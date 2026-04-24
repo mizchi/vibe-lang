@@ -323,3 +323,114 @@ test "type_check: direct iter dispatch accepts custom iterable" {
       fail("expected direct iter dispatch to type-check: \{err.to_string()}")
   }
 }
+
+///|
+test "type_check: un-annotated lambda param is inferred via body arithmetic" {
+  let script =
+    #|let f = (x) -> { x + 1 }
+    #|f(5)
+  let ast = @parser.parse_ast(script) catch {
+    err => fail("parse error: \{err.to_string()}")
+  }
+  let result : Result[TypeEnv, TypeError] = try? type_check(ast)
+  match result {
+    Ok(_) => ()
+    Err(err) =>
+      fail(
+        "expected un-annotated lambda param to be inferred: \{err.to_string()}",
+      )
+  }
+}
+
+///|
+test "type_check: immediately invoked lambda infers param from body usage" {
+  let script =
+    #|((x) -> { x * x })(7)
+  let ast = @parser.parse_ast(script) catch {
+    err => fail("parse error: \{err.to_string()}")
+  }
+  let result : Result[TypeEnv, TypeError] = try? type_check(ast)
+  match result {
+    Ok(_) => ()
+    Err(err) => fail("expected IIFE to type-check: \{err.to_string()}")
+  }
+}
+
+///|
+test "type_check: un-annotated multi-param lambda infers via body" {
+  let script =
+    #|let add = (a, b) -> { a + b }
+    #|add(3, 4)
+  let ast = @parser.parse_ast(script) catch {
+    err => fail("parse error: \{err.to_string()}")
+  }
+  let result : Result[TypeEnv, TypeError] = try? type_check(ast)
+  match result {
+    Ok(_) => ()
+    Err(err) =>
+      fail(
+        "expected multi-param un-annotated lambda to type-check: \{err.to_string()}",
+      )
+  }
+}
+
+///|
+/// Unit equality is accepted at the checker layer. Regression guard for #327
+/// where `ensure_eq_operand` rejected `Type::Unit` with
+/// "expected: Int, actual: Unit".
+test "type_check: Unit equality type-checks" {
+  let script =
+    #|let u = ()
+    #|let v = ()
+    #|u == v
+  let ast = @parser.parse_ast(script) catch {
+    err => fail("parse error: \{err.to_string()}")
+  }
+  let result : Result[TypeEnv, TypeError] = try? type_check(ast)
+  match result {
+    Ok(_) => ()
+    Err(err) => fail("expected Unit == Unit to type-check: \{err.to_string()}")
+  }
+}
+
+///|
+/// Tuple equality type-checks element-wise via `ensure_eq_operand` recursion.
+/// Regression guard for #327 where `Type::Tuple` fell through to the
+/// `_ => raise Mismatch` arm.
+test "type_check: Tuple equality type-checks" {
+  let script =
+    #|let a = (1, 2)
+    #|let b = (1, 2)
+    #|a == b
+  let ast = @parser.parse_ast(script) catch {
+    err => fail("parse error: \{err.to_string()}")
+  }
+  let result : Result[TypeEnv, TypeError] = try? type_check(ast)
+  match result {
+    Ok(_) => ()
+    Err(err) => fail("expected Tuple == Tuple to type-check: \{err.to_string()}")
+  }
+}
+
+///|
+/// Explicit `(x: Unit) -> ...` is NOT an inference placeholder — it's a concrete
+/// Unit-typed param. The parser emits `Type::Named("Unit")` for the annotation
+/// form and `Type::Infer` for the placeholder, so `is_infer_placeholder`
+/// distinguishes them. A call with a non-Unit argument must still fail.
+/// Regression guard for the P1 concern on PR #332.
+test "type_check: explicit Unit-typed lambda param rejects non-Unit arg" {
+  let script =
+    #|let f = (x: Unit) -> { x }
+    #|f(1)
+  let ast = @parser.parse_ast(script) catch {
+    err => fail("parse error: \{err.to_string()}")
+  }
+  let result : Result[TypeEnv, TypeError] = try? type_check(ast)
+  match result {
+    Ok(_) =>
+      fail(
+        "expected (x: Unit) -> x; f(1) to be rejected — explicit Unit param must not accept Int",
+      )
+    Err(_) => ()
+  }
+}

@@ -477,6 +477,7 @@ pub fn Type::structural_hash(self : Type) -> Int {
     Type::Char => 0x43686172
     Type::String => 0x53747267
     Type::Unit => 0x556e6974
+    Type::Infer => 0x496e6672
     Type::Path => 0x50617468
     Type::PromptText => 0x50726d74
     Type::Never => 0x4e657665

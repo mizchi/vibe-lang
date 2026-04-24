@@ -41,6 +41,10 @@ pub(all) enum Type {
   Path
   PromptText
   Unit
+  /// Type-inference placeholder emitted by the parser for unannotated fn params
+  /// and `_`-sugar lambda params. Always replaced with a fresh type variable
+  /// early in `type_fn_literal`; must not survive past the checker.
+  Infer
   Tuple(Array[Type])
   Record(Map[String, Type])
   Array(Type)
@@ -65,10 +69,10 @@ pub impl Show for Type with output(self, logger) {
 }
 
 ///|
-/// Check if a type is a placeholder for inference (Unit is used as placeholder)
+/// Check if a type is a placeholder for inference
 pub fn Type::is_infer_placeholder(self : Type) -> Bool {
   match self {
-    Type::Unit => true
+    Type::Infer => true
     _ => false
   }
 }
@@ -158,6 +162,7 @@ fn format_type_compact(ty : Type) -> String {
     Type::Path => "Path"
     Type::PromptText => "PromptText"
     Type::Unit => "Unit"
+    Type::Infer => "_"
     Type::Never => "Never"
     Type::Tuple(items) => {
       let buf = StringBuilder::new()

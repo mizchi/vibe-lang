@@ -687,6 +687,7 @@ fn addr_type_to_sexp(ty : @core.Type) -> String {
     @core.Type::Path => "@core.Path"
     @core.Type::PromptText => "PromptText"
     @core.Type::Unit => "Unit"
+    @core.Type::Infer => "_"
     @core.Type::Named(name~, args~) =>
       match name {
         "Int" | "i32" if args.is_empty() => "Int"

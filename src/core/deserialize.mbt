@@ -546,6 +546,7 @@ fn parse_type(json : Json) -> Type raise DeserializeError {
       "Path" => return Type::Path
       "PromptText" => return Type::PromptText
       "Unit" => return Type::Unit
+      "Infer" => return Type::Infer
       "Never" => return Type::Never
       "Named" => {
         let inner = expect_object(value)

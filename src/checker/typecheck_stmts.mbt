@@ -1555,6 +1555,11 @@ fn trait_impl_targets_may_overlap_concrete(
         @core.Type::Unit => true
         _ => false
       }
+    @core.Type::Infer =>
+      match right {
+        @core.Type::Infer => true
+        _ => false
+      }
     @core.Type::StringBuilder =>
       match right {
         @core.Type::StringBuilder => true

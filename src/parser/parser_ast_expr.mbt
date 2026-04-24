@@ -1461,7 +1461,7 @@ fn AstParser::parse_param(
         span=name_span,
       )
     }
-    @core.Type::Unit // Placeholder for type inference
+    @core.Type::Infer // Placeholder for type inference
   }
   self.skip_trivia()
   let bounds : Array[String] = if self.peek_kind() == colon() {
@@ -2001,7 +2001,7 @@ fn AstParser::parse_call_or_primary(
       let param = @core.FuncParam::{
         name: base_name,
         label: @core.ParamLabel::Positional,
-        ty: @core.Type::Unit, // Placeholder for inference
+        ty: @core.Type::Infer, // Placeholder for inference
         bounds: [],
       }
       // Check if block body or expression body
@@ -2668,12 +2668,24 @@ pub fn parse_ast_with_recovery(
 
 ///|
 /// Check if an expression contains any placeholder (_)
+///
+/// Operator calls (`__` prefix — `__add`, `__lt`, `__eq`, …) are transparent:
+/// a placeholder anywhere within them belongs to the enclosing lambda, so we
+/// recurse into their args. Regular function calls are opaque — a placeholder
+/// in a nested non-operator call scopes to that call, not outward (matches
+/// Scala's `_` rule: `Array::any(xs, _ > 5)` wraps at `_ > 5`, not at `any`).
 fn contains_placeholder(expr : @core.Expr) -> Bool {
   match expr {
     @core.Expr::Placeholder(..) => true
-    @core.Expr::Call(args~, ..) => {
+    @core.Expr::Call(name~, args~, ..) => {
+      let is_operator_call = name.has_prefix("__")
       for arg in args {
-        if contains_placeholder(arg.expr) {
+        let found = if is_operator_call {
+          contains_placeholder(arg.expr)
+        } else {
+          arg.expr is @core.Expr::Placeholder(..)
+        }
+        if found {
           return true
         }
       }
@@ -2877,7 +2889,7 @@ pub fn desugar_placeholder_expr(expr : @core.Expr) -> @core.Expr {
     params.push(@core.FuncParam::{
       name: "__p" + i.to_string(),
       label: @core.ParamLabel::Positional,
-      ty: @core.Type::Unit, // Placeholder for type inference
+      ty: @core.Type::Infer, // Placeholder for type inference
       bounds: [],
     })
   }

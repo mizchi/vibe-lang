@@ -774,6 +774,7 @@ fn type_contains_scoped_ref_inner_fast(
     | @core.Type::Path
     | @core.Type::PromptText
     | @core.Type::Unit
+    | @core.Type::Infer
     | @core.Type::StringBuilder
     | @core.Type::Bytes
     | @core.Type::V128

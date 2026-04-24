@@ -144,6 +144,7 @@ fn render_type(ty : @core.Type) -> String {
     @core.Type::Path => "Path"
     @core.Type::PromptText => "PromptText"
     @core.Type::Unit => "Unit"
+    @core.Type::Infer => "_"
     @core.Type::Never => "Never"
     @core.Type::Tuple(items) =>
       "(" + join_with(items.map(fn(x) { render_type(x) }), ", ") + ")"

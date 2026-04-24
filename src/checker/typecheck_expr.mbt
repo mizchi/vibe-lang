@@ -1436,9 +1436,16 @@ fn type_fn_literal(
   }
   let resolved_params : Array[@core.FuncParam] = []
   for param in params {
+    // Un-annotated lambda param arrives as Unit placeholder; allocate a fresh
+    // type var so body usage can drive inference instead of being pinned to Unit.
+    let effective_ty = if param.ty.is_infer_placeholder() {
+      fresh_type_var(env)
+    } else {
+      param.ty
+    }
     let param_ty_with_num = match num_var {
-      Some(n) => replace_num_type(param.ty, n)
-      None => param.ty
+      Some(n) => replace_num_type(effective_ty, n)
+      None => effective_ty
     }
     let param_ty = substitute_type_params(param_ty_with_num, type_param_vars)
     let resolved = normalize_type(env, param_ty)
@@ -1939,7 +1946,13 @@ fn ensure_eq_operand(
     | @core.Type::Bool
     | @core.Type::Char
     | @core.Type::String => ()
+    @core.Type::Unit => ()
     @core.Type::Var(_) => ()
+    @core.Type::Tuple(items) =>
+      // Recurse — tuple eq is element-wise, so every element must itself be Eq.
+      for item in items {
+        ensure_eq_operand(env, item, span)
+      }
     @core.Type::Named(..) =>
       if type_implements_trait(env, resolved, "Eq") {
         ()
