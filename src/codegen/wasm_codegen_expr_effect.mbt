@@ -302,6 +302,12 @@ fn compile_expr_handle_with_resume(
       buf.push((4).to_byte()) // if
       buf.push((64).to_byte()) // void
       adjust_loop_offsets(ctx, 1)
+      // Save locals before compiling arm body so handler-param bindings and
+      // prefix-stmt let bindings (from the Block branch below) do not leak
+      // into later arms, where call resolution prefers ctx.locals over
+      // globals and a stale binding could shadow an otherwise-global name.
+      let saved_arm_locals = ctx.locals.copy()
+      let saved_arm_local_kinds = ctx.local_kinds.copy()
       // Bind handler param from perform_arg global
       match arm.pat {
         @core.Pat::Ctor(args~, ..) if args.length() > 0 =>
@@ -348,6 +354,8 @@ fn compile_expr_handle_with_resume(
         }
       }
       emit_local_set(buf, resume_val_local)
+      ctx.locals = saved_arm_locals
+      ctx.local_kinds = saved_arm_local_kinds
       buf.push((11).to_byte()) // end if
       adjust_loop_offsets(ctx, -1)
     }
