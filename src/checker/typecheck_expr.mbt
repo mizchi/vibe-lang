@@ -1948,6 +1948,11 @@ fn ensure_eq_operand(
     | @core.Type::String => ()
     @core.Type::Unit => ()
     @core.Type::Var(_) => ()
+    @core.Type::Tuple(items) =>
+      // Recurse — tuple eq is element-wise, so every element must itself be Eq.
+      for item in items {
+        ensure_eq_operand(env, item, span)
+      }
     @core.Type::Named(..) =>
       if type_implements_trait(env, resolved, "Eq") {
         ()

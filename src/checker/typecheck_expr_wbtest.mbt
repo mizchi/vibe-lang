@@ -392,3 +392,22 @@ test "type_check: Unit equality type-checks" {
     Err(err) => fail("expected Unit == Unit to type-check: \{err.to_string()}")
   }
 }
+
+///|
+/// Tuple equality type-checks element-wise via `ensure_eq_operand` recursion.
+/// Regression guard for #327 where `Type::Tuple` fell through to the
+/// `_ => raise Mismatch` arm.
+test "type_check: Tuple equality type-checks" {
+  let script =
+    #|let a = (1, 2)
+    #|let b = (1, 2)
+    #|a == b
+  let ast = @parser.parse_ast(script) catch {
+    err => fail("parse error: \{err.to_string()}")
+  }
+  let result : Result[TypeEnv, TypeError] = try? type_check(ast)
+  match result {
+    Ok(_) => ()
+    Err(err) => fail("expected Tuple == Tuple to type-check: \{err.to_string()}")
+  }
+}
