@@ -1,0 +1,158 @@
+name: Setup Vibe
+description: Install MoonBit (cached) and optional toolchains for Vibe CI
+
+inputs:
+  wasmtime:
+    description: Install wasmtime
+    default: 'false'
+  just:
+    description: Install just
+    default: 'false'
+  ripgrep:
+    description: Install ripgrep
+    default: 'false'
+  wasm-tools:
+    description: Install wasm-tools
+    default: 'false'
+  node-version:
+    description: Node version (empty=skip)
+    default: ''
+  moon-build-cache:
+    description: Cache _build / .mooncakes for MoonBit project
+    default: 'true'
+  vibe-debug-cache:
+    description: Cache vibe linked build artifacts (dist/cache)
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - name: Install Node.js
+      if: inputs.node-version != ''
+      uses: actions/setup-node@v5
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    # Daily-rotating key for ~/.moon. The official CDN serves a moving
+    # "latest" tag; we accept up to ~1 day of staleness so cache hits stay
+    # frequent while invalidating quickly when upstream releases. The
+    # downstream `moonbit-build` cache below is keyed on .moon-version for
+    # finer invalidation when moonc itself changes (see install_moonbit.sh
+    # context).
+    - name: Resolve cache date
+      id: cache-date
+      shell: bash
+      run: echo "value=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+    - name: Restore MoonBit toolchain cache
+      id: moonbit-toolchain-cache
+      uses: actions/cache/restore@v5
+      with:
+        path: ~/.moon
+        key: moonbit-toolchain-${{ runner.os }}-${{ steps.cache-date.outputs.value }}
+        restore-keys: |
+          moonbit-toolchain-${{ runner.os }}-
+
+    - name: Install MoonBit (cache miss)
+      if: steps.moonbit-toolchain-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: bash "$GITHUB_WORKSPACE/scripts/install_moonbit.sh"
+
+    - name: Save MoonBit toolchain cache
+      if: steps.moonbit-toolchain-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v5
+      with:
+        path: ~/.moon
+        key: ${{ steps.moonbit-toolchain-cache.outputs.cache-primary-key }}
+
+    - name: Add MoonBit to PATH
+      shell: bash
+      run: echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+
+    # The install script writes .moon-version on cache miss; on cache hit we
+    # need to (re-)stamp from the cached binary so downstream hashFiles keys
+    # remain consistent.
+    - name: Stamp .moon-version
+      shell: bash
+      run: |
+        export PATH="$HOME/.moon/bin:$PATH"
+        moon version 2>/dev/null | head -1 > "$GITHUB_WORKSPACE/.moon-version"
+
+    - name: Install ripgrep
+      if: inputs.ripgrep == 'true'
+      shell: bash
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y ripgrep
+
+    - name: Install just
+      if: inputs.just == 'true'
+      shell: bash
+      run: |
+        JUST_VERSION=1.48.1
+        curl -fsSL --retry 5 --retry-all-errors \
+          -o /tmp/just.tar.gz \
+          "https://github.com/casey/just/releases/download/${JUST_VERSION}/just-${JUST_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+        tar -xzf /tmp/just.tar.gz -C /tmp just
+        sudo install -m 0755 /tmp/just /usr/local/bin/just
+        just --version
+
+    # Cache wasmtime release tarball extraction. WASMTIME_VERSION is pinned
+    # in install_wasmtime_release.sh; key includes the file's hash so any
+    # bump invalidates the cache.
+    - name: Restore wasmtime cache
+      if: inputs.wasmtime == 'true'
+      id: wasmtime-cache
+      uses: actions/cache/restore@v5
+      with:
+        path: ~/.wasmtime
+        key: wasmtime-${{ runner.os }}-${{ hashFiles('scripts/install_wasmtime_release.sh') }}
+
+    - name: Install wasmtime (cache miss)
+      if: inputs.wasmtime == 'true' && steps.wasmtime-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: bash "$GITHUB_WORKSPACE/scripts/install_wasmtime_release.sh"
+
+    - name: Save wasmtime cache
+      if: inputs.wasmtime == 'true' && steps.wasmtime-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v5
+      with:
+        path: ~/.wasmtime
+        key: ${{ steps.wasmtime-cache.outputs.cache-primary-key }}
+
+    - name: Add wasmtime to PATH
+      if: inputs.wasmtime == 'true'
+      shell: bash
+      run: echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
+
+    - name: Install wasm-tools
+      if: inputs.wasm-tools == 'true'
+      shell: bash
+      run: |
+        WASM_TOOLS_VERSION=1.245.1
+        curl -fsSL --retry 5 --retry-all-errors \
+          -o /tmp/wasm-tools.tar.gz \
+          "https://github.com/bytecodealliance/wasm-tools/releases/download/v${WASM_TOOLS_VERSION}/wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux.tar.gz"
+        tar xzf /tmp/wasm-tools.tar.gz -C /tmp
+        sudo install -m 0755 "/tmp/wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux/wasm-tools" /usr/local/bin/wasm-tools
+        wasm-tools --version
+
+    - name: Cache MoonBit build
+      if: inputs.moon-build-cache == 'true'
+      uses: actions/cache@v5
+      with:
+        path: |
+          _build
+          .mooncakes
+        key: moonbit-${{ runner.os }}-${{ hashFiles('.moon-version') }}-${{ hashFiles('moon.mod.json', 'src/**/*.mbt') }}
+        restore-keys: |
+          moonbit-${{ runner.os }}-${{ hashFiles('.moon-version') }}-
+
+    - name: Cache vibe linked build
+      if: inputs.vibe-debug-cache == 'true'
+      uses: actions/cache@v5
+      with:
+        path: vibe/.vibe/debug
+        key: vibe-debug-${{ runner.os }}-${{ hashFiles('vibe/**/*.vibe') }}
+        restore-keys: |
+          vibe-debug-${{ runner.os }}-
