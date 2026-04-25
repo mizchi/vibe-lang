@@ -846,7 +846,12 @@ fn type_expr_eff(
     @core.Expr::Map(fields~, span~) => {
       let _ = span
       if fields.is_empty() {
-        @core.Type::Map(@core.Type::String, @core.Type::Unit)
+        // No element to infer from — use a fresh type variable so the value
+        // type can be unified later from context (e.g.
+        // `let m: Map[String, Int] = map {}`). Hard-coding `Unit` here forced
+        // a `Map(String, Unit)` mismatch even when the binding annotation
+        // resolved the value type concretely.
+        @core.Type::Map(@core.Type::String, fresh_type_var(env))
       } else {
         let first = type_expr_eff(
           env,

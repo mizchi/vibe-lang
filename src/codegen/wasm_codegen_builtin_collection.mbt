@@ -1827,6 +1827,13 @@ fn compile_builtin_collection(
         let entry_key_local = alloc_temp_local(ctx)
         compile_expr_i32(ctx, buf, pos_args[1])
         emit_i32_wrap_i64(buf)
+        // Strip `tag_obj` to match the map literal's storage convention
+        // (`compile_map_expr` stores `ctx.strings.intern(key)` raw). `__index`
+        // compares the entry slot against the raw interned offset via
+        // `i32.eq`, so any tagged value stored here would silently fail the
+        // lookup (e.g. `Map::set(map { "a": 1 }, "b", 2)` then `m2["b"]`).
+        emit_i32_const_raw(buf, -4)
+        emit_i32_and(buf)
         emit_local_set(buf, key_local)
         buf.push((3).to_byte()) // loop
         buf.push((64).to_byte()) // void
