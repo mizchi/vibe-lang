@@ -942,7 +942,16 @@ fn compile_builtin_collection(
         emit_i32_add(buf)
         emit_i32_load(buf, 8)
         emit_local_set(buf, entry_key_local)
-        emit_non_js_string_ptr_equals_i32(ctx, buf, entry_key_local, key_local)
+        // Match Set::contains' i32.eq. The shared
+        // `emit_non_js_string_ptr_equals_i32` helper treats its operands as
+        // `obj_string` pointers (loading length at `(int<<2)+4`), so for
+        // tagged-int keys `Set::add(Set::add(Set::new(), 10), 20)` could
+        // false-positive 20 vs 10 against memory garbage and silently skip
+        // the append. Map ops keep the helper because their tests exercise
+        // String keys where structural compare is required.
+        emit_local_get(buf, entry_key_local)
+        emit_local_get(buf, key_local)
+        emit_i32_eq(buf)
         buf.push((4).to_byte()) // if
         buf.push((64).to_byte()) // void
         emit_i32_const_raw(buf, 1)
