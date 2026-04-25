@@ -1189,7 +1189,16 @@ fn compile_builtin_collection(
         emit_i32_add(buf)
         emit_i32_load(buf, 12)
         emit_local_set(buf, entry_val)
-        emit_non_js_string_ptr_equals_i32(ctx, buf, entry_key_local, key_local)
+        // Match Set::contains / Set::add: tagged-int keys compare via i32.eq.
+        // The shared `emit_non_js_string_ptr_equals_i32` helper would
+        // dereference both operands as `obj_string` (load length at +4 of
+        // `(int<<2)`), so for int keys `Set::remove(Set::add(Set::new(), 5),
+        // 999)` previously hit a memory false-positive and removed the
+        // wrong entry. Map ops keep the helper because their keys are
+        // String pointers stored raw.
+        emit_local_get(buf, entry_key_local)
+        emit_local_get(buf, key_local)
+        emit_i32_eq(buf)
         emit_i32_eqz(buf) // not equal = keep
         buf.push((4).to_byte()) // if
         buf.push((64).to_byte()) // void
@@ -1277,12 +1286,13 @@ fn compile_builtin_collection(
       emit_i32_shl(buf)
       emit_i32_add(buf)
       emit_i32_load(buf, 8)
-      if not(ctx.use_js_strings) {
-        emit_i64_extend_i32_u(buf)
-        emit_i64_const_raw(buf, tag_obj.to_int64())
-        emit_i64_or(buf)
-        emit_i32_wrap_i64(buf)
-      }
+      // Set slots store the i32-wrapped form of the tagged i64 value
+      // (`Set::add` does `i32_wrap_i64` on the tagged input). For Int keys
+      // that's the tagged-int representation already; for String keys it's
+      // the tagged pointer. ORing `tag_obj` here would double-tag ints
+      // (`40 | 1 = 41`, breaking the tag_int convention) — leave the slot
+      // value as-is. Map::keys is symmetric but stores RAW string pointers,
+      // so its OR is correct and stays.
       emit_i32_store(buf, 8)
       emit_local_get(buf, loop_i)
       emit_i32_const_raw(buf, 1)
@@ -1298,8 +1308,11 @@ fn compile_builtin_collection(
       emit_i64_or(buf)
     }
     "Set::from_array" => {
-      // Set::from_array(arr) -> new set from array elements
-      // Creates map where each array element is a key with value=true
+      // Set::from_array(arr) -> new set from array elements with dedup.
+      // Creates a map where each unique array element is a key with
+      // value=true. Iterates the source array, linearly scanning the
+      // partial dst for each candidate; only appends when not already
+      // present so `Set::from_array([1, 2, 3, 2, 1])` has size 3.
       let pos_args = extract_positional_exprs_with_arity(
         args, "Set::from_array", 1,
       )
@@ -1308,7 +1321,11 @@ fn compile_builtin_collection(
       let arr_ptr = alloc_temp_local(ctx)
       let arr_len = alloc_temp_local(ctx)
       let dst_ptr = alloc_temp_local(ctx)
+      let dst_len = alloc_temp_local(ctx)
       let loop_i = alloc_temp_local(ctx)
+      let inner_j = alloc_temp_local(ctx)
+      let cand_key = alloc_temp_local(ctx)
+      let found_local = alloc_temp_local(ctx)
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_untag_ptr_i32(buf)
       emit_local_set(buf, arr_ptr)
@@ -1320,47 +1337,96 @@ fn compile_builtin_collection(
       emit_local_get(buf, dst_ptr)
       emit_i32_const_raw(buf, obj_map)
       emit_i32_store(buf, 0)
-      emit_local_get(buf, dst_ptr)
-      emit_local_get(buf, arr_len)
-      emit_i32_store(buf, 4)
+      // dst length is finalised after the loop; start at 0.
+      emit_i32_const_raw(buf, 0)
+      emit_local_set(buf, dst_len)
       emit_i32_const_raw(buf, 0)
       emit_local_set(buf, loop_i)
-      buf.push((3).to_byte()) // loop
+      buf.push((3).to_byte()) // outer loop
       buf.push((64).to_byte()) // void
       emit_local_get(buf, loop_i)
       emit_local_get(buf, arr_len)
       emit_i32_lt_s(buf)
-      buf.push((4).to_byte()) // if
+      buf.push((4).to_byte()) // if (i < arr_len)
       buf.push((64).to_byte()) // void
-      // store key: dst[8 + i*8] = arr[8 + i*4]
-      emit_local_get(buf, dst_ptr)
-      emit_local_get(buf, loop_i)
-      emit_i32_const_raw(buf, 3)
-      emit_i32_shl(buf)
-      emit_i32_add(buf)
+      // load candidate = arr[8 + i*4]
       emit_local_get(buf, arr_ptr)
       emit_local_get(buf, loop_i)
       emit_i32_const_raw(buf, 4)
       emit_i32_mul(buf)
       emit_i32_add(buf)
       emit_i32_load(buf, 8)
-      emit_i32_store(buf, 8)
-      // store value: dst[12 + i*8] = tagged true (7)
+      emit_local_set(buf, cand_key)
+      // dedup search: scan dst[0..dst_len] for cand_key
+      emit_i32_const_raw(buf, 0)
+      emit_local_set(buf, found_local)
+      emit_i32_const_raw(buf, 0)
+      emit_local_set(buf, inner_j)
+      buf.push((3).to_byte()) // inner loop
+      buf.push((64).to_byte()) // void
+      emit_local_get(buf, inner_j)
+      emit_local_get(buf, dst_len)
+      emit_i32_lt_s(buf)
+      buf.push((4).to_byte()) // if (j < dst_len)
+      buf.push((64).to_byte()) // void
       emit_local_get(buf, dst_ptr)
-      emit_local_get(buf, loop_i)
+      emit_local_get(buf, inner_j)
+      emit_i32_const_raw(buf, 3)
+      emit_i32_shl(buf)
+      emit_i32_add(buf)
+      emit_i32_load(buf, 8)
+      emit_local_get(buf, cand_key)
+      emit_i32_eq(buf)
+      buf.push((4).to_byte()) // if (matches)
+      buf.push((64).to_byte()) // void
+      emit_i32_const_raw(buf, 1)
+      emit_local_set(buf, found_local)
+      buf.push((11).to_byte()) // end if (matches)
+      emit_local_get(buf, inner_j)
+      emit_i32_const_raw(buf, 1)
+      emit_i32_add(buf)
+      emit_local_set(buf, inner_j)
+      buf.push((12).to_byte()) // br to inner loop
+      write_u32_leb(buf, 1)
+      buf.push((11).to_byte()) // end if (j < dst_len)
+      buf.push((11).to_byte()) // end inner loop
+      // append if not found
+      emit_local_get(buf, found_local)
+      emit_i32_eqz(buf)
+      buf.push((4).to_byte()) // if (not found)
+      buf.push((64).to_byte()) // void
+      emit_local_get(buf, dst_ptr)
+      emit_local_get(buf, dst_len)
+      emit_i32_const_raw(buf, 3)
+      emit_i32_shl(buf)
+      emit_i32_add(buf)
+      emit_local_get(buf, cand_key)
+      emit_i32_store(buf, 8)
+      emit_local_get(buf, dst_ptr)
+      emit_local_get(buf, dst_len)
       emit_i32_const_raw(buf, 3)
       emit_i32_shl(buf)
       emit_i32_add(buf)
       emit_i32_const_raw(buf, 7) // tagged true = (1 << 2) | 3
       emit_i32_store(buf, 12)
+      emit_local_get(buf, dst_len)
+      emit_i32_const_raw(buf, 1)
+      emit_i32_add(buf)
+      emit_local_set(buf, dst_len)
+      buf.push((11).to_byte()) // end if (not found)
+      // outer i++
       emit_local_get(buf, loop_i)
       emit_i32_const_raw(buf, 1)
       emit_i32_add(buf)
       emit_local_set(buf, loop_i)
-      buf.push((12).to_byte()) // br
-      write_u32_leb(buf, 1) // to loop
-      buf.push((11).to_byte()) // end if
-      buf.push((11).to_byte()) // end loop
+      buf.push((12).to_byte()) // br to outer loop
+      write_u32_leb(buf, 1)
+      buf.push((11).to_byte()) // end if (i < arr_len)
+      buf.push((11).to_byte()) // end outer loop
+      // finalise length
+      emit_local_get(buf, dst_ptr)
+      emit_local_get(buf, dst_len)
+      emit_i32_store(buf, 4)
       emit_local_get(buf, dst_ptr)
       emit_i64_extend_i32_u(buf)
       emit_i64_const_raw(buf, tag_obj.to_int64())
