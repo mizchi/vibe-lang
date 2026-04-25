@@ -1003,37 +1003,131 @@ fn compile_stmt(
       }
     }
     @core.Stmt::LetPatElse(pat~, expr~, else_body~, span~) => {
-      // Desugar to match: match expr { pat => unit, _ => else_body }
-      let scrut_idx = ctx.local_count
-      ctx.local_count += 1
-      ctx.local_types.push(ValueKind::I64)
-      compile_expr_i32(ctx, buf, expr)
-      emit_local_set(buf, scrut_idx)
-      // Build 2-arm match: success (bind + unit) and fallback (else_body)
-      let success_arm = @core.MatchArm::{
-        pat,
-        cond: None,
-        expr: @core.Expr::Tuple(items=[], span~),
-        span,
+      // `let Some(v) = opt else { default }` binds `v` to either `opt`'s ctor
+      // payload (on match) or to `default` (on no match). The old lowering
+      // ran the match for its side effects, dropped the result, and then
+      // unconditionally re-extracted pattern bindings from the scrutinee —
+      // which reads garbage from a non-matching value (e.g. `None` has no
+      // payload at offset 12). Re-lower via a match whose success arm
+      // captures the ctor payload, falling back to `else_body`; bind the
+      // inner pattern against the match result.
+      //
+      // The fast path only applies to single-arg ctor patterns whose inner
+      // pattern is *irrefutable* (Bind, Wildcard, Tuple/Record/Struct of
+      // irrefutable). If the inner pattern is refutable (e.g. `Some(None)`)
+      // we must keep the original pattern in the match so the outer match
+      // itself decides success vs. else; fall back to the legacy two-arm
+      // form for those cases.
+      let single_arg_ctor_irrefutable = match pat {
+        @core.Pat::Ctor(name~, args~, span=pat_span) =>
+          if args.length() == 1 && pat_is_irrefutable(args[0]) {
+            Some((name, args[0], pat_span))
+          } else {
+            None
+          }
+        _ => None
       }
-      let fallback_arm = @core.MatchArm::{
-        pat: @core.Pat::Wildcard(span~),
-        cond: None,
-        expr: @core.Expr::Block(body=else_body, span~),
-        span,
-      }
-      let arms = [success_arm, fallback_arm]
-      compile_match_chain(ctx, buf, scrut_idx, arms, 0)
-      // Drop the match result (Unit from success or else_body value)
-      emit_drop(buf)
-      // Re-bind pattern variables in the outer scope.
-      // compile_match_chain saves/restores ctx.locals, so bindings made
-      // during pattern matching are lost. Re-extract them from scrut_idx.
-      compile_let_pat_nested(ctx, buf, pat, scrut_idx)
-      if is_last {
-        emit_i64_const_tagged(buf, 0L)
+      match single_arg_ctor_irrefutable {
+        Some((ctor_name, inner_pat, pat_span)) => {
+          let inner_tmp = "__let_pat_else_inner"
+          let success_arm = @core.MatchArm::{
+            pat: @core.Pat::Ctor(
+              name=ctor_name,
+              args=[@core.Pat::Bind(name=inner_tmp, span=pat_span)],
+              span=pat_span,
+            ),
+            cond: None,
+            expr: @core.Expr::Ident(name=inner_tmp, span=pat_span),
+            span,
+          }
+          let fallback_arm = @core.MatchArm::{
+            pat: @core.Pat::Wildcard(span~),
+            cond: None,
+            expr: @core.Expr::Block(body=else_body, span~),
+            span,
+          }
+          let match_expr = @core.Expr::Match(
+            scrutinee=expr,
+            arms=[success_arm, fallback_arm],
+            span~,
+          )
+          let tmp_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
+          compile_expr_i32(ctx, buf, match_expr)
+          emit_local_set(buf, tmp_local)
+          compile_let_pat_nested(ctx, buf, inner_pat, tmp_local)
+          if is_last {
+            emit_i64_const_tagged(buf, 0L)
+          }
+        }
+        None => {
+          // Fallback for non-Ctor patterns (tuple, record, struct, bind): use
+          // the earlier two-arm match strategy. Correct only when the pattern
+          // is infallible.
+          let scrut_idx = ctx.local_count
+          ctx.local_count += 1
+          ctx.local_types.push(ValueKind::I64)
+          compile_expr_i32(ctx, buf, expr)
+          emit_local_set(buf, scrut_idx)
+          let success_arm = @core.MatchArm::{
+            pat,
+            cond: None,
+            expr: @core.Expr::Tuple(items=[], span~),
+            span,
+          }
+          let fallback_arm = @core.MatchArm::{
+            pat: @core.Pat::Wildcard(span~),
+            cond: None,
+            expr: @core.Expr::Block(body=else_body, span~),
+            span,
+          }
+          let arms = [success_arm, fallback_arm]
+          compile_match_chain(ctx, buf, scrut_idx, arms, 0)
+          emit_drop(buf)
+          compile_let_pat_nested(ctx, buf, pat, scrut_idx)
+          if is_last {
+            emit_i64_const_tagged(buf, 0L)
+          }
+        }
       }
     }
+  }
+}
+
+///|
+/// Whether a pattern always matches any value of its type — i.e. it binds
+/// values but never rejects the scrutinee. Used by `LetPatElse` lowering to
+/// decide whether the outer match can safely collapse a ctor arg to a single
+/// `Bind`: only when the inner pattern cannot itself reject the scrutinee.
+/// A nested `Ctor` (e.g. `Some(None)`) is refutable and must preserve the
+/// original pattern in the match arm.
+fn pat_is_irrefutable(pat : @core.Pat) -> Bool {
+  match pat {
+    @core.Pat::Bind(..) | @core.Pat::Wildcard(..) => true
+    @core.Pat::Tuple(items~, ..) => {
+      for item in items {
+        if not(pat_is_irrefutable(item)) {
+          return false
+        }
+      }
+      true
+    }
+    @core.Pat::Record(fields~, ..) => {
+      for field in fields {
+        if not(pat_is_irrefutable(field.pat)) {
+          return false
+        }
+      }
+      true
+    }
+    @core.Pat::Struct(fields~, ..) => {
+      for field in fields {
+        if not(pat_is_irrefutable(field.pat)) {
+          return false
+        }
+      }
+      true
+    }
+    _ => false
   }
 }
 
