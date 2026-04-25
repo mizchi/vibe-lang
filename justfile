@@ -131,6 +131,14 @@ ci-contract-native:
     # individual is parallel-cleanup at ~19s). Each script writes its own log
     # under _build/contract-native-logs/ for post-run inspection; failures are
     # collected after `wait` so partial failures don't abort the rest.
+    #
+    # CI workers (4 vCPU) cap: `test_fixtures_isolation.sh` and
+    # `test_e2e_parity.sh` default each to `nproc` workers via xargs -P. Running
+    # 6 subtests with that default would put 2*nproc on the CPU just from those
+    # two and can trip fixtures' 5s timeout. Cap each to 2 so aggregate
+    # concurrency stays ~10 on a 4-vCPU runner; other subtests spawn at most a
+    # handful of vibe.exe processes at a time and are I/O-bound (waiting on
+    # wasmtime), so they don't push the budget further.
     set -uo pipefail
     source scripts/ensure_native_cli.sh
     cli="_build/native/debug/build/cmd/vibe/vibe.exe"
@@ -144,8 +152,10 @@ ci-contract-native:
       pids[$name]=$!
     }
     run_in_bg watchdog        bash scripts/test_internal_parent_watchdog_e2e.sh "$cli"
-    run_in_bg fixtures        bash scripts/test_fixtures_isolation.sh
-    run_in_bg e2e-parity      bash scripts/test_e2e_parity.sh
+    run_in_bg fixtures        env VIBE_FIXTURE_JOBS="${VIBE_FIXTURE_JOBS:-2}" \
+                                  bash scripts/test_fixtures_isolation.sh
+    run_in_bg e2e-parity      env VIBE_E2E_JOBS="${VIBE_E2E_JOBS:-2}" \
+                                  bash scripts/test_e2e_parity.sh
     run_in_bg repl-parity     bash scripts/test_repl_parity.sh
     run_in_bg feature-parity  env VIBE_BIN="$cli" bash scripts/test_feature_parity.sh
     run_in_bg parallel-cleanup bash scripts/test_parallel_cleanup_e2e.sh "$cli"
