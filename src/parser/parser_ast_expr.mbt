@@ -1980,7 +1980,21 @@ fn AstParser::parse_call_or_primary(
     let name_tok = self.bump()
     let base_name = name_tok.text()
     let mut qualified_name = base_name
+    // Track whether trivia between the bare `name` and the next non-trivia
+    // token contains a newline. We need this for the bare-name `name(args)`
+    // call at the bottom of this branch — without it `else exp\n(s, 1)` was
+    // mis-parsed as `exp(s, 1)` (#325 follow-up json.vibe regression).
+    let pre_skip_pos = self.pos
     self.skip_trivia()
+    let mut name_followed_by_newline = false
+    let mut probe = pre_skip_pos
+    while probe < self.pos {
+      if self.tokens[probe].kind() == newline() {
+        name_followed_by_newline = true
+        break
+      }
+      probe += 1
+    }
     if self.can_parse_slash_qualified_name() {
       while true {
         self.skip_trivia()
@@ -2100,12 +2114,21 @@ fn AstParser::parse_call_or_primary(
         let span = self.span_from(start)
         @core.Expr::Ident(name=qualified_name, span~)
       }
-    } else if self.peek_kind() == lparen() {
+    } else if self.peek_kind() == lparen() && not(name_followed_by_newline) {
       let _ = self.bump()
       let args = self.parse_args()
       let _ = self.expect(rparen(), ")")
       let span = self.span_from(start)
       call_or_throw_expr(qualified_name, [], args, span)
+    } else if self.peek_kind() == lparen() && name_followed_by_newline {
+      // Bare name followed by newline + `(...)`: treat as a standalone
+      // identifier and let the surrounding statement boundary detection
+      // (or the postfix loop, which respects newlines) handle the next
+      // expression. Rewind the trivia consumption so the postfix loop sees
+      // the newline.
+      self.pos = pre_skip_pos
+      let span = self.span_from(start)
+      @core.Expr::Ident(name=qualified_name, span~)
     } else if base_name == "_" {
       // Placeholder for lambda shorthand: _ * 2 → x -> x * 2
       let span = self.span_from(start)
@@ -2151,6 +2174,14 @@ fn AstParser::parse_call_or_primary(
     // Track whether trivia before next token contains a newline.
     // Chained call f(a)(b) is only valid on the same line to avoid
     // ambiguity with tuple/parenthesized expressions on the next line.
+    //
+    // We save `pos` before consuming trivia so that we can rewind if no
+    // postfix operator applies. Otherwise an inner postfix loop (e.g. on
+    // the bare `exp` returned from `else exp`) would eat the newline before
+    // the next `(...)`, leaving the *outer* caller's postfix loop blind to
+    // the line break and (incorrectly) treating the following parenthesised
+    // expression as a chained call (#325 follow-up).
+    let pre_trivia_pos = self.pos
     let mut saw_newline = false
     while is_trivia(self.peek_kind()) {
       if self.peek_kind() == newline() {
@@ -2362,6 +2393,10 @@ fn AstParser::parse_call_or_primary(
         span~,
       )
     } else {
+      // No postfix applied — rewind the trivia consumption so an outer
+      // postfix loop (or statement boundary detection in the caller) can
+      // see the original trivia, including newlines.
+      self.pos = pre_trivia_pos
       break
     }
   }
