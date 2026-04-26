@@ -50,6 +50,24 @@ fn rsa_rewrite_stmt(
       )
     @core.Stmt::LetMut(name~, expr~, span~) =>
       @core.Stmt::LetMut(name~, expr=rsa_rewrite_expr(expr, expr_types), span~)
+    @core.Stmt::Assign(name~, expr~, span~) =>
+      @core.Stmt::Assign(name~, expr=rsa_rewrite_expr(expr, expr_types), span~)
+    @core.Stmt::IndexAssign(target~, index~, value~, span~) =>
+      @core.Stmt::IndexAssign(
+        target=rsa_rewrite_expr(target, expr_types),
+        index=rsa_rewrite_expr(index, expr_types),
+        value=rsa_rewrite_expr(value, expr_types),
+        span~,
+      )
+    @core.Stmt::LetPat(pat~, expr~, span~) =>
+      @core.Stmt::LetPat(pat~, expr=rsa_rewrite_expr(expr, expr_types), span~)
+    @core.Stmt::LetPatElse(pat~, expr~, else_body~, span~) =>
+      @core.Stmt::LetPatElse(
+        pat~,
+        expr=rsa_rewrite_expr(expr, expr_types),
+        else_body=rsa_rewrite_module(else_body, expr_types),
+        span~,
+      )
     @core.Stmt::Expr(expr~, span~) =>
       @core.Stmt::Expr(expr=rsa_rewrite_expr(expr, expr_types), span~)
     @core.Stmt::Test(name~, body~, span~) =>
@@ -210,6 +228,117 @@ fn rsa_rewrite_expr(
         body=rsa_rewrite_module(body, expr_types),
         span~,
       )
+    }
+    @core.Expr::Loop(params~, body~, span~) => {
+      let next_params : Array[@core.LoopParam] = []
+      for p in params {
+        next_params.push(@core.LoopParam::{
+          name: p.name,
+          init: rsa_rewrite_expr(p.init, expr_types),
+          span: p.span,
+        })
+      }
+      @core.Expr::Loop(
+        params=next_params,
+        body=rsa_rewrite_module(body, expr_types),
+        span~,
+      )
+    }
+    @core.Expr::Break(value~, span~) =>
+      @core.Expr::Break(
+        value=match value {
+          Some(v) => Some(rsa_rewrite_expr(v, expr_types))
+          None => None
+        },
+        span~,
+      )
+    @core.Expr::Continue(args~, span~) => {
+      let next_args : Array[@core.Expr] = []
+      for a in args {
+        next_args.push(rsa_rewrite_expr(a, expr_types))
+      }
+      @core.Expr::Continue(args=next_args, span~)
+    }
+    @core.Expr::Yield(expr~, span~) =>
+      @core.Expr::Yield(expr=rsa_rewrite_expr(expr, expr_types), span~)
+    @core.Expr::Tuple(items~, span~) => {
+      let next_items : Array[@core.Expr] = []
+      for it in items {
+        next_items.push(rsa_rewrite_expr(it, expr_types))
+      }
+      @core.Expr::Tuple(items=next_items, span~)
+    }
+    @core.Expr::TupleIndex(expr~, index~, span~) =>
+      @core.Expr::TupleIndex(
+        expr=rsa_rewrite_expr(expr, expr_types),
+        index~,
+        span~,
+      )
+    @core.Expr::Array(items~, span~) => {
+      let next_items : Array[@core.Expr] = []
+      for it in items {
+        next_items.push(rsa_rewrite_expr(it, expr_types))
+      }
+      @core.Expr::Array(items=next_items, span~)
+    }
+    @core.Expr::Record(fields~, span~) => {
+      let next_fields : Array[@core.RecordFieldExpr] = []
+      for f in fields {
+        next_fields.push(@core.RecordFieldExpr::{
+          name: f.name,
+          expr: rsa_rewrite_expr(f.expr, expr_types),
+          span: f.span,
+        })
+      }
+      @core.Expr::Record(fields=next_fields, span~)
+    }
+    @core.Expr::Map(fields~, span~) => {
+      let next_fields : Array[@core.MapFieldExpr] = []
+      for f in fields {
+        next_fields.push(@core.MapFieldExpr::{
+          key: f.key,
+          expr: rsa_rewrite_expr(f.expr, expr_types),
+          span: f.span,
+        })
+      }
+      @core.Expr::Map(fields=next_fields, span~)
+    }
+    @core.Expr::StructLit(name~, type_args~, fields~, span~) => {
+      let next_fields : Array[@core.RecordFieldExpr] = []
+      for f in fields {
+        next_fields.push(@core.RecordFieldExpr::{
+          name: f.name,
+          expr: rsa_rewrite_expr(f.expr, expr_types),
+          span: f.span,
+        })
+      }
+      @core.Expr::StructLit(name~, type_args~, fields=next_fields, span~)
+    }
+    @core.Expr::Spread(expr~, span~) =>
+      @core.Expr::Spread(expr=rsa_rewrite_expr(expr, expr_types), span~)
+    @core.Expr::StringInterp(parts~, span~) => {
+      let next_parts : Array[@core.StringInterpPart] = []
+      for p in parts {
+        match p {
+          @core.StringInterpPart::Lit(_) => next_parts.push(p)
+          @core.StringInterpPart::Expr(e) =>
+            next_parts.push(
+              @core.StringInterpPart::Expr(rsa_rewrite_expr(e, expr_types)),
+            )
+        }
+      }
+      @core.Expr::StringInterp(parts=next_parts, span~)
+    }
+    @core.Expr::Perform(effect_name~, op_name~, args~, span~) => {
+      let next_args : Array[@core.CallArg] = []
+      for a in args {
+        next_args.push(@core.CallArg::{
+          label: a.label,
+          expr: rsa_rewrite_expr(a.expr, expr_types),
+          span: a.span,
+        })
+      }
+      @core.Expr::Perform(effect_name~, op_name~, args=next_args, span~)
     }
     _ => expr
   }
