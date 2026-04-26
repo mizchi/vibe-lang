@@ -830,7 +830,26 @@ fn type_call_builtin_handler_collection_numeric(
       let a = type_expr_eff(env, pos_args[0], aliases, effects, allow_effect)
       let b = type_expr_eff(env, pos_args[1], aliases, effects, allow_effect)
       ensure_num_operand(env, a, pos_args[0].span())
-      if not(type_equal(env, b, a)) {
+      // Char ± Int / Int ± Char is allowed (mirrors the `__add` Char arithmetic
+      // path added in #322): runtime tagging matches, result follows the first
+      // operand. Without this `c - '0'` (with `c: Int`) errored as
+      // "expected: Int, actual: Char" inside `Int::to_double(c - '0')`,
+      // breaking `examples/json.vibe`.
+      let resolved_a = resolve_type(env, a)
+      let char_int_mix = match resolved_a {
+        @core.Type::Char =>
+          match resolve_type(env, b) {
+            @core.Type::Int => true
+            _ => false
+          }
+        @core.Type::Int =>
+          match resolve_type(env, b) {
+            @core.Type::Char => true
+            _ => false
+          }
+        _ => false
+      }
+      if not(char_int_mix) && not(type_equal(env, b, a)) {
         raise TypeError::Mismatch(
           expected=a,
           actual=b,
@@ -848,7 +867,21 @@ fn type_call_builtin_handler_collection_numeric(
       let a = type_expr_eff(env, pos_args[0], aliases, effects, allow_effect)
       let b = type_expr_eff(env, pos_args[1], aliases, effects, allow_effect)
       ensure_num_operand(env, a, pos_args[0].span())
-      if not(type_equal(env, b, a)) {
+      let resolved_a = resolve_type(env, a)
+      let char_int_mix = match resolved_a {
+        @core.Type::Char =>
+          match resolve_type(env, b) {
+            @core.Type::Int => true
+            _ => false
+          }
+        @core.Type::Int =>
+          match resolve_type(env, b) {
+            @core.Type::Char => true
+            _ => false
+          }
+        _ => false
+      }
+      if not(char_int_mix) && not(type_equal(env, b, a)) {
         raise TypeError::Mismatch(
           expected=a,
           actual=b,
@@ -866,7 +899,21 @@ fn type_call_builtin_handler_collection_numeric(
       let a = type_expr_eff(env, pos_args[0], aliases, effects, allow_effect)
       let b = type_expr_eff(env, pos_args[1], aliases, effects, allow_effect)
       ensure_num_operand(env, a, pos_args[0].span())
-      if not(type_equal(env, b, a)) {
+      let resolved_a = resolve_type(env, a)
+      let char_int_mix = match resolved_a {
+        @core.Type::Char =>
+          match resolve_type(env, b) {
+            @core.Type::Int => true
+            _ => false
+          }
+        @core.Type::Int =>
+          match resolve_type(env, b) {
+            @core.Type::Char => true
+            _ => false
+          }
+        _ => false
+      }
+      if not(char_int_mix) && not(type_equal(env, b, a)) {
         raise TypeError::Mismatch(
           expected=a,
           actual=b,
