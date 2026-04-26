@@ -368,7 +368,14 @@ fn is_wasm_runtime_fallback_builtin_name(name : String) -> Bool {
     | "PromptText::new"
     | "PromptText::to_string"
     | "select"
+    | "sh"
     | "sh_lines"
+    | "path"
+    | "Path::ref"
+    | "Path::resolve"
+    | "Env::get"
+    | "Env::args_len"
+    | "Env::args_get"
     | "__perform"
     | "__resume" => true
     _ => false
