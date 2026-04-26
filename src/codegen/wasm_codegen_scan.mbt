@@ -433,6 +433,26 @@ fn scan_needs(ctx : CodegenCtx, ast : @core.Module) -> Unit {
   for stmt in ast.stmts {
     scan_needs_stmt(ctx, stmt)
   }
+  // `Perform` registers the op as a host import unless `effect_handled_ops`
+  // already contains it, but the AST is scanned in source order — so a
+  // `perform Logger::Log("hi")` inside `let log_one = ...` (declared above
+  // its handler) registers `Logger::Log` as an import, then the later
+  // `handle ... with Logger { Log(_) => ... }` marks it handled but the
+  // bogus import entry remains. The extra import shifts every compiled
+  // function index by one, so `_start` gets exported at an index past the
+  // last emitted function ("function index N out of bounds (N entries)").
+  // Prune any entries that ended up handled to keep the import count
+  // consistent with what's actually emitted (#329).
+  let to_remove : Array[String] = []
+  for key, _ in ctx.effect_op_imports {
+    if ctx.effect_handled_ops.contains(key) {
+      to_remove.push(key)
+    }
+  }
+  for key in to_remove {
+    ctx.effect_op_imports.remove(key)
+    ctx.effect_op_param_counts.remove(key)
+  }
 }
 
 ///|
