@@ -767,20 +767,34 @@ fn compile_binary_cmp_op(
         emit_i32_lt_s(buf)
         emit_i32_eqz(buf)
         emit_br_if(buf, 1)
-        // Payload offset: base + i*4, load i32 at +12
+        // Payload offset: base + i*4, load i32 at +12. Sign-extend back to
+        // i64 to recover the tagged value, then dispatch through the
+        // value_eq helper so structurally-equal nested enum payloads
+        // (different heap addresses) compare equal (#325).
         emit_local_get(buf, left_ptr_local)
         emit_local_get(buf, loop_i_local)
         emit_i32_const_raw(buf, 4)
         emit_i32_mul(buf)
         emit_i32_add(buf)
         emit_i32_load(buf, 12)
+        emit_i64_extend_i32_s(buf)
         emit_local_get(buf, right_ptr_local)
         emit_local_get(buf, loop_i_local)
         emit_i32_const_raw(buf, 4)
         emit_i32_mul(buf)
         emit_i32_add(buf)
         emit_i32_load(buf, 12)
-        emit_i32_eq(buf)
+        emit_i64_extend_i32_s(buf)
+        if ctx.need_value_eq && ctx.need_heap && ctx.value_eq_func_idx >= 0 {
+          let value_eq_abs_idx = func_import_count(ctx) + ctx.value_eq_func_idx
+          emit_call(buf, value_eq_abs_idx)
+        } else {
+          // Fallback when no helper is available (e.g. no `__eq` in user
+          // code reaches scan_needs because the call was synthesised
+          // post-scan): tagged i64 equality, equivalent to the prior
+          // shallow compare for non-pointer payloads.
+          emit_i64_eq(buf)
+        }
         emit_i32_eqz(buf)
         buf.push((4).to_byte()) // if (values differ)
         buf.push((64).to_byte()) // void

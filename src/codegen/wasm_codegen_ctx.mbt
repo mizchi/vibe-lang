@@ -180,6 +180,15 @@ priv struct CodegenCtx {
   // RC debug mode: global indices for alloc/free counters (-1 if disabled)
   mut rc_debug_alloc_global : Int
   mut rc_debug_free_global : Int
+  // Deep-compare helper for nested enum payloads: needed when any `__eq`
+  // call could reach a heap-allocated enum value. The inline `__eq` in
+  // `compile_binary_cmp_op` shallow-compares obj_enum payload slots via
+  // `i32.eq` (i.e. pointer compare for tag_obj payloads), so structurally
+  // equal but separately allocated values like
+  // `Tree::Node(Tree::Leaf(1), Tree::Leaf(2))` would otherwise miscompare.
+  // The helper recurses on each payload via self-call.
+  mut need_value_eq : Bool
+  mut value_eq_func_idx : Int
 }
 
 ///|
@@ -352,6 +361,8 @@ fn CodegenCtx::new(
     rc_heap_start: 0,
     rc_debug_alloc_global: -1,
     rc_debug_free_global: -1,
+    need_value_eq: false,
+    value_eq_func_idx: -1,
   }
   // Register builtin None as singleton (strings is now initialized)
   let none_offset = ctx.strings.intern_enum_singleton("None", 0)
