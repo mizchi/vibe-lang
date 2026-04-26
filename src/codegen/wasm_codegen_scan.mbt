@@ -3,6 +3,11 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
   match expr {
     @core.Expr::Call(name~, args~, span~, ..) => {
       let _ = span
+      // Any `==` / `!=` may dispatch to the obj_enum payload deep-compare path
+      // and needs the runtime helper.
+      if name == "__eq" || name == "eq" {
+        ctx.need_value_eq = true
+      }
       match name {
         "sh" => ctx.need_sh = true
         "path" | "Path::ref" => ctx.need_path = true

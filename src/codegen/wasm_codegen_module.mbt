@@ -3860,7 +3860,17 @@ fn emit_module_with_coverage(
     next = next + 1
     if has_assign_drop {
       ctx.rc_try_reuse_func_idx = next
+      next = next + 1
     }
+    // value_eq sits after RC helpers when both are present.
+    if ctx.need_value_eq && ctx.need_heap {
+      ctx.value_eq_func_idx = next
+      next = next + 1
+    }
+    let _ = next
+  } else if ctx.need_value_eq && ctx.need_heap {
+    // No RC helpers ahead of us — place value_eq directly after user funcs.
+    ctx.value_eq_func_idx = funcs.length()
   }
   // Pre-compute ref cell capture flags for ALL functions before compile loop.
   // This is needed because compile_function runs before compile_expr_fn.
@@ -3965,6 +3975,18 @@ fn emit_module_with_coverage(
         ),
       )
     }
+  }
+  // value_eq helper: must follow RC helpers in the same order we reserved
+  // their indices. Recurses on enum payload via self-call; signature is
+  // (i64, i64) -> i32 (1 = equal, 0 = not equal).
+  if ctx.need_value_eq && ctx.need_heap {
+    let value_eq_sig = FuncSig::{
+      params: [ValueKind::I64, ValueKind::I64],
+      results: [ValueKind::I32],
+    }
+    let _ = ensure_sig_index(ctx, value_eq_sig)
+    let value_eq_abs_idx = func_import_count(ctx) + ctx.value_eq_func_idx
+    compiled_funcs.push(compile_value_eq_function(value_eq_abs_idx))
   }
   if ctx.need_stdin_read_char ||
     ctx.need_socket ||
