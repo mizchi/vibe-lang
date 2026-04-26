@@ -514,6 +514,13 @@ fn compile_builtin_collection(
         let entry_key_local = alloc_temp_local(ctx)
         compile_expr_i32(ctx, buf, pos_args[1])
         emit_i32_wrap_i64(buf)
+        // Strip `tag_obj` to match the map literal / `Map::set` storage
+        // convention (`compile_map_expr` stores `ctx.strings.intern(key)`
+        // raw). Without this, `m["k"]` lookup via `__index` compares the
+        // tagged stored slot against the raw interned offset and silently
+        // misses (#325 map_advanced repro).
+        emit_i32_const_raw(buf, -4)
+        emit_i32_and(buf)
         emit_local_set(buf, key_local)
         buf.push((3).to_byte()) // loop
         buf.push((64).to_byte()) // void
@@ -2710,10 +2717,20 @@ fn compile_builtin_collection(
         @core.Expr::String(value=field_name, ..) => {
           // Record/Map field access by string key: linear search through
           // (name_ptr, value) pairs with stride 8.
+          //
+          // Slot keys may be either an interned data-section pointer (record
+          // fields, `compile_map_expr`, `Map::set`, `MapBuilder::set`) or a
+          // heap-allocated runtime string (e.g. `Int::to_string(i)` used as a
+          // MapBuilder key). Both layouts are `[obj_string][len][bytes...]`,
+          // so we compare contents via `emit_non_js_string_ptr_equals_i32`,
+          // which short-circuits on pointer equality for the record-field
+          // fast path and falls back to byte-wise compare otherwise.
           let obj_ptr = alloc_temp_local(ctx)
           let obj_len = alloc_temp_local(ctx)
           let loop_i = alloc_temp_local(ctx)
           let result_local = alloc_temp_local(ctx)
+          let entry_name_local = alloc_temp_local(ctx)
+          let field_ptr_local = alloc_temp_local(ctx)
           let field_ptr = ctx.strings.intern(field_name)
           compile_expr_i32(ctx, buf, pos_args[0])
           emit_untag_ptr_i32(buf)
@@ -2726,7 +2743,9 @@ fn compile_builtin_collection(
           emit_i64_const_tagged(buf, 0L)
           emit_i32_wrap_i64(buf)
           emit_local_set(buf, result_local)
-          // loop: compare name pointers, load value on match
+          emit_i32_const_raw(buf, field_ptr)
+          emit_local_set(buf, field_ptr_local)
+          // loop: compare name strings, load value on match
           buf.push((3).to_byte()) // loop
           buf.push((64).to_byte()) // void
           emit_local_get(buf, loop_i)
@@ -2734,15 +2753,17 @@ fn compile_builtin_collection(
           emit_i32_lt_s(buf)
           buf.push((4).to_byte()) // if
           buf.push((64).to_byte()) // void
-          // load name_ptr at obj_ptr + loop_i * 8 + 8
+          // load name_ptr at obj_ptr + loop_i * 8 + 8 into entry_name_local
           emit_local_get(buf, obj_ptr)
           emit_local_get(buf, loop_i)
           emit_i32_const_raw(buf, 3)
           emit_i32_shl(buf)
           emit_i32_add(buf)
           emit_i32_load(buf, 8) // name_ptr
-          emit_i32_const_raw(buf, field_ptr)
-          emit_i32_eq(buf)
+          emit_local_set(buf, entry_name_local)
+          emit_non_js_string_ptr_equals_i32(
+            ctx, buf, entry_name_local, field_ptr_local,
+          )
           buf.push((4).to_byte()) // if (name matches)
           buf.push((64).to_byte()) // void
           // load value at obj_ptr + loop_i * 8 + 12
