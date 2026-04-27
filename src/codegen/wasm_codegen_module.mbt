@@ -108,6 +108,24 @@ fn resolve_exported_fn_aliases(ctx : CodegenCtx) -> Unit {
 }
 
 ///|
+/// Collect distinct effect names from `ctx.effect_handled_ops` keys.
+/// "Logger::Log" / "Logger::Warn" -> "Logger" (deduped). "Bare" -> "Bare"
+/// (enum-as-effect ctor used as-is). Order is stable so global indices
+/// match between pre-compute and emit passes.
+fn collect_effect_names(ctx : CodegenCtx) -> Array[String] {
+  let seen : Map[String, Bool] = {}
+  let names : Array[String] = []
+  for key, _ in ctx.effect_handled_ops {
+    let eff_name = extract_effect_name_from_key(key)
+    if not(seen.contains(eff_name)) {
+      seen[eff_name] = true
+      names.push(eff_name)
+    }
+  }
+  names
+}
+
+///|
 fn collect_emittable_user_exports(ctx : CodegenCtx) -> Array[String] {
   let names : Array[String] = []
   for name, _ in ctx.exported_fns {
@@ -1206,11 +1224,16 @@ fn build_module(
     exported_env_global_count > 0
   // In linked mode, __heap_ptr is imported (not defined in global section)
   let heap_global_in_section = ctx.use_heap_global && not(has_linked_imports)
+  let effect_resume_global_count = if ctx.need_effect_resume {
+    collect_effect_names(ctx).length() * 3 + 1
+  } else {
+    0
+  }
   if need_globals {
     let global_sec = ByteBuf::new()
     let global_count = (if heap_global_in_section { 1 } else { 0 }) +
       (if ctx.need_stack_switching { 1 } else { 0 }) +
-      (if ctx.need_effect_resume { 4 } else { 0 }) +
+      effect_resume_global_count +
       (if ctx.coverage_enabled { 2 } else { 0 }) +
       (if need_fs_global { 1 } else { 0 }) +
       (if ctx.need_socket { 1 } else { 0 }) +
@@ -1235,21 +1258,25 @@ fn build_module(
       emit_i64_const_raw(global_sec, 0L) // initial value = 0
       global_sec.push((11).to_byte()) // end
     }
-    // Effect resume globals: idx, count, buf_ptr, perform_arg
+    // Effect resume globals: per-effect (idx, count, buf) + 1 shared perform_arg.
+    // Indices were assigned in pre-compute (collect_effect_names order). Emit
+    // 3 i32 globals per effect, then 1 i64 perform_arg global.
     if ctx.need_effect_resume {
       let base_idx = (if ctx.use_heap_global { 1 } else { 0 }) +
         (if ctx.need_stack_switching { 1 } else { 0 })
-      ctx.effect_resume_idx_global = base_idx
-      ctx.effect_resume_count_global = base_idx + 1
-      ctx.effect_resume_buf_global = base_idx + 2
-      ctx.effect_perform_arg_global = base_idx + 3
-      for i in 0..<3 {
-        let _ = i
-        global_sec.push((127).to_byte()) // i32
-        global_sec.push((1).to_byte()) // mutable
-        emit_i32_const_raw(global_sec, 0)
-        global_sec.push((11).to_byte()) // end
+      let eff_names = collect_effect_names(ctx)
+      let mut idx = base_idx
+      for eff_name in eff_names {
+        ctx.effect_resume_globals[eff_name] = (idx, idx + 1, idx + 2)
+        idx = idx + 3
+        for _i in 0..<3 {
+          global_sec.push((127).to_byte()) // i32
+          global_sec.push((1).to_byte()) // mutable
+          emit_i32_const_raw(global_sec, 0)
+          global_sec.push((11).to_byte()) // end
+        }
       }
+      ctx.effect_perform_arg_global = idx
       // perform_arg global (i64)
       global_sec.push((126).to_byte()) // i64
       global_sec.push((1).to_byte()) // mutable
@@ -1259,7 +1286,7 @@ fn build_module(
     if ctx.coverage_enabled {
       ctx.coverage_base_global_index = (if ctx.use_heap_global { 1 } else { 0 }) +
         (if ctx.need_stack_switching { 1 } else { 0 }) +
-        (if ctx.need_effect_resume { 4 } else { 0 })
+        effect_resume_global_count
       ctx.coverage_count_global_index = ctx.coverage_base_global_index + 1
       // Coverage counter base offset (immutable)
       global_sec.push((127).to_byte()) // i32
@@ -3793,14 +3820,20 @@ fn emit_module_with_coverage(
       ctx.effect_op_imports[key] = base + eidx
     }
   }
-  // Pre-compute effect resume global indices before compile loop
+  // Pre-compute effect resume global indices before compile loop.
+  // Each handled effect gets its own (idx, count, buf) triple, plus a single
+  // shared perform_arg global. Effect names are extracted from the qualified
+  // op keys recorded by scan in `effect_handled_ops` ("Eff::Op" -> "Eff").
   if ctx.need_effect_resume {
     let base = (if ctx.use_heap_global { 1 } else { 0 }) +
       (if ctx.need_stack_switching { 1 } else { 0 })
-    ctx.effect_resume_idx_global = base
-    ctx.effect_resume_count_global = base + 1
-    ctx.effect_resume_buf_global = base + 2
-    ctx.effect_perform_arg_global = base + 3
+    let eff_names = collect_effect_names(ctx)
+    let mut idx = base
+    for eff_name in eff_names {
+      ctx.effect_resume_globals[eff_name] = (idx, idx + 1, idx + 2)
+      idx = idx + 3
+    }
+    ctx.effect_perform_arg_global = idx
   }
   // Pre-compute RC helper function indices before compile loop.
   // Helpers are appended right after user functions in compiled_funcs.

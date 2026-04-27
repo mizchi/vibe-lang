@@ -60,9 +60,11 @@ priv struct CodegenCtx {
   // Effect resume globals for cross-function perform dispatch
   effect_handled_ops : Map[String, Bool]
   mut need_effect_resume : Bool
-  mut effect_resume_idx_global : Int // i32: current read position
-  mut effect_resume_count_global : Int // i32: number of stored resume values
-  mut effect_resume_buf_global : Int // i32: pointer to resume value buffer
+  // Per-effect resume globals: effect_name -> (idx, count, buf) global indices.
+  // Each handled effect gets its own (idx, count, buf) triple so nested
+  // handles for *different* effects don't clobber each other's resume state.
+  // Same-effect nesting is handled via save/restore in handle codegen.
+  effect_resume_globals : Map[String, (Int, Int, Int)]
   mut effect_perform_arg_global : Int // i64: perform argument value for cross-function dispatch
   // Stack switching for async
   mut need_stack_switching : Bool
@@ -260,9 +262,7 @@ fn CodegenCtx::new(
     current_env_idx: -1,
     effect_handled_ops: {},
     need_effect_resume: false,
-    effect_resume_idx_global: -1,
-    effect_resume_count_global: -1,
-    effect_resume_buf_global: -1,
+    effect_resume_globals: {},
     effect_perform_arg_global: -1,
     need_exceptions: false,
     error_tag_type_index: -1,

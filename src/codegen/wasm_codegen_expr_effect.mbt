@@ -4,6 +4,31 @@ fn is_builtin_error_handler_name(name : String) -> Bool {
 }
 
 ///|
+/// Extract the effect name (prefix before "::") from a qualified op key.
+/// "Logger::Log" -> "Logger"; "Bare" -> "Bare" (used for enum-as-effect).
+fn extract_effect_name_from_key(qualified : String) -> String {
+  for i = 0; i + 1 < qualified.length(); i = i + 1 {
+    if qualified[i] == ':' && qualified[i + 1] == ':' {
+      return qualified[0:i].to_string()
+    }
+  }
+  qualified
+}
+
+///|
+/// Look up the per-effect resume globals for a given effect name.
+/// Returns (-1, -1, -1) when no handle in scope handles this effect.
+fn get_effect_resume_globals(
+  ctx : CodegenCtx,
+  effect_name : String,
+) -> (Int, Int, Int) {
+  match ctx.effect_resume_globals.get(effect_name) {
+    Some(t) => t
+    None => (-1, -1, -1)
+  }
+}
+
+///|
 fn is_resume_effect_pat(pat : @core.Pat) -> Bool {
   match pat {
     @core.Pat::Ctor(name~, ..) =>
@@ -215,16 +240,40 @@ fn compile_expr_handle_with_resume(
 ) -> Unit raise WasmGenError {
   let error_kind = handle_error_kind(ctx)
   require_heap(ctx)
+  // Determine which effect this handle handles. One `with E { ... }` block
+  // covers exactly one effect; pull the prefix off the first effect arm's
+  // qualified key (e.g. "Logger::Log" -> "Logger"), and pick that effect's
+  // (idx, count, buf) global triple.
+  let handled_effect_name = match effect_arms[0].pat {
+    @core.Pat::Ctor(name~, ..) => extract_effect_name_from_key(name)
+    _ => ""
+  }
+  let (idx_g, count_g, buf_g) = get_effect_resume_globals(
+    ctx, handled_effect_name,
+  )
+  // Save outer state for THIS effect to locals so a nested same-effect handle
+  // (or a re-entry of a function that contains a handle) can re-read the
+  // outer's resume buffer when this frame finishes. Without save/restore,
+  // an outer handle's `count` would be permanently clobbered by inner init.
+  let save_idx_local = alloc_temp_local(ctx)
+  let save_count_local = alloc_temp_local(ctx)
+  let save_buf_local = alloc_temp_local(ctx)
+  emit_global_get(buf, idx_g)
+  emit_local_set(buf, save_idx_local)
+  emit_global_get(buf, count_g)
+  emit_local_set(buf, save_count_local)
+  emit_global_get(buf, buf_g)
+  emit_local_set(buf, save_buf_local)
   // Allocate resume buffer on heap (max 64 slots = 512 bytes)
   let resume_buf_local = alloc_temp_local(ctx)
   emit_heap_alloc(ctx, buf, 512, resume_buf_local)
   // Initialize resume globals: idx=0, count=0, buf=allocated
   emit_i32_const_raw(buf, 0)
-  emit_global_set(buf, ctx.effect_resume_idx_global)
+  emit_global_set(buf, idx_g)
   emit_i32_const_raw(buf, 0)
-  emit_global_set(buf, ctx.effect_resume_count_global)
+  emit_global_set(buf, count_g)
   emit_local_get(buf, resume_buf_local)
-  emit_global_set(buf, ctx.effect_resume_buf_global)
+  emit_global_set(buf, buf_g)
   // Structure:
   // block $exit (result i64)                    ; depth 0
   //   loop $retry                               ; depth 1
@@ -250,7 +299,7 @@ fn compile_expr_handle_with_resume(
   buf.push((64).to_byte()) // void
   // Reset resume idx at start of each retry
   emit_i32_const_raw(buf, 0)
-  emit_global_set(buf, ctx.effect_resume_idx_global)
+  emit_global_set(buf, idx_g)
   // block $catch_target (result error_kind)
   buf.push((2).to_byte()) // block
   buf.push(valtype_byte(error_kind)) // result error_kind
@@ -360,18 +409,18 @@ fn compile_expr_handle_with_resume(
       adjust_loop_offsets(ctx, -1)
     }
     // Store resume value: buf[count * 8] = value
-    emit_global_get(buf, ctx.effect_resume_buf_global)
-    emit_global_get(buf, ctx.effect_resume_count_global)
+    emit_global_get(buf, buf_g)
+    emit_global_get(buf, count_g)
     emit_i32_const_raw(buf, 8)
     emit_i32_mul(buf)
     emit_i32_add(buf)
     emit_local_get(buf, resume_val_local)
     emit_i64_store(buf, 0)
     // Increment count
-    emit_global_get(buf, ctx.effect_resume_count_global)
+    emit_global_get(buf, count_g)
     emit_i32_const_raw(buf, 1)
     emit_i32_add(buf)
-    emit_global_set(buf, ctx.effect_resume_count_global)
+    emit_global_set(buf, count_g)
   }
   // br $retry (loop back — depth 0 from handler position = loop)
   buf.push((12).to_byte()) // br
@@ -383,6 +432,18 @@ fn compile_expr_handle_with_resume(
   // end block $exit
   buf.push((11).to_byte())
   adjust_loop_offsets(ctx, -4)
+  // Restore outer state for THIS effect from save_*. Result of handle is
+  // already on the stack from $exit; restoring afterwards keeps it intact.
+  // NOTE: this only fires on the success path (body→br $exit). When a perform
+  // for a *different* effect throws past us, restoration of *that* effect's
+  // globals is the responsibility of the outer handle that owns it; this
+  // handle only manages its own.
+  emit_local_get(buf, save_idx_local)
+  emit_global_set(buf, idx_g)
+  emit_local_get(buf, save_count_local)
+  emit_global_set(buf, count_g)
+  emit_local_get(buf, save_buf_local)
+  emit_global_set(buf, buf_g)
 }
 
 ///|

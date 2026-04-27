@@ -149,27 +149,33 @@ fn compile_expr(
           buf.push((0).to_byte())
           emit_call(buf, idx)
         }
-        _ =>
-          // User-defined effect: check resume globals first, then throw.
-          if ctx.need_effect_resume && ctx.effect_resume_idx_global >= 0 {
+        _ => {
+          // User-defined effect: pick this effect's per-effect resume globals.
+          // Different nested effects (e.g. Log inside an Ask handle) read/write
+          // independent (idx, count, buf) triples so they don't clobber each
+          // other on retry.
+          let (idx_g, count_g, buf_g) = get_effect_resume_globals(
+            ctx, effect_name,
+          )
+          if ctx.need_effect_resume && idx_g >= 0 {
             // if (resume_idx < resume_count) { return resume_buf[resume_idx++ * 8] }
-            emit_global_get(buf, ctx.effect_resume_idx_global)
-            emit_global_get(buf, ctx.effect_resume_count_global)
+            emit_global_get(buf, idx_g)
+            emit_global_get(buf, count_g)
             emit_i32_lt_s(buf)
             buf.push((4).to_byte()) // if
             buf.push((126).to_byte()) // result i64
             // Read resume value: buf_ptr + idx * 8
-            emit_global_get(buf, ctx.effect_resume_buf_global)
-            emit_global_get(buf, ctx.effect_resume_idx_global)
+            emit_global_get(buf, buf_g)
+            emit_global_get(buf, idx_g)
             emit_i32_const_raw(buf, 8)
             emit_i32_mul(buf)
             emit_i32_add(buf)
             emit_i64_load(buf, 0)
             // Increment idx
-            emit_global_get(buf, ctx.effect_resume_idx_global)
+            emit_global_get(buf, idx_g)
             emit_i32_const_raw(buf, 1)
             emit_i32_add(buf)
-            emit_global_set(buf, ctx.effect_resume_idx_global)
+            emit_global_set(buf, idx_g)
             buf.push((5).to_byte()) // else
             // Store perform arg in global before throwing
             if args.length() > 0 {
@@ -193,6 +199,7 @@ fn compile_expr(
             let tag_str = @core.Expr::String(value=key, span~)
             compile_expr_raise(ctx, buf, tag_str)
           }
+        }
       }
     }
     @core.Expr::Handle(body~, arms~, span~) =>
