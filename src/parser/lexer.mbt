@@ -401,6 +401,15 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
       }
       if is_digit(c) {
         let start = self.pos
+        // If preceded by a single '.' (tuple field access like `t.0.0`),
+        // do not consume a trailing `.<digit>` as a float decimal — it
+        // belongs to the next tuple-index access, not this number.
+        let after_field_dot = start >= 1 &&
+          self.input[start - 1].to_int().unsafe_to_char() == '.' &&
+          (
+            start < 2 ||
+            self.input[start - 2].to_int().unsafe_to_char() != '.'
+          )
         // Check for hex prefix: 0x or 0X
         if c == '0' && self.pos + 1 < self.input.length() {
           let next_c = self.input[self.pos + 1].to_int().unsafe_to_char()
@@ -425,8 +434,10 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
         }
         let mut is_float = false
         // Only consume '.' as decimal point if the next char is NOT '.'
-        // (to avoid consuming '..' range operator)
-        if self.peek() == Some('.') &&
+        // (to avoid consuming '..' range operator) and we're not in a
+        // tuple field access context (e.g. `t.0.0`).
+        if !after_field_dot &&
+          self.peek() == Some('.') &&
           !(self.pos + 1 < self.input.length() &&
           self.input[self.pos + 1].to_int().unsafe_to_char() == '.') {
           is_float = true
