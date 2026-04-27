@@ -932,7 +932,7 @@ fn type_expr_eff(
           // then iter_length/iter_get (which dispatch to the impl)
           @core.desugar_for_in(value_name, index_name, iterable, body, span)
       }
-      type_block(env, desugared, aliases, effects, true)
+      type_block(env, desugared, aliases, effects, true, share_subs=true)
     }
     @core.Expr::Fn(
       type_params~,
@@ -960,7 +960,7 @@ fn type_expr_eff(
       }
       env.loop_depth += 1
       let body_ty_result : Result[@core.Type, TypeError] = try? type_block(
-        env, body, aliases, effects, allow_effect,
+        env, body, aliases, effects, allow_effect, share_subs=true,
       )
       env.loop_depth -= 1
       match body_ty_result {
@@ -994,7 +994,7 @@ fn type_expr_eff(
       env.loop_break_types = []
       env.loop_depth += 1
       let body_ty_result : Result[@core.Type, TypeError] = try? type_block(
-        env, body, aliases, effects, allow_effect,
+        env, body, aliases, effects, allow_effect, share_subs=true,
       )
       env.loop_depth -= 1
       let break_types = env.loop_break_types
@@ -1686,8 +1686,20 @@ fn type_block(
   aliases : Map[String, @core.Ref],
   effects : EffectScope,
   allow_effect : Bool,
+  share_subs? : Bool,
 ) -> @core.Type raise TypeError {
-  let scope_env = clone_env(env)
+  // `share_subs` is for `while` / `loop` / `for-in` bodies whose
+  // unifications must be visible to the enclosing scope (e.g.
+  // `ArrayBuilder::push(b, () -> Int { 99 })` inside `while` setting
+  // the element type so a later `freeze(b)[0]()` knows it's a
+  // function). Default off so other blocks (if branches, lambda
+  // bodies, etc.) keep per-scope isolation.
+  let share_subs = share_subs.unwrap_or(false)
+  let scope_env = if share_subs {
+    env.fork_for_block()
+  } else {
+    clone_env(env)
+  }
   let mut last = @core.Type::Unit
   for stmt in body.stmts {
     match stmt {
@@ -1910,6 +1922,21 @@ fn type_block(
     }
     env.handle_resume_types = inferred_resume_types
     env.next_var = scope_env.next_var
+  }
+  if share_subs {
+    // `subs` / `effect_subs` are shared by reference (see
+    // `fork_for_block`), but the `next_var` / `next_effect_var`
+    // counters are still copied. Without writing them back, fresh
+    // vars allocated inside the block (e.g. by an inner closure)
+    // would leak into shared subs while the outer counter still
+    // points at a value that's already a key, producing collisions
+    // on the next outer allocation.
+    if scope_env.next_var > env.next_var {
+      env.next_var = scope_env.next_var
+    }
+    if scope_env.next_effect_var > env.next_effect_var {
+      env.next_effect_var = scope_env.next_effect_var
+    }
   }
   last
 }
