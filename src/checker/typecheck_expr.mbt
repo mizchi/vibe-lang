@@ -1253,10 +1253,18 @@ fn type_match_block(
   if arms.is_empty() {
     raise TypeError::BadMatch(message="empty match", span~)
   }
-  let scrutinee_ty = normalize_type_expand_enum(
+  // Resolve aliases / type vars but do NOT expand `Named` enums into
+  // `Variant` for the binding-collection scrutinee. Pre-expanding would
+  // cause `match t { (a, b) => ... }` on a tuple of `Option[T]` to bind
+  // `a` to `Variant({...})`, which then fails to unify with subsequent
+  // `Some(_)` ctor calls (`Named`-typed). `Pat::Ctor` expands locally
+  // on demand. The exhaustiveness check below still needs the expanded
+  // view, so compute that separately.
+  let scrutinee_ty = normalize_type(
     env,
     type_expr_eff(env, scrutinee, aliases, effects, allow_effect),
   )
+  let scrutinee_ty_for_exhaust = normalize_type_expand_enum(env, scrutinee_ty)
   let mut result : @core.Type? = None
   let mut has_wildcard = false
   let mut has_ctor = false
@@ -1347,7 +1355,7 @@ fn type_match_block(
     }
   }
   if not(has_wildcard) {
-    match scrutinee_ty {
+    match scrutinee_ty_for_exhaust {
       @core.Type::Variant(types) => {
         let missing_names : Array[String] = []
         for name, _ in types {

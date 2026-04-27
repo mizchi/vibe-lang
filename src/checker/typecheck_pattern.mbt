@@ -14,7 +14,13 @@ fn collect_pattern_bindings(
   scrutinee_ty : @core.Type,
 ) -> Map[String, @core.Type] raise TypeError {
   let out : Map[String, @core.Type] = {}
-  let normalized = normalize_type_expand_enum(env, scrutinee_ty)
+  // Resolve aliases / type vars but do NOT expand `Named` enums into
+  // `Variant`. Pre-expanding broke e.g. `let (a, b) = (Some(1), None)`:
+  // `a` got bound to `Variant({Some: Int, None: Unit})` while `Some(42)`
+  // continues to be typed as `Named("Option", [Int])`, so a later
+  // `a == Some(42)` failed to unify. Pat::Ctor still needs the Variant
+  // shape, so it expands locally.
+  let normalized = normalize_type(env, scrutinee_ty)
   collect_pattern_bindings_inner(env, out, pat, normalized)
   out
 }
@@ -52,7 +58,10 @@ fn collect_pattern_bindings_inner(
     @core.Pat::Ctor(name~, args~, span~) => {
       // Strip qualified prefix for variant lookup: Color::Red → Red
       let ctor_key = @core.strip_ctor_qualifier(name)
-      match scrutinee_ty {
+      // Pat::Ctor needs the expanded Variant view; the public entry no
+      // longer pre-expands so we do it here on demand.
+      let expanded = normalize_type_expand_enum(env, scrutinee_ty)
+      match expanded {
         @core.Type::Variant(types) =>
           match types.get(ctor_key) {
             Some(field_ty) =>
