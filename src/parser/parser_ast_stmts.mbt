@@ -571,7 +571,25 @@ fn AstParser::expect_decl_separator(
   self : AstParser,
   separator_name : String,
 ) -> Unit raise ParseError {
-  self.skip_trivia()
+  // A newline before the next token also acts as a separator
+  // (e.g. `enum Shape { Circle(Int)\n  Rect(Int, Int) }`). The newline
+  // may have been consumed by an inner skip_trivia call already, so
+  // also walk backwards over trivia to detect it.
+  let mut saw_newline = false
+  let mut back = self.pos - 1
+  while back >= 0 && is_trivia(self.tokens[back].kind()) {
+    if self.tokens[back].kind() == newline() {
+      saw_newline = true
+      break
+    }
+    back -= 1
+  }
+  while is_trivia(self.peek_kind()) {
+    if self.peek_kind() == newline() {
+      saw_newline = true
+    }
+    self.pos += 1
+  }
   match self.peek_kind() {
     k if k == semicolon() => {
       let _ = self.bump()
@@ -585,11 +603,15 @@ fn AstParser::expect_decl_separator(
     k if k == rbrace() => ()
     k if k == eof() => raise ParseError::UnexpectedEof(span=self.token_span())
     _ =>
-      raise ParseError::UnexpectedToken(
-        expected="; (" + separator_name + ")",
-        got=self.peek().text(),
-        span=self.token_span(),
-      )
+      if saw_newline {
+        ()
+      } else {
+        raise ParseError::UnexpectedToken(
+          expected="; (" + separator_name + ")",
+          got=self.peek().text(),
+          span=self.token_span(),
+        )
+      }
   }
 }
 
