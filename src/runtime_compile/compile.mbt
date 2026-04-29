@@ -768,9 +768,8 @@ fn collect_import_specializable_defs(
 ) -> Map[String, @core.Expr] {
   let out : Map[String, @core.Expr] = {}
   for imp in imports {
-    let imp_compiled = match (try? compile_module(db, imp.path)) {
-      Ok(c) => c
-      Err(_) => continue
+    let imp_compiled = try compile_module(db, imp.path) catch {
+      _ => continue
     }
     for stmt in imp_compiled.ast.stmts {
       let (name, expr) = match stmt {
