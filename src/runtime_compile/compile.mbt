@@ -768,9 +768,10 @@ fn collect_import_specializable_defs(
 ) -> Map[String, @core.Expr] {
   let out : Map[String, @core.Expr] = {}
   for imp in imports {
-    let imp_compiled = match (try? compile_module(db, imp.path)) {
-      Ok(c) => c
-      Err(_) => continue
+    let imp_compiled = try compile_module(db, imp.path) catch {
+      _ => continue
+    } noraise {
+      c => c
     }
     for stmt in imp_compiled.ast.stmts {
       let (name, expr) = match stmt {
@@ -786,7 +787,9 @@ fn collect_import_specializable_defs(
       }
       match expr {
         @core.Expr::Fn(type_params~, params~, ret~, body~, ..) =>
-          if @frontend.fn_is_monoify_specializable(type_params, params, ret, body) {
+          if @frontend.fn_is_monoify_specializable(
+              type_params, params, ret, body,
+            ) {
             out[name] = expr
           }
         _ => ()
@@ -875,7 +878,9 @@ pub fn compile_module(
   // doesn't see fold's body.
   let imported_specializable = collect_import_specializable_defs(db, imports)
   let mono = @frontend.monoify_module(
-    ast, expr_type_index, additional_specializable=imported_specializable,
+    ast,
+    expr_type_index,
+    additional_specializable=imported_specializable,
   )
   @core.clear_string_for_in_spans()
   let rewritten = @frontend.rewrite_string_add(mono.ast, expr_type_index)
