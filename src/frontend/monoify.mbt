@@ -22,8 +22,18 @@ priv struct MonoifyContext {
 pub fn monoify_module(
   ast : @core.Module,
   expr_types : @core.ExprTypeIndex,
+  additional_specializable? : Map[String, @core.Expr] = {},
 ) -> MonoifyResult {
   let specializable = collect_specializable_defs(ast)
+  // Imports' specializable defs are needed to specialize cross-module calls
+  // like `Iterator::fold(xs : Trio[Int], ...)` where fold is defined in
+  // another file but the receiver's concrete root type is only known here.
+  // The user's own defs win on name collision (rare in practice).
+  for name, expr in additional_specializable {
+    if not(specializable.contains(name)) {
+      specializable[name] = expr
+    }
+  }
   let (instantiations, inst_type_subst) = collect_instantiations(
     ast, expr_types, specializable,
   )
@@ -37,7 +47,9 @@ pub fn monoify_module(
     return { ast, instantiations }
   }
   expand_monoify_instantiations(ctx)
-  let rewritten = monoify_module_top(ast, ctx)
+  let rewritten = monoify_module_top(
+    ast, ctx, imported_specializable=additional_specializable,
+  )
   { ast: rewritten, instantiations }
 }
 
@@ -54,6 +66,20 @@ fn expand_monoify_instantiations(ctx : MonoifyContext) -> Unit {
     }
     changed = ctx.instantiations.length() > before
   }
+}
+
+///|
+/// Predicate the cross-module specialization wiring uses to filter imports'
+/// fn defs down to ones monoify can actually specialize.
+pub fn fn_is_monoify_specializable(
+  type_params : Array[String],
+  params : Array[@core.FuncParam],
+  ret : @core.Type?,
+  body : @core.Module,
+) -> Bool {
+  fn_has_num(params, ret) ||
+  fn_uses_iter_dispatch_module(body) ||
+  fn_has_root_specializable_param(type_params, params)
 }
 
 ///|
@@ -74,12 +100,8 @@ fn collect_specializable_defs(ast : @core.Module) -> Map[String, @core.Expr] {
             span~,
             ..
           ) =>
-            if fn_has_num(params, ret) ||
-              fn_uses_iter_dispatch_module(body) ||
-              fn_has_root_specializable_param(type_params, params) {
-              let _ = type_params
+            if fn_is_monoify_specializable(type_params, params, ret, body) {
               let _ = effects
-              let _ = body
               let _ = span
               defs[name] = expr
             }
@@ -278,7 +300,28 @@ fn collect_instantiations_expr(
 }
 
 ///|
-fn monoify_module_top(ast : @core.Module, ctx : MonoifyContext) -> @core.Module {
+fn ast_defines_value(ast : @core.Module, name : String) -> Bool {
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::Let(name=stmt_name, ..)
+      | @core.Stmt::ExportLet(name=stmt_name, ..)
+      | @core.Stmt::InternalExportLet(name=stmt_name, ..)
+      | @core.Stmt::LetMut(name=stmt_name, ..) =>
+        if stmt_name == name {
+          return true
+        }
+      _ => ()
+    }
+  }
+  false
+}
+
+///|
+fn monoify_module_top(
+  ast : @core.Module,
+  ctx : MonoifyContext,
+  imported_specializable? : Map[String, @core.Expr] = {},
+) -> @core.Module {
   let out_stmts : Array[@core.Stmt] = []
   for stmt in ast.stmts {
     match stmt {
@@ -366,6 +409,33 @@ fn monoify_module_top(ast : @core.Module, ctx : MonoifyContext) -> @core.Module 
         out_stmts.push(@core.Stmt::Bench(name~, body=rewritten, span~))
       }
       _ => out_stmts.push(stmt)
+    }
+  }
+  // Emit specializations of imported functions at the END so any types they
+  // reference (defined in user stmts above) are already in scope when this
+  // module is later type-checked or bundled. See #330.
+  for name, expr in imported_specializable {
+    // Skip if user file already defines this name (collision: user wins).
+    if ast_defines_value(ast, name) {
+      continue
+    }
+    match expr {
+      @core.Expr::Fn(span=fn_span, ..) => {
+        let tags = ctx.tags_for_name(name)
+        for tag in tags {
+          let new_name = specialized_name(name, tag)
+          let specialized = specialize_fn_expr(expr, name, tag, ctx)
+          out_stmts.push(
+            @core.Stmt::Let(
+              rec=false,
+              name=new_name,
+              expr=specialized,
+              span=fn_span,
+            ),
+          )
+        }
+      }
+      _ => ()
     }
   }
   @core.Module::{ stmts: out_stmts }

@@ -759,6 +759,44 @@ fn compile_module_import_aliases(
 }
 
 ///|
+/// Collect specializable function defs from imported modules so cross-module
+/// calls (e.g. `Iterator::fold(xs : UserType, ...)`) can be specialized for
+/// the receiver's concrete root at the user-file's monoify pass. See #330.
+fn collect_import_specializable_defs(
+  db : @runtime.VibeDb,
+  imports : Array[@runtime.ImportSpec],
+) -> Map[String, @core.Expr] {
+  let out : Map[String, @core.Expr] = {}
+  for imp in imports {
+    let imp_compiled = match (try? compile_module(db, imp.path)) {
+      Ok(c) => c
+      Err(_) => continue
+    }
+    for stmt in imp_compiled.ast.stmts {
+      let (name, expr) = match stmt {
+        @core.Stmt::Let(name~, expr~, ..)
+        | @core.Stmt::ExportLet(name~, expr~, ..)
+        | @core.Stmt::InternalExportLet(name~, expr~, ..) => (name, expr)
+        _ => continue
+      }
+      // Already handled (first import wins); avoid stomping on user defs is
+      // done later in monoify_module itself.
+      if out.contains(name) {
+        continue
+      }
+      match expr {
+        @core.Expr::Fn(type_params~, params~, ret~, body~, ..) =>
+          if @frontend.fn_is_monoify_specializable(type_params, params, ret, body) {
+            out[name] = expr
+          }
+        _ => ()
+      }
+    }
+  }
+  out
+}
+
+///|
 fn wasm_coverage_kind_from_codegen(
   kind : @codegen.WasmCoveragePointKind,
 ) -> WasmCoveragePointKind {
@@ -830,7 +868,15 @@ pub fn compile_module(
   let desugared = @frontend.desugar_method_calls(raw_ast, aliases)
   let ast = @frontend.rewrite_effect_handles(desugared)
   let expr_type_index = env.expr_type_index()
-  let mono = @frontend.monoify_module(ast, expr_type_index)
+  // Gather specializable defs from imports so cross-module calls get
+  // specialized for the receiver's concrete root. See #330: without this,
+  // `Iterator::fold(xs : Trio[Int], ...)` would dispatch through the
+  // prelude Array fallback at codegen because the user file's monoify
+  // doesn't see fold's body.
+  let imported_specializable = collect_import_specializable_defs(db, imports)
+  let mono = @frontend.monoify_module(
+    ast, expr_type_index, additional_specializable=imported_specializable,
+  )
   @core.clear_string_for_in_spans()
   let rewritten = @frontend.rewrite_string_add(mono.ast, expr_type_index)
   let resolved_ast = db.rewrite_imports_to_hash(path, rewritten)
