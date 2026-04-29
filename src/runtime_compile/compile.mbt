@@ -762,24 +762,27 @@ fn compile_module_import_aliases(
 /// Collect specializable function defs from imported modules so cross-module
 /// calls (e.g. `Iterator::fold(xs : UserType, ...)`) can be specialized for
 /// the receiver's concrete root at the user-file's monoify pass. See #330.
+///
+/// Uses `db.ast` (raw, parsed-and-desugared) rather than `compile_module`
+/// to avoid the per-import typecheck/monoify/hash work — the imported fn
+/// bodies are read as templates, not executed, so the parsed form is enough
+/// and the perf gate doesn't blow up on selfhost.
 fn collect_import_specializable_defs(
   db : @runtime.VibeDb,
   imports : Array[@runtime.ImportSpec],
 ) -> Map[String, @core.Expr] {
   let out : Map[String, @core.Expr] = {}
   for imp in imports {
-    let imp_compiled = try compile_module(db, imp.path) catch {
-      _ => continue
-    }
-    for stmt in imp_compiled.ast.stmts {
+    let imp_ast = db.ast(imp.path)
+    for stmt in imp_ast.stmts {
       let (name, expr) = match stmt {
         @core.Stmt::Let(name~, expr~, ..)
         | @core.Stmt::ExportLet(name~, expr~, ..)
         | @core.Stmt::InternalExportLet(name~, expr~, ..) => (name, expr)
         _ => continue
       }
-      // Already handled (first import wins); avoid stomping on user defs is
-      // done later in monoify_module itself.
+      // First import wins on collision; the user file's own defs override
+      // both later inside monoify_module itself.
       if out.contains(name) {
         continue
       }
