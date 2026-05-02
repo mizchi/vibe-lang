@@ -75,24 +75,14 @@ fn compile_builtin_numeric(
       compile_binary_cmp_op(
         ctx, buf, "eq", args, emit_i64_eq, emit_f32_eq, emit_f64_eq,
       )
-    "lt" if not(is_user_fn) => {
-      let pos_args = extract_positional_exprs_with_arity(args, "lt", 2)
-      let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
-      match resolved_kind {
-        ValueKind::I32 | ValueKind::I64 =>
-          compile_i32_cmp_tagged(
-            ctx,
-            buf,
-            pos_args[0],
-            pos_args[1],
-            emit_i64_lt_s,
-          )
-        _ =>
-          compile_binary_cmp_op(
-            ctx, buf, "lt", args, emit_i64_lt_s, emit_f32_lt, emit_f64_lt,
-          )
-      }
-    }
+    "lt" if not(is_user_fn) =>
+      // Route through compile_binary_cmp_op so the runtime obj_string
+      // branch handles lexicographic comparison; for tagged ints the
+      // fallback there is a plain i64 lt_s on the tagged values, which
+      // preserves order since (a<<2) < (b<<2) iff a < b.
+      compile_binary_cmp_op(
+        ctx, buf, "lt", args, emit_i64_lt_s, emit_f32_lt, emit_f64_lt,
+      )
     "assert" | "assert_true" | "__assert" if not(is_user_fn) => {
       let builtin_name = name
       let pos_args = extract_positional_exprs_with_arity(args, builtin_name, 1)
@@ -244,24 +234,13 @@ fn compile_builtin_numeric(
       compile_binary_cmp_op(
         ctx, buf, "__eq", args, emit_i64_eq, emit_f32_eq, emit_f64_eq,
       )
-    "__lt" => {
-      let pos_args = extract_positional_exprs_with_arity(args, "__lt", 2)
-      let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
-      match resolved_kind {
-        ValueKind::I32 | ValueKind::I64 =>
-          compile_i32_cmp_tagged(
-            ctx,
-            buf,
-            pos_args[0],
-            pos_args[1],
-            emit_i64_lt_s,
-          )
-        _ =>
-          compile_binary_cmp_op(
-            ctx, buf, "__lt", args, emit_i64_lt_s, emit_f32_lt, emit_f64_lt,
-          )
-      }
-    }
+    "__lt" =>
+      // See `lt`: always route through compile_binary_cmp_op so strings
+      // get lex compare and tagged ints fall back to i64 lt_s (correct
+      // because tagging preserves ordering).
+      compile_binary_cmp_op(
+        ctx, buf, "__lt", args, emit_i64_lt_s, emit_f32_lt, emit_f64_lt,
+      )
     "i32_eqz" if not(is_user_fn) => {
       let pos_args = extract_positional_exprs_with_arity(args, "i32_eqz", 1)
       compile_expr_i32(ctx, buf, pos_args[0])
