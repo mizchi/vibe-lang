@@ -504,6 +504,27 @@ fn expr_uses_wasm_runtime_fallback_builtins(expr : @vibe_core.Expr) -> Bool {
       }
       false
     }
+    // `perform Effect::Op(...)` for capability effects (Fs/Stdin/Stdout/Net/
+    // Env/Process) lowers to a host import call that wasmtime cannot resolve;
+    // route those modules through the node-based host runner instead.
+    @vibe_core.Expr::Perform(effect_name~, args~, ..) => {
+      if effect_name == "Fs" ||
+        effect_name == "Stdin" ||
+        effect_name == "Stdout" ||
+        effect_name == "Net" ||
+        effect_name == "Socket" ||
+        effect_name == "Http" ||
+        effect_name == "Env" ||
+        effect_name == "Process" {
+        return true
+      }
+      for arg in args {
+        if expr_uses_wasm_runtime_fallback_builtins(arg.expr) {
+          return true
+        }
+      }
+      false
+    }
     _ => false
   }
 }
