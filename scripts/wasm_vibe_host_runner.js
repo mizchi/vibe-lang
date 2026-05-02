@@ -622,6 +622,7 @@ function createPreview2FilesystemHost(projectRoot) {
 function createPreview2CliStreamsHost() {
   const STDOUT_STREAM_HANDLE = 1;
   const STDERR_STREAM_HANDLE = 2;
+  const STDIN_STREAM_HANDLE = 3;
 
   function writeEmptyResultOk(retptr) {
     const mem = new Uint8Array(instanceRefGlobal.exports.memory.buffer);
@@ -650,6 +651,12 @@ function createPreview2CliStreamsHost() {
     },
   };
 
+  const cliStdin = {
+    "get-stdin"() {
+      return STDIN_STREAM_HANDLE;
+    },
+  };
+
   const ioStreams = new Proxy(
     {
       "[method]output-stream.blocking-write-and-flush"(handle, dataPtr, dataLen, retptr) {
@@ -662,7 +669,21 @@ function createPreview2CliStreamsHost() {
         resolveWritableStream(handle).write(Buffer.from(bytes));
         writeEmptyResultOk(retptr);
       },
+      "[method]input-stream.blocking-read"(_handle, _maxLen, retptr) {
+        // Tests run without an interactive stdin; signal EOF (empty list) so
+        // callers like `Stdin::read_char` see `-1` and `read_line` returns "".
+        const instance = instanceRefGlobal;
+        if (!(instance?.exports?.memory instanceof WebAssembly.Memory)) {
+          throw new Error("missing exported memory for input-stream read");
+        }
+        const mem = new Uint8Array(instance.exports.memory.buffer);
+        // result<list<u8>, stream-error>: tag=0 (ok), then list { ptr=0, len=0 }
+        writeU8(mem, retptr, 0);
+        writeU32LE(mem, retptr + 4, 0); // ptr
+        writeU32LE(mem, retptr + 8, 0); // len
+      },
       "[resource-drop]output-stream"(_handle) {},
+      "[resource-drop]input-stream"(_handle) {},
     },
     {
       get(target, key) {
@@ -677,6 +698,7 @@ function createPreview2CliStreamsHost() {
   return {
     "wasi:cli/stdout@0.2.0": cliStdout,
     "wasi:cli/stderr@0.2.0": cliStderr,
+    "wasi:cli/stdin@0.2.0": cliStdin,
     "wasi:io/streams@0.2.0": ioStreams,
   };
 }
@@ -1167,16 +1189,60 @@ async function main() {
         index >= 0 && index < passthroughArgs.length ? passthroughArgs[index] : "";
       return encodeTaggedString(instanceRef, val);
     },
+    Get(nameTagged) {
+      const name = decodeStringArg(instanceRef, nameTagged);
+      const val = process.env[name] ?? "";
+      return encodeTaggedString(instanceRef, val);
+    },
   };
   const fsModule = {
     ReadFile(pathTagged) {
       return vibeModule.fs_read_file(pathTagged);
+    },
+    WriteFile(pathTagged, contentTagged) {
+      return vibeModule.fs_write_file(pathTagged, contentTagged);
     },
     WriteBytes(pathTagged, bytesTagged) {
       return vibeModule.fs_write_bytes(pathTagged, bytesTagged);
     },
     Exists(pathTagged) {
       return vibeModule.fs_exists(pathTagged);
+    },
+    StatToken(pathTagged) {
+      return vibeModule.fs_stat_token(pathTagged);
+    },
+    ReadDir(pathTagged) {
+      return vibeModule.fs_readdir(pathTagged);
+    },
+    IsDir(pathTagged) {
+      return vibeModule.fs_is_dir(pathTagged);
+    },
+    IsFile(pathTagged) {
+      return vibeModule.fs_is_file(pathTagged);
+    },
+    Mkdir(pathTagged) {
+      return vibeModule.fs_mkdir(pathTagged);
+    },
+    MkdirP(pathTagged) {
+      return vibeModule.fs_mkdir_p(pathTagged);
+    },
+    Remove(pathTagged) {
+      return vibeModule.fs_remove(pathTagged);
+    },
+    Rename(srcTagged, dstTagged) {
+      return vibeModule.fs_rename(srcTagged, dstTagged);
+    },
+    Copy(srcTagged, dstTagged) {
+      return vibeModule.fs_copy(srcTagged, dstTagged);
+    },
+    Append(pathTagged, contentTagged) {
+      return vibeModule.fs_append(pathTagged, contentTagged);
+    },
+    Getcwd() {
+      return vibeModule.fs_getcwd();
+    },
+    Chdir(pathTagged) {
+      return vibeModule.fs_chdir(pathTagged);
     },
     OpenWrite(pathTagged) {
       return vibeModule.fs_open_write(pathTagged);
@@ -1188,15 +1254,41 @@ async function main() {
       return vibeModule.fs_close_write(fdTagged);
     },
   };
+  // Stdin/Stdout effect imports for vibe/io and vibe/prelude/io helpers.
+  const stdinModule = {
+    ReadStream(_maxBytesTagged) {
+      // tests run without a controlling TTY; return empty string.
+      return encodeTaggedString(instanceRef, "");
+    },
+    ReadChar() {
+      // -1 indicates EOF.
+      return encodeTaggedInt(-1);
+    },
+  };
+  const stdoutModule = {
+    WriteStream(strTagged) {
+      const str = decodeStringArg(instanceRef, strTagged);
+      process.stdout.write(str);
+      return 0n;
+    },
+    WriteChar(codeTagged) {
+      const code = decodeTaggedInt(codeTagged);
+      process.stdout.write(String.fromCharCode(code));
+      return 0n;
+    },
+  };
 
   const imports = new Proxy(
     {
       vibe: vibeModule,
       Env: envModule,
       Fs: fsModule,
+      Stdin: stdinModule,
+      Stdout: stdoutModule,
       wasi_snapshot_preview1: wasiModule,
       "wasi:cli/stdout@0.2.0": preview2CliStreamsHost["wasi:cli/stdout@0.2.0"],
       "wasi:cli/stderr@0.2.0": preview2CliStreamsHost["wasi:cli/stderr@0.2.0"],
+      "wasi:cli/stdin@0.2.0": preview2CliStreamsHost["wasi:cli/stdin@0.2.0"],
       "wasi:io/streams@0.2.0": preview2CliStreamsHost["wasi:io/streams@0.2.0"],
       "wasi:filesystem/preopens@0.2.6":
         preview2FsHost["wasi:filesystem/preopens@0.2.6"],
