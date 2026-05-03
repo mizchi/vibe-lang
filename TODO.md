@@ -3,17 +3,18 @@
 Spec-locked decisions are tracked in `docs/spec/decisions.md`.
 Completed items are archived in `docs/DONE.md`.
 
-## 次の一手 (2026-04-19 時点)
+## 次の一手 (2026-05-03 時点)
 
 優先順。各項目は該当セクションに詳細あり。
 
 ### 🔴 0.1.0 release blocker
 
-- [ ] **`just test-vibe-package-suite` compiled-only parity** — 大規模回帰。227 files / 1,422 tests のうち **59 files / 424 tests fail**（2026-04-19 計測、`VIBE_USE_SESSION_HTTP=0` + wasmtime v42）。failure 内訳:
-  - **examples/effects** 系: `() -> T with { Error } = () -> { throw(...) }` で「effect requirements not satisfied: throw」。effect annotation が lambda 本体へ伝播していない (`examples/effects.vibe`, `cheatsheet_effects_test.vibe`, `effect_handler_test.vibe`, etc.)
-  - **fs / io / path / time / shell**: runtime/effect support 未実装（`vibe/fs`, `vibe/io`, `vibe/path`, `vibe/time`, `vibe/shell`）
-  - **examples/syntax**: 0/59 — surface 移行で全体的に失効
-  - 旧来の "current pure regressions" (`examples/string_add_test.vibe`, `vibe/json/test_json_import.vibe`, `vibe/json/jsonrpc_test.vibe`, `vibe/x/url_test.vibe`) は **既に pass**
+- [x] **`just test-vibe-package-suite` compiled-only parity** — 1,455 / 1,455 tests pass（2026-05-03、PR #354）。元の 424 fail から段階的に消化:
+  - examples/effects 系の lambda effect propagation: 解消（#352）
+  - fs / io / path / time / shell: runtime/effect support 配線完了（#352, #353, #354）
+  - examples/syntax: 0/59 → 59/59
+  - derive(Eq) enum payload deep 比較: 実装（#341 value_eq runtime helper）
+  - Array view writethrough / fs_readdir Array[String] / 文字列 lex compare（#354）
 
 ### 🟠 近場の重要
 
@@ -41,7 +42,8 @@ Completed items are archived in `docs/DONE.md`.
 
 ### 既知ギャップ（issue として追跡中）
 
-- derive(Eq) enum with payload の deep 比較は codegen 未実装（#203 e2e で該当テスト除外、issue 未作成）
+- `just test-wasm-heavy` の wasm_opt / wasm_runtime に 17 fail（13 + 4）が pre-existing（#356）。`test-vibe-package-suite` 対象外で 0.1.0 release ブロッカーではないが将来的には潰したい
+- ~~derive(Eq) enum with payload の deep 比較~~（#341 で実装済）
 
 ## 0.2.0 roadmap: wasm-gc main backend gate (2026-03-27)
 
