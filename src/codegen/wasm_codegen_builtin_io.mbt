@@ -862,12 +862,9 @@ fn compile_builtin_io(
       emit_i32_and(buf)
       let alloc_size_local = alloc_temp_local(ctx)
       emit_local_set(buf, alloc_size_local)
-      emit_global_get(buf, ctx.heap_global)
-      emit_local_tee(buf, obj_local)
-      emit_local_get(buf, alloc_size_local)
-      emit_i32_add(buf)
-      emit_global_set(buf, ctx.heap_global)
-      ctx.heap_synced = false
+      // Use heap_local; bumping heap_global directly desynchronizes
+      // ctx.heap_local and overlaps subsequent allocations.
+      emit_heap_alloc_local(ctx, buf, alloc_size_local, obj_local)
       // header: obj_string, len
       emit_local_get(buf, obj_local)
       emit_i32_const_raw(buf, obj_string)
@@ -1329,12 +1326,9 @@ fn compile_builtin_io(
       emit_i32_and(buf)
       let alloc_size_local = alloc_temp_local(ctx)
       emit_local_set(buf, alloc_size_local)
-      emit_global_get(buf, ctx.heap_global)
-      emit_local_tee(buf, dst_local)
-      emit_local_get(buf, alloc_size_local)
-      emit_i32_add(buf)
-      emit_global_set(buf, ctx.heap_global)
-      ctx.heap_synced = false
+      // See `Bytes::to_string` above — bumping heap_global directly
+      // leaves ctx.heap_local stale.
+      emit_heap_alloc_local(ctx, buf, alloc_size_local, dst_local)
       // header: obj_array (target Array), len
       emit_local_get(buf, dst_local)
       emit_i32_const_raw(buf, obj_array)

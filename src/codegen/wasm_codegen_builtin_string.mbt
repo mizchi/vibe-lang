@@ -2712,9 +2712,8 @@ fn compile_builtin_string(
       emit_i32_add(buf) // str_ptr = ptr + 8 (inline data start)
       emit_local_set(buf, str_ptr) // reuse as data ptr
       // Allocate array: header(8) + len*4
-      emit_global_get(buf, ctx.heap_global)
-      emit_local_set(buf, obj_local)
-      emit_local_get(buf, obj_local)
+      // Compute alloc_size = align4(8 + str_len*4)
+      let alloc_size_local = alloc_temp_local(ctx)
       emit_local_get(buf, str_len)
       emit_i32_const_raw(buf, 4)
       emit_i32_mul(buf)
@@ -2722,9 +2721,11 @@ fn compile_builtin_string(
       emit_i32_add(buf)
       emit_i32_const_raw(buf, -4)
       emit_i32_and(buf)
-      emit_i32_add(buf)
-      emit_global_set(buf, ctx.heap_global)
-      ctx.heap_synced = false
+      emit_local_set(buf, alloc_size_local)
+      // Use heap_local-based allocator; bumping heap_global directly
+      // here leaves ctx.heap_local stale and corrupts subsequent
+      // allocations sharing the same memory range.
+      emit_heap_alloc_local(ctx, buf, alloc_size_local, obj_local)
       // Set header
       emit_local_get(buf, obj_local)
       emit_i32_const_raw(buf, obj_array)
