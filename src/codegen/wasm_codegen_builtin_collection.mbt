@@ -2568,12 +2568,13 @@ fn compile_builtin_collection(
       emit_i32_and(buf)
       let alloc_size_local = alloc_temp_local(ctx)
       emit_local_set(buf, alloc_size_local)
-      emit_global_get(buf, ctx.heap_global)
-      emit_local_tee(buf, obj_local)
-      emit_local_get(buf, alloc_size_local)
-      emit_i32_add(buf)
-      emit_global_set(buf, ctx.heap_global)
-      ctx.heap_synced = false
+      // Use the standard heap_local-based allocator. Bumping heap_global
+      // directly here desynchronizes ctx.heap_local — subsequent
+      // emit_heap_alloc / emit_heap_reserve calls then read a stale
+      // heap_local and allocate on top of the FixedArray. (Reproduced
+      // via `Array::push` to a literal `[]` allocated after
+      // `FixedArray::make`.)
+      emit_heap_alloc_local(ctx, buf, alloc_size_local, obj_local)
       emit_local_get(buf, obj_local)
       emit_i32_const_raw(buf, obj_array)
       emit_i32_store(buf, 0)
