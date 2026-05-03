@@ -286,6 +286,33 @@ function encodeTaggedString(instance, jsStr) {
   return BigInt(ptr) | TAG_OBJ;
 }
 
+// Allocate an Array[String] in WASM linear memory matching codegen layout:
+//   base+0  capacity (i32)
+//   base+4  type tag (i32 = OBJ_ARRAY = 5)
+//   base+8  length (i32)
+//   base+12 elements (each i32 = tagged String pointer)
+// Returned tagged i64 = (base+4) | TAG_OBJ.
+function encodeTaggedStringArray(instance, jsStrings) {
+  const stringPtrs = jsStrings.map((s) => {
+    const tagged = encodeTaggedString(instance, s);
+    // Element slots are 4 bytes; tagged String fits in 32 bits since the
+    // pointer is below 4GiB.
+    return Number(tagged & 0xffffffffn);
+  });
+  const len = stringPtrs.length;
+  const totalSize = 4 + 8 + len * 4; // cap + header + elements
+  const alignedSize = (totalSize + 7) & ~7;
+  const base = allocHostBuffer(instance, alignedSize, 8);
+  const mem = new Uint8Array(instance.exports.memory.buffer);
+  writeU32LE(mem, base, len); // capacity = len
+  writeU32LE(mem, base + 4, OBJ_ARRAY);
+  writeU32LE(mem, base + 8, len);
+  for (let i = 0; i < len; i += 1) {
+    writeU32LE(mem, base + 12 + i * 4, stringPtrs[i]);
+  }
+  return BigInt(base + 4) | TAG_OBJ;
+}
+
 function encodeSelfhostString(instance, jsStr) {
   const encoded = new TextEncoder().encode(jsStr);
   const alignedSize = (encoded.length + 7) & ~7;
@@ -964,19 +991,9 @@ async function main() {
         const dirPath = decodeStringArg(instanceRef, pathTagged);
         try {
           const entries = fs.readdirSync(dirPath);
-          // Return as newline-separated string with type info
-          const lines = entries.map((name) => {
-            const fullPath = path.join(dirPath, name);
-            try {
-              const stat = fs.statSync(fullPath);
-              return (stat.isDirectory() ? "d " : "- ") + name;
-            } catch {
-              return "? " + name;
-            }
-          });
-          return encodeTaggedString(instanceRef, lines.join("\n"));
+          return encodeTaggedStringArray(instanceRef, entries);
         } catch (e) {
-          return encodeTaggedString(instanceRef, "");
+          return encodeTaggedStringArray(instanceRef, []);
         }
       },
       fs_getcwd() {
@@ -1544,7 +1561,12 @@ main().catch((err) => {
       }
     } catch (_) {}
   }
-  usage();
+  // usage() is only relevant for argument-parsing errors. Runtime errors
+  // (wasm traps, exceptions, etc.) drop straight to the stack trace so the
+  // failing test output points at the real cause.
+  if (instanceRefGlobal === null) {
+    usage();
+  }
   console.error(err && err.stack ? err.stack : String(err));
   process.exit(1);
 });

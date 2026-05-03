@@ -372,6 +372,90 @@ fn compile_binary_arith_op(
 }
 
 ///|
+/// Lexicographic byte-wise compare of two `obj_string` values, then test the
+/// resulting signed difference against 0 with the operator selected by `name`.
+/// Leaves an i32 boolean (1 or 0) on the stack.
+fn emit_string_lex_cmp_to_bool(
+  buf : ByteBuf,
+  name : String,
+  left_ptr_local : Int,
+  right_ptr_local : Int,
+  left_len_local : Int,
+  right_len_local : Int,
+  loop_i_local : Int,
+  diff_local : Int,
+) -> Unit {
+  // Load lengths from each obj_string header (offset 4).
+  emit_local_get(buf, left_ptr_local)
+  emit_i32_load(buf, 4)
+  emit_local_set(buf, left_len_local)
+  emit_local_get(buf, right_ptr_local)
+  emit_i32_load(buf, 4)
+  emit_local_set(buf, right_len_local)
+  // diff_local accumulates the eventual signed lex difference; default to
+  // length difference so an empty common prefix decides on length alone.
+  emit_local_get(buf, left_len_local)
+  emit_local_get(buf, right_len_local)
+  emit_i32_sub(buf)
+  emit_local_set(buf, diff_local)
+  // Iterate min(left_len, right_len) bytes, breaking on the first mismatch.
+  emit_i32_const_raw(buf, 0)
+  emit_local_set(buf, loop_i_local)
+  emit_block(buf)
+  emit_loop(buf)
+  // if loop_i >= left_len: break
+  emit_local_get(buf, loop_i_local)
+  emit_local_get(buf, left_len_local)
+  emit_i32_ge_s(buf)
+  emit_br_if(buf, 1)
+  // if loop_i >= right_len: break
+  emit_local_get(buf, loop_i_local)
+  emit_local_get(buf, right_len_local)
+  emit_i32_ge_s(buf)
+  emit_br_if(buf, 1)
+  // byte_diff = left[loop_i] - right[loop_i]; both unsigned 0..255.
+  emit_local_get(buf, left_ptr_local)
+  emit_local_get(buf, loop_i_local)
+  emit_i32_add(buf)
+  emit_i32_load8_u(buf, 8)
+  emit_local_get(buf, right_ptr_local)
+  emit_local_get(buf, loop_i_local)
+  emit_i32_add(buf)
+  emit_i32_load8_u(buf, 8)
+  emit_i32_sub(buf)
+  emit_local_tee(buf, diff_local)
+  emit_i32_eqz(buf)
+  emit_i32_eqz(buf) // if byte_diff != 0
+  buf.push((4).to_byte())
+  buf.push((64).to_byte())
+  emit_br(buf, 2) // break out of loop+block; diff_local already set
+  buf.push((11).to_byte())
+  // loop_i++
+  emit_local_get(buf, loop_i_local)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_add(buf)
+  emit_local_set(buf, loop_i_local)
+  emit_br(buf, 0)
+  emit_end(buf) // end loop
+  emit_end(buf) // end block
+  // Compare diff against 0 with the requested op.
+  emit_local_get(buf, diff_local)
+  emit_i32_const_raw(buf, 0)
+  if name == "lt" || name == "__lt" {
+    emit_i32_lt_s(buf)
+  } else if name == "le" || name == "__le" {
+    emit_i32_le_s(buf)
+  } else if name == "gt" || name == "__gt" {
+    emit_i32_gt_s(buf)
+  } else if name == "ge" || name == "__ge" {
+    emit_i32_ge_s(buf)
+  } else {
+    // Fallback for unexpected names: treat as equality.
+    emit_i32_eq(buf)
+  }
+}
+
+///|
 fn compile_binary_cmp_op(
   ctx : CodegenCtx,
   buf : ByteBuf,
@@ -862,12 +946,38 @@ fn compile_binary_cmp_op(
         emit_f64_load(buf, 4)
         emit_f64(buf)
         buf.push((5).to_byte()) // else
+        // Both strings: byte-wise lexicographic order. Compute a signed
+        // i32 lex difference, then compare against 0 with the requested
+        // op. Without this branch, `__lt`/`__le`/`__gt`/`__ge` on strings
+        // fall through to a tagged-i64 pointer comparison and return
+        // arbitrary results.
+        emit_local_get(buf, left_type_local)
+        emit_i32_const_raw(buf, obj_string)
+        emit_i32_eq(buf)
+        emit_local_get(buf, right_type_local)
+        emit_i32_const_raw(buf, obj_string)
+        emit_i32_eq(buf)
+        emit_i32_and(buf)
+        buf.push((4).to_byte()) // if both strings
+        buf.push((127).to_byte()) // result i32
+        emit_string_lex_cmp_to_bool(
+          buf,
+          name,
+          left_ptr_local,
+          right_ptr_local,
+          left_len_local,
+          right_len_local,
+          loop_i_local,
+          eq_local,
+        )
+        buf.push((5).to_byte()) // else (not both strings)
         // Compare tagged i64 values directly
         emit_local_get(buf, left_local)
         emit_local_get(buf, right_local)
         emit_i64_cmp(buf)
-        buf.push((11).to_byte()) // end if
-        buf.push((11).to_byte()) // end if
+        buf.push((11).to_byte()) // end if (string)
+        buf.push((11).to_byte()) // end if (double)
+        buf.push((11).to_byte()) // end if (float)
       }
       buf.push((5).to_byte()) // else
       // Compare tagged i64 values directly

@@ -2465,6 +2465,8 @@ fn compile_builtin_collection(
     }
     "Array::set" => {
       // array_set(arr, idx, value) -> arr[idx] = value
+      // Supports both obj_array (length at offset 4) and obj_array_view
+      // (writes through to source[start+idx]).
       let pos_args = extract_positional_exprs_with_arity(args, "Array::set", 3)
       let ptr_local = alloc_temp_local(ctx)
       let idx_local = alloc_temp_local(ctx)
@@ -2479,6 +2481,42 @@ fn compile_builtin_collection(
       compile_expr_i32(ctx, buf, pos_args[2])
       emit_i32_wrap_i64(buf)
       emit_local_set(buf, val_local)
+      // Dispatch on obj_array_view vs obj_array
+      emit_local_get(buf, ptr_local)
+      emit_i32_load(buf, 0) // obj_type
+      emit_i32_const_raw(buf, obj_array_view)
+      emit_i32_eq(buf)
+      buf.push((4).to_byte()) // if (array_view)
+      buf.push((64).to_byte()) // void
+      // ArrayView: bounds check using length = end - start
+      emit_local_get(buf, idx_local)
+      emit_i32_const_raw(buf, 0)
+      emit_i32_lt_s(buf)
+      emit_local_get(buf, idx_local)
+      emit_local_get(buf, ptr_local)
+      emit_i32_load(buf, 12) // end
+      emit_local_get(buf, ptr_local)
+      emit_i32_load(buf, 8) // start
+      emit_i32_sub(buf) // end - start
+      emit_i32_ge_s(buf)
+      emit_i32_or(buf)
+      buf.push((4).to_byte()) // if (OOB)
+      buf.push((64).to_byte()) // void
+      buf.push((0).to_byte()) // unreachable
+      buf.push((11).to_byte()) // end if
+      // Compute addr = source_ptr + (start + idx) * 4 + 8
+      emit_local_get(buf, ptr_local)
+      emit_i32_load(buf, 4) // source_ptr
+      emit_local_get(buf, ptr_local)
+      emit_i32_load(buf, 8) // start
+      emit_local_get(buf, idx_local)
+      emit_i32_add(buf) // start + idx
+      emit_i32_const_raw(buf, 4)
+      emit_i32_mul(buf)
+      emit_i32_add(buf) // source_ptr + (start + idx) * 4
+      emit_local_get(buf, val_local)
+      emit_i32_store(buf, 8) // store with +8 offset
+      buf.push((5).to_byte()) // else (regular array)
       // bounds check: trap if idx < 0 || idx >= length
       emit_local_get(buf, idx_local)
       emit_i32_const_raw(buf, 0)
@@ -2500,6 +2538,7 @@ fn compile_builtin_collection(
       emit_i32_add(buf)
       emit_local_get(buf, val_local)
       emit_i32_store(buf, 8)
+      buf.push((11).to_byte()) // end if
       emit_i64_const_tagged(buf, 0L) // return Unit
     }
     "FixedArray::make" => {
@@ -3043,7 +3082,44 @@ fn compile_builtin_collection(
       emit_i64_shr_u(buf) // untag byte value
       emit_i32_wrap_i64(buf)
       emit_i32_store8(buf, 0)
-      buf.push((5).to_byte()) // else (array)
+      buf.push((5).to_byte()) // else (array or array_view)
+      // Dispatch on obj_array_view vs obj_array
+      emit_local_get(buf, ptr_local)
+      emit_i32_load(buf, 0) // obj_type
+      emit_i32_const_raw(buf, obj_array_view)
+      emit_i32_eq(buf)
+      buf.push((4).to_byte()) // if (array_view)
+      buf.push((64).to_byte()) // void
+      // ArrayView: bounds check using length = end - start
+      emit_local_get(buf, idx_local)
+      emit_i32_const_raw(buf, 0)
+      emit_i32_lt_s(buf)
+      emit_local_get(buf, idx_local)
+      emit_local_get(buf, ptr_local)
+      emit_i32_load(buf, 12) // end
+      emit_local_get(buf, ptr_local)
+      emit_i32_load(buf, 8) // start
+      emit_i32_sub(buf) // end - start
+      emit_i32_ge_s(buf)
+      emit_i32_or(buf)
+      buf.push((4).to_byte()) // if (OOB)
+      buf.push((64).to_byte()) // void
+      buf.push((0).to_byte()) // unreachable
+      buf.push((11).to_byte()) // end if
+      // Compute addr = source_ptr + (start + idx) * 4 + 8
+      emit_local_get(buf, ptr_local)
+      emit_i32_load(buf, 4) // source_ptr
+      emit_local_get(buf, ptr_local)
+      emit_i32_load(buf, 8) // start
+      emit_local_get(buf, idx_local)
+      emit_i32_add(buf) // start + idx
+      emit_i32_const_raw(buf, 4)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_local_get(buf, value_local)
+      emit_i32_wrap_i64(buf)
+      emit_i32_store(buf, 8) // store with +8 offset
+      buf.push((5).to_byte()) // else (regular array)
       // bounds check: trap if idx < 0 || idx >= length
       emit_local_get(buf, idx_local)
       emit_i32_const_raw(buf, 0)
@@ -3066,7 +3142,8 @@ fn compile_builtin_collection(
       emit_local_get(buf, value_local)
       emit_i32_wrap_i64(buf)
       emit_i32_store(buf, 8)
-      buf.push((11).to_byte()) // end if
+      buf.push((11).to_byte()) // end if (view vs array)
+      buf.push((11).to_byte()) // end if (bytes vs non-bytes)
       emit_local_get(buf, value_local)
     }
     "Map::get" => {
