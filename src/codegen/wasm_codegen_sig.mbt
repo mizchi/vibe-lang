@@ -1324,6 +1324,23 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
       let _ = span
       needs_heap_expr(ctx, expr)
     }
+    @core.Expr::StringInterp(parts~, span~) => {
+      // String interpolation lowers to a String::concat chain at codegen.
+      // Any non-trivial interpolation (more than one part, or a single Expr
+      // part that calls __to_string) allocates on the heap. Conservatively
+      // return true except for empty interpolations.
+      let _ = span
+      if parts.length() == 0 {
+        false
+      } else if parts.length() == 1 {
+        match parts[0] {
+          @core.StringInterpPart::Lit(_) => false
+          @core.StringInterpPart::Expr(_) => true
+        }
+      } else {
+        true
+      }
+    }
     @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
       let _ = params
       let _ = ret
