@@ -584,3 +584,142 @@ test "dce drops ExternLet + its TypeAlias when nothing references them" {
   assert_false(has_type_alias_stmt(filtered.stmts, "Handle"))
   assert_false(has_extern_let_stmt(filtered.stmts, "fd"))
 }
+
+///|
+test "dce keeps InternalExportLet when reachable from a regular export" {
+  // InternalExportLet is filtered by `filter_reachable_stmts` only when it
+  // appears in the reachable set. Verify the path: reachable export calls
+  // the internal-export, so the internal-export must survive DCE.
+  let mod = @core.Module::{
+    stmts: [
+      @core.Stmt::InternalExportLet(
+        rec=false,
+        name="helper_internal",
+        expr=dce_test_int(1L),
+        span=dce_test_span(),
+      ),
+      @core.Stmt::InternalExportLet(
+        rec=false,
+        name="helper_unreachable",
+        expr=dce_test_int(99L),
+        span=dce_test_span(),
+      ),
+      @core.Stmt::ExportLet(
+        rec=false,
+        name="api",
+        expr=dce_test_call("helper_internal", []),
+        span=dce_test_span(),
+      ),
+    ],
+  }
+  let filtered = dce_module(mod)
+  let names = collect_stmt_names(filtered.stmts)
+  assert_true(names.contains("api"))
+  // Reachable internal export survives.
+  let mut kept_internal = false
+  let mut kept_unreachable = false
+  for stmt in filtered.stmts {
+    match stmt {
+      @core.Stmt::InternalExportLet(name="helper_internal", ..) =>
+        kept_internal = true
+      @core.Stmt::InternalExportLet(name="helper_unreachable", ..) =>
+        kept_unreachable = true
+      _ => ()
+    }
+  }
+  assert_true(kept_internal)
+  assert_false(kept_unreachable)
+}
+
+///|
+test "dce keeps InternalExportEnumDef when its constructor is referenced" {
+  // filter_reachable_stmts has a dedicated branch for InternalExportEnumDef
+  // that preserves the enum if any constructor (qualified or unqualified)
+  // is in the reachable set. Exercise it.
+  let ctor_a = dce_test_ctor("Active")
+  let ctor_b = dce_test_ctor("Idle")
+  let mod = @core.Module::{
+    stmts: [
+      @core.Stmt::InternalExportEnumDef(
+        name="State",
+        params=[],
+        ctors=[ctor_a, ctor_b],
+        span=dce_test_span(),
+      ),
+      @core.Stmt::ExportLet(
+        rec=false,
+        name="start",
+        expr=dce_test_call("Active", []),
+        span=dce_test_span(),
+      ),
+    ],
+  }
+  let filtered = dce_module(mod)
+  // The enum stays because Active is reachable.
+  assert_true(has_enum_stmt(filtered.stmts, "State"))
+}
+
+///|
+test "dce drops InternalExportEnumDef when no constructor is reached" {
+  let ctor = dce_test_ctor("Unused")
+  let mod = @core.Module::{
+    stmts: [
+      @core.Stmt::InternalExportEnumDef(
+        name="Dead",
+        params=[],
+        ctors=[ctor],
+        span=dce_test_span(),
+      ),
+      @core.Stmt::ExportLet(
+        rec=false,
+        name="api",
+        expr=dce_test_int(0L),
+        span=dce_test_span(),
+      ),
+    ],
+  }
+  let filtered = dce_module(mod)
+  assert_false(has_enum_stmt(filtered.stmts, "Dead"))
+}
+
+///|
+test "dce_module_with_entry_names handles missing entries gracefully" {
+  // Unknown entry names must not affect the kept-set; reachable analysis
+  // proceeds as if the unknown names contribute nothing.
+  let mod = @core.Module::{
+    stmts: [
+      @core.Stmt::ExportLet(
+        rec=false,
+        name="real_export",
+        expr=dce_test_int(1L),
+        span=dce_test_span(),
+      ),
+    ],
+  }
+  let filtered = dce_module_with_entry_names(
+    mod, ["does_not_exist", "another_phantom"],
+  )
+  let names = collect_stmt_names(filtered.stmts)
+  assert_true(names.contains("real_export"))
+  // Phantom entries don't show up because they were never defined.
+  assert_false(names.contains("does_not_exist"))
+}
+
+///|
+test "dce_module_with_entry_names accepts an empty entry list" {
+  // Smoke: empty extra_entries should not panic; ExportLet roots still
+  // anchor the reachable set so the export survives.
+  let mod = @core.Module::{
+    stmts: [
+      @core.Stmt::ExportLet(
+        rec=false,
+        name="kept",
+        expr=dce_test_int(1L),
+        span=dce_test_span(),
+      ),
+    ],
+  }
+  let filtered = dce_module_with_entry_names(mod, [])
+  let names = collect_stmt_names(filtered.stmts)
+  assert_true(names.contains("kept"))
+}
