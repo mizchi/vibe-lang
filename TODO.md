@@ -3,7 +3,7 @@
 Spec-locked decisions are tracked in `docs/spec/decisions.md`.
 Completed items are archived in `docs/DONE.md`.
 
-## 次の一手 (2026-05-03 時点)
+## 次の一手 (2026-05-04 時点)
 
 優先順。各項目は該当セクションに詳細あり。
 
@@ -15,6 +15,7 @@ Completed items are archived in `docs/DONE.md`.
   - examples/syntax: 0/59 → 59/59
   - derive(Eq) enum payload deep 比較: 実装（#341 value_eq runtime helper）
   - Array view writethrough / fs_readdir Array[String] / 文字列 lex compare（#354）
+- [x] **`just test-wasm-heavy` 全パス** — 129 / 129（2026-05-04、PR #357 + #358）。`heap_local` 不整合（#357）と `needs_heap_expr` の StringInterp 見落とし（#358）の 2 段階で解消
 
 ### 🟠 近場の重要
 
@@ -42,7 +43,7 @@ Completed items are archived in `docs/DONE.md`.
 
 ### 既知ギャップ（issue として追跡中）
 
-- `just test-wasm-heavy` の wasm_opt / wasm_runtime に 17 fail（13 + 4）が pre-existing（#356）。`test-vibe-package-suite` 対象外で 0.1.0 release ブロッカーではないが将来的には潰したい
+- ~~`just test-wasm-heavy` の wasm_opt / wasm_runtime に 17 fail~~（#356 → PR #357 + #358 で 129/129 ✅）
 - ~~derive(Eq) enum with payload の deep 比較~~（#341 で実装済）
 
 ## 0.2.0 roadmap: wasm-gc main backend gate (2026-03-27)
