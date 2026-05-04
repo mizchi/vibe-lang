@@ -1325,19 +1325,32 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
       needs_heap_expr(ctx, expr)
     }
     @core.Expr::StringInterp(parts~, span~) => {
-      // String interpolation lowers to a String::concat chain at codegen.
-      // Any non-trivial interpolation (more than one part, or a single Expr
-      // part that calls __to_string) allocates on the heap. Conservatively
-      // return true except for empty interpolations.
+      // String interpolation lowers to a `String::concat` chain at codegen
+      // when there are 2+ parts, which always allocates. The codegen's
+      // `needs_heap_expr` analysis would otherwise miss this and mark
+      // callee functions as `needs_heap = false`, causing missing
+      // pre-call sync (issue #356). Single-part interpolation desugars
+      // to either a string literal (Lit) or `__to_string(e)` (Expr) — the
+      // `__to_string` Call is detected separately, and recursing into the
+      // inner expr keeps the analysis tight on the very common
+      // `"\{x}"` pattern where x is a String binding (no alloc needed).
       let _ = span
-      if parts.length() == 0 {
-        false
-      } else if parts.length() == 1 {
-        match parts[0] {
-          @core.StringInterpPart::Lit(_) => false
-          @core.StringInterpPart::Expr(_) => true
+      if parts.length() < 2 {
+        // 0 or 1 part: defer to inner expr / literal — neither allocates
+        // unless the inner expr itself does.
+        let mut needs = false
+        for part in parts {
+          match part {
+            @core.StringInterpPart::Lit(_) => ()
+            @core.StringInterpPart::Expr(e) =>
+              if needs_heap_expr(ctx, e) {
+                needs = true
+              }
+          }
         }
+        needs
       } else {
+        // 2+ parts: String::concat chain always allocates.
         true
       }
     }
