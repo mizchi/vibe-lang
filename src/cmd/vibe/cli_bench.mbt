@@ -1148,6 +1148,17 @@ fn compile_bench_script_to_wasm_with_runner(
     Some(v) => not(v == "0" || v.to_lower() == "false" || v.to_lower() == "off")
     None => true
   }
+  // debug_errors=true keeps throw string literals in the output, but the
+  // codegen path that does this scales pathologically on throw-heavy
+  // imports (selfhost compiler imports through loader_hotspot_probe.vibe
+  // hung > 3 min before timeout in our investigation). Default stays
+  // true to match `vibe run` behaviour; VIBE_BENCH_DEBUG_ERRORS=0
+  // opts out for selfhost benches at the cost of less helpful failure
+  // messages from `throw` inside the bench body.
+  let bench_debug_errors = match @sys.get_env_var("VIBE_BENCH_DEBUG_ERRORS") {
+    Some(v) => not(v == "0" || v.to_lower() == "false" || v.to_lower() == "off")
+    None => true
+  }
   let wasm_bytes = if use_node_runner {
     @runtime_compile.compile_module_wasm_with_opt_level(
       db,
@@ -1155,7 +1166,7 @@ fn compile_bench_script_to_wasm_with_runner(
       no_dce=bench_no_dce,
       opt_level=Some("-Oz"),
       // Preserve thrown string payloads for host-runner parity with `run`.
-      debug_errors=true,
+      debug_errors=bench_debug_errors,
       http_host_imports=true,
       fs_host_imports=true,
     ) catch {
@@ -1167,7 +1178,7 @@ fn compile_bench_script_to_wasm_with_runner(
             entry,
             no_dce=bench_no_dce,
             opt_level=None,
-            debug_errors=true,
+            debug_errors=bench_debug_errors,
             http_host_imports=true,
             fs_host_imports=true,
           ) catch {
