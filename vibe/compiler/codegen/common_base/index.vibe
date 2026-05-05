@@ -22,13 +22,31 @@ let op_i64_store = 55
 
 //# Types
 
-// Function registry: groups parallel arrays for function metadata
+// Hand-rolled string -> Int hash index built on top of primitive
+// Array operations only. Avoids vibe's runtime `Map[String, Int]`
+// which is implemented as a linear scan on both `Map::has_key` and
+// `Map::get` in the WASM linear backend (see
+// `bench/selfhost_perf/README.md` postmortem). bucket_count is chosen
+// to be a power of 2 so the modulo step is cheap; lookups walk the
+// bucket linearly with average length ~load_factor.
+export struct StrIntIndex {
+  bucket_count: Int;
+  bucket_keys: Array[Array[String]];
+  bucket_vals: Array[Array[Int]];
+  not_found: Int
+}
+
+// Function registry: groups parallel arrays for function metadata.
+// `name_index` mirrors `names` as a hash bucket map of name -> idx;
+// resolve_func consults it first and falls back to the linear scan
+// when the index is not built (legacy callers, or empty registries).
 export struct FuncTable {
   names: Array[String];
   indices: Array[Int];
   params: Array[Int];
   returns: Array[Int];
-  needs_env: Array[Bool]
+  needs_env: Array[Bool];
+  name_index: StrIntIndex
 }
 
 // String table: groups string data with their WASM data segment offsets/lengths
@@ -47,14 +65,17 @@ export struct LambdaTable {
   meta_i64: Array[Int]
 }
 
-// Constructor/struct registry: enum variant + struct constructors
+// Constructor/struct registry: enum variant + struct constructors.
+// `name_index` mirrors FuncTable.name_index — hash-bucket lookup of
+// constructor name -> array-position index.
 export struct CtorTable {
   names: Array[String];
   tags: Array[Int];
   field_counts: Array[Int];
   type_names: Array[String];
   struct_names: Array[String];
-  struct_field_names: Array[Array[String]]
+  struct_field_names: Array[Array[String]];
+  name_index: StrIntIndex
 }
 
 // Compilation context: all shared state for compile_expr
@@ -230,6 +251,138 @@ export let rec lookup_ctor = (ctor_names: Array[String], name: String, i: Int) -
   else lookup_ctor(ctor_names, name, i + 1)
 }
 
+// === StrIntIndex: hand-rolled hash bucket for name -> array-pos lookup ===
+
+// Pick a bucket count that is a power of 2 large enough to keep the
+// average bucket short. Targets load factor ~3 for the typical
+// FuncTable (≤ 256 builtins + a handful of user funcs). next_pow2_min8
+// ensures we never go below 8 buckets even for tiny tables, so the
+// hash distribution stays useful.
+let str_int_index_default_buckets = (entry_count: Int) -> Int {
+  let target = if entry_count < 24 {
+    8
+  } else if entry_count < 96 {
+    32
+  } else if entry_count < 384 {
+    128
+  } else {
+    512
+  }
+  target
+}
+
+// djb2-style polynomial hash. Stays inside positive 30 bits so that
+// the result is always non-negative under vibe's tagged-int semantics.
+let str_int_hash = (s: String) -> Int {
+  let len = String::length(s)
+  let mut h = 5381
+  let mut i = 0
+  while i < len {
+    h = ((h * 33) + String::char_code_at(s, i)) & 0x3fffffff
+    i = i + 1
+  }
+  h
+}
+
+// Construct an empty StrIntIndex with the given bucket count. The
+// caller fills it via str_int_index_set.
+export let str_int_index_new = (bucket_count: Int, not_found: Int) -> StrIntIndex {
+  let keys = Array::slice([
+    Array::slice([
+      ""
+    ], 0, 0)
+  ], 0, 0)
+  let vals = Array::slice([
+    Array::slice([
+      0
+    ], 0, 0)
+  ], 0, 0)
+  let mut i = 0
+  while i < bucket_count {
+    Array::push(keys, Array::slice([
+      ""
+    ], 0, 0))
+    Array::push(vals, Array::slice([
+      0
+    ], 0, 0))
+    i = i + 1
+  }
+  StrIntIndex::{
+    bucket_count: bucket_count,
+    bucket_keys: keys,
+    bucket_vals: vals,
+    not_found: not_found
+  }
+}
+
+// Insert a (key, value) pair. Caller is responsible for ensuring keys
+// are unique within the index — duplicate inserts will keep the LAST
+// one because lookup walks the bucket and returns the first match.
+export let str_int_index_set = (idx: StrIntIndex, key: String, val: Int) -> Unit {
+  let h = str_int_hash(key) % idx.bucket_count
+  Array::push(Array::get(idx.bucket_keys, h), key)
+  Array::push(Array::get(idx.bucket_vals, h), val)
+}
+
+// Look up a key. Returns idx.not_found when missing (callers usually
+// pass -1 as not_found and treat the negative return as "fall back to
+// linear scan" or "throw undefined").
+export let str_int_index_get_or = (idx: StrIntIndex, key: String) -> Int {
+  let h = str_int_hash(key) % idx.bucket_count
+  let keys = Array::get(idx.bucket_keys, h)
+  let vals = Array::get(idx.bucket_vals, h)
+  let len = Array::length(keys)
+  let mut i = 0
+  let mut result = idx.not_found
+  while i < len {
+    if Array::get(keys, i) == key {
+      result = Array::get(vals, i)
+      i = len
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+
+// Detect uninitialized / placeholder indices so the lookup helpers
+// can fall back to a linear scan.
+export let str_int_index_is_empty = (idx: StrIntIndex) -> Bool {
+  idx.bucket_count == 0
+}
+
+// Empty placeholder used by callers that have not yet built an index.
+export let str_int_index_empty = () -> StrIntIndex {
+  StrIntIndex::{
+    bucket_count: 0,
+    bucket_keys: Array::slice([
+      Array::slice([
+        ""
+      ], 0, 0)
+    ], 0, 0),
+    bucket_vals: Array::slice([
+      Array::slice([
+        0
+      ], 0, 0)
+    ], 0, 0),
+    not_found: -1
+  }
+}
+
+// Build a name -> array-position index in one pass over `names`.
+// Used by codegen entry points to populate FuncTable.name_index /
+// CtorTable.name_index before handing the registry to compile_expr.
+export let build_str_int_index = (names: Array[String]) -> StrIntIndex {
+  let len = Array::length(names)
+  let idx = str_int_index_new(str_int_index_default_buckets(len), -1)
+  let mut i = 0
+  while i < len {
+    str_int_index_set(idx, Array::get(names, i), i)
+    i = i + 1
+  }
+  idx
+}
+
 export let emit_i32_eqz = (buf: Bytes) -> Unit {
   bytebuf_push(buf, op_i32_eqz)
 }
@@ -291,23 +444,43 @@ export let get_elet_val = (expr: Expr) -> Expr with { Error } {
   }
 }
 
-// Resolve function: returns (func_index, param_count, has_return)
+// Resolve function: returns (func_index, param_count, has_return).
+// Uses ft.name_index (StrIntIndex hash bucket) when populated, falls
+// back to a linear scan when the index is empty (lets legacy callers
+// build FuncTable without an index without breaking). Hot path on
+// every codegen call site.
 export let resolve_func = (ft: FuncTable, name: String) -> (Int, Int, Int)with { Error } {
-  let len = Array::length(ft.names)
-  let mut i = 0
   let mut found = -1
-  while i < len {
-    if Array::get(ft.names, i) == name {
-      found = i
-      i = len
-    } else {
-      i = i + 1
+  if !str_int_index_is_empty(ft.name_index) {
+    found = str_int_index_get_or(ft.name_index, name)
+  }
+  if found < 0 {
+    let len = Array::length(ft.names)
+    let mut i = 0
+    while i < len {
+      if Array::get(ft.names, i) == name {
+        found = i
+        i = len
+      } else {
+        i = i + 1
+      }
     }
   }
   if found < 0 {
     throw(String::concat("undefined function: ", name))
   };
   (Array::get(ft.indices, found), Array::get(ft.params, found), Array::get(ft.returns, found))
+}
+
+// O(1) variant of lookup_ctor: walks the StrIntIndex hash bucket
+// when populated, falls back to the recursive linear lookup_ctor
+// otherwise.
+export let lookup_ctor_indexed = (ct: CtorTable, name: String) -> Int {
+  if !str_int_index_is_empty(ct.name_index) {
+    str_int_index_get_or(ct.name_index, name)
+  } else {
+    lookup_ctor(ct.names, name, 0)
+  }
 }
 
 // Emit WASM instruction for a binary operator
