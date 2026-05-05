@@ -52,24 +52,52 @@ warning (no measurement loss, just no speedup).
 with "block cannot pop from outside" — same failure mode as Ubuntu
 24.04's apt binaryen v108. Use the moon-bundled binary instead.
 
-Effect on `examples/basics.vibe` (single-run hyperfine, --warmup 1
---runs 3, May 2026):
+### `-Oz` is the default, not `-O3`
 
-| metric              | host    | self (raw debug) | self (release + O3) | ratio gain |
-| ------------------- | ------- | ---------------- | ------------------- | ---------- |
-| compile mean ms     | 39.6 ms | 247 ms           | **134.9 ms**        | 6.25× → **3.41×** |
-| compile peak RSS    | 16.2 MB | 100 MB           | **80.9 MB**         | 6.18× → **4.99×** |
-| check mean ms       | 107 ms  | 285 ms           | **193 ms**          | 2.66× → **1.80×** |
-| check peak RSS      | 22.5 MB | 70.0 MB          | **73.2 MB**         | 3.09× → **3.25×** |
-| compile wasm size   | —       | 6.82 MB          | **3.07 MB**         | -55% |
-| check wasm size     | —       | 3.04 MB          | **1.27 MB**         | -58% |
+Counter-intuitive but verified: under `moonrun`, **`-Oz` is faster
+than `-O3`**. moonrun is interpreter-flavoured, so wallclock tracks
+the dispatched-instruction count. -O3 unrolls loops and inlines
+aggressively, which grows instruction count and *hurts* moonrun.
+-Oz minimizes instruction count and ships smaller — strict win on
+this runtime.
 
-(Smaller artifacts also help cold-start RSS for the compiler wasm in
-particular.) The remaining gap is dominated by `moonrun`'s
-WASM-execution overhead; bigger wins after this point require either
-a faster runtime (wasmtime AOT, currently blocked on WASI-binding
-reshape since selfhost wasi entry imports `spectest::print_char`) or
-algorithmic work on the moonbit-side compiler. Tracked under TODO #295.
+Variant comparison on examples/basics.vibe (compile-lite, hyperfine
+--warmup 2 --runs 8):
+
+| variant            | mean ms   | wasm size | ratio vs raw |
+| ------------------ | --------- | --------- | ------------ |
+| raw release        | 284.4     | 2.78 MB   | 1.00×        |
+| -O3                | 138.4     | 3.07 MB   | 2.06×        |
+| **-Oz** (default)  | **116.5** | **2.01 MB** | **2.44×**  |
+| -O3 then -Oz       | 141.2     | 2.96 MB   | 2.01×        |
+
+Override with `WASM_OPT_LEVEL=-O3` (etc.) for downstream targets that
+have a different cost model (a JIT/AOT runtime would prefer -O3
+since instruction count is no longer the bottleneck).
+
+### End-to-end memory bench
+
+`examples/basics.vibe` (single-run hyperfine, --warmup 1 --runs 3):
+
+| metric              | host    | self (raw debug) | self (release + -Oz) | ratio (raw → opt) |
+| ------------------- | ------- | ---------------- | -------------------- | ----------------- |
+| compile mean ms     | 38.7 ms | 247 ms           | **129.0 ms**         | 6.25× → **3.33×** |
+| compile peak RSS    | 16.4 MB | 100 MB           | **73.7 MB**          | 6.18× → **4.51×** |
+| check mean ms       | 106 ms  | 285 ms           | **204.7 ms**         | 2.66× → **1.92×** |
+| check peak RSS      | 22.3 MB | 70.0 MB          | **52.6 MB**          | 3.09× → **2.35×** |
+| compile wasm size   | —       | 6.82 MB          | **2.00 MB**          | -71%              |
+| check wasm size     | —       | 3.04 MB          | **0.91 MB**          | -70%              |
+
+The remaining gap is dominated by `moonrun`'s wasm interpretation
+overhead; bigger wins after this point require a faster runtime
+(wasmtime AOT, blocked on WASI-binding reshape — selfhost wasi entry
+imports `spectest::print_char` plus ~30 `__moonbit_fs_unstable::*`
+ABI functions; the project has a parallel `selfhost_compiler.wasm`
+component path under `scripts/build_selfhost_cli_direct_component.sh`
+that runs under wasmtime via WASI Preview2 + a small `Env`/`Fs`
+shim, but exercising it requires `wac` + a Rust adapter component
+build that isn't wired into the bench drivers yet). Tracked under
+TODO #295.
 
 ## Micro: vibe bench probes (currently blocked)
 
