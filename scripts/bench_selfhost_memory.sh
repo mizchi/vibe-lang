@@ -32,8 +32,16 @@ VIBE_CLI_RELEASE=1 source "$ROOT_DIR/scripts/ensure_native_cli.sh"
 
 WASM_PROFILE="${VIBE_SELFHOST_MEMORY_WASM_PROFILE:-debug}"
 REBUILD_MODE="${VIBE_SELFHOST_MEMORY_REBUILD:-auto}"
-COMPILER_WASM="$ROOT_DIR/_build/wasm/$WASM_PROFILE/build/cmd/vibe_compile_wasi/vibe_compile_wasi.wasm"
-CHECKER_WASM="$ROOT_DIR/_build/wasm/$WASM_PROFILE/build/cmd/vibe_check_wasi/vibe_check_wasi.wasm"
+USE_WASM_OPT="${VIBE_SELFHOST_MEMORY_WASM_OPT:-auto}"
+case "$USE_WASM_OPT" in 1|yes|on|true|auto|0|no|off|false) ;;
+  *) echo "bench-selfhost-memory: VIBE_SELFHOST_MEMORY_WASM_OPT must be auto|on|off" >&2; exit 1 ;;
+esac
+COMPILER_WASM_RAW="$ROOT_DIR/_build/wasm/$WASM_PROFILE/build/cmd/vibe_compile_wasi/vibe_compile_wasi.wasm"
+CHECKER_WASM_RAW="$ROOT_DIR/_build/wasm/$WASM_PROFILE/build/cmd/vibe_check_wasi/vibe_check_wasi.wasm"
+COMPILER_WASM_OPT="$ROOT_DIR/_build/wasm/opt/vibe_compile_wasi.wasm"
+CHECKER_WASM_OPT="$ROOT_DIR/_build/wasm/opt/vibe_check_wasi.wasm"
+COMPILER_WASM="$COMPILER_WASM_RAW"
+CHECKER_WASM="$CHECKER_WASM_RAW"
 VIBE_BIN="${VIBE_BIN:-$VIBE_CLI_BIN}"
 OUT_DIR="${VIBE_SELFHOST_MEMORY_OUT_DIR:-$ROOT_DIR/_build/bench/selfhost_memory}"
 CASES_FILE="${VIBE_SELFHOST_MEMORY_CASES_FILE:-$ROOT_DIR/bench/selfhost_perf/cases.txt}"
@@ -121,6 +129,31 @@ ensure_binaries() {
         moon build --target wasm --release src/cmd/vibe_check_wasi
       else
         moon build --target wasm src/cmd/vibe_check_wasi
+      fi
+    fi
+    # Optionally swap to wasm-opt'd artifacts.
+    # Auto mode is permissive: if the helper succeeds, use opt'd wasm;
+    # otherwise fall back to raw release wasm with a warning.
+    local want_opt=0
+    case "$USE_WASM_OPT" in
+      1|yes|on|true) want_opt=1 ;;
+      auto)
+        if command -v wasm-opt >/dev/null 2>&1; then
+          local v
+          v="$(wasm-opt --version 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+$/) { print $i; exit } }')"
+          if [ -n "$v" ] && [ "$v" -ge 118 ]; then
+            want_opt=1
+          fi
+        fi
+        ;;
+    esac
+    if [ "$want_opt" -eq 1 ]; then
+      if ! VIBE_SELFHOST_OPT_WASM_PROFILE="$WASM_PROFILE" VIBE_SELFHOST_OPT_WASM_REBUILD="$REBUILD_MODE" bash "$ROOT_DIR/scripts/build_selfhost_wasi_opt.sh" >&2; then
+        echo "bench-selfhost-memory: wasm-opt step failed; falling back to raw release wasm" >&2
+      else
+        if [ -f "$COMPILER_WASM_OPT" ]; then COMPILER_WASM="$COMPILER_WASM_OPT"; fi
+        if [ -f "$CHECKER_WASM_OPT" ]; then CHECKER_WASM="$CHECKER_WASM_OPT"; fi
+        echo "[selfhost-memory] using wasm-opt'd artifacts under _build/wasm/opt/"
       fi
     fi
     if ! command -v moonrun >/dev/null 2>&1; then

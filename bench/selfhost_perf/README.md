@@ -30,10 +30,34 @@ field. macOS users need `gnu-time` (`brew install gnu-time`) and to point
 Output: `_build/bench/selfhost_memory/rss_summary.tsv` and
 `_build/bench/selfhost_memory/hyperfine/<case>.<phase>.json`.
 
-A first-pass measurement on `examples/basics.vibe` (debug selfhost wasm)
-showed selfhost compile is ~6x slower / ~6x larger RSS than host, and
-selfhost check is ~2.6x slower / ~3x larger — consistent with the
-"selfhost perf gap" item tracked in `TODO.md`.
+### wasm-opt -O3 step
+
+Both `bench_selfhost_perf.sh` and `bench_selfhost_memory.sh` invoke
+`build_selfhost_wasi_opt.sh` (env: `VIBE_SELFHOST_PERF_WASM_OPT` /
+`VIBE_SELFHOST_MEMORY_WASM_OPT`, default `auto`) to pipe the release
+selfhost wasm through binaryen `wasm-opt -O3` before measurement.
+Requires `wasm-opt` >= v118 — Ubuntu 24.04's binaryen 108 cannot parse
+moonbit's wasm feature set. The helper falls back to raw release wasm
+if `wasm-opt` is missing or too old.
+
+Effect on `examples/basics.vibe` (single-run hyperfine, --warmup 1
+--runs 3, May 2026):
+
+| metric              | host    | self (raw debug) | self (release + O3) | ratio gain |
+| ------------------- | ------- | ---------------- | ------------------- | ---------- |
+| compile mean ms     | 39.6 ms | 247 ms           | **134.9 ms**        | 6.25× → **3.41×** |
+| compile peak RSS    | 16.2 MB | 100 MB           | **80.9 MB**         | 6.18× → **4.99×** |
+| check mean ms       | 107 ms  | 285 ms           | **193 ms**          | 2.66× → **1.80×** |
+| check peak RSS      | 22.5 MB | 70.0 MB          | **73.2 MB**         | 3.09× → **3.25×** |
+| compile wasm size   | —       | 6.82 MB          | **3.07 MB**         | -55% |
+| check wasm size     | —       | 3.04 MB          | **1.27 MB**         | -58% |
+
+(Smaller artifacts also help cold-start RSS for the compiler wasm in
+particular.) The remaining gap is dominated by `moonrun`'s
+WASM-execution overhead; bigger wins after this point require either
+a faster runtime (wasmtime AOT, currently blocked on WASI-binding
+reshape since selfhost wasi entry imports `spectest::print_char`) or
+algorithmic work on the moonbit-side compiler. Tracked under TODO #295.
 
 ## Micro: vibe bench probes (currently blocked)
 

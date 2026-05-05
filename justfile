@@ -860,6 +860,13 @@ bench-selfhost-cache-probe:
 bench-selfhost-loader-hotspots:
     scripts/bench_selfhost_loader_hotspots.sh
 
+# Build release-profile wasi compile/check wasm + wasm-opt -O3.
+# Used by bench-selfhost-perf and bench-selfhost-memory when wasm-opt
+# (binaryen >= 118) is available. Cuts ~45% off selfhost compile time
+# and ~32% off selfhost check time on examples/basics.vibe.
+build-selfhost-wasi-opt:
+    scripts/build_selfhost_wasi_opt.sh
+
 # Micro-bench selfhost lex/parse/check phases over selfhost compiler sources.
 # env override: VIBE_SELFHOST_COMPILE_HOTSPOT_RUNS / VIBE_SELFHOST_COMPILE_HOTSPOT_PHASES (lexer,parser,checker)
 bench-selfhost-compile-hotspots:
