@@ -696,9 +696,9 @@ test "dce_module_with_entry_names handles missing entries gracefully" {
       ),
     ],
   }
-  let filtered = dce_module_with_entry_names(
-    mod, ["does_not_exist", "another_phantom"],
-  )
+  let filtered = dce_module_with_entry_names(mod, [
+    "does_not_exist", "another_phantom",
+  ])
   let names = collect_stmt_names(filtered.stmts)
   assert_true(names.contains("real_export"))
   // Phantom entries don't show up because they were never defined.

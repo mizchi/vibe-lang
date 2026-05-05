@@ -488,4 +488,3 @@ pub fn Runtime::register_module(
 ) -> Unit {
   self.module_cache.set(hash, mod_ast)
 }
-

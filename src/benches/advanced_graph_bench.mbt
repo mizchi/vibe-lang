@@ -120,7 +120,9 @@ fn parse_graph_index_json(source : String) -> @x_exp.AdvancedGraphIndex {
     e => abort("json parse failed: " + e.to_string())
   }
   decode_graph_or_abort(
-    "index", "json", @x_exp.advanced_graph_index_from_json(parsed),
+    "index",
+    "json",
+    @x_exp.advanced_graph_index_from_json(parsed),
   )
 }
 
@@ -130,21 +132,27 @@ fn parse_graph_delta_json(source : String) -> @x_exp.AdvancedGraphDelta {
     e => abort("json parse failed: " + e.to_string())
   }
   decode_graph_or_abort(
-    "delta", "json", @x_exp.advanced_graph_delta_from_json(parsed),
+    "delta",
+    "json",
+    @x_exp.advanced_graph_delta_from_json(parsed),
   )
 }
 
 ///|
 fn parse_graph_index_cbor(payload : Bytes) -> @x_exp.AdvancedGraphIndex {
   decode_graph_or_abort(
-    "index", "cbor", @x_exp.advanced_graph_index_from_cbor_bytes(payload),
+    "index",
+    "cbor",
+    @x_exp.advanced_graph_index_from_cbor_bytes(payload),
   )
 }
 
 ///|
 fn parse_graph_delta_cbor(payload : Bytes) -> @x_exp.AdvancedGraphDelta {
   decode_graph_or_abort(
-    "delta", "cbor", @x_exp.advanced_graph_delta_from_cbor_bytes(payload),
+    "delta",
+    "cbor",
+    @x_exp.advanced_graph_delta_from_cbor_bytes(payload),
   )
 }
 
@@ -451,14 +459,18 @@ fn bench_graph_watch_realtime_save_rolling_impl(
 ///|
 fn bench_graph_watch_realtime_save_rolling_cbor(b : @bench.T) -> Unit {
   bench_graph_watch_realtime_save_rolling_impl(
-    b, fn(d) { d.to_cbor_bytes() }, parse_graph_delta_cbor,
+    b,
+    fn(d) { d.to_cbor_bytes() },
+    parse_graph_delta_cbor,
   )
 }
 
 ///|
 fn bench_graph_watch_realtime_save_rolling_flexbuffer(b : @bench.T) -> Unit {
   bench_graph_watch_realtime_save_rolling_impl(
-    b, fn(d) { d.to_flexbuffer_bytes() }, parse_graph_delta_flexbuffer,
+    b,
+    fn(d) { d.to_flexbuffer_bytes() },
+    parse_graph_delta_flexbuffer,
   )
 }
 

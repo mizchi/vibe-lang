@@ -75,7 +75,9 @@ test "parse placeholder inside nested non-op calls preserves outer structure" {
               }
             }
             other =>
-              fail("expected assert arg[0] to stay as Array::any Call, got: \{other}")
+              fail(
+                "expected assert arg[0] to stay as Array::any Call, got: \{other}",
+              )
           }
         _ => fail("expected outer assert Call")
       }

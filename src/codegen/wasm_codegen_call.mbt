@@ -961,14 +961,8 @@ fn compile_binary_cmp_op(
         buf.push((4).to_byte()) // if both strings
         buf.push((127).to_byte()) // result i32
         emit_string_lex_cmp_to_bool(
-          buf,
-          name,
-          left_ptr_local,
-          right_ptr_local,
-          left_len_local,
-          right_len_local,
-          loop_i_local,
-          eq_local,
+          buf, name, left_ptr_local, right_ptr_local, left_len_local, right_len_local,
+          loop_i_local, eq_local,
         )
         buf.push((5).to_byte()) // else (not both strings)
         // Compare tagged i64 values directly

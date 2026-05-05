@@ -141,7 +141,9 @@ fn render_stmt_snippets(
           }
           seen_spans[inner_key] = true
           let snippet = source_slice_by_span(
-            source, inner_span.start, inner_span.end,
+            source,
+            inner_span.start,
+            inner_span.end,
           )
           if snippet.trim().to_string().length() == 0 {
             j = j + 1
