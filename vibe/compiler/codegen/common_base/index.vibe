@@ -22,18 +22,13 @@ let op_i64_store = 55
 
 //# Types
 
-// Function registry: groups parallel arrays for function metadata.
-// `name_index` is a hash-bucket name -> array-position map, populated
-// once in build_func_table_index. Empty when the registry is built
-// before the index pass (legacy construction sites). resolve_func
-// falls back to a linear scan in that case.
+// Function registry: groups parallel arrays for function metadata
 export struct FuncTable {
   names: Array[String];
   indices: Array[Int];
   params: Array[Int];
   returns: Array[Int];
-  needs_env: Array[Bool];
-  name_index: Map[String, Int]
+  needs_env: Array[Bool]
 }
 
 // String table: groups string data with their WASM data segment offsets/lengths
@@ -52,18 +47,14 @@ export struct LambdaTable {
   meta_i64: Array[Int]
 }
 
-// Constructor/struct registry: enum variant + struct constructors.
-// `name_index` mirrors FuncTable.name_index: name -> array-position
-// hash map populated via build_ctor_table_index. lookup_ctor falls
-// back to linear scan when the map is empty.
+// Constructor/struct registry: enum variant + struct constructors
 export struct CtorTable {
   names: Array[String];
   tags: Array[Int];
   field_counts: Array[Int];
   type_names: Array[String];
   struct_names: Array[String];
-  struct_field_names: Array[Array[String]];
-  name_index: Map[String, Int]
+  struct_field_names: Array[Array[String]]
 }
 
 // Compilation context: all shared state for compile_expr
@@ -239,48 +230,6 @@ export let rec lookup_ctor = (ctor_names: Array[String], name: String, i: Int) -
   else lookup_ctor(ctor_names, name, i + 1)
 }
 
-// O(1) variant: resolve a constructor name through the prebuilt index
-// when available, fall back to the linear lookup_ctor otherwise. Used
-// by hot paths in compile_call / compile_match where the same builtin
-// constructors are looked up per-expression.
-export let lookup_ctor_indexed = (ct: CtorTable, name: String) -> Int {
-  if Map::has_key(ct.name_index, name) {
-    Map::get(ct.name_index, name)
-  } else {
-    lookup_ctor(ct.names, name, 0)
-  }
-}
-
-// Build a name -> array-position map for a CtorTable's `names` field.
-// Run once after the parallel arrays are populated, before the table
-// is wrapped into a CompileCtx. Constructor names are unique per
-// module so MapBuilder::set's "last wins" behaviour is equivalent to
-// lookup_ctor's "first wins" linear scan in practice.
-export let build_ctor_table_index = (names: Array[String]) -> Map[String, Int] {
-  let builder = MapBuilder::new()
-  let mut i = 0
-  let len = Array::length(names)
-  while i < len {
-    MapBuilder::set(builder, Array::get(names, i), i)
-    i = i + 1
-  }
-  MapBuilder::freeze(builder)
-}
-
-// Build a name -> array-position map for a FuncTable's `names` field.
-// Function names are unique per module (duplicates would already be a
-// type-check error), so set/freeze is fine here.
-export let build_func_table_index = (names: Array[String]) -> Map[String, Int] {
-  let builder = MapBuilder::new()
-  let mut i = 0
-  let len = Array::length(names)
-  while i < len {
-    MapBuilder::set(builder, Array::get(names, i), i)
-    i = i + 1
-  }
-  MapBuilder::freeze(builder)
-}
-
 export let emit_i32_eqz = (buf: Bytes) -> Unit {
   bytebuf_push(buf, op_i32_eqz)
 }
@@ -342,24 +291,17 @@ export let get_elet_val = (expr: Expr) -> Expr with { Error } {
   }
 }
 
-// Resolve function: returns (func_index, param_count, has_return).
-// Uses ft.name_index (Map[String,Int]) when populated; falls back to
-// a linear scan for legacy callers that build FuncTable without an
-// index. Hot path on every codegen call site.
+// Resolve function: returns (func_index, param_count, has_return)
 export let resolve_func = (ft: FuncTable, name: String) -> (Int, Int, Int)with { Error } {
+  let len = Array::length(ft.names)
+  let mut i = 0
   let mut found = -1
-  if Map::has_key(ft.name_index, name) {
-    found = Map::get(ft.name_index, name)
-  } else {
-    let len = Array::length(ft.names)
-    let mut i = 0
-    while i < len {
-      if Array::get(ft.names, i) == name {
-        found = i
-        i = len
-      } else {
-        i = i + 1
-      }
+  while i < len {
+    if Array::get(ft.names, i) == name {
+      found = i
+      i = len
+    } else {
+      i = i + 1
     }
   }
   if found < 0 {
