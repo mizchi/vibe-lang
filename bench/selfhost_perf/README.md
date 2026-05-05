@@ -133,17 +133,50 @@ per-case probes that exercise the selfhost lexer / parser / checker against
 real selfhost sources and synthetic shapes (deep binop chains, wide match,
 chained let / ESeq sequences).
 
-**Currently blocked**: `vibe bench`'s `compile-lite` calibration step pulls
-in the imported selfhost compiler modules and either errors with
-"unsupported: closure-capture / unknown name" or hangs in calibration —
-same gap as `selfhost_hotspots_bench.vibe` (see `cases.txt` header
-comment). Until compile-lite supports the closure / capture paths these
-probes need, run only the macro and memory benches above.
+**Currently blocked** by a host-CLI codegen pathology, NOT a closure
+capture gap (the original hypothesis):
 
-When that gap closes (TODO #295: "selfhost perf gap cutover 水準まで"),
-these micro-benches will surface per-phase hotspots — lexer keyword_lookup
-cost, parser infix-chain dispatch, env_lookup walk depth — without I/O or
-wasm-runtime overhead.
+The `vibe bench` calibration compiles each bench body through
+`compile_module_wasm_with_opt_level` with `no_dce=true`,
+`debug_errors=true`, `http_host_imports=true`, `fs_host_imports=true`.
+On benches whose bodies pull in heavy probe imports (the loader probe
+transitively depends on most of `vibe/compiler/`), this combination
+hangs >10 minutes burning 99.9% CPU in R-state — it's real compute,
+not deadlock or zombie.
+
+Reproduced standalone with the equivalent CLI flags:
+
+```
+vibe compile --wasm --no-dce --debug-errors -Oz \
+  vibe/compiler/selfhost_loader_collect_bench.vibe -o /tmp/r.wasm
+```
+
+This hits a 180 s timeout. Drop `--debug-errors` and the same compile
+finishes in <2 minutes — so the throw-string-preservation pass is the
+hot offender for selfhost-sized imports.
+
+Two escape-hatch env vars added to `vibe bench` calibration in
+commits `4501373` and `b0509b1`:
+
+| env var                    | default | effect |
+| -------------------------- | ------- | ------ |
+| `VIBE_BENCH_NO_DCE=0`      | true    | turns DCE on so unreachable selfhost code paths get pruned |
+| `VIBE_BENCH_DEBUG_ERRORS=0`| true    | drops `--debug-errors`-equivalent throw-string preservation |
+
+These help, but **neither alone nor combined unblocks the loader
+bench**: even with both off, the calibrate compile still hits 240 s.
+The fs-host-imports path itself needs work (a probe that performs no
+Fs effect would skip that path; the loader probe inherently uses Fs).
+
+Path forward (out of this session's scope):
+1. Profile `compile_module_wasm_with_opt_level` against the bench
+   wrapper script to find the quadratic stage.
+2. Either fix the throw-string-preservation pass / fs-host-imports
+   wiring to scale linearly, or split the bench harness so probe
+   imports are pre-compiled into a runtime artifact and the
+   calibrate compile only handles the bench body.
+
+Tracked under TODO #295 ("selfhost perf gap cutover 水準まで").
 
 ## String-keyed lookup: postmortem on the "hash index" attempt
 
