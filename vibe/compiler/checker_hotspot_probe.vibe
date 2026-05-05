@@ -1,0 +1,151 @@
+//# Imports
+
+import ./ast.vibe {
+  Expr, Pat
+}
+
+import ./checker.vibe {
+  check_expr
+}
+
+import ./polyfill.vibe {
+  __to_string
+}
+
+import ./types.vibe {
+  Subst, Type, TypeDef, TypeEnv, env_bind, types_equal
+}
+
+//# Functions
+
+let empty_defs_array = () -> Array[TypeDef] {
+  Array::slice([
+    TDAlias("_dummy", CtUnit)
+  ], 0, 0)
+}
+
+let run_check = (expr: Expr, env: TypeEnv) -> Type with { Error } {
+  let errors = Array::slice([
+    ""
+  ], 0, 0)
+  match check_expr(expr, env, empty_defs_array(), SubstEmpty, 0, errors) {
+    (ty, _, _) => if Array::length(errors) > 0 {
+      throw(Array::get(errors, 0))
+    } else {
+      ty
+    }
+    ,
+    _ => CtUnknown
+  }
+}
+
+let int_var_name = (i: Int) -> String {
+  String::concat("x_", __to_string(i))
+}
+
+let build_chained_lets = (n: Int) -> Expr {
+  let mut i = n
+  let mut body = EIdent(int_var_name(1))
+  while i >= 1 {
+    body = ELet(int_var_name(i), EInt(i), body)
+    i = i - 1
+  }
+  body
+}
+
+let build_deep_binop = (n: Int) -> Expr {
+  let mut i = n
+  let mut acc = EInt(i)
+  while i > 1 {
+    i = i - 1
+    acc = EBinOp("+", EInt(i), acc)
+  }
+  acc
+}
+
+let build_nested_if = (n: Int) -> Expr {
+  let mut i = n
+  let mut acc = EInt(0)
+  while i > 0 {
+    acc = EIf(EBool(true), EInt(i), acc)
+    i = i - 1
+  }
+  acc
+}
+
+let build_large_match = (n: Int) -> Expr {
+  let arms = Array::slice([
+    (PWild, EUnit)
+  ], 0, 0)
+  let mut i = 0
+  while i < n {
+    Array::push(arms, (PInt(i), EInt(i * 2)))
+    i = i + 1
+  }
+  Array::push(arms, (PWild, EInt(0 - 1)))
+  EMatch(EInt(0), arms)
+}
+
+let build_seq_chain = (n: Int) -> Expr {
+  let mut i = n
+  let mut acc = EInt(0)
+  while i > 0 {
+    acc = ESeq(EInt(i), acc)
+    i = i - 1
+  }
+  acc
+}
+
+export let load_checker_fixture = () -> (Expr, Expr, Expr, Expr, Expr) {
+  let chained = build_chained_lets(64)
+  let binop = build_deep_binop(64)
+  let nif = build_nested_if(64)
+  let mat = build_large_match(48)
+  let seq = build_seq_chain(96)
+  (chained, binop, nif, mat, seq)
+}
+
+export let probe_check_chained_lets = (expr: Expr) -> Int with { Error } {
+  let ty = run_check(expr, EnvEmpty)
+  if types_equal(ty, CtInt) {
+    1
+  } else {
+    0
+  }
+}
+
+export let probe_check_deep_binop = (expr: Expr) -> Int with { Error } {
+  let ty = run_check(expr, EnvEmpty)
+  if types_equal(ty, CtInt) {
+    1
+  } else {
+    0
+  }
+}
+
+export let probe_check_nested_if = (expr: Expr) -> Int with { Error } {
+  let ty = run_check(expr, EnvEmpty)
+  if types_equal(ty, CtInt) {
+    1
+  } else {
+    0
+  }
+}
+
+export let probe_check_large_match = (expr: Expr) -> Int with { Error } {
+  let ty = run_check(expr, EnvEmpty)
+  if types_equal(ty, CtInt) {
+    1
+  } else {
+    0
+  }
+}
+
+export let probe_check_seq_chain = (expr: Expr) -> Int with { Error } {
+  let ty = run_check(expr, EnvEmpty)
+  if types_equal(ty, CtInt) {
+    1
+  } else {
+    0
+  }
+}
