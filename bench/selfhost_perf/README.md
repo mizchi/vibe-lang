@@ -144,6 +144,47 @@ selfhost compiler:
    `Array[(String, Int)]` indexed by `hash(name) mod K`) IS still
    tractable inside codegen and would benefit even on the existing
    linear `Map`.
+
+   Implemented and reverted. Commits `e099f56` (StrIntIndex with
+   djb2 hash + power-of-2 buckets, plain `Array::push`/`Array::get`
+   only, no `Map[K,V]`) and `397d083` (microbench file). Reverted in
+   `67cf7d7` + `832d315` after measuring both layers:
+
+   **Microbench** (`bench/bench_str_int_index.vibe`, vibe bench
+   compiled backend, 5 runs × 100k batch, N=100):
+
+   | op             | linear (μs/op) | hashed (μs/op) | speedup |
+   | -------------- | -------------- | -------------- | ------- |
+   | last           | 0.6488         | 0.1305         | 4.97×   |
+   | mid            | 0.4039         | 0.1092         | 3.70×   |
+   | missing        | 0.4359         | 0.1060         | 4.11×   |
+
+   The bucket lookup IS faster — proves the data structure is sound.
+
+   **Integration** (canonical selfhost wasm via node host runner,
+   hyperfine `--warmup 3 --runs 8`):
+
+   | input        | N user fns | old (linear)    | strint           |
+   | ------------ | ---------- | --------------- | ---------------- |
+   | sample.vibe  |  1         | 1.201 ± 0.015 s | 1.190 ± 0.084 s  |
+   | medium.vibe  | 65         | 2.075 ± 0.027 s | 2.077 ± 0.035 s  |
+
+   Within noise. Math: ~50 resolve_func calls per compile × 0.4μs
+   saved each = 20μs total — invisible in a 2 s wallclock dominated
+   by node + wasm instantiation. Wider tests (N≈100, N≈200) crashed
+   the canonical selfhost compiler (parser stack overflow on long
+   binop chains, deep let-chain overflow), so the cross-over where
+   StrIntIndex would surface in user-visible time is past current
+   selfhost feature gaps.
+
+   **Decision: not adopted.** The 4-5× microbench speedup is real
+   but doesn't translate to measurable improvement at any selfhost
+   workload size we can currently exercise; the +140 lines + ~8 KB
+   wasm + extra struct to maintain don't pay rent yet. The
+   microbench file (`bench/bench_str_int_index.vibe`) is kept as the
+   reference experiment so a future revisit can re-run it with an
+   updated cross-over threshold.
+
 4. **The bigger lever** for selfhost perf on small-to-medium inputs
    remains `wasm-opt -O3` (already wired) and the moonrun → wasmtime
    AOT switch (blocked on WASI binding reshape), not algorithmic

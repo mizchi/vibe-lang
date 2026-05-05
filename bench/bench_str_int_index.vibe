@@ -1,13 +1,15 @@
-// Microbench: linear scan over Array[String] vs StrIntIndex hash
+// Microbench: linear scan over Array[String] vs hand-rolled hash
 // bucket lookup. Self-contained — no selfhost compiler imports —
 // so vibe bench's compile-lite calibration handles it.
 //
 // Builds N=100 names of length ~3 chars, looks up the LAST inserted
-// name (worst-case for linear scan) and the MIDDLE one (average for
-// linear scan). Each `bench {}` block is one lookup; the bench
-// harness picks the iteration count automatically.
+// name (worst-case for linear scan), MIDDLE one (average for linear
+// scan), and a MISSING one (full walk). Each `bench {}` block does
+// one lookup; vibe bench picks iteration count automatically.
 
 let n_entries = 100
+
+let bucket_count = 32
 
 let make_names = () -> Array[String] {
   let names = Array::slice([
@@ -34,8 +36,6 @@ let target_mid = Array::get(names, n_entries / 2)
 
 let target_missing = "zzzz"
 
-// === Linear scan (mimics resolve_func before StrIntIndex) ===
-
 let lookup_linear = (xs: Array[String], key: String) -> Int {
   let len = Array::length(xs)
   let mut i = 0
@@ -51,26 +51,6 @@ let lookup_linear = (xs: Array[String], key: String) -> Int {
   found
 }
 
-// === StrIntIndex (mirrors common_base/index.vibe) ===
-
-struct StrIntIdx {
-  bucket_count: Int;
-  bucket_keys: Array[Array[String]];
-  bucket_vals: Array[Array[Int]]
-}
-
-let pick_bucket_count = (n: Int) -> Int {
-  if n < 24 {
-    8
-  } else if n < 96 {
-    32
-  } else if n < 384 {
-    128
-  } else {
-    512
-  }
-}
-
 let str_hash = (s: String) -> Int {
   let len = String::length(s)
   let mut h = 5381
@@ -82,48 +62,64 @@ let str_hash = (s: String) -> Int {
   h
 }
 
-let build_idx = (names: Array[String]) -> StrIntIdx {
-  let bucket_count = pick_bucket_count(Array::length(names))
-  let keys = Array::slice([
+// Bucket arrays kept as plain top-level Array[Array[String]] so that
+// vibe bench calibration can pick them up. (Wrapping them in a struct
+// makes the struct invisible to the per-bench-body calibrate compile.)
+let make_buckets_keys = () -> Array[Array[String]] {
+  let outer = Array::slice([
     Array::slice([
       ""
     ], 0, 0)
   ], 0, 0)
-  let vals = Array::slice([
+  let mut b = 0
+  while b < bucket_count {
+    Array::push(outer, Array::slice([
+      ""
+    ], 0, 0))
+    b = b + 1
+  }
+  outer
+}
+
+let make_buckets_vals = () -> Array[Array[Int]] {
+  let outer = Array::slice([
     Array::slice([
       0
     ], 0, 0)
   ], 0, 0)
   let mut b = 0
   while b < bucket_count {
-    Array::push(keys, Array::slice([
-      ""
-    ], 0, 0))
-    Array::push(vals, Array::slice([
+    Array::push(outer, Array::slice([
       0
     ], 0, 0))
     b = b + 1
   }
+  outer
+}
+
+let bucket_keys = make_buckets_keys()
+
+let bucket_vals = make_buckets_vals()
+
+let _populate_buckets = () -> Int {
   let mut i = 0
   let len = Array::length(names)
   while i < len {
     let key = Array::get(names, i)
     let h = str_hash(key) % bucket_count
-    Array::push(Array::get(keys, h), key)
-    Array::push(Array::get(vals, h), i)
+    Array::push(Array::get(bucket_keys, h), key)
+    Array::push(Array::get(bucket_vals, h), i)
     i = i + 1
   }
-  StrIntIdx::{
-    bucket_count: bucket_count,
-    bucket_keys: keys,
-    bucket_vals: vals
-  }
+  len
 }
 
-let lookup_hashed = (idx: StrIntIdx, key: String) -> Int {
-  let h = str_hash(key) % idx.bucket_count
-  let keys = Array::get(idx.bucket_keys, h)
-  let vals = Array::get(idx.bucket_vals, h)
+let _populated = _populate_buckets()
+
+let lookup_hashed = (key: String) -> Int {
+  let h = str_hash(key) % bucket_count
+  let keys = Array::get(bucket_keys, h)
+  let vals = Array::get(bucket_vals, h)
   let len = Array::length(keys)
   let mut i = 0
   let mut found = -1
@@ -138,8 +134,6 @@ let lookup_hashed = (idx: StrIntIdx, key: String) -> Int {
   found
 }
 
-let idx = build_idx(names)
-
 bench "linear/last" {
   let _ = lookup_linear(names, target_last)
 }
@@ -153,13 +147,13 @@ bench "linear/missing" {
 }
 
 bench "hashed/last" {
-  let _ = lookup_hashed(idx, target_last)
+  let _ = lookup_hashed(target_last)
 }
 
 bench "hashed/mid" {
-  let _ = lookup_hashed(idx, target_mid)
+  let _ = lookup_hashed(target_mid)
 }
 
 bench "hashed/missing" {
-  let _ = lookup_hashed(idx, target_missing)
+  let _ = lookup_hashed(target_missing)
 }
