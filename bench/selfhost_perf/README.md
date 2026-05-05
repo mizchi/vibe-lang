@@ -133,48 +133,94 @@ per-case probes that exercise the selfhost lexer / parser / checker against
 real selfhost sources and synthetic shapes (deep binop chains, wide match,
 chained let / ESeq sequences).
 
-**Currently blocked** by a host-CLI codegen pathology, NOT a closure
-capture gap (the original hypothesis):
+**Was blocked** by a host-CLI codegen pathology (not a closure
+capture gap as originally hypothesized). **Now unblocked** by three
+opt-in env hatches; the underlying `@wite.optimize_binary_for_size`
+scaling issue is left for a future fix.
 
-The `vibe bench` calibration compiles each bench body through
+### Root cause
+
+`vibe bench` calibration compiles each bench body via
 `compile_module_wasm_with_opt_level` with `no_dce=true`,
-`debug_errors=true`, `http_host_imports=true`, `fs_host_imports=true`.
-On benches whose bodies pull in heavy probe imports (the loader probe
-transitively depends on most of `vibe/compiler/`), this combination
-hangs >10 minutes burning 99.9% CPU in R-state — it's real compute,
-not deadlock or zombie.
+`debug_errors=true`, `opt_level=Some("-Oz")`, `http_host_imports=true`,
+`fs_host_imports=true`. The smoking gun is the `-Oz` step: it does NOT
+shell out to binaryen `wasm-opt`, it runs the in-process MoonBit
+optimizer `@wite.optimize_binary_for_size` (mizchi/wite package).
 
-Reproduced standalone with the equivalent CLI flags:
+That in-process optimizer is **pathological on no-DCE 4-5 MB
+selfhost-import wasm**: a single -Oz pass hangs >4 minutes vs ~5
+seconds for the equivalent binaryen `wasm-opt -Oz` on the same input.
+Verified by isolating flags on `vibe compile vibe/compiler/selfhost_loader_collect_bench.vibe`:
 
-```
-vibe compile --wasm --no-dce --debug-errors -Oz \
-  vibe/compiler/selfhost_loader_collect_bench.vibe -o /tmp/r.wasm
-```
+| flags                                    | outcome             |
+| ---------------------------------------- | ------------------- |
+| `--no-dce`                               | 8.3 s, 4.94 MB out  |
+| `--no-dce -Oz`                           | >4 min hang         |
+| `--no-dce --debug-errors -Oz`            | >4 min hang         |
+| `--no-dce --debug-errors`                | >3 min hang         |
 
-This hits a 180 s timeout. Drop `--debug-errors` and the same compile
-finishes in <2 minutes — so the throw-string-preservation pass is the
-hot offender for selfhost-sized imports.
+### Three opt-in env hatches
 
-Two escape-hatch env vars added to `vibe bench` calibration in
-commits `4501373` and `b0509b1`:
+| env var                     | default | effect                                                    |
+| --------------------------- | ------- | --------------------------------------------------------- |
+| `VIBE_BENCH_NO_DCE=0`       | true    | turns DCE on so unreachable selfhost code paths get pruned |
+| `VIBE_BENCH_DEBUG_ERRORS=0` | true    | drops `--debug-errors`-equivalent throw-string preservation |
+| `VIBE_BENCH_OPT_LEVEL=none` | -Oz     | skips in-process @wite optimization (the actual hang)     |
 
-| env var                    | default | effect |
-| -------------------------- | ------- | ------ |
-| `VIBE_BENCH_NO_DCE=0`      | true    | turns DCE on so unreachable selfhost code paths get pruned |
-| `VIBE_BENCH_DEBUG_ERRORS=0`| true    | drops `--debug-errors`-equivalent throw-string preservation |
+`scripts/bench_selfhost_compile_hotspots.sh` sets all three by default
+so the driver "just works"; users can re-export to override.
 
-These help, but **neither alone nor combined unblocks the loader
-bench**: even with both off, the calibrate compile still hits 240 s.
-The fs-host-imports path itself needs work (a probe that performs no
-Fs effect would skip that path; the loader probe inherently uses Fs).
+### Verified results (with the three hatches set)
 
-Path forward (out of this session's scope):
-1. Profile `compile_module_wasm_with_opt_level` against the bench
-   wrapper script to find the quadratic stage.
-2. Either fix the throw-string-preservation pass / fs-host-imports
-   wiring to scale linearly, or split the bench harness so probe
-   imports are pre-compiled into a runtime artifact and the
-   calibrate compile only handles the bench body.
+15 / 15 selfhost micro-benches pass:
+
+| file                                        | wallclock | benches |
+| ------------------------------------------- | --------- | ------- |
+| `selfhost_lexer_bench.vibe`                 | 3.8 s     | 5/5     |
+| `selfhost_parser_bench.vibe`                | 8.1 s     | 5/5     |
+| `selfhost_checker_bench.vibe`               | 10.8 s    | 5/5     |
+| `selfhost_loader_collect_bench.vibe`        | 12.3 s    | 2/2     |
+
+Per-iteration medians (μs, 1-iter calibration on no-opt wasm so these
+are upper bounds):
+
+| bench                                  | median μs |
+| -------------------------------------- | --------- |
+| `selfhost/check_seq_chain_96`          | 15,203    |
+| `selfhost/check_nested_if_64`          | 15,960    |
+| `selfhost/check_large_match_48`        | 16,312    |
+| `selfhost/check_deep_binop_64`         | 16,687    |
+| `selfhost/check_chained_lets_64`       | 17,357    |
+| `selfhost/parse_deep_binop_chain`      | 207,601   |
+| `selfhost/lex_checker_vibe`            | 213,214   |
+| `selfhost/lex_token_payload_walk`     | 214,297   |
+| `selfhost/lex_synthetic_keyword_heavy`| 214,320   |
+| `selfhost/lex_lexer_vibe`              | 219,514   |
+| `selfhost/lex_parser_vibe`             | 221,608   |
+| `selfhost/parse_wide_match`            | 226,311   |
+| `selfhost/parse_parser_vibe`           | 331,918   |
+| `selfhost/parse_checker_vibe`          | 332,891   |
+| `selfhost/parse_lexer_vibe`            | 363,787   |
+| `selfhost/loader_manifest_list`        | 114,054   |
+| `selfhost/loader_manifest_groups`      | 148,944   |
+
+Lex / parse / loader cases are dominated by per-iteration runtime
+startup (calibration runs only 1 iteration for selfhost-heavy
+imports because each iter is already > 100 ms). The five checker
+cases skip I/O entirely (synthetic Expr trees, in-memory) and land
+at 15-17 ms per iter — the first credible per-call cost view we
+have for the selfhost type-checker.
+
+### Real fix
+
+Out of this session's scope. The underlying improvement targets are:
+
+1. Fix `@wite.optimize_binary_for_size` scaling on no-DCE 4-5 MB
+   wasm (or short-circuit to `wasm-opt` shell-out when one is
+   available), so the env hatches stop being necessary.
+2. Pre-compile heavy probe imports into a runtime artifact and have
+   the bench harness only compile the bench body, removing the
+   transitive selfhost compile from the hot path entirely.
 
 Tracked under TODO #295 ("selfhost perf gap cutover 水準まで").
 

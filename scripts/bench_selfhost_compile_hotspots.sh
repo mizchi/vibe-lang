@@ -36,7 +36,15 @@ run_phase() {
     exit 1
   fi
   echo "[selfhost-compile-hotspots] phase=${name} file=${file#$ROOT_DIR/}"
-  "$CLI_BIN" bench \
+  # Selfhost-import bench files trip a quadratic in-process @wite
+  # optimizer (see bench/selfhost_perf/README.md postmortem).
+  # Default to the three escape hatches so this driver "just works"
+  # for those benches; users can re-export the env vars to override.
+  env \
+    VIBE_BENCH_NO_DCE="${VIBE_BENCH_NO_DCE:-0}" \
+    VIBE_BENCH_DEBUG_ERRORS="${VIBE_BENCH_DEBUG_ERRORS:-0}" \
+    VIBE_BENCH_OPT_LEVEL="${VIBE_BENCH_OPT_LEVEL:-none}" \
+    "$CLI_BIN" bench \
     --backend "$BACKEND" \
     --runs "$RUNS" \
     --warmup "$WARMUP" \
