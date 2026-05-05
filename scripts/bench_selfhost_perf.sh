@@ -210,6 +210,18 @@ main() {
   echo "[selfhost-perf] compile_mode=${COMPILE_MODE}"
   echo "[selfhost-perf] selfhost_wasm_profile=${SELFHOST_WASM_PROFILE}"
 
+  # Warm-up pass: moonrun's first invocation on a stage1 wasm pays a
+  # JIT-compile cost (observed locally as a 7× outlier on the first
+  # case — `examples/basics.vibe` selfhost compile = 1771ms vs ~250ms
+  # for subsequent cases). Run each stage1 wasm once before the timed
+  # loop so the measurement loop sees only warm runs. Output is
+  # discarded to /dev/null; failure during warm-up is tolerated since
+  # the measurement loop will re-surface any genuine errors.
+  local warmup_case="${cases[0]}"
+  echo "[selfhost-perf] warmup: $(realpath --relative-to="$PROJECT_ROOT" "$warmup_case")"
+  moonrun "$STAGE1_COMPILER_WASM" compile-lite --wasm-linear --no-dce --in-memory "$warmup_case" >/dev/null 2>&1 || true
+  moonrun "$STAGE1_CHECKER_WASM" --check --file "$warmup_case" >/dev/null 2>&1 || true
+
   local case_path rel_case safe
   for case_path in "${cases[@]}"; do
     rel_case="${case_path#$PROJECT_ROOT/}"
