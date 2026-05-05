@@ -1,11 +1,24 @@
 #!/usr/bin/env bash
-# Build the wasi compile/check entry-points and run wasm-opt -O3 on them.
+# Build the wasi compile/check entry-points and run wasm-opt on them.
 #
-# moonrun runs the raw moon-built wasm without ahead-of-time optimization;
-# bench_selfhost_perf.sh / bench_selfhost_memory.sh measured ~5.99x compile
-# and ~2.66x check ratios on the unoptimized wasm. Piping release wasm
-# through `wasm-opt -O3` drops these to ~3.87x and ~1.77x on the same
-# inputs (examples/basics.vibe, single-run hyperfine, May 2026).
+# moonrun is an interpreter-flavoured runtime — execution time is dominated
+# by the *number of wasm instructions* it dispatches per call. That makes
+# `wasm-opt -Oz` (size-optimized) actually FASTER under moonrun than
+# `wasm-opt -O3`, despite -O3's loop unrolling / inlining: those passes
+# grow the instruction count, which moonrun has to dispatch one at a time.
+#
+# Measured on examples/basics.vibe (compile-lite, hyperfine --warmup 2
+# --runs 8):
+#
+#   variant         mean ms   wasm size   ratio vs raw
+#   raw release     284.4     2.78 MB     1.00×
+#   -O3             138.4     3.07 MB     2.06×
+#   -Oz             116.5     2.01 MB     2.44×   <-- default
+#   -O3 then -Oz    141.2     2.96 MB     2.01×
+#
+# Defaulting to -Oz: it's faster under moonrun AND ships ~28% smaller.
+# Override via WASM_OPT_LEVEL=-O3 / -O2 / -O1 / -O0 / -Os / -Oz if a
+# specific deployment target benefits from a different trade-off.
 #
 # Outputs:
 #   _build/wasm/opt/vibe_compile_wasi.wasm
@@ -37,6 +50,10 @@ ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 
 REBUILD_MODE="${VIBE_SELFHOST_OPT_WASM_REBUILD:-auto}"
 WASM_PROFILE="${VIBE_SELFHOST_OPT_WASM_PROFILE:-release}"
+WASM_OPT_LEVEL="${WASM_OPT_LEVEL:--Oz}"
+case "$WASM_OPT_LEVEL" in -O0|-O1|-O2|-O3|-O4|-Os|-Oz) ;;
+  *) echo "build-selfhost-wasi-opt: WASM_OPT_LEVEL must be -O0|-O1|-O2|-O3|-O4|-Os|-Oz, got '$WASM_OPT_LEVEL'" >&2; exit 1 ;;
+esac
 
 # Resolve wasm-opt: explicit override wins; otherwise prefer the moon
 # bundled binary (always compatible), then fall back to PATH.
@@ -133,8 +150,8 @@ build_raw() {
 run_wasm_opt() {
   local raw="$1"
   local opt="$2"
-  echo "[build-selfhost-wasi-opt] wasm-opt -O3 $(realpath --relative-to="$ROOT_DIR" "$raw")"
-  "$WASM_OPT_BIN" -O3 \
+  echo "[build-selfhost-wasi-opt] wasm-opt $WASM_OPT_LEVEL $(realpath --relative-to="$ROOT_DIR" "$raw")"
+  "$WASM_OPT_BIN" "$WASM_OPT_LEVEL" \
     --enable-gc \
     --enable-reference-types \
     --enable-bulk-memory \
