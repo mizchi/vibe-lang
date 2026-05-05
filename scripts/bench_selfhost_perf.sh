@@ -178,10 +178,13 @@ ensure_binaries() {
   # ratio (compile 5.99x -> 3.87x, check 2.66x -> 1.77x on
   # examples/basics.vibe; see bench/selfhost_perf/README.md).
   local want_opt=0
+  local moon_wasm_opt="${MOON_HOME:-$HOME/.moon}/bin/moon-wasm-opt"
   case "$WASM_OPT_MODE" in
     1|yes|on|true) want_opt=1 ;;
     auto)
-      if command -v wasm-opt >/dev/null 2>&1; then
+      if [ -x "$moon_wasm_opt" ]; then
+        want_opt=1
+      elif command -v wasm-opt >/dev/null 2>&1; then
         local v
         v="$(wasm-opt --version 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+$/) { print $i; exit } }')"
         if [ -n "$v" ] && [ "$v" -ge 118 ]; then

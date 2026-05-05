@@ -135,10 +135,13 @@ ensure_binaries() {
     # Auto mode is permissive: if the helper succeeds, use opt'd wasm;
     # otherwise fall back to raw release wasm with a warning.
     local want_opt=0
+    local moon_wasm_opt="${MOON_HOME:-$HOME/.moon}/bin/moon-wasm-opt"
     case "$USE_WASM_OPT" in
       1|yes|on|true) want_opt=1 ;;
       auto)
-        if command -v wasm-opt >/dev/null 2>&1; then
+        if [ -x "$moon_wasm_opt" ]; then
+          want_opt=1
+        elif command -v wasm-opt >/dev/null 2>&1; then
           local v
           v="$(wasm-opt --version 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+$/) { print $i; exit } }')"
           if [ -n "$v" ] && [ "$v" -ge 118 ]; then

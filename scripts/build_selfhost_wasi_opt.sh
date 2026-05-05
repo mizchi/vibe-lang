@@ -17,10 +17,17 @@
 #                                   wasm-opt benefits both, but release
 #                                   yields a slightly smaller artifact
 #                                   and tends to be a touch faster.
-#   WASM_OPT_BIN                    override wasm-opt binary
-#                                   (must be binaryen >= v118; older
-#                                    versions fail on selfhost wasm
-#                                    feature set)
+#   WASM_OPT_BIN                    override wasm-opt binary. By
+#                                   default we prefer ~/.moon/bin/
+#                                   moon-wasm-opt (binaryen v125,
+#                                   ships with moonbit and is known
+#                                   to handle moon-emitted wasm),
+#                                   then fall back to PATH wasm-opt
+#                                   if it is binaryen >= v118.
+#                                   `cargo install wasm-opt` produces
+#                                   v116, which CANNOT parse moonbit
+#                                   wasm — same failure mode as the
+#                                   apt-shipped v108. Don't use it.
 set -euo pipefail
 
 trap 'trap - EXIT; kill -- -$$ 2>/dev/null || true' INT TERM
@@ -30,7 +37,22 @@ ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 
 REBUILD_MODE="${VIBE_SELFHOST_OPT_WASM_REBUILD:-auto}"
 WASM_PROFILE="${VIBE_SELFHOST_OPT_WASM_PROFILE:-release}"
-WASM_OPT_BIN="${WASM_OPT_BIN:-$(command -v wasm-opt 2>/dev/null || true)}"
+
+# Resolve wasm-opt: explicit override wins; otherwise prefer the moon
+# bundled binary (always compatible), then fall back to PATH.
+resolve_wasm_opt() {
+  if [ -n "${WASM_OPT_BIN:-}" ]; then
+    printf '%s\n' "$WASM_OPT_BIN"
+    return
+  fi
+  local moon_bundled="${MOON_HOME:-$HOME/.moon}/bin/moon-wasm-opt"
+  if [ -x "$moon_bundled" ]; then
+    printf '%s\n' "$moon_bundled"
+    return
+  fi
+  command -v wasm-opt 2>/dev/null || true
+}
+WASM_OPT_BIN="$(resolve_wasm_opt)"
 
 case "$REBUILD_MODE" in auto|always|never) ;;
   *) echo "build-selfhost-wasi-opt: VIBE_SELFHOST_OPT_WASM_REBUILD must be auto|always|never" >&2; exit 1 ;;

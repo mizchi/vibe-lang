@@ -36,9 +36,21 @@ Both `bench_selfhost_perf.sh` and `bench_selfhost_memory.sh` invoke
 `build_selfhost_wasi_opt.sh` (env: `VIBE_SELFHOST_PERF_WASM_OPT` /
 `VIBE_SELFHOST_MEMORY_WASM_OPT`, default `auto`) to pipe the release
 selfhost wasm through binaryen `wasm-opt -O3` before measurement.
-Requires `wasm-opt` >= v118 — Ubuntu 24.04's binaryen 108 cannot parse
-moonbit's wasm feature set. The helper falls back to raw release wasm
-if `wasm-opt` is missing or too old.
+
+The helper resolves the wasm-opt binary in this order:
+
+1. `WASM_OPT_BIN` env override.
+2. `~/.moon/bin/moon-wasm-opt` (binaryen v125 bundled with moonbit;
+   always compatible with moon-emitted wasm).
+3. PATH `wasm-opt`, only if its binaryen version is `>= 118`.
+
+If none qualify, the helper falls back to raw release wasm with a
+warning (no measurement loss, just no speedup).
+
+**Don't `cargo install wasm-opt`**: crates.io is fixed at
+`wasm-opt v0.116.1` (binaryen v116) which fails on moon-emitted wasm
+with "block cannot pop from outside" — same failure mode as Ubuntu
+24.04's apt binaryen v108. Use the moon-bundled binary instead.
 
 Effect on `examples/basics.vibe` (single-run hyperfine, --warmup 1
 --runs 3, May 2026):
