@@ -1,0 +1,165 @@
+// Microbench: linear scan over Array[String] vs StrIntIndex hash
+// bucket lookup. Self-contained — no selfhost compiler imports —
+// so vibe bench's compile-lite calibration handles it.
+//
+// Builds N=100 names of length ~3 chars, looks up the LAST inserted
+// name (worst-case for linear scan) and the MIDDLE one (average for
+// linear scan). Each `bench {}` block is one lookup; the bench
+// harness picks the iteration count automatically.
+
+let n_entries = 100
+
+let make_names = () -> Array[String] {
+  let names = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  while i < n_entries {
+    let mut buf = "f"
+    let h = i / 26
+    let l = i % 26
+    buf = String::concat(buf, String::from_char_code(97 + h))
+    buf = String::concat(buf, String::from_char_code(97 + l))
+    Array::push(names, buf)
+    i = i + 1
+  }
+  names
+}
+
+let names = make_names()
+
+let target_last = Array::get(names, n_entries - 1)
+
+let target_mid = Array::get(names, n_entries / 2)
+
+let target_missing = "zzzz"
+
+// === Linear scan (mimics resolve_func before StrIntIndex) ===
+
+let lookup_linear = (xs: Array[String], key: String) -> Int {
+  let len = Array::length(xs)
+  let mut i = 0
+  let mut found = -1
+  while i < len {
+    if Array::get(xs, i) == key {
+      found = i
+      i = len
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+// === StrIntIndex (mirrors common_base/index.vibe) ===
+
+struct StrIntIdx {
+  bucket_count: Int;
+  bucket_keys: Array[Array[String]];
+  bucket_vals: Array[Array[Int]]
+}
+
+let pick_bucket_count = (n: Int) -> Int {
+  if n < 24 {
+    8
+  } else if n < 96 {
+    32
+  } else if n < 384 {
+    128
+  } else {
+    512
+  }
+}
+
+let str_hash = (s: String) -> Int {
+  let len = String::length(s)
+  let mut h = 5381
+  let mut i = 0
+  while i < len {
+    h = ((h * 33) + String::char_code_at(s, i)) & 0x3fffffff
+    i = i + 1
+  }
+  h
+}
+
+let build_idx = (names: Array[String]) -> StrIntIdx {
+  let bucket_count = pick_bucket_count(Array::length(names))
+  let keys = Array::slice([
+    Array::slice([
+      ""
+    ], 0, 0)
+  ], 0, 0)
+  let vals = Array::slice([
+    Array::slice([
+      0
+    ], 0, 0)
+  ], 0, 0)
+  let mut b = 0
+  while b < bucket_count {
+    Array::push(keys, Array::slice([
+      ""
+    ], 0, 0))
+    Array::push(vals, Array::slice([
+      0
+    ], 0, 0))
+    b = b + 1
+  }
+  let mut i = 0
+  let len = Array::length(names)
+  while i < len {
+    let key = Array::get(names, i)
+    let h = str_hash(key) % bucket_count
+    Array::push(Array::get(keys, h), key)
+    Array::push(Array::get(vals, h), i)
+    i = i + 1
+  }
+  StrIntIdx::{
+    bucket_count: bucket_count,
+    bucket_keys: keys,
+    bucket_vals: vals
+  }
+}
+
+let lookup_hashed = (idx: StrIntIdx, key: String) -> Int {
+  let h = str_hash(key) % idx.bucket_count
+  let keys = Array::get(idx.bucket_keys, h)
+  let vals = Array::get(idx.bucket_vals, h)
+  let len = Array::length(keys)
+  let mut i = 0
+  let mut found = -1
+  while i < len {
+    if Array::get(keys, i) == key {
+      found = Array::get(vals, i)
+      i = len
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+let idx = build_idx(names)
+
+bench "linear/last" {
+  let _ = lookup_linear(names, target_last)
+}
+
+bench "linear/mid" {
+  let _ = lookup_linear(names, target_mid)
+}
+
+bench "linear/missing" {
+  let _ = lookup_linear(names, target_missing)
+}
+
+bench "hashed/last" {
+  let _ = lookup_hashed(idx, target_last)
+}
+
+bench "hashed/mid" {
+  let _ = lookup_hashed(idx, target_mid)
+}
+
+bench "hashed/missing" {
+  let _ = lookup_hashed(idx, target_missing)
+}
