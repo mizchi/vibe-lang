@@ -97,3 +97,54 @@ When that gap closes (TODO #295: "selfhost perf gap cutover 水準まで"),
 these micro-benches will surface per-phase hotspots — lexer keyword_lookup
 cost, parser infix-chain dispatch, env_lookup walk depth — without I/O or
 wasm-runtime overhead.
+
+## String-keyed lookup: postmortem on the "hash index" attempt
+
+A natural target for the selfhost perf gap is the string-keyed
+linear scans in codegen: `resolve_func` walks `FuncTable.names` and
+`lookup_ctor` walks `CtorTable.names` per call site / per pattern arm.
+For an N-function module this is O(N) per resolution, and the cost
+appears in every `compile_expr` recursion.
+
+Adding a `name_index: Map[String, Int]` to both tables and rewriting
+`resolve_func` / `lookup_ctor` to do `Map::has_key` + `Map::get` was
+implemented in commits `0f32aa2` + `e011e4a` and then reverted in
+`fad9703` + `85aff03` after on-target measurement showed **no
+improvement** even with N=50 user functions:
+
+| input                  | old (linear) | indexed (Map) |
+| ---------------------- | ------------ | ------------- |
+| sample.vibe (1 func)   | 1.225 s      | 1.241 s       |
+| heavy.vibe (13 funcs)  | 2.061 s      | 2.083 s       |
+| big.vibe (50 funcs)    | 2.038 s      | 2.030 s       |
+
+(Each measurement: hyperfine --warmup 1 --runs 5 invoking the
+canonical selfhost wasm via run_wasm_vibe_host_runner.sh; differences
+are within standard deviation.)
+
+**Root cause**: vibe's runtime `Map[K, V]` in the WASM linear backend
+is itself a linear search — see `wasm_codegen_builtin_collection.mbt`,
+"Map::has_key (linear search for key, return tagged bool)" and
+"Map::get (linear search for key, return value)". So the indexed
+path performs `has_key` (O(N)) + `get` (O(N)) = 2N work per call,
+which is strictly worse than the original O(N) array walk it
+replaced. Even on the host CLI (MoonBit-implemented `vibe.exe`)
+the same builtin emits a linear scan, so the host doesn't see a
+win either.
+
+Implications for any future "string-keyed lookup speedup" work in the
+selfhost compiler:
+
+1. **Hash-keyed lookup via `Map[String, _]` is a no-op** until vibe's
+   runtime upgrades `Map` to a real hash table.
+2. **Sorted index + binary search** also won't help directly — the
+   per-comparison cost is still a string equality walk, and N is
+   small enough that constant factors dominate.
+3. **A custom hash-bucket structure** (parallel arrays of
+   `Array[(String, Int)]` indexed by `hash(name) mod K`) IS still
+   tractable inside codegen and would benefit even on the existing
+   linear `Map`.
+4. **The bigger lever** for selfhost perf on small-to-medium inputs
+   remains `wasm-opt -O3` (already wired) and the moonrun → wasmtime
+   AOT switch (blocked on WASI binding reshape), not algorithmic
+   improvements.
