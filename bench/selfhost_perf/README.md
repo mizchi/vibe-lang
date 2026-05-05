@@ -99,6 +99,25 @@ shim, but exercising it requires `wac` + a Rust adapter component
 build that isn't wired into the bench drivers yet). Tracked under
 TODO #295.
 
+### Other levers surveyed (already in place, no new work needed)
+
+- **`vibe run` persistent artifact cache** (cli_run_cmd.mbt,
+  `run_monolithic_cache_paths`): hashes source files, reuses the
+  cached `.wasm` when content unchanged. Verified: cold ~1146 ms,
+  warm ~107 ms = **10× speedup** on sample.vibe. Note `compile-lite`
+  intentionally bypasses this cache because it is the bench's
+  measurement point.
+- **`vibe compile` imports + library cache** (cli_compile_cmd.mbt
+  l.510): same source-hash gate around library wasm regeneration.
+- **`session-http` daemon** (cli_session.mbt): auto-spawned by
+  `vibe run` / `vibe test` when a self-bin is resolvable
+  (`VIBE_USE_SESSION_HTTP=0` to disable). Amortizes startup across
+  many short invocations from LSP / batch test runners. **Caveat**:
+  for one-shot small-input invocations, the IPC overhead loses to
+  direct execution — measured 42 ms (no-session, cache-warm) vs
+  108 ms (session-http) on sample.vibe. The daemon wins only when
+  the client makes many requests in sequence.
+
 ## Micro: vibe bench probes (currently blocked)
 
 Files:
