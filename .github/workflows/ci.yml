@@ -295,6 +295,33 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
+  selfhost-bootstrap-gate:
+    name: selfhost-bootstrap-gate
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - name: Init wasmtime submodule
+        run: git submodule update --init deps/wasmtime
+      - name: Setup Vibe toolchain
+        uses: ./.github/actions/setup-vibe
+        with:
+          ripgrep: 'true'
+          just: 'true'
+          wasmtime: 'true'
+          wasm-tools: 'true'
+          node-version: '24'
+      - name: Build vibe CLI (native debug)
+        run: VIBE_CLI_FORCE=1 bash -c 'source scripts/ensure_native_cli.sh'
+      - name: Set VIBE_BIN for debug binary
+        run: echo "VIBE_BIN=$(pwd)/_build/native/debug/build/cmd/vibe/vibe.exe" >> "$GITHUB_ENV"
+      - name: Run selfhost bootstrap + selfbuild KPI
+        # Lightweight (no Rust/wasm32/wac) selfhost gate: bootstrap probe +
+        # `test-selfhost-wasi-selfbuild-kpi` (300s wall-time budget).
+        # Runs on every PR for early selfhost-regression signal; the
+        # heavier `selfhost-gates` matrix (cli / check) stays push-only.
+        run: just ci-selfhost-gates-shard bootstrap
+
   selfhost-gates:
     if: github.event_name == 'push'
     name: selfhost-gates (${{ matrix.shard }})
@@ -303,7 +330,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [bootstrap, cli, check]
+        shard: [cli, check]
     steps:
       - uses: actions/checkout@v5
       - name: Init wasmtime submodule
@@ -594,6 +621,7 @@ jobs:
       - coverage-moon
       - coverage-selfhost-suite
       - native-binary-parity
+      - selfhost-bootstrap-gate
       - selfhost-gates
       - similarity-mbt-report
       - wasm-codegen-quick
@@ -607,6 +635,7 @@ jobs:
           echo "  coverage-moon: ${{ needs.coverage-moon.result }}"
           echo "  coverage-selfhost-suite: ${{ needs.coverage-selfhost-suite.result }}"
           echo "  native-binary-parity: ${{ needs.native-binary-parity.result }}"
+          echo "  selfhost-bootstrap-gate: ${{ needs.selfhost-bootstrap-gate.result }}"
           echo "  selfhost-gates: ${{ needs.selfhost-gates.result }}"
           echo "  similarity-mbt-report: ${{ needs.similarity-mbt-report.result }}"
           echo "  wasm-codegen-quick: ${{ needs.wasm-codegen-quick.result }}"
