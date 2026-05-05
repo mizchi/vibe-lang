@@ -1159,12 +1159,25 @@ fn compile_bench_script_to_wasm_with_runner(
     Some(v) => not(v == "0" || v.to_lower() == "false" || v.to_lower() == "off")
     None => true
   }
+  // `vibe compile -Oz` runs the in-process @wite.optimize_binary_for_size
+  // pass (not the binaryen wasm-opt CLI). The MoonBit-implemented size
+  // optimizer is pathological on no-DCE 4-5 MB selfhost wasm — single
+  // -Oz pass on a selfhost-import bench file hangs 4+ minutes vs 5
+  // seconds for the equivalent binaryen `wasm-opt -Oz`. Default keeps
+  // -Oz; VIBE_BENCH_OPT_LEVEL=none disables in-process optimization
+  // (each bench iter is then run on the un-optimized wasm — relative
+  // timings still meaningful).
+  let bench_opt_level = match @sys.get_env_var("VIBE_BENCH_OPT_LEVEL") {
+    Some("none") | Some("None") | Some("") => None
+    Some(level) => Some(level)
+    None => Some("-Oz")
+  }
   let wasm_bytes = if use_node_runner {
     @runtime_compile.compile_module_wasm_with_opt_level(
       db,
       entry,
       no_dce=bench_no_dce,
-      opt_level=Some("-Oz"),
+      opt_level=bench_opt_level,
       // Preserve thrown string payloads for host-runner parity with `run`.
       debug_errors=bench_debug_errors,
       http_host_imports=true,
@@ -1201,7 +1214,7 @@ fn compile_bench_script_to_wasm_with_runner(
       db,
       entry,
       no_dce=bench_no_dce,
-      opt_level=Some("-Oz"),
+      opt_level=bench_opt_level,
     ) catch {
       e => {
         let primary_err = e.user_message()
