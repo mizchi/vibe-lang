@@ -6,7 +6,8 @@ set -euo pipefail
 trap 'trap - EXIT; kill -- -$$ 2>/dev/null || true' INT TERM
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-CLI_BIN="${CLI_BIN:-$ROOT_DIR/_build/native/release/build/cmd/vibe/vibe.exe}"
+VIBE_CLI_RELEASE=1 source "$ROOT_DIR/scripts/ensure_native_cli.sh"
+CLI_BIN="${CLI_BIN:-$VIBE_CLI_BIN}"
 OUT_DIR="${OUT_DIR:-$ROOT_DIR/_build/bench/selfhost_compile_hotspots}"
 RUNS="${VIBE_SELFHOST_COMPILE_HOTSPOT_RUNS:-3}"
 WARMUP="${VIBE_SELFHOST_COMPILE_HOTSPOT_WARMUP:-0}"
