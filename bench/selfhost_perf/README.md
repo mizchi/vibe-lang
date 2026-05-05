@@ -144,6 +144,29 @@ selfhost compiler:
    `Array[(String, Int)]` indexed by `hash(name) mod K`) IS still
    tractable inside codegen and would benefit even on the existing
    linear `Map`.
+
+   Implemented in `e099f56` as `StrIntIndex` in
+   `vibe/compiler/codegen/common_base/index.vibe` (djb2 hash, power-of-2
+   bucket count chosen by `str_int_index_default_buckets`, plain
+   `Array::push` / `Array::get` only). Sanity-verified end-to-end:
+
+   | input        | N (user fns) | old (linear)  | strint        |
+   | ------------ | ------------ | ------------- | ------------- |
+   | sample.vibe  | 1            | 1.201 ± 0.015 s | 1.190 ± 0.084 s |
+   | medium.vibe  | 65           | 2.075 ± 0.027 s | 2.077 ± 0.035 s |
+
+   No measurable change at this scale because node + wasm
+   instantiation dominates the ~2s wallclock; the codegen phase
+   itself is ~50 ms and the lookup work is a small fraction of that.
+   For the optimization to surface, the canonical selfhost compiler
+   needs to handle workloads with N >> 65 (currently blocked by
+   feature gaps — long binop chains overflow the parser stack at
+   N≈100, deeply nested let-chains crash even sooner).
+
+   Kept in place as scaffolding: `resolve_func` uses the index when
+   populated and falls back to the original linear scan otherwise,
+   so legacy callers keep working unchanged.
+
 4. **The bigger lever** for selfhost perf on small-to-medium inputs
    remains `wasm-opt -O3` (already wired) and the moonrun → wasmtime
    AOT switch (blocked on WASI binding reshape), not algorithmic
