@@ -1140,11 +1140,19 @@ fn compile_bench_script_to_wasm_with_runner(
       return Ok((wasm_path, cached_bytes.length(), use_node_runner))
     }
   }
+  // Default keeps no_dce=true (bench bodies may reach for things DCE
+  // would prune); VIBE_BENCH_NO_DCE=0 opts into DCE so heavy probe
+  // imports (entire selfhost compiler tree) compile in reasonable
+  // time. See `bench/selfhost_perf/README.md` postmortem.
+  let bench_no_dce = match @sys.get_env_var("VIBE_BENCH_NO_DCE") {
+    Some(v) => not(v == "0" || v.to_lower() == "false" || v.to_lower() == "off")
+    None => true
+  }
   let wasm_bytes = if use_node_runner {
     @runtime_compile.compile_module_wasm_with_opt_level(
       db,
       entry,
-      no_dce=true,
+      no_dce=bench_no_dce,
       opt_level=Some("-Oz"),
       // Preserve thrown string payloads for host-runner parity with `run`.
       debug_errors=true,
@@ -1157,7 +1165,7 @@ fn compile_bench_script_to_wasm_with_runner(
           @runtime_compile.compile_module_wasm_with_opt_level(
             db,
             entry,
-            no_dce=true,
+            no_dce=bench_no_dce,
             opt_level=None,
             debug_errors=true,
             http_host_imports=true,
@@ -1181,7 +1189,7 @@ fn compile_bench_script_to_wasm_with_runner(
     @runtime_compile.compile_module_wasm_with_opt_level(
       db,
       entry,
-      no_dce=true,
+      no_dce=bench_no_dce,
       opt_level=Some("-Oz"),
     ) catch {
       e => {
@@ -1190,7 +1198,7 @@ fn compile_bench_script_to_wasm_with_runner(
           @runtime_compile.compile_module_wasm_with_opt_level(
             db,
             entry,
-            no_dce=true,
+            no_dce=bench_no_dce,
             opt_level=None,
           ) catch {
             e2 =>
