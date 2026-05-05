@@ -454,6 +454,54 @@ jobs:
             _build/coverage/selfhost-suite/selfhost_suite.report.json
           if-no-files-found: ignore
 
+  coverage-moon:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Vibe toolchain
+        uses: ./.github/actions/setup-vibe
+        with:
+          ripgrep: 'true'
+          node-version: '24'
+
+      - name: Run moon coverage with line-coverage gate
+        # Initial gate at 50%: current baseline measures ~54.3% on
+        # `--target js`, so this leaves ~4% of slack against minor
+        # regressions while still catching meaningful drops. Raise the
+        # threshold (`VIBE_MOON_COVERAGE_MIN_LINE`) as coverage improves
+        # toward the TODO.md aspirational target of 70%.
+        env:
+          VIBE_MOON_COVERAGE_TARGET: js
+          VIBE_MOON_COVERAGE_MIN_LINE: '50'
+        run: bash scripts/coverage_moon.sh
+
+      - name: Coverage summary
+        if: always()
+        run: |
+          {
+            echo "### Moon Coverage (target=js)"
+            if [ -f _build/coverage/moon/summary.txt ]; then
+              echo '```'
+              grep '^Total:' _build/coverage/moon/summary.txt || echo "(no Total line)"
+              echo '```'
+            else
+              echo "- No summary produced"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: moon-coverage-report
+          path: |
+            _build/coverage/moon/summary.txt
+            _build/coverage/moon/moonbit-cobertura.xml
+            _build/coverage/moon/html
+          if-no-files-found: ignore
+
   similarity-mbt-report:
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -543,6 +591,7 @@ jobs:
     needs:
       - bundle-size-compiler
       - bundle-size-product-gate
+      - coverage-moon
       - coverage-selfhost-suite
       - native-binary-parity
       - selfhost-gates
@@ -555,6 +604,7 @@ jobs:
           echo "Informational job results (non-blocking):"
           echo "  bundle-size-compiler: ${{ needs.bundle-size-compiler.result }}"
           echo "  bundle-size-product-gate: ${{ needs.bundle-size-product-gate.result }}"
+          echo "  coverage-moon: ${{ needs.coverage-moon.result }}"
           echo "  coverage-selfhost-suite: ${{ needs.coverage-selfhost-suite.result }}"
           echo "  native-binary-parity: ${{ needs.native-binary-parity.result }}"
           echo "  selfhost-gates: ${{ needs.selfhost-gates.result }}"
