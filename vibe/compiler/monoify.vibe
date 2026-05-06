@@ -66,168 +66,151 @@ export let collect_generic_fns = (stmts: Array[Stmt]) -> Array[(String, Int)] {
   result
 }
 
-let rec collect_call_sites_expr = (expr: Expr, fn_name: String) -> Array[Array[Expr]] {
+// Out-param recursive walker: pushes each discovered call site (an
+// `Array[Expr]` of args) directly into `out`. Replaces the previous
+// `result = Array::concat(result, sub)` accumulator pattern, which
+// was O(N^2) per recursion level — for an AST with N nodes the
+// accumulator copied the entire prefix at every push, yielding
+// quadratic total work. Out-param push is O(1) per element, so the
+// whole walk is O(total call sites).
+let rec collect_call_sites_into = (expr: Expr, fn_name: String, out: Array[Array[Expr]]) -> Unit {
   match expr {
     ECall(callee, args) => {
-      let self_results = match callee {
+      match callee {
         EIdent(name) =>
         if name == fn_name {
-          [
-            args
-          ]
-        }
-        else {
-          empty_expr_arrays()
+          Array::push(out, args)
         },
-        _ => empty_expr_arrays()
+        _ => ()
       }
-      let callee_results = collect_call_sites_expr(callee, fn_name)
-      let mut args_results = empty_expr_arrays()
+      collect_call_sites_into(callee, fn_name, out)
       let mut ai = 0
       while ai < Array::length(args) {
-        args_results = Array::concat(args_results, collect_call_sites_expr(Array::get(args, ai), fn_name))
+        collect_call_sites_into(Array::get(args, ai), fn_name, out)
         ai = ai + 1
       }
-      Array::concat(Array::concat(self_results, callee_results), args_results)
     },
-    EInt(_) => empty_expr_arrays(),
-    EFloat(_) => empty_expr_arrays(),
-    EString(_) => empty_expr_arrays(),
-    EBool(_) => empty_expr_arrays(),
-    EIdent(_) => empty_expr_arrays(),
-    EUnit => empty_expr_arrays(),
-    EBreak(_) => empty_expr_arrays(),
-    EContinue(_) => empty_expr_arrays(),
+    EInt(_) => (),
+    EFloat(_) => (),
+    EString(_) => (),
+    EBool(_) => (),
+    EIdent(_) => (),
+    EUnit => (),
+    EBreak(_) => (),
+    EContinue(_) => (),
     ETuple(elems) => {
-      let mut tr = empty_expr_arrays()
       let mut ti = 0
       while ti < Array::length(elems) {
-        tr = Array::concat(tr, collect_call_sites_expr(Array::get(elems, ti), fn_name))
+        collect_call_sites_into(Array::get(elems, ti), fn_name, out)
         ti = ti + 1
       }
-      tr
     },
     EArray(elems) => {
-      let mut ar = empty_expr_arrays()
       let mut ari = 0
       while ari < Array::length(elems) {
-        ar = Array::concat(ar, collect_call_sites_expr(Array::get(elems, ari), fn_name))
+        collect_call_sites_into(Array::get(elems, ari), fn_name, out)
         ari = ari + 1
       }
-      ar
     },
     ERecord(fields) => {
-      let mut result = empty_expr_arrays()
       let mut i = 0
       while i < Array::length(fields) {
         let (_key, val) = Array::get(fields, i)
-        result = Array::concat(result, collect_call_sites_expr(val, fn_name))
+        collect_call_sites_into(val, fn_name, out)
         i = i + 1
       }
-      result
     },
     EIf(cond, then_br, else_br) => {
-      let r1 = collect_call_sites_expr(cond, fn_name)
-      let r2 = collect_call_sites_expr(then_br, fn_name)
-      let r3 = collect_call_sites_expr(else_br, fn_name)
-      Array::concat(Array::concat(r1, r2), r3)
+      collect_call_sites_into(cond, fn_name, out)
+      collect_call_sites_into(then_br, fn_name, out)
+      collect_call_sites_into(else_br, fn_name, out)
     },
     ELet(_name, val, body) => {
-      let r1 = collect_call_sites_expr(val, fn_name)
-      let r2 = collect_call_sites_expr(body, fn_name)
-      Array::concat(r1, r2)
+      collect_call_sites_into(val, fn_name, out)
+      collect_call_sites_into(body, fn_name, out)
     },
     ELetRec(_name, val, body) => {
-      let r1 = collect_call_sites_expr(val, fn_name)
-      let r2 = collect_call_sites_expr(body, fn_name)
-      Array::concat(r1, r2)
+      collect_call_sites_into(val, fn_name, out)
+      collect_call_sites_into(body, fn_name, out)
     },
     ELetMut(_name, val, body) => {
-      let r1 = collect_call_sites_expr(val, fn_name)
-      let r2 = collect_call_sites_expr(body, fn_name)
-      Array::concat(r1, r2)
+      collect_call_sites_into(val, fn_name, out)
+      collect_call_sites_into(body, fn_name, out)
     },
     EAssign(_name, val, body) => {
-      let r1 = collect_call_sites_expr(val, fn_name)
-      let r2 = collect_call_sites_expr(body, fn_name)
-      Array::concat(r1, r2)
+      collect_call_sites_into(val, fn_name, out)
+      collect_call_sites_into(body, fn_name, out)
     },
     EAssignOp(_name, _op, val, body) => {
-      let r1 = collect_call_sites_expr(val, fn_name)
-      let r2 = collect_call_sites_expr(body, fn_name)
-      Array::concat(r1, r2)
+      collect_call_sites_into(val, fn_name, out)
+      collect_call_sites_into(body, fn_name, out)
     },
     ESeq(a, b) => {
-      let r1 = collect_call_sites_expr(a, fn_name)
-      let r2 = collect_call_sites_expr(b, fn_name)
-      Array::concat(r1, r2)
+      collect_call_sites_into(a, fn_name, out)
+      collect_call_sites_into(b, fn_name, out)
     },
     EMatch(scrutinee, arms) => {
-      let r1 = collect_call_sites_expr(scrutinee, fn_name)
-      let mut result = r1
+      collect_call_sites_into(scrutinee, fn_name, out)
       let mut i = 0
       while i < Array::length(arms) {
         let (_arm_pat, arm_body) = Array::get(arms, i)
-        result = Array::concat(result, collect_call_sites_expr(arm_body, fn_name))
+        collect_call_sites_into(arm_body, fn_name, out)
         i = i + 1
       }
-      result
     },
     EHandle(body, arms) => {
-      let r1 = collect_call_sites_expr(body, fn_name)
-      let mut result = r1
+      collect_call_sites_into(body, fn_name, out)
       let mut i = 0
       while i < Array::length(arms) {
         let (_arm_pat, arm_body) = Array::get(arms, i)
-        result = Array::concat(result, collect_call_sites_expr(arm_body, fn_name))
+        collect_call_sites_into(arm_body, fn_name, out)
         i = i + 1
       }
-      result
     },
     EWhile(cond, body) => {
-      let r1 = collect_call_sites_expr(cond, fn_name)
-      let r2 = collect_call_sites_expr(body, fn_name)
-      Array::concat(r1, r2)
+      collect_call_sites_into(cond, fn_name, out)
+      collect_call_sites_into(body, fn_name, out)
     },
     ELoop(params, body) => {
-      let mut result = empty_expr_arrays()
       let mut i = 0
       while i < Array::length(params) {
         let (_, init) = Array::get(params, i)
-        result = Array::concat(result, collect_call_sites_expr(init, fn_name))
+        collect_call_sites_into(init, fn_name, out)
         i = i + 1
       }
-      Array::concat(result, collect_call_sites_expr(body, fn_name))
+      collect_call_sites_into(body, fn_name, out)
     },
     EForIn(_name, _index_name, iter, body) => {
-      let r1 = collect_call_sites_expr(iter, fn_name)
-      let r2 = collect_call_sites_expr(body, fn_name)
-      Array::concat(r1, r2)
+      collect_call_sites_into(iter, fn_name, out)
+      collect_call_sites_into(body, fn_name, out)
     },
     EBinOp(_op, lhs, rhs) => {
-      let r1 = collect_call_sites_expr(lhs, fn_name)
-      let r2 = collect_call_sites_expr(rhs, fn_name)
-      Array::concat(r1, r2)
+      collect_call_sites_into(lhs, fn_name, out)
+      collect_call_sites_into(rhs, fn_name, out)
     },
-    EUnaryOp(_op, operand) => collect_call_sites_expr(operand, fn_name),
+    EUnaryOp(_op, operand) => collect_call_sites_into(operand, fn_name, out),
     EFn(_tp, _bounds, _params, _ret, _eff, body) =>
-    collect_call_sites_expr(body, fn_name),
-    EDot(e, _field) => collect_call_sites_expr(e, fn_name),
-    ELabeledArg(_label, _name, e) => collect_call_sites_expr(e, fn_name),
-    EThrow(e) => collect_call_sites_expr(e, fn_name),
+    collect_call_sites_into(body, fn_name, out),
+    EDot(e, _field) => collect_call_sites_into(e, fn_name, out),
+    ELabeledArg(_label, _name, e) => collect_call_sites_into(e, fn_name, out),
+    EThrow(e) => collect_call_sites_into(e, fn_name, out),
     EMap(fields) => {
-      let mut result = empty_expr_arrays()
       let mut i = 0
       while i < Array::length(fields) {
         let (_key, val) = Array::get(fields, i)
-        result = Array::concat(result, collect_call_sites_expr(val, fn_name))
+        collect_call_sites_into(val, fn_name, out)
         i = i + 1
       }
-      result
     },
-    ESpread(e) => collect_call_sites_expr(e, fn_name),
-    EStringInterp(_) => empty_expr_arrays()
+    ESpread(e) => collect_call_sites_into(e, fn_name, out),
+    EStringInterp(_) => ()
   }
+}
+
+let collect_call_sites_expr = (expr: Expr, fn_name: String) -> Array[Array[Expr]] {
+  let out = empty_expr_arrays()
+  collect_call_sites_into(expr, fn_name, out)
+  out
 }
 
 export let collect_call_sites = (expr: Expr, fn_name: String) -> Array[Array[Expr]] {
@@ -249,13 +232,23 @@ let collect_call_sites_from_stmt = (stmt: Stmt, fn_name: String) -> Array[Array[
 }
 
 export let collect_call_sites_stmts = (stmts: Array[Stmt], fn_name: String) -> Array[Array[Expr]] {
-  let mut result = empty_expr_arrays()
+  let out = empty_expr_arrays()
   let mut i = 0
   while i < Array::length(stmts) {
-    result = Array::concat(result, collect_call_sites_from_stmt(Array::get(stmts, i), fn_name))
+    match Array::get(stmts, i) {
+      SLet(_exported, _is_rec, _name, _ty, body) =>
+      collect_call_sites_into(body, fn_name, out),
+      SLetMut(_name, _ty, body) =>
+      collect_call_sites_into(body, fn_name, out),
+      STest(_name, body) =>
+      collect_call_sites_into(body, fn_name, out),
+      SExpr(body) =>
+      collect_call_sites_into(body, fn_name, out),
+      _ => ()
+    }
     i = i + 1
   }
-  result
+  out
 }
 
 export let count_instantiations = (stmts: Array[Stmt], fn_name: String) -> Int {

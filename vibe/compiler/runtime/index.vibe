@@ -119,6 +119,8 @@ let parse_program_with_path = (path: String, source: String) -> Array[Stmt] with
 }
 
 let add_dep = (acc: Array[String], raw_path: String, base_dir: String) -> Array[String] {
+  // Mutates `acc` in place. Caller pattern is `acc = add_dep(acc, ...)`
+  // so the same reference is returned either way.
   if String::length(raw_path) == 0 {
     acc
   } else {
@@ -126,9 +128,8 @@ let add_dep = (acc: Array[String], raw_path: String, base_dir: String) -> Array[
     if contains_str(acc, resolved) {
       acc
     } else {
-      Array::concat(acc, [
-        resolved
-      ])
+      Array::push(acc, resolved)
+      acc
     }
   }
 }
@@ -262,26 +263,25 @@ let upsert_source_cache = (
   fingerprint: String,
   source: String
 ) -> Array[StringTriple] {
+  // O(N) in-place rebuild: previously each `Array::concat(acc, [x])`
+  // copied the entire prefix per iteration → O(N^2) for large source
+  // caches.
+  let out = empty_string_triples()
+  let mut i = 0
   let len = Array::length(cache)
-  let rec build = (i: Int, acc: Array[StringTriple]) -> Array[StringTriple] {
-    if i >= len {
-      acc
-    } else {
-      match Array::get(cache, i) {
-        StringTriple(p, fp, existing) =>
-          if p == path && fp == fingerprint {
-            build(i + 1, acc)
-          } else {
-            build(i + 1, Array::concat(acc, [
-              StringTriple(p, fp, existing)
-            ]))
-          }
-      }
+  while i < len {
+    match Array::get(cache, i) {
+      StringTriple(p, fp, existing) =>
+        if p == path && fp == fingerprint {
+          ()
+        } else {
+          Array::push(out, StringTriple(p, fp, existing))
+        }
     }
+    i = i + 1
   }
-  Array::concat(build(0, empty_string_triples()), [
-    StringTriple(path, fingerprint, source)
-  ])
+  Array::push(out, StringTriple(path, fingerprint, source))
+  out
 }
 
 export let db_set_source = (db: TypeDb, path: String, source: String) -> TypeDb {
@@ -1078,49 +1078,35 @@ export let db_grouped_merged_source = (
 ) -> (String, String, TypeDb) with { Error } {
   match unwrap_db(db) {
     TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count) => {
-      let rec load_groups = (
-        i: Int,
-        group_fingerprints: Array[(String, String)],
-        group_sources: Array[(String, String)],
-        cache_acc: Array[StringTriple],
-        merge_count_acc: Int
-      ) -> (Array[(String, String)], Array[(String, String)], Array[StringTriple], Int) with { Error } {
-        if i >= Array::length(groups) {
-          (group_fingerprints, group_sources, cache_acc, merge_count_acc)
-        } else {
-          let (group_name, sources) = Array::get(groups, i)
-          let fingerprint = build_merge_fingerprint(sources)
-          let cache_key = String::concat("merged-group|", group_name)
-          match lookup_source_cache(cache_acc, cache_key, fingerprint) {
-            Some(source) =>
-              load_groups(
-                i + 1,
-                Array::concat(group_fingerprints, [(group_name, fingerprint)]),
-                Array::concat(group_sources, [(group_name, source)]),
-                cache_acc,
-                merge_count_acc
-              ),
-            None => {
-              let source = build_merged_source(sources)
-              let next_cache = upsert_source_cache(cache_acc, cache_key, fingerprint, source)
-              load_groups(
-                i + 1,
-                Array::concat(group_fingerprints, [(group_name, fingerprint)]),
-                Array::concat(group_sources, [(group_name, source)]),
-                next_cache,
-                merge_count_acc + 1
-              )
-            }
+      // Iterative + in-place push: previous Array::concat(..., [pair])
+      // per group iteration was O(N^2) for N groups (the manifest has
+      // ~150 groups for the selfhost compiler).
+      let group_fingerprints = empty_string_pairs()
+      let group_sources = empty_string_pairs()
+      let mut cache_acc = merged_cache
+      let mut merge_count_acc = merge_count
+      let mut i = 0
+      while i < Array::length(groups) {
+        let (group_name, sources) = Array::get(groups, i)
+        let fingerprint = build_merge_fingerprint(sources)
+        let cache_key = String::concat("merged-group|", group_name)
+        match lookup_source_cache(cache_acc, cache_key, fingerprint) {
+          Some(source) => {
+            Array::push(group_fingerprints, (group_name, fingerprint))
+            Array::push(group_sources, (group_name, source))
+          },
+          None => {
+            let source = build_merged_source(sources)
+            cache_acc = upsert_source_cache(cache_acc, cache_key, fingerprint, source)
+            merge_count_acc = merge_count_acc + 1
+            Array::push(group_fingerprints, (group_name, fingerprint))
+            Array::push(group_sources, (group_name, source))
           }
         }
+        i = i + 1
       }
-      let (group_fingerprints, group_sources, next_merged_cache, next_merge_count) = load_groups(
-        0,
-        empty_string_pairs(),
-        empty_string_pairs(),
-        merged_cache,
-        merge_count
-      )
+      let next_merged_cache = cache_acc
+      let next_merge_count = merge_count_acc
       let grouped_fingerprint = build_grouped_merge_fingerprint(group_fingerprints)
       let grouped_cache_key = "merged-groups"
       match lookup_source_cache(next_merged_cache, grouped_cache_key, grouped_fingerprint) {
