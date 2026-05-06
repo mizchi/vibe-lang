@@ -1070,6 +1070,111 @@ fn run_http_host_bench_measure(
 }
 
 ///|
+/// Resolve a binaryen wasm-opt binary to shell out to. Prefer the
+/// moon-bundled `~/.moon/bin/moon-wasm-opt` (always compatible with
+/// moon-emitted wasm); fall back to PATH `wasm-opt` IF its version
+/// parses as >= 118 (Ubuntu's apt v108 and `cargo install wasm-opt`'s
+/// v116 cannot parse moonbit wasm — see
+/// `bench/selfhost_perf/README.md`).
+/// Returns None when no usable binary is on the system.
+fn resolve_wasm_opt_bin_for_bench() -> String? {
+  let moon_home = match @sys.get_env_var("MOON_HOME") {
+    Some(v) => v
+    None =>
+      match @sys.get_env_var("HOME") {
+        Some(h) => h + "/.moon"
+        None => "/root/.moon"
+      }
+  }
+  let bundled = moon_home + "/bin/moon-wasm-opt"
+  if @os_fs.path_exists(bundled) {
+    return Some(bundled)
+  }
+  // Probe PATH `wasm-opt`. Run `wasm-opt --version` and require >= 118.
+  let probe = @backend.exec_command_lines("command -v wasm-opt 2>/dev/null") catch {
+    _ => return None
+  }
+  if probe.length() == 0 || probe[0].trim().to_string() == "" {
+    return None
+  }
+  let version_lines = @backend.exec_command_lines(
+    "wasm-opt --version 2>&1 | head -n 1",
+  ) catch {
+    _ => return None
+  }
+  if version_lines.length() == 0 {
+    return None
+  }
+  // Match e.g. "wasm-opt version 122 (version_122)" — pick the first
+  // bare integer in the line.
+  let line = version_lines[0]
+  let mut digits = ""
+  let mut in_digits = false
+  for ch in line {
+    if ch >= '0' && ch <= '9' {
+      digits = digits + ch.to_string()
+      in_digits = true
+    } else if in_digits {
+      break
+    }
+  }
+  if digits.length() == 0 {
+    return None
+  }
+  let version = @strconv.parse_int(digits) catch {
+    _ => return None
+  }
+  if version < 118 {
+    return None
+  }
+  Some("wasm-opt")
+}
+
+///|
+/// Pipe `bytes` through binaryen `wasm-opt $opt_level` via popen; on
+/// any error or missing binary return None so callers can fall back to
+/// the in-process @wite optimizer.
+fn try_wasm_opt_shell_out(
+  bytes : Bytes,
+  opt_level : String,
+  scratch_path : String,
+) -> Bytes? {
+  let bin = match resolve_wasm_opt_bin_for_bench() {
+    Some(v) => v
+    None => return None
+  }
+  let tmp_in = scratch_path + ".wopt-in.wasm"
+  let tmp_out = scratch_path + ".wopt-out.wasm"
+  @os_fs.write_bytes_to_file(tmp_in, bytes) catch {
+    _ => return None
+  }
+  // Same feature flag set as scripts/build_selfhost_wasi_opt.sh — these
+  // are the moonbit wasm features the binary can use.
+  let cmd =
+    bin +
+    " " +
+    opt_level +
+    " --enable-gc --enable-reference-types --enable-bulk-memory" +
+    " --enable-multivalue --enable-tail-call --enable-exception-handling" +
+    " --enable-nontrapping-float-to-int --enable-sign-ext" +
+    " --enable-mutable-globals " +
+    tmp_in +
+    " -o " +
+    tmp_out +
+    " 2>/dev/null"
+  let _ = @backend.exec_command_lines(cmd) catch {
+    _ => return None
+  }
+  let out_bytes = @os_fs.read_file_to_bytes(tmp_out) catch {
+    _ => return None
+  }
+  // Best-effort cleanup; ignore failures.
+  ignore(@os_fs.remove_file(tmp_in) catch { _ => () })
+  ignore(@os_fs.remove_file(tmp_out) catch { _ => () })
+  Some(out_bytes)
+}
+
+///|
 fn compile_bench_script_to_wasm(
   entry_path : String,
   script_kind : String,
@@ -1159,86 +1264,81 @@ fn compile_bench_script_to_wasm_with_runner(
     Some(v) => not(v == "0" || v.to_lower() == "false" || v.to_lower() == "off")
     None => true
   }
-  // `vibe compile -Oz` runs the in-process @wite.optimize_binary_for_size
-  // pass (not the binaryen wasm-opt CLI). The MoonBit-implemented size
-  // optimizer is pathological on no-DCE 4-5 MB selfhost wasm — single
-  // -Oz pass on a selfhost-import bench file hangs 4+ minutes vs 5
-  // seconds for the equivalent binaryen `wasm-opt -Oz`. Default keeps
-  // -Oz; VIBE_BENCH_OPT_LEVEL=none disables in-process optimization
-  // (each bench iter is then run on the un-optimized wasm — relative
-  // timings still meaningful).
+  // `vibe compile -Oz` runs the in-process `@wite.optimize_binary_for_size`
+  // pass (NOT the binaryen wasm-opt CLI). That MoonBit-implemented size
+  // optimizer is pathological on no-DCE 4-5 MB selfhost wasm — a single
+  // -Oz pass on a selfhost-import bench file hangs 4+ minutes vs ~5
+  // seconds for the equivalent binaryen `wasm-opt -Oz`. So we shell out
+  // to binaryen here when a usable binary is on the system: prefer
+  // `~/.moon/bin/moon-wasm-opt` (always compatible with moon-emitted
+  // wasm), fall back to PATH `wasm-opt` only if it's binaryen >= 118.
+  // If neither is available, fall back to in-process @wite (current
+  // pathological behavior, but preserved for compat).
+  // VIBE_BENCH_OPT_LEVEL=none skips optimization entirely (raw wasm).
   let bench_opt_level = match @sys.get_env_var("VIBE_BENCH_OPT_LEVEL") {
     Some("none") | Some("None") | Some("") => None
     Some(level) => Some(level)
     None => Some("-Oz")
   }
-  let wasm_bytes = if use_node_runner {
+  // Step 1: produce the raw wasm with no in-process optimization.
+  let raw_bytes = if use_node_runner {
     @runtime_compile.compile_module_wasm_with_opt_level(
       db,
       entry,
       no_dce=bench_no_dce,
-      opt_level=bench_opt_level,
+      opt_level=None,
       // Preserve thrown string payloads for host-runner parity with `run`.
       debug_errors=bench_debug_errors,
       http_host_imports=true,
       fs_host_imports=true,
     ) catch {
-      e => {
-        let primary_err = e.user_message()
-        if primary_err.contains("optimize:") {
-          @runtime_compile.compile_module_wasm_with_opt_level(
-            db,
-            entry,
-            no_dce=bench_no_dce,
-            opt_level=None,
-            debug_errors=bench_debug_errors,
-            http_host_imports=true,
-            fs_host_imports=true,
-          ) catch {
-            e2 =>
-              return Err(
-                "compile wasm error: " +
-                primary_err +
-                " (fallback without optimize failed: " +
-                e2.user_message() +
-                ")",
-              )
-          }
-        } else {
-          return Err("compile wasm error: " + primary_err)
-        }
-      }
+      e => return Err("compile wasm error: " + e.user_message())
     }
   } else {
     @runtime_compile.compile_module_wasm_with_opt_level(
       db,
       entry,
       no_dce=bench_no_dce,
-      opt_level=bench_opt_level,
+      opt_level=None,
     ) catch {
-      e => {
-        let primary_err = e.user_message()
-        if primary_err.contains("optimize:") {
-          @runtime_compile.compile_module_wasm_with_opt_level(
-            db,
-            entry,
-            no_dce=bench_no_dce,
-            opt_level=None,
-          ) catch {
-            e2 =>
-              return Err(
-                "compile wasm error: " +
-                primary_err +
-                " (fallback without optimize failed: " +
-                e2.user_message() +
-                ")",
-              )
+      e => return Err("compile wasm error: " + e.user_message())
+    }
+  }
+  // Step 2: optionally optimize. Try shell-out first; on failure fall
+  // back to in-process @wite (which is what `vibe compile -Oz` does).
+  let wasm_bytes = match bench_opt_level {
+    None => raw_bytes
+    Some(level) =>
+      match try_wasm_opt_shell_out(raw_bytes, level, wasm_path) {
+        Some(opt) => opt
+        None => {
+          // Shell-out unavailable / failed — try in-process @wite as a
+          // last resort. This may still be pathological on very large
+          // selfhost-import wasm, but it is the historical path.
+          if use_node_runner {
+            @runtime_compile.compile_module_wasm_with_opt_level(
+              db,
+              entry,
+              no_dce=bench_no_dce,
+              opt_level=Some(level),
+              debug_errors=bench_debug_errors,
+              http_host_imports=true,
+              fs_host_imports=true,
+            ) catch {
+              _ => raw_bytes
+            }
+          } else {
+            @runtime_compile.compile_module_wasm_with_opt_level(
+              db,
+              entry,
+              no_dce=bench_no_dce,
+              opt_level=Some(level),
+            ) catch {
+              _ => raw_bytes
+            }
           }
-        } else {
-          return Err("compile wasm error: " + primary_err)
         }
       }
-    }
   }
   @os_fs.write_bytes_to_file(wasm_path, wasm_bytes) catch {
     e => return Err("write wasm failed: " + e.to_string())
