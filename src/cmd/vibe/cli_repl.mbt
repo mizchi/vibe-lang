@@ -847,14 +847,10 @@ fn repl_vibe_symbol_lookup_json(
     obj["ok"] = Json::boolean(false)
     obj["error"] = Json::string("multiple matches")
     obj["query"] = Json::string(symbol)
-    obj["candidates"] = repl_symbol_matches_to_json(
-      matches, include_snippet=include_snippet,
-    )
+    obj["candidates"] = repl_symbol_matches_to_json(matches, include_snippet~)
   } else {
     obj["ok"] = Json::boolean(true)
-    obj["item"] = repl_symbol_match_to_json(
-      matches[0], include_snippet=include_snippet,
-    )
+    obj["item"] = repl_symbol_match_to_json(matches[0], include_snippet~)
   }
   Json::object(obj)
 }

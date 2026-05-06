@@ -960,7 +960,12 @@ fn type_expr_eff(
       }
       env.loop_depth += 1
       let body_ty_result : Result[@core.Type, TypeError] = try? type_block(
-        env, body, aliases, effects, allow_effect, share_subs=true,
+        env,
+        body,
+        aliases,
+        effects,
+        allow_effect,
+        share_subs=true,
       )
       env.loop_depth -= 1
       match body_ty_result {
@@ -994,7 +999,12 @@ fn type_expr_eff(
       env.loop_break_types = []
       env.loop_depth += 1
       let body_ty_result : Result[@core.Type, TypeError] = try? type_block(
-        env, body, aliases, effects, allow_effect, share_subs=true,
+        env,
+        body,
+        aliases,
+        effects,
+        allow_effect,
+        share_subs=true,
       )
       env.loop_depth -= 1
       let break_types = env.loop_break_types
@@ -1703,11 +1713,7 @@ fn type_block(
   // function). Default off so other blocks (if branches, lambda
   // bodies, etc.) keep per-scope isolation.
   let share_subs = share_subs.unwrap_or(false)
-  let scope_env = if share_subs {
-    env.fork_for_block()
-  } else {
-    clone_env(env)
-  }
+  let scope_env = if share_subs { env.fork_for_block() } else { clone_env(env) }
   let mut last = @core.Type::Unit
   for stmt in body.stmts {
     match stmt {
@@ -1957,7 +1963,10 @@ fn ensure_num_operand(
 ) -> Unit raise TypeError {
   let resolved = resolve_type(env, ty)
   match resolved {
-    @core.Type::Int | @core.Type::Float | @core.Type::Double | @core.Type::Char => ()
+    @core.Type::Int
+    | @core.Type::Float
+    | @core.Type::Double
+    | @core.Type::Char => ()
     @core.Type::Var(id) => mark_num_var(env, id)
     @core.Type::Named(..) =>
       if type_implements_trait(env, resolved, "Add") {

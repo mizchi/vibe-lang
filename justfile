@@ -860,6 +860,23 @@ bench-selfhost-cache-probe:
 bench-selfhost-loader-hotspots:
     scripts/bench_selfhost_loader_hotspots.sh
 
+# Build release-profile wasi compile/check wasm + wasm-opt -O3.
+# Used by bench-selfhost-perf and bench-selfhost-memory when wasm-opt
+# (binaryen >= 118) is available. Cuts ~45% off selfhost compile time
+# and ~32% off selfhost check time on examples/basics.vibe.
+build-selfhost-wasi-opt:
+    scripts/build_selfhost_wasi_opt.sh
+
+# Micro-bench selfhost lex/parse/check phases over selfhost compiler sources.
+# env override: VIBE_SELFHOST_COMPILE_HOTSPOT_RUNS / VIBE_SELFHOST_COMPILE_HOTSPOT_PHASES (lexer,parser,checker)
+bench-selfhost-compile-hotspots:
+    scripts/bench_selfhost_compile_hotspots.sh
+
+# Peak RSS + wallclock comparison (host vs selfhost) for compile/check phases.
+# env override: VIBE_SELFHOST_MEMORY_RUNS / VIBE_SELFHOST_MEMORY_TIME_RUNS / VIBE_SELFHOST_MEMORY_MAX_RSS_RATIO / VIBE_SELFHOST_MEMORY_MAX_RSS_KB
+bench-selfhost-memory *paths:
+    scripts/bench_selfhost_memory.sh {{paths}}
+
 # KPI gate: selfhost perf ratio thresholds (host vs selfhost, same case set)
 # Default baseline uses debug selfhost wasm with 3-run median; switch with VIBE_SELFHOST_PERF_WASM_PROFILE=release when comparing packaging artifacts.
 # Current stable debug baseline is around compile ~5x / check ~2-4x slower than host.

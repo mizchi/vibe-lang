@@ -21,6 +21,7 @@ COMPILE_MODE="${VIBE_SELFHOST_PERF_COMPILE_MODE:-e2e}"
 MAX_COMPILE_RATIO="${VIBE_SELFHOST_PERF_MAX_COMPILE_RATIO:-}"
 MAX_CHECK_RATIO="${VIBE_SELFHOST_PERF_MAX_CHECK_RATIO:-}"
 REBUILD_MODE="${VIBE_SELFHOST_PERF_REBUILD:-auto}"
+WASM_OPT_MODE="${VIBE_SELFHOST_PERF_WASM_OPT:-auto}"
 PROFILE_CALLSTACK="${VIBE_SELFHOST_PERF_PROFILE_CALLSTACK:-}"
 
 is_positive_int() {
@@ -128,6 +129,9 @@ ensure_binaries() {
     echo "bench-selfhost-perf: VIBE_SELFHOST_PERF_REBUILD must be auto|always|never" >&2
     exit 1
   fi
+  case "$WASM_OPT_MODE" in 1|yes|on|true|auto|0|no|off|false) ;;
+    *) echo "bench-selfhost-perf: VIBE_SELFHOST_PERF_WASM_OPT must be auto|on|off" >&2; exit 1 ;;
+  esac
   local src_changed_since_host=0
   local src_changed_since_compiler=0
   local src_changed_since_checker=0
@@ -166,6 +170,38 @@ ensure_binaries() {
       moon build --target wasm --release src/cmd/vibe_check_wasi
     else
       moon build --target wasm src/cmd/vibe_check_wasi
+    fi
+  fi
+  # Optional wasm-opt -O3 step. moonrun executes raw moon-built wasm
+  # without ahead-of-time optimization; piping through binaryen
+  # `wasm-opt -O3` recovers a substantial chunk of the host/selfhost
+  # ratio (compile 5.99x -> 3.87x, check 2.66x -> 1.77x on
+  # examples/basics.vibe; see bench/selfhost_perf/README.md).
+  local want_opt=0
+  local moon_wasm_opt="${MOON_HOME:-$HOME/.moon}/bin/moon-wasm-opt"
+  case "$WASM_OPT_MODE" in
+    1|yes|on|true) want_opt=1 ;;
+    auto)
+      if [ -x "$moon_wasm_opt" ]; then
+        want_opt=1
+      elif command -v wasm-opt >/dev/null 2>&1; then
+        local v
+        v="$(wasm-opt --version 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+$/) { print $i; exit } }')"
+        if [ -n "$v" ] && [ "$v" -ge 118 ]; then
+          want_opt=1
+        fi
+      fi
+      ;;
+  esac
+  if [ "$want_opt" -eq 1 ]; then
+    if ! VIBE_SELFHOST_OPT_WASM_PROFILE="$SELFHOST_WASM_PROFILE" VIBE_SELFHOST_OPT_WASM_REBUILD="$REBUILD_MODE" bash "$PROJECT_ROOT/scripts/build_selfhost_wasi_opt.sh" >&2; then
+      echo "bench-selfhost-perf: wasm-opt step failed; falling back to raw wasm" >&2
+    else
+      local opt_compiler="$PROJECT_ROOT/_build/wasm/opt/vibe_compile_wasi.wasm"
+      local opt_checker="$PROJECT_ROOT/_build/wasm/opt/vibe_check_wasi.wasm"
+      if [ -f "$opt_compiler" ]; then STAGE1_COMPILER_WASM="$opt_compiler"; fi
+      if [ -f "$opt_checker" ]; then STAGE1_CHECKER_WASM="$opt_checker"; fi
+      echo "[selfhost-perf] using wasm-opt'd artifacts under _build/wasm/opt/"
     fi
   fi
   if ! command -v moonrun >/dev/null 2>&1; then

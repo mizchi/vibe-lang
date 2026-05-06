@@ -48,7 +48,9 @@ pub fn monoify_module(
   }
   expand_monoify_instantiations(ctx)
   let rewritten = monoify_module_top(
-    ast, ctx, imported_specializable=additional_specializable,
+    ast,
+    ctx,
+    imported_specializable=additional_specializable,
   )
   { ast: rewritten, instantiations }
 }

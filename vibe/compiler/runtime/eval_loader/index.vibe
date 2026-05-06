@@ -156,63 +156,42 @@ export let load_and_parse = (source: String) -> Array[Stmt] with { Error } {
 }
 
 export let collect_exports = (stmts: Array[Stmt]) -> Array[String] {
-  let rec go = (i: Int, acc: Array[String]) -> Array[String] {
-    if i >= Array::length(stmts) {
-      acc
-    }
-    else {
-      let stmt = Array::get(stmts, i)
-      let new_acc = match stmt {
-        SLet(true, _, name, _, _) => Array::concat(acc, [
-          name
-        ]),
-        SEnum(true, _, variants) => {
-          let rec add_ctors = (j: Int, a: Array[String]) -> Array[String] {
-            if j >= Array::length(variants) {
-              a
-            }
-            else {
-              let (cname, _) = Array::get(variants, j)
-              add_ctors(j + 1, Array::concat(a, [
-                cname
-              ]))
-            }
-          }
-          add_ctors(0, acc)
-        },
-        SExport(names) => {
-          let rec add_names = (j: Int, a: Array[String]) -> Array[String] {
-            if j >= Array::length(names) {
-              a
-            }
-            else {
-              add_names(j + 1, Array::concat(a, [
-                Array::get(names, j)
-              ]))
-            }
-          }
-          add_names(0, acc)
-        },
-        SReExport(_, names) => {
-          let rec add_names = (j: Int, a: Array[String]) -> Array[String] {
-            if j >= Array::length(names) {
-              a
-            }
-            else {
-              let (name, _) = Array::get(names, j)
-              add_names(j + 1, Array::concat(a, [
-                name
-              ]))
-            }
-          }
-          add_names(0, acc)
-        },
-        _ => acc
-      }
-      go(i + 1, new_acc)
-    }
-  }
-  go(0, Array::slice([
+  // Out-param accumulation: each match arm pushes directly into `out`.
+  // Previously each `Array::concat(acc, [x])` allocated and copied the
+  // entire growing prefix — total O(N^2) for N exports across the file.
+  let out = Array::slice([
     ""
-  ], 0, 0))
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(true, _, name, _, _) => Array::push(out, name),
+      SEnum(true, _, variants) => {
+        let mut j = 0
+        while j < Array::length(variants) {
+          let (cname, _) = Array::get(variants, j)
+          Array::push(out, cname)
+          j = j + 1
+        }
+      },
+      SExport(names) => {
+        let mut j = 0
+        while j < Array::length(names) {
+          Array::push(out, Array::get(names, j))
+          j = j + 1
+        }
+      },
+      SReExport(_, names) => {
+        let mut j = 0
+        while j < Array::length(names) {
+          let (name, _) = Array::get(names, j)
+          Array::push(out, name)
+          j = j + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
 }

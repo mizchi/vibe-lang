@@ -351,10 +351,7 @@ test "normalize_module renames LetPat tuple bindings" {
     span=zero_span_for_export_norm_test,
   )
   let tup = Expr::Tuple(
-    items=[
-      int_expr_for_export_norm_test(1),
-      int_expr_for_export_norm_test(2),
-    ],
+    items=[int_expr_for_export_norm_test(1), int_expr_for_export_norm_test(2)],
     span=zero_span_for_export_norm_test,
   )
   let mod_ast = Module::{
@@ -373,9 +370,9 @@ test "normalize_module renames LetPat tuple bindings" {
       Stmt::LetPat(
         pat=Pat::Tuple(
           items=[Pat::Bind(name="$0", ..), Pat::Bind(name="$1", ..)],
-          ..,
+          ..
         ),
-        ..,
+        ..
       ) => true
       _ => false
     },
@@ -410,10 +407,7 @@ test "normalize_module LetPatElse else_body uses child scope so pat names don't 
         span=zero_span_for_export_norm_test,
       ),
       Stmt::Expr(
-        expr=Expr::Ident(
-          name="fallback",
-          span=zero_span_for_export_norm_test,
-        ),
+        expr=Expr::Ident(name="fallback", span=zero_span_for_export_norm_test),
         span=zero_span_for_export_norm_test,
       ),
     ],
@@ -433,13 +427,9 @@ test "normalize_module LetPatElse else_body uses child scope so pat names don't 
   assert_true(
     match normalized.stmts[0] {
       Stmt::LetPatElse(
-        pat=Pat::Ctor(
-          name="Some",
-          args=[Pat::Bind(name="$0", ..)],
-          ..,
-        ),
+        pat=Pat::Ctor(name="Some", args=[Pat::Bind(name="$0", ..)], ..),
         else_body~,
-        ..,
+        ..
       ) =>
         match else_body.stmts[0] {
           // Block-child scope inherits counter from outer. The pat's $0
@@ -483,7 +473,7 @@ test "normalize_module Match scrutinee + arm patterns are renamed" {
   let ok = match normalized.stmts[1] {
     Stmt::Expr(
       expr=Expr::Match(scrutinee=Expr::Ident(name="$0", ..), arms~, ..),
-      ..,
+      ..
     ) =>
       if arms.length() == 1 {
         let arm = arms[0]
@@ -551,12 +541,8 @@ test "normalize_module While renames cond and body identifiers" {
   assert_true(
     match normalized.stmts[1] {
       Stmt::Expr(
-        expr=Expr::While(
-          cond=Expr::Call(name=">", args~, ..),
-          body~,
-          ..,
-        ),
-        ..,
+        expr=Expr::While(cond=Expr::Call(name=">", args~, ..), body~, ..),
+        ..
       ) =>
         args.length() == 2 &&
         (match args[0].expr {

@@ -408,7 +408,8 @@ test "type_check: Tuple equality type-checks" {
   let result : Result[TypeEnv, TypeError] = try? type_check(ast)
   match result {
     Ok(_) => ()
-    Err(err) => fail("expected Tuple == Tuple to type-check: \{err.to_string()}")
+    Err(err) =>
+      fail("expected Tuple == Tuple to type-check: \{err.to_string()}")
   }
 }
 
