@@ -1,0 +1,66 @@
+// Microbench: O(N²) String::concat accumulator vs O(N) StringBuilder.
+// Mirrors the cache/persistent_cache.vibe bytes_to_hex pattern that
+// commit `7a67c39` refactored. Self-contained — no selfhost imports —
+// so vibe bench's calibration handles it.
+//
+// Both functions take an Int N and produce 2N hex chars by appending
+// per-iteration. The difference is the accumulator data structure:
+//   - concat_hex: rebuilds the full string on every append (O(N^2))
+//   - sb_hex:     pushes refs into a StringBuilder, freezes once (O(N))
+//
+// We measure for N in {16, 64, 256} so the asymptotic gap is visible:
+// concat scales as N^2, SB scales as N.
+
+let nibble_table = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f"]
+
+let nibble = (n: Int) -> String {
+  Array::get(nibble_table, n & 15)
+}
+
+// O(N^2) accumulator — pre-7a67c39 shape.
+let concat_hex = (n: Int) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < n {
+    out = String::concat(out, nibble(i))
+    out = String::concat(out, nibble(i + 1))
+    i = i + 1
+  }
+  out
+}
+
+// O(N) accumulator — post-7a67c39 shape.
+let sb_hex = (n: Int) -> String {
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < n {
+    StringBuilder::push(sb, nibble(i))
+    StringBuilder::push(sb, nibble(i + 1))
+    i = i + 1
+  }
+  StringBuilder::freeze(sb)
+}
+
+bench "concat/n=16" {
+  let _ = String::length(concat_hex(16))
+}
+
+bench "concat/n=64" {
+  let _ = String::length(concat_hex(64))
+}
+
+bench "concat/n=256" {
+  let _ = String::length(concat_hex(256))
+}
+
+bench "sb/n=16" {
+  let _ = String::length(sb_hex(16))
+}
+
+bench "sb/n=64" {
+  let _ = String::length(sb_hex(64))
+}
+
+bench "sb/n=256" {
+  let _ = String::length(sb_hex(256))
+}
