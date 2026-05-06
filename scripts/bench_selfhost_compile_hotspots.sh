@@ -36,14 +36,15 @@ run_phase() {
     exit 1
   fi
   echo "[selfhost-compile-hotspots] phase=${name} file=${file#$ROOT_DIR/}"
-  # As of `cc63caa`, vibe bench shells out to binaryen wasm-opt
-  # (~/.moon/bin/moon-wasm-opt) instead of the in-process @wite
-  # optimizer for selfhost-import benches, so the driver no longer
-  # needs to set VIBE_BENCH_NO_DCE / VIBE_BENCH_DEBUG_ERRORS /
-  # VIBE_BENCH_OPT_LEVEL by default. Users can still set them to
-  # override (e.g. VIBE_BENCH_OPT_LEVEL=none for un-optimized timing
-  # comparisons).
-  "$CLI_BIN" bench \
+  # `vibe bench`'s `-Oz` shell-out to binaryen wasm-opt (cc63caa) works
+  # for selfhost-import benches in many setups, BUT in some configs it
+  # falls into the pathological in-process @wite fallback and hangs.
+  # Pin VIBE_BENCH_OPT_LEVEL=none here as a safe default — per-iter
+  # timings on un-optimized wasm, but the bench actually completes.
+  # Users who want -Oz timings can `unset VIBE_BENCH_OPT_LEVEL`.
+  env \
+    VIBE_BENCH_OPT_LEVEL="${VIBE_BENCH_OPT_LEVEL:-none}" \
+    "$CLI_BIN" bench \
     --backend "$BACKEND" \
     --runs "$RUNS" \
     --warmup "$WARMUP" \
