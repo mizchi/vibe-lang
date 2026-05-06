@@ -21,6 +21,7 @@ Completed items are archived in `docs/DONE.md`.
 - [ ] **normalize / DCE / loader テスト拡充** — #298 で一部着手、カバー範囲を埋める
 - [ ] **CI カバレッジ gate** — branch coverage 70% target
 - [ ] **selfhost bootstrap / selfbuild KPI を CI shard 専用 gate 化**
+- [ ] **selfhost O(N²) accumulator hotspots を一掃 (#366)** — `claude/benchmark-self-hosted-Pt9Y3` ブランチで survey、commit `7a67c39` (StringBuilder 5 sites) + `0f843b8` (Array push 19 sites) で着手。残タスクは下の §[selfhost accumulator 撲滅](#selfhost-accumulator-撲滅-on²-→-on) を参照
 
 ### 🟡 機能追加
 
@@ -251,6 +252,55 @@ linked debug build を selfhost でも生成するには以下の移植が必要
 - [x] wasm-compile-e2e の高速化（3-shard 並列化で ~5min に短縮）
 - [x] selfhost dist validation 修正（`build_selfhost_dist.sh` の sample compile/run が通る）
 - [x] P3: minify_zlib 個別対策 (#13) — テスト有効化、CI ジョブ追加
+
+## selfhost accumulator 撲滅 (O(N²) → O(N))
+
+Tracking issue: **#366**.
+
+`claude/benchmark-self-hosted-Pt9Y3` で実施した survey 結果。selfhost
+compiler の hot path に残る `String::concat(out, ...)` /
+`Array::concat(out, [x])` の累積パターンを順次 in-place push (or
+StringBuilder/ArrayBuilder) に置換する。
+
+**Microbench で確認済の効果範囲** (`bench/bench_string_builder_vs_concat.vibe`,
+`bench/bench_array_concat_vs_push.vibe`):
+
+| op | N | concat | push/SB | speedup |
+| --- | --- | --- | --- | --- |
+| String concat → SB | 64 | 24.2 μs | 1.7 μs | 14.5× |
+| String concat → SB | 256 | 151 μs | 5.6 μs | 27.2× |
+| Array concat → push | 32 | 72 μs | 1.5 μs | 49× |
+| Array concat → push | 128 | 363 μs | 1.9 μs | 192× |
+| Array concat → push | 512 | 3,391 μs | 3.1 μs | **1095×** |
+
+### 着手済 (このブランチ)
+
+- [x] `vibe/compiler/cache/persistent_cache.vibe :: bytes_to_hex` — StringBuilder 化 (#TBD `7a67c39`)
+- [x] `vibe/compiler/loader/{manifest_sources,index}.vibe :: join_header_values` — StringBuilder 化
+- [x] `vibe/compiler/coverage_selfhost_suite_lib.vibe :: join_str` — StringBuilder 化
+- [x] `vibe/compiler/codegen/common_base/index.vibe :: resolve_local 診断ビルダー` — StringBuilder 化
+- [x] `vibe/compiler/monoify.vibe :: collect_call_sites_*` — out-param walker 化 (10 sites; #TBD `0f843b8`)
+- [x] `vibe/compiler/runtime/eval_loader/index.vibe :: collect_exports` — push 化 (5 sites)
+- [x] `vibe/compiler/runtime/index.vibe :: upsert_source_cache` / `add_dep` / `db_grouped_merged_source` — push 化 (4 sites)
+
+### 未着手 (Tier A 残)
+
+- [ ] `vibe/compiler/runtime/typecheck_fs.vibe` — recursive `Array::concat(acc, [x])` 4 sites
+- [ ] `vibe/compiler/entry/source_compile/wasi_only/linked_helpers.vibe` — `contains_name` 線形走査 3 sites (要パターン精査: 線形 contains は selfhost runtime では Map[String, Bool] にしても改善しないので、別アプローチ要)
+- [ ] `vibe/compiler/entry/source_compile/wasi_only/linked_artifacts.vibe` — `contains_path` 線形走査 2 sites (同上)
+- [ ] `vibe/compiler/runtime/index.vibe` 残 — recursive resolve_nested 系 (`stack: Array[String]` 渡しは copy 必要のため要設計)
+- [ ] `vibe/parser/parser.vibe` — `Array::concat(acc, [x])` 3 sites
+- [ ] `vibe/x/diff/diff.vibe` — `ops = Array::concat([...], ops)` 3 sites
+
+### 一旦スキップ (理由付き)
+
+- `vibe/compiler/checker_warning.vibe` (5 sites)、`checker_capture.vibe` (2 sites)、`core/dce.vibe` (2 sites): `if !contains(out, n) { Array::push(out, n) }` 系の dedup。`Map[String, Bool]` set に置換しても、selfhost runtime の `Map::has_key` 自体が線形走査なので効果ゼロ。host CLI 側 (MoonBit) では効くが、selfhost wasm では効かない (vibe runtime の Map が hash table になるまで保留)。詳細は `bench/selfhost_perf/README.md` 参照
+- `vibe/json/jsonrpc.vibe` などの `Map::has_key` + `Map::get` パターン (Tier B、~10 sites): 同上の理由でスキップ
+
+### 関連
+
+- `bench/selfhost_perf/README.md` — survey と microbench 結果の詳細
+- TODO #295 (selfhost perf gap cutover) — このアキュムレータ最適化はその一部
 
 ## カバレッジ
 
