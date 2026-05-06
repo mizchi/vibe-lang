@@ -679,21 +679,34 @@ let parse_trait_stmt = (tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt
   match peek(tokens, pos) {
     TIdent(name) => match peek(tokens, pos + 1) {
       TColon => {
-        let rec parse_supers = (p: Int, acc: Array[String]) -> (Array[String], Int) {
+        // Iterative push: previously two recursive
+        // `Array::concat(acc, [sname])` paths copied the prefix per
+        // super-trait — typically small N but consistent with the
+        // O(N²) → O(N) cleanup elsewhere.
+        let supers = Array::slice([
+          "_"
+        ], 0, 0)
+        let mut p = pos + 2
+        let mut done = false
+        while !done {
           match peek(tokens, p) {
             TIdent(sname) => match peek(tokens, p + 1) {
-              TPlus => parse_supers(p + 2, Array::concat(acc, [
-                sname
-              ])),
-              _ => (Array::concat(acc, [
-                sname
-              ]), p + 1)
+              TPlus => {
+                Array::push(supers, sname)
+                p = p + 2
+              },
+              _ => {
+                Array::push(supers, sname)
+                p = p + 1
+                done = true
+              }
             },
-            _ => (acc, p)
+            _ => {
+              done = true
+            }
           }
         }
-        let (supers, np) = parse_supers(pos + 2, empty_strings);
-        (STrait(exported, name, supers), np)
+        (STrait(exported, name, supers), p)
       },
       _ => (STrait(exported, name, empty_strings), pos + 1)
     },

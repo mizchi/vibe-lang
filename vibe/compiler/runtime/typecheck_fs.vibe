@@ -147,17 +147,16 @@ let build_fingerprint = (source: String, dep_fps: Array[(String, String)]) -> St
 }
 
 let copy_string_array = (items: Array[String]) -> Array[String] {
+  // Iterative push: previous recursive Array::concat(acc, [x]) was
+  // O(N^2) — copied the full prefix on each step.
+  let out = empty_stack()
+  let mut i = 0
   let len = Array::length(items)
-  let rec go = (index: Int, acc: Array[String]) -> Array[String] {
-    if index >= len {
-      acc
-    } else {
-      go(index + 1, Array::concat(acc, [
-        Array::get(items, index)
-      ]))
-    }
+  while i < len {
+    Array::push(out, Array::get(items, i))
+    i = i + 1
   }
-  go(0, empty_stack())
+  out
 }
 
 let lookup_string_pair = (pairs: Array[(String, String)], key: String) -> Option[String] {
@@ -238,44 +237,31 @@ let finish_typecheck_fs_impl = (rdb: RippleDb, env_cache: Array[(String, TypeEnv
 }
 
 let collect_import_deps_from_stmts = (stmts: Array[Stmt], base_dir: String) -> Array[String] {
+  // Iterative push: previously the recursive `Array::concat(acc, [x])`
+  // copied the full prefix on each new dep — O(N^2) for files with
+  // many imports.
+  let out = empty_stack()
+  let mut i = 0
   let len = Array::length(stmts)
-  let rec go = (i: Int, acc: Array[String]) -> Array[String] {
-    if i >= len {
-      acc
-    } else {
-      let next = match Array::get(stmts, i) {
-        SImport(raw_path, _) => if String::length(raw_path) == 0 {
-          acc
-        } else {
-          let resolved = resolve_path(base_dir, raw_path)
-          if contains_str(acc, resolved) {
-            acc
-          } else {
-            Array::concat(acc, [
-              resolved
-            ])
-          }
+  while i < len {
+    match Array::get(stmts, i) {
+      SImport(raw_path, _) => if String::length(raw_path) > 0 {
+        let resolved = resolve_path(base_dir, raw_path)
+        if !contains_str(out, resolved) {
+          Array::push(out, resolved)
         }
-        ,
-        SReExport(raw_path, _) => if String::length(raw_path) == 0 {
-          acc
-        } else {
-          let resolved = resolve_path(base_dir, raw_path)
-          if contains_str(acc, resolved) {
-            acc
-          } else {
-            Array::concat(acc, [
-              resolved
-            ])
-          }
+      },
+      SReExport(raw_path, _) => if String::length(raw_path) > 0 {
+        let resolved = resolve_path(base_dir, raw_path)
+        if !contains_str(out, resolved) {
+          Array::push(out, resolved)
         }
-        ,
-        _ => acc
-      }
-      go(i + 1, next)
+      },
+      _ => ()
     }
+    i = i + 1
   }
-  go(0, empty_stack())
+  out
 }
 
 let load_or_parse_deps_for_source_fs = (dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int)with { Error } {
