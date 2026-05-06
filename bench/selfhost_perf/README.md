@@ -159,18 +159,46 @@ Verified by isolating flags on `vibe compile vibe/compiler/selfhost_loader_colle
 | `--no-dce --debug-errors -Oz`            | >4 min hang         |
 | `--no-dce --debug-errors`                | >3 min hang         |
 
-### Three opt-in env hatches
+### Real fix: shell out to binaryen wasm-opt (commit `cc63caa`)
+
+`vibe bench` calibration now compiles the bench wrapper with
+`opt_level=None` (raw wasm — fast) and then pipes the bytes through
+the binaryen `wasm-opt` CLI for the requested level. Resolution
+order:
+
+1. `~/.moon/bin/moon-wasm-opt` (binaryen v125 bundled with moonbit;
+   always compatible with moon-emitted wasm)
+2. PATH `wasm-opt`, only if its version line parses as `>= 118`
+   (Ubuntu 24.04's apt v108 and `cargo install wasm-opt`'s v116
+   cannot parse moon-emitted wasm)
+
+If neither is found / shell-out fails, `vibe bench` falls back to
+the in-process `@wite.optimize_binary_for_size` path — same
+pathological behaviour as before, but compatibility-preserving.
+If @wite ALSO fails, raw bytes are used (un-optimized timing —
+each iter slower, but the bench still completes and relative
+numbers stay meaningful).
+
+This makes selfhost-import benches work out-of-the-box: as of
+`cc63caa`, `selfhost_loader_collect_bench.vibe` finishes calibration
+in 11.9 s with no env hatches set (the previous workaround required
+all three of `VIBE_BENCH_NO_DCE=0`, `VIBE_BENCH_DEBUG_ERRORS=0`,
+`VIBE_BENCH_OPT_LEVEL=none`).
+
+### Optional env hatches (mostly historical now)
 
 | env var                     | default | effect                                                    |
 | --------------------------- | ------- | --------------------------------------------------------- |
 | `VIBE_BENCH_NO_DCE=0`       | true    | turns DCE on so unreachable selfhost code paths get pruned |
 | `VIBE_BENCH_DEBUG_ERRORS=0` | true    | drops `--debug-errors`-equivalent throw-string preservation |
-| `VIBE_BENCH_OPT_LEVEL=none` | -Oz     | skips in-process @wite optimization (the actual hang)     |
+| `VIBE_BENCH_OPT_LEVEL=none` | -Oz     | skips optimization entirely (raw bytes — useful for un-opt timing comparisons) |
 
-`scripts/bench_selfhost_compile_hotspots.sh` sets all three by default
-so the driver "just works"; users can re-export to override.
+The shell-out path is the default workaround for `-Oz`, so the
+hatches are no longer required to unblock selfhost benches; they
+remain useful for environments without binaryen, for measuring
+un-optimized iteration cost, or for sanity comparisons.
 
-### Verified results (with the three hatches set)
+### Verified results
 
 15 / 15 selfhost micro-benches pass:
 
