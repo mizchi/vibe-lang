@@ -1091,16 +1091,22 @@ fn resolve_wasm_opt_bin_for_bench() -> String? {
     return Some(bundled)
   }
   // Probe PATH `wasm-opt`. Run `wasm-opt --version` and require >= 118.
-  let probe = @backend.exec_command_lines("command -v wasm-opt 2>/dev/null") catch {
-    _ => return None
+  // exec_command_lines returns a Result (does not raise) — pattern-match
+  // instead of using catch.
+  let probe = match @backend.exec_command_lines(
+    "command -v wasm-opt 2>/dev/null",
+  ) {
+    Ok(lines) => lines
+    Err(_) => return None
   }
   if probe.length() == 0 || probe[0].trim().to_string() == "" {
     return None
   }
-  let version_lines = @backend.exec_command_lines(
+  let version_lines = match @backend.exec_command_lines(
     "wasm-opt --version 2>&1 | head -n 1",
-  ) catch {
-    _ => return None
+  ) {
+    Ok(lines) => lines
+    Err(_) => return None
   }
   if version_lines.length() == 0 {
     return None
@@ -1162,8 +1168,9 @@ fn try_wasm_opt_shell_out(
     " -o " +
     tmp_out +
     " 2>/dev/null"
-  let _ = @backend.exec_command_lines(cmd) catch {
-    _ => return None
+  match @backend.exec_command_lines(cmd) {
+    Ok(_) => ()
+    Err(_) => return None
   }
   let out_bytes = @os_fs.read_file_to_bytes(tmp_out) catch {
     _ => return None
