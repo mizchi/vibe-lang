@@ -228,8 +228,12 @@ export let rec check_expr = (expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
       None => match lookup_builtin(name) {
         Some(t) => (t, s, c),
         None => {
-          Array::push(errors, String::concat("unknown name: ", name))
-          (CtUnknown, s, c)
+          if String::contains(name, "::") {
+            (CtUnknown, s, c)
+          } else {
+            Array::push(errors, String::concat("unknown name: ", name))
+            (CtUnknown, s, c)
+          }
         }
       }
     },
@@ -324,42 +328,115 @@ export let rec check_expr = (expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
         }
       },
       _ => {
-        let (ct, s1, c1) = check_expr(callee, env, defs, s, c, errors)
-        let alen = Array::length(args)
-        let arg_tys = Array::slice([
-          CtUnknown
-        ], 0, 0)
-        let mut ai = 0
-        let mut s2 = s1
-        let mut c2 = c1
-        while ai < alen {
-          let (at, ns, nc) = check_expr(Array::get(args, ai), env, defs, s2, c2, errors)
-          Array::push(arg_tys, at)
-          s2 = ns
-          c2 = nc
-          ai = ai + 1
+        let single_record_fields = if Array::length(args) == 1 {
+          match Array::get(args, 0) {
+            ERecord(rec_fields) => Some(rec_fields),
+            _ => None
+          }
+        } else {
+          None
         }
-        match subst_apply(s2, ct) {
-          CtFn(param_tys, ret, _) => {
-            let plen2 = Array::length(param_tys)
-            let alen3 = Array::length(arg_tys)
-            if alen3 != plen2 {
-              Array::push(errors, String::concat("function arity mismatch: expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))
-            }
-            let mut s3 = s2
-            let mut ui = 0
-            let ul = min_int(alen3, plen2)
-            while ui < ul {
-              s3 = match unify(Array::get(param_tys, ui), Array::get(arg_tys, ui), s3) {
-                Some(su) => su,
-                None => s3
-              }
-              ui = ui + 1
-            }
-            (subst_apply(s3, ret), s3, c2)
+        let (ct, s1, c1) = check_expr(callee, env, defs, s, c, errors)
+        let resolved_callee = subst_apply(s1, ct)
+        let struct_ctor_name = match resolved_callee {
+          CtFn(_, ret_ty, _) => match ret_ty {
+            CtStruct(sname) => Some(sname),
+            _ => None
           },
-          CtStruct(sname) => (CtStruct(sname), s2, c2),
-          _ => (CtUnknown, s2, c2)
+          _ => None
+        }
+        let use_struct_field_check = match (struct_ctor_name, single_record_fields) {
+          (Some(_), Some(_)) => true,
+          _ => false
+        }
+        if use_struct_field_check {
+          let sname = match struct_ctor_name {
+            Some(n) => n,
+            None => ""
+          }
+          let rec_fields = match single_record_fields {
+            Some(rf) => rf,
+            None => Array::slice([
+              ("", EUnit)
+            ], 0, 0)
+          }
+          let def_fields_opt = match find_typedef(defs, sname) {
+            Some(td) => match td {
+              TDStruct(_, df) => Some(df),
+              _ => None
+            },
+            None => None
+          }
+          match def_fields_opt {
+            Some(def_fields) => {
+              let mut s_local = s1
+              let mut c_local = c1
+              let mut fi = 0
+              while fi < Array::length(rec_fields) {
+                let (fname, fval) = Array::get(rec_fields, fi)
+                let rec find_expected = (di: Int) -> Type {
+                  if di >= Array::length(def_fields) {
+                    CtUnknown
+                  } else {
+                    let (dfn, dft) = Array::get(def_fields, di)
+                    if dfn == fname {
+                      dft
+                    } else find_expected(di + 1)
+                  }
+                }
+                let expected_ty = find_expected(0)
+                let (vt, ns, nc) = check_expr(fval, env, defs, s_local, c_local, errors)
+                s_local = match unify(vt, expected_ty, ns) {
+                  Some(su) => su,
+                  None => {
+                    Array::push(errors, String::concat("type mismatch in struct field '", String::concat(fname, String::concat("' of ", sname))))
+                    ns
+                  }
+                }
+                c_local = nc
+                fi = fi + 1
+              }
+              (CtStruct(sname), s_local, c_local)
+            },
+            None => (CtStruct(sname), s1, c1)
+          }
+        } else {
+          let alen = Array::length(args)
+          let arg_tys = Array::slice([
+            CtUnknown
+          ], 0, 0)
+          let mut ai = 0
+          let mut s2 = s1
+          let mut c2 = c1
+          while ai < alen {
+            let (at, ns, nc) = check_expr(Array::get(args, ai), env, defs, s2, c2, errors)
+            Array::push(arg_tys, at)
+            s2 = ns
+            c2 = nc
+            ai = ai + 1
+          }
+          match subst_apply(s2, ct) {
+            CtFn(param_tys, ret, _) => {
+              let plen2 = Array::length(param_tys)
+              let alen3 = Array::length(arg_tys)
+              if alen3 != plen2 {
+                Array::push(errors, String::concat("function arity mismatch: expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))
+              }
+              let mut s3 = s2
+              let mut ui = 0
+              let ul = min_int(alen3, plen2)
+              while ui < ul {
+                s3 = match unify(Array::get(param_tys, ui), Array::get(arg_tys, ui), s3) {
+                  Some(su) => su,
+                  None => s3
+                }
+                ui = ui + 1
+              }
+              (subst_apply(s3, ret), s3, c2)
+            },
+            CtStruct(sname) => (CtStruct(sname), s2, c2),
+            _ => (CtUnknown, s2, c2)
+          }
         }
       }
     },

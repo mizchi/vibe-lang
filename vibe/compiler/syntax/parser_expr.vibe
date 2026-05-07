@@ -136,13 +136,26 @@ let parse_let_stmt = (tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, 
       let val_next = val_pair.1
       (SLetPat(pat, val), val_next)
     },
-    TIdent(_name0) => {
+    TIdent(name0) => {
       let is_struct_destructure = match peek(tokens, pos + 1) {
         TDoubleColon => match peek(tokens, pos + 2) {
           TLBrace => true,
           _ => false
         },
         _ => false
+      }
+      let is_ctor_destructure = if String::length(name0) > 0 {
+        let fc = String::char_code_at(name0, 0)
+        if fc >= 65 && fc <= 90 {
+          match peek(tokens, pos + 1) {
+            TLParen => true,
+            _ => false
+          }
+        } else {
+          false
+        }
+      } else {
+        false
       }
       if is_struct_destructure {
         let (pat, pat_next) = parse_pattern(tokens, pos)
@@ -151,6 +164,39 @@ let parse_let_stmt = (tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, 
         let val = val_pair.0
         let val_next = val_pair.1
         (SLetPat(pat, val), val_next)
+      } else if is_ctor_destructure {
+        let (pat, pat_next) = parse_pattern(tokens, pos)
+        let ep = expect_tk(tokens, pat_next, "=")
+        let val_pair = parse_impl(tokens, ep, 0)
+        let val = val_pair.0
+        let val_next = val_pair.1
+        let after_else = match peek(tokens, val_next) {
+          TElse => match peek(tokens, val_next + 1) {
+            TLBrace => {
+              let mut bp = val_next + 2
+              let mut depth = 1
+              while depth > 0 {
+                match peek(tokens, bp) {
+                  TLBrace => {
+                    depth = depth + 1
+                    bp = bp + 1
+                  },
+                  TRBrace => {
+                    depth = depth - 1
+                    bp = bp + 1
+                  },
+                  _ => {
+                    bp = bp + 1
+                  }
+                }
+              }
+              bp
+            },
+            _ => val_next
+          },
+          _ => val_next
+        }
+        (SLetPat(pat, val), after_else)
       } else {
         let (name, name_next) = parse_binding_name(tokens, pos)
         let (ty_opt, eq_pos) = match peek(tokens, name_next) {

@@ -199,15 +199,40 @@ export let parse_impl_dispatch = (tokens: Array[Token], pos: Int, mode: Int, par
     let (cond, cn) = parse_recur(tokens, pos, 0)
     let mut is_mode = false
     let mut is_pat_val = PWild
+    let mut is_scrutinee = EUnit
     let mut brace_pos = cn
     match peek(tokens, cn) {
       TIdent(kw) => if kw == "is" {
         let (pat, pn) = parse_pattern(tokens, cn + 1)
         is_mode = true
         is_pat_val = pat
+        is_scrutinee = cond
         brace_pos = pn
       },
       _ => ()
+    }
+    if !is_mode {
+      match cond {
+        EMatch(scrutinee, arms) => if Array::length(arms) == 2 {
+          let (pat0, body0) = Array::get(arms, 0)
+          let (pat1, body1) = Array::get(arms, 1)
+          match body0 {
+            EBool(true_flag0) => match body1 {
+              EBool(false_flag1) => match pat1 {
+                PWild => if true_flag0 && !false_flag1 {
+                  is_mode = true
+                  is_pat_val = pat0
+                  is_scrutinee = scrutinee
+                },
+                _ => ()
+              },
+              _ => ()
+            },
+            _ => ()
+          }
+        },
+        _ => ()
+      }
     }
     let br = expect_tk(tokens, brace_pos, "{")
     let (then_e, tn) = parse_recur(tokens, br, mode_block)
@@ -220,7 +245,7 @@ export let parse_impl_dispatch = (tokens: Array[Token], pos: Int, mode: Int, par
       _ => (EUnit, tn)
     }
     if is_mode {
-      (EMatch(cond, [
+      (EMatch(is_scrutinee, [
         (is_pat_val, then_e),
         (PWild, else_e)
       ]), end_pos)
