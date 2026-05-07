@@ -985,6 +985,8 @@ fn ensure_traits_defined(
 }
 
 ///|
+/// Compatibility shim — delegates to ADR-0051 `TraitGraph::register_def`,
+/// the canonical write path for trait definitions.
 fn register_trait_def(
   env : TypeEnv,
   name : String,
@@ -993,37 +995,7 @@ fn register_trait_def(
   exported : Bool,
   span : @core.Span,
 ) -> Unit raise TypeError {
-  if open_impl && not(exported) {
-    raise TypeError::BadTypeDef(
-      message="`open trait` is only allowed with export",
-      span~,
-    )
-  }
-  if env.has_trait(name) {
-    if env.session_state.lenient_mode {
-      return
-    }
-    // Allow re-defining a prelude builtin trait (e.g. Eq, Hash, Ord).
-    // The prelude seed soft-registers these so derive(Eq) works, but
-    // user modules may redefine them via `export trait Eq`.
-    if not(is_prelude_builtin_trait(name)) {
-      raise TypeError::BadTypeDef(message="duplicate trait: " + name, span~)
-    }
-  }
-  let normalized_supertraits = dedup_trait_bounds(supertraits)
-  for supertrait in normalized_supertraits {
-    if supertrait == name {
-      raise TypeError::BadTypeDef(
-        message="trait cannot inherit itself: " + name,
-        span~,
-      )
-    }
-  }
-  ensure_traits_defined(env, normalized_supertraits, span)
-  env.set_trait_info(
-    name,
-    TraitDefInfo::defined_here(normalized_supertraits, open_impl),
-  )
+  TraitGraph::of(env).register_def(name, supertraits, open_impl, exported, span)
 }
 
 ///|
@@ -1290,6 +1262,8 @@ fn ensure_type_satisfies_bounds(
 }
 
 ///|
+/// Compatibility shim — delegates to ADR-0051 `ImplIndex::register_impl`,
+/// the canonical write path for trait impls.
 fn register_trait_impl(
   env : TypeEnv,
   type_params : Array[String],
@@ -1298,39 +1272,9 @@ fn register_trait_impl(
   target : @core.Type,
   span : @core.Span,
 ) -> Unit raise TypeError {
-  if not(env.has_trait(trait_name)) {
-    raise TypeError::BadTypeDef(message="unknown trait: " + trait_name, span~)
-  }
-  if not(env.trait_accepts_impl_here(trait_name)) {
-    raise TypeError::TraitSealed(trait_name~, span~)
-  }
-  ensure_unique_params(type_params, span)
-  let normalized_type_bounds : Map[String, Array[String]] = {}
-  for type_param in type_params {
-    match type_bounds.get(type_param) {
-      Some(bounds) => {
-        let deduped = dedup_trait_bounds(bounds)
-        ensure_traits_defined(env, deduped, span)
-        normalized_type_bounds[type_param] = deduped
-      }
-      None => ()
-    }
-  }
-  let normalized_target = normalize_type(env, target)
-  let incoming = TraitImplDef::{
-    type_params,
-    type_bounds: normalized_type_bounds,
-    target: normalized_target,
-  }
-  // ADR-0051: overlap pre-check goes through `ImplIndex`, the
-  // `trait -> target` index layer.
-  if ImplIndex::of(env).would_overlap(trait_name, incoming) {
-    if env.session_state.lenient_mode {
-      return
-    }
-    raise TypeError::TraitImplOverlap(trait_name~, span~)
-  }
-  env.add_trait_impl(trait_name, incoming)
+  ImplIndex::of(env).register_impl(
+    type_params, type_bounds, trait_name, target, span,
+  )
 }
 
 ///|

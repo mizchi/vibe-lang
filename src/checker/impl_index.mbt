@@ -1,9 +1,10 @@
 // Layer 2 of the 3-layer trait resolution architecture (ADR-0051).
 //
-// `ImplIndex` indexes trait implementations by trait name and provides the
-// overlap pre-check used at impl-registration time. Like `TraitGraph`, it is
-// a read-only adapter over `env.trait_impls` so that the read path can be
-// migrated independently of the storage layout.
+// `ImplIndex` indexes trait implementations by trait name and owns the
+// canonical write path for impl registration (overlap pre-check + storage).
+// Storage still lives on `TypeEnv` so the index acts as a compatibility
+// adapter; future work can move the underlying maps onto a dedicated
+// `TraitState` without changing this API.
 
 ///|
 pub struct ImplIndex {
@@ -52,4 +53,54 @@ pub fn ImplIndex::would_overlap(
     }
   }
   false
+}
+
+///|
+/// Canonical Layer-2 write path. Registers an impl through the index,
+/// performing the validations the index is responsible for:
+///   - target trait must exist,
+///   - target trait must accept impls in the current module,
+///   - impl-bound type-param names must be unique,
+///   - declared trait bounds must reference known traits,
+///   - target type is normalised before storage,
+///   - overlap with existing impls is rejected (lenient mode silently drops).
+pub fn ImplIndex::register_impl(
+  self : ImplIndex,
+  type_params : Array[String],
+  type_bounds : Map[String, Array[String]],
+  trait_name : String,
+  target : @core.Type,
+  span : @core.Span,
+) -> Unit raise TypeError {
+  if not(self.env.has_trait(trait_name)) {
+    raise TypeError::BadTypeDef(message="unknown trait: " + trait_name, span~)
+  }
+  if not(self.env.trait_accepts_impl_here(trait_name)) {
+    raise TypeError::TraitSealed(trait_name~, span~)
+  }
+  ensure_unique_params(type_params, span)
+  let normalized_type_bounds : Map[String, Array[String]] = {}
+  for type_param in type_params {
+    match type_bounds.get(type_param) {
+      Some(bounds) => {
+        let deduped = dedup_trait_bounds(bounds)
+        ensure_traits_defined(self.env, deduped, span)
+        normalized_type_bounds[type_param] = deduped
+      }
+      None => ()
+    }
+  }
+  let normalized_target = normalize_type(self.env, target)
+  let incoming = TraitImplDef::{
+    type_params,
+    type_bounds: normalized_type_bounds,
+    target: normalized_target,
+  }
+  if self.would_overlap(trait_name, incoming) {
+    if self.env.session_state.lenient_mode {
+      return
+    }
+    raise TypeError::TraitImplOverlap(trait_name~, span~)
+  }
+  self.env.add_trait_impl(trait_name, incoming)
 }

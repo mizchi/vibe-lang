@@ -1,9 +1,10 @@
 // Layer 1 of the 3-layer trait resolution architecture (ADR-0051).
 //
-// `TraitGraph` is a read-only view over `env.traits`: it answers questions
-// about trait definitions, the supertrait closure, and the subtrait relation.
-// It is a thin adapter — storage stays on `TypeEnv` for now — so that the
-// read path can be migrated independently of the write path.
+// `TraitGraph` is the canonical entry point for trait definitions:
+// supertrait queries (one-hop / closure / subtrait), cycle detection, and
+// the registration write path. Storage still lives on `TypeEnv` so the
+// graph acts as a compatibility adapter; future work can move the
+// underlying map onto a dedicated `TraitState` without changing this API.
 
 ///|
 pub struct TraitGraph {
@@ -37,7 +38,7 @@ pub fn TraitGraph::supertraits(self : TraitGraph, name : String) -> Array[String
 ///|
 /// Transitive supertrait closure of `name`, excluding `name` itself.
 /// Cycle-safe: traits already on the visit stack are skipped.
-pub fn TraitGraph::super_traitclosure(
+pub fn TraitGraph::super_closure(
   self : TraitGraph,
   name : String,
 ) -> Array[String] {
@@ -150,4 +151,59 @@ fn trait_graph_cycle_inner(
 /// Iterate over every trait name registered in the underlying environment.
 pub fn TraitGraph::trait_names(self : TraitGraph) -> Array[String] {
   self.env.trait_names()
+}
+
+///|
+/// Canonical Layer-1 write path. Registers a trait definition through the
+/// graph, performing all validations the graph is responsible for:
+///   - `open trait` requires `export`,
+///   - duplicate trait names are rejected (prelude-builtin redefinitions ok),
+///   - self-referential supertraits rejected,
+///   - declared supertraits must be known.
+///
+/// The `lenient_mode` short-circuit is preserved so duplicate redefinitions
+/// in REPL/scratch sessions silently win as before. Cycle verification is
+/// not required here because (a) self-reference is rejected up-front and
+/// (b) every declared supertrait must already exist, so the new node cannot
+/// close a back-edge. `has_cycle` remains available for `import_trait`
+/// scenarios where existing entries are mutated post-registration.
+pub fn TraitGraph::register_def(
+  self : TraitGraph,
+  name : String,
+  supertraits : Array[String],
+  open_impl : Bool,
+  exported : Bool,
+  span : @core.Span,
+) -> Unit raise TypeError {
+  if open_impl && not(exported) {
+    raise TypeError::BadTypeDef(
+      message="`open trait` is only allowed with export",
+      span~,
+    )
+  }
+  if self.env.has_trait(name) {
+    if self.env.session_state.lenient_mode {
+      return
+    }
+    // Allow re-defining a prelude builtin trait (e.g. Eq, Hash, Ord).
+    // The prelude seed soft-registers these so derive(Eq) works, but
+    // user modules may redefine them via `export trait Eq`.
+    if not(is_prelude_builtin_trait(name)) {
+      raise TypeError::BadTypeDef(message="duplicate trait: " + name, span~)
+    }
+  }
+  let normalized_supertraits = dedup_trait_bounds(supertraits)
+  for supertrait in normalized_supertraits {
+    if supertrait == name {
+      raise TypeError::BadTypeDef(
+        message="trait cannot inherit itself: " + name,
+        span~,
+      )
+    }
+  }
+  ensure_traits_defined(self.env, normalized_supertraits, span)
+  self.env.set_trait_info(
+    name,
+    TraitDefInfo::defined_here(normalized_supertraits, open_impl),
+  )
 }

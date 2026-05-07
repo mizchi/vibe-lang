@@ -62,3 +62,56 @@ test "TraitGraph::supertraits returns one-hop parents only" {
   let parents = g.supertraits("C")
   assert_eq(parents, ["B"])
 }
+
+///|
+test "TraitGraph::register_def installs trait + supertrait" {
+  let env = TypeEnv::new()
+  let g = TraitGraph::of(env)
+  let span = @core.Span::empty(0)
+  g.register_def("Eq", [], false, true, span)
+  g.register_def("Ord", ["Eq"], false, true, span)
+  assert_true(g.has("Eq"))
+  assert_true(g.is_subtrait("Ord", "Eq"))
+}
+
+///|
+test "TraitGraph::register_def rejects self-referential supertrait" {
+  let env = TypeEnv::new()
+  let g = TraitGraph::of(env)
+  let span = @core.Span::empty(0)
+  let result : Result[Unit, TypeError] = try? g.register_def(
+    "Bad", ["Bad"], false, true, span,
+  )
+  match result {
+    Err(_) => ()
+    Ok(_) => fail("expected register_def to reject self-reference")
+  }
+}
+
+///|
+test "TraitGraph::register_def rejects unknown supertrait" {
+  let env = TypeEnv::new()
+  let g = TraitGraph::of(env)
+  let span = @core.Span::empty(0)
+  let result : Result[Unit, TypeError] = try? g.register_def(
+    "Ord", ["Eq"], false, true, span,
+  )
+  match result {
+    Err(_) => ()
+    Ok(_) => fail("expected register_def to reject unknown supertrait")
+  }
+}
+
+///|
+test "TraitGraph::register_def rejects open trait without export" {
+  let env = TypeEnv::new()
+  let g = TraitGraph::of(env)
+  let span = @core.Span::empty(0)
+  let result : Result[Unit, TypeError] = try? g.register_def(
+    "Custom", [], true, false, span,
+  )
+  match result {
+    Err(_) => ()
+    Ok(_) => fail("expected register_def to reject `open trait` without export")
+  }
+}

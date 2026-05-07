@@ -63,3 +63,46 @@ test "ImplIndex::would_overlap allows disjoint concrete impls" {
   }
   assert_false(ImplIndex::of(env).would_overlap("Eq", incoming))
 }
+
+///|
+test "ImplIndex::register_impl installs an impl through the canonical path" {
+  let env = TypeEnv::new()
+  env.set_trait_info("Eq", TraitDefInfo::defined_here([], false))
+  let span = @core.Span::empty(0)
+  let index = ImplIndex::of(env)
+  index.register_impl([], {}, "Eq", @core.Type::Int, span) catch {
+    err => fail("register_impl unexpectedly failed: \{err.to_string()}")
+  }
+  assert_eq(index.impls_for("Eq").length(), 1)
+}
+
+///|
+test "ImplIndex::register_impl rejects unknown trait" {
+  let env = TypeEnv::new()
+  let span = @core.Span::empty(0)
+  let result : Result[Unit, TypeError] = try? ImplIndex::of(env).register_impl(
+    [], {}, "DoesNotExist", @core.Type::Int, span,
+  )
+  match result {
+    Err(_) => ()
+    Ok(_) => fail("expected register_impl to reject unknown trait")
+  }
+}
+
+///|
+test "ImplIndex::register_impl rejects overlap with existing impl" {
+  let env = TypeEnv::new()
+  env.set_trait_info("Eq", TraitDefInfo::defined_here([], false))
+  let span = @core.Span::empty(0)
+  let index = ImplIndex::of(env)
+  index.register_impl([], {}, "Eq", @core.Type::Int, span) catch {
+    err => fail("first register_impl unexpectedly failed: \{err.to_string()}")
+  }
+  let second : Result[Unit, TypeError] = try? index.register_impl(
+    [], {}, "Eq", @core.Type::Int, span,
+  )
+  match second {
+    Err(_) => ()
+    Ok(_) => fail("expected register_impl to reject overlapping impl")
+  }
+}
