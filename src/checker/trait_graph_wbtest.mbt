@@ -161,3 +161,32 @@ test "TraitGraph::import_def removes new entries on cycle" {
   assert_false(installed)
   assert_false(g.has("Recursive"))
 }
+
+///|
+test "TraitGraph::cycle_chain returns the offending trait sequence" {
+  // A : B; B : A — manually construct via set_trait_info to bypass the
+  // self-reference / existence checks that register_def enforces.
+  let env = TypeEnv::new()
+  env.set_trait_info("A", TraitDefInfo::defined_here([], false))
+  env.set_trait_info("B", TraitDefInfo::defined_here(["A"], false))
+  env.set_trait_info("A", TraitDefInfo::imported(["B"], true))
+  let g = TraitGraph::of(env)
+  match g.cycle_chain("A") {
+    Some(chain) => {
+      // Walk order starts at A, hits B, closes back at A.
+      assert_eq(chain, ["A", "B", "A"])
+    }
+    None => fail("expected cycle_chain to detect A -> B -> A")
+  }
+}
+
+///|
+test "TraitGraph::cycle_chain returns None when graph is acyclic" {
+  let env = TypeEnv::new()
+  env.set_trait_info("Eq", TraitDefInfo::defined_here([], false))
+  env.set_trait_info("Ord", TraitDefInfo::defined_here(["Eq"], false))
+  match TraitGraph::of(env).cycle_chain("Ord") {
+    Some(_) => fail("unexpected cycle in acyclic graph")
+    None => ()
+  }
+}

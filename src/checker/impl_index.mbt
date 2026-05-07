@@ -47,12 +47,27 @@ pub fn ImplIndex::would_overlap(
   trait_name : String,
   incoming : TraitImplDef,
 ) -> Bool {
+  match self.find_overlapping(trait_name, incoming) {
+    Some(_) => true
+    None => false
+  }
+}
+
+///|
+/// Diagnostic-friendly variant: returns the first existing impl that
+/// overlaps with `incoming`, so the caller can report the conflicting
+/// target type rather than just the trait name.
+pub fn ImplIndex::find_overlapping(
+  self : ImplIndex,
+  trait_name : String,
+  incoming : TraitImplDef,
+) -> TraitImplDef? {
   for impl_def in self.env.trait_impls_for(trait_name) {
     if trait_impls_overlap(self.env, impl_def, incoming) {
-      return true
+      return Some(impl_def)
     }
   }
-  false
+  None
 }
 
 ///|
@@ -116,11 +131,19 @@ pub fn ImplIndex::register_impl(
     type_bounds: normalized_type_bounds,
     target: normalized_target,
   }
-  if self.would_overlap(trait_name, incoming) {
-    if self.env.session_state.lenient_mode {
-      return
-    }
-    raise TypeError::TraitImplOverlap(trait_name~, span~)
+  match self.find_overlapping(trait_name, incoming) {
+    Some(existing) =>
+      if self.env.session_state.lenient_mode {
+        return
+      } else {
+        raise TypeError::TraitImplOverlap(
+          trait_name~,
+          existing_target=existing.target,
+          incoming_target=incoming.target,
+          span~,
+        )
+      }
+    None => ()
   }
   self.env.add_trait_impl(trait_name, incoming)
 }

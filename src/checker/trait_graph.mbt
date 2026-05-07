@@ -148,6 +148,51 @@ pub fn TraitGraph::has_cycle(self : TraitGraph, name : String) -> Bool {
 }
 
 ///|
+/// Diagnostic-friendly counterpart to `has_cycle`. Returns the trait names
+/// involved in the cycle in walk order, with the cycle-closing trait
+/// repeated at the end (e.g. `["A", "B", "A"]` for a two-node loop), or
+/// `None` if no cycle is reachable from `name`.
+pub fn TraitGraph::cycle_chain(
+  self : TraitGraph,
+  name : String,
+) -> Array[String]? {
+  let stack : Array[String] = []
+  trait_graph_cycle_chain_inner(self.env, name, stack)
+}
+
+///|
+fn trait_graph_cycle_chain_inner(
+  env : TypeEnv,
+  name : String,
+  stack : Array[String],
+) -> Array[String]? {
+  for i in 0..<stack.length() {
+    if stack[i] == name {
+      let chain : Array[String] = []
+      for j in i..<stack.length() {
+        chain.push(stack[j])
+      }
+      chain.push(name)
+      return Some(chain)
+    }
+  }
+  match env.get_trait_info(name) {
+    Some(info) => {
+      stack.push(name)
+      for parent in info.supertraits_copy() {
+        match trait_graph_cycle_chain_inner(env, parent, stack) {
+          Some(chain) => return Some(chain)
+          None => ()
+        }
+      }
+      let _ = stack.pop()
+      None
+    }
+    None => None
+  }
+}
+
+///|
 fn trait_graph_cycle_inner(
   env : TypeEnv,
   name : String,
