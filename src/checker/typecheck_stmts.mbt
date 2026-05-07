@@ -950,57 +950,24 @@ fn record_expr_type(env : TypeEnv, span : @core.Span, ty : @core.Type) -> Unit {
 }
 
 ///|
-fn trait_is_subtrait_inner(
-  env : TypeEnv,
-  sub_trait : String,
-  super_trait : String,
-  visiting : Map[String, Bool],
-) -> Bool {
-  if sub_trait == super_trait {
-    return true
-  }
-  if visiting.contains(sub_trait) {
-    return false
-  }
-  match env.get_trait_info(sub_trait) {
-    Some(info) => {
-      let next_visiting = visiting.copy()
-      next_visiting[sub_trait] = true
-      for parent in info.supertraits_copy() {
-        if parent == super_trait {
-          return true
-        }
-        if trait_is_subtrait_inner(env, parent, super_trait, next_visiting) {
-          return true
-        }
-      }
-      false
-    }
-    None => false
-  }
-}
-
-///|
+/// Compatibility shim — delegates to ADR-0051 `TraitGraph`. Kept so that the
+/// many call sites in this file (and tests) can migrate gradually.
 fn trait_is_subtrait(
   env : TypeEnv,
   sub_trait : String,
   super_trait : String,
 ) -> Bool {
-  trait_is_subtrait_inner(env, sub_trait, super_trait, {})
+  TraitGraph::of(env).is_subtrait(sub_trait, super_trait)
 }
 
 ///|
+/// Compatibility shim — delegates to ADR-0051 `ObligationSolver`.
 fn trait_bound_satisfied(
   env : TypeEnv,
   available : Array[String],
   required : String,
 ) -> Bool {
-  for bound in available {
-    if trait_is_subtrait(env, bound, required) {
-      return true
-    }
-  }
-  false
+  ObligationSolver::of(env).bound_satisfied(available, required)
 }
 
 ///|
@@ -1276,99 +1243,15 @@ fn is_ord_primitive(ty : @core.Type) -> Bool {
 }
 
 ///|
+/// Compatibility shim — delegates to ADR-0051 `ObligationSolver`. The
+/// solver consults intrinsic primitive impls, the registered impl index,
+/// and the supertrait closure for subtrait fallbacks.
 fn type_implements_trait(
   env : TypeEnv,
   ty : @core.Type,
   trait_name : String,
 ) -> Bool {
-  let resolved = resolve_type(env, ty)
-  match resolved {
-    @core.Type::Var(id) =>
-      match env.var_trait_bounds.get(id) {
-        Some(bounds) => trait_bound_satisfied(env, bounds, trait_name)
-        None => false
-      }
-    _ => {
-      // Primitive types implement Eq and Ord intrinsically
-      // (Bool has Eq but not Ord — runtime __lt does not handle booleans)
-      if trait_name == "Eq" && is_eq_primitive(resolved) {
-        return true
-      }
-      if trait_name == "Ord" && is_ord_primitive(resolved) {
-        return true
-      }
-      // Option[T] implements Eq when T: Eq (intrinsic, avoids builtin module dep)
-      if trait_name == "Eq" {
-        match resolved {
-          @core.Type::Named(name="Option", args=[inner]) =>
-            if type_implements_trait(env, inner, "Eq") {
-              return true
-            }
-          _ => ()
-        }
-      }
-      if type_implements_trait_from_impls(
-          env,
-          resolved,
-          env.trait_impls_for(trait_name),
-        ) {
-        return true
-      }
-      for impl_trait_name in env.trait_names() {
-        if impl_trait_name == trait_name {
-          continue
-        }
-        if not(trait_is_subtrait(env, impl_trait_name, trait_name)) {
-          continue
-        }
-        if type_implements_trait_from_impls(
-            env,
-            resolved,
-            env.trait_impls_for(impl_trait_name),
-          ) {
-          return true
-        }
-      }
-      false
-    }
-  }
-}
-
-///|
-fn type_implements_trait_from_impls(
-  env : TypeEnv,
-  resolved : @core.Type,
-  impls : Array[TraitImplDef],
-) -> Bool {
-  for impl_def in impls {
-    let mapping : Map[String, @core.Type] = {}
-    if type_matches_impl_target(env, impl_def.target, resolved, mapping) {
-      let mut ok = true
-      for param in impl_def.type_params {
-        match mapping.get(param) {
-          Some(actual_ty) =>
-            match impl_def.type_bounds.get(param) {
-              Some(bounds) =>
-                for bound in bounds {
-                  if not(type_implements_trait(env, actual_ty, bound)) {
-                    ok = false
-                    break
-                  }
-                }
-              None => ()
-            }
-          None => ()
-        }
-        if not(ok) {
-          break
-        }
-      }
-      if ok {
-        return true
-      }
-    }
-  }
-  false
+  ObligationSolver::of(env).satisfies(ty, trait_name)
 }
 
 ///|
@@ -1439,13 +1322,13 @@ fn register_trait_impl(
     type_bounds: normalized_type_bounds,
     target: normalized_target,
   }
-  for impl_def in env.trait_impls_for(trait_name) {
-    if trait_impls_overlap(env, impl_def, incoming) {
-      if env.session_state.lenient_mode {
-        return
-      }
-      raise TypeError::TraitImplOverlap(trait_name~, span~)
+  // ADR-0051: overlap pre-check goes through `ImplIndex`, the
+  // `trait -> target` index layer.
+  if ImplIndex::of(env).would_overlap(trait_name, incoming) {
+    if env.session_state.lenient_mode {
+      return
     }
+    raise TypeError::TraitImplOverlap(trait_name~, span~)
   }
   env.add_trait_impl(trait_name, incoming)
 }

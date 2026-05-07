@@ -44,7 +44,7 @@
 | 0042 | **トップレベル未処理 effect 禁止**。ファイルモジュール top-level は pure (effect_scope_none)。shell/REPL/test は別スコープ。 | proposed |
 | 0043 | **Capability-driven DCE + 定数分岐**。`--allow-*`/`--deny-*` で capability 指定 → 不要コード除去。`@build.*` 定数 + dead branch elimination。`--profile` プリセット (minimal/sandbox/server/edge/agent)。 | proposed |
 | 0050 | **`handle` を汎用 effect handler に統一**。canonical syntax は `handle { expr } with EffectName { Op(...) => ...; }`。`Error` も built-in effect として一般化し、`throw(e)` は `perform Error::Throw(e)` の sugar とする。`resume` は one-shot / lexical-scope 限定、arm は exhaustive・top-to-bottom first-match、複数 effect は nested handle で表現する。 | proposed |
-| 0051 | **Trait 解決レイヤを 3 層化**。現行の `TypeEnv` 連結リスト走査（`EnvTraitDef`/`EnvTraitImpl`/`EnvTraitImplGen`）を、(1) **TraitGraph**（trait 定義と super 関係の閉包・cycle 検証）、(2) **ImplIndex**（`trait -> target` の実装索引と overlap 事前検証）、(3) **ObligationSolver**（`type_implements_trait` と bound 充足判定）へ分離する。`trait_is_subtrait` と `type_implements_trait` の責務を分割し、trait 多層化（supertrait の深い階層）時の探索コスト・不整合検出・診断品質を改善する。移行は `TypeEnv` 互換アダプタを置く段階移行（read-path 先行）で行う。 | proposed |
+| 0051 | **Trait 解決レイヤを 3 層化**。現行の `TypeEnv` 連結リスト走査（`EnvTraitDef`/`EnvTraitImpl`/`EnvTraitImplGen`）を、(1) **TraitGraph**（trait 定義と super 関係の閉包・cycle 検証、`src/checker/trait_graph.mbt`）、(2) **ImplIndex**（`trait -> target` の実装索引と overlap 事前検証、`src/checker/impl_index.mbt`）、(3) **ObligationSolver**（`type_implements_trait` と bound 充足判定、`src/checker/obligation_solver.mbt`）へ分離した。`trait_is_subtrait` / `trait_bound_satisfied` / `type_implements_trait` は新レイヤへ委譲する shim として残し、impl overlap 事前検査は `ImplIndex::would_overlap` 経由に統一。Phase 1 (read-path) では storage を `TypeEnv` に残した互換アダプタ構成。 | accepted |
 
 ## Module & Identity
 
