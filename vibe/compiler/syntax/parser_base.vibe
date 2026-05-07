@@ -338,6 +338,32 @@ let rec parse_pattern = (tokens: Array[Token], pos: Int) -> (Pat, Int)with { Err
   }
 }
 
+let skip_braced_body = (tokens: Array[Token], pos: Int) -> Int {
+  match peek(tokens, pos) {
+    TLBrace => {
+      let mut bp = pos + 1
+      let mut depth = 1
+      while depth > 0 {
+        match peek(tokens, bp) {
+          TLBrace => {
+            depth = depth + 1
+            bp = bp + 1
+          },
+          TRBrace => {
+            depth = depth - 1
+            bp = bp + 1
+          },
+          _ => {
+            bp = bp + 1
+          }
+        }
+      }
+      bp
+    },
+    _ => pos
+  }
+}
+
 let parse_impl_stmt = (tokens: Array[Token], pos: Int) -> (Stmt, Int)with { Error } {
   let empty_strings = Array::slice([
     "_"
@@ -351,7 +377,10 @@ let parse_impl_stmt = (tokens: Array[Token], pos: Int) -> (Stmt, Int)with { Erro
     TIdent(trait_name) => {
       let fp = expect_tk(tokens, pos + 1, "for")
       match peek(tokens, fp) {
-        TIdent(type_name) => (SImpl(empty_strings, empty_bounds, trait_name, type_name), fp + 1),
+        TIdent(type_name) => {
+          let body_end = skip_braced_body(tokens, fp + 1)
+          (SImpl(empty_strings, empty_bounds, trait_name, type_name), body_end)
+        },
         _ => throw("expected type name after 'for'")
       }
     },
@@ -386,9 +415,13 @@ let parse_trait_stmt = (tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt
           }
         }
         let (supers, np) = parse_supers(pos + 2, empty_strings);
-        (STrait(exported, name, supers), np)
+        let body_end = skip_braced_body(tokens, np)
+        (STrait(exported, name, supers), body_end)
       },
-      _ => (STrait(exported, name, empty_strings), pos + 1)
+      _ => {
+        let body_end = skip_braced_body(tokens, pos + 1)
+        (STrait(exported, name, empty_strings), body_end)
+      }
     },
     _ => throw("expected trait name")
   }
@@ -805,10 +838,16 @@ let parse_enum_ctors = (tokens: Array[Token], pos: Int) -> (Array[(String, Array
   }
 }
 
-let skip_derive = (tokens: Array[Token], pos: Int) -> Int {
+let skip_derive = (tokens: Array[Token], pos: Int) -> Int with { Error } {
   match peek(tokens, pos) {
     TDerive => match peek(tokens, pos + 1) {
       TLParen => {
+        match peek(tokens, pos + 2) {
+          TIdent(name) => if name != "Eq" {
+            throw("unknown derive: \{name}")
+          },
+          _ => throw("expected derive identifier")
+        }
         let mut dp = pos + 2
         let mut dd = true
         while dd {

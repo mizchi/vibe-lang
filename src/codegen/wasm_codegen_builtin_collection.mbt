@@ -591,10 +591,20 @@ fn compile_builtin_collection(
     }
     "MapBuilder::freeze" => {
       // MapBuilder::freeze(builder) -> return builder as-is (it is already a map obj)
+      // Follow forwarding pointer in case set triggered realloc (mirrors
+      // ArrayBuilder::freeze).
       let pos_args = extract_positional_exprs_with_arity(
         args, "MapBuilder::freeze", 1,
       )
+      let ptr_local = alloc_temp_local(ctx)
       compile_expr_i32(ctx, buf, pos_args[0])
+      emit_untag_ptr_i32(buf)
+      emit_local_set(buf, ptr_local)
+      emit_builder_follow_forwarding(ctx, buf, ptr_local)
+      emit_local_get(buf, ptr_local)
+      emit_i64_extend_i32_u(buf)
+      emit_i64_const_raw(buf, tag_obj.to_int64())
+      emit_i64_or(buf)
     }
     "Set::new" => {
       // Set::new() -> allocate empty map obj with len=0 (same layout as Map)
@@ -1451,6 +1461,7 @@ fn compile_builtin_collection(
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_untag_ptr_i32(buf)
       emit_local_set(buf, map_ptr)
+      emit_builder_follow_forwarding(ctx, buf, map_ptr)
       emit_local_get(buf, map_ptr)
       emit_i32_load(buf, 4)
       emit_local_set(buf, map_len)
@@ -2221,6 +2232,7 @@ fn compile_builtin_collection(
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_untag_ptr_i32(buf)
       emit_local_set(buf, map_ptr)
+      emit_builder_follow_forwarding(ctx, buf, map_ptr)
       emit_local_get(buf, map_ptr)
       emit_i32_load(buf, 4) // len
       emit_local_set(buf, map_len)
@@ -3157,6 +3169,7 @@ fn compile_builtin_collection(
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_untag_ptr_i32(buf)
       emit_local_set(buf, map_ptr)
+      emit_builder_follow_forwarding(ctx, buf, map_ptr)
       emit_local_get(buf, map_ptr)
       emit_i32_load(buf, 4)
       emit_local_set(buf, map_len)
