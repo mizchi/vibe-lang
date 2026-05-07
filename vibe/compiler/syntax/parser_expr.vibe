@@ -137,20 +137,36 @@ let parse_let_stmt = (tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt, 
       (SLetPat(pat, val), val_next)
     },
     TIdent(_name0) => {
-      let (name, name_next) = parse_binding_name(tokens, pos)
-      let (ty_opt, eq_pos) = match peek(tokens, name_next) {
-        TColon => {
-          let (ty, tp) = parse_type_impl(tokens, name_next + 1, 0)
-          (Some(ty), tp)
+      let is_struct_destructure = match peek(tokens, pos + 1) {
+        TDoubleColon => match peek(tokens, pos + 2) {
+          TLBrace => true,
+          _ => false
         },
-        _ => (None, name_next)
+        _ => false
       }
-      let ep = expect_tk(tokens, eq_pos, "=")
-      let val_start = skip_generic_value_start(tokens, ep)
-      let val_pair = parse_impl(tokens, val_start, 0)
-      let val = val_pair.0
-      let val_next = val_pair.1
-      (SLet(exported, false, name, ty_opt, val), val_next)
+      if is_struct_destructure {
+        let (pat, pat_next) = parse_pattern(tokens, pos)
+        let ep = expect_tk(tokens, pat_next, "=")
+        let val_pair = parse_impl(tokens, ep, 0)
+        let val = val_pair.0
+        let val_next = val_pair.1
+        (SLetPat(pat, val), val_next)
+      } else {
+        let (name, name_next) = parse_binding_name(tokens, pos)
+        let (ty_opt, eq_pos) = match peek(tokens, name_next) {
+          TColon => {
+            let (ty, tp) = parse_type_impl(tokens, name_next + 1, 0)
+            (Some(ty), tp)
+          },
+          _ => (None, name_next)
+        }
+        let ep = expect_tk(tokens, eq_pos, "=")
+        let val_start = skip_generic_value_start(tokens, ep)
+        let val_pair = parse_impl(tokens, val_start, 0)
+        let val = val_pair.0
+        let val_next = val_pair.1
+        (SLet(exported, false, name, ty_opt, val), val_next)
+      }
     },
     _ => throw("expected name after 'let'")
   }
