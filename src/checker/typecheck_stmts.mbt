@@ -1246,13 +1246,21 @@ fn ensure_type_satisfies_bounds(
       true
     }
     _ => {
+      let solver = ObligationSolver::of(env)
       for bound in deduped {
-        if not(type_implements_trait(env, resolved, bound)) {
+        let witness = solver.witness(resolved, bound)
+        if not(witness.is_satisfied()) {
+          let extra = witness.message()
+          let enriched_context = if extra == "" {
+            context
+          } else {
+            context + ": " + extra
+          }
           raise TypeError::Mismatch(
             expected=@core.Type::Named(name=bound, args=[]),
             actual=resolved,
             span~,
-            context=Some(context),
+            context=Some(enriched_context),
           )
         }
       }

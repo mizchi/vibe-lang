@@ -77,3 +77,68 @@ test "ObligationSolver::satisfies covers Option[T]: Eq when T: Eq" {
     solver.satisfies(@core.Type::Named(name="Option", args=[@core.Type::Int]), "Eq"),
   )
 }
+
+///|
+test "ObligationSolver::witness reports NoImpl when none exists" {
+  let env = TypeEnv::new()
+  env.set_trait_info("Show", TraitDefInfo::defined_here([], false))
+  let target = @core.Type::Named(name="UserId", args=[])
+  let w = ObligationSolver::of(env).witness(target, "Show")
+  assert_false(w.is_satisfied())
+  let msg = w.message()
+  assert_true(msg.contains("no impl"))
+  assert_true(msg.contains("Show"))
+  assert_true(msg.contains("UserId"))
+}
+
+///|
+test "ObligationSolver::witness reports ImplBoundFailed when bounds fail" {
+  // Register `Hash`, then `impl Show for Array[T] where T: Hash`. Asking
+  // for `Show` on `Array[Int]` should fail because Int does not have a
+  // Hash impl in this fresh env.
+  let env = TypeEnv::new()
+  env.set_trait_info("Show", TraitDefInfo::defined_here([], false))
+  env.set_trait_info("Hash", TraitDefInfo::defined_here([], false))
+  env.add_trait_impl("Show", TraitImplDef::{
+    type_params: ["T"],
+    type_bounds: { "T": ["Hash"] },
+    target: @core.Type::Array(@core.Type::Param("T")),
+  })
+  let target = @core.Type::Array(@core.Type::Int)
+  let w = ObligationSolver::of(env).witness(target, "Show")
+  assert_false(w.is_satisfied())
+  match w {
+    TraitWitness::ImplBoundFailed(
+      trait_name~,
+      param_name~,
+      required_bound~,
+      ..
+    ) => {
+      assert_eq(trait_name, "Show")
+      assert_eq(param_name, "T")
+      assert_eq(required_bound, "Hash")
+    }
+    _ => fail("expected ImplBoundFailed witness")
+  }
+}
+
+///|
+test "ObligationSolver::witness reports VarLacksBound for type variables" {
+  let env = TypeEnv::new()
+  env.set_trait_info("Eq", TraitDefInfo::defined_here([], false))
+  env.set_trait_info("Ord", TraitDefInfo::defined_here(["Eq"], false))
+  // Fresh type var with bound `Eq` only.
+  let tv = fresh_type_var(env)
+  match tv {
+    @core.Type::Var(id) => add_var_trait_bounds(env, id, ["Eq"])
+    _ => fail("fresh_type_var did not return Var")
+  }
+  let w = ObligationSolver::of(env).witness(tv, "Ord")
+  match w {
+    TraitWitness::VarLacksBound(trait_name~, available~) => {
+      assert_eq(trait_name, "Ord")
+      assert_true(available.contains("Eq"))
+    }
+    _ => fail("expected VarLacksBound witness")
+  }
+}
