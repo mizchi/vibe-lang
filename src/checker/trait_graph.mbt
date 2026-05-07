@@ -258,7 +258,7 @@ pub fn TraitGraph::import_def(
   if self.has_cycle(name) {
     match previous {
       Some(info) => self.env.set_trait_info(name, info)
-      None => self.env.traits.remove(name)
+      None => self.env.trait_state.traits.remove(name)
     }
     false
   } else {

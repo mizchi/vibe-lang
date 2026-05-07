@@ -30,7 +30,7 @@ pub fn ImplIndex::impls_for(
 /// solver to skip trait names that cannot contribute to the search.
 pub fn ImplIndex::traits_with_impls(self : ImplIndex) -> Array[String] {
   let names : Array[String] = []
-  for name, items in self.env.trait_impls {
+  for name, items in self.env.trait_state.trait_impls {
     if items.length() > 0 {
       names.push(name)
     }
