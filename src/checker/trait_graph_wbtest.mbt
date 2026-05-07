@@ -115,3 +115,49 @@ test "TraitGraph::register_def rejects open trait without export" {
     Ok(_) => fail("expected register_def to reject `open trait` without export")
   }
 }
+
+///|
+test "TraitGraph::import_def installs an external trait cleanly" {
+  let env = TypeEnv::new()
+  env.set_trait_info("Eq", TraitDefInfo::defined_here([], false))
+  let g = TraitGraph::of(env)
+  let installed = g.import_def(
+    "Ord", TraitDefInfo::defined_here(["Eq"], true), ["Eq"],
+  )
+  assert_true(installed)
+  assert_true(g.is_subtrait("Ord", "Eq"))
+}
+
+///|
+test "TraitGraph::import_def rolls back if it would close a cycle" {
+  // A : (no parents); B : A. Re-importing A with parent B would close
+  // a cycle A -> B -> A. import_def must reject it and restore A.
+  let env = TypeEnv::new()
+  env.set_trait_info("A", TraitDefInfo::defined_here([], false))
+  env.set_trait_info("B", TraitDefInfo::defined_here(["A"], false))
+  let g = TraitGraph::of(env)
+  let installed = g.import_def(
+    "A", TraitDefInfo::defined_here([], true), ["B"],
+  )
+  assert_false(installed)
+  // After rollback, A should retain its empty supertrait list.
+  assert_eq(g.supertraits("A"), [])
+  assert_false(g.has_cycle("A"))
+}
+
+///|
+test "TraitGraph::import_def removes new entries on cycle" {
+  // If the imported trait was never present, rollback removes it
+  // entirely instead of leaving a partial state.
+  let env = TypeEnv::new()
+  env.set_trait_info("Self", TraitDefInfo::defined_here([], false))
+  let g = TraitGraph::of(env)
+  // Simulate an upstream that produced a self-referential supertrait list.
+  let installed = g.import_def(
+    "Recursive",
+    TraitDefInfo::defined_here([], true),
+    ["Recursive"],
+  )
+  assert_false(installed)
+  assert_false(g.has("Recursive"))
+}

@@ -49,17 +49,14 @@ fn resolve_imported_trait_supertraits(
 }
 
 ///|
+/// Thin wrapper over the ADR-0051 import-path entry point so the runtime
+/// import flow shares a canonical idempotent installer with other callers.
 fn maybe_add_trait_impl(
   env : @checker.TypeEnv,
   trait_name : String,
   impl_def : @checker.TraitImplDef,
 ) -> Unit {
-  for existing in env.trait_impls_for(trait_name) {
-    if existing == impl_def {
-      return
-    }
-  }
-  env.add_trait_impl(trait_name, impl_def)
+  @checker.ImplIndex::of(env).import_impl(trait_name, impl_def)
 }
 
 ///|
@@ -146,7 +143,14 @@ fn import_trait_dependency_for_scheme(
     source_trait_name, local_trait_name, source_supertraits, trait_aliases,
   )
   if not(env.has_trait(local_trait_name)) {
-    env.import_trait(local_trait_name, source_info, local_supertraits)
+    // Cycle-checked import path (ADR-0051): drops the install silently if
+    // it would close a supertrait cycle. The upstream type-check should
+    // make cycles impossible, so this is defence-in-depth against
+    // corrupted DB state.
+    let _ : Bool = @checker.TraitGraph::of(env).import_def(
+      local_trait_name, source_info, local_supertraits,
+    )
+
   }
   for impl_def in imported_env.trait_impls_for(source_trait_name) {
     maybe_add_trait_impl(env, local_trait_name, impl_def)

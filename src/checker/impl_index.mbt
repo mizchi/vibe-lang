@@ -56,6 +56,26 @@ pub fn ImplIndex::would_overlap(
 }
 
 ///|
+/// Idempotent Layer-2 write path for the *import* flow. Used when an impl
+/// has already been validated by the upstream type-check (DB / cross-module
+/// import) and may be re-encountered through transitive re-exports.
+/// De-duplicates by exact equality and skips overlap detection on purpose:
+/// the upstream module already proved the impl well-formed, and overlap
+/// between import sources is the upstream's invariant, not ours.
+pub fn ImplIndex::import_impl(
+  self : ImplIndex,
+  trait_name : String,
+  impl_def : TraitImplDef,
+) -> Unit {
+  for existing in self.env.trait_impls_for(trait_name) {
+    if existing == impl_def {
+      return
+    }
+  }
+  self.env.add_trait_impl(trait_name, impl_def)
+}
+
+///|
 /// Canonical Layer-2 write path. Registers an impl through the index,
 /// performing the validations the index is responsible for:
 ///   - target trait must exist,

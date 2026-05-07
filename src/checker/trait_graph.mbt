@@ -9,11 +9,15 @@
 ///|
 pub struct TraitGraph {
   env : TypeEnv
+  // Per-graph memo for `is_subtrait`. Safe to keep mutable because trait
+  // definitions cannot change during a single obligation-solving session,
+  // and `TraitGraph` instances are created fresh per top-level query.
+  memo : Map[String, Map[String, Bool]]
 }
 
 ///|
 pub fn TraitGraph::of(env : TypeEnv) -> TraitGraph {
-  TraitGraph::{ env, }
+  TraitGraph::{ env, memo: {} }
 }
 
 ///|
@@ -71,7 +75,9 @@ fn trait_graph_collect_supers(
 
 ///|
 /// True iff `sub == super_trait` or `super_trait` appears in the transitive supertrait
-/// closure of `sub`. Cycle-safe.
+/// closure of `sub`. Cycle-safe and memoised per `TraitGraph` instance — the
+/// memo benefits the deeply-recursive obligation solver flow where the same
+/// `(sub, super)` query can recur many times across nested impl bounds.
 pub fn TraitGraph::is_subtrait(
   self : TraitGraph,
   sub : String,
@@ -80,7 +86,25 @@ pub fn TraitGraph::is_subtrait(
   if sub == super_trait {
     return true
   }
-  trait_graph_is_subtrait_inner(self.env, sub, super_trait, {})
+  match self.memo.get(sub) {
+    Some(per_super) =>
+      match per_super.get(super_trait) {
+        Some(cached) => return cached
+        None => ()
+      }
+    None => ()
+  }
+  let result = trait_graph_is_subtrait_inner(self.env, sub, super_trait, {})
+  let per_super = match self.memo.get(sub) {
+    Some(existing) => existing
+    None => {
+      let fresh : Map[String, Bool] = {}
+      self.memo[sub] = fresh
+      fresh
+    }
+  }
+  per_super[super_trait] = result
+  result
 }
 
 ///|
@@ -206,4 +230,38 @@ pub fn TraitGraph::register_def(
     name,
     TraitDefInfo::defined_here(normalized_supertraits, open_impl),
   )
+}
+
+///|
+/// Import-side write path for an externally-defined trait. Behaves like
+/// `TypeEnv::import_trait` but additionally reverts the install if it
+/// would close a supertrait cycle. Cycles can only emerge here — the
+/// `register_def` path proves acyclicity inductively because it rejects
+/// self-reference and requires every declared supertrait to already
+/// exist; `import_def` is the only writer that *rewrites* the supertraits
+/// of a node already in the graph (when the same name was previously
+/// registered via `set_trait_info` or imported from another module), and
+/// that rewrite can close a back-edge.
+///
+/// Returns true if the import installed cleanly. On cycle detection the
+/// previous entry is restored (or the entry removed if it was new) and
+/// false is returned, so DB / cross-module loaders can choose to log or
+/// drop the offending trait.
+pub fn TraitGraph::import_def(
+  self : TraitGraph,
+  name : String,
+  source_info : TraitDefInfo,
+  supertraits : Array[String],
+) -> Bool {
+  let previous = self.env.get_trait_info(name)
+  self.env.import_trait(name, source_info, supertraits)
+  if self.has_cycle(name) {
+    match previous {
+      Some(info) => self.env.set_trait_info(name, info)
+      None => self.env.traits.remove(name)
+    }
+    false
+  } else {
+    true
+  }
 }
