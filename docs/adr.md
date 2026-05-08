@@ -29,8 +29,8 @@
 | 0037 | **トップレベル前方参照**。codegen で topological sort + 前方アノテーション関数の pre-scan。パラメータ型注釈必須、自己再帰は `let rec` + 返り値注釈。 | accepted |
 | 0044 | **Iterator trait による map/filter/fold 汎用化**。`trait Iterator[T] { next(Self) -> Option[T] }` + `trait Iterable[T] { iter(Self) -> Iterator[T] }`。現状 `Array::map` 等は Array 固定かつ `(T)->T` で型変換不可。Iterator trait 導入で: (1) 任意コレクションに map/filter/fold を提供 (2) `(T)->U` 型変換対応 (3) lazy evaluation (collect まで実体化しない) (4) `for-in` を Iterable ベースにデシュガー統一。pipe-first との親和性高。段階移行: Phase 1 trait 定義+Array impl → Phase 2 for-in 統一 → Phase 3 String/Map/List 対応 → Phase 4 旧 builtin deprecated。 | proposed |
 | 0045 | **`derive(Eq)` の実装** (#148)。ユーザー定義 enum/struct に `==` を自動導出。`assert_eq` のカスタム型対応 (#153) もこれに依存。 | proposed |
-| 0046 | **`Option[T]` sugar `T?`** (#149)。parser で `T?` → `Option[T]` に展開。 | proposed |
-| 0047 | **`loop` 式 — `break(value)` で値返却** (#151)。現状 loop は Unit 固定。checker+codegen で break の値を loop 式の型に。 | proposed |
+| 0046 | **`Option[T]` sugar `T?`** (#149)。parser で `T?` → `Option[T]` に展開、`T??` / `T?[]` も chain 可。実装は `src/parser/parser_ast_patterns.mbt` (parse_type_post_suffixes)。 | accepted |
+| 0047 | **`loop` 式 — `break(value)` で値返却** (#151)。checker (`typecheck_expr.mbt`: `env.loop_break_types` から最初の break 値の型を採用) と codegen (`wasm_codegen_expr_loop.mbt`: `block (result i64)` を発行し break が値を push) で実装済み。`loop (i = 0) { break 42 }` は `Int` を返す。 | accepted |
 | 0048 | **`map` コンテキストキーワード化** (#152)。`map {` の場合のみキーワード、それ以外は識別子。`Array::map` が `r#` なしで使用可能に。 | accepted |
 
 ## Effect System
@@ -43,7 +43,7 @@
 | 0041 | **`_start` は `() -> Unit` 固定**。`with { Effects }` で capability 宣言。exit code は panic/Process::exit。REPL は例外。 | proposed |
 | 0042 | **トップレベル未処理 effect 禁止**。ファイルモジュール top-level は pure (effect_scope_none)。shell/REPL/test は別スコープ。 | proposed |
 | 0043 | **Capability-driven DCE + 定数分岐**。`--allow-*`/`--deny-*` で capability 指定 → 不要コード除去。`@build.*` 定数 + dead branch elimination。`--profile` プリセット (minimal/sandbox/server/edge/agent)。 | proposed |
-| 0050 | **`handle` を汎用 effect handler に統一**。canonical syntax は `handle { expr } with EffectName { Op(...) => ...; }`。`Error` も built-in effect として一般化し、`throw(e)` は `perform Error::Throw(e)` の sugar とする。`resume` は one-shot / lexical-scope 限定、arm は exhaustive・top-to-bottom first-match、複数 effect は nested handle で表現する。 | proposed |
+| 0050 | **`handle` を汎用 effect handler に統一**。canonical syntax は `handle { expr } with EffectName { Op(...) => ...; }`。`Error` も built-in effect として一般化し、`throw(e)` は `perform Error::Throw(e)` の sugar (両形式が等価動作)。`resume` は one-shot / lexical-scope 限定、arm は exhaustive・top-to-bottom first-match、複数 effect は nested handle で表現する。実装: parser の `handle ... with` デシュガー (`src/parser/parser_ast_expr.mbt`)、checker の effect 検証 (`src/checker/typecheck_effects.mbt`, `typecheck_expr.mbt`)、codegen は CPS 変換相当。 | accepted |
 | 0051 | **Trait 解決レイヤを 3 層化**。`TypeEnv` 連結リスト走査を (1) **TraitGraph** (`src/checker/trait_graph.mbt`: trait 定義 / supertrait 閉包 / `is_subtrait` のメモ化 / cycle 検出 / `register_def` / `import_def`)、(2) **ImplIndex** (`src/checker/impl_index.mbt`: `trait -> target` の索引 / `would_overlap` / `register_impl` / `import_impl`)、(3) **ObligationSolver** (`src/checker/obligation_solver.mbt`: `type_implements_trait` と bound 充足判定) へ分離。trait の storage は `TraitState` (`src/checker/trait_state.mbt`) に切り出し、`TypeEnv` は trait API についての互換アダプタへ縮小。`trait_is_subtrait` / `trait_bound_satisfied` / `type_implements_trait` は shim として残置。runtime の DB ローダ (`runtime/db_type_import.mbt`, `runtime/db_query.mbt`) も import-side の `ImplIndex::import_impl` / `TraitGraph::import_def` 経由に統一。 | accepted |
 
 ## Module & Identity
