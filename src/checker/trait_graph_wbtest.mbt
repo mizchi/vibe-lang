@@ -190,3 +190,21 @@ test "TraitGraph::cycle_chain returns None when graph is acyclic" {
     None => ()
   }
 }
+
+///|
+test "TraitGraph::import_def returning false leaves trait absent" {
+  // Regression coverage for the runtime DB-loader fix: when import_def
+  // rolls back due to a cycle, the caller can rely on `has_trait`
+  // returning false to skip subsequent impl installation. (The runtime
+  // layer treats this signal as "do not install orphan impls".)
+  let env = TypeEnv::new()
+  env.set_trait_info("Self", TraitDefInfo::defined_here([], false))
+  let g = TraitGraph::of(env)
+  let installed = g.import_def(
+    "Recursive",
+    TraitDefInfo::defined_here([], true),
+    ["Recursive"],
+  )
+  assert_false(installed)
+  assert_false(env.has_trait("Recursive"))
+}

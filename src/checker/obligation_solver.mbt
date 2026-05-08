@@ -154,6 +154,9 @@ pub fn ObligationSolver::witness(
       }
       // Try direct impls of `trait_name`. Track the best near-miss so
       // we can return ImplBoundFailed when no impl ultimately satisfies.
+      // Only ImplBoundFailed witnesses are kept — NoImpl is uninformative
+      // beyond the default fallback below, so recording it would cause
+      // a later subtrait-fallback ImplBoundFailed to be dropped.
       let mut near_miss : TraitWitness? = None
       match obligation_solver_witness_match_any(
           self,
@@ -162,10 +165,11 @@ pub fn ObligationSolver::witness(
           self.index.impls_for(trait_name),
         ) {
         TraitWitness::Satisfied => return TraitWitness::Satisfied
-        w =>
+        TraitWitness::ImplBoundFailed(..) as w =>
           if near_miss is None {
             near_miss = Some(w)
           }
+        _ => ()
       }
       // Subtrait impls: any trait T' with T' : trait_name contributes its
       // impls to the search, since T:T' implies T:trait_name.
@@ -185,15 +189,16 @@ pub fn ObligationSolver::witness(
             self.index.impls_for(impl_trait_name),
           ) {
           TraitWitness::Satisfied => return TraitWitness::Satisfied
-          w =>
+          TraitWitness::ImplBoundFailed(..) as w =>
             if near_miss is None {
               near_miss = Some(w)
             }
+          _ => ()
         }
       }
       match near_miss {
-        Some(TraitWitness::ImplBoundFailed(..) as w) => w
-        _ => TraitWitness::NoImpl(trait_name~, ty=resolved)
+        Some(w) => w
+        None => TraitWitness::NoImpl(trait_name~, ty=resolved)
       }
     }
   }

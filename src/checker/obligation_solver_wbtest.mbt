@@ -123,6 +123,40 @@ test "ObligationSolver::witness reports ImplBoundFailed when bounds fail" {
 }
 
 ///|
+test "ObligationSolver::witness prefers ImplBoundFailed from subtrait fallback" {
+  // Regression test for the witness-selection bug surfaced in PR review:
+  // when checking `Eq` for a type that has no direct `Eq` impl but does
+  // have an `Ord` impl (and `Ord : Eq`) whose own bound fails, the
+  // diagnostic must surface the actionable `ImplBoundFailed` from the
+  // subtrait-fallback path rather than the uninformative `NoImpl` from
+  // the direct-impl probe.
+  let env = TypeEnv::new()
+  env.set_trait_info("Eq", TraitDefInfo::defined_here([], false))
+  env.set_trait_info("Ord", TraitDefInfo::defined_here(["Eq"], false))
+  env.set_trait_info("Hash", TraitDefInfo::defined_here([], false))
+  env.add_trait_impl("Ord", TraitImplDef::{
+    type_params: ["T"],
+    type_bounds: { "T": ["Hash"] },
+    target: @core.Type::Array(@core.Type::Param("T")),
+  })
+  let target = @core.Type::Array(@core.Type::Int)
+  let w = ObligationSolver::of(env).witness(target, "Eq")
+  match w {
+    TraitWitness::ImplBoundFailed(
+      trait_name~,
+      param_name~,
+      required_bound~,
+      ..
+    ) => {
+      assert_eq(trait_name, "Eq")
+      assert_eq(param_name, "T")
+      assert_eq(required_bound, "Hash")
+    }
+    _ => fail("expected ImplBoundFailed from subtrait fallback")
+  }
+}
+
+///|
 test "ObligationSolver::witness reports VarLacksBound for type variables" {
   let env = TypeEnv::new()
   env.set_trait_info("Eq", TraitDefInfo::defined_here([], false))
