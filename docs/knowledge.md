@@ -690,3 +690,67 @@ if stat_token_text != "" {
 - content-addressed cache で本当に効かせたいなら、**mtime/stat 由来の invalidate を content hash より優先しすぎない**こと
 - persistent cache は artifact だけでなく、**dependency closure の表現（list/group/header/interface）を相互変換できる粒度**で持つと効く
 - bootstrap のような重い系では、batch 数の改善で child explosion を止めたあとに、**最後まで残る singleton test** を見て真因を切り分けるのが早い
+
+---
+
+## K-020: ADR を一周まわして実装する作業ループ
+
+- 場所: `docs/adr.md`, `src/checker/`, `vibe/compiler/`
+- 発見: 2026-05 (ADR-0051 / 0046 / 0047 / 0050 / 0023-selfhost を順に処理)
+
+### 背景
+
+ADR-0051 (trait 解決 3 層化) を起点に、`docs/adr.md` の `proposed` 列を順に潰していった。実装作業として ADR-0046, 0047, 0050 は「すでに実装済みだが status が更新されていない」状態、ADR-0023 は「host 実装済み・selfhost 未追従」状態という違うパターンに当たり、ADR ごとにアプローチが変わるのが分かった。
+
+### よくあるパターンと処理ループ
+
+各 ADR を以下のフローでさばくと事故が少ない。
+
+1. **status と実装の照合**
+   - `docs/adr.md` 表で proposed のものを取り、関連実装場所を grep で探す。
+   - 簡単な end-to-end コードで動作確認 (`vibe run /tmp/foo.vibe`)。
+   - 動けば「実装済み・doc だけ古い」パターンなので、status 更新 + 補強 wbtest 1〜2 件の小 PR で済む。
+2. **動かない or 部分実装の場合**
+   - host (MoonBit 実装) と selfhost (vibe 実装) のどちらが対応済みか確認。
+   - `host ok / selfhost 未対応`のパターンが多い。selfhost 側に追加するときは:
+     - `vibe/compiler/syntax/token.vibe` に新 Token variant を追加すると、`tk_name` (`parser_base.vibe`) や `token_to_string` (`token.vibe`) など exhaustive match の一致を必ず壊すので一括で揃える。
+     - lexer の keyword_lookup は文字数バケットで分かれているので、追加先のバケットに入れる。
+     - parser の precedence ladder に新規 trailing-構文を入れる場合、**if-cond などで先食いされない位置**に置く必要がある。`expr is pat` を入れたとき `if x is pat { ... }` の if-form と衝突したので、`parse_infix_no_is` を切り出して mode_if 側ではそちらを使うようにした (#374 参照)。
+3. **新 AST variant が必要なケース**
+   - `let-else` のように `Stmt::SLetPatElse` が要るタイプは、selfhost のあらゆる Stmt 走査箇所 (parser, checker, codegen, walker, normalize) を横断する。本格的な機能追加で、ADR 1 件あたり中規模 PR になる。「既存の variant を Option で拡張」は変更面積が爆発するので、新 variant を追加する方が結局少ない。
+
+### PR 粒度
+
+ADR 横断の作業は PR を分けると merge と review が回しやすい。今回の例:
+
+| PR | 内容 | コミット規模 |
+|---|---|---|
+| #371 | ADR-0051 layered trait solver (本体) | 7 commits |
+| #372 | bootstrap gate を unblock (parity skip) | 1 commit |
+| #373 | ADR-0046/0047/0050 を accepted へ更新 + wbtest | 1 commit |
+| #374 | selfhost に `is` キーワード追加 (ADR-0023 parity) | 1 commit |
+
+ADR doc 更新と新規 wbtest だけの PR (#373) は CI も短く、レビューも軽い。逆に bootstrap gate のような「触ると 10 分かかる」テストは、その PR に閉じ込めて他の作業を巻き込まないようにする。
+
+### bootstrap-gate が落ちたときの分け方
+
+`selfhost-bootstrap-gate` は CI 上 `continue-on-error: true` の informational job なので、`ci-required` には影響しない。ただし pre-existing bug を放置していると判別できなくなるので:
+
+1. `vibe test vibe/compiler/<failing>_test.vibe` をローカルで再現 (`flaker` でなく直叩き)。
+2. wasmtime 必須なので `bash scripts/install_wasmtime_release.sh` で 42.0.1 を入れる。
+3. exit code 24 = `assert(...)` 失敗。テストが通ろうとしている場面が selfhost compiler のどの構文/型機能を要求しているかを切り分ける。
+4. 「テストソース自体が host も受理しない」「auto-generated bundle のシェイプが変わったのに assert が古い」など、テストが先走っていることが多い。skip + 再有効化条件を残すコメントだけで unblock 可 (#372)。
+
+### Trait 解決リファクタの教訓 (ADR-0051)
+
+- **read-path 先行 + storage 切り出しは別 PR にする**: `TypeEnv` から `traits` / `trait_impls` Map を切り出して `TraitState` 構造体に集約するのは clone/fork 全バリエーションに影響するため、(a) 互換アダプタを置く read-path → (b) 書き込み API → (c) storage 切り出し、と段階的に進めると衝撃を抑えられる。
+- **診断強化は「失敗理由の構造化」から始める**: `ObligationSolver::satisfies(...) -> Bool` を `witness(...) -> TraitWitness` に置き換えるだけで、bound 不一致のエラーが「impl Show for Array[T] requires T: Hash, but Int does not satisfy it」に化ける。Bool API は thin wrapper として残す。
+- **メモ化は per-call**: `is_subtrait` は session 内で単調なので `TraitGraph` インスタンスにメモを持たせれば十分。invalidate を考えなくていい場所を選ぶ。
+- **import 経路の cycle ガードは defence-in-depth**: `register_def` は self-ref と未知 supertrait を弾けば cycle は構造的に起きない。一方 `import_def` は既存 entry の supertraits を上書きするので、install→`has_cycle`→roll back の三段で守る。
+
+### 教訓
+
+- ADR は実装と doc の乖離が起きやすい。proposed のままになっているものは「実装済みで doc 更新だけ」が混ざるのでまず end-to-end で確認する。
+- selfhost は host の機能を追走する。新 Token を入れるときは exhaustive match 全箇所を一気通貫で更新する。
+- precedence ladder に trailing-構文を入れるときは、cond 的に他 form が trailing 部分を奪い合う場合があるので「消費しない版」を切り出す。
+- bootstrap-gate のような重い informational job は、PR を分けて閉じ込めるとレビューと再実行が独立に回せる。
