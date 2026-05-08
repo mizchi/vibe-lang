@@ -35,7 +35,12 @@ suberror TypeError {
   NonExhaustiveMatch(missing~ : Array[String], span~ : @core.Span)
   BadTypeDef(message~ : String, span~ : @core.Span)
   TraitSealed(trait_name~ : String, span~ : @core.Span)
-  TraitImplOverlap(trait_name~ : String, span~ : @core.Span)
+  TraitImplOverlap(
+    trait_name~ : String,
+    existing_target~ : @core.Type,
+    incoming_target~ : @core.Type,
+    span~ : @core.Span
+  )
   EffectGuardNotSatisfied(
     operation~ : String,
     missing_effect~ : String?,
@@ -288,15 +293,28 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
         severity: None,
         code: None,
       }
-    TypeError::TraitImplOverlap(trait_name~, span~) =>
+    TypeError::TraitImplOverlap(
+      trait_name~,
+      existing_target~,
+      incoming_target~,
+      span~,
+    ) =>
       @core.Diagnostic::{
         stage: "type",
-        message: "[TROP003] overlapping impl: " + trait_name,
+        message: "[TROP003] overlapping impl: " +
+        trait_name +
+        " for " +
+        incoming_target.to_string(),
         span: Some(span),
         hint: Some(
           "narrow the impl target or bounds so only one impl can match each concrete type",
         ),
-        note: None,
+        note: Some(
+          "conflicts with existing impl: " +
+          trait_name +
+          " for " +
+          existing_target.to_string(),
+        ),
         severity: None,
         code: None,
       }
@@ -452,6 +470,18 @@ fn TypeError::resolve_vars(self : TypeError, env : TypeEnv) -> TypeError {
         function_name~,
         function_error~,
         field_type=resolve_type(env, field_type),
+        span~,
+      )
+    TypeError::TraitImplOverlap(
+      trait_name~,
+      existing_target~,
+      incoming_target~,
+      span~,
+    ) =>
+      TypeError::TraitImplOverlap(
+        trait_name~,
+        existing_target=resolve_type(env, existing_target),
+        incoming_target=resolve_type(env, incoming_target),
         span~,
       )
     _ => self

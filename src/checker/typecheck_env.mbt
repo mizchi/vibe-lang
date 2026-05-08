@@ -70,8 +70,7 @@ pub struct TypeEnv {
   effect_defs : Map[String, @core.EffectDef_]
   // Inferred effects: collected when perform is used without explicit with { }
   inferred_effects : Map[String, Bool]
-  traits : Map[String, TraitDefInfo]
-  trait_impls : Map[String, Array[TraitImplDef]]
+  trait_state : TraitState
   fn_versions : Map[String, ApiSemver]
   purities : @scoped_map.ScopedMap[Bool]
   purity_tiers : @scoped_map.ScopedMap[TopLevelPurityTier]
@@ -139,8 +138,7 @@ pub fn TypeEnv::new() -> TypeEnv {
     ctor_index: {},
     effect_defs: {},
     inferred_effects: {},
-    traits: {},
-    trait_impls: {},
+    trait_state: TraitState::new(),
     fn_versions: {},
     purities: @scoped_map.ScopedMap::new(),
     purity_tiers: @scoped_map.ScopedMap::new(),
@@ -409,8 +407,7 @@ pub fn TypecheckSession::new_env(self : TypecheckSession) -> TypeEnv {
     ctor_index: {},
     effect_defs: {},
     inferred_effects: {},
-    traits: {},
-    trait_impls: {},
+    trait_state: TraitState::new(),
     fn_versions: {},
     purities: @scoped_map.ScopedMap::new(),
     purity_tiers: @scoped_map.ScopedMap::new(),
