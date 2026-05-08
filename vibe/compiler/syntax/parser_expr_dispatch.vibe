@@ -9,7 +9,7 @@ import ./parser_base.vibe {
 }
 
 import ./parser_expr_core.vibe {
-  parse_infix
+  parse_infix, parse_infix_no_is
 }
 
 import ./token.vibe {
@@ -196,11 +196,19 @@ export let parse_impl_dispatch = (tokens: Array[Token], pos: Int, mode: Int, par
       }
     }
   } else if mode == mode_if {
-    let (cond, cn) = parse_recur(tokens, pos, 0)
+    // Parse cond with the no-is variant so a trailing `is pattern` belongs
+    // to the if-cond pattern slot rather than collapsing into a Bool match.
+    let (cond, cn) = parse_infix_no_is(tokens, pos, 0, pos, parse_recur)
     let mut is_mode = false
     let mut is_pat_val = PWild
     let mut brace_pos = cn
     match peek(tokens, cn) {
+      TIs => {
+        let (pat, pn) = parse_pattern(tokens, cn + 1)
+        is_mode = true
+        is_pat_val = pat
+        brace_pos = pn
+      },
       TIdent(kw) => if kw == "is" {
         let (pat, pn) = parse_pattern(tokens, cn + 1)
         is_mode = true
