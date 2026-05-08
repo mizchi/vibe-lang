@@ -68,7 +68,7 @@ pub fn TraitDefInfo::supertraits_copy(self : TraitDefInfo) -> Array[String] {
 
 ///|
 pub fn TypeEnv::has_trait(self : TypeEnv, name : String) -> Bool {
-  self.traits.contains(name)
+  self.trait_state.traits.contains(name)
 }
 
 ///|
@@ -82,12 +82,12 @@ pub fn TypeEnv::set_trait_info(
   name : String,
   info : TraitDefInfo,
 ) -> Unit {
-  self.traits[name] = info
+  self.trait_state.traits[name] = info
 }
 
 ///|
 pub fn TypeEnv::get_trait_info(self : TypeEnv, name : String) -> TraitDefInfo? {
-  self.traits.get(name)
+  self.trait_state.traits.get(name)
 }
 
 ///|
@@ -102,7 +102,7 @@ pub fn TypeEnv::import_trait(
 
 ///|
 pub fn TypeEnv::trait_accepts_impl_here(self : TypeEnv, name : String) -> Bool {
-  match self.traits.get(name) {
+  match self.trait_state.traits.get(name) {
     Some(info) => info.allows_impl_here()
     None => false
   }
@@ -111,7 +111,7 @@ pub fn TypeEnv::trait_accepts_impl_here(self : TypeEnv, name : String) -> Bool {
 ///|
 pub fn TypeEnv::trait_names(self : TypeEnv) -> Array[String] {
   let names : Array[String] = []
-  for name, _ in self.traits {
+  for name, _ in self.trait_state.traits {
     names.push(name)
   }
   names
@@ -122,7 +122,7 @@ pub fn TypeEnv::trait_impls_for(
   self : TypeEnv,
   name : String,
 ) -> Array[TraitImplDef] {
-  match self.trait_impls.get(name) {
+  match self.trait_state.trait_impls.get(name) {
     Some(items) => items
     None => []
   }
@@ -137,5 +137,5 @@ pub fn TypeEnv::add_trait_impl(
   let items = self.trait_impls_for(name)
   let next = items.copy()
   next.push(impl_def)
-  self.trait_impls[name] = next
+  self.trait_state.trait_impls[name] = next
 }

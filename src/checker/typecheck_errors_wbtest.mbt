@@ -14,13 +14,24 @@ test "trait sealed diagnostic carries openness code" {
 }
 
 ///|
-test "trait overlap diagnostic carries openness code" {
+test "trait overlap diagnostic carries openness code and target details" {
   let diag = TypeError::TraitImplOverlap(
     trait_name="Eq",
+    existing_target=@core.Type::Named(name="Foo", args=[]),
+    incoming_target=@core.Type::Named(name="Bar", args=[]),
     span=test_span_typecheck_errors(),
   ).diagnostic()
   assert_true(diag.message.contains("[TROP003]"))
   assert_true(diag.message.contains("overlapping impl: Eq"))
+  // Both targets surface so the user can see which impls conflict.
+  assert_true(diag.message.contains("Bar"))
+  match diag.note {
+    Some(note) => {
+      assert_true(note.contains("conflicts with existing impl"))
+      assert_true(note.contains("Foo"))
+    }
+    None => fail("expected note with conflicting target")
+  }
 }
 
 ///|

@@ -1039,14 +1039,26 @@ pub fn VibeDb::new() -> VibeDb {
                         match imported_env.get_trait_info(source_name) {
                           Some(source_info) => {
                             let local_supertraits = source_info.supertraits_copy()
-                            env.import_trait(
-                              target_name, source_info, local_supertraits,
-                            )
-                            let impls = imported_env.trait_impls_for(
-                              source_name,
-                            )
-                            for impl_def in impls {
-                              env.add_trait_impl(target_name, impl_def)
+                            // Skip impl installation if the cycle-checked
+                            // trait import was rolled back; otherwise we'd
+                            // leave orphan impls bound to a missing trait.
+                            let trait_present = if env.has_trait(target_name) {
+                              true
+                            } else {
+                              @checker.TraitGraph::of(env).import_def(
+                                target_name, source_info, local_supertraits,
+                              )
+                            }
+                            if trait_present {
+                              let impls = imported_env.trait_impls_for(
+                                source_name,
+                              )
+                              let import_index = @checker.ImplIndex::of(env)
+                              for impl_def in impls {
+                                import_index.import_impl(
+                                  target_name, impl_def,
+                                )
+                              }
                             }
                           }
                           None => ()
@@ -1108,12 +1120,19 @@ pub fn VibeDb::new() -> VibeDb {
                             source_info.supertraits_copy(),
                             trait_aliases,
                           )
-                          env.import_trait(
-                            target_name, source_info, local_supertraits,
-                          )
-                          let impls = imported_env.trait_impls_for(source_name)
-                          for impl_def in impls {
-                            env.add_trait_impl(target_name, impl_def)
+                          let trait_present = if env.has_trait(target_name) {
+                            true
+                          } else {
+                            @checker.TraitGraph::of(env).import_def(
+                              target_name, source_info, local_supertraits,
+                            )
+                          }
+                          if trait_present {
+                            let impls = imported_env.trait_impls_for(source_name)
+                            let import_index = @checker.ImplIndex::of(env)
+                            for impl_def in impls {
+                              import_index.import_impl(target_name, impl_def)
+                            }
                           }
                         }
                         None => ()

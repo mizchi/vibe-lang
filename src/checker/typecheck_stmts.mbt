@@ -950,57 +950,24 @@ fn record_expr_type(env : TypeEnv, span : @core.Span, ty : @core.Type) -> Unit {
 }
 
 ///|
-fn trait_is_subtrait_inner(
-  env : TypeEnv,
-  sub_trait : String,
-  super_trait : String,
-  visiting : Map[String, Bool],
-) -> Bool {
-  if sub_trait == super_trait {
-    return true
-  }
-  if visiting.contains(sub_trait) {
-    return false
-  }
-  match env.get_trait_info(sub_trait) {
-    Some(info) => {
-      let next_visiting = visiting.copy()
-      next_visiting[sub_trait] = true
-      for parent in info.supertraits_copy() {
-        if parent == super_trait {
-          return true
-        }
-        if trait_is_subtrait_inner(env, parent, super_trait, next_visiting) {
-          return true
-        }
-      }
-      false
-    }
-    None => false
-  }
-}
-
-///|
+/// Compatibility shim — delegates to ADR-0051 `TraitGraph`. Kept so that the
+/// many call sites in this file (and tests) can migrate gradually.
 fn trait_is_subtrait(
   env : TypeEnv,
   sub_trait : String,
   super_trait : String,
 ) -> Bool {
-  trait_is_subtrait_inner(env, sub_trait, super_trait, {})
+  TraitGraph::of(env).is_subtrait(sub_trait, super_trait)
 }
 
 ///|
+/// Compatibility shim — delegates to ADR-0051 `ObligationSolver`.
 fn trait_bound_satisfied(
   env : TypeEnv,
   available : Array[String],
   required : String,
 ) -> Bool {
-  for bound in available {
-    if trait_is_subtrait(env, bound, required) {
-      return true
-    }
-  }
-  false
+  ObligationSolver::of(env).bound_satisfied(available, required)
 }
 
 ///|
@@ -1018,6 +985,8 @@ fn ensure_traits_defined(
 }
 
 ///|
+/// Compatibility shim — delegates to ADR-0051 `TraitGraph::register_def`,
+/// the canonical write path for trait definitions.
 fn register_trait_def(
   env : TypeEnv,
   name : String,
@@ -1026,37 +995,7 @@ fn register_trait_def(
   exported : Bool,
   span : @core.Span,
 ) -> Unit raise TypeError {
-  if open_impl && not(exported) {
-    raise TypeError::BadTypeDef(
-      message="`open trait` is only allowed with export",
-      span~,
-    )
-  }
-  if env.has_trait(name) {
-    if env.session_state.lenient_mode {
-      return
-    }
-    // Allow re-defining a prelude builtin trait (e.g. Eq, Hash, Ord).
-    // The prelude seed soft-registers these so derive(Eq) works, but
-    // user modules may redefine them via `export trait Eq`.
-    if not(is_prelude_builtin_trait(name)) {
-      raise TypeError::BadTypeDef(message="duplicate trait: " + name, span~)
-    }
-  }
-  let normalized_supertraits = dedup_trait_bounds(supertraits)
-  for supertrait in normalized_supertraits {
-    if supertrait == name {
-      raise TypeError::BadTypeDef(
-        message="trait cannot inherit itself: " + name,
-        span~,
-      )
-    }
-  }
-  ensure_traits_defined(env, normalized_supertraits, span)
-  env.set_trait_info(
-    name,
-    TraitDefInfo::defined_here(normalized_supertraits, open_impl),
-  )
+  TraitGraph::of(env).register_def(name, supertraits, open_impl, exported, span)
 }
 
 ///|
@@ -1276,99 +1215,15 @@ fn is_ord_primitive(ty : @core.Type) -> Bool {
 }
 
 ///|
+/// Compatibility shim — delegates to ADR-0051 `ObligationSolver`. The
+/// solver consults intrinsic primitive impls, the registered impl index,
+/// and the supertrait closure for subtrait fallbacks.
 fn type_implements_trait(
   env : TypeEnv,
   ty : @core.Type,
   trait_name : String,
 ) -> Bool {
-  let resolved = resolve_type(env, ty)
-  match resolved {
-    @core.Type::Var(id) =>
-      match env.var_trait_bounds.get(id) {
-        Some(bounds) => trait_bound_satisfied(env, bounds, trait_name)
-        None => false
-      }
-    _ => {
-      // Primitive types implement Eq and Ord intrinsically
-      // (Bool has Eq but not Ord — runtime __lt does not handle booleans)
-      if trait_name == "Eq" && is_eq_primitive(resolved) {
-        return true
-      }
-      if trait_name == "Ord" && is_ord_primitive(resolved) {
-        return true
-      }
-      // Option[T] implements Eq when T: Eq (intrinsic, avoids builtin module dep)
-      if trait_name == "Eq" {
-        match resolved {
-          @core.Type::Named(name="Option", args=[inner]) =>
-            if type_implements_trait(env, inner, "Eq") {
-              return true
-            }
-          _ => ()
-        }
-      }
-      if type_implements_trait_from_impls(
-          env,
-          resolved,
-          env.trait_impls_for(trait_name),
-        ) {
-        return true
-      }
-      for impl_trait_name in env.trait_names() {
-        if impl_trait_name == trait_name {
-          continue
-        }
-        if not(trait_is_subtrait(env, impl_trait_name, trait_name)) {
-          continue
-        }
-        if type_implements_trait_from_impls(
-            env,
-            resolved,
-            env.trait_impls_for(impl_trait_name),
-          ) {
-          return true
-        }
-      }
-      false
-    }
-  }
-}
-
-///|
-fn type_implements_trait_from_impls(
-  env : TypeEnv,
-  resolved : @core.Type,
-  impls : Array[TraitImplDef],
-) -> Bool {
-  for impl_def in impls {
-    let mapping : Map[String, @core.Type] = {}
-    if type_matches_impl_target(env, impl_def.target, resolved, mapping) {
-      let mut ok = true
-      for param in impl_def.type_params {
-        match mapping.get(param) {
-          Some(actual_ty) =>
-            match impl_def.type_bounds.get(param) {
-              Some(bounds) =>
-                for bound in bounds {
-                  if not(type_implements_trait(env, actual_ty, bound)) {
-                    ok = false
-                    break
-                  }
-                }
-              None => ()
-            }
-          None => ()
-        }
-        if not(ok) {
-          break
-        }
-      }
-      if ok {
-        return true
-      }
-    }
-  }
-  false
+  ObligationSolver::of(env).satisfies(ty, trait_name)
 }
 
 ///|
@@ -1391,13 +1246,21 @@ fn ensure_type_satisfies_bounds(
       true
     }
     _ => {
+      let solver = ObligationSolver::of(env)
       for bound in deduped {
-        if not(type_implements_trait(env, resolved, bound)) {
+        let witness = solver.witness(resolved, bound)
+        if not(witness.is_satisfied()) {
+          let extra = witness.message()
+          let enriched_context = if extra == "" {
+            context
+          } else {
+            context + ": " + extra
+          }
           raise TypeError::Mismatch(
             expected=@core.Type::Named(name=bound, args=[]),
             actual=resolved,
             span~,
-            context=Some(context),
+            context=Some(enriched_context),
           )
         }
       }
@@ -1407,6 +1270,8 @@ fn ensure_type_satisfies_bounds(
 }
 
 ///|
+/// Compatibility shim — delegates to ADR-0051 `ImplIndex::register_impl`,
+/// the canonical write path for trait impls.
 fn register_trait_impl(
   env : TypeEnv,
   type_params : Array[String],
@@ -1415,39 +1280,9 @@ fn register_trait_impl(
   target : @core.Type,
   span : @core.Span,
 ) -> Unit raise TypeError {
-  if not(env.has_trait(trait_name)) {
-    raise TypeError::BadTypeDef(message="unknown trait: " + trait_name, span~)
-  }
-  if not(env.trait_accepts_impl_here(trait_name)) {
-    raise TypeError::TraitSealed(trait_name~, span~)
-  }
-  ensure_unique_params(type_params, span)
-  let normalized_type_bounds : Map[String, Array[String]] = {}
-  for type_param in type_params {
-    match type_bounds.get(type_param) {
-      Some(bounds) => {
-        let deduped = dedup_trait_bounds(bounds)
-        ensure_traits_defined(env, deduped, span)
-        normalized_type_bounds[type_param] = deduped
-      }
-      None => ()
-    }
-  }
-  let normalized_target = normalize_type(env, target)
-  let incoming = TraitImplDef::{
-    type_params,
-    type_bounds: normalized_type_bounds,
-    target: normalized_target,
-  }
-  for impl_def in env.trait_impls_for(trait_name) {
-    if trait_impls_overlap(env, impl_def, incoming) {
-      if env.session_state.lenient_mode {
-        return
-      }
-      raise TypeError::TraitImplOverlap(trait_name~, span~)
-    }
-  }
-  env.add_trait_impl(trait_name, incoming)
+  ImplIndex::of(env).register_impl(
+    type_params, type_bounds, trait_name, target, span,
+  )
 }
 
 ///|
