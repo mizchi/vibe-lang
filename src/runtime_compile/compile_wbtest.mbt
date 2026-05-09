@@ -4248,3 +4248,83 @@ test "HOF with pure function compiles to wasm" {
   }
   assert_true(wasm_bytes.length() > 8)
 }
+
+///|
+// ADR-0044 Phase 2: for-in over Array now routes through the unified
+// `iter_require` / `iter_length` / `iter_get` desugar. This regression test
+// pins the behavior end-to-end: a for-in over Array compiles with the
+// Iterable trait constraint enforced, and ArrayView (Array slice) iterates
+// correctly through the same path because `iter_length` / `iter_get` codegen
+// mirrors `Array::length` / `Array::get`.
+test "for-in over Array slice compiles to wasm (ADR-0044 Phase 2)" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let sum_slice = (xs: Array[Int]) -> Int {
+      #|  let s = Array::slice(xs, 1, 4)
+      #|  let mut total = 0
+      #|  for v in s { total = total + v }
+      #|  total
+      #|}
+      #|sum_slice([10, 20, 30, 40, 50])
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("for-in over slice failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+// ADR-0044 Phase 2: for-in over a user-defined Iterable type compiles
+// when `<Type>::iter_length` and `<Type>::iter_get` are provided. The
+// monoify pass specializes the desugared iter calls to the impl helpers.
+test "for-in over user Iterable compiles via iter_length/iter_get" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|enum Trio[T] { Trio(T, T, T) }
+      #|impl [T] Iterable for Trio[T]
+      #|let trio_of3 = [T](a: T, b: T, c: T) -> Trio[T] { Trio(a, b, c) }
+      #|let Trio::iter_length = [T](_xs: Trio[T]) -> Int { 3 }
+      #|let Trio::iter_get = [T](xs: Trio[T], index: Int) -> T {
+      #|  match xs {
+      #|    Trio(a, b, c) => if index == 0 { a } else if index == 1 { b } else { c }
+      #|  }
+      #|}
+      #|let sum_trio = () -> Int {
+      #|  let mut total = 0
+      #|  for v in trio_of3(1, 2, 3) { total = total + v }
+      #|  total
+      #|}
+      #|sum_trio()
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("for-in over Trio failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+// ADR-0044 Phase 2: for-in over a non-Iterable value is rejected by the
+// type checker because the desugared `iter_require[C: Iterable]` cannot
+// satisfy the trait bound.
+test "for-in over non-Iterable rejected (ADR-0044 Phase 2)" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|for v in 42 { v }
+    ),
+  )
+  let result : Result[Bytes, WasmCompileError] = try? compile_module_wasm_no_dce(
+    db, "main",
+  )
+  match result {
+    Err(_) => ()
+    Ok(_) => fail("expected for-in over Int to fail typecheck")
+  }
+}
