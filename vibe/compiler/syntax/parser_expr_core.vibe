@@ -422,10 +422,31 @@ let rec parse_infix_loop = (tokens: Array[Token], left: Expr, next: Int, min_pre
   }
 }
 
-export let parse_infix = (tokens: Array[Token], pos: Int, min_prec: Int, expr_start: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int)with { Error }) -> (Expr, Int)with { Error } {
+// `parse_infix_no_is` walks the operator-precedence ladder *without*
+// consuming a trailing `expr is pattern` test at the end. The `if-cond is
+// pat { ... }` special form (parsed in `parse_impl_dispatch` mode_if)
+// needs the pattern to remain on the token stream so it can capture it
+// as the if-cond's pattern arm; without this split the `is` gets
+// swallowed here and the outer dispatch sees a stray `{` it cannot match
+// against the if-cond pattern slot.
+export let parse_infix_no_is = (tokens: Array[Token], pos: Int, min_prec: Int, expr_start: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int)with { Error }) -> (Expr, Int)with { Error } {
   let (left0, next0) = parse_prefix(tokens, pos, parse_recur)
-  let (expr, en) = parse_infix_loop(tokens, left0, next0, min_prec, expr_start, false, parse_recur)
+  parse_infix_loop(tokens, left0, next0, min_prec, expr_start, false, parse_recur)
+}
+
+export let parse_infix = (tokens: Array[Token], pos: Int, min_prec: Int, expr_start: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int)with { Error }) -> (Expr, Int)with { Error } {
+  let (expr, en) = parse_infix_no_is(tokens, pos, min_prec, expr_start, parse_recur)
+  // ADR-0023: `expr is pattern` desugars to `match expr { pattern => true, _ => false }`.
+  // Accept both `TIs` (now a reserved keyword) and the legacy `TIdent("is")`
+  // shape so older bundles continue to lex.
   match peek(tokens, en) {
+    TIs => {
+      let (pat, pn) = parse_pattern(tokens, en + 1)
+      (EMatch(expr, [
+        (pat, EBool(true)),
+        (PWild, EBool(false))
+      ]), pn)
+    },
     TIdent(kw) => if kw == "is" {
       let (pat, pn) = parse_pattern(tokens, en + 1)
       (EMatch(expr, [
