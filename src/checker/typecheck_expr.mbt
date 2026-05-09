@@ -914,7 +914,11 @@ fn type_expr_eff(
         env, scrutinee, arms, span, aliases, effects, allow_effect,
       )
     @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
-      // Check iterable type to decide desugar strategy
+      // Check iterable type to decide desugar strategy.
+      // String stays special-cased (char-codes vs values, no Iterable impl).
+      // All other types — including Array — flow through the unified
+      // `iter_require` / `iter_length` / `iter_get` desugar so the Iterable
+      // trait constraint is enforced (ADR-0044 Phase 2).
       let iter_ty = type_expr_eff(env, iterable, aliases, effects, allow_effect)
       let desugared = match iter_ty {
         @core.Type::String =>
@@ -922,15 +926,7 @@ fn type_expr_eff(
             value_name, index_name, iterable, body, span, "String::length", "String::char_code_at",
             false,
           )
-        @core.Type::Array(_) =>
-          @core.desugar_for_in_with(
-            value_name, index_name, iterable, body, span, "Array::length", "Array::get",
-            false,
-          )
-        _ =>
-          // Generic Iterable: use iter_require for trait check,
-          // then iter_length/iter_get (which dispatch to the impl)
-          @core.desugar_for_in(value_name, index_name, iterable, body, span)
+        _ => @core.desugar_for_in(value_name, index_name, iterable, body, span)
       }
       type_block(env, desugared, aliases, effects, true, share_subs=true)
     }
