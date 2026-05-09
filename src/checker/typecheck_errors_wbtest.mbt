@@ -14,6 +14,51 @@ test "trait sealed diagnostic carries openness code" {
 }
 
 ///|
+test "Mismatch hint suggests derive(Eq) when context includes no-impl-Eq" {
+  // ADR-0045: typing `vec1 == vec2` where Vec2 has no Eq impl raises a
+  // Mismatch with `context = "argument: no impl `Eq` for `Vec2`"`. The
+  // diagnostic should point the user at `derive(Eq)`.
+  let diag = TypeError::Mismatch(
+    expected=@core.Type::Named(name="Eq", args=[]),
+    actual=@core.Type::Named(name="Vec2", args=[]),
+    span=test_span_typecheck_errors(),
+    context=Some("argument: no impl `Eq` for `Vec2`"),
+  ).diagnostic()
+  match diag.hint {
+    Some(hint) => assert_true(hint.contains("derive(Eq)"))
+    None => fail("expected derive(Eq) hint")
+  }
+}
+
+///|
+test "Mismatch hint suggests derive(Hash) when context includes no-impl-Hash" {
+  let diag = TypeError::Mismatch(
+    expected=@core.Type::Named(name="Hash", args=[]),
+    actual=@core.Type::Named(name="UserId", args=[]),
+    span=test_span_typecheck_errors(),
+    context=Some("argument: no impl `Hash` for `UserId`"),
+  ).diagnostic()
+  match diag.hint {
+    Some(hint) => assert_true(hint.contains("derive(Hash)"))
+    None => fail("expected derive(Hash) hint")
+  }
+}
+
+///|
+test "Mismatch hint omitted for plain (no trait-witness) context" {
+  let diag = TypeError::Mismatch(
+    expected=@core.Type::Int,
+    actual=@core.Type::String,
+    span=test_span_typecheck_errors(),
+    context=Some("argument"),
+  ).diagnostic()
+  match diag.hint {
+    Some(_) => fail("expected no hint for plain mismatch")
+    None => ()
+  }
+}
+
+///|
 test "trait overlap diagnostic carries openness code and target details" {
   let diag = TypeError::TraitImplOverlap(
     trait_name="Eq",

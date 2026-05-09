@@ -69,6 +69,29 @@ fn suggestion_hint(suggestion : String?) -> String? {
 }
 
 ///|
+/// Mismatch hint based on the context string. ADR-0045: when a trait bound
+/// is the failure mode (the witness embedded `no impl `Eq` for `Foo``),
+/// surface `derive(Eq)` as the typical fix so users do not have to know
+/// the trait registration mechanics.
+fn mismatch_hint(context : String?) -> String? {
+  match context {
+    Some(ctx) =>
+      if ctx.contains("no impl `Eq`") {
+        Some(
+          "annotate the type with `derive(Eq)` or add `impl Eq for <type>` to give it an Eq instance",
+        )
+      } else if ctx.contains("no impl `Hash`") {
+        Some("add `derive(Hash)` or `impl Hash for <type>`")
+      } else if ctx.contains("no impl `Ord`") {
+        Some("add `derive(Ord)` or `impl Ord for <type>`")
+      } else {
+        None
+      }
+    None => None
+  }
+}
+
+///|
 fn effect_not_allowed_hint(name : String) -> String? {
   if name == "Error" {
     Some(
@@ -169,7 +192,7 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
         stage: "type",
         message,
         span: Some(span),
-        hint: None,
+        hint: mismatch_hint(context),
         note: Some(
           "expected: " +
           expected.to_string() +

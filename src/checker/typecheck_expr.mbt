@@ -2010,17 +2010,25 @@ fn ensure_eq_operand(
       for item in items {
         ensure_eq_operand(env, item, span)
       }
-    @core.Type::Named(..) =>
-      if type_implements_trait(env, resolved, "Eq") {
-        ()
-      } else {
+    @core.Type::Named(..) => {
+      // ADR-0045: surface the TraitWitness reason so a missing `derive(Eq)`
+      // hints at the actual fix instead of just "expected Eq, actual Vec2".
+      let w = ObligationSolver::of(env).witness(resolved, "Eq")
+      if not(w.is_satisfied()) {
+        let extra = w.message()
+        let ctx = if extra == "" {
+          "argument"
+        } else {
+          "argument: " + extra
+        }
         raise TypeError::Mismatch(
           expected=@core.Type::Named(name="Eq", args=[]),
           actual=resolved,
           span~,
-          context=Some("argument"),
+          context=Some(ctx),
         )
       }
+    }
     _ =>
       raise TypeError::Mismatch(
         expected=@core.Type::Int,
@@ -2861,7 +2869,9 @@ fn check_call_args(
                 expected=argument_mismatch_expected_type(env, param_ty, arg.ty),
                 actual=resolve_type(env, arg.ty),
                 span=arg.span,
-                context=Some("argument"),
+                context=Some(
+                  argument_mismatch_context(env, param_ty, arg.ty),
+                ),
               )
             }
           None =>
@@ -2901,7 +2911,9 @@ fn check_call_args(
                 expected=argument_mismatch_expected_type(env, param.ty, arg.ty),
                 actual=resolve_type(env, arg.ty),
                 span=arg.span,
-                context=Some("argument"),
+                context=Some(
+                  argument_mismatch_context(env, param.ty, arg.ty),
+                ),
               )
             }
           }
@@ -2951,5 +2963,40 @@ fn argument_mismatch_expected_type(
         None => resolved_expected
       }
     _ => resolved_expected
+  }
+}
+
+///|
+/// Build the diagnostic context string for an argument-position trait-bound
+/// mismatch, using the ADR-0051 `TraitWitness` to explain *why* the actual
+/// type does not satisfy the expected bound (e.g. "no impl `Eq` for `Vec2`",
+/// hinting the user to add `derive(Eq)`). Falls through to the bare
+/// "argument" label when there is no informative witness — for instance
+/// when the parameter is not bound by any trait.
+fn argument_mismatch_context(
+  env : TypeEnv,
+  expected : @core.Type,
+  actual : @core.Type,
+) -> String {
+  let base = "argument"
+  let resolved_expected = resolve_type(env, expected)
+  let resolved_actual = resolve_type(env, actual)
+  match resolved_expected {
+    @core.Type::Var(id) =>
+      match env.var_trait_bounds.get(id) {
+        Some(bounds) => {
+          let deduped = dedup_trait_bounds(bounds)
+          let solver = ObligationSolver::of(env)
+          for bound in deduped {
+            let w = solver.witness(resolved_actual, bound)
+            if not(w.is_satisfied()) {
+              return base + ": " + w.message()
+            }
+          }
+          base
+        }
+        None => base
+      }
+    _ => base
   }
 }

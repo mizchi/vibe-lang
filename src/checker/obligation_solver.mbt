@@ -68,7 +68,7 @@ pub fn TraitWitness::message(self : TraitWitness) -> String {
   match self {
     TraitWitness::Satisfied => ""
     TraitWitness::NoImpl(trait_name~, ty~) =>
-      "no impl `" + trait_name + "` for `" + ty.to_string() + "`"
+      "no impl `" + trait_name + "` for `" + render_witness_type(ty) + "`"
     TraitWitness::ImplBoundFailed(
       trait_name~,
       impl_target~,
@@ -79,13 +79,13 @@ pub fn TraitWitness::message(self : TraitWitness) -> String {
       "impl `" +
       trait_name +
       "` for `" +
-      impl_target.to_string() +
+      render_witness_type(impl_target) +
       "` requires `" +
       param_name +
       ": " +
       required_bound +
       "`, but `" +
-      actual_ty.to_string() +
+      render_witness_type(actual_ty) +
       "` does not satisfy it"
     TraitWitness::VarLacksBound(trait_name~, available~) =>
       if available.is_empty() {
@@ -283,5 +283,84 @@ fn obligation_solver_witness_match_any(
   match bound_failure {
     Some(w) => w
     None => TraitWitness::NoImpl(trait_name~, ty=resolved)
+  }
+}
+
+///|
+/// Compact, user-facing rendering of a type for embedding in witness
+/// messages — `Show for Type` falls through to the Debug repr (e.g.
+/// `Named(name="Vec2", args=[])`), which is verbose for diagnostics.
+fn render_witness_type(ty : @core.Type) -> String {
+  match ty {
+    @core.Type::Int => "Int"
+    @core.Type::Float => "Float"
+    @core.Type::Double => "Double"
+    @core.Type::Bool => "Bool"
+    @core.Type::Char => "Char"
+    @core.Type::String => "String"
+    @core.Type::Path => "Path"
+    @core.Type::PromptText => "PromptText"
+    @core.Type::Unit => "Unit"
+    @core.Type::Infer => "_"
+    @core.Type::Never => "Never"
+    @core.Type::StringBuilder => "StringBuilder"
+    @core.Type::Bytes => "Bytes"
+    @core.Type::V128 => "V128"
+    @core.Type::Array(inner) => "Array[" + render_witness_type(inner) + "]"
+    @core.Type::Set(inner) => "Set[" + render_witness_type(inner) + "]"
+    @core.Type::Map(key, inner) =>
+      "Map[" +
+      render_witness_type(key) +
+      ", " +
+      render_witness_type(inner) +
+      "]"
+    @core.Type::ArrayBuilder(inner) =>
+      "ArrayBuilder[" + render_witness_type(inner) + "]"
+    @core.Type::MapBuilder(key, inner) =>
+      "MapBuilder[" +
+      render_witness_type(key) +
+      ", " +
+      render_witness_type(inner) +
+      "]"
+    @core.Type::Named(name~, args~) =>
+      if args.length() == 0 {
+        name
+      } else {
+        let parts : Array[String] = []
+        for arg in args {
+          parts.push(render_witness_type(arg))
+        }
+        let mut joined = ""
+        let mut first = true
+        for p in parts {
+          if first {
+            joined = p
+            first = false
+          } else {
+            joined = joined + ", " + p
+          }
+        }
+        name + "[" + joined + "]"
+      }
+    @core.Type::Param(name) => name
+    @core.Type::Var(id) => "?t" + id.to_string()
+    @core.Type::Tuple(items) => {
+      let parts : Array[String] = []
+      for item in items {
+        parts.push(render_witness_type(item))
+      }
+      let mut joined = ""
+      let mut first = true
+      for p in parts {
+        if first {
+          joined = p
+          first = false
+        } else {
+          joined = joined + ", " + p
+        }
+      }
+      "(" + joined + ")"
+    }
+    _ => ty.to_string()
   }
 }
