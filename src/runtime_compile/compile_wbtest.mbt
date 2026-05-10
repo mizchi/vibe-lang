@@ -4328,3 +4328,65 @@ test "for-in over non-Iterable rejected (ADR-0044 Phase 2)" {
     Ok(_) => fail("expected for-in over Int to fail typecheck")
   }
 }
+
+///|
+// ADR-0044 Phase 3: String now implements Iterable. The prelude provides
+// `String::iter_length` (= String::length) and `String::iter_get`
+// (= String::char_code_at), so generic Iterable combinators
+// (`Iterator::fold`/`map`/etc.) work over String values, with each element
+// visible as the Int char code (matching the existing for-in over String
+// shape).
+test "Iterable for String — iter_length / iter_get compile" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let str_total = (s: String) -> Int {
+      #|  let len = String::iter_length(s)
+      #|  let mut acc = 0
+      #|  let mut i = 0
+      #|  while i < len {
+      #|    acc = acc + String::iter_get(s, i)
+      #|    i = i + 1
+      #|  }
+      #|  acc
+      #|}
+      #|str_total("abc")
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("String iter helpers failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+// ADR-0044 Phase 3: a generic Iterable combinator typechecks and specializes
+// when invoked on a String. The body uses `xs|>iter_length` /
+// `xs|>iter_get(i)`, which the monoify pass rewrites to
+// `String::iter_length` / `String::iter_get` once the receiver type is known
+// to be String.
+test "Iterable for String — generic Iterator::fold over String compiles" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let Iterator::fold = [C: Iterable, T, B](xs: C, init: B, f: (acc: B, x: T) -> B) -> B {
+      #|  let len = xs|>iter_length
+      #|  let mut i = 0
+      #|  let mut acc = init
+      #|  while i < len {
+      #|    acc = f(acc, xs|>iter_get(i))
+      #|    i = i + 1
+      #|  }
+      #|  acc
+      #|}
+      #|let total_str = Iterator::fold("abc", 0, (acc: Int, c: Int) -> Int { acc + c })
+      #|total_str
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("Iterator::fold over String failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}

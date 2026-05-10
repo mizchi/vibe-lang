@@ -3963,3 +3963,31 @@ test "rc debug: loop detects unbalanced allocs (known leak)" {
   // Free counter tracks actual frees — currently fewer than allocs (known leak)
   assert_true(frees < allocs)
 }
+
+///|
+// ADR-0044 Phase 3: String now implements Iterable. The prelude provides
+// `String::iter_length` (= String::length) and `String::iter_get`
+// (= String::char_code_at), so generic Iterable combinators see each char
+// as its Int char code. End-to-end check: sum char codes of "abc" via the
+// prelude helpers — 'a'(97) + 'b'(98) + 'c'(99) = 294.
+test "vibe wasm eval String iter_length / iter_get (ADR-0044 Phase 3)" {
+  let script =
+    #|let sum_chars = (s: String) -> Int {
+    #|  let len = String::iter_length(s)
+    #|  let mut i = 0
+    #|  let mut acc = 0
+    #|  while i < len {
+    #|    acc = acc + String::iter_get(s, i)
+    #|    i = i + 1
+    #|  }
+    #|  acc
+    #|}
+    #|sum_chars("abc")
+  let res = try eval_run(script) catch {
+    e => fail(e.to_string())
+  } noraise {
+    r => r
+  }
+  assert_true(is_tagged_int(res.value))
+  assert_eq(decode_int(res.value), 294L)
+}
