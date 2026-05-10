@@ -3991,3 +3991,32 @@ test "vibe wasm eval String iter_length / iter_get (ADR-0044 Phase 3)" {
   assert_true(is_tagged_int(res.value))
   assert_eq(decode_int(res.value), 294L)
 }
+
+///|
+// ADR-0044 Phase 3: Map[K, V] now implements Iterable, yielding K (the key)
+// per iteration. The prelude `Map::iter_length` returns size, and
+// `Map::iter_get` returns the i-th key (via `Map::keys`). End-to-end check:
+// sum the values reachable through Map iteration. Uses String keys so the
+// iter element type is String.
+test "vibe wasm eval Map iter_length / iter_get (ADR-0044 Phase 3)" {
+  let script =
+    #|let key_total = (m: Map[String, Int]) -> Int {
+    #|  let len = Map::iter_length(m)
+    #|  let mut i = 0
+    #|  let mut acc = 0
+    #|  while i < len {
+    #|    let k = Map::iter_get(m, i)
+    #|    acc = acc + Map::get(m, k)
+    #|    i = i + 1
+    #|  }
+    #|  acc
+    #|}
+    #|key_total(map { "a": 10, "b": 20, "c": 30 })
+  let res = try eval_run(script) catch {
+    e => fail(e.to_string())
+  } noraise {
+    r => r
+  }
+  assert_true(is_tagged_int(res.value))
+  assert_eq(decode_int(res.value), 60L)
+}
