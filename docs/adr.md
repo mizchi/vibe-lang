@@ -39,7 +39,7 @@
 |---|----------|--------|
 | 0003 | **エフェクトセット検証**。`with { Effect }` 宣言で追跡。`do` 境界検証は廃止 (v2)。エフェクト名の個別追跡は ADR-0021 で拡張予定。 | accepted |
 | 0017 | **`let mut` は局所可変状態として許可**。`Ref[T]` は abandoned → ADR-0021 の Effect Handler で代替。 | superseded (→0021) |
-| 0021 | **ミュータビリティを Effect Handler で表現**。`effect Mut<T> { push(); build() }` + `handle ... with Mut<T>`。参照脱出を構造的に防止。tail-resumptive inline 最適化。Component Model `#import` 統合。WASI P3 HTTP を capability effect (Model 1) で表現。 | proposed |
+| 0021 | **ミュータビリティを Effect Handler で表現**。`effect Mut<T> { push(); build() }` + `handle ... with Mut<T>`。Phase 1 (tail-resumptive Mut handler) は実装済み: parser の `effect`/`perform`/`handle ... with` 構文、checker の effect set 追跡 (`src/checker/typecheck_effects*.mbt`)、tail-resumptive inline pass (`src/frontend/rewrite_effect_handle.mbt`) でゼロコスト化。state は外側の `ArrayBuilder` / `let mut` を handler arms が close over する形で表現可能 (`examples/effect_mut_test.vibe`)。Phase 2 (Component Model `#import` 統合) と Phase 3 (WASI P3 HTTP capability effect, single-shot non-tail-resumptive handler の CPS lowering) は引き続き作業中。 | proposed |
 | 0041 | **`_start` は `() -> Unit` 固定**。`with { Effects }` で capability 宣言。exit code は panic/Process::exit。REPL は例外。 | proposed |
 | 0042 | **トップレベル未処理 effect 禁止**。ファイルモジュール top-level は pure (effect_scope_none)。shell/REPL/test は別スコープ。 | proposed |
 | 0043 | **Capability-driven DCE + 定数分岐**。`--allow-*`/`--deny-*` で capability 指定 → 不要コード除去。`@build.*` 定数 + dead branch elimination。`--profile` プリセット (minimal/sandbox/server/edge/agent)。 | proposed |
