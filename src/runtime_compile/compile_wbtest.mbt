@@ -4390,3 +4390,69 @@ test "Iterable for String — generic Iterator::fold over String compiles" {
   }
   assert_true(wasm_bytes.length() > 8)
 }
+
+///|
+// ADR-0044 Phase 3: Map[K, V] now implements Iterable, yielding K (the key)
+// per iteration — matches Python/JS dict-iteration shape. The prelude
+// `Map::iter_length` returns `Map::size(m)`, and `Map::iter_get` returns the
+// i-th key. Note: `Map::iter_get` is O(n) per call because `Map::keys` is
+// the only key-enumeration primitive; total iteration cost is therefore
+// O(n²). For hot paths, prefer `for k in Map::keys(m) { ... }` which only
+// allocates the keys array once.
+test "Iterable for Map — iter_length / iter_get compile" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let key_sum = (m: Map[String, Int]) -> Int {
+      #|  let len = Map::iter_length(m)
+      #|  let mut acc = 0
+      #|  let mut i = 0
+      #|  while i < len {
+      #|    let k = Map::iter_get(m, i)
+      #|    acc = acc + Map::get(m, k)
+      #|    i = i + 1
+      #|  }
+      #|  acc
+      #|}
+      #|key_sum(map { "a": 1, "b": 2, "c": 3 })
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("Map iter helpers failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+// ADR-0044 Phase 3: a generic Iterable combinator typechecks and specializes
+// when invoked on a Map. Monoify rewrites `xs|>iter_length` /
+// `xs|>iter_get(i)` to `Map::iter_length` / `Map::iter_get`, which yield
+// keys for the consumer.
+test "Iterable for Map — generic Iterator::fold over Map compiles" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let Iterator::fold = [C: Iterable, T, B](xs: C, init: B, f: (acc: B, x: T) -> B) -> B {
+      #|  let len = xs|>iter_length
+      #|  let mut i = 0
+      #|  let mut acc = init
+      #|  while i < len {
+      #|    acc = f(acc, xs|>iter_get(i))
+      #|    i = i + 1
+      #|  }
+      #|  acc
+      #|}
+      #|let m = map { "a": 1, "b": 2 }
+      #|let total = Iterator::fold(m, 0, (acc: Int, k: String) -> Int {
+      #|  acc + Map::get(m, k)
+      #|})
+      #|total
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("Iterator::fold over Map failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
