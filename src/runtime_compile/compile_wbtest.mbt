@@ -4248,3 +4248,211 @@ test "HOF with pure function compiles to wasm" {
   }
   assert_true(wasm_bytes.length() > 8)
 }
+
+///|
+// ADR-0044 Phase 2: for-in over Array now routes through the unified
+// `iter_require` / `iter_length` / `iter_get` desugar. This regression test
+// pins the behavior end-to-end: a for-in over Array compiles with the
+// Iterable trait constraint enforced, and ArrayView (Array slice) iterates
+// correctly through the same path because `iter_length` / `iter_get` codegen
+// mirrors `Array::length` / `Array::get`.
+test "for-in over Array slice compiles to wasm (ADR-0044 Phase 2)" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let sum_slice = (xs: Array[Int]) -> Int {
+      #|  let s = Array::slice(xs, 1, 4)
+      #|  let mut total = 0
+      #|  for v in s { total = total + v }
+      #|  total
+      #|}
+      #|sum_slice([10, 20, 30, 40, 50])
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("for-in over slice failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+// ADR-0044 Phase 2: for-in over a user-defined Iterable type compiles
+// when `<Type>::iter_length` and `<Type>::iter_get` are provided. The
+// monoify pass specializes the desugared iter calls to the impl helpers.
+test "for-in over user Iterable compiles via iter_length/iter_get" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|enum Trio[T] { Trio(T, T, T) }
+      #|impl [T] Iterable for Trio[T]
+      #|let trio_of3 = [T](a: T, b: T, c: T) -> Trio[T] { Trio(a, b, c) }
+      #|let Trio::iter_length = [T](_xs: Trio[T]) -> Int { 3 }
+      #|let Trio::iter_get = [T](xs: Trio[T], index: Int) -> T {
+      #|  match xs {
+      #|    Trio(a, b, c) => if index == 0 { a } else if index == 1 { b } else { c }
+      #|  }
+      #|}
+      #|let sum_trio = () -> Int {
+      #|  let mut total = 0
+      #|  for v in trio_of3(1, 2, 3) { total = total + v }
+      #|  total
+      #|}
+      #|sum_trio()
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("for-in over Trio failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+// ADR-0044 Phase 2: for-in over a non-Iterable value is rejected by the
+// type checker because the desugared `iter_require[C: Iterable]` cannot
+// satisfy the trait bound.
+test "for-in over non-Iterable rejected (ADR-0044 Phase 2)" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|for v in 42 { v }
+    ),
+  )
+  let result : Result[Bytes, WasmCompileError] = try? compile_module_wasm_no_dce(
+    db, "main",
+  )
+  match result {
+    Err(_) => ()
+    Ok(_) => fail("expected for-in over Int to fail typecheck")
+  }
+}
+
+///|
+// ADR-0044 Phase 3: String now implements Iterable. The prelude provides
+// `String::iter_length` (= String::length) and `String::iter_get`
+// (= String::char_code_at), so generic Iterable combinators
+// (`Iterator::fold`/`map`/etc.) work over String values, with each element
+// visible as the Int char code (matching the existing for-in over String
+// shape).
+test "Iterable for String — iter_length / iter_get compile" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let str_total = (s: String) -> Int {
+      #|  let len = String::iter_length(s)
+      #|  let mut acc = 0
+      #|  let mut i = 0
+      #|  while i < len {
+      #|    acc = acc + String::iter_get(s, i)
+      #|    i = i + 1
+      #|  }
+      #|  acc
+      #|}
+      #|str_total("abc")
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("String iter helpers failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+// ADR-0044 Phase 3: a generic Iterable combinator typechecks and specializes
+// when invoked on a String. The body uses `xs|>iter_length` /
+// `xs|>iter_get(i)`, which the monoify pass rewrites to
+// `String::iter_length` / `String::iter_get` once the receiver type is known
+// to be String.
+test "Iterable for String — generic Iterator::fold over String compiles" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let Iterator::fold = [C: Iterable, T, B](xs: C, init: B, f: (acc: B, x: T) -> B) -> B {
+      #|  let len = xs|>iter_length
+      #|  let mut i = 0
+      #|  let mut acc = init
+      #|  while i < len {
+      #|    acc = f(acc, xs|>iter_get(i))
+      #|    i = i + 1
+      #|  }
+      #|  acc
+      #|}
+      #|let total_str = Iterator::fold("abc", 0, (acc: Int, c: Int) -> Int { acc + c })
+      #|total_str
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("Iterator::fold over String failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+// ADR-0044 Phase 3: Map[K, V] now implements Iterable, yielding K (the key)
+// per iteration — matches Python/JS dict-iteration shape. The prelude
+// `Map::iter_length` returns `Map::size(m)`, and `Map::iter_get` returns the
+// i-th key. Note: `Map::iter_get` is O(n) per call because `Map::keys` is
+// the only key-enumeration primitive; total iteration cost is therefore
+// O(n²). For hot paths, prefer `for k in Map::keys(m) { ... }` which only
+// allocates the keys array once.
+test "Iterable for Map — iter_length / iter_get compile" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let key_sum = (m: Map[String, Int]) -> Int {
+      #|  let len = Map::iter_length(m)
+      #|  let mut acc = 0
+      #|  let mut i = 0
+      #|  while i < len {
+      #|    let k = Map::iter_get(m, i)
+      #|    acc = acc + Map::get(m, k)
+      #|    i = i + 1
+      #|  }
+      #|  acc
+      #|}
+      #|key_sum(map { "a": 1, "b": 2, "c": 3 })
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("Map iter helpers failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}
+
+///|
+// ADR-0044 Phase 3: a generic Iterable combinator typechecks and specializes
+// when invoked on a Map. Monoify rewrites `xs|>iter_length` /
+// `xs|>iter_get(i)` to `Map::iter_length` / `Map::iter_get`, which yield
+// keys for the consumer.
+test "Iterable for Map — generic Iterator::fold over Map compiles" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let Iterator::fold = [C: Iterable, T, B](xs: C, init: B, f: (acc: B, x: T) -> B) -> B {
+      #|  let len = xs|>iter_length
+      #|  let mut i = 0
+      #|  let mut acc = init
+      #|  while i < len {
+      #|    acc = f(acc, xs|>iter_get(i))
+      #|    i = i + 1
+      #|  }
+      #|  acc
+      #|}
+      #|let m = map { "a": 1, "b": 2 }
+      #|let total = Iterator::fold(m, 0, (acc: Int, k: String) -> Int {
+      #|  acc + Map::get(m, k)
+      #|})
+      #|total
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(db, "main") catch {
+    e => fail("Iterator::fold over Map failed: " + e.user_message())
+  }
+  assert_true(wasm_bytes.length() > 8)
+}

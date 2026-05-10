@@ -23,10 +23,16 @@ let prelude_source : String =
   #|impl Show for Char
   #|impl Show for String
   #|impl [T] Iterable for Array[T]
+  #|impl Iterable for String
+  #|impl [K, V] Iterable for Map[K, V]
   #|let to_string = [T: Show](x: T) -> String { __to_string(x) }
   #|let iter_require = [C: Iterable](xs: C) -> C { xs }
   #|let iter_length = [T](xs: Array[T]) -> Int { Array::length(xs) }
   #|let iter_get = [T](xs: Array[T], index: Int) -> T { Array::get(xs, index) }
+  #|let String::iter_length = (s: String) -> Int { String::length(s) }
+  #|let String::iter_get = (s: String, index: Int) -> Int { String::char_code_at(s, index) }
+  #|let Map::iter_length = [K, V](m: Map[K, V]) -> Int { Map::size(m) }
+  #|let Map::iter_get = [K, V](m: Map[K, V], index: Int) -> K { Array::get(Map::keys(m), index) }
   #|let Array::map = [T](xs: Array[T], f: (x: T) -> T) -> Array[T] {
   #|  {
   #|    let b = ArrayBuilder::new()
@@ -528,6 +534,8 @@ pub fn prelude_names() -> Array[String] {
   [
     "add", "sub", "mul", "div", "eq", "lt", "not", "and", "or", "__not", "__or",
     "assert", "assert_true", "to_string", "iter_require", "iter_length", "iter_get",
+    "String::iter_length", "String::iter_get",
+    "Map::iter_length", "Map::iter_get",
     "Array::map", "Array::fold", "Array::filter", "Array::foreach", "Array::concat",
     "Array::reverse", "Array::any", "Array::all", "Array::find", "assert_eq", "Array::sort",
     "Array::contains", "Array::join", "Map::get_or", "Map::map", "Map::filter", "where",
