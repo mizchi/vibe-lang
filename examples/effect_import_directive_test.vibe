@@ -1,0 +1,32 @@
+// ADR-0021 Phase 2 Step 1: `#import("...")` directive parses on `effect`
+// declarations and is preserved on the AST node (Stmt::EffectDef.import_path).
+//
+// Phase 2 wiring (effect classification + WASM `import` section emission) is
+// not yet hooked up; this example just locks the parser surface so later
+// steps can rely on the directive being available on the AST.
+//
+// Until codegen consumes `import_path`, the effect must still be handled by
+// a tail-resumptive `with`-handler if `perform`-ed in the same module.
+
+//# Effects
+
+#import("wasi:filesystem/read@0.2.0")
+effect Fs {
+  Read(String) -> String
+}
+
+//# Misc
+
+test "import directive: handler still satisfies effect locally" {
+  // With no WASM import wiring yet, the directive is informational. The
+  // effect is still discharged by a local tail-resumptive handler.
+  let content = {
+    let mut canned = ""
+    handle {
+      perform Fs::Read("hello.txt")
+    } with Fs {
+      Read(_p) => { canned = "stub-content"; resume(canned) }
+    }
+  }
+  assert(String::equals(content, "stub-content"))
+}

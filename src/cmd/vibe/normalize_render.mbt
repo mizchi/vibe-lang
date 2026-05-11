@@ -280,8 +280,17 @@ fn normalize_render_effect_stmt(
   name : String,
   params : Array[String],
   ops : Array[@vibe_core.EffectOp],
+  import_path : String?,
 ) -> String {
   let out = StringBuilder::new()
+  match import_path {
+    Some(p) => {
+      out.write_string("#import(\"")
+      out.write_string(p)
+      out.write_string("\")\n")
+    }
+    None => ()
+  }
   if exported {
     out.write_string("export ")
   }
@@ -386,10 +395,10 @@ fn normalize_render_stmt(
         source, true, rec, name, render_expr, rewritten_expr, annotation, env,
       )
     }
-    @vibe_core.Stmt::EffectDef(name~, params~, ops~, ..) =>
-      Some(normalize_render_effect_stmt(false, name, params, ops))
-    @vibe_core.Stmt::ExportEffectDef(name~, params~, ops~, ..) =>
-      Some(normalize_render_effect_stmt(true, name, params, ops))
+    @vibe_core.Stmt::EffectDef(name~, params~, ops~, import_path~, ..) =>
+      Some(normalize_render_effect_stmt(false, name, params, ops, import_path))
+    @vibe_core.Stmt::ExportEffectDef(name~, params~, ops~, import_path~, ..) =>
+      Some(normalize_render_effect_stmt(true, name, params, ops, import_path))
     _ => normalize_render_stmt_fallback(stmt)
   }
 }

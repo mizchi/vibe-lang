@@ -154,9 +154,11 @@ fn canonicalize_export_list_stmts(stmts : Array[Stmt]) -> Array[Stmt] {
         } else {
           out.push(stmt)
         }
-      Stmt::EffectDef(name~, params~, ops~, span~) =>
+      Stmt::EffectDef(name~, params~, ops~, import_path~, span~) =>
         if export_list_names.contains(name) {
-          out.push(Stmt::ExportEffectDef(name~, params~, ops~, span~))
+          out.push(
+            Stmt::ExportEffectDef(name~, params~, ops~, import_path~, span~),
+          )
         } else {
           out.push(stmt)
         }
@@ -414,18 +416,20 @@ fn normalize_stmt(stmt : Stmt, scope : NormScope) -> Stmt {
         fields=normalize_struct_fields(fields),
         span=zero_span,
       )
-    Stmt::EffectDef(name~, params~, ops~, ..) =>
+    Stmt::EffectDef(name~, params~, ops~, import_path~, ..) =>
       Stmt::EffectDef(
         name~,
         params~,
         ops=normalize_effect_ops(ops),
+        import_path~,
         span=zero_span,
       )
-    Stmt::ExportEffectDef(name~, params~, ops~, ..) =>
+    Stmt::ExportEffectDef(name~, params~, ops~, import_path~, ..) =>
       Stmt::ExportEffectDef(
         name~,
         params~,
         ops=normalize_effect_ops(ops),
+        import_path~,
         span=zero_span,
       )
   }
