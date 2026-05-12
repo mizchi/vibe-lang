@@ -754,9 +754,12 @@ fn AstParser::parse_effect_stmt(
 /// ADR-0021 Phase 2 Step 1: binds the effect to a Component Model interface.
 ///   #import("wasi:filesystem/read@0.2.0")
 ///   effect Fs { read_file(String) -> String }
+///   #import("wasi:cli/stdio@0.2.0")
+///   export effect Console { print(String) -> Unit }
 fn AstParser::parse_import_directive_effect_stmt(
   self : AstParser,
 ) -> @core.Stmt raise ParseError {
+  let start = self.pos
   let _ = self.expect(hash_ref(), "#import")
   self.skip_trivia()
   let _ = self.expect(lparen(), "(")
@@ -766,6 +769,13 @@ fn AstParser::parse_import_directive_effect_stmt(
   self.skip_trivia()
   let _ = self.expect(rparen(), ")")
   self.skip_trivia()
+  let exported = if self.peek_kind() == export_kw() {
+    let _ = self.bump()
+    self.skip_trivia()
+    true
+  } else {
+    false
+  }
   if self.peek_kind() != name() || self.peek().text() != "effect" {
     raise ParseError::UnexpectedToken(
       expected="`effect` declaration after `#import(...)` directive",
@@ -773,7 +783,18 @@ fn AstParser::parse_import_directive_effect_stmt(
       span=self.token_span(),
     )
   }
-  self.parse_effect_stmt(false, import_path=Some(path))
+  let effect_stmt = self.parse_effect_stmt(exported, import_path=Some(path))
+  if exported {
+    match effect_stmt {
+      @core.Stmt::EffectDef(name~, params~, ops~, import_path~, ..) => {
+        let span = self.span_from(start)
+        @core.Stmt::ExportEffectDef(name~, params~, ops~, import_path~, span~)
+      }
+      other => other
+    }
+  } else {
+    effect_stmt
+  }
 }
 
 ///|

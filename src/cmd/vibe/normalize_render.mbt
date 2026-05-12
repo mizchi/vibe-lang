@@ -285,9 +285,9 @@ fn normalize_render_effect_stmt(
   let out = StringBuilder::new()
   match import_path {
     Some(p) => {
-      out.write_string("#import(\"")
-      out.write_string(p)
-      out.write_string("\")\n")
+      out.write_string("#import(")
+      out.write_string(normalize_quote_string(p))
+      out.write_string(")\n")
     }
     None => ()
   }
