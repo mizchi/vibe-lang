@@ -64,9 +64,12 @@ pkfire Taskfile only mirrors the common entry points.
 
 ## pkspec — `pkspec/VibeTest.pkl`
 
-`pkspec/VibeTest.pkl` wraps `moon test` (native and JS targets) through the
-`MoonTest.pkl` adapter so the test run can be driven with pkspec's sharding,
-retry, and rerun-failed flags.
+`pkspec/VibeTest.pkl` declares two tests that shell out to `moon test`
+(native and JS targets) so the run can be driven with pkspec's sharding,
+retry, and rerun-failed flags. It amends `./Test.pkl` from the generated
+schemas. (`adapters/MoonTest.pkl` is for native `moon test` discovery /
+batching — not needed for this thin wrapper, but available if you want
+to switch to discovery-driven runs later.)
 
 ### One-time bootstrap
 
