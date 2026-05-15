@@ -3712,6 +3712,7 @@ test "source hash cache match requires identical entries" {
 
 ///|
 test "source hash cache includes transitive imports" {
+  @runtime_compile.init_hooks()
   let db = @runtime.VibeDb::new()
   let main_path = "/tmp/source_hash_cache/main.vibe"
   let dep_path = "/tmp/source_hash_cache/dep.vibe"
@@ -3731,6 +3732,7 @@ test "source hash cache includes transitive imports" {
 
 ///|
 test "save source hashes includes entry for linked cache" {
+  @runtime_compile.init_hooks()
   let root = wbtest_make_temp_dir("save_source_hashes_includes_entry")
   let cache_dir = root + "/.vibe/debug/test"
   let hash_path = cache_dir + "/source_hashes.txt"
