@@ -29,8 +29,6 @@ jobs:
         uses: ./.github/actions/setup-vibe
         with:
           ripgrep: 'true'
-          pkfire: 'true'
-          pkfire-cache: 'true'
 
       - name: Run moon test (verbose, for flaker)
         run: |
@@ -45,17 +43,12 @@ jobs:
           retention-days: 30
 
       - name: PR contract checks (MoonBit/js)
-        run: pkf run --timing ci-contract-moon
-
-      - name: pkfire cache report
-        if: always()
-        run: |
-          {
-            echo "### pkfire CAS (contract-moon)"
-            echo '```'
-            pkf cache stats
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+        # Calls the script directly (not via `pkf run`) so the gate stays
+        # green even if pkfire/pkl have a transient regression. The
+        # canonical body lives in scripts/pkfire/contract_moon.sh and is
+        # also wired into Taskfile.pkl as `ci-contract-moon` for local
+        # use via `pkf run ci-contract-moon`.
+        run: bash scripts/pkfire/contract_moon.sh
 
   contract-native:
     runs-on: ubuntu-latest
@@ -67,56 +60,12 @@ jobs:
         uses: ./.github/actions/setup-vibe
         with:
           ripgrep: 'true'
-          pkfire: 'true'
-          pkfire-cache: 'true'
           wasmtime: 'true'
           vibe-debug-cache: 'true'
 
-      - name: Diagnostic — PATH / tool discovery
-        run: |
-          for tool in moon pkf pkl bash node rg; do
-            if command -v "$tool" >/dev/null 2>&1; then
-              path="$(command -v "$tool")"
-              echo "::notice::ok: $tool=$path"
-            else
-              echo "::error::missing tool: $tool"
-            fi
-          done
-          if command -v pkf >/dev/null 2>&1; then
-            pkf doctor > /tmp/doctor.out 2>&1 || true
-            while IFS= read -r line; do
-              echo "::notice::pkf doctor: $line"
-            done < /tmp/doctor.out
-          fi
-          if command -v pkf >/dev/null 2>&1; then
-            pkf list > /tmp/list.out 2>&1
-            list_status=$?
-            echo "::notice::pkf list status: $list_status, lines: $(wc -l < /tmp/list.out)"
-            head -3 /tmp/list.out | while IFS= read -r line; do
-              echo "::notice::pkf list head: $line"
-            done
-          fi
-          if command -v pkf >/dev/null 2>&1; then
-            pkf run --dry-run ci-contract-native > /tmp/dry.out 2>&1
-            dry_status=$?
-            echo "::notice::pkf run dry-run status: $dry_status"
-            head -10 /tmp/dry.out | while IFS= read -r line; do
-              echo "::notice::pkf dry: $line"
-            done
-          fi
-
       - name: PR contract checks (native/runtime)
-        run: pkf run --timing ci-contract-native
-
-      - name: pkfire cache report
-        if: always()
-        run: |
-          {
-            echo "### pkfire CAS (contract-native)"
-            echo '```'
-            pkf cache stats
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+        # See contract-moon for why we call the script directly.
+        run: bash scripts/pkfire/contract_native.sh
 
   native-binary-parity:
     if: github.event_name == 'push'
@@ -130,14 +79,12 @@ jobs:
         uses: ./.github/actions/setup-vibe
         with:
           ripgrep: 'true'
-          pkfire: 'true'
-          pkfire-cache: 'true'
           wasmtime: 'true'
           wasm-tools: 'true'
           vibe-debug-cache: 'true'
 
       - name: Native binary parity checks
-        run: pkf run ci-native-binary-parity
+        run: bash scripts/pkfire/native_binary_parity.sh
 
   bundle-size-compiler:
     if: github.event_name == 'push'
@@ -247,8 +194,6 @@ jobs:
         uses: ./.github/actions/setup-vibe
         with:
           ripgrep: 'true'
-          pkfire: 'true'
-          pkfire-cache: 'true'
           wasmtime: 'true'
           wasm-tools: 'true'
           node-version: '24'
@@ -257,7 +202,7 @@ jobs:
       - name: Set VIBE_BIN for debug binary
         run: echo "VIBE_BIN=$(pwd)/_build/native/debug/build/cmd/vibe/vibe.exe" >> "$GITHUB_ENV"
       - name: Run wasm quick shard (${{ matrix.shard }})
-        run: pkf run ci-wasm-quick-shard -- ${{ matrix.shard }}
+        run: bash scripts/pkfire/wasm_quick_shard.sh ${{ matrix.shard }}
 
   wasm-parity:
     name: wasm-parity (${{ matrix.name }})
@@ -352,103 +297,6 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-  pkspec-exec:
-    # Drives the per-package `moon test -p mizchi/vibe/<pkg>` matrix
-    # through `pkspec exec`, which gives us pkspec's retry / shard /
-    # rerun-failed machinery for free and proves that
-    # pkspec/VibeTest.pkl's declarations actually correspond to runnable
-    # commands. The 4-shard matrix lines up with `wasm-compile-e2e`'s
-    # shard count so the slowest shard's wall time gates the whole
-    # job. `pkspec exec` returns non-zero on any failed test, so a
-    # broken declaration ("cmd points at a moved package") fails this
-    # job loudly.
-    name: pkspec-exec (shard ${{ matrix.shard }}/4)
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4]
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Setup Vibe toolchain
-        uses: ./.github/actions/setup-vibe
-        with:
-          pkfire: 'true'
-          pkfire-cache: 'true'
-
-      - name: Install pkspec
-        uses: mizchi/pkspec@v0.2.0
-        with:
-          init-schema-dir: pkspec
-
-      - name: pkspec exec — shard ${{ matrix.shard }}/4
-        run: pkspec exec -f pkspec/VibeTest.pkl --shard=${{ matrix.shard }}/4
-
-  pr-affected-tests:
-    # PR-only fast lane: re-runs only the per-package `test:*` tasks whose
-    # inputs changed since `origin/<base>`. This complements (does not
-    # replace) `contract-moon` / `contract-native`, which always run the
-    # full PR contract surface — `pkf affected` here is for early signal
-    # on package-local regressions and to exercise the affected algorithm
-    # under real PR diffs as we tighten task input granularity.
-    if: github.event_name == 'pull_request'
-    name: pr-affected-tests
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-        with:
-          # Need history back to the PR's merge base so `pkf affected
-          # --since=origin/<base>` can resolve the diff. fetch-depth=0 is
-          # the simplest correct choice; on shallow PRs `pkf affected`
-          # silently degrades to "everything changed" without it.
-          fetch-depth: 0
-
-      - name: Setup Vibe toolchain
-        uses: ./.github/actions/setup-vibe
-        with:
-          pkfire: 'true'
-          pkfire-cache: 'true'
-
-      - name: Fetch base ref
-        run: git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
-
-      - name: pkf affected (test:*) — plan
-        run: |
-          pkf affected \
-            --since="origin/${{ github.base_ref }}" \
-            --explain --dry-run 'test:*' | tee affected.plan
-
-      - name: pkf affected (test:*) — execute
-        id: affected_run
-        # `pkf affected` runs the resolved set when --dry-run is omitted.
-        # If nothing matches the diff, this exits 0 with "summary: 0 hit ·
-        # 0 will run · 0 uncached" and adds no work — the right behavior
-        # for a PR that touches only docs / CI.
-        run: |
-          pkf affected \
-            --since="origin/${{ github.base_ref }}" \
-            'test:*'
-
-      - name: pkfire cache + affected report
-        if: always()
-        run: |
-          {
-            echo "### pkf affected (test:*) vs origin/${{ github.base_ref }}"
-            echo ""
-            echo '```'
-            tail -20 affected.plan
-            echo '```'
-            echo ""
-            echo "### pkfire CAS (pr-affected-tests)"
-            echo '```'
-            pkf cache stats
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
   selfhost-bootstrap-gate:
     name: selfhost-bootstrap-gate
     runs-on: ubuntu-latest
@@ -461,8 +309,6 @@ jobs:
         uses: ./.github/actions/setup-vibe
         with:
           ripgrep: 'true'
-          pkfire: 'true'
-          pkfire-cache: 'true'
           wasmtime: 'true'
           wasm-tools: 'true'
           node-version: '24'
@@ -475,7 +321,7 @@ jobs:
         # `test-selfhost-wasi-selfbuild-kpi` (300s wall-time budget).
         # Runs on every PR for early selfhost-regression signal; the
         # heavier `selfhost-gates` matrix (cli / check) stays push-only.
-        run: pkf run ci-selfhost-gates-shard -- bootstrap
+        run: bash scripts/pkfire/selfhost_gates_shard.sh bootstrap
 
   selfhost-gates:
     if: github.event_name == 'push'
@@ -509,8 +355,6 @@ jobs:
         uses: ./.github/actions/setup-vibe
         with:
           ripgrep: 'true'
-          pkfire: 'true'
-          pkfire-cache: 'true'
           wasmtime: 'true'
           wasm-tools: 'true'
           node-version: '24'
@@ -525,7 +369,7 @@ jobs:
       - name: Set VIBE_BIN for debug binary
         run: echo "VIBE_BIN=$(pwd)/_build/native/debug/build/cmd/vibe/vibe.exe" >> "$GITHUB_ENV"
       - name: Run selfhost gate shard (${{ matrix.shard }})
-        run: pkf run ci-selfhost-gates-shard -- ${{ matrix.shard }}
+        run: bash scripts/pkfire/selfhost_gates_shard.sh ${{ matrix.shard }}
 
   e2e-component:
     runs-on: ubuntu-latest
@@ -551,19 +395,17 @@ jobs:
       - name: Setup Vibe toolchain
         uses: ./.github/actions/setup-vibe
         with:
-          pkfire: 'true'
-          pkfire-cache: 'true'
           wasmtime: 'true'
           node-version: '24'
 
       - name: Build selfhost compiler
-        run: pkf run build-selfhost-dist-raw
+        run: VIBE_DIST_SKIP_OPT=1 bash scripts/build_selfhost_dist.sh
 
       - name: Selfhost examples compile+run
-        run: pkf run ci-selfhost-examples-smoke
+        run: bash scripts/pkfire/selfhost_examples_smoke.sh
 
       - name: wasm-gc validation gate
-        run: pkf run test-wasm-gc-validate
+        run: bash scripts/test_wasm_gc_validate.sh
 
       - name: Selfhost runtime fixtures
         id: selfhost_runtime_fixtures
@@ -597,8 +439,6 @@ jobs:
         uses: ./.github/actions/setup-vibe
         with:
           ripgrep: 'true'
-          pkfire: 'true'
-          pkfire-cache: 'true'
           wasmtime: 'true'
           node-version: '24'
 
@@ -621,12 +461,12 @@ jobs:
         # outlier (was 37×), so this just gives the gate breathing room
         # for CI runner spec drift while still flagging genuine ~2×
         # regressions.
-        run: pkf run test-selfhost-perf-gate -- 3 10.0 7.0 bench/selfhost_perf/kpi_cases.txt
+        run: VIBE_SELFHOST_PERF_RUNS=3 VIBE_SELFHOST_PERF_MAX_COMPILE_RATIO=10.0 VIBE_SELFHOST_PERF_MAX_CHECK_RATIO=7.0 VIBE_SELFHOST_PERF_CASES_FILE=bench/selfhost_perf/kpi_cases.txt scripts/bench_selfhost_perf.sh
 
       - name: Run selfhost suite coverage gate
         env:
           VIBE_USE_SESSION_HTTP: '0'
-        run: pkf run coverage-selfhost-suite-gate
+        run: scripts/coverage_selfhost_suite.sh
 
       - name: Coverage summary
         if: always()
@@ -809,8 +649,6 @@ jobs:
       - coverage-moon
       - coverage-selfhost-suite
       - native-binary-parity
-      - pkspec-exec
-      - pr-affected-tests
       - selfhost-bootstrap-gate
       - selfhost-gates
       - similarity-mbt-report
@@ -825,8 +663,6 @@ jobs:
           echo "  coverage-moon: ${{ needs.coverage-moon.result }}"
           echo "  coverage-selfhost-suite: ${{ needs.coverage-selfhost-suite.result }}"
           echo "  native-binary-parity: ${{ needs.native-binary-parity.result }}"
-          echo "  pkspec-exec: ${{ needs.pkspec-exec.result }}"
-          echo "  pr-affected-tests: ${{ needs.pr-affected-tests.result }}"
           echo "  selfhost-bootstrap-gate: ${{ needs.selfhost-bootstrap-gate.result }}"
           echo "  selfhost-gates: ${{ needs.selfhost-gates.result }}"
           echo "  similarity-mbt-report: ${{ needs.similarity-mbt-report.result }}"
