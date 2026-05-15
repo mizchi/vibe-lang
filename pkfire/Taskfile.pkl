@@ -1,0 +1,96 @@
+/// pkfire Taskfile for vibe-lang
+///
+/// Wraps the "Quick Commands" from AGENTS.md so they can be run with
+/// typed dependencies and Bazel-style content-addressed caching.
+///
+/// Usage:
+///   pkf list                # show tasks
+///   pkf run check           # type check (cached)
+///   pkf run test            # check then full test
+///   pkf run release-check   # fmt + info + check + test
+///   pkf graph --format tree # visualize dependencies
+///
+/// The canonical task definitions still live in the top-level `justfile`.
+/// This file mirrors the entry points contributors use day-to-day.
+amends "package://pkg.pkl-lang.org/github.com/mizchi/pkfire/pkfire@0.10.0#/Taskfile.pkl"
+
+local moonSources: Listing<String> = new {
+  "moon.mod.json"
+  "moon.pkg.json"
+  "src/**/*.mbt"
+  "src/**/moon.pkg.json"
+  "vibe/**/*.mbt"
+  "vibe/**/moon.pkg.json"
+  "vibe/**/*.vibe"
+}
+
+local fmt = new Task {
+  name = "fmt"
+  cmd = "moon fmt"
+  inputs { ...moonSources }
+  cache = false
+}
+
+local info = new Task {
+  name = "info"
+  cmd = "moon info"
+  inputs { ...moonSources }
+  outputs { "**/*.mbti" }
+}
+
+local check = new Task {
+  name = "check"
+  cmd = "just check"
+  inputs { ...moonSources }
+}
+
+local test = new Task {
+  name = "test"
+  cmd = "just test"
+  inputs {
+    ...moonSources
+    "fixtures/**/*"
+    "scripts/**/*.sh"
+  }
+  deps { check }
+}
+
+local testUpdate = new Task {
+  name = "test-update"
+  cmd = "just test-update"
+  inputs { ...moonSources; "fixtures/**/*" }
+  cache = false
+}
+
+local run = new Task {
+  name = "run"
+  cmd = "moon run --target native src/cmd/vibe -- $@"
+  inputs { ...moonSources }
+  acceptsArgs = true
+  cache = false
+}
+
+local buildSelfhostDist = new Task {
+  name = "build-selfhost-dist"
+  cmd = "just build-selfhost-dist"
+  inputs { ...moonSources }
+  outputs { "dist/selfhost/**" }
+}
+
+local releaseCheck = new Task {
+  name = "release-check"
+  cmd = "just release-check"
+  inputs { ...moonSources }
+  deps { fmt; info; check; test }
+}
+
+tasks {
+  fmt
+  info
+  check
+  test
+  testUpdate
+  run
+  buildSelfhostDist
+  releaseCheck
+}

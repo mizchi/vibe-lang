@@ -58,6 +58,13 @@
             pkgs.ripgrep
             pkgs.ast-grep
             similarity-mbt
+
+            # Pkl CLI — required by pkfire (pkfire/Taskfile.pkl) and by
+            # pkspec for evaluating local schemas. pkfire / pkspec binaries
+            # are not in nixpkgs; fetch them via `nix run github:mizchi/pkfire`
+            # or `go install github.com/mizchi/pkfire/cmd/pkf@latest`.
+            # See docs/pkfire-pkspec.md for usage.
+            pkgs.pkl
           ];
 
           shellHook = ''

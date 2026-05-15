@@ -28,6 +28,7 @@ Completed items are archived in `docs/DONE.md`.
 - [ ] **WASI P3: effect → WIT マッピング + `vibe serve`**
 - [ ] **SIMD codegen 本番化** — selfhost codegen の 0xFD prefix emit + `simd_skip_ws` / `simd_scan_alnum` 組込
 - [ ] **#59 WASM-GC selfbuild ~350KB** — P4 compile E2E の残 3 ケース（simd_patterns / gc_only/index / selfhost_cli_gc_entry）+ P5 DCE + wasm-opt
+- [ ] **pkfire / pkspec 拡張** — 初期 opt-in 導入済 (`pkfire/Taskfile.pkl`, `pkspec/VibeTest.pkl`, `docs/pkfire-pkspec.md`)。次は (a) `justfile` の主要レシピを Taskfile.pkl にさらに移植 (b) CI で informational gate 化 (c) `pkspec check` 用に `Spec.pkl` を書く
 
 ### 🔵 リファクタ / 長期
 

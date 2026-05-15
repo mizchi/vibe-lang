@@ -120,3 +120,9 @@ flaker run --profile scheduled
 ```bash
 just release-check  # fmt + info + check + test
 ```
+
+## pkfire / pkspec (optional)
+
+`pkfire/Taskfile.pkl` と `pkspec/VibeTest.pkl` で Quick Commands と `moon test` を
+Pkl ベースの typed task / test runner にラップしている。`just` / `flaker run` は
+canonical のままで、これらは opt-in。詳細は [docs/pkfire-pkspec.md](docs/pkfire-pkspec.md)。
