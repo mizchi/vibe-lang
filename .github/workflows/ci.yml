@@ -45,7 +45,17 @@ jobs:
           retention-days: 30
 
       - name: PR contract checks (MoonBit/js)
-        run: pkf run ci-contract-moon
+        run: pkf run --timing ci-contract-moon
+
+      - name: pkfire cache report
+        if: always()
+        run: |
+          {
+            echo "### pkfire CAS (contract-moon)"
+            echo '```'
+            pkf cache stats
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   contract-native:
     runs-on: ubuntu-latest
@@ -63,7 +73,17 @@ jobs:
           vibe-debug-cache: 'true'
 
       - name: PR contract checks (native/runtime)
-        run: pkf run ci-contract-native
+        run: pkf run --timing ci-contract-native
+
+      - name: pkfire cache report
+        if: always()
+        run: |
+          {
+            echo "### pkfire CAS (contract-native)"
+            echo '```'
+            pkf cache stats
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   native-binary-parity:
     if: github.event_name == 'push'
@@ -297,6 +317,69 @@ jobs:
               echo "- Status: failed"
               echo "- Repro: \`SHARD_INDEX=${{ matrix.shard }} SHARD_TOTAL=4 ./scripts/test_wasm_compile_wasmtime.sh\`"
             fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  pr-affected-tests:
+    # PR-only fast lane: re-runs only the per-package `test:*` tasks whose
+    # inputs changed since `origin/<base>`. This complements (does not
+    # replace) `contract-moon` / `contract-native`, which always run the
+    # full PR contract surface — `pkf affected` here is for early signal
+    # on package-local regressions and to exercise the affected algorithm
+    # under real PR diffs as we tighten task input granularity.
+    if: github.event_name == 'pull_request'
+    name: pr-affected-tests
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          # Need history back to the PR's merge base so `pkf affected
+          # --since=origin/<base>` can resolve the diff. fetch-depth=0 is
+          # the simplest correct choice; on shallow PRs `pkf affected`
+          # silently degrades to "everything changed" without it.
+          fetch-depth: 0
+
+      - name: Setup Vibe toolchain
+        uses: ./.github/actions/setup-vibe
+        with:
+          pkfire: 'true'
+          pkfire-cache: 'true'
+
+      - name: Fetch base ref
+        run: git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+
+      - name: pkf affected (test:*) — plan
+        run: |
+          pkf affected -f pkfire/Taskfile.pkl \
+            --since="origin/${{ github.base_ref }}" \
+            --explain --dry-run 'test:*' | tee affected.plan
+
+      - name: pkf affected (test:*) — execute
+        id: affected_run
+        # `pkf affected` runs the resolved set when --dry-run is omitted.
+        # If nothing matches the diff, this exits 0 with "summary: 0 hit ·
+        # 0 will run · 0 uncached" and adds no work — the right behavior
+        # for a PR that touches only docs / CI.
+        run: |
+          pkf affected -f pkfire/Taskfile.pkl \
+            --since="origin/${{ github.base_ref }}" \
+            'test:*'
+
+      - name: pkfire cache + affected report
+        if: always()
+        run: |
+          {
+            echo "### pkf affected (test:*) vs origin/${{ github.base_ref }}"
+            echo ""
+            echo '```'
+            tail -20 affected.plan
+            echo '```'
+            echo ""
+            echo "### pkfire CAS (pr-affected-tests)"
+            echo '```'
+            pkf cache stats
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
   selfhost-bootstrap-gate:
@@ -659,6 +742,7 @@ jobs:
       - coverage-moon
       - coverage-selfhost-suite
       - native-binary-parity
+      - pr-affected-tests
       - selfhost-bootstrap-gate
       - selfhost-gates
       - similarity-mbt-report
@@ -673,6 +757,7 @@ jobs:
           echo "  coverage-moon: ${{ needs.coverage-moon.result }}"
           echo "  coverage-selfhost-suite: ${{ needs.coverage-selfhost-suite.result }}"
           echo "  native-binary-parity: ${{ needs.native-binary-parity.result }}"
+          echo "  pr-affected-tests: ${{ needs.pr-affected-tests.result }}"
           echo "  selfhost-bootstrap-gate: ${{ needs.selfhost-bootstrap-gate.result }}"
           echo "  selfhost-gates: ${{ needs.selfhost-gates.result }}"
           echo "  similarity-mbt-report: ${{ needs.similarity-mbt-report.result }}"
