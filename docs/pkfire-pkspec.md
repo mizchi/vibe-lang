@@ -62,6 +62,37 @@ repo is git-ignored as a fallback.
 For one-off shell tasks, `just <recipe>` is still the right choice — the
 pkfire Taskfile only mirrors the common entry points.
 
+### Differential test execution
+
+`Taskfile.pkl` generates one task per moon package under `src/`
+(`test:parser`, `test:checker`, `test:cmd-vibe`, …) whose `inputs` are
+scoped to that package's directory. Combine with pkfire's `affected` query
+and a `test:*` glob target to run only the packages whose files changed:
+
+```bash
+# vs a git ref (e.g. PR base)
+pkf affected --since=origin/main 'test:*'
+
+# explicit file list (CI helpers, scripts, hooks)
+pkf affected --files="$(git diff --name-only origin/main | paste -sd,)" 'test:*'
+
+# preview only — no commands run
+pkf affected --since=origin/main --dry-run --explain 'test:*'
+
+# full sweep, cache reuse for unchanged packages
+pkf run 'test:*'
+```
+
+The `'test:*'` glob is important: without it, `pkf affected` also pulls in
+wide-scope tasks (`check`, `test`, `release-check`, …) whose inputs cover
+all of `src/`. Names flatten `/` to `-` (e.g. `test:cmd-vibe` for
+`mizchi/vibe/cmd/vibe`) so a single glob covers all 32 packages.
+
+`pkf` treats each `moon test -p` as a black box; cross-package dep
+tracking (parser change → checker tests need rerun) is handled inside
+moon, not by pkfire. For the final pre-commit sweep, fall back to
+`just test` or `pkf run test`.
+
 ## pkspec — `pkspec/VibeTest.pkl`
 
 `pkspec/VibeTest.pkl` declares two tests that shell out to `moon test`

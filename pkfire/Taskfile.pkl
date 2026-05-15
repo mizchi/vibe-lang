@@ -116,6 +116,78 @@ local releaseCheck = new Task {
   deps { fmt; info; check; test; vibeNormalize; benchBundleSize; releaseSelfhostGates }
 }
 
+/// Per-package test tasks for differential execution.
+///
+/// Each task scopes its `inputs` to one package directory under `src/`
+/// (plus `moon.mod.json` so module-wide config changes still invalidate
+/// every package). The qualified moon package name is `mizchi/vibe/<pkg>`,
+/// derived from the module name in `moon.mod.json`.
+///
+/// Differential execution recipe — use a glob target to scope `affected`
+/// to only the per-package test tasks (without it, wide-scope tasks like
+/// `check` / `test` / `release-check` get pulled in too because their
+/// inputs cover all of `src/`):
+///
+///     pkf affected --since=origin/main 'test:*'       # vs git ref
+///     pkf affected --files=src/parser/foo.mbt 'test:*'
+///
+/// Or `pkf run 'test:*'` for a full sweep that hits the cache for
+/// unchanged packages.
+///
+/// Fine-grained cross-package dep tracking (e.g. parser changes invalidate
+/// checker tests) is moon's job — pkf treats each `moon test -p` as a
+/// black box and lets moon decide what to actually rebuild.
+local packages: List<String> =
+  List(
+    "backend",
+    "benches",
+    "capability",
+    "checker",
+    "cmd/fbgen",
+    "cmd/parser_contract",
+    "cmd/typecheck_fixture",
+    "cmd/vibe",
+    "cmd/vibe_check_wasi",
+    "cmd/vibe_compile_wasi",
+    "cmd/vibe_wasm",
+    "cmd/vibe_wite_optimize_wasi",
+    "cmd/warning_fixture",
+    "codebase",
+    "codegen",
+    "core",
+    "frontend",
+    "fs",
+    "io",
+    "lib",
+    "loader",
+    "lsp",
+    "parser",
+    "pipeline",
+    "profiler",
+    "runtime",
+    "runtime_compile",
+    "tests",
+    "x/fp",
+    "x/module_graph",
+    "x/scoped_map",
+    "x/threads",
+  )
+
+local function pkgTask(pkg: String): Task = new Task {
+  // Task name flattens `/` to `-` so `pkf affected ... 'test:*'` covers
+  // every per-package task with a single glob (pkf's glob does not
+  // traverse `/`). The qualified moon package name keeps the `/` as-is.
+  name = "test:\(pkg.replaceAll("/", "-"))"
+  cmd = "moon test --target native -p mizchi/vibe/\(pkg)"
+  inputs {
+    "moon.mod.json"
+    "src/\(pkg)/**/*.mbt"
+    "src/\(pkg)/moon.pkg"
+  }
+}
+
+local pkgTests: List<Task> = packages.map((p) -> pkgTask(p))
+
 tasks {
   fmt
   info
@@ -130,4 +202,7 @@ tasks {
   benchBundleSize
   releaseSelfhostGates
   releaseCheck
+  for (t in pkgTests) {
+    t
+  }
 }
