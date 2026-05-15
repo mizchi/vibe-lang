@@ -103,9 +103,25 @@ pkspec exec -f pkspec/VibeTest.pkl --only moon-test-native
   (`pkspec check`, `pkspec coverage`).
 - **`just test`** — full sweep before commit / on CI.
 
+## Spec gate (`pkspec/VibeSpec.pkl`)
+
+`pkspec/VibeSpec.pkl` declares high-level goals (e.g. `GOAL.test-coverage`)
+and the scenarios (`VIBE-TEST-NATIVE`, `VIBE-TEST-JS`) that `VibeTest.pkl`
+implements. The `.github/workflows/pkfire-pkspec.yml` workflow runs
+`pkspec check` on every PR that touches `pkfire/` or `pkspec/`, which fails
+if a declared spec loses its implementation. Useful queries:
+
+```bash
+pkspec check pkspec/VibeSpec.pkl pkspec/VibeTest.pkl     # CI gate
+pkspec coverage pkspec/VibeSpec.pkl pkspec/VibeTest.pkl  # %
+pkspec next pkspec/VibeSpec.pkl pkspec/VibeTest.pkl      # unimpl by priority
+pkspec goals pkspec/VibeSpec.pkl pkspec/VibeTest.pkl
+```
+
 ## Status
 
-Experimental. CI still runs `just` / `moon test` / `flaker` directly;
-pkfire and pkspec are available for contributors who want them but are not
-gating any release path yet. Promotion to CI is a follow-up — track in
-`TODO.md` under "0.2.0 roadmap" if you take it on.
+Experimental. The main CI lane (`just` / `moon test` / `flaker`) is
+untouched. `.github/workflows/pkfire-pkspec.yml` is a separate, scoped
+informational job that only runs when `pkfire/` or `pkspec/` change, and is
+marked `continue-on-error: true` so it never blocks merges. Promoting to a
+gating job is a follow-up — track in `TODO.md` if you take it on.

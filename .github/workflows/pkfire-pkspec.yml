@@ -1,0 +1,56 @@
+name: pkfire / pkspec validation
+
+# Non-blocking informational gate. Validates that pkfire/Taskfile.pkl and
+# pkspec/{VibeSpec,VibeTest}.pkl evaluate cleanly and stay consistent with
+# each other. Failures here do NOT block merges — they surface drift early.
+# See docs/pkfire-pkspec.md.
+
+on:
+  pull_request:
+    paths:
+      - 'pkfire/**'
+      - 'pkspec/**'
+      - '.github/workflows/pkfire-pkspec.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'pkfire/**'
+      - 'pkspec/**'
+
+jobs:
+  validate:
+    name: validate Pkl configs
+    runs-on: ubuntu-latest
+    continue-on-error: true  # informational only
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install pkfire (pkf)
+        uses: mizchi/pkfire@v0.10.0
+
+      - name: Install pkspec
+        uses: mizchi/pkspec@v0.1.13
+        with:
+          init-schema-dir: pkspec
+
+      - name: pkf doctor
+        run: pkf doctor -f pkfire/Taskfile.pkl
+
+      - name: pkf list
+        run: pkf list -f pkfire/Taskfile.pkl --long
+
+      - name: pkf format --check
+        run: pkf format -f pkfire/Taskfile.pkl --check
+
+      - name: pkf lint
+        run: pkf lint -f pkfire/Taskfile.pkl
+
+      - name: pkspec doctor
+        run: pkspec doctor
+
+      - name: pkspec check (Spec ↔ Test cross-ref)
+        run: pkspec check pkspec/VibeSpec.pkl pkspec/VibeTest.pkl
+
+      - name: pkspec coverage
+        run: pkspec coverage pkspec/VibeSpec.pkl pkspec/VibeTest.pkl
