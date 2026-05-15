@@ -324,9 +324,10 @@ let continue_fingerprint_fs_impl = (rdb: RippleDb, env_cache: Array[(String, Typ
   let deps = copy_string_array(deps_raw)
   Fs::write_file(persistent_dep_list_cache_path(path, compact_string_fingerprint(source)), persistent_dep_list_text(deps))
   let dlen = Array::length(deps)
-  let next_stack = Array::concat(stack, [
-    path
-  ])
+  // Cycle-detection stack: push self before recursing, truncate back after.
+  // O(1) per frame vs. previous Array::concat(stack, [path]) which was O(depth) per frame.
+  let saved_stack_len = Array::length(stack)
+  Array::push(stack, path)
   let mut i = 0
   let mut db_after_deps = rdb
   let mut env_cache_after_deps = env_cache
@@ -335,7 +336,7 @@ let continue_fingerprint_fs_impl = (rdb: RippleDb, env_cache: Array[(String, Typ
   let dep_fps = empty_dep_fps()
   while i < dlen {
     let dep_path = Array::get(deps, i)
-    let (dep_fp, next_db, next_env_cache, next_dep_source_cache2, next_parse_count) = ensure_fingerprint_fs_go(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, dep_path, next_stack)
+    let (dep_fp, next_db, next_env_cache, next_dep_source_cache2, next_parse_count) = ensure_fingerprint_fs_go(db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps, dep_path, stack)
     db_after_deps = next_db
     env_cache_after_deps = next_env_cache
     dep_source_cache_after_deps = next_dep_source_cache2
@@ -343,6 +344,7 @@ let continue_fingerprint_fs_impl = (rdb: RippleDb, env_cache: Array[(String, Typ
     Array::push(dep_fps, (dep_path, dep_fp))
     i = i + 1
   }
+  Array::truncate(stack, saved_stack_len)
   let fingerprint = build_fingerprint(source, dep_fps)
   match ripple_get_fingerprint(db_after_deps, path) {
     Some(cached_fp) =>

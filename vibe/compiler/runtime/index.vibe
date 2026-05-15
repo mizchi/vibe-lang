@@ -585,9 +585,10 @@ let rec ensure_fingerprint = (
           parse_count
         )
         let dlen = Array::length(deps)
-        let next_stack = Array::concat(stack, [
-          path
-        ])
+        // Cycle-detection stack: push self before recursing, truncate back after.
+        // O(1) per frame vs. previous Array::concat(stack, [path]) which was O(depth) per frame.
+        let saved_stack_len = Array::length(stack)
+        Array::push(stack, path)
         let rec resolve_nested = (
           i: Int,
           dep_acc: Array[(String, String)],
@@ -612,7 +613,7 @@ let rec ensure_fingerprint = (
               dep_source_cache2,
               dep_parse_count,
               dep_path,
-              next_stack
+              stack
             )
             resolve_nested(
               i + 1,
@@ -634,6 +635,7 @@ let rec ensure_fingerprint = (
           next_dep_source_cache,
           initial_parse_count
         )
+        Array::truncate(stack, saved_stack_len)
         let dep_fps = resolved_nested.0
         let db_after_deps = resolved_nested.1
         let env_cache_after_deps = resolved_nested.2
@@ -779,9 +781,10 @@ let continue_fingerprint_fs = (
     persistent_dep_list_text(deps)
   )
   let dlen = Array::length(deps)
-  let next_stack = Array::concat(stack, [
-    path
-  ])
+  // Cycle-detection stack: push self before recursing, truncate back after.
+  // O(1) per frame vs. previous Array::concat(stack, [path]) which was O(depth) per frame.
+  let saved_stack_len = Array::length(stack)
+  Array::push(stack, path)
   let dep_fps = empty_dep_fps()
   let rec load_deps = (
     index: Int,
@@ -811,7 +814,7 @@ let continue_fingerprint_fs = (
         current_dep_source_cache,
         current_parse_count,
         dep_path,
-        next_stack
+        stack
       )
       Array::push(dep_fps, (dep_path, dep_fp))
       load_deps(
@@ -829,6 +832,7 @@ let continue_fingerprint_fs = (
     dep_source_cache_after_deps,
     parse_count_after_deps
   ) = load_deps(0, rdb, env_cache, next_dep_source_cache, initial_parse_count)
+  Array::truncate(stack, saved_stack_len)
   let fingerprint = build_fingerprint(source, dep_fps)
   match ripple_get_fingerprint(db_after_deps, path) {
     Some(cached_fp) =>
