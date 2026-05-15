@@ -9,7 +9,7 @@ vibe 言語の構文・機能を把握するには、最初に [docs/cheatsheet.
 ## Quick Commands
 
 タスク runner は [pkfire](https://github.com/mizchi/pkfire) (`pkf`)。
-定義は `pkfire/Taskfile.pkl`。
+定義は `Taskfile.pkl`。
 
 ```bash
 pkf list                  # show all tasks
@@ -128,7 +128,7 @@ pkf run release-check  # fmt + info + check + test + vibe-normalize + bundle-siz
 
 ## pkfire / pkspec
 
-タスク runner は `pkfire/Taskfile.pkl` (238 tasks)、テスト宣言は `pkspec/{VibeSpec,VibeTest}.pkl`。
+タスク runner は `Taskfile.pkl` (238 tasks)、テスト宣言は `pkspec/{VibeSpec,VibeTest}.pkl`。
 CI は `~/.cache/pkfire` を `actions/cache` でキャッシュしているため、
 変更がない subgraph は cache hit でスキップされる。
 詳細は [docs/pkfire-pkspec.md](docs/pkfire-pkspec.md)。

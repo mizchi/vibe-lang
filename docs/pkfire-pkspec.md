@@ -6,7 +6,7 @@ it replaces the former `justfile`. [`pkspec`](https://github.com/mizchi/pkspec)
 (language-agnostic test runner) is wired in as an opt-in companion alongside
 `moon test` / `flaker run`.
 
-The task definitions live in `pkfire/Taskfile.pkl` (238 tasks). Multi-line
+The task definitions live in `Taskfile.pkl` (238 tasks). Multi-line
 shell that doesn't fit a single Pkl `cmd =` lives in `scripts/pkfire/*.sh`
 and is invoked directly. CI runs every job through `pkf run …` with
 `~/.cache/pkfire` persisted via `actions/cache` so unchanged subgraphs are
@@ -31,9 +31,9 @@ CI uses the `mizchi/pkfire@v0.10.0` and `mizchi/pkspec@v0.2.0` composite
 actions via `.github/actions/setup-vibe` (set `pkfire: 'true'` on the
 caller). Pass `pkfire-cache: 'true'` to also hydrate `~/.cache/pkfire`.
 
-## pkfire — `pkfire/Taskfile.pkl`
+## pkfire — `Taskfile.pkl`
 
-`pkfire/Taskfile.pkl` mirrors **every** recipe from the `justfile`
+`Taskfile.pkl` mirrors **every** recipe from the `justfile`
 (238 tasks: 206 from justfile + 32 generated per-package test tasks).
 Simple recipes are inlined; complex multi-line shell stays in the
 justfile and is invoked via `just <name>` so the canonical body
