@@ -319,6 +319,40 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
+  pkspec-exec:
+    # Drives the per-package `moon test -p mizchi/vibe/<pkg>` matrix
+    # through `pkspec exec`, which gives us pkspec's retry / shard /
+    # rerun-failed machinery for free and proves that
+    # pkspec/VibeTest.pkl's declarations actually correspond to runnable
+    # commands. The 4-shard matrix lines up with `wasm-compile-e2e`'s
+    # shard count so the slowest shard's wall time gates the whole
+    # job. `pkspec exec` returns non-zero on any failed test, so a
+    # broken declaration ("cmd points at a moved package") fails this
+    # job loudly.
+    name: pkspec-exec (shard ${{ matrix.shard }}/4)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Vibe toolchain
+        uses: ./.github/actions/setup-vibe
+        with:
+          pkfire: 'true'
+          pkfire-cache: 'true'
+
+      - name: Install pkspec
+        uses: mizchi/pkspec@v0.2.0
+        with:
+          init-schema-dir: pkspec
+
+      - name: pkspec exec — shard ${{ matrix.shard }}/4
+        run: pkspec exec -f pkspec/VibeTest.pkl --shard=${{ matrix.shard }}/4
+
   pr-affected-tests:
     # PR-only fast lane: re-runs only the per-package `test:*` tasks whose
     # inputs changed since `origin/<base>`. This complements (does not
@@ -742,6 +776,7 @@ jobs:
       - coverage-moon
       - coverage-selfhost-suite
       - native-binary-parity
+      - pkspec-exec
       - pr-affected-tests
       - selfhost-bootstrap-gate
       - selfhost-gates
@@ -757,6 +792,7 @@ jobs:
           echo "  coverage-moon: ${{ needs.coverage-moon.result }}"
           echo "  coverage-selfhost-suite: ${{ needs.coverage-selfhost-suite.result }}"
           echo "  native-binary-parity: ${{ needs.native-binary-parity.result }}"
+          echo "  pkspec-exec: ${{ needs.pkspec-exec.result }}"
           echo "  pr-affected-tests: ${{ needs.pr-affected-tests.result }}"
           echo "  selfhost-bootstrap-gate: ${{ needs.selfhost-bootstrap-gate.result }}"
           echo "  selfhost-gates: ${{ needs.selfhost-gates.result }}"
