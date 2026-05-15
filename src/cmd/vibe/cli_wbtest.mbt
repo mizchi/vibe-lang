@@ -3872,11 +3872,15 @@ test "session http spawn command exports worker token" {
     36123,
     @runtime.RuntimeFeatureFlags::new(true, true),
     "worker-token",
+    424242,
   )
   assert_true(cmd.contains("VIBE_SESSION_WORKER_TOKEN="))
+  assert_true(cmd.contains("VIBE_INTERNAL_PARENT_PID=424242"))
   assert_true(cmd.contains("session-http --port 36123"))
   assert_true(cmd.contains("--unstable-async"))
   assert_true(cmd.contains("--unstable-threads"))
+  assert_true(cmd.contains("/proc/$$/fd/*"))
+  assert_true(cmd.contains("eval \"exec $n<&-\""))
 }
 
 ///|

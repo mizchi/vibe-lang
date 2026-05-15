@@ -1,11 +1,55 @@
 ///|
+/// Per-CLI-invocation cache mapping a resolved index root to its
+/// `VibeDb`. Short-lived `vibe` invocations construct this via
+/// `CliEntryDbCache::new()` and rely on natural GC at process exit; the
+/// session-http worker is long-lived and constructs via
+/// `CliEntryDbCache::with_capacity(n)` to evict the least-recently-used
+/// root once `by_root` exceeds the cap, so a single worker doesn't grow
+/// unbounded across many projects.
 struct CliEntryDbCache {
   by_root : Map[String, @runtime.VibeDb]
+  access_order : Array[String]
+  capacity : Int
 }
 
 ///|
 fn CliEntryDbCache::new() -> CliEntryDbCache {
-  { by_root: {} }
+  { by_root: {}, access_order: [], capacity: 0 }
+}
+
+///|
+fn CliEntryDbCache::with_capacity(capacity : Int) -> CliEntryDbCache {
+  { by_root: {}, access_order: [], capacity }
+}
+
+///|
+fn CliEntryDbCache::touch_access_order(
+  self : CliEntryDbCache,
+  root : String,
+) -> Unit {
+  if self.capacity <= 0 {
+    return
+  }
+  let mut i = 0
+  while i < self.access_order.length() {
+    if self.access_order[i] == root {
+      let _ = self.access_order.remove(i)
+      break
+    }
+    i += 1
+  }
+  self.access_order.push(root)
+}
+
+///|
+fn CliEntryDbCache::evict_if_needed(self : CliEntryDbCache) -> Unit {
+  if self.capacity <= 0 {
+    return
+  }
+  while self.access_order.length() > self.capacity {
+    let oldest = self.access_order.remove(0)
+    self.by_root.remove(oldest)
+  }
 }
 
 ///|
@@ -14,11 +58,13 @@ fn CliEntryDbCache::db_for_resolved_entry(
   resolved_entry : String,
 ) -> @runtime.VibeDb {
   let root = @codebase.resolve_index_root(resolved_entry)
+  self.touch_access_order(root)
   match self.by_root.get(root) {
     Some(db) => db
     None => {
       let db = @runtime.VibeDb::new()
       self.by_root[root] = db
+      self.evict_if_needed()
       db
     }
   }
