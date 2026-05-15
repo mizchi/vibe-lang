@@ -12,7 +12,7 @@ FAIL=0
 # --- Sub-gate 1: Component string lift validation ---
 echo "--- 1. Component string lift (handler pattern) ---"
 
-just run compile --component-string-lift fixtures/http_p3_handler_string.vibe 2>/dev/null
+moon run --target native src/cmd/vibe -- compile --component-string-lift fixtures/http_p3_handler_string.vibe 2>/dev/null
 COMPONENT="dist/http_p3_handler_string.component.wasm"
 
 if [ ! -f "$COMPONENT" ]; then
@@ -72,7 +72,7 @@ export let handler = (method: String, url: String) -> Int with {Net} {
 handler("GET", "/")
 EOF
 
-if just run compile --component-string-lift "$REJECT_SRC" 2>/dev/null; then
+if moon run --target native src/cmd/vibe -- compile --component-string-lift "$REJECT_SRC" 2>/dev/null; then
   echo "FAIL: should have rejected incompatible builtins"
   FAIL=$((FAIL + 1))
 else
@@ -85,7 +85,7 @@ rm -f "$REJECT_SRC"
 echo ""
 echo "--- 3. Core wasm exports (handler + cabi_realloc + memory) ---"
 
-just run compile --wasm --force-cabi-realloc fixtures/http_p3_handler_string.vibe 2>/dev/null
+moon run --target native src/cmd/vibe -- compile --wasm --force-cabi-realloc fixtures/http_p3_handler_string.vibe 2>/dev/null
 CORE_WASM="dist/http_p3_handler_string.wasm"
 
 EXPORTS=$(wasm-tools dump "$CORE_WASM" 2>/dev/null | grep 'export Export' || true)

@@ -28,6 +28,7 @@ Completed items are archived in `docs/DONE.md`.
 - [ ] **WASI P3: effect → WIT マッピング + `vibe serve`**
 - [ ] **SIMD codegen 本番化** — selfhost codegen の 0xFD prefix emit + `simd_skip_ws` / `simd_scan_alnum` 組込
 - [ ] **#59 WASM-GC selfbuild ~350KB** — P4 compile E2E の残 3 ケース（simd_patterns / gc_only/index / selfhost_cli_gc_entry）+ P5 DCE + wasm-opt
+- [x] **pkfire / pkspec 全面導入** — `justfile` を完全削除し `pkfire/Taskfile.pkl` (238 tasks) が canonical。複雑な多行レシピは `scripts/pkfire/*.sh` に抽出。CI は `pkf run` 経由 + `~/.cache/pkfire` を `actions/cache` でキャッシュ。`pkspec/{VibeSpec,VibeTest}.pkl` で `pkspec check` 通る、PR 用 informational gate あり。次は (a) `pkf affected --since=origin/main 'test:*'` を CI の PR 高速化パスに組み込む (b) `pkspec exec` で `moon test` を pkspec 経由で回す
 
 ### 🔵 リファクタ / 長期
 

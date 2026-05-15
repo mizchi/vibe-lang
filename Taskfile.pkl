@@ -1,0 +1,1359 @@
+/// pkfire Taskfile for vibe-lang
+///
+/// Canonical task definitions for vibe-lang. Replaces the previous
+/// `justfile`. Simple recipes are inlined; multi-line shell lives in
+/// `scripts/pkfire/*.sh` and is invoked directly (no `just` wrapper).
+///
+/// Usage:
+///   pkf list                                  # show tasks
+///   pkf run check                             # type check (cached)
+///   pkf run test                              # full test suite
+///   pkf affected --since=origin/main 'test:*' # diff-aware package tests
+///   pkf graph --format tree                   # visualize dependencies
+amends "package://pkg.pkl-lang.org/github.com/mizchi/pkfire/pkfire@0.10.0#/Taskfile.pkl"
+
+// Shared canonical package list — also consumed by pkspec/VibeTest.pkl
+// and pkspec/VibeSpec.pkl so per-package test definitions stay in sync.
+import "pkspec/Packages.pkl"
+
+// --- Configuration (env vars, mirroring the former justfile defaults) ---
+
+local target: String = read?("env:VIBE_TARGET")?.text ?? "js"
+local moonWarnList: String = read?("env:VIBE_MOON_WARN_LIST")?.text ?? "-1-6-7-9-20-24-29"
+
+local moonSources: Listing<String> = new {
+  "moon.mod.json"
+  "moon.pkg.json"
+  "src/**/*.mbt"
+  "src/**/moon.pkg.json"
+  "vibe/**/*.mbt"
+  "vibe/**/moon.pkg.json"
+  "vibe/**/*.vibe"
+}
+
+local scriptSources: Listing<String> = new {
+  "scripts/**/*.sh"
+  "scripts/**/*.mjs"
+}
+
+// --- Helper factories ---
+
+/// Single-script wrapper — common pattern.
+local function scriptTask(taskName: String, script: String): Task = new Task {
+  name = taskName
+  cmd = "bash \(script)"
+  inputs { ...moonSources; ...scriptSources }
+}
+
+// === Quick Commands ===
+
+local fmt = new Task {
+  name = "fmt"
+  cmd = "moon fmt"
+  cache = false
+}
+
+local info = new Task {
+  name = "info"
+  cmd = "moon info"
+  inputs { ...moonSources }
+  outputs { "**/*.mbti" }
+}
+
+local check = new Task {
+  name = "check"
+  cmd = "moon check --deny-warn --warn-list '\(moonWarnList)' --target \(target)"
+  inputs { ...moonSources }
+}
+
+local checkCodegenContract = new Task {
+  name = "check-codegen-contract"
+  cmd = "bash scripts/test_codegen_contract.sh"
+  inputs { ...moonSources; ...scriptSources }
+}
+
+local checkLockClean = new Task {
+  name = "check-lock-clean"
+  cmd = "scripts/check_lock_clean.sh"
+  inputs { "index.lock"; "**/index.lock"; "scripts/check_lock_clean.sh" }
+}
+
+local testLockClean = scriptTask("test-lock-clean", "scripts/check_lock_clean_test.sh")
+local checkSelfhostBundleSync =
+  scriptTask("check-selfhost-bundle-sync", "scripts/check_selfhost_bundle_sync.sh")
+local testSelfhostBundleSync =
+  scriptTask("test-selfhost-bundle-sync", "scripts/check_selfhost_bundle_sync_test.sh")
+local testGenerateSelfhostBundle =
+  scriptTask("test-generate-selfhost-bundle", "scripts/generate_selfhost_bundle_test.sh")
+
+local testCoverageScripts = new Task {
+  name = "test-coverage-scripts"
+  cmd =
+    "node --test scripts/coverage_selfhost_suite_next_branches.test.mjs scripts/coverage_wasm_source.test.mjs"
+  inputs { "scripts/**/*.mjs" }
+}
+
+local refreshSelfhostBatchWeights =
+  scriptTask("refresh-selfhost-batch-weights", "scripts/refresh_selfhost_batch_weight_seed.sh")
+local testSelfhostBatchWeights =
+  scriptTask("test-selfhost-batch-weights", "scripts/refresh_selfhost_batch_weight_seed_test.sh")
+local testRenameBuiltins = scriptTask("test-rename-builtins", "scripts/rename_builtins_test.sh")
+local testVibeNormalize = scriptTask("test-vibe-normalize", "scripts/vibe_normalize_all_test.sh")
+
+// === Test suites ===
+
+local test = new Task {
+  name = "test"
+  cmd = "bash scripts/pkfire/test_suite.sh"
+  inputs {
+    ...moonSources
+    ...scriptSources
+    "fixtures/**/*"
+  }
+}
+
+local testWasmGcMainlaneE2e = new Task {
+  name = "test-wasm-gc-mainlane-e2e"
+  cmd =
+    "VIBE_WASM_GC_MAINLANE=1 moon test --target native src/tests/vibe_wasm_gc_mainlane_e2e_test.mbt --warn-list '\(moonWarnList)'"
+  inputs { ...moonSources }
+}
+
+local testWasmGcValidate = scriptTask("test-wasm-gc-validate", "scripts/test_wasm_gc_validate.sh")
+local testVibePackageSuite =
+  scriptTask("test-vibe-package-suite", "scripts/pkfire/test_vibe_package_suite.sh")
+local testWasmHeavy = scriptTask("test-wasm-heavy", "scripts/pkfire/test_wasm_heavy.sh")
+
+local testFull = new Task {
+  name = "test-full"
+  description = "full suite incl. heavy wasm tests"
+  deps { test; testWasmHeavy }
+}
+
+// === CI contract / shard tasks ===
+
+local ciContractMoon = scriptTask("ci-contract-moon", "scripts/pkfire/contract_moon.sh")
+local ciContractNative = scriptTask("ci-contract-native", "scripts/pkfire/contract_native.sh")
+local ciNativeBinaryParity =
+  scriptTask("ci-native-binary-parity", "scripts/pkfire/native_binary_parity.sh")
+
+local ciWasmQuickShard = new Task {
+  name = "ci-wasm-quick-shard"
+  cmd = "bash scripts/pkfire/wasm_quick_shard.sh $@"
+  acceptsArgs = true
+  inputs { ...moonSources; ...scriptSources }
+}
+
+local ciSelfhostGatesShard = new Task {
+  name = "ci-selfhost-gates-shard"
+  cmd = "bash scripts/pkfire/selfhost_gates_shard.sh $@"
+  acceptsArgs = true
+  inputs { ...moonSources; ...scriptSources }
+}
+
+local ciSelfhostExamplesSmoke =
+  scriptTask("ci-selfhost-examples-smoke", "scripts/pkfire/selfhost_examples_smoke.sh")
+
+// === Build artifacts ===
+
+local buildIntegrationDenoWasm = new Task {
+  name = "build-integration-deno-wasm"
+  cmd = "moon build --target wasm-gc --release src/lib"
+  inputs { ...moonSources }
+  outputs { "_build/wasm-gc/release/build/lib/lib.wasm" }
+}
+
+local buildWasmVibe = new Task {
+  name = "build-wasm-vibe"
+  cmd = "mkdir -p wasm/vibe && cp _build/wasm-gc/release/build/lib/lib.wasm wasm/vibe/vibe.wasm"
+  inputs { "_build/wasm-gc/release/build/lib/lib.wasm" }
+  outputs { "wasm/vibe/vibe.wasm" }
+  deps { buildIntegrationDenoWasm }
+}
+
+local buildReleaseAssets = new Task {
+  name = "build-release-assets"
+  cmd = "bash scripts/build_release_assets.sh $@"
+  acceptsArgs = true
+  inputs { ...moonSources; ...scriptSources }
+}
+
+local releaseTagPreflight = new Task {
+  name = "release-tag-preflight"
+  cmd = "bash scripts/build_release_assets.sh $@"
+  acceptsArgs = true
+  inputs { ...moonSources; ...scriptSources }
+}
+
+local buildSelfhostDist = new Task {
+  name = "build-selfhost-dist"
+  cmd = "bash scripts/build_selfhost_dist.sh"
+  inputs { ...moonSources; ...scriptSources }
+  outputs { "dist/selfhost/**" }
+}
+
+local buildSelfhostDistRaw = new Task {
+  name = "build-selfhost-dist-raw"
+  cmd = "VIBE_DIST_SKIP_OPT=1 bash scripts/build_selfhost_dist.sh"
+  inputs { ...moonSources; ...scriptSources }
+  outputs { "dist/selfhost/**" }
+}
+
+local buildSelfhostDistGc = new Task {
+  name = "build-selfhost-dist-gc"
+  cmd =
+    "VIBE_DIST_ENTRY_PATH=\"$(pwd)/vibe/compiler/selfhost_cli_gc_entry.vibe\" bash scripts/build_selfhost_dist.sh"
+  inputs { ...moonSources; ...scriptSources }
+  outputs { "dist/selfhost/**" }
+}
+
+local testWasmVibeWasmtime = new Task {
+  name = "test-wasm-vibe-wasmtime"
+  cmd = "scripts/test_wasm_vibe_wasmtime.sh wasm/vibe/vibe.wasm"
+  inputs { "wasm/vibe/vibe.wasm"; "scripts/test_wasm_vibe_wasmtime.sh" }
+  deps { buildWasmVibe }
+}
+
+local testIntegrationDeno = new Task {
+  name = "test-integration-deno"
+  cmd = "deno test --allow-read tests/integration-deno"
+  inputs { "tests/integration-deno/**/*"; "wasm/vibe/vibe.wasm" }
+  deps { buildIntegrationDenoWasm }
+}
+
+// === Coverage ===
+
+local coverageMoon = scriptTask("coverage-moon", "scripts/coverage_moon.sh")
+local coverageDeno = scriptTask("coverage-deno", "scripts/coverage_deno.sh")
+
+local coverageWasmSource = new Task {
+  name = "coverage-wasm-source"
+  cmd = "scripts/coverage_wasm_source.sh $@"
+  acceptsArgs = true
+  inputs { ...moonSources; ...scriptSources }
+}
+
+local coverageSelfhostIndex = new Task {
+  name = "coverage-selfhost-index"
+  cmd =
+    "VIBE_WASM_SOURCE_COVERAGE_INVOKE=selfbuild_compile_stage2 scripts/coverage_wasm_source.sh ${1:-vibe/compiler/index.vibe}"
+  acceptsArgs = true
+  inputs { ...moonSources; ...scriptSources }
+}
+
+local coverageSelfhost = new Task {
+  name = "coverage-selfhost"
+  cmd = "scripts/coverage_wasm_source.sh ${1:-vibe/compiler/selfhost_coverage_run.vibe}"
+  acceptsArgs = true
+  inputs { ...moonSources; ...scriptSources }
+}
+
+local coverageSelfhostGate = new Task {
+  name = "coverage-selfhost-gate"
+  cmd =
+    "VIBE_WASM_SOURCE_COVERAGE_MIN_POINT_RATE=\"${1:-23}\" VIBE_WASM_SOURCE_COVERAGE_MIN_LINE_RATE=\"${2:-100}\" VIBE_WASM_SOURCE_COVERAGE_MIN_BRANCH_RATE=\"${3:-20}\" scripts/coverage_wasm_source.sh vibe/compiler/selfhost_coverage_run.vibe"
+  acceptsArgs = true
+  inputs { ...moonSources; ...scriptSources }
+}
+
+local coverageSelfhostSuite =
+  scriptTask("coverage-selfhost-suite", "scripts/coverage_selfhost_suite.sh")
+
+local coverageSelfhostSuiteGate = new Task {
+  name = "coverage-selfhost-suite-gate"
+  cmd =
+    "VIBE_SELFHOST_SUITE_MIN_POINT_RATE=\"${1:-36}\" VIBE_SELFHOST_SUITE_MIN_LINE_RATE=\"${2:-97}\" VIBE_SELFHOST_SUITE_MIN_BRANCH_RATE=\"${3:-30}\" scripts/coverage_selfhost_suite.sh"
+  acceptsArgs = true
+  inputs { ...moonSources; ...scriptSources }
+}
+
+local coverageSelfhostSuiteNextBranches = new Task {
+  name = "coverage-selfhost-suite-next-branches"
+  cmd =
+    "node scripts/coverage_selfhost_suite_next_branches.mjs \"${1:-_build/coverage/selfhost-suite/selfhost_suite.report.json}\" --format \"${VIBE_SELFHOST_SUITE_NEXT_BRANCHES_FORMAT:-text}\""
+  acceptsArgs = true
+  inputs { "scripts/coverage_selfhost_suite_next_branches.mjs" }
+}
+
+local coverageSelfhostSuiteBranch = new Task {
+  name = "coverage-selfhost-suite-branch"
+  cmd =
+    #"VIBE_SELFHOST_SUITE_COVERAGE_DIR=_build/coverage/selfhost-suite-branch VIBE_SELFHOST_SUITE_EXTRA_ENTRIES="$(node scripts/coverage_selfhost_suite_next_branches.mjs --preset branch --format env)" scripts/coverage_selfhost_suite.sh"#
+  inputs { ...moonSources; ...scriptSources }
+}
+
+local coverageSelfhostSuiteBranchGate = new Task {
+  name = "coverage-selfhost-suite-branch-gate"
+  cmd =
+    #"VIBE_SELFHOST_SUITE_COVERAGE_DIR=_build/coverage/selfhost-suite-branch VIBE_SELFHOST_SUITE_EXTRA_ENTRIES="$(node scripts/coverage_selfhost_suite_next_branches.mjs --preset branch --format env)" VIBE_SELFHOST_SUITE_MIN_POINT_RATE="${1:-40}" VIBE_SELFHOST_SUITE_MIN_LINE_RATE="${2:-93}" VIBE_SELFHOST_SUITE_MIN_BRANCH_RATE="${3:-33}" scripts/coverage_selfhost_suite.sh"#
+  acceptsArgs = true
+  inputs { ...moonSources; ...scriptSources }
+}
+
+local coverageScratchSidecar = new Task {
+  name = "coverage-scratch-sidecar"
+  cmd = "scripts/coverage_scratch_sidecar.sh $@"
+  acceptsArgs = true
+  inputs { ...moonSources; ...scriptSources }
+}
+
+local coverageEvalSidecar = new Task {
+  name = "coverage-eval-sidecar"
+  cmd = "scripts/coverage_scratch_sidecar.sh $@"
+  acceptsArgs = true
+  inputs { ...moonSources; ...scriptSources }
+}
+
+local coverageWasmStd = scriptTask("coverage-wasm-std", "scripts/coverage_wasm_std.sh")
+
+local coverage = new Task {
+  name = "coverage"
+  deps { coverageMoon; coverageDeno }
+}
+
+// === Fixtures / parity ===
+
+local ideJs = new Task {
+  name = "ide-js"
+  cmd = "deno run --allow-read js/vibe/cli.js ide $@"
+  acceptsArgs = true
+  deps { buildIntegrationDenoWasm }
+  cache = false
+}
+
+local testFixtures = new Task {
+  name = "test-fixtures"
+  cmd = "moon test -p tests --filter 'fixtures' --target \(target)"
+  inputs { ...moonSources; "fixtures/**/*" }
+}
+
+local testBuildParity = scriptTask("test-build-parity", "scripts/test_build_parity.sh")
+
+local testFeatureParity = new Task {
+  name = "test-feature-parity"
+  cmd =
+    "source scripts/ensure_native_cli.sh && VIBE_FEATURE_PARITY_MODES=\"${1:-wasm,wasm-linear}\" scripts/test_feature_parity.sh"
+  acceptsArgs = true
+  inputs { ...moonSources; ...scriptSources }
+}
+
+local testFixturesIsolation =
+  scriptTask("test-fixtures-isolation", "scripts/test_fixtures_isolation.sh")
+local testTypecheckFixtures =
+  scriptTask("test-typecheck-fixtures", "scripts/test_typecheck_fixtures.sh")
+
+local testTypecheckFixturesUpdate = new Task {
+  name = "test-typecheck-fixtures-update"
+  cmd = "scripts/typecheck_fixtures.sh --update"
+  cache = false
+}
+
+local testWarningFixtures = scriptTask("test-warning-fixtures", "scripts/test_warning_fixtures.sh")
+
+local testWarningFixturesUpdate = new Task {
+  name = "test-warning-fixtures-update"
+  cmd = "scripts/warning_fixtures.sh --update"
+  cache = false
+}
+
+local testUpdate = new Task {
+  name = "test-update"
+  cmd = "moon test --update --target \(target)"
+  cache = false
+}
+
+// === Run / serve / install ===
+
+local run = new Task {
+  name = "run"
+  cmd = "moon run --target native src/cmd/vibe -- $@"
+  acceptsArgs = true
+  cache = false
+}
+
+local serve = new Task {
+  name = "serve"
+  cmd = "bash scripts/vibe_serve.sh $@"
+  acceptsArgs = true
+  cache = false
+}
+
+local buildVibeWasm = new Task {
+  name = "build-vibe-wasm"
+  cmd = "moon build --target native src/cmd/vibe_wasm"
+  inputs { ...moonSources }
+  outputs { "_build/native/release/build/cmd/vibe_wasm/**" }
+}
+
+local runVibeWasm = new Task {
+  name = "run-vibe-wasm"
+  cmd = "moon run --target native src/cmd/vibe_wasm -- $@"
+  acceptsArgs = true
+  cache = false
+}
+
+local buildShellWasiWasm = new Task {
+  name = "build-shell-wasi-wasm"
+  cmd = "moon build --target wasm src/cmd/vibe_wasi"
+  inputs { ...moonSources }
+  outputs { "_build/wasm/release/build/cmd/vibe_wasi/**" }
+}
+
+local buildCompilerWasiWasm = new Task {
+  name = "build-compiler-wasi-wasm"
+  cmd = "moon build --target wasm src/cmd/vibe_compile_wasi"
+  inputs { ...moonSources }
+  outputs { "_build/wasm/release/build/cmd/vibe_compile_wasi/**" }
+}
+
+local buildCheckerWasiWasm = new Task {
+  name = "build-checker-wasi-wasm"
+  cmd = "moon build --target wasm src/cmd/vibe_check_wasi"
+  inputs { ...moonSources }
+  outputs { "_build/wasm/release/build/cmd/vibe_check_wasi/**" }
+}
+
+local buildWiteOptimizeWasiWasm = new Task {
+  name = "build-wite-optimize-wasi-wasm"
+  cmd = "moon build --target wasm src/cmd/vibe_wite_optimize_wasi"
+  inputs { ...moonSources }
+  outputs { "_build/wasm/release/build/cmd/vibe_wite_optimize_wasi/**" }
+}
+
+local buildWasiHttpP3Adapter = new Task {
+  name = "build-wasi-http-p3-adapter"
+  cmd = "scripts/build_wasi_http_p3_adapter.sh $@"
+  acceptsArgs = true
+  inputs { ...moonSources; ...scriptSources }
+}
+
+local probeWasiHttpP3Compose = new Task {
+  name = "probe-wasi-http-p3-compose"
+  cmd = "WAC_BIN=\"${1:-wac}\" scripts/probe_wasi_http_p3_compose.sh"
+  acceptsArgs = true
+  inputs { ...moonSources; ...scriptSources }
+}
+
+local probeWasiHttpP3ServiceOnly =
+  scriptTask("probe-wasi-http-p3-service-only", "scripts/probe_wasi_http_p3_service_only.sh")
+local testWasiHttpP3Gate =
+  scriptTask("test-wasi-http-p3-gate", "scripts/test_wasi_http_p3_blocked_gate.sh")
+
+local runCompilerWasiWasm = new Task {
+  name = "run-compiler-wasi-wasm"
+  cmd = "moon run --target wasm src/cmd/vibe_compile_wasi -- $@"
+  acceptsArgs = true
+  cache = false
+}
+
+local runCheckerWasiWasm = new Task {
+  name = "run-checker-wasi-wasm"
+  cmd = "moon run --target wasm src/cmd/vibe_check_wasi -- $@"
+  acceptsArgs = true
+  cache = false
+}
+
+local runWiteOptimizeWasiWasm = new Task {
+  name = "run-wite-optimize-wasi-wasm"
+  cmd = "moon run --target wasm src/cmd/vibe_wite_optimize_wasi -- $@"
+  acceptsArgs = true
+  cache = false
+}
+
+local runCompilerWasiWasmGc = new Task {
+  name = "run-compiler-wasi-wasm-gc"
+  cmd = "moon run --target wasm src/cmd/vibe_compile_wasi -- --wasm-gc $@"
+  acceptsArgs = true
+  cache = false
+}
+
+local runCompilerWasiWasmMvp = new Task {
+  name = "run-compiler-wasi-wasm-mvp"
+  cmd = "moon run --target wasm src/cmd/vibe_compile_wasi -- --wasm-mvp $@"
+  acceptsArgs = true
+  cache = false
+}
+
+local componentRun = new Task {
+  name = "component-run"
+  cmd = "scripts/run_component_stdio.sh \"$1\" \"${2:-}\" \"${3:-run()}\""
+  acceptsArgs = true
+  cache = false
+}
+
+local demoTuiStream = new Task {
+  name = "demo-tui-stream"
+  cmd =
+    #"printf 'hello\nworld\n' | scripts/run_component_stdio.sh examples/wasm/tui_stream_demo.vibe '' 'run()' | awk 'NR==1{prev=$0;next}{print prev;prev=$0} END{if (prev !~ /^-?[0-9]+$/) print prev}'"#
+  cache = false
+}
+
+local componentRunMoonix = new Task {
+  name = "component-run-moonix"
+  cmd = "scripts/run_component_moonix.sh \"$1\" \"${2:-}\" \"${3:-run()}\""
+  acceptsArgs = true
+  cache = false
+}
+
+local bootstrapMoonix = new Task {
+  name = "bootstrap-moonix"
+  cmd = "scripts/bootstrap_moonix_bin.sh ${1:-}"
+  acceptsArgs = true
+  cache = false
+}
+
+local install = new Task {
+  name = "install"
+  cmd =
+    #"VIBE_CLI_RELEASE=1 bash -c 'source scripts/ensure_native_cli.sh' && mkdir -p "${VIBE_PREFIX:-$HOME/.local}/bin" && cp target/native/release/build/cmd/vibe/vibe.exe "${VIBE_PREFIX:-$HOME/.local}/bin/vibe""#
+  cache = false
+}
+
+// === Bench ===
+
+local benchWasmtime = scriptTask("bench-wasmtime", "scripts/bench_wasmtime.sh")
+
+local benchWasmtimeOverhead = new Task {
+  name = "bench-wasmtime-overhead"
+  cmd = "scripts/bench_wasmtime_overhead.sh $@"
+  acceptsArgs = true
+  inputs { ...moonSources; ...scriptSources }
+}
+
+local benchCompare = scriptTask("bench-compare", "scripts/bench_compare.sh")
+
+local benchKpi = new Task {
+  name = "bench-kpi"
+  cmd = "scripts/bench_kpi.sh $@"
+  acceptsArgs = true
+  inputs { "bench/**/*"; ...scriptSources }
+}
+
+local benchKpiFull = new Task {
+  name = "bench-kpi-full"
+  cmd =
+    "scripts/bench_kpi.sh bench/kpi_bench.vibe bench/kpi_bench_large_fn.vibe bench/kpi_bench_strings.vibe bench/kpi_bench_effects.vibe bench/kpi_bench_match.vibe"
+  inputs { "bench/**/*.vibe"; "scripts/bench_kpi.sh" }
+}
+
+local benchStringCompare = scriptTask("bench-string-compare", "scripts/bench_string_compare.sh")
+
+local benchJsonschema = new Task {
+  name = "bench-jsonschema"
+  cmd = "moon run --target native src/cmd/vibe/main.mbt -- bench vibe/x/jsonschema/bench.vibe"
+  cache = false
+}
+
+local benchStringConcat = new Task {
+  name = "bench-string-concat"
+  cmd = "scripts/bench_string_compare.sh bench/bench_string_concat.vibe"
+  inputs { "bench/bench_string_concat.vibe"; "scripts/bench_string_compare.sh" }
+}
+
+local benchStringSubstring = new Task {
+  name = "bench-string-substring"
+  cmd = "scripts/bench_string_compare.sh bench/bench_string_substring.vibe"
+  inputs { "bench/bench_string_substring.vibe"; "scripts/bench_string_compare.sh" }
+}
+
+local benchStringEquals = new Task {
+  name = "bench-string-equals"
+  cmd = "scripts/bench_string_compare.sh bench/bench_string_equals.vibe"
+  inputs { "bench/bench_string_equals.vibe"; "scripts/bench_string_compare.sh" }
+}
+
+local benchBase64 = new Task {
+  name = "bench-base64"
+  cmd = "scripts/bench_string_compare.sh bench/bench_base64_encode.vibe"
+  inputs { "bench/bench_base64_encode.vibe"; "scripts/bench_string_compare.sh" }
+}
+
+local benchAuditBackends = scriptTask("bench-audit-backends", "scripts/bench_audit_backends.sh")
+local benchBuilder = scriptTask("bench-builder", "scripts/bench_builder.sh")
+
+local benchArrayBuild = new Task {
+  name = "bench-array-build"
+  cmd =
+    "moon run --target native src/cmd/vibe/main.mbt -- bench bench/bench_array_build_strategies.vibe"
+  inputs { "bench/bench_array_build_strategies.vibe"; ...moonSources }
+}
+
+local benchCharConversion = new Task {
+  name = "bench-char-conversion"
+  cmd = "moon run --target native src/cmd/vibe/main.mbt -- bench bench/bench_char_conversion.vibe"
+  inputs { "bench/bench_char_conversion.vibe"; ...moonSources }
+}
+
+local benchHttp = scriptTask("bench-http", "scripts/bench_http.sh")
+local benchCmdLatency = scriptTask("bench-cmd-latency", "scripts/bench_cmd_latency.sh")
+local benchCmdCompile = scriptTask("bench-cmd-compile", "scripts/bench_cmd_compile.sh")
+local benchScratchWorkflow =
+  scriptTask("bench-scratch-workflow", "scripts/bench_scratch_workflow.sh")
+local debugScratchWorkflow =
+  scriptTask("debug-scratch-workflow", "scripts/debug_scratch_workflow.sh")
+local benchNormalize = scriptTask("bench-normalize", "scripts/bench_normalize.sh")
+
+local benchNormalizeRelease = new Task {
+  name = "bench-normalize-release"
+  cmd = "scripts/bench_normalize.sh --release"
+  inputs { ...moonSources; "scripts/bench_normalize.sh" }
+}
+
+local benchSymbolIndex = new Task {
+  name = "bench-symbol-index"
+  cmd = "moon bench -p benches -f symbol_index_bench.mbt"
+  inputs { ...moonSources }
+}
+
+local benchAdvancedGraph = new Task {
+  name = "bench-advanced-graph"
+  cmd = "moon bench -p benches -f advanced_graph_bench.mbt"
+  inputs { ...moonSources }
+}
+
+local benchTypechecker = new Task {
+  name = "bench-typechecker"
+  cmd = "moon bench -p benches -f checker_bench.mbt"
+  inputs { ...moonSources }
+}
+
+local benchSelfhostPerf = new Task {
+  name = "bench-selfhost-perf"
+  cmd = "scripts/bench_selfhost_perf.sh $@"
+  acceptsArgs = true
+  inputs { ...moonSources; ...scriptSources; "bench/**/*" }
+}
+
+local benchSelfhostCacheProbe =
+  scriptTask("bench-selfhost-cache-probe", "scripts/bench_selfhost_cache_probe.sh")
+local benchSelfhostLoaderHotspots =
+  scriptTask("bench-selfhost-loader-hotspots", "scripts/bench_selfhost_loader_hotspots.sh")
+local buildSelfhostWasiOpt =
+  scriptTask("build-selfhost-wasi-opt", "scripts/build_selfhost_wasi_opt.sh")
+local benchSelfhostCompileHotspots =
+  scriptTask("bench-selfhost-compile-hotspots", "scripts/bench_selfhost_compile_hotspots.sh")
+
+local benchSelfhostMemory = new Task {
+  name = "bench-selfhost-memory"
+  cmd = "scripts/bench_selfhost_memory.sh $@"
+  acceptsArgs = true
+  inputs { ...moonSources; ...scriptSources }
+}
+
+local testSelfhostPerfGate = new Task {
+  name = "test-selfhost-perf-gate"
+  cmd =
+    "VIBE_SELFHOST_PERF_RUNS=\"${1:-3}\" VIBE_SELFHOST_PERF_MAX_COMPILE_RATIO=\"${2:-8.0}\" VIBE_SELFHOST_PERF_MAX_CHECK_RATIO=\"${3:-5.5}\" VIBE_SELFHOST_PERF_CASES_FILE=\"${4:-bench/selfhost_perf/kpi_cases.txt}\" scripts/bench_selfhost_perf.sh"
+  acceptsArgs = true
+  inputs { ...moonSources; ...scriptSources }
+}
+
+local benchBundleSize = scriptTask("bench-bundle-size", "scripts/bench_bundle_size.sh")
+local benchBundleSizeProduct =
+  scriptTask("bench-bundle-size-product", "scripts/bench_bundle_size.sh")
+
+local benchBundleSizeUpdate = new Task {
+  name = "bench-bundle-size-update"
+  cmd = "scripts/bench_bundle_size.sh --update"
+  cache = false
+}
+
+local benchBundleSizeProductUpdate = new Task {
+  name = "bench-bundle-size-product-update"
+  cmd = "scripts/bench_bundle_size.sh --update"
+  cache = false
+}
+
+local benchBundleSizeCompiler =
+  scriptTask("bench-bundle-size-compiler", "scripts/bench_compiler_bundle_size.sh")
+
+local benchBundleSizeCompilerUpdate = new Task {
+  name = "bench-bundle-size-compiler-update"
+  cmd = "scripts/bench_compiler_bundle_size.sh --update"
+  cache = false
+}
+
+local benchBundleSizeMonitor =
+  scriptTask("bench-bundle-size-monitor", "scripts/monitor_wasm_bundle_size.sh")
+
+local benchBundleSizeMonitorStrict = new Task {
+  name = "bench-bundle-size-monitor-strict"
+  cmd = "VIBE_WASM_BUNDLE_MONITOR_STRICT_PRODUCT=1 scripts/monitor_wasm_bundle_size.sh"
+  inputs { ...moonSources; "scripts/monitor_wasm_bundle_size.sh" }
+}
+
+local benchStdBaselineUpdate = new Task {
+  name = "bench-std-baseline-update"
+  cmd =
+    "VIBE_BUNDLE_BENCH_INCLUDE_STD_SURFACES=1 VIBE_BUNDLE_BENCH_INCLUDE_IMPORTER_NO_DCE=1 scripts/bench_bundle_size.sh --update && VIBE_BENCH_KPI_BACKEND=compiled VIBE_BENCH_KPI_REPORT=bench/golden/kpi_wasm.tsv scripts/bench_kpi.sh bench/kpi_bench.vibe bench/kpi_bench_large_fn.vibe bench/kpi_bench_strings.vibe bench/kpi_bench_effects.vibe bench/kpi_bench_match.vibe"
+  cache = false
+}
+
+// === HTTP / selfhost gates ===
+
+local testHttpE2e = scriptTask("test-http-e2e", "scripts/test_http_e2e.sh")
+
+local testHttpWasm = new Task {
+  name = "test-http-wasm"
+  cmd = "scripts/test_http_wasm_fallback.sh && scripts/test_http_wasm_host_imports.sh"
+  inputs { ...moonSources; ...scriptSources }
+}
+
+local testHttpCompiledPolicy =
+  scriptTask("test-http-compiled-policy", "scripts/test_compiled_backend_http_policy.sh")
+local testSelfhostBootstrap =
+  scriptTask("test-selfhost-bootstrap", "scripts/test_selfhost_bootstrap_gate.sh")
+
+local testSelfhostCacheProbe = new Task {
+  name = "test-selfhost-cache-probe"
+  cmd =
+    "source scripts/ensure_native_cli.sh && _build/native/debug/build/cmd/vibe/vibe.exe run vibe/compiler/cache_probe_run.vibe"
+  inputs { ...moonSources; ...scriptSources }
+}
+
+local testSelfhostWasiSelfbuild =
+  scriptTask("test-selfhost-wasi-selfbuild", "scripts/test_selfhost_wasi_selfbuild.sh")
+
+local testSelfhostWasiSelfbuildKpi = new Task {
+  name = "test-selfhost-wasi-selfbuild-kpi"
+  cmd =
+    "VIBE_SELFHOST_SELFBUILD_STRICT_RECURSIVE=1 VIBE_SELFHOST_SELFBUILD_REQUIRE_TRUE_RECURSIVE=1 VIBE_SELFHOST_SELFBUILD_MAX_TOTAL_SEC=\"${1:-300}\" scripts/test_selfhost_wasi_selfbuild.sh"
+  acceptsArgs = true
+  inputs { ...moonSources; ...scriptSources }
+}
+
+local testSelfhostCliAdapter =
+  scriptTask("test-selfhost-cli-adapter", "scripts/test_selfhost_cli_adapter.sh")
+local testSelfhostCliAdapterCache =
+  scriptTask("test-selfhost-cli-adapter-cache", "scripts/test_selfhost_cli_adapter_cache.sh")
+local testSelfhostCliCore =
+  scriptTask("test-selfhost-cli-core", "scripts/test_selfhost_cli_core.sh")
+local testWasmVibeHostRunner =
+  scriptTask("test-wasm-vibe-host-runner", "scripts/test_wasm_vibe_host_runner.sh")
+local testSelfhostCliFixedAdapterPreview2 =
+  scriptTask(
+    "test-selfhost-cli-fixed-adapter-preview2",
+    "scripts/test_selfhost_cli_fixed_adapter_preview2.sh",
+  )
+local testSelfhostCliComponentPreview2 =
+  scriptTask(
+    "test-selfhost-cli-component-preview2",
+    "scripts/test_selfhost_cli_component_preview2.sh",
+  )
+
+local buildSelfhostCliPreview2Component = new Task {
+  name = "build-selfhost-cli-preview2-component"
+  cmd =
+    "bash scripts/build_selfhost_cli_preview2_component.sh \"${1:-dist/selfhost_cli_preview2.component.wasm}\" \"${2:-dist/selfhost_cli_preview2.component.wit}\""
+  acceptsArgs = true
+  inputs { ...moonSources; ...scriptSources }
+}
+
+local runSelfhostCliPreview2Component = new Task {
+  name = "run-selfhost-cli-preview2-component"
+  cmd = "bash scripts/run_selfhost_cli_preview2_component.sh \"$1\" \"$2\" \"$3\" \"$4\""
+  acceptsArgs = true
+  cache = false
+}
+
+local testSelfhostCliPreview2Package =
+  scriptTask("test-selfhost-cli-preview2-package", "scripts/test_selfhost_cli_preview2_package.sh")
+
+local buildSelfhostCliCommandComponent = new Task {
+  name = "build-selfhost-cli-command-component"
+  cmd =
+    "bash scripts/build_selfhost_cli_command_component.sh \"${1:-dist/selfhost_cli_command.component.wasm}\" \"${2:-dist/selfhost_cli_command.component.wit}\""
+  acceptsArgs = true
+  inputs { ...moonSources; ...scriptSources }
+}
+
+local testSelfhostCliCommandComponent =
+  scriptTask(
+    "test-selfhost-cli-command-component",
+    "scripts/test_selfhost_cli_command_component.sh",
+  )
+local testSelfhostCliCommandParity =
+  scriptTask("test-selfhost-cli-command-parity", "scripts/test_selfhost_cli_command_parity.sh")
+
+local buildSelfhostCliDirectComponent = new Task {
+  name = "build-selfhost-cli-direct-component"
+  cmd =
+    "bash scripts/build_selfhost_cli_direct_component.sh \"${1:-dist/selfhost_cli_direct.component.wasm}\" \"${2:-dist/selfhost_cli_direct.component.wit}\""
+  acceptsArgs = true
+  inputs { ...moonSources; ...scriptSources }
+}
+
+local runSelfhostCliDirectComponent = new Task {
+  name = "run-selfhost-cli-direct-component"
+  cmd = "bash scripts/run_selfhost_cli_direct_component.sh \"$1\" \"$2\" \"$3\" \"$4\""
+  acceptsArgs = true
+  cache = false
+}
+
+local testSelfhostCliDirectComponent =
+  scriptTask("test-selfhost-cli-direct-component", "scripts/test_selfhost_cli_direct_component.sh")
+local testSelfhostCliDirectParity =
+  scriptTask("test-selfhost-cli-direct-parity", "scripts/test_selfhost_cli_direct_parity.sh")
+
+local buildSelfhostCheckPreview2Component = new Task {
+  name = "build-selfhost-check-preview2-component"
+  cmd =
+    "bash scripts/build_selfhost_check_preview2_component.sh \"${1:-dist/selfhost_check_preview2.component.wasm}\" \"${2:-dist/selfhost_check_preview2.component.wit}\""
+  acceptsArgs = true
+  inputs { ...moonSources; ...scriptSources }
+}
+
+local runSelfhostCheckPreview2Component = new Task {
+  name = "run-selfhost-check-preview2-component"
+  cmd = "bash scripts/run_selfhost_check_preview2_component.sh \"$1\" \"$2\""
+  acceptsArgs = true
+  cache = false
+}
+
+local testSelfhostCheckPreview2Package =
+  scriptTask(
+    "test-selfhost-check-preview2-package",
+    "scripts/test_selfhost_check_preview2_package.sh",
+  )
+
+local buildSelfhostCheckCommandComponent = new Task {
+  name = "build-selfhost-check-command-component"
+  cmd =
+    "bash scripts/build_selfhost_check_command_component.sh \"${1:-dist/selfhost_check_command.component.wasm}\" \"${2:-dist/selfhost_check_command.component.wit}\""
+  acceptsArgs = true
+  inputs { ...moonSources; ...scriptSources }
+}
+
+local testSelfhostCheckCommandComponent =
+  scriptTask(
+    "test-selfhost-check-command-component",
+    "scripts/test_selfhost_check_command_component.sh",
+  )
+local testSelfhostCheckCommandParity =
+  scriptTask("test-selfhost-check-command-parity", "scripts/test_selfhost_check_command_parity.sh")
+
+local buildSelfhostCheckDirectComponent = new Task {
+  name = "build-selfhost-check-direct-component"
+  cmd =
+    "bash scripts/build_selfhost_check_direct_component.sh \"${1:-dist/selfhost_check_direct.component.wasm}\" \"${2:-dist/selfhost_check_direct.component.wit}\""
+  acceptsArgs = true
+  inputs { ...moonSources; ...scriptSources }
+}
+
+local runSelfhostCheckDirectComponent = new Task {
+  name = "run-selfhost-check-direct-component"
+  cmd = "bash scripts/run_selfhost_check_direct_component.sh \"$1\" \"$2\" \"$3\""
+  acceptsArgs = true
+  cache = false
+}
+
+local testSelfhostCheckDirectComponent =
+  scriptTask(
+    "test-selfhost-check-direct-component",
+    "scripts/test_selfhost_check_direct_component.sh",
+  )
+local testSelfhostCheckDirectParity =
+  scriptTask("test-selfhost-check-direct-parity", "scripts/test_selfhost_check_direct_parity.sh")
+local testSelfhostWasiHttpBoundary =
+  scriptTask("test-selfhost-wasi-http-boundary", "scripts/test_selfhost_wasi_http_boundary.sh")
+local testSelfhostCutover =
+  scriptTask("test-selfhost-cutover", "scripts/test_selfhost_cutover_gate.sh")
+local testSelfhostCheckBootstrapParity =
+  scriptTask("test-selfhost-check-bootstrap-parity", "scripts/test_selfhost_check_parity.sh")
+
+local testSelfhostCheckParity = new Task {
+  name = "test-selfhost-check-parity"
+  description = "alias for test-selfhost-check-bootstrap-parity"
+  deps { testSelfhostCheckBootstrapParity }
+}
+
+local releaseSelfhostBootstrapGates = new Task {
+  name = "release-selfhost-bootstrap-gates"
+  description = "stage1/stage2 artifact health + checker parity"
+  deps { testSelfhostBootstrap; testSelfhostWasiSelfbuildKpi; testSelfhostCheckBootstrapParity }
+}
+
+local testSelfhostTypecheckFixtures =
+  scriptTask("test-selfhost-typecheck-fixtures", "scripts/test_selfhost_typecheck_fixtures.sh")
+local testSelfhostRuntimeFixtures =
+  scriptTask("test-selfhost-runtime-fixtures", "scripts/test_selfhost_runtime_fixtures.sh")
+
+local updateSelfhostRuntimeFixtureSnapshot = new Task {
+  name = "update-selfhost-runtime-fixture-snapshot"
+  cmd = "node scripts/update_selfhost_runtime_fixture_snapshot.mjs"
+  cache = false
+}
+
+local testSelfhostWarningFixtures =
+  scriptTask("test-selfhost-warning-fixtures", "scripts/test_selfhost_warning_fixtures.sh")
+
+// === Codegen / wasm / wasmtime ===
+
+local genAdvancedGraphFb = new Task {
+  name = "gen-advanced-graph-fb"
+  cmd = "moon run src/cmd/fbgen/main.mbt --target js"
+  inputs { ...moonSources }
+}
+
+local runWasmJsString = new Task {
+  name = "run-wasm-js-string"
+  cmd = "node scripts/run_wasm_js_string.mjs $@"
+  acceptsArgs = true
+  cache = false
+}
+
+local genBuiltinContractTable = new Task {
+  name = "gen-builtin-contract-table"
+  cmd = "node scripts/gen_builtin_contract_table.mjs"
+  inputs { "scripts/gen_builtin_contract_table.mjs"; ...moonSources }
+  outputs { "docs/builtin_contract_table.generated.md" }
+}
+
+local testMoonInfoRegen = scriptTask("test-moon-info-regen", "scripts/test_moon_info_regen.sh")
+
+local clean = new Task {
+  name = "clean"
+  cmd = "moon clean"
+  cache = false
+}
+
+local testComponentE2e = scriptTask("test-component-e2e", "scripts/test_component_e2e.sh")
+local testWasiP3E2e = scriptTask("test-wasi-p3-e2e", "scripts/test_wasi_p3_e2e.sh")
+
+local testWasiP3E2eV44 = new Task {
+  name = "test-wasi-p3-e2e-v44"
+  cmd = "WASMTIME_BIN=deps/wasmtime/target/release/wasmtime scripts/test_wasi_p3_e2e.sh"
+  inputs { ...moonSources; ...scriptSources }
+}
+
+local testWasiP3BlockedGate = new Task {
+  name = "test-wasi-p3-blocked-gate"
+  cmd =
+    "VIBE_WASI_HTTP_P3_REQUIRE_READY=0 VIBE_WASI_HTTP_P3_RUN_COMPOSE=0 scripts/test_wasi_http_p3_blocked_gate.sh"
+  inputs { ...moonSources; ...scriptSources }
+}
+
+local componentWkg = new Task {
+  name = "component-wkg"
+  cmd = "scripts/component_wkg_stdio.sh \"$1\" \"${2:-}\""
+  acceptsArgs = true
+  cache = false
+}
+
+local testCodegenUnsupported =
+  scriptTask("test-codegen-unsupported", "scripts/test_codegen_unsupported.sh")
+local testGoldenWat = scriptTask("test-golden-wat", "scripts/test_golden_wat.sh")
+
+local testGoldenWatUpdate = new Task {
+  name = "test-golden-wat-update"
+  cmd = "scripts/test_golden_wat.sh --update"
+  cache = false
+}
+
+local testRunWasmMatch = scriptTask("test-run-wasm-match", "scripts/test_run_wasm_match.sh")
+local testVibeWasmCompare =
+  scriptTask("test-vibe-wasm-compare", "scripts/test_vibe_wasm_compare.sh")
+local testWasmCompileWasmtime =
+  scriptTask("test-wasm-compile-wasmtime", "scripts/test_wasm_compile_wasmtime.sh")
+local showWasmtimeBin = scriptTask("show-wasmtime-bin", "scripts/wasmtime_bin.sh")
+
+local showWasmtimeFlags = new Task {
+  name = "show-wasmtime-flags"
+  cmd =
+    #"echo "VIBE_WASMTIME_WASM_FLAGS=${VIBE_WASMTIME_WASM_FLAGS:-unknown-imports-default=y}"; echo "VIBE_WASMTIME_WASI_FLAGS=${VIBE_WASMTIME_WASI_FLAGS:-}""#
+  cache = false
+}
+
+local experimentalWasiThreadsProbe =
+  scriptTask("experimental_wasi_threads_probe", "src/x/threads/run_probe.sh")
+
+local wasiThreadsProbe = new Task {
+  name = "wasi-threads-probe"
+  description = "alias for experimental_wasi_threads_probe"
+  deps { experimentalWasiThreadsProbe }
+}
+
+local probeCmAsync = scriptTask("probe-cm-async", "src/x/cm_async/run_probe.sh")
+
+local wasmtimeSubmoduleInit = new Task {
+  name = "wasmtime-submodule-init"
+  cmd = "git submodule update --init deps/wasmtime"
+  cache = false
+}
+
+local wasmtimeSubmoduleUpdate = new Task {
+  name = "wasmtime-submodule-update"
+  cmd = "git submodule update --remote deps/wasmtime"
+  cache = false
+}
+
+local buildWasmtimeSubmodule = new Task {
+  name = "build-wasmtime-submodule"
+  cmd = "bash scripts/pkfire/build_wasmtime_submodule.sh ${1:-release}"
+  acceptsArgs = true
+  inputs { ".gitmodules"; "scripts/pkfire/build_wasmtime_submodule.sh" }
+}
+
+local wasmtimeSubmodule = new Task {
+  name = "wasmtime-submodule"
+  cmd = "bash scripts/pkfire/wasmtime_submodule.sh $@"
+  acceptsArgs = true
+  cache = false
+}
+
+local wasmtimeX64 = new Task {
+  name = "wasmtime-x64"
+  cmd = "bash scripts/pkfire/wasmtime_container.sh $@"
+  acceptsArgs = true
+  cache = false
+}
+
+local experimentalWasmtimeStackSwitching = new Task {
+  name = "experimental_wasmtime_stack_switching"
+  cmd = "bash scripts/pkfire/wasmtime_container.sh --stack-switching $@"
+  acceptsArgs = true
+  cache = false
+}
+
+local wasmtimeStackSwitching = new Task {
+  name = "wasmtime-stack-switching"
+  description = "alias for experimental_wasmtime_stack_switching"
+  cmd = "bash scripts/pkfire/wasmtime_container.sh --stack-switching $@"
+  acceptsArgs = true
+  cache = false
+}
+
+local buildAsyncHost = new Task {
+  name = "build-async-host"
+  cmd = "cargo build --release --manifest-path examples/async_host/Cargo.toml"
+  inputs { "examples/async_host/**/*" }
+  outputs { "examples/async_host/target/release/vibe-async-host" }
+}
+
+local sleepDemo = new Task {
+  name = "sleep-demo"
+  cmd =
+    "moon run --target native src/cmd/vibe -- compile --wasm examples/wasm/sleep_demo.vibe -o /tmp/sleep_demo.wasm && examples/async_host/target/release/vibe-async-host /tmp/sleep_demo.wasm"
+  deps { buildAsyncHost }
+  cache = false
+}
+
+local runWasmAsync = new Task {
+  name = "run-wasm-async"
+  cmd = "examples/async_host/target/release/vibe-async-host $@"
+  acceptsArgs = true
+  deps { buildAsyncHost }
+  cache = false
+}
+
+local precompile = new Task {
+  name = "precompile"
+  cmd =
+    #"source scripts/ensure_native_cli.sh && mkdir -p dist/std dist/path dist/std/threads dist/fs dist/socket dist/http dist/collection dist/json dist/sha1 dist/x dist/x/args && _build/native/debug/build/cmd/vibe/vibe.exe precompile vibe/prelude vibe/path vibe/prelude/threads vibe/fs vibe/socket vibe/http vibe/collection vibe/json vibe/sha1 vibe/x vibe/x/args --out-dir "$(pwd)/dist" --wasm"#
+  inputs { ...moonSources; ...scriptSources }
+  outputs { "dist/**" }
+}
+
+local adr = new Task {
+  name = "adr"
+  cmd = "bash scripts/pkfire/adr_new.sh \"$@\""
+  acceptsArgs = true
+  cache = false
+}
+
+local vibeNormalize = scriptTask("vibe-normalize", "scripts/vibe_normalize_all.sh")
+
+local vibeNormalizeCached = new Task {
+  name = "vibe-normalize-cached"
+  cmd = "scripts/vibe_normalize_all.sh --skip-cached"
+  inputs { ...moonSources; "scripts/vibe_normalize_all.sh" }
+}
+
+local vibeNormalizeCheck = new Task {
+  name = "vibe-normalize-check"
+  cmd = "scripts/vibe_normalize_all.sh --check"
+  inputs { ...moonSources; "scripts/vibe_normalize_all.sh" }
+}
+
+// === Release aggregates ===
+
+local releaseSelfhostGates = new Task {
+  name = "release-selfhost-gates"
+  description = "pre-release selfhost gate bundle for local sign-off"
+  deps {
+    checkSelfhostBundleSync
+    testSelfhostCliCore
+    testSelfhostCliComponentPreview2
+    testSelfhostCliPreview2Package
+    testSelfhostCliCommandComponent
+    testSelfhostCliCommandParity
+    testSelfhostCliDirectComponent
+    testSelfhostCliDirectParity
+    testSelfhostCheckPreview2Package
+    testSelfhostCheckCommandComponent
+    testSelfhostCheckCommandParity
+    testSelfhostCheckDirectComponent
+    testSelfhostCheckDirectParity
+    testSelfhostCutover
+    testGoldenWat
+  }
+}
+
+local releaseCheck = new Task {
+  name = "release-check"
+  description = "fmt + info + check + test + vibe-normalize + bundle-size + selfhost gates"
+  deps { fmt; info; check; test; vibeNormalize; benchBundleSizeMonitor; releaseSelfhostGates }
+}
+
+local checkRelease = new Task {
+  name = "check-release"
+  description = "alias for release-check"
+  deps { releaseCheck }
+}
+
+// === Playground ===
+
+local playgroundDev = new Task {
+  name = "playground-dev"
+  cmd =
+    #"cp _build/wasm-gc/release/build/lib/lib.wasm playground/public/vibe-runtime.wasm && cd playground && VITE_VIBE_BUILD_LABEL=$(git rev-parse --short HEAD) pnpm dev"#
+  deps { buildIntegrationDenoWasm }
+  cache = false
+}
+
+local playgroundBuild = new Task {
+  name = "playground-build"
+  cmd =
+    #"cp _build/wasm-gc/release/build/lib/lib.wasm playground/public/vibe-runtime.wasm && cd playground && VITE_BASE=/vibe-lang/ VITE_VIBE_BUILD_LABEL=$(git rev-parse --short HEAD) pnpm build"#
+  inputs { "playground/**/*" }
+  outputs { "playground/dist/**" }
+  deps { buildIntegrationDenoWasm }
+}
+
+// === Per-package test tasks for differential execution ===
+
+local function pkgTask(pkg: String): Task = new Task {
+  name = Packages.taskName(pkg)
+  cmd = "moon test --target native -p mizchi/vibe/\(pkg)"
+  inputs {
+    "moon.mod.json"
+    "src/\(pkg)/**/*.mbt"
+    "src/\(pkg)/moon.pkg"
+  }
+}
+
+local pkgTests: List<Task> = Packages.all.map((p) -> pkgTask(p))
+
+// === Task registration ===
+
+tasks {
+  fmt
+  info
+  check
+  checkCodegenContract
+  checkLockClean
+  testLockClean
+  checkSelfhostBundleSync
+  testSelfhostBundleSync
+  testGenerateSelfhostBundle
+  testCoverageScripts
+  refreshSelfhostBatchWeights
+  testSelfhostBatchWeights
+  testRenameBuiltins
+  testVibeNormalize
+  test
+  testWasmGcMainlaneE2e
+  testWasmGcValidate
+  testVibePackageSuite
+  testWasmHeavy
+  testFull
+  ciContractMoon
+  ciContractNative
+  ciNativeBinaryParity
+  ciWasmQuickShard
+  ciSelfhostGatesShard
+  ciSelfhostExamplesSmoke
+  buildIntegrationDenoWasm
+  buildWasmVibe
+  buildReleaseAssets
+  releaseTagPreflight
+  buildSelfhostDist
+  buildSelfhostDistRaw
+  buildSelfhostDistGc
+  testWasmVibeWasmtime
+  testIntegrationDeno
+  coverageMoon
+  coverageDeno
+  coverageWasmSource
+  coverageSelfhostIndex
+  coverageSelfhost
+  coverageSelfhostGate
+  coverageSelfhostSuite
+  coverageSelfhostSuiteGate
+  coverageSelfhostSuiteNextBranches
+  coverageSelfhostSuiteBranch
+  coverageSelfhostSuiteBranchGate
+  coverageScratchSidecar
+  coverageEvalSidecar
+  coverageWasmStd
+  coverage
+  ideJs
+  testFixtures
+  testBuildParity
+  testFeatureParity
+  testFixturesIsolation
+  testTypecheckFixtures
+  testTypecheckFixturesUpdate
+  testWarningFixtures
+  testWarningFixturesUpdate
+  testUpdate
+  run
+  serve
+  buildVibeWasm
+  runVibeWasm
+  buildShellWasiWasm
+  buildCompilerWasiWasm
+  buildCheckerWasiWasm
+  buildWiteOptimizeWasiWasm
+  buildWasiHttpP3Adapter
+  probeWasiHttpP3Compose
+  probeWasiHttpP3ServiceOnly
+  testWasiHttpP3Gate
+  runCompilerWasiWasm
+  runCheckerWasiWasm
+  runWiteOptimizeWasiWasm
+  runCompilerWasiWasmGc
+  runCompilerWasiWasmMvp
+  componentRun
+  demoTuiStream
+  componentRunMoonix
+  bootstrapMoonix
+  install
+  benchWasmtime
+  benchWasmtimeOverhead
+  benchCompare
+  benchKpi
+  benchKpiFull
+  benchStringCompare
+  benchJsonschema
+  benchStringConcat
+  benchStringSubstring
+  benchStringEquals
+  benchBase64
+  benchAuditBackends
+  benchBuilder
+  benchArrayBuild
+  benchCharConversion
+  benchHttp
+  benchCmdLatency
+  benchCmdCompile
+  benchScratchWorkflow
+  debugScratchWorkflow
+  benchNormalize
+  benchNormalizeRelease
+  benchSymbolIndex
+  benchAdvancedGraph
+  benchTypechecker
+  benchSelfhostPerf
+  benchSelfhostCacheProbe
+  benchSelfhostLoaderHotspots
+  buildSelfhostWasiOpt
+  benchSelfhostCompileHotspots
+  benchSelfhostMemory
+  testSelfhostPerfGate
+  benchBundleSize
+  benchBundleSizeProduct
+  benchBundleSizeUpdate
+  benchBundleSizeProductUpdate
+  benchBundleSizeCompiler
+  benchBundleSizeCompilerUpdate
+  benchBundleSizeMonitor
+  benchBundleSizeMonitorStrict
+  benchStdBaselineUpdate
+  testHttpE2e
+  testHttpWasm
+  testHttpCompiledPolicy
+  testSelfhostBootstrap
+  testSelfhostCacheProbe
+  testSelfhostWasiSelfbuild
+  testSelfhostWasiSelfbuildKpi
+  testSelfhostCliAdapter
+  testSelfhostCliAdapterCache
+  testSelfhostCliCore
+  testWasmVibeHostRunner
+  testSelfhostCliFixedAdapterPreview2
+  testSelfhostCliComponentPreview2
+  buildSelfhostCliPreview2Component
+  runSelfhostCliPreview2Component
+  testSelfhostCliPreview2Package
+  buildSelfhostCliCommandComponent
+  testSelfhostCliCommandComponent
+  testSelfhostCliCommandParity
+  buildSelfhostCliDirectComponent
+  runSelfhostCliDirectComponent
+  testSelfhostCliDirectComponent
+  testSelfhostCliDirectParity
+  buildSelfhostCheckPreview2Component
+  runSelfhostCheckPreview2Component
+  testSelfhostCheckPreview2Package
+  buildSelfhostCheckCommandComponent
+  testSelfhostCheckCommandComponent
+  testSelfhostCheckCommandParity
+  buildSelfhostCheckDirectComponent
+  runSelfhostCheckDirectComponent
+  testSelfhostCheckDirectComponent
+  testSelfhostCheckDirectParity
+  testSelfhostWasiHttpBoundary
+  testSelfhostCutover
+  testSelfhostCheckBootstrapParity
+  testSelfhostCheckParity
+  releaseSelfhostBootstrapGates
+  testSelfhostTypecheckFixtures
+  testSelfhostRuntimeFixtures
+  updateSelfhostRuntimeFixtureSnapshot
+  testSelfhostWarningFixtures
+  genAdvancedGraphFb
+  runWasmJsString
+  genBuiltinContractTable
+  testMoonInfoRegen
+  clean
+  testComponentE2e
+  testWasiP3E2e
+  testWasiP3E2eV44
+  testWasiP3BlockedGate
+  componentWkg
+  testCodegenUnsupported
+  testGoldenWat
+  testGoldenWatUpdate
+  testRunWasmMatch
+  testVibeWasmCompare
+  testWasmCompileWasmtime
+  showWasmtimeBin
+  showWasmtimeFlags
+  experimentalWasiThreadsProbe
+  wasiThreadsProbe
+  probeCmAsync
+  wasmtimeSubmoduleInit
+  wasmtimeSubmoduleUpdate
+  buildWasmtimeSubmodule
+  wasmtimeSubmodule
+  wasmtimeX64
+  experimentalWasmtimeStackSwitching
+  wasmtimeStackSwitching
+  buildAsyncHost
+  sleepDemo
+  runWasmAsync
+  precompile
+  adr
+  vibeNormalize
+  vibeNormalizeCached
+  vibeNormalizeCheck
+  releaseSelfhostGates
+  releaseCheck
+  checkRelease
+  playgroundDev
+  playgroundBuild
+  for (t in pkgTests) {
+    t
+  }
+}

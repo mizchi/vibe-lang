@@ -1,0 +1,60 @@
+/// pkspec test definitions for vibe-lang
+///
+/// Wraps `moon test` so the test suite can be driven through pkspec's
+/// shard / retry / rerun-failed machinery. CI runs `pkspec exec` with
+/// `--shard=K/N` matrix to parallelize across runners; the per-package
+/// tests below match the `pkf affected --since=origin/main 'test:*'`
+/// granularity so the spec ↔ pkfire ↔ moon mapping stays coherent.
+///
+/// Bootstrap once per checkout (generates ./pkspec/{Test,Spec,Adapter}.pkl
+/// schemas alongside this file):
+///
+///   pkspec init --dir pkspec
+///
+/// Then run:
+///
+///   pkspec exec -f pkspec/VibeTest.pkl
+///   pkspec exec -f pkspec/VibeTest.pkl --shard=2/4
+///   pkspec exec -f pkspec/VibeTest.pkl --rerun-failed
+///
+/// The generated schema files are git-ignored; this file is the
+/// hand-maintained entry point.
+amends "./Test.pkl"
+
+import "./Packages.pkl"
+
+/// Per-package test factory. Each entry mirrors a pkfire `test:<pkg>`
+/// task and the `VIBE-TEST-PKG-<NAME>` scenario in VibeSpec.pkl, so
+/// adding a package to `Packages.all` flows through all three.
+local function pkgTest(pkg: String) = new Test {
+  name = Packages.specTestName(pkg)
+  specRef { "VIBE-TEST-PKG-\(pkg.replaceAll("/", "-").toUpperCase())" }
+  retries = 0
+  timeoutSec = 600
+  cmd = "moon test --target native -p mizchi/vibe/\(pkg)"
+}
+
+tests {
+  // Whole-suite native-target run — matches `pkf run test`.
+  new {
+    name = "moon-test-native"
+    specRef { "VIBE-TEST-NATIVE" }
+    retries = 0
+    timeoutSec = 1800
+    cmd = "moon test --target native"
+  }
+
+  // Whole-suite JS-target run — matches the flaker runner command.
+  new {
+    name = "moon-test-js"
+    specRef { "VIBE-TEST-JS" }
+    retries = 1
+    flakyAcceptable = false
+    timeoutSec = 1800
+    cmd = "moon test --target js -v"
+  }
+
+  for (p in Packages.all) {
+    pkgTest(p)
+  }
+}

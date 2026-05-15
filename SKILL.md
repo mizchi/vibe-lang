@@ -75,7 +75,7 @@ vibe apply my_lib.vibe
 - 同じワークフローの連続実行:
 
 ```bash
-just debug-scratch-workflow
+pkf run debug-scratch-workflow
 ```
 
 - 便利な環境変数:

@@ -104,7 +104,7 @@ Status: accepted and moved from `TODO.md`.
 - Generated builtin contract table is published:
   `docs/builtin_contract_table.generated.md` is generated from
   checker/wasm builtin sources by `scripts/gen_builtin_contract_table.mjs` (also exposed as
-  `just gen-builtin-contract-table`).
+  `pkf run gen-builtin-contract-table`).
 - Import cycle reporting is implemented for path imports:
   import graph cycles are diagnosed in `stage: "import"` with `import cycle:`
   messages.

@@ -5,8 +5,8 @@ inputs:
   wasmtime:
     description: Install wasmtime
     default: 'false'
-  just:
-    description: Install just
+  pkfire:
+    description: Install pkl + pkfire (pkf) — replaces just
     default: 'false'
   ripgrep:
     description: Install ripgrep
@@ -22,6 +22,9 @@ inputs:
     default: 'true'
   vibe-debug-cache:
     description: Cache vibe linked build artifacts (dist/cache)
+    default: 'false'
+  pkfire-cache:
+    description: Cache ~/.cache/pkfire (content-addressed task cache)
     default: 'false'
 
 runs:
@@ -85,17 +88,24 @@ runs:
         sudo apt-get update -qq
         sudo apt-get install -y ripgrep
 
-    - name: Install just
-      if: inputs.just == 'true'
-      shell: bash
-      run: |
-        JUST_VERSION=1.48.1
-        curl -fsSL --retry 5 --retry-all-errors \
-          -o /tmp/just.tar.gz \
-          "https://github.com/casey/just/releases/download/${JUST_VERSION}/just-${JUST_VERSION}-x86_64-unknown-linux-musl.tar.gz"
-        tar -xzf /tmp/just.tar.gz -C /tmp just
-        sudo install -m 0755 /tmp/just /usr/local/bin/just
-        just --version
+    - name: Install pkfire (pkl + pkf)
+      if: inputs.pkfire == 'true'
+      uses: mizchi/pkfire@v0.10.0
+
+    # pkfire content-addressed CAS cache. Use restore+save semantics so
+    # cache hits short-circuit task replay even when inputs hash drifts;
+    # the auto-save post-job hook persists fresh entries. Keys are
+    # intentionally coarse — pkfire's own action-key already deduplicates
+    # per-task work inside the cache directory.
+    - name: Cache pkfire CAS
+      if: inputs.pkfire-cache == 'true'
+      uses: actions/cache@v5
+      with:
+        path: ~/.cache/pkfire
+        key: pkfire-${{ runner.os }}-${{ hashFiles('Taskfile.pkl') }}-${{ github.sha }}
+        restore-keys: |
+          pkfire-${{ runner.os }}-${{ hashFiles('Taskfile.pkl') }}-
+          pkfire-${{ runner.os }}-
 
     # Cache wasmtime release tarball extraction. WASMTIME_VERSION is pinned
     # in install_wasmtime_release.sh; key includes the file's hash so any

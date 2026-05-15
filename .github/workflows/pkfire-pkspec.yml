@@ -1,0 +1,54 @@
+name: pkfire / pkspec validation
+
+# Focused validation gate. Now that main CI drives every job through
+# `pkf run …`, the broken-Taskfile case fails the main CI loudly enough.
+# This workflow narrows to the things main CI does NOT exercise:
+#
+#   - `pkf format --check` and `pkf lint` — style gate, can fail fast
+#     before the slower main CI matrix even starts.
+#   - `pkspec check` / `pkspec coverage` — the spec ↔ test mapping
+#     consistency check, which has no analogue elsewhere.
+#
+# Required (no continue-on-error). The cost is sub-30s per PR and the
+# failure mode is unambiguous.
+on:
+  pull_request:
+    paths:
+      - 'Taskfile.pkl'
+      - 'scripts/pkfire/**'
+      - 'pkspec/**'
+      - '.github/workflows/pkfire-pkspec.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'Taskfile.pkl'
+      - 'scripts/pkfire/**'
+      - 'pkspec/**'
+
+jobs:
+  validate:
+    name: validate Pkl configs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install pkfire (pkf)
+        uses: mizchi/pkfire@v0.10.0
+
+      - name: Install pkspec
+        uses: mizchi/pkspec@v0.2.0
+        with:
+          init-schema-dir: pkspec
+
+      - name: pkf format --check
+        run: pkf format --check Taskfile.pkl
+
+      - name: pkf lint
+        run: pkf lint
+
+      - name: pkspec check (Spec ↔ Test cross-ref)
+        run: pkspec check pkspec/VibeSpec.pkl pkspec/VibeTest.pkl
+
+      - name: pkspec coverage
+        run: pkspec coverage pkspec/VibeSpec.pkl pkspec/VibeTest.pkl

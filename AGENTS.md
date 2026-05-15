@@ -8,14 +8,19 @@ vibe 言語の構文・機能を把握するには、最初に [docs/cheatsheet.
 
 ## Quick Commands
 
+タスク runner は [pkfire](https://github.com/mizchi/pkfire) (`pkf`)。
+定義は `Taskfile.pkl`。
+
 ```bash
-just           # check + test
-just fmt       # format code
-just check     # type check
-just test      # run tests
-just test-update  # update snapshot tests
-just run       # run main
-just info      # generate type definition files
+pkf list                  # show all tasks
+pkf run                   # default: check + test (release-check)
+pkf run fmt               # format code
+pkf run check             # type check
+pkf run test              # run tests
+pkf run test-update       # update snapshot tests
+pkf run run -- args       # run main with args
+pkf run info              # generate type definition files
+pkf affected --since=origin/main 'test:*'  # diff-aware package tests
 ```
 
 ## Project Structure
@@ -113,10 +118,17 @@ flaker run --profile scheduled
 
 `flaker run` はデフォルトで `--profile local`（affected 戦略）を使い、`git diff` から影響範囲のテストだけを選択する。データが蓄積されるほど選択精度が上がる。
 
-`just test` は全テスト実行。commit 前の最終確認や CI 用。
+`pkf run test` は全テスト実行。commit 前の最終確認や CI 用。
 
 ## Before Commit
 
 ```bash
-just release-check  # fmt + info + check + test
+pkf run release-check  # fmt + info + check + test + vibe-normalize + bundle-size + selfhost gates
 ```
+
+## pkfire / pkspec
+
+タスク runner は `Taskfile.pkl` (238 tasks)、テスト宣言は `pkspec/{VibeSpec,VibeTest}.pkl`。
+CI は `~/.cache/pkfire` を `actions/cache` でキャッシュしているため、
+変更がない subgraph は cache hit でスキップされる。
+詳細は [docs/pkfire-pkspec.md](docs/pkfire-pkspec.md)。

@@ -54,10 +54,16 @@
             pkgs.nodejs_24
 
             # Build tools
-            pkgs.just
             pkgs.ripgrep
             pkgs.ast-grep
             similarity-mbt
+
+            # Pkl CLI — required by pkfire (Taskfile.pkl) and by
+            # pkspec for evaluating local schemas. pkfire / pkspec binaries
+            # are not in nixpkgs; fetch them via `nix run github:mizchi/pkfire`
+            # or `go install github.com/mizchi/pkfire/cmd/pkf@latest`.
+            # See docs/pkfire-pkspec.md for usage.
+            pkgs.pkl
           ];
 
           shellHook = ''
@@ -67,6 +73,18 @@
             if [ ! -d .mooncakes ]; then
               echo "Running moon update to fetch dependencies..."
               moon update 2>/dev/null || true
+            fi
+
+            # pkf (pkfire) is the canonical task runner but is not in
+            # nixpkgs. Warn if it is missing so new contributors aren't
+            # blocked by `pkf: command not found` mid-task.
+            if ! command -v pkf >/dev/null 2>&1; then
+              echo ""
+              echo "warn: pkf not on PATH — install pkfire to run tasks:"
+              echo "  nix run github:mizchi/pkfire -- list"
+              echo "  go install github.com/mizchi/pkfire/cmd/pkf@latest"
+              echo "see docs/pkfire-pkspec.md"
+              echo ""
             fi
           '';
         };

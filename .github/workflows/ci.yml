@@ -29,7 +29,6 @@ jobs:
         uses: ./.github/actions/setup-vibe
         with:
           ripgrep: 'true'
-          just: 'true'
 
       - name: Run moon test (verbose, for flaker)
         run: |
@@ -44,7 +43,18 @@ jobs:
           retention-days: 30
 
       - name: PR contract checks (MoonBit/js)
-        run: just ci-contract-moon
+        id: contract_moon
+        run: bash scripts/pkfire/contract_moon.sh 2>&1 | tee /tmp/contract_moon.log
+        continue-on-error: true
+
+      - name: Surface contract-moon failure in annotations
+        if: steps.contract_moon.outcome == 'failure'
+        run: |
+          echo "::error::contract-moon failed; tail of log follows:"
+          tail -80 /tmp/contract_moon.log | while IFS= read -r line; do
+            echo "::error::cm: $line"
+          done
+          exit 1
 
   contract-native:
     runs-on: ubuntu-latest
@@ -56,12 +66,11 @@ jobs:
         uses: ./.github/actions/setup-vibe
         with:
           ripgrep: 'true'
-          just: 'true'
           wasmtime: 'true'
           vibe-debug-cache: 'true'
 
       - name: PR contract checks (native/runtime)
-        run: just ci-contract-native
+        run: bash scripts/pkfire/contract_native.sh
 
   native-binary-parity:
     if: github.event_name == 'push'
@@ -75,13 +84,12 @@ jobs:
         uses: ./.github/actions/setup-vibe
         with:
           ripgrep: 'true'
-          just: 'true'
           wasmtime: 'true'
           wasm-tools: 'true'
           vibe-debug-cache: 'true'
 
       - name: Native binary parity checks
-        run: just ci-native-binary-parity
+        run: bash scripts/pkfire/native_binary_parity.sh
 
   bundle-size-compiler:
     if: github.event_name == 'push'
@@ -191,7 +199,6 @@ jobs:
         uses: ./.github/actions/setup-vibe
         with:
           ripgrep: 'true'
-          just: 'true'
           wasmtime: 'true'
           wasm-tools: 'true'
           node-version: '24'
@@ -200,7 +207,7 @@ jobs:
       - name: Set VIBE_BIN for debug binary
         run: echo "VIBE_BIN=$(pwd)/_build/native/debug/build/cmd/vibe/vibe.exe" >> "$GITHUB_ENV"
       - name: Run wasm quick shard (${{ matrix.shard }})
-        run: just ci-wasm-quick-shard ${{ matrix.shard }}
+        run: bash scripts/pkfire/wasm_quick_shard.sh ${{ matrix.shard }}
 
   wasm-parity:
     name: wasm-parity (${{ matrix.name }})
@@ -307,7 +314,6 @@ jobs:
         uses: ./.github/actions/setup-vibe
         with:
           ripgrep: 'true'
-          just: 'true'
           wasmtime: 'true'
           wasm-tools: 'true'
           node-version: '24'
@@ -320,7 +326,7 @@ jobs:
         # `test-selfhost-wasi-selfbuild-kpi` (300s wall-time budget).
         # Runs on every PR for early selfhost-regression signal; the
         # heavier `selfhost-gates` matrix (cli / check) stays push-only.
-        run: just ci-selfhost-gates-shard bootstrap
+        run: bash scripts/pkfire/selfhost_gates_shard.sh bootstrap
 
   selfhost-gates:
     if: github.event_name == 'push'
@@ -354,7 +360,6 @@ jobs:
         uses: ./.github/actions/setup-vibe
         with:
           ripgrep: 'true'
-          just: 'true'
           wasmtime: 'true'
           wasm-tools: 'true'
           node-version: '24'
@@ -369,7 +374,7 @@ jobs:
       - name: Set VIBE_BIN for debug binary
         run: echo "VIBE_BIN=$(pwd)/_build/native/debug/build/cmd/vibe/vibe.exe" >> "$GITHUB_ENV"
       - name: Run selfhost gate shard (${{ matrix.shard }})
-        run: just ci-selfhost-gates-shard ${{ matrix.shard }}
+        run: bash scripts/pkfire/selfhost_gates_shard.sh ${{ matrix.shard }}
 
   e2e-component:
     runs-on: ubuntu-latest
@@ -395,18 +400,17 @@ jobs:
       - name: Setup Vibe toolchain
         uses: ./.github/actions/setup-vibe
         with:
-          just: 'true'
           wasmtime: 'true'
           node-version: '24'
 
       - name: Build selfhost compiler
-        run: just build-selfhost-dist-raw
+        run: VIBE_DIST_SKIP_OPT=1 bash scripts/build_selfhost_dist.sh
 
       - name: Selfhost examples compile+run
-        run: just ci-selfhost-examples-smoke
+        run: bash scripts/pkfire/selfhost_examples_smoke.sh
 
       - name: wasm-gc validation gate
-        run: just test-wasm-gc-validate
+        run: bash scripts/test_wasm_gc_validate.sh
 
       - name: Selfhost runtime fixtures
         id: selfhost_runtime_fixtures
@@ -440,7 +444,6 @@ jobs:
         uses: ./.github/actions/setup-vibe
         with:
           ripgrep: 'true'
-          just: 'true'
           wasmtime: 'true'
           node-version: '24'
 
@@ -463,12 +466,12 @@ jobs:
         # outlier (was 37×), so this just gives the gate breathing room
         # for CI runner spec drift while still flagging genuine ~2×
         # regressions.
-        run: just test-selfhost-perf-gate 3 10.0 7.0 bench/selfhost_perf/kpi_cases.txt
+        run: VIBE_SELFHOST_PERF_RUNS=3 VIBE_SELFHOST_PERF_MAX_COMPILE_RATIO=10.0 VIBE_SELFHOST_PERF_MAX_CHECK_RATIO=7.0 VIBE_SELFHOST_PERF_CASES_FILE=bench/selfhost_perf/kpi_cases.txt scripts/bench_selfhost_perf.sh
 
       - name: Run selfhost suite coverage gate
         env:
           VIBE_USE_SESSION_HTTP: '0'
-        run: just coverage-selfhost-suite-gate
+        run: scripts/coverage_selfhost_suite.sh
 
       - name: Coverage summary
         if: always()

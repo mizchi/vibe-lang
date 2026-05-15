@@ -21,7 +21,7 @@ Run:
 
 ```bash
 # run from repo root
-just experimental_wasi_threads_probe
+pkf run experimental_wasi_threads_probe
 
 # or run directly
 src/x/threads/run_probe.sh
