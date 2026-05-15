@@ -74,23 +74,35 @@ jobs:
 
       - name: Diagnostic — PATH / tool discovery
         run: |
-          echo "::group::PATH"
-          echo "PATH=$PATH" | tr ':' '\n'
-          echo "::endgroup::"
           for tool in moon pkf pkl bash node rg; do
             if command -v "$tool" >/dev/null 2>&1; then
-              echo "ok: $tool → $(command -v "$tool")"
+              path="$(command -v "$tool")"
+              echo "::notice::ok: $tool=$path"
             else
               echo "::error::missing tool: $tool"
             fi
           done
           if command -v pkf >/dev/null 2>&1; then
-            echo "::group::pkf doctor"
-            pkf doctor || echo "::error::pkf doctor failed: $?"
-            echo "::endgroup::"
+            pkf doctor > /tmp/doctor.out 2>&1 || true
+            while IFS= read -r line; do
+              echo "::notice::pkf doctor: $line"
+            done < /tmp/doctor.out
           fi
-          if command -v moon >/dev/null 2>&1; then
-            echo "moon --version: $(moon version 2>&1 | head -1)"
+          if command -v pkf >/dev/null 2>&1; then
+            pkf list > /tmp/list.out 2>&1
+            list_status=$?
+            echo "::notice::pkf list status: $list_status, lines: $(wc -l < /tmp/list.out)"
+            head -3 /tmp/list.out | while IFS= read -r line; do
+              echo "::notice::pkf list head: $line"
+            done
+          fi
+          if command -v pkf >/dev/null 2>&1; then
+            pkf run --dry-run ci-contract-native > /tmp/dry.out 2>&1
+            dry_status=$?
+            echo "::notice::pkf run dry-run status: $dry_status"
+            head -10 /tmp/dry.out | while IFS= read -r line; do
+              echo "::notice::pkf dry: $line"
+            done
           fi
 
       - name: PR contract checks (native/runtime)
