@@ -25,17 +25,28 @@ The Pkl CLI (`pkl`) is available in this repo's `nix develop` shell.
 
 ## pkfire — `pkfire/Taskfile.pkl`
 
-`pkfire/Taskfile.pkl` wraps the Quick Commands from `AGENTS.md`:
+`pkfire/Taskfile.pkl` mirrors **every** recipe from the `justfile`
+(238 tasks: 206 from justfile + 32 generated per-package test tasks).
+Simple recipes are inlined; complex multi-line shell stays in the
+justfile and is invoked via `just <name>` so the canonical body
+doesn't fork.
 
-| Task           | Shells out to                  | Notes                                |
+Highlights:
+
+| Task           | Behaviour                      | Notes                                |
 |----------------|--------------------------------|--------------------------------------|
 | `fmt`          | `moon fmt`                     | not cached (mutates source files)    |
 | `info`         | `moon info`                    | outputs `**/*.mbti`                  |
-| `check`        | `just check`                   | cached on source-tree hash           |
-| `test`         | `just test`                    | depends on `check`                   |
-| `test-update`  | `just test-update`             | not cached (refreshes snapshots)     |
-| `run`          | `moon run … src/cmd/vibe`      | `acceptsArgs` — pass via `--`        |
-| `release-check`| `just release-check`           | aggregate: fmt → info → check → test |
+| `check`        | `moon check --deny-warn …`     | cached on source-tree hash           |
+| `test`         | `just test` (12-line recipe)   | wrapped — too tangled to inline      |
+| `test-update`  | `moon test --update`           | not cached (refreshes snapshots)     |
+| `run`          | `moon run … src/cmd/vibe -- $@`| `acceptsArgs` — pass via `--`        |
+| `release-check`| aggregate (typed deps)         | fmt + info + check + test + vibe-normalize + bundle-size + 15 selfhost gates |
+
+Two helper factories keep the file readable:
+
+- `justTask(name)` — wraps a recipe whose body stays in the justfile
+- `scriptTask(name, "scripts/X.sh")` — wraps a single-shell-script recipe
 
 Run from the repo root:
 

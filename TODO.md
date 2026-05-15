@@ -28,7 +28,7 @@ Completed items are archived in `docs/DONE.md`.
 - [ ] **WASI P3: effect → WIT マッピング + `vibe serve`**
 - [ ] **SIMD codegen 本番化** — selfhost codegen の 0xFD prefix emit + `simd_skip_ws` / `simd_scan_alnum` 組込
 - [ ] **#59 WASM-GC selfbuild ~350KB** — P4 compile E2E の残 3 ケース（simd_patterns / gc_only/index / selfhost_cli_gc_entry）+ P5 DCE + wasm-opt
-- [ ] **pkfire / pkspec 拡張** — opt-in 導入 + 初期拡張済 (`pkfire/Taskfile.pkl` で 13 tasks、`pkspec/VibeSpec.pkl` ⇆ `VibeTest.pkl` で `pkspec check` 通る、`.github/workflows/pkfire-pkspec.yml` で informational gate)。次は (a) `just` の bench / coverage / selfhost 系を Taskfile.pkl に追加移植 (b) informational gate → required gate 昇格 (c) `pkspec exec` で実際に `moon test` を回す経路を CI に組み込む
+- [ ] **pkfire / pkspec 拡張** — opt-in 導入 + 全 justfile 移植済 (`pkfire/Taskfile.pkl` で 238 tasks: 206 justfile + 32 per-package、`pkspec/VibeSpec.pkl` ⇆ `VibeTest.pkl` で `pkspec check` 通る、`.github/workflows/pkfire-pkspec.yml` で informational gate)。次は (a) informational gate → required gate 昇格 (b) `pkspec exec` で実際に `moon test` を回す経路を CI に組み込む (c) `pkf affected` を CI に組み込んで PR diff だけ流す
 
 ### 🔵 リファクタ / 長期
 
