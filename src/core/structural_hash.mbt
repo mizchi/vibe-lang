@@ -257,7 +257,7 @@ pub fn Stmt::structural_hash(self : Stmt) -> Int {
       }
       h
     }
-    Stmt::EffectDef(name~, params~, ops~, ..) => {
+    Stmt::EffectDef(name~, params~, ops~, import_path~, ..) => {
       let mut h = 0x45666644 // "EffD"
       h = combine_hash(h, name.hash())
       for p in params {
@@ -266,9 +266,13 @@ pub fn Stmt::structural_hash(self : Stmt) -> Int {
       for op in ops {
         h = combine_hash(h, op.structural_hash())
       }
+      match import_path {
+        Some(p) => h = combine_hash(h, p.hash())
+        None => ()
+      }
       h
     }
-    Stmt::ExportEffectDef(name~, params~, ops~, ..) => {
+    Stmt::ExportEffectDef(name~, params~, ops~, import_path~, ..) => {
       let mut h = 0x45784566 // "ExEf"
       h = combine_hash(h, name.hash())
       for p in params {
@@ -276,6 +280,10 @@ pub fn Stmt::structural_hash(self : Stmt) -> Int {
       }
       for op in ops {
         h = combine_hash(h, op.structural_hash())
+      }
+      match import_path {
+        Some(p) => h = combine_hash(h, p.hash())
+        None => ()
       }
       h
     }

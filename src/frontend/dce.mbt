@@ -227,7 +227,7 @@ fn collect_stmt_info(
       }
       (Some(name), refs)
     }
-    @core.Stmt::EffectDef(name~, params~, ops~, span~) => {
+    @core.Stmt::EffectDef(name~, params~, ops~, span~, ..) => {
       let _ = params
       let _ = span
       for op in ops {
@@ -238,7 +238,7 @@ fn collect_stmt_info(
       }
       (Some(name), refs)
     }
-    @core.Stmt::ExportEffectDef(name~, params~, ops~, span~) => {
+    @core.Stmt::ExportEffectDef(name~, params~, ops~, span~, ..) => {
       let _ = params
       let _ = span
       for op in ops {

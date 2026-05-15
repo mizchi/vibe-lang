@@ -2,6 +2,8 @@
 fn AstParser::parse_stmt(self : AstParser) -> @core.Stmt? raise ParseError {
   self.skip_trivia()
   match self.peek_kind() {
+    k if k == hash_ref() && self.peek().text() == "#import" =>
+      Some(self.parse_import_directive_effect_stmt())
     k if k == let_kw() => Some(self.parse_let_stmt())
     k if k == enum_kw() => Some(self.parse_enum_stmt())
     k if k == struct_kw() => Some(self.parse_struct_stmt())
@@ -715,6 +717,7 @@ fn AstParser::parse_suberror_stmt(
 fn AstParser::parse_effect_stmt(
   self : AstParser,
   _exported : Bool,
+  import_path? : String? = None,
 ) -> @core.Stmt raise ParseError {
   let start = self.pos
   let _ = self.expect(name(), "effect")
@@ -737,7 +740,61 @@ fn AstParser::parse_effect_stmt(
   }
   let _ = self.expect(rbrace(), "}")
   let span = self.span_from(start)
-  @core.Stmt::EffectDef(name=name_tok.text(), params~, ops~, span~)
+  @core.Stmt::EffectDef(
+    name=name_tok.text(),
+    params~,
+    ops~,
+    import_path~,
+    span~,
+  )
+}
+
+///|
+/// Parse `#import("<path>")` directive followed by an `effect` declaration.
+/// ADR-0021 Phase 2 Step 1: binds the effect to a Component Model interface.
+///   #import("wasi:filesystem/read@0.2.0")
+///   effect Fs { read_file(String) -> String }
+///   #import("wasi:cli/stdio@0.2.0")
+///   export effect Console { print(String) -> Unit }
+fn AstParser::parse_import_directive_effect_stmt(
+  self : AstParser,
+) -> @core.Stmt raise ParseError {
+  let start = self.pos
+  let _ = self.expect(hash_ref(), "#import")
+  self.skip_trivia()
+  let _ = self.expect(lparen(), "(")
+  self.skip_trivia()
+  let path_tok = self.expect(string_lit(), "import path string literal")
+  let path = path_tok.text()
+  self.skip_trivia()
+  let _ = self.expect(rparen(), ")")
+  self.skip_trivia()
+  let exported = if self.peek_kind() == export_kw() {
+    let _ = self.bump()
+    self.skip_trivia()
+    true
+  } else {
+    false
+  }
+  if self.peek_kind() != name() || self.peek().text() != "effect" {
+    raise ParseError::UnexpectedToken(
+      expected="`effect` declaration after `#import(...)` directive",
+      got=self.peek().text(),
+      span=self.token_span(),
+    )
+  }
+  let effect_stmt = self.parse_effect_stmt(exported, import_path=Some(path))
+  if exported {
+    match effect_stmt {
+      @core.Stmt::EffectDef(name~, params~, ops~, import_path~, ..) => {
+        let span = self.span_from(start)
+        @core.Stmt::ExportEffectDef(name~, params~, ops~, import_path~, span~)
+      }
+      other => other
+    }
+  } else {
+    effect_stmt
+  }
 }
 
 ///|
@@ -1234,10 +1291,10 @@ fn AstParser::parse_internal_export_stmt(
   } else if self.peek_kind() == name() && self.peek().text() == "effect" {
     let effect_stmt = self.parse_effect_stmt(false)
     match effect_stmt {
-      @core.Stmt::EffectDef(name~, params~, ops~, ..) => {
+      @core.Stmt::EffectDef(name~, params~, ops~, import_path~, ..) => {
         let span = self.span_from(start)
         // internal export effects are not yet supported; treat as non-exported
-        @core.Stmt::EffectDef(name~, params~, ops~, span~)
+        @core.Stmt::EffectDef(name~, params~, ops~, import_path~, span~)
       }
       _ => {
         let span = self.span_from(start)
@@ -2328,9 +2385,9 @@ fn AstParser::parse_export_stmt(
   } else if self.peek_kind() == name() && self.peek().text() == "effect" {
     let effect_stmt = self.parse_effect_stmt(false)
     match effect_stmt {
-      @core.Stmt::EffectDef(name~, params~, ops~, ..) => {
+      @core.Stmt::EffectDef(name~, params~, ops~, import_path~, ..) => {
         let span = self.span_from(start)
-        @core.Stmt::ExportEffectDef(name~, params~, ops~, span~)
+        @core.Stmt::ExportEffectDef(name~, params~, ops~, import_path~, span~)
       }
       _ => {
         let span = self.span_from(start)

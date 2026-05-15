@@ -190,6 +190,7 @@ test "normalize_module canonicalizes EffectDef export list into ExportEffectDef"
             span: zero_span_for_export_norm_test,
           },
         ],
+        import_path=None,
         span=zero_span_for_export_norm_test,
       ),
       Stmt::Export(names=["Net"], span=zero_span_for_export_norm_test),

@@ -279,12 +279,14 @@ pub(all) enum Stmt {
     name~ : String,
     params~ : Array[String],
     ops~ : Array[EffectOp],
+    import_path~ : String?,
     span~ : Span
   )
   ExportEffectDef(
     name~ : String,
     params~ : Array[String],
     ops~ : Array[EffectOp],
+    import_path~ : String?,
     span~ : Span
   )
 } derive(Debug, Eq)

@@ -263,18 +263,32 @@ fn serialize_stmt_to(stmt : Stmt, buf : StringBuilder) -> Unit {
       serialize_strings_to(params, buf)
       buf.write_string("}}")
     }
-    Stmt::EffectDef(name~, params~, ops~, ..) => {
+    Stmt::EffectDef(name~, params~, ops~, import_path~, ..) => {
       buf.write_string("{\"EffectDef\":{\"name\":")
       serialize_string_to(name, buf)
+      match import_path {
+        Some(p) => {
+          buf.write_string(",\"import_path\":")
+          serialize_string_to(p, buf)
+        }
+        None => ()
+      }
       buf.write_string(",\"ops\":")
       serialize_effect_ops_to(ops, buf)
       buf.write_string(",\"params\":")
       serialize_strings_to(params, buf)
       buf.write_string("}}")
     }
-    Stmt::ExportEffectDef(name~, params~, ops~, ..) => {
+    Stmt::ExportEffectDef(name~, params~, ops~, import_path~, ..) => {
       buf.write_string("{\"ExportEffectDef\":{\"name\":")
       serialize_string_to(name, buf)
+      match import_path {
+        Some(p) => {
+          buf.write_string(",\"import_path\":")
+          serialize_string_to(p, buf)
+        }
+        None => ()
+      }
       buf.write_string(",\"ops\":")
       serialize_effect_ops_to(ops, buf)
       buf.write_string(",\"params\":")

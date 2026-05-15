@@ -611,8 +611,8 @@ pub fn build_symbol_index_for_module(
           )
         }
       }
-      @core.Stmt::EffectDef(name~, params~, ops~, span~)
-      | @core.Stmt::ExportEffectDef(name~, params~, ops~, span~) => {
+      @core.Stmt::EffectDef(name~, params~, ops~, span~, ..)
+      | @core.Stmt::ExportEffectDef(name~, params~, ops~, span~, ..) => {
         let op_parts : Array[String] = []
         for op in ops {
           let param_strs : Array[String] = []
