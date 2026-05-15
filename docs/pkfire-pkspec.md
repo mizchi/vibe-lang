@@ -1,15 +1,21 @@
-# pkfire / pkspec integration
+# pkfire / pkspec
 
 [`pkfire`](https://github.com/mizchi/pkfire) (typed task runner with
-content-addressed caching) and [`pkspec`](https://github.com/mizchi/pkspec)
-(language-agnostic test runner) are wired in as **opt-in** front-ends for the
-existing `just` / `moon test` / `flaker` toolchain. They do not replace
-anything — `justfile` is still the canonical source of truth for tasks and
-`just test` / `flaker run` are still the supported test entry points.
+content-addressed caching) is the **canonical task runner** for vibe-lang —
+it replaces the former `justfile`. [`pkspec`](https://github.com/mizchi/pkspec)
+(language-agnostic test runner) is wired in as an opt-in companion alongside
+`moon test` / `flaker run`.
+
+The task definitions live in `pkfire/Taskfile.pkl` (238 tasks). Multi-line
+shell that doesn't fit a single Pkl `cmd =` lives in `scripts/pkfire/*.sh`
+and is invoked directly. CI runs every job through `pkf run …` with
+`~/.cache/pkfire` persisted via `actions/cache` so unchanged subgraphs are
+cache hits.
 
 ## Install
 
-Both tools ship as single Go binaries. Pick one:
+The repo's `nix develop` shell ships `pkgs.pkl`. pkfire / pkspec binaries
+are not in nixpkgs — install them via:
 
 ```bash
 # Nix (uses the upstream flake)
@@ -21,7 +27,9 @@ go install github.com/mizchi/pkfire/cmd/pkf@latest
 go install github.com/mizchi/pkspec/cmd/...@latest
 ```
 
-The Pkl CLI (`pkl`) is available in this repo's `nix develop` shell.
+CI uses the `mizchi/pkfire@v0.10.0` and `mizchi/pkspec@v0.2.0` composite
+actions via `.github/actions/setup-vibe` (set `pkfire: 'true'` on the
+caller). Pass `pkfire-cache: 'true'` to also hydrate `~/.cache/pkfire`.
 
 ## pkfire — `pkfire/Taskfile.pkl`
 

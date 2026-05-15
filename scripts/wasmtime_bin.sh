@@ -22,7 +22,7 @@ if [ "${VIBE_USE_WASMTIME_SUBMODULE:-0}" = "1" ]; then
     exit 0
   fi
   echo "VIBE_USE_WASMTIME_SUBMODULE=1 but deps/wasmtime wasmtime binary is not built." >&2
-  echo "Run: just build-wasmtime-submodule" >&2
+  echo "Run: pkf run build-wasmtime-submodule" >&2
   exit 1
 fi
 
@@ -42,5 +42,5 @@ if [ -x "$LOCAL_DEBUG" ]; then
 fi
 
 echo "wasmtime not found (system PATH and deps/wasmtime build)." >&2
-echo "Install wasmtime or run: just wasmtime-submodule-init && just build-wasmtime-submodule" >&2
+echo "Install wasmtime or run: pkf run wasmtime-submodule-init && pkf run build-wasmtime-submodule" >&2
 exit 1

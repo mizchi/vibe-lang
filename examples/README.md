@@ -8,8 +8,8 @@ This directory contains runnable examples of vibe language features.
 - `syntax.vibe`: advanced syntax tour (Generics/Struct/Error/wasm types)
 
 ```bash
-just run test examples/basics.vibe
-just run test examples/syntax.vibe
+pkf run run -- test examples/basics.vibe
+pkf run run -- test examples/syntax.vibe
 ```
 
 ## Language Features
@@ -33,5 +33,5 @@ just run test examples/syntax.vibe
 - `wasm/tui_stream_demo.vibe`: stdin/stdout stream TUI-style demo
 
 ```bash
-just demo-tui-stream
+pkf run demo-tui-stream
 ```

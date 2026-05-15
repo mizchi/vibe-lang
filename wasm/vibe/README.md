@@ -5,19 +5,19 @@
 ## Update
 
 ```bash
-just build-wasm-vibe
+pkf run build-wasm-vibe
 ```
 
 GitHub Release 用の versioned asset をローカルで組むときは:
 
 ```bash
-just build-release-assets v0.0.1
+pkf run build-release-assets -- v0.0.1
 ```
 
 ## Smoke test with wasmtime
 
 ```bash
-just test-wasm-vibe-wasmtime
+pkf run test-wasm-vibe-wasmtime
 ```
 
 内部では以下を実行します:

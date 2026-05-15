@@ -54,7 +54,6 @@
             pkgs.nodejs_24
 
             # Build tools
-            pkgs.just
             pkgs.ripgrep
             pkgs.ast-grep
             similarity-mbt

@@ -56,18 +56,18 @@ try_build() {
   local src="$1"
   local built=""
 
-  if command -v just >/dev/null 2>&1; then
+  if command -v pkf >/dev/null 2>&1; then
     (
       cd "$src"
       set +e
-      just install >/dev/null 2>&1
+      pkf run install >/dev/null 2>&1
       local st=$?
       set -e
       if [ "$st" -eq 0 ]; then
         exit 0
       fi
       set +e
-      just build >/dev/null 2>&1
+      pkf run build >/dev/null 2>&1
       st=$?
       set -e
       [ "$st" -eq 0 ]
@@ -112,7 +112,7 @@ fi
 echo "failed to bootstrap moonix binary from: $MOONIX_SRC" >&2
 echo "moonix repository appears to have no CLI build target yet." >&2
 echo "expected one of:" >&2
-echo "  - just install (installs moonix to ~/.local/bin/moonix)" >&2
+echo "  - pkf run install (installs moonix to ~/.local/bin/moonix)" >&2
 echo "  - moon build --target native src/cmd/moonix" >&2
 echo "  - cargo build --release --manifest-path hosts/wasmtime/Cargo.toml --bin moonix" >&2
 exit 1
