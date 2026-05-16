@@ -1003,7 +1003,7 @@ fn reh_cps_stmts(
 
 ///|
 /// Global counter for generating unique spans in CPS expansion
-let cps_counter : Ref[Int] = Ref::new(0)
+let cps_counter : Ref[Int] = Ref(0)
 
 ///|
 /// Generate a unique span offset for CPS expansion

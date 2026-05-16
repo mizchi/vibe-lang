@@ -1,5 +1,5 @@
 ///|
-let resolve_member_depth : Ref[Int] = Ref::new(0)
+let resolve_member_depth : Ref[Int] = Ref(0)
 
 ///|
 /// Map a resolved type to its builtin namespace root for UFCS dispatch.

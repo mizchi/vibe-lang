@@ -1799,19 +1799,19 @@ fn repl_tui_cmd(
   let (app, cleanup) = @tui.init_vnode_terminal(
     initial_cols, initial_rows, @tui.print_raw,
   )
-  let width = Ref::new(initial_cols)
-  let height = Ref::new(initial_rows)
+  let width = Ref(initial_cols)
+  let height = Ref(initial_rows)
   let outputs : Array[String] = []
   let history : Array[String] = []
   load_history(history)
   let vibe_names : Array[String] = @checker.prelude_names()
-  let history_idx = Ref::new(-1)
-  let history_draft = Ref::new("")
+  let history_idx = Ref(-1)
+  let history_draft = Ref("")
   let completion_session = @editor.CompletionSession::new()
-  let completion_request_id : Ref[Int] = Ref::new(0)
-  let last_popup_rect : Ref[OverlayRect?] = Ref::new(None)
-  let completion_anchor : Ref[CompletionAnchor?] = Ref::new(None)
-  let cleaned = Ref::new(false)
+  let completion_request_id : Ref[Int] = Ref(0)
+  let last_popup_rect : Ref[OverlayRect?] = Ref(None)
+  let completion_anchor : Ref[CompletionAnchor?] = Ref(None)
+  let cleaned = Ref(false)
   fn cleanup_once() -> Unit {
     if cleaned.val {
       return
@@ -1820,13 +1820,13 @@ fn repl_tui_cmd(
     cleanup()
   }
 
-  let input_rows = Ref::new(repl_input_rows_for_height(initial_rows))
+  let input_rows = Ref(repl_input_rows_for_height(initial_rows))
   let input_editor = @editor.EditorState::new_with_kind(
     "",
     input_rows.val,
     @editor.HighlightKind::Plain,
   )
-  let scratch_source_ref = Ref::new(restored_source)
+  let scratch_source_ref = Ref(restored_source)
   fn set_input_text(text : String) -> Unit {
     input_editor.set_text("")
     if text.length() > 0 {
@@ -3590,13 +3590,13 @@ fn repl_interactive_raw_loop_compiled(
   let wasm_path = compiled_repl_temp_wasm_path()
   defer remove_file_if_exists(source_path)
   defer remove_file_if_exists(wasm_path)
-  let scratch_source_ref = Ref::new(initial_source)
+  let scratch_source_ref = Ref(initial_source)
   let line_buf = StringBuilder::new()
-  let cursor_pos = Ref::new(0)
+  let cursor_pos = Ref(0)
   let history : Array[String] = []
   load_history(history)
-  let history_idx = Ref::new(-1)
-  let history_draft = Ref::new("")
+  let history_idx = Ref(-1)
+  let history_draft = Ref("")
 
   fn get_prompt() -> String {
     @vibe_fs.basename(@io.current_dir_or_root()) + "> "
@@ -3771,7 +3771,7 @@ fn repl_interactive_raw_loop_compiled(
     redraw_line()
   }
 
-  let done = Ref::new(false)
+  let done = Ref(false)
 
   fn submit_line() {
     let text = line_buf_to_string().trim().to_string()

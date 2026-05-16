@@ -8,7 +8,7 @@
 ///     let __si_2 = String::concat(__si_1, __to_string(b))
 ///     __si_2 }
 pub fn desugar_string_interp(ast : @core.Module) -> @core.Module {
-  let counter : Ref[Int] = Ref::new(0)
+  let counter : Ref[Int] = Ref(0)
   dsi_rewrite_module(ast, counter)
 }
 
