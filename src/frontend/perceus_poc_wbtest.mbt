@@ -181,10 +181,11 @@ test "perceus plan: unused let binding gets drop" {
     ],
   }
   let lines = perceus_action_lines(build_perceus_plan(mod))
-  inspect(
+  @debug.debug_inspect(
     lines,
     content=(
-      #|[stmt[0].after drop x]
+      #|["stmt[0].after drop x"]
+
     ),
   )
 }
@@ -207,7 +208,7 @@ test "perceus plan: single use, no dup needed" {
   }
   let lines = perceus_action_lines(build_perceus_plan(mod))
   // Single use → no dup, no drop
-  inspect(lines, content="[]")
+  @debug.debug_inspect(lines, content="[]")
 }
 
 ///|
@@ -231,10 +232,11 @@ test "perceus plan: two sequential uses, first gets dup" {
     ],
   }
   let lines = perceus_action_lines(build_perceus_plan(mod))
-  inspect(
+  @debug.debug_inspect(
     lines,
     content=(
-      #|[stmt[1].expr.arg[0].before dup x]
+      #|["stmt[1].expr.arg[0].before dup x"]
+
     ),
   )
 }
@@ -269,10 +271,11 @@ test "perceus plan: if/else branch-sensitive drop" {
   }
   let lines = perceus_action_lines(build_perceus_plan(mod))
   // x is used in then but not in else → drop in else branch
-  inspect(
+  @debug.debug_inspect(
     lines,
     content=(
-      #|[stmt[1].expr.else.end drop x]
+      #|["stmt[1].expr.else.end drop x"]
+
     ),
   )
 }
@@ -318,10 +321,14 @@ test "perceus plan: if/else both use x, then also uses after → dup" {
   let lines = perceus_action_lines(build_perceus_plan(mod))
   // x used in both branches (1 each) + 1 after = 2 total uses
   // First use in then branch dups, first use in else branch dups
-  inspect(
+  @debug.debug_inspect(
     lines,
     content=(
-      #|[stmt[1].expr.then.stmt[0].expr.arg[0].before dup x, stmt[1].expr.else.stmt[0].expr.arg[0].before dup x]
+      #|[
+      #|  "stmt[1].expr.then.stmt[0].expr.arg[0].before dup x",
+      #|  "stmt[1].expr.else.stmt[0].expr.arg[0].before dup x",
+      #|]
+
     ),
   )
 }
@@ -364,10 +371,15 @@ test "perceus plan: match with two arms, only one uses x" {
   let lines = perceus_action_lines(build_perceus_plan(mod))
   // x used in arm[0] but not arm[1] → drop in arm[1]
   // a and b are unused pattern bindings → drop at scope end
-  inspect(
+  @debug.debug_inspect(
     lines,
     content=(
-      #|[stmt[1].expr.arm[0].pat_bind drop a, stmt[1].expr.arm[1].pat_bind drop b, stmt[1].expr.arm[1].end drop x]
+      #|[
+      #|  "stmt[1].expr.arm[0].pat_bind drop a",
+      #|  "stmt[1].expr.arm[1].pat_bind drop b",
+      #|  "stmt[1].expr.arm[1].end drop x",
+      #|]
+
     ),
   )
 }
@@ -397,10 +409,11 @@ test "perceus plan: scope-end drop in block" {
     ],
   }
   let lines = perceus_action_lines(build_perceus_plan(mod))
-  inspect(
+  @debug.debug_inspect(
     lines,
     content=(
-      #|[stmt[0].expr.body.stmt[0].after drop z]
+      #|["stmt[0].expr.body.stmt[0].after drop z"]
+
     ),
   )
 }
@@ -424,10 +437,11 @@ test "perceus plan: mutable reassignment drops old value" {
     ],
   }
   let lines = perceus_action_lines(build_perceus_plan(mod))
-  inspect(
+  @debug.debug_inspect(
     lines,
     content=(
-      #|[stmt[0].after drop x, stmt[1].old_value drop x]
+      #|["stmt[0].after drop x", "stmt[1].old_value drop x"]
+
     ),
   )
 }
@@ -458,10 +472,14 @@ test "perceus plan: three uses need two dups" {
   }
   let lines = perceus_action_lines(build_perceus_plan(mod))
   // 3 uses → dup before 1st and 2nd, last use is a move
-  inspect(
+  @debug.debug_inspect(
     lines,
     content=(
-      #|[stmt[1].expr.arg[0].before dup x, stmt[2].expr.arg[0].before dup x]
+      #|[
+      #|  "stmt[1].expr.arg[0].before dup x",
+      #|  "stmt[2].expr.arg[0].before dup x",
+      #|]
+
     ),
   )
 }
@@ -618,7 +636,7 @@ test "perceus plan: for-in loop drops iterable when unused after" {
   }
   let lines = perceus_action_lines(build_perceus_plan(mod))
   // xs is consumed by the for-in, x is consumed inside body → no dup/drop needed
-  inspect(lines, content="[]")
+  @debug.debug_inspect(lines, content="[]")
 }
 
 ///|
@@ -690,10 +708,11 @@ test "perceus plan: multiple variables, only unused ones get drops" {
   }
   let lines = perceus_action_lines(build_perceus_plan(mod))
   // Only y gets dropped (unused), x is consumed exactly once
-  inspect(
+  @debug.debug_inspect(
     lines,
     content=(
-      #|[stmt[1].after drop y]
+      #|["stmt[1].after drop y"]
+
     ),
   )
 }
@@ -748,7 +767,7 @@ test "perceus plan: nested if/else with inner variable" {
   }
   let lines = perceus_action_lines(build_perceus_plan(mod))
   // x used exactly once in each path → no dup needed
-  inspect(lines, content="[]")
+  @debug.debug_inspect(lines, content="[]")
 }
 
 ///|
@@ -1020,10 +1039,11 @@ test "perceus plan: tuple field access borrows — no dup for t.0 + t.1" {
   }
   let lines = perceus_action_lines(build_perceus_plan(mod))
   // No dup should be emitted — both uses are borrows
-  inspect(
+  @debug.debug_inspect(
     lines,
     content=(
-      #|[stmt[1].scope_end drop t]
+      #|["stmt[1].scope_end drop t"]
+
     ),
   )
 }

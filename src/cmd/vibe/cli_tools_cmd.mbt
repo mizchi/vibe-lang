@@ -625,7 +625,7 @@ fn init_cmd(args : Array[String]) -> Unit {
   }
   let root = resolve_project_root_path(target)
   let created = scaffold_project_root(root, false)
-  println("initialized: " + root + " created=" + created.to_string())
+  println("initialized: " + root + " created=" + Debug::to_repr(created).to_string())
 }
 
 ///|
@@ -638,7 +638,7 @@ fn new_cmd(args : Array[String]) -> Unit {
     abort("new: target already exists: " + root)
   }
   let created = scaffold_project_root(root, true)
-  println("created: " + root + " files=" + created.to_string())
+  println("created: " + root + " files=" + Debug::to_repr(created).to_string())
 }
 
 ///|

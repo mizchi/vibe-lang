@@ -34,7 +34,7 @@ fn resolve_type_member_call_name(
   effects : EffectScope,
   allow_effect : Bool,
   call_span : @core.Span,
-) -> String? raise TypeError {
+) -> String? {
   if name.contains("::") || name.contains(".") {
     return None
   }

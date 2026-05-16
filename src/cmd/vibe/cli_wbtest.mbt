@@ -1909,7 +1909,7 @@ test "normalize fixtures has no stale output files" {
   wbtest_sort_strings(stale_outputs)
   if stale_outputs.length() > 0 {
     fail(
-      "[\{fixture_dir}] stale .out.vibe fixtures found: \{stale_outputs.to_string()}",
+      "[\{fixture_dir}] stale .out.vibe fixtures found: \{Debug::to_repr(stale_outputs).to_string()}",
     )
   }
 }
