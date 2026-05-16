@@ -2192,7 +2192,7 @@ fn perceus_block_prefix(site : String) -> String {
     i = i + 1
   }
   if last_dot_stmt > 0 {
-    return site[0:last_dot_stmt].to_string()
+    return site[0:last_dot_stmt].to_owned()
   }
   // No nested stmt — find last '.' for terminal suffixes
   let mut last_dot = -1
@@ -2204,7 +2204,7 @@ fn perceus_block_prefix(site : String) -> String {
     j = j + 1
   }
   if last_dot > 0 {
-    return site[0:last_dot].to_string()
+    return site[0:last_dot].to_owned()
   }
   site
 }

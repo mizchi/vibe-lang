@@ -393,7 +393,7 @@ test "vibe db path std module has no type diagnostics" {
   db.set_source("runtime.vibe", runtime_source)
   let env = db.types("path")
   let diags = db.diagnostics("path")
-  if not(diags.is_empty()) {
+  if !diags.is_empty() {
     let lines : Array[String] = []
     for diag in diags {
       lines.push(diag.stage + ":" + diag.message)

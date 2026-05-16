@@ -6,11 +6,11 @@ pub fn preprocess_posix_source(script : String) -> String {
   let buf = StringBuilder::new()
   let mut first = true
   for line_view in script.split("\n") {
-    if not(first) {
+    if !first {
       buf.write_char('\n')
     }
     first = false
-    buf.write_string(preprocess_posix_line(line_view.to_string()))
+    buf.write_string(preprocess_posix_line(line_view.to_owned()))
   }
   buf.to_string()
 }
@@ -61,11 +61,9 @@ fn preprocess_posix_line_with_compat_note(line : String) -> (String, String?) {
     return (line, None)
   }
   let first_char = chars[ws_end]
-  if not(
-      (first_char >= 'a' && first_char <= 'z') ||
+  if !((first_char >= 'a' && first_char <= 'z') ||
       (first_char >= 'A' && first_char <= 'Z') ||
-      first_char == '_',
-    ) {
+      first_char == '_') {
     return (line, None)
   }
   // Extract first word
@@ -102,7 +100,7 @@ fn preprocess_posix_line_with_compat_note(line : String) -> (String, String?) {
     return (line, None)
   }
   // Check if first_word is a known vibe/shell command
-  let rest = chars_slice(chars, rest_start, len).trim().to_string()
+  let rest = chars_slice(chars, rest_start, len).trim().to_owned()
   let leading = chars_slice(chars, 0, ws_end)
   match convert_shell_builtin_command(first_word, rest) {
     Some(rewritten) =>
@@ -268,7 +266,7 @@ fn split_first_arg(s : String) -> (String, String)? {
     if i >= len {
       return None
     }
-    let second = chars_slice(chars, i, len).trim().to_string()
+    let second = chars_slice(chars, i, len).trim().to_owned()
     return Some((first, second))
   }
   // Unquoted first arg
@@ -285,7 +283,7 @@ fn split_first_arg(s : String) -> (String, String)? {
   if i >= len {
     return None
   }
-  let second = chars_slice(chars, i, len).trim().to_string()
+  let second = chars_slice(chars, i, len).trim().to_owned()
   Some((first, second))
 }
 
@@ -331,7 +329,7 @@ fn scan_brace_interp(chars : Array[Char], i : Int, len : Int) -> (String, Int)? 
   if depth != 0 {
     return None
   }
-  let expr = chars_slice(chars, start, j).trim().to_string()
+  let expr = chars_slice(chars, start, j).trim().to_owned()
   Some(("\\{" + expr + "}", j + 2))
 }
 
@@ -357,7 +355,7 @@ fn scan_cmd_subst(chars : Array[Char], i : Int, len : Int) -> (String, Int)? {
   if depth != 0 {
     return None
   }
-  let cmd = chars_slice(chars, start, j).trim().to_string()
+  let cmd = chars_slice(chars, start, j).trim().to_owned()
   let escaped = escape_posix_for_vibe_string(cmd)
   let s = "\\{{ match sh_lines(\"" +
     escaped +

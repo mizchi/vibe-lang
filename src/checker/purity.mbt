@@ -99,7 +99,7 @@ fn env_purity_tier(env : TypeEnv, name : String) -> TopLevelPurityTier? {
 
 ///|
 fn PurityAnalysis::is_pure(self : PurityAnalysis) -> Bool {
-  not(self.has_state_local) && not(self.has_impure)
+  !self.has_state_local && !self.has_impure
 }
 
 ///|

@@ -150,7 +150,7 @@ fn collect_pattern_bindings_inner(
     }
     @core.Pat::Int(value~, span~) => {
       let _ = value
-      if not(type_equal(env, scrutinee_ty, @core.Type::Int)) {
+      if !type_equal(env, scrutinee_ty, @core.Type::Int) {
         raise TypeError::Mismatch(
           expected=@core.Type::Int,
           actual=scrutinee_ty,
@@ -161,7 +161,7 @@ fn collect_pattern_bindings_inner(
     }
     @core.Pat::Float(value~, span~) => {
       let _ = value
-      if not(type_equal(env, scrutinee_ty, @core.Type::Float)) {
+      if !type_equal(env, scrutinee_ty, @core.Type::Float) {
         raise TypeError::Mismatch(
           expected=@core.Type::Float,
           actual=scrutinee_ty,
@@ -172,7 +172,7 @@ fn collect_pattern_bindings_inner(
     }
     @core.Pat::Double(value~, span~) => {
       let _ = value
-      if not(type_equal(env, scrutinee_ty, @core.Type::Double)) {
+      if !type_equal(env, scrutinee_ty, @core.Type::Double) {
         raise TypeError::Mismatch(
           expected=@core.Type::Double,
           actual=scrutinee_ty,
@@ -183,7 +183,7 @@ fn collect_pattern_bindings_inner(
     }
     @core.Pat::Bool(value~, span~) => {
       let _ = value
-      if not(type_equal(env, scrutinee_ty, @core.Type::Bool)) {
+      if !type_equal(env, scrutinee_ty, @core.Type::Bool) {
         raise TypeError::Mismatch(
           expected=@core.Type::Bool,
           actual=scrutinee_ty,
@@ -194,7 +194,7 @@ fn collect_pattern_bindings_inner(
     }
     @core.Pat::Char(value~, span~) => {
       let _ = value
-      if not(type_equal(env, scrutinee_ty, @core.Type::Char)) {
+      if !type_equal(env, scrutinee_ty, @core.Type::Char) {
         raise TypeError::Mismatch(
           expected=@core.Type::Char,
           actual=scrutinee_ty,
@@ -205,7 +205,7 @@ fn collect_pattern_bindings_inner(
     }
     @core.Pat::String(value~, span~) => {
       let _ = value
-      if not(type_equal(env, scrutinee_ty, @core.Type::String)) {
+      if !type_equal(env, scrutinee_ty, @core.Type::String) {
         raise TypeError::Mismatch(
           expected=@core.Type::String,
           actual=scrutinee_ty,

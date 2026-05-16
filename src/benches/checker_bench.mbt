@@ -234,7 +234,7 @@ test "bench: checker.db_types.cross_module.delta" (b : @bench.T) {
   let mut toggle = false
   b.bench(fn() {
     db.set_source("./dep0.vibe", if toggle { src_a } else { src_b })
-    toggle = not(toggle)
+    toggle = !toggle
     b.keep(db.types("main").get_scheme("result"))
   })
 }

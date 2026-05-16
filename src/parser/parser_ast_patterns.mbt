@@ -74,7 +74,7 @@ fn AstParser::parse_type_post_suffixes(
 ) -> @core.Type raise ParseError {
   let mut out = base_ty
   let mut done = false
-  while not(done) {
+  while !done {
     self.skip_trivia()
     let k = self.peek_kind()
     if k == lbracket() && self.peek_non_trivia_ahead(1) == rbracket() {
@@ -303,7 +303,7 @@ fn AstParser::parse_pattern(self : AstParser) -> @core.Pat raise ParseError {
         let last = text[len - 1]
         if last == 'f' || last == 'F' {
           is_float = true
-          raw = text[0:len - 1].to_string()
+          raw = text[0:len - 1].to_owned()
         }
       }
       let v = @string.parse_double(raw) catch {

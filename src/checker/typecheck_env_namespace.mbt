@@ -12,7 +12,7 @@ pub fn TypeEnv::variant_namespace_root(
         }
         let mut all_match = true
         for ctor in enum_def.ctors {
-          if not(fields.contains(ctor.name)) {
+          if !fields.contains(ctor.name) {
             all_match = false
             break
           }

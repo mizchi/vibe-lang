@@ -69,7 +69,7 @@ fn parse_error_unexpected_token_hint(
   expected : String,
   got : String,
 ) -> String? {
-  let got_trimmed = got.trim().to_string()
+  let got_trimmed = got.trim().to_owned()
   if got_trimmed == "," {
     match parse_error_separator_name(expected) {
       Some(separator_name) => {
@@ -112,7 +112,7 @@ pub fn ParseError::diagnostic(self : ParseError) -> @core.Diagnostic {
       let got_display = if got.is_empty() {
         "<eof>"
       } else {
-        let trimmed = got.trim().to_string()
+        let trimmed = got.trim().to_owned()
         if trimmed.is_empty() {
           "<whitespace>"
         } else {

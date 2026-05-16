@@ -95,7 +95,7 @@ fn explain_import_path_item(
         Some(h) => Some(explain_import_normalize_hash(h))
         None => None
       }
-      if not(@io.path_exists(resolved)) {
+      if !@io.path_exists(resolved) {
         {
           module_path: source_path,
           line,
@@ -421,7 +421,7 @@ fn explain_import_collect_module(
                 base, raw_path, root, registry_modules,
               ) {
               Ok(next) =>
-                if @io.path_exists(next) && not(next.has_suffix(".wasm")) {
+                if @io.path_exists(next) && !next.has_suffix(".wasm") {
                   match
                     explain_import_collect_module(
                       next, root, registry_modules, lock, codebase, visited, out,

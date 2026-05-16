@@ -232,7 +232,7 @@ pub fn get_env_var(name : String) -> String? {
 fn split_output_lines(text : String) -> Array[String] {
   let out : Array[String] = []
   for part in text.split("\n") {
-    out.push(part.to_string())
+    out.push(part.to_owned())
   }
   if out.length() > 0 && out[out.length() - 1] == "" {
     ignore(out.pop())

@@ -30,7 +30,7 @@ pub fn hash_from_object_path(path : String) -> String? {
   // Find last two path components
   let parts : Array[String] = []
   for p in path.split("/") {
-    parts.push(p.to_string())
+    parts.push(p.to_owned())
   }
   if parts.length() < 2 {
     return None

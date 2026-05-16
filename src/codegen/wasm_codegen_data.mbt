@@ -124,7 +124,7 @@ fn require_heap(ctx : CodegenCtx) -> Unit {
     ctx.local_types.push(ValueKind::I32)
     ctx.heap_synced = false
     // Also ensure heap_global is set (build_module needs it for global section)
-    if not(ctx.use_heap_global) {
+    if !ctx.use_heap_global {
       ctx.use_heap_global = true
       // In linked mode, __heap_ptr is imported global index 0.
       // Otherwise, it'll be global index 0 in the defined globals section.

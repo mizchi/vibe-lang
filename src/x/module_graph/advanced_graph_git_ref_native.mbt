@@ -42,13 +42,13 @@ fn ensure_dir_recursive(path : String) -> Result[Unit, String] {
 
 ///|
 fn normalize_ref_scope(scope : String) -> Result[String, String] {
-  let trimmed = scope.trim().to_string()
+  let trimmed = scope.trim().to_owned()
   if trimmed.length() == 0 {
     return Err("ref scope must not be empty")
   }
   let parts : Array[String] = []
   for part in trimmed.split("/") {
-    let text = part.to_string()
+    let text = part.to_owned()
     if text.length() == 0 || text == "." {
       continue
     }
@@ -111,7 +111,7 @@ fn read_ref_hash(path : String) -> Result[String, String] {
   let content = @os_fs.read_file_to_string(path) catch {
     e => return Err("read ref `" + path + "`: " + e.to_string())
   }
-  let hash = content.trim().to_string()
+  let hash = content.trim().to_owned()
   if hash.length() == 0 {
     return Err("ref `" + path + "` is empty")
   }
@@ -145,7 +145,7 @@ fn load_git_blob_bytes(
   hash : String,
 ) -> Result[Bytes, String] {
   let objects_dir = git_dir + "/objects"
-  if not(@os_fs.path_exists(objects_dir)) {
+  if !@os_fs.path_exists(objects_dir) {
     return Err("git objects dir not found: " + objects_dir)
   }
   let fs = @osfs.OsFs::new()
@@ -242,7 +242,7 @@ pub fn write_advanced_graph_delta_to_git_ref(
 
 ///|
 fn try_read_ref_hash(path : String) -> Result[String?, String] {
-  if not(@os_fs.path_exists(path)) {
+  if !@os_fs.path_exists(path) {
     return Ok(None)
   }
   match read_ref_hash(path) {
@@ -253,7 +253,7 @@ fn try_read_ref_hash(path : String) -> Result[String?, String] {
 
 ///|
 fn validate_hex_hash(hash : String, field : String) -> Result[String, String] {
-  let normalized = hash.trim().to_string()
+  let normalized = hash.trim().to_owned()
   if normalized.length() == 0 {
     return Err(field + " must not be empty")
   }

@@ -144,7 +144,7 @@ fn source_ident_at(source : String, offset : Int) -> String? {
   if anchor >= chars.length() {
     anchor = chars.length() - 1
   }
-  if not(is_ident_char(chars[anchor])) {
+  if !is_ident_char(chars[anchor]) {
     if anchor > 0 && is_ident_char(chars[anchor - 1]) {
       anchor -= 1
     } else {
@@ -208,7 +208,7 @@ pub fn completion_items_json(
   match symbol_index_for_source(uri, source) {
     Some(index) =>
       for entry in index.entries {
-        if prefix.length() > 0 && not(entry.name.has_prefix(prefix)) {
+        if prefix.length() > 0 && !entry.name.has_prefix(prefix) {
           continue
         }
         if seen.contains(entry.name) {
@@ -294,12 +294,12 @@ fn leading_ident(s : String) -> String? {
 ///|
 fn extract_unknown_trait_name(message : String) -> String? {
   let marker = "unknown trait: "
-  if not(message.contains(marker)) {
+  if !message.contains(marker) {
     return None
   }
   let mut tail = ""
   for part in message.split(marker) {
-    tail = part.to_string()
+    tail = part.to_owned()
   }
   leading_ident(tail)
 }
@@ -342,7 +342,7 @@ fn is_trait_imported(
         for item in spec.items {
           let trait_compatible = item.kind == @core.ImportKind::Value ||
             item.kind == @core.ImportKind::Trait
-          if not(trait_compatible) {
+          if !trait_compatible {
             continue
           }
           let local_name = match item.rename {
@@ -375,7 +375,7 @@ fn import_insert_line(source : String) -> Int {
   let mut has_import = false
   let mut line_index = 0
   for line_view in source.split("\n") {
-    let line = line_view.to_string().trim().to_string()
+    let line = line_view.to_owned().trim().to_owned()
     if line.has_prefix("import ") {
       has_import = true
       insert_line = line_index + 1

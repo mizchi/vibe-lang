@@ -266,18 +266,18 @@ fn split_top_level_comma(s : String) -> Array[String] {
     } else if c == cc_close_bracket || c == cc_close_paren {
       depth = depth - 1
     } else if c == cc_comma && depth == 0 {
-      result.push(s[start:i].trim().to_string())
+      result.push(s[start:i].trim().to_owned())
       start = i + 1
     }
   }
-  result.push(s[start:s.length()].trim().to_string())
+  result.push(s[start:s.length()].trim().to_owned())
   result
 }
 
 ///|
 /// Parse a type string (e.g. "Array[T]", "Int", "Map[String, Int]") into BuiltinTypeTag.
 fn parse_type_tag(s : String) -> BuiltinTypeTag {
-  let trimmed = s.trim().to_string()
+  let trimmed = s.trim().to_owned()
   if trimmed == "Unit" {
     return Unit
   }
@@ -329,8 +329,8 @@ fn parse_type_tag(s : String) -> BuiltinTypeTag {
   // Check for container types with brackets
   let bracket_start = find_charcode(trimmed, cc_open_bracket)
   if bracket_start >= 0 {
-    let container_name = trimmed[0:bracket_start].to_string()
-    let inner = trimmed[bracket_start + 1:trimmed.length() - 1].to_string()
+    let container_name = trimmed[0:bracket_start].to_owned()
+    let inner = trimmed[bracket_start + 1:trimmed.length() - 1].to_owned()
     if container_name == "Array" {
       return Array_(parse_type_tag(inner))
     }
@@ -361,8 +361,8 @@ fn parse_type_tag(s : String) -> BuiltinTypeTag {
     let arrow_pos = find_arrow(trimmed)
     if arrow_pos >= 0 {
       let close_paren = find_matching_paren(trimmed, 0)
-      let params_inner = trimmed[1:close_paren].trim().to_string()
-      let ret_str = trimmed[arrow_pos + 2:trimmed.length()].trim().to_string()
+      let params_inner = trimmed[1:close_paren].trim().to_owned()
+      let ret_str = trimmed[arrow_pos + 2:trimmed.length()].trim().to_owned()
       let params = if params_inner.length() == 0 {
         []
       } else {
@@ -383,24 +383,24 @@ fn parse_type_tag(s : String) -> BuiltinTypeTag {
 /// Parse a single `declare` line into a BuiltinDecl.
 /// Format: `declare Name::method(Type1, Type2) -> RetType`
 fn parse_declare_line(line : String) -> BuiltinDecl? {
-  let trimmed = line.trim().to_string()
-  if not(trimmed.has_prefix("declare ")) {
+  let trimmed = line.trim().to_owned()
+  if !trimmed.has_prefix("declare ") {
     return None
   }
-  let rest = trimmed[8:trimmed.length()].to_string()
+  let rest = trimmed[8:trimmed.length()].to_owned()
   // Find the opening paren
   let paren_pos = find_charcode(rest, cc_open_paren)
   if paren_pos < 0 {
     return None
   }
-  let name = rest[0:paren_pos].trim().to_string()
+  let name = rest[0:paren_pos].trim().to_owned()
   // Find matching close paren
   let close_paren = find_matching_paren(rest, paren_pos)
   if close_paren < 0 {
     return None
   }
   // Parse params
-  let params_str = rest[paren_pos + 1:close_paren].trim().to_string()
+  let params_str = rest[paren_pos + 1:close_paren].trim().to_owned()
   let params : Array[BuiltinTypeTag] = if params_str.length() == 0 {
     []
   } else {
@@ -412,9 +412,9 @@ fn parse_declare_line(line : String) -> BuiltinDecl? {
     result
   }
   // Find "->" for return type
-  let arrow_str = rest[close_paren + 1:rest.length()].trim().to_string()
+  let arrow_str = rest[close_paren + 1:rest.length()].trim().to_owned()
   let ret = if arrow_str.has_prefix("->") {
-    parse_type_tag(arrow_str[2:arrow_str.length()].to_string())
+    parse_type_tag(arrow_str[2:arrow_str.length()].to_owned())
   } else {
     BuiltinTypeTag::Unit
   }
@@ -426,7 +426,7 @@ fn parse_declare_line(line : String) -> BuiltinDecl? {
 fn parse_declarations(source : String) -> Array[BuiltinDecl] {
   let result : Array[BuiltinDecl] = []
   for line in source.split("\n") {
-    match parse_declare_line(line.to_string()) {
+    match parse_declare_line(line.to_owned()) {
       Some(decl) => result.push(decl)
       None => ()
     }

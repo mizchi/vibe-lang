@@ -157,7 +157,7 @@ fn update_scoped_ref_binding_flag(
   name : String,
   scheme : TypeScheme,
 ) -> Unit {
-  if not(env.scoped_ref_checks_enabled) {
+  if !env.scoped_ref_checks_enabled {
     return
   }
   if env.has_scoped_ref_binding {
@@ -168,7 +168,7 @@ fn update_scoped_ref_binding_flag(
     @core.has_qualified_name(name) {
     return
   }
-  if not(type_may_contain_scoped_ref_hint(scheme.ty)) {
+  if !type_may_contain_scoped_ref_hint(scheme.ty) {
     return
   }
   env.scoped_ref_binding_scan_stale = true
@@ -176,12 +176,12 @@ fn update_scoped_ref_binding_flag(
 
 ///|
 fn refresh_scoped_ref_binding_flag(env : TypeEnv) -> Unit {
-  if not(env.scoped_ref_checks_enabled) {
+  if !env.scoped_ref_checks_enabled {
     env.has_scoped_ref_binding = false
     env.scoped_ref_binding_scan_stale = false
     return
   }
-  if env.has_scoped_ref_binding || not(env.scoped_ref_binding_scan_stale) {
+  if env.has_scoped_ref_binding || !env.scoped_ref_binding_scan_stale {
     return
   }
   let mut found = false
@@ -205,7 +205,7 @@ fn refresh_scoped_ref_binding_flag(env : TypeEnv) -> Unit {
 
 ///|
 pub fn TypeEnv::has_scoped_ref_binding_for_capture(self : TypeEnv) -> Bool {
-  if not(self.scoped_ref_checks_enabled) {
+  if !self.scoped_ref_checks_enabled {
     return false
   }
   refresh_scoped_ref_binding_flag(self)

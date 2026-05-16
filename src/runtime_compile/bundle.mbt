@@ -145,7 +145,7 @@ fn append_prelude_core_linked_imports(
   for stmt in prelude_core_library_stmts() {
     match prelude_core_linked_import(stmt) {
       Some(li) =>
-        if not(existing_value_names.contains(li.func_name)) {
+        if !existing_value_names.contains(li.func_name) {
           existing_value_names[li.func_name] = true
           linked_imports.push(li)
         }
@@ -162,7 +162,7 @@ fn append_prelude_inline_stmts_for_linked_build(
   for stmt in prelude_linked_build_inline_stmts() {
     match bundle_stmt_value_name(stmt) {
       Some(name) =>
-        if not(existing_value_names.contains(name)) {
+        if !existing_value_names.contains(name) {
           bundled_stmts.push(stmt)
           existing_value_names[name] = true
         }
@@ -188,7 +188,7 @@ fn push_linked_import(
   existing_value_names : Map[String, Bool],
   li : LinkedImport,
 ) -> Unit {
-  if not(existing_value_names.contains(li.func_name)) {
+  if !existing_value_names.contains(li.func_name) {
     existing_value_names[li.func_name] = true
     linked_imports.push(li)
   }
@@ -233,7 +233,7 @@ fn collect_dependency_defs_selected(
   for imp in imports {
     collect_dependency_defs(db, imp.path, out, visited)
   }
-  if not(is_entry) {
+  if !is_entry {
     let dep_ast = db.ast_with_hash_imports(path)
     for stmt in dep_ast.stmts {
       match stmt {
@@ -242,23 +242,23 @@ fn collect_dependency_defs_selected(
             out.push(@core.Stmt::Let(rec~, name~, expr~, span~))
           }
         @core.Stmt::ExportEnumDef(name~, params~, ctors~, span~) =>
-          if not(emitted_types.contains(name)) {
+          if !emitted_types.contains(name) {
             out.push(@core.Stmt::EnumDef(name~, params~, ctors~, span~))
             emitted_types[name] = true
           }
         @core.Stmt::ExportTypeAlias(name~, params~, target~, span~) =>
-          if not(emitted_types.contains(name)) {
+          if !emitted_types.contains(name) {
             out.push(@core.Stmt::TypeAlias(name~, params~, target~, span~))
             emitted_types[name] = true
           }
         @core.Stmt::Let(..) => out.push(stmt)
         @core.Stmt::EnumDef(name~, ..) =>
-          if not(emitted_types.contains(name)) {
+          if !emitted_types.contains(name) {
             out.push(stmt)
             emitted_types[name] = true
           }
         @core.Stmt::TypeAlias(name~, ..) =>
-          if not(emitted_types.contains(name)) {
+          if !emitted_types.contains(name) {
             out.push(stmt)
             emitted_types[name] = true
           }
@@ -1074,7 +1074,7 @@ fn bundle_for_wasm_impl(
     for stmt in prelude_stmts {
       match bundle_stmt_value_name(stmt) {
         Some(name) =>
-          if not(existing_value_names.contains(name)) {
+          if !existing_value_names.contains(name) {
             bundled_stmts.push(stmt)
             existing_value_names[name] = true
           }
@@ -1193,7 +1193,7 @@ fn collect_dependency_defs(
   }
   // Then add definitions from this module (if it's an imported module)
   // Skip the entry module itself (it will be added separately)
-  if not(is_entry) {
+  if !is_entry {
     let dep_ast = db.ast_with_hash_imports(path)
     for stmt in dep_ast.stmts {
       match stmt {
@@ -1201,24 +1201,24 @@ fn collect_dependency_defs(
         @core.Stmt::ExportLet(rec~, name~, expr~, span~) =>
           out.push(@core.Stmt::Let(rec~, name~, expr~, span~))
         @core.Stmt::ExportEnumDef(name~, params~, ctors~, span~) =>
-          if not(emitted_types.contains(name)) {
+          if !emitted_types.contains(name) {
             out.push(@core.Stmt::EnumDef(name~, params~, ctors~, span~))
             emitted_types[name] = true
           }
         @core.Stmt::ExportTypeAlias(name~, params~, target~, span~) =>
-          if not(emitted_types.contains(name)) {
+          if !emitted_types.contains(name) {
             out.push(@core.Stmt::TypeAlias(name~, params~, target~, span~))
             emitted_types[name] = true
           }
         // Also include non-exported definitions that exported ones might depend on
         @core.Stmt::Let(..) => out.push(stmt)
         @core.Stmt::EnumDef(name~, ..) =>
-          if not(emitted_types.contains(name)) {
+          if !emitted_types.contains(name) {
             out.push(stmt)
             emitted_types[name] = true
           }
         @core.Stmt::TypeAlias(name~, ..) =>
-          if not(emitted_types.contains(name)) {
+          if !emitted_types.contains(name) {
             out.push(stmt)
             emitted_types[name] = true
           }
@@ -1264,7 +1264,7 @@ fn dedupe_bundle_structural_defs(
   for stmt in stmts {
     match bundle_stmt_type_name(stmt) {
       Some(name) =>
-        if not(seen_type_names.contains(name)) {
+        if !seen_type_names.contains(name) {
           out.push(stmt)
           seen_type_names[name] = true
         }
@@ -1391,12 +1391,12 @@ fn collect_reexport_defs(
           append_value_aliases(name, span)
         }
       @core.Stmt::ExportEnumDef(name~, params~, ctors~, span~) =>
-        if requested_items.contains(name) && not(emitted_types.contains(name)) {
+        if requested_items.contains(name) && !emitted_types.contains(name) {
           out.push(@core.Stmt::EnumDef(name~, params~, ctors~, span~))
           emitted_types[name] = true
         }
       @core.Stmt::ExportTypeAlias(name~, params~, target~, span~) =>
-        if requested_items.contains(name) && not(emitted_types.contains(name)) {
+        if requested_items.contains(name) && !emitted_types.contains(name) {
           out.push(@core.Stmt::TypeAlias(name~, params~, target~, span~))
           emitted_types[name] = true
         }
@@ -1406,22 +1406,22 @@ fn collect_reexport_defs(
           append_value_aliases(name, span)
         }
       @core.Stmt::EnumDef(name~, params~, ctors~, span~) =>
-        if requested_items.contains(name) && not(emitted_types.contains(name)) {
+        if requested_items.contains(name) && !emitted_types.contains(name) {
           out.push(@core.Stmt::EnumDef(name~, params~, ctors~, span~))
           emitted_types[name] = true
         }
       @core.Stmt::TypeAlias(name~, params~, target~, span~) =>
-        if requested_items.contains(name) && not(emitted_types.contains(name)) {
+        if requested_items.contains(name) && !emitted_types.contains(name) {
           out.push(@core.Stmt::TypeAlias(name~, params~, target~, span~))
           emitted_types[name] = true
         }
       @core.Stmt::ExportStructDef(name~, params~, fields~, span~) =>
-        if requested_items.contains(name) && not(emitted_types.contains(name)) {
+        if requested_items.contains(name) && !emitted_types.contains(name) {
           out.push(@core.Stmt::StructDef(name~, params~, fields~, span~))
           emitted_types[name] = true
         }
       @core.Stmt::StructDef(name~, params~, fields~, span~) =>
-        if requested_items.contains(name) && not(emitted_types.contains(name)) {
+        if requested_items.contains(name) && !emitted_types.contains(name) {
           out.push(@core.Stmt::StructDef(name~, params~, fields~, span~))
           emitted_types[name] = true
         }
@@ -1461,7 +1461,7 @@ fn demote_unused_let_mut(mod_ : @core.Module) -> @core.Module {
   for stmt in mod_.stmts {
     match stmt {
       @core.Stmt::LetMut(name~, expr~, span~) =>
-        if not(assigned.contains(name)) {
+        if !assigned.contains(name) {
           new_stmts.push(@core.Stmt::Let(rec=false, name~, expr~, span~))
           changed = true
         } else {

@@ -30,7 +30,7 @@ fn normalize_inline_single_use(
   for i, stmt in ast.stmts {
     match normalize_stmt_inline_candidate(stmt) {
       Some((name, body_expr)) =>
-        if not(exported_names.contains(name)) {
+        if !exported_names.contains(name) {
           candidates[name] = { stmt_index: i, name, body_expr }
         }
       None => ()
@@ -102,7 +102,7 @@ fn normalize_inline_single_use(
             }
           None => ()
         }
-        if not(drop_stmt) {
+        if !drop_stmt {
           out_stmts.push(stmt)
         }
       }
@@ -197,7 +197,7 @@ fn normalize_count_candidate_refs_module(
       @vibe_core.WalkerScope::new(),
       candidate_names,
       fn(name, bound, cands) {
-        if bound.contains(name) || not(cands.contains(name)) {
+        if bound.contains(name) || !cands.contains(name) {
           return
         }
         match counts.get(name) {
@@ -424,7 +424,7 @@ fn normalize_fold_builtin_call(
     "not" =>
       if args.length() == 1 {
         match normalize_expr_as_bool(args[0]) {
-          Some(value) => Some(@vibe_core.Expr::Bool(value=not(value), span~))
+          Some(value) => Some(@vibe_core.Expr::Bool(value=!value, span~))
           None => None
         }
       } else {

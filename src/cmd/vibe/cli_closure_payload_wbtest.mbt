@@ -156,7 +156,7 @@ test "compile_closure_payload_file compiles import closure payload" {
 fn split_payload_parts(payload : String) -> Array[String] {
   let parts : Array[String] = []
   for part in payload.split("\u{0}") {
-    parts.push(part.to_string())
+    parts.push(part.to_owned())
   }
   parts
 }

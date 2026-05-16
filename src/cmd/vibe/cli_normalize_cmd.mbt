@@ -78,7 +78,7 @@ fn normalize_collect_top_level_decls(
 fn normalize_is_simple_semver(text : String) -> Bool {
   let parts : Array[String] = []
   for part in text.split(".") {
-    let normalized = part.to_string()
+    let normalized = part.to_owned()
     if normalized.length() == 0 {
       return false
     }
@@ -111,7 +111,7 @@ fn normalize_parse_digits(text : String) -> Int? {
 fn normalize_parse_semver(text : String) -> (Int, Int, Int)? {
   let parts : Array[String] = []
   for part in text.split(".") {
-    parts.push(part.to_string())
+    parts.push(part.to_owned())
   }
   if parts.length() != 3 {
     return None
@@ -190,7 +190,7 @@ fn normalize_resolve_latest_scope_version(
   let mut best_version : String? = None
   let mut best_semver : (Int, Int, Int)? = None
   for entry in entries {
-    if not(entry.has_prefix(prefix)) || not(entry.has_suffix(suffix)) {
+    if !entry.has_prefix(prefix) || !entry.has_suffix(suffix) {
       continue
     }
     let ver_start = prefix.length()
@@ -269,7 +269,7 @@ fn normalize_is_unversioned_scope_import_target(scope : String) -> Bool {
     scope.has_suffix(".vibe") ||
     scope.has_suffix(".xm") ||
     scope.has_suffix(".wasm") ||
-    not(scope.contains("/")) {
+    !scope.contains("/") {
     false
   } else {
     true
@@ -281,7 +281,7 @@ fn normalize_resolve_index_import_line(
   line : String,
   lib_root : String,
 ) -> Result[String, String] {
-  let trimmed = line.trim().to_string()
+  let trimmed = line.trim().to_owned()
   let head = if trimmed.has_prefix("import ") {
     "import "
   } else {
@@ -304,7 +304,7 @@ fn normalize_resolve_index_import_line(
       let scope_head = rest
         .unsafe_substring(start=0, end=brace_pos)
         .trim()
-        .to_string()
+        .to_owned()
       let scope_tokens = normalize_split_ws_tokens(scope_head)
       let scope_buf = StringBuilder::new()
       for token in scope_tokens {
@@ -312,7 +312,7 @@ fn normalize_resolve_index_import_line(
       }
       let scope = scope_buf.to_string()
       if scope.length() == 0 ||
-        not(normalize_is_unversioned_scope_import_target(scope)) {
+        !normalize_is_unversioned_scope_import_target(scope) {
         return Ok(line)
       }
       let version = match
@@ -329,7 +329,7 @@ fn normalize_resolve_index_import_line(
       let suffix = rest
         .unsafe_substring(start=brace_pos, end=rest.length())
         .trim()
-        .to_string()
+        .to_owned()
       let out = StringBuilder::new()
       out.write_string(prefix)
       out.write_string(head)
@@ -343,13 +343,13 @@ fn normalize_resolve_index_import_line(
     None => ()
   }
   // Resolve legacy bare `import <scope>` declarations.
-  let mut rest_trimmed = rest.trim().to_string()
+  let mut rest_trimmed = rest.trim().to_owned()
   let has_semicolon = rest_trimmed.has_suffix(";")
   if has_semicolon && rest_trimmed.length() > 0 {
     rest_trimmed = rest_trimmed
       .unsafe_substring(start=0, end=rest_trimmed.length() - 1)
       .trim()
-      .to_string()
+      .to_owned()
   }
   let tokens = normalize_split_ws_tokens(rest_trimmed)
   if tokens.length() == 0 {
@@ -373,7 +373,7 @@ fn normalize_resolve_index_import_line(
   if scope.length() == 0 {
     return Ok(line)
   }
-  if not(normalize_is_unversioned_scope_import_target(scope)) {
+  if !normalize_is_unversioned_scope_import_target(scope) {
     return Ok(line)
   }
   let version = match normalize_resolve_latest_scope_version(lib_root, scope) {
@@ -412,7 +412,7 @@ fn normalize_resolve_index_import_versions(
 ) -> Result[String, String] {
   let lines : Array[String] = []
   for part in source.split("\n") {
-    lines.push(part.to_string())
+    lines.push(part.to_owned())
   }
   let out = StringBuilder::new()
   for i, line in lines {
@@ -457,7 +457,7 @@ fn normalize_ensure_index_version_export(
       _ => ()
     }
   }
-  if source.trim().to_string().length() == 0 {
+  if source.trim().to_owned().length() == 0 {
     Ok("export let version = \"0.1.0\"\n")
   } else {
     Ok("export let version = \"0.1.0\"\n\n" + source)
@@ -479,7 +479,7 @@ fn normalize_directory_vibe_files(
     if name == "." || name == ".." {
       continue
     }
-    if not(name.has_suffix(".vibe")) {
+    if !name.has_suffix(".vibe") {
       continue
     }
     let path = @vibe_fs.normalize_path(dir + "/" + name)
@@ -773,7 +773,7 @@ fn parse_normalize_cmd_options(
   if files.length() == 0 {
     return Err("normalize: expected <file...>")
   }
-  if output_path is Some(_) && not(merge) {
+  if output_path is Some(_) && !merge {
     return Err("normalize: -o is only valid with --merge")
   }
   if check && write {
@@ -785,7 +785,7 @@ fn parse_normalize_cmd_options(
   if check && merge {
     return Err("normalize: --check cannot be combined with --merge")
   }
-  if not(write) && not(check) && files.length() > 1 && not(merge) {
+  if !write && !check && files.length() > 1 && !merge {
     return Err("normalize: use --write or --check for multiple files")
   }
   Ok({ write, check, skip_unchanged, merge, library_mode, output_path, files })

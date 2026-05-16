@@ -158,7 +158,7 @@ fn normalize_source_text_with_modules(
       Err(err) => return Err(err)
     }
     out.write_string(normalized_stmt)
-    if not(normalized_stmt.has_suffix("\n")) {
+    if !normalized_stmt.has_suffix("\n") {
       out.write_char('\n')
     }
     cursor = range.end
@@ -178,14 +178,14 @@ fn normalize_module_stmt_source(stmt_source : String) -> Result[String, String] 
   }
   let head = normalize_source_slice_by_span(stmt_source, 0, open_index)
     .trim()
-    .to_string()
+    .to_owned()
   let body_source = normalize_source_slice_by_span(
     stmt_source,
     open_index + 1,
     close_index,
   )
   let normalized_body = match normalize_source_text_flat(body_source) {
-    Ok(v) => v.trim().to_string()
+    Ok(v) => v.trim().to_owned()
     Err(err) => return Err(err)
   }
   let out = StringBuilder::new()
@@ -305,12 +305,12 @@ fn normalize_indent_block(source : String, indent_spaces : Int) -> String {
   let out = StringBuilder::new()
   let mut first = true
   for line_view in source.split("\n") {
-    if not(first) {
+    if !first {
       out.write_char('\n')
     }
     first = false
-    let line = line_view.to_string()
-    if line.trim().to_string().length() == 0 {
+    let line = line_view.to_owned()
+    if line.trim().to_owned().length() == 0 {
       continue
     }
     for _ in 0..<indent_spaces {
@@ -383,7 +383,7 @@ fn normalize_filter_top_level_expr_stmts(
       @vibe_core.Stmt::Expr(expr~, ..) =>
         if @checker.purity_expr(env, expr) {
           ()
-        } else if not(drop_effectful_expr_stmts) {
+        } else if !drop_effectful_expr_stmts {
           out.push(stmt)
         }
       _ => out.push(stmt)
@@ -480,8 +480,8 @@ fn normalize_is_synthetic_trait_impl(
     @vibe_core.Stmt::TraitImpl(span~, ..) => {
       let snippet = normalize_source_slice_by_span(source, span.start, span.end)
         .trim()
-        .to_string()
-      not(snippet.has_prefix("impl "))
+        .to_owned()
+      !snippet.has_prefix("impl ")
     }
     _ => false
   }
@@ -494,7 +494,7 @@ fn normalize_filter_synthetic_trait_impls(
 ) -> Array[@vibe_core.Stmt] {
   let out : Array[@vibe_core.Stmt] = []
   for stmt in stmts {
-    if not(normalize_is_synthetic_trait_impl(source, stmt)) {
+    if !normalize_is_synthetic_trait_impl(source, stmt) {
       out.push(stmt)
     }
   }
@@ -893,7 +893,7 @@ fn normalize_disambiguate_import_items(
   let used : Map[String, Int] = {}
   let out : Array[@vibe_core.ImportItem] = []
   for item in items {
-    if not(normalize_import_item_accepts_value(item)) {
+    if !normalize_import_item_accepts_value(item) {
       out.push(item)
       continue
     }
@@ -929,14 +929,14 @@ fn normalize_canonicalize_import_path(path : String) -> String {
   let had_dot_prefix = path.has_prefix("./")
   let parts : Array[String] = []
   for part_view in path.split("/") {
-    let part = part_view.to_string()
+    let part = part_view.to_owned()
     if part == "" || part == "." {
       continue
     }
     if part == ".." {
       if parts.length() > 0 && parts[parts.length() - 1] != ".." {
         let _ = parts.pop()
-      } else if not(is_abs) {
+      } else if !is_abs {
         parts.push(part)
       }
     } else {
@@ -954,9 +954,9 @@ fn normalize_canonicalize_import_path(path : String) -> String {
     normalized
   }
   if had_dot_prefix &&
-    not(without_index.has_prefix("./")) &&
-    not(without_index.has_prefix("../")) &&
-    not(without_index.has_prefix("/")) {
+    !without_index.has_prefix("./") &&
+    !without_index.has_prefix("../") &&
+    !without_index.has_prefix("/") {
     "./" + without_index
   } else {
     without_index
@@ -1002,7 +1002,7 @@ fn merge_dedup_stmts(stmts : Array[@vibe_core.Stmt]) -> Array[@vibe_core.Stmt] {
     let stmt = stmts[i]
     match merge_stmt_def_name(stmt) {
       Some(name) =>
-        if not(seen.contains(name)) {
+        if !seen.contains(name) {
           seen[name] = ()
           keep[i] = true
         }
@@ -1076,7 +1076,7 @@ fn merge_prefilter_stmts(
       | @vibe_core.Stmt::IndexAssign(..)
       | @vibe_core.Stmt::LetPat(..)
       | @vibe_core.Stmt::LetPatElse(..) =>
-        if not(library_mode) {
+        if !library_mode {
           out.push(stmt)
         }
       _ => out.push(stmt)
@@ -1095,7 +1095,7 @@ fn merge_render_deduped(
     match merge_render_stmt_fallback(stmt) {
       Some(rendered) => {
         out.write_string(rendered)
-        if not(rendered.has_suffix("\n")) {
+        if !rendered.has_suffix("\n") {
           out.write_char('\n')
         }
       }
@@ -1106,11 +1106,11 @@ fn merge_render_deduped(
           span.start,
           span.end,
         )
-        if snippet.trim().to_string().length() == 0 {
+        if snippet.trim().to_owned().length() == 0 {
           continue
         }
         out.write_string(snippet)
-        if not(snippet.has_suffix("\n")) {
+        if !snippet.has_suffix("\n") {
           out.write_char('\n')
         }
       }
@@ -1143,7 +1143,7 @@ pub fn normalize_merge_sources(
   let filtered = merge_prefilter_stmts(deduped, library_mode)
   // [5] Render from source spans
   let rendered = merge_render_deduped(combined, filtered)
-  if rendered.trim().to_string().length() == 0 {
+  if rendered.trim().to_owned().length() == 0 {
     return Err("merge: no statements kept after dedup")
   }
   // [6] Normalize

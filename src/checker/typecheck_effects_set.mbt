@@ -56,7 +56,7 @@ fn normalize_effects(
   for effect in effects {
     match effect {
       @core.EffectAtom::Const(name) =>
-        if not(seen.contains(name)) {
+        if !seen.contains(name) {
           seen[name] = true
           out.push(effect)
         }
@@ -174,7 +174,7 @@ fn effect_consts_subset(
   large : Map[String, Bool],
 ) -> Bool {
   for name, _ in small {
-    if not(large.contains(name)) {
+    if !large.contains(name) {
       return false
     }
   }
@@ -196,7 +196,7 @@ fn effect_consts_minus(
 ) -> Map[String, Bool] {
   let out : Map[String, Bool] = {}
   for name, _ in left {
-    if not(right.contains(name)) {
+    if !right.contains(name) {
       out[name] = true
     }
   }

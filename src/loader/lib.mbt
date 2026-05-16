@@ -11,14 +11,14 @@ fn extract_vibe_from_markdown(markdown : String) -> String {
   let mut in_other_block = false
   for i = 0; i < lines.length(); i = i + 1 {
     let line = lines[i]
-    if not(in_vibe_block) && not(in_other_block) {
+    if !in_vibe_block && !in_other_block {
       if line.has_prefix("```vibe") {
         in_vibe_block = true
       } else if line.has_prefix("```") {
         in_other_block = true
       }
     } else if in_vibe_block {
-      if line.trim().to_string() == "```" {
+      if line.trim().to_owned() == "```" {
         let sb = StringBuilder::new()
         for j, s in buf {
           if j > 0 {
@@ -33,7 +33,7 @@ fn extract_vibe_from_markdown(markdown : String) -> String {
         buf.push(line)
       }
     } else if in_other_block {
-      if line.trim().to_string() == "```" {
+      if line.trim().to_owned() == "```" {
         in_other_block = false
       }
     }
@@ -114,7 +114,7 @@ fn resolve_alias_to_source(
   fs : &@io.FileSystemAdapter,
 ) -> Result[@vibe_core.ModuleRef, String] {
   let index_path = dir + "/index.vibe"
-  if not(@io.path_exists_with(fs, index_path)) {
+  if !@io.path_exists_with(fs, index_path) {
     return Err("alias @" + alias_name + ": no index.vibe found in " + dir)
   }
   let source = match @io.read_string_with(fs, index_path) {
@@ -214,7 +214,7 @@ fn load_sources_recursive_impl(
               }
             }
             if resolved.has_suffix(".wasm") {
-              if not(visited.contains(resolved)) {
+              if !visited.contains(resolved) {
                 visited.set(resolved, true)
                 let wasm_bytes = match @io.read_bytes_with(fs, resolved) {
                   Ok(v) => v
@@ -241,7 +241,7 @@ fn load_sources_recursive_impl(
           @vibe_core.ModuleRef::Alias(name~) => {
             // Ensure index.vibe is loaded into db for alias resolution in db_query
             let index_path = @vibe_fs.normalize_path(base + "/index.vibe")
-            if not(visited.contains(index_path)) {
+            if !visited.contains(index_path) {
               match @io.read_string_with(fs, index_path) {
                 Ok(index_src) => db.set_source(index_path, index_src)
                 Err(_) => ()
@@ -301,7 +301,7 @@ fn load_sources_recursive_impl(
               }
             }
             if resolved.has_suffix(".wasm") {
-              if not(visited.contains(resolved)) {
+              if !visited.contains(resolved) {
                 visited.set(resolved, true)
                 let wasm_bytes = match @io.read_bytes_with(fs, resolved) {
                   Ok(v) => v

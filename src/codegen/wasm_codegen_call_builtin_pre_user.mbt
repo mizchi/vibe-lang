@@ -1253,7 +1253,7 @@ fn compile_call_builtin_pre_user_inner(
     }
   }
   // No handler matched — check runtime fallback or raise unhandled
-  if not(is_user_fn) && is_wasm_runtime_fallback_builtin(name) {
+  if !is_user_fn && is_wasm_runtime_fallback_builtin(name) {
     emit_wasm_runtime_fallback_throw(ctx, buf, name)
   } else {
     raise WasmGenError::Unsupported(pre_user_builtin_unhandled_marker)

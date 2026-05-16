@@ -10,7 +10,7 @@ fn wbtest_temp_dir(name : String) -> String {
 ///|
 fn wbtest_remove_file_if_exists(path : String) -> Unit {
   let exists = @os_fs.path_exists(path)
-  if not(exists) {
+  if !exists {
     return
   }
   let is_file = @os_fs.is_file(path) catch { _ => false }
@@ -28,7 +28,7 @@ fn wbtest_parse_int(text : String) -> Int? {
 ///|
 fn wbtest_extract_first_int_line(stdout : String) -> Int? {
   for line_view in stdout.split("\n") {
-    let line = line_view.trim().to_string()
+    let line = line_view.trim().to_owned()
     if line.length() == 0 {
       continue
     }
@@ -43,9 +43,9 @@ fn wbtest_extract_first_int_line(stdout : String) -> Int? {
 ///|
 fn wbtest_extract_vibe_last_value(stdout : String) -> Int? {
   for line_view in stdout.split("\n") {
-    let line = line_view.trim().to_string()
+    let line = line_view.trim().to_owned()
     if line.has_prefix("last:") {
-      let raw = line.replace(old="last:", new="").trim().to_string()
+      let raw = line.replace(old="last:", new="").trim().to_owned()
       match wbtest_parse_int(raw) {
         Some(value) => return Some(value)
         None => ()

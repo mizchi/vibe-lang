@@ -754,7 +754,7 @@ fn parse_site_path(site : String) -> (String, Int) {
     ""
   } else {
     // Remove trailing '.' from prefix
-    site[:last_stmt_pos - 1].to_string()
+    site[:last_stmt_pos - 1].to_owned()
   }
   // Extract index from "stmt[N]..."
   let mut i = last_stmt_pos + 5 // skip "stmt["
@@ -773,7 +773,7 @@ fn parse_site_path(site : String) -> (String, Int) {
     }
     i += 1
   }
-  if not(found_digit) {
+  if !found_digit {
     return (prefix, -1)
   }
   (prefix, result)

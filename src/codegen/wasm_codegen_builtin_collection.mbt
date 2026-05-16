@@ -2272,7 +2272,7 @@ fn compile_builtin_collection(
       emit_i32_shl(buf)
       emit_i32_add(buf)
       emit_i32_load(buf, 8)
-      if not(ctx.use_js_strings) {
+      if !ctx.use_js_strings {
         emit_i64_extend_i32_u(buf)
         emit_i64_const_raw(buf, tag_obj.to_int64())
         emit_i64_or(buf)
@@ -2387,14 +2387,14 @@ fn compile_builtin_collection(
       emit_i64_shl(buf)
       buf.push((11).to_byte()) // end if
     }
-    "iter_require" if not(is_user_fn) => {
+    "iter_require" if !is_user_fn => {
       // iter_require(xs) -> identity (prelude fallback for Array iteration)
       let pos_args = extract_positional_exprs_with_arity(
         args, "iter_require", 1,
       )
       compile_expr(ctx, buf, pos_args[0])
     }
-    "iter_length" if not(is_user_fn) => {
+    "iter_length" if !is_user_fn => {
       // iter_length(xs) -> Array::length(xs) semantics.
       // Mirrors Array::length so for-in over an ArrayView (Array slice)
       // works through the unified Iterable desugar (ADR-0044 Phase 2).
@@ -2426,7 +2426,7 @@ fn compile_builtin_collection(
       emit_i64_shl(buf)
       buf.push((11).to_byte()) // end if
     }
-    "iter_get" if not(is_user_fn) => {
+    "iter_get" if !is_user_fn => {
       // iter_get(xs, idx) -> Array::get(xs, idx) semantics.
       // Mirrors Array::get so for-in over an ArrayView (Array slice)
       // works through the unified Iterable desugar (ADR-0044 Phase 2).

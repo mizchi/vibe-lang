@@ -9,7 +9,7 @@ fn is_builtin_error_handler_name(name : String) -> Bool {
 fn extract_effect_name_from_key(qualified : String) -> String {
   for i = 0; i + 1 < qualified.length(); i = i + 1 {
     if qualified[i] == ':' && qualified[i + 1] == ':' {
-      return qualified[0:i].to_string()
+      return qualified[0:i].to_owned()
     }
   }
   qualified
@@ -32,7 +32,7 @@ fn get_effect_resume_globals(
 fn is_resume_effect_pat(pat : @core.Pat) -> Bool {
   match pat {
     @core.Pat::Ctor(name~, ..) =>
-      name.contains("::") && not(is_builtin_error_handler_name(name))
+      name.contains("::") && !is_builtin_error_handler_name(name)
     _ => false
   }
 }

@@ -11,14 +11,14 @@ fn extract_vibe_from_markdown(markdown : String) -> String {
   let mut in_other_block = false
   for i = 0; i < lines.length(); i = i + 1 {
     let line = lines[i]
-    if not(in_vibe_block) && not(in_other_block) {
+    if !in_vibe_block && !in_other_block {
       if line.has_prefix("```vibe") {
         in_vibe_block = true
       } else if line.has_prefix("```") {
         in_other_block = true
       }
     } else if in_vibe_block {
-      if line.trim().to_string() == "```" {
+      if line.trim().to_owned() == "```" {
         let sb = StringBuilder::new()
         for j, s in buf {
           if j > 0 {
@@ -33,7 +33,7 @@ fn extract_vibe_from_markdown(markdown : String) -> String {
         buf.push(line)
       }
     } else if in_other_block {
-      if line.trim().to_string() == "```" {
+      if line.trim().to_owned() == "```" {
         in_other_block = false
       }
     }
@@ -110,7 +110,7 @@ pub fn Codebase::write_object(
   ensure_dir(objects_dir)
   ensure_dir(self.object_dir(hash))
   let path = self.object_path(hash)
-  if not(@io.path_exists(path)) {
+  if !@io.path_exists(path) {
     match @io.write_string(path, content) {
       Ok(_) => ()
       Err(err) => raise CodebaseError::Io("write object: " + err)
@@ -123,7 +123,7 @@ pub fn Codebase::load_path_mappings(
   self : Codebase,
 ) -> Array[@core.PathMapping] {
   let path = self.root + "/paths.json"
-  if not(@io.path_exists(path)) {
+  if !@io.path_exists(path) {
     return []
   }
   let json = match @io.read_string(path) {
@@ -163,7 +163,7 @@ pub fn Codebase::upsert_path_mapping(
       break
     }
   }
-  if not(found) {
+  if !found {
     mappings.push(@core.PathMapping::{ path, hash })
   }
   self.save_path_mappings(mappings)
@@ -437,7 +437,7 @@ fn unwrap_local_type_assert_expr(expr : @core.Expr) -> @core.Expr {
           ..
         ) =>
           if rec ||
-            not(name.has_prefix("__vibe_local_type_assert_")) ||
+            !name.has_prefix("__vibe_local_type_assert_") ||
             params.length() != 1 ||
             helper_body.stmts.length() != 1 {
             return expr
@@ -526,13 +526,13 @@ fn is_ascii_digits(text : String) -> Bool {
 fn is_simple_semver(version : String) -> Bool {
   let parts : Array[String] = []
   for part in version.split(".") {
-    parts.push(part.to_string())
+    parts.push(part.to_owned())
   }
   if parts.length() != 3 {
     return false
   }
   for part in parts {
-    if not(is_ascii_digits(part)) {
+    if !is_ascii_digits(part) {
       return false
     }
   }
@@ -578,7 +578,7 @@ fn normalize_registry_modules(
     } else {
       @vibe_fs.normalize_path(root + "/" + raw_path)
     }
-    if not(is_within_root(root, resolved)) {
+    if !is_within_root(root, resolved) {
       return Err(
         "index.vibe registry path outside root: " + ns + " -> " + resolved,
       )
@@ -595,7 +595,7 @@ pub fn load_registry_modules_with_fs(
 ) -> Result[Map[String, String], String] {
   let root_norm = @vibe_fs.normalize_path(root)
   let index_path = @vibe_fs.normalize_path(root_norm + "/index.vibe")
-  if not(@io.path_exists_with(fs, index_path)) {
+  if !@io.path_exists_with(fs, index_path) {
     return Ok(default_registry_modules(root_norm))
   }
   let content = match @io.read_string_with(fs, index_path) {
@@ -630,7 +630,7 @@ pub fn load_registry_root_version_with_fs(
 ) -> Result[String, String] {
   let root_norm = @vibe_fs.normalize_path(root)
   let index_path = @vibe_fs.normalize_path(root_norm + "/index.vibe")
-  if not(@io.path_exists_with(fs, index_path)) {
+  if !@io.path_exists_with(fs, index_path) {
     return Ok("0.0.0")
   }
   let content = match @io.read_string_with(fs, index_path) {
@@ -682,7 +682,7 @@ pub fn resolve_import_path_with_registry(
   }
   let resolved = resolve_import_module_entry(resolved_raw)
   // Registry-resolved paths are trusted (they point to well-known module locations)
-  if not(from_registry) && not(is_within_root(root, resolved)) {
+  if !from_registry && !is_within_root(root, resolved) {
     return Err(
       "import path outside root: " + resolved + " (root: " + root + ")",
     )
@@ -747,7 +747,7 @@ fn module_ref_relative_path(base : String, target : String) -> String? {
 
 ///|
 fn module_ref_root_version(version : String) -> String {
-  let normalized = version.trim().to_string()
+  let normalized = version.trim().to_owned()
   if normalized.length() == 0 {
     "0.0.0"
   } else {
@@ -773,7 +773,7 @@ pub fn lock_module_ref_canonical_symbol_with_context(
     let ns_root_path = module_ref_symbol_path(ns_root)
     match module_ref_relative_path(ns_root_path, module_path) {
       Some(rel) =>
-        if not(has_match) ||
+        if !has_match ||
           ns_root_path.length() > matched_root.length() ||
           (
             ns_root_path.length() == matched_root.length() &&
@@ -1086,7 +1086,7 @@ fn line_leading_indent(line : String) -> String {
 fn render_comment_block(note : String, indent : String) -> String {
   let buf = StringBuilder::new()
   for part in note.split("\n") {
-    let line = part.to_string()
+    let line = part.to_owned()
     buf.write_string(indent)
     buf.write_string("//")
     if line.length() > 0 {
@@ -1152,7 +1152,7 @@ pub fn apply_annotations_to_source(
       None => ()
     }
     let line_idx = line_index_for_offset(line_starts, source.length(), anchor)
-    if not(line_notes.contains(line_idx)) {
+    if !line_notes.contains(line_idx) {
       line_notes[line_idx] = note
     }
   }
@@ -1192,7 +1192,7 @@ fn collect_path_refs_impl(
   fs : &@io.FileSystemAdapter,
 ) -> Result[Unit, String] {
   let norm = @vibe_fs.normalize_path(path)
-  if not(is_within_root(root, norm)) {
+  if !is_within_root(root, norm) {
     return Err("import path outside root: " + norm + " (root: " + root + ")")
   }
   for i, p in stack {
@@ -1460,7 +1460,7 @@ fn parse_lock_data(
   content : String,
   base_dir : String,
 ) -> Result[LockData, String] {
-  if content.trim().to_string().length() == 0 {
+  if content.trim().to_owned().length() == 0 {
     return Ok(empty_lock_data())
   }
   let json : Json = @json.parse(content) catch {
@@ -1525,7 +1525,7 @@ fn write_json_string_literal(text : String, buf : StringBuilder) -> Unit {
 fn split_path_parts(path : String) -> Array[String] {
   let parts : Array[String] = []
   for part in path.split("/") {
-    let s = part.to_string()
+    let s = part.to_owned()
     if s.length() > 0 {
       parts.push(s)
     }
@@ -1537,7 +1537,7 @@ fn split_path_parts(path : String) -> Array[String] {
 fn relativize_lock_path(base_dir : String, target_path : String) -> String {
   let base = @vibe_fs.normalize_path(base_dir)
   let target = @vibe_fs.normalize_path(target_path)
-  if not(base.has_prefix("/")) || not(target.has_prefix("/")) {
+  if !base.has_prefix("/") || !target.has_prefix("/") {
     return target
   }
   let base_parts = split_path_parts(base)
@@ -1682,7 +1682,7 @@ pub fn load_lock_data_with_fs(
 ) -> Result[LockData, String] {
   let base_dir = @vibe_fs.parent_path(lock_path)
   let mut target = lock_path
-  if not(@io.path_exists_with(fs, target)) {
+  if !@io.path_exists_with(fs, target) {
     let legacy_path = base_dir + "/vibe.lock"
     if @io.path_exists_with(fs, legacy_path) {
       target = legacy_path
@@ -1824,7 +1824,7 @@ pub fn update_lock_path_refs(entry : String) -> Result[LockData, String] {
 
 ///|
 fn ensure_dir(path : String) -> Unit raise CodebaseError {
-  if not(@io.path_exists(path)) {
+  if !@io.path_exists(path) {
     match @io.create_dir(path) {
       Ok(_) => ()
       Err(err) => raise CodebaseError::Io("mkdir: " + err)

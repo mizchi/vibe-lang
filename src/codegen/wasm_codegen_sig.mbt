@@ -244,7 +244,7 @@ fn builtin_type_count(ctx : CodegenCtx) -> Int {
   if ctx.need_stdin_read_char {
     count += 1
   }
-  if ctx.need_fs && not(ctx.fs_host_imports) {
+  if ctx.need_fs && !ctx.fs_host_imports {
     // Keep in sync with wasm_codegen_module.mbt type section:
     // get-directories/resource-drop, open-at, read, write, metadata-hash-at, stat-at
     count += 5
@@ -327,7 +327,7 @@ fn func_import_count(ctx : CodegenCtx) -> Int {
   if ctx.need_stdin_read_char {
     count += 2
   }
-  if ctx.need_fs && not(ctx.fs_host_imports) {
+  if ctx.need_fs && !ctx.fs_host_imports {
     count += 7
   }
   if ctx.need_fs && ctx.fs_host_imports {
@@ -351,7 +351,7 @@ fn func_import_count(ctx : CodegenCtx) -> Int {
 
 ///|
 fn json_host_import_count(ctx : CodegenCtx) -> Int {
-  if not(ctx.need_fs && ctx.fs_host_imports) {
+  if !(ctx.need_fs && ctx.fs_host_imports) {
     return 0
   }
   let mut count = 0
@@ -972,7 +972,7 @@ fn filter_top_level_funcs(ctx : CodegenCtx, ast : @core.Module) -> @core.Module 
         }
       _ => false
     }
-    if not(skip) {
+    if !skip {
       out.push(stmt)
     }
   }
@@ -1479,7 +1479,7 @@ fn js_import_count(ctx : CodegenCtx) -> Int {
 
 ///|
 fn import_index_path(ctx : CodegenCtx) -> Int raise WasmGenError {
-  if not(ctx.need_path) {
+  if !ctx.need_path {
     raise WasmGenError::BackendLimit(backend="wasm", feature="path import")
   }
   js_import_count(ctx)
@@ -1489,7 +1489,7 @@ fn import_index_path(ctx : CodegenCtx) -> Int raise WasmGenError {
 fn import_index_dynamic_path_resolve(
   ctx : CodegenCtx,
 ) -> Int raise WasmGenError {
-  if not(ctx.need_dynamic_path_resolve) {
+  if !ctx.need_dynamic_path_resolve {
     raise WasmGenError::BackendLimit(
       backend="wasm",
       feature="Path::resolve import",
@@ -1504,7 +1504,7 @@ fn import_index_dynamic_path_resolve(
 
 ///|
 fn import_index_sh(ctx : CodegenCtx) -> Int raise WasmGenError {
-  if not(ctx.need_sh) {
+  if !ctx.need_sh {
     raise WasmGenError::BackendLimit(backend="wasm", feature="sh import")
   }
   let mut idx = js_import_count(ctx)
@@ -1519,7 +1519,7 @@ fn import_index_sh(ctx : CodegenCtx) -> Int raise WasmGenError {
 
 ///|
 fn import_index_env_get(ctx : CodegenCtx) -> Int raise WasmGenError {
-  if not(ctx.need_env_get) {
+  if !ctx.need_env_get {
     raise WasmGenError::BackendLimit(backend="wasm", feature="Env::get import")
   }
   let mut idx = js_import_count(ctx)
@@ -1537,7 +1537,7 @@ fn import_index_env_get(ctx : CodegenCtx) -> Int raise WasmGenError {
 
 ///|
 fn import_index_env_args_len(ctx : CodegenCtx) -> Int raise WasmGenError {
-  if not(ctx.need_env_args_len) {
+  if !ctx.need_env_args_len {
     raise WasmGenError::BackendLimit(
       backend="wasm",
       feature="Env::args_len import",
@@ -1561,7 +1561,7 @@ fn import_index_env_args_len(ctx : CodegenCtx) -> Int raise WasmGenError {
 
 ///|
 fn import_index_env_args_get(ctx : CodegenCtx) -> Int raise WasmGenError {
-  if not(ctx.need_env_args_get) {
+  if !ctx.need_env_args_get {
     raise WasmGenError::BackendLimit(
       backend="wasm",
       feature="Env::args_get import",
@@ -1588,7 +1588,7 @@ fn import_index_env_args_get(ctx : CodegenCtx) -> Int raise WasmGenError {
 
 ///|
 fn import_index_js_length(ctx : CodegenCtx) -> Int raise WasmGenError {
-  if not(ctx.need_js_length) {
+  if !ctx.need_js_length {
     raise WasmGenError::BackendLimit(
       backend="wasm-js-string",
       feature="length import",
@@ -1599,7 +1599,7 @@ fn import_index_js_length(ctx : CodegenCtx) -> Int raise WasmGenError {
 
 ///|
 fn import_index_js_char_code_at(ctx : CodegenCtx) -> Int raise WasmGenError {
-  if not(ctx.need_js_char_code_at) {
+  if !ctx.need_js_char_code_at {
     raise WasmGenError::BackendLimit(
       backend="wasm-js-string",
       feature="charCodeAt import",
@@ -1614,7 +1614,7 @@ fn import_index_js_char_code_at(ctx : CodegenCtx) -> Int raise WasmGenError {
 
 ///|
 fn import_index_js_substring(ctx : CodegenCtx) -> Int raise WasmGenError {
-  if not(ctx.need_js_substring) {
+  if !ctx.need_js_substring {
     raise WasmGenError::BackendLimit(
       backend="wasm-js-string",
       feature="substring import",
@@ -1632,7 +1632,7 @@ fn import_index_js_substring(ctx : CodegenCtx) -> Int raise WasmGenError {
 
 ///|
 fn import_index_js_concat(ctx : CodegenCtx) -> Int raise WasmGenError {
-  if not(ctx.need_js_concat) {
+  if !ctx.need_js_concat {
     raise WasmGenError::BackendLimit(
       backend="wasm-js-string",
       feature="concat import",
@@ -1653,7 +1653,7 @@ fn import_index_js_concat(ctx : CodegenCtx) -> Int raise WasmGenError {
 
 ///|
 fn import_index_js_equals(ctx : CodegenCtx) -> Int raise WasmGenError {
-  if not(ctx.need_js_equals) {
+  if !ctx.need_js_equals {
     raise WasmGenError::BackendLimit(
       backend="wasm-js-string",
       feature="equals import",
@@ -1704,7 +1704,7 @@ fn import_index_after_sleep(ctx : CodegenCtx) -> Int {
 
 ///|
 fn import_index_stdout_get_stream(ctx : CodegenCtx) -> Int raise WasmGenError {
-  if not(ctx.need_stdout_write_char) {
+  if !ctx.need_stdout_write_char {
     raise WasmGenError::BackendLimit(
       backend="wasm",
       feature="stdout stream import",
@@ -1715,7 +1715,7 @@ fn import_index_stdout_get_stream(ctx : CodegenCtx) -> Int raise WasmGenError {
 
 ///|
 fn import_index_stdout_write_stream(ctx : CodegenCtx) -> Int raise WasmGenError {
-  if not(ctx.need_stdout_write_char) {
+  if !ctx.need_stdout_write_char {
     raise WasmGenError::BackendLimit(
       backend="wasm",
       feature="stdout stream import",
@@ -1726,7 +1726,7 @@ fn import_index_stdout_write_stream(ctx : CodegenCtx) -> Int raise WasmGenError 
 
 ///|
 fn import_index_stdin_get_stream(ctx : CodegenCtx) -> Int raise WasmGenError {
-  if not(ctx.need_stdin_read_char) {
+  if !ctx.need_stdin_read_char {
     raise WasmGenError::BackendLimit(
       backend="wasm",
       feature="stdin stream import",
@@ -1741,7 +1741,7 @@ fn import_index_stdin_get_stream(ctx : CodegenCtx) -> Int raise WasmGenError {
 
 ///|
 fn import_index_stdin_read_stream(ctx : CodegenCtx) -> Int raise WasmGenError {
-  if not(ctx.need_stdin_read_char) {
+  if !ctx.need_stdin_read_char {
     raise WasmGenError::BackendLimit(
       backend="wasm",
       feature="stdin stream import",
@@ -1764,7 +1764,7 @@ fn import_index_after_stdin(ctx : CodegenCtx) -> Int {
 
 ///|
 fn import_index_fs_get_directories(ctx : CodegenCtx) -> Int raise WasmGenError {
-  if not(ctx.need_fs) || ctx.fs_host_imports {
+  if !ctx.need_fs || ctx.fs_host_imports {
     raise WasmGenError::BackendLimit(backend="wasm", feature="fs WASI import")
   }
   import_index_after_stdin(ctx)
@@ -1810,7 +1810,7 @@ fn fs_root_descriptor_global_index(ctx : CodegenCtx) -> Int {
 
 ///|
 fn import_index_fs_host_read_file(ctx : CodegenCtx) -> Int raise WasmGenError {
-  if not(ctx.need_fs && ctx.fs_host_imports) {
+  if !(ctx.need_fs && ctx.fs_host_imports) {
     raise WasmGenError::BackendLimit(backend="wasm", feature="fs host import")
   }
   import_index_after_stdin(ctx)
@@ -1909,7 +1909,7 @@ fn import_index_fs_host_close_write(ctx : CodegenCtx) -> Int raise WasmGenError 
 ///|
 fn import_index_after_fs(ctx : CodegenCtx) -> Int {
   let mut idx = import_index_after_stdin(ctx)
-  if ctx.need_fs && not(ctx.fs_host_imports) {
+  if ctx.need_fs && !ctx.fs_host_imports {
     idx += 7
   }
   if ctx.need_fs && ctx.fs_host_imports {
@@ -1921,7 +1921,7 @@ fn import_index_after_fs(ctx : CodegenCtx) -> Int {
 
 ///|
 fn import_index_json_host_parse(ctx : CodegenCtx) -> Int raise WasmGenError {
-  if not(ctx.need_fs && ctx.fs_host_imports && ctx.need_json_host_parse) {
+  if !(ctx.need_fs && ctx.fs_host_imports && ctx.need_json_host_parse) {
     raise WasmGenError::BackendLimit(backend="wasm", feature="json host import")
   }
   let mut idx = import_index_after_stdin(ctx)
@@ -1933,7 +1933,7 @@ fn import_index_json_host_parse(ctx : CodegenCtx) -> Int raise WasmGenError {
 
 ///|
 fn import_index_json_host_stringify(ctx : CodegenCtx) -> Int raise WasmGenError {
-  if not(ctx.need_fs && ctx.fs_host_imports && ctx.need_json_host_stringify) {
+  if !(ctx.need_fs && ctx.fs_host_imports && ctx.need_json_host_stringify) {
     raise WasmGenError::BackendLimit(backend="wasm", feature="json host import")
   }
   let mut idx = import_index_after_stdin(ctx)
@@ -1948,7 +1948,7 @@ fn import_index_json_host_stringify(ctx : CodegenCtx) -> Int raise WasmGenError 
 
 ///|
 fn import_index_json_host_get(ctx : CodegenCtx) -> Int raise WasmGenError {
-  if not(ctx.need_fs && ctx.fs_host_imports && ctx.need_json_host_get) {
+  if !(ctx.need_fs && ctx.fs_host_imports && ctx.need_json_host_get) {
     raise WasmGenError::BackendLimit(backend="wasm", feature="json host import")
   }
   let mut idx = import_index_after_stdin(ctx)
@@ -1966,7 +1966,7 @@ fn import_index_json_host_get(ctx : CodegenCtx) -> Int raise WasmGenError {
 
 ///|
 fn import_index_json_host_string(ctx : CodegenCtx) -> Int raise WasmGenError {
-  if not(ctx.need_fs && ctx.fs_host_imports && ctx.need_json_host_string) {
+  if !(ctx.need_fs && ctx.fs_host_imports && ctx.need_json_host_string) {
     raise WasmGenError::BackendLimit(backend="wasm", feature="json host import")
   }
   let mut idx = import_index_after_stdin(ctx)
@@ -1989,7 +1989,7 @@ fn import_index_json_host_string(ctx : CodegenCtx) -> Int raise WasmGenError {
 fn import_index_socket_instance_network(
   ctx : CodegenCtx,
 ) -> Int raise WasmGenError {
-  if not(ctx.need_socket) {
+  if !ctx.need_socket {
     raise WasmGenError::BackendLimit(
       backend="wasm",
       feature="socket WASI import",
@@ -2075,7 +2075,7 @@ fn import_index_after_socket(ctx : CodegenCtx) -> Int {
 
 ///|
 fn import_index_http_request(ctx : CodegenCtx) -> Int raise WasmGenError {
-  if not(ctx.need_http && ctx.http_host_imports) {
+  if !(ctx.need_http && ctx.http_host_imports) {
     raise WasmGenError::BackendLimit(backend="wasm", feature="http host import")
   }
   import_index_after_socket(ctx)
@@ -2146,7 +2146,7 @@ fn socket_table_global_index(ctx : CodegenCtx) -> Int {
   (if ctx.need_stack_switching { 1 } else { 0 }) +
   (if ctx.need_effect_resume { 4 } else { 0 }) +
   (if ctx.coverage_enabled { 2 } else { 0 }) +
-  (if ctx.need_fs && not(ctx.fs_host_imports) { 1 } else { 0 })
+  (if ctx.need_fs && !ctx.fs_host_imports { 1 } else { 0 })
 }
 
 ///|
@@ -2223,9 +2223,7 @@ fn expr_always_returns_tuple(
         return false
       }
       for arm in arms {
-        if not(
-            expr_always_returns_tuple(arm.expr, arity, self_name, eligible_fns~),
-          ) {
+        if !expr_always_returns_tuple(arm.expr, arity, self_name, eligible_fns~) {
           return false
         }
       }
@@ -2248,13 +2246,11 @@ fn expr_always_returns_tuple(
         self_name,
         eligible_fns~,
       )
-      if not(body_ok) {
+      if !body_ok {
         return false
       }
       for arm in arms {
-        if not(
-            expr_always_returns_tuple(arm.expr, arity, self_name, eligible_fns~),
-          ) {
+        if !expr_always_returns_tuple(arm.expr, arity, self_name, eligible_fns~) {
           return false
         }
       }

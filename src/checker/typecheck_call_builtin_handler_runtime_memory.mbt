@@ -16,7 +16,7 @@ fn type_call_builtin_handler_runtime_memory(
         raise TypeError::BadCall(message="__assert", span=call_span)
       }
       let a = type_expr_eff(env, pos_args[0], aliases, effects, allow_effect)
-      if not(type_equal(env, a, @core.Type::Bool)) {
+      if !type_equal(env, a, @core.Type::Bool) {
         raise TypeError::Mismatch(
           expected=@core.Type::Bool,
           actual=a,
@@ -42,7 +42,7 @@ fn type_call_builtin_handler_runtime_memory(
         effects,
         allow_effect,
       )
-      if not(type_equal(env, field_ty, @core.Type::String)) {
+      if !type_equal(env, field_ty, @core.Type::String) {
         raise TypeError::Mismatch(
           expected=@core.Type::String,
           actual=field_ty,
@@ -63,7 +63,7 @@ fn type_call_builtin_handler_runtime_memory(
             @core.Expr::String(value=name, span~) =>
               match fields.get(name) {
                 Some(expect) =>
-                  if not(type_equal(env, expect, value_ty)) {
+                  if !type_equal(env, expect, value_ty) {
                     raise TypeError::Mismatch(
                       expected=expect,
                       actual=value_ty,
@@ -197,7 +197,7 @@ fn type_call_builtin_handler_runtime_memory(
         effects,
         allow_effect,
       )
-      if not(type_equal(env, start_ty, @core.Type::Int)) {
+      if !type_equal(env, start_ty, @core.Type::Int) {
         raise TypeError::Mismatch(
           expected=@core.Type::Int,
           actual=start_ty,
@@ -212,7 +212,7 @@ fn type_call_builtin_handler_runtime_memory(
         effects,
         allow_effect,
       )
-      if not(type_equal(env, end_ty, @core.Type::Int)) {
+      if !type_equal(env, end_ty, @core.Type::Int) {
         raise TypeError::Mismatch(
           expected=@core.Type::Int,
           actual=end_ty,
@@ -373,7 +373,7 @@ fn type_call_builtin_handler_runtime_memory(
       }
       let a = type_expr_eff(env, pos_args[0], aliases, effects, allow_effect)
       let b = type_expr_eff(env, pos_args[1], aliases, effects, allow_effect)
-      if not(type_equal(env, a, @core.Type::Int)) {
+      if !type_equal(env, a, @core.Type::Int) {
         raise TypeError::Mismatch(
           expected=@core.Type::Int,
           actual=a,
@@ -381,7 +381,7 @@ fn type_call_builtin_handler_runtime_memory(
           context=Some("bit operation"),
         )
       }
-      if not(type_equal(env, b, @core.Type::Int)) {
+      if !type_equal(env, b, @core.Type::Int) {
         raise TypeError::Mismatch(
           expected=@core.Type::Int,
           actual=b,
@@ -439,7 +439,7 @@ fn type_call_builtin_handler_runtime_memory(
         effects,
         allow_effect,
       )
-      if not(type_equal(env, base_ty, @core.Type::Int)) {
+      if !type_equal(env, base_ty, @core.Type::Int) {
         raise TypeError::Mismatch(
           expected=@core.Type::Int,
           actual=base_ty,
@@ -454,7 +454,7 @@ fn type_call_builtin_handler_runtime_memory(
         effects,
         allow_effect,
       )
-      if not(type_equal(env, offset_ty, @core.Type::Int)) {
+      if !type_equal(env, offset_ty, @core.Type::Int) {
         raise TypeError::Mismatch(
           expected=@core.Type::Int,
           actual=offset_ty,
@@ -476,7 +476,7 @@ fn type_call_builtin_handler_runtime_memory(
         effects,
         allow_effect,
       )
-      if not(type_equal(env, base_ty, @core.Type::Int)) {
+      if !type_equal(env, base_ty, @core.Type::Int) {
         raise TypeError::Mismatch(
           expected=@core.Type::Int,
           actual=base_ty,
@@ -491,7 +491,7 @@ fn type_call_builtin_handler_runtime_memory(
         effects,
         allow_effect,
       )
-      if not(type_equal(env, offset_ty, @core.Type::Int)) {
+      if !type_equal(env, offset_ty, @core.Type::Int) {
         raise TypeError::Mismatch(
           expected=@core.Type::Int,
           actual=offset_ty,
@@ -506,7 +506,7 @@ fn type_call_builtin_handler_runtime_memory(
         effects,
         allow_effect,
       )
-      if not(type_equal(env, value_ty, @core.Type::Int)) {
+      if !type_equal(env, value_ty, @core.Type::Int) {
         raise TypeError::Mismatch(
           expected=@core.Type::Int,
           actual=value_ty,
@@ -528,7 +528,7 @@ fn type_call_builtin_handler_runtime_memory(
         effects,
         allow_effect,
       )
-      if not(type_equal(env, base_ty, @core.Type::Int)) {
+      if !type_equal(env, base_ty, @core.Type::Int) {
         raise TypeError::Mismatch(
           expected=@core.Type::Int,
           actual=base_ty,
@@ -543,7 +543,7 @@ fn type_call_builtin_handler_runtime_memory(
         effects,
         allow_effect,
       )
-      if not(type_equal(env, offset_ty, @core.Type::Int)) {
+      if !type_equal(env, offset_ty, @core.Type::Int) {
         raise TypeError::Mismatch(
           expected=@core.Type::Int,
           actual=offset_ty,
@@ -565,7 +565,7 @@ fn type_call_builtin_handler_runtime_memory(
         effects,
         allow_effect,
       )
-      if not(type_equal(env, base_ty, @core.Type::Int)) {
+      if !type_equal(env, base_ty, @core.Type::Int) {
         raise TypeError::Mismatch(
           expected=@core.Type::Int,
           actual=base_ty,
@@ -580,7 +580,7 @@ fn type_call_builtin_handler_runtime_memory(
         effects,
         allow_effect,
       )
-      if not(type_equal(env, offset_ty, @core.Type::Int)) {
+      if !type_equal(env, offset_ty, @core.Type::Int) {
         raise TypeError::Mismatch(
           expected=@core.Type::Int,
           actual=offset_ty,
@@ -602,7 +602,7 @@ fn type_call_builtin_handler_runtime_memory(
         effects,
         allow_effect,
       )
-      if not(type_equal(env, base_ty, @core.Type::Int)) {
+      if !type_equal(env, base_ty, @core.Type::Int) {
         raise TypeError::Mismatch(
           expected=@core.Type::Int,
           actual=base_ty,
@@ -617,7 +617,7 @@ fn type_call_builtin_handler_runtime_memory(
         effects,
         allow_effect,
       )
-      if not(type_equal(env, offset_ty, @core.Type::Int)) {
+      if !type_equal(env, offset_ty, @core.Type::Int) {
         raise TypeError::Mismatch(
           expected=@core.Type::Int,
           actual=offset_ty,
@@ -632,7 +632,7 @@ fn type_call_builtin_handler_runtime_memory(
         effects,
         allow_effect,
       )
-      if not(type_equal(env, value_ty, @core.Type::Float)) {
+      if !type_equal(env, value_ty, @core.Type::Float) {
         raise TypeError::Mismatch(
           expected=@core.Type::Float,
           actual=value_ty,
@@ -654,7 +654,7 @@ fn type_call_builtin_handler_runtime_memory(
         effects,
         allow_effect,
       )
-      if not(type_equal(env, base_ty, @core.Type::Int)) {
+      if !type_equal(env, base_ty, @core.Type::Int) {
         raise TypeError::Mismatch(
           expected=@core.Type::Int,
           actual=base_ty,
@@ -669,7 +669,7 @@ fn type_call_builtin_handler_runtime_memory(
         effects,
         allow_effect,
       )
-      if not(type_equal(env, offset_ty, @core.Type::Int)) {
+      if !type_equal(env, offset_ty, @core.Type::Int) {
         raise TypeError::Mismatch(
           expected=@core.Type::Int,
           actual=offset_ty,
@@ -684,7 +684,7 @@ fn type_call_builtin_handler_runtime_memory(
         effects,
         allow_effect,
       )
-      if not(type_equal(env, value_ty, @core.Type::Double)) {
+      if !type_equal(env, value_ty, @core.Type::Double) {
         raise TypeError::Mismatch(
           expected=@core.Type::Double,
           actual=value_ty,

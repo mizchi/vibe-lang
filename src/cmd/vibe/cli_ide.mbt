@@ -21,7 +21,7 @@ fn symbol_line_col(source : String, span : @vibe_core.Span) -> (Int, Int) {
 ///|
 fn symbol_line_text(source : String, span : @vibe_core.Span) -> String {
   let (_, line_start, line_end) = @vibe_core.line_info(source, span.start)
-  source[line_start:line_end].to_string()
+  source[line_start:line_end].to_owned()
 }
 
 ///|
@@ -33,7 +33,7 @@ fn graph_ir_line_col(source : String, row : @x_exp.GraphIrRow) -> (Int, Int) {
 ///|
 fn graph_ir_line_text(source : String, row : @x_exp.GraphIrRow) -> String {
   let (_, line_start, line_end) = @vibe_core.line_info(source, row.start)
-  source[line_start:line_end].to_string()
+  source[line_start:line_end].to_owned()
 }
 
 ///|
@@ -1351,11 +1351,11 @@ async fn lsp_main_loop() -> Unit {
       None => break
       Some(header_line) => {
         let header_str = header_line.to_string()
-        if not(header_str.has_prefix("Content-Length:")) {
+        if !header_str.has_prefix("Content-Length:") {
           continue
         }
         // Parse content length
-        let len_part = header_str[15:].to_string()
+        let len_part = header_str[15:].to_owned()
         let len_str = trim_whitespace(len_part)
         let content_length = @string.parse_int(len_str) catch { _ => continue }
 

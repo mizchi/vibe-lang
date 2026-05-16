@@ -32,14 +32,14 @@ pub fn verify_builtin_contract(
   // Find declared but not covered
   let missing_handlers : Array[String] = []
   for name in checker_declared {
-    if not(covered.contains(name)) {
+    if !covered.contains(name) {
       missing_handlers.push(name)
     }
   }
   // Find covered but not declared (codegen only, not fallback)
   let undeclared_handlers : Array[String] = []
   for name in codegen_names {
-    if not(declared.contains(name)) {
+    if !declared.contains(name) {
       undeclared_handlers.push(name)
     }
   }

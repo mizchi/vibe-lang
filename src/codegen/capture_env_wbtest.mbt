@@ -239,7 +239,7 @@ test "nested lambda without return annotation keeps boxed int wasm result" {
   let ast = @core.Module::{ stmts: [wb_let("run", run_fn)] }
   let wat = wasm_to_wat(emit_module_wasm(ast))
   assert_true(wat.contains("(param i64 i32) (result i64)"))
-  assert_true(not(wat.contains("(param i64 i32) (result i32)")))
+  assert_true(!wat.contains("(param i64 i32) (result i32)"))
 }
 
 ///|

@@ -7,7 +7,7 @@ fn compile_builtin_numeric(
   is_user_fn : Bool,
 ) -> Unit raise WasmGenError {
   match name {
-    "add" if not(is_user_fn) || args.length() == 2 => {
+    "add" if !is_user_fn || args.length() == 2 => {
       let pos_args = extract_positional_exprs_with_arity(args, "add", 2)
       let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
       match resolved_kind {
@@ -23,7 +23,7 @@ fn compile_builtin_numeric(
           )
       }
     }
-    "sub" if not(is_user_fn) || args.length() == 2 => {
+    "sub" if !is_user_fn || args.length() == 2 => {
       let pos_args = extract_positional_exprs_with_arity(args, "sub", 2)
       let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
       match resolved_kind {
@@ -39,7 +39,7 @@ fn compile_builtin_numeric(
           )
       }
     }
-    "mul" if not(is_user_fn) || args.length() == 2 => {
+    "mul" if !is_user_fn || args.length() == 2 => {
       let pos_args = extract_positional_exprs_with_arity(args, "mul", 2)
       let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
       match resolved_kind {
@@ -55,7 +55,7 @@ fn compile_builtin_numeric(
           )
       }
     }
-    "div" if not(is_user_fn) || args.length() == 2 => {
+    "div" if !is_user_fn || args.length() == 2 => {
       let pos_args = extract_positional_exprs_with_arity(args, "div", 2)
       let resolved_kind = resolve_numeric_kind(ctx, pos_args[0], pos_args[1])
       match resolved_kind {
@@ -71,11 +71,11 @@ fn compile_builtin_numeric(
           )
       }
     }
-    "eq" if not(is_user_fn) =>
+    "eq" if !is_user_fn =>
       compile_binary_cmp_op(
         ctx, buf, "eq", args, emit_i64_eq, emit_f32_eq, emit_f64_eq,
       )
-    "lt" if not(is_user_fn) =>
+    "lt" if !is_user_fn =>
       // Route through compile_binary_cmp_op so the runtime obj_string
       // branch handles lexicographic comparison; for tagged ints the
       // fallback there is a plain i64 lt_s on the tagged values, which
@@ -83,7 +83,7 @@ fn compile_builtin_numeric(
       compile_binary_cmp_op(
         ctx, buf, "lt", args, emit_i64_lt_s, emit_f32_lt, emit_f64_lt,
       )
-    "assert" | "assert_true" | "__assert" if not(is_user_fn) => {
+    "assert" | "assert_true" | "__assert" if !is_user_fn => {
       let builtin_name = name
       let pos_args = extract_positional_exprs_with_arity(args, builtin_name, 1)
       compile_expr_i32(ctx, buf, pos_args[0])
@@ -96,7 +96,7 @@ fn compile_builtin_numeric(
       buf.push((11).to_byte()) // end if
       emit_i64_const_tagged(buf, 0L)
     }
-    "assert_eq" | "__assert_eq" if not(is_user_fn) => {
+    "assert_eq" | "__assert_eq" if !is_user_fn => {
       // assert_eq(a, b): compile __eq(a, b), then assert the result
       compile_binary_cmp_op(
         ctx, buf, "__eq", args, emit_i64_eq, emit_f32_eq, emit_f64_eq,
@@ -241,48 +241,48 @@ fn compile_builtin_numeric(
       compile_binary_cmp_op(
         ctx, buf, "__lt", args, emit_i64_lt_s, emit_f32_lt, emit_f64_lt,
       )
-    "i32_eqz" if not(is_user_fn) => {
+    "i32_eqz" if !is_user_fn => {
       let pos_args = extract_positional_exprs_with_arity(args, "i32_eqz", 1)
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_untag_int_i32(buf)
       emit_i32_eqz(buf)
       emit_i32_result_as_tagged_int(buf)
     }
-    "i32_eq" if not(is_user_fn) =>
+    "i32_eq" if !is_user_fn =>
       compile_i32_cmp_to_tagged_int(ctx, buf, "i32_eq", args, emit_i32_eq)
-    "i32_ne" if not(is_user_fn) =>
+    "i32_ne" if !is_user_fn =>
       compile_i32_cmp_to_tagged_int(ctx, buf, "i32_ne", args, emit_i32_ne)
-    "i32_lt_s" if not(is_user_fn) =>
+    "i32_lt_s" if !is_user_fn =>
       compile_i32_cmp_to_tagged_int(ctx, buf, "i32_lt_s", args, emit_i32_lt_s)
-    "i32_gt_s" if not(is_user_fn) =>
+    "i32_gt_s" if !is_user_fn =>
       compile_i32_cmp_to_tagged_int(ctx, buf, "i32_gt_s", args, emit_i32_gt_s)
-    "i32_le_s" if not(is_user_fn) =>
+    "i32_le_s" if !is_user_fn =>
       compile_i32_cmp_to_tagged_int(ctx, buf, "i32_le_s", args, emit_i32_le_s)
-    "i32_ge_s" if not(is_user_fn) =>
+    "i32_ge_s" if !is_user_fn =>
       compile_i32_cmp_to_tagged_int(ctx, buf, "i32_ge_s", args, emit_i32_ge_s)
-    "f32_eq" if not(is_user_fn) =>
+    "f32_eq" if !is_user_fn =>
       compile_f32_cmp_to_tagged_int(ctx, buf, "f32_eq", args, emit_f32_eq)
-    "f32_ne" if not(is_user_fn) =>
+    "f32_ne" if !is_user_fn =>
       compile_f32_cmp_to_tagged_int(ctx, buf, "f32_ne", args, emit_f32_ne)
-    "f32_lt" if not(is_user_fn) =>
+    "f32_lt" if !is_user_fn =>
       compile_f32_cmp_to_tagged_int(ctx, buf, "f32_lt", args, emit_f32_lt)
-    "f32_gt" if not(is_user_fn) =>
+    "f32_gt" if !is_user_fn =>
       compile_f32_cmp_to_tagged_int(ctx, buf, "f32_gt", args, emit_f32_gt)
-    "f32_le" if not(is_user_fn) =>
+    "f32_le" if !is_user_fn =>
       compile_f32_cmp_to_tagged_int(ctx, buf, "f32_le", args, emit_f32_le)
-    "f32_ge" if not(is_user_fn) =>
+    "f32_ge" if !is_user_fn =>
       compile_f32_cmp_to_tagged_int(ctx, buf, "f32_ge", args, emit_f32_ge)
-    "f64_eq" if not(is_user_fn) =>
+    "f64_eq" if !is_user_fn =>
       compile_f64_cmp_to_tagged_int(ctx, buf, "f64_eq", args, emit_f64_eq)
-    "f64_ne" if not(is_user_fn) =>
+    "f64_ne" if !is_user_fn =>
       compile_f64_cmp_to_tagged_int(ctx, buf, "f64_ne", args, emit_f64_ne)
-    "f64_lt" if not(is_user_fn) =>
+    "f64_lt" if !is_user_fn =>
       compile_f64_cmp_to_tagged_int(ctx, buf, "f64_lt", args, emit_f64_lt)
-    "f64_gt" if not(is_user_fn) =>
+    "f64_gt" if !is_user_fn =>
       compile_f64_cmp_to_tagged_int(ctx, buf, "f64_gt", args, emit_f64_gt)
-    "f64_le" if not(is_user_fn) =>
+    "f64_le" if !is_user_fn =>
       compile_f64_cmp_to_tagged_int(ctx, buf, "f64_le", args, emit_f64_le)
-    "f64_ge" if not(is_user_fn) =>
+    "f64_ge" if !is_user_fn =>
       compile_f64_cmp_to_tagged_int(ctx, buf, "f64_ge", args, emit_f64_ge)
     "__neg" => {
       let pos_args = extract_positional_exprs_with_arity(args, "__neg", 1)
@@ -399,7 +399,7 @@ fn compile_builtin_numeric(
       })
     }
     // ========== Integer math builtins ==========
-    "Int::abs" if not(is_user_fn) => {
+    "Int::abs" if !is_user_fn => {
       // int_abs(x): if x < 0 then -x else x (operates on tagged i64 directly)
       let pos_args = extract_positional_exprs_with_arity(args, "Int::abs", 1)
       let tmp = alloc_temp_local_with_kind(ctx, ValueKind::I64)
@@ -415,7 +415,7 @@ fn compile_builtin_numeric(
       emit_end(buf) // end if
       emit_local_get(buf, tmp)
     }
-    "Int::max" if not(is_user_fn) => {
+    "Int::max" if !is_user_fn => {
       // int_max(a, b): works directly on tagged i64 values
       let pos_args = extract_positional_exprs_with_arity(args, "Int::max", 2)
       let a_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
@@ -432,7 +432,7 @@ fn compile_builtin_numeric(
       emit_i64_gt_s(buf) // a > b → 1:i32
       emit_select(buf) // select(a, b, a>b) → a if a>b else b
     }
-    "Int::min" if not(is_user_fn) => {
+    "Int::min" if !is_user_fn => {
       // int_min(a, b): works directly on tagged i64 values
       let pos_args = extract_positional_exprs_with_arity(args, "Int::min", 2)
       let a_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
@@ -448,7 +448,7 @@ fn compile_builtin_numeric(
       emit_i64_lt_s(buf) // a < b → 1:i32
       emit_select(buf) // select(a, b, a<b) → a if a<b else b
     }
-    "Int::clamp" if not(is_user_fn) => {
+    "Int::clamp" if !is_user_fn => {
       // int_clamp(x, lo, hi): max(lo, min(x, hi))
       let pos_args = extract_positional_exprs_with_arity(args, "Int::clamp", 3)
       let x_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
@@ -476,7 +476,7 @@ fn compile_builtin_numeric(
       emit_i64_gt_s(buf)
       emit_select(buf) // max(lo, min(x, hi))
     }
-    "Int::signum" if not(is_user_fn) => {
+    "Int::signum" if !is_user_fn => {
       // int_signum(x): -1 if x<0, 0 if x==0, 1 if x>0
       let pos_args = extract_positional_exprs_with_arity(args, "Int::signum", 1)
       let tmp = alloc_temp_local_with_kind(ctx, ValueKind::I64)
@@ -508,7 +508,7 @@ fn compile_builtin_numeric(
       emit_end(buf) // end outer if
       emit_local_get(buf, tmp)
     }
-    "Int::is_even" if not(is_user_fn) => {
+    "Int::is_even" if !is_user_fn => {
       // int_is_even(x): ((x >> 2) & 1) == 0 → tagged bool
       let pos_args = extract_positional_exprs_with_arity(
         args, "Int::is_even", 1,
@@ -525,7 +525,7 @@ fn compile_builtin_numeric(
       emit_i64_const_raw(buf, tag_bool.to_int64())
       emit_i64_or(buf) // tag as bool
     }
-    "Int::is_odd" if not(is_user_fn) => {
+    "Int::is_odd" if !is_user_fn => {
       // int_is_odd(x): ((x >> 2) & 1) == 1 → tagged bool
       let pos_args = extract_positional_exprs_with_arity(args, "Int::is_odd", 1)
       compile_expr_i32(ctx, buf, pos_args[0])
@@ -789,19 +789,19 @@ fn compile_builtin_numeric(
       emit_i64_const_raw(buf, 2L)
       emit_i64_shl(buf)
     }
-    "not" | "__not" if not(is_user_fn) => {
+    "not" | "__not" if !is_user_fn => {
       let pos_args = extract_positional_exprs_with_arity(args, "not", 1)
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_i64_const_raw(buf, 4L)
       emit_i64_xor(buf)
     }
-    "and" if not(is_user_fn) => {
+    "and" if !is_user_fn => {
       let pos_args = extract_positional_exprs_with_arity(args, "and", 2)
       compile_expr_i32(ctx, buf, pos_args[0])
       compile_expr_i32(ctx, buf, pos_args[1])
       emit_i64_and(buf)
     }
-    "or" | "__or" if not(is_user_fn) => {
+    "or" | "__or" if !is_user_fn => {
       let pos_args = extract_positional_exprs_with_arity(args, "or", 2)
       compile_expr_i32(ctx, buf, pos_args[0])
       compile_expr_i32(ctx, buf, pos_args[1])

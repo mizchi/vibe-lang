@@ -21,7 +21,7 @@ fn module_source_slice_by_span(
   if stop <= s {
     return ""
   }
-  source[s:stop].to_string()
+  source[s:stop].to_owned()
 }
 
 ///|
@@ -68,7 +68,7 @@ fn module_source_from_selected_stmt_spans(
       continue
     }
     out.write_string(snippet)
-    if not(snippet.has_suffix("\n")) {
+    if !snippet.has_suffix("\n") {
       out.write_char('\n')
     }
   }

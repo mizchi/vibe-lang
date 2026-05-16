@@ -30,7 +30,7 @@ pub fn monoify_module(
   // another file but the receiver's concrete root type is only known here.
   // The user's own defs win on name collision (rare in practice).
   for name, expr in additional_specializable {
-    if not(specializable.contains(name)) {
+    if !specializable.contains(name) {
       specializable[name] = expr
     }
   }
@@ -146,7 +146,7 @@ fn collect_transitive_instantiations(ctx : MonoifyContext) -> Unit {
       let tags = ctx.tags_for_name(name)
       for tag in tags {
         let key = inst_key(name, tag)
-        if not(visited.contains(key)) {
+        if !visited.contains(key) {
           visited[key] = true
           has_pending = true
           let specialized = specialize_fn_expr(expr, name, tag, ctx)
@@ -209,7 +209,7 @@ fn collect_instantiations_expr(
   match expr {
     @core.Expr::Call(name~, args~, span~, ..) => {
       let _ = span
-      if ctx.specializable.contains(name) && not(scope.contains(name)) {
+      if ctx.specializable.contains(name) && !scope.contains(name) {
         match ctx.tag_for_call(name, args, {}, {}) {
           Some(inst) => ctx.add_instantiation(name, inst)
           None => ()
@@ -591,7 +591,7 @@ fn monoify_expr(
           @core.Expr::Call(name=mapped, type_args~, args=next_args, span~)
         None =>
           if ctx.specializable.contains(rewritten_name) &&
-            not(scope.contains(rewritten_name)) {
+            !scope.contains(rewritten_name) {
             match
               ctx.tag_for_call(
                 rewritten_name, args, local_types, scope_type_subst,
@@ -1056,7 +1056,7 @@ fn maybe_specialize_ident_arg(
 ) -> @core.Expr {
   match expr {
     @core.Expr::Ident(name~, span~) =>
-      if ctx.specializable.contains(name) && not(scope.contains(name)) {
+      if ctx.specializable.contains(name) && !scope.contains(name) {
         if ctx.instantiations.contains(inst_key(name, tag)) {
           @core.Expr::Ident(name=specialized_name(name, tag), span~)
         } else {
@@ -1763,12 +1763,12 @@ fn fn_has_root_specializable_param(
 
 ///|
 fn explicit_root_tag_from_name(name : String) -> String? {
-  if not(name.contains("::")) {
+  if !name.contains("::") {
     return None
   }
   let parts : Array[String] = []
   for part_view in name.split("::") {
-    parts.push(part_view.to_string())
+    parts.push(part_view.to_owned())
   }
   if parts.length() != 2 || parts[0] == "" || parts[1] == "" {
     None
@@ -2092,7 +2092,7 @@ fn monoify_collect_iter_dispatch_param_names_expr(
         for arg in pos_args {
           match arg.expr {
             @core.Expr::Ident(name=recv, ..) =>
-              if not(seen.contains(recv)) {
+              if !seen.contains(recv) {
                 seen[recv] = true
                 out.push(recv)
               }
@@ -2147,7 +2147,7 @@ fn rewrite_iter_dispatch_call_name(
   args : Array[@core.CallArg],
   iterable_spec : Map[String, String],
 ) -> String {
-  if not(is_iter_dispatch_call_name(name)) {
+  if !is_iter_dispatch_call_name(name) {
     return name
   }
   let pos_args = positional_args(args)

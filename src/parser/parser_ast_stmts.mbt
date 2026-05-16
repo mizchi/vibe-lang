@@ -276,7 +276,7 @@ fn collect_type_param_names(
 ) -> Unit {
   match ty {
     @core.Type::Param(name) =>
-      if not(seen.contains(name)) {
+      if !seen.contains(name) {
         seen[name] = true
         out.push(name)
       }

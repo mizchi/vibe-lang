@@ -40,7 +40,7 @@ pub fn normalize_path(path : String) -> String {
   // Simple normalization: remove trailing slash, handle . and ..
   let parts : Array[String] = []
   for part in path.split("/") {
-    let s = part.to_string()
+    let s = part.to_owned()
     match s {
       "" | "." => continue
       ".." => if parts.length() > 0 { let _ = parts.pop() }

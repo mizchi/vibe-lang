@@ -506,7 +506,7 @@ pub fn AdvancedGraphIndex::query_symbol(
     if name == key {
       continue
     }
-    if lang_prefix.length() > 0 && not(name.has_prefix(lang_prefix)) {
+    if lang_prefix.length() > 0 && !name.has_prefix(lang_prefix) {
       continue
     }
     if name.contains(query) {
@@ -545,7 +545,7 @@ pub fn AdvancedGraphIndex::query_type(
     if sig == key {
       continue
     }
-    if lang_prefix.length() > 0 && not(sig.has_prefix(lang_prefix)) {
+    if lang_prefix.length() > 0 && !sig.has_prefix(lang_prefix) {
       continue
     }
     if sig.contains(query) {
@@ -561,14 +561,14 @@ pub fn AdvancedGraphIndex::verify(self : AdvancedGraphIndex) -> Array[String] {
   let issues : Array[String] = []
   for symbol, ids in self.symbol_index {
     for def_id in ids {
-      if not(self.defs.contains(def_id)) {
+      if !self.defs.contains(def_id) {
         issues.push("symbol index missing def: " + symbol + " -> " + def_id)
       }
     }
   }
   for sig, ids in self.type_index {
     for def_id in ids {
-      if not(self.defs.contains(def_id)) {
+      if !self.defs.contains(def_id) {
         issues.push("type index missing def: " + sig + " -> " + def_id)
       }
     }
@@ -586,7 +586,7 @@ pub fn AdvancedGraphIndex::verify(self : AdvancedGraphIndex) -> Array[String] {
         }
       None => ()
     }
-    if not(has_symbol_link) {
+    if !has_symbol_link {
       issues.push(
         "def missing symbol link: " + def_id + " (" + symbol_key + ")",
       )
@@ -603,7 +603,7 @@ pub fn AdvancedGraphIndex::verify(self : AdvancedGraphIndex) -> Array[String] {
         }
       None => ()
     }
-    if not(has_type_link) {
+    if !has_type_link {
       issues.push("def missing type link: " + def_id + " (" + type_key + ")")
     }
   }
@@ -657,7 +657,7 @@ fn remote_query_from_hits(
   let requested_module_hashes = sorted_unique_strings(requested_hashes)
   let missing_module_hashes : Array[String] = []
   for hash in requested_module_hashes {
-    if not(local_hashes.contains(hash)) {
+    if !local_hashes.contains(hash) {
       missing_module_hashes.push(hash)
     }
   }
@@ -753,7 +753,7 @@ pub fn advanced_graph_diff(
   let removed_def_ids : Array[String] = []
   let upsert_defs : Array[AdvancedGraphDef] = []
   for def_id, _ in base.defs {
-    if not(target.defs.contains(def_id)) {
+    if !target.defs.contains(def_id) {
       removed_def_ids.push(def_id)
     }
   }
@@ -782,7 +782,7 @@ pub fn advanced_graph_diff(
     }
   }
   for key, _ in base.symbol_index {
-    if not(target.symbol_index.contains(key)) {
+    if !target.symbol_index.contains(key) {
       symbol_removes.push(key)
     }
   }
@@ -802,7 +802,7 @@ pub fn advanced_graph_diff(
     }
   }
   for key, _ in base.type_index {
-    if not(target.type_index.contains(key)) {
+    if !target.type_index.contains(key) {
       type_removes.push(key)
     }
   }
@@ -847,7 +847,7 @@ pub fn apply_advanced_graph_delta(
     type_index[key] = ids
   }
   let mut next_manifest = delta.target_manifest
-  if not(advanced_graph_manifest_equal(delta.base_manifest, base.manifest)) {
+  if !advanced_graph_manifest_equal(delta.base_manifest, base.manifest) {
     next_manifest = AdvancedGraphManifest::{
       schema_version: base.manifest.schema_version,
       base_commit: base.manifest.base_commit,
@@ -1524,7 +1524,7 @@ fn parse_advanced_graph_wal_record(
     Json::Object(obj) => obj
     _ => return Err(context + ": record must be object")
   }
-  if not(root.contains("record_kind")) {
+  if !root.contains("record_kind") {
     return match advanced_graph_delta_from_json(record) {
       Ok(delta) => Ok(delta)
       Err(err) => Err(context + ": " + err)
@@ -1560,7 +1560,7 @@ fn parse_advanced_graph_wal_record(
 
 ///|
 fn read_advanced_graph_wal_content(wal_path : String) -> Result[String, String] {
-  if not(@os_fs.path_exists(wal_path)) {
+  if !@os_fs.path_exists(wal_path) {
     return Ok("")
   }
   let content = @os_fs.read_file_to_string(wal_path) catch {
@@ -1577,7 +1577,7 @@ fn parse_advanced_graph_wal_records(
   let mut line_no = 0
   for line_view in content.split("\n") {
     line_no += 1
-    let line = line_view.to_string().trim().to_string()
+    let line = line_view.to_owned().trim().to_owned()
     if line.length() == 0 {
       continue
     }
@@ -1611,7 +1611,7 @@ pub fn append_advanced_graph_deltas_jsonl(
   let buf = StringBuilder::new()
   if content.length() > 0 {
     buf.write_string(content)
-    if not(content.has_suffix("\n")) {
+    if !content.has_suffix("\n") {
       buf.write_char('\n')
     }
   }
@@ -1665,7 +1665,7 @@ pub fn advanced_graph_wal_stats(
   }
   let mut count = 0
   for line_view in content.split("\n") {
-    let line = line_view.to_string().trim().to_string()
+    let line = line_view.to_owned().trim().to_owned()
     if line.length() > 0 {
       count += 1
     }
@@ -1691,12 +1691,10 @@ pub fn replay_advanced_graph_delta_jsonl(
   }
   let mut state = base
   for record in records {
-    if not(
-        advanced_graph_manifest_equal(
+    if !advanced_graph_manifest_equal(
           record.delta.base_manifest,
           state.manifest,
-        ),
-      ) {
+        ) {
       return Err(
         "wal line " + record.line_no.to_string() + ": base manifest mismatch",
       )

@@ -217,30 +217,30 @@ pub fn parse_compile_cmd_args(
   match entry_path {
     None => Err("compile: missing <file>")
     Some(path) => {
-      if no_dce && not(compile_mode_supports_no_dce(mode)) {
+      if no_dce && !compile_mode_supports_no_dce(mode) {
         return Err(
           "compile: --no-dce is only supported with --wasm, --wasm-js-string, or --wasm-gc",
         )
       }
-      if opt_level is Some(_) && not(compile_mode_supports_wite_opt(mode)) {
+      if opt_level is Some(_) && !compile_mode_supports_wite_opt(mode) {
         return Err(
           "compile: --wite/-O* is only supported with --wasm, --wasm-js-string, --wasm-gc, --component, or --wac",
         )
       }
-      if coverage && not(compile_mode_supports_coverage(mode)) {
+      if coverage && !compile_mode_supports_coverage(mode) {
         return Err(
           "compile: --coverage is only supported with --wasm or --wasm-js-string",
         )
       }
-      if coverage_run_tests && not(coverage) {
+      if coverage_run_tests && !coverage {
         return Err("compile: --coverage-run-tests requires --coverage")
       }
-      if debug_errors && not(compile_mode_supports_debug_errors(mode)) {
+      if debug_errors && !compile_mode_supports_debug_errors(mode) {
         return Err(
           "compile: --debug-errors is only supported with --wasm or --wasm-js-string",
         )
       }
-      if http_host_imports && not(compile_mode_supports_http_host_imports(mode)) {
+      if http_host_imports && !compile_mode_supports_http_host_imports(mode) {
         return Err(
           "compile: --http-host-imports is only supported with --wasm or --component",
         )

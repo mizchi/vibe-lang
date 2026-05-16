@@ -22,7 +22,7 @@ fn ensure_type(
   span : @core.Span,
   context : String,
 ) -> Unit raise TypeError {
-  if not(type_equal(env, actual, expected)) {
+  if !type_equal(env, actual, expected) {
     raise TypeError::Mismatch(expected~, actual~, span~, context=Some(context))
   }
 }
@@ -52,10 +52,8 @@ fn check_arg_string_or_prompt_text(
   allow_effect : Bool,
 ) -> @core.Type raise TypeError {
   let actual = type_expr_eff(env, expr, aliases, effects, allow_effect)
-  if not(
-      type_equal(env, actual, @core.Type::String) ||
-      type_equal(env, actual, @core.Type::PromptText),
-    ) {
+  if !(type_equal(env, actual, @core.Type::String) ||
+      type_equal(env, actual, @core.Type::PromptText)) {
     raise TypeError::Mismatch(
       expected=@core.Type::String,
       actual~,
@@ -144,7 +142,7 @@ fn ensure_map_key_hashable(
     | @core.Type::Char
     | @core.Type::String => () // primitive types are always hashable
     _ =>
-      if not(type_implements_trait(env, resolved, "Hash")) {
+      if !type_implements_trait(env, resolved, "Hash") {
         raise TypeError::Mismatch(
           expected=@core.Type::Named(name="Hash", args=[]),
           actual=resolved,
@@ -277,7 +275,7 @@ fn type_call_builtin(
     TypeError::BadCall(message=msg, span=err_span) =>
       // Only attempt UFCS when the error is "unknown function" (message == name).
       // Concrete errors like "select: unknown field: X" must propagate as-is.
-      if msg == name && not(name.contains("::")) {
+      if msg == name && !name.contains("::") {
         let ufcs_name = match @core.first_positional_expr(args) {
           None => None
           Some(expr) =>

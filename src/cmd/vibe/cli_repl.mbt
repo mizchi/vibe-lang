@@ -139,7 +139,7 @@ fn repl_split_words(line : String) -> Array[String] {
 fn repl_split_first_pipeline(line : String) -> (String, String?) {
   let parts : Array[String] = []
   for part_view in line.split("|>") {
-    parts.push(part_view.to_string())
+    parts.push(part_view.to_owned())
   }
   if parts.length() <= 1 {
     return (line, None)
@@ -151,7 +151,7 @@ fn repl_split_first_pipeline(line : String) -> (String, String?) {
     }
     tail.write_string(parts[i])
   }
-  let pipe_tail = tail.to_string().trim().to_string()
+  let pipe_tail = tail.to_string().trim().to_owned()
   let maybe_tail = if pipe_tail.length() == 0 { None } else { Some(pipe_tail) }
   (parts[0], maybe_tail)
 }
@@ -223,7 +223,7 @@ fn repl_symbols_parse_scope_value(
   let mut next_shell = include_shell
   let mut consumed = false
   for part_view in value.split(",") {
-    let part = part_view.to_string().trim().to_string()
+    let part = part_view.to_owned().trim().to_owned()
     if part.length() == 0 {
       continue
     }
@@ -242,7 +242,7 @@ fn repl_symbols_parse_scope_value(
         )
     }
   }
-  if not(consumed) {
+  if !consumed {
     return Err("symbols: missing value for --scope")
   }
   Ok((next_local, next_builtin, next_shell))
@@ -306,7 +306,7 @@ fn repl_parse_symbols_options(
       _ => return Err("symbols: unknown option " + arg)
     }
   }
-  if not(explicit) {
+  if !explicit {
     return Ok(repl_symbols_default_options())
   }
   Ok({ include_local, include_builtin, include_shell })
@@ -335,7 +335,7 @@ fn repl_collect_path_shell_commands() -> Array[String] {
     None => ()
     Some(path) =>
       for dir_view in path.split(":") {
-        let dir = dir_view.to_string()
+        let dir = dir_view.to_owned()
         let entries = @os_fs.read_dir(dir) catch { _ => [] }
         for name in entries {
           if seen.contains(name) {
@@ -534,7 +534,7 @@ fn repl_collect_current_symbol_matches(
   scratch_source : String,
   symbol : String?,
 ) -> Array[ReplSymbolMatch] {
-  if scratch_source.trim().to_string().length() == 0 {
+  if scratch_source.trim().to_owned().length() == 0 {
     return []
   }
   let db = @runtime.VibeDb::new()
@@ -563,7 +563,7 @@ fn repl_load_workspace_symbol_matches(
   symbol : String?,
 ) -> Result[Array[ReplSymbolMatch], String] {
   let workspace_entry = repl_workspace_entry_path()
-  if not(@os_fs.path_exists(workspace_entry)) {
+  if !@os_fs.path_exists(workspace_entry) {
     return Ok([])
   }
   match @loader.load_db_with_paths(workspace_entry) {
@@ -670,7 +670,7 @@ fn repl_symbol_match_to_json(
   obj["location"] = Json::string(repl_symbol_match_location(item))
   if include_snippet {
     obj["snippet"] = Json::string(
-      symbol_line_text(item.source, entry.span).trim().to_string(),
+      symbol_line_text(item.source, entry.span).trim().to_owned(),
     )
   }
   Json::object(obj)
@@ -699,12 +699,12 @@ fn repl_vibe_error_json(command : String, message : String) -> Json {
 
 ///|
 fn repl_parse_vibe_shell_invocation(line : String) -> VibeShellInvocation? {
-  let trimmed = line.trim().to_string()
+  let trimmed = line.trim().to_owned()
   if trimmed.length() == 0 {
     return None
   }
   let (head, pipeline_tail) = repl_split_first_pipeline(trimmed)
-  let tokens = repl_split_words(head.trim().to_string())
+  let tokens = repl_split_words(head.trim().to_owned())
   if tokens.length() == 0 {
     return None
   }
@@ -714,7 +714,7 @@ fn repl_parse_vibe_shell_invocation(line : String) -> VibeShellInvocation? {
     }
     (tokens[1], 2)
   } else {
-    if not(repl_is_vibe_shell_subcommand(tokens[0])) {
+    if !repl_is_vibe_shell_subcommand(tokens[0]) {
       return None
     }
     (tokens[0], 1)
@@ -949,7 +949,7 @@ fn repl_vibe_normalize_json(
   let selected_entries : Array[String] = []
   let seen_entries : Map[String, Bool] = {}
   for name in entry_names {
-    let trimmed = name.trim().to_string()
+    let trimmed = name.trim().to_owned()
     if trimmed.length() == 0 || seen_entries.contains(trimmed) {
       continue
     }
@@ -963,10 +963,10 @@ fn repl_vibe_normalize_json(
   }
   if target != "scratch" &&
     args.length() == 1 &&
-    source.trim().to_string().length() == 0 {
+    source.trim().to_owned().length() == 0 {
     return repl_vibe_error_json("normalize", "source is empty")
   }
-  if source.trim().to_string().length() == 0 {
+  if source.trim().to_owned().length() == 0 {
     return repl_vibe_error_json("normalize", "source is empty")
   }
   let normalized_result = if selected_entries.length() == 0 {
@@ -1232,7 +1232,7 @@ fn repl_print_multiline_text(
   print_line : (String) -> Unit,
 ) -> Unit {
   for part in text.split("\n") {
-    print_line(part.to_string())
+    print_line(part.to_owned())
   }
 }
 
@@ -1269,7 +1269,7 @@ fn repl_print_vibe_payload_human(
     Json::Object(obj) => {
       let command = repl_json_string_or(obj, "command", "vibe")
       let ok = repl_json_bool_or(obj, "ok", true)
-      if not(ok) {
+      if !ok {
         let err = repl_json_string_or(obj, "error", "unknown error")
         if err == "multiple matches" {
           let query = repl_json_string_or(obj, "query", "?")
@@ -1503,7 +1503,7 @@ fn repl_handle_peek_meta_command(
     entry.signature,
   )
   print_line("at " + repl_symbol_match_location(item))
-  let snippet = symbol_line_text(item.source, entry.span).trim().to_string()
+  let snippet = symbol_line_text(item.source, entry.span).trim().to_owned()
   if snippet.length() > 0 {
     print_line(snippet)
   }
@@ -1581,7 +1581,7 @@ fn handle_repl_meta_command(
   scratch_source : String,
   print_line : (String) -> Unit,
 ) -> ReplMetaCommandResult {
-  let trimmed = line.trim().to_string()
+  let trimmed = line.trim().to_owned()
   if trimmed.length() == 0 {
     return ReplMetaCommandResult::NotMeta
   }
@@ -1590,7 +1590,7 @@ fn handle_repl_meta_command(
       return ReplMetaCommandResult::HandledExit
     _ => ()
   }
-  if not(trimmed.has_prefix(":")) {
+  if !trimmed.has_prefix(":") {
     return ReplMetaCommandResult::NotMeta
   }
   let parts = repl_split_words(trimmed)
@@ -1622,7 +1622,7 @@ fn handle_repl_meta_command(
         return ReplMetaCommandResult::HandledContinue
       }
       let path = cmd_args[0]
-      if scratch_source.trim().to_string().length() == 0 {
+      if scratch_source.trim().to_owned().length() == 0 {
         print_line("nothing to save (empty session)")
         return ReplMetaCommandResult::HandledContinue
       }
@@ -1636,7 +1636,7 @@ fn handle_repl_meta_command(
       }
       let mut binding_count = 0
       for line_view in deduped.split("\n") {
-        let l = line_view.to_string().trim().to_string()
+        let l = line_view.to_owned().trim().to_owned()
         if l.has_prefix("let ") || l.has_prefix("export let ") {
           binding_count += 1
         }
@@ -1672,7 +1672,7 @@ fn handle_repl_meta_command(
       ReplMetaCommandResult::HandledLoadSource("")
     }
     ":source" => {
-      if scratch_source.trim().to_string().length() == 0 {
+      if scratch_source.trim().to_owned().length() == 0 {
         print_line("(empty session)")
       } else {
         print_line(scratch_source)
@@ -1714,7 +1714,7 @@ fn get_history_file_path() -> String {
 ///|
 fn load_history(target : Array[String]) -> Unit {
   let path = get_history_file_path()
-  if not(@os_fs.path_exists(path)) {
+  if !@os_fs.path_exists(path) {
     return
   }
   let content = @os_fs.read_file_to_string(path) catch { _ => return }
@@ -1723,7 +1723,7 @@ fn load_history(target : Array[String]) -> Unit {
   }
   let lines = content.split("\n")
   for line in lines {
-    let trimmed = line.to_string()
+    let trimmed = line.to_owned()
     if trimmed.length() > 0 {
       target.push(trimmed)
     }
@@ -1738,7 +1738,7 @@ fn append_history(line : String) -> Unit {
   let lines : Array[String] = []
   if existing.length() > 0 {
     for part in existing.split("\n") {
-      let s = part.to_string()
+      let s = part.to_owned()
       if s.length() > 0 {
         lines.push(s)
       }
@@ -1849,7 +1849,7 @@ fn repl_tui_cmd(
       None => ()
       Some(path) =>
         for dir_view in path.split(":") {
-          let dir = dir_view.to_string()
+          let dir = dir_view.to_owned()
           let entries = @os_fs.read_dir(dir) catch { _ => [] }
           for name in entries {
             let full_path = dir + "/" + name
@@ -1910,7 +1910,7 @@ fn repl_tui_cmd(
   fn completion_overlay(
     view : ReplViewState,
   ) -> (String?, OverlayRect?, CompletionAnchor?) {
-    if not(completion_visible()) {
+    if !completion_visible() {
       return (None, None, None)
     }
     let items = completion_session.get_items()
@@ -2060,7 +2060,7 @@ fn repl_tui_cmd(
     let mut need_clear = false
     match (last_popup_rect.val, next_rect) {
       (Some(prev), Some(next)) =>
-        if not(prev.eq(next)) {
+        if !prev.eq(next) {
           clear_rect(prev)
           need_clear = true
         }
@@ -2089,12 +2089,12 @@ fn repl_tui_cmd(
   fn push_output_line(line : String) -> Unit {
     // Split multi-line strings into separate output entries
     for part in line.split("\n") {
-      outputs.push(part.to_string())
+      outputs.push(part.to_owned())
     }
   }
 
   fn run_command(cmd : String) -> Bool {
-    let trimmed = cmd.trim().to_string()
+    let trimmed = cmd.trim().to_owned()
     if trimmed.length() == 0 {
       return true
     }
@@ -2201,7 +2201,7 @@ fn repl_tui_cmd(
     }
 
     let method_like = method_info is Some(_) || pipe_info is Some(_)
-    if prefix.length() == 0 && not(method_like) {
+    if prefix.length() == 0 && !method_like {
       completion_session.clear()
       return
     }
@@ -2235,7 +2235,7 @@ fn repl_tui_cmd(
           }
         }
       CompletionContext::VibeLetExpr | CompletionContext::VibeExpr => {
-        if not(method_like) {
+        if !method_like {
           for item in vibe_keywords {
             if item.has_prefix(prefix) {
               push_unique(items, item)
@@ -2412,7 +2412,7 @@ fn repl_tui_cmd(
               cleanup_once()
               return
             }
-            let input_value = input_editor.get_text().trim().to_string()
+            let input_value = input_editor.get_text().trim().to_owned()
             if input_value.length() > 0 {
               history.push(input_value)
               append_history(input_value)
@@ -2529,7 +2529,7 @@ fn repl_raw_output_text(text : String) -> String {
   let mut wrote = false
   for part in text.split("\n") {
     out.write_string("\r\n")
-    out.write_string(part.to_string())
+    out.write_string(part.to_owned())
     wrote = true
   }
   if wrote {
@@ -2551,7 +2551,7 @@ fn repl_print_wasm_run_value(
 
 ///|
 fn repl_compiled_zero_result_line(line : String) -> Bool {
-  let trimmed = line.trim().to_string()
+  let trimmed = line.trim().to_owned()
   trimmed.has_prefix("fn ") ||
   trimmed.has_prefix("enum ") ||
   trimmed.has_prefix("struct ") ||
@@ -2579,7 +2579,7 @@ fn repl_compiled_binding_rhs(line : String) -> String? {
   while i < chars.length() {
     if chars[i] == '=' {
       return Some(
-        line.unsafe_substring(start=i + 1, end=line.length()).trim().to_string(),
+        line.unsafe_substring(start=i + 1, end=line.length()).trim().to_owned(),
       )
     }
     i += 1
@@ -2917,7 +2917,7 @@ fn repl_try_compiled_display(wasm_path : String) -> String? {
     return None
   }
   let stdout = @os_fs.read_file_to_string(out_path) catch { _ => "" }
-  let display = stdout.trim().to_string()
+  let display = stdout.trim().to_owned()
   if display.length() == 0 {
     None
   } else {
@@ -2930,7 +2930,7 @@ fn repl_build_compiled_source(scratch_source : String, line : String) -> String 
   let buf = StringBuilder::new()
   let base = append_scratch_db_source(scratch_source, line)
   buf.write_string(base)
-  if not(base.has_suffix("\n")) {
+  if !base.has_suffix("\n") {
     buf.write_string("\n")
   }
   let result_expr = repl_compiled_result_expr(line)
@@ -3099,7 +3099,7 @@ fn run_compiled_shell_line(
   // Handle sh_lines directly in REPL (bypass WASM compilation)
   if effective_line.has_prefix("sh_lines(\"") &&
     effective_line.has_suffix("\")") {
-    let cmd = effective_line[10:effective_line.length() - 2].to_string()
+    let cmd = effective_line[10:effective_line.length() - 2].to_owned()
     let cmd_unescaped = cmd
       .replace(old="\\\\", new="\\")
       .replace(old="\\\"", new="\"")
@@ -3116,9 +3116,9 @@ fn run_compiled_shell_line(
     remove_file_if_exists(out_path)
     remove_file_if_exists(err_path)
     if status != 0 && stderr.length() > 0 {
-      print_line("error: " + stderr.trim().to_string())
-    } else if stdout.trim().to_string().length() > 0 {
-      print_line(stdout.trim().to_string())
+      print_line("error: " + stderr.trim().to_owned())
+    } else if stdout.trim().to_owned().length() > 0 {
+      print_line(stdout.trim().to_owned())
     }
     return scratch_source
   }
@@ -3203,8 +3203,8 @@ fn run_compiled_line_repl_with_prompt(
         }
         continue
       }
-      let line_str = trimmed.to_string()
-      if not(handle_cd_builtin(rt, line_str, fn(s) { println(s) })) {
+      let line_str = trimmed.to_owned()
+      if !handle_cd_builtin(rt, line_str, fn(s) { println(s) }) {
         scratch_source = run_compiled_shell_line(
           cache, rt, syntax_mode, scratch_db_path, source_path, wasm_path, scratch_source,
           line_str,
@@ -3248,7 +3248,7 @@ fn wasm_repl_stdin_cmd(args : Array[String]) -> Unit {
     }
   }
   // Ensure output directory exists
-  if not(@os_fs.path_exists(out_dir)) {
+  if !@os_fs.path_exists(out_dir) {
     @os_fs.create_dir(out_dir) catch {
       e =>
         abort("wasm-shell-stdin: failed to create output dir: " + e.to_string())
@@ -3275,7 +3275,7 @@ fn wasm_repl_stdin_cmd(args : Array[String]) -> Unit {
         }
         continue
       }
-      let line_str = trimmed.to_string()
+      let line_str = trimmed.to_owned()
       match line_str {
         ":q" | ":quit" | ":exit" | "exit" => break
         _ => {
@@ -3415,7 +3415,7 @@ fn repl_ai_cmd(
         }
         continue
       }
-      let line_str = trimmed.to_string()
+      let line_str = trimmed.to_owned()
       match
         handle_repl_meta_command(line_str, scratch_db_path, scratch_source, fn(
           s,
@@ -3557,11 +3557,11 @@ fn repl_interactive_plain_loop_compiled(
         }
         continue
       }
-      let line_str = trimmed.to_string()
+      let line_str = trimmed.to_owned()
       match line_str {
         ":q" | ":quit" | ":exit" | "exit" => break
         _ =>
-          if not(handle_cd_builtin(rt, line_str, fn(s) { println(s) })) {
+          if !handle_cd_builtin(rt, line_str, fn(s) { println(s) }) {
             scratch_source = run_compiled_shell_line(
               cache, rt, syntax_mode, scratch_db_path, source_path, wasm_path, scratch_source,
               line_str,
@@ -3615,7 +3615,7 @@ fn repl_interactive_raw_loop_compiled(
   }
 
   fn redraw_line() {
-    if not(prompt_enabled) {
+    if !prompt_enabled {
       return
     }
     let prompt = get_prompt()
@@ -3774,7 +3774,7 @@ fn repl_interactive_raw_loop_compiled(
   let done = Ref(false)
 
   fn submit_line() {
-    let text = line_buf_to_string().trim().to_string()
+    let text = line_buf_to_string().trim().to_owned()
     @tui.print_raw("\r\n")
     line_buf.reset()
     cursor_pos.val = 0
@@ -3797,7 +3797,7 @@ fn repl_interactive_raw_loop_compiled(
       history.push(text)
       append_history(text)
     }
-    if not(handle_cd_builtin(rt, text, raw_println)) {
+    if !handle_cd_builtin(rt, text, raw_println) {
       scratch_source_ref.val = run_compiled_shell_line(
         cache,
         rt,
@@ -3945,8 +3945,8 @@ fn repl_deduplicate_bindings(source : String) -> String {
   let buf = StringBuilder::new()
   let mut in_block = 0
   for line_view in source.split("\n") {
-    let line = line_view.to_string()
-    let trimmed = line.trim().to_string()
+    let line = line_view.to_owned()
+    let trimmed = line.trim().to_owned()
     // Track brace depth for multi-line blocks
     for ch in trimmed {
       if ch == '{' {
@@ -3961,7 +3961,7 @@ fn repl_deduplicate_bindings(source : String) -> String {
       in_block = 0
       let stmt = buf.to_string()
       buf.reset()
-      let name = extract_let_binding_name(stmt.trim().to_string())
+      let name = extract_let_binding_name(stmt.trim().to_owned())
       stmts.push((stmt, name))
     }
   }
@@ -3992,9 +3992,9 @@ fn repl_deduplicate_bindings(source : String) -> String {
     }
     if keep {
       let stmt_text = stmts[i].0
-      if stmt_text.trim().to_string().length() > 0 {
+      if stmt_text.trim().to_owned().length() > 0 {
         out.write_string(stmt_text)
-        if not(stmt_text.has_suffix("\n")) {
+        if !stmt_text.has_suffix("\n") {
           out.write_char('\n')
         }
       }
@@ -4016,7 +4016,7 @@ fn extract_let_binding_name(line : String) -> String? {
       break
     }
   }
-  if not(found) {
+  if !found {
     return None
   }
   // Extract name until = or : or space
@@ -4040,7 +4040,7 @@ fn extract_let_binding_name(line : String) -> String? {
 /// Extract VIBE_DISPLAY: line from Node runner output.
 fn extract_vibe_display_line(stdout : String) -> String? {
   for line_view in stdout.split("\n") {
-    let line = line_view.to_string()
+    let line = line_view.to_owned()
     if line.has_prefix("VIBE_DISPLAY:") {
       return Some(line[13:].to_owned())
     }
@@ -4055,7 +4055,7 @@ fn handle_cd_builtin(
   line : String,
   print_line : (String) -> Unit,
 ) -> Bool {
-  if not(line == "cd" || line.has_prefix("cd ")) {
+  if !(line == "cd" || line.has_prefix("cd ")) {
     return false
   }
   let arg = if line == "cd" {
@@ -4069,7 +4069,7 @@ fn handle_cd_builtin(
     for i in 3..<chars.length() {
       rest.write_char(chars[i])
     }
-    rest.to_string().trim().to_string()
+    rest.to_string().trim().to_owned()
   }
   // Resolve relative paths against current cwd
   let target = if arg.has_prefix("/") {

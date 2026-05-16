@@ -62,7 +62,7 @@ test "tsv format" {
   let report = @profiler.profiler_report_tsv()
   let lines : Array[String] = report
     .split("\n")
-    .map(fn(sv) { sv.to_string() })
+    .map(fn(sv) { sv.to_owned() })
     .collect()
   // header + outer + inner + trailing empty
   assert_true(lines.length() >= 3)

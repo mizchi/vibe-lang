@@ -403,15 +403,15 @@ fn si_collect_plus_bound_fragments(
       continue
     }
     if tokens[i + 1] != "+" ||
-      not(si_is_bound_atom(tokens[i])) ||
-      not(si_is_bound_atom(tokens[i + 2])) {
+      !si_is_bound_atom(tokens[i]) ||
+      !si_is_bound_atom(tokens[i + 2]) {
       i += 1
       continue
     }
     let atoms : Array[String] = [tokens[i]]
     let mut j = i
     while j + 2 < tokens.length() {
-      if tokens[j + 1] != "+" || not(si_is_bound_atom(tokens[j + 2])) {
+      if tokens[j + 1] != "+" || !si_is_bound_atom(tokens[j + 2]) {
         break
       }
       atoms.push(tokens[j + 2])
@@ -435,7 +435,7 @@ fn si_collect_plus_bound_fragments(
 fn si_collect_effect_fragments(signature : String, out : Array[String]) -> Unit {
   let chunks : Array[String] = []
   for part_view in signature.split("with {") {
-    chunks.push(part_view.to_string())
+    chunks.push(part_view.to_owned())
   }
   if chunks.length() <= 1 {
     return
@@ -445,13 +445,13 @@ fn si_collect_effect_fragments(signature : String, out : Array[String]) -> Unit 
     match tail.find("}") {
       Some(end_pos) => {
         let inner_raw = tail.unsafe_substring(start=0, end=end_pos)
-        let inner = inner_raw.trim().to_string()
+        let inner = inner_raw.trim().to_owned()
         if inner.length() == 0 {
           continue
         }
         out.push("with {" + inner + "}")
         for effect_view in inner.split(",") {
-          let effect = effect_view.to_string().trim().to_string()
+          let effect = effect_view.to_owned().trim().to_owned()
           if effect.length() > 0 {
             out.push("with {" + effect + "}")
           }
@@ -511,7 +511,7 @@ fn si_build_vibe_query_index(
   let out : Map[String, Array[Int]] = {}
   for i in 0..<entries.length() {
     let signature = entries[i].signature
-    if not(signature.contains(" + ") || signature.contains("with {")) {
+    if !(signature.contains(" + ") || signature.contains("with {")) {
       continue
     }
     for key in si_collect_vibe_query_fragments(signature) {

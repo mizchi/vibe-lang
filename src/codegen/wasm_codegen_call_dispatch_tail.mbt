@@ -5,7 +5,7 @@ fn compile_call_enum_ctor_by_name(
   name : String,
   args : Array[@core.CallArg],
 ) -> Bool raise WasmGenError {
-  if not(ctx.enum_ctor_tags.contains(name)) {
+  if !ctx.enum_ctor_tags.contains(name) {
     return false
   }
   // Enum constructor call
@@ -97,7 +97,7 @@ fn compile_call_record_field_fallback_by_name(
     return false
   }
   let pos_args = extract_positional_exprs(args, name)
-  if not(pos_args.length() == 1 && ctx.known_record_fields.contains(name)) {
+  if !(pos_args.length() == 1 && ctx.known_record_fields.contains(name)) {
     return false
   }
   // Fallback for method-style record field access desugared as `field(record)`.

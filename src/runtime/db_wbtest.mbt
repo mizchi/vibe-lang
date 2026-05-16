@@ -37,7 +37,7 @@ test "type query resolves extensionless directory import to index.vibe" {
   db.set_source("main", "import ./dep { value }\n" + "let x = value\n" + "x\n")
   let env = db.types("main")
   let diags = db.diagnostics("main")
-  if not(diags.is_empty()) {
+  if !diags.is_empty() {
     let lines : Array[String] = []
     for diag in diags {
       lines.push(diag.stage + ":" + diag.message)
@@ -76,7 +76,7 @@ test "type query resolves cross-directory transitive dependency through sibling 
   )
   let env = db.types("/project/x/url_test.vibe")
   let diags = db.diagnostics("/project/x/url_test.vibe")
-  if not(diags.is_empty()) {
+  if !diags.is_empty() {
     let lines : Array[String] = []
     for diag in diags {
       lines.push(diag.stage + ":" + diag.message)
@@ -127,7 +127,7 @@ test "type query keeps re-exported value return type through directory index" {
   )
   let index_env = db.types("/project/scan/index.vibe")
   let index_diags = db.diagnostics("/project/scan/index.vibe")
-  if not(index_diags.is_empty()) {
+  if !index_diags.is_empty() {
     let lines : Array[String] = []
     for diag in index_diags {
       lines.push(diag.stage + ":" + diag.message)
@@ -144,7 +144,7 @@ test "type query keeps re-exported value return type through directory index" {
   }
   let env = db.types("/project/main.vibe")
   let diags = db.diagnostics("/project/main.vibe")
-  if not(diags.is_empty()) {
+  if !diags.is_empty() {
     let lines : Array[String] = []
     for diag in diags {
       lines.push(diag.stage + ":" + diag.message)
@@ -263,7 +263,7 @@ test "type query root import exposes constructor-like helpers under namespace" {
   )
   let env = db.types("/project/main.vibe")
   let diags = db.diagnostics("/project/main.vibe")
-  if not(diags.is_empty()) {
+  if !diags.is_empty() {
     let lines : Array[String] = []
     for diag in diags {
       lines.push(diag.stage + ":" + diag.message)
@@ -305,7 +305,7 @@ test "type query resolves nested relative re-export from dot-prefixed keys" {
   )
   let env = db.types("main")
   let diags = db.diagnostics("main")
-  if not(diags.is_empty()) {
+  if !diags.is_empty() {
     let lines : Array[String] = []
     for diag in diags {
       lines.push(diag.stage + ":" + diag.message)
@@ -342,7 +342,7 @@ test "type query keeps no-import dependency exports for alias call" {
   )
   let env = db.types("main")
   let diags = db.diagnostics("main")
-  if not(diags.is_empty()) {
+  if !diags.is_empty() {
     let lines : Array[String] = []
     for diag in diags {
       lines.push(diag.stage + ":" + diag.message)
@@ -373,7 +373,7 @@ test "type query resolves Bytes parameter in imported function" {
   )
   let env = db.types("main")
   let diags = db.diagnostics("main")
-  if not(diags.is_empty()) {
+  if !diags.is_empty() {
     let lines : Array[String] = []
     for diag in diags {
       lines.push(diag.stage + ":" + diag.message)
@@ -409,7 +409,7 @@ test "type query imports transitive type deps from imported value schemes" {
   )
   let env = db.types("main")
   let diags = db.diagnostics("main")
-  if not(diags.is_empty()) {
+  if !diags.is_empty() {
     let lines : Array[String] = []
     for diag in diags {
       lines.push(diag.stage + ":" + diag.message)
@@ -442,7 +442,7 @@ test "type query re-exported enum type imports constructors" {
   )
   let env = db.types("main")
   let diags = db.diagnostics("main")
-  if not(diags.is_empty()) {
+  if !diags.is_empty() {
     let lines : Array[String] = []
     for diag in diags {
       lines.push(diag.stage + ":" + diag.message)
@@ -489,7 +489,7 @@ test "type query imports re-exported Process functions through index" {
   )
   let env = db.types("main")
   let diags = db.diagnostics("main")
-  if not(diags.is_empty()) {
+  if !diags.is_empty() {
     let lines : Array[String] = []
     for diag in diags {
       lines.push(diag.stage + ":" + diag.message)
@@ -538,7 +538,7 @@ test "type query keeps exported schemes for thread runtime-style wrappers" {
   )
   let env = db.types("main")
   let diags = db.diagnostics("main")
-  if not(diags.is_empty()) {
+  if !diags.is_empty() {
     let lines : Array[String] = []
     for diag in diags {
       lines.push(diag.stage + ":" + diag.message)
@@ -631,7 +631,7 @@ test "internal export is importable from same directory" {
   )
   let env = db.types("/project/lib/main.vibe")
   let diags = db.diagnostics("/project/lib/main.vibe")
-  if not(diags.is_empty()) {
+  if !diags.is_empty() {
     let lines : Array[String] = []
     for diag in diags {
       lines.push(diag.stage + ":" + diag.message)

@@ -163,7 +163,7 @@ fn write_i32_leb_unchecked(buf : ByteBuf, value : Int, depth : Int) -> Unit {
   let byte_val = value & 0x7f
   let rest = value >> 7
   let sign_bit_set = (byte_val & 0x40) != 0
-  let done = (rest == 0 && not(sign_bit_set)) || (rest == -1 && sign_bit_set)
+  let done = (rest == 0 && !sign_bit_set) || (rest == -1 && sign_bit_set)
   if done {
     buf.data.unsafe_set(buf.len, byte_val.to_byte())
     buf.len += 1
@@ -566,7 +566,7 @@ fn register_coverage_point(
   kind : WasmCoveragePointKind,
   span : @core.Span,
 ) -> Int {
-  if not(ctx.coverage_enabled) {
+  if !ctx.coverage_enabled {
     return -1
   }
   let id = ctx.coverage_points.length()
@@ -595,7 +595,7 @@ fn emit_coverage(
   kind : WasmCoveragePointKind,
   span : @core.Span,
 ) -> Unit {
-  if not(ctx.coverage_enabled) {
+  if !ctx.coverage_enabled {
     return
   }
   let point_id = register_coverage_point(ctx, kind, span)
@@ -906,7 +906,7 @@ fn write_i64_leb_unchecked_inner(
   let byte_val = (value & 0x7fL).to_int()
   let rest = value >> 7
   let sign_bit_set = (byte_val & 0x40) != 0
-  let done = (rest == 0L && not(sign_bit_set)) || (rest == -1L && sign_bit_set)
+  let done = (rest == 0L && !sign_bit_set) || (rest == -1L && sign_bit_set)
   if done {
     buf.data.unsafe_set(buf.len, byte_val.to_byte())
     buf.len += 1

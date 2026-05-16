@@ -19,7 +19,7 @@ fn normalize_collect_inferred_annotations(
           Some(v) => v
           None => continue
         }
-        if not(normalize_type_annotation_allowed(ty)) {
+        if !normalize_type_annotation_allowed(ty) {
           continue
         }
         let rendered = normalize_render_type_annotation(ty)
@@ -60,7 +60,7 @@ fn normalize_unwrap_local_type_assert(
           ..
         ) =>
           if rec ||
-            not(name.contains("__vibe_local_type_assert_")) ||
+            !name.contains("__vibe_local_type_assert_") ||
             params.length() != 1 ||
             helper_body.stmts.length() != 1 {
             return None
@@ -86,11 +86,9 @@ fn normalize_unwrap_local_type_assert(
       match call_stmt {
         @vibe_core.Stmt::Expr(expr=@vibe_core.Expr::Call(name~, args~, ..), ..) =>
           if args.length() != 1 ||
-            not(
-              name == helper_name ||
+            !(name == helper_name ||
               helper_name.has_suffix("::" + name) ||
-              name.has_suffix("::" + helper_name),
-            ) {
+              name.has_suffix("::" + helper_name)) {
             None
           } else {
             Some((helper_ty, args[0].expr))
@@ -140,7 +138,7 @@ fn normalize_strip_decl_assign_fn_param_types_stmt(
 ) -> @vibe_core.Stmt {
   match stmt {
     @vibe_core.Stmt::ExportLet(rec~, name~, expr~, span~) =>
-      if not(decl_assign_names.contains(name)) {
+      if !decl_assign_names.contains(name) {
         stmt
       } else {
         @vibe_core.Stmt::ExportLet(
@@ -187,7 +185,7 @@ fn normalize_strip_decl_assign_fn_param_types_expr(
           bounds: param.bounds,
         })
       }
-      if not(changed) {
+      if !changed {
         expr
       } else {
         @vibe_core.Expr::Fn(
@@ -221,7 +219,7 @@ fn normalize_type_annotation_allowed(ty : @vibe_core.Type) -> Bool {
     @vibe_core.Type::Infer => false
     @vibe_core.Type::Tuple(items) => {
       for item in items {
-        if not(normalize_type_annotation_allowed(item)) {
+        if !normalize_type_annotation_allowed(item) {
           return false
         }
       }
@@ -238,7 +236,7 @@ fn normalize_type_annotation_allowed(ty : @vibe_core.Type) -> Bool {
     | @vibe_core.Type::V128 => true
     @vibe_core.Type::Named(args~, ..) => {
       for arg in args {
-        if not(normalize_type_annotation_allowed(arg)) {
+        if !normalize_type_annotation_allowed(arg) {
           return false
         }
       }
@@ -246,11 +244,11 @@ fn normalize_type_annotation_allowed(ty : @vibe_core.Type) -> Bool {
     }
     @vibe_core.Type::Func(params~, ret~, effects~) => {
       for param in params {
-        if not(normalize_type_annotation_allowed(param.ty)) {
+        if !normalize_type_annotation_allowed(param.ty) {
           return false
         }
       }
-      if not(normalize_type_annotation_allowed(ret)) {
+      if !normalize_type_annotation_allowed(ret) {
         return false
       }
       for effect in effects {

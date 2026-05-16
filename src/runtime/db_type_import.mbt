@@ -36,11 +36,11 @@ fn resolve_imported_trait_supertraits(
       Some(alias_name) => alias_name
       None => supertrait
     }
-    if not(array_has_string(out, local_super)) {
+    if !array_has_string(out, local_super) {
       out.push(local_super)
     }
   }
-  if local_name != source_name && not(array_has_string(out, source_name)) {
+  if local_name != source_name && !array_has_string(out, source_name) {
     // Preserve canonical source relation so renamed traits still satisfy
     // built-in canonical bounds like Eq/Ord.
     out.push(source_name)
@@ -98,7 +98,7 @@ fn collect_scheme_trait_bounds(scheme : @checker.TypeScheme) -> Array[String] {
   let out : Array[String] = []
   for _, bounds in scheme.trait_bounds {
     for bound in bounds {
-      if not(array_has_string(out, bound)) {
+      if !array_has_string(out, bound) {
         out.push(bound)
       }
     }
@@ -119,10 +119,10 @@ fn import_trait_dependency_for_scheme(
     return
   }
   visiting[source_trait_name] = true
-  if not(imported_env.has_trait(source_trait_name)) {
+  if !imported_env.has_trait(source_trait_name) {
     return
   }
-  if not(exported_names.contains(source_trait_name)) {
+  if !exported_names.contains(source_trait_name) {
     return
   }
   let local_trait_name = match trait_aliases.get(source_trait_name) {
@@ -400,7 +400,7 @@ fn collect_exported_names(ast : @core.Module) -> Map[String, Bool] {
       _ => ()
     }
   }
-  if not(has_late_exports) {
+  if !has_late_exports {
     return exports
   }
   // Second pass: handle export and re-export statements

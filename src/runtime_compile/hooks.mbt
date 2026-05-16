@@ -50,7 +50,7 @@ pub fn init_hooks() -> Unit {
 ///|
 /// Ensure hooks are initialized. Called automatically by key entry points.
 fn ensure_hooks() -> Unit {
-  if not(hooks_initialized.val) {
+  if !hooks_initialized.val {
     init_hooks()
   }
 }

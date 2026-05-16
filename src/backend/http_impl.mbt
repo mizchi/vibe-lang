@@ -62,7 +62,7 @@ fn parse_headers_to_map(s : String) -> Map[String, String] {
       val_buf.clear()
       in_value = false
       skip_space = false
-    } else if not(in_value) && ch == ':' {
+    } else if !in_value && ch == ':' {
       in_value = true
       skip_space = true
     } else if skip_space && ch == ' ' {

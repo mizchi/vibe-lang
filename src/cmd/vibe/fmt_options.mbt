@@ -38,7 +38,7 @@ fn source_to_diff_lines(source : String) -> Array[String] {
     return lines
   }
   for line_view in source.split("\n") {
-    lines.push(line_view.to_string())
+    lines.push(line_view.to_owned())
   }
   if source.has_suffix("\n") && lines.length() > 0 {
     let _ = lines.pop()

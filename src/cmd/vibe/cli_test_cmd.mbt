@@ -145,13 +145,13 @@ fn render_stmt_snippets(
             inner_span.start,
             inner_span.end,
           )
-          if snippet.trim().to_string().length() == 0 {
+          if snippet.trim().to_owned().length() == 0 {
             j = j + 1
             continue
           }
           out.write_string("  ")
           out.write_string(snippet)
-          if not(snippet.has_suffix("\n")) {
+          if !snippet.has_suffix("\n") {
             out.write_char('\n')
           }
           j = j + 1
@@ -162,12 +162,12 @@ fn render_stmt_snippets(
       None => {
         seen_spans[span_key] = true
         let snippet = source_slice_by_span(source, span.start, span.end)
-        if snippet.trim().to_string().length() == 0 {
+        if snippet.trim().to_owned().length() == 0 {
           i = i + 1
           continue
         }
         out.write_string(snippet)
-        if not(snippet.has_suffix("\n")) {
+        if !snippet.has_suffix("\n") {
           out.write_char('\n')
         }
         i = i + 1
@@ -249,7 +249,7 @@ fn compiled_test_prelude_collect_ref_name(
   scope : @vibe_core.WalkerScope,
   refs : Map[String, Bool],
 ) -> Unit {
-  if not(scope.contains(name)) {
+  if !scope.contains(name) {
     refs[name] = true
   }
 }
@@ -296,7 +296,7 @@ fn partition_compiled_test_prelude_stmts(
 ) -> (Array[@vibe_core.Stmt], Array[@vibe_core.Stmt]) {
   let required_names : Map[String, Bool] = {}
   for stmt in stmts {
-    if not(compiled_test_prelude_stmt_runs_in_wrapper(stmt)) {
+    if !compiled_test_prelude_stmt_runs_in_wrapper(stmt) {
       compiled_test_prelude_absorb_stmt_refs(stmt, required_names)
     }
   }
@@ -312,7 +312,7 @@ fn partition_compiled_test_prelude_stmts(
   let wrapper_prelude_stmts : Array[@vibe_core.Stmt] = []
   for stmt in stmts {
     if compiled_test_prelude_stmt_runs_in_wrapper(stmt) &&
-      not(compiled_test_prelude_stmt_must_stay_top_level(stmt, required_names)) {
+      !compiled_test_prelude_stmt_must_stay_top_level(stmt, required_names) {
       wrapper_prelude_stmts.push(stmt)
     } else {
       top_level_stmts.push(stmt)
@@ -328,24 +328,24 @@ fn build_compiled_test_case_source(
   body_source : String,
 ) -> String {
   let out = StringBuilder::new()
-  if top_level_source.trim().to_string().length() > 0 {
+  if top_level_source.trim().to_owned().length() > 0 {
     out.write_string(top_level_source)
-    if not(top_level_source.has_suffix("\n")) {
+    if !top_level_source.has_suffix("\n") {
       out.write_char('\n')
     }
   }
   out.write_string(
     "let __vibe_compiled_test_case = () -> Int with { Error, Fs, Process, Env, Stdout, Stdin, Net, Async, Threads, Llm } {\n",
   )
-  if wrapper_prelude_source.trim().to_string().length() > 0 {
+  if wrapper_prelude_source.trim().to_owned().length() > 0 {
     out.write_string(wrapper_prelude_source)
-    if not(wrapper_prelude_source.has_suffix("\n")) {
+    if !wrapper_prelude_source.has_suffix("\n") {
       out.write_char('\n')
     }
   }
-  if body_source.trim().to_string().length() > 0 {
+  if body_source.trim().to_owned().length() > 0 {
     out.write_string(body_source)
-    if not(body_source.has_suffix("\n")) {
+    if !body_source.has_suffix("\n") {
       out.write_char('\n')
     }
   }
@@ -372,9 +372,9 @@ fn build_compiled_test_batch_source(
   body_sources : Array[String],
 ) -> String {
   let out = StringBuilder::new()
-  if top_level_source.trim().to_string().length() > 0 {
+  if top_level_source.trim().to_owned().length() > 0 {
     out.write_string(top_level_source)
-    if not(top_level_source.has_suffix("\n")) {
+    if !top_level_source.has_suffix("\n") {
       out.write_char('\n')
     }
   }
@@ -385,15 +385,15 @@ fn build_compiled_test_batch_source(
       i.to_string() +
       " = () -> Int with { Error, Fs, Process, Env, Stdout, Stdin, Net, Async, Threads, Llm } {\n",
     )
-    if wrapper_prelude_source.trim().to_string().length() > 0 {
+    if wrapper_prelude_source.trim().to_owned().length() > 0 {
       out.write_string(wrapper_prelude_source)
-      if not(wrapper_prelude_source.has_suffix("\n")) {
+      if !wrapper_prelude_source.has_suffix("\n") {
         out.write_char('\n')
       }
     }
-    if body_source.trim().to_string().length() > 0 {
+    if body_source.trim().to_owned().length() > 0 {
       out.write_string(body_source)
-      if not(body_source.has_suffix("\n")) {
+      if !body_source.has_suffix("\n") {
         out.write_char('\n')
       }
     }
@@ -613,7 +613,7 @@ fn run_test_file_compiled_with_cache(
     match stmt {
       @vibe_core.Stmt::Test(..) | @vibe_core.Stmt::Bench(..) => ()
       _ =>
-        if not(should_omit_compiled_test_prelude_stmt(stmt)) {
+        if !should_omit_compiled_test_prelude_stmt(stmt) {
           prelude_stmts.push(stmt)
         }
     }
@@ -632,7 +632,7 @@ fn run_test_file_compiled_with_cache(
   } else {
     parent + "/.vibe_test_batch_" + stamp + ".wasm"
   }
-  if not(use_cached_batch_wasm) {
+  if !use_cached_batch_wasm {
     // Build batched source: all tests compiled + run in a single WASM
     let body_sources : Array[String] = []
     for case in cases {
@@ -714,7 +714,7 @@ fn run_test_file_compiled_with_cache(
   // stdout contains "last: N" where N is the failure count
   let fail_count = if run_out.status != 0 {
     // Parse failure count from stdout "last: N"
-    let stdout = run_out.stdout.trim().to_string()
+    let stdout = run_out.stdout.trim().to_owned()
     if stdout.has_prefix("last: ") {
       let num_str = stdout.unsafe_substring(start=6, end=stdout.length())
       let parsed : Result[Int, _] = try? @string.parse_int(num_str)
@@ -1000,7 +1000,7 @@ fn test_cmd_sequential(
 fn test_batch_weight_cache_path() -> String? {
   match @sys.get_env_var("VIBE_TEST_BATCH_WEIGHT_CACHE") {
     Some(raw) => {
-      let trimmed = raw.trim().to_string()
+      let trimmed = raw.trim().to_owned()
       if trimmed.length() == 0 {
         None
       } else {
@@ -1030,11 +1030,11 @@ fn strip_leading_slashes(path : String) -> String {
 
 ///|
 fn test_batch_weight_cache_key(path : String) -> String {
-  if not(path.has_prefix("/")) {
+  if !path.has_prefix("/") {
     return strip_leading_slashes(@vibe_fs.normalize_path(path))
   }
   let normalized = @vibe_fs.normalize_path(path)
-  if not(normalized.has_prefix("/")) {
+  if !normalized.has_prefix("/") {
     return normalized
   }
   let cwd = @vibe_fs.normalize_path(@io.current_dir_or_root())
@@ -1051,7 +1051,7 @@ fn test_batch_weight_cache_key(path : String) -> String {
 
 ///|
 fn load_test_batch_weight_cache(cache_path : String) -> Map[String, Int] {
-  if not(@os_fs.path_exists(cache_path)) {
+  if !@os_fs.path_exists(cache_path) {
     return {}
   }
   let text = @os_fs.read_file_to_string(cache_path) catch { _ => return {} }
@@ -1307,7 +1307,7 @@ fn test_entry_batch_has_unassigned_other_root_after(
           already_assigned = true
         }
       }
-      if not(already_assigned) {
+      if !already_assigned {
         return true
       }
     }
@@ -1346,7 +1346,7 @@ let test_entry_batch_max_chunk_size = 4
 fn test_entry_batch_env_chunk_size() -> Int? {
   match @sys.get_env_var("VIBE_TEST_BATCH_CHUNK_SIZE") {
     Some(raw) => {
-      let parsed = @string.parse_int(raw.trim().to_string()) catch { _ => 0 }
+      let parsed = @string.parse_int(raw.trim().to_owned()) catch { _ => 0 }
       if parsed > 0 {
         Some(parsed)
       } else {
@@ -1776,11 +1776,11 @@ fn test_cmd_parallel(
           if code != 0 {
             println("  process exited with code \{code}")
           }
-          if stdout_text.trim().to_string().length() > 0 {
-            println("  stdout: \{stdout_text.trim().to_string()}")
+          if stdout_text.trim().to_owned().length() > 0 {
+            println("  stdout: \{stdout_text.trim().to_owned()}")
           }
-          if stderr_text.trim().to_string().length() > 0 {
-            println("  stderr: \{stderr_text.trim().to_string()}")
+          if stderr_text.trim().to_owned().length() > 0 {
+            println("  stderr: \{stderr_text.trim().to_owned()}")
           }
           any_failed = true
           failed_count += 1
@@ -1839,8 +1839,8 @@ fn test_cmd_parallel(
             println("\{path}: fail (missing JSON report)")
             if code != 0 {
               println("  process exited with code \{code}")
-              if stderr_text.trim().to_string().length() > 0 {
-                println("  stderr: \{stderr_text.trim().to_string()}")
+              if stderr_text.trim().to_owned().length() > 0 {
+                println("  stderr: \{stderr_text.trim().to_owned()}")
               }
             }
             any_failed = true
@@ -1860,12 +1860,12 @@ fn test_cmd_parallel(
             None => has_failure_in_batch = true
           }
         }
-        if not(has_failure_in_batch) {
+        if !has_failure_in_batch {
           for path in batch_paths {
             println("\{path}: fail (process exited with code \{code})")
           }
-          if stderr_text.trim().to_string().length() > 0 {
-            println("  stderr: \{stderr_text.trim().to_string()}")
+          if stderr_text.trim().to_owned().length() > 0 {
+            println("  stderr: \{stderr_text.trim().to_owned()}")
           }
           any_failed = true
           failed_count += batch_paths.length()

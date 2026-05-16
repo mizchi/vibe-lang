@@ -135,7 +135,7 @@ pub fn render_snippet(source : String, span : Span) -> String {
 /// `vibe check` on files with thousands of warnings).
 pub fn render_snippet_with_index(index : LineIndex, span : Span) -> String {
   let (pos, line_start, line_end) = index.line_info(span.start)
-  let line_text = index.source[line_start:line_end].to_string()
+  let line_text = index.source[line_start:line_end].to_owned()
   if line_text.length() == 0 {
     return ""
   }

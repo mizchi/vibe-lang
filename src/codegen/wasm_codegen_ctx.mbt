@@ -454,7 +454,7 @@ fn push_capture(
   captures : Array[String],
   seen : Map[String, Bool],
 ) -> Unit {
-  if not(seen.contains(name)) {
+  if !seen.contains(name) {
     seen[name] = true
     captures.push(name)
   }
@@ -610,7 +610,7 @@ fn collect_captures_block(
       }
       @core.Stmt::Assign(name~, expr~, span~) => {
         let _ = span
-        if not(scope.contains(name)) && outer_bound.contains(name) {
+        if !scope.contains(name) && outer_bound.contains(name) {
           push_capture(name, captures, seen)
         }
         collect_captures_expr(expr, scope, outer_bound, captures, seen)
@@ -637,13 +637,13 @@ fn collect_captures_expr(
   match expr {
     @core.Expr::Ident(name~, span~) => {
       let _ = span
-      if not(bound.contains(name)) && outer_bound.contains(name) {
+      if !bound.contains(name) && outer_bound.contains(name) {
         push_capture(name, captures, seen)
       }
     }
     @core.Expr::Call(name~, args~, span~, ..) => {
       let _ = span
-      if not(bound.contains(name)) && outer_bound.contains(name) {
+      if !bound.contains(name) && outer_bound.contains(name) {
         push_capture(name, captures, seen)
       }
       for arg in args {
@@ -749,7 +749,7 @@ fn collect_captures_expr(
         body, nested_bound, nested_outer, nested_caps, nested_seen,
       )
       for name in nested_caps {
-        if not(bound.contains(name)) && outer_bound.contains(name) {
+        if !bound.contains(name) && outer_bound.contains(name) {
           push_capture(name, captures, seen)
         }
       }
@@ -794,7 +794,7 @@ fn collect_nested_funcs_block(
               fn_bound[param.name] = true
             }
             collect_captures_block(body, fn_bound, scope, captures, seen)
-            if not(skip_top_level) {
+            if !skip_top_level {
               funcs.push(FuncDef::{
                 name: Some(name),
                 params,
@@ -876,7 +876,7 @@ fn collect_nested_funcs_block(
               fn_bound[param.name] = true
             }
             collect_captures_block(body, fn_bound, scope, captures, seen)
-            if not(skip_top_level) {
+            if !skip_top_level {
               funcs.push(FuncDef::{
                 name: Some(name),
                 params,
@@ -1166,7 +1166,7 @@ fn collect_func_defs(ast : @core.Module) -> Array[FuncDef] {
     match f.name {
       Some(name) if top_level_fn_names.contains(name) =>
         for cap in f.captures {
-          if not(top_level_fn_names.contains(cap)) {
+          if !top_level_fn_names.contains(cap) {
             top_level_needs_env[name] = true
             break
           }
@@ -1180,7 +1180,7 @@ fn collect_func_defs(ast : @core.Module) -> Array[FuncDef] {
     for f in funcs {
       match f.name {
         Some(name) if top_level_fn_names.contains(name) =>
-          if not(top_level_needs_env.contains(name)) {
+          if !top_level_needs_env.contains(name) {
             let mut needs = false
             for cap in f.captures {
               if top_level_fn_names.contains(cap) &&
@@ -1204,7 +1204,7 @@ fn collect_func_defs(ast : @core.Module) -> Array[FuncDef] {
       Some(name) if top_level_fn_names.contains(name) => {
         let filtered_captures : Array[String] = []
         for cap in f.captures {
-          if not(top_level_fn_names.contains(cap)) ||
+          if !top_level_fn_names.contains(cap) ||
             top_level_needs_env.contains(cap) {
             filtered_captures.push(cap)
           }
@@ -1264,7 +1264,7 @@ fn compute_mut_captured_for_block(
       break
     }
   }
-  if not(has_any_mut) {
+  if !has_any_mut {
     return {}
   }
   // Step 2: Collect all Fn span_keys defined in this scope

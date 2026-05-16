@@ -23,7 +23,7 @@ pub fn mark_compiler_hooks_initialized() -> Unit {
 
 ///|
 fn assert_hooks_initialized(caller : String) -> Unit {
-  if not(compiler_hooks_initialized.val) {
+  if !compiler_hooks_initialized.val {
     abort(
       caller +
       ": compiler hooks not initialized. Call runtime_compile.init_hooks() first.",

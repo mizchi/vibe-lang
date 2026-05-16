@@ -31,9 +31,9 @@ fn normalize_lock_path(path : String) -> String {
 ///|
 fn strip_module_ext(path : String) -> String {
   if path.has_suffix(".vibe") && path.length() > 5 {
-    path[0:path.length() - 5].to_string()
+    path[0:path.length() - 5].to_owned()
   } else if path.has_suffix(".xm") && path.length() > 3 {
-    path[0:path.length() - 3].to_string()
+    path[0:path.length() - 3].to_owned()
   } else {
     path
   }
@@ -137,7 +137,7 @@ fn fallback_import_root_from_vibe_segment(base_dir : String) -> String? {
     if parent == dir {
       break
     }
-    let name = @path.Path(dir).basename().to_string()
+    let name = @path.Path(dir).basename().to_owned()
     if name == "vibe" {
       return Some(parent)
     }

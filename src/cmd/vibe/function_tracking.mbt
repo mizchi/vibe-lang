@@ -62,7 +62,7 @@ fn function_tracking_semver_to_string(
 fn function_tracking_parse_semver(text : String) -> FunctionTrackingSemver? {
   let parts : Array[String] = []
   for piece in text.split(".") {
-    parts.push(piece.to_string())
+    parts.push(piece.to_owned())
   }
   if parts.length() != 3 {
     return None
@@ -535,7 +535,7 @@ fn function_tracking_record_from_json(
   }
   let renamed_from = match obj.get("renamed_from") {
     Some(Json::String(value)) =>
-      if value.trim().to_string().length() == 0 {
+      if value.trim().to_owned().length() == 0 {
         None
       } else {
         Some(value)
@@ -786,7 +786,7 @@ fn function_tracking_build_next_records(
 
   let unmatched_prev : Map[String, FunctionTrackingRecordState] = {}
   for key, record in previous {
-    if not(snapshot_map.contains(key)) {
+    if !snapshot_map.contains(key) {
       unmatched_prev[key] = record
     }
   }

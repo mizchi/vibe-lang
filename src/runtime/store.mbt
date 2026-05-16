@@ -173,7 +173,7 @@ fn ThreadRuntime::spawn(
   mailbox : Int,
 ) -> Int? {
   let channel_key = thread_runtime_key(mailbox)
-  if not(self.channels.contains(channel_key)) {
+  if !self.channels.contains(channel_key) {
     None
   } else {
     let id = self.next_task_id
@@ -429,7 +429,7 @@ pub fn Runtime::gc(self : Runtime) -> Unit {
   }
   let to_delete : Array[String] = []
   for hash, _ in self.store.values {
-    if not(live.contains(hash)) {
+    if !live.contains(hash) {
       to_delete.push(hash)
     }
   }

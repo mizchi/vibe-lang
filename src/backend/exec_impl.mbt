@@ -32,7 +32,7 @@ pub fn exec_command_lines(cmd : String) -> Result[Array[String], String] {
   }
   let lines : Array[String] = []
   for part_view in text.split("\n") {
-    lines.push(part_view.to_string())
+    lines.push(part_view.to_owned())
   }
   // Remove trailing empty line from final newline
   if lines.length() > 0 && lines[lines.length() - 1] == "" {

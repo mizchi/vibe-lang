@@ -2114,7 +2114,7 @@ fn AstParser::parse_call_or_primary(
         let span = self.span_from(start)
         @core.Expr::Ident(name=qualified_name, span~)
       }
-    } else if self.peek_kind() == lparen() && not(name_followed_by_newline) {
+    } else if self.peek_kind() == lparen() && !name_followed_by_newline {
       let _ = self.bump()
       let args = self.parse_args()
       let _ = self.expect(rparen(), ")")
@@ -2506,7 +2506,7 @@ fn AstParser::parse_primary(self : AstParser) -> @core.Expr raise ParseError {
         let last = text[len - 1]
         if last == 'f' || last == 'F' {
           is_float = true
-          raw = text[0:len - 1].to_string()
+          raw = text[0:len - 1].to_owned()
         }
       }
       let v = @string.parse_double(raw) catch {

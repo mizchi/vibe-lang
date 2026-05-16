@@ -111,7 +111,7 @@ fn append_closure_payload_part(
   first : Bool,
   part : String,
 ) -> Unit {
-  if not(first) {
+  if !first {
     buf.write_string(closure_payload_separator)
   }
   buf.write_string(part)
@@ -152,7 +152,7 @@ pub fn build_closure_payload_with_fs(
 fn split_closure_payload_parts(payload : String) -> Array[String] {
   let parts : Array[String] = []
   for part in payload.split(closure_payload_separator) {
-    parts.push(part.to_string())
+    parts.push(part.to_owned())
   }
   parts
 }
@@ -190,7 +190,7 @@ fn closure_payload_dirname(path : String) -> String {
   if last_slash <= 0 {
     "/"
   } else {
-    path[:last_slash].to_string()
+    path[:last_slash].to_owned()
   }
 }
 

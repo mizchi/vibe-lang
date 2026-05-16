@@ -61,7 +61,7 @@ pub fn PureCache::snapshot(self : PureCache) -> String {
 /// Load snapshot entries into the cache (invalid lines are ignored).
 pub fn PureCache::load(self : PureCache, snapshot : String) -> Unit {
   for line in snapshot.split("\n") {
-    let line_str = line.to_string()
+    let line_str = line.to_owned()
     if line_str.is_empty() {
       continue
     }
@@ -374,7 +374,7 @@ fn read_number(chars : Array[Char], start : Int) -> (Int, Int)? {
     saw = true
     i += 1
   }
-  if not(saw) {
+  if !saw {
     return None
   }
   Some((value, i))

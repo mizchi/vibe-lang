@@ -1692,7 +1692,7 @@ fn scan_server_builtins_expr(
   match expr {
     @core.Expr::Call(name~, args~, ..) => {
       for n in names {
-        if name == n && not(found.contains(n)) {
+        if name == n && !found.contains(n) {
           found.push(n)
         }
       }

@@ -123,7 +123,7 @@ pub fn VibeDb::new() -> VibeDb {
               let alias_name = @core.import_alias_name(path)
               let candidates : Array[String] = []
               let push_candidate = fn(candidate : String) {
-                if not(array_has_string(candidates, candidate)) {
+                if !array_has_string(candidates, candidate) {
                   candidates.push(candidate)
                 }
               }
@@ -132,25 +132,25 @@ pub fn VibeDb::new() -> VibeDb {
                 Some(candidate) => push_candidate(candidate)
                 None => ()
               }
-              if not(path_obj.normalized.has_suffix(".vibe")) {
+              if !path_obj.normalized.has_suffix(".vibe") {
                 push_candidate(path_obj.normalized + ".vibe")
               }
-              if not(path_obj.normalized.has_suffix(".xm")) {
+              if !path_obj.normalized.has_suffix(".xm") {
                 push_candidate(path_obj.normalized + ".xm")
               }
               push_candidate(path)
-              if not(path.has_suffix(".vibe")) &&
-                not(path.has_suffix(".xm")) &&
-                not(path.has_suffix(".wasm")) &&
-                not(path.has_suffix(".db")) &&
-                not(path.has_suffix(".lock")) &&
-                not(path.has_suffix("/index.vibe")) {
+              if !path.has_suffix(".vibe") &&
+                !path.has_suffix(".xm") &&
+                !path.has_suffix(".wasm") &&
+                !path.has_suffix(".db") &&
+                !path.has_suffix(".lock") &&
+                !path.has_suffix("/index.vibe") {
                 push_candidate(path + "/index.vibe")
               }
-              if not(path.has_suffix(".vibe")) {
+              if !path.has_suffix(".vibe") {
                 push_candidate(path + ".vibe")
               }
-              if not(path.has_suffix(".xm")) {
+              if !path.has_suffix(".xm") {
                 push_candidate(path + ".xm")
               }
               let mut final_path = path_obj.normalized
@@ -178,7 +178,7 @@ pub fn VibeDb::new() -> VibeDb {
                 base_dir, path, final_path,
               )
               if is_reexport {
-                if not(path.has_prefix("./")) {
+                if !path.has_prefix("./") {
                   diags.push(rt, @core.Diagnostic::{
                     stage: "import",
                     message: "cross-package re-export is forbidden: " +
@@ -199,7 +199,7 @@ pub fn VibeDb::new() -> VibeDb {
               // index.vibe itself is exempt (it's the module facade)
               let importer_basename = @path.Path(file_path)
                 .basename()
-                .to_string()
+                .to_owned()
               if importer_basename != "index.vibe" &&
                 importer_basename != "index.xm" {
                 let importer_dir = @path.Path(file_path).dirname().to_string()
@@ -211,7 +211,7 @@ pub fn VibeDb::new() -> VibeDb {
                       resolved_path_obj.normalized,
                     )
                     .basename()
-                    .to_string()
+                    .to_owned()
                   if imported_basename != "index.vibe" &&
                     imported_basename != "index.xm" {
                     diags.push(rt, @core.Diagnostic::{
@@ -589,7 +589,7 @@ pub fn VibeDb::new() -> VibeDb {
                   let alias_name_str = "@" + name
                   let candidates : Array[String] = []
                   let push_candidate = fn(candidate : String) {
-                    if not(array_has_string(candidates, candidate)) {
+                    if !array_has_string(candidates, candidate) {
                       candidates.push(candidate)
                     }
                   }
@@ -598,24 +598,24 @@ pub fn VibeDb::new() -> VibeDb {
                     Some(candidate) => push_candidate(candidate)
                     None => ()
                   }
-                  if not(path_obj.normalized.has_suffix(".vibe")) {
+                  if !path_obj.normalized.has_suffix(".vibe") {
                     push_candidate(path_obj.normalized + ".vibe")
                   }
-                  if not(path_obj.normalized.has_suffix(".xm")) {
+                  if !path_obj.normalized.has_suffix(".xm") {
                     push_candidate(path_obj.normalized + ".xm")
                   }
                   push_candidate(path)
-                  if not(path.has_suffix(".vibe")) &&
-                    not(path.has_suffix(".xm")) &&
-                    not(path.has_suffix(".wasm")) &&
-                    not(path.has_suffix(".db")) &&
-                    not(path.has_suffix(".lock")) &&
-                    not(path.has_suffix(".vbundle")) &&
-                    not(path.has_suffix("/index.vibe")) {
+                  if !path.has_suffix(".vibe") &&
+                    !path.has_suffix(".xm") &&
+                    !path.has_suffix(".wasm") &&
+                    !path.has_suffix(".db") &&
+                    !path.has_suffix(".lock") &&
+                    !path.has_suffix(".vbundle") &&
+                    !path.has_suffix("/index.vibe") {
                     push_candidate(path + "/index.vibe")
                     push_candidate(path_obj.normalized + "/index.vibe")
                   }
-                  if not(path.has_suffix(".vibe")) {
+                  if !path.has_suffix(".vibe") {
                     push_candidate(path + ".vibe")
                   }
                   let mut final_path = path_obj.normalized
@@ -810,7 +810,7 @@ pub fn VibeDb::new() -> VibeDb {
     match sources.get(rt, path) {
       None => hook_new_type_env()
       Some(content) =>
-        if not(content.contains("import")) && not(content.contains("use")) {
+        if !content.contains("import") && !content.contains("use") {
           let hash = @core.content_address_hash_string(content)
           match no_import_type_query.fetch(rt, hash) {
             Some(env) => env
@@ -1311,7 +1311,7 @@ pub fn VibeDb::new() -> VibeDb {
                           continue
                         }
                         imported_any = true
-                        if not(import_symbol(item, exported_name, target_name)) {
+                        if !import_symbol(item, exported_name, target_name) {
                           report_kind_mismatch(item, exported_name)
                         }
                       }
@@ -1328,7 +1328,7 @@ pub fn VibeDb::new() -> VibeDb {
                         continue
                       }
                       let target_name = target_prefix + exported_name
-                      if not(import_item_accepts_value(item, target_name)) {
+                      if !import_item_accepts_value(item, target_name) {
                         continue
                       }
                       if explicit_targets.contains(target_name) {
@@ -1379,7 +1379,7 @@ pub fn VibeDb::new() -> VibeDb {
                   for item in spec.items {
                     let name = item.name
                     if item.kind == @core.ImportKind::Module {
-                      if not(supports_module_namespace_import(imp.path)) {
+                      if !supports_module_namespace_import(imp.path) {
                         diags.push(rt, @core.Diagnostic::{
                           stage: "import",
                           message: "module import is only supported for .xm source: " +
@@ -1409,14 +1409,12 @@ pub fn VibeDb::new() -> VibeDb {
                           )
                           let target_name = target_prefix + suffix
                           imported_any = true
-                          if not(
-                              import_symbol(item, exported_name, target_name),
-                            ) {
+                          if !import_symbol(item, exported_name, target_name) {
                             report_kind_mismatch(item, exported_name)
                           }
                         }
                       }
-                      if not(imported_any) {
+                      if !imported_any {
                         report_kind_mismatch(item, name)
                       }
                       continue
@@ -1426,7 +1424,7 @@ pub fn VibeDb::new() -> VibeDb {
                       None => name
                     }
                     if visible_names.contains(name) {
-                      if not(import_symbol(item, name, local_name)) {
+                      if !import_symbol(item, name, local_name) {
                         // Name is declared as exported in the dependency AST
                         // but absent from its type env — the dependency has
                         // type errors that made the export unavailable.
@@ -1458,7 +1456,7 @@ pub fn VibeDb::new() -> VibeDb {
                       let imported_any = import_namespace_members(
                         item, name, name,
                       )
-                      if not(imported_any) {
+                      if !imported_any {
                         if import_item_accepts_trait(item) &&
                           trait_names.contains(name) {
                           report_non_exported_trait(name)
