@@ -175,9 +175,9 @@ test "line shell options show help" {
 
 ///|
 test "check failure message returns exit text only for errors" {
-  assert_eq(check_failure_message(0), None)
-  assert_eq(check_failure_message(1), Some("check: 1 error(s) found"))
-  assert_eq(check_failure_message(3), Some("check: 3 error(s) found"))
+  @debug.assert_eq(check_failure_message(0), None)
+  @debug.assert_eq(check_failure_message(1), Some("check: 1 error(s) found"))
+  @debug.assert_eq(check_failure_message(3), Some("check: 3 error(s) found"))
 }
 
 ///|
@@ -418,7 +418,7 @@ test "fmt cmd options parse default write mode" {
   match parsed {
     Ok(opts) => {
       assert_false(opts.dry_run)
-      assert_eq(opts.files, ["a.vibe", "b.vibe"])
+      @debug.assert_eq(opts.files, ["a.vibe", "b.vibe"])
     }
     Err(msg) => fail("unexpected err: " + msg)
   }
@@ -430,7 +430,7 @@ test "fmt cmd options parse dry-run and legacy write flags" {
   match parsed {
     Ok(opts) => {
       assert_true(opts.dry_run)
-      assert_eq(opts.files, ["a.vibe"])
+      @debug.assert_eq(opts.files, ["a.vibe"])
     }
     Err(msg) => fail("unexpected err: " + msg)
   }
@@ -470,7 +470,7 @@ test "cli syntax mode parse default" {
   match parsed {
     Ok((mode, rest)) => {
       assert_eq(mode, @runtime.ParserMode::VibeMode)
-      assert_eq(rest, ["main.vibe"])
+      @debug.assert_eq(rest, ["main.vibe"])
     }
     Err(msg) => fail("unexpected err: " + msg)
   }
@@ -482,7 +482,7 @@ test "cli syntax mode parse explicit vibe" {
   match parsed {
     Ok((mode, rest)) => {
       assert_eq(mode, @runtime.ParserMode::VibeMode)
-      assert_eq(rest, ["main.vibe"])
+      @debug.assert_eq(rest, ["main.vibe"])
     }
     Err(msg) => fail("unexpected err: " + msg)
   }
@@ -530,7 +530,7 @@ test "cli runtime flags parse default" {
   match parsed {
     Ok(opts) => {
       assert_eq(opts.syntax_mode, @runtime.ParserMode::VibeMode)
-      assert_eq(opts.cmd_args, ["main.vibe"])
+      @debug.assert_eq(opts.cmd_args, ["main.vibe"])
       assert_false(opts.unstable_async)
       assert_false(opts.unstable_threads)
     }
@@ -547,7 +547,7 @@ test "cli runtime flags parse with unstable flags" {
   match parsed {
     Ok(opts) => {
       assert_eq(opts.syntax_mode, @runtime.ParserMode::VibeMode)
-      assert_eq(opts.cmd_args, ["main.vibe"])
+      @debug.assert_eq(opts.cmd_args, ["main.vibe"])
       assert_true(opts.unstable_async)
       assert_true(opts.unstable_threads)
     }
@@ -579,7 +579,7 @@ test "cli dispatch args parse leading unstable flags" {
     Ok(v) => {
       assert_eq(v.cmd, "run")
       assert_eq(v.syntax_mode, @runtime.ParserMode::VibeMode)
-      assert_eq(v.cmd_args, ["main.vibe"])
+      @debug.assert_eq(v.cmd_args, ["main.vibe"])
       assert_true(v.unstable_async)
       assert_true(v.unstable_threads)
     }
@@ -597,7 +597,7 @@ test "cli dispatch args merges leading and trailing unstable flags" {
     Ok(v) => {
       assert_eq(v.cmd, "run")
       assert_eq(v.syntax_mode, @runtime.ParserMode::VibeMode)
-      assert_eq(v.cmd_args, ["main.vibe"])
+      @debug.assert_eq(v.cmd_args, ["main.vibe"])
       assert_true(v.unstable_async)
       assert_true(v.unstable_threads)
     }
@@ -618,19 +618,19 @@ test "cli dispatch args rejects missing command" {
 
 ///|
 test "removed public commands stay blocked" {
-  assert_eq(
+  @debug.assert_eq(
     removed_command_message("eval"),
     Some(
       "eval: command was removed. Use 'vibe shell' or 'vibe shell-stdin' for interactive evaluation, and 'vibe finalize --db <path>' for persisted scratch-db workflows.",
     ),
   )
-  assert_eq(
+  @debug.assert_eq(
     removed_command_message("bundle"),
     Some(
       "bundle: command was removed. Use 'vibe compile' to compile modules, or 'vibe precompile' for precompilation.",
     ),
   )
-  assert_eq(removed_command_message("run"), None)
+  @debug.assert_eq(removed_command_message("run"), None)
 }
 
 ///|
@@ -672,7 +672,7 @@ test "cli dispatch args parse init command" {
   match parsed {
     Ok(v) => {
       assert_eq(v.cmd, "init")
-      assert_eq(v.cmd_args, ["my-lib"])
+      @debug.assert_eq(v.cmd_args, ["my-lib"])
     }
     Err(msg) => fail("unexpected err: " + msg)
   }
@@ -684,7 +684,7 @@ test "cli dispatch args parse new command" {
   match parsed {
     Ok(v) => {
       assert_eq(v.cmd, "new")
-      assert_eq(v.cmd_args, ["my-lib"])
+      @debug.assert_eq(v.cmd_args, ["my-lib"])
     }
     Err(msg) => fail("unexpected err: " + msg)
   }
@@ -696,7 +696,7 @@ test "cli dispatch args parse explain-import command" {
   match parsed {
     Ok(v) => {
       assert_eq(v.cmd, "explain-import")
-      assert_eq(v.cmd_args, ["main.vibe"])
+      @debug.assert_eq(v.cmd_args, ["main.vibe"])
     }
     Err(msg) => fail("unexpected err: " + msg)
   }
@@ -763,28 +763,28 @@ test "explain import report resolves lock-backed refs" {
   let path_item = wbtest_find_explain_import_item(report.imports, "./dep.vibe")
   assert_eq(path_item.ref_kind, "PathRef")
   assert_eq(path_item.lock_lookup_status, "hit")
-  assert_eq(path_item.resolved_hash, Some(dep_hash))
+  @debug.assert_eq(path_item.resolved_hash, Some(dep_hash))
   let version_item = wbtest_find_explain_import_item(
     report.imports,
     "version@main",
   )
   assert_eq(version_item.ref_kind, "VersionRef")
   assert_eq(version_item.lock_lookup_status, "hit")
-  assert_eq(version_item.resolved_hash, Some(version_hash))
+  @debug.assert_eq(version_item.resolved_hash, Some(version_hash))
   let symbol_item = wbtest_find_explain_import_item(
     report.imports,
     "symbol@main/sym",
   )
   assert_eq(symbol_item.ref_kind, "SymbolRef")
   assert_eq(symbol_item.lock_lookup_status, "hit")
-  assert_eq(symbol_item.resolved_hash, Some(symbol_hash))
+  @debug.assert_eq(symbol_item.resolved_hash, Some(symbol_hash))
   let hash_item = wbtest_find_explain_import_item(
     report.imports,
     "#" + direct_hash,
   )
   assert_eq(hash_item.ref_kind, "HashRef")
   assert_eq(hash_item.lock_lookup_status, "n/a")
-  assert_eq(hash_item.resolved_hash, Some(direct_hash))
+  @debug.assert_eq(hash_item.resolved_hash, Some(direct_hash))
   wbtest_remove_if_exists(root)
 }
 
@@ -2005,17 +2005,17 @@ test "ensure_parent_dir_for_file errors when parent path is file" {
 test "split test entry path batches caps workers and balances paths" {
   let capped = split_test_entry_path_batches(["a.vibe", "b.vibe", "c.vibe"], 10)
   assert_eq(capped.length(), 3)
-  assert_eq(capped[0], ["a.vibe"])
-  assert_eq(capped[1], ["b.vibe"])
-  assert_eq(capped[2], ["c.vibe"])
+  @debug.assert_eq(capped[0], ["a.vibe"])
+  @debug.assert_eq(capped[1], ["b.vibe"])
+  @debug.assert_eq(capped[2], ["c.vibe"])
 
   let balanced = split_test_entry_path_batches(
     ["a.vibe", "b.vibe", "c.vibe", "d.vibe", "e.vibe"],
     2,
   )
   assert_eq(balanced.length(), 2)
-  assert_eq(balanced[0], ["a.vibe", "b.vibe", "c.vibe"])
-  assert_eq(balanced[1], ["d.vibe", "e.vibe"])
+  @debug.assert_eq(balanced[0], ["a.vibe", "b.vibe", "c.vibe"])
+  @debug.assert_eq(balanced[1], ["d.vibe", "e.vibe"])
 }
 
 ///|
@@ -2234,13 +2234,13 @@ test "test entry batch env chunk size accepts positive int only" {
   let prev = @sys.get_env_var("VIBE_TEST_BATCH_CHUNK_SIZE")
   defer wbtest_restore_env_var("VIBE_TEST_BATCH_CHUNK_SIZE", prev)
   @sys.unset_env_var("VIBE_TEST_BATCH_CHUNK_SIZE")
-  assert_eq(test_entry_batch_env_chunk_size(), None)
+  @debug.assert_eq(test_entry_batch_env_chunk_size(), None)
   @sys.set_env_var("VIBE_TEST_BATCH_CHUNK_SIZE", "3")
-  assert_eq(test_entry_batch_env_chunk_size(), Some(3))
+  @debug.assert_eq(test_entry_batch_env_chunk_size(), Some(3))
   @sys.set_env_var("VIBE_TEST_BATCH_CHUNK_SIZE", "0")
-  assert_eq(test_entry_batch_env_chunk_size(), None)
+  @debug.assert_eq(test_entry_batch_env_chunk_size(), None)
   @sys.set_env_var("VIBE_TEST_BATCH_CHUNK_SIZE", "bad")
-  assert_eq(test_entry_batch_env_chunk_size(), None)
+  @debug.assert_eq(test_entry_batch_env_chunk_size(), None)
 }
 
 ///|
@@ -2511,22 +2511,22 @@ test "test worker parent pid parses env value safely" {
 
   @sys.unset_env_var("VIBE_INTERNAL_PARENT_PID")
   @sys.unset_env_var("VIBE_INTERNAL_TEST_PARENT_PID")
-  assert_eq(test_worker_parent_pid(), None)
+  @debug.assert_eq(test_worker_parent_pid(), None)
 
   @sys.set_env_var("VIBE_INTERNAL_PARENT_PID", "invalid")
-  assert_eq(test_worker_parent_pid(), None)
+  @debug.assert_eq(test_worker_parent_pid(), None)
 
   @sys.unset_env_var("VIBE_INTERNAL_PARENT_PID")
   @sys.set_env_var("VIBE_INTERNAL_TEST_PARENT_PID", "invalid")
-  assert_eq(test_worker_parent_pid(), None)
+  @debug.assert_eq(test_worker_parent_pid(), None)
 
   let pid = vibe_getpid()
   @sys.set_env_var("VIBE_INTERNAL_PARENT_PID", pid.to_string())
-  assert_eq(test_worker_parent_pid(), Some(pid))
+  @debug.assert_eq(test_worker_parent_pid(), Some(pid))
 
   @sys.unset_env_var("VIBE_INTERNAL_PARENT_PID")
   @sys.set_env_var("VIBE_INTERNAL_TEST_PARENT_PID", pid.to_string())
-  assert_eq(test_worker_parent_pid(), Some(pid))
+  @debug.assert_eq(test_worker_parent_pid(), Some(pid))
 }
 
 ///|
@@ -3690,8 +3690,8 @@ test "serialize source hash cache roundtrips" {
   hashes["/tmp/b.vibe"] = "bbb"
   let parsed = parse_source_hash_cache(serialize_source_hash_cache(hashes))
   assert_eq(parsed.length(), 2)
-  assert_eq(parsed.get("/tmp/a.vibe"), Some("aaa"))
-  assert_eq(parsed.get("/tmp/b.vibe"), Some("bbb"))
+  @debug.assert_eq(parsed.get("/tmp/a.vibe"), Some("aaa"))
+  @debug.assert_eq(parsed.get("/tmp/b.vibe"), Some("bbb"))
 }
 
 ///|
@@ -3942,7 +3942,7 @@ test "cli session request parses check json" {
     Err(err) => fail("expected check request: " + err)
   }
   assert_eq(req.kind, CliSessionRequestKind::Check)
-  assert_eq(req.path, Some("/tmp/project/main.vibe"))
+  @debug.assert_eq(req.path, Some("/tmp/project/main.vibe"))
 }
 
 ///|
@@ -3955,7 +3955,7 @@ test "cli session request parses run json" {
     Err(err) => fail("expected run request: " + err)
   }
   assert_eq(req.kind, CliSessionRequestKind::Run)
-  assert_eq(req.path, Some("/tmp/project/main.vibe"))
+  @debug.assert_eq(req.path, Some("/tmp/project/main.vibe"))
 }
 
 ///|
@@ -3965,7 +3965,7 @@ test "cli session request parses shutdown json" {
     Err(err) => fail("expected shutdown request: " + err)
   }
   assert_eq(req.kind, CliSessionRequestKind::Shutdown)
-  assert_eq(req.path, None)
+  @debug.assert_eq(req.path, None)
 }
 
 ///|
@@ -3975,7 +3975,7 @@ test "cli session request parses ping json" {
     Err(err) => fail("expected ping request: " + err)
   }
   assert_eq(req.kind, CliSessionRequestKind::Ping)
-  assert_eq(req.path, None)
+  @debug.assert_eq(req.path, None)
 }
 
 ///|
@@ -4003,7 +4003,7 @@ test "cli session test report json roundtrips" {
   assert_eq(parsed.passed, 1)
   assert_eq(parsed.failed, 1)
   assert_eq(parsed.failures.length(), 1)
-  assert_eq(parsed.failures[0].name, Some("demo"))
+  @debug.assert_eq(parsed.failures[0].name, Some("demo"))
   assert_eq(parsed.failures[0].error, "boom")
 }
 
@@ -4182,9 +4182,9 @@ test "compiled exec wasm embeds throw literal for handler parity" {
 
 ///|
 test "decode tagged wasm run value" {
-  assert_eq(decode_tagged_wasm_run_value(168L), Some(WasmRunValue::Int(42L)))
-  assert_eq(decode_tagged_wasm_run_value(7L), Some(WasmRunValue::Bool(true)))
-  assert_eq(decode_tagged_wasm_run_value(3L), Some(WasmRunValue::Bool(false)))
+  @debug.assert_eq(decode_tagged_wasm_run_value(168L), Some(WasmRunValue::Int(42L)))
+  @debug.assert_eq(decode_tagged_wasm_run_value(7L), Some(WasmRunValue::Bool(true)))
+  @debug.assert_eq(decode_tagged_wasm_run_value(3L), Some(WasmRunValue::Bool(false)))
 }
 
 ///|
@@ -4244,7 +4244,7 @@ test "graph ir semantic option parser keeps positional args" {
   assert_eq(parsed.0.length(), 2)
   assert_eq(parsed.0[0], "query")
   assert_eq(parsed.0[1], "entry.ts")
-  assert_eq(parsed.1, Some("rows.json"))
+  @debug.assert_eq(parsed.1, Some("rows.json"))
 }
 
 ///|
@@ -4357,7 +4357,7 @@ test "graph ir line helpers resolve line and snippet from start offset" {
     [],
     [],
   )
-  assert_eq(graph_ir_line_col(source, row), (2, 1))
+  @debug.assert_eq(graph_ir_line_col(source, row), (2, 1))
   assert_eq(graph_ir_line_text(source, row), "foo()")
 }
 
@@ -4469,7 +4469,7 @@ test "compiled repl string fallback decodes _start export" {
     Err(err) => fail("compiled repl string literal failed: " + err)
   }
   assert_eq(result.value, WasmRunValue::Int(0L))
-  assert_eq(result.display_override, Some("\"hi\""))
+  @debug.assert_eq(result.display_override, Some("\"hi\""))
   wbtest_remove_if_exists(wasm_path)
   wbtest_remove_if_exists(source_path)
   wbtest_remove_if_exists(root)
@@ -4489,7 +4489,7 @@ test "compiled repl array fallback renders duplicate strings" {
     Err(err) => fail("compiled repl array literal failed: " + err)
   }
   assert_eq(result.value, WasmRunValue::Int(0L))
-  assert_eq(result.display_override, Some("[\"hi\", \"hi\"]"))
+  @debug.assert_eq(result.display_override, Some("[\"hi\", \"hi\"]"))
   wbtest_remove_if_exists(wasm_path)
   wbtest_remove_if_exists(source_path)
   wbtest_remove_if_exists(root)
@@ -4510,7 +4510,7 @@ test "compiled repl array binding renders on reuse" {
     Err(err) => fail("compiled repl array binding failed: " + err)
   }
   assert_eq(bound.value, WasmRunValue::Int(0L))
-  assert_eq(bound.display_override, Some("[1, 2]"))
+  @debug.assert_eq(bound.display_override, Some("[1, 2]"))
   let reused = match
     run_compiled_repl_line_with_cache(
       cache,
@@ -4523,7 +4523,7 @@ test "compiled repl array binding renders on reuse" {
     Err(err) => fail("compiled repl array reuse failed: " + err)
   }
   assert_eq(reused.value, WasmRunValue::Int(0L))
-  assert_eq(reused.display_override, Some("[1, 2]"))
+  @debug.assert_eq(reused.display_override, Some("[1, 2]"))
   wbtest_remove_if_exists(wasm0)
   wbtest_remove_if_exists(wasm1)
   wbtest_remove_if_exists(source_path)
@@ -4544,7 +4544,7 @@ test "compiled repl map fallback renders entries" {
     Err(err) => fail("compiled repl map literal failed: " + err)
   }
   assert_eq(result.value, WasmRunValue::Int(0L))
-  assert_eq(result.display_override, Some("{|\"a\": 1, \"b\": 2|}"))
+  @debug.assert_eq(result.display_override, Some("{|\"a\": 1, \"b\": 2|}"))
   wbtest_remove_if_exists(wasm_path)
   wbtest_remove_if_exists(source_path)
   wbtest_remove_if_exists(root)

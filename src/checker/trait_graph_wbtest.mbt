@@ -60,7 +60,7 @@ test "TraitGraph::supertraits returns one-hop parents only" {
   env.set_trait_info("C", TraitDefInfo::defined_here(["B"], false))
   let g = TraitGraph::of(env)
   let parents = g.supertraits("C")
-  assert_eq(parents, ["B"])
+  @debug.assert_eq(parents, ["B"])
 }
 
 ///|
@@ -153,7 +153,7 @@ test "TraitGraph::import_def rolls back if it would close a cycle" {
   let installed = g.import_def("A", TraitDefInfo::defined_here([], true), ["B"])
   assert_false(installed)
   // After rollback, A should retain its empty supertrait list.
-  assert_eq(g.supertraits("A"), [])
+  @debug.assert_eq(g.supertraits("A"), [])
   assert_false(g.has_cycle("A"))
 }
 
@@ -186,7 +186,7 @@ test "TraitGraph::cycle_chain returns the offending trait sequence" {
   match g.cycle_chain("A") {
     Some(chain) =>
       // Walk order starts at A, hits B, closes back at A.
-      assert_eq(chain, ["A", "B", "A"])
+      @debug.assert_eq(chain, ["A", "B", "A"])
     None => fail("expected cycle_chain to detect A -> B -> A")
   }
 }

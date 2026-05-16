@@ -295,20 +295,20 @@ test "RC codegen: emit_rc_dup generates correct byte sequence" {
 ///|
 test "RC codegen: parse_site_path extracts prefix and index" {
   // Top-level: no prefix
-  assert_eq(parse_site_path("stmt[0].after"), ("", 0))
-  assert_eq(parse_site_path("stmt[5].before"), ("", 5))
-  assert_eq(parse_site_path("stmt[12].old_value"), ("", 12))
-  assert_eq(parse_site_path("stmt[100].after"), ("", 100))
+  @debug.assert_eq(parse_site_path("stmt[0].after"), ("", 0))
+  @debug.assert_eq(parse_site_path("stmt[5].before"), ("", 5))
+  @debug.assert_eq(parse_site_path("stmt[12].old_value"), ("", 12))
+  @debug.assert_eq(parse_site_path("stmt[100].after"), ("", 100))
   // Nested: prefix extracted
-  assert_eq(
+  @debug.assert_eq(
     parse_site_path("stmt[2].expr.body.stmt[1].after"),
     ("stmt[2].expr.body", 1),
   )
-  assert_eq(
+  @debug.assert_eq(
     parse_site_path("stmt[3].else.stmt[0].old_value"),
     ("stmt[3].else", 0),
   )
-  assert_eq(
+  @debug.assert_eq(
     parse_site_path("stmt[0].body.stmt[2].expr.body.stmt[1].after"),
     ("stmt[0].body.stmt[2].expr.body", 1),
   )

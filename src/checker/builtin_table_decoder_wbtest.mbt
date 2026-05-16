@@ -71,7 +71,7 @@ test "decode_builtin_table: single entry String::length" {
     Some(entries) => {
       assert_eq(entries.length(), 1)
       assert_eq(entries[0].name, "String::length")
-      assert_eq(entries[0].params, [BuiltinTypeId::BTString])
+      @debug.assert_eq(entries[0].params, [BuiltinTypeId::BTString])
       assert_eq(entries[0].ret, BuiltinTypeId::BTInt)
       assert_eq(entries[0].flags, 0)
     }
@@ -143,7 +143,7 @@ test "decode_builtin_table: multiple entries" {
       assert_eq(entries[0].params.length(), 0)
       assert_eq(entries[0].ret, BuiltinTypeId::BTString)
       assert_eq(entries[1].name, "Bytes::length")
-      assert_eq(entries[1].params, [BuiltinTypeId::BTBytes])
+      @debug.assert_eq(entries[1].params, [BuiltinTypeId::BTBytes])
       assert_eq(entries[1].ret, BuiltinTypeId::BTInt)
     }
     None => fail("expected Some")

@@ -98,7 +98,7 @@ test "vibe import parsing" {
   match imp.hash {
     Some(h) => {
       assert_eq(h, @core.git_blob_hash_string("export let y = 2"))
-      assert_eq(imp.module_ref, Some(@core.module_ref_from_hash(h)))
+      @debug.assert_eq(imp.module_ref, Some(@core.module_ref_from_hash(h)))
     }
     None => fail("missing hash")
   }
@@ -117,7 +117,7 @@ test "vibe hash import resolves by content hash" {
   match imp.hash {
     Some(h) => {
       assert_eq(h, lib_hash)
-      assert_eq(imp.module_ref, Some(@core.module_ref_from_hash(h)))
+      @debug.assert_eq(imp.module_ref, Some(@core.module_ref_from_hash(h)))
     }
     None => fail("missing hash for hash import")
   }
@@ -211,7 +211,7 @@ test "vibe path import lock accepts matching hash" {
   db.set_path_ref("./foo.vibe", lib_hash)
   let imports = db.imports("main")
   assert_eq(imports.length(), 1)
-  assert_eq(imports[0].hash, Some(lib_hash))
+  @debug.assert_eq(imports[0].hash, Some(lib_hash))
   let _ = db.types("main")
   let diags = db.diagnostics("main")
   assert_true(diags.is_empty())
@@ -257,8 +257,8 @@ test "vibe hash import keeps immutable snapshot after source update" {
   let imports = db.imports("main")
   assert_eq(imports.length(), 1)
   let imp = imports[0]
-  assert_eq(imp.hash, Some(hash_v1))
-  assert_eq(imp.source_hash, Some(hash_v1))
+  @debug.assert_eq(imp.hash, Some(hash_v1))
+  @debug.assert_eq(imp.source_hash, Some(hash_v1))
   match db.get_source(imp.path) {
     Some(snapshot) => assert_eq(snapshot, lib_v1)
     None => fail("missing immutable hash snapshot")
@@ -279,8 +279,8 @@ test "vibe version import resolves through lock ref" {
   let imports = db.imports("entry")
   assert_eq(imports.length(), 1)
   let imp = imports[0]
-  assert_eq(imp.source_version, Some("main"))
-  assert_eq(imp.hash, Some(lib_hash))
+  @debug.assert_eq(imp.source_version, Some("main"))
+  @debug.assert_eq(imp.hash, Some(lib_hash))
   let _ = db.types("entry")
   let diags = db.diagnostics("entry")
   assert_true(diags.is_empty())
@@ -297,8 +297,8 @@ test "vibe symbol import resolves through lock ref" {
   let imports = db.imports("entry")
   assert_eq(imports.length(), 1)
   let imp = imports[0]
-  assert_eq(imp.source_symbol, Some("std/math"))
-  assert_eq(imp.hash, Some(lib_hash))
+  @debug.assert_eq(imp.source_symbol, Some("std/math"))
+  @debug.assert_eq(imp.hash, Some(lib_hash))
   let _ = db.types("entry")
   let diags = db.diagnostics("entry")
   assert_true(diags.is_empty())

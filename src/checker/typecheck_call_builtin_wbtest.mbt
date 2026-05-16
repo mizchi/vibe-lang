@@ -331,7 +331,7 @@ test "type_call_builtin: Http::listen requires Net effect" {
     Ok(_) => fail("expected effect guard error")
     Err(TypeError::EffectGuardNotSatisfied(operation~, missing_effect~, ..)) => {
       assert_eq(operation, "Http::listen")
-      assert_eq(missing_effect, Some("Http"))
+      @debug.assert_eq(missing_effect, Some("Http"))
     }
     Err(other) => fail("unexpected error: \{other.to_string()}")
   }
@@ -405,7 +405,7 @@ test "type_call_builtin: Threads::spawn requires Threads effect" {
     Ok(_) => fail("expected effect guard error")
     Err(TypeError::EffectGuardNotSatisfied(operation~, missing_effect~, ..)) => {
       assert_eq(operation, "Threads::spawn")
-      assert_eq(missing_effect, Some("Threads"))
+      @debug.assert_eq(missing_effect, Some("Threads"))
     }
     Err(other) => fail("unexpected error: \{other.to_string()}")
   }

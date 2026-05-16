@@ -209,7 +209,7 @@ test "desugar_vibe_commands: ls(l=true) → sh_lines with flag" {
         _ => abort("expected String arg")
       }
       // Second arg: labeled Bool l=true
-      assert_eq(args[1].label, Some("l"))
+      @debug.assert_eq(args[1].label, Some("l"))
       match args[1].expr {
         @core.Expr::Bool(value=true, ..) => ()
         _ => abort("expected Bool(true)")
@@ -232,8 +232,8 @@ test "desugar_vibe_commands: ls(l=true, a=true) preserves order" {
   match desugared.stmts[0] {
     @core.Stmt::Expr(expr=@core.Expr::Call(name="sh_lines", args~, ..), ..) => {
       // Labels preserve input order: l, a
-      assert_eq(args[1].label, Some("l"))
-      assert_eq(args[2].label, Some("a"))
+      @debug.assert_eq(args[1].label, Some("l"))
+      @debug.assert_eq(args[2].label, Some("a"))
     }
     _ => abort("expected sh_lines call")
   }
@@ -257,8 +257,8 @@ test "desugar_vibe_commands: ls -al → sh_lines with flags" {
         _ => abort("expected String")
       }
       // Flags sorted: a, l
-      assert_eq(args[1].label, Some("a"))
-      assert_eq(args[2].label, Some("l"))
+      @debug.assert_eq(args[1].label, Some("a"))
+      @debug.assert_eq(args[2].label, Some("l"))
     }
     _ => abort("expected sh_lines call")
   }
