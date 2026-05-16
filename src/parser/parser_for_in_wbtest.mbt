@@ -10,7 +10,7 @@ test "for-in parses to ForIn AST node" {
       ..
     ) => {
       assert_eq(value_name, "x")
-      assert_eq(index_name, None)
+      @debug.assert_eq(index_name, None)
       // iterable is [1, 2, 3]
       match iterable {
         @core.Expr::Array(items~, ..) => assert_eq(items.length(), 3)
@@ -32,7 +32,7 @@ test "for-in with index binding parses correctly" {
   match ast.stmts[0] {
     @core.Stmt::Expr(expr=@core.Expr::ForIn(value_name~, index_name~, ..), ..) => {
       assert_eq(value_name, "x")
-      assert_eq(index_name, Some("i"))
+      @debug.assert_eq(index_name, Some("i"))
     }
     _ => abort("expected ForIn expression with index")
   }

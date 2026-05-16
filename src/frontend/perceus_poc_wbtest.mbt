@@ -53,7 +53,7 @@ test "perceus poc drops unused let binding" {
     ],
   }
   let lines = perceus_action_lines(build_perceus_plan_poc(mod))
-  assert_eq(lines, ["stmt[0].after drop x"])
+  @debug.assert_eq(lines, ["stmt[0].after drop x"])
 }
 
 ///|
@@ -77,7 +77,7 @@ test "perceus poc inserts dup before first sequential use" {
     ],
   }
   let lines = perceus_action_lines(build_perceus_plan_poc(mod))
-  assert_eq(lines, ["stmt[1].expr.arg[0].before dup x"])
+  @debug.assert_eq(lines, ["stmt[1].expr.arg[0].before dup x"])
 }
 
 ///|
@@ -124,7 +124,7 @@ test "perceus poc inserts dup at closure capture when outer value stays live" {
     ],
   }
   let lines = perceus_action_lines(build_perceus_plan_poc(mod))
-  assert_eq(lines, ["stmt[1].expr.capture[x].before dup x"])
+  @debug.assert_eq(lines, ["stmt[1].expr.capture[x].before dup x"])
 }
 
 ///|
@@ -146,7 +146,7 @@ test "perceus poc drops unused binding inside block expression" {
     stmts: [@core.Stmt::Expr(expr=block, span=perceus_test_span(34))],
   }
   let lines = perceus_action_lines(build_perceus_plan_poc(mod))
-  assert_eq(lines, ["stmt[0].expr.body.stmt[0].after drop y"])
+  @debug.assert_eq(lines, ["stmt[0].expr.body.stmt[0].after drop y"])
 }
 
 // ======================================================================

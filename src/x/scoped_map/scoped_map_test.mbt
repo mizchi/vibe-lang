@@ -3,9 +3,9 @@ test "new and set/get" {
   let m : ScopedMap[Int] = ScopedMap::new()
   m["x"] = 1
   m["y"] = 2
-  assert_eq(m.get("x"), Some(1))
-  assert_eq(m.get("y"), Some(2))
-  assert_eq(m.get("z"), None)
+  @debug.assert_eq(m.get("x"), Some(1))
+  @debug.assert_eq(m.get("y"), Some(2))
+  @debug.assert_eq(m.get("z"), None)
 }
 
 ///|
@@ -13,11 +13,11 @@ test "fork inherits parent" {
   let parent : ScopedMap[Int] = ScopedMap::new()
   parent["a"] = 10
   let child = parent.fork()
-  assert_eq(child.get("a"), Some(10))
+  @debug.assert_eq(child.get("a"), Some(10))
   // child write doesn't affect parent
   child["a"] = 20
-  assert_eq(child.get("a"), Some(20))
-  assert_eq(parent.get("a"), Some(10))
+  @debug.assert_eq(child.get("a"), Some(20))
+  @debug.assert_eq(parent.get("a"), Some(10))
 }
 
 ///|
@@ -26,9 +26,9 @@ test "fork child adds own" {
   parent["a"] = 1
   let child = parent.fork()
   child["b"] = 2
-  assert_eq(child.get("a"), Some(1))
-  assert_eq(child.get("b"), Some(2))
-  assert_eq(parent.get("b"), None)
+  @debug.assert_eq(child.get("a"), Some(1))
+  @debug.assert_eq(child.get("b"), Some(2))
+  @debug.assert_eq(parent.get("b"), None)
 }
 
 ///|
@@ -49,7 +49,7 @@ test "remove only affects own" {
   let _ = c.get("x")
   c.remove("x")
   // still accessible from parent
-  assert_eq(c.get("x"), Some(1))
+  @debug.assert_eq(c.get("x"), Some(1))
 }
 
 ///|
@@ -59,8 +59,8 @@ test "copy flattens parent chain" {
   let c = p.fork()
   c["b"] = 2
   let flat = c.copy()
-  assert_eq(flat.get("a"), Some(1))
-  assert_eq(flat.get("b"), Some(2))
+  @debug.assert_eq(flat.get("a"), Some(1))
+  @debug.assert_eq(flat.get("b"), Some(2))
   assert_true(flat.parent is None)
 }
 
@@ -71,7 +71,7 @@ test "copy own overrides parent" {
   let c = p.fork()
   c["x"] = 2
   let flat = c.copy()
-  assert_eq(flat.get("x"), Some(2))
+  @debug.assert_eq(flat.get("x"), Some(2))
 }
 
 ///|
@@ -82,8 +82,8 @@ test "merge_up_or_self pushes to parent" {
   c["b"] = 2
   c["a"] = 10
   let merged = c.merge_up_or_self()
-  assert_eq(merged.get("a"), Some(10))
-  assert_eq(merged.get("b"), Some(2))
+  @debug.assert_eq(merged.get("a"), Some(10))
+  @debug.assert_eq(merged.get("b"), Some(2))
   assert_true(merged.parent is None)
 }
 
@@ -92,7 +92,7 @@ test "from_map" {
   let m : Map[String, Int] = {}
   m["k"] = 42
   let sm = ScopedMap::from_map(m)
-  assert_eq(sm.get("k"), Some(42))
+  @debug.assert_eq(sm.get("k"), Some(42))
 }
 
 ///|
@@ -101,7 +101,7 @@ test "lazy promotion caches in own" {
   p["x"] = 1
   let c = p.fork()
   // first get promotes to own
-  assert_eq(c.get("x"), Some(1))
+  @debug.assert_eq(c.get("x"), Some(1))
   assert_true(c.own.contains("x"))
 }
 
@@ -113,7 +113,7 @@ test "deep chain" {
   b["y"] = 2
   let c = b.fork()
   c["z"] = 3
-  assert_eq(c.get("x"), Some(1))
-  assert_eq(c.get("y"), Some(2))
-  assert_eq(c.get("z"), Some(3))
+  @debug.assert_eq(c.get("x"), Some(1))
+  @debug.assert_eq(c.get("y"), Some(2))
+  @debug.assert_eq(c.get("z"), Some(3))
 }

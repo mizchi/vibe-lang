@@ -502,7 +502,7 @@ test "loader resolve_entry_graph_head_with_fs returns None without graph_head" {
     Ok(_) => ()
     Err(err) => fail(err)
   }
-  assert_eq(resolve_entry_graph_head_with_fs(pkg, fs), None)
+  @debug.assert_eq(resolve_entry_graph_head_with_fs(pkg, fs), None)
 }
 
 ///|
@@ -1222,7 +1222,7 @@ test "loader resolve_entry_graph_head_with_fs returns None when cache.json is mi
     Ok(_) => ()
     Err(err) => fail(err)
   }
-  assert_eq(resolve_entry_graph_head_with_fs(pkg, fs), None)
+  @debug.assert_eq(resolve_entry_graph_head_with_fs(pkg, fs), None)
 }
 
 ///|
@@ -1246,7 +1246,7 @@ test "loader resolve_entry_graph_head_with_fs returns None for malformed cache.j
     Ok(_) => ()
     Err(err) => fail(err)
   }
-  assert_eq(resolve_entry_graph_head_with_fs(pkg, fs), None)
+  @debug.assert_eq(resolve_entry_graph_head_with_fs(pkg, fs), None)
 }
 
 ///|
@@ -1270,7 +1270,7 @@ test "loader resolve_entry_graph_head_with_fs returns None when graph_head is no
     Ok(_) => ()
     Err(err) => fail(err)
   }
-  assert_eq(resolve_entry_graph_head_with_fs(pkg, fs), None)
+  @debug.assert_eq(resolve_entry_graph_head_with_fs(pkg, fs), None)
 }
 
 ///|

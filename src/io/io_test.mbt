@@ -94,7 +94,7 @@ test "io shell wrappers provide ls and cat behavior" {
     Ok(v) => v
     Err(err) => fail(err)
   }
-  assert_eq(lines, ["a", "b"])
+  @debug.assert_eq(lines, ["a", "b"])
   remove_if_exists(root)
 }
 

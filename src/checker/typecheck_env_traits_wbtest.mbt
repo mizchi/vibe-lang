@@ -2,17 +2,17 @@
 test "TraitDefInfo constructors preserve ownership and hierarchy" {
   let imported = TraitDefInfo::imported(["Eq", "Hash"], true)
   assert_true(imported.origin == TraitOrigin::Imported)
-  assert_eq(imported.supertraits, ["Eq", "Hash"])
+  @debug.assert_eq(imported.supertraits, ["Eq", "Hash"])
   assert_true(imported.open_impl)
 
   let defined_here = TraitDefInfo::defined_here(["Eq"], false)
   assert_true(defined_here.origin == TraitOrigin::DefinedHere)
-  assert_eq(defined_here.supertraits, ["Eq"])
+  @debug.assert_eq(defined_here.supertraits, ["Eq"])
   assert_false(defined_here.open_impl)
 
   let seeded = TraitDefInfo::prelude_seeded()
   assert_true(seeded.origin == TraitOrigin::PreludeSeed)
-  assert_eq(seeded.supertraits, [])
+  @debug.assert_eq(seeded.supertraits, [])
   assert_false(seeded.open_impl)
 }
 

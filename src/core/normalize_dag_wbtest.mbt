@@ -326,15 +326,15 @@ test "expand_module respects depth limit" {
 
   let depth0 = expand_module("main-hash", load_module, Some(0))
   assert_eq(depth0.modules.length(), 1)
-  assert_eq(depth0.order, ["main-hash"])
+  @debug.assert_eq(depth0.order, ["main-hash"])
 
   let depth1 = expand_module("main-hash", load_module, Some(1))
   assert_eq(depth1.modules.length(), 2)
-  assert_eq(depth1.order, ["dep-hash", "main-hash"])
+  @debug.assert_eq(depth1.order, ["dep-hash", "main-hash"])
 
   let depth_all = expand_module("main-hash", load_module, None)
   assert_eq(depth_all.modules.length(), 3)
-  assert_eq(depth_all.order, ["leaf-hash", "dep-hash", "main-hash"])
+  @debug.assert_eq(depth_all.order, ["leaf-hash", "dep-hash", "main-hash"])
 }
 
 ///|
@@ -354,7 +354,7 @@ test "expand_module skips missing dependency hashes" {
   }
   let expanded = expand_module("main-hash", load_module, None)
   assert_eq(expanded.modules.length(), 1)
-  assert_eq(expanded.order, ["main-hash"])
+  @debug.assert_eq(expanded.order, ["main-hash"])
 }
 
 ///|
@@ -382,5 +382,5 @@ test "expand_module handles cyclic hashes once" {
   }
   let expanded = expand_module("main-hash", load_module, None)
   assert_eq(expanded.modules.length(), 2)
-  assert_eq(expanded.order, ["dep-hash", "main-hash"])
+  @debug.assert_eq(expanded.order, ["dep-hash", "main-hash"])
 }

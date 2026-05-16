@@ -186,7 +186,7 @@ test "shell vibe parser extracts subcommand args and pipeline" {
   match repl_parse_vibe_shell_invocation("vibe view inc |> Json::get(\"ok\")") {
     Some(invocation) => {
       assert_eq(invocation.subcommand, "view")
-      assert_eq(invocation.args, ["inc"])
+      @debug.assert_eq(invocation.args, ["inc"])
       match invocation.pipeline_tail {
         Some(tail) => assert_eq(tail, "Json::get(\"ok\")")
         None => fail("expected pipeline tail")
@@ -202,7 +202,7 @@ test "shell vibe parser accepts bare subcommand" {
     Some(invocation) => {
       assert_eq(invocation.subcommand, "symbols")
       assert_eq(invocation.args.length(), 0)
-      assert_eq(invocation.pipeline_tail, None)
+      @debug.assert_eq(invocation.pipeline_tail, None)
     }
     None => fail("expected bare vibe shell invocation")
   }
@@ -639,7 +639,7 @@ test "compiled repl line preserves function bindings across lines" {
     Err(err) => fail("function binding line failed: " + err)
   }
   assert_eq(fn_binding.value, WasmRunValue::Int(0L))
-  assert_eq(fn_binding.display_override, Some("<fn add_x>"))
+  @debug.assert_eq(fn_binding.display_override, Some("<fn add_x>"))
   let result = match
     run_compiled_repl_line_with_cache(
       cache,
@@ -692,7 +692,7 @@ test "compiled repl line preserves function alias bindings across lines" {
     Err(err) => fail("alias binding line failed: " + err)
   }
   assert_eq(alias_binding.value, WasmRunValue::Int(0L))
-  assert_eq(alias_binding.display_override, Some("<bound alias>"))
+  @debug.assert_eq(alias_binding.display_override, Some("<bound alias>"))
   let result = match
     run_compiled_repl_line_with_cache(
       cache,
@@ -727,7 +727,7 @@ test "compiled repl line renders string literal" {
     Err(err) => fail("compiled repl string literal failed: " + err)
   }
   assert_eq(result.value, WasmRunValue::Int(0L))
-  assert_eq(result.display_override, Some("\"hi\""))
+  @debug.assert_eq(result.display_override, Some("\"hi\""))
   wbtest_remove_if_exists(wasm_path)
   wbtest_remove_if_exists(source_path)
   wbtest_remove_if_exists(root)
@@ -748,7 +748,7 @@ test "compiled repl line renders string let binding and reuse" {
     Err(err) => fail("compiled repl string binding failed: " + err)
   }
   assert_eq(bound.value, WasmRunValue::Int(0L))
-  assert_eq(bound.display_override, Some("\"hi\""))
+  @debug.assert_eq(bound.display_override, Some("\"hi\""))
   let reused = match
     run_compiled_repl_line_with_cache(
       cache,
@@ -761,7 +761,7 @@ test "compiled repl line renders string let binding and reuse" {
     Err(err) => fail("compiled repl string reuse failed: " + err)
   }
   assert_eq(reused.value, WasmRunValue::Int(0L))
-  assert_eq(reused.display_override, Some("\"hi\""))
+  @debug.assert_eq(reused.display_override, Some("\"hi\""))
   wbtest_remove_if_exists(wasm0)
   wbtest_remove_if_exists(wasm1)
   wbtest_remove_if_exists(source_path)
@@ -817,7 +817,7 @@ test "normalize options parse check single file" {
     Ok(opts) => {
       assert_true(opts.check)
       assert_false(opts.write)
-      assert_eq(opts.files, ["examples/main.vibe"])
+      @debug.assert_eq(opts.files, ["examples/main.vibe"])
     }
     Err(msg) => fail("unexpected err: " + msg)
   }
@@ -1187,7 +1187,7 @@ test "cli bench can filter cases by name" {
       assert_eq(report.passed, 1)
       assert_eq(report.failed, 0)
       assert_eq(report.results.length(), 1)
-      assert_eq(report.results[0].name, Some("beta"))
+      @debug.assert_eq(report.results[0].name, Some("beta"))
     }
     Err(err) => fail("bench run failed: " + err)
   }
@@ -1267,12 +1267,12 @@ test "cli bench parses json output options" {
     ]) {
     Ok(opts) => {
       assert_true(opts.output_json)
-      assert_eq(opts.json_out_path, Some("/tmp/vibe-bench.json"))
+      @debug.assert_eq(opts.json_out_path, Some("/tmp/vibe-bench.json"))
       assert_eq(opts.runs, 5)
       assert_eq(opts.warmup, 1)
-      assert_eq(opts.case_filters, ["beta"])
+      @debug.assert_eq(opts.case_filters, ["beta"])
       assert_eq(opts.backend, BenchBackend::Wasm)
-      assert_eq(opts.paths, ["examples/simple_bench.vibe"])
+      @debug.assert_eq(opts.paths, ["examples/simple_bench.vibe"])
     }
     Err(err) => fail("parse bench args failed: " + err)
   }

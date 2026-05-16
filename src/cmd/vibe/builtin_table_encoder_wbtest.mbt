@@ -89,7 +89,7 @@ test "parse_declare_line: simple builtin" {
   match parse_declare_line("declare String::length(String) -> Int") {
     Some(d) => {
       assert_eq(d.name, "String::length")
-      assert_eq(d.params, [BuiltinTypeTag::String_])
+      @debug.assert_eq(d.params, [BuiltinTypeTag::String_])
       assert_eq(d.ret, BuiltinTypeTag::Int_)
     }
     None => fail("expected Some")

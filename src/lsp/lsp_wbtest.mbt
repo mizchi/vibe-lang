@@ -32,7 +32,7 @@ test "check_document/warning" {
   assert_true(ok)
   assert_eq(diagnostics.length(), 1)
   let diag = diagnostics[0]
-  assert_eq(diag.severity, Some(2))
+  @debug.assert_eq(diag.severity, Some(2))
   assert_true(diag.message.contains("unused variable: unused"))
 }
 
@@ -45,7 +45,7 @@ test "check_document/warning_unnecessary_mut" {
   let mut found = false
   for diag in diagnostics {
     if diag.message.contains("unnecessary `mut` binding: value") {
-      assert_eq(diag.severity, Some(2))
+      @debug.assert_eq(diag.severity, Some(2))
       found = true
     }
   }
@@ -56,7 +56,7 @@ test "check_document/warning_unnecessary_mut" {
 test "handle_initialize" {
   let resp = handle_initialize(Some(JsonRpcId::Num(1)))
   assert_eq(resp.jsonrpc, "2.0")
-  assert_eq(resp.id, Some(JsonRpcId::Num(1)))
+  @debug.assert_eq(resp.id, Some(JsonRpcId::Num(1)))
   assert_true(resp.result is Some(_))
   assert_true(resp.error is None)
   match resp.result {
@@ -82,7 +82,7 @@ test "handle_initialize" {
 test "handle_shutdown" {
   let resp = handle_shutdown(Some(JsonRpcId::Num(2)))
   assert_eq(resp.jsonrpc, "2.0")
-  assert_eq(resp.id, Some(JsonRpcId::Num(2)))
+  @debug.assert_eq(resp.id, Some(JsonRpcId::Num(2)))
   assert_true(resp.error is None)
 }
 
@@ -438,11 +438,11 @@ test "offset_to_position/middle" {
 test "DocumentManager/basic" {
   let dm = DocumentManager::new()
   dm.open("file://test.vibe", "let x = 1", 1)
-  assert_eq(dm.get("file://test.vibe"), Some("let x = 1"))
-  assert_eq(dm.get_version("file://test.vibe"), Some(1))
+  @debug.assert_eq(dm.get("file://test.vibe"), Some("let x = 1"))
+  @debug.assert_eq(dm.get_version("file://test.vibe"), Some(1))
   dm.update("file://test.vibe", "let x = 2", 2)
-  assert_eq(dm.get("file://test.vibe"), Some("let x = 2"))
-  assert_eq(dm.get_version("file://test.vibe"), Some(2))
+  @debug.assert_eq(dm.get("file://test.vibe"), Some("let x = 2"))
+  @debug.assert_eq(dm.get_version("file://test.vibe"), Some(2))
   dm.close("file://test.vibe")
   assert_true(dm.get("file://test.vibe") is None)
 }

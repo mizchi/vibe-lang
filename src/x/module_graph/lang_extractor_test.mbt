@@ -1,16 +1,16 @@
 ///|
 test "detect_language_id" {
-  assert_eq(detect_language_id("foo.vibe"), Some("vibe"))
-  assert_eq(detect_language_id("bar.ts"), Some("typescript"))
-  assert_eq(detect_language_id("baz.tsx"), Some("typescript"))
-  assert_eq(detect_language_id("mod.mts"), Some("typescript"))
-  assert_eq(detect_language_id("mod.cts"), Some("typescript"))
-  assert_eq(detect_language_id("app.js"), Some("javascript"))
-  assert_eq(detect_language_id("app.mjs"), Some("javascript"))
-  assert_eq(detect_language_id("app.cjs"), Some("javascript"))
-  assert_eq(detect_language_id("main.py"), Some("python"))
-  assert_eq(detect_language_id("stub.pyi"), Some("python"))
-  assert_eq(detect_language_id("test.rs"), None)
+  @debug.assert_eq(detect_language_id("foo.vibe"), Some("vibe"))
+  @debug.assert_eq(detect_language_id("bar.ts"), Some("typescript"))
+  @debug.assert_eq(detect_language_id("baz.tsx"), Some("typescript"))
+  @debug.assert_eq(detect_language_id("mod.mts"), Some("typescript"))
+  @debug.assert_eq(detect_language_id("mod.cts"), Some("typescript"))
+  @debug.assert_eq(detect_language_id("app.js"), Some("javascript"))
+  @debug.assert_eq(detect_language_id("app.mjs"), Some("javascript"))
+  @debug.assert_eq(detect_language_id("app.cjs"), Some("javascript"))
+  @debug.assert_eq(detect_language_id("main.py"), Some("python"))
+  @debug.assert_eq(detect_language_id("stub.pyi"), Some("python"))
+  @debug.assert_eq(detect_language_id("test.rs"), None)
 }
 
 ///|
@@ -166,7 +166,7 @@ test "extract_graph_ir_rows_with_semantic_provider can refine baseline rows" {
     Ok(rows) => {
       assert_eq(rows.length(), 1)
       assert_eq(rows[0].signature, "function greet(name: string): string")
-      assert_eq(rows[0].type_terms, ["string"])
+      @debug.assert_eq(rows[0].type_terms, ["string"])
     }
     Err(e) => fail(e)
   }

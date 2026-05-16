@@ -88,8 +88,8 @@ test "parse cmd args compile component with out and wite" {
     Ok(opts) => {
       assert_eq(opts.command, CommandKind::Compile)
       assert_eq(opts.mode, RunMode::Component)
-      assert_eq(opts.out_path, Some("dist/app.component.wasm"))
-      assert_eq(opts.opt_level, Some("-Oz"))
+      @debug.assert_eq(opts.out_path, Some("dist/app.component.wasm"))
+      @debug.assert_eq(opts.opt_level, Some("-Oz"))
     }
     Err(msg) => fail("unexpected err: " + msg)
   }

@@ -95,7 +95,7 @@ test "build_closure_payload_with_fs serializes entry and imported sources" {
     Err(err) => fail(err)
   }
   let parts = split_payload_parts(payload)
-  assert_eq(parts, [
+  @debug.assert_eq(parts, [
     "/workspace/main.vibe", main_source, "/workspace/lib.vibe", lib_source,
   ])
 }
@@ -116,7 +116,7 @@ test "emit_closure_payload_file writes payload to output" {
     Err(err) => fail(err)
   }
   let parts = split_payload_parts(payload)
-  assert_eq(parts, ["/workspace/main.vibe", "let answer = () -> Int { 42 }\n"])
+  @debug.assert_eq(parts, ["/workspace/main.vibe", "let answer = () -> Int { 42 }\n"])
 }
 
 ///|
