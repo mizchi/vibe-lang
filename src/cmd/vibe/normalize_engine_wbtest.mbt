@@ -27,7 +27,11 @@ test "normalize_engine: format basic let binding" {
   inspect(
     result,
     content=(
-      #|Ok("//# Functions\n\nlet x: Int = 1\n")
+      #|Ok(//# Functions
+      #|
+      #|let x: Int = 1
+      #|)
+
     ),
   )
 }
@@ -41,7 +45,13 @@ test "normalize_engine: format multiple let bindings with spacing" {
   inspect(
     result,
     content=(
-      #|Ok("//# Functions\n\nlet a: Int = 1\n\nlet b: Int = 2\n")
+      #|Ok(//# Functions
+      #|
+      #|let a: Int = 1
+      #|
+      #|let b: Int = 2
+      #|)
+
     ),
   )
 }
@@ -54,7 +64,11 @@ test "normalize_engine: constant folding for addition" {
   inspect(
     result,
     content=(
-      #|Ok("//# Functions\n\nlet value: Int = 3\n")
+      #|Ok(//# Functions
+      #|
+      #|let value: Int = 3
+      #|)
+
     ),
   )
 }
@@ -67,7 +81,11 @@ test "normalize_engine: constant folding for multiplication" {
   inspect(
     result,
     content=(
-      #|Ok("//# Functions\n\nlet value: Int = 12\n")
+      #|Ok(//# Functions
+      #|
+      #|let value: Int = 12
+      #|)
+
     ),
   )
 }
@@ -174,7 +192,11 @@ test "normalize_engine: inferred annotation on non-fn let" {
   inspect(
     result,
     content=(
-      #|Ok("//# Functions\n\nlet answer: Int = 42\n")
+      #|Ok(//# Functions
+      #|
+      #|let answer: Int = 42
+      #|)
+
     ),
   )
 }
@@ -443,7 +465,9 @@ test "normalize_engine: empty source returns empty string" {
   let result = normalize_source_text(source)
   let expected =
     #|Ok("")
-  inspect(result, content=expected)
+  inspect(result, content=(
+    #|Ok()
+  ))
 }
 
 ///|
@@ -454,7 +478,11 @@ test "normalize_engine: constant folding subtraction" {
   inspect(
     result,
     content=(
-      #|Ok("//# Functions\n\nlet value: Int = 7\n")
+      #|Ok(//# Functions
+      #|
+      #|let value: Int = 7
+      #|)
+
     ),
   )
 }
