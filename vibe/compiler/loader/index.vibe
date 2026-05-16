@@ -1114,7 +1114,14 @@ export let rec check_module = (
       let tokens = lex(source)
       let stmts = parse_program(tokens)
       let base_dir = dir_of(path)
-      let new_loading = Array::concat(loading, [path])
+      // Cycle-detection stack: push self before recursing through this
+      // module's imports, truncate back when done. O(1) per frame vs.
+      // the previous `Array::concat(loading, [path])`, which copied the
+      // entire ancestor stack on every recursion and made nested module
+      // loads O(depth²) — same idiom as `runtime/typecheck_fs.vibe`
+      // (#366 truncate cutover).
+      let saved_loading_len = Array::length(loading)
+      Array::push(loading, path)
 
       // Resolve imports using while loop
       let mut import_env = EnvEmpty
@@ -1126,7 +1133,7 @@ export let rec check_module = (
             match resolve_path_in_sources(base_dir, raw_path, sources) {
               None => throw(String::concat("module not found: ", resolve_path(base_dir, raw_path))),
               Some((resolved, mod_source)) => {
-                let mod_env = check_module(mod_source, resolved, sources, new_loading, checked_cache)
+                let mod_env = check_module(mod_source, resolved, sources, loading, checked_cache)
                 bind_checked_imports(names, 0, import_env, mod_env)
               }
             }
@@ -1135,7 +1142,7 @@ export let rec check_module = (
             match resolve_path_in_sources(base_dir, raw_path, sources) {
               None => throw(String::concat("module not found: ", resolve_path(base_dir, raw_path))),
               Some((resolved, mod_source)) => {
-                let mod_env = check_module(mod_source, resolved, sources, new_loading, checked_cache)
+                let mod_env = check_module(mod_source, resolved, sources, loading, checked_cache)
                 bind_checked_imports(names, 0, import_env, mod_env)
               }
             }
@@ -1144,6 +1151,7 @@ export let rec check_module = (
         }
         ri = ri + 1
       }
+      Array::truncate(loading, saved_loading_len)
 
       // Type-check with imported env
       let empty_defs = Array::slice([TDAlias("_dummy", CtUnit)], 0, 0)

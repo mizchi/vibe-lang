@@ -589,6 +589,12 @@ let rec ensure_fingerprint = (
         // O(1) per frame vs. previous Array::concat(stack, [path]) which was O(depth) per frame.
         let saved_stack_len = Array::length(stack)
         Array::push(stack, path)
+        // Tail-recursive over `deps`, accumulating (dep_path, dep_fp)
+        // pairs into `dep_acc`. Previously each recursion did
+        // `Array::concat(dep_acc, [tuple])` — O(N) copy per step,
+        // O(N²) over the deps list. Mutating in place is safe because
+        // `dep_acc` flows linearly down the recursion (one path, no
+        // sibling branches that need the old prefix).
         let rec resolve_nested = (
           i: Int,
           dep_acc: Array[(String, String)],
@@ -615,11 +621,10 @@ let rec ensure_fingerprint = (
               dep_path,
               stack
             )
+            Array::push(dep_acc, (dep_path, dep_fp))
             resolve_nested(
               i + 1,
-              Array::concat(dep_acc, [
-                (dep_path, dep_fp)
-              ]),
+              dep_acc,
               next_db,
               next_env_cache,
               next_dep_source_cache2,
