@@ -116,7 +116,7 @@ test "shell meta command ignores non-meta input" {
     "",
     fn(s) { lines.push(s) },
   )
-  assert_eq(result, ReplMetaCommandResult::NotMeta)
+  @debug.assert_eq(result, ReplMetaCommandResult::NotMeta)
   assert_eq(lines.length(), 0)
 }
 
@@ -130,7 +130,7 @@ test "shell meta view resolves current module symbol" {
     source,
     fn(s) { lines.push(s) },
   )
-  assert_eq(result, ReplMetaCommandResult::HandledContinue)
+  @debug.assert_eq(result, ReplMetaCommandResult::HandledContinue)
   let text = wbtest_join_lines(lines)
   assert_true(text.contains("inc : (x: Int) -> Int"))
 }
@@ -145,7 +145,7 @@ test "shell meta outline defaults to current module" {
     source,
     fn(s) { lines.push(s) },
   )
-  assert_eq(result, ReplMetaCommandResult::HandledContinue)
+  @debug.assert_eq(result, ReplMetaCommandResult::HandledContinue)
   let text = wbtest_join_lines(lines)
   assert_true(text.contains("outline: current"))
   assert_true(text.contains("\tbase\t"))
@@ -162,7 +162,7 @@ test "shell meta peek reports missing symbol" {
     source,
     fn(s) { lines.push(s) },
   )
-  assert_eq(result, ReplMetaCommandResult::HandledContinue)
+  @debug.assert_eq(result, ReplMetaCommandResult::HandledContinue)
   assert_eq(lines.length(), 1)
   assert_eq(lines[0], "symbol not found: __wb_missing_symbol_1")
 }
@@ -176,7 +176,7 @@ test "shell meta unknown command is handled" {
     "",
     fn(s) { lines.push(s) },
   )
-  assert_eq(result, ReplMetaCommandResult::HandledContinue)
+  @debug.assert_eq(result, ReplMetaCommandResult::HandledContinue)
   assert_eq(lines.length(), 1)
   assert_eq(lines[0], "unknown command: :unknown")
 }
@@ -258,7 +258,7 @@ test "shell vibe command prints readable help by default" {
     "",
     fn(s) { lines.push(s) },
   )
-  assert_eq(result, ReplMetaCommandResult::HandledContinue)
+  @debug.assert_eq(result, ReplMetaCommandResult::HandledContinue)
   let text = wbtest_join_lines(lines)
   assert_true(text.contains("vibe commands:"))
   assert_true(text.contains("symbols"))
@@ -279,7 +279,7 @@ test "shell vibe command supports --json for help output" {
     "",
     fn(s) { lines.push(s) },
   )
-  assert_eq(result, ReplMetaCommandResult::HandledContinue)
+  @debug.assert_eq(result, ReplMetaCommandResult::HandledContinue)
   assert_eq(lines.length(), 1)
   assert_true(lines[0].contains("\"command\":\"help\""))
   assert_true(lines[0].contains("\"ok\":true"))
@@ -300,7 +300,7 @@ test "shell vibe bare command prints symbols in readable format" {
     "let x = 1\n",
     fn(s) { lines.push(s) },
   )
-  assert_eq(result, ReplMetaCommandResult::HandledContinue)
+  @debug.assert_eq(result, ReplMetaCommandResult::HandledContinue)
   let text = wbtest_join_lines(lines)
   assert_true(text.contains("local scope (1)"))
   assert_true(text.contains("| kind | name | signature | address |"))
@@ -323,7 +323,7 @@ test "shell vibe symbols supports scope flags for builtin and shell" {
     "let x = 1\n",
     fn(s) { lines.push(s) },
   )
-  assert_eq(result, ReplMetaCommandResult::HandledContinue)
+  @debug.assert_eq(result, ReplMetaCommandResult::HandledContinue)
   let text = wbtest_join_lines(lines)
   assert_true(text.contains("builtin scope ("))
   assert_true(text.contains("shell commands ("))
@@ -346,7 +346,7 @@ test "shell vibe symbols supports --json output" {
     "let x = 1\n",
     fn(s) { lines.push(s) },
   )
-  assert_eq(result, ReplMetaCommandResult::HandledContinue)
+  @debug.assert_eq(result, ReplMetaCommandResult::HandledContinue)
   assert_eq(lines.length(), 1)
   assert_true(lines[0].contains("\"command\":\"symbols\""))
   assert_true(lines[0].contains("\"scopes\":[\"local\"]"))
@@ -370,7 +370,7 @@ test "shell vibe command supports pipeline transform over json payload" {
     source,
     fn(s) { lines.push(s) },
   )
-  assert_eq(result, ReplMetaCommandResult::HandledContinue)
+  @debug.assert_eq(result, ReplMetaCommandResult::HandledContinue)
   let text = wbtest_join_lines(lines)
   assert_true(
     text.contains(
@@ -389,7 +389,7 @@ test "shell meta type prints symbol signature" {
     source,
     fn(s) { lines.push(s) },
   )
-  assert_eq(result, ReplMetaCommandResult::HandledContinue)
+  @debug.assert_eq(result, ReplMetaCommandResult::HandledContinue)
   let text = wbtest_join_lines(lines)
   assert_true(text.contains("inc : (x: Int) -> Int"))
 }
@@ -410,7 +410,7 @@ test "shell vibe type prints readable signature by default" {
     source,
     fn(s) { lines.push(s) },
   )
-  assert_eq(result, ReplMetaCommandResult::HandledContinue)
+  @debug.assert_eq(result, ReplMetaCommandResult::HandledContinue)
   let text = wbtest_join_lines(lines)
   assert_true(text.contains("inc : (x: Int) -> Int"))
 }
@@ -431,7 +431,7 @@ test "shell vibe type supports --json output" {
     source,
     fn(s) { lines.push(s) },
   )
-  assert_eq(result, ReplMetaCommandResult::HandledContinue)
+  @debug.assert_eq(result, ReplMetaCommandResult::HandledContinue)
   assert_eq(lines.length(), 1)
   assert_true(lines[0].contains("\"command\":\"type\""))
   assert_true(lines[0].contains("\"signature\":\"(x: Int) -> Int\""))
@@ -457,7 +457,7 @@ test "shell vibe normalize accepts entry symbols and drops pure expr stmt" {
     source,
     fn(s) { lines.push(s) },
   )
-  assert_eq(result, ReplMetaCommandResult::HandledContinue)
+  @debug.assert_eq(result, ReplMetaCommandResult::HandledContinue)
   let text = wbtest_join_lines(lines)
   assert_true(text.contains("normalize: scratch"))
   assert_true(text.contains("let f: (Int) -> Int = (v) -> { v * 2 }"))
@@ -483,7 +483,7 @@ test "shell vibe normalize dedups duplicate lets with last wins" {
     source,
     fn(s) { lines.push(s) },
   )
-  assert_eq(result, ReplMetaCommandResult::HandledContinue)
+  @debug.assert_eq(result, ReplMetaCommandResult::HandledContinue)
   let text = wbtest_join_lines(lines)
   assert_false(text.contains("let x: Int = 3"))
   assert_true(text.contains("let x: Int = 111"))
@@ -570,7 +570,7 @@ test "compiled repl line preserves let bindings across lines" {
     Ok(v) => v
     Err(err) => fail("first compiled repl line failed: " + err)
   }
-  assert_eq(first.value, WasmRunValue::Int(40L))
+  @debug.assert_eq(first.value, WasmRunValue::Int(40L))
   assert_true(@os_fs.path_exists(wasm0))
   let second = match
     run_compiled_repl_line_with_cache(
@@ -583,7 +583,7 @@ test "compiled repl line preserves let bindings across lines" {
     Ok(v) => v
     Err(err) => fail("second compiled repl line failed: " + err)
   }
-  assert_eq(second.value, WasmRunValue::Int(42L))
+  @debug.assert_eq(second.value, WasmRunValue::Int(42L))
   assert_true(@os_fs.path_exists(wasm1))
   assert_true(second.total_us > 0)
   wbtest_remove_if_exists(wasm0)
@@ -605,7 +605,7 @@ test "compiled repl line decodes bool result" {
     Ok(v) => v
     Err(err) => fail("compiled repl bool line failed: " + err)
   }
-  assert_eq(result.value, WasmRunValue::Bool(true))
+  @debug.assert_eq(result.value, WasmRunValue::Bool(true))
   assert_true(@os_fs.path_exists(wasm_path))
   wbtest_remove_if_exists(wasm_path)
   wbtest_remove_if_exists(source_path)
@@ -638,7 +638,7 @@ test "compiled repl line preserves function bindings across lines" {
     Ok(v) => v
     Err(err) => fail("function binding line failed: " + err)
   }
-  assert_eq(fn_binding.value, WasmRunValue::Int(0L))
+  @debug.assert_eq(fn_binding.value, WasmRunValue::Int(0L))
   @debug.assert_eq(fn_binding.display_override, Some("<fn add_x>"))
   let result = match
     run_compiled_repl_line_with_cache(
@@ -651,7 +651,7 @@ test "compiled repl line preserves function bindings across lines" {
     Ok(v) => v
     Err(err) => fail("function call line failed: " + err)
   }
-  assert_eq(result.value, WasmRunValue::Int(42L))
+  @debug.assert_eq(result.value, WasmRunValue::Int(42L))
   wbtest_remove_if_exists(wasm0)
   wbtest_remove_if_exists(wasm1)
   wbtest_remove_if_exists(wasm2)
@@ -691,7 +691,7 @@ test "compiled repl line preserves function alias bindings across lines" {
     Ok(v) => v
     Err(err) => fail("alias binding line failed: " + err)
   }
-  assert_eq(alias_binding.value, WasmRunValue::Int(0L))
+  @debug.assert_eq(alias_binding.value, WasmRunValue::Int(0L))
   @debug.assert_eq(alias_binding.display_override, Some("<bound alias>"))
   let result = match
     run_compiled_repl_line_with_cache(
@@ -704,7 +704,7 @@ test "compiled repl line preserves function alias bindings across lines" {
     Ok(v) => v
     Err(err) => fail("alias call line failed: " + err)
   }
-  assert_eq(result.value, WasmRunValue::Int(42L))
+  @debug.assert_eq(result.value, WasmRunValue::Int(42L))
   wbtest_remove_if_exists(wasm0)
   wbtest_remove_if_exists(wasm1)
   wbtest_remove_if_exists(wasm2)
@@ -726,7 +726,7 @@ test "compiled repl line renders string literal" {
     Ok(v) => v
     Err(err) => fail("compiled repl string literal failed: " + err)
   }
-  assert_eq(result.value, WasmRunValue::Int(0L))
+  @debug.assert_eq(result.value, WasmRunValue::Int(0L))
   @debug.assert_eq(result.display_override, Some("\"hi\""))
   wbtest_remove_if_exists(wasm_path)
   wbtest_remove_if_exists(source_path)
@@ -747,7 +747,7 @@ test "compiled repl line renders string let binding and reuse" {
     Ok(v) => v
     Err(err) => fail("compiled repl string binding failed: " + err)
   }
-  assert_eq(bound.value, WasmRunValue::Int(0L))
+  @debug.assert_eq(bound.value, WasmRunValue::Int(0L))
   @debug.assert_eq(bound.display_override, Some("\"hi\""))
   let reused = match
     run_compiled_repl_line_with_cache(
@@ -760,7 +760,7 @@ test "compiled repl line renders string let binding and reuse" {
     Ok(v) => v
     Err(err) => fail("compiled repl string reuse failed: " + err)
   }
-  assert_eq(reused.value, WasmRunValue::Int(0L))
+  @debug.assert_eq(reused.value, WasmRunValue::Int(0L))
   @debug.assert_eq(reused.display_override, Some("\"hi\""))
   wbtest_remove_if_exists(wasm0)
   wbtest_remove_if_exists(wasm1)
@@ -1066,11 +1066,11 @@ test "cli normalize directory hoists non-index import into index" {
 ///|
 test "cli bench backend parse" {
   match parse_bench_backend("compiled") {
-    Some(backend) => assert_eq(backend, BenchBackend::Wasm)
+    Some(backend) => @debug.assert_eq(backend, BenchBackend::Wasm)
     None => fail("expected compiled backend")
   }
   match parse_bench_backend("wasm") {
-    Some(backend) => assert_eq(backend, BenchBackend::Wasm)
+    Some(backend) => @debug.assert_eq(backend, BenchBackend::Wasm)
     None => fail("expected wasm backend")
   }
   match parse_bench_backend("interpreter") {
@@ -1271,7 +1271,7 @@ test "cli bench parses json output options" {
       assert_eq(opts.runs, 5)
       assert_eq(opts.warmup, 1)
       @debug.assert_eq(opts.case_filters, ["beta"])
-      assert_eq(opts.backend, BenchBackend::Wasm)
+      @debug.assert_eq(opts.backend, BenchBackend::Wasm)
       @debug.assert_eq(opts.paths, ["examples/simple_bench.vibe"])
     }
     Err(err) => fail("parse bench args failed: " + err)

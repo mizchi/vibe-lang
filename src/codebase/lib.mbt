@@ -3,7 +3,7 @@
 fn extract_vibe_from_markdown(markdown : String) -> String {
   let lines : Array[String] = markdown
     .split("\n")
-    .map(StringView::to_string)
+    .map(StringView::to_owned)
     .collect()
   let blocks : Array[String] = []
   let buf : Array[String] = []

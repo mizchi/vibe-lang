@@ -66,11 +66,6 @@ enum ReplMetaCommandResult {
 } derive(Debug, Eq)
 
 ///|
-impl Show for ReplMetaCommandResult with output(self, logger) {
-  logger.write_string(Debug::to_repr(self).to_string())
-}
-
-///|
 struct ReplSymbolMatch {
   entry : @frontend.SymbolEntry
   source : String

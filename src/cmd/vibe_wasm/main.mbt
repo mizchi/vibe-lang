@@ -3,13 +3,13 @@ pub enum CommandKind {
   Run
   Compile
   Compare
-} derive(Eq, Show, Debug)
+} derive(Eq, Debug)
 
 ///|
 pub enum RunMode {
   CoreWasm
   Component
-} derive(Eq, Show, Debug)
+} derive(Eq, Debug)
 
 ///|
 pub struct CmdOptions {

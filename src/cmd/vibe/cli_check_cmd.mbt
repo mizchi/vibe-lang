@@ -151,11 +151,6 @@ enum CliSessionRequestKind {
 } derive(Eq, Debug)
 
 ///|
-impl Show for CliSessionRequestKind with output(self, logger) {
-  logger.write_string(Debug::to_repr(self).to_string())
-}
-
-///|
 struct CliSessionRequest {
   kind : CliSessionRequestKind
   path : String?

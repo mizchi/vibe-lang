@@ -59,7 +59,7 @@ fn EffectTestCursor::read_bytes(self : EffectTestCursor, n : Int) -> Bytes {
   }
   let view = self.bytes[self.pos:self.pos + n]
   self.pos += n
-  view.to_bytes()
+  view.to_owned()
 }
 
 ///|

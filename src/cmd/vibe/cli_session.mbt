@@ -279,11 +279,6 @@ enum SessionHttpPingState {
 } derive(Eq, Debug)
 
 ///|
-impl Show for SessionHttpPingState with output(self, logger) {
-  logger.write_string(Debug::to_repr(self).to_string())
-}
-
-///|
 fn parse_session_http_ping_state(json : Json) -> SessionHttpPingState {
   match json {
     Json::Object(obj) =>

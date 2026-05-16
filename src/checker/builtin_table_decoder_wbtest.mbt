@@ -72,7 +72,7 @@ test "decode_builtin_table: single entry String::length" {
       assert_eq(entries.length(), 1)
       assert_eq(entries[0].name, "String::length")
       @debug.assert_eq(entries[0].params, [BuiltinTypeId::BTString])
-      assert_eq(entries[0].ret, BuiltinTypeId::BTInt)
+      @debug.assert_eq(entries[0].ret, BuiltinTypeId::BTInt)
       assert_eq(entries[0].flags, 0)
     }
     None => fail("expected Some")
@@ -92,12 +92,12 @@ test "decode_builtin_table: Array::get with container type" {
       assert_eq(entries.length(), 1)
       assert_eq(entries[0].name, "Array::get")
       assert_eq(entries[0].params.length(), 2)
-      assert_eq(
+      @debug.assert_eq(
         entries[0].params[0],
         BuiltinTypeId::BTArray(BuiltinTypeId::BTTypeVar(0)),
       )
-      assert_eq(entries[0].params[1], BuiltinTypeId::BTInt)
-      assert_eq(entries[0].ret, BuiltinTypeId::BTTypeVar(0))
+      @debug.assert_eq(entries[0].params[1], BuiltinTypeId::BTInt)
+      @debug.assert_eq(entries[0].ret, BuiltinTypeId::BTTypeVar(0))
     }
     None => fail("expected Some")
   }
@@ -116,15 +116,15 @@ test "decode_builtin_table: Map type" {
       assert_eq(entries.length(), 1)
       assert_eq(entries[0].name, "Map::get")
       assert_eq(entries[0].params.length(), 2)
-      assert_eq(
+      @debug.assert_eq(
         entries[0].params[0],
         BuiltinTypeId::BTMap(
           BuiltinTypeId::BTTypeVar(0),
           BuiltinTypeId::BTTypeVar(1),
         ),
       )
-      assert_eq(entries[0].params[1], BuiltinTypeId::BTTypeVar(0))
-      assert_eq(entries[0].ret, BuiltinTypeId::BTTypeVar(1))
+      @debug.assert_eq(entries[0].params[1], BuiltinTypeId::BTTypeVar(0))
+      @debug.assert_eq(entries[0].ret, BuiltinTypeId::BTTypeVar(1))
     }
     None => fail("expected Some")
   }
@@ -141,10 +141,10 @@ test "decode_builtin_table: multiple entries" {
       assert_eq(entries.length(), 2)
       assert_eq(entries[0].name, "Fs::getcwd")
       assert_eq(entries[0].params.length(), 0)
-      assert_eq(entries[0].ret, BuiltinTypeId::BTString)
+      @debug.assert_eq(entries[0].ret, BuiltinTypeId::BTString)
       assert_eq(entries[1].name, "Bytes::length")
       @debug.assert_eq(entries[1].params, [BuiltinTypeId::BTBytes])
-      assert_eq(entries[1].ret, BuiltinTypeId::BTInt)
+      @debug.assert_eq(entries[1].ret, BuiltinTypeId::BTInt)
     }
     None => fail("expected Some")
   }
@@ -177,7 +177,7 @@ test "decode_builtin_table: Set type" {
   match decode_builtin_table(data) {
     Some(entries) => {
       assert_eq(entries[0].params.length(), 1)
-      assert_eq(
+      @debug.assert_eq(
         entries[0].params[0],
         BuiltinTypeId::BTSet(BuiltinTypeId::BTTypeVar(0)),
       )
@@ -210,7 +210,7 @@ test "decode_builtin_table: Option type" {
   let data = ints_to_bytes(buf)
   match decode_builtin_table(data) {
     Some(entries) =>
-      assert_eq(entries[0].ret, BuiltinTypeId::BTOption(BuiltinTypeId::BTInt))
+      @debug.assert_eq(entries[0].ret, BuiltinTypeId::BTOption(BuiltinTypeId::BTInt))
     None => fail("expected Some")
   }
 }

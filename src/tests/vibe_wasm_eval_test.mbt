@@ -31,11 +31,6 @@ struct WasmEvalResult {
 } derive(Debug, Eq)
 
 ///|
-impl Show for WasmEvalResult with output(self, logger) {
-  logger.write_string(Debug::to_repr(self).to_string())
-}
-
-///|
 struct Cursor {
   bytes : Array[Byte]
   mut pos : Int
