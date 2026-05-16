@@ -41,7 +41,7 @@ pub fn VibeDb::new() -> VibeDb {
                   Some(d) => diags.push(rt, d)
                   None => ()
                 }
-                HashedModule::new(parsed.or({ stmts: [] }))
+                HashedModule::new(parsed.unwrap_or({ stmts: [] }))
               }
             }
           _ => {
@@ -50,7 +50,7 @@ pub fn VibeDb::new() -> VibeDb {
               Some(d) => diags.push(rt, d)
               None => ()
             }
-            HashedModule::new(parsed.or({ stmts: [] }))
+            HashedModule::new(parsed.unwrap_or({ stmts: [] }))
           }
         }
       }
