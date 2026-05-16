@@ -355,25 +355,120 @@ fn session_http_wait_until_unreachable(port : Int) -> Bool {
 }
 
 ///|
+/// Build the shell command that launches a session-http worker as a
+/// detached daemon.
+///
+/// The inner `sh -c '...'` preamble closes file descriptors 3..1023
+/// before `exec`'ing the worker. Without this, any inheritable pipe fd
+/// held by the spawning vibe process (e.g. the stdout-capture pipe of a
+/// test batch worker) would be kept alive by the daemonized session-http
+/// worker. The original parent would then block forever in `epoll_wait`,
+/// reading from a pipe whose write end is held open by an orphan it
+/// cannot see.
+///
+/// `VIBE_INTERNAL_PARENT_PID=<parent>` instructs the worker (in
+/// `cli.mbt:run`) to install the parent-watchdog thread so it exits when
+/// the spawning vibe dies, instead of lingering as a PPID=1 orphan.
 fn build_session_http_spawn_command(
   self_bin : String,
   port : Int,
   features : @runtime.RuntimeFeatureFlags,
   worker_token : String,
+  parent_pid : Int,
 ) -> String {
-  "nohup env VIBE_SESSION_WORKER_TOKEN=" +
-  shell_quote_command_arg(worker_token) +
-  " " +
-  shell_quote_command_arg(self_bin) +
-  (if features.is_unstable_async_enabled() { " --unstable-async" } else { "" }) +
-  (if features.is_unstable_threads_enabled() {
-    " --unstable-threads"
-  } else {
-    ""
-  }) +
-  " session-http --port " +
-  port.to_string() +
+  // Walk the live `/proc/self/fd` view rather than blindly looping a
+  // numeric range: `exec N<&-` on a non-existent fd makes dash abort
+  // the script (POSIX leaves `exec`-with-redirect errors fatal), so a
+  // `for i in 3..1023` loop terminates with status 127 after the first
+  // gap. Globbing only enumerates fds that actually exist.
+  let close_inherited_fds = "for fd in /proc/$$/fd/*; do " +
+    "n=\"${fd##*/}\"; " +
+    "case \"$n\" in 0|1|2) ;; " +
+    "*) eval \"exec $n<&-\" 2>/dev/null ;; " +
+    "esac; done"
+  let exec_worker = "exec env VIBE_INTERNAL_PARENT_PID=" +
+    parent_pid.to_string() +
+    " VIBE_SESSION_WORKER_TOKEN=" +
+    shell_quote_command_arg(worker_token) +
+    " " +
+    shell_quote_command_arg(self_bin) +
+    (if features.is_unstable_async_enabled() {
+      " --unstable-async"
+    } else {
+      ""
+    }) +
+    (if features.is_unstable_threads_enabled() {
+      " --unstable-threads"
+    } else {
+      ""
+    }) +
+    " session-http --port " +
+    port.to_string()
+  let payload = close_inherited_fds + "; " + exec_worker
+  // `shell_quote_command_arg` produces double-quoted strings, so any
+  // single quotes in the binary path (e.g. /home/O'Neil/vibe.exe) pass
+  // through unescaped. Wrapping the whole payload in `'…'` would split
+  // mid-path on those. Splice each embedded `'` as `'\''` so the outer
+  // single-quoted region survives.
+  "nohup sh -c " +
+  pose_single_quote(payload) +
   " >/dev/null 2>&1 &"
+}
+
+///|
+/// POSIX-safe single-quote wrap: rewrites each `'` in `s` as the
+/// closing-quote / escaped-quote / opening-quote sequence `'\''`, then
+/// surrounds the result with `'…'`. The output is byte-identical to `s`
+/// when piped through `sh -c`.
+fn pose_single_quote(s : String) -> String {
+  "'" + s.replace_all(old="'", new="'\\''") + "'"
+}
+
+///|
+/// Choose the parent PID the session-http worker should watch.
+///
+/// Prefer the orchestrator pid when we are a batch worker
+/// (`VIBE_INTERNAL_TEST_PARENT_PID` / `VIBE_INTERNAL_PARENT_PID`), so
+/// session-http stays alive across all batch workers of a single
+/// `vibe test` run; fall back to our own pid when we are the
+/// orchestrator. The pid is consumed by `cli.mbt:run` on the worker
+/// side, which arms the existing parent-watchdog thread.
+fn session_http_effective_parent_pid() -> Int {
+  match internal_parent_pid_env() {
+    Some(pid) => pid
+    None => vibe_getpid()
+  }
+}
+
+///|
+/// Number of seconds the session-http worker tolerates being idle before
+/// it self-terminates. Tunable via `VIBE_SESSION_IDLE_SECONDS`; set to 0
+/// to disable. The default is short enough that abnormal exits of the
+/// spawning vibe don't leave the worker lingering, but long enough that
+/// back-to-back `vibe test` invocations reuse the same worker.
+fn session_http_idle_seconds() -> Int {
+  match @sys.get_env_var("VIBE_SESSION_IDLE_SECONDS") {
+    Some(raw) => @strconv.parse_int(raw) catch { _ => 60 }
+    None => 60
+  }
+}
+
+///|
+/// Maximum number of `VibeDb` entries the session-http cache retains
+/// before evicting the least-recently-used root. Tunable via
+/// `VIBE_SESSION_CACHE_MAX`.
+fn session_http_cache_capacity() -> Int {
+  match @sys.get_env_var("VIBE_SESSION_CACHE_MAX") {
+    Some(raw) => {
+      let n = @strconv.parse_int(raw) catch { _ => 16 }
+      if n <= 0 {
+        16
+      } else {
+        n
+      }
+    }
+    None => 16
+  }
 }
 
 ///|
@@ -399,7 +494,11 @@ fn ensure_session_http_worker(
     }
   }
   let cmd = build_session_http_spawn_command(
-    self_bin, port, features, worker_token,
+    self_bin,
+    port,
+    features,
+    worker_token,
+    session_http_effective_parent_pid(),
   )
   let status = c_system(system_command_bytes(cmd))
   if status != 0 {
@@ -910,7 +1009,8 @@ fn session_http_cmd(
     Ok(v) => v
     Err(err) => abort(err)
   }
-  let cache = CliEntryDbCache::new()
+  let cache = CliEntryDbCache::with_capacity(session_http_cache_capacity())
+  vibe_session_idle_monitor_start(session_http_idle_seconds())
   async fn session_http_loop() {
     let addr = @socket.Addr::parse("127.0.0.1:\{port}") catch {
       err => abort("session-http: invalid listen addr: " + err.to_string())
@@ -920,6 +1020,11 @@ fn session_http_cmd(
     }
     server.run_forever(
       (_request, body, conn) => {
+        // Bracket the whole request with begin/end so the idle monitor
+        // doesn't shoot the worker mid-response when a check or test
+        // legitimately runs longer than VIBE_SESSION_IDLE_SECONDS.
+        vibe_session_idle_monitor_begin()
+        defer vibe_session_idle_monitor_end()
         let request_buf = StringBuilder::new()
         try {
           while body.read_some() is Some(chunk) {

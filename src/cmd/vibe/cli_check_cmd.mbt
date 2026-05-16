@@ -1,11 +1,55 @@
 ///|
+/// Per-CLI-invocation cache mapping a resolved index root to its
+/// `VibeDb`. Short-lived `vibe` invocations construct this via
+/// `CliEntryDbCache::new()` and rely on natural GC at process exit; the
+/// session-http worker is long-lived and constructs via
+/// `CliEntryDbCache::with_capacity(n)` to evict the least-recently-used
+/// root once `by_root` exceeds the cap, so a single worker doesn't grow
+/// unbounded across many projects.
 struct CliEntryDbCache {
   by_root : Map[String, @runtime.VibeDb]
+  access_order : Array[String]
+  capacity : Int
 }
 
 ///|
 fn CliEntryDbCache::new() -> CliEntryDbCache {
-  { by_root: {} }
+  { by_root: {}, access_order: [], capacity: 0 }
+}
+
+///|
+fn CliEntryDbCache::with_capacity(capacity : Int) -> CliEntryDbCache {
+  { by_root: {}, access_order: [], capacity }
+}
+
+///|
+fn CliEntryDbCache::touch_access_order(
+  self : CliEntryDbCache,
+  root : String,
+) -> Unit {
+  if self.capacity <= 0 {
+    return
+  }
+  let mut i = 0
+  while i < self.access_order.length() {
+    if self.access_order[i] == root {
+      let _ = self.access_order.remove(i)
+      break
+    }
+    i += 1
+  }
+  self.access_order.push(root)
+}
+
+///|
+fn CliEntryDbCache::evict_if_needed(self : CliEntryDbCache) -> Unit {
+  if self.capacity <= 0 {
+    return
+  }
+  while self.access_order.length() > self.capacity {
+    let oldest = self.access_order.remove(0)
+    self.by_root.remove(oldest)
+  }
 }
 
 ///|
@@ -14,11 +58,13 @@ fn CliEntryDbCache::db_for_resolved_entry(
   resolved_entry : String,
 ) -> @runtime.VibeDb {
   let root = @codebase.resolve_index_root(resolved_entry)
+  self.touch_access_order(root)
   match self.by_root.get(root) {
     Some(db) => db
     None => {
       let db = @runtime.VibeDb::new()
       self.by_root[root] = db
+      self.evict_if_needed()
       db
     }
   }
@@ -188,18 +234,24 @@ fn run_check_entry_with_cache(
             Some(v) => v
             None => ""
           }
+          let dep_index = @vibe_core.LineIndex::build(dep_source)
           for dep_diag in dep_diags {
-            messages.push(dep_diag.render(imp.path, dep_source))
+            messages.push(dep_diag.render_with_index(imp.path, dep_index))
           }
         }
       }
+      // Build the entry's line index once; reused for every diagnostic
+      // and warning render. Without this, each `render(.., source)` walks
+      // `source` from offset 0 to find line/column, turning N warnings on
+      // an N-line file into O(N²).
+      let entry_index = @vibe_core.LineIndex::build(source)
       let diags = db.diagnostics(entry)
       for diag in diags {
-        messages.push(diag.render(entry_path, source))
+        messages.push(diag.render_with_index(entry_path, entry_index))
       }
       let warnings = db.warnings(entry)
       for warning in warnings {
-        messages.push(warning.render(entry_path, source))
+        messages.push(warning.render_with_index(entry_path, entry_index))
       }
       let layering_violations = std_layering_violations_for_source(
         entry, source,

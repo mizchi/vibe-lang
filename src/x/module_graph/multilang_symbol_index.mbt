@@ -249,27 +249,45 @@ fn ml_normalize_row(row : GraphIrRow) -> GraphIrDef {
 }
 
 ///|
-fn ml_push_unique_string(values : Array[String], value : String) -> Unit {
-  for existing in values {
-    if existing == value {
-      return
-    }
-  }
-  values.push(value)
-}
-
-///|
-fn ml_push_index_id(
+/// Append `def_id` to `index_map[key]`. Mirrors `index_map_append` in
+/// `advanced_graph_poc.mbt`: previously every push ran an O(K) linear
+/// dedup (`ml_push_unique_string`), turning bulk upserts into O(N²)
+/// when many defs share a signature.
+///
+/// Callers must invoke `ml_finalize_index_map` after a batch so the
+/// per-bucket sorted-unique invariant is restored — `upsert_rows` is
+/// allowed to push the same `def_id` more than once across rows.
+fn ml_append_index_id(
   index_map : Map[String, Array[String]],
   key : String,
   def_id : String,
 ) -> Unit {
   match index_map.get(key) {
-    Some(existing) => {
-      ml_push_unique_string(existing, def_id)
-      index_map[key] = existing
-    }
+    Some(existing) => existing.push(def_id)
     None => index_map[key] = [def_id]
+  }
+}
+
+///|
+fn ml_finalize_index_map(index_map : Map[String, Array[String]]) -> Unit {
+  for key, values in index_map {
+    if values.length() <= 1 {
+      continue
+    }
+    values.sort()
+    let deduped : Array[String] = []
+    let mut prev = ""
+    let mut have_prev = false
+    for v in values {
+      if !have_prev || v != prev {
+        deduped.push(v)
+        prev = v
+        have_prev = true
+      }
+    }
+    if deduped.length() != values.length() {
+      index_map[key] = deduped
+    }
   }
 }
 
@@ -313,13 +331,13 @@ fn ml_add_def_to_indexes(
   type_index : Map[String, Array[String]],
   def : GraphIrDef,
 ) -> Unit {
-  ml_push_index_id(
+  ml_append_index_id(
     symbol_index,
     multilang_symbol_key(def.language_id, def.name),
     def.def_id,
   )
   for term in ml_def_type_terms_for_index(def) {
-    ml_push_index_id(
+    ml_append_index_id(
       type_index,
       multilang_type_key(def.language_id, term),
       def.def_id,
@@ -425,6 +443,12 @@ pub fn MultiLangSymbolIndex::upsert_rows(
     anchor_to_def[next_def.anchor_id] = next_def.def_id
     ml_add_def_to_indexes(symbol_index, type_index, next_def)
   }
+  // After bulk append: collapse any per-bucket duplicates (a single
+  // `rows` batch can target the same anchor multiple times) and
+  // restore the sorted ordering downstream consumers rely on for
+  // stable serialization.
+  ml_finalize_index_map(symbol_index)
+  ml_finalize_index_map(type_index)
   MultiLangSymbolIndex::{ defs, anchor_to_def, symbol_index, type_index }
 }
 

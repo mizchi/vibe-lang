@@ -3712,6 +3712,7 @@ test "source hash cache match requires identical entries" {
 
 ///|
 test "source hash cache includes transitive imports" {
+  @runtime_compile.init_hooks()
   let db = @runtime.VibeDb::new()
   let main_path = "/tmp/source_hash_cache/main.vibe"
   let dep_path = "/tmp/source_hash_cache/dep.vibe"
@@ -3731,6 +3732,7 @@ test "source hash cache includes transitive imports" {
 
 ///|
 test "save source hashes includes entry for linked cache" {
+  @runtime_compile.init_hooks()
   let root = wbtest_make_temp_dir("save_source_hashes_includes_entry")
   let cache_dir = root + "/.vibe/debug/test"
   let hash_path = cache_dir + "/source_hashes.txt"
@@ -3872,11 +3874,31 @@ test "session http spawn command exports worker token" {
     36123,
     @runtime.RuntimeFeatureFlags::new(true, true),
     "worker-token",
+    424242,
   )
   assert_true(cmd.contains("VIBE_SESSION_WORKER_TOKEN="))
+  assert_true(cmd.contains("VIBE_INTERNAL_PARENT_PID=424242"))
   assert_true(cmd.contains("session-http --port 36123"))
   assert_true(cmd.contains("--unstable-async"))
   assert_true(cmd.contains("--unstable-threads"))
+  assert_true(cmd.contains("/proc/$$/fd/*"))
+  assert_true(cmd.contains("eval \"exec $n<&-\""))
+}
+
+///|
+test "session http spawn command escapes embedded single quotes in self_bin" {
+  let cmd = build_session_http_spawn_command(
+    "/tmp/O'Neil/vibe.exe",
+    36123,
+    @runtime.RuntimeFeatureFlags::new(false, false),
+    "tok",
+    1,
+  )
+  // The outer single-quote wrap around `sh -c '…'` would otherwise be
+  // truncated by the `'` in the path. Make sure the apostrophe is
+  // re-quoted as `'\''` so the entire script is one POSIX argument.
+  assert_true(cmd.contains("'\\''Neil"))
+  assert_false(cmd.contains("/tmp/O' "))
 }
 
 ///|
