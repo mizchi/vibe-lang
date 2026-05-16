@@ -49,12 +49,8 @@ test "ObligationSolver::satisfies falls back to subtrait impls" {
     target: @core.Type::Named(name="MyKey", args=[]),
   })
   let solver = ObligationSolver::of(env)
-  assert_true(
-    solver.satisfies(@core.Type::Named(name="MyKey", args=[]), "Ord"),
-  )
-  assert_true(
-    solver.satisfies(@core.Type::Named(name="MyKey", args=[]), "Eq"),
-  )
+  assert_true(solver.satisfies(@core.Type::Named(name="MyKey", args=[]), "Ord"))
+  assert_true(solver.satisfies(@core.Type::Named(name="MyKey", args=[]), "Eq"))
 }
 
 ///|
@@ -74,7 +70,10 @@ test "ObligationSolver::satisfies covers Option[T]: Eq when T: Eq" {
   let env = TypeEnv::new()
   let solver = ObligationSolver::of(env)
   assert_true(
-    solver.satisfies(@core.Type::Named(name="Option", args=[@core.Type::Int]), "Eq"),
+    solver.satisfies(
+      @core.Type::Named(name="Option", args=[@core.Type::Int]),
+      "Eq",
+    ),
   )
 }
 
@@ -108,12 +107,7 @@ test "ObligationSolver::witness reports ImplBoundFailed when bounds fail" {
   let w = ObligationSolver::of(env).witness(target, "Show")
   assert_false(w.is_satisfied())
   match w {
-    TraitWitness::ImplBoundFailed(
-      trait_name~,
-      param_name~,
-      required_bound~,
-      ..
-    ) => {
+    TraitWitness::ImplBoundFailed(trait_name~, param_name~, required_bound~, ..) => {
       assert_eq(trait_name, "Show")
       assert_eq(param_name, "T")
       assert_eq(required_bound, "Hash")
@@ -142,12 +136,7 @@ test "ObligationSolver::witness prefers ImplBoundFailed from subtrait fallback" 
   let target = @core.Type::Array(@core.Type::Int)
   let w = ObligationSolver::of(env).witness(target, "Eq")
   match w {
-    TraitWitness::ImplBoundFailed(
-      trait_name~,
-      param_name~,
-      required_bound~,
-      ..
-    ) => {
+    TraitWitness::ImplBoundFailed(trait_name~, param_name~, required_bound~, ..) => {
       assert_eq(trait_name, "Eq")
       assert_eq(param_name, "T")
       assert_eq(required_bound, "Hash")

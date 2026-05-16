@@ -302,7 +302,6 @@ test "pass pipeline: full chain produces same result as normalize_source_text" {
       #|
       #|let z: () -> Int = () -> { b() }
       #|)
-
     ),
   )
 }

@@ -24,9 +24,12 @@ test "walk_expr_refs collects free variable from Ident" {
     refs,
     add_all_refs,
   )
-  inspect(refs.keys().collect(), content=(
-    #|[x]
-  ))
+  inspect(
+    refs.keys().collect(),
+    content=(
+      #|[x]
+    ),
+  )
 }
 
 ///|
@@ -65,9 +68,12 @@ test "walk_expr_refs collects call name and arg refs" {
   )
   let keys = refs.keys().collect()
   keys.sort()
-  inspect(keys, content=(
-    #|[a, f]
-  ))
+  inspect(
+    keys,
+    content=(
+      #|[a, f]
+    ),
+  )
 }
 
 ///|
@@ -138,9 +144,12 @@ test "walk_expr_refs match arm binds pattern names" {
   let keys = refs.keys().collect()
   keys.sort()
   // "val" (scrutinee) and "f" (call), but "x" is bound by pattern
-  inspect(keys, content=(
-    #|[f, val]
-  ))
+  inspect(
+    keys,
+    content=(
+      #|[f, val]
+    ),
+  )
 }
 
 ///|
@@ -166,9 +175,12 @@ test "walk_block_refs let binding scopes correctly" {
     add_all_refs,
   )
   // "a" is free, "x" is bound by the let
-  inspect(refs.keys().collect(), content=(
-    #|[a]
-  ))
+  inspect(
+    refs.keys().collect(),
+    content=(
+      #|[a]
+    ),
+  )
 }
 
 ///|
@@ -186,9 +198,12 @@ test "bind_pattern_names_walker binds nested patterns" {
   )
   let keys = bound.keys().collect()
   keys.sort()
-  inspect(keys, content=(
-    #|[a, b]
-  ))
+  inspect(
+    keys,
+    content=(
+      #|[a, b]
+    ),
+  )
 }
 
 ///|

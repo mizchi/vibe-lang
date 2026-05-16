@@ -1055,9 +1055,7 @@ pub fn VibeDb::new() -> VibeDb {
                               )
                               let import_index = @checker.ImplIndex::of(env)
                               for impl_def in impls {
-                                import_index.import_impl(
-                                  target_name, impl_def,
-                                )
+                                import_index.import_impl(target_name, impl_def)
                               }
                             }
                           }
@@ -1128,7 +1126,9 @@ pub fn VibeDb::new() -> VibeDb {
                             )
                           }
                           if trait_present {
-                            let impls = imported_env.trait_impls_for(source_name)
+                            let impls = imported_env.trait_impls_for(
+                              source_name,
+                            )
                             let import_index = @checker.ImplIndex::of(env)
                             for impl_def in impls {
                               import_index.import_impl(target_name, impl_def)

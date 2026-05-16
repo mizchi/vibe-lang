@@ -72,7 +72,7 @@ fn compiled_test_stmt_module_prefix(stmt : @vibe_core.Stmt) -> String? {
   let idx = name.find("::")
   match idx {
     Some(i) => {
-      let prefix = name.substring(start=0, end=i)
+      let prefix = name[0:i].to_owned()
       if prefix.length() == 0 || prefix.contains("::") {
         None
       } else {
@@ -717,7 +717,7 @@ fn run_test_file_compiled_with_cache(
     let stdout = run_out.stdout.trim().to_string()
     if stdout.has_prefix("last: ") {
       let num_str = stdout.unsafe_substring(start=6, end=stdout.length())
-      let parsed : Result[Int, _] = try? @strconv.parse_int(num_str)
+      let parsed : Result[Int, _] = try? @string.parse_int(num_str)
       match parsed {
         Ok(n) => n
         Err(_) => cases.length()
@@ -881,7 +881,7 @@ fn test_cmd(
     if arg == "--jobs" {
       i += 1
       if i < args.length() {
-        jobs = @strconv.parse_int(args[i]) catch { _ => 0 }
+        jobs = @string.parse_int(args[i]) catch { _ => 0 }
       }
     } else if arg == "--report-json" {
       report_json = true
@@ -929,7 +929,7 @@ fn default_test_jobs() -> Int {
   // Safe default with env override for local tuning.
   match @sys.get_env_var("VIBE_TEST_JOBS") {
     Some(raw) => {
-      let parsed = @strconv.parse_int(raw) catch { _ => 0 }
+      let parsed = @string.parse_int(raw) catch { _ => 0 }
       if parsed > 0 {
         parsed
       } else {
@@ -1346,7 +1346,7 @@ let test_entry_batch_max_chunk_size = 4
 fn test_entry_batch_env_chunk_size() -> Int? {
   match @sys.get_env_var("VIBE_TEST_BATCH_CHUNK_SIZE") {
     Some(raw) => {
-      let parsed = @strconv.parse_int(raw.trim().to_string()) catch { _ => 0 }
+      let parsed = @string.parse_int(raw.trim().to_string()) catch { _ => 0 }
       if parsed > 0 {
         Some(parsed)
       } else {

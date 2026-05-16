@@ -403,7 +403,7 @@ fn split_check_cmd_args(
       }
       profile_tsv = Some(args[i])
     } else if arg.has_prefix("--builtin-contract=") {
-      let value = arg.substring(start="--builtin-contract=".length())
+      let value = arg["--builtin-contract=".length():].to_owned()
       if value == "warn" || value == "error" || value == "ignore" {
         builtin_contract = value
       } else {
