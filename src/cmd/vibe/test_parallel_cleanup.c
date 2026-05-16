@@ -217,12 +217,16 @@ int vibe_process_exists(int pid) {
  * once per second and `_exit(0)`s the process when the idle window
  * exceeds the configured threshold.
  *
- * The MoonBit-side HTTP handler must call vibe_session_idle_monitor_touch()
- * on every request to reset the idle clock.
+ * The MoonBit-side HTTP handler must call vibe_session_idle_monitor_begin()
+ * at request entry and vibe_session_idle_monitor_end() at request exit.
+ * `g_session_in_flight` is non-zero while any request is being handled,
+ * which suppresses the idle-exit decision so a long-running check or
+ * test (e.g. > 60 s) can't get its worker terminated mid-response.
  */
 static volatile sig_atomic_t g_session_idle_running = 0;
 static volatile int g_session_idle_seconds = 0;
 static volatile time_t g_session_last_active = 0;
+static volatile sig_atomic_t g_session_in_flight = 0;
 static pthread_t g_session_idle_thread;
 
 static void* vibe_session_idle_monitor_main(void* arg) {
@@ -230,7 +234,7 @@ static void* vibe_session_idle_monitor_main(void* arg) {
   while (g_session_idle_running) {
     int idle = g_session_idle_seconds;
     time_t last = g_session_last_active;
-    if (idle > 0 && last > 0) {
+    if (idle > 0 && last > 0 && g_session_in_flight == 0) {
       time_t now = time(NULL);
       if (now - last >= idle) {
         _exit(0);
@@ -257,6 +261,14 @@ void vibe_session_idle_monitor_start(int idle_seconds) {
   }
 }
 
-void vibe_session_idle_monitor_touch(void) {
+void vibe_session_idle_monitor_begin(void) {
+  g_session_in_flight = g_session_in_flight + 1;
   g_session_last_active = time(NULL);
+}
+
+void vibe_session_idle_monitor_end(void) {
+  g_session_last_active = time(NULL);
+  if (g_session_in_flight > 0) {
+    g_session_in_flight = g_session_in_flight - 1;
+  }
 }

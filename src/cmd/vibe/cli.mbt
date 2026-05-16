@@ -134,7 +134,10 @@ extern "C" fn vibe_worker_parent_watchdog_stop() = "vibe_worker_parent_watchdog_
 extern "C" fn vibe_session_idle_monitor_start(idle_seconds : Int) = "vibe_session_idle_monitor_start"
 
 ///|
-extern "C" fn vibe_session_idle_monitor_touch() = "vibe_session_idle_monitor_touch"
+extern "C" fn vibe_session_idle_monitor_begin() = "vibe_session_idle_monitor_begin"
+
+///|
+extern "C" fn vibe_session_idle_monitor_end() = "vibe_session_idle_monitor_end"
 
 ///|
 fn print_usage() -> Unit {

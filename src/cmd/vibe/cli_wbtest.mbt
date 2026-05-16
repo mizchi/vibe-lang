@@ -3886,6 +3886,22 @@ test "session http spawn command exports worker token" {
 }
 
 ///|
+test "session http spawn command escapes embedded single quotes in self_bin" {
+  let cmd = build_session_http_spawn_command(
+    "/tmp/O'Neil/vibe.exe",
+    36123,
+    @runtime.RuntimeFeatureFlags::new(false, false),
+    "tok",
+    1,
+  )
+  // The outer single-quote wrap around `sh -c '…'` would otherwise be
+  // truncated by the `'` in the path. Make sure the apostrophe is
+  // re-quoted as `'\''` so the entire script is one POSIX argument.
+  assert_true(cmd.contains("'\\''Neil"))
+  assert_false(cmd.contains("/tmp/O' "))
+}
+
+///|
 test "session http port separates runtime feature sets" {
   let baseline = @runtime.RuntimeFeatureFlags::new(false, false)
   let async_only = @runtime.RuntimeFeatureFlags::new(true, false)

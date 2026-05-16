@@ -404,11 +404,24 @@ fn build_session_http_spawn_command(
     }) +
     " session-http --port " +
     port.to_string()
-  "nohup sh -c '" +
-  close_inherited_fds +
-  "; " +
-  exec_worker +
-  "' >/dev/null 2>&1 &"
+  let payload = close_inherited_fds + "; " + exec_worker
+  // `shell_quote_command_arg` produces double-quoted strings, so any
+  // single quotes in the binary path (e.g. /home/O'Neil/vibe.exe) pass
+  // through unescaped. Wrapping the whole payload in `'…'` would split
+  // mid-path on those. Splice each embedded `'` as `'\''` so the outer
+  // single-quoted region survives.
+  "nohup sh -c " +
+  pose_single_quote(payload) +
+  " >/dev/null 2>&1 &"
+}
+
+///|
+/// POSIX-safe single-quote wrap: rewrites each `'` in `s` as the
+/// closing-quote / escaped-quote / opening-quote sequence `'\''`, then
+/// surrounds the result with `'…'`. The output is byte-identical to `s`
+/// when piped through `sh -c`.
+fn pose_single_quote(s : String) -> String {
+  "'" + s.replace_all(old="'", new="'\\''") + "'"
 }
 
 ///|
@@ -1007,7 +1020,11 @@ fn session_http_cmd(
     }
     server.run_forever(
       (_request, body, conn) => {
-        vibe_session_idle_monitor_touch()
+        // Bracket the whole request with begin/end so the idle monitor
+        // doesn't shoot the worker mid-response when a check or test
+        // legitimately runs longer than VIBE_SESSION_IDLE_SECONDS.
+        vibe_session_idle_monitor_begin()
+        defer vibe_session_idle_monitor_end()
         let request_buf = StringBuilder::new()
         try {
           while body.read_some() is Some(chunk) {
