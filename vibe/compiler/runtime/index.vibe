@@ -1022,20 +1022,19 @@ let build_merged_source = (sources: Array[(String, String)]) -> String with { Er
 
 let join_group_sources = (group_sources: Array[(String, String)]) -> String {
   let len = Array::length(group_sources)
-  let rec go = (i: Int, acc: String) -> String {
-    if i >= len {
-      acc
-    } else {
-      let (_, source) = Array::get(group_sources, i)
-      let next = if acc == "" {
-        source
-      } else {
-        String::concat(acc, String::concat("\n", source))
-      }
-      go(i + 1, next)
+  // O(N) via StringBuilder; the recursive `String::concat(acc, ...)` was
+  // O(N²) over the source-group count.
+  let buf = StringBuilder::new()
+  let mut i = 0
+  while i < len {
+    let (_, source) = Array::get(group_sources, i)
+    if i > 0 {
+      StringBuilder::push(buf, "\n")
     }
+    StringBuilder::push(buf, source)
+    i = i + 1
   }
-  go(0, "")
+  StringBuilder::freeze(buf)
 }
 
 export let db_merged_source = (
@@ -1267,16 +1266,19 @@ let nibble_from_hex_char = (c: Int) -> Int with { Error } {
 let bytes_to_hex = (bytes: Bytes) -> String {
   let len = Bytes::length(bytes)
   let mut i = 0
-  let mut out = ""
+  // O(N) via StringBuilder; previously each `String::concat(out, ...)`
+  // copied the growing buffer, making this O(N²) for the N-byte module
+  // hashes this routine serialises.
+  let buf = StringBuilder::new()
   while i < len {
     let byte = Bytes::get(bytes, i)
     let hi = byte / 16
     let lo = byte % 16
-    out = String::concat(out, bytes_to_hex_digit(hi))
-    out = String::concat(out, bytes_to_hex_digit(lo))
+    StringBuilder::push(buf, bytes_to_hex_digit(hi))
+    StringBuilder::push(buf, bytes_to_hex_digit(lo))
     i = i + 1
   }
-  out
+  StringBuilder::freeze(buf)
 }
 
 let hex_to_bytes = (hex: String) -> Bytes with { Error } {

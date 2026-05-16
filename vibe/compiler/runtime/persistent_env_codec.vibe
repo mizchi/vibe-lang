@@ -228,14 +228,22 @@ let rec parse_cached_type = (source: String, pos: Int) -> (Type, Int)with { Erro
   }
 }
 
+// All `serialize_*_array` helpers below used a `String::concat(out, ...)`
+// accumulator that was O(N²) over the array length. Cache-serialisation
+// runs them on every TypeEnv save, and large modules hit thousands of
+// bindings — the cumulative cost shows up in `vibe check` cold runs.
+// StringBuilder collapses each one to O(N).
 let serialize_int_array = (items: Array[Int]) -> String {
-  let mut out = String::concat(__to_string(Array::length(items)), "[")
+  let buf = StringBuilder::new()
+  StringBuilder::push(buf, __to_string(Array::length(items)))
+  StringBuilder::push(buf, "[")
   let mut i = 0
   while i < Array::length(items) {
-    out = String::concat(out, serialize_segment(__to_string(Array::get(items, i))))
+    StringBuilder::push(buf, serialize_segment(__to_string(Array::get(items, i))))
     i = i + 1
   }
-  String::concat(out, "]")
+  StringBuilder::push(buf, "]")
+  StringBuilder::freeze(buf)
 }
 
 let serialize_effect_name_str = (effect_name: String) -> String {
@@ -243,36 +251,45 @@ let serialize_effect_name_str = (effect_name: String) -> String {
 }
 
 let serialize_string_array = (items: Array[String]) -> String {
-  let mut out = String::concat(__to_string(Array::length(items)), "[")
+  let buf = StringBuilder::new()
+  StringBuilder::push(buf, __to_string(Array::length(items)))
+  StringBuilder::push(buf, "[")
   let mut i = 0
   while i < Array::length(items) {
-    out = String::concat(out, serialize_segment(Array::get(items, i)))
+    StringBuilder::push(buf, serialize_segment(Array::get(items, i)))
     i = i + 1
   }
-  String::concat(out, "]")
+  StringBuilder::push(buf, "]")
+  StringBuilder::freeze(buf)
 }
 
 let serialize_bounds_array = (items: Array[(Int, Array[String])]) -> String {
-  let mut out = String::concat(__to_string(Array::length(items)), "[")
+  let buf = StringBuilder::new()
+  StringBuilder::push(buf, __to_string(Array::length(items)))
+  StringBuilder::push(buf, "[")
   let mut i = 0
   while i < Array::length(items) {
     let (id, bounds) = Array::get(items, i)
-    out = String::concat(out, serialize_segment(__to_string(id)))
-    out = String::concat(out, serialize_string_array(bounds))
+    StringBuilder::push(buf, serialize_segment(__to_string(id)))
+    StringBuilder::push(buf, serialize_string_array(bounds))
     i = i + 1
   }
-  String::concat(out, "]")
+  StringBuilder::push(buf, "]")
+  StringBuilder::freeze(buf)
 }
 
 let rec serialize_type = (ty: Type) -> String {
   let rec serialize_type_array = (items: Array[Type]) -> String {
-    let mut out = String::concat(__to_string(Array::length(items)), "[")
+    let buf = StringBuilder::new()
+    StringBuilder::push(buf, __to_string(Array::length(items)))
+    StringBuilder::push(buf, "[")
     let mut i = 0
     while i < Array::length(items) {
-      out = String::concat(out, serialize_segment(serialize_type(Array::get(items, i))))
+      StringBuilder::push(buf, serialize_segment(serialize_type(Array::get(items, i))))
       i = i + 1
     }
-    String::concat(out, "]")
+    StringBuilder::push(buf, "]")
+    StringBuilder::freeze(buf)
   }
   match ty {
     CtInt => "I",
@@ -378,14 +395,21 @@ export let load_persistent_type_env = (fingerprint: String) -> Option[TypeEnv] w
 
 export let persistent_type_env_cache_text = (env: TypeEnv) -> String {
   let bindings = env_flat_bindings(env)
-  let mut out = "version\t1\n"
+  // StringBuilder over the bindings list — was O(N²) via `out =
+  // String::concat(out, ...)` for N bindings.
+  let buf = StringBuilder::new()
+  StringBuilder::push(buf, "version\t1\n")
   let mut i = 0
   while i < Array::length(bindings) {
     let (name, ty) = Array::get(bindings, i)
-    out = String::concat(out, String::concat("bind\t", String::concat(name, String::concat("\t", String::concat(serialize_type(ty), "\n")))))
+    StringBuilder::push(buf, "bind\t")
+    StringBuilder::push(buf, name)
+    StringBuilder::push(buf, "\t")
+    StringBuilder::push(buf, serialize_type(ty))
+    StringBuilder::push(buf, "\n")
     i = i + 1
   }
-  out
+  StringBuilder::freeze(buf)
 }
 
 export let load_persistent_leaf_fingerprint = (path: String, source: String) -> Option[String] with { Error, Fs } {
