@@ -81,7 +81,11 @@ test "ImplIndex::register_impl rejects unknown trait" {
   let env = TypeEnv::new()
   let span = @core.Span::empty(0)
   let result : Result[Unit, TypeError] = try? ImplIndex::of(env).register_impl(
-    [], {}, "DoesNotExist", @core.Type::Int, span,
+    [],
+    {},
+    "DoesNotExist",
+    @core.Type::Int,
+    span,
   )
   match result {
     Err(_) => ()
@@ -99,7 +103,11 @@ test "ImplIndex::register_impl rejects overlap with existing impl" {
     err => fail("first register_impl unexpectedly failed: \{err.to_string()}")
   }
   let second : Result[Unit, TypeError] = try? index.register_impl(
-    [], {}, "Eq", @core.Type::Int, span,
+    [],
+    {},
+    "Eq",
+    @core.Type::Int,
+    span,
   )
   match second {
     Err(_) => ()

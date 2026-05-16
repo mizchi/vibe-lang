@@ -157,7 +157,7 @@ fn encode_value(value : @core.Value) -> String {
 fn decode_value(encoded : String) -> @core.Value? {
   if encoded.has_prefix("i:") {
     let rest = slice_from(encoded, 2)
-    let parsed : Result[Int64, @strconv.StrConvError] = try? @strconv.parse_int64(
+    let parsed : Result[Int64, Error] = try? @string.parse_int64(
       rest,
     )
     match parsed {
@@ -166,7 +166,7 @@ fn decode_value(encoded : String) -> @core.Value? {
     }
   } else if encoded.has_prefix("f32:") {
     let rest = slice_from(encoded, 4)
-    let parsed : Result[Double, @strconv.StrConvError] = try? @strconv.parse_double(
+    let parsed : Result[Double, Error] = try? @string.parse_double(
       rest,
     )
     match parsed {
@@ -175,7 +175,7 @@ fn decode_value(encoded : String) -> @core.Value? {
     }
   } else if encoded.has_prefix("f64:") {
     let rest = slice_from(encoded, 4)
-    let parsed : Result[Double, @strconv.StrConvError] = try? @strconv.parse_double(
+    let parsed : Result[Double, Error] = try? @string.parse_double(
       rest,
     )
     match parsed {
@@ -196,7 +196,7 @@ fn decode_value(encoded : String) -> @core.Value? {
     }
   } else if encoded.has_prefix("c:") {
     let rest = slice_from(encoded, 2)
-    let parsed : Result[Int, @strconv.StrConvError] = try? @strconv.parse_int(
+    let parsed : Result[Int, Error] = try? @string.parse_int(
       rest,
     )
     match parsed {

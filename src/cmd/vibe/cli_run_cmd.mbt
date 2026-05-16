@@ -56,7 +56,7 @@ fn parse_numeric_line_int64(line : String) -> Int64? {
   if not(has_digit) {
     return None
   }
-  let value = @strconv.parse_int(trimmed) catch { _ => return None }
+  let value = @string.parse_int(trimmed) catch { _ => return None }
   Some(value.to_int64())
 }
 
@@ -1077,7 +1077,7 @@ fn extract_vibe_display_line_run(stdout : String) -> String? {
   for line_view in stdout.split("\n") {
     let line = line_view.to_string()
     if line.has_prefix("VIBE_DISPLAY:") {
-      return Some(line.substring(start=13))
+      return Some(line[13:].to_owned())
     }
   }
   None

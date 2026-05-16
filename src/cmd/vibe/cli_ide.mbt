@@ -1357,7 +1357,7 @@ async fn lsp_main_loop() -> Unit {
         // Parse content length
         let len_part = header_str[15:].to_string()
         let len_str = trim_whitespace(len_part)
-        let content_length = @strconv.parse_int(len_str) catch { _ => continue }
+        let content_length = @string.parse_int(len_str) catch { _ => continue }
 
         // Skip empty line after headers
         let _ = stdin.read_until("\n")

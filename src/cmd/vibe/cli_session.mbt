@@ -410,9 +410,7 @@ fn build_session_http_spawn_command(
   // through unescaped. Wrapping the whole payload in `'…'` would split
   // mid-path on those. Splice each embedded `'` as `'\''` so the outer
   // single-quoted region survives.
-  "nohup sh -c " +
-  pose_single_quote(payload) +
-  " >/dev/null 2>&1 &"
+  "nohup sh -c " + pose_single_quote(payload) + " >/dev/null 2>&1 &"
 }
 
 ///|
@@ -448,7 +446,7 @@ fn session_http_effective_parent_pid() -> Int {
 /// back-to-back `vibe test` invocations reuse the same worker.
 fn session_http_idle_seconds() -> Int {
   match @sys.get_env_var("VIBE_SESSION_IDLE_SECONDS") {
-    Some(raw) => @strconv.parse_int(raw) catch { _ => 60 }
+    Some(raw) => @string.parse_int(raw) catch { _ => 60 }
     None => 60
   }
 }
@@ -460,7 +458,7 @@ fn session_http_idle_seconds() -> Int {
 fn session_http_cache_capacity() -> Int {
   match @sys.get_env_var("VIBE_SESSION_CACHE_MAX") {
     Some(raw) => {
-      let n = @strconv.parse_int(raw) catch { _ => 16 }
+      let n = @string.parse_int(raw) catch { _ => 16 }
       if n <= 0 {
         16
       } else {
@@ -589,7 +587,7 @@ fn parse_cli_run_value_json(json : Json) -> Result[WasmRunValue, String] {
         "int" =>
           match obj.get("value") {
             Some(Json::String(value)) => {
-              let parsed = @strconv.parse_int(value) catch {
+              let parsed = @string.parse_int(value) catch {
                 _ => return Err("session-http: invalid run int result")
               }
               Ok(WasmRunValue::Int(parsed.to_int64()))
@@ -985,7 +983,7 @@ fn split_session_http_cmd_args(args : Array[String]) -> Result[Int, String] {
       if i >= args.length() {
         return Err("session-http: missing value after --port")
       }
-      let parsed = @strconv.parse_int(args[i]) catch {
+      let parsed = @string.parse_int(args[i]) catch {
         e => return Err("session-http: invalid --port: " + e.to_string())
       }
       port = Some(parsed)
@@ -1078,7 +1076,7 @@ fn parse_report_json_int(json : Json, key : String) -> Int {
 fn parse_internal_parent_pid_env(env_name : String) -> Int? {
   match @sys.get_env_var(env_name) {
     Some(raw) => {
-      let pid = @strconv.parse_int(raw) catch { _ => 0 }
+      let pid = @string.parse_int(raw) catch { _ => 0 }
       if pid > 1 {
         Some(pid)
       } else {

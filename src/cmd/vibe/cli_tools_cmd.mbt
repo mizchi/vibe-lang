@@ -892,7 +892,7 @@ fn expand_cmd(args : Array[String]) -> Unit {
     if arg == "--depth" || arg == "-d" {
       i += 1
       if i < args.length() {
-        depth = Some(@strconv.parse_int(args[i]) catch { _ => 0 })
+        depth = Some(@string.parse_int(args[i]) catch { _ => 0 })
       }
     } else if arg == "--json" {
       output_json = true

@@ -80,7 +80,11 @@ test "TraitGraph::register_def rejects self-referential supertrait" {
   let g = TraitGraph::of(env)
   let span = @core.Span::empty(0)
   let result : Result[Unit, TypeError] = try? g.register_def(
-    "Bad", ["Bad"], false, true, span,
+    "Bad",
+    ["Bad"],
+    false,
+    true,
+    span,
   )
   match result {
     Err(_) => ()
@@ -94,7 +98,11 @@ test "TraitGraph::register_def rejects unknown supertrait" {
   let g = TraitGraph::of(env)
   let span = @core.Span::empty(0)
   let result : Result[Unit, TypeError] = try? g.register_def(
-    "Ord", ["Eq"], false, true, span,
+    "Ord",
+    ["Eq"],
+    false,
+    true,
+    span,
   )
   match result {
     Err(_) => ()
@@ -108,7 +116,11 @@ test "TraitGraph::register_def rejects open trait without export" {
   let g = TraitGraph::of(env)
   let span = @core.Span::empty(0)
   let result : Result[Unit, TypeError] = try? g.register_def(
-    "Custom", [], true, false, span,
+    "Custom",
+    [],
+    true,
+    false,
+    span,
   )
   match result {
     Err(_) => ()
@@ -122,7 +134,9 @@ test "TraitGraph::import_def installs an external trait cleanly" {
   env.set_trait_info("Eq", TraitDefInfo::defined_here([], false))
   let g = TraitGraph::of(env)
   let installed = g.import_def(
-    "Ord", TraitDefInfo::defined_here(["Eq"], true), ["Eq"],
+    "Ord",
+    TraitDefInfo::defined_here(["Eq"], true),
+    ["Eq"],
   )
   assert_true(installed)
   assert_true(g.is_subtrait("Ord", "Eq"))
@@ -136,9 +150,7 @@ test "TraitGraph::import_def rolls back if it would close a cycle" {
   env.set_trait_info("A", TraitDefInfo::defined_here([], false))
   env.set_trait_info("B", TraitDefInfo::defined_here(["A"], false))
   let g = TraitGraph::of(env)
-  let installed = g.import_def(
-    "A", TraitDefInfo::defined_here([], true), ["B"],
-  )
+  let installed = g.import_def("A", TraitDefInfo::defined_here([], true), ["B"])
   assert_false(installed)
   // After rollback, A should retain its empty supertrait list.
   assert_eq(g.supertraits("A"), [])
@@ -172,10 +184,9 @@ test "TraitGraph::cycle_chain returns the offending trait sequence" {
   env.set_trait_info("A", TraitDefInfo::imported(["B"], true))
   let g = TraitGraph::of(env)
   match g.cycle_chain("A") {
-    Some(chain) => {
+    Some(chain) =>
       // Walk order starts at A, hits B, closes back at A.
       assert_eq(chain, ["A", "B", "A"])
-    }
     None => fail("expected cycle_chain to detect A -> B -> A")
   }
 }

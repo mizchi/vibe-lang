@@ -25,7 +25,7 @@ fn AstParser::parse_type_with_params(
       let mut q_suffix_count = 0
       let mut core_name = raw_name
       while core_name.length() > 0 && core_name[core_name.length() - 1] == '?' {
-        core_name = core_name.substring(start=0, end=core_name.length() - 1)
+        core_name = core_name[0:core_name.length() - 1].to_owned()
         q_suffix_count = q_suffix_count + 1
       }
       let args = self.parse_type_args(params)

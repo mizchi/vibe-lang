@@ -67,9 +67,9 @@ fn function_tracking_parse_semver(text : String) -> FunctionTrackingSemver? {
   if parts.length() != 3 {
     return None
   }
-  let major = @strconv.parse_int(parts[0].trim()) catch { _ => return None }
-  let minor = @strconv.parse_int(parts[1].trim()) catch { _ => return None }
-  let patch = @strconv.parse_int(parts[2].trim()) catch { _ => return None }
+  let major = @string.parse_int(parts[0].trim()) catch { _ => return None }
+  let minor = @string.parse_int(parts[1].trim()) catch { _ => return None }
+  let patch = @string.parse_int(parts[2].trim()) catch { _ => return None }
   Some({ major, minor, patch })
 }
 

@@ -185,7 +185,6 @@ test "perceus plan: unused let binding gets drop" {
     lines,
     content=(
       #|[stmt[0].after drop x]
-
     ),
   )
 }
@@ -236,7 +235,6 @@ test "perceus plan: two sequential uses, first gets dup" {
     lines,
     content=(
       #|[stmt[1].expr.arg[0].before dup x]
-
     ),
   )
 }
@@ -271,9 +269,12 @@ test "perceus plan: if/else branch-sensitive drop" {
   }
   let lines = perceus_action_lines(build_perceus_plan(mod))
   // x is used in then but not in else → drop in else branch
-  inspect(lines, content=(
-    #|[stmt[1].expr.else.end drop x]
-  ))
+  inspect(
+    lines,
+    content=(
+      #|[stmt[1].expr.else.end drop x]
+    ),
+  )
 }
 
 ///|
@@ -321,7 +322,6 @@ test "perceus plan: if/else both use x, then also uses after → dup" {
     lines,
     content=(
       #|[stmt[1].expr.then.stmt[0].expr.arg[0].before dup x, stmt[1].expr.else.stmt[0].expr.arg[0].before dup x]
-
     ),
   )
 }
@@ -368,7 +368,6 @@ test "perceus plan: match with two arms, only one uses x" {
     lines,
     content=(
       #|[stmt[1].expr.arm[0].pat_bind drop a, stmt[1].expr.arm[1].pat_bind drop b, stmt[1].expr.arm[1].end drop x]
-
     ),
   )
 }
@@ -402,7 +401,6 @@ test "perceus plan: scope-end drop in block" {
     lines,
     content=(
       #|[stmt[0].expr.body.stmt[0].after drop z]
-
     ),
   )
 }
@@ -430,7 +428,6 @@ test "perceus plan: mutable reassignment drops old value" {
     lines,
     content=(
       #|[stmt[0].after drop x, stmt[1].old_value drop x]
-
     ),
   )
 }
@@ -465,7 +462,6 @@ test "perceus plan: three uses need two dups" {
     lines,
     content=(
       #|[stmt[1].expr.arg[0].before dup x, stmt[2].expr.arg[0].before dup x]
-
     ),
   )
 }
@@ -698,7 +694,6 @@ test "perceus plan: multiple variables, only unused ones get drops" {
     lines,
     content=(
       #|[stmt[1].after drop y]
-
     ),
   )
 }
@@ -1029,7 +1024,6 @@ test "perceus plan: tuple field access borrows — no dup for t.0 + t.1" {
     lines,
     content=(
       #|[stmt[1].scope_end drop t]
-
     ),
   )
 }

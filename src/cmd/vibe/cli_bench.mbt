@@ -196,7 +196,7 @@ fn parse_bench_cmd_args(
         if i + 1 >= args.length() {
           return Err("bench: missing value for --runs")
         }
-        runs = @strconv.parse_int(args[i + 1]) catch {
+        runs = @string.parse_int(args[i + 1]) catch {
           e => return Err("bench: invalid --runs: " + e.to_string())
         }
         i += 2
@@ -206,7 +206,7 @@ fn parse_bench_cmd_args(
           return Err("bench: missing value for --n")
         }
         legacy_n = Some(
-          @strconv.parse_int(args[i + 1]) catch {
+          @string.parse_int(args[i + 1]) catch {
             e => return Err("bench: invalid --n: " + e.to_string())
           },
         )
@@ -216,7 +216,7 @@ fn parse_bench_cmd_args(
         if i + 1 >= args.length() {
           return Err("bench: missing value for --warmup")
         }
-        warmup = @strconv.parse_int(args[i + 1]) catch {
+        warmup = @string.parse_int(args[i + 1]) catch {
           e => return Err("bench: invalid --warmup: " + e.to_string())
         }
         i += 2
@@ -1025,7 +1025,7 @@ fn build_http_host_bench_command(
 ///|
 fn parse_http_host_bench_elapsed_us(stdout : String) -> Result[Double, String] {
   let text = stdout.trim().to_string()
-  let parsed : Result[Double, @strconv.StrConvError] = try? @strconv.parse_double(
+  let parsed : Result[Double, Error] = try? @string.parse_double(
     text,
   )
   match parsed {
@@ -1093,18 +1093,16 @@ fn resolve_wasm_opt_bin_for_bench() -> String? {
   // Probe PATH `wasm-opt`. Run `wasm-opt --version` and require >= 118.
   // exec_command_lines returns a Result (does not raise) — pattern-match
   // instead of using catch.
-  let probe = match @backend.exec_command_lines(
-    "command -v wasm-opt 2>/dev/null",
-  ) {
+  let probe = match
+    @backend.exec_command_lines("command -v wasm-opt 2>/dev/null") {
     Ok(lines) => lines
     Err(_) => return None
   }
   if probe.length() == 0 || probe[0].trim().to_string() == "" {
     return None
   }
-  let version_lines = match @backend.exec_command_lines(
-    "wasm-opt --version 2>&1 | head -n 1",
-  ) {
+  let version_lines = match
+    @backend.exec_command_lines("wasm-opt --version 2>&1 | head -n 1") {
     Ok(lines) => lines
     Err(_) => return None
   }
@@ -1127,9 +1125,7 @@ fn resolve_wasm_opt_bin_for_bench() -> String? {
   if digits.length() == 0 {
     return None
   }
-  let version = @strconv.parse_int(digits) catch {
-    _ => return None
-  }
+  let version = @string.parse_int(digits) catch { _ => return None }
   if version < 118 {
     return None
   }
@@ -1156,8 +1152,7 @@ fn try_wasm_opt_shell_out(
   }
   // Same feature flag set as scripts/build_selfhost_wasi_opt.sh — these
   // are the moonbit wasm features the binary can use.
-  let cmd =
-    bin +
+  let cmd = bin +
     " " +
     opt_level +
     " --enable-gc --enable-reference-types --enable-bulk-memory" +
@@ -1172,9 +1167,7 @@ fn try_wasm_opt_shell_out(
     Ok(_) => ()
     Err(_) => return None
   }
-  let out_bytes = @os_fs.read_file_to_bytes(tmp_out) catch {
-    _ => return None
-  }
+  let out_bytes = @os_fs.read_file_to_bytes(tmp_out) catch { _ => return None }
   // Best-effort cleanup; ignore failures.
   ignore(@os_fs.remove_file(tmp_in) catch { _ => () })
   ignore(@os_fs.remove_file(tmp_out) catch { _ => () })
@@ -1318,7 +1311,7 @@ fn compile_bench_script_to_wasm_with_runner(
     Some(level) =>
       match try_wasm_opt_shell_out(raw_bytes, level, wasm_path) {
         Some(opt) => opt
-        None => {
+        None =>
           // Shell-out unavailable / failed — try in-process @wite as a
           // last resort. This may still be pathological on very large
           // selfhost-import wasm, but it is the historical path.
@@ -1344,7 +1337,6 @@ fn compile_bench_script_to_wasm_with_runner(
               _ => raw_bytes
             }
           }
-        }
       }
   }
   @os_fs.write_bytes_to_file(wasm_path, wasm_bytes) catch {
@@ -2194,7 +2186,7 @@ fn bench_file_cmd(
         if i + 1 >= args.length() {
           abort("bench-file: missing value for --n")
         }
-        count = @strconv.parse_int(args[i + 1]) catch {
+        count = @string.parse_int(args[i + 1]) catch {
           e => abort("bench-file: invalid --n: " + e.to_string())
         }
         i += 2
@@ -2203,7 +2195,7 @@ fn bench_file_cmd(
         if i + 1 >= args.length() {
           abort("bench-file: missing value for --warmup")
         }
-        warmup = @strconv.parse_int(args[i + 1]) catch {
+        warmup = @string.parse_int(args[i + 1]) catch {
           e => abort("bench-file: invalid --warmup: " + e.to_string())
         }
         i += 2

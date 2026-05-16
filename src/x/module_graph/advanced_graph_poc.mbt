@@ -158,7 +158,6 @@ fn index_map_finalize(index_map : Map[String, Array[String]]) -> Unit {
   }
 }
 
-
 ///|
 fn remove_index_id(
   index_map : Map[String, Array[String]],

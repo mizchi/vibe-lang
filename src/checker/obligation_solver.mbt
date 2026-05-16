@@ -74,7 +74,7 @@ pub fn TraitWitness::message(self : TraitWitness) -> String {
       impl_target~,
       param_name~,
       required_bound~,
-      actual_ty~,
+      actual_ty~
     ) =>
       "impl `" +
       trait_name +
@@ -126,10 +126,7 @@ pub fn ObligationSolver::witness(
           if self.bound_satisfied(bounds, trait_name) {
             TraitWitness::Satisfied
           } else {
-            TraitWitness::VarLacksBound(
-              trait_name~,
-              available=bounds.copy(),
-            )
+            TraitWitness::VarLacksBound(trait_name~, available=bounds.copy())
           }
         None => TraitWitness::VarLacksBound(trait_name~, available=[])
       }
@@ -158,7 +155,8 @@ pub fn ObligationSolver::witness(
       // beyond the default fallback below, so recording it would cause
       // a later subtrait-fallback ImplBoundFailed to be dropped.
       let mut near_miss : TraitWitness? = None
-      match obligation_solver_witness_match_any(
+      match
+        obligation_solver_witness_match_any(
           self,
           resolved,
           trait_name,
@@ -180,7 +178,8 @@ pub fn ObligationSolver::witness(
         if not(self.graph.is_subtrait(impl_trait_name, trait_name)) {
           continue
         }
-        match obligation_solver_witness_match_any(
+        match
+          obligation_solver_witness_match_any(
             self,
             resolved,
             // The user-visible failure is still about `trait_name`
@@ -235,9 +234,7 @@ fn obligation_solver_witness_match_any(
   let mut bound_failure : TraitWitness? = None
   for impl_def in impls {
     let mapping : Map[String, @core.Type] = {}
-    if type_matches_impl_target(
-        solver.env, impl_def.target, resolved, mapping,
-      ) {
+    if type_matches_impl_target(solver.env, impl_def.target, resolved, mapping) {
       let mut ok = true
       let mut first_failure : TraitWitness? = None
       for param in impl_def.type_params {

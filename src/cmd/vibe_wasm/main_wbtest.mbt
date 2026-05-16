@@ -21,7 +21,7 @@ fn wbtest_remove_file_if_exists(path : String) -> Unit {
 
 ///|
 fn wbtest_parse_int(text : String) -> Int? {
-  let value = @strconv.parse_int(text[:]) catch { _ => return None }
+  let value = @string.parse_int(text[:]) catch { _ => return None }
   Some(value)
 }
 

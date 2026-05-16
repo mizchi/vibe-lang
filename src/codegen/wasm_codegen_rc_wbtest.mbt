@@ -91,9 +91,12 @@ test "RC codegen: perceus plan actions emit dup/drop at stmt boundaries" {
   inspect(pre.length(), content="0")
   inspect(post.length(), content="1")
   let post_top = post.get("").unwrap_or({})
-  inspect(post_top.get(1).map(fn(a) { a[0].name }), content=(
-    #|Some(x)
-  ))
+  inspect(
+    post_top.get(1).map(fn(a) { a[0].name }),
+    content=(
+      #|Some(x)
+    ),
+  )
   // Compile with RC + actions
   let options_rc = wasm_emit_options(enable_rc=true, rc_actions~)
   let wasm_rc = emit_module_wasm_with_options(ast, options_rc)
@@ -393,9 +396,12 @@ test "RC codegen: build_rc_action_maps groups multiple actions on same stmt" {
   inspect(post_top.get(2).map(fn(a) { a.length() }), content="Some(2)")
   // One pre action on stmt 2 (old_value drop z)
   inspect(pre_top.get(2).map(fn(a) { a.length() }), content="Some(1)")
-  inspect(pre_top.get(2).map(fn(a) { a[0].name }), content=(
-    #|Some(z)
-  ))
+  inspect(
+    pre_top.get(2).map(fn(a) { a[0].name }),
+    content=(
+      #|Some(z)
+    ),
+  )
 }
 
 ///|
@@ -409,9 +415,12 @@ test "RC codegen: build_rc_action_maps skips invalid site strings" {
   assert_eq(pre.length(), 0)
   assert_eq(post.length(), 1)
   let post_top = post.get("").unwrap_or({})
-  inspect(post_top.get(0).map(fn(a) { a[0].name }), content=(
-    #|Some(y)
-  ))
+  inspect(
+    post_top.get(0).map(fn(a) { a[0].name }),
+    content=(
+      #|Some(y)
+    ),
+  )
 }
 
 ///|
@@ -425,24 +434,36 @@ test "RC codegen: build_rc_action_maps handles nested site paths" {
   let (pre, post) = build_rc_action_maps(actions)
   // Top-level action
   let post_top = post.get("").unwrap_or({})
-  inspect(post_top.get(0).map(fn(a) { a[0].name }), content=(
-    #|Some(x)
-  ))
+  inspect(
+    post_top.get(0).map(fn(a) { a[0].name }),
+    content=(
+      #|Some(x)
+    ),
+  )
   // Nested body action
   let post_body = post.get("stmt[2].expr.body").unwrap_or({})
-  inspect(post_body.get(0).map(fn(a) { a[0].name }), content=(
-    #|Some(y)
-  ))
+  inspect(
+    post_body.get(0).map(fn(a) { a[0].name }),
+    content=(
+      #|Some(y)
+    ),
+  )
   // Nested old_value → pre
   let pre_body = pre.get("stmt[2].expr.body").unwrap_or({})
-  inspect(pre_body.get(1).map(fn(a) { a[0].name }), content=(
-    #|Some(z)
-  ))
+  inspect(
+    pre_body.get(1).map(fn(a) { a[0].name }),
+    content=(
+      #|Some(z)
+    ),
+  )
   // Nested else action
   let post_else = post.get("stmt[3].else").unwrap_or({})
-  inspect(post_else.get(0).map(fn(a) { a[0].name }), content=(
-    #|Some(w)
-  ))
+  inspect(
+    post_else.get(0).map(fn(a) { a[0].name }),
+    content=(
+      #|Some(w)
+    ),
+  )
 }
 
 ///|

@@ -32,7 +32,10 @@ pub fn TraitGraph::info(self : TraitGraph, name : String) -> TraitDefInfo? {
 
 ///|
 /// Direct (one-hop) supertraits of `name`.
-pub fn TraitGraph::supertraits(self : TraitGraph, name : String) -> Array[String] {
+pub fn TraitGraph::supertraits(
+  self : TraitGraph,
+  name : String,
+) -> Array[String] {
   match self.env.get_trait_info(name) {
     Some(info) => info.supertraits_copy()
     None => []
@@ -128,7 +131,9 @@ fn trait_graph_is_subtrait_inner(
         if parent == super_trait {
           return true
         }
-        if trait_graph_is_subtrait_inner(env, parent, super_trait, next_visiting) {
+        if trait_graph_is_subtrait_inner(
+            env, parent, super_trait, next_visiting,
+          ) {
           return true
         }
       }

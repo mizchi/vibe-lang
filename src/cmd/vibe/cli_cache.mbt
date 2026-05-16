@@ -255,8 +255,8 @@ fn parse_linked_imports_cache(
       parts.push(part_view.to_string())
     }
     if parts.length() >= 4 {
-      let pc : Result[Int, _] = try? @strconv.parse_int(parts[2])
-      let rc : Result[Int, _] = try? @strconv.parse_int(parts[3])
+      let pc : Result[Int, _] = try? @string.parse_int(parts[2])
+      let rc : Result[Int, _] = try? @string.parse_int(parts[3])
       match (pc, rc) {
         (Ok(param_count), Ok(return_count)) =>
           out.push(@runtime_compile.LinkedImport::{
@@ -368,7 +368,7 @@ fn pure_test_cache_lookup(
     return None
   }
   let saved_hash = parts[0]
-  let saved_count : Result[Int, _] = try? @strconv.parse_int(parts[1])
+  let saved_count : Result[Int, _] = try? @string.parse_int(parts[1])
   let expected_count = match saved_count {
     Ok(n) => n
     Err(_) => return None

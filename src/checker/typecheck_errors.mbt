@@ -320,7 +320,7 @@ pub fn TypeError::diagnostic(self : TypeError) -> @core.Diagnostic {
       trait_name~,
       existing_target~,
       incoming_target~,
-      span~,
+      span~
     ) =>
       @core.Diagnostic::{
         stage: "type",
@@ -499,7 +499,7 @@ fn TypeError::resolve_vars(self : TypeError, env : TypeEnv) -> TypeError {
       trait_name~,
       existing_target~,
       incoming_target~,
-      span~,
+      span~
     ) =>
       TypeError::TraitImplOverlap(
         trait_name~,

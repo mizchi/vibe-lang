@@ -4032,7 +4032,7 @@ fn extract_let_binding_name(line : String) -> String? {
   if end == prefix_len {
     return None
   }
-  let name = line.substring(start=prefix_len, end~)
+  let name = line[prefix_len:end].to_owned()
   Some(name)
 }
 
@@ -4042,7 +4042,7 @@ fn extract_vibe_display_line(stdout : String) -> String? {
   for line_view in stdout.split("\n") {
     let line = line_view.to_string()
     if line.has_prefix("VIBE_DISPLAY:") {
-      return Some(line.substring(start=13))
+      return Some(line[13:].to_owned())
     }
   }
   None

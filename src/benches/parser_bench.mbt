@@ -81,7 +81,11 @@ test "load pipeline scaling probe" {
     //    walks every entry and synthesises def-ids / symbol & type maps.
     let t_idx = @bench.monotonic_clock_start()
     let idx = @x_exp.build_advanced_graph_index(
-      db, paths, base_commit="", created_at="", skip_types=true,
+      db,
+      paths,
+      base_commit="",
+      created_at="",
+      skip_types=true,
     )
     let graph_index_us = @bench.monotonic_clock_end(t_idx)
 

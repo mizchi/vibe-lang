@@ -2012,11 +2012,7 @@ fn ensure_eq_operand(
       let w = ObligationSolver::of(env).witness(resolved, "Eq")
       if not(w.is_satisfied()) {
         let extra = w.message()
-        let ctx = if extra == "" {
-          "argument"
-        } else {
-          "argument: " + extra
-        }
+        let ctx = if extra == "" { "argument" } else { "argument: " + extra }
         raise TypeError::Mismatch(
           expected=@core.Type::Named(name="Eq", args=[]),
           actual=resolved,
@@ -2865,9 +2861,7 @@ fn check_call_args(
                 expected=argument_mismatch_expected_type(env, param_ty, arg.ty),
                 actual=resolve_type(env, arg.ty),
                 span=arg.span,
-                context=Some(
-                  argument_mismatch_context(env, param_ty, arg.ty),
-                ),
+                context=Some(argument_mismatch_context(env, param_ty, arg.ty)),
               )
             }
           None =>
@@ -2907,9 +2901,7 @@ fn check_call_args(
                 expected=argument_mismatch_expected_type(env, param.ty, arg.ty),
                 actual=resolve_type(env, arg.ty),
                 span=arg.span,
-                context=Some(
-                  argument_mismatch_context(env, param.ty, arg.ty),
-                ),
+                context=Some(argument_mismatch_context(env, param.ty, arg.ty)),
               )
             }
           }
