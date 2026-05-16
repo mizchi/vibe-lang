@@ -104,7 +104,7 @@ fn type_call_builtin_handler_core_io(
         effects,
         allow_effect,
       )
-      if not(type_equal(env, arg_ty, @core.Type::String)) {
+      if !type_equal(env, arg_ty, @core.Type::String) {
         raise TypeError::Mismatch(
           expected=@core.Type::String,
           actual=arg_ty,
@@ -115,7 +115,7 @@ fn type_call_builtin_handler_core_io(
       // Validate labeled args are all Bool
       for larg in label_args {
         let lty = type_expr_eff(env, larg.expr, aliases, effects, allow_effect)
-        if not(type_equal(env, lty, @core.Type::Bool)) {
+        if !type_equal(env, lty, @core.Type::Bool) {
           raise TypeError::Mismatch(
             expected=@core.Type::Bool,
             actual=lty,
@@ -147,7 +147,7 @@ fn type_call_builtin_handler_core_io(
           effects,
           allow_effect,
         )
-        if not(type_equal(env, arg_ty, @core.Type::String)) {
+        if !type_equal(env, arg_ty, @core.Type::String) {
           raise TypeError::Mismatch(
             expected=@core.Type::String,
             actual=arg_ty,
@@ -264,7 +264,7 @@ fn type_call_builtin_handler_core_io(
         effects,
         allow_effect,
       )
-      if not(type_equal(env, name_ty, @core.Type::String)) {
+      if !type_equal(env, name_ty, @core.Type::String) {
         raise TypeError::Mismatch(
           expected=@core.Type::String,
           actual=name_ty,
@@ -279,7 +279,7 @@ fn type_call_builtin_handler_core_io(
         effects,
         allow_effect,
       )
-      if not(type_equal(env, mailbox_ty, @core.Type::Int)) {
+      if !type_equal(env, mailbox_ty, @core.Type::Int) {
         raise TypeError::Mismatch(
           expected=@core.Type::Int,
           actual=mailbox_ty,

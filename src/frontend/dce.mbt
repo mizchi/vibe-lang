@@ -67,7 +67,7 @@ fn dce_module_impl(
       return
     }
     // Only filter builtin names that are NOT shadowed by user definitions
-    if @core.is_builtin_name(name) && not(user_defs.contains(name)) {
+    if @core.is_builtin_name(name) && !user_defs.contains(name) {
       return
     }
     refs[name] = true
@@ -432,7 +432,7 @@ fn compute_reachable(
   let queue : Array[String] = []
   // Initialize with entry points
   for name, _ in entries {
-    if not(reachable.contains(name)) {
+    if !reachable.contains(name) {
       reachable[name] = true
       queue.push(name)
     }
@@ -445,7 +445,7 @@ fn compute_reachable(
         match graph.get(name) {
           Some(deps) =>
             for dep, _ in deps {
-              if not(reachable.contains(dep)) {
+              if !reachable.contains(dep) {
                 reachable[dep] = true
                 queue.push(dep)
               }
@@ -485,7 +485,7 @@ fn filter_reachable_stmts(
         // Keep if type name is reachable OR any constructor is reachable
         // (including qualified form: EnumName::CtorName)
         let mut keep = reachable.contains(name)
-        if not(keep) {
+        if !keep {
           for ctor in ctors {
             if reachable.contains(ctor.name) ||
               reachable.contains(name + "::" + ctor.name) {
@@ -502,7 +502,7 @@ fn filter_reachable_stmts(
         let _ = params
         let _ = span
         let mut keep = reachable.contains(name)
-        if not(keep) {
+        if !keep {
           for ctor in ctors {
             if reachable.contains(ctor.name) ||
               reachable.contains(name + "::" + ctor.name) {
@@ -519,7 +519,7 @@ fn filter_reachable_stmts(
         let _ = params
         let _ = span
         let mut keep = reachable.contains(name)
-        if not(keep) {
+        if !keep {
           for ctor in ctors {
             if reachable.contains(ctor.name) ||
               reachable.contains(name + "::" + ctor.name) {
@@ -741,7 +741,7 @@ fn collect_for_in_helper_refs_stmt(
         scope.bindings[name] = true
       }
       collect_for_in_helper_refs_expr(expr, scope, refs, on_name)
-      if not(rec) {
+      if !rec {
         scope.bindings[name] = true
       }
     }

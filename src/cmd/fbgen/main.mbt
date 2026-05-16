@@ -2,7 +2,7 @@
 fn postprocess_generated(src : String) -> String {
   let lines : Array[String] = []
   for line_view in src.split("\n") {
-    lines.push(line_view.to_string())
+    lines.push(line_view.to_owned())
   }
   let out = StringBuilder::new()
   for i in 0..<lines.length() {

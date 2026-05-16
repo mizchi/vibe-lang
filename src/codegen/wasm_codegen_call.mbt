@@ -1108,7 +1108,7 @@ fn resolve_args_with_labels(
     }
   }
   // If no labeled args, just return positional
-  if not(has_labeled) {
+  if !has_labeled {
     let out : Array[@core.Expr] = []
     for arg in args {
       out.push(arg.expr)
@@ -1204,9 +1204,9 @@ fn compile_call_user_fn(
   // Direct call needs the callee's closure env when the function has captures.
   // Do not fall back to current function env; it may belong to another closure.
   // Skip closure env check for functions known to not need env at compile time.
-  let known_no_env = not(fn_index_needs_env(ctx, fn_idx))
+  let known_no_env = !fn_index_needs_env(ctx, fn_idx)
   match ctx.locals.get(name) {
-    Some(local_idx) if ctx.fn_local_sigs.contains(name) && not(known_no_env) => {
+    Some(local_idx) if ctx.fn_local_sigs.contains(name) && !known_no_env => {
       let env_local = alloc_temp_local(ctx)
       emit_local_get(buf, local_idx)
       emit_i64_const_raw(buf, tag_mask.to_int64())
@@ -1251,7 +1251,7 @@ fn compile_call_user_fn(
     Some(_) => true
     None => false
   }
-  if ctx.is_tail_position && not(has_multivalue) {
+  if ctx.is_tail_position && !has_multivalue {
     emit_return_call(buf, idx)
   } else {
     emit_call(buf, idx)

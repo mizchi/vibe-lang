@@ -47,8 +47,8 @@ fn split_fixture_gc(source : String, path : String) -> (String, String) raise {
   let data_lines : Array[String] = []
   let mut in_data = false
   for line_view in source.split("\n") {
-    let line = line_view.to_string()
-    if line.trim().to_string() == "__DATA__" {
+    let line = line_view.to_owned()
+    if line.trim().to_owned() == "__DATA__" {
       in_data = true
       continue
     }

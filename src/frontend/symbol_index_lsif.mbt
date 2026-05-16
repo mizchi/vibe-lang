@@ -168,7 +168,7 @@ fn sorted_index_paths(index : SymbolIndex) -> Array[String] {
   let seen : Map[String, Bool] = {}
   let paths : Array[String] = []
   for entry in index.entries {
-    if not(seen.contains(entry.path)) {
+    if !seen.contains(entry.path) {
       seen[entry.path] = true
       paths.push(entry.path)
     }

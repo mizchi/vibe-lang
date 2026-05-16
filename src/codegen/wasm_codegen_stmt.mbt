@@ -55,7 +55,7 @@ fn unwrap_type_assert_block(expr : @core.Expr) -> @core.Expr {
           ) => {
             // Check: call target matches the local type-assert function
             if assert_name != call_name ||
-              not(assert_name.has_prefix("__vibe_local_type_assert_")) {
+              !assert_name.has_prefix("__vibe_local_type_assert_") {
               return expr
             }
             // Check: the function is a single-param identity (body = param)
@@ -68,7 +68,7 @@ fn unwrap_type_assert_block(expr : @core.Expr) -> @core.Expr {
                 ret_name == param_name
               _ => false
             }
-            if not(is_identity) {
+            if !is_identity {
               return expr
             }
             // Check: exactly one argument
@@ -301,7 +301,7 @@ fn compile_stmt(
                       break
                     }
                   }
-                  if not(is_last) && not(is_captured) && not(needs_env) {
+                  if !is_last && !is_captured && !needs_env {
                     return
                   }
                 }
@@ -349,7 +349,7 @@ fn compile_stmt(
                           break
                         }
                       }
-                      if not(is_last) && not(is_captured) {
+                      if !is_last && !is_captured {
                         return
                       }
                       let idx = ctx.local_count
@@ -408,7 +408,7 @@ fn compile_stmt(
                           break
                         }
                       }
-                      if not(is_last) && not(is_captured) && not(needs_env) {
+                      if !is_last && !is_captured && !needs_env {
                         return
                       }
                     }
@@ -424,7 +424,7 @@ fn compile_stmt(
           // directly instead of local.get.
           // When captured by a closure, still register (for inline in closure body)
           // but don't skip local allocation (closure construction needs the local).
-          if not(rec) {
+          if !rec {
             let const_tagged : Int64? = match effective_expr {
               @core.Expr::Int(value=int_val, ..) =>
                 Some(tag_int_value64(int_val))
@@ -442,7 +442,7 @@ fn compile_stmt(
                     break
                   }
                 }
-                if not(is_captured) {
+                if !is_captured {
                   if is_last {
                     emit_i64_const_raw(buf, tagged)
                   }
@@ -518,12 +518,12 @@ fn compile_stmt(
       let _ = span
       for i in 0..<ctors.length() {
         let ctor = ctors[i]
-        if not(ctx.enum_ctor_tags.contains(ctor.name)) {
+        if !ctx.enum_ctor_tags.contains(ctor.name) {
           ctx.enum_ctor_tags[ctor.name] = ctx.next_ctor_tag
           ctx.next_ctor_tag += 1
         }
         ctx.enum_ctor_arities[ctor.name] = ctor.args.length()
-        if not(ctx.enum_ctor_arg_kinds.contains(ctor.name)) {
+        if !ctx.enum_ctor_arg_kinds.contains(ctor.name) {
           let arg_kinds : Array[ValueKind] = []
           for arg in ctor.args {
             arg_kinds.push(value_kind_from_type(ctx, arg))
@@ -532,7 +532,7 @@ fn compile_stmt(
         }
         // Also register qualified form: EnumName::CtorName
         let qualified_ctor = enum_name + "::" + ctor.name
-        if not(ctx.enum_ctor_tags.contains(qualified_ctor)) {
+        if !ctx.enum_ctor_tags.contains(qualified_ctor) {
           ctx.enum_ctor_tags[qualified_ctor] = ctx.enum_ctor_tags[ctor.name]
           ctx.enum_ctor_arities[qualified_ctor] = ctor.args.length()
           if ctx.enum_ctor_arg_kinds.contains(ctor.name) {
@@ -541,7 +541,7 @@ fn compile_stmt(
         }
         // Register singleton for 0-arg enum constructors
         if ctor.args.length() == 0 &&
-          not(ctx.enum_ctor_singletons.contains(ctor.name)) {
+          !ctx.enum_ctor_singletons.contains(ctor.name) {
           let offset = ctx.strings.intern_enum_singleton(
             ctor.name,
             ctx.enum_ctor_tags[ctor.name],
@@ -568,7 +568,7 @@ fn compile_stmt(
       // Tail position propagates only for the last expression in a block
       // compile_expr will save/reset is_tail_position itself
       compile_expr(ctx, buf, expr)
-      if not(is_last) {
+      if !is_last {
         emit_drop(buf)
       }
     }
@@ -760,7 +760,7 @@ fn compile_stmt(
         span~,
       )
       compile_expr(ctx, buf, call_expr)
-      if not(is_last) {
+      if !is_last {
         emit_drop(buf)
       }
     }
@@ -1105,7 +1105,7 @@ fn pat_is_irrefutable(pat : @core.Pat) -> Bool {
     @core.Pat::Bind(..) | @core.Pat::Wildcard(..) => true
     @core.Pat::Tuple(items~, ..) => {
       for item in items {
-        if not(pat_is_irrefutable(item)) {
+        if !pat_is_irrefutable(item) {
           return false
         }
       }
@@ -1113,7 +1113,7 @@ fn pat_is_irrefutable(pat : @core.Pat) -> Bool {
     }
     @core.Pat::Record(fields~, ..) => {
       for field in fields {
-        if not(pat_is_irrefutable(field.pat)) {
+        if !pat_is_irrefutable(field.pat) {
           return false
         }
       }
@@ -1121,7 +1121,7 @@ fn pat_is_irrefutable(pat : @core.Pat) -> Bool {
     }
     @core.Pat::Struct(fields~, ..) => {
       for field in fields {
-        if not(pat_is_irrefutable(field.pat)) {
+        if !pat_is_irrefutable(field.pat) {
           return false
         }
       }
@@ -1432,7 +1432,7 @@ fn detect_multivalue_call(
     @core.Expr::Call(name~, ..) => {
       let lowered = @core.lower_wasm_intrinsic_name(name)
       let is_direct = ctx.fn_indices.contains(lowered) &&
-        not(ctx.fn_local_sigs.contains(lowered) && ctx.locals.contains(lowered))
+        !(ctx.fn_local_sigs.contains(lowered) && ctx.locals.contains(lowered))
       let indirect_mv = match ctx.fn_local_sigs.get(lowered) {
         Some(sig) => sig.results.length() > 1 && ctx.locals.contains(lowered)
         None => false

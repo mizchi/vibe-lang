@@ -2651,7 +2651,7 @@ fn infer_expr_kind_gc(
     @core.Expr::Break(..) | @core.Expr::Continue(..) => GcValKind::I32
     other =>
       raise WasmGenError::Unsupported(
-        "expr: " + other.to_string()[:40].to_string(),
+        "expr: " + other.to_string()[:40].to_owned(),
       )
   }
 }
@@ -8651,7 +8651,7 @@ fn compile_expr_gc(
       emit_br_gc(buf, 0)
     other =>
       raise WasmGenError::Unsupported(
-        "expr: " + other.to_string()[:40].to_string(),
+        "expr: " + other.to_string()[:40].to_owned(),
       )
   }
 }

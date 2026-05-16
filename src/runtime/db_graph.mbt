@@ -65,7 +65,7 @@ fn render_import_cycle(cycle : Array[String]) -> String {
 
 ///|
 fn is_module_facade_path(path : String) -> Bool {
-  let basename = @path.Path(path).basename().to_string()
+  let basename = @path.Path(path).basename().to_owned()
   basename == "index.vibe" || basename == "index.xm"
 }
 
@@ -249,7 +249,7 @@ fn detect_module_cycle(
                         arr
                       }
                     }
-                    if not(array_has_string(edges, next_dir)) {
+                    if !array_has_string(edges, next_dir) {
                       edges.push(next_dir)
                     }
                   }

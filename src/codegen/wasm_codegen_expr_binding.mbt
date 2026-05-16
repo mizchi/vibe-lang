@@ -250,7 +250,7 @@ fn compile_expr_if(
   }
   // Optimization: if cond is an integer comparison, emit comparison directly
   // without going through tagged bool (tag → untag cancels out)
-  if not(try_compile_cond_i32(ctx, buf, cond)) {
+  if !try_compile_cond_i32(ctx, buf, cond) {
     compile_expr_i32(ctx, buf, cond)
     emit_i64_const_raw(buf, 2L)
     emit_i64_shr_u(buf)

@@ -92,7 +92,7 @@ fn precompile_cmd(args : Array[String]) -> Unit {
     }
     ensure_dir_recursive(file_out_dir)
     for entry in entries {
-      if not(entry.has_suffix(".vibe")) {
+      if !entry.has_suffix(".vibe") {
         continue
       }
       // Skip entries that are too short to be valid filenames (e.g. ".vibe" artifacts)

@@ -58,12 +58,12 @@ pub fn parse_line_repl_options(
 ///|
 pub fn extract_let_name_line(line : String) -> String? {
   let t = line.trim()
-  if not(t.has_prefix("let ")) {
+  if !t.has_prefix("let ") {
     return None
   }
-  let mut rest = t[4:].trim().to_string()
+  let mut rest = t[4:].trim().to_owned()
   if rest.has_prefix("rec ") {
-    rest = rest[4:].trim().to_string()
+    rest = rest[4:].trim().to_owned()
   }
   let out = StringBuilder::new()
   for _, c in rest {
@@ -72,7 +72,7 @@ pub fn extract_let_name_line(line : String) -> String? {
     }
     out.write_char(c)
   }
-  let name = out.to_string().trim().to_string()
+  let name = out.to_string().trim().to_owned()
   if name.length() == 0 {
     None
   } else {

@@ -8,7 +8,7 @@ fn normalize_collect_normalize_entry_names(
     names[name] = true
   }
   for name in extra_entry_names {
-    if name.trim().to_string().length() > 0 {
+    if name.trim().to_owned().length() > 0 {
       names[name] = true
     }
   }
@@ -127,7 +127,7 @@ fn normalize_all_names_already_exported(
     }
   }
   for name in entry_names {
-    if not(exported.contains(name)) {
+    if !exported.contains(name) {
       return false
     }
   }
@@ -173,7 +173,7 @@ fn normalize_render_canonicalize_import_path(path : String) -> String {
     if part == ".." {
       if parts.length() > 0 && parts[parts.length() - 1] != ".." {
         let _ = parts.pop()
-      } else if not(is_abs) {
+      } else if !is_abs {
         parts.push(part)
       }
     } else {
@@ -191,9 +191,9 @@ fn normalize_render_canonicalize_import_path(path : String) -> String {
     normalized
   }
   if had_dot_prefix &&
-    not(without_index.has_prefix("./")) &&
-    not(without_index.has_prefix("../")) &&
-    not(without_index.has_prefix("/")) {
+    !without_index.has_prefix("./") &&
+    !without_index.has_prefix("../") &&
+    !without_index.has_prefix("/") {
     "./" + without_index
   } else {
     without_index
@@ -354,12 +354,12 @@ fn normalize_render_stmt(
     @vibe_core.Stmt::Let(rec~, name~, expr~, span~) => {
       let should_preserve_raw = rewritten_expr is None &&
         annotation is None &&
-        not(normalize_let_stmt_prefers_rendered_expr(expr, env.get(name)))
+        !normalize_let_stmt_prefers_rendered_expr(expr, env.get(name))
       if should_preserve_raw {
         let snippet = normalize_strip_trailing_comments(
           normalize_source_slice_by_span(source, span.start, span.end)
           .trim()
-          .to_string(),
+          .to_owned(),
         )
         if normalize_render_stmt_accept_raw_snippet(snippet) {
           return Some(snippet)
@@ -377,14 +377,12 @@ fn normalize_render_stmt(
       }
       let should_preserve_raw = rewritten_expr is None &&
         annotation is None &&
-        not(
-          normalize_let_stmt_prefers_rendered_expr(render_expr, env.get(name)),
-        )
+        !normalize_let_stmt_prefers_rendered_expr(render_expr, env.get(name))
       if should_preserve_raw {
         let snippet = normalize_strip_trailing_comments(
           normalize_source_slice_by_span(source, span.start, span.end)
           .trim()
-          .to_string(),
+          .to_owned(),
         )
         if snippet.has_prefix("export ") &&
           normalize_render_stmt_accept_raw_snippet(snippet) {
@@ -678,7 +676,7 @@ fn normalize_render_fn_separated(
   }
   let snippet = normalize_source_slice_by_span(source, span.start, span.end)
     .trim()
-    .to_string()
+    .to_owned()
   if snippet.length() == 0 {
     return None
   }
@@ -761,7 +759,7 @@ fn normalize_render_stmt_expr_text(
             original_expr.span().end,
           )
           .trim()
-          .to_string()
+          .to_owned()
       }
   }
   if expr_text.length() == 0 {
@@ -831,7 +829,7 @@ fn normalize_render_expr_for_stmt(
       let span = expr.span()
       let snippet = normalize_source_slice_by_span(source, span.start, span.end)
         .trim()
-        .to_string()
+        .to_owned()
       if snippet.length() == 0 {
         None
       } else {
@@ -1038,11 +1036,11 @@ fn normalize_stmt_group_section_name(group : NormalizeStmtGroup) -> String {
 fn normalize_strip_trailing_comments(text : String) -> String {
   let lines : Array[String] = []
   for part in text.split("\n") {
-    lines.push(part.to_string())
+    lines.push(part.to_owned())
   }
   let mut end = lines.length()
   while end > 0 {
-    let line = lines[end - 1].trim().to_string()
+    let line = lines[end - 1].trim().to_owned()
     if line.length() == 0 || line.has_prefix("//") {
       end -= 1
     } else {
@@ -1084,12 +1082,12 @@ fn normalize_trim_rendered_block(text : String) -> String {
 fn normalize_strip_comment_only_lines(text : String) -> String {
   let lines : Array[String] = []
   for part in text.split("\n") {
-    lines.push(part.to_string())
+    lines.push(part.to_owned())
   }
   let buf = StringBuilder::new()
   let mut wrote = false
   for line in lines {
-    if not(line.trim().to_string().has_prefix("//")) {
+    if !line.trim().to_owned().has_prefix("//") {
       if wrote {
         buf.write_char('\n')
       }
@@ -1103,7 +1101,7 @@ fn normalize_strip_comment_only_lines(text : String) -> String {
 ///|
 fn normalize_has_standalone_comment_line(text : String) -> Bool {
   for part in text.split("\n") {
-    if part.trim().to_string().has_prefix("//") {
+    if part.trim().to_owned().has_prefix("//") {
       return true
     }
   }
@@ -1125,7 +1123,7 @@ fn normalize_render_signature_comment(
 ) -> String? {
   match env.get(name) {
     Some(ty) => {
-      if not(normalize_type_has_effects(ty)) {
+      if !normalize_type_has_effects(ty) {
         return None
       }
       let ty_text = normalize_render_type_annotation(ty)
@@ -1146,13 +1144,13 @@ fn normalize_inject_signature_comments(
 ) -> String {
   let lines : Array[String] = []
   for part in rendered.split("\n") {
-    lines.push(part.to_string())
+    lines.push(part.to_owned())
   }
   let out = StringBuilder::new()
   let mut i = 0
   while i < lines.length() {
     let line = lines[i]
-    let trimmed = line.trim().to_string()
+    let trimmed = line.trim().to_owned()
     let name : String? = if trimmed.has_prefix("export let ") {
       normalize_extract_let_name(trimmed, 11)
     } else if trimmed.has_prefix("let rec ") {
@@ -1171,7 +1169,7 @@ fn normalize_inject_signature_comments(
               let mut k = i - 1
               let mut found = false
               while k >= 0 {
-                let prev = lines[k].trim().to_string()
+                let prev = lines[k].trim().to_owned()
                 if prev.length() == 0 {
                   k -= 1
                   continue
@@ -1183,7 +1181,7 @@ fn normalize_inject_signature_comments(
               }
               found
             }
-            if not(prev_is_sig) {
+            if !prev_is_sig {
               out.write_string(c)
               out.write_char('\n')
             }
@@ -1208,7 +1206,7 @@ fn normalize_extract_let_name(line : String, start : Int) -> String? {
     return None
   }
   let rest = line.unsafe_substring(start~, end=line.length())
-  let trimmed = rest.trim().to_string()
+  let trimmed = rest.trim().to_owned()
   if trimmed.length() == 0 {
     return None
   }
@@ -1243,7 +1241,7 @@ fn normalize_render_source(
   let rendered : Array[NormalizeRenderedBlock] = []
   let push_rendered = fn(group : NormalizeStmtGroup, raw_text : String) {
     let text = normalize_trim_rendered_block(raw_text)
-    if text.trim().to_string().length() == 0 {
+    if text.trim().to_owned().length() == 0 {
       return
     }
     rendered.push({ group, text })
@@ -1333,7 +1331,7 @@ fn normalize_source_slice_by_span(
   if stop <= s {
     return ""
   }
-  source[s:stop].to_string()
+  source[s:stop].to_owned()
 }
 
 ///|

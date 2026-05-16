@@ -50,7 +50,7 @@ pub fn gc_e2e_compile_and_run(
   let output = @os_fs.read_file_to_string(out_path) catch { _ => "" }
   let _ = try? @os_fs.remove_file(wasm_path)
   let _ = try? @os_fs.remove_file(out_path)
-  (exit_code, output.trim().to_string())
+  (exit_code, output.trim().to_owned())
 }
 
 ///|

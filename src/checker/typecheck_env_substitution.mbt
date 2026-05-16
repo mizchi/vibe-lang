@@ -11,7 +11,7 @@ fn instantiate_scheme(env : TypeEnv, scheme : TypeScheme) -> @core.Type {
       mapping[id] = fresh_type_var(env)
     }
   }
-  if not(scheme.trait_bounds.is_empty()) {
+  if !scheme.trait_bounds.is_empty() {
     for id in scheme.vars {
       match mapping.get(id) {
         Some(@core.Type::Var(new_id)) =>
@@ -152,7 +152,7 @@ fn transform_type_structure(
       let out : Array[@core.Type] = []
       let mut changed = false
       for item in items {
-        if not(changed) && not(has_target(item)) {
+        if !changed && !has_target(item) {
           out.push(item)
         } else {
           out.push(walk(item))
@@ -271,7 +271,7 @@ fn transform_type_structure(
       let out : Array[@core.Type] = []
       let mut changed = false
       for arg in args {
-        if not(changed) && not(has_target(arg)) {
+        if !changed && !has_target(arg) {
           out.push(arg)
         } else {
           out.push(walk(arg))
@@ -323,7 +323,7 @@ fn resolve_type(env : TypeEnv, ty : @core.Type) -> @core.Type {
   if env.subs.is_empty() {
     return ty
   }
-  if not(type_has_substitutable_var(env, ty)) {
+  if !type_has_substitutable_var(env, ty) {
     return ty
   }
   resolve_type_walk(env, ty)
@@ -353,7 +353,7 @@ fn substitute_type_vars(
   ty : @core.Type,
   subs : Map[Int, @core.Type],
 ) -> @core.Type {
-  if subs.is_empty() || not(type_has_var_in_map(ty, subs)) {
+  if subs.is_empty() || !type_has_var_in_map(ty, subs) {
     return ty
   }
   substitute_type_vars_walk(ty, subs)
@@ -384,7 +384,7 @@ fn substitute_effect_vars(
   ty : @core.Type,
   subs : Map[String, String],
 ) -> @core.Type {
-  if subs.is_empty() || not(type_has_effect_var_in_map(ty, subs)) {
+  if subs.is_empty() || !type_has_effect_var_in_map(ty, subs) {
     return ty
   }
   substitute_effect_vars_walk(ty, subs)
@@ -457,7 +457,7 @@ fn substitute_type(
   ty : @core.Type,
   subs : Map[String, @core.Type],
 ) -> @core.Type {
-  if subs.is_empty() || not(type_has_param_in_map(ty, subs)) {
+  if subs.is_empty() || !type_has_param_in_map(ty, subs) {
     return ty
   }
   substitute_type_walk(ty, subs)

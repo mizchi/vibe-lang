@@ -43,7 +43,7 @@ fn NormScope::bind(self : NormScope, name : String) -> String {
   // Also bind unqualified name for module-prefixed identifiers (e.g. "math::helper" -> bind "helper" too)
   match name.rev_find("::") {
     Some(idx) => {
-      let unqualified = name[idx + 2:].to_string()
+      let unqualified = name[idx + 2:].to_owned()
       if unqualified.length() > 0 && !self.bindings.contains(unqualified) {
         self.bindings[unqualified] = normalized
       }

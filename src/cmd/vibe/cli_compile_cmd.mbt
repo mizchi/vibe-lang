@@ -59,7 +59,7 @@ fn compile_lite_cmd(args : Array[String]) -> Unit {
         }
       }
       let mut write_us = 0
-      if not(in_memory) {
+      if !in_memory {
         @profiler.profiler_enter("write")
         let start_write = @bench.monotonic_clock_start()
         match @io.write_bytes_with(fs, out_path, wasm_bytes) {
@@ -518,10 +518,10 @@ fn build_cmd_debug(entry : String, out_path : String?) -> Unit {
     let mut all_valid = cached.length() > 0
     // Check library .wasm files exist
     for li in cached {
-      if not(module_names.contains(li.module_name)) {
+      if !module_names.contains(li.module_name) {
         module_names[li.module_name] = true
         let lib_path = cache_dir + "/" + li.module_name + ".wasm"
-        if not(@os_fs.path_exists(lib_path)) {
+        if !@os_fs.path_exists(lib_path) {
           all_valid = false
         }
       }
@@ -626,7 +626,7 @@ fn build_cmd_debug(entry : String, out_path : String?) -> Unit {
       e => abort("build --debug: " + e.user_message())
     }
     // Save linked imports cache
-    if not(@os_fs.path_exists(cache_dir)) {
+    if !@os_fs.path_exists(cache_dir) {
       let _ = c_system(
         system_command_bytes("mkdir -p " + shell_quote_command_arg(cache_dir)),
       )
@@ -648,7 +648,7 @@ fn build_cmd_debug(entry : String, out_path : String?) -> Unit {
   let preload_parts : Array[String] = []
   let module_names : Map[String, Bool] = {}
   for li in linked_imports {
-    if not(module_names.contains(li.module_name)) {
+    if !module_names.contains(li.module_name) {
       module_names[li.module_name] = true
       let lib_path = cache_dir + "/" + li.module_name + ".wasm"
       preload_parts.push("--preload " + li.module_name + "=" + lib_path)
@@ -715,7 +715,7 @@ fn save_library_modules(
   let db_imports = db.imports(entry)
   for imp in db_imports {
     let mod_name = @runtime_compile.linked_module_name(imp.path)
-    if not(module_names.contains(mod_name)) {
+    if !module_names.contains(mod_name) {
       continue
     }
     let lib_wasm_path = cache_dir + "/" + mod_name + ".wasm"
@@ -815,19 +815,19 @@ fn collect_reexport_types_recursive(
   for stmt in source_ast.stmts {
     match stmt {
       @vibe_core.Stmt::ExportEnumDef(name~, params~, ctors~, span~) =>
-        if wanted.contains(name) && not(found.contains(name)) {
+        if wanted.contains(name) && !found.contains(name) {
           found[name] = true
           result.push(@vibe_core.Stmt::EnumDef(name~, params~, ctors~, span~))
         }
       @vibe_core.Stmt::ExportTypeAlias(name~, params~, target~, span~) =>
-        if wanted.contains(name) && not(found.contains(name)) {
+        if wanted.contains(name) && !found.contains(name) {
           found[name] = true
           result.push(
             @vibe_core.Stmt::TypeAlias(name~, params~, target~, span~),
           )
         }
       @vibe_core.Stmt::ExportStructDef(name~, params~, fields~, span~) =>
-        if wanted.contains(name) && not(found.contains(name)) {
+        if wanted.contains(name) && !found.contains(name) {
           found[name] = true
           result.push(
             @vibe_core.Stmt::StructDef(name~, params~, fields~, span~),
@@ -836,7 +836,7 @@ fn collect_reexport_types_recursive(
       @vibe_core.Stmt::ReExport(spec=inner_spec, source=inner_source, ..) => {
         let inner_wanted : Map[String, Bool] = {}
         for item in inner_spec.items {
-          if wanted.contains(item.name) && not(found.contains(item.name)) {
+          if wanted.contains(item.name) && !found.contains(item.name) {
             inner_wanted[item.name] = true
           }
         }

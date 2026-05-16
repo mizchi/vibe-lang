@@ -564,25 +564,25 @@ fn finalize_render_source(
     match finalize_render_stmt_fallback(stmt) {
       Some(rendered) => {
         out.write_string(rendered)
-        if not(rendered.has_suffix("\n")) {
+        if !rendered.has_suffix("\n") {
           out.write_char('\n')
         }
       }
       None => {
         let span = stmt.span()
         let snippet = source_slice_by_span(source, span.start, span.end)
-        if snippet.trim().to_string().length() == 0 {
+        if snippet.trim().to_owned().length() == 0 {
           continue
         }
         out.write_string(snippet)
-        if not(snippet.has_suffix("\n")) {
+        if !snippet.has_suffix("\n") {
           out.write_char('\n')
         }
       }
     }
   }
   let result = out.to_string()
-  if result.trim().to_string().length() == 0 {
+  if result.trim().to_owned().length() == 0 {
     Err("finalize: no statements kept")
   } else {
     let _ = @parser.parse_ast(result) catch {
@@ -645,7 +645,7 @@ fn finalize_cmd(args : Array[String]) -> Unit {
     Ok(v) => v
     Err(err) => abort("finalize: " + err)
   }
-  if source.trim().to_string().length() == 0 {
+  if source.trim().to_owned().length() == 0 {
     abort("finalize: source is empty: " + db_path)
   }
   let ast = @parser.parse_ast(source) catch {
@@ -663,7 +663,7 @@ fn finalize_cmd(args : Array[String]) -> Unit {
   if options.print_source {
     println(finalized_source)
   }
-  if not(options.dry_run) {
+  if !options.dry_run {
     match write_scratch_db_source(db_path, finalized_source) {
       Ok(_) => ()
       Err(err) => abort("finalize: " + err)

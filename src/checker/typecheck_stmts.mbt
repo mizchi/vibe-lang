@@ -369,7 +369,7 @@ fn type_check_stmts(
 ) -> TypeEnv raise TypeError {
   let is_top_level = is_top_level.unwrap_or(false)
   let declared_in_scope : Map[String, Bool] = {}
-  let has_exports = not(exported_names.is_empty())
+  let has_exports = !exported_names.is_empty()
   let ensure_fresh_value_binding = fn(
     name : String,
     span : @core.Span,
@@ -424,19 +424,19 @@ fn type_check_stmts(
   for stmt in stmts {
     let fn_info : (String, @core.Expr)? = match stmt {
       @core.Stmt::Let(rec~, name~, expr~, ..) =>
-        if not(rec) && name != "_" {
+        if !rec && name != "_" {
           Some((name, expr))
         } else {
           None
         }
       @core.Stmt::ExportLet(rec~, name~, expr~, ..) =>
-        if not(rec) && name != "_" {
+        if !rec && name != "_" {
           Some((name, expr))
         } else {
           None
         }
       @core.Stmt::InternalExportLet(rec~, name~, expr~, ..) =>
-        if not(rec) && name != "_" {
+        if !rec && name != "_" {
           Some((name, expr))
         } else {
           None
@@ -485,12 +485,12 @@ fn type_check_stmts(
               // when all parameters have explicit type annotations and
               // the body does not self-reference (self-recursion needs
               // explicit `let rec` with return type annotation).
-              let all_annotated = not(has_infer_placeholder(params))
+              let all_annotated = !has_infer_placeholder(params)
               let self_refs = if all_annotated {
                 let refs : Map[String, Bool] = {}
                 let bound = @core.WalkerScope::new()
                 @core.walk_expr_refs(expr, bound, refs, fn(n, b, r) {
-                  if not(b.contains(n)) {
+                  if !b.contains(n) {
                     r[n] = true
                   }
                 })
@@ -498,7 +498,7 @@ fn type_check_stmts(
               } else {
                 false
               }
-              if all_annotated && not(self_refs) {
+              if all_annotated && !self_refs {
                 let inferred_ret = fresh_type_var(env)
                 let result : Result[TypeScheme, TypeError] = try? build_forward_fn_scheme(
                   env, type_params, type_bounds, params, inferred_ret, fn_effects,
@@ -811,7 +811,7 @@ fn type_check_stmts(
         match env.get_scheme(name) {
           Some(scheme) => {
             let expected = instantiate_scheme(env, scheme)
-            if not(type_equal(env, expected, ty)) {
+            if !type_equal(env, expected, ty) {
               raise TypeError::Mismatch(
                 expected~,
                 actual=ty,
@@ -871,7 +871,7 @@ fn collect_exported_names(stmts : Array[@core.Stmt]) -> Map[String, Bool] {
       _ => ()
     }
   }
-  if not(has_late_exports) {
+  if !has_late_exports {
     return exports
   }
   let defined : Map[String, Bool] = {}
@@ -978,7 +978,7 @@ fn ensure_traits_defined(
 ) -> Unit raise TypeError {
   let deduped = dedup_trait_bounds(bounds)
   for bound in deduped {
-    if not(env.has_trait(bound)) {
+    if !env.has_trait(bound) {
       raise TypeError::BadTypeDef(message="unknown trait: " + bound, span~)
     }
   }
@@ -1024,7 +1024,7 @@ fn type_matches_impl_target(
           } else {
             let mut ok = true
             for i in 0..<pa.length() {
-              if not(type_matches_impl_target(env, pa[i], aa[i], mapping)) {
+              if !type_matches_impl_target(env, pa[i], aa[i], mapping) {
                 ok = false
                 break
               }
@@ -1063,9 +1063,7 @@ fn type_matches_impl_target(
           } else {
             let mut ok = true
             for i in 0..<ps.length() {
-              if not(
-                  type_matches_impl_target(env, ps[i], actual_items[i], mapping),
-                ) {
+              if !type_matches_impl_target(env, ps[i], actual_items[i], mapping) {
                 ok = false
                 break
               }
@@ -1084,7 +1082,7 @@ fn type_matches_impl_target(
             for name, p_ty in pf {
               match af.get(name) {
                 Some(a_ty) =>
-                  if not(type_matches_impl_target(env, p_ty, a_ty, mapping)) {
+                  if !type_matches_impl_target(env, p_ty, a_ty, mapping) {
                     ok = false
                     break
                   }
@@ -1140,7 +1138,7 @@ fn type_matches_impl_target(
             for name, p_ty in pf {
               match af.get(name) {
                 Some(a_ty) =>
-                  if not(type_matches_impl_target(env, p_ty, a_ty, mapping)) {
+                  if !type_matches_impl_target(env, p_ty, a_ty, mapping) {
                     ok = false
                     break
                   }
@@ -1163,8 +1161,8 @@ fn type_matches_impl_target(
             let mut ok = true
             for i in 0..<pp.length() {
               if pp[i].label != ap[i].label ||
-                (not(pp[i].label.is_positional()) && pp[i].name != ap[i].name) ||
-                not(type_matches_impl_target(env, pp[i].ty, ap[i].ty, mapping)) {
+                (!pp[i].label.is_positional() && pp[i].name != ap[i].name) ||
+                !type_matches_impl_target(env, pp[i].ty, ap[i].ty, mapping) {
                 ok = false
                 break
               }
@@ -1249,7 +1247,7 @@ fn ensure_type_satisfies_bounds(
       let solver = ObligationSolver::of(env)
       for bound in deduped {
         let witness = solver.witness(resolved, bound)
-        if not(witness.is_satisfied()) {
+        if !witness.is_satisfied() {
           let extra = witness.message()
           let enriched_context = if extra == "" {
             context
@@ -1316,7 +1314,7 @@ fn trait_impl_targets_may_overlap_many(
   }
   let mut i = 0
   while i < left.length() {
-    if not(trait_impl_targets_may_overlap(left[i], right[i])) {
+    if !trait_impl_targets_may_overlap(left[i], right[i]) {
       return false
     }
     i += 1
@@ -1479,17 +1477,15 @@ fn trait_impl_targets_may_overlap_concrete(
           while i < left_params.length() {
             if left_params[i].label != right_params[i].label ||
               (
-                not(left_params[i].label.is_positional()) &&
+                !left_params[i].label.is_positional() &&
                 left_params[i].name != right_params[i].name
               ) {
               return false
             }
-            if not(
-                trait_impl_targets_may_overlap(
+            if !trait_impl_targets_may_overlap(
                   left_params[i].ty,
                   right_params[i].ty,
-                ),
-              ) {
+                ) {
               return false
             }
             i += 1
@@ -1518,7 +1514,7 @@ fn trait_impls_overlap(
   left : TraitImplDef,
   right : TraitImplDef,
 ) -> Bool {
-  if not(trait_impl_targets_may_overlap(left.target, right.target)) {
+  if !trait_impl_targets_may_overlap(left.target, right.target) {
     return false
   }
   let overlap_env = clone_env(env)
@@ -1662,7 +1658,7 @@ fn build_forward_fn_scheme(
       break
     }
   }
-  if not(uses_num) {
+  if !uses_num {
     uses_num = has_num_type(ret)
   }
   let num_var = if uses_num { Some(fresh_num_var(env)) } else { None }

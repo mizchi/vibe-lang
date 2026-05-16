@@ -2100,7 +2100,7 @@ fn read_function_tracking_record(
   }
   let renamed_from = match record.get("renamed_from") {
     Some(Json::String(value)) =>
-      if value.trim().to_string().length() == 0 {
+      if value.trim().to_owned().length() == 0 {
         None
       } else {
         Some(value)
@@ -2161,9 +2161,9 @@ test "selfhost compiler source files roundtrip format" {
       fail(
         file +
         " roundtrip unstable:\n--- fmt1 (first 200) ---\n" +
-        fmt1[:200].to_string() +
+        fmt1[:200].to_owned() +
         "\n--- fmt2 (first 200) ---\n" +
-        fmt2[:200].to_string(),
+        fmt2[:200].to_owned(),
       )
     }
   }

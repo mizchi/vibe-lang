@@ -128,7 +128,7 @@ fn type_call(
                     effects,
                     allow_effect,
                   )
-                  if not(type_equal(env, arg_ty, items[i])) {
+                  if !type_equal(env, arg_ty, items[i]) {
                     raise TypeError::Mismatch(
                       expected=items[i],
                       actual=arg_ty,
@@ -149,7 +149,7 @@ fn type_call(
                   effects,
                   allow_effect,
                 )
-                if not(type_equal(env, arg_ty, inst.payload)) {
+                if !type_equal(env, arg_ty, inst.payload) {
                   raise TypeError::Mismatch(
                     expected=inst.payload,
                     actual=arg_ty,

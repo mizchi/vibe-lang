@@ -13,10 +13,10 @@ fn std_layer_name(layer : StdModuleLayer) -> String {
 fn std_layer_for_path(path : String) -> StdModuleLayer? {
   let normalized = @vibe_fs.normalize_path(path)
   if (
-      not(normalized.contains("/vibe/prelude/")) &&
-      not(normalized.contains("/vibe/path/"))
+      !normalized.contains("/vibe/prelude/") &&
+      !normalized.contains("/vibe/path/")
     ) ||
-    not(normalized.has_suffix(".vibe")) ||
+    !normalized.has_suffix(".vibe") ||
     normalized.has_suffix("_test.vibe") ||
     normalized.has_suffix("_type_import_test.vibe") ||
     normalized.has_suffix("/test_import.vibe") {
@@ -126,7 +126,7 @@ pub fn std_layering_violations_for_source(
   for import_path in imports {
     match std_layer_for_path(import_path) {
       Some(imported_layer) =>
-        if not(std_layer_allows_import(source_layer, imported_layer)) {
+        if !std_layer_allows_import(source_layer, imported_layer) {
           violations.push(
             "std layering violation: " +
             std_layer_name(source_layer) +
@@ -345,8 +345,8 @@ fn split_data_section(source : String) -> (String, String) {
   let marker = "\n__DATA__\n"
   match source.split_once(marker) {
     Some((before, after)) => {
-      let code = before.to_string()
-      let data = "\n__DATA__\n" + after.to_string()
+      let code = before.to_owned()
+      let data = "\n__DATA__\n" + after.to_owned()
       (code, data)
     }
     None => (source, "")
@@ -360,7 +360,7 @@ fn normalize_next_non_trivia_token_index(
 ) -> Int? {
   let mut i = start
   while i < tokens.length() {
-    if not(@parser.is_trivia(tokens[i].kind())) {
+    if !@parser.is_trivia(tokens[i].kind()) {
       return Some(i)
     }
     i += 1
@@ -495,7 +495,7 @@ fn normalize_apply_grammar_quickfixes(source : String) -> String {
         let _ = call_paren_stack.pop()
       }
     }
-    if not(@parser.is_trivia(kind)) {
+    if !@parser.is_trivia(kind) {
       prev_non_trivia_kind = Some(kind)
     }
     cursor = end

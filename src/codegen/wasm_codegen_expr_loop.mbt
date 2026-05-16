@@ -26,7 +26,7 @@ fn compile_expr_while(
   ctx.loop_param_locals = []
 
   // Evaluate condition
-  if not(try_compile_cond_i32(ctx, buf, cond)) {
+  if !try_compile_cond_i32(ctx, buf, cond) {
     compile_expr_i32(ctx, buf, cond)
     // Extract bool value: (tagged >> 2) & 1
     emit_i64_const_raw(buf, 2L)

@@ -122,7 +122,7 @@ fn split_comma_values(value : String) -> Array[String] {
   let buf = StringBuilder::new()
   for ch in value {
     if ch == ',' {
-      let s = buf.to_string().trim().to_string()
+      let s = buf.to_string().trim().to_owned()
       if s.length() > 0 {
         result.push(s)
       }
@@ -131,7 +131,7 @@ fn split_comma_values(value : String) -> Array[String] {
       buf.write_char(ch)
     }
   }
-  let s = buf.to_string().trim().to_string()
+  let s = buf.to_string().trim().to_owned()
   if s.length() > 0 {
     result.push(s)
   }
@@ -141,7 +141,7 @@ fn split_comma_values(value : String) -> Array[String] {
 ///|
 fn extract_flag_value(arg : String, prefix : String) -> String? {
   if arg.has_prefix(prefix) {
-    let value = arg[prefix.length():].to_string()
+    let value = arg[prefix.length():].to_owned()
     if value.length() > 0 {
       Some(value)
     } else {

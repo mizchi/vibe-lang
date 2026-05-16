@@ -262,7 +262,7 @@ fn parse_wasm_exported_function_types(
               None => return Err("invalid wasm function import type")
             }
             imported_func_type_indices.push(type_idx)
-          } else if not(wasm_skip_import_desc(kind, section)) {
+          } else if !wasm_skip_import_desc(kind, section) {
             return Err("invalid wasm import descriptor")
           }
         }

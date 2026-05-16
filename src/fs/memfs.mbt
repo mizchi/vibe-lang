@@ -66,7 +66,7 @@ fn MemFs::resolve(self : MemFs, path : String) -> Int? {
     ""
   }
   for part in path_without_slash.split("/") {
-    let part_str = part.to_string()
+    let part_str = part.to_owned()
     if part_str.is_empty() {
       continue
     }
@@ -287,7 +287,7 @@ pub impl FileSystemBackend for MemFs with mkdir_p(self, path) {
   }
   let parts : Array[String] = []
   for part in path_without_slash.split("/") {
-    parts.push(part.to_string())
+    parts.push(part.to_owned())
   }
   let mut current_path = ""
   for part in parts {

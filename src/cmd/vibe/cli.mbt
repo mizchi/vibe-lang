@@ -365,7 +365,7 @@ fn short_hash(hash : String) -> String {
   if hash.length() <= 7 {
     hash
   } else {
-    hash[0:7].to_string()
+    hash[0:7].to_owned()
   }
 }
 
@@ -458,16 +458,16 @@ fn sanitize_wit_ident(raw : String) -> String {
       out.write_char(ch)
       last_dash = ch == '-'
     } else if ch == '_' || ch == '.' || ch == ' ' {
-      if not(last_dash) {
+      if !last_dash {
         out.write_char('-')
         last_dash = true
       }
-    } else if not(last_dash) {
+    } else if !last_dash {
       out.write_char('-')
       last_dash = true
     }
   }
-  let normalized = out.to_string().trim().to_string()
+  let normalized = out.to_string().trim().to_owned()
   let candidate = if normalized.length() == 0 { "main" } else { normalized }
   let mut first = 'a'
   for _, c in candidate {
@@ -484,7 +484,7 @@ fn sanitize_wit_ident(raw : String) -> String {
 ///|
 /// Ensure dist directory exists
 fn ensure_dist_dir_with(fs : &@io.FileSystemAdapter) -> Unit {
-  if not(@io.path_exists_with(fs, "dist")) {
+  if !@io.path_exists_with(fs, "dist") {
     match @io.create_dir_with(fs, "dist") {
       Ok(_) => ()
       Err(err) => abort("compile: failed to create dist/: " + err)
@@ -575,7 +575,7 @@ fn write_wasm_coverage_sidecar_with(
 
 ///|
 fn parse_bool_flag(value : String) -> Bool {
-  let normalized = value.trim().to_string().to_lower()
+  let normalized = value.trim().to_owned().to_lower()
   match normalized {
     "1" | "true" | "yes" | "on" => true
     "0" | "false" | "no" | "off" => false
@@ -609,7 +609,7 @@ fn ensure_compile_coverage_allowed(
   coverage : Bool,
   test_mode_enabled : Bool,
 ) -> Result[Unit, String] {
-  if not(coverage) || test_mode_enabled {
+  if !coverage || test_mode_enabled {
     Ok(())
   } else {
     Err("compile: --coverage is test-only (set VIBE_TEST_COVERAGE=1)")
@@ -652,7 +652,7 @@ fn sync_wac_dependencies_if_configured(
   fs : &@io.FileSystemAdapter,
 ) -> Result[UInt, String] {
   let config_path = default_wac_config_path(wac_path)
-  if not(@io.path_exists_with(fs, config_path)) {
+  if !@io.path_exists_with(fs, config_path) {
     return Ok(0U)
   }
   @wite_deps.materialize_wac_dependencies_from_config(
@@ -690,7 +690,7 @@ fn compile_lite_validate_opts(
   if opts.adapter_path is Some(_) {
     return Err("compile-lite: --adapter is not supported")
   }
-  if not(in_memory) && opts.out_path is None {
+  if !in_memory && opts.out_path is None {
     return Err("compile-lite: -o/--out is required")
   }
   Ok(())
@@ -731,7 +731,7 @@ fn split_compile_lite_args(
 
 ///|
 fn remove_file_if_exists(path : String) -> Unit {
-  if not(@os_fs.path_exists(path)) {
+  if !@os_fs.path_exists(path) {
     return
   }
   let is_file = @os_fs.is_file(path) catch { _ => false }

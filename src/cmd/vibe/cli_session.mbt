@@ -177,7 +177,7 @@ fn session_http_port_for_entry_with_features(
 ///|
 fn current_cli_binary_path() -> String? {
   let resolve_bin = fn(raw : String) -> String {
-    if raw.has_prefix("/") || not(raw.contains("/")) {
+    if raw.has_prefix("/") || !raw.contains("/") {
       raw
     } else {
       @io.current_dir_or_root() + "/" + raw
@@ -487,7 +487,7 @@ fn ensure_session_http_worker(
   }
   if ping_state is SessionHttpPingState::Alive(_) {
     ignore(session_http_shutdown(port))
-    if not(session_http_wait_until_unreachable(port)) {
+    if !session_http_wait_until_unreachable(port) {
       return Err("session-http: stale worker did not shut down")
     }
   }
@@ -767,7 +767,7 @@ fn parse_cli_session_request(
   match json {
     Json::Object(obj) => {
       let cmd = match obj.get("cmd") {
-        Some(Json::String(value)) => value.trim().to_string().to_lower()
+        Some(Json::String(value)) => value.trim().to_owned().to_lower()
         _ => return Err("session-json: missing cmd")
       }
       match cmd {
@@ -779,7 +779,7 @@ fn parse_cli_session_request(
         "run" =>
           match obj.get("path") {
             Some(Json::String(value)) => {
-              let path = value.trim().to_string()
+              let path = value.trim().to_owned()
               if path.length() == 0 {
                 Err("session-json: missing path")
               } else {
@@ -794,7 +794,7 @@ fn parse_cli_session_request(
         "check" =>
           match obj.get("path") {
             Some(Json::String(value)) => {
-              let path = value.trim().to_string()
+              let path = value.trim().to_owned()
               if path.length() == 0 {
                 Err("session-json: missing path")
               } else {
@@ -809,7 +809,7 @@ fn parse_cli_session_request(
         "test" =>
           match obj.get("path") {
             Some(Json::String(value)) => {
-              let path = value.trim().to_string()
+              let path = value.trim().to_owned()
               if path.length() == 0 {
                 Err("session-json: missing path")
               } else {
@@ -945,7 +945,7 @@ fn session_json_cmd(
     let input = @stdio.stdin
     let cache = CliEntryDbCache::new()
     while input.read_until("\n") is Some(line) {
-      let trimmed = line.trim().to_string()
+      let trimmed = line.trim().to_owned()
       if trimmed.length() == 0 {
         continue
       }
@@ -1125,7 +1125,7 @@ fn find_json_lines(text : String) -> Array[String] {
   let lines = text.split("\n")
   let out : Array[String] = []
   for line in lines {
-    let trimmed = line.to_string().trim().to_string()
+    let trimmed = line.to_owned().trim().to_owned()
     if trimmed.length() > 0 && trimmed.has_prefix("{") {
       out.push(trimmed)
     }

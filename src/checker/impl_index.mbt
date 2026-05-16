@@ -107,10 +107,10 @@ pub fn ImplIndex::register_impl(
   target : @core.Type,
   span : @core.Span,
 ) -> Unit raise TypeError {
-  if not(self.env.has_trait(trait_name)) {
+  if !self.env.has_trait(trait_name) {
     raise TypeError::BadTypeDef(message="unknown trait: " + trait_name, span~)
   }
-  if not(self.env.trait_accepts_impl_here(trait_name)) {
+  if !self.env.trait_accepts_impl_here(trait_name) {
     raise TypeError::TraitSealed(trait_name~, span~)
   }
   ensure_unique_params(type_params, span)

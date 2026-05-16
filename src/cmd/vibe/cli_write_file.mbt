@@ -45,7 +45,7 @@ fn first_char_index(text : String, target : Char) -> Int? {
 
 ///|
 fn parse_write_file_selector(raw : String) -> Result[WriteFileSelector, String] {
-  let trimmed = raw.trim().to_string()
+  let trimmed = raw.trim().to_owned()
   if trimmed.length() == 0 {
     return Err("write_file: selector must not be empty")
   }
@@ -53,7 +53,7 @@ fn parse_write_file_selector(raw : String) -> Result[WriteFileSelector, String] 
     let hash = trimmed
       .unsafe_substring(start=1, end=trimmed.length())
       .trim()
-      .to_string()
+      .to_owned()
     if hash.length() == 0 {
       return Err("write_file: selector hash must not be empty")
     }
@@ -61,11 +61,11 @@ fn parse_write_file_selector(raw : String) -> Result[WriteFileSelector, String] 
   }
   match first_char_index(trimmed, '#') {
     Some(idx) => {
-      let name = trimmed.unsafe_substring(start=0, end=idx).trim().to_string()
+      let name = trimmed.unsafe_substring(start=0, end=idx).trim().to_owned()
       let hash = trimmed
         .unsafe_substring(start=idx + 1, end=trimmed.length())
         .trim()
-        .to_string()
+        .to_owned()
       if name.length() == 0 {
         return Err("write_file: selector name must not be empty")
       }
@@ -101,7 +101,7 @@ fn parse_write_file_cmd_args(
     }
     if arg.has_prefix("--entry=") {
       let path = arg.unsafe_substring(start=8, end=arg.length())
-      if path.trim().to_string().length() == 0 {
+      if path.trim().to_owned().length() == 0 {
         return Err("write_file: --entry path must not be empty")
       }
       entry_path = Some(path)
@@ -277,7 +277,7 @@ fn write_file_filter_hash(
 ) -> Array[WriteFileCandidate] {
   let out : Array[WriteFileCandidate] = []
   for candidate in candidates {
-    if not(candidate.def.def_id.has_prefix(hash_prefix)) {
+    if !candidate.def.def_id.has_prefix(hash_prefix) {
       continue
     }
     if name.length() > 0 && candidate.def.name != name {
@@ -371,7 +371,7 @@ fn write_file_resolve_candidate(
 fn graph_head_from_cache(cache : Map[String, Json]) -> String? {
   match cache.get("graph_head") {
     Some(Json::String(hash)) => {
-      let normalized = hash.trim().to_string()
+      let normalized = hash.trim().to_owned()
       if normalized.length() == 0 {
         None
       } else {
@@ -428,7 +428,7 @@ fn load_scratch_write_file_candidates(
     Ok(v) => v
     Err(err) => return Err(err)
   }
-  if source.trim().to_string().length() == 0 {
+  if source.trim().to_owned().length() == 0 {
     return Ok([])
   }
   let _ = @parser.parse_ast(source) catch {
@@ -448,11 +448,11 @@ fn load_scratch_write_file_candidates(
 ///|
 fn read_write_file_source(path : String) -> Result[String, String] {
   let resolved = @loader.resolve_entry_path(path)
-  if not(@os_fs.path_exists(resolved)) {
+  if !@os_fs.path_exists(resolved) {
     return Err("write_file: source path not found: " + resolved)
   }
   let is_file = @os_fs.is_file(resolved) catch { _ => false }
-  if not(is_file) {
+  if !is_file {
     return Err("write_file: source path is not a file: " + resolved)
   }
   let source = @os_fs.read_file_to_string(resolved) catch {
@@ -519,7 +519,7 @@ fn ensure_write_file_export(source : String, name : String) -> String {
   }
   let buf = StringBuilder::new()
   buf.write_string(source)
-  if source.length() > 0 && not(source.has_suffix("\n")) {
+  if source.length() > 0 && !source.has_suffix("\n") {
     buf.write_char('\n')
   }
   buf.write_string("export { " + name + " }\n")
@@ -532,11 +532,11 @@ fn materialize_write_file_source(
   def : WriteFileDef,
   no_deps : Bool,
 ) -> Result[String, String] {
-  if not(no_deps) {
+  if !no_deps {
     return Ok(source)
   }
   let snippet = source_slice_by_span(source, def.start, def.end)
-  if snippet.trim().to_string().length() == 0 {
+  if snippet.trim().to_owned().length() == 0 {
     return Err(
       "write_file: empty selector span for " + def.path + "#" + def.name,
     )

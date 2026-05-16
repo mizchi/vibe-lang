@@ -19,7 +19,7 @@ pub fn import_alias_name(path : String) -> String {
   }
   let base = buf.to_string()
   if base.has_suffix(".vibe") && base.length() > 5 {
-    base[0:base.length() - 5].to_string()
+    base[0:base.length() - 5].to_owned()
   } else {
     base
   }

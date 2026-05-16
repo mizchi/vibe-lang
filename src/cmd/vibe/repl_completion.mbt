@@ -107,11 +107,11 @@ fn is_in_fn_param_context(line : String, col : Int) -> Bool {
   let mut last_fn = -1
   for i in 0..<(limit - 1) {
     if chars[i] == 'f' && chars[i + 1] == 'n' {
-      let prev_ok = if i == 0 { true } else { not(is_ident_char(chars[i - 1])) }
+      let prev_ok = if i == 0 { true } else { !is_ident_char(chars[i - 1]) }
       let next_ok = if i + 2 >= chars.length() {
         true
       } else {
-        not(is_ident_char(chars[i + 2]))
+        !is_ident_char(chars[i + 2])
       }
       if prev_ok && next_ok {
         last_fn = i
@@ -256,8 +256,8 @@ fn detect_pipe_completion(line : String, col : Int) -> PipeCompletion? {
 
 ///|
 fn extract_let_name(line : String) -> String? {
-  let trimmed = line.trim().to_string()
-  if trimmed.length() < 4 || not(trimmed.has_prefix("let")) {
+  let trimmed = line.trim().to_owned()
+  if trimmed.length() < 4 || !trimmed.has_prefix("let") {
     return None
   }
   let chars = trimmed.to_array()
@@ -265,7 +265,7 @@ fn extract_let_name(line : String) -> String? {
     return None
   }
   let mut i = 3
-  if i >= chars.length() || not(is_space_char(chars[i])) {
+  if i >= chars.length() || !is_space_char(chars[i]) {
     return None
   }
   while i < chars.length() && is_space_char(chars[i]) {

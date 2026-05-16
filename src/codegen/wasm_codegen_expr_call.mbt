@@ -14,7 +14,7 @@ fn compile_expr_call(
   // Respect lexical locals first. Named local functions also live in fn_indices,
   // but env-backed captures may only be safely direct-called when the local
   // function metadata is still in scope.
-  if ctx.locals.contains(name) && not(ctx.enum_ctor_tags.contains(name)) {
+  if ctx.locals.contains(name) && !ctx.enum_ctor_tags.contains(name) {
     let direct_arity_match = match ctx.fn_params.get(name) {
       Some(params) => args.length() == params.length()
       None => false
@@ -128,7 +128,7 @@ fn compile_expr_call(
   } else {
     // Optimization: if name refers to a known non-local function with matching
     // arity, use direct `call` instead of `call_indirect`.
-    if ctx.fn_indices.contains(name) && not(ctx.enum_ctor_tags.contains(name)) {
+    if ctx.fn_indices.contains(name) && !ctx.enum_ctor_tags.contains(name) {
       let direct_arity_match = match ctx.fn_params.get(name) {
         Some(params) => args.length() == params.length()
         None => false

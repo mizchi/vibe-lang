@@ -10,16 +10,16 @@ pub fn extract_python_graph_ir_rows(
   let lines = source.split("\n")
   let mut offset = 0
   for line_view in lines {
-    let line = line_view.to_string()
+    let line = line_view.to_owned()
     let line_start = offset
     let line_end = offset + line.length()
     // Only process lines at indent level 0 (no leading whitespace)
-    if line.length() > 0 && not(py_is_whitespace_char(line, 0)) {
+    if line.length() > 0 && !py_is_whitespace_char(line, 0) {
       let trimmed = line
       // Skip comments, blank, imports
-      if not(trimmed.has_prefix("#")) &&
-        not(trimmed.has_prefix("import ")) &&
-        not(trimmed.has_prefix("from ")) {
+      if !trimmed.has_prefix("#") &&
+        !trimmed.has_prefix("import ") &&
+        !trimmed.has_prefix("from ") {
         match py_try_extract_declaration(trimmed) {
           Some((kind, name, signature)) =>
             rows.push(GraphIrRow::{

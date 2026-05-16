@@ -896,13 +896,13 @@ pub fn collect_exports(ast : @core.Module) -> Array[ExportInfo] {
   for stmt in ast.stmts {
     match stmt {
       @core.Stmt::ExportLet(name~, expr~, ..) =>
-        if not(seen.contains(name)) {
+        if !seen.contains(name) {
           exports.push(ExportInfo::{ name, ty: infer_export_type(expr) })
           seen[name] = true
         }
       @core.Stmt::Export(names~, ..) =>
         for name in names {
-          if not(seen.contains(name)) {
+          if !seen.contains(name) {
             match find_let_expr(ast, name) {
               Some(expr) => {
                 exports.push(ExportInfo::{ name, ty: infer_export_type(expr) })
@@ -1286,7 +1286,7 @@ pub fn generate_component_wit(
     wit = wit + "  import wasi:sockets/tcp-create-socket@0.2.0;\n"
     wit = wit + "  import wasi:sockets/tcp@0.2.0;\n"
     wit = wit + "  import wasi:io/poll@0.2.0;\n"
-    if not(imports.need_stdout_write_char) && not(imports.need_stdin_read_char) {
+    if !imports.need_stdout_write_char && !imports.need_stdin_read_char {
       wit = wit + "  import wasi:io/streams@0.2.0;\n"
     }
   }
@@ -1777,7 +1777,7 @@ pub fn emit_component_wasm_with_string_lift(
   let has_env_param = needs_target_env
   if needs_target_env {
     let env_global_name = exported_env_global_export_name(target_func_name)
-    if not(core_has_named_export(core_wasm, env_global_name, 3)) {
+    if !core_has_named_export(core_wasm, env_global_name, 3) {
       needs_target_env = false
     }
   }

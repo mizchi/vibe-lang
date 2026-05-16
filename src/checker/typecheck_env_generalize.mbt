@@ -15,10 +15,10 @@ fn generalize(env : TypeEnv, ty : @core.Type) -> TypeScheme raise TypeError {
     }
   }
   let vars : Array[Int] = []
-  if not(free_ty.is_empty()) {
+  if !free_ty.is_empty() {
     let free_env = free_vars_in_env(env)
     for id, _ in free_ty {
-      if not(free_env.contains(id)) {
+      if !free_env.contains(id) {
         vars.push(id)
       }
     }
@@ -30,10 +30,10 @@ fn generalize(env : TypeEnv, ty : @core.Type) -> TypeScheme raise TypeError {
     }
   }
   let effect_vars : Array[String] = []
-  if not(free_effects.is_empty()) {
+  if !free_effects.is_empty() {
     let free_effect_env = free_effect_vars_in_env(env)
     for name, _ in free_effects {
-      if not(free_effect_env.contains(name)) {
+      if !free_effect_env.contains(name) {
         effect_vars.push(name)
       }
     }

@@ -132,7 +132,7 @@ fn collect_source_hash_cache(
     }
     let imports = db.imports(path)
     for imp in imports {
-      if not(visited.contains(imp.path)) {
+      if !visited.contains(imp.path) {
         pending.push(imp.path)
       }
     }
@@ -166,13 +166,13 @@ fn serialize_source_hash_cache(hashes : Map[String, String]) -> String {
 fn parse_source_hash_cache(text : String) -> Map[String, String] {
   let out : Map[String, String] = {}
   for line_view in text.split("\n") {
-    let line = line_view.to_string().trim().to_string()
+    let line = line_view.to_owned().trim().to_owned()
     if line.length() == 0 {
       continue
     }
     let parts : Array[String] = []
     for part_view in line.split("\t") {
-      parts.push(part_view.to_string())
+      parts.push(part_view.to_owned())
     }
     if parts.length() >= 2 {
       out[parts[0]] = parts[1]
@@ -246,13 +246,13 @@ fn parse_linked_imports_cache(
 ) -> Array[@runtime_compile.LinkedImport] {
   let out : Array[@runtime_compile.LinkedImport] = []
   for line_view in text.split("\n") {
-    let line = line_view.to_string().trim().to_string()
+    let line = line_view.to_owned().trim().to_owned()
     if line.length() == 0 {
       continue
     }
     let parts : Array[String] = []
     for part_view in line.split("\t") {
-      parts.push(part_view.to_string())
+      parts.push(part_view.to_owned())
     }
     if parts.length() >= 4 {
       let pc : Result[Int, _] = try? @string.parse_int(parts[2])
@@ -282,7 +282,7 @@ fn all_test_blocks_pure(
 ) -> Bool {
   let env = db.types(entry)
   for case in cases {
-    if not(@checker.purity_block(env, case.body)) {
+    if !@checker.purity_block(env, case.body) {
       return false
     }
   }
@@ -339,11 +339,11 @@ fn pure_test_cache_lookup(
     Some(v) if v.length() > 0 => return None
     _ => ()
   }
-  if not(all_test_blocks_pure(db, entry, cases)) {
+  if !all_test_blocks_pure(db, entry, cases) {
     return None
   }
   let (_cache_dir, result_path) = pure_test_result_cache_paths(entry)
-  if not(@os_fs.path_exists(result_path)) {
+  if !@os_fs.path_exists(result_path) {
     return None
   }
   let saved_text = @os_fs.read_file_to_string(result_path) catch {
@@ -352,7 +352,7 @@ fn pure_test_cache_lookup(
   // Format: "hash\tcount\n" where hash is the combined source hash
   let lines : Array[String] = []
   for line_view in saved_text.split("\n") {
-    let line = line_view.to_string().trim().to_string()
+    let line = line_view.to_owned().trim().to_owned()
     if line.length() > 0 {
       lines.push(line)
     }
@@ -362,7 +362,7 @@ fn pure_test_cache_lookup(
   }
   let parts : Array[String] = []
   for part_view in lines[0].split("\t") {
-    parts.push(part_view.to_string())
+    parts.push(part_view.to_owned())
   }
   if parts.length() < 2 {
     return None
@@ -398,7 +398,7 @@ fn pure_test_cache_save(
   current_hashes : Map[String, String],
 ) -> Unit {
   let _ = ast
-  if not(all_test_blocks_pure(db, entry, cases)) {
+  if !all_test_blocks_pure(db, entry, cases) {
     return
   }
   let (cache_dir, result_path) = pure_test_result_cache_paths(entry)

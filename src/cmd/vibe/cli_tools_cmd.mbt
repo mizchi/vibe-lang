@@ -309,7 +309,7 @@ fn collect_symbols_rows(
         if candidate.def.name != def.name {
           continue
         }
-        if not(symbols_defs_equivalent(def, candidate.def)) {
+        if !symbols_defs_equivalent(def, candidate.def) {
           has_conflicting_scratch = true
           break
         }
@@ -421,17 +421,17 @@ fn is_scaffold_seed_vibe_root(vibe_root : String) -> Bool {
   let json_mod = @vibe_fs.normalize_path(json_dir + "/json.vibe")
   let base64_mod = @vibe_fs.normalize_path(base64_dir + "/base64.vibe")
   let sha1_mod = @vibe_fs.normalize_path(sha1_dir + "/sha1.vibe")
-  if not(has_prelude) {
+  if !has_prelude {
     return false
   }
   let prelude_is_dir = @os_fs.is_dir(prelude_dir) catch { _ => false }
-  if not(prelude_is_dir) {
+  if !prelude_is_dir {
     return false
   }
   let json_is_dir = @os_fs.is_dir(json_dir) catch { _ => false }
   let base64_is_dir = @os_fs.is_dir(base64_dir) catch { _ => false }
   let sha1_is_dir = @os_fs.is_dir(sha1_dir) catch { _ => false }
-  if not(json_is_dir) || not(base64_is_dir) || not(sha1_is_dir) {
+  if !json_is_dir || !base64_is_dir || !sha1_is_dir {
     return false
   }
   @os_fs.path_exists(string_mod) &&
@@ -466,7 +466,7 @@ fn resolve_scaffold_seed_vibe_root() -> String? {
 fn ensure_dir_recursive(path : String) -> Unit {
   if @os_fs.path_exists(path) {
     let is_dir = @os_fs.is_dir(path) catch { _ => false }
-    if not(is_dir) {
+    if !is_dir {
       abort("init: path exists and is not directory: " + path)
     }
     return
@@ -477,7 +477,7 @@ fn ensure_dir_recursive(path : String) -> Unit {
   }
   @os_fs.create_dir(path) catch {
     e =>
-      if not(@os_fs.path_exists(path)) {
+      if !@os_fs.path_exists(path) {
         abort("init: mkdir failed: " + path + " (" + e.to_string() + ")")
       }
   }
@@ -501,17 +501,17 @@ fn copy_seed_tree_if_missing(src_dir : String, dest_dir : String) -> Bool {
   if src_norm == dest_norm {
     return false
   }
-  if not(@os_fs.path_exists(src_norm)) {
+  if !@os_fs.path_exists(src_norm) {
     return false
   }
   let src_is_dir = @os_fs.is_dir(src_norm) catch { _ => false }
-  if not(src_is_dir) {
+  if !src_is_dir {
     return false
   }
   let mut changed = false
   if @os_fs.path_exists(dest_norm) {
     let dest_is_dir = @os_fs.is_dir(dest_norm) catch { _ => false }
-    if not(dest_is_dir) {
+    if !dest_is_dir {
       abort("init: seed target exists and is not directory: " + dest_norm)
     }
   } else {
@@ -533,7 +533,7 @@ fn copy_seed_tree_if_missing(src_dir : String, dest_dir : String) -> Bool {
       if copy_seed_tree_if_missing(src_path, dest_path) {
         changed = true
       }
-    } else if not(@os_fs.path_exists(dest_path)) {
+    } else if !@os_fs.path_exists(dest_path) {
       let content = match @io.read_string(src_path) {
         Ok(v) => v
         Err(err) => abort("init: read failed: " + src_path + " (" + err + ")")
@@ -565,7 +565,7 @@ fn scaffold_project_root_with_seed(
     created.push("index.lock")
   }
   let vibe_dir = root + "/.vibe"
-  if not(@os_fs.path_exists(vibe_dir)) {
+  if !@os_fs.path_exists(vibe_dir) {
     ensure_dir_recursive(vibe_dir)
     created.push(".vibe/")
   }
@@ -728,7 +728,7 @@ fn source_slice_by_span(source : String, start : Int, end : Int) -> String {
   if stop <= s {
     return ""
   }
-  source[s:stop].to_string()
+  source[s:stop].to_owned()
 }
 
 ///|
@@ -796,7 +796,7 @@ fn save_cmd(args : Array[String]) -> Unit {
     saved_count += 1
   }
   // Update paths.json for the main module
-  if not(use_git) {
+  if !use_git {
     let base_dir = find_vibe_dir(path)
     let codebase = @codebase.Codebase::new(base_dir)
     let _ = codebase.upsert_path_mapping(file_arg, bundle.main_hash) catch {
@@ -907,7 +907,7 @@ fn expand_cmd(args : Array[String]) -> Unit {
     abort("expand: no target specified")
   }
   // Default to source output if nothing specified
-  if not(output_json) && not(output_source) {
+  if !output_json && !output_source {
     output_source = true
   }
   // Find .vibe directory from target path
@@ -1010,7 +1010,7 @@ fn is_hash_like(s : String) -> Bool {
     return false
   }
   for c in s {
-    if not((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+    if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
       return false
     }
   }

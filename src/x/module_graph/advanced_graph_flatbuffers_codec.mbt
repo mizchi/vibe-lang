@@ -340,7 +340,7 @@ fn fb_sorted_defs_for_delta(
         break
       }
     }
-    if not(inserted) {
+    if !inserted {
       out.push(def)
     }
   }
@@ -455,7 +455,7 @@ fn advanced_graph_index_from_flatbuffer_bytes(
   payload : Bytes,
 ) -> Result[AdvancedGraphIndex, String] {
   let bb = @flatbuffers.ByteBuffer::from_bytes(payload)
-  if not(bb.verify()) {
+  if !bb.verify() {
     return Err("index flatbuffer: invalid byte buffer")
   }
   let root = FbIndex::from_buffer(bb)
@@ -828,7 +828,7 @@ fn advanced_graph_delta_from_flatbuffer_bytes(
   payload : Bytes,
 ) -> Result[AdvancedGraphDelta, String] {
   let bb = @flatbuffers.ByteBuffer::from_bytes(payload)
-  if not(bb.verify()) {
+  if !bb.verify() {
     return Err("delta flatbuffer: invalid byte buffer")
   }
   let root = FbDelta::from_buffer(bb)

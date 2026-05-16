@@ -362,7 +362,7 @@ fn prelude_add_unbound_ref(
   bound : @core.WalkerScope,
   refs : Map[String, Bool],
 ) -> Unit {
-  if not(bound.contains(name)) {
+  if !bound.contains(name) {
     refs[name] = true
   }
 }

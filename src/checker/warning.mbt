@@ -666,7 +666,7 @@ fn walk_expr(
         }
         walk_expr(arm.expr, scopes, out)
         warning_scope_pop(scopes, out)
-        if not(catchall_seen) && arm.cond is None {
+        if !catchall_seen && arm.cond is None {
           match arm.pat {
             @core.Pat::Wildcard(..) | @core.Pat::Bind(..) =>
               catchall_seen = true

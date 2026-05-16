@@ -16,7 +16,7 @@ fn test_repo_root() -> String {
   if !git_ref.has_prefix(prefix) {
     return cwd
   }
-  let gitdir = git_ref[prefix.length():].trim().to_string()
+  let gitdir = git_ref[prefix.length():].trim().to_owned()
   let parts = gitdir.split("/.git/").map(StringView::to_string).collect()
   if parts.length() == 0 || parts[0].length() == 0 {
     return cwd
@@ -27,7 +27,7 @@ fn test_repo_root() -> String {
 ///|
 fn make_temp_dir(prefix : String) -> String {
   let tmp_root = test_repo_root() + "/_build/vibe_codebase_test"
-  if not(@os_fs.path_exists(tmp_root)) {
+  if !@os_fs.path_exists(tmp_root) {
     @os_fs.create_dir(tmp_root) catch {
       e => abort("create temp root failed: " + e.to_string())
     }
@@ -35,7 +35,7 @@ fn make_temp_dir(prefix : String) -> String {
   let base = tmp_root + "/vibe_codebase_test_" + prefix
   for i in 0..<1000 {
     let path = if i == 0 { base } else { base + "_" + i.to_string() }
-    if not(@os_fs.path_exists(path)) {
+    if !@os_fs.path_exists(path) {
       @os_fs.create_dir(path) catch {
         e => abort("create temp dir failed: " + e.to_string())
       }
@@ -48,7 +48,7 @@ fn make_temp_dir(prefix : String) -> String {
 
 ///|
 fn remove_if_exists(path : String) -> Unit {
-  if not(@os_fs.path_exists(path)) {
+  if !@os_fs.path_exists(path) {
     return
   }
   let is_file = @os_fs.is_file(path) catch { _ => false }

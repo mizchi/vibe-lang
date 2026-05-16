@@ -1,7 +1,7 @@
 ///|
 fn make_temp_dir(prefix : String) -> String {
   let tmp_root = @vibe_fs.normalize_path(@io.current_dir_or_root() + "/.tmp")
-  if not(@os_fs.path_exists(tmp_root)) {
+  if !@os_fs.path_exists(tmp_root) {
     @os_fs.create_dir(tmp_root) catch {
       e => abort("create temp root failed: " + e.to_string())
     }
@@ -9,7 +9,7 @@ fn make_temp_dir(prefix : String) -> String {
   let base = tmp_root + "/vibe_loader_test_" + prefix
   for i in 0..<1000 {
     let path = if i == 0 { base } else { base + "_" + i.to_string() }
-    if not(@os_fs.path_exists(path)) {
+    if !@os_fs.path_exists(path) {
       @os_fs.create_dir(path) catch {
         e => abort("create temp dir failed: " + e.to_string())
       }
@@ -22,7 +22,7 @@ fn make_temp_dir(prefix : String) -> String {
 
 ///|
 fn remove_if_exists(path : String) -> Unit {
-  if not(@os_fs.path_exists(path)) {
+  if !@os_fs.path_exists(path) {
     return
   }
   let is_file = @os_fs.is_file(path) catch { _ => false }
@@ -179,7 +179,7 @@ test "loader load_db_with_paths_with_fs resolves alias imports declared in index
   }
   let env = db.types(resolved)
   let diags = db.diagnostics(resolved)
-  if not(diags.is_empty()) {
+  if !diags.is_empty() {
     let lines : Array[String] = []
     for diag in diags {
       lines.push(diag.stage + ":" + diag.message)
@@ -303,7 +303,7 @@ test "loader load_db_with_paths_with_fs extracts vibe blocks from markdown entry
     None => fail("expected markdown source to be extracted")
   }
   let diags = db.import_diagnostics(resolved)
-  if not(diags.is_empty()) {
+  if !diags.is_empty() {
     let lines : Array[String] = []
     for diag in diags {
       lines.push(diag.stage + ":" + diag.message)
@@ -353,7 +353,7 @@ test "loader load_db_with_paths_with_fs loads wasm binary imports" {
   assert_true(imports[0].hash is Some(_))
   let _ = db.types(resolved)
   let diags = db.diagnostics(resolved)
-  if not(diags.is_empty()) {
+  if !diags.is_empty() {
     let lines : Array[String] = []
     for diag in diags {
       lines.push(diag.stage + ":" + diag.message)
@@ -411,7 +411,7 @@ test "loader load_db_with_paths keeps transitive import diagnostics clean" {
   }
   let (db, resolved, _) = loaded
   let entry_diags = db.import_diagnostics(resolved)
-  if not(entry_diags.is_empty()) {
+  if !entry_diags.is_empty() {
     let lines : Array[String] = []
     for diag in entry_diags {
       lines.push(diag.stage + ":" + diag.message)
@@ -419,7 +419,7 @@ test "loader load_db_with_paths keeps transitive import diagnostics clean" {
     fail("unexpected entry import diagnostics: " + lines.join(","))
   }
   let lib_diags = db.import_diagnostics(@vibe_fs.normalize_path(lib))
-  if not(lib_diags.is_empty()) {
+  if !lib_diags.is_empty() {
     let lines : Array[String] = []
     for diag in lib_diags {
       lines.push(diag.stage + ":" + diag.message)
@@ -946,7 +946,7 @@ test "loader load_db_with_paths: repo process index_import_test has callable run
   let env = db.types(resolved)
   let diags = db.diagnostics(resolved)
   let type_diags = diags.filter(fn(diag) { diag.stage == "type" })
-  if not(type_diags.is_empty()) {
+  if !type_diags.is_empty() {
     let lines : Array[String] = []
     for diag in type_diags {
       lines.push(diag.stage + ":" + diag.message)
@@ -1011,7 +1011,7 @@ test "loader load_db_with_paths: repo url_test cross-directory import" {
   let import_errors = diags.filter(fn(diag) {
     diag.stage == "import" && diag.message.contains("missing:")
   })
-  if not(import_errors.is_empty()) {
+  if !import_errors.is_empty() {
     let lines : Array[String] = []
     for diag in import_errors {
       lines.push(diag.message)
@@ -1037,7 +1037,7 @@ test "loader load_db_with_paths: repo url/url_test cross-directory import" {
   let import_errors = diags.filter(fn(diag) {
     diag.stage == "import" && diag.message.contains("missing:")
   })
-  if not(import_errors.is_empty()) {
+  if !import_errors.is_empty() {
     let lines : Array[String] = []
     for diag in import_errors {
       lines.push(diag.message)
@@ -1064,7 +1064,7 @@ test "loader load_db_with_paths: repo scan_root_import_test cross-directory" {
   let import_errors = diags.filter(fn(diag) {
     diag.stage == "import" && diag.message.contains("missing:")
   })
-  if not(import_errors.is_empty()) {
+  if !import_errors.is_empty() {
     let lines : Array[String] = []
     for diag in import_errors {
       lines.push(diag.message)
@@ -1165,7 +1165,7 @@ test "loader cross-root import via transitive dependency" {
       assert_true(contains_path(paths, "/project/x/regexp/regexp.vibe"))
       // Verify import resolution is clean
       let diags = db.import_diagnostics(resolved)
-      if not(diags.is_empty()) {
+      if !diags.is_empty() {
         let lines : Array[String] = []
         for diag in diags {
           lines.push(diag.stage + ":" + diag.message)

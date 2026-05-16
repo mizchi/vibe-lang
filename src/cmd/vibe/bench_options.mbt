@@ -13,16 +13,14 @@ fn is_valid_bench_case_name(name : String) -> Bool {
   for _, c in name {
     if first {
       first = false
-      if not(Char::is_ascii_alphabetic(c) || c == '_') {
+      if !(Char::is_ascii_alphabetic(c) || c == '_') {
         return false
       }
       continue
     }
-    if not(
-        (Char::is_ascii_alphabetic(c) || Char::is_ascii_digit(c)) ||
+    if !((Char::is_ascii_alphabetic(c) || Char::is_ascii_digit(c)) ||
         c == '_' ||
-        c == '-',
-      ) {
+        c == '-') {
       return false
     }
   }
@@ -34,7 +32,7 @@ pub fn parse_bench_case_arg(
   raw : String,
   case_index : Int,
 ) -> Result[BenchCase, String] {
-  let trimmed = raw.trim().to_string()
+  let trimmed = raw.trim().to_owned()
   if trimmed.length() == 0 {
     return Err("empty case expression")
   }
@@ -50,14 +48,14 @@ pub fn parse_bench_case_arg(
       if pos <= 0 || pos + 1 >= trimmed.length() {
         return Ok({ name: "case" + case_index.to_string(), expr: trimmed })
       }
-      let left = trimmed.unsafe_substring(start=0, end=pos).trim().to_string()
+      let left = trimmed.unsafe_substring(start=0, end=pos).trim().to_owned()
       let right = trimmed
         .unsafe_substring(start=pos + 1, end=trimmed.length())
         .trim()
-        .to_string()
+        .to_owned()
       if right.length() == 0 ||
         right.has_prefix("=") ||
-        not(is_valid_bench_case_name(left)) {
+        !is_valid_bench_case_name(left) {
         return Ok({ name: "case" + case_index.to_string(), expr: trimmed })
       }
       Ok({ name: left, expr: right })
@@ -76,7 +74,7 @@ pub fn parse_bench_case_source(
   let mut line_no = 0
   for line_view in source.split("\n") {
     line_no += 1
-    let line = line_view.to_string().trim().to_string()
+    let line = line_view.to_owned().trim().to_owned()
     if line.length() == 0 || line.has_prefix("#") {
       continue
     }

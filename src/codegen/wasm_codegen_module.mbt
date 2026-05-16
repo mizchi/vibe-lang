@@ -20,7 +20,7 @@ fn http_host_import_binding(
   ctx : CodegenCtx,
   builtin_name : String,
 ) -> (String, String) {
-  if not(ctx.http_component_wasi_shim) {
+  if !ctx.http_component_wasi_shim {
     return ("vibe:http", builtin_name)
   }
   match builtin_name {
@@ -67,7 +67,7 @@ fn write_fs_host_import(
 fn fs_host_import_func_name(builtin_name : String) -> String {
   // "Fs::read_file" -> "fs_read_file"
   // "Fs::getcwd" -> "fs_getcwd"
-  "fs_" + builtin_name[4:].to_string()
+  "fs_" + builtin_name[4:].to_owned()
 }
 
 ///|
@@ -117,7 +117,7 @@ fn collect_effect_names(ctx : CodegenCtx) -> Array[String] {
   let names : Array[String] = []
   for key, _ in ctx.effect_handled_ops {
     let eff_name = extract_effect_name_from_key(key)
-    if not(seen.contains(eff_name)) {
+    if !seen.contains(eff_name) {
       seen[eff_name] = true
       names.push(eff_name)
     }
@@ -242,7 +242,7 @@ fn build_module(
     stdin_read_char_type = type_count
     type_count += 1
   }
-  if ctx.need_fs && not(ctx.fs_host_imports) {
+  if ctx.need_fs && !ctx.fs_host_imports {
     // fs_get_dirs_type: (i32) -> () — shared by get-directories and resource-drop
     fs_get_dirs_type = type_count
     type_count += 1
@@ -456,7 +456,7 @@ fn build_module(
     type_sec.push((127).to_byte())
     write_u32_leb(type_sec, 0)
   }
-  if ctx.need_fs && not(ctx.fs_host_imports) {
+  if ctx.need_fs && !ctx.fs_host_imports {
     // fs_get_dirs_type: (func (param i32) -> ()) — get-directories & resource-drop
     type_sec.push((96).to_byte())
     write_u32_leb(type_sec, 1)
@@ -650,7 +650,7 @@ fn build_module(
   // Exclude user-defined effects that are handled by throw/catch (not imports)
   let effect_op_keys : Array[String] = []
   for key, _ in ctx.effect_op_imports {
-    if not(ctx.effect_handled_ops.contains(key)) {
+    if !ctx.effect_handled_ops.contains(key) {
       effect_op_keys.push(key)
     }
   }
@@ -735,7 +735,7 @@ fn build_module(
   if ctx.need_stdin_read_char {
     func_import_count += 2
   }
-  if ctx.need_fs && not(ctx.fs_host_imports) {
+  if ctx.need_fs && !ctx.fs_host_imports {
     func_import_count += 7
   }
   if ctx.need_fs && ctx.fs_host_imports {
@@ -876,7 +876,7 @@ fn build_module(
       import_sec.push((0).to_byte())
       write_u32_leb(import_sec, stdin_read_char_type)
     }
-    if ctx.need_fs && not(ctx.fs_host_imports) {
+    if ctx.need_fs && !ctx.fs_host_imports {
       // 1. get-directories
       write_name(import_sec, "wasi:filesystem/preopens@0.2.6")
       write_name(import_sec, "get-directories")
@@ -1080,8 +1080,8 @@ fn build_module(
         }
       }
       if found {
-        let mod_name = key[0:sep].to_string()
-        let fn_name = key[sep + 2:key.length()].to_string()
+        let mod_name = key[0:sep].to_owned()
+        let fn_name = key[sep + 2:key.length()].to_owned()
         write_name(import_sec, mod_name)
         write_name(import_sec, fn_name)
         import_sec.push((0).to_byte()) // func import
@@ -1151,7 +1151,7 @@ fn build_module(
     ctx.need_funcref_table
   // TODO: In linked mode with closures, import funcref table from library
   let import_funcref_table = false // not yet implemented
-  let table_count = (if has_funcref_table && not(import_funcref_table) {
+  let table_count = (if has_funcref_table && !import_funcref_table {
       1
     } else {
       0
@@ -1176,7 +1176,7 @@ fn build_module(
   }
 
   // memory section (skip when importing memory from linked library)
-  if not(has_linked_imports) {
+  if !has_linked_imports {
     let mem_sec = ByteBuf::new()
     write_u32_leb(mem_sec, 1)
     mem_sec.push((0).to_byte())
@@ -1212,7 +1212,7 @@ fn build_module(
   let coverage_count = ctx.coverage_points.length()
   let coverage_bytes = coverage_count * 4
   let exported_env_global_count = ctx.exported_fn_env_globals.length()
-  let need_fs_global = ctx.need_fs && not(ctx.fs_host_imports)
+  let need_fs_global = ctx.need_fs && !ctx.fs_host_imports
   let need_globals = ctx.use_heap_global ||
     ctx.need_stack_switching ||
     ctx.need_effect_resume ||
@@ -1223,7 +1223,7 @@ fn build_module(
     ctx.rc_debug ||
     exported_env_global_count > 0
   // In linked mode, __heap_ptr is imported (not defined in global section)
-  let heap_global_in_section = ctx.use_heap_global && not(has_linked_imports)
+  let heap_global_in_section = ctx.use_heap_global && !has_linked_imports
   let effect_resume_global_count = if ctx.need_effect_resume {
     collect_effect_names(ctx).length() * 3 + 1
   } else {
@@ -1361,7 +1361,7 @@ fn build_module(
     need_fs_global ||
     ctx.force_cabi_realloc
   let need_http_host_string_new_export = ctx.need_http && ctx.http_host_imports
-  let emit_start = not(ctx.library_mode)
+  let emit_start = !ctx.library_mode
   // Library mode: export funcref table for linked builds
   let export_funcref_table = ctx.library_mode && has_funcref_table
   let export_count = (if emit_start { 3 } else { 1 }) + // _start + _vibe_run_tagged + memory, or just memory
@@ -1618,7 +1618,7 @@ fn build_module(
       caps.push("Async")
     }
     for key, _ in ctx.effect_op_imports {
-      if not(ctx.effect_handled_ops.contains(key)) {
+      if !ctx.effect_handled_ops.contains(key) {
         caps.push(key)
       }
     }
@@ -1672,7 +1672,7 @@ fn build_error_map_custom_content(ctx : CodegenCtx) -> Array[Byte] {
 fn restore_locals(ctx : CodegenCtx, saved : Map[String, Int]) -> Unit {
   let to_remove : Array[String] = []
   for name, _ in ctx.locals {
-    if not(saved.contains(name)) {
+    if !saved.contains(name) {
       to_remove.push(name)
     }
   }
@@ -1691,7 +1691,7 @@ fn restore_local_kinds(
 ) -> Unit {
   let to_remove : Array[String] = []
   for name, _ in ctx.local_kinds {
-    if not(saved.contains(name)) {
+    if !saved.contains(name) {
       to_remove.push(name)
     }
   }
@@ -1710,7 +1710,7 @@ fn restore_string_int_map(
 ) -> Unit {
   let to_remove : Array[String] = []
   for name, _ in target {
-    if not(saved.contains(name)) {
+    if !saved.contains(name) {
       to_remove.push(name)
     }
   }
@@ -1729,7 +1729,7 @@ fn restore_string_array_value_kind_map(
 ) -> Unit {
   let to_remove : Array[String] = []
   for name, _ in target {
-    if not(saved.contains(name)) {
+    if !saved.contains(name) {
       to_remove.push(name)
     }
   }
@@ -1748,7 +1748,7 @@ fn restore_string_array_string_map(
 ) -> Unit {
   let to_remove : Array[String] = []
   for name, _ in target {
-    if not(saved.contains(name)) {
+    if !saved.contains(name) {
       to_remove.push(name)
     }
   }
@@ -1767,7 +1767,7 @@ fn restore_string_value_kind_map(
 ) -> Unit {
   let to_remove : Array[String] = []
   for name, _ in target {
-    if not(saved.contains(name)) {
+    if !saved.contains(name) {
       to_remove.push(name)
     }
   }
@@ -1786,7 +1786,7 @@ fn restore_string_func_sig_map(
 ) -> Unit {
   let to_remove : Array[String] = []
   for name, _ in target {
-    if not(saved.contains(name)) {
+    if !saved.contains(name) {
       to_remove.push(name)
     }
   }
@@ -1805,7 +1805,7 @@ fn restore_string_string_map(
 ) -> Unit {
   let to_remove : Array[String] = []
   for name, _ in target {
-    if not(saved.contains(name)) {
+    if !saved.contains(name) {
       to_remove.push(name)
     }
   }
@@ -2200,7 +2200,7 @@ fn static_fold_value_eq(
       } else {
         let mut ok = true
         for i in 0..<left_items.length() {
-          if not(static_fold_value_eq(left_items[i], right_items[i])) {
+          if !static_fold_value_eq(left_items[i], right_items[i]) {
             ok = false
           }
         }
@@ -2215,7 +2215,7 @@ fn static_fold_value_eq(
       } else {
         let mut ok = true
         for i in 0..<left_args.length() {
-          if not(static_fold_value_eq(left_args[i], right_args[i])) {
+          if !static_fold_value_eq(left_args[i], right_args[i]) {
             ok = false
           }
         }
@@ -2235,9 +2235,7 @@ fn static_fold_value_eq(
         let mut ok = true
         for i in 0..<left_fields.length() {
           if left_fields[i].name != right_fields[i].name ||
-            not(
-              static_fold_value_eq(left_fields[i].value, right_fields[i].value),
-            ) {
+            !static_fold_value_eq(left_fields[i].value, right_fields[i].value) {
             ok = false
           }
         }
@@ -2455,7 +2453,7 @@ fn static_fold_builtin_call(
       if args.length() == 1 {
         match args[0] {
           StaticFoldValue::Bool(value~) =>
-            Some(StaticFoldValue::Bool(value=not(value)))
+            Some(StaticFoldValue::Bool(value=!value))
           _ => None
         }
       } else {
@@ -2500,7 +2498,7 @@ fn static_fold_match_pat(
           } else {
             let mut ok = true
             for i in 0..<items.length() {
-              if not(static_fold_match_pat(items[i], value_items[i], bindings)) {
+              if !static_fold_match_pat(items[i], value_items[i], bindings) {
                 ok = false
               }
             }
@@ -2517,7 +2515,7 @@ fn static_fold_match_pat(
           } else {
             let mut ok = true
             for i in 0..<args.length() {
-              if not(static_fold_match_pat(args[i], value_args[i], bindings)) {
+              if !static_fold_match_pat(args[i], value_args[i], bindings) {
                 ok = false
               }
             }
@@ -2549,7 +2547,7 @@ fn static_fold_match_pat(
           for pf in fields {
             match value_map.get(pf.name) {
               Some(vv) =>
-                if not(static_fold_match_pat(pf.pat, vv, bindings)) {
+                if !static_fold_match_pat(pf.pat, vv, bindings) {
                   ok = false
                 }
               None => ok = false
@@ -2813,7 +2811,7 @@ fn static_fold_count_ref_name(
   counts : Map[String, Int],
   bound : Map[String, Bool],
 ) -> Unit {
-  if bound.contains(name) || not(candidates.contains(name)) {
+  if bound.contains(name) || !candidates.contains(name) {
     return
   }
   match counts.get(name) {
@@ -2833,7 +2831,7 @@ fn static_fold_count_refs_expr(
     @core.Expr::Ident(name~, ..) =>
       static_fold_count_ref_name(name, candidates, counts, bound)
     @core.Expr::Call(name~, args~, ..) => {
-      if not(@core.is_ctor_name(name)) {
+      if !@core.is_ctor_name(name) {
         static_fold_count_ref_name(name, candidates, counts, bound)
       }
       for arg in args {
@@ -3034,7 +3032,7 @@ fn strip_unused_top_level_static_bindings(
         @core.Stmt::Let(name~, ..) =>
           if name != "_start" &&
             candidates.contains(name) &&
-            not(counts.contains(name)) {
+            !counts.contains(name) {
             changed = true
           } else {
             stmts.push(stmt)
@@ -3376,7 +3374,7 @@ fn emit_module_with_coverage(
         @core.Stmt::Let(name~, expr~, ..) =>
           match expr {
             @core.Expr::Fn(..) =>
-              if not(ctx.exported_fns.contains(name)) {
+              if !ctx.exported_fns.contains(name) {
                 ctx.exported_fns[name] = true
               }
             _ => ()
@@ -3470,7 +3468,7 @@ fn emit_module_with_coverage(
     if ctx.need_stdin_read_char {
       pre_import_count += 2
     }
-    if ctx.need_fs && not(ctx.fs_host_imports) {
+    if ctx.need_fs && !ctx.fs_host_imports {
       pre_import_count += 7
     }
     if ctx.need_fs && ctx.fs_host_imports {
@@ -3597,7 +3595,7 @@ fn emit_module_with_coverage(
         let f = funcs[i]
         match f.name {
           Some(name) =>
-            if not(ctx.fn_multivalue_results.contains(name)) {
+            if !ctx.fn_multivalue_results.contains(name) {
               match tuple_return_kinds(ctx, f.ret) {
                 Some(kinds) =>
                   if body_always_returns_tuple(
@@ -3681,7 +3679,7 @@ fn emit_module_with_coverage(
   for _pass = 0; _pass < 10; _pass = _pass + 1 {
     let mut changed = false
     for i in 0..<funcs.length() {
-      if not(func_needs_heap[i]) {
+      if !func_needs_heap[i] {
         if needs_heap_block(ctx, funcs[i].body) {
           func_needs_heap[i] = true
           any_user_heap = true
@@ -3693,7 +3691,7 @@ fn emit_module_with_coverage(
         }
       }
     }
-    if not(changed) {
+    if !changed {
       break
     }
   }
@@ -3710,7 +3708,7 @@ fn emit_module_with_coverage(
   // Linked library modules share their memory with dependents.
   // Even when they only expose static string data, the consumer needs
   // a stable heap_ptr export to reserve space after the library's segments.
-  let require_library_heap_global = ctx.library_mode && not(ctx.use_js_strings)
+  let require_library_heap_global = ctx.library_mode && !ctx.use_js_strings
   // In linked mode, always enable heap_global (library provides memory/heap_ptr)
   if require_library_heap_global ||
     any_user_heap ||
@@ -3789,7 +3787,7 @@ fn emit_module_with_coverage(
       (if ctx.need_stack_switching { 1 } else { 0 }) +
       (if ctx.need_effect_resume { 4 } else { 0 }) +
       (if ctx.coverage_enabled { 2 } else { 0 }) +
-      (if ctx.need_fs && not(ctx.fs_host_imports) { 1 } else { 0 }) +
+      (if ctx.need_fs && !ctx.fs_host_imports { 1 } else { 0 }) +
       (if ctx.need_socket { 1 } else { 0 }) +
       (if ctx.rc_free_list_global >= 0 { 1 } else { 0 }) +
       (if ctx.rc_debug { 2 } else { 0 })
@@ -3808,7 +3806,7 @@ fn emit_module_with_coverage(
   {
     let effect_op_keys : Array[String] = []
     for key, _ in ctx.effect_op_imports {
-      if not(ctx.effect_handled_ops.contains(key)) {
+      if !ctx.effect_handled_ops.contains(key) {
         effect_op_keys.push(key)
       }
     }
@@ -3861,7 +3859,7 @@ fn emit_module_with_coverage(
         (if ctx.need_stack_switching { 1 } else { 0 }) +
         (if ctx.need_effect_resume { 4 } else { 0 }) +
         (if ctx.coverage_enabled { 2 } else { 0 }) +
-        (if ctx.need_fs && not(ctx.fs_host_imports) { 1 } else { 0 }) +
+        (if ctx.need_fs && !ctx.fs_host_imports { 1 } else { 0 }) +
         (if ctx.need_socket { 1 } else { 0 })
     } else {
       ctx.rc_header_size = 4 // [rc_count@-4] only
@@ -3876,7 +3874,7 @@ fn emit_module_with_coverage(
         (if ctx.need_stack_switching { 1 } else { 0 }) +
         (if ctx.need_effect_resume { 4 } else { 0 }) +
         (if ctx.coverage_enabled { 2 } else { 0 }) +
-        (if ctx.need_fs && not(ctx.fs_host_imports) { 1 } else { 0 }) +
+        (if ctx.need_fs && !ctx.fs_host_imports { 1 } else { 0 }) +
         (if ctx.need_socket { 1 } else { 0 })
       }
       ctx.rc_debug_alloc_global = debug_base
@@ -4024,7 +4022,7 @@ fn emit_module_with_coverage(
   if ctx.need_stdin_read_char ||
     ctx.need_socket ||
     ctx.need_http ||
-    (ctx.need_fs && not(ctx.fs_host_imports)) ||
+    (ctx.need_fs && !ctx.fs_host_imports) ||
     ctx.force_cabi_realloc {
     let cabi_realloc_sig = FuncSig::{
       params: [ValueKind::I32, ValueKind::I32, ValueKind::I32, ValueKind::I32],
@@ -4073,7 +4071,7 @@ fn emit_module_with_coverage(
   )
   let run_func_index = func_import_count(ctx) + run_func_array_index
   let mut start_export_index = None
-  if not(ctx.library_mode) {
+  if !ctx.library_mode {
     let start_idx = func_import_count(ctx) + compiled_funcs.length()
     compiled_funcs.push(compile_public_start_wrapper(run_func_index))
     start_export_index = Some(start_idx)

@@ -86,7 +86,7 @@ fn is_wasm_unsupported_compile_error(message : String) -> Bool {
 
 ///|
 fn parse_bench_backend(value : String) -> BenchBackend? {
-  match value.trim().to_string().to_lower() {
+  match value.trim().to_owned().to_lower() {
     "wasm" | "compiled" => Some(BenchBackend::Wasm)
     _ => None
   }
@@ -166,14 +166,14 @@ fn bench_uses_expr_mode(args : Array[String]) -> Bool {
           i += 1
         }
       _ => {
-        if not(arg.has_prefix("-")) {
+        if !arg.has_prefix("-") {
           saw_path = true
         }
         i += 1
       }
     }
   }
-  not(saw_path)
+  !saw_path
 }
 
 ///|
@@ -408,7 +408,7 @@ fn bench_blocks_cmd(args : Array[String]) -> Unit {
       total,
       passed,
       failed_count,
-      not(failed),
+      !failed,
       file_reports,
     )
     let json_text = root_json.stringify()
@@ -489,7 +489,7 @@ fn module_source_from_stmt_spans(
       continue
     }
     out.write_string(snippet)
-    if not(snippet.has_suffix("\n")) {
+    if !snippet.has_suffix("\n") {
       out.write_char('\n')
     }
   }
@@ -631,7 +631,7 @@ fn build_bench_case_loop_script(
   out.write_string(" {\n")
   if body_source.length() > 0 {
     out.write_string(body_source)
-    if not(body_source.has_suffix("\n")) {
+    if !body_source.has_suffix("\n") {
       out.write_char('\n')
     }
   }
@@ -720,7 +720,7 @@ fn bench_script_cache_paths(
 
 ///|
 fn is_existing_file(path : String) -> Bool {
-  if not(@os_fs.path_exists(path)) {
+  if !@os_fs.path_exists(path) {
     return false
   }
   @os_fs.is_file(path) catch {
@@ -732,7 +732,7 @@ fn is_existing_file(path : String) -> Bool {
 fn split_env_flags(raw : String) -> Array[String] {
   let out : Array[String] = []
   for part_view in raw.split(" ") {
-    let token = part_view.trim().to_string()
+    let token = part_view.trim().to_owned()
     if token.length() > 0 {
       out.push(token)
     }
@@ -744,7 +744,7 @@ fn split_env_flags(raw : String) -> Array[String] {
 fn has_wasm_feature_flag(flags : Array[String], feature : String) -> Bool {
   let prefix = feature.to_lower() + "="
   for flag in flags {
-    let token = flag.trim().to_string().to_lower()
+    let token = flag.trim().to_owned().to_lower()
     if token == feature || token.has_prefix(prefix) {
       return true
     }
@@ -756,7 +756,7 @@ fn has_wasm_feature_flag(flags : Array[String], feature : String) -> Bool {
 fn with_default_bench_wasm_flags(flags : Array[String]) -> Array[String] {
   let out = flags.copy()
   // vibe-generated core wasm currently uses exception tags; enable by default.
-  if not(has_wasm_feature_flag(out, "exceptions")) {
+  if !has_wasm_feature_flag(out, "exceptions") {
     out.push("exceptions=y")
   }
   out
@@ -768,7 +768,7 @@ fn find_command_in_path(name : String) -> String? {
     None => None
     Some(path_value) => {
       for dir_view in path_value.split(":") {
-        let dir = dir_view.trim().to_string()
+        let dir = dir_view.trim().to_owned()
         if dir.length() == 0 {
           continue
         }
@@ -806,7 +806,7 @@ fn resolve_wasmtime_bin_for_bench(
 ) -> Result[String, String] {
   match @sys.get_env_var("WASMTIME_BIN") {
     Some(value) => {
-      let trimmed = value.trim().to_string()
+      let trimmed = value.trim().to_owned()
       if trimmed.length() > 0 {
         return Ok(trimmed)
       }
@@ -816,7 +816,7 @@ fn resolve_wasmtime_bin_for_bench(
   let local_release = project_root + "/deps/wasmtime/target/release/wasmtime"
   let local_debug = project_root + "/deps/wasmtime/target/debug/wasmtime"
   let use_submodule = match @sys.get_env_var("VIBE_USE_WASMTIME_SUBMODULE") {
-    Some(value) => value.trim().to_string() == "1"
+    Some(value) => value.trim().to_owned() == "1"
     None => false
   }
   if use_submodule {
@@ -1024,7 +1024,7 @@ fn build_http_host_bench_command(
 
 ///|
 fn parse_http_host_bench_elapsed_us(stdout : String) -> Result[Double, String] {
-  let text = stdout.trim().to_string()
+  let text = stdout.trim().to_owned()
   let parsed : Result[Double, Error] = try? @string.parse_double(
     text,
   )
@@ -1098,7 +1098,7 @@ fn resolve_wasm_opt_bin_for_bench() -> String? {
     Ok(lines) => lines
     Err(_) => return None
   }
-  if probe.length() == 0 || probe[0].trim().to_string() == "" {
+  if probe.length() == 0 || probe[0].trim().to_owned() == "" {
     return None
   }
   let version_lines = match
@@ -1221,7 +1221,7 @@ fn compile_bench_script_to_wasm_with_runner(
     let saved_mode = @os_fs.read_file_to_string(cached_mode_path) catch {
       _ => ""
     }
-    saved_mode.trim().to_string() == current_mode
+    saved_mode.trim().to_owned() == current_mode
   } else {
     false
   }
@@ -1250,7 +1250,7 @@ fn compile_bench_script_to_wasm_with_runner(
   // imports (entire selfhost compiler tree) compile in reasonable
   // time. See `bench/selfhost_perf/README.md` postmortem.
   let bench_no_dce = match @sys.get_env_var("VIBE_BENCH_NO_DCE") {
-    Some(v) => not(v == "0" || v.to_lower() == "false" || v.to_lower() == "off")
+    Some(v) => !(v == "0" || v.to_lower() == "false" || v.to_lower() == "off")
     None => true
   }
   // debug_errors=true keeps throw string literals in the output, but the
@@ -1261,7 +1261,7 @@ fn compile_bench_script_to_wasm_with_runner(
   // opts out for selfhost benches at the cost of less helpful failure
   // messages from `throw` inside the bench body.
   let bench_debug_errors = match @sys.get_env_var("VIBE_BENCH_DEBUG_ERRORS") {
-    Some(v) => not(v == "0" || v.to_lower() == "false" || v.to_lower() == "off")
+    Some(v) => !(v == "0" || v.to_lower() == "false" || v.to_lower() == "off")
     None => true
   }
   // `vibe compile -Oz` runs the in-process `@wite.optimize_binary_for_size`
@@ -1696,7 +1696,7 @@ fn run_bench_blocks_wasm_statistical_entry_with_cases(
         }
         trial = trial * 2
       }
-      if not(calibration_ok) {
+      if !calibration_ok {
         continue
       }
       let run_source = build_bench_case_loop_script(
@@ -1768,7 +1768,7 @@ fn run_bench_blocks_wasm_statistical_entry_with_cases(
         }
         trial = trial * 2
       }
-      if not(calibration_ok) {
+      if !calibration_ok {
         continue
       }
       let mut sample_ok = true
@@ -1795,7 +1795,7 @@ fn run_bench_blocks_wasm_statistical_entry_with_cases(
         }
         samples.push(elapsed_us / batch_size.to_double())
       }
-      if not(sample_ok) {
+      if !sample_ok {
         continue
       }
     } else {
@@ -1814,7 +1814,7 @@ fn run_bench_blocks_wasm_statistical_entry_with_cases(
           }
         }
       }
-      if not(warmup_ok) {
+      if !warmup_ok {
         continue
       }
       let mut sample_ok = true
@@ -1835,7 +1835,7 @@ fn run_bench_blocks_wasm_statistical_entry_with_cases(
         let elapsed_us = @bench.monotonic_clock_end(start)
         samples.push(elapsed_us / batch_size.to_double())
       }
-      if not(sample_ok) {
+      if !sample_ok {
         continue
       }
     }

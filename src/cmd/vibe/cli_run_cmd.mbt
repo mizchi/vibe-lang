@@ -17,7 +17,7 @@ fn cli_use_session_http() -> Bool {
 ///|
 fn first_non_empty_line(text : String) -> String {
   for line_view in text.split("\n") {
-    let line = line_view.trim().to_string()
+    let line = line_view.trim().to_owned()
     if line.length() > 0 {
       return line
     }
@@ -29,7 +29,7 @@ fn first_non_empty_line(text : String) -> String {
 fn last_non_empty_line(text : String) -> String {
   let mut out = ""
   for line_view in text.split("\n") {
-    let line = line_view.trim().to_string()
+    let line = line_view.trim().to_owned()
     if line.length() > 0 {
       out = line
     }
@@ -39,7 +39,7 @@ fn last_non_empty_line(text : String) -> String {
 
 ///|
 fn parse_numeric_line_int64(line : String) -> Int64? {
-  let trimmed = line.trim().to_string()
+  let trimmed = line.trim().to_owned()
   if trimmed.length() == 0 {
     return None
   }
@@ -53,7 +53,7 @@ fn parse_numeric_line_int64(line : String) -> Int64? {
     }
     has_digit = true
   }
-  if not(has_digit) {
+  if !has_digit {
     return None
   }
   let value = @string.parse_int(trimmed) catch { _ => return None }
@@ -64,7 +64,7 @@ fn parse_numeric_line_int64(line : String) -> Int64? {
 fn parse_last_numeric_line_int64(text : String) -> Int64? {
   let mut out : Int64? = None
   for line_view in text.split("\n") {
-    let line = line_view.to_string()
+    let line = line_view.to_owned()
     match parse_numeric_line_int64(line) {
       Some(value) => out = Some(value)
       None => ()
@@ -140,7 +140,7 @@ fn resolve_http_host_runner(
 ) -> Result[HttpHostRunner, String] {
   let node_bin = match @sys.get_env_var("NODE_BIN") {
     Some(raw) => {
-      let value = raw.trim().to_string()
+      let value = raw.trim().to_owned()
       if value.length() > 0 {
         value
       } else {
@@ -202,8 +202,8 @@ fn resolve_http_host_runner(
 ///|
 fn split_command_flag_words(raw : String) -> Array[String] {
   let out : Array[String] = []
-  for part in raw.trim().to_string().split(" ") {
-    let token = part.trim().to_string()
+  for part in raw.trim().to_owned().split(" ") {
+    let token = part.trim().to_owned()
     if token.length() > 0 {
       out.push(token)
     }
@@ -816,10 +816,10 @@ fn run_cmd_wasm_linked(
   // Verify all library .wasm exist
   let module_names : Map[String, Bool] = {}
   for li in cached_imports {
-    if not(module_names.contains(li.module_name)) {
+    if !module_names.contains(li.module_name) {
       module_names[li.module_name] = true
       let lib_path = cache_dir + "/" + li.module_name + ".wasm"
-      if not(@os_fs.path_exists(lib_path)) {
+      if !@os_fs.path_exists(lib_path) {
         return Err("missing library")
       }
     }
@@ -866,7 +866,7 @@ fn run_cmd_wasm_linked(
   )
   let seen : Map[String, Bool] = {}
   for li in cached_imports {
-    if not(seen.contains(li.module_name)) {
+    if !seen.contains(li.module_name) {
       seen[li.module_name] = true
       let lib_path = cache_dir + "/" + li.module_name + ".wasm"
       cmd = shell_quote_command_arg(runner.wasmtime_bin)
@@ -925,7 +925,7 @@ fn run_cmd_wasm_backend_with_cache(
     Some("release") | Some("monolithic") => true
     _ => false
   }
-  if not(force_release) {
+  if !force_release {
     let resolved = @loader.resolve_entry_path(entry_path)
     let parent = @vibe_fs.parent_path(resolved)
     let (vibe_root, cache_key) = find_vibe_cache_root(resolved)
@@ -985,7 +985,7 @@ fn run_cmd_wasm_backend_with_cache(
   } else {
     parent + "/.vibe_run_wasm_" + stamp + ".wasm"
   }
-  if not(use_cached_wasm) {
+  if !use_cached_wasm {
     let wasm_bytes = compile_module_wasm_for_exec(
       db,
       entry,
@@ -1013,7 +1013,7 @@ fn run_cmd_wasm_backend_with_cache(
       Err(_) => ()
     }
   }
-  defer (if not(use_cached_wasm) { remove_file_if_exists(wasm_path) })
+  defer (if !use_cached_wasm { remove_file_if_exists(wasm_path) })
   let exec_out = match http_runner {
     Some(host_runner) =>
       run_http_host_invoke_run_capture(
@@ -1075,7 +1075,7 @@ fn run_cmd_wasm_backend_with_cache(
 ///|
 fn extract_vibe_display_line_run(stdout : String) -> String? {
   for line_view in stdout.split("\n") {
-    let line = line_view.to_string()
+    let line = line_view.to_owned()
     if line.has_prefix("VIBE_DISPLAY:") {
       return Some(line[13:].to_owned())
     }

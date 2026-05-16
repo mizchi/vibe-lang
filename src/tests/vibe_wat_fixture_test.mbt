@@ -17,9 +17,9 @@ fn join_lines_wat(lines : Array[String]) -> String {
 fn normalize_wat(text : String) -> String {
   let lines : Array[String] = []
   for line_view in text.split("\n") {
-    lines.push(line_view.trim_end().to_string())
+    lines.push(line_view.trim_end().to_owned())
   }
-  while lines.length() > 0 && lines[lines.length() - 1].trim().to_string() == "" {
+  while lines.length() > 0 && lines[lines.length() - 1].trim().to_owned() == "" {
     ignore(lines.pop())
   }
   join_lines_wat(lines)
@@ -53,7 +53,7 @@ fn replace_suffix(
   new_suffix : String,
 ) -> String {
   match path.strip_suffix(suffix) {
-    Some(view) => view.to_string() + new_suffix
+    Some(view) => view.to_owned() + new_suffix
     None => path
   }
 }
@@ -63,7 +63,7 @@ test "wasm wat fixtures" {
   let fixture_dir = "fixtures/wasm"
   let update_mode = match @sys.get_env_var("VIBE_WAT_FIXTURE_UPDATE") {
     Some(v) => {
-      let lowered = v.trim().to_string().to_lower()
+      let lowered = v.trim().to_owned().to_lower()
       lowered == "1" || lowered == "true" || lowered == "yes"
     }
     None => false

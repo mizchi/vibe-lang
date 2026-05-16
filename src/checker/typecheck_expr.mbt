@@ -105,7 +105,7 @@ fn collect_perform_ops_expr(expr : @core.Expr, ops : Array[String]) -> Unit {
 fn extract_effect_name(qualified : String) -> String {
   for i = 0; i + 1 < qualified.length(); i = i + 1 {
     if qualified[i] == ':' && qualified[i + 1] == ':' {
-      return qualified[0:i].to_string()
+      return qualified[0:i].to_owned()
     }
   }
   qualified
@@ -128,8 +128,8 @@ fn reh_resolve_effect_op_params(
   if sep < 0 {
     return None
   }
-  let effect_name = qualified_name[0:sep].to_string()
-  let op_name = qualified_name[sep + 2:qualified_name.length()].to_string()
+  let effect_name = qualified_name[0:sep].to_owned()
+  let op_name = qualified_name[sep + 2:qualified_name.length()].to_owned()
   match env.effect_defs.get(effect_name) {
     Some(effect_def) =>
       match effect_def.ops.get(op_name) {
@@ -248,10 +248,10 @@ fn ensure_no_scoped_ref_capture_in_fn(
   body : @core.Module,
   span : @core.Span,
 ) -> Unit raise TypeError {
-  if not(env.scoped_ref_checks_enabled) {
+  if !env.scoped_ref_checks_enabled {
     return
   }
-  if not(env.has_scoped_ref_binding_for_capture()) {
+  if !env.has_scoped_ref_binding_for_capture() {
     return
   }
   let bound = @core.WalkerScope::new()
@@ -287,7 +287,7 @@ fn ensure_no_scoped_ref_param_decl(
   param_ty : @core.Type,
   span : @core.Span,
 ) -> Unit raise TypeError {
-  if not(env.scoped_ref_checks_enabled) {
+  if !env.scoped_ref_checks_enabled {
     return
   }
   if type_contains_scoped_ref(env, param_ty) {
@@ -355,7 +355,7 @@ fn type_struct_lit(
               field_def.ty,
               type_map,
             )
-            if not(type_equal(env, expected, field_ty)) {
+            if !type_equal(env, expected, field_ty) {
               raise TypeError::Mismatch(
                 expected~,
                 actual=field_ty,
@@ -373,7 +373,7 @@ fn type_struct_lit(
       }
       // Check all required fields are provided
       for field_def in struct_def.fields {
-        if not(provided.contains(field_def.name)) {
+        if !provided.contains(field_def.name) {
           raise TypeError::BadTypeDef(
             message="missing field: " + field_def.name,
             span~,
@@ -403,7 +403,7 @@ fn infer_type_params_from_field(
 ) -> Unit {
   match expected {
     @core.Type::Param(param_name) =>
-      if not(type_map.contains(param_name)) {
+      if !type_map.contains(param_name) {
         type_map[param_name] = actual
       }
     @core.Type::Array(inner) =>
@@ -575,7 +575,7 @@ fn type_perform_expr(
   if env.handle_resume_types_active {
     match env.handle_resume_types.get(effect_name) {
       Some(expected_ty) =>
-        if not(type_equal(env, expected_ty, ret_ty)) {
+        if !type_equal(env, expected_ty, ret_ty) {
           raise TypeError::Mismatch(
             expected=expected_ty,
             actual=ret_ty,
@@ -606,7 +606,7 @@ fn type_resume_expr(
     raise TypeError::BadCall(message="resume used outside handle arm", span~)
   }
   let arg_ty = type_expr_eff(env, pos_args[0], aliases, effects, allow_effect)
-  if not(env.handle_resume_types_active) {
+  if !env.handle_resume_types_active {
     raise TypeError::BadCall(
       message="resume used outside resumable handle",
       span~,
@@ -620,8 +620,8 @@ fn type_resume_expr(
   match env.handle_arm_resume_expected {
     Some(expected_ty) =>
       // Allow Int → Unit coercion (resume(0) for Unit-returning ops)
-      if not(type_equal(env, expected_ty, arg_ty)) &&
-        not(expected_ty is @core.Type::Unit) {
+      if !type_equal(env, expected_ty, arg_ty) &&
+        !(expected_ty is @core.Type::Unit) {
         raise TypeError::Mismatch(
           expected=expected_ty,
           actual=arg_ty,
@@ -633,8 +633,8 @@ fn type_resume_expr(
   }
   match env.handle_resume_types.get(effect_name) {
     Some(expected_ty) =>
-      if not(type_equal(env, expected_ty, arg_ty)) &&
-        not(expected_ty is @core.Type::Unit) {
+      if !type_equal(env, expected_ty, arg_ty) &&
+        !(expected_ty is @core.Type::Unit) {
         raise TypeError::Mismatch(
           expected=expected_ty,
           actual=arg_ty,
@@ -657,7 +657,7 @@ fn type_handle_arm_expr(
 ) -> @core.Type raise TypeError {
   if arm.cond is Some(c) {
     let g_ty = type_expr_eff(env, c, aliases, effects, allow_effect)
-    if not(type_equal(env, g_ty, @core.Type::Bool)) {
+    if !type_equal(env, g_ty, @core.Type::Bool) {
       raise TypeError::Mismatch(
         expected=@core.Type::Bool,
         actual=g_ty,
@@ -831,7 +831,7 @@ fn type_expr_eff(
             }
             _ => type_expr_eff(env, items[i], aliases, effects, allow_effect)
           }
-          if not(type_equal(env, elem_ty, item_ty)) {
+          if !type_equal(env, elem_ty, item_ty) {
             raise TypeError::Mismatch(
               expected=elem_ty,
               actual=item_ty,
@@ -869,7 +869,7 @@ fn type_expr_eff(
             effects,
             allow_effect,
           )
-          if not(type_equal(env, val_ty, item_ty)) {
+          if !type_equal(env, val_ty, item_ty) {
             raise TypeError::Mismatch(
               expected=val_ty,
               actual=item_ty,
@@ -883,7 +883,7 @@ fn type_expr_eff(
     }
     @core.Expr::If(cond~, then_body~, else_body~, span~) => {
       let cond_ty = type_expr_eff(env, cond, aliases, effects, allow_effect)
-      if not(type_equal(env, cond_ty, @core.Type::Bool)) {
+      if !type_equal(env, cond_ty, @core.Type::Bool) {
         raise TypeError::Mismatch(
           expected=@core.Type::Bool,
           actual=cond_ty,
@@ -893,7 +893,7 @@ fn type_expr_eff(
       }
       let then_ty = type_block(env, then_body, aliases, effects, allow_effect)
       let else_ty = type_block(env, else_body, aliases, effects, allow_effect)
-      if not(type_equal(env, then_ty, else_ty)) {
+      if !type_equal(env, then_ty, else_ty) {
         raise TypeError::Mismatch(
           expected=then_ty,
           actual=else_ty,
@@ -946,7 +946,7 @@ fn type_expr_eff(
     @core.Expr::While(cond~, body~, span~) => {
       let _ = span
       let cond_ty = type_expr_eff(env, cond, aliases, effects, allow_effect)
-      if not(type_equal(env, cond_ty, @core.Type::Bool)) {
+      if !type_equal(env, cond_ty, @core.Type::Bool) {
         raise TypeError::Mismatch(
           expected=@core.Type::Bool,
           actual=cond_ty,
@@ -1158,7 +1158,7 @@ fn type_handle_block(
   }
   for op_name in body_performs {
     let eff = extract_effect_name(op_name)
-    if handled_effect_set.contains(eff) && not(handled_ops.contains(op_name)) {
+    if handled_effect_set.contains(eff) && !handled_ops.contains(op_name) {
       raise TypeError::BadTypeDef(
         message="handle is missing handler for `" +
           op_name +
@@ -1173,7 +1173,7 @@ fn type_handle_block(
   let inferred_resume_types = body_resume_types.copy()
   let escaping_resume_types : Map[String, @core.Type] = {}
   for effect_name, resume_ty in body_resume_types {
-    if not(handled_effect_names.contains(effect_name)) {
+    if !handled_effect_names.contains(effect_name) {
       escaping_resume_types[effect_name] = resume_ty
     }
   }
@@ -1207,7 +1207,7 @@ fn type_handle_block(
       }
       match escaping_resume_types.get(effect_name) {
         Some(existing) =>
-          if not(type_equal(arm_env, existing, resume_ty)) {
+          if !type_equal(arm_env, existing, resume_ty) {
             raise TypeError::Mismatch(
               expected=existing,
               actual=resume_ty,
@@ -1218,7 +1218,7 @@ fn type_handle_block(
         None => escaping_resume_types[effect_name] = resume_ty
       }
     }
-    if not(type_equal(arm_env, body_ty, arm_ty)) {
+    if !type_equal(arm_env, body_ty, arm_ty) {
       raise TypeError::Mismatch(
         expected=body_ty,
         actual=arm_ty,
@@ -1231,7 +1231,7 @@ fn type_handle_block(
     for effect_name, resume_ty in escaping_resume_types {
       match env.handle_resume_types.get(effect_name) {
         Some(existing) =>
-          if not(type_equal(env, existing, resume_ty)) {
+          if !type_equal(env, existing, resume_ty) {
             raise TypeError::Mismatch(
               expected=existing,
               actual=resume_ty,
@@ -1329,7 +1329,7 @@ fn type_match_block(
     match arm.cond {
       Some(c) => {
         let g_ty = type_expr_eff(arm_env, c, aliases, effects, allow_effect)
-        if not(type_equal(env, g_ty, @core.Type::Bool)) {
+        if !type_equal(env, g_ty, @core.Type::Bool) {
           raise TypeError::Mismatch(
             expected=@core.Type::Bool,
             actual=g_ty,
@@ -1349,7 +1349,7 @@ fn type_match_block(
     )
     match result {
       Some(t) =>
-        if not(type_equal(env, t, arm_ty)) {
+        if !type_equal(env, t, arm_ty) {
           raise TypeError::Mismatch(
             expected=t,
             actual=arm_ty,
@@ -1360,12 +1360,12 @@ fn type_match_block(
       None => result = Some(arm_ty)
     }
   }
-  if not(has_wildcard) {
+  if !has_wildcard {
     match scrutinee_ty_for_exhaust {
       @core.Type::Variant(types) => {
         let missing_names : Array[String] = []
         for name, _ in types {
-          if not(covered.contains(name)) {
+          if !covered.contains(name) {
             missing_names.push(name)
           }
         }
@@ -1375,18 +1375,18 @@ fn type_match_block(
       }
       @core.Type::Bool => {
         let missing_names : Array[String] = []
-        if not(covered_true) {
+        if !covered_true {
           missing_names.push("true")
         }
-        if not(covered_false) {
+        if !covered_false {
           missing_names.push("false")
         }
-        if not(has_bool_pat && covered_true && covered_false) {
+        if !(has_bool_pat && covered_true && covered_false) {
           raise TypeError::NonExhaustiveMatch(missing=missing_names, span~)
         }
       }
       _ =>
-        if not(has_ctor) {
+        if !has_ctor {
           raise TypeError::NonExhaustiveMatch(missing=[], span~)
         }
     }
@@ -1434,7 +1434,7 @@ fn type_fn_literal(
       break
     }
   }
-  if not(uses_num) {
+  if !uses_num {
     match ret {
       Some(r) => uses_num = has_num_type(r)
       None => ()
@@ -1535,7 +1535,7 @@ fn type_fn_literal(
         }
         let ret_ty = substitute_type_params(ret_ty_with_num, type_param_vars)
         let resolved = normalize_type(env, ret_ty)
-        if not(type_equal(env, resolved, body_ty)) {
+        if !type_equal(env, resolved, body_ty) {
           raise TypeError::Mismatch(
             expected=resolved,
             actual=body_ty,
@@ -1561,7 +1561,7 @@ fn type_fn_literal(
             _ => ()
           }
         }
-        if not(already) {
+        if !already {
           merged.push(@core.EffectAtom::Const(name))
         }
       }
@@ -1588,7 +1588,7 @@ fn type_perform_effect(
   effects : EffectScope,
   allow_effect : Bool,
 ) -> @core.Type raise TypeError {
-  if not(effect_scope_allows(effects, effect_name)) {
+  if !effect_scope_allows(effects, effect_name) {
     if allow_effect {
       raise TypeError::EffectGuardNotSatisfied(
         operation="perform " + effect_name + "::" + op_name,
@@ -1633,7 +1633,7 @@ fn type_perform_effect(
                 effects,
                 allow_effect,
               )
-              if not(unify_types(env, arg_ty, inst_params[i])) {
+              if !unify_types(env, arg_ty, inst_params[i]) {
                 raise TypeError::Mismatch(
                   expected=inst_params[i],
                   actual=arg_ty,
@@ -1882,7 +1882,7 @@ fn type_block(
         match scope_env.get_scheme(name) {
           Some(scheme) => {
             let expected = instantiate_scheme(scope_env, scheme)
-            if not(type_equal(scope_env, expected, ty)) {
+            if !type_equal(scope_env, expected, ty) {
               raise TypeError::Mismatch(
                 expected~,
                 actual=ty,
@@ -2010,7 +2010,7 @@ fn ensure_eq_operand(
       // ADR-0045: surface the TraitWitness reason so a missing `derive(Eq)`
       // hints at the actual fix instead of just "expected Eq, actual Vec2".
       let w = ObligationSolver::of(env).witness(resolved, "Eq")
-      if not(w.is_satisfied()) {
+      if !w.is_satisfied() {
         let extra = w.message()
         let ctx = if extra == "" { "argument" } else { "argument: " + extra }
         raise TypeError::Mismatch(
@@ -2050,7 +2050,7 @@ fn ensure_ord_operand(
       } else {
         match env.var_trait_bounds.get(id) {
           Some(bounds) =>
-            if not(trait_bound_satisfied(env, bounds, "Ord")) {
+            if !trait_bound_satisfied(env, bounds, "Ord") {
               raise TypeError::Mismatch(
                 expected=@core.Type::Named(name="Ord", args=[]),
                 actual=resolved,
@@ -2102,12 +2102,12 @@ fn int_char_comparable_pair(
 
 ///|
 fn parse_type_member_decl(name : String) -> (String, String)? {
-  if not(name.contains("::")) {
+  if !name.contains("::") {
     return None
   }
   let parts : Array[String] = []
   for part_view in name.split("::") {
-    parts.push(part_view.to_string())
+    parts.push(part_view.to_owned())
   }
   if parts.length() != 2 {
     return None
@@ -2146,7 +2146,7 @@ fn ensure_type_member_decl_receiver_contract(
     None => ()
     Some((type_name, member_name)) => {
       let _ = member_name
-      if not(should_enforce_type_member_decl_contract(env, type_name)) {
+      if !should_enforce_type_member_decl_contract(env, type_name) {
         return
       }
       let resolved = normalize_type(env, ty)
@@ -2219,7 +2219,7 @@ fn type_check_unary_convert(
     raise TypeError::BadCall(message=name, span=call_span)
   }
   let arg_ty = type_expr_eff(env, pos_args[0], aliases, effects, allow_effect)
-  if not(type_equal(env, arg_ty, from_ty)) {
+  if !type_equal(env, arg_ty, from_ty) {
     raise TypeError::Mismatch(
       expected=from_ty,
       actual=arg_ty,
@@ -2248,7 +2248,7 @@ fn type_check_binary_exact(
     raise TypeError::BadCall(message=name, span=call_span)
   }
   let left_ty = type_expr_eff(env, pos_args[0], aliases, effects, allow_effect)
-  if not(type_equal(env, left_ty, left_expect)) {
+  if !type_equal(env, left_ty, left_expect) {
     raise TypeError::Mismatch(
       expected=left_expect,
       actual=left_ty,
@@ -2257,7 +2257,7 @@ fn type_check_binary_exact(
     )
   }
   let right_ty = type_expr_eff(env, pos_args[1], aliases, effects, allow_effect)
-  if not(type_equal(env, right_ty, right_expect)) {
+  if !type_equal(env, right_ty, right_expect) {
     raise TypeError::Mismatch(
       expected=right_expect,
       actual=right_ty,
@@ -2283,13 +2283,13 @@ fn is_non_expansive_expr(
     @core.Expr::String(..) => true
     @core.Expr::Ident(name~, span~) => {
       let _ = span
-      not(has_alias_prefix(name, aliases))
+      !has_alias_prefix(name, aliases)
     }
     @core.Expr::Tuple(items~, span~) => {
       let _ = span
       let mut ok = true
       for item in items {
-        if not(is_non_expansive_expr(env, item, aliases)) {
+        if !is_non_expansive_expr(env, item, aliases) {
           ok = false
           break
         }
@@ -2302,7 +2302,7 @@ fn is_non_expansive_expr(
       let _ = span
       let mut ok = true
       for field in fields {
-        if not(is_non_expansive_expr(env, field.expr, aliases)) {
+        if !is_non_expansive_expr(env, field.expr, aliases) {
           ok = false
           break
         }
@@ -2313,7 +2313,7 @@ fn is_non_expansive_expr(
       let _ = span
       let mut ok = true
       for item in items {
-        if not(is_non_expansive_expr(env, item, aliases)) {
+        if !is_non_expansive_expr(env, item, aliases) {
           ok = false
           break
         }
@@ -2324,7 +2324,7 @@ fn is_non_expansive_expr(
       let _ = span
       let mut ok = true
       for field in fields {
-        if not(is_non_expansive_expr(env, field.expr, aliases)) {
+        if !is_non_expansive_expr(env, field.expr, aliases) {
           ok = false
           break
         }
@@ -2339,7 +2339,7 @@ fn is_non_expansive_expr(
       } else if @core.is_ctor_name(name) {
         let mut ok = true
         for arg in args {
-          if not(is_non_expansive_expr(env, arg.expr, aliases)) {
+          if !is_non_expansive_expr(env, arg.expr, aliases) {
             ok = false
             break
           }
@@ -2408,7 +2408,7 @@ fn type_let_expr(
                 break
               }
             }
-            if not(uses_num) {
+            if !uses_num {
               uses_num = has_num_type(r)
             }
             let num_var = if uses_num { Some(fresh_num_var(env)) } else { None }
@@ -2476,11 +2476,11 @@ fn type_let_expr(
             let fn_scope = effect_scope_from_list(normalized_effects)
             let fn_allow_effect = allow_effect ||
               normalized_effects.length() > 0
-            if not(env.session_state.skip_fn_body_check) {
+            if !env.session_state.skip_fn_body_check {
               let body_ty = type_block(
                 scope_env, body, aliases, fn_scope, fn_allow_effect,
               )
-              if not(type_equal(scope_env, resolved_ret, body_ty)) {
+              if !type_equal(scope_env, resolved_ret, body_ty) {
                 raise TypeError::Mismatch(
                   expected=resolved_ret,
                   actual=body_ty,
@@ -2655,7 +2655,7 @@ fn type_lambda_with_context(
           let final_ret = match ret {
             Some(r) => {
               let resolved = normalize_type(env, r)
-              if not(type_equal(env, resolved, body_ty)) {
+              if !type_equal(env, resolved, body_ty) {
                 raise TypeError::Mismatch(
                   expected=resolved,
                   actual=body_ty,
@@ -2730,7 +2730,7 @@ fn ensure_no_scoped_ref_call_argument(
   arg_ty : @core.Type,
   span : @core.Span,
 ) -> Unit raise TypeError {
-  if not(env.scoped_ref_checks_enabled) {
+  if !env.scoped_ref_checks_enabled {
     return
   }
   if type_contains_scoped_ref(env, arg_ty) {
@@ -2753,7 +2753,7 @@ fn check_call_args(
   let positional : Array[@core.FuncParam] = []
   let mut variadic_param : @core.FuncParam? = None
   for param in params {
-    if not(@core.ParamLabel::is_positional(param.label)) {
+    if !@core.ParamLabel::is_positional(param.label) {
       continue
     }
     match param.label {
@@ -2815,7 +2815,7 @@ fn check_call_args(
         // Labeled argument - find expected type
         let mut expected_ty : @core.Type? = None
         for param in params {
-          if not(@core.ParamLabel::is_positional(param.label)) &&
+          if !@core.ParamLabel::is_positional(param.label) &&
             param.name == label {
             expected_ty = Some(param.ty)
             break
@@ -2849,8 +2849,8 @@ fn check_call_args(
         }
         match expected_ty {
           Some(param_ty) =>
-            if not(type_equal(env, param_ty, arg.ty)) &&
-              not(is_type_subtype(env, arg.ty, param_ty)) {
+            if !type_equal(env, param_ty, arg.ty) &&
+              !is_type_subtype(env, arg.ty, param_ty) {
               if is_active_polymorphic_recursive_call(env, callee_name) {
                 raise TypeError::BadRec(
                   message="polymorphic recursion is unsupported",
@@ -2880,7 +2880,7 @@ fn check_call_args(
         }
         let mut found : @core.FuncParam? = None
         for param in params {
-          if not(@core.ParamLabel::is_positional(param.label)) &&
+          if !@core.ParamLabel::is_positional(param.label) &&
             param.name == label {
             found = Some(param)
             break
@@ -2889,8 +2889,8 @@ fn check_call_args(
         match found {
           Some(param) => {
             used_labels[label] = true
-            if not(type_equal(env, param.ty, arg.ty)) &&
-              not(is_type_subtype(env, arg.ty, param.ty)) {
+            if !type_equal(env, param.ty, arg.ty) &&
+              !is_type_subtype(env, arg.ty, param.ty) {
               if is_active_polymorphic_recursive_call(env, callee_name) {
                 raise TypeError::BadRec(
                   message="polymorphic recursion is unsupported",
@@ -2919,7 +2919,7 @@ fn check_call_args(
   }
   for param in params {
     if param.label == @core.ParamLabel::Required &&
-      not(used_labels.contains(param.name)) {
+      !used_labels.contains(param.name) {
       raise TypeError::BadCall(
         message="missing label: " + param.name,
         span=call_span,
@@ -2942,7 +2942,7 @@ fn argument_mismatch_expected_type(
         Some(bounds) => {
           let deduped = dedup_trait_bounds(bounds)
           for bound in deduped {
-            if not(type_implements_trait(env, resolved_actual, bound)) {
+            if !type_implements_trait(env, resolved_actual, bound) {
               return @core.Type::Named(name=bound, args=[])
             }
           }
@@ -2977,7 +2977,7 @@ fn argument_mismatch_context(
           let solver = ObligationSolver::of(env)
           for bound in deduped {
             let w = solver.witness(resolved_actual, bound)
-            if not(w.is_satisfied()) {
+            if !w.is_satisfied() {
               return base + ": " + w.message()
             }
           }

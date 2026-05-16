@@ -40,7 +40,7 @@ fn dedup_trait_bounds(bounds : Array[String]) -> Array[String] {
   let seen : Map[String, Bool] = {}
   let out : Array[String] = []
   for bound in bounds {
-    if not(seen.contains(bound)) {
+    if !seen.contains(bound) {
       seen[bound] = true
       out.push(bound)
     }

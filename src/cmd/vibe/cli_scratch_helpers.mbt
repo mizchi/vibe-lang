@@ -1,10 +1,10 @@
 ///|
 fn load_scratch_db_source(path : String) -> Result[String, String] {
-  if not(@os_fs.path_exists(path)) {
+  if !@os_fs.path_exists(path) {
     return Ok("")
   }
   let is_file = @os_fs.is_file(path) catch { _ => false }
-  if not(is_file) {
+  if !is_file {
     return Err("scratch-db path is not a file: " + path)
   }
   let source = @os_fs.read_file_to_string(path) catch {
@@ -44,7 +44,7 @@ fn collect_scratch_scope_symbols(
   path : String,
   source : String,
 ) -> Array[ScratchScopeSymbol] {
-  if source.trim().to_string().length() == 0 {
+  if source.trim().to_owned().length() == 0 {
     return []
   }
   let db = @runtime.VibeDb::new()
@@ -105,7 +105,7 @@ fn vibe_cache_json_path(index_root : String) -> String {
 fn load_vibe_cache_object(index_root : String) -> Map[String, Json] {
   let path = vibe_cache_json_path(index_root)
   let obj : Map[String, Json] = {}
-  if not(@os_fs.path_exists(path)) {
+  if !@os_fs.path_exists(path) {
     return obj
   }
   let source = @os_fs.read_file_to_string(path) catch { _ => return obj }
@@ -128,7 +128,7 @@ fn write_vibe_cache_object(
 ) -> Result[Unit, String] {
   let path = vibe_cache_json_path(index_root)
   let dir = @vibe_fs.parent_path(path)
-  if not(@os_fs.path_exists(dir)) {
+  if !@os_fs.path_exists(dir) {
     @os_fs.create_dir(dir) catch {
       e => return Err("mkdir .vibe: " + e.to_string())
     }
@@ -143,8 +143,8 @@ fn write_vibe_cache_object(
 fn resolve_active_ns_name_from_cache(cache : Map[String, Json]) -> String {
   match cache.get("active_namespace") {
     Some(Json::String(name)) =>
-      if name.trim().to_string().length() > 0 {
-        name.trim().to_string()
+      if name.trim().to_owned().length() > 0 {
+        name.trim().to_owned()
       } else {
         default_scratch_ns_name()
       }
@@ -163,8 +163,8 @@ fn resolve_ns_db_rel_path_from_cache(
         Some(Json::Object(ns_obj)) =>
           match ns_obj.get("db_path") {
             Some(Json::String(path)) =>
-              if path.trim().to_string().length() > 0 {
-                path.trim().to_string()
+              if path.trim().to_owned().length() > 0 {
+                path.trim().to_owned()
               } else {
                 default_ns_db_rel_path(ns_name)
               }
@@ -191,7 +191,7 @@ fn resolve_scratch_db_path_for_index_root(
 ) -> Result[(String, String), String] {
   match @sys.get_env_var("VIBE_SCRATCH_DB_PATH") {
     Some(path) =>
-      if path.trim().to_string().length() == 0 {
+      if path.trim().to_owned().length() == 0 {
         Err("VIBE_SCRATCH_DB_PATH must not be empty")
       } else {
         Ok((default_scratch_ns_name(), @loader.resolve_entry_path(path)))
@@ -232,12 +232,12 @@ fn resolve_scratch_db_path_for_index_root(
 
 ///|
 fn scratch_source_is_import_stmt(source : String) -> Bool {
-  source.trim().to_string().has_prefix("import ")
+  source.trim().to_owned().has_prefix("import ")
 }
 
 ///|
 fn scratch_source_is_import_prefix_line(line : String) -> Bool {
-  let trimmed = line.trim().to_string()
+  let trimmed = line.trim().to_owned()
   trimmed.length() == 0 ||
   trimmed.has_prefix("//") ||
   trimmed.has_prefix("/*") ||
@@ -282,9 +282,9 @@ fn scratch_source_contains_import_stmt(
     }
     None => ()
   }
-  let target = import_stmt.trim().to_string()
+  let target = import_stmt.trim().to_owned()
   for line_view in base_source.split("\n") {
-    if line_view.to_string().trim().to_string() == target {
+    if line_view.to_owned().trim().to_owned() == target {
       return true
     }
   }
@@ -318,7 +318,7 @@ fn append_scratch_db_source_hoist_import(
   let mut inserted = false
   let mut import_block_depth = 0
   for line_view in base_source.split("\n") {
-    let line = line_view.to_string()
+    let line = line_view.to_owned()
     if import_block_depth > 0 {
       head.write_string(line)
       head.write_char('\n')
@@ -331,7 +331,7 @@ fn append_scratch_db_source_hoist_import(
     if in_prefix && scratch_source_is_import_prefix_line(line) {
       head.write_string(line)
       head.write_char('\n')
-      if line.trim().to_string().has_prefix("import ") {
+      if line.trim().to_owned().has_prefix("import ") {
         import_block_depth = scratch_source_import_block_delta(line)
         if import_block_depth < 0 {
           import_block_depth = 0
@@ -348,7 +348,7 @@ fn append_scratch_db_source_hoist_import(
     tail.write_string(line)
     tail.write_char('\n')
   }
-  if not(inserted) {
+  if !inserted {
     head.write_string(import_stmt)
     head.write_char('\n')
   }
@@ -358,7 +358,7 @@ fn append_scratch_db_source_hoist_import(
 
 ///|
 fn append_scratch_db_source(base_source : String, expr : String) -> String {
-  let trimmed = expr.trim().to_string()
+  let trimmed = expr.trim().to_owned()
   if trimmed.length() == 0 {
     return base_source
   }
@@ -372,12 +372,12 @@ fn append_scratch_db_source(base_source : String, expr : String) -> String {
     let out = StringBuilder::new()
     if base_source.length() > 0 {
       out.write_string(base_source)
-      if not(base_source.has_suffix("\n")) {
+      if !base_source.has_suffix("\n") {
         out.write_char('\n')
       }
     }
     out.write_string(trimmed)
-    if not(trimmed.has_suffix("\n")) {
+    if !trimmed.has_suffix("\n") {
       out.write_char('\n')
     }
     out.to_string()

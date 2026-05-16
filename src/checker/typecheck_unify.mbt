@@ -75,7 +75,7 @@ fn normalize_type_cache_store_to(
   normalized : @core.Type,
 ) -> Unit {
   let key = normalize_type_cache_key(source)
-  if cache.length() >= 8192 && not(cache.contains(key)) {
+  if cache.length() >= 8192 && !cache.contains(key) {
     return
   }
   let entry = (source, normalized)
@@ -91,7 +91,7 @@ fn normalize_type_cache_lookup(
   ty : @core.Type,
   expand_enum : Bool,
 ) -> @core.Type? {
-  if not(normalize_type_cacheable(ty)) {
+  if !normalize_type_cacheable(ty) {
     return None
   }
   // Fast path: ground cache for 0-arg Named types.
@@ -126,8 +126,8 @@ fn normalize_type_cache_store(
   normalized : @core.Type,
   expand_enum : Bool,
 ) -> Unit {
-  if not(normalize_type_cacheable(source)) ||
-    not(normalize_type_cacheable(normalized)) {
+  if !normalize_type_cacheable(source) ||
+    !normalize_type_cacheable(normalized) {
     return
   }
   // Store in ground cache for 0-arg Named types (survives subs_version changes).
@@ -457,7 +457,7 @@ fn normalize_type_inner(
                 for i in 0..<def.params.length() {
                   mapping[def.params[i]] = normalized_args[i]
                 }
-                if not(expand_enum) {
+                if !expand_enum {
                   return @core.Type::Named(name~, args=normalized_args)
                 }
                 let ctor_map : Map[String, @core.Type] = {}
@@ -516,7 +516,7 @@ fn normalize_type_inner(
         @core.Type::Tuple(out)
       }
     @core.Type::Record(fields) =>
-      if not(type_has_named_node(ty)) {
+      if !type_has_named_node(ty) {
         ty
       } else {
         let out : Map[String, @core.Type] = {}
@@ -526,7 +526,7 @@ fn normalize_type_inner(
         @core.Type::Record(out)
       }
     @core.Type::Array(inner) =>
-      if not(type_has_named_node(inner)) {
+      if !type_has_named_node(inner) {
         ty
       } else {
         @core.Type::Array(
@@ -534,7 +534,7 @@ fn normalize_type_inner(
         )
       }
     @core.Type::Map(key, inner) =>
-      if not(type_has_named_node(key)) && not(type_has_named_node(inner)) {
+      if !type_has_named_node(key) && !type_has_named_node(inner) {
         ty
       } else {
         @core.Type::Map(
@@ -549,7 +549,7 @@ fn normalize_type_inner(
         @core.Type::Set(normalize_type_inner(env, inner, visiting, expand_enum))
       }
     @core.Type::ArrayBuilder(inner) =>
-      if not(type_has_named_node(inner)) {
+      if !type_has_named_node(inner) {
         ty
       } else {
         @core.Type::ArrayBuilder(
@@ -557,7 +557,7 @@ fn normalize_type_inner(
         )
       }
     @core.Type::MapBuilder(key, inner) =>
-      if not(type_has_named_node(key)) && not(type_has_named_node(inner)) {
+      if !type_has_named_node(key) && !type_has_named_node(inner) {
         ty
       } else {
         @core.Type::MapBuilder(
@@ -566,7 +566,7 @@ fn normalize_type_inner(
         )
       }
     @core.Type::Variant(fields) =>
-      if not(type_has_named_node(ty)) {
+      if !type_has_named_node(ty) {
         ty
       } else {
         let out : Map[String, @core.Type] = {}
@@ -578,7 +578,7 @@ fn normalize_type_inner(
     @core.Type::Param(_) => ty
     @core.Type::Var(_) => ty
     @core.Type::Func(params~, ret~, effects~) =>
-      if not(type_has_named_node(ty)) {
+      if !type_has_named_node(ty) {
         ty
       } else {
         let out : Array[@core.FuncParam] = []
@@ -682,7 +682,7 @@ fn scoped_ref_cache_store(env : TypeEnv, ty : @core.Type, value : Bool) -> Unit 
   let key : String = scoped_ref_cache_key(env, ty)
   let next = ScopedRefContainsCacheEntry::{ ty, has_scoped_ref: value }
   if env.scoped_ref_contains_cache.length() >= 4096 &&
-    not(env.scoped_ref_contains_cache.contains(key)) {
+    !env.scoped_ref_contains_cache.contains(key) {
     return
   }
   match env.scoped_ref_contains_cache.get(key) {
@@ -706,7 +706,7 @@ fn type_contains_scoped_ref(
   env : TypeEnv,
   ty : @core.Type,
 ) -> Bool raise TypeError {
-  if not(env.scoped_ref_checks_enabled) {
+  if !env.scoped_ref_checks_enabled {
     return false
   }
   let profile_start = if env.scoped_ref_profile_enabled {
@@ -724,7 +724,7 @@ fn type_contains_scoped_ref(
     result
   }
   let resolved = resolve_type(env, ty)
-  if not(type_may_contain_scoped_ref_hint(resolved)) {
+  if !type_may_contain_scoped_ref_hint(resolved) {
     return finish(false)
   }
   match scoped_ref_cache_lookup(env, resolved) {
@@ -932,7 +932,7 @@ fn ensure_no_scoped_ref_return_escape(
   ret_ty : @core.Type,
   span : @core.Span,
 ) -> Unit raise TypeError {
-  if not(env.scoped_ref_checks_enabled) {
+  if !env.scoped_ref_checks_enabled {
     return
   }
   let profile_start = if env.scoped_ref_profile_enabled {
@@ -961,7 +961,7 @@ fn ensure_no_toplevel_scoped_ref_escape(
   ty : @core.Type,
   span : @core.Span,
 ) -> Unit raise TypeError {
-  if not(env.scoped_ref_checks_enabled) {
+  if !env.scoped_ref_checks_enabled {
     return
   }
   let profile_start = if env.scoped_ref_profile_enabled {
@@ -1056,7 +1056,7 @@ fn effects_subset(
     large_keys[effect_atom_key(effect)] = true
   }
   for effect in small {
-    if not(large_keys.contains(effect_atom_key(effect))) {
+    if !large_keys.contains(effect_atom_key(effect)) {
       return false
     }
   }
@@ -1072,7 +1072,7 @@ fn trait_bounds_subset(
   let required = dedup_trait_bounds(small)
   let available = dedup_trait_bounds(large)
   for bound in required {
-    if not(trait_bound_satisfied(env, available, bound)) {
+    if !trait_bound_satisfied(env, available, bound) {
       return false
     }
   }
@@ -1109,7 +1109,7 @@ pub fn is_type_subtype(
       } else {
         let mut ok = true
         for i in 0..<sub_items.length() {
-          if not(is_type_subtype(env, sub_items[i], sup_items[i])) {
+          if !is_type_subtype(env, sub_items[i], sup_items[i]) {
             ok = false
             break
           }
@@ -1121,7 +1121,7 @@ pub fn is_type_subtype(
       for name, sup_ty in sup_fields {
         match sub_fields.get(name) {
           Some(sub_ty) =>
-            if not(is_type_subtype(env, sub_ty, sup_ty)) {
+            if !is_type_subtype(env, sub_ty, sup_ty) {
               ok = false
               break
             }
@@ -1154,7 +1154,7 @@ pub fn is_type_subtype(
     ) =>
       if sub_params.length() != sup_params.length() {
         false
-      } else if not(effects_subset(sub_effects, sup_effects)) {
+      } else if !effects_subset(sub_effects, sup_effects) {
         false
       } else {
         let mut ok = true
@@ -1165,18 +1165,18 @@ pub fn is_type_subtype(
             ok = false
             break
           }
-          if not(@core.ParamLabel::is_positional(sub_param.label)) &&
+          if !@core.ParamLabel::is_positional(sub_param.label) &&
             sub_param.name != sup_param.name {
             ok = false
             break
           }
-          if not(trait_bounds_subset(env, sub_param.bounds, sup_param.bounds)) {
+          if !trait_bounds_subset(env, sub_param.bounds, sup_param.bounds) {
             ok = false
             break
           }
           // Function parameter types are contravariant:
           // new <: old requires old_param <: new_param
-          if not(is_type_subtype(env, sup_param.ty, sub_param.ty)) {
+          if !is_type_subtype(env, sup_param.ty, sub_param.ty) {
             ok = false
             break
           }
@@ -1314,7 +1314,7 @@ fn unify_types_inner(
         } else {
           let mut ok = true
           for i in 0..<aa.length() {
-            if not(unify_types_inner(env, aa[i], bb[i], cache)) {
+            if !unify_types_inner(env, aa[i], bb[i], cache) {
               ok = false
               break
             }
@@ -1367,7 +1367,7 @@ fn unify_types_inner(
       } else {
         let mut ok = true
         for i in 0..<xs.length() {
-          if not(unify_types_inner(env, xs[i], ys[i], cache)) {
+          if !unify_types_inner(env, xs[i], ys[i], cache) {
             ok = false
             break
           }
@@ -1382,7 +1382,7 @@ fn unify_types_inner(
         for name, ty in ax {
           match bx.get(name) {
             Some(other) =>
-              if not(unify_types_inner(env, ty, other, cache)) {
+              if !unify_types_inner(env, ty, other, cache) {
                 ok = false
                 break
               }
@@ -1417,7 +1417,7 @@ fn unify_types_inner(
         for name, ty in ax {
           match bx.get(name) {
             Some(other) =>
-              if not(unify_types_inner(env, ty, other, cache)) {
+              if !unify_types_inner(env, ty, other, cache) {
                 ok = false
                 break
               }
@@ -1435,14 +1435,14 @@ fn unify_types_inner(
     ) =>
       if pa.length() != pb.length() {
         false
-      } else if not(unify_effects(env, ea, eb)) {
+      } else if !unify_effects(env, ea, eb) {
         false
-      } else if not(unify_types_inner(env, ra, rb, cache)) {
+      } else if !unify_types_inner(env, ra, rb, cache) {
         false
       } else {
         let mut ok = true
         for i in 0..<pa.length() {
-          if not(param_unify(env, pa[i], pb[i], cache)) {
+          if !param_unify(env, pa[i], pb[i], cache) {
             ok = false
             break
           }
@@ -1475,13 +1475,11 @@ fn param_unify(
   if a.label != b.label {
     return false
   }
-  if not(@core.ParamLabel::is_positional(a.label)) && a.name != b.name {
+  if !@core.ParamLabel::is_positional(a.label) && a.name != b.name {
     return false
   }
-  if not(
-      trait_bounds_subset(env, a.bounds, b.bounds) &&
-      trait_bounds_subset(env, b.bounds, a.bounds),
-    ) {
+  if !(trait_bounds_subset(env, a.bounds, b.bounds) &&
+      trait_bounds_subset(env, b.bounds, a.bounds)) {
     return false
   }
   unify_types_inner(env, a.ty, b.ty, cache)
@@ -1510,7 +1508,7 @@ fn bind_var(env : TypeEnv, id : Int, ty : @core.Type) -> Bool {
         }
       @core.Type::Int | @core.Type::Float | @core.Type::Double => {
         for bound in required_bounds {
-          if not(type_implements_trait(env, resolved, bound)) {
+          if !type_implements_trait(env, resolved, bound) {
             return false
           }
         }
@@ -1538,7 +1536,7 @@ fn bind_var(env : TypeEnv, id : Int, ty : @core.Type) -> Bool {
           false
         } else {
           for bound in required_bounds {
-            if not(type_implements_trait(env, resolved, bound)) {
+            if !type_implements_trait(env, resolved, bound) {
               return false
             }
           }

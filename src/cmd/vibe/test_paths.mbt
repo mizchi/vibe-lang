@@ -100,7 +100,7 @@ fn extract_entry_basename(entry_name : String) -> String {
   let normalized = entry_name.replace(old="\\", new="/")
   let mut last = normalized
   for segment in normalized.split("/") {
-    let part = segment.to_string()
+    let part = segment.to_owned()
     if part.length() > 0 {
       last = part
     }

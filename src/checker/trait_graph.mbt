@@ -249,7 +249,7 @@ pub fn TraitGraph::register_def(
   exported : Bool,
   span : @core.Span,
 ) -> Unit raise TypeError {
-  if open_impl && not(exported) {
+  if open_impl && !exported {
     raise TypeError::BadTypeDef(
       message="`open trait` is only allowed with export",
       span~,
@@ -262,7 +262,7 @@ pub fn TraitGraph::register_def(
     // Allow re-defining a prelude builtin trait (e.g. Eq, Hash, Ord).
     // The prelude seed soft-registers these so derive(Eq) works, but
     // user modules may redefine them via `export trait Eq`.
-    if not(is_prelude_builtin_trait(name)) {
+    if !is_prelude_builtin_trait(name) {
       raise TypeError::BadTypeDef(message="duplicate trait: " + name, span~)
     }
   }

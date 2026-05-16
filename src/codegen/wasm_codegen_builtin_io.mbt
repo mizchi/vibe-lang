@@ -25,7 +25,7 @@ fn compile_builtin_io(
       emit_call(buf, import_index_path(ctx))
       emit_heap_post_call_sync(ctx, buf)
     }
-    "Env::get" if not(is_user_fn) => {
+    "Env::get" if !is_user_fn => {
       let pos_args = extract_positional_exprs_with_arity(args, "Env::get", 1)
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_untag_ptr_i32(buf)
@@ -33,13 +33,13 @@ fn compile_builtin_io(
       emit_call(buf, import_index_env_get(ctx))
       emit_heap_post_call_sync(ctx, buf)
     }
-    "Env::args_len" if not(is_user_fn) => {
+    "Env::args_len" if !is_user_fn => {
       let _ = extract_positional_exprs_with_arity(args, "Env::args_len", 0)
       emit_heap_pre_call_sync(ctx, buf)
       emit_call(buf, import_index_env_args_len(ctx))
       emit_heap_post_call_sync(ctx, buf)
     }
-    "Env::args_get" if not(is_user_fn) => {
+    "Env::args_get" if !is_user_fn => {
       let pos_args = extract_positional_exprs_with_arity(
         args, "Env::args_get", 1,
       )
@@ -2099,25 +2099,25 @@ fn compile_builtin_io(
     // Json host imports (vibe module, available when fs_host_imports is set).
     // Skip when the user has shadowed the builtin with a same-named definition,
     // matching the convention used by other builtins (e.g. `Env::get`).
-    "Json::parse" if ctx.fs_host_imports && not(is_user_fn) => {
+    "Json::parse" if ctx.fs_host_imports && !is_user_fn => {
       let pos_args = extract_positional_exprs_with_arity(args, "Json::parse", 1)
       compile_expr(ctx, buf, pos_args[0])
       emit_call(buf, import_index_json_host_parse(ctx))
     }
-    "Json::stringify" if ctx.fs_host_imports && not(is_user_fn) => {
+    "Json::stringify" if ctx.fs_host_imports && !is_user_fn => {
       let pos_args = extract_positional_exprs_with_arity(
         args, "Json::stringify", 1,
       )
       compile_expr(ctx, buf, pos_args[0])
       emit_call(buf, import_index_json_host_stringify(ctx))
     }
-    "Json::get" if ctx.fs_host_imports && not(is_user_fn) => {
+    "Json::get" if ctx.fs_host_imports && !is_user_fn => {
       let pos_args = extract_positional_exprs_with_arity(args, "Json::get", 2)
       compile_expr(ctx, buf, pos_args[0])
       compile_expr(ctx, buf, pos_args[1])
       emit_call(buf, import_index_json_host_get(ctx))
     }
-    "Json::string" if ctx.fs_host_imports && not(is_user_fn) => {
+    "Json::string" if ctx.fs_host_imports && !is_user_fn => {
       let pos_args = extract_positional_exprs_with_arity(
         args, "Json::string", 1,
       )

@@ -44,7 +44,7 @@ pub fn parse_finalize_cmd_args(
     }
     if arg.has_prefix("--db=") {
       let path = arg.unsafe_substring(start=5, end=arg.length())
-      if path.trim().to_string().length() == 0 {
+      if path.trim().to_owned().length() == 0 {
         return Err("finalize: --db path must not be empty")
       }
       db_path = Some(path)
@@ -61,7 +61,7 @@ pub fn parse_finalize_cmd_args(
     }
     if arg.has_prefix("--export=") {
       let path = arg.unsafe_substring(start=9, end=arg.length())
-      if path.trim().to_string().length() == 0 {
+      if path.trim().to_owned().length() == 0 {
         return Err("finalize: --export path must not be empty")
       }
       export_path = Some(path)

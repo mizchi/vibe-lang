@@ -15,14 +15,14 @@ fn build_git_ref_test_graph_index(
 
 ///|
 fn ensure_dir_if_missing(path : String) -> Unit {
-  if not(@os_fs.path_exists(path)) {
+  if !@os_fs.path_exists(path) {
     let _ = @os_fs.create_dir(path) catch { _ => () }
   }
 }
 
 ///|
 fn remove_if_exists(path : String) -> Unit {
-  if not(@os_fs.path_exists(path)) {
+  if !@os_fs.path_exists(path) {
     return
   }
   let is_file = @os_fs.is_file(path) catch { _ => false }

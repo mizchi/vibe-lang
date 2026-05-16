@@ -149,7 +149,7 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
         | "Float::to_string"
         | "Double::to_string"
         | "Bool::to_string" =>
-          if not(ctx.use_js_strings) {
+          if !ctx.use_js_strings {
             ctx.need_heap = true
           }
         _ =>
@@ -299,8 +299,8 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
     @core.Expr::Perform(effect_name~, op_name~, args~, ..) => {
       let key = effect_name + "::" + op_name
       // Only register as import if not a user-defined effect (handled by throw/catch)
-      if not(ctx.effect_op_imports.contains(key)) &&
-        not(ctx.effect_handled_ops.contains(key)) {
+      if !ctx.effect_op_imports.contains(key) &&
+        !ctx.effect_handled_ops.contains(key) {
         ctx.effect_op_imports[key] = -1
         ctx.effect_op_param_counts[key] = args.length()
       }
@@ -334,7 +334,7 @@ fn scan_needs_stmt(ctx : CodegenCtx, stmt : @core.Stmt) -> Unit {
       let _ = span
       for i in 0..<ctors.length() {
         let ctor = ctors[i]
-        if not(ctx.enum_ctor_tags.contains(ctor.name)) {
+        if !ctx.enum_ctor_tags.contains(ctor.name) {
           ctx.enum_ctor_tags[ctor.name] = ctx.next_ctor_tag
           ctx.next_ctor_tag += 1
         }
@@ -346,7 +346,7 @@ fn scan_needs_stmt(ctx : CodegenCtx, stmt : @core.Stmt) -> Unit {
         ctx.enum_ctor_arg_kinds[ctor.name] = arg_kinds
         // Register qualified form: EnumName::CtorName
         let qualified_ctor = enum_name + "::" + ctor.name
-        if not(ctx.enum_ctor_tags.contains(qualified_ctor)) {
+        if !ctx.enum_ctor_tags.contains(qualified_ctor) {
           ctx.enum_ctor_tags[qualified_ctor] = ctx.enum_ctor_tags[ctor.name]
           ctx.enum_ctor_arities[qualified_ctor] = ctor.args.length()
           ctx.enum_ctor_arg_kinds[qualified_ctor] = arg_kinds
@@ -614,7 +614,7 @@ fn scan_strings_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
     }
     @core.Expr::Perform(effect_name="Error", op_name="Throw", args~, ..) => {
       let value = if args.length() >= 1 { args[0].expr } else { return }
-      if not(ctx.use_js_strings) {
+      if !ctx.use_js_strings {
         match value {
           @core.Expr::String(value=message, span~) => {
             let _ = span
@@ -660,7 +660,7 @@ fn scan_strings_pat(ctx : CodegenCtx, pat : @core.Pat) -> Unit {
   match pat {
     @core.Pat::String(value=s, span~) => {
       let _ = span
-      if not(ctx.use_js_strings) {
+      if !ctx.use_js_strings {
         let _ = ctx.strings.intern(s)
       }
     }

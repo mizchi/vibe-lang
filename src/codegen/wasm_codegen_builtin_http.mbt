@@ -145,7 +145,7 @@ fn compile_builtin_http(
         // WASI P3 HTTP is draft; emit raise with error message instead of
         // unreachable trap so the error is catchable by try/catch.
         let msg = name + " is not available on wasm target"
-        if not(ctx.use_js_strings) && not(ctx.embed_error_strings) {
+        if !ctx.use_js_strings && !ctx.embed_error_strings {
           emit_i64_const_tagged(buf, intern_error_code(ctx, msg).to_int64())
         } else if ctx.use_js_strings {
           emit_string_const(ctx, buf, msg)

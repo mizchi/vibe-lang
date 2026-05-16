@@ -82,8 +82,8 @@ fn is_vibe_command_candidate(
   scope : DesugarScope,
   known_non_cmd : Map[String, Bool],
 ) -> Bool {
-  not(scope.contains(name)) &&
-  not(known_non_cmd.contains(name)) &&
+  !scope.contains(name) &&
+  !known_non_cmd.contains(name) &&
   is_command_like_name(name)
 }
 
@@ -770,7 +770,7 @@ fn desugar_expr(
       if next_args.length() >= 1 {
         match next_args[0].expr {
           @core.Expr::Ident(name=recv, ..) =>
-            if aliases.contains(recv) && not(scope.contains(recv)) {
+            if aliases.contains(recv) && !scope.contains(recv) {
               let qualified = recv + "." + name
               if next_args.length() == 1 {
                 // foo.bar → Ident("foo.bar")
@@ -794,7 +794,7 @@ fn desugar_expr(
       }
       match split_method_call_name(name) {
         Some((recv, method_name)) =>
-          if scope.contains(recv) && not(aliases.contains(recv)) {
+          if scope.contains(recv) && !aliases.contains(recv) {
             let merged : Array[@core.CallArg] = []
             let recv_expr = @core.Expr::Ident(name=recv, span~)
             merged.push(@core.CallArg::{ label: None, expr: recv_expr, span })
@@ -1032,9 +1032,9 @@ fn split_method_call_name(name : String) -> (String, String)? {
   if dot <= 0 || dot >= chars.length() - 1 {
     return None
   }
-  let left = name[0:dot].to_string()
-  let right = name[dot + 1:chars.length()].to_string()
-  if not(is_simple_ident(left)) || not(is_simple_ident(right)) {
+  let left = name[0:dot].to_owned()
+  let right = name[dot + 1:chars.length()].to_owned()
+  if !is_simple_ident(left) || !is_simple_ident(right) {
     return None
   }
   Some((left, right))
@@ -1052,7 +1052,7 @@ fn is_simple_ident(name : String) -> Bool {
       (code >= 65 && code <= 90) ||
       (code >= 97 && code <= 122) ||
       code == 95
-    if not(ok) {
+    if !ok {
       return false
     }
   }

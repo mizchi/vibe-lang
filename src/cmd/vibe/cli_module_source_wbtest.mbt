@@ -37,7 +37,7 @@ test "build_module_source_from_source keeps required type defs" {
 ///|
 test "build_module_source_from_source keeps parse errors" {
   let result = build_module_source_from_source("let =", "main")
-  if not(result is Err(_)) {
+  if !(result is Err(_)) {
     fail("expected parse error")
   }
 }

@@ -1405,7 +1405,7 @@ fn compile_builtin_string(
         // tag_int = 0, i64.or is a no-op
       }
     }
-    "String::contains" if not(is_user_fn) => {
+    "String::contains" if !is_user_fn => {
       // string_contains(str, sub) -> Bool
       // Reuses the same substring search as string_index_of but returns bool.
       let pos_args = extract_positional_exprs_with_arity(
@@ -1521,7 +1521,7 @@ fn compile_builtin_string(
         emit_tag_bool_from_i32(buf)
       }
     }
-    "String::starts_with" if not(is_user_fn) => {
+    "String::starts_with" if !is_user_fn => {
       let pos_args = extract_positional_exprs_with_arity(
         args, "String::starts_with", 2,
       )
@@ -1597,7 +1597,7 @@ fn compile_builtin_string(
         emit_tag_bool_from_i32(buf)
       }
     }
-    "String::ends_with" if not(is_user_fn) => {
+    "String::ends_with" if !is_user_fn => {
       let pos_args = extract_positional_exprs_with_arity(
         args, "String::ends_with", 2,
       )
@@ -1680,7 +1680,7 @@ fn compile_builtin_string(
         emit_tag_bool_from_i32(buf)
       }
     }
-    "String::last_index_of" if not(is_user_fn) => {
+    "String::last_index_of" if !is_user_fn => {
       let pos_args = extract_positional_exprs_with_arity(
         args, "String::last_index_of", 2,
       )
@@ -1795,7 +1795,7 @@ fn compile_builtin_string(
         // tag_int = 0, i64.or is a no-op
       }
     }
-    "String::count" if not(is_user_fn) => {
+    "String::count" if !is_user_fn => {
       // string_count(str, sub) -> Int (non-overlapping count)
       let pos_args = extract_positional_exprs_with_arity(
         args, "String::count", 2,
@@ -1925,7 +1925,7 @@ fn compile_builtin_string(
         // tag_int = 0, i64.or is a no-op
       }
     }
-    "String::trim" if not(is_user_fn) => {
+    "String::trim" if !is_user_fn => {
       // string_trim(str) -> String (trim ASCII whitespace from both ends)
       let pos_args = extract_positional_exprs_with_arity(
         args, "String::trim", 1,
@@ -2061,7 +2061,7 @@ fn compile_builtin_string(
         emit_i64_or(buf)
       }
     }
-    "String::trim_start" if not(is_user_fn) => {
+    "String::trim_start" if !is_user_fn => {
       // string_trim_start(str) -> String (trim leading whitespace)
       let pos_args = extract_positional_exprs_with_arity(
         args, "String::trim_start", 1,
@@ -2166,7 +2166,7 @@ fn compile_builtin_string(
         emit_i64_or(buf)
       }
     }
-    "String::trim_end" if not(is_user_fn) => {
+    "String::trim_end" if !is_user_fn => {
       // string_trim_end(str) -> String (trim trailing whitespace)
       let pos_args = extract_positional_exprs_with_arity(
         args, "String::trim_end", 1,
@@ -2265,7 +2265,7 @@ fn compile_builtin_string(
         emit_i64_or(buf)
       }
     }
-    "String::to_upper" if not(is_user_fn) => {
+    "String::to_upper" if !is_user_fn => {
       // string_to_upper(str) -> String (convert ASCII lowercase to uppercase)
       let pos_args = extract_positional_exprs_with_arity(
         args, "String::to_upper", 1,
@@ -2360,7 +2360,7 @@ fn compile_builtin_string(
         emit_i64_or(buf)
       }
     }
-    "String::to_lower" if not(is_user_fn) => {
+    "String::to_lower" if !is_user_fn => {
       // string_to_lower(str) -> String (convert ASCII uppercase to lowercase)
       let pos_args = extract_positional_exprs_with_arity(
         args, "String::to_lower", 1,
@@ -2455,7 +2455,7 @@ fn compile_builtin_string(
         emit_i64_or(buf)
       }
     }
-    "String::replace" if not(is_user_fn) => {
+    "String::replace" if !is_user_fn => {
       // string_replace(str, pattern, replacement) -> String (replace first occurrence)
       let pos_args = extract_positional_exprs_with_arity(
         args, "String::replace", 3,
@@ -2469,7 +2469,7 @@ fn compile_builtin_string(
         emit_string_replace_impl(ctx, buf, pos_args, replace_all=false)
       }
     }
-    "String::replace_all" if not(is_user_fn) => {
+    "String::replace_all" if !is_user_fn => {
       // string_replace_all(str, pattern, replacement) -> String (replace all occurrences)
       let pos_args = extract_positional_exprs_with_arity(
         args, "String::replace_all", 3,
@@ -2483,7 +2483,7 @@ fn compile_builtin_string(
         emit_string_replace_impl(ctx, buf, pos_args, replace_all=true)
       }
     }
-    "String::split" if not(is_user_fn) => {
+    "String::split" if !is_user_fn => {
       // string_split(str, delimiter) -> Array[String]
       let pos_args = extract_positional_exprs_with_arity(
         args, "String::split", 2,
@@ -2916,7 +2916,7 @@ fn emit_string_replace_impl(
   emit_i32_const_raw(buf, 1)
   emit_i32_add(buf)
   emit_local_set(buf, match_count)
-  if not(replace_all) {
+  if !replace_all {
     emit_br(buf, 2) // break $count_break
   } else {
     // Advance by pat_len to avoid overlapping
@@ -3064,7 +3064,7 @@ fn emit_string_replace_impl(
   emit_local_get(buf, pat_len)
   emit_i32_add(buf)
   emit_local_set(buf, src_i)
-  if not(replace_all) {
+  if !replace_all {
     // Copy remaining bytes directly, then break
     emit_block(buf) // block $rest_done
     emit_loop(buf) // loop $rest_loop

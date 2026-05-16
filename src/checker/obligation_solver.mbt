@@ -175,7 +175,7 @@ pub fn ObligationSolver::witness(
         if impl_trait_name == trait_name {
           continue
         }
-        if not(self.graph.is_subtrait(impl_trait_name, trait_name)) {
+        if !self.graph.is_subtrait(impl_trait_name, trait_name) {
           continue
         }
         match
@@ -243,7 +243,7 @@ fn obligation_solver_witness_match_any(
             match impl_def.type_bounds.get(param) {
               Some(bounds) =>
                 for bound in bounds {
-                  if not(solver.satisfies(actual_ty, bound)) {
+                  if !solver.satisfies(actual_ty, bound) {
                     ok = false
                     if first_failure is None {
                       first_failure = Some(
@@ -263,7 +263,7 @@ fn obligation_solver_witness_match_any(
             }
           None => ()
         }
-        if not(ok) {
+        if !ok {
           break
         }
       }

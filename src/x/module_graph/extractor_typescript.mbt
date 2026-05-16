@@ -16,16 +16,16 @@ pub fn extract_typescript_graph_ir_rows(
   let lines = source.split("\n")
   let mut offset = 0
   for line_view in lines {
-    let line = line_view.to_string()
+    let line = line_view.to_owned()
     let trimmed = ts_trim_start(line)
     let line_start = offset
     let line_end = offset + line.length()
     // Skip empty lines, comments, imports
     if trimmed.length() > 0 &&
-      not(trimmed.has_prefix("//")) &&
-      not(trimmed.has_prefix("/*")) &&
-      not(trimmed.has_prefix("*")) &&
-      not(trimmed.has_prefix("import ")) {
+      !trimmed.has_prefix("//") &&
+      !trimmed.has_prefix("/*") &&
+      !trimmed.has_prefix("*") &&
+      !trimmed.has_prefix("import ") {
       // Strip leading export/declare/async/default keywords
       let stripped = ts_strip_modifiers(trimmed)
       match ts_try_extract_declaration(stripped) {

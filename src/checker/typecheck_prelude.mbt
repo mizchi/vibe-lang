@@ -139,10 +139,10 @@ pub fn ensure_prelude_option(env : TypeEnv) -> Unit raise TypeError {
 ///|
 fn ensure_prelude_error_trait(env : TypeEnv) -> Unit raise TypeError {
   let span = @core.Span::empty(0)
-  if not(env.has_trait("Error")) {
+  if !env.has_trait("Error") {
     register_trait_def(env, "Error", [], true, true, span)
   }
-  if not(type_implements_trait(env, @core.Type::String, "Error")) {
+  if !type_implements_trait(env, @core.Type::String, "Error") {
     register_trait_impl(env, [], {}, "Error", @core.Type::String, span)
   }
 }
@@ -237,7 +237,7 @@ pub fn ensure_prelude_builtin_traits(env : TypeEnv) -> Unit {
     "Eq", "Hash", "Ord", "Add", "Sub", "Mul", "Div", "Signed",
   ]
   for name in builtin_trait_names {
-    if not(env.has_trait(name)) {
+    if !env.has_trait(name) {
       env.set_trait_info(name, TraitDefInfo::prelude_seeded())
     }
   }

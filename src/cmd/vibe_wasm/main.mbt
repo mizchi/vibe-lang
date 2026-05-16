@@ -73,7 +73,7 @@ fn elapsed_us_to_ms_int(elapsed_us : Double) -> Int {
 
 ///|
 fn remove_file_if_exists(path : String) -> Unit {
-  if not(@os_fs.path_exists(path)) {
+  if !@os_fs.path_exists(path) {
     return
   }
   let is_file = @os_fs.is_file(path) catch { _ => false }
@@ -84,10 +84,10 @@ fn remove_file_if_exists(path : String) -> Unit {
 
 ///|
 fn snapshot_file(path : String) -> FileSnapshot {
-  if not(@os_fs.path_exists(path)) {
+  if !@os_fs.path_exists(path) {
     return { exists: false, content: "" }
   }
-  if not(@os_fs.is_file(path) catch { _ => false }) {
+  if !(@os_fs.is_file(path) catch { _ => false }) {
     return { exists: false, content: "" }
   }
   let content = @os_fs.read_file_to_string(path) catch { _ => "" }
@@ -107,7 +107,7 @@ fn restore_file_snapshot(path : String, snapshot : FileSnapshot) -> Unit {
 
 ///|
 fn is_existing_file(path : String) -> Bool {
-  if not(@os_fs.path_exists(path)) {
+  if !@os_fs.path_exists(path) {
     return false
   }
   @os_fs.is_file(path) catch {
@@ -119,7 +119,7 @@ fn is_existing_file(path : String) -> Bool {
 fn split_env_flags(raw : String) -> Array[String] {
   let out : Array[String] = []
   for part_view in raw.split(" ") {
-    let token = part_view.trim().to_string()
+    let token = part_view.trim().to_owned()
     if token.length() > 0 {
       out.push(token)
     }
@@ -131,7 +131,7 @@ fn split_env_flags(raw : String) -> Array[String] {
 fn has_wasm_feature_flag(flags : Array[String], feature : String) -> Bool {
   let prefix = feature.to_lower() + "="
   for flag in flags {
-    let token = flag.trim().to_string().to_lower()
+    let token = flag.trim().to_owned().to_lower()
     if token == feature || token.has_prefix(prefix) {
       return true
     }
@@ -142,7 +142,7 @@ fn has_wasm_feature_flag(flags : Array[String], feature : String) -> Bool {
 ///|
 fn with_default_core_wasm_flags(flags : Array[String]) -> Array[String] {
   let out = flags.copy()
-  if not(has_wasm_feature_flag(out, "exceptions")) {
+  if !has_wasm_feature_flag(out, "exceptions") {
     out.push("exceptions=y")
   }
   out
@@ -150,7 +150,7 @@ fn with_default_core_wasm_flags(flags : Array[String]) -> Array[String] {
 
 ///|
 fn is_component_incompatible_wasm_flag(flag : String) -> Bool {
-  let token = flag.trim().to_string().to_lower()
+  let token = flag.trim().to_owned().to_lower()
   token == "unknown-imports-default" ||
   token.has_prefix("unknown-imports-default=")
 }
@@ -173,7 +173,7 @@ fn find_command_in_path(name : String) -> String? {
     None => None
     Some(path_value) => {
       for dir_view in path_value.split(":") {
-        let dir = dir_view.trim().to_string()
+        let dir = dir_view.trim().to_owned()
         if dir.length() == 0 {
           continue
         }
@@ -218,7 +218,7 @@ fn absolute_path_from_cwd(path : String) -> String {
 fn resolve_wasmtime_bin(project_root : String) -> Result[String, String] {
   match @sys.get_env_var("WASMTIME_BIN") {
     Some(value) => {
-      let trimmed = value.trim().to_string()
+      let trimmed = value.trim().to_owned()
       if trimmed.length() > 0 {
         return Ok(trimmed)
       }
@@ -228,7 +228,7 @@ fn resolve_wasmtime_bin(project_root : String) -> Result[String, String] {
   let local_release = project_root + "/deps/wasmtime/target/release/wasmtime"
   let local_debug = project_root + "/deps/wasmtime/target/debug/wasmtime"
   let use_submodule = match @sys.get_env_var("VIBE_USE_WASMTIME_SUBMODULE") {
-    Some(value) => value.trim().to_string() == "1"
+    Some(value) => value.trim().to_owned() == "1"
     None => false
   }
   if use_submodule {
@@ -286,7 +286,7 @@ fn resolve_wasmtime_runner(
 fn resolve_vibe_bin(project_root : String) -> Result[String, String] {
   match @sys.get_env_var("VIBE_BIN") {
     Some(value) => {
-      let trimmed = value.trim().to_string()
+      let trimmed = value.trim().to_owned()
       if trimmed.length() > 0 {
         return Ok(trimmed)
       }
@@ -338,7 +338,7 @@ fn system_command_bytes(cmd : String) -> Bytes {
 ///|
 fn first_non_empty_line(text : String) -> String {
   for line_view in text.split("\n") {
-    let line = line_view.trim().to_string()
+    let line = line_view.trim().to_owned()
     if line.length() > 0 {
       return line
     }
@@ -704,7 +704,7 @@ fn run_mode_capture(
     resolve_wasmtime_runner(absolute_path_from_cwd(entry_path), mode) {
     Ok(v) => v
     Err(err) => {
-      if out_path is None && not(keep_artifact) {
+      if out_path is None && !keep_artifact {
         remove_file_if_exists(artifact_path)
       }
       return Err(err)
@@ -714,7 +714,7 @@ fn run_mode_capture(
   let tmp_prefix = artifact_path + ".exec"
   let (status, stdout, stderr) = run_shell_capture(cmd, tmp_prefix)
   let elapsed_ms = elapsed_us_to_ms_int(@bench.monotonic_clock_end(total_start))
-  if out_path is None && not(keep_artifact) {
+  if out_path is None && !keep_artifact {
     remove_file_if_exists(artifact_path)
   }
   Ok((artifact_path, { status, elapsed_ms, stdout, stderr }))

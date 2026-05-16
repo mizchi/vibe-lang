@@ -161,7 +161,7 @@ fn ml_extract_type_terms_from_signature(signature : String) -> Array[String] {
   let normalized = ml_replace_all_delimiters(signature)
   let terms : Array[String] = []
   for part_view in normalized.split(" ") {
-    let token = part_view.to_string()
+    let token = part_view.to_owned()
     if token.length() == 0 {
       continue
     }
@@ -489,7 +489,7 @@ pub fn MultiLangSymbolIndex::query_symbol(
       Some(def) =>
         if (language_id.length() == 0 || def.language_id == language_id) &&
           def.name.contains(query) {
-          if not(seen.contains(def_id)) {
+          if !seen.contains(def_id) {
             seen[def_id] = true
             out.push(def)
           }
@@ -537,7 +537,7 @@ pub fn MultiLangSymbolIndex::query_type(
       Some(def) =>
         if language_id.length() == 0 || def.language_id == language_id {
           if def.signature.contains(query) {
-            if not(seen.contains(def_id)) {
+            if !seen.contains(def_id) {
               seen[def_id] = true
               out.push(def)
               continue
@@ -545,7 +545,7 @@ pub fn MultiLangSymbolIndex::query_type(
           }
           for term in def.type_terms {
             if term.contains(query) {
-              if not(seen.contains(def_id)) {
+              if !seen.contains(def_id) {
                 seen[def_id] = true
                 out.push(def)
               }
@@ -566,14 +566,14 @@ pub fn MultiLangSymbolIndex::verify(
   let issues : Array[String] = []
   for key, ids in self.symbol_index {
     for def_id in ids {
-      if not(self.defs.contains(def_id)) {
+      if !self.defs.contains(def_id) {
         issues.push("symbol index missing def: " + key + " -> " + def_id)
       }
     }
   }
   for key, ids in self.type_index {
     for def_id in ids {
-      if not(self.defs.contains(def_id)) {
+      if !self.defs.contains(def_id) {
         issues.push("type index missing def: " + key + " -> " + def_id)
       }
     }

@@ -1859,7 +1859,7 @@ test "normalize fixtures input output pairs" {
   }
   for input_path in input_files {
     let output_path = wbtest_replace_suffix(input_path, ".in.vibe", ".out.vibe")
-    if not(@os_fs.path_exists(output_path)) {
+    if !@os_fs.path_exists(output_path) {
       fail("[\{input_path}] missing expected output fixture: \{output_path}")
     }
     let source = @os_fs.read_file_to_string(input_path) catch {
@@ -1898,11 +1898,11 @@ test "normalize fixtures has no stale output files" {
     let is_file = @os_fs.is_file(path) catch {
       e => fail("[\{fixture_dir}] stat failed: \{e.to_string()}")
     }
-    if not(is_file) || not(path.has_suffix(".out.vibe")) {
+    if !is_file || !path.has_suffix(".out.vibe") {
       continue
     }
     let input_path = wbtest_replace_suffix(path, ".out.vibe", ".in.vibe")
-    if not(@os_fs.path_exists(input_path)) {
+    if !@os_fs.path_exists(input_path) {
       stale_outputs.push(path)
     }
   }
@@ -2667,7 +2667,7 @@ test "compiled test case source omits example main binding" {
     match stmt {
       @vibe_core.Stmt::Test(..) | @vibe_core.Stmt::Bench(..) => ()
       _ =>
-        if not(should_omit_compiled_test_prelude_stmt(stmt)) {
+        if !should_omit_compiled_test_prelude_stmt(stmt) {
           if compiled_test_prelude_stmt_runs_in_wrapper(stmt) {
             wrapper_prelude_stmts.push(stmt)
           } else {
@@ -3378,7 +3378,7 @@ fn wbtest_make_temp_dir(prefix : String) -> String {
   let base = "/tmp/cmd_vibe_wbtest_" + prefix + "_" + @env.now().to_string()
   for i in 0..<1000 {
     let path = if i == 0 { base } else { base + "_" + i.to_string() }
-    if not(@os_fs.path_exists(path)) {
+    if !@os_fs.path_exists(path) {
       @os_fs.create_dir(path) catch {
         e => abort("create temp dir failed: " + e.to_string())
       }
@@ -3429,7 +3429,7 @@ fn wbtest_substring_index(haystack : String, needle : String) -> Int {
     let slice = try haystack[i:i + n_len] catch {
       _ => ""
     } noraise {
-      value => value.to_string()
+      value => value.to_owned()
     }
     if slice == needle {
       return i
@@ -3458,9 +3458,9 @@ fn wbtest_join_lines(lines : Array[String]) -> String {
 fn wbtest_normalize_fixture_text(text : String) -> String {
   let lines : Array[String] = []
   for line_view in text.split("\n") {
-    lines.push(line_view.trim_end().to_string())
+    lines.push(line_view.trim_end().to_owned())
   }
-  while lines.length() > 0 && lines[lines.length() - 1].trim().to_string() == "" {
+  while lines.length() > 0 && lines[lines.length() - 1].trim().to_owned() == "" {
     ignore(lines.pop())
   }
   wbtest_join_lines(lines)
@@ -3494,7 +3494,7 @@ fn wbtest_replace_suffix(
   new_suffix : String,
 ) -> String {
   match path.strip_suffix(suffix) {
-    Some(view) => view.to_string() + new_suffix
+    Some(view) => view.to_owned() + new_suffix
     None => path
   }
 }
@@ -3538,7 +3538,7 @@ fn wbtest_collect_vibe_files_recursive_impl(
 
 ///|
 fn wbtest_remove_if_exists(path : String) -> Unit {
-  if not(@os_fs.path_exists(path)) {
+  if !@os_fs.path_exists(path) {
     return
   }
   let is_file = @os_fs.is_file(path) catch { _ => false }

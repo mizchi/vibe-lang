@@ -51,8 +51,8 @@ fn split_fixture(source : String, path : String) -> (String, String) raise {
   let data_lines : Array[String] = []
   let mut in_data = false
   for line_view in source.split("\n") {
-    let line = line_view.to_string()
-    if line.trim().to_string() == "__DATA__" {
+    let line = line_view.to_owned()
+    if line.trim().to_owned() == "__DATA__" {
       in_data = true
       continue
     }
@@ -223,8 +223,8 @@ fn preload_module_sources(
   if normalized_path != module_path {
     db.set_source(normalized_path, source)
   }
-  if not(normalized_path.has_prefix("/")) &&
-    not(normalized_path.has_prefix("./")) {
+  if !normalized_path.has_prefix("/") &&
+    !normalized_path.has_prefix("./") {
     let dotted_path = "./" + normalized_path
     if dotted_path != module_path {
       db.set_source(dotted_path, source)
@@ -400,7 +400,7 @@ fn run_fixture(path : String) -> Unit raise {
     Err(err) =>
       match spec.error_contains {
         Some(expect) =>
-          if not(contains_ci(err.to_string(), expect)) {
+          if !contains_ci(err.to_string(), expect) {
             fail(
               "[\{path}] error mismatch: expected '\{expect}', got '\{err.to_string()}'",
             )

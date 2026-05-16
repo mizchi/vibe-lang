@@ -332,7 +332,7 @@ fn reh_parse_effect_arm(arm : @core.MatchArm) -> EffectHandler? {
   // Pattern must be Ctor("Effect::Op", params)
   let (key, param_names) = match arm.pat {
     @core.Pat::Ctor(name~, args~, ..) =>
-      if name.contains("::") && not(reh_is_builtin_error_handler_name(name)) {
+      if name.contains("::") && !reh_is_builtin_error_handler_name(name) {
         let names : Array[String] = []
         for arg in args {
           match arg {
@@ -832,10 +832,10 @@ fn reh_try_defunctionalize(
   }
   // Verify all handlers are accumulate: raw_expr is BinOp("+", v, Call(k, [arg]))
   for _key, handler in handlers {
-    if not(handler.has_continuation) {
+    if !handler.has_continuation {
       return None
     }
-    if not(reh_is_accumulate_pattern(handler)) {
+    if !reh_is_accumulate_pattern(handler) {
       return None
     }
   }

@@ -104,7 +104,7 @@ fn collect_pat_bind_names(
 ) -> Unit {
   match pat {
     @core.Pat::Bind(name~, span~) =>
-      if name != "_" && not(out.contains(name)) {
+      if name != "_" && !out.contains(name) {
         out[name] = span
       }
     @core.Pat::Ctor(args~, ..) =>
@@ -137,7 +137,7 @@ fn collect_local_value_decl_spans(
 ) -> Map[String, @core.Span] {
   let out : Map[String, @core.Span] = {}
   let collect_name = fn(name : String, span : @core.Span) {
-    if name != "_" && not(out.contains(name)) {
+    if name != "_" && !out.contains(name) {
       out[name] = span
     }
   }
