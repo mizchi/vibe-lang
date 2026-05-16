@@ -309,26 +309,27 @@ fn ctor_signature(
 }
 
 ///|
-fn si_push_unique_int(values : Array[Int], value : Int) -> Unit {
-  for existing in values {
-    if existing == value {
-      return
-    }
-  }
-  values.push(value)
-}
-
-///|
-fn si_push_index_id(
+/// Append `id` to `index_map[key]`, creating the bucket on first
+/// insert. The previous implementation ran an O(K) linear-scan dedup
+/// (`si_push_unique_int`) on every push, which turns this loop into
+/// O(N²) when N entries share the same key — exactly the type-index
+/// pattern that bit `build_advanced_graph_index` and the cst
+/// `GreenNodeBuilder`.
+///
+/// Both call sites in this file push values that are already unique by
+/// construction: `si_build_name_index` only ever pushes the current
+/// loop index `i` (monotonic, never repeats under one key), and
+/// `si_build_vibe_query_index` pushes `i` once per pre-deduplicated
+/// fragment from `si_collect_vibe_query_fragments` (which returns a
+/// `seen`-deduped list). So the dedup never fires; a plain `push` is
+/// behaviorally identical and O(1) amortized.
+fn si_append_index_id(
   index_map : Map[String, Array[Int]],
   key : String,
   id : Int,
 ) -> Unit {
   match index_map.get(key) {
-    Some(existing) => {
-      si_push_unique_int(existing, id)
-      index_map[key] = existing
-    }
+    Some(existing) => existing.push(id)
     None => index_map[key] = [id]
   }
 }
@@ -494,10 +495,8 @@ fn si_build_name_index(
       None => primary[name] = i
       Some(first_id) =>
         match dups.get(name) {
-          Some(ids) => {
-            si_push_unique_int(ids, i)
-            dups[name] = ids
-          }
+          // `i` strictly increases, so it can't already be in `ids`.
+          Some(ids) => ids.push(i)
           None => dups[name] = [first_id, i]
         }
     }
@@ -516,7 +515,7 @@ fn si_build_vibe_query_index(
       continue
     }
     for key in si_collect_vibe_query_fragments(signature) {
-      si_push_index_id(out, key, i)
+      si_append_index_id(out, key, i)
     }
   }
   out
