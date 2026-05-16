@@ -104,30 +104,60 @@ fn sorted_string_keys_def(map : Map[String, AdvancedGraphDef]) -> Array[String] 
 }
 
 ///|
-fn push_unique_string(values : Array[String], value : String) -> Unit {
-  for existing in values {
-    if existing == value {
-      return
-    }
-  }
-  values.push(value)
-}
-
-///|
-fn push_index_id(
+/// O(1) append into a `(key -> [def_id])` index, deferring dedup + sort
+/// to `index_map_finalize`.
+///
+/// The previous `push_index_id` ran `push_unique_string` (linear scan)
+/// and `existing.sort()` (O(K log K)) on every insert. When N decls
+/// share a signature — which is the common case for `type_index` on
+/// real codebases: a flat module with N `let _: Int = …` lines puts all
+/// N entries under the same `Int` bucket — that turned a single build
+/// into O(N² log N). For N = 16 000 we observed 8.3 s in
+/// `build_advanced_graph_index` alone (≈97 % of `vibe check`'s `load`
+/// stage); see PR description for the per-stage scaling table.
+///
+/// During a fresh build each entry produces a fresh def_id (keyed by
+/// path|span|name|kind|signature, which is unique per entry), so the
+/// dedup never actually triggered. We can append blindly and sort once
+/// at the end without changing the public byte representation.
+fn index_map_append(
   index_map : Map[String, Array[String]],
   key : String,
   def_id : String,
 ) -> Unit {
   match index_map.get(key) {
-    Some(existing) => {
-      push_unique_string(existing, def_id)
-      existing.sort()
-      index_map[key] = existing
-    }
+    Some(existing) => existing.push(def_id)
     None => index_map[key] = [def_id]
   }
 }
+
+///|
+/// Sort + dedup every bucket in `index_map`. Call this once after a
+/// build/update loop that used `index_map_append`; the resulting JSON /
+/// FlatBuffer serialization is identical to what the old
+/// per-insertion `sort()` produced.
+fn index_map_finalize(index_map : Map[String, Array[String]]) -> Unit {
+  for key, values in index_map {
+    if values.length() <= 1 {
+      continue
+    }
+    values.sort()
+    let deduped : Array[String] = []
+    let mut prev = ""
+    let mut have_prev = false
+    for v in values {
+      if !have_prev || v != prev {
+        deduped.push(v)
+        prev = v
+        have_prev = true
+      }
+    }
+    if deduped.length() != values.length() {
+      index_map[key] = deduped
+    }
+  }
+}
+
 
 ///|
 fn remove_index_id(
@@ -286,17 +316,19 @@ pub fn build_advanced_graph_index(
   for entry in symbol_index.entries {
     let node = graph_def_from_entry(db, entry, hash_cache)
     defs[node.def_id] = node
-    push_index_id(
+    index_map_append(
       symbols,
       multilang_symbol_key(node.language_id, node.name),
       node.def_id,
     )
-    push_index_id(
+    index_map_append(
       types,
       multilang_type_key(node.language_id, node.signature),
       node.def_id,
     )
   }
+  index_map_finalize(symbols)
+  index_map_finalize(types)
   let manifest = AdvancedGraphManifest::{
     schema_version: 1,
     base_commit,
@@ -338,18 +370,20 @@ pub fn build_advanced_graph_index_from_ir(
       module_hash: row.module_hash,
     }
     defs[node.def_id] = node
-    push_index_id(
+    index_map_append(
       symbols,
       multilang_symbol_key(node.language_id, node.name),
       node.def_id,
     )
-    push_index_id(
+    index_map_append(
       types,
       multilang_type_key(node.language_id, node.signature),
       node.def_id,
     )
     lang_set[row.language_id] = true
   }
+  index_map_finalize(symbols)
+  index_map_finalize(types)
   let language_ids : Array[String] = []
   for lang, _ in lang_set {
     language_ids.push(lang)
@@ -402,17 +436,22 @@ pub fn update_advanced_graph_index_incremental(
   for entry in next_entries.entries {
     let node = graph_def_from_entry(db, entry, hash_cache)
     defs[node.def_id] = node
-    push_index_id(
+    index_map_append(
       symbols,
       multilang_symbol_key(node.language_id, node.name),
       node.def_id,
     )
-    push_index_id(
+    index_map_append(
       types,
       multilang_type_key(node.language_id, node.signature),
       node.def_id,
     )
   }
+  // After bulk-replacing the entries for the changed paths, sort+dedup
+  // every affected bucket so the resulting JSON / FlatBuffer ordering
+  // matches the from-scratch build.
+  index_map_finalize(symbols)
+  index_map_finalize(types)
   let next_base_commit = if base_commit.length() > 0 {
     base_commit
   } else {
