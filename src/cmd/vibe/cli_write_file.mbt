@@ -421,7 +421,7 @@ fn load_scratch_write_file_candidates(
     Ok(v) => v
     Err(err) => return Err(err)
   }
-  if not(@os_fs.path_exists(scratch_db_path)) {
+  if !@os_fs.path_exists(scratch_db_path) {
     return Ok([])
   }
   let source = match load_scratch_db_source(scratch_db_path) {

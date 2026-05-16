@@ -70,9 +70,9 @@ test "parse cmd args defaults to run core wasm" {
   let parsed = parse_cmd_args(["examples/hello.vibe"])
   match parsed {
     Ok(opts) => {
-      assert_eq(opts.command, CommandKind::Run)
-      assert_eq(opts.mode, RunMode::CoreWasm)
-      assert_eq(opts.entry_path, "examples/hello.vibe")
+      @debug.assert_eq(opts.command, CommandKind::Run)
+      @debug.assert_eq(opts.mode, RunMode::CoreWasm)
+      @debug.assert_eq(opts.entry_path, "examples/hello.vibe")
       assert_false(opts.keep_artifact)
     }
     Err(msg) => fail("unexpected err: " + msg)
@@ -86,8 +86,8 @@ test "parse cmd args compile component with out and wite" {
   ])
   match parsed {
     Ok(opts) => {
-      assert_eq(opts.command, CommandKind::Compile)
-      assert_eq(opts.mode, RunMode::Component)
+      @debug.assert_eq(opts.command, CommandKind::Compile)
+      @debug.assert_eq(opts.mode, RunMode::Component)
       @debug.assert_eq(opts.out_path, Some("dist/app.component.wasm"))
       @debug.assert_eq(opts.opt_level, Some("-Oz"))
     }
@@ -97,11 +97,11 @@ test "parse cmd args compile component with out and wite" {
 
 ///|
 test "default output path uses mode extension" {
-  assert_eq(
+  @debug.assert_eq(
     default_output_path("examples/hello.vibe", RunMode::CoreWasm),
     "dist/hello.wasm",
   )
-  assert_eq(
+  @debug.assert_eq(
     default_output_path("examples/hello.vibe", RunMode::Component),
     "dist/hello.component.wasm",
   )
@@ -168,7 +168,7 @@ test "snapshot restore rewinds file content" {
   let restored = @os_fs.read_file_to_string(file) catch {
     e => fail("read restored failed: " + e.to_string())
   }
-  assert_eq(restored, "before")
+  @debug.assert_eq(restored, "before")
   wbtest_remove_file_if_exists(file)
 }
 
@@ -253,6 +253,6 @@ test "vibe and vibe_wasm run outputs agree on normalized Int result" {
       )
   }
 
-  assert_eq(wasm_tagged >> 2, vibe_value)
-  assert_eq(component_tagged >> 2, vibe_value)
+  @debug.assert_eq(wasm_tagged >> 2, vibe_value)
+  @debug.assert_eq(component_tagged >> 2, vibe_value)
 }

@@ -4,11 +4,6 @@ enum BenchBackend {
 } derive(Debug, Eq)
 
 ///|
-impl Show for BenchBackend with output(self, logger) {
-  logger.write_string(Debug::to_repr(self).to_string())
-}
-
-///|
 struct BenchSourceCase {
   name : String?
   body_source : String

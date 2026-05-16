@@ -660,7 +660,7 @@ test "shell meta help uses shell terminology" {
   ) {
     lines.push(line)
   })
-  assert_eq(result, ReplMetaCommandResult::HandledContinue)
+  @debug.assert_eq(result, ReplMetaCommandResult::HandledContinue)
   let text = wbtest_join_lines(lines)
   assert_true(text.contains("Exit the shell"))
   assert_false(text.contains("REPL"))
@@ -2726,7 +2726,7 @@ test "compiled test wrapper executes top-level computed let bindings" {
     CompiledTestAttempt::Success(report) => {
       assert_eq(report.total, 1)
       if report.passed != 1 || report.failed != 0 {
-        fail("unexpected compiled report: " + report.to_string())
+        fail("unexpected compiled report: " + Debug::to_repr(report).to_string())
       }
     }
     CompiledTestAttempt::Unsupported(err) =>
@@ -2767,7 +2767,7 @@ test "compiled test wrapper executes closure-captured string condition" {
     CompiledTestAttempt::Success(report) => {
       assert_eq(report.total, 1)
       if report.passed != 1 || report.failed != 0 {
-        fail("unexpected compiled report: " + report.to_string())
+        fail("unexpected compiled report: " + Debug::to_repr(report).to_string())
       }
     }
     CompiledTestAttempt::Unsupported(err) =>
@@ -2804,7 +2804,7 @@ test "compiled test wrapper supports paren string interpolation syntax" {
     CompiledTestAttempt::Success(report) => {
       assert_eq(report.total, 1)
       if report.passed != 1 || report.failed != 0 {
-        fail("unexpected compiled report: " + report.to_string())
+        fail("unexpected compiled report: " + Debug::to_repr(report).to_string())
       }
     }
     CompiledTestAttempt::Unsupported(err) =>
@@ -3146,7 +3146,7 @@ test "compiled test wrapper keeps Map::keys results as strings" {
     CompiledTestAttempt::Success(report) => {
       assert_eq(report.total, 1)
       if report.passed != 1 || report.failed != 0 {
-        fail("unexpected compiled report: " + report.to_string())
+        fail("unexpected compiled report: " + Debug::to_repr(report).to_string())
       }
     }
     CompiledTestAttempt::Unsupported(err) =>
@@ -3861,7 +3861,7 @@ test "session http ping reports worker token" {
     "worker-token",
   )
   assert_false(should_shutdown)
-  assert_eq(
+  @debug.assert_eq(
     parse_session_http_ping_state(json),
     SessionHttpPingState::Alive(Some("worker-token")),
   )
@@ -3941,7 +3941,7 @@ test "cli session request parses check json" {
     Ok(v) => v
     Err(err) => fail("expected check request: " + err)
   }
-  assert_eq(req.kind, CliSessionRequestKind::Check)
+  @debug.assert_eq(req.kind, CliSessionRequestKind::Check)
   @debug.assert_eq(req.path, Some("/tmp/project/main.vibe"))
 }
 
@@ -3954,7 +3954,7 @@ test "cli session request parses run json" {
     Ok(v) => v
     Err(err) => fail("expected run request: " + err)
   }
-  assert_eq(req.kind, CliSessionRequestKind::Run)
+  @debug.assert_eq(req.kind, CliSessionRequestKind::Run)
   @debug.assert_eq(req.path, Some("/tmp/project/main.vibe"))
 }
 
@@ -3964,7 +3964,7 @@ test "cli session request parses shutdown json" {
     Ok(v) => v
     Err(err) => fail("expected shutdown request: " + err)
   }
-  assert_eq(req.kind, CliSessionRequestKind::Shutdown)
+  @debug.assert_eq(req.kind, CliSessionRequestKind::Shutdown)
   @debug.assert_eq(req.path, None)
 }
 
@@ -3974,7 +3974,7 @@ test "cli session request parses ping json" {
     Ok(v) => v
     Err(err) => fail("expected ping request: " + err)
   }
-  assert_eq(req.kind, CliSessionRequestKind::Ping)
+  @debug.assert_eq(req.kind, CliSessionRequestKind::Ping)
   @debug.assert_eq(req.path, None)
 }
 
@@ -4019,7 +4019,7 @@ test "cli session run json roundtrips" {
     Ok(v) => v
     Err(err) => fail("expected parsed int result: " + err)
   }
-  assert_eq(parsed_int, WasmRunValue::Int(42L))
+  @debug.assert_eq(parsed_int, WasmRunValue::Int(42L))
   let parsed_bool = match
     parse_cli_run_value_json(
       make_cli_session_run_result_json(
@@ -4030,7 +4030,7 @@ test "cli session run json roundtrips" {
     Ok(v) => v
     Err(err) => fail("expected parsed bool result: " + err)
   }
-  assert_eq(parsed_bool, WasmRunValue::Bool(true))
+  @debug.assert_eq(parsed_bool, WasmRunValue::Bool(true))
 }
 
 ///|
@@ -4151,7 +4151,7 @@ test "compiled exec keeps >= lowering away from imported or helpers" {
     Some(v) => v
     None => fail("unsupported tagged result: " + tagged.to_string())
   }
-  assert_eq(value, WasmRunValue::Int(1L))
+  @debug.assert_eq(value, WasmRunValue::Int(1L))
   wbtest_remove_if_exists(wasm_path)
   wbtest_remove_if_exists(entry_path)
   wbtest_remove_if_exists(helper_path)
@@ -4468,7 +4468,7 @@ test "compiled repl string fallback decodes _start export" {
     Ok(v) => v
     Err(err) => fail("compiled repl string literal failed: " + err)
   }
-  assert_eq(result.value, WasmRunValue::Int(0L))
+  @debug.assert_eq(result.value, WasmRunValue::Int(0L))
   @debug.assert_eq(result.display_override, Some("\"hi\""))
   wbtest_remove_if_exists(wasm_path)
   wbtest_remove_if_exists(source_path)
@@ -4488,7 +4488,7 @@ test "compiled repl array fallback renders duplicate strings" {
     Ok(v) => v
     Err(err) => fail("compiled repl array literal failed: " + err)
   }
-  assert_eq(result.value, WasmRunValue::Int(0L))
+  @debug.assert_eq(result.value, WasmRunValue::Int(0L))
   @debug.assert_eq(result.display_override, Some("[\"hi\", \"hi\"]"))
   wbtest_remove_if_exists(wasm_path)
   wbtest_remove_if_exists(source_path)
@@ -4509,7 +4509,7 @@ test "compiled repl array binding renders on reuse" {
     Ok(v) => v
     Err(err) => fail("compiled repl array binding failed: " + err)
   }
-  assert_eq(bound.value, WasmRunValue::Int(0L))
+  @debug.assert_eq(bound.value, WasmRunValue::Int(0L))
   @debug.assert_eq(bound.display_override, Some("[1, 2]"))
   let reused = match
     run_compiled_repl_line_with_cache(
@@ -4522,7 +4522,7 @@ test "compiled repl array binding renders on reuse" {
     Ok(v) => v
     Err(err) => fail("compiled repl array reuse failed: " + err)
   }
-  assert_eq(reused.value, WasmRunValue::Int(0L))
+  @debug.assert_eq(reused.value, WasmRunValue::Int(0L))
   @debug.assert_eq(reused.display_override, Some("[1, 2]"))
   wbtest_remove_if_exists(wasm0)
   wbtest_remove_if_exists(wasm1)
@@ -4543,7 +4543,7 @@ test "compiled repl map fallback renders entries" {
     Ok(v) => v
     Err(err) => fail("compiled repl map literal failed: " + err)
   }
-  assert_eq(result.value, WasmRunValue::Int(0L))
+  @debug.assert_eq(result.value, WasmRunValue::Int(0L))
   @debug.assert_eq(result.display_override, Some("{|\"a\": 1, \"b\": 2|}"))
   wbtest_remove_if_exists(wasm_path)
   wbtest_remove_if_exists(source_path)
@@ -4593,7 +4593,7 @@ test "compiled repl hoists import entered after prior binding" {
     Ok(v) => v
     Err(err) => fail("late import call failed: " + err)
   }
-  assert_eq(result.value, WasmRunValue::Int(42L))
+  @debug.assert_eq(result.value, WasmRunValue::Int(42L))
   wbtest_remove_if_exists(wasm0)
   wbtest_remove_if_exists(wasm1)
   wbtest_remove_if_exists(wasm2)

@@ -94,11 +94,6 @@ enum WasmRunValue {
 } derive(Debug, Eq)
 
 ///|
-impl Show for WasmRunValue with output(self, logger) {
-  logger.write_string(Debug::to_repr(self).to_string())
-}
-
-///|
 let cli_tagged_run_export_name = "_vibe_run_tagged"
 
 ///|

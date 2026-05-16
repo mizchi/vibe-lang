@@ -153,7 +153,7 @@ fn CursorGc::read_bytes(self : CursorGc, n : Int) -> Bytes raise {
   }
   let view = self.bytes[self.pos:self.pos + n]
   self.pos += n
-  view.to_bytes()
+  view.to_owned()
 }
 
 ///|

@@ -17,7 +17,7 @@ fn test_repo_root() -> String {
     return cwd
   }
   let gitdir = git_ref[prefix.length():].trim().to_owned()
-  let parts = gitdir.split("/.git/").map(StringView::to_string).collect()
+  let parts = gitdir.split("/.git/").map(StringView::to_owned).collect()
   if parts.length() == 0 || parts[0].length() == 0 {
     return cwd
   }

@@ -17,11 +17,6 @@ struct BuiltinTableEntry {
 } derive(Eq, Debug)
 
 ///|
-impl Show for BuiltinTableEntry with output(self, logger) {
-  logger.write_string(Debug::to_repr(self).to_string())
-}
-
-///|
 /// Type identifier decoded from binary.
 enum BuiltinTypeId {
   BTUnit
@@ -47,11 +42,6 @@ enum BuiltinTypeId {
   BTTypeVar(Int) // 0=T, 1=U, 2=V
   BTUnknown
 } derive(Eq, Debug)
-
-///|
-impl Show for BuiltinTypeId with output(self, logger) {
-  logger.write_string(Debug::to_repr(self).to_string())
-}
 
 ///|
 /// Read LEB128 unsigned integer from bytes at position.

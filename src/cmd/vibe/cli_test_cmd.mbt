@@ -19,11 +19,6 @@ struct CliTestReport {
 } derive(Debug, Eq)
 
 ///|
-impl Show for CliTestReport with output(self, logger) {
-  logger.write_string(Debug::to_repr(self).to_string())
-}
-
-///|
 enum CompiledTestAttempt {
   Success(CliTestReport)
   Unsupported(String)

@@ -45,7 +45,7 @@ fn Cursor::read_bytes(self : Cursor, n : Int) -> Bytes raise WasmWatError {
   }
   let view = self.bytes[self.pos:self.pos + n]
   self.pos += n
-  view.to_bytes()
+  view.to_owned()
 }
 
 ///|

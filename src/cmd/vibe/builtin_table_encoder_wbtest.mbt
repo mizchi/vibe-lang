@@ -1,54 +1,54 @@
 ///|
 test "parse_type_tag: primitive types" {
-  assert_eq(parse_type_tag("Unit"), BuiltinTypeTag::Unit)
-  assert_eq(parse_type_tag("Int"), BuiltinTypeTag::Int_)
-  assert_eq(parse_type_tag("Bool"), BuiltinTypeTag::Bool_)
-  assert_eq(parse_type_tag("String"), BuiltinTypeTag::String_)
-  assert_eq(parse_type_tag("Double"), BuiltinTypeTag::Double_)
-  assert_eq(parse_type_tag("Float"), BuiltinTypeTag::Float_)
-  assert_eq(parse_type_tag("Bytes"), BuiltinTypeTag::Bytes_)
-  assert_eq(parse_type_tag("Char"), BuiltinTypeTag::Char_)
-  assert_eq(parse_type_tag("Path"), BuiltinTypeTag::Path_)
-  assert_eq(parse_type_tag("V128"), BuiltinTypeTag::V128_)
-  assert_eq(parse_type_tag("Json"), BuiltinTypeTag::Json_)
-  assert_eq(parse_type_tag("StringBuilder"), BuiltinTypeTag::StringBuilder_)
-  assert_eq(parse_type_tag("PromptText"), BuiltinTypeTag::PromptText_)
+  @debug.assert_eq(parse_type_tag("Unit"), BuiltinTypeTag::Unit)
+  @debug.assert_eq(parse_type_tag("Int"), BuiltinTypeTag::Int_)
+  @debug.assert_eq(parse_type_tag("Bool"), BuiltinTypeTag::Bool_)
+  @debug.assert_eq(parse_type_tag("String"), BuiltinTypeTag::String_)
+  @debug.assert_eq(parse_type_tag("Double"), BuiltinTypeTag::Double_)
+  @debug.assert_eq(parse_type_tag("Float"), BuiltinTypeTag::Float_)
+  @debug.assert_eq(parse_type_tag("Bytes"), BuiltinTypeTag::Bytes_)
+  @debug.assert_eq(parse_type_tag("Char"), BuiltinTypeTag::Char_)
+  @debug.assert_eq(parse_type_tag("Path"), BuiltinTypeTag::Path_)
+  @debug.assert_eq(parse_type_tag("V128"), BuiltinTypeTag::V128_)
+  @debug.assert_eq(parse_type_tag("Json"), BuiltinTypeTag::Json_)
+  @debug.assert_eq(parse_type_tag("StringBuilder"), BuiltinTypeTag::StringBuilder_)
+  @debug.assert_eq(parse_type_tag("PromptText"), BuiltinTypeTag::PromptText_)
 }
 
 ///|
 test "parse_type_tag: type variables" {
-  assert_eq(parse_type_tag("T"), BuiltinTypeTag::TypeVar(0))
-  assert_eq(parse_type_tag("U"), BuiltinTypeTag::TypeVar(1))
-  assert_eq(parse_type_tag("V"), BuiltinTypeTag::TypeVar(2))
+  @debug.assert_eq(parse_type_tag("T"), BuiltinTypeTag::TypeVar(0))
+  @debug.assert_eq(parse_type_tag("U"), BuiltinTypeTag::TypeVar(1))
+  @debug.assert_eq(parse_type_tag("V"), BuiltinTypeTag::TypeVar(2))
 }
 
 ///|
 test "parse_type_tag: container types" {
-  assert_eq(
+  @debug.assert_eq(
     parse_type_tag("Array[Int]"),
     BuiltinTypeTag::Array_(BuiltinTypeTag::Int_),
   )
-  assert_eq(
+  @debug.assert_eq(
     parse_type_tag("Map[String, Int]"),
     BuiltinTypeTag::Map_(BuiltinTypeTag::String_, BuiltinTypeTag::Int_),
   )
-  assert_eq(
+  @debug.assert_eq(
     parse_type_tag("Set[T]"),
     BuiltinTypeTag::Set_(BuiltinTypeTag::TypeVar(0)),
   )
-  assert_eq(
+  @debug.assert_eq(
     parse_type_tag("Option[Int]"),
     BuiltinTypeTag::Option_(BuiltinTypeTag::Int_),
   )
-  assert_eq(
+  @debug.assert_eq(
     parse_type_tag("Array[T]"),
     BuiltinTypeTag::Array_(BuiltinTypeTag::TypeVar(0)),
   )
-  assert_eq(
+  @debug.assert_eq(
     parse_type_tag("ArrayBuilder[T]"),
     BuiltinTypeTag::ArrayBuilder_(BuiltinTypeTag::TypeVar(0)),
   )
-  assert_eq(
+  @debug.assert_eq(
     parse_type_tag("MapBuilder[T, U]"),
     BuiltinTypeTag::MapBuilder_(
       BuiltinTypeTag::TypeVar(0),
@@ -59,11 +59,11 @@ test "parse_type_tag: container types" {
 
 ///|
 test "parse_type_tag: nested containers" {
-  assert_eq(
+  @debug.assert_eq(
     parse_type_tag("Array[Array[Int]]"),
     BuiltinTypeTag::Array_(BuiltinTypeTag::Array_(BuiltinTypeTag::Int_)),
   )
-  assert_eq(
+  @debug.assert_eq(
     parse_type_tag("Array[String]"),
     BuiltinTypeTag::Array_(BuiltinTypeTag::String_),
   )
@@ -71,14 +71,14 @@ test "parse_type_tag: nested containers" {
 
 ///|
 test "parse_type_tag: function types" {
-  assert_eq(
+  @debug.assert_eq(
     parse_type_tag("(T) -> U"),
     BuiltinTypeTag::Fn_(
       [BuiltinTypeTag::TypeVar(0)],
       BuiltinTypeTag::TypeVar(1),
     ),
   )
-  assert_eq(
+  @debug.assert_eq(
     parse_type_tag("(T) -> Bool"),
     BuiltinTypeTag::Fn_([BuiltinTypeTag::TypeVar(0)], BuiltinTypeTag::Bool_),
   )
@@ -90,7 +90,7 @@ test "parse_declare_line: simple builtin" {
     Some(d) => {
       assert_eq(d.name, "String::length")
       @debug.assert_eq(d.params, [BuiltinTypeTag::String_])
-      assert_eq(d.ret, BuiltinTypeTag::Int_)
+      @debug.assert_eq(d.ret, BuiltinTypeTag::Int_)
     }
     None => fail("expected Some")
   }
@@ -102,7 +102,7 @@ test "parse_declare_line: no params" {
     Some(d) => {
       assert_eq(d.name, "array_new")
       assert_eq(d.params.length(), 0)
-      assert_eq(d.ret, BuiltinTypeTag::Array_(BuiltinTypeTag::TypeVar(0)))
+      @debug.assert_eq(d.ret, BuiltinTypeTag::Array_(BuiltinTypeTag::TypeVar(0)))
     }
     None => fail("expected Some")
   }
@@ -114,10 +114,10 @@ test "parse_declare_line: multiple params" {
     Some(d) => {
       assert_eq(d.name, "Array::set")
       assert_eq(d.params.length(), 3)
-      assert_eq(d.params[0], BuiltinTypeTag::Array_(BuiltinTypeTag::TypeVar(0)))
-      assert_eq(d.params[1], BuiltinTypeTag::Int_)
-      assert_eq(d.params[2], BuiltinTypeTag::TypeVar(0))
-      assert_eq(d.ret, BuiltinTypeTag::Unit)
+      @debug.assert_eq(d.params[0], BuiltinTypeTag::Array_(BuiltinTypeTag::TypeVar(0)))
+      @debug.assert_eq(d.params[1], BuiltinTypeTag::Int_)
+      @debug.assert_eq(d.params[2], BuiltinTypeTag::TypeVar(0))
+      @debug.assert_eq(d.ret, BuiltinTypeTag::Unit)
     }
     None => fail("expected Some")
   }
@@ -239,20 +239,20 @@ test "parse_declarations: full declarations sample" {
   assert_eq(decls.length(), 4)
   assert_eq(decls[0].name, "Array::length")
   assert_eq(decls[0].params.length(), 1)
-  assert_eq(
+  @debug.assert_eq(
     decls[0].params[0],
     BuiltinTypeTag::Array_(BuiltinTypeTag::TypeVar(0)),
   )
-  assert_eq(decls[0].ret, BuiltinTypeTag::Int_)
+  @debug.assert_eq(decls[0].ret, BuiltinTypeTag::Int_)
   assert_eq(decls[1].name, "Map::get")
   assert_eq(decls[1].params.length(), 2)
-  assert_eq(
+  @debug.assert_eq(
     decls[1].params[0],
     BuiltinTypeTag::Map_(BuiltinTypeTag::TypeVar(0), BuiltinTypeTag::TypeVar(1)),
   )
   assert_eq(decls[2].name, "Set::new")
   assert_eq(decls[2].params.length(), 0)
-  assert_eq(decls[2].ret, BuiltinTypeTag::Set_(BuiltinTypeTag::TypeVar(0)))
+  @debug.assert_eq(decls[2].ret, BuiltinTypeTag::Set_(BuiltinTypeTag::TypeVar(0)))
   assert_eq(decls[3].name, "Int::parse")
-  assert_eq(decls[3].ret, BuiltinTypeTag::Option_(BuiltinTypeTag::Int_))
+  @debug.assert_eq(decls[3].ret, BuiltinTypeTag::Option_(BuiltinTypeTag::Int_))
 }

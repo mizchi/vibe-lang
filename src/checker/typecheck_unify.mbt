@@ -506,7 +506,7 @@ fn normalize_type_inner(
       }
     }
     @core.Type::Tuple(items) =>
-      if not(type_has_named_node(ty)) {
+      if !type_has_named_node(ty) {
         ty
       } else {
         let out : Array[@core.Type] = []
@@ -543,7 +543,7 @@ fn normalize_type_inner(
         )
       }
     @core.Type::Set(inner) =>
-      if not(type_has_named_node(inner)) {
+      if !type_has_named_node(inner) {
         ty
       } else {
         @core.Type::Set(normalize_type_inner(env, inner, visiting, expand_enum))

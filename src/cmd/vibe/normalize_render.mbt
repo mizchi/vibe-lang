@@ -166,7 +166,7 @@ fn normalize_render_canonicalize_import_path(path : String) -> String {
   let had_dot_prefix = path.has_prefix("./")
   let parts : Array[String] = []
   for part_view in path.split("/") {
-    let part = part_view.to_string()
+    let part = part_view.to_owned()
     if part == "" || part == "." {
       continue
     }
