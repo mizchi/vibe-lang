@@ -92,7 +92,7 @@ pub fn TraitWitness::message(self : TraitWitness) -> String {
         "type variable has no trait bounds; expected `" + trait_name + "`"
       } else {
         "type variable bounds " +
-        available.to_string() +
+        Debug::to_repr(available).to_string() +
         " do not include `" +
         trait_name +
         "`"

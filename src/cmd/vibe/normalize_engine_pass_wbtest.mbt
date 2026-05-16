@@ -55,7 +55,7 @@ test "pass_select_and_dedup: no entry names keeps all stmts" {
   }
   let result = pass_select_and_dedup(ast, [])
   let expected = ["let:a", "let:b", "let:c"]
-  inspect(wbtest_stmt_summary(result), content=expected.to_string())
+  @debug.debug_inspect(wbtest_stmt_summary(result), content=Debug::to_repr(expected).to_string())
 }
 
 ///|
@@ -104,9 +104,9 @@ test "pass_select_and_dedup: duplicate names dedup last wins" {
       }
     })
     .count()
-  inspect(x_count, content="1")
+  @debug.debug_inspect(x_count, content="1")
   let expected = ["let:x", "let:y"]
-  inspect(wbtest_stmt_summary(result), content=expected.to_string())
+  @debug.debug_inspect(wbtest_stmt_summary(result), content=Debug::to_repr(expected).to_string())
 }
 
 ///|
@@ -205,7 +205,7 @@ test "pass_validate: valid render passes" {
   }
   let rendered = "let x: Int = 1\n"
   let result = pass_validate(source, rendered, ast.stmts)
-  inspect(result, content="Ok(())")
+  @debug.debug_inspect(result, content="Ok(())")
 }
 
 ///|
@@ -291,17 +291,11 @@ test "pass pipeline: full chain produces same result as normalize_source_text" {
     }
   }
   let actual : Result[String, String] = Ok(rendered)
-  inspect(
+  @debug.debug_inspect(
     actual,
     content=(
-      #|Ok(//# Functions
-      #|
-      #|let a: () -> Int = () -> { 42 }
-      #|
-      #|let b: () -> Int = () -> { a() }
-      #|
-      #|let z: () -> Int = () -> { b() }
-      #|)
+      #|Ok("//# Functions\n\nlet a: () -> Int = () -> { 42 }\n\nlet b: () -> Int = () -> { a() }\n\nlet z: () -> Int = () -> { b() }\n")
+
     ),
   )
 }

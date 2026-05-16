@@ -18,7 +18,7 @@ pub fn init_hooks() -> Unit {
   // Parser
   @runtime.set_parse_ast_hook(fn(
     source,
-  ) -> (@core.Module, @core.Diagnostic?) raise Error {
+  ) -> (@core.Module, @core.Diagnostic?) {
     let ast = @parser.parse_ast(source) catch {
       e => return ({ stmts: [] }, Some(e.diagnostic()))
     }

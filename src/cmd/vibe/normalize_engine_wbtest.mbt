@@ -24,13 +24,11 @@ fn ne_substring_index(haystack : String, needle : String) -> Int {
 test "normalize_engine: format basic let binding" {
   let source = "let   x  =  1"
   let result = normalize_source_text(source)
-  inspect(
+  @debug.debug_inspect(
     result,
     content=(
-      #|Ok(//# Functions
-      #|
-      #|let x: Int = 1
-      #|)
+      #|Ok("//# Functions\n\nlet x: Int = 1\n")
+
     ),
   )
 }
@@ -41,15 +39,11 @@ test "normalize_engine: format multiple let bindings with spacing" {
     #|let a  = 1
     #|let b  = 2
   let result = normalize_source_text(source)
-  inspect(
+  @debug.debug_inspect(
     result,
     content=(
-      #|Ok(//# Functions
-      #|
-      #|let a: Int = 1
-      #|
-      #|let b: Int = 2
-      #|)
+      #|Ok("//# Functions\n\nlet a: Int = 1\n\nlet b: Int = 2\n")
+
     ),
   )
 }
@@ -59,13 +53,11 @@ test "normalize_engine: constant folding for addition" {
   let source =
     #|let value = 1 + 2
   let result = normalize_source_text(source)
-  inspect(
+  @debug.debug_inspect(
     result,
     content=(
-      #|Ok(//# Functions
-      #|
-      #|let value: Int = 3
-      #|)
+      #|Ok("//# Functions\n\nlet value: Int = 3\n")
+
     ),
   )
 }
@@ -75,13 +67,11 @@ test "normalize_engine: constant folding for multiplication" {
   let source =
     #|let value = 3 * 4
   let result = normalize_source_text(source)
-  inspect(
+  @debug.debug_inspect(
     result,
     content=(
-      #|Ok(//# Functions
-      #|
-      #|let value: Int = 12
-      #|)
+      #|Ok("//# Functions\n\nlet value: Int = 12\n")
+
     ),
   )
 }
@@ -185,13 +175,11 @@ test "normalize_engine: inferred annotation on non-fn let" {
   let source =
     #|let answer = 40 + 2
   let result = normalize_source_text(source)
-  inspect(
+  @debug.debug_inspect(
     result,
     content=(
-      #|Ok(//# Functions
-      #|
-      #|let answer: Int = 42
-      #|)
+      #|Ok("//# Functions\n\nlet answer: Int = 42\n")
+
     ),
   )
 }
@@ -460,10 +448,11 @@ test "normalize_engine: empty source returns empty string" {
   let result = normalize_source_text(source)
   let expected =
     #|Ok("")
-  inspect(
+  @debug.debug_inspect(
     result,
     content=(
-      #|Ok()
+      #|Ok("")
+
     ),
   )
 }
@@ -473,13 +462,11 @@ test "normalize_engine: constant folding subtraction" {
   let source =
     #|let value = 10 - 3
   let result = normalize_source_text(source)
-  inspect(
+  @debug.debug_inspect(
     result,
     content=(
-      #|Ok(//# Functions
-      #|
-      #|let value: Int = 7
-      #|)
+      #|Ok("//# Functions\n\nlet value: Int = 7\n")
+
     ),
   )
 }

@@ -327,7 +327,7 @@ fn emit_coerce_top_gc(
   buf : GcByteBuf,
   actual_kind : GcValKind,
   expected_kind : GcValKind,
-) -> Unit raise WasmGenError {
+) -> Unit {
   if actual_kind == expected_kind {
     return
   }

@@ -93,7 +93,7 @@ pub fn desugar_method_calls(
 let parse_ast_hook : Ref[
   (String) -> (@core.Module, @core.Diagnostic?) raise Error,
 ] = {
-  val: fn(_source) -> (@core.Module, @core.Diagnostic?) raise Error {
+  val: fn(_source) -> (@core.Module, @core.Diagnostic?) {
     ({ stmts: [] }, None)
   },
 }
@@ -240,7 +240,7 @@ pub fn hook_get_prelude_env() -> @checker.TypeEnv {
 let type_check_with_env_hook : Ref[
   (@checker.TypeEnv, @core.Module, Map[String, @core.Ref]) -> @checker.TypeEnv raise @checker.TypeError,
 ] = {
-  val: fn(env, _ast, _aliases) -> @checker.TypeEnv raise @checker.TypeError {
+  val: fn(env, _ast, _aliases) -> @checker.TypeEnv {
     env
   },
 }

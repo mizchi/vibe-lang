@@ -473,6 +473,6 @@ test "fixtures has no stale todo files" {
   }
   sort_strings(stale)
   if stale.length() > 0 {
-    fail("[fixtures] stale todo fixtures found: \{stale.to_string()}")
+    fail("[fixtures] stale todo fixtures found: \{Debug::to_repr(stale).to_string()}")
   }
 }
