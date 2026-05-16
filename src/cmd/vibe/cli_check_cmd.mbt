@@ -234,18 +234,24 @@ fn run_check_entry_with_cache(
             Some(v) => v
             None => ""
           }
+          let dep_index = @vibe_core.LineIndex::build(dep_source)
           for dep_diag in dep_diags {
-            messages.push(dep_diag.render(imp.path, dep_source))
+            messages.push(dep_diag.render_with_index(imp.path, dep_index))
           }
         }
       }
+      // Build the entry's line index once; reused for every diagnostic
+      // and warning render. Without this, each `render(.., source)` walks
+      // `source` from offset 0 to find line/column, turning N warnings on
+      // an N-line file into O(N²).
+      let entry_index = @vibe_core.LineIndex::build(source)
       let diags = db.diagnostics(entry)
       for diag in diags {
-        messages.push(diag.render(entry_path, source))
+        messages.push(diag.render_with_index(entry_path, entry_index))
       }
       let warnings = db.warnings(entry)
       for warning in warnings {
-        messages.push(warning.render(entry_path, source))
+        messages.push(warning.render_with_index(entry_path, entry_index))
       }
       let layering_violations = std_layering_violations_for_source(
         entry, source,
