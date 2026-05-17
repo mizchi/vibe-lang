@@ -18,6 +18,50 @@ import ./types.vibe {
 
 //# Functions
 
+let int_var_name = (i: Int) -> String {
+  String::concat("x_", __to_string(i))
+}
+
+let build_nested_if = (n: Int) -> Expr {
+  let mut i = n
+  let mut acc = EInt(0)
+  while i > 0 {
+    acc = EIf(EBool(true), EInt(i), acc)
+    i = i - 1
+  }
+  acc
+}
+
+let build_seq_chain = (n: Int) -> Expr {
+  let mut i = n
+  let mut acc = EInt(0)
+  while i > 0 {
+    acc = ESeq(EInt(i), acc)
+    i = i - 1
+  }
+  acc
+}
+
+let build_cached_env = (n: Int) -> TypeEnv {
+  let mut env = EnvEmpty
+  let mut i = 1
+  while i <= n {
+    env = env_bind(env, int_var_name(i), CtInt)
+    i = i + 1
+  }
+  env_cache(env)
+}
+
+let build_deep_binop = (n: Int) -> Expr {
+  let mut i = n
+  let mut acc = EInt(i)
+  while i > 1 {
+    i = i - 1
+    acc = EBinOp("+", EInt(i), acc)
+  }
+  acc
+}
+
 let empty_defs_array = () -> Array[TypeDef] {
   Array::slice([
     TDAlias("_dummy", CtUnit)
@@ -39,40 +83,6 @@ let run_check = (expr: Expr, env: TypeEnv) -> Type with { Error } {
   }
 }
 
-let int_var_name = (i: Int) -> String {
-  String::concat("x_", __to_string(i))
-}
-
-let build_chained_lets = (n: Int) -> Expr {
-  let mut i = n
-  let mut body = EIdent(int_var_name(1))
-  while i >= 1 {
-    body = ELet(int_var_name(i), EInt(i), body)
-    i = i - 1
-  }
-  body
-}
-
-let build_deep_binop = (n: Int) -> Expr {
-  let mut i = n
-  let mut acc = EInt(i)
-  while i > 1 {
-    i = i - 1
-    acc = EBinOp("+", EInt(i), acc)
-  }
-  acc
-}
-
-let build_nested_if = (n: Int) -> Expr {
-  let mut i = n
-  let mut acc = EInt(0)
-  while i > 0 {
-    acc = EIf(EBool(true), EInt(i), acc)
-    i = i - 1
-  }
-  acc
-}
-
 let build_large_match = (n: Int) -> Expr {
   let arms = Array::slice([
     (PWild, EUnit)
@@ -86,27 +96,26 @@ let build_large_match = (n: Int) -> Expr {
   EMatch(EInt(0), arms)
 }
 
-// Build a TypeEnv with `n` bindings (`x_1`..`x_n` : Int), then cache it via
-// `env_cache` so subsequent env_lookup hits the EnvCached(Map, ...) fast path
-// that goes through Map::has_key + Map::get. This is the path the README
-// postmortem hypothesised is dominated by node + wasm startup at current N;
-// the probes below exercise it in isolation so the cost is directly visible.
-let build_cached_env = (n: Int) -> TypeEnv {
-  let mut env = EnvEmpty
-  let mut i = 1
-  while i <= n {
-    env = env_bind(env, int_var_name(i), CtInt)
-    i = i + 1
+let check_to_int_flag = (expr: Expr) -> Int with { Error } {
+  let ty = run_check(expr, EnvEmpty)
+  if types_equal(ty, CtInt) {
+    1
+  } else {
+    0
   }
-  env_cache(env)
 }
 
-// Build an expression that does `refs` EIdent lookups against names that exist
-// in a `n`-entry env. Each EIdent triggers env_lookup, which on EnvCached walks
-// Map::has_key then Map::get — both linear in the linear-Map emit.
-let build_env_lookup_expr = (n: Int, refs: Int) -> Expr {
-  // Round-robin the references across the env so the linear walk has to
-  // traverse different distances (avg ~n/2 entries per lookup).
+let build_chained_lets = (n: Int) -> Expr {
+  let mut i = n
+  let mut body = EIdent(int_var_name(1))
+  while i >= 1 {
+    body = ELet(int_var_name(i), EInt(i), body)
+    i = i - 1
+  }
+  body
+}
+
+let build_env_lookup_expr: (Int, Int) -> Expr = (n, refs) -> {
   let mut body = EIdent(int_var_name(1))
   let mut i = 0
   while i < refs {
@@ -117,52 +126,30 @@ let build_env_lookup_expr = (n: Int, refs: Int) -> Expr {
   body
 }
 
-let build_seq_chain = (n: Int) -> Expr {
-  let mut i = n
-  let mut acc = EInt(0)
-  while i > 0 {
-    acc = ESeq(EInt(i), acc)
-    i = i - 1
-  }
-  acc
-}
-
-let check_to_int_flag = (expr: Expr) -> Int with { Error } {
-  let ty = run_check(expr, EnvEmpty)
-  if types_equal(ty, CtInt) {
-    1
-  } else {
-    0
-  }
-}
-
-export let probe_check_chained_lets = () -> Int with { Error } {
-  check_to_int_flag(build_chained_lets(64))
-}
-
-export let probe_check_deep_binop = () -> Int with { Error } {
-  check_to_int_flag(build_deep_binop(64))
-}
-
 export let probe_check_nested_if = () -> Int with { Error } {
   check_to_int_flag(build_nested_if(64))
-}
-
-export let probe_check_large_match = () -> Int with { Error } {
-  check_to_int_flag(build_large_match(48))
 }
 
 export let probe_check_seq_chain = () -> Int with { Error } {
   check_to_int_flag(build_seq_chain(96))
 }
 
-// Cached-env lookup scaling. Pre-builds the env (which itself is O(N²) via
-// MapBuilder::set linear-find) and the lookup expression at fixture load
-// time, so bench iters measure pure lookup cost (O(N) per Map::has_key +
-// O(N) per Map::get on linear-Map emit). Refs fixed at 128 across N.
-//
-// fixture loaders are exported so the bench file can bind them at top-level
-// once; the probes themselves take prebuilt (expr, env) tuples.
+export let probe_check_deep_binop = () -> Int with { Error } {
+  check_to_int_flag(build_deep_binop(64))
+}
+
+export let probe_check_large_match = () -> Int with { Error } {
+  check_to_int_flag(build_large_match(48))
+}
+
+export let probe_check_chained_lets = () -> Int with { Error } {
+  check_to_int_flag(build_chained_lets(64))
+}
+
+export let probe_check_cached_env_lookups = (expr: Expr, env: TypeEnv) -> Int with { Error } {
+  let _ = run_check(expr, env)
+  128
+}
 
 export let load_cached_env_lookup_fixture_n64 = () -> (Expr, TypeEnv) {
   (build_env_lookup_expr(64, 128), build_cached_env(64))
@@ -174,9 +161,4 @@ export let load_cached_env_lookup_fixture_n256 = () -> (Expr, TypeEnv) {
 
 export let load_cached_env_lookup_fixture_n512 = () -> (Expr, TypeEnv) {
   (build_env_lookup_expr(512, 128), build_cached_env(512))
-}
-
-export let probe_check_cached_env_lookups = (expr: Expr, env: TypeEnv) -> Int with { Error } {
-  let _ = run_check(expr, env)
-  128
 }
