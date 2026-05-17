@@ -1223,17 +1223,24 @@ fn collect_path_refs_impl(
   } else {
     raw_source
   }
+  @profiler.profiler_enter("load/apply_lock/hash")
   out[norm] = @core.content_address_hash_string(source)
+  @profiler.profiler_leave()
+  @profiler.profiler_enter("load/apply_lock/parse")
   let ast = @parser.parse_ast(source) catch {
     e => {
+      @profiler.profiler_leave()
       let _ = stack.pop()
       return Err("parse: " + e.to_string())
     }
   }
+  @profiler.profiler_leave()
+  @profiler.profiler_enter("load/apply_lock/collect_refs")
   collect_module_export_refs(
     norm, ast, module_refs, root, registry_modules, root_version,
   )
   collect_module_export_annotations(norm, source, ast, annotations)
+  @profiler.profiler_leave()
   let base = @vibe_fs.parent_path(norm)
   for stmt in ast.stmts {
     match stmt {
