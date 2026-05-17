@@ -196,6 +196,12 @@ pub fn ensure_builtin_modules(
         }
       }
       env.session_state.lenient_mode = true
+      // Skip per-function body typecheck for builtin modules. Builtin
+      // sources are vendored and already known to typecheck; user code
+      // only needs the declarations (top-level let signatures, trait
+      // impls, enums) registered into env. Saves ~100ms / call on
+      // selfhost (60-70% of ensure_builtin_modules cost). See #400.
+      env.session_state.skip_fn_body_check = true
       for pair in builtin_module_sources {
         let (mod_name, source) = pair
         @profiler.profiler_enter("type/builtin/" + mod_name)
@@ -216,6 +222,7 @@ pub fn ensure_builtin_modules(
         }
         @profiler.profiler_leave()
       }
+      env.session_state.skip_fn_body_check = false
       env.session_state.lenient_mode = false
       // Restore prelude bindings that were overwritten
       for name, scheme in preserved {
