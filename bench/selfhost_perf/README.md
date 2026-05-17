@@ -48,6 +48,34 @@ Set `VIBE_SELFHOST_PERF_RUNTIME=wasmtime` to skip the AOT step (loses
 the per-invocation Cranelift cost). Set `MOONRUN_WT_BIN` to point at a
 prebuilt `moonrun_wt` (otherwise the driver builds it on first use).
 
+### Runtime-aware wasm-opt level
+
+Each runtime has a different sweet-spot for binaryen's optimization
+level — interpreters benefit from `-Oz` (instruction count), JITs
+benefit from `-O3` (loop unrolling, inlining). When the bench leaves
+`VIBE_SELFHOST_PERF_WASM_OPT_LEVEL` on `auto` (the default), the
+driver picks per-runtime:
+
+| runtime         | default level | rationale                                |
+| --------------- | ------------- | ---------------------------------------- |
+| moonrun         | `-Oz`         | v8 interp: instruction count wins        |
+| wasmtime / -aot | `-O3`         | Cranelift JIT: loop unrolling pays off   |
+
+Measured (release, examples/basics + base64 + effects, mean compile ratio):
+
+| wasm-opt level | moonrun | wasmtime-aot |
+| -------------- | ------- | ------------ |
+| `-Oz`          | 2.48    | 1.02         |
+| `-O3`          | 3.11    | **0.85**     |
+| `-O4`          | 3.15    | 0.85         |
+
+With auto level on wasmtime-aot the TOTAL compile ratio drops to
+**0.80** (selfhost now beats host on these cases). The driver also
+writes `_build/wasm/opt/.opt_level` so a runtime switch triggers a
+single rebuild of the opt artifact, never a silent level mismatch.
+
+Override with `VIBE_SELFHOST_PERF_WASM_OPT_LEVEL=-Oz|-O3|-O4|-Os|...`.
+
 The same wins survive on the canonical CI artifact (release profile +
 binaryen `wasm-opt -Oz`):
 

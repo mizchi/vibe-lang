@@ -198,14 +198,44 @@ ensure_binaries() {
       ;;
   esac
   if [ "$want_opt" -eq 1 ]; then
-    if ! VIBE_SELFHOST_OPT_WASM_PROFILE="$SELFHOST_WASM_PROFILE" VIBE_SELFHOST_OPT_WASM_REBUILD="$REBUILD_MODE" bash "$PROJECT_ROOT/scripts/build_selfhost_wasi_opt.sh" >&2; then
+    # Pick the wasm-opt level that's best for the chosen runtime.
+    # Empirical (release+wasm-opt, examples/basics + base64 + effects,
+    # mean compile ratio across cases):
+    #   runtime         -Oz    -O3    -O4
+    #   moonrun         2.48   3.11   3.15   (v8 interp: instruction count wins)
+    #   wasmtime-aot    1.02   0.85   0.85   (Cranelift JIT: loop unrolling wins)
+    # -O3 cuts ~17% off the wasmtime-aot ratio vs -Oz on the same wasm,
+    # so use runtime-aware defaults when caller leaves the level on
+    # `auto`. Explicit VIBE_SELFHOST_PERF_WASM_OPT_LEVEL overrides this.
+    local opt_level="${VIBE_SELFHOST_PERF_WASM_OPT_LEVEL:-auto}"
+    if [ "$opt_level" = "auto" ]; then
+      case "$SELFHOST_RUNTIME" in
+        moonrun) opt_level="-Oz" ;;
+        wasmtime|wasmtime-aot) opt_level="-O3" ;;
+        *) opt_level="-Oz" ;;
+      esac
+    fi
+    # Rebuild the wasm-opt artifact if the recorded level doesn't
+    # match the runtime-appropriate level. Otherwise we'd be running
+    # moonrun against -O3 wasm (or vice-versa), distorting the bench.
+    local opt_marker="$PROJECT_ROOT/_build/wasm/opt/.opt_level"
+    local need_rebuild_opt=0
+    if [ ! -f "$opt_marker" ] || [ "$(cat "$opt_marker" 2>/dev/null)" != "$opt_level" ]; then
+      need_rebuild_opt=1
+    fi
+    local rebuild_mode_for_opt="$REBUILD_MODE"
+    if [ "$need_rebuild_opt" -eq 1 ] && [ "$rebuild_mode_for_opt" != "always" ]; then
+      rebuild_mode_for_opt="always"
+    fi
+    if ! WASM_OPT_LEVEL="$opt_level" VIBE_SELFHOST_OPT_WASM_PROFILE="$SELFHOST_WASM_PROFILE" VIBE_SELFHOST_OPT_WASM_REBUILD="$rebuild_mode_for_opt" bash "$PROJECT_ROOT/scripts/build_selfhost_wasi_opt.sh" >&2; then
       echo "bench-selfhost-perf: wasm-opt step failed; falling back to raw wasm" >&2
     else
       local opt_compiler="$PROJECT_ROOT/_build/wasm/opt/vibe_compile_wasi.wasm"
       local opt_checker="$PROJECT_ROOT/_build/wasm/opt/vibe_check_wasi.wasm"
       if [ -f "$opt_compiler" ]; then STAGE1_COMPILER_WASM="$opt_compiler"; fi
       if [ -f "$opt_checker" ]; then STAGE1_CHECKER_WASM="$opt_checker"; fi
-      echo "[selfhost-perf] using wasm-opt'd artifacts under _build/wasm/opt/"
+      echo "$opt_level" > "$opt_marker"
+      echo "[selfhost-perf] using wasm-opt'd artifacts under _build/wasm/opt/ (level=$opt_level for runtime=$SELFHOST_RUNTIME)"
     fi
   fi
   case "$SELFHOST_RUNTIME" in
