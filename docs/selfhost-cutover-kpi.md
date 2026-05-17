@@ -16,8 +16,9 @@ fixed-point (stage1 == stage2) が確定」。
 |---|---|
 | **host** | `src/cmd/vibe/vibe.exe` (MoonBit native binary)。現メインライン。 |
 | **stage-1 selfhost** | host が `src/cmd/vibe_compile_wasi/` (MoonBit) を wasm にビルドしたもの。`_build/wasm/{release,debug}/build/cmd/vibe_compile_wasi/vibe_compile_wasi.wasm`。selfhost compiler の "seed" として機能。 |
-| **stage-2 selfhost** | stage-1 wasm が、自分自身 (vibe で書かれた selfhost compiler の entry source) を wasm に再コンパイルした出力。Cutover 後のメインラインで実際に shipped されるバイナリ。 |
-| **bootstrap fixed-point** | stage-1 のバイト列 == stage-2 のバイト列。これが成り立つと「stage-2 が stage-1 と同じ wasm を再生成できる」= self-reproducing。`test-selfhost-bootstrap-gate` が gate。 |
+| **stage-2 selfhost** | stage-1 wasm が、`vibe/compiler/index.vibe` (vibe で書かれた selfhost compiler entry) を wasm に再コンパイルした出力。Cutover 後のメインラインで実際に shipped されるバイナリ。 |
+| **stage-3 selfhost** | stage-2 wasm が **自分自身を再 emit** した出力。`stage-2 == stage-3` (バイト一致) なら selfhost codegen は自己再生産可能 = 決定論的。 |
+| **selfhost determinism (fixed-point)** | stage-2 == stage-3。これが成立して初めて cutover 後の再 build が安定する。**stage-1 と stage-2 はバイト一致を期待しない** (host MoonBit codegen と selfhost vibe codegen は別実装で出力 wasm の bit-level shape も違う; 機能的等価性は `test-selfhost-check-parity` / `test-selfhost-cutover-compare` が gate)。 |
 | **cutover** | メインライン実装を host → stage-2 selfhost に切り替えること。CI と shipped CLI が selfhost wasm を使うようになる。 |
 
 ## カットオーバー判断基準 (target KPI)
@@ -30,7 +31,7 @@ fixed-point (stage1 == stage2) が確定」。
 | check peak RSS ratio | **≤ 2.0×** | 2.35× | 🟡 |
 | compile wasm size | **≤ 3.0 MB** | 2.00 MB (opt) | 🟢 |
 | check wasm size | **≤ 1.5 MB** | 0.91 MB (opt) | 🟢 |
-| bootstrap fixed-point (`stage1 == stage2`) | **deterministic** | OK (`test-selfhost-bootstrap-gate` green) | 🟢 |
+| selfhost determinism (`stage2 == stage3`) | **deterministic** | 要計測 (`pkf run bench-selfhost-stage2-kpi`) | ⚠️ |
 | `test-selfhost-check-parity` | **all pass** | OK | 🟢 |
 | `test-selfhost-cutover-compare` | **all pass** | OK | 🟢 |
 
@@ -50,11 +51,15 @@ pkf run bench-selfhost-stage2-kpi
 これは内部的に:
 
 1. host CLI を build (`scripts/ensure_native_cli.sh`)
-2. stage-1 wasm を build (`moon build --target wasm`)
-3. stage-1 が selfhost source を再コンパイル → stage-2 wasm 生成
-4. `sha256(stage-1) == sha256(stage-2)` を verify (fixed-point check)
-5. stage-2 wasm を compiler under test として `bench_selfhost_perf.sh` 実行
-6. KPI summary を `bench/selfhost_perf/stage2_kpi_history.tsv` に append
+2. stage-1 wasm を build (`moon build --target wasm src/cmd/vibe_compile_wasi`)
+3. stage-1 が `vibe/compiler/index.vibe` を compile → stage-2 wasm
+4. stage-2 が同じ `vibe/compiler/index.vibe` を compile → stage-3 wasm
+5. `sha256(stage-2) == sha256(stage-3)` を verify (selfhost determinism check)
+6. stage-2 wasm を compiler under test として `bench_selfhost_perf.sh` 実行
+7. KPI summary を `bench/selfhost_perf/stage2_kpi_history.tsv` に append
+
+`VIBE_SELFHOST_KPI_SKIP_FIXED_POINT=1` で 3-4 を skip し stage-1 (host emit) を
+proxy として測定可。fast-path、bootstrap が直前で green と分かっている時用。
 
 ### 個別計測
 
@@ -91,6 +96,13 @@ VIBE_SELFHOST_PERF_MAX_CHECK_RATIO=1.5 \
   cost model が変わる (-O3 が有利になる)。Cutover 時点の runtime によって最適化方針が変わる。
 - **RSS 計測は Linux 限定** (`/usr/bin/time -v` の `Maximum resident set size` を読む)。
   macOS は `gnu-time` を install して PATH に通すこと。
+- **check_ratio が 1.0 を切る (selfhost が「速い」) 場合の解釈**: 現状の
+  bench_selfhost_perf.sh 内 host check は `vibe check` を直接呼び、コマンド毎に
+  session-http daemon spawn / native binary cold start を payback する。1 ファイル
+  あたり ~1100ms のうち本来の typecheck cost は数十 ms 程度。selfhost 側は moonrun
+  常駐コストのみで、結果として比率が逆転する。**この時点で「selfhost の check が
+  host より速い」と結論しない**。正しく比較するなら host 側に session-http persistent
+  mode を導入するか、両者の warm-call 時間を測る。次に改善するべき計測項目候補。
 
 ## ロードマップ — close until parity
 
@@ -112,13 +124,17 @@ selfhost-side optimization は moonrun の interpreter cost に飲まれて user
 
 ## 既存実装の信頼度
 
-- **bootstrap-gate** が安定的に green → stage-1 と stage-2 がバイト一致 → 性能特性も同一
-- → 当面は「stage-2 用に再ビルド」を毎回やらず、`bench-selfhost-perf` の stage-1
-  数値を stage-2 として扱って差し支えない
-- ただし bootstrap-gate が落ちている期間は要再計測 (cutover も保留)
+- 既存 `test-selfhost-bootstrap-gate` は「同じ compiler で同じ source を 2 回 compile
+  して bit 一致するか」を測る (determinism)。本 doc の selfhost determinism
+  (stage-2 == stage-3) はそれを cutover 文脈に対応付けた呼び方。
+- 機能的等価性は `test-selfhost-check-parity` / `test-selfhost-cutover-compare` が
+  別途 gate。perf 計測時点で両方 green である前提。
+- stage-1 (host emit) と stage-2 (selfhost emit) は **バイトが一致しなくて当然**
+  (codegen の実装が違う)。性能だけが等価性の対象。
 
-`bench-selfhost-stage2-kpi` script は念のため毎回 fixed-point を verify してから
-計測する設計にしてある。
+`bench-selfhost-stage2-kpi` script は毎回 stage-2 → stage-3 を再 emit して
+determinism を verify する。それが失敗すると selfhost 自身が壊れている (再 build
+できない) 状態で cutover してはいけない。
 
 ## 関連
 

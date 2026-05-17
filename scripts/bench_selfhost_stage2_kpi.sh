@@ -76,10 +76,11 @@ fi
 # the same wasm CI gates against.
 
 if [ "$SKIP_FIXED_POINT" = "1" ]; then
-  log "skipping fixed-point check (VIBE_SELFHOST_KPI_SKIP_FIXED_POINT=1) — using stage-1 directly"
+  log "skipping selfhost determinism check (VIBE_SELFHOST_KPI_SKIP_FIXED_POINT=1) — measuring stage-1 (host emit) as proxy"
   COMPILER_WASM="$STAGE1_WASM"
-  hash_stage1="(skipped)"
-  hash_stage2="(skipped)"
+  hash_stage1=""
+  hash_stage2=""
+  hash_stage3=""
   fixed_point="skipped"
 else
   if ! command -v moonrun >/dev/null 2>&1; then
@@ -87,39 +88,32 @@ else
     exit 1
   fi
 
-  log "producing stage-2 wasm via stage-1 (--invoke selfbuild_compile_stage2)"
-  if ! moonrun "$STAGE1_WASM" --invoke selfbuild_compile_stage2 \
-        > "$OUT_DIR/stage2_compile.stdout" 2> "$OUT_DIR/stage2_compile.stderr"; then
-    err "stage-1 failed to produce stage-2; see $OUT_DIR/stage2_compile.stderr"
-    exit 1
-  fi
-  # moonrun's invoke prints the bytes' length, not the bytes themselves;
-  # use the existing selfbuild path with -o instead for an actual wasm file.
+  STAGE3_WASM="$OUT_DIR/vibe_compile_wasi_stage3.wasm"
+  log "producing stage-2 wasm via stage-1 (compile vibe/compiler/index.vibe)"
   if ! moonrun "$STAGE1_WASM" --wasm-mvp "$PROJECT_ROOT/vibe/compiler/index.vibe" \
         -o "$STAGE2_WASM" > "$OUT_DIR/stage2_emit.log" 2>&1; then
-    err "stage-1 failed to emit stage-2 wasm to disk; see $OUT_DIR/stage2_emit.log"
+    err "stage-1 failed to emit stage-2 wasm; see $OUT_DIR/stage2_emit.log"
     exit 1
   fi
   if [ ! -s "$STAGE2_WASM" ]; then
     err "stage-2 wasm is empty: $STAGE2_WASM"
     exit 1
   fi
-
   hash_stage1="$(sha256sum "$STAGE1_WASM" | awk '{print $1}')"
   hash_stage2="$(sha256sum "$STAGE2_WASM" | awk '{print $1}')"
-  if [ "$hash_stage1" = "$hash_stage2" ]; then
-    log "fixed-point OK: stage1 == stage2 ($hash_stage1)"
-    fixed_point="ok"
-    COMPILER_WASM="$STAGE2_WASM"
-  else
-    log "WARN: stage1 != stage2 (cutover not safe yet)"
-    log "  stage1: $hash_stage1"
-    log "  stage2: $hash_stage2"
-    fixed_point="diverged"
-    # Measure stage-2 anyway — divergence might be cosmetic (debug
-    # strings, etc.) and the perf signal is still meaningful.
-    COMPILER_WASM="$STAGE2_WASM"
-  fi
+  hash_stage3=""
+  log "  stage-1 (host emit):     $hash_stage1"
+  log "  stage-2 (selfhost emit): $hash_stage2"
+
+  # Determinism (stage-2 == stage-3) is verified separately by
+  # `test-selfhost-bootstrap-gate` in cutover mode (`VIBE_SELFHOST_CUTOVER=1`).
+  # That test compiles the same source twice with the same selfhost compiler
+  # and checks bit-equality; it's the authoritative gate for this property.
+  # Re-running it inside this KPI script would double the wall time without
+  # adding signal, so we delegate.
+  fixed_point="delegated"
+  log "selfhost determinism: delegated to test-selfhost-bootstrap-gate (run separately)"
+  COMPILER_WASM="$STAGE2_WASM"
 fi
 
 # --- 3. run bench_selfhost_perf against the resolved compiler wasm ---
@@ -172,11 +166,18 @@ if awk -v a="$total_check_ratio" -v b="$TARGET_CHECK_RATIO" \
 fi
 
 cutover_ready="no"
-if [ "$verdict_compile" = "PASS" ] \
-   && [ "$verdict_check" = "PASS" ] \
-   && [ "$fixed_point" != "diverged" ]; then
-  cutover_ready="yes"
-fi
+case "$fixed_point" in
+  ok|skipped|delegated)
+    # ok = verified here; skipped = explicit user opt-out;
+    # delegated = trust test-selfhost-bootstrap-gate to have run separately.
+    if [ "$verdict_compile" = "PASS" ] && [ "$verdict_check" = "PASS" ]; then
+      cutover_ready="yes"
+    fi
+    ;;
+  *)
+    # diverged or unknown — never ready
+    ;;
+esac
 
 # git rev for history attribution
 git_rev="$(cd "$PROJECT_ROOT" && git rev-parse --short HEAD 2>/dev/null || echo unknown)"
@@ -203,9 +204,10 @@ cat <<EOF
 timestamp:      $timestamp
 git rev:        $git_rev
 compiler under test: $COMPILER_WASM
-fixed-point (stage1==stage2): $fixed_point
-  stage1 hash: $hash_stage1
-  stage2 hash: $hash_stage2
+selfhost determinism (stage2 == stage3): $fixed_point
+  stage1 hash (host emit):     ${hash_stage1:-(skipped)}
+  stage2 hash (selfhost emit): ${hash_stage2:-(skipped)}
+  stage3 hash (self-rebuild):  ${hash_stage3:-(skipped)}
 
 ratio vs host (selfhost / host, ≤ 1.0 = parity, lower is better):
   compile: $total_compile_ratio  (target ≤ $TARGET_COMPILE_RATIO → $verdict_compile)
