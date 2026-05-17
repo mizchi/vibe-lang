@@ -160,29 +160,38 @@ experiment lacked — it bypassed both `node + wasm instantiation`
 AST, no parse step) that capped the prior cross-over investigation at
 N≤50.
 
-##### Result (commit `86f9177`, wasmtime 42.0.1, --n 20 --warmup 3 --runs 10):
+##### Result (post `95f77af` calibration fix, wasmtime 42.0.1, --runs 5 --warmup 2):
 
 | N    | per-iter | ratio vs n64 |
 | ---- | -------- | ------------ |
-| 64   | 9.72 ms  | 1.00×        |
-| 256  | 9.38 ms  | 0.97×        |
-| 512  | 9.42 ms  | 0.97×        |
-| 2048 | 9.98 ms  | 1.03×        |
+| 64   | 1.72 ms  | 1.00×        |
+| 256  | 1.81 ms  | 1.05×        |
+| 512  | 2.27 ms  | 1.32×        |
+| 2048 | 3.15 ms  | **1.83×**    |
 
-**Flat across 32× N**. Linear-Map would have predicted ~32×; observed
-1.03×. Lookup cost is completely below the noise floor of the bench
-harness (which is dominated by AST tree walking through 128 ESeq + 128
-EIdent nodes plus per-iter wasm/wasmtime overhead — ~9.5 ms baseline).
+(Original numbers in `333dd12` were ~10ms/iter for all four cases —
+that turned out to be the bench-harness per-invocation cold start, not
+the workload. After the `f907dc7` + `95f77af` calibration fix the
+non-setup statistical path now batches via `--bench-count` (node
+runner) or extrapolates startup out (wasmtime runner), and the
+workload signal becomes visible.)
 
-**Interpretation**: postmortem's prediction confirmed at a much wider
-N range (up to N=2048) than the prior StrIntIndex experiment could
-exercise (N≤50 before parser gates). #395 (runtime Map → hash-backed)
-has no measurable ROI at any selfhost-tractable workload size, and is
-not justified. Hash migration would only become interesting if
-selfhost feature gates lift far enough to surface workloads with
-**very** large bound-name counts in a single env, AND the AST-walk
-constant factor drops enough that per-lookup cost is visible — neither
-condition is on the horizon.
+**1.83× for 32× N**. Linear-Map would have predicted ~32×; observed
+1.83× is still strongly sublinear. The per-iter cost is dominated by
+the `check_expr` walk over the 128-node EIdent+ESeq expression, with
+Map lookup cost a small additive term — exactly what the
+StrIntIndex postmortem predicted (lookup cost is small relative to
+tree-walk constant factor).
+
+**Interpretation**: #395 (runtime Map → hash-backed) still has no
+measurable ROI at any selfhost-tractable workload size, even with the
+more reliable measurement. The 1.83× residual is small enough (~1.4 ms
+in absolute terms) that a hash migration would shave at most ~1 ms /
+check call — well below user-visible thresholds. Hash migration would
+only become interesting if selfhost workloads grow to push the lookup
+cost above the tree-walk constant factor, which would require both
+much larger envs AND a faster wasm runtime than moonrun/wasmtime
+interpreter pace.
 
 #### Heavy real-source fixtures
 
