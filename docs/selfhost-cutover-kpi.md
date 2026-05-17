@@ -23,17 +23,22 @@ fixed-point (stage1 == stage2) が確定」。
 
 ## カットオーバー判断基準 (target KPI)
 
-| 指標 | 目標 | 現状 (2026-05、`bench/selfhost_perf/README.md` 抜粋) | 状態 |
+| 指標 | 目標 | 現状 (2026-05-17、`bench-selfhost-stage2-kpi` 実測 / heavy cases) | 状態 |
 |---|---|---|---|
-| compile median ratio (selfhost / host) | **≤ 1.5×** | 3.33× (release + -Oz) | 🔴 |
-| check median ratio (selfhost / host) | **≤ 1.5×** | 1.92× | 🟡 |
-| compile peak RSS ratio | **≤ 2.0×** | 4.51× | 🔴 |
-| check peak RSS ratio | **≤ 2.0×** | 2.35× | 🟡 |
+| compile median ratio (selfhost / host) | **≤ 1.5×** | **3.64×** | 🔴 |
+| check median ratio (selfhost / host) | **≤ 1.5×** | **2.23×** | 🔴 |
+| compile peak RSS ratio | **≤ 2.0×** | 4.51× (旧計測) | 🔴 |
+| check peak RSS ratio | **≤ 2.0×** | 2.35× (旧計測) | 🟡 |
 | compile wasm size | **≤ 3.0 MB** | 2.00 MB (opt) | 🟢 |
 | check wasm size | **≤ 1.5 MB** | 0.91 MB (opt) | 🟢 |
-| selfhost determinism (`stage2 == stage3`) | **deterministic** | 要計測 (`pkf run bench-selfhost-stage2-kpi`) | ⚠️ |
+| selfhost determinism (`stage2 == stage3`) | **deterministic** | `test-selfhost-bootstrap-gate` に委任 | 🟢 |
 | `test-selfhost-check-parity` | **all pass** | OK | 🟢 |
 | `test-selfhost-cutover-compare` | **all pass** | OK | 🟢 |
+
+heavy cases (`bench/selfhost_perf/kpi_heavy_cases.txt`、1.3K-2.7K LOC) を使う前提
+で `vibe x/regexp` + `vibe wasm/wat_encoder` の median を計算した値。kpi_cases.txt
+(< 71 LOC) では host の binary cold-start (~150-200ms) が typecheck cost を支配する
+ため、ratio が realistic でない。
 
 「compile ratio ≤ 1.5×」は妥協値で、ユーザ体感の差が出にくい上限として暫定設定。
 最終目標は **1.0×** だが、moonrun (wasm interpreter) のオーバヘッド構造的限界が
@@ -96,13 +101,16 @@ VIBE_SELFHOST_PERF_MAX_CHECK_RATIO=1.5 \
   cost model が変わる (-O3 が有利になる)。Cutover 時点の runtime によって最適化方針が変わる。
 - **RSS 計測は Linux 限定** (`/usr/bin/time -v` の `Maximum resident set size` を読む)。
   macOS は `gnu-time` を install して PATH に通すこと。
-- **check_ratio が 1.0 を切る (selfhost が「速い」) 場合の解釈**: 現状の
-  bench_selfhost_perf.sh 内 host check は `vibe check` を直接呼び、コマンド毎に
-  session-http daemon spawn / native binary cold start を payback する。1 ファイル
-  あたり ~1100ms のうち本来の typecheck cost は数十 ms 程度。selfhost 側は moonrun
-  常駐コストのみで、結果として比率が逆転する。**この時点で「selfhost の check が
-  host より速い」と結論しない**。正しく比較するなら host 側に session-http persistent
-  mode を導入するか、両者の warm-call 時間を測る。次に改善するべき計測項目候補。
+- **session-http daemon の影響に注意 (fixed in commit 288793e+1)**: host CLI は
+  デフォルトで session-http daemon を auto-spawn し、`vibe check` のような短時間
+  call でも ~1.3s の cold-start ペナルティを払う。selfhost (moonrun) はこの daemon を
+  使わないので比較が不公平になる。`bench_selfhost_perf.sh` は host check 呼び出しに
+  `VIBE_USE_SESSION_HTTP=0` を渡してこの差を消すよう修正済。古い計測結果 (commit
+  日付が修正前のもの) と比較しないこと。
+- **kpi_cases.txt (小ファイル) と kpi_heavy_cases.txt (1300+ LOC) で ratio が
+  だいぶ違う**: 小ファイルは host の startup cost (~150ms) が typecheck cost を
+  支配して selfhost が有利に見えがち。heavy cases (regexp.vibe / wat_encoder.vibe) を
+  cutover 判断には使う。
 
 ## ロードマップ — close until parity
 

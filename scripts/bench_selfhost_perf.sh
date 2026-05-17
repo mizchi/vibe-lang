@@ -299,8 +299,14 @@ main() {
             read -r cmd_status elapsed < <(run_timed "$stdout_file" "$stderr_file" \
               moonrun "$STAGE1_COMPILER_WASM" compile-lite --wasm-linear --no-dce --in-memory --profile-tsv "$profile_file" "${callstack_args[@]+"${callstack_args[@]}"}" "$case_path")
           elif [ "$phase" = "check" ] && [ "$runtime" = "host" ]; then
+            # VIBE_USE_SESSION_HTTP=0 disables the auto-spawn session daemon.
+            # Without this, each `vibe check` call pays ~1.3s daemon-spawn
+            # overhead (a wallclock cost the selfhost path does NOT have,
+            # since it runs via moonrun and never touches the session
+            # daemon), which would make check_ratio look misleadingly < 1.0×
+            # for small files. See docs/selfhost-cutover-kpi.md.
             read -r cmd_status elapsed < <(run_timed "$stdout_file" "$stderr_file" \
-              env VIBE_CHECK_DEBUG=0 "$VIBE_BIN" check --profile-tsv "$profile_file" "$case_path")
+              env VIBE_CHECK_DEBUG=0 VIBE_USE_SESSION_HTTP=0 "$VIBE_BIN" check --profile-tsv "$profile_file" "$case_path")
           else
             read -r cmd_status elapsed < <(run_timed "$stdout_file" "$stderr_file" \
               moonrun "$STAGE1_CHECKER_WASM" --check --profile-tsv "$profile_file" --file "$case_path")
