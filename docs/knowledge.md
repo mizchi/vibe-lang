@@ -754,3 +754,170 @@ ADR doc 更新と新規 wbtest だけの PR (#373) は CI も短く、レビュ�
 - selfhost は host の機能を追走する。新 Token を入れるときは exhaustive match 全箇所を一気通貫で更新する。
 - precedence ladder に trailing-構文を入れるときは、cond 的に他 form が trailing 部分を奪い合う場合があるので「消費しない版」を切り出す。
 - bootstrap-gate のような重い informational job は、PR を分けて閉じ込めるとレビューと再実行が独立に回せる。
+
+---
+
+## K-021: `vibe bench` の per-iter overhead を消すための calibration 設計
+
+- 場所: `src/cmd/vibe/cli_bench.mbt`, `scripts/wasm_vibe_host_runner.js`, `bench/selfhost_perf/README.md`
+- 発見: 2026-05 (commits `f907dc7`, `95f77af`)
+
+### 背景
+
+`vibe bench --runs N` の statistical mode (non-setup) は long-running な計測。
+当初 `selfhost_lexer_bench` / `selfhost_checker_bench` の per-iter が **19-26ms** で
+ファイルサイズに無関係に flat だったため、「workload 自体は noise floor 以下」と誤判断
+してしまった。実は **bench harness の per-iter overhead** が支配していた。
+
+### 問題
+
+`vibe bench` 内部の per-case 流れ:
+
+1. `compile_bench_script_to_wasm(...)` で 1 サンプル分の wasm 生成。元コードは
+   `build_bench_case_loop_script(iter_body, batch_size)` で wasm 内 vibe-`while` ループ
+   を生成し、batch_size 回まわしてから返る。
+2. Calibration: `trial=1, 2, 4, …` で wasm を再生成しつつ measure。
+   - node runner では `run_bench_module(...)` がそのつど **node を fresh spawn**。
+   - wasmtime backend でも **wasmtime プロセスを fresh spawn**。
+3. `elapsed > 100ms` (threshold) で break、`batch_size = ceil(threshold / single_us)`。
+4. Sampling: `for _ in 0..<runs { run_bench_module(...) }` で **runs 回 spawn**、各回の
+   wallclock を `batch_size` で割って per-iter を出す。
+
+破綻ポイント:
+
+- Node spawn cold-start: **~100ms** (V8 startup + WASI shim ロード + wasm 1 回 instantiate)。
+- Wasmtime spawn cold-start: 530KB selfhost wasm で **~25ms** (cranelift JIT)。
+- Calibration `trial=1` が常に threshold を踏むので `single_us ≈ cold-start cost`、
+  `batch_size = 1` に張り付く。以降の sampling も毎 spawn cold start を払い、per-iter は
+  「workload cost」ではなく「spawn cost」を測る。
+
+結果: lex_lexer_vibe (681 LOC) と lex_host_parser_vibe (2596 LOC) が **同じ ~20ms** に
+見えてしまい、誤った「サイズ無関係」結論を導いた。
+
+### 切り分けプロセスでハマったこと
+
+probe 側に `if String::length(content) < 1000 { abort("short") }` を入れて Fs::ReadFile が
+empty を返しているかを確認したが、`abort` は vibe builtin にない (`String::abort` で
+type error)。compile error が harness の `PanicError` として表面化して「Fs::ReadFile が
+silent fail している」と早合点した。Fs は正常で、cold-start オーバーヘッドだけが問題だった。
+
+教訓: bench probe で人為的に fail させる時は `abort` ではなく `throw "msg"` を使う
+(`with { Error }` で受ける)。compile error と runtime error を bench harness の同一の
+失敗モードに集約されると切り分けがつかない。
+
+### 修正方針
+
+calibration が cold-start を per-iter cost と混同しないよう、measurement 経路を 2 つに
+分割した:
+
+| backend | 修正 |
+|---|---|
+| node host runner (Fs 系) | wasm は `iterations=1` で生成し、`run_http_host_bench_measure(...)` で `--bench-count batch_size --bench-warmup warmup+1` を渡す。host runner (`scripts/wasm_vibe_host_runner.js:1428-`) が **1 spawn の中で `_start` を loop**。calibration も `--bench-warmup=1` を必ず付け、cold first iter を warmup に逃がす。 |
+| wasmtime (Fs-free) | 内部 vibe ループ方式を維持。calibration の break 条件を `trial >= 2` に上げ、`(elapsed_last - elapsed_first) / (trial_last - trial_first)` で startup cost を構造的に subtract。 |
+
+### 実測効果 (`vibe bench --runs 5 --warmup 2`)
+
+| bench | LOC | before | after | speedup |
+|---|---|---|---|---|
+| `lex_parser_vibe` (node) | 351 | 19,854μs | 987μs | **20×** |
+| `lex_host_parser_vibe` (node) | 2596 | 23,873μs | 5,648μs | 4× |
+| `check_chained_lets_64` (wasmtime) | — | 22,960μs | 772μs | **30×** |
+| `check_cached_env_lookups_n64` (wasmtime) | — | 23,615μs | 1,721μs | 14× |
+| `check_cached_env_lookups_n2048` (wasmtime) | — | 26,355μs | 3,153μs | 8× |
+
+修正後は per-iter が LOC に比例 (lex ~2μs/LOC) し、cached_env も N に対して
+1.83× / 32× で **僅かな workload signal が見える**ようになった。修正前は spawn cost
+20-25ms の中に workload が埋没していた。
+
+### Calibration の cold-start 補正 (一般則)
+
+「(プロセス spawn を伴う) bench harness の calibration は trial=1 を信用するな」。
+最低限 trial=2 の measurement を取って線形外挿:
+
+```
+iter_cost ≈ (elapsed[N] - elapsed[1]) / (N - 1)
+batch_size = ceil(threshold / iter_cost)
+```
+
+`elapsed[1]` には startup + 1 iter、`elapsed[N]` には startup + N iter が含まれる
+ので、差を取ると startup が消える。`iter_cost = elapsed/trial` で割るだけだと startup
+が iter cost に混ざる。
+
+### 教訓
+
+- **bench harness の per-iter overhead は、calibration を疑うところから**。`batch_size=1` が
+  全 case に pin している = 「workload は noise 以下」ではなく「spawn cost が threshold
+  を勝手に踏んでいる」を疑う。
+- **measurement path を backend ごとに分ける**。node host runner は JS-side で `_start` を
+  loop できる (`--bench-count`)。wasmtime は無理なので wasm 内 vibe ループに頼る。
+  同一 calibration ロジックは使えない。
+- **per-iter cost が flat = workload signal なしと早合点しない**。bench harness の
+  spawn overhead が支配しているケースは「workload に対する hash 化 / O(N) → O(1) などの
+  algorithmic 改善は ROI ゼロ」という誤った結論を導きうる (issue #395 でやらかしかけた)。
+- **probe で人為的 fail を作るときは `throw "msg"`、`abort` は使わない**。`abort` は vibe
+  builtin ではなく、compile error が harness の runtime panic と同じ stderr に出るため
+  切り分け不能になる。
+
+---
+
+## K-022: bench で「flat measurement」を見たら結論を出す前に harness を疑う
+
+- 場所: `bench/selfhost_perf/README.md`, `docs/knowledge.md#K-021`
+- 発見: 2026-05 (issue #395 の measurement 反復)
+
+### 経緯
+
+issue #395 (selfhost runtime `Map::has_key`/`Map::get` を hash-backed に上げるべきか) を
+検証するため、`vibe/compiler/checker_hotspot_probe.vibe` に `cached_env_lookups` の
+N-sweep probe を追加し N=64/256/512/2048 で計測した。1 回目の結果:
+
+| N | per-iter |
+|---|---|
+| 64 | 9.72ms |
+| 256 | 9.38ms |
+| 512 | 9.42ms |
+| 2048 | 9.98ms |
+
+「32× の N に対して 1.03×、完全に flat → linear-Map cost は noise 以下、#395 着手は
+ROI ゼロ」と結論して issue を not-planned で close。
+
+実は K-021 のとおり **bench harness の cold-start が ~9.5ms 程度を全 case で取っており、
+workload は実際には 1-3ms** だった。harness 修正後に再計測:
+
+| N | per-iter (fixed) | ratio |
+|---|---|---|
+| 64 | 1.72ms | 1.00× |
+| 256 | 1.81ms | 1.05× |
+| 512 | 2.27ms | 1.32× |
+| 2048 | 3.15ms | **1.83×** |
+
+依然として 32× N → 1.83× の sublinear scaling で、#395 の結論 (not-planned) は変わらない。
+ただし **理由が変わった**: 「noise 以下」ではなく「実測 1.4ms ヘッドルームしかなく、
+hash 化しても ~1ms / call 削れるかどうか」。
+
+### 教訓
+
+「benchmark で flat に見える」には 2 通りある:
+
+1. workload 自体が小さく noise 以下 (= 介入の ROI 低い、結論は正しい)
+2. harness overhead が workload を埋没させている (= 介入の ROI を測れていない、結論は不正)
+
+両者は計測結果上は区別できないので、結論を出す前に **harness の bare overhead を
+独立に測る** こと。具体的には:
+
+- `node host_runner.js --bench-count 1 / --bench-count 100` を直接叩いて
+  per-iter cost を比較する (`--bench-count` 増で per-iter が急減 → harness overhead が
+  支配)。
+- バックエンドが wasmtime なら `wasmtime --invoke` を 1 / 10 / 100 回ループしてみる。
+- bench harness の `batch_size=1` が全 case に pin している = ほぼ確実に harness 律速。
+
+なお bench README (`bench/selfhost_perf/README.md`) の「Cached-env lookup scaling」
+表は修正後数値で書き換え済 (commit `fbf181e`)。同じ轍を踏まないように、過去の
+flat-measurement 結論を読むときも一度 harness 版を疑うのが安全。
+
+### 関連
+
+- K-021 — calibration 設計の根本問題
+- issue #395 (closed) — Map → hash-backed: not-planned (理由は更新済)
+- `bench/selfhost_perf/README.md` — methodology 詳細
+
