@@ -1738,10 +1738,21 @@ fn run_bench_blocks_wasm_statistical_entry_with_cases(
         }
         (compiled_wasm_path, compiled_wasm_bytes, true)
       } else {
-        // wasmtime path: no JS-side batching available, fall back to the
-        // legacy calibration that uses internal vibe loops. Compile a
-        // looped wasm once batch_size is decided.
+        // wasmtime path: no JS-side batching available — internal vibe
+        // loop in the wasm `_start` does the batching, and each sample
+        // is one wasmtime invocation.
+        //
+        // Calibrate by ramping `trial` until elapsed exceeds the
+        // threshold, but pick batch_size from a *linear extrapolation*
+        // between trial=1 and trial=last so the per-invocation cold
+        // start (wasmtime instantiation, ~100ms on ~500KB selfhost wasm)
+        // gets subtracted out. Without this correction, calibration
+        // attributes the entire startup cost to a single iter and pins
+        // batch_size=1, locking measurements at the startup cost.
         let mut trial = 1
+        let mut first_elapsed_us = 0.0
+        let mut last_elapsed_us = 0.0
+        let mut last_trial = 1
         while true {
           let cal_source = build_bench_case_loop_script(
             plan.import_source,
@@ -1782,10 +1793,32 @@ fn run_bench_blocks_wasm_statistical_entry_with_cases(
             Ok(_) => ()
           }
           let elapsed_us = @bench.monotonic_clock_end(start)
+          if trial == 1 {
+            first_elapsed_us = elapsed_us
+          }
+          last_elapsed_us = elapsed_us
+          last_trial = trial
           let single_us = elapsed_us / trial.to_double()
-          if trial.to_double() * single_us > threshold_us {
-            let target = threshold_us /
-              (if single_us < 1.0 { 1.0 } else { single_us })
+          // Need at least 2 trials to extrapolate startup cost out, so
+          // don't break at trial=1 even if it exceeds the threshold —
+          // a single sample can't distinguish startup from iter cost.
+          if trial >= 2 && trial.to_double() * single_us > threshold_us {
+            // Extrapolated per-iter cost from two trial measurements,
+            // factoring out the wasmtime-startup overhead included in
+            // both. (e2 - e1) / (t2 - t1) ~= true iter cost.
+            let iter_cost_us = if last_trial > 1 {
+              let delta = last_elapsed_us - first_elapsed_us
+              let span = (last_trial - 1).to_double()
+              if delta > 0.0 && span > 0.0 {
+                delta / span
+              } else {
+                single_us
+              }
+            } else {
+              single_us
+            }
+            let effective = if iter_cost_us < 1.0 { 1.0 } else { iter_cost_us }
+            let target = threshold_us / effective
             batch_size = if target < 1.0 { 1 } else { target.ceil().to_int() }
             break
           }
