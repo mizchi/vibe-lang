@@ -53,6 +53,7 @@ pub struct CmdOptions {
   input : CheckInput
   human_readable : Bool
   profile_tsv : String?
+  profile_callstack : String?
 } derive(Eq, Debug)
 
 ///|
@@ -98,6 +99,7 @@ pub fn parse_cmd_args(args : Array[String]) -> Result[CmdOptions, String] {
   let mut mode = CommandMode::Check
   let mut human_readable = false
   let mut profile_tsv : String? = None
+  let mut profile_callstack : String? = None
   let mut mode_flag_count = 0
   let mut i = 0
   while i < args.length() {
@@ -119,6 +121,13 @@ pub fn parse_cmd_args(args : Array[String]) -> Result[CmdOptions, String] {
           return Err("check: missing path after --profile-tsv")
         }
         profile_tsv = Some(args[i])
+      }
+      "--profile-callstack" => {
+        i += 1
+        if i >= args.length() {
+          return Err("check: missing path after --profile-callstack")
+        }
+        profile_callstack = Some(args[i])
       }
       "--source" => {
         i += 1
@@ -148,7 +157,13 @@ pub fn parse_cmd_args(args : Array[String]) -> Result[CmdOptions, String] {
   match source {
     Some(src) =>
       if files.length() == 0 {
-        Ok({ mode, input: CheckInput::Source(src), human_readable, profile_tsv })
+        Ok({
+          mode,
+          input: CheckInput::Source(src),
+          human_readable,
+          profile_tsv,
+          profile_callstack,
+        })
       } else {
         Err("check: --source and file input are exclusive")
       }
@@ -161,6 +176,7 @@ pub fn parse_cmd_args(args : Array[String]) -> Result[CmdOptions, String] {
           input: CheckInput::File(files[0]),
           human_readable,
           profile_tsv,
+          profile_callstack,
         })
       } else {
         Ok({
@@ -168,6 +184,7 @@ pub fn parse_cmd_args(args : Array[String]) -> Result[CmdOptions, String] {
           input: CheckInput::Files(files),
           human_readable,
           profile_tsv,
+          profile_callstack,
         })
       }
   }
@@ -743,6 +760,10 @@ fn main {
     Err(err) => abort(err)
   }
   let fs = @io.default_fs_adapter()
+  if options.profile_callstack is Some(_) {
+    @profiler.profiler_set_enabled(true)
+    @profiler.profiler_reset()
+  }
   match options.mode {
     CommandMode::Check => {
       let mut load_ms_total = 0
@@ -863,6 +884,17 @@ fn main {
           match @io.write_string_with(fs, path, content) {
             Ok(_) => ()
             Err(err) => abort("check: failed to write profile tsv: " + err)
+          }
+        }
+        None => ()
+      }
+      match options.profile_callstack {
+        Some(path) => {
+          let content = @profiler.profiler_report_tsv()
+          match @io.write_string_with(fs, path, content) {
+            Ok(_) => ()
+            Err(err) =>
+              abort("check: failed to write callstack profile: " + err)
           }
         }
         None => ()

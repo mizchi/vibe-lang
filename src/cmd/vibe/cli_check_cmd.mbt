@@ -288,13 +288,17 @@ fn check_cmd(args : Array[String]) -> Unit {
     print_check_help()
     return
   }
-  let (check_args, profile_tsv, builtin_contract) = match
+  let (check_args, profile_tsv, profile_callstack, builtin_contract) = match
     split_check_cmd_args(args) {
     Ok(v) => v
     Err(msg) => abort(msg)
   }
   if check_args.length() == 0 {
     abort("check: expected <file...>")
+  }
+  if profile_callstack is Some(_) {
+    @profiler.profiler_set_enabled(true)
+    @profiler.profiler_reset()
   }
   @runtime_compile.init_hooks()
   let check_debug = check_debug_enabled()
@@ -365,6 +369,17 @@ fn check_cmd(args : Array[String]) -> Unit {
     }
     None => ()
   }
+  match profile_callstack {
+    Some(path) => {
+      let fs = @io.default_fs_adapter()
+      let content = @profiler.profiler_report_tsv()
+      match @io.write_string_with(fs, path, content) {
+        Ok(_) => ()
+        Err(err) => abort("check: failed to write callstack profile: " + err)
+      }
+    }
+    None => ()
+  }
   if total_errors > 0 {
     println("check: \{total_errors} error(s) found")
     c_exit(1)
@@ -384,9 +399,10 @@ fn check_failure_message(total_errors : Int) -> String? {
 ///|
 fn split_check_cmd_args(
   args : Array[String],
-) -> Result[(Array[String], String?, String), String] {
+) -> Result[(Array[String], String?, String?, String), String] {
   let filtered : Array[String] = []
   let mut profile_tsv : String? = None
+  let mut profile_callstack : String? = None
   let mut builtin_contract : String = "ignore"
   let mut i = 0
   while i < args.length() {
@@ -397,6 +413,12 @@ fn split_check_cmd_args(
         return Err("check: missing path after --profile-tsv")
       }
       profile_tsv = Some(args[i])
+    } else if arg == "--profile-callstack" {
+      i += 1
+      if i >= args.length() {
+        return Err("check: missing path after --profile-callstack")
+      }
+      profile_callstack = Some(args[i])
     } else if arg.has_prefix("--builtin-contract=") {
       let value = arg["--builtin-contract=".length():].to_owned()
       if value == "warn" || value == "error" || value == "ignore" {
@@ -428,7 +450,7 @@ fn split_check_cmd_args(
     }
     i += 1
   }
-  Ok((filtered, profile_tsv, builtin_contract))
+  Ok((filtered, profile_tsv, profile_callstack, builtin_contract))
 }
 
 ///|
