@@ -440,6 +440,16 @@ jobs:
   # emitted `.wasm` between moonrun and moonrun_wt, or any new
   # moon `--target wasm` import that we haven't wired into
   # `tools/moonrun_wasmtime/src/main.rs`, will fail this job.
+  #
+  # Cache layout (3 stacked caches, restored independently):
+  #   - moon `_build`/`.mooncakes` via setup-vibe (moon-build-cache):
+  #     skips `moon build --target wasm` on unchanged sources.
+  #   - cargo registry + `tools/moonrun_wasmtime/target`: skips the
+  #     moonrun_wt cargo build on unchanged Cargo.toml + src.
+  #   - `_build/wasm/opt/*.cwasm`: skips the wasmtime AOT compile step
+  #     when both stage1 wasm and moonrun_wt source are unchanged. Key
+  #     uses input hashes (not artifact hashes) so it can be restored
+  #     before the build steps run.
   selfhost-runtime-parity:
     runs-on: ubuntu-latest
     steps:
@@ -449,6 +459,7 @@ jobs:
         uses: ./.github/actions/setup-vibe
         with:
           ripgrep: 'true'
+          moon-build-cache: 'true'
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -464,6 +475,19 @@ jobs:
           key: cargo-moonrun-wt-${{ runner.os }}-${{ hashFiles('tools/moonrun_wasmtime/Cargo.toml', 'tools/moonrun_wasmtime/src/**') }}
           restore-keys: cargo-moonrun-wt-${{ runner.os }}-
 
+      # Restore previously AOT-compiled cwasm artifacts. Cache key bakes
+      # the wasmtime version (Cargo.toml) + moonrun_wt source + the moon
+      # toolchain version + the stage1 wasm source tree, so any change
+      # to inputs that could alter cwasm output forces a fresh compile.
+      # mizchi/vibe-lang's wasmtime is pinned at 42.0.1; cwasm produced
+      # by a different wasmtime version is UB to load.
+      - name: Restore stage1 cwasm cache
+        id: cwasm-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: _build/wasm/opt/*.cwasm
+          key: stage1-cwasm-${{ runner.os }}-wt:${{ hashFiles('tools/moonrun_wasmtime/Cargo.toml', 'tools/moonrun_wasmtime/src/**') }}-wasm:${{ hashFiles('.moon-version', 'moon.mod.json', '**/moon.pkg.json', 'src/**/*.mbt') }}
+
       - name: Build stage1 wasm (compile + check)
         run: |
           moon build --target wasm src/cmd/vibe_compile_wasi
@@ -472,6 +496,27 @@ jobs:
       - name: Build moonrun_wt
         run: cargo build --release --manifest-path tools/moonrun_wasmtime/Cargo.toml
 
+      # On a cwasm cache hit the restored cwasm files arrived with their
+      # original mtime, which can be older than the wasm files just
+      # rebuilt by `moon build` (moon may rewrite the .wasm even when its
+      # content is identical). The mtime check in
+      # `test_moonrun_wt_parity.sh`/`bench_selfhost_perf.sh` would then
+      # re-precompile and wipe the cache benefit. Touching after both
+      # builds ensures cwasm > wasm on the cache-hit path. Safe because
+      # the cache key already pins every input that could change cwasm
+      # output (wasmtime version + moonrun_wt source + moon version +
+      # stage1 wasm source).
+      - name: Mark cwasm as fresh on cache hit
+        if: steps.cwasm-cache.outputs.cache-hit == 'true'
+        run: |
+          set -e
+          for f in _build/wasm/opt/vibe_compile_wasi.cwasm _build/wasm/opt/vibe_check_wasi.cwasm; do
+            if [ -f "$f" ]; then
+              touch "$f"
+              echo "[cwasm-cache] reused $f"
+            fi
+          done
+
       - name: Import-surface drift guard
         run: bash scripts/check_moonrun_wt_imports.sh
 
@@ -479,6 +524,17 @@ jobs:
         env:
           VIBE_PARITY_WASM_PROFILE: debug
         run: bash scripts/test_moonrun_wt_parity.sh
+
+      # Persist freshly built cwasm so the next run skips precompile.
+      # Save unconditionally (not only on cache miss): the parity script
+      # may regenerate cwasm if mtimes drift, and we'd like that result
+      # cached too.
+      - name: Save stage1 cwasm cache
+        if: always() && steps.cwasm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: _build/wasm/opt/*.cwasm
+          key: ${{ steps.cwasm-cache.outputs.cache-primary-key }}
 
   coverage-selfhost-suite:
     runs-on: ubuntu-latest
