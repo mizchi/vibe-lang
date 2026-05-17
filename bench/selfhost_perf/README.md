@@ -133,6 +133,24 @@ per-case probes that exercise the selfhost lexer / parser / checker against
 real selfhost sources and synthetic shapes (deep binop chains, wide match,
 chained let / ESeq sequences).
 
+#### Heavy real-source fixtures
+
+In addition to the small selfhost-internal sources (`syntax/lexer.vibe`
+~681 LOC, `syntax/parser.vibe` ~351 LOC, `checker/checker.vibe` ~674
+LOC), the lexer and parser probe sets now cover three large
+vibe-package fixtures to surface scale-dependent hotspots:
+
+| probe stem                | fixture                                  | LOC  |
+| ------------------------- | ---------------------------------------- | ---- |
+| `host_parser_vibe`        | `vibe/parser/parser.vibe`                | 2596 |
+| `wat_encoder_vibe`        | `vibe/wasm/wat_encoder/wat_encoder.vibe` | 2700 |
+| `regexp_vibe`             | `vibe/x/regexp/regexp.vibe`              | 1302 |
+
+These give a ~4-8× larger N than the selfhost-internal fixtures, which
+makes O(N²) accumulator patterns observable in wallclock (see #366 for
+the closed cohort of O(N²) → push fixes — same shape, just bigger
+inputs to keep regressions visible).
+
 **Was blocked** by a host-CLI codegen pathology (not a closure
 capture gap as originally hypothesized). **Now unblocked** by three
 opt-in env hatches; the underlying `@wite.optimize_binary_for_size`
