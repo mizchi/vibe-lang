@@ -133,6 +133,33 @@ per-case probes that exercise the selfhost lexer / parser / checker against
 real selfhost sources and synthetic shapes (deep binop chains, wide match,
 chained let / ESeq sequences).
 
+#### Cached-env lookup scaling (`check_cached_env_lookups_n{64,256,512}`)
+
+The check-phase probe set now includes three N-sweep cases that
+exercise the `EnvCached(Map, ...)` fast path in
+`vibe/compiler/core/types.vibe :: env_lookup` (line 141: `if
+Map::has_key(cache, name) { Some(Map::get(cache, name)) }`). Each
+probe pre-builds an N-entry TypeEnv, calls `env_cache` to materialize
+the Map, then runs `check_expr` against an expression with 128
+`EIdent` references that all hit the cache.
+
+Interpretation of the n64 → n256 → n512 wallclock spread:
+
+- **~1 : 4 : 8** — linear-Map emit is dominating; hash-backed Map
+  (#395) would be a measurable win on this workload.
+- **~1 : 1 : 1** — the lookups are below the noise floor of wasm
+  instantiation / probe harness overhead; the README postmortem's
+  "cross-over not yet reached at this N" conclusion still holds and
+  #395 is premature.
+- **anything in between** — partial scaling; useful baseline number
+  for comparing before/after a candidate fix.
+
+This is the targeted measurement that the closed StrIntIndex
+experiment lacked — it bypassed both `node + wasm instantiation`
+(measured in-process) and the parser stack-overflow gates (synthetic
+AST, no parse step) that capped the prior cross-over investigation at
+N≤50.
+
 #### Heavy real-source fixtures
 
 In addition to the small selfhost-internal sources (`syntax/lexer.vibe`

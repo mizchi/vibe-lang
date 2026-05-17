@@ -13,7 +13,7 @@ import ./polyfill.vibe {
 }
 
 import ./types.vibe {
-  Subst, Type, TypeDef, TypeEnv, types_equal
+  Subst, Type, TypeDef, TypeEnv, env_bind, env_cache, types_equal
 }
 
 //# Functions
@@ -86,6 +86,37 @@ let build_large_match = (n: Int) -> Expr {
   EMatch(EInt(0), arms)
 }
 
+// Build a TypeEnv with `n` bindings (`x_1`..`x_n` : Int), then cache it via
+// `env_cache` so subsequent env_lookup hits the EnvCached(Map, ...) fast path
+// that goes through Map::has_key + Map::get. This is the path the README
+// postmortem hypothesised is dominated by node + wasm startup at current N;
+// the probes below exercise it in isolation so the cost is directly visible.
+let build_cached_env = (n: Int) -> TypeEnv {
+  let mut env = EnvEmpty
+  let mut i = 1
+  while i <= n {
+    env = env_bind(env, int_var_name(i), CtInt)
+    i = i + 1
+  }
+  env_cache(env)
+}
+
+// Build an expression that does `refs` EIdent lookups against names that exist
+// in a `n`-entry env. Each EIdent triggers env_lookup, which on EnvCached walks
+// Map::has_key then Map::get — both linear in the linear-Map emit.
+let build_env_lookup_expr = (n: Int, refs: Int) -> Expr {
+  // Round-robin the references across the env so the linear walk has to
+  // traverse different distances (avg ~n/2 entries per lookup).
+  let mut body = EIdent(int_var_name(1))
+  let mut i = 0
+  while i < refs {
+    let name_idx = (i % n) + 1
+    body = ESeq(EIdent(int_var_name(name_idx)), body)
+    i = i + 1
+  }
+  body
+}
+
 let build_seq_chain = (n: Int) -> Expr {
   let mut i = n
   let mut acc = EInt(0)
@@ -123,4 +154,26 @@ export let probe_check_large_match = () -> Int with { Error } {
 
 export let probe_check_seq_chain = () -> Int with { Error } {
   check_to_int_flag(build_seq_chain(96))
+}
+
+// Cached-env lookup scaling. refs is fixed; only N changes. Linear-Map emit
+// gives O(N) per lookup → wallclock scales linearly in N. Hash-backed Map
+// would flatten this to ~constant.
+let cached_env_lookup_count = (n: Int, refs: Int) -> Int with { Error } {
+  let env = build_cached_env(n)
+  let expr = build_env_lookup_expr(n, refs)
+  let _ = run_check(expr, env)
+  refs
+}
+
+export let probe_check_cached_env_lookups_n64 = () -> Int with { Error } {
+  cached_env_lookup_count(64, 128)
+}
+
+export let probe_check_cached_env_lookups_n256 = () -> Int with { Error } {
+  cached_env_lookup_count(256, 128)
+}
+
+export let probe_check_cached_env_lookups_n512 = () -> Int with { Error } {
+  cached_env_lookup_count(512, 128)
 }
