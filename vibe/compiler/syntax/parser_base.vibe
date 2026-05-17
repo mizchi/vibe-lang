@@ -402,15 +402,19 @@ let parse_trait_stmt = (tokens: Array[Token], pos: Int, exported: Bool) -> (Stmt
   match peek(tokens, pos) {
     TIdent(name) => match peek(tokens, pos + 1) {
       TColon => {
+        // O(N) in-place push: previously each `Array::concat(acc, [sname])`
+        // allocated and copied the prefix per step. Mirror of #366 host-side fix.
         let rec parse_supers = (p: Int, acc: Array[String]) -> (Array[String], Int) {
           match peek(tokens, p) {
             TIdent(sname) => match peek(tokens, p + 1) {
-              TPlus => parse_supers(p + 2, Array::concat(acc, [
-                sname
-              ])),
-              _ => (Array::concat(acc, [
-                sname
-              ]), p + 1)
+              TPlus => {
+                Array::push(acc, sname)
+                parse_supers(p + 2, acc)
+              },
+              _ => {
+                Array::push(acc, sname)
+                (acc, p + 1)
+              }
             },
             _ => (acc, p)
           }
