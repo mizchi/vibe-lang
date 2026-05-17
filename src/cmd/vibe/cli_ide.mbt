@@ -1188,7 +1188,7 @@ fn resolve_entry_artifacts(
 ] {
   let resolved = @loader.resolve_entry_path(entry_path)
   let lock = match @codebase.update_lock_path_refs(resolved) {
-    Ok((v, _parsed_asts)) => v
+    Ok(v) => v
     Err(err) => return Err(err)
   }
   let synced_lock = sync_prelude_to_codebase(resolved, lock)

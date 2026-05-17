@@ -61,7 +61,7 @@ fn apply_lock_to_db_with_fs(
   let legacy_lock_path = lock_root + "/vibe.lock"
   let has_lock_source = @io.path_exists_with(fs, lock_path) ||
     @io.path_exists_with(fs, legacy_lock_path)
-  let (lock, parsed_asts) = if has_lock_source {
+  let lock = if has_lock_source {
     if persist_lock_updates {
       match @codebase.update_lock_path_refs_with_fs(entry, fs) {
         Ok(updated) => updated
@@ -74,9 +74,8 @@ fn apply_lock_to_db_with_fs(
       }
     }
   } else {
-    let empty_asts : Map[String, (String, @vibe_core.Module)] = {}
     match @codebase.load_lock_data_with_fs(lock_path, fs) {
-      Ok(data) => (data, empty_asts)
+      Ok(data) => data
       Err(err) => return Err(err)
     }
   }
@@ -88,15 +87,6 @@ fn apply_lock_to_db_with_fs(
   }
   for name, hash in lock.symbol_refs {
     db.set_symbol_ref(name, hash)
-  }
-  // Pipe parsed ASTs (with their already-extracted source) from
-  // collect_path_refs into the db cache. The subsequent
-  // load_sources_recursive pass will see these via db.get_preparsed_ast
-  // and skip its own parse_ast(source) call, halving the parse cost
-  // (94ms saved in selfhost wat_encoder.vibe).
-  for path, pair in parsed_asts {
-    let (source, ast) = pair
-    db.set_preparsed_ast(path, source, ast)
   }
   Ok(())
 }
@@ -200,28 +190,18 @@ fn load_sources_recursive_impl(
     raw_source
   }
   db.set_source(norm, source)
-  // Reuse the AST already parsed during apply_lock_to_db_with_fs (which
-  // populates db.preparsed_asts) instead of re-parsing the same source.
-  // Cuts ~94ms / call in selfhost wat_encoder.vibe (load_apply_lock/parse +
-  // load/parse → only the former remains).
-  let ast = match db.get_preparsed_ast(norm) {
-    Some(cached) => cached
-    None => {
-      @profiler.profiler_enter("load/parse")
-      let parsed = @parser.parse_ast(source) catch {
-        e => {
-          @profiler.profiler_leave()
-          let _ = stack.pop()
-          return Err("parse: " + e.to_string())
-        }
-      }
+  @profiler.profiler_enter("load/parse")
+  let ast = @parser.parse_ast(source) catch {
+    e => {
       @profiler.profiler_leave()
-      @profiler.profiler_enter("load/cache_ast")
-      db.set_preparsed_ast(norm, source, parsed)
-      @profiler.profiler_leave()
-      parsed
+      let _ = stack.pop()
+      return Err("parse: " + e.to_string())
     }
   }
+  @profiler.profiler_leave()
+  @profiler.profiler_enter("load/cache_ast")
+  db.set_preparsed_ast(norm, source, ast)
+  @profiler.profiler_leave()
   let base = @vibe_fs.parent_path(norm)
   for stmt in ast.stmts {
     match stmt {

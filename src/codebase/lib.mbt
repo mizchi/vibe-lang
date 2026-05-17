@@ -1184,7 +1184,6 @@ fn collect_path_refs_impl(
   out : Map[String, String],
   module_refs : Map[String, String],
   annotations : Map[String, String],
-  parsed_asts : Map[String, (String, @core.Module)],
   visited : Map[String, Bool],
   stack : Array[String],
   root : String,
@@ -1242,10 +1241,6 @@ fn collect_path_refs_impl(
   )
   collect_module_export_annotations(norm, source, ast, annotations)
   @profiler.profiler_leave()
-  // Record (source, parsed AST) so the subsequent load_sources_recursive
-  // pass can reuse it instead of re-parsing. apply_lock_to_db_with_fs
-  // pipes this into db.set_preparsed_ast without re-reading the file.
-  parsed_asts[norm] = (source, ast)
   let base = @vibe_fs.parent_path(norm)
   for stmt in ast.stmts {
     match stmt {
@@ -1267,7 +1262,7 @@ fn collect_path_refs_impl(
             }
             match
               collect_path_refs_impl(
-                resolved, out, module_refs, annotations, parsed_asts, visited, stack, root, registry_modules,
+                resolved, out, module_refs, annotations, visited, stack, root, registry_modules,
                 root_version, fs,
               ) {
               Ok(_) => ()
@@ -1299,7 +1294,7 @@ fn collect_path_refs_impl(
             }
             match
               collect_path_refs_impl(
-                resolved, out, module_refs, annotations, parsed_asts, visited, stack, root, registry_modules,
+                resolved, out, module_refs, annotations, visited, stack, root, registry_modules,
                 root_version, fs,
               ) {
               Ok(_) => ()
@@ -1330,26 +1325,20 @@ fn collect_path_refs(
   root_version : String,
   fs : &@io.FileSystemAdapter,
 ) -> Result[
-  (
-    Map[String, String],
-    Map[String, String],
-    Map[String, String],
-    Map[String, (String, @core.Module)],
-  ),
+  (Map[String, String], Map[String, String], Map[String, String]),
   String,
 ] {
   let out : Map[String, String] = {}
   let module_refs : Map[String, String] = {}
   let annotations : Map[String, String] = {}
-  let parsed_asts : Map[String, (String, @core.Module)] = {}
   let visited : Map[String, Bool] = {}
   let stack : Array[String] = []
   match
     collect_path_refs_impl(
-      entry, out, module_refs, annotations, parsed_asts, visited, stack, root, registry_modules,
+      entry, out, module_refs, annotations, visited, stack, root, registry_modules,
       root_version, fs,
     ) {
-    Ok(_) => Ok((out, module_refs, annotations, parsed_asts))
+    Ok(_) => Ok((out, module_refs, annotations))
     Err(err) => Err(err)
   }
 }
@@ -1761,7 +1750,7 @@ pub fn write_lock_data(
 fn build_refreshed_lock_data_with_fs(
   normalized_entry : String,
   fs : &@io.FileSystemAdapter,
-) -> Result[(String, LockData, Map[String, (String, @core.Module)]), String] {
+) -> Result[(String, LockData), String] {
   let root = resolve_index_root_with_fs(normalized_entry, fs)
   let registry_modules = match load_registry_modules_with_fs(root, fs) {
     Ok(v) => v
@@ -1776,7 +1765,7 @@ fn build_refreshed_lock_data_with_fs(
     Ok(v) => v
     Err(err) => return Err(err)
   }
-  let (path_refs, module_refs, annotations, parsed_asts) = match
+  let (path_refs, module_refs, annotations) = match
     collect_path_refs(
       normalized_entry, root, registry_modules, root_version, fs,
     ) {
@@ -1790,29 +1779,27 @@ fn build_refreshed_lock_data_with_fs(
     module_refs,
     annotations,
   )
-  Ok((lock_path, next_lock, parsed_asts))
+  Ok((lock_path, next_lock))
 }
 
 ///|
 pub fn refresh_lock_path_refs_with_fs(
   entry : String,
   fs : &@io.FileSystemAdapter,
-) -> Result[(LockData, Map[String, (String, @core.Module)]), String] {
+) -> Result[LockData, String] {
   let normalized_entry = if entry.has_prefix("/") {
     @vibe_fs.normalize_path(entry)
   } else {
     @vibe_fs.normalize_path(@io.current_dir_or_root_with(fs) + "/" + entry)
   }
   match build_refreshed_lock_data_with_fs(normalized_entry, fs) {
-    Ok((_, next_lock, parsed_asts)) => Ok((next_lock, parsed_asts))
+    Ok((_, next_lock)) => Ok(next_lock)
     Err(err) => Err(err)
   }
 }
 
 ///|
-pub fn refresh_lock_path_refs(
-  entry : String,
-) -> Result[(LockData, Map[String, (String, @core.Module)]), String] {
+pub fn refresh_lock_path_refs(entry : String) -> Result[LockData, String] {
   refresh_lock_path_refs_with_fs(entry, @io.default_fs_adapter())
 }
 
@@ -1820,13 +1807,13 @@ pub fn refresh_lock_path_refs(
 pub fn update_lock_path_refs_with_fs(
   entry : String,
   fs : &@io.FileSystemAdapter,
-) -> Result[(LockData, Map[String, (String, @core.Module)]), String] {
+) -> Result[LockData, String] {
   let normalized_entry = if entry.has_prefix("/") {
     @vibe_fs.normalize_path(entry)
   } else {
     @vibe_fs.normalize_path(@io.current_dir_or_root_with(fs) + "/" + entry)
   }
-  let (lock_path, next_lock, parsed_asts) = match
+  let (lock_path, next_lock) = match
     build_refreshed_lock_data_with_fs(normalized_entry, fs) {
     Ok(v) => v
     Err(err) => return Err(err)
@@ -1838,19 +1825,17 @@ pub fn update_lock_path_refs_with_fs(
   // an empty LockData when the file doesn't exist, so we get a sound
   // !=-against-non-empty next_lock comparison either way.)
   match load_lock_data_with_fs(lock_path, fs) {
-    Ok(current_lock) if current_lock == next_lock => Ok((next_lock, parsed_asts))
+    Ok(current_lock) if current_lock == next_lock => Ok(next_lock)
     _ =>
       match write_lock_data_with_fs(lock_path, next_lock, fs) {
-        Ok(_) => Ok((next_lock, parsed_asts))
+        Ok(_) => Ok(next_lock)
         Err(err) => Err(err)
       }
   }
 }
 
 ///|
-pub fn update_lock_path_refs(
-  entry : String,
-) -> Result[(LockData, Map[String, (String, @core.Module)]), String] {
+pub fn update_lock_path_refs(entry : String) -> Result[LockData, String] {
   update_lock_path_refs_with_fs(entry, @io.default_fs_adapter())
 }
 

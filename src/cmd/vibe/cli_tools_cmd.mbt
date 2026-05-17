@@ -114,7 +114,7 @@ fn fetch_cmd(args : Array[String]) -> Unit {
   let entry = @loader.resolve_entry_path(args[0])
   let lock_path = @codebase.lock_file_path(entry)
   let path_locked = match @codebase.update_lock_path_refs(entry) {
-    Ok((lock, _parsed_asts)) => lock
+    Ok(lock) => lock
     Err(err) => abort("fetch: " + err)
   }
   let updated_lock = sync_prelude_to_codebase(entry, path_locked)
