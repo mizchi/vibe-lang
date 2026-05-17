@@ -1660,72 +1660,26 @@ fn run_bench_blocks_wasm_statistical_entry_with_cases(
         }
       }
     } else {
-      let mut trial = 1
-      while true {
-        let cal_source = build_bench_case_loop_script(
-          plan.import_source,
-          plan.shared_prelude_source,
-          plan.local_prelude_source,
-          case_body_source,
-          trial,
-        )
-        let cal_script_kind = "stat_cal_" +
-          case_index.to_string() +
-          "_" +
-          trial.to_string()
-        let (cal_wasm_path, cal_use_node_runner) = match
-          compile_bench_script_to_wasm(entry_path, cal_script_kind, cal_source) {
-          Err(err) => {
-            failures.push(WasmBenchFailure::{
-              name: case_name,
-              error: "calibration compile failed: " + err,
-            })
-            calibration_ok = false
-            break
-          }
-          Ok((path, _, use_node_runner)) => (path, use_node_runner)
-        }
-        let start = @bench.monotonic_clock_start()
-        match
-          run_bench_module(
-            runner, entry_path, cal_wasm_path, cal_use_node_runner,
-          ) {
-          Err(err) => {
-            failures.push(WasmBenchFailure::{
-              name: case_name,
-              error: "calibration run failed: " + err,
-            })
-            calibration_ok = false
-            break
-          }
-          Ok(_) => ()
-        }
-        let elapsed_us = @bench.monotonic_clock_end(start)
-        let single_us = elapsed_us / trial.to_double()
-        if trial.to_double() * single_us > threshold_us {
-          let target = threshold_us /
-            (if single_us < 1.0 { 1.0 } else { single_us })
-          batch_size = if target < 1.0 { 1 } else { target.ceil().to_int() }
-          break
-        }
-        trial = trial * 2
-      }
-      if !calibration_ok {
-        continue
-      }
-      let run_source = build_bench_case_loop_script(
+      // Non-setup statistical path. Compile bench wasm with iterations=1 in
+      // _start (no internal vibe loop); batching is done JS-side by the host
+      // runner's --bench-count, which amortizes node-spawn + wasm-instantiation
+      // across `batch_size` invocations of _start. Without this batching, a
+      // single _start invocation costs ~100-200ms (node + wasm cold start
+      // dominates over the actual bench body), which would force batch_size=1
+      // and pin per-iter measurements at the node-spawn cost rather than the
+      // actual workload cost.
+      let single_iter_source = build_bench_case_loop_script(
         plan.import_source,
         plan.shared_prelude_source,
         plan.local_prelude_source,
         case_body_source,
-        batch_size,
+        1,
       )
-      let run_script_kind = "stat_run_" +
-        case_index.to_string() +
-        "_" +
-        batch_size.to_string()
-      match
-        compile_bench_script_to_wasm(entry_path, run_script_kind, run_source) {
+      let single_iter_script_kind = "stat_run_" + case_index.to_string()
+      let (compiled_wasm_path, compiled_wasm_bytes, compiled_use_node_runner) = match
+        compile_bench_script_to_wasm(
+          entry_path, single_iter_script_kind, single_iter_source,
+        ) {
         Ok(v) => v
         Err(err) => {
           failures.push(WasmBenchFailure::{
@@ -1733,6 +1687,136 @@ fn run_bench_blocks_wasm_statistical_entry_with_cases(
             error: "compile failed: " + err,
           })
           continue
+        }
+      }
+      if compiled_use_node_runner {
+        // Node host runner path: use --bench-count for JS-side batching.
+        let host_runner = match resolve_http_host_runner(entry_path) {
+          Ok(v) => v
+          Err(err) => {
+            failures.push(WasmBenchFailure::{ name: case_name, error: err })
+            continue
+          }
+        }
+        // Calibrate batch_size by ramping `trial` until total elapsed exceeds
+        // the threshold. Each calibration run includes 1 warmup iter inside
+        // the same node process so cold-start (node + wasm instantiation,
+        // ~100ms) doesn't get attributed to the per-iter cost.
+        let mut trial = 1
+        while true {
+          let elapsed_us = match
+            run_http_host_bench_measure(
+              host_runner,
+              compiled_wasm_path,
+              compiled_wasm_path + ".stat_cal",
+              "_start",
+              trial,
+              1,
+              None,
+            ) {
+            Ok(v) => v
+            Err(err) => {
+              failures.push(WasmBenchFailure::{
+                name: case_name,
+                error: "calibration run failed: " + err,
+              })
+              calibration_ok = false
+              break
+            }
+          }
+          let single_us = elapsed_us / trial.to_double()
+          if elapsed_us > threshold_us {
+            let target = threshold_us /
+              (if single_us < 1.0 { 1.0 } else { single_us })
+            batch_size = if target < 1.0 { 1 } else { target.ceil().to_int() }
+            break
+          }
+          trial = trial * 2
+        }
+        if !calibration_ok {
+          continue
+        }
+        (compiled_wasm_path, compiled_wasm_bytes, true)
+      } else {
+        // wasmtime path: no JS-side batching available, fall back to the
+        // legacy calibration that uses internal vibe loops. Compile a
+        // looped wasm once batch_size is decided.
+        let mut trial = 1
+        while true {
+          let cal_source = build_bench_case_loop_script(
+            plan.import_source,
+            plan.shared_prelude_source,
+            plan.local_prelude_source,
+            case_body_source,
+            trial,
+          )
+          let cal_script_kind = "stat_cal_" +
+            case_index.to_string() +
+            "_" +
+            trial.to_string()
+          let (cal_wasm_path, _cal_use_node) = match
+            compile_bench_script_to_wasm(
+              entry_path, cal_script_kind, cal_source,
+            ) {
+            Err(err) => {
+              failures.push(WasmBenchFailure::{
+                name: case_name,
+                error: "calibration compile failed: " + err,
+              })
+              calibration_ok = false
+              break
+            }
+            Ok((path, _, use_node_runner)) => (path, use_node_runner)
+          }
+          let start = @bench.monotonic_clock_start()
+          match
+            run_bench_module(runner, entry_path, cal_wasm_path, false) {
+            Err(err) => {
+              failures.push(WasmBenchFailure::{
+                name: case_name,
+                error: "calibration run failed: " + err,
+              })
+              calibration_ok = false
+              break
+            }
+            Ok(_) => ()
+          }
+          let elapsed_us = @bench.monotonic_clock_end(start)
+          let single_us = elapsed_us / trial.to_double()
+          if trial.to_double() * single_us > threshold_us {
+            let target = threshold_us /
+              (if single_us < 1.0 { 1.0 } else { single_us })
+            batch_size = if target < 1.0 { 1 } else { target.ceil().to_int() }
+            break
+          }
+          trial = trial * 2
+        }
+        if !calibration_ok {
+          continue
+        }
+        let run_source = build_bench_case_loop_script(
+          plan.import_source,
+          plan.shared_prelude_source,
+          plan.local_prelude_source,
+          case_body_source,
+          batch_size,
+        )
+        let run_script_kind = "stat_run_" +
+          case_index.to_string() +
+          "_" +
+          batch_size.to_string()
+        match
+          compile_bench_script_to_wasm(
+            entry_path, run_script_kind, run_source,
+          ) {
+          Ok(v) => v
+          Err(err) => {
+            failures.push(WasmBenchFailure::{
+              name: case_name,
+              error: "compile failed: " + err,
+            })
+            continue
+          }
         }
       }
     }
@@ -1812,7 +1896,47 @@ fn run_bench_blocks_wasm_statistical_entry_with_cases(
       if !sample_ok {
         continue
       }
+    } else if use_node_runner {
+      // Non-setup + node host runner: amortize node spawn over batch_size
+      // iters per sample via --bench-count. wasm has iterations=1 in _start.
+      let host_runner = match resolve_http_host_runner(entry_path) {
+        Ok(v) => v
+        Err(err) => {
+          failures.push(WasmBenchFailure::{ name: case_name, error: err })
+          continue
+        }
+      }
+      let mut sample_ok = true
+      for _ in 0..<runs {
+        let elapsed_us = match
+          run_http_host_bench_measure(
+            host_runner,
+            run_wasm_path,
+            run_wasm_path + ".stat_run",
+            "_start",
+            batch_size,
+            warmup + 1,
+            None,
+          ) {
+          Ok(v) => v
+          Err(err) => {
+            failures.push(WasmBenchFailure::{
+              name: case_name,
+              error: "measurement run failed: " + err,
+            })
+            sample_ok = false
+            break
+          }
+        }
+        samples.push(elapsed_us / batch_size.to_double())
+      }
+      if !sample_ok {
+        continue
+      }
     } else {
+      // Non-setup + wasmtime path: no JS-side batching. Each sample is a
+      // full wasmtime invocation of _start (which does `batch_size` iters
+      // internally via the compiled vibe loop).
       let mut warmup_ok = true
       for _ in 0..<warmup {
         match
