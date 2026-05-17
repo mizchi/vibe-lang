@@ -921,3 +921,162 @@ flat-measurement 結論を読むときも一度 harness 版を疑うのが安全
 - issue #395 (closed) — Map → hash-backed: not-planned (理由は更新済)
 - `bench/selfhost_perf/README.md` — methodology 詳細
 
+---
+
+## K-023: cutover ratio 計測の "fair compare" 設計
+
+- 場所: `scripts/bench_selfhost_perf.sh`, `bench/selfhost_perf/kpi_heavy_cases.txt`, `docs/selfhost-cutover-kpi.md`
+- 発見: 2026-05 (commits `288793e`, `b9b95fc`)
+
+### 背景
+
+メインライン実装を host CLI (MoonBit native binary) から selfhost wasm に切り替える
+判断のため `pkf run bench-selfhost-stage2-kpi` を導入。初回実行で「**selfhost の check
+が host より 6× 速い** (ratio=0.16×)」という直感に反する結果が出た。実は計測バイアス
+2 件が乗っていた。
+
+### 問題 (A): host check が session-http daemon を auto-spawn
+
+`vibe check foo.vibe` は LSP/persistent session 用に session-http daemon を
+auto-spawn する。短時間 call (cold-start = 1.5s 程度) に対し、典型的な typecheck
+本体は数十 ms。bench harness が cold-start の `vibe check` を毎回 spawn するので、
+**全 wallclock のうち ~90% が daemon spawn**。selfhost (moonrun 経由) は daemon を
+一切使わないので、比較が極端に不公平になる。
+
+実測 (`vibe/x/regexp/regexp.vibe`, 1302 LOC):
+
+| invocation | wallclock |
+|---|---|
+| `vibe check ...` (default, daemon spawn) | 1565 ms |
+| `VIBE_USE_SESSION_HTTP=0 vibe check ...` | 226 ms |
+| `moonrun selfhost.wasm --check ...` | 314 ms |
+
+session-http なしで比較すると host 226ms vs selfhost 314ms = **1.39× (selfhost が
+1.39× 遅い)** が真の値。bench harness が daemon-ありで host を測ると selfhost が
+不当に有利に見える。
+
+**修正**: `scripts/bench_selfhost_perf.sh` の host check 呼び出しに
+`VIBE_USE_SESSION_HTTP=0` を追加 (selfhost 側は moonrun 経由で対称性が取れている)。
+
+### 問題 (B): 小ファイル case では typecheck cost が startup cost に埋もれる
+
+`bench/selfhost_perf/kpi_cases.txt` は `examples/basics.vibe` (145 LOC) や
+`bench/compiler_size/cases/*.vibe` (≤71 LOC) で構成。これらは:
+
+- host check の typecheck 自体は数 ms
+- host CLI の native binary cold-start は 150-200ms
+- 同じく moonrun startup も数十 ms
+
+つまり wallclock のほとんどが startup 由来で、本来の typecheck speed の比較になっていない。
+
+**修正**: `bench/selfhost_perf/kpi_heavy_cases.txt` を追加 (`vibe/x/regexp/regexp.vibe`
+1302 LOC + `vibe/wasm/wat_encoder/wat_encoder.vibe` 2700 LOC)。これらは
+typecheck/codegen cost が startup を 3-10 倍上回るサイズなので、真の比率が出る。
+`bench-selfhost-stage2-kpi` のデフォルト cases を heavy に切替。
+
+### 結果の劇的変化
+
+同じ HEAD で計測:
+
+| measurement | session-http=on, 小 cases | session-http=off, heavy cases (現状) |
+|---|---|---|
+| compile ratio | 2.93× | 3.64× |
+| check ratio | **0.16× (selfhost が速い)** | **2.23× (selfhost が遅い)** |
+| 結論 | check は cutover 可能?? | 正しい cutover gap が見える |
+
+修正前は「check は OK」と誤った楽観をしてしまうところだった。
+
+### 教訓
+
+cutover 判断のための比較計測では:
+
+- **比較の両側でランタイム前提を揃える**。host だけ daemon spawn / selfhost だけ
+  cold-start interpreter のような非対称があると、wallclock 比較は無意味。可能なら
+  両者を同じ runtime profile (両方 warm / 両方 cold / 両方 daemon あり) に揃える。
+  揃えられないなら fixed cost を引き算する。
+- **典型的な workload サイズで測る**。tiny case (< 200 LOC) では startup cost が
+  wallclock を支配する。realistic な workload サイズ (1K+ LOC) を heavy cases に
+  指定。tiny と heavy は別の質問に答える (前者: CLI startup latency、後者: typecheck
+  throughput)。混同しない。
+- **直感に反する結果が出たら計測バイアスを疑う**。本件の「selfhost が host より
+  6× 速い」は明らかに変なので踏みとどまれた。微妙な差 (例: 1.05× vs 1.15×) なら
+  バイアスを見落としやすい。
+
+### 関連
+
+- `docs/selfhost-cutover-kpi.md` — cutover 基準 + ロードマップ
+- `bench/selfhost_perf/stage2_kpi_history.tsv` — 計測履歴 (修正前後の差が見える)
+- K-021 / K-022 — bench harness overhead に関する関連知見
+
+---
+
+## K-024: selfhost compiler の "fixed-point" 用語の罠
+
+- 場所: `scripts/bench_selfhost_stage2_kpi.sh`, `docs/selfhost-cutover-kpi.md`, `scripts/test_selfhost_bootstrap_gate.sh`
+- 発見: 2026-05 (commit `288793e`)
+
+### 背景
+
+`bench-selfhost-stage2-kpi` の初版で「**bootstrap fixed-point = `sha256(stage-1) ==
+sha256(stage-2)`** を verify する」と書いた。これは間違い。
+
+### 用語の正確な切り分け
+
+vibe の bootstrap には複数の段階がある:
+
+| 段階 | 生成過程 |
+|---|---|
+| **stage-1** wasm | host CLI (MoonBit) が `src/cmd/vibe_compile_wasi/` (MoonBit source) を wasm にビルド |
+| **stage-2** wasm | stage-1 wasm が `vibe/compiler/index.vibe` (vibe source) を wasm にコンパイル |
+| **stage-3** wasm | stage-2 wasm が同じ `vibe/compiler/index.vibe` を **自分自身のコードジェネレータで** コンパイル |
+
+「fixed-point」と呼ぶに値するのは **stage-2 == stage-3** (selfhost codegen が自分を
+再生産できる = 決定論的)。stage-1 と stage-2 はそれぞれ MoonBit codegen と vibe codegen
+の **出力 wasm** で、bit-level shape が違って当然 (機能等価性は別 gate で担保)。
+
+| 比較 | 期待 | 何を測れるか |
+|---|---|---|
+| `stage1 == stage1`-rerun | OK (host codegen の決定性) | host CLI の同一性 |
+| `stage1 == stage2` | ❌ 期待しない | (codegen 実装が違うので bit 一致しない、無意味な比較) |
+| `stage2 == stage3` | OK (selfhost codegen の決定性) | **cutover 安全性の核心** |
+
+`test-selfhost-bootstrap-gate` は **同じ compiler で同じ source を 2 回コンパイル**
+して bit 一致を見る (`VIBE_SELFHOST_CUTOVER=0` で host、`=1` で selfhost を使う)。
+これは「compiler 決定性 (determinism)」テストで、`stage-N == stage-N-rerun` を
+verify している。selfhost が再生産できるかは `=1` モードで verify される。
+
+### 実装上の罠
+
+stage-2 → stage-3 を script 内で自前に測ろうとすると:
+
+- moonrun で stage-2 wasm を走らせる → `vibe::*` imports (selfhost codegen pattern)
+  を resolve できず instantiation 失敗
+- wasmtime で `unknown-imports-default=y` を使う → instantiation OK だが、stage-2
+  は出力先を CLI args 経由で受け取る I/O 規約を持つので、単純な `--invoke _start`
+  では使えない (selfbuild_cli_args_entry 等の特定 export を invoke する必要)
+
+→ stage-3 emit を自前でやろうとせず、既存 `test-selfhost-bootstrap-gate` (cutover
+mode で stage-2 == stage-3 を verify する仕組みを既に持っている) に委任するのが正解。
+KPI script では `fixed_point=delegated` として記録する。
+
+### 教訓
+
+- **「fixed-point」「determinism」「bit-equivalence」を混同しない**。何を verify
+  したいのか言語化してから命名する。bootstrap-gate の test 名は「determinism gate」が
+  正確で、「fixed-point」と呼ぶと別概念に滑る。
+- **既存 gate に任せられるなら任せる**。selfhost bootstrap や cutover 関連の不変条件は
+  既に複数の test で別々に担保されている (`test-selfhost-bootstrap-gate` /
+  `test-selfhost-check-parity` / `test-selfhost-cutover-compare`)。新 script で同じ
+  ことを再実装すると、(a) 維持コストが二重になる、(b) 微妙に違うチェックを書いてしまって
+  食い違いが起きる、(c) 失敗時にどちらを信じるか曖昧になる。
+- **selfhost wasm の自己呼び出しは imports と I/O 規約で詰まる**。`vibe::*` 系
+  imports は moonrun に存在せず wasmtime でも stub 化が必要、output path 受け渡し
+  も export 名と引数経路に依存。selfhost コードを single-shot script から扱うのは
+  避け、専用 entry export 経由で叩くか、既存ドライバを呼ぶ。
+
+### 関連
+
+- `docs/selfhost-cutover-kpi.md#用語` — stage 定義
+- K-023 — cutover 計測の fair compare
+
+
