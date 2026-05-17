@@ -156,24 +156,27 @@ export let probe_check_seq_chain = () -> Int with { Error } {
   check_to_int_flag(build_seq_chain(96))
 }
 
-// Cached-env lookup scaling. refs is fixed; only N changes. Linear-Map emit
-// gives O(N) per lookup → wallclock scales linearly in N. Hash-backed Map
-// would flatten this to ~constant.
-let cached_env_lookup_count = (n: Int, refs: Int) -> Int with { Error } {
-  let env = build_cached_env(n)
-  let expr = build_env_lookup_expr(n, refs)
+// Cached-env lookup scaling. Pre-builds the env (which itself is O(N²) via
+// MapBuilder::set linear-find) and the lookup expression at fixture load
+// time, so bench iters measure pure lookup cost (O(N) per Map::has_key +
+// O(N) per Map::get on linear-Map emit). Refs fixed at 128 across N.
+//
+// fixture loaders are exported so the bench file can bind them at top-level
+// once; the probes themselves take prebuilt (expr, env) tuples.
+
+export let load_cached_env_lookup_fixture_n64 = () -> (Expr, TypeEnv) {
+  (build_env_lookup_expr(64, 128), build_cached_env(64))
+}
+
+export let load_cached_env_lookup_fixture_n256 = () -> (Expr, TypeEnv) {
+  (build_env_lookup_expr(256, 128), build_cached_env(256))
+}
+
+export let load_cached_env_lookup_fixture_n512 = () -> (Expr, TypeEnv) {
+  (build_env_lookup_expr(512, 128), build_cached_env(512))
+}
+
+export let probe_check_cached_env_lookups = (expr: Expr, env: TypeEnv) -> Int with { Error } {
   let _ = run_check(expr, env)
-  refs
-}
-
-export let probe_check_cached_env_lookups_n64 = () -> Int with { Error } {
-  cached_env_lookup_count(64, 128)
-}
-
-export let probe_check_cached_env_lookups_n256 = () -> Int with { Error } {
-  cached_env_lookup_count(256, 128)
-}
-
-export let probe_check_cached_env_lookups_n512 = () -> Int with { Error } {
-  cached_env_lookup_count(512, 128)
+  128
 }
