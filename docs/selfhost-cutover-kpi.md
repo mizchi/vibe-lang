@@ -10,6 +10,9 @@ fixed-point (stage1 == stage2) が確定」。
 このドキュメントは KPI の定義と計測手順、現状の数値、close until parity の作業
 ロードマップを集約する。
 
+**進捗 tracking issue**: `#402` (Phase 0/1/2 のタスク状態、関連 issue link、戦略的判断)。
+個別の作業や残課題確認は #402 を参照。
+
 ## 用語
 
 | 用語 | 定義 |
