@@ -435,6 +435,51 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # moonrun_wt host parity + import-surface drift guard. Keeps the
+  # wasmtime-aot bench backend (TODO #295) honest: any divergence in
+  # emitted `.wasm` between moonrun and moonrun_wt, or any new
+  # moon `--target wasm` import that we haven't wired into
+  # `tools/moonrun_wasmtime/src/main.rs`, will fail this job.
+  selfhost-runtime-parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Vibe toolchain
+        uses: ./.github/actions/setup-vibe
+        with:
+          ripgrep: 'true'
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/git
+            tools/moonrun_wasmtime/target
+          key: cargo-moonrun-wt-${{ runner.os }}-${{ hashFiles('tools/moonrun_wasmtime/Cargo.toml', 'tools/moonrun_wasmtime/src/**') }}
+          restore-keys: cargo-moonrun-wt-${{ runner.os }}-
+
+      - name: Build stage1 wasm (compile + check)
+        run: |
+          moon build --target wasm src/cmd/vibe_compile_wasi
+          moon build --target wasm src/cmd/vibe_check_wasi
+
+      - name: Build moonrun_wt
+        run: cargo build --release --manifest-path tools/moonrun_wasmtime/Cargo.toml
+
+      - name: Import-surface drift guard
+        run: bash scripts/check_moonrun_wt_imports.sh
+
+      - name: Output parity (byte-identical compile)
+        env:
+          VIBE_PARITY_WASM_PROFILE: debug
+        run: bash scripts/test_moonrun_wt_parity.sh
+
   coverage-selfhost-suite:
     runs-on: ubuntu-latest
     steps:
@@ -624,6 +669,7 @@ jobs:
       - contract-native
       - e2e-component
       - selfhost-examples
+      - selfhost-runtime-parity
       - wasm-compile-e2e
       - wasm-parity
       - wasm-vibe-smoke
@@ -641,6 +687,7 @@ jobs:
             echo "  contract-native: ${{ needs.contract-native.result }}"
             echo "  e2e-component: ${{ needs.e2e-component.result }}"
             echo "  selfhost-examples: ${{ needs.selfhost-examples.result }}"
+            echo "  selfhost-runtime-parity: ${{ needs.selfhost-runtime-parity.result }}"
             echo "  wasm-compile-e2e: ${{ needs.wasm-compile-e2e.result }}"
             echo "  wasm-parity: ${{ needs.wasm-parity.result }}"
             echo "  wasm-vibe-smoke: ${{ needs.wasm-vibe-smoke.result }}"

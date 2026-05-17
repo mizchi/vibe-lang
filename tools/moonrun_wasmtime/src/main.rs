@@ -9,6 +9,7 @@
 // CLI matches moonrun's positional shape:
 //   moonrun_wt <wasm|cwasm> [args...]              run, forward args
 //   moonrun_wt --precompile <wasm> [-o out.cwasm]  AOT compile only
+//   moonrun_wt --dump-imports <wasm>               list import surface (drift guard)
 //   moonrun_wt --help
 
 use std::any::Any;
@@ -19,8 +20,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use wasmtime::{
-    bail, format_err, Caller, Config, Engine, ExternRef, Linker, Module, Result, Rooted, Store,
-    StoreLimits, StoreLimitsBuilder, Strategy, TypedFunc,
+    bail, format_err, Caller, Config, Engine, ExternRef, ExternType, Linker, Module, Result,
+    Rooted, Store, StoreLimits, StoreLimitsBuilder, Strategy, TypedFunc, ValType,
 };
 
 const FFI_END_OF_STRING_ARRAY: &str = "ffi_end_of_/string_array";
@@ -107,6 +108,7 @@ fn print_help() {
          USAGE:\n\
            moonrun_wt <wasm|cwasm> [args...]\n\
            moonrun_wt --precompile <input.wasm> [-o <output.cwasm>]\n\
+           moonrun_wt --dump-imports <input.wasm>\n\
            moonrun_wt --help\n\
          \n\
          ENV:\n\
@@ -154,6 +156,66 @@ fn precompile(input: &str, output: Option<&str>) -> Result<()> {
         out_path.display(),
         bytes.len()
     );
+    Ok(())
+}
+
+// Wrapper for ValType -> short stable string. Used by `--dump-imports`;
+// kept narrow on purpose so any new ValType variant fails the build (we'd
+// rather notice schema drift here than ship a silent `?` for new types).
+fn valtype_short(t: &ValType) -> &'static str {
+    match t {
+        ValType::I32 => "i32",
+        ValType::I64 => "i64",
+        ValType::F32 => "f32",
+        ValType::F64 => "f64",
+        ValType::V128 => "v128",
+        ValType::Ref(r) => {
+            if r.is_nullable() {
+                match r.heap_type() {
+                    wasmtime::HeapType::Extern => "externref",
+                    wasmtime::HeapType::Func => "funcref",
+                    _ => "ref_null",
+                }
+            } else {
+                "ref"
+            }
+        }
+    }
+}
+
+// Print the module's import surface in a deterministic, diffable shape.
+// Format per line:   <module>\t<name>\t<kind>\t<sig>
+// `func` sigs are `(p1,p2)->(r1,r2)`; everything else uses `-`.
+// Output is sorted to make diffs against a baseline meaningful.
+fn dump_imports(input: &str) -> Result<()> {
+    let cfg = engine_config();
+    let engine = Engine::new(&cfg)?;
+    let module =
+        Module::from_file(&engine, input).map_err(|e| format_err!("from_file {input}: {e}"))?;
+    let mut lines: Vec<String> = Vec::new();
+    for imp in module.imports() {
+        let module_name = imp.module();
+        let name = imp.name();
+        let (kind, sig) = match imp.ty() {
+            ExternType::Func(ft) => {
+                let params: Vec<&'static str> = ft.params().map(|t| valtype_short(&t)).collect();
+                let results: Vec<&'static str> = ft.results().map(|t| valtype_short(&t)).collect();
+                let s = format!("({})->({})", params.join(","), results.join(","));
+                ("func", s)
+            }
+            ExternType::Table(_) => ("table", "-".to_string()),
+            ExternType::Memory(_) => ("memory", "-".to_string()),
+            ExternType::Global(_) => ("global", "-".to_string()),
+            ExternType::Tag(_) => ("tag", "-".to_string()),
+        };
+        lines.push(format!("{module_name}\t{name}\t{kind}\t{sig}"));
+    }
+    lines.sort();
+    let stdout = std::io::stdout();
+    let mut h = stdout.lock();
+    for line in &lines {
+        writeln!(h, "{line}").ok();
+    }
     Ok(())
 }
 
@@ -706,6 +768,24 @@ fn main() {
     if args.iter().any(|a| a == "--help" || a == "-h") {
         print_help();
         std::process::exit(0);
+    }
+    if args.first().map(|s| s.as_str()) == Some("--dump-imports") {
+        let input = match args.get(1) {
+            Some(s) => s.clone(),
+            None => {
+                eprintln!("--dump-imports: missing <input.wasm>");
+                std::process::exit(2);
+            }
+        };
+        if args.len() > 2 {
+            eprintln!("--dump-imports: unexpected extra args");
+            std::process::exit(2);
+        }
+        if let Err(e) = dump_imports(&input) {
+            eprintln!("moonrun_wt: dump-imports failed: {e:?}");
+            std::process::exit(1);
+        }
+        return;
     }
     if args.first().map(|s| s.as_str()) == Some("--precompile") {
         let mut iter = args.iter().skip(1);

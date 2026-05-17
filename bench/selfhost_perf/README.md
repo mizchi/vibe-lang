@@ -66,6 +66,21 @@ test-moonrun-wt-parity`) compiles each case under both runtimes and
 verifies the emitted `.wasm` is byte-identical. As of 2026-05-17 all
 5 default cases match SHA-256 on both debug and release+Oz profiles.
 
+**Import drift guard**: `scripts/check_moonrun_wt_imports.sh` (`pkf
+run check-moonrun-wt-imports`) dumps the `--target wasm` import
+surface from stage1 compile + check artifacts and diffs against
+`tools/moonrun_wasmtime/expected_imports.txt`. Fails if moonbit ever
+emits a new host import we haven't wired into moonrun_wt's
+`register_imports()`. Refresh with
+`scripts/check_moonrun_wt_imports.sh --update` after implementing
+the new import.
+
+Both guards run in the `selfhost-runtime-parity` CI job (required).
+
+`scripts/bench_selfhost_memory.sh` also accepts
+`VIBE_SELFHOST_MEMORY_RUNTIME=wasmtime-aot` so peak-RSS measurement
+can compare moonrun's v8 heap vs wasmtime's linear memory.
+
 ## Memory: peak RSS + wallclock
 
 Driver: `scripts/bench_selfhost_memory.sh` → `just bench-selfhost-memory`.

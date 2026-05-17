@@ -22,6 +22,10 @@
 #   VIBE_SELFHOST_MEMORY_MAX_RSS_RATIO   abort if any selfhost/host RSS ratio exceeds this
 #   VIBE_SELFHOST_MEMORY_MAX_RSS_KB      abort if any peak RSS (KB) exceeds this absolute limit
 #   VIBE_SELFHOST_MEMORY_SKIP_HYPERFINE   1 to skip hyperfine pass (RSS only)
+#   VIBE_SELFHOST_MEMORY_RUNTIME      moonrun|wasmtime|wasmtime-aot (default: moonrun)
+#                                     wasmtime-aot pre-compiles stage1 wasm → cwasm
+#                                     and runs through tools/moonrun_wasmtime.
+#   MOONRUN_WT_BIN                    path to a prebuilt moonrun_wt binary
 set -euo pipefail
 
 trap 'trap - EXIT; kill -- -$$ 2>/dev/null || true' INT TERM
@@ -53,6 +57,11 @@ RUNTIMES_RAW="${VIBE_SELFHOST_MEMORY_RUNTIMES:-host,selfhost}"
 MAX_RSS_RATIO="${VIBE_SELFHOST_MEMORY_MAX_RSS_RATIO:-}"
 MAX_RSS_KB="${VIBE_SELFHOST_MEMORY_MAX_RSS_KB:-}"
 SKIP_HYPERFINE="${VIBE_SELFHOST_MEMORY_SKIP_HYPERFINE:-0}"
+SELFHOST_RUNTIME="${VIBE_SELFHOST_MEMORY_RUNTIME:-moonrun}"
+MOONRUN_WT_BIN="${MOONRUN_WT_BIN:-}"
+case "$SELFHOST_RUNTIME" in moonrun|wasmtime|wasmtime-aot) ;;
+  *) echo "bench-selfhost-memory: VIBE_SELFHOST_MEMORY_RUNTIME must be moonrun|wasmtime|wasmtime-aot" >&2; exit 1 ;;
+esac
 
 is_positive_int() {
   case "$1" in
@@ -159,9 +168,17 @@ ensure_binaries() {
         echo "[selfhost-memory] using wasm-opt'd artifacts under _build/wasm/opt/"
       fi
     fi
-    if ! command -v moonrun >/dev/null 2>&1; then
-      echo "bench-selfhost-memory: moonrun not found (required for selfhost runtime)" >&2
-      exit 1
+    if [ "$SELFHOST_RUNTIME" = "moonrun" ]; then
+      if ! command -v moonrun >/dev/null 2>&1; then
+        echo "bench-selfhost-memory: moonrun not found (required for selfhost runtime)" >&2
+        exit 1
+      fi
+    else
+      ensure_moonrun_wt
+      if [ "$SELFHOST_RUNTIME" = "wasmtime-aot" ]; then
+        COMPILER_WASM="$(ensure_cwasm "$COMPILER_WASM")"
+        CHECKER_WASM="$(ensure_cwasm "$CHECKER_WASM")"
+      fi
     fi
   fi
   if [ ! -x "$VIBE_BIN" ]; then
@@ -201,20 +218,60 @@ collect_cases() {
   done < "$CASES_FILE"
 }
 
+# Build a host-runner prefix for the selfhost stage1 wasm. Single
+# token-ish (no quoting needed) — both moonrun and moonrun_wt take the
+# wasm path as positional arg 1.
+selfhost_runner_prefix() {
+  case "$SELFHOST_RUNTIME" in
+    moonrun) printf 'moonrun' ;;
+    wasmtime|wasmtime-aot) printf '%q' "$MOONRUN_WT_BIN" ;;
+    *) echo "bench-selfhost-memory: unknown runtime $SELFHOST_RUNTIME" >&2; return 2 ;;
+  esac
+}
+
 build_cmd() {
   local phase="$1"
   local runtime="$2"
   local case_path="$3"
+  local prefix
+  prefix="$(selfhost_runner_prefix)"
   case "$phase/$runtime" in
     compile/host)
       printf '%q compile-lite --wasm-linear --no-dce --in-memory %q' "$VIBE_BIN" "$case_path" ;;
     compile/selfhost)
-      printf 'moonrun %q compile-lite --wasm-linear --no-dce --in-memory %q' "$COMPILER_WASM" "$case_path" ;;
+      printf '%s %q compile-lite --wasm-linear --no-dce --in-memory %q' "$prefix" "$COMPILER_WASM" "$case_path" ;;
     check/host)
       printf 'env VIBE_CHECK_DEBUG=0 %q check %q' "$VIBE_BIN" "$case_path" ;;
     check/selfhost)
-      printf 'moonrun %q --check --file %q' "$CHECKER_WASM" "$case_path" ;;
+      printf '%s %q --check --file %q' "$prefix" "$CHECKER_WASM" "$case_path" ;;
   esac
+}
+
+ensure_moonrun_wt() {
+  if [ -n "${MOONRUN_WT_BIN:-}" ] && [ -x "$MOONRUN_WT_BIN" ]; then
+    return 0
+  fi
+  local default_bin="$ROOT_DIR/tools/moonrun_wasmtime/target/release/moonrun_wt"
+  if [ ! -x "$default_bin" ] || [ "$REBUILD_MODE" = "always" ]; then
+    echo "[selfhost-memory] building moonrun_wt (wasmtime host)..." >&2
+    (cd "$ROOT_DIR/tools/moonrun_wasmtime" && cargo build --release >&2)
+  fi
+  MOONRUN_WT_BIN="$default_bin"
+  if [ ! -x "$MOONRUN_WT_BIN" ]; then
+    echo "bench-selfhost-memory: moonrun_wt build did not produce $MOONRUN_WT_BIN" >&2
+    exit 1
+  fi
+}
+
+# Pre-compile stage1 `.wasm` → `.cwasm` and echo the cwasm path.
+ensure_cwasm() {
+  local wasm_path="$1"
+  local cwasm_path="${wasm_path%.wasm}.cwasm"
+  if [ ! -f "$cwasm_path" ] || [ "$wasm_path" -nt "$cwasm_path" ]; then
+    echo "[selfhost-memory] AOT-compiling $(basename "$wasm_path")..." >&2
+    "$MOONRUN_WT_BIN" --precompile "$wasm_path" -o "$cwasm_path" >&2
+  fi
+  echo "$cwasm_path"
 }
 
 # Capture max RSS (KB) from /usr/bin/time -v output. Returns the largest of
@@ -271,6 +328,7 @@ main() {
   printf "file\tphase\thost_rss_kb\tselfhost_rss_kb\tratio\n" >> "$rss_tsv"
 
   echo "[selfhost-memory] cases=${#cases[@]} phases=${PHASES_RAW} runtimes=${RUNTIMES_RAW}"
+  echo "[selfhost-memory] runtime=${SELFHOST_RUNTIME}"
   echo "[selfhost-memory] rss_runs=${TIME_RUNS} hyperfine_runs=${RUNS} warmup=${WARMUP}"
 
   local fail=0
