@@ -48,6 +48,24 @@ Set `VIBE_SELFHOST_PERF_RUNTIME=wasmtime` to skip the AOT step (loses
 the per-invocation Cranelift cost). Set `MOONRUN_WT_BIN` to point at a
 prebuilt `moonrun_wt` (otherwise the driver builds it on first use).
 
+The same wins survive on the canonical CI artifact (release profile +
+binaryen `wasm-opt -Oz`):
+
+| case (release+Oz)                     | moonrun ratio | wasmtime-aot ratio |
+| ------------------------------------- | ------------- | ------------------ |
+| examples/basics.vibe                  | 2.64          | 1.14               |
+| bench/compiler_size/cases/base64.vibe | 3.30          | 1.14               |
+| bench/compiler_size/cases/effects.vibe| 2.48          | 0.98               |
+| bench/compiler_size/cases/module_export.vibe | 2.49   | 0.95               |
+| bench/compiler_size/cases/module_import.vibe | 2.56   | 1.00               |
+
+Average ratio drop ~2.6× on opt'd wasm (still above the 1.5-2× target).
+
+**Output parity**: `scripts/test_moonrun_wt_parity.sh` (`pkf run
+test-moonrun-wt-parity`) compiles each case under both runtimes and
+verifies the emitted `.wasm` is byte-identical. As of 2026-05-17 all
+5 default cases match SHA-256 on both debug and release+Oz profiles.
+
 ## Memory: peak RSS + wallclock
 
 Driver: `scripts/bench_selfhost_memory.sh` → `just bench-selfhost-memory`.
