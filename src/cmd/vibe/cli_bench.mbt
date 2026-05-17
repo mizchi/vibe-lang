@@ -861,18 +861,14 @@ fn resolve_bench_wasm_runner(
   }
   // Preopen dirs for Fs::ReadFile etc. — space-separated host paths
   // (same tokenizer as VIBE_WASMTIME_WASM_FLAGS). Each entry is passed
-  // as `--dir <path>`, supporting wasmtime's `HOST::GUEST` mapping
-  // syntax. Without any preopen, Fs::ReadFile silently fails (caught by
-  // probe-side `handle Error { Throw(_) => 0 }`) and the bench reports
-  // a wallclock that reflects only error-handler overhead.
+  // verbatim as `wasmtime --dir <entry>`, supporting wasmtime's
+  // `HOST::GUEST` mapping syntax.
   //
-  // Note (2026-05-17): wasi-libc relative path resolution against
-  // preopens via the vibe Fs lowering doesn't currently pick up the
-  // preopened dirs, so probes must use absolute paths (e.g.
-  // "/home/user/vibe-lang/vibe/compiler/syntax/lexer.vibe") to read
-  // files through this harness. The existing relative-path probes
-  // (loader_hotspot_probe, lexer_hotspot_probe heavy fixtures) read as
-  // empty under this setup. Tracked for separate fix.
+  // Only used when the bench falls back to the wasmtime backend
+  // (Fs-free probes). Fs-using probes auto-route through the node host
+  // runner (scripts/wasm_vibe_host_runner.js) instead, which provides
+  // the `vibe::fs_*` imports natively backed by Node FS — no preopen
+  // needed on that path.
   let preopen_dirs = match @sys.get_env_var("VIBE_WASMTIME_DIR") {
     Some(raw) => split_env_flags(raw)
     None => []
