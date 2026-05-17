@@ -198,6 +198,21 @@ pub fn VibeDb::set_preparsed_ast(
 }
 
 ///|
+/// Read a previously-cached AST (set via set_preparsed_ast).
+/// Returns None if no AST is cached for the given path.
+/// Used by `apply_lock_to_db_with_fs` to avoid re-parsing files that
+/// have already been parsed during `load_sources_recursive`.
+pub fn VibeDb::get_preparsed_ast(
+  self : VibeDb,
+  path : String,
+) -> @core.Module? {
+  match self.inputs.preparsed_asts.get(self.rt, path) {
+    Some(hm) => Some(hm.unwrap())
+    None => None
+  }
+}
+
+///|
 pub fn VibeDb::set_preparsed_imports(
   self : VibeDb,
   path : String,
