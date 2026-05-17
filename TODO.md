@@ -35,7 +35,7 @@ Completed items are archived in `docs/DONE.md`.
 - [ ] `vibe/types/` / `vibe/parser/` 分離
 - [ ] `vibe/compiler` 論理分割
 - [ ] MoonBit host CLI を bootstrap 専用へ縮退
-- [ ] selfhost perf gap cutover 水準まで（素材: `claude/chunk-compile-experiment` ブランチに hash-bucket lookup / sorted index / O(n) string dedup 等 23 commits、#295）
+- [ ] selfhost perf gap cutover 水準まで（素材: `claude/chunk-compile-experiment` ブランチに hash-bucket lookup / sorted index / O(n) string dedup 等 23 commits、#295）。wasmtime AOT runtime は `tools/moonrun_wasmtime` で実装済、bench-selfhost-perf-wasmtime task で 5 cases 平均 compile ratio 5.7 → 1.2（~5× 改善）。残課題は algorithmic な hash-bucket / dedup 系
 - [ ] MoonBit host 重複削減（similarity-mbt 抽出、§[MoonBit host 重複削減](#moonbit-host-重複削減-similarity-mbt-ベース)）
 
 ### ⚪ upstream / infra 待ち
