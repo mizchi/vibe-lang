@@ -240,22 +240,22 @@ let empty_string_pairs = () -> Array[(String, String)] {
 }
 
 let rec append_import_paths = (stmts: Array[Stmt], acc: Array[String]) -> Array[String] {
-  let mut out = acc
+  // O(N) in-place push: previously each `Array::concat(out, [raw_path])`
+  // allocated and copied per step. Mirror of #366 cleanup.
   let mut i = 0
   while i < Array::length(stmts) {
-    out = match Array::get(stmts, i) {
-      SImport(raw_path, _) => Array::concat(out, [
-        raw_path
-      ]),
-      SReExport(raw_path, _) => Array::concat(out, [
-        raw_path
-      ]),
-      SModule(_, _, body) => append_import_paths(body, out),
-      _ => out
+    match Array::get(stmts, i) {
+      SImport(raw_path, _) => Array::push(acc, raw_path),
+      SReExport(raw_path, _) => Array::push(acc, raw_path),
+      SModule(_, _, body) => {
+        let _ = append_import_paths(body, acc)
+        ()
+      },
+      _ => ()
     }
     i = i + 1
   }
-  out
+  acc
 }
 
 let json_string_map_field = (obj: Map[String, Json], key: String) -> Map[String, String] with { Error } {
@@ -477,23 +477,24 @@ let rec load_fixture_sources = (path: String, spec: FixtureSpec, loaded: Array[(
   } else {
     let source = perform Fs::ReadFile(path)
     let rewritten_source = rewrite_fixture_source(path, source, spec)
-    let next_loaded = Array::concat(loaded, [
-      (path, rewritten_source)
-    ])
+    // O(N) in-place push: previously `Array::concat(loaded, [pair])` per
+    // recursion gave O(N²). Caller passes a fresh `empty_string_pairs()`
+    // at the top level, so in-place mutation is sound.
+    Array::push(loaded, (path, rewritten_source))
     let stmts = parse_program(lex(rewritten_source))
     let import_paths = append_import_paths(stmts, empty_strings())
-    let mut out = next_loaded
     let mut i = 0
     while i < Array::length(import_paths) {
       match resolve_import_fs_path(path, Array::get(import_paths, i)) {
         Some(dep_path) => {
-          out = load_fixture_sources(dep_path, spec, out)
+          let _ = load_fixture_sources(dep_path, spec, loaded)
+          ()
         },
         None => ()
       }
       i = i + 1
     }
-    out
+    loaded
   }
 }
 
