@@ -23,6 +23,7 @@ struct BenchWasmRunner {
   wasmtime_bin : String
   wasm_flags : Array[String]
   wasi_flags : Array[String]
+  preopen_dirs : Array[String]
 } derive(Debug, Eq)
 
 ///|
@@ -858,7 +859,25 @@ fn resolve_bench_wasm_runner(
     Some(raw) => split_env_flags(raw)
     None => []
   }
-  Ok(BenchWasmRunner::{ wasmtime_bin, wasm_flags, wasi_flags })
+  // Preopen dirs for Fs::ReadFile etc. — space-separated host paths
+  // (same tokenizer as VIBE_WASMTIME_WASM_FLAGS). Each entry is passed
+  // as `--dir <path>`, supporting wasmtime's `HOST::GUEST` mapping
+  // syntax. Without any preopen, Fs::ReadFile silently fails (caught by
+  // probe-side `handle Error { Throw(_) => 0 }`) and the bench reports
+  // a wallclock that reflects only error-handler overhead.
+  //
+  // Note (2026-05-17): wasi-libc relative path resolution against
+  // preopens via the vibe Fs lowering doesn't currently pick up the
+  // preopened dirs, so probes must use absolute paths (e.g.
+  // "/home/user/vibe-lang/vibe/compiler/syntax/lexer.vibe") to read
+  // files through this harness. The existing relative-path probes
+  // (loader_hotspot_probe, lexer_hotspot_probe heavy fixtures) read as
+  // empty under this setup. Tracked for separate fix.
+  let preopen_dirs = match @sys.get_env_var("VIBE_WASMTIME_DIR") {
+    Some(raw) => split_env_flags(raw)
+    None => []
+  }
+  Ok(BenchWasmRunner::{ wasmtime_bin, wasm_flags, wasi_flags, preopen_dirs })
 }
 
 ///|
@@ -893,6 +912,10 @@ fn build_wasmtime_invoke_command(
   for flag in runner.wasi_flags {
     cmd.write_string(" -S ")
     cmd.write_string(shell_quote_command_arg(flag))
+  }
+  for dir in runner.preopen_dirs {
+    cmd.write_string(" --dir ")
+    cmd.write_string(shell_quote_command_arg(dir))
   }
   cmd.write_string(" --invoke ")
   cmd.write_string(shell_quote_command_arg(invoke_name))
