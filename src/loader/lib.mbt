@@ -61,6 +61,34 @@ fn apply_lock_to_db_with_fs(
   let legacy_lock_path = lock_root + "/vibe.lock"
   let has_lock_source = @io.path_exists_with(fs, lock_path) ||
     @io.path_exists_with(fs, legacy_lock_path)
+  // FAST PATH (#401): when a lock file exists and every recorded
+  // path_ref still hashes to the on-disk content, the lock is fresh —
+  // skip the full collect_path_refs walk (parse + collect refs across
+  // the dep tree) and just apply the existing lock to the db.
+  //
+  // For heavy-fixture benches with 0 imports (regexp.vibe /
+  // wat_encoder.vibe, single-file lock), this turns ~165ms of
+  // apply_lock work into ~5-10ms (read + hash for one file).
+  if has_lock_source {
+    match @codebase.load_lock_data_with_fs(lock_path, fs) {
+      Ok(current_lock) =>
+        if lock_path_refs_match_disk(current_lock, fs) {
+          @profiler.profiler_enter("load/apply_lock/fast_path")
+          for path, hash in current_lock.path_refs {
+            db.set_path_ref(path, hash)
+          }
+          for name, hash in current_lock.version_refs {
+            db.set_version_ref(name, hash)
+          }
+          for name, hash in current_lock.symbol_refs {
+            db.set_symbol_ref(name, hash)
+          }
+          @profiler.profiler_leave()
+          return Ok(())
+        }
+      Err(_) => () // fall through to slow path
+    }
+  }
   let lock = if has_lock_source {
     if persist_lock_updates {
       match @codebase.update_lock_path_refs_with_fs(entry, fs) {
@@ -89,6 +117,33 @@ fn apply_lock_to_db_with_fs(
     db.set_symbol_ref(name, hash)
   }
   Ok(())
+}
+
+///|
+/// Check whether every path_ref in `lock` still hashes to the same
+/// content on disk. Returns false if any file is missing, read fails,
+/// or hash mismatches — caller should fall back to a full
+/// collect_path_refs walk.
+fn lock_path_refs_match_disk(
+  lock : @codebase.LockData,
+  fs : &@io.FileSystemAdapter,
+) -> Bool {
+  for path, expected_hash in lock.path_refs {
+    let raw_source = match @io.read_string_with(fs, path) {
+      Ok(v) => v
+      Err(_) => return false
+    }
+    let source = if path.has_suffix(".md") {
+      extract_vibe_from_markdown(raw_source)
+    } else {
+      raw_source
+    }
+    let actual_hash = @vibe_core.content_address_hash_string(source)
+    if actual_hash != expected_hash {
+      return false
+    }
+  }
+  true
 }
 
 ///|
