@@ -1811,9 +1811,19 @@ pub fn update_lock_path_refs_with_fs(
     Ok(v) => v
     Err(err) => return Err(err)
   }
-  match write_lock_data_with_fs(lock_path, next_lock, fs) {
-    Ok(_) => Ok(next_lock)
-    Err(err) => Err(err)
+  // Skip write when the lock file content hasn't changed. Hot path in
+  // benchmarks and steady-state CLI: re-compiling an unmodified project
+  // recomputes the same lock data and would otherwise pay a write +
+  // serialize cost every invocation. (`load_lock_data_with_fs` returns
+  // an empty LockData when the file doesn't exist, so we get a sound
+  // !=-against-non-empty next_lock comparison either way.)
+  match load_lock_data_with_fs(lock_path, fs) {
+    Ok(current_lock) if current_lock == next_lock => Ok(next_lock)
+    _ =>
+      match write_lock_data_with_fs(lock_path, next_lock, fs) {
+        Ok(_) => Ok(next_lock)
+        Err(err) => Err(err)
+      }
   }
 }
 

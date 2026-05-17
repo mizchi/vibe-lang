@@ -174,26 +174,34 @@ fn load_sources_recursive_impl(
   }
   stack.push(norm)
   visited.set(norm, true)
+  @profiler.profiler_enter("load/read_file")
   let raw_source = match @io.read_string_with(fs, norm) {
     Ok(v) => v
     Err(err) => {
+      @profiler.profiler_leave()
       let _ = stack.pop()
       return Err("io: " + err)
     }
   }
+  @profiler.profiler_leave()
   let source = if norm.has_suffix(".md") {
     extract_vibe_from_markdown(raw_source)
   } else {
     raw_source
   }
   db.set_source(norm, source)
+  @profiler.profiler_enter("load/parse")
   let ast = @parser.parse_ast(source) catch {
     e => {
+      @profiler.profiler_leave()
       let _ = stack.pop()
       return Err("parse: " + e.to_string())
     }
   }
+  @profiler.profiler_leave()
+  @profiler.profiler_enter("load/cache_ast")
   db.set_preparsed_ast(norm, source, ast)
+  @profiler.profiler_leave()
   let base = @vibe_fs.parent_path(norm)
   for stmt in ast.stmts {
     match stmt {
@@ -691,19 +699,36 @@ fn load_db_with_paths_with_fs_into_impl(
   fs : &@io.FileSystemAdapter,
   persist_lock_updates : Bool,
 ) -> Result[(@runtime.VibeDb, String, Array[String]), String] {
+  @profiler.profiler_enter("load/resolve_entry")
   let entry = resolve_entry_path_with_fs(entry_path, fs)
   let root = @codebase.resolve_index_root_with_fs(entry, fs)
+  @profiler.profiler_leave()
+  @profiler.profiler_enter("load/registry")
   let registry_modules = match
     @codebase.load_registry_modules_with_fs(root, fs) {
     Ok(v) => v
-    Err(err) => return Err(err)
+    Err(err) => {
+      @profiler.profiler_leave()
+      return Err(err)
+    }
   }
+  @profiler.profiler_leave()
+  @profiler.profiler_enter("load/apply_lock")
   match apply_lock_to_db_with_fs(db, entry, fs, persist_lock_updates) {
     Ok(_) => ()
-    Err(err) => return Err(err)
+    Err(err) => {
+      @profiler.profiler_leave()
+      return Err(err)
+    }
   }
+  @profiler.profiler_leave()
   let visited : Map[String, Bool] = {}
-  match load_sources_recursive(db, entry, visited, fs, root, registry_modules) {
+  @profiler.profiler_enter("load/sources_recursive")
+  let result = load_sources_recursive(
+    db, entry, visited, fs, root, registry_modules,
+  )
+  @profiler.profiler_leave()
+  match result {
     Ok(_) => {
       let paths : Array[String] = []
       for path, _ in visited {
