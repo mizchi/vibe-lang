@@ -160,6 +160,30 @@ experiment lacked — it bypassed both `node + wasm instantiation`
 AST, no parse step) that capped the prior cross-over investigation at
 N≤50.
 
+##### Result (commit `86f9177`, wasmtime 42.0.1, --n 20 --warmup 3 --runs 10):
+
+| N    | per-iter | ratio vs n64 |
+| ---- | -------- | ------------ |
+| 64   | 9.72 ms  | 1.00×        |
+| 256  | 9.38 ms  | 0.97×        |
+| 512  | 9.42 ms  | 0.97×        |
+| 2048 | 9.98 ms  | 1.03×        |
+
+**Flat across 32× N**. Linear-Map would have predicted ~32×; observed
+1.03×. Lookup cost is completely below the noise floor of the bench
+harness (which is dominated by AST tree walking through 128 ESeq + 128
+EIdent nodes plus per-iter wasm/wasmtime overhead — ~9.5 ms baseline).
+
+**Interpretation**: postmortem's prediction confirmed at a much wider
+N range (up to N=2048) than the prior StrIntIndex experiment could
+exercise (N≤50 before parser gates). #395 (runtime Map → hash-backed)
+has no measurable ROI at any selfhost-tractable workload size, and is
+not justified. Hash migration would only become interesting if
+selfhost feature gates lift far enough to surface workloads with
+**very** large bound-name counts in a single env, AND the AST-walk
+constant factor drops enough that per-lookup cost is visible — neither
+condition is on the horizon.
+
 #### Heavy real-source fixtures
 
 In addition to the small selfhost-internal sources (`syntax/lexer.vibe`
