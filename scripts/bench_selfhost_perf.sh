@@ -33,11 +33,18 @@ PROFILE_CALLSTACK="${VIBE_SELFHOST_PERF_PROFILE_CALLSTACK:-}"
 # (e.g. environments without rust + cargo).
 SELFHOST_RUNTIME="${VIBE_SELFHOST_PERF_RUNTIME:-wasmtime-aot}"
 MOONRUN_WT_BIN="${MOONRUN_WT_BIN:-}"
-# Opt-in: use moonrun_wt --daemon for selfhost check requests, batching
-# all RUNS through one warm wasm instance. Eliminates the per-invocation
-# `ensure_builtin_modules` cold-start cost (#400). Only applies when
-# SELFHOST_RUNTIME ∈ {wasmtime, wasmtime-aot}. Median across RUNS still
-# discards the first (cold) request's outlier when RUNS ≥ 3.
+# Opt-in: use moonrun_wt --daemon for selfhost check requests.
+#
+# When set, ALL (case × run) check requests are funneled through a
+# *single* warm wasm instance — so `ensure_builtin_modules` is paid
+# exactly once for the whole bench instead of once per case. This
+# mirrors how a production LSP / vibe-check-as-service would batch
+# work, and matches the host side's session-http amortization.
+#
+# Only applies when SELFHOST_RUNTIME ∈ {wasmtime, wasmtime-aot}.
+# Median across RUNS still drops the first (cold) outlier when
+# RUNS ≥ 3; with cross-case daemon mode only request #1 of case #1
+# is cold, the rest are pure-warm-ratio.
 CHECK_DAEMON_MODE="${VIBE_SELFHOST_PERF_CHECK_DAEMON:-0}"
 
 is_positive_int() {
@@ -300,108 +307,159 @@ ensure_cwasm() {
   echo "$cwasm_path"
 }
 
-# Run RUNS check requests through a single warm `moonrun_wt --daemon`
-# process and populate the per-iteration output files the main loop
-# would otherwise produce. Uses the daemon's per-request `elapsed_us`
-# JSON field for timing (excludes stdin/stdout protocol overhead),
-# which is the cleanest signal of in-wasm work time.
+# Run ALL (case × RUNS) check requests through a SINGLE warm
+# `moonrun_wt --daemon` process. Uses the daemon's per-request
+# `elapsed_us` field for timing (excludes stdin/stdout protocol
+# overhead) — the cleanest signal of in-wasm work time.
+#
+# Cross-case amortization: `ensure_builtin_modules` (~179ms,
+# #400 Option D'd to 118ms) is paid exactly once for the whole
+# bench instead of once per case. Only request #1 of case #1
+# is cold; all others run on a fully warmed store. Mirrors
+# the host side's session-http amortization model.
 #
 # Args:
-#   $1 = case path           (e.g. /abs/path/examples/basics.vibe)
-#   $2 = rel case            (e.g. examples/basics.vibe)  — for logs only
-#   $3 = safe-name prefix    (matches the main loop's $safe)
-#   $4 = wasm path           (cwasm if available)
-#   $5 = RUNS
-#   $6 = out tmp dir         ($OUT_DIR/tmp)
-#   $7 = raw_tsv             (appended)
-#   $8 = raw_stage_tsv       (appended)
+#   $1 = wasm path             (cwasm if available)
+#   $2 = RUNS                  (per-case run count)
+#   $3 = out tmp dir           ($OUT_DIR/tmp)
+#   $4 = raw_tsv               (appended)
+#   $5 = raw_stage_tsv         (appended)
+#   $6.. = case paths          (one absolute path per case)
 #
-# Produces the same files as the main loop's iteration body so the
-# downstream median + summary logic stays unchanged:
-#   $sample_file       — one elapsed_ms per line
-#   $profile_file × N  — per-iteration --profile-tsv outputs
-#   $stdout_file × N   — per-iteration captured wasm stdout
-run_check_batch_daemon() {
-  local case_path="$1"
-  local rel_case="$2"
-  local safe="$3"
-  local wasm_path="$4"
-  local runs="$5"
-  local tmp_dir="$6"
-  local raw_tsv="$7"
-  local raw_stage_tsv="$8"
+# Produces the same per-(case,run) output files the per-case loop
+# body would have produced, keyed by the same `safe` prefix:
+#   $OUT_DIR/raw/${safe}.check.selfhost.txt         (one elapsed_ms per line)
+#   $OUT_DIR/raw/${safe}.check_stage.selfhost.${stage}.txt
+#   $tmp_dir/${safe}.check.selfhost.${run}.profile.tsv
+#   $tmp_dir/${safe}.check.selfhost.${run}.stdout
+run_check_all_cases_daemon() {
+  local wasm_path="$1"
+  local runs="$2"
+  local tmp_dir="$3"
+  local raw_tsv="$4"
+  local raw_stage_tsv="$5"
+  shift 5
+  local -a cases=("$@")
 
-  local sample_file="$OUT_DIR/raw/${safe}.check.selfhost.txt"
-  : > "$sample_file"
-  for stage in load type total; do
-    : > "$OUT_DIR/raw/${safe}.check_stage.selfhost.${stage}.txt"
+  # Reset per-case output files for all cases up-front. The demux
+  # loop below appends, so a stale file from a prior run would
+  # corrupt the median.
+  local case_path rel_case safe
+  for case_path in "${cases[@]}"; do
+    rel_case="${case_path#$PROJECT_ROOT/}"
+    safe="$(echo "$rel_case" | tr '/: ' '___')"
+    : > "$OUT_DIR/raw/${safe}.check.selfhost.txt"
+    for stage in load type total; do
+      : > "$OUT_DIR/raw/${safe}.check_stage.selfhost.${stage}.txt"
+    done
   done
 
-  # Build the request batch. Each request uses a distinct profile_tsv
-  # path so per-iteration stage timings stay separable.
-  local req_file="${tmp_dir}/${safe}.check.daemon.requests.jsonl"
-  local resp_file="${tmp_dir}/${safe}.check.daemon.responses.jsonl"
+  # Build one giant request stream covering every (case × run).
+  # Each request's --profile-tsv path is unique per (case, run)
+  # so we can demux profile data after the daemon completes.
+  # Iteration order is case-major (case1 × runs, then case2 × runs)
+  # — important when interpreting the cold-request outlier: only
+  # the very first request of case 1 sees a fully-cold store.
+  local req_file="${tmp_dir}/check.daemon.all.requests.jsonl"
+  local resp_file="${tmp_dir}/check.daemon.all.responses.jsonl"
   : > "$req_file"
-  local run_idx=1
-  while [ "$run_idx" -le "$runs" ]; do
-    local profile_file="${tmp_dir}/${safe}.check.selfhost.${run_idx}.profile.tsv"
-    # JSON-encode args via python to handle paths with shell-unsafe chars.
-    python3 -c "import json,sys; print(json.dumps({'args':sys.argv[1:]}))" \
-      --check --profile-tsv "$profile_file" --file "$case_path" >> "$req_file"
-    run_idx=$((run_idx + 1))
+  for case_path in "${cases[@]}"; do
+    rel_case="${case_path#$PROJECT_ROOT/}"
+    safe="$(echo "$rel_case" | tr '/: ' '___')"
+    local run_idx=1
+    while [ "$run_idx" -le "$runs" ]; do
+      local profile_file="${tmp_dir}/${safe}.check.selfhost.${run_idx}.profile.tsv"
+      # JSON-encode args via python so paths with shell-unsafe
+      # chars (spaces, quotes) round-trip cleanly.
+      python3 -c "import json,sys; print(json.dumps({'args':sys.argv[1:]}))" \
+        --check --profile-tsv "$profile_file" --file "$case_path" >> "$req_file"
+      run_idx=$((run_idx + 1))
+    done
   done
 
-  # Run daemon. Failure here aborts the bench — fall-through to a
-  # one-shot fallback would mask daemon regressions silently.
-  if ! "$MOONRUN_WT_BIN" --daemon "$wasm_path" < "$req_file" > "$resp_file" 2>"${tmp_dir}/${safe}.check.daemon.stderr"; then
-    echo "bench-selfhost-perf: daemon run failed (check/${rel_case}); stderr at ${tmp_dir}/${safe}.check.daemon.stderr" >&2
+  # Run the single daemon. Failure aborts — a per-case fallback
+  # would silently mask daemon regressions.
+  if ! "$MOONRUN_WT_BIN" --daemon "$wasm_path" < "$req_file" > "$resp_file" 2>"${tmp_dir}/check.daemon.all.stderr"; then
+    echo "bench-selfhost-perf: cross-case daemon run failed; stderr at ${tmp_dir}/check.daemon.all.stderr" >&2
     exit 1
   fi
 
-  # Parse responses, write per-iteration stdout files + sample line.
-  # Profile_tsv files were written by the daemon directly.
-  python3 - "$resp_file" "$tmp_dir" "$safe" "$sample_file" <<'PY'
+  # Demux responses back to per-(case, run) files. Response order
+  # matches request order, so case_idx = i / runs, run_idx = i % runs + 1.
+  python3 - "$resp_file" "$tmp_dir" "$OUT_DIR" "$runs" "${cases[@]}" <<'PY'
 import json, os, sys
-resp_file, tmp_dir, safe, sample_file = sys.argv[1:5]
-with open(sample_file, 'w') as sf, open(resp_file) as rf:
-    for i, line in enumerate(rf, start=1):
+resp_file, tmp_dir, out_dir, runs_s = sys.argv[1:5]
+runs = int(runs_s)
+case_paths = sys.argv[5:]
+project_root = os.environ.get("PROJECT_ROOT", "")
+
+def safe_for(case_path: str) -> str:
+    rel = case_path[len(project_root) + 1:] if case_path.startswith(project_root + "/") else case_path
+    return rel.replace("/", "_").replace(":", "_").replace(" ", "_")
+
+# Open sample files per case.
+sample_files = {}
+for case_path in case_paths:
+    safe = safe_for(case_path)
+    sample_files[safe] = open(os.path.join(out_dir, "raw", f"{safe}.check.selfhost.txt"), "w")
+
+with open(resp_file) as rf:
+    for i, line in enumerate(rf):
         line = line.strip()
-        if not line: continue
+        if not line:
+            continue
         d = json.loads(line)
-        if d.get('exit_code', 0) != 0 or 'error' in d:
-            sys.stderr.write(f"bench-selfhost-perf: daemon req {i} non-zero exit: {d.get('exit_code')} err={d.get('error','?')}\n")
+        case_idx = i // runs
+        run_idx = i % runs + 1
+        if case_idx >= len(case_paths):
+            sys.stderr.write(f"bench-selfhost-perf: extra daemon response #{i+1}, no matching request\n")
             sys.exit(1)
-        elapsed_us = int(d['elapsed_us'])
+        case_path = case_paths[case_idx]
+        safe = safe_for(case_path)
+        if d.get("exit_code", 0) != 0 or "error" in d:
+            sys.stderr.write(
+                f"bench-selfhost-perf: daemon req {i+1} (case={case_path} run={run_idx}) "
+                f"non-zero exit: {d.get('exit_code')} err={d.get('error','?')}\n"
+            )
+            sys.exit(1)
+        elapsed_us = int(d["elapsed_us"])
         elapsed_ms = elapsed_us // 1000
-        sf.write(f"{elapsed_ms}\n")
-        # Emit captured stdout to match what run_timed would have written.
-        stdout_path = os.path.join(tmp_dir, f"{safe}.check.selfhost.{i}.stdout")
-        with open(stdout_path, 'w') as so:
-            so.write(d.get('stdout', ''))
-        # Empty stderr file (daemon doesn't surface per-request stderr).
-        stderr_path = os.path.join(tmp_dir, f"{safe}.check.selfhost.{i}.stderr")
-        open(stderr_path, 'w').close()
+        sample_files[safe].write(f"{elapsed_ms}\n")
+        # Write per-iteration captured stdout (matches run_timed).
+        with open(os.path.join(tmp_dir, f"{safe}.check.selfhost.{run_idx}.stdout"), "w") as so:
+            so.write(d.get("stdout", ""))
+        # Empty stderr to match per-iteration convention.
+        open(os.path.join(tmp_dir, f"{safe}.check.selfhost.{run_idx}.stderr"), "w").close()
+
+for f in sample_files.values():
+    f.close()
 PY
 
   # Append raw_tsv + raw_stage_tsv rows, mirroring the main loop's
-  # bookkeeping so downstream aggregation sees identical structure.
-  run_idx=1
-  while [ "$run_idx" -le "$runs" ]; do
-    local elapsed
-    elapsed="$(sed -n "${run_idx}p" "$sample_file")"
-    printf "%s\t%s\t%s\t%d\t%s\t%s\n" "$rel_case" "check" "selfhost" "$run_idx" "$elapsed" "0" >> "$raw_tsv"
-    local profile_file="${tmp_dir}/${safe}.check.selfhost.${run_idx}.profile.tsv"
-    if [ ! -f "$profile_file" ]; then
-      echo "bench-selfhost-perf: missing stage profile (check/selfhost daemon): $rel_case run=$run_idx" >&2
-      exit 1
-    fi
-    while IFS=$'\t' read -r stage ms us; do
-      if [ "$stage" = "stage" ] || [ -z "$stage" ]; then continue; fi
-      if [ -z "$us" ]; then us="$((ms * 1000))"; fi
-      printf "%s\t%s\t%s\t%d\t%s\t%s\t%s\n" "$rel_case" "check" "selfhost" "$run_idx" "$stage" "$ms" "$us" >> "$raw_stage_tsv"
-      echo "$us" >> "$OUT_DIR/raw/${safe}.check_stage.selfhost.${stage}.txt"
-    done < "$profile_file"
-    run_idx=$((run_idx + 1))
+  # per-case bookkeeping so downstream aggregation sees identical
+  # structure.
+  for case_path in "${cases[@]}"; do
+    rel_case="${case_path#$PROJECT_ROOT/}"
+    safe="$(echo "$rel_case" | tr '/: ' '___')"
+    local sample_file="$OUT_DIR/raw/${safe}.check.selfhost.txt"
+    local run_idx=1
+    while [ "$run_idx" -le "$runs" ]; do
+      local elapsed
+      elapsed="$(sed -n "${run_idx}p" "$sample_file")"
+      printf "%s\t%s\t%s\t%d\t%s\t%s\n" "$rel_case" "check" "selfhost" "$run_idx" "$elapsed" "0" >> "$raw_tsv"
+      local profile_file="${tmp_dir}/${safe}.check.selfhost.${run_idx}.profile.tsv"
+      if [ ! -f "$profile_file" ]; then
+        echo "bench-selfhost-perf: missing stage profile (check/selfhost daemon): $rel_case run=$run_idx" >&2
+        exit 1
+      fi
+      while IFS=$'\t' read -r stage ms us; do
+        if [ "$stage" = "stage" ] || [ -z "$stage" ]; then continue; fi
+        if [ -z "$us" ]; then us="$((ms * 1000))"; fi
+        printf "%s\t%s\t%s\t%d\t%s\t%s\t%s\n" "$rel_case" "check" "selfhost" "$run_idx" "$stage" "$ms" "$us" >> "$raw_stage_tsv"
+        echo "$us" >> "$OUT_DIR/raw/${safe}.check_stage.selfhost.${stage}.txt"
+      done < "$profile_file"
+      run_idx=$((run_idx + 1))
+    done
   done
 }
 
@@ -471,23 +529,32 @@ main() {
   selfhost_runner "$STAGE1_COMPILER_WASM" compile-lite --wasm-linear --no-dce --in-memory "$warmup_case" >/dev/null 2>&1 || true
   selfhost_runner "$STAGE1_CHECKER_WASM" --check --file "$warmup_case" >/dev/null 2>&1 || true
 
+  # Cross-case daemon pre-pass: one warm wasm instance handles ALL
+  # (case × run) check/selfhost requests, so `ensure_builtin_modules`
+  # is paid exactly once for the whole bench. Pre-populates the same
+  # per-(case, run) output files the per-case loop body would; the
+  # loop then unconditionally skips check/selfhost since results
+  # already exist.
+  local check_daemon_active=0
+  if [ "$CHECK_DAEMON_MODE" = "1" ] \
+     && { [ "$SELFHOST_RUNTIME" = "wasmtime" ] || [ "$SELFHOST_RUNTIME" = "wasmtime-aot" ]; }; then
+    check_daemon_active=1
+    echo "[selfhost-perf] check/selfhost: cross-case daemon mode (1 daemon for ${#cases[@]} cases × ${RUNS} runs)"
+    PROJECT_ROOT="$PROJECT_ROOT" run_check_all_cases_daemon \
+      "$STAGE1_CHECKER_WASM" "$RUNS" "$OUT_DIR/tmp" \
+      "$raw_tsv" "$raw_stage_tsv" "${cases[@]}"
+  fi
+
   local case_path rel_case safe
   for case_path in "${cases[@]}"; do
     rel_case="${case_path#$PROJECT_ROOT/}"
     safe="$(echo "$rel_case" | tr '/: ' '___')"
     for phase in compile check; do
       for runtime in host selfhost; do
-        # Daemon fast-path for check/selfhost: one warm wasm instance
-        # handles all RUNS requests, skipping the per-invocation
-        # ensure_builtin_modules cold-start cost. Produces the same
-        # per-iteration files as the regular loop body so downstream
-        # aggregation is unchanged.
-        if [ "$phase" = "check" ] && [ "$runtime" = "selfhost" ] \
-           && [ "$CHECK_DAEMON_MODE" = "1" ] \
-           && { [ "$SELFHOST_RUNTIME" = "wasmtime" ] || [ "$SELFHOST_RUNTIME" = "wasmtime-aot" ]; }; then
-          run_check_batch_daemon "$case_path" "$rel_case" "$safe" \
-            "$STAGE1_CHECKER_WASM" "$RUNS" "$OUT_DIR/tmp" \
-            "$raw_tsv" "$raw_stage_tsv"
+        # Cross-case daemon pre-pass already populated check/selfhost
+        # results for this case — skip the per-iteration loop body.
+        if [ "$check_daemon_active" = "1" ] \
+           && [ "$phase" = "check" ] && [ "$runtime" = "selfhost" ]; then
           continue
         fi
         local run_idx=1
