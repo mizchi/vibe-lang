@@ -406,6 +406,15 @@ fn daemon(args: Vec<String>) -> Result<i32> {
         };
 
         // Reset per-request state. Keep capture_stdout=true.
+        //
+        // `pending_bytes` / `pending_strings` are the host-side staging
+        // slots for `read_file_to_bytes_new` → `get_file_content` and
+        // `read_dir_new` → `get_dir_files`. If the previous request
+        // populated one of these but trapped / early-exited before the
+        // matching `get_*` consumer ran, the value would leak into this
+        // request and surface as stale file/dir data. One-shot mode
+        // can't hit this (fresh process per invocation); daemon mode
+        // must clear them explicitly.
         {
             let host = store.data_mut();
             host.args = Arc::new(
@@ -416,6 +425,8 @@ fn daemon(args: Vec<String>) -> Result<i32> {
             host.print_buf.clear();
             host.captured_stdout.clear();
             host.last_error = None;
+            host.pending_bytes = None;
+            host.pending_strings = None;
         }
 
         // Server-side wall-clock for _start. Bench harness uses this to
