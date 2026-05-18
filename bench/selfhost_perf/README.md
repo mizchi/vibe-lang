@@ -107,7 +107,12 @@ Both guards run in the `selfhost-runtime-parity` CI job (required).
 
 `scripts/bench_selfhost_memory.sh` also accepts
 `VIBE_SELFHOST_MEMORY_RUNTIME=wasmtime-aot` so peak-RSS measurement
-can compare moonrun's v8 heap vs wasmtime's linear memory.
+can compare moonrun's v8 heap vs wasmtime's linear memory. It mirrors
+the perf bench's auto opt-level (`-Oz` for moonrun, `-O3` for
+wasmtime/-aot); override with `VIBE_SELFHOST_MEMORY_WASM_OPT_LEVEL`.
+Both benches share `_build/wasm/opt/` and consult `.opt_level` so a
+runtime switch rebuilds the wasm-opt artifact rather than silently
+benching against the wrong level.
 
 ## Memory: peak RSS + wallclock
 

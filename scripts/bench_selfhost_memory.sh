@@ -25,6 +25,10 @@
 #   VIBE_SELFHOST_MEMORY_RUNTIME      moonrun|wasmtime|wasmtime-aot (default: moonrun)
 #                                     wasmtime-aot pre-compiles stage1 wasm → cwasm
 #                                     and runs through tools/moonrun_wasmtime.
+#   VIBE_SELFHOST_MEMORY_WASM_OPT_LEVEL
+#                                     auto (default) picks -Oz for moonrun,
+#                                     -O3 for wasmtime/-aot. Override with
+#                                     an explicit level (-Oz|-O3|-O4|...).
 #   MOONRUN_WT_BIN                    path to a prebuilt moonrun_wt binary
 set -euo pipefail
 
@@ -160,12 +164,35 @@ ensure_binaries() {
         ;;
     esac
     if [ "$want_opt" -eq 1 ]; then
-      if ! VIBE_SELFHOST_OPT_WASM_PROFILE="$WASM_PROFILE" VIBE_SELFHOST_OPT_WASM_REBUILD="$REBUILD_MODE" bash "$ROOT_DIR/scripts/build_selfhost_wasi_opt.sh" >&2; then
+      # Pick wasm-opt level per runtime (mirrors bench_selfhost_perf.sh):
+      #   moonrun       → -Oz  (v8 interp: instruction count wins)
+      #   wasmtime/-aot → -O3  (Cranelift JIT: loop unrolling pays off)
+      # Override with VIBE_SELFHOST_MEMORY_WASM_OPT_LEVEL=-Oz|-O3|...
+      # Memory RSS is less level-sensitive than wallclock, but keeping
+      # the two benches consistent avoids confusing "perf used -O3 but
+      # memory used -Oz" cross-comparison artifacts.
+      local opt_level="${VIBE_SELFHOST_MEMORY_WASM_OPT_LEVEL:-auto}"
+      if [ "$opt_level" = "auto" ]; then
+        case "$SELFHOST_RUNTIME" in
+          moonrun) opt_level="-Oz" ;;
+          wasmtime|wasmtime-aot) opt_level="-O3" ;;
+          *) opt_level="-Oz" ;;
+        esac
+      fi
+      local opt_marker="$ROOT_DIR/_build/wasm/opt/.opt_level"
+      local rebuild_mode_for_opt="$REBUILD_MODE"
+      if [ ! -f "$opt_marker" ] || [ "$(cat "$opt_marker" 2>/dev/null)" != "$opt_level" ]; then
+        if [ "$rebuild_mode_for_opt" != "always" ]; then
+          rebuild_mode_for_opt="always"
+        fi
+      fi
+      if ! WASM_OPT_LEVEL="$opt_level" VIBE_SELFHOST_OPT_WASM_PROFILE="$WASM_PROFILE" VIBE_SELFHOST_OPT_WASM_REBUILD="$rebuild_mode_for_opt" bash "$ROOT_DIR/scripts/build_selfhost_wasi_opt.sh" >&2; then
         echo "bench-selfhost-memory: wasm-opt step failed; falling back to raw release wasm" >&2
       else
         if [ -f "$COMPILER_WASM_OPT" ]; then COMPILER_WASM="$COMPILER_WASM_OPT"; fi
         if [ -f "$CHECKER_WASM_OPT" ]; then CHECKER_WASM="$CHECKER_WASM_OPT"; fi
-        echo "[selfhost-memory] using wasm-opt'd artifacts under _build/wasm/opt/"
+        echo "$opt_level" > "$opt_marker"
+        echo "[selfhost-memory] using wasm-opt'd artifacts under _build/wasm/opt/ (level=$opt_level for runtime=$SELFHOST_RUNTIME)"
       fi
     fi
     if [ "$SELFHOST_RUNTIME" = "moonrun" ]; then
