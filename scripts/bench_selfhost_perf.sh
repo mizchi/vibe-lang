@@ -23,6 +23,10 @@ MAX_CHECK_RATIO="${VIBE_SELFHOST_PERF_MAX_CHECK_RATIO:-}"
 REBUILD_MODE="${VIBE_SELFHOST_PERF_REBUILD:-auto}"
 WASM_OPT_MODE="${VIBE_SELFHOST_PERF_WASM_OPT:-auto}"
 PROFILE_CALLSTACK="${VIBE_SELFHOST_PERF_PROFILE_CALLSTACK:-}"
+# Runtime that hosts the stage1 wasm. `moonrun` is the legacy default;
+# `wasmtime` and `wasmtime-aot` switch to the moonrun_wt host (TODO #295).
+SELFHOST_RUNTIME="${VIBE_SELFHOST_PERF_RUNTIME:-moonrun}"
+MOONRUN_WT_BIN="${MOONRUN_WT_BIN:-}"
 
 is_positive_int() {
   case "$1" in
@@ -194,20 +198,111 @@ ensure_binaries() {
       ;;
   esac
   if [ "$want_opt" -eq 1 ]; then
-    if ! VIBE_SELFHOST_OPT_WASM_PROFILE="$SELFHOST_WASM_PROFILE" VIBE_SELFHOST_OPT_WASM_REBUILD="$REBUILD_MODE" bash "$PROJECT_ROOT/scripts/build_selfhost_wasi_opt.sh" >&2; then
+    # Pick the wasm-opt level that's best for the chosen runtime.
+    # Empirical (release+wasm-opt, examples/basics + base64 + effects,
+    # mean compile ratio across cases):
+    #   runtime         -Oz    -O3    -O4
+    #   moonrun         2.48   3.11   3.15   (v8 interp: instruction count wins)
+    #   wasmtime-aot    1.02   0.85   0.85   (Cranelift JIT: loop unrolling wins)
+    # -O3 cuts ~17% off the wasmtime-aot ratio vs -Oz on the same wasm,
+    # so use runtime-aware defaults when caller leaves the level on
+    # `auto`. Explicit VIBE_SELFHOST_PERF_WASM_OPT_LEVEL overrides this.
+    local opt_level="${VIBE_SELFHOST_PERF_WASM_OPT_LEVEL:-auto}"
+    if [ "$opt_level" = "auto" ]; then
+      case "$SELFHOST_RUNTIME" in
+        moonrun) opt_level="-Oz" ;;
+        wasmtime|wasmtime-aot) opt_level="-O3" ;;
+        *) opt_level="-Oz" ;;
+      esac
+    fi
+    # Rebuild the wasm-opt artifact if the recorded level doesn't
+    # match the runtime-appropriate level. Otherwise we'd be running
+    # moonrun against -O3 wasm (or vice-versa), distorting the bench.
+    local opt_marker="$PROJECT_ROOT/_build/wasm/opt/.opt_level"
+    local need_rebuild_opt=0
+    if [ ! -f "$opt_marker" ] || [ "$(cat "$opt_marker" 2>/dev/null)" != "$opt_level" ]; then
+      need_rebuild_opt=1
+    fi
+    local rebuild_mode_for_opt="$REBUILD_MODE"
+    if [ "$need_rebuild_opt" -eq 1 ] && [ "$rebuild_mode_for_opt" != "always" ]; then
+      rebuild_mode_for_opt="always"
+    fi
+    if ! WASM_OPT_LEVEL="$opt_level" VIBE_SELFHOST_OPT_WASM_PROFILE="$SELFHOST_WASM_PROFILE" VIBE_SELFHOST_OPT_WASM_REBUILD="$rebuild_mode_for_opt" bash "$PROJECT_ROOT/scripts/build_selfhost_wasi_opt.sh" >&2; then
       echo "bench-selfhost-perf: wasm-opt step failed; falling back to raw wasm" >&2
     else
       local opt_compiler="$PROJECT_ROOT/_build/wasm/opt/vibe_compile_wasi.wasm"
       local opt_checker="$PROJECT_ROOT/_build/wasm/opt/vibe_check_wasi.wasm"
       if [ -f "$opt_compiler" ]; then STAGE1_COMPILER_WASM="$opt_compiler"; fi
       if [ -f "$opt_checker" ]; then STAGE1_CHECKER_WASM="$opt_checker"; fi
-      echo "[selfhost-perf] using wasm-opt'd artifacts under _build/wasm/opt/"
+      echo "$opt_level" > "$opt_marker"
+      echo "[selfhost-perf] using wasm-opt'd artifacts under _build/wasm/opt/ (level=$opt_level for runtime=$SELFHOST_RUNTIME)"
     fi
   fi
-  if ! command -v moonrun >/dev/null 2>&1; then
-    echo "bench-selfhost-perf: moonrun not found" >&2
+  case "$SELFHOST_RUNTIME" in
+    moonrun)
+      if ! command -v moonrun >/dev/null 2>&1; then
+        echo "bench-selfhost-perf: moonrun not found" >&2
+        exit 1
+      fi
+      ;;
+    wasmtime|wasmtime-aot)
+      ensure_moonrun_wt
+      if [ "$SELFHOST_RUNTIME" = "wasmtime-aot" ]; then
+        STAGE1_COMPILER_WASM="$(ensure_cwasm "$STAGE1_COMPILER_WASM")"
+        STAGE1_CHECKER_WASM="$(ensure_cwasm "$STAGE1_CHECKER_WASM")"
+      fi
+      ;;
+    *)
+      echo "bench-selfhost-perf: VIBE_SELFHOST_PERF_RUNTIME must be moonrun|wasmtime|wasmtime-aot" >&2
+      exit 1
+      ;;
+  esac
+}
+
+# Resolve / build the wasmtime host binary. Released as part of TODO #295.
+ensure_moonrun_wt() {
+  if [ -n "${MOONRUN_WT_BIN:-}" ] && [ -x "$MOONRUN_WT_BIN" ]; then
+    return 0
+  fi
+  local default_bin="$PROJECT_ROOT/tools/moonrun_wasmtime/target/release/moonrun_wt"
+  if [ ! -x "$default_bin" ] || [ "$REBUILD_MODE" = "always" ]; then
+    echo "[selfhost-perf] building moonrun_wt (wasmtime host)..."
+    (cd "$PROJECT_ROOT/tools/moonrun_wasmtime" && cargo build --release >&2)
+  fi
+  MOONRUN_WT_BIN="$default_bin"
+  if [ ! -x "$MOONRUN_WT_BIN" ]; then
+    echo "bench-selfhost-perf: moonrun_wt build did not produce $MOONRUN_WT_BIN" >&2
     exit 1
   fi
+}
+
+# Pre-compile `.wasm` → `.cwasm` for the wasmtime-aot runtime path.
+# Skips work when the cwasm is newer than the input. Echoes the cwasm path.
+ensure_cwasm() {
+  local wasm_path="$1"
+  local cwasm_path="${wasm_path%.wasm}.cwasm"
+  if [ ! -f "$cwasm_path" ] || [ "$wasm_path" -nt "$cwasm_path" ]; then
+    echo "[selfhost-perf] AOT-compiling $(basename "$wasm_path")..." >&2
+    "$MOONRUN_WT_BIN" --precompile "$wasm_path" -o "$cwasm_path" >&2
+  fi
+  echo "$cwasm_path"
+}
+
+# Dispatch a stage1 wasm invocation to the configured runtime.
+# Usage: selfhost_runner <wasm-or-cwasm> [args...]
+selfhost_runner() {
+  case "$SELFHOST_RUNTIME" in
+    moonrun)
+      moonrun "$@"
+      ;;
+    wasmtime|wasmtime-aot)
+      "$MOONRUN_WT_BIN" "$@"
+      ;;
+    *)
+      echo "bench-selfhost-perf: unknown runtime $SELFHOST_RUNTIME" >&2
+      return 2
+      ;;
+  esac
 }
 
 main() {
@@ -255,8 +350,9 @@ main() {
   # the measurement loop will re-surface any genuine errors.
   local warmup_case="${cases[0]}"
   echo "[selfhost-perf] warmup: $(realpath --relative-to="$PROJECT_ROOT" "$warmup_case")"
-  moonrun "$STAGE1_COMPILER_WASM" compile-lite --wasm-linear --no-dce --in-memory "$warmup_case" >/dev/null 2>&1 || true
-  moonrun "$STAGE1_CHECKER_WASM" --check --file "$warmup_case" >/dev/null 2>&1 || true
+  echo "[selfhost-perf] runtime=${SELFHOST_RUNTIME}"
+  selfhost_runner "$STAGE1_COMPILER_WASM" compile-lite --wasm-linear --no-dce --in-memory "$warmup_case" >/dev/null 2>&1 || true
+  selfhost_runner "$STAGE1_CHECKER_WASM" --check --file "$warmup_case" >/dev/null 2>&1 || true
 
   local case_path rel_case safe
   for case_path in "${cases[@]}"; do
@@ -291,19 +387,19 @@ main() {
               "$VIBE_BIN" compile-lite --wasm-linear --no-dce --profile-tsv "$profile_file" "${callstack_args[@]+"${callstack_args[@]}"}" "$case_path" -o "$OUT_DIR/tmp/${safe}.${run_idx}.host.wasm")
           elif [ "$phase" = "compile" ] && [ "$runtime" = "selfhost" ] && [ "$COMPILE_MODE" = "e2e" ]; then
             read -r cmd_status elapsed < <(run_timed "$stdout_file" "$stderr_file" \
-              moonrun "$STAGE1_COMPILER_WASM" compile-lite --wasm-linear --no-dce --profile-tsv "$profile_file" "${callstack_args[@]+"${callstack_args[@]}"}" "$case_path" -o "$OUT_DIR/tmp/${safe}.${run_idx}.selfhost.wasm")
+              selfhost_runner "$STAGE1_COMPILER_WASM" compile-lite --wasm-linear --no-dce --profile-tsv "$profile_file" "${callstack_args[@]+"${callstack_args[@]}"}" "$case_path" -o "$OUT_DIR/tmp/${safe}.${run_idx}.selfhost.wasm")
           elif [ "$phase" = "compile" ] && [ "$runtime" = "host" ]; then
             read -r cmd_status elapsed < <(run_timed "$stdout_file" "$stderr_file" \
               "$VIBE_BIN" compile-lite --wasm-linear --no-dce --in-memory --profile-tsv "$profile_file" "${callstack_args[@]+"${callstack_args[@]}"}" "$case_path")
           elif [ "$phase" = "compile" ] && [ "$runtime" = "selfhost" ]; then
             read -r cmd_status elapsed < <(run_timed "$stdout_file" "$stderr_file" \
-              moonrun "$STAGE1_COMPILER_WASM" compile-lite --wasm-linear --no-dce --in-memory --profile-tsv "$profile_file" "${callstack_args[@]+"${callstack_args[@]}"}" "$case_path")
+              selfhost_runner "$STAGE1_COMPILER_WASM" compile-lite --wasm-linear --no-dce --in-memory --profile-tsv "$profile_file" "${callstack_args[@]+"${callstack_args[@]}"}" "$case_path")
           elif [ "$phase" = "check" ] && [ "$runtime" = "host" ]; then
             read -r cmd_status elapsed < <(run_timed "$stdout_file" "$stderr_file" \
               env VIBE_CHECK_DEBUG=0 "$VIBE_BIN" check --profile-tsv "$profile_file" "$case_path")
           else
             read -r cmd_status elapsed < <(run_timed "$stdout_file" "$stderr_file" \
-              moonrun "$STAGE1_CHECKER_WASM" --check --profile-tsv "$profile_file" --file "$case_path")
+              selfhost_runner "$STAGE1_CHECKER_WASM" --check --profile-tsv "$profile_file" --file "$case_path")
           fi
           printf "%s\t%s\t%s\t%d\t%s\t%s\n" "$rel_case" "$phase" "$runtime" "$run_idx" "$elapsed" "$cmd_status" >> "$raw_tsv"
           echo "$elapsed" >> "$sample_file"
@@ -392,9 +488,19 @@ main() {
   total_compile_ratio="$(calc_ratio "$sum_compile_self" "$sum_compile_host")"
   total_check_ratio="$(calc_ratio "$sum_check_self" "$sum_check_host")"
 
+  # `column` ships with bsdmainutils on Debian; not always present on minimal
+  # build images. Fall back to raw TSV if missing.
+  pretty_tsv() {
+    if command -v column >/dev/null 2>&1; then
+      column -t -s $'\t'
+    else
+      cat
+    fi
+  }
+
   echo
   echo "=== selfhost perf summary (median ms) ==="
-  column -t -s $'\t' "$summary_tsv"
+  pretty_tsv <"$summary_tsv"
   echo
   echo "TOTAL compile(host/selfhost): ${sum_compile_host} / ${sum_compile_self} ms (ratio=${total_compile_ratio})"
   echo "TOTAL check(host/selfhost):   ${sum_check_host} / ${sum_check_self} ms (ratio=${total_check_ratio})"
@@ -402,19 +508,19 @@ main() {
   echo "summary: $summary_tsv"
   if [ -s "$stage_summary_tsv" ]; then
     echo "stage summary:"
-    column -t -s $'\t' "$stage_summary_tsv"
+    pretty_tsv <"$stage_summary_tsv"
     echo
     echo "top selfhost hotspots:"
     {
       printf "file\tphase\tstage\tselfhost_us\tratio\n"
       tail -n +2 "$stage_summary_tsv" | sort -t $'\t' -k5,5nr | head -n 8 | awk -F'\t' '{ printf "%s\t%s\t%s\t%s\t%s\n", $1, $2, $3, $5, $6 }'
-    } | column -t -s $'\t'
+    } | pretty_tsv
     echo
     echo "worst selfhost ratios:"
     {
       printf "file\tphase\tstage\thost_us\tselfhost_us\tratio\n"
       tail -n +2 "$stage_summary_tsv" | sort -t $'\t' -k6,6nr | head -n 8
-    } | column -t -s $'\t'
+    } | pretty_tsv
     echo "raw stage:     $raw_stage_tsv"
     echo "stage summary: $stage_summary_tsv"
   fi

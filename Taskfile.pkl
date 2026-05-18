@@ -624,6 +624,52 @@ local benchSelfhostPerf = new Task {
   inputs { ...moonSources; ...scriptSources; "bench/**/*" }
 }
 
+// wasmtime-AOT variant of bench-selfhost-perf. Builds the moonrun_wt host
+// (tools/moonrun_wasmtime), pre-compiles stage1 wasm → cwasm, and reuses
+// the same harness. Selfhost compile ratio drops ~5× on examples/basics.vibe
+// (6.30 → 1.21) versus the moonrun-backed default (TODO #295).
+local benchSelfhostPerfWasmtime = new Task {
+  name = "bench-selfhost-perf-wasmtime"
+  cmd = "VIBE_SELFHOST_PERF_RUNTIME=wasmtime-aot scripts/bench_selfhost_perf.sh $@"
+  acceptsArgs = true
+  inputs {
+    ...moonSources
+    ...scriptSources
+    "bench/**/*"
+    "tools/moonrun_wasmtime/**/*"
+  }
+}
+
+// Output parity gate: moonrun and moonrun_wt must produce byte-identical
+// stage1 compile output on the default case set. Catches regressions in the
+// wasmtime host shim before they show up as ratio noise (TODO #295).
+local testMoonrunWtParity = new Task {
+  name = "test-moonrun-wt-parity"
+  cmd = "scripts/test_moonrun_wt_parity.sh $@"
+  acceptsArgs = true
+  inputs {
+    ...moonSources
+    ...scriptSources
+    "bench/selfhost_perf/cases.txt"
+    "tools/moonrun_wasmtime/**/*"
+  }
+}
+
+// Import-surface drift guard. Dumps moon `--target wasm` imports from the
+// stage1 compile + check artifacts and diffs against
+// `tools/moonrun_wasmtime/expected_imports.txt`. Catches new moonbit
+// toolchain imports before they trap at runtime under moonrun_wt
+// (TODO #295).
+local checkMoonrunWtImports = new Task {
+  name = "check-moonrun-wt-imports"
+  cmd = "scripts/check_moonrun_wt_imports.sh $@"
+  acceptsArgs = true
+  inputs {
+    ...moonSources
+    "tools/moonrun_wasmtime/**/*"
+  }
+}
+
 local benchSelfhostCacheProbe =
   scriptTask("bench-selfhost-cache-probe", "scripts/bench_selfhost_cache_probe.sh")
 local benchSelfhostLoaderHotspots =
@@ -1255,6 +1301,9 @@ tasks {
   benchAdvancedGraph
   benchTypechecker
   benchSelfhostPerf
+  benchSelfhostPerfWasmtime
+  testMoonrunWtParity
+  checkMoonrunWtImports
   benchSelfhostCacheProbe
   benchSelfhostLoaderHotspots
   buildSelfhostWasiOpt

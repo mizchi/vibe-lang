@@ -14,6 +14,106 @@ gates that `just test-selfhost-perf-gate` enforces.
 
 Output: `_build/bench/selfhost_perf/{summary,stage_summary}.{e2e,in-memory}.tsv`.
 
+### wasmtime AOT runtime (TODO #295)
+
+`VIBE_SELFHOST_PERF_RUNTIME=wasmtime-aot` swaps `moonrun` (v8) for a
+small Rust wasmtime host (`tools/moonrun_wasmtime`, binary
+`moonrun_wt`) that re-implements the moonbit `--target wasm` import
+surface (spectest::print_char + `__moonbit_{fs,time,sys}_unstable::*`,
+~32 functions) and Cranelift-JITs the stage1 wasm. With
+`-RUNTIME=wasmtime-aot` the bench driver also `precompile`s each
+stage1 wasm to a `.cwasm` sibling so instantiation skips Cranelift on
+every invocation.
+
+Measured on the default 5-case set (debug profile wasm, no wasm-opt,
+median of 3 runs):
+
+| case                                  | moonrun ratio | wasmtime-aot ratio | ratio speedup |
+| ------------------------------------- | ------------- | ------------------ | ------------- |
+| examples/basics.vibe                  | 6.22          | 1.21               | **5.1×**      |
+| bench/compiler_size/cases/base64.vibe | 5.75          | 1.81               | **3.2×**      |
+| bench/compiler_size/cases/effects.vibe| 5.70          | 0.98               | **5.8×**      |
+| bench/compiler_size/cases/module_export.vibe | 5.31   | 1.00               | **5.3×**      |
+| bench/compiler_size/cases/module_import.vibe | 5.82   | 1.05               | **5.6×**      |
+
+Run via:
+
+```bash
+VIBE_SELFHOST_PERF_RUNTIME=wasmtime-aot pkf run bench-selfhost-perf-wasmtime
+# or directly
+scripts/bench_selfhost_perf.sh
+```
+
+Set `VIBE_SELFHOST_PERF_RUNTIME=wasmtime` to skip the AOT step (loses
+the per-invocation Cranelift cost). Set `MOONRUN_WT_BIN` to point at a
+prebuilt `moonrun_wt` (otherwise the driver builds it on first use).
+
+### Runtime-aware wasm-opt level
+
+Each runtime has a different sweet-spot for binaryen's optimization
+level — interpreters benefit from `-Oz` (instruction count), JITs
+benefit from `-O3` (loop unrolling, inlining). When the bench leaves
+`VIBE_SELFHOST_PERF_WASM_OPT_LEVEL` on `auto` (the default), the
+driver picks per-runtime:
+
+| runtime         | default level | rationale                                |
+| --------------- | ------------- | ---------------------------------------- |
+| moonrun         | `-Oz`         | v8 interp: instruction count wins        |
+| wasmtime / -aot | `-O3`         | Cranelift JIT: loop unrolling pays off   |
+
+Measured (release, examples/basics + base64 + effects, mean compile ratio):
+
+| wasm-opt level | moonrun | wasmtime-aot |
+| -------------- | ------- | ------------ |
+| `-Oz`          | 2.48    | 1.02         |
+| `-O3`          | 3.11    | **0.85**     |
+| `-O4`          | 3.15    | 0.85         |
+
+With auto level on wasmtime-aot the TOTAL compile ratio drops to
+**0.80** (selfhost now beats host on these cases). The driver also
+writes `_build/wasm/opt/.opt_level` so a runtime switch triggers a
+single rebuild of the opt artifact, never a silent level mismatch.
+
+Override with `VIBE_SELFHOST_PERF_WASM_OPT_LEVEL=-Oz|-O3|-O4|-Os|...`.
+
+The same wins survive on the canonical CI artifact (release profile +
+binaryen `wasm-opt -Oz`):
+
+| case (release+Oz)                     | moonrun ratio | wasmtime-aot ratio |
+| ------------------------------------- | ------------- | ------------------ |
+| examples/basics.vibe                  | 2.64          | 1.14               |
+| bench/compiler_size/cases/base64.vibe | 3.30          | 1.14               |
+| bench/compiler_size/cases/effects.vibe| 2.48          | 0.98               |
+| bench/compiler_size/cases/module_export.vibe | 2.49   | 0.95               |
+| bench/compiler_size/cases/module_import.vibe | 2.56   | 1.00               |
+
+Average ratio drop ~2.6× on opt'd wasm (still above the 1.5-2× target).
+
+**Output parity**: `scripts/test_moonrun_wt_parity.sh` (`pkf run
+test-moonrun-wt-parity`) compiles each case under both runtimes and
+verifies the emitted `.wasm` is byte-identical. As of 2026-05-17 all
+5 default cases match SHA-256 on both debug and release+Oz profiles.
+
+**Import drift guard**: `scripts/check_moonrun_wt_imports.sh` (`pkf
+run check-moonrun-wt-imports`) dumps the `--target wasm` import
+surface from stage1 compile + check artifacts and diffs against
+`tools/moonrun_wasmtime/expected_imports.txt`. Fails if moonbit ever
+emits a new host import we haven't wired into moonrun_wt's
+`register_imports()`. Refresh with
+`scripts/check_moonrun_wt_imports.sh --update` after implementing
+the new import.
+
+Both guards run in the `selfhost-runtime-parity` CI job (required).
+
+`scripts/bench_selfhost_memory.sh` also accepts
+`VIBE_SELFHOST_MEMORY_RUNTIME=wasmtime-aot` so peak-RSS measurement
+can compare moonrun's v8 heap vs wasmtime's linear memory. It mirrors
+the perf bench's auto opt-level (`-Oz` for moonrun, `-O3` for
+wasmtime/-aot); override with `VIBE_SELFHOST_MEMORY_WASM_OPT_LEVEL`.
+Both benches share `_build/wasm/opt/` and consult `.opt_level` so a
+runtime switch rebuilds the wasm-opt artifact rather than silently
+benching against the wrong level.
+
 ## Memory: peak RSS + wallclock
 
 Driver: `scripts/bench_selfhost_memory.sh` → `just bench-selfhost-memory`.
@@ -89,15 +189,8 @@ since instruction count is no longer the bottleneck).
 | check wasm size     | —       | 3.04 MB          | **0.91 MB**          | -70%              |
 
 The remaining gap is dominated by `moonrun`'s wasm interpretation
-overhead; bigger wins after this point require a faster runtime
-(wasmtime AOT, blocked on WASI-binding reshape — selfhost wasi entry
-imports `spectest::print_char` plus ~30 `__moonbit_fs_unstable::*`
-ABI functions; the project has a parallel `selfhost_compiler.wasm`
-component path under `scripts/build_selfhost_cli_direct_component.sh`
-that runs under wasmtime via WASI Preview2 + a small `Env`/`Fs`
-shim, but exercising it requires `wac` + a Rust adapter component
-build that isn't wired into the bench drivers yet). Tracked under
-TODO #295.
+overhead. The `wasmtime-aot` runtime variant addresses this directly
+(see "wasmtime AOT runtime" below for the measured ~5× ratio drop).
 
 ### Other levers surveyed (already in place, no new work needed)
 
@@ -250,7 +343,9 @@ Out of this session's scope. The underlying improvement targets are:
    the bench harness only compile the bench body, removing the
    transitive selfhost compile from the hot path entirely.
 
-Tracked under TODO #295 ("selfhost perf gap cutover 水準まで").
+TODO #295 ("selfhost perf gap cutover 水準まで") originally tracked
+both items. The wasmtime AOT runtime (above) addresses lever #4 and
+lever #2 partially.
 
 ## String-keyed lookup: postmortem on the "hash index" attempt
 
