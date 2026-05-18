@@ -592,20 +592,33 @@ jobs:
         env:
           VIBE_USE_SESSION_HTTP: '0'
         # Switched to wasmtime-aot default (#402 Phase 2).
-        # Local on KPI cases (release+wasm-opt-O3, runs=3, median):
-        #   per-case max compile ratio  1.03   (effects.vibe → 0.84)
-        #   per-case max check  ratio   0.12   (module_import → 0.03)
-        # Caps below: compile 2.0 / check 0.5 (was 10.0 / 8.5 under
-        # moonrun). Sized to catch genuine 2× regressions toward the
-        # old moonrun numbers (~2.7 compile / 0.15 check) while
-        # absorbing CI's ~1.5× host slowdown vs local. Bumping
-        # compile to 2.0 (not 1.5) avoids tripping on the upper end
-        # of normal CI variance — the floor is essentially 1.0 here,
-        # so headroom matters more than under moonrun where the
-        # floor was 2-3×.
+        # KPI cases, release + wasm-opt -O3, runs=3 median, with
+        # VIBE_USE_SESSION_HTTP=0 (matches this step's env):
+        #
+        #          TOTAL compile  TOTAL check  per-case worst check
+        #   local      0.918         2.522        3.10 (effects)
+        #   CI         1.000         2.878        13.3 (effects, total)
+        #
+        # The per-case `check/total` numbers swing wide because host
+        # check time per case is tiny (~10 ms) without session-http —
+        # variance hits hard in % terms. The harness gates on TOTAL
+        # ratio across cases, which is what these caps target.
+        #
+        # Caps: compile 2.0 (CI 1.00 → 2× headroom), check 5.0
+        # (CI 2.88 → 1.74× headroom). Both catch moonrun-class
+        # regressions (moonrun CI baseline was ~5-8 check, ~2.7
+        # compile) while absorbing CI's ±30% variance band.
+        #
+        # NOTE: an early version of this step used check cap 0.5
+        # based on a local measurement that accidentally included
+        # session-http daemon spawn cost in `host_check_ms` (~1100
+        # ms/case), which made the ratio look ~30× lower than it
+        # actually is under the CI env. Don't repeat that — keep
+        # VIBE_USE_SESSION_HTTP=0 set wherever this bench runs.
+        #
         # Opt back into moonrun (e.g. no rust toolchain) with
         # `VIBE_SELFHOST_PERF_RUNTIME=moonrun` and caps 10.0 / 8.5.
-        run: VIBE_SELFHOST_PERF_RUNS=3 VIBE_SELFHOST_PERF_MAX_COMPILE_RATIO=2.0 VIBE_SELFHOST_PERF_MAX_CHECK_RATIO=0.5 VIBE_SELFHOST_PERF_CASES_FILE=bench/selfhost_perf/kpi_cases.txt scripts/bench_selfhost_perf.sh
+        run: VIBE_SELFHOST_PERF_RUNS=3 VIBE_SELFHOST_PERF_MAX_COMPILE_RATIO=2.0 VIBE_SELFHOST_PERF_MAX_CHECK_RATIO=5.0 VIBE_SELFHOST_PERF_CASES_FILE=bench/selfhost_perf/kpi_cases.txt scripts/bench_selfhost_perf.sh
 
       - name: Save stage1 cwasm cache
         if: always() && steps.cwasm-cache-kpi.outputs.cache-hit != 'true'

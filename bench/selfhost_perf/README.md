@@ -27,9 +27,11 @@ instantiations skip Cranelift entirely.
 
 Opt back into the legacy `moonrun` (v8 interp) path with
 `VIBE_SELFHOST_PERF_RUNTIME=moonrun` — useful in environments
-without a rust toolchain. The CI KPI step uses `wasmtime-aot`;
-caps drop accordingly (compile 2.0 / check 0.5 instead of 10.0 /
-8.5).
+without a rust toolchain. The CI KPI step uses `wasmtime-aot` with
+tightened TOTAL-ratio caps: `compile 2.0 / check 5.0` (was 10.0 /
+8.5 under moonrun). Sized against measured CI baselines (compile
+~1.00, check ~2.88 with `VIBE_USE_SESSION_HTTP=0`) to catch
+moonrun-class regressions while absorbing CI's ±30% variance band.
 
 Measured on the default 5-case set (debug profile wasm, no wasm-opt,
 median of 3 runs):
