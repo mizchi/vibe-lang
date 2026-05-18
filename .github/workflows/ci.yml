@@ -546,30 +546,86 @@ jobs:
         with:
           ripgrep: 'true'
           wasmtime: 'true'
+          moon-build-cache: 'true'
           node-version: '24'
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry (moonrun_wt)
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/git
+            tools/moonrun_wasmtime/target
+          key: cargo-moonrun-wt-${{ runner.os }}-${{ hashFiles('tools/moonrun_wasmtime/Cargo.toml', 'tools/moonrun_wasmtime/src/**') }}
+          restore-keys: cargo-moonrun-wt-${{ runner.os }}-
+
+      - name: Restore stage1 cwasm cache
+        id: cwasm-cache-kpi
+        uses: actions/cache/restore@v5
+        with:
+          path: _build/wasm/opt/*.cwasm
+          key: stage1-cwasm-${{ runner.os }}-wt:${{ hashFiles('tools/moonrun_wasmtime/Cargo.toml', 'tools/moonrun_wasmtime/src/**') }}-wasm:${{ hashFiles('.moon-version', 'moon.mod.json', '**/moon.pkg.json', 'src/**/*.mbt') }}
 
       - name: Build vibe CLI (native)
         run: VIBE_CLI_RELEASE=1 VIBE_CLI_FORCE=1 bash -c 'source scripts/ensure_native_cli.sh'
 
+      - name: Build moonrun_wt (wasmtime host)
+        run: cargo build --release --manifest-path tools/moonrun_wasmtime/Cargo.toml
+
+      # Touch restored cwasm AFTER moon may have rewritten the wasm,
+      # so the perf script's mtime check reuses the cached precompile.
+      # Same invariant as `selfhost-runtime-parity` job: cache key bakes
+      # every input that could change cwasm content.
+      - name: Mark cwasm fresh on cache hit
+        if: steps.cwasm-cache-kpi.outputs.cache-hit == 'true'
+        run: |
+          set -e
+          for f in _build/wasm/opt/vibe_compile_wasi.cwasm _build/wasm/opt/vibe_check_wasi.cwasm; do
+            [ -f "$f" ] && touch "$f" && echo "[cwasm-cache] reused $f"
+          done
+
       - name: Run selfhost perf KPI
         env:
           VIBE_USE_SESSION_HTTP: '0'
-        # runs=3 (was 1): a single sample on shared CI runners is too
-        # noisy — local with runs=1 measures ~2.8 / ~4.0 stably, but CI
-        # has been tripping the per-case 7.0 check cap when one outlier
-        # measurement spikes to ~7.5+ (typically module_export.vibe).
-        # Median of 3 absorbs the spike. Per-step cost goes from ~30s
-        # to ~90s — fine inside the job's existing budget.
-        # Budget 10.0 / 8.5 (was 10.0 / 7.0, before that 8.0 / 5.5): a
-        # fresh measurement on this branch's box puts module_export.vibe
-        # at 5.625 check_ratio locally, which scales to ~8.4 on the
-        # 1.5×-slower CI runners and was tripping the 7.0 cap on
-        # otherwise-identical snapshot-only diffs. Bumping to 8.5
-        # absorbs that drift while still flagging genuine 2×
-        # regressions (which land at 11+). The warmup pass in
-        # `bench_selfhost_perf.sh` already eliminated the cold-start
-        # outlier (was 37×).
-        run: VIBE_SELFHOST_PERF_RUNS=3 VIBE_SELFHOST_PERF_MAX_COMPILE_RATIO=10.0 VIBE_SELFHOST_PERF_MAX_CHECK_RATIO=8.5 VIBE_SELFHOST_PERF_CASES_FILE=bench/selfhost_perf/kpi_cases.txt scripts/bench_selfhost_perf.sh
+        # Switched to wasmtime-aot default (#402 Phase 2).
+        # KPI cases, release + wasm-opt -O3, runs=3 median, with
+        # VIBE_USE_SESSION_HTTP=0 (matches this step's env):
+        #
+        #          TOTAL compile  TOTAL check  per-case worst check
+        #   local      0.918         2.522        3.10 (effects)
+        #   CI         1.000         2.878        13.3 (effects, total)
+        #
+        # The per-case `check/total` numbers swing wide because host
+        # check time per case is tiny (~10 ms) without session-http —
+        # variance hits hard in % terms. The harness gates on TOTAL
+        # ratio across cases, which is what these caps target.
+        #
+        # Caps: compile 2.0 (CI 1.00 → 2× headroom), check 5.0
+        # (CI 2.88 → 1.74× headroom). Both catch moonrun-class
+        # regressions (moonrun CI baseline was ~5-8 check, ~2.7
+        # compile) while absorbing CI's ±30% variance band.
+        #
+        # NOTE: an early version of this step used check cap 0.5
+        # based on a local measurement that accidentally included
+        # session-http daemon spawn cost in `host_check_ms` (~1100
+        # ms/case), which made the ratio look ~30× lower than it
+        # actually is under the CI env. Don't repeat that — keep
+        # VIBE_USE_SESSION_HTTP=0 set wherever this bench runs.
+        #
+        # Opt back into moonrun (e.g. no rust toolchain) with
+        # `VIBE_SELFHOST_PERF_RUNTIME=moonrun` and caps 10.0 / 8.5.
+        run: VIBE_SELFHOST_PERF_RUNS=3 VIBE_SELFHOST_PERF_MAX_COMPILE_RATIO=2.0 VIBE_SELFHOST_PERF_MAX_CHECK_RATIO=5.0 VIBE_SELFHOST_PERF_CASES_FILE=bench/selfhost_perf/kpi_cases.txt scripts/bench_selfhost_perf.sh
+
+      - name: Save stage1 cwasm cache
+        if: always() && steps.cwasm-cache-kpi.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: _build/wasm/opt/*.cwasm
+          key: ${{ steps.cwasm-cache-kpi.outputs.cache-primary-key }}
 
       - name: Run selfhost suite coverage gate
         env:
