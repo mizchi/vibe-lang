@@ -33,6 +33,12 @@ PROFILE_CALLSTACK="${VIBE_SELFHOST_PERF_PROFILE_CALLSTACK:-}"
 # (e.g. environments without rust + cargo).
 SELFHOST_RUNTIME="${VIBE_SELFHOST_PERF_RUNTIME:-wasmtime-aot}"
 MOONRUN_WT_BIN="${MOONRUN_WT_BIN:-}"
+# Opt-in: use moonrun_wt --daemon for selfhost check requests, batching
+# all RUNS through one warm wasm instance. Eliminates the per-invocation
+# `ensure_builtin_modules` cold-start cost (#400). Only applies when
+# SELFHOST_RUNTIME ∈ {wasmtime, wasmtime-aot}. Median across RUNS still
+# discards the first (cold) request's outlier when RUNS ≥ 3.
+CHECK_DAEMON_MODE="${VIBE_SELFHOST_PERF_CHECK_DAEMON:-0}"
 
 is_positive_int() {
   case "$1" in
@@ -294,6 +300,111 @@ ensure_cwasm() {
   echo "$cwasm_path"
 }
 
+# Run RUNS check requests through a single warm `moonrun_wt --daemon`
+# process and populate the per-iteration output files the main loop
+# would otherwise produce. Uses the daemon's per-request `elapsed_us`
+# JSON field for timing (excludes stdin/stdout protocol overhead),
+# which is the cleanest signal of in-wasm work time.
+#
+# Args:
+#   $1 = case path           (e.g. /abs/path/examples/basics.vibe)
+#   $2 = rel case            (e.g. examples/basics.vibe)  — for logs only
+#   $3 = safe-name prefix    (matches the main loop's $safe)
+#   $4 = wasm path           (cwasm if available)
+#   $5 = RUNS
+#   $6 = out tmp dir         ($OUT_DIR/tmp)
+#   $7 = raw_tsv             (appended)
+#   $8 = raw_stage_tsv       (appended)
+#
+# Produces the same files as the main loop's iteration body so the
+# downstream median + summary logic stays unchanged:
+#   $sample_file       — one elapsed_ms per line
+#   $profile_file × N  — per-iteration --profile-tsv outputs
+#   $stdout_file × N   — per-iteration captured wasm stdout
+run_check_batch_daemon() {
+  local case_path="$1"
+  local rel_case="$2"
+  local safe="$3"
+  local wasm_path="$4"
+  local runs="$5"
+  local tmp_dir="$6"
+  local raw_tsv="$7"
+  local raw_stage_tsv="$8"
+
+  local sample_file="$OUT_DIR/raw/${safe}.check.selfhost.txt"
+  : > "$sample_file"
+  for stage in load type total; do
+    : > "$OUT_DIR/raw/${safe}.check_stage.selfhost.${stage}.txt"
+  done
+
+  # Build the request batch. Each request uses a distinct profile_tsv
+  # path so per-iteration stage timings stay separable.
+  local req_file="${tmp_dir}/${safe}.check.daemon.requests.jsonl"
+  local resp_file="${tmp_dir}/${safe}.check.daemon.responses.jsonl"
+  : > "$req_file"
+  local run_idx=1
+  while [ "$run_idx" -le "$runs" ]; do
+    local profile_file="${tmp_dir}/${safe}.check.selfhost.${run_idx}.profile.tsv"
+    # JSON-encode args via python to handle paths with shell-unsafe chars.
+    python3 -c "import json,sys; print(json.dumps({'args':sys.argv[1:]}))" \
+      --check --profile-tsv "$profile_file" --file "$case_path" >> "$req_file"
+    run_idx=$((run_idx + 1))
+  done
+
+  # Run daemon. Failure here aborts the bench — fall-through to a
+  # one-shot fallback would mask daemon regressions silently.
+  if ! "$MOONRUN_WT_BIN" --daemon "$wasm_path" < "$req_file" > "$resp_file" 2>"${tmp_dir}/${safe}.check.daemon.stderr"; then
+    echo "bench-selfhost-perf: daemon run failed (check/${rel_case}); stderr at ${tmp_dir}/${safe}.check.daemon.stderr" >&2
+    exit 1
+  fi
+
+  # Parse responses, write per-iteration stdout files + sample line.
+  # Profile_tsv files were written by the daemon directly.
+  python3 - "$resp_file" "$tmp_dir" "$safe" "$sample_file" <<'PY'
+import json, os, sys
+resp_file, tmp_dir, safe, sample_file = sys.argv[1:5]
+with open(sample_file, 'w') as sf, open(resp_file) as rf:
+    for i, line in enumerate(rf, start=1):
+        line = line.strip()
+        if not line: continue
+        d = json.loads(line)
+        if d.get('exit_code', 0) != 0 or 'error' in d:
+            sys.stderr.write(f"bench-selfhost-perf: daemon req {i} non-zero exit: {d.get('exit_code')} err={d.get('error','?')}\n")
+            sys.exit(1)
+        elapsed_us = int(d['elapsed_us'])
+        elapsed_ms = elapsed_us // 1000
+        sf.write(f"{elapsed_ms}\n")
+        # Emit captured stdout to match what run_timed would have written.
+        stdout_path = os.path.join(tmp_dir, f"{safe}.check.selfhost.{i}.stdout")
+        with open(stdout_path, 'w') as so:
+            so.write(d.get('stdout', ''))
+        # Empty stderr file (daemon doesn't surface per-request stderr).
+        stderr_path = os.path.join(tmp_dir, f"{safe}.check.selfhost.{i}.stderr")
+        open(stderr_path, 'w').close()
+PY
+
+  # Append raw_tsv + raw_stage_tsv rows, mirroring the main loop's
+  # bookkeeping so downstream aggregation sees identical structure.
+  run_idx=1
+  while [ "$run_idx" -le "$runs" ]; do
+    local elapsed
+    elapsed="$(sed -n "${run_idx}p" "$sample_file")"
+    printf "%s\t%s\t%s\t%d\t%s\t%s\n" "$rel_case" "check" "selfhost" "$run_idx" "$elapsed" "0" >> "$raw_tsv"
+    local profile_file="${tmp_dir}/${safe}.check.selfhost.${run_idx}.profile.tsv"
+    if [ ! -f "$profile_file" ]; then
+      echo "bench-selfhost-perf: missing stage profile (check/selfhost daemon): $rel_case run=$run_idx" >&2
+      exit 1
+    fi
+    while IFS=$'\t' read -r stage ms us; do
+      if [ "$stage" = "stage" ] || [ -z "$stage" ]; then continue; fi
+      if [ -z "$us" ]; then us="$((ms * 1000))"; fi
+      printf "%s\t%s\t%s\t%d\t%s\t%s\t%s\n" "$rel_case" "check" "selfhost" "$run_idx" "$stage" "$ms" "$us" >> "$raw_stage_tsv"
+      echo "$us" >> "$OUT_DIR/raw/${safe}.check_stage.selfhost.${stage}.txt"
+    done < "$profile_file"
+    run_idx=$((run_idx + 1))
+  done
+}
+
 # Dispatch a stage1 wasm invocation to the configured runtime.
 # Usage: selfhost_runner <wasm-or-cwasm> [args...]
 selfhost_runner() {
@@ -366,6 +477,19 @@ main() {
     safe="$(echo "$rel_case" | tr '/: ' '___')"
     for phase in compile check; do
       for runtime in host selfhost; do
+        # Daemon fast-path for check/selfhost: one warm wasm instance
+        # handles all RUNS requests, skipping the per-invocation
+        # ensure_builtin_modules cold-start cost. Produces the same
+        # per-iteration files as the regular loop body so downstream
+        # aggregation is unchanged.
+        if [ "$phase" = "check" ] && [ "$runtime" = "selfhost" ] \
+           && [ "$CHECK_DAEMON_MODE" = "1" ] \
+           && { [ "$SELFHOST_RUNTIME" = "wasmtime" ] || [ "$SELFHOST_RUNTIME" = "wasmtime-aot" ]; }; then
+          run_check_batch_daemon "$case_path" "$rel_case" "$safe" \
+            "$STAGE1_CHECKER_WASM" "$RUNS" "$OUT_DIR/tmp" \
+            "$raw_tsv" "$raw_stage_tsv"
+          continue
+        fi
         local run_idx=1
         local sample_file="$OUT_DIR/raw/${safe}.${phase}.${runtime}.txt"
         : > "$sample_file"

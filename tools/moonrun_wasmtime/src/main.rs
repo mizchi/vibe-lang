@@ -10,6 +10,7 @@
 //   moonrun_wt <wasm|cwasm> [args...]              run, forward args
 //   moonrun_wt --precompile <wasm> [-o out.cwasm]  AOT compile only
 //   moonrun_wt --dump-imports <wasm>               list import surface (drift guard)
+//   moonrun_wt --daemon <wasm|cwasm>               long-running mode (#400)
 //   moonrun_wt --help
 
 use std::any::Any;
@@ -81,6 +82,12 @@ struct HostState {
     pending_bytes: Option<Arc<Vec<u8>>>,
     pending_strings: Option<Arc<Vec<String>>>,
     limits: StoreLimits,
+    // Daemon mode: when set, print_char's flushed lines go into
+    // captured_stdout instead of host stdout. The daemon loop emits
+    // them as part of the per-request JSON response envelope so they
+    // don't get interleaved with the daemon's own protocol traffic.
+    capture_stdout: bool,
+    captured_stdout: Vec<u8>,
 }
 
 impl HostState {
@@ -92,6 +99,8 @@ impl HostState {
             pending_bytes: None,
             pending_strings: None,
             limits,
+            capture_stdout: false,
+            captured_stdout: Vec::new(),
         }
     }
 
@@ -109,6 +118,7 @@ fn print_help() {
            moonrun_wt <wasm|cwasm> [args...]\n\
            moonrun_wt --precompile <input.wasm> [-o <output.cwasm>]\n\
            moonrun_wt --dump-imports <input.wasm>\n\
+           moonrun_wt --daemon <wasm|cwasm>\n\
            moonrun_wt --help\n\
          \n\
          ENV:\n\
@@ -289,6 +299,205 @@ fn run(args: Vec<String>) -> Result<i32> {
     }
 }
 
+// Long-running daemon: instantiate the wasm module ONCE and reuse the
+// store/instance across many requests. moonbit module-level state
+// (top-level let-bindings, e.g. `default_typecheck_session` which holds
+// `cached_builtins_env`) survives between requests, so the cold-start
+// cost of `ensure_builtin_modules` (#400, ~125ms/case) is paid only
+// once instead of every invocation.
+//
+// Protocol: line-delimited JSON over stdin/stdout.
+//   request  ← stdin   {"args": ["--check", "file.vibe"]}
+//   response → stdout  {"exit_code": 0, "stdout": "<captured wasm stdout>"}
+//   EOF on stdin → daemon exits cleanly.
+//
+// Wasm stdout is captured (HostState.capture_stdout) so it doesn't
+// interleave with the protocol on stdout. Diagnostic / panic messages
+// from moonrun_wt itself still go to stderr.
+fn daemon(args: Vec<String>) -> Result<i32> {
+    if args.is_empty() {
+        bail!("--daemon: missing <wasm|cwasm> argument");
+    }
+    let wasm_path = &args[0];
+
+    let cfg = engine_config();
+    let engine = Engine::new(&cfg)?;
+    let module = load_module(&engine, wasm_path)?;
+
+    let memory_mb: usize = std::env::var("MOONRUN_WT_MEMORY_MB")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8192);
+    let limits = StoreLimitsBuilder::new()
+        .memory_size(memory_mb * 1024 * 1024)
+        .build();
+
+    // Empty initial args; daemon will populate per-request before each
+    // `_start` call. capture_stdout is set true so per-request output
+    // accumulates in HostState.captured_stdout for the JSON envelope.
+    let mut state = HostState::new(vec!["moonrun_wt".to_string()], limits);
+    state.capture_stdout = true;
+    let mut store = Store::new(&engine, state);
+    store.limiter(|s| &mut s.limits);
+
+    let mut linker = Linker::new(&engine);
+    register_imports(&mut linker)?;
+
+    let instance = linker.instantiate(&mut store, &module)?;
+    let start: TypedFunc<(), ()> = instance.get_typed_func(&mut store, "_start")?;
+
+    eprintln!("moonrun_wt: daemon ready ({} loaded)", wasm_path);
+
+    use std::io::BufRead;
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    let mut req_id: u64 = 0;
+
+    for line_res in stdin.lock().lines() {
+        let line = match line_res {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("moonrun_wt: daemon stdin read failed: {e}");
+                break;
+            }
+        };
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        req_id += 1;
+
+        // Parse request. Accept either {"args": [...]} or a bare ["a","b"]
+        // array for convenience.
+        let req_args_res: Result<Vec<String>> = (|| {
+            let v: serde_json::Value = serde_json::from_str(trimmed)
+                .map_err(|e| format_err!("bad request json: {e}"))?;
+            let arr = if v.is_array() {
+                v
+            } else if let Some(a) = v.get("args").cloned() {
+                a
+            } else {
+                bail!("request missing `args` array");
+            };
+            let arr = arr.as_array().ok_or_else(|| format_err!("`args` not array"))?;
+            arr.iter()
+                .map(|x| {
+                    x.as_str()
+                        .map(|s| s.to_string())
+                        .ok_or_else(|| format_err!("arg not string"))
+                })
+                .collect()
+        })();
+
+        let req_args = match req_args_res {
+            Ok(a) => a,
+            Err(e) => {
+                let resp = serde_json::json!({
+                    "req_id": req_id,
+                    "exit_code": 2,
+                    "stdout": "",
+                    "error": format!("{e}"),
+                });
+                let mut h = stdout.lock();
+                writeln!(h, "{}", resp).ok();
+                h.flush().ok();
+                continue;
+            }
+        };
+
+        // Reset per-request state. Keep capture_stdout=true.
+        //
+        // `pending_bytes` / `pending_strings` are the host-side staging
+        // slots for `read_file_to_bytes_new` → `get_file_content` and
+        // `read_dir_new` → `get_dir_files`. If the previous request
+        // populated one of these but trapped / early-exited before the
+        // matching `get_*` consumer ran, the value would leak into this
+        // request and surface as stale file/dir data. One-shot mode
+        // can't hit this (fresh process per invocation); daemon mode
+        // must clear them explicitly.
+        {
+            let host = store.data_mut();
+            host.args = Arc::new(
+                std::iter::once("moonrun_wt".to_string())
+                    .chain(req_args.into_iter())
+                    .collect(),
+            );
+            host.print_buf.clear();
+            host.captured_stdout.clear();
+            host.last_error = None;
+            host.pending_bytes = None;
+            host.pending_strings = None;
+        }
+
+        // Server-side wall-clock for _start. Bench harness uses this to
+        // attribute per-request elapsed time without paying for the JSON
+        // protocol round-trip (which would otherwise inflate measurements
+        // by ~1ms/req of stdin/stdout copying).
+        let t0 = std::time::Instant::now();
+        let result = start.call(&mut store, ());
+        let elapsed_us = t0.elapsed().as_micros() as u64;
+
+        // Flush any leftover print_buf bytes that didn't end on a newline.
+        {
+            let host = store.data_mut();
+            if !host.print_buf.is_empty() {
+                let s = String::from_utf16_lossy(&host.print_buf);
+                host.print_buf.clear();
+                host.captured_stdout.extend_from_slice(s.as_bytes());
+            }
+        }
+
+        let (exit_code, err_msg): (i32, Option<String>) = match result {
+            Ok(()) => (0, None),
+            Err(e) => {
+                if let Some(ExitTrap(code)) = e.downcast_ref::<ExitTrap>() {
+                    (*code, None)
+                } else {
+                    // wasm trap. Store may be in a poisoned state after
+                    // a trap — wasmtime allows reuse for non-trap errors
+                    // but traps generally leave the instance in an
+                    // unrecoverable state. Surface the error and exit
+                    // the daemon so the client gets a clean failure
+                    // instead of silently-garbage subsequent responses.
+                    let msg = format!("{e:?}");
+                    let captured = std::mem::take(&mut store.data_mut().captured_stdout);
+                    let captured_str = String::from_utf8_lossy(&captured).to_string();
+                    let resp = serde_json::json!({
+                        "req_id": req_id,
+                        "exit_code": 1,
+                        "stdout": captured_str,
+                        "error": msg,
+                        "daemon_aborting": true,
+                    });
+                    let mut h = stdout.lock();
+                    writeln!(h, "{}", resp).ok();
+                    h.flush().ok();
+                    eprintln!("moonrun_wt: daemon aborting after wasm trap: {e:?}");
+                    return Ok(1);
+                }
+            }
+        };
+
+        let captured = std::mem::take(&mut store.data_mut().captured_stdout);
+        let captured_str = String::from_utf8_lossy(&captured).to_string();
+        let mut resp = serde_json::json!({
+            "req_id": req_id,
+            "exit_code": exit_code,
+            "stdout": captured_str,
+            "elapsed_us": elapsed_us,
+        });
+        if let Some(msg) = err_msg {
+            resp["error"] = serde_json::Value::String(msg);
+        }
+        let mut h = stdout.lock();
+        writeln!(h, "{}", resp).ok();
+        h.flush().ok();
+    }
+
+    eprintln!("moonrun_wt: daemon shutting down (stdin EOF, handled {req_id} requests)");
+    Ok(0)
+}
+
 // Pull the MoonValue clone-bits we need without holding the Caller's
 // immutable borrow across the next ExternRef::new mutable borrow.
 fn read_str(caller: &Caller<'_, HostState>, h: Option<Rooted<ExternRef>>) -> Result<String> {
@@ -369,9 +578,13 @@ fn register_imports(linker: &mut Linker<HostState>) -> Result<()> {
             if cu == 0x0A {
                 let s = String::from_utf16_lossy(&host.print_buf);
                 host.print_buf.clear();
-                let stdout = std::io::stdout();
-                let mut h = stdout.lock();
-                let _ = h.write_all(s.as_bytes());
+                if host.capture_stdout {
+                    host.captured_stdout.extend_from_slice(s.as_bytes());
+                } else {
+                    let stdout = std::io::stdout();
+                    let mut h = stdout.lock();
+                    let _ = h.write_all(s.as_bytes());
+                }
             }
         },
     )?;
@@ -786,6 +999,16 @@ fn main() {
             std::process::exit(1);
         }
         return;
+    }
+    if args.first().map(|s| s.as_str()) == Some("--daemon") {
+        let daemon_args: Vec<String> = args.iter().skip(1).cloned().collect();
+        match daemon(daemon_args) {
+            Ok(code) => std::process::exit(code),
+            Err(e) => {
+                eprintln!("moonrun_wt: daemon failed: {e:?}");
+                std::process::exit(1);
+            }
+        }
     }
     if args.first().map(|s| s.as_str()) == Some("--precompile") {
         let mut iter = args.iter().skip(1);
