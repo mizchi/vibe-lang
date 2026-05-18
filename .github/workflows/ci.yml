@@ -629,10 +629,21 @@ jobs:
         # variance hits hard in % terms. The harness gates on TOTAL
         # ratio across cases, which is what these caps target.
         #
-        # Caps: compile 2.0 (CI 1.00 → 2× headroom), check 5.0
-        # (with daemon mode CI is expected ≪ 1.0, ample headroom;
-        # the cap still catches moonrun-class regressions if someone
-        # opts back into moonrun via VIBE_SELFHOST_PERF_RUNTIME).
+        # Caps after #405 (daemon mode landed):
+        #   compile 1.5  (local 0.901 → 1.66× headroom)
+        #   check   1.0  (local 0.096 → 10× headroom)
+        #
+        # First tightening pass — we only have one CI data point on
+        # main under daemon mode (#405 merge) so headroom stays
+        # generous to absorb the ±20-30% CI variance we typically
+        # see vs local. The 1.0 check cap still catches a
+        # moonrun-class regression: the moonrun-baseline check_ratio
+        # was 2.88×, so anything that pushes back near that path
+        # trips the gate.
+        #
+        # Follow-up tightening (e.g. compile 1.2, check 0.5) belongs
+        # in a separate PR once we have 5-10 CI runs of daemon-mode
+        # numbers to characterize variance.
         #
         # NOTE: an early version of this step used check cap 0.5
         # based on a local measurement that accidentally included
@@ -643,8 +654,12 @@ jobs:
         #
         # Opt back into moonrun (e.g. no rust toolchain) with
         # `VIBE_SELFHOST_PERF_RUNTIME=moonrun` (daemon-mode is a
-        # no-op for moonrun) and caps 10.0 / 8.5.
-        run: VIBE_SELFHOST_PERF_RUNS=3 VIBE_SELFHOST_PERF_MAX_COMPILE_RATIO=2.0 VIBE_SELFHOST_PERF_MAX_CHECK_RATIO=5.0 VIBE_SELFHOST_PERF_CASES_FILE=bench/selfhost_perf/kpi_cases.txt scripts/bench_selfhost_perf.sh
+        # no-op for moonrun): the moonrun path's check_ratio was
+        # ~5-8 and compile_ratio ~2.7, so these tightened caps will
+        # trip on that runtime. Override the caps in env if you
+        # need to run the moonrun path: `MAX_COMPILE_RATIO=10.0`
+        # `MAX_CHECK_RATIO=8.5`.
+        run: VIBE_SELFHOST_PERF_RUNS=3 VIBE_SELFHOST_PERF_MAX_COMPILE_RATIO=1.5 VIBE_SELFHOST_PERF_MAX_CHECK_RATIO=1.0 VIBE_SELFHOST_PERF_CASES_FILE=bench/selfhost_perf/kpi_cases.txt scripts/bench_selfhost_perf.sh
 
       - name: Save stage1 cwasm cache
         if: always() && steps.cwasm-cache-kpi.outputs.cache-hit != 'true'
