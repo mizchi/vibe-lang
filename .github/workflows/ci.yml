@@ -598,13 +598,31 @@ jobs:
       - name: Run selfhost perf KPI
         env:
           VIBE_USE_SESSION_HTTP: '0'
+          # Daemon-mode for selfhost check (#400). Batches all RUNS
+          # check requests through one warm wasm instance — eliminates
+          # the per-invocation ensure_builtin_modules cold-start cost
+          # that dominated the check_ratio under one-shot moonrun_wt.
+          # Local measurement on the KPI cases (release+O3, runs=3):
+          #   one-shot:  TOTAL check ratio 0.131 (per-case median ~150ms self)
+          #   daemon:    TOTAL check ratio 0.005 (per-case median ~5ms self)
+          # Compile path unchanged (still one-shot).
+          VIBE_SELFHOST_PERF_CHECK_DAEMON: '1'
         # Switched to wasmtime-aot default (#402 Phase 2).
         # KPI cases, release + wasm-opt -O3, runs=3 median, with
         # VIBE_USE_SESSION_HTTP=0 (matches this step's env):
         #
+        # One-shot (pre-#400-daemon) CI baseline:
         #          TOTAL compile  TOTAL check  per-case worst check
         #   local      0.918         2.522        3.10 (effects)
         #   CI         1.000         2.878        13.3 (effects, total)
+        #
+        # With daemon mode (#400) the check ratio collapses by ~25×
+        # because the 179ms ensure_builtin_modules cost is paid once
+        # per case instead of RUNS times. We keep the check cap at
+        # 5.0 conservatively for now — letting the daemon-mode CI
+        # numbers settle for a few PRs before tightening (tightening
+        # the cap to e.g. 1.0 belongs in a follow-up once we have
+        # stable observations).
         #
         # The per-case `check/total` numbers swing wide because host
         # check time per case is tiny (~10 ms) without session-http —
@@ -612,9 +630,9 @@ jobs:
         # ratio across cases, which is what these caps target.
         #
         # Caps: compile 2.0 (CI 1.00 → 2× headroom), check 5.0
-        # (CI 2.88 → 1.74× headroom). Both catch moonrun-class
-        # regressions (moonrun CI baseline was ~5-8 check, ~2.7
-        # compile) while absorbing CI's ±30% variance band.
+        # (with daemon mode CI is expected ≪ 1.0, ample headroom;
+        # the cap still catches moonrun-class regressions if someone
+        # opts back into moonrun via VIBE_SELFHOST_PERF_RUNTIME).
         #
         # NOTE: an early version of this step used check cap 0.5
         # based on a local measurement that accidentally included
@@ -624,7 +642,8 @@ jobs:
         # VIBE_USE_SESSION_HTTP=0 set wherever this bench runs.
         #
         # Opt back into moonrun (e.g. no rust toolchain) with
-        # `VIBE_SELFHOST_PERF_RUNTIME=moonrun` and caps 10.0 / 8.5.
+        # `VIBE_SELFHOST_PERF_RUNTIME=moonrun` (daemon-mode is a
+        # no-op for moonrun) and caps 10.0 / 8.5.
         run: VIBE_SELFHOST_PERF_RUNS=3 VIBE_SELFHOST_PERF_MAX_COMPILE_RATIO=2.0 VIBE_SELFHOST_PERF_MAX_CHECK_RATIO=5.0 VIBE_SELFHOST_PERF_CASES_FILE=bench/selfhost_perf/kpi_cases.txt scripts/bench_selfhost_perf.sh
 
       - name: Save stage1 cwasm cache

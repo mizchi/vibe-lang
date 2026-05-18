@@ -418,7 +418,13 @@ fn daemon(args: Vec<String>) -> Result<i32> {
             host.last_error = None;
         }
 
+        // Server-side wall-clock for _start. Bench harness uses this to
+        // attribute per-request elapsed time without paying for the JSON
+        // protocol round-trip (which would otherwise inflate measurements
+        // by ~1ms/req of stdin/stdout copying).
+        let t0 = std::time::Instant::now();
         let result = start.call(&mut store, ());
+        let elapsed_us = t0.elapsed().as_micros() as u64;
 
         // Flush any leftover print_buf bytes that didn't end on a newline.
         {
@@ -467,6 +473,7 @@ fn daemon(args: Vec<String>) -> Result<i32> {
             "req_id": req_id,
             "exit_code": exit_code,
             "stdout": captured_str,
+            "elapsed_us": elapsed_us,
         });
         if let Some(msg) = err_msg {
             resp["error"] = serde_json::Value::String(msg);
