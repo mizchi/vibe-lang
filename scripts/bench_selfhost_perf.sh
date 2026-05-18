@@ -23,9 +23,15 @@ MAX_CHECK_RATIO="${VIBE_SELFHOST_PERF_MAX_CHECK_RATIO:-}"
 REBUILD_MODE="${VIBE_SELFHOST_PERF_REBUILD:-auto}"
 WASM_OPT_MODE="${VIBE_SELFHOST_PERF_WASM_OPT:-auto}"
 PROFILE_CALLSTACK="${VIBE_SELFHOST_PERF_PROFILE_CALLSTACK:-}"
-# Runtime that hosts the stage1 wasm. `moonrun` is the legacy default;
-# `wasmtime` and `wasmtime-aot` switch to the moonrun_wt host (TODO #295).
-SELFHOST_RUNTIME="${VIBE_SELFHOST_PERF_RUNTIME:-moonrun}"
+# Runtime that hosts the stage1 wasm.
+#   moonrun        — legacy v8 interpreter (no rust toolchain needed)
+#   wasmtime       — wasmtime via moonrun_wt without precompile
+#   wasmtime-aot   — wasmtime via moonrun_wt with .cwasm precompile (default)
+# wasmtime-aot was the default starting on this PoC branch (#402 Phase 2);
+# selfhost compile ratio dropped from 2.71 → 0.80 on the KPI cases.
+# Set VIBE_SELFHOST_PERF_RUNTIME=moonrun to opt back into the v8 path
+# (e.g. environments without rust + cargo).
+SELFHOST_RUNTIME="${VIBE_SELFHOST_PERF_RUNTIME:-wasmtime-aot}"
 MOONRUN_WT_BIN="${MOONRUN_WT_BIN:-}"
 
 is_positive_int() {
