@@ -172,7 +172,15 @@ fn run_check_entry_with_cache(
     Err(err) => {
       let load_us = elapsed_us_from(start_load)
       let total_us = elapsed_us_from(start_total)
-      messages.push("check: \{entry_path}: \{err}")
+      // Loader-rendered diagnostics (parse errors) already include the
+      // path / line / column prefix. Don't double-wrap them with
+      // "check: <path>: " — that would diverge from the selfhost path
+      // (#402 byte-equal parity).
+      if err.has_prefix(entry_path + ":") {
+        messages.push(err)
+      } else {
+        messages.push("check: \{entry_path}: \{err}")
+      }
       CliCheckReport::{
         file: entry_path,
         resolved_entry: entry_path,
