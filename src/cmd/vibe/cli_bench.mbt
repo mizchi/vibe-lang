@@ -1020,9 +1020,7 @@ fn build_http_host_bench_command(
 ///|
 fn parse_http_host_bench_elapsed_us(stdout : String) -> Result[Double, String] {
   let text = stdout.trim().to_owned()
-  let parsed : Result[Double, Error] = try? @string.parse_double(
-    text,
-  )
+  let parsed : Result[Double, Error] = try? @string.parse_double(text)
   match parsed {
     Ok(value) => Ok(value)
     Err(_) => Err("invalid node host bench output: " + text)

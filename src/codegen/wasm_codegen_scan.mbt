@@ -148,10 +148,7 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
         | "Int::to_string"
         | "Float::to_string"
         | "Double::to_string"
-        | "Bool::to_string" =>
-          if !ctx.use_js_strings {
-            ctx.need_heap = true
-          }
+        | "Bool::to_string" => if !ctx.use_js_strings { ctx.need_heap = true }
         _ =>
           if is_wasm_runtime_fallback_builtin(name) {
             ctx.need_exceptions = true

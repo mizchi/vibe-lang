@@ -980,7 +980,10 @@ fn parse_import_kind(kind : String?) -> ImportKind raise DeserializeError {
 fn expect_object(json : Json) -> Map[String, Json] raise DeserializeError {
   match json {
     Json::Object(obj) => obj
-    _ => raise DeserializeError("Expected object, got: " + Debug::to_repr(json).to_string())
+    _ =>
+      raise DeserializeError(
+        "Expected object, got: " + Debug::to_repr(json).to_string(),
+      )
   }
 }
 

@@ -62,8 +62,8 @@ fn preprocess_posix_line_with_compat_note(line : String) -> (String, String?) {
   }
   let first_char = chars[ws_end]
   if !((first_char >= 'a' && first_char <= 'z') ||
-      (first_char >= 'A' && first_char <= 'Z') ||
-      first_char == '_') {
+    (first_char >= 'A' && first_char <= 'Z') ||
+    first_char == '_') {
     return (line, None)
   }
   // Extract first word

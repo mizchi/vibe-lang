@@ -53,7 +53,7 @@ fn check_arg_string_or_prompt_text(
 ) -> @core.Type raise TypeError {
   let actual = type_expr_eff(env, expr, aliases, effects, allow_effect)
   if !(type_equal(env, actual, @core.Type::String) ||
-      type_equal(env, actual, @core.Type::PromptText)) {
+    type_equal(env, actual, @core.Type::PromptText)) {
     raise TypeError::Mismatch(
       expected=@core.Type::String,
       actual~,

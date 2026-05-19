@@ -116,7 +116,9 @@ test "emit_closure_payload_file writes payload to output" {
     Err(err) => fail(err)
   }
   let parts = split_payload_parts(payload)
-  @debug.assert_eq(parts, ["/workspace/main.vibe", "let answer = () -> Int { 42 }\n"])
+  @debug.assert_eq(parts, [
+    "/workspace/main.vibe", "let answer = () -> Int { 42 }\n",
+  ])
 }
 
 ///|

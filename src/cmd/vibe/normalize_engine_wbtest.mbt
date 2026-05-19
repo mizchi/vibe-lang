@@ -28,7 +28,6 @@ test "normalize_engine: format basic let binding" {
     result,
     content=(
       #|Ok("//# Functions\n\nlet x: Int = 1\n")
-
     ),
   )
 }
@@ -43,7 +42,6 @@ test "normalize_engine: format multiple let bindings with spacing" {
     result,
     content=(
       #|Ok("//# Functions\n\nlet a: Int = 1\n\nlet b: Int = 2\n")
-
     ),
   )
 }
@@ -57,7 +55,6 @@ test "normalize_engine: constant folding for addition" {
     result,
     content=(
       #|Ok("//# Functions\n\nlet value: Int = 3\n")
-
     ),
   )
 }
@@ -71,7 +68,6 @@ test "normalize_engine: constant folding for multiplication" {
     result,
     content=(
       #|Ok("//# Functions\n\nlet value: Int = 12\n")
-
     ),
   )
 }
@@ -179,7 +175,6 @@ test "normalize_engine: inferred annotation on non-fn let" {
     result,
     content=(
       #|Ok("//# Functions\n\nlet answer: Int = 42\n")
-
     ),
   )
 }
@@ -452,7 +447,6 @@ test "normalize_engine: empty source returns empty string" {
     result,
     content=(
       #|Ok("")
-
     ),
   )
 }
@@ -466,7 +460,6 @@ test "normalize_engine: constant folding subtraction" {
     result,
     content=(
       #|Ok("//# Functions\n\nlet value: Int = 7\n")
-
     ),
   )
 }

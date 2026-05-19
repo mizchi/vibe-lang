@@ -2726,7 +2726,9 @@ test "compiled test wrapper executes top-level computed let bindings" {
     CompiledTestAttempt::Success(report) => {
       assert_eq(report.total, 1)
       if report.passed != 1 || report.failed != 0 {
-        fail("unexpected compiled report: " + Debug::to_repr(report).to_string())
+        fail(
+          "unexpected compiled report: " + Debug::to_repr(report).to_string(),
+        )
       }
     }
     CompiledTestAttempt::Unsupported(err) =>
@@ -2767,7 +2769,9 @@ test "compiled test wrapper executes closure-captured string condition" {
     CompiledTestAttempt::Success(report) => {
       assert_eq(report.total, 1)
       if report.passed != 1 || report.failed != 0 {
-        fail("unexpected compiled report: " + Debug::to_repr(report).to_string())
+        fail(
+          "unexpected compiled report: " + Debug::to_repr(report).to_string(),
+        )
       }
     }
     CompiledTestAttempt::Unsupported(err) =>
@@ -2804,7 +2808,9 @@ test "compiled test wrapper supports paren string interpolation syntax" {
     CompiledTestAttempt::Success(report) => {
       assert_eq(report.total, 1)
       if report.passed != 1 || report.failed != 0 {
-        fail("unexpected compiled report: " + Debug::to_repr(report).to_string())
+        fail(
+          "unexpected compiled report: " + Debug::to_repr(report).to_string(),
+        )
       }
     }
     CompiledTestAttempt::Unsupported(err) =>
@@ -3146,7 +3152,9 @@ test "compiled test wrapper keeps Map::keys results as strings" {
     CompiledTestAttempt::Success(report) => {
       assert_eq(report.total, 1)
       if report.passed != 1 || report.failed != 0 {
-        fail("unexpected compiled report: " + Debug::to_repr(report).to_string())
+        fail(
+          "unexpected compiled report: " + Debug::to_repr(report).to_string(),
+        )
       }
     }
     CompiledTestAttempt::Unsupported(err) =>
@@ -4182,9 +4190,18 @@ test "compiled exec wasm embeds throw literal for handler parity" {
 
 ///|
 test "decode tagged wasm run value" {
-  @debug.assert_eq(decode_tagged_wasm_run_value(168L), Some(WasmRunValue::Int(42L)))
-  @debug.assert_eq(decode_tagged_wasm_run_value(7L), Some(WasmRunValue::Bool(true)))
-  @debug.assert_eq(decode_tagged_wasm_run_value(3L), Some(WasmRunValue::Bool(false)))
+  @debug.assert_eq(
+    decode_tagged_wasm_run_value(168L),
+    Some(WasmRunValue::Int(42L)),
+  )
+  @debug.assert_eq(
+    decode_tagged_wasm_run_value(7L),
+    Some(WasmRunValue::Bool(true)),
+  )
+  @debug.assert_eq(
+    decode_tagged_wasm_run_value(3L),
+    Some(WasmRunValue::Bool(false)),
+  )
 }
 
 ///|

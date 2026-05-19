@@ -1483,9 +1483,9 @@ fn trait_impl_targets_may_overlap_concrete(
               return false
             }
             if !trait_impl_targets_may_overlap(
-                  left_params[i].ty,
-                  right_params[i].ty,
-                ) {
+                left_params[i].ty,
+                right_params[i].ty,
+              ) {
               return false
             }
             i += 1

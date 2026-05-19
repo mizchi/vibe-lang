@@ -87,8 +87,8 @@ fn normalize_unwrap_local_type_assert(
         @vibe_core.Stmt::Expr(expr=@vibe_core.Expr::Call(name~, args~, ..), ..) =>
           if args.length() != 1 ||
             !(name == helper_name ||
-              helper_name.has_suffix("::" + name) ||
-              name.has_suffix("::" + helper_name)) {
+            helper_name.has_suffix("::" + name) ||
+            name.has_suffix("::" + helper_name)) {
             None
           } else {
             Some((helper_ty, args[0].expr))
