@@ -387,9 +387,16 @@ fn check_ast_without_imports(
   ast : @core.Module,
 ) -> (Array[@core.Diagnostic], Int, Int) {
   let desugared = @frontend.desugar_method_calls(ast, {})
-  let typed : Result[@checker.TypeEnv, @checker.TypeError] = try? @checker.type_check(
-    desugared,
-  )
+  // Match `no_import_type_query` in runtime/db_query.mbt: seed with the
+  // prelude-only env (NOT the prelude+builtins one that
+  // `@checker.type_check` uses). The builtins env preloads `Result`,
+  // `MapBuilder`, etc, so user-level `enum Result[T]` and friends would
+  // shadow-conflict only on the selfhost path and report spurious
+  // "duplicate type" diagnostics that the host doesn't emit.
+  let typed : Result[@checker.TypeEnv, @checker.TypeError] = try? ({
+    let env = @checker.get_prelude_only_env_for_module()
+    @checker.type_check_with_env(env, desugared, {})
+  })
   let warnings = @checker.collect_warnings(ast)
   match typed {
     Ok(_) => (warnings, 0, warnings.length())
