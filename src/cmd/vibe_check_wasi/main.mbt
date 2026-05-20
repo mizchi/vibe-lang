@@ -872,7 +872,7 @@ fn main {
               Err(err) => {
                 let diag = @core.Diagnostic::{
                   stage: "check",
-                  message: "check: " + path + ": " + err,
+                  message: err,
                   span: None,
                   hint: None,
                   note: None,
