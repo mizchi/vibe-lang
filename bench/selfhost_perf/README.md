@@ -14,16 +14,24 @@ gates that `just test-selfhost-perf-gate` enforces.
 
 Output: `_build/bench/selfhost_perf/{summary,stage_summary}.{e2e,in-memory}.tsv`.
 
-### wasmtime AOT runtime (TODO #295)
+### wasmtime AOT runtime (default, #402 Phase 2)
 
-`VIBE_SELFHOST_PERF_RUNTIME=wasmtime-aot` swaps `moonrun` (v8) for a
-small Rust wasmtime host (`tools/moonrun_wasmtime`, binary
-`moonrun_wt`) that re-implements the moonbit `--target wasm` import
-surface (spectest::print_char + `__moonbit_{fs,time,sys}_unstable::*`,
-~32 functions) and Cranelift-JITs the stage1 wasm. With
-`-RUNTIME=wasmtime-aot` the bench driver also `precompile`s each
-stage1 wasm to a `.cwasm` sibling so instantiation skips Cranelift on
-every invocation.
+The bench driver's `VIBE_SELFHOST_PERF_RUNTIME` defaults to
+`wasmtime-aot`. It runs the stage1 wasm under a small Rust wasmtime
+host (`tools/moonrun_wasmtime`, binary `moonrun_wt`) that
+re-implements the moonbit `--target wasm` import surface
+(`spectest::print_char` + `__moonbit_{fs,time,sys}_unstable::*`,
+32 functions) and Cranelift-JITs the module. `wasmtime-aot` also
+`precompile`s each stage1 wasm to a `.cwasm` sibling so subsequent
+instantiations skip Cranelift entirely.
+
+Opt back into the legacy `moonrun` (v8 interp) path with
+`VIBE_SELFHOST_PERF_RUNTIME=moonrun` — useful in environments
+without a rust toolchain. The CI KPI step uses `wasmtime-aot` with
+tightened TOTAL-ratio caps: `compile 2.0 / check 5.0` (was 10.0 /
+8.5 under moonrun). Sized against measured CI baselines (compile
+~1.00, check ~2.88 with `VIBE_USE_SESSION_HTTP=0`) to catch
+moonrun-class regressions while absorbing CI's ±30% variance band.
 
 Measured on the default 5-case set (debug profile wasm, no wasm-opt,
 median of 3 runs):
