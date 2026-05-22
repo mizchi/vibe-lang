@@ -38,6 +38,71 @@ test "bundle_for_wasm keeps enum defs from re-exported directory wrapper" {
 }
 
 ///|
+test "bundle_for_wasm_no_dce rewrites import alias calls in entry module" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "/project/helper.vibe", "export let add = (a: Int, b: Int) -> Int { a + b }\n",
+  )
+  db.set_source(
+    "/project/main.vibe",
+    "import ./helper.vibe { add as plus }\n" +
+    "let result = plus(1, 2)\n" +
+    "result\n",
+  )
+  let ast = db.ast_with_hash_imports("/project/main.vibe")
+  let bundled = bundle_for_wasm_no_dce(db, "/project/main.vibe", ast)
+  let mut saw_rewritten_call = false
+  for stmt in bundled.stmts {
+    match stmt {
+      @core.Stmt::Let(
+        name="result",
+        expr=@core.Expr::Call(name=call_name, ..),
+        ..
+      ) => {
+        assert_eq(call_name, "add")
+        saw_rewritten_call = true
+      }
+      _ => ()
+    }
+  }
+  assert_true(saw_rewritten_call)
+}
+
+///|
+test "bundle_for_wasm_no_dce namespaces dependency private helper against entry helper" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "/project/dep.vibe",
+    "let helper: () -> Int = () -> { 1 }\n" +
+    "export let answer: () -> Int = () -> { helper() }\n",
+  )
+  db.set_source(
+    "/project/main.vibe",
+    "import ./dep.vibe { answer as dep_answer }\n" +
+    "let helper: () -> Int = () -> { 2 }\n" +
+    "test \"entry helper collision\" {\n" +
+    "  assert_eq(dep_answer() + helper(), 3)\n" +
+    "}\n",
+  )
+  let ast = db.ast_with_hash_imports("/project/main.vibe")
+  let bundled = bundle_for_wasm_no_dce(db, "/project/main.vibe", ast)
+  let sexp = module_to_sexp(bundled, {})
+  if !sexp.contains("helper$dep$") || !sexp.contains("(let \"answer\"") {
+    fail(sexp)
+  }
+  let test_bundle = bundle_for_codegen(db, "/project/main.vibe", ast, "tests") catch {
+    e => fail(e.to_string())
+  }
+  let lowered = lower_top_level_tests_to_exprs(test_bundle)
+  let test_sexp = module_to_sexp(lowered, {})
+  if !test_sexp.contains("helper$dep$") ||
+    !test_sexp.contains("(call \"answer\"") ||
+    !test_sexp.contains("(call \"helper\"") {
+    fail(test_sexp)
+  }
+}
+
+///|
 test "bundle_for_wasm_no_dce keeps imported trait impls" {
   let db = @runtime.VibeDb::new()
   db.set_source(

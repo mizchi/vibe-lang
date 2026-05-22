@@ -478,7 +478,7 @@ write_adapter_bundle() {
     f="${FILES[$idx]}"
     filepath="$COMPILER_DIR/$f"
     relpath="vibe/compiler/$f"
-    echo "  let source_$adapter_local_idx = (\"$relpath\","
+    echo "  let cli_adapter_source_$adapter_local_idx = (\"$relpath\","
     write_vibe_string_literal_from_file "$filepath"
     echo ")"
     echo ""
@@ -489,7 +489,7 @@ write_adapter_bundle() {
   echo "  let sources = Array::slice([(\"\", \"\")], 0, 0)"
   adapter_local_idx=0
   for _idx in "${CLI_ADAPTER_INDEXES[@]}"; do
-    echo "  Array::push(sources, source_$adapter_local_idx)"
+    echo "  Array::push(sources, cli_adapter_source_$adapter_local_idx)"
     adapter_local_idx=$((adapter_local_idx + 1))
   done
   echo "  sources"
@@ -500,7 +500,7 @@ write_adapter_bundle() {
   adapter_local_idx=0
   for idx in "${CLI_ADAPTER_INDEXES[@]}"; do
     group="${MANIFEST_GROUPS[$idx]}"
-    echo "  cli_adapter_push_grouped_source_pair(groups, \"$group\", source_$adapter_local_idx)"
+    echo "  cli_adapter_push_grouped_source_pair(groups, \"$group\", cli_adapter_source_$adapter_local_idx)"
     adapter_local_idx=$((adapter_local_idx + 1))
   done
   echo "  groups"
@@ -510,7 +510,7 @@ write_adapter_bundle() {
   echo "  let sources = Array::slice([(\"\", \"\")], 0, 0)"
   for idx in "${CLI_ADAPTER_ORDERED_INDEXES[@]}"; do
     adapter_local_idx="$(find_adapter_local_index "$idx")"
-    echo "  Array::push(sources, source_$adapter_local_idx)"
+    echo "  Array::push(sources, cli_adapter_source_$adapter_local_idx)"
   done
   echo "  sources"
   echo "}"
@@ -720,7 +720,7 @@ write_runtime_entry_bundle
       exit 1
     fi
     relpath="vibe/compiler/$f"
-    echo "  let source_$bundle_local_idx = (\"$relpath\","
+    echo "  let selfhost_source_$bundle_local_idx = (\"$relpath\","
     # Escape the source code for embedding in a vibe string literal
     # Need to escape: backslash -> \\, double quote -> \", newline -> \n
     python3 -c "
@@ -765,7 +765,7 @@ sys.stdout.write('\"' + content + '\"')
 
   for pair in "${BUNDLE_SOURCE_INDEXES[@]}"; do
     local_idx="${pair#*:}"
-    echo "  Array::push(sources, source_$local_idx)"
+    echo "  Array::push(sources, selfhost_source_$local_idx)"
   done
 
   echo "  sources"
@@ -779,7 +779,7 @@ sys.stdout.write('\"' + content + '\"')
     manifest_idx="${pair%%:*}"
     local_idx="${pair#*:}"
     group="${MANIFEST_GROUPS[$manifest_idx]}"
-    echo "  push_grouped_source_pair(groups, \"$group\", source_$local_idx)"
+    echo "  push_grouped_source_pair(groups, \"$group\", selfhost_source_$local_idx)"
   done
 
   echo ""
@@ -790,7 +790,7 @@ sys.stdout.write('\"' + content + '\"')
   echo "  let sources = Array::slice([(\"\", \"\")], 0, 0)"
   for idx in "${MAIN_ORDERED_INDEXES[@]}"; do
     if local_idx="$(find_bundle_local_index "$idx")"; then
-      echo "  Array::push(sources, source_$local_idx)"
+      echo "  Array::push(sources, selfhost_source_$local_idx)"
     fi
   done
   echo "  sources"
@@ -803,7 +803,7 @@ sys.stdout.write('\"' + content + '\"')
     local_idx="${pair#*:}"
     if is_main_ordered "$manifest_idx"; then
       group="${MANIFEST_GROUPS[$manifest_idx]}"
-      echo "  push_grouped_source_pair(groups, \"$group\", source_$local_idx)"
+      echo "  push_grouped_source_pair(groups, \"$group\", selfhost_source_$local_idx)"
     fi
   done
   echo "  groups"
