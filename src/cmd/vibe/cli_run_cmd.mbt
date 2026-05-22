@@ -1,8 +1,8 @@
 ///|
-fn cli_use_session_http_with(raw : String?, has_self_bin : Bool) -> Bool {
+fn cli_use_session_http_with(raw : String?, _has_self_bin : Bool) -> Bool {
   match raw {
     Some(value) => parse_bool_flag(value)
-    None => has_self_bin
+    None => false
   }
 }
 

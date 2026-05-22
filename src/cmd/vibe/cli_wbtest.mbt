@@ -3811,8 +3811,8 @@ test "session http port is stable per entry root" {
 }
 
 ///|
-test "session http defaults on when self binary exists" {
-  assert_true(cli_use_session_http_with(None, true))
+test "session http defaults off when self binary exists" {
+  assert_false(cli_use_session_http_with(None, true))
 }
 
 ///|

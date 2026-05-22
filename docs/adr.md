@@ -89,6 +89,7 @@
 | 0035 | **DAP デバッグ**。DWARF 不採用、カバレッジインフラ拡張で独自 DAP サーバー。`vibe.func_map`/`debug_map` カスタムセクション。Node.js ベース。 | proposed |
 | 0049 | **CI キャッシュキーに moonc バージョンを含める**。`scripts/install_moonbit.sh` が install 後に `.moon-version` スタンプを書き、全ワークフローの `actions/cache` key が `hashFiles('.moon-version')` を参照する。moonc 上流更新時に古い `_build` 成果物が再利用されるのを防ぐ。きっかけは Linux native CLI 回帰クラスタ (#265/#266/#267/#268/#280/#281) — moon 0.1.20260403 で作られた成果物が、source 未変更のまま stale 再利用されていた。 | accepted |
 | 0050 | **selfhost bench は wasmtime AOT を host-side accelerator としてサポート**。`tools/moonrun_wasmtime` (binary `moonrun_wt`) で moonrun 互換 host を実装（spectest::print_char + `__moonbit_{fs,time,sys}_unstable::*` 全 32 imports を Rust+wasmtime+externref で再実装）、`scripts/bench_selfhost_perf.sh` に `VIBE_SELFHOST_PERF_RUNTIME=wasmtime\|wasmtime-aot` を追加。AOT は engine.precompile_module で `.cwasm` を吐き Cranelift cost を per-run から除去。debug-profile 5-case 平均で compile ratio 5.7→1.2 (~5×)（TODO #295）。`moonrun_wt` / daemon / `moonrun_wt_client` は CI・bench・IDE/LSP 向けの host-side accelerator に限定し、canonical selfhost compiler/checker artifact は引き続き WASI wasm 単体で実行可能でなければならない。Rust/wasmtime daemon を配布 selfhost CLI の必須実行経路にしない。CI は native-accelerated KPI と別に one-shot portable wasm path の correctness/parity gate を維持する。| accepted |
+| 0052 | **persistent session worker は opt-in**。`vibe run/check/test` は既定で one-shot 経路を使う。`session-http` daemon は `VIBE_USE_SESSION_HTTP=1` で明示した場合だけ使う host-side accelerator とし、portable selfhost path や配布 CLI の必須経路にしない。 | accepted |
 
 ## Deferred
 

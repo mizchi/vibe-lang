@@ -95,7 +95,7 @@ CI gate は発見の場ではなく、手元で詰めた導線の再現確認と
 
 - cold/hot の差が体感できる
 - 出力/終了コードが期待通り
-- session worker 既定利用で不安定にならない
+- one-shot 既定経路が安定し、session worker opt-in でも不安定にならない
 
 ### 4. build
 
