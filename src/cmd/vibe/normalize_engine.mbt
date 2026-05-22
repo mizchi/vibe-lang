@@ -1075,10 +1075,7 @@ fn merge_prefilter_stmts(
       | @vibe_core.Stmt::Assign(..)
       | @vibe_core.Stmt::IndexAssign(..)
       | @vibe_core.Stmt::LetPat(..)
-      | @vibe_core.Stmt::LetPatElse(..) =>
-        if !library_mode {
-          out.push(stmt)
-        }
+      | @vibe_core.Stmt::LetPatElse(..) => if !library_mode { out.push(stmt) }
       _ => out.push(stmt)
     }
   }

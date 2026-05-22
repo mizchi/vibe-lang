@@ -477,7 +477,7 @@ fn normalize_render_fn_effects(
     return ""
   }
   let out = StringBuilder::new()
-  out.write_string(" with {")
+  out.write_string(" with { ")
   for i, effect in effects {
     if i > 0 {
       out.write_string(", ")
@@ -487,7 +487,7 @@ fn normalize_render_fn_effects(
       @vibe_core.EffectAtom::Var(name) => out.write_string(name)
     }
   }
-  out.write_char('}')
+  out.write_string(" }")
   out.to_string()
 }
 
