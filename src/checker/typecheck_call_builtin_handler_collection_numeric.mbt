@@ -1109,10 +1109,10 @@ fn type_call_builtin_handler_collection_numeric(
           ensure_type(env, index_ty, key_ty, pos_args[1].span(), "index")
           ensure_map_key_hashable(env, index_ty, pos_args[1].span())
           if !type_equal(
-                env,
-                resolved_container,
-                @core.Type::Map(key_ty, elem_ty),
-              ) {
+              env,
+              resolved_container,
+              @core.Type::Map(key_ty, elem_ty),
+            ) {
             raise TypeError::Mismatch(
               expected=@core.Type::Map(key_ty, elem_ty),
               actual=resolved_container,

@@ -126,8 +126,7 @@ fn normalize_type_cache_store(
   normalized : @core.Type,
   expand_enum : Bool,
 ) -> Unit {
-  if !normalize_type_cacheable(source) ||
-    !normalize_type_cacheable(normalized) {
+  if !normalize_type_cacheable(source) || !normalize_type_cacheable(normalized) {
     return
   }
   // Store in ground cache for 0-arg Named types (survives subs_version changes).
@@ -1479,7 +1478,7 @@ fn param_unify(
     return false
   }
   if !(trait_bounds_subset(env, a.bounds, b.bounds) &&
-      trait_bounds_subset(env, b.bounds, a.bounds)) {
+    trait_bounds_subset(env, b.bounds, a.bounds)) {
     return false
   }
   unify_types_inner(env, a.ty, b.ty, cache)

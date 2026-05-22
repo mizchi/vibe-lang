@@ -16,9 +16,7 @@ pub fn init_hooks() -> Unit {
   @runtime.set_expr_address_hook(@codegen.expr_address)
   @runtime.set_desugar_method_calls_hook(@pipeline.desugar_method_calls)
   // Parser
-  @runtime.set_parse_ast_hook(fn(
-    source,
-  ) -> (@core.Module, @core.Diagnostic?) {
+  @runtime.set_parse_ast_hook(fn(source) -> (@core.Module, @core.Diagnostic?) {
     let ast = @parser.parse_ast(source) catch {
       e => return ({ stmts: [] }, Some(e.diagnostic()))
     }

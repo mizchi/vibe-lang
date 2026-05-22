@@ -19,8 +19,8 @@ fn is_valid_bench_case_name(name : String) -> Bool {
       continue
     }
     if !((Char::is_ascii_alphabetic(c) || Char::is_ascii_digit(c)) ||
-        c == '_' ||
-        c == '-') {
+      c == '_' ||
+      c == '-') {
       return false
     }
   }

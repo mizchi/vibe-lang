@@ -11,7 +11,10 @@ test "parse_type_tag: primitive types" {
   @debug.assert_eq(parse_type_tag("Path"), BuiltinTypeTag::Path_)
   @debug.assert_eq(parse_type_tag("V128"), BuiltinTypeTag::V128_)
   @debug.assert_eq(parse_type_tag("Json"), BuiltinTypeTag::Json_)
-  @debug.assert_eq(parse_type_tag("StringBuilder"), BuiltinTypeTag::StringBuilder_)
+  @debug.assert_eq(
+    parse_type_tag("StringBuilder"),
+    BuiltinTypeTag::StringBuilder_,
+  )
   @debug.assert_eq(parse_type_tag("PromptText"), BuiltinTypeTag::PromptText_)
 }
 
@@ -102,7 +105,10 @@ test "parse_declare_line: no params" {
     Some(d) => {
       assert_eq(d.name, "array_new")
       assert_eq(d.params.length(), 0)
-      @debug.assert_eq(d.ret, BuiltinTypeTag::Array_(BuiltinTypeTag::TypeVar(0)))
+      @debug.assert_eq(
+        d.ret,
+        BuiltinTypeTag::Array_(BuiltinTypeTag::TypeVar(0)),
+      )
     }
     None => fail("expected Some")
   }
@@ -114,7 +120,10 @@ test "parse_declare_line: multiple params" {
     Some(d) => {
       assert_eq(d.name, "Array::set")
       assert_eq(d.params.length(), 3)
-      @debug.assert_eq(d.params[0], BuiltinTypeTag::Array_(BuiltinTypeTag::TypeVar(0)))
+      @debug.assert_eq(
+        d.params[0],
+        BuiltinTypeTag::Array_(BuiltinTypeTag::TypeVar(0)),
+      )
       @debug.assert_eq(d.params[1], BuiltinTypeTag::Int_)
       @debug.assert_eq(d.params[2], BuiltinTypeTag::TypeVar(0))
       @debug.assert_eq(d.ret, BuiltinTypeTag::Unit)
@@ -252,7 +261,10 @@ test "parse_declarations: full declarations sample" {
   )
   assert_eq(decls[2].name, "Set::new")
   assert_eq(decls[2].params.length(), 0)
-  @debug.assert_eq(decls[2].ret, BuiltinTypeTag::Set_(BuiltinTypeTag::TypeVar(0)))
+  @debug.assert_eq(
+    decls[2].ret,
+    BuiltinTypeTag::Set_(BuiltinTypeTag::TypeVar(0)),
+  )
   assert_eq(decls[3].name, "Int::parse")
   @debug.assert_eq(decls[3].ret, BuiltinTypeTag::Option_(BuiltinTypeTag::Int_))
 }
