@@ -3,7 +3,7 @@
 This is a vibe program embedded in markdown.
 
 ```vibe
-let rec fib = (n: Int) -> Int {
+let rec fib: (Int) -> Int = (n) -> {
   match n {
     0 => 0,
     1 => 1,
