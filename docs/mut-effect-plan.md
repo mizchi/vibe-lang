@@ -30,14 +30,15 @@ ADR: [ADR-0021](adr.md), [ADR-0050](archive/adr/0050-unify-handle-as-generic-eff
 - WASM codegen (`codegen_expr.vibe:1047`) では `EHandle(body, _)` = body をそのまま
   compile（ハンドラ arms 無視）
 - eval (`eval.vibe:1326`) では Error catch として実行
-- `perform`/`resume` は `examples/perform_handle.vibe` に**関数呼び出し形式**
-  (`perform(Ask(41))`, `resume(42)`) のサンプルがあるが、キーワードではなく
-  通常の識別子として扱われている
+- `perform`/`resume` は `examples/perform_handle.vibe` でも canonical syntax
+  (`perform Ask::Ask(41)`, `resume(42)`) を使う。旧 `perform(Ask(41))`
+  は互換入力に限定する
 
 ### 不足している機能
 
 1. ユーザー定義エフェクト宣言 (`effect Mut<T> { ... }`)
-2. `perform`/`resume` の言語レベルサポート（現在は関数呼び出しとして parse される）
+2. 旧 `perform(...)` 互換入力の整理（canonical syntax へ移行済み、
+   互換入力の扱いは段階的に縮小）
 3. エフェクト型の追跡（`Bool` ではなくエフェクトセット）
 4. ハンドラによるエフェクト消去の型検査
 5. ADR-0050 canonical syntax への移行
@@ -45,13 +46,13 @@ ADR: [ADR-0021](adr.md), [ADR-0050](archive/adr/0050-unify-handle-as-generic-eff
 
 ### 設計上の注意: `perform`/`resume` の構文選択
 
-現在の `examples/perform_handle.vibe` は `perform(Ask(41))` のように
-**関数呼び出し構文**で `perform`/`resume` を使っている。
-新設計では `perform push(1)` のようなキーワード構文を提案しているが、
-既存のサンプルとの互換性を考慮し、両形式をサポートするか決定が必要。
+現在の `examples/perform_handle.vibe` は `effect Ask { Ask(Int) -> Int }` と
+`perform Ask::Ask(41)` の組み合わせに揃えている。関数呼び出し構文の
+`perform(Ask(41))` は legacy 互換入力として残すが、仕様・docs・examples では
+canonical syntax を使う。
 
-- 関数呼び出し形式: `perform(Ask(41))` — 既存サンプルと互換
-- キーワード形式: `perform push(1)` — ADR-0021 提案。エフェクト操作を直接指定
+- 互換形式: `perform(Ask(41))` — legacy compatibility only
+- canonical: `perform Ask::Ask(41)` — effect と operation を直接指定
 
 ---
 
@@ -169,7 +170,7 @@ EffectSet = Array[String]  // ["Error", "Mut", "IO"]
 // handle の戻り値型に E が残っていたらエラー
 // → クロージャの型が with { Mut } を含むなら、handle の外に返せない
 handle {
-  let f = () -> Unit with { Mut } { perform push(1) }
+  let f: () -> Unit with { Mut } = () -> { perform push(1) }
   f  // ERROR: unhandled effect Mut in return type
 } with Mut { ... }
 ```
@@ -383,7 +384,7 @@ effect Fs {
   read_file(path: String) -> String
 }
 
-let main = () -> Unit with { Fs } {
+let main: () -> Unit with { Fs } = () -> {
   let content = perform read_file("hello.txt")
   print(content)
 }
@@ -422,7 +423,7 @@ effect Fs { ... }
 #import("wasi:cli/stdio@0.2.0")
 effect Console { ... }
 
-export let main = () -> Unit with { Fs, Console } { ... }
+export let main: () -> Unit with { Fs, Console } = () -> { ... }
 ```
 
 コンパイラが以下の WIT world 相当を自動導出:

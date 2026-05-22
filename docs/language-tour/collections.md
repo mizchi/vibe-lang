@@ -12,16 +12,16 @@ test "array basics" {
   assert(eq(Array::length(arr), 3))
 
   // Higher-order functions — collection-first, fn-last
-  let doubled = Array::map(arr, (x: Int) -> Int { x * 2 })       // [2, 4, 6]
-  let filtered = Array::filter(arr, (x: Int) -> Bool { x > 1 })  // [2, 3]
-  let sum = Array::fold(arr, 0, (acc: Int, x: Int) -> Int { acc + x })  // 6
+  let doubled = Array::map(arr, (x) -> { x * 2 })       // [2, 4, 6]
+  let filtered = Array::filter(arr, (x) -> { x > 1 })   // [2, 3]
+  let sum = Array::fold(arr, 0, (acc, x) -> { acc + x })  // 6
   assert(eq(sum, 6))
 
-  assert(Array::any(arr, (x: Int) -> Bool { x > 2 }))   // true
-  assert(Array::all(arr, (x: Int) -> Bool { x > 0 }))   // true
+  assert(Array::any(arr, (x) -> { x > 2 }))   // true
+  assert(Array::all(arr, (x) -> { x > 0 }))   // true
 
   // find returns Option[T]
-  let found = Array::find(arr, (x: Int) -> Bool { x > 1 })  // Some(2)
+  let found = Array::find(arr, (x) -> { x > 1 })  // Some(2)
 
   // Concat, reverse, sort, slice
   let merged = Array::concat([1, 2], [3, 4])         // [1, 2, 3, 4]
@@ -32,14 +32,11 @@ test "array basics" {
 
 ### Array Builder
 
+`do` is reserved and is not part of the current surface syntax. Prefer
+`for-in` for collected array expressions:
+
 ```vibe
-let result = do {
-  let b = ArrayBuilder::new()
-  ArrayBuilder::push(b, 1)
-  ArrayBuilder::push(b, 2)
-  ArrayBuilder::freeze(b)
-}
-// => [1, 2]
+let result = for x in [1, 2] { x }
 ```
 
 ## Map
@@ -62,21 +59,15 @@ test "map operations" {
   let vals = Map::values(m)   // [1, 2]
 
   // HOFs
-  let scaled = Map::map(m, (v: Int) -> Int { v * 10 })     // map { a: 10, b: 20 }
-  let big = Map::filter(m, (v: Int) -> Bool { v > 1 })     // map { b: 2 }
+  let scaled = Map::map(m, (v) -> { v * 10 })     // map { a: 10, b: 20 }
+  let big = Map::filter(m, (v) -> { v > 1 })      // map { b: 2 }
 }
 ```
 
 ### Map Builder
 
-```vibe
-let m = do {
-  let b = MapBuilder::new()
-  MapBuilder::set(b, "x", 10)
-  MapBuilder::set(b, "y", 20)
-  MapBuilder::freeze(b)
-}
-```
+Builder internals are intentionally not part of the standard syntax path.
+Use map literals for ordinary source code.
 
 ## Record
 

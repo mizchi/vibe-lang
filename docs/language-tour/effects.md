@@ -7,7 +7,7 @@ vibe uses an explicit effect system. Functions declare required effects with `wi
 Functions without `with { ... }` are pure -- they cannot perform I/O or throw errors.
 
 ```vibe
-let add = (a: Int, b: Int) -> Int { a + b }  // pure
+let add: (Int, Int) -> Int = (a, b) -> { a + b }  // pure
 ```
 
 ## Error handling
@@ -17,18 +17,18 @@ let add = (a: Int, b: Int) -> Int { a + b }  // pure
 Use `Result` composition in the pipeline core, and isolate error boundaries at edges.
 
 ```vibe
-let parse_id = (raw: String) -> Result[Int, String] { ... }
-let validate_id = (id: Int) -> Result[Int, String] { ... }
-let load_user = (id: Int) -> Result[String, String] { ... }
+let parse_id: (String) -> Result[Int, String] = (raw) -> { ... }
+let validate_id: (Int) -> Result[Int, String] = (id) -> { ... }
+let load_user: (Int) -> Result[String, String] = (id) -> { ... }
 
-let fetch_user = (raw: String) -> Result[String, String] {
+let fetch_user: (String) -> Result[String, String] = (raw) -> {
   raw
   |> parse_id
   |> Result::and_then(validate_id)
   |> Result::and_then(load_user)
 }
 
-let fetch_user_or_guest = (raw: String) -> String {
+let fetch_user_or_guest: (String) -> String = (raw) -> {
   match fetch_user(raw) {
     Ok(user) => user,
     Err(_) => "guest"
@@ -47,7 +47,7 @@ Rule of thumb:
 `throw` raises an `Error` effect. `handle` catches it locally at the boundary.
 
 ```vibe
-let safe_div = (a: Int, b: Int) -> Int with { Error } {
+let safe_div: (Int, Int) -> Int with { Error } = (a, b) -> {
   if eq(b, 0) { throw("division by zero") } else { a / b }
 }
 
@@ -58,7 +58,7 @@ let result = handle { safe_div(8, 0) } with Error { Throw(_) => -1 }
 Calling a `with { Error }` function from a pure function requires `handle`:
 
 ```vibe
-let safe = (x: Int) -> Int {
+let safe: (Int) -> Int = (x) -> {
   handle { safe_div(x, 0) } with Error { Throw(_) => 0 }
 }
 ```
@@ -76,7 +76,7 @@ suberror AppError {
 // Single constructor shorthand
 suberror ParseError(String)
 
-let risky = () -> Int with { Error } {
+let risky: () -> Int with { Error } = () -> {
   throw(NotFound("missing"))
 }
 
@@ -88,26 +88,26 @@ let result = handle { risky() } with Error { Throw(_) => -1 }
 
 ## Algebraic effects (perform / resume)
 
-User-defined effects use enum + `perform` / `resume`.
+User-defined effects use `effect` + `perform` / `resume`.
 
 ```vibe
-enum Ask {
-  Ask(Int)
+effect Ask {
+  Question(Int) -> Int
 }
 
-let ask_once = () -> Int with { Ask } {
-  perform(Ask(41))
+let ask_once: () -> Int with { Ask } = () -> {
+  perform Ask::Question(41)
 }
 
 let result = handle {
   add(1, ask_once())
 } with Ask {
-  Ask(v) => resume(add(v, 1))
+  Question(v) => resume(add(v, 1))
 }
 // => 43
 ```
 
-- `perform(Foo(...))` requires `{ Foo }` in the effect set
+- `perform Effect::Op(...)` requires `{ Effect }` in the effect set
 - `resume(v)` replaces the `perform` site result with `v` and re-evaluates the handled body
 
 ## Effect polymorphism
@@ -115,19 +115,21 @@ let result = handle {
 Effect row variables (`{ e }`) let higher-order functions propagate callee effects.
 
 ```vibe
-let apply = [T, U](f: (T) -> U with { e }, x: T) -> U with { e } { f(x) }
+let apply: [T, U]((T) -> U with { e }, T) -> U with { e } = (f, x) -> {
+  f(x)
+}
 
-apply((x: Int) -> Int { x + 1 }, 41)  // => 42
+apply((x) -> { x + 1 }, 41)  // => 42
 ```
 
 The wrapper must declare `with { e }` to propagate the callee's effects:
 
 ```vibe
 // Error: wrapper does not declare { e }
-let bad = [T](f: (T) -> T with { e }, x: T) -> T { f(x) }
+let bad: [T]((T) -> T with { e }, T) -> T = (f, x) -> { f(x) }
 
 // OK: Error is localized by handle
-let safe = [T](f: (T) -> T with { Error }, x: T) -> T {
+let safe: [T]((T) -> T with { Error }, T) -> T = (f, x) -> {
   handle { f(x) } with Error { Throw(_) => x }
 }
 ```
@@ -143,30 +145,23 @@ let safe = [T](f: (T) -> T with { Error }, x: T) -> T {
 
 ## Builders and `for-in`
 
-Mutable builder APIs (`ArrayBuilder::new`, `MapBuilder::new`, `StringBuilder::new`) can be used
-inside any function. `for-in` comprehensions desugar to builder operations internally:
+`for-in` comprehensions desugar to builder operations internally:
 
 ```vibe
 // for-in comprehension
 let doubled = for x in [1, 2, 3] { x * 2 }
-
-// Builder pattern (typically inside do for runtime shared-mut semantics)
-let items = do {
-  let b = ArrayBuilder::new()
-  ArrayBuilder::push(b, 1)
-  ArrayBuilder::push(b, 2)
-  ArrayBuilder::freeze(b)
-}
 ```
+
+`do` is reserved and is not part of the current surface syntax.
 
 I/O builtins require the appropriate `with { Effect }` declaration:
 
 ```vibe
 // OK: effect declared
-let greet = (name: String) -> Unit with { Stdout } {
+let greet: (String) -> Unit with { Stdout } = (name) -> {
   Stdout::write_stream(name)
 }
 
 // Error: missing effect declaration
-let bad = () -> Unit { sh("ls") }
+let bad: () -> Unit = () -> { sh("ls") }
 ```

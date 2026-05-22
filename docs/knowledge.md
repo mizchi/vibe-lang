@@ -18,7 +18,7 @@ vibe ランタイムは pure 関数の結果を content-addressed cache に保�
 `purity_for_let` が関数の `effects` 宣言を無視していた (`effects=_`)。これにより `with { Fs }` のような effect 付き関数でも、body が pure なら関数全体が pure と判定された。
 
 ```vibe
-export let exists = (path: String) -> Bool with { Fs } {
+export let exists: (String) -> Bool with { Fs } = (path) -> {
   do { Fs::exists(path) }
 }
 ```
@@ -323,7 +323,7 @@ vibe/compiler/
 K-006 の修正で `simple_type_query` の diagnostics を `db.diagnostics()` に追加した。これにより、以前は不可視だった型エラーが `compile_module` に到達するようになった。
 
 影響を受けたテスト（3件）:
-1. **resume multi-layer perform** — nested handle での `resume(perform(Ask(32)))` で誤検知
+1. **resume multi-layer perform** — nested handle での `resume(perform Ask::Ask(32))` で誤検知
 2. **resume rejects mismatched resumed value type** — 型不一致を runtime error として期待していたが compile-time error に
 3. **resume rejects prior effects before perform** — effect 付き関数での resume 誤検知
 

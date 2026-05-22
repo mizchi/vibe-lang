@@ -42,34 +42,34 @@ let x = 1
 let y: Int = 2
 
 // Mutable
-let mut count = 0
-count += 1
-count -= 1
-count *= 2
-count /= 2
-count %= 3
+let count = {
+  let mut value = 0
+  value += 1
+  value -= 1
+  value *= 2
+  value /= 2
+  value %= 3
+  value
+}
 ```
 
 ## Functions
 
 ```vibe
 // Named function
-let inc = (x: Int) -> Int { x + 1 }
-
-// Omit return type
-let inc2 = (x: Int) { x + 1 }
+let inc: (Int) -> Int = (x) -> { x + 1 }
 
 // Multi-param
-let add = (x: Int, y: Int) -> Int { x + y }
+let add: (Int, Int) -> Int = (x, y) -> { x + y }
 
 // Recursive
-let rec fact = (n: Int) -> Int {
+let rec fact: (Int) -> Int = (n) -> {
   if n < 2 { 1 } else { n * fact(n - 1) }
 }
 
 // Lambda — used inside functions or tests
-// Array::map([1, 2, 3], (x: Int) -> Int { x * 2 })
-// Array::fold([1, 2, 3], 0, (acc: Int, x: Int) -> Int { acc + x })
+// Array::map([1, 2, 3], (x) -> { x * 2 })
+// Array::fold([1, 2, 3], 0, (acc, x) -> { acc + x })
 
 // Short lambda / placeholder (may need explicit types)
 // Array::map([1, 2, 3], x -> x * 2)
@@ -80,9 +80,9 @@ let rec fact = (n: Int) -> Int {
 ## Generics
 
 ```vibe
-let identity = [T](x: T) -> T { x }
-let make_pair = [A, B](a: A, b: B) -> (A, B) { (a, b) }
-let swap = [A, B](p: (A, B)) -> (B, A) { (p.1, p.0) }
+let identity: [T](T) -> T = (x) -> { x }
+let make_pair: [A, B](A, B) -> (A, B) = (a, b) -> { (a, b) }
+let swap: [A, B](A, B) -> (B, A) = (a, b) -> { (b, a) }
 ```
 
 ## Labeled Arguments
@@ -90,15 +90,19 @@ let swap = [A, B](p: (A, B)) -> (B, A) { (p.1, p.0) }
 ```vibe
 // y~ : required labeled argument (caller must use y = ...)
 // z? : optional argument (receives Option[T])
-let f = (x: Int, y~: String, z?: Int) -> String {
+let f: (Int, y~: String, z?: Int) -> String = (x, y~, z?) -> {
   let suffix = match z { Some(v) => to_string(v), None => "none" }
   "\(y)-\(suffix)"
 }
 // f(1, y = "ok")          => "ok-none"
 // f(1, y = "ok", z = 10)  => "ok-10"
 
-// Default value for optional
-let g = (x: Int, y?: Int = 0) -> Int { x + y }
+let g: (Int, y?: Int) -> Int = (x, y?) -> {
+  match y {
+    Some(v) => x + v,
+    None => x,
+  }
+}
 // g(1)         => 1
 // g(1, y = 5)  => 6
 ```
@@ -114,11 +118,14 @@ let v = if true { 1 } else { 2 }
 ### while
 
 ```vibe
-let mut i = 0
-let mut sum = 0
-while i <= 4 {
-  sum += i
-  i += 1
+{
+  let mut i = 0
+  let mut sum = 0
+  while i <= 4 {
+    sum += i
+    i += 1
+  }
+  sum
 }
 ```
 
@@ -186,19 +193,11 @@ match "ok" {
 
 ### do block
 
-`do { ... }` creates a pure boundary for mutable builders. `for-in` loops
-also work as a pure alternative:
+`do` is reserved and is not part of the current surface syntax. Use `for-in`
+when you want a collected array expression:
 
 ```vibe
-let built = do {
-  let b = ArrayBuilder::new()
-  ArrayBuilder::push(b, 1)
-  ArrayBuilder::push(b, 2)
-  ArrayBuilder::freeze(b)
-}
-
-// equivalent using for-in
-let built2 = for x in [1, 2] { x }
+let built = for x in [1, 2] { x }
 ```
 
 ## String Interpolation
@@ -302,11 +301,11 @@ impl Show for Int
 impl [T: Eq] Eq for Array[T]
 
 // Trait bounds in functions
-let f = [T: Eq](x: T) -> T { x }
-let g = [T: Eq + Show](x: T) -> T { x }
+let f: [T: Eq](T) -> T = (x) -> { x }
+let g: [T: Eq + Show](T) -> T = (x) -> { x }
 
 // Inline trait bound
-let h = [T](x: T: Eq) -> T { x }
+let h: [T: Eq](T) -> T = (x) -> { x }
 ```
 
 ## Option[T]
@@ -326,7 +325,7 @@ let value = match x {
 // => 42
 
 // Common usage: Array::find
-match Array::find([1, 2, 3], (x: Int) -> Bool { x > 1 }) {
+match Array::find([1, 2, 3], (x) -> { x > 1 }) {
   Some(v) => v,    // => 2
   None => -1,
 }
@@ -337,7 +336,7 @@ match Array::find([1, 2, 3], (x: Int) -> Bool { x > 1 }) {
 Functions declare required effects with `with { ... }`.
 
 ```vibe
-let run = () -> Unit with { Stdout } {
+let run: () -> Unit with { Stdout } = () -> {
   sh("echo hello")
 }
 ```
@@ -345,11 +344,11 @@ let run = () -> Unit with { Stdout } {
 ### Error handling
 
 ```vibe
-let parse_id = (raw: String) -> Result[Int, String] { ... }
-let validate_id = (id: Int) -> Result[Int, String] { ... }
-let load_user = (id: Int) -> Result[String, String] { ... }
+let parse_id: (String) -> Result[Int, String] = (raw) -> { ... }
+let validate_id: (Int) -> Result[Int, String] = (id) -> { ... }
+let load_user: (Int) -> Result[String, String] = (id) -> { ... }
 
-let fetch_user = (raw: String) -> Result[String, String] {
+let fetch_user: (String) -> Result[String, String] = (raw) -> {
   raw
   |> parse_id
   |> Result::and_then(validate_id)
@@ -357,7 +356,7 @@ let fetch_user = (raw: String) -> Result[String, String] {
 }
 
 // Boundary helper when you need local Error handling
-let safe_div = (a: Int, b: Int) -> Int with { Error } {
+let safe_div: (Int, Int) -> Int with { Error } = (a, b) -> {
   if eq(b, 0) { throw("division by zero") } else { a / b }
 }
 
@@ -370,10 +369,12 @@ let result = handle { safe_div(8, 0) } with Error { Throw(_) => -1 }
 Effect-polymorphic functions propagate callee effects via `{ e }`.
 
 ```vibe
-let apply = [T, U](f: (T) -> U with { e }, x: T) -> U with { e } { f(x) }
+let apply: [T, U]((T) -> U with { e }, T) -> U with { e } = (f, x) -> {
+  f(x)
+}
 
 test "effect row" {
-  assert(eq(apply((x: Int) -> Int { x + 1 }, 41), 42))
+  assert(eq(apply((x) -> { x + 1 }, 41), 42))
 }
 ```
 
@@ -387,11 +388,11 @@ suberror AppError {
   InvalidInput(Int)
 }
 
-let risky = () -> Int with { Error } {
+let risky: () -> Int with { Error } = () -> {
   throw(NotFound("missing"))
 }
 
-let lookup_user = (raw: String) -> Result[String, AppError] {
+let lookup_user: (String) -> Result[String, AppError] = (raw) -> {
   if raw == "" { Err(NotFound("missing")) } else { Ok(raw) }
 }
 
@@ -406,21 +407,21 @@ let fallback = handle { risky() } with Error { Throw(_) => -1 }
 
 ### perform / resume (algebraic effects)
 
-User-defined effects via enum + `perform`/`resume`.
+User-defined effects via `effect` + `perform`/`resume`.
 
 ```vibe
-enum Eff {
-  Ask(Int)
+effect Ask {
+  Question(Int) -> Int
 }
 
-let ask_once = () -> Int with { Ask } {
-  perform(Ask(41))
+let ask_once: () -> Int with { Ask } = () -> {
+  perform Ask::Question(41)
 }
 
 let result = handle {
   add(1, ask_once())
 } with Ask {
-  Ask(v) => resume(add(v, 1))
+  Question(v) => resume(add(v, 1))
 }
 // => 43
 ```
@@ -430,7 +431,7 @@ let result = handle {
 Requires `--unstable-async` flag.
 
 ```vibe
-let delayed = () -> Int with { Async } {
+let delayed: () -> Int with { Async } = () -> {
   yield
   42
 }
@@ -442,7 +443,7 @@ let delayed = () -> Int with { Async } {
 
 ```vibe
 // math.vibe
-export let double = (x: Int) -> Int { x * 2 }
+export let double: (Int) -> Int = (x) -> { x * 2 }
 ```
 
 ### import
