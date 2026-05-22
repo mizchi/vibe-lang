@@ -407,14 +407,14 @@ fn call_or_throw_expr(
   if name == "perform" {
     if type_args.length() != 0 {
       raise ParseError::UnexpectedToken(
-        expected="perform does not accept type arguments. Use `perform(Effect::Op(args))` instead.",
+        expected="perform does not accept type arguments. Use `perform Effect::Op(args)` instead.",
         got="perform[<type>](...)",
         span~,
       )
     }
     if args.length() != 1 {
       raise ParseError::UnexpectedToken(
-        expected="perform requires the form `perform(Effect::Op(args))`.",
+        expected="perform requires the form `perform Effect::Op(args)`.",
         got="perform(...) with \{args.length()} arguments",
         span~,
       )
@@ -422,7 +422,7 @@ fn call_or_throw_expr(
     match args[0].label {
       Some(_) =>
         raise ParseError::UnexpectedToken(
-          expected="perform does not accept labeled arguments. Use `perform(Effect::Op(args))` instead.",
+          expected="perform does not accept labeled arguments. Use `perform Effect::Op(args)` instead.",
           got="perform(label=...)",
           span~,
         )

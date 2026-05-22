@@ -36,6 +36,19 @@ test "parse diagnostic suggests labeled-arg quickfix" {
 }
 
 ///|
+test "parse diagnostic prefers canonical perform syntax" {
+  let result : Result[@core.Module, ParseError] = try? parse_ast("perform()")
+  match result {
+    Ok(_) => fail("expected parse error for empty perform call")
+    Err(err) => {
+      let diag = err.diagnostic()
+      assert_true(diag.message.contains("perform Effect::Op(args)"))
+      assert_false(diag.message.contains("perform(Effect::Op(args))"))
+    }
+  }
+}
+
+///|
 test "parse diagnostic suggests parenthesize hint for infix+pipe mix" {
   let diag = ParseError::UnexpectedToken(
     expected="parenthesize infix expression when mixing with `|>`",
