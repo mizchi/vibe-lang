@@ -875,12 +875,6 @@ fn serialize_linked_imports_cache(
 }
 
 ///|
-
-///|
-/// Spawn background `vibe build --debug` to create linked cache for next run.
-/// Only spawns if no cache exists yet. The background process is fire-and-forget.
-
-///|
 /// Find the nearest parent .vibe directory for cache hoisting.
 /// Returns (vibe_dir_path, cache_key) where cache_key is the relative path
 /// from the .vibe parent to the entry file (slug-ified for directory name).

@@ -255,6 +255,9 @@ fn print_run_help() -> Unit {
     "  VIBE_RUN_BACKEND=release|monolithic  Disable linked debug fast path",
   )
   println("  VIBE_USE_SESSION_HTTP=1              Enable session worker")
+  println(
+    "  VIBE_LINKED_CACHE_BACKGROUND=1       Enable background linked cache build",
+  )
 }
 
 ///|

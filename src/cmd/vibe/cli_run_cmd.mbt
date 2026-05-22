@@ -933,8 +933,8 @@ fn run_cmd_wasm_backend_with_cache(
         Err(_) => () // fall through
       }
     }
-    // No cache yet: fall through to monolithic run.
-    // After execution, spawn background cache creation for next run.
+    // No cache yet: fall through to monolithic run. An opt-in background
+    // build may create the linked cache after a successful run.
   }
   // Monolithic fallback
   let (db, entry) = match load_db_for_run_with_cache(cache, entry_path) {

@@ -22,7 +22,7 @@ Execute a vibe script. The final top-level expression must be pure.
 vibe run <file>
 ```
 
-Compiles and runs the script via WASM. By default this uses the one-shot execution path; set `VIBE_USE_SESSION_HTTP=1` to opt into the persistent session worker. After successful execution, the linked debug cache is populated in the background for faster subsequent runs.
+Compiles and runs the script via WASM. By default this uses the one-shot execution path; set `VIBE_USE_SESSION_HTTP=1` to opt into the persistent session worker. Set `VIBE_LINKED_CACHE_BACKGROUND=1` to populate the linked debug cache in the background after a successful run.
 
 ### build
 
@@ -260,5 +260,6 @@ Opt-in persistent session workers that accelerate `run`/`check`/`test` by keepin
 |----------|-------------|
 | `VIBE_RUN_BACKEND=release\|monolithic` | Disable linked debug fast path for `run` |
 | `VIBE_USE_SESSION_HTTP=1` | Enable persistent session worker for run/check/test |
+| `VIBE_LINKED_CACHE_BACKGROUND=1` | Enable background linked debug cache build after `run` |
 | `VIBE_TEST_JOBS` | Default parallelism for `test` (max 16) |
 | `VIBE_TEST_COVERAGE=1` | Required to enable `--coverage` in compile |
