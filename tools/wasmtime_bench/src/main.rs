@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use std::time::Instant;
 use wasmtime::{Config, Engine, Linker, Module, Store, TypedFunc};
 
@@ -40,7 +40,7 @@ fn main() -> Result<()> {
 
     let module_start = Instant::now();
     let module = Module::from_file(&engine, &wasm_path)
-        .with_context(|| format!("failed to load {wasm_path}"))?;
+        .map_err(|err| anyhow!("failed to load {wasm_path}: {err}"))?;
     let module_elapsed = module_start.elapsed();
 
     let mut linker = Linker::new(&engine);
@@ -52,7 +52,7 @@ fn main() -> Result<()> {
     let instantiate_start = Instant::now();
     let instance = linker
         .instantiate(&mut store, &module)
-        .context("failed to instantiate module")?;
+        .map_err(|err| anyhow!("failed to instantiate module: {err}"))?;
     let instantiate_elapsed = instantiate_start.elapsed();
 
     let lookup_start = Instant::now();

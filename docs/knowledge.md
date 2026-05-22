@@ -737,7 +737,7 @@ ADR doc 更新と新規 wbtest だけの PR (#373) は CI も短く、レビュ�
 `selfhost-bootstrap-gate` は CI 上 `continue-on-error: true` の informational job なので、`ci-required` には影響しない。ただし pre-existing bug を放置していると判別できなくなるので:
 
 1. `vibe test vibe/compiler/<failing>_test.vibe` をローカルで再現 (`flaker` でなく直叩き)。
-2. wasmtime 必須なので `bash scripts/install_wasmtime_release.sh` で 42.0.1 を入れる。
+2. wasmtime 必須なので `bash scripts/install_wasmtime_release.sh` で repo 既定バージョンを入れる。
 3. exit code 24 = `assert(...)` 失敗。テストが通ろうとしている場面が selfhost compiler のどの構文/型機能を要求しているかを切り分ける。
 4. 「テストソース自体が host も受理しない」「auto-generated bundle のシェイプが変わったのに assert が古い」など、テストが先走っていることが多い。skip + 再有効化条件を残すコメントだけで unblock 可 (#372)。
 
