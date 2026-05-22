@@ -7,9 +7,7 @@
 ///|
 fn init {
   // Parser hooks
-  parse_ast_hook.val = fn(
-    source,
-  ) -> (@core.Module, @core.Diagnostic?) {
+  parse_ast_hook.val = fn(source) -> (@core.Module, @core.Diagnostic?) {
     let ast = @parser.parse_ast(source) catch {
       e => return ({ stmts: [] }, Some(e.diagnostic()))
     }

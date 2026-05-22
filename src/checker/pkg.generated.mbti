@@ -101,6 +101,27 @@ pub struct EnumDef {
   ctors : Array[@core.TypeCtor]
 } derive(Eq, @debug.Debug)
 
+pub struct ImplIndex {
+  env : TypeEnv
+}
+pub fn ImplIndex::find_overlapping(Self, String, TraitImplDef) -> TraitImplDef?
+pub fn ImplIndex::impls_for(Self, String) -> Array[TraitImplDef]
+pub fn ImplIndex::import_impl(Self, String, TraitImplDef) -> Unit
+pub fn ImplIndex::of(TypeEnv) -> Self
+pub fn ImplIndex::register_impl(Self, Array[String], Map[String, Array[String]], String, @core.Type, @core.Span) -> Unit raise TypeError
+pub fn ImplIndex::traits_with_impls(Self) -> Array[String]
+pub fn ImplIndex::would_overlap(Self, String, TraitImplDef) -> Bool
+
+pub struct ObligationSolver {
+  env : TypeEnv
+  graph : TraitGraph
+  index : ImplIndex
+}
+pub fn ObligationSolver::bound_satisfied(Self, Array[String], String) -> Bool
+pub fn ObligationSolver::of(TypeEnv) -> Self
+pub fn ObligationSolver::satisfies(Self, @core.Type, String) -> Bool
+pub fn ObligationSolver::witness(Self, @core.Type, String) -> TraitWitness
+
 pub(all) struct PurityInfo {
   expr : Bool
   value : Bool
@@ -166,6 +187,22 @@ pub fn TraitDefInfo::prelude_seeded() -> Self
 pub fn TraitDefInfo::supertraits_copy(Self) -> Array[String]
 pub fn TraitDefInfo::to_imported(Self, Array[String]) -> Self
 
+pub struct TraitGraph {
+  env : TypeEnv
+  memo : Map[String, Map[String, Bool]]
+}
+pub fn TraitGraph::cycle_chain(Self, String) -> Array[String]?
+pub fn TraitGraph::has(Self, String) -> Bool
+pub fn TraitGraph::has_cycle(Self, String) -> Bool
+pub fn TraitGraph::import_def(Self, String, TraitDefInfo, Array[String]) -> Bool
+pub fn TraitGraph::info(Self, String) -> TraitDefInfo?
+pub fn TraitGraph::is_subtrait(Self, String, String) -> Bool
+pub fn TraitGraph::of(TypeEnv) -> Self
+pub fn TraitGraph::register_def(Self, String, Array[String], Bool, Bool, @core.Span) -> Unit raise TypeError
+pub fn TraitGraph::super_closure(Self, String) -> Array[String]
+pub fn TraitGraph::supertraits(Self, String) -> Array[String]
+pub fn TraitGraph::trait_names(Self) -> Array[String]
+
 pub struct TraitImplDef {
   type_params : Array[String]
   type_bounds : Map[String, Array[String]]
@@ -177,6 +214,22 @@ pub enum TraitOrigin {
   Imported
   PreludeSeed
 } derive(Eq, @debug.Debug)
+
+pub(all) struct TraitState {
+  traits : Map[String, TraitDefInfo]
+  trait_impls : Map[String, Array[TraitImplDef]]
+} derive(Eq, @debug.Debug)
+pub fn TraitState::copy(Self) -> Self
+pub fn TraitState::new() -> Self
+
+pub enum TraitWitness {
+  Satisfied
+  NoImpl(trait_name~ : String, ty~ : @core.Type)
+  ImplBoundFailed(trait_name~ : String, impl_target~ : @core.Type, param_name~ : String, required_bound~ : String, actual_ty~ : @core.Type)
+  VarLacksBound(trait_name~ : String, available~ : Array[String])
+} derive(Eq, @debug.Debug)
+pub fn TraitWitness::is_satisfied(Self) -> Bool
+pub fn TraitWitness::message(Self) -> String
 
 pub struct TypeAlias {
   name : String
@@ -193,8 +246,7 @@ pub struct TypeEnv {
   ctor_index : Map[String, CtorInfo]
   effect_defs : Map[String, @core.EffectDef_]
   inferred_effects : Map[String, Bool]
-  traits : Map[String, TraitDefInfo]
-  trait_impls : Map[String, Array[TraitImplDef]]
+  trait_state : TraitState
   fn_versions : Map[String, ApiSemver]
   purities : @scoped_map.ScopedMap[Bool]
   purity_tiers : @scoped_map.ScopedMap[TopLevelPurityTier]

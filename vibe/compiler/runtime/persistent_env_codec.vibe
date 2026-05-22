@@ -1,7 +1,7 @@
 //# Imports
 
 import .. / cache / persistent_cache.vibe {
-  compact_string_fingerprint, normalize_persistent_cache_text, persistent_leaf_fingerprint_cache_path, persistent_type_env_cache_path
+  compact_string_fingerprint, normalize_persistent_cache_text, persistent_dep_list_cache_path, persistent_leaf_fingerprint_cache_path, persistent_type_env_cache_path
 }
 
 import .. / core {
@@ -10,7 +10,7 @@ import .. / core {
 
 //# Functions
 
-let parse_int_unwrap = (raw: String, fallback: Int) -> Int {
+let parse_int_unwrap: (String, Int) -> Int = (raw, fallback) -> {
   let len = String::length(raw)
   let mut result = 0
   let mut i = 0
@@ -35,14 +35,14 @@ let parse_int_unwrap = (raw: String, fallback: Int) -> Int {
   } else fallback
 }
 
-let serialize_segment = (text: String) -> String {
+let serialize_segment: (String) -> String = (text) -> {
   let len = String::length(text)
   let len_str = __to_string(len)
   let colon_text = String::concat(":", text)
   String::concat(len_str, colon_text)
 }
 
-let decode_effect_name = (raw: String) -> String {
+let decode_effect_name: (String) -> String = (raw) -> {
   if raw == "" || raw == "0" {
     ""
   } else if raw == "1" {
@@ -52,7 +52,7 @@ let decode_effect_name = (raw: String) -> String {
   }
 }
 
-let parse_count_header = (text: String, pos: Int, terminator: Int) -> (Int, Int)with { Error } {
+let parse_count_header: (String, Int, Int) -> (Int, Int) with { Error } = (text, pos, terminator) -> {
   let len = String::length(text)
   let mut i = pos
   while i < len && String::char_code_at(text, i) != terminator {
@@ -66,7 +66,7 @@ let parse_count_header = (text: String, pos: Int, terminator: Int) -> (Int, Int)
   }
 }
 
-let parse_segment = (text: String, pos: Int) -> (String, Int)with { Error } {
+let parse_segment: (String, Int) -> (String, Int) with { Error } = (text, pos) -> {
   let (seg_len, start) = parse_count_header(text, pos, 58)
   let end = start + seg_len
   if end > String::length(text) {
@@ -76,7 +76,7 @@ let parse_segment = (text: String, pos: Int) -> (String, Int)with { Error } {
   }
 }
 
-let parse_int_array = (text: String, pos: Int) -> (Array[Int], Int)with { Error } {
+let parse_int_array: (String, Int) -> (Array[Int], Int) with { Error } = (text, pos) -> {
   let (count, start) = parse_count_header(text, pos, 91)
   let items = Array::slice([
     0
@@ -97,7 +97,7 @@ let parse_int_array = (text: String, pos: Int) -> (Array[Int], Int)with { Error 
   }
 }
 
-let parse_string_array = (text: String, pos: Int) -> (Array[String], Int)with { Error } {
+let parse_string_array: (String, Int) -> (Array[String], Int) with { Error } = (text, pos) -> {
   let (count, start) = parse_count_header(text, pos, 91)
   let items = Array::slice([
     ""
@@ -117,7 +117,7 @@ let parse_string_array = (text: String, pos: Int) -> (Array[String], Int)with { 
   }
 }
 
-let parse_bounds_array = (text: String, pos: Int) -> (Array[(Int, Array[String])], Int)with { Error } {
+let parse_bounds_array: (String, Int) -> (Array[(Int, Array[String])], Int) with { Error } = (text, pos) -> {
   let (count, start) = parse_count_header(text, pos, 91)
   let items = Array::slice([
     (0, Array::slice([
@@ -141,8 +141,8 @@ let parse_bounds_array = (text: String, pos: Int) -> (Array[(Int, Array[String])
   }
 }
 
-let rec parse_cached_type = (source: String, pos: Int) -> (Type, Int)with { Error } {
-  let rec parse_type_array = (text: String, pos: Int) -> (Array[Type], Int)with { Error } {
+let rec parse_cached_type: (String, Int) -> (Type, Int) with { Error } = (source, pos) -> {
+  let rec parse_type_array: (String, Int) -> (Array[Type], Int) with { Error } = (text, pos) -> {
     let (count, start) = parse_count_header(text, pos, 91)
     let items = Array::slice([
       CtUnknown
@@ -233,7 +233,7 @@ let rec parse_cached_type = (source: String, pos: Int) -> (Type, Int)with { Erro
 // runs them on every TypeEnv save, and large modules hit thousands of
 // bindings — the cumulative cost shows up in `vibe check` cold runs.
 // StringBuilder collapses each one to O(N).
-let serialize_int_array = (items: Array[Int]) -> String {
+let serialize_int_array: (Array[Int]) -> String = (items) -> {
   let buf = StringBuilder::new()
   StringBuilder::push(buf, __to_string(Array::length(items)))
   StringBuilder::push(buf, "[")
@@ -246,11 +246,11 @@ let serialize_int_array = (items: Array[Int]) -> String {
   StringBuilder::freeze(buf)
 }
 
-let serialize_effect_name_str = (effect_name: String) -> String {
+let serialize_effect_name_str: (String) -> String = (effect_name) -> {
   effect_name
 }
 
-let serialize_string_array = (items: Array[String]) -> String {
+let serialize_string_array: (Array[String]) -> String = (items) -> {
   let buf = StringBuilder::new()
   StringBuilder::push(buf, __to_string(Array::length(items)))
   StringBuilder::push(buf, "[")
@@ -263,7 +263,7 @@ let serialize_string_array = (items: Array[String]) -> String {
   StringBuilder::freeze(buf)
 }
 
-let serialize_bounds_array = (items: Array[(Int, Array[String])]) -> String {
+let serialize_bounds_array: (Array[(Int, Array[String])]) -> String = (items) -> {
   let buf = StringBuilder::new()
   StringBuilder::push(buf, __to_string(Array::length(items)))
   StringBuilder::push(buf, "[")
@@ -278,8 +278,8 @@ let serialize_bounds_array = (items: Array[(Int, Array[String])]) -> String {
   StringBuilder::freeze(buf)
 }
 
-let rec serialize_type = (ty: Type) -> String {
-  let rec serialize_type_array = (items: Array[Type]) -> String {
+let rec serialize_type: (Type) -> String = (ty) -> {
+  let rec serialize_type_array: (Array[Type]) -> String = (items) -> {
     let buf = StringBuilder::new()
     StringBuilder::push(buf, __to_string(Array::length(items)))
     StringBuilder::push(buf, "[")
@@ -317,7 +317,7 @@ let rec serialize_type = (ty: Type) -> String {
   }
 }
 
-export let persistent_dep_list_text = (deps: Array[String]) -> String {
+export let persistent_dep_list_text: (Array[String]) -> String = (deps) -> {
   if Array::length(deps) == 0 {
     ""
   } else if Array::length(deps) == 1 {
@@ -327,7 +327,49 @@ export let persistent_dep_list_text = (deps: Array[String]) -> String {
   }
 }
 
-let rebuild_persistent_type_env = (bindings: Array[(String, Type)]) -> TypeEnv {
+export let load_persistent_dep_list: (String, String) -> Option[Array[String]] with { Error, Fs } = (path, source) -> {
+  let cache_path = persistent_dep_list_cache_path(path, compact_string_fingerprint(source))
+  if !(Fs::exists(cache_path)) {
+    None
+  } else {
+    let text = normalize_persistent_cache_text(Fs::read_file(cache_path))
+    if String::length(text) == 0 {
+      Some(Array::slice([
+        ""
+      ], 0, 0))
+    } else {
+      let v2_prefix = "version\t2\n"
+      let v3_prefix = "version\t3\n"
+      let text_len = String::length(text)
+      let v2_len = String::length(v2_prefix)
+      let v3_len = String::length(v3_prefix)
+      if text_len >= v2_len &&
+      text[0: v2_len] == v2_prefix {
+        let body = text[v2_len: text_len]
+        let (deps, end_pos) = parse_string_array(body, 0)
+        if end_pos == String::length(body) {
+          Some(deps)
+        } else {
+          throw(String::concat("invalid persistent dep list body: ", cache_path))
+        }
+      } else if text_len >= v3_len &&
+      text[0: v3_len] == v3_prefix {
+        let dep = text[v3_len: text_len]
+        if String::length(dep) == 0 {
+          Some(Array::slice([
+            ""
+          ], 0, 0))
+        } else {
+          Some([dep])
+        }
+      } else {
+        throw(String::concat("invalid persistent dep list header: ", cache_path))
+      }
+    }
+  }
+}
+
+let rebuild_persistent_type_env: (Array[(String, Type)]) -> TypeEnv = (bindings) -> {
   let mut env = EnvEmpty
   let len = Array::length(bindings)
   let mut i = 0
@@ -340,14 +382,14 @@ let rebuild_persistent_type_env = (bindings: Array[(String, Type)]) -> TypeEnv {
   env
 }
 
-export let load_persistent_type_env = (fingerprint: String) -> Option[TypeEnv] with { Error, Fs } {
+export let load_persistent_type_env: (String) -> Option[TypeEnv] with { Error, Fs } = (fingerprint) -> {
   let path = persistent_type_env_cache_path(fingerprint)
   if !(Fs::exists(path)) {
     None
   } else {
     let lines = String::split(normalize_persistent_cache_text(Fs::read_file(path)), "\n")
     let len = Array::length(lines)
-    let rec go = (index: Int, version_ok: Bool, bindings: Array[(String, Type)]) -> Option[TypeEnv] with { Error } {
+    let rec go: (Int, Bool, Array[(String, Type)]) -> Option[TypeEnv] with { Error } = (index, version_ok, bindings) -> {
       if index >= len {
         if version_ok {
           Some(rebuild_persistent_type_env(bindings))
@@ -393,7 +435,7 @@ export let load_persistent_type_env = (fingerprint: String) -> Option[TypeEnv] w
   }
 }
 
-export let persistent_type_env_cache_text = (env: TypeEnv) -> String {
+export let persistent_type_env_cache_text: (TypeEnv) -> String = (env) -> {
   let bindings = env_flat_bindings(env)
   // StringBuilder over the bindings list — was O(N²) via `out =
   // String::concat(out, ...)` for N bindings.
@@ -412,7 +454,7 @@ export let persistent_type_env_cache_text = (env: TypeEnv) -> String {
   StringBuilder::freeze(buf)
 }
 
-export let load_persistent_leaf_fingerprint = (path: String, source: String) -> Option[String] with { Error, Fs } {
+export let load_persistent_leaf_fingerprint: (String, String) -> Option[String] with { Error, Fs } = (path, source) -> {
   let cache_path = persistent_leaf_fingerprint_cache_path(path, compact_string_fingerprint(source))
   if !(Fs::exists(cache_path)) {
     None
@@ -428,6 +470,6 @@ export let load_persistent_leaf_fingerprint = (path: String, source: String) -> 
   }
 }
 
-export let persistent_leaf_fingerprint_text = (fingerprint: String) -> String {
+export let persistent_leaf_fingerprint_text: (String) -> String = (fingerprint) -> {
   String::concat("version\t1\n", String::concat(fingerprint, "\n"))
 }

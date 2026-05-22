@@ -1,6 +1,7 @@
 # Syntax Reference
 
-Complete syntax reference for the vibe language.
+Tour-oriented syntax reference for the vibe language. The canonical surface
+syntax spec is [`../spec/syntax.md`](../spec/syntax.md).
 
 ## Literals
 
@@ -43,35 +44,36 @@ Assignment: `=`, `+=`, `-=`, `*=`, `/=`, `%=` (statements, not expressions).
 let x = 42
 let y: Int = 10
 
-let rec fact = (n: Int) -> Int {
+let rec fact: (Int) -> Int = (n) -> {
   if n < 2 { 1 } else { n * fact(n - 1) }
 }
 
-let mut counter = 0
-counter += 1
+let counter = {
+  let mut value = 0
+  value += 1
+  value
+}
 ```
 
 ### Functions
 
 ```vibe
-// Named with types
-let add = (x: Int, y: Int) -> Int { x + y }
-
-// Inferred return type
-let inc = (x: Int) { x + 1 }
+// Preferred: type annotation separated from body
+let add: (Int, Int) -> Int = (x, y) -> { x + y }
+let inc: (Int) -> Int = (x) -> { x + 1 }
 
 // Generic
-let identity = [T](x: T) -> T { x }
+let identity: [T](T) -> T = (x) -> { x }
 
 // With effect
-let risky = () -> Int with { Error } { throw("fail") }
+let risky: () -> Int with { Error } = () -> { throw("fail") }
 
 // With trait bounds
-let show = [T: Show](x: T) -> String { to_string(x) }
+let show: [T: Show](T) -> String = (x) -> { to_string(x) }
 
 // Labeled arguments
-let f = (x: Int, y~: String, z?: Int = 0) -> Int { x + z }
-f(1, y = "ok", z = 5)
+let f: (x~: Int, y~: Int) -> Int = (x~, y~) -> { x + y }
+f(x = 1, y = 5)
 ```
 
 ### Lambda shorthand
@@ -198,14 +200,7 @@ loop { if done { break } }
 
 ### do block
 
-```vibe
-// Enables mutable builders and effectful builtins
-do {
-  let b = ArrayBuilder::new()
-  ArrayBuilder::push(b, 1)
-  ArrayBuilder::freeze(b)
-}
-```
+`do` is reserved and is not part of the current surface syntax.
 
 ### Pipe operator
 
@@ -310,22 +305,24 @@ T, U, V
 
 ```vibe
 // Result-first core flow
-let parse_id = (raw: String) -> Result[Int, String] { ... }
-let load_user = (id: Int) -> Result[String, String] { ... }
+let parse_id: (String) -> Result[Int, String] = (raw) -> { ... }
+let load_user: (Int) -> Result[String, String] = (id) -> { ... }
 
 raw |> parse_id |> Result::and_then(load_user)
 
 // Error boundary
-let f = () -> Int with { Error } { throw("fail") }
+let f: () -> Int with { Error } = () -> { throw("fail") }
 handle { f() } with Error { Throw(msg) => -1 }
 
 // User-defined effect
-enum Ask { Ask(Int) }
-perform(Ask(42))
-handle { perform(Ask(1)) } with Ask { Ask(v) => resume(v + 1) }
+effect Ask { Question(Int) -> Int }
+perform Ask::Question(42)
+handle { perform Ask::Question(1) } with Ask { Question(v) => resume(v + 1) }
 
 // Effect polymorphism
-let apply = [T](f: (T) -> T with { e }, x: T) -> T with { e } { f(x) }
+let apply: [T](f: (T) -> T with { e }, x: T) -> T with { e } = (f, x) -> {
+  f(x)
+}
 ```
 
 ## Qualified Names
@@ -389,7 +386,7 @@ Point::{ x: 1, y: 2 } // struct literal
 ### export
 
 ```vibe
-export let f = (x: Int) -> Int { x + 1 }
+export let f: (Int) -> Int = (x) -> { x + 1 }
 export enum Color { Red; Green; Blue }
 export { name1, name2 }
 ```
@@ -431,5 +428,8 @@ bench "name" {
 `let`, `rec`, `mut`, `if`, `else`, `match`, `do`, `while`, `loop`, `for`, `in`,
 `break`, `continue`, `yield`, `throw`, `perform`, `resume`, `handle`,
 `test`, `bench`, `enum`, `struct`, `trait`, `impl`, `type`, `import`,
-`export`, `internal`, `extern`, `module`, `fn`, `as`, `true`, `false`, `record`, `map`,
-`suberror`, `derive`
+`export`, `internal`, `extern`, `module`, `as`, `true`, `false`, `suberror`,
+`derive`
+
+`record` and `map` are context-sensitive literal heads. `map` is not a reserved
+keyword.

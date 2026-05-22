@@ -50,6 +50,7 @@ fn warn_context_keyword_binding(
 /// separated type annotation style (`let f: (Int) -> Int = (x) -> { ... }`).
 fn warn_old_style_fn_def(
   name : String,
+  rec : Bool,
   expr : @core.Expr,
   span : @core.Span,
   out : Array[@core.Diagnostic],
@@ -58,8 +59,14 @@ fn warn_old_style_fn_def(
   if name.has_prefix("__vibe_local_type_assert_") {
     return
   }
+  if rec {
+    return
+  }
   match expr {
-    @core.Expr::Fn(params~, ret~, ..) => {
+    @core.Expr::Fn(type_params~, params~, ret~, ..) => {
+      if !type_params.is_empty() {
+        return
+      }
       let has_typed_param = params
         .iter()
         .any(fn(p) { p.ty != @core.Type::Unit })
@@ -290,7 +297,7 @@ fn walk_stmt(
   match stmt {
     @core.Stmt::Let(rec~, name~, expr~, span~) => {
       warn_context_keyword_binding(name, span, out)
-      warn_old_style_fn_def(name, expr, span, out)
+      warn_old_style_fn_def(name, rec, expr, span, out)
       if rec {
         warning_scope_declare(
           scopes,
@@ -313,7 +320,7 @@ fn walk_stmt(
     }
     @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
       warn_context_keyword_binding(name, span, out)
-      warn_old_style_fn_def(name, expr, span, out)
+      warn_old_style_fn_def(name, rec, expr, span, out)
       if rec {
         warning_scope_declare(
           scopes,
@@ -336,7 +343,7 @@ fn walk_stmt(
     }
     @core.Stmt::InternalExportLet(rec~, name~, expr~, span~) => {
       warn_context_keyword_binding(name, span, out)
-      warn_old_style_fn_def(name, expr, span, out)
+      warn_old_style_fn_def(name, rec, expr, span, out)
       if rec {
         warning_scope_declare(
           scopes,

@@ -667,6 +667,1076 @@ fn namespace_private_module_values(
 }
 
 ///|
+fn namespace_private_module_values_for_existing_names(
+  path : String,
+  ast : @core.Module,
+  existing_names : Map[String, Bool],
+) -> @core.Module {
+  let all_renames = collect_private_value_rename_map(path, ast)
+  let rename_map : Map[String, String] = {}
+  for name, renamed in all_renames {
+    if existing_names.contains(name) {
+      rename_map[name] = renamed
+    }
+  }
+  if rename_map.length() == 0 {
+    ast
+  } else {
+    rename_private_module_refs(ast, RenameScope::new(), rename_map, true)
+  }
+}
+
+///|
+fn rename_private_type_name(
+  type_rename_map : Map[String, String],
+  name : String,
+) -> String {
+  match type_rename_map.get(name) {
+    Some(mapped) => mapped
+    None => name
+  }
+}
+
+///|
+fn rename_private_ctor_lookup_name(
+  scope : RenameScope,
+  ctor_rename_map : Map[String, String],
+  name : String,
+) -> String {
+  match rename_scope_lookup(scope, name) {
+    Some(mapped) => mapped
+    None =>
+      match ctor_rename_map.get(name) {
+        Some(mapped) => mapped
+        None => name
+      }
+  }
+}
+
+///|
+fn rename_private_type_refs(
+  ty : @core.Type,
+  type_rename_map : Map[String, String],
+) -> @core.Type {
+  match ty {
+    @core.Type::Tuple(items) => {
+      let next : Array[@core.Type] = []
+      for item in items {
+        next.push(rename_private_type_refs(item, type_rename_map))
+      }
+      @core.Type::Tuple(next)
+    }
+    @core.Type::Record(fields) => {
+      let next : Map[String, @core.Type] = {}
+      for name, field_ty in fields {
+        next[name] = rename_private_type_refs(field_ty, type_rename_map)
+      }
+      @core.Type::Record(next)
+    }
+    @core.Type::Array(item) =>
+      @core.Type::Array(rename_private_type_refs(item, type_rename_map))
+    @core.Type::Map(key, value) =>
+      @core.Type::Map(
+        rename_private_type_refs(key, type_rename_map),
+        rename_private_type_refs(value, type_rename_map),
+      )
+    @core.Type::Set(item) =>
+      @core.Type::Set(rename_private_type_refs(item, type_rename_map))
+    @core.Type::ArrayBuilder(item) =>
+      @core.Type::ArrayBuilder(rename_private_type_refs(item, type_rename_map))
+    @core.Type::MapBuilder(key, value) =>
+      @core.Type::MapBuilder(
+        rename_private_type_refs(key, type_rename_map),
+        rename_private_type_refs(value, type_rename_map),
+      )
+    @core.Type::Variant(fields) => {
+      let next : Map[String, @core.Type] = {}
+      for name, field_ty in fields {
+        next[name] = rename_private_type_refs(field_ty, type_rename_map)
+      }
+      @core.Type::Variant(next)
+    }
+    @core.Type::Named(name~, args~) => {
+      let next_args : Array[@core.Type] = []
+      for arg in args {
+        next_args.push(rename_private_type_refs(arg, type_rename_map))
+      }
+      @core.Type::Named(
+        name=rename_private_type_name(type_rename_map, name),
+        args=next_args,
+      )
+    }
+    @core.Type::Func(params~, ret~, effects~) =>
+      @core.Type::Func(
+        params=rename_private_func_params(params, type_rename_map),
+        ret=rename_private_type_refs(ret, type_rename_map),
+        effects~,
+      )
+    _ => ty
+  }
+}
+
+///|
+fn rename_private_func_params(
+  params : Array[@core.FuncParam],
+  type_rename_map : Map[String, String],
+) -> Array[@core.FuncParam] {
+  let next : Array[@core.FuncParam] = []
+  for param in params {
+    next.push(@core.FuncParam::{
+      ..param,
+      ty: rename_private_type_refs(param.ty, type_rename_map),
+    })
+  }
+  next
+}
+
+///|
+fn rename_private_type_args(
+  type_args : Array[@core.Type],
+  type_rename_map : Map[String, String],
+) -> Array[@core.Type] {
+  let next : Array[@core.Type] = []
+  for ty in type_args {
+    next.push(rename_private_type_refs(ty, type_rename_map))
+  }
+  next
+}
+
+///|
+fn rename_private_type_ctors(
+  ctors : Array[@core.TypeCtor],
+  type_rename_map : Map[String, String],
+  ctor_rename_map : Map[String, String],
+) -> Array[@core.TypeCtor] {
+  let next : Array[@core.TypeCtor] = []
+  for ctor in ctors {
+    next.push(@core.TypeCtor::{
+      name: match ctor_rename_map.get(ctor.name) {
+        Some(mapped) => mapped
+        None => ctor.name
+      },
+      args: rename_private_type_args(ctor.args, type_rename_map),
+      span: ctor.span,
+    })
+  }
+  next
+}
+
+///|
+fn rename_private_struct_fields(
+  fields : Array[@core.StructField],
+  type_rename_map : Map[String, String],
+) -> Array[@core.StructField] {
+  let next : Array[@core.StructField] = []
+  for field in fields {
+    next.push(@core.StructField::{
+      ..field,
+      ty: rename_private_type_refs(field.ty, type_rename_map),
+    })
+  }
+  next
+}
+
+///|
+fn rename_private_effect_ops(
+  ops : Array[@core.EffectOp],
+  type_rename_map : Map[String, String],
+) -> Array[@core.EffectOp] {
+  let next : Array[@core.EffectOp] = []
+  for op in ops {
+    next.push(@core.EffectOp::{
+      ..op,
+      params: rename_private_type_args(op.params, type_rename_map),
+      ret: rename_private_type_refs(op.ret, type_rename_map),
+    })
+  }
+  next
+}
+
+///|
+fn rename_private_trait_method_sigs(
+  methods : Array[@core.TraitMethodSig],
+  type_rename_map : Map[String, String],
+) -> Array[@core.TraitMethodSig] {
+  let next : Array[@core.TraitMethodSig] = []
+  for sig in methods {
+    next.push(@core.TraitMethodSig::{
+      ..sig,
+      params: rename_private_func_params(sig.params, type_rename_map),
+      ret: rename_private_type_refs(sig.ret, type_rename_map),
+    })
+  }
+  next
+}
+
+///|
+fn rename_private_type_ctor_pat_refs(
+  pat : @core.Pat,
+  type_rename_map : Map[String, String],
+  ctor_rename_map : Map[String, String],
+) -> @core.Pat {
+  match pat {
+    @core.Pat::Ctor(name~, args~, span~) => {
+      let next_args : Array[@core.Pat] = []
+      for arg in args {
+        next_args.push(
+          rename_private_type_ctor_pat_refs(
+            arg, type_rename_map, ctor_rename_map,
+          ),
+        )
+      }
+      @core.Pat::Ctor(
+        name=match ctor_rename_map.get(name) {
+          Some(mapped) => mapped
+          None => name
+        },
+        args=next_args,
+        span~,
+      )
+    }
+    @core.Pat::Tuple(items~, span~) => {
+      let next_items : Array[@core.Pat] = []
+      for item in items {
+        next_items.push(
+          rename_private_type_ctor_pat_refs(
+            item, type_rename_map, ctor_rename_map,
+          ),
+        )
+      }
+      @core.Pat::Tuple(items=next_items, span~)
+    }
+    @core.Pat::Record(fields~, span~) => {
+      let next_fields : Array[@core.RecordFieldPat] = []
+      for field in fields {
+        next_fields.push(@core.RecordFieldPat::{
+          ..field,
+          pat: rename_private_type_ctor_pat_refs(
+            field.pat,
+            type_rename_map,
+            ctor_rename_map,
+          ),
+        })
+      }
+      @core.Pat::Record(fields=next_fields, span~)
+    }
+    @core.Pat::Struct(name~, fields~, span~) => {
+      let next_fields : Array[@core.RecordFieldPat] = []
+      for field in fields {
+        next_fields.push(@core.RecordFieldPat::{
+          ..field,
+          pat: rename_private_type_ctor_pat_refs(
+            field.pat,
+            type_rename_map,
+            ctor_rename_map,
+          ),
+        })
+      }
+      @core.Pat::Struct(
+        name=rename_private_type_name(type_rename_map, name),
+        fields=next_fields,
+        span~,
+      )
+    }
+    @core.Pat::Or(pats~, span~) => {
+      let next_pats : Array[@core.Pat] = []
+      for item in pats {
+        next_pats.push(
+          rename_private_type_ctor_pat_refs(
+            item, type_rename_map, ctor_rename_map,
+          ),
+        )
+      }
+      @core.Pat::Or(pats=next_pats, span~)
+    }
+    _ => pat
+  }
+}
+
+///|
+fn rename_private_type_ctor_call_args(
+  args : Array[@core.CallArg],
+  scope : RenameScope,
+  type_rename_map : Map[String, String],
+  ctor_rename_map : Map[String, String],
+) -> Array[@core.CallArg] {
+  let next : Array[@core.CallArg] = []
+  for arg in args {
+    next.push(@core.CallArg::{
+      ..arg,
+      expr: rename_private_type_ctor_expr_refs(
+        arg.expr,
+        scope,
+        type_rename_map,
+        ctor_rename_map,
+      ),
+    })
+  }
+  next
+}
+
+///|
+fn rename_private_type_ctor_record_fields(
+  fields : Array[@core.RecordFieldExpr],
+  scope : RenameScope,
+  type_rename_map : Map[String, String],
+  ctor_rename_map : Map[String, String],
+) -> Array[@core.RecordFieldExpr] {
+  let next : Array[@core.RecordFieldExpr] = []
+  for field in fields {
+    next.push(@core.RecordFieldExpr::{
+      ..field,
+      expr: rename_private_type_ctor_expr_refs(
+        field.expr,
+        scope,
+        type_rename_map,
+        ctor_rename_map,
+      ),
+    })
+  }
+  next
+}
+
+///|
+fn rename_private_type_ctor_map_fields(
+  fields : Array[@core.MapFieldExpr],
+  scope : RenameScope,
+  type_rename_map : Map[String, String],
+  ctor_rename_map : Map[String, String],
+) -> Array[@core.MapFieldExpr] {
+  let next : Array[@core.MapFieldExpr] = []
+  for field in fields {
+    next.push(@core.MapFieldExpr::{
+      ..field,
+      expr: rename_private_type_ctor_expr_refs(
+        field.expr,
+        scope,
+        type_rename_map,
+        ctor_rename_map,
+      ),
+    })
+  }
+  next
+}
+
+///|
+fn rename_private_type_ctor_match_arms(
+  arms : Array[@core.MatchArm],
+  scope : RenameScope,
+  type_rename_map : Map[String, String],
+  ctor_rename_map : Map[String, String],
+) -> Array[@core.MatchArm] {
+  let next : Array[@core.MatchArm] = []
+  for arm in arms {
+    let next_pat = rename_private_type_ctor_pat_refs(
+      arm.pat,
+      type_rename_map,
+      ctor_rename_map,
+    )
+    let arm_scope = scope.child()
+    bind_pattern_names_into_scope(arm_scope, next_pat)
+    next.push(@core.MatchArm::{
+      pat: next_pat,
+      cond: match arm.cond {
+        Some(expr) =>
+          Some(
+            rename_private_type_ctor_expr_refs(
+              expr, arm_scope, type_rename_map, ctor_rename_map,
+            ),
+          )
+        None => None
+      },
+      expr: rename_private_type_ctor_expr_refs(
+        arm.expr,
+        arm_scope,
+        type_rename_map,
+        ctor_rename_map,
+      ),
+      span: arm.span,
+    })
+  }
+  next
+}
+
+///|
+fn rename_private_type_ctor_expr_refs(
+  expr : @core.Expr,
+  scope : RenameScope,
+  type_rename_map : Map[String, String],
+  ctor_rename_map : Map[String, String],
+) -> @core.Expr {
+  match expr {
+    @core.Expr::Int(..)
+    | @core.Expr::Float(..)
+    | @core.Expr::Double(..)
+    | @core.Expr::Bool(..)
+    | @core.Expr::Char(..)
+    | @core.Expr::String(..)
+    | @core.Expr::Placeholder(..) => expr
+    @core.Expr::StringInterp(parts~, span~) => {
+      let next : Array[@core.StringInterpPart] = []
+      for part in parts {
+        match part {
+          @core.StringInterpPart::Lit(text) =>
+            next.push(@core.StringInterpPart::Lit(text))
+          @core.StringInterpPart::Expr(inner) =>
+            next.push(
+              @core.StringInterpPart::Expr(
+                rename_private_type_ctor_expr_refs(
+                  inner, scope, type_rename_map, ctor_rename_map,
+                ),
+              ),
+            )
+        }
+      }
+      @core.Expr::StringInterp(parts=next, span~)
+    }
+    @core.Expr::Ident(name~, span~) =>
+      @core.Expr::Ident(
+        name=rename_private_ctor_lookup_name(scope, ctor_rename_map, name),
+        span~,
+      )
+    @core.Expr::Call(name~, type_args~, args~, span~) =>
+      @core.Expr::Call(
+        name=rename_private_ctor_lookup_name(scope, ctor_rename_map, name),
+        type_args=rename_private_type_args(type_args, type_rename_map),
+        args=rename_private_type_ctor_call_args(
+          args, scope, type_rename_map, ctor_rename_map,
+        ),
+        span~,
+      )
+    @core.Expr::Tuple(items~, span~) => {
+      let next : Array[@core.Expr] = []
+      for item in items {
+        next.push(
+          rename_private_type_ctor_expr_refs(
+            item, scope, type_rename_map, ctor_rename_map,
+          ),
+        )
+      }
+      @core.Expr::Tuple(items=next, span~)
+    }
+    @core.Expr::TupleIndex(expr~, index~, span~) =>
+      @core.Expr::TupleIndex(
+        expr=rename_private_type_ctor_expr_refs(
+          expr, scope, type_rename_map, ctor_rename_map,
+        ),
+        index~,
+        span~,
+      )
+    @core.Expr::Record(fields~, span~) =>
+      @core.Expr::Record(
+        fields=rename_private_type_ctor_record_fields(
+          fields, scope, type_rename_map, ctor_rename_map,
+        ),
+        span~,
+      )
+    @core.Expr::Array(items~, span~) => {
+      let next : Array[@core.Expr] = []
+      for item in items {
+        next.push(
+          rename_private_type_ctor_expr_refs(
+            item, scope, type_rename_map, ctor_rename_map,
+          ),
+        )
+      }
+      @core.Expr::Array(items=next, span~)
+    }
+    @core.Expr::Map(fields~, span~) =>
+      @core.Expr::Map(
+        fields=rename_private_type_ctor_map_fields(
+          fields, scope, type_rename_map, ctor_rename_map,
+        ),
+        span~,
+      )
+    @core.Expr::If(cond~, then_body~, else_body~, span~) =>
+      @core.Expr::If(
+        cond=rename_private_type_ctor_expr_refs(
+          cond, scope, type_rename_map, ctor_rename_map,
+        ),
+        then_body=rename_private_type_ctor_module_refs(
+          then_body, scope, type_rename_map, ctor_rename_map,
+        ),
+        else_body=rename_private_type_ctor_module_refs(
+          else_body, scope, type_rename_map, ctor_rename_map,
+        ),
+        span~,
+      )
+    @core.Expr::Block(body~, span~) =>
+      @core.Expr::Block(
+        body=rename_private_type_ctor_module_refs(
+          body, scope, type_rename_map, ctor_rename_map,
+        ),
+        span~,
+      )
+    @core.Expr::Match(scrutinee~, arms~, span~) =>
+      @core.Expr::Match(
+        scrutinee=rename_private_type_ctor_expr_refs(
+          scrutinee, scope, type_rename_map, ctor_rename_map,
+        ),
+        arms=rename_private_type_ctor_match_arms(
+          arms, scope, type_rename_map, ctor_rename_map,
+        ),
+        span~,
+      )
+    @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
+      let body_scope = scope.child()
+      body_scope.bindings[value_name] = value_name
+      match index_name {
+        Some(name) => body_scope.bindings[name] = name
+        None => ()
+      }
+      @core.Expr::ForIn(
+        value_name~,
+        index_name~,
+        iterable=rename_private_type_ctor_expr_refs(
+          iterable, scope, type_rename_map, ctor_rename_map,
+        ),
+        body=rename_private_type_ctor_module_refs(
+          body, body_scope, type_rename_map, ctor_rename_map,
+        ),
+        span~,
+      )
+    }
+    @core.Expr::Fn(
+      type_params~,
+      type_bounds~,
+      params~,
+      ret~,
+      effects~,
+      body~,
+      span~
+    ) => {
+      let body_scope = scope.child()
+      for param in params {
+        body_scope.bindings[param.name] = param.name
+      }
+      @core.Expr::Fn(
+        type_params~,
+        type_bounds~,
+        params=rename_private_func_params(params, type_rename_map),
+        ret=match ret {
+          Some(ty) => Some(rename_private_type_refs(ty, type_rename_map))
+          None => None
+        },
+        effects~,
+        body=rename_private_type_ctor_module_refs(
+          body, body_scope, type_rename_map, ctor_rename_map,
+        ),
+        span~,
+      )
+    }
+    @core.Expr::While(cond~, body~, span~) =>
+      @core.Expr::While(
+        cond=rename_private_type_ctor_expr_refs(
+          cond, scope, type_rename_map, ctor_rename_map,
+        ),
+        body=rename_private_type_ctor_module_refs(
+          body, scope, type_rename_map, ctor_rename_map,
+        ),
+        span~,
+      )
+    @core.Expr::Loop(params~, body~, span~) => {
+      let next_params : Array[@core.LoopParam] = []
+      let body_scope = scope.child()
+      for param in params {
+        next_params.push(@core.LoopParam::{
+          name: param.name,
+          init: rename_private_type_ctor_expr_refs(
+            param.init,
+            scope,
+            type_rename_map,
+            ctor_rename_map,
+          ),
+          span: param.span,
+        })
+        body_scope.bindings[param.name] = param.name
+      }
+      @core.Expr::Loop(
+        params=next_params,
+        body=rename_private_type_ctor_module_refs(
+          body, body_scope, type_rename_map, ctor_rename_map,
+        ),
+        span~,
+      )
+    }
+    @core.Expr::Break(value~, span~) =>
+      @core.Expr::Break(
+        value=match value {
+          Some(inner) =>
+            Some(
+              rename_private_type_ctor_expr_refs(
+                inner, scope, type_rename_map, ctor_rename_map,
+              ),
+            )
+          None => None
+        },
+        span~,
+      )
+    @core.Expr::Continue(args~, span~) => {
+      let next : Array[@core.Expr] = []
+      for arg in args {
+        next.push(
+          rename_private_type_ctor_expr_refs(
+            arg, scope, type_rename_map, ctor_rename_map,
+          ),
+        )
+      }
+      @core.Expr::Continue(args=next, span~)
+    }
+    @core.Expr::Yield(expr~, span~) =>
+      @core.Expr::Yield(
+        expr=rename_private_type_ctor_expr_refs(
+          expr, scope, type_rename_map, ctor_rename_map,
+        ),
+        span~,
+      )
+    @core.Expr::Handle(body~, arms~, span~) =>
+      @core.Expr::Handle(
+        body=rename_private_type_ctor_module_refs(
+          body, scope, type_rename_map, ctor_rename_map,
+        ),
+        arms=rename_private_type_ctor_match_arms(
+          arms, scope, type_rename_map, ctor_rename_map,
+        ),
+        span~,
+      )
+    @core.Expr::StructLit(name~, type_args~, fields~, span~) =>
+      @core.Expr::StructLit(
+        name=rename_private_type_name(type_rename_map, name),
+        type_args=rename_private_type_args(type_args, type_rename_map),
+        fields=rename_private_type_ctor_record_fields(
+          fields, scope, type_rename_map, ctor_rename_map,
+        ),
+        span~,
+      )
+    @core.Expr::Spread(expr~, span~) =>
+      @core.Expr::Spread(
+        expr=rename_private_type_ctor_expr_refs(
+          expr, scope, type_rename_map, ctor_rename_map,
+        ),
+        span~,
+      )
+    @core.Expr::Perform(effect_name~, op_name~, args~, span~) =>
+      @core.Expr::Perform(
+        effect_name~,
+        op_name~,
+        args=rename_private_type_ctor_call_args(
+          args, scope, type_rename_map, ctor_rename_map,
+        ),
+        span~,
+      )
+  }
+}
+
+///|
+fn rename_private_impl_methods(
+  methods : Array[@core.ImplMethodDef],
+  scope : RenameScope,
+  type_rename_map : Map[String, String],
+  ctor_rename_map : Map[String, String],
+) -> Array[@core.ImplMethodDef] {
+  let next : Array[@core.ImplMethodDef] = []
+  for impl_method in methods {
+    next.push(@core.ImplMethodDef::{
+      ..impl_method,
+      expr: rename_private_type_ctor_expr_refs(
+        impl_method.expr,
+        scope,
+        type_rename_map,
+        ctor_rename_map,
+      ),
+    })
+  }
+  next
+}
+
+///|
+fn rename_private_type_ctor_stmt_refs(
+  stmt : @core.Stmt,
+  scope : RenameScope,
+  type_rename_map : Map[String, String],
+  ctor_rename_map : Map[String, String],
+) -> @core.Stmt {
+  match stmt {
+    @core.Stmt::Let(rec~, name~, expr~, span~) => {
+      let expr_scope = if rec {
+        let child = scope.child()
+        child.bindings[name] = name
+        child
+      } else {
+        scope
+      }
+      @core.Stmt::Let(
+        rec~,
+        name~,
+        expr=rename_private_type_ctor_expr_refs(
+          expr, expr_scope, type_rename_map, ctor_rename_map,
+        ),
+        span~,
+      )
+    }
+    @core.Stmt::ExportLet(rec~, name~, expr~, span~) =>
+      @core.Stmt::ExportLet(
+        rec~,
+        name~,
+        expr=rename_private_type_ctor_expr_refs(
+          expr, scope, type_rename_map, ctor_rename_map,
+        ),
+        span~,
+      )
+    @core.Stmt::InternalExportLet(rec~, name~, expr~, span~) =>
+      @core.Stmt::InternalExportLet(
+        rec~,
+        name~,
+        expr=rename_private_type_ctor_expr_refs(
+          expr, scope, type_rename_map, ctor_rename_map,
+        ),
+        span~,
+      )
+    @core.Stmt::EnumDef(name~, params~, ctors~, span~) =>
+      @core.Stmt::EnumDef(
+        name=rename_private_type_name(type_rename_map, name),
+        params~,
+        ctors=rename_private_type_ctors(ctors, type_rename_map, ctor_rename_map),
+        span~,
+      )
+    @core.Stmt::ExportEnumDef(name~, params~, ctors~, span~) =>
+      @core.Stmt::ExportEnumDef(
+        name~,
+        params~,
+        ctors=rename_private_type_ctors(ctors, type_rename_map, ctor_rename_map),
+        span~,
+      )
+    @core.Stmt::InternalExportEnumDef(name~, params~, ctors~, span~) =>
+      @core.Stmt::InternalExportEnumDef(
+        name~,
+        params~,
+        ctors=rename_private_type_ctors(ctors, type_rename_map, ctor_rename_map),
+        span~,
+      )
+    @core.Stmt::TypeAlias(name~, params~, target~, span~) =>
+      @core.Stmt::TypeAlias(
+        name=rename_private_type_name(type_rename_map, name),
+        params~,
+        target=rename_private_type_refs(target, type_rename_map),
+        span~,
+      )
+    @core.Stmt::ExportTypeAlias(name~, params~, target~, span~) =>
+      @core.Stmt::ExportTypeAlias(
+        name~,
+        params~,
+        target=rename_private_type_refs(target, type_rename_map),
+        span~,
+      )
+    @core.Stmt::InternalExportTypeAlias(name~, params~, target~, span~) =>
+      @core.Stmt::InternalExportTypeAlias(
+        name~,
+        params~,
+        target=rename_private_type_refs(target, type_rename_map),
+        span~,
+      )
+    @core.Stmt::TraitDef(
+      name~,
+      supertraits~,
+      methods~,
+      open_impl~,
+      exported~,
+      span~
+    ) =>
+      @core.Stmt::TraitDef(
+        name~,
+        supertraits~,
+        methods=rename_private_trait_method_sigs(methods, type_rename_map),
+        open_impl~,
+        exported~,
+        span~,
+      )
+    @core.Stmt::InternalTraitDef(
+      name~,
+      supertraits~,
+      methods~,
+      open_impl~,
+      span~
+    ) =>
+      @core.Stmt::InternalTraitDef(
+        name~,
+        supertraits~,
+        methods=rename_private_trait_method_sigs(methods, type_rename_map),
+        open_impl~,
+        span~,
+      )
+    @core.Stmt::TraitImpl(
+      type_params~,
+      type_bounds~,
+      trait_name~,
+      target~,
+      methods~,
+      span~
+    ) =>
+      @core.Stmt::TraitImpl(
+        type_params~,
+        type_bounds~,
+        trait_name~,
+        target=rename_private_type_refs(target, type_rename_map),
+        methods=rename_private_impl_methods(
+          methods, scope, type_rename_map, ctor_rename_map,
+        ),
+        span~,
+      )
+    @core.Stmt::Expr(expr~, span~) =>
+      @core.Stmt::Expr(
+        expr=rename_private_type_ctor_expr_refs(
+          expr, scope, type_rename_map, ctor_rename_map,
+        ),
+        span~,
+      )
+    @core.Stmt::Test(name~, body~, span~) =>
+      @core.Stmt::Test(
+        name~,
+        body=rename_private_type_ctor_module_refs(
+          body, scope, type_rename_map, ctor_rename_map,
+        ),
+        span~,
+      )
+    @core.Stmt::Bench(name~, body~, span~) =>
+      @core.Stmt::Bench(
+        name~,
+        body=rename_private_type_ctor_module_refs(
+          body, scope, type_rename_map, ctor_rename_map,
+        ),
+        span~,
+      )
+    @core.Stmt::LetMut(name~, expr~, span~) =>
+      @core.Stmt::LetMut(
+        name~,
+        expr=rename_private_type_ctor_expr_refs(
+          expr, scope, type_rename_map, ctor_rename_map,
+        ),
+        span~,
+      )
+    @core.Stmt::ExternLet(name~, ty~, span~) =>
+      @core.Stmt::ExternLet(
+        name~,
+        ty=rename_private_type_refs(ty, type_rename_map),
+        span~,
+      )
+    @core.Stmt::Assign(name~, expr~, span~) =>
+      @core.Stmt::Assign(
+        name~,
+        expr=rename_private_type_ctor_expr_refs(
+          expr, scope, type_rename_map, ctor_rename_map,
+        ),
+        span~,
+      )
+    @core.Stmt::IndexAssign(target~, index~, value~, span~) =>
+      @core.Stmt::IndexAssign(
+        target=rename_private_type_ctor_expr_refs(
+          target, scope, type_rename_map, ctor_rename_map,
+        ),
+        index=rename_private_type_ctor_expr_refs(
+          index, scope, type_rename_map, ctor_rename_map,
+        ),
+        value=rename_private_type_ctor_expr_refs(
+          value, scope, type_rename_map, ctor_rename_map,
+        ),
+        span~,
+      )
+    @core.Stmt::LetPat(pat~, expr~, span~) =>
+      @core.Stmt::LetPat(
+        pat=rename_private_type_ctor_pat_refs(
+          pat, type_rename_map, ctor_rename_map,
+        ),
+        expr=rename_private_type_ctor_expr_refs(
+          expr, scope, type_rename_map, ctor_rename_map,
+        ),
+        span~,
+      )
+    @core.Stmt::LetPatElse(pat~, expr~, else_body~, span~) =>
+      @core.Stmt::LetPatElse(
+        pat=rename_private_type_ctor_pat_refs(
+          pat, type_rename_map, ctor_rename_map,
+        ),
+        expr=rename_private_type_ctor_expr_refs(
+          expr, scope, type_rename_map, ctor_rename_map,
+        ),
+        else_body=rename_private_type_ctor_module_refs(
+          else_body, scope, type_rename_map, ctor_rename_map,
+        ),
+        span~,
+      )
+    @core.Stmt::StructDef(name~, params~, fields~, span~) =>
+      @core.Stmt::StructDef(
+        name=rename_private_type_name(type_rename_map, name),
+        params~,
+        fields=rename_private_struct_fields(fields, type_rename_map),
+        span~,
+      )
+    @core.Stmt::ExportStructDef(name~, params~, fields~, span~) =>
+      @core.Stmt::ExportStructDef(
+        name~,
+        params~,
+        fields=rename_private_struct_fields(fields, type_rename_map),
+        span~,
+      )
+    @core.Stmt::InternalExportStructDef(name~, params~, fields~, span~) =>
+      @core.Stmt::InternalExportStructDef(
+        name~,
+        params~,
+        fields=rename_private_struct_fields(fields, type_rename_map),
+        span~,
+      )
+    @core.Stmt::EffectDef(name~, params~, ops~, import_path~, span~) =>
+      @core.Stmt::EffectDef(
+        name~,
+        params~,
+        ops=rename_private_effect_ops(ops, type_rename_map),
+        import_path~,
+        span~,
+      )
+    @core.Stmt::ExportEffectDef(name~, params~, ops~, import_path~, span~) =>
+      @core.Stmt::ExportEffectDef(
+        name~,
+        params~,
+        ops=rename_private_effect_ops(ops, type_rename_map),
+        import_path~,
+        span~,
+      )
+    _ => stmt
+  }
+}
+
+///|
+fn extend_type_ctor_scope_with_stmt_bindings(
+  scope : RenameScope,
+  stmt : @core.Stmt,
+) -> Unit {
+  match stmt {
+    @core.Stmt::Let(name~, ..)
+    | @core.Stmt::LetMut(name~, ..)
+    | @core.Stmt::ExternLet(name~, ..)
+    | @core.Stmt::ExportLet(name~, ..)
+    | @core.Stmt::InternalExportLet(name~, ..) => scope.bindings[name] = name
+    @core.Stmt::LetPat(pat~, ..) | @core.Stmt::LetPatElse(pat~, ..) =>
+      bind_pattern_names_into_scope(scope, pat)
+    _ => ()
+  }
+}
+
+///|
+fn rename_private_type_ctor_module_refs(
+  mod_ : @core.Module,
+  parent_scope : RenameScope,
+  type_rename_map : Map[String, String],
+  ctor_rename_map : Map[String, String],
+) -> @core.Module {
+  let scope = parent_scope.child()
+  let next_stmts : Array[@core.Stmt] = []
+  for stmt in mod_.stmts {
+    let next = rename_private_type_ctor_stmt_refs(
+      stmt, scope, type_rename_map, ctor_rename_map,
+    )
+    next_stmts.push(next)
+    extend_type_ctor_scope_with_stmt_bindings(scope, next)
+  }
+  { stmts: next_stmts }
+}
+
+///|
+fn collect_private_type_rename_map_for_existing_names(
+  path : String,
+  ast : @core.Module,
+  existing_type_names : Map[String, Bool],
+) -> Map[String, String] {
+  let exported = collect_exported_value_names(ast)
+  let rename_map : Map[String, String] = {}
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::EnumDef(name~, ..)
+      | @core.Stmt::TypeAlias(name~, ..)
+      | @core.Stmt::StructDef(name~, ..) =>
+        if !exported.contains(name) && existing_type_names.contains(name) {
+          rename_map[name] = prefixed_private_value_name(path, name)
+        }
+      _ => ()
+    }
+  }
+  rename_map
+}
+
+///|
+fn collect_private_ctor_rename_map(
+  path : String,
+  ast : @core.Module,
+  type_rename_map : Map[String, String],
+  existing_value_names : Map[String, Bool],
+) -> Map[String, String] {
+  let exported = collect_exported_value_names(ast)
+  let rename_map : Map[String, String] = {}
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::EnumDef(name~, ctors~, ..) =>
+        if !exported.contains(name) {
+          let next_type_name = rename_private_type_name(type_rename_map, name)
+          let rename_all_ctors = type_rename_map.contains(name)
+          for ctor in ctors {
+            if rename_all_ctors || existing_value_names.contains(ctor.name) {
+              let next_ctor_name = prefixed_private_value_name(path, ctor.name)
+              rename_map[ctor.name] = next_ctor_name
+              rename_map[name + "::" + ctor.name] = next_type_name +
+                "::" +
+                next_ctor_name
+            }
+          }
+        }
+      @core.Stmt::ExportEnumDef(name~, ctors~, ..)
+      | @core.Stmt::InternalExportEnumDef(name~, ctors~, ..) =>
+        match type_rename_map.get(name) {
+          Some(next_type_name) =>
+            for ctor in ctors {
+              let next_ctor_name = prefixed_private_value_name(path, ctor.name)
+              rename_map[ctor.name] = next_ctor_name
+              rename_map[name + "::" + ctor.name] = next_type_name +
+                "::" +
+                next_ctor_name
+            }
+          None => ()
+        }
+      _ => ()
+    }
+  }
+  rename_map
+}
+
+///|
+fn namespace_private_module_defs_for_existing_names(
+  path : String,
+  ast : @core.Module,
+  existing_value_names : Map[String, Bool],
+  existing_type_names : Map[String, Bool],
+) -> @core.Module {
+  let value_renamed = namespace_private_module_values_for_existing_names(
+    path, ast, existing_value_names,
+  )
+  let type_rename_map = collect_private_type_rename_map_for_existing_names(
+    path, value_renamed, existing_type_names,
+  )
+  let ctor_rename_map = collect_private_ctor_rename_map(
+    path, value_renamed, type_rename_map, existing_value_names,
+  )
+  if type_rename_map.length() == 0 && ctor_rename_map.length() == 0 {
+    value_renamed
+  } else {
+    rename_private_type_ctor_module_refs(
+      value_renamed,
+      RenameScope::new(),
+      type_rename_map,
+      ctor_rename_map,
+    )
+  }
+}
+
+///|
 fn elapsed_us_from(start : @bench.Timestamp) -> Int {
   @bench.monotonic_clock_end(start).to_int()
 }

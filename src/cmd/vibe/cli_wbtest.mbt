@@ -2726,7 +2726,9 @@ test "compiled test wrapper executes top-level computed let bindings" {
     CompiledTestAttempt::Success(report) => {
       assert_eq(report.total, 1)
       if report.passed != 1 || report.failed != 0 {
-        fail("unexpected compiled report: " + Debug::to_repr(report).to_string())
+        fail(
+          "unexpected compiled report: " + Debug::to_repr(report).to_string(),
+        )
       }
     }
     CompiledTestAttempt::Unsupported(err) =>
@@ -2767,7 +2769,9 @@ test "compiled test wrapper executes closure-captured string condition" {
     CompiledTestAttempt::Success(report) => {
       assert_eq(report.total, 1)
       if report.passed != 1 || report.failed != 0 {
-        fail("unexpected compiled report: " + Debug::to_repr(report).to_string())
+        fail(
+          "unexpected compiled report: " + Debug::to_repr(report).to_string(),
+        )
       }
     }
     CompiledTestAttempt::Unsupported(err) =>
@@ -2804,7 +2808,9 @@ test "compiled test wrapper supports paren string interpolation syntax" {
     CompiledTestAttempt::Success(report) => {
       assert_eq(report.total, 1)
       if report.passed != 1 || report.failed != 0 {
-        fail("unexpected compiled report: " + Debug::to_repr(report).to_string())
+        fail(
+          "unexpected compiled report: " + Debug::to_repr(report).to_string(),
+        )
       }
     }
     CompiledTestAttempt::Unsupported(err) =>
@@ -3146,7 +3152,9 @@ test "compiled test wrapper keeps Map::keys results as strings" {
     CompiledTestAttempt::Success(report) => {
       assert_eq(report.total, 1)
       if report.passed != 1 || report.failed != 0 {
-        fail("unexpected compiled report: " + Debug::to_repr(report).to_string())
+        fail(
+          "unexpected compiled report: " + Debug::to_repr(report).to_string(),
+        )
       }
     }
     CompiledTestAttempt::Unsupported(err) =>
@@ -3760,6 +3768,17 @@ test "save source hashes includes entry for linked cache" {
 }
 
 ///|
+test "background linked cache defaults off" {
+  assert_false(cli_use_background_linked_cache_with(None))
+}
+
+///|
+test "background linked cache env overrides default" {
+  assert_false(cli_use_background_linked_cache_with(Some("0")))
+  assert_true(cli_use_background_linked_cache_with(Some("1")))
+}
+
+///|
 test "run monolithic cache paths separate http mode" {
   let paths1 = run_monolithic_cache_paths("/tmp/project/src/main.vibe", false)
   let paths2 = run_monolithic_cache_paths("/tmp/project/src/main.vibe", true)
@@ -3803,8 +3822,8 @@ test "session http port is stable per entry root" {
 }
 
 ///|
-test "session http defaults on when self binary exists" {
-  assert_true(cli_use_session_http_with(None, true))
+test "session http defaults off when self binary exists" {
+  assert_false(cli_use_session_http_with(None, true))
 }
 
 ///|
@@ -4182,9 +4201,18 @@ test "compiled exec wasm embeds throw literal for handler parity" {
 
 ///|
 test "decode tagged wasm run value" {
-  @debug.assert_eq(decode_tagged_wasm_run_value(168L), Some(WasmRunValue::Int(42L)))
-  @debug.assert_eq(decode_tagged_wasm_run_value(7L), Some(WasmRunValue::Bool(true)))
-  @debug.assert_eq(decode_tagged_wasm_run_value(3L), Some(WasmRunValue::Bool(false)))
+  @debug.assert_eq(
+    decode_tagged_wasm_run_value(168L),
+    Some(WasmRunValue::Int(42L)),
+  )
+  @debug.assert_eq(
+    decode_tagged_wasm_run_value(7L),
+    Some(WasmRunValue::Bool(true)),
+  )
+  @debug.assert_eq(
+    decode_tagged_wasm_run_value(3L),
+    Some(WasmRunValue::Bool(false)),
+  )
 }
 
 ///|

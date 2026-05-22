@@ -239,11 +239,7 @@ pub fn hook_get_prelude_env() -> @checker.TypeEnv {
 /// Replaced by @checker.type_check_with_env when runtime_compile is loaded.
 let type_check_with_env_hook : Ref[
   (@checker.TypeEnv, @core.Module, Map[String, @core.Ref]) -> @checker.TypeEnv raise @checker.TypeError,
-] = {
-  val: fn(env, _ast, _aliases) -> @checker.TypeEnv {
-    env
-  },
-}
+] = { val: fn(env, _ast, _aliases) -> @checker.TypeEnv { env } }
 
 ///|
 pub fn set_type_check_with_env_hook(

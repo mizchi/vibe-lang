@@ -18,7 +18,7 @@ Source-level scripts run the final top-level pure expression. When you `vibe bui
 the generated WASM exports `_start` as the ABI entry point.
 
 ```vibe
-let add = (x: Int, y: Int) -> Int { x + y }
+let add: (Int, Int) -> Int = (x, y) -> { x + y }
 
 add(1, 2)
 ```
@@ -28,22 +28,25 @@ add(1, 2)
 ```vibe
 // Variables
 let x = 1
-let mut count = 0
-count += 1
+let count = {
+  let mut value = 0
+  value += 1
+  value
+}
 
 // String interpolation
 let name = "vibe"
 let msg = "hello \(name)"
 
-// Functions — parameter types are always required
-let inc = (x: Int) -> Int { x + 1 }
-let add = (x: Int, y: Int) -> Int { x + y }
-let rec fact = (n: Int) -> Int {
+// Functions
+let inc: (Int) -> Int = (x) -> { x + 1 }
+let add: (Int, Int) -> Int = (x, y) -> { x + y }
+let rec fact: (Int) -> Int = (n) -> {
   if n < 2 { 1 } else { n * fact(n - 1) }
 }
 
 // Generics
-let identity = [T](x: T) -> T { x }
+let identity: [T](T) -> T = (x) -> { x }
 
 // Pipe — passes value as FIRST argument
 // 1 |> add(2) |> mul(3)  => 9   (add(1,2) => mul(3,3))
@@ -57,8 +60,8 @@ let identity = [T](x: T) -> T { x }
 > so piping works naturally:
 > ```vibe
 > [1, 2, 3, 4, 5]
->   |> Array::filter((x: Int) -> Bool { x % 2 == 0 })
->   |> Array::fold(0, (acc: Int, x: Int) -> Int { acc + x })
+>   |> Array::filter((x) -> { x % 2 == 0 })
+>   |> Array::fold(0, (acc, x) -> { acc + x })
 > ```
 
 ## Types
@@ -136,17 +139,17 @@ let (a, b) = pair         // destructure
 
 ```vibe
 // Preferred: keep the core flow in Result
-let parse_id = (raw: String) -> Result[Int, String] { ... }
-let load_user = (id: Int) -> Result[String, String] { ... }
+let parse_id: (String) -> Result[Int, String] = (raw) -> { ... }
+let load_user: (Int) -> Result[String, String] = (id) -> { ... }
 
-let run = (raw: String) -> Result[String, String] {
+let run: (String) -> Result[String, String] = (raw) -> {
   raw
   |> parse_id
   |> Result::and_then(load_user)
 }
 
 // Boundary helper when you need to localize Error
-let safe_div = (a: Int, b: Int) -> Int with { Error } {
+let safe_div: (Int, Int) -> Int with { Error } = (a, b) -> {
   if eq(b, 0) { throw("division by zero") } else { a / b }
 }
 let result = handle { safe_div(8, 0) } with Error { Throw(_) => -1 }
@@ -160,12 +163,12 @@ test "example" {
   assert(eq(1 + 1, 2))
   assert(String::equals("hello", "hello"))
   // Array operations in test blocks
-  let doubled = Array::map([1, 2, 3], (x: Int) -> Int { x * 2 })
+  let doubled = Array::map([1, 2, 3], (x) -> { x * 2 })
   assert(eq(Array::length(doubled), 3))
 }
 ```
 
-> **Note**: Effects like `sh`/`sh_lines` work implicitly in test blocks (no `do { }` needed).
+> **Note**: Effects like `sh`/`sh_lines` work implicitly in test blocks.
 
 ## Key Builtins
 

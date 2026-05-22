@@ -223,8 +223,7 @@ fn preload_module_sources(
   if normalized_path != module_path {
     db.set_source(normalized_path, source)
   }
-  if !normalized_path.has_prefix("/") &&
-    !normalized_path.has_prefix("./") {
+  if !normalized_path.has_prefix("/") && !normalized_path.has_prefix("./") {
     let dotted_path = "./" + normalized_path
     if dotted_path != module_path {
       db.set_source(dotted_path, source)
@@ -473,6 +472,8 @@ test "fixtures has no stale todo files" {
   }
   sort_strings(stale)
   if stale.length() > 0 {
-    fail("[fixtures] stale todo fixtures found: \{Debug::to_repr(stale).to_string()}")
+    fail(
+      "[fixtures] stale todo fixtures found: \{Debug::to_repr(stale).to_string()}",
+    )
   }
 }

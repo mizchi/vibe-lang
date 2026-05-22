@@ -19,9 +19,55 @@
           overlays = [ (import rust-overlay) ];
         };
 
-        # Rust 1.91+ required for wasmtime (edition 2024)
-        rustToolchain = pkgs.rust-bin.stable."1.91.0".default.override {
+        # Rust 1.93+ required for wasmtime 45.
+        rustToolchain = pkgs.rust-bin.stable."1.93.0".default.override {
           targets = [ "wasm32-wasip1" "wasm32-wasip2" ];
+        };
+
+        wasmtimeVersion = "45.0.0";
+        wasmtimeArtifact = {
+          aarch64-darwin = {
+            arch = "aarch64";
+            os = "macos";
+            hash = "sha256-jFiaH+tleN39dtTuB7rFUdfzBp1s75sq5eh+YwtRmNs=";
+          };
+          x86_64-darwin = {
+            arch = "x86_64";
+            os = "macos";
+            hash = "sha256-sBtCFhPZ4GcQPvtwHNZvQ2Agsy9ulVEl+snq80+lvOc=";
+          };
+          aarch64-linux = {
+            arch = "aarch64";
+            os = "linux";
+            hash = "sha256-SicIO6jTxkUmstRp9Q5lOctMHdnQgzbg2JU7ymFnN+M=";
+          };
+          x86_64-linux = {
+            arch = "x86_64";
+            os = "linux";
+            hash = "sha256-nZLm3ARjD2F+Dl1TIyelqResSJhYfgf0+3pfx//+92A=";
+          };
+        }.${system};
+        wasmtimeRelease = pkgs.stdenvNoCC.mkDerivation {
+          pname = "wasmtime";
+          version = wasmtimeVersion;
+          src = pkgs.fetchurl {
+            url = "https://github.com/bytecodealliance/wasmtime/releases/download/v${wasmtimeVersion}/wasmtime-v${wasmtimeVersion}-${wasmtimeArtifact.arch}-${wasmtimeArtifact.os}.tar.xz";
+            hash = wasmtimeArtifact.hash;
+          };
+          installPhase = ''
+            runHook preInstall
+            install -Dm755 wasmtime "$out/bin/wasmtime"
+            runHook postInstall
+          '';
+          meta = {
+            mainProgram = "wasmtime";
+            platforms = builtins.attrNames {
+              aarch64-darwin = null;
+              x86_64-darwin = null;
+              aarch64-linux = null;
+              x86_64-linux = null;
+            };
+          };
         };
 
         # MoonBit code duplication detector (crates.io / github:mizchi/similarity)
@@ -46,7 +92,7 @@
             rustToolchain
 
             # Wasm tooling
-            pkgs.wasmtime
+            wasmtimeRelease
             pkgs.wasm-tools
             pkgs.wac-cli
 

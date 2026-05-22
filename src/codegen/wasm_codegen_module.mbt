@@ -108,6 +108,126 @@ fn resolve_exported_fn_aliases(ctx : CodegenCtx) -> Unit {
 }
 
 ///|
+fn copy_function_alias_metadata(
+  ctx : CodegenCtx,
+  alias_name : String,
+  target_name : String,
+) -> Unit {
+  match ctx.fn_local_sigs.get(target_name) {
+    Some(sig) => ctx.fn_local_sigs[alias_name] = sig
+    None => ()
+  }
+  match ctx.fn_params.get(target_name) {
+    Some(kinds) => ctx.fn_params[alias_name] = kinds
+    None => ()
+  }
+  match ctx.fn_param_names.get(target_name) {
+    Some(names) => ctx.fn_param_names[alias_name] = names
+    None => ()
+  }
+  match ctx.fn_returns.get(target_name) {
+    Some(ret_kind) => ctx.fn_returns[alias_name] = ret_kind
+    None => ()
+  }
+  match ctx.fn_return_sigs.get(target_name) {
+    Some(sig) => ctx.fn_return_sigs[alias_name] = sig
+    None => ()
+  }
+  match ctx.fn_multivalue_results.get(target_name) {
+    Some(results) => ctx.fn_multivalue_results[alias_name] = results
+    None => ()
+  }
+}
+
+///|
+fn register_linked_function_alias(
+  ctx : CodegenCtx,
+  alias_name : String,
+  target_name : String,
+  import_idx : Int,
+) -> Unit {
+  ctx.linked_fn_imports[alias_name] = import_idx
+  let param_count = match ctx.linked_fn_param_counts.get(target_name) {
+    Some(pc) => pc
+    None => 0
+  }
+  ctx.linked_fn_param_counts[alias_name] = param_count
+  let return_count = match ctx.linked_fn_return_counts.get(target_name) {
+    Some(rc) => rc
+    None => 1
+  }
+  ctx.linked_fn_return_counts[alias_name] = return_count
+  let param_kinds : Array[ValueKind] = []
+  for _ in 0..<param_count {
+    param_kinds.push(ValueKind::I64)
+  }
+  ctx.fn_params[alias_name] = param_kinds
+  if return_count > 1 {
+    let result_kinds : Array[ValueKind] = []
+    for _ in 0..<return_count {
+      result_kinds.push(ValueKind::I64)
+    }
+    let sig = func_sig_with_env_multi(param_kinds, result_kinds)
+    ctx.fn_local_sigs[alias_name] = sig
+    ignore(ensure_sig_index(ctx, sig))
+    ctx.fn_multivalue_results[alias_name] = result_kinds
+  } else {
+    let sig = func_sig_with_env(param_kinds, ValueKind::I64)
+    ctx.fn_local_sigs[alias_name] = sig
+    ignore(ensure_sig_index(ctx, sig))
+    ctx.fn_returns[alias_name] = ValueKind::I64
+  }
+}
+
+///|
+fn collect_top_level_function_aliases(
+  ast : @core.Module,
+) -> Array[(String, String)] {
+  let aliases : Array[(String, String)] = []
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::Let(name~, expr~, ..)
+      | @core.Stmt::ExportLet(name~, expr~, ..)
+      | @core.Stmt::InternalExportLet(name~, expr~, ..) =>
+        match unwrap_type_assert_block(expr) {
+          @core.Expr::Ident(name=target_name, ..) =>
+            aliases.push((name, target_name))
+          _ => ()
+        }
+      _ => ()
+    }
+  }
+  aliases
+}
+
+///|
+fn resolve_top_level_function_aliases(
+  ctx : CodegenCtx,
+  ast : @core.Module,
+) -> Unit {
+  let aliases = collect_top_level_function_aliases(ast)
+  for _ in 0..<aliases.length() {
+    for entry in aliases {
+      let (alias_name, target_name) = entry
+      match ctx.fn_indices.get(target_name) {
+        Some(func_idx) => {
+          ctx.fn_indices[alias_name] = func_idx
+          copy_function_alias_metadata(ctx, alias_name, target_name)
+        }
+        None =>
+          match ctx.linked_fn_imports.get(target_name) {
+            Some(import_idx) =>
+              register_linked_function_alias(
+                ctx, alias_name, target_name, import_idx,
+              )
+            None => ()
+          }
+      }
+    }
+  }
+}
+
+///|
 /// Collect distinct effect names from `ctx.effect_handled_ops` keys.
 /// "Logger::Log" / "Logger::Warn" -> "Logger" (deduped). "Bare" -> "Bare"
 /// (enum-as-effect ctor used as-is). Order is stable so global indices
@@ -3641,6 +3761,7 @@ fn emit_module_with_coverage(
     let type_idx = ensure_sig_index(ctx, sig)
     ctx.fn_type_indices[funcs[i].span_key] = type_idx
   }
+  resolve_top_level_function_aliases(ctx, ast)
   let run_sig = FuncSig::{ params: [], results: [ValueKind::I64] }
   let _ = ensure_sig_index(ctx, run_sig)
   let run_ast = ensure_run_ast_result(

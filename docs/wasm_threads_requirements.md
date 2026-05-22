@@ -1,7 +1,11 @@
 # wasm + threads 要件メモ
 
-更新日: 2026-02-09  
-検証対象:
+更新日: 2026-05-22
+現在の repo 既定:
+
+- `wasmtime 45.0.0` (`deps/wasmtime` submodule / `scripts/install_wasmtime_release.sh`)
+
+元の実測対象:
 
 - `wasmtime 41.0.3 (db1c043b5 2026-02-04)` (system)
 - `wasmtime 43.0.0 (57b4bf56c 2026-02-06)` (`deps/wasmtime` submodule)
@@ -59,7 +63,7 @@ WASI Threads モジュールとして必要な形:
 
 - Core Wasm threads / WASI threads 実行には不要。
 - ただし Component Model の `component-model-async` / `component-model-threading` では別扱い。
-  - 43 系では `concurrency-support=y` が必要。
+  - 43 系の実測では `concurrency-support=y` が必要。
   - 41 系は `-W concurrency-support=...` 自体が未対応（unknown option）。
 
 ## 5. vibe リポジトリ内での最小実行手順

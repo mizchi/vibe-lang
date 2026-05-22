@@ -24,6 +24,14 @@ import .. / .. / .. / syntax / parser.vibe {
   parse_program
 }
 
+import .. / .. / .. / syntax / import_alias_rewrite.vibe {
+  append_import_alias_rewritten_non_import_stmts_skipping,
+  collect_import_alias_collision_locals,
+  collect_import_alias_collision_refs,
+  namespace_private_value_stmts,
+  rewrite_imported_value_stmt_to_local
+}
+
 import ./path_utils.vibe {
   empty_stmt_array
 }
@@ -34,7 +42,54 @@ import ./preprocess.vibe {
 
 //# Functions
 
-let rec collect_merged_stmts_recursive = (path: String, merged: Array[Stmt], visited: Array[String]) -> Unit with { Error, Fs } {
+let string_array_contains_local: (Array[String], String) -> Bool = (items, target) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) && !found {
+    if Array::get(items, i) == target {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+let append_fs_import_alias_collision_defs: (Array[Stmt], String, Array[Stmt]) -> Unit with { Error, Fs } = (merged, current_path, stmts) -> {
+  let refs = collect_import_alias_collision_refs(stmts)
+  let emitted = Array::slice([
+    ""
+  ], 0, 0)
+  let base_dir = dir_of_path(current_path)
+  let mut i = 0
+  while i < Array::length(refs) {
+    let (raw_path, original, local) = Array::get(refs, i)
+    if !string_array_contains_local(emitted, local) {
+      let resolved = resolve_import_path(base_dir, raw_path)
+      let source = perform Fs::ReadFile(resolved)
+      let source_stmts = namespace_private_value_stmts(
+        resolved,
+        parse_program(lex(source))
+      )
+      let mut j = 0
+      let mut done = false
+      while j < Array::length(source_stmts) && !done {
+        match rewrite_imported_value_stmt_to_local(Array::get(source_stmts, j), original, local) {
+          Some(local_stmt) => {
+            Array::push(merged, local_stmt)
+            Array::push(emitted, local)
+            done = true
+          },
+          None => ()
+        }
+        j = j + 1
+      }
+    }
+    i = i + 1
+  }
+}
+
+let rec collect_merged_stmts_recursive_impl: (String, String, Array[Stmt], Array[String]) -> Unit with { Error, Fs } = (entry_path, path, merged, visited) -> {
   if contains_path(visited, path) {
     ()
   }
@@ -48,30 +103,32 @@ let rec collect_merged_stmts_recursive = (path: String, merged: Array[Stmt], vis
       match Array::get(stmts, i) {
         SImport(raw_path, _) => {
           let resolved = resolve_import_path(base_dir, raw_path)
-          collect_merged_stmts_recursive(resolved, merged, visited)
+          collect_merged_stmts_recursive_impl(entry_path, resolved, merged, visited)
         },
         SReExport(raw_path, _) => {
           let resolved = resolve_import_path(base_dir, raw_path)
-          collect_merged_stmts_recursive(resolved, merged, visited)
+          collect_merged_stmts_recursive_impl(entry_path, resolved, merged, visited)
         },
         _ => ()
       }
       i = i + 1
     }
-    let mut j = 0
-    while j < Array::length(stmts) {
-      match Array::get(stmts, j) {
-        SImport(_, _) => (),
-        SReExport(_, _) => (),
-        SAliasDecl(_, _) => (),
-        _ => Array::push(merged, Array::get(stmts, j))
-      }
-      j = j + 1
+    let skipped_locals = collect_import_alias_collision_locals(stmts)
+    let namespaced_stmts = if path == entry_path {
+      stmts
+    } else {
+      namespace_private_value_stmts(path, stmts)
     }
+    append_fs_import_alias_collision_defs(merged, path, stmts)
+    append_import_alias_rewritten_non_import_stmts_skipping(merged, namespaced_stmts, skipped_locals)
   }
 }
 
-export let compile_file_wasi_only = (entry_path: String, entry_name: String) -> Bytes with { Error, Fs } {
+let collect_merged_stmts_recursive: (String, Array[Stmt], Array[String]) -> Unit with { Error, Fs } = (path, merged, visited) -> {
+  collect_merged_stmts_recursive_impl(path, path, merged, visited)
+}
+
+export let compile_file_wasi_only: (String, String) -> Bytes with { Error, Fs } = (entry_path, entry_name) -> {
   let stmts = empty_stmt_array()
   let visited = Array::slice([
     ""

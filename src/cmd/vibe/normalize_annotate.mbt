@@ -87,8 +87,8 @@ fn normalize_unwrap_local_type_assert(
         @vibe_core.Stmt::Expr(expr=@vibe_core.Expr::Call(name~, args~, ..), ..) =>
           if args.length() != 1 ||
             !(name == helper_name ||
-              helper_name.has_suffix("::" + name) ||
-              name.has_suffix("::" + helper_name)) {
+            helper_name.has_suffix("::" + name) ||
+            name.has_suffix("::" + helper_name)) {
             None
           } else {
             Some((helper_ty, args[0].expr))
@@ -341,7 +341,7 @@ fn normalize_render_type_annotation(ty : @vibe_core.Type) -> String {
       out.write_string(") -> ")
       out.write_string(normalize_render_type_annotation(ret))
       if effects.length() > 0 {
-        out.write_string(" with {")
+        out.write_string(" with { ")
         for i, effect in effects {
           if i > 0 {
             out.write_string(", ")
@@ -351,7 +351,7 @@ fn normalize_render_type_annotation(ty : @vibe_core.Type) -> String {
             @vibe_core.EffectAtom::Var(name) => out.write_string(name)
           }
         }
-        out.write_char('}')
+        out.write_string(" }")
       }
       out.to_string()
     }

@@ -5,7 +5,9 @@ typed, pure functional language with explicit effects, built for WASM/wasip3.
 
 ## Status and authority
 
-- `docs/vibe.md` is the normative spec for implemented behavior.
+- `docs/spec/syntax.md` is the canonical surface syntax reference.
+- `docs/vibe.md` is the broader language design/spec note for implemented
+  behavior outside pure syntax (effects, imports, hashing, runtime contracts).
 - Items explicitly marked as "future", "proposal", or "draft" are non-normative.
 - Design explorations live in separate documents:
   - `docs/module-system.md`
@@ -36,12 +38,13 @@ Parser dispatch is explicit:
 
 Reserved leading keyword detection (`let`, `fn`, `type`, `effect`, `import`,
 `test`, `handle`, `throw`) exists as helper logic only and does not switch parser modes.
+`fn` is not a current declaration form.
 - `map` is not a reserved keyword and can be used as a normal identifier.
 
 ## Standard tutorial scope (v1 core)
 
 Included in standard tutorial:
-- core expressions/statements: `let`, `fn`, `if`, `match`, `while`
+- core expressions/statements: `let`, `if`, `match`, `while`
 - module API: `import` / `export`
 - data model: `enum` / `struct` / tuples / arrays / records
 - error flow: `Result` composition (`map`, `and_then`, `match`)
@@ -61,7 +64,7 @@ Effects are explicit in function signatures and validated by effect
 compatibility plus handler matching.
 
 ```
-let run = () -> Unit with {Stdout} {
+let run: () -> Unit with { Stdout } = () -> {
   sh("ls")
 }
 ```
@@ -95,20 +98,20 @@ Examples:
 
 ```vibe
 // ok: declared effect allows direct builtin call
-let run = () -> Unit with {Stdout} { sh("ls") }
+let run: () -> Unit with { Stdout } = () -> { sh("ls") }
 
 // error: missing effect declaration for direct effectful builtin call
-let run = () -> Unit { sh("ls") }
+let run: () -> Unit = () -> { sh("ls") }
 
 // error: caller must include callee effect
-let f = (x: Int) -> Int with {Error} { x }
-let g = (y: Int) -> Int { f(y) }
+let f: (Int) -> Int with { Error } = (x) -> { x }
+let g: (Int) -> Int = (y) -> { f(y) }
 
 // ok: effect requirement is explicitly propagated
-let g2 = (y: Int) -> Int with {Error} { f(y) }
+let g2: (Int) -> Int with { Error } = (y) -> { f(y) }
 
 // ok: effect is localized by handler pattern
-let g3 = (y: Int) -> Int {
+let g3: (Int) -> Int = (y) -> {
   handle { f(y) } with Error { Throw(_) => 0 }
 }
 ```
@@ -138,7 +141,7 @@ suberror AppError {
   Parse(Int);
 }
 
-let fail = () -> Result[Unit, AppError] {
+let fail: () -> Result[Unit, AppError] = () -> {
   Err(Io("io"))
 }
 ```
@@ -152,14 +155,14 @@ Railway-oriented guideline (pipe-first error flow):
   boundary location explicit in code.
 
 ```vibe
-let run_core = (raw: String) -> Result[Int, String] {
+let run_core: (String) -> Result[Int, String] = (raw) -> {
   raw
   |> parse_id
   |> Result::and_then(validate_id)
   |> Result::and_then(load_user_id)
 }
 
-let run_cli = (raw: String) -> Int {
+let run_cli: (String) -> Int = (raw) -> {
   match run_core(raw) {
     Ok(v) => v,
     Err(_) => -1
@@ -184,10 +187,12 @@ Examples:
 
 ```vibe
 // error: wrapper body calls effect-polymorphic callback without declaring {e}
-let apply = [T](f: (x: T) -> T with {e}, x: T) -> T { f(x) }
+let apply: [T](f: (T) -> T with { e }, x: T) -> T = (f, x) -> {
+  f(x)
+}
 
 // ok: wrapper propagates effect requirement explicitly
-let apply_ok = [T](f: (x: T) -> T with {e}, x: T) -> T with {e} {
+let apply_ok: [T](f: (T) -> T with { e }, x: T) -> T with { e } = (f, x) -> {
   f(x)
 }
 ```
@@ -236,11 +241,17 @@ Raw identifier (advanced):
 
 Definition:
 ```
-fn foo(x~: Int, y?: Int = 2) -> Int { ... }
+let foo: (x~: Int, y?: Int) -> Int = (x~, y?) -> {
+  match y? {
+    Some(y) => x + y,
+    None => x,
+  }
+}
 ```
 
 Call:
 ```
+foo(x=1)
 foo(x=1, y=2)
 ```
 
@@ -251,9 +262,10 @@ foo -x=1 -y=2
 
 Rules:
 - `x~` is required (must be supplied by label).
-- `y?` is optional: without a default it is `Int?`, with a default it is `Int`.
+- `y?` is optional and is bound as `Option[Int]` inside the function body.
+- Default values in parameter lists are not part of the current surface syntax.
 - Call arguments are reordered to match the parameter order during lowering.
-- Missing optional args are expanded to defaults in IR.
+- Missing optional args are passed as `None`.
 
 ## Builtins (current)
 
@@ -422,11 +434,11 @@ Parser compatibility:
 Exports are explicit:
 
 ```
-export let add = (x: Int, y: Int) -> Int { x + y }
+export let add: (Int, Int) -> Int = (x, y) -> { x + y }
 export enum Color { Red; Green; Blue }
 export type IntPair = (Int, Int)
 export { add, Color, IntPair }
-export { foo } from "./other.vibe"
+export ./other.vibe { foo }
 ```
 
 Rules:
@@ -683,9 +695,9 @@ Rules:
 Declaration examples:
 
 ```vibe
-let Int::to_string = (x: Int) -> String { "int" }
-let String::to_string = (x: String) -> String { x }
-export let Option::unwrap_or = [T](opt: Option[T], fallback: T) -> T {
+let Int::to_string: (Int) -> String = (x) -> { "int" }
+let String::to_string: (String) -> String = (x) -> { x }
+export let Option::unwrap_or: [T](Option[T], T) -> T = (opt, fallback) -> {
   match opt {
     Some(v) => v
     None => fallback
@@ -729,8 +741,8 @@ Example:
 ## vibe shell command pipeline (PosixMode preview)
 
 ```vibe
-let run = () -> Array[String] with {Stdout} {
-  ls |> where((line: String) -> Bool { String::contains(line, "vibe") })
+let run: () -> Array[String] with { Stdout } = () -> {
+  ls |> where((line) -> { String::contains(line, "vibe") })
 }
 ```
 

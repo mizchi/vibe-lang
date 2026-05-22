@@ -14,7 +14,7 @@ import ./syntax / printer.vibe {
 
 //# Functions
 
-let roundtrip = (source: String) -> Bool {
+let roundtrip: (String) -> Bool = (source) -> {
   handle {
     let s1 = print_program(parse_program(lex(source)))
     let s2 = print_program(parse_program(lex(s1)))
@@ -22,6 +22,10 @@ let roundtrip = (source: String) -> Bool {
   } with Error {
     Throw(_) => false
   }
+}
+
+let format_once: (String) -> String with { Error } = (source) -> {
+  print_program(parse_program(lex(source)))
 }
 
 //# Misc
@@ -123,7 +127,7 @@ test "let mut" {
 }
 
 test "let rec" {
-  assert(roundtrip("let rec f = (n: Int) -> Int { if n <= 0 { 0 } else { f(n - 1) } }\nf(5)"))
+  assert(roundtrip("let rec f: (Int) -> Int = (n) -> { if n <= 0 { 0 } else { f(n - 1) } }\nf(5)"))
 }
 
 test "let with type" {
@@ -139,11 +143,24 @@ test "assign add" {
 }
 
 test "fn basic" {
-  assert(roundtrip("let f = (x: Int) -> Int { x + 1 }\nf(5)"))
+  assert(roundtrip("let f: (Int) -> Int = (x) -> { x + 1 }\nf(5)"))
+}
+
+test "fn canonical typed let" {
+  assert(roundtrip("let f: (Int) -> Int = (x) -> { x + 1 }\nf(5)"))
+}
+
+test "printer keeps spaces in effect sets" {
+  let result = handle {
+    format_once("let f: () -> Int with { Error } = () -> { 1 }")
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(result == "let f: () -> Int with { Error } = () -> { 1 }")
 }
 
 test "fn multi param" {
-  assert(roundtrip("let add = (a: Int, b: Int) -> Int { a + b }\nadd(1, 2)"))
+  assert(roundtrip("let add: (Int, Int) -> Int = (a, b) -> { a + b }\nadd(1, 2)"))
 }
 
 test "fn no return type" {
@@ -151,11 +168,11 @@ test "fn no return type" {
 }
 
 test "fn labeled" {
-  assert(roundtrip("let f = (x~: Int) -> Int { x }\nf(x=1)"))
+  assert(roundtrip("let f: (x~: Int) -> Int = (x~) -> { x }\nf(x=1)"))
 }
 
 test "fn generic" {
-  assert(roundtrip("let id = [T](x: T) -> T { x }\nid(42)"))
+  assert(roundtrip("let id: [T](T) -> T = (x) -> { x }\nid(42)"))
 }
 
 test "while" {
@@ -211,7 +228,7 @@ test "handle throw" {
 }
 
 test "effectful fn" {
-  assert(roundtrip("let f = () -> Int with { Error } { throw(\"x\")\n0 }\nhandle { f() } with Error { Throw(_) => 99 }"))
+  assert(roundtrip("let f: () -> Int with { Error } = () -> { throw(\"x\")\n0 }\nhandle { f() } with Error { Throw(_) => 99 }"))
 }
 
 test "pat wildcard" {

@@ -14,7 +14,7 @@ let lines = sh_lines("ls /tmp")
 Both require the `{Stdout}` effect:
 
 ```vibe
-let run = () -> Unit with { Stdout } {
+let run: () -> Unit with { Stdout } = () -> {
   sh("echo hello")
 }
 
@@ -92,7 +92,7 @@ The vibe `|>` pipe operator can chain shell results with vibe functions:
 
 ```vibe
 let result = sh_lines("ls /tmp")
-  |> Array::filter((s: String) -> Bool { String::contains(s, ".txt") })
+  |> Array::filter((s) -> { String::contains(s, ".txt") })
   |> Array::length
 // Works because |> inserts value as first arg, matching collection-first order
 ```
@@ -101,6 +101,6 @@ let result = sh_lines("ls /tmp")
 
 ```vibe
 // Filter array with predicate (prelude function, collection-first)
-let evens = where([1, 2, 3, 4, 5], (x: Int) -> Bool { x % 2 == 0 })
+let evens = where([1, 2, 3, 4, 5], (x) -> { x % 2 == 0 })
 // => [2, 4]
 ```

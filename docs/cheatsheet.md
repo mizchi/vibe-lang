@@ -36,8 +36,11 @@ let u: Unit = ()
 
 ```vibe
 let x = 42            // immutable
-let mut y = 0         // mutable (lexical scope only)
-y += 1
+let y = {             // mutable is local/block-scoped
+  let mut value = 0
+  value += 1
+  value
+}
 ```
 
 ## Functions
@@ -120,9 +123,8 @@ for x in arr { x * 2 }         // -> Array
 for i, x in arr { i + x }      // with index
 
 // loop (parameterized tail-recursion)
-let mut result = 0
-loop (i = 0, sum = 0) {
-  if i >= 10 { result = sum; break }
+let result = loop (i = 0, sum = 0) {
+  if i >= 10 { break sum }
   continue(i + 1, sum + i)
 }
 ```
@@ -278,7 +280,7 @@ let apply: [T](f~: (T) -> T with { e }, x~: T) -> T with { e } = (f~, x~) -> {
 export let f: (Int) -> Int = (x) -> { x + 1 }
 export enum Color { Red; Green; Blue }
 export { name1, name2 }
-export use ./lib.vibe { helper1, helper2 }  // re-export
+export ./lib.vibe { helper1, helper2 }  // re-export
 
 // import
 import ./lib.vibe { func1, func2 }
@@ -368,4 +370,4 @@ input
 
 ---
 
-*Full reference: [syntax-reference.md](language-tour/syntax-reference.md) / [language-tour/](language-tour/)*
+*Full reference: [docs/spec/syntax.md](spec/syntax.md) / [syntax-reference.md](language-tour/syntax-reference.md) / [language-tour/](language-tour/)*

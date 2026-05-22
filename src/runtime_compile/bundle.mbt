@@ -172,6 +172,729 @@ fn append_prelude_inline_stmts_for_linked_build(
 }
 
 ///|
+fn bundle_import_alias_map(ast : @core.Module) -> Map[String, String] {
+  bundle_import_alias_map_with_skips(ast, {})
+}
+
+///|
+fn bundle_import_alias_map_with_skips(
+  ast : @core.Module,
+  skipped_locals : Map[String, Bool],
+) -> Map[String, String] {
+  let aliases : Map[String, String] = {}
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::Import(spec~, ..) =>
+        for item in spec.items {
+          match item.rename {
+            Some(alias_name) =>
+              if alias_name != item.name && !skipped_locals.contains(alias_name) {
+                aliases[alias_name] = item.name
+              }
+            None => ()
+          }
+        }
+      _ => ()
+    }
+  }
+  aliases
+}
+
+///|
+fn bundle_clone_scope(scope : Map[String, Bool]) -> Map[String, Bool] {
+  let next : Map[String, Bool] = {}
+  for name, value in scope {
+    next[name] = value
+  }
+  next
+}
+
+///|
+fn bundle_alias_name(
+  name : String,
+  aliases : Map[String, String],
+  scope : Map[String, Bool],
+) -> String {
+  if scope.contains(name) {
+    name
+  } else {
+    match aliases.get(name) {
+      Some(original) => original
+      None => name
+    }
+  }
+}
+
+///|
+fn bundle_rewrite_alias_call_args(
+  args : Array[@core.CallArg],
+  aliases : Map[String, String],
+  scope : Map[String, Bool],
+) -> Array[@core.CallArg] {
+  let next : Array[@core.CallArg] = []
+  for arg in args {
+    next.push(@core.CallArg::{
+      label: arg.label,
+      expr: bundle_rewrite_alias_expr(arg.expr, aliases, scope),
+      span: arg.span,
+    })
+  }
+  next
+}
+
+///|
+fn bundle_rewrite_alias_record_fields(
+  fields : Array[@core.RecordFieldExpr],
+  aliases : Map[String, String],
+  scope : Map[String, Bool],
+) -> Array[@core.RecordFieldExpr] {
+  let next : Array[@core.RecordFieldExpr] = []
+  for field in fields {
+    next.push(@core.RecordFieldExpr::{
+      name: field.name,
+      expr: bundle_rewrite_alias_expr(field.expr, aliases, scope),
+      span: field.span,
+    })
+  }
+  next
+}
+
+///|
+fn bundle_rewrite_alias_map_fields(
+  fields : Array[@core.MapFieldExpr],
+  aliases : Map[String, String],
+  scope : Map[String, Bool],
+) -> Array[@core.MapFieldExpr] {
+  let next : Array[@core.MapFieldExpr] = []
+  for field in fields {
+    next.push(@core.MapFieldExpr::{
+      key: field.key,
+      expr: bundle_rewrite_alias_expr(field.expr, aliases, scope),
+      span: field.span,
+    })
+  }
+  next
+}
+
+///|
+fn bundle_rewrite_alias_match_arms(
+  arms : Array[@core.MatchArm],
+  aliases : Map[String, String],
+  scope : Map[String, Bool],
+) -> Array[@core.MatchArm] {
+  let next : Array[@core.MatchArm] = []
+  for arm in arms {
+    let arm_scope = bundle_clone_scope(scope)
+    @core.bind_pattern_names_walker(arm_scope, arm.pat)
+    next.push(@core.MatchArm::{
+      pat: arm.pat,
+      cond: match arm.cond {
+        Some(cond) => Some(bundle_rewrite_alias_expr(cond, aliases, arm_scope))
+        None => None
+      },
+      expr: bundle_rewrite_alias_expr(arm.expr, aliases, arm_scope),
+      span: arm.span,
+    })
+  }
+  next
+}
+
+///|
+fn bundle_rewrite_alias_expr(
+  expr : @core.Expr,
+  aliases : Map[String, String],
+  scope : Map[String, Bool],
+) -> @core.Expr {
+  match expr {
+    @core.Expr::Int(..)
+    | @core.Expr::Float(..)
+    | @core.Expr::Double(..)
+    | @core.Expr::Bool(..)
+    | @core.Expr::Char(..)
+    | @core.Expr::String(..)
+    | @core.Expr::Placeholder(..) => expr
+    @core.Expr::StringInterp(parts~, span~) => {
+      let next : Array[@core.StringInterpPart] = []
+      for part in parts {
+        match part {
+          @core.StringInterpPart::Lit(text) =>
+            next.push(@core.StringInterpPart::Lit(text))
+          @core.StringInterpPart::Expr(inner) =>
+            next.push(
+              @core.StringInterpPart::Expr(
+                bundle_rewrite_alias_expr(inner, aliases, scope),
+              ),
+            )
+        }
+      }
+      @core.Expr::StringInterp(parts=next, span~)
+    }
+    @core.Expr::Ident(name~, span~) =>
+      @core.Expr::Ident(name=bundle_alias_name(name, aliases, scope), span~)
+    @core.Expr::Call(name~, type_args~, args~, span~) =>
+      @core.Expr::Call(
+        name=bundle_alias_name(name, aliases, scope),
+        type_args~,
+        args=bundle_rewrite_alias_call_args(args, aliases, scope),
+        span~,
+      )
+    @core.Expr::Tuple(items~, span~) => {
+      let next : Array[@core.Expr] = []
+      for item in items {
+        next.push(bundle_rewrite_alias_expr(item, aliases, scope))
+      }
+      @core.Expr::Tuple(items=next, span~)
+    }
+    @core.Expr::TupleIndex(expr~, index~, span~) =>
+      @core.Expr::TupleIndex(
+        expr=bundle_rewrite_alias_expr(expr, aliases, scope),
+        index~,
+        span~,
+      )
+    @core.Expr::Record(fields~, span~) =>
+      @core.Expr::Record(
+        fields=bundle_rewrite_alias_record_fields(fields, aliases, scope),
+        span~,
+      )
+    @core.Expr::Array(items~, span~) => {
+      let next : Array[@core.Expr] = []
+      for item in items {
+        next.push(bundle_rewrite_alias_expr(item, aliases, scope))
+      }
+      @core.Expr::Array(items=next, span~)
+    }
+    @core.Expr::Map(fields~, span~) =>
+      @core.Expr::Map(
+        fields=bundle_rewrite_alias_map_fields(fields, aliases, scope),
+        span~,
+      )
+    @core.Expr::If(cond~, then_body~, else_body~, span~) =>
+      @core.Expr::If(
+        cond=bundle_rewrite_alias_expr(cond, aliases, scope),
+        then_body=bundle_rewrite_alias_module_with_scope(
+          then_body, aliases, scope,
+        ),
+        else_body=bundle_rewrite_alias_module_with_scope(
+          else_body, aliases, scope,
+        ),
+        span~,
+      )
+    @core.Expr::Block(body~, span~) =>
+      @core.Expr::Block(
+        body=bundle_rewrite_alias_module_with_scope(body, aliases, scope),
+        span~,
+      )
+    @core.Expr::Match(scrutinee~, arms~, span~) =>
+      @core.Expr::Match(
+        scrutinee=bundle_rewrite_alias_expr(scrutinee, aliases, scope),
+        arms=bundle_rewrite_alias_match_arms(arms, aliases, scope),
+        span~,
+      )
+    @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
+      let body_scope = bundle_clone_scope(scope)
+      body_scope[value_name] = true
+      match index_name {
+        Some(name) => body_scope[name] = true
+        None => ()
+      }
+      @core.Expr::ForIn(
+        value_name~,
+        index_name~,
+        iterable=bundle_rewrite_alias_expr(iterable, aliases, scope),
+        body=bundle_rewrite_alias_module_with_scope(body, aliases, body_scope),
+        span~,
+      )
+    }
+    @core.Expr::Fn(
+      type_params~,
+      type_bounds~,
+      params~,
+      ret~,
+      effects~,
+      body~,
+      span~
+    ) => {
+      let body_scope = bundle_clone_scope(scope)
+      for param in params {
+        body_scope[param.name] = true
+      }
+      @core.Expr::Fn(
+        type_params~,
+        type_bounds~,
+        params~,
+        ret~,
+        effects~,
+        body=bundle_rewrite_alias_module_with_scope(body, aliases, body_scope),
+        span~,
+      )
+    }
+    @core.Expr::While(cond~, body~, span~) =>
+      @core.Expr::While(
+        cond=bundle_rewrite_alias_expr(cond, aliases, scope),
+        body=bundle_rewrite_alias_module_with_scope(body, aliases, scope),
+        span~,
+      )
+    @core.Expr::Loop(params~, body~, span~) => {
+      let next_params : Array[@core.LoopParam] = []
+      let body_scope = bundle_clone_scope(scope)
+      for param in params {
+        next_params.push(@core.LoopParam::{
+          name: param.name,
+          init: bundle_rewrite_alias_expr(param.init, aliases, scope),
+          span: param.span,
+        })
+        body_scope[param.name] = true
+      }
+      @core.Expr::Loop(
+        params=next_params,
+        body=bundle_rewrite_alias_module_with_scope(body, aliases, body_scope),
+        span~,
+      )
+    }
+    @core.Expr::Break(value~, span~) =>
+      @core.Expr::Break(
+        value=match value {
+          Some(inner) => Some(bundle_rewrite_alias_expr(inner, aliases, scope))
+          None => None
+        },
+        span~,
+      )
+    @core.Expr::Continue(args~, span~) => {
+      let next : Array[@core.Expr] = []
+      for arg in args {
+        next.push(bundle_rewrite_alias_expr(arg, aliases, scope))
+      }
+      @core.Expr::Continue(args=next, span~)
+    }
+    @core.Expr::Yield(expr~, span~) =>
+      @core.Expr::Yield(
+        expr=bundle_rewrite_alias_expr(expr, aliases, scope),
+        span~,
+      )
+    @core.Expr::Handle(body~, arms~, span~) =>
+      @core.Expr::Handle(
+        body=bundle_rewrite_alias_module_with_scope(body, aliases, scope),
+        arms=bundle_rewrite_alias_match_arms(arms, aliases, scope),
+        span~,
+      )
+    @core.Expr::StructLit(name~, type_args~, fields~, span~) =>
+      @core.Expr::StructLit(
+        name~,
+        type_args~,
+        fields=bundle_rewrite_alias_record_fields(fields, aliases, scope),
+        span~,
+      )
+    @core.Expr::Spread(expr~, span~) =>
+      @core.Expr::Spread(
+        expr=bundle_rewrite_alias_expr(expr, aliases, scope),
+        span~,
+      )
+    @core.Expr::Perform(effect_name~, op_name~, args~, span~) =>
+      @core.Expr::Perform(
+        effect_name~,
+        op_name~,
+        args=bundle_rewrite_alias_call_args(args, aliases, scope),
+        span~,
+      )
+  }
+}
+
+///|
+fn bundle_rewrite_alias_stmt(
+  stmt : @core.Stmt,
+  aliases : Map[String, String],
+  scope : Map[String, Bool],
+) -> @core.Stmt {
+  match stmt {
+    @core.Stmt::Let(rec~, name~, expr~, span~) => {
+      let expr_scope = if rec {
+        let child = bundle_clone_scope(scope)
+        child[name] = true
+        child
+      } else {
+        scope
+      }
+      @core.Stmt::Let(
+        rec~,
+        name~,
+        expr=bundle_rewrite_alias_expr(expr, aliases, expr_scope),
+        span~,
+      )
+    }
+    @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
+      let expr_scope = if rec {
+        let child = bundle_clone_scope(scope)
+        child[name] = true
+        child
+      } else {
+        scope
+      }
+      @core.Stmt::ExportLet(
+        rec~,
+        name~,
+        expr=bundle_rewrite_alias_expr(expr, aliases, expr_scope),
+        span~,
+      )
+    }
+    @core.Stmt::InternalExportLet(rec~, name~, expr~, span~) => {
+      let expr_scope = if rec {
+        let child = bundle_clone_scope(scope)
+        child[name] = true
+        child
+      } else {
+        scope
+      }
+      @core.Stmt::InternalExportLet(
+        rec~,
+        name~,
+        expr=bundle_rewrite_alias_expr(expr, aliases, expr_scope),
+        span~,
+      )
+    }
+    @core.Stmt::LetMut(name~, expr~, span~) =>
+      @core.Stmt::LetMut(
+        name~,
+        expr=bundle_rewrite_alias_expr(expr, aliases, scope),
+        span~,
+      )
+    @core.Stmt::Assign(name~, expr~, span~) =>
+      @core.Stmt::Assign(
+        name=bundle_alias_name(name, aliases, scope),
+        expr=bundle_rewrite_alias_expr(expr, aliases, scope),
+        span~,
+      )
+    @core.Stmt::IndexAssign(target~, index~, value~, span~) =>
+      @core.Stmt::IndexAssign(
+        target=bundle_rewrite_alias_expr(target, aliases, scope),
+        index=bundle_rewrite_alias_expr(index, aliases, scope),
+        value=bundle_rewrite_alias_expr(value, aliases, scope),
+        span~,
+      )
+    @core.Stmt::LetPat(pat~, expr~, span~) =>
+      @core.Stmt::LetPat(
+        pat~,
+        expr=bundle_rewrite_alias_expr(expr, aliases, scope),
+        span~,
+      )
+    @core.Stmt::LetPatElse(pat~, expr~, else_body~, span~) =>
+      @core.Stmt::LetPatElse(
+        pat~,
+        expr=bundle_rewrite_alias_expr(expr, aliases, scope),
+        else_body=bundle_rewrite_alias_module_with_scope(
+          else_body, aliases, scope,
+        ),
+        span~,
+      )
+    @core.Stmt::Expr(expr~, span~) =>
+      @core.Stmt::Expr(
+        expr=bundle_rewrite_alias_expr(expr, aliases, scope),
+        span~,
+      )
+    @core.Stmt::Test(name~, body~, span~) =>
+      @core.Stmt::Test(
+        name~,
+        body=bundle_rewrite_alias_module_with_scope(body, aliases, scope),
+        span~,
+      )
+    @core.Stmt::Bench(name~, body~, span~) =>
+      @core.Stmt::Bench(
+        name~,
+        body=bundle_rewrite_alias_module_with_scope(body, aliases, scope),
+        span~,
+      )
+    @core.Stmt::TraitImpl(
+      type_params~,
+      type_bounds~,
+      trait_name~,
+      target~,
+      methods~,
+      span~
+    ) => {
+      let next_methods : Array[@core.ImplMethodDef] = []
+      for impl_method in methods {
+        next_methods.push(@core.ImplMethodDef::{
+          name: impl_method.name,
+          expr: bundle_rewrite_alias_expr(impl_method.expr, aliases, scope),
+          span: impl_method.span,
+        })
+      }
+      @core.Stmt::TraitImpl(
+        type_params~,
+        type_bounds~,
+        trait_name~,
+        target~,
+        methods=next_methods,
+        span~,
+      )
+    }
+    _ => stmt
+  }
+}
+
+///|
+fn bundle_extend_alias_scope(
+  scope : Map[String, Bool],
+  stmt : @core.Stmt,
+) -> Unit {
+  match stmt {
+    @core.Stmt::Let(name~, ..)
+    | @core.Stmt::ExportLet(name~, ..)
+    | @core.Stmt::InternalExportLet(name~, ..)
+    | @core.Stmt::LetMut(name~, ..)
+    | @core.Stmt::ExternLet(name~, ..) => scope[name] = true
+    @core.Stmt::LetPat(pat~, ..) | @core.Stmt::LetPatElse(pat~, ..) =>
+      @core.bind_pattern_names_walker(scope, pat)
+    _ => ()
+  }
+}
+
+///|
+fn bundle_rewrite_alias_module_with_scope(
+  ast : @core.Module,
+  aliases : Map[String, String],
+  parent_scope : Map[String, Bool],
+) -> @core.Module {
+  let scope = bundle_clone_scope(parent_scope)
+  let next : Array[@core.Stmt] = []
+  for stmt in ast.stmts {
+    next.push(bundle_rewrite_alias_stmt(stmt, aliases, scope))
+    bundle_extend_alias_scope(scope, stmt)
+  }
+  @core.Module::{ stmts: next }
+}
+
+///|
+fn bundle_rewrite_import_aliases(ast : @core.Module) -> @core.Module {
+  bundle_rewrite_import_aliases_from_map(ast, bundle_import_alias_map(ast))
+}
+
+///|
+fn bundle_rewrite_import_aliases_with_skips(
+  ast : @core.Module,
+  skipped_locals : Map[String, Bool],
+) -> @core.Module {
+  let aliases = bundle_import_alias_map_with_skips(ast, skipped_locals)
+  bundle_rewrite_import_aliases_from_map(ast, aliases)
+}
+
+///|
+fn bundle_rewrite_import_aliases_from_map(
+  ast : @core.Module,
+  aliases : Map[String, String],
+) -> @core.Module {
+  if aliases.length() == 0 {
+    ast
+  } else {
+    bundle_rewrite_alias_module_with_scope(ast, aliases, {})
+  }
+}
+
+///|
+priv struct BundleImportAliasCollision {
+  source_path : String
+  original_name : String
+  local_name : String
+}
+
+///|
+fn bundle_import_item_is_value(item : @core.ImportItem) -> Bool {
+  item.kind == @core.ImportKind::Value
+}
+
+///|
+fn bundle_resolve_import_source_path(
+  db : @runtime.VibeDb,
+  owner_path : String,
+  source : @core.ModuleRef,
+) -> String? {
+  let imports = db.imports(owner_path)
+  let base_dir = @path.Path(owner_path).dirname().to_string()
+  for imp in imports {
+    if @runtime.import_stmt_matches_spec(base_dir, source, imp) {
+      return Some(imp.path)
+    }
+  }
+  resolve_module_ref_path(base_dir, source, dep_imports=imports)
+}
+
+///|
+fn bundle_collect_import_alias_collisions(
+  db : @runtime.VibeDb,
+  owner_path : String,
+  ast : @core.Module,
+) -> Array[BundleImportAliasCollision] {
+  let import_paths_by_name : Map[String, Map[String, Bool]] = {}
+  let imports : Array[BundleImportAliasCollision] = []
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::Import(spec~, source~, ..) =>
+        match bundle_resolve_import_source_path(db, owner_path, source) {
+          Some(source_path) =>
+            for item in spec.items {
+              if bundle_import_item_is_value(item) {
+                let local_name = @core.import_item_local_name(item)
+                imports.push(BundleImportAliasCollision::{
+                  source_path,
+                  original_name: item.name,
+                  local_name,
+                })
+                match import_paths_by_name.get(item.name) {
+                  Some(paths) => paths[source_path] = true
+                  None => {
+                    let paths : Map[String, Bool] = {}
+                    paths[source_path] = true
+                    import_paths_by_name[item.name] = paths
+                  }
+                }
+              }
+            }
+          None => ()
+        }
+      _ => ()
+    }
+  }
+  let collisions : Array[BundleImportAliasCollision] = []
+  for imp in imports {
+    match import_paths_by_name.get(imp.original_name) {
+      Some(paths) => if paths.length() > 1 { collisions.push(imp) }
+      None => ()
+    }
+  }
+  collisions
+}
+
+///|
+fn bundle_collision_local_names(
+  collisions : Array[BundleImportAliasCollision],
+) -> Map[String, Bool] {
+  let out : Map[String, Bool] = {}
+  for collision in collisions {
+    out[collision.local_name] = true
+  }
+  out
+}
+
+///|
+fn bundle_collision_original_names(
+  collisions : Array[BundleImportAliasCollision],
+) -> Map[String, Bool] {
+  let out : Map[String, Bool] = {}
+  for collision in collisions {
+    out[collision.original_name] = true
+  }
+  out
+}
+
+///|
+fn bundle_drop_colliding_value_defs(
+  stmts : Array[@core.Stmt],
+  colliding_originals : Map[String, Bool],
+) -> Array[@core.Stmt] {
+  if colliding_originals.length() == 0 {
+    return stmts
+  }
+  let out : Array[@core.Stmt] = []
+  for stmt in stmts {
+    match bundle_stmt_value_name(stmt) {
+      Some(name) => if !colliding_originals.contains(name) { out.push(stmt) }
+      None => out.push(stmt)
+    }
+  }
+  out
+}
+
+///|
+fn bundle_rewrite_imported_value_to_local(
+  stmt : @core.Stmt,
+  original_name : String,
+  local_name : String,
+) -> @core.Stmt? {
+  let rewrite_expr = fn(expr : @core.Expr) {
+    if local_name == original_name {
+      expr
+    } else {
+      let aliases : Map[String, String] = {}
+      aliases[original_name] = local_name
+      bundle_rewrite_alias_expr(expr, aliases, {})
+    }
+  }
+  match stmt {
+    @core.Stmt::Let(rec~, name~, expr~, span~)
+    | @core.Stmt::ExportLet(rec~, name~, expr~, span~)
+    | @core.Stmt::InternalExportLet(rec~, name~, expr~, span~) =>
+      if name == original_name {
+        Some(
+          @core.Stmt::Let(rec~, name=local_name, expr=rewrite_expr(expr), span~),
+        )
+      } else {
+        None
+      }
+    @core.Stmt::LetMut(name~, expr~, span~) =>
+      if name == original_name {
+        Some(
+          @core.Stmt::LetMut(name=local_name, expr=rewrite_expr(expr), span~),
+        )
+      } else {
+        None
+      }
+    _ => None
+  }
+}
+
+///|
+fn bundle_append_import_alias_collision_defs(
+  db : @runtime.VibeDb,
+  collisions : Array[BundleImportAliasCollision],
+  out : Array[@core.Stmt],
+) -> Unit {
+  let emitted_aliases : Map[String, Bool] = {}
+  let emitted_helpers : Map[String, Bool] = {}
+  for collision in collisions {
+    if emitted_aliases.contains(collision.local_name) {
+      continue
+    }
+    let rewritten_source_ast = bundle_rewrite_import_aliases(
+      db.ast_with_hash_imports(collision.source_path),
+    )
+    let source_ast = namespace_private_module_values(
+      collision.source_path,
+      rewritten_source_ast,
+    )
+    let private_names = collect_private_value_rename_map(
+      collision.source_path,
+      rewritten_source_ast,
+    )
+    for stmt in source_ast.stmts {
+      match bundle_stmt_value_name(stmt) {
+        Some(name) =>
+          for _, renamed in private_names {
+            if name == renamed && !emitted_helpers.contains(name) {
+              out.push(stmt)
+              emitted_helpers[name] = true
+            }
+          }
+        None => ()
+      }
+    }
+    for stmt in source_ast.stmts {
+      match
+        bundle_rewrite_imported_value_to_local(
+          stmt,
+          collision.original_name,
+          collision.local_name,
+        ) {
+        Some(local_stmt) => {
+          out.push(local_stmt)
+          emitted_aliases[collision.local_name] = true
+          break
+        }
+        None => ()
+      }
+    }
+  }
+}
+
+///|
 pub fn prelude_core_library_module() -> @core.Module {
   @core.Module::{ stmts: prelude_core_library_stmts() }
 }
@@ -214,27 +937,43 @@ fn collect_dependency_defs_selected(
   path : String,
   out : Array[@core.Stmt],
   visited : Map[String, Bool],
+  protected_value_names : Map[String, Bool],
+  protected_type_names : Map[String, Bool],
   selected_export_names : Map[String, Bool],
   selected_reexports : Array[SelectedReExport],
 ) -> Unit {
   if visited.contains(path) {
     return
   }
-  let emitted_types : Map[String, Bool] = {}
-  for stmt in out {
-    match bundle_stmt_type_name(stmt) {
-      Some(name) => emitted_types[name] = true
-      None => ()
-    }
-  }
   let is_entry = visited.length() == 0
   visited[path] = true
   let imports = db.imports(path)
   for imp in imports {
-    collect_dependency_defs(db, imp.path, out, visited)
+    collect_dependency_defs_with_protected_names(
+      db,
+      imp.path,
+      out,
+      visited,
+      protected_value_names,
+      protected_type_names,
+    )
   }
   if !is_entry {
-    let dep_ast = db.ast_with_hash_imports(path)
+    let existing_values = bundle_existing_value_names_with_protected(
+      out, protected_value_names,
+    )
+    let existing_types = bundle_existing_type_names_with_protected(
+      out, protected_type_names,
+    )
+    let dep_ast = namespace_private_module_defs_for_existing_names(
+      path,
+      bundle_rewrite_import_aliases(db.ast_with_hash_imports(path)),
+      existing_values,
+      existing_types,
+    )
+    let emitted_types = bundle_existing_type_names_with_protected(
+      out, protected_type_names,
+    )
     for stmt in dep_ast.stmts {
       match stmt {
         @core.Stmt::ExportLet(rec~, name~, expr~, span~) =>
@@ -280,6 +1019,8 @@ fn collect_dependency_defs_selected(
         selected.source,
         out,
         visited,
+        protected_value_names,
+        protected_type_names,
       )
     }
   }
@@ -302,11 +1043,19 @@ pub fn bundle_for_wasm_linked(
   // If any export has Func params (HOF) → inline the entire module (monolithic).
   let imports = db.imports(path)
   let visited : Map[String, Bool] = {}
+  let entry_value_names = bundle_module_all_value_binder_names(
+    bundle_rewrite_import_aliases(ast),
+  )
+  let entry_type_names = bundle_module_type_names(
+    bundle_rewrite_import_aliases(ast),
+  )
   // Mark user module as visited so collect_dependency_defs treats
   // import modules as non-entry (their ExportLet defs will be included).
   visited[path] = true
   for imp in imports {
-    let dep_ast = db.ast_with_hash_imports(imp.path)
+    let dep_ast = bundle_rewrite_import_aliases(
+      db.ast_with_hash_imports(imp.path),
+    )
     let module_name = linked_module_name(imp.path)
     let host_imports_visited : Map[String, Bool] = {}
     let needs_host_import_inline = module_requires_preload_host_imports(
@@ -317,7 +1066,14 @@ pub fn bundle_for_wasm_linked(
     if needs_host_import_inline {
       // Inline deps that need host imports because wasmtime --preload cannot
       // instantiate library modules that carry their own host/WASI imports.
-      collect_dependency_defs(db, imp.path, bundled_stmts, visited)
+      collect_dependency_defs_with_protected_names(
+        db,
+        imp.path,
+        bundled_stmts,
+        visited,
+        entry_value_names,
+        entry_type_names,
+      )
     } else {
       let selected_export_names : Map[String, Bool] = {}
       let selected_reexports : Array[SelectedReExport] = []
@@ -389,6 +1145,8 @@ pub fn bundle_for_wasm_linked(
           imp.path,
           bundled_stmts,
           visited,
+          entry_value_names,
+          entry_type_names,
           selected_export_names,
           selected_reexports,
         )
@@ -401,8 +1159,9 @@ pub fn bundle_for_wasm_linked(
   )
   // Add main module statements (excluding imports; resolve re-exports for types)
   let raw_entry_ast = db.ast(path)
+  let entry_ast = bundle_rewrite_import_aliases(ast)
   let non_prelude_names : Array[String] = []
-  for stmt in ast.stmts {
+  for stmt in entry_ast.stmts {
     match stmt {
       @core.Stmt::Import(..) => ()
       @core.Stmt::ReExport(..) => ()
@@ -456,7 +1215,8 @@ pub fn bundle_for_wasm_linked_with_imports(
     bundled_stmts.push(stmt)
   }
   let non_prelude_names : Array[String] = []
-  for stmt in ast.stmts {
+  let rewritten_ast = bundle_rewrite_import_aliases(ast)
+  for stmt in rewritten_ast.stmts {
     match stmt {
       @core.Stmt::Import(..) | @core.Stmt::ReExport(..) => ()
       _ => {
@@ -1030,11 +1790,29 @@ fn bundle_for_wasm_impl(
   keep_for_in_helpers~ : Bool,
 ) -> @core.Module {
   ensure_hooks()
+  let import_alias_collisions = bundle_collect_import_alias_collisions(
+    db, path, ast,
+  )
+  let main_ast = bundle_rewrite_import_aliases_with_skips(
+    ast,
+    bundle_collision_local_names(import_alias_collisions),
+  )
   let collected_dep_stmts : Array[@core.Stmt] = []
   let visited : Map[String, Bool] = {}
+  let entry_value_names = bundle_module_all_value_binder_names(main_ast)
+  let entry_type_names = bundle_module_type_names(main_ast)
   // Collect all dependency definitions in topological order
-  collect_dependency_defs(db, path, collected_dep_stmts, visited)
-  let bundled_stmts = dedupe_dependency_value_defs(collected_dep_stmts)
+  collect_dependency_defs_with_protected_names(
+    db, path, collected_dep_stmts, visited, entry_value_names, entry_type_names,
+  )
+  let dep_stmts = bundle_drop_colliding_value_defs(
+    collected_dep_stmts,
+    bundle_collision_original_names(import_alias_collisions),
+  )
+  bundle_append_import_alias_collision_defs(
+    db, import_alias_collisions, dep_stmts,
+  )
+  let bundled_stmts = dedupe_dependency_value_defs(dep_stmts)
   let existing_value_names : Map[String, Bool] = {}
   for stmt in bundled_stmts {
     match bundle_stmt_value_name(stmt) {
@@ -1042,7 +1820,7 @@ fn bundle_for_wasm_impl(
       None => ()
     }
   }
-  for stmt in ast.stmts {
+  for stmt in main_ast.stmts {
     match bundle_stmt_value_name(stmt) {
       Some(name) => existing_value_names[name] = true
       None => ()
@@ -1084,12 +1862,14 @@ fn bundle_for_wasm_impl(
   }
   // Add main module statements (excluding imports and expanding re-exports)
   let main_stmts : Array[@core.Stmt] = []
-  for stmt in ast.stmts {
+  for stmt in main_ast.stmts {
     match stmt {
       @core.Stmt::Import(..) => () // Skip imports
       @core.Stmt::ReExport(spec~, source~, span=_) =>
         // Expand re-exports in main module
-        collect_reexport_defs(db, path, spec, source, bundled_stmts, visited)
+        collect_reexport_defs(
+          db, path, spec, source, bundled_stmts, visited, entry_value_names, entry_type_names,
+        )
       _ => main_stmts.push(stmt)
     }
   }
@@ -1166,35 +1946,333 @@ fn bundle_stmt_value_name(stmt : @core.Stmt) -> String? {
 }
 
 ///|
-/// Recursively collect definitions from dependencies.
-fn collect_dependency_defs(
+fn bundle_existing_value_names(stmts : Array[@core.Stmt]) -> Map[String, Bool] {
+  let names : Map[String, Bool] = {}
+  for stmt in stmts {
+    match bundle_stmt_value_name(stmt) {
+      Some(name) => names[name] = true
+      None => ()
+    }
+    match stmt {
+      @core.Stmt::EnumDef(ctors~, ..)
+      | @core.Stmt::ExportEnumDef(ctors~, ..)
+      | @core.Stmt::InternalExportEnumDef(ctors~, ..) =>
+        for ctor in ctors {
+          names[ctor.name] = true
+        }
+      _ => ()
+    }
+  }
+  names
+}
+
+///|
+fn bundle_existing_value_names_with_protected(
+  stmts : Array[@core.Stmt],
+  protected_value_names : Map[String, Bool],
+) -> Map[String, Bool] {
+  let names = bundle_existing_value_names(stmts)
+  for name, _ in protected_value_names {
+    names[name] = true
+  }
+  names
+}
+
+///|
+fn bundle_collect_pattern_binder_names(
+  names : Map[String, Bool],
+  pat : @core.Pat,
+) -> Unit {
+  let bound : Map[String, Bool] = {}
+  @core.bind_pattern_names_walker(bound, pat)
+  for name, _ in bound {
+    names[name] = true
+  }
+}
+
+///|
+fn bundle_collect_call_arg_binder_names(
+  names : Map[String, Bool],
+  args : Array[@core.CallArg],
+) -> Unit {
+  for arg in args {
+    bundle_collect_expr_binder_names(names, arg.expr)
+  }
+}
+
+///|
+fn bundle_collect_expr_binder_names(
+  names : Map[String, Bool],
+  expr : @core.Expr,
+) -> Unit {
+  match expr {
+    @core.Expr::StringInterp(parts~, ..) =>
+      for part in parts {
+        match part {
+          @core.StringInterpPart::Expr(inner) =>
+            bundle_collect_expr_binder_names(names, inner)
+          @core.StringInterpPart::Lit(_) => ()
+        }
+      }
+    @core.Expr::Call(args~, ..) =>
+      bundle_collect_call_arg_binder_names(names, args)
+    @core.Expr::Tuple(items~, ..) | @core.Expr::Array(items~, ..) =>
+      for item in items {
+        bundle_collect_expr_binder_names(names, item)
+      }
+    @core.Expr::TupleIndex(expr=inner, ..)
+    | @core.Expr::Spread(expr=inner, ..) =>
+      bundle_collect_expr_binder_names(names, inner)
+    @core.Expr::Record(fields~, ..) =>
+      for field in fields {
+        bundle_collect_expr_binder_names(names, field.expr)
+      }
+    @core.Expr::Map(fields~, ..) =>
+      for field in fields {
+        bundle_collect_expr_binder_names(names, field.expr)
+      }
+    @core.Expr::If(cond~, then_body~, else_body~, ..) => {
+      bundle_collect_expr_binder_names(names, cond)
+      bundle_collect_module_binder_names(names, then_body)
+      bundle_collect_module_binder_names(names, else_body)
+    }
+    @core.Expr::Block(body~, ..) =>
+      bundle_collect_module_binder_names(names, body)
+    @core.Expr::Match(scrutinee~, arms~, ..) => {
+      bundle_collect_expr_binder_names(names, scrutinee)
+      for arm in arms {
+        bundle_collect_pattern_binder_names(names, arm.pat)
+        match arm.cond {
+          Some(cond) => bundle_collect_expr_binder_names(names, cond)
+          None => ()
+        }
+        bundle_collect_expr_binder_names(names, arm.expr)
+      }
+    }
+    @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, ..) => {
+      names[value_name] = true
+      match index_name {
+        Some(name) => names[name] = true
+        None => ()
+      }
+      bundle_collect_expr_binder_names(names, iterable)
+      bundle_collect_module_binder_names(names, body)
+    }
+    @core.Expr::Fn(params~, body~, ..) => {
+      for param in params {
+        names[param.name] = true
+      }
+      bundle_collect_module_binder_names(names, body)
+    }
+    @core.Expr::While(cond~, body~, ..) => {
+      bundle_collect_expr_binder_names(names, cond)
+      bundle_collect_module_binder_names(names, body)
+    }
+    @core.Expr::Loop(params~, body~, ..) => {
+      for param in params {
+        names[param.name] = true
+        bundle_collect_expr_binder_names(names, param.init)
+      }
+      bundle_collect_module_binder_names(names, body)
+    }
+    @core.Expr::Break(value~, ..) =>
+      match value {
+        Some(inner) => bundle_collect_expr_binder_names(names, inner)
+        None => ()
+      }
+    @core.Expr::Continue(args~, ..) =>
+      for arg in args {
+        bundle_collect_expr_binder_names(names, arg)
+      }
+    @core.Expr::Yield(expr=inner, ..) =>
+      bundle_collect_expr_binder_names(names, inner)
+    @core.Expr::Handle(body~, arms~, ..) => {
+      bundle_collect_module_binder_names(names, body)
+      for arm in arms {
+        bundle_collect_pattern_binder_names(names, arm.pat)
+        match arm.cond {
+          Some(cond) => bundle_collect_expr_binder_names(names, cond)
+          None => ()
+        }
+        bundle_collect_expr_binder_names(names, arm.expr)
+      }
+    }
+    @core.Expr::StructLit(fields~, ..) =>
+      for field in fields {
+        bundle_collect_expr_binder_names(names, field.expr)
+      }
+    @core.Expr::Perform(args~, ..) =>
+      bundle_collect_call_arg_binder_names(names, args)
+    @core.Expr::Int(..)
+    | @core.Expr::Float(..)
+    | @core.Expr::Double(..)
+    | @core.Expr::Bool(..)
+    | @core.Expr::Char(..)
+    | @core.Expr::String(..)
+    | @core.Expr::Ident(..)
+    | @core.Expr::Placeholder(..) => ()
+  }
+}
+
+///|
+fn bundle_collect_stmt_binder_names(
+  names : Map[String, Bool],
+  stmt : @core.Stmt,
+) -> Unit {
+  match stmt {
+    @core.Stmt::Let(name~, expr~, ..)
+    | @core.Stmt::ExportLet(name~, expr~, ..)
+    | @core.Stmt::InternalExportLet(name~, expr~, ..)
+    | @core.Stmt::LetMut(name~, expr~, ..) => {
+      names[name] = true
+      bundle_collect_expr_binder_names(names, expr)
+    }
+    @core.Stmt::ExternLet(name~, ..) => names[name] = true
+    @core.Stmt::LetPat(pat~, expr~, ..) => {
+      bundle_collect_pattern_binder_names(names, pat)
+      bundle_collect_expr_binder_names(names, expr)
+    }
+    @core.Stmt::LetPatElse(pat~, expr~, else_body~, ..) => {
+      bundle_collect_pattern_binder_names(names, pat)
+      bundle_collect_expr_binder_names(names, expr)
+      bundle_collect_module_binder_names(names, else_body)
+    }
+    @core.Stmt::Assign(expr~, ..) =>
+      bundle_collect_expr_binder_names(names, expr)
+    @core.Stmt::IndexAssign(target~, index~, value~, ..) => {
+      bundle_collect_expr_binder_names(names, target)
+      bundle_collect_expr_binder_names(names, index)
+      bundle_collect_expr_binder_names(names, value)
+    }
+    @core.Stmt::Expr(expr~, ..) => bundle_collect_expr_binder_names(names, expr)
+    @core.Stmt::Test(body~, ..) | @core.Stmt::Bench(body~, ..) =>
+      bundle_collect_module_binder_names(names, body)
+    @core.Stmt::TraitImpl(methods~, ..) =>
+      for impl_method in methods {
+        bundle_collect_expr_binder_names(names, impl_method.expr)
+      }
+    @core.Stmt::EnumDef(ctors~, ..)
+    | @core.Stmt::ExportEnumDef(ctors~, ..)
+    | @core.Stmt::InternalExportEnumDef(ctors~, ..) =>
+      for ctor in ctors {
+        names[ctor.name] = true
+      }
+    @core.Stmt::Import(..)
+    | @core.Stmt::TypeAlias(..)
+    | @core.Stmt::TraitDef(..)
+    | @core.Stmt::ExportTypeAlias(..)
+    | @core.Stmt::InternalExportTypeAlias(..)
+    | @core.Stmt::InternalTraitDef(..)
+    | @core.Stmt::Export(..)
+    | @core.Stmt::ReExport(..)
+    | @core.Stmt::AliasDecl(..)
+    | @core.Stmt::StructDef(..)
+    | @core.Stmt::ExportStructDef(..)
+    | @core.Stmt::InternalExportStructDef(..)
+    | @core.Stmt::EffectDef(..)
+    | @core.Stmt::ExportEffectDef(..) => ()
+  }
+}
+
+///|
+fn bundle_collect_module_binder_names(
+  names : Map[String, Bool],
+  ast : @core.Module,
+) -> Unit {
+  for stmt in ast.stmts {
+    bundle_collect_stmt_binder_names(names, stmt)
+  }
+}
+
+///|
+fn bundle_module_all_value_binder_names(
+  ast : @core.Module,
+) -> Map[String, Bool] {
+  let names : Map[String, Bool] = {}
+  bundle_collect_module_binder_names(names, ast)
+  names
+}
+
+///|
+fn bundle_existing_type_names(stmts : Array[@core.Stmt]) -> Map[String, Bool] {
+  let names : Map[String, Bool] = {}
+  for stmt in stmts {
+    match bundle_stmt_type_name(stmt) {
+      Some(name) => names[name] = true
+      None => ()
+    }
+  }
+  names
+}
+
+///|
+fn bundle_existing_type_names_with_protected(
+  stmts : Array[@core.Stmt],
+  protected_type_names : Map[String, Bool],
+) -> Map[String, Bool] {
+  let names = bundle_existing_type_names(stmts)
+  for name, _ in protected_type_names {
+    names[name] = true
+  }
+  names
+}
+
+///|
+fn bundle_module_type_names(ast : @core.Module) -> Map[String, Bool] {
+  let names : Map[String, Bool] = {}
+  for stmt in ast.stmts {
+    match bundle_stmt_type_name(stmt) {
+      Some(name) => names[name] = true
+      None => ()
+    }
+  }
+  names
+}
+
+///|
+fn collect_dependency_defs_with_protected_names(
   db : @runtime.VibeDb,
   path : String,
   out : Array[@core.Stmt],
   visited : Map[String, Bool],
+  protected_value_names : Map[String, Bool],
+  protected_type_names : Map[String, Bool],
 ) -> Unit {
   if visited.contains(path) {
     return
-  }
-  // Track emitted type names to avoid duplicate EnumDef/StructDef/TypeAlias
-  let emitted_types : Map[String, Bool] = {}
-  for stmt in out {
-    match bundle_stmt_type_name(stmt) {
-      Some(name) => emitted_types[name] = true
-      None => ()
-    }
   }
   let is_entry = visited.length() == 0
   visited[path] = true
   let imports = db.imports(path)
   // First, recursively process dependencies
   for imp in imports {
-    collect_dependency_defs(db, imp.path, out, visited)
+    collect_dependency_defs_with_protected_names(
+      db,
+      imp.path,
+      out,
+      visited,
+      protected_value_names,
+      protected_type_names,
+    )
   }
   // Then add definitions from this module (if it's an imported module)
   // Skip the entry module itself (it will be added separately)
   if !is_entry {
-    let dep_ast = db.ast_with_hash_imports(path)
+    let existing_values = bundle_existing_value_names_with_protected(
+      out, protected_value_names,
+    )
+    let existing_types = bundle_existing_type_names_with_protected(
+      out, protected_type_names,
+    )
+    let dep_ast = namespace_private_module_defs_for_existing_names(
+      path,
+      bundle_rewrite_import_aliases(db.ast_with_hash_imports(path)),
+      existing_values,
+      existing_types,
+    )
+    let emitted_types = bundle_existing_type_names_with_protected(
+      out, protected_type_names,
+    )
     for stmt in dep_ast.stmts {
       match stmt {
         // Convert exports to regular definitions
@@ -1224,7 +2302,9 @@ fn collect_dependency_defs(
           }
         // Handle re-exports: fetch definitions from source module
         @core.Stmt::ReExport(spec~, source~, span=_) =>
-          collect_reexport_defs(db, path, spec, source, out, visited)
+          collect_reexport_defs(
+            db, path, spec, source, out, visited, protected_value_names, protected_type_names,
+          )
         // Skip imports and exports in dependencies
         @core.Stmt::Import(..) | @core.Stmt::Export(..) => ()
         // Skip tests from dependencies
@@ -1300,6 +2380,8 @@ fn collect_reexport_defs(
   source : @core.ModuleRef,
   out : Array[@core.Stmt],
   visited : Map[String, Bool],
+  protected_value_names : Map[String, Bool],
+  protected_type_names : Map[String, Bool],
 ) -> Unit {
   let normalize_hash_ref = fn(hash : String) {
     if hash.has_prefix("#") && hash.length() > 1 {
@@ -1345,7 +2427,9 @@ fn collect_reexport_defs(
       "__hash__/" + normalize_hash_ref(hash)
   }
   // Recursively process the source module's dependencies first
-  collect_dependency_defs(db, source_path, out, visited)
+  collect_dependency_defs_with_protected_names(
+    db, source_path, out, visited, protected_value_names, protected_type_names,
+  )
   // Get the source module AST
   let source_ast = db.ast_with_hash_imports(source_path)
   let requested_items : Map[String, Array[@core.ImportItem]] = {}
@@ -1375,13 +2459,9 @@ fn collect_reexport_defs(
     }
   }
   // Track already-emitted types to avoid duplicates
-  let emitted_types : Map[String, Bool] = {}
-  for stmt in out {
-    match bundle_stmt_type_name(stmt) {
-      Some(name) => emitted_types[name] = true
-      None => ()
-    }
-  }
+  let emitted_types = bundle_existing_type_names_with_protected(
+    out, protected_type_names,
+  )
   // Extract matching definitions from source module
   for stmt in source_ast.stmts {
     match stmt {

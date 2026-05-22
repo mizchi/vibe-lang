@@ -55,7 +55,10 @@ test "pass_select_and_dedup: no entry names keeps all stmts" {
   }
   let result = pass_select_and_dedup(ast, [])
   let expected = ["let:a", "let:b", "let:c"]
-  @debug.debug_inspect(wbtest_stmt_summary(result), content=Debug::to_repr(expected).to_string())
+  @debug.debug_inspect(
+    wbtest_stmt_summary(result),
+    content=Debug::to_repr(expected).to_string(),
+  )
 }
 
 ///|
@@ -106,7 +109,10 @@ test "pass_select_and_dedup: duplicate names dedup last wins" {
     .count()
   @debug.debug_inspect(x_count, content="1")
   let expected = ["let:x", "let:y"]
-  @debug.debug_inspect(wbtest_stmt_summary(result), content=Debug::to_repr(expected).to_string())
+  @debug.debug_inspect(
+    wbtest_stmt_summary(result),
+    content=Debug::to_repr(expected).to_string(),
+  )
 }
 
 ///|
@@ -295,7 +301,6 @@ test "pass pipeline: full chain produces same result as normalize_source_text" {
     actual,
     content=(
       #|Ok("//# Functions\n\nlet a: () -> Int = () -> { 42 }\n\nlet b: () -> Int = () -> { a() }\n\nlet z: () -> Int = () -> { b() }\n")
-
     ),
   )
 }

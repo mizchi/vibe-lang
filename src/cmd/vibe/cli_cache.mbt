@@ -61,7 +61,25 @@ fn find_vibe_cache_root(entry_path : String) -> (String, String) {
 }
 
 ///|
+fn cli_use_background_linked_cache_with(raw : String?) -> Bool {
+  match raw {
+    Some(value) => parse_bool_flag(value)
+    None => false
+  }
+}
+
+///|
+fn cli_use_background_linked_cache() -> Bool {
+  cli_use_background_linked_cache_with(
+    @sys.get_env_var("VIBE_LINKED_CACHE_BACKGROUND"),
+  )
+}
+
+///|
 fn maybe_create_linked_cache_background(entry_path : String) -> Unit {
+  if !cli_use_background_linked_cache() {
+    return
+  }
   let resolved = @loader.resolve_entry_path(entry_path)
   let (vibe_root, cache_key) = find_vibe_cache_root(resolved)
   let cache_dir = vibe_root + "/debug/" + cache_key
