@@ -284,14 +284,17 @@ StringBuilder/ArrayBuilder) に置換する。
 - [x] `vibe/compiler/runtime/eval_loader/index.vibe :: collect_exports` — push 化 (5 sites)
 - [x] `vibe/compiler/runtime/index.vibe :: upsert_source_cache` / `add_dep` / `db_grouped_merged_source` — push 化 (4 sites)
 
-### 未着手 (Tier A 残)
+### 着手済 (続き)
 
-- [ ] `vibe/compiler/runtime/typecheck_fs.vibe` — recursive `Array::concat(acc, [x])` 4 sites
+- [x] `vibe/compiler/runtime/typecheck_fs.vibe` — recursive `Array::concat(acc, [x])` 4 sites → `Array::push` 化
+- [x] `vibe/compiler/runtime/index.vibe` — recursive `resolve_nested` の dep_acc / stack を `Array::push` + `Array::truncate` 化
+- [x] `vibe/parser/parser.vibe` — `parse_trait_stmt` の super-traits 累積を `Array::push` 化（残る `pipe_desugar` の単発 prepend はループ累積ではないため対象外）
+- [x] `vibe/x/diff/diff.vibe` — backtrace を `ops_rev` push + in-place reverse 化
+
+### 未着手 (要設計)
+
 - [ ] `vibe/compiler/entry/source_compile/wasi_only/linked_helpers.vibe` — `contains_name` 線形走査 3 sites (要パターン精査: 線形 contains は selfhost runtime では Map[String, Bool] にしても改善しないので、別アプローチ要)
 - [ ] `vibe/compiler/entry/source_compile/wasi_only/linked_artifacts.vibe` — `contains_path` 線形走査 2 sites (同上)
-- [ ] `vibe/compiler/runtime/index.vibe` 残 — recursive resolve_nested 系 (`stack: Array[String]` 渡しは copy 必要のため要設計)
-- [ ] `vibe/parser/parser.vibe` — `Array::concat(acc, [x])` 3 sites
-- [ ] `vibe/x/diff/diff.vibe` — `ops = Array::concat([...], ops)` 3 sites
 
 ### 一旦スキップ (理由付き)
 
@@ -345,7 +348,7 @@ StringBuilder/ArrayBuilder) に置換する。
 ノイズを除いた中規模ファイル (5–100 pairs) が現実的な refactor 候補:
 
 - [x] `src/runtime/store.mbt` — `get_by_addr` / `get_alias` / `pure_cache_get` / `pure_cache_set` / `get_module` は未使用 helper だったので削除（`Runtime::get` は公開 API で残存）
-- [ ] `src/backend/http_wasm.mbt` vs `src/backend/http_js.mbt` (30 pairs each) — backend 実装が並走。`src/backend/http_impl.mbt` 側に共通化
+- [x] `src/backend/http_wasm.mbt` vs `src/backend/http_js.mbt` (30 pairs each) — 2 つの target-specific stub を `src/backend/http_stub.mbt` (multi-target) に統合（`exec_stub.mbt` と同パターン）
 - [x] `src/benches/advanced_graph_bench.mbt` — parse 6 本を `decode_graph_or_abort[T]` に集約、`bench_graph_watch_realtime_save_rolling_{cbor,flexbuffer}` を `rolling_impl(encode, decode)` で共通化
 - [x] `src/codegen/wasm_codegen_rc.mbt` — `emit_rc_init_impl(emit_size closure)` に共通化、`emit_rc_call_or_inline_i64(emit_inline closure)` で dup/drop の分岐を抽出
 - [x] `src/cmd/vibe/cli_repl.mbt` — `repl_vibe_view_json` / `repl_vibe_peek_json` は `repl_vibe_symbol_lookup_json` に集約、`repl_is_*` は `Array::contains` へ、`compiled_repl_temp_{source,wasm}_path` は共通 `compiled_repl_temp_path(ext)` 経由
