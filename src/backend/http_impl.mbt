@@ -141,21 +141,24 @@ pub fn http_response_status(handle : Int) -> Result[Int, String] {
 }
 
 ///|
+fn lookup_header(headers : Map[String, String], name : String) -> String {
+  let lower_name = name.to_lower()
+  let mut found = ""
+  for k, v in headers {
+    if k == lower_name {
+      found = v
+    }
+  }
+  found
+}
+
+///|
 pub fn http_response_header(
   handle : Int,
   name : String,
 ) -> Result[String, String] {
   match http_get_entry(handle) {
-    Some(ClientResponse(headers~, ..)) => {
-      let lower_name = name.to_lower()
-      let mut found = ""
-      for k, v in headers {
-        if k == lower_name {
-          found = v
-        }
-      }
-      Ok(found)
-    }
+    Some(ClientResponse(headers~, ..)) => Ok(lookup_header(headers, name))
     _ => Err("invalid handle: " + handle.to_string())
   }
 }
@@ -260,16 +263,7 @@ pub fn http_request_header(
   name : String,
 ) -> Result[String, String] {
   match http_get_entry(handle) {
-    Some(ServerRequest(headers~, ..)) => {
-      let lower_name = name.to_lower()
-      let mut found = ""
-      for k, v in headers {
-        if k == lower_name {
-          found = v
-        }
-      }
-      Ok(found)
-    }
+    Some(ServerRequest(headers~, ..)) => Ok(lookup_header(headers, name))
     _ => Err("invalid handle: " + handle.to_string())
   }
 }
