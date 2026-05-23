@@ -1,0 +1,115 @@
+//# Imports
+
+import ./bitstream.vibe {
+  BitReader, read_bits
+}
+
+//# Types
+
+// Canonical Huffman decode table.
+//
+// We store a flat ordered-by-code-length symbol list plus, for each
+// possible code length L (1..15), the number of codes of that length
+// (`counts[L]`) and the cumulative offset into `symbols`. Decoding then
+// walks bit-by-bit, accumulating a code value, and tests whether it
+// falls inside the range for the current length — when it does the
+// symbol is `symbols[offsets[L] + (code - first_code[L])]`.
+//
+// Slower per-symbol than a flat lookup table but fits in <200 lines of
+// idiomatic code and is plenty fast for moderate inputs.
+
+export struct HuffTable {
+  counts: Array[Int];     // size 16: counts[L] = number of codes of length L
+  symbols: Array[Int]     // symbols, sorted by (length asc, symbol asc)
+}
+
+let max_code_len = 15
+
+let empty_int_array: () -> Array[Int] = () -> {
+  Array::slice([
+    0
+  ], 0, 0)
+}
+
+// Build a decode table from an array of code lengths.
+// `lengths[i]` is the bit-length assigned to symbol `i` (0 means
+// "no code, do not decode").
+export let build_table: (Array[Int]) -> HuffTable with { Error } = (lengths) -> {
+  let n = Array::length(lengths)
+  let counts = empty_int_array()
+  let mut k = 0
+  while k <= max_code_len {
+    Array::push(counts, 0)
+    k = k + 1
+  }
+  let mut i = 0
+  while i < n {
+    let len = Array::get(lengths, i)
+    if len < 0 || len > max_code_len {
+      throw("huffman: code length out of range")
+    }
+    if len > 0 {
+      Array::set(counts, len, Array::get(counts, len) + 1)
+    }
+    i = i + 1
+  }
+  // Offsets per length: prefix sum of counts (starting at length 1).
+  let offsets = empty_int_array()
+  let mut o = 0
+  while o <= max_code_len {
+    Array::push(offsets, 0)
+    o = o + 1
+  }
+  let mut p_len = 1
+  let mut sum = 0
+  while p_len <= max_code_len {
+    Array::set(offsets, p_len, sum)
+    sum = sum + Array::get(counts, p_len)
+    p_len = p_len + 1
+  }
+  // Place symbols sorted by length.
+  let symbols = empty_int_array()
+  let mut s = 0
+  while s < sum {
+    Array::push(symbols, 0)
+    s = s + 1
+  }
+  // We mutate `offsets` as a moving cursor here; after this loop the
+  // values are stale but we discard the array anyway.
+  let mut sym = 0
+  while sym < n {
+    let lg = Array::get(lengths, sym)
+    if lg > 0 {
+      let off = Array::get(offsets, lg)
+      Array::set(symbols, off, sym)
+      Array::set(offsets, lg, off + 1)
+    }
+    sym = sym + 1
+  }
+  HuffTable::{ counts: counts, symbols: symbols }
+}
+
+// Decode the next symbol from the bit stream using table `t`.
+export let decode_symbol: (HuffTable, BitReader) -> Int with { Error } = (t, r) -> {
+  let mut code = 0
+  let mut first = 0
+  let mut index = 0
+  let mut len = 1
+  let mut result = -1
+  while len <= max_code_len && result < 0 {
+    let bit = read_bits(r, 1)
+    code = (code << 1) | bit
+    let cnt = Array::get(t.counts, len)
+    if code - cnt < first {
+      result = Array::get(t.symbols, index + (code - first))
+    } else {
+      index = index + cnt
+      first = (first + cnt) << 1
+      len = len + 1
+    }
+  }
+  if result < 0 {
+    throw("huffman: code did not fit in 15 bits")
+  }
+  result
+}
