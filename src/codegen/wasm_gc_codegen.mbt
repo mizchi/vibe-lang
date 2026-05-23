@@ -930,6 +930,12 @@ fn emit_br_gc(buf : GcByteBuf, depth : Int) -> Unit {
 }
 
 ///|
+/// wasm `return` (0x0F): unwind to the current function boundary.
+fn emit_return_gc(buf : GcByteBuf) -> Unit {
+  buf.push(0x0f)
+}
+
+///|
 fn emit_br_if_gc(buf : GcByteBuf, depth : Int) -> Unit {
   buf.push(0x0d)
   write_u32_leb_gc(buf, depth)
@@ -2648,7 +2654,8 @@ fn infer_expr_kind_gc(
         _ => GcValKind::EqRef
       }
     }
-    @core.Expr::Break(..) | @core.Expr::Continue(..) => GcValKind::I32
+    @core.Expr::Break(..) | @core.Expr::Continue(..) | @core.Expr::Return(..) =>
+      GcValKind::I32
     other =>
       raise WasmGenError::Unsupported(
         "expr: " + other.to_string()[:40].to_owned(),
@@ -8649,6 +8656,16 @@ fn compile_expr_gc(
     @core.Expr::Continue(..) =>
       // Continue while loop: br to loop header (depth 0)
       emit_br_gc(buf, 0)
+    @core.Expr::Return(value~, ..) => {
+      // Emit the value (if any), then wasm `return`. Bare `return`
+      // produces a Unit tagged constant since the function frame
+      // always expects a result on the stack.
+      match value {
+        Some(v) => compile_expr_gc(ctx, fctx, buf, v)
+        None => emit_i64_const_gc(buf, 0L)
+      }
+      emit_return_gc(buf)
+    }
     other =>
       raise WasmGenError::Unsupported(
         "expr: " + other.to_string()[:40].to_owned(),

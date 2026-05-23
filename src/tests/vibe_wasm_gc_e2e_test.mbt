@@ -742,3 +742,33 @@ test "wasm-gc e2e: let rec nested helper captures outer local (#273)" {
     #|sum_range(100)
   assert_gc_e2e(src, "let_rec_nested_capture", 5050)
 }
+
+///|
+test "wasm-gc e2e: return from inside while loop" {
+  // `return` must escape the function frame, not just the loop. If
+  // return were wrongly desugared into `break`, the function would
+  // fall through to the trailing `-1`.
+  let src =
+    #|let find_first_neg: (Array[Int]) -> Int = (arr) -> {
+    #|  let mut i = 0
+    #|  while i < Array::length(arr) {
+    #|    if Array::get(arr, i) < 0 {
+    #|      return i
+    #|    }
+    #|    i = i + 1
+    #|  }
+    #|  -1
+    #|}
+    #|find_first_neg([1, 2, -3, 4])
+  assert_gc_e2e(src, "return_from_while", 2)
+}
+
+///|
+test "wasm-gc e2e: return at function tail (equivalent to tail expr)" {
+  let src =
+    #|let twice: (Int) -> Int = (n) -> {
+    #|  return n * 2
+    #|}
+    #|twice(21)
+  assert_gc_e2e(src, "return_tail", 42)
+}

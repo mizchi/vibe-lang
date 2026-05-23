@@ -425,6 +425,7 @@ fn parse_expr(json : Json) -> Expr raise DeserializeError {
       }
       "Break" => return Expr::Break(value=None, span=zero)
       "Continue" => return Expr::Continue(args=[], span=zero)
+      "Return" => return Expr::Return(value=None, span=zero)
       "Handle" => {
         let inner = expect_object(value)
         let body = parse_module(get_field(inner, "body"))

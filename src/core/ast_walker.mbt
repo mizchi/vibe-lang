@@ -295,6 +295,13 @@ pub fn walk_expr_refs(
         walk_expr_refs(arg, bound, refs, on_name)
       }
     }
+    Expr::Return(value~, span~) => {
+      let _ = span
+      match value {
+        Some(e) => walk_expr_refs(e, bound, refs, on_name)
+        None => ()
+      }
+    }
     Expr::Yield(expr~, span~) => {
       let _ = span
       walk_expr_refs(expr, bound, refs, on_name)

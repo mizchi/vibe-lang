@@ -706,6 +706,12 @@ fn collect_for_in_helper_refs_expr(
       for arg in args {
         collect_for_in_helper_refs_expr(arg, bound, refs, on_name)
       }
+    @core.Expr::Return(value~, ..) =>
+      match value {
+        Some(inner) =>
+          collect_for_in_helper_refs_expr(inner, bound, refs, on_name)
+        None => ()
+      }
     @core.Expr::Yield(expr=value, ..) =>
       collect_for_in_helper_refs_expr(value, bound, refs, on_name)
     @core.Expr::Spread(expr~, ..) =>

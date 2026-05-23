@@ -268,6 +268,11 @@ fn expr_may_use_scoped_ref(expr : @core.Expr) -> Bool {
         Some(v) => expr_may_use_scoped_ref(v)
         None => false
       }
+    @core.Expr::Return(value~, ..) =>
+      match value {
+        Some(v) => expr_may_use_scoped_ref(v)
+        None => false
+      }
     @core.Expr::Handle(body~, arms~, ..) =>
       module_may_use_scoped_ref(body) || match_arms_may_use_scoped_ref(arms)
     @core.Expr::StructLit(type_args~, fields~, ..) => {

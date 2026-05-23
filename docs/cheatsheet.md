@@ -127,6 +127,16 @@ let result = loop (i = 0, sum = 0) {
   if i >= 10 { break sum }
   continue(i + 1, sum + i)
 }
+
+// return (early exit from the enclosing function)
+let find_first_neg: (Array[Int]) -> Int = (arr) -> {
+  let mut i = 0
+  while i < Array::length(arr) {
+    if Array::get(arr, i) < 0 { return i }   // escapes the function, not just the loop
+    i = i + 1
+  }
+  -1
+}
 ```
 
 ## Pattern Matching

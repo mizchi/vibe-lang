@@ -2194,6 +2194,8 @@ fn strip_type_assert_expr(expr : @core.Expr) -> @core.Expr {
       let new_args = args.map(strip_type_assert_expr)
       @core.Expr::Continue(args=new_args, span~)
     }
+    @core.Expr::Return(value~, span~) =>
+      @core.Expr::Return(value=value.map(strip_type_assert_expr), span~)
     @core.Expr::Yield(expr=inner, span~) =>
       @core.Expr::Yield(expr=strip_type_assert_expr(inner), span~)
     _ => expr

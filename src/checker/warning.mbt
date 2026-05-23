@@ -724,6 +724,11 @@ fn walk_expr(
       for arg in args {
         walk_expr(arg, scopes, out)
       }
+    @core.Expr::Return(value~, ..) =>
+      match value {
+        Some(expr) => walk_expr(expr, scopes, out)
+        None => ()
+      }
     @core.Expr::Spread(expr~, ..) => walk_expr(expr, scopes, out)
     @core.Expr::Perform(args~, ..) =>
       for arg in args {

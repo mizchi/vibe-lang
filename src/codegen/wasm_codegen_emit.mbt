@@ -286,6 +286,15 @@ fn emit_call_indirect(buf : ByteBuf, type_idx : Int) -> Unit {
 }
 
 ///|
+/// wasm `return` (0x0F): return from the current function. The stack
+/// must be in a state matching the function's result type.
+fn emit_return(buf : ByteBuf) -> Unit {
+  buf.ensure(1)
+  buf.data.unsafe_set(buf.len, b'\x0f')
+  buf.len += 1
+}
+
+///|
 fn emit_return_call(buf : ByteBuf, idx : Int) -> Unit {
   buf.ensure(6)
   buf.data.unsafe_set(buf.len, b'\x12')

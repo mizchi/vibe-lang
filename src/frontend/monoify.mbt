@@ -769,6 +769,15 @@ fn monoify_expr(
       }
       @core.Expr::Continue(args=next_args, span~)
     }
+    @core.Expr::Return(value~, span~) =>
+      @core.Expr::Return(
+        value=value.map(fn(inner) {
+          monoify_expr(
+            inner, ctx, scope, current_spec, iterable_spec, local_types, scope_type_subst,
+          )
+        }),
+        span~,
+      )
     @core.Expr::Handle(body~, arms~, span~) => {
       let next_arms : Array[@core.MatchArm] = []
       for arm in arms {

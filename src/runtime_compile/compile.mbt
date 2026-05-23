@@ -439,6 +439,15 @@ fn rename_private_expr_refs(
       }
       @core.Expr::Continue(args=next, span~)
     }
+    @core.Expr::Return(value~, span~) =>
+      @core.Expr::Return(
+        value=match value {
+          Some(inner) =>
+            Some(rename_private_expr_refs(inner, scope, rename_map))
+          None => None
+        },
+        span~,
+      )
     @core.Expr::Yield(expr~, span~) =>
       @core.Expr::Yield(
         expr=rename_private_expr_refs(expr, scope, rename_map),
@@ -1284,6 +1293,19 @@ fn rename_private_type_ctor_expr_refs(
       }
       @core.Expr::Continue(args=next, span~)
     }
+    @core.Expr::Return(value~, span~) =>
+      @core.Expr::Return(
+        value=match value {
+          Some(inner) =>
+            Some(
+              rename_private_type_ctor_expr_refs(
+                inner, scope, type_rename_map, ctor_rename_map,
+              ),
+            )
+          None => None
+        },
+        span~,
+      )
     @core.Expr::Yield(expr~, span~) =>
       @core.Expr::Yield(
         expr=rename_private_type_ctor_expr_refs(

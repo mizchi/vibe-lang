@@ -541,6 +541,7 @@ fn expr_to_sexp(expr : @core.Expr, aliases : Map[String, @core.Ref]) -> String {
     }
     @core.Expr::Break(..) => "(break)"
     @core.Expr::Continue(..) => "(continue)"
+    @core.Expr::Return(..) => "(return)"
     @core.Expr::Loop(params~, body~, span~) => {
       let _ = span
       let buf = StringBuilder::new()

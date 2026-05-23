@@ -466,6 +466,14 @@ fn bundle_rewrite_alias_expr(
       }
       @core.Expr::Continue(args=next, span~)
     }
+    @core.Expr::Return(value~, span~) =>
+      @core.Expr::Return(
+        value=match value {
+          Some(inner) => Some(bundle_rewrite_alias_expr(inner, aliases, scope))
+          None => None
+        },
+        span~,
+      )
     @core.Expr::Yield(expr~, span~) =>
       @core.Expr::Yield(
         expr=bundle_rewrite_alias_expr(expr, aliases, scope),
@@ -1470,6 +1478,11 @@ fn module_expr_requires_preload_host_imports(expr : @core.Expr) -> Bool {
       }
       false
     }
+    @core.Expr::Return(value~, ..) =>
+      match value {
+        Some(inner) => module_expr_requires_preload_host_imports(inner)
+        None => false
+      }
     @core.Expr::Int(..)
     | @core.Expr::Float(..)
     | @core.Expr::Double(..)
@@ -2083,6 +2096,11 @@ fn bundle_collect_expr_binder_names(
     @core.Expr::Continue(args~, ..) =>
       for arg in args {
         bundle_collect_expr_binder_names(names, arg)
+      }
+    @core.Expr::Return(value~, ..) =>
+      match value {
+        Some(inner) => bundle_collect_expr_binder_names(names, inner)
+        None => ()
       }
     @core.Expr::Yield(expr=inner, ..) =>
       bundle_collect_expr_binder_names(names, inner)

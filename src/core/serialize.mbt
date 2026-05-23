@@ -437,6 +437,7 @@ fn serialize_expr_to(expr : Expr, buf : StringBuilder) -> Unit {
     }
     Expr::Break(..) => buf.write_string("{\"Break\":null}")
     Expr::Continue(..) => buf.write_string("{\"Continue\":null}")
+    Expr::Return(..) => buf.write_string("{\"Return\":null}")
     Expr::Loop(params~, body~, ..) => {
       buf.write_string("{\"Loop\":{\"body\":")
       serialize_module_to(body, buf)
