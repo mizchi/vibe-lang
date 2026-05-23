@@ -131,12 +131,13 @@ inputs. A real-world inflate would amortize this over many KB.
   type-checked as used. Probably the usage scanner only counts
   value-position references. Cosmetic but noisy.
 
-- **Empty-array literals**. There's no `[]: Array[Int]` form; vibe
-  needs `Array::slice([0], 0, 0)` (or an explicit one-element seed
-  + truncate). This is documented in the codebase but it's a paper cut
-  every time you build an accumulator. *(See `let empty_int_array = ()
-  -> Array[Int]` helpers in `huffman.vibe`, `inflate.vibe`, etc. —
-  that helper exists three times across this small library.)*
+- ~~**Empty-array literals**~~ — **retracted.** I'd assumed `[]`
+  required a `Array::slice([x], 0, 0)` workaround based on existing
+  helpers in `vibe/x/diff/`; turns out plain `let counts = []` works
+  fine when there's a `Array::push` constraint downstream (or a `let
+  xs: Array[T] = []` annotation). Removed the `empty_int_array`
+  helpers in a follow-up commit. The diff/markdown helpers are
+  presumably legacy from an earlier inference rule.
 
 - **No tuple destructuring inside `match` arms with side effects**.
   Wanted to write `let (litlen_t, dist_t) = if btype == 1 {
@@ -181,8 +182,10 @@ competitive with native zlib for hot paths.
 ## Open follow-ups (suggested issues)
 
 1. `mut` field syntax on structs (or first-class `Cell[T]` / `Ref[T]`).
-2. `[]: Array[Int]` empty-array literal sugar (eliminate
-   `Array::slice([x], 0, 0)` helpers).
+   Needs type-system soundness work to track unique writers safely.
+2. `return` statement for early-exit (currently must invert with a
+   `mut found = -1; while … && found < 0 { … }` pattern). Less
+   sweeping than #1; mainly parser + a control-flow-graph node.
 3. Quieten `deprecated function style` warning — it shouldn't take 8
    lines per occurrence.
 4. Type-only imports should count as "used" by the import-usage scanner.
