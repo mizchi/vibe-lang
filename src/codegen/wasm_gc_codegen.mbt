@@ -1168,6 +1168,46 @@ fn register_struct_types_gc(
 }
 
 ///|
+/// Try to compile a struct field assignment: `record.field = value` →
+/// `struct.set`. Returns true on success. Used by `Stmt::IndexAssign` when
+/// the index is a string literal naming a struct field. The struct itself
+/// must already be registered via `register_struct_types_gc`. The caller
+/// is responsible for the "field must be declared `mut`" policy — by the
+/// time we land here the typechecker has already approved the write.
+fn try_compile_struct_field_set_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  field_name : String,
+  record_expr : @core.Expr,
+  value_expr : @core.Expr,
+) -> Bool raise WasmGenError {
+  let record_kind = infer_expr_kind_gc(ctx, fctx, record_expr)
+  match record_kind {
+    GcValKind::Ref(type_idx) => {
+      for struct_name, struct_type_idx in ctx.named_struct_types {
+        if struct_type_idx == type_idx {
+          match ctx.named_struct_fields.get(struct_name) {
+            Some(field_names) =>
+              for i in 0..<field_names.length() {
+                if field_names[i] == field_name {
+                  compile_expr_gc(ctx, fctx, buf, record_expr)
+                  compile_expr_gc(ctx, fctx, buf, value_expr)
+                  emit_struct_set_gc(buf, type_idx, i)
+                  return true
+                }
+              }
+            None => ()
+          }
+        }
+      }
+      false
+    }
+    _ => false
+  }
+}
+
+///|
 /// Try to compile a struct field access: field_name(record_expr) → struct.get.
 /// Returns true if the access was successfully compiled, false otherwise.
 fn try_compile_struct_field_get_gc(
@@ -6688,8 +6728,21 @@ fn compile_expr_gc(
           if pos_args.length() != 2 {
             raise WasmGenError::Unsupported("__index arity")
           }
+          // Struct field access: `r.field` parses as `__index(r, "field")`.
+          // Try the struct path first; on miss fall through to the
+          // string / bytes / map / array cases below.
+          let struct_handled = match pos_args[1] {
+            @core.Expr::String(value=field_name, ..) =>
+              try_compile_struct_field_get_gc(
+                ctx, fctx, buf, field_name, pos_args[0],
+              )
+            _ => false
+          }
           let base_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
-          if base_kind == GcValKind::Ref(ctx.string_type) {
+          if struct_handled {
+            // already emitted
+            ()
+          } else if base_kind == GcValKind::Ref(ctx.string_type) {
             compile_string_char_code_at(
               ctx,
               fctx,
@@ -8885,16 +8938,28 @@ fn compile_stmt_gc(
       }
     }
     @core.Stmt::IndexAssign(target~, index~, value~, ..) => {
-      let base_kind = infer_expr_kind_gc(ctx, fctx, target)
-      let type_idx = gc_array_type_idx_from_kind(ctx, base_kind, "IndexAssign")
-      compile_expr_gc(ctx, fctx, buf, target)
-      compile_expr_gc(ctx, fctx, buf, index)
-      let idx_kind = infer_expr_kind_gc(ctx, fctx, index)
-      if idx_kind == GcValKind::I64 {
-        emit_i32_wrap_i64_gc(buf)
+      // Struct-field assignment `r.field = v` is parsed as
+      // IndexAssign(r, "field", v). Try the struct path first; on miss
+      // fall through to array/element-set.
+      let handled = match index {
+        @core.Expr::String(value=field_name, ..) =>
+          try_compile_struct_field_set_gc(
+            ctx, fctx, buf, field_name, target, value,
+          )
+        _ => false
       }
-      compile_expr_gc(ctx, fctx, buf, value)
-      emit_array_set_gc(buf, type_idx)
+      if !handled {
+        let base_kind = infer_expr_kind_gc(ctx, fctx, target)
+        let type_idx = gc_array_type_idx_from_kind(ctx, base_kind, "IndexAssign")
+        compile_expr_gc(ctx, fctx, buf, target)
+        compile_expr_gc(ctx, fctx, buf, index)
+        let idx_kind = infer_expr_kind_gc(ctx, fctx, index)
+        if idx_kind == GcValKind::I64 {
+          emit_i32_wrap_i64_gc(buf)
+        }
+        compile_expr_gc(ctx, fctx, buf, value)
+        emit_array_set_gc(buf, type_idx)
+      }
       if is_last {
         emit_i32_const_gc(buf, 0)
       }

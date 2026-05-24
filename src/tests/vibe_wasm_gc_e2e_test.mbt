@@ -772,3 +772,39 @@ test "wasm-gc e2e: return at function tail (equivalent to tail expr)" {
     #|twice(21)
   assert_gc_e2e(src, "return_tail", 42)
 }
+
+///|
+test "wasm-gc e2e: mut struct field — write then read" {
+  // ADR-0052: `mut` field becomes a wasm-gc struct.set / struct.get.
+  let src =
+    #|struct Counter {
+    #|  mut count: Int
+    #|}
+    #|let main: () -> Int = () -> {
+    #|  let c = Counter::{ count: 7 }
+    #|  c.count = 42
+    #|  c.count
+    #|}
+    #|main()
+  assert_gc_e2e(src, "mut_field_set_get", 42)
+}
+
+///|
+test "wasm-gc e2e: mut struct field — compound update" {
+  let src =
+    #|struct Counter {
+    #|  mut count: Int
+    #|}
+    #|let bump = (c: Counter) -> Unit {
+    #|  c.count = c.count + 1
+    #|}
+    #|let main: () -> Int = () -> {
+    #|  let c = Counter::{ count: 10 }
+    #|  bump(c)
+    #|  bump(c)
+    #|  bump(c)
+    #|  c.count
+    #|}
+    #|main()
+  assert_gc_e2e(src, "mut_field_compound", 13)
+}
