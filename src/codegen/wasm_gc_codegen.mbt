@@ -9346,6 +9346,16 @@ fn build_module_gc(
 
 ///|
 pub fn emit_module_wasm_gc(ast : @core.Module) -> Bytes raise WasmGenError {
+  // Mirror the linear backend's prologue: strip type-assertion blocks
+  // first (so the AST has bare Int/Bool literals where the user wrote
+  // `let c: Int = 100`), then fold pure top-level expressions
+  // (`let mask32 = __bit_or(__lshift(...), 0xFFFF)`, etc.) into Int /
+  // Bool literals so they can be lifted to wasm globals and referenced
+  // from inside other top-level functions. Without these passes, the
+  // value stays a Call expression and any function body that references
+  // it (e.g. `read_word` in sha1) becomes a closure with a free var
+  // the gc backend can't resolve → "unknown name: mask32".
+  let ast = static_fold_module(strip_type_assert_module(ast))
   let ctx = GcCodegenCtx::new()
   scan_enum_defs_gc(ctx, ast)
   register_struct_types_gc(ctx, ast)
@@ -9365,7 +9375,12 @@ pub fn emit_module_wasm_gc(ast : @core.Module) -> Bytes raise WasmGenError {
       @core.Stmt::Let(name~, expr~, ..)
       | @core.Stmt::ExportLet(name~, expr~, ..)
       | @core.Stmt::InternalExportLet(name~, expr~, ..) =>
-        match expr {
+        // unwrap_type_assert_block matters: `let c: Int = 100` is wrapped
+        // by the parser in a type-annotation block. Without unwrapping
+        // the match below sees a Block, never an Int literal, so the
+        // global gets silently dropped — leaving downstream functions
+        // that reference it with an "unknown name" error.
+        match unwrap_type_assert_block(expr) {
           @core.Expr::Int(value~, ..) => {
             ctx.global_consts[name] = (global_idx, GcValKind::I64)
             global_init_values.push((GcValKind::I64, value))
@@ -9381,7 +9396,7 @@ pub fn emit_module_wasm_gc(ast : @core.Module) -> Bytes raise WasmGenError {
           _ => ()
         }
       @core.Stmt::LetMut(name~, expr~, ..) =>
-        match expr {
+        match unwrap_type_assert_block(expr) {
           @core.Expr::Int(value~, ..) => {
             ctx.global_consts[name] = (global_idx, GcValKind::I64)
             global_init_values.push((GcValKind::I64, value))

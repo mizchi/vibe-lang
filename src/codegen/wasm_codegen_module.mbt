@@ -2243,7 +2243,7 @@ fn strip_type_assert_stmt(stmt : @core.Stmt) -> @core.Stmt {
 
 ///|
 /// Recursively strip type-assertion identity blocks from a module/block.
-fn strip_type_assert_module(ast : @core.Module) -> @core.Module {
+pub fn strip_type_assert_module(ast : @core.Module) -> @core.Module {
   let stmts : Array[@core.Stmt] = []
   for stmt in ast.stmts {
     stmts.push(strip_type_assert_stmt(stmt))
@@ -2566,6 +2566,58 @@ fn static_fold_builtin_call(
         match (args[0], args[1]) {
           (StaticFoldValue::Bool(value=left), StaticFoldValue::Bool(value=right)
           ) => Some(StaticFoldValue::Bool(value=left || right))
+          _ => None
+        }
+      } else {
+        None
+      }
+    "__bit_or" | "bit_or" =>
+      if args.length() == 2 {
+        match (args[0], args[1]) {
+          (StaticFoldValue::Int(value=left), StaticFoldValue::Int(value=right)) =>
+            Some(StaticFoldValue::Int(value=left.lor(right)))
+          _ => None
+        }
+      } else {
+        None
+      }
+    "__bit_and" | "bit_and" =>
+      if args.length() == 2 {
+        match (args[0], args[1]) {
+          (StaticFoldValue::Int(value=left), StaticFoldValue::Int(value=right)) =>
+            Some(StaticFoldValue::Int(value=left.land(right)))
+          _ => None
+        }
+      } else {
+        None
+      }
+    "__bit_xor" | "bit_xor" =>
+      if args.length() == 2 {
+        match (args[0], args[1]) {
+          (StaticFoldValue::Int(value=left), StaticFoldValue::Int(value=right)) =>
+            Some(StaticFoldValue::Int(value=left.lxor(right)))
+          _ => None
+        }
+      } else {
+        None
+      }
+    "__lshift" | "lshift" =>
+      if args.length() == 2 {
+        match (args[0], args[1]) {
+          (StaticFoldValue::Int(value=left), StaticFoldValue::Int(value=right)) =>
+            Some(StaticFoldValue::Int(value=left.lsl(right.to_int())))
+          _ => None
+        }
+      } else {
+        None
+      }
+    "__rshift" | "rshift" =>
+      if args.length() == 2 {
+        match (args[0], args[1]) {
+          (StaticFoldValue::Int(value=left), StaticFoldValue::Int(value=right)) =>
+            // Arithmetic shift right (sign-extending) — matches the
+            // vibe `>>` operator semantics (ADR-0006).
+            Some(StaticFoldValue::Int(value=left.asr(right.to_int())))
           _ => None
         }
       } else {
@@ -3168,7 +3220,7 @@ fn strip_unused_top_level_static_bindings(
 }
 
 ///|
-fn static_fold_module(ast : @core.Module) -> @core.Module {
+pub fn static_fold_module(ast : @core.Module) -> @core.Module {
   let env : Map[String, StaticFoldValue] = {}
   let candidates : Map[String, Bool] = {}
   let stmts : Array[@core.Stmt] = []

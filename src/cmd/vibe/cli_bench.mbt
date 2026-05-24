@@ -760,6 +760,12 @@ fn with_default_bench_wasm_flags(flags : Array[String]) -> Array[String] {
   if !has_wasm_feature_flag(out, "gc") {
     out.push("gc=y")
   }
+  // wasm-gc closures use typed function refs (`ref.func` / `call_ref`)
+  // which require the function-references proposal. Enable by default
+  // for the same reason as `gc=y`: harmless for linear-only modules.
+  if !has_wasm_feature_flag(out, "function-references") {
+    out.push("function-references=y")
+  }
   out
 }
 
