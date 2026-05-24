@@ -754,6 +754,12 @@ fn with_default_bench_wasm_flags(flags : Array[String]) -> Array[String] {
   if !has_wasm_feature_flag(out, "exceptions") {
     out.push("exceptions=y")
   }
+  // Enable wasm-gc by default so the same runner can execute either the
+  // linear-memory or the GC backend output. wasmtime ignores the flag
+  // when the module doesn't use GC types.
+  if !has_wasm_feature_flag(out, "gc") {
+    out.push("gc=y")
+  }
   out
 }
 

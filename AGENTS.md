@@ -74,12 +74,42 @@ moon doc 'String::*rev*'  # Glob pattern search
 - **`~` (bit_not) 非対応**: `x ^ mask` で代用
 - **ビット演算子**: `&`, `|`, `^`, `<<`, `>>` は使用可能
 
+## 実装上の Gotcha (MoonBit ホスト側)
+
+- **MoonBit `String <` は length-first**: `"buf" < "acc_bits"` が `true` になる
+  (長さ比較が先、その後 char 比較)。**lexicographic な順序が必要なら自前で
+  char-by-char 比較する関数を書くこと**。compiler/codegen 内で構造体の
+  field を sort する箇所 (`sort_record_fields_expr`, `register_struct_types_gc`
+  等) でこの落とし穴で ADR-0052 実装中に wasm-gc cast-failure を生んだ実例
+  あり (`src/codegen/wasm_codegen_data.mbt::record_field_name_lt` 参照)。
+- **`is_mut~` のような短縮ラベル記法は struct literal 内で使えないことがある**:
+  `StructField::{ is_mut~, ... }` が parse error になる場面があった。
+  保守的に `is_mut: is_mut` と書くのが無難。
+- **`/* */` C-style block comment 非対応**: MoonBit は `//` line comment のみ。
+  式の中にコメントを挟みたい場合は別行に分ける。
+
 ## Tooling
 
 - `moon fmt` is used to format your code properly.
 - `moon info` is used to update the generated interface of the package.
 - `moon test` to check the test is passed. Use `moon test --update` to update snapshots.
 - `moon check` to check the code is linted correctly.
+
+### `vibe test` backend 切り替え
+
+`vibe test` は既定で linear-memory backend を使う (`vibe build --release`
+と同じ codegen path)。**`VIBE_TEST_BACKEND=gc` を設定すると wasm-gc
+backend に切り替わる** — HTTP/FS host imports を必要としない pure な
+test に限る。wasm-gc 専用機能 (ADR-0052 の `mut` struct field 等) を
+test レベルで踏みたいときに使う。
+
+```bash
+vibe test foo_test.vibe                       # default: linear
+VIBE_TEST_BACKEND=gc vibe test foo_test.vibe  # opt-in: wasm-gc
+```
+
+wasm-gc には HOF / Iterator 系の codegen ギャップ (`src/tests/vibe_wasm_gc_e2e_test.mbt`
+冒頭コメント参照) があるため、すべての test が gc で通るわけではない点に注意。
 
 ## Task Management
 
