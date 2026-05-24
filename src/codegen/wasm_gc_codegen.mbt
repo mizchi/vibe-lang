@@ -9199,6 +9199,11 @@ fn build_module_gc(
   funcs : Array[GcWasmFunc],
   run_index : Int,
   global_init_values? : Array[(GcValKind, Int64)] = [],
+  // Additional user-declared exports (e.g. `_bench_run`, custom-named
+  // entry points). Each name is looked up in `ctx.func_indices` and
+  // emitted in the export section alongside the synthesized `_start`.
+  // Empty for tests/run/build that only need `_start`.
+  user_exports? : Array[String] = [],
 ) -> Bytes {
   let buf = GcByteBuf::new()
   buf.push(0x00)
@@ -9277,14 +9282,37 @@ fn build_module_gc(
     write_section_gc(buf, 6, global_sec.to_array())
   }
   let export_sec = GcByteBuf::new()
-  write_u32_leb_gc(export_sec, 1)
-  let name = "_start"
-  write_u32_leb_gc(export_sec, name.length())
-  for c in name {
-    export_sec.push(c.to_int())
+  // Collect (name, func_index) pairs. Default `_start` points at the
+  // synthesized module run wrapper (which executes any top-level
+  // statements). If the user wrote `export let _start = ...` themselves,
+  // their function takes over `_start` — the run wrapper is unused in
+  // that case (which is fine: bench / test source emits its work into
+  // `_start` directly and has no top-level statements).
+  let export_entries : Array[(String, Int)] = []
+  let user_start_idx = ctx.func_indices.get("_start")
+  match user_start_idx {
+    Some(idx) => export_entries.push(("_start", idx))
+    None => export_entries.push(("_start", run_index))
   }
-  export_sec.push(0x00)
-  write_u32_leb_gc(export_sec, run_index)
+  for export_name in user_exports {
+    if export_name == "_start" {
+      continue // already pushed above
+    }
+    match ctx.func_indices.get(export_name) {
+      Some(idx) => export_entries.push((export_name, idx))
+      None => () // user named a non-function export (e.g. a top-level constant) — skip
+    }
+  }
+  write_u32_leb_gc(export_sec, export_entries.length())
+  for entry in export_entries {
+    let (name, idx) = entry
+    write_u32_leb_gc(export_sec, name.length())
+    for c in name {
+      export_sec.push(c.to_int())
+    }
+    export_sec.push(0x00)
+    write_u32_leb_gc(export_sec, idx)
+  }
   write_section_gc(buf, 7, export_sec.to_array())
   // Element section: declare closure function refs for ref.func
   if ctx.closure_lifted_funcs.length() > 0 {
@@ -9443,5 +9471,23 @@ pub fn emit_module_wasm_gc(ast : @core.Module) -> Bytes raise WasmGenError {
   for lf in ctx.closure_lifted_funcs {
     wasm_funcs.push(lf)
   }
-  build_module_gc(ctx, wasm_funcs, run_index, global_init_values~)
+  // Collect user `export let` function names so they appear in the wasm
+  // export section (otherwise wasmtime --invoke can only call `_start`).
+  // Required for `vibe bench --backend=gc` which invokes `_bench_run`,
+  // and for any future entrypoint customization.
+  let user_exports : Array[String] = []
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::ExportLet(name~, expr~, ..)
+      | @core.Stmt::InternalExportLet(name~, expr~, ..) =>
+        match unwrap_type_assert_block(expr) {
+          @core.Expr::Fn(..) => user_exports.push(name)
+          _ => ()
+        }
+      _ => ()
+    }
+  }
+  build_module_gc(
+    ctx, wasm_funcs, run_index, global_init_values~, user_exports~,
+  )
 }

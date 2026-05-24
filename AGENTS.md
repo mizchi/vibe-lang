@@ -95,21 +95,29 @@ moon doc 'String::*rev*'  # Glob pattern search
 - `moon test` to check the test is passed. Use `moon test --update` to update snapshots.
 - `moon check` to check the code is linted correctly.
 
-### `vibe test` backend 切り替え
+### `vibe test` / `vibe bench` backend 切り替え
 
-`vibe test` は既定で linear-memory backend を使う (`vibe build --release`
-と同じ codegen path)。**`VIBE_TEST_BACKEND=gc` を設定すると wasm-gc
+`vibe test` / `vibe bench` は既定で linear-memory backend を使う
+(`vibe build --release` と同じ codegen path)。
+
+**`VIBE_TEST_BACKEND=gc` / `VIBE_BENCH_BACKEND=gc` を設定すると wasm-gc
 backend に切り替わる** — HTTP/FS host imports を必要としない pure な
-test に限る。wasm-gc 専用機能 (ADR-0052 の `mut` struct field 等) を
-test レベルで踏みたいときに使う。
+test/bench に限る。wasm-gc 専用機能 (ADR-0052 の `mut` struct field 等)
+を test/bench レベルで踏みたいときに使う。
 
 ```bash
-vibe test foo_test.vibe                       # default: linear
-VIBE_TEST_BACKEND=gc vibe test foo_test.vibe  # opt-in: wasm-gc
+vibe test foo_test.vibe                        # default: linear
+VIBE_TEST_BACKEND=gc vibe test foo_test.vibe   # opt-in: wasm-gc
+
+vibe bench foo_bench.vibe                       # default: linear
+VIBE_BENCH_BACKEND=gc vibe bench foo_bench.vibe # opt-in: wasm-gc
 ```
 
 wasm-gc には HOF / Iterator 系の codegen ギャップ (`src/tests/vibe_wasm_gc_e2e_test.mbt`
-冒頭コメント参照) があるため、すべての test が gc で通るわけではない点に注意。
+冒頭コメント参照) があるため、すべての test/bench が gc で通るわけでは
+ない点に注意 (例: sha1 bench は `read_word` 未対応で fail、zlib inflate の
+LZ77 backreference 経路は trap)。bench cache はモードに backend を
+含めるので、`linear → gc` の切り替えで自動的に再コンパイルされる。
 
 ## Task Management
 
