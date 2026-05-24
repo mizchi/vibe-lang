@@ -3127,6 +3127,77 @@ fn compile_builtin_collection(
       // __set_index(arr, idx, value) -> arr[idx] = value; return value
       // This is used by index-assignment desugaring (e.g. cursor[0] = x).
       let pos_args = extract_positional_exprs_with_arity(args, "__set_index", 3)
+      // ADR-0052: when idx is a string literal, this is a struct field
+      // assignment `r.field = value`. Use the same (name_ptr, value)
+      // pair layout that `__index` reads from to do the linear search
+      // and write the value slot in-place.
+      match pos_args[1] {
+        @core.Expr::String(value=field_name, ..) => {
+          let r_ptr = alloc_temp_local(ctx)
+          let r_len = alloc_temp_local(ctx)
+          let r_loop_i = alloc_temp_local(ctx)
+          let r_entry_name = alloc_temp_local(ctx)
+          let r_field_ptr = alloc_temp_local(ctx)
+          let r_value = alloc_temp_local_with_kind(ctx, ValueKind::I64)
+          let field_ptr = ctx.strings.intern(field_name)
+          // Stash value first (so we can both write the slot and return it).
+          compile_expr(ctx, buf, pos_args[2])
+          emit_local_set(buf, r_value)
+          // Resolve record pointer.
+          compile_expr_i32(ctx, buf, pos_args[0])
+          emit_untag_ptr_i32(buf)
+          emit_local_set(buf, r_ptr)
+          emit_local_get(buf, r_ptr)
+          emit_i32_load(buf, 4)
+          emit_local_set(buf, r_len)
+          emit_i32_const_raw(buf, 0)
+          emit_local_set(buf, r_loop_i)
+          emit_i32_const_raw(buf, field_ptr)
+          emit_local_set(buf, r_field_ptr)
+          buf.push((3).to_byte()) // loop
+          buf.push((64).to_byte()) // void
+          emit_local_get(buf, r_loop_i)
+          emit_local_get(buf, r_len)
+          emit_i32_lt_s(buf)
+          buf.push((4).to_byte()) // if (i < len)
+          buf.push((64).to_byte()) // void
+          emit_local_get(buf, r_ptr)
+          emit_local_get(buf, r_loop_i)
+          emit_i32_const_raw(buf, 3)
+          emit_i32_shl(buf)
+          emit_i32_add(buf)
+          emit_i32_load(buf, 8) // name_ptr
+          emit_local_set(buf, r_entry_name)
+          emit_non_js_string_ptr_equals_i32(
+            ctx, buf, r_entry_name, r_field_ptr,
+          )
+          buf.push((4).to_byte()) // if (name matches)
+          buf.push((64).to_byte()) // void
+          // store value at obj_ptr + loop_i * 8 + 12
+          emit_local_get(buf, r_ptr)
+          emit_local_get(buf, r_loop_i)
+          emit_i32_const_raw(buf, 3)
+          emit_i32_shl(buf)
+          emit_i32_add(buf)
+          emit_local_get(buf, r_value)
+          emit_i32_wrap_i64(buf)
+          emit_i32_store(buf, 12)
+          buf.push((11).to_byte()) // end if (name matches)
+          emit_local_get(buf, r_loop_i)
+          emit_i32_const_raw(buf, 1)
+          emit_i32_add(buf)
+          emit_local_set(buf, r_loop_i)
+          buf.push((12).to_byte()) // br
+          write_u32_leb(buf, 1) // to loop
+          buf.push((11).to_byte()) // end if (i < len)
+          buf.push((11).to_byte()) // end loop
+          // Leave the value on the stack (matches array path which
+          // also returns the assigned value, caller drops it).
+          emit_local_get(buf, r_value)
+          return
+        }
+        _ => ()
+      }
       let ptr_local = alloc_temp_local(ctx)
       let idx_local = alloc_temp_local(ctx)
       let value_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)

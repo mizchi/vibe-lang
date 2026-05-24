@@ -808,3 +808,27 @@ test "wasm-gc e2e: mut struct field — compound update" {
     #|main()
   assert_gc_e2e(src, "mut_field_compound", 13)
 }
+
+///|
+test "wasm-gc e2e: ADR-0052 — non-mut field assignment is rejected" {
+  // The checker must reject `r.field = e` when `field` was not
+  // declared `mut`. We use the e2e harness's compile path (which
+  // funnels through the checker) and assert that compilation fails.
+  let db = VibeDb::new()
+  let src =
+    #|struct Counter {
+    #|  count: Int
+    #|}
+    #|let main: () -> Int = () -> {
+    #|  let c = Counter::{ count: 0 }
+    #|  c.count = 5
+    #|  c.count
+    #|}
+    #|main()
+  db.set_source("main", src)
+  let result = try? @runtime_compile.compile_module_wasm_gc(db, "main")
+  match result {
+    Ok(_) => fail("expected compile error for non-mut field assignment")
+    Err(_) => () // expected
+  }
+}

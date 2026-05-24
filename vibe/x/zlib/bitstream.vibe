@@ -2,30 +2,17 @@
 
 // Mutable bit-stream reader (LSB-first, the DEFLATE convention).
 //
-// vibe structs don't have `mut` fields, so position is held in a
-// 2-element `Array[Int]` ([byte_pos, bit_pos]). Mutation through
-// Array::set lets us pass the reader around like a handle.
+// Uses `mut` struct fields (ADR-0052). The reader is a handle that
+// callers pass around; the cursor advances by direct field assignment.
 
 export struct BitReader {
   buf: Bytes;
-  state: Array[Int]
+  mut byte_pos: Int;
+  mut bit_pos: Int
 }
 
 export let new_reader = (buf: Bytes) -> BitReader {
-  BitReader::{ buf: buf, state: [0, 0] }
-}
-
-let reader_byte_pos = (r: BitReader) -> Int {
-  Array::get(r.state, 0)
-}
-
-let reader_bit_pos = (r: BitReader) -> Int {
-  Array::get(r.state, 1)
-}
-
-let set_reader_pos = (r: BitReader, byte_pos: Int, bit_pos: Int) -> Unit {
-  Array::set(r.state, 0, byte_pos)
-  Array::set(r.state, 1, bit_pos)
+  BitReader::{ buf: buf, byte_pos: 0, bit_pos: 0 }
 }
 
 // Read `n` bits (n <= 24), advancing the cursor. Throws on EOF.
@@ -33,8 +20,8 @@ export let read_bits = (r: BitReader, n: Int) -> Int with { Error } {
   let mut value = 0
   let mut shift = 0
   let mut remaining = n
-  let mut bp = reader_byte_pos(r)
-  let mut bi = reader_bit_pos(r)
+  let mut bp = r.byte_pos
+  let mut bi = r.bit_pos
   let buf_len = Bytes::length(r.buf)
   while remaining > 0 {
     if bp >= buf_len {
@@ -53,60 +40,50 @@ export let read_bits = (r: BitReader, n: Int) -> Int with { Error } {
       bp = bp + 1
     }
   }
-  set_reader_pos(r, bp, bi)
+  r.byte_pos = bp
+  r.bit_pos = bi
   value
 }
 
 // Skip remaining bits in current byte; next read starts at the next byte.
 export let align_to_byte = (r: BitReader) -> Unit {
-  if reader_bit_pos(r) != 0 {
-    set_reader_pos(r, reader_byte_pos(r) + 1, 0)
+  if r.bit_pos != 0 {
+    r.byte_pos = r.byte_pos + 1
+    r.bit_pos = 0
   }
 }
 
 // Read one whole byte (must be byte-aligned).
 export let read_byte = (r: BitReader) -> Int with { Error } {
-  if reader_bit_pos(r) != 0 {
+  if r.bit_pos != 0 {
     throw("bitstream: read_byte requires byte alignment")
   }
-  let bp = reader_byte_pos(r)
+  let bp = r.byte_pos
   if bp >= Bytes::length(r.buf) {
     throw("bitstream: EOF on read_byte")
   }
-  set_reader_pos(r, bp + 1, 0)
+  r.byte_pos = bp + 1
   Bytes::get(r.buf, bp)
 }
 
 //# Writer
 
-// Mutable bit-stream writer (LSB-first).
-// `state` holds [acc, acc_bits].
+// Mutable bit-stream writer (LSB-first). Uses `mut` fields for the
+// bit accumulator + bit count (ADR-0052).
 
 export struct BitWriter {
   buf: Bytes;
-  state: Array[Int]
+  mut acc: Int;
+  mut acc_bits: Int
 }
 
 export let new_writer = () -> BitWriter {
-  BitWriter::{ buf: Bytes::new(), state: [0, 0] }
-}
-
-let writer_acc = (w: BitWriter) -> Int {
-  Array::get(w.state, 0)
-}
-
-let writer_acc_bits = (w: BitWriter) -> Int {
-  Array::get(w.state, 1)
-}
-
-let set_writer_state = (w: BitWriter, acc: Int, acc_bits: Int) -> Unit {
-  Array::set(w.state, 0, acc)
-  Array::set(w.state, 1, acc_bits)
+  BitWriter::{ buf: Bytes::new(), acc: 0, acc_bits: 0 }
 }
 
 export let write_bits = (w: BitWriter, value: Int, n: Int) -> Unit {
-  let mut acc = writer_acc(w)
-  let mut acc_bits = writer_acc_bits(w)
+  let mut acc = w.acc
+  let mut acc_bits = w.acc_bits
   acc = acc | ((value & ((1 << n) - 1)) << acc_bits)
   acc_bits = acc_bits + n
   while acc_bits >= 8 {
@@ -114,15 +91,16 @@ export let write_bits = (w: BitWriter, value: Int, n: Int) -> Unit {
     acc = (acc >> 8) & 0xFFFFFF
     acc_bits = acc_bits - 8
   }
-  set_writer_state(w, acc, acc_bits)
+  w.acc = acc
+  w.acc_bits = acc_bits
 }
 
 // Flush any partial byte (pad with zero bits) and align to byte boundary.
 export let flush_to_byte = (w: BitWriter) -> Unit {
-  let acc_bits = writer_acc_bits(w)
-  if acc_bits > 0 {
-    Bytes::push(w.buf, writer_acc(w) & 0xFF)
-    set_writer_state(w, 0, 0)
+  if w.acc_bits > 0 {
+    Bytes::push(w.buf, w.acc & 0xFF)
+    w.acc = 0
+    w.acc_bits = 0
   }
 }
 

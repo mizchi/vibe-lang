@@ -1,7 +1,7 @@
 # ADR-0052: struct field の `mut` 修飾子
 
 - Date: 2026-05-23
-- Status: proposed
+- Status: accepted (Phase 1 完了)
 - Related: ADR-0017 (let mut / Ref[T]), ADR-0021 (Mut effect handler),
   ADR-0004 (content-addressed modules), ADR-0040 (checker/codegen contract)
 
@@ -123,13 +123,35 @@ Frontend desugar pass (`src/frontend/desugar.mbt`) で:
 
 ### Phase
 
-- **Phase 1** (本 ADR): syntax + desugar + assignment 経路。escape 分析なし。
+- **Phase 1** (本 ADR): syntax + checker (非 mut field assignment は error) +
+  両 backend codegen (wasm-gc は `struct.set`、linear は record pair の
+  値スロット上書き)。escape 分析なし。
 - **Phase 2** (別 ADR): ADR-0017 の `state_local` effect 区分が実装された
   ときに `mut` field を持つ struct を `state_local` に分類する。content-
   address の同一性は `pure` / `state_local` を決定的とする既存方針と整合。
 - **Phase 3** (別 ADR): mut field の参照 escape を検査する soundness 強化。
   ただし `Array[T]` field との一貫した制約として導入する (本 ADR の sugar
   だけ厳しくしない)。
+
+### 実装メモ (Phase 1 完了時点)
+
+- 採用は最終的に「Array[T] sugar」ではなく **両 backend で native struct
+  mutation** に落ち着いた。
+  - **wasm-gc**: `try_compile_struct_field_set_gc` / `try_compile_struct_field_get_gc`
+    を `__index` / IndexAssign の string-literal case で呼ぶ。
+    付随して `sort_record_fields_expr` の lex sort バグを修正
+    (MoonBit `String <` が length-first だったため named struct と
+    literal の anonymous 型が dedupe で別物になり cast failure を吐いて
+    いた; `record_field_name_lt` で char-by-char に統一)。
+  - **linear**: `__set_index` の string-literal case で、`__index` と
+    同じ (name_ptr, value) ペアレイアウトを線形検索して値スロットを
+    in-place 上書き。`emit_i32_store` で wasm linear memory に書き戻す。
+- Checker は `core.StructField.is_mut` を `checker.StructFieldDef.is_mut`
+  に伝播し、`Stmt::IndexAssign` (typecheck_stmts.mbt と typecheck_expr.mbt
+  の両方) で string-literal index の場合に struct を引いて mut チェックを
+  実行。
+- Content-address hash (`structural_hash`) は `is_mut` を folding する
+  ので、`struct S { mut x: T }` と `struct S { x: T }` は別 hash になる。
 
 ## Consequences
 

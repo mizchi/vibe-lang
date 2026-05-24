@@ -1957,10 +1957,42 @@ fn type_block(
       }
       @core.Stmt::IndexAssign(target~, index~, value~, span~) => {
         // Type check target[index] = value
-        let _ = type_expr_eff(scope_env, target, aliases, effects, allow_effect)
+        let target_ty = type_expr_eff(
+          scope_env, target, aliases, effects, allow_effect,
+        )
         let _ = type_expr_eff(scope_env, index, aliases, effects, allow_effect)
         let _ = type_expr_eff(scope_env, value, aliases, effects, allow_effect)
-        let _ = span
+        // ADR-0052: reject `r.field = e` when field isn't `mut`.
+        match index {
+          @core.Expr::String(value=field_name, ..) => {
+            let resolved = resolve_type(scope_env, target_ty)
+            match resolved {
+              @core.Type::Named(name~, ..) =>
+                match scope_env.struct_defs.get(name) {
+                  Some(struct_def) =>
+                    match struct_def.get_field(field_name) {
+                      Some(field) =>
+                        if !field.is_mut {
+                          raise TypeError::BadCall(
+                            message="cannot assign to immutable field `" +
+                            field_name +
+                            "` of struct `" +
+                            name +
+                            "` — declare the field as `mut " +
+                            field_name +
+                            ": ...` to allow assignment (ADR-0052)",
+                            span~,
+                          )
+                        }
+                      None => ()
+                    }
+                  None => ()
+                }
+              _ => ()
+            }
+          }
+          _ => ()
+        }
         last = @core.Type::Unit
       }
       @core.Stmt::StructDef(name~, params~, fields~, span~) => {
