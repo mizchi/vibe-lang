@@ -1026,6 +1026,9 @@ fn serialize_struct_fields_to(
     serialize_string_to(f.name, buf)
     buf.write_string(",\"ty\":")
     serialize_type_to(f.ty, buf)
+    if f.is_mut {
+      buf.write_string(",\"is_mut\":true")
+    }
     buf.write_char('}')
   }
   buf.write_char(']')

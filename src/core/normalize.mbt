@@ -455,7 +455,16 @@ fn normalize_struct_fields(fields : Array[StructField]) -> Array[StructField] {
   let out : Array[StructField] = []
   let zero_span = Span::{ start: 0, end: 0 }
   for field in fields {
-    out.push(StructField::{ name: field.name, ty: field.ty, span: zero_span })
+    // Preserve `is_mut` — it's part of the struct's structural identity
+    // (ADR-0052). Span is stripped for content-address stability.
+    out.push(
+      StructField::{
+        name: field.name,
+        ty: field.ty,
+        is_mut: field.is_mut,
+        span: zero_span,
+      },
+    )
   }
   out
 }

@@ -666,6 +666,10 @@ fn LoopParam::structural_hash(self : LoopParam) -> Int {
 fn StructField::structural_hash(self : StructField) -> Int {
   let mut h = self.name.hash()
   h = combine_hash(h, self.ty.structural_hash())
+  // Fold `mut` into the structural identity (ADR-0052) so that a
+  // struct with `mut x: T` hashes differently from `x: T`.
+  // 0x4d757421 = "Mut!" in ASCII.
+  h = combine_hash(h, if self.is_mut { 0x4d757421 } else { 0 })
   h
 }
 

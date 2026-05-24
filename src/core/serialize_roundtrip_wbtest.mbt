@@ -1043,8 +1043,8 @@ test "roundtrip: struct def" {
         name="Point",
         params=["T"],
         fields=[
-          StructField::{ name: "x", ty: Type::Param("T"), span: zero_span() },
-          StructField::{ name: "y", ty: Type::Param("T"), span: zero_span() },
+          StructField::{ name: "x", ty: Type::Param("T"), is_mut: false, span: zero_span() },
+          StructField::{ name: "y", ty: Type::Param("T"), is_mut: false, span: zero_span() },
         ],
         span=zero_span(),
       ),
@@ -1062,9 +1062,9 @@ test "roundtrip: export struct def" {
         name="Color",
         params=[],
         fields=[
-          StructField::{ name: "r", ty: Type::Int, span: zero_span() },
-          StructField::{ name: "g", ty: Type::Int, span: zero_span() },
-          StructField::{ name: "b", ty: Type::Int, span: zero_span() },
+          StructField::{ name: "r", ty: Type::Int, is_mut: false, span: zero_span() },
+          StructField::{ name: "g", ty: Type::Int, is_mut: false, span: zero_span() },
+          StructField::{ name: "b", ty: Type::Int, is_mut: false, span: zero_span() },
         ],
         span=zero_span(),
       ),

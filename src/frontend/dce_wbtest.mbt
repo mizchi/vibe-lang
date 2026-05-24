@@ -481,6 +481,7 @@ test "dce keeps TypeAlias when referenced from reachable StructDef field" {
           @core.StructField::{
             name: "id",
             ty: @core.Type::Named(name="UserId", args=[]),
+            is_mut: false,
             span: dce_test_span(),
           },
         ],

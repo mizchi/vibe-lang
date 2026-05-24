@@ -129,6 +129,12 @@ pub(all) struct TypeCtor {
 pub(all) struct StructField {
   name : String
   ty : Type
+  /// When true the field was declared `mut name: T`. Per ADR-0052 this is
+  /// pure surface syntax that frontend lowering rewrites to a length-1
+  /// `Array[T]` field; we keep the flag through the typechecker so that
+  /// "assignment to non-mut field" can be rejected with the same diagnostic
+  /// as `let mut`.
+  is_mut : Bool
   span : Span
 } derive(Debug, Eq)
 
