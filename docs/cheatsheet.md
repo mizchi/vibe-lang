@@ -43,6 +43,25 @@ let y = {             // mutable is local/block-scoped
 }
 ```
 
+### Choosing a mutation style
+
+vibe has 5 ways to express mutable state. Pick the simplest one that
+covers your scope:
+
+| Want | Use | Notes |
+|---|---|---|
+| Local counter, accumulator | `let mut x = ...` | block-scoped; cannot escape the function via async/spawn (ADR-0017) |
+| Growable buffer (bytes / chars) | `Bytes` / `String` | immutable binding, mutable interior |
+| Growable array | `ArrayBuilder` → `Array::from_array_builder` | preferred over `Array::push` on `Array` |
+| Mutable cursor in a struct | `struct S { mut field: T }` + `r.field = v` | ADR-0052; same responsibility model as `Array[T]` field |
+| Cross-call / handler-mediated state | `effect Mut { ... } + handle ... with Mut` | ADR-0021; tail-resumptive is zero-cost |
+
+Anti-patterns:
+- `Array::push(arr, ...)` on a plain `Array` — semantics differ
+  per-backend (wasm-gc local-rebinds via best-effort, linear mutates
+  in-place); prefer `ArrayBuilder` for any non-trivial accumulation
+- `Ref[T]` — historically abandoned (ADR-0017), use the table above
+
 ## Functions
 
 ```vibe
