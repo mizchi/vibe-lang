@@ -9564,6 +9564,11 @@ fn build_module_gc(
   // emitted in the export section alongside the synthesized `_start`.
   // Empty for tests/run/build that only need `_start`.
   user_exports? : Array[String] = [],
+  // Function names parallel to `funcs[]` for the wasm `name` custom
+  // section. Empty disables emission. Improves stack-trace readability
+  // in `wasmtime --profile=guest` (and in browser devtools); without
+  // it every frame shows as `<wasm function N>`.
+  func_names? : Array[String] = [],
 ) -> Bytes {
   let buf = GcByteBuf::new()
   buf.push(0x00)
@@ -9765,7 +9770,56 @@ fn build_module_gc(
     code_sec.extend_buf(func_body)
   }
   write_section_gc(buf, 10, code_sec.to_array())
+  // Custom "name" section (after data per convention) — improves
+  // profiler / devtools readability so frames render with their vibe
+  // identifier instead of `<wasm function N>`. Subsection 1 is the
+  // function-name map; we don't emit subsection 2 (locals) yet
+  // because the wasm-gc backend allocates locals without keeping the
+  // source identifiers around.
+  if func_names.length() > 0 {
+    let function_names_sub = GcByteBuf::new()
+    // namemap = vec(naming)
+    let mut entry_count = 0
+    for n in func_names {
+      if n.length() > 0 {
+        entry_count += 1
+      }
+    }
+    if entry_count > 0 {
+      write_u32_leb_gc(function_names_sub, entry_count)
+      for i in 0..<func_names.length() {
+        let n = func_names[i]
+        if n.length() == 0 {
+          continue
+        }
+        write_u32_leb_gc(function_names_sub, i)
+        write_name_string_gc(function_names_sub, n)
+      }
+      let name_sec = GcByteBuf::new()
+      // Custom section payload: name "name" + subsection 1
+      write_name_string_gc(name_sec, "name")
+      // Subsection 1: function names — id=1, size, content
+      name_sec.push(0x01)
+      let sub_bytes = function_names_sub.to_array()
+      write_u32_leb_gc(name_sec, sub_bytes.length())
+      for b in sub_bytes {
+        name_sec.push(b.to_int())
+      }
+      write_section_gc(buf, 0, name_sec.to_array())
+    }
+  }
   buf.to_bytes()
+}
+
+///|
+/// Write a length-prefixed UTF-8 string (wasm name encoding). Mirrors
+/// the linear backend's `write_name` but for the GC byte buffer.
+fn write_name_string_gc(buf : GcByteBuf, s : String) -> Unit {
+  let bytes = @utf8.encode(s)
+  write_u32_leb_gc(buf, bytes.length())
+  for b in bytes {
+    buf.push(b.to_int())
+  }
 }
 
 ///|
@@ -9933,10 +9987,15 @@ fn emit_module_wasm_gc_inner(
     }
   }
   let wasm_funcs : Array[GcWasmFunc] = []
+  // Parallel array of human-readable names for the wasm `name` custom
+  // section. Improves profiler / devtools stack traces; without it
+  // every frame renders as `<wasm function N>`.
+  let func_names : Array[String] = []
   for f in funcs {
     let wf = compile_function_gc(ctx, f)
     ctx.func_returns[f.name] = wf.sig.result
     wasm_funcs.push(wf)
+    func_names.push(f.name)
   }
   let collected_names : Map[String, Bool] = {}
   for f in funcs {
@@ -9946,8 +10005,16 @@ fn emit_module_wasm_gc_inner(
   let run_func = compile_run_gc(ctx, run_body)
   let run_index = wasm_funcs.length()
   wasm_funcs.push(run_func)
-  for lf in ctx.closure_lifted_funcs {
-    wasm_funcs.push(lf)
+  // `_start` is the canonical name; even when the user re-exports a
+  // different function under that name we still want this stable label
+  // so wasmtime --invoke and the profiler agree.
+  func_names.push("_start")
+  for i in 0..<ctx.closure_lifted_funcs.length() {
+    wasm_funcs.push(ctx.closure_lifted_funcs[i])
+    // Closures don't carry source identifiers through codegen yet — the
+    // anonymous `lambda_<idx>` is enough to surface them in stack
+    // traces; mapping back to source spans is a follow-up.
+    func_names.push("lambda_" + i.to_string())
   }
   // Collect user `export let` function names so they appear in the wasm
   // export section (otherwise wasmtime --invoke can only call `_start`).
@@ -9971,6 +10038,7 @@ fn emit_module_wasm_gc_inner(
     run_index,
     global_init_values~,
     user_exports~,
+    func_names~,
   )
   (bytes, ctx)
 }
