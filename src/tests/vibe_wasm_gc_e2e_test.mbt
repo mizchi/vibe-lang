@@ -832,3 +832,66 @@ test "wasm-gc e2e: ADR-0052 — non-mut field assignment is rejected" {
     Err(_) => () // expected
   }
 }
+
+///|
+/// Issue #414 (Phase A.2): cheap Int/Char/Float/Double conversions.
+test "wasm-gc e2e: Int::clamp inside range" {
+  let src =
+    #|let main = () -> Int { Int::clamp(7, 0, 10) }
+    #|main()
+  assert_gc_e2e(src, "int_clamp_inside", 7)
+}
+
+///|
+test "wasm-gc e2e: Int::clamp below range" {
+  let src =
+    #|let main = () -> Int { Int::clamp(-3, 0, 10) }
+    #|main()
+  assert_gc_e2e(src, "int_clamp_below", 0)
+}
+
+///|
+test "wasm-gc e2e: Int::clamp above range" {
+  let src =
+    #|let main = () -> Int { Int::clamp(99, 0, 10) }
+    #|main()
+  assert_gc_e2e(src, "int_clamp_above", 10)
+}
+
+///|
+test "wasm-gc e2e: Char::to_int and Char::from_int are identities" {
+  let src =
+    #|let main = () -> Int { Char::to_int(Char::from_int(65)) }
+    #|main()
+  assert_gc_e2e(src, "char_roundtrip", 65)
+}
+
+///|
+test "wasm-gc e2e: Int::to_float then Float::to_int roundtrips" {
+  let src =
+    #|let main = () -> Int { Float::to_int(Int::to_float(42)) }
+    #|main()
+  assert_gc_e2e(src, "int_float_roundtrip", 42)
+}
+
+///|
+test "wasm-gc e2e: Float::to_double then Double::to_float preserves whole values" {
+  let src =
+    #|let main = () -> Int {
+    #|  let d = Float::to_double(Int::to_float(7))
+    #|  Double::to_int(d)
+    #|}
+    #|main()
+  assert_gc_e2e(src, "float_double_roundtrip", 7)
+}
+
+///|
+test "wasm-gc e2e: Double::from_i64_bits parses zero bit pattern as 0.0" {
+  let src =
+    #|let main = () -> Int {
+    #|  let d = Double::from_i64_bits(0)
+    #|  Double::to_int(d)
+    #|}
+    #|main()
+  assert_gc_e2e(src, "double_from_bits_zero", 0)
+}

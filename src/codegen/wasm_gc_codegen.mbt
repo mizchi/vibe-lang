@@ -818,6 +818,31 @@ fn emit_i64_trunc_f64_s_gc(buf : GcByteBuf) -> Unit {
 }
 
 ///|
+fn emit_f32_convert_i64_s_gc(buf : GcByteBuf) -> Unit {
+  buf.push(0xb4)
+}
+
+///|
+fn emit_i64_trunc_f32_s_gc(buf : GcByteBuf) -> Unit {
+  buf.push(0xae)
+}
+
+///|
+fn emit_f64_promote_f32_gc(buf : GcByteBuf) -> Unit {
+  buf.push(0xbb)
+}
+
+///|
+fn emit_f32_demote_f64_gc(buf : GcByteBuf) -> Unit {
+  buf.push(0xb6)
+}
+
+///|
+fn emit_f64_reinterpret_i64_gc(buf : GcByteBuf) -> Unit {
+  buf.push(0xbf)
+}
+
+///|
 fn emit_i64_eq_gc(buf : GcByteBuf) -> Unit {
   buf.push(0x51)
 }
@@ -2346,11 +2371,23 @@ fn infer_expr_kind_gc(
         | "Double::to_string"
         | "String::from_char_code" => GcValKind::Ref(ctx.string_type)
         "Int::to_double" => GcValKind::F64
-        "Int::abs" | "Int::max" | "Int::min" | "Int::signum"
-        | "Int::is_even" | "Int::is_odd" => GcValKind::I64
+        "Int::to_float" => GcValKind::F32
+        "Int::abs"
+        | "Int::max"
+        | "Int::min"
+        | "Int::signum"
+        | "Int::clamp"
+        | "Int::is_even"
+        | "Int::is_odd"
+        | "Char::to_int"
+        | "Char::from_int" => GcValKind::I64
         "Double::to_int" => GcValKind::I64
         "Double::to_i64_bits" => GcValKind::I64
         "Double::parse" => GcValKind::F64
+        "Double::to_float" => GcValKind::F32
+        "Double::from_i64_bits" => GcValKind::F64
+        "Float::to_double" => GcValKind::F64
+        "Float::to_int" => GcValKind::I64
         "Array::length" => GcValKind::I64
         "Array::fold" | "fold" => {
           if pos_args.length() != 3 {
@@ -6758,7 +6795,11 @@ fn compile_expr_gc(
           let struct_handled = match pos_args[1] {
             @core.Expr::String(value=field_name, ..) =>
               try_compile_struct_field_get_gc(
-                ctx, fctx, buf, field_name, pos_args[0],
+                ctx,
+                fctx,
+                buf,
+                field_name,
+                pos_args[0],
               )
             _ => false
           }
@@ -6792,7 +6833,12 @@ fn compile_expr_gc(
               span=pos_args[1].span(),
             )
             compile_string_substring(
-              ctx, fctx, buf, pos_args[0], pos_args[1], next_idx,
+              ctx,
+              fctx,
+              buf,
+              pos_args[0],
+              pos_args[1],
+              next_idx,
             )
           } else if base_kind == GcValKind::Ref(ctx.bytes_type) {
             compile_bytes_get_gc(ctx, fctx, buf, pos_args[0], pos_args[1])
@@ -7247,6 +7293,82 @@ fn compile_expr_gc(
           emit_i64_and_gc(buf)
           emit_i64_const_gc(buf, 1L)
           emit_i64_eq_gc(buf)
+        }
+        "Int::clamp" => {
+          // Int::clamp(x, lo, hi) = max(lo, min(x, hi))
+          if pos_args.length() != 3 {
+            raise WasmGenError::Unsupported("Int::clamp arity")
+          }
+          let x = alloc_local_gc(fctx, GcValKind::I64)
+          let lo = alloc_local_gc(fctx, GcValKind::I64)
+          let hi = alloc_local_gc(fctx, GcValKind::I64)
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_local_set_gc(buf, x)
+          compile_expr_gc(ctx, fctx, buf, pos_args[1])
+          emit_local_set_gc(buf, lo)
+          compile_expr_gc(ctx, fctx, buf, pos_args[2])
+          emit_local_set_gc(buf, hi)
+          // min_val = if x > hi then hi else x
+          emit_local_get_gc(buf, x)
+          emit_local_get_gc(buf, hi)
+          emit_i64_gt_s_gc(buf)
+          emit_if_gc(buf, Some(GcValKind::I64))
+          emit_local_get_gc(buf, hi)
+          emit_else_gc(buf)
+          emit_local_get_gc(buf, x)
+          emit_end_gc(buf)
+          emit_local_set_gc(buf, x)
+          // result = if lo > min_val then lo else min_val
+          emit_local_get_gc(buf, lo)
+          emit_local_get_gc(buf, x)
+          emit_i64_gt_s_gc(buf)
+          emit_if_gc(buf, Some(GcValKind::I64))
+          emit_local_get_gc(buf, lo)
+          emit_else_gc(buf)
+          emit_local_get_gc(buf, x)
+          emit_end_gc(buf)
+        }
+        "Char::to_int" | "Char::from_int" => {
+          // Identity: Char is a 62-bit tagged int (ADR-0006).
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported(name + " arity")
+          }
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+        }
+        "Int::to_float" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("Int::to_float arity")
+          }
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_f32_convert_i64_s_gc(buf)
+        }
+        "Float::to_int" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("Float::to_int arity")
+          }
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_i64_trunc_f32_s_gc(buf)
+        }
+        "Float::to_double" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("Float::to_double arity")
+          }
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_f64_promote_f32_gc(buf)
+        }
+        "Double::to_float" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("Double::to_float arity")
+          }
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_f32_demote_f64_gc(buf)
+        }
+        "Double::from_i64_bits" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("Double::from_i64_bits arity")
+          }
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_f64_reinterpret_i64_gc(buf)
         }
         "Double::to_int" => {
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
@@ -9119,7 +9241,9 @@ fn compile_stmt_gc(
       }
       if !handled {
         let base_kind = infer_expr_kind_gc(ctx, fctx, target)
-        let type_idx = gc_array_type_idx_from_kind(ctx, base_kind, "IndexAssign")
+        let type_idx = gc_array_type_idx_from_kind(
+          ctx, base_kind, "IndexAssign",
+        )
         compile_expr_gc(ctx, fctx, buf, target)
         compile_expr_gc(ctx, fctx, buf, index)
         let idx_kind = infer_expr_kind_gc(ctx, fctx, index)
@@ -9675,6 +9799,10 @@ pub fn emit_module_wasm_gc(ast : @core.Module) -> Bytes raise WasmGenError {
     }
   }
   build_module_gc(
-    ctx, wasm_funcs, run_index, global_init_values~, user_exports~,
+    ctx,
+    wasm_funcs,
+    run_index,
+    global_init_values~,
+    user_exports~,
   )
 }
