@@ -246,6 +246,15 @@ priv struct GcCodegenCtx {
   // string constants that show up in practice (sha1 `hex_table`, etc.).
   string_consts : Map[String, String]
   mut needs_exceptions : Bool
+  /// Issue #417 / Phase A: coverage instrumentation. When enabled,
+  /// build_module_gc emits a `memory` section + two i32 globals
+  /// (`__vibe_cov_base`, `__vibe_cov_count`) and every Line / Branch
+  /// site emits an `i32.load + i32.add + i32.store` into linear
+  /// memory at `coverage_base + id * 4`. The same JS reader
+  /// (`scripts/coverage_wasm_source.mjs`) works against both
+  /// backends — only the memory wiring differs.
+  mut coverage_enabled : Bool
+  coverage_points : Array[WasmCoveragePoint]
 }
 
 ///|
@@ -534,6 +543,8 @@ fn GcCodegenCtx::new() -> GcCodegenCtx {
     global_consts: {},
     string_consts: {},
     needs_exceptions: false,
+    coverage_enabled: false,
+    coverage_points: [],
   }
 }
 
@@ -621,6 +632,54 @@ fn emit_global_set_gc(buf : GcByteBuf, idx : Int) -> Unit {
 ///|
 fn emit_i32_add_gc(buf : GcByteBuf) -> Unit {
   buf.push(0x6a)
+}
+
+///|
+/// i32.load align=2 offset=0 (the 4-byte aligned counter at the i32 addr
+/// already on the value stack).
+fn emit_i32_load_gc(buf : GcByteBuf) -> Unit {
+  buf.push(0x28)
+  buf.push(0x02) // align = 2 → 4-byte
+  buf.push(0x00) // offset = 0
+}
+
+///|
+/// i32.store align=2 offset=0.
+fn emit_i32_store_gc(buf : GcByteBuf) -> Unit {
+  buf.push(0x36)
+  buf.push(0x02)
+  buf.push(0x00)
+}
+
+///|
+/// Issue #417: register a coverage point and emit the increment ops
+/// when coverage is enabled. Mirrors `emit_coverage` in the linear
+/// backend but writes to linear memory through wasm-gc opcodes.
+///
+///     i32.const addr      ; address for store
+///     i32.const addr      ; address for load
+///     i32.load 2 0        ; current counter
+///     i32.const 1
+///     i32.add
+///     i32.store 2 0       ; bump counter
+fn emit_coverage_gc(
+  ctx : GcCodegenCtx,
+  buf : GcByteBuf,
+  kind : WasmCoveragePointKind,
+  span : @core.Span,
+) -> Unit {
+  if !ctx.coverage_enabled {
+    return
+  }
+  let id = ctx.coverage_points.length()
+  ctx.coverage_points.push({ id, kind, span })
+  let addr = id * 4
+  emit_i32_const_gc(buf, addr)
+  emit_i32_const_gc(buf, addr)
+  emit_i32_load_gc(buf)
+  emit_i32_const_gc(buf, 1)
+  emit_i32_add_gc(buf)
+  emit_i32_store_gc(buf)
 }
 
 ///|
@@ -6253,6 +6312,8 @@ fn compile_match_chain_gc(
   let saved = clone_locals_gc(fctx.locals)
   compile_pat_cond_gc(ctx, fctx, buf, scrut_idx, scrut_kind, arm.pat)
   emit_if_gc(buf, Some(result_kind))
+  // Issue #417: per-arm coverage point.
+  emit_coverage_gc(ctx, buf, WasmCoveragePointKind::BranchMatchArm, arm.span)
   compile_pat_bind_gc(ctx, fctx, buf, scrut_idx, scrut_kind, arm.pat)
   let arm_kind = infer_expr_kind_gc(ctx, fctx, arm.expr)
   compile_expr_gc(ctx, fctx, buf, arm.expr)
@@ -8489,7 +8550,6 @@ fn compile_expr_gc(
       }
     }
     @core.Expr::If(cond~, then_body~, else_body~, span~) => {
-      let _ = span
       compile_expr_gc(ctx, fctx, buf, cond)
       let then_kind = infer_block_kind_gc(ctx, fctx, then_body)
       let else_kind = infer_block_kind_gc(ctx, fctx, else_body)
@@ -8499,9 +8559,12 @@ fn compile_expr_gc(
         gc_common_kind(then_kind, else_kind)
       }
       emit_if_gc(buf, Some(result_kind))
+      // Issue #417: branch-then / branch-else coverage points.
+      emit_coverage_gc(ctx, buf, WasmCoveragePointKind::BranchIfThen, span)
       compile_block_expr_gc(ctx, fctx, buf, then_body)
       emit_coerce_top_gc(ctx, buf, then_kind, result_kind)
       emit_else_gc(buf)
+      emit_coverage_gc(ctx, buf, WasmCoveragePointKind::BranchIfElse, span)
       compile_block_expr_gc(ctx, fctx, buf, else_body)
       emit_coerce_top_gc(ctx, buf, else_kind, result_kind)
       emit_end_gc(buf)
@@ -9025,6 +9088,10 @@ fn compile_stmt_gc(
   stmt : @core.Stmt,
   is_last : Bool,
 ) -> Unit raise WasmGenError {
+  // Issue #417: emit a line coverage point before each statement when
+  // coverage is enabled. Mirrors the linear backend's hook in
+  // `wasm_codegen_stmt.mbt::compile_stmt::line 97`.
+  emit_coverage_gc(ctx, buf, WasmCoveragePointKind::Line, stmt.span())
   match stmt {
     @core.Stmt::Let(rec~, name~, expr~, ..) =>
       if rec {
@@ -9537,6 +9604,19 @@ fn build_module_gc(
     }
   }
   write_section_gc(buf, 3, func_sec.to_array())
+  // Memory section (section 5): only emitted when coverage is enabled
+  // (issue #417). The wasm-gc backend is memory-free by default; the
+  // counters live in a 1-page (64 KB = 16 384 i32 slots) linear
+  // memory that the JS reader (`scripts/coverage_wasm_source.mjs`)
+  // reads through the `memory` export, identically to the linear
+  // backend's path.
+  if ctx.coverage_enabled {
+    let mem_sec = GcByteBuf::new()
+    write_u32_leb_gc(mem_sec, 1) // 1 memory entry
+    mem_sec.push(0x00) // limits flag: only min, no max
+    write_u32_leb_gc(mem_sec, 1) // initial = 1 page
+    write_section_gc(buf, 5, mem_sec.to_array())
+  }
   // Tag section (section 13): only emit if throw/handle is used
   // Per exception handling spec, placed between func(3) and global(6)
   if ctx.needs_exceptions {
@@ -9546,11 +9626,14 @@ fn build_module_gc(
     write_u32_leb_gc(tag_sec, ctx.error_tag_type_index) // type index
     write_section_gc(buf, 13, tag_sec.to_array())
   }
-  // Global section (section 6): immutable compile-time constants only
-  // No mutable globals — thread-safe by design
-  if global_init_values.length() > 0 {
+  // Global section (section 6): immutable compile-time constants plus
+  // the two coverage descriptor globals (__vibe_cov_base /
+  // __vibe_cov_count) when coverage is enabled. No mutable globals —
+  // thread-safe by design.
+  let cov_global_count = if ctx.coverage_enabled { 2 } else { 0 }
+  if global_init_values.length() > 0 || cov_global_count > 0 {
     let global_sec = GcByteBuf::new()
-    write_u32_leb_gc(global_sec, global_init_values.length())
+    write_u32_leb_gc(global_sec, global_init_values.length() + cov_global_count)
     for entry in global_init_values {
       let kind = entry.0
       let value = entry.1
@@ -9571,6 +9654,20 @@ fn build_module_gc(
         }
       }
       global_sec.push(0x0b) // end
+    }
+    if ctx.coverage_enabled {
+      // __vibe_cov_base : i32 immutable = 0 (counters at addr 0)
+      write_valtype_gc(global_sec, GcValKind::I32)
+      global_sec.push(0x00) // immutable
+      global_sec.push(0x41) // i32.const
+      write_i32_leb_gc(global_sec, 0)
+      global_sec.push(0x0b) // end
+      // __vibe_cov_count : i32 immutable = registered point count
+      write_valtype_gc(global_sec, GcValKind::I32)
+      global_sec.push(0x00) // immutable
+      global_sec.push(0x41)
+      write_i32_leb_gc(global_sec, ctx.coverage_points.length())
+      global_sec.push(0x0b)
     }
     write_section_gc(buf, 6, global_sec.to_array())
   }
@@ -9596,7 +9693,13 @@ fn build_module_gc(
       None => () // user named a non-function export (e.g. a top-level constant) — skip
     }
   }
-  write_u32_leb_gc(export_sec, export_entries.length())
+  // Coverage exports (issue #417): the JS reader expects `memory`,
+  // `__vibe_cov_base`, and `__vibe_cov_count`. They're indexed into
+  // separate spaces (memory→memidx 0; globals→last 2 global slots).
+  let extra_export_count = if ctx.coverage_enabled { 3 } else { 0 }
+  write_u32_leb_gc(
+    export_sec, export_entries.length() + extra_export_count,
+  )
   for entry in export_entries {
     let (name, idx) = entry
     write_u32_leb_gc(export_sec, name.length())
@@ -9605,6 +9708,34 @@ fn build_module_gc(
     }
     export_sec.push(0x00)
     write_u32_leb_gc(export_sec, idx)
+  }
+  if ctx.coverage_enabled {
+    let cov_base_global_idx = global_init_values.length()
+    let cov_count_global_idx = cov_base_global_idx + 1
+    // export "memory" memory 0
+    let mem_name = "memory"
+    write_u32_leb_gc(export_sec, mem_name.length())
+    for c in mem_name {
+      export_sec.push(c.to_int())
+    }
+    export_sec.push(0x02) // memory kind
+    write_u32_leb_gc(export_sec, 0)
+    // export "__vibe_cov_base" global N
+    let base_name = "__vibe_cov_base"
+    write_u32_leb_gc(export_sec, base_name.length())
+    for c in base_name {
+      export_sec.push(c.to_int())
+    }
+    export_sec.push(0x03) // global kind
+    write_u32_leb_gc(export_sec, cov_base_global_idx)
+    // export "__vibe_cov_count" global N+1
+    let count_name = "__vibe_cov_count"
+    write_u32_leb_gc(export_sec, count_name.length())
+    for c in count_name {
+      export_sec.push(c.to_int())
+    }
+    export_sec.push(0x03)
+    write_u32_leb_gc(export_sec, cov_count_global_idx)
   }
   write_section_gc(buf, 7, export_sec.to_array())
   // Element section: declare closure function refs for ref.func
@@ -9639,6 +9770,35 @@ fn build_module_gc(
 
 ///|
 pub fn emit_module_wasm_gc(ast : @core.Module) -> Bytes raise WasmGenError {
+  let (bytes, _) = emit_module_wasm_gc_inner(ast, coverage_enabled=false)
+  bytes
+}
+
+///|
+/// Issue #417: wasm-gc backend coverage-instrumented emit. Mirrors the
+/// linear backend's `emit_module_wasm_with_coverage`. Returns the wasm
+/// bytes plus a `WasmCoverageArtifact` whose `points` array describes
+/// every counter slot. The .wasm has a linear memory + the two
+/// `__vibe_cov_base` / `__vibe_cov_count` globals plus a `memory`
+/// export so the existing `scripts/coverage_wasm_source.mjs` reader
+/// works unchanged.
+pub fn emit_module_wasm_gc_with_coverage(
+  ast : @core.Module,
+) -> WasmCoverageArtifact raise WasmGenError {
+  let (bytes, ctx) = emit_module_wasm_gc_inner(ast, coverage_enabled=true)
+  {
+    bytes,
+    counter_base: 0,
+    counter_count: ctx.coverage_points.length(),
+    points: ctx.coverage_points,
+  }
+}
+
+///|
+fn emit_module_wasm_gc_inner(
+  ast : @core.Module,
+  coverage_enabled? : Bool = false,
+) -> (Bytes, GcCodegenCtx) raise WasmGenError {
   // Mirror the linear backend's prologue: strip type-assertion blocks
   // first (so the AST has bare Int/Bool literals where the user wrote
   // `let c: Int = 100`), then fold pure top-level expressions
@@ -9648,8 +9808,15 @@ pub fn emit_module_wasm_gc(ast : @core.Module) -> Bytes raise WasmGenError {
   // value stays a Call expression and any function body that references
   // it (e.g. `read_word` in sha1) becomes a closure with a free var
   // the gc backend can't resolve → "unknown name: mask32".
-  let ast = static_fold_module(strip_type_assert_module(ast))
+  // Coverage-enabled compilation skips the static folding pass so that
+  // every source statement remains a distinct instrumentation point.
+  let ast = if coverage_enabled {
+    strip_type_assert_module(ast)
+  } else {
+    static_fold_module(strip_type_assert_module(ast))
+  }
   let ctx = GcCodegenCtx::new()
+  ctx.coverage_enabled = coverage_enabled
   scan_enum_defs_gc(ctx, ast)
   register_struct_types_gc(ctx, ast)
   // Build enum ctor name set for free-var filtering
@@ -9798,11 +9965,12 @@ pub fn emit_module_wasm_gc(ast : @core.Module) -> Bytes raise WasmGenError {
       _ => ()
     }
   }
-  build_module_gc(
+  let bytes = build_module_gc(
     ctx,
     wasm_funcs,
     run_index,
     global_init_values~,
     user_exports~,
   )
+  (bytes, ctx)
 }

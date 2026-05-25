@@ -2620,6 +2620,24 @@ pub fn compile_module_wasm_gc(
 }
 
 ///|
+/// Issue #417: wasm-gc coverage entry. Same shape as
+/// `compile_module_wasm_with_coverage` for the linear backend so the
+/// CLI dispatch in `cli_compile_cmd.mbt` is symmetric.
+pub fn compile_module_wasm_gc_with_coverage(
+  db : @runtime.VibeDb,
+  path : String,
+  no_dce? : Bool = false,
+  opt_level? : String? = None,
+  run_tests? : Bool = false,
+) -> WasmCoverageArtifact raise WasmCompileError {
+  let _ = no_dce // wasm-gc backend currently always inlines; no DCE toggle yet
+  let coverage = compile_module_wasm_coverage_with(
+    db, path, "gc_coverage", @codegen.emit_module_wasm_gc_with_coverage, run_tests~,
+  )
+  optimize_wasm_coverage_with_opt_level(coverage, opt_level)
+}
+
+///|
 /// Compile a module to WASM without DCE (for benchmarking).
 pub fn compile_module_wasm_no_dce(
   db : @runtime.VibeDb,

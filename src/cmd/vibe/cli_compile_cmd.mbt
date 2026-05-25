@@ -265,21 +265,51 @@ fn compile_cmd(args : Array[String]) -> Unit {
             }
             println("wrote " + resolved_out)
           }
-        CompileMode::WasmGc => {
-          let wasm_bytes = @runtime_compile.compile_module_wasm_gc_with_opt_level(
-            db,
-            entry,
-            no_dce=opts.no_dce,
-            opt_level=opts.opt_level,
-          ) catch {
-            e => abort("compile: " + e.user_message())
+        CompileMode::WasmGc =>
+          if opts.coverage {
+            // Issue #417: coverage path for wasm-gc — emits counter
+            // memory + cov_base/cov_count exports + .wasm.cov.json
+            // sidecar in the same format the linear backend uses.
+            let coverage = @runtime_compile.compile_module_wasm_gc_with_coverage(
+              db,
+              entry,
+              no_dce=opts.no_dce,
+              opt_level=opts.opt_level,
+              run_tests=opts.coverage_run_tests,
+            ) catch {
+              e => abort("compile: " + e.user_message())
+            }
+            match @io.write_bytes_with(fs, resolved_out, coverage.bytes) {
+              Ok(_) => ()
+              Err(err) => abort("compile: " + err)
+            }
+            println("wrote " + resolved_out)
+            let source = match db.get_source(entry) {
+              Some(s) => s
+              None => ""
+            }
+            write_wasm_coverage_sidecar_with(
+              fs,
+              resolved_out,
+              opts.entry_path,
+              source,
+              coverage,
+            )
+          } else {
+            let wasm_bytes = @runtime_compile.compile_module_wasm_gc_with_opt_level(
+              db,
+              entry,
+              no_dce=opts.no_dce,
+              opt_level=opts.opt_level,
+            ) catch {
+              e => abort("compile: " + e.user_message())
+            }
+            match @io.write_bytes_with(fs, resolved_out, wasm_bytes) {
+              Ok(_) => ()
+              Err(err) => abort("compile: " + err)
+            }
+            println("wrote " + resolved_out)
           }
-          match @io.write_bytes_with(fs, resolved_out, wasm_bytes) {
-            Ok(_) => ()
-            Err(err) => abort("compile: " + err)
-          }
-          println("wrote " + resolved_out)
-        }
         CompileMode::Component => {
           let wasm_bytes = @runtime_compile.compile_module_component_with_opt_level(
             db,

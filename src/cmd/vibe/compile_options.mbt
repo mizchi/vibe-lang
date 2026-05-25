@@ -58,7 +58,12 @@ fn compile_mode_supports_wite_opt(mode : CompileMode) -> Bool {
 ///|
 fn compile_mode_supports_coverage(mode : CompileMode) -> Bool {
   match mode {
-    CompileMode::Wasm | CompileMode::WasmJsString => true
+    // Issue #417: wasm-gc now ships coverage instrumentation
+    // (line + branch counters in a linear-memory side memory plus
+    // `__vibe_cov_base` / `__vibe_cov_count` exports). The
+    // `.wasm.cov.json` sidecar format is identical to the linear
+    // backend so `scripts/coverage_wasm_source.mjs` works on either.
+    CompileMode::Wasm | CompileMode::WasmJsString | CompileMode::WasmGc => true
     _ => false
   }
 }
