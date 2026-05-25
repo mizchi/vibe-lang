@@ -55,6 +55,7 @@ pub fn run(args : Array[String]) -> Unit {
     "precompile" => precompile_cmd(cmd_args)
     "bench" => bench_cmd(cmd_args, syntax_mode, runtime_features)
     "bench-file" => bench_file_cmd(cmd_args, runtime_features)
+    "profile" => profile_cmd(cmd_args)
     "shell" => repl_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
     "shell-stdin" =>
       repl_stdin_cmd(
@@ -162,6 +163,7 @@ fn print_subcommand_help(cmd : String) -> Unit {
     "check" => print_check_help()
     "fmt" => print_fmt_help()
     "bench" => print_bench_help()
+    "profile" => print_profile_help()
     "build" => print_build_help()
     "normalize" => print_normalize_help()
     _ => {
