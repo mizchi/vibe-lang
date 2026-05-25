@@ -2346,6 +2346,8 @@ fn infer_expr_kind_gc(
         | "Double::to_string"
         | "String::from_char_code" => GcValKind::Ref(ctx.string_type)
         "Int::to_double" => GcValKind::F64
+        "Int::abs" | "Int::max" | "Int::min" | "Int::signum"
+        | "Int::is_even" | "Int::is_odd" => GcValKind::I64
         "Double::to_int" => GcValKind::I64
         "Double::to_i64_bits" => GcValKind::I64
         "Double::parse" => GcValKind::F64
@@ -7144,6 +7146,107 @@ fn compile_expr_gc(
         "Int::to_double" => {
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
           emit_f64_convert_i64_s_gc(buf)
+        }
+        // Phase A.2 of docs/spec/codegen-dual-backend.md: fill in
+        // the cheap Int::* arithmetic utilities that linear has but
+        // wasm-gc was missing. All operate on raw i64.
+        "Int::abs" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("Int::abs arity")
+          }
+          let x = alloc_local_gc(fctx, GcValKind::I64)
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_local_tee_gc(buf, x)
+          emit_i64_const_gc(buf, 0L)
+          emit_i64_lt_s_gc(buf)
+          emit_if_gc(buf, Some(GcValKind::I64))
+          emit_i64_const_gc(buf, 0L)
+          emit_local_get_gc(buf, x)
+          emit_i64_sub_gc(buf)
+          emit_else_gc(buf)
+          emit_local_get_gc(buf, x)
+          emit_end_gc(buf)
+        }
+        "Int::max" => {
+          if pos_args.length() != 2 {
+            raise WasmGenError::Unsupported("Int::max arity")
+          }
+          let a = alloc_local_gc(fctx, GcValKind::I64)
+          let b = alloc_local_gc(fctx, GcValKind::I64)
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_local_set_gc(buf, a)
+          compile_expr_gc(ctx, fctx, buf, pos_args[1])
+          emit_local_set_gc(buf, b)
+          emit_local_get_gc(buf, a)
+          emit_local_get_gc(buf, b)
+          emit_i64_gt_s_gc(buf)
+          emit_if_gc(buf, Some(GcValKind::I64))
+          emit_local_get_gc(buf, a)
+          emit_else_gc(buf)
+          emit_local_get_gc(buf, b)
+          emit_end_gc(buf)
+        }
+        "Int::min" => {
+          if pos_args.length() != 2 {
+            raise WasmGenError::Unsupported("Int::min arity")
+          }
+          let a = alloc_local_gc(fctx, GcValKind::I64)
+          let b = alloc_local_gc(fctx, GcValKind::I64)
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_local_set_gc(buf, a)
+          compile_expr_gc(ctx, fctx, buf, pos_args[1])
+          emit_local_set_gc(buf, b)
+          emit_local_get_gc(buf, a)
+          emit_local_get_gc(buf, b)
+          emit_i64_lt_s_gc(buf)
+          emit_if_gc(buf, Some(GcValKind::I64))
+          emit_local_get_gc(buf, a)
+          emit_else_gc(buf)
+          emit_local_get_gc(buf, b)
+          emit_end_gc(buf)
+        }
+        "Int::signum" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("Int::signum arity")
+          }
+          let x = alloc_local_gc(fctx, GcValKind::I64)
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_local_set_gc(buf, x)
+          emit_local_get_gc(buf, x)
+          emit_i64_const_gc(buf, 0L)
+          emit_i64_gt_s_gc(buf)
+          emit_if_gc(buf, Some(GcValKind::I64))
+          emit_i64_const_gc(buf, 1L)
+          emit_else_gc(buf)
+          emit_local_get_gc(buf, x)
+          emit_i64_const_gc(buf, 0L)
+          emit_i64_lt_s_gc(buf)
+          emit_if_gc(buf, Some(GcValKind::I64))
+          emit_i64_const_gc(buf, -1L)
+          emit_else_gc(buf)
+          emit_i64_const_gc(buf, 0L)
+          emit_end_gc(buf)
+          emit_end_gc(buf)
+        }
+        "Int::is_even" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("Int::is_even arity")
+          }
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_i64_const_gc(buf, 1L)
+          emit_i64_and_gc(buf)
+          emit_i64_const_gc(buf, 0L)
+          emit_i64_eq_gc(buf)
+        }
+        "Int::is_odd" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("Int::is_odd arity")
+          }
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_i64_const_gc(buf, 1L)
+          emit_i64_and_gc(buf)
+          emit_i64_const_gc(buf, 1L)
+          emit_i64_eq_gc(buf)
         }
         "Double::to_int" => {
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
