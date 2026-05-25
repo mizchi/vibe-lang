@@ -1,0 +1,146 @@
+//# Imports
+
+import ./adler32.vibe {
+  adler32, adler32_init, adler32_update
+}
+
+import ./deflate.vibe {
+  deflate_stored
+}
+
+import ./inflate.vibe {
+  inflate
+}
+
+import ./zlib.vibe {
+  zlib_compress_stored, zlib_decompress
+}
+
+//# Helpers
+
+let bytes_eq: (Bytes, Bytes) -> Bool = (a, b) -> {
+  let la = Bytes::length(a)
+  let lb = Bytes::length(b)
+  if la != lb {
+    false
+  } else {
+    let mut i = 0
+    let mut ok = true
+    while i < la && ok {
+      if Bytes::get(a, i) != Bytes::get(b, i) {
+        ok = false
+      }
+      i = i + 1
+    }
+    ok
+  }
+}
+
+let str_bytes: (String) -> Bytes = (s) -> {
+  let b = Bytes::new()
+  let mut i = 0
+  let n = String::length(s)
+  while i < n {
+    Bytes::push(b, String::char_code_at(s, i))
+    i = i + 1
+  }
+  b
+}
+
+//# Adler-32
+
+test "adler32: empty buffer" {
+  let b = Bytes::new()
+  assert(adler32(b) == 1)
+}
+
+test "adler32: 'Wikipedia' reference (0x11E60398)" {
+  // Standard test vector from the Adler-32 Wikipedia article.
+  let b = str_bytes("Wikipedia")
+  assert(adler32(b) == 0x11E60398)
+}
+
+test "adler32: streaming update equals one-shot" {
+  let b = str_bytes("the quick brown fox")
+  let n = Bytes::length(b)
+  let mid = n / 2
+  let s1 = adler32_update(adler32_init(), b, 0, mid)
+  let s2 = adler32_update(s1, b, mid, n - mid)
+  assert(s2 == adler32(b))
+}
+
+//# Stored DEFLATE round-trip
+
+test "deflate_stored + inflate: empty" {
+  let input = Bytes::new()
+  let encoded = deflate_stored(input)
+  let decoded = inflate(encoded)
+  assert(bytes_eq(decoded, input))
+}
+
+test "deflate_stored + inflate: short ascii" {
+  let input = str_bytes("hello, world!")
+  let encoded = deflate_stored(input)
+  let decoded = inflate(encoded)
+  assert(bytes_eq(decoded, input))
+}
+
+test "deflate_stored + inflate: repetitive" {
+  let mut input = Bytes::new()
+  let mut i = 0
+  while i < 1000 {
+    Bytes::push(input, i % 256)
+    i = i + 1
+  }
+  let encoded = deflate_stored(input)
+  let decoded = inflate(encoded)
+  assert(bytes_eq(decoded, input))
+}
+
+test "zlib_compress_stored + zlib_decompress: round-trip" {
+  let input = str_bytes("the quick brown fox jumps over the lazy dog")
+  let encoded = zlib_compress_stored(input)
+  // Header byte sanity.
+  assert(Bytes::get(encoded, 0) == 0x78)
+  assert(Bytes::get(encoded, 1) == 0x01)
+  let decoded = zlib_decompress(encoded)
+  assert(bytes_eq(decoded, input))
+}
+
+//# Fixed Huffman: decode a hand-built reference vector
+
+test "inflate: fixed Huffman 'Hello' (zlib reference)" {
+  // DEFLATE-encoded with `python -c 'import zlib;print(zlib.compress(b"Hello"))'`
+  // then header (2 bytes) + adler32 trailer (4 bytes) stripped.
+  // bytes: 0xF3 0x48 0xCD 0xC9 0xC9 0x07 0x00
+  let payload = Bytes::new()
+  Bytes::push(payload, 0xF3)
+  Bytes::push(payload, 0x48)
+  Bytes::push(payload, 0xCD)
+  Bytes::push(payload, 0xC9)
+  Bytes::push(payload, 0xC9)
+  Bytes::push(payload, 0x07)
+  Bytes::push(payload, 0x00)
+  let result = inflate(payload)
+  assert(bytes_eq(result, str_bytes("Hello")))
+}
+
+test "zlib_decompress: full zlib stream from Python zlib.compress(b'Hello')" {
+  // Python: zlib.compress(b'Hello') = b'x\x9c\xf3H\xcd\xc9\xc9\x07\x00\x05\x8c\x01\xf5'
+  let stream = Bytes::new()
+  Bytes::push(stream, 0x78)
+  Bytes::push(stream, 0x9C)
+  Bytes::push(stream, 0xF3)
+  Bytes::push(stream, 0x48)
+  Bytes::push(stream, 0xCD)
+  Bytes::push(stream, 0xC9)
+  Bytes::push(stream, 0xC9)
+  Bytes::push(stream, 0x07)
+  Bytes::push(stream, 0x00)
+  Bytes::push(stream, 0x05)
+  Bytes::push(stream, 0x8C)
+  Bytes::push(stream, 0x01)
+  Bytes::push(stream, 0xF5)
+  let decoded = zlib_decompress(stream)
+  assert(bytes_eq(decoded, str_bytes("Hello")))
+}

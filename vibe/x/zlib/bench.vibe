@@ -1,0 +1,115 @@
+//# Imports
+
+import ./adler32.vibe {
+  adler32
+}
+
+import ./deflate.vibe {
+  deflate_stored
+}
+
+import ./inflate.vibe {
+  inflate
+}
+
+import ./zlib.vibe {
+  zlib_compress_stored, zlib_decompress
+}
+
+//# Helpers
+
+let make_bytes: (Int) -> Bytes = (n) -> {
+  // Deterministic pseudo-random byte pattern (cheap LCG, byte-wise).
+  let b = Bytes::new()
+  let mut state = 12345
+  let mut i = 0
+  while i < n {
+    state = (state * 1103515245 + 12345) & 0x7FFFFFFF
+    Bytes::push(b, (state >> 16) & 0xFF)
+    i = i + 1
+  }
+  b
+}
+
+let make_repetitive: (Int) -> Bytes = (n) -> {
+  // Highly compressible: the same 32-byte block tiled.
+  let b = Bytes::new()
+  let mut i = 0
+  while i < n {
+    Bytes::push(b, i % 32)
+    i = i + 1
+  }
+  b
+}
+
+//# Adler-32 throughput
+
+bench "adler32/1KB" {
+  let buf = make_bytes(1024)
+  let _ = adler32(buf)
+}
+
+bench "adler32/16KB" {
+  let buf = make_bytes(16 * 1024)
+  let _ = adler32(buf)
+}
+
+bench "adler32/64KB" {
+  let buf = make_bytes(64 * 1024)
+  let _ = adler32(buf)
+}
+
+//# deflate_stored (no real compression — measures bit-stream + memcpy cost)
+
+bench "deflate_stored/1KB" {
+  let buf = make_bytes(1024)
+  let _ = deflate_stored(buf)
+}
+
+bench "deflate_stored/16KB" {
+  let buf = make_bytes(16 * 1024)
+  let _ = deflate_stored(buf)
+}
+
+bench "deflate_stored/64KB" {
+  let buf = make_bytes(64 * 1024)
+  let _ = deflate_stored(buf)
+}
+
+//# inflate: random data via stored block
+
+bench "inflate/stored_1KB" {
+  let payload = deflate_stored(make_bytes(1024))
+  let _ = inflate(payload)
+}
+
+bench "inflate/stored_16KB" {
+  let payload = deflate_stored(make_bytes(16 * 1024))
+  let _ = inflate(payload)
+}
+
+//# inflate: fixed Huffman block (compressed by reference zlib)
+
+bench "inflate/fixed_huffman_short" {
+  // Python: zlib.compress(b'Hello' * 10) DEFLATE payload (header/trailer stripped)
+  let payload = Bytes::new()
+  Bytes::push(payload, 0xF3)
+  Bytes::push(payload, 0x48)
+  Bytes::push(payload, 0xCD)
+  Bytes::push(payload, 0xC9)
+  Bytes::push(payload, 0xC9)
+  Bytes::push(payload, 0xF7)
+  Bytes::push(payload, 0x20)
+  Bytes::push(payload, 0x85)
+  Bytes::push(payload, 0x00)
+  Bytes::push(payload, 0x00)
+  let _ = inflate(payload)
+}
+
+//# zlib round-trip
+
+bench "zlib_roundtrip/repetitive_4KB" {
+  let buf = make_repetitive(4096)
+  let encoded = zlib_compress_stored(buf)
+  let _ = zlib_decompress(encoded)
+}

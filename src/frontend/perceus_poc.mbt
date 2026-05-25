@@ -436,6 +436,14 @@ fn perceus_collect_capture_ids_expr(
           arg, outer_scopes, local_scopes, captures, seen,
         )
       }
+    @core.Expr::Return(value~, ..) =>
+      match value {
+        Some(expr) =>
+          perceus_collect_capture_ids_expr(
+            expr, outer_scopes, local_scopes, captures, seen,
+          )
+        None => ()
+      }
     @core.Expr::Yield(expr~, ..) =>
       perceus_collect_capture_ids_expr(
         expr, outer_scopes, local_scopes, captures, seen,
@@ -669,6 +677,11 @@ fn perceus_count_expr(
     @core.Expr::Continue(args~, ..) =>
       for arg in args {
         perceus_count_expr(arg, scopes, ctx)
+      }
+    @core.Expr::Return(value~, ..) =>
+      match value {
+        Some(expr) => perceus_count_expr(expr, scopes, ctx)
+        None => ()
       }
     @core.Expr::Yield(expr~, ..) => perceus_count_expr(expr, scopes, ctx)
     @core.Expr::Perform(args~, ..) =>
@@ -968,6 +981,12 @@ fn perceus_emit_expr(
           emit_ctx,
           site + ".arg[\{i.to_string()}]",
         )
+      }
+    @core.Expr::Return(value~, ..) =>
+      match value {
+        Some(expr) =>
+          perceus_emit_expr(expr, scopes, count_ctx, emit_ctx, site + ".value")
+        None => ()
       }
     @core.Expr::Yield(expr~, ..) =>
       perceus_emit_expr(expr, scopes, count_ctx, emit_ctx, site + ".value")
@@ -1431,6 +1450,11 @@ fn p2_count_expr(ctx : PerceusCountCtx2, expr : @core.Expr) -> Unit {
     @core.Expr::Continue(args~, ..) =>
       for arg in args {
         p2_count_expr(ctx, arg)
+      }
+    @core.Expr::Return(value~, ..) =>
+      match value {
+        Some(expr) => p2_count_expr(ctx, expr)
+        None => ()
       }
     @core.Expr::Yield(expr~, ..) => p2_count_expr(ctx, expr)
     @core.Expr::Perform(args~, ..) =>
@@ -1944,6 +1968,11 @@ fn p2_emit_expr(
     @core.Expr::Continue(args~, ..) =>
       for i = 0; i < args.length(); i = i + 1 {
         p2_emit_expr(ctx, args[i], site + ".arg[\{i.to_string()}]")
+      }
+    @core.Expr::Return(value~, ..) =>
+      match value {
+        Some(expr) => p2_emit_expr(ctx, expr, site + ".value")
+        None => ()
       }
     @core.Expr::Yield(expr~, ..) => p2_emit_expr(ctx, expr, site + ".value")
     @core.Expr::Perform(args~, ..) =>

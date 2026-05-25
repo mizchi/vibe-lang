@@ -779,6 +779,10 @@ fn infer_expr_kind_with(
       let _ = span
       ValueKind::I64
     }
+    @core.Expr::Return(span~, ..) => {
+      let _ = span
+      ValueKind::I64
+    }
     @core.Expr::Yield(expr~, span~) => {
       let _ = expr
       let _ = span

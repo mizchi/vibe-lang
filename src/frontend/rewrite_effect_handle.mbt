@@ -236,6 +236,8 @@ fn reh_rewrite_expr(expr : @core.Expr) -> @core.Expr {
       @core.Expr::Break(value=value.map(fn(v) { reh_rewrite_expr(v) }), span~)
     @core.Expr::Continue(args~, span~) =>
       @core.Expr::Continue(args=args.map(reh_rewrite_expr), span~)
+    @core.Expr::Return(value~, span~) =>
+      @core.Expr::Return(value=value.map(fn(v) { reh_rewrite_expr(v) }), span~)
     @core.Expr::Record(fields~, span~) => {
       let next_fields : Array[@core.RecordFieldExpr] = []
       for field in fields {
@@ -721,6 +723,11 @@ fn reh_replace_performs_expr(
     @core.Expr::Continue(args~, span~) =>
       @core.Expr::Continue(
         args=args.map(fn(e) { reh_replace_performs_expr(e, handlers) }),
+        span~,
+      )
+    @core.Expr::Return(value~, span~) =>
+      @core.Expr::Return(
+        value=value.map(fn(v) { reh_replace_performs_expr(v, handlers) }),
         span~,
       )
     @core.Expr::Record(fields~, span~) => {

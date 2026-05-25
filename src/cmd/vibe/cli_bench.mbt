@@ -754,6 +754,18 @@ fn with_default_bench_wasm_flags(flags : Array[String]) -> Array[String] {
   if !has_wasm_feature_flag(out, "exceptions") {
     out.push("exceptions=y")
   }
+  // Enable wasm-gc by default so the same runner can execute either the
+  // linear-memory or the GC backend output. wasmtime ignores the flag
+  // when the module doesn't use GC types.
+  if !has_wasm_feature_flag(out, "gc") {
+    out.push("gc=y")
+  }
+  // wasm-gc closures use typed function refs (`ref.func` / `call_ref`)
+  // which require the function-references proposal. Enable by default
+  // for the same reason as `gc=y`: harmless for linear-only modules.
+  if !has_wasm_feature_flag(out, "function-references") {
+    out.push("function-references=y")
+  }
   out
 }
 
@@ -916,11 +928,28 @@ fn run_wasmtime_bench_module(
 }
 
 ///|
+///|
+/// Resolve the wasmtime `--invoke` export name for the bench runner.
+/// Linear backend emits the CLI-tagged `_vibe_run_tagged` wrapper;
+/// wasm-gc backend doesn't (it only emits the user-declared exports +
+/// the synthesized `_start`). VIBE_BENCH_BACKEND=gc switches the bench
+/// pipeline over, including this entrypoint selection.
+fn bench_default_invoke_name() -> String {
+  match @sys.get_env_var("VIBE_BENCH_BACKEND") {
+    Some("gc") | Some("wasm-gc") => "_start"
+    _ => cli_tagged_run_export_name
+  }
+}
+
+///|
 fn run_bench_module(
   runner : BenchWasmRunner,
   entry_path : String,
   wasm_path : String,
   use_node_runner : Bool,
+  // Per-mode entry export name. Defaults to `bench_default_invoke_name()`
+  // which respects the VIBE_BENCH_BACKEND env var.
+  invoke_name? : String = bench_default_invoke_name(),
 ) -> Result[Unit, String] {
   let tmp_prefix = wasm_path + ".bench_exec"
   let exec_out = if use_node_runner {
@@ -937,7 +966,9 @@ fn run_bench_module(
       ["_start"],
     )
   } else {
-    run_wasmtime_invoke_run_capture(runner, wasm_path, tmp_prefix)
+    run_wasmtime_invoke_named_capture(
+      runner, wasm_path, tmp_prefix, invoke_name,
+    )
   }
   if exec_out.status == 0 {
     Ok(())
@@ -1205,10 +1236,22 @@ fn compile_bench_script_to_wasm_with_runner(
   let use_node_runner = force_node_runner ||
     use_http_host_runner ||
     use_fs_host_runner
+  // Resolve backend selection early so it can feed into both the cache
+  // mode tag and the compile path below.
+  let bench_backend_gc_requested = match
+    @sys.get_env_var("VIBE_BENCH_BACKEND") {
+    Some("gc") | Some("wasm-gc") => true
+    _ => false
+  }
+  let bench_backend_gc = bench_backend_gc_requested && !use_node_runner
   let cached_hash_path = wasm_path + ".hashes"
   let cached_mode_path = wasm_path + ".mode"
   let current_hashes = collect_source_hash_cache(db, entry, true)
-  let current_mode = if use_node_runner { "host" } else { "plain" }
+  // Include the backend selection in the mode tag so the cache doesn't
+  // serve a linear-backend wasm to a gc-backend bench (or vice versa).
+  let backend_suffix = if bench_backend_gc { ":gc" } else { "" }
+  let current_mode = (if use_node_runner { "host" } else { "plain" }) +
+    backend_suffix
   let has_cached_hashes = @os_fs.path_exists(cached_hash_path)
   let cached_mode_matches = if @os_fs.path_exists(cached_mode_path) {
     let saved_mode = @os_fs.read_file_to_string(cached_mode_path) catch {
@@ -1273,8 +1316,14 @@ fn compile_bench_script_to_wasm_with_runner(
     Some(level) => Some(level)
     None => Some("-Oz")
   }
+  // Backend selection (`bench_backend_gc`) was resolved earlier so the
+  // cache-mode tag could include it.
   // Step 1: produce the raw wasm with no in-process optimization.
-  let raw_bytes = if use_node_runner {
+  let raw_bytes = if bench_backend_gc {
+    @runtime_compile.compile_module_wasm_gc(db, entry) catch {
+      e => return Err("compile wasm-gc error: " + e.user_message())
+    }
+  } else if use_node_runner {
     @runtime_compile.compile_module_wasm_with_opt_level(
       db,
       entry,
@@ -1299,15 +1348,21 @@ fn compile_bench_script_to_wasm_with_runner(
   }
   // Step 2: optionally optimize. Try shell-out first; on failure fall
   // back to in-process @wite (which is what `vibe compile -Oz` does).
-  let wasm_bytes = match bench_opt_level {
+  // wasm-gc output is intentionally NOT optimized — moon-bundled
+  // `moon-wasm-opt` mishandles gc types (it dropped the entire bench
+  // body down to `i64.const 15` in early experiments), and the
+  // in-process @wite optimizer has no gc code path either. Keep the
+  // raw bytes; user-visible perf is the codegen quality of the gc
+  // backend itself, which is what we want to measure.
+  let wasm_bytes = if bench_backend_gc {
+    raw_bytes
+  } else {
+    match bench_opt_level {
     None => raw_bytes
     Some(level) =>
       match try_wasm_opt_shell_out(raw_bytes, level, wasm_path) {
         Some(opt) => opt
         None =>
-          // Shell-out unavailable / failed — try in-process @wite as a
-          // last resort. This may still be pathological on very large
-          // selfhost-import wasm, but it is the historical path.
           if use_node_runner {
             @runtime_compile.compile_module_wasm_with_opt_level(
               db,
@@ -1331,6 +1386,7 @@ fn compile_bench_script_to_wasm_with_runner(
             }
           }
       }
+    }
   }
   @os_fs.write_bytes_to_file(wasm_path, wasm_bytes) catch {
     e => return Err("write wasm failed: " + e.to_string())

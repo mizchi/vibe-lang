@@ -742,3 +742,93 @@ test "wasm-gc e2e: let rec nested helper captures outer local (#273)" {
     #|sum_range(100)
   assert_gc_e2e(src, "let_rec_nested_capture", 5050)
 }
+
+///|
+test "wasm-gc e2e: return from inside while loop" {
+  // `return` must escape the function frame, not just the loop. If
+  // return were wrongly desugared into `break`, the function would
+  // fall through to the trailing `-1`.
+  let src =
+    #|let find_first_neg: (Array[Int]) -> Int = (arr) -> {
+    #|  let mut i = 0
+    #|  while i < Array::length(arr) {
+    #|    if Array::get(arr, i) < 0 {
+    #|      return i
+    #|    }
+    #|    i = i + 1
+    #|  }
+    #|  -1
+    #|}
+    #|find_first_neg([1, 2, -3, 4])
+  assert_gc_e2e(src, "return_from_while", 2)
+}
+
+///|
+test "wasm-gc e2e: return at function tail (equivalent to tail expr)" {
+  let src =
+    #|let twice: (Int) -> Int = (n) -> {
+    #|  return n * 2
+    #|}
+    #|twice(21)
+  assert_gc_e2e(src, "return_tail", 42)
+}
+
+///|
+test "wasm-gc e2e: mut struct field — write then read" {
+  // ADR-0052: `mut` field becomes a wasm-gc struct.set / struct.get.
+  let src =
+    #|struct Counter {
+    #|  mut count: Int
+    #|}
+    #|let main: () -> Int = () -> {
+    #|  let c = Counter::{ count: 7 }
+    #|  c.count = 42
+    #|  c.count
+    #|}
+    #|main()
+  assert_gc_e2e(src, "mut_field_set_get", 42)
+}
+
+///|
+test "wasm-gc e2e: mut struct field — compound update" {
+  let src =
+    #|struct Counter {
+    #|  mut count: Int
+    #|}
+    #|let bump = (c: Counter) -> Unit {
+    #|  c.count = c.count + 1
+    #|}
+    #|let main: () -> Int = () -> {
+    #|  let c = Counter::{ count: 10 }
+    #|  bump(c)
+    #|  bump(c)
+    #|  bump(c)
+    #|  c.count
+    #|}
+    #|main()
+  assert_gc_e2e(src, "mut_field_compound", 13)
+}
+
+///|
+test "wasm-gc e2e: ADR-0052 — non-mut field assignment is rejected" {
+  // The checker must reject `r.field = e` when `field` was not
+  // declared `mut`. We use the e2e harness's compile path (which
+  // funnels through the checker) and assert that compilation fails.
+  let db = VibeDb::new()
+  let src =
+    #|struct Counter {
+    #|  count: Int
+    #|}
+    #|let main: () -> Int = () -> {
+    #|  let c = Counter::{ count: 0 }
+    #|  c.count = 5
+    #|  c.count
+    #|}
+    #|main()
+  db.set_source("main", src)
+  let result = try? @runtime_compile.compile_module_wasm_gc(db, "main")
+  match result {
+    Ok(_) => fail("expected compile error for non-mut field assignment")
+    Err(_) => () // expected
+  }
+}

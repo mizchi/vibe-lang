@@ -423,6 +423,7 @@ pub fn Expr::structural_hash(self : Expr) -> Int {
     }
     Expr::Break(..) => 0x42726561 // "Brea"
     Expr::Continue(..) => 0x436f6e74 // "Cont"
+    Expr::Return(..) => 0x52657475 // "Retu"
     Expr::Yield(expr~, ..) => {
       let mut h = 0x5969656c // "Yiel"
       h = combine_hash(h, expr.structural_hash())
@@ -665,6 +666,10 @@ fn LoopParam::structural_hash(self : LoopParam) -> Int {
 fn StructField::structural_hash(self : StructField) -> Int {
   let mut h = self.name.hash()
   h = combine_hash(h, self.ty.structural_hash())
+  // Fold `mut` into the structural identity (ADR-0052) so that a
+  // struct with `mut x: T` hashes differently from `x: T`.
+  // 0x4d757421 = "Mut!" in ASCII.
+  h = combine_hash(h, if self.is_mut { 0x4d757421 } else { 0 })
   h
 }
 

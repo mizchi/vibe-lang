@@ -239,6 +239,12 @@ priv struct GcCodegenCtx {
   /// Compile-time known constants from top-level let bindings.
   /// Maps name → (global_index, val_kind)
   global_consts : Map[String, (Int, GcValKind)]
+  // Top-level String constants. wasm globals don't take arbitrary
+  // initializer expressions for struct/array refs without const ops, so
+  // we keep the value as a MoonBit String and emit `emit_string_literal`
+  // at every use site. Cheaper than a lazy-init global for the small
+  // string constants that show up in practice (sha1 `hex_table`, etc.).
+  string_consts : Map[String, String]
   mut needs_exceptions : Bool
 }
 
@@ -526,6 +532,7 @@ fn GcCodegenCtx::new() -> GcCodegenCtx {
     error_tag_index,
     error_tag_type_index,
     global_consts: {},
+    string_consts: {},
     needs_exceptions: false,
   }
 }
@@ -930,6 +937,12 @@ fn emit_br_gc(buf : GcByteBuf, depth : Int) -> Unit {
 }
 
 ///|
+/// wasm `return` (0x0F): unwind to the current function boundary.
+fn emit_return_gc(buf : GcByteBuf) -> Unit {
+  buf.push(0x0f)
+}
+
+///|
 fn emit_br_if_gc(buf : GcByteBuf, depth : Int) -> Unit {
   buf.push(0x0d)
   write_u32_leb_gc(buf, depth)
@@ -1158,6 +1171,46 @@ fn register_struct_types_gc(
     )
     ctx.named_struct_types[struct_name] = type_idx
     ctx.named_struct_fields[struct_name] = sorted_names
+  }
+}
+
+///|
+/// Try to compile a struct field assignment: `record.field = value` →
+/// `struct.set`. Returns true on success. Used by `Stmt::IndexAssign` when
+/// the index is a string literal naming a struct field. The struct itself
+/// must already be registered via `register_struct_types_gc`. The caller
+/// is responsible for the "field must be declared `mut`" policy — by the
+/// time we land here the typechecker has already approved the write.
+fn try_compile_struct_field_set_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  field_name : String,
+  record_expr : @core.Expr,
+  value_expr : @core.Expr,
+) -> Bool raise WasmGenError {
+  let record_kind = infer_expr_kind_gc(ctx, fctx, record_expr)
+  match record_kind {
+    GcValKind::Ref(type_idx) => {
+      for struct_name, struct_type_idx in ctx.named_struct_types {
+        if struct_type_idx == type_idx {
+          match ctx.named_struct_fields.get(struct_name) {
+            Some(field_names) =>
+              for i in 0..<field_names.length() {
+                if field_names[i] == field_name {
+                  compile_expr_gc(ctx, fctx, buf, record_expr)
+                  compile_expr_gc(ctx, fctx, buf, value_expr)
+                  emit_struct_set_gc(buf, type_idx, i)
+                  return true
+                }
+              }
+            None => ()
+          }
+        }
+      }
+      false
+    }
+    _ => false
   }
 }
 
@@ -2166,6 +2219,8 @@ fn infer_expr_kind_gc(
           } else if ctx.global_consts.contains(name) {
             let (_, kind) = ctx.global_consts[name]
             kind
+          } else if ctx.string_consts.contains(name) {
+            GcValKind::Ref(ctx.string_type)
           } else if ctx.func_indices.contains(name) {
             // Top-level function used as value → closure ref
             let param_count = match ctx.func_param_counts.get(name) {
@@ -2210,7 +2265,10 @@ fn infer_expr_kind_gc(
           }
           let base_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
           if base_kind == GcValKind::Ref(ctx.string_type) {
-            GcValKind::I64
+            // `s[i]` returns a 1-char String substring (matches the
+            // checker's type for `String[Int]`). See the corresponding
+            // code-emit path below.
+            GcValKind::Ref(ctx.string_type)
           } else if base_kind == GcValKind::Ref(ctx.bytes_type) {
             GcValKind::I64
           } else if base_kind == gc_map_builder_kind_gc(ctx) {
@@ -2288,6 +2346,8 @@ fn infer_expr_kind_gc(
         | "Double::to_string"
         | "String::from_char_code" => GcValKind::Ref(ctx.string_type)
         "Int::to_double" => GcValKind::F64
+        "Int::abs" | "Int::max" | "Int::min" | "Int::signum"
+        | "Int::is_even" | "Int::is_odd" => GcValKind::I64
         "Double::to_int" => GcValKind::I64
         "Double::to_i64_bits" => GcValKind::I64
         "Double::parse" => GcValKind::F64
@@ -2648,7 +2708,8 @@ fn infer_expr_kind_gc(
         _ => GcValKind::EqRef
       }
     }
-    @core.Expr::Break(..) | @core.Expr::Continue(..) => GcValKind::I32
+    @core.Expr::Break(..) | @core.Expr::Continue(..) | @core.Expr::Return(..) =>
+      GcValKind::I32
     other =>
       raise WasmGenError::Unsupported(
         "expr: " + other.to_string()[:40].to_owned(),
@@ -2725,6 +2786,10 @@ fn compile_string_char_code_at(
   emit_local_get_gc(buf, data_idx)
   emit_local_get_gc(buf, i_idx)
   emit_array_get_gc(buf, ctx.array_i32_type)
+  // String char array is i32-typed but vibe Int = i64; extend to match
+  // callers that consume the result as Int (e.g. sha1 `read_word` shifts
+  // the byte left by 24 via `__lshift` which expects i64).
+  emit_i64_extend_i32_s_gc(buf)
 }
 
 ///|
@@ -6230,6 +6295,12 @@ fn compile_expr_gc(
             // Top-level constant (Int, Bool, String)
             let (idx, _) = ctx.global_consts[name]
             emit_global_get_gc(buf, idx)
+          } else if ctx.string_consts.contains(name) {
+            // Top-level String constant: inline the literal at each use
+            // site. Construction cost is the same as a per-call literal
+            // — sha1 `hex_table = "0123456789abcdef"` referenced via
+            // `hex_table[i]` etc.
+            emit_string_literal(ctx, buf, ctx.string_consts[name])
           } else if ctx.func_indices.contains(name) {
             // Top-level function used as value: wrap in closure struct
             let func_idx = ctx.func_indices[name]
@@ -6681,14 +6752,47 @@ fn compile_expr_gc(
           if pos_args.length() != 2 {
             raise WasmGenError::Unsupported("__index arity")
           }
+          // Struct field access: `r.field` parses as `__index(r, "field")`.
+          // Try the struct path first; on miss fall through to the
+          // string / bytes / map / array cases below.
+          let struct_handled = match pos_args[1] {
+            @core.Expr::String(value=field_name, ..) =>
+              try_compile_struct_field_get_gc(
+                ctx, fctx, buf, field_name, pos_args[0],
+              )
+            _ => false
+          }
           let base_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
-          if base_kind == GcValKind::Ref(ctx.string_type) {
-            compile_string_char_code_at(
-              ctx,
-              fctx,
-              buf,
-              pos_args[0],
-              pos_args[1],
+          if struct_handled {
+            // already emitted
+            ()
+          } else if base_kind == GcValKind::Ref(ctx.string_type) {
+            // `s[i]` on String is typed as String (1-char substring) by
+            // the checker — NOT as char code (use `String::char_code_at`
+            // for that). Emit `substring(s, i, i+1)` so the result type
+            // matches what callers expect; previously this called
+            // `compile_string_char_code_at` and silently mis-typed the
+            // result as i64, breaking any code that piped `s[i]` into
+            // a String-returning function (e.g. sha1's `to_hex_char`).
+            let next_idx = @core.Expr::Call(
+              name="__add",
+              type_args=[],
+              args=[
+                @core.CallArg::{
+                  label: None,
+                  expr: pos_args[1],
+                  span: pos_args[1].span(),
+                },
+                @core.CallArg::{
+                  label: None,
+                  expr: @core.Expr::Int(value=1L, span=pos_args[1].span()),
+                  span: pos_args[1].span(),
+                },
+              ],
+              span=pos_args[1].span(),
+            )
+            compile_string_substring(
+              ctx, fctx, buf, pos_args[0], pos_args[1], next_idx,
             )
           } else if base_kind == GcValKind::Ref(ctx.bytes_type) {
             compile_bytes_get_gc(ctx, fctx, buf, pos_args[0], pos_args[1])
@@ -7043,6 +7147,107 @@ fn compile_expr_gc(
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
           emit_f64_convert_i64_s_gc(buf)
         }
+        // Phase A.2 of docs/spec/codegen-dual-backend.md: fill in
+        // the cheap Int::* arithmetic utilities that linear has but
+        // wasm-gc was missing. All operate on raw i64.
+        "Int::abs" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("Int::abs arity")
+          }
+          let x = alloc_local_gc(fctx, GcValKind::I64)
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_local_tee_gc(buf, x)
+          emit_i64_const_gc(buf, 0L)
+          emit_i64_lt_s_gc(buf)
+          emit_if_gc(buf, Some(GcValKind::I64))
+          emit_i64_const_gc(buf, 0L)
+          emit_local_get_gc(buf, x)
+          emit_i64_sub_gc(buf)
+          emit_else_gc(buf)
+          emit_local_get_gc(buf, x)
+          emit_end_gc(buf)
+        }
+        "Int::max" => {
+          if pos_args.length() != 2 {
+            raise WasmGenError::Unsupported("Int::max arity")
+          }
+          let a = alloc_local_gc(fctx, GcValKind::I64)
+          let b = alloc_local_gc(fctx, GcValKind::I64)
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_local_set_gc(buf, a)
+          compile_expr_gc(ctx, fctx, buf, pos_args[1])
+          emit_local_set_gc(buf, b)
+          emit_local_get_gc(buf, a)
+          emit_local_get_gc(buf, b)
+          emit_i64_gt_s_gc(buf)
+          emit_if_gc(buf, Some(GcValKind::I64))
+          emit_local_get_gc(buf, a)
+          emit_else_gc(buf)
+          emit_local_get_gc(buf, b)
+          emit_end_gc(buf)
+        }
+        "Int::min" => {
+          if pos_args.length() != 2 {
+            raise WasmGenError::Unsupported("Int::min arity")
+          }
+          let a = alloc_local_gc(fctx, GcValKind::I64)
+          let b = alloc_local_gc(fctx, GcValKind::I64)
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_local_set_gc(buf, a)
+          compile_expr_gc(ctx, fctx, buf, pos_args[1])
+          emit_local_set_gc(buf, b)
+          emit_local_get_gc(buf, a)
+          emit_local_get_gc(buf, b)
+          emit_i64_lt_s_gc(buf)
+          emit_if_gc(buf, Some(GcValKind::I64))
+          emit_local_get_gc(buf, a)
+          emit_else_gc(buf)
+          emit_local_get_gc(buf, b)
+          emit_end_gc(buf)
+        }
+        "Int::signum" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("Int::signum arity")
+          }
+          let x = alloc_local_gc(fctx, GcValKind::I64)
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_local_set_gc(buf, x)
+          emit_local_get_gc(buf, x)
+          emit_i64_const_gc(buf, 0L)
+          emit_i64_gt_s_gc(buf)
+          emit_if_gc(buf, Some(GcValKind::I64))
+          emit_i64_const_gc(buf, 1L)
+          emit_else_gc(buf)
+          emit_local_get_gc(buf, x)
+          emit_i64_const_gc(buf, 0L)
+          emit_i64_lt_s_gc(buf)
+          emit_if_gc(buf, Some(GcValKind::I64))
+          emit_i64_const_gc(buf, -1L)
+          emit_else_gc(buf)
+          emit_i64_const_gc(buf, 0L)
+          emit_end_gc(buf)
+          emit_end_gc(buf)
+        }
+        "Int::is_even" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("Int::is_even arity")
+          }
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_i64_const_gc(buf, 1L)
+          emit_i64_and_gc(buf)
+          emit_i64_const_gc(buf, 0L)
+          emit_i64_eq_gc(buf)
+        }
+        "Int::is_odd" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("Int::is_odd arity")
+          }
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_i64_const_gc(buf, 1L)
+          emit_i64_and_gc(buf)
+          emit_i64_const_gc(buf, 1L)
+          emit_i64_eq_gc(buf)
+        }
         "Double::to_int" => {
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
           emit_i64_trunc_f64_s_gc(buf)
@@ -7151,7 +7356,18 @@ fn compile_expr_gc(
           emit_i32_const_gc(buf, 0)
         }
         "Array::push" => {
-          // GC arrays are fixed-size; create new array of len+1 with copy
+          // wasm-gc arrays are fixed-size; we allocate a new array of
+          // len+1 with the elements copied + the new value appended.
+          // If the receiver is a bare local binding (`Array::push(arr,
+          // v)` where `arr` is an Ident → local var), write the new
+          // array back into that local so subsequent reads see the
+          // growth. This mirrors how vibe's `Array::push` is
+          // semantically a mutation on shared state (the linear backend
+          // implements it as in-place growth of a heap buffer).
+          // Non-local receivers (e.g. `Array::push(record.field, v)`)
+          // are not yet supported — but those are uncommon in user code
+          // since `Array::push` only makes sense when you have a
+          // reference to update.
           if pos_args.length() != 2 {
             raise WasmGenError::Unsupported("Array::push arity")
           }
@@ -7201,6 +7417,19 @@ fn compile_expr_gc(
           emit_local_get_gc(buf, len_l)
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
           emit_array_set_gc(buf, type_idx)
+          // Write the new array back into the receiver's local so the
+          // caller's binding observes the growth.
+          match pos_args[0] {
+            @core.Expr::Ident(name~, ..) =>
+              match fctx.locals.get(name) {
+                Some(info) => {
+                  emit_local_get_gc(buf, new_arr)
+                  emit_local_set_gc(buf, info.idx)
+                }
+                None => () // captured from outer scope: silently no-op (pre-existing wasm-gc gap)
+              }
+            _ => () // complex receiver: silently no-op
+          }
           emit_i32_const_gc(buf, 0)
         }
         "Array::slice" => {
@@ -8649,6 +8878,16 @@ fn compile_expr_gc(
     @core.Expr::Continue(..) =>
       // Continue while loop: br to loop header (depth 0)
       emit_br_gc(buf, 0)
+    @core.Expr::Return(value~, ..) => {
+      // Emit the value (if any), then wasm `return`. Bare `return`
+      // produces a Unit tagged constant since the function frame
+      // always expects a result on the stack.
+      match value {
+        Some(v) => compile_expr_gc(ctx, fctx, buf, v)
+        None => emit_i64_const_gc(buf, 0L)
+      }
+      emit_return_gc(buf)
+    }
     other =>
       raise WasmGenError::Unsupported(
         "expr: " + other.to_string()[:40].to_owned(),
@@ -8868,16 +9107,28 @@ fn compile_stmt_gc(
       }
     }
     @core.Stmt::IndexAssign(target~, index~, value~, ..) => {
-      let base_kind = infer_expr_kind_gc(ctx, fctx, target)
-      let type_idx = gc_array_type_idx_from_kind(ctx, base_kind, "IndexAssign")
-      compile_expr_gc(ctx, fctx, buf, target)
-      compile_expr_gc(ctx, fctx, buf, index)
-      let idx_kind = infer_expr_kind_gc(ctx, fctx, index)
-      if idx_kind == GcValKind::I64 {
-        emit_i32_wrap_i64_gc(buf)
+      // Struct-field assignment `r.field = v` is parsed as
+      // IndexAssign(r, "field", v). Try the struct path first; on miss
+      // fall through to array/element-set.
+      let handled = match index {
+        @core.Expr::String(value=field_name, ..) =>
+          try_compile_struct_field_set_gc(
+            ctx, fctx, buf, field_name, target, value,
+          )
+        _ => false
       }
-      compile_expr_gc(ctx, fctx, buf, value)
-      emit_array_set_gc(buf, type_idx)
+      if !handled {
+        let base_kind = infer_expr_kind_gc(ctx, fctx, target)
+        let type_idx = gc_array_type_idx_from_kind(ctx, base_kind, "IndexAssign")
+        compile_expr_gc(ctx, fctx, buf, target)
+        compile_expr_gc(ctx, fctx, buf, index)
+        let idx_kind = infer_expr_kind_gc(ctx, fctx, index)
+        if idx_kind == GcValKind::I64 {
+          emit_i32_wrap_i64_gc(buf)
+        }
+        compile_expr_gc(ctx, fctx, buf, value)
+        emit_array_set_gc(buf, type_idx)
+      }
       if is_last {
         emit_i32_const_gc(buf, 0)
       }
@@ -8926,7 +9177,7 @@ fn collect_top_level_funcs_gc(
       | @core.Stmt::InternalExportLet(name~, expr~, ..) =>
         match unwrap_type_assert_block(expr) {
           @core.Expr::Fn(..) => top_func_names[name] = true
-          @core.Expr::Int(..) | @core.Expr::Bool(..) =>
+          @core.Expr::Int(..) | @core.Expr::Bool(..) | @core.Expr::String(..) =>
             top_func_names[name] = true
           _ => ()
         }
@@ -9117,6 +9368,11 @@ fn build_module_gc(
   funcs : Array[GcWasmFunc],
   run_index : Int,
   global_init_values? : Array[(GcValKind, Int64)] = [],
+  // Additional user-declared exports (e.g. `_bench_run`, custom-named
+  // entry points). Each name is looked up in `ctx.func_indices` and
+  // emitted in the export section alongside the synthesized `_start`.
+  // Empty for tests/run/build that only need `_start`.
+  user_exports? : Array[String] = [],
 ) -> Bytes {
   let buf = GcByteBuf::new()
   buf.push(0x00)
@@ -9195,14 +9451,37 @@ fn build_module_gc(
     write_section_gc(buf, 6, global_sec.to_array())
   }
   let export_sec = GcByteBuf::new()
-  write_u32_leb_gc(export_sec, 1)
-  let name = "_start"
-  write_u32_leb_gc(export_sec, name.length())
-  for c in name {
-    export_sec.push(c.to_int())
+  // Collect (name, func_index) pairs. Default `_start` points at the
+  // synthesized module run wrapper (which executes any top-level
+  // statements). If the user wrote `export let _start = ...` themselves,
+  // their function takes over `_start` — the run wrapper is unused in
+  // that case (which is fine: bench / test source emits its work into
+  // `_start` directly and has no top-level statements).
+  let export_entries : Array[(String, Int)] = []
+  let user_start_idx = ctx.func_indices.get("_start")
+  match user_start_idx {
+    Some(idx) => export_entries.push(("_start", idx))
+    None => export_entries.push(("_start", run_index))
   }
-  export_sec.push(0x00)
-  write_u32_leb_gc(export_sec, run_index)
+  for export_name in user_exports {
+    if export_name == "_start" {
+      continue // already pushed above
+    }
+    match ctx.func_indices.get(export_name) {
+      Some(idx) => export_entries.push((export_name, idx))
+      None => () // user named a non-function export (e.g. a top-level constant) — skip
+    }
+  }
+  write_u32_leb_gc(export_sec, export_entries.length())
+  for entry in export_entries {
+    let (name, idx) = entry
+    write_u32_leb_gc(export_sec, name.length())
+    for c in name {
+      export_sec.push(c.to_int())
+    }
+    export_sec.push(0x00)
+    write_u32_leb_gc(export_sec, idx)
+  }
   write_section_gc(buf, 7, export_sec.to_array())
   // Element section: declare closure function refs for ref.func
   if ctx.closure_lifted_funcs.length() > 0 {
@@ -9236,6 +9515,16 @@ fn build_module_gc(
 
 ///|
 pub fn emit_module_wasm_gc(ast : @core.Module) -> Bytes raise WasmGenError {
+  // Mirror the linear backend's prologue: strip type-assertion blocks
+  // first (so the AST has bare Int/Bool literals where the user wrote
+  // `let c: Int = 100`), then fold pure top-level expressions
+  // (`let mask32 = __bit_or(__lshift(...), 0xFFFF)`, etc.) into Int /
+  // Bool literals so they can be lifted to wasm globals and referenced
+  // from inside other top-level functions. Without these passes, the
+  // value stays a Call expression and any function body that references
+  // it (e.g. `read_word` in sha1) becomes a closure with a free var
+  // the gc backend can't resolve → "unknown name: mask32".
+  let ast = static_fold_module(strip_type_assert_module(ast))
   let ctx = GcCodegenCtx::new()
   scan_enum_defs_gc(ctx, ast)
   register_struct_types_gc(ctx, ast)
@@ -9255,7 +9544,12 @@ pub fn emit_module_wasm_gc(ast : @core.Module) -> Bytes raise WasmGenError {
       @core.Stmt::Let(name~, expr~, ..)
       | @core.Stmt::ExportLet(name~, expr~, ..)
       | @core.Stmt::InternalExportLet(name~, expr~, ..) =>
-        match expr {
+        // unwrap_type_assert_block matters: `let c: Int = 100` is wrapped
+        // by the parser in a type-annotation block. Without unwrapping
+        // the match below sees a Block, never an Int literal, so the
+        // global gets silently dropped — leaving downstream functions
+        // that reference it with an "unknown name" error.
+        match unwrap_type_assert_block(expr) {
           @core.Expr::Int(value~, ..) => {
             ctx.global_consts[name] = (global_idx, GcValKind::I64)
             global_init_values.push((GcValKind::I64, value))
@@ -9268,10 +9562,13 @@ pub fn emit_module_wasm_gc(ast : @core.Module) -> Bytes raise WasmGenError {
             )
             global_idx += 1
           }
+          @core.Expr::String(value~, ..) =>
+            // Record the literal value; emit fresh per use site.
+            ctx.string_consts[name] = value
           _ => ()
         }
       @core.Stmt::LetMut(name~, expr~, ..) =>
-        match expr {
+        match unwrap_type_assert_block(expr) {
           @core.Expr::Int(value~, ..) => {
             ctx.global_consts[name] = (global_idx, GcValKind::I64)
             global_init_values.push((GcValKind::I64, value))
@@ -9361,5 +9658,23 @@ pub fn emit_module_wasm_gc(ast : @core.Module) -> Bytes raise WasmGenError {
   for lf in ctx.closure_lifted_funcs {
     wasm_funcs.push(lf)
   }
-  build_module_gc(ctx, wasm_funcs, run_index, global_init_values~)
+  // Collect user `export let` function names so they appear in the wasm
+  // export section (otherwise wasmtime --invoke can only call `_start`).
+  // Required for `vibe bench --backend=gc` which invokes `_bench_run`,
+  // and for any future entrypoint customization.
+  let user_exports : Array[String] = []
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::ExportLet(name~, expr~, ..)
+      | @core.Stmt::InternalExportLet(name~, expr~, ..) =>
+        match unwrap_type_assert_block(expr) {
+          @core.Expr::Fn(..) => user_exports.push(name)
+          _ => ()
+        }
+      _ => ()
+    }
+  }
+  build_module_gc(
+    ctx, wasm_funcs, run_index, global_init_values~, user_exports~,
+  )
 }

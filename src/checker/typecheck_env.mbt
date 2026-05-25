@@ -114,6 +114,10 @@ pub struct TypeEnv {
   mut next_effect_var : Int
   mut loop_depth : Int
   mut loop_break_types : Array[@core.Type]
+  // Stack of expected return types for enclosing function bodies. Pushed
+  // on entering Expr::Fn, popped on exit. `Expr::Return` checks the top
+  // of this stack against the returned value's type.
+  fn_return_stack : Array[@core.Type]
   mut handle_arm_depth : Int
   mut handle_resume_types : Map[String, @core.Type]
   mut handle_resume_types_active : Bool
@@ -172,6 +176,7 @@ pub fn TypeEnv::new() -> TypeEnv {
     next_effect_var: 0,
     loop_depth: 0,
     loop_break_types: [],
+    fn_return_stack: [],
     handle_arm_depth: 0,
     handle_resume_types: {},
     handle_resume_types_active: false,
@@ -441,6 +446,7 @@ pub fn TypecheckSession::new_env(self : TypecheckSession) -> TypeEnv {
     next_effect_var: 0,
     loop_depth: 0,
     loop_break_types: [],
+    fn_return_stack: [],
     handle_arm_depth: 0,
     handle_resume_types: {},
     handle_resume_types_active: false,

@@ -769,6 +769,15 @@ fn monoify_expr(
       }
       @core.Expr::Continue(args=next_args, span~)
     }
+    @core.Expr::Return(value~, span~) =>
+      @core.Expr::Return(
+        value=value.map(fn(inner) {
+          monoify_expr(
+            inner, ctx, scope, current_spec, iterable_spec, local_types, scope_type_subst,
+          )
+        }),
+        span~,
+      )
     @core.Expr::Handle(body~, arms~, span~) => {
       let next_arms : Array[@core.MatchArm] = []
       for arm in arms {
@@ -1717,6 +1726,14 @@ fn MonoifyContext::iterable_root_tag_from_expr(
   match self.expr_types.get_expr_type(expr.span()) {
     Some(@core.Type::Array(_)) => Some("Array")
     Some(@core.Type::Named(name~, ..)) => Some(name)
+    // Built-in primitive iterables (ADR-0044 Phase 3). Without these
+    // the monoify pass left `Iterator::fold` etc. as the generic
+    // eqref-erased version when invoked on a String / Bytes / Map,
+    // breaking wasm-gc closure dispatch (closure expects i64, fold
+    // generic version uses eqref → type mismatch at call_ref).
+    Some(@core.Type::String) => Some("String")
+    Some(@core.Type::Bytes) => Some("Bytes")
+    Some(@core.Type::Map(_, _)) => Some("Map")
     _ => None
   }
 }
@@ -2021,6 +2038,13 @@ fn monoify_iter_root_from_type(ty : @core.Type) -> String? {
   match ty {
     @core.Type::Array(_) => Some("Array")
     @core.Type::Named(name~, ..) => Some(name)
+    // Built-in primitive iterables (ADR-0044 Phase 3). Mirrors the
+    // companion case in `iterable_root_tag_from_expr` — both need to
+    // recognize these for the specialized fold body to rewrite
+    // `xs|>iter_length` to `String::iter_length(xs)` etc.
+    @core.Type::String => Some("String")
+    @core.Type::Bytes => Some("Bytes")
+    @core.Type::Map(_, _) => Some("Map")
     _ => None
   }
 }

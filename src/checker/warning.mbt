@@ -72,12 +72,20 @@ fn warn_old_style_fn_def(
         .any(fn(p) { p.ty != @core.Type::Unit })
       let has_ret = ret is Some(_)
       if has_typed_param || has_ret {
+        // Underline just `let <name>` rather than the full statement —
+        // the deprecated-style warning previously spanned the entire
+        // `let f = (x: Int) -> Int { ... }` (often many lines), which
+        // drowned out genuine errors in compiler output.
+        let head_span = @core.Span::{
+          start: span.start,
+          end: span.start + 4 + name.length(),
+        }
         out.push(@core.Diagnostic::{
           stage: "warning",
           message: "deprecated function style: use `let " +
           name +
           ": <type> = <lambda>` instead",
-          span: Some(span),
+          span: Some(head_span),
           hint: Some("use `vibe fmt` to auto-convert"),
           note: None,
           severity: None,
@@ -546,6 +554,53 @@ fn walk_eq_chain(
 }
 
 ///|
+/// Walk a `Type` and mark every `Type::Named(name, ..)` it contains as
+/// used in the current warning scope. This lets `let f: (T) -> U = ...`
+/// and similar type-only references to imported names (T, U) escape the
+/// "unused import" false-positive — value-imports that happen to name
+/// types still get caught when the type appears in an annotation.
+fn mark_type_uses(ty : @core.Type, scopes : Array[WarningScope]) -> Unit {
+  match ty {
+    @core.Type::Named(name~, args~) => {
+      warning_scope_mark_use(scopes, name)
+      for arg in args {
+        mark_type_uses(arg, scopes)
+      }
+    }
+    @core.Type::Tuple(items) =>
+      for item in items {
+        mark_type_uses(item, scopes)
+      }
+    @core.Type::Array(inner) | @core.Type::Set(inner) =>
+      mark_type_uses(inner, scopes)
+    @core.Type::Map(k, v) => {
+      mark_type_uses(k, scopes)
+      mark_type_uses(v, scopes)
+    }
+    @core.Type::ArrayBuilder(inner) => mark_type_uses(inner, scopes)
+    @core.Type::MapBuilder(k, v) => {
+      mark_type_uses(k, scopes)
+      mark_type_uses(v, scopes)
+    }
+    @core.Type::Func(params~, ret~, ..) => {
+      for p in params {
+        mark_type_uses(p.ty, scopes)
+      }
+      mark_type_uses(ret, scopes)
+    }
+    @core.Type::Record(fields) =>
+      for _, fty in fields {
+        mark_type_uses(fty, scopes)
+      }
+    @core.Type::Variant(ctors) =>
+      for _, payload in ctors {
+        mark_type_uses(payload, scopes)
+      }
+    _ => () // Int, Float, etc. — no nested type refs
+  }
+}
+
+///|
 fn walk_expr(
   expr : @core.Expr,
   scopes : Array[WarningScope],
@@ -682,9 +737,13 @@ fn walk_expr(
         }
       }
     }
-    @core.Expr::Fn(params~, body~, span~, ..) => {
+    @core.Expr::Fn(params~, ret~, body~, span~, ..) => {
       scopes.push(warning_scope_new())
       for param in params {
+        // Mark any imported type referenced by a param annotation as
+        // used, so `let f: (T) -> U = ...` doesn't falsely report `T`
+        // as an unused import.
+        mark_type_uses(param.ty, scopes)
         warning_scope_declare(
           scopes,
           param.name,
@@ -692,6 +751,10 @@ fn walk_expr(
           false,
           WarningBindingKind::Variable,
         )
+      }
+      match ret {
+        Some(r) => mark_type_uses(r, scopes)
+        None => ()
       }
       walk_module(body, scopes, out)
       warning_scope_pop(scopes, out)
@@ -723,6 +786,11 @@ fn walk_expr(
     @core.Expr::Continue(args~, ..) =>
       for arg in args {
         walk_expr(arg, scopes, out)
+      }
+    @core.Expr::Return(value~, ..) =>
+      match value {
+        Some(expr) => walk_expr(expr, scopes, out)
+        None => ()
       }
     @core.Expr::Spread(expr~, ..) => walk_expr(expr, scopes, out)
     @core.Expr::Perform(args~, ..) =>

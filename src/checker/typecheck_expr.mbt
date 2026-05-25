@@ -1037,6 +1037,43 @@ fn type_expr_eff(
       }
       @core.Type::Unit
     }
+    @core.Expr::Return(value~, span~) => {
+      // `return` must appear inside a function body. We compare the
+      // returned value's type to the enclosing function's declared
+      // return type when one is available (pushed on `fn_return_stack`
+      // by Expr::Fn). Bare `return` is only legal when the enclosing
+      // function returns Unit.
+      if env.fn_return_stack.is_empty() {
+        raise TypeError::BadCall(
+          message="return used outside function body",
+          span~,
+        )
+      }
+      let expected = env.fn_return_stack[env.fn_return_stack.length() - 1]
+      match value {
+        Some(v) => {
+          let actual = type_expr_eff(env, v, aliases, effects, allow_effect)
+          if !type_equal(env, expected, actual) {
+            raise TypeError::Mismatch(
+              expected~,
+              actual~,
+              span~,
+              context=Some("return value"),
+            )
+          }
+        }
+        None =>
+          if expected != @core.Type::Unit {
+            raise TypeError::Mismatch(
+              expected~,
+              actual=@core.Type::Unit,
+              span~,
+              context=Some("bare return in non-Unit function"),
+            )
+          }
+      }
+      @core.Type::Never
+    }
     @core.Expr::Yield(expr~, span~) => {
       let _ = type_expr_eff(env, expr, aliases, effects, allow_effect)
       require_effects(
@@ -1524,9 +1561,26 @@ fn type_fn_literal(
       effects=resolved_effects,
     )
   } else {
+    // Push the (declared, type-resolved) return type so inner `return`
+    // expressions can check against it. When the return type is not
+    // declared we push a fresh type variable that the body will pin
+    // down naturally — `return e` then constrains it to typeof(e).
+    let return_target : @core.Type = match ret {
+      Some(r) => {
+        let ret_ty_with_num = match num_var {
+          Some(n) => replace_num_type(r, n)
+          None => r
+        }
+        let ret_ty = substitute_type_params(ret_ty_with_num, type_param_vars)
+        normalize_type(env, ret_ty)
+      }
+      None => fresh_type_var(env)
+    }
+    env.fn_return_stack.push(return_target)
     let body_ty = type_block(
       scope_env, body, aliases, fn_scope, fn_allow_effect,
     )
+    let _ = env.fn_return_stack.pop()
     let final_ret = match ret {
       Some(r) => {
         let ret_ty_with_num = match num_var {
@@ -1903,10 +1957,42 @@ fn type_block(
       }
       @core.Stmt::IndexAssign(target~, index~, value~, span~) => {
         // Type check target[index] = value
-        let _ = type_expr_eff(scope_env, target, aliases, effects, allow_effect)
+        let target_ty = type_expr_eff(
+          scope_env, target, aliases, effects, allow_effect,
+        )
         let _ = type_expr_eff(scope_env, index, aliases, effects, allow_effect)
         let _ = type_expr_eff(scope_env, value, aliases, effects, allow_effect)
-        let _ = span
+        // ADR-0052: reject `r.field = e` when field isn't `mut`.
+        match index {
+          @core.Expr::String(value=field_name, ..) => {
+            let resolved = resolve_type(scope_env, target_ty)
+            match resolved {
+              @core.Type::Named(name~, ..) =>
+                match scope_env.struct_defs.get(name) {
+                  Some(struct_def) =>
+                    match struct_def.get_field(field_name) {
+                      Some(field) =>
+                        if !field.is_mut {
+                          raise TypeError::BadCall(
+                            message="cannot assign to immutable field `" +
+                            field_name +
+                            "` of struct `" +
+                            name +
+                            "` — declare the field as `mut " +
+                            field_name +
+                            ": ...` to allow assignment (ADR-0052)",
+                            span~,
+                          )
+                        }
+                      None => ()
+                    }
+                  None => ()
+                }
+              _ => ()
+            }
+          }
+          _ => ()
+        }
         last = @core.Type::Unit
       }
       @core.Stmt::StructDef(name~, params~, fields~, span~) => {
@@ -2645,9 +2731,17 @@ fn type_lambda_with_context(
           }
           let normalized_effects = normalize_effects(fn_effects, span)
           let fn_scope = effect_scope_from_list(normalized_effects)
+          // Push the (declared or expected) return type for any inner
+          // `return` expressions to typecheck against.
+          let return_target = match ret {
+            Some(r) => normalize_type(env, r)
+            None => resolve_type(env, expected_ret)
+          }
+          env.fn_return_stack.push(return_target)
           let body_ty = type_block(
             scope_env, body, aliases, fn_scope, allow_effect,
           )
+          let _ = env.fn_return_stack.pop()
           let resolved_effects = effect_set_to_atoms(
             effect_set_from_atoms(scope_env, normalized_effects),
           )

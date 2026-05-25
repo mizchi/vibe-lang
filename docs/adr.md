@@ -32,6 +32,7 @@
 | 0046 | **`Option[T]` sugar `T?`** (#149)。parser で `T?` → `Option[T]` に展開、`T??` / `T?[]` も chain 可。実装は `src/parser/parser_ast_patterns.mbt` (parse_type_post_suffixes)。 | accepted |
 | 0047 | **`loop` 式 — `break(value)` で値返却** (#151)。checker (`typecheck_expr.mbt`: `env.loop_break_types` から最初の break 値の型を採用) と codegen (`wasm_codegen_expr_loop.mbt`: `block (result i64)` を発行し break が値を push) で実装済み。`loop (i = 0) { break 42 }` は `Int` を返す。 | accepted |
 | 0048 | **`map` コンテキストキーワード化** (#152)。`map {` の場合のみキーワード、それ以外は識別子。`Array::map` が `r#` なしで使用可能に。 | accepted |
+| 0052 | **struct field の `mut` 修飾子**。`struct S { mut field: T }` を許容。実装は `Array[T]` sugar ではなく **wasm-gc は `struct.set` / linear は (name_ptr, value) ペアの値スロット in-place 上書き** という backend native の direct mutation。Checker は非 mut field への `r.field = e` を error にする (`ADR-0052` ヒント付き)。content-address hash は `mut` flag を含めて区別する。`vibe x/zlib` の BitReader / BitWriter は実際に mut field に書き換え済み (zlib_test 9/9)。 | accepted |
 
 ## Effect System
 

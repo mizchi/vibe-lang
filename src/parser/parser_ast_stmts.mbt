@@ -861,6 +861,17 @@ fn AstParser::parse_struct_stmt(
       raise ParseError::UnexpectedEof(span=self.token_span())
     }
     let field_start = self.pos
+    // Optional `mut` modifier (ADR-0052): `struct S { mut x: T }`
+    // is desugared in the frontend to a length-1 Array[T] cell. The
+    // parser just records the flag here and lets the checker enforce
+    // assignment rules.
+    let is_mut = if self.peek_kind() == mut_kw() {
+      let _ = self.bump()
+      self.skip_trivia()
+      true
+    } else {
+      false
+    }
     let field_name = self.expect(name(), "field name")
     self.skip_trivia()
     let _ = self.expect(colon(), ":")
@@ -868,6 +879,7 @@ fn AstParser::parse_struct_stmt(
     fields.push(@core.StructField::{
       name: field_name.text(),
       ty: field_ty,
+      is_mut: is_mut,
       span: self.span_from(field_start),
     })
     self.expect_decl_separator("struct field separator")

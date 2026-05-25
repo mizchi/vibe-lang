@@ -17,6 +17,8 @@ fn AstParser::parse_expr(self : AstParser) -> @core.Expr raise ParseError {
     self.parse_break_expr()
   } else if self.peek_kind() == continue_kw() {
     self.parse_continue_expr()
+  } else if self.peek_kind() == return_kw() {
+    self.parse_return_expr()
   } else if self.peek_kind() == raise_kw() {
     self.parse_removed_raise_expr()
   } else if self.peek_kind() == yield_kw() {
@@ -1028,6 +1030,23 @@ fn AstParser::parse_break_expr(self : AstParser) -> @core.Expr raise ParseError 
   }
   let span = self.span_from(start)
   @core.Expr::Break(value~, span~)
+}
+
+///|
+fn AstParser::parse_return_expr(self : AstParser) -> @core.Expr raise ParseError {
+  let start = self.pos
+  let _ = self.expect(return_kw(), "return")
+  self.skip_trivia()
+  let next = self.peek_kind()
+  let value : @core.Expr? = if next == rbrace() ||
+    next == semicolon() ||
+    next == eof() {
+    None
+  } else {
+    Some(self.parse_expr())
+  }
+  let span = self.span_from(start)
+  @core.Expr::Return(value~, span~)
 }
 
 ///|
