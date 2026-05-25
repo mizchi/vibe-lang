@@ -1,9 +1,46 @@
 # wasm-gc HOF Gap: Closure ↔ Generic Iterator signature mismatch
 
 Date: 2026-05-25
-Status: investigation (no fix in this report)
+Status: **resolved** (fix in commit `7faa294` —
+  `src/frontend/monoify.mbt`)
 Related: vibe_wasm_gc_e2e_test.mbt header "Known GC codegen limitations
 (tracked in issue #41)"
+
+## Update (resolved)
+
+The root cause turned out to be **shallower than the
+monoify/closure-boxing rewrite proposed below**: two helper functions
+in monoify (`iterable_root_tag_from_expr` and
+`monoify_iter_root_from_type`) were matching only `Type::Array` and
+`Type::Named(...)`, missing the built-in primitive iterables added in
+ADR-0044 Phase 3 (`Type::String`, `Type::Bytes`, `Type::Map`).
+
+Without that root tag, `Iterator::fold(s : String, ...)` never got
+specialized → the eqref-erased generic path described below ran with
+the user's `(i64, i64) -> i64` closure, triggering the signature
+mismatch.
+
+The fix is 15 lines: add the three missing match arms. After it:
+
+| pattern | wasm-gc (before) | wasm-gc (after) |
+|---|---:|---:|
+| `Iterator::fold([Int], ...)` | ✓ | ✓ |
+| `Iterator::fold("abc", ...)` | **fail** | ✓ |
+| `Iterator::fold(Map, ...)` | **fail** | ✓ (codegen) — but blocked by a
+  separate pre-existing checker bug `expected Var(814), actual String`
+  on the Map iterable test |
+| `Iterator::fold(CustomIterable, ...)` | **fail** | ✓ |
+| custom Trio impl, etc. | **fail** | ✓ |
+
+`iterator_test.vibe` goes from 0/6 to 5/6 (the failing case is the Map
+test, blocked by an unrelated pre-existing checker bug).
+
+The analysis below is preserved as a reference for the kind of
+investigation that led to the fix — start at "What needs to happen" to
+see the original (mis-)hypothesis vs. what actually shipped.
+
+---
+
 
 ## Symptom
 
