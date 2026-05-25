@@ -232,3 +232,79 @@ test "emit_module_wasm_gc name section indices match function order" {
     prev = idx
   }
 }
+
+///|
+/// `let mk_adder = (n) -> { (x) -> { x + n } }`. The inner lambda
+/// becomes a lifted closure and must surface in the name section as
+/// `mk_adder::lambda@<offset>` so profiler stack traces show the
+/// enclosing function alongside the lambda's source position.
+fn names_closure_ast() -> @core.Module {
+  let inner_span = @core.Span::empty(80)
+  let n_ident = @core.Expr::Ident(name="n", span=names_span())
+  let x_ident = @core.Expr::Ident(name="x", span=names_span())
+  let add = names_call("__add", [x_ident, n_ident])
+  let inner_body : @core.Module = { stmts: [names_stmt_expr(add)] }
+  let inner_fn = @core.Expr::Fn(
+    type_params=[],
+    type_bounds={},
+    params=[
+      @core.FuncParam::{
+        name: "x",
+        label: @core.ParamLabel::Positional,
+        ty: @core.Type::Int,
+        bounds: [],
+      },
+    ],
+    ret=Some(@core.Type::Int),
+    effects=[],
+    body=inner_body,
+    span=inner_span,
+  )
+  let outer_body : @core.Module = { stmts: [names_stmt_expr(inner_fn)] }
+  let outer_fn = @core.Expr::Fn(
+    type_params=[],
+    type_bounds={},
+    params=[
+      @core.FuncParam::{
+        name: "n",
+        label: @core.ParamLabel::Positional,
+        ty: @core.Type::Int,
+        bounds: [],
+      },
+    ],
+    ret=Some(
+      @core.Type::Func(
+        params=[
+          {
+            name: "x",
+            label: @core.ParamLabel::Positional,
+            ty: @core.Type::Int,
+            bounds: [],
+          },
+        ],
+        ret=@core.Type::Int,
+        effects=[],
+      ),
+    ),
+    effects=[],
+    body=outer_body,
+    span=names_span(),
+  )
+  @core.Module::{ stmts: [names_let("mk_adder", outer_fn)] }
+}
+
+///|
+test "lifted closures label with parent function and source offset" {
+  let ast = names_closure_ast()
+  let bytes = (try? emit_module_wasm_gc(ast)).unwrap()
+  let payload = find_name_subsection1(bytes).unwrap()
+  let entries = parse_name_subsection1(payload)
+  let mut has_qualified_lambda = false
+  for entry in entries {
+    let (_, n) = entry
+    if n.has_prefix("mk_adder::lambda@") {
+      has_qualified_lambda = true
+    }
+  }
+  @debug.assert_eq(has_qualified_lambda, true)
+}

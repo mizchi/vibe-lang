@@ -195,6 +195,11 @@ priv struct GcFuncCtx {
   param_count : Int
   closure_call_types : Map[String, Int]
   current_rec_binding : String?
+  /// Name of the immediately-enclosing top-level function (or let-rec
+  /// binding) — used only to label lifted closures in the wasm `name`
+  /// section. Distinct from `current_rec_binding` so we don't conflate
+  /// "is rec-callable" with "is the enclosing label".
+  mut enclosing_function_name : String?
   direct_rec_call_name : String?
   direct_rec_call_func_idx : Int
   direct_rec_call_type_idx : Int
@@ -223,6 +228,12 @@ priv struct GcCodegenCtx {
   closure_fn_type_cache : Map[String, Int]
   closure_struct_type_cache : Map[String, Int]
   closure_lifted_funcs : Array[GcWasmFunc]
+  /// Parallel labels for `closure_lifted_funcs` used by the wasm `name`
+  /// custom section. Format: `<parent>::lambda@<offset>` when the
+  /// lambda is bound to a let, `lambda@<offset>` for free lambdas, or
+  /// `as_closure::<name>` for the wrapper synthesised when a top-level
+  /// function is passed as a value. Surfaces in profiler / devtools.
+  closure_lifted_labels : Array[String]
   closure_call_type_for_func : Map[String, Int]
   mut num_regular_funcs : Int
   enum_ctor_tags : Map[String, Int]
@@ -529,6 +540,7 @@ fn GcCodegenCtx::new() -> GcCodegenCtx {
     closure_fn_type_cache: {},
     closure_struct_type_cache: {},
     closure_lifted_funcs: [],
+    closure_lifted_labels: [],
     closure_call_type_for_func: {},
     num_regular_funcs: 0,
     enum_ctor_tags: {},
@@ -1983,6 +1995,7 @@ fn GcFuncCtx::new(
     param_count: idx,
     closure_call_types,
     current_rec_binding: None,
+    enclosing_function_name: None,
     direct_rec_call_name: None,
     direct_rec_call_func_idx: -1,
     direct_rec_call_type_idx: -1,
@@ -2042,6 +2055,7 @@ fn infer_block_kind_gc(
     param_count: fctx.param_count,
     closure_call_types: temp_cct,
     current_rec_binding: None,
+    enclosing_function_name: fctx.enclosing_function_name,
     direct_rec_call_name: None,
     direct_rec_call_func_idx: -1,
     direct_rec_call_type_idx: -1,
@@ -6446,6 +6460,7 @@ fn compile_expr_gc(
               body: wrapper_buf.to_array(),
               type_idx: fn_type_idx,
             })
+            ctx.closure_lifted_labels.push("as_closure::" + name)
             emit_ref_func_gc(buf, wrapper_idx)
             // Empty environment struct
             let env_type_idx = ensure_struct_type(
@@ -8757,7 +8772,7 @@ fn compile_expr_gc(
         emit_local_get_gc(buf, result_idx)
       }
     }
-    @core.Expr::Fn(params~, ret~, body~, ..) => {
+    @core.Expr::Fn(params~, ret~, body~, span=lambda_span, ..) => {
       let param_kinds : Array[GcValKind] = []
       for param in params {
         param_kinds.push(gc_val_kind_from_type(ctx, param.ty))
@@ -8839,6 +8854,7 @@ fn compile_expr_gc(
         param_count: 1 + params.length(),
         closure_call_types: lifted_closure_types,
         current_rec_binding: None,
+        enclosing_function_name: fctx.enclosing_function_name,
         direct_rec_call_name: rec_binding,
         direct_rec_call_func_idx: func_idx,
         direct_rec_call_type_idx: fn_type_idx,
@@ -8882,6 +8898,20 @@ fn compile_expr_gc(
         body: lifted_buf.to_array(),
         type_idx: fn_type_idx,
       })
+      // Prefer the let-rec binding name (so a `let rec foo = ...` lambda
+      // shows as `foo::lambda@N`), falling back to the enclosing
+      // function's source name. If neither is available (top-level
+      // lambda directly in `_start`), only the offset is used.
+      let parent_label = match rec_binding {
+        Some(p) => Some(p)
+        None => fctx.enclosing_function_name
+      }
+      let lambda_label = match parent_label {
+        Some(parent) =>
+          parent + "::lambda@" + lambda_span.start.to_string()
+        None => "lambda@" + lambda_span.start.to_string()
+      }
+      ctx.closure_lifted_labels.push(lambda_label)
       emit_ref_func_gc(buf, func_idx)
       for i in 0..<capture_indices.length() {
         emit_local_get_gc(buf, capture_indices[i])
@@ -9125,6 +9155,7 @@ fn compile_stmt_gc(
               param_count: fctx.param_count,
               closure_call_types: rec_compile_cct,
               current_rec_binding: Some(name),
+              enclosing_function_name: Some(name),
               direct_rec_call_name: None,
               direct_rec_call_func_idx: -1,
               direct_rec_call_type_idx: -1,
@@ -9458,6 +9489,9 @@ fn compile_function_gc(
   def : GcFuncDef,
 ) -> GcWasmFunc raise WasmGenError {
   let fctx = GcFuncCtx::new(ctx, def.params)
+  // Let lambdas inside this body label themselves
+  // `<def.name>::lambda@<offset>` in the wasm name section.
+  fctx.enclosing_function_name = Some(def.name)
   let body_kind = infer_block_kind_gc(ctx, fctx, def.body)
   let result_kind = match def.ret {
     Some(ty) => gc_val_kind_from_type(ctx, ty)
@@ -10011,10 +10045,15 @@ fn emit_module_wasm_gc_inner(
   func_names.push("_start")
   for i in 0..<ctx.closure_lifted_funcs.length() {
     wasm_funcs.push(ctx.closure_lifted_funcs[i])
-    // Closures don't carry source identifiers through codegen yet — the
-    // anonymous `lambda_<idx>` is enough to surface them in stack
-    // traces; mapping back to source spans is a follow-up.
-    func_names.push("lambda_" + i.to_string())
+    // Label set when the closure was lifted (see `closure_lifted_labels`
+    // doc comment) — gives `<parent>::lambda@<offset>` /
+    // `as_closure::<name>` rather than a bare ordinal.
+    let lbl = if i < ctx.closure_lifted_labels.length() {
+      ctx.closure_lifted_labels[i]
+    } else {
+      "lambda_" + i.to_string()
+    }
+    func_names.push(lbl)
   }
   // Collect user `export let` function names so they appear in the wasm
   // export section (otherwise wasmtime --invoke can only call `_start`).
