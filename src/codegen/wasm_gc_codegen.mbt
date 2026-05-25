@@ -239,6 +239,12 @@ priv struct GcCodegenCtx {
   /// Compile-time known constants from top-level let bindings.
   /// Maps name → (global_index, val_kind)
   global_consts : Map[String, (Int, GcValKind)]
+  // Top-level String constants. wasm globals don't take arbitrary
+  // initializer expressions for struct/array refs without const ops, so
+  // we keep the value as a MoonBit String and emit `emit_string_literal`
+  // at every use site. Cheaper than a lazy-init global for the small
+  // string constants that show up in practice (sha1 `hex_table`, etc.).
+  string_consts : Map[String, String]
   mut needs_exceptions : Bool
 }
 
@@ -526,6 +532,7 @@ fn GcCodegenCtx::new() -> GcCodegenCtx {
     error_tag_index,
     error_tag_type_index,
     global_consts: {},
+    string_consts: {},
     needs_exceptions: false,
   }
 }
@@ -2212,6 +2219,8 @@ fn infer_expr_kind_gc(
           } else if ctx.global_consts.contains(name) {
             let (_, kind) = ctx.global_consts[name]
             kind
+          } else if ctx.string_consts.contains(name) {
+            GcValKind::Ref(ctx.string_type)
           } else if ctx.func_indices.contains(name) {
             // Top-level function used as value → closure ref
             let param_count = match ctx.func_param_counts.get(name) {
@@ -2256,7 +2265,10 @@ fn infer_expr_kind_gc(
           }
           let base_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
           if base_kind == GcValKind::Ref(ctx.string_type) {
-            GcValKind::I64
+            // `s[i]` returns a 1-char String substring (matches the
+            // checker's type for `String[Int]`). See the corresponding
+            // code-emit path below.
+            GcValKind::Ref(ctx.string_type)
           } else if base_kind == GcValKind::Ref(ctx.bytes_type) {
             GcValKind::I64
           } else if base_kind == gc_map_builder_kind_gc(ctx) {
@@ -2772,6 +2784,10 @@ fn compile_string_char_code_at(
   emit_local_get_gc(buf, data_idx)
   emit_local_get_gc(buf, i_idx)
   emit_array_get_gc(buf, ctx.array_i32_type)
+  // String char array is i32-typed but vibe Int = i64; extend to match
+  // callers that consume the result as Int (e.g. sha1 `read_word` shifts
+  // the byte left by 24 via `__lshift` which expects i64).
+  emit_i64_extend_i32_s_gc(buf)
 }
 
 ///|
@@ -6277,6 +6293,12 @@ fn compile_expr_gc(
             // Top-level constant (Int, Bool, String)
             let (idx, _) = ctx.global_consts[name]
             emit_global_get_gc(buf, idx)
+          } else if ctx.string_consts.contains(name) {
+            // Top-level String constant: inline the literal at each use
+            // site. Construction cost is the same as a per-call literal
+            // — sha1 `hex_table = "0123456789abcdef"` referenced via
+            // `hex_table[i]` etc.
+            emit_string_literal(ctx, buf, ctx.string_consts[name])
           } else if ctx.func_indices.contains(name) {
             // Top-level function used as value: wrap in closure struct
             let func_idx = ctx.func_indices[name]
@@ -6743,12 +6765,32 @@ fn compile_expr_gc(
             // already emitted
             ()
           } else if base_kind == GcValKind::Ref(ctx.string_type) {
-            compile_string_char_code_at(
-              ctx,
-              fctx,
-              buf,
-              pos_args[0],
-              pos_args[1],
+            // `s[i]` on String is typed as String (1-char substring) by
+            // the checker — NOT as char code (use `String::char_code_at`
+            // for that). Emit `substring(s, i, i+1)` so the result type
+            // matches what callers expect; previously this called
+            // `compile_string_char_code_at` and silently mis-typed the
+            // result as i64, breaking any code that piped `s[i]` into
+            // a String-returning function (e.g. sha1's `to_hex_char`).
+            let next_idx = @core.Expr::Call(
+              name="__add",
+              type_args=[],
+              args=[
+                @core.CallArg::{
+                  label: None,
+                  expr: pos_args[1],
+                  span: pos_args[1].span(),
+                },
+                @core.CallArg::{
+                  label: None,
+                  expr: @core.Expr::Int(value=1L, span=pos_args[1].span()),
+                  span: pos_args[1].span(),
+                },
+              ],
+              span=pos_args[1].span(),
+            )
+            compile_string_substring(
+              ctx, fctx, buf, pos_args[0], pos_args[1], next_idx,
             )
           } else if base_kind == GcValKind::Ref(ctx.bytes_type) {
             compile_bytes_get_gc(ctx, fctx, buf, pos_args[0], pos_args[1])
@@ -9008,7 +9050,7 @@ fn collect_top_level_funcs_gc(
       | @core.Stmt::InternalExportLet(name~, expr~, ..) =>
         match unwrap_type_assert_block(expr) {
           @core.Expr::Fn(..) => top_func_names[name] = true
-          @core.Expr::Int(..) | @core.Expr::Bool(..) =>
+          @core.Expr::Int(..) | @core.Expr::Bool(..) | @core.Expr::String(..) =>
             top_func_names[name] = true
           _ => ()
         }
@@ -9393,6 +9435,9 @@ pub fn emit_module_wasm_gc(ast : @core.Module) -> Bytes raise WasmGenError {
             )
             global_idx += 1
           }
+          @core.Expr::String(value~, ..) =>
+            // Record the literal value; emit fresh per use site.
+            ctx.string_consts[name] = value
           _ => ()
         }
       @core.Stmt::LetMut(name~, expr~, ..) =>
