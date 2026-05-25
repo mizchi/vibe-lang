@@ -7253,7 +7253,18 @@ fn compile_expr_gc(
           emit_i32_const_gc(buf, 0)
         }
         "Array::push" => {
-          // GC arrays are fixed-size; create new array of len+1 with copy
+          // wasm-gc arrays are fixed-size; we allocate a new array of
+          // len+1 with the elements copied + the new value appended.
+          // If the receiver is a bare local binding (`Array::push(arr,
+          // v)` where `arr` is an Ident → local var), write the new
+          // array back into that local so subsequent reads see the
+          // growth. This mirrors how vibe's `Array::push` is
+          // semantically a mutation on shared state (the linear backend
+          // implements it as in-place growth of a heap buffer).
+          // Non-local receivers (e.g. `Array::push(record.field, v)`)
+          // are not yet supported — but those are uncommon in user code
+          // since `Array::push` only makes sense when you have a
+          // reference to update.
           if pos_args.length() != 2 {
             raise WasmGenError::Unsupported("Array::push arity")
           }
@@ -7303,6 +7314,19 @@ fn compile_expr_gc(
           emit_local_get_gc(buf, len_l)
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
           emit_array_set_gc(buf, type_idx)
+          // Write the new array back into the receiver's local so the
+          // caller's binding observes the growth.
+          match pos_args[0] {
+            @core.Expr::Ident(name~, ..) =>
+              match fctx.locals.get(name) {
+                Some(info) => {
+                  emit_local_get_gc(buf, new_arr)
+                  emit_local_set_gc(buf, info.idx)
+                }
+                None => () // captured from outer scope: silently no-op (pre-existing wasm-gc gap)
+              }
+            _ => () // complex receiver: silently no-op
+          }
           emit_i32_const_gc(buf, 0)
         }
         "Array::slice" => {
