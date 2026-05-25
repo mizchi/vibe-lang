@@ -88,6 +88,10 @@ pub struct WasmEmitOptions {
   rc_actions : Array[(String, Bool, String)]
   /// Per-function Perceus actions: func_name → (site, is_dup, name) tuples.
   rc_func_actions : Map[String, Array[(String, Bool, String)]]
+  /// Original source — used only to render `<line>:<col>` (instead of
+  /// `<offset>`) in lambda labels of the wasm `name` custom section.
+  /// Empty disables the upgrade.
+  source : String
 } derive(Debug, Eq)
 
 ///|
@@ -108,6 +112,7 @@ pub fn wasm_emit_options(
   rc_debug? : Bool = false,
   rc_actions? : Array[(String, Bool, String)] = [],
   rc_func_actions? : Map[String, Array[(String, Bool, String)]] = {},
+  source? : String = "",
 ) -> WasmEmitOptions {
   {
     embed_error_strings,
@@ -121,6 +126,7 @@ pub fn wasm_emit_options(
     rc_debug,
     rc_actions,
     rc_func_actions,
+    source,
   }
 }
 

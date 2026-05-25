@@ -1810,6 +1810,32 @@ fn write_section(buf : ByteBuf, id : Int, content : Array[Byte]) -> Unit {
 }
 
 ///|
+/// Format a lambda's source position for the wasm `name` section.
+/// Parses the `"<start>:<end>"` span_key produced by
+/// `wasm_codegen_ctx.span_key`. Returns `<line>:<col>` when the
+/// codegen has the source string in scope (set via `ctx.source`),
+/// otherwise falls back to the raw byte offset.
+fn format_lambda_position_linear(ctx : CodegenCtx, span_key : String) -> String {
+  // span_key is always `<start>:<end>:[suffix]` per
+  // `wasm_codegen_ctx.span_key` / `span_key_unique`.
+  let mut offset = 0
+  let mut i = 0
+  while i < span_key.length() {
+    let c = span_key[i].to_int()
+    if c < 48 || c > 57 {
+      break
+    }
+    offset = offset * 10 + (c - 48)
+    i += 1
+  }
+  if ctx.source.length() == 0 {
+    return offset.to_string()
+  }
+  let (lc, _, _) = @core.line_info(ctx.source, offset)
+  lc.line.to_string() + ":" + lc.column.to_string()
+}
+
+///|
 fn write_custom_section(
   buf : ByteBuf,
   name : String,
@@ -4178,7 +4204,7 @@ fn emit_module_with_coverage(
     )
     let label = match f.name {
       Some(name) => name
-      None => "lambda_" + i.to_string()
+      None => "lambda@" + format_lambda_position_linear(ctx, f.span_key)
     }
     compiled_func_names.push((import_base + i, label))
   }
@@ -4361,6 +4387,7 @@ pub fn emit_module_wasm_with_options(
     library_mode=options.library_mode,
   )
   ctx.linked_fn_imports_list = options.linked_imports
+  ctx.source = options.source
   if options.enable_rc {
     ctx.enable_rc = true
     ctx.rc_debug = options.rc_debug
@@ -4375,6 +4402,29 @@ pub fn emit_module_wasm_with_options(
 ///|
 pub fn emit_module_wasm(ast : @core.Module) -> Bytes raise WasmGenError {
   emit_module_wasm_with_options(ast, default_emit_options())
+}
+
+///|
+/// Same as `emit_module_wasm` but threads the original source string
+/// through so lambda labels in the wasm `name` section are upgraded
+/// from `lambda@<offset>` to `lambda@<line>:<col>`. Bare callsites
+/// (wbtests, synthetic ASTs) can keep using `emit_module_wasm`.
+pub fn emit_module_wasm_with_source(
+  ast : @core.Module,
+  source : String,
+) -> Bytes raise WasmGenError {
+  let ctx = CodegenCtx::new(
+    false,
+    coverage_enabled=false,
+    embed_error_strings=default_emit_options().embed_error_strings,
+    http_host_imports=default_emit_options().http_host_imports,
+    http_component_wasi_shim=default_emit_options().http_component_wasi_shim,
+    fs_host_imports=default_emit_options().fs_host_imports,
+    force_cabi_realloc=default_emit_options().force_cabi_realloc,
+    library_mode=default_emit_options().library_mode,
+  )
+  ctx.source = source
+  emit_module(ctx, ast)
 }
 
 ///|

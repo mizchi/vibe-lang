@@ -98,6 +98,10 @@ priv struct CodegenCtx {
   coverage_points : Array[WasmCoveragePoint]
   mut coverage_base_offset : Int
   mut coverage_base_global_index : Int
+  /// Original source text — used only to upgrade lambda labels in the
+  /// wasm `name` section from `lambda@<offset>` to `lambda@<line>:<col>`.
+  /// Empty disables the upgrade.
+  mut source : String
   mut coverage_count_global_index : Int
   // Effect operation imports: "Effect::Op" → import func index
   effect_op_imports : Map[String, Int]
@@ -308,6 +312,7 @@ fn CodegenCtx::new(
     coverage_base_offset: 0,
     coverage_base_global_index: -1,
     coverage_count_global_index: -1,
+    source: "",
     // Exported user functions
     effect_op_imports: {},
     effect_op_param_counts: {},

@@ -308,3 +308,30 @@ test "lifted closures label with parent function and source offset" {
   }
   @debug.assert_eq(has_qualified_lambda, true)
 }
+
+///|
+/// Real source string: the inner lambda starts at line 2, col 3.
+/// `emit_module_wasm_gc_with_source` should upgrade the label from a
+/// byte offset to `<line>:<col>`.
+test "emit_module_wasm_gc_with_source upgrades lambda label to line:col" {
+  let src =
+    #|let mk_adder = (n: Int) -> (Int) -> Int {
+    #|  (x: Int) -> Int { x + n }
+    #|}
+    #|mk_adder(1)
+  let ast = (try? @parser.parse_ast(src)).unwrap()
+  let bytes = (try? emit_module_wasm_gc_with_source(ast, src)).unwrap()
+  let payload = find_name_subsection1(bytes).unwrap()
+  let entries = parse_name_subsection1(payload)
+  let mut lambda_label : String = ""
+  for entry in entries {
+    let (_, n) = entry
+    if n.has_prefix("mk_adder::lambda@") {
+      lambda_label = n
+    }
+  }
+  // The inner lambda body opens with `(x` at line 2, column 3
+  // (1-based). Confirm the upgrade kicked in — i.e. the label
+  // contains a `:` after the `@`.
+  @debug.assert_eq(lambda_label, "mk_adder::lambda@2:3")
+}

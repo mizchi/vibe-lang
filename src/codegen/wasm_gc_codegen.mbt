@@ -266,6 +266,12 @@ priv struct GcCodegenCtx {
   /// backends — only the memory wiring differs.
   mut coverage_enabled : Bool
   coverage_points : Array[WasmCoveragePoint]
+  /// Original source text, used only to upgrade lambda labels in the
+  /// wasm `name` section from `lambda@<offset>` to
+  /// `lambda@<line>:<col>`. Empty string disables the upgrade (labels
+  /// stay at byte offsets) — kept optional so synthetic ASTs built by
+  /// wbtests don't have to thread a string through.
+  mut source : String
 }
 
 ///|
@@ -557,6 +563,7 @@ fn GcCodegenCtx::new() -> GcCodegenCtx {
     needs_exceptions: false,
     coverage_enabled: false,
     coverage_points: [],
+    source: "",
   }
 }
 
@@ -8901,15 +8908,15 @@ fn compile_expr_gc(
       // Prefer the let-rec binding name (so a `let rec foo = ...` lambda
       // shows as `foo::lambda@N`), falling back to the enclosing
       // function's source name. If neither is available (top-level
-      // lambda directly in `_start`), only the offset is used.
+      // lambda directly in `_start`), only the position is used.
       let parent_label = match rec_binding {
         Some(p) => Some(p)
         None => fctx.enclosing_function_name
       }
+      let pos = format_lambda_position_gc(ctx, lambda_span.start)
       let lambda_label = match parent_label {
-        Some(parent) =>
-          parent + "::lambda@" + lambda_span.start.to_string()
-        None => "lambda@" + lambda_span.start.to_string()
+        Some(parent) => parent + "::lambda@" + pos
+        None => "lambda@" + pos
       }
       ctx.closure_lifted_labels.push(lambda_label)
       emit_ref_func_gc(buf, func_idx)
@@ -9846,6 +9853,20 @@ fn build_module_gc(
 }
 
 ///|
+/// Format a byte offset as `<line>:<col>` when the codegen has the
+/// original source string, falling back to the raw offset otherwise.
+/// Used only for lambda labels in the wasm `name` section so the
+/// profiler / devtools can show a human-friendly position. Lines and
+/// columns are 1-based, matching `@core.line_info`.
+fn format_lambda_position_gc(ctx : GcCodegenCtx, offset : Int) -> String {
+  if ctx.source.length() == 0 {
+    return offset.to_string()
+  }
+  let (lc, _, _) = @core.line_info(ctx.source, offset)
+  lc.line.to_string() + ":" + lc.column.to_string()
+}
+
+///|
 /// Write a length-prefixed UTF-8 string (wasm name encoding). Mirrors
 /// the linear backend's `write_name` but for the GC byte buffer.
 fn write_name_string_gc(buf : GcByteBuf, s : String) -> Unit {
@@ -9859,6 +9880,22 @@ fn write_name_string_gc(buf : GcByteBuf, s : String) -> Unit {
 ///|
 pub fn emit_module_wasm_gc(ast : @core.Module) -> Bytes raise WasmGenError {
   let (bytes, _) = emit_module_wasm_gc_inner(ast, coverage_enabled=false)
+  bytes
+}
+
+///|
+/// Same as `emit_module_wasm_gc` but threads the original source
+/// string through so lambda labels in the wasm `name` section can be
+/// upgraded from `lambda@<offset>` to `lambda@<line>:<col>`. Callers
+/// that don't have the source (e.g. wbtests, synthetic ASTs) can keep
+/// using the bare entry point.
+pub fn emit_module_wasm_gc_with_source(
+  ast : @core.Module,
+  source : String,
+) -> Bytes raise WasmGenError {
+  let (bytes, _) = emit_module_wasm_gc_inner(
+    ast, coverage_enabled=false, source~,
+  )
   bytes
 }
 
@@ -9886,6 +9923,7 @@ pub fn emit_module_wasm_gc_with_coverage(
 fn emit_module_wasm_gc_inner(
   ast : @core.Module,
   coverage_enabled? : Bool = false,
+  source? : String = "",
 ) -> (Bytes, GcCodegenCtx) raise WasmGenError {
   // Mirror the linear backend's prologue: strip type-assertion blocks
   // first (so the AST has bare Int/Bool literals where the user wrote
@@ -9905,6 +9943,7 @@ fn emit_module_wasm_gc_inner(
   }
   let ctx = GcCodegenCtx::new()
   ctx.coverage_enabled = coverage_enabled
+  ctx.source = source
   scan_enum_defs_gc(ctx, ast)
   register_struct_types_gc(ctx, ast)
   // Build enum ctor name set for free-var filtering
