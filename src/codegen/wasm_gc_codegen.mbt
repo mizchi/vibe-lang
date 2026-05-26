@@ -3271,6 +3271,15 @@ fn compile_string_concat(
   a_expr : @core.Expr,
   b_expr : @core.Expr,
 ) -> Unit raise WasmGenError {
+  // Note: tried `array.copy` (gc bulk op) here as a memcpy
+  // equivalent of the linear backend's `memory.copy`. Wasmtime 36's
+  // Cranelift implementation of `array.copy` turned out ~45× slower
+  // than the per-element loop on small copies (3.4 s vs 74 ms for
+  // a 5000-iter single-char concat benchmark). Sticking with the
+  // loops until wasmtime's GC bulk-copy fast path lands; the loops
+  // themselves are fine, the bottleneck for SHA-1-shaped workloads
+  // is the algorithmic O(N²) of `acc|>String::concat(small)` rather
+  // than the per-byte op count.
   let a_idx = alloc_local_gc(fctx, GcValKind::Ref(ctx.string_type))
   let b_idx = alloc_local_gc(fctx, GcValKind::Ref(ctx.string_type))
   let len_a_idx = alloc_local_gc(fctx, GcValKind::I32)
