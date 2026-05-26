@@ -352,9 +352,26 @@ fn normalize_render_stmt(
   let annotation = inferred_annotations.get(key)
   match stmt {
     @vibe_core.Stmt::Let(rec~, name~, expr~, span~) => {
+      // Unwrap local type assert wrapper from declare+assign to get inner expr
+      // (mirrors the ExportLet arm — needed when the parser qualified a
+      // module-local name and the raw snippet's bare identifier no longer
+      // matches the AST's `module::name`).
+      let render_expr = match normalize_unwrap_local_type_assert(expr) {
+        Some((_, inner)) => inner
+        None => expr
+      }
+      // Preserve the raw source snippet only when the AST hasn't been
+      // rewritten in a way that would conflict with what the source
+      // says. A `name` containing `"::"` means the parser qualified
+      // it with a module prefix (e.g. `helper` → `math::helper` from
+      // `export module math { let helper: T = ... }`); the raw
+      // snippet still says `let helper`, so re-render to inject the
+      // qualifier.
+      let was_module_qualified = name.contains("::")
       let should_preserve_raw = rewritten_expr is None &&
         annotation is None &&
-        !normalize_let_stmt_prefers_rendered_expr(expr, env.get(name))
+        !was_module_qualified &&
+        !normalize_let_stmt_prefers_rendered_expr(render_expr, env.get(name))
       if should_preserve_raw {
         let snippet = normalize_strip_trailing_comments(
           normalize_source_slice_by_span(source, span.start, span.end)
@@ -366,7 +383,7 @@ fn normalize_render_stmt(
         }
       }
       normalize_render_let_stmt(
-        source, false, rec, name, expr, rewritten_expr, annotation, env,
+        source, false, rec, name, render_expr, rewritten_expr, annotation, env,
       )
     }
     @vibe_core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
@@ -375,8 +392,13 @@ fn normalize_render_stmt(
         Some((_, inner)) => inner
         None => expr
       }
+      // Same module-qualification check as the `Stmt::Let` arm — the
+      // raw source has `export let run` but the AST holds
+      // `export let math::run` after parsing.
+      let was_module_qualified = name.contains("::")
       let should_preserve_raw = rewritten_expr is None &&
         annotation is None &&
+        !was_module_qualified &&
         !normalize_let_stmt_prefers_rendered_expr(render_expr, env.get(name))
       if should_preserve_raw {
         let snippet = normalize_strip_trailing_comments(
