@@ -386,6 +386,12 @@ fn fn_index_needs_env(ctx : CodegenCtx, idx : Int) -> Bool {
 ///|
 priv struct FuncDef {
   name : String?
+  /// Name of the enclosing top-level (or named) function — used only
+  /// to label lifted lambdas in the wasm `name` section as
+  /// `<parent>::lambda@<line>:<col>` instead of bare `lambda@…`. None
+  /// for top-level functions and for free lambdas in the `_start`
+  /// scope.
+  parent_name : String?
   params : Array[@core.FuncParam]
   ret : @core.Type?
   body : @core.Module
@@ -779,6 +785,7 @@ fn collect_nested_funcs_block(
   bound : Map[String, Bool],
   funcs : Array[FuncDef],
   skip_top_level : Bool,
+  parent? : String? = None,
 ) -> Unit {
   let scope = bound.copy()
   for stmt in body.stmts {
@@ -802,6 +809,7 @@ fn collect_nested_funcs_block(
             if !skip_top_level {
               funcs.push(FuncDef::{
                 name: Some(name),
+                parent_name: parent,
                 params,
                 ret,
                 body,
@@ -821,15 +829,15 @@ fn collect_nested_funcs_block(
               // Nested closures must be able to capture it as a closure value.
               inner_bound[name] = true
             }
-            collect_nested_funcs_block(body, inner_bound, funcs, false)
+            collect_nested_funcs_block(body, inner_bound, funcs, false, parent=Some(name))
           }
-          _ => collect_nested_funcs_expr(expr, scope, funcs)
+          _ => collect_nested_funcs_expr(expr, scope, funcs, parent~)
         }
         scope[name] = true
       }
       @core.Stmt::Expr(expr~, span~) => {
         let _ = span
-        collect_nested_funcs_expr(expr, scope, funcs)
+        collect_nested_funcs_expr(expr, scope, funcs, parent~)
       }
       @core.Stmt::Test(name~, body~, span~) => {
         let _ = name
@@ -852,8 +860,8 @@ fn collect_nested_funcs_block(
       }
       @core.Stmt::LetPatElse(pat~, expr~, else_body~, span~) => {
         let _ = span
-        collect_nested_funcs_expr(expr, scope, funcs)
-        collect_nested_funcs_block(else_body, scope, funcs, false)
+        collect_nested_funcs_expr(expr, scope, funcs, parent~)
+        collect_nested_funcs_block(else_body, scope, funcs, false, parent~)
         let bindings : Array[String] = []
         collect_pat_bindings_codegen(pat, bindings)
         for name in bindings {
@@ -862,7 +870,7 @@ fn collect_nested_funcs_block(
       }
       @core.Stmt::LetMut(name~, expr~, span~) => {
         let _ = span
-        collect_nested_funcs_expr(expr, scope, funcs)
+        collect_nested_funcs_expr(expr, scope, funcs, parent~)
         scope[name] = true
       }
       @core.Stmt::ExportLet(rec~, name~, expr~, span~) => {
@@ -884,6 +892,7 @@ fn collect_nested_funcs_block(
             if !skip_top_level {
               funcs.push(FuncDef::{
                 name: Some(name),
+                parent_name: parent,
                 params,
                 ret,
                 body,
@@ -901,16 +910,16 @@ fn collect_nested_funcs_block(
             if rec {
               inner_bound[name] = true
             }
-            collect_nested_funcs_block(body, inner_bound, funcs, false)
+            collect_nested_funcs_block(body, inner_bound, funcs, false, parent=Some(name))
           }
-          _ => collect_nested_funcs_expr(expr, scope, funcs)
+          _ => collect_nested_funcs_expr(expr, scope, funcs, parent~)
         }
         scope[name] = true
       }
       @core.Stmt::Assign(name~, expr~, span~) => {
         let _ = name
         let _ = span
-        collect_nested_funcs_expr(expr, scope, funcs)
+        collect_nested_funcs_expr(expr, scope, funcs, parent~)
       }
       _ => ()
     }
@@ -922,6 +931,7 @@ fn collect_nested_funcs_expr(
   expr : @core.Expr,
   bound : Map[String, Bool],
   funcs : Array[FuncDef],
+  parent? : String? = None,
 ) -> Unit {
   match expr {
     @core.Expr::Fn(params~, ret~, effects~, body~, span~, ..) => {
@@ -936,6 +946,7 @@ fn collect_nested_funcs_expr(
       collect_captures_block(body, fn_bound, bound, captures, seen)
       funcs.push(FuncDef::{
         name: None,
+        parent_name: parent,
         params,
         ret,
         body,
@@ -949,54 +960,54 @@ fn collect_nested_funcs_expr(
       for cap in captures {
         inner_bound[cap] = true
       }
-      collect_nested_funcs_block(body, inner_bound, funcs, false)
+      collect_nested_funcs_block(body, inner_bound, funcs, false, parent~)
     }
     @core.Expr::Call(name~, args~, span~, ..) => {
       let _ = name
       let _ = span
       for arg in args {
-        collect_nested_funcs_expr(arg.expr, bound, funcs)
+        collect_nested_funcs_expr(arg.expr, bound, funcs, parent~)
       }
     }
     @core.Expr::Tuple(items~, span~) => {
       let _ = span
       for item in items {
-        collect_nested_funcs_expr(item, bound, funcs)
+        collect_nested_funcs_expr(item, bound, funcs, parent~)
       }
     }
     @core.Expr::TupleIndex(expr~, ..) =>
-      collect_nested_funcs_expr(expr, bound, funcs)
+      collect_nested_funcs_expr(expr, bound, funcs, parent~)
     @core.Expr::Record(fields~, span~) => {
       let _ = span
       for field in fields {
-        collect_nested_funcs_expr(field.expr, bound, funcs)
+        collect_nested_funcs_expr(field.expr, bound, funcs, parent~)
       }
     }
     @core.Expr::Array(items~, span~) => {
       let _ = span
       for item in items {
-        collect_nested_funcs_expr(item, bound, funcs)
+        collect_nested_funcs_expr(item, bound, funcs, parent~)
       }
     }
     @core.Expr::Map(fields~, span~) => {
       let _ = span
       for field in fields {
-        collect_nested_funcs_expr(field.expr, bound, funcs)
+        collect_nested_funcs_expr(field.expr, bound, funcs, parent~)
       }
     }
     @core.Expr::If(cond~, then_body~, else_body~, span~) => {
       let _ = span
-      collect_nested_funcs_expr(cond, bound, funcs)
-      collect_nested_funcs_block(then_body, bound, funcs, false)
-      collect_nested_funcs_block(else_body, bound, funcs, false)
+      collect_nested_funcs_expr(cond, bound, funcs, parent~)
+      collect_nested_funcs_block(then_body, bound, funcs, false, parent~)
+      collect_nested_funcs_block(else_body, bound, funcs, false, parent~)
     }
     @core.Expr::Block(body~, span~) => {
       let _ = span
-      collect_nested_funcs_block(body, bound, funcs, false)
+      collect_nested_funcs_block(body, bound, funcs, false, parent~)
     }
     @core.Expr::Match(scrutinee~, arms~, span~) => {
       let _ = span
-      collect_nested_funcs_expr(scrutinee, bound, funcs)
+      collect_nested_funcs_expr(scrutinee, bound, funcs, parent~)
       for arm in arms {
         let arm_bound = bound.copy()
         let bindings : Array[String] = []
@@ -1005,34 +1016,34 @@ fn collect_nested_funcs_expr(
           arm_bound[name] = true
         }
         match arm.cond {
-          Some(c) => collect_nested_funcs_expr(c, arm_bound, funcs)
+          Some(c) => collect_nested_funcs_expr(c, arm_bound, funcs, parent~)
           None => ()
         }
-        collect_nested_funcs_expr(arm.expr, arm_bound, funcs)
+        collect_nested_funcs_expr(arm.expr, arm_bound, funcs, parent~)
       }
     }
     @core.Expr::Handle(body~, arms~, span~) => {
       let _ = span
-      collect_nested_funcs_block(body, bound, funcs, false)
+      collect_nested_funcs_block(body, bound, funcs, false, parent~)
       for arm in arms {
-        collect_nested_funcs_expr(arm.expr, bound, funcs)
+        collect_nested_funcs_expr(arm.expr, bound, funcs, parent~)
         match arm.cond {
-          Some(c) => collect_nested_funcs_expr(c, bound, funcs)
+          Some(c) => collect_nested_funcs_expr(c, bound, funcs, parent~)
           None => ()
         }
       }
     }
     @core.Expr::While(cond~, body~, span~) => {
       let _ = span
-      collect_nested_funcs_expr(cond, bound, funcs)
-      collect_nested_funcs_block(body, bound, funcs, false)
+      collect_nested_funcs_expr(cond, bound, funcs, parent~)
+      collect_nested_funcs_block(body, bound, funcs, false, parent~)
     }
     @core.Expr::Loop(params~, body~, span~) => {
       let _ = span
       for param in params {
-        collect_nested_funcs_expr(param.init, bound, funcs)
+        collect_nested_funcs_expr(param.init, bound, funcs, parent~)
       }
-      collect_nested_funcs_block(body, bound, funcs, false)
+      collect_nested_funcs_block(body, bound, funcs, false, parent~)
     }
     @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
       let desugared = if @core.is_string_for_in(span.start) {
@@ -1042,7 +1053,7 @@ fn collect_nested_funcs_expr(
       } else {
         @core.desugar_for_in(value_name, index_name, iterable, body, span)
       }
-      collect_nested_funcs_block(desugared, bound, funcs, false)
+      collect_nested_funcs_block(desugared, bound, funcs, false, parent~)
     }
     _ => ()
   }
@@ -1093,6 +1104,7 @@ fn collect_func_defs(ast : @core.Module) -> Array[FuncDef] {
             collect_captures_block(body, fn_bound, outer_bound, captures, seen)
             funcs.push(FuncDef::{
               name: Some(name),
+              parent_name: None,
               params,
               ret,
               body,
@@ -1147,6 +1159,7 @@ fn collect_func_defs(ast : @core.Module) -> Array[FuncDef] {
             collect_captures_block(body, fn_bound, outer_bound, captures, seen)
             funcs.push(FuncDef::{
               name: Some(name),
+              parent_name: None,
               params,
               ret,
               body,
@@ -1216,6 +1229,7 @@ fn collect_func_defs(ast : @core.Module) -> Array[FuncDef] {
         }
         normalized_funcs.push(FuncDef::{
           name: f.name,
+          parent_name: f.parent_name,
           params: f.params,
           ret: f.ret,
           body: f.body,

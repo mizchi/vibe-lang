@@ -906,6 +906,7 @@ fn collect_top_level_funcs(ast : @core.Module) -> Array[FuncDef] {
             let _ = effects
             out.push(FuncDef::{
               name: Some(name),
+              parent_name: None,
               params,
               ret,
               body,
@@ -925,6 +926,7 @@ fn collect_top_level_funcs(ast : @core.Module) -> Array[FuncDef] {
             let _ = effects
             out.push(FuncDef::{
               name: Some(name),
+              parent_name: None,
               params,
               ret,
               body,

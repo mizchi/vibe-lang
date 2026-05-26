@@ -4204,7 +4204,13 @@ fn emit_module_with_coverage(
     )
     let label = match f.name {
       Some(name) => name
-      None => "lambda@" + format_lambda_position_linear(ctx, f.span_key)
+      None => {
+        let pos = format_lambda_position_linear(ctx, f.span_key)
+        match f.parent_name {
+          Some(parent) => parent + "::lambda@" + pos
+          None => "lambda@" + pos
+        }
+      }
     }
     compiled_func_names.push((import_base + i, label))
   }

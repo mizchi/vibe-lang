@@ -260,6 +260,7 @@ test "compile_function_with_scoped_names restores named function metadata after 
   let outer_params = [wb_param("n")]
   let outer_func = FuncDef::{
     name: Some("outer"),
+    parent_name: None,
     params: outer_params,
     ret: Some(@core.Type::Int),
     body: @core.Module::{
