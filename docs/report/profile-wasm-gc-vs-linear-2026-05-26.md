@@ -98,12 +98,69 @@ patterns can avoid the 5–35× slowdown:
   end. (`from_char_codes` builtin still TBD — see `String::join` for
   the existing batch API.)
 
+## Follow-up: applied + dropped
+
+**Applied** — `vibe/sha1` (commit `76ac205`):
+
+- Switched `build_schedule` from `String` accumulator to `Bytes`.
+  `Bytes::push` is amortised O(1), `Bytes::get` is O(1) — together
+  the 80-word expand loop went from O(N²) to O(N). Bytes-not-Array
+  because `Array[Int]` storage in the linear backend truncates to
+  the tagged-i32 width (~30 payload bits), so SHA-1 words ≥ 2^30
+  silently corrupt.
+- `pad_message` zero-fill loop, `word_to_hex`, and the digest
+  assembly in `process_blocks` switched to `StringBuilder::push`
+  + `freeze`.
+- Net effect: **wasm-gc 249 → 83 ms (3× faster)**, ratio vs linear
+  4.8× → 1.6×.
+
+**Tried + reverted** — `vibe/json/json_stringify`:
+
+Replaced `String::concat(acc, …)` recursion in `escape_string`,
+`stringify_impl/JArr`, `stringify_impl/JObj` with `StringBuilder`.
+Empirically:
+
+| workload | linear before | linear after | wasm-gc before | wasm-gc after |
+|---|---:|---:|---:|---:|
+| 50-item × 500 | 49 ms | 48 ms | 20 ms | 30 ms |
+| 1000-item × 20 | 38 ms | 25 ms | 19 ms | 30 ms |
+
+StringBuilder won on linear (~1.5×) but **lost 1.5× on wasm-gc** in
+both small and large workloads. The 2× double-grow check + struct
+field updates per push outweigh the avoided per-iteration string
+realloc when each item is ≥ ~30 bytes and the accumulator stays
+< ~100 KB. wasm-gc's element-by-element copy in `compile_string_concat`
+is faster than expected — wasmtime auto-vectorises the loop.
+
+Crossover heuristic: StringBuilder helps when **(a) inner loop is
+tight (≤ ~10 wasm ops per iteration excluding the concat), AND
+(b) the appended chunk is small (≤ ~16 bytes)**. SHA-1's 4-byte
+schedule append meets both; JSON's ~30-byte item-with-separator
+doesn't.
+
+**Already optimised elsewhere** (no action):
+
+- `vibe/compiler/runtime/index.vibe::join_group_sources` — uses
+  `StringBuilder` already (see comment on line 1020).
+- `vibe/compiler/cache/persistent_cache.vibe` and
+  `vibe/compiler/runtime/typecheck_fs.vibe` — the accumulator is
+  bounded each iteration via `compact_string_fingerprint`, so the
+  per-iteration `String::concat` is on a fixed-size temporary, not
+  a growing tail.
+- `vibe/parser/lexer.vibe::lex_string_go` — `acc` only grows on
+  escape sequences; typical input has 0–few escapes.
+- `vibe/x/markdown/index.vibe` — heading prefix / underline loops
+  bounded by the heading level (≤ 6).
+
 ## Suggested follow-up issues
 
-- **`vibe/sha1` rewrite**: switch `build_schedule` / `build_initial` /
-  `pad_zeros` to `Array[Int]` (64-byte word array). Expected: SHA-1 on
-  wasm-gc within 1.5× of linear (currently 4.8×). Out of scope for
-  this profile commit.
+- **`Array[Int]` linear-backend 32-bit truncation**: the linear
+  backend's `Array::push` / `Array::get` use i32 cells with a 2-bit
+  tag, giving ~30-bit signed payloads. Any user code storing
+  unsigned 32-bit values (hash schedules, network protocols, image
+  data) hits this. Widening to i64 cells touches ~30 sites across
+  Array / ArrayBuilder / array_new / slice / concat / push_all /
+  truncate, so it's a dedicated PR.
 - **Codegen: `array.copy` revisit** when wasmtime PR for bulk-copy
   optimisation lands. The helper byte sequence (`0xfb 0x11 <dst_type>
   <src_type>`) is recorded in `compile_string_concat`'s comment so the
