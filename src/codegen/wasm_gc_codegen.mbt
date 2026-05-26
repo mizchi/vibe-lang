@@ -1742,6 +1742,15 @@ fn is_gc_builtin_name(name : String) -> Bool {
   name == "div" ||
   name == "eq" ||
   name == "lt" ||
+  // Floating-point math shortcuts — intercepted in compile_expr_gc to
+  // emit the matching wasm primitive directly rather than calling the
+  // bundled vibe implementation (which depends on Double globals the
+  // wasm-gc backend doesn't register).
+  name == "floor" ||
+  name == "ceil" ||
+  name == "trunc" ||
+  name == "round" ||
+  name == "fract" ||
   name == "not" ||
   name == "__not" ||
   name == "__or" ||
@@ -2646,6 +2655,37 @@ fn infer_expr_kind_gc(
         // after the spurious wrap on validation).
         "Int::is_even" | "Int::is_odd" => GcValKind::I32
         "Double::to_int" => GcValKind::I64
+        // Direct f64 math primitives. Match the compile-side dispatch
+        // above and the linear backend's `f64_*` semantics — these
+        // return the same kind as the argument (f32 for Float, f64 for
+        // Double / Num).
+        "Double::floor"
+        | "Double::ceil"
+        | "Double::trunc"
+        | "Double::round"
+        | "Double::sqrt"
+        | "Double::fract"
+        | "floor"
+        | "ceil"
+        | "trunc"
+        | "round"
+        | "fract" => {
+          if pos_args.length() < 1 {
+            raise WasmGenError::Unsupported(name + " arity")
+          }
+          let arg_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          if arg_kind == GcValKind::F32 {
+            GcValKind::F32
+          } else {
+            GcValKind::F64
+          }
+        }
+        "Float::floor"
+        | "Float::ceil"
+        | "Float::trunc"
+        | "Float::round"
+        | "Float::sqrt"
+        | "Float::fract" => GcValKind::F32
         "Double::to_i64_bits" => GcValKind::I64
         "Double::parse" => GcValKind::F64
         "Double::to_float" => GcValKind::F32
@@ -8114,6 +8154,104 @@ fn compile_expr_gc(
         "Double::to_int" => {
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
           emit_i64_trunc_f64_s_gc(buf)
+        }
+        // Direct f64 math primitives — mirror the linear backend's
+        // `f64_floor`/`f64_ceil`/... builtins so wasm-gc doesn't need
+        // to bundle the vibe-side `Double::floor` implementation
+        // (which depends on the `double_int_{max,min}_value` Double
+        // globals that the wasm-gc backend doesn't register).
+        "Double::floor" | "floor" | "Float::floor" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported(name + " arity")
+          }
+          let arg_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          if arg_kind == GcValKind::F32 {
+            buf.push(0x8e) // f32.floor
+          } else {
+            emit_coerce_top_gc(ctx, buf, arg_kind, GcValKind::F64)
+            buf.push(0x9c) // f64.floor
+          }
+        }
+        "Double::ceil" | "ceil" | "Float::ceil" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported(name + " arity")
+          }
+          let arg_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          if arg_kind == GcValKind::F32 {
+            buf.push(0x8d) // f32.ceil
+          } else {
+            emit_coerce_top_gc(ctx, buf, arg_kind, GcValKind::F64)
+            buf.push(0x9b) // f64.ceil
+          }
+        }
+        "Double::trunc" | "trunc" | "Float::trunc" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported(name + " arity")
+          }
+          let arg_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          if arg_kind == GcValKind::F32 {
+            buf.push(0x8f) // f32.trunc
+          } else {
+            emit_coerce_top_gc(ctx, buf, arg_kind, GcValKind::F64)
+            buf.push(0x9d) // f64.trunc
+          }
+        }
+        "Double::round" | "round" | "Float::round" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported(name + " arity")
+          }
+          let arg_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          if arg_kind == GcValKind::F32 {
+            buf.push(0x90) // f32.nearest
+          } else {
+            emit_coerce_top_gc(ctx, buf, arg_kind, GcValKind::F64)
+            buf.push(0x9e) // f64.nearest
+          }
+        }
+        "Double::sqrt" | "Float::sqrt" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported(name + " arity")
+          }
+          let arg_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          if arg_kind == GcValKind::F32 {
+            buf.push(0x91) // f32.sqrt
+          } else {
+            emit_coerce_top_gc(ctx, buf, arg_kind, GcValKind::F64)
+            buf.push(0x9f) // f64.sqrt
+          }
+        }
+        "Double::fract" | "fract" | "Float::fract" => {
+          // x - trunc(x)
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported(name + " arity")
+          }
+          let arg_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          let tmp = alloc_local_gc(
+            fctx,
+            if arg_kind == GcValKind::F32 {
+              GcValKind::F32
+            } else {
+              GcValKind::F64
+            },
+          )
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          if arg_kind != GcValKind::F32 {
+            emit_coerce_top_gc(ctx, buf, arg_kind, GcValKind::F64)
+          }
+          emit_local_tee_gc(buf, tmp)
+          emit_local_get_gc(buf, tmp)
+          if arg_kind == GcValKind::F32 {
+            buf.push(0x8f) // f32.trunc
+            buf.push(0x93) // f32.sub
+          } else {
+            buf.push(0x9d) // f64.trunc
+            buf.push(0xa1) // f64.sub
+          }
         }
         "Double::to_i64_bits" => {
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
