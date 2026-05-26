@@ -6592,9 +6592,58 @@ fn compile_pat_cond_gc(
     }
     @core.Pat::Tuple(items~, span~) => {
       let _ = span
-      let _ = items
-      // Tuples always match structurally (no tag check needed)
-      emit_i32_const_gc(buf, 1)
+      // Tuple itself matches structurally, but any nested Ctor / literal
+      // patterns must still be checked. Emit an AND-chain across items.
+      let type_idx = match scrut_kind {
+        GcValKind::Ref(idx) => idx
+        _ => {
+          let fields : Array[GcValKind] = []
+          for _ in items {
+            fields.push(GcValKind::EqRef)
+          }
+          ensure_struct_type(ctx.types, ctx.struct_type_index, fields)
+        }
+      }
+      let field_kinds = match ctx.types[type_idx] {
+        GcTypeDef::Struct(fields~) => fields
+        _ => {
+          let fields : Array[GcValKind] = []
+          for _ in items {
+            fields.push(GcValKind::EqRef)
+          }
+          fields
+        }
+      }
+      let mut emitted_any = false
+      for i in 0..<items.length() {
+        let item = items[i]
+        match item {
+          @core.Pat::Wildcard(..) | @core.Pat::Bind(..) => ()
+          sub_pat => {
+            let kind = if i < field_kinds.length() {
+              field_kinds[i]
+            } else {
+              GcValKind::EqRef
+            }
+            let sub_idx = alloc_local_gc(_fctx, kind)
+            emit_local_get_gc(buf, scrut_idx)
+            match scrut_kind {
+              GcValKind::Ref(_) => ()
+              _ => emit_ref_cast_gc(buf, type_idx)
+            }
+            emit_struct_get_gc(buf, type_idx, i)
+            emit_local_set_gc(buf, sub_idx)
+            compile_pat_cond_gc(ctx, _fctx, buf, sub_idx, kind, sub_pat)
+            if emitted_any {
+              emit_i32_and_gc(buf)
+            }
+            emitted_any = true
+          }
+        }
+      }
+      if !emitted_any {
+        emit_i32_const_gc(buf, 1)
+      }
     }
     @core.Pat::String(value=s, span~) => {
       let _ = span
@@ -6725,15 +6774,15 @@ fn compile_pat_bind_gc(
       }
       for i in 0..<items.length() {
         let item = items[i]
+        let kind = if i < field_kinds.length() {
+          field_kinds[i]
+        } else {
+          GcValKind::EqRef
+        }
         match item {
           @core.Pat::Wildcard(..) => ()
           @core.Pat::Bind(name~, span~) => {
             let _ = span
-            let kind = if i < field_kinds.length() {
-              field_kinds[i]
-            } else {
-              GcValKind::EqRef
-            }
             let idx = bind_local_gc(fctx, name, kind)
             emit_local_get_gc(buf, scrut_idx)
             // Cast to struct type if scrutinee is not already the right ref
@@ -6744,7 +6793,21 @@ fn compile_pat_bind_gc(
             emit_struct_get_gc(buf, type_idx, i)
             emit_local_set_gc(buf, idx)
           }
-          _ => ()
+          // Nested pattern (Ctor, Tuple, etc.): extract field into a fresh
+          // local and recurse, so bindings inside e.g. `(Some(a), Some(b))`
+          // get allocated. Without this, `a`/`b` are silently dropped and
+          // later references emit "unknown name: a".
+          sub_pat => {
+            let sub_idx = alloc_local_gc(fctx, kind)
+            emit_local_get_gc(buf, scrut_idx)
+            match scrut_kind {
+              GcValKind::Ref(_) => ()
+              _ => emit_ref_cast_gc(buf, type_idx)
+            }
+            emit_struct_get_gc(buf, type_idx, i)
+            emit_local_set_gc(buf, sub_idx)
+            compile_pat_bind_gc(ctx, fctx, buf, sub_idx, kind, sub_pat)
+          }
         }
       }
     }
