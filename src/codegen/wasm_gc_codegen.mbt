@@ -6688,7 +6688,20 @@ fn compile_pat_cond_gc(
           emit_i32_const_gc(buf, n.to_int())
           emit_i32_eq_gc(buf)
         }
-        _ => raise WasmGenError::Unsupported("pat int kind")
+        // The scrutinee is an erased generic (eqref / anyref / ref to
+        // unknown struct), e.g. `match Some(7) { Some(0) => ..., ... }`
+        // where the option payload is bound as eqref. Unbox through
+        // the matching `{i64}` box-struct shape that
+        // `emit_box_top_for_ref_kind_gc` produces on the storage side,
+        // then compare to the literal. The cast trips if the eqref
+        // is not actually an i64 box — which would already be a type
+        // error at the source level, so let wasmtime raise it.
+        _ => {
+          emit_local_get_gc(buf, scrut_idx)
+          emit_coerce_top_gc(ctx, buf, scrut_kind, GcValKind::I64)
+          emit_i64_const_gc(buf, n)
+          emit_i64_eq_gc(buf)
+        }
       }
     }
     @core.Pat::Bool(value=b, span~) => {
