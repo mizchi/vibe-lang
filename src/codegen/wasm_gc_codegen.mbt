@@ -2733,11 +2733,14 @@ fn infer_expr_kind_gc(
         }
         "Array::truncate" => GcValKind::I32
         "ArrayBuilder::new" => {
-          // Return concrete builder struct type: { i32, ref array<i64> }
+          // Return concrete builder struct type: { i32, ref array<eqref> }.
+          // Mirror the compile-side default so `let b = ArrayBuilder::new()`
+          // resolves to the eqref-backed builder when no explicit
+          // `ArrayBuilder[T]` annotation is present.
           let arr_type = ensure_array_type(
             ctx.types,
             ctx.array_type_index,
-            GcValKind::I64,
+            GcValKind::EqRef,
           )
           let builder_fields : Array[GcValKind] = [
             GcValKind::I32,
@@ -8593,12 +8596,18 @@ fn compile_expr_gc(
           emit_i32_const_gc(buf, 0)
         }
         "ArrayBuilder::new" => {
-          // Create struct { len: i32, data: ref array<i64> }
+          // Create struct { len: i32, data: ref array<eqref> }.
+          // Default to eqref element storage so the same builder
+          // shape works for both primitive (`ArrayBuilder[Int]`,
+          // boxed on push via `emit_coerce_top_gc`) and reference
+          // (`ArrayBuilder[Json]`) element types. Explicit
+          // `ArrayBuilder[T]` annotations still pick `T`'s exact
+          // kind via the `gc_val_kind_from_type` path.
           let init_cap = 8
           let arr_type = ensure_array_type(
             ctx.types,
             ctx.array_type_index,
-            GcValKind::I64,
+            GcValKind::EqRef,
           )
           let builder_fields : Array[GcValKind] = [
             GcValKind::I32,
@@ -8725,10 +8734,20 @@ fn compile_expr_gc(
           emit_local_get_gc(buf, new_data)
           emit_local_set_gc(buf, data_l)
           emit_end_gc(buf)
-          // data[len] = val
+          // data[len] = val. Coerce the value to the array's element
+          // kind so callers pushing a kind that doesn't match the
+          // ArrayBuilder's default storage (e.g. boxing an i64 into an
+          // eqref-backed builder for `ArrayBuilder[Json]`) still
+          // validate.
+          let elem_kind = match ctx.types[arr_type] {
+            GcTypeDef::Array(elem~, ..) => elem
+            _ => GcValKind::I64
+          }
           emit_local_get_gc(buf, data_l)
           emit_local_get_gc(buf, len_l)
+          let val_kind = infer_expr_kind_gc(ctx, fctx, pos_args[1])
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
+          emit_coerce_top_gc(ctx, buf, val_kind, elem_kind)
           emit_array_set_gc(buf, arr_type)
           // len++
           emit_local_get_gc(buf, b_idx)
