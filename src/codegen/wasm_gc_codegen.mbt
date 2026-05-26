@@ -245,6 +245,12 @@ priv struct GcCodegenCtx {
   named_struct_types : Map[String, Int]
   /// Named struct field order: name → sorted field names
   named_struct_fields : Map[String, Array[String]]
+  /// Anonymous record types: type_idx → sorted field names. Populated
+  /// by `infer_record_kind_gc` so later `__index(record, "field")`
+  /// dispatches in `try_compile_struct_field_get_gc` can look up the
+  /// field index even when the record was created via a record literal
+  /// (no `struct Foo { ... }` declaration).
+  record_field_names_by_type_idx : Map[Int, Array[String]]
   error_tag_index : Int
   error_tag_type_index : Int
   /// Compile-time known constants from top-level let bindings.
@@ -598,6 +604,7 @@ fn GcCodegenCtx::new() -> GcCodegenCtx {
     enum_names: {},
     named_struct_types: {},
     named_struct_fields: {},
+    record_field_names_by_type_idx: {},
     error_tag_index,
     error_tag_type_index,
     global_consts: {},
@@ -1402,6 +1409,20 @@ fn try_compile_struct_field_get_gc(
             None => ()
           }
         }
+      }
+      // Anonymous record literal: look up the sorted field-name order
+      // populated by `infer_record_kind_gc`. Lets `r.field` resolve
+      // when `r` came from `record { ... }` rather than a named struct.
+      match ctx.record_field_names_by_type_idx.get(type_idx) {
+        Some(field_names) =>
+          for i in 0..<field_names.length() {
+            if field_names[i] == field_name {
+              compile_expr_gc(ctx, fctx, buf, record_expr)
+              emit_struct_get_gc(buf, type_idx, i)
+              return true
+            }
+          }
+        None => ()
       }
       false
     }
@@ -2390,10 +2411,18 @@ fn infer_record_kind_gc(
 ) -> GcValKind raise WasmGenError {
   let ordered = sort_record_fields_expr(fields)
   let kinds : Array[GcValKind] = []
+  let names : Array[String] = []
   for field in ordered {
     kinds.push(infer_expr_kind_gc(ctx, fctx, field.expr))
+    names.push(field.name)
   }
   let type_idx = ensure_struct_type(ctx.types, ctx.struct_type_index, kinds)
+  // Record the sorted field-name order so `try_compile_struct_field_get_gc`
+  // can resolve `record.field` even when the value came from a record
+  // literal rather than a named `struct Foo { ... }` declaration.
+  if !ctx.record_field_names_by_type_idx.contains(type_idx) {
+    ctx.record_field_names_by_type_idx[type_idx] = names
+  }
   GcValKind::Ref(type_idx)
 }
 
