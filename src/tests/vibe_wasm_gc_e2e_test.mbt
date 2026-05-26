@@ -938,3 +938,83 @@ test "wasm-gc e2e: StringBuilder::freeze on empty builder returns empty string" 
     #|main()
   assert_gc_e2e(src, "string_builder_empty", 0)
 }
+
+///|
+/// Issue #414 (Phase A.2): Map mutation × 4 — set / delete / has / values.
+test "wasm-gc e2e: Map::set adds a new key" {
+  let src =
+    #|let main = () -> Int {
+    #|  let m = map { "a": 1, "b": 2 }
+    #|  let m2 = Map::set(m, "c", 3)
+    #|  Array::length(Map::keys(m2))
+    #|}
+    #|main()
+  assert_gc_e2e(src, "map_set_add", 3)
+}
+
+///|
+test "wasm-gc e2e: Map::set updates an existing key" {
+  let src =
+    #|let main = () -> Int {
+    #|  let m = map { "a": 1, "b": 2 }
+    #|  let m2 = Map::set(m, "b", 42)
+    #|  Map::get(m2, "b")
+    #|}
+    #|main()
+  assert_gc_e2e(src, "map_set_update", 42)
+}
+
+///|
+test "wasm-gc e2e: Map::has returns 1 / 0 like has_key" {
+  let src =
+    #|let main = () -> Int {
+    #|  let m = map { "x": 7 }
+    #|  let in_yes = if Map::has(m, "x") { 1 } else { 0 }
+    #|  let in_no = if Map::has(m, "z") { 100 } else { 10 }
+    #|  in_yes * 10 + in_no
+    #|}
+    #|main()
+  // yes=1 → 10, no=10 → +10 → 20
+  assert_gc_e2e(src, "map_has", 20)
+}
+
+///|
+test "wasm-gc e2e: Map::delete removes the key" {
+  let src =
+    #|let main = () -> Int {
+    #|  let m = map { "a": 1, "b": 2, "c": 3 }
+    #|  let m2 = Map::delete(m, "b")
+    #|  // m2 still contains the other two keys, length shrinks by 1
+    #|  let after = Array::length(Map::keys(m2))
+    #|  let gone = if Map::has(m2, "b") { 1 } else { 0 }
+    #|  after * 10 + gone
+    #|}
+    #|main()
+  // after=2 → 20, gone=0 → +0 → 20
+  assert_gc_e2e(src, "map_delete", 20)
+}
+
+///|
+test "wasm-gc e2e: Map::delete is a no-op for absent keys" {
+  let src =
+    #|let main = () -> Int {
+    #|  let m = map { "a": 1 }
+    #|  let m2 = Map::delete(m, "missing")
+    #|  Array::length(Map::keys(m2))
+    #|}
+    #|main()
+  assert_gc_e2e(src, "map_delete_absent", 1)
+}
+
+///|
+test "wasm-gc e2e: Map::values returns values in insertion order" {
+  let src =
+    #|let main = () -> Int {
+    #|  let m = map { "a": 10, "b": 20, "c": 30 }
+    #|  let vs = Map::values(m)
+    #|  Array::get(vs, 0) + Array::get(vs, 2)
+    #|}
+    #|main()
+  // 10 + 30
+  assert_gc_e2e(src, "map_values_order", 40)
+}
