@@ -292,6 +292,19 @@ fn gc_common_kind(a : GcValKind, b : GcValKind) -> GcValKind {
     (GcValKind::Ref(_), GcValKind::I32) => GcValKind::EqRef
     (GcValKind::I32, GcValKind::EqRef) => GcValKind::EqRef
     (GcValKind::EqRef, GcValKind::I32) => GcValKind::EqRef
+    // i64 / f32 / f64 vs EqRef — all box into eqref via the matching
+    // `{i64}` / `{f32}` / `{f64}` wrapper struct that
+    // `emit_box_top_for_ref_kind_gc` already understands. Previously
+    // these fell through to AnyRef, which made the surrounding `if`
+    // block declare a wider result type than its arms could supply and
+    // broke wasm validation on prelude generics like
+    // `num_abs[T: Signed + Ord + Sub](x: T) -> T`.
+    (GcValKind::I64, GcValKind::EqRef) => GcValKind::EqRef
+    (GcValKind::EqRef, GcValKind::I64) => GcValKind::EqRef
+    (GcValKind::F32, GcValKind::EqRef) => GcValKind::EqRef
+    (GcValKind::EqRef, GcValKind::F32) => GcValKind::EqRef
+    (GcValKind::F64, GcValKind::EqRef) => GcValKind::EqRef
+    (GcValKind::EqRef, GcValKind::F64) => GcValKind::EqRef
     _ => GcValKind::AnyRef
   }
 }
