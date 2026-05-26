@@ -895,3 +895,46 @@ test "wasm-gc e2e: Double::from_i64_bits parses zero bit pattern as 0.0" {
     #|main()
   assert_gc_e2e(src, "double_from_bits_zero", 0)
 }
+
+///|
+/// Issue #414 (Phase A.2): StringBuilder × 3.
+test "wasm-gc e2e: StringBuilder::new + push + freeze total length" {
+  let src =
+    #|let main = () -> Int {
+    #|  let sb = StringBuilder::new()
+    #|  StringBuilder::push(sb, "ab")
+    #|  StringBuilder::push(sb, "cd")
+    #|  StringBuilder::push(sb, "ef")
+    #|  let s = StringBuilder::freeze(sb)
+    #|  String::length(s)
+    #|}
+    #|main()
+  assert_gc_e2e(src, "string_builder_len", 6)
+}
+
+///|
+test "wasm-gc e2e: StringBuilder::freeze preserves codepoint order" {
+  let src =
+    #|let main = () -> Int {
+    #|  let sb = StringBuilder::new()
+    #|  StringBuilder::push(sb, "AB")
+    #|  StringBuilder::push(sb, "CD")
+    #|  let s = StringBuilder::freeze(sb)
+    #|  // 'A'=65, 'B'=66, 'C'=67, 'D'=68
+    #|  String::char_code_at(s, 0) + String::char_code_at(s, 3)
+    #|}
+    #|main()
+  // 65 + 68 = 133
+  assert_gc_e2e(src, "string_builder_order", 133)
+}
+
+///|
+test "wasm-gc e2e: StringBuilder::freeze on empty builder returns empty string" {
+  let src =
+    #|let main = () -> Int {
+    #|  let sb = StringBuilder::new()
+    #|  String::length(StringBuilder::freeze(sb))
+    #|}
+    #|main()
+  assert_gc_e2e(src, "string_builder_empty", 0)
+}
