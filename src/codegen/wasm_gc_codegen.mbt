@@ -2475,7 +2475,13 @@ fn infer_expr_kind_gc(
       let name = @core.lower_wasm_intrinsic_name(name)
       let pos_args = extract_positional_exprs(args, name)
       match name {
-        "add" | "sub" | "mul" | "div" => GcValKind::I64
+        // Only treat bare `add`/`sub`/`mul`/`div` as I64 when there is
+        // no user-defined function of the same name. Mirrors the call-
+        // side guard so `infer` and `compile` stay in sync (otherwise
+        // the codegen would emit `struct.new {i64}` to "box" a
+        // non-existent i64 result and crash wasm validation).
+        "add" | "sub" | "mul" | "div" if !ctx.func_indices.contains(name) =>
+          GcValKind::I64
         "eq" | "lt" => GcValKind::I32
         "__len" => GcValKind::I64
         "__index" => {
@@ -7048,7 +7054,16 @@ fn compile_expr_gc(
       let name = @core.lower_wasm_intrinsic_name(name)
       let pos_args = extract_positional_exprs(args, name)
       match name {
-        "add" => {
+        // `add` / `sub` / `mul` / `div` are prelude thin-wrapper short-
+        // circuits — emit i64.add/i64.sub/etc only when there is no
+        // user-defined function of the same name. The original handler
+        // unconditionally emitted `i64.add` (etc.) and silently mis-
+        // compiled any user-defined function (e.g.
+        // `vibe/collection/set.vibe::add: (StringSet, String) -> StringSet`
+        // was being lowered to i64.add on a struct ref → wasm
+        // validation: expected i64, found ref). When `ctx.func_indices`
+        // has the name, route to the normal call dispatch below.
+        "add" if !ctx.func_indices.contains(name) => {
           if pos_args.length() != 2 {
             raise WasmGenError::Unsupported("add arity")
           }
@@ -7056,7 +7071,7 @@ fn compile_expr_gc(
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
           emit_i64_add_gc(buf)
         }
-        "sub" => {
+        "sub" if !ctx.func_indices.contains(name) => {
           if pos_args.length() != 2 {
             raise WasmGenError::Unsupported("sub arity")
           }
@@ -7064,7 +7079,7 @@ fn compile_expr_gc(
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
           emit_i64_sub_gc(buf)
         }
-        "mul" => {
+        "mul" if !ctx.func_indices.contains(name) => {
           if pos_args.length() != 2 {
             raise WasmGenError::Unsupported("mul arity")
           }
@@ -7072,7 +7087,7 @@ fn compile_expr_gc(
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
           emit_i64_mul_gc(buf)
         }
-        "div" => {
+        "div" if !ctx.func_indices.contains(name) => {
           if pos_args.length() != 2 {
             raise WasmGenError::Unsupported("div arity")
           }
