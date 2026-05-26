@@ -1912,6 +1912,34 @@ fn gc_val_kind_from_type(
             )
             GcValKind::Ref(type_idx)
           }
+          // Issue #416: prelude functions like `Map::iter_get` declare
+          // their first parameter as `Map[K, V]`, which the parser
+          // encodes as Named("Map", [K, V]) (not Type::Map). Map this
+          // back onto the canonical map struct so the function body's
+          // `struct.get` ops validate against a typed ref.
+          "Map" | "MapBuilder" => {
+            let (builder_type, _, _) = map_struct_types_gc(ctx)
+            GcValKind::Ref(builder_type)
+          }
+          "ArrayBuilder" => {
+            let elem_kind = gc_val_kind_from_type(ctx, args[0])
+            let arr_type = ensure_array_type(
+              ctx.types, ctx.array_type_index, elem_kind,
+            )
+            let builder_fields : Array[GcValKind] = [
+              GcValKind::I32, GcValKind::Ref(arr_type),
+            ]
+            let builder_type = ensure_struct_type(
+              ctx.types, ctx.struct_type_index, builder_fields,
+            )
+            GcValKind::Ref(builder_type)
+          }
+          "Set" => {
+            let arr_type = ensure_array_type(
+              ctx.types, ctx.array_type_index, GcValKind::EqRef,
+            )
+            GcValKind::Ref(arr_type)
+          }
           // Option, Result, etc. — treat as eqref (enum-like)
           _ => GcValKind::EqRef
         }
@@ -1924,6 +1952,37 @@ fn gc_val_kind_from_type(
         elem_kind,
       )
       GcValKind::Ref(type_idx)
+    }
+    @core.Type::Map(_, _) | @core.Type::MapBuilder(_, _) => {
+      // Issue #416: Map and MapBuilder share a single runtime struct
+      // `{ len: i32, keys: array<eqref>, vals: array<eqref> }`. Key
+      // and value element types are erased to eqref per ADR-0044
+      // (per-type kind recovered through `map_value_kinds` at call
+      // sites that need it). Returning the struct ref here lets
+      // generic functions like `Iterator::fold(map, ...)` typecheck
+      // their `xs : C` parameter against an actual Map value kind.
+      let (builder_type, _, _) = map_struct_types_gc(ctx)
+      GcValKind::Ref(builder_type)
+    }
+    @core.Type::ArrayBuilder(elem_ty) => {
+      let elem_kind = gc_val_kind_from_type(ctx, elem_ty)
+      let arr_type = ensure_array_type(
+        ctx.types, ctx.array_type_index, elem_kind,
+      )
+      let builder_fields : Array[GcValKind] = [
+        GcValKind::I32, GcValKind::Ref(arr_type),
+      ]
+      let builder_type = ensure_struct_type(
+        ctx.types, ctx.struct_type_index, builder_fields,
+      )
+      GcValKind::Ref(builder_type)
+    }
+    @core.Type::Set(_) => {
+      // Set is internally stored as an Array of eqref values.
+      let arr_type = ensure_array_type(
+        ctx.types, ctx.array_type_index, GcValKind::EqRef,
+      )
+      GcValKind::Ref(arr_type)
     }
     @core.Type::Func(params~, ret~, ..) => {
       let param_kinds : Array[GcValKind] = []
@@ -10293,6 +10352,12 @@ fn build_module_gc(
     Some(idx) => export_entries.push(("_start", idx))
     None => export_entries.push(("_start", run_index))
   }
+  // Mirror the linear backend's `_vibe_run_tagged` export so the test
+  // / repl framework (`run_wasmtime_invoke_run_capture` in
+  // `src/cmd/vibe/cli_run_cmd.mbt`) can find a run entry. The export
+  // always aliases the run wrapper — for user-supplied `_start` we
+  // want the wrapper's top-level body, not the user's manual entry.
+  export_entries.push(("_vibe_run_tagged", run_index))
   for export_name in user_exports {
     if export_name == "_start" {
       continue // already pushed above

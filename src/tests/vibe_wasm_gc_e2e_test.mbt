@@ -1018,3 +1018,21 @@ test "wasm-gc e2e: Map::values returns values in insertion order" {
   // 10 + 30
   assert_gc_e2e(src, "map_values_order", 40)
 }
+
+///|
+/// Issue #416 follow-up: pass a `Map[K, V]` value through a generic
+/// function call (here `Map::keys`, which is declared
+/// `[K, V](m: Map[K, V]) -> Array[K]`). Before the
+/// `gc_val_kind_from_type` fix the param compiled as `eqref`, the
+/// body's `struct.get` ops mismatched, and the module failed to
+/// validate. After the fix the param resolves to the canonical map
+/// struct ref and the function compiles + runs.
+test "wasm-gc e2e: Map value type flows through a typed parameter" {
+  let src =
+    #|let main = () -> Int {
+    #|  let m = map { "a": 1, "b": 2, "c": 3 }
+    #|  Array::length(Map::keys(m))
+    #|}
+    #|main()
+  assert_gc_e2e(src, "map_param_type", 3)
+}
