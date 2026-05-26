@@ -3672,9 +3672,19 @@ fn compile_string_equals(
   let i_idx = alloc_local_gc(fctx, GcValKind::I32)
   let last_idx = alloc_local_gc(fctx, GcValKind::I32)
   let ok_idx = alloc_local_gc(fctx, GcValKind::I32)
+  // Coerce both operands to the String ref type before spilling into
+  // the comparison-local pair. `hash_require[T: Hash](x: T) -> T` and
+  // similar generics give back an eqref-shaped result at the call
+  // site, even when the static argument was a String; the local was
+  // pre-allocated as `Ref(string_type)` and `local.set` rejected the
+  // wider eqref otherwise.
+  let a_kind = infer_expr_kind_gc(ctx, fctx, a_expr)
+  let b_kind = infer_expr_kind_gc(ctx, fctx, b_expr)
   compile_expr_gc(ctx, fctx, buf, a_expr)
+  emit_coerce_top_gc(ctx, buf, a_kind, GcValKind::Ref(ctx.string_type))
   emit_local_set_gc(buf, a_idx)
   compile_expr_gc(ctx, fctx, buf, b_expr)
+  emit_coerce_top_gc(ctx, buf, b_kind, GcValKind::Ref(ctx.string_type))
   emit_local_set_gc(buf, b_idx)
   emit_i32_const_gc(buf, 1)
   emit_local_set_gc(buf, ok_idx)
