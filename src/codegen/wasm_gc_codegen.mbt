@@ -6934,16 +6934,27 @@ fn compile_expr_gc(
           if pos_args.length() != 2 {
             raise WasmGenError::Unsupported("eq arity")
           }
+          // Coerce both args to i64 — fixes the case where an arg
+          // arrives as eqref (e.g. from an enum payload local of
+          // erased kind, as `match Some(v) => eq(v, 7)` does).
+          let left_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          let right_kind = infer_expr_kind_gc(ctx, fctx, pos_args[1])
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_coerce_top_gc(ctx, buf, left_kind, GcValKind::I64)
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
+          emit_coerce_top_gc(ctx, buf, right_kind, GcValKind::I64)
           emit_i64_eq_gc(buf)
         }
         "lt" => {
           if pos_args.length() != 2 {
             raise WasmGenError::Unsupported("lt arity")
           }
+          let left_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          let right_kind = infer_expr_kind_gc(ctx, fctx, pos_args[1])
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_coerce_top_gc(ctx, buf, left_kind, GcValKind::I64)
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
+          emit_coerce_top_gc(ctx, buf, right_kind, GcValKind::I64)
           emit_i64_lt_s_gc(buf)
         }
         "__add" => {
