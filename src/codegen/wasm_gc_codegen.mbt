@@ -2212,15 +2212,41 @@ fn infer_block_kind_gc(
       }
       @core.Stmt::LetPat(pat~, expr~, ..) => {
         let kind = infer_expr_kind_gc(ctx, temp_ctx, expr)
-        // Bind pattern names in temp_ctx
+        // Bind pattern names in temp_ctx. For Tuple/Ctor patterns we
+        // look up the actual struct field kinds when the scrutinee is a
+        // known struct type, so that `let (a, b) = ...` binds `a`/`b`
+        // with their real I32/I64/Ref kind instead of a defaulted EqRef.
+        // Without this, downstream blocks that end in `a = x` infer
+        // their block kind as EqRef while the actual codegen leaves an
+        // i64/i32 on the stack, producing a `(result eqref)` if-block
+        // with mismatched arm types (wasm validation: expected eqref,
+        // found i64).
+        fn struct_field_kinds(k : GcValKind) -> Array[GcValKind]? {
+          match k {
+            GcValKind::Ref(idx) =>
+              match ctx.types[idx] {
+                GcTypeDef::Struct(fields~) => Some(fields)
+                _ => None
+              }
+            _ => None
+          }
+        }
+
         fn bind_pat_names(p : @core.Pat, k : GcValKind) -> Unit {
           match p {
             @core.Pat::Bind(name~, ..) =>
               temp_ctx.locals[name] = { idx: 0, kind: k }
-            @core.Pat::Tuple(items~, ..) =>
-              for item in items {
-                bind_pat_names(item, GcValKind::EqRef)
+            @core.Pat::Tuple(items~, ..) => {
+              let field_kinds = struct_field_kinds(k)
+              for i in 0..<items.length() {
+                let item_kind = match field_kinds {
+                  Some(fks) =>
+                    if i < fks.length() { fks[i] } else { GcValKind::EqRef }
+                  None => GcValKind::EqRef
+                }
+                bind_pat_names(items[i], item_kind)
               }
+            }
             @core.Pat::Ctor(args~, ..) =>
               for arg in args {
                 bind_pat_names(arg, GcValKind::EqRef)
@@ -2236,14 +2262,32 @@ fn infer_block_kind_gc(
       }
       @core.Stmt::LetPatElse(pat~, expr~, ..) => {
         let kind = infer_expr_kind_gc(ctx, temp_ctx, expr)
+        fn struct_field_kinds2(k : GcValKind) -> Array[GcValKind]? {
+          match k {
+            GcValKind::Ref(idx) =>
+              match ctx.types[idx] {
+                GcTypeDef::Struct(fields~) => Some(fields)
+                _ => None
+              }
+            _ => None
+          }
+        }
+
         fn bind_pat_names(p : @core.Pat, k : GcValKind) -> Unit {
           match p {
             @core.Pat::Bind(name~, ..) =>
               temp_ctx.locals[name] = { idx: 0, kind: k }
-            @core.Pat::Tuple(items~, ..) =>
-              for item in items {
-                bind_pat_names(item, GcValKind::EqRef)
+            @core.Pat::Tuple(items~, ..) => {
+              let field_kinds = struct_field_kinds2(k)
+              for i in 0..<items.length() {
+                let item_kind = match field_kinds {
+                  Some(fks) =>
+                    if i < fks.length() { fks[i] } else { GcValKind::EqRef }
+                  None => GcValKind::EqRef
+                }
+                bind_pat_names(items[i], item_kind)
               }
+            }
             @core.Pat::Ctor(args~, ..) =>
               for arg in args {
                 bind_pat_names(arg, GcValKind::EqRef)
@@ -6219,8 +6263,16 @@ fn compile_array_slice_gc(
   compile_expr_gc(ctx, fctx, buf, array_expr)
   emit_local_set_gc(buf, arr_idx)
   compile_expr_gc(ctx, fctx, buf, start_expr)
+  let sk = infer_expr_kind_gc(ctx, fctx, start_expr)
+  if sk == GcValKind::I64 {
+    emit_i32_wrap_i64_gc(buf)
+  }
   emit_local_set_gc(buf, start_idx)
   compile_expr_gc(ctx, fctx, buf, end_expr)
+  let ek = infer_expr_kind_gc(ctx, fctx, end_expr)
+  if ek == GcValKind::I64 {
+    emit_i32_wrap_i64_gc(buf)
+  }
   emit_local_set_gc(buf, end_idx)
   emit_local_get_gc(buf, end_idx)
   emit_local_get_gc(buf, start_idx)
