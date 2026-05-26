@@ -2072,6 +2072,15 @@ fn gc_val_kind_from_type(
       // Generic payloads are boxed/ref-cast through eqref in GC mode.
       GcValKind::EqRef
     @core.Type::Variant(_) => GcValKind::EqRef
+    // Unresolved unification variables (`Type::Var(_)`) leak out of
+    // the checker when a generic helper is monomorphised against a
+    // value whose type is itself a fresh metavariable (the common
+    // case is `Option`/`Result` ctor inference at the test top-
+    // level, e.g. `let r = ok(42)`). Treat them as the same generic
+    // erased kind as `Type::Param` — eqref — so the codegen doesn't
+    // bail out with `gc type: Var(N)` and the bundling pipeline
+    // moves on to box / cast the value through eqref normally.
+    @core.Type::Var(_) => GcValKind::EqRef
     _ => raise WasmGenError::Unsupported("gc type: " + ty.to_string())
   }
 }
