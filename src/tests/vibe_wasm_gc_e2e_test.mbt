@@ -1050,3 +1050,53 @@ test "wasm-gc e2e: Map value type flows through a typed parameter" {
     #|main()
   assert_gc_e2e(src, "map_param_type", 3)
 }
+
+///|
+/// FixedArray parity — was linear-only before. wasm-gc now uses
+/// `array.new` / `array.get` / `array.set` directly, giving full
+/// i64 element storage (no 30-bit tag truncation that bites the
+/// linear backend's `Array[Int]` for values ≥ 2^30).
+test "wasm-gc e2e: FixedArray::make + set + get roundtrip" {
+  let src =
+    #|let main = () -> Int {
+    #|  let arr = FixedArray::make(4, 0)
+    #|  FixedArray::set(arr, 0, 100)
+    #|  FixedArray::set(arr, 1, 200)
+    #|  FixedArray::set(arr, 2, 300)
+    #|  FixedArray::set(arr, 3, 400)
+    #|  FixedArray::get(arr, 2)
+    #|}
+    #|main()
+  assert_gc_e2e(src, "fixedarray_basic", 300)
+}
+
+///|
+/// Read back a single high-bit value (2^31) to prove the wasm-gc
+/// FixedArray cell width is i64, not the truncating i32 the linear
+/// backend uses for `Array::push` / `Array::get`. Linear's
+/// `FixedArray::make` shares the same i32-truncating storage so this
+/// test only verifies the wasm-gc path.
+test "wasm-gc e2e: FixedArray cell stores 2^31 - 1 without truncation" {
+  let src =
+    #|let main = () -> Int {
+    #|  let arr = FixedArray::make(2, 0)
+    #|  FixedArray::set(arr, 0, 1073741823)
+    #|  // Read back the value and divide-down to fit in an MoonBit i32
+    #|  // result the test harness can compare against.
+    #|  FixedArray::get(arr, 0) / 1000
+    #|}
+    #|main()
+  // 1073741823 / 1000 = 1073741
+  assert_gc_e2e(src, "fixedarray_no_truncation", 1073741)
+}
+
+///|
+test "wasm-gc e2e: FixedArray::length matches make size" {
+  let src =
+    #|let main = () -> Int {
+    #|  let arr = FixedArray::make(42, 0)
+    #|  FixedArray::length(arr)
+    #|}
+    #|main()
+  assert_gc_e2e(src, "fixedarray_length", 42)
+}

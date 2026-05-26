@@ -1082,6 +1082,17 @@ fn emit_array_new_default_gc(buf : GcByteBuf, type_idx : Int) -> Unit {
 }
 
 ///|
+/// array.new $type — stack: `(default_value size) → arrayref`. Used
+/// by FixedArray::make to allocate-and-fill in one op (instead of
+/// `array.new_default` followed by N `array.set` to overwrite the
+/// per-element-type zero).
+fn emit_array_new_gc(buf : GcByteBuf, type_idx : Int) -> Unit {
+  buf.push(0xfb)
+  buf.push(0x06)
+  write_u32_leb_gc(buf, type_idx)
+}
+
+///|
 fn emit_array_new_fixed_gc(
   buf : GcByteBuf,
   type_idx : Int,
@@ -2528,23 +2539,38 @@ fn infer_expr_kind_gc(
         "Float::to_double" => GcValKind::F64
         "Float::to_int" => GcValKind::I64
         "Array::length" => GcValKind::I64
+        "FixedArray::length" => GcValKind::I64
         "Array::fold" | "fold" => {
           if pos_args.length() != 3 {
             raise WasmGenError::Unsupported("arity: Array::fold")
           }
           infer_expr_kind_gc(ctx, fctx, pos_args[1])
         }
-        "Array::get" => {
+        "Array::get" | "FixedArray::get" => {
           if pos_args.length() != 2 {
-            raise WasmGenError::Unsupported("arity: Array::get")
+            raise WasmGenError::Unsupported("arity: " + name)
           }
           gc_array_elem_kind_from_kind(
             ctx,
             infer_expr_kind_gc(ctx, fctx, pos_args[0]),
-            "Array::get",
+            name,
           )
         }
-        "Array::set" | "Array::push" => GcValKind::I32
+        "Array::set" | "Array::push"
+        | "FixedArray::set" | "FixedArray::unsafe_set"
+        | "FixedArray::blit" => GcValKind::I32
+        "FixedArray::make" => {
+          // FixedArray::make(size, default) → Array[T] where T is the
+          // default's kind. Returns the corresponding gc array ref.
+          if pos_args.length() != 2 {
+            raise WasmGenError::Unsupported("arity: FixedArray::make")
+          }
+          let elem_kind = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+          let arr_type = ensure_array_type(
+            ctx.types, ctx.array_type_index, elem_kind,
+          )
+          GcValKind::Ref(arr_type)
+        }
         "Array::slice" | "Array::concat" => {
           if pos_args.length() < 1 {
             raise WasmGenError::Unsupported("arity: " + name)
@@ -8010,6 +8036,116 @@ fn compile_expr_gc(
             _ => () // complex receiver: silently no-op
           }
           emit_i32_const_gc(buf, 0)
+        }
+        // FixedArray builtins (declared in vibe/builtins/declarations.vibe
+        // as operating on `Array[T]`). Linear backend already implements
+        // these; the wasm-gc parity gap meant `vibe/wasm/wasm_opt/wasm_opt.vibe`
+        // and other FixedArray-using code couldn't be compiled with the
+        // wasm-gc backend. Implementation here mirrors the corresponding
+        // Array ops — `make` does one `array.new` at fixed size, `set`
+        // is a direct `array.set` (no grow logic; the array is
+        // immutable in capacity), `get` / `length` are aliases of the
+        // Array versions.
+        "FixedArray::make" => {
+          if pos_args.length() != 2 {
+            raise WasmGenError::Unsupported("FixedArray::make arity")
+          }
+          let elem_kind = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+          let arr_type = ensure_array_type(
+            ctx.types, ctx.array_type_index, elem_kind,
+          )
+          // array.new $arr_type (default value) (size)
+          compile_expr_gc(ctx, fctx, buf, pos_args[1])
+          let ik = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          if ik == GcValKind::I64 {
+            emit_i32_wrap_i64_gc(buf)
+          }
+          emit_array_new_gc(buf, arr_type)
+        }
+        "FixedArray::length" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("FixedArray::length arity")
+          }
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_array_len_gc(buf)
+          emit_i64_extend_i32_s_gc(buf)
+        }
+        "FixedArray::get" => {
+          if pos_args.length() != 2 {
+            raise WasmGenError::Unsupported("FixedArray::get arity")
+          }
+          let arr_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          let type_idx = gc_array_type_idx_from_kind(
+            ctx, arr_kind, "FixedArray::get",
+          )
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          compile_expr_gc(ctx, fctx, buf, pos_args[1])
+          let ik = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+          if ik == GcValKind::I64 {
+            emit_i32_wrap_i64_gc(buf)
+          }
+          emit_array_get_gc(buf, type_idx)
+        }
+        "FixedArray::set" | "FixedArray::unsafe_set" => {
+          if pos_args.length() != 3 {
+            raise WasmGenError::Unsupported(name + " arity")
+          }
+          let arr_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          let type_idx = gc_array_type_idx_from_kind(
+            ctx, arr_kind, name,
+          )
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          compile_expr_gc(ctx, fctx, buf, pos_args[1])
+          let ik = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+          if ik == GcValKind::I64 {
+            emit_i32_wrap_i64_gc(buf)
+          }
+          compile_expr_gc(ctx, fctx, buf, pos_args[2])
+          emit_array_set_gc(buf, type_idx)
+          emit_i32_const_gc(buf, 0)
+        }
+        "FixedArray::blit" => {
+          // FixedArray::blit(dst, dst_idx, src, src_idx, len) — copy a
+          // range of elements. Backed by wasm `array.copy`.
+          // Note: wasmtime 36's Cranelift implementation of array.copy
+          // is roughly memcpy-equivalent for typed-array element
+          // copies, faster than the manual per-element loop the
+          // String concat path can't use (see profile report).
+          if pos_args.length() != 5 {
+            raise WasmGenError::Unsupported("FixedArray::blit arity")
+          }
+          let dst_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          let dst_type = gc_array_type_idx_from_kind(
+            ctx, dst_kind, "FixedArray::blit/dst",
+          )
+          let src_kind = infer_expr_kind_gc(ctx, fctx, pos_args[2])
+          let src_type = gc_array_type_idx_from_kind(
+            ctx, src_kind, "FixedArray::blit/src",
+          )
+          compile_expr_gc(ctx, fctx, buf, pos_args[0]) // dst
+          compile_expr_gc(ctx, fctx, buf, pos_args[1]) // dst_idx
+          let di = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+          if di == GcValKind::I64 {
+            emit_i32_wrap_i64_gc(buf)
+          }
+          compile_expr_gc(ctx, fctx, buf, pos_args[2]) // src
+          compile_expr_gc(ctx, fctx, buf, pos_args[3]) // src_idx
+          let si = infer_expr_kind_gc(ctx, fctx, pos_args[3])
+          if si == GcValKind::I64 {
+            emit_i32_wrap_i64_gc(buf)
+          }
+          compile_expr_gc(ctx, fctx, buf, pos_args[4]) // len
+          let li = infer_expr_kind_gc(ctx, fctx, pos_args[4])
+          if li == GcValKind::I64 {
+            emit_i32_wrap_i64_gc(buf)
+          }
+          // array.copy dst_type src_type
+          buf.push(0xfb)
+          buf.push(0x11)
+          write_u32_leb_gc(buf, dst_type)
+          write_u32_leb_gc(buf, src_type)
+          emit_i32_const_gc(buf, 0) // Unit
         }
         "Array::slice" => {
           if pos_args.length() != 3 {
