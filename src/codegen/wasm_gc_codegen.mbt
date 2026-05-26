@@ -297,6 +297,35 @@ fn gc_common_kind(a : GcValKind, b : GcValKind) -> GcValKind {
 }
 
 ///|
+/// True for kinds that map directly to wasm numeric primitives.
+fn gc_is_arith_kind(kind : GcValKind) -> Bool {
+  match kind {
+    GcValKind::I32 | GcValKind::I64 | GcValKind::F32 | GcValKind::F64 => true
+    _ => false
+  }
+}
+
+///|
+/// Used to gate the prelude `add` / `sub` / `mul` / `div` / `eq` / `lt`
+/// short-circuits — inline the wasm primitive only when *both* operands
+/// resolve to numeric kinds. Otherwise fall through to the regular
+/// call dispatch so a user-defined function (e.g.
+/// `vibe/collection/set.vibe::add: (StringSet, String) -> StringSet`)
+/// keeps working.
+fn gc_call_args_arith(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  args : Array[@core.Expr],
+) -> Bool raise WasmGenError {
+  if args.length() != 2 {
+    return false
+  }
+  let lk = infer_expr_kind_gc(ctx, fctx, args[0])
+  let rk = infer_expr_kind_gc(ctx, fctx, args[1])
+  gc_is_arith_kind(lk) && gc_is_arith_kind(rk)
+}
+
+///|
 /// Map a unified value kind to the arithmetic primitive kind.
 /// EqRef / Ref / AnyRef operands are treated as boxed I64.
 fn gc_arith_kind(kind : GcValKind) -> GcValKind {
@@ -808,7 +837,11 @@ fn emit_f64_lt_gc(buf : GcByteBuf) -> Unit {
 
 ///|
 fn emit_f64_neg_gc(buf : GcByteBuf) -> Unit {
-  buf.push(0x99)
+  // f64.neg is 0x9a — 0x99 is f64.abs (the prior typo made `-x`
+  // come out as `abs(x)`, e.g. `Double::abs(-3.5)` collapsed to
+  // `Double::abs(3.5)` and the assertion still tripped because the
+  // codegen also routed `eq` through i64.eq on f64 operands).
+  buf.push(0x9a)
 }
 
 ///|
@@ -1860,6 +1893,12 @@ fn gc_val_kind_from_type(
 ) -> GcValKind raise WasmGenError {
   match ty {
     @core.Type::Int => GcValKind::I64
+    // Char shares Int's runtime representation (tagged 62-bit i64
+    // per ADR-0006). Without this case, parameters typed `Char` fell
+    // through to the Named-type fallback and resolved to EqRef, which
+    // mis-typed `to_int(ch: Char) -> Int` as `(eqref) -> i64` and
+    // tripped wasm validation on the identity body.
+    @core.Type::Char => GcValKind::I64
     @core.Type::Float => GcValKind::F32
     @core.Type::Double => GcValKind::F64
     @core.Type::Bool => GcValKind::I32
@@ -1890,6 +1929,7 @@ fn gc_val_kind_from_type(
       if args.length() == 0 {
         match name {
           "Int" | "i32" | "Num" => GcValKind::I64
+          "Char" => GcValKind::I64
           "Float" | "f32" => GcValKind::F32
           "Double" | "f64" => GcValKind::F64
           "Bool" | "Unit" => GcValKind::I32
@@ -2475,13 +2515,32 @@ fn infer_expr_kind_gc(
       let name = @core.lower_wasm_intrinsic_name(name)
       let pos_args = extract_positional_exprs(args, name)
       match name {
-        // Only treat bare `add`/`sub`/`mul`/`div` as I64 when there is
-        // no user-defined function of the same name. Mirrors the call-
-        // side guard so `infer` and `compile` stay in sync (otherwise
-        // the codegen would emit `struct.new {i64}` to "box" a
-        // non-existent i64 result and crash wasm validation).
-        "add" | "sub" | "mul" | "div" if !ctx.func_indices.contains(name) =>
-          GcValKind::I64
+        // Mirror the call-side `gc_call_args_arith` guard so `infer`
+        // and `compile` stay in sync — when both args are arithmetic
+        // the codegen inlines an i32/i64/f32/f64 op and the result
+        // kind is the unified arith kind. Otherwise fall through to
+        // the function-return lookup below (relevant for user-defined
+        // `add: (StringSet, String) -> StringSet` and friends).
+        "add" if gc_call_args_arith(ctx, fctx, pos_args) => {
+          let lk = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          let rk = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+          gc_arith_kind(gc_common_kind(lk, rk))
+        }
+        "sub" if gc_call_args_arith(ctx, fctx, pos_args) => {
+          let lk = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          let rk = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+          gc_arith_kind(gc_common_kind(lk, rk))
+        }
+        "mul" if gc_call_args_arith(ctx, fctx, pos_args) => {
+          let lk = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          let rk = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+          gc_arith_kind(gc_common_kind(lk, rk))
+        }
+        "div" if gc_call_args_arith(ctx, fctx, pos_args) => {
+          let lk = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          let rk = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+          gc_arith_kind(gc_common_kind(lk, rk))
+        }
         "eq" | "lt" => GcValKind::I32
         "__len" => GcValKind::I64
         "__index" => {
@@ -2577,10 +2636,15 @@ fn infer_expr_kind_gc(
         | "Int::min"
         | "Int::signum"
         | "Int::clamp"
-        | "Int::is_even"
-        | "Int::is_odd"
         | "Char::to_int"
         | "Char::from_int" => GcValKind::I64
+        // is_even / is_odd compile to `(x & 1) i64.eq C`, which leaves
+        // an i32 on the stack — not the i64 we were reporting. The
+        // miscoded kind made the outer codegen apply an `i32.wrap_i64`
+        // when assigning the result to a `Bool` (i32) return slot, and
+        // the resulting wasm was invalid ("expected i32, found i32"
+        // after the spurious wrap on validation).
+        "Int::is_even" | "Int::is_odd" => GcValKind::I32
         "Double::to_int" => GcValKind::I64
         "Double::to_i64_bits" => GcValKind::I64
         "Double::parse" => GcValKind::F64
@@ -7055,60 +7119,117 @@ fn compile_expr_gc(
       let pos_args = extract_positional_exprs(args, name)
       match name {
         // `add` / `sub` / `mul` / `div` are prelude thin-wrapper short-
-        // circuits — emit i64.add/i64.sub/etc only when there is no
-        // user-defined function of the same name. The original handler
-        // unconditionally emitted `i64.add` (etc.) and silently mis-
-        // compiled any user-defined function (e.g.
-        // `vibe/collection/set.vibe::add: (StringSet, String) -> StringSet`
-        // was being lowered to i64.add on a struct ref → wasm
-        // validation: expected i64, found ref). When `ctx.func_indices`
-        // has the name, route to the normal call dispatch below.
-        "add" if !ctx.func_indices.contains(name) => {
+        // circuits — when both args are arithmetic (i32 / i64 / f32 /
+        // f64) inline the matching wasm op so we don't have to pay a
+        // call into the prelude's `(Num, Num) -> Num` wrapper (which
+        // collapses to i64 in wasm-gc and would mis-type f32/f64 args).
+        // When operands aren't arithmetic (e.g.
+        // `vibe/collection/set.vibe::add: (StringSet, String) -> StringSet`)
+        // fall through to the normal `call $name` dispatch below, so a
+        // user function with the same name keeps working.
+        "add" if gc_call_args_arith(ctx, fctx, pos_args) => {
           if pos_args.length() != 2 {
             raise WasmGenError::Unsupported("add arity")
           }
+          let lk = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          let rk = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+          let arith = gc_arith_kind(gc_common_kind(lk, rk))
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_coerce_top_gc(ctx, buf, lk, arith)
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
-          emit_i64_add_gc(buf)
+          emit_coerce_top_gc(ctx, buf, rk, arith)
+          match arith {
+            GcValKind::I64 => emit_i64_add_gc(buf)
+            GcValKind::I32 => emit_i32_add_gc(buf)
+            GcValKind::F32 => emit_f32_add_gc(buf)
+            GcValKind::F64 => emit_f64_add_gc(buf)
+            _ => emit_i64_add_gc(buf)
+          }
         }
-        "sub" if !ctx.func_indices.contains(name) => {
+        "sub" if gc_call_args_arith(ctx, fctx, pos_args) => {
           if pos_args.length() != 2 {
             raise WasmGenError::Unsupported("sub arity")
           }
+          let lk = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          let rk = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+          let arith = gc_arith_kind(gc_common_kind(lk, rk))
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_coerce_top_gc(ctx, buf, lk, arith)
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
-          emit_i64_sub_gc(buf)
+          emit_coerce_top_gc(ctx, buf, rk, arith)
+          match arith {
+            GcValKind::I64 => emit_i64_sub_gc(buf)
+            GcValKind::I32 => emit_i32_sub_gc(buf)
+            GcValKind::F32 => emit_f32_sub_gc(buf)
+            GcValKind::F64 => emit_f64_sub_gc(buf)
+            _ => emit_i64_sub_gc(buf)
+          }
         }
-        "mul" if !ctx.func_indices.contains(name) => {
+        "mul" if gc_call_args_arith(ctx, fctx, pos_args) => {
           if pos_args.length() != 2 {
             raise WasmGenError::Unsupported("mul arity")
           }
+          let lk = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          let rk = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+          let arith = gc_arith_kind(gc_common_kind(lk, rk))
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_coerce_top_gc(ctx, buf, lk, arith)
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
-          emit_i64_mul_gc(buf)
+          emit_coerce_top_gc(ctx, buf, rk, arith)
+          match arith {
+            GcValKind::I64 => emit_i64_mul_gc(buf)
+            GcValKind::I32 => emit_i32_mul_gc(buf)
+            GcValKind::F32 => emit_f32_mul_gc(buf)
+            GcValKind::F64 => emit_f64_mul_gc(buf)
+            _ => emit_i64_mul_gc(buf)
+          }
         }
-        "div" if !ctx.func_indices.contains(name) => {
+        "div" if gc_call_args_arith(ctx, fctx, pos_args) => {
           if pos_args.length() != 2 {
             raise WasmGenError::Unsupported("div arity")
           }
+          let lk = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          let rk = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+          let arith = gc_arith_kind(gc_common_kind(lk, rk))
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_coerce_top_gc(ctx, buf, lk, arith)
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
-          emit_i64_div_s_gc(buf)
+          emit_coerce_top_gc(ctx, buf, rk, arith)
+          match arith {
+            GcValKind::I64 => emit_i64_div_s_gc(buf)
+            GcValKind::I32 => emit_i32_div_s_gc(buf)
+            GcValKind::F32 => emit_f32_div_gc(buf)
+            GcValKind::F64 => emit_f64_div_gc(buf)
+            _ => emit_i64_div_s_gc(buf)
+          }
         }
+        // `eq` / `lt` are prelude thin wrappers around `__eq` / `__lt`
+        // declared with the synthetic `Num` type that the wasm-gc
+        // backend collapses to i64 — calling the bundled function with
+        // f32 / f64 args would trip wasm validation. Always inline the
+        // comparison primitive matched to the operand kinds, regardless
+        // of whether a user-defined `eq` / `lt` exists. The prelude
+        // `let eq = (x: Num, y: Num) -> ...` function still gets
+        // bundled but its body is now unreachable; DCE drops it from
+        // the final module.
         "eq" => {
           if pos_args.length() != 2 {
             raise WasmGenError::Unsupported("eq arity")
           }
-          // Coerce both args to i64 — fixes the case where an arg
-          // arrives as eqref (e.g. from an enum payload local of
-          // erased kind, as `match Some(v) => eq(v, 7)` does).
           let left_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
           let right_kind = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+          let arith = gc_arith_kind(gc_common_kind(left_kind, right_kind))
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
-          emit_coerce_top_gc(ctx, buf, left_kind, GcValKind::I64)
+          emit_coerce_top_gc(ctx, buf, left_kind, arith)
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
-          emit_coerce_top_gc(ctx, buf, right_kind, GcValKind::I64)
-          emit_i64_eq_gc(buf)
+          emit_coerce_top_gc(ctx, buf, right_kind, arith)
+          match arith {
+            GcValKind::I64 => emit_i64_eq_gc(buf)
+            GcValKind::I32 => emit_i32_eq_gc(buf)
+            GcValKind::F32 => emit_f32_eq_gc(buf)
+            GcValKind::F64 => emit_f64_eq_gc(buf)
+            _ => emit_i64_eq_gc(buf)
+          }
         }
         "lt" => {
           if pos_args.length() != 2 {
@@ -7116,11 +7237,18 @@ fn compile_expr_gc(
           }
           let left_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
           let right_kind = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+          let arith = gc_arith_kind(gc_common_kind(left_kind, right_kind))
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
-          emit_coerce_top_gc(ctx, buf, left_kind, GcValKind::I64)
+          emit_coerce_top_gc(ctx, buf, left_kind, arith)
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
-          emit_coerce_top_gc(ctx, buf, right_kind, GcValKind::I64)
-          emit_i64_lt_s_gc(buf)
+          emit_coerce_top_gc(ctx, buf, right_kind, arith)
+          match arith {
+            GcValKind::I64 => emit_i64_lt_s_gc(buf)
+            GcValKind::I32 => emit_i32_lt_s_gc(buf)
+            GcValKind::F32 => emit_f32_lt_gc(buf)
+            GcValKind::F64 => emit_f64_lt_gc(buf)
+            _ => emit_i64_lt_s_gc(buf)
+          }
         }
         "__add" => {
           if pos_args.length() != 2 {
