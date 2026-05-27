@@ -46,7 +46,13 @@ priv struct ProfilerState {
   // Both expressed as microseconds since `profiler_set_enabled(true)`
   // or `profiler_reset()` — pprof's spec wants nanoseconds, the
   // encoder multiplies on output.
-  mut session_start : @bench.Timestamp
+  //
+  // `None` until the profiler is enabled. Keeping this lazy avoids
+  // calling `@bench.monotonic_clock_start()` at module load, which
+  // would otherwise add an unneeded host clock read to every wasm
+  // instantiation (including release builds that never enable the
+  // profiler).
+  mut session_start : @bench.Timestamp?
   mut session_elapsed_us : Int
 }
 
@@ -60,7 +66,7 @@ let profiler_state : Ref[ProfilerState] = @ref.new({
   order: [],
   stack_self_us: {},
   stack_order: [],
-  session_start: @bench.monotonic_clock_start(),
+  session_start: None,
   session_elapsed_us: 0,
 })
 
@@ -71,7 +77,7 @@ const STACK_SEP : Char = '\u0001'
 pub fn profiler_set_enabled(enabled : Bool) -> Unit {
   profiler_enabled_ref.val = enabled
   if enabled {
-    profiler_state.val.session_start = @bench.monotonic_clock_start()
+    profiler_state.val.session_start = Some(@bench.monotonic_clock_start())
     profiler_state.val.session_elapsed_us = 0
   }
 }
@@ -84,7 +90,11 @@ pub fn profiler_reset() -> Unit {
     order: [],
     stack_self_us: {},
     stack_order: [],
-    session_start: @bench.monotonic_clock_start(),
+    session_start: if profiler_enabled_ref.val {
+      Some(@bench.monotonic_clock_start())
+    } else {
+      None
+    },
     session_elapsed_us: 0,
   }
 }
@@ -198,9 +208,14 @@ pub fn profiler_leave() -> Unit {
     }
   }
   // Bump session-elapsed window for pprof time_nanos/duration_nanos.
-  state.session_elapsed_us = @bench
-    .monotonic_clock_end(state.session_start)
-    .to_int()
+  // `session_start` is None outside an enabled profile session — but
+  // we only reach this leave-path under `profiler_enabled_ref.val`,
+  // which `profiler_set_enabled(true)` always pairs with a Some(...).
+  match state.session_start {
+    Some(start) =>
+      state.session_elapsed_us = @bench.monotonic_clock_end(start).to_int()
+    None => ()
+  }
 }
 
 ///|
