@@ -522,7 +522,19 @@ pub fn prelude_ast() -> @core.Module {
   match cached_prelude_ast.val {
     Some(ast) => ast
     None => {
-      let ast = try! @parser.parse_ast(prelude_source)
+      // Disk cache layer: on cold CLI invocations the in-process
+      // Ref above is always empty; without this we'd re-parse the
+      // prelude on every `vibe build` (≈5ms). Cache key is the
+      // content-address hash of `prelude_source`, so updates to
+      // the prelude invalidate automatically.
+      let ast = match try_load_prelude_ast_from_disk() {
+        Some(m) => m
+        None => {
+          let parsed = try! @parser.parse_ast(prelude_source)
+          save_prelude_ast_to_disk(parsed)
+          parsed
+        }
+      }
       cached_prelude_ast.val = Some(ast)
       ast
     }
