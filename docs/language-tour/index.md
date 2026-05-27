@@ -15,7 +15,7 @@ vibe check file.vibe     # Type check
 ## Hello World
 
 ```vibe
-let greeting = (name: String) -> String {
+let greeting: (String) -> String = (name) -> {
   "hello \(name)"
 }
 

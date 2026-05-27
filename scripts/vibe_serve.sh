@@ -93,7 +93,7 @@ fi
 if ! "$WASMTIME_BIN" serve --help 2>&1 | grep -qi "p3\|preview3\|Sp3"; then
   WASMTIME_VERSION=$("$WASMTIME_BIN" --version 2>/dev/null || echo "unknown")
   echo "warning: wasmtime ($WASMTIME_VERSION) may not support WASI P3" >&2
-  echo "warning: P3 requires wasmtime v42+ with -Sp3 flag" >&2
+  echo "warning: P3 serve requires wasmtime v44+ with -Sp3 flag" >&2
   echo "warning: attempting serve anyway..." >&2
 fi
 

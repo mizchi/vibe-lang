@@ -455,7 +455,16 @@ fn normalize_struct_fields(fields : Array[StructField]) -> Array[StructField] {
   let out : Array[StructField] = []
   let zero_span = Span::{ start: 0, end: 0 }
   for field in fields {
-    out.push(StructField::{ name: field.name, ty: field.ty, span: zero_span })
+    // Preserve `is_mut` — it's part of the struct's structural identity
+    // (ADR-0052). Span is stripped for content-address stability.
+    out.push(
+      StructField::{
+        name: field.name,
+        ty: field.ty,
+        is_mut: field.is_mut,
+        span: zero_span,
+      },
+    )
   }
   out
 }
@@ -581,6 +590,11 @@ fn normalize_expr(expr : Expr, scope : NormScope) -> Expr {
       )
     Expr::Continue(args~, ..) =>
       Expr::Continue(args=normalize_exprs(args, scope), span=zero_span)
+    Expr::Return(value~, ..) =>
+      Expr::Return(
+        value=value.map(fn(v) { normalize_expr(v, scope) }),
+        span=zero_span,
+      )
     Expr::Handle(body~, arms~, ..) =>
       Expr::Handle(
         body=normalize_block(body, scope.child_block()),

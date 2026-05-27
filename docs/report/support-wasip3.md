@@ -1,12 +1,14 @@
 # WASI P3 サポート状況レポート
 
-## 現在の状態 (2026-03-18)
+## 現在の状態 (2026-05-22)
 
 ### 動作確認済み
 
-- **wasmtime v44.0.0** (deps/wasmtime submodule) で P3 HTTP serve 完全動作
-- wasmtime v42.0.1 (system install) では `fields` resource 未リンクで serve 不可
+- **wasmtime v45.0.0** (deps/wasmtime submodule) を現在の基準に更新
+- wasmtime v44.0.0 で P3 HTTP serve 完全動作確認済み
+- 古い wasmtime v42.0.1 では `fields` resource 未リンクで serve 不可
 - フラグ: `-Sp3 -Shttp -Wcomponent-model-async=y -Wcomponent-model-async-builtins=y -Wexceptions=y`
+- v45 系の Rust crate / submodule build には Rust 1.93+ が必要
 
 ### パイプライン
 
@@ -78,7 +80,7 @@ POST/PUT のリクエストボディを処理するには adapter の WIT 拡張
 
 ### 5. wasmtime バージョン依存
 
-P3 serve は wasmtime v44+ が必要。CI (system install) は v42 で serve テスト skip。
+P3 serve は wasmtime v44+ が必要。repo 既定の install script / submodule は v45.0.0 を基準にする。
 
 ## 設計決定: Model 1 (Full Algebraic Effect)
 
@@ -237,8 +239,8 @@ let proxy = () -> Unit with { HttpRequest, HttpResponse, HttpClient } {
 
 ### Phase 4: CI / Tooling
 
-- [ ] CI で wasmtime v44 を使って P3 serve テストを有効化
-- [ ] `just test-wasi-p3-e2e-v44` を CI に追加（submodule build 必要）
+- [ ] CI で wasmtime v45 を使って P3 serve テストを有効化
+- [ ] `pkf run test-wasi-p3-e2e-v45` を CI に追加（submodule build 必要）
 - [ ] effect handler の型推論テスト
 
 ### Phase 5: Production Ready

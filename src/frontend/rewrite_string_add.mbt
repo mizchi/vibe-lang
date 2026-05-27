@@ -259,6 +259,14 @@ fn rsa_rewrite_expr(
       }
       @core.Expr::Continue(args=next_args, span~)
     }
+    @core.Expr::Return(value~, span~) =>
+      @core.Expr::Return(
+        value=match value {
+          Some(v) => Some(rsa_rewrite_expr(v, expr_types))
+          None => None
+        },
+        span~,
+      )
     @core.Expr::Yield(expr~, span~) =>
       @core.Expr::Yield(expr=rsa_rewrite_expr(expr, expr_types), span~)
     @core.Expr::Tuple(items~, span~) => {

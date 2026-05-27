@@ -1,8 +1,8 @@
 // wasmtime-backed runner for moon-emitted `--target wasm` modules.
 //
-// Mirrors the moonrun host import surface (spectest::print_char +
-// __moonbit_fs_unstable::* + __moonbit_time_unstable::* +
-// __moonbit_sys_unstable::is_windows) but uses wasmtime's Cranelift JIT /
+// Mirrors the moonrun host import surface (stdout via spectest::print_char
+// or wasi_snapshot_preview1::fd_write + __moonbit_fs_unstable::* +
+// __moonbit_time_unstable::* + __moonbit_sys_unstable::is_windows) but uses wasmtime's Cranelift JIT /
 // pre-compiled `.cwasm` so selfhost bench wallclock isn't dominated by
 // v8's wasm interpretation overhead.
 //
@@ -15,7 +15,7 @@
 
 use std::any::Any;
 use std::fs;
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -26,6 +26,11 @@ use wasmtime::{
 };
 
 const FFI_END_OF_STRING_ARRAY: &str = "ffi_end_of_/string_array";
+const WASI_ERRNO_SUCCESS: i32 = 0;
+const WASI_ERRNO_BADF: i32 = 8;
+const WASI_ERRNO_FAULT: i32 = 21;
+const WASI_ERRNO_INVAL: i32 = 28;
+const WASI_ERRNO_IO: i32 = 29;
 
 // Per-handle moonrun shapes. Mirror the JS objects in moonrun's embedded glue:
 //   begin_create_string()      -> StringWriter
@@ -158,8 +163,7 @@ fn precompile(input: &str, output: Option<&str>) -> Result<()> {
             p
         }
     };
-    fs::write(&out_path, &bytes)
-        .map_err(|e| format_err!("write {}: {e}", out_path.display()))?;
+    fs::write(&out_path, &bytes).map_err(|e| format_err!("write {}: {e}", out_path.display()))?;
     eprintln!(
         "moonrun_wt: precompiled {} → {} ({} bytes)",
         input,
@@ -370,8 +374,8 @@ fn daemon(args: Vec<String>) -> Result<i32> {
         // Parse request. Accept either {"args": [...]} or a bare ["a","b"]
         // array for convenience.
         let req_args_res: Result<Vec<String>> = (|| {
-            let v: serde_json::Value = serde_json::from_str(trimmed)
-                .map_err(|e| format_err!("bad request json: {e}"))?;
+            let v: serde_json::Value =
+                serde_json::from_str(trimmed).map_err(|e| format_err!("bad request json: {e}"))?;
             let arr = if v.is_array() {
                 v
             } else if let Some(a) = v.get("args").cloned() {
@@ -379,7 +383,9 @@ fn daemon(args: Vec<String>) -> Result<i32> {
             } else {
                 bail!("request missing `args` array");
             };
-            let arr = arr.as_array().ok_or_else(|| format_err!("`args` not array"))?;
+            let arr = arr
+                .as_array()
+                .ok_or_else(|| format_err!("`args` not array"))?;
             arr.iter()
                 .map(|x| {
                     x.as_str()
@@ -515,7 +521,10 @@ fn read_str(caller: &Caller<'_, HostState>, h: Option<Rooted<ExternRef>>) -> Res
     }
 }
 
-fn read_bytes(caller: &Caller<'_, HostState>, h: Option<Rooted<ExternRef>>) -> Result<Arc<Vec<u8>>> {
+fn read_bytes(
+    caller: &Caller<'_, HostState>,
+    h: Option<Rooted<ExternRef>>,
+) -> Result<Arc<Vec<u8>>> {
     let h = h.ok_or_else(|| format_err!("null externref"))?;
     let any: &(dyn Any + Send + Sync) = h
         .data(caller)?
@@ -564,7 +573,108 @@ fn with_value<R>(
     f(v)
 }
 
+fn read_wasi_u32(
+    memory: &wasmtime::Memory,
+    caller: &Caller<'_, HostState>,
+    offset: usize,
+) -> std::result::Result<u32, i32> {
+    let mut buf = [0u8; 4];
+    memory
+        .read(caller, offset, &mut buf)
+        .map_err(|_| WASI_ERRNO_FAULT)?;
+    Ok(u32::from_le_bytes(buf))
+}
+
+fn write_wasi_fd(host: &mut HostState, fd: i32, bytes: &[u8]) -> io::Result<()> {
+    match fd {
+        1 if host.capture_stdout => {
+            host.captured_stdout.extend_from_slice(bytes);
+            Ok(())
+        }
+        1 => {
+            let stdout = std::io::stdout();
+            stdout.lock().write_all(bytes)
+        }
+        2 => {
+            let stderr = std::io::stderr();
+            stderr.lock().write_all(bytes)
+        }
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "unsupported WASI fd",
+        )),
+    }
+}
+
+fn wasi_fd_write(
+    caller: &mut Caller<'_, HostState>,
+    fd: i32,
+    iovs: i32,
+    iovs_len: i32,
+    nwritten: i32,
+) -> i32 {
+    if fd != 1 && fd != 2 {
+        return WASI_ERRNO_BADF;
+    }
+    if iovs < 0 || iovs_len < 0 || nwritten < 0 {
+        return WASI_ERRNO_INVAL;
+    }
+
+    let memory = match caller
+        .get_export("memory")
+        .and_then(|ext| ext.into_memory())
+    {
+        Some(memory) => memory,
+        None => return WASI_ERRNO_FAULT,
+    };
+
+    let mut written: u32 = 0;
+    let iovs_base = iovs as usize;
+    for index in 0..(iovs_len as usize) {
+        let iov_offset = match iovs_base.checked_add(index.saturating_mul(8)) {
+            Some(offset) => offset,
+            None => return WASI_ERRNO_INVAL,
+        };
+        let ptr = match read_wasi_u32(&memory, caller, iov_offset) {
+            Ok(ptr) => ptr as usize,
+            Err(errno) => return errno,
+        };
+        let len = match read_wasi_u32(&memory, caller, iov_offset + 4) {
+            Ok(len) => len as usize,
+            Err(errno) => return errno,
+        };
+        let mut bytes = vec![0u8; len];
+        if memory.read(&*caller, ptr, &mut bytes).is_err() {
+            return WASI_ERRNO_FAULT;
+        }
+        if write_wasi_fd(caller.data_mut(), fd, &bytes).is_err() {
+            return WASI_ERRNO_IO;
+        }
+        written = match written.checked_add(len as u32) {
+            Some(total) => total,
+            None => return WASI_ERRNO_INVAL,
+        };
+    }
+
+    if memory
+        .write(caller, nwritten as usize, &written.to_le_bytes())
+        .is_err()
+    {
+        return WASI_ERRNO_FAULT;
+    }
+    WASI_ERRNO_SUCCESS
+}
+
 fn register_imports(linker: &mut Linker<HostState>) -> Result<()> {
+    // Current moon emits WASI Preview1 fd_write for stdout/stderr.
+    linker.func_wrap(
+        "wasi_snapshot_preview1",
+        "fd_write",
+        |mut caller: Caller<'_, HostState>, fd: i32, iovs: i32, iovs_len: i32, nwritten: i32| {
+            wasi_fd_write(&mut caller, fd, iovs, iovs_len, nwritten)
+        },
+    )?;
+
     // spectest::print_char — moonbit emits UTF-16 code units. Buffer until
     // newline, then decode lossily so multibyte sequences land on stdout
     // as one write.
@@ -603,9 +713,7 @@ fn register_imports(linker: &mut Linker<HostState>) -> Result<()> {
     linker.func_wrap(
         "__moonbit_sys_unstable",
         "exit",
-        |_caller: Caller<'_, HostState>, code: i32| -> Result<()> {
-            Err(ExitTrap(code).into())
-        },
+        |_caller: Caller<'_, HostState>, code: i32| -> Result<()> { Err(ExitTrap(code).into()) },
     )?;
 
     // ------------- time -------------
@@ -737,7 +845,10 @@ fn register_imports(linker: &mut Linker<HostState>) -> Result<()> {
          h: Option<Rooted<ExternRef>>|
          -> Result<Option<Rooted<ExternRef>>> {
             let arr = read_bytes(&caller, h)?;
-            Ok(Some(ExternRef::new(&mut caller, MoonValue::ByteArray(arr))?))
+            Ok(Some(ExternRef::new(
+                &mut caller,
+                MoonValue::ByteArray(arr),
+            )?))
         },
     )?;
     linker.func_wrap(
@@ -961,11 +1072,7 @@ fn register_imports(linker: &mut Linker<HostState>) -> Result<()> {
         "__moonbit_fs_unstable",
         "get_dir_files",
         |mut caller: Caller<'_, HostState>| -> Result<Option<Rooted<ExternRef>>> {
-            let arr = caller
-                .data_mut()
-                .pending_strings
-                .take()
-                .unwrap_or_default();
+            let arr = caller.data_mut().pending_strings.take().unwrap_or_default();
             Ok(Some(ExternRef::new(
                 &mut caller,
                 MoonValue::StringArray(arr),

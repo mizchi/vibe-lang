@@ -28,7 +28,6 @@ test "normalize_engine: format basic let binding" {
     result,
     content=(
       #|Ok("//# Functions\n\nlet x: Int = 1\n")
-
     ),
   )
 }
@@ -43,7 +42,6 @@ test "normalize_engine: format multiple let bindings with spacing" {
     result,
     content=(
       #|Ok("//# Functions\n\nlet a: Int = 1\n\nlet b: Int = 2\n")
-
     ),
   )
 }
@@ -57,7 +55,6 @@ test "normalize_engine: constant folding for addition" {
     result,
     content=(
       #|Ok("//# Functions\n\nlet value: Int = 3\n")
-
     ),
   )
 }
@@ -71,7 +68,6 @@ test "normalize_engine: constant folding for multiplication" {
     result,
     content=(
       #|Ok("//# Functions\n\nlet value: Int = 12\n")
-
     ),
   )
 }
@@ -179,7 +175,6 @@ test "normalize_engine: inferred annotation on non-fn let" {
     result,
     content=(
       #|Ok("//# Functions\n\nlet answer: Int = 42\n")
-
     ),
   )
 }
@@ -194,6 +189,30 @@ test "normalize_engine: infers fn return annotation in fn expression" {
     Ok(normalized) => {
       assert_true(normalized.contains("let f: (Int) -> Int = (v) -> { v * 2 }"))
       assert_true(normalized.contains("let y: Int = f(3)"))
+    }
+    Err(msg) => fail("normalize failed: " + msg)
+  }
+}
+
+///|
+test "normalize_engine: canonicalizes explicit fn signature with effects" {
+  let source =
+    #|effect Error {
+    #|  Throw(String) -> Int
+    #|}
+    #|let recover = (f: () -> Int with { Error }) -> Int with { Error } {
+    #|  f()
+    #|}
+    #|export { recover }
+  let result = normalize_source_text(source)
+  match result {
+    Ok(normalized) => {
+      assert_true(
+        normalized.contains(
+          "let recover: (() -> Int with { Error }) -> Int with { Error } = (f) -> {",
+        ),
+      )
+      assert_true(normalized.contains("f()"))
     }
     Err(msg) => fail("normalize failed: " + msg)
   }
@@ -452,7 +471,6 @@ test "normalize_engine: empty source returns empty string" {
     result,
     content=(
       #|Ok("")
-
     ),
   )
 }
@@ -466,7 +484,6 @@ test "normalize_engine: constant folding subtraction" {
     result,
     content=(
       #|Ok("//# Functions\n\nlet value: Int = 7\n")
-
     ),
   )
 }

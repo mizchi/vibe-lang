@@ -425,6 +425,7 @@ fn parse_expr(json : Json) -> Expr raise DeserializeError {
       }
       "Break" => return Expr::Break(value=None, span=zero)
       "Continue" => return Expr::Continue(args=[], span=zero)
+      "Return" => return Expr::Return(value=None, span=zero)
       "Handle" => {
         let inner = expect_object(value)
         let body = parse_module(get_field(inner, "body"))
@@ -876,7 +877,14 @@ fn parse_struct_fields(
     let obj = expect_object(item)
     let name = get_string(obj, "name")
     let ty = parse_type(get_field(obj, "ty"))
-    out.push(StructField::{ name, ty, span: deser_zero_span })
+    // is_mut is absent on legacy IR (defaults to false). ADR-0052.
+    let is_mut = match obj.get("is_mut") {
+      Some(v) => expect_bool(v)
+      None => false
+    }
+    out.push(
+      StructField::{ name, ty, is_mut: is_mut, span: deser_zero_span },
+    )
   }
   out
 }
@@ -980,7 +988,10 @@ fn parse_import_kind(kind : String?) -> ImportKind raise DeserializeError {
 fn expect_object(json : Json) -> Map[String, Json] raise DeserializeError {
   match json {
     Json::Object(obj) => obj
-    _ => raise DeserializeError("Expected object, got: " + Debug::to_repr(json).to_string())
+    _ =>
+      raise DeserializeError(
+        "Expected object, got: " + Debug::to_repr(json).to_string(),
+      )
   }
 }
 

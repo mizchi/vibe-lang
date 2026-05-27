@@ -157,27 +157,21 @@ fn encode_value(value : @core.Value) -> String {
 fn decode_value(encoded : String) -> @core.Value? {
   if encoded.has_prefix("i:") {
     let rest = slice_from(encoded, 2)
-    let parsed : Result[Int64, Error] = try? @string.parse_int64(
-      rest,
-    )
+    let parsed : Result[Int64, Error] = try? @string.parse_int64(rest)
     match parsed {
       Ok(v) => Some(@core.Value::Int(v))
       Err(_) => None
     }
   } else if encoded.has_prefix("f32:") {
     let rest = slice_from(encoded, 4)
-    let parsed : Result[Double, Error] = try? @string.parse_double(
-      rest,
-    )
+    let parsed : Result[Double, Error] = try? @string.parse_double(rest)
     match parsed {
       Ok(v) => Some(@core.Value::Float(Float::from_double(v)))
       Err(_) => None
     }
   } else if encoded.has_prefix("f64:") {
     let rest = slice_from(encoded, 4)
-    let parsed : Result[Double, Error] = try? @string.parse_double(
-      rest,
-    )
+    let parsed : Result[Double, Error] = try? @string.parse_double(rest)
     match parsed {
       Ok(v) => Some(@core.Value::Double(v))
       Err(_) => None
@@ -196,9 +190,7 @@ fn decode_value(encoded : String) -> @core.Value? {
     }
   } else if encoded.has_prefix("c:") {
     let rest = slice_from(encoded, 2)
-    let parsed : Result[Int, Error] = try? @string.parse_int(
-      rest,
-    )
+    let parsed : Result[Int, Error] = try? @string.parse_int(rest)
     match parsed {
       Ok(code) =>
         match Int::to_char(code) {

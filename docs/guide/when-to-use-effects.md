@@ -13,7 +13,7 @@
 
 ```vibe
 // ✅ let mut: 内部の反復制御
-let sum = (arr: Array[Int]) -> Int {
+let sum: (Array[Int]) -> Int = (arr) -> {
   let mut total = 0
   let mut i = 0
   while i < Array::length(arr) {
@@ -30,7 +30,7 @@ let sum = (arr: Array[Int]) -> Int {
 
 ```vibe
 // ✅ let mut: 構築中の中間状態
-let join = (parts: Array[String], sep: String) -> String {
+let join: (Array[String], String) -> String = (parts, sep) -> {
   let sb = StringBuilder::new()
   let mut first = true
   for part in parts {
@@ -48,7 +48,7 @@ let join = (parts: Array[String], sep: String) -> String {
 
 ```vibe
 // ✅ let mut: 関数内のフラグ
-let has_uppercase = (s: String) -> Bool {
+let has_uppercase: (String) -> Bool = (s) -> {
   let mut found = false
   let mut i = 0
   while i < String::length(s) {
@@ -65,7 +65,7 @@ let has_uppercase = (s: String) -> Bool {
 
 ```vibe
 // ✅ let mut: 集計は内部ロジック
-let count_even = (arr: Array[Int]) -> Int {
+let count_even: (Array[Int]) -> Int = (arr) -> {
   let mut count = 0
   for x in arr {
     if x - (x / 2) * 2 == 0 { count = count + 1 }
@@ -82,7 +82,7 @@ let count_even = (arr: Array[Int]) -> Int {
 // ✅ effect: テスト時に mock したい
 effect Db { Query(String) -> String }
 
-let get_user = () -> String with { Db } {
+let get_user: () -> String with { Db } = () -> {
   perform Db::Query("SELECT name FROM users WHERE id=1")
 }
 
@@ -102,7 +102,7 @@ effect Config {
   Get(String) -> String
 }
 
-let connect = () -> String with { Config } {
+let connect: () -> String with { Config } = () -> {
   let host = perform Config::Get("DB_HOST")
   let port = perform Config::Get("DB_PORT")
   String::concat(host, String::concat(":", port))
@@ -124,7 +124,7 @@ handle { connect() } with Config {
 // ✅ effect: ログの出力先を変えたい
 effect Log { Info(String) -> Unit; Error(String) -> Unit }
 
-let process = (data: String) -> Int with { Log } {
+let process: (String) -> Int with { Log } = (data) -> {
   perform Log::Info("processing started")
   let result = String::length(data)
   if result == 0 {
@@ -148,7 +148,7 @@ handle { process("hello") } with Log {
 // ✅ effect: 認証ロジックを差し替え可能に
 effect Auth { Verify(String) -> Bool }
 
-let protected_action = () -> Int with { Auth } {
+let protected_action: () -> Int with { Auth } = () -> {
   let ok = perform Auth::Verify("token")
   if ok { 200 } else { 401 }
 }
@@ -162,7 +162,7 @@ let protected_action = () -> Int with { Auth } {
 // ✅ effect: テストで決定的にしたい
 effect Random { NextInt(Int, Int) -> Int }
 
-let roll_dice = () -> Int with { Random } {
+let roll_dice: () -> Int with { Random } = () -> {
   perform Random::NextInt(1, 6)
 }
 
@@ -219,18 +219,23 @@ let total = handle {
 
 ```vibe
 // BAD: 不必要な effect 化
-effect Counter { Inc -> Unit; Get -> Int }
+effect Counter { Inc() -> Unit; Get() -> Int }
 let count = handle {
-  perform Counter::Inc
-  perform Counter::Inc
-  perform Counter::Get
-} { Counter::Inc(k) => ..., Counter::Get(k) => ... }
+  perform Counter::Inc()
+  perform Counter::Inc()
+  perform Counter::Get()
+} with Counter {
+  Inc() => ...
+  Get() => ...
+}
 
 // GOOD: let mut で十分
-let mut count = 0
-count = count + 1
-count = count + 1
-count
+{
+  let mut count = 0
+  count = count + 1
+  count = count + 1
+  count
+}
 ```
 
 ### ❌ 純粋関数の入出力を effect にしない
@@ -248,13 +253,16 @@ String::concat(a, b)
 ```vibe
 // BAD: while ループの accumulator を CPS effect で書く
 effect Acc { Add(Int) -> Unit }
-handle { for x in arr { perform Acc::Add(x) }; 0 }
-{ Acc::Add(v, k) => v + k(0) }
+handle { for x in arr { perform Acc::Add(x) }; 0 } with Acc {
+  Add(v) => v + resume(0)
+}
 
 // GOOD: let mut で書く（シンプル、高速）
-let mut total = 0
-for x in arr { total = total + x }
-total
+{
+  let mut total = 0
+  for x in arr { total = total + x }
+  total
+}
 ```
 
 ## まとめ

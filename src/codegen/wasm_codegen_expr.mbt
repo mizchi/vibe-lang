@@ -218,6 +218,10 @@ fn compile_expr(
       let _ = span
       compile_expr_continue(ctx, buf, args)
     }
+    @core.Expr::Return(value~, span~) => {
+      let _ = span
+      compile_expr_return(ctx, buf, value)
+    }
     @core.Expr::Loop(params~, body~, span~) => {
       let _ = span
       compile_expr_loop(ctx, buf, params, body)

@@ -210,7 +210,10 @@ test "decode_builtin_table: Option type" {
   let data = ints_to_bytes(buf)
   match decode_builtin_table(data) {
     Some(entries) =>
-      @debug.assert_eq(entries[0].ret, BuiltinTypeId::BTOption(BuiltinTypeId::BTInt))
+      @debug.assert_eq(
+        entries[0].ret,
+        BuiltinTypeId::BTOption(BuiltinTypeId::BTInt),
+      )
     None => fail("expected Some")
   }
 }

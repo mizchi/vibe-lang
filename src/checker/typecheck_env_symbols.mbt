@@ -29,6 +29,9 @@ pub struct TypeAlias {
 pub struct StructFieldDef {
   name : String
   ty : @core.Type
+  // ADR-0052: `mut name: T` — direct field assignment `r.name = e` is
+  // allowed only when this flag is true.
+  is_mut : Bool
 } derive(Debug, Eq)
 
 ///|

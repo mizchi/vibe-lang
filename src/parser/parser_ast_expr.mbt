@@ -17,6 +17,8 @@ fn AstParser::parse_expr(self : AstParser) -> @core.Expr raise ParseError {
     self.parse_break_expr()
   } else if self.peek_kind() == continue_kw() {
     self.parse_continue_expr()
+  } else if self.peek_kind() == return_kw() {
+    self.parse_return_expr()
   } else if self.peek_kind() == raise_kw() {
     self.parse_removed_raise_expr()
   } else if self.peek_kind() == yield_kw() {
@@ -407,14 +409,14 @@ fn call_or_throw_expr(
   if name == "perform" {
     if type_args.length() != 0 {
       raise ParseError::UnexpectedToken(
-        expected="perform does not accept type arguments. Use `perform(Effect::Op(args))` instead.",
+        expected="perform does not accept type arguments. Use `perform Effect::Op(args)` instead.",
         got="perform[<type>](...)",
         span~,
       )
     }
     if args.length() != 1 {
       raise ParseError::UnexpectedToken(
-        expected="perform requires the form `perform(Effect::Op(args))`.",
+        expected="perform requires the form `perform Effect::Op(args)`.",
         got="perform(...) with \{args.length()} arguments",
         span~,
       )
@@ -422,7 +424,7 @@ fn call_or_throw_expr(
     match args[0].label {
       Some(_) =>
         raise ParseError::UnexpectedToken(
-          expected="perform does not accept labeled arguments. Use `perform(Effect::Op(args))` instead.",
+          expected="perform does not accept labeled arguments. Use `perform Effect::Op(args)` instead.",
           got="perform(label=...)",
           span~,
         )
@@ -1028,6 +1030,23 @@ fn AstParser::parse_break_expr(self : AstParser) -> @core.Expr raise ParseError 
   }
   let span = self.span_from(start)
   @core.Expr::Break(value~, span~)
+}
+
+///|
+fn AstParser::parse_return_expr(self : AstParser) -> @core.Expr raise ParseError {
+  let start = self.pos
+  let _ = self.expect(return_kw(), "return")
+  self.skip_trivia()
+  let next = self.peek_kind()
+  let value : @core.Expr? = if next == rbrace() ||
+    next == semicolon() ||
+    next == eof() {
+    None
+  } else {
+    Some(self.parse_expr())
+  }
+  let span = self.span_from(start)
+  @core.Expr::Return(value~, span~)
 }
 
 ///|
@@ -2677,11 +2696,20 @@ fn desugar_string_interp(
 ///|
 /// Parse input into AST
 pub fn parse_ast(input : String) -> @core.Module raise ParseError {
+  @profiler.profiler_enter("parser/parse_ast")
+  @profiler.profiler_enter("parser/tokenize")
   let tokens = tokenize(input)
+  @profiler.profiler_leave()
   let parser = AstParser::new(tokens)
+  @profiler.profiler_enter("parser/parse_stmts")
   let parsed = parser.parse()
+  @profiler.profiler_leave()
   // Desugar placeholders in Call args after parsing
-  desugar_module(parsed)
+  @profiler.profiler_enter("parser/desugar")
+  let desugared = desugar_module(parsed)
+  @profiler.profiler_leave()
+  @profiler.profiler_leave()
+  desugared
 }
 
 ///|

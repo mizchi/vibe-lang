@@ -22,7 +22,7 @@ Execute a vibe script. The final top-level expression must be pure.
 vibe run <file>
 ```
 
-Compiles and runs the script via WASM. Uses a persistent session worker by default (disable with `VIBE_USE_SESSION_HTTP=0`). After successful execution, the linked debug cache is populated in the background for faster subsequent runs.
+Compiles and runs the script via WASM. By default this uses the one-shot execution path; set `VIBE_USE_SESSION_HTTP=1` to opt into the persistent session worker. Set `VIBE_LINKED_CACHE_BACKGROUND=1` to populate the linked debug cache in the background after a successful run.
 
 ### build
 
@@ -225,7 +225,7 @@ vibe wasm-shell-stdin [--no-prompt] [-o dir]
 
 ### session-http / session-json
 
-Persistent session workers that accelerate `run`/`check`/`test` by keeping compilation state in memory.
+Opt-in persistent session workers that accelerate `run`/`check`/`test` by keeping compilation state in memory.
 
 - `session-http --port N`: HTTP-based session (localhost).
 - `session-json`: stdin/stdout JSON protocol.
@@ -259,6 +259,7 @@ Persistent session workers that accelerate `run`/`check`/`test` by keeping compi
 | Variable | Description |
 |----------|-------------|
 | `VIBE_RUN_BACKEND=release\|monolithic` | Disable linked debug fast path for `run` |
-| `VIBE_USE_SESSION_HTTP=0` | Disable persistent session worker for run/check/test |
+| `VIBE_USE_SESSION_HTTP=1` | Enable persistent session worker for run/check/test |
+| `VIBE_LINKED_CACHE_BACKGROUND=1` | Enable background linked debug cache build after `run` |
 | `VIBE_TEST_JOBS` | Default parallelism for `test` (max 16) |
 | `VIBE_TEST_COVERAGE=1` | Required to enable `--coverage` in compile |

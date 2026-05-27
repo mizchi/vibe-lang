@@ -129,6 +129,12 @@ pub(all) struct TypeCtor {
 pub(all) struct StructField {
   name : String
   ty : Type
+  /// When true the field was declared `mut name: T`. Per ADR-0052 this is
+  /// pure surface syntax that frontend lowering rewrites to a length-1
+  /// `Array[T]` field; we keep the flag through the typechecker so that
+  /// "assignment to non-mut field" can be rejected with the same diagnostic
+  /// as `let mut`.
+  is_mut : Bool
   span : Span
 } derive(Debug, Eq)
 
@@ -344,6 +350,9 @@ pub(all) enum Expr {
   Loop(params~ : Array[LoopParam], body~ : Module, span~ : Span)
   Break(value~ : Expr?, span~ : Span)
   Continue(args~ : Array[Expr], span~ : Span)
+  /// Early return from the enclosing function body. `value` is None for
+  /// bare `return` (in a Unit-returning function), Some for `return e`.
+  Return(value~ : Expr?, span~ : Span)
   Yield(expr~ : Expr, span~ : Span)
   Handle(body~ : Module, arms~ : Array[MatchArm], span~ : Span)
   StructLit(
@@ -451,6 +460,7 @@ pub fn Expr::span(self : Expr) -> Span {
     | Expr::Loop(span~, ..)
     | Expr::Break(span~, ..)
     | Expr::Continue(span~, ..)
+    | Expr::Return(span~, ..)
     | Expr::Yield(span~, ..)
     | Expr::Handle(span~, ..)
     | Expr::StructLit(span~, ..)

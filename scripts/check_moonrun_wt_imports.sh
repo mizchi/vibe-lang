@@ -84,10 +84,25 @@ BASELINE="$PROJECT_ROOT/tools/moonrun_wasmtime/expected_imports.txt"
 ACTUAL="$(mktemp /tmp/moonrun_wt_imports.XXXXXX)"
 trap 'rm -f "$ACTUAL"' EXIT
 
+normalize_imports() {
+  awk -F '\t' '
+    BEGIN { OFS = "\t" }
+    $1 == "spectest" && $2 == "print_char" && $3 == "func" && $4 == "(i32)->()" {
+      print "moonrun_stdout", "write", "func", "variant(spectest.print_char|wasi_snapshot_preview1.fd_write)"
+      next
+    }
+    $1 == "wasi_snapshot_preview1" && $2 == "fd_write" && $3 == "func" && $4 == "(i32,i32,i32,i32)->(i32)" {
+      print "moonrun_stdout", "write", "func", "variant(spectest.print_char|wasi_snapshot_preview1.fd_write)"
+      next
+    }
+    { print }
+  '
+}
+
 {
   "$WT_BIN" --dump-imports "$COMPILE_WASM"
   "$WT_BIN" --dump-imports "$CHECK_WASM"
-} | sort -u > "$ACTUAL"
+} | normalize_imports | sort -u > "$ACTUAL"
 
 if [ "$UPDATE" = "1" ]; then
   cp "$ACTUAL" "$BASELINE"

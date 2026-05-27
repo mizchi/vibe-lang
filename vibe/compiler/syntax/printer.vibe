@@ -10,7 +10,7 @@ import ./float_format.vibe {
 
 //# Functions
 
-let join = (arr: Array[String], sep: String) -> String {
+let join: (Array[String], String) -> String = (arr, sep) -> {
   let len = Array::length(arr)
   if len == 0 {
     ""
@@ -28,10 +28,10 @@ let join = (arr: Array[String], sep: String) -> String {
   }
 }
 
-let escape_string = (s: String) -> String {
+let escape_string: (String) -> String = (s) -> {
   let len = String::length(s)
   let b = ArrayBuilder::new()
-  let push_chunk = (start: Int, end: Int) -> Unit {
+  let push_chunk: (Int, Int) -> Unit = (start, end) -> {
     if end > start {
       ArrayBuilder::push(b, s[start: end])
     }
@@ -78,7 +78,7 @@ let escape_string = (s: String) -> String {
   String::join(ArrayBuilder::freeze(b), "")
 }
 
-export let rec print_pat = (p: Pat) -> String {
+export let rec print_pat: (Pat) -> String = (p) -> {
   match p {
     PWild => "_",
     PBind(name) => name,
@@ -106,7 +106,7 @@ export let rec print_pat = (p: Pat) -> String {
   }
 }
 
-let handle_effect_name_from_ctor = (name: String) -> Option[String] {
+let handle_effect_name_from_ctor: (String) -> Option[String] = (name) -> {
   let idx = String::last_index_of(name, "::")
   if idx < 0 {
     None
@@ -115,7 +115,7 @@ let handle_effect_name_from_ctor = (name: String) -> Option[String] {
   }
 }
 
-let rec infer_handle_effect_name_from_pat = (pat: Pat) -> Option[String] {
+let rec infer_handle_effect_name_from_pat: (Pat) -> Option[String] = (pat) -> {
   match pat {
     PCtor(name, _) => handle_effect_name_from_ctor(name),
     POr(left, right) => match infer_handle_effect_name_from_pat(left) {
@@ -126,7 +126,7 @@ let rec infer_handle_effect_name_from_pat = (pat: Pat) -> Option[String] {
   }
 }
 
-let infer_handle_effect_name = (arms: Array[(Pat, Expr)]) -> String {
+let infer_handle_effect_name: (Array[(Pat, Expr)]) -> String = (arms) -> {
   let mut i = 0
   let mut effect_name = "Error"
   let mut found = false
@@ -145,7 +145,7 @@ let infer_handle_effect_name = (arms: Array[(Pat, Expr)]) -> String {
   effect_name
 }
 
-let strip_handle_effect_ctor = (effect_name: String, ctor_name: String) -> String {
+let strip_handle_effect_ctor: (String, String) -> String = (effect_name, ctor_name) -> {
   let prefix = String::concat(effect_name, "::")
   if String::starts_with(ctor_name, prefix) {
     let prefix_len = String::length(prefix)
@@ -156,7 +156,7 @@ let strip_handle_effect_ctor = (effect_name: String, ctor_name: String) -> Strin
   }
 }
 
-let rec print_handle_pat = (effect_name: String, pat: Pat) -> String {
+let rec print_handle_pat: (String, Pat) -> String = (effect_name, pat) -> {
   match pat {
     PCtor(name, args) => {
       let short_name = strip_handle_effect_ctor(effect_name, name)
@@ -174,13 +174,13 @@ let rec print_handle_pat = (effect_name: String, pat: Pat) -> String {
   }
 }
 
-let map_to_strings = (exprs: Array[Expr], f: (Expr) -> String) -> Array[String] {
+let map_to_strings: (Array[Expr], (Expr) -> String) -> Array[String] = (exprs, f) -> {
   for expr in exprs {
     f(expr)
   }
 }
 
-export let rec print_type_expr = (ty: TypeExpr) -> String {
+export let rec print_type_expr: (TypeExpr) -> String = (ty) -> {
   match ty {
     TyName(name) => name,
     TyUnit => "()",
@@ -196,7 +196,7 @@ export let rec print_type_expr = (ty: TypeExpr) -> String {
       }
       let base = String::concat("(", String::concat(join(parts, ", "), String::concat(") -> ", print_type_expr(ret))))
       match effect_name {
-        Some(name) => String::concat(base, String::concat(" with {", String::concat(name, "}"))),
+        Some(name) => String::concat(base, String::concat(" with { ", String::concat(name, " }"))),
         None => base
       }
     },
@@ -209,7 +209,7 @@ export let rec print_type_expr = (ty: TypeExpr) -> String {
   }
 }
 
-let print_ctor = (ctor: (String, Array[TypeExpr])) -> String {
+let print_ctor: ((String, Array[TypeExpr])) -> String = (ctor) -> {
   let (name, args) = ctor
   if eq(Array::length(args), 0) {
     name
@@ -222,7 +222,7 @@ let print_ctor = (ctor: (String, Array[TypeExpr])) -> String {
   }
 }
 
-export let rec print_expr = (e: Expr) -> String {
+export let rec print_expr: (Expr) -> String = (e) -> {
   match e {
     EInt(n) => __to_string(n),
     EFloat(n) => double_to_string_compiler(n),
@@ -281,7 +281,14 @@ export let rec print_expr = (e: Expr) -> String {
       }
       String::concat("for ", String::concat(binding, String::concat(" in ", String::concat(print_expr(iterable), String::concat(" { ", String::concat(print_expr(body), " }"))))))
     },
-    ECall(callee, args) => String::concat(print_expr(callee), String::concat("(", String::concat(join(map_to_strings(args, print_expr), ", "), ")"))),
+    ECall(callee, args) => match callee {
+      EIdent("perform") => if Array::length(args) == 1 {
+        String::concat("perform ", print_expr(Array::get(args, 0)))
+      } else {
+        String::concat(print_expr(callee), String::concat("(", String::concat(join(map_to_strings(args, print_expr), ", "), ")")))
+      },
+      _ => String::concat(print_expr(callee), String::concat("(", String::concat(join(map_to_strings(args, print_expr), ", "), ")")))
+    },
     EBinOp(op, left, right) => String::concat("(", String::concat(print_expr(left), String::concat(" ", String::concat(op, String::concat(" ", String::concat(print_expr(right), ")")))))),
     EUnaryOp(op, expr) => String::concat("(", String::concat(op, String::concat(print_expr(expr), ")"))),
     EFn(_, _, params, ret_ty, effect, body) => {
@@ -295,12 +302,12 @@ export let rec print_expr = (e: Expr) -> String {
       let ret_str = match ret_ty {
         Some(rt) => {
           let eff_str = match effect {
-            Some(e) => String::concat(" with {", String::concat(e, "}")),
+            Some(e) => String::concat(" with { ", String::concat(e, " }")),
             None => ""
           }
           String::concat(") -> ", String::concat(print_type_expr(rt), String::concat(eff_str, String::concat(" { ", String::concat(print_expr(body), " }")))))
         },
-        None => String::concat(") -> ", print_expr(body))
+        None => String::concat(") -> { ", String::concat(print_expr(body), " }"))
       }
       String::concat("(", String::concat(join(parts, ", "), ret_str))
     },
@@ -328,15 +335,37 @@ export let rec print_expr = (e: Expr) -> String {
   }
 }
 
-let print_ctor_list = (ctors: Array[(String, Array[TypeExpr])]) -> String {
+let print_annotated_let_value: (Option[TypeExpr], Expr) -> String = (ty_opt, val) -> {
+  match ty_opt {
+    Some(TyFn(_, _, _)) => match val {
+      EFn(_, _, params, _, _, body) => {
+        let parts = for param in params {
+          let (name, _) = param
+          name
+        }
+        String::concat(
+          "(",
+          String::concat(
+            join(parts, ", "),
+            String::concat(") -> { ", String::concat(print_expr(body), " }"))
+          )
+        )
+      },
+      _ => print_expr(val)
+    },
+    _ => print_expr(val)
+  }
+}
+
+let print_ctor_list: (Array[(String, Array[TypeExpr])]) -> String = (ctors) -> {
   let parts = for ctor in ctors {
     print_ctor(ctor)
   }
   join(parts, "; ")
 }
 
-export let rec print_stmt = (s: Stmt) -> String {
-  let prefix = (exported: Bool) -> String {
+export let rec print_stmt: (Stmt) -> String = (s) -> {
+  let prefix: (Bool) -> String = (exported) -> {
     if exported {
       "export "
     } else ""
@@ -351,7 +380,7 @@ export let rec print_stmt = (s: Stmt) -> String {
         Some(ty) => String::concat(": ", print_type_expr(ty)),
         None => ""
       }
-      String::concat(p, String::concat(r, String::concat(name, String::concat(t, String::concat(" = ", print_expr(val))))))
+      String::concat(p, String::concat(r, String::concat(name, String::concat(t, String::concat(" = ", print_annotated_let_value(ty_opt, val))))))
     },
     SLetMut(name, ty_opt, val) => {
       let t = match ty_opt {
@@ -453,7 +482,7 @@ export let rec print_stmt = (s: Stmt) -> String {
   }
 }
 
-let needs_program_separator = (stmt_text: String) -> Bool {
+let needs_program_separator: (String) -> Bool = (stmt_text) -> {
   if String::length(stmt_text) == 0 {
     false
   } else {
@@ -462,7 +491,7 @@ let needs_program_separator = (stmt_text: String) -> Bool {
   }
 }
 
-export let print_program = (stmts: Array[Stmt]) -> String {
+export let print_program: (Array[Stmt]) -> String = (stmts) -> {
   let len = Array::length(stmts)
   let mut out = ""
   let mut i = 0

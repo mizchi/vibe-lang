@@ -14,9 +14,9 @@ pkf run run -- test examples/syntax.vibe
 
 ## Language Features
 
-- `effects.vibe`: `with {Error}` / `try { ... } catch { ... }`
+- `effects.vibe`: `with { Error }` / `handle { ... } with Error { ... }`
 - `async.vibe`: `await` and async effect combinations
-- `perform_handle.vibe`: `perform(...)` + `handle` による多層エフェクト/回復パターン
+- `perform_handle.vibe`: `perform Effect::Op(...)` + `handle` による多層エフェクト/回復パターン
 - `module_export.vibe`, `module_import.vibe`: module export/import basics
 - `module_types_export.vibe`, `module_types_import.vibe`: importing types from modules
 - `pattern_coverage.vibe`: exhaustive pattern coverage examples

@@ -708,13 +708,20 @@ fn load_db_with_paths_with_fs_into_impl(
   fs : &@io.FileSystemAdapter,
   persist_lock_updates : Bool,
 ) -> Result[(@runtime.VibeDb, String, Array[String]), String] {
+  @profiler.profiler_enter("loader/load_db")
   let entry = resolve_entry_path_with_fs(entry_path, fs)
   let root = @codebase.resolve_index_root_with_fs(entry, fs)
+  @profiler.profiler_enter("loader/registry_modules")
   let registry_modules = match
     @codebase.load_registry_modules_with_fs(root, fs) {
     Ok(v) => v
-    Err(err) => return Err(err)
+    Err(err) => {
+      @profiler.profiler_leave()
+      @profiler.profiler_leave()
+      return Err(err)
+    }
   }
+  @profiler.profiler_leave()
   // (#399) Order: load_sources_recursive FIRST, then apply_lock.
   // Pre-this-change the order was reversed and `collect_path_refs`
   // inside apply_lock re-parsed every source that load_sources had
@@ -724,19 +731,32 @@ fn load_db_with_paths_with_fs_into_impl(
   // `db.get_preparsed_ast_if_matches` (threaded through as
   // `preparsed_lookup` in `apply_lock_to_db_with_fs`).
   let visited : Map[String, Bool] = {}
+  @profiler.profiler_enter("loader/load_sources")
   match load_sources_recursive(db, entry, visited, fs, root, registry_modules) {
     Ok(_) => ()
-    Err(err) => return Err(err)
+    Err(err) => {
+      @profiler.profiler_leave()
+      @profiler.profiler_leave()
+      return Err(err)
+    }
   }
+  @profiler.profiler_leave()
+  @profiler.profiler_enter("loader/apply_lock")
   match apply_lock_to_db_with_fs(db, entry, fs, persist_lock_updates) {
     Ok(_) => ()
-    Err(err) => return Err(err)
+    Err(err) => {
+      @profiler.profiler_leave()
+      @profiler.profiler_leave()
+      return Err(err)
+    }
   }
+  @profiler.profiler_leave()
   let paths : Array[String] = []
   for path, _ in visited {
     paths.push(path)
   }
   paths.sort()
+  @profiler.profiler_leave()
   Ok((db, entry, paths))
 }
 

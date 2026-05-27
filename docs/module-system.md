@@ -9,14 +9,14 @@
 ### モジュール定義
 ```vibe
 module math {
-  let private_inc = (x: Int) -> Int { add(x, 1) }
+  let private_inc: (Int) -> Int = (x) -> { add(x, 1) }
   export let inc = private_inc
 }
 ```
 
 ```vibe
 export module math {
-  export let inc = (x: Int) -> Int { add(x, 1) }
+  export let inc: (Int) -> Int = (x) -> { add(x, 1) }
 }
 ```
 
@@ -76,7 +76,7 @@ from_char_code(65)
 ```vibe
 // lib.xm
 export module math {
-  export let inc = (x: Int) -> Int { add(x, 1) }
+  export let inc: (Int) -> Int = (x) -> { add(x, 1) }
 }
 
 // main.vibe

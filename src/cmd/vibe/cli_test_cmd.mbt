@@ -474,18 +474,40 @@ fn run_compiled_test_case(
     Err(err) => return CompiledTestCaseExec::Error("load error: " + err)
     Ok(v) => v
   }
-  let wasm_bytes = compile_module_wasm_for_exec(
-    db,
-    entry,
-    http_host_imports=use_node_runner,
-    fs_host_imports=use_node_runner,
-  ) catch {
-    e => {
-      let msg = e.user_message()
-      if is_wasm_unsupported_compile_error(msg) {
-        return CompiledTestCaseExec::Unsupported(msg)
+  // Backend selection: by default the linear-memory backend matches
+  // what `vibe build --release` emits. Setting `VIBE_TEST_BACKEND=gc`
+  // routes pure (no-host-import) tests through the wasm-gc backend —
+  // useful to catch wasm-gc regressions before they ship. When the
+  // test needs HTTP / FS host imports we always stay on linear since
+  // only that backend currently wires those imports.
+  let test_backend_gc = match @sys.get_env_var("VIBE_TEST_BACKEND") {
+    Some("gc") | Some("wasm-gc") => true
+    _ => false
+  }
+  let wasm_bytes = if test_backend_gc && !use_node_runner {
+    @runtime_compile.compile_module_wasm_gc(db, entry) catch {
+      e => {
+        let msg = e.user_message()
+        if is_wasm_unsupported_compile_error(msg) {
+          return CompiledTestCaseExec::Unsupported(msg)
+        }
+        return CompiledTestCaseExec::Error("compile wasm-gc error: " + msg)
       }
-      return CompiledTestCaseExec::Error("compile wasm error: " + msg)
+    }
+  } else {
+    compile_module_wasm_for_exec(
+      db,
+      entry,
+      http_host_imports=use_node_runner,
+      fs_host_imports=use_node_runner,
+    ) catch {
+      e => {
+        let msg = e.user_message()
+        if is_wasm_unsupported_compile_error(msg) {
+          return CompiledTestCaseExec::Unsupported(msg)
+        }
+        return CompiledTestCaseExec::Error("compile wasm error: " + msg)
+      }
     }
   }
   @os_fs.write_bytes_to_file(wasm_path, wasm_bytes) catch {
@@ -862,9 +884,21 @@ fn test_cmd(
     print_test_help()
     return
   }
+  let (args, profile_path) = match extract_profile_flag(args) {
+    Ok(v) => v
+    Err(msg) => abort("test: " + msg)
+  }
   if args.length() == 0 {
     abort("test: expected <file|dir...>")
   }
+  with_profile(profile_path, fn() { test_cmd_body(args, features) })
+}
+
+///|
+fn test_cmd_body(
+  args : Array[String],
+  features : @runtime.RuntimeFeatureFlags,
+) -> Unit {
   // Parse --jobs, --report-json, --no-cache flags
   let mut jobs = 0
   let mut report_json = false

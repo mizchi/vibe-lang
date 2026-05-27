@@ -1,0 +1,203 @@
+//# Imports
+
+import ./bitstream.vibe {
+  BitReader, new_reader, read_bits, align_to_byte, read_byte
+}
+
+import ./huffman.vibe {
+  HuffTable, build_table, decode_symbol
+}
+
+//# Functions
+
+// DEFLATE length-code base values and extra-bit widths (codes 257..285).
+let length_base = () -> Array[Int] {
+  [3, 4, 5, 6, 7, 8, 9, 10,
+   11, 13, 15, 17, 19, 23, 27, 31,
+   35, 43, 51, 59, 67, 83, 99, 115,
+   131, 163, 195, 227, 258]
+}
+
+let length_extra = () -> Array[Int] {
+  [0, 0, 0, 0, 0, 0, 0, 0,
+   1, 1, 1, 1, 2, 2, 2, 2,
+   3, 3, 3, 3, 4, 4, 4, 4,
+   5, 5, 5, 5, 0]
+}
+
+// DEFLATE distance-code base values and extra-bit widths (codes 0..29).
+let dist_base = () -> Array[Int] {
+  [1, 2, 3, 4, 5, 7, 9, 13,
+   17, 25, 33, 49, 65, 97, 129, 193,
+   257, 385, 513, 769, 1025, 1537, 2049, 3073,
+   4097, 6145, 8193, 12289, 16385, 24577]
+}
+
+let dist_extra = () -> Array[Int] {
+  [0, 0, 0, 0, 1, 1, 2, 2,
+   3, 3, 4, 4, 5, 5, 6, 6,
+   7, 7, 8, 8, 9, 9, 10, 10,
+   11, 11, 12, 12, 13, 13]
+}
+
+// Code length permutation for dynamic Huffman block (RFC 1951 §3.2.7).
+let clen_order = () -> Array[Int] {
+  [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15]
+}
+
+// Build the fixed Huffman tables (RFC 1951 §3.2.6).
+let fixed_litlen_table = () -> HuffTable with { Error } {
+  let lengths = FixedArray::make(288, 0)
+  let mut i = 0
+  while i < 288 {
+    let len = if i < 144 {
+      8
+    } else if i < 256 {
+      9
+    } else if i < 280 {
+      7
+    } else {
+      8
+    }
+    Array::set(lengths, i, len)
+    i = i + 1
+  }
+  build_table(lengths)
+}
+
+let fixed_dist_table = () -> HuffTable with { Error } {
+  build_table(FixedArray::make(30, 5))
+}
+
+// Decode a dynamic Huffman block header → (litlen table, dist table).
+let read_dynamic_tables = (r: BitReader) -> (HuffTable, HuffTable) with { Error } {
+  let hlit = read_bits(r, 5) + 257
+  let hdist = read_bits(r, 5) + 1
+  let hclen = read_bits(r, 4) + 4
+  // Read code-length code lengths in the permuted order.
+  let clen_lengths = FixedArray::make(19, 0)
+  let order = clen_order()
+  let mut i = 0
+  while i < hclen {
+    Array::set(clen_lengths, Array::get(order, i), read_bits(r, 3))
+    i = i + 1
+  }
+  let clen_table = build_table(clen_lengths)
+  // Decode the literal/length + distance code lengths via the clen table.
+  let total = hlit + hdist
+  let lengths = []
+  while Array::length(lengths) < total {
+    let sym = decode_symbol(clen_table, r)
+    if sym < 16 {
+      Array::push(lengths, sym)
+    } else if sym == 16 {
+      // Repeat previous length 3..6 times (extra 2 bits).
+      let prev = Array::get(lengths, Array::length(lengths) - 1)
+      let n = read_bits(r, 2) + 3
+      let mut j = 0
+      while j < n {
+        Array::push(lengths, prev)
+        j = j + 1
+      }
+    } else if sym == 17 {
+      let n = read_bits(r, 3) + 3
+      let mut j = 0
+      while j < n {
+        Array::push(lengths, 0)
+        j = j + 1
+      }
+    } else if sym == 18 {
+      let n = read_bits(r, 7) + 11
+      let mut j = 0
+      while j < n {
+        Array::push(lengths, 0)
+        j = j + 1
+      }
+    } else {
+      throw("inflate: bad clen symbol")
+    }
+  }
+  // Split into litlen and dist arrays. Both sizes are known up front
+  // (`hlit` and `hdist`), so preallocate and bulk-copy from `lengths`
+  // — avoids the O(N) per Array::push that wasm-gc would otherwise pay.
+  let litlen_lens = FixedArray::make(hlit, 0)
+  FixedArray::blit(litlen_lens, 0, lengths, 0, hlit)
+  let dist_lens = FixedArray::make(hdist, 0)
+  FixedArray::blit(dist_lens, 0, lengths, hlit, hdist)
+  (build_table(litlen_lens), build_table(dist_lens))
+}
+
+// Inflate a single block into the output buffer.
+// Returns true if this was the final block.
+let inflate_block = (r: BitReader, out: Bytes) -> Bool with { Error } {
+  let bfinal = read_bits(r, 1)
+  let btype = read_bits(r, 2)
+  if btype == 0 {
+    // Stored block: skip to next byte, then LEN (2B) / NLEN (2B) / LEN bytes.
+    align_to_byte(r)
+    let len_lo = read_byte(r)
+    let len_hi = read_byte(r)
+    let nlen_lo = read_byte(r)
+    let nlen_hi = read_byte(r)
+    let len = len_lo | (len_hi << 8)
+    let nlen = nlen_lo | (nlen_hi << 8)
+    if (len ^ 0xFFFF) != nlen {
+      throw("inflate: stored block LEN/NLEN mismatch")
+    }
+    let mut i = 0
+    while i < len {
+      Bytes::push(out, read_byte(r))
+      i = i + 1
+    }
+    bfinal == 1
+  } else if btype == 1 || btype == 2 {
+    let (litlen_t, dist_t) = if btype == 1 {
+      (fixed_litlen_table(), fixed_dist_table())
+    } else {
+      read_dynamic_tables(r)
+    }
+    let lbase = length_base()
+    let lextra = length_extra()
+    let dbase = dist_base()
+    let dextra = dist_extra()
+    let mut done = false
+    while !done {
+      let sym = decode_symbol(litlen_t, r)
+      if sym < 256 {
+        Bytes::push(out, sym)
+      } else if sym == 256 {
+        done = true
+      } else {
+        let li = sym - 257
+        let length = Array::get(lbase, li) + read_bits(r, Array::get(lextra, li))
+        let dsym = decode_symbol(dist_t, r)
+        let distance = Array::get(dbase, dsym) + read_bits(r, Array::get(dextra, dsym))
+        let out_len = Bytes::length(out)
+        if distance > out_len {
+          throw("inflate: distance exceeds output buffer")
+        }
+        // Copy `length` bytes from out[-distance:] to the end of out.
+        // Note: source and destination may overlap (RLE for repeats).
+        let mut j = 0
+        while j < length {
+          Bytes::push(out, Bytes::get(out, out_len - distance + j))
+          j = j + 1
+        }
+      }
+    }
+    bfinal == 1
+  } else {
+    throw("inflate: reserved block type")
+  }
+}
+
+// Decode a raw DEFLATE stream (no zlib header) into Bytes.
+export let inflate = (data: Bytes) -> Bytes with { Error } {
+  let r = new_reader(data)
+  let out = Bytes::new()
+  let mut done = false
+  while !done {
+    done = inflate_block(r, out)
+  }
+  out
+}

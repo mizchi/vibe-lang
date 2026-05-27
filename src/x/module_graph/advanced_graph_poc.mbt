@@ -1692,9 +1692,9 @@ pub fn replay_advanced_graph_delta_jsonl(
   let mut state = base
   for record in records {
     if !advanced_graph_manifest_equal(
-          record.delta.base_manifest,
-          state.manifest,
-        ) {
+        record.delta.base_manifest,
+        state.manifest,
+      ) {
       return Err(
         "wal line " + record.line_no.to_string() + ": base manifest mismatch",
       )

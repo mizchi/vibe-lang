@@ -268,6 +268,11 @@ fn expr_may_use_scoped_ref(expr : @core.Expr) -> Bool {
         Some(v) => expr_may_use_scoped_ref(v)
         None => false
       }
+    @core.Expr::Return(value~, ..) =>
+      match value {
+        Some(v) => expr_may_use_scoped_ref(v)
+        None => false
+      }
     @core.Expr::Handle(body~, arms~, ..) =>
       module_may_use_scoped_ref(body) || match_arms_may_use_scoped_ref(arms)
     @core.Expr::StructLit(type_args~, fields~, ..) => {
@@ -830,12 +835,44 @@ fn type_check_stmts(
       }
       @core.Stmt::IndexAssign(target~, index~, value~, span~) => {
         // Type check target[index] = value as __set_index(target, index, value)
-        let _ = type_expr_eff(env, target, aliases, effects, allow_effect)
+        let target_ty = type_expr_eff(env, target, aliases, effects, allow_effect)
         let _ = type_expr_eff(env, index, aliases, effects, allow_effect)
         let _ = type_expr_eff(env, value, aliases, effects, allow_effect)
-        let _ = span
-        // For now, just check that all sub-expressions type check
-        // More precise checking would verify target is array/map compatible
+        // ADR-0052: struct-field assignment `r.field = v` is rejected
+        // unless `field` was declared with `mut`. The IndexAssign form
+        // here comes from `r.field = v` only when `index` is a string
+        // literal — for all other index expressions (e.g. `arr[i] = v`)
+        // the check is irrelevant.
+        match index {
+          @core.Expr::String(value=field_name, ..) => {
+            let resolved = resolve_type(env, target_ty)
+            match resolved {
+              @core.Type::Named(name~, ..) =>
+                match env.struct_defs.get(name) {
+                  Some(struct_def) =>
+                    match struct_def.get_field(field_name) {
+                      Some(field) =>
+                        if !field.is_mut {
+                          raise TypeError::BadCall(
+                            message="cannot assign to immutable field `" +
+                            field_name +
+                            "` of struct `" +
+                            name +
+                            "` — declare the field as `mut " +
+                            field_name +
+                            ": ...` to allow assignment (ADR-0052)",
+                            span~,
+                          )
+                        }
+                      None => ()
+                    }
+                  None => ()
+                }
+              _ => ()
+            }
+          }
+          _ => ()
+        }
       }
       @core.Stmt::StructDef(name~, params~, fields~, span~) =>
         register_struct_def(env, name, params, fields, span)
@@ -1483,9 +1520,9 @@ fn trait_impl_targets_may_overlap_concrete(
               return false
             }
             if !trait_impl_targets_may_overlap(
-                  left_params[i].ty,
-                  right_params[i].ty,
-                ) {
+                left_params[i].ty,
+                right_params[i].ty,
+              ) {
               return false
             }
             i += 1
@@ -1618,7 +1655,13 @@ fn register_struct_def(
   let field_defs : Array[StructFieldDef] = []
   for field in fields {
     let normalized = normalize_type(env, field.ty)
-    field_defs.push(StructFieldDef::{ name: field.name, ty: normalized })
+    field_defs.push(
+      StructFieldDef::{
+        name: field.name,
+        ty: normalized,
+        is_mut: field.is_mut,
+      },
+    )
   }
   env.set_struct(name, StructDef::{ name, params, fields: field_defs })
 }

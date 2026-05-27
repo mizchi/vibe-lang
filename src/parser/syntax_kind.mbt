@@ -193,6 +193,16 @@ pub fn continue_kw() -> @cst.SyntaxKind {
 }
 
 ///|
+pub fn return_kw() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(136)
+}
+
+///|
+pub fn return_expr() -> @cst.SyntaxKind {
+  @cst.SyntaxKind::new(137)
+}
+
+///|
 pub fn loop_kw() -> @cst.SyntaxKind {
   @cst.SyntaxKind::new(91)
 }

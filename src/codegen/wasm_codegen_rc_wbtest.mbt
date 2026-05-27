@@ -29,11 +29,20 @@ test "RC codegen: build_rc_action_maps parses site strings" {
   let pre_top = pre.get("").unwrap_or({})
   let post_top = post.get("").unwrap_or({})
   // stmt[1].old_value → pre[""][1]
-  @debug.debug_inspect(pre_top.get(1).map(fn(a) { a.length() }), content="Some(1)")
+  @debug.debug_inspect(
+    pre_top.get(1).map(fn(a) { a.length() }),
+    content="Some(1)",
+  )
   // stmt[0].after → post[""][0]
-  @debug.debug_inspect(post_top.get(0).map(fn(a) { a.length() }), content="Some(1)")
+  @debug.debug_inspect(
+    post_top.get(0).map(fn(a) { a.length() }),
+    content="Some(1)",
+  )
   // stmt[2].before → post[""][2] (not old_value, so it's post)
-  @debug.debug_inspect(post_top.get(2).map(fn(a) { a.length() }), content="Some(1)")
+  @debug.debug_inspect(
+    post_top.get(2).map(fn(a) { a.length() }),
+    content="Some(1)",
+  )
 }
 
 ///|
@@ -95,7 +104,6 @@ test "RC codegen: perceus plan actions emit dup/drop at stmt boundaries" {
     post_top.get(1).map(fn(a) { a[0].name }),
     content=(
       #|Some("x")
-
     ),
   )
   // Compile with RC + actions
@@ -331,13 +339,28 @@ test "RC codegen: build_rc_action_maps separates old_value into pre-actions" {
   let pre_top = pre.get("").unwrap_or({})
   let post_top = post.get("").unwrap_or({})
   // old_value → pre-action
-  @debug.debug_inspect(pre_top.get(0).map(fn(a) { a.length() }), content="Some(1)")
-  @debug.debug_inspect(pre_top.get(0).map(fn(a) { a[0].kind }), content="Some(Drop)")
+  @debug.debug_inspect(
+    pre_top.get(0).map(fn(a) { a.length() }),
+    content="Some(1)",
+  )
+  @debug.debug_inspect(
+    pre_top.get(0).map(fn(a) { a[0].kind }),
+    content="Some(Drop)",
+  )
   // after → post-action
-  @debug.debug_inspect(post_top.get(0).map(fn(a) { a.length() }), content="Some(1)")
+  @debug.debug_inspect(
+    post_top.get(0).map(fn(a) { a.length() }),
+    content="Some(1)",
+  )
   // before (dup) → post-action
-  @debug.debug_inspect(post_top.get(1).map(fn(a) { a.length() }), content="Some(1)")
-  @debug.debug_inspect(post_top.get(1).map(fn(a) { a[0].kind }), content="Some(Dup)")
+  @debug.debug_inspect(
+    post_top.get(1).map(fn(a) { a.length() }),
+    content="Some(1)",
+  )
+  @debug.debug_inspect(
+    post_top.get(1).map(fn(a) { a[0].kind }),
+    content="Some(Dup)",
+  )
 }
 
 ///|
@@ -394,14 +417,19 @@ test "RC codegen: build_rc_action_maps groups multiple actions on same stmt" {
   let post_top = post.get("").unwrap_or({})
   let pre_top = pre.get("").unwrap_or({})
   // Two post actions on stmt 2 (drop x, dup y)
-  @debug.debug_inspect(post_top.get(2).map(fn(a) { a.length() }), content="Some(2)")
+  @debug.debug_inspect(
+    post_top.get(2).map(fn(a) { a.length() }),
+    content="Some(2)",
+  )
   // One pre action on stmt 2 (old_value drop z)
-  @debug.debug_inspect(pre_top.get(2).map(fn(a) { a.length() }), content="Some(1)")
+  @debug.debug_inspect(
+    pre_top.get(2).map(fn(a) { a.length() }),
+    content="Some(1)",
+  )
   @debug.debug_inspect(
     pre_top.get(2).map(fn(a) { a[0].name }),
     content=(
       #|Some("z")
-
     ),
   )
 }
@@ -421,7 +449,6 @@ test "RC codegen: build_rc_action_maps skips invalid site strings" {
     post_top.get(0).map(fn(a) { a[0].name }),
     content=(
       #|Some("y")
-
     ),
   )
 }
@@ -441,7 +468,6 @@ test "RC codegen: build_rc_action_maps handles nested site paths" {
     post_top.get(0).map(fn(a) { a[0].name }),
     content=(
       #|Some("x")
-
     ),
   )
   // Nested body action
@@ -450,7 +476,6 @@ test "RC codegen: build_rc_action_maps handles nested site paths" {
     post_body.get(0).map(fn(a) { a[0].name }),
     content=(
       #|Some("y")
-
     ),
   )
   // Nested old_value → pre
@@ -459,7 +484,6 @@ test "RC codegen: build_rc_action_maps handles nested site paths" {
     pre_body.get(1).map(fn(a) { a[0].name }),
     content=(
       #|Some("z")
-
     ),
   )
   // Nested else action
@@ -468,7 +492,6 @@ test "RC codegen: build_rc_action_maps handles nested site paths" {
     post_else.get(0).map(fn(a) { a[0].name }),
     content=(
       #|Some("w")
-
     ),
   )
 }

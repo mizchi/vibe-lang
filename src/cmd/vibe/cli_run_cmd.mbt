@@ -1,8 +1,8 @@
 ///|
-fn cli_use_session_http_with(raw : String?, has_self_bin : Bool) -> Bool {
+fn cli_use_session_http_with(raw : String?, _has_self_bin : Bool) -> Bool {
   match raw {
     Some(value) => parse_bool_flag(value)
-    None => has_self_bin
+    None => false
   }
 }
 
@@ -479,6 +479,11 @@ fn expr_uses_wasm_runtime_fallback_builtins(expr : @vibe_core.Expr) -> Bool {
       }
       false
     }
+    @vibe_core.Expr::Return(value~, ..) =>
+      match value {
+        Some(v) => expr_uses_wasm_runtime_fallback_builtins(v)
+        None => false
+      }
     @vibe_core.Expr::Yield(expr~, ..) =>
       expr_uses_wasm_runtime_fallback_builtins(expr)
     @vibe_core.Expr::Handle(body~, arms~, ..) => {
@@ -652,6 +657,11 @@ fn expr_uses_http_builtins(expr : @vibe_core.Expr) -> Bool {
       }
       false
     }
+    @vibe_core.Expr::Return(value~, ..) =>
+      match value {
+        Some(v) => expr_uses_http_builtins(v)
+        None => false
+      }
     @vibe_core.Expr::Yield(expr~, ..) => expr_uses_http_builtins(expr)
     @vibe_core.Expr::Handle(body~, arms~, ..) => {
       if module_uses_http_builtins(body) {
@@ -933,8 +943,8 @@ fn run_cmd_wasm_backend_with_cache(
         Err(_) => () // fall through
       }
     }
-    // No cache yet: fall through to monolithic run.
-    // After execution, spawn background cache creation for next run.
+    // No cache yet: fall through to monolithic run. An opt-in background
+    // build may create the linked cache after a successful run.
   }
   // Monolithic fallback
   let (db, entry) = match load_db_for_run_with_cache(cache, entry_path) {
@@ -1104,25 +1114,31 @@ fn run_cmd(
     print_run_help()
     return
   }
+  let (args, profile_path) = match extract_profile_flag(args) {
+    Ok(v) => v
+    Err(msg) => abort("run: " + msg)
+  }
   if args.length() != 1 {
     abort("run: expected <file>")
   }
   let entry_path = args[0]
-  let use_session_http = cli_use_session_http()
-  if use_session_http {
-    match run_entry_via_session(entry_path, _features) {
+  with_profile(profile_path, fn() {
+    let use_session_http = cli_use_session_http()
+    if use_session_http {
+      match run_entry_via_session(entry_path, _features) {
+        Ok(result) => {
+          print_wasm_run_value(result)
+          return
+        }
+        Err(_) => ()
+      }
+    }
+    match run_cmd_wasm_backend(entry_path) {
       Ok(result) => {
         print_wasm_run_value(result)
-        return
+        maybe_create_linked_cache_background(entry_path)
       }
-      Err(_) => ()
+      Err(err) => die("error: run wasm backend: " + err)
     }
-  }
-  match run_cmd_wasm_backend(entry_path) {
-    Ok(result) => {
-      print_wasm_run_value(result)
-      maybe_create_linked_cache_background(entry_path)
-    }
-    Err(err) => die("error: run wasm backend: " + err)
-  }
+  })
 }

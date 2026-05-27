@@ -28,7 +28,6 @@ test "walk_expr_refs collects free variable from Ident" {
     refs.keys().collect(),
     content=(
       #|["x"]
-
     ),
   )
 }
@@ -73,7 +72,6 @@ test "walk_expr_refs collects call name and arg refs" {
     keys,
     content=(
       #|["a", "f"]
-
     ),
   )
 }
@@ -150,7 +148,6 @@ test "walk_expr_refs match arm binds pattern names" {
     keys,
     content=(
       #|["f", "val"]
-
     ),
   )
 }
@@ -182,7 +179,6 @@ test "walk_block_refs let binding scopes correctly" {
     refs.keys().collect(),
     content=(
       #|["a"]
-
     ),
   )
 }
@@ -206,7 +202,6 @@ test "bind_pattern_names_walker binds nested patterns" {
     keys,
     content=(
       #|["a", "b"]
-
     ),
   )
 }
