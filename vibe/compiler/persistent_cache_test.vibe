@@ -1,15 +1,11 @@
 //# Imports
 
 import ./cache / persistent_cache.vibe {
-  build_file_compile_module_artifact_fingerprint, build_file_compile_wasi_artifact_fingerprint, build_fs_compile_wasi_artifact_fingerprint, build_source_groups_fingerprint, compact_string_fingerprint, persistent_artifact_cache_path, persistent_dep_list_cache_path, persistent_leaf_fingerprint_cache_path, persistent_module_header_cache_path, persistent_source_group_cache_path, persistent_source_list_cache_path, persistent_type_env_cache_path
+  build_file_compile_module_artifact_fingerprint, build_file_compile_wasi_artifact_fingerprint, build_source_groups_fingerprint, compact_string_fingerprint, persistent_artifact_cache_path, persistent_dep_list_cache_path, persistent_leaf_fingerprint_cache_path, persistent_module_header_cache_path, persistent_source_group_cache_path, persistent_source_list_cache_path, persistent_type_env_cache_path
 }
 
 import ./entry / compiler / file_compile {
   compile_file_fs_mode_cached, compile_file_fs_module_cached
-}
-
-import ./entry / compiler / fs_compile {
-  compile_file_fs_cached
 }
 
 import ./module_loader.vibe {
@@ -22,7 +18,7 @@ import ./type_db.vibe {
 
 //# Functions
 
-let string_to_bytes = (s: String) -> Bytes {
+let string_to_bytes: (String) -> Bytes = (s) -> {
   let out = Bytes::new()
   let len = String::length(s)
   let mut i = 0
@@ -33,7 +29,7 @@ let string_to_bytes = (s: String) -> Bytes {
   out
 }
 
-let lookup_group_source = (groups: Array[(String, Array[(String, String)])], target_path: String) -> Option[String] {
+let lookup_group_source: (Array[(String, Array[(String, String)])], String) -> Option[String] = (groups, target_path) -> {
   let mut gi = 0
   let mut found = None
   while gi < Array::length(groups) {
@@ -54,7 +50,7 @@ let lookup_group_source = (groups: Array[(String, Array[(String, String)])], tar
   found
 }
 
-let remove_file_if_exists = (path: String) -> Unit with { Fs } {
+let remove_file_if_exists: (String) -> Unit with { Fs } = (path) -> {
   if Fs::exists(path) {
     Fs::remove(path)
   } else {
@@ -62,7 +58,7 @@ let remove_file_if_exists = (path: String) -> Unit with { Fs } {
   }
 }
 
-let build_type_db_fingerprint = (source: String, dep_fps: Array[(String, String)]) -> String {
+let build_type_db_fingerprint: (String, Array[(String, String)]) -> String = (source, dep_fps) -> {
   let mut acc = compact_string_fingerprint(source)
   let mut i = 0
   while i < Array::length(dep_fps) {
@@ -78,7 +74,7 @@ let build_type_db_fingerprint = (source: String, dep_fps: Array[(String, String)
 test "compile_file_fs_module_cached: fresh db reuses persistent artifact cache across entry paths" {
   let main_path1 = "/tmp/vibe_compiler_persistent_module_cache_a.vibe"
   let main_path2 = "/tmp/vibe_compiler_persistent_module_cache_b.vibe"
-  let source = "let run = () -> Int { 1 + 2 }"
+  let source = "let run: () -> Int = () -> { 1 + 2 }"
   Fs::write_bytes(main_path1, string_to_bytes(source))
   Fs::write_bytes(main_path2, string_to_bytes(source))
   let source_groups = collect_source_groups_fs(main_path1)
@@ -92,7 +88,7 @@ test "compile_file_fs_module_cached: fresh db reuses persistent artifact cache a
 
 test "compile_file_fs_mode_cached: fresh db reuses persistent artifact cache" {
   let main_path = "/tmp/vibe_compiler_persistent_mode_cache_main.vibe"
-  let source = "let unused = () -> Int { 0 }\nlet run = () -> Int { 40 + 2 }"
+  let source = "let unused: () -> Int = () -> { 0 }\nlet run: () -> Int = () -> { 40 + 2 }"
   Fs::write_bytes(main_path, string_to_bytes(source))
   let source_groups = collect_source_groups_fs(main_path)
   let cache_path = persistent_artifact_cache_path("file-compile-wasi", "run", build_file_compile_wasi_artifact_fingerprint(source_groups, "run", "no-dce"))
@@ -103,25 +99,12 @@ test "compile_file_fs_mode_cached: fresh db reuses persistent artifact cache" {
   assert(eq(db_codegen_count(db2), 0))
 }
 
-test "compile_file_fs_cached: fresh db reuses persistent fs artifact cache" {
-  let main_path = "/tmp/vibe_compiler_persistent_fs_compile_main.vibe"
-  let source = "let _start = () -> Int { 40 + 2 }"
-  Fs::write_bytes(main_path, string_to_bytes(source))
-  let source_groups = collect_source_groups_fs(main_path)
-  let cache_path = persistent_artifact_cache_path("fs-compile-wasi", "_start", build_fs_compile_wasi_artifact_fingerprint(source_groups, "_start"))
-  remove_file_if_exists(cache_path)
-  let (_, db1) = compile_file_fs_cached(db_new(), main_path, "_start")
-  assert(db_codegen_count(db1) > 0)
-  let (_, db2) = compile_file_fs_cached(db_new(), main_path, "_start")
-  assert(eq(db_codegen_count(db2), 0))
-}
-
 test "collect_source_groups_fs: persistent cache invalidates when dependency source changes" {
   let helper_path = "/tmp/vibe_compiler_persistent_loader_helper.vibe"
   let main_path = "/tmp/vibe_compiler_persistent_loader_main.vibe"
-  let source1 = "export let add = () -> Int { 1 }"
-  let source2 = "export let add = () -> Int { 2 }"
-  let main_source = "import ./vibe_compiler_persistent_loader_helper.vibe { add }\nlet run = () -> Int { add() }"
+  let source1 = "export let add: () -> Int = () -> { 1 }"
+  let source2 = "export let add: () -> Int = () -> { 2 }"
+  let main_source = "import ./vibe_compiler_persistent_loader_helper.vibe { add }\nlet run: () -> Int = () -> { add() }"
   Fs::write_bytes(helper_path, string_to_bytes(source1))
   Fs::write_bytes(main_path, string_to_bytes(main_source))
   remove_file_if_exists(persistent_source_list_cache_path(main_path))
@@ -139,9 +122,9 @@ test "collect_source_groups_fs: persistent cache invalidates when dependency sou
 test "load_persistent_source_group_fingerprint_if_valid: reuses cached source fingerprints while files stay unchanged" {
   let helper_path = "/tmp/vibe_compiler_persistent_loader_fp_helper.vibe"
   let main_path = "/tmp/vibe_compiler_persistent_loader_fp_main.vibe"
-  let helper_source1 = "export let add = () -> Int { 1 }"
-  let helper_source2 = "export let add = () -> Int { 2 }"
-  let main_source = "import ./vibe_compiler_persistent_loader_fp_helper.vibe { add }\nlet run = () -> Int { add() }"
+  let helper_source1 = "export let add: () -> Int = () -> { 1 }"
+  let helper_source2 = "export let add: () -> Int = () -> { 2 }"
+  let main_source = "import ./vibe_compiler_persistent_loader_fp_helper.vibe { add }\nlet run: () -> Int = () -> { add() }"
   Fs::write_bytes(helper_path, string_to_bytes(helper_source1))
   Fs::write_bytes(main_path, string_to_bytes(main_source))
   remove_file_if_exists(persistent_source_group_cache_path(main_path))
@@ -161,8 +144,8 @@ test "load_persistent_source_group_fingerprint_if_valid: reuses cached source fi
 test "compile_file_fs_mode_cached: fresh db reuses persistent type env cache when artifact cache is cold" {
   let helper_path = "/tmp/vibe_compiler_persistent_type_env_helper.vibe"
   let main_path = "/tmp/vibe_compiler_persistent_type_env_main.vibe"
-  let helper_source = "export let add = () -> Int { 1 }"
-  let main_source = "import ./vibe_compiler_persistent_type_env_helper.vibe { add }\nlet run = () -> Int { add() }"
+  let helper_source = "export let add: () -> Int = () -> { 1 }"
+  let main_source = "import ./vibe_compiler_persistent_type_env_helper.vibe { add }\nlet run: () -> Int = () -> { add() }"
   Fs::write_bytes(helper_path, string_to_bytes(helper_source))
   Fs::write_bytes(main_path, string_to_bytes(main_source))
   let helper_fp = build_type_db_fingerprint(helper_source, Array::slice([
@@ -198,8 +181,8 @@ test "compile_file_fs_mode_cached: fresh db reuses persistent type env cache whe
 test "db_typecheck_fs: fresh db reuses persistent type env cache" {
   let helper_path = "/tmp/vibe_compiler_persistent_type_env_direct_helper.vibe"
   let main_path = "/tmp/vibe_compiler_persistent_type_env_direct_main.vibe"
-  let helper_source = "export let add = () -> Int { 1 }"
-  let main_source = "import ./vibe_compiler_persistent_type_env_direct_helper.vibe { add }\nlet run = () -> Int { add() }"
+  let helper_source = "export let add: () -> Int = () -> { 1 }"
+  let main_source = "import ./vibe_compiler_persistent_type_env_direct_helper.vibe { add }\nlet run: () -> Int = () -> { add() }"
   Fs::write_bytes(helper_path, string_to_bytes(helper_source))
   Fs::write_bytes(main_path, string_to_bytes(main_source))
   let helper_fp = build_type_db_fingerprint(helper_source, Array::slice([
@@ -230,9 +213,9 @@ test "db_typecheck_fs: fresh db reuses persistent dep cache for multi-dep module
   let helper1_path = "/tmp/vibe_compiler_persistent_multi_dep_helper1.vibe"
   let helper2_path = "/tmp/vibe_compiler_persistent_multi_dep_helper2.vibe"
   let main_path = "/tmp/vibe_compiler_persistent_multi_dep_main.vibe"
-  let helper1_source = "export let add1 = () -> Int { 1 }"
-  let helper2_source = "export let add2 = () -> Int { 2 }"
-  let main_source = String::concat("import ./vibe_compiler_persistent_multi_dep_helper1.vibe { add1 }\n", String::concat("import ./vibe_compiler_persistent_multi_dep_helper2.vibe { add2 }\n", "let run = () -> Int { add1() + add2() }"))
+  let helper1_source = "export let add1: () -> Int = () -> { 1 }"
+  let helper2_source = "export let add2: () -> Int = () -> { 2 }"
+  let main_source = String::concat("import ./vibe_compiler_persistent_multi_dep_helper1.vibe { add1 }\n", String::concat("import ./vibe_compiler_persistent_multi_dep_helper2.vibe { add2 }\n", "let run: () -> Int = () -> { add1() + add2() }"))
   Fs::write_bytes(helper1_path, string_to_bytes(helper1_source))
   Fs::write_bytes(helper2_path, string_to_bytes(helper2_source))
   Fs::write_bytes(main_path, string_to_bytes(main_source))
@@ -269,8 +252,8 @@ test "db_typecheck_fs: fresh db reuses persistent dep cache for multi-dep module
 test "db_typecheck_fs: module header cache rebuilds missing persistent dep cache" {
   let helper_path = "/tmp/vibe_compiler_persistent_header_helper.vibe"
   let main_path = "/tmp/vibe_compiler_persistent_header_main.vibe"
-  let helper_source = "export let add = () -> Int { 1 }"
-  let main_source = "import ./vibe_compiler_persistent_header_helper.vibe { add }\nlet run = () -> Int { add() }"
+  let helper_source = "export let add: () -> Int = () -> { 1 }"
+  let main_source = "import ./vibe_compiler_persistent_header_helper.vibe { add }\nlet run: () -> Int = () -> { add() }"
   Fs::write_bytes(helper_path, string_to_bytes(helper_source))
   Fs::write_bytes(main_path, string_to_bytes(main_source))
   let helper_fp = build_type_db_fingerprint(helper_source, Array::slice([

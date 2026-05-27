@@ -86,6 +86,23 @@ fn compile_expr_break(
 }
 
 ///|
+/// `return` from the enclosing function. Emits the value (if any) then
+/// the wasm `return` opcode. Unlike `break`, no loop wrapper is needed
+/// — the wasm return targets the function frame directly.
+fn compile_expr_return(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  value : @core.Expr?,
+) -> Unit raise WasmGenError {
+  match value {
+    Some(expr) => compile_expr(ctx, buf, expr)
+    None => emit_i64_const_tagged(buf, 0L)
+  }
+  emit_return(buf)
+  emit_unreachable(buf)
+}
+
+///|
 fn compile_expr_continue(
   ctx : CodegenCtx,
   buf : ByteBuf,

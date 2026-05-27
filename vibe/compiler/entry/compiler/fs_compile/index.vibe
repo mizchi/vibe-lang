@@ -8,6 +8,14 @@ import ../../../syntax/parser.vibe {
   parse_program
 }
 
+import ../../../syntax/import_alias_rewrite.vibe {
+  append_import_alias_rewritten_non_import_stmts_skipping,
+  collect_import_alias_collision_locals,
+  collect_import_alias_collision_refs,
+  namespace_private_value_stmts,
+  rewrite_imported_value_stmt_to_local
+}
+
 import ../../../core/ast.vibe {
   Stmt
 }
@@ -32,6 +40,10 @@ import ../../../loader/index.vibe {
   collect_all_sources_fs, collect_source_groups_fs, load_persistent_source_group_fingerprint_if_valid
 }
 
+import ../../../module_graph_path.vibe {
+  dir_of_path, resolve_import_path
+}
+
 import ../../../runtime/index.vibe {
   TypeDb, db_new, db_set_source, db_typecheck, db_typecheck_count, db_typecheck_fs, db_merged_source,
   db_grouped_merged_source, db_module_source, db_load_artifact, db_store_artifact
@@ -52,13 +64,13 @@ import ./closure_order.vibe {
 
 //# Functions
 
-let empty_stmt_array = () -> Array[Stmt] {
+let empty_stmt_array: () -> Array[Stmt] = () -> {
   Array::slice([
     SExport(["_dummy"])
   ], 0, 0)
 }
 
-let seed_type_db = (db: TypeDb, main_path: String, main_source: String, sources: Array[(String, String)]) -> TypeDb {
+let seed_type_db: (TypeDb, String, String, Array[(String, String)]) -> TypeDb = (db, main_path, main_source, sources) -> {
   let mut seeded = db
   let mut i = 0
   while i < Array::length(sources) {
@@ -69,7 +81,7 @@ let seed_type_db = (db: TypeDb, main_path: String, main_source: String, sources:
   db_set_source(seeded, main_path, main_source)
 }
 
-let flatten_source_groups = (source_groups: Array[(String, Array[(String, String)])]) -> Array[(String, String)] {
+let flatten_source_groups: (Array[(String, Array[(String, String)])]) -> Array[(String, String)] = (source_groups) -> {
   let flat = Array::slice([("", "")], 0, 0)
   let mut gi = 0
   while gi < Array::length(source_groups) {
@@ -84,11 +96,7 @@ let flatten_source_groups = (source_groups: Array[(String, Array[(String, String
   flat
 }
 
-let normalize_source_groups = (
-  source_groups: Array[(String, Array[(String, String)])],
-  main_path: String,
-  main_source: String
-) -> Array[(String, Array[(String, String)])] {
+let normalize_source_groups: (Array[(String, Array[(String, String)])], String, String) -> Array[(String, Array[(String, String)])] = (source_groups, main_path, main_source) -> {
   let normalized = Array::slice([("", Array::slice([("", "")], 0, 0))], 0, 0)
   let mut found = false
   let mut gi = 0
@@ -117,7 +125,7 @@ let normalize_source_groups = (
   normalized
 }
 
-let contains_source_path = (sources: Array[(String, String)], target_path: String) -> Bool {
+let contains_source_path: (Array[(String, String)], String) -> Bool = (sources, target_path) -> {
   let mut i = 0
   let mut found = false
   while i < Array::length(sources) && !found {
@@ -131,10 +139,7 @@ let contains_source_path = (sources: Array[(String, String)], target_path: Strin
   found
 }
 
-let filter_source_groups = (
-  source_groups: Array[(String, Array[(String, String)])],
-  ordered_sources: Array[(String, String)]
-) -> Array[(String, Array[(String, String)])] {
+let filter_source_groups: (Array[(String, Array[(String, String)])], Array[(String, String)]) -> Array[(String, Array[(String, String)])] = (source_groups, ordered_sources) -> {
   let filtered_groups = Array::slice([("", Array::slice([("", "")], 0, 0))], 0, 0)
   let mut gi = 0
   while gi < Array::length(source_groups) {
@@ -157,9 +162,7 @@ let filter_source_groups = (
   filtered_groups
 }
 
-export let source_group_total_source_count = (
-  source_groups: Array[(String, Array[(String, String)])]
-) -> Int {
+export let source_group_total_source_count: (Array[(String, Array[(String, String)])]) -> Int = (source_groups) -> {
   let mut total = 0
   let mut gi = 0
   while gi < Array::length(source_groups) {
@@ -170,11 +173,7 @@ export let source_group_total_source_count = (
   total
 }
 
-export let source_group_ordered_source_count = (
-  main_source: String,
-  main_path: String,
-  source_groups: Array[(String, Array[(String, String)])]
-) -> Int with { Error } {
+export let source_group_ordered_source_count: (String, String, Array[(String, Array[(String, String)])]) -> Int with { Error } = (main_source, main_path, source_groups) -> {
   let normalized_groups = normalize_source_groups(source_groups, main_path, main_source)
   let ordered_sources = collect_inline_sources_ordered(
     main_path,
@@ -184,11 +183,7 @@ export let source_group_ordered_source_count = (
   Array::length(ordered_sources)
 }
 
-export let source_group_filtered_group_count = (
-  main_source: String,
-  main_path: String,
-  source_groups: Array[(String, Array[(String, String)])]
-) -> Int with { Error } {
+export let source_group_filtered_group_count: (String, String, Array[(String, Array[(String, String)])]) -> Int with { Error } = (main_source, main_path, source_groups) -> {
   let normalized_groups = normalize_source_groups(source_groups, main_path, main_source)
   let ordered_sources = collect_inline_sources_ordered(
     main_path,
@@ -199,22 +194,64 @@ export let source_group_filtered_group_count = (
   Array::length(filtered_groups)
 }
 
-export let prepare_modules_cached = (db: TypeDb, main_path: String, main_source: String, sources: Array[(String, String)]) -> TypeDb with { Error } {
+let string_array_contains_local: (Array[String], String) -> Bool = (items, target) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) && !found {
+    if Array::get(items, i) == target {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+let append_inline_import_alias_collision_defs: (Array[Stmt], String, Array[Stmt], Array[(String, String)]) -> Unit with { Error } = (merged, current_path, stmts, sources) -> {
+  let refs = collect_import_alias_collision_refs(stmts)
+  let emitted = Array::slice([
+    ""
+  ], 0, 0)
+  let base_dir = dir_of_path(current_path)
+  let mut i = 0
+  while i < Array::length(refs) {
+    let (raw_path, original, local) = Array::get(refs, i)
+    if !string_array_contains_local(emitted, local) {
+      let resolved = resolve_import_path(base_dir, raw_path)
+      let source = source_lookup_or_throw(sources, resolved)
+      let source_stmts = namespace_private_value_stmts(
+        resolved,
+        parse_program(lex(source))
+      )
+      let mut j = 0
+      let mut done = false
+      while j < Array::length(source_stmts) && !done {
+        match rewrite_imported_value_stmt_to_local(Array::get(source_stmts, j), original, local) {
+          Some(local_stmt) => {
+            Array::push(merged, local_stmt)
+            Array::push(emitted, local)
+            done = true
+          },
+          None => ()
+        }
+        j = j + 1
+      }
+    }
+    i = i + 1
+  }
+}
+
+export let prepare_modules_cached: (TypeDb, String, String, Array[(String, String)]) -> TypeDb with { Error } = (db, main_path, main_source, sources) -> {
   let seeded = seed_type_db(db, main_path, main_source, sources)
   db_typecheck(seeded, main_path)
 }
 
-let prepare_modules_persistent_fs_cached = (db: TypeDb, main_path: String, main_source: String, sources: Array[(String, String)]) -> TypeDb with { Error, Fs } {
+let prepare_modules_persistent_fs_cached: (TypeDb, String, String, Array[(String, String)]) -> TypeDb with { Error, Fs } = (db, main_path, main_source, sources) -> {
   let seeded = seed_type_db(db, main_path, main_source, sources)
   db_typecheck_fs(seeded, main_path)
 }
 
-export let source_group_prepare_typecheck_count = (
-  db: TypeDb,
-  main_source: String,
-  main_path: String,
-  source_groups: Array[(String, Array[(String, String)])]
-) -> Int with { Error } {
+export let source_group_prepare_typecheck_count: (TypeDb, String, String, Array[(String, Array[(String, String)])]) -> Int with { Error } = (db, main_source, main_path, source_groups) -> {
   let normalized_groups = normalize_source_groups(source_groups, main_path, main_source)
   let ordered_sources = collect_inline_sources_ordered(
     main_path,
@@ -230,12 +267,7 @@ export let source_group_prepare_typecheck_count = (
   db_typecheck_count(next_db)
 }
 
-export let grouped_source_merged_len = (
-  db: TypeDb,
-  main_source: String,
-  main_path: String,
-  source_groups: Array[(String, Array[(String, String)])]
-) -> Int with { Error } {
+export let grouped_source_merged_len: (TypeDb, String, String, Array[(String, Array[(String, String)])]) -> Int with { Error } = (db, main_source, main_path, source_groups) -> {
   let normalized_groups = normalize_source_groups(source_groups, main_path, main_source)
   let ordered_sources = collect_inline_sources_ordered(
     main_path,
@@ -253,12 +285,7 @@ export let grouped_source_merged_len = (
   String::length(merged_source)
 }
 
-export let source_group_module_source_len = (
-  db: TypeDb,
-  main_source: String,
-  main_path: String,
-  source_groups: Array[(String, Array[(String, String)])]
-) -> Int with { Error } {
+export let source_group_module_source_len: (TypeDb, String, String, Array[(String, Array[(String, String)])]) -> Int with { Error } = (db, main_source, main_path, source_groups) -> {
   let normalized_groups = normalize_source_groups(source_groups, main_path, main_source)
   let ordered_sources = collect_inline_sources_ordered(
     main_path,
@@ -271,17 +298,17 @@ export let source_group_module_source_len = (
   String::length(module_source)
 }
 
-export let compile_with_modules = (main_source: String, main_path: String, sources: Array[(String, String)]) -> Bytes with { Error } {
+export let compile_with_modules: (String, String, Array[(String, String)]) -> Bytes with { Error } = (main_source, main_path, sources) -> {
   let (bytes, _) = compile_with_modules_cached(db_new(), main_source, main_path, sources)
   bytes
 }
 
-export let compile_with_modules_wasi = (main_source: String, main_path: String, sources: Array[(String, String)], entry_name: String) -> Bytes with { Error } {
+export let compile_with_modules_wasi: (String, String, Array[(String, String)], String) -> Bytes with { Error } = (main_source, main_path, sources, entry_name) -> {
   let (bytes, _) = compile_with_modules_wasi_cached(db_new(), main_source, main_path, sources, entry_name)
   bytes
 }
 
-let artifact_fingerprint_from_source = (source: String) -> String {
+let artifact_fingerprint_from_source: (String) -> String = (source) -> {
   let mod1 = 2147483647
   let mod2 = 2147483629
   let step1 = 131
@@ -302,7 +329,7 @@ let artifact_fingerprint_from_source = (source: String) -> String {
   )
 }
 
-let build_merge_fingerprint_inline = (sources: Array[(String, String)]) -> String {
+let build_merge_fingerprint_inline: (Array[(String, String)]) -> String = (sources) -> {
   let mut acc = "merged"
   let mut i = 0
   while i < Array::length(sources) {
@@ -317,69 +344,48 @@ let build_merge_fingerprint_inline = (sources: Array[(String, String)]) -> Strin
   acc
 }
 
-let build_merged_stmts_inline = (sources: Array[(String, String)]) -> Array[Stmt] with { Error } {
+let build_merged_stmts_inline: (Array[(String, String)]) -> Array[Stmt] with { Error } = (sources) -> {
   let merged = empty_stmt_array()
+  let source_count = Array::length(sources)
   let mut si = 0
-  while si < Array::length(sources) {
-    let (_, source) = Array::get(sources, si)
+  while si < source_count {
+    let (path, source) = Array::get(sources, si)
     let stmts = parse_program(lex(source))
-    let mut j = 0
-    while j < Array::length(stmts) {
-      let stmt = Array::get(stmts, j)
-      match stmt {
-        SImport(_, _) => (),
-        SReExport(_, _) => (),
-        SAliasDecl(_, _) => (),
-        _ => Array::push(merged, stmt),
-      }
-      j = j + 1
+    let namespaced_stmts = if si == source_count - 1 {
+      stmts
+    } else {
+      namespace_private_value_stmts(path, stmts)
     }
+    let skipped_locals = collect_import_alias_collision_locals(stmts)
+    append_inline_import_alias_collision_defs(merged, path, stmts, sources)
+    append_import_alias_rewritten_non_import_stmts_skipping(merged, namespaced_stmts, skipped_locals)
     si = si + 1
   }
   merged
 }
 
-let prune_entry_stmts = (stmts: Array[Stmt], entry_name: String) -> Array[Stmt] {
+let prune_entry_stmts: (Array[Stmt], String) -> Array[Stmt] = (stmts, entry_name) -> {
   dce_stmts(stmts, [entry_name])
 }
 
-export let closure_ordered_source_count = (
-  main_source: String,
-  main_path: String,
-  sources: Array[(String, String)]
-) -> Int with { Error } {
+export let closure_ordered_source_count: (String, String, Array[(String, String)]) -> Int with { Error } = (main_source, main_path, sources) -> {
   Array::length(collect_inline_sources_ordered(main_path, main_source, sources))
 }
 
-export let closure_merged_stmt_count = (
-  main_source: String,
-  main_path: String,
-  sources: Array[(String, String)]
-) -> Int with { Error } {
+export let closure_merged_stmt_count: (String, String, Array[(String, String)]) -> Int with { Error } = (main_source, main_path, sources) -> {
   let ordered_sources = collect_inline_sources_ordered(main_path, main_source, sources)
   let merged_stmts = build_merged_stmts_inline(ordered_sources)
   Array::length(merged_stmts)
 }
 
-export let closure_pruned_stmt_count = (
-  main_source: String,
-  main_path: String,
-  sources: Array[(String, String)],
-  entry_name: String
-) -> Int with { Error } {
+export let closure_pruned_stmt_count: (String, String, Array[(String, String)], String) -> Int with { Error } = (main_source, main_path, sources, entry_name) -> {
   let ordered_sources = collect_inline_sources_ordered(main_path, main_source, sources)
   let merged_stmts = build_merged_stmts_inline(ordered_sources)
   let pruned_stmts = prune_entry_stmts(merged_stmts, entry_name)
   Array::length(pruned_stmts)
 }
 
-export let source_group_pruned_stmt_count = (
-  db: TypeDb,
-  main_source: String,
-  main_path: String,
-  source_groups: Array[(String, Array[(String, String)])],
-  entry_name: String
-) -> Int with { Error } {
+export let source_group_pruned_stmt_count: (TypeDb, String, String, Array[(String, Array[(String, String)])], String) -> Int with { Error } = (db, main_source, main_path, source_groups, entry_name) -> {
   let normalized_groups = normalize_source_groups(source_groups, main_path, main_source)
   let ordered_sources = collect_inline_sources_ordered(
     main_path,
@@ -392,7 +398,7 @@ export let source_group_pruned_stmt_count = (
   Array::length(pruned_stmts)
 }
 
-export let compile_with_modules_cached = (db: TypeDb, main_source: String, main_path: String, sources: Array[(String, String)]) -> (Bytes, TypeDb) with { Error } {
+export let compile_with_modules_cached: (TypeDb, String, String, Array[(String, String)]) -> (Bytes, TypeDb) with { Error } = (db, main_source, main_path, sources) -> {
   let next_db = prepare_modules_cached(db, main_path, main_source, sources)
   let ordered_sources = collect_inline_sources_ordered(main_path, main_source, sources)
   let (merged_source, merge_fingerprint, merge_db) = db_merged_source(next_db, main_path, ordered_sources)
@@ -408,7 +414,7 @@ export let compile_with_modules_cached = (db: TypeDb, main_source: String, main_
   }
 }
 
-export let compile_with_modules_wasi_cached = (db: TypeDb, main_source: String, main_path: String, sources: Array[(String, String)], entry_name: String) -> (Bytes, TypeDb) with { Error } {
+export let compile_with_modules_wasi_cached: (TypeDb, String, String, Array[(String, String)], String) -> (Bytes, TypeDb) with { Error } = (db, main_source, main_path, sources, entry_name) -> {
   let next_db = prepare_modules_cached(db, main_path, main_source, sources)
   let ordered_sources = collect_inline_sources_ordered(main_path, main_source, sources)
   let merge_fingerprint = build_merge_fingerprint_inline(ordered_sources)
@@ -426,13 +432,7 @@ export let compile_with_modules_wasi_cached = (db: TypeDb, main_source: String, 
   }
 }
 
-export let compile_with_closure_sources_wasi_cached = (
-  db: TypeDb,
-  main_source: String,
-  main_path: String,
-  sources: Array[(String, String)],
-  entry_name: String
-) -> (Bytes, TypeDb) with { Error } {
+export let compile_with_closure_sources_wasi_cached: (TypeDb, String, String, Array[(String, String)], String) -> (Bytes, TypeDb) with { Error } = (db, main_source, main_path, sources, entry_name) -> {
   let ordered_sources = collect_inline_sources_ordered(main_path, main_source, sources)
   let next_db = prepare_modules_cached(db, main_path, main_source, ordered_sources)
   let merge_fingerprint = build_merge_fingerprint_inline(ordered_sources)
@@ -450,14 +450,7 @@ export let compile_with_closure_sources_wasi_cached = (
   }
 }
 
-export let compile_with_closure_sources_wasi_mode_cached = (
-  db: TypeDb,
-  main_source: String,
-  main_path: String,
-  sources: Array[(String, String)],
-  entry_name: String,
-  mode: String
-) -> (Bytes, TypeDb) with { Error } {
+export let compile_with_closure_sources_wasi_mode_cached: (TypeDb, String, String, Array[(String, String)], String, String) -> (Bytes, TypeDb) with { Error } = (db, main_source, main_path, sources, entry_name, mode) -> {
   let ordered_sources = collect_inline_sources_ordered(main_path, main_source, sources)
   let next_db = prepare_modules_cached(db, main_path, main_source, ordered_sources)
   let merge_fingerprint = build_merge_fingerprint_inline(ordered_sources)
@@ -486,13 +479,7 @@ export let compile_with_closure_sources_wasi_mode_cached = (
   }
 }
 
-export let compile_with_closure_sources_wasi_unchecked_cached = (
-  db: TypeDb,
-  main_source: String,
-  main_path: String,
-  sources: Array[(String, String)],
-  entry_name: String
-) -> (Bytes, TypeDb) with { Error } {
+export let compile_with_closure_sources_wasi_unchecked_cached: (TypeDb, String, String, Array[(String, String)], String) -> (Bytes, TypeDb) with { Error } = (db, main_source, main_path, sources, entry_name) -> {
   let ordered_sources = collect_inline_sources_ordered(main_path, main_source, sources)
   let merge_fingerprint = build_merge_fingerprint_inline(ordered_sources)
   let artifact_fingerprint = artifact_fingerprint_from_source(
@@ -509,14 +496,7 @@ export let compile_with_closure_sources_wasi_unchecked_cached = (
   }
 }
 
-export let compile_with_closure_sources_wasi_mode_unchecked_cached = (
-  db: TypeDb,
-  main_source: String,
-  main_path: String,
-  sources: Array[(String, String)],
-  entry_name: String,
-  mode: String
-) -> (Bytes, TypeDb) with { Error } {
+export let compile_with_closure_sources_wasi_mode_unchecked_cached: (TypeDb, String, String, Array[(String, String)], String, String) -> (Bytes, TypeDb) with { Error } = (db, main_source, main_path, sources, entry_name, mode) -> {
   let ordered_sources = collect_inline_sources_ordered(main_path, main_source, sources)
   let merge_fingerprint = build_merge_fingerprint_inline(ordered_sources)
   let artifact_kind = if mode == "mvp" {
@@ -544,13 +524,7 @@ export let compile_with_closure_sources_wasi_mode_unchecked_cached = (
   }
 }
 
-export let compile_with_closure_sources_wasi_mode_unchecked = (
-  main_source: String,
-  main_path: String,
-  sources: Array[(String, String)],
-  entry_name: String,
-  mode: String
-) -> Bytes with { Error } {
+export let compile_with_closure_sources_wasi_mode_unchecked: (String, String, Array[(String, String)], String, String) -> Bytes with { Error } = (main_source, main_path, sources, entry_name, mode) -> {
   let (bytes, _) = compile_with_closure_sources_wasi_mode_unchecked_cached(
     db_new(),
     main_source,
@@ -562,13 +536,7 @@ export let compile_with_closure_sources_wasi_mode_unchecked = (
   bytes
 }
 
-export let compile_with_closure_sources_wasi_mode_uncached = (
-  main_source: String,
-  main_path: String,
-  sources: Array[(String, String)],
-  entry_name: String,
-  mode: String
-) -> Bytes with { Error } {
+export let compile_with_closure_sources_wasi_mode_uncached: (String, String, Array[(String, String)], String, String) -> Bytes with { Error } = (main_source, main_path, sources, entry_name, mode) -> {
   let ordered_sources = collect_inline_sources_ordered(main_path, main_source, sources)
   let merged_stmts = build_merged_stmts_inline(ordered_sources)
   if mode == "mvp" {
@@ -581,13 +549,7 @@ export let compile_with_closure_sources_wasi_mode_uncached = (
   }
 }
 
-export let compile_with_source_groups_wasi_cached = (
-  db: TypeDb,
-  main_source: String,
-  main_path: String,
-  source_groups: Array[(String, Array[(String, String)])],
-  entry_name: String
-) -> (Bytes, TypeDb) with { Error } {
+export let compile_with_source_groups_wasi_cached: (TypeDb, String, String, Array[(String, Array[(String, String)])], String) -> (Bytes, TypeDb) with { Error } = (db, main_source, main_path, source_groups, entry_name) -> {
   let normalized_groups = normalize_source_groups(source_groups, main_path, main_source)
   let ordered_sources = collect_inline_sources_ordered(
     main_path,
@@ -616,13 +578,7 @@ export let compile_with_source_groups_wasi_cached = (
   }
 }
 
-export let compile_with_source_groups_wasi_unchecked_cached = (
-  db: TypeDb,
-  main_source: String,
-  main_path: String,
-  source_groups: Array[(String, Array[(String, String)])],
-  entry_name: String
-) -> (Bytes, TypeDb) with { Error } {
+export let compile_with_source_groups_wasi_unchecked_cached: (TypeDb, String, String, Array[(String, Array[(String, String)])], String) -> (Bytes, TypeDb) with { Error } = (db, main_source, main_path, source_groups, entry_name) -> {
   let normalized_groups = normalize_source_groups(source_groups, main_path, main_source)
   let ordered_sources = collect_inline_sources_ordered(
     main_path,
@@ -645,13 +601,7 @@ export let compile_with_source_groups_wasi_unchecked_cached = (
   }
 }
 
-export let compile_with_source_groups_via_module_source_wasi_unchecked_cached = (
-  db: TypeDb,
-  main_source: String,
-  main_path: String,
-  source_groups: Array[(String, Array[(String, String)])],
-  entry_name: String
-) -> (Bytes, TypeDb) with { Error } {
+export let compile_with_source_groups_via_module_source_wasi_unchecked_cached: (TypeDb, String, String, Array[(String, Array[(String, String)])], String) -> (Bytes, TypeDb) with { Error } = (db, main_source, main_path, source_groups, entry_name) -> {
   let normalized_groups = normalize_source_groups(source_groups, main_path, main_source)
   let ordered_sources = collect_inline_sources_ordered(
     main_path,
@@ -675,46 +625,34 @@ export let compile_with_source_groups_via_module_source_wasi_unchecked_cached = 
   }
 }
 
-export let compile_file_fs = (entry_path: String, entry_name: String) -> Bytes with { Error, Fs } {
+export let compile_file_fs: (String, String) -> Bytes with { Error, Fs } = (entry_path, entry_name) -> {
   let (bytes, _) = compile_file_fs_cached(db_new(), entry_path, entry_name)
   bytes
 }
 
-export let compile_file_fs_module = (entry_path: String) -> Bytes with { Error, Fs } {
+export let compile_file_fs_module: (String) -> Bytes with { Error, Fs } = (entry_path) -> {
   let (bytes, _) = compile_file_fs_module_cached(db_new(), entry_path)
   bytes
 }
 
-export let prepare_file_fs_cached = (db: TypeDb, entry_path: String) -> TypeDb with { Error, Fs } {
+export let prepare_file_fs_cached: (TypeDb, String) -> TypeDb with { Error, Fs } = (db, entry_path) -> {
   let source_groups = collect_source_groups_fs(entry_path)
   prepare_file_fs_from_source_groups_persistent_cached(db, entry_path, source_groups)
 }
 
-let prepare_file_fs_from_source_groups_cached = (
-  db: TypeDb,
-  entry_path: String,
-  source_groups: Array[(String, Array[(String, String)])]
-) -> TypeDb with { Error } {
+let prepare_file_fs_from_source_groups_cached: (TypeDb, String, Array[(String, Array[(String, String)])]) -> TypeDb with { Error } = (db, entry_path, source_groups) -> {
   let sources = flatten_source_groups(source_groups)
   let main_source = source_lookup_or_throw(sources, entry_path)
   prepare_modules_cached(db, entry_path, main_source, sources)
 }
 
-let prepare_file_fs_from_source_groups_persistent_cached = (
-  db: TypeDb,
-  entry_path: String,
-  source_groups: Array[(String, Array[(String, String)])]
-) -> TypeDb with { Error, Fs } {
+let prepare_file_fs_from_source_groups_persistent_cached: (TypeDb, String, Array[(String, Array[(String, String)])]) -> TypeDb with { Error, Fs } = (db, entry_path, source_groups) -> {
   let sources = flatten_source_groups(source_groups)
   let main_source = source_lookup_or_throw(sources, entry_path)
   prepare_modules_persistent_fs_cached(db, entry_path, main_source, sources)
 }
 
-let compile_file_fs_cached_slow = (
-  db: TypeDb,
-  entry_path: String,
-  entry_name: String
-) -> (Bytes, TypeDb) with { Error, Fs } {
+let compile_file_fs_cached_slow: (TypeDb, String, String) -> (Bytes, TypeDb) with { Error, Fs } = (db, entry_path, entry_name) -> {
   let source_groups = collect_source_groups_fs(entry_path)
   let persistent_artifact_fingerprint = build_fs_compile_wasi_artifact_fingerprint(
     source_groups,
@@ -745,7 +683,7 @@ let compile_file_fs_cached_slow = (
   }
 }
 
-export let compile_file_fs_cached = (db: TypeDb, entry_path: String, entry_name: String) -> (Bytes, TypeDb) with { Error, Fs } {
+export let compile_file_fs_cached: (TypeDb, String, String) -> (Bytes, TypeDb) with { Error, Fs } = (db, entry_path, entry_name) -> {
   match load_persistent_source_group_fingerprint_if_valid(entry_path) {
     Some(source_groups_fingerprint) =>
       match load_persistent_artifact(
@@ -763,10 +701,7 @@ export let compile_file_fs_cached = (db: TypeDb, entry_path: String, entry_name:
   }
 }
 
-let compile_file_fs_module_cached_slow = (
-  db: TypeDb,
-  entry_path: String
-) -> (Bytes, TypeDb) with { Error, Fs } {
+let compile_file_fs_module_cached_slow: (TypeDb, String) -> (Bytes, TypeDb) with { Error, Fs } = (db, entry_path) -> {
   let source_groups = collect_source_groups_fs(entry_path)
   let persistent_artifact_fingerprint = build_fs_compile_module_artifact_fingerprint(
     source_groups
@@ -796,7 +731,7 @@ let compile_file_fs_module_cached_slow = (
   }
 }
 
-export let compile_file_fs_module_cached = (db: TypeDb, entry_path: String) -> (Bytes, TypeDb) with { Error, Fs } {
+export let compile_file_fs_module_cached: (TypeDb, String) -> (Bytes, TypeDb) with { Error, Fs } = (db, entry_path) -> {
   match load_persistent_source_group_fingerprint_if_valid(entry_path) {
     Some(source_groups_fingerprint) =>
       match load_persistent_artifact(

@@ -1,0 +1,64 @@
+//# Imports
+
+import ./adler32.vibe {
+  adler32
+}
+
+import ./deflate.vibe {
+  deflate_stored
+}
+
+import ./inflate.vibe {
+  inflate
+}
+
+//# Functions
+
+// Driver: runs a fixed amount of work and exits.
+// Wall-clock is measured externally via `time wasmtime …`. The work
+// volume is chosen so each backend takes >100 ms (small overhead noise).
+
+let make_bytes: (Int) -> Bytes = (n) -> {
+  let b = Bytes::new()
+  let mut state = 12345
+  let mut i = 0
+  while i < n {
+    state = (state * 1103515245 + 12345) & 0x7FFFFFFF
+    Bytes::push(b, (state >> 16) & 0xFF)
+    i = i + 1
+  }
+  b
+}
+
+let main: () -> Int with { Error } = () -> {
+  let payload = make_bytes(16 * 1024)
+  // adler32 × 200 + deflate_stored × 200 + inflate × 50
+  // Per the in-language `vibe bench`:
+  //   adler32   16 KB ≈ 0.51 ms  → 200 calls ≈ 100 ms
+  //   deflate   16 KB ≈ 0.49 ms  → 200 calls ≈ 100 ms
+  //   inflate   16 KB ≈ 1.69 ms  → 50 calls  ≈ 85 ms
+  let mut acc = 0
+  let mut i = 0
+  while i < 200 {
+    acc = acc ^ adler32(payload)
+    i = i + 1
+  }
+  let mut encoded = deflate_stored(payload)
+  i = 1
+  while i < 200 {
+    encoded = deflate_stored(payload)
+    i = i + 1
+  }
+  i = 0
+  while i < 50 {
+    let _ = inflate(encoded)
+    i = i + 1
+  }
+  acc & 0xFF
+}
+
+handle {
+  main()
+} with Error {
+  Throw(_) => -1
+}

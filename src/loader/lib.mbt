@@ -692,19 +692,34 @@ fn load_db_with_paths_with_fs_into_impl(
   fs : &@io.FileSystemAdapter,
   persist_lock_updates : Bool,
 ) -> Result[(@runtime.VibeDb, String, Array[String]), String] {
+  @profiler.profiler_enter("loader/load_db")
   let entry = resolve_entry_path_with_fs(entry_path, fs)
   let root = @codebase.resolve_index_root_with_fs(entry, fs)
+  @profiler.profiler_enter("loader/registry_modules")
   let registry_modules = match
     @codebase.load_registry_modules_with_fs(root, fs) {
     Ok(v) => v
-    Err(err) => return Err(err)
+    Err(err) => {
+      @profiler.profiler_leave()
+      @profiler.profiler_leave()
+      return Err(err)
+    }
   }
+  @profiler.profiler_leave()
+  @profiler.profiler_enter("loader/apply_lock")
   match apply_lock_to_db_with_fs(db, entry, fs, persist_lock_updates) {
     Ok(_) => ()
-    Err(err) => return Err(err)
+    Err(err) => {
+      @profiler.profiler_leave()
+      @profiler.profiler_leave()
+      return Err(err)
+    }
   }
+  @profiler.profiler_leave()
   let visited : Map[String, Bool] = {}
-  match load_sources_recursive(db, entry, visited, fs, root, registry_modules) {
+  @profiler.profiler_enter("loader/load_sources")
+  let result = match
+    load_sources_recursive(db, entry, visited, fs, root, registry_modules) {
     Ok(_) => {
       let paths : Array[String] = []
       for path, _ in visited {
@@ -715,6 +730,9 @@ fn load_db_with_paths_with_fs_into_impl(
     }
     Err(err) => Err(err)
   }
+  @profiler.profiler_leave() // loader/load_sources
+  @profiler.profiler_leave() // loader/load_db
+  result
 }
 
 ///|

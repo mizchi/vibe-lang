@@ -37,6 +37,7 @@ test "normalize_module canonicalizes export list into explicit exports" {
           StructField::{
             name: "id",
             ty: Type::Int,
+            is_mut: false,
             span: zero_span_for_export_norm_test,
           },
         ],

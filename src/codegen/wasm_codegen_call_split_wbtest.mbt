@@ -286,6 +286,7 @@ test "scan_needs_stmt registers struct fields as known record fields" {
   let field = @core.StructField::{
     name: "name",
     ty: @core.Type::String,
+    is_mut: false,
     span: call_split_test_span(),
   }
   let stmt = @core.Stmt::StructDef(

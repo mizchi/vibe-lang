@@ -18,7 +18,7 @@ vibe ランタイムは pure 関数の結果を content-addressed cache に保�
 `purity_for_let` が関数の `effects` 宣言を無視していた (`effects=_`)。これにより `with { Fs }` のような effect 付き関数でも、body が pure なら関数全体が pure と判定された。
 
 ```vibe
-export let exists = (path: String) -> Bool with { Fs } {
+export let exists: (String) -> Bool with { Fs } = (path) -> {
   do { Fs::exists(path) }
 }
 ```
@@ -323,7 +323,7 @@ vibe/compiler/
 K-006 の修正で `simple_type_query` の diagnostics を `db.diagnostics()` に追加した。これにより、以前は不可視だった型エラーが `compile_module` に到達するようになった。
 
 影響を受けたテスト（3件）:
-1. **resume multi-layer perform** — nested handle での `resume(perform(Ask(32)))` で誤検知
+1. **resume multi-layer perform** — nested handle での `resume(perform Ask::Ask(32))` で誤検知
 2. **resume rejects mismatched resumed value type** — 型不一致を runtime error として期待していたが compile-time error に
 3. **resume rejects prior effects before perform** — effect 付き関数での resume 誤検知
 
@@ -737,7 +737,7 @@ ADR doc 更新と新規 wbtest だけの PR (#373) は CI も短く、レビュ�
 `selfhost-bootstrap-gate` は CI 上 `continue-on-error: true` の informational job なので、`ci-required` には影響しない。ただし pre-existing bug を放置していると判別できなくなるので:
 
 1. `vibe test vibe/compiler/<failing>_test.vibe` をローカルで再現 (`flaker` でなく直叩き)。
-2. wasmtime 必須なので `bash scripts/install_wasmtime_release.sh` で 42.0.1 を入れる。
+2. wasmtime 必須なので `bash scripts/install_wasmtime_release.sh` で repo 既定バージョンを入れる。
 3. exit code 24 = `assert(...)` 失敗。テストが通ろうとしている場面が selfhost compiler のどの構文/型機能を要求しているかを切り分ける。
 4. 「テストソース自体が host も受理しない」「auto-generated bundle のシェイプが変わったのに assert が古い」など、テストが先走っていることが多い。skip + 再有効化条件を残すコメントだけで unblock 可 (#372)。
 

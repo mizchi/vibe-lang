@@ -108,6 +108,126 @@ fn resolve_exported_fn_aliases(ctx : CodegenCtx) -> Unit {
 }
 
 ///|
+fn copy_function_alias_metadata(
+  ctx : CodegenCtx,
+  alias_name : String,
+  target_name : String,
+) -> Unit {
+  match ctx.fn_local_sigs.get(target_name) {
+    Some(sig) => ctx.fn_local_sigs[alias_name] = sig
+    None => ()
+  }
+  match ctx.fn_params.get(target_name) {
+    Some(kinds) => ctx.fn_params[alias_name] = kinds
+    None => ()
+  }
+  match ctx.fn_param_names.get(target_name) {
+    Some(names) => ctx.fn_param_names[alias_name] = names
+    None => ()
+  }
+  match ctx.fn_returns.get(target_name) {
+    Some(ret_kind) => ctx.fn_returns[alias_name] = ret_kind
+    None => ()
+  }
+  match ctx.fn_return_sigs.get(target_name) {
+    Some(sig) => ctx.fn_return_sigs[alias_name] = sig
+    None => ()
+  }
+  match ctx.fn_multivalue_results.get(target_name) {
+    Some(results) => ctx.fn_multivalue_results[alias_name] = results
+    None => ()
+  }
+}
+
+///|
+fn register_linked_function_alias(
+  ctx : CodegenCtx,
+  alias_name : String,
+  target_name : String,
+  import_idx : Int,
+) -> Unit {
+  ctx.linked_fn_imports[alias_name] = import_idx
+  let param_count = match ctx.linked_fn_param_counts.get(target_name) {
+    Some(pc) => pc
+    None => 0
+  }
+  ctx.linked_fn_param_counts[alias_name] = param_count
+  let return_count = match ctx.linked_fn_return_counts.get(target_name) {
+    Some(rc) => rc
+    None => 1
+  }
+  ctx.linked_fn_return_counts[alias_name] = return_count
+  let param_kinds : Array[ValueKind] = []
+  for _ in 0..<param_count {
+    param_kinds.push(ValueKind::I64)
+  }
+  ctx.fn_params[alias_name] = param_kinds
+  if return_count > 1 {
+    let result_kinds : Array[ValueKind] = []
+    for _ in 0..<return_count {
+      result_kinds.push(ValueKind::I64)
+    }
+    let sig = func_sig_with_env_multi(param_kinds, result_kinds)
+    ctx.fn_local_sigs[alias_name] = sig
+    ignore(ensure_sig_index(ctx, sig))
+    ctx.fn_multivalue_results[alias_name] = result_kinds
+  } else {
+    let sig = func_sig_with_env(param_kinds, ValueKind::I64)
+    ctx.fn_local_sigs[alias_name] = sig
+    ignore(ensure_sig_index(ctx, sig))
+    ctx.fn_returns[alias_name] = ValueKind::I64
+  }
+}
+
+///|
+fn collect_top_level_function_aliases(
+  ast : @core.Module,
+) -> Array[(String, String)] {
+  let aliases : Array[(String, String)] = []
+  for stmt in ast.stmts {
+    match stmt {
+      @core.Stmt::Let(name~, expr~, ..)
+      | @core.Stmt::ExportLet(name~, expr~, ..)
+      | @core.Stmt::InternalExportLet(name~, expr~, ..) =>
+        match unwrap_type_assert_block(expr) {
+          @core.Expr::Ident(name=target_name, ..) =>
+            aliases.push((name, target_name))
+          _ => ()
+        }
+      _ => ()
+    }
+  }
+  aliases
+}
+
+///|
+fn resolve_top_level_function_aliases(
+  ctx : CodegenCtx,
+  ast : @core.Module,
+) -> Unit {
+  let aliases = collect_top_level_function_aliases(ast)
+  for _ in 0..<aliases.length() {
+    for entry in aliases {
+      let (alias_name, target_name) = entry
+      match ctx.fn_indices.get(target_name) {
+        Some(func_idx) => {
+          ctx.fn_indices[alias_name] = func_idx
+          copy_function_alias_metadata(ctx, alias_name, target_name)
+        }
+        None =>
+          match ctx.linked_fn_imports.get(target_name) {
+            Some(import_idx) =>
+              register_linked_function_alias(
+                ctx, alias_name, target_name, import_idx,
+              )
+            None => ()
+          }
+      }
+    }
+  }
+}
+
+///|
 /// Collect distinct effect names from `ctx.effect_handled_ops` keys.
 /// "Logger::Log" / "Logger::Warn" -> "Logger" (deduped). "Bare" -> "Bare"
 /// (enum-as-effect ctor used as-is). Order is stable so global indices
@@ -2074,6 +2194,8 @@ fn strip_type_assert_expr(expr : @core.Expr) -> @core.Expr {
       let new_args = args.map(strip_type_assert_expr)
       @core.Expr::Continue(args=new_args, span~)
     }
+    @core.Expr::Return(value~, span~) =>
+      @core.Expr::Return(value=value.map(strip_type_assert_expr), span~)
     @core.Expr::Yield(expr=inner, span~) =>
       @core.Expr::Yield(expr=strip_type_assert_expr(inner), span~)
     _ => expr
@@ -2121,7 +2243,7 @@ fn strip_type_assert_stmt(stmt : @core.Stmt) -> @core.Stmt {
 
 ///|
 /// Recursively strip type-assertion identity blocks from a module/block.
-fn strip_type_assert_module(ast : @core.Module) -> @core.Module {
+pub fn strip_type_assert_module(ast : @core.Module) -> @core.Module {
   let stmts : Array[@core.Stmt] = []
   for stmt in ast.stmts {
     stmts.push(strip_type_assert_stmt(stmt))
@@ -2444,6 +2566,58 @@ fn static_fold_builtin_call(
         match (args[0], args[1]) {
           (StaticFoldValue::Bool(value=left), StaticFoldValue::Bool(value=right)
           ) => Some(StaticFoldValue::Bool(value=left || right))
+          _ => None
+        }
+      } else {
+        None
+      }
+    "__bit_or" | "bit_or" =>
+      if args.length() == 2 {
+        match (args[0], args[1]) {
+          (StaticFoldValue::Int(value=left), StaticFoldValue::Int(value=right)) =>
+            Some(StaticFoldValue::Int(value=left.lor(right)))
+          _ => None
+        }
+      } else {
+        None
+      }
+    "__bit_and" | "bit_and" =>
+      if args.length() == 2 {
+        match (args[0], args[1]) {
+          (StaticFoldValue::Int(value=left), StaticFoldValue::Int(value=right)) =>
+            Some(StaticFoldValue::Int(value=left.land(right)))
+          _ => None
+        }
+      } else {
+        None
+      }
+    "__bit_xor" | "bit_xor" =>
+      if args.length() == 2 {
+        match (args[0], args[1]) {
+          (StaticFoldValue::Int(value=left), StaticFoldValue::Int(value=right)) =>
+            Some(StaticFoldValue::Int(value=left.lxor(right)))
+          _ => None
+        }
+      } else {
+        None
+      }
+    "__lshift" | "lshift" =>
+      if args.length() == 2 {
+        match (args[0], args[1]) {
+          (StaticFoldValue::Int(value=left), StaticFoldValue::Int(value=right)) =>
+            Some(StaticFoldValue::Int(value=left.lsl(right.to_int())))
+          _ => None
+        }
+      } else {
+        None
+      }
+    "__rshift" | "rshift" =>
+      if args.length() == 2 {
+        match (args[0], args[1]) {
+          (StaticFoldValue::Int(value=left), StaticFoldValue::Int(value=right)) =>
+            // Arithmetic shift right (sign-extending) — matches the
+            // vibe `>>` operator semantics (ADR-0006).
+            Some(StaticFoldValue::Int(value=left.asr(right.to_int())))
           _ => None
         }
       } else {
@@ -3046,7 +3220,7 @@ fn strip_unused_top_level_static_bindings(
 }
 
 ///|
-fn static_fold_module(ast : @core.Module) -> @core.Module {
+pub fn static_fold_module(ast : @core.Module) -> @core.Module {
   let env : Map[String, StaticFoldValue] = {}
   let candidates : Map[String, Bool] = {}
   let stmts : Array[@core.Stmt] = []
@@ -3641,6 +3815,7 @@ fn emit_module_with_coverage(
     let type_idx = ensure_sig_index(ctx, sig)
     ctx.fn_type_indices[funcs[i].span_key] = type_idx
   }
+  resolve_top_level_function_aliases(ctx, ast)
   let run_sig = FuncSig::{ params: [], results: [ValueKind::I64] }
   let _ = ensure_sig_index(ctx, run_sig)
   let run_ast = ensure_run_ast_result(

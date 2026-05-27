@@ -8,8 +8,8 @@ Mark bindings for external use with `export`.
 
 ```vibe
 // math.vibe
-export let double = (x: Int) -> Int { x * 2 }
-export let triple = (x: Int) -> Int { x * 3 }
+export let double: (Int) -> Int = (x) -> { x * 2 }
+export let triple: (Int) -> Int = (x) -> { x * 3 }
 
 // Batch export
 export { double, triple }
@@ -55,7 +55,7 @@ Group related definitions into a namespace accessed with `::`.
 
 ```vibe
 module math {
-  export let inc = (x: Int) -> Int { x + 1 }
+  export let inc: (Int) -> Int = (x) -> { x + 1 }
 }
 
 test "module" {
@@ -68,7 +68,7 @@ Export a module for use from other files:
 ```vibe
 // lib.xm
 export module math {
-  export let inc = (x: Int) -> Int { x + 1 }
+  export let inc: (Int) -> Int = (x) -> { x + 1 }
 }
 ```
 

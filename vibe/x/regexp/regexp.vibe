@@ -341,12 +341,8 @@ let empty_matches = () -> Array[Match] {
 }
 
 let extract_captures = (collector: Array[Int], s: String, num_groups: Int) -> Array[String] {
-  let captures = empty_string_array()
-  let mut gi = 0
-  while gi < num_groups {
-    Array::push(captures, "")
-    gi = gi + 1
-  }
+  // Preallocate exactly num_groups slots — only Array::set follows below.
+  let captures = FixedArray::make(num_groups, "")
   let clen = Array::length(collector)
   let mut ci = 0
   while ci + 2 < clen {
@@ -468,9 +464,12 @@ let rec parse2 = (pattern: String, pos: Int, mode: Int, acc: Array[Re], gc: Arra
         }
       } else {
         let (atom, ni) = parse2(pattern, pos, 2, empty_res(), gc, gnames)
-        parse2(pattern, ni, 1, Array::concat(acc, [
-          atom
-        ]), gc, gnames)
+        // Tail-recursive in mode 1: only this branch threads `acc`
+        // forward, so mutating in place is safe (no other caller
+        // observes the old prefix). Previous Array::concat(acc, [atom])
+        // copied the whole prefix per atom — O(N²) for an N-atom seq.
+        Array::push(acc, atom)
+        parse2(pattern, ni, 1, acc, gc, gnames)
       }
     }
   } else if mode == 2 {

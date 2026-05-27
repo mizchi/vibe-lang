@@ -267,6 +267,11 @@ fn railway_collect_expr_boundaries(
       for a in args {
         railway_collect_expr_boundaries(a, stats)
       }
+    @vibe_core.Expr::Return(value~, ..) =>
+      match value {
+        Some(v) => railway_collect_expr_boundaries(v, stats)
+        None => ()
+      }
     @vibe_core.Expr::Record(fields~, ..)
     | @vibe_core.Expr::StructLit(fields~, ..) =>
       for f in fields {
@@ -625,6 +630,11 @@ fn collect_rb_expr(
     @vibe_core.Expr::Continue(args~, ..) =>
       for a in args {
         collect_rb_expr(a, out)
+      }
+    @vibe_core.Expr::Return(value~, ..) =>
+      match value {
+        Some(v) => collect_rb_expr(v, out)
+        None => ()
       }
     @vibe_core.Expr::Record(fields~, ..)
     | @vibe_core.Expr::StructLit(fields~, ..) =>

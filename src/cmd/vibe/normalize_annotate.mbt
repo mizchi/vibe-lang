@@ -341,7 +341,7 @@ fn normalize_render_type_annotation(ty : @vibe_core.Type) -> String {
       out.write_string(") -> ")
       out.write_string(normalize_render_type_annotation(ret))
       if effects.length() > 0 {
-        out.write_string(" with {")
+        out.write_string(" with { ")
         for i, effect in effects {
           if i > 0 {
             out.write_string(", ")
@@ -351,7 +351,7 @@ fn normalize_render_type_annotation(ty : @vibe_core.Type) -> String {
             @vibe_core.EffectAtom::Var(name) => out.write_string(name)
           }
         }
-        out.write_char('}')
+        out.write_string(" }")
       }
       out.to_string()
     }

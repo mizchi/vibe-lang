@@ -195,6 +195,30 @@ test "normalize_engine: infers fn return annotation in fn expression" {
 }
 
 ///|
+test "normalize_engine: canonicalizes explicit fn signature with effects" {
+  let source =
+    #|effect Error {
+    #|  Throw(String) -> Int
+    #|}
+    #|let recover = (f: () -> Int with { Error }) -> Int with { Error } {
+    #|  f()
+    #|}
+    #|export { recover }
+  let result = normalize_source_text(source)
+  match result {
+    Ok(normalized) => {
+      assert_true(
+        normalized.contains(
+          "let recover: (() -> Int with { Error }) -> Int with { Error } = (f) -> {",
+        ),
+      )
+      assert_true(normalized.contains("f()"))
+    }
+    Err(msg) => fail("normalize failed: " + msg)
+  }
+}
+
+///|
 test "normalize_engine: inline comment in fn params is preserved on its own line" {
   let source =
     #|let rec compile_expr = (

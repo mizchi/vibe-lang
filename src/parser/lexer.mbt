@@ -387,6 +387,7 @@ pub fn Lexer::next_token(self : Lexer) -> Token {
           "handle" => handle_kw()
           "break" => break_kw()
           "continue" => continue_kw()
+          "return" => return_kw()
           "export" => export_kw()
           "from" => from_kw()
           "as" => as_kw()

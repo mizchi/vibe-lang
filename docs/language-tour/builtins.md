@@ -80,7 +80,8 @@ Prelude wrappers: `add(a, b)`, `sub(a, b)`, `mul(a, b)`, `div(a, b)`, `eq(a, b)`
 | `ArrayBuilder::push` | `(ArrayBuilder[T], T) -> Unit` | Add element |
 | `ArrayBuilder::freeze` | `(ArrayBuilder[T]) -> Array[T]` | Convert to array |
 
-Builders require `do { ... }` or `for-in` context.
+`for-in` comprehensions desugar to builder operations internally. `do` is
+reserved and is not part of the current surface syntax.
 
 ## Map
 

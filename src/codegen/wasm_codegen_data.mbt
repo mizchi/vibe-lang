@@ -582,6 +582,37 @@ fn compile_map_expr(
 }
 
 ///|
+/// True lexicographic less-than on Strings (char-by-char), matching the
+/// `addr_string_lt` used by `register_struct_types_gc` for the named
+/// struct field layout. MoonBit's built-in `<` on String is length-first
+/// then char (so e.g. "buf" < "acc_bits"), which would have us produce
+/// a *different* sort order here than the registered struct expects,
+/// leading to runtime "cast failure" when the literal's anonymous
+/// struct type gets reused for a named struct (de-duped by field-kind
+/// signature only).
+fn record_field_name_lt(a : String, b : String) -> Bool {
+  let ac : Array[Char] = []
+  for c in a {
+    ac.push(c)
+  }
+  let bc : Array[Char] = []
+  for c in b {
+    bc.push(c)
+  }
+  let alen = ac.length()
+  let blen = bc.length()
+  let limit = if alen < blen { alen } else { blen }
+  let mut i = 0
+  while i < limit {
+    if ac[i] != bc[i] {
+      return ac[i] < bc[i]
+    }
+    i += 1
+  }
+  alen < blen
+}
+
+///|
 fn sort_record_fields_expr(
   fields : Array[@core.RecordFieldExpr],
 ) -> Array[@core.RecordFieldExpr] {
@@ -589,7 +620,7 @@ fn sort_record_fields_expr(
   for field in fields {
     out.push(field)
     let mut i = out.length() - 1
-    while i > 0 && out[i].name < out[i - 1].name {
+    while i > 0 && record_field_name_lt(out[i].name, out[i - 1].name) {
       let tmp = out[i - 1]
       out[i - 1] = out[i]
       out[i] = tmp

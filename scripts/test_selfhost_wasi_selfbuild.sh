@@ -108,6 +108,15 @@ is_non_negative_int() {
   esac
 }
 
+clear_selfhost_probe_persistent_caches() {
+  rm -f \
+    "$PROJECT_ROOT"/_build/vibe_selfhost_dep_list_* \
+    "$PROJECT_ROOT"/_build/vibe_selfhost_leaf_fp_v2_* \
+    "$PROJECT_ROOT"/_build/vibe_selfhost_module_header_v2_* \
+    "$PROJECT_ROOT"/_build/vibe_selfhost_type_env_v2_* \
+    2>/dev/null || true
+}
+
 SELFBUILD_START_SEC="$(date +%s)"
 mkdir -p "$OUT_DIR"
 rm -f "$STAGE1_WASM" "$STAGE2_WASM"
@@ -212,6 +221,7 @@ if [ "$cache_probe_runner_mode" -eq 1 ]; then
   fi
   echo "[selfbuild] cache probe counts: $CACHE_PROBE_COUNT1 -> $CACHE_PROBE_COUNT2"
 
+  clear_selfhost_probe_persistent_caches
   FS_PARSE_CACHE_PROBE_OUT="$OUT_DIR/stage1_fs_parse_cache_probe.out"
   run_stage_capture_stdout "run stage1 fs parse cache probe (--invoke selfbuild_stage1_probe_type_db_fs_parse_counts)" \
     "$FS_PARSE_CACHE_PROBE_OUT" \

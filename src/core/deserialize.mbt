@@ -425,6 +425,7 @@ fn parse_expr(json : Json) -> Expr raise DeserializeError {
       }
       "Break" => return Expr::Break(value=None, span=zero)
       "Continue" => return Expr::Continue(args=[], span=zero)
+      "Return" => return Expr::Return(value=None, span=zero)
       "Handle" => {
         let inner = expect_object(value)
         let body = parse_module(get_field(inner, "body"))
@@ -876,7 +877,14 @@ fn parse_struct_fields(
     let obj = expect_object(item)
     let name = get_string(obj, "name")
     let ty = parse_type(get_field(obj, "ty"))
-    out.push(StructField::{ name, ty, span: deser_zero_span })
+    // is_mut is absent on legacy IR (defaults to false). ADR-0052.
+    let is_mut = match obj.get("is_mut") {
+      Some(v) => expect_bool(v)
+      None => false
+    }
+    out.push(
+      StructField::{ name, ty, is_mut: is_mut, span: deser_zero_span },
+    )
   }
   out
 }

@@ -14,13 +14,13 @@ import ./type_db.vibe {
 
 //# Functions
 
-let empty_sources = () -> Array[(String, String)] {
+let empty_sources: () -> Array[(String, String)] = () -> {
   Array::slice([
     ("", "")
   ], 0, 0)
 }
 
-let string_to_bytes = (s: String) -> Bytes {
+let string_to_bytes: (String) -> Bytes = (s) -> {
   let out = Array::slice([
     0
   ], 0, 0)
@@ -33,7 +33,7 @@ let string_to_bytes = (s: String) -> Bytes {
   Bytes::from_array(out)
 }
 
-let assert_wasm_magic = (bytes: Bytes) -> Unit {
+let assert_wasm_magic: (Bytes) -> Unit = (bytes) -> {
   assert(Bytes::get(bytes, 0) == 0)
   assert(Bytes::get(bytes, 1) == 97)
   assert(Bytes::get(bytes, 2) == 115)
@@ -44,8 +44,18 @@ let assert_wasm_magic = (bytes: Bytes) -> Unit {
 
 test "compile_with_closure_sources_wasi_unchecked_cached: prunes unreachable broken defs" {
   let helper_source =
-  "export let used = () -> Int { 1 }\nexport let unused = () -> Int { missing() }"
-  let main_source = "import ./helpers.vibe { used }\nlet _start = () -> Int { used() }"
+  "export let used: () -> Int = () -> { 1 }\nexport let unused: () -> Int = () -> { missing() }"
+  let main_source = "import ./helpers.vibe { used }\nlet _start: () -> Int = () -> { used() }"
+  let sources = [
+    ("helpers.vibe", helper_source)
+  ]
+  let (bytes, _) = compile_with_closure_sources_wasi_unchecked_cached(db_new(), main_source, "main.vibe", sources, "_start")
+  assert_wasm_magic(bytes)
+}
+
+test "compile_with_closure_sources_wasi_unchecked_cached: import alias call resolves before codegen" {
+  let helper_source = "export let add_one: (Int) -> Int = (x) -> { x + 1 }"
+  let main_source = "import ./helpers.vibe { add_one as inc }\nlet _start: () -> Int = () -> { inc(41) }"
   let sources = [
     ("helpers.vibe", helper_source)
   ]
@@ -55,8 +65,8 @@ test "compile_with_closure_sources_wasi_unchecked_cached: prunes unreachable bro
 
 test "compile_with_closure_sources_wasi_mode_unchecked_cached: mvp prunes unreachable broken defs" {
   let helper_source =
-  "export let used = () -> Int { 1 }\nexport let unused = () -> Int { missing() }"
-  let main_source = "import ./helpers.vibe { used }\nlet _start = () -> Int { used() }"
+  "export let used: () -> Int = () -> { 1 }\nexport let unused: () -> Int = () -> { missing() }"
+  let main_source = "import ./helpers.vibe { used }\nlet _start: () -> Int = () -> { used() }"
   let sources = [
     ("helpers.vibe", helper_source)
   ]
@@ -66,7 +76,7 @@ test "compile_with_closure_sources_wasi_mode_unchecked_cached: mvp prunes unreac
 
 test "closure_pruned_stmt_count: drops unreachable statements before codegen" {
   let main_source =
-  "let used = () -> Int { 1 }\nlet unused = () -> Int { missing() }\nlet _start = () -> Int { used() }"
+  "let used: () -> Int = () -> { 1 }\nlet unused: () -> Int = () -> { missing() }\nlet _start: () -> Int = () -> { used() }"
   let merged_count = closure_merged_stmt_count(main_source, "main.vibe", empty_sources())
   let pruned_count = closure_pruned_stmt_count(main_source, "main.vibe", empty_sources(), "_start")
   assert(pruned_count < merged_count)
@@ -74,8 +84,8 @@ test "closure_pruned_stmt_count: drops unreachable statements before codegen" {
 
 test "source_group_pruned_stmt_count: drops unreachable statements before codegen" {
   let helper_source =
-  "export let used = () -> Int { 1 }\nexport let unused = () -> Int { missing() }"
-  let main_source = "import ./helpers.vibe { used }\nlet _start = () -> Int { used() }"
+  "export let used: () -> Int = () -> { 1 }\nexport let unused: () -> Int = () -> { missing() }"
+  let main_source = "import ./helpers.vibe { used }\nlet _start: () -> Int = () -> { used() }"
   let source_groups = [
     ("core", [
       ("helpers.vibe", helper_source)
@@ -90,9 +100,9 @@ test "source_group_pruned_stmt_count: drops unreachable statements before codege
 }
 
 test "compile_with_source_groups_wasi_cached: grouped source stats follow reachable closure" {
-  let helper_source = "export let add = (a: Int, b: Int) -> Int { a + b }"
-  let unused_source = "export let unused = () -> Int { 0 }"
-  let main_source = "import ./helpers.vibe { add }\nlet _start = () -> Int { add(1, 2) }"
+  let helper_source = "export let add: (Int, Int) -> Int = (a, b) -> { a + b }"
+  let unused_source = "export let unused: () -> Int = () -> { 0 }"
+  let main_source = "import ./helpers.vibe { add }\nlet _start: () -> Int = () -> { add(1, 2) }"
   let source_groups = [
     ("core", [
       ("helpers.vibe", helper_source)
@@ -113,8 +123,8 @@ test "compile_with_source_groups_wasi_cached: grouped source stats follow reacha
 }
 
 test "compile_with_source_groups_via_module_source_wasi_unchecked_cached: grouped sources compile to valid WASM" {
-  let helper_source = "export let add = (a: Int, b: Int) -> Int { a + b }"
-  let main_source = "import ./helpers.vibe { add }\nlet _start = () -> Int { add(1, 2) }"
+  let helper_source = "export let add: (Int, Int) -> Int = (a, b) -> { a + b }"
+  let main_source = "import ./helpers.vibe { add }\nlet _start: () -> Int = () -> { add(1, 2) }"
   let source_groups = [
     ("core", [
       ("helpers.vibe", helper_source)
@@ -132,7 +142,7 @@ test "compile_with_source_groups_via_module_source_wasi_unchecked_cached: groupe
 }
 
 test "compile_with_modules_cached: same source reuses compiled artifact cache across paths" {
-  let main_source = "let main = () -> Int { 1 + 2 }"
+  let main_source = "let main: () -> Int = () -> { 1 + 2 }"
   let sources = empty_sources()
   let (_, db1) = compile_with_modules_cached(db_new(), main_source, "main_a.vibe", sources)
   let codegen_count1 = db_codegen_count(db1)
@@ -141,7 +151,7 @@ test "compile_with_modules_cached: same source reuses compiled artifact cache ac
 }
 
 test "compile_with_modules_cached: same source reuses module source cache across paths" {
-  let main_source = "let main = () -> Int { 1 + 2 }"
+  let main_source = "let main: () -> Int = () -> { 1 + 2 }"
   let sources = empty_sources()
   let (_, db1) = compile_with_modules_cached(db_new(), main_source, "main_a.vibe", sources)
   let module_source_count1 = db_module_source_count(db1)
@@ -152,8 +162,8 @@ test "compile_with_modules_cached: same source reuses module source cache across
 test "compile_file_fs_module_cached: warm compile reuses compiled fs artifact cache" {
   let helper_path = "/tmp/vibe_compiler_codegen_cache_helper.vibe"
   let main_path = "/tmp/vibe_compiler_codegen_cache_main.vibe"
-  Fs::write_bytes(helper_path, string_to_bytes("export let add = (a: Int, b: Int) -> Int { a + b }"))
-  Fs::write_bytes(main_path, string_to_bytes("import ./vibe_compiler_codegen_cache_helper.vibe { add }\nlet run = () -> Int { add(1, 2) }"))
+  Fs::write_bytes(helper_path, string_to_bytes("export let add: (Int, Int) -> Int = (a, b) -> { a + b }"))
+  Fs::write_bytes(main_path, string_to_bytes("import ./vibe_compiler_codegen_cache_helper.vibe { add }\nlet run: () -> Int = () -> { add(1, 2) }"))
   let (_, db1) = compile_file_fs_module_cached(db_new(), main_path)
   let codegen_count1 = db_codegen_count(db1)
   let (_, db2) = compile_file_fs_module_cached(db1, main_path)
@@ -163,7 +173,7 @@ test "compile_file_fs_module_cached: warm compile reuses compiled fs artifact ca
 test "compile_file_fs_module_cached: same merged source reuses compiled artifact cache across entry paths" {
   let main_path1 = "/tmp/vibe_compiler_codegen_cache_same_source_a.vibe"
   let main_path2 = "/tmp/vibe_compiler_codegen_cache_same_source_b.vibe"
-  let source = "let run = () -> Int { 1 + 2 }"
+  let source = "let run: () -> Int = () -> { 1 + 2 }"
   Fs::write_bytes(main_path1, string_to_bytes(source))
   Fs::write_bytes(main_path2, string_to_bytes(source))
   let (_, db1) = compile_file_fs_module_cached(db_new(), main_path1)
@@ -175,7 +185,7 @@ test "compile_file_fs_module_cached: same merged source reuses compiled artifact
 test "compile_file_fs_module_cached: same merged source reuses module source cache across entry paths" {
   let main_path1 = "/tmp/vibe_compiler_module_source_cache_same_source_a.vibe"
   let main_path2 = "/tmp/vibe_compiler_module_source_cache_same_source_b.vibe"
-  let source = "let run = () -> Int { 1 + 2 }"
+  let source = "let run: () -> Int = () -> { 1 + 2 }"
   Fs::write_bytes(main_path1, string_to_bytes(source))
   Fs::write_bytes(main_path2, string_to_bytes(source))
   let (_, db1) = compile_file_fs_module_cached(db_new(), main_path1)

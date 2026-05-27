@@ -437,6 +437,7 @@ fn serialize_expr_to(expr : Expr, buf : StringBuilder) -> Unit {
     }
     Expr::Break(..) => buf.write_string("{\"Break\":null}")
     Expr::Continue(..) => buf.write_string("{\"Continue\":null}")
+    Expr::Return(..) => buf.write_string("{\"Return\":null}")
     Expr::Loop(params~, body~, ..) => {
       buf.write_string("{\"Loop\":{\"body\":")
       serialize_module_to(body, buf)
@@ -1025,6 +1026,9 @@ fn serialize_struct_fields_to(
     serialize_string_to(f.name, buf)
     buf.write_string(",\"ty\":")
     serialize_type_to(f.ty, buf)
+    if f.is_mut {
+      buf.write_string(",\"is_mut\":true")
+    }
     buf.write_char('}')
   }
   buf.write_char(']')

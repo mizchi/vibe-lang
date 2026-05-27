@@ -3768,6 +3768,17 @@ test "save source hashes includes entry for linked cache" {
 }
 
 ///|
+test "background linked cache defaults off" {
+  assert_false(cli_use_background_linked_cache_with(None))
+}
+
+///|
+test "background linked cache env overrides default" {
+  assert_false(cli_use_background_linked_cache_with(Some("0")))
+  assert_true(cli_use_background_linked_cache_with(Some("1")))
+}
+
+///|
 test "run monolithic cache paths separate http mode" {
   let paths1 = run_monolithic_cache_paths("/tmp/project/src/main.vibe", false)
   let paths2 = run_monolithic_cache_paths("/tmp/project/src/main.vibe", true)
@@ -3811,8 +3822,8 @@ test "session http port is stable per entry root" {
 }
 
 ///|
-test "session http defaults on when self binary exists" {
-  assert_true(cli_use_session_http_with(None, true))
+test "session http defaults off when self binary exists" {
+  assert_false(cli_use_session_http_with(None, true))
 }
 
 ///|

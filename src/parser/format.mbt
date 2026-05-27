@@ -745,6 +745,7 @@ fn is_statement_start(kind : @cst.SyntaxKind) -> Bool {
   kind == match_kw() ||
   kind == break_kw() ||
   kind == continue_kw() ||
+  kind == return_kw() ||
   kind == raise_kw() ||
   kind == enum_kw() ||
   kind == type_kw() ||

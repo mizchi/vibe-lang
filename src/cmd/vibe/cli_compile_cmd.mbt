@@ -391,14 +391,20 @@ fn[T] die(msg : String) -> T {
 }
 
 ///|
-/// `vibe build [--debug|--release] <file.vibe> [-o <out.wasm>]`
+/// `vibe build [--debug|--release] <file.vibe> [-o <out.wasm>] [--profile <path>]`
 ///
 /// --debug:   linked build (pre-compile imports as library .wasm, cache in .vibe/debug/)
 /// --release: monolithic build (default, same as `compile --wasm`)
+/// --profile: write a pprof / folded / TSV profile to `<path>`
+///            (format chosen by extension).
 fn build_cmd(args : Array[String]) -> Unit {
   if has_help_flag(args) {
     print_build_help()
     return
+  }
+  let (args, profile_path) = match extract_profile_flag(args) {
+    Ok(v) => v
+    Err(msg) => abort("build: " + msg)
   }
   let mut debug_mode = false
   let mut entry_path : String? = None
@@ -436,11 +442,13 @@ fn build_cmd(args : Array[String]) -> Unit {
     Some(p) => p
     None => abort("build: missing <file.vibe>")
   }
-  if debug_mode {
-    build_cmd_debug(entry, out_path)
-  } else {
-    build_cmd_release(entry, out_path)
-  }
+  with_profile(profile_path, fn() {
+    if debug_mode {
+      build_cmd_debug(entry, out_path)
+    } else {
+      build_cmd_release(entry, out_path)
+    }
+  })
 }
 
 ///|
@@ -873,12 +881,6 @@ fn serialize_linked_imports_cache(
   }
   buf.to_string()
 }
-
-///|
-
-///|
-/// Spawn background `vibe build --debug` to create linked cache for next run.
-/// Only spawns if no cache exists yet. The background process is fire-and-forget.
 
 ///|
 /// Find the nearest parent .vibe directory for cache hoisting.

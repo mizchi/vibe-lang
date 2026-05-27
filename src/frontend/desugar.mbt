@@ -564,6 +564,13 @@ fn desugar_vibe_expr(
       }
       @core.Expr::Continue(args=next_args, span~)
     }
+    @core.Expr::Return(value~, span~) => {
+      let next_value = match value {
+        Some(e) => Some(desugar_vibe_expr(e, scope, known_non_cmd, notes))
+        None => None
+      }
+      @core.Expr::Return(value=next_value, span~)
+    }
     @core.Expr::Yield(expr~, span~) =>
       @core.Expr::Yield(
         expr=desugar_vibe_expr(expr, scope, known_non_cmd, notes),
@@ -954,6 +961,13 @@ fn desugar_expr(
         next_args.push(desugar_expr(arg, scope, aliases))
       }
       @core.Expr::Continue(args=next_args, span~)
+    }
+    @core.Expr::Return(value~, span~) => {
+      let next_value = match value {
+        Some(e) => Some(desugar_expr(e, scope, aliases))
+        None => None
+      }
+      @core.Expr::Return(value=next_value, span~)
     }
     @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
       let next_scope = scope.child()

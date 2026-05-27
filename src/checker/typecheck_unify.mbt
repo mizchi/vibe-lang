@@ -1230,10 +1230,34 @@ fn unify_pair_cache_key(left : @core.Type, right : @core.Type) -> (Int, Int) {
 }
 
 ///|
+fn type_has_unification_var(ty : @core.Type) -> Bool {
+  type_tree_any(ty, fn(t) {
+    match t {
+      @core.Type::Var(_) => true
+      _ => false
+    }
+  })
+}
+
+///|
 fn unify_pair_cacheable(left : @core.Type, right : @core.Type) -> Bool {
-  match (left, right) {
-    (@core.Type::Named(..), _) | (_, @core.Type::Named(..)) => true
-    _ => false
+  if type_has_unification_var(left) || type_has_unification_var(right) {
+    false
+  } else {
+    match (left, right) {
+      (@core.Type::Named(..), _) | (_, @core.Type::Named(..)) => true
+      (@core.Type::Tuple(_), @core.Type::Tuple(_))
+      | (@core.Type::Record(_), @core.Type::Record(_))
+      | (@core.Type::Array(_), @core.Type::Array(_))
+      | (@core.Type::Set(_), @core.Type::Set(_))
+      | (@core.Type::Map(_, _), @core.Type::Map(_, _))
+      | (@core.Type::ArrayBuilder(_), @core.Type::ArrayBuilder(_))
+      | (@core.Type::MapBuilder(_, _), @core.Type::MapBuilder(_, _))
+      | (@core.Type::Variant(_), @core.Type::Variant(_))
+      | (@core.Type::Func(..), @core.Type::Func(..)) =>
+        type_has_named_node(left) || type_has_named_node(right)
+      _ => false
+    }
   }
 }
 
@@ -1299,6 +1323,10 @@ fn unify_types_inner(
       Some(hit) => return hit
       None => ()
     }
+    // Recursive enum expansion can compare the same structural pair before the
+    // outer comparison finishes. Treat the active pair coinductively; a later
+    // mismatch in the same comparison overwrites this optimistic entry.
+    cache[key] = true
     Some(key)
   } else {
     None
@@ -1452,8 +1480,7 @@ fn unify_types_inner(
   }
   match cache_key {
     Some(key) =>
-      if result &&
-        env.subs.length() == subs_size_before &&
+      if env.subs.length() == subs_size_before &&
         env.effect_subs.length() == effect_subs_size_before {
         if cache.length() < 8192 || cache.contains(key) {
           cache[key] = result
@@ -1567,9 +1594,11 @@ fn occurs_in(env : TypeEnv, id : Int, ty : @core.Type) -> Bool {
       }
       false
     }
-    @core.Type::Array(inner) | @core.Type::Set(inner) =>
-      occurs_in(env, id, inner)
-    @core.Type::Map(_key, inner) => occurs_in(env, id, inner)
+    @core.Type::Array(inner)
+    | @core.Type::ArrayBuilder(inner)
+    | @core.Type::Set(inner) => occurs_in(env, id, inner)
+    @core.Type::Map(key, inner) | @core.Type::MapBuilder(key, inner) =>
+      occurs_in(env, id, key) || occurs_in(env, id, inner)
     @core.Type::Named(args~, ..) => {
       for arg in args {
         if occurs_in(env, id, arg) {
