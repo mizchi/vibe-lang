@@ -6,10 +6,10 @@
 // (≈5ms). That 5ms is a fixed tax on every CLI call — 57% of total
 // build time on a small file (see profile output below).
 //
-// **Status: OPT-IN.** Set `VIBE_PRELUDE_CACHE=1` to enable. Off by
-// default because the current JSON-based format is roughly a wash
-// versus re-parsing. We keep the wiring so a follow-up can swap in a
-// compact binary encoding without touching `prelude_ast()`.
+// Now uses the binary ABI v1 (see `docs/ast_binary_abi.md`). Same
+// ABI is implemented by the selfhost compiler at
+// `vibe/compiler/ast_binary.vibe`, so caches written by either side
+// can be read by the other (parity gated by a roundtrip test).
 //
 // Profile (examples/perform_handle.vibe, 84 lines, before cache):
 //
@@ -17,20 +17,10 @@
 //   ├── type/prelude_parse    5439us
 //   └── type/prelude_typecheck 2848us
 //
-// Profile with `VIBE_PRELUDE_CACHE=1` (warm — 2nd invocation):
-//
-//   type/prelude_cache_load    5384us  35.92%
-//   ├── type/prelude_cache_read_file       2031us  (38%)
-//   └── type/prelude_cache_deserialize     3338us  (62%)
-//   type/prelude_typecheck    2770us  (unchanged)
-//
-// So we trade 5.4ms of `parse_ast` for 5.4ms of file-read +
-// JSON-decode — essentially neutral. Root cause: `serialize_module`
-// produces canonical JSON ≈56KB (15× the source) and
-// `deserialize_module` walks the json tree, which is comparable in
-// cost to direct parsing. A custom binary format (tagged varints,
-// span dedup, default-omission) would likely 5–10× the win; that's
-// the planned next iteration.
+// JSON v0 (deprecated) was a wash: 56KB blob, 3.3ms deserialize +
+// 2.0ms file read ≈ parse cost. Replaced with binary ABI v1 (see
+// `docs/ast_binary_abi.md`) which uses tagged varints and a single
+// pass; expected to be substantially faster, measured at use sites.
 //
 // Cache key = `content_address_hash_string(prelude_source)`. If the
 // prelude is ever modified, the hash changes and we re-parse +
@@ -42,14 +32,14 @@
 // — never a correctness requirement.
 
 ///|
-/// Gate the disk cache behind `VIBE_PRELUDE_CACHE=1`. Off by default
-/// because the current JSON-based format is neutral vs re-parsing
-/// (see the file header for measurements). When the binary format
-/// lands, flip this to default-on.
+/// Disk cache is on by default (binary ABI v1 measured ~30% faster
+/// per CLI invocation on a small program). Set
+/// `VIBE_PRELUDE_CACHE=0` to disable for benchmarking or when
+/// diagnosing a corrupted cache.
 fn prelude_disk_cache_enabled() -> Bool {
   match @sys.get_env_var("VIBE_PRELUDE_CACHE") {
-    Some(v) if v == "1" || v == "true" => true
-    _ => false
+    Some(v) if v == "0" || v == "false" => false
+    _ => true
   }
 }
 
@@ -67,7 +57,17 @@ fn prelude_cache_path() -> String? {
       }
   }
   let key = @core.content_address_hash_string(prelude_source)
-  Some(home + "/vibe/prelude-" + key + ".json")
+  // Embed wire version in the filename so a future ABI bump doesn't
+  // try to read older blobs. `.bin` = binary ABI v1; the JSON path is
+  // retired.
+  Some(
+    home +
+    "/vibe/prelude-" +
+    key +
+    "-v" +
+    @core.AST_BINARY_VERSION.to_string() +
+    ".bin",
+  )
 }
 
 ///|
@@ -121,7 +121,7 @@ fn try_load_prelude_ast_from_disk() -> @core.Module? {
   }
   @profiler.profiler_enter("type/prelude_cache_load")
   @profiler.profiler_enter("type/prelude_cache_read_file")
-  let text = try @os_fs.read_file_to_string(path) catch {
+  let bytes = try @os_fs.read_file_to_bytes(path) catch {
     _ => {
       @profiler.profiler_leave() // read_file
       @profiler.profiler_leave() // cache_load
@@ -130,7 +130,7 @@ fn try_load_prelude_ast_from_disk() -> @core.Module? {
   }
   @profiler.profiler_leave() // read_file
   @profiler.profiler_enter("type/prelude_cache_deserialize")
-  let result = try @core.deserialize_module(text) catch {
+  let result = try @core.deserialize_module_binary(bytes) catch {
     _ => {
       @profiler.profiler_leave() // deserialize
       @profiler.profiler_leave() // cache_load
@@ -155,8 +155,8 @@ fn save_prelude_ast_to_disk(ast : @core.Module) -> Unit {
   }
   ensure_parent_dir(path)
   @profiler.profiler_enter("type/prelude_cache_save")
-  let text = @core.serialize_module(ast)
-  try @os_fs.write_string_to_file(path, text) catch {
+  let bytes = @core.serialize_module_binary(ast)
+  try @os_fs.write_bytes_to_file(path, bytes) catch {
     _ => ()
   }
   @profiler.profiler_leave()

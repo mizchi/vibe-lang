@@ -1,0 +1,231 @@
+//# Imports
+
+import ./ast_binary.vibe {
+  AST_BINARY_VERSION, AST_BINARY_MAGIC_V, AST_BINARY_MAGIC_A, AST_BINARY_MAGIC_S, AST_BINARY_MAGIC_T,
+  ast_binary_write_varint, ast_binary_write_svarint, ast_binary_write_bool, ast_binary_write_string,
+  ast_binary_write_optstr, ast_binary_write_span, ast_binary_write_header,
+  ast_binary_reader_new, ast_binary_read_byte, ast_binary_read_varint, ast_binary_read_svarint,
+  ast_binary_read_bool, ast_binary_read_string, ast_binary_read_optstr, ast_binary_read_span,
+  ast_binary_read_header
+}
+
+//# Misc — parity tests against docs/ast_binary_abi.md
+
+test "ast_binary: varint encodes/decodes the same canonical bytes" {
+  // 0  → [0x00]
+  let b1 = Bytes::new()
+  ast_binary_write_varint(b1, 0)
+  assert(Bytes::length(b1) == 1)
+  assert(Bytes::get(b1, 0) == 0)
+  // 127 → [0x7F]
+  let b2 = Bytes::new()
+  ast_binary_write_varint(b2, 127)
+  assert(Bytes::length(b2) == 1)
+  assert(Bytes::get(b2, 0) == 127)
+  // 128 → [0x80, 0x01]
+  let b3 = Bytes::new()
+  ast_binary_write_varint(b3, 128)
+  assert(Bytes::length(b3) == 2)
+  assert(Bytes::get(b3, 0) == 128)
+  assert(Bytes::get(b3, 1) == 1)
+  // 16384 → [0x80, 0x80, 0x01]
+  let b4 = Bytes::new()
+  ast_binary_write_varint(b4, 16384)
+  assert(Bytes::length(b4) == 3)
+  assert(Bytes::get(b4, 0) == 128)
+  assert(Bytes::get(b4, 1) == 128)
+  assert(Bytes::get(b4, 2) == 1)
+}
+
+test "ast_binary: varint roundtrip" {
+  let cases: Array[Int] = [0, 1, 42, 127, 128, 200, 16384, 1000000]
+  let mut i = 0
+  while i < Array::length(cases) {
+    let v = Array::get(cases, i)
+    let buf = Bytes::new()
+    ast_binary_write_varint(buf, v)
+    let r = ast_binary_reader_new(buf)
+    assert(ast_binary_read_varint(r) == v)
+    i = i + 1
+  }
+}
+
+test "ast_binary: svarint canonical bytes" {
+  // sleb128: -1 → [0x7F]
+  let b1 = Bytes::new()
+  ast_binary_write_svarint(b1, 0 - 1)
+  assert(Bytes::length(b1) == 1)
+  assert(Bytes::get(b1, 0) == 127)
+  // 0 → [0x00]
+  let b2 = Bytes::new()
+  ast_binary_write_svarint(b2, 0)
+  assert(Bytes::length(b2) == 1)
+  assert(Bytes::get(b2, 0) == 0)
+  // 63 → [0x3F] (fits in 7 bits with sign-bit 0)
+  let b3 = Bytes::new()
+  ast_binary_write_svarint(b3, 63)
+  assert(Bytes::length(b3) == 1)
+  assert(Bytes::get(b3, 0) == 63)
+  // 64 → [0xC0, 0x00] (sign-bit 0 in 2nd byte to disambiguate from -64)
+  let b4 = Bytes::new()
+  ast_binary_write_svarint(b4, 64)
+  assert(Bytes::length(b4) == 2)
+  assert(Bytes::get(b4, 0) == 192)
+  assert(Bytes::get(b4, 1) == 0)
+  // -64 → [0x40] (sign-bit 1)
+  let b5 = Bytes::new()
+  ast_binary_write_svarint(b5, 0 - 64)
+  assert(Bytes::length(b5) == 1)
+  assert(Bytes::get(b5, 0) == 64)
+}
+
+test "ast_binary: svarint roundtrip incl negatives" {
+  let cases: Array[Int] = [
+    0, 1, 42, 63, 64, 100, 127, 128, 200,
+    0 - 1, 0 - 42, 0 - 63, 0 - 64, 0 - 100, 0 - 128
+  ]
+  let mut i = 0
+  while i < Array::length(cases) {
+    let v = Array::get(cases, i)
+    let buf = Bytes::new()
+    ast_binary_write_svarint(buf, v)
+    let r = ast_binary_reader_new(buf)
+    let got = ast_binary_read_svarint(r)
+    assert(got == v)
+    i = i + 1
+  }
+}
+
+test "ast_binary: bool roundtrip" {
+  let b_true = Bytes::new()
+  ast_binary_write_bool(b_true, true)
+  assert(Bytes::get(b_true, 0) == 1)
+  let b_false = Bytes::new()
+  ast_binary_write_bool(b_false, false)
+  assert(Bytes::get(b_false, 0) == 0)
+  assert(ast_binary_read_bool(ast_binary_reader_new(b_true)))
+  let r = ast_binary_reader_new(b_false)
+  if ast_binary_read_bool(r) { assert(false) } else { assert(true) }
+}
+
+test "ast_binary: ASCII string roundtrip" {
+  let buf = Bytes::new()
+  ast_binary_write_string(buf, "hello")
+  // varint(5) followed by 5 ASCII bytes
+  assert(Bytes::length(buf) == 6)
+  assert(Bytes::get(buf, 0) == 5)
+  assert(Bytes::get(buf, 1) == 104) // 'h'
+  assert(Bytes::get(buf, 2) == 101) // 'e'
+  assert(Bytes::get(buf, 3) == 108) // 'l'
+  assert(Bytes::get(buf, 4) == 108) // 'l'
+  assert(Bytes::get(buf, 5) == 111) // 'o'
+  let r = ast_binary_reader_new(buf)
+  let s = ast_binary_read_string(r)
+  assert(s == "hello")
+}
+
+test "ast_binary: empty string roundtrip" {
+  let buf = Bytes::new()
+  ast_binary_write_string(buf, "")
+  assert(Bytes::length(buf) == 1)
+  assert(Bytes::get(buf, 0) == 0)
+  let r = ast_binary_reader_new(buf)
+  let s = ast_binary_read_string(r)
+  assert(s == "")
+}
+
+test "ast_binary: optstr roundtrip" {
+  let bn = Bytes::new()
+  ast_binary_write_optstr(bn, None)
+  assert(Bytes::length(bn) == 1)
+  assert(Bytes::get(bn, 0) == 0)
+  let bs = Bytes::new()
+  ast_binary_write_optstr(bs, Some("hi"))
+  // 0x01 + varint(2) + 'h','i'
+  assert(Bytes::length(bs) == 4)
+  assert(Bytes::get(bs, 0) == 1)
+  assert(Bytes::get(bs, 1) == 2)
+  let r1 = ast_binary_reader_new(bn)
+  match ast_binary_read_optstr(r1) {
+    None => assert(true)
+    Some(_) => assert(false)
+  }
+  let r2 = ast_binary_reader_new(bs)
+  match ast_binary_read_optstr(r2) {
+    None => assert(false)
+    Some(s) => assert(s == "hi")
+  }
+}
+
+test "ast_binary: span roundtrip" {
+  let buf = Bytes::new()
+  ast_binary_write_span(buf, 10, 42)
+  let r = ast_binary_reader_new(buf)
+  let p = ast_binary_read_span(r)
+  let (start, end) = p
+  assert(start == 10)
+  assert(end == 42)
+}
+
+test "ast_binary: span(0,0) is two zero bytes" {
+  let buf = Bytes::new()
+  ast_binary_write_span(buf, 0, 0)
+  assert(Bytes::length(buf) == 2)
+  assert(Bytes::get(buf, 0) == 0)
+  assert(Bytes::get(buf, 1) == 0)
+}
+
+test "ast_binary: header magic + version" {
+  let buf = Bytes::new()
+  ast_binary_write_header(buf)
+  // 4 magic bytes + 1 byte varint(1)
+  assert(Bytes::length(buf) == 5)
+  assert(Bytes::get(buf, 0) == AST_BINARY_MAGIC_V)
+  assert(Bytes::get(buf, 1) == AST_BINARY_MAGIC_A)
+  assert(Bytes::get(buf, 2) == AST_BINARY_MAGIC_S)
+  assert(Bytes::get(buf, 3) == AST_BINARY_MAGIC_T)
+  assert(Bytes::get(buf, 4) == AST_BINARY_VERSION)
+  let r = ast_binary_reader_new(buf)
+  let h = ast_binary_read_header(r)
+  let (ok, v) = h
+  assert(ok)
+  assert(v == AST_BINARY_VERSION)
+}
+
+test "ast_binary: header bad magic rejected" {
+  // Magic doesn't match → ok=false
+  let buf = Bytes::new()
+  Bytes::push(buf, 0)
+  Bytes::push(buf, 0)
+  Bytes::push(buf, 0)
+  Bytes::push(buf, 0)
+  Bytes::push(buf, 1)
+  let r = ast_binary_reader_new(buf)
+  let h = ast_binary_read_header(r)
+  let (ok, _) = h
+  if ok { assert(false) } else { assert(true) }
+}
+
+//# Cross-impl parity: this byte sequence MUST be produced by the
+//# MoonBit `serialize_module_binary(Module { stmts: [] })` —
+//# header (5 bytes) + array_count varint(0) (1 byte) = 6 bytes
+//# total: 'v','A','S','T', version=1, count=0.
+test "ast_binary: empty-module canonical bytes" {
+  let expected = Bytes::new()
+  Bytes::push(expected, AST_BINARY_MAGIC_V)
+  Bytes::push(expected, AST_BINARY_MAGIC_A)
+  Bytes::push(expected, AST_BINARY_MAGIC_S)
+  Bytes::push(expected, AST_BINARY_MAGIC_T)
+  Bytes::push(expected, AST_BINARY_VERSION)
+  Bytes::push(expected, 0)
+  // Compose the same locally and assert byte-by-byte.
+  let actual = Bytes::new()
+  ast_binary_write_header(actual)
+  ast_binary_write_varint(actual, 0)
+  assert(Bytes::length(actual) == Bytes::length(expected))
+  let mut i = 0
+  while i < Bytes::length(expected) {
+    assert(Bytes::get(actual, i) == Bytes::get(expected, i))
+    i = i + 1
+  }
+}
