@@ -882,6 +882,43 @@ test "wasm-gc e2e: FixedArray default value initialises all cells" {
 }
 
 ///|
+/// `Array::with_capacity(n)` returns a struct{len, data} wrapper that
+/// `Array::push` then mutates in place with amortized O(1) cost. This
+/// validates that the doubling path (kicks in when len catches up to
+/// cap) produces the right element count and the right values back via
+/// `Array::get`.
+test "wasm-gc e2e: Array::with_capacity + push amortized" {
+  let src =
+    #|let main = () -> Int {
+    #|  let arr = Array::with_capacity(2)
+    #|  let mut i = 0
+    #|  while i < 7 {
+    #|    Array::push(arr, i * 10)
+    #|    i = i + 1
+    #|  }
+    #|  Array::length(arr) * 100 + Array::get(arr, 3) + Array::get(arr, 6)
+    #|}
+    #|main()
+  // length=7 → 700; arr[3]=30; arr[6]=60 → 700+30+60 = 790
+  assert_gc_e2e(src, "array_with_capacity_doubling", 790)
+}
+
+///|
+test "wasm-gc e2e: Array::with_capacity(0) still grows on push" {
+  let src =
+    #|let main = () -> Int {
+    #|  let arr = Array::with_capacity(0)
+    #|  Array::push(arr, 11)
+    #|  Array::push(arr, 22)
+    #|  Array::push(arr, 33)
+    #|  Array::length(arr) * 1000 + Array::get(arr, 0) + Array::get(arr, 1) + Array::get(arr, 2)
+    #|}
+    #|main()
+  // length=3 → 3000; 11+22+33=66 → 3066
+  assert_gc_e2e(src, "array_with_capacity_zero", 3066)
+}
+
+///|
 test "wasm-gc e2e: ADR-0052 — non-mut field assignment is rejected" {
   // The checker must reject `r.field = e` when `field` was not
   // declared `mut`. We use the e2e harness's compile path (which
