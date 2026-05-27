@@ -32,14 +32,18 @@
 // — never a correctness requirement.
 
 ///|
-/// Disk cache is on by default (binary ABI v1 measured ~30% faster
-/// per CLI invocation on a small program). Set
-/// `VIBE_PRELUDE_CACHE=0` to disable for benchmarking or when
-/// diagnosing a corrupted cache.
+/// Disk cache gate. Default OFF until CI validates the binary ABI on
+/// the selfhost path — the cache changes how `prelude_ast()` returns
+/// its `@core.Module` (parse vs. deserialize), and any latent
+/// non-determinism in the cache (e.g. Map iteration-order drift
+/// across serialize/deserialize) would only show up in jobs that
+/// compare byte-identical outputs (selfhost-runtime-parity). Enable
+/// per-shell with `VIBE_PRELUDE_CACHE=1` once the binary serializer
+/// is proven roundtrip-stable end-to-end.
 fn prelude_disk_cache_enabled() -> Bool {
   match @sys.get_env_var("VIBE_PRELUDE_CACHE") {
-    Some(v) if v == "0" || v == "false" => false
-    _ => true
+    Some(v) if v == "1" || v == "true" => true
+    _ => false
   }
 }
 

@@ -796,15 +796,16 @@ fn write_string_type_map(
   buf : @buffer.Buffer,
   fields : Map[String, Type],
 ) -> Unit {
-  // Sort keys for deterministic output — the ABI says order is
-  // implementation-defined, but stable ordering across runs is needed
-  // for content-addressed caches.
-  let keys = fields.keys().to_array()
-  keys.sort()
-  write_varint_int(buf, keys.length())
-  for k in keys {
+  // Iterate in whatever order the Map yields rather than sorting —
+  // selfhost-runtime-parity compares byte-identical compile output,
+  // and downstream codegen sometimes iterates fields in the order
+  // they appear in the source AST. Sorting here would silently
+  // re-order fields on cache reload and break the parity gate.
+  let n = fields.length()
+  write_varint_int(buf, n)
+  for k, v in fields {
     write_string(buf, k)
-    write_type(buf, fields.get(k).unwrap())
+    write_type(buf, v)
   }
 }
 
@@ -813,12 +814,12 @@ fn write_type_bounds_map(
   buf : @buffer.Buffer,
   bounds : Map[String, Array[String]],
 ) -> Unit {
-  let keys = bounds.keys().to_array()
-  keys.sort()
-  write_varint_int(buf, keys.length())
-  for k in keys {
+  // Same iteration-order rationale as `write_string_type_map`.
+  let n = bounds.length()
+  write_varint_int(buf, n)
+  for k, v in bounds {
     write_string(buf, k)
-    write_string_array(buf, bounds.get(k).unwrap())
+    write_string_array(buf, v)
   }
 }
 
