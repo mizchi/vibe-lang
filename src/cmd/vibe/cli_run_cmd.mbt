@@ -1114,25 +1114,31 @@ fn run_cmd(
     print_run_help()
     return
   }
+  let (args, profile_path) = match extract_profile_flag(args) {
+    Ok(v) => v
+    Err(msg) => abort("run: " + msg)
+  }
   if args.length() != 1 {
     abort("run: expected <file>")
   }
   let entry_path = args[0]
-  let use_session_http = cli_use_session_http()
-  if use_session_http {
-    match run_entry_via_session(entry_path, _features) {
+  with_profile(profile_path, fn() {
+    let use_session_http = cli_use_session_http()
+    if use_session_http {
+      match run_entry_via_session(entry_path, _features) {
+        Ok(result) => {
+          print_wasm_run_value(result)
+          return
+        }
+        Err(_) => ()
+      }
+    }
+    match run_cmd_wasm_backend(entry_path) {
       Ok(result) => {
         print_wasm_run_value(result)
-        return
+        maybe_create_linked_cache_background(entry_path)
       }
-      Err(_) => ()
+      Err(err) => die("error: run wasm backend: " + err)
     }
-  }
-  match run_cmd_wasm_backend(entry_path) {
-    Ok(result) => {
-      print_wasm_run_value(result)
-      maybe_create_linked_cache_background(entry_path)
-    }
-    Err(err) => die("error: run wasm backend: " + err)
-  }
+  })
 }

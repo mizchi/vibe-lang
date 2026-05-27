@@ -288,6 +288,10 @@ fn check_cmd(args : Array[String]) -> Unit {
     print_check_help()
     return
   }
+  let (args, profile_path) = match extract_profile_flag(args) {
+    Ok(v) => v
+    Err(msg) => abort("check: " + msg)
+  }
   let (check_args, profile_tsv, builtin_contract) = match
     split_check_cmd_args(args) {
     Ok(v) => v
@@ -296,6 +300,19 @@ fn check_cmd(args : Array[String]) -> Unit {
   if check_args.length() == 0 {
     abort("check: expected <file...>")
   }
+  with_profile(profile_path, fn() {
+    check_cmd_body(
+      check_args, profile_tsv, builtin_contract,
+    )
+  })
+}
+
+///|
+fn check_cmd_body(
+  check_args : Array[String],
+  profile_tsv : String?,
+  builtin_contract : String,
+) -> Unit {
   @runtime_compile.init_hooks()
   let check_debug = check_debug_enabled()
   let mut total_errors = 0
