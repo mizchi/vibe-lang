@@ -884,9 +884,21 @@ fn test_cmd(
     print_test_help()
     return
   }
+  let (args, profile_path) = match extract_profile_flag(args) {
+    Ok(v) => v
+    Err(msg) => abort("test: " + msg)
+  }
   if args.length() == 0 {
     abort("test: expected <file|dir...>")
   }
+  with_profile(profile_path, fn() { test_cmd_body(args, features) })
+}
+
+///|
+fn test_cmd_body(
+  args : Array[String],
+  features : @runtime.RuntimeFeatureFlags,
+) -> Unit {
   // Parse --jobs, --report-json, --no-cache flags
   let mut jobs = 0
   let mut report_json = false

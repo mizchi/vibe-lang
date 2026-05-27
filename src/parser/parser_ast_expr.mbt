@@ -2696,11 +2696,20 @@ fn desugar_string_interp(
 ///|
 /// Parse input into AST
 pub fn parse_ast(input : String) -> @core.Module raise ParseError {
+  @profiler.profiler_enter("parser/parse_ast")
+  @profiler.profiler_enter("parser/tokenize")
   let tokens = tokenize(input)
+  @profiler.profiler_leave()
   let parser = AstParser::new(tokens)
+  @profiler.profiler_enter("parser/parse_stmts")
   let parsed = parser.parse()
+  @profiler.profiler_leave()
   // Desugar placeholders in Call args after parsing
-  desugar_module(parsed)
+  @profiler.profiler_enter("parser/desugar")
+  let desugared = desugar_module(parsed)
+  @profiler.profiler_leave()
+  @profiler.profiler_leave()
+  desugared
 }
 
 ///|
