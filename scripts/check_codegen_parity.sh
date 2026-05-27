@@ -67,8 +67,8 @@ $([ -z "$gc_core_only" ] && echo "(none)" || echo "$gc_core_only" | sed 's/^/- /
 ## Linear-only (full list)
 
 These are mostly host-import bindings (Fs, Env, Http, Io, Socket) and
-linear-specific primitives (FixedArray, debug helpers). Acceptable to
-remain linear-only until wasm-gc gains capability-import support.
+debug helpers. Acceptable to remain linear-only until wasm-gc gains
+capability-import support.
 
 $(comm -23 "$tmp/linear.txt" "$tmp/gc.txt" | head -50 | sed 's/^/- /')
 $(if [[ $(comm -23 "$tmp/linear.txt" "$tmp/gc.txt" | wc -l) -gt 50 ]]; then
