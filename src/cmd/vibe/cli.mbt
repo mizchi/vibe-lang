@@ -269,6 +269,17 @@ fn print_check_help() -> Unit {
   println("Options:")
   println("  --profile-tsv <path>   Write profiling data to TSV file")
   println("  --builtin-contract <error|warn|ignore>  Builtin contract mode")
+  println("")
+  println("Environment:")
+  println(
+    "  VIBE_CHECK_SELFHOST=1         Route `check` through moonrun_wt + selfhost wasi bundle (#402)",
+  )
+  println(
+    "  VIBE_MOONRUN_WT_BIN=<path>    Override moonrun_wt binary (default tools/moonrun_wasmtime/target/release/moonrun_wt)",
+  )
+  println(
+    "  VIBE_CHECK_WASI_BUNDLE=<path> Override check bundle (default _build/wasm/opt/vibe_check_wasi.cwasm)",
+  )
 }
 
 ///|

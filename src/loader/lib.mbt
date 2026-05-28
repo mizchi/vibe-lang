@@ -207,7 +207,8 @@ fn load_sources_recursive_impl(
   let ast = @parser.parse_ast(source) catch {
     e => {
       let _ = stack.pop()
-      return Err("parse: " + e.to_string())
+      let index = @vibe_core.LineIndex::build(source)
+      return Err(e.diagnostic().render_with_index(norm, index))
     }
   }
   db.set_preparsed_ast(norm, source, ast)

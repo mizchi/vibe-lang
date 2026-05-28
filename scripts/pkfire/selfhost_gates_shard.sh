@@ -32,6 +32,7 @@ case "$shard" in
     bash scripts/test_selfhost_check_direct_parity.sh
     ./scripts/test_selfhost_wasi_http_boundary.sh
     VIBE_CHECK_PARITY_REQUIRE_PARITY=1 ./scripts/test_selfhost_check_parity.sh
+    bash scripts/test_vibe_check_selfhost_byte_parity.sh
     scripts/test_golden_wat.sh
     ;;
   coverage)
