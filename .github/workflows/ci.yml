@@ -546,7 +546,13 @@ jobs:
           path: _build/wasm/opt/*.cwasm
           key: ${{ steps.cwasm-cache.outputs.cache-primary-key }}
 
-  coverage-selfhost-suite:
+  # Selfhost perf KPI gate — split out of the former
+  # `coverage-selfhost-suite` job (which conflated perf-ratio gating
+  # with coverage measurement). They share no signal: the KPI cap
+  # gating compile/check ratio failed independently of coverage,
+  # which hid the coverage result behind a perf regression. Two
+  # jobs let each gate's status be read directly.
+  selfhost-perf-kpi:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -671,6 +677,42 @@ jobs:
           path: _build/wasm/opt/*.cwasm
           key: ${{ steps.cwasm-cache-kpi.outputs.cache-primary-key }}
 
+      - name: Upload selfhost perf bench raw output
+        # Diagnostic artifact for perf KPI failures: gives the actual
+        # ratios + per-stage timings + stderr from each measurement so
+        # the gate's failure mode (ratio violation vs. command failure)
+        # is visible without needing log access.
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: selfhost-perf-raw
+          path: |
+            _build/bench/selfhost_perf/raw.e2e.tsv
+            _build/bench/selfhost_perf/summary.e2e.tsv
+            _build/bench/selfhost_perf/raw_stage.e2e.tsv
+            _build/bench/selfhost_perf/stage_summary.e2e.tsv
+            _build/bench/selfhost_perf/tmp/*.stderr
+          if-no-files-found: ignore
+
+  # Selfhost suite coverage gate — split from the former combined
+  # job so the coverage result is independent of the perf KPI cap.
+  # Only needs the native vibe CLI + node; no rust / wasmtime / cwasm
+  # cache (those belong to `selfhost-perf-kpi`).
+  coverage-selfhost-suite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Vibe toolchain
+        uses: ./.github/actions/setup-vibe
+        with:
+          ripgrep: 'true'
+          moon-build-cache: 'true'
+          node-version: '24'
+
+      - name: Build vibe CLI (native)
+        run: VIBE_CLI_RELEASE=1 VIBE_CLI_FORCE=1 bash -c 'source scripts/ensure_native_cli.sh'
+
       - name: Run selfhost suite coverage gate
         env:
           VIBE_USE_SESSION_HTTP: '0'
@@ -698,23 +740,6 @@ jobs:
           path: |
             _build/coverage/selfhost-suite/selfhost_suite.summary.txt
             _build/coverage/selfhost-suite/selfhost_suite.report.json
-          if-no-files-found: ignore
-
-      - name: Upload selfhost perf bench raw output
-        # Diagnostic artifact for perf KPI failures: gives the actual
-        # ratios + per-stage timings + stderr from each measurement so
-        # the gate's failure mode (ratio violation vs. command failure)
-        # is visible without needing log access.
-        if: always()
-        uses: actions/upload-artifact@v6
-        with:
-          name: selfhost-perf-raw
-          path: |
-            _build/bench/selfhost_perf/raw.e2e.tsv
-            _build/bench/selfhost_perf/summary.e2e.tsv
-            _build/bench/selfhost_perf/raw_stage.e2e.tsv
-            _build/bench/selfhost_perf/stage_summary.e2e.tsv
-            _build/bench/selfhost_perf/tmp/*.stderr
           if-no-files-found: ignore
 
   coverage-moon:
@@ -861,6 +886,7 @@ jobs:
       - native-binary-parity
       - selfhost-bootstrap-gate
       - selfhost-gates
+      - selfhost-perf-kpi
       - similarity-mbt-report
       - wasm-codegen-quick
     runs-on: ubuntu-latest
@@ -875,6 +901,7 @@ jobs:
           echo "  native-binary-parity: ${{ needs.native-binary-parity.result }}"
           echo "  selfhost-bootstrap-gate: ${{ needs.selfhost-bootstrap-gate.result }}"
           echo "  selfhost-gates: ${{ needs.selfhost-gates.result }}"
+          echo "  selfhost-perf-kpi: ${{ needs.selfhost-perf-kpi.result }}"
           echo "  similarity-mbt-report: ${{ needs.similarity-mbt-report.result }}"
           echo "  wasm-codegen-quick: ${{ needs.wasm-codegen-quick.result }}"
           if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]]; then
