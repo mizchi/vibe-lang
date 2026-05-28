@@ -39,8 +39,11 @@ if [ ! -f "$WASI_OPT" ] || \
 fi
 
 if [ ! -x "$MOONRUN_WT" ]; then
-  echo "[byte-parity] moonrun_wt not built at $MOONRUN_WT" >&2
-  echo "[byte-parity] build with 'cargo build --release --manifest-path tools/moonrun_wasmtime/Cargo.toml'" >&2
+  echo "[byte-parity] building moonrun_wt..." >&2
+  cargo build --release --manifest-path "$PROJECT_ROOT/tools/moonrun_wasmtime/Cargo.toml" >&2
+fi
+if [ ! -x "$MOONRUN_WT" ]; then
+  echo "[byte-parity] moonrun_wt build did not produce $MOONRUN_WT" >&2
   exit 2
 fi
 
