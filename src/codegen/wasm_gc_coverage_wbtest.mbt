@@ -83,7 +83,7 @@ fn cov_if_ast() -> @core.Module {
 ///|
 test "emit_module_wasm_gc_with_coverage records points and emits valid header" {
   let ast = cov_simple_ast()
-  let artifact = (try? emit_module_wasm_gc_with_coverage(ast)).unwrap()
+  let artifact = try! emit_module_wasm_gc_with_coverage(ast)
   // At least the two top-level statements get Line points.
   @debug.assert_eq(artifact.points.length() >= 2, true)
   @debug.assert_eq(artifact.counter_base, 0)
@@ -99,7 +99,7 @@ test "emit_module_wasm_gc_with_coverage records points and emits valid header" {
 ///|
 test "emit_module_wasm_gc_with_coverage records both branch arms" {
   let ast = cov_if_ast()
-  let artifact = (try? emit_module_wasm_gc_with_coverage(ast)).unwrap()
+  let artifact = try! emit_module_wasm_gc_with_coverage(ast)
   let mut has_then = false
   let mut has_else = false
   for p in artifact.points {
@@ -116,7 +116,7 @@ test "emit_module_wasm_gc_with_coverage records both branch arms" {
 ///|
 test "emit_module_wasm_gc (no coverage) skips counter wiring" {
   let ast = cov_simple_ast()
-  let bytes = (try? emit_module_wasm_gc(ast)).unwrap()
+  let bytes = try! emit_module_wasm_gc(ast)
   let s = bytes.to_unchecked_string()
   // Default emit_module_wasm_gc must not contain the coverage
   // descriptor export names so we don't accidentally embed them in

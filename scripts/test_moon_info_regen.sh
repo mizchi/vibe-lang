@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_ROOT"
-warn_list="${VIBE_MOON_WARN_LIST:--1-6-7-9-24-29}"
+warn_list="${VIBE_MOON_WARN_LIST:--1-6-7-9-20-24-27-29}"
 
 HASH_BEFORE="$(mktemp "${TMPDIR:-/tmp}/vibe_moon_info_before.XXXXXX")"
 HASH_AFTER="$(mktemp "${TMPDIR:-/tmp}/vibe_moon_info_after.XXXXXX")"

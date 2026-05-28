@@ -6625,7 +6625,7 @@ fn compile_struct_array_push_gc(
   emit_end_gc(buf)
   // data[len] = val
   let elem_kind = match ctx.types[arr_type] {
-    GcTypeDef::Array(elem~, ..) => elem
+    GcTypeDef::Array(elem~) => elem
     _ => GcValKind::I64
   }
   emit_local_get_gc(buf, data_l)

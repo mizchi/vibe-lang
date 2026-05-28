@@ -193,7 +193,7 @@ fn parse_name_subsection1(payload : Bytes) -> Array[(Int, String)] {
 ///|
 test "emit_module_wasm_gc includes a name custom section" {
   let ast = names_two_func_ast()
-  let bytes = (try? emit_module_wasm_gc(ast)).unwrap()
+  let bytes = try! emit_module_wasm_gc(ast)
   let payload = find_name_subsection1(bytes)
   match payload {
     None => @debug.assert_eq("name subsection missing", "<expected present>")
@@ -221,7 +221,7 @@ test "emit_module_wasm_gc includes a name custom section" {
 ///|
 test "emit_module_wasm_gc name section indices match function order" {
   let ast = names_two_func_ast()
-  let bytes = (try? emit_module_wasm_gc(ast)).unwrap()
+  let bytes = try! emit_module_wasm_gc(ast)
   let payload = find_name_subsection1(bytes).unwrap()
   let entries = parse_name_subsection1(payload)
   // Indices must be monotonically non-decreasing per the wasm spec.
@@ -296,7 +296,7 @@ fn names_closure_ast() -> @core.Module {
 ///|
 test "lifted closures label with parent function and source offset" {
   let ast = names_closure_ast()
-  let bytes = (try? emit_module_wasm_gc(ast)).unwrap()
+  let bytes = try! emit_module_wasm_gc(ast)
   let payload = find_name_subsection1(bytes).unwrap()
   let entries = parse_name_subsection1(payload)
   let mut has_qualified_lambda = false
@@ -319,8 +319,8 @@ test "emit_module_wasm_gc_with_source upgrades lambda label to line:col" {
     #|  (x: Int) -> Int { x + n }
     #|}
     #|mk_adder(1)
-  let ast = (try? @parser.parse_ast(src)).unwrap()
-  let bytes = (try? emit_module_wasm_gc_with_source(ast, src)).unwrap()
+  let ast = try! @parser.parse_ast(src)
+  let bytes = try! emit_module_wasm_gc_with_source(ast, src)
   let payload = find_name_subsection1(bytes).unwrap()
   let entries = parse_name_subsection1(payload)
   let mut lambda_label : String = ""

@@ -152,7 +152,7 @@ classify_compile_failure() {
   local stdout_text stderr_text
   stdout_text="$(cat "$stdout_file" 2>/dev/null || true)"
   stderr_text="$(cat "$stderr_file" 2>/dev/null || true)"
-  if printf '%s\n%s\n' "$stdout_text" "$stderr_text" | rg -q 'compile: parse:|Compile\(Parse|UnexpectedToken'; then
+  if printf '%s\n%s\n' "$stdout_text" "$stderr_text" | rg -q 'compile: parse:|: parse:|Compile\(Parse|UnexpectedToken'; then
     echo "parse"
     return 0
   fi

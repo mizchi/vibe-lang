@@ -122,7 +122,7 @@ test "linear emit_module_wasm includes a name section with _start and __vibe_run
   let ast = @core.Module::{
     stmts: [wb_let("helper", helper_fn), wb_let("run", run_fn)],
   }
-  let bytes = (try? emit_module_wasm(ast)).unwrap()
+  let bytes = try! emit_module_wasm(ast)
   let names = linear_parse_function_names(bytes)
   let mut has_start = false
   let mut has_run = false

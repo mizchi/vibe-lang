@@ -615,6 +615,41 @@ test "P3 handler: component_string_lift_auto kebab-cases snake_case parameter na
 }
 
 ///|
+test "P3 handler: component_string_lift_auto supports annotated function type" {
+  let db = VibeDb::new()
+  let src =
+    #|export let compile_cli_request: (String, String) -> Int = (source, request) -> {
+    #|  if String::equals(source, request) { 1 } else { 0 }
+    #|}
+    #|compile_cli_request("GET", "GET")
+  db.set_source("main", src)
+  let wasm = try compile_module_component_string_lift_auto(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  let names = component_export_names(wasm)
+  assert_true(array_contains_string(names, "compile-cli-request"))
+}
+
+///|
+test "P3 handler: component_string_lift_auto supports annotated string result" {
+  let db = VibeDb::new()
+  let src =
+    #|export let check_source_report: (String) -> String = (source) -> {
+    #|  String::concat("ok:", source)
+    #|}
+  db.set_source("main", src)
+  let wasm = try compile_module_component_string_lift_auto(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(component_bytes_contains_ascii(wasm, "check-source-report"))
+  assert_true(component_bytes_contains_ascii(wasm, "source"))
+}
+
+///|
 test "P3 handler: component_string_lift_auto injects run_init when run export exists" {
   let db = VibeDb::new()
   let src =

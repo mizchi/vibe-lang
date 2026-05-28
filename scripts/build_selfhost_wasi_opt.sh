@@ -100,9 +100,13 @@ case "$WASM_PROFILE" in
   debug)   RAW_DIR="$ROOT_DIR/_build/wasm/debug/build" ;;
 esac
 
-declare -A TARGETS=(
-  ["vibe_compile_wasi"]="$RAW_DIR/cmd/vibe_compile_wasi/vibe_compile_wasi.wasm"
-  ["vibe_check_wasi"]="$RAW_DIR/cmd/vibe_check_wasi/vibe_check_wasi.wasm"
+TARGET_NAMES=(
+  "vibe_compile_wasi"
+  "vibe_check_wasi"
+)
+TARGET_RAWS=(
+  "$RAW_DIR/cmd/vibe_compile_wasi/vibe_compile_wasi.wasm"
+  "$RAW_DIR/cmd/vibe_check_wasi/vibe_check_wasi.wasm"
 )
 
 needs_raw_build() {
@@ -150,8 +154,9 @@ build_raw() {
 run_wasm_opt() {
   local raw="$1"
   local opt="$2"
-  echo "[build-selfhost-wasi-opt] wasm-opt $WASM_OPT_LEVEL $(realpath --relative-to="$ROOT_DIR" "$raw")"
+  echo "[build-selfhost-wasi-opt] wasm-opt $WASM_OPT_LEVEL $raw"
   "$WASM_OPT_BIN" "$WASM_OPT_LEVEL" \
+    --enable-simd \
     --enable-gc \
     --enable-reference-types \
     --enable-bulk-memory \
@@ -164,8 +169,9 @@ run_wasm_opt() {
     "$raw" -o "$opt"
 }
 
-for pkg in "${!TARGETS[@]}"; do
-  raw="${TARGETS[$pkg]}"
+for i in "${!TARGET_NAMES[@]}"; do
+  pkg="${TARGET_NAMES[$i]}"
+  raw="${TARGET_RAWS[$i]}"
   opt="$OUT_DIR/${pkg}.wasm"
   if needs_raw_build "$raw"; then
     build_raw "$pkg"
@@ -173,7 +179,7 @@ for pkg in "${!TARGETS[@]}"; do
   if needs_opt "$raw" "$opt"; then
     run_wasm_opt "$raw" "$opt"
   else
-    echo "[build-selfhost-wasi-opt] up to date: $(realpath --relative-to="$ROOT_DIR" "$opt")"
+    echo "[build-selfhost-wasi-opt] up to date: $opt"
   fi
   raw_size="$(wc -c < "$raw")"
   opt_size="$(wc -c < "$opt")"

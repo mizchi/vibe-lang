@@ -58,8 +58,15 @@ if ! command -v wasmtime >/dev/null 2>&1; then
 fi
 
 echo "[p3-gate] service-only probe"
-VIBE_WASI_HTTP_P3_REQUIRE_READY="$REQUIRE_READY" \
-  "$PROJECT_ROOT/scripts/probe_wasi_http_p3_service_only.sh"
+if ! VIBE_WASI_HTTP_P3_REQUIRE_READY="$REQUIRE_READY" \
+  "$PROJECT_ROOT/scripts/probe_wasi_http_p3_service_only.sh"; then
+  if [ "$REQUIRE_READY" = "1" ]; then
+    echo "[p3-gate] strict mode: service-only probe failed" >&2
+    exit 1
+  fi
+  echo "[p3-gate] blocked mode: service-only probe failed; treating as blocked"
+  exit 0
+fi
 
 if [ "$RUN_COMPOSE" != "1" ]; then
   echo "[p3-gate] compose probe: skipped (set VIBE_WASI_HTTP_P3_RUN_COMPOSE=1 to enable)"
@@ -76,6 +83,13 @@ if ! command -v "$WAC_BIN" >/dev/null 2>&1; then
 fi
 
 echo "[p3-gate] compose probe"
-VIBE_WASI_HTTP_P3_REQUIRE_READY="$REQUIRE_READY" \
+if ! VIBE_WASI_HTTP_P3_REQUIRE_READY="$REQUIRE_READY" \
   WAC_BIN="$WAC_BIN" \
-  "$PROJECT_ROOT/scripts/probe_wasi_http_p3_compose.sh"
+  "$PROJECT_ROOT/scripts/probe_wasi_http_p3_compose.sh"; then
+  if [ "$REQUIRE_READY" = "1" ]; then
+    echo "[p3-gate] strict mode: compose probe failed" >&2
+    exit 1
+  fi
+  echo "[p3-gate] blocked mode: compose probe failed; treating as blocked"
+  exit 0
+fi

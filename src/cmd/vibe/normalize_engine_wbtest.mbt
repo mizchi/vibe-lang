@@ -465,8 +465,6 @@ test "normalize_engine: http handle harness snippet stays semantic" {
 test "normalize_engine: empty source returns empty string" {
   let source = ""
   let result = normalize_source_text(source)
-  let expected =
-    #|Ok("")
   @debug.debug_inspect(
     result,
     content=(
