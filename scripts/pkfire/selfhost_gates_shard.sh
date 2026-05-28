@@ -1,11 +1,21 @@
 #!/usr/bin/env bash
 # Selfhost release gate shards — extracted from justfile `ci-selfhost-gates-shard`.
-# Usage: scripts/pkfire/selfhost_gates_shard.sh <bootstrap|cli|check|coverage>
+# Usage: scripts/pkfire/selfhost_gates_shard.sh <bootstrap|bootstrap-core|selfbuild|cli|check|coverage>
 set -euo pipefail
 
-shard="${1:?missing shard argument: bootstrap|cli|check|coverage}"
+shard="${1:?missing shard argument: bootstrap|bootstrap-core|selfbuild|cli|check|coverage}"
 
 case "$shard" in
+  bootstrap-core)
+    bash scripts/check_selfhost_bundle_sync.sh
+    scripts/test_selfhost_bootstrap_gate.sh
+    ;;
+  selfbuild)
+    VIBE_SELFHOST_SELFBUILD_STRICT_RECURSIVE=1 \
+    VIBE_SELFHOST_SELFBUILD_REQUIRE_TRUE_RECURSIVE=1 \
+    VIBE_SELFHOST_SELFBUILD_MAX_TOTAL_SEC="${VIBE_SELFHOST_SELFBUILD_MAX_TOTAL_SEC:-300}" \
+    scripts/test_selfhost_wasi_selfbuild.sh
+    ;;
   bootstrap)
     bash scripts/check_selfhost_bundle_sync.sh
     scripts/test_selfhost_bootstrap_gate.sh
@@ -47,7 +57,7 @@ case "$shard" in
     scripts/coverage_selfhost_suite.sh
     ;;
   *)
-    echo "unknown shard: $shard (expected: bootstrap|cli|check|coverage)" >&2
+    echo "unknown shard: $shard (expected: bootstrap|bootstrap-core|selfbuild|cli|check|coverage)" >&2
     exit 1
     ;;
 esac
