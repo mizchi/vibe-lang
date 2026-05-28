@@ -47,7 +47,7 @@ let clen_order = () -> Array[Int] {
 
 // Build the fixed Huffman tables (RFC 1951 §3.2.6).
 let fixed_litlen_table = () -> HuffTable with { Error } {
-  let lengths = []
+  let lengths = FixedArray::make(288, 0)
   let mut i = 0
   while i < 288 {
     let len = if i < 144 {
@@ -59,20 +59,14 @@ let fixed_litlen_table = () -> HuffTable with { Error } {
     } else {
       8
     }
-    Array::push(lengths, len)
+    Array::set(lengths, i, len)
     i = i + 1
   }
   build_table(lengths)
 }
 
 let fixed_dist_table = () -> HuffTable with { Error } {
-  let lengths = []
-  let mut i = 0
-  while i < 30 {
-    Array::push(lengths, 5)
-    i = i + 1
-  }
-  build_table(lengths)
+  build_table(FixedArray::make(30, 5))
 }
 
 // Decode a dynamic Huffman block header → (litlen table, dist table).
@@ -81,12 +75,7 @@ let read_dynamic_tables = (r: BitReader) -> (HuffTable, HuffTable) with { Error 
   let hdist = read_bits(r, 5) + 1
   let hclen = read_bits(r, 4) + 4
   // Read code-length code lengths in the permuted order.
-  let clen_lengths = []
-  let mut k = 0
-  while k < 19 {
-    Array::push(clen_lengths, 0)
-    k = k + 1
-  }
+  let clen_lengths = FixedArray::make(19, 0)
   let order = clen_order()
   let mut i = 0
   while i < hclen {
@@ -128,18 +117,13 @@ let read_dynamic_tables = (r: BitReader) -> (HuffTable, HuffTable) with { Error 
       throw("inflate: bad clen symbol")
     }
   }
-  // Split into litlen and dist arrays.
-  let litlen_lens = []
-  let dist_lens = []
-  let mut p = 0
-  while p < hlit {
-    Array::push(litlen_lens, Array::get(lengths, p))
-    p = p + 1
-  }
-  while p < total {
-    Array::push(dist_lens, Array::get(lengths, p))
-    p = p + 1
-  }
+  // Split into litlen and dist arrays. Both sizes are known up front
+  // (`hlit` and `hdist`), so preallocate and bulk-copy from `lengths`
+  // — avoids the O(N) per Array::push that wasm-gc would otherwise pay.
+  let litlen_lens = FixedArray::make(hlit, 0)
+  FixedArray::blit(litlen_lens, 0, lengths, 0, hlit)
+  let dist_lens = FixedArray::make(hdist, 0)
+  FixedArray::blit(dist_lens, 0, lengths, hlit, hdist)
   (build_table(litlen_lens), build_table(dist_lens))
 }
 

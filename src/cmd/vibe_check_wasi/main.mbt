@@ -62,6 +62,8 @@ struct CheckFileSummary {
   graph_head : String?
   error_count : Int
   warning_count : Int
+  source : String
+  diagnostics : Array[@core.Diagnostic]
 }
 
 ///|
@@ -385,15 +387,29 @@ fn check_ast_without_imports(
   ast : @core.Module,
 ) -> (Array[@core.Diagnostic], Int, Int) {
   let desugared = @frontend.desugar_method_calls(ast, {})
-  let typed : Result[@checker.TypeEnv, @checker.TypeError] = try? @checker.type_check(
-    desugared,
-  )
+  // Match `no_import_type_query` in runtime/db_query.mbt: seed with the
+  // prelude-only env (NOT the prelude+builtins one that
+  // `@checker.type_check` uses). The builtins env preloads `Result`,
+  // `MapBuilder`, etc, so user-level `enum Result[T]` and friends would
+  // shadow-conflict only on the selfhost path and report spurious
+  // "duplicate type" diagnostics that the host doesn't emit.
+  let typed : Result[@checker.TypeEnv, @checker.TypeError] = try? ({
+    let env = @checker.get_prelude_only_env_for_module()
+    @checker.type_check_with_env(env, desugared, {})
+  })
+  let warnings = @checker.collect_warnings(ast)
   match typed {
-    Ok(_) => {
-      let warnings = @checker.collect_warnings(ast)
-      (warnings, 0, warnings.length())
+    Ok(_) => (warnings, 0, warnings.length())
+    Err(err) => {
+      // Match `run_check_entry_with_cache` (host): warnings are collected
+      // independently of type-check success so a single type error doesn't
+      // suppress unrelated unused-variable / dead-code reports.
+      let out : Array[@core.Diagnostic] = [err.diagnostic()]
+      for w in warnings {
+        out.push(w)
+      }
+      (out, 1, warnings.length())
     }
-    Err(err) => ([err.diagnostic()], 1, 0)
   }
 }
 
@@ -414,7 +430,10 @@ fn format_source(source : String) -> String {
 fn check_file_with_timing(
   entry_path : String,
   fs : &@io.FileSystemAdapter,
-) -> Result[((Array[@core.Diagnostic], Int, Int), CheckTimingSummary), String] {
+) -> Result[
+  ((Array[@core.Diagnostic], Int, Int), CheckTimingSummary, String),
+  String,
+] {
   ensure_checker_hooks()
   let start_total = @bench.monotonic_clock_start()
   let start_load = @bench.monotonic_clock_start()
@@ -439,6 +458,7 @@ fn check_file_with_timing(
             total_ms: elapsed_ms_from_us(total_us),
             total_us,
           },
+          source,
         ),
       )
     }
@@ -465,6 +485,7 @@ fn check_file_with_timing(
           total_ms: elapsed_ms_from_us(total_us),
           total_us,
         },
+        source,
       ),
     )
   }
@@ -503,6 +524,7 @@ fn check_file_with_timing(
         total_ms: elapsed_ms_from_us(total_us),
         total_us,
       },
+      source,
     ),
   )
 }
@@ -626,39 +648,64 @@ fn report_to_json(
 }
 
 ///|
+/// Host-parity human renderer. Each diagnostic is rendered via
+/// `@core.Diagnostic::render_with_index` against its file's source so the
+/// `file:line:col: stage: message` header and the source-caret snippet
+/// match `vibe check` (native path) byte-for-byte. `graph_head` is
+/// abbreviated via `@core.short_hash`, and a trailing
+/// `check: N error(s) found` is emitted when `error_count > 0` — both
+/// matching `print_cli_check_report` + `check_cmd` in the host CLI.
+///
+/// `--source` mode falls back to the terse pre-parity layout because the
+/// native host CLI has no equivalent input mode to parity against.
 fn report_to_human(
   diagnostics : Array[@core.Diagnostic],
   error_count : Int,
-  warning_count : Int,
+  _warning_count : Int,
   files : Array[CheckFileSummary],
 ) -> String {
   let lines : Array[String] = []
-  for diag in diagnostics {
-    lines.push(diag.stage + ": " + diag.message)
-    match diag.hint {
-      Some(hint) => lines.push("  help: " + hint)
-      None => ()
+  if files.length() == 0 {
+    // `--source` mode: no file context, keep the terse layout.
+    for diag in diagnostics {
+      lines.push(diag.stage + ": " + diag.message)
+      match diag.hint {
+        Some(hint) => lines.push("  help: " + hint)
+        None => ()
+      }
+      match diag.note {
+        Some(note) => lines.push("  note: " + note)
+        None => ()
+      }
     }
-    match diag.note {
-      Some(note) => lines.push("  note: " + note)
-      None => ()
+    if error_count > 0 {
+      lines.push("check: " + error_count.to_string() + " error(s) found")
     }
+    return lines_to_text(lines)
   }
   for file in files {
+    let index = @core.LineIndex::build(file.source)
+    for diag in file.diagnostics {
+      lines.push(diag.render_with_index(file.path, index))
+    }
     if file.error_count == 0 && file.warning_count == 0 {
+      // 7-char prefix matches host CLI's local `short_hash` (cli.mbt) —
+      // `@core.short_hash` is 8 chars so we slice explicitly here.
       let head = match file.graph_head {
-        Some(hash) => hash
+        Some(hash) =>
+          if hash.length() <= 7 {
+            hash
+          } else {
+            hash[0:7].to_owned()
+          }
         None => "null"
       }
       lines.push(file.path + ": ok (graph_head=" + head + ")")
     }
   }
-  lines.push(
-    "summary: errors=" +
-    error_count.to_string() +
-    ", warnings=" +
-    warning_count.to_string(),
-  )
+  if error_count > 0 {
+    lines.push("check: " + error_count.to_string() + " error(s) found")
+  }
   lines_to_text(lines)
 }
 
@@ -764,7 +811,7 @@ fn main {
         }
         CheckInput::File(path) =>
           match check_file_with_timing(path, fs) {
-            Ok(((diagnostics, error_count, warning_count), timing)) => {
+            Ok(((diagnostics, error_count, warning_count), timing, source)) => {
               load_ms_total += timing.load_ms
               load_us_total += timing.load_us
               type_ms_total += timing.type_ms
@@ -784,6 +831,8 @@ fn main {
                     ),
                     error_count,
                     warning_count,
+                    source,
+                    diagnostics,
                   },
                 ],
               )
@@ -798,7 +847,7 @@ fn main {
           for path in paths {
             let resolved = @loader.resolve_entry_path_with_fs(path, fs)
             match check_file_with_timing(path, fs) {
-              Ok(((diags, err_count, warn_count), timing)) => {
+              Ok(((diags, err_count, warn_count), timing, source)) => {
                 load_ms_total += timing.load_ms
                 load_us_total += timing.load_us
                 type_ms_total += timing.type_ms
@@ -814,26 +863,31 @@ fn main {
                   graph_head: @loader.resolve_entry_graph_head_with_fs(path, fs),
                   error_count: err_count,
                   warning_count: warn_count,
+                  source,
+                  diagnostics: diags,
                 })
                 errors += err_count
                 warnings += warn_count
               }
               Err(err) => {
-                all_diags.push(@core.Diagnostic::{
+                let diag = @core.Diagnostic::{
                   stage: "check",
-                  message: "check: " + path + ": " + err,
+                  message: err,
                   span: None,
                   hint: None,
                   note: None,
                   severity: None,
                   code: None,
-                })
+                }
+                all_diags.push(diag)
                 summaries.push(CheckFileSummary::{
                   path,
                   resolved_path: resolved,
                   graph_head: @loader.resolve_entry_graph_head_with_fs(path, fs),
                   error_count: 1,
                   warning_count: 0,
+                  source: "",
+                  diagnostics: [diag],
                 })
                 errors += 1
               }

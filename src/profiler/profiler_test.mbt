@@ -52,6 +52,66 @@ test "multiple calls aggregate" {
 }
 
 ///|
+test "folded stack format" {
+  @profiler.profiler_set_enabled(true)
+  @profiler.profiler_reset()
+  @profiler.profiler_enter("outer")
+  @profiler.profiler_enter("inner")
+  @profiler.profiler_leave()
+  @profiler.profiler_leave()
+  let folded = @profiler.profiler_report_folded()
+  // Format: `outer;inner <us>\n` (leaf line) and possibly `outer <us>\n`
+  // (self time for outer if any). Both must contain the joined path.
+  assert_true(folded.contains("outer;inner"))
+  @profiler.profiler_set_enabled(false)
+  @profiler.profiler_reset()
+}
+
+///|
+test "stack samples expose root-first frames" {
+  @profiler.profiler_set_enabled(true)
+  @profiler.profiler_reset()
+  @profiler.profiler_enter("a")
+  @profiler.profiler_enter("b")
+  @profiler.profiler_enter("c")
+  @profiler.profiler_leave()
+  @profiler.profiler_leave()
+  @profiler.profiler_leave()
+  let samples = @profiler.profiler_stack_samples()
+  // Expect at least the leaf stack [a, b, c]; outer frames may have
+  // zero self-time and be filtered.
+  let mut found_leaf = false
+  for s in samples {
+    if s.frames.length() == 3 &&
+      s.frames[0] == "a" &&
+      s.frames[1] == "b" &&
+      s.frames[2] == "c" {
+      found_leaf = true
+    }
+  }
+  assert_true(found_leaf)
+  @profiler.profiler_set_enabled(false)
+  @profiler.profiler_reset()
+}
+
+///|
+test "pprof output starts with sample_type" {
+  @profiler.profiler_set_enabled(true)
+  @profiler.profiler_reset()
+  @profiler.profiler_enter("phase/a")
+  @profiler.profiler_enter("phase/b")
+  @profiler.profiler_leave()
+  @profiler.profiler_leave()
+  let bytes = @profiler.profiler_report_pprof()
+  // Field 1 (sample_type) wire-tag = (1 << 3) | 2 = 0x0A.
+  // pprof emitters all start with this field.
+  assert_true(bytes.length() > 0)
+  assert_eq(bytes[0], b'\x0A')
+  @profiler.profiler_set_enabled(false)
+  @profiler.profiler_reset()
+}
+
+///|
 test "tsv format" {
   @profiler.profiler_set_enabled(true)
   @profiler.profiler_reset()

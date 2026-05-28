@@ -30,12 +30,9 @@ let max_code_len = 15
 // "no code, do not decode").
 export let build_table: (Array[Int]) -> HuffTable with { Error } = (lengths) -> {
   let n = Array::length(lengths)
-  let counts = []
-  let mut k = 0
-  while k <= max_code_len {
-    Array::push(counts, 0)
-    k = k + 1
-  }
+  // Fixed-size scratch buffers — preallocated to avoid the O(N) per push
+  // that wasm-gc would otherwise pay for these growth loops.
+  let counts = FixedArray::make(max_code_len + 1, 0)
   let mut i = 0
   while i < n {
     let len = Array::get(lengths, i)
@@ -48,12 +45,7 @@ export let build_table: (Array[Int]) -> HuffTable with { Error } = (lengths) -> 
     i = i + 1
   }
   // Offsets per length: prefix sum of counts (starting at length 1).
-  let offsets = []
-  let mut o = 0
-  while o <= max_code_len {
-    Array::push(offsets, 0)
-    o = o + 1
-  }
+  let offsets = FixedArray::make(max_code_len + 1, 0)
   let mut p_len = 1
   let mut sum = 0
   while p_len <= max_code_len {
@@ -62,12 +54,7 @@ export let build_table: (Array[Int]) -> HuffTable with { Error } = (lengths) -> 
     p_len = p_len + 1
   }
   // Place symbols sorted by length.
-  let symbols = []
-  let mut s = 0
-  while s < sum {
-    Array::push(symbols, 0)
-    s = s + 1
-  }
+  let symbols = FixedArray::make(sum, 0)
   // We mutate `offsets` as a moving cursor here; after this loop the
   // values are stale but we discard the array anyway.
   let mut sym = 0

@@ -247,6 +247,20 @@ fn type_call_builtin_handler_collection_numeric(
       let _ = check_positional_arity(args, "array_new", 0, call_span)
       @core.Type::Array(fresh_type_var(env))
     }
+    "Array::with_capacity" => {
+      let pos_args = check_positional_arity(
+        args, "Array::with_capacity", 1, call_span,
+      )
+      let _ = check_arg_type(
+        env,
+        pos_args[0],
+        @core.Type::Int,
+        aliases,
+        effects,
+        allow_effect,
+      )
+      @core.Type::Array(fresh_type_var(env))
+    }
     "Array::length" | "FixedArray::length" => {
       let pos_args = check_positional_arity(args, "Array::length", 1, call_span)
       let array_ty = type_expr_eff(

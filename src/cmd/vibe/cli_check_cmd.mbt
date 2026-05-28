@@ -172,7 +172,15 @@ fn run_check_entry_with_cache(
     Err(err) => {
       let load_us = elapsed_us_from(start_load)
       let total_us = elapsed_us_from(start_total)
-      messages.push("check: \{entry_path}: \{err}")
+      // Loader-rendered diagnostics (parse errors) already include the
+      // path / line / column prefix. Don't double-wrap them with
+      // "check: <path>: " — that would diverge from the selfhost path
+      // (#402 byte-equal parity).
+      if err.has_prefix(entry_path + ":") {
+        messages.push(err)
+      } else {
+        messages.push("check: \{entry_path}: \{err}")
+      }
       CliCheckReport::{
         file: entry_path,
         resolved_entry: entry_path,
@@ -283,10 +291,116 @@ fn print_cli_check_report(report : CliCheckReport) -> Unit {
 }
 
 ///|
+/// Opt-in flag for the #402 phase 1 cutover. `VIBE_CHECK_SELFHOST=1`
+/// routes `vibe check` through the selfhost wasi bundle via `moonrun_wt`
+/// instead of the in-process native checker. Default off.
+fn cli_use_selfhost_check() -> Bool {
+  match @sys.get_env_var("VIBE_CHECK_SELFHOST") {
+    Some(raw) => parse_bool_flag(raw)
+    None => false
+  }
+}
+
+///|
+fn selfhost_check_bundle_path() -> String {
+  match @sys.get_env_var("VIBE_CHECK_WASI_BUNDLE") {
+    Some(path) =>
+      if path.length() > 0 {
+        path
+      } else {
+        "_build/wasm/opt/vibe_check_wasi.cwasm"
+      }
+    None => "_build/wasm/opt/vibe_check_wasi.cwasm"
+  }
+}
+
+///|
+fn selfhost_moonrun_wt_bin() -> String {
+  match @sys.get_env_var("VIBE_MOONRUN_WT_BIN") {
+    Some(path) =>
+      if path.length() > 0 {
+        path
+      } else {
+        "tools/moonrun_wasmtime/target/release/moonrun_wt"
+      }
+    None => "tools/moonrun_wasmtime/target/release/moonrun_wt"
+  }
+}
+
+///|
+/// POSIX-shell single-quote escape: wrap in single quotes and rewrite any
+/// embedded single quote as `'\''`.
+fn shell_single_quote(arg : String) -> String {
+  let out = StringBuilder::new()
+  out.write_string("'")
+  for ch in arg {
+    if ch == '\'' {
+      out.write_string("'\\''")
+    } else {
+      out.write_char(ch)
+    }
+  }
+  out.write_string("'")
+  out.to_string()
+}
+
+///|
+fn run_selfhost_check(files : Array[String], profile_tsv : String?) -> Int {
+  let bin = selfhost_moonrun_wt_bin()
+  let bundle = selfhost_check_bundle_path()
+  let parts : Array[String] = [
+    shell_single_quote(bin),
+    shell_single_quote(bundle),
+    "--human",
+  ]
+  match profile_tsv {
+    Some(path) => {
+      parts.push("--profile-tsv")
+      parts.push(shell_single_quote(path))
+    }
+    None => ()
+  }
+  for f in files {
+    parts.push(shell_single_quote(f))
+  }
+  let cmd_builder = StringBuilder::new()
+  for i, part in parts {
+    if i > 0 {
+      cmd_builder.write_string(" ")
+    }
+    cmd_builder.write_string(part)
+  }
+  let cmd = cmd_builder.to_string()
+  match @backend.exec_command_capture(cmd) {
+    Ok((exit_code, lines)) => {
+      for line in lines {
+        println(line)
+      }
+      exit_code
+    }
+    Err(err) => {
+      println("check: selfhost dispatch failed: " + err)
+      println(
+        "check: hint: build `" +
+        bin +
+        "` and `" +
+        bundle +
+        "`, or set VIBE_MOONRUN_WT_BIN / VIBE_CHECK_WASI_BUNDLE",
+      )
+      2
+    }
+  }
+}
+
+///|
 fn check_cmd(args : Array[String]) -> Unit {
   if has_help_flag(args) {
     print_check_help()
     return
+  }
+  let (args, profile_path) = match extract_profile_flag(args) {
+    Ok(v) => v
+    Err(msg) => abort("check: " + msg)
   }
   let (check_args, profile_tsv, builtin_contract) = match
     split_check_cmd_args(args) {
@@ -296,6 +410,35 @@ fn check_cmd(args : Array[String]) -> Unit {
   if check_args.length() == 0 {
     abort("check: expected <file...>")
   }
+  // Opt-in selfhost path (#402 phase 1): when `VIBE_CHECK_SELFHOST=1` is
+  // set, dispatch the entire check through `moonrun_wt` running the
+  // `vibe_check_wasi` bundle instead of the in-process native checker.
+  // Default off; native path below is unchanged.
+  if cli_use_selfhost_check() {
+    if builtin_contract != "ignore" {
+      abort(
+        "check: --builtin-contract is not yet supported with VIBE_CHECK_SELFHOST=1",
+      )
+    }
+    let code = run_selfhost_check(check_args, profile_tsv)
+    if code != 0 {
+      c_exit(code)
+    }
+    return
+  }
+  with_profile(profile_path, fn() {
+    check_cmd_body(
+      check_args, profile_tsv, builtin_contract,
+    )
+  })
+}
+
+///|
+fn check_cmd_body(
+  check_args : Array[String],
+  profile_tsv : String?,
+  builtin_contract : String,
+) -> Unit {
   @runtime_compile.init_hooks()
   let check_debug = check_debug_enabled()
   let mut total_errors = 0

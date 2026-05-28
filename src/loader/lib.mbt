@@ -61,14 +61,31 @@ fn apply_lock_to_db_with_fs(
   let legacy_lock_path = lock_root + "/vibe.lock"
   let has_lock_source = @io.path_exists_with(fs, lock_path) ||
     @io.path_exists_with(fs, legacy_lock_path)
+  // (#399) Feed collect_path_refs the ASTs already produced by
+  // load_sources_recursive (which now runs *before* apply_lock).
+  // Cache key is (path, source_hash); a hit means the bytes haven't
+  // drifted between the two walks, so the cached Module can stand
+  // in for `@parser.parse_ast(source)`.
+  let preparsed_lookup : (String, String) -> @vibe_core.Module? = fn(
+    path,
+    hash,
+  ) {
+    db.get_preparsed_ast_if_matches(path, hash)
+  }
   let lock = if has_lock_source {
     if persist_lock_updates {
-      match @codebase.update_lock_path_refs_with_fs(entry, fs) {
+      match
+        @codebase.update_lock_path_refs_with_fs_cached(
+          entry, fs, preparsed_lookup,
+        ) {
         Ok(updated) => updated
         Err(err) => return Err(err)
       }
     } else {
-      match @codebase.refresh_lock_path_refs_with_fs(entry, fs) {
+      match
+        @codebase.refresh_lock_path_refs_with_fs_cached(
+          entry, fs, preparsed_lookup,
+        ) {
         Ok(updated) => updated
         Err(err) => return Err(err)
       }
@@ -190,7 +207,8 @@ fn load_sources_recursive_impl(
   let ast = @parser.parse_ast(source) catch {
     e => {
       let _ = stack.pop()
-      return Err("parse: " + e.to_string())
+      let index = @vibe_core.LineIndex::build(source)
+      return Err(e.diagnostic().render_with_index(norm, index))
     }
   }
   db.set_preparsed_ast(norm, source, ast)
@@ -691,29 +709,56 @@ fn load_db_with_paths_with_fs_into_impl(
   fs : &@io.FileSystemAdapter,
   persist_lock_updates : Bool,
 ) -> Result[(@runtime.VibeDb, String, Array[String]), String] {
+  @profiler.profiler_enter("loader/load_db")
   let entry = resolve_entry_path_with_fs(entry_path, fs)
   let root = @codebase.resolve_index_root_with_fs(entry, fs)
+  @profiler.profiler_enter("loader/registry_modules")
   let registry_modules = match
     @codebase.load_registry_modules_with_fs(root, fs) {
     Ok(v) => v
-    Err(err) => return Err(err)
+    Err(err) => {
+      @profiler.profiler_leave()
+      @profiler.profiler_leave()
+      return Err(err)
+    }
   }
+  @profiler.profiler_leave()
+  // (#399) Order: load_sources_recursive FIRST, then apply_lock.
+  // Pre-this-change the order was reversed and `collect_path_refs`
+  // inside apply_lock re-parsed every source that load_sources had
+  // *just* parsed (~94ms wasted on a 2700-LOC entry, selfhost).
+  // Running load_sources first populates db.preparsed_asts so
+  // apply_lock's collect_path_refs walk can read AST cache hits via
+  // `db.get_preparsed_ast_if_matches` (threaded through as
+  // `preparsed_lookup` in `apply_lock_to_db_with_fs`).
+  let visited : Map[String, Bool] = {}
+  @profiler.profiler_enter("loader/load_sources")
+  match load_sources_recursive(db, entry, visited, fs, root, registry_modules) {
+    Ok(_) => ()
+    Err(err) => {
+      @profiler.profiler_leave()
+      @profiler.profiler_leave()
+      return Err(err)
+    }
+  }
+  @profiler.profiler_leave()
+  @profiler.profiler_enter("loader/apply_lock")
   match apply_lock_to_db_with_fs(db, entry, fs, persist_lock_updates) {
     Ok(_) => ()
-    Err(err) => return Err(err)
-  }
-  let visited : Map[String, Bool] = {}
-  match load_sources_recursive(db, entry, visited, fs, root, registry_modules) {
-    Ok(_) => {
-      let paths : Array[String] = []
-      for path, _ in visited {
-        paths.push(path)
-      }
-      paths.sort()
-      Ok((db, entry, paths))
+    Err(err) => {
+      @profiler.profiler_leave()
+      @profiler.profiler_leave()
+      return Err(err)
     }
-    Err(err) => Err(err)
   }
+  @profiler.profiler_leave()
+  let paths : Array[String] = []
+  for path, _ in visited {
+    paths.push(path)
+  }
+  paths.sort()
+  @profiler.profiler_leave()
+  Ok((db, entry, paths))
 }
 
 ///|

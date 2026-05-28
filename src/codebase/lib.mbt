@@ -1190,6 +1190,12 @@ fn collect_path_refs_impl(
   registry_modules : Map[String, String],
   root_version : String,
   fs : &@io.FileSystemAdapter,
+  // (#399) AST cache lookup: returns the preparsed module for `path`
+  // if and only if its cached source-hash matches `hash`. Used to
+  // dedup the parse work that load_sources_recursive already did when
+  // running before apply_lock. Callers that don't have a cache pass
+  // a `fn(_, _) -> None` stub.
+  preparsed_ast_lookup : (String, String) -> @core.Module?,
 ) -> Result[Unit, String] {
   let norm = @vibe_fs.normalize_path(path)
   if !is_within_root(root, norm) {
@@ -1223,12 +1229,21 @@ fn collect_path_refs_impl(
   } else {
     raw_source
   }
-  out[norm] = @core.content_address_hash_string(source)
-  let ast = @parser.parse_ast(source) catch {
-    e => {
-      let _ = stack.pop()
-      return Err("parse: " + e.to_string())
-    }
+  let source_hash = @core.content_address_hash_string(source)
+  out[norm] = source_hash
+  // (#399) Try the AST cache first. The cache key is (path, source_hash);
+  // a hit means load_sources_recursive already parsed the exact same
+  // bytes into a Module. Miss → fall through to the real parse.
+  let ast = match preparsed_ast_lookup(norm, source_hash) {
+    Some(m) => m
+    None =>
+      @parser.parse_ast(source) catch {
+        e => {
+          let _ = stack.pop()
+          let index = @core.LineIndex::build(source)
+          return Err(e.diagnostic().render_with_index(norm, index))
+        }
+      }
   }
   collect_module_export_refs(
     norm, ast, module_refs, root, registry_modules, root_version,
@@ -1256,7 +1271,7 @@ fn collect_path_refs_impl(
             match
               collect_path_refs_impl(
                 resolved, out, module_refs, annotations, visited, stack, root, registry_modules,
-                root_version, fs,
+                root_version, fs, preparsed_ast_lookup,
               ) {
               Ok(_) => ()
               Err(err) => {
@@ -1288,7 +1303,7 @@ fn collect_path_refs_impl(
             match
               collect_path_refs_impl(
                 resolved, out, module_refs, annotations, visited, stack, root, registry_modules,
-                root_version, fs,
+                root_version, fs, preparsed_ast_lookup,
               ) {
               Ok(_) => ()
               Err(err) => {
@@ -1321,6 +1336,32 @@ fn collect_path_refs(
   (Map[String, String], Map[String, String], Map[String, String]),
   String,
 ] {
+  // No external AST cache → stub lookup that always misses.
+  collect_path_refs_with_cache(
+    entry,
+    root,
+    registry_modules,
+    root_version,
+    fs,
+    fn(_, _) { None },
+  )
+}
+
+///|
+/// (#399) Variant that accepts a preparsed-AST lookup. Used by the
+/// loader to feed back ASTs already produced by load_sources_recursive,
+/// eliminating the duplicate parse in apply_lock's collect_path_refs walk.
+pub fn collect_path_refs_with_cache(
+  entry : String,
+  root : String,
+  registry_modules : Map[String, String],
+  root_version : String,
+  fs : &@io.FileSystemAdapter,
+  preparsed_ast_lookup : (String, String) -> @core.Module?,
+) -> Result[
+  (Map[String, String], Map[String, String], Map[String, String]),
+  String,
+] {
   let out : Map[String, String] = {}
   let module_refs : Map[String, String] = {}
   let annotations : Map[String, String] = {}
@@ -1329,7 +1370,7 @@ fn collect_path_refs(
   match
     collect_path_refs_impl(
       entry, out, module_refs, annotations, visited, stack, root, registry_modules,
-      root_version, fs,
+      root_version, fs, preparsed_ast_lookup,
     ) {
     Ok(_) => Ok((out, module_refs, annotations))
     Err(err) => Err(err)
@@ -1743,6 +1784,7 @@ pub fn write_lock_data(
 fn build_refreshed_lock_data_with_fs(
   normalized_entry : String,
   fs : &@io.FileSystemAdapter,
+  preparsed_ast_lookup : (String, String) -> @core.Module?,
 ) -> Result[(String, LockData), String] {
   let root = resolve_index_root_with_fs(normalized_entry, fs)
   let registry_modules = match load_registry_modules_with_fs(root, fs) {
@@ -1759,8 +1801,8 @@ fn build_refreshed_lock_data_with_fs(
     Err(err) => return Err(err)
   }
   let (path_refs, module_refs, annotations) = match
-    collect_path_refs(
-      normalized_entry, root, registry_modules, root_version, fs,
+    collect_path_refs_with_cache(
+      normalized_entry, root, registry_modules, root_version, fs, preparsed_ast_lookup,
     ) {
     Ok(v) => v
     Err(err) => return Err(err)
@@ -1780,12 +1822,27 @@ pub fn refresh_lock_path_refs_with_fs(
   entry : String,
   fs : &@io.FileSystemAdapter,
 ) -> Result[LockData, String] {
+  refresh_lock_path_refs_with_fs_cached(entry, fs, fn(_, _) { None })
+}
+
+///|
+/// (#399) Variant that feeds collect_path_refs an AST cache lookup,
+/// so apply_lock's import walk can skip the parses that
+/// load_sources_recursive already performed.
+pub fn refresh_lock_path_refs_with_fs_cached(
+  entry : String,
+  fs : &@io.FileSystemAdapter,
+  preparsed_ast_lookup : (String, String) -> @core.Module?,
+) -> Result[LockData, String] {
   let normalized_entry = if entry.has_prefix("/") {
     @vibe_fs.normalize_path(entry)
   } else {
     @vibe_fs.normalize_path(@io.current_dir_or_root_with(fs) + "/" + entry)
   }
-  match build_refreshed_lock_data_with_fs(normalized_entry, fs) {
+  match
+    build_refreshed_lock_data_with_fs(
+      normalized_entry, fs, preparsed_ast_lookup,
+    ) {
     Ok((_, next_lock)) => Ok(next_lock)
     Err(err) => Err(err)
   }
@@ -1801,13 +1858,25 @@ pub fn update_lock_path_refs_with_fs(
   entry : String,
   fs : &@io.FileSystemAdapter,
 ) -> Result[LockData, String] {
+  update_lock_path_refs_with_fs_cached(entry, fs, fn(_, _) { None })
+}
+
+///|
+/// (#399) Variant that feeds collect_path_refs an AST cache lookup.
+pub fn update_lock_path_refs_with_fs_cached(
+  entry : String,
+  fs : &@io.FileSystemAdapter,
+  preparsed_ast_lookup : (String, String) -> @core.Module?,
+) -> Result[LockData, String] {
   let normalized_entry = if entry.has_prefix("/") {
     @vibe_fs.normalize_path(entry)
   } else {
     @vibe_fs.normalize_path(@io.current_dir_or_root_with(fs) + "/" + entry)
   }
   let (lock_path, next_lock) = match
-    build_refreshed_lock_data_with_fs(normalized_entry, fs) {
+    build_refreshed_lock_data_with_fs(
+      normalized_entry, fs, preparsed_ast_lookup,
+    ) {
     Ok(v) => v
     Err(err) => return Err(err)
   }

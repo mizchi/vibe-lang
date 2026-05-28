@@ -824,6 +824,115 @@ test "wasm-gc e2e: mut struct field — compound update" {
 }
 
 ///|
+/// FixedArray parity on wasm-gc. Lowers to `array.new` / `array.get` /
+/// `array.set` directly, so storage is i64 cells (no 30-bit tag
+/// truncation like linear's `Array::push` / `Array::get`).
+test "wasm-gc e2e: FixedArray::make + set + get roundtrip" {
+  let src =
+    #|let main = () -> Int {
+    #|  let arr = FixedArray::make(4, 0)
+    #|  FixedArray::set(arr, 0, 100)
+    #|  FixedArray::set(arr, 1, 200)
+    #|  FixedArray::set(arr, 2, 300)
+    #|  FixedArray::set(arr, 3, 400)
+    #|  FixedArray::get(arr, 2)
+    #|}
+    #|main()
+  assert_gc_e2e(src, "fixedarray_basic", 300)
+}
+
+///|
+test "wasm-gc e2e: FixedArray::length matches make size" {
+  let src =
+    #|let main = () -> Int {
+    #|  let arr = FixedArray::make(42, 0)
+    #|  FixedArray::length(arr)
+    #|}
+    #|main()
+  assert_gc_e2e(src, "fixedarray_length", 42)
+}
+
+///|
+test "wasm-gc e2e: FixedArray::unsafe_set behaves like set" {
+  let src =
+    #|let main = () -> Int {
+    #|  let arr = FixedArray::make(3, 7)
+    #|  FixedArray::unsafe_set(arr, 1, 99)
+    #|  FixedArray::get(arr, 0) + FixedArray::get(arr, 1) + FixedArray::get(arr, 2)
+    #|}
+    #|main()
+  // 7 + 99 + 7 = 113
+  assert_gc_e2e(src, "fixedarray_unsafe_set", 113)
+}
+
+///|
+test "wasm-gc e2e: FixedArray::blit copies a range across arrays" {
+  let src =
+    #|let main = () -> Int {
+    #|  let src = FixedArray::make(5, 0)
+    #|  FixedArray::set(src, 0, 11)
+    #|  FixedArray::set(src, 1, 22)
+    #|  FixedArray::set(src, 2, 33)
+    #|  FixedArray::set(src, 3, 44)
+    #|  FixedArray::set(src, 4, 55)
+    #|  let dst = FixedArray::make(5, 0)
+    #|  FixedArray::blit(dst, 1, src, 2, 3)
+    #|  FixedArray::get(dst, 1) + FixedArray::get(dst, 2) + FixedArray::get(dst, 3) + FixedArray::get(dst, 0)
+    #|}
+    #|main()
+  // dst becomes [0, 33, 44, 55, 0]; sum[1..3] + dst[0] = 132 + 0 = 132
+  assert_gc_e2e(src, "fixedarray_blit", 132)
+}
+
+///|
+test "wasm-gc e2e: FixedArray default value initialises all cells" {
+  let src =
+    #|let main = () -> Int {
+    #|  let arr = FixedArray::make(5, 9)
+    #|  FixedArray::get(arr, 0) + FixedArray::get(arr, 4)
+    #|}
+    #|main()
+  assert_gc_e2e(src, "fixedarray_default", 18)
+}
+
+///|
+/// `Array::with_capacity(n)` returns a struct{len, data} wrapper that
+/// `Array::push` then mutates in place with amortized O(1) cost. This
+/// validates that the doubling path (kicks in when len catches up to
+/// cap) produces the right element count and the right values back via
+/// `Array::get`.
+test "wasm-gc e2e: Array::with_capacity + push amortized" {
+  let src =
+    #|let main = () -> Int {
+    #|  let arr = Array::with_capacity(2)
+    #|  let mut i = 0
+    #|  while i < 7 {
+    #|    Array::push(arr, i * 10)
+    #|    i = i + 1
+    #|  }
+    #|  Array::length(arr) * 100 + Array::get(arr, 3) + Array::get(arr, 6)
+    #|}
+    #|main()
+  // length=7 → 700; arr[3]=30; arr[6]=60 → 700+30+60 = 790
+  assert_gc_e2e(src, "array_with_capacity_doubling", 790)
+}
+
+///|
+test "wasm-gc e2e: Array::with_capacity(0) still grows on push" {
+  let src =
+    #|let main = () -> Int {
+    #|  let arr = Array::with_capacity(0)
+    #|  Array::push(arr, 11)
+    #|  Array::push(arr, 22)
+    #|  Array::push(arr, 33)
+    #|  Array::length(arr) * 1000 + Array::get(arr, 0) + Array::get(arr, 1) + Array::get(arr, 2)
+    #|}
+    #|main()
+  // length=3 → 3000; 11+22+33=66 → 3066
+  assert_gc_e2e(src, "array_with_capacity_zero", 3066)
+}
+
+///|
 test "wasm-gc e2e: ADR-0052 — non-mut field assignment is rejected" {
   // The checker must reject `r.field = e` when `field` was not
   // declared `mut`. We use the e2e harness's compile path (which
