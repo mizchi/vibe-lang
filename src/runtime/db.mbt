@@ -198,6 +198,27 @@ pub fn VibeDb::set_preparsed_ast(
 }
 
 ///|
+/// Look up a preparsed AST by path, but only return it if the cached hash
+/// matches `expected_hash`. This guards against stale ASTs when the
+/// caller already has the current source bytes in hand — required by
+/// `collect_path_refs` which dedups parse work across the load → apply_lock
+/// chain (#399).
+pub fn VibeDb::get_preparsed_ast_if_matches(
+  self : VibeDb,
+  path : String,
+  expected_hash : String,
+) -> @core.Module? {
+  match self.inputs.preparsed_ast_hashes.get(self.rt, path) {
+    Some(cached_hash) if cached_hash == expected_hash =>
+      match self.inputs.preparsed_asts.get(self.rt, path) {
+        Some(hashed) => Some(hashed.unwrap())
+        None => None
+      }
+    _ => None
+  }
+}
+
+///|
 pub fn VibeDb::set_preparsed_imports(
   self : VibeDb,
   path : String,
