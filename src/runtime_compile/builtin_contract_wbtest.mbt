@@ -58,6 +58,13 @@ test "codegen_registered_builtin_names is non-empty" {
 }
 
 ///|
+test "Map Iterable codegen handlers are registered" {
+  let names = @codegen.codegen_registered_builtin_names()
+  assert_true(names.contains("Map::iter_length"))
+  assert_true(names.contains("Map::iter_get"))
+}
+
+///|
 test "codegen_runtime_fallback_builtin_names is non-empty" {
   let names = @codegen.codegen_runtime_fallback_builtin_names()
   assert_true(names.length() > 10)

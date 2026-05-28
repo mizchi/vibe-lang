@@ -995,6 +995,8 @@ fn is_builtin(name : String) -> Bool {
   name == "Map::has" ||
   name == "Map::keys" ||
   name == "Map::values" ||
+  name == "Map::iter_length" ||
+  name == "Map::iter_get" ||
   name == "Map::has_key" ||
   name == "Array::slice" ||
   name == "Int::to_float" ||

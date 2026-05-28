@@ -7,7 +7,7 @@ suberror WasmEvalError {
 } derive(Debug, Eq)
 
 ///|
-impl Show for WasmEvalError with output(self, logger) {
+impl Show for WasmEvalError with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 
@@ -18,7 +18,7 @@ suberror WasmRunError {
 } derive(Debug, Eq)
 
 ///|
-impl Show for WasmRunError with output(self, logger) {
+impl Show for WasmRunError with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 
@@ -3990,9 +3990,9 @@ test "vibe wasm eval String iter_length / iter_get (ADR-0044 Phase 3)" {
 ///|
 // ADR-0044 Phase 3: Map[K, V] now implements Iterable, yielding K (the key)
 // per iteration. The prelude `Map::iter_length` returns size, and
-// `Map::iter_get` returns the i-th key (via `Map::keys`). End-to-end check:
-// sum the values reachable through Map iteration. Uses String keys so the
-// iter element type is String.
+// compiled backends lower `Map::iter_get` to direct key-slot reads instead of
+// allocating `Map::keys` per item. End-to-end check: sum the values reachable
+// through Map iteration. Uses String keys so the iter element type is String.
 test "vibe wasm eval Map iter_length / iter_get (ADR-0044 Phase 3)" {
   let script =
     #|let key_total = (m: Map[String, Int]) -> Int {
