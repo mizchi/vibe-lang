@@ -7,7 +7,7 @@ suberror CompileError {
 } derive(Debug, Eq)
 
 ///|
-pub impl Show for CompileError with output(self, logger) {
+pub impl Show for CompileError with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 
@@ -19,7 +19,7 @@ suberror WasmCompileError {
 } derive(Debug, Eq)
 
 ///|
-pub impl Show for WasmCompileError with output(self, logger) {
+pub impl Show for WasmCompileError with fn output(self, logger) {
   logger.write_string(self.user_message())
 }
 
@@ -67,7 +67,7 @@ pub struct WasmCompileStageProfile {
 } derive(Debug, Eq)
 
 ///|
-pub impl Show for WasmCompileStageProfile with output(self, logger) {
+pub impl Show for WasmCompileStageProfile with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 
@@ -2416,13 +2416,14 @@ pub fn compile_module_wasm(
     Some(s) => s
     None => ""
   }
-  let bare_options = !debug_errors &&
-    !http_host_imports &&
-    !force_cabi_realloc
+  let bare_options = !debug_errors && !http_host_imports && !force_cabi_realloc
   compile_module_wasm_with(db, path, "default", ast => {
     if enable_rc {
       let (options, desugared_ast) = wasm_emit_options_with_rc(
-        ast, debug_errors~, http_host_imports~, rc_debug~,
+        ast,
+        debug_errors~,
+        http_host_imports~,
+        rc_debug~,
       )
       @codegen.emit_module_wasm_with_options(desugared_ast, options)
     } else if source.length() > 0 && bare_options {
@@ -2631,12 +2632,9 @@ pub fn compile_module_wasm_gc(
     Some(s) => s
     None => ""
   }
-  compile_module_wasm_with(
-    db,
-    path,
-    "gc",
-    fn(m) { @codegen.emit_module_wasm_gc_with_source(m, source) },
-  )
+  compile_module_wasm_with(db, path, "gc", m => {
+    @codegen.emit_module_wasm_gc_with_source(m, source)
+  })
 }
 
 ///|
@@ -2652,7 +2650,11 @@ pub fn compile_module_wasm_gc_with_coverage(
 ) -> WasmCoverageArtifact raise WasmCompileError {
   let _ = no_dce // wasm-gc backend currently always inlines; no DCE toggle yet
   let coverage = compile_module_wasm_coverage_with(
-    db, path, "gc_coverage", @codegen.emit_module_wasm_gc_with_coverage, run_tests~,
+    db,
+    path,
+    "gc_coverage",
+    @codegen.emit_module_wasm_gc_with_coverage,
+    run_tests~,
   )
   optimize_wasm_coverage_with_opt_level(coverage, opt_level)
 }

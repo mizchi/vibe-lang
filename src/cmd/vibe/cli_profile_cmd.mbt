@@ -55,10 +55,7 @@ fn default_profile_interval_us() -> Int {
 ///|
 fn default_profile_iterations() -> Int {
   match @sys.get_env_var("VIBE_PROFILE_ITERATIONS") {
-    Some(raw) =>
-      @string.parse_int(raw.trim().to_owned()) catch {
-        _ => 1
-      }
+    Some(raw) => @string.parse_int(raw.trim().to_owned()) catch { _ => 1 }
     None => 1
   }
 }
@@ -145,7 +142,9 @@ fn parse_profile_cmd_args(
     return Err("profile: --iterations must be > 0")
   }
   if paths.length() != 1 {
-    return Err("profile: expected exactly one <file>, got " + paths.length().to_string())
+    return Err(
+      "profile: expected exactly one <file>, got " + paths.length().to_string(),
+    )
   }
   let entry_path = paths[0]
   let resolved_out = match out_path {
@@ -222,8 +221,11 @@ fn build_wasmtime_profile_command(
   // wasmtime's --profile=guest accepts `path,interval`. The interval is
   // a humantime-parsed duration; emit microseconds as `<n>us` so we
   // don't rely on millisecond rounding for small intervals.
-  let profile_arg =
-    "guest," + profile_out + "," + interval_us.to_string() + "us"
+  let profile_arg = "guest," +
+    profile_out +
+    "," +
+    interval_us.to_string() +
+    "us"
   cmd.write_string(" --profile=")
   cmd.write_string(shell_quote_command_arg(profile_arg))
   cmd.write_string(" --invoke ")
@@ -329,11 +331,10 @@ fn profile_cmd(args : Array[String]) -> Unit {
   }
   for p in final_paths {
     println(
-      "[profile] " +
-      opts.interval_us.to_string() +
-      "us interval → " +
-      p,
+      "[profile] " + opts.interval_us.to_string() + "us interval → " + p,
     )
   }
-  println("[profile] view at https://profiler.firefox.com/ (drop the JSON onto the page)")
+  println(
+    "[profile] view at https://profiler.firefox.com/ (drop the JSON onto the page)",
+  )
 }

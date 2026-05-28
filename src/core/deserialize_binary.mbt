@@ -22,7 +22,7 @@ pub(all) suberror BinaryDeserializeError {
 } derive(Debug)
 
 ///|
-pub impl Show for BinaryDeserializeError with output(self, logger) {
+pub impl Show for BinaryDeserializeError with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 
@@ -149,9 +149,7 @@ fn read_string(r : BinReader) -> String raise BinaryDeserializeError {
   r.pos = r.pos + n
   // UTF-8 decode. The host runtime's @utf8.decode raises on invalid
   // sequences; we surface that as BadUtf8 to keep our error vocab tight.
-  let result = try @utf8.decode(view) catch {
-    _ => raise BadUtf8
-  }
+  let result = @utf8.decode(view) catch { _ => raise BadUtf8 }
   result
 }
 
@@ -385,13 +383,7 @@ fn read_stmt(r : BinReader) -> Stmt raise BinaryDeserializeError {
       let methods = read_trait_method_array(r)
       let open_impl = read_bool(r)
       let span = read_span(r)
-      Stmt::InternalTraitDef(
-        name~,
-        supertraits~,
-        methods~,
-        open_impl~,
-        span~,
-      )
+      Stmt::InternalTraitDef(name~, supertraits~, methods~, open_impl~, span~)
     }
     b'\x17' => {
       let names = read_string_array(r)
@@ -838,7 +830,9 @@ fn read_module(r : BinReader) -> Module raise BinaryDeserializeError {
 }
 
 ///|
-fn read_string_array(r : BinReader) -> Array[String] raise BinaryDeserializeError {
+fn read_string_array(
+  r : BinReader,
+) -> Array[String] raise BinaryDeserializeError {
   let n = read_varint(r).to_int()
   let out : Array[String] = []
   let mut i = 0
@@ -882,9 +876,7 @@ fn read_type_bounds_map(
 }
 
 ///|
-fn read_param_label(
-  r : BinReader,
-) -> ParamLabel raise BinaryDeserializeError {
+fn read_param_label(r : BinReader) -> ParamLabel raise BinaryDeserializeError {
   let tag = read_byte(r)
   match tag {
     b'\x01' => ParamLabel::Positional
@@ -1104,9 +1096,7 @@ fn read_type_ctor_array(
 }
 
 ///|
-fn read_struct_field(
-  r : BinReader,
-) -> StructField raise BinaryDeserializeError {
+fn read_struct_field(r : BinReader) -> StructField raise BinaryDeserializeError {
   let name = read_string(r)
   let ty = read_type(r)
   let is_mut = read_bool(r)

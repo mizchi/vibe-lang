@@ -143,6 +143,12 @@ collect_cases() {
   done < "$CASES_FILE"
 }
 
+source_changed_since() {
+  local artifact="$1"
+  find "$PROJECT_ROOT/src" -type f \( -name '*.mbt' -o -name 'moon.pkg' \) -newer "$artifact" -print -quit 2>/dev/null | grep -q . ||
+    find "$PROJECT_ROOT" -maxdepth 1 -type f \( -name 'moon.mod' -o -name 'moon.mod.json' \) -newer "$artifact" -print -quit 2>/dev/null | grep -q .
+}
+
 ensure_binaries() {
   if [ "$SELFHOST_WASM_PROFILE" != "release" ] && [ "$SELFHOST_WASM_PROFILE" != "debug" ]; then
     echo "bench-selfhost-perf: VIBE_SELFHOST_PERF_WASM_PROFILE must be release or debug" >&2
@@ -163,13 +169,13 @@ ensure_binaries() {
     src_changed_since_compiler=1
     src_changed_since_checker=1
   elif [ "$REBUILD_MODE" = "auto" ]; then
-    if [ ! -x "$VIBE_BIN" ] || [ -n "$(find "$PROJECT_ROOT/src" -type f \( -name '*.mbt' -o -name 'moon.pkg' -o -name 'moon.mod.json' \) -newer "$VIBE_BIN" -print -quit 2>/dev/null)" ]; then
+    if [ ! -x "$VIBE_BIN" ] || source_changed_since "$VIBE_BIN"; then
       src_changed_since_host=1
     fi
-    if [ ! -f "$STAGE1_COMPILER_WASM" ] || [ -n "$(find "$PROJECT_ROOT/src" -type f \( -name '*.mbt' -o -name 'moon.pkg' -o -name 'moon.mod.json' \) -newer "$STAGE1_COMPILER_WASM" -print -quit 2>/dev/null)" ]; then
+    if [ ! -f "$STAGE1_COMPILER_WASM" ] || source_changed_since "$STAGE1_COMPILER_WASM"; then
       src_changed_since_compiler=1
     fi
-    if [ ! -f "$STAGE1_CHECKER_WASM" ] || [ -n "$(find "$PROJECT_ROOT/src" -type f \( -name '*.mbt' -o -name 'moon.pkg' -o -name 'moon.mod.json' \) -newer "$STAGE1_CHECKER_WASM" -print -quit 2>/dev/null)" ]; then
+    if [ ! -f "$STAGE1_CHECKER_WASM" ] || source_changed_since "$STAGE1_CHECKER_WASM"; then
       src_changed_since_checker=1
     fi
   fi

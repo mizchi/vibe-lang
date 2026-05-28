@@ -8,9 +8,10 @@
 ///   pkf list                                  # show tasks
 ///   pkf run check                             # type check (cached)
 ///   pkf run test                              # full test suite
+///   pkf run test-local                        # affected local tests via flaker
 ///   pkf affected --since=origin/main 'test:*' # diff-aware package tests
 ///   pkf graph --format tree                   # visualize dependencies
-amends "package://pkg.pkl-lang.org/github.com/mizchi/pkfire/pkfire@0.10.0#/Taskfile.pkl"
+amends "package://pkg.pkl-lang.org/github.com/mizchi/pkfire/pkfire@0.9.0#/Taskfile.pkl"
 
 // Shared canonical package list — also consumed by pkspec/VibeTest.pkl
 // and pkspec/VibeSpec.pkl so per-package test definitions stay in sync.
@@ -22,12 +23,11 @@ local target: String = read?("env:VIBE_TARGET")?.text ?? "js"
 local moonWarnList: String = read?("env:VIBE_MOON_WARN_LIST")?.text ?? "-1-6-7-9-20-24-29"
 
 local moonSources: Listing<String> = new {
-  "moon.mod.json"
-  "moon.pkg.json"
+  "moon.mod"
   "src/**/*.mbt"
-  "src/**/moon.pkg.json"
+  "src/**/moon.pkg"
   "vibe/**/*.mbt"
-  "vibe/**/moon.pkg.json"
+  "vibe/**/moon.pkg"
   "vibe/**/*.vibe"
 }
 
@@ -79,6 +79,10 @@ local checkLockClean = new Task {
 }
 
 local testLockClean = scriptTask("test-lock-clean", "scripts/check_lock_clean_test.sh")
+local lintArchitectureDebt =
+  scriptTask("lint-architecture", "scripts/lint_architecture_debt.sh")
+local testLintArchitecture =
+  scriptTask("test-lint-architecture", "scripts/lint_architecture_debt_test.sh")
 local checkCodegenParity = scriptTask("check-codegen-parity", "scripts/check_codegen_parity.sh")
 local checkSelfhostBundleSync =
   scriptTask("check-selfhost-bundle-sync", "scripts/check_selfhost_bundle_sync.sh")
@@ -102,6 +106,8 @@ local testSelfhostBatchWeights =
   scriptTask("test-selfhost-batch-weights", "scripts/refresh_selfhost_batch_weight_seed_test.sh")
 local testRenameBuiltins = scriptTask("test-rename-builtins", "scripts/rename_builtins_test.sh")
 local testVibeNormalize = scriptTask("test-vibe-normalize", "scripts/vibe_normalize_all_test.sh")
+local testFlakerRun = scriptTask("test-flaker-run", "scripts/flaker_run_test.sh")
+local testRunCachedVibe = scriptTask("test-run-cached-vibe", "scripts/run_cached_vibe_test.sh")
 
 // === Test suites ===
 
@@ -113,6 +119,14 @@ local test = new Task {
     ...scriptSources
     "fixtures/**/*"
   }
+}
+
+local testLocal = new Task {
+  name = "test-local"
+  description = "affected local tests via flaker"
+  cmd = "scripts/flaker_run.sh $@"
+  acceptsArgs = true
+  cache = false
 }
 
 local testWasmGcMainlaneE2e = new Task {
@@ -369,7 +383,7 @@ local testUpdate = new Task {
 
 local run = new Task {
   name = "run"
-  cmd = "moon run --target native src/cmd/vibe -- $@"
+  cmd = "scripts/run_cached_vibe.sh $@"
   acceptsArgs = true
   cache = false
 }
@@ -1211,7 +1225,7 @@ local function pkgTask(pkg: String): Task = new Task {
   name = Packages.taskName(pkg)
   cmd = "moon test --target native -p mizchi/vibe/\(pkg)"
   inputs {
-    "moon.mod.json"
+    "moon.mod"
     "src/\(pkg)/**/*.mbt"
     "src/\(pkg)/moon.pkg"
   }
@@ -1228,6 +1242,8 @@ tasks {
   checkCodegenContract
   checkLockClean
   testLockClean
+  lintArchitectureDebt
+  testLintArchitecture
   checkSelfhostBundleSync
   checkSelfhostPortableBoundary
   testSelfhostBundleSync
@@ -1237,7 +1253,10 @@ tasks {
   testSelfhostBatchWeights
   testRenameBuiltins
   testVibeNormalize
+  testFlakerRun
+  testRunCachedVibe
   test
+  testLocal
   testWasmGcMainlaneE2e
   testWasmGcValidate
   testVibePackageSuite

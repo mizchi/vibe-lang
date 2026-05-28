@@ -32,16 +32,18 @@ _ensure_needs_build() {
   if [[ ! -x "$VIBE_CLI_BIN" ]]; then
     return 0
   fi
-  # Check if any .mbt source is newer than the binary
+  # Check if any MoonBit source or package metadata is newer than the binary.
   local newest_src
-  newest_src="$(find "$_ENSURE_ROOT_DIR/src" -name '*.mbt' -newer "$VIBE_CLI_BIN" -print -quit 2>/dev/null || true)"
+  newest_src="$(find "$_ENSURE_ROOT_DIR/src" -type f \( -name '*.mbt' -o -name 'moon.pkg' \) -newer "$VIBE_CLI_BIN" -print -quit 2>/dev/null || true)"
   if [[ -n "$newest_src" ]]; then
     return 0
   fi
-  # Check moon.mod.json
-  if [[ "$_ENSURE_ROOT_DIR/moon.mod.json" -nt "$VIBE_CLI_BIN" ]]; then
-    return 0
-  fi
+  local metadata
+  for metadata in "$_ENSURE_ROOT_DIR/moon.mod" "$_ENSURE_ROOT_DIR/moon.mod.json" "$_ENSURE_ROOT_DIR/moon.pkg" "$_ENSURE_ROOT_DIR/moon.pkg.json"; do
+    if [[ -f "$metadata" && "$metadata" -nt "$VIBE_CLI_BIN" ]]; then
+      return 0
+    fi
+  done
   return 1
 }
 

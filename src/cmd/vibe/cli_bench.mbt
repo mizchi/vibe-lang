@@ -928,6 +928,7 @@ fn run_wasmtime_bench_module(
 }
 
 ///|
+
 ///|
 /// Resolve the wasmtime `--invoke` export name for the bench runner.
 /// Linear backend emits the CLI-tagged `_vibe_run_tagged` wrapper;
@@ -1199,6 +1200,42 @@ fn try_wasm_opt_shell_out(
 }
 
 ///|
+fn bench_wite_fallback_max_bytes_default() -> Int {
+  2 * 1024 * 1024
+}
+
+///|
+fn bench_wite_fallback_max_bytes() -> Int {
+  match @sys.get_env_var("VIBE_BENCH_WITE_FALLBACK_MAX_BYTES") {
+    Some(raw) => {
+      let trimmed = raw.trim().to_owned()
+      if trimmed == "" {
+        bench_wite_fallback_max_bytes_default()
+      } else {
+        let parsed = @string.parse_int(trimmed) catch {
+          _ => return bench_wite_fallback_max_bytes_default()
+        }
+        if parsed < 0 {
+          bench_wite_fallback_max_bytes_default()
+        } else {
+          parsed
+        }
+      }
+    }
+    None => bench_wite_fallback_max_bytes_default()
+  }
+}
+
+///|
+fn bench_should_try_wite_fallback(
+  raw_bytes_len : Int,
+  bench_no_dce : Bool,
+  max_bytes : Int,
+) -> Bool {
+  max_bytes <= 0 || !bench_no_dce || raw_bytes_len <= max_bytes
+}
+
+///|
 fn compile_bench_script_to_wasm(
   entry_path : String,
   script_kind : String,
@@ -1348,44 +1385,53 @@ fn compile_bench_script_to_wasm_with_runner(
   }
   // Step 2: optionally optimize. Try shell-out first; on failure fall
   // back to in-process @wite (which is what `vibe compile -Oz` does).
+  // Large no-DCE bench wrappers are the known pathological case for
+  // @wite, so skip that fallback and keep raw bytes once the guard trips.
   // wasm-gc output is intentionally NOT optimized — moon-bundled
   // `moon-wasm-opt` mishandles gc types (it dropped the entire bench
   // body down to `i64.const 15` in early experiments), and the
   // in-process @wite optimizer has no gc code path either. Keep the
   // raw bytes; user-visible perf is the codegen quality of the gc
   // backend itself, which is what we want to measure.
+  let wite_fallback_max_bytes = bench_wite_fallback_max_bytes()
   let wasm_bytes = if bench_backend_gc {
     raw_bytes
   } else {
     match bench_opt_level {
-    None => raw_bytes
-    Some(level) =>
-      match try_wasm_opt_shell_out(raw_bytes, level, wasm_path) {
-        Some(opt) => opt
-        None =>
-          if use_node_runner {
-            @runtime_compile.compile_module_wasm_with_opt_level(
-              db,
-              entry,
-              no_dce=bench_no_dce,
-              opt_level=Some(level),
-              debug_errors=bench_debug_errors,
-              http_host_imports=true,
-              fs_host_imports=true,
-            ) catch {
-              _ => raw_bytes
+      None => raw_bytes
+      Some(level) =>
+        match try_wasm_opt_shell_out(raw_bytes, level, wasm_path) {
+          Some(opt) => opt
+          None =>
+            if !bench_should_try_wite_fallback(
+                raw_bytes.length(),
+                bench_no_dce,
+                wite_fallback_max_bytes,
+              ) {
+              raw_bytes
+            } else if use_node_runner {
+              @runtime_compile.compile_module_wasm_with_opt_level(
+                db,
+                entry,
+                no_dce=bench_no_dce,
+                opt_level=Some(level),
+                debug_errors=bench_debug_errors,
+                http_host_imports=true,
+                fs_host_imports=true,
+              ) catch {
+                _ => raw_bytes
+              }
+            } else {
+              @runtime_compile.compile_module_wasm_with_opt_level(
+                db,
+                entry,
+                no_dce=bench_no_dce,
+                opt_level=Some(level),
+              ) catch {
+                _ => raw_bytes
+              }
             }
-          } else {
-            @runtime_compile.compile_module_wasm_with_opt_level(
-              db,
-              entry,
-              no_dce=bench_no_dce,
-              opt_level=Some(level),
-            ) catch {
-              _ => raw_bytes
-            }
-          }
-      }
+        }
     }
   }
   @os_fs.write_bytes_to_file(wasm_path, wasm_bytes) catch {

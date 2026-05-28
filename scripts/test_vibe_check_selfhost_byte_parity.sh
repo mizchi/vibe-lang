@@ -31,9 +31,9 @@ fi
 
 # Ensure the opt .wasm exists and is newer than the source tree; rebuild via
 # the canonical script if missing.
-if [ ! -f "$WASI_OPT" ] || \
-   find "$PROJECT_ROOT/src" -type f \( -name '*.mbt' -o -name 'moon.pkg' -o -name 'moon.mod.json' \) \
-        -newer "$WASI_OPT" -print -quit 2>/dev/null | grep -q .; then
+if [ ! -f "$WASI_OPT" ] ||
+  find "$PROJECT_ROOT/src" -type f \( -name '*.mbt' -o -name 'moon.pkg' \) -newer "$WASI_OPT" -print -quit 2>/dev/null | grep -q . ||
+  find "$PROJECT_ROOT" -maxdepth 1 -type f \( -name 'moon.mod' -o -name 'moon.mod.json' \) -newer "$WASI_OPT" -print -quit 2>/dev/null | grep -q .; then
   echo "[byte-parity] rebuilding selfhost wasi bundle..." >&2
   bash "$SCRIPT_DIR/build_selfhost_wasi_opt.sh"
 fi

@@ -427,9 +427,7 @@ fn check_cmd(args : Array[String]) -> Unit {
     return
   }
   with_profile(profile_path, fn() {
-    check_cmd_body(
-      check_args, profile_tsv, builtin_contract,
-    )
+    check_cmd_body(check_args, profile_tsv, builtin_contract)
   })
 }
 

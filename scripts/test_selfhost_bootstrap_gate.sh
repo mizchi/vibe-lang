@@ -222,7 +222,7 @@ DETERMINISTIC_CASES_CHECKED=0
 needs_cli_rebuild=0
 if [ ! -x "$VIBE_BIN" ]; then
   needs_cli_rebuild=1
-elif [ "$PROJECT_ROOT/moon.mod.json" -nt "$VIBE_BIN" ]; then
+elif find "$PROJECT_ROOT" -maxdepth 1 -type f \( -name 'moon.mod' -o -name 'moon.mod.json' \) -newer "$VIBE_BIN" -print -quit 2>/dev/null | grep -q .; then
   needs_cli_rebuild=1
 elif find "$PROJECT_ROOT/src" -type f \( -name '*.mbt' -o -name 'moon.pkg' \) -newer "$VIBE_BIN" -print -quit | grep -q .; then
   needs_cli_rebuild=1
@@ -238,7 +238,7 @@ if [ "$SELFHOST_CUTOVER" = "1" ]; then
   needs_selfhost_rebuild=0
   if [ ! -f "$SELFHOST_COMPILER_WASM" ]; then
     needs_selfhost_rebuild=1
-  elif [ "$PROJECT_ROOT/moon.mod.json" -nt "$SELFHOST_COMPILER_WASM" ]; then
+  elif find "$PROJECT_ROOT" -maxdepth 1 -type f \( -name 'moon.mod' -o -name 'moon.mod.json' \) -newer "$SELFHOST_COMPILER_WASM" -print -quit 2>/dev/null | grep -q .; then
     needs_selfhost_rebuild=1
   elif find "$PROJECT_ROOT/src" -type f \( -name '*.mbt' -o -name 'moon.pkg' \) -newer "$SELFHOST_COMPILER_WASM" -print -quit 2>/dev/null | grep -q .; then
     needs_selfhost_rebuild=1

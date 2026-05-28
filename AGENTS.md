@@ -25,7 +25,7 @@ pkf affected --since=origin/main 'test:*'  # diff-aware package tests
 
 ## Project Structure
 
-- `moon.mod.json` - Module definition
+- `moon.mod` - Module definition
 - `moon.pkg` - Package dependencies (per directory)
 - `*.mbt` - Source files
 - `*_test.mbt` - Blackbox test files
@@ -168,20 +168,21 @@ gh issue create --title "タイトル" --label bug
 
 ## Local Test Execution
 
-ローカルでのテスト実行には `flaker run` を使う。全テスト（1162件、~2分）を毎回流す必要はない。
+ローカルでのテスト実行には `pkf run test-local` を使う。全テスト（1162件、~2分）を毎回流す必要はない。
+これは `scripts/flaker_run.sh` 経由で `flaker` を起動するため、mise の symlink 経由で CLI が no-op になる問題を避けられる。
 
 ```bash
 # 変更に影響するテストだけ実行（推奨、時間制約120秒）
-flaker run
+pkf run test-local
 
 # CI と同じ hybrid サンプリング（30%）
-flaker run --profile ci
+pkf run test-local -- --profile ci
 
 # 全テスト実行（データ蓄積用、定期的に）
-flaker run --profile scheduled
+pkf run test-local -- --profile scheduled
 ```
 
-`flaker run` はデフォルトで `--profile local`（affected 戦略）を使い、`git diff` から影響範囲のテストだけを選択する。データが蓄積されるほど選択精度が上がる。
+`pkf run test-local` はデフォルトで `--profile local`（affected 戦略）を使い、`git diff` から影響範囲のテストだけを選択する。データが蓄積されるほど選択精度が上がる。
 
 `pkf run test` は全テスト実行。commit 前の最終確認や CI 用。
 

@@ -13,7 +13,7 @@ pub enum CompileMode {
 } derive(Eq, Debug)
 
 ///|
-pub impl Show for CompileMode with output(self, logger) {
+pub impl Show for CompileMode with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 

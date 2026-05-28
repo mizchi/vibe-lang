@@ -6,7 +6,7 @@ pub(all) suberror DeserializeError {
 } derive(Debug)
 
 ///|
-pub impl Show for DeserializeError with output(self, logger) {
+pub impl Show for DeserializeError with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 
@@ -882,9 +882,7 @@ fn parse_struct_fields(
       Some(v) => expect_bool(v)
       None => false
     }
-    out.push(
-      StructField::{ name, ty, is_mut: is_mut, span: deser_zero_span },
-    )
+    out.push(StructField::{ name, ty, is_mut, span: deser_zero_span })
   }
   out
 }

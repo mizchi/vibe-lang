@@ -14,17 +14,19 @@ fn MemIoAdapter::new(cwd : String) -> MemIoAdapter {
 }
 
 ///|
-pub impl @io.FileSystemAdapter for MemIoAdapter with current_dir_or_root(self) {
+pub impl @io.FileSystemAdapter for MemIoAdapter with fn current_dir_or_root(
+  self,
+) {
   self.cwd
 }
 
 ///|
-pub impl @io.FileSystemAdapter for MemIoAdapter with path_exists(self, path) {
+pub impl @io.FileSystemAdapter for MemIoAdapter with fn path_exists(self, path) {
   self.fs.exists(path)
 }
 
 ///|
-pub impl @io.FileSystemAdapter for MemIoAdapter with create_dir(self, path) {
+pub impl @io.FileSystemAdapter for MemIoAdapter with fn create_dir(self, path) {
   self.fs.mkdir_p(path) catch {
     e => return Err(e.to_string())
   }
@@ -32,7 +34,7 @@ pub impl @io.FileSystemAdapter for MemIoAdapter with create_dir(self, path) {
 }
 
 ///|
-pub impl @io.FileSystemAdapter for MemIoAdapter with read_dir(self, path) {
+pub impl @io.FileSystemAdapter for MemIoAdapter with fn read_dir(self, path) {
   let entries = self.fs.readdir(path) catch { e => return Err(e.to_string()) }
   let out : Array[String] = []
   for entry in entries {
@@ -42,7 +44,7 @@ pub impl @io.FileSystemAdapter for MemIoAdapter with read_dir(self, path) {
 }
 
 ///|
-pub impl @io.FileSystemAdapter for MemIoAdapter with read_string(self, path) {
+pub impl @io.FileSystemAdapter for MemIoAdapter with fn read_string(self, path) {
   let content = self.fs.read_string(path) catch {
     e => return Err(e.to_string())
   }
@@ -50,13 +52,13 @@ pub impl @io.FileSystemAdapter for MemIoAdapter with read_string(self, path) {
 }
 
 ///|
-pub impl @io.FileSystemAdapter for MemIoAdapter with read_bytes(self, path) {
+pub impl @io.FileSystemAdapter for MemIoAdapter with fn read_bytes(self, path) {
   let content = self.fs.read_file(path) catch { e => return Err(e.to_string()) }
   Ok(content)
 }
 
 ///|
-pub impl @io.FileSystemAdapter for MemIoAdapter with write_string(
+pub impl @io.FileSystemAdapter for MemIoAdapter with fn write_string(
   self,
   path,
   content,
@@ -68,7 +70,7 @@ pub impl @io.FileSystemAdapter for MemIoAdapter with write_string(
 }
 
 ///|
-pub impl @io.FileSystemAdapter for MemIoAdapter with write_bytes(
+pub impl @io.FileSystemAdapter for MemIoAdapter with fn write_bytes(
   self,
   path,
   content,

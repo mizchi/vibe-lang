@@ -1033,7 +1033,9 @@ fn AstParser::parse_break_expr(self : AstParser) -> @core.Expr raise ParseError 
 }
 
 ///|
-fn AstParser::parse_return_expr(self : AstParser) -> @core.Expr raise ParseError {
+fn AstParser::parse_return_expr(
+  self : AstParser,
+) -> @core.Expr raise ParseError {
   let start = self.pos
   let _ = self.expect(return_kw(), "return")
   self.skip_trivia()

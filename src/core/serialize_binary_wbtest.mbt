@@ -33,12 +33,7 @@ fn smoke_module() -> Module {
         expr=Expr::Bool(value=true, span=s),
         span=s,
       ),
-      Stmt::Let(
-        rec=false,
-        name="c",
-        expr=Expr::Char(value='a', span=s),
-        span=s,
-      ),
+      Stmt::Let(rec=false, name="c", expr=Expr::Char(value='a', span=s), span=s),
       Stmt::Let(
         rec=false,
         name="strv",
@@ -258,12 +253,7 @@ fn smoke_module() -> Module {
       Stmt::Let(
         rec=false,
         name="pf",
-        expr=Expr::Perform(
-          effect_name="E",
-          op_name="Op",
-          args=[],
-          span=s,
-        ),
+        expr=Expr::Perform(effect_name="E", op_name="Op", args=[], span=s),
         span=s,
       ),
       Stmt::EnumDef(
@@ -288,9 +278,7 @@ fn smoke_module() -> Module {
         type_bounds={},
         trait_name="Tr",
         target=Type::Int,
-        methods=[
-          ImplMethodDef::{ name: "m", expr: int_expr, span: s },
-        ],
+        methods=[ImplMethodDef::{ name: "m", expr: int_expr, span: s }],
         span=s,
       ),
       Stmt::Expr(expr=int_expr, span=s),
@@ -336,7 +324,12 @@ fn smoke_module() -> Module {
       Stmt::ExportEnumDef(name="E2", params=[], ctors=[], span=s),
       Stmt::InternalExportEnumDef(name="E3", params=[], ctors=[], span=s),
       Stmt::ExportTypeAlias(name="A2", params=[], target=unit_ty, span=s),
-      Stmt::InternalExportTypeAlias(name="A3", params=[], target=unit_ty, span=s),
+      Stmt::InternalExportTypeAlias(
+        name="A3",
+        params=[],
+        target=unit_ty,
+        span=s,
+      ),
       Stmt::InternalTraitDef(
         name="T2",
         supertraits=[],
@@ -359,12 +352,7 @@ fn smoke_module() -> Module {
         name="S",
         params=[],
         fields=[
-          StructField::{
-            name: "f",
-            ty: Type::Int,
-            is_mut: false,
-            span: s,
-          },
+          StructField::{ name: "f", ty: Type::Int, is_mut: false, span: s },
         ],
         span=s,
       ),
@@ -384,19 +372,41 @@ fn smoke_module() -> Module {
         import_path=Some("./eff.vibe"),
         span=s,
       ),
-      Stmt::ExportEffectDef(name="Eff2", params=[], ops=[], import_path=None, span=s),
+      Stmt::ExportEffectDef(
+        name="Eff2",
+        params=[],
+        ops=[],
+        import_path=None,
+        span=s,
+      ),
       // Touch remaining type variants
-      Stmt::ExternLet(name="t_tuple", ty=Type::Tuple([Type::Int, Type::Bool]), span=s),
+      Stmt::ExternLet(
+        name="t_tuple",
+        ty=Type::Tuple([Type::Int, Type::Bool]),
+        span=s,
+      ),
       Stmt::ExternLet(name="t_rec", ty=Type::Record({ "k": Type::Int }), span=s),
       Stmt::ExternLet(name="t_arr", ty=Type::Array(Type::Int), span=s),
-      Stmt::ExternLet(name="t_map", ty=Type::Map(Type::String, Type::Int), span=s),
+      Stmt::ExternLet(
+        name="t_map",
+        ty=Type::Map(Type::String, Type::Int),
+        span=s,
+      ),
       Stmt::ExternLet(name="t_set", ty=Type::Set(Type::Int), span=s),
       Stmt::ExternLet(name="t_ab", ty=Type::ArrayBuilder(Type::Int), span=s),
-      Stmt::ExternLet(name="t_mb", ty=Type::MapBuilder(Type::String, Type::Int), span=s),
+      Stmt::ExternLet(
+        name="t_mb",
+        ty=Type::MapBuilder(Type::String, Type::Int),
+        span=s,
+      ),
       Stmt::ExternLet(name="t_sb", ty=Type::StringBuilder, span=s),
       Stmt::ExternLet(name="t_by", ty=Type::Bytes, span=s),
       Stmt::ExternLet(name="t_v128", ty=Type::V128, span=s),
-      Stmt::ExternLet(name="t_var", ty=Type::Variant({ "X": Type::Unit }), span=s),
+      Stmt::ExternLet(
+        name="t_var",
+        ty=Type::Variant({ "X": Type::Unit }),
+        span=s,
+      ),
       Stmt::ExternLet(
         name="t_named",
         ty=Type::Named(name="Box", args=[Type::Int]),
@@ -429,7 +439,11 @@ fn smoke_module() -> Module {
           scrutinee=int_expr,
           arms=[
             MatchArm::{
-              pat: Pat::Ctor(name="A", args=[Pat::Bind(name="x", span=s)], span=s),
+              pat: Pat::Ctor(
+                name="A",
+                args=[Pat::Bind(name="x", span=s)],
+                span=s,
+              ),
               cond: None,
               expr: int_expr,
               span: s,

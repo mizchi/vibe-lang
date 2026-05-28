@@ -5,7 +5,7 @@ pub struct PureCache {
 } derive(Eq)
 
 ///|
-pub impl Show for PureCache with output(self, logger) {
+pub impl Show for PureCache with fn output(self, logger) {
   logger.write_string("PureCache(len=")
   logger.write_string(self.entries.length().to_string())
   logger.write_string(")")

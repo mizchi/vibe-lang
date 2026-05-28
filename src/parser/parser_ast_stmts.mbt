@@ -879,7 +879,7 @@ fn AstParser::parse_struct_stmt(
     fields.push(@core.StructField::{
       name: field_name.text(),
       ty: field_ty,
-      is_mut: is_mut,
+      is_mut,
       span: self.span_from(field_start),
     })
     self.expect_decl_separator("struct field separator")

@@ -829,7 +829,13 @@ fn collect_nested_funcs_block(
               // Nested closures must be able to capture it as a closure value.
               inner_bound[name] = true
             }
-            collect_nested_funcs_block(body, inner_bound, funcs, false, parent=Some(name))
+            collect_nested_funcs_block(
+              body,
+              inner_bound,
+              funcs,
+              false,
+              parent=Some(name),
+            )
           }
           _ => collect_nested_funcs_expr(expr, scope, funcs, parent~)
         }
@@ -910,7 +916,13 @@ fn collect_nested_funcs_block(
             if rec {
               inner_bound[name] = true
             }
-            collect_nested_funcs_block(body, inner_bound, funcs, false, parent=Some(name))
+            collect_nested_funcs_block(
+              body,
+              inner_bound,
+              funcs,
+              false,
+              parent=Some(name),
+            )
           }
           _ => collect_nested_funcs_expr(expr, scope, funcs, parent~)
         }

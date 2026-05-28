@@ -1975,12 +1975,12 @@ fn type_block(
                         if !field.is_mut {
                           raise TypeError::BadCall(
                             message="cannot assign to immutable field `" +
-                            field_name +
-                            "` of struct `" +
-                            name +
-                            "` — declare the field as `mut " +
-                            field_name +
-                            ": ...` to allow assignment (ADR-0052)",
+                              field_name +
+                              "` of struct `" +
+                              name +
+                              "` — declare the field as `mut " +
+                              field_name +
+                              ": ...` to allow assignment (ADR-0052)",
                             span~,
                           )
                         }
