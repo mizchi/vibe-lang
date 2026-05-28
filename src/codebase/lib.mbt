@@ -55,7 +55,7 @@ pub struct Codebase {
 } derive(Debug, Eq)
 
 ///|
-pub impl Show for Codebase with output(self, logger) {
+pub impl Show for Codebase with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 
@@ -65,7 +65,7 @@ suberror CodebaseError {
 } derive(Debug, Eq)
 
 ///|
-pub impl Show for CodebaseError with output(self, logger) {
+pub impl Show for CodebaseError with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 
@@ -1387,7 +1387,7 @@ pub struct LockData {
 } derive(Debug, Eq)
 
 ///|
-pub impl Show for LockData with output(self, logger) {
+pub impl Show for LockData with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 

@@ -5,7 +5,7 @@ pub(all) struct Module {
 } derive(Debug, Eq)
 
 ///|
-pub impl Show for Module with output(self, logger) {
+pub impl Show for Module with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 
@@ -393,32 +393,32 @@ pub(all) struct CallArg {
 } derive(Debug, Eq)
 
 ///|
-pub impl Show for Ref with output(self, logger) {
+pub impl Show for Ref with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 
 ///|
-pub impl Show for Pat with output(self, logger) {
+pub impl Show for Pat with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 
 ///|
-pub impl Show for ImportKind with output(self, logger) {
+pub impl Show for ImportKind with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 
 ///|
-pub impl Show for ModuleRef with output(self, logger) {
+pub impl Show for ModuleRef with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 
 ///|
-pub impl Show for Stmt with output(self, logger) {
+pub impl Show for Stmt with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 
 ///|
-pub impl Show for Expr with output(self, logger) {
+pub impl Show for Expr with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 

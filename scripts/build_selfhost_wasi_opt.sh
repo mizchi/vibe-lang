@@ -109,6 +109,12 @@ TARGET_RAWS=(
   "$RAW_DIR/cmd/vibe_check_wasi/vibe_check_wasi.wasm"
 )
 
+source_changed_since() {
+  local artifact="$1"
+  find "$ROOT_DIR/src" -type f \( -name '*.mbt' -o -name 'moon.pkg' \) -newer "$artifact" -print -quit 2>/dev/null | grep -q . ||
+    find "$ROOT_DIR" -maxdepth 1 -type f \( -name 'moon.mod' -o -name 'moon.mod.json' \) -newer "$artifact" -print -quit 2>/dev/null | grep -q .
+}
+
 needs_raw_build() {
   local raw="$1"
   if [ "$REBUILD_MODE" = "always" ]; then
@@ -120,7 +126,7 @@ needs_raw_build() {
   if [ "$REBUILD_MODE" = "never" ]; then
     return 1
   fi
-  if find "$ROOT_DIR/src" -type f \( -name '*.mbt' -o -name 'moon.pkg' -o -name 'moon.mod.json' \) -newer "$raw" -print -quit 2>/dev/null | grep -q .; then
+  if source_changed_since "$raw"; then
     return 0
   fi
   return 1

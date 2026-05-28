@@ -835,7 +835,9 @@ fn type_check_stmts(
       }
       @core.Stmt::IndexAssign(target~, index~, value~, span~) => {
         // Type check target[index] = value as __set_index(target, index, value)
-        let target_ty = type_expr_eff(env, target, aliases, effects, allow_effect)
+        let target_ty = type_expr_eff(
+          env, target, aliases, effects, allow_effect,
+        )
         let _ = type_expr_eff(env, index, aliases, effects, allow_effect)
         let _ = type_expr_eff(env, value, aliases, effects, allow_effect)
         // ADR-0052: struct-field assignment `r.field = v` is rejected
@@ -855,12 +857,12 @@ fn type_check_stmts(
                         if !field.is_mut {
                           raise TypeError::BadCall(
                             message="cannot assign to immutable field `" +
-                            field_name +
-                            "` of struct `" +
-                            name +
-                            "` — declare the field as `mut " +
-                            field_name +
-                            ": ...` to allow assignment (ADR-0052)",
+                              field_name +
+                              "` of struct `" +
+                              name +
+                              "` — declare the field as `mut " +
+                              field_name +
+                              ": ...` to allow assignment (ADR-0052)",
                             span~,
                           )
                         }
@@ -1655,13 +1657,11 @@ fn register_struct_def(
   let field_defs : Array[StructFieldDef] = []
   for field in fields {
     let normalized = normalize_type(env, field.ty)
-    field_defs.push(
-      StructFieldDef::{
-        name: field.name,
-        ty: normalized,
-        is_mut: field.is_mut,
-      },
-    )
+    field_defs.push(StructFieldDef::{
+      name: field.name,
+      ty: normalized,
+      is_mut: field.is_mut,
+    })
   }
   env.set_struct(name, StructDef::{ name, params, fields: field_defs })
 }

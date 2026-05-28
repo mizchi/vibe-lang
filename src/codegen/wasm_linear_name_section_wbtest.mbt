@@ -22,7 +22,7 @@ fn linear_parse_function_names(bytes : Bytes) -> Array[(Int, String)] {
     while continues {
       let b = view[i]
       i += 1
-      size = size | ((b & 0x7f).lsl(shift))
+      size = size | (b & 0x7f).lsl(shift)
       shift += 7
       continues = (b & 0x80) != 0
     }
@@ -34,7 +34,7 @@ fn linear_parse_function_names(bytes : Bytes) -> Array[(Int, String)] {
       while ns_continues {
         let b = view[i]
         i += 1
-        name_size = name_size | ((b & 0x7f).lsl(ns_shift))
+        name_size = name_size | (b & 0x7f).lsl(ns_shift)
         ns_shift += 7
         ns_continues = (b & 0x80) != 0
       }
@@ -53,7 +53,7 @@ fn linear_parse_function_names(bytes : Bytes) -> Array[(Int, String)] {
           while ss_continues {
             let b = view[i]
             i += 1
-            sub_size = sub_size | ((b & 0x7f).lsl(ss_shift))
+            sub_size = sub_size | (b & 0x7f).lsl(ss_shift)
             ss_shift += 7
             ss_continues = (b & 0x80) != 0
           }
@@ -65,7 +65,7 @@ fn linear_parse_function_names(bytes : Bytes) -> Array[(Int, String)] {
             while cc {
               let b = view[p]
               p += 1
-              count = count | ((b & 0x7f).lsl(cs))
+              count = count | (b & 0x7f).lsl(cs)
               cs += 7
               cc = (b & 0x80) != 0
             }
@@ -77,7 +77,7 @@ fn linear_parse_function_names(bytes : Bytes) -> Array[(Int, String)] {
               while ic {
                 let b = view[p]
                 p += 1
-                idx = idx | ((b & 0x7f).lsl(isz))
+                idx = idx | (b & 0x7f).lsl(isz)
                 isz += 7
                 ic = (b & 0x80) != 0
               }
@@ -87,7 +87,7 @@ fn linear_parse_function_names(bytes : Bytes) -> Array[(Int, String)] {
               while nc {
                 let b = view[p]
                 p += 1
-                n_len = n_len | ((b & 0x7f).lsl(nls))
+                n_len = n_len | (b & 0x7f).lsl(nls)
                 nls += 7
                 nc = (b & 0x80) != 0
               }

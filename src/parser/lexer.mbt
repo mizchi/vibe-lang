@@ -8,7 +8,7 @@ pub struct Lexer {
 } derive(Debug)
 
 ///|
-pub impl Show for Lexer with output(self, logger) {
+pub impl Show for Lexer with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 

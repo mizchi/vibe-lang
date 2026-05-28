@@ -103,6 +103,12 @@ case "$WASM_PROFILE" in debug|release) ;;
   *) echo "bench-selfhost-memory: VIBE_SELFHOST_MEMORY_WASM_PROFILE must be debug|release" >&2; exit 1 ;;
 esac
 
+source_changed_since() {
+  local artifact="$1"
+  find "$ROOT_DIR/src" -type f \( -name '*.mbt' -o -name 'moon.pkg' \) -newer "$artifact" -print -quit 2>/dev/null | grep -q . ||
+    find "$ROOT_DIR" -maxdepth 1 -type f \( -name 'moon.mod' -o -name 'moon.mod.json' \) -newer "$artifact" -print -quit 2>/dev/null | grep -q .
+}
+
 ensure_binaries() {
   local need_compiler=0
   local need_checker=0
@@ -110,10 +116,10 @@ ensure_binaries() {
     need_compiler=1
     need_checker=1
   elif [ "$REBUILD_MODE" = "auto" ]; then
-    if [ ! -f "$COMPILER_WASM" ] || [ -n "$(find "$ROOT_DIR/src" -type f \( -name '*.mbt' -o -name 'moon.pkg' -o -name 'moon.mod.json' \) -newer "$COMPILER_WASM" -print -quit 2>/dev/null)" ]; then
+    if [ ! -f "$COMPILER_WASM" ] || source_changed_since "$COMPILER_WASM"; then
       need_compiler=1
     fi
-    if [ ! -f "$CHECKER_WASM" ] || [ -n "$(find "$ROOT_DIR/src" -type f \( -name '*.mbt' -o -name 'moon.pkg' -o -name 'moon.mod.json' \) -newer "$CHECKER_WASM" -print -quit 2>/dev/null)" ]; then
+    if [ ! -f "$CHECKER_WASM" ] || source_changed_since "$CHECKER_WASM"; then
       need_checker=1
     fi
   fi

@@ -82,7 +82,7 @@ fn find_name_subsection1(bytes : Bytes) -> Bytes? {
     while continues {
       let b = view[i]
       i += 1
-      size = size | ((b & 0x7f).lsl(shift))
+      size = size | (b & 0x7f).lsl(shift)
       shift += 7
       continues = (b & 0x80) != 0
     }
@@ -95,7 +95,7 @@ fn find_name_subsection1(bytes : Bytes) -> Bytes? {
       while ns_continues {
         let b = view[i]
         i += 1
-        name_size = name_size | ((b & 0x7f).lsl(ns_shift))
+        name_size = name_size | (b & 0x7f).lsl(ns_shift)
         ns_shift += 7
         ns_continues = (b & 0x80) != 0
       }
@@ -115,7 +115,7 @@ fn find_name_subsection1(bytes : Bytes) -> Bytes? {
           while ss_continues {
             let b = view[i]
             i += 1
-            sub_size = sub_size | ((b & 0x7f).lsl(ss_shift))
+            sub_size = sub_size | (b & 0x7f).lsl(ss_shift)
             ss_shift += 7
             ss_continues = (b & 0x80) != 0
           }
@@ -154,7 +154,7 @@ fn parse_name_subsection1(payload : Bytes) -> Array[(Int, String)] {
   while continues {
     let b = view[i]
     i += 1
-    count = count | ((b & 0x7f).lsl(shift))
+    count = count | (b & 0x7f).lsl(shift)
     shift += 7
     continues = (b & 0x80) != 0
   }
@@ -166,7 +166,7 @@ fn parse_name_subsection1(payload : Bytes) -> Array[(Int, String)] {
     while ic {
       let b = view[i]
       i += 1
-      idx = idx | ((b & 0x7f).lsl(isz))
+      idx = idx | (b & 0x7f).lsl(isz)
       isz += 7
       ic = (b & 0x80) != 0
     }
@@ -176,7 +176,7 @@ fn parse_name_subsection1(payload : Bytes) -> Array[(Int, String)] {
     while nc {
       let b = view[i]
       i += 1
-      n_len = n_len | ((b & 0x7f).lsl(ns))
+      n_len = n_len | (b & 0x7f).lsl(ns)
       ns += 7
       nc = (b & 0x80) != 0
     }

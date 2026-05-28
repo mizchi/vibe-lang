@@ -4,7 +4,7 @@
 content-addressed caching) is the **canonical task runner** for vibe-lang —
 it replaces the former `justfile`. [`pkspec`](https://github.com/mizchi/pkspec)
 (language-agnostic test runner) is wired in as an opt-in companion alongside
-`moon test` / `flaker run`.
+`moon test` / `pkf run test-local`.
 
 The task definitions live in `Taskfile.pkl` (238 tasks). Multi-line
 shell that doesn't fit a single Pkl `cmd =` lives in `scripts/pkfire/*.sh`
@@ -144,9 +144,9 @@ pkspec exec -f pkspec/VibeTest.pkl --rerun-failed
 pkspec exec -f pkspec/VibeTest.pkl --only moon-test-native
 ```
 
-### When to reach for it vs `flaker run`
+### When to reach for it vs `pkf run test-local`
 
-- **`flaker run`** — preferred for local dev: affected-test selection,
+- **`pkf run test-local`** — preferred for local dev: affected-test selection,
   history-aware sampling, 120 s budget.
 - **`pkspec exec`** — useful when you want sharding across multiple
   machines, deterministic retry policy, or pkspec's spec-coverage reporting

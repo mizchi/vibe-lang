@@ -7,7 +7,7 @@ suberror WasmGenError {
 } derive(Debug, Eq)
 
 ///|
-pub impl Show for WasmGenError with output(self, logger) {
+pub impl Show for WasmGenError with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 
@@ -38,7 +38,7 @@ pub enum WasmCoveragePointKind {
 } derive(Debug, Eq)
 
 ///|
-pub impl Show for WasmCoveragePointKind with output(self, logger) {
+pub impl Show for WasmCoveragePointKind with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 
@@ -50,7 +50,7 @@ pub struct WasmCoveragePoint {
 } derive(Debug, Eq)
 
 ///|
-pub impl Show for WasmCoveragePoint with output(self, logger) {
+pub impl Show for WasmCoveragePoint with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 
@@ -63,7 +63,7 @@ pub struct WasmCoverageArtifact {
 } derive(Debug, Eq)
 
 ///|
-pub impl Show for WasmCoverageArtifact with output(self, logger) {
+pub impl Show for WasmCoverageArtifact with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 
@@ -95,7 +95,7 @@ pub struct WasmEmitOptions {
 } derive(Debug, Eq)
 
 ///|
-pub impl Show for WasmEmitOptions with output(self, logger) {
+pub impl Show for WasmEmitOptions with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 
@@ -226,7 +226,7 @@ enum ValueKind {
 } derive(Debug, Eq)
 
 ///|
-impl Show for ValueKind with output(self, logger) {
+impl Show for ValueKind with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 

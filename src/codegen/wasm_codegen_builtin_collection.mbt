@@ -3219,9 +3219,7 @@ fn compile_builtin_collection(
           emit_i32_add(buf)
           emit_i32_load(buf, 8) // name_ptr
           emit_local_set(buf, r_entry_name)
-          emit_non_js_string_ptr_equals_i32(
-            ctx, buf, r_entry_name, r_field_ptr,
-          )
+          emit_non_js_string_ptr_equals_i32(ctx, buf, r_entry_name, r_field_ptr)
           buf.push((4).to_byte()) // if (name matches)
           buf.push((64).to_byte()) // void
           // store value at obj_ptr + loop_i * 8 + 12

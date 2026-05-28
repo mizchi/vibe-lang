@@ -28,15 +28,10 @@ if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   exit 1
 fi
 
-MODULE_VERSION="$(python3 - <<'PY' "$PROJECT_ROOT/moon.mod.json"
-import json, sys
-with open(sys.argv[1], "r", encoding="utf-8") as f:
-    print(json.load(f)["version"])
-PY
-)"
+MODULE_VERSION="$(awk -F '"' '/^version[[:space:]]*=/ { print $2; exit }' "$PROJECT_ROOT/moon.mod")"
 
 if [ "$MODULE_VERSION" != "$VERSION" ]; then
-  echo "release-assets: moon.mod.json version mismatch (got=$MODULE_VERSION expected=$VERSION)" >&2
+  echo "release-assets: moon.mod version mismatch (got=$MODULE_VERSION expected=$VERSION)" >&2
   exit 1
 fi
 

@@ -32,7 +32,7 @@ resolve_vibe_cmd() {
     if [ ! -x "$candidate" ]; then
       continue
     fi
-    if [ "$PROJECT_ROOT/moon.mod.json" -nt "$candidate" ]; then
+    if find "$PROJECT_ROOT" -maxdepth 1 -type f \( -name 'moon.mod' -o -name 'moon.mod.json' \) -newer "$candidate" -print -quit 2>/dev/null | grep -q .; then
       continue
     fi
     if find "$PROJECT_ROOT/src" -type f \( -name '*.mbt' -o -name 'moon.pkg' \) -newer "$candidate" -print -quit 2>/dev/null | grep -q .; then
@@ -111,7 +111,7 @@ compile_cache_valid() {
     return 1
   fi
   if [ "${VIBE_CMD[0]}" = "moon" ]; then
-    if [ "$PROJECT_ROOT/moon.mod.json" -nt "$wasm_path" ]; then
+    if find "$PROJECT_ROOT" -maxdepth 1 -type f \( -name 'moon.mod' -o -name 'moon.mod.json' \) -newer "$wasm_path" -print -quit 2>/dev/null | grep -q .; then
       return 1
     fi
     if find "$PROJECT_ROOT/src" -type f \( -name '*.mbt' -o -name 'moon.pkg' \) -newer "$wasm_path" -print -quit 2>/dev/null | grep -q .; then

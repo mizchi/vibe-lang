@@ -275,7 +275,6 @@ pub fn profiler_report_pprof() -> Bytes {
     for frame in sample.frames {
       let _ = pprof_intern_func(st, frame)
       let _ = pprof_intern_string(st, frame)
-
     }
   }
   let out = st.buf

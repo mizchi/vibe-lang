@@ -1012,7 +1012,7 @@ pub enum ApiVersionBump {
 } derive(Debug, Eq)
 
 ///|
-pub impl Show for ApiVersionBump with output(self, logger) {
+pub impl Show for ApiVersionBump with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 

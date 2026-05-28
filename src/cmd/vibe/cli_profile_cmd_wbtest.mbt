@@ -6,27 +6,35 @@
 test "parse_profile_backend accepts wasm and wasm-gc aliases" {
   @debug.assert_eq(parse_profile_backend("wasm"), Some(ProfileBackend::Wasm))
   @debug.assert_eq(parse_profile_backend("linear"), Some(ProfileBackend::Wasm))
-  @debug.assert_eq(parse_profile_backend("wasm-gc"), Some(ProfileBackend::WasmGc))
+  @debug.assert_eq(
+    parse_profile_backend("wasm-gc"),
+    Some(ProfileBackend::WasmGc),
+  )
   @debug.assert_eq(parse_profile_backend("gc"), Some(ProfileBackend::WasmGc))
-  @debug.assert_eq(parse_profile_backend("WASM-GC"), Some(ProfileBackend::WasmGc))
+  @debug.assert_eq(
+    parse_profile_backend("WASM-GC"),
+    Some(ProfileBackend::WasmGc),
+  )
   @debug.assert_eq(parse_profile_backend("nope"), None)
 }
 
 ///|
 test "default_profile_out_path replaces .vibe suffix" {
-  @debug.assert_eq(default_profile_out_path("examples/foo.vibe"), "examples/foo.profile.json")
-  @debug.assert_eq(default_profile_out_path("bench/cases/heavy"), "bench/cases/heavy.profile.json")
+  @debug.assert_eq(
+    default_profile_out_path("examples/foo.vibe"),
+    "examples/foo.profile.json",
+  )
+  @debug.assert_eq(
+    default_profile_out_path("bench/cases/heavy"),
+    "bench/cases/heavy.profile.json",
+  )
 }
 
 ///|
 test "parse_profile_cmd_args wires flags through to options" {
   let r = parse_profile_cmd_args([
-    "foo.vibe",
-    "--backend", "wasm-gc",
-    "--out", "/tmp/out.json",
-    "--interval-us", "250",
-    "--invoke", "_bench_run",
-    "--keep-wasm",
+    "foo.vibe", "--backend", "wasm-gc", "--out", "/tmp/out.json", "--interval-us",
+    "250", "--invoke", "_bench_run", "--keep-wasm",
   ])
   let opts = match r {
     Ok(v) => v
@@ -68,7 +76,8 @@ test "parse_profile_cmd_args rejects unknown flags and bad numbers" {
   }
   match parse_profile_cmd_args(["foo.vibe", "--interval-us", "0"]) {
     Ok(_) => @debug.assert_eq("unexpected ok", "<should err>")
-    Err(msg) => @debug.assert_eq(msg.contains("--interval-us must be > 0"), true)
+    Err(msg) =>
+      @debug.assert_eq(msg.contains("--interval-us must be > 0"), true)
   }
   match parse_profile_cmd_args([]) {
     Ok(_) => @debug.assert_eq("unexpected ok", "<should err>")

@@ -181,14 +181,7 @@ fn write_stmt(buf : @buffer.Buffer, stmt : Stmt) -> Unit {
       write_type(buf, target)
       write_span(buf, span)
     }
-    Stmt::TraitDef(
-      name~,
-      supertraits~,
-      methods~,
-      open_impl~,
-      exported~,
-      span~,
-    ) => {
+    Stmt::TraitDef(name~, supertraits~, methods~, open_impl~, exported~, span~) => {
       buf.write_byte(b'\x04')
       write_string(buf, name)
       write_string_array(buf, supertraits)
@@ -203,7 +196,7 @@ fn write_stmt(buf : @buffer.Buffer, stmt : Stmt) -> Unit {
       trait_name~,
       target~,
       methods~,
-      span~,
+      span~
     ) => {
       buf.write_byte(b'\x05')
       write_string_array(buf, type_params)
@@ -316,13 +309,7 @@ fn write_stmt(buf : @buffer.Buffer, stmt : Stmt) -> Unit {
       write_type(buf, target)
       write_span(buf, span)
     }
-    Stmt::InternalTraitDef(
-      name~,
-      supertraits~,
-      methods~,
-      open_impl~,
-      span~,
-    ) => {
+    Stmt::InternalTraitDef(name~, supertraits~, methods~, open_impl~, span~) => {
       buf.write_byte(b'\x16')
       write_string(buf, name)
       write_string_array(buf, supertraits)
@@ -509,15 +496,7 @@ fn write_expr(buf : @buffer.Buffer, expr : Expr) -> Unit {
       write_module(buf, body)
       write_span(buf, span)
     }
-    Expr::Fn(
-      type_params~,
-      type_bounds~,
-      params~,
-      ret~,
-      effects~,
-      body~,
-      span~,
-    ) => {
+    Expr::Fn(type_params~, type_bounds~, params~, ret~, effects~, body~, span~) => {
       buf.write_byte(b'\x14')
       write_string_array(buf, type_params)
       write_type_bounds_map(buf, type_bounds)
@@ -842,10 +821,7 @@ fn write_func_param(buf : @buffer.Buffer, p : FuncParam) -> Unit {
 }
 
 ///|
-fn write_func_param_array(
-  buf : @buffer.Buffer,
-  ps : Array[FuncParam],
-) -> Unit {
+fn write_func_param_array(buf : @buffer.Buffer, ps : Array[FuncParam]) -> Unit {
   write_varint_int(buf, ps.length())
   for p in ps {
     write_func_param(buf, p)
@@ -970,10 +946,7 @@ fn write_loop_param(buf : @buffer.Buffer, p : LoopParam) -> Unit {
 }
 
 ///|
-fn write_loop_param_array(
-  buf : @buffer.Buffer,
-  ps : Array[LoopParam],
-) -> Unit {
+fn write_loop_param_array(buf : @buffer.Buffer, ps : Array[LoopParam]) -> Unit {
   write_varint_int(buf, ps.length())
   for p in ps {
     write_loop_param(buf, p)
@@ -988,10 +961,7 @@ fn write_type_ctor(buf : @buffer.Buffer, c : TypeCtor) -> Unit {
 }
 
 ///|
-fn write_type_ctor_array(
-  buf : @buffer.Buffer,
-  ctors : Array[TypeCtor],
-) -> Unit {
+fn write_type_ctor_array(buf : @buffer.Buffer, ctors : Array[TypeCtor]) -> Unit {
   write_varint_int(buf, ctors.length())
   for c in ctors {
     write_type_ctor(buf, c)

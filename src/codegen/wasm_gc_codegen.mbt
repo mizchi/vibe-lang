@@ -2026,19 +2026,26 @@ fn gc_val_kind_from_type(
           "ArrayBuilder" => {
             let elem_kind = gc_val_kind_from_type(ctx, args[0])
             let arr_type = ensure_array_type(
-              ctx.types, ctx.array_type_index, elem_kind,
+              ctx.types,
+              ctx.array_type_index,
+              elem_kind,
             )
             let builder_fields : Array[GcValKind] = [
-              GcValKind::I32, GcValKind::Ref(arr_type),
+              GcValKind::I32,
+              GcValKind::Ref(arr_type),
             ]
             let builder_type = ensure_struct_type(
-              ctx.types, ctx.struct_type_index, builder_fields,
+              ctx.types,
+              ctx.struct_type_index,
+              builder_fields,
             )
             GcValKind::Ref(builder_type)
           }
           "Set" => {
             let arr_type = ensure_array_type(
-              ctx.types, ctx.array_type_index, GcValKind::EqRef,
+              ctx.types,
+              ctx.array_type_index,
+              GcValKind::EqRef,
             )
             GcValKind::Ref(arr_type)
           }
@@ -2069,20 +2076,27 @@ fn gc_val_kind_from_type(
     @core.Type::ArrayBuilder(elem_ty) => {
       let elem_kind = gc_val_kind_from_type(ctx, elem_ty)
       let arr_type = ensure_array_type(
-        ctx.types, ctx.array_type_index, elem_kind,
+        ctx.types,
+        ctx.array_type_index,
+        elem_kind,
       )
       let builder_fields : Array[GcValKind] = [
-        GcValKind::I32, GcValKind::Ref(arr_type),
+        GcValKind::I32,
+        GcValKind::Ref(arr_type),
       ]
       let builder_type = ensure_struct_type(
-        ctx.types, ctx.struct_type_index, builder_fields,
+        ctx.types,
+        ctx.struct_type_index,
+        builder_fields,
       )
       GcValKind::Ref(builder_type)
     }
     @core.Type::Set(_) => {
       // Set is internally stored as an Array of eqref values.
       let arr_type = ensure_array_type(
-        ctx.types, ctx.array_type_index, GcValKind::EqRef,
+        ctx.types,
+        ctx.array_type_index,
+        GcValKind::EqRef,
       )
       GcValKind::Ref(arr_type)
     }
@@ -2341,7 +2355,11 @@ fn infer_block_kind_gc(
               for i in 0..<items.length() {
                 let item_kind = match field_kinds {
                   Some(fks) =>
-                    if i < fks.length() { fks[i] } else { GcValKind::EqRef }
+                    if i < fks.length() {
+                      fks[i]
+                    } else {
+                      GcValKind::EqRef
+                    }
                   None => GcValKind::EqRef
                 }
                 bind_pat_names(items[i], item_kind)
@@ -2382,7 +2400,11 @@ fn infer_block_kind_gc(
               for i in 0..<items.length() {
                 let item_kind = match field_kinds {
                   Some(fks) =>
-                    if i < fks.length() { fks[i] } else { GcValKind::EqRef }
+                    if i < fks.length() {
+                      fks[i]
+                    } else {
+                      GcValKind::EqRef
+                    }
                   None => GcValKind::EqRef
                 }
                 bind_pat_names(items[i], item_kind)
@@ -2769,8 +2791,10 @@ fn infer_expr_kind_gc(
             name,
           )
         }
-        "Array::set" | "Array::push"
-        | "FixedArray::set" | "FixedArray::unsafe_set"
+        "Array::set"
+        | "Array::push"
+        | "FixedArray::set"
+        | "FixedArray::unsafe_set"
         | "FixedArray::blit" => GcValKind::I32
         "FixedArray::make" => {
           // FixedArray::make(size, default) → Array[T] where T is the
@@ -2780,7 +2804,9 @@ fn infer_expr_kind_gc(
           }
           let elem_kind = infer_expr_kind_gc(ctx, fctx, pos_args[1])
           let arr_type = ensure_array_type(
-            ctx.types, ctx.array_type_index, elem_kind,
+            ctx.types,
+            ctx.array_type_index,
+            elem_kind,
           )
           GcValKind::Ref(arr_type)
         }
@@ -2862,7 +2888,8 @@ fn infer_expr_kind_gc(
             GcValKind::Ref(ctx.string_type),
           )
           let builder_fields : Array[GcValKind] = [
-            GcValKind::I32, GcValKind::Ref(arr_type),
+            GcValKind::I32,
+            GcValKind::Ref(arr_type),
           ]
           let builder_type = ensure_struct_type(
             ctx.types,
@@ -2907,7 +2934,7 @@ fn infer_expr_kind_gc(
           )
           GcValKind::Ref(arr_type)
         }
-        "Map::set" | "Map::delete" => {
+        "Map::set" | "Map::delete" =>
           // Returns the (mutated) Map — same struct layout as the
           // input. Pull it from the first arg's kind to keep type
           // info accurate.
@@ -2916,7 +2943,6 @@ fn infer_expr_kind_gc(
           } else {
             GcValKind::EqRef
           }
-        }
         "__eq"
         | "__lt"
         | "String::equals"
@@ -3267,10 +3293,14 @@ fn compile_string_char_code_at(
 /// call sites — factored here.
 fn map_struct_types_gc(ctx : GcCodegenCtx) -> (Int, Int, Int) {
   let key_arr_type = ensure_array_type(
-    ctx.types, ctx.array_type_index, GcValKind::EqRef,
+    ctx.types,
+    ctx.array_type_index,
+    GcValKind::EqRef,
   )
   let val_arr_type = ensure_array_type(
-    ctx.types, ctx.array_type_index, GcValKind::EqRef,
+    ctx.types,
+    ctx.array_type_index,
+    GcValKind::EqRef,
   )
   let builder_fields : Array[GcValKind] = [
     GcValKind::I32,
@@ -3278,7 +3308,9 @@ fn map_struct_types_gc(ctx : GcCodegenCtx) -> (Int, Int, Int) {
     GcValKind::Ref(val_arr_type),
   ]
   let builder_type = ensure_struct_type(
-    ctx.types, ctx.struct_type_index, builder_fields,
+    ctx.types,
+    ctx.struct_type_index,
+    builder_fields,
   )
   (builder_type, key_arr_type, val_arr_type)
 }
@@ -8636,8 +8668,7 @@ fn compile_expr_gc(
                         "Array::push struct data kind",
                       )
                   }
-                _ =>
-                  raise WasmGenError::Unsupported("Array::push struct kind")
+                _ => raise WasmGenError::Unsupported("Array::push struct kind")
               }
               compile_struct_array_push_gc(
                 ctx,
@@ -8730,7 +8761,9 @@ fn compile_expr_gc(
           }
           let elem_kind = infer_expr_kind_gc(ctx, fctx, pos_args[1])
           let arr_type = ensure_array_type(
-            ctx.types, ctx.array_type_index, elem_kind,
+            ctx.types,
+            ctx.array_type_index,
+            elem_kind,
           )
           // array.new $arr_type (default value) (size)
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
@@ -8770,9 +8803,7 @@ fn compile_expr_gc(
             raise WasmGenError::Unsupported(name + " arity")
           }
           let arr_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
-          let type_idx = gc_array_type_idx_from_kind(
-            ctx, arr_kind, name,
-          )
+          let type_idx = gc_array_type_idx_from_kind(ctx, arr_kind, name)
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
           let ik = infer_expr_kind_gc(ctx, fctx, pos_args[1])
@@ -9062,10 +9093,13 @@ fn compile_expr_gc(
             GcValKind::Ref(ctx.string_type),
           )
           let builder_fields : Array[GcValKind] = [
-            GcValKind::I32, GcValKind::Ref(arr_type),
+            GcValKind::I32,
+            GcValKind::Ref(arr_type),
           ]
           let builder_type = ensure_struct_type(
-            ctx.types, ctx.struct_type_index, builder_fields,
+            ctx.types,
+            ctx.struct_type_index,
+            builder_fields,
           )
           let _ = builder_type
           emit_i32_const_gc(buf, 0)
@@ -9083,10 +9117,13 @@ fn compile_expr_gc(
             GcValKind::Ref(ctx.string_type),
           )
           let builder_fields : Array[GcValKind] = [
-            GcValKind::I32, GcValKind::Ref(arr_type),
+            GcValKind::I32,
+            GcValKind::Ref(arr_type),
           ]
           let builder_type = ensure_struct_type(
-            ctx.types, ctx.struct_type_index, builder_fields,
+            ctx.types,
+            ctx.struct_type_index,
+            builder_fields,
           )
           let builder_kind = GcValKind::Ref(builder_type)
           let b_l = alloc_local_gc(fctx, builder_kind)
@@ -9175,23 +9212,28 @@ fn compile_expr_gc(
             GcValKind::Ref(ctx.string_type),
           )
           let builder_fields : Array[GcValKind] = [
-            GcValKind::I32, GcValKind::Ref(arr_type),
+            GcValKind::I32,
+            GcValKind::Ref(arr_type),
           ]
           let builder_type = ensure_struct_type(
-            ctx.types, ctx.struct_type_index, builder_fields,
+            ctx.types,
+            ctx.struct_type_index,
+            builder_fields,
           )
           let b_l = alloc_local_gc(fctx, GcValKind::Ref(builder_type))
           let len_l = alloc_local_gc(fctx, GcValKind::I32)
           let data_l = alloc_local_gc(fctx, GcValKind::Ref(arr_type))
           let total_l = alloc_local_gc(fctx, GcValKind::I32)
           let out_data_l = alloc_local_gc(
-            fctx, GcValKind::Ref(ctx.array_i32_type),
+            fctx,
+            GcValKind::Ref(ctx.array_i32_type),
           )
           let i_l = alloc_local_gc(fctx, GcValKind::I32)
           let cur_s_l = alloc_local_gc(fctx, GcValKind::Ref(ctx.string_type))
           let cur_len_l = alloc_local_gc(fctx, GcValKind::I32)
           let cur_data_l = alloc_local_gc(
-            fctx, GcValKind::Ref(ctx.array_i32_type),
+            fctx,
+            GcValKind::Ref(ctx.array_i32_type),
           )
           let write_l = alloc_local_gc(fctx, GcValKind::I32)
           let j_l = alloc_local_gc(fctx, GcValKind::I32)
@@ -9689,7 +9731,11 @@ fn compile_expr_gc(
             builder_fields,
           )
           let src_field = if pick_values { 2 } else { 1 }
-          let src_arr_type = if pick_values { val_arr_type } else { key_arr_type }
+          let src_arr_type = if pick_values {
+            val_arr_type
+          } else {
+            key_arr_type
+          }
           let b_idx = alloc_local_gc(fctx, GcValKind::Ref(builder_type))
           let len_l = alloc_local_gc(fctx, GcValKind::I32)
           let src_l = alloc_local_gc(fctx, GcValKind::Ref(src_arr_type))
@@ -11163,9 +11209,7 @@ fn build_module_gc(
   // `__vibe_cov_base`, and `__vibe_cov_count`. They're indexed into
   // separate spaces (memory→memidx 0; globals→last 2 global slots).
   let extra_export_count = if ctx.coverage_enabled { 3 } else { 0 }
-  write_u32_leb_gc(
-    export_sec, export_entries.length() + extra_export_count,
-  )
+  write_u32_leb_gc(export_sec, export_entries.length() + extra_export_count)
   for entry in export_entries {
     let (name, idx) = entry
     write_u32_leb_gc(export_sec, name.length())
@@ -11314,7 +11358,9 @@ pub fn emit_module_wasm_gc_with_source(
   source : String,
 ) -> Bytes raise WasmGenError {
   let (bytes, _) = emit_module_wasm_gc_inner(
-    ast, coverage_enabled=false, source~,
+    ast,
+    coverage_enabled=false,
+    source~,
   )
   bytes
 }

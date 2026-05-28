@@ -1363,6 +1363,15 @@ test "bench case source parse skips comments and blanks" {
 }
 
 ///|
+test "bench skips wite fallback for large no-dce wasm" {
+  let limit = 2 * 1024 * 1024
+  assert_true(bench_should_try_wite_fallback(64 * 1024, true, limit))
+  assert_true(bench_should_try_wite_fallback(4 * 1024 * 1024, false, limit))
+  assert_false(bench_should_try_wite_fallback(4 * 1024 * 1024, true, limit))
+  assert_true(bench_should_try_wite_fallback(4 * 1024 * 1024, true, 0))
+}
+
+///|
 test "line shell extract let name" {
   match extract_let_name_line("let foo = 1") {
     Some(name) => assert_eq(name, "foo")
