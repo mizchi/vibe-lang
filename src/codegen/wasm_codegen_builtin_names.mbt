@@ -30,7 +30,7 @@ pub fn codegen_registered_builtin_names() -> Array[String] {
     "Bytes::from_string", "Bytes::to_array", "Bytes::to_string",
     // Map
      "Map::get", "Map::set", "Map::delete", "Map::has", "Map::has_key", "Map::keys",
-    "Map::values",
+    "Map::values", "Map::iter_length", "Map::iter_get",
     // Set
      "Set::new", "Set::add", "Set::remove", "Set::contains", "Set::size", "Set::from_array",
     "Set::to_array",

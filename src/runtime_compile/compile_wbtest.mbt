@@ -4395,10 +4395,8 @@ test "Iterable for String — generic Iterator::fold over String compiles" {
 // ADR-0044 Phase 3: Map[K, V] now implements Iterable, yielding K (the key)
 // per iteration — matches Python/JS dict-iteration shape. The prelude
 // `Map::iter_length` returns `Map::size(m)`, and `Map::iter_get` returns the
-// i-th key. Note: `Map::iter_get` is O(n) per call because `Map::keys` is
-// the only key-enumeration primitive; total iteration cost is therefore
-// O(n²). For hot paths, prefer `for k in Map::keys(m) { ... }` which only
-// allocates the keys array once.
+// i-th key. Compiled backends lower both helpers directly to the map storage
+// layout, so generic Map iteration no longer allocates `Map::keys` per item.
 test "Iterable for Map — iter_length / iter_get compile" {
   let db = @runtime.VibeDb::new()
   db.set_source(

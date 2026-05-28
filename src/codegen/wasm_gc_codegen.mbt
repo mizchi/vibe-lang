@@ -2924,6 +2924,8 @@ fn infer_expr_kind_gc(
           GcValKind::Ref(builder_type)
         }
         "MapBuilder::set" => GcValKind::I32
+        "Map::iter_length" => GcValKind::I64
+        "Map::iter_get" => GcValKind::EqRef
         "Map::get" => GcValKind::EqRef
         "Map::has_key" | "Map::has" => GcValKind::I32
         "Map::keys" | "Map::values" => {
@@ -9543,6 +9545,54 @@ fn compile_expr_gc(
             raise WasmGenError::Unsupported("MapBuilder::freeze arity")
           }
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
+        }
+        "Map::iter_length" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("Map::iter_length arity")
+          }
+          let (builder_type, _, _) = ensure_map_builder_type_gc(ctx)
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_struct_get_gc(buf, builder_type, 0)
+          emit_i64_extend_i32_s_gc(buf)
+        }
+        "Map::iter_get" => {
+          if pos_args.length() != 2 {
+            raise WasmGenError::Unsupported("Map::iter_get arity")
+          }
+          let (builder_type, key_arr_type, _) = ensure_map_builder_type_gc(ctx)
+          let b_idx = alloc_local_gc(fctx, GcValKind::Ref(builder_type))
+          let len_l = alloc_local_gc(fctx, GcValKind::I32)
+          let keys_l = alloc_local_gc(fctx, GcValKind::Ref(key_arr_type))
+          let idx_l = alloc_local_gc(fctx, GcValKind::I32)
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_local_set_gc(buf, b_idx)
+          emit_local_get_gc(buf, b_idx)
+          emit_struct_get_gc(buf, builder_type, 0)
+          emit_local_set_gc(buf, len_l)
+          emit_local_get_gc(buf, b_idx)
+          emit_struct_get_gc(buf, builder_type, 1)
+          emit_local_set_gc(buf, keys_l)
+          compile_expr_gc(ctx, fctx, buf, pos_args[1])
+          let idx_kind = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+          if idx_kind == GcValKind::I64 {
+            emit_i32_wrap_i64_gc(buf)
+          }
+          emit_local_set_gc(buf, idx_l)
+          emit_local_get_gc(buf, idx_l)
+          emit_i32_const_gc(buf, 0)
+          emit_i32_lt_s_gc(buf)
+          emit_if_gc(buf, None)
+          emit_unreachable_gc(buf)
+          emit_end_gc(buf)
+          emit_local_get_gc(buf, idx_l)
+          emit_local_get_gc(buf, len_l)
+          emit_i32_ge_s_gc(buf)
+          emit_if_gc(buf, None)
+          emit_unreachable_gc(buf)
+          emit_end_gc(buf)
+          emit_local_get_gc(buf, keys_l)
+          emit_local_get_gc(buf, idx_l)
+          emit_array_get_gc(buf, key_arr_type)
         }
         "Map::get" => {
           // Map::get(map, key) -> eqref (null eqref if not found)

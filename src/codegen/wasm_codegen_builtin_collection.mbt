@@ -2346,6 +2346,63 @@ fn compile_builtin_collection(
       emit_i64_const_raw(buf, tag_obj.to_int64())
       emit_i64_or(buf)
     }
+    "Map::iter_length" => {
+      // Map::iter_length(map) -> map length without allocating Map::keys.
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "Map::iter_length", 1,
+      )
+      let map_ptr = alloc_temp_local(ctx)
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_untag_ptr_i32(buf)
+      emit_local_set(buf, map_ptr)
+      emit_builder_follow_forwarding(ctx, buf, map_ptr)
+      emit_local_get(buf, map_ptr)
+      emit_i32_load(buf, 4)
+      emit_i64_extend_i32_s(buf)
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shl(buf)
+    }
+    "Map::iter_get" if !ctx.use_js_strings => {
+      // Map::iter_get(map, idx) -> direct key slot read.
+      // This preserves Map::keys element representation without allocating a
+      // fresh key array for each Iterable access.
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "Map::iter_get", 2,
+      )
+      let map_ptr = alloc_temp_local(ctx)
+      let map_len = alloc_temp_local(ctx)
+      let idx_local = alloc_temp_local(ctx)
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_untag_ptr_i32(buf)
+      emit_local_set(buf, map_ptr)
+      emit_builder_follow_forwarding(ctx, buf, map_ptr)
+      emit_local_get(buf, map_ptr)
+      emit_i32_load(buf, 4)
+      emit_local_set(buf, map_len)
+      compile_expr_i32(ctx, buf, pos_args[1])
+      emit_untag_int_i32(buf)
+      emit_local_set(buf, idx_local)
+      emit_local_get(buf, idx_local)
+      emit_i32_const_raw(buf, 0)
+      emit_i32_lt_s(buf)
+      emit_local_get(buf, idx_local)
+      emit_local_get(buf, map_len)
+      emit_i32_ge_s(buf)
+      emit_i32_or(buf)
+      buf.push((4).to_byte()) // if (out of bounds)
+      buf.push((64).to_byte()) // void
+      buf.push((0).to_byte()) // unreachable (trap)
+      buf.push((11).to_byte()) // end if
+      emit_local_get(buf, map_ptr)
+      emit_local_get(buf, idx_local)
+      emit_i32_const_raw(buf, 3)
+      emit_i32_shl(buf)
+      emit_i32_add(buf)
+      emit_i32_load(buf, 8)
+      emit_i64_extend_i32_u(buf)
+      emit_i64_const_raw(buf, tag_obj.to_int64())
+      emit_i64_or(buf)
+    }
     "Map::values" => {
       // map_values(map) -> allocate new array with values from map
       let pos_args = extract_positional_exprs_with_arity(args, "Map::values", 1)
