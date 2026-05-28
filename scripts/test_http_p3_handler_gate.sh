@@ -9,6 +9,7 @@ echo "=== HTTP P3 handler gate ==="
 PASS=0
 FAIL=0
 TMP_FILES=()
+OUT_DIR="${VIBE_HTTP_P3_HANDLER_GATE_OUT_DIR:-$PROJECT_ROOT/_build/http_p3_handler_gate}"
 
 cleanup() {
   if [ "${#TMP_FILES[@]}" -gt 0 ]; then
@@ -27,11 +28,12 @@ strip_fixture_data() {
 }
 
 HANDLER_SRC="$(strip_fixture_data fixtures/http_p3_handler_string.vibe)"
+mkdir -p "$OUT_DIR"
 
 # --- Sub-gate 1: Component string lift validation ---
 echo "--- 1. Component string lift (handler pattern) ---"
 
-COMPONENT="dist/http_p3_handler_string.component.wasm"
+COMPONENT="$OUT_DIR/http_p3_handler_string.component.wasm"
 moon run --target native src/cmd/vibe -- compile --component-string-lift "$HANDLER_SRC" -o "$COMPONENT" 2>/dev/null
 
 if [ ! -f "$COMPONENT" ]; then
@@ -104,7 +106,7 @@ rm -f "$REJECT_SRC"
 echo ""
 echo "--- 3. Core wasm exports (handler + cabi_realloc + memory) ---"
 
-CORE_WASM="dist/http_p3_handler_string.wasm"
+CORE_WASM="$OUT_DIR/http_p3_handler_string.wasm"
 moon run --target native src/cmd/vibe -- compile --wasm --force-cabi-realloc "$HANDLER_SRC" -o "$CORE_WASM" 2>/dev/null
 
 EXPORTS=$(wasm-tools dump "$CORE_WASM" 2>/dev/null | grep 'export Export' || true)
