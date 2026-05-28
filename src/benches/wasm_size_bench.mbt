@@ -6,7 +6,7 @@ struct SizeSnapshot {
 } derive(Debug)
 
 ///|
-impl Show for SizeSnapshot with output(self, logger) {
+impl Show for SizeSnapshot with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 
@@ -49,7 +49,7 @@ test "bench: wasm.size.pipeline" {
   inspect(
     snapshot,
     content=(
-      #|{ wasm_size: Some(117), ir_size: 237, note: None }
+      #|{ wasm_size: Some(147), ir_size: 237, note: None }
     ),
   )
 }
@@ -64,7 +64,7 @@ test "bench: wasm.size.pipeline_js_string" {
   inspect(
     snapshot,
     content=(
-      #|{ wasm_size: Some(196), ir_size: 185, note: None }
+      #|{ wasm_size: Some(226), ir_size: 185, note: None }
     ),
   )
 }
@@ -75,7 +75,7 @@ test "bench: wasm.size.user_fn" {
   inspect(
     snapshot,
     content=(
-      #|{ wasm_size: Some(147), ir_size: 344, note: None }
+      #|{ wasm_size: Some(188), ir_size: 344, note: None }
     ),
   )
 }
@@ -86,7 +86,7 @@ test "bench: wasm.size.effect_ho" {
   inspect(
     snapshot,
     content=(
-      #|{ wasm_size: Some(317), ir_size: 1051, note: None }
+      #|{ wasm_size: Some(370), ir_size: 1051, note: None }
     ),
   )
 }

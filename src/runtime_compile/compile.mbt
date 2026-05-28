@@ -2704,9 +2704,54 @@ pub fn compile_module_component(
 }
 
 ///|
+fn component_lift_type_is_string(ty : @core.Type) -> Bool {
+  match ty {
+    @core.Type::String => true
+    @core.Type::Named(name="String", args=[]) => true
+    _ => false
+  }
+}
+
+///|
+fn component_lift_param_name(
+  source_params : Array[@core.FuncParam],
+  typed_param : @core.FuncParam,
+  index : Int,
+) -> String {
+  if index < source_params.length() && source_params[index].name != "" {
+    source_params[index].name
+  } else {
+    typed_param.name
+  }
+}
+
+///|
+fn component_lift_source_params(expr : @core.Expr) -> Array[@core.FuncParam] {
+  match expr {
+    @core.Expr::Fn(params~, ..) => params
+    @core.Expr::Block(body~, ..) => {
+      for stmt in body.stmts {
+        match stmt {
+          @core.Stmt::Expr(expr=@core.Expr::Call(args~, ..), ..) =>
+            if args.length() == 1 {
+              match args[0].expr {
+                @core.Expr::Fn(params~, ..) => return params
+                _ => ()
+              }
+            }
+          _ => ()
+        }
+      }
+      []
+    }
+    _ => []
+  }
+}
+
+///|
 /// Auto-detect exported function with string params and compile to Component
-/// with string lift trampoline. Scans AST for the first ExportLet with Fn
-/// whose params include Type::String.
+/// with string lift trampoline. Scans the first exported Fn whose checked
+/// function type includes String params.
 pub fn compile_module_component_string_lift_auto(
   db : @runtime.VibeDb,
   path : String,
@@ -2734,25 +2779,48 @@ pub fn compile_module_component_string_lift_auto(
   let mut string_result = false
   for stmt in compiled.ast.stmts {
     match stmt {
-      @core.Stmt::ExportLet(name~, expr~, ..) =>
-        match expr {
-          @core.Expr::Fn(params~, ret~, ..) => {
-            for p in params {
-              if p.ty == @core.Type::String ||
-                p.ty == @core.Type::Named(name="String", args=[]) {
-                string_param_names.push(p.name)
+      @core.Stmt::ExportLet(name~, expr~, ..) => {
+        let source_params = component_lift_source_params(expr)
+        let found_param_names : Array[String] = []
+        let mut found_string_result = false
+        match compiled.type_env.get(name) {
+          Some(@core.Type::Func(params=typed_params, ret=typed_ret, ..)) => {
+            for i in 0..<typed_params.length() {
+              let typed_param = typed_params[i]
+              if component_lift_type_is_string(typed_param.ty) {
+                found_param_names.push(
+                  component_lift_param_name(source_params, typed_param, i),
+                )
               }
             }
-            if string_param_names.length() > 0 {
-              target_func_name = Some(name)
-              string_param_count = string_param_names.length()
-              string_result = ret == Some(@core.Type::String) ||
-                ret == Some(@core.Type::Named(name="String", args=[]))
-              break
-            }
+            found_string_result = component_lift_type_is_string(typed_ret)
           }
-          _ => ()
+          _ =>
+            match expr {
+              @core.Expr::Fn(params~, ret~, ..) => {
+                for p in params {
+                  if component_lift_type_is_string(p.ty) {
+                    found_param_names.push(p.name)
+                  }
+                }
+                found_string_result = match ret {
+                  Some(r) => component_lift_type_is_string(r)
+                  None => false
+                }
+              }
+              _ => ()
+            }
         }
+        if found_param_names.length() > 0 {
+          target_func_name = Some(name)
+          string_param_count = found_param_names.length()
+          for param_name in found_param_names {
+            string_param_names.push(param_name)
+          }
+          string_result = found_string_result
+          break
+        }
+      }
       _ => ()
     }
   }

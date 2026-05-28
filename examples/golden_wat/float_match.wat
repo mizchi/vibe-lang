@@ -1,10 +1,10 @@
 (module
   (type (;0;) (func (result i64)))
   (memory (;0;) 1024)
-  (export "_start" (func 1))
-  (export "_vibe_run_tagged" (func 0))
+  (export "_start" (func $_start))
+  (export "_vibe_run_tagged" (func $__vibe_run))
   (export "memory" (memory 0))
-  (func (;0;) (type 0) (result i64)
+  (func $__vibe_run (;0;) (type 0) (result i64)
     (local i32 i64 i32 i32 i32 i32)
     i32.const 12
     local.tee 0
@@ -47,9 +47,9 @@
     local.set 1
     i64.const 0
   )
-  (func (;1;) (type 0) (result i64)
+  (func $_start (;1;) (type 0) (result i64)
     (local i64)
-    call 0
+    call $__vibe_run
     local.tee 0
     i64.const 2
     i64.shr_s

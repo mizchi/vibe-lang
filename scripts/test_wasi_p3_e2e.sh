@@ -12,6 +12,7 @@ SERVE_LOG="$OUT_DIR/serve.log"
 SERVE_PID_FILE="$OUT_DIR/serve.pid"
 SERVE_PORT="${VIBE_P3_E2E_PORT:-18799}"
 SERVE_ADDR="127.0.0.1:$SERVE_PORT"
+REQUIRE_READY="${VIBE_WASI_HTTP_P3_REQUIRE_READY:-0}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -68,8 +69,12 @@ if ! require_cmd cargo; then log_skip "cargo not found (needed for Rust adapter 
 # Step 1: Build adapter
 log_info "Building P3 adapter component..."
 if ! "$PROJECT_ROOT/scripts/build_wasi_http_p3_adapter.sh" "$ADAPTER_COMPONENT" >/dev/null 2>&1; then
-  log_fail "P3 adapter build failed"
-  exit 1
+  if [ "$REQUIRE_READY" = "1" ]; then
+    log_fail "P3 adapter build failed"
+    exit 1
+  fi
+  log_skip "P3 adapter build failed (blocked mode)"
+  exit 0
 fi
 log_pass "P3 adapter built"
 

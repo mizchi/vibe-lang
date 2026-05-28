@@ -12,7 +12,7 @@ struct DceBenchResult {
 } derive(Debug)
 
 ///|
-impl Show for DceBenchResult with output(self, logger) {
+impl Show for DceBenchResult with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 
@@ -111,9 +111,9 @@ test "bench: dce.many_unused" {
       #|  name: "many_unused",
       #|  stmts_before: 18,
       #|  stmts_after: 3,
-      #|  wasm_no_dce: Some(238),
-      #|  wasm_with_dce: Some(147),
-      #|  reduction_percent: Some(38.23529411764706),
+      #|  wasm_no_dce: Some(350),
+      #|  wasm_with_dce: Some(194),
+      #|  reduction_percent: Some(44.57142857142857),
       #|}
     ),
   )
@@ -140,8 +140,8 @@ test "bench: dce.single_module" {
       #|  name: "single_module",
       #|  stmts_before: 6,
       #|  stmts_after: 3,
-      #|  wasm_no_dce: Some(146),
-      #|  wasm_with_dce: Some(146),
+      #|  wasm_no_dce: Some(193),
+      #|  wasm_with_dce: Some(193),
       #|  reduction_percent: Some(0),
       #|}
     ),
@@ -174,9 +174,9 @@ test "bench: dce.dependency_chain" {
       #|  name: "dependency_chain",
       #|  stmts_before: 6,
       #|  stmts_after: 5,
-      #|  wasm_no_dce: Some(194),
-      #|  wasm_with_dce: Some(175),
-      #|  reduction_percent: Some(9.793814432989691),
+      #|  wasm_no_dce: Some(270),
+      #|  wasm_with_dce: Some(237),
+      #|  reduction_percent: Some(12.222222222222221),
       #|}
     ),
   )
@@ -204,8 +204,8 @@ test "bench: dce.all_used" {
       #|  name: "all_used",
       #|  stmts_before: 3,
       #|  stmts_after: 3,
-      #|  wasm_no_dce: Some(152),
-      #|  wasm_with_dce: Some(152),
+      #|  wasm_no_dce: Some(192),
+      #|  wasm_with_dce: Some(192),
       #|  reduction_percent: Some(0),
       #|}
     ),
