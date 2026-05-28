@@ -191,6 +191,7 @@ priv struct GcLocalInfo {
 priv struct GcFuncCtx {
   locals : Map[String, GcLocalInfo]
   map_value_kinds : Map[String, GcValKind]
+  array_builder_elem_hints : Map[String, GcValKind]
   local_kinds : Array[GcValKind]
   param_count : Int
   closure_call_types : Map[String, Int]
@@ -2135,6 +2136,7 @@ fn GcFuncCtx::new(
 ) -> GcFuncCtx raise WasmGenError {
   let locals : Map[String, GcLocalInfo] = {}
   let map_value_kinds : Map[String, GcValKind] = {}
+  let array_builder_elem_hints : Map[String, GcValKind] = {}
   let local_kinds : Array[GcValKind] = []
   let closure_call_types : Map[String, Int] = {}
   let mut idx = 0
@@ -2182,6 +2184,7 @@ fn GcFuncCtx::new(
   {
     locals,
     map_value_kinds,
+    array_builder_elem_hints,
     local_kinds,
     param_count: idx,
     closure_call_types,
@@ -2226,6 +2229,346 @@ fn clone_locals_gc(src : Map[String, GcLocalInfo]) -> Map[String, GcLocalInfo] {
 }
 
 ///|
+fn gc_array_builder_kind_for_elem(
+  ctx : GcCodegenCtx,
+  elem_kind : GcValKind,
+) -> GcValKind {
+  let arr_type = ensure_array_type(ctx.types, ctx.array_type_index, elem_kind)
+  let builder_fields : Array[GcValKind] = [
+    GcValKind::I32,
+    GcValKind::Ref(arr_type),
+  ]
+  let builder_type = ensure_struct_type(
+    ctx.types,
+    ctx.struct_type_index,
+    builder_fields,
+  )
+  GcValKind::Ref(builder_type)
+}
+
+///|
+fn emit_array_builder_new_for_elem_gc(
+  ctx : GcCodegenCtx,
+  buf : GcByteBuf,
+  elem_kind : GcValKind,
+) -> Unit {
+  let init_cap = 8
+  let arr_type = ensure_array_type(ctx.types, ctx.array_type_index, elem_kind)
+  let builder_fields : Array[GcValKind] = [
+    GcValKind::I32,
+    GcValKind::Ref(arr_type),
+  ]
+  let builder_type = ensure_struct_type(
+    ctx.types,
+    ctx.struct_type_index,
+    builder_fields,
+  )
+  emit_i32_const_gc(buf, 0)
+  emit_i32_const_gc(buf, init_cap)
+  emit_array_new_default_gc(buf, arr_type)
+  emit_struct_new_gc(buf, builder_type)
+}
+
+///|
+fn positional_exprs_no_raise_gc(
+  args : Array[@core.CallArg],
+) -> Array[@core.Expr] {
+  let out : Array[@core.Expr] = []
+  for arg in args {
+    match arg.label {
+      Some(_) => ()
+      None => out.push(arg.expr)
+    }
+  }
+  out
+}
+
+///|
+fn is_array_builder_new_expr_gc(expr : @core.Expr) -> Bool {
+  match expr {
+    @core.Expr::Call(name~, args~, ..) => {
+      let name = @core.lower_wasm_intrinsic_name(name)
+      name == "ArrayBuilder::new" &&
+      positional_exprs_no_raise_gc(args).is_empty()
+    }
+    _ => false
+  }
+}
+
+///|
+fn array_builder_new_elem_hint_gc(
+  fctx : GcFuncCtx,
+  name : String,
+  expr : @core.Expr,
+) -> GcValKind? {
+  if is_array_builder_new_expr_gc(expr) {
+    fctx.array_builder_elem_hints.get(name)
+  } else {
+    None
+  }
+}
+
+///|
+fn gc_scan_ctx_from_gc(fctx : GcFuncCtx) -> GcFuncCtx {
+  let closure_call_types : Map[String, Int] = {}
+  for k, v in fctx.closure_call_types {
+    closure_call_types[k] = v
+  }
+  {
+    locals: clone_locals_gc(fctx.locals),
+    map_value_kinds: clone_kind_map_gc(fctx.map_value_kinds),
+    array_builder_elem_hints: clone_kind_map_gc(fctx.array_builder_elem_hints),
+    local_kinds: [],
+    param_count: fctx.param_count,
+    closure_call_types,
+    current_rec_binding: fctx.current_rec_binding,
+    enclosing_function_name: fctx.enclosing_function_name,
+    direct_rec_call_name: fctx.direct_rec_call_name,
+    direct_rec_call_func_idx: fctx.direct_rec_call_func_idx,
+    direct_rec_call_type_idx: fctx.direct_rec_call_type_idx,
+  }
+}
+
+///|
+fn gc_try_infer_expr_kind(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  expr : @core.Expr,
+) -> GcValKind? {
+  let result : Result[GcValKind, WasmGenError] = try? infer_expr_kind_gc(
+    ctx, fctx, expr,
+  )
+  match result {
+    Ok(kind) => Some(kind)
+    Err(_) => None
+  }
+}
+
+///|
+fn record_array_builder_hint_gc(
+  hints : Map[String, GcValKind],
+  name : String,
+  elem_kind : GcValKind,
+) -> Unit {
+  match hints.get(name) {
+    Some(existing) =>
+      if existing != elem_kind {
+        hints[name] = GcValKind::EqRef
+      }
+    None => hints[name] = elem_kind
+  }
+}
+
+///|
+fn scan_array_builder_hints_module_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  body : @core.Module,
+  hints : Map[String, GcValKind],
+) -> Unit {
+  for stmt in body.stmts {
+    scan_array_builder_hints_stmt_gc(ctx, fctx, stmt, hints)
+  }
+}
+
+///|
+fn scan_array_builder_hints_stmt_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  stmt : @core.Stmt,
+  hints : Map[String, GcValKind],
+) -> Unit {
+  match stmt {
+    @core.Stmt::Let(rec~, name~, expr~, ..) => {
+      let _ = rec
+      scan_array_builder_hints_expr_gc(ctx, fctx, expr, hints)
+      match gc_try_infer_expr_kind(ctx, fctx, expr) {
+        Some(kind) => {
+          fctx.locals[name] = { idx: 0, kind }
+          let map_value : Result[GcValKind?, WasmGenError] = try? infer_map_value_kind_from_expr_gc(
+            ctx, fctx, expr,
+          )
+          match map_value {
+            Ok(Some(value_kind)) => fctx.map_value_kinds[name] = value_kind
+            Ok(None) | Err(_) => ()
+          }
+        }
+        None => ()
+      }
+      ignore(try? track_closure_binding_gc(ctx, fctx, name, expr))
+    }
+    @core.Stmt::LetMut(name~, expr~, ..)
+    | @core.Stmt::Assign(name~, expr~, ..) => {
+      scan_array_builder_hints_expr_gc(ctx, fctx, expr, hints)
+      match gc_try_infer_expr_kind(ctx, fctx, expr) {
+        Some(kind) => {
+          fctx.locals[name] = { idx: 0, kind }
+          let map_value : Result[GcValKind?, WasmGenError] = try? infer_map_value_kind_from_expr_gc(
+            ctx, fctx, expr,
+          )
+          match map_value {
+            Ok(Some(value_kind)) => fctx.map_value_kinds[name] = value_kind
+            Ok(None) | Err(_) => ()
+          }
+        }
+        None => ()
+      }
+      ignore(try? track_closure_binding_gc(ctx, fctx, name, expr))
+    }
+    @core.Stmt::Expr(expr~, ..) =>
+      scan_array_builder_hints_expr_gc(ctx, fctx, expr, hints)
+    @core.Stmt::LetPat(expr~, ..) | @core.Stmt::LetPatElse(expr~, ..) =>
+      scan_array_builder_hints_expr_gc(ctx, fctx, expr, hints)
+    @core.Stmt::IndexAssign(target~, index~, value~, ..) => {
+      scan_array_builder_hints_expr_gc(ctx, fctx, target, hints)
+      scan_array_builder_hints_expr_gc(ctx, fctx, index, hints)
+      scan_array_builder_hints_expr_gc(ctx, fctx, value, hints)
+    }
+    @core.Stmt::ExportLet(rec~, name~, expr~, span~) =>
+      scan_array_builder_hints_stmt_gc(
+        ctx,
+        fctx,
+        @core.Stmt::Let(rec~, name~, expr~, span~),
+        hints,
+      )
+    @core.Stmt::InternalExportLet(rec~, name~, expr~, span~) =>
+      scan_array_builder_hints_stmt_gc(
+        ctx,
+        fctx,
+        @core.Stmt::Let(rec~, name~, expr~, span~),
+        hints,
+      )
+    _ => ()
+  }
+}
+
+///|
+fn scan_array_builder_hints_expr_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  expr : @core.Expr,
+  hints : Map[String, GcValKind],
+) -> Unit {
+  match expr {
+    @core.Expr::Call(name~, args~, ..) => {
+      let name = @core.lower_wasm_intrinsic_name(name)
+      let pos_args = positional_exprs_no_raise_gc(args)
+      if name == "ArrayBuilder::push" && pos_args.length() == 2 {
+        match pos_args[0] {
+          @core.Expr::Ident(name=builder_name, ..) =>
+            match gc_try_infer_expr_kind(ctx, fctx, pos_args[1]) {
+              Some(elem_kind) =>
+                record_array_builder_hint_gc(hints, builder_name, elem_kind)
+              None => ()
+            }
+          _ => ()
+        }
+      }
+      for arg in args {
+        scan_array_builder_hints_expr_gc(ctx, fctx, arg.expr, hints)
+      }
+    }
+    @core.Expr::Block(body~, ..) => {
+      let child = gc_scan_ctx_from_gc(fctx)
+      scan_array_builder_hints_module_gc(ctx, child, body, hints)
+    }
+    @core.Expr::If(cond~, then_body~, else_body~, ..) => {
+      scan_array_builder_hints_expr_gc(ctx, fctx, cond, hints)
+      let then_ctx = gc_scan_ctx_from_gc(fctx)
+      scan_array_builder_hints_module_gc(ctx, then_ctx, then_body, hints)
+      let else_ctx = gc_scan_ctx_from_gc(fctx)
+      scan_array_builder_hints_module_gc(ctx, else_ctx, else_body, hints)
+    }
+    @core.Expr::While(cond~, body~, ..) => {
+      scan_array_builder_hints_expr_gc(ctx, fctx, cond, hints)
+      let child = gc_scan_ctx_from_gc(fctx)
+      scan_array_builder_hints_module_gc(ctx, child, body, hints)
+    }
+    @core.Expr::ForIn(iterable~, body~, ..) => {
+      scan_array_builder_hints_expr_gc(ctx, fctx, iterable, hints)
+      let child = gc_scan_ctx_from_gc(fctx)
+      scan_array_builder_hints_module_gc(ctx, child, body, hints)
+    }
+    @core.Expr::Loop(params~, body~, ..) => {
+      for param in params {
+        scan_array_builder_hints_expr_gc(ctx, fctx, param.init, hints)
+      }
+      let child = gc_scan_ctx_from_gc(fctx)
+      scan_array_builder_hints_module_gc(ctx, child, body, hints)
+    }
+    @core.Expr::Match(scrutinee~, arms~, ..) => {
+      scan_array_builder_hints_expr_gc(ctx, fctx, scrutinee, hints)
+      for arm in arms {
+        match arm.cond {
+          Some(cond) => scan_array_builder_hints_expr_gc(ctx, fctx, cond, hints)
+          None => ()
+        }
+        scan_array_builder_hints_expr_gc(ctx, fctx, arm.expr, hints)
+      }
+    }
+    @core.Expr::Handle(body~, arms~, ..) => {
+      let child = gc_scan_ctx_from_gc(fctx)
+      scan_array_builder_hints_module_gc(ctx, child, body, hints)
+      for arm in arms {
+        scan_array_builder_hints_expr_gc(ctx, fctx, arm.expr, hints)
+      }
+    }
+    @core.Expr::Array(items~, ..) | @core.Expr::Tuple(items~, ..) =>
+      for item in items {
+        scan_array_builder_hints_expr_gc(ctx, fctx, item, hints)
+      }
+    @core.Expr::Record(fields~, ..) | @core.Expr::StructLit(fields~, ..) =>
+      for field in fields {
+        scan_array_builder_hints_expr_gc(ctx, fctx, field.expr, hints)
+      }
+    @core.Expr::Map(fields~, ..) =>
+      for field in fields {
+        scan_array_builder_hints_expr_gc(ctx, fctx, field.expr, hints)
+      }
+    @core.Expr::TupleIndex(expr=inner, ..)
+    | @core.Expr::Break(value=Some(inner), ..)
+    | @core.Expr::Return(value=Some(inner), ..)
+    | @core.Expr::Yield(expr=inner, ..)
+    | @core.Expr::Spread(expr=inner, ..) =>
+      scan_array_builder_hints_expr_gc(ctx, fctx, inner, hints)
+    @core.Expr::Continue(args~, ..) =>
+      for arg in args {
+        scan_array_builder_hints_expr_gc(ctx, fctx, arg, hints)
+      }
+    @core.Expr::Perform(args~, ..) =>
+      for arg in args {
+        scan_array_builder_hints_expr_gc(ctx, fctx, arg.expr, hints)
+      }
+    @core.Expr::Fn(..)
+    | @core.Expr::Int(..)
+    | @core.Expr::Float(..)
+    | @core.Expr::Double(..)
+    | @core.Expr::Bool(..)
+    | @core.Expr::Char(..)
+    | @core.Expr::String(..)
+    | @core.Expr::StringInterp(..)
+    | @core.Expr::Ident(..)
+    | @core.Expr::Placeholder(..)
+    | @core.Expr::Break(value=None, ..)
+    | @core.Expr::Return(value=None, ..) => ()
+  }
+}
+
+///|
+fn seed_array_builder_hints_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  body : @core.Module,
+) -> Unit {
+  let scan_ctx = gc_scan_ctx_from_gc(fctx)
+  let hints : Map[String, GcValKind] = {}
+  scan_array_builder_hints_module_gc(ctx, scan_ctx, body, hints)
+  for name, elem_kind in hints {
+    fctx.array_builder_elem_hints[name] = elem_kind
+  }
+}
+
+///|
 fn infer_block_kind_gc(
   ctx : GcCodegenCtx,
   fctx : GcFuncCtx,
@@ -2242,6 +2585,7 @@ fn infer_block_kind_gc(
   let temp_ctx = GcFuncCtx::{
     locals: clone_locals_gc(fctx.locals),
     map_value_kinds: clone_kind_map_gc(fctx.map_value_kinds),
+    array_builder_elem_hints: clone_kind_map_gc(fctx.array_builder_elem_hints),
     local_kinds: [],
     param_count: fctx.param_count,
     closure_call_types: temp_cct,
@@ -2251,6 +2595,7 @@ fn infer_block_kind_gc(
     direct_rec_call_func_idx: -1,
     direct_rec_call_type_idx: -1,
   }
+  seed_array_builder_hints_gc(ctx, temp_ctx, body)
   for i in 0..<len {
     let stmt = body.stmts[i]
     let is_last = i == len - 1
@@ -2278,7 +2623,12 @@ fn infer_block_kind_gc(
               }
             }
             _ => {
-              let kind = infer_expr_kind_gc(ctx, temp_ctx, expr)
+              let kind = match
+                array_builder_new_elem_hint_gc(temp_ctx, name, expr) {
+                Some(elem_kind) =>
+                  gc_array_builder_kind_for_elem(ctx, elem_kind)
+                None => infer_expr_kind_gc(ctx, temp_ctx, expr)
+              }
               temp_ctx.locals[name] = { idx: 0, kind }
               match infer_map_value_kind_from_expr_gc(ctx, temp_ctx, expr) {
                 Some(value_kind) => temp_ctx.map_value_kinds[name] = value_kind
@@ -2290,7 +2640,11 @@ fn infer_block_kind_gc(
             }
           }
         } else {
-          let kind = infer_expr_kind_gc(ctx, temp_ctx, expr)
+          let kind = match
+            array_builder_new_elem_hint_gc(temp_ctx, name, expr) {
+            Some(elem_kind) => gc_array_builder_kind_for_elem(ctx, elem_kind)
+            None => infer_expr_kind_gc(ctx, temp_ctx, expr)
+          }
           temp_ctx.locals[name] = { idx: 0, kind }
           match infer_map_value_kind_from_expr_gc(ctx, temp_ctx, expr) {
             Some(value_kind) => temp_ctx.map_value_kinds[name] = value_kind
@@ -2302,7 +2656,10 @@ fn infer_block_kind_gc(
           }
         }
       @core.Stmt::LetMut(name~, expr~, ..) => {
-        let kind = infer_expr_kind_gc(ctx, temp_ctx, expr)
+        let kind = match array_builder_new_elem_hint_gc(temp_ctx, name, expr) {
+          Some(elem_kind) => gc_array_builder_kind_for_elem(ctx, elem_kind)
+          None => infer_expr_kind_gc(ctx, temp_ctx, expr)
+        }
         temp_ctx.locals[name] = { idx: 0, kind }
         match infer_map_value_kind_from_expr_gc(ctx, temp_ctx, expr) {
           Some(value_kind) => temp_ctx.map_value_kinds[name] = value_kind
@@ -10367,6 +10724,9 @@ fn compile_expr_gc(
       let lifted_fctx = GcFuncCtx::{
         locals: {},
         map_value_kinds: clone_kind_map_gc(fctx.map_value_kinds),
+        array_builder_elem_hints: clone_kind_map_gc(
+          fctx.array_builder_elem_hints,
+        ),
         local_kinds: [],
         param_count: 1 + params.length(),
         closure_call_types: lifted_closure_types,
@@ -10668,6 +11028,9 @@ fn compile_stmt_gc(
             let rec_compile_fctx = GcFuncCtx::{
               locals: clone_locals_gc(fctx.locals),
               map_value_kinds: clone_kind_map_gc(fctx.map_value_kinds),
+              array_builder_elem_hints: clone_kind_map_gc(
+                fctx.array_builder_elem_hints,
+              ),
               local_kinds: [],
               param_count: fctx.param_count,
               closure_call_types: rec_compile_cct,
@@ -10685,14 +11048,22 @@ fn compile_stmt_gc(
             }
           }
           _ => {
-            let kind = infer_expr_kind_gc(ctx, fctx, expr)
+            let elem_hint = array_builder_new_elem_hint_gc(fctx, name, expr)
+            let kind = match elem_hint {
+              Some(elem_kind) => gc_array_builder_kind_for_elem(ctx, elem_kind)
+              None => infer_expr_kind_gc(ctx, fctx, expr)
+            }
             let idx = bind_local_gc(fctx, name, kind)
             match infer_map_value_kind_from_expr_gc(ctx, fctx, expr) {
               Some(value_kind) => fctx.map_value_kinds[name] = value_kind
               None => ()
             }
             track_closure_binding_gc(ctx, fctx, name, expr)
-            compile_expr_gc(ctx, fctx, buf, expr)
+            match elem_hint {
+              Some(elem_kind) =>
+                emit_array_builder_new_for_elem_gc(ctx, buf, elem_kind)
+              None => compile_expr_gc(ctx, fctx, buf, expr)
+            }
             if is_last {
               emit_local_tee_gc(buf, idx)
             } else {
@@ -10701,14 +11072,22 @@ fn compile_stmt_gc(
           }
         }
       } else {
-        let kind = infer_expr_kind_gc(ctx, fctx, expr)
+        let elem_hint = array_builder_new_elem_hint_gc(fctx, name, expr)
+        let kind = match elem_hint {
+          Some(elem_kind) => gc_array_builder_kind_for_elem(ctx, elem_kind)
+          None => infer_expr_kind_gc(ctx, fctx, expr)
+        }
         let idx = bind_local_gc(fctx, name, kind)
         match infer_map_value_kind_from_expr_gc(ctx, fctx, expr) {
           Some(value_kind) => fctx.map_value_kinds[name] = value_kind
           None => ()
         }
         track_closure_binding_gc(ctx, fctx, name, expr)
-        compile_expr_gc(ctx, fctx, buf, expr)
+        match elem_hint {
+          Some(elem_kind) =>
+            emit_array_builder_new_for_elem_gc(ctx, buf, elem_kind)
+          None => compile_expr_gc(ctx, fctx, buf, expr)
+        }
         if is_last {
           emit_local_tee_gc(buf, idx)
         } else {
@@ -10716,14 +11095,22 @@ fn compile_stmt_gc(
         }
       }
     @core.Stmt::LetMut(name~, expr~, ..) => {
-      let kind = infer_expr_kind_gc(ctx, fctx, expr)
+      let elem_hint = array_builder_new_elem_hint_gc(fctx, name, expr)
+      let kind = match elem_hint {
+        Some(elem_kind) => gc_array_builder_kind_for_elem(ctx, elem_kind)
+        None => infer_expr_kind_gc(ctx, fctx, expr)
+      }
       let idx = bind_local_gc(fctx, name, kind)
       match infer_map_value_kind_from_expr_gc(ctx, fctx, expr) {
         Some(value_kind) => fctx.map_value_kinds[name] = value_kind
         None => ()
       }
       track_closure_binding_gc(ctx, fctx, name, expr)
-      compile_expr_gc(ctx, fctx, buf, expr)
+      match elem_hint {
+        Some(elem_kind) =>
+          emit_array_builder_new_for_elem_gc(ctx, buf, elem_kind)
+        None => compile_expr_gc(ctx, fctx, buf, expr)
+      }
       if is_last {
         emit_local_tee_gc(buf, idx)
       } else {
@@ -10892,6 +11279,7 @@ fn compile_block_expr_gc(
     emit_i32_const_gc(buf, 0)
     return
   }
+  seed_array_builder_hints_gc(ctx, fctx, body)
   for i in 0..<len {
     let is_last = i == len - 1
     compile_stmt_gc(ctx, fctx, buf, body.stmts[i], is_last)

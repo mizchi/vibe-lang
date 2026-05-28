@@ -14,17 +14,19 @@ fn MemIoAdapter::new(cwd : String) -> MemIoAdapter {
 }
 
 ///|
-pub impl @io.FileSystemAdapter for MemIoAdapter with current_dir_or_root(self) {
+pub impl @io.FileSystemAdapter for MemIoAdapter with fn current_dir_or_root(
+  self,
+) {
   self.cwd
 }
 
 ///|
-pub impl @io.FileSystemAdapter for MemIoAdapter with path_exists(self, path) {
+pub impl @io.FileSystemAdapter for MemIoAdapter with fn path_exists(self, path) {
   self.fs.exists(path)
 }
 
 ///|
-pub impl @io.FileSystemAdapter for MemIoAdapter with create_dir(self, path) {
+pub impl @io.FileSystemAdapter for MemIoAdapter with fn create_dir(self, path) {
   self.fs.mkdir_p(path) catch {
     e => return Err(e.to_string())
   }
@@ -32,7 +34,7 @@ pub impl @io.FileSystemAdapter for MemIoAdapter with create_dir(self, path) {
 }
 
 ///|
-pub impl @io.FileSystemAdapter for MemIoAdapter with read_dir(self, path) {
+pub impl @io.FileSystemAdapter for MemIoAdapter with fn read_dir(self, path) {
   let entries = self.fs.readdir(path) catch { e => return Err(e.to_string()) }
   let out : Array[String] = []
   for entry in entries {
@@ -42,7 +44,7 @@ pub impl @io.FileSystemAdapter for MemIoAdapter with read_dir(self, path) {
 }
 
 ///|
-pub impl @io.FileSystemAdapter for MemIoAdapter with read_string(self, path) {
+pub impl @io.FileSystemAdapter for MemIoAdapter with fn read_string(self, path) {
   let content = self.fs.read_string(path) catch {
     e => return Err(e.to_string())
   }
@@ -50,13 +52,13 @@ pub impl @io.FileSystemAdapter for MemIoAdapter with read_string(self, path) {
 }
 
 ///|
-pub impl @io.FileSystemAdapter for MemIoAdapter with read_bytes(self, path) {
+pub impl @io.FileSystemAdapter for MemIoAdapter with fn read_bytes(self, path) {
   let content = self.fs.read_file(path) catch { e => return Err(e.to_string()) }
   Ok(content)
 }
 
 ///|
-pub impl @io.FileSystemAdapter for MemIoAdapter with write_string(
+pub impl @io.FileSystemAdapter for MemIoAdapter with fn write_string(
   self,
   path,
   content,
@@ -68,7 +70,7 @@ pub impl @io.FileSystemAdapter for MemIoAdapter with write_string(
 }
 
 ///|
-pub impl @io.FileSystemAdapter for MemIoAdapter with write_bytes(
+pub impl @io.FileSystemAdapter for MemIoAdapter with fn write_bytes(
   self,
   path,
   content,
@@ -288,10 +290,12 @@ test "report_to_human includes summary" {
       graph_head: Some("abc"),
       error_count: 0,
       warning_count: 0,
+      source: "",
+      diagnostics: [],
     },
   ])
   assert_true(output.contains("a.vibe: ok (graph_head=abc)"))
-  assert_true(output.contains("summary: errors=0, warnings=0"))
+  assert_false(output.contains("check:"))
 }
 
 ///|
@@ -341,7 +345,7 @@ test "check_file reports dependency error propagation through transitive imports
     Err(err) => fail(err)
   }
   match check_file_with_timing(a, fs) {
-    Ok(((diags, error_count, warning_count), _timing)) => {
+    Ok(((diags, error_count, warning_count), _timing, _source)) => {
       assert_eq(error_count, expected_entry_errors)
       assert_eq(warning_count, 0)
       assert_true(
@@ -366,7 +370,7 @@ test "check_file_with_timing records type timing for no-import file" {
   let entry = root + "/single.vibe"
   wbtest_write_string_or_abort(fs, entry, "let value = 1 + 2\n")
   match check_file_with_timing(entry, fs) {
-    Ok(((_, errors, _warnings), timing)) => {
+    Ok(((_, errors, _warnings), timing, _source)) => {
       assert_eq(errors, 0)
       assert_true(timing.type_us > 0)
       assert_true(timing.type_ms > 0)

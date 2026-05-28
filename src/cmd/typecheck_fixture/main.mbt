@@ -177,12 +177,16 @@ fn main {
       for mismatch in mismatches {
         print_mismatch(mismatch)
       }
-      abort(
+      println(
         "typecheck-fixture: " +
         mismatches.length().to_string() +
         " mismatch(es)",
       )
+      @sys.exit(1)
     }
-    Err(err) => abort("typecheck-fixture: " + err)
+    Err(err) => {
+      println("typecheck-fixture: " + err)
+      @sys.exit(1)
+    }
   }
 }
