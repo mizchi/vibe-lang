@@ -1227,7 +1227,8 @@ fn collect_path_refs_impl(
   let ast = @parser.parse_ast(source) catch {
     e => {
       let _ = stack.pop()
-      return Err("parse: " + e.to_string())
+      let index = @core.LineIndex::build(source)
+      return Err(e.diagnostic().render_with_index(norm, index))
     }
   }
   collect_module_export_refs(
