@@ -12,6 +12,11 @@ PIPELINE_OPT_LEVEL="${VIBE_SELFHOST_PIPELINE_OPT_LEVEL:-}"
 SELFHOST_TEST_JOBS="${VIBE_SELFHOST_BOOTSTRAP_TEST_JOBS:-}"
 SELFHOST_BATCH_CHUNK_SIZE="${VIBE_SELFHOST_BOOTSTRAP_BATCH_CHUNK_SIZE:-1}"
 STAGE_TIMEOUT_SEC="${VIBE_SELFHOST_BOOTSTRAP_STAGE_TIMEOUT_SEC:-1800}"
+BOOTSTRAP_PROFILE="${VIBE_SELFHOST_BOOTSTRAP_PROFILE:-full}"
+RUN_TESTS="${VIBE_SELFHOST_BOOTSTRAP_RUN_TESTS:-1}"
+RUN_DETERMINISTIC="${VIBE_SELFHOST_BOOTSTRAP_RUN_DETERMINISTIC:-1}"
+TEST_SHARD_INDEX="${VIBE_SELFHOST_BOOTSTRAP_TEST_SHARD_INDEX:-}"
+TEST_SHARD_TOTAL="${VIBE_SELFHOST_BOOTSTRAP_TEST_SHARD_TOTAL:-}"
 BATCH_WEIGHT_CACHE_PATH="${VIBE_SELFHOST_BOOTSTRAP_BATCH_WEIGHT_CACHE:-$OUT_DIR/selfhost_test_batch_weights.json}"
 BATCH_WEIGHT_SEED_PATH="${VIBE_SELFHOST_BOOTSTRAP_BATCH_WEIGHT_SEED:-$PROJECT_ROOT/scripts/selfhost_test_batch_weights.seed.json}"
 # Cutover: use selfhost compiler (moonrun) instead of host CLI for wasm compilation.
@@ -116,6 +121,13 @@ is_positive_int() {
     return 1
   fi
   [ "$1" -gt 0 ]
+}
+
+is_bool_01() {
+  case "$1" in
+    0|1) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 detect_default_test_jobs() {
@@ -233,29 +245,67 @@ if [ "$needs_cli_rebuild" -eq 1 ]; then
     moon build --target native --release --target-dir target src/cmd/vibe --warn-list '-29'
 fi
 
-# Build selfhost compiler wasm if cutover is enabled and binary is missing/stale
-if [ "$SELFHOST_CUTOVER" = "1" ]; then
-  needs_selfhost_rebuild=0
-  if [ ! -f "$SELFHOST_COMPILER_WASM" ]; then
-    needs_selfhost_rebuild=1
-  elif find "$PROJECT_ROOT" -maxdepth 1 -type f \( -name 'moon.mod' -o -name 'moon.mod.json' \) -newer "$SELFHOST_COMPILER_WASM" -print -quit 2>/dev/null | grep -q .; then
-    needs_selfhost_rebuild=1
-  elif find "$PROJECT_ROOT/src" -type f \( -name '*.mbt' -o -name 'moon.pkg' \) -newer "$SELFHOST_COMPILER_WASM" -print -quit 2>/dev/null | grep -q .; then
-    needs_selfhost_rebuild=1
-  fi
-  if [ "$needs_selfhost_rebuild" -eq 1 ]; then
-    run_stage "building selfhost compiler (wasm)" \
-      moon build --target wasm src/cmd/vibe_compile_wasi
-  fi
-  if ! command -v moonrun >/dev/null 2>&1; then
-    echo "bootstrap gate failed: moonrun not found (required for VIBE_SELFHOST_CUTOVER=1)" >&2
+if ! is_bool_01 "$RUN_TESTS"; then
+  echo "bootstrap gate failed: VIBE_SELFHOST_BOOTSTRAP_RUN_TESTS must be 0 or 1" >&2
+  exit 1
+fi
+if ! is_bool_01 "$RUN_DETERMINISTIC"; then
+  echo "bootstrap gate failed: VIBE_SELFHOST_BOOTSTRAP_RUN_DETERMINISTIC must be 0 or 1" >&2
+  exit 1
+fi
+if [ "$RUN_TESTS" -eq 0 ] && [ "$RUN_DETERMINISTIC" -eq 0 ]; then
+  echo "bootstrap gate failed: at least one bootstrap section must run" >&2
+  exit 1
+fi
+case "$BOOTSTRAP_PROFILE" in
+  full|pr) ;;
+  *)
+    echo "bootstrap gate failed: VIBE_SELFHOST_BOOTSTRAP_PROFILE must be full or pr" >&2
+    exit 1
+    ;;
+esac
+if [ -n "$TEST_SHARD_INDEX" ] || [ -n "$TEST_SHARD_TOTAL" ]; then
+  if ! is_non_negative_int "$TEST_SHARD_INDEX"; then
+    echo "bootstrap gate failed: VIBE_SELFHOST_BOOTSTRAP_TEST_SHARD_INDEX must be non-negative integer" >&2
     exit 1
   fi
-  echo "[bootstrap] cutover: using selfhost compiler (moonrun)"
-  COMPILE_CMD_ARGS=(moonrun "$SELFHOST_COMPILER_WASM")
+  if ! is_positive_int "$TEST_SHARD_TOTAL"; then
+    echo "bootstrap gate failed: VIBE_SELFHOST_BOOTSTRAP_TEST_SHARD_TOTAL must be positive integer" >&2
+    exit 1
+  fi
+  if [ "$TEST_SHARD_INDEX" -ge "$TEST_SHARD_TOTAL" ]; then
+    echo "bootstrap gate failed: test shard index must be less than total" >&2
+    exit 1
+  fi
+fi
+
+if [ "$RUN_DETERMINISTIC" -eq 1 ]; then
+  # Build selfhost compiler wasm if cutover is enabled and binary is missing/stale.
+  if [ "$SELFHOST_CUTOVER" = "1" ]; then
+    needs_selfhost_rebuild=0
+    if [ ! -f "$SELFHOST_COMPILER_WASM" ]; then
+      needs_selfhost_rebuild=1
+    elif find "$PROJECT_ROOT" -maxdepth 1 -type f \( -name 'moon.mod' -o -name 'moon.mod.json' \) -newer "$SELFHOST_COMPILER_WASM" -print -quit 2>/dev/null | grep -q .; then
+      needs_selfhost_rebuild=1
+    elif find "$PROJECT_ROOT/src" -type f \( -name '*.mbt' -o -name 'moon.pkg' \) -newer "$SELFHOST_COMPILER_WASM" -print -quit 2>/dev/null | grep -q .; then
+      needs_selfhost_rebuild=1
+    fi
+    if [ "$needs_selfhost_rebuild" -eq 1 ]; then
+      run_stage "building selfhost compiler (wasm)" \
+        moon build --target wasm src/cmd/vibe_compile_wasi
+    fi
+    if ! command -v moonrun >/dev/null 2>&1; then
+      echo "bootstrap gate failed: moonrun not found (required for VIBE_SELFHOST_CUTOVER=1)" >&2
+      exit 1
+    fi
+    echo "[bootstrap] cutover: using selfhost compiler (moonrun)"
+    COMPILE_CMD_ARGS=(moonrun "$SELFHOST_COMPILER_WASM")
+  else
+    echo "[bootstrap] cutover: using host CLI"
+    COMPILE_CMD_ARGS=("$VIBE_BIN" compile)
+  fi
 else
-  echo "[bootstrap] cutover: using host CLI"
-  COMPILE_CMD_ARGS=("$VIBE_BIN" compile)
+  echo "[bootstrap] deterministic compile checks: skipped"
 fi
 
 mkdir -p "$OUT_DIR"
@@ -290,7 +340,15 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   printf -- "- %s: %s\n" "selfhost test jobs" "$SELFHOST_TEST_JOBS" >> "$GITHUB_STEP_SUMMARY" || true
   printf -- "- %s: %s\n" "selfhost batch chunk size" "$SELFHOST_BATCH_CHUNK_SIZE" >> "$GITHUB_STEP_SUMMARY" || true
   printf -- "- %s: %ss\n" "stage timeout" "$STAGE_TIMEOUT_SEC" >> "$GITHUB_STEP_SUMMARY" || true
-  printf -- "- %s: %s\n" "cutover" "$( [ "$SELFHOST_CUTOVER" = "1" ] && echo "selfhost (moonrun)" || echo "host CLI" )" >> "$GITHUB_STEP_SUMMARY" || true
+  printf -- "- %s: %s\n" "profile" "$BOOTSTRAP_PROFILE" >> "$GITHUB_STEP_SUMMARY" || true
+  printf -- "- %s: %s\n" "run tests" "$RUN_TESTS" >> "$GITHUB_STEP_SUMMARY" || true
+  printf -- "- %s: %s\n" "run deterministic" "$RUN_DETERMINISTIC" >> "$GITHUB_STEP_SUMMARY" || true
+  if [ -n "$TEST_SHARD_TOTAL" ]; then
+    printf -- "- %s: %s/%s\n" "test shard" "$TEST_SHARD_INDEX" "$TEST_SHARD_TOTAL" >> "$GITHUB_STEP_SUMMARY" || true
+  fi
+  if [ "$RUN_DETERMINISTIC" -eq 1 ]; then
+    printf -- "- %s: %s\n" "cutover" "$( [ "$SELFHOST_CUTOVER" = "1" ] && echo "selfhost (moonrun)" || echo "host CLI" )" >> "$GITHUB_STEP_SUMMARY" || true
+  fi
   printf -- "- %s: %s\n" "batch weight cache" "$BATCH_WEIGHT_CACHE_PATH" >> "$GITHUB_STEP_SUMMARY" || true
   printf -- "- %s: %s\n" "batch weight seed" "$BATCH_WEIGHT_SEED_PATH" >> "$GITHUB_STEP_SUMMARY" || true
 fi
@@ -344,122 +402,156 @@ run_compiled_selfhost_test_shard() {
   fi
 }
 
-SELFHOST_COMPILED_TEST_FILES_SHARD_0=()
-SELFHOST_COMPILED_TEST_FILES_SHARD_1=()
-SELFHOST_COMPILED_TEST_FILES_SHARD_2=()
-SELFHOST_COMPILED_TEST_FILES_SHARD_3=()
-shard_index=0
-for test_path in "${SELFHOST_COMPILED_TEST_FILES[@]}"; do
-  case "$shard_index" in
-    0)
-      SELFHOST_COMPILED_TEST_FILES_SHARD_0+=("$test_path")
-      ;;
-    1)
-      SELFHOST_COMPILED_TEST_FILES_SHARD_1+=("$test_path")
-      ;;
-    2)
-      SELFHOST_COMPILED_TEST_FILES_SHARD_2+=("$test_path")
-      ;;
-    *)
-      SELFHOST_COMPILED_TEST_FILES_SHARD_3+=("$test_path")
-      ;;
-  esac
-  shard_index=$(((shard_index + 1) % 4))
-done
+run_compiled_selfhost_test_shards() {
+  local shard_index selected_index selected_total shard_label
+  local -a selected_files
+  if [ -n "$TEST_SHARD_TOTAL" ]; then
+    selected_index="$TEST_SHARD_INDEX"
+    selected_total="$TEST_SHARD_TOTAL"
+    selected_files=()
+    shard_index=0
+    for test_path in "${SELFHOST_COMPILED_TEST_FILES[@]}"; do
+      if [ $((shard_index % selected_total)) -eq "$selected_index" ]; then
+        selected_files+=("$test_path")
+      fi
+      shard_index=$((shard_index + 1))
+    done
+    shard_label="$((selected_index + 1))/${selected_total}"
+    run_compiled_selfhost_test_shard "$shard_label" "${selected_files[@]}"
+    return
+  fi
 
-run_compiled_selfhost_test_shard "1/4" "${SELFHOST_COMPILED_TEST_FILES_SHARD_0[@]}"
-run_compiled_selfhost_test_shard "2/4" "${SELFHOST_COMPILED_TEST_FILES_SHARD_1[@]}"
-run_compiled_selfhost_test_shard "3/4" "${SELFHOST_COMPILED_TEST_FILES_SHARD_2[@]}"
-run_compiled_selfhost_test_shard "4/4" "${SELFHOST_COMPILED_TEST_FILES_SHARD_3[@]}"
+  local default_total=4
+  local default_index
+  for default_index in 0 1 2 3; do
+    selected_files=()
+    shard_index=0
+    for test_path in "${SELFHOST_COMPILED_TEST_FILES[@]}"; do
+      if [ $((shard_index % default_total)) -eq "$default_index" ]; then
+        selected_files+=("$test_path")
+      fi
+      shard_index=$((shard_index + 1))
+    done
+    run_compiled_selfhost_test_shard "$((default_index + 1))/${default_total}" "${selected_files[@]}"
+  done
+}
 
-run_stage "compiled selfhost cli cache test" \
-  env VIBE_TEST_BACKEND=compiled \
-  "$VIBE_BIN" test "$PROJECT_ROOT/vibe/compiler/cli_cache_test.vibe"
+should_run_unsharded_test() {
+  if [ -z "$TEST_SHARD_TOTAL" ]; then
+    return 0
+  fi
+  [ "$TEST_SHARD_INDEX" -eq 0 ]
+}
 
-run_stage "compiled selfhost cli adapter cache test" \
-  env VIBE_TEST_BACKEND=compiled \
-  "$VIBE_BIN" test "$PROJECT_ROOT/vibe/compiler/cli_adapter_cache_test.vibe"
+if [ "$RUN_TESTS" -eq 1 ]; then
+  run_compiled_selfhost_test_shards
 
-run_stage "compiled selfhost codegen enum import test" \
-  env VIBE_TEST_BACKEND=compiled \
-  "$VIBE_BIN" test "$PROJECT_ROOT/vibe/compiler/codegen_enum_import_test.vibe"
+  if should_run_unsharded_test; then
+    run_stage "compiled selfhost cli cache test" \
+      env VIBE_TEST_BACKEND=compiled \
+      "$VIBE_BIN" test "$PROJECT_ROOT/vibe/compiler/cli_cache_test.vibe"
 
-run_stage "compiled selfhost compiler cache test" \
-  env VIBE_TEST_BACKEND=compiled \
-  "$VIBE_BIN" test "$PROJECT_ROOT/vibe/compiler/compiler_cache_test.vibe"
+    run_stage "compiled selfhost cli adapter cache test" \
+      env VIBE_TEST_BACKEND=compiled \
+      "$VIBE_BIN" test "$PROJECT_ROOT/vibe/compiler/cli_adapter_cache_test.vibe"
 
-echo "[bootstrap] selfhost __to_string source path check"
-if rg -n "double_to_string_compiler" \
-  "$PROJECT_ROOT/vibe/compiler/token.vibe" \
-  "$PROJECT_ROOT/vibe/compiler/printer.vibe" >/dev/null; then
-  echo "bootstrap gate failed: selfhost compiler still depends on double_to_string_compiler" >&2
-  exit 1
-fi
+    run_stage "compiled selfhost codegen enum import test" \
+      env VIBE_TEST_BACKEND=compiled \
+      "$VIBE_BIN" test "$PROJECT_ROOT/vibe/compiler/codegen_enum_import_test.vibe"
 
-TOSTRING_PROBE="$OUT_DIR/selfhost_tostring_probe.vibe"
-cat >"$TOSTRING_PROBE" <<'EOF'
+    run_stage "compiled selfhost compiler cache test" \
+      env VIBE_TEST_BACKEND=compiled \
+      "$VIBE_BIN" test "$PROJECT_ROOT/vibe/compiler/compiler_cache_test.vibe"
+
+    echo "[bootstrap] selfhost __to_string source path check"
+    if rg -n "double_to_string_compiler" \
+      "$PROJECT_ROOT/vibe/compiler/token.vibe" \
+      "$PROJECT_ROOT/vibe/compiler/printer.vibe" >/dev/null; then
+      echo "bootstrap gate failed: selfhost compiler still depends on double_to_string_compiler" >&2
+      exit 1
+    fi
+
+    TOSTRING_PROBE="$OUT_DIR/selfhost_tostring_probe.vibe"
+    cat >"$TOSTRING_PROBE" <<'EOF'
 test "__to_string number parity" {
   assert(String::equals(__to_string(1.5), "1.5"))
   assert(String::equals(__to_string(2.0), "2"))
   assert(String::equals(__to_string(1.5f), "1.5"))
 }
 EOF
-run_stage "compiled __to_string(Double/Float) probe" \
-  env VIBE_TEST_BACKEND=compiled "$VIBE_BIN" test "$TOSTRING_PROBE"
+    run_stage "compiled __to_string(Double/Float) probe" \
+      env VIBE_TEST_BACKEND=compiled "$VIBE_BIN" test "$TOSTRING_PROBE"
+  else
+    echo "[bootstrap] unsharded compiled cache probes: skipped on shard ${TEST_SHARD_INDEX}/${TEST_SHARD_TOTAL}"
+  fi
+else
+  echo "[bootstrap] compiled selfhost tests: skipped"
+fi
 
 BASICS_FIXTURE="$PROJECT_ROOT/examples/basics.vibe"
 BASE64_FIXTURE="$PROJECT_ROOT/bench/compiler_size/cases/base64.vibe"
-if [ ! -f "$BASICS_FIXTURE" ]; then
-  echo "bootstrap gate failed: fixture not found: $BASICS_FIXTURE" >&2
-  exit 1
-fi
-if [ ! -f "$BASE64_FIXTURE" ]; then
-  echo "bootstrap gate failed: fixture not found: $BASE64_FIXTURE" >&2
-  exit 1
-fi
-
-verify_stage_pair_hash "index_mvp" "$ENTRY_PATH" "--wasm" --wasm
-STAGE1_WASM="$STAGE_PAIR_LAST_STAGE1"
-STAGE2_WASM="$STAGE_PAIR_LAST_STAGE2"
-HASH_STAGE1="$STAGE_PAIR_LAST_HASH"
-
-verify_stage_pair_hash "index_no_dce" "$ENTRY_PATH" "--wasm --no-dce" --wasm --no-dce
-verify_stage_pair_hash "index_debug_errors" "$ENTRY_PATH" "--wasm --debug-errors" --wasm --debug-errors
-verify_stage_pair_hash "basics_mvp" "$BASICS_FIXTURE" "--wasm" --wasm
-verify_stage_pair_hash "base64_mvp" "$BASE64_FIXTURE" "--wasm" --wasm
-
-PIPELINE_CHECK="$OUT_DIR/index_pipeline_check.log"
-PIPELINE_RAW_WASM="$OUT_DIR/index_pipeline_raw.wasm"
-PIPELINE_OPT_WASM="$OUT_DIR/index_pipeline_opt.wasm"
-run_stage_capture_stdout "pipeline parse+type check for $ENTRY_PATH" \
-  "$PIPELINE_CHECK" \
-  "$VIBE_BIN" check "$ENTRY_PATH"
-run_stage "pipeline codegen (--wasm --no-dce) for $ENTRY_PATH" \
-  "${COMPILE_CMD_ARGS[@]}" --wasm --no-dce "$ENTRY_PATH" -o "$PIPELINE_RAW_WASM"
-if [ -n "$PIPELINE_OPT_LEVEL" ]; then
-  run_stage "pipeline optimize/codegen (-O$PIPELINE_OPT_LEVEL) for $ENTRY_PATH" \
-    "${COMPILE_CMD_ARGS[@]}" --wasm "-O$PIPELINE_OPT_LEVEL" "$ENTRY_PATH" -o "$PIPELINE_OPT_WASM"
-else
-  echo "[bootstrap] pipeline optimize/codegen: skipped (set VIBE_SELFHOST_PIPELINE_OPT_LEVEL)"
-fi
-
-if command -v wasm-tools >/dev/null 2>&1; then
-  run_stage "validate pipeline raw wasm" wasm-tools validate --features all "$PIPELINE_RAW_WASM"
-  if [ -n "$PIPELINE_OPT_LEVEL" ]; then
-    run_stage "validate pipeline opt wasm" wasm-tools validate --features all "$PIPELINE_OPT_WASM"
+HASH_STAGE1="skipped"
+if [ "$RUN_DETERMINISTIC" -eq 1 ]; then
+  if [ ! -f "$BASICS_FIXTURE" ]; then
+    echo "bootstrap gate failed: fixture not found: $BASICS_FIXTURE" >&2
+    exit 1
   fi
-else
-  echo "warning: wasm-tools not found, skipping validate" >&2
-fi
+  if [ ! -f "$BASE64_FIXTURE" ]; then
+    echo "bootstrap gate failed: fixture not found: $BASE64_FIXTURE" >&2
+    exit 1
+  fi
 
-run_wasm_and_expect_zero \
-  "run stage1 wasm via wasmtime (--invoke _start)" \
-  "$STAGE1_WASM" \
-  "$OUT_DIR/stage1_run.out"
-run_wasm_and_expect_zero \
-  "run stage2 wasm via wasmtime (--invoke _start)" \
-  "$STAGE2_WASM" \
-  "$OUT_DIR/stage2_run.out"
+  verify_stage_pair_hash "index_mvp" "$ENTRY_PATH" "--wasm" --wasm
+  STAGE1_WASM="$STAGE_PAIR_LAST_STAGE1"
+  STAGE2_WASM="$STAGE_PAIR_LAST_STAGE2"
+  HASH_STAGE1="$STAGE_PAIR_LAST_HASH"
+
+  if [ "$BOOTSTRAP_PROFILE" = "full" ]; then
+    verify_stage_pair_hash "index_no_dce" "$ENTRY_PATH" "--wasm --no-dce" --wasm --no-dce
+    verify_stage_pair_hash "index_debug_errors" "$ENTRY_PATH" "--wasm --debug-errors" --wasm --debug-errors
+  else
+    echo "[bootstrap] full index mode pairs: skipped in pr profile"
+  fi
+  verify_stage_pair_hash "basics_mvp" "$BASICS_FIXTURE" "--wasm" --wasm
+  verify_stage_pair_hash "base64_mvp" "$BASE64_FIXTURE" "--wasm" --wasm
+
+  PIPELINE_CHECK="$OUT_DIR/index_pipeline_check.log"
+  PIPELINE_RAW_WASM="$OUT_DIR/index_pipeline_raw.wasm"
+  PIPELINE_OPT_WASM="$OUT_DIR/index_pipeline_opt.wasm"
+  run_stage_capture_stdout "pipeline parse+type check for $ENTRY_PATH" \
+    "$PIPELINE_CHECK" \
+    "$VIBE_BIN" check "$ENTRY_PATH"
+  if [ "$BOOTSTRAP_PROFILE" = "full" ]; then
+    run_stage "pipeline codegen (--wasm --no-dce) for $ENTRY_PATH" \
+      "${COMPILE_CMD_ARGS[@]}" --wasm --no-dce "$ENTRY_PATH" -o "$PIPELINE_RAW_WASM"
+    if [ -n "$PIPELINE_OPT_LEVEL" ]; then
+      run_stage "pipeline optimize/codegen (-O$PIPELINE_OPT_LEVEL) for $ENTRY_PATH" \
+        "${COMPILE_CMD_ARGS[@]}" --wasm "-O$PIPELINE_OPT_LEVEL" "$ENTRY_PATH" -o "$PIPELINE_OPT_WASM"
+    else
+      echo "[bootstrap] pipeline optimize/codegen: skipped (set VIBE_SELFHOST_PIPELINE_OPT_LEVEL)"
+    fi
+
+    if command -v wasm-tools >/dev/null 2>&1; then
+      run_stage "validate pipeline raw wasm" wasm-tools validate --features all "$PIPELINE_RAW_WASM"
+      if [ -n "$PIPELINE_OPT_LEVEL" ]; then
+        run_stage "validate pipeline opt wasm" wasm-tools validate --features all "$PIPELINE_OPT_WASM"
+      fi
+    else
+      echo "warning: wasm-tools not found, skipping validate" >&2
+    fi
+  else
+    echo "[bootstrap] pipeline codegen: skipped in pr profile"
+  fi
+
+  run_wasm_and_expect_zero \
+    "run stage1 wasm via wasmtime (--invoke _start)" \
+    "$STAGE1_WASM" \
+    "$OUT_DIR/stage1_run.out"
+  run_wasm_and_expect_zero \
+    "run stage2 wasm via wasmtime (--invoke _start)" \
+    "$STAGE2_WASM" \
+    "$OUT_DIR/stage2_run.out"
+fi
 
 bootstrap_total_end="$(date +%s)"
 bootstrap_total_elapsed="$((bootstrap_total_end - bootstrap_total_start))"

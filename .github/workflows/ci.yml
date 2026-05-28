@@ -166,10 +166,54 @@ jobs:
       - name: Smoke test wasm/vibe with wasmtime
         run: ./scripts/test_wasm_vibe_wasmtime.sh wasm/vibe/vibe.wasm
 
+  native-cli-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Vibe toolchain
+        uses: ./.github/actions/setup-vibe
+        with:
+          moon-build-cache: 'true'
+
+      - name: Build vibe CLI (native release)
+        run: VIBE_CLI_RELEASE=1 VIBE_CLI_FORCE=1 bash -c 'source scripts/ensure_native_cli.sh'
+
+      - name: Upload native CLI release
+        uses: actions/upload-artifact@v6
+        with:
+          name: native-cli-release
+          path: target/native/release/build/cmd/vibe/vibe.exe
+          if-no-files-found: error
+          retention-days: 1
+
+  native-cli-debug:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Vibe toolchain
+        uses: ./.github/actions/setup-vibe
+        with:
+          moon-build-cache: 'true'
+
+      - name: Build vibe CLI (native debug)
+        run: VIBE_CLI_FORCE=1 bash -c 'source scripts/ensure_native_cli.sh'
+
+      - name: Upload native CLI debug
+        uses: actions/upload-artifact@v6
+        with:
+          name: native-cli-debug
+          path: _build/native/debug/build/cmd/vibe/vibe.exe
+          if-no-files-found: error
+          retention-days: 1
+
   wasm-codegen-quick:
     if: github.event_name == 'push'
     name: wasm-codegen-quick (${{ matrix.shard }})
     runs-on: ubuntu-latest
+    needs: native-cli-debug
     continue-on-error: true
     strategy:
       fail-fast: false
@@ -202,16 +246,23 @@ jobs:
           wasmtime: 'true'
           wasm-tools: 'true'
           node-version: '24'
-      - name: Build vibe CLI (native debug)
-        run: VIBE_CLI_FORCE=1 bash -c 'source scripts/ensure_native_cli.sh'
+      - name: Download native CLI (debug)
+        uses: actions/download-artifact@v6
+        with:
+          name: native-cli-debug
+          path: _build/native/debug/build/cmd/vibe
       - name: Set VIBE_BIN for debug binary
-        run: echo "VIBE_BIN=$(pwd)/_build/native/debug/build/cmd/vibe/vibe.exe" >> "$GITHUB_ENV"
+        run: |
+          chmod +x _build/native/debug/build/cmd/vibe/vibe.exe
+          touch _build/native/debug/build/cmd/vibe/vibe.exe
+          echo "VIBE_BIN=$(pwd)/_build/native/debug/build/cmd/vibe/vibe.exe" >> "$GITHUB_ENV"
       - name: Run wasm quick shard (${{ matrix.shard }})
         run: bash scripts/pkfire/wasm_quick_shard.sh ${{ matrix.shard }}
 
   wasm-parity:
     name: wasm-parity (${{ matrix.name }})
     runs-on: ubuntu-latest
+    needs: native-cli-release
     strategy:
       fail-fast: false
       matrix:
@@ -234,10 +285,16 @@ jobs:
         uses: ./.github/actions/setup-vibe
         with:
           wasmtime: 'true'
-      - name: Build vibe CLI (native)
-        run: VIBE_CLI_RELEASE=1 VIBE_CLI_FORCE=1 bash -c 'source scripts/ensure_native_cli.sh'
+      - name: Download native CLI (release)
+        uses: actions/download-artifact@v6
+        with:
+          name: native-cli-release
+          path: target/native/release/build/cmd/vibe
       - name: Set VIBE_BIN for release binary
-        run: echo "VIBE_BIN=$(pwd)/target/native/release/build/cmd/vibe/vibe.exe" >> "$GITHUB_ENV"
+        run: |
+          chmod +x target/native/release/build/cmd/vibe/vibe.exe
+          touch target/native/release/build/cmd/vibe/vibe.exe
+          echo "VIBE_BIN=$(pwd)/target/native/release/build/cmd/vibe/vibe.exe" >> "$GITHUB_ENV"
       - name: Run wasm parity suite (${{ matrix.name }})
         id: wasm_parity_suite
         run: |
@@ -271,6 +328,7 @@ jobs:
 
   wasm-compile-e2e:
     runs-on: ubuntu-latest
+    needs: native-cli-release
     strategy:
       fail-fast: false
       matrix:
@@ -281,8 +339,16 @@ jobs:
         uses: ./.github/actions/setup-vibe
         with:
           wasmtime: 'true'
-      - name: Build vibe CLI (native)
-        run: VIBE_CLI_RELEASE=1 VIBE_CLI_FORCE=1 bash -c 'source scripts/ensure_native_cli.sh'
+      - name: Download native CLI (release)
+        uses: actions/download-artifact@v6
+        with:
+          name: native-cli-release
+          path: target/native/release/build/cmd/vibe
+      - name: Set VIBE_BIN for release binary
+        run: |
+          chmod +x target/native/release/build/cmd/vibe/vibe.exe
+          touch target/native/release/build/cmd/vibe/vibe.exe
+          echo "VIBE_BIN=$(pwd)/target/native/release/build/cmd/vibe/vibe.exe" >> "$GITHUB_ENV"
       - name: WASM compile E2E (shard ${{ matrix.shard }}/4)
         id: wasm_compile_e2e
         env:
@@ -303,7 +369,79 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   selfhost-bootstrap-gate:
-    name: selfhost-bootstrap-gate
+    name: selfhost-bootstrap-gate (${{ matrix.part }})
+    runs-on: ubuntu-latest
+    needs: native-cli-debug
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - part: tests-0
+            run_tests: '1'
+            run_deterministic: '0'
+            test_shard_index: '0'
+            test_shard_total: '4'
+            needs_wasmtime_submodule: 'false'
+          - part: tests-1
+            run_tests: '1'
+            run_deterministic: '0'
+            test_shard_index: '1'
+            test_shard_total: '4'
+            needs_wasmtime_submodule: 'false'
+          - part: tests-2
+            run_tests: '1'
+            run_deterministic: '0'
+            test_shard_index: '2'
+            test_shard_total: '4'
+            needs_wasmtime_submodule: 'false'
+          - part: tests-3
+            run_tests: '1'
+            run_deterministic: '0'
+            test_shard_index: '3'
+            test_shard_total: '4'
+            needs_wasmtime_submodule: 'false'
+          - part: deterministic
+            run_tests: '0'
+            run_deterministic: '1'
+            test_shard_index: ''
+            test_shard_total: ''
+            needs_wasmtime_submodule: 'true'
+    steps:
+      - uses: actions/checkout@v5
+      - name: Init wasmtime submodule
+        if: matrix.needs_wasmtime_submodule == 'true'
+        run: git submodule update --init deps/wasmtime
+      - name: Setup Vibe toolchain
+        uses: ./.github/actions/setup-vibe
+        with:
+          ripgrep: 'true'
+          wasmtime: 'true'
+          wasm-tools: 'true'
+          node-version: '24'
+      - name: Download native CLI (debug)
+        uses: actions/download-artifact@v6
+        with:
+          name: native-cli-debug
+          path: _build/native/debug/build/cmd/vibe
+      - name: Set VIBE_BIN for debug binary
+        run: |
+          chmod +x _build/native/debug/build/cmd/vibe/vibe.exe
+          touch _build/native/debug/build/cmd/vibe/vibe.exe
+          echo "VIBE_BIN=$(pwd)/_build/native/debug/build/cmd/vibe/vibe.exe" >> "$GITHUB_ENV"
+      - name: Run selfhost bootstrap gate (${{ matrix.part }})
+        # PRs use a sampled deterministic profile to keep feedback short.
+        # Pushes keep the full deterministic mode coverage. Compiled
+        # selfhost tests are sharded across matrix jobs in both cases.
+        run: bash scripts/pkfire/selfhost_gates_shard.sh bootstrap-core
+        env:
+          VIBE_SELFHOST_BOOTSTRAP_PROFILE: ${{ github.event_name == 'pull_request' && 'pr' || 'full' }}
+          VIBE_SELFHOST_BOOTSTRAP_RUN_TESTS: ${{ matrix.run_tests }}
+          VIBE_SELFHOST_BOOTSTRAP_RUN_DETERMINISTIC: ${{ matrix.run_deterministic }}
+          VIBE_SELFHOST_BOOTSTRAP_TEST_SHARD_INDEX: ${{ matrix.test_shard_index }}
+          VIBE_SELFHOST_BOOTSTRAP_TEST_SHARD_TOTAL: ${{ matrix.test_shard_total }}
+
+  selfhost-selfbuild-kpi:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
@@ -315,23 +453,15 @@ jobs:
         with:
           ripgrep: 'true'
           wasmtime: 'true'
-          wasm-tools: 'true'
           node-version: '24'
-      - name: Build vibe CLI (native debug)
-        run: VIBE_CLI_FORCE=1 bash -c 'source scripts/ensure_native_cli.sh'
-      - name: Set VIBE_BIN for debug binary
-        run: echo "VIBE_BIN=$(pwd)/_build/native/debug/build/cmd/vibe/vibe.exe" >> "$GITHUB_ENV"
-      - name: Run selfhost bootstrap + selfbuild KPI
-        # Lightweight (no Rust/wasm32/wac) selfhost gate: bootstrap probe +
-        # `test-selfhost-wasi-selfbuild-kpi` (300s wall-time budget).
-        # Runs on every PR for early selfhost-regression signal; the
-        # heavier `selfhost-gates` matrix (cli / check) stays push-only.
-        run: bash scripts/pkfire/selfhost_gates_shard.sh bootstrap
+      - name: Run selfbuild KPI
+        run: bash scripts/pkfire/selfhost_gates_shard.sh selfbuild
 
   selfhost-gates:
     if: github.event_name == 'push'
     name: selfhost-gates (${{ matrix.shard }})
     runs-on: ubuntu-latest
+    needs: native-cli-debug
     continue-on-error: true
     strategy:
       fail-fast: false
@@ -369,10 +499,16 @@ jobs:
           if ! command -v wac >/dev/null 2>&1; then
             cargo install wac-cli --version 0.9.0 --locked
           fi
-      - name: Build vibe CLI (native debug)
-        run: VIBE_CLI_FORCE=1 bash -c 'source scripts/ensure_native_cli.sh'
+      - name: Download native CLI (debug)
+        uses: actions/download-artifact@v6
+        with:
+          name: native-cli-debug
+          path: _build/native/debug/build/cmd/vibe
       - name: Set VIBE_BIN for debug binary
-        run: echo "VIBE_BIN=$(pwd)/_build/native/debug/build/cmd/vibe/vibe.exe" >> "$GITHUB_ENV"
+        run: |
+          chmod +x _build/native/debug/build/cmd/vibe/vibe.exe
+          touch _build/native/debug/build/cmd/vibe/vibe.exe
+          echo "VIBE_BIN=$(pwd)/_build/native/debug/build/cmd/vibe/vibe.exe" >> "$GITHUB_ENV"
       - name: Run selfhost gate shard (${{ matrix.shard }})
         run: bash scripts/pkfire/selfhost_gates_shard.sh ${{ matrix.shard }}
 
@@ -554,6 +690,7 @@ jobs:
   # jobs let each gate's status be read directly.
   selfhost-perf-kpi:
     runs-on: ubuntu-latest
+    needs: native-cli-release
     steps:
       - uses: actions/checkout@v5
 
@@ -586,8 +723,17 @@ jobs:
           path: _build/wasm/opt/*.cwasm
           key: stage1-cwasm-${{ runner.os }}-wt:${{ hashFiles('tools/moonrun_wasmtime/Cargo.toml', 'tools/moonrun_wasmtime/src/**') }}-wasm:${{ hashFiles('.moon-version', 'moon.mod.json', '**/moon.pkg.json', 'src/**/*.mbt') }}
 
-      - name: Build vibe CLI (native)
-        run: VIBE_CLI_RELEASE=1 VIBE_CLI_FORCE=1 bash -c 'source scripts/ensure_native_cli.sh'
+      - name: Download native CLI (release)
+        uses: actions/download-artifact@v6
+        with:
+          name: native-cli-release
+          path: target/native/release/build/cmd/vibe
+
+      - name: Set VIBE_BIN for release binary
+        run: |
+          chmod +x target/native/release/build/cmd/vibe/vibe.exe
+          touch target/native/release/build/cmd/vibe/vibe.exe
+          echo "VIBE_BIN=$(pwd)/target/native/release/build/cmd/vibe/vibe.exe" >> "$GITHUB_ENV"
 
       - name: Build moonrun_wt (wasmtime host)
         run: cargo build --release --manifest-path tools/moonrun_wasmtime/Cargo.toml
@@ -700,6 +846,7 @@ jobs:
   # cache (those belong to `selfhost-perf-kpi`).
   coverage-selfhost-suite:
     runs-on: ubuntu-latest
+    needs: native-cli-release
     steps:
       - uses: actions/checkout@v5
 
@@ -711,8 +858,17 @@ jobs:
           node-version: '24'
           wasmtime: 'true'
 
-      - name: Build vibe CLI (native)
-        run: VIBE_CLI_RELEASE=1 VIBE_CLI_FORCE=1 bash -c 'source scripts/ensure_native_cli.sh'
+      - name: Download native CLI (release)
+        uses: actions/download-artifact@v6
+        with:
+          name: native-cli-release
+          path: target/native/release/build/cmd/vibe
+
+      - name: Set VIBE_BIN for release binary
+        run: |
+          chmod +x target/native/release/build/cmd/vibe/vibe.exe
+          touch target/native/release/build/cmd/vibe/vibe.exe
+          echo "VIBE_BIN=$(pwd)/target/native/release/build/cmd/vibe/vibe.exe" >> "$GITHUB_ENV"
 
       - name: Run selfhost suite coverage gate
         env:
@@ -850,6 +1006,7 @@ jobs:
       - contract-moon
       - contract-native
       - e2e-component
+      - native-cli-release
       - selfhost-examples
       - selfhost-runtime-parity
       - wasm-compile-e2e
@@ -868,6 +1025,7 @@ jobs:
             echo "  contract-moon: ${{ needs.contract-moon.result }}"
             echo "  contract-native: ${{ needs.contract-native.result }}"
             echo "  e2e-component: ${{ needs.e2e-component.result }}"
+            echo "  native-cli-release: ${{ needs.native-cli-release.result }}"
             echo "  selfhost-examples: ${{ needs.selfhost-examples.result }}"
             echo "  selfhost-runtime-parity: ${{ needs.selfhost-runtime-parity.result }}"
             echo "  wasm-compile-e2e: ${{ needs.wasm-compile-e2e.result }}"
@@ -884,8 +1042,10 @@ jobs:
       - bundle-size-product-gate
       - coverage-moon
       - coverage-selfhost-suite
+      - native-cli-debug
       - native-binary-parity
       - selfhost-bootstrap-gate
+      - selfhost-selfbuild-kpi
       - selfhost-gates
       - selfhost-perf-kpi
       - similarity-mbt-report
@@ -899,8 +1059,10 @@ jobs:
           echo "  bundle-size-product-gate: ${{ needs.bundle-size-product-gate.result }}"
           echo "  coverage-moon: ${{ needs.coverage-moon.result }}"
           echo "  coverage-selfhost-suite: ${{ needs.coverage-selfhost-suite.result }}"
+          echo "  native-cli-debug: ${{ needs.native-cli-debug.result }}"
           echo "  native-binary-parity: ${{ needs.native-binary-parity.result }}"
           echo "  selfhost-bootstrap-gate: ${{ needs.selfhost-bootstrap-gate.result }}"
+          echo "  selfhost-selfbuild-kpi: ${{ needs.selfhost-selfbuild-kpi.result }}"
           echo "  selfhost-gates: ${{ needs.selfhost-gates.result }}"
           echo "  selfhost-perf-kpi: ${{ needs.selfhost-perf-kpi.result }}"
           echo "  similarity-mbt-report: ${{ needs.similarity-mbt-report.result }}"
