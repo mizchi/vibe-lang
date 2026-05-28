@@ -56,15 +56,59 @@ fn trim_trailing_newlines(text : String) -> String {
 }
 
 ///|
+fn is_typecheck_fixture_digit(ch : Char) -> Bool {
+  ch >= '0' && ch <= '9'
+}
+
+///|
+fn normalize_typecheck_fixture_result(text : String) -> String {
+  let chars = text.to_array()
+  let out = StringBuilder::new()
+  let mut i = 0
+  while i < chars.length() {
+    if i + 4 < chars.length() &&
+      chars[i] == 'V' &&
+      chars[i + 1] == 'a' &&
+      chars[i + 2] == 'r' &&
+      chars[i + 3] == '(' &&
+      is_typecheck_fixture_digit(chars[i + 4]) {
+      let mut j = i + 4
+      while j < chars.length() && is_typecheck_fixture_digit(chars[j]) {
+        j += 1
+      }
+      if j < chars.length() && chars[j] == ')' {
+        out.write_string("Var(_)")
+        i = j + 1
+        continue
+      }
+    }
+    out.write_char(chars[i])
+    i += 1
+  }
+  out.to_string()
+}
+
+///|
 fn render_typecheck_fixture_result(path : String, source : String) -> String {
   let ast = @parser.parse_ast(source) catch {
-    e => return e.diagnostic().render(path, source)
+    e =>
+      return normalize_typecheck_fixture_result(
+        e.diagnostic().render(path, source),
+      )
   }
   let typed : Result[TypeEnv, TypeError] = try? type_check(ast)
-  match typed {
+  let rendered = match typed {
     Ok(_) => "ok"
     Err(e) => e.diagnostic().render(path, source)
   }
+  normalize_typecheck_fixture_result(rendered)
+}
+
+///|
+test "typecheck fixture output normalizes unstable type variable ids" {
+  let input = "expected: Var(386)\nactual: Pair(Var(42), VarName(7))"
+  let actual = normalize_typecheck_fixture_result(input)
+  inspect(actual, content="expected: Var(_)\nactual: Pair(Var(_), VarName(7))")
 }
 
 ///|

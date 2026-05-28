@@ -95,10 +95,14 @@ fn main {
       for mismatch in mismatches {
         print_mismatch(mismatch)
       }
-      abort(
+      println(
         "warning-fixture: " + mismatches.length().to_string() + " mismatch(es)",
       )
+      @sys.exit(1)
     }
-    Err(err) => abort("warning-fixture: " + err)
+    Err(err) => {
+      println("warning-fixture: " + err)
+      @sys.exit(1)
+    }
   }
 }
