@@ -195,6 +195,11 @@ priv struct GcFuncCtx {
   param_count : Int
   closure_call_types : Map[String, Int]
   current_rec_binding : String?
+  /// Name of the immediately-enclosing top-level function (or let-rec
+  /// binding) — used only to label lifted closures in the wasm `name`
+  /// section. Distinct from `current_rec_binding` so we don't conflate
+  /// "is rec-callable" with "is the enclosing label".
+  mut enclosing_function_name : String?
   direct_rec_call_name : String?
   direct_rec_call_func_idx : Int
   direct_rec_call_type_idx : Int
@@ -223,6 +228,12 @@ priv struct GcCodegenCtx {
   closure_fn_type_cache : Map[String, Int]
   closure_struct_type_cache : Map[String, Int]
   closure_lifted_funcs : Array[GcWasmFunc]
+  /// Parallel labels for `closure_lifted_funcs` used by the wasm `name`
+  /// custom section. Format: `<parent>::lambda@<offset>` when the
+  /// lambda is bound to a let, `lambda@<offset>` for free lambdas, or
+  /// `as_closure::<name>` for the wrapper synthesised when a top-level
+  /// function is passed as a value. Surfaces in profiler / devtools.
+  closure_lifted_labels : Array[String]
   closure_call_type_for_func : Map[String, Int]
   mut num_regular_funcs : Int
   enum_ctor_tags : Map[String, Int]
@@ -234,6 +245,12 @@ priv struct GcCodegenCtx {
   named_struct_types : Map[String, Int]
   /// Named struct field order: name → sorted field names
   named_struct_fields : Map[String, Array[String]]
+  /// Anonymous record types: type_idx → sorted field names. Populated
+  /// by `infer_record_kind_gc` so later `__index(record, "field")`
+  /// dispatches in `try_compile_struct_field_get_gc` can look up the
+  /// field index even when the record was created via a record literal
+  /// (no `struct Foo { ... }` declaration).
+  record_field_names_by_type_idx : Map[Int, Array[String]]
   error_tag_index : Int
   error_tag_type_index : Int
   /// Compile-time known constants from top-level let bindings.
@@ -246,6 +263,21 @@ priv struct GcCodegenCtx {
   // string constants that show up in practice (sha1 `hex_table`, etc.).
   string_consts : Map[String, String]
   mut needs_exceptions : Bool
+  /// Issue #417 / Phase A: coverage instrumentation. When enabled,
+  /// build_module_gc emits a `memory` section + two i32 globals
+  /// (`__vibe_cov_base`, `__vibe_cov_count`) and every Line / Branch
+  /// site emits an `i32.load + i32.add + i32.store` into linear
+  /// memory at `coverage_base + id * 4`. The same JS reader
+  /// (`scripts/coverage_wasm_source.mjs`) works against both
+  /// backends — only the memory wiring differs.
+  mut coverage_enabled : Bool
+  coverage_points : Array[WasmCoveragePoint]
+  /// Original source text, used only to upgrade lambda labels in the
+  /// wasm `name` section from `lambda@<offset>` to
+  /// `lambda@<line>:<col>`. Empty string disables the upgrade (labels
+  /// stay at byte offsets) — kept optional so synthetic ASTs built by
+  /// wbtests don't have to thread a string through.
+  mut source : String
 }
 
 ///|
@@ -266,8 +298,50 @@ fn gc_common_kind(a : GcValKind, b : GcValKind) -> GcValKind {
     (GcValKind::Ref(_), GcValKind::I32) => GcValKind::EqRef
     (GcValKind::I32, GcValKind::EqRef) => GcValKind::EqRef
     (GcValKind::EqRef, GcValKind::I32) => GcValKind::EqRef
+    // i64 / f32 / f64 vs EqRef — all box into eqref via the matching
+    // `{i64}` / `{f32}` / `{f64}` wrapper struct that
+    // `emit_box_top_for_ref_kind_gc` already understands. Previously
+    // these fell through to AnyRef, which made the surrounding `if`
+    // block declare a wider result type than its arms could supply and
+    // broke wasm validation on prelude generics like
+    // `num_abs[T: Signed + Ord + Sub](x: T) -> T`.
+    (GcValKind::I64, GcValKind::EqRef) => GcValKind::EqRef
+    (GcValKind::EqRef, GcValKind::I64) => GcValKind::EqRef
+    (GcValKind::F32, GcValKind::EqRef) => GcValKind::EqRef
+    (GcValKind::EqRef, GcValKind::F32) => GcValKind::EqRef
+    (GcValKind::F64, GcValKind::EqRef) => GcValKind::EqRef
+    (GcValKind::EqRef, GcValKind::F64) => GcValKind::EqRef
     _ => GcValKind::AnyRef
   }
+}
+
+///|
+/// True for kinds that map directly to wasm numeric primitives.
+fn gc_is_arith_kind(kind : GcValKind) -> Bool {
+  match kind {
+    GcValKind::I32 | GcValKind::I64 | GcValKind::F32 | GcValKind::F64 => true
+    _ => false
+  }
+}
+
+///|
+/// Used to gate the prelude `add` / `sub` / `mul` / `div` / `eq` / `lt`
+/// short-circuits — inline the wasm primitive only when *both* operands
+/// resolve to numeric kinds. Otherwise fall through to the regular
+/// call dispatch so a user-defined function (e.g.
+/// `vibe/collection/set.vibe::add: (StringSet, String) -> StringSet`)
+/// keeps working.
+fn gc_call_args_arith(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  args : Array[@core.Expr],
+) -> Bool raise WasmGenError {
+  if args.length() != 2 {
+    return false
+  }
+  let lk = infer_expr_kind_gc(ctx, fctx, args[0])
+  let rk = infer_expr_kind_gc(ctx, fctx, args[1])
+  gc_is_arith_kind(lk) && gc_is_arith_kind(rk)
 }
 
 ///|
@@ -520,6 +594,7 @@ fn GcCodegenCtx::new() -> GcCodegenCtx {
     closure_fn_type_cache: {},
     closure_struct_type_cache: {},
     closure_lifted_funcs: [],
+    closure_lifted_labels: [],
     closure_call_type_for_func: {},
     num_regular_funcs: 0,
     enum_ctor_tags: {},
@@ -529,11 +604,15 @@ fn GcCodegenCtx::new() -> GcCodegenCtx {
     enum_names: {},
     named_struct_types: {},
     named_struct_fields: {},
+    record_field_names_by_type_idx: {},
     error_tag_index,
     error_tag_type_index,
     global_consts: {},
     string_consts: {},
     needs_exceptions: false,
+    coverage_enabled: false,
+    coverage_points: [],
+    source: "",
   }
 }
 
@@ -621,6 +700,54 @@ fn emit_global_set_gc(buf : GcByteBuf, idx : Int) -> Unit {
 ///|
 fn emit_i32_add_gc(buf : GcByteBuf) -> Unit {
   buf.push(0x6a)
+}
+
+///|
+/// i32.load align=2 offset=0 (the 4-byte aligned counter at the i32 addr
+/// already on the value stack).
+fn emit_i32_load_gc(buf : GcByteBuf) -> Unit {
+  buf.push(0x28)
+  buf.push(0x02) // align = 2 → 4-byte
+  buf.push(0x00) // offset = 0
+}
+
+///|
+/// i32.store align=2 offset=0.
+fn emit_i32_store_gc(buf : GcByteBuf) -> Unit {
+  buf.push(0x36)
+  buf.push(0x02)
+  buf.push(0x00)
+}
+
+///|
+/// Issue #417: register a coverage point and emit the increment ops
+/// when coverage is enabled. Mirrors `emit_coverage` in the linear
+/// backend but writes to linear memory through wasm-gc opcodes.
+///
+///     i32.const addr      ; address for store
+///     i32.const addr      ; address for load
+///     i32.load 2 0        ; current counter
+///     i32.const 1
+///     i32.add
+///     i32.store 2 0       ; bump counter
+fn emit_coverage_gc(
+  ctx : GcCodegenCtx,
+  buf : GcByteBuf,
+  kind : WasmCoveragePointKind,
+  span : @core.Span,
+) -> Unit {
+  if !ctx.coverage_enabled {
+    return
+  }
+  let id = ctx.coverage_points.length()
+  ctx.coverage_points.push({ id, kind, span })
+  let addr = id * 4
+  emit_i32_const_gc(buf, addr)
+  emit_i32_const_gc(buf, addr)
+  emit_i32_load_gc(buf)
+  emit_i32_const_gc(buf, 1)
+  emit_i32_add_gc(buf)
+  emit_i32_store_gc(buf)
 }
 
 ///|
@@ -730,7 +857,11 @@ fn emit_f64_lt_gc(buf : GcByteBuf) -> Unit {
 
 ///|
 fn emit_f64_neg_gc(buf : GcByteBuf) -> Unit {
-  buf.push(0x99)
+  // f64.neg is 0x9a — 0x99 is f64.abs (the prior typo made `-x`
+  // come out as `abs(x)`, e.g. `Double::abs(-3.5)` collapsed to
+  // `Double::abs(3.5)` and the assertion still tripped because the
+  // codegen also routed `eq` through i64.eq on f64 operands).
+  buf.push(0x9a)
 }
 
 ///|
@@ -815,6 +946,31 @@ fn emit_f64_convert_i64_s_gc(buf : GcByteBuf) -> Unit {
 ///|
 fn emit_i64_trunc_f64_s_gc(buf : GcByteBuf) -> Unit {
   buf.push(0xb0)
+}
+
+///|
+fn emit_f32_convert_i64_s_gc(buf : GcByteBuf) -> Unit {
+  buf.push(0xb4)
+}
+
+///|
+fn emit_i64_trunc_f32_s_gc(buf : GcByteBuf) -> Unit {
+  buf.push(0xae)
+}
+
+///|
+fn emit_f64_promote_f32_gc(buf : GcByteBuf) -> Unit {
+  buf.push(0xbb)
+}
+
+///|
+fn emit_f32_demote_f64_gc(buf : GcByteBuf) -> Unit {
+  buf.push(0xb6)
+}
+
+///|
+fn emit_f64_reinterpret_i64_gc(buf : GcByteBuf) -> Unit {
+  buf.push(0xbf)
 }
 
 ///|
@@ -1262,6 +1418,20 @@ fn try_compile_struct_field_get_gc(
           }
         }
       }
+      // Anonymous record literal: look up the sorted field-name order
+      // populated by `infer_record_kind_gc`. Lets `r.field` resolve
+      // when `r` came from `record { ... }` rather than a named struct.
+      match ctx.record_field_names_by_type_idx.get(type_idx) {
+        Some(field_names) =>
+          for i in 0..<field_names.length() {
+            if field_names[i] == field_name {
+              compile_expr_gc(ctx, fctx, buf, record_expr)
+              emit_struct_get_gc(buf, type_idx, i)
+              return true
+            }
+          }
+        None => ()
+      }
       false
     }
     _ => false
@@ -1614,6 +1784,15 @@ fn is_gc_builtin_name(name : String) -> Bool {
   name == "div" ||
   name == "eq" ||
   name == "lt" ||
+  // Floating-point math shortcuts — intercepted in compile_expr_gc to
+  // emit the matching wasm primitive directly rather than calling the
+  // bundled vibe implementation (which depends on Double globals the
+  // wasm-gc backend doesn't register).
+  name == "floor" ||
+  name == "ceil" ||
+  name == "trunc" ||
+  name == "round" ||
+  name == "fract" ||
   name == "not" ||
   name == "__not" ||
   name == "__or" ||
@@ -1765,6 +1944,12 @@ fn gc_val_kind_from_type(
 ) -> GcValKind raise WasmGenError {
   match ty {
     @core.Type::Int => GcValKind::I64
+    // Char shares Int's runtime representation (tagged 62-bit i64
+    // per ADR-0006). Without this case, parameters typed `Char` fell
+    // through to the Named-type fallback and resolved to EqRef, which
+    // mis-typed `to_int(ch: Char) -> Int` as `(eqref) -> i64` and
+    // tripped wasm validation on the identity body.
+    @core.Type::Char => GcValKind::I64
     @core.Type::Float => GcValKind::F32
     @core.Type::Double => GcValKind::F64
     @core.Type::Bool => GcValKind::I32
@@ -1795,6 +1980,7 @@ fn gc_val_kind_from_type(
       if args.length() == 0 {
         match name {
           "Int" | "i32" | "Num" => GcValKind::I64
+          "Char" => GcValKind::I64
           "Float" | "f32" => GcValKind::F32
           "Double" | "f64" => GcValKind::F64
           "Bool" | "Unit" => GcValKind::I32
@@ -1828,6 +2014,34 @@ fn gc_val_kind_from_type(
             )
             GcValKind::Ref(type_idx)
           }
+          // Issue #416: prelude functions like `Map::iter_get` declare
+          // their first parameter as `Map[K, V]`, which the parser
+          // encodes as Named("Map", [K, V]) (not Type::Map). Map this
+          // back onto the canonical map struct so the function body's
+          // `struct.get` ops validate against a typed ref.
+          "Map" | "MapBuilder" => {
+            let (builder_type, _, _) = map_struct_types_gc(ctx)
+            GcValKind::Ref(builder_type)
+          }
+          "ArrayBuilder" => {
+            let elem_kind = gc_val_kind_from_type(ctx, args[0])
+            let arr_type = ensure_array_type(
+              ctx.types, ctx.array_type_index, elem_kind,
+            )
+            let builder_fields : Array[GcValKind] = [
+              GcValKind::I32, GcValKind::Ref(arr_type),
+            ]
+            let builder_type = ensure_struct_type(
+              ctx.types, ctx.struct_type_index, builder_fields,
+            )
+            GcValKind::Ref(builder_type)
+          }
+          "Set" => {
+            let arr_type = ensure_array_type(
+              ctx.types, ctx.array_type_index, GcValKind::EqRef,
+            )
+            GcValKind::Ref(arr_type)
+          }
           // Option, Result, etc. — treat as eqref (enum-like)
           _ => GcValKind::EqRef
         }
@@ -1840,6 +2054,37 @@ fn gc_val_kind_from_type(
         elem_kind,
       )
       GcValKind::Ref(type_idx)
+    }
+    @core.Type::Map(_, _) | @core.Type::MapBuilder(_, _) => {
+      // Issue #416: Map and MapBuilder share a single runtime struct
+      // `{ len: i32, keys: array<eqref>, vals: array<eqref> }`. Key
+      // and value element types are erased to eqref per ADR-0044
+      // (per-type kind recovered through `map_value_kinds` at call
+      // sites that need it). Returning the struct ref here lets
+      // generic functions like `Iterator::fold(map, ...)` typecheck
+      // their `xs : C` parameter against an actual Map value kind.
+      let (builder_type, _, _) = map_struct_types_gc(ctx)
+      GcValKind::Ref(builder_type)
+    }
+    @core.Type::ArrayBuilder(elem_ty) => {
+      let elem_kind = gc_val_kind_from_type(ctx, elem_ty)
+      let arr_type = ensure_array_type(
+        ctx.types, ctx.array_type_index, elem_kind,
+      )
+      let builder_fields : Array[GcValKind] = [
+        GcValKind::I32, GcValKind::Ref(arr_type),
+      ]
+      let builder_type = ensure_struct_type(
+        ctx.types, ctx.struct_type_index, builder_fields,
+      )
+      GcValKind::Ref(builder_type)
+    }
+    @core.Type::Set(_) => {
+      // Set is internally stored as an Array of eqref values.
+      let arr_type = ensure_array_type(
+        ctx.types, ctx.array_type_index, GcValKind::EqRef,
+      )
+      GcValKind::Ref(arr_type)
     }
     @core.Type::Func(params~, ret~, ..) => {
       let param_kinds : Array[GcValKind] = []
@@ -1856,6 +2101,15 @@ fn gc_val_kind_from_type(
       // Generic payloads are boxed/ref-cast through eqref in GC mode.
       GcValKind::EqRef
     @core.Type::Variant(_) => GcValKind::EqRef
+    // Unresolved unification variables (`Type::Var(_)`) leak out of
+    // the checker when a generic helper is monomorphised against a
+    // value whose type is itself a fresh metavariable (the common
+    // case is `Option`/`Result` ctor inference at the test top-
+    // level, e.g. `let r = ok(42)`). Treat them as the same generic
+    // erased kind as `Type::Param` — eqref — so the codegen doesn't
+    // bail out with `gc type: Var(N)` and the bundling pipeline
+    // moves on to box / cast the value through eqref normally.
+    @core.Type::Var(_) => GcValKind::EqRef
     _ => raise WasmGenError::Unsupported("gc type: " + ty.to_string())
   }
 }
@@ -1918,6 +2172,7 @@ fn GcFuncCtx::new(
     param_count: idx,
     closure_call_types,
     current_rec_binding: None,
+    enclosing_function_name: None,
     direct_rec_call_name: None,
     direct_rec_call_func_idx: -1,
     direct_rec_call_type_idx: -1,
@@ -1977,6 +2232,7 @@ fn infer_block_kind_gc(
     param_count: fctx.param_count,
     closure_call_types: temp_cct,
     current_rec_binding: None,
+    enclosing_function_name: fctx.enclosing_function_name,
     direct_rec_call_name: None,
     direct_rec_call_func_idx: -1,
     direct_rec_call_type_idx: -1,
@@ -2056,15 +2312,41 @@ fn infer_block_kind_gc(
       }
       @core.Stmt::LetPat(pat~, expr~, ..) => {
         let kind = infer_expr_kind_gc(ctx, temp_ctx, expr)
-        // Bind pattern names in temp_ctx
+        // Bind pattern names in temp_ctx. For Tuple/Ctor patterns we
+        // look up the actual struct field kinds when the scrutinee is a
+        // known struct type, so that `let (a, b) = ...` binds `a`/`b`
+        // with their real I32/I64/Ref kind instead of a defaulted EqRef.
+        // Without this, downstream blocks that end in `a = x` infer
+        // their block kind as EqRef while the actual codegen leaves an
+        // i64/i32 on the stack, producing a `(result eqref)` if-block
+        // with mismatched arm types (wasm validation: expected eqref,
+        // found i64).
+        fn struct_field_kinds(k : GcValKind) -> Array[GcValKind]? {
+          match k {
+            GcValKind::Ref(idx) =>
+              match ctx.types[idx] {
+                GcTypeDef::Struct(fields~) => Some(fields)
+                _ => None
+              }
+            _ => None
+          }
+        }
+
         fn bind_pat_names(p : @core.Pat, k : GcValKind) -> Unit {
           match p {
             @core.Pat::Bind(name~, ..) =>
               temp_ctx.locals[name] = { idx: 0, kind: k }
-            @core.Pat::Tuple(items~, ..) =>
-              for item in items {
-                bind_pat_names(item, GcValKind::EqRef)
+            @core.Pat::Tuple(items~, ..) => {
+              let field_kinds = struct_field_kinds(k)
+              for i in 0..<items.length() {
+                let item_kind = match field_kinds {
+                  Some(fks) =>
+                    if i < fks.length() { fks[i] } else { GcValKind::EqRef }
+                  None => GcValKind::EqRef
+                }
+                bind_pat_names(items[i], item_kind)
               }
+            }
             @core.Pat::Ctor(args~, ..) =>
               for arg in args {
                 bind_pat_names(arg, GcValKind::EqRef)
@@ -2080,14 +2362,32 @@ fn infer_block_kind_gc(
       }
       @core.Stmt::LetPatElse(pat~, expr~, ..) => {
         let kind = infer_expr_kind_gc(ctx, temp_ctx, expr)
+        fn struct_field_kinds2(k : GcValKind) -> Array[GcValKind]? {
+          match k {
+            GcValKind::Ref(idx) =>
+              match ctx.types[idx] {
+                GcTypeDef::Struct(fields~) => Some(fields)
+                _ => None
+              }
+            _ => None
+          }
+        }
+
         fn bind_pat_names(p : @core.Pat, k : GcValKind) -> Unit {
           match p {
             @core.Pat::Bind(name~, ..) =>
               temp_ctx.locals[name] = { idx: 0, kind: k }
-            @core.Pat::Tuple(items~, ..) =>
-              for item in items {
-                bind_pat_names(item, GcValKind::EqRef)
+            @core.Pat::Tuple(items~, ..) => {
+              let field_kinds = struct_field_kinds2(k)
+              for i in 0..<items.length() {
+                let item_kind = match field_kinds {
+                  Some(fks) =>
+                    if i < fks.length() { fks[i] } else { GcValKind::EqRef }
+                  None => GcValKind::EqRef
+                }
+                bind_pat_names(items[i], item_kind)
               }
+            }
             @core.Pat::Ctor(args~, ..) =>
               for arg in args {
                 bind_pat_names(arg, GcValKind::EqRef)
@@ -2119,10 +2419,18 @@ fn infer_record_kind_gc(
 ) -> GcValKind raise WasmGenError {
   let ordered = sort_record_fields_expr(fields)
   let kinds : Array[GcValKind] = []
+  let names : Array[String] = []
   for field in ordered {
     kinds.push(infer_expr_kind_gc(ctx, fctx, field.expr))
+    names.push(field.name)
   }
   let type_idx = ensure_struct_type(ctx.types, ctx.struct_type_index, kinds)
+  // Record the sorted field-name order so `try_compile_struct_field_get_gc`
+  // can resolve `record.field` even when the value came from a record
+  // literal rather than a named `struct Foo { ... }` declaration.
+  if !ctx.record_field_names_by_type_idx.contains(type_idx) {
+    ctx.record_field_names_by_type_idx[type_idx] = names
+  }
   GcValKind::Ref(type_idx)
 }
 
@@ -2275,7 +2583,32 @@ fn infer_expr_kind_gc(
       let name = @core.lower_wasm_intrinsic_name(name)
       let pos_args = extract_positional_exprs(args, name)
       match name {
-        "add" | "sub" | "mul" | "div" => GcValKind::I64
+        // Mirror the call-side `gc_call_args_arith` guard so `infer`
+        // and `compile` stay in sync — when both args are arithmetic
+        // the codegen inlines an i32/i64/f32/f64 op and the result
+        // kind is the unified arith kind. Otherwise fall through to
+        // the function-return lookup below (relevant for user-defined
+        // `add: (StringSet, String) -> StringSet` and friends).
+        "add" if gc_call_args_arith(ctx, fctx, pos_args) => {
+          let lk = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          let rk = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+          gc_arith_kind(gc_common_kind(lk, rk))
+        }
+        "sub" if gc_call_args_arith(ctx, fctx, pos_args) => {
+          let lk = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          let rk = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+          gc_arith_kind(gc_common_kind(lk, rk))
+        }
+        "mul" if gc_call_args_arith(ctx, fctx, pos_args) => {
+          let lk = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          let rk = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+          gc_arith_kind(gc_common_kind(lk, rk))
+        }
+        "div" if gc_call_args_arith(ctx, fctx, pos_args) => {
+          let lk = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          let rk = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+          gc_arith_kind(gc_common_kind(lk, rk))
+        }
         "eq" | "lt" => GcValKind::I32
         "__len" => GcValKind::I64
         "__index" => {
@@ -2365,29 +2698,92 @@ fn infer_expr_kind_gc(
         | "Double::to_string"
         | "String::from_char_code" => GcValKind::Ref(ctx.string_type)
         "Int::to_double" => GcValKind::F64
-        "Int::abs" | "Int::max" | "Int::min" | "Int::signum"
-        | "Int::is_even" | "Int::is_odd" => GcValKind::I64
+        "Int::to_float" => GcValKind::F32
+        "Int::abs"
+        | "Int::max"
+        | "Int::min"
+        | "Int::signum"
+        | "Int::clamp"
+        | "Char::to_int"
+        | "Char::from_int" => GcValKind::I64
+        // is_even / is_odd compile to `(x & 1) i64.eq C`, which leaves
+        // an i32 on the stack — not the i64 we were reporting. The
+        // miscoded kind made the outer codegen apply an `i32.wrap_i64`
+        // when assigning the result to a `Bool` (i32) return slot, and
+        // the resulting wasm was invalid ("expected i32, found i32"
+        // after the spurious wrap on validation).
+        "Int::is_even" | "Int::is_odd" => GcValKind::I32
         "Double::to_int" => GcValKind::I64
+        // Direct f64 math primitives. Match the compile-side dispatch
+        // above and the linear backend's `f64_*` semantics — these
+        // return the same kind as the argument (f32 for Float, f64 for
+        // Double / Num).
+        "Double::floor"
+        | "Double::ceil"
+        | "Double::trunc"
+        | "Double::round"
+        | "Double::sqrt"
+        | "Double::fract"
+        | "floor"
+        | "ceil"
+        | "trunc"
+        | "round"
+        | "fract" => {
+          if pos_args.length() < 1 {
+            raise WasmGenError::Unsupported(name + " arity")
+          }
+          let arg_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          if arg_kind == GcValKind::F32 {
+            GcValKind::F32
+          } else {
+            GcValKind::F64
+          }
+        }
+        "Float::floor"
+        | "Float::ceil"
+        | "Float::trunc"
+        | "Float::round"
+        | "Float::sqrt"
+        | "Float::fract" => GcValKind::F32
         "Double::to_i64_bits" => GcValKind::I64
         "Double::parse" => GcValKind::F64
+        "Double::to_float" => GcValKind::F32
+        "Double::from_i64_bits" => GcValKind::F64
+        "Float::to_double" => GcValKind::F64
+        "Float::to_int" => GcValKind::I64
         "Array::length" => GcValKind::I64
+        "FixedArray::length" => GcValKind::I64
         "Array::fold" | "fold" => {
           if pos_args.length() != 3 {
             raise WasmGenError::Unsupported("arity: Array::fold")
           }
           infer_expr_kind_gc(ctx, fctx, pos_args[1])
         }
-        "Array::get" => {
+        "Array::get" | "FixedArray::get" => {
           if pos_args.length() != 2 {
-            raise WasmGenError::Unsupported("arity: Array::get")
+            raise WasmGenError::Unsupported("arity: " + name)
           }
           gc_array_elem_kind_from_kind(
             ctx,
             infer_expr_kind_gc(ctx, fctx, pos_args[0]),
-            "Array::get",
+            name,
           )
         }
-        "Array::set" | "Array::push" => GcValKind::I32
+        "Array::set" | "Array::push"
+        | "FixedArray::set" | "FixedArray::unsafe_set"
+        | "FixedArray::blit" => GcValKind::I32
+        "FixedArray::make" => {
+          // FixedArray::make(size, default) → Array[T] where T is the
+          // default's kind. Returns the corresponding gc array ref.
+          if pos_args.length() != 2 {
+            raise WasmGenError::Unsupported("arity: FixedArray::make")
+          }
+          let elem_kind = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+          let arr_type = ensure_array_type(
+            ctx.types, ctx.array_type_index, elem_kind,
+          )
+          GcValKind::Ref(arr_type)
+        }
         "Array::slice" | "Array::concat" => {
           if pos_args.length() < 1 {
             raise WasmGenError::Unsupported("arity: " + name)
@@ -2395,37 +2791,30 @@ fn infer_expr_kind_gc(
           infer_expr_kind_gc(ctx, fctx, pos_args[0])
         }
         "Array::truncate" => GcValKind::I32
-        "FixedArray::make" => {
-          // FixedArray::make(size, default) -> ref array<i64>
-          // Mirror Array's default element kind so get/set use the
-          // same array type index.
+        "ArrayBuilder::new" => {
+          // Return concrete builder struct type: { i32, ref array<eqref> }.
+          // Mirror the compile-side default so `let b = ArrayBuilder::new()`
+          // resolves to the eqref-backed builder when no explicit
+          // `ArrayBuilder[T]` annotation is present.
           let arr_type = ensure_array_type(
             ctx.types,
             ctx.array_type_index,
-            GcValKind::I64,
+            GcValKind::EqRef,
           )
-          GcValKind::Ref(arr_type)
-        }
-        "FixedArray::length" => GcValKind::I64
-        "FixedArray::get" => {
-          if pos_args.length() != 2 {
-            raise WasmGenError::Unsupported("arity: FixedArray::get")
-          }
-          gc_array_elem_kind_from_kind(
-            ctx,
-            infer_expr_kind_gc(ctx, fctx, pos_args[0]),
-            "FixedArray::get",
+          let builder_fields : Array[GcValKind] = [
+            GcValKind::I32,
+            GcValKind::Ref(arr_type),
+          ]
+          let builder_type = ensure_struct_type(
+            ctx.types,
+            ctx.struct_type_index,
+            builder_fields,
           )
+          GcValKind::Ref(builder_type)
         }
-        "FixedArray::set"
-        | "FixedArray::unsafe_set"
-        | "FixedArray::blit" => GcValKind::I32
-        "ArrayBuilder::new" | "Array::with_capacity" => {
-          // Return concrete builder struct type: { i32, ref array<i64> }
-          // Array::with_capacity shares ArrayBuilder's representation —
-          // a struct{len, data} — so Array::push on it can use the
-          // doubling path (amortized O(1)) instead of the realloc-per-
-          // push path that bare-array Arrays pay.
+        "Array::with_capacity" => {
+          // Array::with_capacity shares ArrayBuilder's struct layout but
+          // keeps the historical i64 array storage for Array::push.
           let arr_type = ensure_array_type(
             ctx.types,
             ctx.array_type_index,
@@ -2462,6 +2851,28 @@ fn infer_expr_kind_gc(
             _ => GcValKind::EqRef
           }
         }
+        // Issue #414: wasm-gc StringBuilder. Layout mirrors
+        // ArrayBuilder but element type is the gc String struct.
+        // `new` returns a builder struct, `push` returns Unit-shape
+        // i32, `freeze` returns a single concatenated String.
+        "StringBuilder::new" => {
+          let arr_type = ensure_array_type(
+            ctx.types,
+            ctx.array_type_index,
+            GcValKind::Ref(ctx.string_type),
+          )
+          let builder_fields : Array[GcValKind] = [
+            GcValKind::I32, GcValKind::Ref(arr_type),
+          ]
+          let builder_type = ensure_struct_type(
+            ctx.types,
+            ctx.struct_type_index,
+            builder_fields,
+          )
+          GcValKind::Ref(builder_type)
+        }
+        "StringBuilder::push" => GcValKind::I32
+        "StringBuilder::freeze" => GcValKind::Ref(ctx.string_type)
         "MapBuilder::new" | "MapBuilder::freeze" => {
           let key_arr_type = ensure_array_type(
             ctx.types,
@@ -2487,14 +2898,24 @@ fn infer_expr_kind_gc(
         }
         "MapBuilder::set" => GcValKind::I32
         "Map::get" => GcValKind::EqRef
-        "Map::has_key" => GcValKind::I32
-        "Map::keys" => {
-          let str_arr_type = ensure_array_type(
+        "Map::has_key" | "Map::has" => GcValKind::I32
+        "Map::keys" | "Map::values" => {
+          let arr_type = ensure_array_type(
             ctx.types,
             ctx.array_type_index,
             GcValKind::EqRef,
           )
-          GcValKind::Ref(str_arr_type)
+          GcValKind::Ref(arr_type)
+        }
+        "Map::set" | "Map::delete" => {
+          // Returns the (mutated) Map — same struct layout as the
+          // input. Pull it from the first arg's kind to keep type
+          // info accurate.
+          if pos_args.length() >= 1 {
+            infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          } else {
+            GcValKind::EqRef
+          }
         }
         "__eq"
         | "__lt"
@@ -2841,6 +3262,269 @@ fn compile_string_char_code_at(
 }
 
 ///|
+/// Map struct type accessor: builder_type / key_arr_type / val_arr_type
+/// tuple for the canonical 3-field map layout. Repeated in many Map::*
+/// call sites — factored here.
+fn map_struct_types_gc(ctx : GcCodegenCtx) -> (Int, Int, Int) {
+  let key_arr_type = ensure_array_type(
+    ctx.types, ctx.array_type_index, GcValKind::EqRef,
+  )
+  let val_arr_type = ensure_array_type(
+    ctx.types, ctx.array_type_index, GcValKind::EqRef,
+  )
+  let builder_fields : Array[GcValKind] = [
+    GcValKind::I32,
+    GcValKind::Ref(key_arr_type),
+    GcValKind::Ref(val_arr_type),
+  ]
+  let builder_type = ensure_struct_type(
+    ctx.types, ctx.struct_type_index, builder_fields,
+  )
+  (builder_type, key_arr_type, val_arr_type)
+}
+
+///|
+/// Map::set(map, key, value) — wasm-gc. Updates the slot if `key`
+/// already exists, otherwise grows the backing arrays (2× capacity
+/// when full) and appends. Returns the (now mutated) map ref.
+///
+/// Mirrors MapBuilder::set's traversal logic; the only difference is
+/// the final stack value — Map::set leaves the map ref on the stack
+/// where MapBuilder::set leaves a Unit i32.
+fn compile_map_set_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  pos_args : Array[@core.Expr],
+) -> Unit raise WasmGenError {
+  let (builder_type, key_arr_type, val_arr_type) = map_struct_types_gc(ctx)
+  let b_idx = alloc_local_gc(fctx, GcValKind::Ref(builder_type))
+  let len_l = alloc_local_gc(fctx, GcValKind::I32)
+  let cap_l = alloc_local_gc(fctx, GcValKind::I32)
+  let keys_l = alloc_local_gc(fctx, GcValKind::Ref(key_arr_type))
+  let vals_l = alloc_local_gc(fctx, GcValKind::Ref(val_arr_type))
+  let new_keys = alloc_local_gc(fctx, GcValKind::Ref(key_arr_type))
+  let new_vals = alloc_local_gc(fctx, GcValKind::Ref(val_arr_type))
+  let i_l = alloc_local_gc(fctx, GcValKind::I32)
+  let key_l = alloc_local_gc(fctx, GcValKind::EqRef)
+  let found_l = alloc_local_gc(fctx, GcValKind::I32)
+  let val_l = alloc_local_gc(fctx, GcValKind::EqRef)
+  let cur_key_l = alloc_local_gc(fctx, GcValKind::EqRef)
+  compile_expr_gc(ctx, fctx, buf, pos_args[0])
+  emit_local_set_gc(buf, b_idx)
+  let key_kind = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+  compile_expr_gc(ctx, fctx, buf, pos_args[1])
+  emit_box_top_for_ref_kind_gc(ctx, buf, key_kind, GcValKind::EqRef)
+  emit_local_set_gc(buf, key_l)
+  emit_local_get_gc(buf, b_idx)
+  emit_struct_get_gc(buf, builder_type, 0)
+  emit_local_set_gc(buf, len_l)
+  emit_local_get_gc(buf, b_idx)
+  emit_struct_get_gc(buf, builder_type, 1)
+  emit_local_set_gc(buf, keys_l)
+  emit_local_get_gc(buf, b_idx)
+  emit_struct_get_gc(buf, builder_type, 2)
+  emit_local_set_gc(buf, vals_l)
+  emit_local_get_gc(buf, keys_l)
+  emit_array_len_gc(buf)
+  emit_local_set_gc(buf, cap_l)
+  let val_kind = infer_expr_kind_gc(ctx, fctx, pos_args[2])
+  compile_expr_gc(ctx, fctx, buf, pos_args[2])
+  emit_box_top_for_ref_kind_gc(ctx, buf, val_kind, GcValKind::EqRef)
+  emit_local_set_gc(buf, val_l)
+  emit_i32_const_gc(buf, 0)
+  emit_local_set_gc(buf, i_l)
+  emit_i32_const_gc(buf, 0)
+  emit_local_set_gc(buf, found_l)
+  emit_block_gc(buf, None)
+  emit_loop_gc(buf, None)
+  emit_local_get_gc(buf, i_l)
+  emit_local_get_gc(buf, len_l)
+  emit_i32_ge_s_gc(buf)
+  emit_br_if_gc(buf, 1)
+  emit_local_get_gc(buf, keys_l)
+  emit_local_get_gc(buf, i_l)
+  emit_array_get_gc(buf, key_arr_type)
+  emit_local_set_gc(buf, cur_key_l)
+  emit_map_key_eq_gc(ctx, fctx, buf, cur_key_l, key_l)
+  emit_if_gc(buf, None)
+  emit_local_get_gc(buf, vals_l)
+  emit_local_get_gc(buf, i_l)
+  emit_local_get_gc(buf, val_l)
+  emit_array_set_gc(buf, val_arr_type)
+  emit_i32_const_gc(buf, 1)
+  emit_local_set_gc(buf, found_l)
+  emit_br_gc(buf, 2)
+  emit_end_gc(buf)
+  emit_local_get_gc(buf, i_l)
+  emit_i32_const_gc(buf, 1)
+  emit_i32_add_gc(buf)
+  emit_local_set_gc(buf, i_l)
+  emit_br_gc(buf, 0)
+  emit_end_gc(buf)
+  emit_end_gc(buf)
+  emit_local_get_gc(buf, found_l)
+  emit_i32_eqz_gc(buf)
+  emit_if_gc(buf, None)
+  emit_local_get_gc(buf, len_l)
+  emit_local_get_gc(buf, cap_l)
+  emit_i32_ge_s_gc(buf)
+  emit_if_gc(buf, None)
+  emit_local_get_gc(buf, cap_l)
+  emit_i32_const_gc(buf, 2)
+  emit_i32_mul_gc(buf)
+  emit_array_new_default_gc(buf, key_arr_type)
+  emit_local_set_gc(buf, new_keys)
+  emit_local_get_gc(buf, cap_l)
+  emit_i32_const_gc(buf, 2)
+  emit_i32_mul_gc(buf)
+  emit_array_new_default_gc(buf, val_arr_type)
+  emit_local_set_gc(buf, new_vals)
+  emit_i32_const_gc(buf, 0)
+  emit_local_set_gc(buf, i_l)
+  emit_block_gc(buf, None)
+  emit_loop_gc(buf, None)
+  emit_local_get_gc(buf, i_l)
+  emit_local_get_gc(buf, len_l)
+  emit_i32_ge_s_gc(buf)
+  emit_br_if_gc(buf, 1)
+  emit_local_get_gc(buf, new_keys)
+  emit_local_get_gc(buf, i_l)
+  emit_local_get_gc(buf, keys_l)
+  emit_local_get_gc(buf, i_l)
+  emit_array_get_gc(buf, key_arr_type)
+  emit_array_set_gc(buf, key_arr_type)
+  emit_local_get_gc(buf, new_vals)
+  emit_local_get_gc(buf, i_l)
+  emit_local_get_gc(buf, vals_l)
+  emit_local_get_gc(buf, i_l)
+  emit_array_get_gc(buf, val_arr_type)
+  emit_array_set_gc(buf, val_arr_type)
+  emit_local_get_gc(buf, i_l)
+  emit_i32_const_gc(buf, 1)
+  emit_i32_add_gc(buf)
+  emit_local_set_gc(buf, i_l)
+  emit_br_gc(buf, 0)
+  emit_end_gc(buf)
+  emit_end_gc(buf)
+  emit_local_get_gc(buf, b_idx)
+  emit_local_get_gc(buf, new_keys)
+  emit_struct_set_gc(buf, builder_type, 1)
+  emit_local_get_gc(buf, b_idx)
+  emit_local_get_gc(buf, new_vals)
+  emit_struct_set_gc(buf, builder_type, 2)
+  emit_local_get_gc(buf, new_keys)
+  emit_local_set_gc(buf, keys_l)
+  emit_local_get_gc(buf, new_vals)
+  emit_local_set_gc(buf, vals_l)
+  emit_end_gc(buf)
+  emit_local_get_gc(buf, keys_l)
+  emit_local_get_gc(buf, len_l)
+  emit_local_get_gc(buf, key_l)
+  emit_array_set_gc(buf, key_arr_type)
+  emit_local_get_gc(buf, vals_l)
+  emit_local_get_gc(buf, len_l)
+  emit_local_get_gc(buf, val_l)
+  emit_array_set_gc(buf, val_arr_type)
+  emit_local_get_gc(buf, b_idx)
+  emit_local_get_gc(buf, len_l)
+  emit_i32_const_gc(buf, 1)
+  emit_i32_add_gc(buf)
+  emit_struct_set_gc(buf, builder_type, 0)
+  emit_end_gc(buf)
+  // Return the (possibly grown) map on the stack
+  emit_local_get_gc(buf, b_idx)
+}
+
+///|
+/// Map::delete(map, key) — wasm-gc. Linear search; if `key` is found,
+/// swap-remove with the last slot (cheap O(1) removal — order isn't
+/// preserved). Returns the (mutated) map ref.
+fn compile_map_delete_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  pos_args : Array[@core.Expr],
+) -> Unit raise WasmGenError {
+  let (builder_type, key_arr_type, val_arr_type) = map_struct_types_gc(ctx)
+  let b_idx = alloc_local_gc(fctx, GcValKind::Ref(builder_type))
+  let len_l = alloc_local_gc(fctx, GcValKind::I32)
+  let last_l = alloc_local_gc(fctx, GcValKind::I32)
+  let keys_l = alloc_local_gc(fctx, GcValKind::Ref(key_arr_type))
+  let vals_l = alloc_local_gc(fctx, GcValKind::Ref(val_arr_type))
+  let i_l = alloc_local_gc(fctx, GcValKind::I32)
+  let key_l = alloc_local_gc(fctx, GcValKind::EqRef)
+  let cur_key_l = alloc_local_gc(fctx, GcValKind::EqRef)
+  compile_expr_gc(ctx, fctx, buf, pos_args[0])
+  emit_local_set_gc(buf, b_idx)
+  let key_kind = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+  compile_expr_gc(ctx, fctx, buf, pos_args[1])
+  emit_box_top_for_ref_kind_gc(ctx, buf, key_kind, GcValKind::EqRef)
+  emit_local_set_gc(buf, key_l)
+  emit_local_get_gc(buf, b_idx)
+  emit_struct_get_gc(buf, builder_type, 0)
+  emit_local_set_gc(buf, len_l)
+  emit_local_get_gc(buf, b_idx)
+  emit_struct_get_gc(buf, builder_type, 1)
+  emit_local_set_gc(buf, keys_l)
+  emit_local_get_gc(buf, b_idx)
+  emit_struct_get_gc(buf, builder_type, 2)
+  emit_local_set_gc(buf, vals_l)
+  emit_i32_const_gc(buf, 0)
+  emit_local_set_gc(buf, i_l)
+  emit_block_gc(buf, None)
+  emit_loop_gc(buf, None)
+  emit_local_get_gc(buf, i_l)
+  emit_local_get_gc(buf, len_l)
+  emit_i32_ge_s_gc(buf)
+  emit_br_if_gc(buf, 1)
+  emit_local_get_gc(buf, keys_l)
+  emit_local_get_gc(buf, i_l)
+  emit_array_get_gc(buf, key_arr_type)
+  emit_local_set_gc(buf, cur_key_l)
+  emit_map_key_eq_gc(ctx, fctx, buf, cur_key_l, key_l)
+  emit_if_gc(buf, None)
+  // last = len - 1
+  emit_local_get_gc(buf, len_l)
+  emit_i32_const_gc(buf, 1)
+  emit_i32_sub_gc(buf)
+  emit_local_set_gc(buf, last_l)
+  // keys[i] = keys[last], vals[i] = vals[last] (skip when i == last)
+  emit_local_get_gc(buf, i_l)
+  emit_local_get_gc(buf, last_l)
+  emit_i32_ne_gc(buf)
+  emit_if_gc(buf, None)
+  emit_local_get_gc(buf, keys_l)
+  emit_local_get_gc(buf, i_l)
+  emit_local_get_gc(buf, keys_l)
+  emit_local_get_gc(buf, last_l)
+  emit_array_get_gc(buf, key_arr_type)
+  emit_array_set_gc(buf, key_arr_type)
+  emit_local_get_gc(buf, vals_l)
+  emit_local_get_gc(buf, i_l)
+  emit_local_get_gc(buf, vals_l)
+  emit_local_get_gc(buf, last_l)
+  emit_array_get_gc(buf, val_arr_type)
+  emit_array_set_gc(buf, val_arr_type)
+  emit_end_gc(buf)
+  // len -= 1
+  emit_local_get_gc(buf, b_idx)
+  emit_local_get_gc(buf, last_l)
+  emit_struct_set_gc(buf, builder_type, 0)
+  emit_br_gc(buf, 2)
+  emit_end_gc(buf)
+  emit_local_get_gc(buf, i_l)
+  emit_i32_const_gc(buf, 1)
+  emit_i32_add_gc(buf)
+  emit_local_set_gc(buf, i_l)
+  emit_br_gc(buf, 0)
+  emit_end_gc(buf)
+  emit_end_gc(buf)
+  // Always return the map ref (untouched if key was absent).
+  emit_local_get_gc(buf, b_idx)
+}
+
+///|
 fn compile_string_concat(
   ctx : GcCodegenCtx,
   fctx : GcFuncCtx,
@@ -2848,6 +3532,15 @@ fn compile_string_concat(
   a_expr : @core.Expr,
   b_expr : @core.Expr,
 ) -> Unit raise WasmGenError {
+  // Note: tried `array.copy` (gc bulk op) here as a memcpy
+  // equivalent of the linear backend's `memory.copy`. Wasmtime 36's
+  // Cranelift implementation of `array.copy` turned out ~45× slower
+  // than the per-element loop on small copies (3.4 s vs 74 ms for
+  // a 5000-iter single-char concat benchmark). Sticking with the
+  // loops until wasmtime's GC bulk-copy fast path lands; the loops
+  // themselves are fine, the bottleneck for SHA-1-shaped workloads
+  // is the algorithmic O(N²) of `acc|>String::concat(small)` rather
+  // than the per-byte op count.
   let a_idx = alloc_local_gc(fctx, GcValKind::Ref(ctx.string_type))
   let b_idx = alloc_local_gc(fctx, GcValKind::Ref(ctx.string_type))
   let len_a_idx = alloc_local_gc(fctx, GcValKind::I32)
@@ -3035,9 +3728,19 @@ fn compile_string_equals(
   let i_idx = alloc_local_gc(fctx, GcValKind::I32)
   let last_idx = alloc_local_gc(fctx, GcValKind::I32)
   let ok_idx = alloc_local_gc(fctx, GcValKind::I32)
+  // Coerce both operands to the String ref type before spilling into
+  // the comparison-local pair. `hash_require[T: Hash](x: T) -> T` and
+  // similar generics give back an eqref-shaped result at the call
+  // site, even when the static argument was a String; the local was
+  // pre-allocated as `Ref(string_type)` and `local.set` rejected the
+  // wider eqref otherwise.
+  let a_kind = infer_expr_kind_gc(ctx, fctx, a_expr)
+  let b_kind = infer_expr_kind_gc(ctx, fctx, b_expr)
   compile_expr_gc(ctx, fctx, buf, a_expr)
+  emit_coerce_top_gc(ctx, buf, a_kind, GcValKind::Ref(ctx.string_type))
   emit_local_set_gc(buf, a_idx)
   compile_expr_gc(ctx, fctx, buf, b_expr)
+  emit_coerce_top_gc(ctx, buf, b_kind, GcValKind::Ref(ctx.string_type))
   emit_local_set_gc(buf, b_idx)
   emit_i32_const_gc(buf, 1)
   emit_local_set_gc(buf, ok_idx)
@@ -5792,8 +6495,16 @@ fn compile_array_slice_gc(
   compile_expr_gc(ctx, fctx, buf, array_expr)
   emit_local_set_gc(buf, arr_idx)
   compile_expr_gc(ctx, fctx, buf, start_expr)
+  let sk = infer_expr_kind_gc(ctx, fctx, start_expr)
+  if sk == GcValKind::I64 {
+    emit_i32_wrap_i64_gc(buf)
+  }
   emit_local_set_gc(buf, start_idx)
   compile_expr_gc(ctx, fctx, buf, end_expr)
+  let ek = infer_expr_kind_gc(ctx, fctx, end_expr)
+  if ek == GcValKind::I64 {
+    emit_i32_wrap_i64_gc(buf)
+  }
   emit_local_set_gc(buf, end_idx)
   emit_local_get_gc(buf, end_idx)
   emit_local_get_gc(buf, start_idx)
@@ -5913,9 +6624,15 @@ fn compile_struct_array_push_gc(
   emit_local_set_gc(buf, data_l)
   emit_end_gc(buf)
   // data[len] = val
+  let elem_kind = match ctx.types[arr_type] {
+    GcTypeDef::Array(elem~, ..) => elem
+    _ => GcValKind::I64
+  }
   emit_local_get_gc(buf, data_l)
   emit_local_get_gc(buf, len_l)
+  let val_kind = infer_expr_kind_gc(ctx, fctx, value_expr)
   compile_expr_gc(ctx, fctx, buf, value_expr)
+  emit_coerce_top_gc(ctx, buf, val_kind, elem_kind)
   emit_array_set_gc(buf, arr_type)
   // struct.len = len + 1
   emit_local_get_gc(buf, b_idx)
@@ -6162,7 +6879,20 @@ fn compile_pat_cond_gc(
           emit_i32_const_gc(buf, n.to_int())
           emit_i32_eq_gc(buf)
         }
-        _ => raise WasmGenError::Unsupported("pat int kind")
+        // The scrutinee is an erased generic (eqref / anyref / ref to
+        // unknown struct), e.g. `match Some(7) { Some(0) => ..., ... }`
+        // where the option payload is bound as eqref. Unbox through
+        // the matching `{i64}` box-struct shape that
+        // `emit_box_top_for_ref_kind_gc` produces on the storage side,
+        // then compare to the literal. The cast trips if the eqref
+        // is not actually an i64 box — which would already be a type
+        // error at the source level, so let wasmtime raise it.
+        _ => {
+          emit_local_get_gc(buf, scrut_idx)
+          emit_coerce_top_gc(ctx, buf, scrut_kind, GcValKind::I64)
+          emit_i64_const_gc(buf, n)
+          emit_i64_eq_gc(buf)
+        }
       }
     }
     @core.Pat::Bool(value=b, span~) => {
@@ -6211,9 +6941,58 @@ fn compile_pat_cond_gc(
     }
     @core.Pat::Tuple(items~, span~) => {
       let _ = span
-      let _ = items
-      // Tuples always match structurally (no tag check needed)
-      emit_i32_const_gc(buf, 1)
+      // Tuple itself matches structurally, but any nested Ctor / literal
+      // patterns must still be checked. Emit an AND-chain across items.
+      let type_idx = match scrut_kind {
+        GcValKind::Ref(idx) => idx
+        _ => {
+          let fields : Array[GcValKind] = []
+          for _ in items {
+            fields.push(GcValKind::EqRef)
+          }
+          ensure_struct_type(ctx.types, ctx.struct_type_index, fields)
+        }
+      }
+      let field_kinds = match ctx.types[type_idx] {
+        GcTypeDef::Struct(fields~) => fields
+        _ => {
+          let fields : Array[GcValKind] = []
+          for _ in items {
+            fields.push(GcValKind::EqRef)
+          }
+          fields
+        }
+      }
+      let mut emitted_any = false
+      for i in 0..<items.length() {
+        let item = items[i]
+        match item {
+          @core.Pat::Wildcard(..) | @core.Pat::Bind(..) => ()
+          sub_pat => {
+            let kind = if i < field_kinds.length() {
+              field_kinds[i]
+            } else {
+              GcValKind::EqRef
+            }
+            let sub_idx = alloc_local_gc(_fctx, kind)
+            emit_local_get_gc(buf, scrut_idx)
+            match scrut_kind {
+              GcValKind::Ref(_) => ()
+              _ => emit_ref_cast_gc(buf, type_idx)
+            }
+            emit_struct_get_gc(buf, type_idx, i)
+            emit_local_set_gc(buf, sub_idx)
+            compile_pat_cond_gc(ctx, _fctx, buf, sub_idx, kind, sub_pat)
+            if emitted_any {
+              emit_i32_and_gc(buf)
+            }
+            emitted_any = true
+          }
+        }
+      }
+      if !emitted_any {
+        emit_i32_const_gc(buf, 1)
+      }
     }
     @core.Pat::String(value=s, span~) => {
       let _ = span
@@ -6344,15 +7123,15 @@ fn compile_pat_bind_gc(
       }
       for i in 0..<items.length() {
         let item = items[i]
+        let kind = if i < field_kinds.length() {
+          field_kinds[i]
+        } else {
+          GcValKind::EqRef
+        }
         match item {
           @core.Pat::Wildcard(..) => ()
           @core.Pat::Bind(name~, span~) => {
             let _ = span
-            let kind = if i < field_kinds.length() {
-              field_kinds[i]
-            } else {
-              GcValKind::EqRef
-            }
             let idx = bind_local_gc(fctx, name, kind)
             emit_local_get_gc(buf, scrut_idx)
             // Cast to struct type if scrutinee is not already the right ref
@@ -6363,7 +7142,21 @@ fn compile_pat_bind_gc(
             emit_struct_get_gc(buf, type_idx, i)
             emit_local_set_gc(buf, idx)
           }
-          _ => ()
+          // Nested pattern (Ctor, Tuple, etc.): extract field into a fresh
+          // local and recurse, so bindings inside e.g. `(Some(a), Some(b))`
+          // get allocated. Without this, `a`/`b` are silently dropped and
+          // later references emit "unknown name: a".
+          sub_pat => {
+            let sub_idx = alloc_local_gc(fctx, kind)
+            emit_local_get_gc(buf, scrut_idx)
+            match scrut_kind {
+              GcValKind::Ref(_) => ()
+              _ => emit_ref_cast_gc(buf, type_idx)
+            }
+            emit_struct_get_gc(buf, type_idx, i)
+            emit_local_set_gc(buf, sub_idx)
+            compile_pat_bind_gc(ctx, fctx, buf, sub_idx, kind, sub_pat)
+          }
         }
       }
     }
@@ -6393,6 +7186,8 @@ fn compile_match_chain_gc(
   let saved = clone_locals_gc(fctx.locals)
   compile_pat_cond_gc(ctx, fctx, buf, scrut_idx, scrut_kind, arm.pat)
   emit_if_gc(buf, Some(result_kind))
+  // Issue #417: per-arm coverage point.
+  emit_coverage_gc(ctx, buf, WasmCoveragePointKind::BranchMatchArm, arm.span)
   compile_pat_bind_gc(ctx, fctx, buf, scrut_idx, scrut_kind, arm.pat)
   let arm_kind = infer_expr_kind_gc(ctx, fctx, arm.expr)
   compile_expr_gc(ctx, fctx, buf, arm.expr)
@@ -6525,6 +7320,7 @@ fn compile_expr_gc(
               body: wrapper_buf.to_array(),
               type_idx: fn_type_idx,
             })
+            ctx.closure_lifted_labels.push("as_closure::" + name)
             emit_ref_func_gc(buf, wrapper_idx)
             // Empty environment struct
             let env_type_idx = ensure_struct_type(
@@ -6601,53 +7397,137 @@ fn compile_expr_gc(
       let name = @core.lower_wasm_intrinsic_name(name)
       let pos_args = extract_positional_exprs(args, name)
       match name {
-        "add" => {
+        // `add` / `sub` / `mul` / `div` are prelude thin-wrapper short-
+        // circuits — when both args are arithmetic (i32 / i64 / f32 /
+        // f64) inline the matching wasm op so we don't have to pay a
+        // call into the prelude's `(Num, Num) -> Num` wrapper (which
+        // collapses to i64 in wasm-gc and would mis-type f32/f64 args).
+        // When operands aren't arithmetic (e.g.
+        // `vibe/collection/set.vibe::add: (StringSet, String) -> StringSet`)
+        // fall through to the normal `call $name` dispatch below, so a
+        // user function with the same name keeps working.
+        "add" if gc_call_args_arith(ctx, fctx, pos_args) => {
           if pos_args.length() != 2 {
             raise WasmGenError::Unsupported("add arity")
           }
+          let lk = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          let rk = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+          let arith = gc_arith_kind(gc_common_kind(lk, rk))
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_coerce_top_gc(ctx, buf, lk, arith)
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
-          emit_i64_add_gc(buf)
+          emit_coerce_top_gc(ctx, buf, rk, arith)
+          match arith {
+            GcValKind::I64 => emit_i64_add_gc(buf)
+            GcValKind::I32 => emit_i32_add_gc(buf)
+            GcValKind::F32 => emit_f32_add_gc(buf)
+            GcValKind::F64 => emit_f64_add_gc(buf)
+            _ => emit_i64_add_gc(buf)
+          }
         }
-        "sub" => {
+        "sub" if gc_call_args_arith(ctx, fctx, pos_args) => {
           if pos_args.length() != 2 {
             raise WasmGenError::Unsupported("sub arity")
           }
+          let lk = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          let rk = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+          let arith = gc_arith_kind(gc_common_kind(lk, rk))
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_coerce_top_gc(ctx, buf, lk, arith)
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
-          emit_i64_sub_gc(buf)
+          emit_coerce_top_gc(ctx, buf, rk, arith)
+          match arith {
+            GcValKind::I64 => emit_i64_sub_gc(buf)
+            GcValKind::I32 => emit_i32_sub_gc(buf)
+            GcValKind::F32 => emit_f32_sub_gc(buf)
+            GcValKind::F64 => emit_f64_sub_gc(buf)
+            _ => emit_i64_sub_gc(buf)
+          }
         }
-        "mul" => {
+        "mul" if gc_call_args_arith(ctx, fctx, pos_args) => {
           if pos_args.length() != 2 {
             raise WasmGenError::Unsupported("mul arity")
           }
+          let lk = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          let rk = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+          let arith = gc_arith_kind(gc_common_kind(lk, rk))
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_coerce_top_gc(ctx, buf, lk, arith)
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
-          emit_i64_mul_gc(buf)
+          emit_coerce_top_gc(ctx, buf, rk, arith)
+          match arith {
+            GcValKind::I64 => emit_i64_mul_gc(buf)
+            GcValKind::I32 => emit_i32_mul_gc(buf)
+            GcValKind::F32 => emit_f32_mul_gc(buf)
+            GcValKind::F64 => emit_f64_mul_gc(buf)
+            _ => emit_i64_mul_gc(buf)
+          }
         }
-        "div" => {
+        "div" if gc_call_args_arith(ctx, fctx, pos_args) => {
           if pos_args.length() != 2 {
             raise WasmGenError::Unsupported("div arity")
           }
+          let lk = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          let rk = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+          let arith = gc_arith_kind(gc_common_kind(lk, rk))
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_coerce_top_gc(ctx, buf, lk, arith)
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
-          emit_i64_div_s_gc(buf)
+          emit_coerce_top_gc(ctx, buf, rk, arith)
+          match arith {
+            GcValKind::I64 => emit_i64_div_s_gc(buf)
+            GcValKind::I32 => emit_i32_div_s_gc(buf)
+            GcValKind::F32 => emit_f32_div_gc(buf)
+            GcValKind::F64 => emit_f64_div_gc(buf)
+            _ => emit_i64_div_s_gc(buf)
+          }
         }
+        // `eq` / `lt` are prelude thin wrappers around `__eq` / `__lt`
+        // declared with the synthetic `Num` type that the wasm-gc
+        // backend collapses to i64 — calling the bundled function with
+        // f32 / f64 args would trip wasm validation. Always inline the
+        // comparison primitive matched to the operand kinds, regardless
+        // of whether a user-defined `eq` / `lt` exists. The prelude
+        // `let eq = (x: Num, y: Num) -> ...` function still gets
+        // bundled but its body is now unreachable; DCE drops it from
+        // the final module.
         "eq" => {
           if pos_args.length() != 2 {
             raise WasmGenError::Unsupported("eq arity")
           }
+          let left_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          let right_kind = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+          let arith = gc_arith_kind(gc_common_kind(left_kind, right_kind))
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_coerce_top_gc(ctx, buf, left_kind, arith)
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
-          emit_i64_eq_gc(buf)
+          emit_coerce_top_gc(ctx, buf, right_kind, arith)
+          match arith {
+            GcValKind::I64 => emit_i64_eq_gc(buf)
+            GcValKind::I32 => emit_i32_eq_gc(buf)
+            GcValKind::F32 => emit_f32_eq_gc(buf)
+            GcValKind::F64 => emit_f64_eq_gc(buf)
+            _ => emit_i64_eq_gc(buf)
+          }
         }
         "lt" => {
           if pos_args.length() != 2 {
             raise WasmGenError::Unsupported("lt arity")
           }
+          let left_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          let right_kind = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+          let arith = gc_arith_kind(gc_common_kind(left_kind, right_kind))
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_coerce_top_gc(ctx, buf, left_kind, arith)
           compile_expr_gc(ctx, fctx, buf, pos_args[1])
-          emit_i64_lt_s_gc(buf)
+          emit_coerce_top_gc(ctx, buf, right_kind, arith)
+          match arith {
+            GcValKind::I64 => emit_i64_lt_s_gc(buf)
+            GcValKind::I32 => emit_i32_lt_s_gc(buf)
+            GcValKind::F32 => emit_f32_lt_gc(buf)
+            GcValKind::F64 => emit_f64_lt_gc(buf)
+            _ => emit_i64_lt_s_gc(buf)
+          }
         }
         "__add" => {
           if pos_args.length() != 2 {
@@ -6935,7 +7815,11 @@ fn compile_expr_gc(
           let struct_handled = match pos_args[1] {
             @core.Expr::String(value=field_name, ..) =>
               try_compile_struct_field_get_gc(
-                ctx, fctx, buf, field_name, pos_args[0],
+                ctx,
+                fctx,
+                buf,
+                field_name,
+                pos_args[0],
               )
             _ => false
           }
@@ -6969,7 +7853,12 @@ fn compile_expr_gc(
               span=pos_args[1].span(),
             )
             compile_string_substring(
-              ctx, fctx, buf, pos_args[0], pos_args[1], next_idx,
+              ctx,
+              fctx,
+              buf,
+              pos_args[0],
+              pos_args[1],
+              next_idx,
             )
           } else if base_kind == GcValKind::Ref(ctx.bytes_type) {
             compile_bytes_get_gc(ctx, fctx, buf, pos_args[0], pos_args[1])
@@ -7425,9 +8314,183 @@ fn compile_expr_gc(
           emit_i64_const_gc(buf, 1L)
           emit_i64_eq_gc(buf)
         }
+        "Int::clamp" => {
+          // Int::clamp(x, lo, hi) = max(lo, min(x, hi))
+          if pos_args.length() != 3 {
+            raise WasmGenError::Unsupported("Int::clamp arity")
+          }
+          let x = alloc_local_gc(fctx, GcValKind::I64)
+          let lo = alloc_local_gc(fctx, GcValKind::I64)
+          let hi = alloc_local_gc(fctx, GcValKind::I64)
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_local_set_gc(buf, x)
+          compile_expr_gc(ctx, fctx, buf, pos_args[1])
+          emit_local_set_gc(buf, lo)
+          compile_expr_gc(ctx, fctx, buf, pos_args[2])
+          emit_local_set_gc(buf, hi)
+          // min_val = if x > hi then hi else x
+          emit_local_get_gc(buf, x)
+          emit_local_get_gc(buf, hi)
+          emit_i64_gt_s_gc(buf)
+          emit_if_gc(buf, Some(GcValKind::I64))
+          emit_local_get_gc(buf, hi)
+          emit_else_gc(buf)
+          emit_local_get_gc(buf, x)
+          emit_end_gc(buf)
+          emit_local_set_gc(buf, x)
+          // result = if lo > min_val then lo else min_val
+          emit_local_get_gc(buf, lo)
+          emit_local_get_gc(buf, x)
+          emit_i64_gt_s_gc(buf)
+          emit_if_gc(buf, Some(GcValKind::I64))
+          emit_local_get_gc(buf, lo)
+          emit_else_gc(buf)
+          emit_local_get_gc(buf, x)
+          emit_end_gc(buf)
+        }
+        "Char::to_int" | "Char::from_int" => {
+          // Identity: Char is a 62-bit tagged int (ADR-0006).
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported(name + " arity")
+          }
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+        }
+        "Int::to_float" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("Int::to_float arity")
+          }
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_f32_convert_i64_s_gc(buf)
+        }
+        "Float::to_int" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("Float::to_int arity")
+          }
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_i64_trunc_f32_s_gc(buf)
+        }
+        "Float::to_double" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("Float::to_double arity")
+          }
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_f64_promote_f32_gc(buf)
+        }
+        "Double::to_float" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("Double::to_float arity")
+          }
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_f32_demote_f64_gc(buf)
+        }
+        "Double::from_i64_bits" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("Double::from_i64_bits arity")
+          }
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_f64_reinterpret_i64_gc(buf)
+        }
         "Double::to_int" => {
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
           emit_i64_trunc_f64_s_gc(buf)
+        }
+        // Direct f64 math primitives — mirror the linear backend's
+        // `f64_floor`/`f64_ceil`/... builtins so wasm-gc doesn't need
+        // to bundle the vibe-side `Double::floor` implementation
+        // (which depends on the `double_int_{max,min}_value` Double
+        // globals that the wasm-gc backend doesn't register).
+        "Double::floor" | "floor" | "Float::floor" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported(name + " arity")
+          }
+          let arg_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          if arg_kind == GcValKind::F32 {
+            buf.push(0x8e) // f32.floor
+          } else {
+            emit_coerce_top_gc(ctx, buf, arg_kind, GcValKind::F64)
+            buf.push(0x9c) // f64.floor
+          }
+        }
+        "Double::ceil" | "ceil" | "Float::ceil" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported(name + " arity")
+          }
+          let arg_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          if arg_kind == GcValKind::F32 {
+            buf.push(0x8d) // f32.ceil
+          } else {
+            emit_coerce_top_gc(ctx, buf, arg_kind, GcValKind::F64)
+            buf.push(0x9b) // f64.ceil
+          }
+        }
+        "Double::trunc" | "trunc" | "Float::trunc" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported(name + " arity")
+          }
+          let arg_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          if arg_kind == GcValKind::F32 {
+            buf.push(0x8f) // f32.trunc
+          } else {
+            emit_coerce_top_gc(ctx, buf, arg_kind, GcValKind::F64)
+            buf.push(0x9d) // f64.trunc
+          }
+        }
+        "Double::round" | "round" | "Float::round" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported(name + " arity")
+          }
+          let arg_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          if arg_kind == GcValKind::F32 {
+            buf.push(0x90) // f32.nearest
+          } else {
+            emit_coerce_top_gc(ctx, buf, arg_kind, GcValKind::F64)
+            buf.push(0x9e) // f64.nearest
+          }
+        }
+        "Double::sqrt" | "Float::sqrt" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported(name + " arity")
+          }
+          let arg_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          if arg_kind == GcValKind::F32 {
+            buf.push(0x91) // f32.sqrt
+          } else {
+            emit_coerce_top_gc(ctx, buf, arg_kind, GcValKind::F64)
+            buf.push(0x9f) // f64.sqrt
+          }
+        }
+        "Double::fract" | "fract" | "Float::fract" => {
+          // x - trunc(x)
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported(name + " arity")
+          }
+          let arg_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          let tmp = alloc_local_gc(
+            fctx,
+            if arg_kind == GcValKind::F32 {
+              GcValKind::F32
+            } else {
+              GcValKind::F64
+            },
+          )
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          if arg_kind != GcValKind::F32 {
+            emit_coerce_top_gc(ctx, buf, arg_kind, GcValKind::F64)
+          }
+          emit_local_tee_gc(buf, tmp)
+          emit_local_get_gc(buf, tmp)
+          if arg_kind == GcValKind::F32 {
+            buf.push(0x8f) // f32.trunc
+            buf.push(0x93) // f32.sub
+          } else {
+            buf.push(0x9d) // f64.trunc
+            buf.push(0xa1) // f64.sub
+          }
         }
         "Double::to_i64_bits" => {
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
@@ -7652,6 +8715,116 @@ fn compile_expr_gc(
             }
           }
         }
+        // FixedArray builtins (declared in vibe/builtins/declarations.vibe
+        // as operating on `Array[T]`). Linear backend already implements
+        // these; the wasm-gc parity gap meant `vibe/wasm/wasm_opt/wasm_opt.vibe`
+        // and other FixedArray-using code couldn't be compiled with the
+        // wasm-gc backend. Implementation here mirrors the corresponding
+        // Array ops — `make` does one `array.new` at fixed size, `set`
+        // is a direct `array.set` (no grow logic; the array is
+        // immutable in capacity), `get` / `length` are aliases of the
+        // Array versions.
+        "FixedArray::make" => {
+          if pos_args.length() != 2 {
+            raise WasmGenError::Unsupported("FixedArray::make arity")
+          }
+          let elem_kind = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+          let arr_type = ensure_array_type(
+            ctx.types, ctx.array_type_index, elem_kind,
+          )
+          // array.new $arr_type (default value) (size)
+          compile_expr_gc(ctx, fctx, buf, pos_args[1])
+          let ik = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          if ik == GcValKind::I64 {
+            emit_i32_wrap_i64_gc(buf)
+          }
+          emit_array_new_gc(buf, arr_type)
+        }
+        "FixedArray::length" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("FixedArray::length arity")
+          }
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_array_len_gc(buf)
+          emit_i64_extend_i32_s_gc(buf)
+        }
+        "FixedArray::get" => {
+          if pos_args.length() != 2 {
+            raise WasmGenError::Unsupported("FixedArray::get arity")
+          }
+          let arr_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          let type_idx = gc_array_type_idx_from_kind(
+            ctx, arr_kind, "FixedArray::get",
+          )
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          compile_expr_gc(ctx, fctx, buf, pos_args[1])
+          let ik = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+          if ik == GcValKind::I64 {
+            emit_i32_wrap_i64_gc(buf)
+          }
+          emit_array_get_gc(buf, type_idx)
+        }
+        "FixedArray::set" | "FixedArray::unsafe_set" => {
+          if pos_args.length() != 3 {
+            raise WasmGenError::Unsupported(name + " arity")
+          }
+          let arr_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          let type_idx = gc_array_type_idx_from_kind(
+            ctx, arr_kind, name,
+          )
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          compile_expr_gc(ctx, fctx, buf, pos_args[1])
+          let ik = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+          if ik == GcValKind::I64 {
+            emit_i32_wrap_i64_gc(buf)
+          }
+          compile_expr_gc(ctx, fctx, buf, pos_args[2])
+          emit_array_set_gc(buf, type_idx)
+          emit_i32_const_gc(buf, 0)
+        }
+        "FixedArray::blit" => {
+          // FixedArray::blit(dst, dst_idx, src, src_idx, len) — copy a
+          // range of elements. Backed by wasm `array.copy`.
+          // Note: wasmtime 36's Cranelift implementation of array.copy
+          // is roughly memcpy-equivalent for typed-array element
+          // copies, faster than the manual per-element loop the
+          // String concat path can't use (see profile report).
+          if pos_args.length() != 5 {
+            raise WasmGenError::Unsupported("FixedArray::blit arity")
+          }
+          let dst_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          let dst_type = gc_array_type_idx_from_kind(
+            ctx, dst_kind, "FixedArray::blit/dst",
+          )
+          let src_kind = infer_expr_kind_gc(ctx, fctx, pos_args[2])
+          let src_type = gc_array_type_idx_from_kind(
+            ctx, src_kind, "FixedArray::blit/src",
+          )
+          compile_expr_gc(ctx, fctx, buf, pos_args[0]) // dst
+          compile_expr_gc(ctx, fctx, buf, pos_args[1]) // dst_idx
+          let di = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+          if di == GcValKind::I64 {
+            emit_i32_wrap_i64_gc(buf)
+          }
+          compile_expr_gc(ctx, fctx, buf, pos_args[2]) // src
+          compile_expr_gc(ctx, fctx, buf, pos_args[3]) // src_idx
+          let si = infer_expr_kind_gc(ctx, fctx, pos_args[3])
+          if si == GcValKind::I64 {
+            emit_i32_wrap_i64_gc(buf)
+          }
+          compile_expr_gc(ctx, fctx, buf, pos_args[4]) // len
+          let li = infer_expr_kind_gc(ctx, fctx, pos_args[4])
+          if li == GcValKind::I64 {
+            emit_i32_wrap_i64_gc(buf)
+          }
+          // array.copy dst_type src_type
+          buf.push(0xfb)
+          buf.push(0x11)
+          write_u32_leb_gc(buf, dst_type)
+          write_u32_leb_gc(buf, src_type)
+          emit_i32_const_gc(buf, 0) // Unit
+        }
         "Array::slice" => {
           if pos_args.length() != 3 {
             raise WasmGenError::Unsupported("Array::slice arity")
@@ -7701,105 +8874,19 @@ fn compile_expr_gc(
           emit_struct_set_gc(buf, builder_type, 0)
           emit_i32_const_gc(buf, 0)
         }
-        "FixedArray::make" => {
-          // FixedArray::make(size, default) -> array.new $arr<i64>
-          // Stack order for array.new: [initial_value, length] -> [array_ref]
-          if pos_args.length() != 2 {
-            raise WasmGenError::Unsupported("FixedArray::make arity")
-          }
-          let arr_type = ensure_array_type(
-            ctx.types,
-            ctx.array_type_index,
-            GcValKind::I64,
-          )
-          compile_expr_gc(ctx, fctx, buf, pos_args[1])
-          let val_kind = infer_expr_kind_gc(ctx, fctx, pos_args[1])
-          if val_kind == GcValKind::I32 {
-            emit_i64_extend_i32_s_gc(buf)
-          }
-          compile_expr_gc(ctx, fctx, buf, pos_args[0])
-          let size_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
-          if size_kind == GcValKind::I64 {
-            emit_i32_wrap_i64_gc(buf)
-          }
-          emit_array_new_gc(buf, arr_type)
-        }
-        "FixedArray::length" => {
-          if pos_args.length() != 1 {
-            raise WasmGenError::Unsupported("FixedArray::length arity")
-          }
-          compile_len_gc(ctx, fctx, buf, pos_args[0])
-        }
-        "FixedArray::get" => {
-          if pos_args.length() != 2 {
-            raise WasmGenError::Unsupported("FixedArray::get arity")
-          }
-          let arr_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
-          let type_idx = gc_array_type_idx_from_kind(
-            ctx, arr_kind, "FixedArray::get",
-          )
-          compile_expr_gc(ctx, fctx, buf, pos_args[0])
-          compile_expr_gc(ctx, fctx, buf, pos_args[1])
-          let ik = infer_expr_kind_gc(ctx, fctx, pos_args[1])
-          if ik == GcValKind::I64 {
-            emit_i32_wrap_i64_gc(buf)
-          }
-          emit_array_get_gc(buf, type_idx)
-        }
-        "FixedArray::set" | "FixedArray::unsafe_set" => {
-          if pos_args.length() != 3 {
-            raise WasmGenError::Unsupported(name + " arity")
-          }
-          let arr_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
-          let type_idx = gc_array_type_idx_from_kind(ctx, arr_kind, name)
-          compile_expr_gc(ctx, fctx, buf, pos_args[0])
-          compile_expr_gc(ctx, fctx, buf, pos_args[1])
-          let ik = infer_expr_kind_gc(ctx, fctx, pos_args[1])
-          if ik == GcValKind::I64 {
-            emit_i32_wrap_i64_gc(buf)
-          }
-          compile_expr_gc(ctx, fctx, buf, pos_args[2])
-          emit_array_set_gc(buf, type_idx)
-          emit_i32_const_gc(buf, 0)
-        }
-        "FixedArray::blit" => {
-          // FixedArray::blit(dst, dst_off, src, src_off, len)
-          // -> array.copy $arr $arr
-          // Stack: [dst, dst_off, src, src_off, len]
-          if pos_args.length() != 5 {
-            raise WasmGenError::Unsupported("FixedArray::blit arity")
-          }
-          let dst_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
-          let type_idx = gc_array_type_idx_from_kind(
-            ctx, dst_kind, "FixedArray::blit",
-          )
-          compile_expr_gc(ctx, fctx, buf, pos_args[0])
-          compile_expr_gc(ctx, fctx, buf, pos_args[1])
-          let k1 = infer_expr_kind_gc(ctx, fctx, pos_args[1])
-          if k1 == GcValKind::I64 {
-            emit_i32_wrap_i64_gc(buf)
-          }
-          compile_expr_gc(ctx, fctx, buf, pos_args[2])
-          compile_expr_gc(ctx, fctx, buf, pos_args[3])
-          let k3 = infer_expr_kind_gc(ctx, fctx, pos_args[3])
-          if k3 == GcValKind::I64 {
-            emit_i32_wrap_i64_gc(buf)
-          }
-          compile_expr_gc(ctx, fctx, buf, pos_args[4])
-          let k4 = infer_expr_kind_gc(ctx, fctx, pos_args[4])
-          if k4 == GcValKind::I64 {
-            emit_i32_wrap_i64_gc(buf)
-          }
-          emit_array_copy_gc(buf, type_idx)
-          emit_i32_const_gc(buf, 0)
-        }
         "ArrayBuilder::new" => {
-          // Create struct { len: i32, data: ref array<i64> }
+          // Create struct { len: i32, data: ref array<eqref> }.
+          // Default to eqref element storage so the same builder
+          // shape works for both primitive (`ArrayBuilder[Int]`,
+          // boxed on push via `emit_coerce_top_gc`) and reference
+          // (`ArrayBuilder[Json]`) element types. Explicit
+          // `ArrayBuilder[T]` annotations still pick `T`'s exact
+          // kind via the `gc_val_kind_from_type` path.
           let init_cap = 8
           let arr_type = ensure_array_type(
             ctx.types,
             ctx.array_type_index,
-            GcValKind::I64,
+            GcValKind::EqRef,
           )
           let builder_fields : Array[GcValKind] = [
             GcValKind::I32,
@@ -7962,6 +9049,249 @@ fn compile_expr_gc(
           emit_end_gc(buf)
           emit_end_gc(buf)
           emit_local_get_gc(buf, dst_l)
+        }
+        // Issue #414: StringBuilder. Layout = { len: i32, data: ref
+        // array<Ref(string_type)> }. `push` appends a String reference,
+        // growing the data array if needed. `freeze` concatenates all
+        // collected strings into a single fresh String.
+        "StringBuilder::new" => {
+          let init_cap = 8
+          let arr_type = ensure_array_type(
+            ctx.types,
+            ctx.array_type_index,
+            GcValKind::Ref(ctx.string_type),
+          )
+          let builder_fields : Array[GcValKind] = [
+            GcValKind::I32, GcValKind::Ref(arr_type),
+          ]
+          let builder_type = ensure_struct_type(
+            ctx.types, ctx.struct_type_index, builder_fields,
+          )
+          let _ = builder_type
+          emit_i32_const_gc(buf, 0)
+          emit_i32_const_gc(buf, init_cap)
+          emit_array_new_default_gc(buf, arr_type)
+          emit_struct_new_gc(buf, builder_type)
+        }
+        "StringBuilder::push" => {
+          if pos_args.length() != 2 {
+            raise WasmGenError::Unsupported("StringBuilder::push arity")
+          }
+          let arr_type = ensure_array_type(
+            ctx.types,
+            ctx.array_type_index,
+            GcValKind::Ref(ctx.string_type),
+          )
+          let builder_fields : Array[GcValKind] = [
+            GcValKind::I32, GcValKind::Ref(arr_type),
+          ]
+          let builder_type = ensure_struct_type(
+            ctx.types, ctx.struct_type_index, builder_fields,
+          )
+          let builder_kind = GcValKind::Ref(builder_type)
+          let b_l = alloc_local_gc(fctx, builder_kind)
+          let len_l = alloc_local_gc(fctx, GcValKind::I32)
+          let cap_l = alloc_local_gc(fctx, GcValKind::I32)
+          let data_l = alloc_local_gc(fctx, GcValKind::Ref(arr_type))
+          let new_data_l = alloc_local_gc(fctx, GcValKind::Ref(arr_type))
+          let i_l = alloc_local_gc(fctx, GcValKind::I32)
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_local_set_gc(buf, b_l)
+          emit_local_get_gc(buf, b_l)
+          emit_struct_get_gc(buf, builder_type, 0)
+          emit_local_set_gc(buf, len_l)
+          emit_local_get_gc(buf, b_l)
+          emit_struct_get_gc(buf, builder_type, 1)
+          emit_local_tee_gc(buf, data_l)
+          emit_array_len_gc(buf)
+          emit_local_set_gc(buf, cap_l)
+          // grow if needed
+          emit_local_get_gc(buf, len_l)
+          emit_local_get_gc(buf, cap_l)
+          emit_i32_ge_s_gc(buf)
+          emit_if_gc(buf, None)
+          // new_cap = max(cap * 2, 1)
+          emit_local_get_gc(buf, cap_l)
+          emit_i32_const_gc(buf, 2)
+          emit_i32_mul_gc(buf)
+          emit_local_tee_gc(buf, cap_l)
+          emit_i32_const_gc(buf, 0)
+          emit_i32_eq_gc(buf)
+          emit_if_gc(buf, Some(GcValKind::I32))
+          emit_i32_const_gc(buf, 1)
+          emit_else_gc(buf)
+          emit_local_get_gc(buf, cap_l)
+          emit_end_gc(buf)
+          emit_array_new_default_gc(buf, arr_type)
+          emit_local_set_gc(buf, new_data_l)
+          emit_i32_const_gc(buf, 0)
+          emit_local_set_gc(buf, i_l)
+          emit_block_gc(buf, None)
+          emit_loop_gc(buf, None)
+          emit_local_get_gc(buf, i_l)
+          emit_local_get_gc(buf, len_l)
+          emit_i32_ge_s_gc(buf)
+          emit_br_if_gc(buf, 1)
+          emit_local_get_gc(buf, new_data_l)
+          emit_local_get_gc(buf, i_l)
+          emit_local_get_gc(buf, data_l)
+          emit_local_get_gc(buf, i_l)
+          emit_array_get_gc(buf, arr_type)
+          emit_array_set_gc(buf, arr_type)
+          emit_local_get_gc(buf, i_l)
+          emit_i32_const_gc(buf, 1)
+          emit_i32_add_gc(buf)
+          emit_local_set_gc(buf, i_l)
+          emit_br_gc(buf, 0)
+          emit_end_gc(buf)
+          emit_end_gc(buf)
+          emit_local_get_gc(buf, b_l)
+          emit_local_get_gc(buf, new_data_l)
+          emit_struct_set_gc(buf, builder_type, 1)
+          emit_local_get_gc(buf, new_data_l)
+          emit_local_set_gc(buf, data_l)
+          emit_end_gc(buf)
+          // data[len] = value
+          emit_local_get_gc(buf, data_l)
+          emit_local_get_gc(buf, len_l)
+          compile_expr_gc(ctx, fctx, buf, pos_args[1])
+          emit_array_set_gc(buf, arr_type)
+          // len += 1
+          emit_local_get_gc(buf, b_l)
+          emit_local_get_gc(buf, len_l)
+          emit_i32_const_gc(buf, 1)
+          emit_i32_add_gc(buf)
+          emit_struct_set_gc(buf, builder_type, 0)
+          // Unit result
+          emit_i32_const_gc(buf, 0)
+        }
+        "StringBuilder::freeze" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("StringBuilder::freeze arity")
+          }
+          let arr_type = ensure_array_type(
+            ctx.types,
+            ctx.array_type_index,
+            GcValKind::Ref(ctx.string_type),
+          )
+          let builder_fields : Array[GcValKind] = [
+            GcValKind::I32, GcValKind::Ref(arr_type),
+          ]
+          let builder_type = ensure_struct_type(
+            ctx.types, ctx.struct_type_index, builder_fields,
+          )
+          let b_l = alloc_local_gc(fctx, GcValKind::Ref(builder_type))
+          let len_l = alloc_local_gc(fctx, GcValKind::I32)
+          let data_l = alloc_local_gc(fctx, GcValKind::Ref(arr_type))
+          let total_l = alloc_local_gc(fctx, GcValKind::I32)
+          let out_data_l = alloc_local_gc(
+            fctx, GcValKind::Ref(ctx.array_i32_type),
+          )
+          let i_l = alloc_local_gc(fctx, GcValKind::I32)
+          let cur_s_l = alloc_local_gc(fctx, GcValKind::Ref(ctx.string_type))
+          let cur_len_l = alloc_local_gc(fctx, GcValKind::I32)
+          let cur_data_l = alloc_local_gc(
+            fctx, GcValKind::Ref(ctx.array_i32_type),
+          )
+          let write_l = alloc_local_gc(fctx, GcValKind::I32)
+          let j_l = alloc_local_gc(fctx, GcValKind::I32)
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_local_set_gc(buf, b_l)
+          emit_local_get_gc(buf, b_l)
+          emit_struct_get_gc(buf, builder_type, 0)
+          emit_local_set_gc(buf, len_l)
+          emit_local_get_gc(buf, b_l)
+          emit_struct_get_gc(buf, builder_type, 1)
+          emit_local_set_gc(buf, data_l)
+          // Pass 1: total = sum of each string's len
+          emit_i32_const_gc(buf, 0)
+          emit_local_set_gc(buf, total_l)
+          emit_i32_const_gc(buf, 0)
+          emit_local_set_gc(buf, i_l)
+          emit_block_gc(buf, None)
+          emit_loop_gc(buf, None)
+          emit_local_get_gc(buf, i_l)
+          emit_local_get_gc(buf, len_l)
+          emit_i32_ge_s_gc(buf)
+          emit_br_if_gc(buf, 1)
+          emit_local_get_gc(buf, data_l)
+          emit_local_get_gc(buf, i_l)
+          emit_array_get_gc(buf, arr_type)
+          emit_local_tee_gc(buf, cur_s_l)
+          emit_struct_get_gc(buf, ctx.string_type, 0)
+          emit_local_get_gc(buf, total_l)
+          emit_i32_add_gc(buf)
+          emit_local_set_gc(buf, total_l)
+          emit_local_get_gc(buf, i_l)
+          emit_i32_const_gc(buf, 1)
+          emit_i32_add_gc(buf)
+          emit_local_set_gc(buf, i_l)
+          emit_br_gc(buf, 0)
+          emit_end_gc(buf)
+          emit_end_gc(buf)
+          // Allocate output array<i32> of total_l codepoints
+          emit_local_get_gc(buf, total_l)
+          emit_array_new_default_gc(buf, ctx.array_i32_type)
+          emit_local_set_gc(buf, out_data_l)
+          // Pass 2: copy each string's data
+          emit_i32_const_gc(buf, 0)
+          emit_local_set_gc(buf, write_l)
+          emit_i32_const_gc(buf, 0)
+          emit_local_set_gc(buf, i_l)
+          emit_block_gc(buf, None)
+          emit_loop_gc(buf, None)
+          emit_local_get_gc(buf, i_l)
+          emit_local_get_gc(buf, len_l)
+          emit_i32_ge_s_gc(buf)
+          emit_br_if_gc(buf, 1)
+          emit_local_get_gc(buf, data_l)
+          emit_local_get_gc(buf, i_l)
+          emit_array_get_gc(buf, arr_type)
+          emit_local_set_gc(buf, cur_s_l)
+          emit_local_get_gc(buf, cur_s_l)
+          emit_struct_get_gc(buf, ctx.string_type, 0)
+          emit_local_set_gc(buf, cur_len_l)
+          emit_local_get_gc(buf, cur_s_l)
+          emit_struct_get_gc(buf, ctx.string_type, 1)
+          emit_local_set_gc(buf, cur_data_l)
+          emit_i32_const_gc(buf, 0)
+          emit_local_set_gc(buf, j_l)
+          emit_block_gc(buf, None)
+          emit_loop_gc(buf, None)
+          emit_local_get_gc(buf, j_l)
+          emit_local_get_gc(buf, cur_len_l)
+          emit_i32_ge_s_gc(buf)
+          emit_br_if_gc(buf, 1)
+          emit_local_get_gc(buf, out_data_l)
+          emit_local_get_gc(buf, write_l)
+          emit_local_get_gc(buf, j_l)
+          emit_i32_add_gc(buf)
+          emit_local_get_gc(buf, cur_data_l)
+          emit_local_get_gc(buf, j_l)
+          emit_array_get_gc(buf, ctx.array_i32_type)
+          emit_array_set_gc(buf, ctx.array_i32_type)
+          emit_local_get_gc(buf, j_l)
+          emit_i32_const_gc(buf, 1)
+          emit_i32_add_gc(buf)
+          emit_local_set_gc(buf, j_l)
+          emit_br_gc(buf, 0)
+          emit_end_gc(buf)
+          emit_end_gc(buf)
+          emit_local_get_gc(buf, write_l)
+          emit_local_get_gc(buf, cur_len_l)
+          emit_i32_add_gc(buf)
+          emit_local_set_gc(buf, write_l)
+          emit_local_get_gc(buf, i_l)
+          emit_i32_const_gc(buf, 1)
+          emit_i32_add_gc(buf)
+          emit_local_set_gc(buf, i_l)
+          emit_br_gc(buf, 0)
+          emit_end_gc(buf)
+          emit_end_gc(buf)
+          // Construct result String { len, data }
+          emit_local_get_gc(buf, total_l)
+          emit_local_get_gc(buf, out_data_l)
+          emit_struct_new_gc(buf, ctx.string_type)
         }
         "MapBuilder::new" => {
           // Map: struct { len: i32, keys: ref array<eqref>, vals: ref array<eqref> }
@@ -8256,10 +9586,11 @@ fn compile_expr_gc(
           // result_l has the boxed value (or null eqref if not found)
           emit_local_get_gc(buf, result_l)
         }
-        "Map::has_key" => {
-          // Map::has_key(map, key) -> I32 (1 if found, 0 if not)
+        "Map::has_key" | "Map::has" => {
+          // Map::has_key / Map::has (issue #414): same semantics —
+          // return I32 1 if the key exists, 0 otherwise.
           if pos_args.length() != 2 {
-            raise WasmGenError::Unsupported("Map::has_key arity")
+            raise WasmGenError::Unsupported(name + " arity")
           }
           let key_arr_type = ensure_array_type(
             ctx.types,
@@ -8328,11 +9659,15 @@ fn compile_expr_gc(
           emit_end_gc(buf)
           emit_local_get_gc(buf, result_l)
         }
-        "Map::keys" => {
+        "Map::keys" | "Map::values" => {
           // Map::keys(map) -> Array of keys
+          // Map::values(map) -> Array of values  (issue #414)
+          // Both share the iteration scaffold — selects field 1 (keys)
+          // vs field 2 (values) of the map struct.
           if pos_args.length() != 1 {
-            raise WasmGenError::Unsupported("Map::keys arity")
+            raise WasmGenError::Unsupported(name + " arity")
           }
+          let pick_values = name == "Map::values"
           let key_arr_type = ensure_array_type(
             ctx.types,
             ctx.array_type_index,
@@ -8353,10 +9688,12 @@ fn compile_expr_gc(
             ctx.struct_type_index,
             builder_fields,
           )
+          let src_field = if pick_values { 2 } else { 1 }
+          let src_arr_type = if pick_values { val_arr_type } else { key_arr_type }
           let b_idx = alloc_local_gc(fctx, GcValKind::Ref(builder_type))
           let len_l = alloc_local_gc(fctx, GcValKind::I32)
-          let keys_l = alloc_local_gc(fctx, GcValKind::Ref(key_arr_type))
-          let result_l = alloc_local_gc(fctx, GcValKind::Ref(key_arr_type))
+          let src_l = alloc_local_gc(fctx, GcValKind::Ref(src_arr_type))
+          let result_l = alloc_local_gc(fctx, GcValKind::Ref(src_arr_type))
           let i_l = alloc_local_gc(fctx, GcValKind::I32)
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
           emit_local_set_gc(buf, b_idx)
@@ -8364,13 +9701,11 @@ fn compile_expr_gc(
           emit_struct_get_gc(buf, builder_type, 0)
           emit_local_set_gc(buf, len_l)
           emit_local_get_gc(buf, b_idx)
-          emit_struct_get_gc(buf, builder_type, 1)
-          emit_local_set_gc(buf, keys_l)
-          // Create result array of exact size
+          emit_struct_get_gc(buf, builder_type, src_field)
+          emit_local_set_gc(buf, src_l)
           emit_local_get_gc(buf, len_l)
-          emit_array_new_default_gc(buf, key_arr_type)
+          emit_array_new_default_gc(buf, src_arr_type)
           emit_local_set_gc(buf, result_l)
-          // Copy keys
           emit_i32_const_gc(buf, 0)
           emit_local_set_gc(buf, i_l)
           emit_block_gc(buf, None)
@@ -8381,10 +9716,10 @@ fn compile_expr_gc(
           emit_br_if_gc(buf, 1)
           emit_local_get_gc(buf, result_l)
           emit_local_get_gc(buf, i_l)
-          emit_local_get_gc(buf, keys_l)
+          emit_local_get_gc(buf, src_l)
           emit_local_get_gc(buf, i_l)
-          emit_array_get_gc(buf, key_arr_type)
-          emit_array_set_gc(buf, key_arr_type)
+          emit_array_get_gc(buf, src_arr_type)
+          emit_array_set_gc(buf, src_arr_type)
           emit_local_get_gc(buf, i_l)
           emit_i32_const_gc(buf, 1)
           emit_i32_add_gc(buf)
@@ -8393,6 +9728,26 @@ fn compile_expr_gc(
           emit_end_gc(buf)
           emit_end_gc(buf)
           emit_local_get_gc(buf, result_l)
+        }
+        // Issue #414: Map::set / Map::delete — mutate the input map
+        // and return it. Linear backend returns a fresh copy; wasm-gc
+        // mutates in place (cheaper, and the user's `let m2 =
+        // Map::set(m, k, v)` reads the result the same either way
+        // because aliasing of m / m2 isn't observable through the
+        // immutable Map[K, V] API).
+        "Map::set" => {
+          if pos_args.length() != 3 {
+            raise WasmGenError::Unsupported("Map::set arity")
+          }
+          // Reuse MapBuilder::set logic by recursing with the same
+          // dispatch label — handled below by sharing the impl.
+          compile_map_set_gc(ctx, fctx, buf, pos_args)
+        }
+        "Map::delete" => {
+          if pos_args.length() != 2 {
+            raise WasmGenError::Unsupported("Map::delete arity")
+          }
+          compile_map_delete_gc(ctx, fctx, buf, pos_args)
         }
         _ => {
           let handled_direct_rec = match fctx.direct_rec_call_name {
@@ -8631,7 +9986,6 @@ fn compile_expr_gc(
       }
     }
     @core.Expr::If(cond~, then_body~, else_body~, span~) => {
-      let _ = span
       compile_expr_gc(ctx, fctx, buf, cond)
       let then_kind = infer_block_kind_gc(ctx, fctx, then_body)
       let else_kind = infer_block_kind_gc(ctx, fctx, else_body)
@@ -8641,9 +9995,12 @@ fn compile_expr_gc(
         gc_common_kind(then_kind, else_kind)
       }
       emit_if_gc(buf, Some(result_kind))
+      // Issue #417: branch-then / branch-else coverage points.
+      emit_coverage_gc(ctx, buf, WasmCoveragePointKind::BranchIfThen, span)
       compile_block_expr_gc(ctx, fctx, buf, then_body)
       emit_coerce_top_gc(ctx, buf, then_kind, result_kind)
       emit_else_gc(buf)
+      emit_coverage_gc(ctx, buf, WasmCoveragePointKind::BranchIfElse, span)
       compile_block_expr_gc(ctx, fctx, buf, else_body)
       emit_coerce_top_gc(ctx, buf, else_kind, result_kind)
       emit_end_gc(buf)
@@ -8836,7 +10193,7 @@ fn compile_expr_gc(
         emit_local_get_gc(buf, result_idx)
       }
     }
-    @core.Expr::Fn(params~, ret~, body~, ..) => {
+    @core.Expr::Fn(params~, ret~, body~, span=lambda_span, ..) => {
       let param_kinds : Array[GcValKind] = []
       for param in params {
         param_kinds.push(gc_val_kind_from_type(ctx, param.ty))
@@ -8918,6 +10275,7 @@ fn compile_expr_gc(
         param_count: 1 + params.length(),
         closure_call_types: lifted_closure_types,
         current_rec_binding: None,
+        enclosing_function_name: fctx.enclosing_function_name,
         direct_rec_call_name: rec_binding,
         direct_rec_call_func_idx: func_idx,
         direct_rec_call_type_idx: fn_type_idx,
@@ -8961,6 +10319,20 @@ fn compile_expr_gc(
         body: lifted_buf.to_array(),
         type_idx: fn_type_idx,
       })
+      // Prefer the let-rec binding name (so a `let rec foo = ...` lambda
+      // shows as `foo::lambda@N`), falling back to the enclosing
+      // function's source name. If neither is available (top-level
+      // lambda directly in `_start`), only the position is used.
+      let parent_label = match rec_binding {
+        Some(p) => Some(p)
+        None => fctx.enclosing_function_name
+      }
+      let pos = format_lambda_position_gc(ctx, lambda_span.start)
+      let lambda_label = match parent_label {
+        Some(parent) => parent + "::lambda@" + pos
+        None => "lambda@" + pos
+      }
+      ctx.closure_lifted_labels.push(lambda_label)
       emit_ref_func_gc(buf, func_idx)
       for i in 0..<capture_indices.length() {
         emit_local_get_gc(buf, capture_indices[i])
@@ -9167,6 +10539,10 @@ fn compile_stmt_gc(
   stmt : @core.Stmt,
   is_last : Bool,
 ) -> Unit raise WasmGenError {
+  // Issue #417: emit a line coverage point before each statement when
+  // coverage is enabled. Mirrors the linear backend's hook in
+  // `wasm_codegen_stmt.mbt::compile_stmt::line 97`.
+  emit_coverage_gc(ctx, buf, WasmCoveragePointKind::Line, stmt.span())
   match stmt {
     @core.Stmt::Let(rec~, name~, expr~, ..) =>
       if rec {
@@ -9200,6 +10576,7 @@ fn compile_stmt_gc(
               param_count: fctx.param_count,
               closure_call_types: rec_compile_cct,
               current_rec_binding: Some(name),
+              enclosing_function_name: Some(name),
               direct_rec_call_name: None,
               direct_rec_call_func_idx: -1,
               direct_rec_call_type_idx: -1,
@@ -9383,7 +10760,9 @@ fn compile_stmt_gc(
       }
       if !handled {
         let base_kind = infer_expr_kind_gc(ctx, fctx, target)
-        let type_idx = gc_array_type_idx_from_kind(ctx, base_kind, "IndexAssign")
+        let type_idx = gc_array_type_idx_from_kind(
+          ctx, base_kind, "IndexAssign",
+        )
         compile_expr_gc(ctx, fctx, buf, target)
         compile_expr_gc(ctx, fctx, buf, index)
         let idx_kind = infer_expr_kind_gc(ctx, fctx, index)
@@ -9531,6 +10910,9 @@ fn compile_function_gc(
   def : GcFuncDef,
 ) -> GcWasmFunc raise WasmGenError {
   let fctx = GcFuncCtx::new(ctx, def.params)
+  // Let lambdas inside this body label themselves
+  // `<def.name>::lambda@<offset>` in the wasm name section.
+  fctx.enclosing_function_name = Some(def.name)
   let body_kind = infer_block_kind_gc(ctx, fctx, def.body)
   let result_kind = match def.ret {
     Some(ty) => gc_val_kind_from_type(ctx, ty)
@@ -9637,6 +11019,11 @@ fn build_module_gc(
   // emitted in the export section alongside the synthesized `_start`.
   // Empty for tests/run/build that only need `_start`.
   user_exports? : Array[String] = [],
+  // Function names parallel to `funcs[]` for the wasm `name` custom
+  // section. Empty disables emission. Improves stack-trace readability
+  // in `wasmtime --profile=guest` (and in browser devtools); without
+  // it every frame shows as `<wasm function N>`.
+  func_names? : Array[String] = [],
 ) -> Bytes {
   let buf = GcByteBuf::new()
   buf.push(0x00)
@@ -9677,6 +11064,19 @@ fn build_module_gc(
     }
   }
   write_section_gc(buf, 3, func_sec.to_array())
+  // Memory section (section 5): only emitted when coverage is enabled
+  // (issue #417). The wasm-gc backend is memory-free by default; the
+  // counters live in a 1-page (64 KB = 16 384 i32 slots) linear
+  // memory that the JS reader (`scripts/coverage_wasm_source.mjs`)
+  // reads through the `memory` export, identically to the linear
+  // backend's path.
+  if ctx.coverage_enabled {
+    let mem_sec = GcByteBuf::new()
+    write_u32_leb_gc(mem_sec, 1) // 1 memory entry
+    mem_sec.push(0x00) // limits flag: only min, no max
+    write_u32_leb_gc(mem_sec, 1) // initial = 1 page
+    write_section_gc(buf, 5, mem_sec.to_array())
+  }
   // Tag section (section 13): only emit if throw/handle is used
   // Per exception handling spec, placed between func(3) and global(6)
   if ctx.needs_exceptions {
@@ -9686,11 +11086,14 @@ fn build_module_gc(
     write_u32_leb_gc(tag_sec, ctx.error_tag_type_index) // type index
     write_section_gc(buf, 13, tag_sec.to_array())
   }
-  // Global section (section 6): immutable compile-time constants only
-  // No mutable globals — thread-safe by design
-  if global_init_values.length() > 0 {
+  // Global section (section 6): immutable compile-time constants plus
+  // the two coverage descriptor globals (__vibe_cov_base /
+  // __vibe_cov_count) when coverage is enabled. No mutable globals —
+  // thread-safe by design.
+  let cov_global_count = if ctx.coverage_enabled { 2 } else { 0 }
+  if global_init_values.length() > 0 || cov_global_count > 0 {
     let global_sec = GcByteBuf::new()
-    write_u32_leb_gc(global_sec, global_init_values.length())
+    write_u32_leb_gc(global_sec, global_init_values.length() + cov_global_count)
     for entry in global_init_values {
       let kind = entry.0
       let value = entry.1
@@ -9712,6 +11115,20 @@ fn build_module_gc(
       }
       global_sec.push(0x0b) // end
     }
+    if ctx.coverage_enabled {
+      // __vibe_cov_base : i32 immutable = 0 (counters at addr 0)
+      write_valtype_gc(global_sec, GcValKind::I32)
+      global_sec.push(0x00) // immutable
+      global_sec.push(0x41) // i32.const
+      write_i32_leb_gc(global_sec, 0)
+      global_sec.push(0x0b) // end
+      // __vibe_cov_count : i32 immutable = registered point count
+      write_valtype_gc(global_sec, GcValKind::I32)
+      global_sec.push(0x00) // immutable
+      global_sec.push(0x41)
+      write_i32_leb_gc(global_sec, ctx.coverage_points.length())
+      global_sec.push(0x0b)
+    }
     write_section_gc(buf, 6, global_sec.to_array())
   }
   let export_sec = GcByteBuf::new()
@@ -9727,6 +11144,12 @@ fn build_module_gc(
     Some(idx) => export_entries.push(("_start", idx))
     None => export_entries.push(("_start", run_index))
   }
+  // Mirror the linear backend's `_vibe_run_tagged` export so the test
+  // / repl framework (`run_wasmtime_invoke_run_capture` in
+  // `src/cmd/vibe/cli_run_cmd.mbt`) can find a run entry. The export
+  // always aliases the run wrapper — for user-supplied `_start` we
+  // want the wrapper's top-level body, not the user's manual entry.
+  export_entries.push(("_vibe_run_tagged", run_index))
   for export_name in user_exports {
     if export_name == "_start" {
       continue // already pushed above
@@ -9736,7 +11159,13 @@ fn build_module_gc(
       None => () // user named a non-function export (e.g. a top-level constant) — skip
     }
   }
-  write_u32_leb_gc(export_sec, export_entries.length())
+  // Coverage exports (issue #417): the JS reader expects `memory`,
+  // `__vibe_cov_base`, and `__vibe_cov_count`. They're indexed into
+  // separate spaces (memory→memidx 0; globals→last 2 global slots).
+  let extra_export_count = if ctx.coverage_enabled { 3 } else { 0 }
+  write_u32_leb_gc(
+    export_sec, export_entries.length() + extra_export_count,
+  )
   for entry in export_entries {
     let (name, idx) = entry
     write_u32_leb_gc(export_sec, name.length())
@@ -9745,6 +11174,34 @@ fn build_module_gc(
     }
     export_sec.push(0x00)
     write_u32_leb_gc(export_sec, idx)
+  }
+  if ctx.coverage_enabled {
+    let cov_base_global_idx = global_init_values.length()
+    let cov_count_global_idx = cov_base_global_idx + 1
+    // export "memory" memory 0
+    let mem_name = "memory"
+    write_u32_leb_gc(export_sec, mem_name.length())
+    for c in mem_name {
+      export_sec.push(c.to_int())
+    }
+    export_sec.push(0x02) // memory kind
+    write_u32_leb_gc(export_sec, 0)
+    // export "__vibe_cov_base" global N
+    let base_name = "__vibe_cov_base"
+    write_u32_leb_gc(export_sec, base_name.length())
+    for c in base_name {
+      export_sec.push(c.to_int())
+    }
+    export_sec.push(0x03) // global kind
+    write_u32_leb_gc(export_sec, cov_base_global_idx)
+    // export "__vibe_cov_count" global N+1
+    let count_name = "__vibe_cov_count"
+    write_u32_leb_gc(export_sec, count_name.length())
+    for c in count_name {
+      export_sec.push(c.to_int())
+    }
+    export_sec.push(0x03)
+    write_u32_leb_gc(export_sec, cov_count_global_idx)
   }
   write_section_gc(buf, 7, export_sec.to_array())
   // Element section: declare closure function refs for ref.func
@@ -9774,11 +11231,120 @@ fn build_module_gc(
     code_sec.extend_buf(func_body)
   }
   write_section_gc(buf, 10, code_sec.to_array())
+  // Custom "name" section (after data per convention) — improves
+  // profiler / devtools readability so frames render with their vibe
+  // identifier instead of `<wasm function N>`. Subsection 1 is the
+  // function-name map; we don't emit subsection 2 (locals) yet
+  // because the wasm-gc backend allocates locals without keeping the
+  // source identifiers around.
+  if func_names.length() > 0 {
+    let function_names_sub = GcByteBuf::new()
+    // namemap = vec(naming)
+    let mut entry_count = 0
+    for n in func_names {
+      if n.length() > 0 {
+        entry_count += 1
+      }
+    }
+    if entry_count > 0 {
+      write_u32_leb_gc(function_names_sub, entry_count)
+      for i in 0..<func_names.length() {
+        let n = func_names[i]
+        if n.length() == 0 {
+          continue
+        }
+        write_u32_leb_gc(function_names_sub, i)
+        write_name_string_gc(function_names_sub, n)
+      }
+      let name_sec = GcByteBuf::new()
+      // Custom section payload: name "name" + subsection 1
+      write_name_string_gc(name_sec, "name")
+      // Subsection 1: function names — id=1, size, content
+      name_sec.push(0x01)
+      let sub_bytes = function_names_sub.to_array()
+      write_u32_leb_gc(name_sec, sub_bytes.length())
+      for b in sub_bytes {
+        name_sec.push(b.to_int())
+      }
+      write_section_gc(buf, 0, name_sec.to_array())
+    }
+  }
   buf.to_bytes()
 }
 
 ///|
+/// Format a byte offset as `<line>:<col>` when the codegen has the
+/// original source string, falling back to the raw offset otherwise.
+/// Used only for lambda labels in the wasm `name` section so the
+/// profiler / devtools can show a human-friendly position. Lines and
+/// columns are 1-based, matching `@core.line_info`.
+fn format_lambda_position_gc(ctx : GcCodegenCtx, offset : Int) -> String {
+  if ctx.source.length() == 0 {
+    return offset.to_string()
+  }
+  let (lc, _, _) = @core.line_info(ctx.source, offset)
+  lc.line.to_string() + ":" + lc.column.to_string()
+}
+
+///|
+/// Write a length-prefixed UTF-8 string (wasm name encoding). Mirrors
+/// the linear backend's `write_name` but for the GC byte buffer.
+fn write_name_string_gc(buf : GcByteBuf, s : String) -> Unit {
+  let bytes = @utf8.encode(s)
+  write_u32_leb_gc(buf, bytes.length())
+  for b in bytes {
+    buf.push(b.to_int())
+  }
+}
+
+///|
 pub fn emit_module_wasm_gc(ast : @core.Module) -> Bytes raise WasmGenError {
+  let (bytes, _) = emit_module_wasm_gc_inner(ast, coverage_enabled=false)
+  bytes
+}
+
+///|
+/// Same as `emit_module_wasm_gc` but threads the original source
+/// string through so lambda labels in the wasm `name` section can be
+/// upgraded from `lambda@<offset>` to `lambda@<line>:<col>`. Callers
+/// that don't have the source (e.g. wbtests, synthetic ASTs) can keep
+/// using the bare entry point.
+pub fn emit_module_wasm_gc_with_source(
+  ast : @core.Module,
+  source : String,
+) -> Bytes raise WasmGenError {
+  let (bytes, _) = emit_module_wasm_gc_inner(
+    ast, coverage_enabled=false, source~,
+  )
+  bytes
+}
+
+///|
+/// Issue #417: wasm-gc backend coverage-instrumented emit. Mirrors the
+/// linear backend's `emit_module_wasm_with_coverage`. Returns the wasm
+/// bytes plus a `WasmCoverageArtifact` whose `points` array describes
+/// every counter slot. The .wasm has a linear memory + the two
+/// `__vibe_cov_base` / `__vibe_cov_count` globals plus a `memory`
+/// export so the existing `scripts/coverage_wasm_source.mjs` reader
+/// works unchanged.
+pub fn emit_module_wasm_gc_with_coverage(
+  ast : @core.Module,
+) -> WasmCoverageArtifact raise WasmGenError {
+  let (bytes, ctx) = emit_module_wasm_gc_inner(ast, coverage_enabled=true)
+  {
+    bytes,
+    counter_base: 0,
+    counter_count: ctx.coverage_points.length(),
+    points: ctx.coverage_points,
+  }
+}
+
+///|
+fn emit_module_wasm_gc_inner(
+  ast : @core.Module,
+  coverage_enabled? : Bool = false,
+  source? : String = "",
+) -> (Bytes, GcCodegenCtx) raise WasmGenError {
   // Mirror the linear backend's prologue: strip type-assertion blocks
   // first (so the AST has bare Int/Bool literals where the user wrote
   // `let c: Int = 100`), then fold pure top-level expressions
@@ -9788,8 +11354,16 @@ pub fn emit_module_wasm_gc(ast : @core.Module) -> Bytes raise WasmGenError {
   // value stays a Call expression and any function body that references
   // it (e.g. `read_word` in sha1) becomes a closure with a free var
   // the gc backend can't resolve → "unknown name: mask32".
-  let ast = static_fold_module(strip_type_assert_module(ast))
+  // Coverage-enabled compilation skips the static folding pass so that
+  // every source statement remains a distinct instrumentation point.
+  let ast = if coverage_enabled {
+    strip_type_assert_module(ast)
+  } else {
+    static_fold_module(strip_type_assert_module(ast))
+  }
   let ctx = GcCodegenCtx::new()
+  ctx.coverage_enabled = coverage_enabled
+  ctx.source = source
   scan_enum_defs_gc(ctx, ast)
   register_struct_types_gc(ctx, ast)
   // Build enum ctor name set for free-var filtering
@@ -9906,10 +11480,15 @@ pub fn emit_module_wasm_gc(ast : @core.Module) -> Bytes raise WasmGenError {
     }
   }
   let wasm_funcs : Array[GcWasmFunc] = []
+  // Parallel array of human-readable names for the wasm `name` custom
+  // section. Improves profiler / devtools stack traces; without it
+  // every frame renders as `<wasm function N>`.
+  let func_names : Array[String] = []
   for f in funcs {
     let wf = compile_function_gc(ctx, f)
     ctx.func_returns[f.name] = wf.sig.result
     wasm_funcs.push(wf)
+    func_names.push(f.name)
   }
   let collected_names : Map[String, Bool] = {}
   for f in funcs {
@@ -9919,8 +11498,21 @@ pub fn emit_module_wasm_gc(ast : @core.Module) -> Bytes raise WasmGenError {
   let run_func = compile_run_gc(ctx, run_body)
   let run_index = wasm_funcs.length()
   wasm_funcs.push(run_func)
-  for lf in ctx.closure_lifted_funcs {
-    wasm_funcs.push(lf)
+  // `_start` is the canonical name; even when the user re-exports a
+  // different function under that name we still want this stable label
+  // so wasmtime --invoke and the profiler agree.
+  func_names.push("_start")
+  for i in 0..<ctx.closure_lifted_funcs.length() {
+    wasm_funcs.push(ctx.closure_lifted_funcs[i])
+    // Label set when the closure was lifted (see `closure_lifted_labels`
+    // doc comment) — gives `<parent>::lambda@<offset>` /
+    // `as_closure::<name>` rather than a bare ordinal.
+    let lbl = if i < ctx.closure_lifted_labels.length() {
+      ctx.closure_lifted_labels[i]
+    } else {
+      "lambda_" + i.to_string()
+    }
+    func_names.push(lbl)
   }
   // Collect user `export let` function names so they appear in the wasm
   // export section (otherwise wasmtime --invoke can only call `_start`).
@@ -9938,7 +11530,13 @@ pub fn emit_module_wasm_gc(ast : @core.Module) -> Bytes raise WasmGenError {
       _ => ()
     }
   }
-  build_module_gc(
-    ctx, wasm_funcs, run_index, global_init_values~, user_exports~,
+  let bytes = build_module_gc(
+    ctx,
+    wasm_funcs,
+    run_index,
+    global_init_values~,
+    user_exports~,
+    func_names~,
   )
+  (bytes, ctx)
 }

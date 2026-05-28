@@ -2406,15 +2406,29 @@ pub fn compile_module_wasm(
   enable_rc? : Bool = false,
   rc_debug? : Bool = false,
 ) -> Bytes raise WasmCompileError {
+  // Threaded for the wasm `name` section: lets the linear codegen
+  // convert lambda span offsets to `<line>:<col>` when labels are
+  // emitted (the wasm-gc equivalent lives in
+  // `compile_module_wasm_gc`). RC / option paths keep the legacy
+  // emit entry (still byte-offset labels) until WasmEmitOptions
+  // grows a source field.
+  let source = match db.get_source(path) {
+    Some(s) => s
+    None => ""
+  }
+  let bare_options = !debug_errors &&
+    !http_host_imports &&
+    !force_cabi_realloc
   compile_module_wasm_with(db, path, "default", ast => {
     if enable_rc {
       let (options, desugared_ast) = wasm_emit_options_with_rc(
-        ast,
-        debug_errors~,
-        http_host_imports~,
-        rc_debug~,
+        ast, debug_errors~, http_host_imports~, rc_debug~,
       )
       @codegen.emit_module_wasm_with_options(desugared_ast, options)
+    } else if source.length() > 0 && bare_options {
+      // Fast path: bare options + non-empty source → use the
+      // source-aware emit entry so lambdas get `<line>:<col>`.
+      @codegen.emit_module_wasm_with_source(ast, source)
     } else {
       let options = @codegen.wasm_emit_options(
         embed_error_strings=debug_errors,
@@ -2488,23 +2502,28 @@ pub fn compile_module_wasm_with_opt_level_profiled(
     force_cabi_realloc,
     library_mode,
   )
+  // Threaded for the wasm `name` section: lets the codegen render
+  // lambda labels as `<line>:<col>` instead of `<offset>`.
+  let source = match db.get_source(path) {
+    Some(s) => s
+    None => ""
+  }
+  let mk_options = fn() -> @codegen.WasmEmitOptions {
+    @codegen.wasm_emit_options(
+      embed_error_strings=debug_errors,
+      http_host_imports~,
+      fs_host_imports~,
+      force_cabi_realloc~,
+      library_mode~,
+      source~,
+    )
+  }
   if no_dce {
     compile_module_wasm_profiled_with(
       db,
       path,
       "no_dce",
-      ast => {
-        @codegen.emit_module_wasm_with_options(
-          ast,
-          @codegen.wasm_emit_options(
-            embed_error_strings=debug_errors,
-            http_host_imports~,
-            fs_host_imports~,
-            force_cabi_realloc~,
-            library_mode~,
-          ),
-        )
-      },
+      ast => @codegen.emit_module_wasm_with_options(ast, mk_options()),
       cache_namespace,
       opt_level,
     )
@@ -2513,18 +2532,7 @@ pub fn compile_module_wasm_with_opt_level_profiled(
       db,
       path,
       "default",
-      ast => {
-        @codegen.emit_module_wasm_with_options(
-          ast,
-          @codegen.wasm_emit_options(
-            embed_error_strings=debug_errors,
-            http_host_imports~,
-            fs_host_imports~,
-            force_cabi_realloc~,
-            library_mode~,
-          ),
-        )
-      },
+      ast => @codegen.emit_module_wasm_with_options(ast, mk_options()),
       cache_namespace,
       opt_level,
     )
@@ -2612,11 +2620,41 @@ pub fn compile_module_wasm_js_string(
 
 ///|
 /// Compile a module to WASM using wasm-gc opcodes (fixture-focused).
+/// Threads the entry source through so the wasm `name` custom section
+/// renders lambda labels as `<parent>::lambda@<line>:<col>` instead of
+/// raw byte offsets.
 pub fn compile_module_wasm_gc(
   db : @runtime.VibeDb,
   path : String,
 ) -> Bytes raise WasmCompileError {
-  compile_module_wasm_with(db, path, "gc", @codegen.emit_module_wasm_gc)
+  let source = match db.get_source(path) {
+    Some(s) => s
+    None => ""
+  }
+  compile_module_wasm_with(
+    db,
+    path,
+    "gc",
+    fn(m) { @codegen.emit_module_wasm_gc_with_source(m, source) },
+  )
+}
+
+///|
+/// Issue #417: wasm-gc coverage entry. Same shape as
+/// `compile_module_wasm_with_coverage` for the linear backend so the
+/// CLI dispatch in `cli_compile_cmd.mbt` is symmetric.
+pub fn compile_module_wasm_gc_with_coverage(
+  db : @runtime.VibeDb,
+  path : String,
+  no_dce? : Bool = false,
+  opt_level? : String? = None,
+  run_tests? : Bool = false,
+) -> WasmCoverageArtifact raise WasmCompileError {
+  let _ = no_dce // wasm-gc backend currently always inlines; no DCE toggle yet
+  let coverage = compile_module_wasm_coverage_with(
+    db, path, "gc_coverage", @codegen.emit_module_wasm_gc_with_coverage, run_tests~,
+  )
+  optimize_wasm_coverage_with_opt_level(coverage, opt_level)
 }
 
 ///|

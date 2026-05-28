@@ -265,6 +265,7 @@ fn build_module(
   funcs : Array[WasmFunc],
   run_index : Int,
   start_export_index : Int?,
+  func_names? : Array[(Int, String)] = [],
 ) -> Bytes {
   let buf = ByteBuf::new()
   // magic + version
@@ -1753,6 +1754,51 @@ fn build_module(
       write_custom_section(buf, "vibe.capabilities", manifest.to_array())
     }
   }
+  // Standard wasm `name` custom section (subsection 1: function names).
+  // Mirrors the wasm-gc backend addition; lets profilers and devtools
+  // render stack frames with the source identifier instead of
+  // `<wasm function N>`. Indices in `func_names` are pre-absolute
+  // (post-import) and the spec requires monotonically non-decreasing
+  // funcidx order — we sort here to enforce that.
+  if func_names.length() > 0 {
+    let sorted : Array[(Int, String)] = []
+    for entry in func_names {
+      sorted.push(entry)
+    }
+    sorted.sort_by(fn(a, b) { a.0 - b.0 })
+    let mut entry_count = 0
+    for entry in sorted {
+      if entry.1.length() > 0 {
+        entry_count += 1
+      }
+    }
+    if entry_count > 0 {
+      let function_names_sub = ByteBuf::new()
+      write_u32_leb(function_names_sub, entry_count)
+      let mut prev = -1
+      for entry in sorted {
+        let (idx, name) = entry
+        if name.length() == 0 {
+          continue
+        }
+        if idx == prev {
+          // Duplicate funcidx — skip the later one to keep the
+          // subsection well-formed (spec forbids duplicates).
+          continue
+        }
+        write_u32_leb(function_names_sub, idx)
+        write_name(function_names_sub, name)
+        prev = idx
+      }
+      let name_sec = ByteBuf::new()
+      write_name(name_sec, "name")
+      name_sec.push((1).to_byte()) // subsection 1: function names
+      let sub_bytes = function_names_sub.to_array()
+      write_u32_leb(name_sec, sub_bytes.length())
+      name_sec.extend(sub_bytes)
+      write_section(buf, 0, name_sec.to_array())
+    }
+  }
   buf.to_bytes()
 }
 
@@ -1761,6 +1807,32 @@ fn write_section(buf : ByteBuf, id : Int, content : Array[Byte]) -> Unit {
   buf.push(id.to_byte())
   write_u32_leb(buf, content.length())
   buf.extend(content)
+}
+
+///|
+/// Format a lambda's source position for the wasm `name` section.
+/// Parses the `"<start>:<end>"` span_key produced by
+/// `wasm_codegen_ctx.span_key`. Returns `<line>:<col>` when the
+/// codegen has the source string in scope (set via `ctx.source`),
+/// otherwise falls back to the raw byte offset.
+fn format_lambda_position_linear(ctx : CodegenCtx, span_key : String) -> String {
+  // span_key is always `<start>:<end>:[suffix]` per
+  // `wasm_codegen_ctx.span_key` / `span_key_unique`.
+  let mut offset = 0
+  let mut i = 0
+  while i < span_key.length() {
+    let c = span_key[i].to_int()
+    if c < 48 || c > 57 {
+      break
+    }
+    offset = offset * 10 + (c - 48)
+    i += 1
+  }
+  if ctx.source.length() == 0 {
+    return offset.to_string()
+  }
+  let (lc, _, _) = @core.line_info(ctx.source, offset)
+  lc.line.to_string() + ":" + lc.column.to_string()
 }
 
 ///|
@@ -4083,6 +4155,12 @@ fn emit_module_with_coverage(
   precompute_ref_cell_captures_block(ctx, run_ast.stmts, top_mut_captured)
   @profiler.profiler_enter("codegen/compile_functions")
   let compiled_funcs : Array[WasmFunc] = []
+  // Parallel array of (absolute funcidx, source name) for the standard
+  // wasm `name` custom section. Improves stack-trace readability in
+  // wasmtime --profile=guest and browser devtools (no `<wasm function
+  // N>` frames). Anonymous lambdas get a synthetic `lambda_<i>` label.
+  let compiled_func_names : Array[(Int, String)] = []
+  let import_base = func_import_count(ctx)
   for i in 0..<funcs.length() {
     let f = funcs[i]
     let cap_kinds = match ctx.fn_closure_capture_kinds.get(f.span_key) {
@@ -4124,6 +4202,17 @@ fn emit_module_with_coverage(
         has_func_rc,
       ),
     )
+    let label = match f.name {
+      Some(name) => name
+      None => {
+        let pos = format_lambda_position_linear(ctx, f.span_key)
+        match f.parent_name {
+          Some(parent) => parent + "::lambda@" + pos
+          None => "lambda@" + pos
+        }
+      }
+    }
+    compiled_func_names.push((import_base + i, label))
   }
   // Append RC helper functions right after user functions.
   // Only include helpers that are actually needed to minimize binary size.
@@ -4245,16 +4334,25 @@ fn emit_module_with_coverage(
     ),
   )
   let run_func_index = func_import_count(ctx) + run_func_array_index
+  // The internal run function does the actual top-level work; label it
+  // `__vibe_run` so it's distinguishable from the public `_start`
+  // wrapper (which only forwards into it) in flame graphs.
+  compiled_func_names.push((run_func_index, "__vibe_run"))
   let mut start_export_index = None
   if !ctx.library_mode {
     let start_idx = func_import_count(ctx) + compiled_funcs.length()
     compiled_funcs.push(compile_public_start_wrapper(run_func_index))
+    compiled_func_names.push((start_idx, "_start"))
     start_export_index = Some(start_idx)
   }
   @profiler.profiler_leave()
   @profiler.profiler_enter("codegen/build_module")
   let bytes = build_module(
-    ctx, compiled_funcs, run_func_index, start_export_index,
+    ctx,
+    compiled_funcs,
+    run_func_index,
+    start_export_index,
+    func_names=compiled_func_names,
   )
   @profiler.profiler_leave()
   {
@@ -4295,6 +4393,7 @@ pub fn emit_module_wasm_with_options(
     library_mode=options.library_mode,
   )
   ctx.linked_fn_imports_list = options.linked_imports
+  ctx.source = options.source
   if options.enable_rc {
     ctx.enable_rc = true
     ctx.rc_debug = options.rc_debug
@@ -4309,6 +4408,29 @@ pub fn emit_module_wasm_with_options(
 ///|
 pub fn emit_module_wasm(ast : @core.Module) -> Bytes raise WasmGenError {
   emit_module_wasm_with_options(ast, default_emit_options())
+}
+
+///|
+/// Same as `emit_module_wasm` but threads the original source string
+/// through so lambda labels in the wasm `name` section are upgraded
+/// from `lambda@<offset>` to `lambda@<line>:<col>`. Bare callsites
+/// (wbtests, synthetic ASTs) can keep using `emit_module_wasm`.
+pub fn emit_module_wasm_with_source(
+  ast : @core.Module,
+  source : String,
+) -> Bytes raise WasmGenError {
+  let ctx = CodegenCtx::new(
+    false,
+    coverage_enabled=false,
+    embed_error_strings=default_emit_options().embed_error_strings,
+    http_host_imports=default_emit_options().http_host_imports,
+    http_component_wasi_shim=default_emit_options().http_component_wasi_shim,
+    fs_host_imports=default_emit_options().fs_host_imports,
+    force_cabi_realloc=default_emit_options().force_cabi_realloc,
+    library_mode=default_emit_options().library_mode,
+  )
+  ctx.source = source
+  emit_module(ctx, ast)
 }
 
 ///|
