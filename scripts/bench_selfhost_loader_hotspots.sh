@@ -49,6 +49,7 @@ if [[ "$SKIP_MICRO" != "1" ]]; then
     --warmup "$WARMUP" \
     --json \
     --case selfhost/loader_manifest_list_filter_linear \
+    --case selfhost/loader_manifest_list_filter_path_indexed \
     --case selfhost/loader_manifest_list_filter_indexed \
     --json-out "$LIST_JSON_OUT" \
     "$LIST_MATERIALIZE_BENCH_FILE"

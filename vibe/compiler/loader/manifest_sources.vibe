@@ -608,10 +608,6 @@ export let filter_manifest_sources_by_paths_linear: (Array[(String, String)], Ar
   filtered_sources
 }
 
-let should_use_linear_needed_path_filter: (Array[String]) -> Bool = (needed_paths) -> {
-  Array::length(needed_paths) <= 64
-}
-
 export let filter_manifest_sources_by_path_index: (Array[(String, String)], Map[String, Bool]) -> Array[(String, String)] = (preloaded_sources, needed_path_index) -> {
   let filtered_sources = Array::slice([("", "")], 0, 0)
   let mut i = 0
@@ -1090,15 +1086,11 @@ export let try_collect_manifest_sources_fs: (String) -> Option[(String, Array[(S
         header_rows
       )
       let preloaded_sources = load_manifest_full_sources(base_dir, rows)
-      let sources = if should_use_linear_needed_path_filter(needed_paths) {
-        filter_manifest_sources_by_paths_linear(preloaded_sources, needed_paths)
-      } else {
-        let preloaded_source_index = build_manifest_source_index(preloaded_sources)
-        filter_manifest_sources_by_source_index(
-          needed_paths,
-          preloaded_source_index
-        )
-      }
+      let needed_path_index = build_manifest_path_index(needed_paths)
+      let sources = filter_manifest_sources_by_path_index(
+        preloaded_sources,
+        needed_path_index
+      )
       Some((manifest_path, sources))
     },
     None => None
@@ -1122,32 +1114,18 @@ export let try_collect_manifest_source_groups_fs: (String) -> Option[(String, Ar
       )
       let preloaded_sources = load_manifest_full_sources(base_dir, rows)
       let preloaded_source_index = build_manifest_source_index(preloaded_sources)
-      let groups = if should_use_linear_needed_path_filter(needed_paths) {
-        build_grouped_sources_from_manifest_rows_with_lookup(
-          base_dir,
-          rows,
-          (path: String) -> Option[String] {
-            if contains_str(needed_paths, path) {
-              source_lookup_in_index(preloaded_source_index, path)
-            } else {
-              None
-            }
+      let needed_path_index = build_manifest_path_index(needed_paths)
+      let groups = build_grouped_sources_from_manifest_rows_with_lookup(
+        base_dir,
+        rows,
+        (path: String) -> Option[String] {
+          if Map::has_key(needed_path_index, path) {
+            source_lookup_in_index(preloaded_source_index, path)
+          } else {
+            None
           }
-        )
-      } else {
-        let needed_path_index = build_manifest_path_index(needed_paths)
-        build_grouped_sources_from_manifest_rows_with_lookup(
-          base_dir,
-          rows,
-          (path: String) -> Option[String] {
-            if Map::has_key(needed_path_index, path) {
-              source_lookup_in_index(preloaded_source_index, path)
-            } else {
-              None
-            }
-          }
-        )
-      }
+        }
+      )
       Some((manifest_path, groups))
     },
     None => None
