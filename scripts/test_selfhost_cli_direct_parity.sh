@@ -17,7 +17,7 @@ if [ ! -x "$VIBE_BIN" ]; then
   moon build --target native --release src/cmd/vibe --warn-list '-29'
 fi
 
-bash "$SCRIPT_DIR/build_selfhost_cli_direct_component.sh" "$COMPONENT_PATH" "$WIT_PATH"
+VIBE_BIN="$VIBE_BIN" bash "$SCRIPT_DIR/build_selfhost_cli_direct_component.sh" "$COMPONENT_PATH" "$WIT_PATH"
 
 run_case() {
   local case_name="$1"
@@ -46,7 +46,7 @@ run_case() {
       ;;
   esac
   "$VIBE_BIN" compile-lite "${mode_flags[@]}" "$input_path" -o "$host_out"
-  bash "$SCRIPT_DIR/run_selfhost_cli_direct_component.sh" "$COMPONENT_PATH" "$input_path" "$selfhost_out" "$entry_name" "$mode"
+  VIBE_BIN="$VIBE_BIN" bash "$SCRIPT_DIR/run_selfhost_cli_direct_component.sh" "$COMPONENT_PATH" "$input_path" "$selfhost_out" "$entry_name" "$mode"
 
   wasm-tools validate "$host_out" >/dev/null
   wasm-tools validate "$selfhost_out" >/dev/null
@@ -105,7 +105,7 @@ selfhost_import_out="$import_case_dir/selfhost.wasm"
 host_import_log="$import_case_dir/host.run.log"
 selfhost_import_log="$import_case_dir/selfhost.run.log"
 "$VIBE_BIN" compile-lite --wasm-linear "$import_case_dir/main.vibe" -o "$host_import_out"
-bash "$SCRIPT_DIR/run_selfhost_cli_direct_component.sh" "$COMPONENT_PATH" "$import_case_dir/main.vibe" "$selfhost_import_out" "answer" "mvp"
+VIBE_BIN="$VIBE_BIN" bash "$SCRIPT_DIR/run_selfhost_cli_direct_component.sh" "$COMPONENT_PATH" "$import_case_dir/main.vibe" "$selfhost_import_out" "answer" "mvp"
 wasm-tools validate "$host_import_out" >/dev/null
 wasm-tools validate "$selfhost_import_out" >/dev/null
 env VIBE_WASMTIME_WASM_FLAGS="$WASMTIME_WASM_FLAGS" \

@@ -14,7 +14,8 @@ OUTPUT_PATH="$3"
 ENTRY_NAME="$4"
 COMPILE_MODE="${5:-mvp}"
 WASMTIME_RUN="$SCRIPT_DIR/wasmtime_run.sh"
-VIBE_BIN="${VIBE_BIN:-$PROJECT_ROOT/_build/native/debug/build/cmd/vibe/vibe.exe}"
+USER_VIBE_BIN="${VIBE_BIN:-}"
+VIBE_BIN="${USER_VIBE_BIN:-$PROJECT_ROOT/_build/native/debug/build/cmd/vibe/vibe.exe}"
 WASMTIME_WASM_FLAGS="${VIBE_WASMTIME_WASM_FLAGS:-exceptions=y}"
 WASMTIME_WASI_FLAGS="${VIBE_WASMTIME_WASI_FLAGS:-cli=y}"
 
@@ -42,13 +43,16 @@ OUTPUT_NAME="output.wasm"
 cp -R "$INPUT_DIR"/. "$TMP_DIR/"
 
 ensure_host_vibe_bin() {
-  if [ ! -x "$VIBE_BIN" ]; then
-    moon build --target native --warn-list '-29-55-67-23-24-7-1' src/cmd/vibe >/dev/null
+  if [ -n "$USER_VIBE_BIN" ]; then
+    if [ ! -x "$VIBE_BIN" ]; then
+      echo "VIBE_BIN is not executable: $VIBE_BIN" >&2
+      exit 1
+    fi
     return
   fi
-  if ! "$VIBE_BIN" 2>&1 | grep -q 'emit-closure-payload'; then
-    moon build --target native --warn-list '-29-55-67-23-24-7-1' src/cmd/vibe >/dev/null
-  fi
+  export VIBE_MOON_WARN_LIST="${VIBE_MOON_WARN_LIST:--29-55-67-23-24-7-1}"
+  source "$SCRIPT_DIR/ensure_native_cli.sh"
+  VIBE_BIN="$VIBE_CLI_BIN"
 }
 
 ensure_host_vibe_bin

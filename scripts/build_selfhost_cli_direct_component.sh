@@ -6,10 +6,17 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 OUT_COMPONENT="${1:-$PROJECT_ROOT/dist/selfhost_cli_direct.component.wasm}"
 OUT_WIT="${2:-${OUT_COMPONENT%.wasm}.wit}"
 ENTRY_PATH="${ENTRY_PATH:-$PROJECT_ROOT/vibe/compiler/selfhost_cli_direct_component_entry.vibe}"
-RELEASE_VIBE_EXE="${VIBE_BIN:-$PROJECT_ROOT/_build/native/debug/build/cmd/vibe/vibe.exe}"
 TMP_DIR="$(mktemp -d /tmp/vibe_selfhost_cli_direct_component.XXXXXX)"
+CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${VIBE_SELFHOST_CLI_DIRECT_CARGO_TARGET_DIR:-$PROJECT_ROOT/_build/cargo-target/selfhost_component_adapters}}"
+ADAPTER_LOCK_FILE="${VIBE_SELFHOST_CLI_DIRECT_CARGO_LOCK:-$PROJECT_ROOT/_build/cargo-locks/selfhost_cli_direct_adapter.Cargo.lock}"
+ADAPTER_BUILD_LOCK_DIR="${VIBE_SELFHOST_CLI_DIRECT_BUILD_LOCK:-$PROJECT_ROOT/_build/locks/selfhost_cli_direct_adapter.lock}"
+ADAPTER_BUILD_LOCK_HELD=0
+export CARGO_TARGET_DIR
 
 cleanup() {
+  if [ "$ADAPTER_BUILD_LOCK_HELD" = "1" ]; then
+    rmdir "$ADAPTER_BUILD_LOCK_DIR" 2>/dev/null || true
+  fi
   if [ "${VIBE_KEEP_TMP:-0}" = "1" ]; then
     echo "keeping tmp dir: $TMP_DIR" >&2
     return
@@ -23,6 +30,21 @@ require_cmd() {
     echo "missing required command: $1" >&2
     exit 1
   fi
+}
+
+acquire_adapter_build_lock() {
+  mkdir -p "$(dirname "$ADAPTER_BUILD_LOCK_DIR")"
+  local attempts=0
+  local max_attempts=1500
+  while ! mkdir "$ADAPTER_BUILD_LOCK_DIR" 2>/dev/null; do
+    sleep 0.2
+    attempts=$((attempts + 1))
+    if [ "$attempts" -ge "$max_attempts" ]; then
+      echo "timed out waiting for adapter build lock: $ADAPTER_BUILD_LOCK_DIR" >&2
+      exit 1
+    fi
+  done
+  ADAPTER_BUILD_LOCK_HELD=1
 }
 
 if [ -x "$HOME/.cargo/bin/cargo" ]; then
@@ -42,8 +64,16 @@ ADAPTER_WIT_DIR="$TMP_DIR/wit"
 ADAPTER_WIT_DEPS_DIR="$ADAPTER_WIT_DIR/deps"
 mkdir -p "$ADAPTER_WIT_DEPS_DIR"
 
-if [ ! -x "$RELEASE_VIBE_EXE" ]; then
-  moon build --target native --warn-list '-29-55-67-23-24-7-1' src/cmd/vibe >/dev/null
+if [ -n "${VIBE_BIN:-}" ]; then
+  RELEASE_VIBE_EXE="$VIBE_BIN"
+  if [ ! -x "$RELEASE_VIBE_EXE" ]; then
+    echo "VIBE_BIN is not executable: $RELEASE_VIBE_EXE" >&2
+    exit 1
+  fi
+else
+  export VIBE_MOON_WARN_LIST="${VIBE_MOON_WARN_LIST:--29-55-67-23-24-7-1}"
+  source "$SCRIPT_DIR/ensure_native_cli.sh"
+  RELEASE_VIBE_EXE="$VIBE_CLI_BIN"
 fi
 
 "$RELEASE_VIBE_EXE" compile --component-string-lift "$ENTRY_PATH" -o "$PLUG_COMPONENT"
@@ -234,10 +264,20 @@ cp \
   "$PROJECT_ROOT/deps/wasmtime/crates/wasi/src/p2/wit/deps/sockets.wit" \
   "$ADAPTER_WIT_DEPS_DIR/"
 
+acquire_adapter_build_lock
+mkdir -p "$(dirname "$ADAPTER_LOCK_FILE")"
 pushd "$TMP_DIR" >/dev/null
-PATH="$HOME/.cargo/bin:$PATH" cargo build --target wasm32-unknown-unknown --release >/dev/null
+cargo_build_args=(--target wasm32-unknown-unknown --release)
+if [ -f "$ADAPTER_LOCK_FILE" ]; then
+  cp "$ADAPTER_LOCK_FILE" Cargo.lock
+  cargo_build_args+=(--locked)
+fi
+PATH="$HOME/.cargo/bin:$PATH" cargo build "${cargo_build_args[@]}" >/dev/null
+if [ ! -f "$ADAPTER_LOCK_FILE" ] && [ -f Cargo.lock ]; then
+  cp Cargo.lock "$ADAPTER_LOCK_FILE"
+fi
 wasm-tools component embed "$ADAPTER_WIT_DIR" \
-  target/wasm32-unknown-unknown/release/vibe_selfhost_cli_direct_adapter.wasm \
+  "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/vibe_selfhost_cli_direct_adapter.wasm" \
   --world adapter \
   -o "$ADAPTER_EMBEDDED_WASM"
 wasm-tools component new "$ADAPTER_EMBEDDED_WASM" -o "$ADAPTER_COMPONENT"
