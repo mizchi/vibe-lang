@@ -755,6 +755,7 @@ fn is_pure_builtin_name(name : String) -> Bool {
   name == "String::contains" ||
   name == "String::trim" ||
   name == "String::from_char_code" ||
+  name == "String::from_char_codes" ||
   name == "Char::to_int" ||
   name == "Char::from_int" ||
   name == "String::starts_with" ||

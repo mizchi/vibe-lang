@@ -71,6 +71,27 @@ test "type_call_builtin: String::length returns Int" {
 }
 
 ///|
+test "type_call_builtin: String::from_char_codes returns String" {
+  let env = TypeEnv::new()
+  let span = builtin_test_span()
+  env.set("codes", @core.Type::Array(@core.Type::Int))
+  let args = [builtin_test_ident_arg("codes")]
+  let aliases : Map[String, @core.Ref] = {}
+  let actual = type_call_builtin(
+    env,
+    "String::from_char_codes",
+    args,
+    aliases,
+    effect_scope_all(),
+    true,
+    span,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_eq(actual, @core.Type::String)
+}
+
+///|
 test "type_call_builtin: __len returns Int for Bytes" {
   let env = TypeEnv::new()
   let span = builtin_test_span()

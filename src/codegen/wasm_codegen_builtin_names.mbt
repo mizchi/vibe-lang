@@ -20,7 +20,7 @@ pub fn codegen_registered_builtin_names() -> Array[String] {
     "String::ends_with", "String::last_index_of", "String::count", "String::trim",
     "String::trim_start", "String::trim_end", "String::split", "String::replace",
     "String::replace_all", "String::to_lower", "String::to_upper", "String::from_char_code",
-    "String::unicode_length",
+    "String::from_char_codes", "String::unicode_length",
     // Array
      "Array::get", "Array::set", "Array::length", "Array::push", "Array::push_all",
     "Array::truncate", "Array::slice", "Array::concat",

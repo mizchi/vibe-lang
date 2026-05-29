@@ -1423,6 +1423,22 @@ test "vibe wasm compiles String::from_char_code builtin" {
 }
 
 ///|
+test "vibe wasm compiles String::from_char_codes builtin" {
+  let db = VibeDb::new()
+  let src =
+    #|let s = String::from_char_codes([65, 66, 67])
+    #|String::char_code_at(s, 1)
+  db.set_source("main", src)
+  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    b => b
+  }
+  assert_true(wasm.length() >= 8)
+  assert_true(bytes_contains_ascii(wasm, "_start"))
+}
+
+///|
 test "vibe wasm compiles non-js string builtins" {
   let db = VibeDb::new()
   let src =

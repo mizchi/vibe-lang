@@ -2506,6 +2506,14 @@ test "vibe wasm eval supports: String::from_char_code" {
 }
 
 ///|
+test "vibe wasm eval supports: String::from_char_codes" {
+  assert_wasm_eval_decodes(
+    "String::char_code_at(String::from_char_codes([65, 66, 67]), 1)",
+  )
+  assert_wasm_eval_decodes("String::length(String::from_char_codes([]))")
+}
+
+///|
 test "vibe wasm eval supports: Int::abs" {
   assert_wasm_eval_decodes("Int::abs(5)")
   assert_wasm_eval_decodes("Int::abs(-5)")

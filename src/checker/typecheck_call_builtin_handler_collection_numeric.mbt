@@ -25,6 +25,13 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::String,
         false,
       )
+    "String::from_char_codes" =>
+      ctx.simple(
+        "String::from_char_codes",
+        [@core.Type::Array(@core.Type::Int)],
+        @core.Type::String,
+        false,
+      )
     "Char::to_int" =>
       ctx.simple("Char::to_int", [@core.Type::Char], @core.Type::Int, false)
     "Char::from_int" =>

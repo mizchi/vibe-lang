@@ -3075,7 +3075,8 @@ fn infer_expr_kind_gc(
         | "Bool::to_string"
         | "Float::to_string"
         | "Double::to_string"
-        | "String::from_char_code" => GcValKind::Ref(ctx.string_type)
+        | "String::from_char_code"
+        | "String::from_char_codes" => GcValKind::Ref(ctx.string_type)
         "Int::to_double" => GcValKind::F64
         "Int::to_float" => GcValKind::F32
         "Int::abs"
@@ -3644,6 +3645,66 @@ fn compile_string_char_code_at(
   // callers that consume the result as Int (e.g. sha1 `read_word` shifts
   // the byte left by 24 via `__lshift` which expects i64).
   emit_i64_extend_i32_s_gc(buf)
+}
+
+///|
+fn compile_string_from_char_codes_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  arr_expr : @core.Expr,
+) -> Unit raise WasmGenError {
+  let arr_kind = infer_expr_kind_gc(ctx, fctx, arr_expr)
+  let arr_type = gc_array_type_idx_from_kind(
+    ctx, arr_kind, "String::from_char_codes",
+  )
+  let elem_kind = gc_array_elem_kind_from_kind(
+    ctx, arr_kind, "String::from_char_codes",
+  )
+  let arr_idx = alloc_local_gc(fctx, arr_kind)
+  let len_idx = alloc_local_gc(fctx, GcValKind::I32)
+  let out_idx = alloc_local_gc(fctx, GcValKind::Ref(ctx.array_i32_type))
+  let i_idx = alloc_local_gc(fctx, GcValKind::I32)
+  compile_expr_gc(ctx, fctx, buf, arr_expr)
+  emit_local_set_gc(buf, arr_idx)
+  emit_local_get_gc(buf, arr_idx)
+  emit_array_len_gc(buf)
+  emit_local_set_gc(buf, len_idx)
+  emit_local_get_gc(buf, len_idx)
+  emit_array_new_default_gc(buf, ctx.array_i32_type)
+  emit_local_set_gc(buf, out_idx)
+  emit_i32_const_gc(buf, 0)
+  emit_local_set_gc(buf, i_idx)
+  emit_block_gc(buf, None)
+  emit_loop_gc(buf, None)
+  emit_local_get_gc(buf, i_idx)
+  emit_local_get_gc(buf, len_idx)
+  emit_i32_ge_s_gc(buf)
+  emit_br_if_gc(buf, 1)
+  emit_local_get_gc(buf, out_idx)
+  emit_local_get_gc(buf, i_idx)
+  emit_local_get_gc(buf, arr_idx)
+  emit_local_get_gc(buf, i_idx)
+  emit_array_get_gc(buf, arr_type)
+  match elem_kind {
+    GcValKind::I64 => emit_i32_wrap_i64_gc(buf)
+    GcValKind::I32 => ()
+    other => {
+      emit_coerce_top_gc(ctx, buf, other, GcValKind::I64)
+      emit_i32_wrap_i64_gc(buf)
+    }
+  }
+  emit_array_set_gc(buf, ctx.array_i32_type)
+  emit_local_get_gc(buf, i_idx)
+  emit_i32_const_gc(buf, 1)
+  emit_i32_add_gc(buf)
+  emit_local_set_gc(buf, i_idx)
+  emit_br_gc(buf, 0)
+  emit_end_gc(buf)
+  emit_end_gc(buf)
+  emit_local_get_gc(buf, len_idx)
+  emit_local_get_gc(buf, out_idx)
+  emit_struct_new_gc(buf, ctx.string_type)
 }
 
 ///|
@@ -8907,6 +8968,12 @@ fn compile_expr_gc(
           emit_i32_const_gc(buf, 1)
           emit_local_get_gc(buf, arr_idx)
           emit_struct_new_gc(buf, ctx.string_type)
+        }
+        "String::from_char_codes" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("String::from_char_codes arity")
+          }
+          compile_string_from_char_codes_gc(ctx, fctx, buf, pos_args[0])
         }
         "Int::to_string" => {
           if pos_args.length() != 1 {

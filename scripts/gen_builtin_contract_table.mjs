@@ -99,6 +99,7 @@ const signatures = {
   "Stdin::read_char": "() -> Int",
   "Stdin::read_stream": "(Int) -> String",
   "String::from_char_code": "(Int) -> String",
+  "String::from_char_codes": "(Array[Int]) -> String",
   "ArrayBuilder::new": "() -> ArrayBuilder[T]",
   "ArrayBuilder::push": "(ArrayBuilder[T], T) -> Unit",
   "ArrayBuilder::freeze": "(ArrayBuilder[T]) -> Array[T]",

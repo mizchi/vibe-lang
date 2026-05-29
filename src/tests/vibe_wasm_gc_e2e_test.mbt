@@ -1052,6 +1052,17 @@ test "wasm-gc e2e: StringBuilder::freeze preserves codepoint order" {
 }
 
 ///|
+test "wasm-gc e2e: String::from_char_codes preserves codepoint order" {
+  let src =
+    #|let main = () -> Int {
+    #|  let s = String::from_char_codes([65, 66, 67, 68])
+    #|  String::char_code_at(s, 0) + String::char_code_at(s, 3)
+    #|}
+    #|main()
+  assert_gc_e2e(src, "string_from_char_codes_order", 133)
+}
+
+///|
 test "wasm-gc e2e: StringBuilder::freeze on empty builder returns empty string" {
   let src =
     #|let main = () -> Int {

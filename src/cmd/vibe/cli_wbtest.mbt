@@ -1237,7 +1237,7 @@ test "check split args extracts profile tsv path" {
     "--profile-tsv", "/tmp/check.tsv", "a.vibe", "b.vibe",
   ])
   match parsed {
-    Ok((args, Some(path), _)) => {
+    Ok((args, Some(path), None, _)) => {
       assert_eq(path, "/tmp/check.tsv")
       assert_eq(args.length(), 2)
       assert_eq(args[0], "a.vibe")
@@ -1245,6 +1245,31 @@ test "check split args extracts profile tsv path" {
     }
     Ok(_) => fail("expected profile path")
     Err(msg) => fail(msg)
+  }
+}
+
+///|
+test "check split args extracts profile callstack path" {
+  let parsed = split_check_cmd_args([
+    "--profile-callstack", "/tmp/check.callstack.tsv", "a.vibe",
+  ])
+  match parsed {
+    Ok((args, None, Some(path), _)) => {
+      assert_eq(path, "/tmp/check.callstack.tsv")
+      assert_eq(args.length(), 1)
+      assert_eq(args[0], "a.vibe")
+    }
+    Ok(_) => fail("expected profile callstack path")
+    Err(msg) => fail(msg)
+  }
+}
+
+///|
+test "check split args rejects missing profile callstack path" {
+  let parsed = split_check_cmd_args(["--profile-callstack"])
+  match parsed {
+    Ok(_) => fail("expected parse error")
+    Err(msg) => assert_eq(msg, "check: missing path after --profile-callstack")
   }
 }
 
@@ -1261,7 +1286,7 @@ test "check split args rejects missing profile path" {
 test "check split args extracts builtin-contract flag" {
   let parsed = split_check_cmd_args(["--builtin-contract=warn", "a.vibe"])
   match parsed {
-    Ok((args, None, contract)) => {
+    Ok((args, None, None, contract)) => {
       assert_eq(args.length(), 1)
       assert_eq(args[0], "a.vibe")
       assert_eq(contract, "warn")
@@ -1275,7 +1300,7 @@ test "check split args extracts builtin-contract flag" {
 test "check split args builtin-contract separate value" {
   let parsed = split_check_cmd_args(["--builtin-contract", "error", "a.vibe"])
   match parsed {
-    Ok((args, None, contract)) => {
+    Ok((args, None, None, contract)) => {
       assert_eq(args.length(), 1)
       assert_eq(contract, "error")
     }
@@ -1300,7 +1325,7 @@ test "check split args builtin-contract invalid value" {
 test "check split args builtin-contract default is ignore" {
   let parsed = split_check_cmd_args(["a.vibe"])
   match parsed {
-    Ok((_, _, contract)) => assert_eq(contract, "ignore")
+    Ok((_, _, _, contract)) => assert_eq(contract, "ignore")
     Err(msg) => fail(msg)
   }
 }
