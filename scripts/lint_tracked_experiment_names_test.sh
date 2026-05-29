@@ -24,8 +24,8 @@ EOF
 git -C "$TMP_ROOT" add .
 
 cat > "$TMP_ROOT/allowlist.txt" <<'EOF'
-# path
-vibe/compiler/cache_probe_test.vibe
+# path category reason
+vibe/compiler/cache_probe_test.vibe gate legacy probe fixture
 EOF
 
 if VIBE_EXPERIMENT_NAME_LINT_ROOT="$TMP_ROOT" \
@@ -48,12 +48,36 @@ if ! rg -q 'scripts/.tmp_probe.sh' "$TMP_ROOT/fail.stderr"; then
 fi
 
 cat >> "$TMP_ROOT/allowlist.txt" <<'EOF'
-vibe/compiler/new_probe_test.vibe
-scripts/.tmp_probe.sh
+vibe/compiler/new_probe_test.vibe gate new gate fixture
+scripts/.tmp_probe.sh manual-experiment temporary script fixture
 EOF
 
 VIBE_EXPERIMENT_NAME_LINT_ROOT="$TMP_ROOT" \
   VIBE_EXPERIMENT_NAME_LINT_ALLOWLIST="$TMP_ROOT/allowlist.txt" \
   bash "$CHECK_SCRIPT" >/dev/null
+
+cat > "$TMP_ROOT/allowlist.txt" <<'EOF'
+vibe/compiler/cache_probe_test.vibe invalid-category bad category
+vibe/compiler/missing_probe_test.vibe gate stale entry
+EOF
+
+if VIBE_EXPERIMENT_NAME_LINT_ROOT="$TMP_ROOT" \
+  VIBE_EXPERIMENT_NAME_LINT_ALLOWLIST="$TMP_ROOT/allowlist.txt" \
+  bash "$CHECK_SCRIPT" >"$TMP_ROOT/invalid.stdout" 2>"$TMP_ROOT/invalid.stderr"; then
+  echo "experiment-name lint self-test: expected invalid allowlist failure" >&2
+  exit 1
+fi
+
+if ! rg -q 'invalid category' "$TMP_ROOT/invalid.stderr"; then
+  echo "experiment-name lint self-test: missing invalid category error" >&2
+  cat "$TMP_ROOT/invalid.stderr" >&2
+  exit 1
+fi
+
+if ! rg -q 'stale allowlist entry' "$TMP_ROOT/invalid.stderr"; then
+  echo "experiment-name lint self-test: missing stale allowlist error" >&2
+  cat "$TMP_ROOT/invalid.stderr" >&2
+  exit 1
+fi
 
 echo "experiment-name lint self-test: ok"

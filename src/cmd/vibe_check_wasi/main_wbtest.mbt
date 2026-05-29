@@ -111,7 +111,7 @@ fn wbtest_not_contains_message(
   diags : Array[@core.Diagnostic],
   text : String,
 ) -> Bool {
-  not(wbtest_contains_message(diags, text))
+  !wbtest_contains_message(diags, text)
 }
 
 ///|
@@ -124,6 +124,7 @@ test "parse_cmd_args accepts --source input" {
         input: CheckInput::Source(source),
         human_readable: false,
         profile_tsv: None,
+        profile_callstack: None,
       }
     ) => assert_eq(source, "1 + true")
     Ok(_) => fail("expected source input")
@@ -166,6 +167,7 @@ test "parse_cmd_args parses --format mode" {
         input: CheckInput::Source(source),
         human_readable: false,
         profile_tsv: None,
+        profile_callstack: None,
       }
     ) => assert_eq(source, "let  x=1")
     Ok(_) => fail("expected format source input")
@@ -245,6 +247,7 @@ test "parse_cmd_args accepts --human flag" {
         input: CheckInput::File(path),
         human_readable: true,
         profile_tsv: None,
+        profile_callstack: None,
       }
     ) => assert_eq(path, "a.vibe")
     Ok(_) => fail("expected human-readable check input")
@@ -269,6 +272,37 @@ test "parse_cmd_args accepts --profile-tsv flag" {
     }
     Ok(_) => fail("expected profile path")
     Err(err) => fail(err)
+  }
+}
+
+///|
+test "parse_cmd_args accepts --profile-callstack flag" {
+  let parsed = parse_cmd_args([
+    "--profile-callstack", "/tmp/check.callstack.tsv", "a.vibe",
+  ])
+  match parsed {
+    Ok(
+      {
+        mode: CommandMode::Check,
+        input: CheckInput::File(path),
+        profile_callstack: Some(profile_path),
+        ..,
+      }
+    ) => {
+      assert_eq(path, "a.vibe")
+      assert_eq(profile_path, "/tmp/check.callstack.tsv")
+    }
+    Ok(_) => fail("expected profile callstack path")
+    Err(err) => fail(err)
+  }
+}
+
+///|
+test "parse_cmd_args rejects missing --profile-callstack value" {
+  let parsed = parse_cmd_args(["--profile-callstack"])
+  match parsed {
+    Ok(_) => fail("expected parse error")
+    Err(err) => assert_eq(err, "check: missing path after --profile-callstack")
   }
 }
 

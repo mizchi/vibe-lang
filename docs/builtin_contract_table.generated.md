@@ -46,6 +46,7 @@ Legend:
 | `String::contains` | `(String, String) -> Bool` | `-` | yes | yes |
 | `String::equals` | `(String, String) -> Bool` | `-` | yes | yes |
 | `String::from_char_code` | `(Int) -> String` | `-` | yes | yes |
+| `String::from_char_codes` | `(Array[Int]) -> String` | `-` | yes | yes |
 | `String::index_of` | `(String, String) -> Int` | `-` | yes | yes |
 | `String::length` | `(String) -> Int` | `-` | yes | yes |
 | `String::split` | `(String, String) -> Array[String]` | `-` | yes | yes |

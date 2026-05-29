@@ -45,6 +45,7 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
         "ArrayBuilder::new"
         | "MapBuilder::new"
         | "StringBuilder::new"
+        | "String::from_char_codes"
         | "String::join"
         | "Map::keys"
         | "Map::values"

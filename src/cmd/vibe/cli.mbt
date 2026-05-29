@@ -270,6 +270,7 @@ fn print_check_help() -> Unit {
   println("")
   println("Options:")
   println("  --profile-tsv <path>   Write profiling data to TSV file")
+  println("  --profile-callstack <path>  Write callstack profiling TSV")
   println("  --builtin-contract <error|warn|ignore>  Builtin contract mode")
   println("")
   println("Environment:")

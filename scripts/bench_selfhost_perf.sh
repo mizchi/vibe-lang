@@ -530,7 +530,7 @@ main() {
   # discarded to /dev/null; failure during warm-up is tolerated since
   # the measurement loop will re-surface any genuine errors.
   local warmup_case="${cases[0]}"
-  echo "[selfhost-perf] warmup: $(realpath --relative-to="$PROJECT_ROOT" "$warmup_case")"
+  echo "[selfhost-perf] warmup: ${warmup_case#$PROJECT_ROOT/}"
   echo "[selfhost-perf] runtime=${SELFHOST_RUNTIME}"
   selfhost_runner "$STAGE1_COMPILER_WASM" compile-lite --wasm-linear --no-dce --in-memory "$warmup_case" >/dev/null 2>&1 || true
   selfhost_runner "$STAGE1_CHECKER_WASM" --check --file "$warmup_case" >/dev/null 2>&1 || true
@@ -580,7 +580,7 @@ main() {
           local stderr_file="$OUT_DIR/tmp/${safe}.${phase}.${runtime}.${run_idx}.stderr"
           local profile_file="$OUT_DIR/tmp/${safe}.${phase}.${runtime}.${run_idx}.profile.tsv"
           local callstack_args=()
-          if [ -n "$PROFILE_CALLSTACK" ] && [ "$phase" = "compile" ] && [ "$run_idx" -eq 1 ]; then
+          if [ -n "$PROFILE_CALLSTACK" ] && [ "$run_idx" -eq 1 ]; then
             local callstack_file="$OUT_DIR/tmp/${safe}.${phase}.${runtime}.callstack.tsv"
             callstack_args=(--profile-callstack "$callstack_file")
           fi
@@ -599,10 +599,10 @@ main() {
               selfhost_runner "$STAGE1_COMPILER_WASM" compile-lite --wasm-linear --no-dce --in-memory --profile-tsv "$profile_file" "${callstack_args[@]+"${callstack_args[@]}"}" "$case_path")
           elif [ "$phase" = "check" ] && [ "$runtime" = "host" ]; then
             read -r cmd_status elapsed < <(run_timed "$stdout_file" "$stderr_file" \
-              env VIBE_CHECK_DEBUG=0 "$VIBE_BIN" check --profile-tsv "$profile_file" "$case_path")
+              env VIBE_CHECK_DEBUG=0 "$VIBE_BIN" check --profile-tsv "$profile_file" "${callstack_args[@]+"${callstack_args[@]}"}" "$case_path")
           else
             read -r cmd_status elapsed < <(run_timed "$stdout_file" "$stderr_file" \
-              selfhost_runner "$STAGE1_CHECKER_WASM" --check --profile-tsv "$profile_file" --file "$case_path")
+              selfhost_runner "$STAGE1_CHECKER_WASM" --check --profile-tsv "$profile_file" "${callstack_args[@]+"${callstack_args[@]}"}" --file "$case_path")
           fi
           printf "%s\t%s\t%s\t%d\t%s\t%s\n" "$rel_case" "$phase" "$runtime" "$run_idx" "$elapsed" "$cmd_status" >> "$raw_tsv"
           echo "$elapsed" >> "$sample_file"

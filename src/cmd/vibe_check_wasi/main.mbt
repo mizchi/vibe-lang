@@ -7,9 +7,7 @@ fn ensure_checker_hooks() -> Unit {
     return
   }
   checker_hooks_ready.val = true
-  @runtime.set_parse_ast_hook(fn(
-    source,
-  ) -> (@core.Module, @core.Diagnostic?) raise Error {
+  @runtime.set_parse_ast_hook(fn(source) -> (@core.Module, @core.Diagnostic?) {
     let ast = @parser.parse_ast(source) catch {
       e => return ({ stmts: [] }, Some(e.diagnostic()))
     }
@@ -53,6 +51,7 @@ pub struct CmdOptions {
   input : CheckInput
   human_readable : Bool
   profile_tsv : String?
+  profile_callstack : String?
 } derive(Eq, Debug)
 
 ///|
@@ -100,6 +99,7 @@ pub fn parse_cmd_args(args : Array[String]) -> Result[CmdOptions, String] {
   let mut mode = CommandMode::Check
   let mut human_readable = false
   let mut profile_tsv : String? = None
+  let mut profile_callstack : String? = None
   let mut mode_flag_count = 0
   let mut i = 0
   while i < args.length() {
@@ -121,6 +121,13 @@ pub fn parse_cmd_args(args : Array[String]) -> Result[CmdOptions, String] {
           return Err("check: missing path after --profile-tsv")
         }
         profile_tsv = Some(args[i])
+      }
+      "--profile-callstack" => {
+        i += 1
+        if i >= args.length() {
+          return Err("check: missing path after --profile-callstack")
+        }
+        profile_callstack = Some(args[i])
       }
       "--source" => {
         i += 1
@@ -150,7 +157,13 @@ pub fn parse_cmd_args(args : Array[String]) -> Result[CmdOptions, String] {
   match source {
     Some(src) =>
       if files.length() == 0 {
-        Ok({ mode, input: CheckInput::Source(src), human_readable, profile_tsv })
+        Ok({
+          mode,
+          input: CheckInput::Source(src),
+          human_readable,
+          profile_tsv,
+          profile_callstack,
+        })
       } else {
         Err("check: --source and file input are exclusive")
       }
@@ -163,6 +176,7 @@ pub fn parse_cmd_args(args : Array[String]) -> Result[CmdOptions, String] {
           input: CheckInput::File(files[0]),
           human_readable,
           profile_tsv,
+          profile_callstack,
         })
       } else {
         Ok({
@@ -170,6 +184,7 @@ pub fn parse_cmd_args(args : Array[String]) -> Result[CmdOptions, String] {
           input: CheckInput::Files(files),
           human_readable,
           profile_tsv,
+          profile_callstack,
         })
       }
   }
@@ -231,10 +246,10 @@ fn std_layer_name(layer : StdModuleLayer) -> String {
 fn std_layer_for_path(path : String) -> StdModuleLayer? {
   let normalized = @vibe_fs.normalize_path(path)
   if (
-      not(normalized.contains("/vibe/prelude/")) &&
-      not(normalized.contains("/vibe/path/"))
+      !normalized.contains("/vibe/prelude/") &&
+      !normalized.contains("/vibe/path/")
     ) ||
-    not(normalized.has_suffix(".vibe")) ||
+    !normalized.has_suffix(".vibe") ||
     normalized.has_suffix("_test.vibe") ||
     normalized.has_suffix("_type_import_test.vibe") ||
     normalized.has_suffix("/test_import.vibe") {
@@ -343,7 +358,7 @@ fn std_layering_violations_for_source(
   for import_path in imports {
     match std_layer_for_path(import_path) {
       Some(imported_layer) =>
-        if not(std_layer_allows_import(source_layer, imported_layer)) {
+        if !std_layer_allows_import(source_layer, imported_layer) {
           violations.push(
             "std layering violation: " +
             std_layer_name(source_layer) +
@@ -463,7 +478,7 @@ fn check_file_with_timing(
       )
     }
   }
-  if not(has_import_stmt(ast)) {
+  if !has_import_stmt(ast) {
     let start_type = @bench.monotonic_clock_start()
     let (out, error_count, warning_count) = check_ast_without_imports(ast)
     let type_us = elapsed_us_from(start_type)
@@ -774,7 +789,7 @@ fn format_files_report_to_human(files : Array[FormatFileSummary]) -> String {
 ///|
 fn usage() -> Unit {
   println(
-    "vibe_check_wasi [--check|--format] [--json|--human] [--profile-tsv <path>] [--source <code> | --file <path> | <path>]",
+    "vibe_check_wasi [--check|--format] [--json|--human] [--profile-tsv <path>] [--profile-callstack <path>] [--source <code> | --file <path> | <path>]",
   )
 }
 
@@ -792,6 +807,10 @@ fn main {
   let fs = @io.default_fs_adapter()
   match options.mode {
     CommandMode::Check => {
+      if options.profile_callstack is Some(_) {
+        @profiler.profiler_set_enabled(true)
+        @profiler.profiler_reset()
+      }
       let mut load_ms_total = 0
       let mut type_ms_total = 0
       let mut total_ms_total = 0
@@ -917,6 +936,17 @@ fn main {
           match @io.write_string_with(fs, path, content) {
             Ok(_) => ()
             Err(err) => abort("check: failed to write profile tsv: " + err)
+          }
+        }
+        None => ()
+      }
+      match options.profile_callstack {
+        Some(path) => {
+          let content = @profiler.profiler_report_tsv()
+          match @io.write_string_with(fs, path, content) {
+            Ok(_) => ()
+            Err(err) =>
+              abort("check: failed to write callstack profile: " + err)
           }
         }
         None => ()

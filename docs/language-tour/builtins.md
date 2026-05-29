@@ -32,6 +32,7 @@ Prelude wrappers: `add(a, b)`, `sub(a, b)`, `mul(a, b)`, `div(a, b)`, `eq(a, b)`
 | `String::substring` | `(String, Int, Int) -> String` | Substring (start, end) |
 | `String::char_code_at` | `(String, Int) -> Int` | Char code at index |
 | `String::from_char_code` | `(Int) -> String` | String from char code |
+| `String::from_char_codes` | `(Array[Int]) -> String` | String from char codes |
 | `String::equals` | `(String, String) -> Bool` | Equality |
 | `String::split` | `(String, String) -> Array[String]` | Split by separator |
 | `String::join` | `(Array[String], String) -> String` | Join with separator |

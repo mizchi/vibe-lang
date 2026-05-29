@@ -588,6 +588,7 @@ fn infer_expr_kind_with(
             ValueKind::I64
           }
         "String::equals" => ValueKind::I64
+        "String::from_char_codes" => ValueKind::I64
         "ArrayBuilder::new" | "ArrayBuilder::freeze" => ValueKind::I64
         "ArrayBuilder::push"
         | "Array::push"
@@ -1168,6 +1169,7 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
         name == "Double::to_string" ||
         name == "Bool::to_string" ||
         name == "String::from_char_code" ||
+        name == "String::from_char_codes" ||
         name == "Array::slice" ||
         name == "Array::concat" ||
         name == "ArrayBuilder::new" ||

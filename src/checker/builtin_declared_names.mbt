@@ -30,11 +30,12 @@ pub fn checker_declared_builtin_names() -> Array[String] {
     // Char
      "Char::to_int", "Char::from_int",
     // String
-     "String::length", "String::char_code_at", "String::from_char_code", "String::substring",
-    "String::concat", "String::join", "String::equals", "String::index_of", "String::contains",
-    "String::starts_with", "String::ends_with", "String::last_index_of", "String::count",
-    "String::trim", "String::trim_start", "String::trim_end", "String::split", "String::replace",
-    "String::replace_all", "String::to_lower", "String::to_upper", "String::unicode_length",
+     "String::length", "String::char_code_at", "String::from_char_code", "String::from_char_codes",
+    "String::substring", "String::concat", "String::join", "String::equals", "String::index_of",
+    "String::contains", "String::starts_with", "String::ends_with", "String::last_index_of",
+    "String::count", "String::trim", "String::trim_start", "String::trim_end", "String::split",
+    "String::replace", "String::replace_all", "String::to_lower", "String::to_upper",
+    "String::unicode_length",
     // Array
      "Array::get", "Array::set", "Array::length", "Array::push", "Array::push_all",
     "Array::truncate", "Array::slice", "Array::concat", "Array::map", "Array::fold",

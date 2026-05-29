@@ -11,6 +11,11 @@ pub enum CompileMode {
 } derive(Eq, Debug)
 
 ///|
+pub impl Show for CompileMode with fn output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
+
+///|
 pub struct CompileCmdOptions {
   mode : CompileMode
   no_dce : Bool
@@ -168,22 +173,22 @@ fn parse_compile_cmd_args(
   match entry_path {
     None => Err("compile: missing <file>")
     Some(path) => {
-      if no_dce && not(compile_mode_supports_no_dce(mode)) {
+      if no_dce && !compile_mode_supports_no_dce(mode) {
         return Err(
           "compile: --no-dce is only supported with --wasm/--wasm-mvp, --wasm-js-string, or --wasm-gc",
         )
       }
-      if opt_level is Some(_) && not(compile_mode_supports_wite_opt(mode)) {
+      if opt_level is Some(_) && !compile_mode_supports_wite_opt(mode) {
         return Err(
           "compile: --wite/-O* is only supported with --wasm, --wasm-js-string, --wasm-gc, --component, or --wac",
         )
       }
-      if debug_errors && not(compile_mode_supports_debug_errors(mode)) {
+      if debug_errors && !compile_mode_supports_debug_errors(mode) {
         return Err(
           "compile: --debug-errors is only supported with --wasm or --wasm-js-string",
         )
       }
-      if http_host_imports && not(compile_mode_supports_http_host_imports(mode)) {
+      if http_host_imports && !compile_mode_supports_http_host_imports(mode) {
         return Err(
           "compile: --http-host-imports is only supported with --wasm or --component",
         )
@@ -459,7 +464,7 @@ fn compile_lite_validate_opts(
   if opts.http_host_imports {
     return Err("compile-lite: --http-host-imports is not supported")
   }
-  if not(in_memory) && opts.out_path is None {
+  if !in_memory && opts.out_path is None {
     return Err("compile-lite: -o/--out is required")
   }
   Ok(())
@@ -468,9 +473,10 @@ fn compile_lite_validate_opts(
 ///|
 fn split_compile_lite_args(
   args : Array[String],
-) -> Result[(Array[String], String?, Bool), String] {
+) -> Result[(Array[String], String?, String?, Bool), String] {
   let filtered : Array[String] = []
   let mut profile_tsv : String? = None
+  let mut profile_callstack : String? = None
   let mut in_memory = false
   let mut i = 0
   while i < args.length() {
@@ -481,6 +487,12 @@ fn split_compile_lite_args(
         return Err("compile-lite: missing path after --profile-tsv")
       }
       profile_tsv = Some(args[i])
+    } else if arg == "--profile-callstack" {
+      i += 1
+      if i >= args.length() {
+        return Err("compile-lite: missing path after --profile-callstack")
+      }
+      profile_callstack = Some(args[i])
     } else if arg == "--in-memory" {
       in_memory = true
     } else {
@@ -488,7 +500,7 @@ fn split_compile_lite_args(
     }
     i += 1
   }
-  Ok((filtered, profile_tsv, in_memory))
+  Ok((filtered, profile_tsv, profile_callstack, in_memory))
 }
 
 ///|
@@ -507,7 +519,7 @@ fn compile_lite_cmd(
   args : Array[String],
   fs : &@io.FileSystemAdapter,
 ) -> Result[String, String] {
-  let (compile_args, profile_tsv, in_memory) = match
+  let (compile_args, profile_tsv, profile_callstack, in_memory) = match
     split_compile_lite_args(args) {
     Ok(v) => v
     Err(err) => return Err(err)
@@ -520,22 +532,30 @@ fn compile_lite_cmd(
     Ok(_) => ()
     Err(err) => return Err(err)
   }
+  if profile_callstack is Some(_) {
+    @profiler.profiler_set_enabled(true)
+    @profiler.profiler_reset()
+  }
   let out_path = match opts.out_path {
     Some(path) => path
     None => ""
   }
   @runtime_compile.init_hooks()
   let start_total = @bench.monotonic_clock_start()
+  @profiler.profiler_enter("load")
   let start_load = @bench.monotonic_clock_start()
   let loaded = match @loader.load_db_with_fs(opts.entry_path, fs) {
     Ok(v) => v
     Err(err) => return Err("compile-lite: " + err)
   }
   let load_us = elapsed_us_from(start_load)
+  @profiler.profiler_leave()
   let (db, entry) = loaded
+  @profiler.profiler_enter("type")
   let start_type = @bench.monotonic_clock_start()
   let _ = db.types(entry)
   let type_us = elapsed_us_from(start_type)
+  @profiler.profiler_leave()
   let (wasm_bytes, compile_profile) = if opts.mode == CompileMode::WasmGc {
     @runtime_compile.compile_module_wasm_gc_with_opt_level_profiled(
       db,
@@ -558,13 +578,15 @@ fn compile_lite_cmd(
     }
   }
   let mut write_us = 0
-  if not(in_memory) {
+  if !in_memory {
+    @profiler.profiler_enter("write")
     let start_write = @bench.monotonic_clock_start()
     match @io.write_bytes_with(fs, out_path, wasm_bytes) {
       Ok(_) => ()
       Err(err) => return Err("compile-lite: " + err)
     }
     write_us = elapsed_us_from(start_write)
+    @profiler.profiler_leave()
   }
   let total_us = elapsed_us_from(start_total)
   match profile_tsv {
@@ -576,6 +598,17 @@ fn compile_lite_cmd(
         Ok(_) => ()
         Err(err) =>
           return Err("compile-lite: failed to write profile tsv: " + err)
+      }
+    }
+    None => ()
+  }
+  match profile_callstack {
+    Some(path) => {
+      let content = @profiler.profiler_report_tsv()
+      match @io.write_string_with(fs, path, content) {
+        Ok(_) => ()
+        Err(err) =>
+          return Err("compile-lite: failed to write callstack profile: " + err)
       }
     }
     None => ()
