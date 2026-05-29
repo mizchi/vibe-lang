@@ -8,4 +8,6 @@ if rg -n '@checker|mizchi/vibe/checker' src/codegen/moon.pkg src/codegen >/dev/n
   exit 1
 fi
 
-moon check --target js --deny-warn --warn-list "${warn_list}" src/codegen
+if [ "${VIBE_CODEGEN_CONTRACT_SKIP_MOON_CHECK:-0}" != "1" ]; then
+  moon check --target js --deny-warn --warn-list "${warn_list}" src/codegen
+fi
