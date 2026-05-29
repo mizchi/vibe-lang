@@ -15,10 +15,12 @@ STAGE_TIMEOUT_SEC="${VIBE_SELFHOST_BOOTSTRAP_STAGE_TIMEOUT_SEC:-1800}"
 BOOTSTRAP_PROFILE="${VIBE_SELFHOST_BOOTSTRAP_PROFILE:-full}"
 RUN_TESTS="${VIBE_SELFHOST_BOOTSTRAP_RUN_TESTS:-1}"
 RUN_DETERMINISTIC="${VIBE_SELFHOST_BOOTSTRAP_RUN_DETERMINISTIC:-1}"
+RUN_PROBES="${VIBE_SELFHOST_BOOTSTRAP_RUN_PROBES:-$RUN_TESTS}"
 TEST_SHARD_INDEX="${VIBE_SELFHOST_BOOTSTRAP_TEST_SHARD_INDEX:-}"
 TEST_SHARD_TOTAL="${VIBE_SELFHOST_BOOTSTRAP_TEST_SHARD_TOTAL:-}"
 BATCH_WEIGHT_CACHE_PATH="${VIBE_SELFHOST_BOOTSTRAP_BATCH_WEIGHT_CACHE:-$OUT_DIR/selfhost_test_batch_weights.json}"
 BATCH_WEIGHT_SEED_PATH="${VIBE_SELFHOST_BOOTSTRAP_BATCH_WEIGHT_SEED:-$PROJECT_ROOT/scripts/selfhost_test_batch_weights.seed.json}"
+SHARD_SELECTOR="${VIBE_SELFHOST_BOOTSTRAP_SHARD_SELECTOR:-$PROJECT_ROOT/scripts/selfhost_select_test_shard.mjs}"
 # Cutover: use selfhost compiler (moonrun) instead of host CLI for wasm compilation.
 # Set VIBE_SELFHOST_CUTOVER=0 to fall back to host CLI (emergency rollback).
 SELFHOST_CUTOVER="${VIBE_SELFHOST_CUTOVER:-1}"
@@ -216,10 +218,10 @@ verify_stage_pair_hash() {
     exit 1
   fi
 
-  echo "[bootstrap] deterministic hash ok: mode=${mode_label} source=${source_path#$PROJECT_ROOT/} hash=$pair_hash1"
+  echo "[bootstrap] deterministic hash ok: mode=${mode_label} source=${source_path#"$PROJECT_ROOT"/} hash=$pair_hash1"
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     printf -- "- deterministic hash: mode=%s source=%s hash=%s\n" \
-      "$mode_label" "${source_path#$PROJECT_ROOT/}" "$pair_hash1" >> "$GITHUB_STEP_SUMMARY" || true
+      "$mode_label" "${source_path#"$PROJECT_ROOT"/}" "$pair_hash1" >> "$GITHUB_STEP_SUMMARY" || true
   fi
 
   STAGE_PAIR_LAST_STAGE1="$pair_stage1"
@@ -253,7 +255,11 @@ if ! is_bool_01 "$RUN_DETERMINISTIC"; then
   echo "bootstrap gate failed: VIBE_SELFHOST_BOOTSTRAP_RUN_DETERMINISTIC must be 0 or 1" >&2
   exit 1
 fi
-if [ "$RUN_TESTS" -eq 0 ] && [ "$RUN_DETERMINISTIC" -eq 0 ]; then
+if ! is_bool_01 "$RUN_PROBES"; then
+  echo "bootstrap gate failed: VIBE_SELFHOST_BOOTSTRAP_RUN_PROBES must be 0 or 1" >&2
+  exit 1
+fi
+if [ "$RUN_TESTS" -eq 0 ] && [ "$RUN_DETERMINISTIC" -eq 0 ] && [ "$RUN_PROBES" -eq 0 ]; then
   echo "bootstrap gate failed: at least one bootstrap section must run" >&2
   exit 1
 fi
@@ -342,6 +348,7 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   printf -- "- %s: %ss\n" "stage timeout" "$STAGE_TIMEOUT_SEC" >> "$GITHUB_STEP_SUMMARY" || true
   printf -- "- %s: %s\n" "profile" "$BOOTSTRAP_PROFILE" >> "$GITHUB_STEP_SUMMARY" || true
   printf -- "- %s: %s\n" "run tests" "$RUN_TESTS" >> "$GITHUB_STEP_SUMMARY" || true
+  printf -- "- %s: %s\n" "run probes" "$RUN_PROBES" >> "$GITHUB_STEP_SUMMARY" || true
   printf -- "- %s: %s\n" "run deterministic" "$RUN_DETERMINISTIC" >> "$GITHUB_STEP_SUMMARY" || true
   if [ -n "$TEST_SHARD_TOTAL" ]; then
     printf -- "- %s: %s/%s\n" "test shard" "$TEST_SHARD_INDEX" "$TEST_SHARD_TOTAL" >> "$GITHUB_STEP_SUMMARY" || true
@@ -402,20 +409,58 @@ run_compiled_selfhost_test_shard() {
   fi
 }
 
+select_compiled_selfhost_test_shard_file() {
+  local selected_index="$1"
+  local selected_total="$2"
+  local output_path="$3"
+  local shard_index test_path count
+
+  if command -v node >/dev/null 2>&1 && [ -f "$SHARD_SELECTOR" ]; then
+    if node "$SHARD_SELECTOR" \
+      --index "$selected_index" \
+      --total "$selected_total" \
+      --root "$PROJECT_ROOT" \
+      --weights "$BATCH_WEIGHT_CACHE_PATH" \
+      -- "${SELFHOST_COMPILED_TEST_FILES[@]}" >"$output_path"; then
+      count="$(wc -l <"$output_path" | tr -d ' ')"
+      echo "[bootstrap] weighted compiled selfhost shard $((selected_index + 1))/${selected_total}: ${count} files"
+      return 0
+    fi
+    echo "[bootstrap] weighted shard selection failed; falling back to round-robin" >&2
+  fi
+
+  : >"$output_path"
+  shard_index=0
+  for test_path in "${SELFHOST_COMPILED_TEST_FILES[@]}"; do
+    if [ $((shard_index % selected_total)) -eq "$selected_index" ]; then
+      printf '%s\n' "$test_path" >>"$output_path"
+    fi
+    shard_index=$((shard_index + 1))
+  done
+  count="$(wc -l <"$output_path" | tr -d ' ')"
+  echo "[bootstrap] round-robin compiled selfhost shard $((selected_index + 1))/${selected_total}: ${count} files"
+}
+
+read_selected_selfhost_test_files() {
+  local input_path="$1"
+  local test_path
+  selected_files=()
+  while IFS= read -r test_path; do
+    selected_files+=("$test_path")
+  done <"$input_path"
+}
+
 run_compiled_selfhost_test_shards() {
-  local shard_index selected_index selected_total shard_label
+  local selected_index selected_total shard_label
   local -a selected_files
   if [ -n "$TEST_SHARD_TOTAL" ]; then
     selected_index="$TEST_SHARD_INDEX"
     selected_total="$TEST_SHARD_TOTAL"
-    selected_files=()
-    shard_index=0
-    for test_path in "${SELFHOST_COMPILED_TEST_FILES[@]}"; do
-      if [ $((shard_index % selected_total)) -eq "$selected_index" ]; then
-        selected_files+=("$test_path")
-      fi
-      shard_index=$((shard_index + 1))
-    done
+    select_compiled_selfhost_test_shard_file \
+      "$selected_index" \
+      "$selected_total" \
+      "$OUT_DIR/compiled_selfhost_shard_${selected_index}_of_${selected_total}.txt"
+    read_selected_selfhost_test_files "$OUT_DIR/compiled_selfhost_shard_${selected_index}_of_${selected_total}.txt"
     shard_label="$((selected_index + 1))/${selected_total}"
     run_compiled_selfhost_test_shard "$shard_label" "${selected_files[@]}"
     return
@@ -424,14 +469,11 @@ run_compiled_selfhost_test_shards() {
   local default_total=4
   local default_index
   for default_index in 0 1 2 3; do
-    selected_files=()
-    shard_index=0
-    for test_path in "${SELFHOST_COMPILED_TEST_FILES[@]}"; do
-      if [ $((shard_index % default_total)) -eq "$default_index" ]; then
-        selected_files+=("$test_path")
-      fi
-      shard_index=$((shard_index + 1))
-    done
+    select_compiled_selfhost_test_shard_file \
+      "$default_index" \
+      "$default_total" \
+      "$OUT_DIR/compiled_selfhost_shard_${default_index}_of_${default_total}.txt"
+    read_selected_selfhost_test_files "$OUT_DIR/compiled_selfhost_shard_${default_index}_of_${default_total}.txt"
     run_compiled_selfhost_test_shard "$((default_index + 1))/${default_total}" "${selected_files[@]}"
   done
 }
@@ -445,7 +487,11 @@ should_run_unsharded_test() {
 
 if [ "$RUN_TESTS" -eq 1 ]; then
   run_compiled_selfhost_test_shards
+else
+  echo "[bootstrap] compiled selfhost tests: skipped"
+fi
 
+if [ "$RUN_PROBES" -eq 1 ]; then
   if should_run_unsharded_test; then
     run_stage "compiled selfhost cli cache test" \
       env VIBE_TEST_BACKEND=compiled \
@@ -485,7 +531,7 @@ EOF
     echo "[bootstrap] unsharded compiled cache probes: skipped on shard ${TEST_SHARD_INDEX}/${TEST_SHARD_TOTAL}"
   fi
 else
-  echo "[bootstrap] compiled selfhost tests: skipped"
+  echo "[bootstrap] unsharded compiled cache probes: skipped"
 fi
 
 BASICS_FIXTURE="$PROJECT_ROOT/examples/basics.vibe"

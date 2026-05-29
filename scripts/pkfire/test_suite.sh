@@ -10,7 +10,7 @@ node_options="${VIBE_TEST_NODE_OPTIONS:---max-old-space-size=16384}"
 scripts/check_lock_clean.sh
 scripts/check_lock_clean_test.sh
 bash scripts/generate_selfhost_bundle_test.sh
-node --test scripts/coverage_selfhost_suite_next_branches.test.mjs scripts/coverage_wasm_source.test.mjs
+node --test scripts/coverage_selfhost_suite_next_branches.test.mjs scripts/coverage_wasm_source.test.mjs scripts/selfhost_select_test_shard.test.mjs
 env NODE_OPTIONS="$node_options" moon test --target "$target" --warn-list "$moon_warn_list"
 bash scripts/test_typecheck_fixtures.sh
 bash scripts/test_warning_fixtures.sh
