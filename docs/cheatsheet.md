@@ -232,6 +232,15 @@ m["key"]
 let b = ArrayBuilder::new()
 ArrayBuilder::push(b, 1)
 ArrayBuilder::freeze(b)       // -> Array[Int]
+
+// Int64Array — fixed-size i64-cell buffer for 32-bit word workloads.
+// linear `Array[Int]` cells are 32-bit (with a 2-bit tag), so values
+// >= 2^30 truncate; use Int64Array for hash / binary-protocol word
+// buffers (SHA-1 schedule, etc.) where full 32/62-bit Ints must survive.
+let w = Int64Array::make(4, 0)   // length 4, default 0
+Int64Array::set(w, 0, 0xffffffff)
+Int64Array::get(w, 0)            // => 4294967295 (no truncation)
+Int64Array::length(w)            // => 4
 ```
 
 ## Effects (core concept)
