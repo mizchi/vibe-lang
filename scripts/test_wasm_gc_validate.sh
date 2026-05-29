@@ -25,12 +25,16 @@ log_fail() { echo -e "${RED}FAIL${NC}: $1"; FAILED=$((FAILED + 1)); }
 
 cd "$PROJECT_ROOT"
 
-VIBE="${VIBE_CLI:-}"
+VIBE="${VIBE_BIN:-${VIBE_CLI:-}}"
+if [ -n "$VIBE" ] && [ ! -x "$VIBE" ]; then
+  echo "ERROR: VIBE_BIN/VIBE_CLI is not executable: $VIBE" >&2
+  exit 1
+fi
 if [ -z "$VIBE" ]; then
-  # Try debug build first, then release
   for candidate in \
-    _build/native/debug/build/cmd/vibe/vibe.exe \
     target/native/release/build/cmd/vibe/vibe.exe \
+    _build/native/release/build/cmd/vibe/vibe.exe \
+    _build/native/debug/build/cmd/vibe/vibe.exe \
     target/native/debug/build/cmd/vibe/vibe.exe \
   ; do
     if [ -x "$candidate" ]; then
@@ -39,10 +43,10 @@ if [ -z "$VIBE" ]; then
     fi
   done
 fi
-if [ -z "$VIBE" ] || [ ! -x "$VIBE" ]; then
+if [ -z "$VIBE" ]; then
   echo "Building vibe CLI (debug)..."
-  moon build --target native src/cmd/vibe 2>/dev/null
-  VIBE="_build/native/debug/build/cmd/vibe/vibe.exe"
+  VIBE_MOON_WARN_LIST="${VIBE_MOON_WARN_LIST:--29}" source "$SCRIPT_DIR/ensure_native_cli.sh"
+  VIBE="$VIBE_CLI_BIN"
 fi
 if [ ! -x "$VIBE" ]; then
   echo "ERROR: vibe CLI not found and build failed" >&2
