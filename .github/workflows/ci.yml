@@ -688,10 +688,19 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Restore moonrun_wt release binary cache
+        id: moonrun-wt-binary-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: tools/moonrun_wasmtime/target/release/moonrun_wt
+          key: moonrun-wt-release-${{ runner.os }}-${{ hashFiles('tools/moonrun_wasmtime/Cargo.toml', 'tools/moonrun_wasmtime/Cargo.lock', 'tools/moonrun_wasmtime/src/**') }}
+
       - name: Install Rust toolchain
+        if: steps.moonrun-wt-binary-cache.outputs.cache-hit != 'true'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo registry (moonrun_wt)
+        if: steps.moonrun-wt-binary-cache.outputs.cache-hit != 'true'
         uses: actions/cache@v5
         with:
           path: |
@@ -699,11 +708,24 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             tools/moonrun_wasmtime/target
-          key: cargo-moonrun-wt-${{ runner.os }}-${{ hashFiles('tools/moonrun_wasmtime/Cargo.toml', 'tools/moonrun_wasmtime/src/**') }}
+          key: cargo-moonrun-wt-${{ runner.os }}-${{ hashFiles('tools/moonrun_wasmtime/Cargo.toml', 'tools/moonrun_wasmtime/Cargo.lock', 'tools/moonrun_wasmtime/src/**') }}
           restore-keys: cargo-moonrun-wt-${{ runner.os }}-
 
       - name: Build moonrun_wt
+        if: steps.moonrun-wt-binary-cache.outputs.cache-hit != 'true'
         run: cargo build --release --manifest-path tools/moonrun_wasmtime/Cargo.toml
+
+      - name: Mark moonrun_wt release binary executable
+        run: |
+          chmod +x tools/moonrun_wasmtime/target/release/moonrun_wt
+          touch tools/moonrun_wasmtime/target/release/moonrun_wt
+
+      - name: Save moonrun_wt release binary cache
+        if: steps.moonrun-wt-binary-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: tools/moonrun_wasmtime/target/release/moonrun_wt
+          key: ${{ steps.moonrun-wt-binary-cache.outputs.cache-primary-key }}
 
       - name: Upload moonrun_wt release binary
         uses: actions/upload-artifact@v6
