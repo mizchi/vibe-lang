@@ -3319,7 +3319,9 @@ fn infer_expr_kind_gc(
         "String::length"
         | "String::char_code_at"
         | "String::index_of"
-        | "String::last_index_of" => GcValKind::I64
+        | "String::last_index_of"
+        | "String::count"
+        | "String::unicode_length" => GcValKind::I64
         "Bytes::length" | "Bytes::get" => GcValKind::I64
         "Bytes::new" | "Bytes::from_array" | "Bytes::slice" | "Bytes::concat" =>
           GcValKind::Ref(ctx.bytes_type)
@@ -3339,6 +3341,10 @@ fn infer_expr_kind_gc(
         "String::substring"
         | "String::concat"
         | "String::trim"
+        | "String::trim_start"
+        | "String::trim_end"
+        | "String::to_lower"
+        | "String::to_upper"
         | "String::replace"
         | "String::join" => GcValKind::Ref(ctx.string_type)
         "String::split" => {
@@ -5056,6 +5062,377 @@ fn compile_string_trim(
   emit_local_get_gc(buf, n_idx)
   emit_local_get_gc(buf, arr_idx)
   emit_struct_new_gc(buf, ctx.string_type)
+}
+
+///|
+/// String::to_lower / String::to_upper shared codegen.
+/// Maps ASCII case over the codepoint array: for each codepoint c,
+///   new_c = c + delta * ((c >= lo) & (c <= hi))
+/// (delta = +32 lo=65 hi=90 for to_lower; delta = -32 lo=97 hi=122 for to_upper)
+fn compile_string_case_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  s_expr : @core.Expr,
+  lo : Int,
+  hi : Int,
+  delta : Int,
+) -> Unit raise WasmGenError {
+  let s_idx = alloc_local_gc(fctx, GcValKind::Ref(ctx.string_type))
+  let s_len = alloc_local_gc(fctx, GcValKind::I32)
+  let s_data = alloc_local_gc(fctx, GcValKind::Ref(ctx.array_i32_type))
+  let arr_idx = alloc_local_gc(fctx, GcValKind::Ref(ctx.array_i32_type))
+  let i_idx = alloc_local_gc(fctx, GcValKind::I32)
+  let ch_idx = alloc_local_gc(fctx, GcValKind::I32)
+  compile_expr_gc(ctx, fctx, buf, s_expr)
+  emit_local_set_gc(buf, s_idx)
+  emit_local_get_gc(buf, s_idx)
+  emit_struct_get_gc(buf, ctx.string_type, 0)
+  emit_local_set_gc(buf, s_len)
+  emit_local_get_gc(buf, s_idx)
+  emit_struct_get_gc(buf, ctx.string_type, 1)
+  emit_local_set_gc(buf, s_data)
+  // arr = new array(s_len)
+  emit_local_get_gc(buf, s_len)
+  emit_array_new_default_gc(buf, ctx.array_i32_type)
+  emit_local_set_gc(buf, arr_idx)
+  // for i in 0..<s_len
+  emit_i32_const_gc(buf, 0)
+  emit_local_set_gc(buf, i_idx)
+  emit_block_gc(buf, None)
+  emit_loop_gc(buf, None)
+  emit_local_get_gc(buf, i_idx)
+  emit_local_get_gc(buf, s_len)
+  emit_i32_ge_s_gc(buf)
+  emit_br_if_gc(buf, 1)
+  // ch = s_data[i]
+  emit_local_get_gc(buf, s_data)
+  emit_local_get_gc(buf, i_idx)
+  emit_array_get_gc(buf, ctx.array_i32_type)
+  emit_local_set_gc(buf, ch_idx)
+  // arr[i] = ch + delta * ((ch >= lo) & (ch <= hi))
+  emit_local_get_gc(buf, arr_idx)
+  emit_local_get_gc(buf, i_idx)
+  emit_local_get_gc(buf, ch_idx)
+  emit_local_get_gc(buf, ch_idx)
+  emit_i32_const_gc(buf, lo)
+  emit_i32_ge_s_gc(buf)
+  emit_local_get_gc(buf, ch_idx)
+  emit_i32_const_gc(buf, hi)
+  emit_i32_le_s_gc(buf)
+  emit_i32_and_gc(buf)
+  emit_i32_const_gc(buf, delta)
+  emit_i32_mul_gc(buf)
+  emit_i32_add_gc(buf)
+  emit_array_set_gc(buf, ctx.array_i32_type)
+  // i++
+  emit_local_get_gc(buf, i_idx)
+  emit_i32_const_gc(buf, 1)
+  emit_i32_add_gc(buf)
+  emit_local_set_gc(buf, i_idx)
+  emit_br_gc(buf, 0)
+  emit_end_gc(buf)
+  emit_end_gc(buf)
+  // struct.new(s_len, arr)
+  emit_local_get_gc(buf, s_len)
+  emit_local_get_gc(buf, arr_idx)
+  emit_struct_new_gc(buf, ctx.string_type)
+}
+
+///|
+/// String::trim_start(str) -> string (drop leading codepoints <= 32)
+fn compile_string_trim_start_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  s_expr : @core.Expr,
+) -> Unit raise WasmGenError {
+  let s_idx = alloc_local_gc(fctx, GcValKind::Ref(ctx.string_type))
+  let s_len = alloc_local_gc(fctx, GcValKind::I32)
+  let s_data = alloc_local_gc(fctx, GcValKind::Ref(ctx.array_i32_type))
+  let start_idx = alloc_local_gc(fctx, GcValKind::I32)
+  let n_idx = alloc_local_gc(fctx, GcValKind::I32)
+  let arr_idx = alloc_local_gc(fctx, GcValKind::Ref(ctx.array_i32_type))
+  let i_idx = alloc_local_gc(fctx, GcValKind::I32)
+  compile_expr_gc(ctx, fctx, buf, s_expr)
+  emit_local_set_gc(buf, s_idx)
+  emit_local_get_gc(buf, s_idx)
+  emit_struct_get_gc(buf, ctx.string_type, 0)
+  emit_local_set_gc(buf, s_len)
+  emit_local_get_gc(buf, s_idx)
+  emit_struct_get_gc(buf, ctx.string_type, 1)
+  emit_local_set_gc(buf, s_data)
+  // start = 0; while start < s_len && data[start] <= 32: start++
+  emit_i32_const_gc(buf, 0)
+  emit_local_set_gc(buf, start_idx)
+  emit_block_gc(buf, None)
+  emit_loop_gc(buf, None)
+  emit_local_get_gc(buf, start_idx)
+  emit_local_get_gc(buf, s_len)
+  emit_i32_ge_s_gc(buf)
+  emit_br_if_gc(buf, 1)
+  // if data[start] > 32 -> break
+  emit_local_get_gc(buf, s_data)
+  emit_local_get_gc(buf, start_idx)
+  emit_array_get_gc(buf, ctx.array_i32_type)
+  emit_i32_const_gc(buf, 32)
+  emit_i32_gt_s_gc(buf)
+  emit_br_if_gc(buf, 1)
+  emit_local_get_gc(buf, start_idx)
+  emit_i32_const_gc(buf, 1)
+  emit_i32_add_gc(buf)
+  emit_local_set_gc(buf, start_idx)
+  emit_br_gc(buf, 0)
+  emit_end_gc(buf)
+  emit_end_gc(buf)
+  // n = s_len - start
+  emit_local_get_gc(buf, s_len)
+  emit_local_get_gc(buf, start_idx)
+  emit_i32_sub_gc(buf)
+  emit_local_set_gc(buf, n_idx)
+  // arr = new array(n); copy data[start..start+n]
+  emit_local_get_gc(buf, n_idx)
+  emit_array_new_default_gc(buf, ctx.array_i32_type)
+  emit_local_set_gc(buf, arr_idx)
+  emit_i32_const_gc(buf, 0)
+  emit_local_set_gc(buf, i_idx)
+  emit_block_gc(buf, None)
+  emit_loop_gc(buf, None)
+  emit_local_get_gc(buf, i_idx)
+  emit_local_get_gc(buf, n_idx)
+  emit_i32_ge_s_gc(buf)
+  emit_br_if_gc(buf, 1)
+  emit_local_get_gc(buf, arr_idx)
+  emit_local_get_gc(buf, i_idx)
+  emit_local_get_gc(buf, s_data)
+  emit_local_get_gc(buf, start_idx)
+  emit_local_get_gc(buf, i_idx)
+  emit_i32_add_gc(buf)
+  emit_array_get_gc(buf, ctx.array_i32_type)
+  emit_array_set_gc(buf, ctx.array_i32_type)
+  emit_local_get_gc(buf, i_idx)
+  emit_i32_const_gc(buf, 1)
+  emit_i32_add_gc(buf)
+  emit_local_set_gc(buf, i_idx)
+  emit_br_gc(buf, 0)
+  emit_end_gc(buf)
+  emit_end_gc(buf)
+  emit_local_get_gc(buf, n_idx)
+  emit_local_get_gc(buf, arr_idx)
+  emit_struct_new_gc(buf, ctx.string_type)
+}
+
+///|
+/// String::trim_end(str) -> string (drop trailing codepoints <= 32)
+fn compile_string_trim_end_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  s_expr : @core.Expr,
+) -> Unit raise WasmGenError {
+  let s_idx = alloc_local_gc(fctx, GcValKind::Ref(ctx.string_type))
+  let s_len = alloc_local_gc(fctx, GcValKind::I32)
+  let s_data = alloc_local_gc(fctx, GcValKind::Ref(ctx.array_i32_type))
+  let end_idx = alloc_local_gc(fctx, GcValKind::I32)
+  let arr_idx = alloc_local_gc(fctx, GcValKind::Ref(ctx.array_i32_type))
+  let i_idx = alloc_local_gc(fctx, GcValKind::I32)
+  compile_expr_gc(ctx, fctx, buf, s_expr)
+  emit_local_set_gc(buf, s_idx)
+  emit_local_get_gc(buf, s_idx)
+  emit_struct_get_gc(buf, ctx.string_type, 0)
+  emit_local_set_gc(buf, s_len)
+  emit_local_get_gc(buf, s_idx)
+  emit_struct_get_gc(buf, ctx.string_type, 1)
+  emit_local_set_gc(buf, s_data)
+  // end = s_len; while end > 0 && data[end-1] <= 32: end--
+  emit_local_get_gc(buf, s_len)
+  emit_local_set_gc(buf, end_idx)
+  emit_block_gc(buf, None)
+  emit_loop_gc(buf, None)
+  emit_local_get_gc(buf, end_idx)
+  emit_i32_const_gc(buf, 0)
+  emit_i32_le_s_gc(buf)
+  emit_br_if_gc(buf, 1)
+  // if data[end-1] > 32 -> break
+  emit_local_get_gc(buf, s_data)
+  emit_local_get_gc(buf, end_idx)
+  emit_i32_const_gc(buf, 1)
+  emit_i32_sub_gc(buf)
+  emit_array_get_gc(buf, ctx.array_i32_type)
+  emit_i32_const_gc(buf, 32)
+  emit_i32_gt_s_gc(buf)
+  emit_br_if_gc(buf, 1)
+  emit_local_get_gc(buf, end_idx)
+  emit_i32_const_gc(buf, 1)
+  emit_i32_sub_gc(buf)
+  emit_local_set_gc(buf, end_idx)
+  emit_br_gc(buf, 0)
+  emit_end_gc(buf)
+  emit_end_gc(buf)
+  // arr = new array(end); copy data[0..end]
+  emit_local_get_gc(buf, end_idx)
+  emit_array_new_default_gc(buf, ctx.array_i32_type)
+  emit_local_set_gc(buf, arr_idx)
+  emit_i32_const_gc(buf, 0)
+  emit_local_set_gc(buf, i_idx)
+  emit_block_gc(buf, None)
+  emit_loop_gc(buf, None)
+  emit_local_get_gc(buf, i_idx)
+  emit_local_get_gc(buf, end_idx)
+  emit_i32_ge_s_gc(buf)
+  emit_br_if_gc(buf, 1)
+  emit_local_get_gc(buf, arr_idx)
+  emit_local_get_gc(buf, i_idx)
+  emit_local_get_gc(buf, s_data)
+  emit_local_get_gc(buf, i_idx)
+  emit_array_get_gc(buf, ctx.array_i32_type)
+  emit_array_set_gc(buf, ctx.array_i32_type)
+  emit_local_get_gc(buf, i_idx)
+  emit_i32_const_gc(buf, 1)
+  emit_i32_add_gc(buf)
+  emit_local_set_gc(buf, i_idx)
+  emit_br_gc(buf, 0)
+  emit_end_gc(buf)
+  emit_end_gc(buf)
+  emit_local_get_gc(buf, end_idx)
+  emit_local_get_gc(buf, arr_idx)
+  emit_struct_new_gc(buf, ctx.string_type)
+}
+
+///|
+/// String::count(str, sub) -> Int (non-overlapping occurrence count)
+fn compile_string_count_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  s_expr : @core.Expr,
+  sub_expr : @core.Expr,
+) -> Unit raise WasmGenError {
+  let s_idx = alloc_local_gc(fctx, GcValKind::Ref(ctx.string_type))
+  let sub_idx = alloc_local_gc(fctx, GcValKind::Ref(ctx.string_type))
+  let s_len = alloc_local_gc(fctx, GcValKind::I32)
+  let sub_len = alloc_local_gc(fctx, GcValKind::I32)
+  let s_data = alloc_local_gc(fctx, GcValKind::Ref(ctx.array_i32_type))
+  let sub_data = alloc_local_gc(fctx, GcValKind::Ref(ctx.array_i32_type))
+  let count_idx = alloc_local_gc(fctx, GcValKind::I32)
+  let outer_i = alloc_local_gc(fctx, GcValKind::I32)
+  let inner_j = alloc_local_gc(fctx, GcValKind::I32)
+  let matched = alloc_local_gc(fctx, GcValKind::I32)
+  let limit = alloc_local_gc(fctx, GcValKind::I32)
+  compile_expr_gc(ctx, fctx, buf, s_expr)
+  emit_local_set_gc(buf, s_idx)
+  compile_expr_gc(ctx, fctx, buf, sub_expr)
+  emit_local_set_gc(buf, sub_idx)
+  emit_local_get_gc(buf, s_idx)
+  emit_struct_get_gc(buf, ctx.string_type, 0)
+  emit_local_set_gc(buf, s_len)
+  emit_local_get_gc(buf, sub_idx)
+  emit_struct_get_gc(buf, ctx.string_type, 0)
+  emit_local_set_gc(buf, sub_len)
+  emit_local_get_gc(buf, s_idx)
+  emit_struct_get_gc(buf, ctx.string_type, 1)
+  emit_local_set_gc(buf, s_data)
+  emit_local_get_gc(buf, sub_idx)
+  emit_struct_get_gc(buf, ctx.string_type, 1)
+  emit_local_set_gc(buf, sub_data)
+  // count = 0
+  emit_i32_const_gc(buf, 0)
+  emit_local_set_gc(buf, count_idx)
+  // limit = s_len - sub_len + 1
+  emit_local_get_gc(buf, s_len)
+  emit_local_get_gc(buf, sub_len)
+  emit_i32_sub_gc(buf)
+  emit_i32_const_gc(buf, 1)
+  emit_i32_add_gc(buf)
+  emit_local_set_gc(buf, limit)
+  // guard empty pattern: if sub_len <= 0 { limit = 0 } to avoid infinite loop
+  emit_local_get_gc(buf, sub_len)
+  emit_i32_const_gc(buf, 0)
+  emit_i32_le_s_gc(buf)
+  emit_if_gc(buf, None)
+  emit_i32_const_gc(buf, 0)
+  emit_local_set_gc(buf, limit)
+  emit_end_gc(buf)
+  // outer_i = 0
+  emit_i32_const_gc(buf, 0)
+  emit_local_set_gc(buf, outer_i)
+  emit_block_gc(buf, None)
+  emit_loop_gc(buf, None)
+  emit_local_get_gc(buf, outer_i)
+  emit_local_get_gc(buf, limit)
+  emit_i32_ge_s_gc(buf)
+  emit_br_if_gc(buf, 1)
+  // matched = 1; inner_j = 0
+  emit_i32_const_gc(buf, 1)
+  emit_local_set_gc(buf, matched)
+  emit_i32_const_gc(buf, 0)
+  emit_local_set_gc(buf, inner_j)
+  emit_block_gc(buf, None)
+  emit_loop_gc(buf, None)
+  emit_local_get_gc(buf, inner_j)
+  emit_local_get_gc(buf, sub_len)
+  emit_i32_ge_s_gc(buf)
+  emit_br_if_gc(buf, 1)
+  // if s_data[outer_i + inner_j] != sub_data[inner_j] { matched = 0; break }
+  emit_local_get_gc(buf, s_data)
+  emit_local_get_gc(buf, outer_i)
+  emit_local_get_gc(buf, inner_j)
+  emit_i32_add_gc(buf)
+  emit_array_get_gc(buf, ctx.array_i32_type)
+  emit_local_get_gc(buf, sub_data)
+  emit_local_get_gc(buf, inner_j)
+  emit_array_get_gc(buf, ctx.array_i32_type)
+  emit_i32_ne_gc(buf)
+  emit_if_gc(buf, None)
+  emit_i32_const_gc(buf, 0)
+  emit_local_set_gc(buf, matched)
+  emit_br_gc(buf, 2)
+  emit_end_gc(buf)
+  emit_local_get_gc(buf, inner_j)
+  emit_i32_const_gc(buf, 1)
+  emit_i32_add_gc(buf)
+  emit_local_set_gc(buf, inner_j)
+  emit_br_gc(buf, 0)
+  emit_end_gc(buf)
+  emit_end_gc(buf)
+  // if matched { count++; outer_i += sub_len } else { outer_i++ }
+  emit_local_get_gc(buf, matched)
+  emit_if_gc(buf, None)
+  emit_local_get_gc(buf, count_idx)
+  emit_i32_const_gc(buf, 1)
+  emit_i32_add_gc(buf)
+  emit_local_set_gc(buf, count_idx)
+  emit_local_get_gc(buf, outer_i)
+  emit_local_get_gc(buf, sub_len)
+  emit_i32_add_gc(buf)
+  emit_local_set_gc(buf, outer_i)
+  emit_else_gc(buf)
+  emit_local_get_gc(buf, outer_i)
+  emit_i32_const_gc(buf, 1)
+  emit_i32_add_gc(buf)
+  emit_local_set_gc(buf, outer_i)
+  emit_end_gc(buf)
+  emit_br_gc(buf, 0)
+  emit_end_gc(buf)
+  emit_end_gc(buf)
+  // return count as i64
+  emit_local_get_gc(buf, count_idx)
+  emit_i64_extend_i32_s_gc(buf)
+}
+
+///|
+/// String::unicode_length(str) -> Int. In the wasm-gc backend a string is a
+/// codepoint array, so the codepoint count equals the stored length.
+fn compile_string_unicode_length_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  s_expr : @core.Expr,
+) -> Unit raise WasmGenError {
+  ignore(fctx)
+  compile_expr_gc(ctx, fctx, buf, s_expr)
+  emit_struct_get_gc(buf, ctx.string_type, 0)
+  emit_i64_extend_i32_s_gc(buf)
 }
 
 ///|
@@ -8586,6 +8963,42 @@ fn compile_expr_gc(
             raise WasmGenError::Unsupported("String::trim arity")
           }
           compile_string_trim(ctx, fctx, buf, pos_args[0])
+        }
+        "String::trim_start" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("String::trim_start arity")
+          }
+          compile_string_trim_start_gc(ctx, fctx, buf, pos_args[0])
+        }
+        "String::trim_end" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("String::trim_end arity")
+          }
+          compile_string_trim_end_gc(ctx, fctx, buf, pos_args[0])
+        }
+        "String::to_lower" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("String::to_lower arity")
+          }
+          compile_string_case_gc(ctx, fctx, buf, pos_args[0], 65, 90, 32)
+        }
+        "String::to_upper" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("String::to_upper arity")
+          }
+          compile_string_case_gc(ctx, fctx, buf, pos_args[0], 97, 122, -32)
+        }
+        "String::count" => {
+          if pos_args.length() != 2 {
+            raise WasmGenError::Unsupported("String::count arity")
+          }
+          compile_string_count_gc(ctx, fctx, buf, pos_args[0], pos_args[1])
+        }
+        "String::unicode_length" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("String::unicode_length arity")
+          }
+          compile_string_unicode_length_gc(ctx, fctx, buf, pos_args[0])
         }
         "String::replace" => {
           if pos_args.length() != 3 {

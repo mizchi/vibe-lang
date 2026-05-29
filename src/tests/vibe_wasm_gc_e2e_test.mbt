@@ -1063,6 +1063,75 @@ test "wasm-gc e2e: String::from_char_codes preserves codepoint order" {
 }
 
 ///|
+test "wasm-gc e2e: String::to_lower lowercases ASCII uppercase" {
+  let src =
+    #|let main = () -> Int {
+    #|  let s = String::to_lower("AbC9Z")
+    #|  String::char_code_at(s, 0) + String::char_code_at(s, 4)
+    #|}
+    #|main()
+  // 'a'(97) + 'z'(122) = 219
+  assert_gc_e2e(src, "string_to_lower", 219)
+}
+
+///|
+test "wasm-gc e2e: String::to_upper uppercases ASCII lowercase" {
+  let src =
+    #|let main = () -> Int {
+    #|  let s = String::to_upper("aB9z")
+    #|  String::char_code_at(s, 0) + String::char_code_at(s, 3)
+    #|}
+    #|main()
+  // 'A'(65) + 'Z'(90) = 155
+  assert_gc_e2e(src, "string_to_upper", 155)
+}
+
+///|
+test "wasm-gc e2e: String::trim_start drops leading whitespace only" {
+  let src =
+    #|let main = () -> Int {
+    #|  let s = String::trim_start("   hi ")
+    #|  String::length(s)
+    #|}
+    #|main()
+  // "hi " -> length 3
+  assert_gc_e2e(src, "string_trim_start", 3)
+}
+
+///|
+test "wasm-gc e2e: String::trim_end drops trailing whitespace only" {
+  let src =
+    #|let main = () -> Int {
+    #|  let s = String::trim_end(" hi   ")
+    #|  String::length(s)
+    #|}
+    #|main()
+  // " hi" -> length 3
+  assert_gc_e2e(src, "string_trim_end", 3)
+}
+
+///|
+test "wasm-gc e2e: String::count counts non-overlapping matches" {
+  let src =
+    #|let main = () -> Int {
+    #|  String::count("aaaa", "aa") + String::count("banana", "a")
+    #|}
+    #|main()
+  // 2 + 3 = 5
+  assert_gc_e2e(src, "string_count", 5)
+}
+
+///|
+test "wasm-gc e2e: String::unicode_length counts codepoints" {
+  let src =
+    #|let main = () -> Int {
+    #|  String::unicode_length("hello")
+    #|}
+    #|main()
+  assert_gc_e2e(src, "string_unicode_length", 5)
+}
+
+///|
 test "wasm-gc e2e: StringBuilder::freeze on empty builder returns empty string" {
   let src =
     #|let main = () -> Int {
