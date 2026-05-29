@@ -45,6 +45,7 @@ VIBE_SELFHOST_SOURCE_MANIFEST="$TMP_ROOT/vibe/compiler/selfhost_sources_manifest
 VIBE_SELFHOST_BUNDLE_OUT="$TMP_ROOT/vibe/compiler/selfhost_sources_bundle.vibe" \
 VIBE_SELFHOST_ADAPTER_BUNDLE_OUT="$TMP_ROOT/vibe/compiler/selfhost_cli_adapter_bundle.vibe" \
 VIBE_SELFHOST_BUNDLE_EXTRA_ENTRIES="" \
+VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_FROM_MERGED=1 \
 bash "$BUNDLE_SCRIPT" >/dev/null
 
 OUT="$TMP_ROOT/vibe/compiler/selfhost_sources_bundle.vibe"
