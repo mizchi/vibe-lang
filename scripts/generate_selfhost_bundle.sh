@@ -431,6 +431,29 @@ run_host_vibe_cmd() {
 
 build_adapter_module_source() {
   local merged_source_file="$1"
+  # Fast path for tiny shell self-tests; production generation uses
+  # emit-module-source through the host compiler below.
+  if [ "${VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_FROM_MERGED:-0}" = "1" ]; then
+    local module_source_path
+    mkdir -p "$PROJECT_ROOT/_build"
+    module_source_path="$(mktemp "$PROJECT_ROOT/_build/selfhost_cli_adapter_module_source.XXXXXX")"
+    python3 - "$merged_source_file" "$module_source_path" <<'PY'
+import sys
+
+src, out = sys.argv[1:]
+with open(src, "r", encoding="utf-8") as f:
+    lines = f.readlines()
+
+with open(out, "w", encoding="utf-8") as f:
+    for line in lines:
+        stripped = line.lstrip()
+        if stripped.startswith("let ") and "->" not in stripped:
+            continue
+        f.write(line)
+PY
+    printf '%s\n' "$module_source_path"
+    return 0
+  fi
   local module_source_path
   mkdir -p "$PROJECT_ROOT/_build"
   module_source_path="$(mktemp "$PROJECT_ROOT/_build/selfhost_cli_adapter_module_source.XXXXXX")"
