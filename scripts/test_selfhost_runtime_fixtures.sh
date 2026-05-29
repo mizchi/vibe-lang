@@ -3,15 +3,40 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-VIBE_BIN="${VIBE_BIN:-$PROJECT_ROOT/_build/native/debug/build/cmd/vibe/vibe.exe}"
+VIBE_BIN="${VIBE_BIN:-${VIBE_CLI:-}}"
 OUT_DIR="${OUT_DIR:-$PROJECT_ROOT/_build/bench/selfhost_runtime_fixtures}"
 SNAPSHOT_FILE="${VIBE_SELFHOST_RUNTIME_FIXTURE_SNAPSHOT_FILE:-$PROJECT_ROOT/bench/golden/selfhost_runtime_fixture_snapshot.json}"
 SHARD_SIZE="${VIBE_SELFHOST_RUNTIME_FIXTURE_SHARD_SIZE:-10}"
 GENERATED_DIR="$PROJECT_ROOT/vibe/compiler/_generated_selfhost_runtime_fixtures"
 
-if [ ! -x "$VIBE_BIN" ]; then
-  moon build --target native src/cmd/vibe --warn-list '-29' >/dev/null
-fi
+resolve_vibe_bin() {
+  if [ -n "$VIBE_BIN" ]; then
+    if [ ! -x "$VIBE_BIN" ]; then
+      echo "selfhost runtime fixtures: VIBE_BIN/VIBE_CLI is not executable: $VIBE_BIN" >&2
+      exit 1
+    fi
+    return
+  fi
+
+  local candidate
+  for candidate in \
+    "$PROJECT_ROOT/target/native/release/build/cmd/vibe/vibe.exe" \
+    "$PROJECT_ROOT/_build/native/release/build/cmd/vibe/vibe.exe" \
+    "$PROJECT_ROOT/_build/native/debug/build/cmd/vibe/vibe.exe" \
+    "$PROJECT_ROOT/target/native/debug/build/cmd/vibe/vibe.exe" \
+  ; do
+    if [ -x "$candidate" ]; then
+      VIBE_BIN="$candidate"
+      return
+    fi
+  done
+
+  export VIBE_MOON_WARN_LIST="${VIBE_MOON_WARN_LIST:--29}"
+  source "$SCRIPT_DIR/ensure_native_cli.sh"
+  VIBE_BIN="$VIBE_CLI_BIN"
+}
+
+resolve_vibe_bin
 
 cd "$PROJECT_ROOT"
 mkdir -p "$OUT_DIR"

@@ -23,24 +23,43 @@ ENTRY_PATH="${VIBE_DIST_ENTRY_PATH:-$PROJECT_ROOT/vibe/compiler/selfhost_cli_sup
 OPT_LEVEL="${VIBE_DIST_OPT_LEVEL:--O3}"
 SKIP_OPT="${VIBE_DIST_SKIP_OPT:-0}"
 
-HOST_VIBE_EXE_RELEASE="$PROJECT_ROOT/_build/native/release/build/cmd/vibe/vibe.exe"
-HOST_VIBE_EXE_DEBUG="$PROJECT_ROOT/_build/native/debug/build/cmd/vibe/vibe.exe"
+EXPLICIT_VIBE_BIN="${VIBE_BIN:-${VIBE_CLI:-}}"
 
 mkdir -p "$DIST_DIR"
 
 RAW_WASM="$DIST_DIR/selfhost_compiler_raw.wasm"
 DIST_WASM="$DIST_DIR/selfhost_compiler.wasm"
 
-# --- Step 1: Host compile ---
-if [ -x "$HOST_VIBE_EXE_RELEASE" ]; then
-  HOST_CMD=("$HOST_VIBE_EXE_RELEASE" compile --wasm --force-cabi-realloc)
-elif [ -x "$HOST_VIBE_EXE_DEBUG" ]; then
-  HOST_CMD=("$HOST_VIBE_EXE_DEBUG" compile --wasm --force-cabi-realloc)
-else
+resolve_host_cmd() {
+  if [ -n "$EXPLICIT_VIBE_BIN" ]; then
+    if [ ! -x "$EXPLICIT_VIBE_BIN" ]; then
+      echo "[dist] VIBE_BIN/VIBE_CLI is not executable: $EXPLICIT_VIBE_BIN" >&2
+      exit 1
+    fi
+    HOST_CMD=("$EXPLICIT_VIBE_BIN" compile --wasm --force-cabi-realloc)
+    return
+  fi
+
+  local candidate
+  for candidate in \
+    "$PROJECT_ROOT/target/native/release/build/cmd/vibe/vibe.exe" \
+    "$PROJECT_ROOT/_build/native/release/build/cmd/vibe/vibe.exe" \
+    "$PROJECT_ROOT/_build/native/debug/build/cmd/vibe/vibe.exe" \
+    "$PROJECT_ROOT/target/native/debug/build/cmd/vibe/vibe.exe" \
+  ; do
+    if [ -x "$candidate" ]; then
+      HOST_CMD=("$candidate" compile --wasm --force-cabi-realloc)
+      return
+    fi
+  done
+
   echo "[dist] building host CLI..." >&2
-  (cd "$PROJECT_ROOT" && moon build --target native --release src/cmd/vibe --warn-list '-1-7-24-29' >/dev/null)
-  HOST_CMD=("$HOST_VIBE_EXE_RELEASE" compile --wasm --force-cabi-realloc)
-fi
+  VIBE_CLI_RELEASE=1 source "$SCRIPT_DIR/ensure_native_cli.sh"
+  HOST_CMD=("$VIBE_CLI_BIN" compile --wasm --force-cabi-realloc)
+}
+
+# --- Step 1: Host compile ---
+resolve_host_cmd
 
 echo "[dist] stage1: host compile $ENTRY_PATH"
 "${HOST_CMD[@]}" "$ENTRY_PATH" -o "$RAW_WASM"
