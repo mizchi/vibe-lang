@@ -19,7 +19,7 @@ jobs:
           bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
           ./actionlint -color
 
-  contract-moon:
+  contract-moon-test:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -27,8 +27,6 @@ jobs:
 
       - name: Setup Vibe toolchain
         uses: ./.github/actions/setup-vibe
-        with:
-          ripgrep: 'true'
 
       - name: Run moon test (verbose, for flaker)
         id: moon_test_flaker
@@ -47,9 +45,41 @@ jobs:
           path: .flaker-test-output.txt
           retention-days: 30
 
+      - name: Surface moon test failure in annotations
+        if: steps.moon_test_flaker.outputs.exit_code != '0'
+        run: |
+          echo "::error::moon test --target js failed; tail of log follows:"
+          tail -80 .flaker-test-output.txt | while IFS= read -r line; do
+            echo "::error::moon-test: $line"
+          done
+          exit 1
+
+  contract-moon-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Vibe toolchain
+        uses: ./.github/actions/setup-vibe
+
+      - name: MoonBit js check
+        run: moon check --deny-warn --warn-list "$VIBE_MOON_WARN_LIST" --target js
+
+  contract-moon-contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Vibe toolchain
+        uses: ./.github/actions/setup-vibe
+        with:
+          ripgrep: 'true'
+
       - name: PR contract checks (MoonBit/js)
         id: contract_moon
-        run: VIBE_CONTRACT_MOON_SKIP_JS_PACKAGE_TESTS=1 bash scripts/pkfire/contract_moon.sh 2>&1 | tee /tmp/contract_moon.log
+        run: VIBE_CONTRACT_MOON_SKIP_MOON_CHECK=1 VIBE_CONTRACT_MOON_SKIP_JS_PACKAGE_TESTS=1 bash scripts/pkfire/contract_moon.sh 2>&1 | tee /tmp/contract_moon.log
         continue-on-error: true
 
       - name: Surface contract-moon failure in annotations
@@ -61,14 +91,29 @@ jobs:
           done
           exit 1
 
-      - name: Surface moon test failure in annotations
-        if: steps.moon_test_flaker.outputs.exit_code != '0'
+  # Keep the public `contract-moon` check name stable while running the
+  # expensive MoonBit test/check/contract pieces in parallel shards.
+  contract-moon:
+    if: always()
+    needs:
+      - contract-moon-test
+      - contract-moon-check
+      - contract-moon-contracts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check contract-moon shard results
         run: |
-          echo "::error::moon test --target js failed; tail of log follows:"
-          tail -80 .flaker-test-output.txt | while IFS= read -r line; do
-            echo "::error::moon-test: $line"
-          done
-          exit 1
+          if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]] || \
+             [[ "${{ contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
+            echo "::error::One or more contract-moon shards failed or were cancelled"
+            echo ""
+            echo "Shard results:"
+            echo "  contract-moon-test: ${{ needs.contract-moon-test.result }}"
+            echo "  contract-moon-check: ${{ needs.contract-moon-check.result }}"
+            echo "  contract-moon-contracts: ${{ needs.contract-moon-contracts.result }}"
+            exit 1
+          fi
+          echo "All contract-moon shards passed."
 
   contract-native:
     runs-on: ubuntu-latest
@@ -598,36 +643,15 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # moonrun_wt host parity + import-surface drift guard. Keeps the
-  # wasmtime-aot bench backend (TODO #295) honest: any divergence in
-  # emitted `.wasm` between moonrun and moonrun_wt, or any new
-  # moon `--target wasm` import that we haven't wired into
-  # `tools/moonrun_wasmtime/src/main.rs`, will fail this job.
-  #
-  # Cache layout (3 stacked caches, restored independently):
-  #   - moon `_build`/`.mooncakes` via setup-vibe (moon-build-cache):
-  #     skips `moon build --target wasm` on unchanged sources.
-  #   - cargo registry + `tools/moonrun_wasmtime/target`: skips the
-  #     moonrun_wt cargo build on unchanged Cargo.toml + src.
-  #   - `_build/wasm/opt/*.cwasm`: skips the wasmtime AOT compile step
-  #     when both stage1 wasm and moonrun_wt source are unchanged. Key
-  #     uses input hashes (not artifact hashes) so it can be restored
-  #     before the build steps run.
-  selfhost-runtime-parity:
+  moonrun-wt-release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
-      - name: Setup Vibe toolchain
-        uses: ./.github/actions/setup-vibe
-        with:
-          ripgrep: 'true'
-          moon-build-cache: 'true'
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Cargo registry
+      - name: Cache Cargo registry (moonrun_wt)
         uses: actions/cache@v5
         with:
           path: |
@@ -638,11 +662,47 @@ jobs:
           key: cargo-moonrun-wt-${{ runner.os }}-${{ hashFiles('tools/moonrun_wasmtime/Cargo.toml', 'tools/moonrun_wasmtime/src/**') }}
           restore-keys: cargo-moonrun-wt-${{ runner.os }}-
 
+      - name: Build moonrun_wt
+        run: cargo build --release --manifest-path tools/moonrun_wasmtime/Cargo.toml
+
+      - name: Upload moonrun_wt release binary
+        uses: actions/upload-artifact@v6
+        with:
+          name: moonrun-wt-release
+          path: tools/moonrun_wasmtime/target/release/moonrun_wt
+          retention-days: 1
+
+  # moonrun_wt host parity + import-surface drift guard. Keeps the
+  # wasmtime-aot bench backend (TODO #295) honest: any divergence in
+  # emitted `.wasm` between moonrun and moonrun_wt, or any new
+  # moon `--target wasm` import that we haven't wired into
+  # `tools/moonrun_wasmtime/src/main.rs`, will fail this job.
+  #
+  # Cache/artifact layout:
+  #   - moon `_build`/`.mooncakes` via setup-vibe (moon-build-cache):
+  #     skips `moon build --target wasm` on unchanged sources.
+  #   - `moonrun-wt-release` artifact: builds moonrun_wt once per run
+  #     and shares the binary with parity/perf consumers.
+  #   - `_build/wasm/opt/*.cwasm`: skips the wasmtime AOT compile step
+  #     when both stage1 wasm and moonrun_wt source are unchanged. Key
+  #     uses input hashes (not artifact hashes) so it can be restored
+  #     before the build steps run.
+  selfhost-runtime-parity:
+    runs-on: ubuntu-latest
+    needs: moonrun-wt-release
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Vibe toolchain
+        uses: ./.github/actions/setup-vibe
+        with:
+          moon-build-cache: 'true'
+
       # Restore previously AOT-compiled cwasm artifacts. Cache key bakes
       # the wasmtime version (Cargo.toml) + moonrun_wt source + the moon
       # toolchain version + the stage1 wasm source tree, so any change
       # to inputs that could alter cwasm output forces a fresh compile.
-      # mizchi/vibe-lang's wasmtime is pinned at 42.0.1; cwasm produced
+      # mizchi/vibe-lang's wasmtime is pinned via Cargo.toml; cwasm produced
       # by a different wasmtime version is UB to load.
       - name: Restore stage1 cwasm cache
         id: cwasm-cache
@@ -659,16 +719,25 @@ jobs:
       - name: Selfhost portable boundary guard
         run: bash scripts/check_selfhost_portable_boundary.sh
 
-      - name: Build moonrun_wt
-        run: cargo build --release --manifest-path tools/moonrun_wasmtime/Cargo.toml
+      - name: Download moonrun_wt release binary
+        uses: actions/download-artifact@v6
+        with:
+          name: moonrun-wt-release
+          path: tools/moonrun_wasmtime/target/release
+
+      - name: Set MOONRUN_WT_BIN
+        run: |
+          chmod +x tools/moonrun_wasmtime/target/release/moonrun_wt
+          echo "MOONRUN_WT_BIN=$(pwd)/tools/moonrun_wasmtime/target/release/moonrun_wt" >> "$GITHUB_ENV"
 
       # On a cwasm cache hit the restored cwasm files arrived with their
       # original mtime, which can be older than the wasm files just
       # rebuilt by `moon build` (moon may rewrite the .wasm even when its
       # content is identical). The mtime check in
       # `test_moonrun_wt_parity.sh`/`bench_selfhost_perf.sh` would then
-      # re-precompile and wipe the cache benefit. Touching after both
-      # builds ensures cwasm > wasm on the cache-hit path. Safe because
+      # re-precompile and wipe the cache benefit. Touching after the wasm
+      # build and binary download ensures cwasm > wasm on the cache-hit path.
+      # Safe because
       # the cache key already pins every input that could change cwasm
       # output (wasmtime version + moonrun_wt source + moon version +
       # stage1 wasm source).
@@ -717,31 +786,16 @@ jobs:
   # jobs let each gate's status be read directly.
   selfhost-perf-kpi:
     runs-on: ubuntu-latest
-    needs: native-cli-release
+    needs:
+      - native-cli-release
+      - moonrun-wt-release
     steps:
       - uses: actions/checkout@v5
 
       - name: Setup Vibe toolchain
         uses: ./.github/actions/setup-vibe
         with:
-          ripgrep: 'true'
-          wasmtime: 'true'
           moon-build-cache: 'true'
-          node-version: '24'
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Cargo registry (moonrun_wt)
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/bin
-            ~/.cargo/registry
-            ~/.cargo/git
-            tools/moonrun_wasmtime/target
-          key: cargo-moonrun-wt-${{ runner.os }}-${{ hashFiles('tools/moonrun_wasmtime/Cargo.toml', 'tools/moonrun_wasmtime/src/**') }}
-          restore-keys: cargo-moonrun-wt-${{ runner.os }}-
 
       - name: Restore stage1 cwasm cache
         id: cwasm-cache-kpi
@@ -762,8 +816,16 @@ jobs:
           touch target/native/release/build/cmd/vibe/vibe.exe
           echo "VIBE_BIN=$(pwd)/target/native/release/build/cmd/vibe/vibe.exe" >> "$GITHUB_ENV"
 
-      - name: Build moonrun_wt (wasmtime host)
-        run: cargo build --release --manifest-path tools/moonrun_wasmtime/Cargo.toml
+      - name: Download moonrun_wt release binary
+        uses: actions/download-artifact@v6
+        with:
+          name: moonrun-wt-release
+          path: tools/moonrun_wasmtime/target/release
+
+      - name: Set MOONRUN_WT_BIN
+        run: |
+          chmod +x tools/moonrun_wasmtime/target/release/moonrun_wt
+          echo "MOONRUN_WT_BIN=$(pwd)/tools/moonrun_wasmtime/target/release/moonrun_wt" >> "$GITHUB_ENV"
 
       # Touch restored cwasm AFTER moon may have rewritten the wasm,
       # so the perf script's mtime check reuses the cached precompile.
@@ -1033,6 +1095,7 @@ jobs:
       - contract-moon
       - contract-native
       - e2e-component
+      - moonrun-wt-release
       - native-cli-release
       - selfhost-examples
       - selfhost-runtime-parity
@@ -1052,6 +1115,7 @@ jobs:
             echo "  contract-moon: ${{ needs.contract-moon.result }}"
             echo "  contract-native: ${{ needs.contract-native.result }}"
             echo "  e2e-component: ${{ needs.e2e-component.result }}"
+            echo "  moonrun-wt-release: ${{ needs.moonrun-wt-release.result }}"
             echo "  native-cli-release: ${{ needs.native-cli-release.result }}"
             echo "  selfhost-examples: ${{ needs.selfhost-examples.result }}"
             echo "  selfhost-runtime-parity: ${{ needs.selfhost-runtime-parity.result }}"
