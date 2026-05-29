@@ -37,15 +37,25 @@ log_info() {
   echo -e "${YELLOW}INFO${NC}: $1"
 }
 
-# Build the CLI first
-log_info "Building vibe CLI..."
 cd "$PROJECT_ROOT"
-moon build src/cmd/vibe/main.mbt --target native -q 2>/dev/null || {
-  log_fail "Failed to build vibe CLI"
-  exit 1
-}
 
-VIBE="moon run src/cmd/vibe/main.mbt --target native --"
+if [ -n "${VIBE_BIN:-}" ]; then
+  log_info "Using VIBE_BIN: $VIBE_BIN"
+else
+  log_info "Building vibe CLI..."
+  moon build src/cmd/vibe/main.mbt --target native -q 2>/dev/null || {
+    log_fail "Failed to build vibe CLI"
+    exit 1
+  }
+  VIBE_BIN="$PROJECT_ROOT/_build/native/debug/build/cmd/vibe/vibe.exe"
+fi
+
+if [ ! -x "$VIBE_BIN" ]; then
+  log_fail "vibe CLI is not executable: $VIBE_BIN"
+  exit 1
+fi
+
+VIBE_CMD=("$VIBE_BIN")
 WASMTIME_BIN=""
 WASMTIME_RUN="$PROJECT_ROOT/scripts/wasmtime_run.sh"
 HAS_WASMTIME=0
@@ -86,7 +96,7 @@ let sum_up = (n: Int) -> Int {
 sum_up(5)
 EOF
 
-  if ! $VIBE compile --wasm "$TMP_DIR/while_test.vibe" -o "$TMP_DIR/while_test.wasm" 2>/dev/null; then
+  if ! "${VIBE_CMD[@]}" compile --wasm "$TMP_DIR/while_test.vibe" -o "$TMP_DIR/while_test.wasm" 2>/dev/null; then
     log_fail "While loop WASM compilation failed"
     return
   fi
@@ -120,7 +130,7 @@ export let multiply = (a: Int, b: Int) -> Int {
 add(1, 2)
 EOF
 
-  if ! $VIBE compile --wit "$TMP_DIR/wit_test.vibe" -o "$TMP_DIR/wit_test.wit" 2>/dev/null; then
+  if ! "${VIBE_CMD[@]}" compile --wit "$TMP_DIR/wit_test.vibe" -o "$TMP_DIR/wit_test.wit" 2>/dev/null; then
     log_fail "WIT compilation failed"
     return
   fi
@@ -161,7 +171,7 @@ let square = (x: Int) -> Int {
 square(7)
 EOF
 
-  if ! $VIBE compile --component "$TMP_DIR/component_test.vibe" -o "$TMP_DIR/component_test.component.wasm" 2>/dev/null; then
+  if ! "${VIBE_CMD[@]}" compile --component "$TMP_DIR/component_test.vibe" -o "$TMP_DIR/component_test.component.wasm" 2>/dev/null; then
     log_fail "Component WASM compilation failed"
     return
   fi
@@ -218,7 +228,7 @@ let quot = a / b
 prod
 EOF
 
-  if ! $VIBE compile --wasm "$TMP_DIR/arith_test.vibe" -o "$TMP_DIR/arith_test.wasm" 2>/dev/null; then
+  if ! "${VIBE_CMD[@]}" compile --wasm "$TMP_DIR/arith_test.vibe" -o "$TMP_DIR/arith_test.wasm" 2>/dev/null; then
     log_fail "Arithmetic WASM compilation failed"
     return
   fi
@@ -243,7 +253,7 @@ EOF
 
   # Ensure dist/ exists and run from project root
   mkdir -p "$PROJECT_ROOT/dist"
-  if ! $VIBE compile --wasm "$TMP_DIR/default_out.vibe" 2>/dev/null; then
+  if ! "${VIBE_CMD[@]}" compile --wasm "$TMP_DIR/default_out.vibe" 2>/dev/null; then
     log_fail "Default output compilation failed"
     return
   fi
@@ -268,9 +278,9 @@ handle { parse("test", 5) } with Error { Throw(_) => ("err", 0) }
 EOF
 
   # Compile to WASM to verify parsing works; tuple return is not yet supported at runtime
-  if ! $VIBE compile --wasm "$TMP_DIR/tuple_effects.vibe" -o "$TMP_DIR/tuple_effects.wasm" 2>/dev/null; then
+  if ! "${VIBE_CMD[@]}" compile --wasm "$TMP_DIR/tuple_effects.vibe" -o "$TMP_DIR/tuple_effects.wasm" 2>/dev/null; then
     # Tuple return in WASM codegen is a known limitation, check WIT generation instead
-    if $VIBE compile --wit "$TMP_DIR/tuple_effects.vibe" -o "$TMP_DIR/tuple_effects.wit" 2>/dev/null; then
+    if "${VIBE_CMD[@]}" compile --wit "$TMP_DIR/tuple_effects.vibe" -o "$TMP_DIR/tuple_effects.wit" 2>/dev/null; then
       log_pass "Tuple with effects parses and generates WIT"
     else
       log_fail "Tuple with effects failed to parse"
@@ -291,7 +301,7 @@ export let identity = (x: Int) -> Int { x }
 1
 EOF
 
-  if ! $VIBE compile --wit "$TMP_DIR/wit_types.vibe" -o "$TMP_DIR/wit_types.wit" 2>/dev/null; then
+  if ! "${VIBE_CMD[@]}" compile --wit "$TMP_DIR/wit_types.vibe" -o "$TMP_DIR/wit_types.wit" 2>/dev/null; then
     log_fail "WIT types compilation failed"
     return
   fi
