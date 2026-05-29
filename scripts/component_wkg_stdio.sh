@@ -39,7 +39,13 @@ EMBEDDED_WASM="${TMP_DIR}/${BASE}.embedded.wasm"
 WIT_PKG="${TMP_DIR}/${BASE}.wit.wasm"
 
 RELEASE_VIBE_EXE="$PROJECT_ROOT/_build/native/release/build/cmd/vibe/vibe.exe"
-if [ -x "$RELEASE_VIBE_EXE" ]; then
+if [ -n "${VIBE_BIN:-}" ]; then
+  if [ ! -x "$VIBE_BIN" ]; then
+    echo "VIBE_BIN is not executable: $VIBE_BIN" >&2
+    exit 1
+  fi
+  VIBE_CMD=("$VIBE_BIN" compile)
+elif [ -x "$RELEASE_VIBE_EXE" ]; then
   VIBE_CMD=("$RELEASE_VIBE_EXE" compile)
 else
   VIBE_CMD=(moon run --target native src/cmd/vibe -- compile)
