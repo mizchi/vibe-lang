@@ -269,6 +269,12 @@ fn resolve_builtin_type_name(
         None
       }
     "Bytes" => if args.is_empty() { Some(@core.Type::Bytes) } else { None }
+    "Int64Array" =>
+      if args.is_empty() {
+        Some(@core.Type::Named(name="Int64Array", args=[]))
+      } else {
+        None
+      }
     "V128" => if args.is_empty() { Some(@core.Type::V128) } else { None }
     "anyref" =>
       if args.is_empty() {
