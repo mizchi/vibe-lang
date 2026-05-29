@@ -130,20 +130,20 @@ if ! rg -q '^export let selfhost_cli_adapter_module_source' "$OUT_ADAPTER"; then
   exit 1
 fi
 
-if ! rg -Fq 'push_grouped_source_pair(groups, "core", source_0)' "$OUT"; then
+if ! rg -Fq 'push_grouped_source_pair(groups, "core", selfhost_source_0)' "$OUT"; then
   echo "generate-selfhost-bundle self-test: missing core group mapping" >&2
   cat "$OUT" >&2
   exit 1
 fi
 
-if ! rg -Fq 'push_grouped_source_pair(groups, "syntax", source_1)' "$OUT"; then
+if ! rg -Fq 'push_grouped_source_pair(groups, "syntax", selfhost_source_1)' "$OUT"; then
   echo "generate-selfhost-bundle self-test: missing syntax group mapping" >&2
   cat "$OUT" >&2
   exit 1
 fi
 
 # source_2 is selfhost_cli_adapter.vibe (entry group)
-if ! rg -Fq 'push_grouped_source_pair(groups, "entry", source_2)' "$OUT"; then
+if ! rg -Fq 'push_grouped_source_pair(groups, "entry", selfhost_source_2)' "$OUT"; then
   echo "generate-selfhost-bundle self-test: missing entry group mapping" >&2
   cat "$OUT" >&2
   exit 1
@@ -155,13 +155,13 @@ adapter_module_block="$(sed -n '/export let selfhost_cli_adapter_module_source/,
 adapter_merged_value_block="$(sed -n '/let selfhost_cli_adapter_merged_source_value =/,/export let selfhost_cli_adapter_merged_source/p' "$OUT_ADAPTER")"
 adapter_module_value_block="$(sed -n '/let selfhost_cli_adapter_module_source_value =/,/export let selfhost_cli_adapter_module_source/p' "$OUT_ADAPTER")"
 
-if ! printf '%s\n' "$adapter_sources_block" | rg -Fq 'Array::push(sources, source_1)'; then
+if ! printf '%s\n' "$adapter_sources_block" | rg -Fq 'Array::push(sources, cli_adapter_source_1)'; then
   echo "generate-selfhost-bundle self-test: adapter closure missing token source" >&2
   cat "$OUT_ADAPTER" >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$adapter_sources_block" | rg -Fq 'Array::push(sources, source_2)'; then
+if ! printf '%s\n' "$adapter_sources_block" | rg -Fq 'Array::push(sources, cli_adapter_source_2)'; then
   echo "generate-selfhost-bundle self-test: adapter closure missing adapter source" >&2
   cat "$OUT_ADAPTER" >&2
   exit 1

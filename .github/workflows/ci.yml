@@ -31,8 +31,13 @@ jobs:
           ripgrep: 'true'
 
       - name: Run moon test (verbose, for flaker)
+        id: moon_test_flaker
         run: |
-          moon test --target js -v 2>&1 | tee .flaker-test-output.txt || true
+          set +e
+          moon test --target js -v 2>&1 | tee .flaker-test-output.txt
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          exit 0
 
       - name: Upload test results for flaker
         if: always()
@@ -44,7 +49,7 @@ jobs:
 
       - name: PR contract checks (MoonBit/js)
         id: contract_moon
-        run: bash scripts/pkfire/contract_moon.sh 2>&1 | tee /tmp/contract_moon.log
+        run: VIBE_CONTRACT_MOON_SKIP_JS_PACKAGE_TESTS=1 bash scripts/pkfire/contract_moon.sh 2>&1 | tee /tmp/contract_moon.log
         continue-on-error: true
 
       - name: Surface contract-moon failure in annotations
@@ -53,6 +58,15 @@ jobs:
           echo "::error::contract-moon failed; tail of log follows:"
           tail -80 /tmp/contract_moon.log | while IFS= read -r line; do
             echo "::error::cm: $line"
+          done
+          exit 1
+
+      - name: Surface moon test failure in annotations
+        if: steps.moon_test_flaker.outputs.exit_code != '0'
+        run: |
+          echo "::error::moon test --target js failed; tail of log follows:"
+          tail -80 .flaker-test-output.txt | while IFS= read -r line; do
+            echo "::error::moon-test: $line"
           done
           exit 1
 
@@ -530,6 +544,7 @@ jobs:
 
   selfhost-examples:
     runs-on: ubuntu-latest
+    needs: native-cli-release
     steps:
       - uses: actions/checkout@v5
 
@@ -538,6 +553,18 @@ jobs:
         with:
           wasmtime: 'true'
           node-version: '24'
+
+      - name: Download native CLI (release)
+        uses: actions/download-artifact@v6
+        with:
+          name: native-cli-release
+          path: target/native/release/build/cmd/vibe
+
+      - name: Set VIBE_BIN for release binary
+        run: |
+          chmod +x target/native/release/build/cmd/vibe/vibe.exe
+          touch target/native/release/build/cmd/vibe/vibe.exe
+          echo "VIBE_BIN=$(pwd)/target/native/release/build/cmd/vibe/vibe.exe" >> "$GITHUB_ENV"
 
       - name: Build selfhost compiler
         run: VIBE_DIST_SKIP_OPT=1 bash scripts/build_selfhost_dist.sh

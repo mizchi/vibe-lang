@@ -8,13 +8,16 @@ contract_js_packages=(
   src/runtime_compile
 )
 
-for pkg_dir in "${contract_js_packages[@]}"; do
-  NODE_OPTIONS=--max-old-space-size=8192 moon test --target js --warn-list "$warn_list" "$pkg_dir"
-done
+if [ "${VIBE_CONTRACT_MOON_SKIP_JS_PACKAGE_TESTS:-0}" != "1" ]; then
+  NODE_OPTIONS=--max-old-space-size=8192 moon test --target js --warn-list "$warn_list" "${contract_js_packages[@]}"
+fi
 
 moon build src/cmd/warning_fixture/main.mbt --target js --warn-list "$warn_list"
-moon build src/cmd/typecheck_fixture/main.mbt --target native --warn-list "$warn_list"
-moon build src/cmd/parser_contract/main.mbt --target native --warn-list "$warn_list"
+moon build \
+  src/cmd/typecheck_fixture/main.mbt \
+  src/cmd/parser_contract/main.mbt \
+  --target native \
+  --warn-list "$warn_list"
 
 warning_fixture_js="_build/js/debug/build/cmd/warning_fixture/warning_fixture.js"
 typecheck_fixture_native="_build/native/debug/build/cmd/typecheck_fixture/typecheck_fixture.exe"
