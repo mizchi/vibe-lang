@@ -16,6 +16,7 @@ BOOTSTRAP_PROFILE="${VIBE_SELFHOST_BOOTSTRAP_PROFILE:-full}"
 RUN_TESTS="${VIBE_SELFHOST_BOOTSTRAP_RUN_TESTS:-1}"
 RUN_DETERMINISTIC="${VIBE_SELFHOST_BOOTSTRAP_RUN_DETERMINISTIC:-1}"
 RUN_PROBES="${VIBE_SELFHOST_BOOTSTRAP_RUN_PROBES:-$RUN_TESTS}"
+PARALLEL_STAGE_PAIR="${VIBE_SELFHOST_BOOTSTRAP_PARALLEL_STAGE_PAIR:-1}"
 TEST_SHARD_INDEX="${VIBE_SELFHOST_BOOTSTRAP_TEST_SHARD_INDEX:-}"
 TEST_SHARD_TOTAL="${VIBE_SELFHOST_BOOTSTRAP_TEST_SHARD_TOTAL:-}"
 BATCH_WEIGHT_CACHE_PATH="${VIBE_SELFHOST_BOOTSTRAP_BATCH_WEIGHT_CACHE:-$OUT_DIR/selfhost_test_batch_weights.json}"
@@ -111,6 +112,41 @@ run_stage_capture_stdout() {
   fi
 }
 
+run_stage_capture_log() {
+  local name="$1"
+  local log_path="$2"
+  shift 2
+  local start end elapsed status
+  start="$(date +%s)"
+  echo "[bootstrap] $name"
+  set +e
+  run_with_timeout "$STAGE_TIMEOUT_SEC" "$@" >"$log_path" 2>&1
+  status=$?
+  set -e
+  if [ "$status" -eq 124 ]; then
+    echo "[bootstrap] timeout: $name (${STAGE_TIMEOUT_SEC}s)" >&2
+  fi
+  if [ "$status" -ne 0 ]; then
+    return "$status"
+  fi
+  end="$(date +%s)"
+  elapsed="$((end - start))"
+  echo "[bootstrap] done: $name (${elapsed}s)"
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    printf -- "- %s: %ss\n" "$name" "$elapsed" >> "$GITHUB_STEP_SUMMARY" || true
+  fi
+}
+
+print_stage_log_tail() {
+  local label="$1"
+  local log_path="$2"
+  if [ ! -f "$log_path" ]; then
+    return 0
+  fi
+  echo "[bootstrap] ${label} log tail:" >&2
+  tail -n 80 "$log_path" >&2 || true
+}
+
 is_non_negative_int() {
   case "$1" in
     ''|*[!0-9]*) return 1 ;;
@@ -196,12 +232,47 @@ verify_stage_pair_hash() {
 
   local pair_stage1="$OUT_DIR/${output_prefix}_stage1.wasm"
   local pair_stage2="$OUT_DIR/${output_prefix}_stage2.wasm"
+  local pair_stage1_log="$OUT_DIR/${output_prefix}_stage1.compile.log"
+  local pair_stage2_log="$OUT_DIR/${output_prefix}_stage2.compile.log"
   local pair_hash1 pair_hash2
 
-  run_stage "stage1 compile (${mode_label}) for $source_path" \
-    "${COMPILE_CMD_ARGS[@]}" "$@" "$source_path" -o "$pair_stage1"
-  run_stage "stage2 compile (${mode_label}) for $source_path" \
-    "${COMPILE_CMD_ARGS[@]}" "$@" "$source_path" -o "$pair_stage2"
+  if [ "$PARALLEL_STAGE_PAIR" -eq 1 ]; then
+    local stage1_pid stage2_pid stage1_status stage2_status
+    run_stage_capture_log "stage1 compile (${mode_label}) for $source_path" \
+      "$pair_stage1_log" \
+      "${COMPILE_CMD_ARGS[@]}" "$@" "$source_path" -o "$pair_stage1" &
+    stage1_pid=$!
+    run_stage_capture_log "stage2 compile (${mode_label}) for $source_path" \
+      "$pair_stage2_log" \
+      "${COMPILE_CMD_ARGS[@]}" "$@" "$source_path" -o "$pair_stage2" &
+    stage2_pid=$!
+
+    set +e
+    wait "$stage1_pid"
+    stage1_status=$?
+    wait "$stage2_pid"
+    stage2_status=$?
+    set -e
+
+    if [ "$stage1_status" -ne 0 ] || [ "$stage2_status" -ne 0 ]; then
+      echo "bootstrap gate failed: deterministic compile pair failed (${mode_label})" >&2
+      echo "  source: $source_path" >&2
+      echo "  stage1 status: $stage1_status" >&2
+      echo "  stage2 status: $stage2_status" >&2
+      if [ "$stage1_status" -ne 0 ]; then
+        print_stage_log_tail "stage1" "$pair_stage1_log"
+      fi
+      if [ "$stage2_status" -ne 0 ]; then
+        print_stage_log_tail "stage2" "$pair_stage2_log"
+      fi
+      exit 1
+    fi
+  else
+    run_stage "stage1 compile (${mode_label}) for $source_path" \
+      "${COMPILE_CMD_ARGS[@]}" "$@" "$source_path" -o "$pair_stage1"
+    run_stage "stage2 compile (${mode_label}) for $source_path" \
+      "${COMPILE_CMD_ARGS[@]}" "$@" "$source_path" -o "$pair_stage2"
+  fi
 
   if command -v wasm-tools >/dev/null 2>&1; then
     run_stage "validate ${output_prefix} stage1 wasm" wasm-tools validate --features all "$pair_stage1"
@@ -257,6 +328,10 @@ if ! is_bool_01 "$RUN_DETERMINISTIC"; then
 fi
 if ! is_bool_01 "$RUN_PROBES"; then
   echo "bootstrap gate failed: VIBE_SELFHOST_BOOTSTRAP_RUN_PROBES must be 0 or 1" >&2
+  exit 1
+fi
+if ! is_bool_01 "$PARALLEL_STAGE_PAIR"; then
+  echo "bootstrap gate failed: VIBE_SELFHOST_BOOTSTRAP_PARALLEL_STAGE_PAIR must be 0 or 1" >&2
   exit 1
 fi
 if [ "$RUN_TESTS" -eq 0 ] && [ "$RUN_DETERMINISTIC" -eq 0 ] && [ "$RUN_PROBES" -eq 0 ]; then
@@ -342,6 +417,7 @@ if [ "$SELFHOST_TEST_JOBS" -gt 16 ]; then
 fi
 echo "[bootstrap] selfhost test jobs: $SELFHOST_TEST_JOBS"
 echo "[bootstrap] selfhost batch chunk size: $SELFHOST_BATCH_CHUNK_SIZE"
+echo "[bootstrap] deterministic stage pair parallelism: $PARALLEL_STAGE_PAIR"
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   printf -- "- %s: %s\n" "selfhost test jobs" "$SELFHOST_TEST_JOBS" >> "$GITHUB_STEP_SUMMARY" || true
   printf -- "- %s: %s\n" "selfhost batch chunk size" "$SELFHOST_BATCH_CHUNK_SIZE" >> "$GITHUB_STEP_SUMMARY" || true
@@ -350,6 +426,7 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   printf -- "- %s: %s\n" "run tests" "$RUN_TESTS" >> "$GITHUB_STEP_SUMMARY" || true
   printf -- "- %s: %s\n" "run probes" "$RUN_PROBES" >> "$GITHUB_STEP_SUMMARY" || true
   printf -- "- %s: %s\n" "run deterministic" "$RUN_DETERMINISTIC" >> "$GITHUB_STEP_SUMMARY" || true
+  printf -- "- %s: %s\n" "parallel stage pairs" "$PARALLEL_STAGE_PAIR" >> "$GITHUB_STEP_SUMMARY" || true
   if [ -n "$TEST_SHARD_TOTAL" ]; then
     printf -- "- %s: %s/%s\n" "test shard" "$TEST_SHARD_INDEX" "$TEST_SHARD_TOTAL" >> "$GITHUB_STEP_SUMMARY" || true
   fi
