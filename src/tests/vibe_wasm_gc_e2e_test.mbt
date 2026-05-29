@@ -1132,6 +1132,70 @@ test "wasm-gc e2e: String::unicode_length counts codepoints" {
 }
 
 ///|
+test "wasm-gc e2e: Array::push_all appends elements" {
+  let src =
+    #|let main = () -> Int {
+    #|  let a = Array::slice([0], 0, 0)
+    #|  Array::push_all(a, [1, 2, 3])
+    #|  Array::push_all(a, [4, 5])
+    #|  Array::length(a) * 100 + Array::get(a, 3)
+    #|}
+    #|main()
+  // length 5, a[3] = 4 -> 504
+  assert_gc_e2e(src, "array_push_all", 504)
+}
+
+///|
+test "wasm-gc e2e: Bytes::from_string / to_string round-trip (ASCII)" {
+  let src =
+    #|let main = () -> Int {
+    #|  let b = Bytes::from_string("ABC")
+    #|  let s = Bytes::to_string(b)
+    #|  Bytes::length(b) * 100 + String::char_code_at(s, 0)
+    #|}
+    #|main()
+  // length 3, 'A' = 65 -> 365
+  assert_gc_e2e(src, "bytes_roundtrip", 365)
+}
+
+///|
+test "wasm-gc e2e: Bytes::from_string UTF-8 encodes multi-byte codepoints" {
+  let src =
+    #|let main = () -> Int {
+    #|  Bytes::length(Bytes::from_string("é"))
+    #|}
+    #|main()
+  // 'é' (U+00E9) is 2 bytes in UTF-8
+  assert_gc_e2e(src, "bytes_from_string_multibyte", 2)
+}
+
+///|
+test "wasm-gc e2e: Int::parse returns Some on valid input" {
+  let src =
+    #|let main = () -> Int {
+    #|  match Int::parse("456") {
+    #|    Some(n) => n
+    #|    None => 0
+    #|  }
+    #|}
+    #|main()
+  assert_gc_e2e(src, "int_parse_some", 456)
+}
+
+///|
+test "wasm-gc e2e: Int::parse returns None on invalid input" {
+  let src =
+    #|let main = () -> Int {
+    #|  match Int::parse("12x") {
+    #|    Some(n) => n
+    #|    None => 777
+    #|  }
+    #|}
+    #|main()
+  assert_gc_e2e(src, "int_parse_none", 777)
+}
+
+///|
 test "wasm-gc e2e: StringBuilder::freeze on empty builder returns empty string" {
   let src =
     #|let main = () -> Int {
