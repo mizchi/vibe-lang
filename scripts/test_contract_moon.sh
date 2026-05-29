@@ -12,16 +12,16 @@ if [ "${VIBE_CONTRACT_MOON_SKIP_JS_PACKAGE_TESTS:-0}" != "1" ]; then
   NODE_OPTIONS=--max-old-space-size=8192 moon test --target js --warn-list "$warn_list" "${contract_js_packages[@]}"
 fi
 
-moon build src/cmd/warning_fixture/main.mbt --target js --warn-list "$warn_list"
 moon build \
+  src/cmd/warning_fixture/main.mbt \
   src/cmd/typecheck_fixture/main.mbt \
   src/cmd/parser_contract/main.mbt \
-  --target native \
+  --target js \
   --warn-list "$warn_list"
 
 warning_fixture_js="_build/js/debug/build/cmd/warning_fixture/warning_fixture.js"
-typecheck_fixture_native="_build/native/debug/build/cmd/typecheck_fixture/typecheck_fixture.exe"
-parser_contract_native="_build/native/debug/build/cmd/parser_contract/parser_contract.exe"
+typecheck_fixture_js="_build/js/debug/build/cmd/typecheck_fixture/typecheck_fixture.js"
+parser_contract_js="_build/js/debug/build/cmd/parser_contract/parser_contract.js"
 
 typecheck_contract_files=(
   fixtures/typecheck/duplicate_enum_ctor.vibe
@@ -39,7 +39,9 @@ typecheck_contract_files=(
 )
 
 NODE_OPTIONS=--max-old-space-size=4096 node "$warning_fixture_js"
-"$parser_contract_native"
+node "$parser_contract_js"
+typecheck_fixture_args=()
 for f in "${typecheck_contract_files[@]}"; do
-  "$typecheck_fixture_native" --file "$f"
+  typecheck_fixture_args+=(--file "$f")
 done
+node "$typecheck_fixture_js" "${typecheck_fixture_args[@]}"
