@@ -1030,6 +1030,16 @@ fn emit_i32_or_gc(buf : GcByteBuf) -> Unit {
 }
 
 ///|
+fn emit_i32_shl_gc(buf : GcByteBuf) -> Unit {
+  buf.push(0x74)
+}
+
+///|
+fn emit_i32_shr_u_gc(buf : GcByteBuf) -> Unit {
+  buf.push(0x76)
+}
+
+///|
 fn emit_i32_ne_gc(buf : GcByteBuf) -> Unit {
   buf.push(0x47)
 }
@@ -3079,6 +3089,8 @@ fn infer_expr_kind_gc(
         | "String::from_char_codes" => GcValKind::Ref(ctx.string_type)
         "Int::to_double" => GcValKind::F64
         "Int::to_float" => GcValKind::F32
+        // Int::parse returns Option[Int]; enums are eqref-boxed in wasm-gc.
+        "Int::parse" => GcValKind::EqRef
         "Int::abs"
         | "Int::max"
         | "Int::min"
@@ -3151,6 +3163,7 @@ fn infer_expr_kind_gc(
         }
         "Array::set"
         | "Array::push"
+        | "Array::push_all"
         | "FixedArray::set"
         | "FixedArray::unsafe_set"
         | "FixedArray::blit" => GcValKind::I32
@@ -3323,8 +3336,12 @@ fn infer_expr_kind_gc(
         | "String::count"
         | "String::unicode_length" => GcValKind::I64
         "Bytes::length" | "Bytes::get" => GcValKind::I64
-        "Bytes::new" | "Bytes::from_array" | "Bytes::slice" | "Bytes::concat" =>
-          GcValKind::Ref(ctx.bytes_type)
+        "Bytes::new"
+        | "Bytes::from_array"
+        | "Bytes::from_string"
+        | "Bytes::slice"
+        | "Bytes::concat" => GcValKind::Ref(ctx.bytes_type)
+        "Bytes::to_string" => GcValKind::Ref(ctx.string_type)
         "Bytes::push"
         | "Bytes::set"
         | "Bytes::append"
@@ -5433,6 +5450,639 @@ fn compile_string_unicode_length_gc(
   compile_expr_gc(ctx, fctx, buf, s_expr)
   emit_struct_get_gc(buf, ctx.string_type, 0)
   emit_i64_extend_i32_s_gc(buf)
+}
+
+///|
+/// Int::parse(str) -> Option[Int]. Mirrors the linear backend state machine
+/// (skip leading spaces, optional +/- sign, decimal digit loop, trailing
+/// spaces) over the codepoint array, then builds Some(i64) / None using the
+/// registered Option enum ctor structs. Each branch writes an eqref local so
+/// the two differently-typed enum structs merge without a block result type.
+fn compile_int_parse_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  s_expr : @core.Expr,
+) -> Unit raise WasmGenError {
+  let s_idx = alloc_local_gc(fctx, GcValKind::Ref(ctx.string_type))
+  let s_len = alloc_local_gc(fctx, GcValKind::I32)
+  let s_data = alloc_local_gc(fctx, GcValKind::Ref(ctx.array_i32_type))
+  let idx = alloc_local_gc(fctx, GcValKind::I32)
+  let result = alloc_local_gc(fctx, GcValKind::I32)
+  let neg = alloc_local_gc(fctx, GcValKind::I32)
+  let ch = alloc_local_gc(fctx, GcValKind::I32)
+  let valid = alloc_local_gc(fctx, GcValKind::I32)
+  let has_digit = alloc_local_gc(fctx, GcValKind::I32)
+  let opt_local = alloc_local_gc(fctx, GcValKind::EqRef)
+  compile_expr_gc(ctx, fctx, buf, s_expr)
+  emit_local_set_gc(buf, s_idx)
+  emit_local_get_gc(buf, s_idx)
+  emit_struct_get_gc(buf, ctx.string_type, 0)
+  emit_local_set_gc(buf, s_len)
+  emit_local_get_gc(buf, s_idx)
+  emit_struct_get_gc(buf, ctx.string_type, 1)
+  emit_local_set_gc(buf, s_data)
+  // init: result=0 idx=0 neg=0 valid=1 has_digit=0
+  emit_i32_const_gc(buf, 0)
+  emit_local_set_gc(buf, result)
+  emit_i32_const_gc(buf, 0)
+  emit_local_set_gc(buf, idx)
+  emit_i32_const_gc(buf, 0)
+  emit_local_set_gc(buf, neg)
+  emit_i32_const_gc(buf, 1)
+  emit_local_set_gc(buf, valid)
+  emit_i32_const_gc(buf, 0)
+  emit_local_set_gc(buf, has_digit)
+  // skip leading spaces (codepoint == 32)
+  emit_block_gc(buf, None)
+  emit_loop_gc(buf, None)
+  emit_local_get_gc(buf, idx)
+  emit_local_get_gc(buf, s_len)
+  emit_i32_ge_s_gc(buf)
+  emit_br_if_gc(buf, 1)
+  emit_local_get_gc(buf, s_data)
+  emit_local_get_gc(buf, idx)
+  emit_array_get_gc(buf, ctx.array_i32_type)
+  emit_i32_const_gc(buf, 32)
+  emit_i32_ne_gc(buf)
+  emit_br_if_gc(buf, 1)
+  emit_local_get_gc(buf, idx)
+  emit_i32_const_gc(buf, 1)
+  emit_i32_add_gc(buf)
+  emit_local_set_gc(buf, idx)
+  emit_br_gc(buf, 0)
+  emit_end_gc(buf)
+  emit_end_gc(buf)
+  // optional sign: '-' (45) or '+' (43)
+  emit_block_gc(buf, None)
+  emit_local_get_gc(buf, idx)
+  emit_local_get_gc(buf, s_len)
+  emit_i32_ge_s_gc(buf)
+  emit_br_if_gc(buf, 0)
+  emit_local_get_gc(buf, s_data)
+  emit_local_get_gc(buf, idx)
+  emit_array_get_gc(buf, ctx.array_i32_type)
+  emit_local_set_gc(buf, ch)
+  emit_local_get_gc(buf, ch)
+  emit_i32_const_gc(buf, 45)
+  emit_i32_eq_gc(buf)
+  emit_if_gc(buf, None)
+  emit_i32_const_gc(buf, 1)
+  emit_local_set_gc(buf, neg)
+  emit_local_get_gc(buf, idx)
+  emit_i32_const_gc(buf, 1)
+  emit_i32_add_gc(buf)
+  emit_local_set_gc(buf, idx)
+  emit_br_gc(buf, 1)
+  emit_end_gc(buf)
+  emit_local_get_gc(buf, ch)
+  emit_i32_const_gc(buf, 43)
+  emit_i32_eq_gc(buf)
+  emit_if_gc(buf, None)
+  emit_local_get_gc(buf, idx)
+  emit_i32_const_gc(buf, 1)
+  emit_i32_add_gc(buf)
+  emit_local_set_gc(buf, idx)
+  emit_end_gc(buf)
+  emit_end_gc(buf)
+  // digit loop: result = result*10 + (ch-48); trailing space ends; else invalid
+  emit_block_gc(buf, None)
+  emit_loop_gc(buf, None)
+  emit_local_get_gc(buf, idx)
+  emit_local_get_gc(buf, s_len)
+  emit_i32_ge_s_gc(buf)
+  emit_br_if_gc(buf, 1)
+  emit_local_get_gc(buf, s_data)
+  emit_local_get_gc(buf, idx)
+  emit_array_get_gc(buf, ctx.array_i32_type)
+  emit_local_set_gc(buf, ch)
+  emit_local_get_gc(buf, ch)
+  emit_i32_const_gc(buf, 32)
+  emit_i32_eq_gc(buf)
+  emit_br_if_gc(buf, 1)
+  emit_local_get_gc(buf, ch)
+  emit_i32_const_gc(buf, 48)
+  emit_i32_lt_s_gc(buf)
+  emit_if_gc(buf, None)
+  emit_i32_const_gc(buf, 0)
+  emit_local_set_gc(buf, valid)
+  emit_br_gc(buf, 2)
+  emit_end_gc(buf)
+  emit_local_get_gc(buf, ch)
+  emit_i32_const_gc(buf, 57)
+  emit_i32_gt_s_gc(buf)
+  emit_if_gc(buf, None)
+  emit_i32_const_gc(buf, 0)
+  emit_local_set_gc(buf, valid)
+  emit_br_gc(buf, 2)
+  emit_end_gc(buf)
+  emit_i32_const_gc(buf, 1)
+  emit_local_set_gc(buf, has_digit)
+  emit_local_get_gc(buf, result)
+  emit_i32_const_gc(buf, 10)
+  emit_i32_mul_gc(buf)
+  emit_local_get_gc(buf, ch)
+  emit_i32_const_gc(buf, 48)
+  emit_i32_sub_gc(buf)
+  emit_i32_add_gc(buf)
+  emit_local_set_gc(buf, result)
+  emit_local_get_gc(buf, idx)
+  emit_i32_const_gc(buf, 1)
+  emit_i32_add_gc(buf)
+  emit_local_set_gc(buf, idx)
+  emit_br_gc(buf, 0)
+  emit_end_gc(buf)
+  emit_end_gc(buf)
+  // valid && has_digit ? Some(result) : None
+  emit_local_get_gc(buf, valid)
+  emit_local_get_gc(buf, has_digit)
+  emit_i32_and_gc(buf)
+  emit_if_gc(buf, None)
+  // apply negation
+  emit_local_get_gc(buf, neg)
+  emit_if_gc(buf, None)
+  emit_i32_const_gc(buf, 0)
+  emit_local_get_gc(buf, result)
+  emit_i32_sub_gc(buf)
+  emit_local_set_gc(buf, result)
+  emit_end_gc(buf)
+  // Some(result): struct.new(some_type, [tag, eqref payload])
+  emit_i32_const_gc(buf, ctx.enum_ctor_tags["Some"])
+  emit_local_get_gc(buf, result)
+  emit_i64_extend_i32_s_gc(buf)
+  emit_coerce_top_gc(ctx, buf, GcValKind::I64, GcValKind::EqRef)
+  emit_struct_new_gc(buf, ctx.enum_ctor_type_indices["Some"])
+  emit_local_set_gc(buf, opt_local)
+  emit_else_gc(buf)
+  // None: struct.new(none_type, [tag])
+  emit_i32_const_gc(buf, ctx.enum_ctor_tags["None"])
+  emit_struct_new_gc(buf, ctx.enum_ctor_type_indices["None"])
+  emit_local_set_gc(buf, opt_local)
+  emit_end_gc(buf)
+  emit_local_get_gc(buf, opt_local)
+}
+
+///|
+/// Array::push_all(dst, src) -> Unit. Appends every element of src to dst.
+/// Handles both wasm-gc array representations:
+///   - bare array: allocate dst_len+src_len, copy both, rebind the receiver
+///     local (mirrors Array::push path 1)
+///   - builder struct {len, data}: grow data if needed, copy src in place,
+///     bump len (mirrors compile_struct_array_push_gc)
+/// src is unwrapped from either representation. Returns 0 (Unit).
+fn compile_array_push_all_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  dst_expr : @core.Expr,
+  src_expr : @core.Expr,
+) -> Unit raise WasmGenError {
+  let dst_kind = infer_expr_kind_gc(ctx, fctx, dst_expr)
+  let src_kind = infer_expr_kind_gc(ctx, fctx, src_expr)
+  // Resolve the element array type from dst.
+  let (dst_builder, arr_type) = match
+    gc_is_array_builder_struct_kind(ctx, dst_kind) {
+    Some(builder_type) => {
+      let at = match ctx.types[builder_type] {
+        GcTypeDef::Struct(fields~) =>
+          match fields[1] {
+            GcValKind::Ref(idx) => idx
+            _ => raise WasmGenError::Unsupported("Array::push_all struct data")
+          }
+        _ => raise WasmGenError::Unsupported("Array::push_all struct kind")
+      }
+      (Some(builder_type), at)
+    }
+    None =>
+      (None, gc_array_type_idx_from_kind(ctx, dst_kind, "Array::push_all"))
+  }
+  // Load src into (src_data : ref arr_type, src_len : i32).
+  let src_data = alloc_local_gc(fctx, GcValKind::Ref(arr_type))
+  let src_len = alloc_local_gc(fctx, GcValKind::I32)
+  match gc_is_array_builder_struct_kind(ctx, src_kind) {
+    Some(src_builder) => {
+      let src_idx = alloc_local_gc(fctx, src_kind)
+      compile_expr_gc(ctx, fctx, buf, src_expr)
+      emit_local_set_gc(buf, src_idx)
+      emit_local_get_gc(buf, src_idx)
+      emit_struct_get_gc(buf, src_builder, 1)
+      emit_local_set_gc(buf, src_data)
+      emit_local_get_gc(buf, src_idx)
+      emit_struct_get_gc(buf, src_builder, 0)
+      emit_local_set_gc(buf, src_len)
+    }
+    None => {
+      compile_expr_gc(ctx, fctx, buf, src_expr)
+      emit_local_set_gc(buf, src_data)
+      emit_local_get_gc(buf, src_data)
+      emit_array_len_gc(buf)
+      emit_local_set_gc(buf, src_len)
+    }
+  }
+  let j_idx = alloc_local_gc(fctx, GcValKind::I32)
+  match dst_builder {
+    Some(builder_type) => {
+      // In-place struct append.
+      let b_idx = alloc_local_gc(fctx, dst_kind)
+      let len_l = alloc_local_gc(fctx, GcValKind::I32)
+      let cap_l = alloc_local_gc(fctx, GcValKind::I32)
+      let data_l = alloc_local_gc(fctx, GcValKind::Ref(arr_type))
+      let new_data = alloc_local_gc(fctx, GcValKind::Ref(arr_type))
+      let need_l = alloc_local_gc(fctx, GcValKind::I32)
+      compile_expr_gc(ctx, fctx, buf, dst_expr)
+      emit_local_set_gc(buf, b_idx)
+      emit_local_get_gc(buf, b_idx)
+      emit_struct_get_gc(buf, builder_type, 0)
+      emit_local_set_gc(buf, len_l)
+      emit_local_get_gc(buf, b_idx)
+      emit_struct_get_gc(buf, builder_type, 1)
+      emit_local_tee_gc(buf, data_l)
+      emit_array_len_gc(buf)
+      emit_local_set_gc(buf, cap_l)
+      // need = len + src_len
+      emit_local_get_gc(buf, len_l)
+      emit_local_get_gc(buf, src_len)
+      emit_i32_add_gc(buf)
+      emit_local_set_gc(buf, need_l)
+      // if need > cap: grow to need, copy old, rebind struct.data
+      emit_local_get_gc(buf, need_l)
+      emit_local_get_gc(buf, cap_l)
+      emit_i32_gt_s_gc(buf)
+      emit_if_gc(buf, None)
+      emit_local_get_gc(buf, need_l)
+      emit_array_new_default_gc(buf, arr_type)
+      emit_local_set_gc(buf, new_data)
+      emit_local_get_gc(buf, new_data)
+      emit_i32_const_gc(buf, 0)
+      emit_local_get_gc(buf, data_l)
+      emit_i32_const_gc(buf, 0)
+      emit_local_get_gc(buf, len_l)
+      emit_array_copy_gc(buf, arr_type)
+      emit_local_get_gc(buf, b_idx)
+      emit_local_get_gc(buf, new_data)
+      emit_struct_set_gc(buf, builder_type, 1)
+      emit_local_get_gc(buf, new_data)
+      emit_local_set_gc(buf, data_l)
+      emit_end_gc(buf)
+      // copy loop: data[len + j] = src_data[j]
+      emit_i32_const_gc(buf, 0)
+      emit_local_set_gc(buf, j_idx)
+      emit_block_gc(buf, None)
+      emit_loop_gc(buf, None)
+      emit_local_get_gc(buf, j_idx)
+      emit_local_get_gc(buf, src_len)
+      emit_i32_ge_s_gc(buf)
+      emit_br_if_gc(buf, 1)
+      emit_local_get_gc(buf, data_l)
+      emit_local_get_gc(buf, len_l)
+      emit_local_get_gc(buf, j_idx)
+      emit_i32_add_gc(buf)
+      emit_local_get_gc(buf, src_data)
+      emit_local_get_gc(buf, j_idx)
+      emit_array_get_gc(buf, arr_type)
+      emit_array_set_gc(buf, arr_type)
+      emit_local_get_gc(buf, j_idx)
+      emit_i32_const_gc(buf, 1)
+      emit_i32_add_gc(buf)
+      emit_local_set_gc(buf, j_idx)
+      emit_br_gc(buf, 0)
+      emit_end_gc(buf)
+      emit_end_gc(buf)
+      // struct.len = need
+      emit_local_get_gc(buf, b_idx)
+      emit_local_get_gc(buf, need_l)
+      emit_struct_set_gc(buf, builder_type, 0)
+      emit_i32_const_gc(buf, 0)
+    }
+    None => {
+      // Bare array: realloc to dst_len + src_len, copy both, rebind local.
+      let dst_arr = alloc_local_gc(fctx, GcValKind::Ref(arr_type))
+      let dst_len = alloc_local_gc(fctx, GcValKind::I32)
+      let out_arr = alloc_local_gc(fctx, GcValKind::Ref(arr_type))
+      compile_expr_gc(ctx, fctx, buf, dst_expr)
+      emit_local_set_gc(buf, dst_arr)
+      emit_local_get_gc(buf, dst_arr)
+      emit_array_len_gc(buf)
+      emit_local_set_gc(buf, dst_len)
+      // out = array(dst_len + src_len)
+      emit_local_get_gc(buf, dst_len)
+      emit_local_get_gc(buf, src_len)
+      emit_i32_add_gc(buf)
+      emit_array_new_default_gc(buf, arr_type)
+      emit_local_set_gc(buf, out_arr)
+      // copy dst[0..dst_len]
+      emit_local_get_gc(buf, out_arr)
+      emit_i32_const_gc(buf, 0)
+      emit_local_get_gc(buf, dst_arr)
+      emit_i32_const_gc(buf, 0)
+      emit_local_get_gc(buf, dst_len)
+      emit_array_copy_gc(buf, arr_type)
+      // copy src[0..src_len] at offset dst_len
+      emit_local_get_gc(buf, out_arr)
+      emit_local_get_gc(buf, dst_len)
+      emit_local_get_gc(buf, src_data)
+      emit_i32_const_gc(buf, 0)
+      emit_local_get_gc(buf, src_len)
+      emit_array_copy_gc(buf, arr_type)
+      // rebind receiver local if it is an Ident
+      match dst_expr {
+        @core.Expr::Ident(name~, ..) =>
+          match fctx.locals.get(name) {
+            Some(info) => {
+              emit_local_get_gc(buf, out_arr)
+              emit_local_set_gc(buf, info.idx)
+            }
+            None => ()
+          }
+        _ => ()
+      }
+      emit_i32_const_gc(buf, 0)
+    }
+  }
+}
+
+///|
+/// Bytes::from_string(str) -> Bytes. UTF-8 encodes each codepoint of the
+/// wasm-gc string (codepoint array) into a byte array (one byte per element).
+/// Over-allocates 4 bytes/codepoint, then records the actual byte length.
+fn compile_bytes_from_string_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  s_expr : @core.Expr,
+) -> Unit raise WasmGenError {
+  let at = ctx.array_i32_type
+  let s_idx = alloc_local_gc(fctx, GcValKind::Ref(ctx.string_type))
+  let s_len = alloc_local_gc(fctx, GcValKind::I32)
+  let s_data = alloc_local_gc(fctx, GcValKind::Ref(at))
+  let maxb = alloc_local_gc(fctx, GcValKind::I32)
+  let out = alloc_local_gc(fctx, GcValKind::Ref(at))
+  let i = alloc_local_gc(fctx, GcValKind::I32)
+  let w = alloc_local_gc(fctx, GcValKind::I32)
+  let c = alloc_local_gc(fctx, GcValKind::I32)
+  // store_cont(shift): out[w] = 0x80 | ((c >> shift) & 0x3F); w++
+  let store_cont = fn(shift : Int) -> Unit {
+    emit_local_get_gc(buf, out)
+    emit_local_get_gc(buf, w)
+    emit_i32_const_gc(buf, 0x80)
+    emit_local_get_gc(buf, c)
+    emit_i32_const_gc(buf, shift)
+    emit_i32_shr_u_gc(buf)
+    emit_i32_const_gc(buf, 0x3F)
+    emit_i32_and_gc(buf)
+    emit_i32_or_gc(buf)
+    emit_array_set_gc(buf, at)
+    emit_local_get_gc(buf, w)
+    emit_i32_const_gc(buf, 1)
+    emit_i32_add_gc(buf)
+    emit_local_set_gc(buf, w)
+  }
+  // store_lead(prefix, shift): out[w] = prefix | (c >> shift); w++
+  let store_lead = fn(prefix : Int, shift : Int) -> Unit {
+    emit_local_get_gc(buf, out)
+    emit_local_get_gc(buf, w)
+    emit_i32_const_gc(buf, prefix)
+    emit_local_get_gc(buf, c)
+    emit_i32_const_gc(buf, shift)
+    emit_i32_shr_u_gc(buf)
+    emit_i32_or_gc(buf)
+    emit_array_set_gc(buf, at)
+    emit_local_get_gc(buf, w)
+    emit_i32_const_gc(buf, 1)
+    emit_i32_add_gc(buf)
+    emit_local_set_gc(buf, w)
+  }
+  compile_expr_gc(ctx, fctx, buf, s_expr)
+  emit_local_set_gc(buf, s_idx)
+  emit_local_get_gc(buf, s_idx)
+  emit_struct_get_gc(buf, ctx.string_type, 0)
+  emit_local_set_gc(buf, s_len)
+  emit_local_get_gc(buf, s_idx)
+  emit_struct_get_gc(buf, ctx.string_type, 1)
+  emit_local_set_gc(buf, s_data)
+  emit_local_get_gc(buf, s_len)
+  emit_i32_const_gc(buf, 4)
+  emit_i32_mul_gc(buf)
+  emit_local_set_gc(buf, maxb)
+  emit_local_get_gc(buf, maxb)
+  emit_array_new_default_gc(buf, at)
+  emit_local_set_gc(buf, out)
+  emit_i32_const_gc(buf, 0)
+  emit_local_set_gc(buf, w)
+  emit_i32_const_gc(buf, 0)
+  emit_local_set_gc(buf, i)
+  emit_block_gc(buf, None)
+  emit_loop_gc(buf, None)
+  emit_local_get_gc(buf, i)
+  emit_local_get_gc(buf, s_len)
+  emit_i32_ge_s_gc(buf)
+  emit_br_if_gc(buf, 1)
+  emit_local_get_gc(buf, s_data)
+  emit_local_get_gc(buf, i)
+  emit_array_get_gc(buf, at)
+  emit_local_set_gc(buf, c)
+  // if c < 0x80 (1 byte)
+  emit_local_get_gc(buf, c)
+  emit_i32_const_gc(buf, 0x80)
+  emit_i32_lt_s_gc(buf)
+  emit_if_gc(buf, None)
+  emit_local_get_gc(buf, out)
+  emit_local_get_gc(buf, w)
+  emit_local_get_gc(buf, c)
+  emit_array_set_gc(buf, at)
+  emit_local_get_gc(buf, w)
+  emit_i32_const_gc(buf, 1)
+  emit_i32_add_gc(buf)
+  emit_local_set_gc(buf, w)
+  emit_else_gc(buf)
+  // if c < 0x800 (2 bytes)
+  emit_local_get_gc(buf, c)
+  emit_i32_const_gc(buf, 0x800)
+  emit_i32_lt_s_gc(buf)
+  emit_if_gc(buf, None)
+  store_lead(0xC0, 6)
+  store_cont(0)
+  emit_else_gc(buf)
+  // if c < 0x10000 (3 bytes)
+  emit_local_get_gc(buf, c)
+  emit_i32_const_gc(buf, 0x10000)
+  emit_i32_lt_s_gc(buf)
+  emit_if_gc(buf, None)
+  store_lead(0xE0, 12)
+  store_cont(6)
+  store_cont(0)
+  emit_else_gc(buf)
+  // 4 bytes
+  store_lead(0xF0, 18)
+  store_cont(12)
+  store_cont(6)
+  store_cont(0)
+  emit_end_gc(buf)
+  emit_end_gc(buf)
+  emit_end_gc(buf)
+  // i++
+  emit_local_get_gc(buf, i)
+  emit_i32_const_gc(buf, 1)
+  emit_i32_add_gc(buf)
+  emit_local_set_gc(buf, i)
+  emit_br_gc(buf, 0)
+  emit_end_gc(buf)
+  emit_end_gc(buf)
+  // struct.new bytes_type [len=w, cap=maxb, data=out]
+  emit_local_get_gc(buf, w)
+  emit_local_get_gc(buf, maxb)
+  emit_local_get_gc(buf, out)
+  emit_struct_new_gc(buf, ctx.bytes_type)
+}
+
+///|
+/// Bytes::to_string(bytes) -> String. UTF-8 decodes the byte array into a
+/// codepoint array. Assumes well-formed UTF-8 (linear backend likewise does
+/// not validate). Over-allocates byte-count codepoints, records actual count.
+fn compile_bytes_to_string_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  b_expr : @core.Expr,
+) -> Unit raise WasmGenError {
+  let at = ctx.array_i32_type
+  let b_idx = alloc_local_gc(fctx, GcValKind::Ref(ctx.bytes_type))
+  let b_len = alloc_local_gc(fctx, GcValKind::I32)
+  let b_data = alloc_local_gc(fctx, GcValKind::Ref(at))
+  let out = alloc_local_gc(fctx, GcValKind::Ref(at))
+  let i = alloc_local_gc(fctx, GcValKind::I32)
+  let w = alloc_local_gc(fctx, GcValKind::I32)
+  let b0 = alloc_local_gc(fctx, GcValKind::I32)
+  let cp = alloc_local_gc(fctx, GcValKind::I32)
+  // push (b_data[i + off] & 0x3F) onto the stack
+  let cont_masked = fn(off : Int) -> Unit {
+    emit_local_get_gc(buf, b_data)
+    emit_local_get_gc(buf, i)
+    emit_i32_const_gc(buf, off)
+    emit_i32_add_gc(buf)
+    emit_array_get_gc(buf, at)
+    emit_i32_const_gc(buf, 0x3F)
+    emit_i32_and_gc(buf)
+  }
+  compile_expr_gc(ctx, fctx, buf, b_expr)
+  emit_local_set_gc(buf, b_idx)
+  emit_local_get_gc(buf, b_idx)
+  emit_struct_get_gc(buf, ctx.bytes_type, 0)
+  emit_local_set_gc(buf, b_len)
+  emit_local_get_gc(buf, b_idx)
+  emit_struct_get_gc(buf, ctx.bytes_type, 2)
+  emit_local_set_gc(buf, b_data)
+  emit_local_get_gc(buf, b_len)
+  emit_array_new_default_gc(buf, at)
+  emit_local_set_gc(buf, out)
+  emit_i32_const_gc(buf, 0)
+  emit_local_set_gc(buf, i)
+  emit_i32_const_gc(buf, 0)
+  emit_local_set_gc(buf, w)
+  emit_block_gc(buf, None)
+  emit_loop_gc(buf, None)
+  emit_local_get_gc(buf, i)
+  emit_local_get_gc(buf, b_len)
+  emit_i32_ge_s_gc(buf)
+  emit_br_if_gc(buf, 1)
+  emit_local_get_gc(buf, b_data)
+  emit_local_get_gc(buf, i)
+  emit_array_get_gc(buf, at)
+  emit_local_set_gc(buf, b0)
+  // if b0 < 0x80 (1 byte)
+  emit_local_get_gc(buf, b0)
+  emit_i32_const_gc(buf, 0x80)
+  emit_i32_lt_s_gc(buf)
+  emit_if_gc(buf, None)
+  emit_local_get_gc(buf, b0)
+  emit_local_set_gc(buf, cp)
+  emit_local_get_gc(buf, i)
+  emit_i32_const_gc(buf, 1)
+  emit_i32_add_gc(buf)
+  emit_local_set_gc(buf, i)
+  emit_else_gc(buf)
+  // if b0 < 0xE0 (2 bytes)
+  emit_local_get_gc(buf, b0)
+  emit_i32_const_gc(buf, 0xE0)
+  emit_i32_lt_s_gc(buf)
+  emit_if_gc(buf, None)
+  // cp = ((b0 & 0x1F) << 6) | (b_data[i+1] & 0x3F)
+  emit_local_get_gc(buf, b0)
+  emit_i32_const_gc(buf, 0x1F)
+  emit_i32_and_gc(buf)
+  emit_i32_const_gc(buf, 6)
+  emit_i32_shl_gc(buf)
+  cont_masked(1)
+  emit_i32_or_gc(buf)
+  emit_local_set_gc(buf, cp)
+  emit_local_get_gc(buf, i)
+  emit_i32_const_gc(buf, 2)
+  emit_i32_add_gc(buf)
+  emit_local_set_gc(buf, i)
+  emit_else_gc(buf)
+  // if b0 < 0xF0 (3 bytes)
+  emit_local_get_gc(buf, b0)
+  emit_i32_const_gc(buf, 0xF0)
+  emit_i32_lt_s_gc(buf)
+  emit_if_gc(buf, None)
+  // cp = ((b0 & 0x0F) << 12) | ((b_data[i+1] & 0x3F) << 6) | (b_data[i+2] & 0x3F)
+  emit_local_get_gc(buf, b0)
+  emit_i32_const_gc(buf, 0x0F)
+  emit_i32_and_gc(buf)
+  emit_i32_const_gc(buf, 12)
+  emit_i32_shl_gc(buf)
+  cont_masked(1)
+  emit_i32_const_gc(buf, 6)
+  emit_i32_shl_gc(buf)
+  emit_i32_or_gc(buf)
+  cont_masked(2)
+  emit_i32_or_gc(buf)
+  emit_local_set_gc(buf, cp)
+  emit_local_get_gc(buf, i)
+  emit_i32_const_gc(buf, 3)
+  emit_i32_add_gc(buf)
+  emit_local_set_gc(buf, i)
+  emit_else_gc(buf)
+  // 4 bytes: cp = ((b0 & 0x07) << 18) | ((i+1)<<12) | ((i+2)<<6) | (i+3)
+  emit_local_get_gc(buf, b0)
+  emit_i32_const_gc(buf, 0x07)
+  emit_i32_and_gc(buf)
+  emit_i32_const_gc(buf, 18)
+  emit_i32_shl_gc(buf)
+  cont_masked(1)
+  emit_i32_const_gc(buf, 12)
+  emit_i32_shl_gc(buf)
+  emit_i32_or_gc(buf)
+  cont_masked(2)
+  emit_i32_const_gc(buf, 6)
+  emit_i32_shl_gc(buf)
+  emit_i32_or_gc(buf)
+  cont_masked(3)
+  emit_i32_or_gc(buf)
+  emit_local_set_gc(buf, cp)
+  emit_local_get_gc(buf, i)
+  emit_i32_const_gc(buf, 4)
+  emit_i32_add_gc(buf)
+  emit_local_set_gc(buf, i)
+  emit_end_gc(buf)
+  emit_end_gc(buf)
+  emit_end_gc(buf)
+  // out[w] = cp; w++
+  emit_local_get_gc(buf, out)
+  emit_local_get_gc(buf, w)
+  emit_local_get_gc(buf, cp)
+  emit_array_set_gc(buf, at)
+  emit_local_get_gc(buf, w)
+  emit_i32_const_gc(buf, 1)
+  emit_i32_add_gc(buf)
+  emit_local_set_gc(buf, w)
+  emit_br_gc(buf, 0)
+  emit_end_gc(buf)
+  emit_end_gc(buf)
+  // struct.new string_type [len=w, data=out]
+  emit_local_get_gc(buf, w)
+  emit_local_get_gc(buf, out)
+  emit_struct_new_gc(buf, ctx.string_type)
 }
 
 ///|
@@ -8814,6 +9464,18 @@ fn compile_expr_gc(
           }
           compile_bytes_from_array_gc(ctx, fctx, buf, pos_args[0])
         }
+        "Bytes::from_string" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("Bytes::from_string arity")
+          }
+          compile_bytes_from_string_gc(ctx, fctx, buf, pos_args[0])
+        }
+        "Bytes::to_string" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("Bytes::to_string arity")
+          }
+          compile_bytes_to_string_gc(ctx, fctx, buf, pos_args[0])
+        }
         "Bytes::get" => {
           if pos_args.length() != 2 {
             raise WasmGenError::Unsupported("Bytes::get arity")
@@ -8999,6 +9661,12 @@ fn compile_expr_gc(
             raise WasmGenError::Unsupported("String::unicode_length arity")
           }
           compile_string_unicode_length_gc(ctx, fctx, buf, pos_args[0])
+        }
+        "Int::parse" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("Int::parse arity")
+          }
+          compile_int_parse_gc(ctx, fctx, buf, pos_args[0])
         }
         "String::replace" => {
           if pos_args.length() != 3 {
@@ -9584,6 +10252,12 @@ fn compile_expr_gc(
               emit_i32_const_gc(buf, 0)
             }
           }
+        }
+        "Array::push_all" => {
+          if pos_args.length() != 2 {
+            raise WasmGenError::Unsupported("Array::push_all arity")
+          }
+          compile_array_push_all_gc(ctx, fctx, buf, pos_args[0], pos_args[1])
         }
         // FixedArray builtins (declared in vibe/builtins/declarations.vibe
         // as operating on `Array[T]`). Linear backend already implements
