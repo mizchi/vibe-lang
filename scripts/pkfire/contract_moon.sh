@@ -9,7 +9,7 @@ skip_js_package_tests="${VIBE_CONTRACT_MOON_SKIP_JS_PACKAGE_TESTS:-0}"
 scripts/check_lock_clean.sh
 scripts/check_lock_clean_test.sh
 bash scripts/generate_selfhost_bundle_test.sh
-node --test scripts/coverage_selfhost_suite_next_branches.test.mjs scripts/coverage_wasm_source.test.mjs
+node --test scripts/coverage_selfhost_suite_next_branches.test.mjs scripts/coverage_wasm_source.test.mjs scripts/selfhost_select_test_shard.test.mjs
 if [ "$skip_moon_check" != "1" ]; then
   moon check --deny-warn --warn-list "$moon_warn_list" --target js
 fi
