@@ -1196,6 +1196,40 @@ test "wasm-gc e2e: Int::parse returns None on invalid input" {
 }
 
 ///|
+test "wasm-gc e2e: Int64Array round-trips 32-bit-boundary Ints" {
+  let src =
+    #|let main = () -> Int {
+    #|  let a = Int64Array::make(2, 0)
+    #|  Int64Array::set(a, 0, 4294967295)
+    #|  Int64Array::set(a, 1, 1152921504606846975)
+    #|  if Int64Array::get(a, 0) == 4294967295 {
+    #|    if Int64Array::get(a, 1) == 1152921504606846975 {
+    #|      Int64Array::length(a)
+    #|    } else {
+    #|      0
+    #|    }
+    #|  } else {
+    #|    0
+    #|  }
+    #|}
+    #|main()
+  // Returns length 2 only if both 0xffffffff and a 60-bit value round-trip
+  // intact (32-bit Array[Int] cells would truncate and yield 0).
+  assert_gc_e2e(src, "int64array_roundtrip", 2)
+}
+
+///|
+test "wasm-gc e2e: Int64Array::make fills with default" {
+  let src =
+    #|let main = () -> Int {
+    #|  let a = Int64Array::make(4, 1073741824)
+    #|  Int64Array::get(a, 3)
+    #|}
+    #|main()
+  assert_gc_e2e(src, "int64array_default", 1073741824)
+}
+
+///|
 test "wasm-gc e2e: StringBuilder::freeze on empty builder returns empty string" {
   let src =
     #|let main = () -> Int {

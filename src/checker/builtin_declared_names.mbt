@@ -45,6 +45,8 @@ pub fn checker_declared_builtin_names() -> Array[String] {
      "Bytes::new", "Bytes::length", "Bytes::get", "Bytes::set", "Bytes::push", "Bytes::append",
     "Bytes::blit", "Bytes::concat", "Bytes::fill", "Bytes::slice", "Bytes::from_array",
     "Bytes::from_string", "Bytes::to_array", "Bytes::to_string",
+    // Int64Array (i64-cell buffer; avoids Array[Int] 32-bit truncation, #429)
+     "Int64Array::make", "Int64Array::length", "Int64Array::get", "Int64Array::set",
     // Map
      "Map::get", "Map::get_or", "Map::set", "Map::delete", "Map::has", "Map::has_key",
     "Map::keys", "Map::values", "Map::map", "Map::filter",

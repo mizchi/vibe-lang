@@ -934,6 +934,143 @@ fn compile_builtin_io(
       emit_i64_const_raw(buf, 2L)
       emit_i64_shl(buf) // tag as int
     }
+    "Int64Array::make" => {
+      // Int64Array::make(len, default) -> buffer of `len` i64 cells, each
+      // initialized to the tagged `default` value. Header [tag,len,cap,data].
+      require_heap(ctx)
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "Int64Array::make", 2,
+      )
+      let len_local = alloc_temp_local(ctx)
+      let obj_local = alloc_temp_local(ctx)
+      let data_local = alloc_temp_local(ctx)
+      let data_size_local = alloc_temp_local(ctx)
+      let i_local = alloc_temp_local(ctx)
+      let default_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
+      // len = untag(arg0)
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shr_s(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, len_local)
+      // default (tagged i64) stored verbatim
+      compile_expr_i32(ctx, buf, pos_args[1])
+      emit_local_set(buf, default_local)
+      // obj header alloc (16 bytes)
+      emit_heap_alloc(ctx, buf, align4(16), obj_local)
+      // data_size = len * 8
+      emit_local_get(buf, len_local)
+      emit_i32_const_raw(buf, 8)
+      emit_i32_mul(buf)
+      emit_local_set(buf, data_size_local)
+      emit_heap_alloc_local(ctx, buf, data_size_local, data_local)
+      // header: [obj_int64array, len, cap=len, data_ptr]
+      emit_local_get(buf, obj_local)
+      emit_i32_const_raw(buf, obj_int64array)
+      emit_i32_store(buf, 0)
+      emit_local_get(buf, obj_local)
+      emit_local_get(buf, len_local)
+      emit_i32_store(buf, 4)
+      emit_local_get(buf, obj_local)
+      emit_local_get(buf, len_local)
+      emit_i32_store(buf, 8)
+      emit_local_get(buf, obj_local)
+      emit_local_get(buf, data_local)
+      emit_i32_store(buf, 12)
+      // fill: for i in 0..<len { data[i*8] = default }
+      emit_i32_const_raw(buf, 0)
+      emit_local_set(buf, i_local)
+      emit_block(buf)
+      emit_loop(buf)
+      emit_local_get(buf, i_local)
+      emit_local_get(buf, len_local)
+      emit_i32_ge_s(buf)
+      emit_br_if(buf, 1)
+      emit_local_get(buf, data_local)
+      emit_local_get(buf, i_local)
+      emit_i32_const_raw(buf, 8)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_local_get(buf, default_local)
+      emit_i64_store(buf, 0)
+      emit_local_get(buf, i_local)
+      emit_i32_const_raw(buf, 1)
+      emit_i32_add(buf)
+      emit_local_set(buf, i_local)
+      emit_br(buf, 0)
+      emit_end(buf)
+      emit_end(buf)
+      // return tagged obj pointer
+      emit_local_get(buf, obj_local)
+      emit_i64_extend_i32_u(buf)
+      emit_i64_const_raw(buf, tag_obj.to_int64())
+      emit_i64_or(buf)
+    }
+    "Int64Array::length" => {
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "Int64Array::length", 1,
+      )
+      let ptr_local = alloc_temp_local(ctx)
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_untag_ptr_i32(buf)
+      emit_local_set(buf, ptr_local)
+      emit_local_get(buf, ptr_local)
+      emit_i32_load(buf, 4) // len
+      emit_i64_extend_i32_u(buf)
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shl(buf) // tag as Int
+    }
+    "Int64Array::get" => {
+      // Int64Array::get(a, idx) -> stored tagged i64 Int (no truncation)
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "Int64Array::get", 2,
+      )
+      let ptr_local = alloc_temp_local(ctx)
+      let idx_local = alloc_temp_local(ctx)
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_untag_ptr_i32(buf)
+      emit_local_set(buf, ptr_local)
+      compile_expr_i32(ctx, buf, pos_args[1])
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shr_s(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, idx_local)
+      // addr = data_ptr + idx * 8
+      emit_local_get(buf, ptr_local)
+      emit_i32_load(buf, 12) // data_ptr
+      emit_local_get(buf, idx_local)
+      emit_i32_const_raw(buf, 8)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_i64_load(buf, 0) // tagged Int, returned verbatim
+    }
+    "Int64Array::set" => {
+      // Int64Array::set(a, idx, v) -> store tagged i64 verbatim
+      let pos_args = extract_positional_exprs_with_arity(
+        args, "Int64Array::set", 3,
+      )
+      let ptr_local = alloc_temp_local(ctx)
+      let idx_local = alloc_temp_local(ctx)
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_untag_ptr_i32(buf)
+      emit_local_set(buf, ptr_local)
+      compile_expr_i32(ctx, buf, pos_args[1])
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shr_s(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_set(buf, idx_local)
+      // addr = data_ptr + idx * 8
+      emit_local_get(buf, ptr_local)
+      emit_i32_load(buf, 12)
+      emit_local_get(buf, idx_local)
+      emit_i32_const_raw(buf, 8)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      // value (tagged i64) stored verbatim
+      compile_expr_i32(ctx, buf, pos_args[2])
+      emit_i64_store(buf, 0)
+      emit_i64_const_tagged(buf, 0L) // Unit
+    }
     "Bytes::new" => {
       // Bytes::new() -> empty bytes with reserved packed byte storage
       require_heap(ctx)

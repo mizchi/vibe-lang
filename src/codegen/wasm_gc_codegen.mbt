@@ -226,6 +226,7 @@ priv struct GcCodegenCtx {
   string_type : Int
   array_i32_type : Int
   bytes_type : Int
+  int64array_type : Int
   closure_fn_type_cache : Map[String, Int]
   closure_struct_type_cache : Map[String, Int]
   closure_lifted_funcs : Array[GcWasmFunc]
@@ -577,6 +578,20 @@ fn GcCodegenCtx::new() -> GcCodegenCtx {
     GcValKind::Ref(array_i32_type),
   ]
   let bytes_type = ensure_struct_type(types, struct_type_index, bytes_fields)
+  // Int64Array struct: (len: i32, data: ref array<i64>) — i64 cells store
+  // Int values without the 30-bit truncation of the linear Array[Int] (#429).
+  let array_i64_type = ensure_array_type(
+    types,
+    array_type_index,
+    GcValKind::I64,
+  )
+  let int64array_fields : Array[GcValKind] = [
+    GcValKind::I32,
+    GcValKind::Ref(array_i64_type),
+  ]
+  let int64array_type = ensure_struct_type(
+    types, struct_type_index, int64array_fields,
+  )
   // Error tag type: (eqref) -> [] — a tag carrying one eqref payload
   let error_tag_type_index = types.length()
   types.push(GcTypeDef::TagFunc(params=[GcValKind::EqRef]))
@@ -592,6 +607,7 @@ fn GcCodegenCtx::new() -> GcCodegenCtx {
     string_type,
     array_i32_type,
     bytes_type,
+    int64array_type,
     closure_fn_type_cache: {},
     closure_struct_type_cache: {},
     closure_lifted_funcs: [],
@@ -1967,6 +1983,8 @@ fn gc_val_kind_from_type(
     @core.Type::Unit => GcValKind::I32
     @core.Type::String => GcValKind::Ref(ctx.string_type)
     @core.Type::Bytes => GcValKind::Ref(ctx.bytes_type)
+    @core.Type::Named(name="Int64Array", ..) =>
+      GcValKind::Ref(ctx.int64array_type)
     @core.Type::Tuple(items) => {
       let kinds : Array[GcValKind] = []
       for item in items {
@@ -3336,6 +3354,9 @@ fn infer_expr_kind_gc(
         | "String::count"
         | "String::unicode_length" => GcValKind::I64
         "Bytes::length" | "Bytes::get" => GcValKind::I64
+        "Int64Array::make" => GcValKind::Ref(ctx.int64array_type)
+        "Int64Array::length" | "Int64Array::get" => GcValKind::I64
+        "Int64Array::set" => GcValKind::I32
         "Bytes::new"
         | "Bytes::from_array"
         | "Bytes::from_string"
@@ -6746,6 +6767,106 @@ fn compile_string_join(
 // field 0 = len, field 1 = cap, field 2 = data
 
 ///|
+/// Int64Array::make(len, default) -> struct{len, data: array<i64>}.
+/// i64 cells store Int values without truncation (#429).
+fn compile_int64array_make_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  len_expr : @core.Expr,
+  default_expr : @core.Expr,
+) -> Unit raise WasmGenError {
+  let arr_type = ensure_array_type(
+    ctx.types,
+    ctx.array_type_index,
+    GcValKind::I64,
+  )
+  let len_idx = alloc_local_gc(fctx, GcValKind::I32)
+  let data_idx = alloc_local_gc(fctx, GcValKind::Ref(arr_type))
+  // len = wrap(len_expr)
+  let lk = infer_expr_kind_gc(ctx, fctx, len_expr)
+  compile_expr_gc(ctx, fctx, buf, len_expr)
+  if lk == GcValKind::I64 {
+    emit_i32_wrap_i64_gc(buf)
+  }
+  emit_local_set_gc(buf, len_idx)
+  // data = array.new(default, len): push init value then length
+  let dk = infer_expr_kind_gc(ctx, fctx, default_expr)
+  compile_expr_gc(ctx, fctx, buf, default_expr)
+  emit_coerce_top_gc(ctx, buf, dk, GcValKind::I64)
+  emit_local_get_gc(buf, len_idx)
+  emit_array_new_gc(buf, arr_type)
+  emit_local_set_gc(buf, data_idx)
+  // struct.new(int64array_type, [len, data])
+  emit_local_get_gc(buf, len_idx)
+  emit_local_get_gc(buf, data_idx)
+  emit_struct_new_gc(buf, ctx.int64array_type)
+}
+
+///|
+fn compile_int64array_length_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  a_expr : @core.Expr,
+) -> Unit raise WasmGenError {
+  compile_expr_gc(ctx, fctx, buf, a_expr)
+  emit_struct_get_gc(buf, ctx.int64array_type, 0)
+  emit_i64_extend_i32_s_gc(buf)
+}
+
+///|
+fn compile_int64array_get_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  a_expr : @core.Expr,
+  idx_expr : @core.Expr,
+) -> Unit raise WasmGenError {
+  let arr_type = ensure_array_type(
+    ctx.types,
+    ctx.array_type_index,
+    GcValKind::I64,
+  )
+  compile_expr_gc(ctx, fctx, buf, a_expr)
+  emit_struct_get_gc(buf, ctx.int64array_type, 1)
+  let ik = infer_expr_kind_gc(ctx, fctx, idx_expr)
+  compile_expr_gc(ctx, fctx, buf, idx_expr)
+  if ik == GcValKind::I64 {
+    emit_i32_wrap_i64_gc(buf)
+  }
+  emit_array_get_gc(buf, arr_type)
+}
+
+///|
+fn compile_int64array_set_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  a_expr : @core.Expr,
+  idx_expr : @core.Expr,
+  val_expr : @core.Expr,
+) -> Unit raise WasmGenError {
+  let arr_type = ensure_array_type(
+    ctx.types,
+    ctx.array_type_index,
+    GcValKind::I64,
+  )
+  compile_expr_gc(ctx, fctx, buf, a_expr)
+  emit_struct_get_gc(buf, ctx.int64array_type, 1)
+  let ik = infer_expr_kind_gc(ctx, fctx, idx_expr)
+  compile_expr_gc(ctx, fctx, buf, idx_expr)
+  if ik == GcValKind::I64 {
+    emit_i32_wrap_i64_gc(buf)
+  }
+  let vk = infer_expr_kind_gc(ctx, fctx, val_expr)
+  compile_expr_gc(ctx, fctx, buf, val_expr)
+  emit_coerce_top_gc(ctx, buf, vk, GcValKind::I64)
+  emit_array_set_gc(buf, arr_type)
+  emit_i32_const_gc(buf, 0)
+}
+
+///|
 fn compile_bytes_new_gc(ctx : GcCodegenCtx, buf : GcByteBuf) -> Unit {
   let init_cap = 64
   // len = 0
@@ -9456,6 +9577,37 @@ fn compile_expr_gc(
             raise WasmGenError::Unsupported("Bytes::length arity")
           }
           compile_bytes_length_gc(ctx, fctx, buf, pos_args[0])
+        }
+        "Int64Array::make" => {
+          if pos_args.length() != 2 {
+            raise WasmGenError::Unsupported("Int64Array::make arity")
+          }
+          compile_int64array_make_gc(ctx, fctx, buf, pos_args[0], pos_args[1])
+        }
+        "Int64Array::length" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("Int64Array::length arity")
+          }
+          compile_int64array_length_gc(ctx, fctx, buf, pos_args[0])
+        }
+        "Int64Array::get" => {
+          if pos_args.length() != 2 {
+            raise WasmGenError::Unsupported("Int64Array::get arity")
+          }
+          compile_int64array_get_gc(ctx, fctx, buf, pos_args[0], pos_args[1])
+        }
+        "Int64Array::set" => {
+          if pos_args.length() != 3 {
+            raise WasmGenError::Unsupported("Int64Array::set arity")
+          }
+          compile_int64array_set_gc(
+            ctx,
+            fctx,
+            buf,
+            pos_args[0],
+            pos_args[1],
+            pos_args[2],
+          )
         }
         "Bytes::new" => compile_bytes_new_gc(ctx, buf)
         "Bytes::from_array" => {

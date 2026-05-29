@@ -213,6 +213,11 @@ let obj_bytes = 13
 let obj_bytes_view = 14
 
 ///|
+/// Int64Array: i64-cell buffer storing tagged vibe Ints without truncation.
+/// Header [tag, len, cap, data_ptr]; data is len * 8 bytes (one i64 per elem).
+let obj_int64array = 15
+
+///|
 let obj_v128 = 15
 
 ///|

@@ -69,6 +69,38 @@ fn type_call_builtin_handler_collection_numeric(
         @core.Type::Unit,
         true,
       )
+    "Int64Array::make" =>
+      ctx.simple(
+        "Int64Array::make",
+        [@core.Type::Int, @core.Type::Int],
+        @core.Type::Named(name="Int64Array", args=[]),
+        true,
+      )
+    "Int64Array::length" =>
+      ctx.simple(
+        "Int64Array::length",
+        [@core.Type::Named(name="Int64Array", args=[])],
+        @core.Type::Int,
+        false,
+      )
+    "Int64Array::get" =>
+      ctx.simple(
+        "Int64Array::get",
+        [@core.Type::Named(name="Int64Array", args=[]), @core.Type::Int],
+        @core.Type::Int,
+        false,
+      )
+    "Int64Array::set" =>
+      ctx.simple(
+        "Int64Array::set",
+        [
+          @core.Type::Named(name="Int64Array", args=[]),
+          @core.Type::Int,
+          @core.Type::Int,
+        ],
+        @core.Type::Unit,
+        true,
+      )
     "Bytes::push" =>
       ctx.simple(
         "Bytes::push",

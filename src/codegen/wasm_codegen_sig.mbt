@@ -602,6 +602,10 @@ fn infer_expr_kind_with(
         "Bytes::from_array" => ValueKind::I64
         "Bytes::length" => ValueKind::I64
         "Bytes::get" => ValueKind::I64
+        "Int64Array::make"
+        | "Int64Array::length"
+        | "Int64Array::get"
+        | "Int64Array::set" => ValueKind::I64
         "MapBuilder::new" | "MapBuilder::freeze" => ValueKind::I64
         "MapBuilder::set" => ValueKind::I64
         "Array::length" => ValueKind::I64
