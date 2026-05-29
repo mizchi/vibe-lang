@@ -1,0 +1,56 @@
+//# String::from_char_codes vs concat-tower microbench (#428)
+//
+// Two ways to build an N-codepoint string are compared:
+//   - build_with_concat: `acc ++ from_char_code(c)` N times (concat tower).
+//     On wasm-gc the accumulator is recopied each step, so this is O(N^2).
+//   - build_with_codes:  collect codepoints into an ArrayBuilder, freeze to
+//     Array[Int], then a single `String::from_char_codes` call.
+//
+// Acceptance criterion (#428): for 4-256 codepoints from_char_codes is
+// clearly faster than the concat tower. Run with:
+//   vibe bench vibe/bench/from_char_codes_bench.vibe
+//   VIBE_BENCH_BACKEND=gc vibe bench vibe/bench/from_char_codes_bench.vibe
+
+let build_with_concat = (n: Int) -> String {
+  let mut acc = ""
+  let mut i = 0
+  while i < n {
+    acc = acc ++ String::from_char_code(65 + (i % 26))
+    i = i + 1
+  }
+  acc
+}
+
+let build_with_codes = (n: Int) -> String {
+  let b = ArrayBuilder::new()
+  let mut i = 0
+  while i < n {
+    ArrayBuilder::push(b, 65 + (i % 26))
+    i = i + 1
+  }
+  String::from_char_codes(ArrayBuilder::freeze(b))
+}
+
+bench "from_char_codes_concat_4" {
+  let _ = build_with_concat(4)
+}
+
+bench "from_char_codes_codes_4" {
+  let _ = build_with_codes(4)
+}
+
+bench "from_char_codes_concat_64" {
+  let _ = build_with_concat(64)
+}
+
+bench "from_char_codes_codes_64" {
+  let _ = build_with_codes(64)
+}
+
+bench "from_char_codes_concat_256" {
+  let _ = build_with_concat(256)
+}
+
+bench "from_char_codes_codes_256" {
+  let _ = build_with_codes(256)
+}
