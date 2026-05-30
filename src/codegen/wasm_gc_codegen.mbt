@@ -5178,7 +5178,29 @@ fn compile_string_case_gc(
 }
 
 ///|
-/// String::trim_start(str) -> string (drop leading codepoints <= 32)
+/// Push i32 (1 if ch_local is ASCII whitespace, else 0), matching the prelude's
+/// `is_ascii_whitespace` which counts exactly space/tab/LF/CR ({32,9,10,13}).
+/// Used by trim_start / trim_end so they don't strip other control codepoints.
+fn emit_is_ascii_whitespace_gc(buf : GcByteBuf, ch_local : Int) -> Unit {
+  emit_local_get_gc(buf, ch_local)
+  emit_i32_const_gc(buf, 32)
+  emit_i32_eq_gc(buf)
+  emit_local_get_gc(buf, ch_local)
+  emit_i32_const_gc(buf, 9)
+  emit_i32_eq_gc(buf)
+  emit_i32_or_gc(buf)
+  emit_local_get_gc(buf, ch_local)
+  emit_i32_const_gc(buf, 10)
+  emit_i32_eq_gc(buf)
+  emit_i32_or_gc(buf)
+  emit_local_get_gc(buf, ch_local)
+  emit_i32_const_gc(buf, 13)
+  emit_i32_eq_gc(buf)
+  emit_i32_or_gc(buf)
+}
+
+///|
+/// String::trim_start(str) -> string (drop leading ASCII-whitespace codepoints)
 fn compile_string_trim_start_gc(
   ctx : GcCodegenCtx,
   fctx : GcFuncCtx,
@@ -5192,6 +5214,7 @@ fn compile_string_trim_start_gc(
   let n_idx = alloc_local_gc(fctx, GcValKind::I32)
   let arr_idx = alloc_local_gc(fctx, GcValKind::Ref(ctx.array_i32_type))
   let i_idx = alloc_local_gc(fctx, GcValKind::I32)
+  let ch_idx = alloc_local_gc(fctx, GcValKind::I32)
   compile_expr_gc(ctx, fctx, buf, s_expr)
   emit_local_set_gc(buf, s_idx)
   emit_local_get_gc(buf, s_idx)
@@ -5200,7 +5223,7 @@ fn compile_string_trim_start_gc(
   emit_local_get_gc(buf, s_idx)
   emit_struct_get_gc(buf, ctx.string_type, 1)
   emit_local_set_gc(buf, s_data)
-  // start = 0; while start < s_len && data[start] <= 32: start++
+  // start = 0; while start < s_len && is_ascii_whitespace(data[start]): start++
   emit_i32_const_gc(buf, 0)
   emit_local_set_gc(buf, start_idx)
   emit_block_gc(buf, None)
@@ -5209,12 +5232,13 @@ fn compile_string_trim_start_gc(
   emit_local_get_gc(buf, s_len)
   emit_i32_ge_s_gc(buf)
   emit_br_if_gc(buf, 1)
-  // if data[start] > 32 -> break
+  // ch = data[start]; if !is_ascii_whitespace(ch) -> break
   emit_local_get_gc(buf, s_data)
   emit_local_get_gc(buf, start_idx)
   emit_array_get_gc(buf, ctx.array_i32_type)
-  emit_i32_const_gc(buf, 32)
-  emit_i32_gt_s_gc(buf)
+  emit_local_set_gc(buf, ch_idx)
+  emit_is_ascii_whitespace_gc(buf, ch_idx)
+  emit_i32_eqz_gc(buf)
   emit_br_if_gc(buf, 1)
   emit_local_get_gc(buf, start_idx)
   emit_i32_const_gc(buf, 1)
@@ -5274,6 +5298,7 @@ fn compile_string_trim_end_gc(
   let end_idx = alloc_local_gc(fctx, GcValKind::I32)
   let arr_idx = alloc_local_gc(fctx, GcValKind::Ref(ctx.array_i32_type))
   let i_idx = alloc_local_gc(fctx, GcValKind::I32)
+  let ch_idx = alloc_local_gc(fctx, GcValKind::I32)
   compile_expr_gc(ctx, fctx, buf, s_expr)
   emit_local_set_gc(buf, s_idx)
   emit_local_get_gc(buf, s_idx)
@@ -5282,7 +5307,7 @@ fn compile_string_trim_end_gc(
   emit_local_get_gc(buf, s_idx)
   emit_struct_get_gc(buf, ctx.string_type, 1)
   emit_local_set_gc(buf, s_data)
-  // end = s_len; while end > 0 && data[end-1] <= 32: end--
+  // end = s_len; while end > 0 && is_ascii_whitespace(data[end-1]): end--
   emit_local_get_gc(buf, s_len)
   emit_local_set_gc(buf, end_idx)
   emit_block_gc(buf, None)
@@ -5291,14 +5316,15 @@ fn compile_string_trim_end_gc(
   emit_i32_const_gc(buf, 0)
   emit_i32_le_s_gc(buf)
   emit_br_if_gc(buf, 1)
-  // if data[end-1] > 32 -> break
+  // ch = data[end-1]; if !is_ascii_whitespace(ch) -> break
   emit_local_get_gc(buf, s_data)
   emit_local_get_gc(buf, end_idx)
   emit_i32_const_gc(buf, 1)
   emit_i32_sub_gc(buf)
   emit_array_get_gc(buf, ctx.array_i32_type)
-  emit_i32_const_gc(buf, 32)
-  emit_i32_gt_s_gc(buf)
+  emit_local_set_gc(buf, ch_idx)
+  emit_is_ascii_whitespace_gc(buf, ch_idx)
+  emit_i32_eqz_gc(buf)
   emit_br_if_gc(buf, 1)
   emit_local_get_gc(buf, end_idx)
   emit_i32_const_gc(buf, 1)
@@ -5489,7 +5515,9 @@ fn compile_int_parse_gc(
   let s_len = alloc_local_gc(fctx, GcValKind::I32)
   let s_data = alloc_local_gc(fctx, GcValKind::Ref(ctx.array_i32_type))
   let idx = alloc_local_gc(fctx, GcValKind::I32)
-  let result = alloc_local_gc(fctx, GcValKind::I32)
+  // result accumulates in i64 so 62-bit Ints (e.g. Int::parse("4294967295"))
+  // are not truncated to i32 before the sign-extend into the Some payload.
+  let result = alloc_local_gc(fctx, GcValKind::I64)
   let neg = alloc_local_gc(fctx, GcValKind::I32)
   let ch = alloc_local_gc(fctx, GcValKind::I32)
   let valid = alloc_local_gc(fctx, GcValKind::I32)
@@ -5504,7 +5532,7 @@ fn compile_int_parse_gc(
   emit_struct_get_gc(buf, ctx.string_type, 1)
   emit_local_set_gc(buf, s_data)
   // init: result=0 idx=0 neg=0 valid=1 has_digit=0
-  emit_i32_const_gc(buf, 0)
+  emit_i64_const_gc(buf, 0L)
   emit_local_set_gc(buf, result)
   emit_i32_const_gc(buf, 0)
   emit_local_set_gc(buf, idx)
@@ -5599,13 +5627,15 @@ fn compile_int_parse_gc(
   emit_end_gc(buf)
   emit_i32_const_gc(buf, 1)
   emit_local_set_gc(buf, has_digit)
+  // result = result*10 + (ch - 48), all in i64 to preserve 62-bit values
   emit_local_get_gc(buf, result)
-  emit_i32_const_gc(buf, 10)
-  emit_i32_mul_gc(buf)
+  emit_i64_const_gc(buf, 10L)
+  emit_i64_mul_gc(buf)
   emit_local_get_gc(buf, ch)
   emit_i32_const_gc(buf, 48)
   emit_i32_sub_gc(buf)
-  emit_i32_add_gc(buf)
+  emit_i64_extend_i32_s_gc(buf)
+  emit_i64_add_gc(buf)
   emit_local_set_gc(buf, result)
   emit_local_get_gc(buf, idx)
   emit_i32_const_gc(buf, 1)
@@ -5619,18 +5649,17 @@ fn compile_int_parse_gc(
   emit_local_get_gc(buf, has_digit)
   emit_i32_and_gc(buf)
   emit_if_gc(buf, None)
-  // apply negation
+  // apply negation (in i64)
   emit_local_get_gc(buf, neg)
   emit_if_gc(buf, None)
-  emit_i32_const_gc(buf, 0)
+  emit_i64_const_gc(buf, 0L)
   emit_local_get_gc(buf, result)
-  emit_i32_sub_gc(buf)
+  emit_i64_sub_gc(buf)
   emit_local_set_gc(buf, result)
   emit_end_gc(buf)
   // Some(result): struct.new(some_type, [tag, eqref payload])
   emit_i32_const_gc(buf, ctx.enum_ctor_tags["Some"])
   emit_local_get_gc(buf, result)
-  emit_i64_extend_i32_s_gc(buf)
   emit_coerce_top_gc(ctx, buf, GcValKind::I64, GcValKind::EqRef)
   emit_struct_new_gc(buf, ctx.enum_ctor_type_indices["Some"])
   emit_local_set_gc(buf, opt_local)
