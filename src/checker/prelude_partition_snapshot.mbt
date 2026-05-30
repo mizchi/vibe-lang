@@ -21,11 +21,18 @@ const PARTITION_SNAPSHOT_VERSION : Int = 1
 
 ///|
 fn partition_snapshot_path() -> String {
+  // The classification is computed over the *parsed/desugared* prelude AST, so
+  // fold in AST_CACHE_PARSER_VERSION (as the #427/#476 caches do): a
+  // parser/desugar change that alters refs for unchanged prelude source must
+  // invalidate the cached name set, since the warm path trusts it without
+  // re-running walk_stmt_refs.
   ast_disk_cache_dir.val +
   "/prelude-partition." +
   @core.content_address_hash_string(prelude_source) +
   ".v" +
   PARTITION_SNAPSHOT_VERSION.to_string() +
+  "-p" +
+  AST_CACHE_PARSER_VERSION.to_string() +
   ".names"
 }
 
