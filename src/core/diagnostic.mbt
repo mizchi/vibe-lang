@@ -6,7 +6,7 @@ pub(all) struct Span {
 } derive(Debug, Eq)
 
 ///|
-pub impl Show for Span with output(self, logger) {
+pub impl Show for Span with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 
@@ -104,7 +104,7 @@ pub(all) struct Diagnostic {
 } derive(Debug, Eq)
 
 ///|
-pub impl Show for Diagnostic with output(self, logger) {
+pub impl Show for Diagnostic with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 

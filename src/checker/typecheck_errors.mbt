@@ -7,7 +7,7 @@ pub(all) enum TopLevelPurityTier {
 } derive(Debug, Eq)
 
 ///|
-pub impl Show for TopLevelPurityTier with output(self, logger) {
+pub impl Show for TopLevelPurityTier with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 
@@ -56,7 +56,7 @@ suberror TypeError {
 } derive(Debug, Eq)
 
 ///|
-pub impl Show for TypeError with output(self, logger) {
+pub impl Show for TypeError with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 

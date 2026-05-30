@@ -15,7 +15,7 @@ pub(all) suberror FsError {
 } derive(Debug, Eq)
 
 ///|
-pub impl Show for FsError with output(self, logger) {
+pub impl Show for FsError with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 
@@ -28,7 +28,7 @@ pub(all) enum FileType {
 } derive(Debug, Eq)
 
 ///|
-pub impl Show for FileType with output(self, logger) {
+pub impl Show for FileType with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 

@@ -124,9 +124,7 @@ fn load_cached_ast(path : String) -> @core.Module? {
   if !@os_fs.path_exists(path) {
     return None
   }
-  let bytes = @os_fs.read_file_to_bytes(path) catch {
-    _ => return None
-  }
+  let bytes = @os_fs.read_file_to_bytes(path) catch { _ => return None }
   Some(@core.deserialize_module_binary(bytes)) catch {
     _ => None
   }

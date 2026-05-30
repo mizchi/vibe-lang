@@ -13,7 +13,7 @@ pub fn HashedModule::new(m : @core.Module) -> HashedModule {
 
 ///|
 /// Equality based on structural hash, not full AST comparison
-pub impl Eq for HashedModule with equal(self, other) {
+pub impl Eq for HashedModule with fn equal(self, other) {
   self.hash == other.hash
 }
 

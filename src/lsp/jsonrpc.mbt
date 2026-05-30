@@ -9,7 +9,7 @@ pub(all) enum JsonRpcId {
 } derive(Debug, Eq)
 
 ///|
-pub impl Show for JsonRpcId with output(self, logger) {
+pub impl Show for JsonRpcId with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 

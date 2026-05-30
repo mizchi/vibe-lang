@@ -7,7 +7,7 @@ pub struct Token {
 } derive(Eq)
 
 ///|
-pub impl Show for Token with output(self, logger) {
+pub impl Show for Token with fn output(self, logger) {
   logger.write_string("Token(kind=")
   logger.write_string(self.kind.raw().to_string())
   logger.write_string(", text=")

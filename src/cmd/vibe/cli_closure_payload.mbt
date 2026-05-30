@@ -23,14 +23,14 @@ fn ClosurePayloadFsAdapter::new(cwd : String) -> ClosurePayloadFsAdapter {
 }
 
 ///|
-pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with current_dir_or_root(
+pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with fn current_dir_or_root(
   self,
 ) {
   self.cwd
 }
 
 ///|
-pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with path_exists(
+pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with fn path_exists(
   self,
   path,
 ) {
@@ -38,7 +38,7 @@ pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with path_exists(
 }
 
 ///|
-pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with create_dir(
+pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with fn create_dir(
   self,
   path,
 ) {
@@ -49,7 +49,7 @@ pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with create_dir(
 }
 
 ///|
-pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with read_dir(
+pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with fn read_dir(
   self,
   path,
 ) {
@@ -62,7 +62,7 @@ pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with read_dir(
 }
 
 ///|
-pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with read_string(
+pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with fn read_string(
   self,
   path,
 ) {
@@ -73,7 +73,7 @@ pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with read_string(
 }
 
 ///|
-pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with read_bytes(
+pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with fn read_bytes(
   self,
   path,
 ) {
@@ -82,7 +82,7 @@ pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with read_bytes(
 }
 
 ///|
-pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with write_string(
+pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with fn write_string(
   self,
   path,
   content,
@@ -94,7 +94,7 @@ pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with write_string(
 }
 
 ///|
-pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with write_bytes(
+pub impl @io.FileSystemAdapter for ClosurePayloadFsAdapter with fn write_bytes(
   self,
   path,
   content,

@@ -88,7 +88,7 @@ fn MemFs::resolve(self : MemFs, path : String) -> Int? {
 
 ///|
 /// FileSystemBackend implementation
-pub impl FileSystemBackend for MemFs with read_file(self, path) {
+pub impl FileSystemBackend for MemFs with fn read_file(self, path) {
   match self.resolve(path) {
     None => raise FsError::NotFound(path)
     Some(id) =>
@@ -104,7 +104,7 @@ pub impl FileSystemBackend for MemFs with read_file(self, path) {
 }
 
 ///|
-pub impl FileSystemBackend for MemFs with read_string(self, path) {
+pub impl FileSystemBackend for MemFs with fn read_string(self, path) {
   let bytes = self.read_file(path)
   // Simple UTF-8 decode
   let buf = StringBuilder::new()
@@ -115,12 +115,12 @@ pub impl FileSystemBackend for MemFs with read_string(self, path) {
 }
 
 ///|
-pub impl FileSystemBackend for MemFs with exists(self, path) {
+pub impl FileSystemBackend for MemFs with fn exists(self, path) {
   self.resolve(path) is Some(_)
 }
 
 ///|
-pub impl FileSystemBackend for MemFs with is_file(self, path) {
+pub impl FileSystemBackend for MemFs with fn is_file(self, path) {
   match self.resolve(path) {
     Some(id) =>
       match self.get_inode(id) {
@@ -132,7 +132,7 @@ pub impl FileSystemBackend for MemFs with is_file(self, path) {
 }
 
 ///|
-pub impl FileSystemBackend for MemFs with is_dir(self, path) {
+pub impl FileSystemBackend for MemFs with fn is_dir(self, path) {
   match self.resolve(path) {
     Some(id) =>
       match self.get_inode(id) {
@@ -144,7 +144,7 @@ pub impl FileSystemBackend for MemFs with is_dir(self, path) {
 }
 
 ///|
-pub impl FileSystemBackend for MemFs with stat(self, path) {
+pub impl FileSystemBackend for MemFs with fn stat(self, path) {
   match self.resolve(path) {
     None => raise FsError::NotFound(path)
     Some(id) =>
@@ -162,7 +162,7 @@ pub impl FileSystemBackend for MemFs with stat(self, path) {
 }
 
 ///|
-pub impl FileSystemBackend for MemFs with readdir(self, path) {
+pub impl FileSystemBackend for MemFs with fn readdir(self, path) {
   match self.resolve(path) {
     None => raise FsError::NotFound(path)
     Some(id) =>
@@ -193,7 +193,7 @@ pub impl FileSystemBackend for MemFs with readdir(self, path) {
 }
 
 ///|
-pub impl FileSystemBackend for MemFs with write_file(self, path, data) {
+pub impl FileSystemBackend for MemFs with fn write_file(self, path, data) {
   let normalized = normalize_path(path)
   let parent = parent_path(normalized)
   let name = basename(normalized)
@@ -233,7 +233,7 @@ pub impl FileSystemBackend for MemFs with write_file(self, path, data) {
 }
 
 ///|
-pub impl FileSystemBackend for MemFs with write_string(self, path, content) {
+pub impl FileSystemBackend for MemFs with fn write_string(self, path, content) {
   let bytes = Bytes::from_array(
     FixedArray::makei(content.length(), fn(i) { content[i].to_int().to_byte() }),
   )
@@ -241,7 +241,7 @@ pub impl FileSystemBackend for MemFs with write_string(self, path, content) {
 }
 
 ///|
-pub impl FileSystemBackend for MemFs with mkdir(self, path) {
+pub impl FileSystemBackend for MemFs with fn mkdir(self, path) {
   let normalized = normalize_path(path)
   if normalized == "/" {
     raise FsError::AlreadyExists(path)
@@ -269,7 +269,7 @@ pub impl FileSystemBackend for MemFs with mkdir(self, path) {
 }
 
 ///|
-pub impl FileSystemBackend for MemFs with mkdir_p(self, path) {
+pub impl FileSystemBackend for MemFs with fn mkdir_p(self, path) {
   let normalized = normalize_path(path)
   if normalized == "/" {
     return
@@ -301,7 +301,7 @@ pub impl FileSystemBackend for MemFs with mkdir_p(self, path) {
 }
 
 ///|
-pub impl FileSystemBackend for MemFs with remove(self, path) {
+pub impl FileSystemBackend for MemFs with fn remove(self, path) {
   let normalized = normalize_path(path)
   if normalized == "/" {
     raise FsError::PermissionDenied("cannot remove root")
@@ -335,7 +335,7 @@ pub impl FileSystemBackend for MemFs with remove(self, path) {
 }
 
 ///|
-pub impl FileSystemBackend for MemFs with rmdir(self, path) {
+pub impl FileSystemBackend for MemFs with fn rmdir(self, path) {
   let normalized = normalize_path(path)
   if normalized == "/" {
     raise FsError::PermissionDenied("cannot remove root")
@@ -374,7 +374,7 @@ pub impl FileSystemBackend for MemFs with rmdir(self, path) {
 }
 
 ///|
-pub impl FileSystemBackend for MemFs with rename(self, old_path, new_path) {
+pub impl FileSystemBackend for MemFs with fn rename(self, old_path, new_path) {
   // Simple implementation: copy data and remove old
   let old_normalized = normalize_path(old_path)
   let new_normalized = normalize_path(new_path)
@@ -393,7 +393,7 @@ pub impl FileSystemBackend for MemFs with rename(self, old_path, new_path) {
 }
 
 ///|
-pub impl FileSystemBackend for MemFs with copy_file(self, src, dst) {
+pub impl FileSystemBackend for MemFs with fn copy_file(self, src, dst) {
   let src_normalized = normalize_path(src)
   let dst_normalized = normalize_path(dst)
   if !self.is_file(src_normalized) {
@@ -407,7 +407,7 @@ pub impl FileSystemBackend for MemFs with copy_file(self, src, dst) {
 }
 
 ///|
-pub impl FileSystemBackend for MemFs with rm_rf(self, path) {
+pub impl FileSystemBackend for MemFs with fn rm_rf(self, path) {
   let normalized = normalize_path(path)
   if normalized == "/" {
     raise FsError::PermissionDenied("cannot remove root")

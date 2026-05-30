@@ -57,6 +57,6 @@ pub(all) enum ErrorCode {
 } derive(Eq)
 
 ///|
-pub impl Show for ErrorCode with output(self, logger) {
+pub impl Show for ErrorCode with fn output(self, logger) {
   logger.write_string(format_error(self))
 }

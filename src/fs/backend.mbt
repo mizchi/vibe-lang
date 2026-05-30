@@ -14,24 +14,24 @@
 /// Minimal filesystem operations required by vposix
 pub(open) trait FileSystemBackend {
   // Read operations
-  read_file(Self, String) -> Bytes raise FsError
-  read_string(Self, String) -> String raise FsError
-  exists(Self, String) -> Bool
-  is_file(Self, String) -> Bool
-  is_dir(Self, String) -> Bool
-  stat(Self, String) -> FileStat raise FsError
-  readdir(Self, String) -> Array[DirEntry] raise FsError
+  fn read_file(Self, String) -> Bytes raise FsError
+  fn read_string(Self, String) -> String raise FsError
+  fn exists(Self, String) -> Bool
+  fn is_file(Self, String) -> Bool
+  fn is_dir(Self, String) -> Bool
+  fn stat(Self, String) -> FileStat raise FsError
+  fn readdir(Self, String) -> Array[DirEntry] raise FsError
 
   // Write operations
-  write_file(Self, String, Bytes) -> Unit raise FsError
-  write_string(Self, String, String) -> Unit raise FsError
-  mkdir(Self, String) -> Unit raise FsError
-  mkdir_p(Self, String) -> Unit raise FsError
-  remove(Self, String) -> Unit raise FsError
-  rmdir(Self, String) -> Unit raise FsError
-  rename(Self, String, String) -> Unit raise FsError
-  copy_file(Self, String, String) -> Unit raise FsError
-  rm_rf(Self, String) -> Unit raise FsError
+  fn write_file(Self, String, Bytes) -> Unit raise FsError
+  fn write_string(Self, String, String) -> Unit raise FsError
+  fn mkdir(Self, String) -> Unit raise FsError
+  fn mkdir_p(Self, String) -> Unit raise FsError
+  fn remove(Self, String) -> Unit raise FsError
+  fn rmdir(Self, String) -> Unit raise FsError
+  fn rename(Self, String, String) -> Unit raise FsError
+  fn copy_file(Self, String, String) -> Unit raise FsError
+  fn rm_rf(Self, String) -> Unit raise FsError
 }
 
 ///|

@@ -64,7 +64,7 @@ pub(all) enum Type {
 } derive(Debug, Eq)
 
 ///|
-pub impl Show for Type with output(self, logger) {
+pub impl Show for Type with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 
@@ -132,12 +132,12 @@ pub(all) struct ContinuationValue {
 } derive(Eq)
 
 ///|
-pub impl Show for ContinuationValue with output(_self, logger) {
+pub impl Show for ContinuationValue with fn output(_self, logger) {
   logger.write_string("<continuation>")
 }
 
 ///|
-pub impl Show for FnValue with output(self, logger) {
+pub impl Show for FnValue with fn output(self, logger) {
   logger.write_string("<fn(")
   for i, param in self.params {
     if i > 0 {
@@ -286,7 +286,7 @@ pub(all) enum Value {
 } derive(Eq)
 
 ///|
-pub impl Show for Value with output(self, logger) {
+pub impl Show for Value with fn output(self, logger) {
   match self {
     Value::Int(n) => logger.write_string(n.to_string())
     Value::Float(n) => logger.write_string(n.to_string())
