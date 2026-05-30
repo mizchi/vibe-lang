@@ -735,10 +735,10 @@ fn try_load_env_snapshot(
   let bytes = @os_fs.read_file_to_bytes(path) catch {
     _ => return None
   }
-  match (try? deserialize_builtins_env(session, bytes)) {
-    Ok(env) => Some(env)
-    Err(_) => None
+  let env = deserialize_builtins_env(session, bytes) catch {
+    _ => return None
   }
+  Some(env)
 }
 
 ///|

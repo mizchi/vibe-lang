@@ -21,12 +21,9 @@ test "builtins env snapshot round-trips" {
   }
   let bytes = serialize_builtins_env(env)
   // Reconstruct into a brand-new session (fresh typevar counter etc).
-  let env2 = (try? deserialize_builtins_env(TypecheckSession::new(), bytes)) |> (
-      x => match x {
-        Ok(e) => e
-        Err(err) => abort("deserialize failed: " + err.to_string())
-      }
-    )
+  let env2 = deserialize_builtins_env(TypecheckSession::new(), bytes) catch {
+    err => abort("deserialize failed: " + err.to_string())
+  }
 
   // Definitional maps must match (Eq is order-independent for Map).
   assert_true(
