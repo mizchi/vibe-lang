@@ -9271,6 +9271,53 @@ fn compile_expr_gc(
             _ => emit_i64_eq_gc(buf)
           }
         }
+        "__assert" | "assert" | "assert_true" => {
+          if pos_args.length() != 1 {
+            raise WasmGenError::Unsupported("__assert arity")
+          }
+          // cond is a native i32 Bool (1=true / 0=false) in the gc backend.
+          // Trap (unreachable) when it is false, then leave a Unit
+          // placeholder (i32.const 0) on the stack.
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_i32_eqz_gc(buf)
+          emit_if_gc(buf, None)
+          emit_unreachable_gc(buf)
+          emit_end_gc(buf)
+          emit_i32_const_gc(buf, 0)
+        }
+        "__assert_eq" | "assert_eq" => {
+          if pos_args.length() != 2 {
+            raise WasmGenError::Unsupported("__assert_eq arity")
+          }
+          // Compute the same equality the `__eq` arm produces (an i32 Bool),
+          // dispatching on operand type so non-Int operands stay
+          // wasm-validation-correct, then trap when the operands differ.
+          let left_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
+          let right_kind = infer_expr_kind_gc(ctx, fctx, pos_args[1])
+          let unified = if left_kind == right_kind {
+            left_kind
+          } else {
+            gc_common_kind(left_kind, right_kind)
+          }
+          let arith = gc_arith_kind(unified)
+          compile_expr_gc(ctx, fctx, buf, pos_args[0])
+          emit_coerce_top_gc(ctx, buf, left_kind, arith)
+          compile_expr_gc(ctx, fctx, buf, pos_args[1])
+          emit_coerce_top_gc(ctx, buf, right_kind, arith)
+          match arith {
+            GcValKind::I64 => emit_i64_eq_gc(buf)
+            GcValKind::I32 => emit_i32_eq_gc(buf)
+            GcValKind::F32 => emit_f32_eq_gc(buf)
+            GcValKind::F64 => emit_f64_eq_gc(buf)
+            _ => emit_i64_eq_gc(buf)
+          }
+          // result is i32 Bool; trap when not equal, then push Unit.
+          emit_i32_eqz_gc(buf)
+          emit_if_gc(buf, None)
+          emit_unreachable_gc(buf)
+          emit_end_gc(buf)
+          emit_i32_const_gc(buf, 0)
+        }
         "__lt" => {
           if pos_args.length() != 2 {
             raise WasmGenError::Unsupported("__lt arity")

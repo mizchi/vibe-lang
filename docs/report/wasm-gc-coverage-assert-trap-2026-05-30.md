@@ -1,6 +1,6 @@
 # wasm-gc coverage `--coverage-run-tests` trap — root cause (#417)
 
-Status: **root-caused, fix designed, not yet implemented**. Captured here
+Status: **implemented — runtime verification pending CI/toolchain** (static review complete; see "Resolution" at the end). Captured here
 because the interactive session hit harness instability mid-diagnosis; this
 note lets the work be picked up cleanly.
 
@@ -133,3 +133,111 @@ The wasm-gc coverage **codegen** (counter memory, `__vibe_cov_base` /
 was already implemented prior to this session and works for the non-test
 (`_start`-invoke) path; the only functional gap is the missing `__assert` arm
 that the run-tests path needs.
+
+## Resolution (2026-05-30)
+
+Implemented `__assert` / `__assert_eq` codegen arms in the wasm-gc backend
+(`src/codegen/wasm_gc_codegen.mbt`, inside `compile_expr_gc`'s builtin
+dispatch, immediately after the `__eq` arm).
+
+- gc `Bool` is a native i32 (1=true / 0=false), so `__assert(cond)` is a
+  direct `i32.eqz / if (void) / unreachable / end`, then `i32.const 0` for
+  the Unit result — no untag / `i32.wrap_i64` (unlike the linear backend's
+  tagged-i64 bool).
+- `__assert_eq(a, b)` mirrors the `__eq` arm's operand-type dispatch
+  (`infer_expr_kind_gc` + `gc_common_kind` + `gc_arith_kind` +
+  `emit_coerce_top_gc`, then `i64.eq` Int / `i32.eq` Bool/Char /
+  `f32.eq`/`f64.eq` floats), producing an i32 Bool, then the same
+  `i32.eqz / if / unreachable / end` trap-when-false sequence + Unit.
+
+Static review done: `grep -c` confirms exactly one arm each (no duplicate
+match arms); helper signatures match the surrounding `__eq` / `__lt` /
+`__not` arms verbatim.
+
+**Runtime verification still pending.** This web-session container is
+network-restricted and has no MoonBit toolchain (`moon` / `wasmtime`
+installs all failed via `.claude/hooks/session-start.sh`), so `moon check`
+and the `vibe compile --wasm-gc --coverage --coverage-run-tests` repro
+could not be executed here. CI (or any toolchain-enabled environment) must
+still confirm:
+
+1. `moon check` clean.
+2. `assert(1 == 1)` / `assert_eq(1, 1)` no longer trap under
+   `--wasm-gc --coverage --coverage-run-tests`.
+3. `assert(1 == 2)` / `assert_eq(1, 2)` still trap (failing assertions must
+   still abort).
+4. wasm-gc e2e suite — no regression.
+5. linear vs wasm-gc coverage within ±5% on the same source (#417 acceptance
+   criterion).
+
+## Resolution (2026-05-30)
+
+Implemented `__assert` / `__assert_eq` codegen arms in the wasm-gc backend
+(`src/codegen/wasm_gc_codegen.mbt`, inside `compile_expr_gc`'s builtin
+dispatch, immediately after the `__eq` arm).
+
+- gc `Bool` is a native i32 (1=true / 0=false), so `__assert(cond)` is a
+  direct `i32.eqz / if (void) / unreachable / end`, then `i32.const 0` for
+  the Unit result — no untag / `i32.wrap_i64` (unlike the linear backend's
+  tagged-i64 bool).
+- `__assert_eq(a, b)` mirrors the `__eq` arm's operand-type dispatch
+  (`infer_expr_kind_gc` + `gc_common_kind` + `gc_arith_kind` +
+  `emit_coerce_top_gc`, then `i64.eq` Int / `i32.eq` Bool/Char /
+  `f32.eq`/`f64.eq` floats), producing an i32 Bool, then the same
+  `i32.eqz / if / unreachable / end` trap-when-false sequence + Unit.
+
+Static review done: `grep -c` confirms exactly one arm each (no duplicate
+match arms); helper signatures match the surrounding `__eq` / `__lt` /
+`__not` arms verbatim.
+
+**Runtime verification still pending.** This web-session container is
+network-restricted and has no MoonBit toolchain (`moon` / `wasmtime`
+installs all failed via `.claude/hooks/session-start.sh`), so `moon check`
+and the `vibe compile --wasm-gc --coverage --coverage-run-tests` repro
+could not be executed here. CI (or any toolchain-enabled environment) must
+still confirm:
+
+1. `moon check` clean.
+2. `assert(1 == 1)` / `assert_eq(1, 1)` no longer trap under
+   `--wasm-gc --coverage --coverage-run-tests`.
+3. `assert(1 == 2)` / `assert_eq(1, 2)` still trap (failing assertions must
+   still abort).
+4. wasm-gc e2e suite — no regression.
+5. linear vs wasm-gc coverage within ±5% on the same source (#417 acceptance
+   criterion).
+
+## Resolution (2026-05-30)
+
+Implemented `__assert` / `__assert_eq` codegen arms in the wasm-gc backend
+(`src/codegen/wasm_gc_codegen.mbt`, inside `compile_expr_gc`'s builtin
+dispatch, immediately after the `__eq` arm).
+
+- gc `Bool` is a native i32 (1=true / 0=false), so `__assert(cond)` is a
+  direct `i32.eqz / if (void) / unreachable / end`, then `i32.const 0` for
+  the Unit result — no untag / `i32.wrap_i64` (unlike the linear backend's
+  tagged-i64 bool).
+- `__assert_eq(a, b)` mirrors the `__eq` arm's operand-type dispatch
+  (`infer_expr_kind_gc` + `gc_common_kind` + `gc_arith_kind` +
+  `emit_coerce_top_gc`, then `i64.eq` Int / `i32.eq` Bool/Char /
+  `f32.eq`/`f64.eq` floats), producing an i32 Bool, then the same
+  `i32.eqz / if / unreachable / end` trap-when-false sequence + Unit.
+
+Static review done: `grep -c` confirms exactly one arm each (no duplicate
+match arms); helper signatures match the surrounding `__eq` / `__lt` /
+`__not` arms verbatim.
+
+**Runtime verification still pending.** This web-session container is
+network-restricted and has no MoonBit toolchain (`moon` / `wasmtime`
+installs all failed via `.claude/hooks/session-start.sh`), so `moon check`
+and the `vibe compile --wasm-gc --coverage --coverage-run-tests` repro
+could not be executed here. CI (or any toolchain-enabled environment) must
+still confirm:
+
+1. `moon check` clean.
+2. `assert(1 == 1)` / `assert_eq(1, 1)` no longer trap under
+   `--wasm-gc --coverage --coverage-run-tests`.
+3. `assert(1 == 2)` / `assert_eq(1, 2)` still trap (failing assertions must
+   still abort).
+4. wasm-gc e2e suite — no regression.
+5. linear vs wasm-gc coverage within ±5% on the same source (#417 acceptance
+   criterion).
