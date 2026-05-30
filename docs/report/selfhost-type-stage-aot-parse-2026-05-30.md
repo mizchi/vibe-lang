@@ -61,7 +61,9 @@ the prelude parse is amortized elsewhere and typecheck dominates.
 `src/checker/ast_disk_cache.mbt` — `parse_ast_cached(source)` mirrors
 `@parser.parse_ast` but:
 
-1. key = `content_address_hash(source)` + `AST_BINARY_VERSION`;
+1. key = `content_address_hash(source)` + `AST_BINARY_VERSION` (serializer wire
+   format) + `AST_CACHE_PARSER_VERSION` (parser/desugar semantics, bumped when
+   the AST produced for unchanged source changes);
 2. read `.vibe/ast/<key>.vast`, `deserialize_module_binary` on hit;
 3. on miss/error/version-skew: parse, then best-effort
    `serialize_module_binary` + write.

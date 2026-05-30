@@ -94,12 +94,27 @@ fn split_parent(path : String) -> String? {
 }
 
 ///|
+/// Parser/desugar semantics version, independent of the binary wire format
+/// (`AST_BINARY_VERSION`). `AST_BINARY_VERSION` only changes when the
+/// serializer's *encoding* changes; it does NOT change when `@parser.parse_ast`
+/// / desugar start producing a *different AST* for the same source. Without a
+/// separate knob, a parser-only fix would silently reuse a stale blob parsed by
+/// the old parser (the prelude/builtin source string is unchanged), until
+/// `.vibe/ast` is deleted by hand.
+///
+/// **Bump this whenever a parser/desugar change alters the AST produced for
+/// unchanged prelude/builtin source** so the cache key invalidates old blobs.
+const AST_CACHE_PARSER_VERSION : Int = 1
+
+///|
 fn ast_disk_cache_path(source : String) -> String {
   ast_disk_cache_dir.val +
   "/" +
   @core.content_address_hash_string(source) +
   ".v" +
   @core.AST_BINARY_VERSION.to_string() +
+  "-p" +
+  AST_CACHE_PARSER_VERSION.to_string() +
   ".vast"
 }
 
