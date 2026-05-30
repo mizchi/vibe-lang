@@ -40,14 +40,26 @@ fn type_check_with_aliases(
 fn ensure_prelude_seed(session : TypecheckSession) -> TypeEnv raise TypeError {
   match session.cached_prelude_env.val {
     Some(seed) => seed
-    None => {
-      let seed = session.new_env()
-      ensure_prelude_option(seed)
-      ensure_prelude_functions(seed, {})
-      ensure_prelude_builtin_traits(seed)
-      session.cached_prelude_env.val = Some(seed)
-      seed
-    }
+    None =>
+      // #476: deserialize the typed prelude seed from disk to skip the prelude
+      // typecheck (the floor left after #427 removed the parse cost). This is
+      // the hot path used by `get_prelude_only_env_for_module`. Best-effort —
+      // a miss runs the full typecheck and persists a fresh snapshot.
+      match try_load_prelude_snapshot(session) {
+        Some(seed) => {
+          session.cached_prelude_env.val = Some(seed)
+          seed
+        }
+        None => {
+          let seed = session.new_env()
+          ensure_prelude_option(seed)
+          ensure_prelude_functions(seed, {})
+          ensure_prelude_builtin_traits(seed)
+          session.cached_prelude_env.val = Some(seed)
+          save_prelude_snapshot(seed)
+          seed
+        }
+      }
   }
 }
 
@@ -62,13 +74,24 @@ fn get_cached_prelude_env_for_module_with_session(
 ) -> TypeEnv raise TypeError {
   match session.cached_builtins_env.val {
     Some(seed) => seed.clone_for_module()
-    None => {
-      let prelude_seed = ensure_prelude_seed(session)
-      let builtins_seed = prelude_seed.clone_for_module()
-      ensure_builtin_modules(builtins_seed, {})
-      session.cached_builtins_env.val = Some(builtins_seed)
-      builtins_seed.clone_for_module()
-    }
+    None =>
+      // #476: try the on-disk typed-env snapshot before re-typechecking the
+      // prelude + builtin modules. Best-effort — a miss falls through to the
+      // full path, which then persists a fresh snapshot.
+      match try_load_builtins_snapshot(session) {
+        Some(seed) => {
+          session.cached_builtins_env.val = Some(seed)
+          seed.clone_for_module()
+        }
+        None => {
+          let prelude_seed = ensure_prelude_seed(session)
+          let builtins_seed = prelude_seed.clone_for_module()
+          ensure_builtin_modules(builtins_seed, {})
+          session.cached_builtins_env.val = Some(builtins_seed)
+          save_builtins_snapshot(builtins_seed)
+          builtins_seed.clone_for_module()
+        }
+      }
   }
 }
 

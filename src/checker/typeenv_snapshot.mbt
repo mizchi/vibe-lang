@@ -109,7 +109,7 @@ fn snap_write_str_strarr_map(
   w : @core.TypeBinWriter,
   m : Map[String, Array[String]],
 ) -> Unit {
-  w.uint(m.size())
+  w.uint(m.length())
   for k, v in m {
     w.str(k)
     snap_write_str_array(w, v)
@@ -138,7 +138,7 @@ fn snap_write_scheme(w : @core.TypeBinWriter, s : TypeScheme) -> Unit {
   snap_write_int_array(w, s.vars)
   snap_write_int_array(w, s.num_vars)
   snap_write_str_array(w, s.effect_vars)
-  w.uint(s.trait_bounds.size())
+  w.uint(s.trait_bounds.length())
   for k, v in s.trait_bounds {
     w.int(k)
     snap_write_str_array(w, v)
@@ -273,7 +273,7 @@ fn snap_read_ctor_info(
 fn snap_write_effect_def(w : @core.TypeBinWriter, d : @core.EffectDef_) -> Unit {
   w.str(d.name)
   snap_write_str_array(w, d.params)
-  w.uint(d.ops.size())
+  w.uint(d.ops.length())
   for k, sig in d.ops {
     w.str(k)
     snap_write_type_array(w, sig.params)
@@ -378,6 +378,90 @@ fn snap_purity_tier_of(
 }
 
 // ---------------------------------------------------------------------------
+// Typevar-counter safety
+// ---------------------------------------------------------------------------
+
+///|
+/// Largest `Type::Var` id occurring structurally in `ty`, or -1 if none.
+/// Used to advance a deserialized session's typevar counter past every baked
+/// id so freshly allocated vars can never collide with a scheme placeholder.
+fn snap_max_var_in_type(ty : @core.Type) -> Int {
+  fn max2(a : Int, b : Int) -> Int {
+    if a > b {
+      a
+    } else {
+      b
+    }
+  }
+
+  fn arr(xs : Array[@core.Type]) -> Int {
+    let mut m = -1
+    for t in xs {
+      m = max2(m, snap_max_var_in_type(t))
+    }
+    m
+  }
+
+  fn vals(mp : Map[String, @core.Type]) -> Int {
+    let mut m = -1
+    for _k, t in mp {
+      m = max2(m, snap_max_var_in_type(t))
+    }
+    m
+  }
+
+  match ty {
+    @core.Type::Var(id) => id
+    @core.Type::Tuple(items) => arr(items)
+    @core.Type::Array(t) => snap_max_var_in_type(t)
+    @core.Type::Set(t) => snap_max_var_in_type(t)
+    @core.Type::ArrayBuilder(t) => snap_max_var_in_type(t)
+    @core.Type::Map(k, v) => max2(snap_max_var_in_type(k), snap_max_var_in_type(v))
+    @core.Type::MapBuilder(k, v) =>
+      max2(snap_max_var_in_type(k), snap_max_var_in_type(v))
+    @core.Type::Record(fields) => vals(fields)
+    @core.Type::Variant(cases) => vals(cases)
+    @core.Type::Named(args~, ..) => arr(args)
+    @core.Type::Func(params~, ret~, ..) => {
+      let mut m = snap_max_var_in_type(ret)
+      for p in params {
+        m = max2(m, snap_max_var_in_type(p.ty))
+      }
+      m
+    }
+    _ => -1
+  }
+}
+
+///|
+/// Smallest safe value for a fresh session's typevar counter: one past the
+/// largest baked id across all schemes (vars, num_vars, trait-bound keys, and
+/// the scheme types themselves).
+fn snap_seed_var_counter(env : TypeEnv) -> Int {
+  let mut m = -1
+  fn bump(v : Int) -> Unit {
+    if v > m {
+      m = v
+    }
+  }
+
+  for entry in snap_scoped_entries(env.bindings) {
+    let scheme = entry.1
+    for id in scheme.vars {
+      bump(id)
+    }
+    for id in scheme.num_vars {
+      bump(id)
+    }
+    for id, _b in scheme.trait_bounds {
+      bump(id)
+    }
+    bump(snap_max_var_in_type(scheme.ty))
+  }
+  m + 1
+}
+
+// ---------------------------------------------------------------------------
 // Env-level serialize / deserialize
 // ---------------------------------------------------------------------------
 
@@ -406,49 +490,49 @@ pub fn serialize_builtins_env(env : TypeEnv) -> Bytes {
   }
 
   // enum_defs
-  w.uint(env.enum_defs.size())
+  w.uint(env.enum_defs.length())
   for k, v in env.enum_defs {
     w.str(k)
     snap_write_enum_def(w, v)
   }
 
   // struct_defs
-  w.uint(env.struct_defs.size())
+  w.uint(env.struct_defs.length())
   for k, v in env.struct_defs {
     w.str(k)
     snap_write_struct_def(w, v)
   }
 
   // type_aliases
-  w.uint(env.type_aliases.size())
+  w.uint(env.type_aliases.length())
   for k, v in env.type_aliases {
     w.str(k)
     snap_write_type_alias(w, v)
   }
 
   // ctor_index
-  w.uint(env.ctor_index.size())
+  w.uint(env.ctor_index.length())
   for k, v in env.ctor_index {
     w.str(k)
     snap_write_ctor_info(w, v)
   }
 
   // effect_defs
-  w.uint(env.effect_defs.size())
+  w.uint(env.effect_defs.length())
   for k, v in env.effect_defs {
     w.str(k)
     snap_write_effect_def(w, v)
   }
 
   // trait_state.traits
-  w.uint(env.trait_state.traits.size())
+  w.uint(env.trait_state.traits.length())
   for k, v in env.trait_state.traits {
     w.str(k)
     snap_write_trait_def(w, v)
   }
 
   // trait_state.trait_impls : Map[String, Array[TraitImplDef]]
-  w.uint(env.trait_state.trait_impls.size())
+  w.uint(env.trait_state.trait_impls.length())
   for k, impls in env.trait_state.trait_impls {
     w.str(k)
     w.uint(impls.length())
@@ -458,7 +542,7 @@ pub fn serialize_builtins_env(env : TypeEnv) -> Bytes {
   }
 
   // fn_versions : Map[String, ApiSemver]
-  w.uint(env.fn_versions.size())
+  w.uint(env.fn_versions.length())
   for k, v in env.fn_versions {
     w.str(k)
     w.uint(v.major)
@@ -578,5 +662,121 @@ pub fn deserialize_builtins_env(
     let k = r.str()
     env.purity_tiers[k] = snap_purity_tier_of(r.uint())
   }
+
+  // Advance the session typevar counter past every baked id. The non-snapshot
+  // path advances it while typechecking the builtins; replicate that so freshly
+  // allocated user vars cannot collide with a scheme's placeholder ids (only a
+  // concern if a builtin scheme were to carry an un-generalized free var).
+  let seed = snap_seed_var_counter(env)
+  if env.session_state.type_var_counter < seed {
+    env.session_state.type_var_counter = seed
+  }
+  if env.next_var < seed {
+    env.next_var = seed
+  }
   env
+}
+
+// ---------------------------------------------------------------------------
+// Disk cache (reuses the #427 ast_disk_cache dir / enable plumbing)
+// ---------------------------------------------------------------------------
+
+///|
+/// Cache path for an env snapshot of a given `kind` (e.g. "prelude",
+/// "builtins"). `source` is the concatenated source(s) the env is derived
+/// from; its content hash is folded with the binary, parser, and snapshot
+/// versions so any change invalidates a stale snapshot. The `kind` keeps the
+/// prelude-only and prelude+builtins snapshots in distinct files.
+fn env_snapshot_path(kind : String, source : String) -> String {
+  let h = @core.content_address_hash_string(source)
+  ast_disk_cache_dir.val +
+  "/" +
+  kind +
+  "-env." +
+  h +
+  ".v" +
+  @core.AST_BINARY_VERSION.to_string() +
+  "-p" +
+  AST_CACHE_PARSER_VERSION.to_string() +
+  "-e" +
+  TYPEENV_SNAPSHOT_VERSION.to_string() +
+  ".venv"
+}
+
+///|
+/// Concatenated prelude + builtin module sources (for the builtins snapshot
+/// key). The prelude-only snapshot keys on `prelude_source` alone.
+fn builtins_snapshot_source() -> String {
+  let sb = StringBuilder::new()
+  sb.write_string(prelude_source)
+  for pair in builtin_module_sources {
+    sb.write_string("\u{1e}")
+    sb.write_string(pair.1)
+  }
+  sb.to_string()
+}
+
+///|
+/// Try to load a typed env from the on-disk snapshot. Best-effort: returns
+/// None on disabled cache / miss / fs error / version skew / corruption so the
+/// caller falls back to typechecking.
+fn try_load_env_snapshot(
+  session : TypecheckSession,
+  kind : String,
+  source : String,
+) -> TypeEnv? {
+  if !ast_disk_cache_enabled.val {
+    return None
+  }
+  let path = env_snapshot_path(kind, source)
+  if !@os_fs.path_exists(path) {
+    return None
+  }
+  let bytes = @os_fs.read_file_to_bytes(path) catch {
+    _ => return None
+  }
+  match (try? deserialize_builtins_env(session, bytes)) {
+    Ok(env) => Some(env)
+    Err(_) => None
+  }
+}
+
+///|
+/// Persist a typed env to the on-disk snapshot. Best-effort; failures ignored.
+fn save_env_snapshot(env : TypeEnv, kind : String, source : String) -> Unit {
+  if !ast_disk_cache_enabled.val {
+    return
+  }
+  if !ensure_ast_disk_cache_dir() {
+    return
+  }
+  let path = env_snapshot_path(kind, source)
+  let bytes = serialize_builtins_env(env)
+  @os_fs.write_bytes_to_file(path, bytes) catch {
+    _ => ()
+  }
+}
+
+///|
+/// Prelude-only seed snapshot (the hot-path env from
+/// `get_prelude_only_env_for_module`). Keyed on `prelude_source`.
+pub fn try_load_prelude_snapshot(session : TypecheckSession) -> TypeEnv? {
+  try_load_env_snapshot(session, "prelude", prelude_source)
+}
+
+///|
+pub fn save_prelude_snapshot(env : TypeEnv) -> Unit {
+  save_env_snapshot(env, "prelude", prelude_source)
+}
+
+///|
+/// Prelude + builtin-modules seed snapshot (the `type_check` path env from
+/// `get_cached_prelude_env_for_module`). Keyed on all sources.
+pub fn try_load_builtins_snapshot(session : TypecheckSession) -> TypeEnv? {
+  try_load_env_snapshot(session, "builtins", builtins_snapshot_source())
+}
+
+///|
+pub fn save_builtins_snapshot(env : TypeEnv) -> Unit {
+  save_env_snapshot(env, "builtins", builtins_snapshot_source())
 }
