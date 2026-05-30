@@ -132,6 +132,15 @@ if [ -x "$PKF_BIN" ]; then
       echo "[session-start] WARNING: pkl cache warm failed (run pkf with pkl --ca-certificates)" >&2
     fi
   fi
+
+  # Install the pkfire-managed git hooks (e.g. the `pre-commit` task that
+  # `moon fmt`s staged sources) so commits in this fresh clone land formatted.
+  # Idempotent and best-effort; `.git/hooks` is not version-controlled.
+  if [ -d "$PROJECT_DIR/.git" ] && [ -f "$PROJECT_DIR/Taskfile.pkl" ]; then
+    if (cd "$PROJECT_DIR" && "$PKF_BIN" hooks install >/dev/null 2>&1); then
+      echo "[session-start] pkf git hooks installed"
+    fi
+  fi
 fi
 
 echo "[session-start] toolchain init complete"
