@@ -66,3 +66,37 @@ the focus.
 Per #402's strategic note, wasmtime-AOT (now default) was the big multiplier;
 with check under gate, the focused work is compile-stage constant-factor
 (bundle/emit) reduction.
+
+## compile bundle/emit profiling (host, native debug, warm)
+
+Added finer `--profile-callstack` instrumentation to the bundle path
+(`compile/bundle/{collect,dce,cache_key}` and, inside the collector,
+`bundle/collect/{deps,prelude_add,dce}`) — the bundle stage was previously a
+single opaque self-time leaf.
+
+`compile/bundle` totals (µs), basics / base64:
+
+| sub-stage | basics | base64 | nature |
+|---|---|---|---|
+| bundle/collect/**prelude_add** | ~1300–1600 | ~1300–1600 | **fixed** — merges every prelude+builtin value def into each bundle |
+| bundle/collect/dce | ~450 | ~490 | fixed — surgical prelude DCE reachability walk (`dce_module_with_entry_names`) |
+| bundle/cache_key | ~7 | ~680 | program-proportional — content hash of bundled module |
+| bundle/collect/deps | ~1 | ~1 | negligible for these cases |
+
+`compile/emit` = `codegen/compile_functions` + `codegen/build_module`, both
+program-proportional (tiny for small programs); not a fixed floor.
+
+**Finding:** like the prelude parse (#427) and typecheck (#476) floors, the
+bundle stage carries a **~1.3–1.6ms fixed cost from re-processing the entire
+prelude/builtin value set on every compile** (`prelude_add` merge loop +
+surgical prelude DCE). This dominates the worst compile stage.
+
+Landed here: memoized `prelude_partition_value_stmts` (the dependency-graph +
+fixpoint partition was recomputed twice per compile; now once per process).
+Modest on single-file compile (~300µs) but removes a full recompute per module
+on multi-module / warm-process compiles.
+
+**Follow-up (next lever):** cache the *bundled* prelude/builtin stmt set (or
+disk-snapshot it, analogous to #476) so each compile doesn't re-merge +
+re-DCE the full standard library. Estimated ~1.7ms off the compile `type`/
+`bundle` fixed cost — the largest remaining compile-stage constant factor.

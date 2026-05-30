@@ -503,15 +503,36 @@ fn prelude_partition_value_stmts(
 }
 
 ///|
+/// Memoized partition of the prelude AST into (core, builtin) value stmts.
+/// `prelude_partition_value_stmts` builds a dependency graph + runs a fixpoint
+/// over every prelude value def (~0.8ms); it depends only on the (cached,
+/// static) prelude AST, so compute it once per process. Bundling called this
+/// twice on every compile (`prelude_core_value_stmts` +
+/// `prelude_builtin_value_stmts`), making it ~1.6ms of fixed bundle-stage cost.
+let cached_prelude_partition : Ref[(Array[@core.Stmt], Array[@core.Stmt])?] = @ref.new(
+  None,
+)
+
+///|
+fn prelude_partitioned_value_stmts() -> (Array[@core.Stmt], Array[@core.Stmt]) {
+  match cached_prelude_partition.val {
+    Some(p) => p
+    None => {
+      let p = prelude_partition_value_stmts(prelude_ast())
+      cached_prelude_partition.val = Some(p)
+      p
+    }
+  }
+}
+
+///|
 pub fn prelude_core_value_stmts() -> Array[@core.Stmt] {
-  let (core_stmts, _) = prelude_partition_value_stmts(prelude_ast())
-  core_stmts
+  prelude_partitioned_value_stmts().0
 }
 
 ///|
 pub fn prelude_builtin_value_stmts() -> Array[@core.Stmt] {
-  let (_, builtin_stmts) = prelude_partition_value_stmts(prelude_ast())
-  builtin_stmts
+  prelude_partitioned_value_stmts().1
 }
 
 ///|
