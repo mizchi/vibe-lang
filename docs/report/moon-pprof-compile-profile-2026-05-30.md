@@ -43,40 +43,45 @@ Note: samply `--save-only` leaves frame symbols in a `.syms.json` sidecar that
 moon-pprof's `firefox2pprof` does not read, so `summary` shows raw addresses;
 symbolicate the top addresses with `addr2line -f -e <binary> <addr>`.
 
-## Findings
+## Harness must bust the compile caches
 
-### Memory management dominates (~30%+ self time)
+`runtime_compile` has global `compile_module_cache` (path-keyed) and
+`wasm_artifact_cache` (content-keyed). Compiling the *same* `"main"` source N
+times hits them after the first pass, so most iterations skip
+emit/optimize/most-of-compile and the samples describe the **cache-hit** path,
+not a fresh compile (thanks to Codex review on #480 for catching this). The
+harness therefore varies both the module path and the source content each
+iteration (`m<i>` + a `// iter <i>` comment) so every compile is a cache miss
+(~0.13ms/iter cached → ~7ms/iter fresh), and aborts on compile error instead of
+swallowing it.
 
-| function | self time |
-|---|---|
-| `moonbit_incref_inlined` | ~15% |
-| `moonbit_decref_inlined` | ~8% |
-| `_mi_page_malloc_zero` / `__libc_malloc` / `operator delete[]` | ~8% |
+## Findings (fresh compile — cache-busted)
 
-The compile path is **allocation-bound** — refcount churn + malloc/free are the
-largest self-time buckets. Reducing per-compile allocation (re-building the
-prelude/builtin stmt set every compile) is the highest-leverage win.
+Top user functions by stack frequency (`addr2line`-symbolicated from folded
+stacks; ~9.2k samples over 10.6s):
 
-### Hot user functions on the call stacks
+| function | ~% of stacks | what |
+|---|---|---|
+| `ripple Query.fetch/execute<TypeEnv>` + `VibeDb.types` | ~86% | **typecheck**, driven through the incremental-query framework |
+| `parser/AstParser.parse_*` | ~58% | parsing the user module |
+| `checker.type_expr_eff` | ~37% | expression typechecking |
 
-(by sample count; `addr2line`-symbolicated from the folded stacks)
+A fresh compile is **dominated by typecheck (incl. ripple incremental-query
+overhead) and parse** — both program-proportional, not fixed startup. The
+bundle prelude processing (`walk_block_refs` etc.) that looked hot in the
+*cache-hit* profile is a smaller, fixed component once caches are busted.
 
-- `parser/AstParser.parse_*` (parse_expr / or / and / pipe / unary) — heavy,
-  but **over-represented by the harness** (it recompiles the *same* source N
-  times and the db re-parses the user source each `VibeDb::new()`; real compiles
-  parse each file once).
-- **`core.walk_block_refs`** — the reference walk used by the bundle stage's
-  prelude partition (dependency graph) and surgical prelude DCE. Confirms the
-  bundle fixed cost found via `--profile-callstack` (`bundle/collect/prelude_add`
-  + `bundle/collect/dce`).
-- `VibeDb.imports` + `ripple Query.fetch/execute` (ImportSpec / HashedModule) —
-  incremental-query overhead in import resolution.
+Memory management (`moonbit_incref/decref_inlined`, malloc/free) is still a
+large self-time bucket (~25-30%), consistent with the AST/TypeEnv-heavy
+allocation of typecheck + parse.
 
 ## Takeaway for #402
 
-Both the stage profile (`bundle` ~4×, dominated by re-processing the whole
-prelude/builtin set) and this CPU profile (allocation-bound; `walk_block_refs`
-hot) point to the same lever: **cache the bundled prelude/builtin stmt set**
-(analogous to #427/#476) so each compile doesn't re-merge, re-walk, and
-re-allocate the standard library. That cuts both the ref-walk time and the
-allocation churn this profile attributes to memory management.
+- The largest compile cost is **typecheck**, routed through `ripple Query`
+  (incremental-query) machinery — the query/caching overhead and the
+  `type_expr_eff` tree walk are the constant factors to attack next, and they
+  scale with the program (not fixed startup).
+- The bundle prelude partition is a smaller **fixed** cost; the companion
+  branch removes it via a disk snapshot of the partition name-set (a focused
+  win for fresh selfhost processes), but it is not the dominant compile lever
+  that the cache-hit profile suggested.

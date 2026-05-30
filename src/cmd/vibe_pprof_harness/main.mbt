@@ -79,14 +79,27 @@ let harness_source : String =
 fn main {
   let iters = 1500
   let mut acc = 0
-  for _i in 0..<iters {
+  for i in 0..<iters {
+    // Vary BOTH the module path and the source content each iteration so the
+    // global compile_module_cache (path-keyed) and wasm_artifact_cache
+    // (content-keyed) in runtime_compile miss every time — otherwise iterations
+    // 2..N would be cache hits and the samples would describe the cache-hit
+    // path instead of a fresh compile. The appended `//` line is an inert
+    // comment; the prelude/builtin caches (keyed on prelude source) stay warm,
+    // matching production where each user file compiles fresh against a warm
+    // standard library.
+    let path = "m" + i.to_string()
     let db = @runtime.VibeDb::new()
-    db.set_source("main", harness_source)
-    let wasm = (try? @runtime_compile.compile_module_wasm_with_opt_level(
+    db.set_source(path, harness_source + "\n// iter " + i.to_string())
+    // Abort on failure rather than swallowing it — a silent b"" would profile
+    // the error/recovery path and hide a broken embedded source.
+    let wasm = @runtime_compile.compile_module_wasm_with_opt_level(
       db,
-      "main",
+      path,
       no_dce=true,
-    )).unwrap_or(b"")
+    ) catch {
+      e => abort("harness compile failed: " + e.to_string())
+    }
     acc = acc + wasm.length()
   }
   println("compiled bytes acc=" + acc.to_string())
