@@ -522,7 +522,7 @@ pub fn prelude_ast() -> @core.Module {
   match cached_prelude_ast.val {
     Some(ast) => ast
     None => {
-      let ast = try! @parser.parse_ast(prelude_source)
+      let ast = try! parse_ast_cached(prelude_source)
       cached_prelude_ast.val = Some(ast)
       ast
     }
