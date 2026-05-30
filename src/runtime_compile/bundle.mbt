@@ -1815,9 +1815,11 @@ fn bundle_for_wasm_impl(
   let entry_value_names = bundle_module_all_value_binder_names(main_ast)
   let entry_type_names = bundle_module_type_names(main_ast)
   // Collect all dependency definitions in topological order
+  @profiler.profiler_enter("bundle/collect/deps")
   collect_dependency_defs_with_protected_names(
     db, path, collected_dep_stmts, visited, entry_value_names, entry_type_names,
   )
+  @profiler.profiler_leave()
   let dep_stmts = bundle_drop_colliding_value_defs(
     collected_dep_stmts,
     bundle_collision_original_names(import_alias_collisions),
@@ -1857,6 +1859,7 @@ fn bundle_for_wasm_impl(
       None => ()
     }
   }
+  @profiler.profiler_enter("bundle/collect/prelude_add")
   for
     prelude_stmts in [
       @checker.prelude_core_value_stmts(),
@@ -1873,6 +1876,7 @@ fn bundle_for_wasm_impl(
       }
     }
   }
+  @profiler.profiler_leave()
   // Add main module statements (excluding imports and expanding re-exports)
   let main_stmts : Array[@core.Stmt] = []
   for stmt in main_ast.stmts {
@@ -1930,6 +1934,7 @@ fn bundle_for_wasm_impl(
   let bundled = @core.Module::{
     stmts: dedupe_bundle_structural_defs(bundled_stmts),
   }
+  @profiler.profiler_enter("bundle/collect/dce")
   let after_dce = if apply_dce {
     if include_test_entries {
       @pipeline.dce_module_for_tests(bundled)
@@ -1944,6 +1949,7 @@ fn bundle_for_wasm_impl(
     // All user/dependency names are kept as roots so only prelude is affected.
     @pipeline.dce_module_with_entry_names(bundled, non_prelude_names)
   }
+  @profiler.profiler_leave()
   demote_unused_let_mut(after_dce)
 }
 

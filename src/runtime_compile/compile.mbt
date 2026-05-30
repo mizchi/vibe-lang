@@ -2080,13 +2080,18 @@ fn bundle_for_codegen(
   ast : @core.Module,
   bundle_kind : String,
 ) -> @core.Module raise CompileError {
+  @profiler.profiler_enter("compile/bundle/collect")
   let raw = bundle_for_wasm_no_dce(db, path, ast)
-  match bundle_kind {
+  @profiler.profiler_leave()
+  @profiler.profiler_enter("compile/bundle/dce")
+  let result = match bundle_kind {
     "default" => @pipeline.dce_module(raw)
     "gc" => @pipeline.dce_module_gc(raw)
     "tests" => @pipeline.dce_module_for_tests(raw)
     _ => raw
   }
+  @profiler.profiler_leave()
+  result
 }
 
 ///|
@@ -2362,12 +2367,14 @@ fn compile_module_wasm_profiled_with(
   let bundled = bundle_for_codegen(db, path, compiled.ast, bundle_kind) catch {
     e => raise WasmCompileError::Compile(e)
   }
+  @profiler.profiler_enter("compile/bundle/cache_key")
   let cache_key = wasm_artifact_cache_key(
     bundled,
     compiled.aliases,
     cache_namespace,
     opt_level,
   )
+  @profiler.profiler_leave()
   let bundle_us = elapsed_us_from(start_bundle)
   @profiler.profiler_leave()
   match wasm_artifact_cache.val.get(cache_key) {
