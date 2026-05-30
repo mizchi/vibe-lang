@@ -1559,7 +1559,13 @@ fn generate_string_trampoline_module(
   func_body.push(b'\x10') // call
   write_u32_leb(func_body, 0) // func 0 = target_func
   match result_kind {
-    ComponentStringLiftResult::S64 => ()
+    ComponentStringLiftResult::S64 => {
+      // vibe Int is 2-bit tagged (value << 2, tag_int = 0). Untag with an
+      // arithmetic shift so the canonical-ABI s64 result is the true integer
+      // rather than the internal tagged representation (which is 4x too big).
+      emit_i64_const_raw(func_body, 2)
+      emit_i64_shr_s(func_body)
+    }
     ComponentStringLiftResult::String => {
       let result_obj_local = obj_base + string_param_count
       let result_retptr_local = result_obj_local + 1

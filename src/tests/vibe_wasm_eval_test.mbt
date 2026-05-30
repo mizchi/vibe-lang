@@ -2514,6 +2514,17 @@ test "vibe wasm eval supports: String::from_char_codes" {
 }
 
 ///|
+test "vibe wasm eval supports: Int64Array (linear, 32-bit-safe)" {
+  // Round-trips values above the 30-bit Array[Int] cell limit (#429).
+  assert_wasm_eval_decodes(
+    "let a = Int64Array::make(2, 0)\nInt64Array::set(a, 0, 4294967295)\nInt64Array::get(a, 0)",
+  )
+  assert_wasm_eval_decodes(
+    "Int64Array::length(Int64Array::make(5, 1073741824))",
+  )
+}
+
+///|
 test "vibe wasm eval supports: Int::abs" {
   assert_wasm_eval_decodes("Int::abs(5)")
   assert_wasm_eval_decodes("Int::abs(-5)")

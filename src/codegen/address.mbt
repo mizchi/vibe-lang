@@ -987,6 +987,10 @@ fn is_builtin(name : String) -> Bool {
   name == "Bytes::to_string" ||
   name == "Bytes::length" ||
   name == "Bytes::get" ||
+  name == "Int64Array::make" ||
+  name == "Int64Array::length" ||
+  name == "Int64Array::get" ||
+  name == "Int64Array::set" ||
   name == "MapBuilder::new" ||
   name == "MapBuilder::set" ||
   name == "MapBuilder::freeze" ||

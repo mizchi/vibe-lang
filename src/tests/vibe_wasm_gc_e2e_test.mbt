@@ -1063,6 +1063,173 @@ test "wasm-gc e2e: String::from_char_codes preserves codepoint order" {
 }
 
 ///|
+test "wasm-gc e2e: String::to_lower lowercases ASCII uppercase" {
+  let src =
+    #|let main = () -> Int {
+    #|  let s = String::to_lower("AbC9Z")
+    #|  String::char_code_at(s, 0) + String::char_code_at(s, 4)
+    #|}
+    #|main()
+  // 'a'(97) + 'z'(122) = 219
+  assert_gc_e2e(src, "string_to_lower", 219)
+}
+
+///|
+test "wasm-gc e2e: String::to_upper uppercases ASCII lowercase" {
+  let src =
+    #|let main = () -> Int {
+    #|  let s = String::to_upper("aB9z")
+    #|  String::char_code_at(s, 0) + String::char_code_at(s, 3)
+    #|}
+    #|main()
+  // 'A'(65) + 'Z'(90) = 155
+  assert_gc_e2e(src, "string_to_upper", 155)
+}
+
+///|
+test "wasm-gc e2e: String::trim_start drops leading whitespace only" {
+  let src =
+    #|let main = () -> Int {
+    #|  let s = String::trim_start("   hi ")
+    #|  String::length(s)
+    #|}
+    #|main()
+  // "hi " -> length 3
+  assert_gc_e2e(src, "string_trim_start", 3)
+}
+
+///|
+test "wasm-gc e2e: String::trim_end drops trailing whitespace only" {
+  let src =
+    #|let main = () -> Int {
+    #|  let s = String::trim_end(" hi   ")
+    #|  String::length(s)
+    #|}
+    #|main()
+  // " hi" -> length 3
+  assert_gc_e2e(src, "string_trim_end", 3)
+}
+
+///|
+test "wasm-gc e2e: String::count counts non-overlapping matches" {
+  let src =
+    #|let main = () -> Int {
+    #|  String::count("aaaa", "aa") + String::count("banana", "a")
+    #|}
+    #|main()
+  // 2 + 3 = 5
+  assert_gc_e2e(src, "string_count", 5)
+}
+
+///|
+test "wasm-gc e2e: String::unicode_length counts codepoints" {
+  let src =
+    #|let main = () -> Int {
+    #|  String::unicode_length("hello")
+    #|}
+    #|main()
+  assert_gc_e2e(src, "string_unicode_length", 5)
+}
+
+///|
+test "wasm-gc e2e: Array::push_all appends elements" {
+  let src =
+    #|let main = () -> Int {
+    #|  let a = Array::slice([0], 0, 0)
+    #|  Array::push_all(a, [1, 2, 3])
+    #|  Array::push_all(a, [4, 5])
+    #|  Array::length(a) * 100 + Array::get(a, 3)
+    #|}
+    #|main()
+  // length 5, a[3] = 4 -> 504
+  assert_gc_e2e(src, "array_push_all", 504)
+}
+
+///|
+test "wasm-gc e2e: Bytes::from_string / to_string round-trip (ASCII)" {
+  let src =
+    #|let main = () -> Int {
+    #|  let b = Bytes::from_string("ABC")
+    #|  let s = Bytes::to_string(b)
+    #|  Bytes::length(b) * 100 + String::char_code_at(s, 0)
+    #|}
+    #|main()
+  // length 3, 'A' = 65 -> 365
+  assert_gc_e2e(src, "bytes_roundtrip", 365)
+}
+
+///|
+test "wasm-gc e2e: Bytes::from_string UTF-8 encodes multi-byte codepoints" {
+  let src =
+    #|let main = () -> Int {
+    #|  Bytes::length(Bytes::from_string("é"))
+    #|}
+    #|main()
+  // 'é' (U+00E9) is 2 bytes in UTF-8
+  assert_gc_e2e(src, "bytes_from_string_multibyte", 2)
+}
+
+///|
+test "wasm-gc e2e: Int::parse returns Some on valid input" {
+  let src =
+    #|let main = () -> Int {
+    #|  match Int::parse("456") {
+    #|    Some(n) => n
+    #|    None => 0
+    #|  }
+    #|}
+    #|main()
+  assert_gc_e2e(src, "int_parse_some", 456)
+}
+
+///|
+test "wasm-gc e2e: Int::parse returns None on invalid input" {
+  let src =
+    #|let main = () -> Int {
+    #|  match Int::parse("12x") {
+    #|    Some(n) => n
+    #|    None => 777
+    #|  }
+    #|}
+    #|main()
+  assert_gc_e2e(src, "int_parse_none", 777)
+}
+
+///|
+test "wasm-gc e2e: Int64Array round-trips 32-bit-boundary Ints" {
+  let src =
+    #|let main = () -> Int {
+    #|  let a = Int64Array::make(2, 0)
+    #|  Int64Array::set(a, 0, 4294967295)
+    #|  Int64Array::set(a, 1, 1152921504606846975)
+    #|  if Int64Array::get(a, 0) == 4294967295 {
+    #|    if Int64Array::get(a, 1) == 1152921504606846975 {
+    #|      Int64Array::length(a)
+    #|    } else {
+    #|      0
+    #|    }
+    #|  } else {
+    #|    0
+    #|  }
+    #|}
+    #|main()
+  // Returns length 2 only if both 0xffffffff and a 60-bit value round-trip
+  // intact (32-bit Array[Int] cells would truncate and yield 0).
+  assert_gc_e2e(src, "int64array_roundtrip", 2)
+}
+
+///|
+test "wasm-gc e2e: Int64Array::make fills with default" {
+  let src =
+    #|let main = () -> Int {
+    #|  let a = Int64Array::make(4, 1073741824)
+    #|  Int64Array::get(a, 3)
+    #|}
+    #|main()
+  assert_gc_e2e(src, "int64array_default", 1073741824)
+}
+
+///|
 test "wasm-gc e2e: StringBuilder::freeze on empty builder returns empty string" {
   let src =
     #|let main = () -> Int {

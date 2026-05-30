@@ -82,11 +82,40 @@ fi)
 $(comm -13 "$tmp/linear.txt" "$tmp/gc.txt" | sed 's/^/- /')
 EOF
 
-# Informational only for now: there are ~31 known core-namespace
-# divergences (StringBuilder, Int::* utils, Map mutation API, etc.)
-# that need to land in wasm-gc per docs/spec/codegen-dual-backend.md
-# Phase A.2. When that's done, flip this to a hard gate.
-if [[ -n "$linear_core_only" || -n "$gc_core_only" ]]; then
-  echo ""
-  echo "note: core-namespace divergences exist (see docs/spec/codegen-dual-backend.md)." >&2
+# Hard gate (#414 step 7): every core-namespace builtin must exist in both
+# backends, except divergences explicitly accepted in the allowlist. Adding a
+# builtin to one backend without the other (the silent-regression failure mode
+# that motivated this script) now fails release-check with exit 2.
+ALLOWLIST_FILE="$ROOT_DIR/scripts/codegen_parity_allowlist.txt"
+if [[ -f "$ALLOWLIST_FILE" ]]; then
+  grep -vE '^[[:space:]]*(#|$)' "$ALLOWLIST_FILE" | sed 's/[[:space:]]*$//' \
+    | sort -u > "$tmp/allow.txt"
+else
+  : > "$tmp/allow.txt"
+fi
+
+printf '%s\n' "$linear_core_only" | grep -v '^$' | sort -u > "$tmp/lco.txt" || true
+printf '%s\n' "$gc_core_only" | grep -v '^$' | sort -u > "$tmp/gco.txt" || true
+
+unexpected_linear_only=$(comm -23 "$tmp/lco.txt" "$tmp/allow.txt")
+unexpected_gc_only=$(comm -23 "$tmp/gco.txt" "$tmp/allow.txt")
+
+if [[ -n "$unexpected_linear_only" || -n "$unexpected_gc_only" ]]; then
+  {
+    echo ""
+    echo "ERROR: unexpected core-namespace codegen divergence (parity gate)."
+    if [[ -n "$unexpected_linear_only" ]]; then
+      echo "  linear has, wasm-gc missing:"
+      echo "$unexpected_linear_only" | sed 's/^/    - /'
+    fi
+    if [[ -n "$unexpected_gc_only" ]]; then
+      echo "  wasm-gc has, linear missing:"
+      echo "$unexpected_gc_only" | sed 's/^/    - /'
+    fi
+    echo ""
+    echo "Implement the builtin in the missing backend, or (if the divergence"
+    echo "is intentional) add it to scripts/codegen_parity_allowlist.txt with a"
+    echo "rationale. See docs/spec/codegen-dual-backend.md."
+  } >&2
+  exit 2
 fi

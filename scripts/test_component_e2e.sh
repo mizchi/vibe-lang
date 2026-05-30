@@ -363,6 +363,13 @@ EOF
 
   RESULT=$(printf 'A' | WASMTIME_BIN="$WASMTIME_BIN" "$WASMTIME_RUN" --invoke 'run()' "$TMP_DIR/stdio_roundtrip.component.wasm" 2>/dev/null || true)
   LAST_LINE=$(printf '%s\n' "$RESULT" | tail -n 1)
+  # NOTE (#472): the `run` export returns the *raw tagged* vibe value
+  # (Int 'A'=65 -> 65<<2 = 260), unlike the string-lift `handler` export which
+  # untags its known-Int result to a plain canonical-ABI s64. `run` is
+  # deliberately tagged because its return type is polymorphic (Int / Obj
+  # pointer / Bool / Unit, e.g. selfhost `run() -> Result<(),()>`), so a blind
+  # `>> 2` untag would corrupt non-Int returns. Consumers of `run` interpret
+  # the 2-bit tag themselves. Hence 260, not 65, is the expected value here.
   if [ "$LAST_LINE" = "260" ]; then
     log_pass "stdin_read_char reads one byte and returns tagged int (260 for 'A')"
   else
