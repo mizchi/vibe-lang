@@ -9,9 +9,15 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     moonbit-overlay.url = "github:moonbit-community/moonbit-overlay";
+    # pkfire (pkf) — canonical task runner (Taskfile.pkl). Not in nixpkgs;
+    # pinned to the same tag CI and the session-start hook use (v0.10.0).
+    pkfire = {
+      url = "git+https://github.com/mizchi/pkfire?ref=refs/tags/v0.10.0";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, nixpkgs, flake-utils, rust-overlay, moonbit-overlay }:
+  outputs = { self, nixpkgs, flake-utils, rust-overlay, moonbit-overlay, pkfire }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs {
@@ -105,11 +111,13 @@
             similarity-mbt
 
             # Pkl CLI — required by pkfire (Taskfile.pkl) and by
-            # pkspec for evaluating local schemas. pkfire / pkspec binaries
-            # are not in nixpkgs; fetch them via `nix run github:mizchi/pkfire`
-            # or `go install github.com/mizchi/pkfire/cmd/pkf@latest`.
+            # pkspec for evaluating local schemas.
             # See docs/pkfire-pkspec.md for usage.
             pkgs.pkl
+
+            # pkfire (pkf) — canonical task runner, pinned to v0.10.0 via the
+            # `pkfire` flake input. Not in nixpkgs.
+            pkfire.packages.${system}.default
           ];
 
           shellHook = ''
@@ -121,9 +129,9 @@
               moon update 2>/dev/null || true
             fi
 
-            # pkf (pkfire) is the canonical task runner but is not in
-            # nixpkgs. Warn if it is missing so new contributors aren't
-            # blocked by `pkf: command not found` mid-task.
+            # pkf (pkfire) is provided by the `pkfire` flake input above. Keep
+            # a fallback hint in case the shell is entered without it on PATH
+            # (e.g. flake input fetch failed offline).
             if ! command -v pkf >/dev/null 2>&1; then
               echo ""
               echo "warn: pkf not on PATH — install pkfire to run tasks:"

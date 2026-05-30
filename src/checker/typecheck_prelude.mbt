@@ -199,7 +199,7 @@ pub fn ensure_builtin_modules(
       for pair in builtin_module_sources {
         let (mod_name, source) = pair
         @profiler.profiler_enter("type/builtin/" + mod_name)
-        let parsed = try? @parser.parse_ast(source)
+        let parsed = try? parse_ast_cached(source)
         match parsed {
           Ok(m) => {
             let exported_names = collect_exported_names(m.stmts)
