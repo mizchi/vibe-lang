@@ -24,7 +24,7 @@ pub(all) enum RcStmtActionKind {
 } derive(Debug, Eq)
 
 ///|
-pub impl Show for RcStmtActionKind with output(self, logger) {
+pub impl Show for RcStmtActionKind with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 
@@ -35,7 +35,7 @@ pub(all) struct RcStmtAction {
 } derive(Debug, Eq)
 
 ///|
-pub impl Show for RcStmtAction with output(self, logger) {
+pub impl Show for RcStmtAction with fn output(self, logger) {
   logger.write_string(Debug::to_repr(self).to_string())
 }
 

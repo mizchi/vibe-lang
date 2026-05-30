@@ -84,7 +84,10 @@ fn snap_read_int_array(
 }
 
 ///|
-fn snap_write_type_array(w : @core.TypeBinWriter, xs : Array[@core.Type]) -> Unit {
+fn snap_write_type_array(
+  w : @core.TypeBinWriter,
+  xs : Array[@core.Type],
+) -> Unit {
   w.uint(xs.length())
   for t in xs {
     w.ty(t)
@@ -315,7 +318,11 @@ fn snap_trait_origin_of(
     0 => TraitOrigin::DefinedHere
     1 => TraitOrigin::Imported
     2 => TraitOrigin::PreludeSeed
-    _ => raise @core.BinaryDeserializeError::UnknownTag("TraitOrigin", tag.to_byte())
+    _ =>
+      raise @core.BinaryDeserializeError::UnknownTag(
+        "TraitOrigin",
+        tag.to_byte(),
+      )
   }
 }
 
@@ -372,7 +379,8 @@ fn snap_purity_tier_of(
     2 => TopLevelPurityTier::Impure
     _ =>
       raise @core.BinaryDeserializeError::UnknownTag(
-        "TopLevelPurityTier", tag.to_byte(),
+        "TopLevelPurityTier",
+        tag.to_byte(),
       )
   }
 }
@@ -416,7 +424,8 @@ fn snap_max_var_in_type(ty : @core.Type) -> Int {
     @core.Type::Array(t) => snap_max_var_in_type(t)
     @core.Type::Set(t) => snap_max_var_in_type(t)
     @core.Type::ArrayBuilder(t) => snap_max_var_in_type(t)
-    @core.Type::Map(k, v) => max2(snap_max_var_in_type(k), snap_max_var_in_type(v))
+    @core.Type::Map(k, v) =>
+      max2(snap_max_var_in_type(k), snap_max_var_in_type(v))
     @core.Type::MapBuilder(k, v) =>
       max2(snap_max_var_in_type(k), snap_max_var_in_type(v))
     @core.Type::Record(fields) => vals(fields)
@@ -732,12 +741,8 @@ fn try_load_env_snapshot(
   if !@os_fs.path_exists(path) {
     return None
   }
-  let bytes = @os_fs.read_file_to_bytes(path) catch {
-    _ => return None
-  }
-  let env = deserialize_builtins_env(session, bytes) catch {
-    _ => return None
-  }
+  let bytes = @os_fs.read_file_to_bytes(path) catch { _ => return None }
+  let env = deserialize_builtins_env(session, bytes) catch { _ => return None }
   Some(env)
 }
 

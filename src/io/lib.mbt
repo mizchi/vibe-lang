@@ -1,14 +1,14 @@
 ///|
 /// Filesystem adapter trait for compiler/runtime boundary.
 pub(open) trait FileSystemAdapter {
-  current_dir_or_root(Self) -> String
-  path_exists(Self, String) -> Bool
-  create_dir(Self, String) -> Result[Unit, String]
-  read_dir(Self, String) -> Result[Array[String], String]
-  read_string(Self, String) -> Result[String, String]
-  read_bytes(Self, String) -> Result[Bytes, String]
-  write_string(Self, String, String) -> Result[Unit, String]
-  write_bytes(Self, String, Bytes) -> Result[Unit, String]
+  fn current_dir_or_root(Self) -> String
+  fn path_exists(Self, String) -> Bool
+  fn create_dir(Self, String) -> Result[Unit, String]
+  fn read_dir(Self, String) -> Result[Array[String], String]
+  fn read_string(Self, String) -> Result[String, String]
+  fn read_bytes(Self, String) -> Result[Bytes, String]
+  fn write_string(Self, String, String) -> Result[Unit, String]
+  fn write_bytes(Self, String, Bytes) -> Result[Unit, String]
 }
 
 ///|
@@ -22,7 +22,7 @@ pub fn OsFsAdapter::new() -> OsFsAdapter {
 }
 
 ///|
-pub impl FileSystemAdapter for OsFsAdapter with current_dir_or_root(_self) {
+pub impl FileSystemAdapter for OsFsAdapter with fn current_dir_or_root(_self) {
   match @env.current_dir() {
     Some(dir) => dir
     None => "/"
@@ -30,12 +30,12 @@ pub impl FileSystemAdapter for OsFsAdapter with current_dir_or_root(_self) {
 }
 
 ///|
-pub impl FileSystemAdapter for OsFsAdapter with path_exists(_self, path) {
+pub impl FileSystemAdapter for OsFsAdapter with fn path_exists(_self, path) {
   @os_fs.path_exists(path)
 }
 
 ///|
-pub impl FileSystemAdapter for OsFsAdapter with create_dir(_self, path) {
+pub impl FileSystemAdapter for OsFsAdapter with fn create_dir(_self, path) {
   @os_fs.create_dir(path) catch {
     e => return Err(e.to_string())
   }
@@ -43,13 +43,13 @@ pub impl FileSystemAdapter for OsFsAdapter with create_dir(_self, path) {
 }
 
 ///|
-pub impl FileSystemAdapter for OsFsAdapter with read_dir(_self, path) {
+pub impl FileSystemAdapter for OsFsAdapter with fn read_dir(_self, path) {
   let entries = @os_fs.read_dir(path) catch { e => return Err(e.to_string()) }
   Ok(entries)
 }
 
 ///|
-pub impl FileSystemAdapter for OsFsAdapter with read_string(_self, path) {
+pub impl FileSystemAdapter for OsFsAdapter with fn read_string(_self, path) {
   let content = @os_fs.read_file_to_string(path) catch {
     e => return Err(e.to_string())
   }
@@ -57,7 +57,7 @@ pub impl FileSystemAdapter for OsFsAdapter with read_string(_self, path) {
 }
 
 ///|
-pub impl FileSystemAdapter for OsFsAdapter with read_bytes(_self, path) {
+pub impl FileSystemAdapter for OsFsAdapter with fn read_bytes(_self, path) {
   let content = @os_fs.read_file_to_bytes(path) catch {
     e => return Err(e.to_string())
   }
@@ -65,7 +65,7 @@ pub impl FileSystemAdapter for OsFsAdapter with read_bytes(_self, path) {
 }
 
 ///|
-pub impl FileSystemAdapter for OsFsAdapter with write_string(
+pub impl FileSystemAdapter for OsFsAdapter with fn write_string(
   _self,
   path,
   content,
@@ -77,7 +77,7 @@ pub impl FileSystemAdapter for OsFsAdapter with write_string(
 }
 
 ///|
-pub impl FileSystemAdapter for OsFsAdapter with write_bytes(
+pub impl FileSystemAdapter for OsFsAdapter with fn write_bytes(
   _self,
   path,
   content,

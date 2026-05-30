@@ -6,7 +6,7 @@ pub struct Store {
 } derive(Eq)
 
 ///|
-pub impl Show for Store with output(self, logger) {
+pub impl Show for Store with fn output(self, logger) {
   logger.write_string("Store(values=")
   logger.write_string(self.values.length().to_string())
   logger.write_string(", next_uid=")
