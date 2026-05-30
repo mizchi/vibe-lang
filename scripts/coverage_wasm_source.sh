@@ -157,9 +157,9 @@ if [ ! -f "$ENTRY_PATH" ]; then
 fi
 
 case "$MODE" in
-  wasm|wasm-js-string) ;;
+  wasm|wasm-js-string|wasm-gc) ;;
   *)
-    echo "[wasm source coverage] invalid mode: $MODE (expected: wasm|wasm-js-string)" >&2
+    echo "[wasm source coverage] invalid mode: $MODE (expected: wasm|wasm-js-string|wasm-gc)" >&2
     exit 1
     ;;
 esac
