@@ -518,7 +518,18 @@ fn prelude_partitioned_value_stmts() -> (Array[@core.Stmt], Array[@core.Stmt]) {
   match cached_prelude_partition.val {
     Some(p) => p
     None => {
-      let p = prelude_partition_value_stmts(prelude_ast())
+      let ast = prelude_ast()
+      // #402: load the partition name-set from disk (skip graph+fixpoint) on a
+      // fresh process; on a miss compute it and persist the name-set. Both paths
+      // produce the identical (core, builtin) split.
+      let p = match try_load_prelude_partition(ast) {
+        Some(loaded) => loaded
+        None => {
+          let computed = prelude_partition_value_stmts(ast)
+          save_prelude_partition(computed.1)
+          computed
+        }
+      }
       cached_prelude_partition.val = Some(p)
       p
     }
