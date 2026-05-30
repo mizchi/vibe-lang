@@ -112,7 +112,22 @@ tracking (parser change → checker tests need rerun) is handled inside
 moon, not by pkfire. For the final pre-commit sweep, fall back to
 `just test` or `pkf run test`.
 
-## pkspec — `pkspec/VibeTest.pkl`
+## git hooks (`pkf hooks`)
+
+`pkf hooks install` writes `.git/hooks/*` shims that delegate to
+`pkf run <hook-name>` — pkfire binds a git hook to the task whose name
+matches the hook (e.g. the `pre-commit` task).
+
+This repo ships a **`pre-commit`** task that runs
+`scripts/pkfire/precommit_fmt.sh`: it `moon fmt`s the staged `.mbt` files and
+re-stages them, so every commit lands formatted. Hooks live under `.git/`
+(not version-controlled), so each clone must opt in once:
+
+```bash
+pkf hooks install      # wire .git/hooks → pkf run
+pkf hooks list         # show which hooks are installed / declared
+pkf hooks uninstall    # remove the shims
+```
 
 `pkspec/VibeTest.pkl` declares two tests that shell out to `moon test`
 (native and JS targets) so the run can be driven with pkspec's sharding,
