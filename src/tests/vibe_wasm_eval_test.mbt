@@ -801,6 +801,13 @@ fn eval_loop(
   //   pos: for loop, the position right after the loop opcode+blocktype (restart point)
   //   stack_height: stack height at block entry
   let block_stack : Array[(Int, Int, Int)] = []
+  // v128 value pool. The Int64 value stack cannot hold a 128-bit value, so a
+  // v128 is materialised as a 16-byte FixedArray and referenced from the
+  // stack/locals by its pool index. v128 values never cross a call boundary
+  // in vibe-lang codegen (produced and consumed within one function body —
+  // SIMD array fill and string-content equality), so a per-eval_loop pool is
+  // sufficient.
+  let v128_pool : Array[FixedArray[Byte]] = []
   while true {
     let op = code.read_u8()
     match op {
@@ -1555,37 +1562,90 @@ fn eval_loop(
         } else {
           let _ = block_stack.pop()
         }
-      // SIMD (v128) prefix. vibe-lang's codegen emits SIMD as an always-on
-      // baseline; in mainline programs the only shapes reaching this
-      // interpreter are the splat-broadcast fill (`i32x4.splat` + `v128.store`)
-      // used by `array_new` / `FixedArray::make`. A splat vector has four
-      // identical lanes, so it is modelled as its single i32 lane stored in
-      // one Int64 stack slot. Non-splat SIMD is rejected rather than silently
-      // mis-evaluated.
+      // SIMD (v128) prefix. vibe-lang treats the wasm SIMD extension as an
+      // always-on baseline (ADR-0054), so v128 ops appear in core primitives:
+      // the splat-broadcast array fill (`i32x4.splat` + `v128.store`) and the
+      // 16-byte string-content equality scan (`v128.load` + `i8x16.eq` +
+      // `i8x16.all_true`). v128 values live in `v128_pool`, referenced by
+      // index on the Int64 stack.
       253 => {
         let subop = code.read_leb_u32()
         match subop {
-          // i32x4.splat: keep the broadcast lane (low 32 bits) on the stack.
-          17 => {
+          // v128.load: pool a 16-byte copy of memory at addr+offset.
+          0 => {
+            let _ = code.read_leb_u32() // align
+            let offset = code.read_leb_u32()
             if stack.is_empty() {
               raise WasmEvalError::Invalid("stack underflow")
             }
-            let v = stack.unsafe_pop().to_int()
-            stack.push(v.to_int64())
+            let addr = stack.unsafe_pop().to_int()
+            let v : FixedArray[Byte] = FixedArray::make(16, (0).to_byte())
+            for i in 0..<16 {
+              v[i] = mem[addr + offset + i]
+            }
+            v128_pool.push(v)
+            stack.push((v128_pool.length() - 1).to_int64())
           }
-          // v128.store: write the 4-byte lane four times (16 bytes total).
+          // v128.store: write the pooled 16 bytes back to memory.
           11 => {
             let _ = code.read_leb_u32() // align
             let offset = code.read_leb_u32()
             if stack.length() < 2 {
               raise WasmEvalError::Invalid("stack underflow")
             }
-            let value = stack.unsafe_pop().to_int()
+            let idx = stack.unsafe_pop().to_int()
             let addr = stack.unsafe_pop().to_int()
-            write_u32_le(mem, addr + offset, value)
-            write_u32_le(mem, addr + offset + 4, value)
-            write_u32_le(mem, addr + offset + 8, value)
-            write_u32_le(mem, addr + offset + 12, value)
+            let v = v128_pool[idx]
+            for i in 0..<16 {
+              mem[addr + offset + i] = v[i]
+            }
+          }
+          // i32x4.splat: broadcast the low 32 bits to all four lanes.
+          17 => {
+            if stack.is_empty() {
+              raise WasmEvalError::Invalid("stack underflow")
+            }
+            let val = stack.unsafe_pop().to_int()
+            let v : FixedArray[Byte] = FixedArray::make(16, (0).to_byte())
+            for lane in 0..<4 {
+              v[lane * 4 + 0] = (val & 0xff).to_byte()
+              v[lane * 4 + 1] = ((val >> 8) & 0xff).to_byte()
+              v[lane * 4 + 2] = ((val >> 16) & 0xff).to_byte()
+              v[lane * 4 + 3] = ((val >> 24) & 0xff).to_byte()
+            }
+            v128_pool.push(v)
+            stack.push((v128_pool.length() - 1).to_int64())
+          }
+          // i8x16.eq: per-byte equality (0xFF where equal, else 0x00).
+          35 => {
+            if stack.length() < 2 {
+              raise WasmEvalError::Invalid("stack underflow")
+            }
+            let bi = stack.unsafe_pop().to_int()
+            let ai = stack.unsafe_pop().to_int()
+            let a = v128_pool[ai]
+            let b = v128_pool[bi]
+            let r : FixedArray[Byte] = FixedArray::make(16, (0).to_byte())
+            for i in 0..<16 {
+              r[i] = if a[i] == b[i] { (0xff).to_byte() } else { (0).to_byte() }
+            }
+            v128_pool.push(r)
+            stack.push((v128_pool.length() - 1).to_int64())
+          }
+          // i8x16.all_true: 1 iff every lane is non-zero.
+          99 => {
+            if stack.is_empty() {
+              raise WasmEvalError::Invalid("stack underflow")
+            }
+            let idx = stack.unsafe_pop().to_int()
+            let v = v128_pool[idx]
+            let mut all = 1
+            for i in 0..<16 {
+              if v[i].to_int() == 0 {
+                all = 0
+              }
+            }
+            stack.push(all.to_int64())
           }
           _ => raise WasmEvalError::Unsupported("simd op " + subop.to_string())
         }

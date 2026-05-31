@@ -1219,6 +1219,8 @@ fn compile_builtin_string(
         let right_len_local = alloc_temp_local(ctx)
         let loop_i_local = alloc_temp_local(ctx)
         let eq_local = alloc_temp_local(ctx)
+        // End of the 16-byte SIMD chunk region: left_len & ~15 (ADR-0054).
+        let chunk_end_local = alloc_temp_local(ctx)
         compile_expr_i32(ctx, buf, pos_args[0])
         emit_untag_ptr_i32(buf)
         emit_local_set(buf, left_ptr_local)
@@ -1247,6 +1249,50 @@ fn compile_builtin_string(
         emit_local_set(buf, eq_local)
         emit_i32_const_raw(buf, 0)
         emit_local_set(buf, loop_i_local)
+        // SIMD fast path (ADR-0054): compare 16 bytes per iteration with
+        // v128.load + i8x16.eq + i8x16.all_true. On the first mismatching
+        // chunk, set eq=0 and loop_i=left_len so both this loop and the
+        // scalar tail exit. The chunk region is left_len & ~15; the trailing
+        // (left_len & 15) bytes fall through to the scalar tail. The string
+        // bytes live at memarg offset 8 (obj_string: tag@0, len@4, data@8).
+        emit_local_get(buf, left_len_local)
+        emit_i32_const_raw(buf, -16)
+        emit_i32_and(buf)
+        emit_local_set(buf, chunk_end_local)
+        emit_block(buf)
+        emit_loop(buf)
+        emit_local_get(buf, loop_i_local)
+        emit_local_get(buf, chunk_end_local)
+        emit_i32_lt_s(buf)
+        emit_i32_eqz(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, left_ptr_local)
+        emit_local_get(buf, loop_i_local)
+        emit_i32_add(buf)
+        emit_v128_load_align(buf, 2, 8)
+        emit_local_get(buf, right_ptr_local)
+        emit_local_get(buf, loop_i_local)
+        emit_i32_add(buf)
+        emit_v128_load_align(buf, 2, 8)
+        emit_i8x16_eq(buf)
+        emit_i8x16_all_true(buf)
+        emit_i32_eqz(buf) // 1 if any byte in the chunk differs
+        buf.push((4).to_byte()) // if (chunk mismatch)
+        buf.push((64).to_byte()) // void
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, eq_local)
+        emit_local_get(buf, left_len_local)
+        emit_local_set(buf, loop_i_local)
+        buf.push((5).to_byte()) // else
+        emit_local_get(buf, loop_i_local)
+        emit_i32_const_raw(buf, 16)
+        emit_i32_add(buf)
+        emit_local_set(buf, loop_i_local)
+        buf.push((11).to_byte()) // end if
+        emit_br(buf, 0)
+        emit_end(buf) // end SIMD loop
+        emit_end(buf) // end SIMD block
+        // Scalar tail: remaining (left_len & 15) bytes one at a time.
         emit_block(buf)
         emit_loop(buf)
         emit_local_get(buf, loop_i_local)
