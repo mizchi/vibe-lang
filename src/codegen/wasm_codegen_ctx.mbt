@@ -115,6 +115,13 @@ priv struct CodegenCtx {
   mut loop_continue_offset : Int
   // For parameterized loop: local indices for loop params
   mut loop_param_locals : Array[Int]
+  // Undo log for scoped named-function maps (fn_indices, fn_params,
+  // fn_param_names, fn_returns). These maps are pre-registered to the size
+  // of the whole module, so snapshotting them by value on every block was
+  // O(module_size) per block = O(N^2) over a compile. Instead, in-region
+  // writes push a revert closure here; snapshot records the log length and
+  // restore pops back to it. O(writes-in-block) per block.
+  scope_undo : Array[() -> Unit]
   // Forward-declared function tracking for mutual recursion back-patch
   // Maps function name -> span_key for forward-declarable functions
   forward_fn_keys : Map[String, String]
@@ -322,6 +329,7 @@ fn CodegenCtx::new(
     loop_break_offset: -1,
     loop_continue_offset: -1,
     loop_param_locals: [],
+    scope_undo: [],
     // Forward function tracking
     forward_fn_keys: {},
     // Mutable capture ref cell tracking

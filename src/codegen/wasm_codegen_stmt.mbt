@@ -124,15 +124,15 @@ fn compile_stmt(
           }
           if func_idx >= 0 {
             // Register as callable function (direct call)
-            ctx.fn_indices[name] = func_idx
-            ctx.fn_params[name] = kinds
+            scoped_named_map_set(ctx, ctx.fn_indices, name, func_idx)
+            scoped_named_map_set(ctx, ctx.fn_params, name, kinds)
             // Save parameter names for labeled args resolution
             let names : Array[String] = []
             for p in fn_params {
               names.push(p.name)
             }
-            ctx.fn_param_names[name] = names
-            ctx.fn_returns[name] = ret_kind
+            scoped_named_map_set(ctx, ctx.fn_param_names, name, names)
+            scoped_named_map_set(ctx, ctx.fn_returns, name, ret_kind)
             // Infer return signature if function returns a function type
             match fn_ret {
               Some(r) =>
@@ -269,21 +269,24 @@ fn compile_stmt(
               match ctx.fn_indices.get(source_name) {
                 Some(func_idx) => {
                   let _ = span
-                  ctx.fn_indices[name] = func_idx
+                  scoped_named_map_set(ctx, ctx.fn_indices, name, func_idx)
                   match ctx.fn_local_sigs.get(source_name) {
                     Some(sig) => ctx.fn_local_sigs[name] = sig
                     None => ()
                   }
                   match ctx.fn_params.get(source_name) {
-                    Some(kinds) => ctx.fn_params[name] = kinds
+                    Some(kinds) =>
+                      scoped_named_map_set(ctx, ctx.fn_params, name, kinds)
                     None => ()
                   }
                   match ctx.fn_param_names.get(source_name) {
-                    Some(names) => ctx.fn_param_names[name] = names
+                    Some(names) =>
+                      scoped_named_map_set(ctx, ctx.fn_param_names, name, names)
                     None => ()
                   }
                   match ctx.fn_returns.get(source_name) {
-                    Some(ret_kind) => ctx.fn_returns[name] = ret_kind
+                    Some(ret_kind) =>
+                      scoped_named_map_set(ctx, ctx.fn_returns, name, ret_kind)
                     None => ()
                   }
                   match ctx.fn_return_sigs.get(source_name) {
@@ -340,7 +343,12 @@ fn compile_stmt(
                           param_kinds,
                           ValueKind::I64,
                         )
-                        ctx.fn_returns[name] = ValueKind::I64
+                        scoped_named_map_set(
+                          ctx,
+                          ctx.fn_returns,
+                          name,
+                          ValueKind::I64,
+                        )
                       }
                       let mut is_captured = false
                       for _key, captures in ctx.fn_closure_captures {
@@ -379,21 +387,34 @@ fn compile_stmt(
                 Some(target_name) =>
                   match ctx.fn_indices.get(target_name) {
                     Some(func_idx) => {
-                      ctx.fn_indices[name] = func_idx
+                      scoped_named_map_set(ctx, ctx.fn_indices, name, func_idx)
                       match ctx.fn_local_sigs.get(target_name) {
                         Some(sig) => ctx.fn_local_sigs[name] = sig
                         None => ()
                       }
                       match ctx.fn_params.get(target_name) {
-                        Some(kinds) => ctx.fn_params[name] = kinds
+                        Some(kinds) =>
+                          scoped_named_map_set(ctx, ctx.fn_params, name, kinds)
                         None => ()
                       }
                       match ctx.fn_param_names.get(target_name) {
-                        Some(names) => ctx.fn_param_names[name] = names
+                        Some(names) =>
+                          scoped_named_map_set(
+                            ctx,
+                            ctx.fn_param_names,
+                            name,
+                            names,
+                          )
                         None => ()
                       }
                       match ctx.fn_returns.get(target_name) {
-                        Some(ret_kind) => ctx.fn_returns[name] = ret_kind
+                        Some(ret_kind) =>
+                          scoped_named_map_set(
+                            ctx,
+                            ctx.fn_returns,
+                            name,
+                            ret_kind,
+                          )
                         None => ()
                       }
                       match ctx.fn_return_sigs.get(target_name) {
