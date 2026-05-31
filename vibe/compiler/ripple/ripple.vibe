@@ -1,14 +1,71 @@
 //# Types
 
+// RippleDb is the selfhost compiler's incremental module DB: it maps module
+// path -> source, path -> fingerprint, and path -> dependency list.
+//
+// Previously each map was a flat association array (`Array[(String, _)]`):
+// every lookup was O(n) and every upsert rebuilt the whole array O(n), so
+// threading the DB through N modules was O(N^2) time AND allocations (matching
+// the alloc-bound compile profile from moon-pprof). This replaces them with
+// fixed-bucket hash maps: hash the path to one of NBUCKETS buckets and scan
+// only that (small) bucket. Lookup/insert are O(1) amortized, so a full
+// N-module compile is O(N).
+//
+// The maps mutate their buckets in place, so the DB is *linear*: callers must
+// use the returned db and discard the old one. The selfhost compiler always
+// threads `next_db`, so this is safe. eval_count lives in a 1-element array so
+// it is bumped without rebuilding the enum payload.
+
+export enum StrMap {
+  StrMap(Array[Array[(String, String)]])
+}
+
+export enum DepsMap {
+  DepsMap(Array[Array[(String, Array[String])]])
+}
+
 export enum RippleDb {
-  RippleDb(Array[(String, String)], Array[(String, String)], Array[(String, Array[String])], Int)
+  RippleDb(StrMap, StrMap, DepsMap, Array[Int])
 }
 
 //# Functions
 
+let nbuckets: () -> Int = () -> {
+  256
+}
+
+let bucket_mask: () -> Int = () -> {
+  255
+}
+
+// FNV-1a-style string hash, masked to a non-negative bucket index. NBUCKETS is
+// a power of two so we mask with `& 255` instead of `%`. Intermediate values
+// are kept within 30 bits so the multiply stays well under the 2^61 tag limit.
+let hash_bucket: (String) -> Int = (key) -> {
+  let len = String::length(key)
+  let rec go: (Int, Int) -> Int = (i, acc) -> {
+    if i >= len {
+      acc
+    } else {
+      let c = String::char_code_at(key, i)
+      let mixed = (acc ^ c) * 16777619
+      let bounded = mixed & 1073741823
+      go(i + 1, bounded)
+    }
+  }
+  let h = go(0, 2166136261 & 1073741823)
+  h & bucket_mask()
+}
+
 let empty_strings: () -> Array[String] = () -> {
   Array::slice([
     ""
+  ], 0, 0)
+}
+
+let empty_string_pairs: () -> Array[(String, String)] = () -> {
+  Array::slice([
+    ("", "")
   ], 0, 0)
 }
 
@@ -18,135 +75,195 @@ let empty_deps_pairs: () -> Array[(String, Array[String])] = () -> {
   ], 0, 0)
 }
 
-let rec lookup_deps_entry: (Array[(String, Array[String])], String, Int) -> Option[Array[String]] = (entries, key, i) -> {
-  if i >= Array::length(entries) {
-    None
-  }
-  else {
-    let (k, deps) = Array::get(entries, i)
-    if k == key {
-      Some(deps)
-    }
-    else {
-      lookup_deps_entry(entries, key, i + 1)
-    }
-  }
-}
-
-export let ripple_get_deps: (RippleDb, String) -> Option[Array[String]] = (db, path) -> {
-  match db {
-    RippleDb(_, _, deps_map, _) => lookup_deps_entry(deps_map, path, 0)
-  }
-}
-
-export let ripple_eval_count: (RippleDb) -> Int = (db) -> {
-  match db {
-    RippleDb(_, _, _, count) => count
-  }
-}
-
-let upsert_deps_entry: (Array[(String, Array[String])], String, Array[String]) -> Array[(String, Array[String])] = (entries, key, deps) -> {
-  let len = Array::length(entries)
+// Build a bucket array of NBUCKETS DISTINCT empty assoc arrays. (Array::make
+// would alias one array across every slot, so push fresh empties instead.)
+let new_string_buckets: () -> Array[Array[(String, String)]] = () -> {
+  let n = nbuckets()
   let b = ArrayBuilder::new()
-  let rec go: (Int, Bool) -> Array[(String, Array[String])] = (i, found) -> {
-    if i >= len {
-      if found {
-        ArrayBuilder::freeze(b)
-      } else {
-        ArrayBuilder::push(b, (key, deps))
-        ArrayBuilder::freeze(b)
-      }
+  let rec go: (Int) -> Unit = (i) -> {
+    if i >= n {
+      ()
     } else {
-      let (k, existing) = Array::get(entries, i)
-      if k == key {
-        ArrayBuilder::push(b, (key, deps))
-        go(i + 1, true)
-      } else {
-        ArrayBuilder::push(b, (k, existing))
-        go(i + 1, found)
-      }
+      ArrayBuilder::push(b, empty_string_pairs())
+      go(i + 1)
     }
   }
-  go(0, false)
+  go(0)
+  ArrayBuilder::freeze(b)
 }
 
-let empty_string_pairs: () -> Array[(String, String)] = () -> {
-  Array::slice([
-    ("", "")
-  ], 0, 0)
+let new_deps_buckets: () -> Array[Array[(String, Array[String])]] = () -> {
+  let n = nbuckets()
+  let b = ArrayBuilder::new()
+  let rec go: (Int) -> Unit = (i) -> {
+    if i >= n {
+      ()
+    } else {
+      ArrayBuilder::push(b, empty_deps_pairs())
+      go(i + 1)
+    }
+  }
+  go(0)
+  ArrayBuilder::freeze(b)
+}
+
+let strmap_new: () -> StrMap = () -> {
+  StrMap(new_string_buckets())
+}
+
+let rec assoc_get_string: (Array[(String, String)], String, Int) -> Option[String] = (bucket, key, i) -> {
+  if i >= Array::length(bucket) {
+    None
+  } else {
+    let (k, v) = Array::get(bucket, i)
+    if k == key {
+      Some(v)
+    } else {
+      assoc_get_string(bucket, key, i + 1)
+    }
+  }
+}
+
+let strmap_get: (StrMap, String) -> Option[String] = (m, key) -> {
+  match m {
+    StrMap(buckets) => {
+      let idx = hash_bucket(key)
+      let bucket = Array::get(buckets, idx)
+      assoc_get_string(bucket, key, 0)
+    }
+  }
+}
+
+// In-place upsert into the bucket for `key`.
+let strmap_set: (StrMap, String, String) -> Unit = (m, key, value) -> {
+  match m {
+    StrMap(buckets) => {
+      let idx = hash_bucket(key)
+      let bucket = Array::get(buckets, idx)
+      let len = Array::length(bucket)
+      let rec go: (Int) -> Unit = (i) -> {
+        if i >= len {
+          Array::push(bucket, (key, value))
+        } else {
+          let (k, _) = Array::get(bucket, i)
+          if k == key {
+            Array::set(bucket, i, (key, value))
+          } else {
+            go(i + 1)
+          }
+        }
+      }
+      go(0)
+    }
+  }
+}
+
+let depsmap_new: () -> DepsMap = () -> {
+  DepsMap(new_deps_buckets())
+}
+
+let rec assoc_get_deps: (Array[(String, Array[String])], String, Int) -> Option[Array[String]] = (bucket, key, i) -> {
+  if i >= Array::length(bucket) {
+    None
+  } else {
+    let (k, v) = Array::get(bucket, i)
+    if k == key {
+      Some(v)
+    } else {
+      assoc_get_deps(bucket, key, i + 1)
+    }
+  }
+}
+
+let depsmap_get: (DepsMap, String) -> Option[Array[String]] = (m, key) -> {
+  match m {
+    DepsMap(buckets) => {
+      let idx = hash_bucket(key)
+      let bucket = Array::get(buckets, idx)
+      assoc_get_deps(bucket, key, 0)
+    }
+  }
+}
+
+let depsmap_set: (DepsMap, String, Array[String]) -> Unit = (m, key, deps) -> {
+  match m {
+    DepsMap(buckets) => {
+      let idx = hash_bucket(key)
+      let bucket = Array::get(buckets, idx)
+      let len = Array::length(bucket)
+      let rec go: (Int) -> Unit = (i) -> {
+        if i >= len {
+          Array::push(bucket, (key, deps))
+        } else {
+          let (k, _) = Array::get(bucket, i)
+          if k == key {
+            Array::set(bucket, i, (key, deps))
+          } else {
+            go(i + 1)
+          }
+        }
+      }
+      go(0)
+    }
+  }
 }
 
 export let ripple_new: () -> RippleDb = () -> {
-  RippleDb(empty_string_pairs(), empty_string_pairs(), empty_deps_pairs(), 0)
-}
-
-let rec lookup_string_entry: (Array[(String, String)], String, Int) -> Option[String] = (entries, key, i) -> {
-  if i >= Array::length(entries) {
-    None
-  }
-  else {
-    let (k, v) = Array::get(entries, i)
-    if k == key {
-      Some(v)
-    }
-    else {
-      lookup_string_entry(entries, key, i + 1)
-    }
-  }
+  let count = ArrayBuilder::new()
+  ArrayBuilder::push(count, 0)
+  RippleDb(strmap_new(), strmap_new(), depsmap_new(), ArrayBuilder::freeze(count))
 }
 
 export let ripple_get_source: (RippleDb, String) -> Option[String] = (db, path) -> {
   match db {
-    RippleDb(sources, _, _, _) => lookup_string_entry(sources, path, 0)
-  }
-}
-
-let upsert_string_entry: (Array[(String, String)], String, String) -> Array[(String, String)] = (entries, key, value) -> {
-  let len = Array::length(entries)
-  let b = ArrayBuilder::new()
-  let rec go: (Int, Bool) -> Array[(String, String)] = (i, found) -> {
-    if i >= len {
-      if found {
-        ArrayBuilder::freeze(b)
-      } else {
-        ArrayBuilder::push(b, (key, value))
-        ArrayBuilder::freeze(b)
-      }
-    } else {
-      let (k, v) = Array::get(entries, i)
-      if k == key {
-        ArrayBuilder::push(b, (key, value))
-        go(i + 1, true)
-      } else {
-        ArrayBuilder::push(b, (k, v))
-        go(i + 1, found)
-      }
-    }
-  }
-  go(0, false)
-}
-
-export let ripple_set_source: (RippleDb, String, String) -> RippleDb = (db, path, source) -> {
-  match db {
-    RippleDb(sources, fingerprints, deps_map, eval_count) => RippleDb(upsert_string_entry(sources, path, source), fingerprints, deps_map, eval_count)
-  }
-}
-
-export let ripple_record_eval: (RippleDb, String, String, Array[String]) -> RippleDb = (db, path, fingerprint, deps) -> {
-  match db {
-    RippleDb(sources, fingerprints, deps_map, eval_count) => match lookup_string_entry(fingerprints, path, 0) {
-      Some(prev_fp) => if prev_fp == fingerprint {
-        RippleDb(sources, fingerprints, deps_map, eval_count)
-      } else {
-        RippleDb(sources, upsert_string_entry(fingerprints, path, fingerprint), upsert_deps_entry(deps_map, path, deps), eval_count + 1)
-      },
-      None => RippleDb(sources, upsert_string_entry(fingerprints, path, fingerprint), upsert_deps_entry(deps_map, path, deps), eval_count + 1)
-    }
+    RippleDb(sources, _, _, _) => strmap_get(sources, path)
   }
 }
 
 export let ripple_get_fingerprint: (RippleDb, String) -> Option[String] = (db, path) -> {
   match db {
-    RippleDb(_, fingerprints, _, _) => lookup_string_entry(fingerprints, path, 0)
+    RippleDb(_, fingerprints, _, _) => strmap_get(fingerprints, path)
+  }
+}
+
+export let ripple_get_deps: (RippleDb, String) -> Option[Array[String]] = (db, path) -> {
+  match db {
+    RippleDb(_, _, deps_map, _) => depsmap_get(deps_map, path)
+  }
+}
+
+export let ripple_eval_count: (RippleDb) -> Int = (db) -> {
+  match db {
+    RippleDb(_, _, _, count) => Array::get(count, 0)
+  }
+}
+
+export let ripple_set_source: (RippleDb, String, String) -> RippleDb = (db, path, source) -> {
+  match db {
+    RippleDb(sources, _, _, _) => {
+      strmap_set(sources, path, source)
+      db
+    }
+  }
+}
+
+export let ripple_record_eval: (RippleDb, String, String, Array[String]) -> RippleDb = (db, path, fingerprint, deps) -> {
+  match db {
+    RippleDb(_, fingerprints, deps_map, count) => match strmap_get(fingerprints, path) {
+      Some(prev_fp) => if prev_fp == fingerprint {
+        db
+      } else {
+        strmap_set(fingerprints, path, fingerprint)
+        depsmap_set(deps_map, path, deps)
+        Array::set(count, 0, Array::get(count, 0) + 1)
+        db
+      },
+      None => {
+        strmap_set(fingerprints, path, fingerprint)
+        depsmap_set(deps_map, path, deps)
+        Array::set(count, 0, Array::get(count, 0) + 1)
+        db
+      }
+    }
   }
 }
