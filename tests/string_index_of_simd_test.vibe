@@ -1,0 +1,33 @@
+// SIMD memchr (ADR-0054) correctness for String::index_of / String::contains,
+// run via the compiled wasm backend (wasmtime). The first-byte scan uses
+// i8x16.splat + i8x16.eq + v128.any_true to skip 16-byte windows. (The in-tree
+// wasm eval interpreter does not yet model this scan; this is the
+// authoritative correctness check — see ADR-0054.)
+let rec repeat : (String, Int) -> String = (s, n) -> {
+  if n == 0 { "" } else { String::concat(s, repeat(s, n - 1)) }
+}
+
+test "index_of: short (no SIMD window)" {
+  assert_eq(String::index_of("abcdef", "abc"), 0)
+  assert_eq(String::index_of("xxabcyy", "abc"), 2)
+  assert_eq(String::index_of("hello", "zzz"), -1)
+  assert_eq(String::index_of("ab", "abc"), -1)
+  assert_eq(String::index_of("abc", ""), 0)
+}
+
+test "index_of: SIMD window scan (len > 16)" {
+  assert_eq(String::index_of("0123456789abcdefABCDEF", "ABC"), 16)
+  assert_eq(String::index_of("0123456789abcdefGHIJKLMNOP", "Q"), -1)
+  assert_eq(String::index_of("xxxxxxxxxxxxxxxxNEEDLExx", "NEEDLE"), 16)
+  assert_eq(String::index_of(repeat("0123456789abcdef", 64), "G"), -1)
+  assert_eq(String::index_of(String::concat("X0X1X2X3X4X5X6X7X8", "Xtarget"), "Xtarget"), 18)
+  assert_eq(String::index_of(repeat("0123456789abcdef", 8), "abZ"), -1)
+  assert_eq(String::index_of(String::concat(repeat("0123456789abcdef", 3), "ABCXX"), "ABC"), 48)
+}
+
+test "contains: SIMD window scan" {
+  assert_eq(String::contains("hello world", "world"), true)
+  assert_eq(String::contains(repeat("0123456789abcdef", 64), "G"), false)
+  assert_eq(String::contains(repeat("0123456789abcdef", 64), "cdef0123"), true)
+  assert_eq(String::contains("0123456789abcdef", "cdef"), true)
+}

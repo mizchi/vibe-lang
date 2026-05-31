@@ -1353,6 +1353,10 @@ fn compile_builtin_string(
         let result_local = alloc_temp_local(ctx)
         let matched = alloc_temp_local(ctx)
         let limit_local = alloc_temp_local(ctx)
+        // SIMD memchr (ADR-0054): broadcast vector of the needle's first byte.
+        let v_first_local = alloc_temp_local_with_kind(ctx, ValueKind::V128)
+        // Flag: 1 when the current 16-byte window contains no candidate byte.
+        let no_cand_local = alloc_temp_local(ctx)
         // get str pointer and length
         compile_expr_i32(ctx, buf, pos_args[0])
         emit_untag_ptr_i32(buf)
@@ -1377,6 +1381,11 @@ fn compile_builtin_string(
         emit_i32_const_raw(buf, 1)
         emit_i32_add(buf)
         emit_local_set(buf, limit_local)
+        // SIMD memchr setup: broadcast the needle's first byte to all lanes.
+        emit_local_get(buf, sub_ptr)
+        emit_i32_load8_u(buf, 8)
+        emit_i8x16_splat(buf)
+        emit_local_set(buf, v_first_local)
         // if sub_len > str_len, skip search (limit <= 0)
         emit_i32_const_raw(buf, 0)
         emit_local_set(buf, outer_i)
@@ -1388,6 +1397,43 @@ fn compile_builtin_string(
         emit_i32_lt_s(buf)
         emit_i32_eqz(buf)
         emit_br_if(buf, 1) // break to block
+        // SIMD memchr (ADR-0054): when sub_len>=1 and a full 16-byte window
+        // fits, set no_cand=1 if none of its bytes equals sub[0]. Kept as a
+        // single-level `if` (no branch out of nested ifs) so the value stack
+        // and block nesting stay simple across the loop-continue below.
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, no_cand_local)
+        emit_local_get(buf, sub_len)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_ge_s(buf)
+        emit_local_get(buf, outer_i)
+        emit_i32_const_raw(buf, 16)
+        emit_i32_add(buf)
+        emit_local_get(buf, str_len)
+        emit_i32_le_s(buf)
+        emit_i32_and(buf)
+        buf.push((4).to_byte()) // if (SIMD window applicable)
+        buf.push((64).to_byte()) // void
+        emit_local_get(buf, str_ptr)
+        emit_local_get(buf, outer_i)
+        emit_i32_add(buf)
+        emit_v128_load_align(buf, 2, 8)
+        emit_local_get(buf, v_first_local)
+        emit_i8x16_eq(buf)
+        emit_v128_any_true(buf)
+        emit_i32_eqz(buf) // 1 if no byte in the window equals sub[0]
+        emit_local_set(buf, no_cand_local)
+        buf.push((11).to_byte()) // end if (SIMD window)
+        // If the window has no candidate, skip 16 bytes and continue.
+        emit_local_get(buf, no_cand_local)
+        buf.push((4).to_byte()) // if (no candidate)
+        buf.push((64).to_byte()) // void
+        emit_local_get(buf, outer_i)
+        emit_i32_const_raw(buf, 16)
+        emit_i32_add(buf)
+        emit_local_set(buf, outer_i)
+        emit_br(buf, 1) // continue outer loop (if=0, loop=1)
+        buf.push((11).to_byte()) // end if (no candidate)
         // check if all sub bytes match at position outer_i
         emit_i32_const_raw(buf, 1)
         emit_local_set(buf, matched)
@@ -1472,6 +1518,10 @@ fn compile_builtin_string(
         let result_local = alloc_temp_local(ctx)
         let matched = alloc_temp_local(ctx)
         let limit_local = alloc_temp_local(ctx)
+        // SIMD memchr (ADR-0054): broadcast vector of the needle's first byte.
+        let v_first_local = alloc_temp_local_with_kind(ctx, ValueKind::V128)
+        // Flag: 1 when the current 16-byte window contains no candidate byte.
+        let no_cand_local = alloc_temp_local(ctx)
         // get str pointer and length
         compile_expr_i32(ctx, buf, pos_args[0])
         emit_untag_ptr_i32(buf)
@@ -1496,6 +1546,11 @@ fn compile_builtin_string(
         emit_i32_const_raw(buf, 1)
         emit_i32_add(buf)
         emit_local_set(buf, limit_local)
+        // SIMD memchr setup: broadcast the needle's first byte to all lanes.
+        emit_local_get(buf, sub_ptr)
+        emit_i32_load8_u(buf, 8)
+        emit_i8x16_splat(buf)
+        emit_local_set(buf, v_first_local)
         // if sub_len > str_len, skip search (limit <= 0)
         emit_i32_const_raw(buf, 0)
         emit_local_set(buf, outer_i)
@@ -1507,6 +1562,43 @@ fn compile_builtin_string(
         emit_i32_lt_s(buf)
         emit_i32_eqz(buf)
         emit_br_if(buf, 1) // break to block
+        // SIMD memchr (ADR-0054): when sub_len>=1 and a full 16-byte window
+        // fits, set no_cand=1 if none of its bytes equals sub[0]. Kept as a
+        // single-level `if` (no branch out of nested ifs) so the value stack
+        // and block nesting stay simple across the loop-continue below.
+        emit_i32_const_raw(buf, 0)
+        emit_local_set(buf, no_cand_local)
+        emit_local_get(buf, sub_len)
+        emit_i32_const_raw(buf, 1)
+        emit_i32_ge_s(buf)
+        emit_local_get(buf, outer_i)
+        emit_i32_const_raw(buf, 16)
+        emit_i32_add(buf)
+        emit_local_get(buf, str_len)
+        emit_i32_le_s(buf)
+        emit_i32_and(buf)
+        buf.push((4).to_byte()) // if (SIMD window applicable)
+        buf.push((64).to_byte()) // void
+        emit_local_get(buf, str_ptr)
+        emit_local_get(buf, outer_i)
+        emit_i32_add(buf)
+        emit_v128_load_align(buf, 2, 8)
+        emit_local_get(buf, v_first_local)
+        emit_i8x16_eq(buf)
+        emit_v128_any_true(buf)
+        emit_i32_eqz(buf) // 1 if no byte in the window equals sub[0]
+        emit_local_set(buf, no_cand_local)
+        buf.push((11).to_byte()) // end if (SIMD window)
+        // If the window has no candidate, skip 16 bytes and continue.
+        emit_local_get(buf, no_cand_local)
+        buf.push((4).to_byte()) // if (no candidate)
+        buf.push((64).to_byte()) // void
+        emit_local_get(buf, outer_i)
+        emit_i32_const_raw(buf, 16)
+        emit_i32_add(buf)
+        emit_local_set(buf, outer_i)
+        emit_br(buf, 1) // continue outer loop (if=0, loop=1)
+        buf.push((11).to_byte()) // end if (no candidate)
         // check if all sub bytes match at position outer_i
         emit_i32_const_raw(buf, 1)
         emit_local_set(buf, matched)
@@ -1861,6 +1953,10 @@ fn compile_builtin_string(
         let count_local = alloc_temp_local(ctx)
         let matched = alloc_temp_local(ctx)
         let limit_local = alloc_temp_local(ctx)
+        // SIMD memchr (ADR-0054): broadcast vector of the needle's first byte.
+        let v_first_local = alloc_temp_local_with_kind(ctx, ValueKind::V128)
+        // Flag: 1 when the current 16-byte window contains no candidate byte.
+        let no_cand_local = alloc_temp_local(ctx)
         // get str pointer and length
         compile_expr_i32(ctx, buf, pos_args[0])
         emit_untag_ptr_i32(buf)

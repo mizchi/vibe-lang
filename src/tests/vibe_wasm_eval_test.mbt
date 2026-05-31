@@ -1647,6 +1647,31 @@ fn eval_loop(
             }
             stack.push(all.to_int64())
           }
+          // i8x16.splat: broadcast the low 8 bits to all 16 lanes.
+          15 => {
+            if stack.is_empty() {
+              raise WasmEvalError::Invalid("stack underflow")
+            }
+            let b = (stack.unsafe_pop().to_int() & 0xff).to_byte()
+            let v : FixedArray[Byte] = FixedArray::make(16, b)
+            v128_pool.push(v)
+            stack.push((v128_pool.length() - 1).to_int64())
+          }
+          // v128.any_true: 1 iff any lane is non-zero.
+          83 => {
+            if stack.is_empty() {
+              raise WasmEvalError::Invalid("stack underflow")
+            }
+            let idx = stack.unsafe_pop().to_int()
+            let v = v128_pool[idx]
+            let mut any = 0
+            for i in 0..<16 {
+              if v[i].to_int() != 0 {
+                any = 1
+              }
+            }
+            stack.push(any.to_int64())
+          }
           _ => raise WasmEvalError::Unsupported("simd op " + subop.to_string())
         }
       }

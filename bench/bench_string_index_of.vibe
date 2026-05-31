@@ -1,0 +1,32 @@
+// String::index_of throughput benchmark (pure vibe).
+//
+// Exercises the substring-search byte scan in `String::index_of`
+// (`wasm_codegen_builtin_string.mbt`). The outer loop scans the haystack for
+// the needle's first byte; SIMD memchr (i8x16.eq + bitmask + ctz) accelerates
+// that scan. Operands are routed through an `idx_count` recursion so they are
+// parameters, not constants — otherwise the search folds away at compile time.
+
+let rec repeat : (String, Int) -> String = (s, n) -> {
+  if n == 0 { "" } else { String::concat(s, repeat(s, n - 1)) }
+}
+
+// 1024-byte haystack of [0-9a-f]; 'G'/'Z' never appear except where injected.
+let h1k = repeat("0123456789abcdef", 64)
+
+// 'Z' appears only near the end (~offset 1004): a full scan before the hit.
+let h1k_late = String::concat(repeat("0123456789abcdef", 63), "0123456789abZdef")
+
+let rec idx_count : (String, String, Int, Int) -> Int = (h, ndl, k, acc) -> {
+  if k == 0 { acc } else { idx_count(h, ndl, k - 1, acc + String::index_of(h, ndl)) }
+}
+
+// Worst case for the scalar scan / best case for SIMD: first byte absent, so
+// the whole haystack is scanned and -1 returned.
+bench "index_of/absent/1024B" {
+  let _ = idx_count(h1k, "G", 10, 0)
+}
+
+// Single late hit: scan most of the haystack before matching.
+bench "index_of/late/1024B" {
+  let _ = idx_count(h1k_late, "Z", 10, 0)
+}
