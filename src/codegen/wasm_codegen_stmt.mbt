@@ -137,13 +137,15 @@ fn compile_stmt(
             match fn_ret {
               Some(r) =>
                 match func_sig_from_type(ctx, r) {
-                  Some(sig) => ctx.fn_return_sigs[name] = sig
+                  Some(sig) =>
+                    scoped_named_map_set(ctx, ctx.fn_return_sigs, name, sig)
                   None => ()
                 }
               None =>
                 // Try to infer from body's last expression
                 match infer_body_return_sig(ctx, fn_body) {
-                  Some(sig) => ctx.fn_return_sigs[name] = sig
+                  Some(sig) =>
+                    scoped_named_map_set(ctx, ctx.fn_return_sigs, name, sig)
                   None => ()
                 }
             }
@@ -290,7 +292,8 @@ fn compile_stmt(
                     None => ()
                   }
                   match ctx.fn_return_sigs.get(source_name) {
-                    Some(sig) => ctx.fn_return_sigs[name] = sig
+                    Some(sig) =>
+                      scoped_named_map_set(ctx, ctx.fn_return_sigs, name, sig)
                     None => ()
                   }
                   // Skip only when: not is_last, not captured, and
@@ -312,19 +315,34 @@ fn compile_stmt(
                   // Check linked imports (library functions from --preload)
                   match ctx.linked_fn_imports.get(source_name) {
                     Some(import_idx) => {
-                      ctx.linked_fn_imports[name] = import_idx
+                      scoped_named_map_set(
+                        ctx,
+                        ctx.linked_fn_imports,
+                        name,
+                        import_idx,
+                      )
                       let param_count = match
                         ctx.linked_fn_param_counts.get(source_name) {
                         Some(pc) => pc
                         None => 0
                       }
-                      ctx.linked_fn_param_counts[name] = param_count
+                      scoped_named_map_set(
+                        ctx,
+                        ctx.linked_fn_param_counts,
+                        name,
+                        param_count,
+                      )
                       let return_count = match
                         ctx.linked_fn_return_counts.get(source_name) {
                         Some(rc) => rc
                         None => 1
                       }
-                      ctx.linked_fn_return_counts[name] = return_count
+                      scoped_named_map_set(
+                        ctx,
+                        ctx.linked_fn_return_counts,
+                        name,
+                        return_count,
+                      )
                       let param_kinds : Array[ValueKind] = []
                       for _ in 0..<param_count {
                         param_kinds.push(ValueKind::I64)
@@ -337,7 +355,12 @@ fn compile_stmt(
                         ctx.fn_local_sigs[name] = func_sig_with_env_multi(
                           param_kinds, result_kinds,
                         )
-                        ctx.fn_multivalue_results[name] = result_kinds
+                        scoped_named_map_set(
+                          ctx,
+                          ctx.fn_multivalue_results,
+                          name,
+                          result_kinds,
+                        )
                       } else {
                         ctx.fn_local_sigs[name] = func_sig_with_env(
                           param_kinds,
@@ -418,7 +441,13 @@ fn compile_stmt(
                         None => ()
                       }
                       match ctx.fn_return_sigs.get(target_name) {
-                        Some(sig) => ctx.fn_return_sigs[name] = sig
+                        Some(sig) =>
+                          scoped_named_map_set(
+                            ctx,
+                            ctx.fn_return_sigs,
+                            name,
+                            sig,
+                          )
                         None => ()
                       }
                       let needs_env = fn_index_needs_env(ctx, func_idx)
