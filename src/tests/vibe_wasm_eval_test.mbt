@@ -1421,6 +1421,12 @@ fn eval_loop(
         if kind == 1 {
           // Loop: jump back to loop start
           code.pos = loop_pos
+          // Restore the value stack to the loop's entry height (wasm br
+          // semantics) so leftover operands cannot accumulate across
+          // iterations.
+          while stack.length() > _sh {
+            let _ = stack.unsafe_pop()
+          }
           // Pop blocks above the loop target
           while block_stack.length() > target_idx + 1 {
             let _ = block_stack.pop()
@@ -1452,6 +1458,9 @@ fn eval_loop(
           if kind == 1 {
             // Loop: jump back
             code.pos = loop_pos
+            while stack.length() > _sh {
+              let _ = stack.unsafe_pop()
+            }
             while block_stack.length() > target_idx + 1 {
               let _ = block_stack.pop()
             }
