@@ -2,8 +2,58 @@
 
 Spec-locked decisions are tracked in `docs/spec/decisions.md`.
 Completed items are archived in `docs/DONE.md`.
+タスクの一次管理は GitHub Issues (`gh issue` / MCP)。本ファイルはロードマップ概要。
 
-## 次の一手 (2026-05-05 時点)
+## 次の一手 (2026-05-31 時点)
+
+現況スナップショット。open issue は 4 件 (#402 #482 #418 #415)。優先順は下記。
+
+### 現状サマリ
+
+- **0.1.0 surface は通っている**。直近の主戦場は **selfhost cutover の perf gate (#402)**。
+- **#402 KPI (wasmtime-aot, RUNS=5 median, 2026-05-30〜31 再計測)**:
+  - **check ratio = 0.77× ✅** (gate ≤ 1.33× 通過)
+  - **compile ratio ≈ 3.4–3.9× ❌** (依然 blocker)。worst stage は **bundle ~4.7×**、次いで load 3.4–4× / compile_module 3.1–3.4× / type 3.3× / emit 2–3.3×。
+  - レポート: `docs/report/selfhost-cutover-kpi-2026-05-30.md`
+
+### 🔴 #402 compile ratio を動かす — 戦略の軌道修正 (重要)
+
+今セッションの A/B 計測で判明した、今後の方針を左右する事実:
+
+- **compile ratio ~3.4× は単一ホットスポットではなく、全 stage に乗る wasm↔native の constant-factor floor**(load/type/emit/bundle/compile_module がどれも ~3–5×)。
+- ⇒ **対称な algorithmic 改善は ratio を動かさない**。例: bundle の prelude reachability prune (commit `80098b6`, 51→2-6 def materialize) は bundle 絶対時間を host/selfhost 双方で ~2-3% 削るが、削減が対称なので selfhost÷host は不変(むしろ微増)。debug プロファイルが指した「prelude_add 1.3-1.6ms 固定費」は **debug ビルド固有**で release では数 %。
+- ⇒ ratio を動かすには次のいずれかが必要(優先順):
+  1. **selfhost compile の daemon 化** ← 最有力単一レバー。check が 0.77× を切れた主因は「check は daemon 化済 (#405) で `check.load` が 0.02–0.06×(host が毎回払う session-http/db setup を selfhost は skip)」という **load-stage の非対称**。compile は依然 one-shot で `compile.load` が 3.3–3.9×。compile も daemon 化すれば同じ非対称が効き、ratio を大きく押し下げる見込み。parity test (compile は output file 書き、state surface 広) の整備が必要。
+  2. **非対称な algorithmic 改善** ← selfhost wasm が native より桁で損する箇所(vibe runtime の `Map`/`Set` が線形走査、データ構造の差)。#366 accumulator / #483 selfhost ripple O(N) はこの系。vibe runtime に hash-backed Map が入れば §[accumulator 撲滅] でスキップした dedup 系 (~17 sites) も効くようになる。
+  3. **release ビルドでの bundle/emit sub-stage 再プロファイル** ← debug プロファイルは ratio 用途には誤誘導。release で bundle ~4.7× の真の支配項(deps collection / alias rewrite / dedup / DCE tree-walk のどれが wasm で重いか)を特定。
+- **未計測ゲート**: compile/check の **peak RSS ratio ≤ 2.0×** が wasmtime-aot 後に未計測(`/usr/bin/time -v` 環境要)。
+
+### 🟠 open issues (一次ソース)
+
+- [ ] **#402** selfhost cutover tracking — 上記。compile ratio が最後の gate。
+- [ ] **#482** host `mizchi/ripple` verifier の O(n²) memo scan — **upstream publish 待ちで bump のみ**。host typecheck hot path に効く(selfhost 側 ripple は #483 で O(N) 化済)。`moon.mod` の `mizchi/ripple` を修正版公開後に bump。
+- [ ] **#415** codegen builtin を 2 backend 共有 registry に refactor (Phase B) — linear↔wasm-gc の parity 117 件ずれ、新 builtin 追加時の silent regression 温床。3-6 週、namespace 単位の小 PR 5-7 本。wasm-gc default 化 (Phase D) の前提。
+- [ ] **#418** ADR-0052 Phase 2/3 — `mut` struct field の `state_local` effect 分類 + escape 検査。ADR-0017 `state_local` 実装が前提。大規模・既存コード影響大。
+
+### 🟡 機能 / 品質 (issue 化候補、TODO 内に詳細あり)
+
+- [ ] **CI branch coverage 70% gate** + normalize/DCE/loader テスト拡充 (§カバレッジ)
+- [ ] **SIMD codegen 本番化** — 0xFD prefix emit + `simd_skip_ws`/`simd_scan_alnum` builtin 化 (§vibe/wasm)
+- [ ] **#59 WASM-GC selfbuild ~350KB** — P4 残 3 ケース (simd_patterns / gc_only/index / selfhost_cli_gc_entry) + P5 DCE + wasm-opt
+- [ ] **WASI P3**: effect → WIT マッピング + `vibe serve`
+- [ ] selfhost accumulator 残 2 sites (`linked_helpers.vibe` の `contains_name` 線形走査) — vibe runtime の Map が hash table 化するまで保留 (ROI ≪、§accumulator 撲滅)
+
+### 🔵 リファクタ / 長期
+
+- [ ] `vibe/types/` `vibe/parser/` 分離、`vibe/compiler` 論理分割
+- [ ] MoonBit host CLI を bootstrap 専用へ縮退
+- [ ] MoonBit host 重複削減 (§similarity-mbt、残: `src/runtime/db.mbt` の `set_source`/`set_binary_source`)
+
+---
+
+## 次の一手 (2026-05-05 時点) — historical
+
+> 注: 以下は 2026-05-05 時点の整理。`just` は pkfire (`pkf`) に移行済み。最新の優先順は上の「2026-05-31 時点」を参照。各 §詳細は下に残置。
 
 優先順。各項目は該当セクションに詳細あり。
 
