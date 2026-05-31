@@ -16,16 +16,20 @@ Completed items are archived in `docs/DONE.md`.
   - **compile ratio ≈ 3.4–3.9× ❌** (依然 blocker)。worst stage は **bundle ~4.7×**、次いで load 3.4–4× / compile_module 3.1–3.4× / type 3.3× / emit 2–3.3×。
   - レポート: `docs/report/selfhost-cutover-kpi-2026-05-30.md`
 
-### 🔴 #402 compile ratio を動かす — 戦略の軌道修正 (重要)
+### 🔴 #402 compile ratio — 本質診断で攻め方が確定 (重要・要 maintainer 判断)
 
-今セッションの A/B 計測で判明した、今後の方針を左右する事実:
+今セッションの per-frame profile (release/wasmtime, warm) で判明した、ロードマップを書き換える事実。詳細は #402 コメント (2026-05-31, `4586511284`)。
 
-- **compile ratio ~3.4× は単一ホットスポットではなく、全 stage に乗る wasm↔native の constant-factor floor**(load/type/emit/bundle/compile_module がどれも ~3–5×)。
-- ⇒ **対称な algorithmic 改善は ratio を動かさない**。例: bundle の prelude reachability prune (commit `80098b6`, 51→2-6 def materialize) は bundle 絶対時間を host/selfhost 双方で ~2-3% 削るが、削減が対称なので selfhost÷host は不変(むしろ微増)。debug プロファイルが指した「prelude_add 1.3-1.6ms 固定費」は **debug ビルド固有**で release では数 %。
-- ⇒ ratio を動かすには次のいずれかが必要(優先順):
-  1. **selfhost compile の daemon 化** ← 最有力単一レバー。check が 0.77× を切れた主因は「check は daemon 化済 (#405) で `check.load` が 0.02–0.06×(host が毎回払う session-http/db setup を selfhost は skip)」という **load-stage の非対称**。compile は依然 one-shot で `compile.load` が 3.3–3.9×。compile も daemon 化すれば同じ非対称が効き、ratio を大きく押し下げる見込み。parity test (compile は output file 書き、state surface 広) の整備が必要。
-  2. **非対称な algorithmic 改善** ← selfhost wasm が native より桁で損する箇所(vibe runtime の `Map`/`Set` が線形走査、データ構造の差)。#366 accumulator / #483 selfhost ripple O(N) はこの系。vibe runtime に hash-backed Map が入れば §[accumulator 撲滅] でスキップした dedup 系 (~17 sites) も効くようになる。
-  3. **release ビルドでの bundle/emit sub-stage 再プロファイル** ← debug プロファイルは ratio 用途には誤誘導。release で bundle ~4.7× の真の支配項(deps collection / alias rewrite / dedup / DCE tree-walk のどれが wasm で重いか)を特定。
+- **bench の "selfhost" は `src/cmd/vibe_compile_wasi` = src/ runtime_compile を `--target wasm` したもの**(vibe/compiler/ ではない)。host は同じ src/ を `--target native`。⇒ **両側は同一 MoonBit コード、アルゴリズム同一。**
+- ⇒ **src/ への algorithmic 改善は両側に等しく効く = 構造的に symmetric → compile ratio を原理的に動かさない**。prelude prune (`80098b6`) も過去の accumulator/ripple も「横ばい」だったのはこれが根本原因。**compile ratio 目的の src/ 最適化は ROI ゼロ**。
+- **ratio ~4.8× は wasmtime JIT vs native の runtime floor**(frame 別 2.5–13.6×: build_module 13.6× / prelude_add roots-walk 7.4× / cache_key 5.5× / parse_stmts 5.2×)。ばらつきは「wasmtime がその op mix で native よりどれだけ遅いか」を表すだけ。
+- **「compile daemon 化」レバーは棄却**: daemon は selfhost の cold-start を amortize するが host(one-shot native)も同じ cold cost を払うので、公平比較では両側 amortize → 残る per-compile work の ~4× は不変。**check が 0.77× なのは host が session-http (~7-9ms/invoke) を払う host-only の計測非対称**であって selfhost daemon の効果ではない(`CHECK_DAEMON_MODE` は default 0)。host check に `VIBE_USE_SESSION_HTTP=0` を与えれば check も ~4× に跳ねる。
+- **gate ≤ 1.33× は「wasmtime JIT が native の 1.33× 以内」を要求**。branchy な compiler workload で JIT が native の 1.3× 以内は一般に非現実的。**src/ 改善では到達不能。**
+
+⇒ 残る実レバー(いずれも maintainer 判断要):
+  1. **wasmtime runtime チューニング**(codegen flag / PGO 等。既に `-O3`+cwasm)。floor を 4.8→例えば 4.0 に削る程度、1.33× には届かない見込み。
+  2. **operation-mix 置換**(高非対称 frame: build_module の per-byte `ByteBuf::push` を bulk op 化 等)。同上、floor を少し削るのみ。
+  3. **cutover 基準の再定義** ← 本命。「native を常用 / wasm は portability・sandbox 用 optional artifact」とするか、gate を runtime 現実(~2-4×)へ緩める。check の "pass" も session-http 非対称依存で、apples-to-apples なら compile/check 共に ~4× が実態。
 - **未計測ゲート**: compile/check の **peak RSS ratio ≤ 2.0×** が wasmtime-aot 後に未計測(`/usr/bin/time -v` 環境要)。
 
 ### 🟠 open issues (一次ソース)
