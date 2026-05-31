@@ -1896,44 +1896,6 @@ fn restore_local_kinds(
 }
 
 ///|
-fn restore_string_int_map(
-  target : Map[String, Int],
-  saved : Map[String, Int],
-) -> Unit {
-  let to_remove : Array[String] = []
-  for name, _ in target {
-    if !saved.contains(name) {
-      to_remove.push(name)
-    }
-  }
-  for name in to_remove {
-    target.remove(name)
-  }
-  for name, value in saved {
-    target[name] = value
-  }
-}
-
-///|
-fn restore_string_array_value_kind_map(
-  target : Map[String, Array[ValueKind]],
-  saved : Map[String, Array[ValueKind]],
-) -> Unit {
-  let to_remove : Array[String] = []
-  for name, _ in target {
-    if !saved.contains(name) {
-      to_remove.push(name)
-    }
-  }
-  for name in to_remove {
-    target.remove(name)
-  }
-  for name, value in saved {
-    target[name] = value
-  }
-}
-
-///|
 fn restore_string_func_sig_map(
   target : Map[String, FuncSig],
   saved : Map[String, FuncSig],
@@ -1974,25 +1936,24 @@ fn restore_string_string_map(
 ///|
 /// Scope snapshot for the named-function maps.
 ///
-/// `fn_indices` / `fn_params` / `fn_param_names` / `fn_returns` are
-/// pre-registered to the size of the whole module (every top-level function),
-/// so copying them by value on every block snapshot was O(module_size) per
-/// block — O(N^2) over a compile (this dominated codegen on large modules).
-/// They are now scoped via the `ctx.scope_undo` log instead: in-region writes
+/// `fn_indices` / `fn_params` / `fn_param_names` / `fn_returns`,
+/// `fn_return_sigs`, `fn_multivalue_results` and the three `linked_fn_*` maps
+/// are all pre-registered before the compile loop (the big four for every
+/// top-level function, the others for every fn-returning / tuple-returning /
+/// linked-import function). Copying them by value on every block snapshot was
+/// O(module_size) per block — O(N^2) over a compile, which dominated codegen
+/// on large modules (and left a smaller residual quadratic on match/loop-heavy
+/// code). They are now scoped via the `ctx.scope_undo` log: in-region writes
 /// go through `scoped_named_map_set`, which records a revert closure, and the
-/// snapshot only remembers the log length (`big_map_undo_marker`).
+/// snapshot only remembers the log length (`scope_undo_marker`).
 ///
-/// The remaining maps are sparse (only special functions populate them) or
-/// per-function and small, so copying them stays cheap.
+/// `fn_local_sigs` (reset per function, small) and `forward_fn_keys` (not
+/// pre-registered, small) are not pre-registered to module size, so they keep
+/// the cheap value copy.
 priv struct NamedFnScopeSnapshot {
-  big_map_undo_marker : Int
-  fn_multivalue_results : Map[String, Array[ValueKind]]
-  fn_return_sigs : Map[String, FuncSig]
+  scope_undo_marker : Int
   fn_local_sigs : Map[String, FuncSig]
   forward_fn_keys : Map[String, String]
-  linked_fn_imports : Map[String, Int]
-  linked_fn_param_counts : Map[String, Int]
-  linked_fn_return_counts : Map[String, Int]
 }
 
 ///|
@@ -2015,14 +1976,9 @@ fn[V] scoped_named_map_set(
 ///|
 fn snapshot_named_fn_scope(ctx : CodegenCtx) -> NamedFnScopeSnapshot {
   NamedFnScopeSnapshot::{
-    big_map_undo_marker: ctx.scope_undo.length(),
-    fn_multivalue_results: ctx.fn_multivalue_results.copy(),
-    fn_return_sigs: ctx.fn_return_sigs.copy(),
+    scope_undo_marker: ctx.scope_undo.length(),
     fn_local_sigs: ctx.fn_local_sigs.copy(),
     forward_fn_keys: ctx.forward_fn_keys.copy(),
-    linked_fn_imports: ctx.linked_fn_imports.copy(),
-    linked_fn_param_counts: ctx.linked_fn_param_counts.copy(),
-    linked_fn_return_counts: ctx.linked_fn_return_counts.copy(),
   }
 }
 
@@ -2031,31 +1987,18 @@ fn restore_named_fn_scope(
   ctx : CodegenCtx,
   saved : NamedFnScopeSnapshot,
 ) -> Unit {
-  // Revert in-region writes to the pre-registered big maps (fn_indices,
-  // fn_params, fn_param_names, fn_returns) by replaying the undo log back to
-  // the snapshot marker, newest first.
-  while ctx.scope_undo.length() > saved.big_map_undo_marker {
+  // Revert in-region writes to the pre-registered maps (fn_indices, fn_params,
+  // fn_param_names, fn_returns, fn_return_sigs, fn_multivalue_results,
+  // linked_fn_*) by replaying the undo log back to the snapshot marker,
+  // newest first.
+  while ctx.scope_undo.length() > saved.scope_undo_marker {
     match ctx.scope_undo.pop() {
       Some(revert) => revert()
       None => break
     }
   }
-  restore_string_array_value_kind_map(
-    ctx.fn_multivalue_results,
-    saved.fn_multivalue_results,
-  )
-  restore_string_func_sig_map(ctx.fn_return_sigs, saved.fn_return_sigs)
   restore_string_func_sig_map(ctx.fn_local_sigs, saved.fn_local_sigs)
   restore_string_string_map(ctx.forward_fn_keys, saved.forward_fn_keys)
-  restore_string_int_map(ctx.linked_fn_imports, saved.linked_fn_imports)
-  restore_string_int_map(
-    ctx.linked_fn_param_counts,
-    saved.linked_fn_param_counts,
-  )
-  restore_string_int_map(
-    ctx.linked_fn_return_counts,
-    saved.linked_fn_return_counts,
-  )
 }
 
 ///|
