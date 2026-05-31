@@ -7,10 +7,13 @@ threading probes for the local Wasmtime experiment.
 Included:
 
 - `threads.mbt`
+  - backend contract helpers (`ThreadBackend`, `ThreadSpawnSemantics`)
   - recommended flag helpers for `VIBE_WASMTIME_WASM_FLAGS` / `VIBE_WASMTIME_WASI_FLAGS`
   - embedded probe WAT source (`probe_wat()`)
   - shared-everything flag helpers and i31 WAST source
   - Component Model threading flag helpers and WAST source
+- `THREADING_CONTRACT.md`
+  - stable semantic contract between vibe and the local Wasmtime fork
 - `wasi_threads_probe.wat`
   - imports:
     - `env::memory` (shared memory)
@@ -98,3 +101,13 @@ Component Model threading runtime requirements:
 - `-W component-model=y`
 - `-W component-model-async=y`
 - `-W component-model-threading=y`
+
+Backend semantic contract:
+
+- `ComponentModelCooperative` covers current `thread.new-indirect` and any
+  fork-local `thread.spawn-indirect` implementation that only fuses
+  new-and-resume on the cooperative scheduler.
+- `ComponentModelShared` is reserved for a real shared-everything path that can
+  claim preemptive parallel speedup.
+- `WasiThreads` remains a speedup baseline, not the final Component Model
+  backend.
