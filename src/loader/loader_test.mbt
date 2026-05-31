@@ -966,33 +966,6 @@ test "loader load_db_with_paths: repo process index_import_test has callable run
 }
 
 ///|
-test "loader load_db_with_paths: repo threads_runtime_test imports runtime_hints" {
-  let cwd = @io.current_dir_or_root()
-  let entry = @vibe_fs.normalize_path(
-    cwd + "/vibe/prelude/threads_runtime_test.vibe",
-  )
-  let loaded = match load_db_with_paths(entry) {
-    Ok(v) => v
-    Err(err) => fail(err)
-  }
-  let (db, resolved, _) = loaded
-  let env = db.types(resolved)
-  let diags = db.diagnostics(resolved)
-  match env.get_scheme("runtime_hints") {
-    Some(scheme) =>
-      match scheme.ty {
-        @vibe_core.Type::Func(..) => ()
-        _ => fail("expected function scheme: runtime_hints")
-      }
-    None => {
-      let lines : Array[String] = []
-      for diag in diags {
-        lines.push(diag.stage + ":" + diag.message)
-      }
-      fail("expected imported scheme: runtime_hints; diags=" + lines.join(","))
-    }
-  }
-}
 
 ///|
 test "loader load_db_with_paths: repo url_test cross-directory import" {

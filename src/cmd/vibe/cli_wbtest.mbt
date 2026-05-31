@@ -532,16 +532,15 @@ test "cli runtime flags parse default" {
       assert_eq(opts.syntax_mode, @runtime.ParserMode::VibeMode)
       @debug.assert_eq(opts.cmd_args, ["main.vibe"])
       assert_false(opts.unstable_async)
-      assert_false(opts.unstable_threads)
     }
     Err(msg) => fail("unexpected err: " + msg)
   }
 }
 
 ///|
-test "cli runtime flags parse with unstable flags" {
+test "cli runtime flags parse with unstable async" {
   let parsed = parse_cli_runtime_args(
-    ["--unstable-async", "--syntax", "vibe", "--unstable-threads", "main.vibe"],
+    ["--unstable-async", "--syntax", "vibe", "main.vibe"],
     "run",
   )
   match parsed {
@@ -549,7 +548,6 @@ test "cli runtime flags parse with unstable flags" {
       assert_eq(opts.syntax_mode, @runtime.ParserMode::VibeMode)
       @debug.assert_eq(opts.cmd_args, ["main.vibe"])
       assert_true(opts.unstable_async)
-      assert_true(opts.unstable_threads)
     }
     Err(msg) => fail("unexpected err: " + msg)
   }
@@ -572,16 +570,13 @@ test "test cmd normalize jobs keeps explicit positive value" {
 
 ///|
 test "cli dispatch args parse leading unstable flags" {
-  let parsed = parse_cli_dispatch_args([
-    "vibe", "--unstable-async", "--unstable-threads", "run", "main.vibe",
-  ])
+  let parsed = parse_cli_dispatch_args(["vibe", "--unstable-async", "run", "main.vibe"])
   match parsed {
     Ok(v) => {
       assert_eq(v.cmd, "run")
       assert_eq(v.syntax_mode, @runtime.ParserMode::VibeMode)
       @debug.assert_eq(v.cmd_args, ["main.vibe"])
       assert_true(v.unstable_async)
-      assert_true(v.unstable_threads)
     }
     Err(msg) => fail("unexpected err: " + msg)
   }
@@ -590,8 +585,7 @@ test "cli dispatch args parse leading unstable flags" {
 ///|
 test "cli dispatch args merges leading and trailing unstable flags" {
   let parsed = parse_cli_dispatch_args([
-    "vibe", "--unstable-async", "run", "--unstable-threads", "--syntax", "vibe",
-    "main.vibe",
+    "vibe", "--unstable-async", "run", "--syntax", "vibe", "main.vibe",
   ])
   match parsed {
     Ok(v) => {
@@ -599,7 +593,6 @@ test "cli dispatch args merges leading and trailing unstable flags" {
       assert_eq(v.syntax_mode, @runtime.ParserMode::VibeMode)
       @debug.assert_eq(v.cmd_args, ["main.vibe"])
       assert_true(v.unstable_async)
-      assert_true(v.unstable_threads)
     }
     Err(msg) => fail("unexpected err: " + msg)
   }
@@ -607,9 +600,7 @@ test "cli dispatch args merges leading and trailing unstable flags" {
 
 ///|
 test "cli dispatch args rejects missing command" {
-  let parsed = parse_cli_dispatch_args([
-    "vibe", "--unstable-async", "--unstable-threads",
-  ])
+  let parsed = parse_cli_dispatch_args(["vibe", "--unstable-async"])
   match parsed {
     Ok(_) => fail("expected error")
     Err(msg) => assert_eq(msg, "missing command")
@@ -1789,8 +1780,7 @@ test "std layer classification covers primary modules" {
   }
   assert_eq(ref_layer, "ref-model")
 
-  let effect_layer = match
-    std_layer_for_path("/tmp/repo/vibe/prelude/threads/runtime.vibe") {
+  let effect_layer = match std_layer_for_path("/tmp/repo/vibe/prelude/io.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
@@ -3840,7 +3830,7 @@ test "compiled test batch cache paths separate http mode" {
 
 ///|
 test "session http port is stable per entry root" {
-  let features = @runtime.RuntimeFeatureFlags::new(false, false)
+  let features = @runtime.RuntimeFeatureFlags::new(false)
   let port1 = session_http_port_for_entry_with_features(
     "/tmp/project/src/main.vibe", features,
   )
@@ -3910,7 +3900,7 @@ test "session http ping reports worker token" {
   let (json, should_shutdown) = handle_cli_session_request(
     CliEntryDbCache::new(),
     req,
-    @runtime.RuntimeFeatureFlags::new(false, false),
+    @runtime.RuntimeFeatureFlags::new(false),
     "worker-token",
   )
   assert_false(should_shutdown)
@@ -3925,7 +3915,7 @@ test "session http spawn command exports worker token" {
   let cmd = build_session_http_spawn_command(
     "/tmp/vibe.exe",
     36123,
-    @runtime.RuntimeFeatureFlags::new(true, true),
+    @runtime.RuntimeFeatureFlags::new(true),
     "worker-token",
     424242,
   )
@@ -3933,7 +3923,6 @@ test "session http spawn command exports worker token" {
   assert_true(cmd.contains("VIBE_INTERNAL_PARENT_PID=424242"))
   assert_true(cmd.contains("session-http --port 36123"))
   assert_true(cmd.contains("--unstable-async"))
-  assert_true(cmd.contains("--unstable-threads"))
   assert_true(cmd.contains("/proc/$$/fd/*"))
   assert_true(cmd.contains("eval \"exec $n<&-\""))
 }
@@ -3943,7 +3932,7 @@ test "session http spawn command escapes embedded single quotes in self_bin" {
   let cmd = build_session_http_spawn_command(
     "/tmp/O'Neil/vibe.exe",
     36123,
-    @runtime.RuntimeFeatureFlags::new(false, false),
+    @runtime.RuntimeFeatureFlags::new(false),
     "tok",
     1,
   )
@@ -3956,10 +3945,8 @@ test "session http spawn command escapes embedded single quotes in self_bin" {
 
 ///|
 test "session http port separates runtime feature sets" {
-  let baseline = @runtime.RuntimeFeatureFlags::new(false, false)
-  let async_only = @runtime.RuntimeFeatureFlags::new(true, false)
-  let threads_only = @runtime.RuntimeFeatureFlags::new(false, true)
-  let both = @runtime.RuntimeFeatureFlags::new(true, true)
+  let baseline = @runtime.RuntimeFeatureFlags::new(false)
+  let async_only = @runtime.RuntimeFeatureFlags::new(true)
   let base_port = session_http_port_for_entry_with_features(
     "/tmp/project/src/main.vibe", baseline,
   )
@@ -3967,20 +3954,6 @@ test "session http port separates runtime feature sets" {
     base_port !=
     session_http_port_for_entry_with_features(
       "/tmp/project/src/main.vibe", async_only,
-    ),
-  )
-  assert_true(
-    base_port !=
-    session_http_port_for_entry_with_features(
-      "/tmp/project/src/main.vibe", threads_only,
-    ),
-  )
-  assert_true(
-    session_http_port_for_entry_with_features(
-      "/tmp/project/src/main.vibe", async_only,
-    ) !=
-    session_http_port_for_entry_with_features(
-      "/tmp/project/src/main.vibe", both,
     ),
   )
 }

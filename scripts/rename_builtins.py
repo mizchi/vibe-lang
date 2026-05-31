@@ -188,14 +188,6 @@ RENAMES = [
     ("stdout_write_char", "Stdout::write_char"),
     ("stdin_read_stream", "Stdin::read_stream"),
     ("stdin_read_char", "Stdin::read_char"),
-    # Threads
-    ("threads_runtime_hints", "Threads::runtime_hints"),
-    ("threads_channel_new", "Threads::channel_new"),
-    ("threads_probe_wat", "Threads::probe_wat"),
-    ("threads_spawn", "Threads::spawn"),
-    ("threads_send", "Threads::send"),
-    ("threads_recv", "Threads::recv"),
-    ("threads_wait", "Threads::wait"),
     # Lines
     ("from_lines", "Lines::parse"),
     ("to_lines", "Lines::stringify"),
