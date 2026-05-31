@@ -264,6 +264,18 @@ VIBE_USE_WASMTIME_SUBMODULE=1 pkf run experimental_wasi_threads_probe
 
 # direct runner under x/threads
 VIBE_USE_WASMTIME_SUBMODULE=1 src/x/threads/run_probe.sh
+
+# run minimal shared-everything-threads i31 probe
+# defaults to:
+#   VIBE_WASMTIME_WASM_FLAGS='gc=y function-references=y shared-everything-threads=y'
+# If ../wasmtime/target/debug/wasmtime exists, this runner uses it automatically.
+pkf run experimental_shared_everything_threads_probe
+
+# run minimal Component Model threading probe
+# defaults to:
+#   VIBE_WASMTIME_WASM_FLAGS='component-model=y component-model-async=y component-model-threading=y'
+# If ../wasmtime/target/debug/wasmtime exists, this runner uses it automatically.
+pkf run experimental_component_model_threading_probe
 ```
 
 ### With wasmtime stack-switching (x86_64 Linux only)

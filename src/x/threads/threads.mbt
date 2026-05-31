@@ -9,6 +9,43 @@ pub fn recommended_wasi_flags() -> Array[String] {
 }
 
 ///|
+pub fn shared_everything_wasm_flags() -> Array[String] {
+  ["gc=y", "function-references=y", "shared-everything-threads=y"]
+}
+
+///|
+pub fn shared_everything_wasi_flags() -> Array[String] {
+  []
+}
+
+///|
+pub fn component_model_threading_wasm_flags() -> Array[String] {
+  ["component-model=y", "component-model-async=y", "component-model-threading=y"]
+}
+
+///|
+pub fn component_model_threading_wasi_flags() -> Array[String] {
+  []
+}
+
+///|
+pub fn shared_everything_component_wasm_flags() -> Array[String] {
+  [
+    "component-model=y",
+    "component-model-async=y",
+    "component-model-threading=y",
+    "gc=y",
+    "function-references=y",
+    "shared-everything-threads=y",
+  ]
+}
+
+///|
+pub fn shared_everything_component_wasi_flags() -> Array[String] {
+  []
+}
+
+///|
 pub fn flags_to_env_value(flags : Array[String]) -> String {
   if flags.length() == 0 {
     return ""
@@ -106,4 +143,101 @@ pub fn probe_wat() -> String {
     #|  )
     #|)
   wat
+}
+
+///|
+/// Minimal WAST probe for Wasmtime's experimental shared-everything-threads
+/// subset currently used by vibe. This intentionally starts with shared i31:
+/// i31 refs are immediate values, so they exercise shared heap types without
+/// requiring shared GC object allocation yet.
+pub fn shared_everything_i31_probe_wast() -> String {
+  let wast =
+    #|(module
+    #|  (global $g (ref (shared i31)) (ref.i31_shared (i32.const 77)))
+    #|  (global $any (ref null (shared any)) (ref.i31_shared (i32.const 1234)))
+    #|  (table $t 1 1 (ref (shared i31)) (ref.i31_shared (i32.const 88)))
+    #|
+    #|  (func (export "new") (param i32) (result (ref (shared i31)))
+    #|    local.get 0
+    #|    ref.i31_shared)
+    #|
+    #|  (func (export "get_u") (param i32) (result i32)
+    #|    local.get 0
+    #|    ref.i31_shared
+    #|    i31.get_u)
+    #|
+    #|  (func (export "get_s") (param i32) (result i32)
+    #|    local.get 0
+    #|    ref.i31_shared
+    #|    i31.get_s)
+    #|)
+    #|
+    #|(assert_return (invoke "new" (i32.const 1)) (ref.i31_shared))
+    #|(assert_return (invoke "get_u" (i32.const 100)) (i32.const 100))
+    #|(assert_return (invoke "get_u" (i32.const -1)) (i32.const 2147483647))
+    #|(assert_return (invoke "get_s" (i32.const -1)) (i32.const -1))
+    #|(assert_return (invoke "get_s" (i32.const 1073741824)) (i32.const -1073741824))
+  wast
+}
+
+///|
+/// Minimal Component Model threading WAST probe for Wasmtime's current
+/// `thread.new-indirect` builtins. This does not exercise the newer
+/// shared-everything `thread.spawn-*` intrinsics yet.
+pub fn component_model_threading_probe_wast() -> String {
+  let wast =
+    #|;;! component_model_async = true
+    #|;;! component_model_threading = true
+    #|
+    #|(component
+    #|  (core module $libc
+    #|    (table (export "__indirect_function_table") 1 funcref))
+    #|
+    #|  (core module $m
+    #|    (import "" "thread.new-indirect" (func $thread-new-indirect (param i32 i32) (result i32)))
+    #|    (import "" "thread.suspend-to-suspended" (func $thread-suspend-to-suspended (param i32) (result i32)))
+    #|    (import "" "thread.unsuspend" (func $thread-unsuspend (param i32)))
+    #|    (import "" "thread.index" (func $thread-index (result i32)))
+    #|    (import "libc" "__indirect_function_table" (table $indirect-function-table 1 funcref))
+    #|
+    #|    (global $g (mut i32) (i32.const 0))
+    #|    (global $main-thread-index (mut i32) (i32.const 0))
+    #|
+    #|    (func $thread-start (param i32)
+    #|      (global.set $g (local.get 0))
+    #|      (call $thread-unsuspend (global.get $main-thread-index)))
+    #|    (export "thread-start" (func $thread-start))
+    #|
+    #|    (elem (table $indirect-function-table) (i32.const 0) func $thread-start)
+    #|
+    #|    (func (export "run") (result i32)
+    #|      (global.set $main-thread-index (call $thread-index))
+    #|      (drop
+    #|        (call $thread-suspend-to-suspended
+    #|          (call $thread-new-indirect (i32.const 0) (i32.const 7))))
+    #|      (global.get $g)))
+    #|
+    #|  (core instance $libc (instantiate $libc))
+    #|  (core type $start-func-ty (func (param i32)))
+    #|  (alias core export $libc "__indirect_function_table" (core table $indirect-function-table))
+    #|
+    #|  (core func $thread-new-indirect
+    #|    (canon thread.new-indirect $start-func-ty (table $indirect-function-table)))
+    #|  (core func $thread-suspend-to-suspended (canon thread.suspend-to-suspended))
+    #|  (core func $thread-unsuspend (canon thread.unsuspend))
+    #|  (core func $thread-index (canon thread.index))
+    #|
+    #|  (core instance $i
+    #|    (instantiate $m
+    #|      (with "" (instance
+    #|        (export "thread.new-indirect" (func $thread-new-indirect))
+    #|        (export "thread.suspend-to-suspended" (func $thread-suspend-to-suspended))
+    #|        (export "thread.unsuspend" (func $thread-unsuspend))
+    #|        (export "thread.index" (func $thread-index))))
+    #|      (with "libc" (instance $libc))))
+    #|
+    #|  (func (export "run") async (result u32) (canon lift (core func $i "run"))))
+    #|
+    #|(assert_return (invoke "run") (u32.const 7))
+  wast
 }
