@@ -547,6 +547,109 @@ pub fn prelude_builtin_value_stmts() -> Array[@core.Stmt] {
 }
 
 ///|
+/// #402: name -> prelude value stmt index, in canonical (core ++ builtin) order
+/// the bundler emits. Built once per process; only a cheap O(stmts) pass (no
+/// ref walk), so it costs far less than walking every prelude def.
+let cached_prelude_value_index : Ref[Map[String, @core.Stmt]?] = @ref.new(None)
+
+///|
+fn prelude_value_index() -> Map[String, @core.Stmt] {
+  match cached_prelude_value_index.val {
+    Some(idx) => idx
+    None => {
+      let idx : Map[String, @core.Stmt] = {}
+      for stmt in prelude_core_value_stmts() {
+        match prelude_stmt_value_name(stmt) {
+          Some(name) => idx[name] = stmt
+          None => ()
+        }
+      }
+      for stmt in prelude_builtin_value_stmts() {
+        match prelude_stmt_value_name(stmt) {
+          Some(name) => idx[name] = stmt
+          None => ()
+        }
+      }
+      cached_prelude_value_index.val = Some(idx)
+      idx
+    }
+  }
+}
+
+///|
+/// #402: prelude value defs transitively reachable from `roots` (the value names
+/// referenced by the bundled non-prelude code) via the prelude's internal value
+/// dependency graph, returned in canonical (core ++ builtin) order and skipping
+/// any name in `shadowed` (a non-prelude def of the same name takes precedence,
+/// mirroring the bundler's existing collision guard).
+///
+/// The closure is computed lazily: only prelude defs that are actually reached
+/// get their references walked, so a small program walks a handful of stdlib
+/// functions instead of the bundler materializing the entire prelude and the
+/// DCE then removing most of it. The result is a *superset* of the prelude defs
+/// the final DCE keeps (roots are a superset of DCE's prelude entry refs and the
+/// closure uses the same `walk_stmt_refs` ref semantics), so emitting only these
+/// and letting the authoritative DCE prune the remainder is bit-for-bit
+/// identical to adding the whole prelude up front.
+pub fn prelude_reachable_value_stmts(
+  roots : Map[String, Bool],
+  shadowed : Map[String, Bool],
+) -> Array[@core.Stmt] {
+  let index = prelude_value_index()
+  let reachable : Map[String, Bool] = {}
+  let queue : Array[String] = []
+  for r, _ in roots {
+    if index.contains(r) && !reachable.contains(r) {
+      reachable[r] = true
+      queue.push(r)
+    }
+  }
+  let mut i = 0
+  while i < queue.length() {
+    let name = queue[i]
+    i = i + 1
+    match index.get(name) {
+      Some(stmt) => {
+        let refs : Map[String, Bool] = {}
+        @core.walk_stmt_refs(
+          stmt,
+          @core.WalkerScope::new(),
+          refs,
+          prelude_add_unbound_ref,
+        )
+        for ref_name, _ in refs {
+          if index.contains(ref_name) && !reachable.contains(ref_name) {
+            reachable[ref_name] = true
+            queue.push(ref_name)
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  let out : Array[@core.Stmt] = []
+  for stmt in prelude_core_value_stmts() {
+    match prelude_stmt_value_name(stmt) {
+      Some(name) =>
+        if reachable.contains(name) && !shadowed.contains(name) {
+          out.push(stmt)
+        }
+      None => ()
+    }
+  }
+  for stmt in prelude_builtin_value_stmts() {
+    match prelude_stmt_value_name(stmt) {
+      Some(name) =>
+        if reachable.contains(name) && !shadowed.contains(name) {
+          out.push(stmt)
+        }
+      None => ()
+    }
+  }
+  out
+}
+
+///|
 let cached_prelude_ast : Ref[@core.Module?] = @ref.new(None)
 
 ///|

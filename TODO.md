@@ -2,8 +2,62 @@
 
 Spec-locked decisions are tracked in `docs/spec/decisions.md`.
 Completed items are archived in `docs/DONE.md`.
+タスクの一次管理は GitHub Issues (`gh issue` / MCP)。本ファイルはロードマップ概要。
 
-## 次の一手 (2026-05-05 時点)
+## 次の一手 (2026-05-31 時点)
+
+現況スナップショット。open issue は 4 件 (#402 #482 #418 #415)。優先順は下記。
+
+### 現状サマリ
+
+- **0.1.0 surface は通っている**。直近の主戦場は **selfhost cutover の perf gate (#402)**。
+- **#402 KPI (wasmtime-aot, RUNS=5 median, 2026-05-30〜31 再計測)**:
+  - **check ratio = 0.77× ✅** (gate ≤ 1.33× 通過)
+  - **compile ratio ≈ 3.4–3.9× ❌** (依然 blocker)。worst stage は **bundle ~4.7×**、次いで load 3.4–4× / compile_module 3.1–3.4× / type 3.3× / emit 2–3.3×。
+  - レポート: `docs/report/selfhost-cutover-kpi-2026-05-30.md`
+
+### 🔴 #402 compile ratio — 本質診断で攻め方が確定 (重要・要 maintainer 判断)
+
+今セッションの per-frame profile (release/wasmtime, warm) で判明した、ロードマップを書き換える事実。詳細は #402 コメント (2026-05-31, `4586511284`)。
+
+- **bench の "selfhost" は `src/cmd/vibe_compile_wasi` = src/ runtime_compile を `--target wasm` したもの**(vibe/compiler/ ではない)。host は同じ src/ を `--target native`。⇒ **両側は同一 MoonBit コード、アルゴリズム同一。**
+- ⇒ **src/ への algorithmic 改善は両側に等しく効く = 構造的に symmetric → compile ratio を原理的に動かさない**。prelude prune (`80098b6`) も過去の accumulator/ripple も「横ばい」だったのはこれが根本原因。**compile ratio 目的の src/ 最適化は ROI ゼロ**。
+- **ratio ~4.8× は wasmtime JIT vs native の runtime floor**(frame 別 2.5–13.6×: build_module 13.6× / prelude_add roots-walk 7.4× / cache_key 5.5× / parse_stmts 5.2×)。ばらつきは「wasmtime がその op mix で native よりどれだけ遅いか」を表すだけ。
+- **「compile daemon 化」レバーは棄却**: daemon は selfhost の cold-start を amortize するが host(one-shot native)も同じ cold cost を払うので、公平比較では両側 amortize → 残る per-compile work の ~4× は不変。**check が 0.77× なのは host が session-http (~7-9ms/invoke) を払う host-only の計測非対称**であって selfhost daemon の効果ではない(`CHECK_DAEMON_MODE` は default 0)。host check に `VIBE_USE_SESSION_HTTP=0` を与えれば check も ~4× に跳ねる。
+- **gate ≤ 1.33× は「wasmtime JIT が native の 1.33× 以内」を要求**。branchy な compiler workload で JIT が native の 1.3× 以内は一般に非現実的。**src/ 改善では到達不能。**
+
+⇒ 残る実レバー(いずれも maintainer 判断要):
+  1. **wasmtime runtime チューニング**(codegen flag / PGO 等。既に `-O3`+cwasm)。floor を 4.8→例えば 4.0 に削る程度、1.33× には届かない見込み。
+  2. **operation-mix 置換**(高非対称 frame: build_module の per-byte `ByteBuf::push` を bulk op 化 等)。同上、floor を少し削るのみ。
+  3. **cutover 基準の再定義** ← 本命。「native を常用 / wasm は portability・sandbox 用 optional artifact」とするか、gate を runtime 現実(~2-4×)へ緩める。check の "pass" も session-http 非対称依存で、apples-to-apples なら compile/check 共に ~4× が実態。
+- **未計測ゲート**: compile/check の **peak RSS ratio ≤ 2.0×** が wasmtime-aot 後に未計測(`/usr/bin/time -v` 環境要)。
+
+### 🟠 open issues (一次ソース)
+
+- [ ] **#402** selfhost cutover tracking — 上記。compile ratio が最後の gate。
+- [ ] **#482** host `mizchi/ripple` verifier の O(n²) memo scan — **upstream publish 待ちで bump のみ**。host typecheck hot path に効く(selfhost 側 ripple は #483 で O(N) 化済)。`moon.mod` の `mizchi/ripple` を修正版公開後に bump。
+- [ ] **#415** codegen builtin を 2 backend 共有 registry に refactor (Phase B) — linear↔wasm-gc の parity 117 件ずれ、新 builtin 追加時の silent regression 温床。3-6 週、namespace 単位の小 PR 5-7 本。wasm-gc default 化 (Phase D) の前提。
+- [ ] **#418** ADR-0052 Phase 2/3 — `mut` struct field の `state_local` effect 分類 + escape 検査。ADR-0017 `state_local` 実装が前提。大規模・既存コード影響大。
+
+### 🟡 機能 / 品質 (issue 化候補、TODO 内に詳細あり)
+
+- [ ] **CI branch coverage 70% gate** + normalize/DCE/loader テスト拡充 (§カバレッジ)
+- [ ] **SIMD codegen 本番化** — 0xFD prefix emit + `simd_skip_ws`/`simd_scan_alnum` builtin 化 (§vibe/wasm)
+- [ ] **#59 WASM-GC selfbuild ~350KB** — P4 残 3 ケース (simd_patterns / gc_only/index / selfhost_cli_gc_entry) + P5 DCE + wasm-opt
+- [ ] **WASI P3**: effect → WIT マッピング + `vibe serve`
+- [ ] selfhost accumulator 残 2 sites (`linked_helpers.vibe` の `contains_name` 線形走査) — vibe runtime の Map が hash table 化するまで保留 (ROI ≪、§accumulator 撲滅)
+
+### 🔵 リファクタ / 長期
+
+- [ ] `vibe/types/` `vibe/parser/` 分離、`vibe/compiler` 論理分割
+- [ ] MoonBit host CLI を bootstrap 専用へ縮退
+- [ ] MoonBit host 重複削減 (§similarity-mbt、残: `src/runtime/db.mbt` の `set_source`/`set_binary_source`)
+
+---
+
+## 次の一手 (2026-05-05 時点) — historical
+
+> 注: 以下は 2026-05-05 時点の整理。`just` は pkfire (`pkf`) に移行済み。最新の優先順は上の「2026-05-31 時点」を参照。各 §詳細は下に残置。
 
 優先順。各項目は該当セクションに詳細あり。
 

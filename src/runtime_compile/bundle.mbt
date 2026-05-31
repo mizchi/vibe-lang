@@ -1845,9 +1845,16 @@ fn bundle_for_wasm_impl(
   // like array_map, array_filter, array_fold etc. are available in WASM.
   // These are defined as user-level .vibe code using primitive builtins
   // (array_builder, array_builder_push, etc.) that the WASM backend handles.
-  // DCE will remove any prelude definitions that aren't actually used.
-  // Snapshot non-prelude names before adding prelude stmts.
-  // Used for surgical prelude DCE in --no-dce mode.
+  //
+  // #402: instead of materializing the entire prelude here and letting DCE drop
+  // most of it (~1.3-1.6ms fixed bundle cost per compile), add only the prelude
+  // defs transitively reachable from the bundled program. The authoritative DCE
+  // below still prunes any over-approximation, so the output is bit-identical to
+  // adding the whole prelude up front, but a small program now walks a handful
+  // of stdlib functions rather than the full standard library.
+  //
+  // Snapshot non-prelude names for the surgical --no-dce path. Built from deps +
+  // main (re-export-expanded defs are intentionally excluded, as before).
   let non_prelude_names : Array[String] = []
   for stmt in bundled_stmts {
     match bundle_stmt_value_name(stmt) {
@@ -1859,25 +1866,10 @@ fn bundle_for_wasm_impl(
       None => ()
     }
   }
-  @profiler.profiler_enter("bundle/collect/prelude_add")
-  for
-    prelude_stmts in [
-      @checker.prelude_core_value_stmts(),
-      @checker.prelude_builtin_value_stmts(),
-    ] {
-    for stmt in prelude_stmts {
-      match bundle_stmt_value_name(stmt) {
-        Some(name) =>
-          if !existing_value_names.contains(name) {
-            bundled_stmts.push(stmt)
-            existing_value_names[name] = true
-          }
-        None => ()
-      }
-    }
-  }
-  @profiler.profiler_leave()
-  // Add main module statements (excluding imports and expanding re-exports)
+  // Expand re-exports and collect main module statements (excluding imports)
+  // into a tail appended after the prelude, preserving the original bundle order
+  // (deps ++ prelude ++ re-export-defs ++ sorted-main).
+  let tail_stmts : Array[@core.Stmt] = []
   let main_stmts : Array[@core.Stmt] = []
   for stmt in main_ast.stmts {
     match stmt {
@@ -1885,7 +1877,7 @@ fn bundle_for_wasm_impl(
       @core.Stmt::ReExport(spec~, source~, span=_) =>
         // Expand re-exports in main module
         collect_reexport_defs(
-          db, path, spec, source, bundled_stmts, visited, entry_value_names, entry_type_names,
+          db, path, spec, source, tail_stmts, visited, entry_value_names, entry_type_names,
         )
       _ => main_stmts.push(stmt)
     }
@@ -1929,6 +1921,37 @@ fn bundle_for_wasm_impl(
       Some(name) => non_prelude_names.push(name)
       None => ()
     }
+    tail_stmts.push(stmt)
+  }
+  // Roots = every name referenced by the bundled non-prelude code (deps +
+  // re-export-defs + main). A superset of DCE's prelude entry refs, so the
+  // reachable prelude closure is a superset of what DCE keeps.
+  @profiler.profiler_enter("bundle/collect/prelude_add")
+  let prelude_roots : Map[String, Bool] = {}
+  for stmt in bundled_stmts {
+    @core.walk_stmt_refs(
+      stmt,
+      @core.WalkerScope::new(),
+      prelude_roots,
+      bundle_add_unbound_ref,
+    )
+  }
+  for stmt in tail_stmts {
+    @core.walk_stmt_refs(
+      stmt,
+      @core.WalkerScope::new(),
+      prelude_roots,
+      bundle_add_unbound_ref,
+    )
+  }
+  for
+    stmt in @checker.prelude_reachable_value_stmts(
+      prelude_roots, existing_value_names,
+    ) {
+    bundled_stmts.push(stmt)
+  }
+  @profiler.profiler_leave()
+  for stmt in tail_stmts {
     bundled_stmts.push(stmt)
   }
   let bundled = @core.Module::{
@@ -1961,6 +1984,19 @@ fn bundle_stmt_value_name(stmt : @core.Stmt) -> String? {
     | @core.Stmt::InternalExportLet(name~, ..)
     | @core.Stmt::LetMut(name~, ..) => Some(name)
     _ => None
+  }
+}
+
+///|
+/// #402: `walk_stmt_refs` callback that records every unbound (free) name. Used
+/// to collect the prelude roots of a bundle.
+fn bundle_add_unbound_ref(
+  name : String,
+  bound : @core.WalkerScope,
+  refs : Map[String, Bool],
+) -> Unit {
+  if !bound.contains(name) {
+    refs[name] = true
   }
 }
 
