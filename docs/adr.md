@@ -68,6 +68,7 @@
 | 0038 | **Perceus RC バイナリサイズ最適化**。4-byte RC header、free-list optional、i64 space tagging、br_table dispatch。1.95x→1.49x 達成。 | accepted |
 | 0040 | **Checker/Codegen contract boundary**。`@core` パッケージが checker と codegen の間の安定 contract を提供。codegen は checker に一切依存せず、`@core.Module` / `@core.Type` / `@core.ExprTypeIndex` のみを入力として動作。`runtime_compile` がオーケストレータとして両者を接続。 | accepted |
 | 0049 | **Perceus RC isolation boundary**。RC 専用コードは `wasm_codegen_rc.mbt` (1696 LOC) + `perceus_poc.mbt` (2327 LOC) に集約。`wasm_gc_codegen.mbt` は RC に一切依存しない。`enable_rc` フラグで linear backend 内でも RC パスを制御可能。将来の wasm-gc only build flavor では RC ファイルを link graph から除外可能。 | accepted |
+| 0054 | **SIMD-first baseline (linear backend)**。wasm SIMD 拡張を「常に有効」と仮定し、`FixedArray` / `Bytes` 系の hot path を v128 命令で高速化する方針。第一歩として `array_new` / `FixedArray::make` の cell fill を `i32x4.splat` + 16-byte `v128.store`（4 要素/反復）+ scalar tail へ置き換え (`src/codegen/wasm_codegen_builtin_collection.mbt::emit_simd_fill_i32`)。`Bytes` の bulk copy/fill は既に `memory.copy`/`memory.fill` で最適。SIMD を baseline 化したため内製 wasm eval interpreter (`src/tests/vibe_wasm_eval_test.mbt`) も v128 local + `i32x4.splat`/`v128.store`（splat-broadcast 限定）をサポートする。検証は wasmtime 実行 + interpreter の両経路、vector/tail 境界 (size 3/4/7/9) を pin。参考: mizchi/simd（MoonBit wasm SIMD で memcpy/memset/sum 等が 5–90× 高速化）。 | accepted |
 
 ## Platform & Runtime
 
