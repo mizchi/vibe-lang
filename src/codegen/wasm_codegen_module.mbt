@@ -1934,44 +1934,6 @@ fn restore_string_array_value_kind_map(
 }
 
 ///|
-fn restore_string_array_string_map(
-  target : Map[String, Array[String]],
-  saved : Map[String, Array[String]],
-) -> Unit {
-  let to_remove : Array[String] = []
-  for name, _ in target {
-    if !saved.contains(name) {
-      to_remove.push(name)
-    }
-  }
-  for name in to_remove {
-    target.remove(name)
-  }
-  for name, value in saved {
-    target[name] = value
-  }
-}
-
-///|
-fn restore_string_value_kind_map(
-  target : Map[String, ValueKind],
-  saved : Map[String, ValueKind],
-) -> Unit {
-  let to_remove : Array[String] = []
-  for name, _ in target {
-    if !saved.contains(name) {
-      to_remove.push(name)
-    }
-  }
-  for name in to_remove {
-    target.remove(name)
-  }
-  for name, value in saved {
-    target[name] = value
-  }
-}
-
-///|
 fn restore_string_func_sig_map(
   target : Map[String, FuncSig],
   saved : Map[String, FuncSig],
@@ -2010,11 +1972,20 @@ fn restore_string_string_map(
 }
 
 ///|
+/// Scope snapshot for the named-function maps.
+///
+/// `fn_indices` / `fn_params` / `fn_param_names` / `fn_returns` are
+/// pre-registered to the size of the whole module (every top-level function),
+/// so copying them by value on every block snapshot was O(module_size) per
+/// block — O(N^2) over a compile (this dominated codegen on large modules).
+/// They are now scoped via the `ctx.scope_undo` log instead: in-region writes
+/// go through `scoped_named_map_set`, which records a revert closure, and the
+/// snapshot only remembers the log length (`big_map_undo_marker`).
+///
+/// The remaining maps are sparse (only special functions populate them) or
+/// per-function and small, so copying them stays cheap.
 priv struct NamedFnScopeSnapshot {
-  fn_indices : Map[String, Int]
-  fn_params : Map[String, Array[ValueKind]]
-  fn_param_names : Map[String, Array[String]]
-  fn_returns : Map[String, ValueKind]
+  big_map_undo_marker : Int
   fn_multivalue_results : Map[String, Array[ValueKind]]
   fn_return_sigs : Map[String, FuncSig]
   fn_local_sigs : Map[String, FuncSig]
@@ -2025,12 +1996,26 @@ priv struct NamedFnScopeSnapshot {
 }
 
 ///|
+/// Write `key=value` into one of the pre-registered named-function maps while
+/// recording how to revert it, so `restore_named_fn_scope` can undo exactly
+/// the in-region writes without copying the whole (module-sized) map.
+fn[V] scoped_named_map_set(
+  ctx : CodegenCtx,
+  m : Map[String, V],
+  key : String,
+  value : V,
+) -> Unit {
+  match m.get(key) {
+    Some(old) => ctx.scope_undo.push(fn() { m[key] = old })
+    None => ctx.scope_undo.push(fn() { m.remove(key) })
+  }
+  m[key] = value
+}
+
+///|
 fn snapshot_named_fn_scope(ctx : CodegenCtx) -> NamedFnScopeSnapshot {
   NamedFnScopeSnapshot::{
-    fn_indices: ctx.fn_indices.copy(),
-    fn_params: ctx.fn_params.copy(),
-    fn_param_names: ctx.fn_param_names.copy(),
-    fn_returns: ctx.fn_returns.copy(),
+    big_map_undo_marker: ctx.scope_undo.length(),
     fn_multivalue_results: ctx.fn_multivalue_results.copy(),
     fn_return_sigs: ctx.fn_return_sigs.copy(),
     fn_local_sigs: ctx.fn_local_sigs.copy(),
@@ -2046,10 +2031,15 @@ fn restore_named_fn_scope(
   ctx : CodegenCtx,
   saved : NamedFnScopeSnapshot,
 ) -> Unit {
-  restore_string_int_map(ctx.fn_indices, saved.fn_indices)
-  restore_string_array_value_kind_map(ctx.fn_params, saved.fn_params)
-  restore_string_array_string_map(ctx.fn_param_names, saved.fn_param_names)
-  restore_string_value_kind_map(ctx.fn_returns, saved.fn_returns)
+  // Revert in-region writes to the pre-registered big maps (fn_indices,
+  // fn_params, fn_param_names, fn_returns) by replaying the undo log back to
+  // the snapshot marker, newest first.
+  while ctx.scope_undo.length() > saved.big_map_undo_marker {
+    match ctx.scope_undo.pop() {
+      Some(revert) => revert()
+      None => break
+    }
+  }
   restore_string_array_value_kind_map(
     ctx.fn_multivalue_results,
     saved.fn_multivalue_results,
@@ -2083,14 +2073,14 @@ fn compile_function_with_scoped_names(
   let saved_named_fn_scope = snapshot_named_fn_scope(ctx)
   match f.name {
     Some(name) => {
-      ctx.fn_indices[name] = func_idx
-      ctx.fn_params[name] = param_kinds
+      scoped_named_map_set(ctx, ctx.fn_indices, name, func_idx)
+      scoped_named_map_set(ctx, ctx.fn_params, name, param_kinds)
       let param_names : Array[String] = []
       for p in f.params {
         param_names.push(p.name)
       }
-      ctx.fn_param_names[name] = param_names
-      ctx.fn_returns[name] = result_kind
+      scoped_named_map_set(ctx, ctx.fn_param_names, name, param_names)
+      scoped_named_map_set(ctx, ctx.fn_returns, name, result_kind)
     }
     None => ()
   }
