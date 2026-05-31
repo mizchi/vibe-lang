@@ -18,12 +18,20 @@ Included:
   - exports:
     - `_start`
     - `wasi_thread_start`
+- `wasi_threads_speedup_bench.wat`
+  - exports:
+    - `serial`
+    - `parallel`
+    - `_start` checksum validation
+    - `wasi_thread_start`
 - `shared_everything_i31_probe.wast`
   - validates `ref.i31_shared`, `(shared i31)`, and `(shared any)`
 - `component_model_threading_probe.wast`
   - validates Wasmtime's current `canon thread.new-indirect` Component Model path
 - `run_probe.sh`
   - local runner for this directory (`wasm-tools parse` + `scripts/wasmtime_run.sh`)
+- `run_speedup_probe.sh`
+  - local runner for serial vs parallel speedup verification (`hyperfine`)
 - `run_shared_everything_probe.sh`
   - local runner for the shared-everything WAST probe
 - `run_component_model_threading_probe.sh`
@@ -37,6 +45,16 @@ pkf run experimental_wasi_threads_probe
 
 # or run directly
 src/x/threads/run_probe.sh
+```
+
+Run WASI threads speedup verification:
+
+```bash
+# run from repo root
+pkf run experimental_wasi_threads_speedup_probe
+
+# or run directly
+src/x/threads/run_speedup_probe.sh
 ```
 
 Run shared-everything i31:

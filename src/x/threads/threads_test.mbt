@@ -78,6 +78,16 @@ test "threads probe wat contains wasi-threads primitives" {
 }
 
 ///|
+test "threads speedup bench wat contains serial and parallel entry points" {
+  let wat = speedup_bench_wat()
+  assert_true(wat.contains("(export \"serial\")"))
+  assert_true(wat.contains("(export \"parallel\")"))
+  assert_true(wat.contains("(export \"wasi_thread_start\")"))
+  assert_true(wat.contains("memory.atomic.wait32"))
+  assert_true(wat.contains("memory.atomic.notify"))
+}
+
+///|
 test "threads shared-everything i31 probe wast contains current primitives" {
   let wast = shared_everything_i31_probe_wast()
   assert_true(wast.contains("(ref (shared i31))"))
