@@ -1,4 +1,99 @@
 ///|
+/// Execution backends that the experimental thread layer can target.
+/// Keep these names stable: the Wasmtime fork milestones are mapped to this
+/// semantic contract instead of to a specific low-level instruction spelling.
+pub(all) enum ThreadBackend {
+  SerialOnly
+  WasiThreads
+  ComponentModelCooperative
+  ComponentModelShared
+} derive(Debug, Eq)
+
+///|
+/// The observable scheduling contract of a backend.
+pub(all) enum ThreadSpawnSemantics {
+  NoSpawn
+  Cooperative
+  PreemptiveParallel
+} derive(Debug, Eq)
+
+///|
+pub impl Show for ThreadBackend with fn output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
+
+///|
+pub impl Show for ThreadSpawnSemantics with fn output(self, logger) {
+  logger.write_string(Debug::to_repr(self).to_string())
+}
+
+///|
+pub fn all_thread_backends() -> Array[ThreadBackend] {
+  [
+    SerialOnly,
+    WasiThreads,
+    ComponentModelCooperative,
+    ComponentModelShared,
+  ]
+}
+
+///|
+pub fn thread_backend_id(backend : ThreadBackend) -> String {
+  match backend {
+    SerialOnly => "serial"
+    WasiThreads => "wasi-threads"
+    ComponentModelCooperative => "component-cooperative"
+    ComponentModelShared => "component-shared"
+  }
+}
+
+///|
+pub fn thread_backend_spawn_semantics(
+  backend : ThreadBackend
+) -> ThreadSpawnSemantics {
+  match backend {
+    SerialOnly => NoSpawn
+    ComponentModelCooperative => Cooperative
+    WasiThreads | ComponentModelShared => PreemptiveParallel
+  }
+}
+
+///|
+pub fn thread_backend_can_claim_parallel_speedup(
+  backend : ThreadBackend
+) -> Bool {
+  thread_backend_spawn_semantics(backend) == PreemptiveParallel
+}
+
+///|
+pub fn thread_backend_available_parallelism_semantics(
+  backend : ThreadBackend
+) -> String {
+  match backend {
+    SerialOnly | ComponentModelCooperative => "always-one"
+    WasiThreads | ComponentModelShared => "host-available-parallelism"
+  }
+}
+
+///|
+pub fn thread_backend_wasm_flags(backend : ThreadBackend) -> Array[String] {
+  match backend {
+    SerialOnly => []
+    WasiThreads => recommended_wasm_flags()
+    ComponentModelCooperative => component_model_threading_wasm_flags()
+    ComponentModelShared => shared_everything_component_wasm_flags()
+  }
+}
+
+///|
+pub fn thread_backend_wasi_flags(backend : ThreadBackend) -> Array[String] {
+  match backend {
+    SerialOnly | ComponentModelCooperative | ComponentModelShared => []
+    WasiThreads => recommended_wasi_flags()
+  }
+}
+
+///|
 pub fn recommended_wasm_flags() -> Array[String] {
   ["threads=y", "shared-memory=y"]
 }

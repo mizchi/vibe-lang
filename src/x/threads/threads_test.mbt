@@ -68,6 +68,55 @@ test "threads flags env formatting" {
 }
 
 ///|
+test "threads backend contracts keep cooperative and parallel semantics separate" {
+  assert_eq(
+    thread_backend_spawn_semantics(ThreadBackend::SerialOnly),
+    ThreadSpawnSemantics::NoSpawn,
+  )
+  assert_eq(
+    thread_backend_spawn_semantics(ThreadBackend::ComponentModelCooperative),
+    ThreadSpawnSemantics::Cooperative,
+  )
+  assert_eq(
+    thread_backend_spawn_semantics(ThreadBackend::WasiThreads),
+    ThreadSpawnSemantics::PreemptiveParallel,
+  )
+  assert_eq(
+    thread_backend_spawn_semantics(ThreadBackend::ComponentModelShared),
+    ThreadSpawnSemantics::PreemptiveParallel,
+  )
+  assert_false(thread_backend_can_claim_parallel_speedup(
+    ThreadBackend::ComponentModelCooperative,
+  ))
+  assert_true(thread_backend_can_claim_parallel_speedup(
+    ThreadBackend::ComponentModelShared,
+  ))
+}
+
+///|
+test "threads backend flags describe the intended runtime target" {
+  assert_eq(thread_backend_id(ThreadBackend::ComponentModelShared), "component-shared")
+  assert_eq(
+    flags_to_env_value(thread_backend_wasm_flags(ThreadBackend::ComponentModelShared)),
+    "component-model=y component-model-async=y component-model-threading=y gc=y function-references=y shared-everything-threads=y",
+  )
+  assert_eq(
+    flags_to_env_value(thread_backend_wasi_flags(ThreadBackend::ComponentModelShared)),
+    "",
+  )
+  assert_eq(
+    thread_backend_available_parallelism_semantics(
+      ThreadBackend::ComponentModelCooperative,
+    ),
+    "always-one",
+  )
+  assert_eq(
+    thread_backend_available_parallelism_semantics(ThreadBackend::ComponentModelShared),
+    "host-available-parallelism",
+  )
+}
+
+///|
 test "threads probe wat contains wasi-threads primitives" {
   let wat = probe_wat()
   assert_true(wat.contains("(import \"env\" \"memory\" (memory 1 1 shared))"))
