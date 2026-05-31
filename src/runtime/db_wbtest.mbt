@@ -507,56 +507,6 @@ test "type query imports re-exported Process functions through index" {
 }
 
 ///|
-test "type query keeps exported schemes for thread runtime-style wrappers" {
-  let db = VibeDb::new()
-  db.set_source(
-    "main",
-    "export let recv = (channel: Int) -> String with { Threads } {\n" +
-    "  Threads::recv(channel)\n" +
-    "}\n" +
-    "export let send = (channel: Int, message: String) -> Bool with { Threads } {\n" +
-    "  Threads::send(channel, message)\n" +
-    "}\n" +
-    "export let wait = (task: Int) -> Int with { Threads } {\n" +
-    "  Threads::wait(task)\n" +
-    "}\n" +
-    "export let spawn = (name: String, mailbox: Int) -> Int with { Threads } {\n" +
-    "  { Threads::spawn(name, mailbox) }\n" +
-    "}\n" +
-    "export let probe_wat = () -> String with { Threads } {\n" +
-    "  Threads::probe_wat()\n" +
-    "}\n" +
-    "export let channel_new = (capacity: Int) -> Int with { Threads } {\n" +
-    "  Threads::channel_new(capacity)\n" +
-    "}\n" +
-    "export let runtime_hints = () -> Unit with { Threads } {\n" +
-    "  let _ = Threads::runtime_hints()\n" +
-    "  if true {\n" +
-    "  } else {\n" +
-    "  }\n" +
-    "}\n",
-  )
-  let env = db.types("main")
-  let diags = db.diagnostics("main")
-  if !diags.is_empty() {
-    let lines : Array[String] = []
-    for diag in diags {
-      lines.push(diag.stage + ":" + diag.message)
-    }
-    fail("unexpected diagnostics: " + lines.join(","))
-  }
-  let names = [
-    "recv", "send", "wait", "spawn", "probe_wat", "channel_new", "runtime_hints",
-  ]
-  for name in names {
-    match env.get_scheme(name) {
-      Some(_) => ()
-      None => fail("expected exported scheme: " + name)
-    }
-  }
-}
-
-///|
 test "cross-directory import to non-index.vibe emits warning" {
   let db = VibeDb::new()
   db.set_source(

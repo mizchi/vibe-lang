@@ -14,7 +14,6 @@ struct CliRuntimeArgs {
   syntax_mode : @runtime.ParserMode
   cmd_args : Array[String]
   unstable_async : Bool
-  unstable_threads : Bool
   enable_llm : Bool
   permissions : @capability.CapabilitySet?
 }
@@ -25,7 +24,6 @@ struct CliDispatchArgs {
   syntax_mode : @runtime.ParserMode
   cmd_args : Array[String]
   unstable_async : Bool
-  unstable_threads : Bool
   enable_llm : Bool
   permissions : @capability.CapabilitySet?
 }
@@ -73,13 +71,11 @@ fn parse_cli_runtime_args(
 ) -> Result[CliRuntimeArgs, String] {
   let filtered : Array[String] = []
   let mut unstable_async = false
-  let mut unstable_threads = false
   let mut enable_llm = false
   let allow_flags : Array[String] = []
   for arg in args {
     match arg {
       "--unstable-async" => unstable_async = true
-      "--unstable-threads" => unstable_threads = true
       "--llm" => enable_llm = true
       _ =>
         if arg == "--allow-all" ||
@@ -108,7 +104,6 @@ fn parse_cli_runtime_args(
         syntax_mode,
         cmd_args,
         unstable_async,
-        unstable_threads,
         enable_llm,
         permissions,
       })
@@ -240,17 +235,12 @@ pub fn parse_cli_dispatch_args(
     return Err("missing command")
   }
   let mut global_unstable_async = false
-  let mut global_unstable_threads = false
   let mut global_enable_llm = false
   let mut cmd_index = 1
   while cmd_index < args.length() {
     match args[cmd_index] {
       "--unstable-async" => {
         global_unstable_async = true
-        cmd_index += 1
-      }
-      "--unstable-threads" => {
-        global_unstable_threads = true
         cmd_index += 1
       }
       "--llm" => {
@@ -272,7 +262,6 @@ pub fn parse_cli_dispatch_args(
         syntax_mode: cli_args.syntax_mode,
         cmd_args: cli_args.cmd_args,
         unstable_async: cli_args.unstable_async || global_unstable_async,
-        unstable_threads: cli_args.unstable_threads || global_unstable_threads,
         enable_llm: cli_args.enable_llm || global_enable_llm,
         permissions: cli_args.permissions,
       })

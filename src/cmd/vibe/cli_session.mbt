@@ -168,9 +168,6 @@ fn session_http_port_for_entry_with_features(
   if features.is_unstable_async_enabled() {
     acc = (acc * 131 + 17) % 20000
   }
-  if features.is_unstable_threads_enabled() {
-    acc = (acc * 131 + 31) % 20000
-  }
   36000 + acc
 }
 
@@ -392,11 +389,6 @@ fn build_session_http_spawn_command(
     } else {
       ""
     }) +
-    (if features.is_unstable_threads_enabled() {
-      " --unstable-threads"
-    } else {
-      ""
-    }) +
     " session-http --port " +
     port.to_string()
   let payload = close_inherited_fds + "; " + exec_worker
@@ -558,7 +550,7 @@ fn run_check_entry_via_session(
   let port = match
     ensure_session_http_worker(
       entry_path,
-      @runtime.RuntimeFeatureFlags::new(false, false),
+      @runtime.RuntimeFeatureFlags::new(false),
     ) {
     Ok(v) => v
     Err(err) => return Err(err)

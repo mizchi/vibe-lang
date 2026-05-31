@@ -19,9 +19,6 @@ This directory is the vibe core library, self-hosted by porting selected parts o
 | `bytes.vibe` | 5 | Byte array helpers (`is_byte`, `clamp_byte`, `from_ascii`, `to_ascii`, `to_hex`, `from_hex`) |
 | `string.vibe` | 19 | String helpers (`equals`, `compare`, `utf8/utf16/unicode length`, `is_blank`, `trim*`, `head`, `tail`, `contains`, `replace*`, `from_char_code`) |
 | `io.vibe` | 6 | High-level stdio + ANSI/TUI helpers (`stdout_write`, `stdout_writeln`, `stdin_read`, `stdin_read_line`, `ansi_escape`) |
-| `threads/spec.vibe` | 4 | Pure thread deployment specs (`task/channel/actor/deployment_plan`, recommended flags/env) |
-| `threads/runtime.vibe` | 2 | Runtime bridge (`probe_wat`, `runtime_hints`, `channel_new`, `spawn`, `send`, `recv`, `wait`) |
-| `threads.vibe` | 7 | Compatibility facade for legacy threads API shape |
 
 `list.vibe` / `map.vibe` / `set.vibe` moved to `vibe/collection`.
 
@@ -34,11 +31,7 @@ Tests are separated into `*_test.vibe` files (for example, `string_test.vibe` fo
 - `trait-contract`: contracts (`builtin_traits.vibe`)
 - `pure-primitive`: pure scalar/string operations (`bool/cmp/char/int/float/double/string`)
 - `pure-data`: pure ADT/data operations (`array/option/result/bytes`)
-- `effect-boundary`: runtime side-effect bridge (`io/threads/runtime`)
-
-Compatibility facades:
-
-- `threads.vibe` delegates conceptually to `threads/spec.vibe` + `threads/runtime.vibe`.
+- `effect-boundary`: runtime side-effect bridge (`io`)
 
 Path モジュールは `vibe/path` へ移動済み。
 - quick usage: `import /vibe/path { ... }`
@@ -63,7 +56,7 @@ Boundary enforcement is active in:
   - stdio: `with {Stdin}` / `with {Stdout}`
   - async runtime: `with {Async}`
 - 新規 API を追加する場合、pure 変換ロジックは pure module に置き、effect module には混在させない。
-- 実験 API は `threads/runtime` のように runtime wrapper 側へ隔離し、必要な unstable flag をドキュメントに明記する。
+- 実験 API は runtime wrapper 側へ隔離し、必要な unstable flag をドキュメントに明記する。
 
 ## Trait-oriented API Surface
 
@@ -111,50 +104,6 @@ Recommended usage (collision-safe, pipe-first):
 import /vibe/prelude/option.vibe { is_some, unwrap_or }
 let ok = Some(1) |> is_some
 let v = None |> unwrap_or(0)
-```
-
-## Unstable Feature: `--unstable-threads`
-
-Threads API は安定層と実験層に分離されている（ADR-0008 参照）。
-
-### Stable (flag 不要)
-
-Pure spec 関数。`vibe test` で通常実行可能。
-
-| Function | Signature | Description |
-|----------|-----------|-------------|
-| `task_spec` | `(name: String, entry_symbol: String) -> Record` | タスク定義 |
-| `channel_spec` | `(name: String, capacity: Int) -> Record` | チャネル定義 |
-| `actor_spec` | `(name: String, mailbox: String, handler: String) -> Record` | アクター定義 |
-| `deployment_plan` | `(task, channel, actor) -> Record` | デプロイメントプラン |
-| `recommended_wasi_env` | `() -> String` | `"threads=y"` |
-| `recommended_wasm_env` | `() -> String` | `"threads=y shared-memory=y"` |
-| `recommended_wasi_flags` | `() -> Array[String]` | `["threads=y"]` |
-| `recommended_wasm_flags` | `() -> Array[String]` | `["threads=y", "shared-memory=y"]` |
-
-### Unstable (requires `--unstable-threads`)
-
-Runtime bridge 関数。実行時に flag チェックされ、未指定時は `FeatureDisabled` エラー。
-
-| Function | Signature | Description |
-|----------|-----------|-------------|
-| `channel_new` | `(capacity: Int) -> Int` | チャネル割り当て |
-| `spawn` | `(name: String, mailbox: Int) -> Int` | スレッドタスク生成 |
-| `send` | `(channel: Int, message: String) -> Bool` | メッセージ送信 |
-| `recv` | `(channel: Int) -> String` | メッセージ受信 |
-| `wait` | `(task: Int) -> Int` | タスク完了待ち |
-| `probe_wat` | `() -> String` | WASM-WASI インポート診断 |
-| `runtime_hints` | `() -> Unit` | ランタイム初期化ヒント |
-
-**型チェックは flag なしで通る**（テストでの thunk 参照は可能）。
-実際の *実行* のみ flag が必要。
-
-```bash
-# Stable spec — flag 不要
-vibe test vibe/prelude/threads_spec_test.vibe
-
-# Unstable runtime — flag 必要
-vibe --unstable-threads run my_threaded_app.vibe
 ```
 
 ## Current Language Gaps Found During Porting
@@ -222,8 +171,7 @@ just run test \
   vibe/prelude/option_test.vibe \
   vibe/prelude/result_test.vibe \
   vibe/prelude/string_test.vibe \
-  vibe/prelude/io_test.vibe \
-  vibe/prelude/threads_test.vibe
+  vibe/prelude/io_test.vibe
 
 # Validate WASM compilation (import/export usage)
 just run compile --wasm vibe/prelude/test_import.vibe -o /tmp/test.wasm
@@ -234,7 +182,3 @@ wasmtime run --invoke _start /tmp/test.wasm  # -> 484 (untagged: 121)
 
 - `vibe/prelude/test_import.vibe` is only for compilation validation (no `test` blocks).
 - `vibe/prelude/io.vibe` depends on runtime builtins, so it is exercised via the native/compiled test path rather than pure Core WASM (`--wasm`) today.
-- `vibe/prelude/threads.vibe` では runtime wrappers
-  (`probe_wat` / `runtime_hints` / `channel_new` / `spawn` / `send` / `recv` / `wait`)
-  の実行に `--unstable-threads` が必要。
-  `task_spec` / `channel_spec` / `actor_spec` / `deployment_plan` / `recommended_*` は通常テストで実行可能。

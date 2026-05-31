@@ -1475,28 +1475,6 @@ test "vibe wasm compiles __to_string builtin" {
   assert_true(bytes_contains_ascii(wasm, "_start"))
 }
 
-///|
-test "vibe wasm compiles threads builtin thunks" {
-  let db = VibeDb::new()
-  let src =
-    #|let probe = () -> String with {Threads} { Threads::probe_wat() }
-    #|let new_ch = () -> Int with {Threads} { Threads::channel_new(1) }
-    #|let spawn_w = () -> Int with {Threads} { Threads::spawn("worker", 1) }
-    #|let send_w = () -> Bool with {Threads} { Threads::send(1, "msg") }
-    #|let recv_w = () -> String with {Threads} { Threads::recv(1) }
-    #|let wait_w = () -> Int with {Threads} { Threads::wait(1) }
-    #|0
-  db.set_source("main", src)
-  let wasm = try @runtime_compile.compile_module_wasm(db, "main") catch {
-    e => fail("compile error: " + e.to_string())
-  } noraise {
-    b => b
-  }
-  assert_true(wasm.length() >= 8)
-  assert_true(bytes_contains_ascii(wasm, "_start"))
-}
-
-///|
 test "vibe wasm rejects unknown record accessor call" {
   let db = VibeDb::new()
   let src =
