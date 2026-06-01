@@ -115,6 +115,34 @@ fn Cursor::read_leb_i64(self : Cursor) -> Int64 raise WasmEvalError {
 }
 
 ///|
+/// Read a signed LEB128 i32 immediate (the encoding used by `i32.const`).
+/// Unlike `read_leb_u32`, this sign-extends when the final byte's 0x40 bit is
+/// set, so e.g. the single byte `0x7F` decodes to -1 rather than 127. Reading
+/// `i32.const` as unsigned previously made negative constants (notably the
+/// `result = -1` sentinel in `String::index_of`) come back as large positives.
+fn Cursor::read_leb_i32(self : Cursor) -> Int raise WasmEvalError {
+  let mut result = 0
+  let mut shift = 0
+  let mut last_byte = 0
+  while true {
+    let byte = self.read_u8()
+    last_byte = byte
+    result = result | ((byte & 0x7f) << shift)
+    if (byte & 0x80) == 0 {
+      break
+    }
+    shift += 7
+    if shift > 35 {
+      raise WasmEvalError::Invalid("leb overflow")
+    }
+  }
+  if shift < 32 && (last_byte & 0x40) != 0 {
+    result = result | (-1 << (shift + 7))
+  }
+  result
+}
+
+///|
 fn Cursor::read_name(self : Cursor) -> String raise WasmEvalError {
   let len = self.read_leb_u32()
   let bytes = self.read_bytes(len)
@@ -346,7 +374,7 @@ fn parse_global_section(
     // Parse init expr: expect i32.const or i64.const followed by end
     let op = cur.read_u8()
     let value : Int64 = match op {
-      65 => cur.read_leb_u32().to_int64() // i32.const
+      65 => cur.read_leb_i32().to_int64() // i32.const (signed LEB128)
       66 => cur.read_leb_i64() // i64.const
       _ => raise WasmEvalError::Unsupported("global init expr")
     }
@@ -812,9 +840,9 @@ fn eval_loop(
     let op = code.read_u8()
     match op {
       0 => raise WasmEvalError::Invalid("unreachable")
-      // i32.const
+      // i32.const (signed LEB128)
       65 => {
-        let v = code.read_leb_u32()
+        let v = code.read_leb_i32()
         stack.push(v.to_int64())
       }
       // i64.const
@@ -2596,6 +2624,24 @@ test "vibe wasm eval supports: String::join" {
 test "vibe wasm eval supports: String::index_of" {
   assert_wasm_eval_decodes("String::index_of(\"hello world\", \"world\")")
   assert_wasm_eval_decodes("String::index_of(\"abcabc\", \"bc\")")
+}
+
+///|
+// Value-level checks for SIMD-accelerated String::index_of (ADR-0054). The
+// not-found case exercises the `result = -1` sentinel, which regressed to 127
+// while `i32.const` was decoded as unsigned LEB128 (-1 == 0x7F == 127).
+test "vibe wasm eval: String::index_of values (found / not found)" {
+  assert_wasm_eval_int("String::index_of(\"hello world\", \"world\")", 6)
+  assert_wasm_eval_int("String::index_of(\"abcabc\", \"bc\")", 1)
+  assert_wasm_eval_int("String::index_of(\"abc\", \"x\")", -1)
+  assert_wasm_eval_int("String::index_of(\"abc\", \"a\")", 0)
+  // String long enough to take the 16-byte SIMD memchr window path.
+  assert_wasm_eval_int(
+    "String::index_of(\"aaaaaaaaaaaaaaaaaaaaXY\", \"XY\")", 20,
+  )
+  assert_wasm_eval_int(
+    "String::index_of(\"aaaaaaaaaaaaaaaaaaaaXY\", \"ZZ\")", -1,
+  )
 }
 
 ///|
