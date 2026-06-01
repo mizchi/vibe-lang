@@ -101,10 +101,6 @@ pkf run run -- examples/syntax.vibe
 pkf run run -- --unstable-async examples/async.vibe
 # flags can also be placed before command
 pkf run run -- --unstable-async run examples/async.vibe
-# unstable threads probe builtin (via line shell)
-printf 'Threads::probe_wat()\nexit\n' | pkf run run -- shell-stdin --no-prompt --unstable-threads
-# unstable threads runtime hints (recommended -W/-S flags)
-printf 'Threads::runtime_hints()\nexit\n' | pkf run run -- shell-stdin --no-prompt --unstable-threads
 
 # Run tests in script
 pkf run run -- test examples/*.vibe
@@ -256,14 +252,6 @@ VIBE_WASMTIME_WASM_FLAGS='gc=y' pkf run bench-wasmtime
 # inspect current flag env values used by scripts/wasmtime_run.sh
 pkf run show-wasmtime-flags
 
-# run minimal WASI Threads probe (imports wasi::thread-spawn + env::memory)
-# defaults to:
-#   VIBE_WASMTIME_WASM_FLAGS='threads=y shared-memory=y'
-#   VIBE_WASMTIME_WASI_FLAGS='threads=y'
-VIBE_USE_WASMTIME_SUBMODULE=1 pkf run experimental_wasi_threads_probe
-
-# direct runner under x/threads
-VIBE_USE_WASMTIME_SUBMODULE=1 src/x/threads/run_probe.sh
 ```
 
 ### With wasmtime stack-switching (x86_64 Linux only)

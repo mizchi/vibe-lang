@@ -241,13 +241,6 @@ fn builtin_effects(name : String) -> Array[@core.EffectAtom] {
     "Stdin::read_char" => [@core.EffectAtom::Const("Stdin")]
     "Stdin::read_stream" => [@core.EffectAtom::Const("Stdin")]
     "sleep" => [@core.EffectAtom::Const("Async")]
-    "Threads::probe_wat"
-    | "Threads::runtime_hints"
-    | "Threads::channel_new"
-    | "Threads::send"
-    | "Threads::recv"
-    | "Threads::spawn"
-    | "Threads::wait" => [@core.EffectAtom::Const("Threads")]
     "Path::resolve" => [@core.EffectAtom::Const("Env")]
     "Fs::read_file"
     | "Fs::write_file"

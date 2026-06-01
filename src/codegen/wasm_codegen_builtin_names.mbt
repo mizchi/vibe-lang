@@ -48,9 +48,6 @@ pub fn codegen_registered_builtin_names() -> Array[String] {
     "Http::response_status", "Http::response_header", "Http::response_body",
     // Socket
      "Socket::tcp_connect", "Socket::tcp_read", "Socket::tcp_write", "Socket::tcp_close",
-    // Threads
-     "Threads::probe_wat", "Threads::runtime_hints", "Threads::channel_new", "Threads::spawn",
-    "Threads::send", "Threads::recv", "Threads::wait",
     // Json (host imports when fs_host_imports is set)
      "Json::parse", "Json::stringify", "Json::get", "Json::string",
   ]

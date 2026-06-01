@@ -60,8 +60,5 @@ pub fn checker_declared_builtin_names() -> Array[String] {
     "Lines::stringify",
     // LLM / interactive
      "Llm::complete", "Rlm::run", "Rlm::finalize",
-    // Threads
-     "Threads::probe_wat", "Threads::runtime_hints", "Threads::channel_new", "Threads::spawn",
-    "Threads::send", "Threads::recv", "Threads::wait",
   ]
 }

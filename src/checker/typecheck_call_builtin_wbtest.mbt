@@ -407,52 +407,6 @@ test "type_call_builtin: sh keeps Stdout compatibility" {
 }
 
 ///|
-test "type_call_builtin: Threads::spawn requires Threads effect" {
-  let env = TypeEnv::new()
-  let span = builtin_test_span()
-  let args = [builtin_test_string_arg("worker"), builtin_test_ident_arg("ch")]
-  env.set("ch", @core.Type::Int)
-  let aliases : Map[String, @core.Ref] = {}
-  let result : Result[@core.Type, TypeError] = try? type_call_builtin(
-    env,
-    "Threads::spawn",
-    args,
-    aliases,
-    effect_scope_from_list([]),
-    true,
-    span,
-  )
-  match result {
-    Ok(_) => fail("expected effect guard error")
-    Err(TypeError::EffectGuardNotSatisfied(operation~, missing_effect~, ..)) => {
-      assert_eq(operation, "Threads::spawn")
-      @debug.assert_eq(missing_effect, Some("Threads"))
-    }
-    Err(other) => fail("unexpected error: \{other.to_string()}")
-  }
-}
-
-///|
-test "type_call_builtin: Threads::spawn succeeds with Threads effect scope" {
-  let env = TypeEnv::new()
-  let span = builtin_test_span()
-  let args = [builtin_test_string_arg("worker"), builtin_test_ident_arg("ch")]
-  env.set("ch", @core.Type::Int)
-  let aliases : Map[String, @core.Ref] = {}
-  let result : Result[@core.Type, TypeError] = try? type_call_builtin(
-    env,
-    "Threads::spawn",
-    args,
-    aliases,
-    effect_scope_from_list([@core.EffectAtom::Const("Threads")]),
-    false,
-    span,
-  )
-  match result {
-    Ok(_) => ()
-    Err(err) => fail("unexpected error: \{err.to_string()}")
-  }
-}
 
 ///|
 test "type_call_builtin: v128_splat_i8x16 returns V128" {

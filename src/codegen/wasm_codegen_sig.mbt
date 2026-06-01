@@ -623,29 +623,6 @@ fn infer_expr_kind_with(
         "String::from_char_code" => ValueKind::I64
         "Char::to_int" => ValueKind::I64
         "Char::from_int" => ValueKind::I64
-        "Threads::probe_wat" =>
-          if ctx.use_js_strings {
-            ValueKind::ExternRef
-          } else {
-            ValueKind::I64
-          }
-        "Threads::runtime_hints" => ValueKind::I64
-        "wasm_env" | "wasi_env" =>
-          if ctx.use_js_strings {
-            ValueKind::ExternRef
-          } else {
-            ValueKind::I64
-          }
-        "Threads::channel_new" => ValueKind::I64
-        "Threads::spawn" => ValueKind::I64
-        "Threads::send" => ValueKind::I64
-        "Threads::recv" =>
-          if ctx.use_js_strings {
-            ValueKind::ExternRef
-          } else {
-            ValueKind::I64
-          }
-        "Threads::wait" => ValueKind::I64
         _ if ctx.fn_local_sigs.contains(name) =>
           match ctx.fn_local_sigs.get(name) {
             Some(sig) =>

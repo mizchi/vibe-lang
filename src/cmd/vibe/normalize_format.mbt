@@ -37,8 +37,7 @@ fn std_layer_for_path(path : String) -> StdModuleLayer? {
   if normalized.has_suffix("/vibe/prelude/array.vibe") ||
     normalized.has_suffix("/vibe/prelude/option.vibe") ||
     normalized.has_suffix("/vibe/prelude/result.vibe") ||
-    normalized.has_suffix("/vibe/prelude/bytes.vibe") ||
-    normalized.has_suffix("/vibe/prelude/threads/spec.vibe") {
+    normalized.has_suffix("/vibe/prelude/bytes.vibe") {
     return Some(StdModuleLayer::PureData)
   }
   if normalized.has_suffix("/vibe/path/ref.vibe") {
@@ -46,9 +45,7 @@ fn std_layer_for_path(path : String) -> StdModuleLayer? {
   }
   if normalized.has_suffix("/vibe/prelude/io.vibe") ||
     normalized.has_suffix("/vibe/path/runtime.vibe") ||
-    normalized.has_suffix("/vibe/path/index.vibe") ||
-    normalized.has_suffix("/vibe/prelude/threads/runtime.vibe") ||
-    normalized.has_suffix("/vibe/prelude/threads.vibe") {
+    normalized.has_suffix("/vibe/path/index.vibe") {
     return Some(StdModuleLayer::EffectBoundary)
   }
   None

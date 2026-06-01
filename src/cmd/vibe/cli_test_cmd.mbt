@@ -1718,9 +1718,6 @@ fn test_cmd_parallel(
     if features.is_unstable_async_enabled() {
       sub_args.push("--unstable-async")
     }
-    if features.is_unstable_threads_enabled() {
-      sub_args.push("--unstable-threads")
-    }
     let captured_batch = batch
     let captured_args = sub_args
     let captured_extra_env = extra_env
