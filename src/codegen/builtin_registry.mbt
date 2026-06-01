@@ -221,6 +221,16 @@ pub fn builtins() -> Array[BuiltinDecl] {
     registry_both("Map::has_key", Int),
     registry_both("Map::has", Int),
     registry_both("Map::iter_get", Ref),
+    // Array:: namespace (conservative subset — ops present as a dedicated
+    // dispatch arm in BOTH backends). `get` returns a generic element so its
+    // shape is Ref; `set` / `truncate` / `push` return Unit; `with_capacity`
+    // returns the builder Ref; `length` returns Int.
+    registry_both("Array::length", Int),
+    registry_both("Array::get", Ref),
+    registry_both("Array::set", Unit),
+    registry_both("Array::truncate", Unit),
+    registry_both("Array::with_capacity", Ref),
+    registry_both("Array::push", Unit),
     // --- divergences (parity contract only) ---
     // linear-only (wasm-gc uses the prelude)
     prelude_fallback("String::compare", Int, true),
@@ -477,6 +487,26 @@ fn migrated_builtin(name : String) -> MigratedBuiltin? {
     "Map::has" => Some(mig(compile_map_has_linear, compile_map_has_gc_arm))
     "Map::iter_get" =>
       Some(mig(compile_map_iter_get_linear, compile_map_iter_get_gc_arm))
+    // Array:: namespace (conservative subset). Linear bodies are inline
+    // byte-buffer codegen; the wasm-gc arms are relocated verbatim (NOT thin
+    // delegates — they carry the arr_kind inference / type_idx / builder-unwrap
+    // setup). No `!is_user_fn` guard (matches the legacy arms), so `mig`.
+    "Array::length" =>
+      Some(mig(compile_array_length_linear, compile_array_length_gc_arm))
+    "Array::get" =>
+      Some(mig(compile_array_get_linear, compile_array_get_gc_arm))
+    "Array::set" =>
+      Some(mig(compile_array_set_linear, compile_array_set_gc_arm))
+    "Array::truncate" =>
+      Some(mig(compile_array_truncate_linear, compile_array_truncate_gc_arm))
+    "Array::with_capacity" =>
+      Some(
+        mig(
+          compile_array_with_capacity_linear, compile_array_with_capacity_gc_arm,
+        ),
+      )
+    "Array::push" =>
+      Some(mig(compile_array_push_linear, compile_array_push_gc_arm))
     _ => None
   }
 }

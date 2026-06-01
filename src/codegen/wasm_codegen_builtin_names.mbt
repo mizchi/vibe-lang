@@ -23,7 +23,7 @@ pub fn codegen_registered_builtin_names() -> Array[String] {
     "String::from_char_codes", "String::unicode_length",
     // Array
      "Array::get", "Array::set", "Array::length", "Array::push", "Array::push_all",
-    "Array::truncate", "Array::slice", "Array::concat",
+    "Array::truncate", "Array::slice", "Array::concat", "Array::with_capacity",
     // Bytes
      "Bytes::new", "Bytes::length", "Bytes::get", "Bytes::set", "Bytes::push", "Bytes::append",
     "Bytes::blit", "Bytes::concat", "Bytes::fill", "Bytes::slice", "Bytes::from_array",

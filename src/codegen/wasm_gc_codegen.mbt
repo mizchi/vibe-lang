@@ -9900,12 +9900,6 @@ fn compile_expr_gc(
           compile_to_string_gc(ctx, fctx, buf, pos_args[0])
         }
         // Array ops
-        "Array::length" => {
-          if pos_args.length() != 1 {
-            raise WasmGenError::Unsupported("Array::length arity")
-          }
-          compile_len_gc(ctx, fctx, buf, pos_args[0])
-        }
         "Array::fold" | "fold" => {
           if pos_args.length() != 3 {
             raise WasmGenError::Unsupported("Array::fold arity")
@@ -9918,159 +9912,6 @@ fn compile_expr_gc(
             pos_args[1],
             pos_args[2],
           )
-        }
-        "Array::get" => {
-          if pos_args.length() != 2 {
-            raise WasmGenError::Unsupported("Array::get arity")
-          }
-          let arr_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
-          let type_idx = gc_array_type_idx_from_kind(
-            ctx, arr_kind, "Array::get",
-          )
-          compile_expr_gc(ctx, fctx, buf, pos_args[0])
-          // If the receiver is the struct{len, data} wrapper
-          // (Array::with_capacity / ArrayBuilder), unwrap to data first.
-          match gc_is_array_builder_struct_kind(ctx, arr_kind) {
-            Some(struct_idx) => emit_struct_get_gc(buf, struct_idx, 1)
-            None => ()
-          }
-          compile_expr_gc(ctx, fctx, buf, pos_args[1])
-          let ik = infer_expr_kind_gc(ctx, fctx, pos_args[1])
-          if ik == GcValKind::I64 {
-            emit_i32_wrap_i64_gc(buf)
-          }
-          emit_array_get_gc(buf, type_idx)
-        }
-        "Array::set" => {
-          if pos_args.length() != 3 {
-            raise WasmGenError::Unsupported("Array::set arity")
-          }
-          let arr_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
-          let type_idx = gc_array_type_idx_from_kind(
-            ctx, arr_kind, "Array::set",
-          )
-          compile_expr_gc(ctx, fctx, buf, pos_args[0])
-          match gc_is_array_builder_struct_kind(ctx, arr_kind) {
-            Some(struct_idx) => emit_struct_get_gc(buf, struct_idx, 1)
-            None => ()
-          }
-          compile_expr_gc(ctx, fctx, buf, pos_args[1])
-          let ik = infer_expr_kind_gc(ctx, fctx, pos_args[1])
-          if ik == GcValKind::I64 {
-            emit_i32_wrap_i64_gc(buf)
-          }
-          compile_expr_gc(ctx, fctx, buf, pos_args[2])
-          emit_array_set_gc(buf, type_idx)
-          emit_i32_const_gc(buf, 0)
-        }
-        "Array::push" => {
-          // Two paths:
-          //   1. Bare-array receiver (default Array[T] kind on wasm-gc):
-          //      Allocate a fresh array of len+1, copy elements, append.
-          //      O(N) per push.
-          //   2. Struct-wrapped receiver (Array::with_capacity result,
-          //      shares ArrayBuilder layout {len:i32, data:ref array}):
-          //      ArrayBuilder-style: if len < cap, write data[len] = v
-          //      and len++. If full, double cap, array.copy, then write.
-          //      Amortized O(1) per push.
-          // If the receiver is a bare local binding (`Array::push(arr,
-          // v)` where `arr` is an Ident → local var), the new array (path
-          // 1) is written back into the local. Path 2 mutates the struct
-          // in place, so no rebind is needed.
-          if pos_args.length() != 2 {
-            raise WasmGenError::Unsupported("Array::push arity")
-          }
-          let arr_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
-          match gc_is_array_builder_struct_kind(ctx, arr_kind) {
-            Some(builder_type) => {
-              // Path 2: doubling push on struct{len, data}. Shared
-              // with ArrayBuilder::push via compile_struct_array_push_gc.
-              let arr_type = match ctx.types[builder_type] {
-                GcTypeDef::Struct(fields~) =>
-                  match fields[1] {
-                    GcValKind::Ref(idx) => idx
-                    _ =>
-                      raise WasmGenError::Unsupported(
-                        "Array::push struct data kind",
-                      )
-                  }
-                _ => raise WasmGenError::Unsupported("Array::push struct kind")
-              }
-              compile_struct_array_push_gc(
-                ctx,
-                fctx,
-                buf,
-                pos_args[0],
-                pos_args[1],
-                arr_kind,
-                builder_type,
-                arr_type,
-              )
-            }
-            None => {
-              // Path 1: bare array, realloc-per-push (pre-existing
-              // wasm-gc behavior).
-              let type_idx = gc_array_type_idx_from_kind(
-                ctx, arr_kind, "Array::push",
-              )
-              let old_arr = alloc_local_gc(fctx, arr_kind)
-              let new_arr = alloc_local_gc(fctx, arr_kind)
-              let len_l = alloc_local_gc(fctx, GcValKind::I32)
-              let i_l = alloc_local_gc(fctx, GcValKind::I32)
-              compile_expr_gc(ctx, fctx, buf, pos_args[0])
-              emit_local_set_gc(buf, old_arr)
-              emit_local_get_gc(buf, old_arr)
-              emit_array_len_gc(buf)
-              emit_local_set_gc(buf, len_l)
-              // new array of len+1
-              emit_local_get_gc(buf, len_l)
-              emit_i32_const_gc(buf, 1)
-              emit_i32_add_gc(buf)
-              emit_array_new_default_gc(buf, type_idx)
-              emit_local_set_gc(buf, new_arr)
-              // copy loop
-              emit_i32_const_gc(buf, 0)
-              emit_local_set_gc(buf, i_l)
-              emit_block_gc(buf, None)
-              emit_loop_gc(buf, None)
-              emit_local_get_gc(buf, i_l)
-              emit_local_get_gc(buf, len_l)
-              emit_i32_ge_s_gc(buf)
-              emit_br_if_gc(buf, 1)
-              emit_local_get_gc(buf, new_arr)
-              emit_local_get_gc(buf, i_l)
-              emit_local_get_gc(buf, old_arr)
-              emit_local_get_gc(buf, i_l)
-              emit_array_get_gc(buf, type_idx)
-              emit_array_set_gc(buf, type_idx)
-              emit_local_get_gc(buf, i_l)
-              emit_i32_const_gc(buf, 1)
-              emit_i32_add_gc(buf)
-              emit_local_set_gc(buf, i_l)
-              emit_br_gc(buf, 0)
-              emit_end_gc(buf)
-              emit_end_gc(buf)
-              // set last element
-              emit_local_get_gc(buf, new_arr)
-              emit_local_get_gc(buf, len_l)
-              compile_expr_gc(ctx, fctx, buf, pos_args[1])
-              emit_array_set_gc(buf, type_idx)
-              // Write the new array back into the receiver's local so
-              // the caller's binding observes the growth.
-              match pos_args[0] {
-                @core.Expr::Ident(name~, ..) =>
-                  match fctx.locals.get(name) {
-                    Some(info) => {
-                      emit_local_get_gc(buf, new_arr)
-                      emit_local_set_gc(buf, info.idx)
-                    }
-                    None => () // captured from outer scope: silently no-op (pre-existing wasm-gc gap)
-                  }
-                _ => () // complex receiver: silently no-op
-              }
-              emit_i32_const_gc(buf, 0)
-            }
-          }
         }
         "Array::push_all" => {
           if pos_args.length() != 2 {
@@ -10215,28 +10056,6 @@ fn compile_expr_gc(
             "Array::concat",
           )
         }
-        "Array::truncate" => {
-          // Array::truncate(arr_builder, new_len) -> set len field
-          if pos_args.length() != 2 {
-            raise WasmGenError::Unsupported("Array::truncate arity")
-          }
-          let builder_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
-          let builder_type = match builder_kind {
-            GcValKind::Ref(idx) => idx
-            _ => raise WasmGenError::Unsupported("Array::truncate kind")
-          }
-          let b_idx = alloc_local_gc(fctx, builder_kind)
-          compile_expr_gc(ctx, fctx, buf, pos_args[0])
-          emit_local_set_gc(buf, b_idx)
-          emit_local_get_gc(buf, b_idx)
-          compile_expr_gc(ctx, fctx, buf, pos_args[1])
-          let idx_kind = infer_expr_kind_gc(ctx, fctx, pos_args[1])
-          if idx_kind == GcValKind::I64 {
-            emit_i32_wrap_i64_gc(buf)
-          }
-          emit_struct_set_gc(buf, builder_type, 0)
-          emit_i32_const_gc(buf, 0)
-        }
         "ArrayBuilder::new" => {
           // Create struct { len: i32, data: ref array<eqref> }.
           // Default to eqref element storage so the same builder
@@ -10262,37 +10081,6 @@ fn compile_expr_gc(
           )
           emit_i32_const_gc(buf, 0)
           emit_i32_const_gc(buf, init_cap)
-          emit_array_new_default_gc(buf, arr_type)
-          emit_struct_new_gc(buf, builder_type)
-        }
-        "Array::with_capacity" => {
-          // Same struct layout as ArrayBuilder. Caller-supplied
-          // capacity is used for the initial data allocation; len=0.
-          if pos_args.length() != 1 {
-            raise WasmGenError::Unsupported("Array::with_capacity arity")
-          }
-          let arr_type = ensure_array_type(
-            ctx.types,
-            ctx.array_type_index,
-            GcValKind::I64,
-          )
-          let builder_fields : Array[GcValKind] = [
-            GcValKind::I32,
-            GcValKind::Ref(arr_type),
-          ]
-          let builder_type = ensure_struct_type(
-            ctx.types,
-            ctx.struct_type_index,
-            builder_fields,
-          )
-          // len = 0
-          emit_i32_const_gc(buf, 0)
-          // data = array.new_default(cap)
-          compile_expr_gc(ctx, fctx, buf, pos_args[0])
-          let cap_kind = infer_expr_kind_gc(ctx, fctx, pos_args[0])
-          if cap_kind == GcValKind::I64 {
-            emit_i32_wrap_i64_gc(buf)
-          }
           emit_array_new_default_gc(buf, arr_type)
           emit_struct_new_gc(buf, builder_type)
         }

@@ -23,7 +23,9 @@ test "builtin_registry: divergence entries carry a reason, both-entries don't" {
 test "builtin_registry: migrated Char dispatch is table-driven" {
   @debug.assert_eq(migrated_builtin("Char::to_int") is Some(_), true)
   @debug.assert_eq(migrated_builtin("Char::from_int") is Some(_), true)
-  @debug.assert_eq(migrated_builtin("Array::push") is None, true)
+  // Array::slice has only a wasm-gc dispatch arm (no linear arm), so it is
+  // not migrated onto the shared table.
+  @debug.assert_eq(migrated_builtin("Array::slice") is None, true)
 }
 
 ///|
@@ -38,8 +40,8 @@ test "builtin_registry: String::compare is a linear-only divergence" {
 }
 
 ///|
-test "builtin_registry: find_builtin returns None for non-divergent builtin" {
-  // Array::push is implemented in both backends, so it is not (yet) in the
-  // table — the registry only owns divergences for now.
-  @debug.assert_eq(find_builtin("Array::push") is None, true)
+test "builtin_registry: find_builtin returns None for an unregistered builtin" {
+  // Array::slice has only a wasm-gc dispatch arm (no linear arm and no
+  // recorded divergence), so the registry does not own it.
+  @debug.assert_eq(find_builtin("Array::slice") is None, true)
 }
