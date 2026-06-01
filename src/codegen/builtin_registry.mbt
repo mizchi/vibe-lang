@@ -2,11 +2,10 @@
 /// Phase B (Issue #415) skeleton: a single registry table that describes
 /// every builtin with its parity between the linear and wasm-gc backends.
 ///
-/// This file is intentionally empty of dispatch logic — Phase B-0 only
-/// introduces the shape. Phase B-1 will migrate namespaces (Array → Bytes
-/// → Map → String → Int/Char/Float) one PR at a time, replacing the
-/// match arms in `wasm_codegen_builtin_*.mbt` and `wasm_gc_codegen.mbt`
-/// with `find_builtin(name)` lookups.
+/// Phase B-1 migrates builtins off the two parallel `match name`
+/// dispatchers in `wasm_codegen_builtin_*.mbt` and `wasm_gc_codegen.mbt`
+/// and onto the shared `migrated_builtin` table below, one namespace at a
+/// time (Char → numeric conversions → ... → Array/Bytes/Map/String).
 ///
 /// Background: the dual-codegen problem (wasm-linear + wasm-gc
 /// maintained in parallel) is the biggest structural complexity in
@@ -131,6 +130,9 @@ fn registry_both(name : String, result : ResultShape) -> BuiltinDecl {
 /// Migrated (table-driven on both backends — legacy `match name` arms
 /// removed, dispatch goes through `migrated_builtin` below):
 /// - `Char::to_int` / `Char::from_int` — identity (62-bit tagged int).
+/// - numeric conversions: `Int::to_float` / `Int::to_double` /
+///   `Float::to_int` / `Double::to_int` / `Float::to_double` /
+///   `Double::to_float`.
 ///
 /// Divergences (parity contract only, all `PreludeFallback`):
 /// - `String::compare` has a single-pass SIMD arm in the linear backend
@@ -143,6 +145,12 @@ pub fn builtins() -> Array[BuiltinDecl] {
     // --- migrated: table-driven on both backends ---
     registry_both("Char::to_int", Int),
     registry_both("Char::from_int", Int),
+    registry_both("Int::to_float", Float),
+    registry_both("Int::to_double", Double),
+    registry_both("Float::to_int", Int),
+    registry_both("Double::to_int", Int),
+    registry_both("Float::to_double", Double),
+    registry_both("Double::to_float", Float),
     // --- divergences (parity contract only) ---
     // linear-only (wasm-gc uses the prelude)
     prelude_fallback("String::compare", Int, true),
@@ -201,6 +209,38 @@ fn migrated_builtin(name : String) -> MigratedBuiltin? {
         compile_linear: compile_char_identity_linear,
         compile_gc: compile_char_identity_gc,
       })
+    // Numeric widening / truncation conversions. Linear boxes f32/f64 and
+    // tags ints; wasm-gc uses raw f32/f64/i64 — hence per-backend fns.
+    "Int::to_float" =>
+      Some(MigratedBuiltin::{
+        compile_linear: compile_int_to_float_linear,
+        compile_gc: compile_int_to_float_gc,
+      })
+    "Int::to_double" =>
+      Some(MigratedBuiltin::{
+        compile_linear: compile_int_to_double_linear,
+        compile_gc: compile_int_to_double_gc,
+      })
+    "Float::to_int" =>
+      Some(MigratedBuiltin::{
+        compile_linear: compile_float_to_int_linear,
+        compile_gc: compile_float_to_int_gc,
+      })
+    "Double::to_int" =>
+      Some(MigratedBuiltin::{
+        compile_linear: compile_double_to_int_linear,
+        compile_gc: compile_double_to_int_gc,
+      })
+    "Float::to_double" =>
+      Some(MigratedBuiltin::{
+        compile_linear: compile_float_to_double_linear,
+        compile_gc: compile_float_to_double_gc,
+      })
+    "Double::to_float" =>
+      Some(MigratedBuiltin::{
+        compile_linear: compile_double_to_float_linear,
+        compile_gc: compile_double_to_float_gc,
+      })
     _ => None
   }
 }
@@ -228,4 +268,179 @@ fn compile_char_identity_gc(
     raise WasmGenError::Unsupported("Char identity arity")
   }
   compile_expr_gc(ctx, fctx, buf, pos_args[0])
+}
+
+// --- numeric conversions (Phase B-1) ---
+// Linear bodies migrated verbatim from wasm_codegen_builtin_numeric.mbt;
+// wasm-gc bodies from wasm_gc_codegen.mbt. Shapes differ because linear
+// boxes floats / tags ints while wasm-gc uses raw f32/f64/i64.
+
+///|
+fn compile_int_to_float_linear(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  args : Array[@core.CallArg],
+) -> Unit raise WasmGenError {
+  let pos_args = extract_positional_exprs_with_arity(args, "Int::to_float", 1)
+  emit_boxed_f32_raise(ctx, buf, fn() raise WasmGenError {
+    compile_expr_i32(ctx, buf, pos_args[0])
+    emit_untag_int_i32(buf)
+    emit_f32_convert_i32_s(buf)
+  })
+}
+
+///|
+fn compile_int_to_float_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  pos_args : Array[@core.Expr],
+) -> Unit raise WasmGenError {
+  if pos_args.length() != 1 {
+    raise WasmGenError::Unsupported("Int::to_float arity")
+  }
+  compile_expr_gc(ctx, fctx, buf, pos_args[0])
+  emit_f32_convert_i64_s_gc(buf)
+}
+
+///|
+fn compile_int_to_double_linear(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  args : Array[@core.CallArg],
+) -> Unit raise WasmGenError {
+  let pos_args = extract_positional_exprs_with_arity(args, "Int::to_double", 1)
+  emit_boxed_f64_raise(ctx, buf, fn() raise WasmGenError {
+    compile_expr_i32(ctx, buf, pos_args[0])
+    emit_i64_const_raw(buf, 2L)
+    emit_i64_shr_s(buf)
+    emit_f64_convert_i64_s(buf)
+  })
+}
+
+///|
+fn compile_int_to_double_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  pos_args : Array[@core.Expr],
+) -> Unit raise WasmGenError {
+  if pos_args.length() != 1 {
+    raise WasmGenError::Unsupported("Int::to_double arity")
+  }
+  compile_expr_gc(ctx, fctx, buf, pos_args[0])
+  emit_f64_convert_i64_s_gc(buf)
+}
+
+///|
+fn compile_float_to_int_linear(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  args : Array[@core.CallArg],
+) -> Unit raise WasmGenError {
+  let pos_args = extract_positional_exprs_with_arity(args, "Float::to_int", 1)
+  emit_unbox_f32_expr(ctx, buf, pos_args[0])
+  emit_i32_trunc_f32_s(buf)
+  emit_i64_extend_i32_s(buf)
+  emit_i64_const_raw(buf, 2L)
+  emit_i64_shl(buf)
+}
+
+///|
+fn compile_float_to_int_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  pos_args : Array[@core.Expr],
+) -> Unit raise WasmGenError {
+  if pos_args.length() != 1 {
+    raise WasmGenError::Unsupported("Float::to_int arity")
+  }
+  compile_expr_gc(ctx, fctx, buf, pos_args[0])
+  emit_i64_trunc_f32_s_gc(buf)
+}
+
+///|
+fn compile_double_to_int_linear(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  args : Array[@core.CallArg],
+) -> Unit raise WasmGenError {
+  let pos_args = extract_positional_exprs_with_arity(args, "Double::to_int", 1)
+  emit_unbox_f64_expr(ctx, buf, pos_args[0])
+  emit_i64_trunc_f64_s(buf)
+  emit_i64_const_raw(buf, 2L)
+  emit_i64_shl(buf)
+}
+
+///|
+fn compile_double_to_int_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  pos_args : Array[@core.Expr],
+) -> Unit raise WasmGenError {
+  if pos_args.length() != 1 {
+    raise WasmGenError::Unsupported("Double::to_int arity")
+  }
+  compile_expr_gc(ctx, fctx, buf, pos_args[0])
+  emit_i64_trunc_f64_s_gc(buf)
+}
+
+///|
+fn compile_float_to_double_linear(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  args : Array[@core.CallArg],
+) -> Unit raise WasmGenError {
+  let pos_args = extract_positional_exprs_with_arity(
+    args, "Float::to_double", 1,
+  )
+  emit_boxed_f64_raise(ctx, buf, fn() raise WasmGenError {
+    emit_unbox_f32_expr(ctx, buf, pos_args[0])
+    emit_f64_promote_f32(buf)
+  })
+}
+
+///|
+fn compile_float_to_double_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  pos_args : Array[@core.Expr],
+) -> Unit raise WasmGenError {
+  if pos_args.length() != 1 {
+    raise WasmGenError::Unsupported("Float::to_double arity")
+  }
+  compile_expr_gc(ctx, fctx, buf, pos_args[0])
+  emit_f64_promote_f32_gc(buf)
+}
+
+///|
+fn compile_double_to_float_linear(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  args : Array[@core.CallArg],
+) -> Unit raise WasmGenError {
+  let pos_args = extract_positional_exprs_with_arity(
+    args, "Double::to_float", 1,
+  )
+  emit_boxed_f32_raise(ctx, buf, fn() raise WasmGenError {
+    emit_unbox_f64_expr(ctx, buf, pos_args[0])
+    emit_f32_demote_f64(buf)
+  })
+}
+
+///|
+fn compile_double_to_float_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  pos_args : Array[@core.Expr],
+) -> Unit raise WasmGenError {
+  if pos_args.length() != 1 {
+    raise WasmGenError::Unsupported("Double::to_float arity")
+  }
+  compile_expr_gc(ctx, fctx, buf, pos_args[0])
+  emit_f32_demote_f64_gc(buf)
 }

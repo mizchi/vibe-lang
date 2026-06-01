@@ -9978,10 +9978,7 @@ fn compile_expr_gc(
           buf.push(0x88) // i64.shr_u
         }
         // Type conversions
-        "Int::to_double" => {
-          compile_expr_gc(ctx, fctx, buf, pos_args[0])
-          emit_f64_convert_i64_s_gc(buf)
-        }
+        // Int::to_double migrated to the builtin registry (Phase B-1, #415).
         // Phase A.2 of docs/spec/codegen-dual-backend.md: fill in
         // the cheap Int::* arithmetic utilities that linear has but
         // wasm-gc was missing. All operate on raw i64.
@@ -10119,34 +10116,8 @@ fn compile_expr_gc(
         }
         // Char::to_int / Char::from_int migrated to the builtin registry
         // (Phase B-1, #415) — see builtin_registry.mbt.
-        "Int::to_float" => {
-          if pos_args.length() != 1 {
-            raise WasmGenError::Unsupported("Int::to_float arity")
-          }
-          compile_expr_gc(ctx, fctx, buf, pos_args[0])
-          emit_f32_convert_i64_s_gc(buf)
-        }
-        "Float::to_int" => {
-          if pos_args.length() != 1 {
-            raise WasmGenError::Unsupported("Float::to_int arity")
-          }
-          compile_expr_gc(ctx, fctx, buf, pos_args[0])
-          emit_i64_trunc_f32_s_gc(buf)
-        }
-        "Float::to_double" => {
-          if pos_args.length() != 1 {
-            raise WasmGenError::Unsupported("Float::to_double arity")
-          }
-          compile_expr_gc(ctx, fctx, buf, pos_args[0])
-          emit_f64_promote_f32_gc(buf)
-        }
-        "Double::to_float" => {
-          if pos_args.length() != 1 {
-            raise WasmGenError::Unsupported("Double::to_float arity")
-          }
-          compile_expr_gc(ctx, fctx, buf, pos_args[0])
-          emit_f32_demote_f64_gc(buf)
-        }
+        // Int::to_float / Float::to_int / Float::to_double / Double::to_float
+        // migrated to the builtin registry (Phase B-1, #415).
         "Double::from_i64_bits" => {
           if pos_args.length() != 1 {
             raise WasmGenError::Unsupported("Double::from_i64_bits arity")
@@ -10154,10 +10125,7 @@ fn compile_expr_gc(
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
           emit_f64_reinterpret_i64_gc(buf)
         }
-        "Double::to_int" => {
-          compile_expr_gc(ctx, fctx, buf, pos_args[0])
-          emit_i64_trunc_f64_s_gc(buf)
-        }
+        // Double::to_int migrated to the builtin registry (Phase B-1, #415).
         // Direct f64 math primitives — mirror the linear backend's
         // `f64_floor`/`f64_ceil`/... builtins so wasm-gc doesn't need
         // to bundle the vibe-side `Double::floor` implementation

@@ -350,54 +350,17 @@ fn compile_builtin_numeric(
         emit_op(buf)
       })
     }
-    "Int::to_float" | "f32_convert_i32_s" => {
-      let pos_args = extract_positional_exprs_with_arity(args, name, 1)
-      emit_boxed_f32_raise(ctx, buf, fn() raise WasmGenError {
-        compile_expr_i32(ctx, buf, pos_args[0])
-        emit_untag_int_i32(buf)
-        emit_f32_convert_i32_s(buf)
-      })
-    }
-    "Int::to_double" | "f64_convert_i32_s" | "to_double" => {
-      let pos_args = extract_positional_exprs_with_arity(args, name, 1)
-      emit_boxed_f64_raise(ctx, buf, fn() raise WasmGenError {
-        compile_expr_i32(ctx, buf, pos_args[0])
-        emit_i64_const_raw(buf, 2L)
-        emit_i64_shr_s(buf)
-        emit_f64_convert_i64_s(buf)
-      })
-    }
-    "Float::to_int" | "i32_trunc_f32_s" => {
-      let pos_args = extract_positional_exprs_with_arity(args, name, 1)
-      emit_unbox_f32_expr(ctx, buf, pos_args[0])
-      emit_i32_trunc_f32_s(buf)
-      emit_i64_extend_i32_s(buf)
-      emit_i64_const_raw(buf, 2L)
-      emit_i64_shl(buf)
-      // tag_int = 0, i64.or is a no-op
-    }
-    "Double::to_int" | "i32_trunc_f64_s" => {
-      let pos_args = extract_positional_exprs_with_arity(args, name, 1)
-      emit_unbox_f64_expr(ctx, buf, pos_args[0])
-      emit_i64_trunc_f64_s(buf)
-      emit_i64_const_raw(buf, 2L)
-      emit_i64_shl(buf)
-      // tag_int = 0, i64.or is a no-op
-    }
-    "Float::to_double" | "f64_promote_f32" => {
-      let pos_args = extract_positional_exprs_with_arity(args, name, 1)
-      emit_boxed_f64_raise(ctx, buf, fn() raise WasmGenError {
-        emit_unbox_f32_expr(ctx, buf, pos_args[0])
-        emit_f64_promote_f32(buf)
-      })
-    }
-    "Double::to_float" | "f32_demote_f64" => {
-      let pos_args = extract_positional_exprs_with_arity(args, name, 1)
-      emit_boxed_f32_raise(ctx, buf, fn() raise WasmGenError {
-        emit_unbox_f64_expr(ctx, buf, pos_args[0])
-        emit_f32_demote_f64(buf)
-      })
-    }
+    // Numeric conversions migrated to the builtin registry (Phase B-1,
+    // #415). The namespaced names (`Int::to_float`, ...) are dispatched
+    // via `migrated_builtin`; the bare wasm-intrinsic aliases below stay
+    // here and delegate to the same registry compile fns.
+    "f32_convert_i32_s" => compile_int_to_float_linear(ctx, buf, args)
+    "f64_convert_i32_s" | "to_double" =>
+      compile_int_to_double_linear(ctx, buf, args)
+    "i32_trunc_f32_s" => compile_float_to_int_linear(ctx, buf, args)
+    "i32_trunc_f64_s" => compile_double_to_int_linear(ctx, buf, args)
+    "f64_promote_f32" => compile_float_to_double_linear(ctx, buf, args)
+    "f32_demote_f64" => compile_double_to_float_linear(ctx, buf, args)
     // ========== Integer math builtins ==========
     "Int::abs" if !is_user_fn => {
       // int_abs(x): if x < 0 then -x else x (operates on tagged i64 directly)
