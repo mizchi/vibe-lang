@@ -2038,10 +2038,6 @@ fn compile_builtin_string(
         let count_local = alloc_temp_local(ctx)
         let matched = alloc_temp_local(ctx)
         let limit_local = alloc_temp_local(ctx)
-        // SIMD memchr (ADR-0054): broadcast vector of the needle's first byte.
-        let v_first_local = alloc_temp_local_with_kind(ctx, ValueKind::V128)
-        // Flag: 1 when the current 16-byte window contains no candidate byte.
-        let no_cand_local = alloc_temp_local(ctx)
         // get str pointer and length
         compile_expr_i32(ctx, buf, pos_args[0])
         emit_untag_ptr_i32(buf)
