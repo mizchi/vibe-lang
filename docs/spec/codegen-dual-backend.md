@@ -74,10 +74,16 @@ bigger PR.
 
 ### Phase A: visible & cheap (week 1-2)
 
-1. **Parity gate in CI**. Run `scripts/check_codegen_parity.sh` on
-   each PR. Exit code 2 if a core-namespace gap appears (i.e., new
-   linear builtin without wasm-gc counterpart, or vice versa). Tracks
-   new divergence without forcing the existing 30 to be fixed first.
+1. **Parity gate in CI** — *done, now registry-driven (#415 Phase B-1)*.
+   `scripts/check_codegen_parity.sh` remains a human-readable report,
+   but the authoritative hard gate moved into `pkf run test` /
+   release-check as `src/tests/codegen_parity_test.mbt`. That test
+   scans both backends' source for builtin name literals and fails on
+   any core-namespace divergence not declared in the typed source of
+   truth `src/codegen/builtin_registry.mbt::builtins()` (each declared
+   divergence carries a `DivergenceReason`). This replaced the old
+   plain-text `scripts/codegen_parity_allowlist.txt`. Tracks new
+   divergence without forcing the existing gaps to be fixed first.
 2. **Fill in the cheap core-namespace gaps** in wasm-gc: anything
    that can be implemented in terms of existing wasm-gc primitives
    (StringBuilder ↔ Bytes, Int::abs/min/max ↔ existing arithmetic,

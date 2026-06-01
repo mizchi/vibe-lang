@@ -82,40 +82,17 @@ fi)
 $(comm -13 "$tmp/linear.txt" "$tmp/gc.txt" | sed 's/^/- /')
 EOF
 
-# Hard gate (#414 step 7): every core-namespace builtin must exist in both
-# backends, except divergences explicitly accepted in the allowlist. Adding a
-# builtin to one backend without the other (the silent-regression failure mode
-# that motivated this script) now fails release-check with exit 2.
-ALLOWLIST_FILE="$ROOT_DIR/scripts/codegen_parity_allowlist.txt"
-if [[ -f "$ALLOWLIST_FILE" ]]; then
-  grep -vE '^[[:space:]]*(#|$)' "$ALLOWLIST_FILE" | sed 's/[[:space:]]*$//' \
-    | sort -u > "$tmp/allow.txt"
-else
-  : > "$tmp/allow.txt"
-fi
-
-printf '%s\n' "$linear_core_only" | grep -v '^$' | sort -u > "$tmp/lco.txt" || true
-printf '%s\n' "$gc_core_only" | grep -v '^$' | sort -u > "$tmp/gco.txt" || true
-
-unexpected_linear_only=$(comm -23 "$tmp/lco.txt" "$tmp/allow.txt")
-unexpected_gc_only=$(comm -23 "$tmp/gco.txt" "$tmp/allow.txt")
-
-if [[ -n "$unexpected_linear_only" || -n "$unexpected_gc_only" ]]; then
-  {
-    echo ""
-    echo "ERROR: unexpected core-namespace codegen divergence (parity gate)."
-    if [[ -n "$unexpected_linear_only" ]]; then
-      echo "  linear has, wasm-gc missing:"
-      echo "$unexpected_linear_only" | sed 's/^/    - /'
-    fi
-    if [[ -n "$unexpected_gc_only" ]]; then
-      echo "  wasm-gc has, linear missing:"
-      echo "$unexpected_gc_only" | sed 's/^/    - /'
-    fi
-    echo ""
-    echo "Implement the builtin in the missing backend, or (if the divergence"
-    echo "is intentional) add it to scripts/codegen_parity_allowlist.txt with a"
-    echo "rationale. See docs/spec/codegen-dual-backend.md."
-  } >&2
-  exit 2
+# Informational only. The authoritative hard gate is now the registry-driven
+# test `src/tests/codegen_parity_test.mbt` (#415, Phase B-1): it cross-checks
+# these same core-namespace divergences against the typed source of truth
+# `src/codegen/builtin_registry.mbt::builtins()` and fails `pkf run test` /
+# release-check on any undeclared divergence. This script stays as a quick
+# human-readable report and no longer exits non-zero on divergence (the typed
+# table replaced the old scripts/codegen_parity_allowlist.txt).
+if [[ -n "$linear_core_only" || -n "$gc_core_only" ]]; then
+  echo ""
+  echo "NOTE: core-namespace divergences above must each be declared in"
+  echo "src/codegen/builtin_registry.mbt::builtins() with a DivergenceReason."
+  echo "The registry-driven gate (src/tests/codegen_parity_test.mbt) enforces"
+  echo "this. See docs/spec/codegen-dual-backend.md."
 fi

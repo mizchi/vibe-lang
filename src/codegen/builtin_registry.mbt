@@ -10,26 +10,38 @@
 ///
 /// Background: the dual-codegen problem (wasm-linear + wasm-gc
 /// maintained in parallel) is the biggest structural complexity in
-/// `src/codegen/`. The `scripts/check_codegen_parity.sh` informational
-/// gate currently shows ~17 core-namespace divergences after #414
-/// landed Phase A.2. With registry entries, parity becomes a static
-/// property (`compile_gc` either Some or None with a reason), and
-/// `check_codegen_parity` can become a hard gate driven by the table
-/// instead of regex over source files.
+/// `src/codegen/`. As of Phase B-1 this table owns the **parity
+/// contract**: every core-namespace divergence between the two backends
+/// is recorded here as a typed entry, and the registry-driven gate
+/// `src/tests/codegen_parity_test.mbt` fails `pkf run test` /
+/// release-check on any divergence the source scan finds but the table
+/// does not declare. This replaced the regex+plain-text allowlist
+/// (`scripts/codegen_parity_allowlist.txt`, now removed). Phase B-2 will
+/// extend each entry with `compile_linear` / `compile_gc` fns so the two
+/// big match statements collapse into a table lookup.
 
 ///|
-/// Why a builtin is implemented only for the linear backend. Mostly
-/// host-import bindings that wasm-gc can't service yet.
-pub(all) enum LinearOnlyReason {
+/// Why a builtin is implemented for only one of the two backends. Used as
+/// the typed source of truth for the codegen parity gate
+/// (`src/tests/codegen_parity_test.mbt`): a core-namespace divergence is
+/// only accepted when a `BuiltinDecl` records it here with a reason.
+pub(all) enum DivergenceReason {
+  /// The missing backend reaches the same behavior through the prelude /
+  /// fallback path rather than a dedicated codegen arm. The name only
+  /// shows up in one backend's source scan, but user code still works on
+  /// both (e.g. `String::compare` has a single-pass linear arm while
+  /// wasm-gc falls back to the prelude implementation; the native float
+  /// math ops are the mirror case).
+  PreludeFallback
   /// WASI P1 host import — wasm-gc target plans to use a P2 component
   /// (see ADR-0036 / docs/spec/codegen-dual-backend.md Phase D).
   WasiP1HostImport
   /// Linear-specific primitive (FixedArray, raw memory helpers) that
   /// has no analogue in wasm-gc.
   LinearOnlyPrimitive
-  /// Not yet implemented for wasm-gc — Phase A.2 follow-up tracked in
-  /// issue #414.
-  NotYetGc
+  /// Not yet implemented for the missing backend — Phase A.2 follow-up
+  /// tracked in issue #414.
+  NotYetImplemented
 }
 
 ///|
@@ -70,21 +82,67 @@ pub(all) struct BuiltinDecl {
   has_linear : Bool
   /// True when the builtin is implemented for the wasm-gc backend.
   has_gc : Bool
-  /// Required when `has_gc` is false — why.
-  linear_only_reason : LinearOnlyReason?
+  /// Required when `has_linear != has_gc` (a parity divergence) — why the
+  /// builtin only has a dedicated codegen arm in one backend.
+  divergence_reason : DivergenceReason?
 }
 
 ///|
-/// Skeleton table. Phase B-1 will progressively migrate entries from
-/// the existing `wasm_codegen_builtin_*.mbt` and
-/// `wasm_gc_codegen.mbt::Call` dispatch into this table.
+/// Helper for a core-namespace builtin that only has a dedicated codegen
+/// arm in one backend, with the other backend reaching the same behavior
+/// through the prelude / fallback path. These are the entries the parity
+/// gate (`src/tests/codegen_parity_test.mbt`) treats as accepted
+/// divergences.
+fn prelude_fallback(
+  name : String,
+  result : ResultShape,
+  has_linear : Bool,
+) -> BuiltinDecl {
+  BuiltinDecl::{
+    name,
+    sig_summary: "",
+    result,
+    has_linear,
+    has_gc: !has_linear,
+    divergence_reason: Some(PreludeFallback),
+  }
+}
+
+///|
+/// Registry table. Phase B-1 will progressively migrate *all* builtins
+/// from the existing `wasm_codegen_builtin_*.mbt` and
+/// `wasm_gc_codegen.mbt::Call` dispatch into this table. For now the table
+/// owns the **parity contract**: every core-namespace divergence between
+/// the linear and wasm-gc backends is recorded here as a typed entry, and
+/// `src/tests/codegen_parity_test.mbt` fails if the source scan finds a
+/// core divergence that is not declared (replacing the old
+/// `scripts/codegen_parity_allowlist.txt`).
 ///
-/// The current implementation is empty: registry consumers must fall
-/// back to the legacy match-arm dispatch until each namespace is moved
-/// over. Keeping the table empty means there is no risk of double-
-/// dispatch during the migration.
+/// Current divergences (all `PreludeFallback`):
+/// - `String::compare` has a single-pass SIMD arm in the linear backend
+///   (ADR-0054); wasm-gc reaches the same result via the prelude.
+/// - Native float math (`Float`/`Double` ceil/floor/fract/round/sqrt/trunc)
+///   and `Array::fold` have dedicated wasm-gc arms; the linear backend
+///   routes them through the prelude / fallback path.
 pub fn builtins() -> Array[BuiltinDecl] {
-  []
+  [
+    // linear-only (wasm-gc uses the prelude)
+    prelude_fallback("String::compare", Int, true),
+    // wasm-gc-only (linear uses the prelude / fallback path)
+    prelude_fallback("Array::fold", Ref, false),
+    prelude_fallback("Double::ceil", Double, false),
+    prelude_fallback("Double::floor", Double, false),
+    prelude_fallback("Double::fract", Double, false),
+    prelude_fallback("Double::round", Double, false),
+    prelude_fallback("Double::sqrt", Double, false),
+    prelude_fallback("Double::trunc", Double, false),
+    prelude_fallback("Float::ceil", Float, false),
+    prelude_fallback("Float::floor", Float, false),
+    prelude_fallback("Float::fract", Float, false),
+    prelude_fallback("Float::round", Float, false),
+    prelude_fallback("Float::sqrt", Float, false),
+    prelude_fallback("Float::trunc", Float, false),
+  ]
 }
 
 ///|
