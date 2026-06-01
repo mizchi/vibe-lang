@@ -209,6 +209,13 @@ pub fn builtins() -> Array[BuiltinDecl] {
     registry_both("String::split", Ref),
     registry_both("String::from_char_code", Ref),
     registry_both("String::from_char_codes", Ref),
+    // Map:: namespace (conservative subset). The linear bodies are inline
+    // builder codegen; the wasm-gc bodies are relocated verbatim from the
+    // inline gc arms.
+    registry_both("Map::iter_length", Int),
+    registry_both("Map::get", Ref),
+    registry_both("Map::set", Ref),
+    registry_both("Map::delete", Ref),
     // --- divergences (parity contract only) ---
     // linear-only (wasm-gc uses the prelude)
     prelude_fallback("String::compare", Int, true),
@@ -450,6 +457,13 @@ fn migrated_builtin(name : String) -> MigratedBuiltin? {
           compile_string_from_char_codes_linear, compile_string_from_char_codes_gc_arm,
         ),
       )
+    // Map:: namespace (conservative subset).
+    "Map::iter_length" =>
+      Some(mig(compile_map_iter_length_linear, compile_map_iter_length_gc_arm))
+    "Map::get" => Some(mig(compile_map_get_linear, compile_map_get_gc_arm))
+    "Map::set" => Some(mig(compile_map_set_linear, compile_map_set_gc_arm))
+    "Map::delete" =>
+      Some(mig(compile_map_delete_linear, compile_map_delete_gc_arm))
     _ => None
   }
 }

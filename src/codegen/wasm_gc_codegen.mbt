@@ -10876,15 +10876,6 @@ fn compile_expr_gc(
           }
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
         }
-        "Map::iter_length" => {
-          if pos_args.length() != 1 {
-            raise WasmGenError::Unsupported("Map::iter_length arity")
-          }
-          let (builder_type, _, _) = ensure_map_builder_type_gc(ctx)
-          compile_expr_gc(ctx, fctx, buf, pos_args[0])
-          emit_struct_get_gc(buf, builder_type, 0)
-          emit_i64_extend_i32_s_gc(buf)
-        }
         "Map::iter_get" => {
           if pos_args.length() != 2 {
             raise WasmGenError::Unsupported("Map::iter_get arity")
@@ -10923,90 +10914,6 @@ fn compile_expr_gc(
           emit_local_get_gc(buf, keys_l)
           emit_local_get_gc(buf, idx_l)
           emit_array_get_gc(buf, key_arr_type)
-        }
-        "Map::get" => {
-          // Map::get(map, key) -> eqref (null eqref if not found)
-          if pos_args.length() != 2 {
-            raise WasmGenError::Unsupported("Map::get arity")
-          }
-          let key_arr_type = ensure_array_type(
-            ctx.types,
-            ctx.array_type_index,
-            GcValKind::EqRef,
-          )
-          let val_arr_type = ensure_array_type(
-            ctx.types,
-            ctx.array_type_index,
-            GcValKind::EqRef,
-          )
-          let builder_fields : Array[GcValKind] = [
-            GcValKind::I32,
-            GcValKind::Ref(key_arr_type),
-            GcValKind::Ref(val_arr_type),
-          ]
-          let builder_type = ensure_struct_type(
-            ctx.types,
-            ctx.struct_type_index,
-            builder_fields,
-          )
-          let b_idx = alloc_local_gc(fctx, GcValKind::Ref(builder_type))
-          let len_l = alloc_local_gc(fctx, GcValKind::I32)
-          let keys_l = alloc_local_gc(fctx, GcValKind::Ref(key_arr_type))
-          let vals_l = alloc_local_gc(fctx, GcValKind::Ref(val_arr_type))
-          let i_l = alloc_local_gc(fctx, GcValKind::I32)
-          let key_l = alloc_local_gc(fctx, GcValKind::EqRef)
-          let result_l = alloc_local_gc(fctx, GcValKind::EqRef)
-          compile_expr_gc(ctx, fctx, buf, pos_args[0])
-          emit_local_set_gc(buf, b_idx)
-          // Box key to eqref (handles int keys, string keys, etc.)
-          let get_key_kind = infer_expr_kind_gc(ctx, fctx, pos_args[1])
-          compile_expr_gc(ctx, fctx, buf, pos_args[1])
-          emit_box_top_for_ref_kind_gc(ctx, buf, get_key_kind, GcValKind::EqRef)
-          emit_local_set_gc(buf, key_l)
-          emit_local_get_gc(buf, b_idx)
-          emit_struct_get_gc(buf, builder_type, 0)
-          emit_local_set_gc(buf, len_l)
-          emit_local_get_gc(buf, b_idx)
-          emit_struct_get_gc(buf, builder_type, 1)
-          emit_local_set_gc(buf, keys_l)
-          emit_local_get_gc(buf, b_idx)
-          emit_struct_get_gc(buf, builder_type, 2)
-          emit_local_set_gc(buf, vals_l)
-          // Linear search with result in local
-          // result_l defaults to null eqref (not found)
-          emit_i32_const_gc(buf, 0)
-          emit_local_set_gc(buf, i_l)
-          // block $done
-          emit_block_gc(buf, None)
-          // loop $search
-          emit_loop_gc(buf, None)
-          emit_local_get_gc(buf, i_l)
-          emit_local_get_gc(buf, len_l)
-          emit_i32_ge_s_gc(buf)
-          emit_br_if_gc(buf, 1) // br $done (not found)
-          let cur_key_get = alloc_local_gc(fctx, GcValKind::EqRef)
-          emit_local_get_gc(buf, keys_l)
-          emit_local_get_gc(buf, i_l)
-          emit_array_get_gc(buf, key_arr_type)
-          emit_local_set_gc(buf, cur_key_get)
-          emit_map_key_eq_gc(ctx, fctx, buf, cur_key_get, key_l)
-          emit_if_gc(buf, None)
-          // Found: store vals[i] and break
-          emit_local_get_gc(buf, vals_l)
-          emit_local_get_gc(buf, i_l)
-          emit_array_get_gc(buf, val_arr_type)
-          emit_local_set_gc(buf, result_l)
-          emit_br_gc(buf, 2) // br $done
-          emit_end_gc(buf) // end if
-          emit_local_get_gc(buf, i_l)
-          emit_i32_const_gc(buf, 1)
-          emit_i32_add_gc(buf)
-          emit_local_set_gc(buf, i_l)
-          emit_br_gc(buf, 0) // br $search
-          emit_end_gc(buf) // end loop
-          emit_end_gc(buf) // end $done
-          // result_l has the boxed value (or null eqref if not found)
-          emit_local_get_gc(buf, result_l)
         }
         "Map::has_key" | "Map::has" => {
           // Map::has_key / Map::has (issue #414): same semantics —
@@ -11154,26 +11061,6 @@ fn compile_expr_gc(
           emit_end_gc(buf)
           emit_end_gc(buf)
           emit_local_get_gc(buf, result_l)
-        }
-        // Issue #414: Map::set / Map::delete — mutate the input map
-        // and return it. Linear backend returns a fresh copy; wasm-gc
-        // mutates in place (cheaper, and the user's `let m2 =
-        // Map::set(m, k, v)` reads the result the same either way
-        // because aliasing of m / m2 isn't observable through the
-        // immutable Map[K, V] API).
-        "Map::set" => {
-          if pos_args.length() != 3 {
-            raise WasmGenError::Unsupported("Map::set arity")
-          }
-          // Reuse MapBuilder::set logic by recursing with the same
-          // dispatch label — handled below by sharing the impl.
-          compile_map_set_gc(ctx, fctx, buf, pos_args)
-        }
-        "Map::delete" => {
-          if pos_args.length() != 2 {
-            raise WasmGenError::Unsupported("Map::delete arity")
-          }
-          compile_map_delete_gc(ctx, fctx, buf, pos_args)
         }
         _ => {
           let handled_direct_rec = match fctx.direct_rec_call_name {
