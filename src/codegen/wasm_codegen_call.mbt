@@ -384,6 +384,8 @@ fn emit_string_lex_cmp_to_bool(
   right_len_local : Int,
   loop_i_local : Int,
   diff_local : Int,
+  chunk_end_local : Int,
+  min_len_local : Int,
 ) -> Unit {
   // Load lengths from each obj_string header (offset 4).
   emit_local_get(buf, left_ptr_local)
@@ -401,6 +403,51 @@ fn emit_string_lex_cmp_to_bool(
   // Iterate min(left_len, right_len) bytes, breaking on the first mismatch.
   emit_i32_const_raw(buf, 0)
   emit_local_set(buf, loop_i_local)
+  // SIMD fast path (ADR-0054): skip equal 16-byte chunks of the common
+  // prefix, stopping at the first unequal chunk (or chunk_end). The scalar
+  // loop below then locates the first differing byte and sets diff. Only the
+  // common prefix is scanned, so diff's length-difference default survives.
+  // min_len = min(left_len, right_len).
+  emit_local_get(buf, left_len_local)
+  emit_local_set(buf, min_len_local)
+  emit_local_get(buf, right_len_local)
+  emit_local_get(buf, left_len_local)
+  emit_i32_lt_s(buf)
+  buf.push((4).to_byte()) // if (right_len < left_len)
+  buf.push((64).to_byte()) // void
+  emit_local_get(buf, right_len_local)
+  emit_local_set(buf, min_len_local)
+  buf.push((11).to_byte()) // end if
+  // chunk_end = min_len & ~15
+  emit_local_get(buf, min_len_local)
+  emit_i32_const_raw(buf, -16)
+  emit_i32_and(buf)
+  emit_local_set(buf, chunk_end_local)
+  emit_block(buf)
+  emit_loop(buf)
+  emit_local_get(buf, loop_i_local)
+  emit_local_get(buf, chunk_end_local)
+  emit_i32_ge_s(buf)
+  emit_br_if(buf, 1) // loop_i >= chunk_end: stop
+  emit_local_get(buf, left_ptr_local)
+  emit_local_get(buf, loop_i_local)
+  emit_i32_add(buf)
+  emit_v128_load_align(buf, 2, 8)
+  emit_local_get(buf, right_ptr_local)
+  emit_local_get(buf, loop_i_local)
+  emit_i32_add(buf)
+  emit_v128_load_align(buf, 2, 8)
+  emit_i8x16_eq(buf)
+  emit_i8x16_all_true(buf)
+  emit_i32_eqz(buf) // 1 if this 16-byte chunk has a mismatch
+  emit_br_if(buf, 1) // stop; scalar loop pinpoints the first differing byte
+  emit_local_get(buf, loop_i_local)
+  emit_i32_const_raw(buf, 16)
+  emit_i32_add(buf)
+  emit_local_set(buf, loop_i_local)
+  emit_br(buf, 0)
+  emit_end(buf) // end SIMD loop
+  emit_end(buf) // end SIMD block
   emit_block(buf)
   emit_loop(buf)
   // if loop_i >= left_len: break
@@ -423,12 +470,19 @@ fn emit_string_lex_cmp_to_bool(
   emit_i32_add(buf)
   emit_i32_load8_u(buf, 8)
   emit_i32_sub(buf)
-  emit_local_tee(buf, diff_local)
+  // Stash byte_diff in min_len_local (no longer needed here) rather than
+  // overwriting diff_local every iteration: on an all-equal common prefix we
+  // must keep diff_local at its length-difference default, only replacing it
+  // when an actual mismatch is found. (Fixes length tie-break, e.g.
+  // "ab" < "abc", which the previous unconditional `tee diff_local` broke.)
+  emit_local_tee(buf, min_len_local)
   emit_i32_eqz(buf)
   emit_i32_eqz(buf) // if byte_diff != 0
   buf.push((4).to_byte())
   buf.push((64).to_byte())
-  emit_br(buf, 2) // break out of loop+block; diff_local already set
+  emit_local_get(buf, min_len_local)
+  emit_local_set(buf, diff_local) // diff = first differing byte's signed diff
+  emit_br(buf, 2) // break out of loop+block
   buf.push((11).to_byte())
   // loop_i++
   emit_local_get(buf, loop_i_local)
@@ -483,6 +537,10 @@ fn compile_binary_cmp_op(
       let right_len_local = alloc_temp_local(ctx)
       let loop_i_local = alloc_temp_local(ctx)
       let eq_local = alloc_temp_local(ctx)
+      // SIMD lex-compare scratch (ADR-0054): common-prefix chunk boundary
+      // and min(left_len, right_len).
+      let lex_chunk_end_local = alloc_temp_local(ctx)
+      let lex_min_len_local = alloc_temp_local(ctx)
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_local_set(buf, left_local)
       compile_expr_i32(ctx, buf, pos_args[1])
@@ -962,7 +1020,7 @@ fn compile_binary_cmp_op(
         buf.push((127).to_byte()) // result i32
         emit_string_lex_cmp_to_bool(
           buf, name, left_ptr_local, right_ptr_local, left_len_local, right_len_local,
-          loop_i_local, eq_local,
+          loop_i_local, eq_local, lex_chunk_end_local, lex_min_len_local,
         )
         buf.push((5).to_byte()) // else (not both strings)
         // Compare tagged i64 values directly
