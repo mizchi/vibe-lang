@@ -1475,6 +1475,7 @@ test "vibe wasm compiles __to_string builtin" {
   assert_true(bytes_contains_ascii(wasm, "_start"))
 }
 
+///|
 test "vibe wasm rejects unknown record accessor call" {
   let db = VibeDb::new()
   let src =
