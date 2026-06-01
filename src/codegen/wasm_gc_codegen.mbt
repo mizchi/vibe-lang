@@ -9656,12 +9656,7 @@ fn compile_expr_gc(
           }
           compile_len_gc(ctx, fctx, buf, pos_args[0])
         }
-        "Bytes::length" => {
-          if pos_args.length() != 1 {
-            raise WasmGenError::Unsupported("Bytes::length arity")
-          }
-          compile_bytes_length_gc(ctx, fctx, buf, pos_args[0])
-        }
+        // Bytes::length migrated to the shared builtin registry.
         "Int64Array::make" => {
           if pos_args.length() != 2 {
             raise WasmGenError::Unsupported("Int64Array::make arity")
@@ -9693,108 +9688,10 @@ fn compile_expr_gc(
             pos_args[2],
           )
         }
-        "Bytes::new" => compile_bytes_new_gc(ctx, buf)
-        "Bytes::from_array" => {
-          if pos_args.length() != 1 {
-            raise WasmGenError::Unsupported("Bytes::from_array arity")
-          }
-          compile_bytes_from_array_gc(ctx, fctx, buf, pos_args[0])
-        }
-        "Bytes::from_string" => {
-          if pos_args.length() != 1 {
-            raise WasmGenError::Unsupported("Bytes::from_string arity")
-          }
-          compile_bytes_from_string_gc(ctx, fctx, buf, pos_args[0])
-        }
-        "Bytes::to_string" => {
-          if pos_args.length() != 1 {
-            raise WasmGenError::Unsupported("Bytes::to_string arity")
-          }
-          compile_bytes_to_string_gc(ctx, fctx, buf, pos_args[0])
-        }
-        "Bytes::get" => {
-          if pos_args.length() != 2 {
-            raise WasmGenError::Unsupported("Bytes::get arity")
-          }
-          compile_bytes_get_gc(ctx, fctx, buf, pos_args[0], pos_args[1])
-        }
-        "Bytes::set" => {
-          if pos_args.length() != 3 {
-            raise WasmGenError::Unsupported("Bytes::set arity")
-          }
-          compile_bytes_set_gc(
-            ctx,
-            fctx,
-            buf,
-            pos_args[0],
-            pos_args[1],
-            pos_args[2],
-          )
-        }
-        "Bytes::push" => {
-          if pos_args.length() != 2 {
-            raise WasmGenError::Unsupported("Bytes::push arity")
-          }
-          compile_bytes_push_gc(ctx, fctx, buf, pos_args[0], pos_args[1])
-        }
-        "Bytes::append" => {
-          if pos_args.length() != 2 {
-            raise WasmGenError::Unsupported("Bytes::append arity")
-          }
-          compile_bytes_append_gc(ctx, fctx, buf, pos_args[0], pos_args[1])
-        }
-        "Bytes::slice" => {
-          if pos_args.length() != 3 {
-            raise WasmGenError::Unsupported("Bytes::slice arity")
-          }
-          compile_bytes_slice_gc(
-            ctx,
-            fctx,
-            buf,
-            pos_args[0],
-            pos_args[1],
-            pos_args[2],
-          )
-        }
-        "Bytes::concat" => {
-          if pos_args.length() != 2 {
-            raise WasmGenError::Unsupported("Bytes::concat arity")
-          }
-          compile_bytes_concat_gc(ctx, fctx, buf, pos_args[0], pos_args[1])
-        }
-        "Bytes::blit" => {
-          if pos_args.length() != 4 {
-            raise WasmGenError::Unsupported("Bytes::blit arity")
-          }
-          compile_bytes_blit_gc(
-            ctx,
-            fctx,
-            buf,
-            pos_args[0],
-            pos_args[1],
-            pos_args[2],
-            pos_args[3],
-          )
-        }
-        "Bytes::fill" => {
-          if pos_args.length() != 3 {
-            raise WasmGenError::Unsupported("Bytes::fill arity")
-          }
-          compile_bytes_fill_gc(
-            ctx,
-            fctx,
-            buf,
-            pos_args[0],
-            pos_args[1],
-            pos_args[2],
-          )
-        }
-        "Bytes::to_array" => {
-          if pos_args.length() != 1 {
-            raise WasmGenError::Unsupported("Bytes::to_array arity")
-          }
-          compile_bytes_to_array_gc(ctx, fctx, buf, pos_args[0])
-        }
+        // Bytes::new / from_array / from_string / to_string / get / set /
+        // push / append / slice / concat / blit / fill / to_array migrated to
+        // the shared builtin registry (registry_bytes.mbt /
+        // builtin_registry.mbt).
         "String::char_code_at" => {
           if pos_args.length() != 2 {
             raise WasmGenError::Unsupported("String::char_code_at arity")

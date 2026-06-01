@@ -135,6 +135,9 @@ fn registry_both(name : String, result : ResultShape) -> BuiltinDecl {
 ///   `Double::to_float`.
 /// - int math utilities: `Int::abs` / `max` / `min` / `clamp` / `signum` /
 ///   `is_even` / `is_odd` (linear keeps the `!is_user_fn` guard).
+/// - `Bytes::` namespace: `from_array` / `from_string` / `to_string` /
+///   `length` / `get` / `new` / `push` / `set` / `append` / `blit` / `fill` /
+///   `slice` / `concat` / `to_array`.
 ///
 /// Divergences (parity contract only, all `PreludeFallback`):
 /// - `String::compare` has a single-pass SIMD arm in the linear backend
@@ -160,6 +163,20 @@ pub fn builtins() -> Array[BuiltinDecl] {
     registry_both("Int::signum", Int),
     registry_both("Int::is_even", Int),
     registry_both("Int::is_odd", Int),
+    registry_both("Bytes::from_array", Ref),
+    registry_both("Bytes::from_string", Ref),
+    registry_both("Bytes::to_string", Ref),
+    registry_both("Bytes::length", Int),
+    registry_both("Bytes::get", Int),
+    registry_both("Bytes::new", Ref),
+    registry_both("Bytes::push", Unit),
+    registry_both("Bytes::set", Unit),
+    registry_both("Bytes::append", Unit),
+    registry_both("Bytes::blit", Unit),
+    registry_both("Bytes::fill", Unit),
+    registry_both("Bytes::slice", Ref),
+    registry_both("Bytes::concat", Ref),
+    registry_both("Bytes::to_array", Ref),
     // --- divergences (parity contract only) ---
     // linear-only (wasm-gc uses the prelude)
     prelude_fallback("String::compare", Int, true),
@@ -267,6 +284,41 @@ fn migrated_builtin(name : String) -> MigratedBuiltin? {
       Some(mig_guarded(compile_int_is_even_linear, compile_int_is_even_gc))
     "Int::is_odd" =>
       Some(mig_guarded(compile_int_is_odd_linear, compile_int_is_odd_gc))
+    // Bytes:: namespace. Linear bodies are inline byte-buffer codegen; the
+    // wasm-gc arms delegate to dedicated `compile_bytes_*_gc` fns. No
+    // `!is_user_fn` guard (matches the legacy arms), so `mig`.
+    "Bytes::from_array" =>
+      Some(
+        mig(compile_bytes_from_array_linear, compile_bytes_from_array_gc_arm),
+      )
+    "Bytes::from_string" =>
+      Some(
+        mig(compile_bytes_from_string_linear, compile_bytes_from_string_gc_arm),
+      )
+    "Bytes::to_string" =>
+      Some(mig(compile_bytes_to_string_linear, compile_bytes_to_string_gc_arm))
+    "Bytes::length" =>
+      Some(mig(compile_bytes_length_linear, compile_bytes_length_gc_arm))
+    "Bytes::get" =>
+      Some(mig(compile_bytes_get_linear, compile_bytes_get_gc_arm))
+    "Bytes::new" =>
+      Some(mig(compile_bytes_new_linear, compile_bytes_new_gc_arm))
+    "Bytes::push" =>
+      Some(mig(compile_bytes_push_linear, compile_bytes_push_gc_arm))
+    "Bytes::set" =>
+      Some(mig(compile_bytes_set_linear, compile_bytes_set_gc_arm))
+    "Bytes::append" =>
+      Some(mig(compile_bytes_append_linear, compile_bytes_append_gc_arm))
+    "Bytes::blit" =>
+      Some(mig(compile_bytes_blit_linear, compile_bytes_blit_gc_arm))
+    "Bytes::fill" =>
+      Some(mig(compile_bytes_fill_linear, compile_bytes_fill_gc_arm))
+    "Bytes::slice" =>
+      Some(mig(compile_bytes_slice_linear, compile_bytes_slice_gc_arm))
+    "Bytes::concat" =>
+      Some(mig(compile_bytes_concat_linear, compile_bytes_concat_gc_arm))
+    "Bytes::to_array" =>
+      Some(mig(compile_bytes_to_array_linear, compile_bytes_to_array_gc_arm))
     _ => None
   }
 }
