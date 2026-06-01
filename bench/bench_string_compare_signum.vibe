@@ -1,0 +1,43 @@
+// String::compare / string_compare throughput: single-pass SIMD lex signum
+// (ADR-0054) vs the original two-pass `a < b` then `a > b` shape.
+//
+// `string_compare` is intercepted by the codegen builtin (1 SIMD scan that
+// yields the signum directly). `cmp_naive` has the identical body but a name
+// the builtin does not recognise, so it compiles the literal two-pass form
+// (the common prefix is scanned by `<`, then again by `>`). Both take the
+// strings as parameters so the const-folder cannot precompute the result.
+//
+// Measured (wasmtime JIT): the two-pass form only re-scans when `x >= y`
+// (short-circuit makes `x < y` a single scan). For x >= y the builtin wins:
+//   gt 1024B-diff-last: 70.2us -> 36.7us  (1.91x)
+//   eq 1024B:           59.0us -> 30.7us  (1.92x)
+let rec repeat : (String, Int) -> String = (s, n) -> { if n == 0 { "" } else { String::concat(s, repeat(s, n - 1)) } }
+// 1024B, differ only in the last byte: maximal common prefix scanned twice
+// by the naive form, once by the builtin.
+let a = String::concat(repeat("0123456789abcdef", 63), "0123456789abcdeA")
+let b = String::concat(repeat("0123456789abcdef", 63), "0123456789abcdeB")
+
+// Intercepted by the codegen builtin -> single SIMD lex scan -> signum.
+let string_compare = (x: String, y: String) -> Int {
+  if x < y { -1 } else if x > y { 1 } else { 0 }
+}
+// Not intercepted (different name) -> literal two-pass scan.
+let cmp_naive = (x: String, y: String) -> Int {
+  if x < y { -1 } else if x > y { 1 } else { 0 }
+}
+
+let rec cmp1_count : (String, String, Int, Int) -> Int = (x, y, n, acc) -> {
+  if n == 0 { acc } else { cmp1_count(x, y, n - 1, acc + string_compare(x, y)) }
+}
+let rec cmp2_count : (String, String, Int, Int) -> Int = (x, y, n, acc) -> {
+  if n == 0 { acc } else { cmp2_count(x, y, n - 1, acc + cmp_naive(x, y)) }
+}
+
+// Worst case for the two-pass shape: x >= y, so `x < y` scans the whole common
+// prefix and returns false, then `x > y` scans it a second time. Use b > a
+// (x=b, y=a) and the equal case (x=a, y=a) where the naive form pays for two
+// full scans while the builtin pays for one.
+bench "compare/gt 1024B-diff-last 1pass (builtin)" { let _ = cmp1_count(b, a, 300, 0) }
+bench "compare/gt 1024B-diff-last 2pass (naive)" { let _ = cmp2_count(b, a, 300, 0) }
+bench "compare/eq 1024B 1pass (builtin)" { let _ = cmp1_count(a, a, 300, 0) }
+bench "compare/eq 1024B 2pass (naive)" { let _ = cmp2_count(a, a, 300, 0) }

@@ -52,4 +52,21 @@ test "cmp_string_compare" {
   assert(eq(string_compare("a", "b"), -1))
   assert(eq(string_compare("b", "b"), 0))
   assert(eq(string_compare("c", "b"), 1))
+  // length tie-break: a prefix is lexicographically smaller.
+  assert(eq(string_compare("ab", "abc"), -1))
+  assert(eq(string_compare("abc", "ab"), 1))
+}
+
+// string_compare now lowers to a single-pass SIMD lex scan returning the
+// signum of the lexicographic difference (ADR-0054), instead of scanning the
+// common prefix twice via `a < b` then `a > b`. Exercise the 16-byte SIMD
+// chunk-skip path (>16 equal leading bytes) end-to-end.
+test "cmp_string_compare_simd_chunk" {
+  let p20 = "aaaaaaaaaaaaaaaaaaaa" // 20 equal leading bytes (> 1 chunk)
+  assert(eq(string_compare(p20 + "X", p20 + "Y"), -1))
+  assert(eq(string_compare(p20 + "Y", p20 + "X"), 1))
+  assert(eq(string_compare(p20 + "Z", p20 + "Z"), 0))
+  // equal multi-chunk prefix, one is a prefix of the other.
+  assert(eq(string_compare(p20, p20 + "tail"), -1))
+  assert(eq(string_compare(p20 + "tail", p20), 1))
 }

@@ -387,6 +387,49 @@ fn emit_string_lex_cmp_to_bool(
   chunk_end_local : Int,
   min_len_local : Int,
 ) -> Unit {
+  emit_string_lex_diff(
+    buf, left_ptr_local, right_ptr_local, left_len_local, right_len_local, loop_i_local,
+    diff_local, chunk_end_local, min_len_local,
+  )
+  // Compare diff against 0 with the requested op.
+  emit_local_get(buf, diff_local)
+  emit_i32_const_raw(buf, 0)
+  if name == "lt" || name == "__lt" {
+    emit_i32_lt_s(buf)
+  } else if name == "le" || name == "__le" {
+    emit_i32_le_s(buf)
+  } else if name == "gt" || name == "__gt" {
+    emit_i32_gt_s(buf)
+  } else if name == "ge" || name == "__ge" {
+    emit_i32_ge_s(buf)
+  } else {
+    // Fallback for unexpected names: treat as equality.
+    emit_i32_eq(buf)
+  }
+}
+
+///|
+/// Compute the signed lexicographic difference of two `obj_string`s and leave
+/// it in `diff_local` (i32). The result is the signed difference of the first
+/// differing byte (unsigned 0..255 lanes), or the length difference when one
+/// string is a prefix of the other. Shared by the boolean lex comparisons
+/// (`<`/`<=`/`>`/`>=`) and `String::compare` (which maps it to -1/0/1).
+///
+/// The two `*_ptr_local`s must already hold the untagged string base pointers.
+/// SIMD fast path (ADR-0054): equal 16-byte chunks of the common prefix are
+/// skipped via `v128.load` + `i8x16.eq` + `i8x16.all_true`; the scalar loop
+/// then pinpoints the first differing byte.
+fn emit_string_lex_diff(
+  buf : ByteBuf,
+  left_ptr_local : Int,
+  right_ptr_local : Int,
+  left_len_local : Int,
+  right_len_local : Int,
+  loop_i_local : Int,
+  diff_local : Int,
+  chunk_end_local : Int,
+  min_len_local : Int,
+) -> Unit {
   // Load lengths from each obj_string header (offset 4).
   emit_local_get(buf, left_ptr_local)
   emit_i32_load(buf, 4)
@@ -492,21 +535,6 @@ fn emit_string_lex_cmp_to_bool(
   emit_br(buf, 0)
   emit_end(buf) // end loop
   emit_end(buf) // end block
-  // Compare diff against 0 with the requested op.
-  emit_local_get(buf, diff_local)
-  emit_i32_const_raw(buf, 0)
-  if name == "lt" || name == "__lt" {
-    emit_i32_lt_s(buf)
-  } else if name == "le" || name == "__le" {
-    emit_i32_le_s(buf)
-  } else if name == "gt" || name == "__gt" {
-    emit_i32_gt_s(buf)
-  } else if name == "ge" || name == "__ge" {
-    emit_i32_ge_s(buf)
-  } else {
-    // Fallback for unexpected names: treat as equality.
-    emit_i32_eq(buf)
-  }
 }
 
 ///|

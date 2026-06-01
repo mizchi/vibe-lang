@@ -2645,6 +2645,41 @@ test "vibe wasm eval: String::index_of values (found / not found)" {
 }
 
 ///|
+// Value-level checks for the single-pass SIMD String::compare (ADR-0054):
+// signum of the lexicographic difference, returning -1 / 0 / 1. The minimal
+// eval harness has no prelude, so we define `string_compare` locally; the
+// codegen builtin handler intercepts the call regardless (no is_user_fn
+// guard, like String::equals), exercising the 1-pass signum path. Covers the
+// length tie-break (prefix is "less"), first-differing-byte sign, and the
+// 16-byte SIMD common-prefix skip path (>16 equal leading bytes).
+test "vibe wasm eval: String::compare signum (-1 / 0 / 1)" {
+  let prelude =
+    #|let string_compare = (a: String, b: String) -> Int {
+    #|  if a < b { -1 } else if a > b { 1 } else { 0 }
+    #|}
+    #|
+  fn cmp(a : String, b : String) -> String {
+    prelude + "string_compare(\"" + a + "\", \"" + b + "\")"
+  }
+
+  assert_wasm_eval_int(cmp("a", "b"), -1)
+  assert_wasm_eval_int(cmp("b", "a"), 1)
+  assert_wasm_eval_int(cmp("abc", "abc"), 0)
+  // Prefix is lexicographically smaller (length tie-break).
+  assert_wasm_eval_int(cmp("ab", "abc"), -1)
+  assert_wasm_eval_int(cmp("abc", "ab"), 1)
+  // First differing byte decides regardless of remaining length.
+  assert_wasm_eval_int(cmp("abd", "abc"), 1)
+  assert_wasm_eval_int(cmp("abc", "abd"), -1)
+  // >16 equal leading bytes: exercises the SIMD chunk-skip then scalar diff.
+  assert_wasm_eval_int(cmp("aaaaaaaaaaaaaaaaaaaX", "aaaaaaaaaaaaaaaaaaaY"), -1)
+  assert_wasm_eval_int(
+    cmp("aaaaaaaaaaaaaaaaaaaaaa", "aaaaaaaaaaaaaaaaaaaaaa"),
+    0,
+  )
+}
+
+///|
 test "vibe wasm eval supports: String::contains" {
   assert_wasm_eval_decodes("String::contains(\"hello world\", \"world\")")
   assert_wasm_eval_decodes("String::contains(\"hello\", \"xyz\")")

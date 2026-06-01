@@ -1333,6 +1333,48 @@ fn compile_builtin_string(
         emit_tag_bool_from_i32(buf)
       }
     }
+    "String::compare" | "string_compare" => {
+      // string_compare(a, b) -> Int in {-1, 0, 1} (signum of lex difference).
+      // The prelude defines this as `if a<b {-1} else if a>b {1} else {0}`,
+      // which runs the SIMD lex scan twice. Here we compute the signed lex
+      // difference once (ADR-0054) and map it to -1/0/1, halving the work.
+      // js-string backend has no linear-memory layout to scan, so defer to the
+      // prelude implementation there.
+      let pos_args = extract_positional_exprs_with_arity(args, name, 2)
+      if ctx.use_js_strings {
+        raise WasmGenError::Unsupported(pre_user_builtin_unhandled_marker)
+      }
+      let left_ptr_local = alloc_temp_local(ctx)
+      let right_ptr_local = alloc_temp_local(ctx)
+      let left_len_local = alloc_temp_local(ctx)
+      let right_len_local = alloc_temp_local(ctx)
+      let loop_i_local = alloc_temp_local(ctx)
+      let diff_local = alloc_temp_local(ctx)
+      let chunk_end_local = alloc_temp_local(ctx)
+      let min_len_local = alloc_temp_local(ctx)
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_untag_ptr_i32(buf)
+      emit_local_set(buf, left_ptr_local)
+      compile_expr_i32(ctx, buf, pos_args[1])
+      emit_untag_ptr_i32(buf)
+      emit_local_set(buf, right_ptr_local)
+      emit_string_lex_diff(
+        buf, left_ptr_local, right_ptr_local, left_len_local, right_len_local, loop_i_local,
+        diff_local, chunk_end_local, min_len_local,
+      )
+      // signum(diff) = (diff > 0) - (diff < 0)  ->  -1 / 0 / 1.
+      emit_local_get(buf, diff_local)
+      emit_i32_const_raw(buf, 0)
+      emit_i32_gt_s(buf)
+      emit_local_get(buf, diff_local)
+      emit_i32_const_raw(buf, 0)
+      emit_i32_lt_s(buf)
+      emit_i32_sub(buf)
+      // tag as int: (signum << 2) | tag_int(0).
+      emit_i64_extend_i32_s(buf)
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shl(buf)
+    }
     "String::index_of" => {
       // string_index_of(str, sub) -> Int (byte offset or -1)
       let pos_args = extract_positional_exprs_with_arity(
