@@ -109,16 +109,30 @@ fn prelude_fallback(
 }
 
 ///|
-/// Registry table. Phase B-1 will progressively migrate *all* builtins
-/// from the existing `wasm_codegen_builtin_*.mbt` and
-/// `wasm_gc_codegen.mbt::Call` dispatch into this table. For now the table
-/// owns the **parity contract**: every core-namespace divergence between
-/// the linear and wasm-gc backends is recorded here as a typed entry, and
-/// `src/tests/codegen_parity_test.mbt` fails if the source scan finds a
-/// core divergence that is not declared (replacing the old
-/// `scripts/codegen_parity_allowlist.txt`).
+/// Helper for a builtin implemented (table-driven) on both backends — no
+/// divergence. See `migrated_builtin` for the actual compile fns.
+fn registry_both(name : String, result : ResultShape) -> BuiltinDecl {
+  BuiltinDecl::{
+    name,
+    sig_summary: "",
+    result,
+    has_linear: true,
+    has_gc: true,
+    divergence_reason: None,
+  }
+}
+
+///|
+/// Registry table — the typed source of truth for which builtins the
+/// registry owns and their parity. Phase B-1 migrates builtins from the
+/// `wasm_codegen_builtin_*.mbt` and `wasm_gc_codegen.mbt::Call` dispatch
+/// into this table one namespace at a time.
 ///
-/// Current divergences (all `PreludeFallback`):
+/// Migrated (table-driven on both backends — legacy `match name` arms
+/// removed, dispatch goes through `migrated_builtin` below):
+/// - `Char::to_int` / `Char::from_int` — identity (62-bit tagged int).
+///
+/// Divergences (parity contract only, all `PreludeFallback`):
 /// - `String::compare` has a single-pass SIMD arm in the linear backend
 ///   (ADR-0054); wasm-gc reaches the same result via the prelude.
 /// - Native float math (`Float`/`Double` ceil/floor/fract/round/sqrt/trunc)
@@ -126,6 +140,10 @@ fn prelude_fallback(
 ///   routes them through the prelude / fallback path.
 pub fn builtins() -> Array[BuiltinDecl] {
   [
+    // --- migrated: table-driven on both backends ---
+    registry_both("Char::to_int", Int),
+    registry_both("Char::from_int", Int),
+    // --- divergences (parity contract only) ---
     // linear-only (wasm-gc uses the prelude)
     prelude_fallback("String::compare", Int, true),
     // wasm-gc-only (linear uses the prelude / fallback path)
@@ -146,8 +164,8 @@ pub fn builtins() -> Array[BuiltinDecl] {
 }
 
 ///|
-/// Look up a builtin by name. Returns `None` when the registry hasn't
-/// taken ownership of the name yet (Phase B-1 in progress).
+/// Look up a builtin's metadata by name. Used by the parity gate. Returns
+/// `None` when the registry hasn't taken ownership of the name yet.
 pub fn find_builtin(name : String) -> BuiltinDecl? {
   for decl in builtins() {
     if decl.name == name {
@@ -155,4 +173,59 @@ pub fn find_builtin(name : String) -> BuiltinDecl? {
     }
   }
   None
+}
+
+///|
+/// The per-backend codegen for a builtin the registry has migrated off the
+/// legacy `match name` arms (Phase B-1). Kept separate from the public
+/// `BuiltinDecl` because the compile fns reference package-private context
+/// types (`CodegenCtx` / `GcCodegenCtx` ...) that a `pub(all)` struct may
+/// not expose. `compile_gc` receives the positional arg expressions
+/// pre-extracted by the wasm-gc `Call` dispatch.
+priv struct MigratedBuiltin {
+  compile_linear : (CodegenCtx, ByteBuf, Array[@core.CallArg]) -> Unit raise WasmGenError
+  compile_gc : (GcCodegenCtx, GcFuncCtx, GcByteBuf, Array[@core.Expr]) -> Unit raise WasmGenError
+}
+
+///|
+/// Single dispatch table feeding both backends. When this returns `Some`,
+/// the linear and wasm-gc dispatch call the matching compile fn instead of
+/// a legacy `match name` arm. Adding a migrated builtin is one arm here
+/// (plus its metadata entry in `builtins()` for the parity gate).
+fn migrated_builtin(name : String) -> MigratedBuiltin? {
+  match name {
+    // Char::to_int / Char::from_int are identity: a Char is a 62-bit
+    // tagged int (ADR-0006), so the conversion just compiles its argument.
+    "Char::to_int" | "Char::from_int" =>
+      Some(MigratedBuiltin::{
+        compile_linear: compile_char_identity_linear,
+        compile_gc: compile_char_identity_gc,
+      })
+    _ => None
+  }
+}
+
+///|
+/// Linear identity codegen for `Char::to_int` / `Char::from_int`.
+fn compile_char_identity_linear(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  args : Array[@core.CallArg],
+) -> Unit raise WasmGenError {
+  let pos_args = extract_positional_exprs_with_arity(args, "Char::*", 1)
+  compile_expr(ctx, buf, pos_args[0])
+}
+
+///|
+/// wasm-gc identity codegen for `Char::to_int` / `Char::from_int`.
+fn compile_char_identity_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  pos_args : Array[@core.Expr],
+) -> Unit raise WasmGenError {
+  if pos_args.length() != 1 {
+    raise WasmGenError::Unsupported("Char identity arity")
+  }
+  compile_expr_gc(ctx, fctx, buf, pos_args[0])
 }

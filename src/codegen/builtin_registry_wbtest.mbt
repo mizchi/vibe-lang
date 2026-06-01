@@ -6,13 +6,24 @@
 /// `src/tests/codegen_parity_test.mbt`.
 
 ///|
-test "builtin_registry: declared divergences carry a reason" {
+test "builtin_registry: divergence entries carry a reason, both-entries don't" {
   for decl in builtins() {
-    // Every entry currently in the table is a parity divergence, so it
-    // must have exactly one backend and a recorded reason.
-    @debug.assert_eq(decl.has_linear != decl.has_gc, true)
-    @debug.assert_eq(decl.divergence_reason is Some(_), true)
+    if decl.has_linear != decl.has_gc {
+      // A parity divergence must record why.
+      @debug.assert_eq(decl.divergence_reason is Some(_), true)
+    } else {
+      // A both-backends entry (e.g. migrated Char) has no divergence.
+      @debug.assert_eq(decl.has_linear && decl.has_gc, true)
+      @debug.assert_eq(decl.divergence_reason is None, true)
+    }
   }
+}
+
+///|
+test "builtin_registry: migrated Char dispatch is table-driven" {
+  @debug.assert_eq(migrated_builtin("Char::to_int") is Some(_), true)
+  @debug.assert_eq(migrated_builtin("Char::from_int") is Some(_), true)
+  @debug.assert_eq(migrated_builtin("Array::push") is None, true)
 }
 
 ///|

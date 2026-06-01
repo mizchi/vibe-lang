@@ -1228,6 +1228,16 @@ fn compile_call_builtin_pre_user_inner(
   args : Array[@core.CallArg],
   is_user_fn : Bool,
 ) -> Unit raise WasmGenError {
+  // Phase B-1 (#415): table-driven dispatch for migrated builtins. When the
+  // registry owns a name, use its linear compile fn instead of the legacy
+  // per-domain `match name` arms below.
+  match migrated_builtin(name) {
+    Some(m) => {
+      (m.compile_linear)(ctx, buf, args)
+      return
+    }
+    None => ()
+  }
   // Try each domain-specific handler in turn.
   // Each handler raises WasmGenError::Unsupported(pre_user_builtin_unhandled_marker)
   // for names it does not recognise, so we catch that sentinel and try the next.

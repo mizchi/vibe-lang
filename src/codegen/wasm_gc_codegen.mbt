@@ -9025,6 +9025,14 @@ fn compile_expr_gc(
       let _ = span
       let name = @core.lower_wasm_intrinsic_name(name)
       let pos_args = extract_positional_exprs(args, name)
+      // Phase B-1 (#415): table-driven dispatch for migrated builtins.
+      match migrated_builtin(name) {
+        Some(m) => {
+          (m.compile_gc)(ctx, fctx, buf, pos_args)
+          return
+        }
+        None => ()
+      }
       match name {
         // `add` / `sub` / `mul` / `div` are prelude thin-wrapper short-
         // circuits — when both args are arithmetic (i32 / i64 / f32 /
@@ -10109,13 +10117,8 @@ fn compile_expr_gc(
           emit_local_get_gc(buf, x)
           emit_end_gc(buf)
         }
-        "Char::to_int" | "Char::from_int" => {
-          // Identity: Char is a 62-bit tagged int (ADR-0006).
-          if pos_args.length() != 1 {
-            raise WasmGenError::Unsupported(name + " arity")
-          }
-          compile_expr_gc(ctx, fctx, buf, pos_args[0])
-        }
+        // Char::to_int / Char::from_int migrated to the builtin registry
+        // (Phase B-1, #415) — see builtin_registry.mbt.
         "Int::to_float" => {
           if pos_args.length() != 1 {
             raise WasmGenError::Unsupported("Int::to_float arity")

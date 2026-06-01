@@ -1378,18 +1378,8 @@ fn compile_builtin_numeric(
         emit_f64_reinterpret_i64(buf)
       })
     }
-    "Char::to_int" => {
-      let pos_args = extract_positional_exprs_with_arity(
-        args, "Char::to_int", 1,
-      )
-      compile_expr(ctx, buf, pos_args[0])
-    }
-    "Char::from_int" => {
-      let pos_args = extract_positional_exprs_with_arity(
-        args, "Char::from_int", 1,
-      )
-      compile_expr(ctx, buf, pos_args[0])
-    }
+    // Char::to_int / Char::from_int migrated to the builtin registry
+    // (Phase B-1, #415) — see builtin_registry.mbt.
     _ => raise WasmGenError::Unsupported(pre_user_builtin_unhandled_marker)
   }
 }
