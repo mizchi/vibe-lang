@@ -133,6 +133,8 @@ fn registry_both(name : String, result : ResultShape) -> BuiltinDecl {
 /// - numeric conversions: `Int::to_float` / `Int::to_double` /
 ///   `Float::to_int` / `Double::to_int` / `Float::to_double` /
 ///   `Double::to_float`.
+/// - int math utilities: `Int::abs` / `max` / `min` / `clamp` / `signum` /
+///   `is_even` / `is_odd` (linear keeps the `!is_user_fn` guard).
 ///
 /// Divergences (parity contract only, all `PreludeFallback`):
 /// - `String::compare` has a single-pass SIMD arm in the linear backend
@@ -151,6 +153,13 @@ pub fn builtins() -> Array[BuiltinDecl] {
     registry_both("Double::to_int", Int),
     registry_both("Float::to_double", Double),
     registry_both("Double::to_float", Float),
+    registry_both("Int::abs", Int),
+    registry_both("Int::max", Int),
+    registry_both("Int::min", Int),
+    registry_both("Int::clamp", Int),
+    registry_both("Int::signum", Int),
+    registry_both("Int::is_even", Int),
+    registry_both("Int::is_odd", Int),
     // --- divergences (parity contract only) ---
     // linear-only (wasm-gc uses the prelude)
     prelude_fallback("String::compare", Int, true),
@@ -193,6 +202,31 @@ pub fn find_builtin(name : String) -> BuiltinDecl? {
 priv struct MigratedBuiltin {
   compile_linear : (CodegenCtx, ByteBuf, Array[@core.CallArg]) -> Unit raise WasmGenError
   compile_gc : (GcCodegenCtx, GcFuncCtx, GcByteBuf, Array[@core.Expr]) -> Unit raise WasmGenError
+  /// When true, the *linear* dispatch only uses this entry when the name
+  /// does not resolve to a user/prelude function (`!is_user_fn`), mirroring
+  /// the legacy `"Int::abs" if !is_user_fn =>` guards. The wasm-gc dispatch
+  /// ignores this (it has no equivalent guard — preserved behavior).
+  linear_skip_if_user_fn : Bool
+}
+
+///|
+/// Constructor for a migrated builtin that always intercepts on both
+/// backends (no user-fn shadowing guard).
+fn mig(
+  compile_linear : (CodegenCtx, ByteBuf, Array[@core.CallArg]) -> Unit raise WasmGenError,
+  compile_gc : (GcCodegenCtx, GcFuncCtx, GcByteBuf, Array[@core.Expr]) -> Unit raise WasmGenError,
+) -> MigratedBuiltin {
+  MigratedBuiltin::{ compile_linear, compile_gc, linear_skip_if_user_fn: false }
+}
+
+///|
+/// Constructor for a migrated builtin whose linear dispatch is guarded by
+/// `!is_user_fn` (the int-math utilities).
+fn mig_guarded(
+  compile_linear : (CodegenCtx, ByteBuf, Array[@core.CallArg]) -> Unit raise WasmGenError,
+  compile_gc : (GcCodegenCtx, GcFuncCtx, GcByteBuf, Array[@core.Expr]) -> Unit raise WasmGenError,
+) -> MigratedBuiltin {
+  MigratedBuiltin::{ compile_linear, compile_gc, linear_skip_if_user_fn: true }
 }
 
 ///|
@@ -205,42 +239,34 @@ fn migrated_builtin(name : String) -> MigratedBuiltin? {
     // Char::to_int / Char::from_int are identity: a Char is a 62-bit
     // tagged int (ADR-0006), so the conversion just compiles its argument.
     "Char::to_int" | "Char::from_int" =>
-      Some(MigratedBuiltin::{
-        compile_linear: compile_char_identity_linear,
-        compile_gc: compile_char_identity_gc,
-      })
+      Some(mig(compile_char_identity_linear, compile_char_identity_gc))
     // Numeric widening / truncation conversions. Linear boxes f32/f64 and
     // tags ints; wasm-gc uses raw f32/f64/i64 — hence per-backend fns.
     "Int::to_float" =>
-      Some(MigratedBuiltin::{
-        compile_linear: compile_int_to_float_linear,
-        compile_gc: compile_int_to_float_gc,
-      })
+      Some(mig(compile_int_to_float_linear, compile_int_to_float_gc))
     "Int::to_double" =>
-      Some(MigratedBuiltin::{
-        compile_linear: compile_int_to_double_linear,
-        compile_gc: compile_int_to_double_gc,
-      })
+      Some(mig(compile_int_to_double_linear, compile_int_to_double_gc))
     "Float::to_int" =>
-      Some(MigratedBuiltin::{
-        compile_linear: compile_float_to_int_linear,
-        compile_gc: compile_float_to_int_gc,
-      })
+      Some(mig(compile_float_to_int_linear, compile_float_to_int_gc))
     "Double::to_int" =>
-      Some(MigratedBuiltin::{
-        compile_linear: compile_double_to_int_linear,
-        compile_gc: compile_double_to_int_gc,
-      })
+      Some(mig(compile_double_to_int_linear, compile_double_to_int_gc))
     "Float::to_double" =>
-      Some(MigratedBuiltin::{
-        compile_linear: compile_float_to_double_linear,
-        compile_gc: compile_float_to_double_gc,
-      })
+      Some(mig(compile_float_to_double_linear, compile_float_to_double_gc))
     "Double::to_float" =>
-      Some(MigratedBuiltin::{
-        compile_linear: compile_double_to_float_linear,
-        compile_gc: compile_double_to_float_gc,
-      })
+      Some(mig(compile_double_to_float_linear, compile_double_to_float_gc))
+    // Integer math utilities. Operate on tagged i64 (linear) / raw i64
+    // (wasm-gc); linear keeps the `!is_user_fn` shadowing guard.
+    "Int::abs" => Some(mig_guarded(compile_int_abs_linear, compile_int_abs_gc))
+    "Int::max" => Some(mig_guarded(compile_int_max_linear, compile_int_max_gc))
+    "Int::min" => Some(mig_guarded(compile_int_min_linear, compile_int_min_gc))
+    "Int::clamp" =>
+      Some(mig_guarded(compile_int_clamp_linear, compile_int_clamp_gc))
+    "Int::signum" =>
+      Some(mig_guarded(compile_int_signum_linear, compile_int_signum_gc))
+    "Int::is_even" =>
+      Some(mig_guarded(compile_int_is_even_linear, compile_int_is_even_gc))
+    "Int::is_odd" =>
+      Some(mig_guarded(compile_int_is_odd_linear, compile_int_is_odd_gc))
     _ => None
   }
 }
@@ -443,4 +469,354 @@ fn compile_double_to_float_gc(
   }
   compile_expr_gc(ctx, fctx, buf, pos_args[0])
   emit_f32_demote_f64_gc(buf)
+}
+
+// --- integer math utilities (Phase B-1) ---
+// Linear operates on tagged i64 directly; wasm-gc on raw i64. Bodies
+// migrated verbatim from wasm_codegen_builtin_numeric.mbt /
+// wasm_gc_codegen.mbt.
+
+///|
+fn compile_int_abs_linear(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  args : Array[@core.CallArg],
+) -> Unit raise WasmGenError {
+  let pos_args = extract_positional_exprs_with_arity(args, "Int::abs", 1)
+  let tmp = alloc_temp_local_with_kind(ctx, ValueKind::I64)
+  compile_expr_i32(ctx, buf, pos_args[0])
+  emit_local_tee(buf, tmp)
+  emit_i64_const_raw(buf, 0L)
+  emit_i64_lt_s(buf)
+  emit_if(buf)
+  emit_i64_const_raw(buf, 0L)
+  emit_local_get(buf, tmp)
+  emit_i64_sub(buf)
+  emit_local_set(buf, tmp)
+  emit_end(buf)
+  emit_local_get(buf, tmp)
+}
+
+///|
+fn compile_int_abs_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  pos_args : Array[@core.Expr],
+) -> Unit raise WasmGenError {
+  if pos_args.length() != 1 {
+    raise WasmGenError::Unsupported("Int::abs arity")
+  }
+  let x = alloc_local_gc(fctx, GcValKind::I64)
+  compile_expr_gc(ctx, fctx, buf, pos_args[0])
+  emit_local_tee_gc(buf, x)
+  emit_i64_const_gc(buf, 0L)
+  emit_i64_lt_s_gc(buf)
+  emit_if_gc(buf, Some(GcValKind::I64))
+  emit_i64_const_gc(buf, 0L)
+  emit_local_get_gc(buf, x)
+  emit_i64_sub_gc(buf)
+  emit_else_gc(buf)
+  emit_local_get_gc(buf, x)
+  emit_end_gc(buf)
+}
+
+///|
+fn compile_int_max_linear(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  args : Array[@core.CallArg],
+) -> Unit raise WasmGenError {
+  let pos_args = extract_positional_exprs_with_arity(args, "Int::max", 2)
+  let a_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
+  let b_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
+  compile_expr_i32(ctx, buf, pos_args[0])
+  emit_local_set(buf, a_local)
+  compile_expr_i32(ctx, buf, pos_args[1])
+  emit_local_set(buf, b_local)
+  emit_local_get(buf, a_local)
+  emit_local_get(buf, b_local)
+  emit_local_get(buf, a_local)
+  emit_local_get(buf, b_local)
+  emit_i64_gt_s(buf)
+  emit_select(buf)
+}
+
+///|
+fn compile_int_max_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  pos_args : Array[@core.Expr],
+) -> Unit raise WasmGenError {
+  if pos_args.length() != 2 {
+    raise WasmGenError::Unsupported("Int::max arity")
+  }
+  let a = alloc_local_gc(fctx, GcValKind::I64)
+  let b = alloc_local_gc(fctx, GcValKind::I64)
+  compile_expr_gc(ctx, fctx, buf, pos_args[0])
+  emit_local_set_gc(buf, a)
+  compile_expr_gc(ctx, fctx, buf, pos_args[1])
+  emit_local_set_gc(buf, b)
+  emit_local_get_gc(buf, a)
+  emit_local_get_gc(buf, b)
+  emit_i64_gt_s_gc(buf)
+  emit_if_gc(buf, Some(GcValKind::I64))
+  emit_local_get_gc(buf, a)
+  emit_else_gc(buf)
+  emit_local_get_gc(buf, b)
+  emit_end_gc(buf)
+}
+
+///|
+fn compile_int_min_linear(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  args : Array[@core.CallArg],
+) -> Unit raise WasmGenError {
+  let pos_args = extract_positional_exprs_with_arity(args, "Int::min", 2)
+  let a_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
+  let b_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
+  compile_expr_i32(ctx, buf, pos_args[0])
+  emit_local_set(buf, a_local)
+  compile_expr_i32(ctx, buf, pos_args[1])
+  emit_local_set(buf, b_local)
+  emit_local_get(buf, a_local)
+  emit_local_get(buf, b_local)
+  emit_local_get(buf, a_local)
+  emit_local_get(buf, b_local)
+  emit_i64_lt_s(buf)
+  emit_select(buf)
+}
+
+///|
+fn compile_int_min_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  pos_args : Array[@core.Expr],
+) -> Unit raise WasmGenError {
+  if pos_args.length() != 2 {
+    raise WasmGenError::Unsupported("Int::min arity")
+  }
+  let a = alloc_local_gc(fctx, GcValKind::I64)
+  let b = alloc_local_gc(fctx, GcValKind::I64)
+  compile_expr_gc(ctx, fctx, buf, pos_args[0])
+  emit_local_set_gc(buf, a)
+  compile_expr_gc(ctx, fctx, buf, pos_args[1])
+  emit_local_set_gc(buf, b)
+  emit_local_get_gc(buf, a)
+  emit_local_get_gc(buf, b)
+  emit_i64_lt_s_gc(buf)
+  emit_if_gc(buf, Some(GcValKind::I64))
+  emit_local_get_gc(buf, a)
+  emit_else_gc(buf)
+  emit_local_get_gc(buf, b)
+  emit_end_gc(buf)
+}
+
+///|
+fn compile_int_clamp_linear(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  args : Array[@core.CallArg],
+) -> Unit raise WasmGenError {
+  let pos_args = extract_positional_exprs_with_arity(args, "Int::clamp", 3)
+  let x_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
+  let lo_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
+  let hi_local = alloc_temp_local_with_kind(ctx, ValueKind::I64)
+  compile_expr_i32(ctx, buf, pos_args[0])
+  emit_local_set(buf, x_local)
+  compile_expr_i32(ctx, buf, pos_args[1])
+  emit_local_set(buf, lo_local)
+  compile_expr_i32(ctx, buf, pos_args[2])
+  emit_local_set(buf, hi_local)
+  emit_local_get(buf, x_local)
+  emit_local_get(buf, hi_local)
+  emit_local_get(buf, x_local)
+  emit_local_get(buf, hi_local)
+  emit_i64_lt_s(buf)
+  emit_select(buf)
+  emit_local_set(buf, x_local)
+  emit_local_get(buf, lo_local)
+  emit_local_get(buf, x_local)
+  emit_local_get(buf, lo_local)
+  emit_local_get(buf, x_local)
+  emit_i64_gt_s(buf)
+  emit_select(buf)
+}
+
+///|
+fn compile_int_clamp_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  pos_args : Array[@core.Expr],
+) -> Unit raise WasmGenError {
+  if pos_args.length() != 3 {
+    raise WasmGenError::Unsupported("Int::clamp arity")
+  }
+  let x = alloc_local_gc(fctx, GcValKind::I64)
+  let lo = alloc_local_gc(fctx, GcValKind::I64)
+  let hi = alloc_local_gc(fctx, GcValKind::I64)
+  compile_expr_gc(ctx, fctx, buf, pos_args[0])
+  emit_local_set_gc(buf, x)
+  compile_expr_gc(ctx, fctx, buf, pos_args[1])
+  emit_local_set_gc(buf, lo)
+  compile_expr_gc(ctx, fctx, buf, pos_args[2])
+  emit_local_set_gc(buf, hi)
+  emit_local_get_gc(buf, x)
+  emit_local_get_gc(buf, hi)
+  emit_i64_gt_s_gc(buf)
+  emit_if_gc(buf, Some(GcValKind::I64))
+  emit_local_get_gc(buf, hi)
+  emit_else_gc(buf)
+  emit_local_get_gc(buf, x)
+  emit_end_gc(buf)
+  emit_local_set_gc(buf, x)
+  emit_local_get_gc(buf, lo)
+  emit_local_get_gc(buf, x)
+  emit_i64_gt_s_gc(buf)
+  emit_if_gc(buf, Some(GcValKind::I64))
+  emit_local_get_gc(buf, lo)
+  emit_else_gc(buf)
+  emit_local_get_gc(buf, x)
+  emit_end_gc(buf)
+}
+
+///|
+fn compile_int_signum_linear(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  args : Array[@core.CallArg],
+) -> Unit raise WasmGenError {
+  let pos_args = extract_positional_exprs_with_arity(args, "Int::signum", 1)
+  let tmp = alloc_temp_local_with_kind(ctx, ValueKind::I64)
+  compile_expr_i32(ctx, buf, pos_args[0])
+  emit_local_set(buf, tmp)
+  emit_local_get(buf, tmp)
+  emit_i64_const_raw(buf, 2L)
+  emit_i64_shr_s(buf)
+  emit_local_set(buf, tmp)
+  emit_local_get(buf, tmp)
+  emit_i64_const_raw(buf, 0L)
+  emit_i64_lt_s(buf)
+  emit_if(buf)
+  emit_i64_const_raw(buf, tag_int_value64(-1L))
+  emit_local_set(buf, tmp)
+  emit_else(buf)
+  emit_local_get(buf, tmp)
+  emit_i64_const_raw(buf, 0L)
+  emit_i64_gt_s(buf)
+  emit_if(buf)
+  emit_i64_const_raw(buf, tag_int_value64(1L))
+  emit_local_set(buf, tmp)
+  emit_else(buf)
+  emit_i64_const_raw(buf, tag_int_value64(0L))
+  emit_local_set(buf, tmp)
+  emit_end(buf)
+  emit_end(buf)
+  emit_local_get(buf, tmp)
+}
+
+///|
+fn compile_int_signum_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  pos_args : Array[@core.Expr],
+) -> Unit raise WasmGenError {
+  if pos_args.length() != 1 {
+    raise WasmGenError::Unsupported("Int::signum arity")
+  }
+  let x = alloc_local_gc(fctx, GcValKind::I64)
+  compile_expr_gc(ctx, fctx, buf, pos_args[0])
+  emit_local_set_gc(buf, x)
+  emit_local_get_gc(buf, x)
+  emit_i64_const_gc(buf, 0L)
+  emit_i64_gt_s_gc(buf)
+  emit_if_gc(buf, Some(GcValKind::I64))
+  emit_i64_const_gc(buf, 1L)
+  emit_else_gc(buf)
+  emit_local_get_gc(buf, x)
+  emit_i64_const_gc(buf, 0L)
+  emit_i64_lt_s_gc(buf)
+  emit_if_gc(buf, Some(GcValKind::I64))
+  emit_i64_const_gc(buf, -1L)
+  emit_else_gc(buf)
+  emit_i64_const_gc(buf, 0L)
+  emit_end_gc(buf)
+  emit_end_gc(buf)
+}
+
+///|
+fn compile_int_is_even_linear(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  args : Array[@core.CallArg],
+) -> Unit raise WasmGenError {
+  let pos_args = extract_positional_exprs_with_arity(args, "Int::is_even", 1)
+  compile_expr_i32(ctx, buf, pos_args[0])
+  emit_i64_const_raw(buf, 2L)
+  emit_i64_shr_s(buf)
+  emit_i64_const_raw(buf, 1L)
+  emit_i64_and(buf)
+  emit_i64_eqz(buf)
+  emit_i64_extend_i32_u(buf)
+  emit_i64_const_raw(buf, 2L)
+  emit_i64_shl(buf)
+  emit_i64_const_raw(buf, tag_bool.to_int64())
+  emit_i64_or(buf)
+}
+
+///|
+fn compile_int_is_even_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  pos_args : Array[@core.Expr],
+) -> Unit raise WasmGenError {
+  if pos_args.length() != 1 {
+    raise WasmGenError::Unsupported("Int::is_even arity")
+  }
+  compile_expr_gc(ctx, fctx, buf, pos_args[0])
+  emit_i64_const_gc(buf, 1L)
+  emit_i64_and_gc(buf)
+  emit_i64_const_gc(buf, 0L)
+  emit_i64_eq_gc(buf)
+}
+
+///|
+fn compile_int_is_odd_linear(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  args : Array[@core.CallArg],
+) -> Unit raise WasmGenError {
+  let pos_args = extract_positional_exprs_with_arity(args, "Int::is_odd", 1)
+  compile_expr_i32(ctx, buf, pos_args[0])
+  emit_i64_const_raw(buf, 2L)
+  emit_i64_shr_s(buf)
+  emit_i64_const_raw(buf, 1L)
+  emit_i64_and(buf)
+  emit_i64_const_raw(buf, 2L)
+  emit_i64_shl(buf)
+  emit_i64_const_raw(buf, tag_bool.to_int64())
+  emit_i64_or(buf)
+}
+
+///|
+fn compile_int_is_odd_gc(
+  ctx : GcCodegenCtx,
+  fctx : GcFuncCtx,
+  buf : GcByteBuf,
+  pos_args : Array[@core.Expr],
+) -> Unit raise WasmGenError {
+  if pos_args.length() != 1 {
+    raise WasmGenError::Unsupported("Int::is_odd arity")
+  }
+  compile_expr_gc(ctx, fctx, buf, pos_args[0])
+  emit_i64_const_gc(buf, 1L)
+  emit_i64_and_gc(buf)
+  emit_i64_const_gc(buf, 1L)
+  emit_i64_eq_gc(buf)
 }

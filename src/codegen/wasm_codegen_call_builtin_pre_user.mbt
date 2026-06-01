@@ -1230,12 +1230,15 @@ fn compile_call_builtin_pre_user_inner(
 ) -> Unit raise WasmGenError {
   // Phase B-1 (#415): table-driven dispatch for migrated builtins. When the
   // registry owns a name, use its linear compile fn instead of the legacy
-  // per-domain `match name` arms below.
+  // per-domain `match name` arms below. Entries marked
+  // `linear_skip_if_user_fn` defer to a user/prelude function when one
+  // exists (mirrors the legacy `"Int::abs" if !is_user_fn =>` guards).
   match migrated_builtin(name) {
-    Some(m) => {
-      (m.compile_linear)(ctx, buf, args)
-      return
-    }
+    Some(m) =>
+      if !(m.linear_skip_if_user_fn && is_user_fn) {
+        (m.compile_linear)(ctx, buf, args)
+        return
+      }
     None => ()
   }
   // Try each domain-specific handler in turn.
