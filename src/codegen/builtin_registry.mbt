@@ -138,10 +138,19 @@ fn registry_both(name : String, result : ResultShape) -> BuiltinDecl {
 /// - `Bytes::` namespace: `from_array` / `from_string` / `to_string` /
 ///   `length` / `get` / `new` / `push` / `set` / `append` / `blit` / `fill` /
 ///   `slice` / `concat` / `to_array`.
+/// - `String::` namespace: `length` / `char_code_at` / `substring` / `concat` /
+///   `join` / `equals` / `index_of` / `last_index_of` / `contains` /
+///   `starts_with` / `ends_with` / `trim` / `trim_start` / `trim_end` /
+///   `to_lower` / `to_upper` / `count` / `replace` / `split` / `from_char_code` /
+///   `from_char_codes` (the linear arms guarded by `!is_user_fn` keep that
+///   guard via `mig_guarded`).
 ///
 /// Divergences (parity contract only, all `PreludeFallback`):
 /// - `String::compare` has a single-pass SIMD arm in the linear backend
-///   (ADR-0054); wasm-gc reaches the same result via the prelude.
+///   (ADR-0054); wasm-gc reaches the same result via the prelude. (Likewise
+///   `String::replace_all` / `String::unicode_length` stay legacy: the former
+///   has only a linear dedicated arm, the latter only a wasm-gc one, so neither
+///   is a `registry_both` builtin.)
 /// - Native float math (`Float`/`Double` ceil/floor/fract/round/sqrt/trunc)
 ///   and `Array::fold` have dedicated wasm-gc arms; the linear backend
 ///   routes them through the prelude / fallback path.
@@ -177,6 +186,29 @@ pub fn builtins() -> Array[BuiltinDecl] {
     registry_both("Bytes::slice", Ref),
     registry_both("Bytes::concat", Ref),
     registry_both("Bytes::to_array", Ref),
+    // String:: namespace. Boolean-returning ops (equals / contains /
+    // starts_with / ends_with) yield a tagged bool, shape Int.
+    registry_both("String::length", Int),
+    registry_both("String::char_code_at", Int),
+    registry_both("String::substring", Ref),
+    registry_both("String::concat", Ref),
+    registry_both("String::join", Ref),
+    registry_both("String::equals", Int),
+    registry_both("String::index_of", Int),
+    registry_both("String::last_index_of", Int),
+    registry_both("String::contains", Int),
+    registry_both("String::starts_with", Int),
+    registry_both("String::ends_with", Int),
+    registry_both("String::trim", Ref),
+    registry_both("String::trim_start", Ref),
+    registry_both("String::trim_end", Ref),
+    registry_both("String::to_lower", Ref),
+    registry_both("String::to_upper", Ref),
+    registry_both("String::count", Int),
+    registry_both("String::replace", Ref),
+    registry_both("String::split", Ref),
+    registry_both("String::from_char_code", Ref),
+    registry_both("String::from_char_codes", Ref),
     // --- divergences (parity contract only) ---
     // linear-only (wasm-gc uses the prelude)
     prelude_fallback("String::compare", Int, true),
@@ -319,6 +351,105 @@ fn migrated_builtin(name : String) -> MigratedBuiltin? {
       Some(mig(compile_bytes_concat_linear, compile_bytes_concat_gc_arm))
     "Bytes::to_array" =>
       Some(mig(compile_bytes_to_array_linear, compile_bytes_to_array_gc_arm))
+    // String:: namespace. Linear bodies inline byte-buffer codegen; wasm-gc
+    // arms delegate to dedicated `compile_string_*` fns. The arms whose legacy
+    // linear dispatch was `if !is_user_fn =>` keep that guard via `mig_guarded`.
+    "String::length" =>
+      Some(mig(compile_string_length_linear, compile_string_length_gc_arm))
+    "String::char_code_at" =>
+      Some(
+        mig(
+          compile_string_char_code_at_linear, compile_string_char_code_at_gc_arm,
+        ),
+      )
+    "String::substring" =>
+      Some(
+        mig(compile_string_substring_linear, compile_string_substring_gc_arm),
+      )
+    "String::concat" =>
+      Some(mig(compile_string_concat_linear, compile_string_concat_gc_arm))
+    "String::join" =>
+      Some(mig(compile_string_join_linear, compile_string_join_gc_arm))
+    "String::equals" =>
+      Some(mig(compile_string_equals_linear, compile_string_equals_gc_arm))
+    "String::index_of" =>
+      Some(mig(compile_string_index_of_linear, compile_string_index_of_gc_arm))
+    "String::contains" =>
+      Some(
+        mig_guarded(
+          compile_string_contains_linear, compile_string_contains_gc_arm,
+        ),
+      )
+    "String::starts_with" =>
+      Some(
+        mig_guarded(
+          compile_string_starts_with_linear, compile_string_starts_with_gc_arm,
+        ),
+      )
+    "String::ends_with" =>
+      Some(
+        mig_guarded(
+          compile_string_ends_with_linear, compile_string_ends_with_gc_arm,
+        ),
+      )
+    "String::last_index_of" =>
+      Some(
+        mig_guarded(
+          compile_string_last_index_of_linear, compile_string_last_index_of_gc_arm,
+        ),
+      )
+    "String::count" =>
+      Some(
+        mig_guarded(compile_string_count_linear, compile_string_count_gc_arm),
+      )
+    "String::trim" =>
+      Some(mig_guarded(compile_string_trim_linear, compile_string_trim_gc_arm))
+    "String::trim_start" =>
+      Some(
+        mig_guarded(
+          compile_string_trim_start_linear, compile_string_trim_start_gc_arm,
+        ),
+      )
+    "String::trim_end" =>
+      Some(
+        mig_guarded(
+          compile_string_trim_end_linear, compile_string_trim_end_gc_arm,
+        ),
+      )
+    "String::to_upper" =>
+      Some(
+        mig_guarded(
+          compile_string_to_upper_linear, compile_string_to_upper_gc_arm,
+        ),
+      )
+    "String::to_lower" =>
+      Some(
+        mig_guarded(
+          compile_string_to_lower_linear, compile_string_to_lower_gc_arm,
+        ),
+      )
+    "String::replace" =>
+      Some(
+        mig_guarded(
+          compile_string_replace_linear, compile_string_replace_gc_arm,
+        ),
+      )
+    "String::split" =>
+      Some(
+        mig_guarded(compile_string_split_linear, compile_string_split_gc_arm),
+      )
+    "String::from_char_code" =>
+      Some(
+        mig(
+          compile_string_from_char_code_linear, compile_string_from_char_code_gc_arm,
+        ),
+      )
+    "String::from_char_codes" =>
+      Some(
+        mig(
+          compile_string_from_char_codes_linear, compile_string_from_char_codes_gc_arm,
+        ),
+      )
     _ => None
   }
 }

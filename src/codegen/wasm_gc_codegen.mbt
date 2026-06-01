@@ -9650,13 +9650,8 @@ fn compile_expr_gc(
             )
           }
         }
-        "String::length" => {
-          if pos_args.length() != 1 {
-            raise WasmGenError::Unsupported("String::length arity")
-          }
-          compile_len_gc(ctx, fctx, buf, pos_args[0])
-        }
-        // Bytes::length migrated to the shared builtin registry.
+        // String::length / Bytes::length migrated to the shared builtin
+        // registry (registry_string.mbt / registry_bytes.mbt).
         "Int64Array::make" => {
           if pos_args.length() != 2 {
             raise WasmGenError::Unsupported("Int64Array::make arity")
@@ -9692,103 +9687,6 @@ fn compile_expr_gc(
         // push / append / slice / concat / blit / fill / to_array migrated to
         // the shared builtin registry (registry_bytes.mbt /
         // builtin_registry.mbt).
-        "String::char_code_at" => {
-          if pos_args.length() != 2 {
-            raise WasmGenError::Unsupported("String::char_code_at arity")
-          }
-          compile_string_char_code_at(ctx, fctx, buf, pos_args[0], pos_args[1])
-        }
-        "String::substring" => {
-          if pos_args.length() != 3 {
-            raise WasmGenError::Unsupported("String::substring arity")
-          }
-          compile_string_substring(
-            ctx,
-            fctx,
-            buf,
-            pos_args[0],
-            pos_args[1],
-            pos_args[2],
-          )
-        }
-        "String::concat" => {
-          if pos_args.length() != 2 {
-            raise WasmGenError::Unsupported("String::concat arity")
-          }
-          compile_string_concat(ctx, fctx, buf, pos_args[0], pos_args[1])
-        }
-        "String::equals" => {
-          if pos_args.length() != 2 {
-            raise WasmGenError::Unsupported("String::equals arity")
-          }
-          compile_string_equals(ctx, fctx, buf, pos_args[0], pos_args[1])
-        }
-        "String::index_of" => {
-          if pos_args.length() != 2 {
-            raise WasmGenError::Unsupported("String::index_of arity")
-          }
-          compile_string_index_of(ctx, fctx, buf, pos_args[0], pos_args[1])
-        }
-        "String::last_index_of" => {
-          if pos_args.length() != 2 {
-            raise WasmGenError::Unsupported("String::last_index_of arity")
-          }
-          compile_string_last_index_of(ctx, fctx, buf, pos_args[0], pos_args[1])
-        }
-        "String::contains" => {
-          if pos_args.length() != 2 {
-            raise WasmGenError::Unsupported("String::contains arity")
-          }
-          compile_string_contains(ctx, fctx, buf, pos_args[0], pos_args[1])
-        }
-        "String::starts_with" => {
-          if pos_args.length() != 2 {
-            raise WasmGenError::Unsupported("String::starts_with arity")
-          }
-          compile_string_starts_with(ctx, fctx, buf, pos_args[0], pos_args[1])
-        }
-        "String::ends_with" => {
-          if pos_args.length() != 2 {
-            raise WasmGenError::Unsupported("String::ends_with arity")
-          }
-          compile_string_ends_with(ctx, fctx, buf, pos_args[0], pos_args[1])
-        }
-        "String::trim" => {
-          if pos_args.length() != 1 {
-            raise WasmGenError::Unsupported("String::trim arity")
-          }
-          compile_string_trim(ctx, fctx, buf, pos_args[0])
-        }
-        "String::trim_start" => {
-          if pos_args.length() != 1 {
-            raise WasmGenError::Unsupported("String::trim_start arity")
-          }
-          compile_string_trim_start_gc(ctx, fctx, buf, pos_args[0])
-        }
-        "String::trim_end" => {
-          if pos_args.length() != 1 {
-            raise WasmGenError::Unsupported("String::trim_end arity")
-          }
-          compile_string_trim_end_gc(ctx, fctx, buf, pos_args[0])
-        }
-        "String::to_lower" => {
-          if pos_args.length() != 1 {
-            raise WasmGenError::Unsupported("String::to_lower arity")
-          }
-          compile_string_case_gc(ctx, fctx, buf, pos_args[0], 65, 90, 32)
-        }
-        "String::to_upper" => {
-          if pos_args.length() != 1 {
-            raise WasmGenError::Unsupported("String::to_upper arity")
-          }
-          compile_string_case_gc(ctx, fctx, buf, pos_args[0], 97, 122, -32)
-        }
-        "String::count" => {
-          if pos_args.length() != 2 {
-            raise WasmGenError::Unsupported("String::count arity")
-          }
-          compile_string_count_gc(ctx, fctx, buf, pos_args[0], pos_args[1])
-        }
         "String::unicode_length" => {
           if pos_args.length() != 1 {
             raise WasmGenError::Unsupported("String::unicode_length arity")
@@ -9800,31 +9698,6 @@ fn compile_expr_gc(
             raise WasmGenError::Unsupported("Int::parse arity")
           }
           compile_int_parse_gc(ctx, fctx, buf, pos_args[0])
-        }
-        "String::replace" => {
-          if pos_args.length() != 3 {
-            raise WasmGenError::Unsupported("String::replace arity")
-          }
-          compile_string_replace(
-            ctx,
-            fctx,
-            buf,
-            pos_args[0],
-            pos_args[1],
-            pos_args[2],
-          )
-        }
-        "String::split" => {
-          if pos_args.length() != 2 {
-            raise WasmGenError::Unsupported("String::split arity")
-          }
-          compile_string_split(ctx, fctx, buf, pos_args[0], pos_args[1])
-        }
-        "String::join" => {
-          if pos_args.length() != 2 {
-            raise WasmGenError::Unsupported("String::join arity")
-          }
-          compile_string_join(ctx, fctx, buf, pos_args[0], pos_args[1])
         }
         // Bitwise ops
         "__bit_and" => {
@@ -10001,26 +9874,6 @@ fn compile_expr_gc(
           compile_expr_gc(ctx, fctx, buf, pos_args[0])
           emit_drop_gc(buf)
           emit_f64_const_gc(buf, 0.0)
-        }
-        "String::from_char_code" => {
-          // Build 1-char string: struct(len=1, data=array[charcode])
-          compile_expr_gc(ctx, fctx, buf, pos_args[0])
-          let ck = infer_expr_kind_gc(ctx, fctx, pos_args[0])
-          if ck == GcValKind::I64 {
-            emit_i32_wrap_i64_gc(buf)
-          }
-          emit_array_new_fixed_gc(buf, ctx.array_i32_type, 1)
-          let arr_idx = alloc_local_gc(fctx, GcValKind::Ref(ctx.array_i32_type))
-          emit_local_set_gc(buf, arr_idx)
-          emit_i32_const_gc(buf, 1)
-          emit_local_get_gc(buf, arr_idx)
-          emit_struct_new_gc(buf, ctx.string_type)
-        }
-        "String::from_char_codes" => {
-          if pos_args.length() != 1 {
-            raise WasmGenError::Unsupported("String::from_char_codes arity")
-          }
-          compile_string_from_char_codes_gc(ctx, fctx, buf, pos_args[0])
         }
         "Int::to_string" => {
           if pos_args.length() != 1 {
