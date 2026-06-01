@@ -216,6 +216,11 @@ pub fn builtins() -> Array[BuiltinDecl] {
     registry_both("Map::get", Ref),
     registry_both("Map::set", Ref),
     registry_both("Map::delete", Ref),
+    registry_both("Map::keys", Ref),
+    registry_both("Map::values", Ref),
+    registry_both("Map::has_key", Int),
+    registry_both("Map::has", Int),
+    registry_both("Map::iter_get", Ref),
     // --- divergences (parity contract only) ---
     // linear-only (wasm-gc uses the prelude)
     prelude_fallback("String::compare", Int, true),
@@ -464,6 +469,14 @@ fn migrated_builtin(name : String) -> MigratedBuiltin? {
     "Map::set" => Some(mig(compile_map_set_linear, compile_map_set_gc_arm))
     "Map::delete" =>
       Some(mig(compile_map_delete_linear, compile_map_delete_gc_arm))
+    "Map::keys" => Some(mig(compile_map_keys_linear, compile_map_keys_gc_arm))
+    "Map::values" =>
+      Some(mig(compile_map_values_linear, compile_map_values_gc_arm))
+    "Map::has_key" =>
+      Some(mig(compile_map_has_key_linear, compile_map_has_gc_arm))
+    "Map::has" => Some(mig(compile_map_has_linear, compile_map_has_gc_arm))
+    "Map::iter_get" =>
+      Some(mig(compile_map_iter_get_linear, compile_map_iter_get_gc_arm))
     _ => None
   }
 }

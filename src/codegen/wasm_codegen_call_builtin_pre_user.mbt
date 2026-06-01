@@ -1232,12 +1232,25 @@ fn compile_call_builtin_pre_user_inner(
   // registry owns a name, use its linear compile fn instead of the legacy
   // per-domain `match name` arms below. Entries marked
   // `linear_skip_if_user_fn` defer to a user/prelude function when one
-  // exists (mirrors the legacy `"Int::abs" if !is_user_fn =>` guards).
+  // exists (mirrors the legacy `"Int::abs" if !is_user_fn =>` guards). A
+  // migrated fn may itself raise the unhandled marker to defer to the
+  // legacy path (e.g. `Map::iter_get` only handles the non-js-strings
+  // case); we treat that the same as "not migrated" and fall through.
   match migrated_builtin(name) {
     Some(m) =>
       if !(m.linear_skip_if_user_fn && is_user_fn) {
-        (m.compile_linear)(ctx, buf, args)
-        return
+        let result : Result[Unit, WasmGenError] = try? (m.compile_linear)(
+          ctx, buf, args,
+        )
+        match result {
+          Ok(_) => return
+          Err(WasmGenError::Unsupported(message)) =>
+            if message != pre_user_builtin_unhandled_marker {
+              raise WasmGenError::Unsupported(message)
+            }
+          // marker → fall through to the legacy handlers below
+          Err(err) => raise err
+        }
       }
     None => ()
   }
