@@ -1085,11 +1085,41 @@ fn emit_v128_load(buf : ByteBuf, offset : Int) -> Unit {
 }
 
 ///|
+/// v128.load with an explicit alignment hint (log2 of the byte alignment).
+/// Mirrors `emit_v128_store_align`: scanning element/byte data that is only
+/// guaranteed 4-byte aligned passes `align=2` rather than over-claiming the
+/// natural 16-byte alignment. The hint is advisory — wasm engines must handle
+/// the actual (possibly unaligned) address regardless.
+fn emit_v128_load_align(buf : ByteBuf, align : Int, offset : Int) -> Unit {
+  emit_simd_prefix(buf, 0)
+  write_u32_leb(buf, align)
+  write_u32_leb(buf, offset)
+}
+
+///|
 /// v128.store: 0xFD 0x0B, memarg align=4 offset
 fn emit_v128_store(buf : ByteBuf, offset : Int) -> Unit {
   emit_simd_prefix(buf, 11)
   write_u32_leb(buf, 4) // alignment
   write_u32_leb(buf, offset)
+}
+
+///|
+/// v128.store with an explicit alignment hint (log2 of the byte alignment).
+/// Heap objects are only guaranteed 4-byte aligned, so bulk stores into
+/// element data (e.g. SIMD-accelerated array fill) pass `align=2` rather than
+/// over-claiming the natural 16-byte alignment. The hint is advisory — wasm
+/// engines must handle the actual (possibly unaligned) address regardless.
+fn emit_v128_store_align(buf : ByteBuf, align : Int, offset : Int) -> Unit {
+  emit_simd_prefix(buf, 11)
+  write_u32_leb(buf, align)
+  write_u32_leb(buf, offset)
+}
+
+///|
+/// i32x4.splat: 0xFD 0x11 (17) — broadcast an i32 to all four lanes.
+fn emit_i32x4_splat(buf : ByteBuf) -> Unit {
+  emit_simd_prefix(buf, 17)
 }
 
 ///|
@@ -1099,21 +1129,21 @@ fn emit_i8x16_splat(buf : ByteBuf) -> Unit {
 }
 
 ///|
-/// i8x16.eq: 0xFD 0x26 (38)
+/// i8x16.eq: 0xFD 0x23 (35)
 fn emit_i8x16_eq(buf : ByteBuf) -> Unit {
-  emit_simd_prefix(buf, 38)
+  emit_simd_prefix(buf, 35)
 }
 
 ///|
-/// i8x16.le_u: 0xFD 0x2C (44)
+/// i8x16.le_u: 0xFD 0x2A (42)
 fn emit_i8x16_le_u(buf : ByteBuf) -> Unit {
-  emit_simd_prefix(buf, 44)
+  emit_simd_prefix(buf, 42)
 }
 
 ///|
-/// i8x16.ge_u: 0xFD 0x2E (46)
+/// i8x16.ge_u: 0xFD 0x2C (44)
 fn emit_i8x16_ge_u(buf : ByteBuf) -> Unit {
-  emit_simd_prefix(buf, 46)
+  emit_simd_prefix(buf, 44)
 }
 
 ///|

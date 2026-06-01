@@ -1,4 +1,83 @@
 ///|
+/// SIMD-accelerated cell fill for the `obj_array` element region.
+///
+/// Stores `size` copies of the i32 `val_local` starting at `obj_local + 8`
+/// (the element data offset shared by `array_new` and `FixedArray::make`).
+/// The bulk of the array is filled four elements at a time with a single
+/// `i32x4.splat` broadcast plus a 16-byte `v128.store`; a scalar tail handles
+/// the trailing `size & 3` elements. `idx_local` is used as the running
+/// element index and is left equal to `size` on exit.
+///
+/// vibe-lang assumes the wasm SIMD extension is always available (ADR-0054,
+/// SIMD-first baseline), so this path is unconditional — there is no scalar
+/// fallback variant of the fill loop.
+fn emit_simd_fill_i32(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  obj_local : Int,
+  size_local : Int,
+  val_local : Int,
+  idx_local : Int,
+) -> Unit {
+  let vec_local = alloc_temp_local_with_kind(ctx, ValueKind::V128)
+  let vec_count_local = alloc_temp_local(ctx)
+  // vec = i32x4.splat(val) — broadcast the fill value to all four lanes once.
+  emit_local_get(buf, val_local)
+  emit_i32x4_splat(buf)
+  emit_local_set(buf, vec_local)
+  // vec_count = size & ~3 — element count covered by full 16-byte stores.
+  emit_local_get(buf, size_local)
+  emit_i32_const_raw(buf, -4)
+  emit_i32_and(buf)
+  emit_local_set(buf, vec_count_local)
+  // Vector loop: store 4 elements (16 bytes) per iteration.
+  emit_i32_const_raw(buf, 0)
+  emit_local_set(buf, idx_local)
+  emit_block(buf)
+  emit_loop(buf)
+  emit_local_get(buf, idx_local)
+  emit_local_get(buf, vec_count_local)
+  emit_i32_ge_s(buf)
+  emit_br_if(buf, 1)
+  // addr = obj + idx*4; v128.store at memarg offset 8 (element base).
+  emit_local_get(buf, obj_local)
+  emit_local_get(buf, idx_local)
+  emit_i32_const_raw(buf, 4)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_local_get(buf, vec_local)
+  emit_v128_store_align(buf, 2, 8)
+  emit_local_get(buf, idx_local)
+  emit_i32_const_raw(buf, 4)
+  emit_i32_add(buf)
+  emit_local_set(buf, idx_local)
+  emit_br(buf, 0)
+  emit_end(buf) // end loop
+  emit_end(buf) // end block
+  // Scalar tail: idx already == vec_count, fill the remaining < 4 cells.
+  emit_block(buf)
+  emit_loop(buf)
+  emit_local_get(buf, idx_local)
+  emit_local_get(buf, size_local)
+  emit_i32_ge_s(buf)
+  emit_br_if(buf, 1)
+  emit_local_get(buf, obj_local)
+  emit_local_get(buf, idx_local)
+  emit_i32_const_raw(buf, 4)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_local_get(buf, val_local)
+  emit_i32_store(buf, 8)
+  emit_local_get(buf, idx_local)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_add(buf)
+  emit_local_set(buf, idx_local)
+  emit_br(buf, 0)
+  emit_end(buf) // end loop
+  emit_end(buf) // end block
+}
+
+///|
 fn compile_builtin_collection(
   ctx : CodegenCtx,
   buf : ByteBuf,
@@ -147,30 +226,8 @@ fn compile_builtin_collection(
       emit_local_get(buf, obj_local)
       emit_local_get(buf, size_local)
       emit_i32_store(buf, 4)
-      // Fill with default value
-      emit_i32_const_raw(buf, 0)
-      emit_local_set(buf, idx_local)
-      // loop
-      emit_block(buf)
-      emit_loop(buf)
-      emit_local_get(buf, idx_local)
-      emit_local_get(buf, size_local)
-      emit_i32_ge_s(buf)
-      emit_br_if(buf, 1) // break if idx >= size
-      emit_local_get(buf, obj_local)
-      emit_local_get(buf, idx_local)
-      emit_i32_const_raw(buf, 4)
-      emit_i32_mul(buf)
-      emit_i32_add(buf)
-      emit_local_get(buf, val_local)
-      emit_i32_store(buf, 8)
-      emit_local_get(buf, idx_local)
-      emit_i32_const_raw(buf, 1)
-      emit_i32_add(buf)
-      emit_local_set(buf, idx_local)
-      emit_br(buf, 0) // continue
-      emit_end(buf) // end loop
-      emit_end(buf) // end block
+      // Fill with default value (SIMD-accelerated 16-byte stores + scalar tail).
+      emit_simd_fill_i32(ctx, buf, obj_local, size_local, val_local, idx_local)
       // Return tagged obj
       emit_local_get(buf, obj_local)
       emit_i64_extend_i32_u(buf)
@@ -2761,28 +2818,8 @@ fn compile_builtin_collection(
       emit_local_get(buf, obj_local)
       emit_local_get(buf, size_local)
       emit_i32_store(buf, 4)
-      emit_i32_const_raw(buf, 0)
-      emit_local_set(buf, idx_local)
-      emit_block(buf)
-      emit_loop(buf)
-      emit_local_get(buf, idx_local)
-      emit_local_get(buf, size_local)
-      emit_i32_ge_s(buf)
-      emit_br_if(buf, 1)
-      emit_local_get(buf, obj_local)
-      emit_local_get(buf, idx_local)
-      emit_i32_const_raw(buf, 4)
-      emit_i32_mul(buf)
-      emit_i32_add(buf)
-      emit_local_get(buf, val_local)
-      emit_i32_store(buf, 8)
-      emit_local_get(buf, idx_local)
-      emit_i32_const_raw(buf, 1)
-      emit_i32_add(buf)
-      emit_local_set(buf, idx_local)
-      emit_br(buf, 0)
-      emit_end(buf)
-      emit_end(buf)
+      // Fill cells (SIMD-accelerated 16-byte stores + scalar tail).
+      emit_simd_fill_i32(ctx, buf, obj_local, size_local, val_local, idx_local)
       emit_local_get(buf, obj_local)
       emit_i64_extend_i32_u(buf)
       emit_i64_const_raw(buf, tag_obj.to_int64())

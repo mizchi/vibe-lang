@@ -1,0 +1,67 @@
+// String equality throughput benchmark (pure vibe).
+//
+// Exercises the byte-content equality loop in `compile_binary_cmp_op`
+// (`src/codegen/wasm_codegen_call.mbt`, the `obj_string == obj_string` path).
+// To avoid the codegen ptr-eq fast path short-circuiting the comparison, the
+// two operands are built separately (distinct heap allocations) but are
+// structurally equal, so each `==` must scan every byte — the worst case the
+// SIMD acceleration (ADR-0054) targets.
+
+let unit = "0123456789abcdef" // 16 bytes
+
+let rec repeat : (String, Int) -> String = (s, n) -> {
+  if n == 0 {
+    ""
+  } else {
+    String::concat(s, repeat(s, n - 1))
+  }
+}
+
+// Equal pairs (distinct allocations, identical content).
+let a64 = repeat(unit, 4) // 64 bytes
+
+let b64 = repeat(unit, 4)
+
+let a256 = repeat(unit, 16) // 256 bytes
+
+let b256 = repeat(unit, 16)
+
+let a1024 = repeat(unit, 64) // 1024 bytes
+
+let b1024 = repeat(unit, 64)
+
+// Same length, differs only in the final byte: maximal common prefix, so the
+// loop runs to the very end before reporting inequality.
+let c1024 = String::concat(repeat(unit, 63), "0123456789abcdeX")
+
+// Count matches over `n` comparisons. The operands are *parameters* (`x`,
+// `y`), not module constants, so the compiler cannot constant-fold the `==`
+// away — unlike comparing two top-level `let`s directly, which folds to a
+// constant for short (foldable) strings and hides the real loop cost. The
+// recursion also resists inlining, keeping a genuine runtime comparison per
+// iteration. `per_us` is the time for one `eq_count(.., N, 0)` call (N=300
+// for every block), so the values are directly comparable across sizes.
+let rec eq_count : (String, String, Int, Int) -> Int = (x, y, n, acc) -> {
+  if n == 0 {
+    acc
+  } else {
+    let r = if x == y { 1 } else { 0 }
+    eq_count(x, y, n - 1, acc + r)
+  }
+}
+
+bench "str_eq/equal/64B" {
+  let _ = eq_count(a64, b64, 300, 0)
+}
+
+bench "str_eq/equal/256B" {
+  let _ = eq_count(a256, b256, 300, 0)
+}
+
+bench "str_eq/equal/1024B" {
+  let _ = eq_count(a1024, b1024, 300, 0)
+}
+
+bench "str_eq/diff_tail/1024B" {
+  let _ = eq_count(a1024, c1024, 300, 0)
+}

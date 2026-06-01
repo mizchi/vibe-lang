@@ -306,7 +306,12 @@ fn parse_one_func_body(cur : Cursor) -> FuncBody raise WasmEvalError {
   for _ in 0..<local_decl_count {
     let n = body_cur.read_leb_u32()
     let ty = body_cur.read_u8()
-    if ty != 127 && ty != 126 {
+    // 127 = i32, 126 = i64, 123 = v128. vibe-lang treats the wasm SIMD
+    // extension as an always-on baseline, so v128 locals appear in core
+    // primitives (e.g. the SIMD-accelerated array fill). This interpreter
+    // only ever sees splat-broadcast vectors, which it models as their
+    // single i32 lane in one Int64 stack slot (see the 0xFD handler).
+    if ty != 127 && ty != 126 && ty != 123 {
       raise WasmEvalError::Unsupported("local type")
     }
     locals_total += n
@@ -476,10 +481,23 @@ fn skip_to_else_or_end(code : Cursor) -> Bool raise WasmEvalError {
         skip_leb(code)
         skip_leb(code)
       }
+      253 => skip_simd_immediates(code) // SIMD (v128) prefix
       _ => ()
     }
   }
   raise WasmEvalError::UnexpectedEof
+}
+
+///|
+/// Skip the immediates of a v128 (0xFD-prefixed) instruction during static
+/// block scanning. The sub-opcode LEB is always present; load/store forms
+/// (0 = v128.load, 11 = v128.store) additionally carry a 2-LEB memarg.
+fn skip_simd_immediates(code : Cursor) -> Unit raise WasmEvalError {
+  let subop = code.read_leb_u32()
+  if subop == 0 || subop == 11 {
+    skip_leb(code) // align
+    skip_leb(code) // offset
+  }
 }
 
 ///|
@@ -509,6 +527,7 @@ fn skip_to_end(code : Cursor) -> Unit raise WasmEvalError {
         skip_leb(code)
         skip_leb(code)
       }
+      253 => skip_simd_immediates(code) // SIMD (v128) prefix
       _ => ()
     }
   }
@@ -782,6 +801,13 @@ fn eval_loop(
   //   pos: for loop, the position right after the loop opcode+blocktype (restart point)
   //   stack_height: stack height at block entry
   let block_stack : Array[(Int, Int, Int)] = []
+  // v128 value pool. The Int64 value stack cannot hold a 128-bit value, so a
+  // v128 is materialised as a 16-byte FixedArray and referenced from the
+  // stack/locals by its pool index. v128 values never cross a call boundary
+  // in vibe-lang codegen (produced and consumed within one function body —
+  // SIMD array fill and string-content equality), so a per-eval_loop pool is
+  // sufficient.
+  let v128_pool : Array[FixedArray[Byte]] = []
   while true {
     let op = code.read_u8()
     match op {
@@ -1395,6 +1421,12 @@ fn eval_loop(
         if kind == 1 {
           // Loop: jump back to loop start
           code.pos = loop_pos
+          // Restore the value stack to the loop's entry height (wasm br
+          // semantics) so leftover operands cannot accumulate across
+          // iterations.
+          while stack.length() > _sh {
+            let _ = stack.unsafe_pop()
+          }
           // Pop blocks above the loop target
           while block_stack.length() > target_idx + 1 {
             let _ = block_stack.pop()
@@ -1426,6 +1458,9 @@ fn eval_loop(
           if kind == 1 {
             // Loop: jump back
             code.pos = loop_pos
+            while stack.length() > _sh {
+              let _ = stack.unsafe_pop()
+            }
             while block_stack.length() > target_idx + 1 {
               let _ = block_stack.pop()
             }
@@ -1536,6 +1571,119 @@ fn eval_loop(
         } else {
           let _ = block_stack.pop()
         }
+      // SIMD (v128) prefix. vibe-lang treats the wasm SIMD extension as an
+      // always-on baseline (ADR-0054), so v128 ops appear in core primitives:
+      // the splat-broadcast array fill (`i32x4.splat` + `v128.store`) and the
+      // 16-byte string-content equality scan (`v128.load` + `i8x16.eq` +
+      // `i8x16.all_true`). v128 values live in `v128_pool`, referenced by
+      // index on the Int64 stack.
+      253 => {
+        let subop = code.read_leb_u32()
+        match subop {
+          // v128.load: pool a 16-byte copy of memory at addr+offset.
+          0 => {
+            let _ = code.read_leb_u32() // align
+            let offset = code.read_leb_u32()
+            if stack.is_empty() {
+              raise WasmEvalError::Invalid("stack underflow")
+            }
+            let addr = stack.unsafe_pop().to_int()
+            let v : FixedArray[Byte] = FixedArray::make(16, (0).to_byte())
+            for i in 0..<16 {
+              v[i] = mem[addr + offset + i]
+            }
+            v128_pool.push(v)
+            stack.push((v128_pool.length() - 1).to_int64())
+          }
+          // v128.store: write the pooled 16 bytes back to memory.
+          11 => {
+            let _ = code.read_leb_u32() // align
+            let offset = code.read_leb_u32()
+            if stack.length() < 2 {
+              raise WasmEvalError::Invalid("stack underflow")
+            }
+            let idx = stack.unsafe_pop().to_int()
+            let addr = stack.unsafe_pop().to_int()
+            let v = v128_pool[idx]
+            for i in 0..<16 {
+              mem[addr + offset + i] = v[i]
+            }
+          }
+          // i32x4.splat: broadcast the low 32 bits to all four lanes.
+          17 => {
+            if stack.is_empty() {
+              raise WasmEvalError::Invalid("stack underflow")
+            }
+            let val = stack.unsafe_pop().to_int()
+            let v : FixedArray[Byte] = FixedArray::make(16, (0).to_byte())
+            for lane in 0..<4 {
+              v[lane * 4 + 0] = (val & 0xff).to_byte()
+              v[lane * 4 + 1] = ((val >> 8) & 0xff).to_byte()
+              v[lane * 4 + 2] = ((val >> 16) & 0xff).to_byte()
+              v[lane * 4 + 3] = ((val >> 24) & 0xff).to_byte()
+            }
+            v128_pool.push(v)
+            stack.push((v128_pool.length() - 1).to_int64())
+          }
+          // i8x16.eq: per-byte equality (0xFF where equal, else 0x00).
+          35 => {
+            if stack.length() < 2 {
+              raise WasmEvalError::Invalid("stack underflow")
+            }
+            let bi = stack.unsafe_pop().to_int()
+            let ai = stack.unsafe_pop().to_int()
+            let a = v128_pool[ai]
+            let b = v128_pool[bi]
+            let r : FixedArray[Byte] = FixedArray::make(16, (0).to_byte())
+            for i in 0..<16 {
+              r[i] = if a[i] == b[i] { (0xff).to_byte() } else { (0).to_byte() }
+            }
+            v128_pool.push(r)
+            stack.push((v128_pool.length() - 1).to_int64())
+          }
+          // i8x16.all_true: 1 iff every lane is non-zero.
+          99 => {
+            if stack.is_empty() {
+              raise WasmEvalError::Invalid("stack underflow")
+            }
+            let idx = stack.unsafe_pop().to_int()
+            let v = v128_pool[idx]
+            let mut all = 1
+            for i in 0..<16 {
+              if v[i].to_int() == 0 {
+                all = 0
+              }
+            }
+            stack.push(all.to_int64())
+          }
+          // i8x16.splat: broadcast the low 8 bits to all 16 lanes.
+          15 => {
+            if stack.is_empty() {
+              raise WasmEvalError::Invalid("stack underflow")
+            }
+            let b = (stack.unsafe_pop().to_int() & 0xff).to_byte()
+            let v : FixedArray[Byte] = FixedArray::make(16, b)
+            v128_pool.push(v)
+            stack.push((v128_pool.length() - 1).to_int64())
+          }
+          // v128.any_true: 1 iff any lane is non-zero.
+          83 => {
+            if stack.is_empty() {
+              raise WasmEvalError::Invalid("stack underflow")
+            }
+            let idx = stack.unsafe_pop().to_int()
+            let v = v128_pool[idx]
+            let mut any = 0
+            for i in 0..<16 {
+              if v[i].to_int() != 0 {
+                any = 1
+              }
+            }
+            stack.push(any.to_int64())
+          }
+          _ => raise WasmEvalError::Unsupported("simd op " + subop.to_string())
+        }
+      }
       _ => raise WasmEvalError::Unsupported("opcode " + op.to_string())
     }
   }
@@ -1700,6 +1848,51 @@ fn assert_wasm_eval_decodes(script : String) -> Unit raise {
   } noraise {
     _ => ()
   }
+}
+
+///|
+/// Assert that a script evaluates to a specific tagged Int via the WASM
+/// backend. Used to pin the correctness of the SIMD-accelerated array fill
+/// across the vector-loop / scalar-tail boundary.
+fn assert_wasm_eval_int(script : String, expected : Int) -> Unit raise {
+  let wasm_res = try eval_run(script) catch {
+    e => fail("wasm eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let decoded = try decode_tagged_value(wasm_res.mem, wasm_res.value, 0) catch {
+    e => fail("wasm decode failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  match decoded {
+    @core.Value::Int(n) =>
+      if n != expected.to_int64() {
+        fail(
+          "wasm eval = " + n.to_string() + ", expected " + expected.to_string(),
+        )
+      }
+    other => fail("wasm eval returned non-Int: " + other.to_string())
+  }
+}
+
+///|
+/// The SIMD fill writes 4 elements per 16-byte `v128.store`, then a scalar
+/// tail covers the trailing `size & 3` cells. Probe both regions at a range
+/// of sizes that straddle the vector/tail boundary (0..2 full vectors plus
+/// every tail remainder) to ensure every cell receives the fill value.
+test "vibe wasm eval: SIMD array fill covers vector body and scalar tail" {
+  // size 3: scalar tail only (no full vector) — last cell.
+  assert_wasm_eval_int("FixedArray::get(FixedArray::make(3, 9), 2)", 9)
+  // size 4: exactly one vector, no tail — last cell of the vector.
+  assert_wasm_eval_int("FixedArray::get(FixedArray::make(4, 5), 3)", 5)
+  // size 7: one vector + 3 tail — a vector cell and the last tail cell.
+  assert_wasm_eval_int("FixedArray::get(FixedArray::make(7, 8), 1)", 8)
+  assert_wasm_eval_int("FixedArray::get(FixedArray::make(7, 8), 6)", 8)
+  // size 9: two vectors + 1 tail — the lone tail cell.
+  assert_wasm_eval_int("FixedArray::get(FixedArray::make(9, 6), 8)", 6)
+  // Growable `Array` element access still reads back correctly post-fill.
+  assert_wasm_eval_int("Array::get([3, 3, 3, 3, 3, 3, 3], 6)", 3)
 }
 
 ///|

@@ -1,0 +1,36 @@
+// SIMD lex compare (ADR-0054): the common prefix of two strings is scanned
+// 16 bytes at a time (v128.load x2 + i8x16.eq + i8x16.all_true); the first
+// unequal chunk falls back to a scalar scan that pinpoints the differing
+// byte. This drives `<` / `>` / `<=` / `>=` and (via prelude) String::compare.
+let rec repeat : (String, Int) -> String = (s, n) -> { if n == 0 { "" } else { String::concat(s, repeat(s, n - 1)) } }
+
+test "lex compare: short (no SIMD chunk)" {
+  assert_eq("abc" < "abd", true)
+  assert_eq("abd" < "abc", false)
+  assert_eq("abc" <= "abc", true)
+  assert_eq("abd" > "abc", true)
+  assert_eq("abc" >= "abd", false)
+  assert_eq("ab" < "abc", true)   // length tie-break
+  assert_eq("abc" < "ab", false)
+  assert_eq("" < "x", true)
+  assert_eq("" < "", false)
+}
+
+test "lex compare: SIMD chunk (len > 16)" {
+  let a = String::concat(repeat("0123456789abcdef", 4), "A")  // diff at byte 64
+  let b = String::concat(repeat("0123456789abcdef", 4), "B")
+  assert_eq(a < b, true)
+  assert_eq(b < a, false)
+  assert_eq(a <= a, true)
+  // diff inside the 2nd chunk (byte 19)
+  let c = String::concat("0123456789abcdef0123", "XYZ")
+  let d = String::concat("0123456789abcdef0124", "XYZ")
+  assert_eq(c < d, true)
+  assert_eq(d < c, false)
+  // multi-chunk equal prefix + length tie-break
+  let e = repeat("0123456789abcdef", 4)  // 64B
+  let f = repeat("0123456789abcdef", 5)  // 80B (e is a prefix of f)
+  assert_eq(e < f, true)
+  assert_eq(f < e, false)
+  assert_eq(f > e, true)
+}
