@@ -9026,11 +9026,17 @@ fn compile_expr_gc(
       let name = @core.lower_wasm_intrinsic_name(name)
       let pos_args = extract_positional_exprs(args, name)
       // Phase B-1 (#415): table-driven dispatch for migrated builtins.
+      // `compile_gc == None` means the builtin is linear-only (wasm-gc uses
+      // the prelude), so fall through to the normal path.
       match migrated_builtin(name) {
-        Some(m) => {
-          (m.compile_gc)(ctx, fctx, buf, pos_args)
-          return
-        }
+        Some(m) =>
+          match m.compile_gc {
+            Some(compile) => {
+              compile(ctx, fctx, buf, pos_args)
+              return
+            }
+            None => ()
+          }
         None => ()
       }
       match name {
@@ -9692,12 +9698,6 @@ fn compile_expr_gc(
             raise WasmGenError::Unsupported("String::unicode_length arity")
           }
           compile_string_unicode_length_gc(ctx, fctx, buf, pos_args[0])
-        }
-        "Int::parse" => {
-          if pos_args.length() != 1 {
-            raise WasmGenError::Unsupported("Int::parse arity")
-          }
-          compile_int_parse_gc(ctx, fctx, buf, pos_args[0])
         }
         // Bitwise ops
         "__bit_and" => {

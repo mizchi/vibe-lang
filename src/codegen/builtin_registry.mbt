@@ -135,6 +135,8 @@ fn registry_both(name : String, result : ResultShape) -> BuiltinDecl {
 ///   `Double::to_float`.
 /// - int math utilities: `Int::abs` / `max` / `min` / `clamp` / `signum` /
 ///   `is_even` / `is_odd` (linear keeps the `!is_user_fn` guard).
+/// - `Int::parse` — table-driven on both backends (linear byte-buffer state
+///   machine; wasm-gc delegates to `compile_int_parse_gc`).
 /// - `Bytes::` namespace: `from_array` / `from_string` / `to_string` /
 ///   `length` / `get` / `new` / `push` / `set` / `append` / `blit` / `fill` /
 ///   `slice` / `concat` / `to_array`.
@@ -161,6 +163,12 @@ fn registry_both(name : String, result : ResultShape) -> BuiltinDecl {
 /// - Native float math (`Float`/`Double` ceil/floor/fract/round/sqrt/trunc)
 ///   and `Array::fold` have dedicated wasm-gc arms; the linear backend
 ///   routes them through the prelude / fallback path.
+/// - `Set::` namespace (`new` / `size` / `contains` / `add` / `remove` /
+///   `to_array` / `from_array`) is linear-only at the dispatch level: the
+///   linear backend has a dedicated arm per op (registered via
+///   `mig_linear_only`), while wasm-gc reaches the same behavior through the
+///   prelude (no Set dispatch arm — `compile_gc=None`, gc dispatch falls
+///   through).
 pub fn builtins() -> Array[BuiltinDecl] {
   [
     // --- migrated: table-driven on both backends ---
@@ -179,6 +187,7 @@ pub fn builtins() -> Array[BuiltinDecl] {
     registry_both("Int::signum", Int),
     registry_both("Int::is_even", Int),
     registry_both("Int::is_odd", Int),
+    registry_both("Int::parse", Ref),
     registry_both("Bytes::from_array", Ref),
     registry_both("Bytes::from_string", Ref),
     registry_both("Bytes::to_string", Ref),
@@ -256,6 +265,17 @@ pub fn builtins() -> Array[BuiltinDecl] {
     // --- divergences (parity contract only) ---
     // linear-only (wasm-gc uses the prelude)
     prelude_fallback("String::compare", Int, true),
+    // Set:: namespace — linear has a dedicated arm per op; wasm-gc has no Set
+    // dispatch arm and reaches the same behavior through the prelude
+    // (set_test passes on the wasm-gc backend). Registered as
+    // `mig_linear_only` below (compile_gc=None → gc dispatch falls through).
+    prelude_fallback("Set::new", Ref, true),
+    prelude_fallback("Set::size", Int, true),
+    prelude_fallback("Set::contains", Int, true),
+    prelude_fallback("Set::add", Ref, true),
+    prelude_fallback("Set::remove", Ref, true),
+    prelude_fallback("Set::to_array", Ref, true),
+    prelude_fallback("Set::from_array", Ref, true),
     // wasm-gc-only (linear uses the prelude / fallback path)
     prelude_fallback("Array::fold", Ref, false),
     prelude_fallback("Double::ceil", Double, false),
@@ -294,7 +314,11 @@ pub fn find_builtin(name : String) -> BuiltinDecl? {
 /// pre-extracted by the wasm-gc `Call` dispatch.
 priv struct MigratedBuiltin {
   compile_linear : (CodegenCtx, ByteBuf, Array[@core.CallArg]) -> Unit raise WasmGenError
-  compile_gc : (GcCodegenCtx, GcFuncCtx, GcByteBuf, Array[@core.Expr]) -> Unit raise WasmGenError
+  /// `None` for builtins the linear backend implements with a dedicated arm
+  /// while wasm-gc reaches the same behavior through the prelude (e.g. the
+  /// `Set::` namespace). When `None`, the wasm-gc dispatch falls through to
+  /// its normal path instead of calling a registry fn.
+  compile_gc : ((GcCodegenCtx, GcFuncCtx, GcByteBuf, Array[@core.Expr]) -> Unit raise WasmGenError)?
   /// When true, the *linear* dispatch only uses this entry when the name
   /// does not resolve to a user/prelude function (`!is_user_fn`), mirroring
   /// the legacy `"Int::abs" if !is_user_fn =>` guards. The wasm-gc dispatch
@@ -309,7 +333,25 @@ fn mig(
   compile_linear : (CodegenCtx, ByteBuf, Array[@core.CallArg]) -> Unit raise WasmGenError,
   compile_gc : (GcCodegenCtx, GcFuncCtx, GcByteBuf, Array[@core.Expr]) -> Unit raise WasmGenError,
 ) -> MigratedBuiltin {
-  MigratedBuiltin::{ compile_linear, compile_gc, linear_skip_if_user_fn: false }
+  MigratedBuiltin::{
+    compile_linear,
+    compile_gc: Some(compile_gc),
+    linear_skip_if_user_fn: false,
+  }
+}
+
+///|
+/// Constructor for a builtin the linear backend implements with a dedicated
+/// arm while wasm-gc reaches the same behavior through the prelude (no gc
+/// codegen arm). The wasm-gc dispatch falls through.
+fn mig_linear_only(
+  compile_linear : (CodegenCtx, ByteBuf, Array[@core.CallArg]) -> Unit raise WasmGenError,
+) -> MigratedBuiltin {
+  MigratedBuiltin::{
+    compile_linear,
+    compile_gc: None,
+    linear_skip_if_user_fn: false,
+  }
 }
 
 ///|
@@ -319,7 +361,11 @@ fn mig_guarded(
   compile_linear : (CodegenCtx, ByteBuf, Array[@core.CallArg]) -> Unit raise WasmGenError,
   compile_gc : (GcCodegenCtx, GcFuncCtx, GcByteBuf, Array[@core.Expr]) -> Unit raise WasmGenError,
 ) -> MigratedBuiltin {
-  MigratedBuiltin::{ compile_linear, compile_gc, linear_skip_if_user_fn: true }
+  MigratedBuiltin::{
+    compile_linear,
+    compile_gc: Some(compile_gc),
+    linear_skip_if_user_fn: true,
+  }
 }
 
 ///|
@@ -360,6 +406,12 @@ fn migrated_builtin(name : String) -> MigratedBuiltin? {
       Some(mig_guarded(compile_int_is_even_linear, compile_int_is_even_gc))
     "Int::is_odd" =>
       Some(mig_guarded(compile_int_is_odd_linear, compile_int_is_odd_gc))
+    // Int::parse — table-driven on both backends. The linear body is the one
+    // in the numeric handler (tried before the string handler); the wasm-gc
+    // body delegates to `compile_int_parse_gc`. Both raise
+    // `Unsupported("Int::parse with js strings")` under `use_js_strings`.
+    "Int::parse" =>
+      Some(mig(compile_int_parse_linear, compile_int_parse_gc_arm))
     // Bytes:: namespace. Linear bodies are inline byte-buffer codegen; the
     // wasm-gc arms delegate to dedicated `compile_bytes_*_gc` fns. No
     // `!is_user_fn` guard (matches the legacy arms), so `mig`.
@@ -581,6 +633,18 @@ fn migrated_builtin(name : String) -> MigratedBuiltin? {
           compile_map_builder_freeze_linear, compile_map_builder_freeze_gc_arm,
         ),
       )
+    // Set:: namespace (#415). LINEAR-ONLY at the dispatch level: the linear
+    // backend has a dedicated arm per op (relocated verbatim into
+    // registry_set.mbt); wasm-gc has no Set dispatch arm and reaches the same
+    // behavior through the prelude (set_test passes on wasm-gc). So each uses
+    // `mig_linear_only` (compile_gc=None → gc dispatch falls through).
+    "Set::new" => Some(mig_linear_only(compile_set_new_linear))
+    "Set::size" => Some(mig_linear_only(compile_set_size_linear))
+    "Set::contains" => Some(mig_linear_only(compile_set_contains_linear))
+    "Set::add" => Some(mig_linear_only(compile_set_add_linear))
+    "Set::remove" => Some(mig_linear_only(compile_set_remove_linear))
+    "Set::to_array" => Some(mig_linear_only(compile_set_to_array_linear))
+    "Set::from_array" => Some(mig_linear_only(compile_set_from_array_linear))
     _ => None
   }
 }
