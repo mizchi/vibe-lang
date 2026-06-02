@@ -4382,6 +4382,35 @@ test "rc debug: match arm-local heap is dropped per arm" {
 }
 
 ///|
+test "rc debug: discarded statement-expr heap is dropped" {
+  // The first two `mk()` results are statement expressions whose values are
+  // discarded. They are bound to synthetic `let` bindings before Perceus so
+  // the owned tuples are reclaimed instead of leaking.
+  let script =
+    #|let mk = () -> (Int, Int) {
+    #|  (1, 2)
+    #|}
+    #|let f = () -> Int {
+    #|  mk()
+    #|  mk()
+    #|  let r = mk()
+    #|  r.0
+    #|}
+    #|f()
+  let res = try eval_run_rc_debug(script) catch {
+    e => fail("rc debug eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let (allocs, frees) = rc_debug_counts(res)
+  // Three tuples allocated (three mk() calls), all three reclaimed.
+  assert_true(allocs >= 3L)
+  assert_eq(allocs, frees)
+  // Correctness is preserved: r.0 == 1.
+  assert_eq(decode_int(res.value), 1L)
+}
+
+///|
 // ADR-0044 Phase 3: String now implements Iterable. The prelude provides
 // `String::iter_length` (= String::length) and `String::iter_get`
 // (= String::char_code_at), so generic Iterable combinators see each char
