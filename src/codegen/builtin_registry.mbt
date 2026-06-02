@@ -144,6 +144,8 @@ fn registry_both(name : String, result : ResultShape) -> BuiltinDecl {
 ///   `to_lower` / `to_upper` / `count` / `replace` / `split` / `from_char_code` /
 ///   `from_char_codes` (the linear arms guarded by `!is_user_fn` keep that
 ///   guard via `mig_guarded`).
+/// - `StringBuilder::` namespace: `new` / `push` / `freeze` (linear inline
+///   builder codegen; wasm-gc arms relocated verbatim).
 ///
 /// Divergences (parity contract only, all `PreludeFallback`):
 /// - `String::compare` has a single-pass SIMD arm in the linear backend
@@ -231,6 +233,12 @@ pub fn builtins() -> Array[BuiltinDecl] {
     registry_both("Array::truncate", Unit),
     registry_both("Array::with_capacity", Ref),
     registry_both("Array::push", Unit),
+    // StringBuilder:: namespace (#414 / #415). Linear bodies are inline
+    // builder codegen; the wasm-gc bodies are relocated verbatim from the
+    // inline gc arms (struct/array type setup + grow/copy loops).
+    registry_both("StringBuilder::new", Ref),
+    registry_both("StringBuilder::push", Unit),
+    registry_both("StringBuilder::freeze", Ref),
     // --- divergences (parity contract only) ---
     // linear-only (wasm-gc uses the prelude)
     prelude_fallback("String::compare", Int, true),
@@ -507,6 +515,28 @@ fn migrated_builtin(name : String) -> MigratedBuiltin? {
       )
     "Array::push" =>
       Some(mig(compile_array_push_linear, compile_array_push_gc_arm))
+    // StringBuilder:: namespace (#414 / #415). Linear bodies are inline
+    // builder codegen; the wasm-gc arms are relocated verbatim (struct/array
+    // type setup + grow/copy loops, NOT thin delegates). No `!is_user_fn`
+    // guard (matches the legacy arms), so `mig`.
+    "StringBuilder::new" =>
+      Some(
+        mig(
+          compile_string_builder_new_linear, compile_string_builder_new_gc_arm,
+        ),
+      )
+    "StringBuilder::push" =>
+      Some(
+        mig(
+          compile_string_builder_push_linear, compile_string_builder_push_gc_arm,
+        ),
+      )
+    "StringBuilder::freeze" =>
+      Some(
+        mig(
+          compile_string_builder_freeze_linear, compile_string_builder_freeze_gc_arm,
+        ),
+      )
     _ => None
   }
 }
