@@ -642,6 +642,19 @@ fn emit_rc_drop_i64(ctx : CodegenCtx, buf : ByteBuf, local_idx : Int) -> Unit {
 
 ///|
 /// Emit all RC actions for a given stmt index (pre or post).
+/// Build the Perceus site string for statement `idx` inside a block whose
+/// action prefix is `prefix`. The top-level block uses an empty prefix and
+/// the bare `stmt[i]` form (matching `build_perceus_plan`); nested blocks
+/// prepend their dotted prefix.
+fn rc_make_stmt_site(prefix : String, idx : Int) -> String {
+  if prefix.length() == 0 {
+    "stmt[\{idx}]"
+  } else {
+    "\{prefix}.stmt[\{idx}]"
+  }
+}
+
+///|
 fn emit_rc_actions(
   ctx : CodegenCtx,
   buf : ByteBuf,

@@ -1264,6 +1264,7 @@ fn compile_block_expr(
   let saved_named_fn_scope = snapshot_named_fn_scope(ctx)
   let saved_mut_captured = ctx.mut_captured_vars.copy()
   let saved_prefix = ctx.rc_action_prefix
+  let saved_stmt_site = ctx.rc_stmt_site
   ctx.mut_captured_vars = scoped_mut_captured_for_block(
     saved_mut_captured,
     body.stmts,
@@ -1279,6 +1280,7 @@ fn compile_block_expr(
     for i in 0..<len {
       let is_last = i == len - 1
       if emit_rc_stmt_actions {
+        ctx.rc_stmt_site = rc_make_stmt_site(ctx.rc_action_prefix, i)
         emit_rc_actions(ctx, buf, ctx.rc_pre_actions, i)
       }
       compile_stmt(ctx, buf, body.stmts[i], is_last)
@@ -1288,6 +1290,7 @@ fn compile_block_expr(
     }
   }
   ctx.rc_action_prefix = saved_prefix
+  ctx.rc_stmt_site = saved_stmt_site
   ctx.mut_captured_vars = saved_mut_captured
   restore_locals(ctx, saved)
   restore_local_kinds(ctx, saved_kinds)

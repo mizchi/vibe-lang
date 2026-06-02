@@ -162,6 +162,10 @@ priv struct CodegenCtx {
   mut rc_pre_actions : Map[String, Map[Int, Array[RcStmtAction]]]
   mut rc_post_actions : Map[String, Map[Int, Array[RcStmtAction]]]
   mut rc_action_prefix : String
+  // Perceus RC: site of the statement currently being compiled within the
+  // enclosing block (e.g. "stmt[2]" or "outer.stmt[1]"). Nested constructs
+  // (while/loop bodies) extend this to derive their own action prefix.
+  mut rc_stmt_site : String
   // Per-function RC actions: func_name → raw action tuples
   mut rc_func_actions : Map[String, Array[(String, Bool, String)]]
   // RC free-list head global index (-1 if not allocated)
@@ -356,6 +360,7 @@ fn CodegenCtx::new(
     rc_pre_actions: {},
     rc_post_actions: {},
     rc_action_prefix: "",
+    rc_stmt_site: "",
     rc_func_actions: {},
     rc_free_list_global: -1,
     rc_tmp_local: -1,
