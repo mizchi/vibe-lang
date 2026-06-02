@@ -182,12 +182,16 @@ hash_file() {
 }
 
 stage1_fingerprint() {
-  # Determinant of stage1.wasm: the wasm compiler binary + every selfhost
-  # compiler source the entry transitively compiles + the entry path.
+  # Determinant of stage1.wasm: the wasm compiler binary + every Vibe source
+  # the entry transitively compiles + the entry path. index.vibe imports
+  # siblings outside vibe/compiler (../json, ../module, ../shell, and their
+  # transitive deps), so fingerprint the whole vibe/**/*.vibe tree — narrowing
+  # to vibe/compiler would let an out-of-tree dependency change reuse a stale
+  # stage1 wasm and validate a stale compiler against itself.
   {
     hash_file "$STAGE1_COMPILER_WASM"
     echo "$ENTRY_PATH"
-    find "$PROJECT_ROOT/vibe/compiler" -name '*.vibe' -type f 2>/dev/null \
+    find "$PROJECT_ROOT/vibe" -name '*.vibe' -type f 2>/dev/null \
       | LC_ALL=C sort \
       | while IFS= read -r f; do hash_file "$f"; done
   } | {
