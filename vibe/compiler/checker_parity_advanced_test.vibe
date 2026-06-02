@@ -6,6 +6,36 @@ import ./checker_parity_test_support.vibe {
 
 //# Misc
 
+test "parity: return statement" {
+  assert(check_source_ok("let run = (n: Int) -> Int { let mut i = 0\nwhile i < 100 { if i == n { return i * 6 }\ni = i + 1 }\nn }\nrun(7)"))
+}
+
+test "parity: early return in if" {
+  assert(check_source_ok("let f = (n: Int) -> Int { if n == 0 { return 1 }\nn }\nf(0)"))
+}
+
+test "parity: generic impl header (#492)" {
+  assert(check_source_ok("trait Eq\nimpl Eq for Int\nimpl [T: Eq] Eq for Option[T]\n0"))
+}
+
+test "parity: generic struct decl (#492)" {
+  assert(check_source_ok("struct Box[T] { v: T }\nlet get = (b: Box[Int]) -> Int { b.v }\nget(Box::{ v: 42 })"))
+}
+
+test "parity: Float unified with Double (#492)" {
+  // The selfhost has no distinct 32-bit float: `Float` resolves to Double, so
+  // a `Float` value compares with a `0.0f` literal (also Double). Used by
+  // vibe/prelude/float.vibe (`if x < 0.0f`).
+  assert(check_source_ok("let f = (x: Float) -> Bool { x < 0.0f }\nf(1.5f)"))
+}
+
+test "parity: generic Ord comparison (#492)" {
+  // A generic `[T: Ord]` function comparing its params must type-check (the
+  // body resolves `T` as a bound type variable). Used by
+  // vibe/prelude/builtin_traits.vibe (ord_max/ord_min) and cmp.vibe.
+  assert(check_source_ok("let ord_max = [T: Ord](a: T, b: T) -> T { if a < b { b } else a }\nord_max(1, 2)"))
+}
+
 test "parity: for-in with map" {
   assert(check_source_ok("let squares = for x in [1, 2, 3] { x * x }\nArray::length(squares)"))
 }
@@ -32,6 +62,14 @@ test "parity: match wildcard only" {
 
 test "parity: struct field access" {
   assert(check_source_ok("struct Rect { w: Int; h: Int }\nlet r = Rect::{ w: 10, h: 20 }\nr.w * r.h"))
+}
+
+test "parity: mut struct field def + read (ADR-0052)" {
+  assert(check_source_ok("struct Counter { mut n: Int }\nlet get = (c: Counter) -> Int { c.n }\nget(Counter::{ n: 5 })"))
+}
+
+test "parity: mut struct field write (ADR-0052)" {
+  assert(check_source_ok("struct C { mut n: Int }\nlet f = (c: C) -> Int { c.n = 5\nc.n }\nf(C::{ n: 0 })"))
 }
 
 test "parity: struct with multiple fields" {

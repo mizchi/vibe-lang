@@ -365,22 +365,120 @@ let skip_braced_body: (Array[Token], Int) -> Int = (tokens, pos) -> {
   }
 }
 
-let parse_impl_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (tokens, pos) -> {
-  let empty_strings = Array::slice([
-    "_"
-  ], 0, 0)
-  let empty_bounds = Array::slice([
-    ("_", empty_strings)
-  ], 0, 0)
+// Parse one type-param bound list following a ':' in an impl header
+// (e.g. the `Eq` / `Eq + Show` part of `impl [T: Eq + Show] ...`).
+let parse_impl_bound_names: (Array[Token], Int) -> (Array[String], Int) with { Error } = (tokens, pos) -> {
+  let b = ArrayBuilder::new()
+  let mut p = pos
+  let mut done = false
+  while !done {
+    match peek(tokens, p) {
+      TIdent(name) => {
+        ArrayBuilder::push(b, name)
+        p = p + 1
+        match peek(tokens, p) {
+          TPlus => {
+            p = p + 1
+          },
+          _ => {
+            done = true
+          }
+        }
+      },
+      _ => throw("expected trait bound name")
+    }
+  }
+  (ArrayBuilder::freeze(b), p)
+}
+
+// Parse an impl type-parameter header `[T, U: Eq, ...]` (pos points just
+// after the '['). Returns the param names, the per-param trait bounds, and
+// the position just after the closing ']'. Mirrors parse_let_type_params,
+// inlined here so parser_base avoids an import cycle with parser_expr.
+let parse_impl_type_params: (Array[Token], Int) -> (Array[String], Array[(String, Array[String])], Int) with { Error } = (tokens, pos) -> {
+  let names = ArrayBuilder::new()
+  let bounds = ArrayBuilder::new()
+  let mut p = pos
+  while true {
+    match peek(tokens, p) {
+      TRBracket => {
+        p = p + 1
+        break
+      },
+      TIdent(name) => {
+        ArrayBuilder::push(names, name)
+        p = p + 1
+        match peek(tokens, p) {
+          TColon => {
+            let (bound_names, next) = parse_impl_bound_names(tokens, p + 1)
+            ArrayBuilder::push(bounds, (name, bound_names))
+            p = next
+          },
+          _ => ()
+        }
+        match peek(tokens, p) {
+          TComma => {
+            p = p + 1
+          },
+          TRBracket => {
+            p = p + 1
+            break
+          },
+          _ => throw("expected ',' or ']' in impl type params")
+        }
+      },
+      _ => throw("expected type parameter name or ']'")
+    }
+  }
+  (ArrayBuilder::freeze(names), ArrayBuilder::freeze(bounds), p)
+}
+
+// Skip a balanced `[...]` group (the target type's argument list, e.g. the
+// `[T]` in `impl ... for Option[T]`). Returns pos unchanged if not at a '['.
+let skip_bracketed_args: (Array[Token], Int) -> Int = (tokens, pos) -> {
   match peek(tokens, pos) {
-    TLBracket => throw("impl type parameters are not supported yet")
-    ,
+    TLBracket => {
+      let mut bp = pos + 1
+      let mut depth = 1
+      while depth > 0 {
+        match peek(tokens, bp) {
+          TLBracket => {
+            depth = depth + 1
+            bp = bp + 1
+          },
+          TRBracket => {
+            depth = depth - 1
+            bp = bp + 1
+          },
+          TEof => {
+            depth = 0
+          },
+          _ => {
+            bp = bp + 1
+          }
+        }
+      }
+      bp
+    },
+    _ => pos
+  }
+}
+
+let parse_impl_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (tokens, pos) -> {
+  let (type_params, type_bounds, after_tp) = match peek(tokens, pos) {
+    TLBracket => parse_impl_type_params(tokens, pos + 1),
+    _ => (_no_tp(), _no_tb(), pos)
+  }
+  match peek(tokens, after_tp) {
     TIdent(trait_name) => {
-      let fp = expect_tk(tokens, pos + 1, "for")
+      let fp = expect_tk(tokens, after_tp + 1, "for")
       match peek(tokens, fp) {
         TIdent(type_name) => {
-          let body_end = skip_braced_body(tokens, fp + 1)
-          (SImpl(empty_strings, empty_bounds, trait_name, type_name), body_end)
+          // Skip the target's optional type-argument list (`Option[T]`); the
+          // checker resolves impls by the target's head name only.
+          let after_targs = skip_bracketed_args(tokens, fp + 1)
+          let body_end = skip_braced_body(tokens, after_targs)
+          (SImpl(type_params, type_bounds, trait_name, type_name), body_end)
         },
         _ => throw("expected type name after 'for'")
       }
@@ -480,12 +578,24 @@ let is_non_pipe_infix: (Token) -> Bool = (tok) -> {
 let parse_import_item: (Array[Token], Int) -> ((String, Option[String]), Int) with { Error } = (tokens, pos) -> {
   let parse_import_name: (Int) -> ((String, Option[String]), Int) with { Error } = (name_pos) -> {
     match peek(tokens, name_pos) {
-      TIdent(name) => match peek(tokens, name_pos + 1) {
-        TAs => match peek(tokens, name_pos + 2) {
-          TIdent(alias) => ((name, Some(alias)), name_pos + 3),
-          _ => throw("expected alias name after 'as'")
-        },
-        _ => ((name, None), name_pos + 1)
+      TIdent(name) => {
+        // Accept a qualified item name `Ns::member` (e.g. `Int::abs`) in
+        // import/export lists, mirroring parse_binding_name.
+        let (base, after) = match peek(tokens, name_pos + 1) {
+          TDoubleColon => match peek(tokens, name_pos + 2) {
+            TIdent(member) =>
+              (String::concat(name, String::concat("::", member)), name_pos + 3),
+            _ => throw("expected qualified member name after '::'")
+          },
+          _ => (name, name_pos + 1)
+        }
+        match peek(tokens, after) {
+          TAs => match peek(tokens, after + 1) {
+            TIdent(alias) => ((base, Some(alias)), after + 2),
+            _ => throw("expected alias name after 'as'")
+          },
+          _ => ((base, None), after)
+        }
       },
       _ => throw("expected import item name")
     }
@@ -752,9 +862,17 @@ let parse_param_list: (Array[Token], Int) -> (Array[(String, Option[TypeExpr])],
 }
 
 let parse_struct_field: (Array[Token], Int) -> ((String, TypeExpr), Int) with { Error } = (tokens, pos) -> {
-  match peek(tokens, pos) {
+  // ADR-0052: accept an optional `mut` modifier on the field. The selfhost
+  // field representation is `(String, TypeExpr)` (no is_mut yet), so the
+  // modifier is currently parsed-and-accepted; checker enforcement / direct
+  // mutation codegen are tracked as follow-ups (#492).
+  let p = match peek(tokens, pos) {
+    TMut => pos + 1
+    _ => pos
+  }
+  match peek(tokens, p) {
     TIdent(name) => {
-      let cn = expect_tk(tokens, pos + 1, ":")
+      let cn = expect_tk(tokens, p + 1, ":")
       let (ty, next) = parse_type_impl(tokens, cn, 0);
       ((name, ty), next)
     },
@@ -941,7 +1059,11 @@ let parse_suberror_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error }
 let parse_type_alias_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } = (tokens, pos, exported) -> {
   match peek(tokens, pos) {
     TIdent(name) => {
-      let ep = expect_tk(tokens, pos + 1, "=")
+      // Optional type-parameter header `type Foo[T] = ...`. Consumed and
+      // discarded (STypeAlias does not carry params; the alias body is
+      // resolved structurally), consistent with generic struct/enum.
+      let after_name = skip_bracketed_args(tokens, pos + 1)
+      let ep = expect_tk(tokens, after_name, "=")
       let (ty, next) = parse_type_impl(tokens, ep, 0);
       (STypeAlias(exported, name, ty), next)
     },
@@ -1085,7 +1207,12 @@ let parse_struct_fields: (Array[Token], Int) -> (Array[(String, TypeExpr)], Int)
 let parse_struct_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } = (tokens, pos, exported) -> {
   match peek(tokens, pos) {
     TIdent(name) => {
-      let br = expect_tk(tokens, pos + 1, "{")
+      // Optional type-parameter header `struct Foo[T] { ... }`. Like enum
+      // type params, these are consumed and discarded: the selfhost runtime
+      // uses a uniform tagged representation, so type params do not affect
+      // struct layout or codegen (cf. parse_enum_stmt).
+      let after_name = skip_bracketed_args(tokens, pos + 1)
+      let br = expect_tk(tokens, after_name, "{")
       let (fields, end) = parse_struct_fields(tokens, br);
       let final_pos = skip_derive(tokens, end)
       (SStruct(exported, name, fields), final_pos)

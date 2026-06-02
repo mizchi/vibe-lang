@@ -1297,6 +1297,58 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_end(buf)
       nl
     }
+    else if fname == "__set_field" {
+      let field = get_estring_value(Array::get(args, 1))
+      let fc = String::char_code_at(field, 0)
+      let is_numeric = fc >= 48 && fc <= 57
+      let field_idx = if is_numeric {
+        let mut vi = 0
+        let mut vp = 0
+        while vp < String::length(field) {
+          vi = vi * 10 + (String::char_code_at(field, vp) - 48)
+          vp = vp + 1
+        }
+        vi
+      } else {
+        let mut si_search = 0
+        let mut found = -1
+        while si_search < Array::length(ctx.ctor_table.struct_names) {
+          let fnames = Array::get(ctx.ctor_table.struct_field_names, si_search)
+          let mut fi = 0
+          while fi < Array::length(fnames) {
+            if Array::get(fnames, fi) == field {
+              found = fi
+              fi = Array::length(fnames)
+            } else {
+              fi = fi + 1
+            }
+          }
+          if found >= 0 {
+            si_search = Array::length(ctx.ctor_table.struct_names)
+          } else {
+            si_search = si_search + 1
+          }
+        }
+        if found < 0 {
+          throw(String::concat("unknown struct field: ", field))
+        }
+        found
+      }
+      let mut nl = next_local
+      nl = ce(buf, Array::get(args, 0), local_names, nl, ctx, ld)
+      emit_i64_const(buf, -2)
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
+      let store_off = if is_numeric {
+        field_idx * 8
+      } else {
+        8 + field_idx * 8
+      }
+      emit_i64_store(buf, 3, store_off)
+      emit_i64_const(buf, 0)
+      nl
+    }
     else {
       if fn_idx_in_list >= 0 {
         let fidx = Array::get(ctx.func_table.indices, fn_idx_in_list)

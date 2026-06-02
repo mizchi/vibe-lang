@@ -153,6 +153,18 @@ let parse_throw_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, 
   (EThrow(expr), close_pos)
 }
 
+let parse_return_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, parse_recur) -> {
+  match peek(tokens, pos + 1) {
+    TRBrace => (EReturn(EUnit), pos + 1),
+    TSemicolon => (EReturn(EUnit), pos + 1),
+    TEof => (EReturn(EUnit), pos + 1),
+    _ => {
+      let (expr, next_pos) = parse_recur(tokens, pos + 1, 0)
+      (EReturn(expr), next_pos)
+    }
+  }
+}
+
 let parse_perform_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, parse_recur) -> {
   match peek(tokens, pos + 1) {
     TRParen => (EIdent("perform"), pos + 1),
@@ -175,6 +187,7 @@ let rec parse_array_elems_rest: (Array[Token], Int, ArrayBuilder[Expr], (Array[T
     TComma => {
       let next_pos = pos + 1
       match peek(tokens, next_pos) {
+        TRBracket => (ArrayBuilder::freeze(b), next_pos),
         TDotDotDot => {
           let (expr, end_pos) = parse_recur(tokens, next_pos + 1, 0)
           ArrayBuilder::push(b, ESpread(expr))
@@ -216,9 +229,16 @@ let parse_array_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, 
 let rec parse_comma_exprs_rest: (Array[Token], Int, ArrayBuilder[Expr], (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Array[Expr], Int) with { Error } = (tokens, pos, b, parse_recur) -> {
   match peek(tokens, pos) {
     TComma => {
-      let (e, next) = parse_recur(tokens, pos + 1, 0)
-      ArrayBuilder::push(b, e)
-      parse_comma_exprs_rest(tokens, next, b, parse_recur)
+      // Allow a trailing comma before the closing `)` in tuples and call
+      // argument lists (`(a, b,)` / `f(a, b,)`).
+      match peek(tokens, pos + 1) {
+        TRParen => (ArrayBuilder::freeze(b), pos + 1),
+        _ => {
+          let (e, next) = parse_recur(tokens, pos + 1, 0)
+          ArrayBuilder::push(b, e)
+          parse_comma_exprs_rest(tokens, next, b, parse_recur)
+        }
+      }
     },
     _ => (ArrayBuilder::freeze(b), pos)
   }
@@ -255,7 +275,7 @@ let parse_control_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr
     TBreak => parse_break_primary(tokens, pos, parse_recur),
     TContinue => parse_continue_primary(tokens, pos, parse_recur),
     TRaise => throw("'raise' is deprecated, use 'throw(expr)' instead"),
-    TReturn => throw("'return' is not supported; use implicit returns"),
+    TReturn => parse_return_primary(tokens, pos, parse_recur),
     TDo => throw("'do' is reserved; use 'while' or 'for' instead"),
     TLoop => parse_loop_primary(tokens, pos, parse_recur),
     TYield => throw("'yield' is not supported"),

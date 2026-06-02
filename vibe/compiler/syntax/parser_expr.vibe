@@ -179,6 +179,31 @@ let apply_generic_let_annotation: (Array[String], Array[(String, Array[String])]
   }
 }
 
+// Inject a value-position type-parameter header `[T: Ord]` (from
+// `let f = [T: Ord](...)`) into the resulting lambda's EFn type_params/bounds.
+// Previously these were skipped and discarded, so the lambda had no type
+// params: the body checked with `T` as a concrete `CtNamed("T")` rather than a
+// bound type variable. That happened to work standalone (unresolved type names
+// are tolerated) but broke once the module was re-exported and re-checked.
+let apply_value_bracket_type_params: (Array[String], Array[(String, Array[String])], Expr) -> Expr = (tps, tbs, val) -> {
+  if Array::length(tps) == 0 {
+    val
+  } else {
+    match val {
+      EFn(existing_tp, existing_tb, params, ret, eff, body) => {
+        let next_tp = if Array::length(existing_tp) > 0 {
+          existing_tp
+        } else tps
+        let next_tb = if Array::length(existing_tp) > 0 {
+          existing_tb
+        } else tbs
+        EFn(next_tp, next_tb, params, ret, eff, body)
+      },
+      _ => val
+    }
+  }
+}
+
 let skip_generic_value_start: (Array[Token], Int) -> Int = (tokens, pos) -> {
   match peek(tokens, pos) {
     TLBracket => match peek(tokens, pos + 1) {
@@ -218,6 +243,25 @@ let skip_generic_value_start: (Array[Token], Int) -> Int = (tokens, pos) -> {
   }
 }
 
+// Parse a value-position generic header `[T: Ord]` at `pos` (just after `=`)
+// when one is present, returning its type params/bounds plus the position of
+// the value that follows. When there is no generic header (e.g. an array
+// literal `[1, 2]`), returns empty params and `pos` unchanged.
+let parse_value_bracket_header: (Array[Token], Int) -> (Array[String], Array[(String, Array[String])], Int) with { Error } = (tokens, pos) -> {
+  let skipped = skip_generic_value_start(tokens, pos)
+  if skipped == pos {
+    (_no_tp(), _no_tb(), pos)
+  } else {
+    match peek(tokens, pos) {
+      TLBracket => {
+        let (tps, tbs, _after) = parse_let_type_params(tokens, pos + 1)
+        (tps, tbs, skipped)
+      },
+      _ => (_no_tp(), _no_tb(), skipped)
+    }
+  }
+}
+
 let parse_let_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } = (tokens, pos, exported) -> {
   match peek(tokens, pos) {
     TRec => {
@@ -230,9 +274,10 @@ let parse_let_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } = (t
         _ => (_no_tp(), _no_tb(), None, name_next)
       }
       let ep = expect_tk(tokens, eq_pos, "=")
-      let val_start_r = skip_generic_value_start(tokens, ep)
+      let (bracket_tps, bracket_tbs, val_start_r) = parse_value_bracket_header(tokens, ep)
       let val_pair = parse_impl(tokens, val_start_r, 0)
-      let (final_ty_opt, val) = apply_generic_let_annotation(type_params, type_bounds, ty_opt, val_pair.0)
+      let val_with_tp = apply_value_bracket_type_params(bracket_tps, bracket_tbs, val_pair.0)
+      let (final_ty_opt, val) = apply_generic_let_annotation(type_params, type_bounds, ty_opt, val_with_tp)
       let val_next = val_pair.1
       (SLet(exported, true, name, final_ty_opt, val), val_next)
     },
@@ -286,9 +331,10 @@ let parse_let_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } = (t
           _ => (_no_tp(), _no_tb(), None, name_next)
         }
         let ep = expect_tk(tokens, eq_pos, "=")
-        let val_start = skip_generic_value_start(tokens, ep)
+        let (bracket_tps, bracket_tbs, val_start) = parse_value_bracket_header(tokens, ep)
         let val_pair = parse_impl(tokens, val_start, 0)
-        let (final_ty_opt, val) = apply_generic_let_annotation(type_params, type_bounds, ty_opt, val_pair.0)
+        let val_with_tp = apply_value_bracket_type_params(bracket_tps, bracket_tbs, val_pair.0)
+        let (final_ty_opt, val) = apply_generic_let_annotation(type_params, type_bounds, ty_opt, val_with_tp)
         let val_next = val_pair.1
         (SLet(exported, false, name, final_ty_opt, val), val_next)
       }

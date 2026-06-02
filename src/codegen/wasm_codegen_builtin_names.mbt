@@ -21,9 +21,14 @@ pub fn codegen_registered_builtin_names() -> Array[String] {
     "String::trim_start", "String::trim_end", "String::split", "String::replace",
     "String::replace_all", "String::to_lower", "String::to_upper", "String::from_char_code",
     "String::from_char_codes", "String::unicode_length",
+    // StringBuilder (codegen-handled via the shared builtin registry, #414 / #415)
+     "StringBuilder::new", "StringBuilder::push", "StringBuilder::freeze",
+    // ArrayBuilder / MapBuilder (codegen-handled via the shared builtin registry, #415)
+     "ArrayBuilder::new", "ArrayBuilder::push", "ArrayBuilder::freeze", "MapBuilder::new",
+    "MapBuilder::set", "MapBuilder::freeze",
     // Array
      "Array::get", "Array::set", "Array::length", "Array::push", "Array::push_all",
-    "Array::truncate", "Array::slice", "Array::concat",
+    "Array::truncate", "Array::slice", "Array::concat", "Array::with_capacity",
     // Bytes
      "Bytes::new", "Bytes::length", "Bytes::get", "Bytes::set", "Bytes::push", "Bytes::append",
     "Bytes::blit", "Bytes::concat", "Bytes::fill", "Bytes::slice", "Bytes::from_array",
