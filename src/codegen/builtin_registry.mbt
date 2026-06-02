@@ -87,215 +87,622 @@ pub(all) struct BuiltinDecl {
 }
 
 ///|
-/// Helper for a core-namespace builtin that only has a dedicated codegen
-/// arm in one backend, with the other backend reaching the same behavior
-/// through the prelude / fallback path. These are the entries the parity
-/// gate (`src/tests/codegen_parity_test.mbt`) treats as accepted
-/// divergences.
-fn prelude_fallback(
-  name : String,
-  result : ResultShape,
-  has_linear : Bool,
-) -> BuiltinDecl {
-  BuiltinDecl::{
-    name,
-    sig_summary: "",
-    result,
-    has_linear,
-    has_gc: !has_linear,
-    divergence_reason: Some(PreludeFallback),
-  }
+/// Phase B-2 (#415): a single `RegistryEntry` declares each builtin ONCE —
+/// its parity metadata (name / result shape / has_linear / has_gc /
+/// divergence_reason) AND its per-backend codegen (`compile_linear` /
+/// `compile_gc`, optional). Both the public `builtins()` metadata (used by
+/// the parity gate) and the `migrated_builtin` dispatch table are derived
+/// from `registry_entries()`, so adding or changing a builtin is a single
+/// edit. The compile fns reference package-private context types, so this
+/// entry type is `priv` (the public `BuiltinDecl` stays metadata-only).
+priv struct RegistryEntry {
+  name : String
+  result : ResultShape
+  has_linear : Bool
+  has_gc : Bool
+  divergence_reason : DivergenceReason?
+  /// Linear codegen. `None` when the linear backend has no dedicated arm
+  /// (a wasm-gc-only divergence such as the native float math ops).
+  compile_linear : ((CodegenCtx, ByteBuf, Array[@core.CallArg]) -> Unit raise WasmGenError)?
+  /// wasm-gc codegen. `None` when wasm-gc reaches the same behavior through
+  /// the prelude (a linear-only builtin such as the `Set::` namespace, or a
+  /// metadata-only divergence such as `String::compare`).
+  compile_gc : ((GcCodegenCtx, GcFuncCtx, GcByteBuf, Array[@core.Expr]) -> Unit raise WasmGenError)?
+  /// When true, the linear dispatch only uses this entry when the name does
+  /// not resolve to a user/prelude function (`!is_user_fn`) — the legacy
+  /// `"Int::abs" if !is_user_fn =>` guards.
+  linear_skip_if_user_fn : Bool
 }
 
 ///|
-/// Helper for a builtin implemented (table-driven) on both backends — no
-/// divergence. See `migrated_builtin` for the actual compile fns.
-fn registry_both(name : String, result : ResultShape) -> BuiltinDecl {
-  BuiltinDecl::{
+/// Both backends have a dedicated codegen arm (no divergence, no guard).
+fn entry_both(
+  name : String,
+  result : ResultShape,
+  compile_linear : (CodegenCtx, ByteBuf, Array[@core.CallArg]) -> Unit raise WasmGenError,
+  compile_gc : (GcCodegenCtx, GcFuncCtx, GcByteBuf, Array[@core.Expr]) -> Unit raise WasmGenError,
+) -> RegistryEntry {
+  RegistryEntry::{
     name,
-    sig_summary: "",
     result,
     has_linear: true,
     has_gc: true,
     divergence_reason: None,
+    compile_linear: Some(compile_linear),
+    compile_gc: Some(compile_gc),
+    linear_skip_if_user_fn: false,
   }
 }
 
 ///|
-/// Registry table — the typed source of truth for which builtins the
-/// registry owns and their parity. Phase B-1 migrates builtins from the
-/// `wasm_codegen_builtin_*.mbt` and `wasm_gc_codegen.mbt::Call` dispatch
-/// into this table one namespace at a time.
+/// Both backends, but the linear dispatch keeps the `!is_user_fn` guard.
+fn entry_both_guarded(
+  name : String,
+  result : ResultShape,
+  compile_linear : (CodegenCtx, ByteBuf, Array[@core.CallArg]) -> Unit raise WasmGenError,
+  compile_gc : (GcCodegenCtx, GcFuncCtx, GcByteBuf, Array[@core.Expr]) -> Unit raise WasmGenError,
+) -> RegistryEntry {
+  RegistryEntry::{
+    name,
+    result,
+    has_linear: true,
+    has_gc: true,
+    divergence_reason: None,
+    compile_linear: Some(compile_linear),
+    compile_gc: Some(compile_gc),
+    linear_skip_if_user_fn: true,
+  }
+}
+
+///|
+/// Linear has a dedicated arm; wasm-gc reaches the same behavior through the
+/// prelude (no gc arm → gc dispatch falls through). e.g. the `Set::` namespace.
+fn entry_linear_only(
+  name : String,
+  result : ResultShape,
+  compile_linear : (CodegenCtx, ByteBuf, Array[@core.CallArg]) -> Unit raise WasmGenError,
+) -> RegistryEntry {
+  RegistryEntry::{
+    name,
+    result,
+    has_linear: true,
+    has_gc: false,
+    divergence_reason: Some(PreludeFallback),
+    compile_linear: Some(compile_linear),
+    compile_gc: None,
+    linear_skip_if_user_fn: false,
+  }
+}
+
+///|
+/// A divergence recorded only for the parity contract — no registry codegen
+/// on either side (the implementing backend still uses its legacy arm).
+/// `has_linear`/`has_gc` describe which backend has the dedicated arm.
+fn entry_divergence(
+  name : String,
+  result : ResultShape,
+  has_linear : Bool,
+) -> RegistryEntry {
+  RegistryEntry::{
+    name,
+    result,
+    has_linear,
+    has_gc: !has_linear,
+    divergence_reason: Some(PreludeFallback),
+    compile_linear: None,
+    compile_gc: None,
+    linear_skip_if_user_fn: false,
+  }
+}
+
+///|
+/// The single source of truth: every builtin the registry owns, declared
+/// once. `builtins()` and `migrated_builtin` are both derived from this.
 ///
-/// Migrated (table-driven on both backends — legacy `match name` arms
-/// removed, dispatch goes through `migrated_builtin` below):
-/// - `Char::to_int` / `Char::from_int` — identity (62-bit tagged int).
-/// - numeric conversions: `Int::to_float` / `Int::to_double` /
-///   `Float::to_int` / `Double::to_int` / `Float::to_double` /
-///   `Double::to_float`.
-/// - int math utilities: `Int::abs` / `max` / `min` / `clamp` / `signum` /
-///   `is_even` / `is_odd` (linear keeps the `!is_user_fn` guard).
-/// - `Int::parse` — table-driven on both backends (linear byte-buffer state
-///   machine; wasm-gc delegates to `compile_int_parse_gc`).
-/// - `Bytes::` namespace: `from_array` / `from_string` / `to_string` /
-///   `length` / `get` / `new` / `push` / `set` / `append` / `blit` / `fill` /
-///   `slice` / `concat` / `to_array`.
-/// - `String::` namespace: `length` / `char_code_at` / `substring` / `concat` /
-///   `join` / `equals` / `index_of` / `last_index_of` / `contains` /
-///   `starts_with` / `ends_with` / `trim` / `trim_start` / `trim_end` /
-///   `to_lower` / `to_upper` / `count` / `replace` / `split` / `from_char_code` /
-///   `from_char_codes` (the linear arms guarded by `!is_user_fn` keep that
-///   guard via `mig_guarded`).
-/// - `StringBuilder::` namespace: `new` / `push` / `freeze` (linear inline
-///   builder codegen; wasm-gc arms relocated verbatim).
-/// - `ArrayBuilder::` namespace: `new` / `push` / `freeze` and `MapBuilder::`
-///   namespace: `new` / `set` / `freeze` (linear inline builder codegen;
-///   wasm-gc arms relocated verbatim). The synthetic `MapBuilder::new` /
-///   `MapBuilder::set` Call exprs that `compile_map_literal_gc` builds route
-///   through these registry fns, preserving map-literal behavior.
+/// Migrated (table-driven dispatch on the listed backend(s)):
+/// - Char identity, numeric conversions, int math, `Int::parse`, the full
+///   `Bytes::` / `String::` / `Array::` / `Map::` (conservative subsets) /
+///   `StringBuilder::` / `ArrayBuilder::` / `MapBuilder::` namespaces, and the
+///   linear-only `Set::` namespace (wasm-gc via prelude).
 ///
-/// Divergences (parity contract only, all `PreludeFallback`):
-/// - `String::compare` has a single-pass SIMD arm in the linear backend
-///   (ADR-0054); wasm-gc reaches the same result via the prelude. (Likewise
-///   `String::replace_all` / `String::unicode_length` stay legacy: the former
-///   has only a linear dedicated arm, the latter only a wasm-gc one, so neither
-///   is a `registry_both` builtin.)
-/// - Native float math (`Float`/`Double` ceil/floor/fract/round/sqrt/trunc)
-///   and `Array::fold` have dedicated wasm-gc arms; the linear backend
-///   routes them through the prelude / fallback path.
-/// - `Set::` namespace (`new` / `size` / `contains` / `add` / `remove` /
-///   `to_array` / `from_array`) is linear-only at the dispatch level: the
-///   linear backend has a dedicated arm per op (registered via
-///   `mig_linear_only`), while wasm-gc reaches the same behavior through the
-///   prelude (no Set dispatch arm — `compile_gc=None`, gc dispatch falls
-///   through).
-pub fn builtins() -> Array[BuiltinDecl] {
+/// Divergences (parity contract only — implemented via the legacy arm /
+/// prelude, not the registry):
+/// - `String::compare` (linear-only SIMD, ADR-0054; wasm-gc via prelude),
+///   `Array::fold` and the native `Float`/`Double` math (wasm-gc arms; linear
+///   via prelude).
+fn registry_entries() -> Array[RegistryEntry] {
   [
-    // --- migrated: table-driven on both backends ---
-    registry_both("Char::to_int", Int),
-    registry_both("Char::from_int", Int),
-    registry_both("Int::to_float", Float),
-    registry_both("Int::to_double", Double),
-    registry_both("Float::to_int", Int),
-    registry_both("Double::to_int", Int),
-    registry_both("Float::to_double", Double),
-    registry_both("Double::to_float", Float),
-    registry_both("Int::abs", Int),
-    registry_both("Int::max", Int),
-    registry_both("Int::min", Int),
-    registry_both("Int::clamp", Int),
-    registry_both("Int::signum", Int),
-    registry_both("Int::is_even", Int),
-    registry_both("Int::is_odd", Int),
-    registry_both("Int::parse", Ref),
-    registry_both("Bytes::from_array", Ref),
-    registry_both("Bytes::from_string", Ref),
-    registry_both("Bytes::to_string", Ref),
-    registry_both("Bytes::length", Int),
-    registry_both("Bytes::get", Int),
-    registry_both("Bytes::new", Ref),
-    registry_both("Bytes::push", Unit),
-    registry_both("Bytes::set", Unit),
-    registry_both("Bytes::append", Unit),
-    registry_both("Bytes::blit", Unit),
-    registry_both("Bytes::fill", Unit),
-    registry_both("Bytes::slice", Ref),
-    registry_both("Bytes::concat", Ref),
-    registry_both("Bytes::to_array", Ref),
-    // String:: namespace. Boolean-returning ops (equals / contains /
-    // starts_with / ends_with) yield a tagged bool, shape Int.
-    registry_both("String::length", Int),
-    registry_both("String::char_code_at", Int),
-    registry_both("String::substring", Ref),
-    registry_both("String::concat", Ref),
-    registry_both("String::join", Ref),
-    registry_both("String::equals", Int),
-    registry_both("String::index_of", Int),
-    registry_both("String::last_index_of", Int),
-    registry_both("String::contains", Int),
-    registry_both("String::starts_with", Int),
-    registry_both("String::ends_with", Int),
-    registry_both("String::trim", Ref),
-    registry_both("String::trim_start", Ref),
-    registry_both("String::trim_end", Ref),
-    registry_both("String::to_lower", Ref),
-    registry_both("String::to_upper", Ref),
-    registry_both("String::count", Int),
-    registry_both("String::replace", Ref),
-    registry_both("String::split", Ref),
-    registry_both("String::from_char_code", Ref),
-    registry_both("String::from_char_codes", Ref),
-    // Map:: namespace (conservative subset). The linear bodies are inline
-    // builder codegen; the wasm-gc bodies are relocated verbatim from the
-    // inline gc arms.
-    registry_both("Map::iter_length", Int),
-    registry_both("Map::get", Ref),
-    registry_both("Map::set", Ref),
-    registry_both("Map::delete", Ref),
-    registry_both("Map::keys", Ref),
-    registry_both("Map::values", Ref),
-    registry_both("Map::has_key", Int),
-    registry_both("Map::has", Int),
-    registry_both("Map::iter_get", Ref),
-    // Array:: namespace (conservative subset — ops present as a dedicated
-    // dispatch arm in BOTH backends). `get` returns a generic element so its
-    // shape is Ref; `set` / `truncate` / `push` return Unit; `with_capacity`
-    // returns the builder Ref; `length` returns Int.
-    registry_both("Array::length", Int),
-    registry_both("Array::get", Ref),
-    registry_both("Array::set", Unit),
-    registry_both("Array::truncate", Unit),
-    registry_both("Array::with_capacity", Ref),
-    registry_both("Array::push", Unit),
-    // StringBuilder:: namespace (#414 / #415). Linear bodies are inline
-    // builder codegen; the wasm-gc bodies are relocated verbatim from the
-    // inline gc arms (struct/array type setup + grow/copy loops).
-    registry_both("StringBuilder::new", Ref),
-    registry_both("StringBuilder::push", Unit),
-    registry_both("StringBuilder::freeze", Ref),
-    // ArrayBuilder:: / MapBuilder:: namespaces (#414 / #415). Linear bodies
-    // are inline builder codegen; the wasm-gc bodies are relocated verbatim
-    // from the inline gc arms (struct/array type setup + grow/copy loops).
-    registry_both("ArrayBuilder::new", Ref),
-    registry_both("ArrayBuilder::push", Unit),
-    registry_both("ArrayBuilder::freeze", Ref),
-    registry_both("MapBuilder::new", Ref),
-    registry_both("MapBuilder::set", Unit),
-    registry_both("MapBuilder::freeze", Ref),
-    // --- divergences (parity contract only) ---
-    // linear-only (wasm-gc uses the prelude)
-    prelude_fallback("String::compare", Int, true),
-    // Set:: namespace — linear has a dedicated arm per op; wasm-gc has no Set
-    // dispatch arm and reaches the same behavior through the prelude
-    // (set_test passes on the wasm-gc backend). Registered as
-    // `mig_linear_only` below (compile_gc=None → gc dispatch falls through).
-    prelude_fallback("Set::new", Ref, true),
-    prelude_fallback("Set::size", Int, true),
-    prelude_fallback("Set::contains", Int, true),
-    prelude_fallback("Set::add", Ref, true),
-    prelude_fallback("Set::remove", Ref, true),
-    prelude_fallback("Set::to_array", Ref, true),
-    prelude_fallback("Set::from_array", Ref, true),
-    // wasm-gc-only (linear uses the prelude / fallback path)
-    prelude_fallback("Array::fold", Ref, false),
-    prelude_fallback("Double::ceil", Double, false),
-    prelude_fallback("Double::floor", Double, false),
-    prelude_fallback("Double::fract", Double, false),
-    prelude_fallback("Double::round", Double, false),
-    prelude_fallback("Double::sqrt", Double, false),
-    prelude_fallback("Double::trunc", Double, false),
-    prelude_fallback("Float::ceil", Float, false),
-    prelude_fallback("Float::floor", Float, false),
-    prelude_fallback("Float::fract", Float, false),
-    prelude_fallback("Float::round", Float, false),
-    prelude_fallback("Float::sqrt", Float, false),
-    prelude_fallback("Float::trunc", Float, false),
+    // --- Char identity ---
+    entry_both(
+      "Char::to_int",
+      Int,
+      compile_char_identity_linear,
+      compile_char_identity_gc,
+    ),
+    entry_both(
+      "Char::from_int",
+      Int,
+      compile_char_identity_linear,
+      compile_char_identity_gc,
+    ),
+    // --- numeric conversions (linear boxes f32/f64 & tags ints; gc raw) ---
+    entry_both(
+      "Int::to_float",
+      Float,
+      compile_int_to_float_linear,
+      compile_int_to_float_gc,
+    ),
+    entry_both(
+      "Int::to_double",
+      Double,
+      compile_int_to_double_linear,
+      compile_int_to_double_gc,
+    ),
+    entry_both(
+      "Float::to_int",
+      Int,
+      compile_float_to_int_linear,
+      compile_float_to_int_gc,
+    ),
+    entry_both(
+      "Double::to_int",
+      Int,
+      compile_double_to_int_linear,
+      compile_double_to_int_gc,
+    ),
+    entry_both(
+      "Float::to_double",
+      Double,
+      compile_float_to_double_linear,
+      compile_float_to_double_gc,
+    ),
+    entry_both(
+      "Double::to_float",
+      Float,
+      compile_double_to_float_linear,
+      compile_double_to_float_gc,
+    ),
+    // --- int math utilities (linear keeps the !is_user_fn guard) ---
+    entry_both_guarded(
+      "Int::abs",
+      Int,
+      compile_int_abs_linear,
+      compile_int_abs_gc,
+    ),
+    entry_both_guarded(
+      "Int::max",
+      Int,
+      compile_int_max_linear,
+      compile_int_max_gc,
+    ),
+    entry_both_guarded(
+      "Int::min",
+      Int,
+      compile_int_min_linear,
+      compile_int_min_gc,
+    ),
+    entry_both_guarded(
+      "Int::clamp",
+      Int,
+      compile_int_clamp_linear,
+      compile_int_clamp_gc,
+    ),
+    entry_both_guarded(
+      "Int::signum",
+      Int,
+      compile_int_signum_linear,
+      compile_int_signum_gc,
+    ),
+    entry_both_guarded(
+      "Int::is_even",
+      Int,
+      compile_int_is_even_linear,
+      compile_int_is_even_gc,
+    ),
+    entry_both_guarded(
+      "Int::is_odd",
+      Int,
+      compile_int_is_odd_linear,
+      compile_int_is_odd_gc,
+    ),
+    entry_both(
+      "Int::parse",
+      Ref,
+      compile_int_parse_linear,
+      compile_int_parse_gc_arm,
+    ),
+    // --- Bytes:: ---
+    entry_both(
+      "Bytes::from_array",
+      Ref,
+      compile_bytes_from_array_linear,
+      compile_bytes_from_array_gc_arm,
+    ),
+    entry_both(
+      "Bytes::from_string",
+      Ref,
+      compile_bytes_from_string_linear,
+      compile_bytes_from_string_gc_arm,
+    ),
+    entry_both(
+      "Bytes::to_string",
+      Ref,
+      compile_bytes_to_string_linear,
+      compile_bytes_to_string_gc_arm,
+    ),
+    entry_both(
+      "Bytes::length",
+      Int,
+      compile_bytes_length_linear,
+      compile_bytes_length_gc_arm,
+    ),
+    entry_both(
+      "Bytes::get",
+      Int,
+      compile_bytes_get_linear,
+      compile_bytes_get_gc_arm,
+    ),
+    entry_both(
+      "Bytes::new",
+      Ref,
+      compile_bytes_new_linear,
+      compile_bytes_new_gc_arm,
+    ),
+    entry_both(
+      "Bytes::push",
+      Unit,
+      compile_bytes_push_linear,
+      compile_bytes_push_gc_arm,
+    ),
+    entry_both(
+      "Bytes::set",
+      Unit,
+      compile_bytes_set_linear,
+      compile_bytes_set_gc_arm,
+    ),
+    entry_both(
+      "Bytes::append",
+      Unit,
+      compile_bytes_append_linear,
+      compile_bytes_append_gc_arm,
+    ),
+    entry_both(
+      "Bytes::blit",
+      Unit,
+      compile_bytes_blit_linear,
+      compile_bytes_blit_gc_arm,
+    ),
+    entry_both(
+      "Bytes::fill",
+      Unit,
+      compile_bytes_fill_linear,
+      compile_bytes_fill_gc_arm,
+    ),
+    entry_both(
+      "Bytes::slice",
+      Ref,
+      compile_bytes_slice_linear,
+      compile_bytes_slice_gc_arm,
+    ),
+    entry_both(
+      "Bytes::concat",
+      Ref,
+      compile_bytes_concat_linear,
+      compile_bytes_concat_gc_arm,
+    ),
+    entry_both(
+      "Bytes::to_array",
+      Ref,
+      compile_bytes_to_array_linear,
+      compile_bytes_to_array_gc_arm,
+    ),
+    // --- String:: (boolean-returning ops yield a tagged bool → Int) ---
+    entry_both(
+      "String::length",
+      Int,
+      compile_string_length_linear,
+      compile_string_length_gc_arm,
+    ),
+    entry_both(
+      "String::char_code_at",
+      Int,
+      compile_string_char_code_at_linear,
+      compile_string_char_code_at_gc_arm,
+    ),
+    entry_both(
+      "String::substring",
+      Ref,
+      compile_string_substring_linear,
+      compile_string_substring_gc_arm,
+    ),
+    entry_both(
+      "String::concat",
+      Ref,
+      compile_string_concat_linear,
+      compile_string_concat_gc_arm,
+    ),
+    entry_both(
+      "String::join",
+      Ref,
+      compile_string_join_linear,
+      compile_string_join_gc_arm,
+    ),
+    entry_both(
+      "String::equals",
+      Int,
+      compile_string_equals_linear,
+      compile_string_equals_gc_arm,
+    ),
+    entry_both(
+      "String::index_of",
+      Int,
+      compile_string_index_of_linear,
+      compile_string_index_of_gc_arm,
+    ),
+    entry_both_guarded(
+      "String::last_index_of",
+      Int,
+      compile_string_last_index_of_linear,
+      compile_string_last_index_of_gc_arm,
+    ),
+    entry_both_guarded(
+      "String::contains",
+      Int,
+      compile_string_contains_linear,
+      compile_string_contains_gc_arm,
+    ),
+    entry_both_guarded(
+      "String::starts_with",
+      Int,
+      compile_string_starts_with_linear,
+      compile_string_starts_with_gc_arm,
+    ),
+    entry_both_guarded(
+      "String::ends_with",
+      Int,
+      compile_string_ends_with_linear,
+      compile_string_ends_with_gc_arm,
+    ),
+    entry_both_guarded(
+      "String::trim",
+      Ref,
+      compile_string_trim_linear,
+      compile_string_trim_gc_arm,
+    ),
+    entry_both_guarded(
+      "String::trim_start",
+      Ref,
+      compile_string_trim_start_linear,
+      compile_string_trim_start_gc_arm,
+    ),
+    entry_both_guarded(
+      "String::trim_end",
+      Ref,
+      compile_string_trim_end_linear,
+      compile_string_trim_end_gc_arm,
+    ),
+    entry_both_guarded(
+      "String::to_lower",
+      Ref,
+      compile_string_to_lower_linear,
+      compile_string_to_lower_gc_arm,
+    ),
+    entry_both_guarded(
+      "String::to_upper",
+      Ref,
+      compile_string_to_upper_linear,
+      compile_string_to_upper_gc_arm,
+    ),
+    entry_both_guarded(
+      "String::count",
+      Int,
+      compile_string_count_linear,
+      compile_string_count_gc_arm,
+    ),
+    entry_both_guarded(
+      "String::replace",
+      Ref,
+      compile_string_replace_linear,
+      compile_string_replace_gc_arm,
+    ),
+    entry_both_guarded(
+      "String::split",
+      Ref,
+      compile_string_split_linear,
+      compile_string_split_gc_arm,
+    ),
+    entry_both(
+      "String::from_char_code",
+      Ref,
+      compile_string_from_char_code_linear,
+      compile_string_from_char_code_gc_arm,
+    ),
+    entry_both(
+      "String::from_char_codes",
+      Ref,
+      compile_string_from_char_codes_linear,
+      compile_string_from_char_codes_gc_arm,
+    ),
+    // --- Map:: (conservative subset) ---
+    entry_both(
+      "Map::iter_length",
+      Int,
+      compile_map_iter_length_linear,
+      compile_map_iter_length_gc_arm,
+    ),
+    entry_both("Map::get", Ref, compile_map_get_linear, compile_map_get_gc_arm),
+    entry_both("Map::set", Ref, compile_map_set_linear, compile_map_set_gc_arm),
+    entry_both(
+      "Map::delete",
+      Ref,
+      compile_map_delete_linear,
+      compile_map_delete_gc_arm,
+    ),
+    entry_both(
+      "Map::keys",
+      Ref,
+      compile_map_keys_linear,
+      compile_map_keys_gc_arm,
+    ),
+    entry_both(
+      "Map::values",
+      Ref,
+      compile_map_values_linear,
+      compile_map_values_gc_arm,
+    ),
+    entry_both(
+      "Map::has_key",
+      Int,
+      compile_map_has_key_linear,
+      compile_map_has_gc_arm,
+    ),
+    entry_both("Map::has", Int, compile_map_has_linear, compile_map_has_gc_arm),
+    entry_both(
+      "Map::iter_get",
+      Ref,
+      compile_map_iter_get_linear,
+      compile_map_iter_get_gc_arm,
+    ),
+    // --- Array:: (conservative subset) ---
+    entry_both(
+      "Array::length",
+      Int,
+      compile_array_length_linear,
+      compile_array_length_gc_arm,
+    ),
+    entry_both(
+      "Array::get",
+      Ref,
+      compile_array_get_linear,
+      compile_array_get_gc_arm,
+    ),
+    entry_both(
+      "Array::set",
+      Unit,
+      compile_array_set_linear,
+      compile_array_set_gc_arm,
+    ),
+    entry_both(
+      "Array::truncate",
+      Unit,
+      compile_array_truncate_linear,
+      compile_array_truncate_gc_arm,
+    ),
+    entry_both(
+      "Array::with_capacity",
+      Ref,
+      compile_array_with_capacity_linear,
+      compile_array_with_capacity_gc_arm,
+    ),
+    entry_both(
+      "Array::push",
+      Unit,
+      compile_array_push_linear,
+      compile_array_push_gc_arm,
+    ),
+    // --- StringBuilder:: ---
+    entry_both(
+      "StringBuilder::new",
+      Ref,
+      compile_string_builder_new_linear,
+      compile_string_builder_new_gc_arm,
+    ),
+    entry_both(
+      "StringBuilder::push",
+      Unit,
+      compile_string_builder_push_linear,
+      compile_string_builder_push_gc_arm,
+    ),
+    entry_both(
+      "StringBuilder::freeze",
+      Ref,
+      compile_string_builder_freeze_linear,
+      compile_string_builder_freeze_gc_arm,
+    ),
+    // --- ArrayBuilder:: / MapBuilder:: ---
+    entry_both(
+      "ArrayBuilder::new",
+      Ref,
+      compile_array_builder_new_linear,
+      compile_array_builder_new_gc_arm,
+    ),
+    entry_both(
+      "ArrayBuilder::push",
+      Unit,
+      compile_array_builder_push_linear,
+      compile_array_builder_push_gc_arm,
+    ),
+    entry_both(
+      "ArrayBuilder::freeze",
+      Ref,
+      compile_array_builder_freeze_linear,
+      compile_array_builder_freeze_gc_arm,
+    ),
+    entry_both(
+      "MapBuilder::new",
+      Ref,
+      compile_map_builder_new_linear,
+      compile_map_builder_new_gc_arm,
+    ),
+    entry_both(
+      "MapBuilder::set",
+      Unit,
+      compile_map_builder_set_linear,
+      compile_map_builder_set_gc_arm,
+    ),
+    entry_both(
+      "MapBuilder::freeze",
+      Ref,
+      compile_map_builder_freeze_linear,
+      compile_map_builder_freeze_gc_arm,
+    ),
+    // --- Set:: (linear-only; wasm-gc via prelude) ---
+    entry_linear_only("Set::new", Ref, compile_set_new_linear),
+    entry_linear_only("Set::size", Int, compile_set_size_linear),
+    entry_linear_only("Set::contains", Int, compile_set_contains_linear),
+    entry_linear_only("Set::add", Ref, compile_set_add_linear),
+    entry_linear_only("Set::remove", Ref, compile_set_remove_linear),
+    entry_linear_only("Set::to_array", Ref, compile_set_to_array_linear),
+    entry_linear_only("Set::from_array", Ref, compile_set_from_array_linear),
+    // --- divergences (parity contract only; legacy arm / prelude) ---
+    entry_divergence("String::compare", Int, true),
+    entry_divergence("Array::fold", Ref, false),
+    entry_divergence("Double::ceil", Double, false),
+    entry_divergence("Double::floor", Double, false),
+    entry_divergence("Double::fract", Double, false),
+    entry_divergence("Double::round", Double, false),
+    entry_divergence("Double::sqrt", Double, false),
+    entry_divergence("Double::trunc", Double, false),
+    entry_divergence("Float::ceil", Float, false),
+    entry_divergence("Float::floor", Float, false),
+    entry_divergence("Float::fract", Float, false),
+    entry_divergence("Float::round", Float, false),
+    entry_divergence("Float::sqrt", Float, false),
+    entry_divergence("Float::trunc", Float, false),
   ]
 }
 
 ///|
+/// Public, metadata-only view of the registry. Used by the parity gate
+/// (`src/tests/codegen_parity_test.mbt`). Derived from `registry_entries()`.
+pub fn builtins() -> Array[BuiltinDecl] {
+  let out : Array[BuiltinDecl] = []
+  for e in registry_entries() {
+    out.push(BuiltinDecl::{
+      name: e.name,
+      sig_summary: "",
+      result: e.result,
+      has_linear: e.has_linear,
+      has_gc: e.has_gc,
+      divergence_reason: e.divergence_reason,
+    })
+  }
+  out
+}
+
+///|
 /// Look up a builtin's metadata by name. Used by the parity gate. Returns
-/// `None` when the registry hasn't taken ownership of the name yet.
+/// `None` when the registry doesn't own the name.
 pub fn find_builtin(name : String) -> BuiltinDecl? {
   for decl in builtins() {
     if decl.name == name {
@@ -306,347 +713,50 @@ pub fn find_builtin(name : String) -> BuiltinDecl? {
 }
 
 ///|
-/// The per-backend codegen for a builtin the registry has migrated off the
-/// legacy `match name` arms (Phase B-1). Kept separate from the public
-/// `BuiltinDecl` because the compile fns reference package-private context
-/// types (`CodegenCtx` / `GcCodegenCtx` ...) that a `pub(all)` struct may
-/// not expose. `compile_gc` receives the positional arg expressions
-/// pre-extracted by the wasm-gc `Call` dispatch.
+/// The per-backend codegen the dispatch sites consume. `compile_gc == None`
+/// means linear-only (wasm-gc falls through to the prelude path).
 priv struct MigratedBuiltin {
   compile_linear : (CodegenCtx, ByteBuf, Array[@core.CallArg]) -> Unit raise WasmGenError
-  /// `None` for builtins the linear backend implements with a dedicated arm
-  /// while wasm-gc reaches the same behavior through the prelude (e.g. the
-  /// `Set::` namespace). When `None`, the wasm-gc dispatch falls through to
-  /// its normal path instead of calling a registry fn.
   compile_gc : ((GcCodegenCtx, GcFuncCtx, GcByteBuf, Array[@core.Expr]) -> Unit raise WasmGenError)?
-  /// When true, the *linear* dispatch only uses this entry when the name
-  /// does not resolve to a user/prelude function (`!is_user_fn`), mirroring
-  /// the legacy `"Int::abs" if !is_user_fn =>` guards. The wasm-gc dispatch
-  /// ignores this (it has no equivalent guard — preserved behavior).
   linear_skip_if_user_fn : Bool
 }
 
 ///|
-/// Constructor for a migrated builtin that always intercepts on both
-/// backends (no user-fn shadowing guard).
-fn mig(
-  compile_linear : (CodegenCtx, ByteBuf, Array[@core.CallArg]) -> Unit raise WasmGenError,
-  compile_gc : (GcCodegenCtx, GcFuncCtx, GcByteBuf, Array[@core.Expr]) -> Unit raise WasmGenError,
-) -> MigratedBuiltin {
-  MigratedBuiltin::{
-    compile_linear,
-    compile_gc: Some(compile_gc),
-    linear_skip_if_user_fn: false,
-  }
+/// Built-once dispatch table (lazy). `migrated_builtin` is on the codegen
+/// hot path, so the map is materialized from `registry_entries()` on first
+/// use and cached, rather than rebuilt per lookup. A top-level `let`
+/// computing the map directly would form a definition cycle
+/// (table -> compile fns -> compile_expr -> migrated_builtin -> table), so
+/// the cache holds `None` until first use.
+let migrated_table_cache : Ref[Map[String, MigratedBuiltin]?] = Ref::{
+  val: None,
 }
 
 ///|
-/// Constructor for a builtin the linear backend implements with a dedicated
-/// arm while wasm-gc reaches the same behavior through the prelude (no gc
-/// codegen arm). The wasm-gc dispatch falls through.
-fn mig_linear_only(
-  compile_linear : (CodegenCtx, ByteBuf, Array[@core.CallArg]) -> Unit raise WasmGenError,
-) -> MigratedBuiltin {
-  MigratedBuiltin::{
-    compile_linear,
-    compile_gc: None,
-    linear_skip_if_user_fn: false,
-  }
-}
-
-///|
-/// Constructor for a migrated builtin whose linear dispatch is guarded by
-/// `!is_user_fn` (the int-math utilities).
-fn mig_guarded(
-  compile_linear : (CodegenCtx, ByteBuf, Array[@core.CallArg]) -> Unit raise WasmGenError,
-  compile_gc : (GcCodegenCtx, GcFuncCtx, GcByteBuf, Array[@core.Expr]) -> Unit raise WasmGenError,
-) -> MigratedBuiltin {
-  MigratedBuiltin::{
-    compile_linear,
-    compile_gc: Some(compile_gc),
-    linear_skip_if_user_fn: true,
-  }
-}
-
-///|
-/// Single dispatch table feeding both backends. When this returns `Some`,
-/// the linear and wasm-gc dispatch call the matching compile fn instead of
-/// a legacy `match name` arm. Adding a migrated builtin is one arm here
-/// (plus its metadata entry in `builtins()` for the parity gate).
+/// Look up the per-backend codegen for a builtin the registry dispatches.
+/// Returns `None` for names with no `compile_linear` (pure divergences) or
+/// names the registry does not own.
 fn migrated_builtin(name : String) -> MigratedBuiltin? {
-  match name {
-    // Char::to_int / Char::from_int are identity: a Char is a 62-bit
-    // tagged int (ADR-0006), so the conversion just compiles its argument.
-    "Char::to_int" | "Char::from_int" =>
-      Some(mig(compile_char_identity_linear, compile_char_identity_gc))
-    // Numeric widening / truncation conversions. Linear boxes f32/f64 and
-    // tags ints; wasm-gc uses raw f32/f64/i64 — hence per-backend fns.
-    "Int::to_float" =>
-      Some(mig(compile_int_to_float_linear, compile_int_to_float_gc))
-    "Int::to_double" =>
-      Some(mig(compile_int_to_double_linear, compile_int_to_double_gc))
-    "Float::to_int" =>
-      Some(mig(compile_float_to_int_linear, compile_float_to_int_gc))
-    "Double::to_int" =>
-      Some(mig(compile_double_to_int_linear, compile_double_to_int_gc))
-    "Float::to_double" =>
-      Some(mig(compile_float_to_double_linear, compile_float_to_double_gc))
-    "Double::to_float" =>
-      Some(mig(compile_double_to_float_linear, compile_double_to_float_gc))
-    // Integer math utilities. Operate on tagged i64 (linear) / raw i64
-    // (wasm-gc); linear keeps the `!is_user_fn` shadowing guard.
-    "Int::abs" => Some(mig_guarded(compile_int_abs_linear, compile_int_abs_gc))
-    "Int::max" => Some(mig_guarded(compile_int_max_linear, compile_int_max_gc))
-    "Int::min" => Some(mig_guarded(compile_int_min_linear, compile_int_min_gc))
-    "Int::clamp" =>
-      Some(mig_guarded(compile_int_clamp_linear, compile_int_clamp_gc))
-    "Int::signum" =>
-      Some(mig_guarded(compile_int_signum_linear, compile_int_signum_gc))
-    "Int::is_even" =>
-      Some(mig_guarded(compile_int_is_even_linear, compile_int_is_even_gc))
-    "Int::is_odd" =>
-      Some(mig_guarded(compile_int_is_odd_linear, compile_int_is_odd_gc))
-    // Int::parse — table-driven on both backends. The linear body is the one
-    // in the numeric handler (tried before the string handler); the wasm-gc
-    // body delegates to `compile_int_parse_gc`. Both raise
-    // `Unsupported("Int::parse with js strings")` under `use_js_strings`.
-    "Int::parse" =>
-      Some(mig(compile_int_parse_linear, compile_int_parse_gc_arm))
-    // Bytes:: namespace. Linear bodies are inline byte-buffer codegen; the
-    // wasm-gc arms delegate to dedicated `compile_bytes_*_gc` fns. No
-    // `!is_user_fn` guard (matches the legacy arms), so `mig`.
-    "Bytes::from_array" =>
-      Some(
-        mig(compile_bytes_from_array_linear, compile_bytes_from_array_gc_arm),
-      )
-    "Bytes::from_string" =>
-      Some(
-        mig(compile_bytes_from_string_linear, compile_bytes_from_string_gc_arm),
-      )
-    "Bytes::to_string" =>
-      Some(mig(compile_bytes_to_string_linear, compile_bytes_to_string_gc_arm))
-    "Bytes::length" =>
-      Some(mig(compile_bytes_length_linear, compile_bytes_length_gc_arm))
-    "Bytes::get" =>
-      Some(mig(compile_bytes_get_linear, compile_bytes_get_gc_arm))
-    "Bytes::new" =>
-      Some(mig(compile_bytes_new_linear, compile_bytes_new_gc_arm))
-    "Bytes::push" =>
-      Some(mig(compile_bytes_push_linear, compile_bytes_push_gc_arm))
-    "Bytes::set" =>
-      Some(mig(compile_bytes_set_linear, compile_bytes_set_gc_arm))
-    "Bytes::append" =>
-      Some(mig(compile_bytes_append_linear, compile_bytes_append_gc_arm))
-    "Bytes::blit" =>
-      Some(mig(compile_bytes_blit_linear, compile_bytes_blit_gc_arm))
-    "Bytes::fill" =>
-      Some(mig(compile_bytes_fill_linear, compile_bytes_fill_gc_arm))
-    "Bytes::slice" =>
-      Some(mig(compile_bytes_slice_linear, compile_bytes_slice_gc_arm))
-    "Bytes::concat" =>
-      Some(mig(compile_bytes_concat_linear, compile_bytes_concat_gc_arm))
-    "Bytes::to_array" =>
-      Some(mig(compile_bytes_to_array_linear, compile_bytes_to_array_gc_arm))
-    // String:: namespace. Linear bodies inline byte-buffer codegen; wasm-gc
-    // arms delegate to dedicated `compile_string_*` fns. The arms whose legacy
-    // linear dispatch was `if !is_user_fn =>` keep that guard via `mig_guarded`.
-    "String::length" =>
-      Some(mig(compile_string_length_linear, compile_string_length_gc_arm))
-    "String::char_code_at" =>
-      Some(
-        mig(
-          compile_string_char_code_at_linear, compile_string_char_code_at_gc_arm,
-        ),
-      )
-    "String::substring" =>
-      Some(
-        mig(compile_string_substring_linear, compile_string_substring_gc_arm),
-      )
-    "String::concat" =>
-      Some(mig(compile_string_concat_linear, compile_string_concat_gc_arm))
-    "String::join" =>
-      Some(mig(compile_string_join_linear, compile_string_join_gc_arm))
-    "String::equals" =>
-      Some(mig(compile_string_equals_linear, compile_string_equals_gc_arm))
-    "String::index_of" =>
-      Some(mig(compile_string_index_of_linear, compile_string_index_of_gc_arm))
-    "String::contains" =>
-      Some(
-        mig_guarded(
-          compile_string_contains_linear, compile_string_contains_gc_arm,
-        ),
-      )
-    "String::starts_with" =>
-      Some(
-        mig_guarded(
-          compile_string_starts_with_linear, compile_string_starts_with_gc_arm,
-        ),
-      )
-    "String::ends_with" =>
-      Some(
-        mig_guarded(
-          compile_string_ends_with_linear, compile_string_ends_with_gc_arm,
-        ),
-      )
-    "String::last_index_of" =>
-      Some(
-        mig_guarded(
-          compile_string_last_index_of_linear, compile_string_last_index_of_gc_arm,
-        ),
-      )
-    "String::count" =>
-      Some(
-        mig_guarded(compile_string_count_linear, compile_string_count_gc_arm),
-      )
-    "String::trim" =>
-      Some(mig_guarded(compile_string_trim_linear, compile_string_trim_gc_arm))
-    "String::trim_start" =>
-      Some(
-        mig_guarded(
-          compile_string_trim_start_linear, compile_string_trim_start_gc_arm,
-        ),
-      )
-    "String::trim_end" =>
-      Some(
-        mig_guarded(
-          compile_string_trim_end_linear, compile_string_trim_end_gc_arm,
-        ),
-      )
-    "String::to_upper" =>
-      Some(
-        mig_guarded(
-          compile_string_to_upper_linear, compile_string_to_upper_gc_arm,
-        ),
-      )
-    "String::to_lower" =>
-      Some(
-        mig_guarded(
-          compile_string_to_lower_linear, compile_string_to_lower_gc_arm,
-        ),
-      )
-    "String::replace" =>
-      Some(
-        mig_guarded(
-          compile_string_replace_linear, compile_string_replace_gc_arm,
-        ),
-      )
-    "String::split" =>
-      Some(
-        mig_guarded(compile_string_split_linear, compile_string_split_gc_arm),
-      )
-    "String::from_char_code" =>
-      Some(
-        mig(
-          compile_string_from_char_code_linear, compile_string_from_char_code_gc_arm,
-        ),
-      )
-    "String::from_char_codes" =>
-      Some(
-        mig(
-          compile_string_from_char_codes_linear, compile_string_from_char_codes_gc_arm,
-        ),
-      )
-    // Map:: namespace (conservative subset).
-    "Map::iter_length" =>
-      Some(mig(compile_map_iter_length_linear, compile_map_iter_length_gc_arm))
-    "Map::get" => Some(mig(compile_map_get_linear, compile_map_get_gc_arm))
-    "Map::set" => Some(mig(compile_map_set_linear, compile_map_set_gc_arm))
-    "Map::delete" =>
-      Some(mig(compile_map_delete_linear, compile_map_delete_gc_arm))
-    "Map::keys" => Some(mig(compile_map_keys_linear, compile_map_keys_gc_arm))
-    "Map::values" =>
-      Some(mig(compile_map_values_linear, compile_map_values_gc_arm))
-    "Map::has_key" =>
-      Some(mig(compile_map_has_key_linear, compile_map_has_gc_arm))
-    "Map::has" => Some(mig(compile_map_has_linear, compile_map_has_gc_arm))
-    "Map::iter_get" =>
-      Some(mig(compile_map_iter_get_linear, compile_map_iter_get_gc_arm))
-    // Array:: namespace (conservative subset). Linear bodies are inline
-    // byte-buffer codegen; the wasm-gc arms are relocated verbatim (NOT thin
-    // delegates — they carry the arr_kind inference / type_idx / builder-unwrap
-    // setup). No `!is_user_fn` guard (matches the legacy arms), so `mig`.
-    "Array::length" =>
-      Some(mig(compile_array_length_linear, compile_array_length_gc_arm))
-    "Array::get" =>
-      Some(mig(compile_array_get_linear, compile_array_get_gc_arm))
-    "Array::set" =>
-      Some(mig(compile_array_set_linear, compile_array_set_gc_arm))
-    "Array::truncate" =>
-      Some(mig(compile_array_truncate_linear, compile_array_truncate_gc_arm))
-    "Array::with_capacity" =>
-      Some(
-        mig(
-          compile_array_with_capacity_linear, compile_array_with_capacity_gc_arm,
-        ),
-      )
-    "Array::push" =>
-      Some(mig(compile_array_push_linear, compile_array_push_gc_arm))
-    // StringBuilder:: namespace (#414 / #415). Linear bodies are inline
-    // builder codegen; the wasm-gc arms are relocated verbatim (struct/array
-    // type setup + grow/copy loops, NOT thin delegates). No `!is_user_fn`
-    // guard (matches the legacy arms), so `mig`.
-    "StringBuilder::new" =>
-      Some(
-        mig(
-          compile_string_builder_new_linear, compile_string_builder_new_gc_arm,
-        ),
-      )
-    "StringBuilder::push" =>
-      Some(
-        mig(
-          compile_string_builder_push_linear, compile_string_builder_push_gc_arm,
-        ),
-      )
-    "StringBuilder::freeze" =>
-      Some(
-        mig(
-          compile_string_builder_freeze_linear, compile_string_builder_freeze_gc_arm,
-        ),
-      )
-    // ArrayBuilder:: / MapBuilder:: namespaces (#414 / #415). Linear bodies
-    // are inline builder codegen; the wasm-gc bodies are relocated verbatim
-    // from the inline gc arms (NOT thin delegates). No `!is_user_fn` guard
-    // (matches the legacy arms), so `mig`.
-    "ArrayBuilder::new" =>
-      Some(
-        mig(compile_array_builder_new_linear, compile_array_builder_new_gc_arm),
-      )
-    "ArrayBuilder::push" =>
-      Some(
-        mig(
-          compile_array_builder_push_linear, compile_array_builder_push_gc_arm,
-        ),
-      )
-    "ArrayBuilder::freeze" =>
-      Some(
-        mig(
-          compile_array_builder_freeze_linear, compile_array_builder_freeze_gc_arm,
-        ),
-      )
-    "MapBuilder::new" =>
-      Some(mig(compile_map_builder_new_linear, compile_map_builder_new_gc_arm))
-    "MapBuilder::set" =>
-      Some(mig(compile_map_builder_set_linear, compile_map_builder_set_gc_arm))
-    "MapBuilder::freeze" =>
-      Some(
-        mig(
-          compile_map_builder_freeze_linear, compile_map_builder_freeze_gc_arm,
-        ),
-      )
-    // Set:: namespace (#415). LINEAR-ONLY at the dispatch level: the linear
-    // backend has a dedicated arm per op (relocated verbatim into
-    // registry_set.mbt); wasm-gc has no Set dispatch arm and reaches the same
-    // behavior through the prelude (set_test passes on wasm-gc). So each uses
-    // `mig_linear_only` (compile_gc=None → gc dispatch falls through).
-    "Set::new" => Some(mig_linear_only(compile_set_new_linear))
-    "Set::size" => Some(mig_linear_only(compile_set_size_linear))
-    "Set::contains" => Some(mig_linear_only(compile_set_contains_linear))
-    "Set::add" => Some(mig_linear_only(compile_set_add_linear))
-    "Set::remove" => Some(mig_linear_only(compile_set_remove_linear))
-    "Set::to_array" => Some(mig_linear_only(compile_set_to_array_linear))
-    "Set::from_array" => Some(mig_linear_only(compile_set_from_array_linear))
-    _ => None
+  let table = match migrated_table_cache.val {
+    Some(t) => t
+    None => {
+      let t : Map[String, MigratedBuiltin] = Map::new()
+      for e in registry_entries() {
+        match e.compile_linear {
+          Some(cl) =>
+            t.set(e.name, MigratedBuiltin::{
+              compile_linear: cl,
+              compile_gc: e.compile_gc,
+              linear_skip_if_user_fn: e.linear_skip_if_user_fn,
+            })
+          None => ()
+        }
+      }
+      migrated_table_cache.val = Some(t)
+      t
+    }
   }
+  table.get(name)
 }
 
 ///|
