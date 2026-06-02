@@ -160,8 +160,68 @@ if [ ! -f "$STAGE1_COMPILER_WASM" ]; then
   exit 1
 fi
 
-run_stage "stage0 (wasm compiler via moonrun) -> stage1 wasm compile" \
-  moonrun "$STAGE1_COMPILER_WASM" --wasm-mvp "$ENTRY_PATH" -o "$STAGE1_WASM"
+# --- stage1 wasm cache (#492) ---
+# stage0 (moonrun running the MoonBit-built wasm compiler) is the dominant
+# selfbuild cost (~27s, ~70% of the total). Its output, stage1.wasm, is a pure
+# function of the wasm compiler binary + the selfhost compiler sources, so
+# fingerprint those inputs and reuse a cached stage1.wasm when they are
+# unchanged. The true-recursive validation (stage2 = stage1 compiling itself)
+# still runs on the cached artifact; on any source change the fingerprint
+# misses and stage0 reruns. Opt out with VIBE_SELFHOST_SELFBUILD_STAGE1_CACHE=0.
+STAGE1_CACHE_ENABLED="${VIBE_SELFHOST_SELFBUILD_STAGE1_CACHE:-1}"
+STAGE1_CACHE_DIR="${VIBE_SELFHOST_SELFBUILD_STAGE1_CACHE_DIR:-$PROJECT_ROOT/_build/bench/selfhost_wasi_selfbuild/stage1_cache}"
+
+hash_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | cut -d' ' -f1
+  else
+    cksum "$1" | cut -d' ' -f1
+  fi
+}
+
+stage1_fingerprint() {
+  # Determinant of stage1.wasm: the wasm compiler binary + every selfhost
+  # compiler source the entry transitively compiles + the entry path.
+  {
+    hash_file "$STAGE1_COMPILER_WASM"
+    echo "$ENTRY_PATH"
+    find "$PROJECT_ROOT/vibe/compiler" -name '*.vibe' -type f 2>/dev/null \
+      | LC_ALL=C sort \
+      | while IFS= read -r f; do hash_file "$f"; done
+  } | {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum
+    elif command -v shasum >/dev/null 2>&1; then shasum -a 256
+    else cksum
+    fi
+  } | cut -d' ' -f1
+}
+
+STAGE1_CACHE_HIT=0
+if [ "$STAGE1_CACHE_ENABLED" = "1" ]; then
+  STAGE1_FP="$(stage1_fingerprint)"
+  STAGE1_CACHE_FILE="$STAGE1_CACHE_DIR/stage1_${STAGE1_FP}.wasm"
+  if [ -s "$STAGE1_CACHE_FILE" ]; then
+    echo "[selfbuild] stage0 cache hit (fp=${STAGE1_FP:0:12}) — reusing cached stage1 wasm, skipping moonrun compile"
+    cp "$STAGE1_CACHE_FILE" "$STAGE1_WASM"
+    STAGE1_CACHE_HIT=1
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+      printf -- "- stage0 (cache hit, skipped): 0s\n" >> "$GITHUB_STEP_SUMMARY" || true
+    fi
+  fi
+fi
+
+if [ "$STAGE1_CACHE_HIT" -eq 0 ]; then
+  run_stage "stage0 (wasm compiler via moonrun) -> stage1 wasm compile" \
+    moonrun "$STAGE1_COMPILER_WASM" --wasm-mvp "$ENTRY_PATH" -o "$STAGE1_WASM"
+  if [ "$STAGE1_CACHE_ENABLED" = "1" ] && [ -s "$STAGE1_WASM" ]; then
+    mkdir -p "$STAGE1_CACHE_DIR"
+    # Keep only the current fingerprint's artifact to bound cache growth.
+    rm -f "$STAGE1_CACHE_DIR"/stage1_*.wasm 2>/dev/null || true
+    cp "$STAGE1_WASM" "$STAGE1_CACHE_FILE"
+  fi
+fi
 
 recursive_stage2_ok=0
 RECURSIVE_STAGE2_LOG="$OUT_DIR/stage2_recursive_compile.log"
