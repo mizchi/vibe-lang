@@ -297,14 +297,16 @@ fn emit_rc_bump_alloc(
 ///   i32.store offset=0   ; rc_count += 1
 ///   $skip:
 fn emit_rc_dup(buf : ByteBuf, val_local : Int, tmp_local : Int) -> Unit {
+  // if (not heap object) → skip. The `block` must open BEFORE the condition
+  // so the `br_if` operand is produced inside the block frame (wasmtime
+  // rejects a br_if whose condition was pushed outside the enclosing block).
+  emit_block(buf) // block void ($skip)
   // Check if value is a heap object (tag == tag_obj == 1)
   emit_local_get(buf, val_local)
   emit_i32_const_raw(buf, tag_mask)
   emit_i32_and(buf)
   emit_i32_const_raw(buf, tag_obj)
   emit_i32_ne(buf)
-  // if (not heap object) → skip
-  emit_block(buf) // block void
   emit_br_if(buf, 0) // br_if 0 → skip to end of block
   // obj_ptr = val & ~tag_mask (clear low 2 bits)
   emit_local_get(buf, val_local)
@@ -340,14 +342,15 @@ fn emit_rc_drop(
   new_rc_local : Int,
   recursive? : Bool = true,
 ) -> Unit {
+  // if (not heap object) → skip. The `block` must open BEFORE the condition
+  // so the `br_if` operand is produced inside the block frame.
+  emit_block(buf)
   // Check if value is a heap object
   emit_local_get(buf, val_local)
   emit_i32_const_raw(buf, tag_mask)
   emit_i32_and(buf)
   emit_i32_const_raw(buf, tag_obj)
   emit_i32_ne(buf)
-  // if (not heap object) → skip
-  emit_block(buf)
   emit_br_if(buf, 0)
   // obj_ptr = val & ~tag_mask
   emit_local_get(buf, val_local)
@@ -820,13 +823,15 @@ fn compile_rc_dup_function(heap_start? : Int = 0) -> WasmFunc {
   // Tag check in i64 space eliminates val32 local.
   let param = 0
   let rc_ptr = 1
-  // if (param & 3L) != 1L → skip (tag check in i64 space)
+  // if (param & 3L) != 1L → skip (tag check in i64 space). The `block` opens
+  // before the condition so the `br_if` operand stays inside the block frame
+  // (wasmtime rejects a condition pushed outside the enclosing block).
+  emit_block(body)
   emit_local_get(body, param)
   emit_i64_const_raw(body, tag_mask.to_int64())
   emit_i64_and(body)
   emit_i64_const_raw(body, tag_obj.to_int64())
   emit_i64_ne(body)
-  emit_block(body)
   emit_br_if(body, 0)
   // obj_ptr = i32.wrap(param) & ~3
   emit_local_get(body, param)
@@ -889,13 +894,15 @@ fn compile_rc_drop_function(
   let type_id = 3
   let len = 4
   let idx = 5
-  // if (param & 3L) != 1L → skip (tag check in i64 space)
+  // if (param & 3L) != 1L → skip (tag check in i64 space). The `block` opens
+  // before the condition so the `br_if` operand stays inside the block frame
+  // (wasmtime rejects a condition pushed outside the enclosing block).
+  emit_block(body)
   emit_local_get(body, param)
   emit_i64_const_raw(body, tag_mask.to_int64())
   emit_i64_and(body)
   emit_i64_const_raw(body, tag_obj.to_int64())
   emit_i64_ne(body)
-  emit_block(body)
   emit_br_if(body, 0)
   // obj_ptr = i32.wrap(param) & ~3
   emit_local_get(body, param)

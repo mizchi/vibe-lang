@@ -70,10 +70,17 @@ RC as its first (default) reclamation strategy**, replacing the current
 
 ### B. Verification gaps
 
-- **B-1** `enable_rc` is exercised only by the in-tree wasm interpreter
-  (`src/tests/vibe_wasm_eval_test.mbt`); there is no wasmtime-backed RC
-  e2e gate. Default-ing RC requires real-engine validation of
-  free / free-list reuse.
+- **B-1** *done*. A wasmtime-backed RC e2e gate now exists
+  (`src/tests/vibe_wasm_rc_e2e_test.mbt`, run via the `test-wasm-rc-e2e`
+  task on `--target native`). It compiles representative programs with
+  `enable_rc=true` and runs them on wasmtime, asserting correct results
+  (incl. a 1000-iteration loop-stress checksum that would corrupt under a
+  reuse-while-live bug). This immediately surfaced — and drove the fix
+  for — an invalid `block`/`br_if` ordering in the rc_dup/rc_drop emitters:
+  the tag-check condition was pushed *outside* the enclosing block, which
+  the lenient in-tree interpreter accepted but wasmtime rejects ("expected
+  i32 but nothing on stack"). RC had never produced spec-valid wasm before
+  this gate.
 - **B-2** `rc_debug` counters are interpreter-only.
 - **B-3** No parity/gate test pins the RC default.
 - **B-4** No differential test asserting that no-RC / RC / wasm-gc
