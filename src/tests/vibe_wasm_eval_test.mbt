@@ -4351,6 +4351,37 @@ test "rc debug: if/else branch-local heap is dropped per branch" {
 }
 
 ///|
+test "rc debug: match arm-local heap is dropped per arm" {
+  // A heap binding allocated inside a match arm body must be dropped at the
+  // end of that arm — and only when the arm is selected.
+  let prog = fn(arg : String) -> String {
+    "let f = (n: Int) -> Int {\n" +
+    "  let mut s = 0\n" +
+    "  match n {\n    0 => { let t = (1, 2); s = s + t.0 }\n    _ => { s = s + 9 }\n  }\n" +
+    "  s\n}\nf(" +
+    arg +
+    ")"
+  }
+  // matching arm allocates the tuple → must be freed.
+  let res0 = try eval_run_rc_debug(prog("0")) catch {
+    e => fail("rc debug eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let (allocs0, frees0) = rc_debug_counts(res0)
+  assert_true(allocs0 >= 1L)
+  assert_eq(allocs0, frees0)
+  // default arm allocates nothing, and emits no spurious drop.
+  let res1 = try eval_run_rc_debug(prog("1")) catch {
+    e => fail("rc debug eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let (allocs1, frees1) = rc_debug_counts(res1)
+  assert_eq(allocs1, frees1)
+}
+
+///|
 // ADR-0044 Phase 3: String now implements Iterable. The prelude provides
 // `String::iter_length` (= String::length) and `String::iter_get`
 // (= String::char_code_at), so generic Iterable combinators see each char

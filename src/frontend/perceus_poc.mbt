@@ -1850,7 +1850,10 @@ fn p2_emit_expr(
       ])
     }
     @core.Expr::Block(body~, ..) | @core.Expr::Handle(body~, ..) =>
-      p2_emit_block(ctx, body, site + ".body")
+      // Attach block-local scope-end drops to the last statement so codegen
+      // (which compiles a block expression statement-by-statement) emits them
+      // inside the block, e.g. a match-arm body `=> { let t = ...; ... }`.
+      p2_emit_block(ctx, body, site + ".body", scope_end_to_last=true)
     @core.Expr::Match(scrutinee~, arms~, ..) => {
       p2_emit_expr(ctx, scrutinee, site + ".scrutinee")
       if arms.length() == 0 {
