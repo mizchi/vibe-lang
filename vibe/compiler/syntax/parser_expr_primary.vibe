@@ -229,9 +229,16 @@ let parse_array_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, 
 let rec parse_comma_exprs_rest: (Array[Token], Int, ArrayBuilder[Expr], (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Array[Expr], Int) with { Error } = (tokens, pos, b, parse_recur) -> {
   match peek(tokens, pos) {
     TComma => {
-      let (e, next) = parse_recur(tokens, pos + 1, 0)
-      ArrayBuilder::push(b, e)
-      parse_comma_exprs_rest(tokens, next, b, parse_recur)
+      // Allow a trailing comma before the closing `)` in tuples and call
+      // argument lists (`(a, b,)` / `f(a, b,)`).
+      match peek(tokens, pos + 1) {
+        TRParen => (ArrayBuilder::freeze(b), pos + 1),
+        _ => {
+          let (e, next) = parse_recur(tokens, pos + 1, 0)
+          ArrayBuilder::push(b, e)
+          parse_comma_exprs_rest(tokens, next, b, parse_recur)
+        }
+      }
     },
     _ => (ArrayBuilder::freeze(b), pos)
   }

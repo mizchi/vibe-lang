@@ -162,9 +162,16 @@ let has_placeholder_args: (Array[Expr]) -> Bool = (args) -> {
 let rec parse_call_args_rest: (Array[Token], Int, ArrayBuilder[Expr], (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Array[Expr], Int) with { Error } = (tokens, pos, b, parse_recur) -> {
   match peek(tokens, pos) {
     TComma => {
-      let (e, next) = parse_call_arg(tokens, pos + 1, parse_recur)
-      ArrayBuilder::push(b, e)
-      parse_call_args_rest(tokens, next, b, parse_recur)
+      // Allow a trailing comma before the closing `)` in call argument
+      // lists (`f(a, b,)`).
+      match peek(tokens, pos + 1) {
+        TRParen => (ArrayBuilder::freeze(b), pos + 1),
+        _ => {
+          let (e, next) = parse_call_arg(tokens, pos + 1, parse_recur)
+          ArrayBuilder::push(b, e)
+          parse_call_args_rest(tokens, next, b, parse_recur)
+        }
+      }
     },
     _ => (ArrayBuilder::freeze(b), pos)
   }
