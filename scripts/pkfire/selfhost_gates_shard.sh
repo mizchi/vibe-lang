@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Selfhost release gate shards — extracted from justfile `ci-selfhost-gates-shard`.
-# Usage: scripts/pkfire/selfhost_gates_shard.sh <bootstrap|bootstrap-core|selfbuild|cli|check|coverage>
+# Usage: scripts/pkfire/selfhost_gates_shard.sh <bootstrap|bootstrap-core|selfbuild|cli|check|coverage|corpus>
 set -euo pipefail
 
-shard="${1:?missing shard argument: bootstrap|bootstrap-core|selfbuild|cli|check|coverage}"
+shard="${1:?missing shard argument: bootstrap|bootstrap-core|selfbuild|cli|check|coverage|corpus}"
 
 case "$shard" in
   bootstrap-core)
@@ -56,8 +56,16 @@ case "$shard" in
     VIBE_SELFHOST_SUITE_MIN_BRANCH_RATE="${VIBE_SELFHOST_SUITE_MIN_BRANCH_RATE:-30}" \
     scripts/coverage_selfhost_suite.sh
     ;;
+  corpus)
+    # Full-corpus selfhost compile gate (#492): every corpus .vibe must
+    # compile through the self-hosted compiler with no REAL language/checker
+    # gaps. `--gate` exits non-zero only on REAL gaps (MODE/TRIAGE harness
+    # artifacts do not trip it). Tracks selfhost expressiveness regressions on
+    # the path to dropping the MoonBit implementation.
+    bash scripts/test_selfhost_corpus_gate.sh --gate
+    ;;
   *)
-    echo "unknown shard: $shard (expected: bootstrap|bootstrap-core|selfbuild|cli|check|coverage)" >&2
+    echo "unknown shard: $shard (expected: bootstrap|bootstrap-core|selfbuild|cli|check|coverage|corpus)" >&2
     exit 1
     ;;
 esac
