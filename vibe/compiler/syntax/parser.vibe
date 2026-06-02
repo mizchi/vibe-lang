@@ -178,7 +178,33 @@ let parse_struct_fields: (Array[Token], Int) -> (Array[(String, TypeExpr)], Int)
 let parse_struct_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } = (tokens, pos, exported) -> {
   match peek(tokens, pos) {
     TIdent(name) => {
-      let br = expect_tk(tokens, pos + 1, "{")
+      // Optional type-parameter header `struct Foo[T] { ... }`. Consumed and
+      // discarded (uniform tagged representation, like enum type params).
+      let after_name = match peek(tokens, pos + 1) {
+        TLBracket => {
+          let mut skip = pos + 2
+          let mut depth = 1
+          while depth > 0 {
+            match peek(tokens, skip) {
+              TLBracket => {
+                depth = depth + 1; skip = skip + 1
+              },
+              TRBracket => {
+                depth = depth - 1; skip = skip + 1
+              },
+              TEof => {
+                depth = 0
+              },
+              _ => {
+                skip = skip + 1
+              }
+            }
+          }
+          skip
+        },
+        _ => pos + 1
+      }
+      let br = expect_tk(tokens, after_name, "{")
       let (fields, end) = parse_struct_fields(tokens, br);
       (SStruct(exported, name, fields), end)
     },
