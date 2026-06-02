@@ -146,6 +146,11 @@ fn registry_both(name : String, result : ResultShape) -> BuiltinDecl {
 ///   guard via `mig_guarded`).
 /// - `StringBuilder::` namespace: `new` / `push` / `freeze` (linear inline
 ///   builder codegen; wasm-gc arms relocated verbatim).
+/// - `ArrayBuilder::` namespace: `new` / `push` / `freeze` and `MapBuilder::`
+///   namespace: `new` / `set` / `freeze` (linear inline builder codegen;
+///   wasm-gc arms relocated verbatim). The synthetic `MapBuilder::new` /
+///   `MapBuilder::set` Call exprs that `compile_map_literal_gc` builds route
+///   through these registry fns, preserving map-literal behavior.
 ///
 /// Divergences (parity contract only, all `PreludeFallback`):
 /// - `String::compare` has a single-pass SIMD arm in the linear backend
@@ -239,6 +244,15 @@ pub fn builtins() -> Array[BuiltinDecl] {
     registry_both("StringBuilder::new", Ref),
     registry_both("StringBuilder::push", Unit),
     registry_both("StringBuilder::freeze", Ref),
+    // ArrayBuilder:: / MapBuilder:: namespaces (#414 / #415). Linear bodies
+    // are inline builder codegen; the wasm-gc bodies are relocated verbatim
+    // from the inline gc arms (struct/array type setup + grow/copy loops).
+    registry_both("ArrayBuilder::new", Ref),
+    registry_both("ArrayBuilder::push", Unit),
+    registry_both("ArrayBuilder::freeze", Ref),
+    registry_both("MapBuilder::new", Ref),
+    registry_both("MapBuilder::set", Unit),
+    registry_both("MapBuilder::freeze", Ref),
     // --- divergences (parity contract only) ---
     // linear-only (wasm-gc uses the prelude)
     prelude_fallback("String::compare", Int, true),
@@ -535,6 +549,36 @@ fn migrated_builtin(name : String) -> MigratedBuiltin? {
       Some(
         mig(
           compile_string_builder_freeze_linear, compile_string_builder_freeze_gc_arm,
+        ),
+      )
+    // ArrayBuilder:: / MapBuilder:: namespaces (#414 / #415). Linear bodies
+    // are inline builder codegen; the wasm-gc bodies are relocated verbatim
+    // from the inline gc arms (NOT thin delegates). No `!is_user_fn` guard
+    // (matches the legacy arms), so `mig`.
+    "ArrayBuilder::new" =>
+      Some(
+        mig(compile_array_builder_new_linear, compile_array_builder_new_gc_arm),
+      )
+    "ArrayBuilder::push" =>
+      Some(
+        mig(
+          compile_array_builder_push_linear, compile_array_builder_push_gc_arm,
+        ),
+      )
+    "ArrayBuilder::freeze" =>
+      Some(
+        mig(
+          compile_array_builder_freeze_linear, compile_array_builder_freeze_gc_arm,
+        ),
+      )
+    "MapBuilder::new" =>
+      Some(mig(compile_map_builder_new_linear, compile_map_builder_new_gc_arm))
+    "MapBuilder::set" =>
+      Some(mig(compile_map_builder_set_linear, compile_map_builder_set_gc_arm))
+    "MapBuilder::freeze" =>
+      Some(
+        mig(
+          compile_map_builder_freeze_linear, compile_map_builder_freeze_gc_arm,
         ),
       )
     _ => None
