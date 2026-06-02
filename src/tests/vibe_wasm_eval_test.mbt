@@ -4284,6 +4284,41 @@ test "rc debug: while-loop body drops nested heap per-iteration (no leak)" {
 }
 
 ///|
+test "rc debug: for-in body has no per-iteration leak" {
+  // for-in is desugared to a while loop before Perceus analysis, so the
+  // per-iteration body binding `t` must be reclaimed each turn just like the
+  // hand-written while case. We assert the per-iteration property directly:
+  // the count of unreclaimed allocations must NOT grow with the iteration
+  // count. (A small constant remainder — the array builder / discarded result
+  // array — is tracked separately and is independent of iteration count.)
+  fn leak_for(elems : String) -> Int64 raise {
+    let script = "let f = () -> Int {\n" +
+      "  let xs = " +
+      elems +
+      "\n  let mut sum = 0\n" +
+      "  for x in xs {\n    let t = (x, x + 1)\n    sum = sum + t.0\n  }\n" +
+      "  sum\n}\nf()"
+    let res = eval_run_rc_debug(script)
+    let (allocs, frees) = rc_debug_counts(res)
+    allocs - frees
+  }
+
+  let leak_small = try leak_for("[10, 20, 30]") catch {
+    e => fail("rc debug eval failed: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  let leak_large = try leak_for("[10, 20, 30, 40, 50, 60, 70]") catch {
+    e => fail("rc debug eval failed: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  // No per-iteration leak: the unreclaimed count is the same for 3 and 7
+  // iterations (the per-iteration tuples are all dropped).
+  assert_eq(leak_small, leak_large)
+}
+
+///|
 // ADR-0044 Phase 3: String now implements Iterable. The prelude provides
 // `String::iter_length` (= String::length) and `String::iter_get`
 // (= String::char_code_at), so generic Iterable combinators see each char

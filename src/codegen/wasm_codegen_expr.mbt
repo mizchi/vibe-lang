@@ -106,7 +106,22 @@ fn compile_expr(
     @core.Expr::Block(body~, span~) => {
       let _ = span
       ctx.is_tail_position = saved_tail // propagate to last expression
-      compile_block_expr(ctx, buf, body)
+      // With RC enabled, wire the nested block's statements into the action
+      // map so drops fire inside it (e.g. the while loop a for-in desugars
+      // to). A statement's expression sits at `<stmt_site>.expr` for both
+      // `let` RHS and bare expression statements, so the block body prefix is
+      // `<rc_stmt_site>.expr.body`, matching Perceus's `p2_emit_block` site.
+      if ctx.enable_rc {
+        compile_block_expr(
+          ctx,
+          buf,
+          body,
+          emit_rc_stmt_actions=true,
+          rc_prefix="\{ctx.rc_stmt_site}.expr.body",
+        )
+      } else {
+        compile_block_expr(ctx, buf, body)
+      }
     }
     @core.Expr::Match(scrutinee~, arms~, span~) => {
       let _ = span
