@@ -4319,6 +4319,38 @@ test "rc debug: for-in body has no per-iteration leak" {
 }
 
 ///|
+test "rc debug: if/else branch-local heap is dropped per branch" {
+  // A heap binding allocated inside a branch must be dropped at the end of
+  // that branch — and only when the branch actually runs (no spurious drop of
+  // an uninitialized local on the other path).
+  let prog = fn(arg : String) -> String {
+    "let f = (c: Bool) -> Int {\n" +
+    "  let mut s = 0\n" +
+    "  if c {\n    let t = (1, 2)\n    s = s + t.0\n  } else {\n    s = s + 5\n  }\n" +
+    "  s\n}\nf(" +
+    arg +
+    ")"
+  }
+  // then-branch taken: the tuple is allocated and must be freed.
+  let res_then = try eval_run_rc_debug(prog("true")) catch {
+    e => fail("rc debug eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let (allocs_then, frees_then) = rc_debug_counts(res_then)
+  assert_true(allocs_then >= 1L)
+  assert_eq(allocs_then, frees_then)
+  // else-branch taken: no allocation, and no drop of the uninitialized `t`.
+  let res_else = try eval_run_rc_debug(prog("false")) catch {
+    e => fail("rc debug eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let (allocs_else, frees_else) = rc_debug_counts(res_else)
+  assert_eq(allocs_else, frees_else)
+}
+
+///|
 // ADR-0044 Phase 3: String now implements Iterable. The prelude provides
 // `String::iter_length` (= String::length) and `String::iter_get`
 // (= String::char_code_at), so generic Iterable combinators see each char

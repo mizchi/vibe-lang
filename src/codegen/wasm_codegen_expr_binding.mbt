@@ -261,13 +261,39 @@ fn compile_expr_if(
   adjust_loop_offsets(ctx, 1)
   let saved_heap_synced = ctx.heap_synced
   emit_coverage(ctx, buf, WasmCoveragePointKind::BranchIfThen, span)
-  compile_block_expr(ctx, buf, then_body)
+  // With RC enabled, wire each branch's statements into the action map so
+  // branch-local bindings are dropped at the end of the branch (and only when
+  // that branch runs). The branch bodies sit at `<stmt_site>.expr.then` /
+  // `.else` in Perceus, matching `p2_emit_block`'s site for the If arms.
+  let rc_then_prefix = "\{ctx.rc_stmt_site}.expr.then"
+  let rc_else_prefix = "\{ctx.rc_stmt_site}.expr.else"
+  if ctx.enable_rc {
+    compile_block_expr(
+      ctx,
+      buf,
+      then_body,
+      emit_rc_stmt_actions=true,
+      rc_prefix=rc_then_prefix,
+    )
+  } else {
+    compile_block_expr(ctx, buf, then_body)
+  }
   // Restore heap_synced for the else branch so it doesn't inherit
   // the then-branch's sync state (they are mutually exclusive at runtime).
   ctx.heap_synced = saved_heap_synced
   buf.push((5).to_byte()) // else
   emit_coverage(ctx, buf, WasmCoveragePointKind::BranchIfElse, span)
-  compile_block_expr(ctx, buf, else_body)
+  if ctx.enable_rc {
+    compile_block_expr(
+      ctx,
+      buf,
+      else_body,
+      emit_rc_stmt_actions=true,
+      rc_prefix=rc_else_prefix,
+    )
+  } else {
+    compile_block_expr(ctx, buf, else_body)
+  }
   // After both branches, mark heap as unsynced since either branch
   // may have advanced the heap pointer.
   ctx.heap_synced = false

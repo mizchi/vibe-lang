@@ -1839,10 +1839,10 @@ fn p2_emit_expr(
     @core.Expr::If(cond~, then_body~, else_body~, ..) => {
       p2_emit_expr(ctx, cond, site + ".cond")
       let pre = p2_emit_snapshot(ctx)
-      p2_emit_block(ctx, then_body, site + ".then")
+      p2_emit_block(ctx, then_body, site + ".then", scope_end_to_last=true)
       let then_snap = p2_emit_snapshot(ctx)
       p2_emit_restore(ctx, pre)
-      p2_emit_block(ctx, else_body, site + ".else")
+      p2_emit_block(ctx, else_body, site + ".else", scope_end_to_last=true)
       let else_snap = p2_emit_snapshot(ctx)
       p2_emit_merge_branches(ctx, pre, [
         (then_snap, site + ".then"),
