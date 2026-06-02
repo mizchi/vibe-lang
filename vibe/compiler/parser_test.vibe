@@ -60,6 +60,27 @@ test "parse generic impl" {
   assert(ok == "ok")
 }
 
+test "parse value-position generic let keeps type params" {
+  // Regression: `let f = [T: Ord](...)` (a value-position type-parameter
+  // header, no `: Type` annotation) must put `[T: Ord]` onto the lambda's
+  // type params and survive a print -> re-parse round-trip. Previously the
+  // header was skipped and discarded, so the round-trip (used when merging
+  // multi-module programs) lost it (#492).
+  let p1 = handle {
+    print_program(parse_program(lex("let ord_max = [T: Ord](a: T, b: T) -> T { if a < b { b } else a }")))
+  } with Error {
+    Throw(e) => String::concat("ERR: ", e)
+  }
+  assert(String::index_of(p1, "[T: Ord]") >= 0)
+  // and it is stable across a second round-trip
+  let p2 = handle {
+    print_program(parse_program(lex(p1)))
+  } with Error {
+    Throw(_) => "threw"
+  }
+  assert(p1 == p2)
+}
+
 test "parse generic struct" {
   // Regression: struct declarations accept a type-parameter header
   // `struct Foo[T] { ... }` (and `[A, B]`) — used by vibe/prelude/string_view.vibe

@@ -222,6 +222,38 @@ let print_ctor: ((String, Array[TypeExpr])) -> String = (ctor) -> {
   }
 }
 
+// Render a function/lambda type-parameter header `[T: Ord, U]` from the EFn
+// type_params + bounds. Returns "" when there are no type params. Without
+// this, print_program (used to round-trip a merged multi-module program back
+// to source) would drop `[T: Ord]`, so a re-parsed generic function loses its
+// type-parameter scope and `T` resolves to a concrete `CtNamed("T", [])`
+// instead of a bound type variable.
+let print_fn_type_params: (Array[String], Array[(String, Array[String])]) -> String = (type_params, bounds) -> {
+  if eq(Array::length(type_params), 0) {
+    ""
+  } else {
+    let parts = for tp in type_params {
+      let mut found = Array::slice([
+        ""
+      ], 0, 0)
+      let mut bi = 0
+      while bi < Array::length(bounds) {
+        let (bname, blist) = Array::get(bounds, bi)
+        if bname == tp {
+          found = blist
+        }
+        bi = bi + 1
+      }
+      if eq(Array::length(found), 0) {
+        tp
+      } else {
+        String::concat(tp, String::concat(": ", join(found, " + ")))
+      }
+    }
+    String::concat("[", String::concat(join(parts, ", "), "]"))
+  }
+}
+
 export let rec print_expr: (Expr) -> String = (e) -> {
   match e {
     EInt(n) => __to_string(n),
@@ -291,7 +323,8 @@ export let rec print_expr: (Expr) -> String = (e) -> {
     },
     EBinOp(op, left, right) => String::concat("(", String::concat(print_expr(left), String::concat(" ", String::concat(op, String::concat(" ", String::concat(print_expr(right), ")")))))),
     EUnaryOp(op, expr) => String::concat("(", String::concat(op, String::concat(print_expr(expr), ")"))),
-    EFn(_, _, params, ret_ty, effect, body) => {
+    EFn(type_params, bounds, params, ret_ty, effect, body) => {
+      let tp_str = print_fn_type_params(type_params, bounds)
       let parts = for param in params {
         let (name, ty_opt) = param
         match ty_opt {
@@ -309,7 +342,7 @@ export let rec print_expr: (Expr) -> String = (e) -> {
         },
         None => String::concat(") -> { ", String::concat(print_expr(body), " }"))
       }
-      String::concat("(", String::concat(join(parts, ", "), ret_str))
+      String::concat(tp_str, String::concat("(", String::concat(join(parts, ", "), ret_str)))
     },
     EDot(expr, field) => String::concat(print_expr(expr), String::concat(".", field)),
     EThrow(e) => String::concat("throw(", String::concat(print_expr(e), ")")),
@@ -339,16 +372,25 @@ export let rec print_expr: (Expr) -> String = (e) -> {
 let print_annotated_let_value: (Option[TypeExpr], Expr) -> String = (ty_opt, val) -> {
   match ty_opt {
     Some(TyFn(_, _, _)) => match val {
-      EFn(_, _, params, _, _, body) => {
+      EFn(type_params, bounds, params, _, _, body) => {
+        // Type params live only on the EFn (the `: (T) -> T` annotation does
+        // not carry `[T: Ord]`); emit them so a re-parse keeps the
+        // type-parameter scope. Without this, print_program round-tripping a
+        // merged multi-module program drops `[T: Ord]` and `T` resolves to a
+        // concrete CtNamed instead of a bound type variable.
+        let tp_str = print_fn_type_params(type_params, bounds)
         let parts = for param in params {
           let (name, _) = param
           name
         }
         String::concat(
-          "(",
+          tp_str,
           String::concat(
-            join(parts, ", "),
-            String::concat(") -> { ", String::concat(print_expr(body), " }"))
+            "(",
+            String::concat(
+              join(parts, ", "),
+              String::concat(") -> { ", String::concat(print_expr(body), " }"))
+            )
           )
         )
       },
