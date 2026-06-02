@@ -48,13 +48,30 @@ let parse_bench_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (token
   }
 }
 
+// Parse one export-list name, accepting a qualified `Ns::member`
+// (e.g. `JsonSchema::validate`) in addition to a bare ident.
+let parse_export_name: (Array[Token], Int) -> (String, Int) with { Error } = (tokens, pos) -> {
+  match peek(tokens, pos) {
+    TIdent(name) => match peek(tokens, pos + 1) {
+      TDoubleColon => match peek(tokens, pos + 2) {
+        TIdent(member) =>
+          (String::concat(name, String::concat("::", member)), pos + 3),
+        _ => throw("expected qualified member name after '::'")
+      },
+      _ => (name, pos + 1)
+    },
+    _ => throw("expected name in export list")
+  }
+}
+
 let rec parse_export_names_rest: (Array[Token], Int, ArrayBuilder[String]) -> (Array[String], Int) with { Error } = (tokens, pos, b) -> {
   match peek(tokens, pos) {
     TComma => match peek(tokens, pos + 1) {
       TRBrace => (ArrayBuilder::freeze(b), pos + 2),
-      TIdent(name) => {
-        ArrayBuilder::push(b, name)
-        parse_export_names_rest(tokens, pos + 2, b)
+      TIdent(_) => {
+        let (nm, after) = parse_export_name(tokens, pos + 1)
+        ArrayBuilder::push(b, nm)
+        parse_export_names_rest(tokens, after, b)
       },
       _ => throw("expected name in export list")
     },
@@ -188,10 +205,11 @@ let parse_export_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (toke
     },
     TLBrace => match peek(tokens, pos + 1) {
       TRBrace => (SExport(empty_names()), pos + 2),
-      TIdent(name) => {
+      TIdent(_) => {
+        let (first, after) = parse_export_name(tokens, pos + 1)
         let b = ArrayBuilder::new()
-        ArrayBuilder::push(b, name)
-        let (names, end) = parse_export_names_rest(tokens, pos + 2, b);
+        ArrayBuilder::push(b, first)
+        let (names, end) = parse_export_names_rest(tokens, after, b);
         (SExport(names), end)
       },
       _ => throw("expected name in export list")

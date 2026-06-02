@@ -480,12 +480,24 @@ let is_non_pipe_infix: (Token) -> Bool = (tok) -> {
 let parse_import_item: (Array[Token], Int) -> ((String, Option[String]), Int) with { Error } = (tokens, pos) -> {
   let parse_import_name: (Int) -> ((String, Option[String]), Int) with { Error } = (name_pos) -> {
     match peek(tokens, name_pos) {
-      TIdent(name) => match peek(tokens, name_pos + 1) {
-        TAs => match peek(tokens, name_pos + 2) {
-          TIdent(alias) => ((name, Some(alias)), name_pos + 3),
-          _ => throw("expected alias name after 'as'")
-        },
-        _ => ((name, None), name_pos + 1)
+      TIdent(name) => {
+        // Accept a qualified item name `Ns::member` (e.g. `Int::abs`) in
+        // import/export lists, mirroring parse_binding_name.
+        let (base, after) = match peek(tokens, name_pos + 1) {
+          TDoubleColon => match peek(tokens, name_pos + 2) {
+            TIdent(member) =>
+              (String::concat(name, String::concat("::", member)), name_pos + 3),
+            _ => throw("expected qualified member name after '::'")
+          },
+          _ => (name, name_pos + 1)
+        }
+        match peek(tokens, after) {
+          TAs => match peek(tokens, after + 1) {
+            TIdent(alias) => ((base, Some(alias)), after + 2),
+            _ => throw("expected alias name after 'as'")
+          },
+          _ => ((base, None), after)
+        }
       },
       _ => throw("expected import item name")
     }
