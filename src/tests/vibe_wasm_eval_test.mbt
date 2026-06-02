@@ -4225,9 +4225,12 @@ test "rc debug: function with local tuple balanced" {
 }
 
 ///|
-test "rc debug: loop detects unbalanced allocs (known leak)" {
-  // While-loop bodies don't yet generate per-iteration drops for let bindings.
-  // This test verifies the debug counters correctly detect the leak.
+test "rc debug: while-loop body drops per-iteration allocs (no leak)" {
+  // While-loop bodies now generate per-iteration drops for bindings that
+  // leave the body scope. The per-iteration tuple is reclaimed each turn, so
+  // allocs and frees stay balanced. (Previously this leaked all but the final
+  // allocation; see the codegen wiring in compile_expr_while and the
+  // scope_end_to_last handling in perceus_poc.mbt::p2_emit_block.)
   let script =
     #|let f = () -> Int {
     #|  let mut i = 0
@@ -4248,8 +4251,36 @@ test "rc debug: loop detects unbalanced allocs (known leak)" {
   let (allocs, frees) = rc_debug_counts(res)
   // Alloc counter should track all 5 tuple allocations
   assert_true(allocs >= 5L)
-  // Free counter tracks actual frees — currently fewer than allocs (known leak)
-  assert_true(frees < allocs)
+  // Every per-iteration tuple is dropped — no leak.
+  assert_eq(allocs, frees)
+}
+
+///|
+test "rc debug: while-loop body drops nested heap per-iteration (no leak)" {
+  // A per-iteration binding whose value is a nested heap object (tuple of
+  // tuples) must be recursively dropped at the end of each iteration. Verifies
+  // that the loop-body scope-end drop reaches inner heap allocations too.
+  let script =
+    #|let f = () -> Int {
+    #|  let mut i = 0
+    #|  let mut sum = 0
+    #|  while i < 4 {
+    #|    let t = ((i, i + 1), (i + 2, i + 3))
+    #|    sum = sum + t.0.0 + t.1.1
+    #|    i = i + 1
+    #|  }
+    #|  sum
+    #|}
+    #|f()
+  let res = try eval_run_rc_debug(script) catch {
+    e => fail("rc debug eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let (allocs, frees) = rc_debug_counts(res)
+  // Each iteration allocates the outer tuple plus two inner tuples.
+  assert_true(allocs >= 12L)
+  assert_eq(allocs, frees)
 }
 
 ///|

@@ -44,9 +44,33 @@ fn compile_expr_while(
   emit_br(buf, 2) // br $exit
   buf.push((11).to_byte()) // end if
 
-  // Execute body
+  // Execute body. With Perceus RC enabled, the body is its own scope: any
+  // bindings allocated per iteration must be dropped before looping back, or
+  // the heap leaks one object per iteration (the historical known leak). We
+  // mirror compile_block_expr's per-statement pre/post action emission, using
+  // the body's nested action prefix so the analysis-emitted scope-end drops
+  // fire inside the loop. The while statement appears as `Stmt::Expr` in the
+  // enclosing block, so its Perceus site is `<rc_stmt_site>.expr` and the body
+  // prefix is `<rc_stmt_site>.expr.body`.
+  let saved_rc_prefix = ctx.rc_action_prefix
+  let saved_rc_stmt_site = ctx.rc_stmt_site
+  let body_prefix = "\{ctx.rc_stmt_site}.expr.body"
+  if ctx.enable_rc {
+    ctx.rc_action_prefix = body_prefix
+  }
   for i in 0..<body.stmts.length() {
+    if ctx.enable_rc {
+      ctx.rc_stmt_site = rc_make_stmt_site(body_prefix, i)
+      emit_rc_actions(ctx, buf, ctx.rc_pre_actions, i)
+    }
     compile_stmt(ctx, buf, body.stmts[i], false)
+    if ctx.enable_rc {
+      emit_rc_actions(ctx, buf, ctx.rc_post_actions, i)
+    }
+  }
+  if ctx.enable_rc {
+    ctx.rc_action_prefix = saved_rc_prefix
+    ctx.rc_stmt_site = saved_rc_stmt_site
   }
   // Reset heap_synced before looping back: the condition check at the
   // top of the loop may call functions that need a fresh heap sync.

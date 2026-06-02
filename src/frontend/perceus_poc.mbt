@@ -1932,7 +1932,7 @@ fn p2_emit_expr(
     @core.Expr::While(cond~, body~, ..) => {
       let pre = p2_emit_snapshot(ctx)
       p2_emit_expr(ctx, cond, site + ".cond")
-      p2_emit_block(ctx, body, site + ".body")
+      p2_emit_block(ctx, body, site + ".body", scope_end_to_last=true)
       let loop_snap = p2_emit_snapshot(ctx)
       p2_emit_merge_branches(ctx, pre, [
         (loop_snap, site + ".body"),
@@ -2110,12 +2110,22 @@ fn p2_emit_block(
   ctx : PerceusEmitCtx2,
   body : @core.Module,
   prefix : String,
+  scope_end_to_last? : Bool = false,
 ) -> Unit {
   p2_emit_push_scope(ctx)
   for i = 0; i < body.stmts.length(); i = i + 1 {
     p2_emit_stmt(ctx, body.stmts[i], prefix + ".stmt[\{i.to_string()}]")
   }
-  p2_emit_pop_scope(ctx, prefix)
+  // For loop bodies, attach scope-end drops to the last statement so the
+  // codegen emits them *inside* the loop (per iteration) rather than once at
+  // the enclosing statement. Without this, a binding allocated each iteration
+  // leaks all but the final allocation (the historical while-loop leak).
+  let pop_site = if scope_end_to_last && body.stmts.length() > 0 {
+    prefix + ".stmt[\{(body.stmts.length() - 1).to_string()}]"
+  } else {
+    prefix
+  }
+  p2_emit_pop_scope(ctx, pop_site)
 }
 
 ///|
