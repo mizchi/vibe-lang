@@ -262,6 +262,28 @@ test "unify CtOption(CtVar) with CtOption(CtInt)" {
   }
 }
 
+test "unify CtEnum with bare CtNamed bridges (#492)" {
+  // A self-referential enum ctor field type can resolve to CtEnum(X) while a
+  // function annotation resolves to CtNamed(X, []) across module imports;
+  // they denote the same type and must unify (both directions).
+  let no_args = Array::slice([
+    CtUnit
+  ], 0, 0)
+  let one_arg = Array::slice([
+    CtInt
+  ], 0, 1)
+  assert(is_some(unify(CtEnum("TomlValue"), CtNamed("TomlValue", no_args), SubstEmpty)))
+  assert(is_some(unify(CtNamed("TomlValue", no_args), CtEnum("TomlValue"), SubstEmpty)))
+  // Wrapped in Array, mirroring `Array[TomlValue]` return types.
+  assert(is_some(unify(CtArray(CtEnum("TomlValue")), CtArray(CtNamed("TomlValue", no_args)), SubstEmpty)))
+  // Struct bridges too.
+  assert(is_some(unify(CtStruct("Point"), CtNamed("Point", no_args), SubstEmpty)))
+  // Non-zero args must NOT bridge (a generic application is a distinct type).
+  assert(is_none(unify(CtEnum("Box"), CtNamed("Box", one_arg), SubstEmpty)))
+  // Different names must NOT bridge.
+  assert(is_none(unify(CtEnum("A"), CtNamed("B", no_args), SubstEmpty)))
+}
+
 test "occurs check prevents infinite type" {
   // unify var(0) with (var(0)) -> Int  should fail
   let result = unify(CtVar(0), CtFn([

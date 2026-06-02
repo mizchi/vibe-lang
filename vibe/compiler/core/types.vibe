@@ -730,13 +730,21 @@ export let rec types_equal: (Type, Type) -> Bool = (a, b) -> {
     },
     CtEnum(aname) => match b {
       CtEnum(bname) => aname == bname,
+      // A bare named type `CtNamed(X, [])` (zero type args) denotes the same
+      // type as the enum `CtEnum(X)`. Cross-module imports can resolve a
+      // self-referential enum ctor field type to one form and a function
+      // annotation to the other; bridge them so they unify.
+      CtNamed(bname, bargs) => aname == bname && Array::length(bargs) == 0,
       _ => false
     },
     CtStruct(aname) => match b {
       CtStruct(bname) => aname == bname,
+      CtNamed(bname, bargs) => aname == bname && Array::length(bargs) == 0,
       _ => false
     },
     CtNamed(aname, aargs) => match b {
+      CtEnum(bname) => aname == bname && Array::length(aargs) == 0,
+      CtStruct(bname) => aname == bname && Array::length(aargs) == 0,
       CtNamed(bname, bargs) =>
       if aname != bname {
         false
@@ -987,15 +995,29 @@ export let rec unify: (Type, Type, Subst) -> Option[Subst] = (a, b, s) -> {
                   CtEnum(b_name) => if a_name == b_name {
                     Some(s)
                   } else None,
+                  // Bridge `CtEnum(X)` with a bare `CtNamed(X, [])`; see the
+                  // matching case in types_equal.
+                  CtNamed(b_name, b_args) => if a_name == b_name && Array::length(b_args) == 0 {
+                    Some(s)
+                  } else None,
                   _ => None
                 },
                 CtStruct(a_name) => match tb {
                   CtStruct(b_name) => if a_name == b_name {
                     Some(s)
                   } else None,
+                  CtNamed(b_name, b_args) => if a_name == b_name && Array::length(b_args) == 0 {
+                    Some(s)
+                  } else None,
                   _ => None
                 },
                 CtNamed(a_name, a_args) => match tb {
+                  CtEnum(b_name) => if a_name == b_name && Array::length(a_args) == 0 {
+                    Some(s)
+                  } else None,
+                  CtStruct(b_name) => if a_name == b_name && Array::length(a_args) == 0 {
+                    Some(s)
+                  } else None,
                   CtNamed(b_name, b_args) => if a_name != b_name {
                     None
                   }
