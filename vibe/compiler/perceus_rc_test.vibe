@@ -23,6 +23,18 @@ let count_drops: (Array[PerceusAction], String) -> Int = (plan, name) -> {
   n
 }
 
+let count_all_drops: (Array[PerceusAction]) -> Int = (plan) -> {
+  let mut n = 0
+  let mut i = 0
+  while i < Array::length(plan) {
+    if pa_is_drop(Array::get(plan, i)) {
+      n = n + 1
+    }
+    i = i + 1
+  }
+  n
+}
+
 let count_dups: (Array[PerceusAction], String) -> Int = (plan, name) -> {
   let mut n = 0
   let mut i = 0
@@ -148,6 +160,33 @@ test "perceus: closure capture counts as an owning use" {
   assert(count_drops(plan, "g") == 1)
   // t is moved into the closure env (its capture is the consuming use).
   assert(count_drops(plan, "t") == 0)
+}
+
+// A discarded sequenced heap value is reclaimed (A-1b): `mk(); r` where the
+// first call's owned result is thrown away.
+test "perceus: discarded sequenced heap value is dropped" {
+  // (1, 2) ; 7   -- the tuple value is discarded
+  let body = ESeq(ETuple([EInt(1), EInt(2)]), EInt(7))
+  let plan = build_perceus_plan(body)
+  // The discarded tuple is bound to a synthetic name and dropped.
+  assert(count_all_drops(plan) == 1)
+}
+
+// A discarded scalar needs no drop.
+test "perceus: discarded scalar is not dropped" {
+  // 5 ; 7
+  let body = ESeq(EInt(5), EInt(7))
+  let plan = build_perceus_plan(body)
+  assert(count_all_drops(plan) == 0)
+}
+
+// A loop parameter that owns heap and is only borrowed is dropped at scope end.
+test "perceus: loop parameter heap is dropped" {
+  // loop acc = (1, 2) { acc.0 }
+  let params: Array[(String, Expr)] = [("acc", ETuple([EInt(1), EInt(2)]))]
+  let lp = ELoop(params, EDot(EIdent("acc"), "0"))
+  let plan = build_perceus_plan(lp)
+  assert(count_drops(plan, "acc") == 1)
 }
 
 // A match arm-local pattern binding that is only borrowed is dropped per arm.

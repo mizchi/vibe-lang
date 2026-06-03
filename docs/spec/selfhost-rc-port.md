@@ -79,17 +79,25 @@ is added.
   uses of the outer binding; the body is analysed separately as its own
   function). `EForIn` binds its element per iteration (structural scope-end
   drop). `EMatch` does branch-max counting across arms and drops arm-local
-  pattern bindings per arm.
+  pattern bindings per arm. `ELoop` treats its parameters as body-scoped
+  bindings. `ESeq` binds the discarded left value to a synthetic name so an
+  owned heap temporary is reclaimed at scope end (A-1b).
+- A binding with no owning uses (pure-borrow *or* entirely unused) keeps its
+  one owned reference and is dropped at scope end; the scalar check skips
+  known non-heap values.
 - Unit-tested in isolation via the native vibe CLI
-  (`vibe/compiler/perceus_rc_test.vibe`, task `test-selfhost-perceus`, 11/11):
+  (`vibe/compiler/perceus_rc_test.vibe`, task `test-selfhost-perceus`, 14/14):
   pure-borrow drop, moved-out (no drop), scalar (no drop), dup on double use,
   closure-call borrow + drop, nested borrow, branch-local drop, while-body
   per-iteration drop, for-in element drop, closure capture as owning use,
-  match arm pattern-binding drop.
-- **Remaining in Phase 2** (safe no-ops today — never emit a wrong drop):
-  `EHandle` / `ELoop`, cross-branch balancing of outer bindings consumed
-  unevenly across `EIf` / `EMatch` arms, and the discarded-statement-expr
-  reclamation (A-1b) which maps to `ESeq` here.
+  match arm pattern-binding drop, discarded sequenced heap value drop (A-1b),
+  discarded scalar (no drop), loop-parameter drop.
+- **Remaining in Phase 2**: `EHandle` (effect handlers) and cross-branch
+  balancing of outer bindings consumed unevenly across `EIf` / `EMatch` arms.
+  Cross-branch balancing needs each balancing drop placed in a specific branch,
+  which requires the action to carry placement (a site) — deferred to Phase 3,
+  where the codegen wiring assigns sites (as the `src/` backend already does).
+  Until then these are safe no-ops (never a wrong drop).
 
 ### Phase 3 — port the RC codegen
 

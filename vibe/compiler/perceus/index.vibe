@@ -8,6 +8,10 @@ import .. / codegen / common_analysis {
   collect_free_vars
 }
 
+import .. / core / polyfill.vibe {
+  __to_string
+}
+
 //# Types
 
 // Perceus RC analysis for the selfhost linear backend.
@@ -57,6 +61,7 @@ export struct PerceusAction {
 // re-advanced in lockstep so ids match.
 struct PCtx {
   mut next_id: Int;
+  mut seq_id: Int;
   names: Array[String];
   uses: Array[Int];
   borrows: Array[Int];
@@ -70,6 +75,7 @@ struct PCtx {
 let pctx_new: () -> PCtx = () -> {
   PCtx::{
     next_id: 0,
+    seq_id: 0,
     names: [],
     uses: [],
     borrows: [],
@@ -77,6 +83,14 @@ let pctx_new: () -> PCtx = () -> {
     remaining: [],
     actions: [],
   }
+}
+
+// A fresh, deterministic synthetic name for an `ESeq`-discarded value. Both
+// passes walk the tree identically, so the Nth `ESeq` gets the same name.
+let next_seq_name: (PCtx) -> String = (ctx) -> {
+  let nm = "__seq" + __to_string(ctx.seq_id)
+  ctx.seq_id = ctx.seq_id + 1
+  nm
 }
 
 export let pa_is_drop: (PerceusAction) -> Bool = (a) -> {
@@ -288,7 +302,11 @@ export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, ex
       pc_count(ctx, scope, body)
     },
     ESeq(a, b) => {
+      // `a`'s value is discarded; bind it so an owned heap temporary is
+      // reclaimed at scope end (A-1b). A scalar `a` needs no binding.
       pc_count(ctx, scope, a)
+      let nm = next_seq_name(ctx)
+      let _id = pc_declare(ctx, nm, is_scalar_expr(a))
       pc_count(ctx, scope, b)
     },
     EBinOp(_op, l, r) => {
@@ -392,6 +410,19 @@ export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, ex
       }
       pc_count(ctx, s3, fbody)
     },
+    ELoop(params, lbody) => {
+      // Loop parameters are bindings (re-bound on continue) scoped to the body.
+      let mut s = scope
+      let mut i = 0
+      while i < Array::length(params) {
+        let p = Array::get(params, i)
+        pc_count(ctx, scope, p.1)
+        let pid = pc_declare(ctx, p.0, is_scalar_expr(p.1))
+        s = Map::set(s, p.0, pid)
+        i = i + 1
+      }
+      pc_count(ctx, s, lbody)
+    },
     EMatch(scrut, arms) => {
       pc_count(ctx, scope, scrut)
       let snap_u = copy_ints(ctx.uses)
@@ -450,8 +481,12 @@ export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, ex
 let pe_declare: (PCtx, String) -> Int = (ctx, _name) -> {
   let id = ctx.next_id
   let owning = Array::get(ctx.uses, id)
-  let borrowed = Array::get(ctx.borrows, id)
-  let init = if owning == 0 && borrowed > 0 { 1 } else { owning }
+  // A binding holds one owned reference. If it is never used in an owning
+  // (consuming) position it still owns that reference at scope end and must be
+  // dropped there — this covers both pure-borrow bindings and entirely unused
+  // ones (e.g. a discarded sequenced value). The scalar check in pe_scope_end
+  // skips known non-heap values.
+  let init = if owning == 0 { 1 } else { owning }
   Array::push(ctx.remaining, init)
   ctx.next_id = id + 1
   id
@@ -556,7 +591,10 @@ export let rec pc_emit: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, exp
     },
     ESeq(a, b) => {
       pc_emit(ctx, scope, a)
+      let nm = next_seq_name(ctx)
+      let id = pe_declare(ctx, nm)
       pc_emit(ctx, scope, b)
+      pe_scope_end(ctx, id, nm)
     },
     EBinOp(_op, l, r) => {
       pc_emit(ctx, scope, l)
@@ -640,6 +678,28 @@ export let rec pc_emit: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, exp
       pc_emit(ctx, s3, fbody)
       pe_scope_end(ctx, idv, value_name)
     },
+    ELoop(params, lbody) => {
+      let mut s = scope
+      let pids: Array[Int] = []
+      let pnames: Array[String] = []
+      let mut i = 0
+      while i < Array::length(params) {
+        let p = Array::get(params, i)
+        pc_emit(ctx, scope, p.1)
+        let pid = pe_declare(ctx, p.0)
+        s = Map::set(s, p.0, pid)
+        Array::push(pids, pid)
+        Array::push(pnames, p.0)
+        i = i + 1
+      }
+      pc_emit(ctx, s, lbody)
+      let mut j = 0
+      while j < Array::length(pids) {
+        pe_scope_end(ctx, Array::get(pids, j), Array::get(pnames, j))
+        j = j + 1
+      }
+      0
+    },
     EMatch(scrut, arms) => {
       pc_emit(ctx, scope, scrut)
       let snap = copy_ints(ctx.remaining)
@@ -678,8 +738,10 @@ export let build_perceus_plan: (Expr) -> Array[PerceusAction] = (body) -> {
   let ctx = pctx_new()
   let empty: Map[String, Int] = map {}
   pc_count(ctx, empty, body)
-  // Reset id allocation; the emit pass re-declares in the same tree order.
+  // Reset id + synthetic-name allocation; the emit pass re-declares in the
+  // same tree order so ids and synthetic names line up.
   ctx.next_id = 0
+  ctx.seq_id = 0
   pc_emit(ctx, empty, body)
   ctx.actions
 }
