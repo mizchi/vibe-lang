@@ -514,7 +514,13 @@ let lex_decimal: (String, Int, Int) -> (Token, Int) with { Error } = (s, len, i)
   if int_end == i {
     throw("expected digit")
   }
-  if int_end < len && String::char_code_at(s, int_end) == '.' {
+  // Tuple field access `t.0.0`: a number immediately preceded by a single field
+  // dot must NOT absorb a trailing `.<digit>` as a float decimal — that `.` is
+  // the next tuple-index projection, not this number's fraction. (Mirrors
+  // src/parser/lexer.mbt `after_field_dot`.) Excludes `..`/`...` (range/spread)
+  // by requiring the char two back to not also be a dot.
+  let after_field_dot = i >= 1 && String::char_code_at(s, i - 1) == '.' && (i < 2 || String::char_code_at(s, i - 2) != '.')
+  if !after_field_dot && int_end < len && String::char_code_at(s, int_end) == '.' {
     if int_end + 1 < len && is_digit(String::char_code_at(s, int_end + 1)) {
       let int_str = s[i: int_end]
       let int_val = Int::to_double(parse_int_from_string(int_str))
