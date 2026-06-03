@@ -70,12 +70,20 @@ is added.
   this by the header size (still leaking, as expected with no RC); once Perceus
   RC + a free-list land (Phase 3) this per-iteration figure must drop to ~0,
   which is the concrete leak-fixed acceptance criterion.
-- Introduce the `src/`-compatible header `[type_id@0][length@4][payload@8...]`
-  for tuple / array / record / enum / closure allocations in the selfhost
-  linear backend (`codegen/expr/compile_expr_tail2.vibe`, `compile_lambda.vibe`,
-  `compile_expr.vibe` ctor path, etc.).
-- Shift every field read/write by the header size; keep string/bytes fat
-  pointers as today (leaf objects).
+- Gating in place: `CompileCtx.enable_rc` (threaded as a parameter on the WASI
+  path) + `compile_wasi_module_rc` / `compile_wasi_rc` entries. Default off, so
+  the existing path is unchanged.
+- **Records/structs already carry a `[type_id@0][length@4][payload@8...]`
+  header; only tuples were headerless.** Tuples now take the same header under
+  `enable_rc` (type_id 3 = tuple): construction (`compile_expr_tail2.vibe`),
+  field access (`compile_expr_tail4.vibe` EDot), and the `compile_match.vibe`
+  PTuple element loads all shift the payload by 8. Verified result-preserving
+  (heap e2e 15/15 on both paths, incl. a discriminating tuple-inequality case)
+  and the leak profiler shows the RC-mode tuple loop at **24 B/iteration**
+  (16 element + 8 header) vs 16 default — bigger but still leaking, as expected
+  with no RC drop yet.
+- Remaining for arrays / enums / closures: the same header treatment. Keep
+  string/bytes fat pointers as today (leaf objects).
 - No refcount field yet, no behavior change: the parity gates
   (`scripts/test_selfhost_*`) must show identical compiled output / runtime
   results. This phase is purely structural.
