@@ -5,7 +5,7 @@ import .. / .. / core {
 }
 
 import .. / .. / perceus {
-  PerceusAction, build_perceus_plan, pa_is_alias_dup, pa_is_drop, pa_is_dup
+  PerceusAction, build_perceus_plan, build_perceus_plan_with_params, pa_is_alias_dup, pa_is_drop, pa_is_dup, type_expr_is_heap
 }
 
 import .. / builtin_bodies {
@@ -13,11 +13,11 @@ import .. / builtin_bodies {
 }
 
 import .. / common_analysis {
-  collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, is_mut_captured_in
+  collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, is_mut_captured_in, scope_tail_proj_root
 }
 
 import .. / common_base {
-  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
+  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, fn_type_param_types, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, get_slet_type, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
 }
 
 import .. / common_extractors {
@@ -37,6 +37,41 @@ import ./linked_helpers.vibe {
 }
 
 //# Functions
+
+// ADR-0055 Stage 4: a runtime-guarded rc_dup of the value in `local_idx` — no-op
+// on an even (scalar) value or a string/bytes fat pointer. Replica of
+// compile_expr_tail's emit_rc_dup_guarded (linked_compile cannot import the tail
+// chain). Used to dup an owned heap param used in multiple owning positions.
+let lc_emit_rc_dup_guarded: (Bytes, Int) -> Unit = (buf, local_idx) -> {
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, 1)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_if_void(buf)
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, 32)
+  emit_i64_shr_s(buf)
+  emit_i64_eqz(buf)
+  emit_if_void(buf)
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 1)
+  emit_i32_add(buf)
+  emit_i32_store(buf, 2, 0)
+  emit_end(buf)
+  emit_end(buf)
+}
 
 export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String, String)], Array[(String, String, Int, Int)], Bool, Bool) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, linked_imports, library_mode, enable_rc) -> {
   let fn_names_list = Array::slice([
@@ -827,13 +862,82 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     let rc_dups = Array::slice([
       ""
     ], 0, 0)
+    // ADR-0055 Stage 4 (owned-vs-borrowed): top-level fn parameters are owned
+    // heap values; norm_params (suffix-stripped) feeds the param-aware plan, and
+    // lc_heap_params lists the heap-typed ones for binding/drop classification.
+    let lc_norm_params = if is_efn(__bi_expr) {
+      let ps = get_efn_params(__bi_expr)
+      // A top-level fn's param types live on its signature (`let f: (A,B) -> R`),
+      // not on the lambda params — fall back to the signature arg types when a
+      // lambda param has no annotation. (ADR-0055 Stage 4 owned-param drops.)
+      // A single tuple param prints as `((A,B)) -> R` but parses as multiple
+      // args (the outer parens are the param list); when the lambda has exactly
+      // one param and the signature has >1 args, the param IS the tuple of all
+      // those args — reconstruct it so the param is seen as a heap tuple.
+      let sig_args_raw = fn_type_param_types(get_slet_type(__bi_stmt))
+      let single_tuple_param = match sig_args_raw {
+        Some(a) => Array::length(ps) == 1 && Array::length(a) > 1,
+        None => false
+      }
+      let np = Array::slice(ps, 0, 0)
+      let mut spi = 0
+      while spi < Array::length(ps) {
+        let (sraw, sty) = Array::get(ps, spi)
+        let slen = String::length(sraw)
+        let ssn = if slen > 0 {
+          let slc = String::char_code_at(sraw, slen - 1)
+          if slc == '~' || slc == '?' {
+            sraw[0: slen - 1]
+          } else {
+            sraw
+          }
+        } else {
+          sraw
+        }
+        let resolved_ty = match sty {
+          Some(_) => sty,
+          None =>
+            match sig_args_raw {
+              Some(args) =>
+                if single_tuple_param {
+                  Some(TyTuple(args))
+                } else if Array::length(args) == Array::length(ps) {
+                  Some(Array::get(args, spi))
+                } else {
+                  None
+                },
+              None => None
+            }
+        }
+        Array::push(np, (ssn, resolved_ty))
+        spi = spi + 1
+      }
+      np
+    } else {
+      Array::slice([
+        ("", None)
+      ], 0, 0)
+    }
+    let lc_heap_params = Array::slice([
+      ""
+    ], 0, 0)
     if enable_rc {
       let fbody = if is_efn(__bi_expr) {
         get_efn_body(__bi_expr)
       } else {
         __bi_expr
       }
-      let plan = build_perceus_plan(fbody)
+      let plan = build_perceus_plan_with_params(lc_norm_params, fbody)
+      let mut lhpi = 0
+      while lhpi < Array::length(lc_norm_params) {
+        let (lhpn, lhpt) = Array::get(lc_norm_params, lhpi)
+        if type_expr_is_heap(lhpt) {
+          Array::push(lc_heap_params, lhpn)
+        } else {
+          ()
+        }
+        lhpi = lhpi + 1
+      }
       let mut di = 0
       while di < Array::length(plan) {
         let pa = Array::get(plan, di)
@@ -876,9 +980,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       enable_rc: enable_rc,
       rc_drop_names: rc_drops,
       rc_alias_dup_names: rc_alias_dups,
-      heap_binding_names: Array::slice([
-        ""
-      ], 0, 0),
+      heap_binding_names: lc_heap_params,
       rc_drop_func_idx: if enable_rc {
         rc_drop_idx
       } else {
@@ -909,7 +1011,80 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       }
       Array::push(local_names, "__env")
       let param_count = Array::length(__bi_params) + 1
+      // ADR-0055 Stage 4: owning-use dup budget for heap params at fn entry.
+      if enable_rc {
+        let mut edi = 0
+        while edi < Array::length(lc_norm_params) {
+          let (edn, edt) = Array::get(lc_norm_params, edi)
+          if type_expr_is_heap(edt) {
+            let mut edc = 0
+            let mut edj = 0
+            while edj < Array::length(rc_dups) {
+              if Array::get(rc_dups, edj) == edn {
+                edc = edc + 1
+              } else {
+                ()
+              }
+              edj = edj + 1
+            }
+            let mut ede = 0
+            while ede < edc {
+              lc_emit_rc_dup_guarded(body_buf, edi)
+              ede = ede + 1
+            }
+          } else {
+            ()
+          }
+          edi = edi + 1
+        }
+      } else {
+        ()
+      }
       let final_nl = compile_expr(body_buf, body, local_names, param_count, compile_ctx, -1)
+      // ADR-0055 Stage 4: drop owned heap params (borrow-only/unused) at the body
+      // tail. If the result is a projection rooted at a dropped param, dup it
+      // first to survive the recursive drop (guarded; no-op on a scalar result).
+      let mut tail_nl = final_nl
+      if enable_rc && rc_drop_idx >= 0 {
+        let tail_root = scope_tail_proj_root(body)
+        let mut need_dup = false
+        let mut tci = 0
+        while tci < Array::length(lc_norm_params) {
+          let (tcn, tct) = Array::get(lc_norm_params, tci)
+          if type_expr_is_heap(tct) && array_contains_str(rc_drops, tcn) && tcn == tail_root {
+            need_dup = true
+          } else {
+            ()
+          }
+          tci = tci + 1
+        }
+        let rtemp = final_nl
+        if need_dup {
+          emit_local_set(body_buf, rtemp)
+          lc_emit_rc_dup_guarded(body_buf, rtemp)
+          tail_nl = final_nl + 1
+        } else {
+          ()
+        }
+        let mut tdj = 0
+        while tdj < Array::length(lc_norm_params) {
+          let (tdn, tdt) = Array::get(lc_norm_params, tdj)
+          if type_expr_is_heap(tdt) && array_contains_str(rc_drops, tdn) {
+            emit_local_get(body_buf, tdj)
+            emit_call(body_buf, rc_drop_idx)
+          } else {
+            ()
+          }
+          tdj = tdj + 1
+        }
+        if need_dup {
+          emit_local_get(body_buf, rtemp)
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
       // ADR-0055 Stage 1: the exported Int entry returns a tagged value; untag
       // at the boundary so the host sees the real integer (else it prints 2n).
       if enable_rc && fn_name_dbg == entry_name {
@@ -917,8 +1092,8 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
         emit_i64_shr_s(body_buf)
       }
       Array::push(bodies, body_buf)
-      let extra = if final_nl > param_count {
-        final_nl - param_count
+      let extra = if tail_nl > param_count {
+        tail_nl - param_count
       } else {
         0
       }

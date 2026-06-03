@@ -5,11 +5,11 @@ import .. / .. / core {
 }
 
 import .. / common_analysis {
-  collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, is_mut_captured_in
+  collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, is_mut_captured_in, scope_tail_proj_root
 }
 
 import .. / .. / perceus {
-  build_perceus_plan, pa_is_alias_dup, pa_is_drop, pa_is_dup
+  build_perceus_plan_with_params, pa_is_alias_dup, pa_is_drop, pa_is_dup, type_expr_is_heap
 }
 
 import .. / common_base {
@@ -25,6 +25,41 @@ import .. / wasm_emit {
 }
 
 //# Functions
+
+// ADR-0055 Stage 4: a runtime-guarded rc_dup of the value in `local_idx` — a
+// no-op on an even (scalar) value or a string/bytes fat pointer (high 32 bits
+// set). Replica of compile_expr_tail's emit_rc_dup_guarded (avoids a circular
+// import: the tail chain calls compile_lambda).
+let lam_emit_rc_dup_guarded: (Bytes, Int) -> Unit = (buf, local_idx) -> {
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, 1)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_if_void(buf)
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, 32)
+  emit_i64_shr_s(buf)
+  emit_i64_eqz(buf)
+  emit_if_void(buf)
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 1)
+  emit_i32_add(buf)
+  emit_i32_store(buf, 2, 0)
+  emit_end(buf)
+  emit_end(buf)
+}
 
 export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, params, fn_body, local_names, next_local, ctx, ld, compile_fn) -> {
   let param_names_arr = Array::slice([
@@ -85,7 +120,29 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
   }
   // RC: a lambda body has its own scope, so run the Perceus analysis on it and
   // give the lambda ctx its own drop set (otherwise per-iteration tuples in a
-  // callback / returned closure leak).
+  // callback / returned closure leak). ADR-0055 Stage 4 (owned-vs-borrowed): the
+  // analysis also declares the parameters as owned bindings, so a heap param used
+  // only by borrows is dropped at the body tail rather than leaked.
+  // norm_params = params with the labeled-arg `~`/`?` suffix stripped, matching
+  // how the body references them (and how lam_locals were named).
+  let norm_params = Array::slice(params, 0, 0)
+  let mut npi = 0
+  while npi < Array::length(params) {
+    let (rawn, pty) = Array::get(params, npi)
+    let rnlen = String::length(rawn)
+    let sn = if rnlen > 0 {
+      let lc = String::char_code_at(rawn, rnlen - 1)
+      if lc == '~' || lc == '?' {
+        rawn[0: rnlen - 1]
+      } else {
+        rawn
+      }
+    } else {
+      rawn
+    }
+    Array::push(norm_params, (sn, pty))
+    npi = npi + 1
+  }
   let lam_drops = Array::slice([
     ""
   ], 0, 0)
@@ -95,8 +152,11 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
   let lam_dups = Array::slice([
     ""
   ], 0, 0)
+  let lam_heap_params = Array::slice([
+    ""
+  ], 0, 0)
   if ctx.enable_rc {
-    let lam_plan = build_perceus_plan(fn_body)
+    let lam_plan = build_perceus_plan_with_params(norm_params, fn_body)
     let mut ldi = 0
     while ldi < Array::length(lam_plan) {
       let lpa = Array::get(lam_plan, ldi)
@@ -111,6 +171,16 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
       }
       ldi = ldi + 1
     }
+    let mut hpi = 0
+    while hpi < Array::length(norm_params) {
+      let (hpn, hpt) = Array::get(norm_params, hpi)
+      if type_expr_is_heap(hpt) {
+        Array::push(lam_heap_params, hpn)
+      } else {
+        ()
+      }
+      hpi = hpi + 1
+    }
   }
   let lam_ctx = CompileCtx::{
     func_table: ctx.func_table, str_table: ctx.str_table,
@@ -123,22 +193,97 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
     enable_rc: ctx.enable_rc,
     rc_drop_names: lam_drops,
     rc_alias_dup_names: lam_alias_dups,
-    heap_binding_names: Array::slice([
-      ""
-    ], 0, 0),
+    heap_binding_names: lam_heap_params,
     rc_drop_func_idx: ctx.rc_drop_func_idx,
     rc_alloc_func_idx: ctx.rc_alloc_func_idx,
     rc_dup_names: lam_dups
   }
+  // ADR-0055 Stage 4: emit the owning-use dup budget for heap params at function
+  // entry (one guarded rc_dup per plan PaDup(param)) — a param used in N owning
+  // positions needs N-1 extra refs. Param i lives at local index i.
+  if ctx.enable_rc {
+    let mut dpi = 0
+    while dpi < Array::length(norm_params) {
+      let (dpn, dpt) = Array::get(norm_params, dpi)
+      if type_expr_is_heap(dpt) {
+        let mut dcount = 0
+        let mut dqi = 0
+        while dqi < Array::length(lam_dups) {
+          if Array::get(lam_dups, dqi) == dpn {
+            dcount = dcount + 1
+          } else {
+            ()
+          }
+          dqi = dqi + 1
+        }
+        let mut de = 0
+        while de < dcount {
+          lam_emit_rc_dup_guarded(lam_buf, dpi)
+          de = de + 1
+        }
+      } else {
+        ()
+      }
+      dpi = dpi + 1
+    }
+  } else {
+    ()
+  }
   let final_lam_nl = compile_fn(lam_buf, fn_body, lam_locals, lam_nl, lam_ctx, -1)
+  // ADR-0055 Stage 4: drop owned heap params (borrow-only / unused, hence in the
+  // plan's drop set) at the body tail. The body result is on the stack. If that
+  // result is a projection rooted at one of the dropped params, dup it first
+  // (the recursive drop would otherwise free the field it aliases — use-after
+  // -free); the guarded dup is a no-op on a scalar result.
+  let mut tail_lam_nl = final_lam_nl
+  if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
+    let tail_root = scope_tail_proj_root(fn_body)
+    let mut need_dup = false
+    let mut ti = 0
+    while ti < Array::length(norm_params) {
+      let (tpn, tpt) = Array::get(norm_params, ti)
+      if type_expr_is_heap(tpt) && array_contains_str(lam_drops, tpn) && tpn == tail_root {
+        need_dup = true
+      } else {
+        ()
+      }
+      ti = ti + 1
+    }
+    let rtemp = final_lam_nl
+    if need_dup {
+      emit_local_set(lam_buf, rtemp)
+      lam_emit_rc_dup_guarded(lam_buf, rtemp)
+      tail_lam_nl = final_lam_nl + 1
+    } else {
+      ()
+    }
+    let mut tj = 0
+    while tj < Array::length(norm_params) {
+      let (dpn2, dpt2) = Array::get(norm_params, tj)
+      if type_expr_is_heap(dpt2) && array_contains_str(lam_drops, dpn2) {
+        emit_local_get(lam_buf, tj)
+        emit_call(lam_buf, ctx.rc_drop_func_idx)
+      } else {
+        ()
+      }
+      tj = tj + 1
+    }
+    if need_dup {
+      emit_local_get(lam_buf, rtemp)
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
   let lambda_idx = Array::length(ctx.lambda_table.bodies)
   Array::push(ctx.lambda_table.bodies, lam_buf)
   Array::push(ctx.lambda_table.param_counts, user_params + 1)
   Array::push(ctx.lambda_table.captures, captures)
   let mut extra_lam = 0
   let min_lam_nl = user_params + 1
-  if final_lam_nl > min_lam_nl {
-    extra_lam = final_lam_nl - min_lam_nl
+  if tail_lam_nl > min_lam_nl {
+    extra_lam = tail_lam_nl - min_lam_nl
   }
   Array::push(ctx.lambda_table.meta_i32, 0)
   Array::push(ctx.lambda_table.meta_i64, extra_lam)

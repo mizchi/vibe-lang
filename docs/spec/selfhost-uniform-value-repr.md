@@ -385,12 +385,42 @@ arithmetic / comparison / bitop / shift / float / nested-data case under
      reassignment safety carve-out above) or an owned value stored into a
      container that *outlives* the current scope without a matching drop site are
      not dup'd/dropped → leak (safe).
-   - The final value of a heap `mut` binding is not dropped at scope end (a
-     bounded, one-time leak — the per-iteration leak is fixed; the scope-end drop
-     needs the same tail-aliasing guard as the `let` projection-escape case).
    - Captured closures remain unheadered (the recursion would misread one stored
      in a dropped container — low address, so the high-32 guard does not catch
      it); no opt-in RC path exercises it.
+
+   **Heap `mut` final-value scope-end drop (landed).** The reassignment drop only
+   reclaims *overwritten* values; the binding's last value still owns a reference
+   at scope end. `ELetMut` now emits a scope-end drop of the final value (same
+   projection-rooted-at-name tail guard as `let`), so `let mut b = ...; … ; b.0`
+   reclaims fully. Pinned by `mut_final`.
+
+   **Owned parameters (owned-vs-borrowed; landed).** A function parameter is
+   *owned*: the caller transfers its reference in under the owning-argument
+   convention (a call argument is a consuming use). So a heap param used only by
+   borrows (or unused) is never dropped — it leaked. `build_perceus_plan_with
+   _params` now declares the parameters as bindings (count + emit in lockstep, so
+   the existing machinery emits a `PaDrop` for a borrow-only/unused heap param and
+   a `PaDup` for one used in multiple owning positions), and the codegen
+   (compile_lambda + the top-level fn path in linked_compile) classifies the heap
+   params, emits the owning-use dup budget at entry, and drops the owned params at
+   the body tail. The tail drop carries the same projection-escape guard (dup the
+   result first when it is a projection rooted at a dropped param — `fst(p) → p.0`).
+   Heap-ness is read from the param's type (`type_expr_is_heap`): tuple / array /
+   record / enum / concrete struct, but **never** a type containing a function
+   (closures are unheadered — the recursive `__rc_drop` would misread one) nor a
+   type variable / unannotated param (may be a closure → safe, no drop). A
+   top-level fn's param types live on its *signature* (`let f: (A,B) → R`), not on
+   the lambda params, so they are read from the SLet annotation; a single tuple
+   param prints `((A,B)) → R` but parses as multiple args (the outer parens are
+   the param list), so a 1-param lambda with a multi-arg signature reconstructs
+   the param type as the tuple of all args. Pinned by `owned_param`,
+   `owned_param_proj` (reclaim) and three heap-e2e parity cases.
+
+   **Still remaining (smaller, safe):** owned heap params of *nested closures*
+   (compile_lambda) whose types are unannotated are not dropped (the signature
+   lives on an outer binding the lambda does not see) → leak (safe); and the
+   container-escape / reassign-reads-target carve-outs above.
 5. **Stage 5 — verification & throughput. ◐ MEASURED.** The RC e2e gate (47/47,
    default vs RC identical on wasmtime) is the correctness signal;
    `scripts/bench_selfhost_rc.{sh,mjs}` measures the payoff: each benchmark

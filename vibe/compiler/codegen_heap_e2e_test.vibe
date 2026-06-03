@@ -466,6 +466,31 @@ test "heap e2e: chained projection in loop" {
   assert_result(src, "main", "chained_projection_loop", "35")
 }
 
+// ADR-0055 Stage 4 (owned-vs-borrowed): a function parameter is owned (the
+// caller transfers its reference under the owning-argument convention). A heap
+// param used only by borrows must be dropped at the callee's scope end, else it
+// leaks. `consume(p)` borrows p.0/p.1 and returns a scalar — the tuple must be
+// reclaimed by the callee. Param type comes from the signature.
+test "heap e2e: owned tuple param dropped by callee (loop)" {
+  let src = "let consume: ((Int, Int)) -> Int = (p) -> {\n  p.0 + p.1\n}\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 100 {\n    let t = (i, i + 1)\n    s = s + consume(t)\n    i = i + 1\n  }\n  s\n}"
+  assert_result(src, "main", "owned_param_drop", "10000")
+}
+
+// ADR-0055 Stage 4: a param returned by projection (`fst(p) -> p.0`). The owned
+// param is dropped at the tail, but the result aliases a field — the tail guard
+// dups it first so it survives the recursive drop (no use-after-free).
+test "heap e2e: owned param returned by projection (loop)" {
+  let src = "let fst: (((Int, Int), (Int, Int))) -> (Int, Int) = (p) -> {\n  p.0\n}\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 100 {\n    let t = ((i, i + 1), (i + 2, i + 3))\n    let r = fst(t)\n    s = s + r.0\n    i = i + 1\n  }\n  s\n}"
+  assert_result(src, "main", "owned_param_proj", "4950")
+}
+
+// ADR-0055 Stage 4: the FINAL value of a heap mut binding is dropped at scope
+// end (the reassignment drop only reclaims overwritten values).
+test "heap e2e: heap mut final value dropped (loop)" {
+  let src = "let main: () -> Int = () -> {\n  let mut acc = 0\n  let mut i = 0\n  while i < 100 {\n    let mut b = (i, i + 1)\n    b = (i + 2, i + 3)\n    acc = acc + b.0\n    i = i + 1\n  }\n  acc\n}"
+  assert_result(src, "main", "mut_final_drop", "5150")
+}
+
 test "heap e2e: enum payload tuple drop in loop" {
   let src = "enum Box { Wrap((Int, Int)); Empty }\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 40 {\n    let e = Wrap((i, i + 1))\n    s = s + match e {\n      Wrap(p) => p.0 + p.1,\n      Empty => 0\n    }\n    i = i + 1\n  }\n  s\n}"
   assert_result(src, "main", "enum_tuple_loop", "1600")

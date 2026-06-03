@@ -487,6 +487,32 @@ export let collect_free_vars: (Expr, Array[String], Array[String]) -> Array[Stri
   out
 }
 
+// The root identifier of a projection chain (EDot(...EDot(EIdent(root))...)), or
+// "" if `e` is not a projection. (ADR-0055 Stage 4: shared with compile_expr_tail
+// so function-tail param drops can detect an escaping projection of a param.)
+export let rec proj_root_ident: (Expr) -> String = (e) -> {
+  match e {
+    EDot(obj, _) => proj_root_ident(obj),
+    EIdent(nm) => nm,
+    _ => ""
+  }
+}
+
+// If the *tail* (result) expression of a scope is a projection chain, return its
+// root identifier; otherwise "". Follows let/seq/assign wrappers to the tail.
+export let rec scope_tail_proj_root: (Expr) -> String = (e) -> {
+  match e {
+    ELet(_, _, b) => scope_tail_proj_root(b),
+    ELetMut(_, _, b) => scope_tail_proj_root(b),
+    ELetRec(_, _, b) => scope_tail_proj_root(b),
+    ESeq(_, b) => scope_tail_proj_root(b),
+    EAssign(_, _, b) => scope_tail_proj_root(b),
+    EAssignOp(_, _, _, b) => scope_tail_proj_root(b),
+    EDot(obj, _) => proj_root_ident(obj),
+    _ => ""
+  }
+}
+
 // Check if a mutable variable is captured by any nested EFn in the given expression
 export let rec is_mut_captured_in: (Expr, String) -> Bool = (expr, name) -> {
   match expr {

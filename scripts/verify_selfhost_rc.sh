@@ -143,6 +143,15 @@ reclaim_case owned_in_record '"struct H { v: (Int, Int) }\nlet main: () -> Int =
 # the assignment drop reclaims it (bounded heap, two blocks cycling).
 reclaim_case mut_reassign '"let main: () -> Int = () -> {\n  let mut b = (0, 0)\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let t = (i, i + 1)\n    b = t\n    i = i + 1\n  }\n  b.0\n}"'
 
+# ADR-0055 Stage 4: the FINAL value of a heap mut binding is dropped at scope end.
+reclaim_case mut_final '"let main: () -> Int = () -> {\n  let mut acc = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let mut b = (i, i + 1)\n    b = (i + 2, i + 3)\n    acc = acc + b.0\n    i = i + 1\n  }\n  acc\n}"'
+
+# ADR-0055 Stage 4 (owned-vs-borrowed): an owned heap parameter used only by
+# borrows is dropped by the callee, else the caller's transferred tuple leaks.
+reclaim_case owned_param '"let consume: ((Int, Int)) -> Int = (p) -> {\n  p.0 + p.1\n}\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let t = (i, i + 1)\n    s = s + consume(t)\n    i = i + 1\n  }\n  s\n}"'
+# An owned param returned by projection (tail-aliasing guard dups the result).
+reclaim_case owned_param_proj '"let fst: (((Int, Int), (Int, Int))) -> (Int, Int) = (p) -> {\n  p.0\n}\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let t = ((i, i + 1), (i + 2, i + 3))\n    let r = fst(t)\n    s = s + r.0\n    i = i + 1\n  }\n  s\n}"'
+
 # KNOWN PRE-EXISTING GAP (not a regression): a *nested* tuple built in a loop
 # (`let t = ((i, i+1), (i+2, i+3))`) fails to compile under RC at BOTH HEAD and
 # the Stage-1 baseline — so it is excluded from the reclamation set rather than

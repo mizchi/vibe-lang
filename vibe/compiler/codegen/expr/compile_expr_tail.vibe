@@ -412,7 +412,27 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
       let nl = compile_expr(buf, value, local_names, next_local + 1, ctx, ld)
       emit_local_set(buf, local_idx)
       let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
-      nl2
+      // ADR-0055 Stage 4: drop the mut binding's FINAL value at scope end (the
+      // per-iteration reassignment drop only reclaims overwritten values; the
+      // last one still owns a reference). Same projection-rooted-at-name tail
+      // guard as `let`: if the scope result aliases a field of this binding, dup
+      // it before the recursive drop frees the container.
+      if ctx.enable_rc && array_contains_str(ctx.heap_binding_names, name) && array_contains_str(ctx.rc_drop_names, name) && ctx.rc_drop_func_idx >= 0 {
+        if scope_tail_proj_root(body) == name {
+          emit_local_set(buf, nl2)
+          emit_rc_dup_guarded(buf, nl2)
+          emit_local_get(buf, local_idx)
+          emit_call(buf, ctx.rc_drop_func_idx)
+          emit_local_get(buf, nl2)
+          nl2 + 1
+        } else {
+          emit_local_get(buf, local_idx)
+          emit_call(buf, ctx.rc_drop_func_idx)
+          nl2
+        }
+      } else {
+        nl2
+      }
     }
   } else if __tag == 12 {
     let name = get_eassign_name(expr)
