@@ -1136,7 +1136,13 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   leb128_encode_u32(tag_content, 1)
   bytebuf_push_section(out, 13, tag_content)
   let global_content = bytebuf_new()
-  bytebuf_push_vec_header(global_content, 2)
+  // RC mode adds a third mutable i32 global (index 2): the free-list head used
+  // by tuple rc_drop / rc_alloc (docs/spec/selfhost-rc-port.md).
+  if enable_rc {
+    bytebuf_push_vec_header(global_content, 3)
+  } else {
+    bytebuf_push_vec_header(global_content, 2)
+  }
   bytebuf_push(global_content, 127)
   bytebuf_push(global_content, 1)
   emit_i32_const(global_content, heap_start)
@@ -1145,6 +1151,12 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   bytebuf_push(global_content, 1)
   emit_i64_const(global_content, 0)
   emit_end(global_content)
+  if enable_rc {
+    bytebuf_push(global_content, 127)
+    bytebuf_push(global_content, 1)
+    emit_i32_const(global_content, 0)
+    emit_end(global_content)
+  }
   bytebuf_push_section(out, 6, global_content)
   let start_func_idx = func_offset + num_user_funcs
   let run_func_idx = start_func_idx + 1

@@ -43,44 +43,106 @@ export let compile_expr_tail2: (Bytes, Expr, Array[String], Int, CompileCtx, Int
   if __tag == 15 {
     let __tuple_elems = get_etuple_elems(expr)
     let num_elems = Array::length(__tuple_elems)
-    // RC mode: prepend the uniform `[type_id@0][length@4][payload@8...]` header
-    // (docs/spec/selfhost-rc-port.md). type_id 3 = tuple (matches src/ obj_tuple).
-    let hdr = if ctx.enable_rc {
-      8
-    } else {
-      0
-    }
-    let alloc_size = hdr + num_elems * 8
     let ptr_local = next_local
     Array::push(local_names, "__tuple_ptr")
     let mut nl = next_local + 1
-    emit_global_get(buf, 0)
-    emit_i64_extend_i32_u(buf)
-    emit_local_tee(buf, ptr_local)
-    emit_i32_wrap_i64(buf)
-    emit_i32_const(buf, alloc_size)
-    emit_i32_add(buf)
-    emit_global_set(buf, 0)
     if ctx.enable_rc {
+      // RC layout (docs/spec/selfhost-rc-port.md):
+      //   block_start: [alloc_size@0][rc_count@4][type_id@8][length@12][payload@16...]
+      // The tuple value is block_start+8 (points at type_id), so the live header
+      // is [alloc_size@ptr-8][rc_count@ptr-4][type_id@ptr+0][length@ptr+4] and the
+      // payload stays at ptr+8 (field access is unchanged). ptr_local holds
+      // block_start. type_id 3 = tuple.
+      let total = 16 + num_elems * 8
+      // Allocate: reuse an exact-fit free-list block (head = global 2) else bump.
+      emit_global_get(buf, 2)
+      emit_i32_eqz(buf)
+      emit_if_void(buf)
+      emit_global_get(buf, 0)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, ptr_local)
+      emit_global_get(buf, 0)
+      emit_i32_const(buf, total)
+      emit_i32_add(buf)
+      emit_global_set(buf, 0)
+      emit_else(buf)
+      emit_global_get(buf, 2)
+      emit_i32_const(buf, 8)
+      emit_i32_sub(buf)
+      emit_i32_load(buf, 2, 0)
+      emit_i32_const(buf, total)
+      emit_i32_eq(buf)
+      emit_if_void(buf)
+      emit_global_get(buf, 2)
+      emit_i32_const(buf, 8)
+      emit_i32_sub(buf)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, ptr_local)
+      emit_global_get(buf, 2)
+      emit_i32_const(buf, 4)
+      emit_i32_sub(buf)
+      emit_i32_load(buf, 2, 0)
+      emit_global_set(buf, 2)
+      emit_else(buf)
+      emit_global_get(buf, 0)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, ptr_local)
+      emit_global_get(buf, 0)
+      emit_i32_const(buf, total)
+      emit_i32_add(buf)
+      emit_global_set(buf, 0)
+      emit_end(buf)
+      emit_end(buf)
+      // header words at block_start
       emit_local_get(buf, ptr_local)
       emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 3)
+      emit_i32_const(buf, total)
       emit_i32_store(buf, 2, 0)
       emit_local_get(buf, ptr_local)
       emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, num_elems)
+      emit_i32_const(buf, 1)
       emit_i32_store(buf, 2, 4)
-    }
-    let mut ti = 0
-    while ti < num_elems {
       emit_local_get(buf, ptr_local)
       emit_i32_wrap_i64(buf)
-      nl = compile_expr(buf, Array::get(__tuple_elems, ti), local_names, nl, ctx, ld)
-      emit_i64_store(buf, 3, hdr + ti * 8)
-      ti = ti + 1
+      emit_i32_const(buf, 3)
+      emit_i32_store(buf, 2, 8)
+      emit_local_get(buf, ptr_local)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, num_elems)
+      emit_i32_store(buf, 2, 12)
+      let mut tri = 0
+      while tri < num_elems {
+        emit_local_get(buf, ptr_local)
+        emit_i32_wrap_i64(buf)
+        nl = compile_expr(buf, Array::get(__tuple_elems, tri), local_names, nl, ctx, ld)
+        emit_i64_store(buf, 3, 16 + tri * 8)
+        tri = tri + 1
+      }
+      // tuple value = block_start + 8
+      emit_local_get(buf, ptr_local)
+      emit_i64_const(buf, 8)
+      emit_i64_add(buf)
+      nl
+    } else {
+      let alloc_size = num_elems * 8
+      emit_global_get(buf, 0)
+      emit_i64_extend_i32_u(buf)
+      emit_local_tee(buf, ptr_local)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, alloc_size)
+      emit_i32_add(buf)
+      emit_global_set(buf, 0)
+      let mut ti = 0
+      while ti < num_elems {
+        emit_local_get(buf, ptr_local)
+        emit_i32_wrap_i64(buf)
+        nl = compile_expr(buf, Array::get(__tuple_elems, ti), local_names, nl, ctx, ld)
+        emit_i64_store(buf, 3, ti * 8)
+        ti = ti + 1
+      }
+      emit_local_get(buf, ptr_local)
+      nl
     }
-    emit_local_get(buf, ptr_local)
-    nl
   } else if __tag == 16 {
     compile_match(buf, expr, local_names, next_local, ctx, ld, compile_expr)
   } else if __tag == 17 {
