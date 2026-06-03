@@ -159,6 +159,18 @@ is added.
   loop body is reclaimed (measured 0 bytes/iteration, constant 32 B for 1k and
   11k iterations); results unchanged (heap e2e 19/19 on both paths, incl. nested
   struct field access).
+- **Enums (constructors) are covered**: `A(x)` takes the same tagged free-list
+  RC layout (`compile_call.vibe`, `[tag@8][field_count@12][values@16…]`), and a
+  ctor binding is dropped via `is_ctor_call`. The match tag / field reads are
+  offset-invariant (the +8 pointer shift cancels the +8 header), so only
+  construction + drop changed. **Analysis change**: a bare-identifier *match
+  scrutinee* is now a **borrow** (like `EDot` / `__index` arg0) in
+  `build_perceus_plan` — matching reads the tag/fields but frees nothing, so the
+  binding keeps its owned reference and is reclaimed by its own scope-end drop.
+  Without this an enum/record/tuple bound then matched in a loop leaked (it was
+  "moved into" the match). A `let e = A(i); match e {…}` loop is now reclaimed
+  (measured 0 bytes/iteration, constant 24 B); results unchanged (heap e2e 20/20
+  on both paths, incl. an enum alloc+match loop).
 - Known limitations of this first vertical (all leak conservatively — they
   never corrupt — and only matter under `enable_rc`):
   - **Mixed tuple sizes**: the free list is head-only exact-fit (as in `src/`),
@@ -166,9 +178,10 @@ is added.
     reuse the stuck size-2 block until the head matches. Same-size loops (the
     common case) are fully reused.
 - Remaining: `rc_dup` for shared (multiply-used) bindings; recursive field drop
-  (needs the uniform `type_id` so a dropped tuple / record frees nested heap);
-  the same treatment for array / enum bindings; and a segregated / coalescing
-  free list.
+  (needs the uniform `type_id` so a dropped tuple / record / enum frees nested
+  heap); the same treatment for array bindings (arrays go through the
+  `array_new` / `Array::push` runtime, a separate mechanism); and a segregated /
+  coalescing free list.
 - Everything stays gated behind `enable_rc`, default off.
 
 ### Phase 4 — verification & cutover

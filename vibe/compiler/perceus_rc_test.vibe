@@ -200,6 +200,22 @@ test "perceus: match arm pattern binding is dropped" {
   assert(count_drops(plan, "p") == 1)
 }
 
+// A heap binding consumed only as a match scrutinee is borrowed (matching reads
+// the tag/fields but frees nothing), so it keeps its owned reference and is
+// dropped once at its scope end — this is what reclaims an enum/record/tuple
+// allocated then matched inside a loop.
+test "perceus: match scrutinee binding is borrowed and dropped" {
+  // let e = A(5); match e { A(n) => n, _ => 0 }
+  let arm1: (Pat, Expr) = (PCtor("A", [PBind("n")]), EIdent("n"))
+  let arm2: (Pat, Expr) = (PWild, EInt(0))
+  let arms: Array[(Pat, Expr)] = [arm1, arm2]
+  let m = EMatch(EIdent("e"), arms)
+  let body = ELet("e", ECall(EIdent("A"), [EInt(5)]), m)
+  let plan = build_perceus_plan(body)
+  assert(count_drops(plan, "e") == 1)
+  assert(count_dups(plan, "e") == 0)
+}
+
 // A handler arm-local pattern binding that is only borrowed is dropped.
 test "perceus: handle arm pattern binding is dropped" {
   // handle comp { Op(v) => v.0 }

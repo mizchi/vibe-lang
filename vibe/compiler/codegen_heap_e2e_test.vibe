@@ -153,6 +153,14 @@ test "heap e2e: nested struct field access" {
   assert_result(src, "main", "nested_struct", "12")
 }
 
+// An enum value allocated per iteration and consumed by a match is reclaimed
+// under RC (constructors are tagged like records; match tag/field reads are
+// offset-invariant). Correctness here; the leak is checked by the profiler.
+test "heap e2e: loop allocating + matching enums" {
+  let src = "enum E { A(Int); B }\nlet main: () -> Int = () -> {\n  let mut sum = 0\n  let mut i = 0\n  while i < 5 {\n    let e = A(i)\n    sum = sum + match e {\n      A(n) => n,\n      B => 0\n    }\n    i = i + 1\n  }\n  sum\n}"
+  assert_result(src, "main", "loop_enums", "10")
+}
+
 test "heap e2e: enum without payload" {
   let src = "enum Color { Red; Green; Blue }\nlet main: () -> Int = () -> {\n  let c = Green\n  match c {\n    Red => 0,\n    Green => 1,\n    Blue => 2\n  }\n}"
   assert_result(src, "main", "enum_nopayload", "1")

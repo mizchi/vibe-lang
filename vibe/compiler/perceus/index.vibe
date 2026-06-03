@@ -424,7 +424,15 @@ export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, ex
       pc_count(ctx, s, lbody)
     },
     EMatch(scrut, arms) => {
-      pc_count(ctx, scope, scrut)
+      // A bare-identifier scrutinee is a *borrow* (like EDot / `__index` arg0):
+      // matching reads the tag/fields but does not consume the value, so the
+      // binding keeps its owned reference and is reclaimed by its own scope-end
+      // drop. Without this an enum/record/tuple bound then matched in a loop
+      // leaks (it is "moved into" the match but the match frees nothing).
+      match scrut {
+        EIdent(sx) => pc_count_borrow(ctx, scope, sx),
+        _ => pc_count(ctx, scope, scrut)
+      }
       let snap_u = copy_ints(ctx.uses)
       let snap_b = copy_ints(ctx.borrows)
       let max_u = zeros(Array::length(snap_u))
@@ -763,7 +771,12 @@ export let rec pc_emit: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, exp
       0
     },
     EMatch(scrut, arms) => {
-      pc_emit(ctx, scope, scrut)
+      // Mirror the count pass: a bare-identifier scrutinee is borrowed (no use /
+      // no dup), so its owned reference survives to the scope-end drop.
+      match scrut {
+        EIdent(_) => 0,
+        _ => pc_emit(ctx, scope, scrut)
+      }
       let snap = copy_ints(ctx.remaining)
       let mut a = 0
       while a < Array::length(arms) {
