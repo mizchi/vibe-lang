@@ -241,9 +241,43 @@ arithmetic / comparison / bitop / shift / float / nested-data case under
    > global, is fine for reclamation). The **authoritative** signal is the
    > genuinely-busted `codegen_heap_e2e_test.vibe` (default vs RC, identical
    > results on wasmtime).
-3. **Stage 3 — generic recursive `rc_drop`.** Port `emit_rc_drop_fields` adapted
-   to the selfhost 8-byte-slot layout: `(val & 1)==1 && classify(type_id)` → for
-   each RC-managed field, recurse. Now nested heap is freed.
+3. **Stage 3 — generic recursive `rc_drop`. ✅ IMPLEMENTED.** Two parts landed:
+   - **Stage 2c (uniform drop-class byte).** Every headered RC block carries a
+     drop-class id in the **high byte of the rc_count word** (`block+7` =
+     `value-1`), set at construction: tuple/record/ctor/closure = `1`
+     (field-vector), array = `5`. rc lives in the low 24 bits, so `rc--`
+     (full-word `-1`) preserves the byte and the zero-test becomes
+     `(rc_word * 256) == 0` (the `*256` shifts the class byte out of the 32-bit
+     word — chosen because the selfhost emitter has `i32.mul`/`load8_u`/`store8`
+     but no `i32.and`/`i32.shr`). `array_new` was given the same
+     `[alloc_size@0][rc_count@4][class@7]` header (value = `block+8`, total `84`
+     == a cap-8 literal so the free-list reuses it) so **every** odd array
+     pointer is self-describing.
+   - **Stage 3 (recursive helper).** A generated `__rc_drop` wasm function
+     (`gen_rc_drop_body`, registered only under `enable_rc` as the last
+     generated builtin so the default path keeps byte-identical indices; its
+     wasm index is threaded as `CompileCtx::rc_drop_func_idx`) decrements the
+     value's rc and, at zero, reads the class byte and — for a field-vector —
+     loops `count@value+4` fields at `value+8+i*8`, **recursing into itself**
+     (`call self_idx`) to arbitrary depth; for an array it loops `length@value+4`
+     elements behind `data_ptr@value+8`; then pushes the block to the free-list.
+     Scope-end drops route through it (`local.get; call rc_drop_func_idx`).
+   Verified (`scripts/verify_selfhost_rc.sh`): the heap-e2e gate is 45/45
+   (default vs RC identical, incl. 4 new nested-drop-in-loop cases — 2/3-level
+   tuples, record-of-tuples, enum-payload-tuple — that both recurse and reuse
+   the freed blocks), and a per-iteration **nested** tuple
+   `((i,i+1),(i+2,i+3))` reclaims at **0 B/iter** (heap 96→96: outer + both
+   inner blocks freed each iteration; without recursion the 64 B/iter of inner
+   blocks would leak).
+
+   **Known gap (latent, opt-in RC only):** captured closures are odd pointers
+   that share the heap tag but are **not** yet headered (value = block_start, no
+   rc_count/class byte), so a captured closure stored in a *dropped* container
+   would be misclassified by the recursion. No opt-in RC test/benchmark stores a
+   closure in a dropped container, but this must be closed (header closures like
+   `array_new`) before RC is sound for general higher-order programs — track
+   with the Stage 4 escape work. Floats-in-heap-fields are likewise unsound
+   until boxed.
 4. **Stage 4 — escape ownership (analysis).** Dup on escaping field projections
    and container/call owning escapes (the general dup-placement work the
    `PaAliasDup` slice started). Only then are container/call escapes leak-free

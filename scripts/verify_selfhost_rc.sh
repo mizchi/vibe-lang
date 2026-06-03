@@ -124,6 +124,10 @@ reclaim_case tuple   '"let main: () -> Int = () -> {\n  let mut s = 0\n  let mut
 reclaim_case record  '"struct P { x: Int; y: Int }\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let p = P::{ x: i, y: i + 1 }\n    s = s + p.x\n    i = i + 1\n  }\n  s\n}"'
 reclaim_case enum    '"enum E { A(Int); B }\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let e = A(i)\n    s = s + match e { A(v) => v, B => 0 }\n    i = i + 1\n  }\n  s\n}"'
 reclaim_case array   '"let main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let a = [i, i + 1, i + 2]\n    s = s + Array::get(a, 1)\n    i = i + 1\n  }\n  s\n}"'
+# ADR-0055 Stage 3: a NESTED tuple per iteration. Without recursive drop the
+# outer block is reused but the two inner tuple blocks leak (heap grows). With
+# the recursive rc_drop helper all three are reclaimed → ~0 B/iter.
+reclaim_case nested  '"let main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let t = ((i, i + 1), (i + 2, i + 3))\n    let a = t.0\n    s = s + a.0\n    i = i + 1\n  }\n  s\n}"'
 
 # KNOWN PRE-EXISTING GAP (not a regression): a *nested* tuple built in a loop
 # (`let t = ((i, i+1), (i+2, i+3))`) fails to compile under RC at BOTH HEAD and
