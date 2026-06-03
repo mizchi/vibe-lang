@@ -2198,6 +2198,16 @@ fn wasm_emit_options_with_rc(
   // Desugar StringInterp into let-binding chains before Perceus analysis
   // so that intermediate String::concat results are RC-tracked.
   let desugared_ast = @frontend.desugar_string_interp(ast)
+  // Desugar for-in into its while/Block form before Perceus, so the analysis
+  // and codegen share the same lowered shape and per-iteration loop-body
+  // drops fire (the codegen would otherwise desugar for-in lazily, after RC
+  // analysis, breaking the site mapping). See desugar_for_in_module.
+  let desugared_ast = @frontend.desugar_for_in_module(desugared_ast)
+  // Bind discarded statement-expression values so owned heap temporaries that
+  // are never named (e.g. an ignored call result, or a for-in used purely for
+  // effect) are reclaimed at scope end instead of leaking. See
+  // desugar_discarded_stmts.
+  let desugared_ast = @frontend.desugar_discarded_stmts(desugared_ast)
   // Analyze top-level (non-function) statements
   let run_ast = extract_run_stmts(desugared_ast)
   let top_plan = @frontend.build_perceus_plan(run_ast)

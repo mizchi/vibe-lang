@@ -16,7 +16,7 @@ RC as its first (default) reclamation strategy**, replacing the current
 | reclamation | **none (leaks)** | Perceus dup/drop, free on `rc==0` | engine GC (tracing) |
 | object lifetime | n/a | deterministic, eager | non-deterministic, lazy |
 | cycles | n/a | **leak (RC limitation)** | collected |
-| known gaps | — | while-loop body drop, cycles, closure env drop (unverified), borrow inference scope | builtin parity (53 vs 169), coverage instrumentation, fixed-size arrays |
+| known gaps | — | temporary/discarded-value drops, cycles, closure env drop (unverified), borrow inference scope, no wasmtime e2e gate | builtin parity (53 vs 169), coverage instrumentation, fixed-size arrays |
 | intended status | legacy / opt-out | **future linear default** | primary target |
 
 ## Intended direction
@@ -46,13 +46,29 @@ RC as its first (default) reclamation strategy**, replacing the current
 
 ### A. Correctness blockers
 
-- **A-1 while-loop / for-in body drops** — per-iteration `let` bindings
-  are not dropped. Pinned as a known leak
-  (`src/tests/vibe_wasm_eval_test.mbt:4228`). Top-priority blocker:
-  loops are a hot path and must not leak for RC to replace bump.
-- **A-2 closure environment drop** — `emit_rc_drop_fields` has no
-  closure-specific branch; captured heap in closure envs needs
-  wasmtime-level verification.
+- **A-1 nested-block body drops** — *done*. Bindings that leave the scope
+  of a nested block were not dropped, leaking per loop iteration / branch.
+  Now wired for `while`, `for-in` (desugared before Perceus), `if`/`else`
+  arms, `match` arms, and bare block expressions. The codegen threads the
+  current statement site (`CodegenCtx.rc_stmt_site`) so each nested construct
+  derives its Perceus action prefix, and `p2_emit_block` keys loop/branch
+  scope-end drops to the last body statement. Regression tests assert
+  per-iteration / per-branch balance via the `rc_debug` counters.
+- **A-1b temporary / discarded-value drops** — *open*. Heap that is never
+  bound to a name still leaks: builtin intermediates and discarded
+  expression results (e.g. a `for-in`'s ArrayBuilder and its frozen result
+  array when the loop is used as a statement). Constant w.r.t. iteration
+  count, but a real remaining leak.
+- **A-2 closure environment drop** — *done*. Closures that capture heap
+  leaked their env block and the captured values. Two fixes: (1) Perceus
+  treats a call as a *borrow* of the callee binding, so a closure stays
+  live across calls and is dropped at scope end (top-level fn names /
+  builtins resolve to no local binding, so this is a no-op for them);
+  (2) `rc_has_closure` is now derived from the authoritative funcs list
+  (any capturing closure) rather than a scan that used a mismatched span
+  key for parameterized closures, so the RC drop helper actually emits its
+  `obj_fn` capture-recursion branch. Verified balanced on the interpreter
+  and correct on wasmtime (`rc e2e: closure capturing heap value`).
 - **A-3 borrow inference scope** — only `__index` is recognized as a
   borrow; broaden to all borrowed parameters.
 - **A-4 cycles** — RC cannot reclaim cycles. Decide policy: accept and
@@ -61,10 +77,17 @@ RC as its first (default) reclamation strategy**, replacing the current
 
 ### B. Verification gaps
 
-- **B-1** `enable_rc` is exercised only by the in-tree wasm interpreter
-  (`src/tests/vibe_wasm_eval_test.mbt`); there is no wasmtime-backed RC
-  e2e gate. Default-ing RC requires real-engine validation of
-  free / free-list reuse.
+- **B-1** *done*. A wasmtime-backed RC e2e gate now exists
+  (`src/tests/vibe_wasm_rc_e2e_test.mbt`, run via the `test-wasm-rc-e2e`
+  task on `--target native`). It compiles representative programs with
+  `enable_rc=true` and runs them on wasmtime, asserting correct results
+  (incl. a 1000-iteration loop-stress checksum that would corrupt under a
+  reuse-while-live bug). This immediately surfaced — and drove the fix
+  for — an invalid `block`/`br_if` ordering in the rc_dup/rc_drop emitters:
+  the tag-check condition was pushed *outside* the enclosing block, which
+  the lenient in-tree interpreter accepted but wasmtime rejects ("expected
+  i32 but nothing on stack"). RC had never produced spec-valid wasm before
+  this gate.
 - **B-2** `rc_debug` counters are interpreter-only.
 - **B-3** No parity/gate test pins the RC default.
 - **B-4** No differential test asserting that no-RC / RC / wasm-gc

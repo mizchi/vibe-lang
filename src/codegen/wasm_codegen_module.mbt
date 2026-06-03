@@ -3572,6 +3572,14 @@ fn emit_module_with_coverage(
     let f = funcs[i]
     ctx.fn_closure_indices[f.span_key] = i
     ctx.fn_closure_captures[f.span_key] = f.captures
+    // Any capturing closure means heap `obj_fn` env blocks exist, so the RC
+    // drop helper must emit its capture-recursion branch. Deriving this here
+    // (from the authoritative funcs list) avoids relying on the scan matching
+    // the closure's span key, which uses a different key form for closures
+    // that carry parameters.
+    if f.captures.length() > 0 {
+      ctx.rc_has_closure = true
+    }
     match f.name {
       Some(name) => ctx.fn_indices[name] = i
       None => ()

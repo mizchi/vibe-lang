@@ -892,6 +892,13 @@ fn compile_guarded_arm_with_bindings(
     }
     ctx.local_kinds[name] = binding_kind
   }
+  // With RC enabled, the arm body sits at `<match_stmt_site>.expr.arm[index]`
+  // in Perceus. Point rc_stmt_site there while compiling the body so a nested
+  // block/while/if inside the arm derives the matching action prefix. The
+  // value is restored before the fall-through recursion so subsequent arms
+  // are not nested under this arm's site.
+  let saved_rc_site = ctx.rc_stmt_site
+  let arm_rc_site = "\{saved_rc_site}.expr.arm[\{index}]"
   match arm.cond {
     Some(c) => {
       compile_expr(ctx, buf, c)
@@ -903,7 +910,11 @@ fn compile_guarded_arm_with_bindings(
       buf.push((126).to_byte())
       adjust_loop_offsets(ctx, 1)
       emit_coverage(ctx, buf, WasmCoveragePointKind::BranchMatchArm, arm.span)
+      if ctx.enable_rc {
+        ctx.rc_stmt_site = arm_rc_site
+      }
       compile_expr(ctx, buf, arm.expr)
+      ctx.rc_stmt_site = saved_rc_site
       ctx.heap_synced = guard_heap_synced
       buf.push((5).to_byte())
       restore_locals(ctx, saved)
@@ -919,7 +930,11 @@ fn compile_guarded_arm_with_bindings(
     }
     None => {
       emit_coverage(ctx, buf, WasmCoveragePointKind::BranchMatchArm, arm.span)
+      if ctx.enable_rc {
+        ctx.rc_stmt_site = arm_rc_site
+      }
       compile_expr(ctx, buf, arm.expr)
+      ctx.rc_stmt_site = saved_rc_site
       restore_locals(ctx, saved)
       restore_local_kinds(ctx, saved_kinds)
       restore_named_fn_scope(ctx, saved_named_fn_scope)

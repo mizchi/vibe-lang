@@ -4284,6 +4284,178 @@ test "rc debug: while-loop body drops nested heap per-iteration (no leak)" {
 }
 
 ///|
+test "rc debug: for-in body has no per-iteration leak" {
+  // for-in is desugared to a while loop before Perceus analysis, so the
+  // per-iteration body binding `t` must be reclaimed each turn just like the
+  // hand-written while case. We assert the per-iteration property directly:
+  // the count of unreclaimed allocations must NOT grow with the iteration
+  // count. (A small constant remainder — the array builder / discarded result
+  // array — is tracked separately and is independent of iteration count.)
+  fn leak_for(elems : String) -> Int64 raise {
+    let script = "let f = () -> Int {\n" +
+      "  let xs = " +
+      elems +
+      "\n  let mut sum = 0\n" +
+      "  for x in xs {\n    let t = (x, x + 1)\n    sum = sum + t.0\n  }\n" +
+      "  sum\n}\nf()"
+    let res = eval_run_rc_debug(script)
+    let (allocs, frees) = rc_debug_counts(res)
+    allocs - frees
+  }
+
+  let leak_small = try leak_for("[10, 20, 30]") catch {
+    e => fail("rc debug eval failed: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  let leak_large = try leak_for("[10, 20, 30, 40, 50, 60, 70]") catch {
+    e => fail("rc debug eval failed: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  // No per-iteration leak: the unreclaimed count is the same for 3 and 7
+  // iterations (the per-iteration tuples are all dropped).
+  assert_eq(leak_small, leak_large)
+}
+
+///|
+test "rc debug: if/else branch-local heap is dropped per branch" {
+  // A heap binding allocated inside a branch must be dropped at the end of
+  // that branch — and only when the branch actually runs (no spurious drop of
+  // an uninitialized local on the other path).
+  let prog = fn(arg : String) -> String {
+    "let f = (c: Bool) -> Int {\n" +
+    "  let mut s = 0\n" +
+    "  if c {\n    let t = (1, 2)\n    s = s + t.0\n  } else {\n    s = s + 5\n  }\n" +
+    "  s\n}\nf(" +
+    arg +
+    ")"
+  }
+  // then-branch taken: the tuple is allocated and must be freed.
+  let res_then = try eval_run_rc_debug(prog("true")) catch {
+    e => fail("rc debug eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let (allocs_then, frees_then) = rc_debug_counts(res_then)
+  assert_true(allocs_then >= 1L)
+  assert_eq(allocs_then, frees_then)
+  // else-branch taken: no allocation, and no drop of the uninitialized `t`.
+  let res_else = try eval_run_rc_debug(prog("false")) catch {
+    e => fail("rc debug eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let (allocs_else, frees_else) = rc_debug_counts(res_else)
+  assert_eq(allocs_else, frees_else)
+}
+
+///|
+test "rc debug: match arm-local heap is dropped per arm" {
+  // A heap binding allocated inside a match arm body must be dropped at the
+  // end of that arm — and only when the arm is selected.
+  let prog = fn(arg : String) -> String {
+    "let f = (n: Int) -> Int {\n" +
+    "  let mut s = 0\n" +
+    "  match n {\n    0 => { let t = (1, 2); s = s + t.0 }\n    _ => { s = s + 9 }\n  }\n" +
+    "  s\n}\nf(" +
+    arg +
+    ")"
+  }
+  // matching arm allocates the tuple → must be freed.
+  let res0 = try eval_run_rc_debug(prog("0")) catch {
+    e => fail("rc debug eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let (allocs0, frees0) = rc_debug_counts(res0)
+  assert_true(allocs0 >= 1L)
+  assert_eq(allocs0, frees0)
+  // default arm allocates nothing, and emits no spurious drop.
+  let res1 = try eval_run_rc_debug(prog("1")) catch {
+    e => fail("rc debug eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let (allocs1, frees1) = rc_debug_counts(res1)
+  assert_eq(allocs1, frees1)
+}
+
+///|
+test "rc debug: discarded statement-expr heap is dropped" {
+  // The first two `mk()` results are statement expressions whose values are
+  // discarded. They are bound to synthetic `let` bindings before Perceus so
+  // the owned tuples are reclaimed instead of leaking.
+  let script =
+    #|let mk = () -> (Int, Int) {
+    #|  (1, 2)
+    #|}
+    #|let f = () -> Int {
+    #|  mk()
+    #|  mk()
+    #|  let r = mk()
+    #|  r.0
+    #|}
+    #|f()
+  let res = try eval_run_rc_debug(script) catch {
+    e => fail("rc debug eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let (allocs, frees) = rc_debug_counts(res)
+  // Three tuples allocated (three mk() calls), all three reclaimed.
+  assert_true(allocs >= 3L)
+  assert_eq(allocs, frees)
+  // Correctness is preserved: r.0 == 1.
+  assert_eq(decode_int(res.value), 1L)
+}
+
+///|
+test "rc debug: closure capturing heap is reclaimed (A-2)" {
+  // A closure that captures a heap value owns it via its env block. Calling the
+  // closure borrows it; at scope end the closure is dropped and its captured
+  // heap is recursively reclaimed. Verified both for a single closure and for
+  // per-iteration closures in a loop (no growth).
+  let single =
+    #|let f = () -> Int {
+    #|  let t = (1, 2)
+    #|  let g = (x: Int) -> Int { x + t.0 }
+    #|  g(10)
+    #|}
+    #|f()
+  let r1 = try eval_run_rc_debug(single) catch {
+    e => fail("rc debug eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let (a1, f1) = rc_debug_counts(r1)
+  assert_true(a1 >= 2L)
+  assert_eq(a1, f1)
+  assert_eq(decode_int(r1.value), 11L)
+  let loop_ =
+    #|let f = () -> Int {
+    #|  let mut s = 0
+    #|  let mut i = 0
+    #|  while i < 5 {
+    #|    let t = (i, i)
+    #|    let g = (x: Int) -> Int { x + t.0 }
+    #|    s = s + g(1)
+    #|    i = i + 1
+    #|  }
+    #|  s
+    #|}
+    #|f()
+  let r2 = try eval_run_rc_debug(loop_) catch {
+    e => fail("rc debug eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let (a2, f2) = rc_debug_counts(r2)
+  assert_true(a2 >= 10L)
+  assert_eq(a2, f2)
+}
+
+///|
 // ADR-0044 Phase 3: String now implements Iterable. The prelude provides
 // `String::iter_length` (= String::length) and `String::iter_get`
 // (= String::char_code_at), so generic Iterable combinators see each char

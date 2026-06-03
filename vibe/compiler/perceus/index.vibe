@@ -1,0 +1,838 @@
+//# Imports
+
+import .. / core {
+  Expr, Pat, TypeExpr
+}
+
+import .. / codegen / common_analysis {
+  collect_free_vars
+}
+
+import .. / core / polyfill.vibe {
+  __to_string
+}
+
+//# Types
+
+// Perceus RC analysis for the selfhost linear backend.
+//
+// Phase 2 of docs/spec/selfhost-rc-port.md: a pure AST -> action-list pass,
+// independent of codegen, so it is unit-testable in isolation. It mirrors the
+// authoritative `src/frontend/perceus_poc.mbt` adapted to the selfhost's
+// expression-oriented AST: scope is structural (an `ELet(x, val, body)` scopes
+// `x` to `body`), so per-iteration / per-branch bindings fall out of the tree
+// shape rather than needing statement-index bookkeeping.
+//
+// Model (mirrors the validated src/ semantics):
+//   - An `EIdent` occurrence in a consuming position is an *owning* use.
+//   - A call callee and a field access (`EDot`, array `__index`) are *borrows*:
+//     the binding stays live and is reclaimed at scope end.
+//   - A binding is dropped at the end of its `ELet` body when it still owns a
+//     live reference (pure-borrow, or unused non-scalar). Used-more-than-once
+//     owning references emit a `dup` at all but the consuming use.
+//
+// Two passes share binding ids assigned in tree order (count then emit walk the
+// tree identically, so ids line up):
+//   pass 1 `pc_count` fills owning-use / borrow counts per binding;
+//   pass 2 `pc_emit` emits dup/drop actions using those counts.
+//
+// Covered: literals, EIdent, ECall (callee borrow + `__index` arg0 borrow),
+// EDot, ELet/ELetMut/ELetRec, EAssign/EAssignOp, ESeq, EBinOp/EUnaryOp, ETuple,
+// EArray, ERecord/EMap, EIf (branch-max counting), EWhile, EReturn/EThrow/
+// EBreak/ESpread/EStringInterp/ELabeledArg.
+//
+// Deferred (safe no-op for now — may leave heap unreclaimed but never emits a
+// wrong drop; tracked as follow-up within Phase 2): EFn captures, EMatch,
+// EHandle, ELoop, EForIn, and cross-branch balancing of outer bindings consumed
+// unevenly across `EIf` arms.
+
+export enum PerceusActionKind {
+  PaDup;
+  PaDrop
+}
+
+export struct PerceusAction {
+  kind: PerceusActionKind;
+  name: String
+}
+
+// Shared analysis context. Counters are indexed by binding id (assigned in
+// tree order). `next_id` is reset between the count and emit passes and
+// re-advanced in lockstep so ids match.
+struct PCtx {
+  mut next_id: Int;
+  mut seq_id: Int;
+  names: Array[String];
+  uses: Array[Int];
+  borrows: Array[Int];
+  scalar: Array[Bool];
+  remaining: Array[Int];
+  actions: Array[PerceusAction]
+}
+
+//# Functions
+
+let pctx_new: () -> PCtx = () -> {
+  PCtx::{
+    next_id: 0,
+    seq_id: 0,
+    names: [],
+    uses: [],
+    borrows: [],
+    scalar: [],
+    remaining: [],
+    actions: [],
+  }
+}
+
+// A fresh, deterministic synthetic name for an `ESeq`-discarded value. Both
+// passes walk the tree identically, so the Nth `ESeq` gets the same name.
+let next_seq_name: (PCtx) -> String = (ctx) -> {
+  let nm = "__seq" + __to_string(ctx.seq_id)
+  ctx.seq_id = ctx.seq_id + 1
+  nm
+}
+
+export let pa_is_drop: (PerceusAction) -> Bool = (a) -> {
+  match a.kind {
+    PaDrop => true,
+    PaDup => false
+  }
+}
+
+export let pa_is_dup: (PerceusAction) -> Bool = (a) -> {
+  match a.kind {
+    PaDup => true,
+    PaDrop => false
+  }
+}
+
+// A value that is a known non-heap scalar literal needs no RC ops, so a binding
+// of one is never dropped.
+let is_scalar_expr: (Expr) -> Bool = (e) -> {
+  match e {
+    EInt(_) => true,
+    EBool(_) => true,
+    EFloat(_) => true,
+    EUnit => true,
+    _ => false
+  }
+}
+
+// Names bound by a pattern (for match arms).
+let rec pat_names: (Pat, Array[String]) -> Int = (pat, out) -> {
+  match pat {
+    PBind(name) => {
+      Array::push(out, name)
+      0
+    },
+    PCtor(_n, args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        pat_names(Array::get(args, i), out)
+        i = i + 1
+      }
+      0
+    },
+    PTuple(pats) => {
+      let mut i = 0
+      while i < Array::length(pats) {
+        pat_names(Array::get(pats, i), out)
+        i = i + 1
+      }
+      0
+    },
+    POr(l, _r) => pat_names(l, out),
+    PStruct(_n, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        pat_names((Array::get(fields, i)).1, out)
+        i = i + 1
+      }
+      0
+    },
+    _ => 0
+  }
+}
+
+// Value parameter names of an EFn (the `params` array of (name, type?) pairs).
+let fn_param_names: (Array[(String, Option[TypeExpr])]) -> Array[String] = (params) -> {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(params) {
+    Array::push(out, (Array::get(params, i)).0)
+    i = i + 1
+  }
+  out
+}
+
+// --- count pass ---
+
+// Declare a binding during the count pass: allocate an id and zeroed counters.
+let pc_declare: (PCtx, String, Bool) -> Int = (ctx, name, scalar) -> {
+  let id = ctx.next_id
+  Array::push(ctx.names, name)
+  Array::push(ctx.uses, 0)
+  Array::push(ctx.borrows, 0)
+  Array::push(ctx.scalar, scalar)
+  ctx.next_id = id + 1
+  id
+}
+
+let pc_count_use: (PCtx, Map[String, Int], String) -> Int = (ctx, scope, name) -> {
+  if Map::has_key(scope, name) {
+    let id = Map::get(scope, name)
+    Array::set(ctx.uses, id, Array::get(ctx.uses, id) + 1)
+  }
+  0
+}
+
+let pc_count_borrow: (PCtx, Map[String, Int], String) -> Int = (ctx, scope, name) -> {
+  if Map::has_key(scope, name) {
+    let id = Map::get(scope, name)
+    Array::set(ctx.borrows, id, Array::get(ctx.borrows, id) + 1)
+  }
+  0
+}
+
+let copy_ints: (Array[Int]) -> Array[Int] = (src) -> {
+  let out: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(src) {
+    Array::push(out, Array::get(src, i))
+    i = i + 1
+  }
+  out
+}
+
+// Restore `dst[0..len(src)]` from `src` (ids created after the snapshot are
+// left untouched — they are branch-local and handled within their own scope).
+let restore_prefix: (Array[Int], Array[Int]) -> Int = (dst, src) -> {
+  let mut i = 0
+  while i < Array::length(src) {
+    Array::set(dst, i, Array::get(src, i))
+    i = i + 1
+  }
+  0
+}
+
+let int_max: (Int, Int) -> Int = (a, b) -> {
+  if a > b { a } else { b }
+}
+
+let zeros: (Int) -> Array[Int] = (n) -> {
+  let out: Array[Int] = []
+  let mut i = 0
+  while i < n {
+    Array::push(out, 0)
+    i = i + 1
+  }
+  out
+}
+
+export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, expr) -> {
+  match expr {
+    EInt(_) => 0,
+    EFloat(_) => 0,
+    EString(_) => 0,
+    EBool(_) => 0,
+    EUnit => 0,
+    EStringInterp(_) => 0,
+    EIdent(x) => pc_count_use(ctx, scope, x),
+    ECall(callee, args) => {
+      // The callee binding is borrowed (a closure stays live across the call).
+      match callee {
+        EIdent(f) => {
+          // `__index(obj, idx)` borrows the container.
+          if f == "__index" {
+            0
+          } else {
+            pc_count_borrow(ctx, scope, f)
+          }
+        },
+        _ => pc_count(ctx, scope, callee)
+      }
+      let is_index = match callee {
+        EIdent(f) => f == "__index",
+        _ => false
+      }
+      let mut i = 0
+      while i < Array::length(args) {
+        let arg = Array::get(args, i)
+        if is_index && i == 0 {
+          match arg {
+            EIdent(obj) => pc_count_borrow(ctx, scope, obj),
+            _ => pc_count(ctx, scope, arg)
+          }
+        } else {
+          pc_count(ctx, scope, arg)
+        }
+        i = i + 1
+      }
+      0
+    },
+    EDot(obj, _field) => {
+      match obj {
+        EIdent(x) => pc_count_borrow(ctx, scope, x),
+        _ => pc_count(ctx, scope, obj)
+      }
+    },
+    ELet(name, value, body) => {
+      pc_count(ctx, scope, value)
+      let id = pc_declare(ctx, name, is_scalar_expr(value))
+      pc_count(ctx, Map::set(scope, name, id), body)
+    },
+    ELetMut(name, value, body) => {
+      pc_count(ctx, scope, value)
+      let id = pc_declare(ctx, name, is_scalar_expr(value))
+      pc_count(ctx, Map::set(scope, name, id), body)
+    },
+    ELetRec(name, value, body) => {
+      let id = pc_declare(ctx, name, false)
+      let s2 = Map::set(scope, name, id)
+      pc_count(ctx, s2, value)
+      pc_count(ctx, s2, body)
+    },
+    EAssign(_name, value, body) => {
+      pc_count(ctx, scope, value)
+      pc_count(ctx, scope, body)
+    },
+    EAssignOp(_op, _name, value, body) => {
+      pc_count(ctx, scope, value)
+      pc_count(ctx, scope, body)
+    },
+    ESeq(a, b) => {
+      // `a`'s value is discarded; bind it so an owned heap temporary is
+      // reclaimed at scope end (A-1b). A scalar `a` needs no binding.
+      pc_count(ctx, scope, a)
+      let nm = next_seq_name(ctx)
+      let _id = pc_declare(ctx, nm, is_scalar_expr(a))
+      pc_count(ctx, scope, b)
+    },
+    EBinOp(_op, l, r) => {
+      pc_count(ctx, scope, l)
+      pc_count(ctx, scope, r)
+    },
+    EUnaryOp(_op, e) => pc_count(ctx, scope, e),
+    ETuple(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        pc_count(ctx, scope, Array::get(items, i))
+        i = i + 1
+      }
+      0
+    },
+    EArray(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        pc_count(ctx, scope, Array::get(items, i))
+        i = i + 1
+      }
+      0
+    },
+    ERecord(fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        pc_count(ctx, scope, (Array::get(fields, i)).1)
+        i = i + 1
+      }
+      0
+    },
+    EMap(fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        pc_count(ctx, scope, (Array::get(fields, i)).1)
+        i = i + 1
+      }
+      0
+    },
+    EIf(cond, then_e, else_e) => {
+      pc_count(ctx, scope, cond)
+      let snap_u = copy_ints(ctx.uses)
+      let snap_b = copy_ints(ctx.borrows)
+      pc_count(ctx, scope, then_e)
+      let then_u = copy_ints(ctx.uses)
+      let then_b = copy_ints(ctx.borrows)
+      restore_prefix(ctx.uses, snap_u)
+      restore_prefix(ctx.borrows, snap_b)
+      pc_count(ctx, scope, else_e)
+      // Merge outer bindings (ids < snapshot length) as branch-max.
+      let mut id = 0
+      while id < Array::length(snap_u) {
+        let base_u = Array::get(snap_u, id)
+        let dt = Array::get(then_u, id) - base_u
+        let de = Array::get(ctx.uses, id) - base_u
+        Array::set(ctx.uses, id, base_u + int_max(dt, de))
+        let base_b = Array::get(snap_b, id)
+        let dtb = Array::get(then_b, id) - base_b
+        let deb = Array::get(ctx.borrows, id) - base_b
+        Array::set(ctx.borrows, id, base_b + int_max(dtb, deb))
+        id = id + 1
+      }
+      0
+    },
+    EWhile(cond, body) => {
+      pc_count(ctx, scope, cond)
+      pc_count(ctx, scope, body)
+    },
+    EReturn(e) => pc_count(ctx, scope, e),
+    EThrow(e) => pc_count(ctx, scope, e),
+    ESpread(e) => pc_count(ctx, scope, e),
+    ELabeledArg(_l, _n, e) => pc_count(ctx, scope, e),
+    EBreak(opt) => {
+      match opt {
+        Some(e) => pc_count(ctx, scope, e),
+        None => 0
+      }
+    },
+    EFn(_tp, _tb, params, _ret, _eff, fbody) => {
+      // A closure captures its free variables: each is an owning use of the
+      // outer binding. The body is compiled as its own function (analysed
+      // separately), so we do not recurse into it with the outer scope.
+      let caps = collect_free_vars(fbody, fn_param_names(params), [])
+      let mut i = 0
+      while i < Array::length(caps) {
+        pc_count_use(ctx, scope, Array::get(caps, i))
+        i = i + 1
+      }
+      0
+    },
+    EForIn(value_name, index_opt, iterable, fbody) => {
+      pc_count(ctx, scope, iterable)
+      let idv = pc_declare(ctx, value_name, false)
+      let s2 = Map::set(scope, value_name, idv)
+      let s3 = match index_opt {
+        Some(idx) => {
+          let idi = pc_declare(ctx, idx, true)
+          Map::set(s2, idx, idi)
+        },
+        None => s2
+      }
+      pc_count(ctx, s3, fbody)
+    },
+    ELoop(params, lbody) => {
+      // Loop parameters are bindings (re-bound on continue) scoped to the body.
+      let mut s = scope
+      let mut i = 0
+      while i < Array::length(params) {
+        let p = Array::get(params, i)
+        pc_count(ctx, scope, p.1)
+        let pid = pc_declare(ctx, p.0, is_scalar_expr(p.1))
+        s = Map::set(s, p.0, pid)
+        i = i + 1
+      }
+      pc_count(ctx, s, lbody)
+    },
+    EMatch(scrut, arms) => {
+      pc_count(ctx, scope, scrut)
+      let snap_u = copy_ints(ctx.uses)
+      let snap_b = copy_ints(ctx.borrows)
+      let max_u = zeros(Array::length(snap_u))
+      let max_b = zeros(Array::length(snap_b))
+      let mut a = 0
+      while a < Array::length(arms) {
+        let arm = Array::get(arms, a)
+        restore_prefix(ctx.uses, snap_u)
+        restore_prefix(ctx.borrows, snap_b)
+        let pnames: Array[String] = []
+        pat_names(arm.0, pnames)
+        let mut s = scope
+        let mut k = 0
+        while k < Array::length(pnames) {
+          let nm = Array::get(pnames, k)
+          let pid = pc_declare(ctx, nm, false)
+          s = Map::set(s, nm, pid)
+          k = k + 1
+        }
+        pc_count(ctx, s, arm.1)
+        let mut id = 0
+        while id < Array::length(snap_u) {
+          let du = Array::get(ctx.uses, id) - Array::get(snap_u, id)
+          if du > Array::get(max_u, id) {
+            Array::set(max_u, id, du)
+          }
+          let db = Array::get(ctx.borrows, id) - Array::get(snap_b, id)
+          if db > Array::get(max_b, id) {
+            Array::set(max_b, id, db)
+          }
+          id = id + 1
+        }
+        a = a + 1
+      }
+      restore_prefix(ctx.uses, snap_u)
+      restore_prefix(ctx.borrows, snap_b)
+      let mut id2 = 0
+      while id2 < Array::length(snap_u) {
+        Array::set(ctx.uses, id2, Array::get(snap_u, id2) + Array::get(max_u, id2))
+        Array::set(ctx.borrows, id2, Array::get(snap_b, id2) + Array::get(max_b, id2))
+        id2 = id2 + 1
+      }
+      0
+    },
+    EHandle(hbody, arms) => {
+      // Treat the handled body as branch 0 and each handler arm as a further
+      // branch (branch-max counting), with arm-local pattern bindings. This is
+      // a conservative approximation of effect control flow (safe: it never
+      // emits a wrong drop).
+      let snap_u = copy_ints(ctx.uses)
+      let snap_b = copy_ints(ctx.borrows)
+      let max_u = zeros(Array::length(snap_u))
+      let max_b = zeros(Array::length(snap_b))
+      pc_count(ctx, scope, hbody)
+      let mut id0 = 0
+      while id0 < Array::length(snap_u) {
+        let du = Array::get(ctx.uses, id0) - Array::get(snap_u, id0)
+        if du > Array::get(max_u, id0) {
+          Array::set(max_u, id0, du)
+        }
+        let db = Array::get(ctx.borrows, id0) - Array::get(snap_b, id0)
+        if db > Array::get(max_b, id0) {
+          Array::set(max_b, id0, db)
+        }
+        id0 = id0 + 1
+      }
+      let mut a = 0
+      while a < Array::length(arms) {
+        let arm = Array::get(arms, a)
+        restore_prefix(ctx.uses, snap_u)
+        restore_prefix(ctx.borrows, snap_b)
+        let pnames: Array[String] = []
+        pat_names(arm.0, pnames)
+        let mut s = scope
+        let mut k = 0
+        while k < Array::length(pnames) {
+          let nm = Array::get(pnames, k)
+          let pid = pc_declare(ctx, nm, false)
+          s = Map::set(s, nm, pid)
+          k = k + 1
+        }
+        pc_count(ctx, s, arm.1)
+        let mut id = 0
+        while id < Array::length(snap_u) {
+          let du = Array::get(ctx.uses, id) - Array::get(snap_u, id)
+          if du > Array::get(max_u, id) {
+            Array::set(max_u, id, du)
+          }
+          let db = Array::get(ctx.borrows, id) - Array::get(snap_b, id)
+          if db > Array::get(max_b, id) {
+            Array::set(max_b, id, db)
+          }
+          id = id + 1
+        }
+        a = a + 1
+      }
+      restore_prefix(ctx.uses, snap_u)
+      restore_prefix(ctx.borrows, snap_b)
+      let mut id2 = 0
+      while id2 < Array::length(snap_u) {
+        Array::set(ctx.uses, id2, Array::get(snap_u, id2) + Array::get(max_u, id2))
+        Array::set(ctx.borrows, id2, Array::get(snap_b, id2) + Array::get(max_b, id2))
+        id2 = id2 + 1
+      }
+      0
+    },
+    _ => 0
+  }
+}
+
+// --- emit pass ---
+
+// Declare in lockstep with the count pass and initialise the remaining-owning
+// count. A pure-borrow binding (0 owning uses, >=1 borrow) is given 1 remaining
+// so its scope-end drop fires.
+let pe_declare: (PCtx, String) -> Int = (ctx, _name) -> {
+  let id = ctx.next_id
+  let owning = Array::get(ctx.uses, id)
+  // A binding holds one owned reference. If it is never used in an owning
+  // (consuming) position it still owns that reference at scope end and must be
+  // dropped there — this covers both pure-borrow bindings and entirely unused
+  // ones (e.g. a discarded sequenced value). The scalar check in pe_scope_end
+  // skips known non-heap values.
+  let init = if owning == 0 { 1 } else { owning }
+  Array::push(ctx.remaining, init)
+  ctx.next_id = id + 1
+  id
+}
+
+let pe_push: (PCtx, PerceusActionKind, String) -> Int = (ctx, kind, name) -> {
+  Array::push(ctx.actions, PerceusAction::{ kind, name })
+  0
+}
+
+let pe_use: (PCtx, Map[String, Int], String) -> Int = (ctx, scope, name) -> {
+  if Map::has_key(scope, name) {
+    let id = Map::get(scope, name)
+    let rem = Array::get(ctx.remaining, id)
+    if rem > 1 && !Array::get(ctx.scalar, id) {
+      pe_push(ctx, PaDup, name)
+    } else {
+      0
+    }
+    if rem > 0 {
+      Array::set(ctx.remaining, id, rem - 1)
+    }
+  }
+  0
+}
+
+// Drop a binding leaving scope if it still owns a live reference.
+let pe_scope_end: (PCtx, Int, String) -> Int = (ctx, id, name) -> {
+  if Array::get(ctx.remaining, id) > 0 && !Array::get(ctx.scalar, id) {
+    pe_push(ctx, PaDrop, name)
+    Array::set(ctx.remaining, id, 0)
+  }
+  0
+}
+
+export let rec pc_emit: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, expr) -> {
+  match expr {
+    EInt(_) => 0,
+    EFloat(_) => 0,
+    EString(_) => 0,
+    EBool(_) => 0,
+    EUnit => 0,
+    EStringInterp(_) => 0,
+    EIdent(x) => pe_use(ctx, scope, x),
+    ECall(callee, args) => {
+      // Borrowed callee / `__index` arg0: no consuming use, no action.
+      let is_index = match callee {
+        EIdent(f) => f == "__index",
+        _ => false
+      }
+      match callee {
+        EIdent(_) => 0,
+        _ => pc_emit(ctx, scope, callee)
+      }
+      let mut i = 0
+      while i < Array::length(args) {
+        let arg = Array::get(args, i)
+        if is_index && i == 0 {
+          match arg {
+            EIdent(_) => 0,
+            _ => pc_emit(ctx, scope, arg)
+          }
+        } else {
+          pc_emit(ctx, scope, arg)
+        }
+        i = i + 1
+      }
+      0
+    },
+    EDot(obj, _field) => {
+      match obj {
+        EIdent(_) => 0,
+        _ => pc_emit(ctx, scope, obj)
+      }
+    },
+    ELet(name, value, body) => {
+      pc_emit(ctx, scope, value)
+      let id = pe_declare(ctx, name)
+      pc_emit(ctx, Map::set(scope, name, id), body)
+      pe_scope_end(ctx, id, name)
+    },
+    ELetMut(name, value, body) => {
+      pc_emit(ctx, scope, value)
+      let id = pe_declare(ctx, name)
+      pc_emit(ctx, Map::set(scope, name, id), body)
+      pe_scope_end(ctx, id, name)
+    },
+    ELetRec(name, value, body) => {
+      let id = pe_declare(ctx, name)
+      let s2 = Map::set(scope, name, id)
+      pc_emit(ctx, s2, value)
+      pc_emit(ctx, s2, body)
+      pe_scope_end(ctx, id, name)
+    },
+    EAssign(_name, value, body) => {
+      pc_emit(ctx, scope, value)
+      pc_emit(ctx, scope, body)
+    },
+    EAssignOp(_op, _name, value, body) => {
+      pc_emit(ctx, scope, value)
+      pc_emit(ctx, scope, body)
+    },
+    ESeq(a, b) => {
+      pc_emit(ctx, scope, a)
+      let nm = next_seq_name(ctx)
+      let id = pe_declare(ctx, nm)
+      pc_emit(ctx, scope, b)
+      pe_scope_end(ctx, id, nm)
+    },
+    EBinOp(_op, l, r) => {
+      pc_emit(ctx, scope, l)
+      pc_emit(ctx, scope, r)
+    },
+    EUnaryOp(_op, e) => pc_emit(ctx, scope, e),
+    ETuple(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        pc_emit(ctx, scope, Array::get(items, i))
+        i = i + 1
+      }
+      0
+    },
+    EArray(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        pc_emit(ctx, scope, Array::get(items, i))
+        i = i + 1
+      }
+      0
+    },
+    ERecord(fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        pc_emit(ctx, scope, (Array::get(fields, i)).1)
+        i = i + 1
+      }
+      0
+    },
+    EMap(fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        pc_emit(ctx, scope, (Array::get(fields, i)).1)
+        i = i + 1
+      }
+      0
+    },
+    EIf(cond, then_e, else_e) => {
+      pc_emit(ctx, scope, cond)
+      let snap = copy_ints(ctx.remaining)
+      pc_emit(ctx, scope, then_e)
+      restore_prefix(ctx.remaining, snap)
+      pc_emit(ctx, scope, else_e)
+      0
+    },
+    EWhile(cond, body) => {
+      pc_emit(ctx, scope, cond)
+      pc_emit(ctx, scope, body)
+    },
+    EReturn(e) => pc_emit(ctx, scope, e),
+    EThrow(e) => pc_emit(ctx, scope, e),
+    ESpread(e) => pc_emit(ctx, scope, e),
+    ELabeledArg(_l, _n, e) => pc_emit(ctx, scope, e),
+    EBreak(opt) => {
+      match opt {
+        Some(e) => pc_emit(ctx, scope, e),
+        None => 0
+      }
+    },
+    EFn(_tp, _tb, params, _ret, _eff, fbody) => {
+      let caps = collect_free_vars(fbody, fn_param_names(params), [])
+      let mut i = 0
+      while i < Array::length(caps) {
+        pe_use(ctx, scope, Array::get(caps, i))
+        i = i + 1
+      }
+      0
+    },
+    EForIn(value_name, index_opt, iterable, fbody) => {
+      pc_emit(ctx, scope, iterable)
+      let idv = pe_declare(ctx, value_name)
+      let s2 = Map::set(scope, value_name, idv)
+      let s3 = match index_opt {
+        Some(idx) => {
+          let idi = pe_declare(ctx, idx)
+          Map::set(s2, idx, idi)
+        },
+        None => s2
+      }
+      pc_emit(ctx, s3, fbody)
+      pe_scope_end(ctx, idv, value_name)
+    },
+    ELoop(params, lbody) => {
+      let mut s = scope
+      let pids: Array[Int] = []
+      let pnames: Array[String] = []
+      let mut i = 0
+      while i < Array::length(params) {
+        let p = Array::get(params, i)
+        pc_emit(ctx, scope, p.1)
+        let pid = pe_declare(ctx, p.0)
+        s = Map::set(s, p.0, pid)
+        Array::push(pids, pid)
+        Array::push(pnames, p.0)
+        i = i + 1
+      }
+      pc_emit(ctx, s, lbody)
+      let mut j = 0
+      while j < Array::length(pids) {
+        pe_scope_end(ctx, Array::get(pids, j), Array::get(pnames, j))
+        j = j + 1
+      }
+      0
+    },
+    EMatch(scrut, arms) => {
+      pc_emit(ctx, scope, scrut)
+      let snap = copy_ints(ctx.remaining)
+      let mut a = 0
+      while a < Array::length(arms) {
+        let arm = Array::get(arms, a)
+        restore_prefix(ctx.remaining, snap)
+        let pnames: Array[String] = []
+        pat_names(arm.0, pnames)
+        let mut s = scope
+        let pids: Array[Int] = []
+        let mut k = 0
+        while k < Array::length(pnames) {
+          let nm = Array::get(pnames, k)
+          let pid = pe_declare(ctx, nm)
+          s = Map::set(s, nm, pid)
+          Array::push(pids, pid)
+          k = k + 1
+        }
+        pc_emit(ctx, s, arm.1)
+        let mut j = 0
+        while j < Array::length(pids) {
+          pe_scope_end(ctx, Array::get(pids, j), Array::get(pnames, j))
+          j = j + 1
+        }
+        a = a + 1
+      }
+      0
+    },
+    EHandle(hbody, arms) => {
+      let snap = copy_ints(ctx.remaining)
+      pc_emit(ctx, scope, hbody)
+      let mut a = 0
+      while a < Array::length(arms) {
+        let arm = Array::get(arms, a)
+        restore_prefix(ctx.remaining, snap)
+        let pnames: Array[String] = []
+        pat_names(arm.0, pnames)
+        let mut s = scope
+        let pids: Array[Int] = []
+        let mut k = 0
+        while k < Array::length(pnames) {
+          let nm = Array::get(pnames, k)
+          let pid = pe_declare(ctx, nm)
+          s = Map::set(s, nm, pid)
+          Array::push(pids, pid)
+          k = k + 1
+        }
+        pc_emit(ctx, s, arm.1)
+        let mut j = 0
+        while j < Array::length(pids) {
+          pe_scope_end(ctx, Array::get(pids, j), Array::get(pnames, j))
+          j = j + 1
+        }
+        a = a + 1
+      }
+      0
+    },
+    _ => 0
+  }
+}
+
+// Build the dup/drop plan for a function body expression.
+export let build_perceus_plan: (Expr) -> Array[PerceusAction] = (body) -> {
+  let ctx = pctx_new()
+  let empty: Map[String, Int] = map {}
+  pc_count(ctx, empty, body)
+  // Reset id + synthetic-name allocation; the emit pass re-declares in the
+  // same tree order so ids and synthetic names line up.
+  ctx.next_id = 0
+  ctx.seq_id = 0
+  pc_emit(ctx, empty, body)
+  ctx.actions
+}
