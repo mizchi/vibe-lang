@@ -49,6 +49,42 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     let nl = compile_expr(buf, value, local_names, next_local + 1, ctx, ld)
     emit_local_set(buf, local_idx)
     let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
+    // RC: drop a tuple binding the Perceus plan marks for scope-end drop. The
+    // value is a fresh tuple (ptr = block_start+8), rc_count at ptr-4: decrement
+    // and, at zero, push the block onto the free-list head (global 2), reusing
+    // the rc slot (ptr-4) as the next pointer. The body result is already on the
+    // stack and untouched. (docs/spec/selfhost-rc-port.md)
+    if ctx.enable_rc && is_etuple(value) && array_contains_str(ctx.rc_drop_names, name) {
+      emit_local_get(buf, local_idx)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 4)
+      emit_i32_sub(buf)
+      emit_local_get(buf, local_idx)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 4)
+      emit_i32_sub(buf)
+      emit_i32_load(buf, 2, 0)
+      emit_i32_const(buf, 1)
+      emit_i32_sub(buf)
+      emit_i32_store(buf, 2, 0)
+      emit_local_get(buf, local_idx)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 4)
+      emit_i32_sub(buf)
+      emit_i32_load(buf, 2, 0)
+      emit_i32_eqz(buf)
+      emit_if_void(buf)
+      emit_local_get(buf, local_idx)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 4)
+      emit_i32_sub(buf)
+      emit_global_get(buf, 2)
+      emit_i32_store(buf, 2, 0)
+      emit_local_get(buf, local_idx)
+      emit_i32_wrap_i64(buf)
+      emit_global_set(buf, 2)
+      emit_end(buf)
+    }
     nl2
   } else if __tag == 10 {
     let name = get_eletrec_name(expr)

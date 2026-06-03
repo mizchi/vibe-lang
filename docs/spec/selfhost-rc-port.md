@@ -131,14 +131,25 @@ is added.
   (never a wrong drop; at worst an outer binding consumed in only one arm is
   reclaimed slightly late or left to its enclosing scope's drop).
 
-### Phase 3 — port the RC codegen
+### Phase 3 — port the RC codegen — *first vertical landed (tuples)*
 
-- Port `src/codegen/wasm_codegen_rc.mbt`: refcount header (`[rc@-4]` in front of
-  the Phase 1 header), `rc_dup` / `rc_drop` helpers (with the corrected
-  `block`-before-condition ordering found in B-1), recursive field drop keyed
-  by `type_id`, head-only free-list, and per-statement action injection in the
-  selfhost statement/expression compilers.
-- Gate behind a selfhost `enable_rc` flag, default off.
+- **The tuple loop leak is fixed**: with `enable_rc`, a `let t = (i, i+1)` loop
+  body drops `t` each iteration and the freed block is reused, so the heap is
+  bounded. The leak profiler reports **0 bytes/iteration** (constant 32 B total
+  for 1k and 11k iterations) vs 24 B/iteration without drops — and results are
+  unchanged (heap e2e 15/15 on both paths).
+- How it works: `rc_count` lives at `ptr-4`, `alloc_size` at `ptr-8` (Phase 1
+  layout); allocation reuses an exact-fit free-list block (global 2 head);
+  `compile_expr`'s `ELet` emits a non-recursive `rc_drop` (decrement; at zero,
+  push the block onto the free list, reusing the rc slot as the next pointer)
+  for a tuple binding whose name the per-function `build_perceus_plan`
+  (the Phase 2 analysis, now imported by `linked_compile.vibe`) marks for a
+  scope-end drop. Non-recursive drop needs no runtime `type_id` dispatch, so it
+  sidesteps the type_id-uniformity work for enums/closures.
+- Remaining: `rc_dup` for shared (multiply-used) bindings; recursive field drop
+  (needs the uniform `type_id` so a dropped tuple frees nested heap); and the
+  same treatment for record / array / enum / closure bindings.
+- Everything stays gated behind `enable_rc`, default off.
 
 ### Phase 4 — verification & cutover
 

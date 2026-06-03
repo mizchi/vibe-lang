@@ -4,6 +4,10 @@ import .. / .. / core {
   Expr, Pat, Stmt, TypeExpr, bytebuf_length, bytebuf_new, bytebuf_push, bytebuf_push_buf, bytebuf_push_section, bytebuf_push_vec_header, bytebuf_to_bytes, leb128_encode_s64, leb128_encode_u32
 }
 
+import .. / .. / perceus {
+  PerceusAction, build_perceus_plan, pa_is_drop
+}
+
 import .. / builtin_bodies {
   gen_bytes_append_body, gen_bytes_concat_body, gen_bytes_from_array_body, gen_bytes_get_body, gen_bytes_len_body, gen_bytes_new_body, gen_bytes_push_body, gen_bytes_set_body, gen_bytes_slice_body, gen_bytes_to_array_body, gen_eq_body, gen_selfhost_sources_proper_body, gen_selfhost_sources_stub_body, gen_string_contains_body, gen_string_ends_with_body, gen_string_index_of_body, gen_string_join_body, gen_string_last_index_of_body, gen_string_split_body, gen_string_starts_with_body, gen_string_trim_body, static_arr_concat_body, static_arr_get_body, static_arr_len_body, static_arr_new_body, static_arr_push_all_body, static_arr_push_body, static_arr_set_body, static_arr_slice_body, static_arr_truncate_body, static_double_to_int_body, static_fs_stub_body, static_fs_write_bytes_stub_body, static_identity_body, static_int_to_double_body, static_print_i64_body, static_print_str_body, static_str_char_code_at_body, static_str_concat_body, static_str_eq_body, static_str_from_char_code_body, static_str_len_body, static_str_substring_body
 }
@@ -755,6 +759,26 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       ""
     ], 0, 0)
     let fn_name_dbg = Array::get(fn_names_list, bi)
+    // RC: names this function's Perceus plan says to drop at scope end.
+    let rc_drops = Array::slice([
+      ""
+    ], 0, 0)
+    if enable_rc {
+      let fbody = if is_efn(__bi_expr) {
+        get_efn_body(__bi_expr)
+      } else {
+        __bi_expr
+      }
+      let plan = build_perceus_plan(fbody)
+      let mut di = 0
+      while di < Array::length(plan) {
+        let pa = Array::get(plan, di)
+        if pa_is_drop(pa) {
+          Array::push(rc_drops, pa.name)
+        }
+        di = di + 1
+      }
+    }
     let compile_ctx = CompileCtx::{
       func_table: FuncTable::{
         names: fn_names_list,
@@ -777,7 +801,8 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       thunk_names: thunk_names_list,
       const_int_names: const_int_names_list,
       const_int_values: const_int_values_list,
-      enable_rc: enable_rc
+      enable_rc: enable_rc,
+      rc_drop_names: rc_drops
     }
     if is_efn(__bi_expr) {
       let __bi_params = get_efn_params(__bi_expr)
