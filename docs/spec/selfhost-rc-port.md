@@ -221,9 +221,11 @@ is added.
   so neither `src/`-style runtime pointer-dispatch nor a static pointer-bitmap is
   available; and even a fresh-literal-only subset is unsafe because an extracted
   field (`t.0`) can escape while the container is dropped. It needs a foundational
-  step first — integer tagging (enabling `src/`-style runtime dispatch) or a typed
-  IR threaded from the checker. Also remaining: freeing grown array data buffers,
-  `ArrayBuilder`-built arrays, and a segregated / coalescing free list.
+  step first — a **uniform value representation** (integer/float tagging enabling
+  `src/`-style runtime dispatch) plus escape-ownership analysis. Designed in
+  [selfhost-uniform-value-repr.md](selfhost-uniform-value-repr.md) (ADR-0055).
+  Also remaining: freeing grown array data buffers, `ArrayBuilder`-built arrays,
+  and a segregated / coalescing free list.
 - Everything stays gated behind `enable_rc`, default off.
 
 ### Phase 4 — verification & cutover
