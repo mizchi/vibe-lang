@@ -211,6 +211,28 @@ arithmetic / comparison / bitop / shift / float / nested-data case under
    classification for string/bytes/closure-without-RC-header so the drop can skip
    them. Give floats a representation (heap-box). Header `type_id` finalized per
    kind (tuple/array/record/enum/closure/float/string).
+   - **Stage 2a — tuples flipped to `|1`. ✅ IMPLEMENTED.** Construction
+     (`compile_expr_tail2`) emits `(block+8)|1`; EDot numeric access
+     (`compile_expr_tail4`) and the 4 tuple pattern-load sites (`compile_match`)
+     untag with `& -2`; the drop classifies tuples as `rc_kind 2` (tagged) so
+     `emit_rc_drop_local` untags to find the block. Gate-verified 41/41.
+   - **Stage 2b — arrays flipped to `|1`. PENDING.** Arrays have a `data_ptr`
+     indirection and growable-buffer path (`Array::push`, `ArrayBuilder`); a first
+     attempt was reverted unverified. Redo against the genuinely-busted gate.
+
+   > **Verification methodology (learned the hard way — Stage 2).** `vibe test`
+   > **memoizes pure-test results**, and `--no-cache` does **not** invalidate that
+   > memo — only changing the *test file's content* forces a real re-run. So
+   > `vibe test codegen_heap_e2e_test.vibe` can report a stale `41/41` that does
+   > not reflect edited codegen. **Always bust the cache by appending a unique
+   > comment to the test file** (then `git checkout` it) when verifying codegen
+   > changes. Do **not** rely on ad-hoc `compile_wasi_rc` → write-`/tmp` →
+   > `measure_selfhost_heap.mjs` probes for *correctness*: the test sandbox
+   > isolates `/tmp` and the entry takes a closure-`env` arg, so the `result`
+   > field is unreliable (the `heap_used` field, read from the `__heap_ptr`
+   > global, is fine for reclamation). The **authoritative** signal is the
+   > genuinely-busted `codegen_heap_e2e_test.vibe` (default vs RC, identical
+   > results on wasmtime).
 3. **Stage 3 — generic recursive `rc_drop`.** Port `emit_rc_drop_fields` adapted
    to the selfhost 8-byte-slot layout: `(val & 1)==1 && classify(type_id)` → for
    each RC-managed field, recurse. Now nested heap is freed.
