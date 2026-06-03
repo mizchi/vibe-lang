@@ -641,21 +641,48 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   // ADR-0055 Stage 1/2b: under RC, ints are tagged (n<<1) and array pointers are
   // odd (|1); use the gen bodies that untag the index/pointer, tag the length,
   // and return odd from array_new. Default path keeps the precompiled static.
-  Array::push(bodies, if enable_rc { gen_arr_new_body(true) } else { static_arr_new_body() })
-  Array::push(meta_i32, 1)
-  Array::push(meta_i64, 0)
-  Array::push(bodies, if enable_rc { gen_arr_len_body(true) } else { static_arr_len_body() })
-  Array::push(meta_i32, 0)
-  Array::push(meta_i64, 0)
-  Array::push(bodies, if enable_rc { gen_arr_get_body(true) } else { static_arr_get_body() })
-  Array::push(meta_i32, 1)
-  Array::push(meta_i64, 0)
-  Array::push(bodies, if enable_rc { gen_arr_push_body(true) } else { static_arr_push_body() })
-  Array::push(meta_i32, 6)
-  Array::push(meta_i64, 0)
-  Array::push(bodies, if enable_rc { gen_arr_set_body(true) } else { static_arr_set_body() })
-  Array::push(meta_i32, 1)
-  Array::push(meta_i64, 0)
+  //
+  // The branch is at STATEMENT level (each arm does its own Array::push), not an
+  // `if`-expression returning the body. The wasm-gc backend (which also compiles
+  // this linear module as a smoke gate) infers the result kind of an
+  // `if`-expression, and the static_arr_* bodies are closures there (their body
+  // references a Bytes const, which the gc backend cannot lift to a global, so
+  // the function has a free var). Kind-inferring a call to such a closure raises
+  // "unknown name". Keeping `static_arr_*()` as a direct Array::push argument —
+  // the form the default path always used — never triggers that inference.
+  if enable_rc {
+    Array::push(bodies, gen_arr_new_body(true))
+    Array::push(meta_i32, 1)
+    Array::push(meta_i64, 0)
+    Array::push(bodies, gen_arr_len_body(true))
+    Array::push(meta_i32, 0)
+    Array::push(meta_i64, 0)
+    Array::push(bodies, gen_arr_get_body(true))
+    Array::push(meta_i32, 1)
+    Array::push(meta_i64, 0)
+    Array::push(bodies, gen_arr_push_body(true))
+    Array::push(meta_i32, 6)
+    Array::push(meta_i64, 0)
+    Array::push(bodies, gen_arr_set_body(true))
+    Array::push(meta_i32, 1)
+    Array::push(meta_i64, 0)
+  } else {
+    Array::push(bodies, static_arr_new_body())
+    Array::push(meta_i32, 1)
+    Array::push(meta_i64, 0)
+    Array::push(bodies, static_arr_len_body())
+    Array::push(meta_i32, 0)
+    Array::push(meta_i64, 0)
+    Array::push(bodies, static_arr_get_body())
+    Array::push(meta_i32, 1)
+    Array::push(meta_i64, 0)
+    Array::push(bodies, static_arr_push_body())
+    Array::push(meta_i32, 6)
+    Array::push(meta_i64, 0)
+    Array::push(bodies, static_arr_set_body())
+    Array::push(meta_i32, 1)
+    Array::push(meta_i64, 0)
+  }
   Array::push(bodies, static_double_to_int_body())
   Array::push(meta_i32, 0)
   Array::push(meta_i64, 0)
