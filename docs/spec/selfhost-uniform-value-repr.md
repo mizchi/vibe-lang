@@ -322,6 +322,19 @@ arithmetic / comparison / bitop / shift / float / nested-data case under
    (`(t.1, t.0)`) is verified correct under RC by a gate case as well.
 
    **Still remaining (leaks, safe; need owned-vs-borrowed typing):**
+   - **Non-alias `PaDup` for shared owned values is not emitted** (codegen threads
+     only `PaDrop` and `PaAliasDup`). For `let u = (t, t)` the analysis plans one
+     `PaDup(t)` so `t` reaches rc 2 to back `u`'s two field references; without it
+     `t` stays rc 1 and the recursive `__rc_drop` visits the same child pointer
+     twice. *Investigated (codex review #499): not reproducible* — every
+     constructed pattern (`(t,t)` / `(t,t,t)` loops, three-alloc desync, escaping
+     `(t,t)` returned and read after reuse, share-in-a-function-then-drain) gives
+     results identical to the default path with bounded heap, because (a) reads
+     precede the scope-end drops and (b) the steady-state free-list cycle absorbs
+     the extra decrement (the corrupted next-pointer is overwritten before it is
+     popped). A proper fix is occurrence-precise dup placement for container/call
+     owning uses (the same general dup-placement work as the next item); the
+     naive "dup every owning use" over-counts (→ leak). Tracked, not yet fixed.
    - Container **owning** escapes (storing an owned heap value into a longer
      -lived container that outlives the current scope) are not dup'd → leak
      (safe), as before.
