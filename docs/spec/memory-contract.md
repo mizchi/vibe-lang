@@ -59,9 +59,16 @@ RC as its first (default) reclamation strategy**, replacing the current
   expression results (e.g. a `for-in`'s ArrayBuilder and its frozen result
   array when the loop is used as a statement). Constant w.r.t. iteration
   count, but a real remaining leak.
-- **A-2 closure environment drop** — `emit_rc_drop_fields` has no
-  closure-specific branch; captured heap in closure envs needs
-  wasmtime-level verification.
+- **A-2 closure environment drop** — *done*. Closures that capture heap
+  leaked their env block and the captured values. Two fixes: (1) Perceus
+  treats a call as a *borrow* of the callee binding, so a closure stays
+  live across calls and is dropped at scope end (top-level fn names /
+  builtins resolve to no local binding, so this is a no-op for them);
+  (2) `rc_has_closure` is now derived from the authoritative funcs list
+  (any capturing closure) rather than a scan that used a mismatched span
+  key for parameterized closures, so the RC drop helper actually emits its
+  `obj_fn` capture-recursion branch. Verified balanced on the interpreter
+  and correct on wasmtime (`rc e2e: closure capturing heap value`).
 - **A-3 borrow inference scope** — only `__index` is recognized as a
   borrow; broaden to all borrowed parameters.
 - **A-4 cycles** — RC cannot reclaim cycles. Decide policy: accept and

@@ -1329,7 +1329,11 @@ fn p2_count_expr(ctx : PerceusCountCtx2, expr : @core.Expr) -> Unit {
     | @core.Expr::Placeholder(..) => ()
     @core.Expr::Ident(name~, ..) => p2_count_use(ctx, name)
     @core.Expr::Call(name~, args~, ..) => {
-      p2_count_use(ctx, name)
+      // Calling a binding borrows it: a closure value stays live across the
+      // call (it may be called again) and is reclaimed at scope end, which
+      // recursively drops its captured heap. For top-level function names and
+      // builtins the lookup finds no local binding, so this is a no-op.
+      p2_count_borrow(ctx, name)
       // __index(obj, key) borrows the container — no ownership transfer
       // Applies to both record field access (string key) and array index (int key)
       if name == "__index" && args.length() == 2 {
@@ -1800,7 +1804,9 @@ fn p2_emit_expr(
     | @core.Expr::Placeholder(..) => ()
     @core.Expr::Ident(name~, ..) => p2_emit_use(ctx, name, site)
     @core.Expr::Call(name~, args~, ..) => {
-      p2_emit_use(ctx, name, site + ".callee")
+      // Borrow (not consume) the callee binding — see the count pass. A
+      // closure stays live across the call and is dropped at scope end.
+      p2_emit_borrow(ctx, name, site + ".callee")
       // __index(obj, key) borrows the container (record field or array index)
       if name == "__index" && args.length() == 2 {
         match args[0].expr {

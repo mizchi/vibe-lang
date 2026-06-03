@@ -168,6 +168,23 @@ test "rc e2e: closure capturing heap" {
 }
 
 ///|
+test "rc e2e: closure capturing heap value" {
+  if rc_e2e_should_skip("closure capturing heap") {
+    return
+  }
+  // The closure captures a heap tuple; its env (and the captured tuple) must be
+  // reclaimed without corrupting the computed result.
+  let src =
+    #|let f = () -> Int {
+    #|  let t = (3, 4)
+    #|  let g = (x: Int) -> Int { x + t.0 + t.1 }
+    #|  g(10)
+    #|}
+    #|f()
+  assert_rc_e2e_int(src, "closure_heap_capture", 17)
+}
+
+///|
 test "rc e2e: array allocation and index" {
   if rc_e2e_should_skip("array") {
     return

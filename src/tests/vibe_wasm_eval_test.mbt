@@ -4411,6 +4411,51 @@ test "rc debug: discarded statement-expr heap is dropped" {
 }
 
 ///|
+test "rc debug: closure capturing heap is reclaimed (A-2)" {
+  // A closure that captures a heap value owns it via its env block. Calling the
+  // closure borrows it; at scope end the closure is dropped and its captured
+  // heap is recursively reclaimed. Verified both for a single closure and for
+  // per-iteration closures in a loop (no growth).
+  let single =
+    #|let f = () -> Int {
+    #|  let t = (1, 2)
+    #|  let g = (x: Int) -> Int { x + t.0 }
+    #|  g(10)
+    #|}
+    #|f()
+  let r1 = try eval_run_rc_debug(single) catch {
+    e => fail("rc debug eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let (a1, f1) = rc_debug_counts(r1)
+  assert_true(a1 >= 2L)
+  assert_eq(a1, f1)
+  assert_eq(decode_int(r1.value), 11L)
+  let loop_ =
+    #|let f = () -> Int {
+    #|  let mut s = 0
+    #|  let mut i = 0
+    #|  while i < 5 {
+    #|    let t = (i, i)
+    #|    let g = (x: Int) -> Int { x + t.0 }
+    #|    s = s + g(1)
+    #|    i = i + 1
+    #|  }
+    #|  s
+    #|}
+    #|f()
+  let r2 = try eval_run_rc_debug(loop_) catch {
+    e => fail("rc debug eval failed: " + e.to_string())
+  } noraise {
+    r => r
+  }
+  let (a2, f2) = rc_debug_counts(r2)
+  assert_true(a2 >= 10L)
+  assert_eq(a2, f2)
+}
+
+///|
 // ADR-0044 Phase 3: String now implements Iterable. The prelude provides
 // `String::iter_length` (= String::length) and `String::iter_get`
 // (= String::char_code_at), so generic Iterable combinators see each char
