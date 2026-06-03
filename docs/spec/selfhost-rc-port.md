@@ -146,11 +146,12 @@ is added.
   (the Phase 2 analysis, now imported by `linked_compile.vibe`) marks for a
   scope-end drop. Non-recursive drop needs no runtime `type_id` dispatch, so it
   sidesteps the type_id-uniformity work for enums/closures.
+- Closures are covered: `compile_lambda` runs `build_perceus_plan` on the
+  lambda body and gives the lambda ctx its own drop set, so a tuple allocated
+  per iteration inside a callback / returned closure is reclaimed too
+  (measured 0 bytes/iteration).
 - Known limitations of this first vertical (all leak conservatively — they
   never corrupt — and only matter under `enable_rc`):
-  - **Closures**: lambda bodies are analysed with an empty drop set, so a tuple
-    allocated per iteration inside a callback / returned closure is not yet
-    reclaimed (each lambda needs its own `build_perceus_plan`).
   - **Mixed tuple sizes**: the free list is head-only exact-fit (as in `src/`),
     so after a size-3 tuple is freed, later size-2 allocations bump rather than
     reuse the stuck size-2 block until the head matches. Same-size loops (the

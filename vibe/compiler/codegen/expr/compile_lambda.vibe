@@ -8,6 +8,10 @@ import .. / common_analysis {
   collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, is_mut_captured_in
 }
 
+import .. / .. / perceus {
+  build_perceus_plan, pa_is_drop
+}
+
 import .. / common_base {
   CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
 }
@@ -79,6 +83,23 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
     lam_nl = lam_nl + 1
     ci3 = ci3 + 1
   }
+  // RC: a lambda body has its own scope, so run the Perceus analysis on it and
+  // give the lambda ctx its own drop set (otherwise per-iteration tuples in a
+  // callback / returned closure leak).
+  let lam_drops = Array::slice([
+    ""
+  ], 0, 0)
+  if ctx.enable_rc {
+    let lam_plan = build_perceus_plan(fn_body)
+    let mut ldi = 0
+    while ldi < Array::length(lam_plan) {
+      let lpa = Array::get(lam_plan, ldi)
+      if pa_is_drop(lpa) {
+        Array::push(lam_drops, lpa.name)
+      }
+      ldi = ldi + 1
+    }
+  }
   let lam_ctx = CompileCtx::{
     func_table: ctx.func_table, str_table: ctx.str_table,
     lambda_table: ctx.lambda_table,
@@ -88,9 +109,7 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
     const_int_names: ctx.const_int_names,
     const_int_values: ctx.const_int_values,
     enable_rc: ctx.enable_rc,
-    rc_drop_names: Array::slice([
-      ""
-    ], 0, 0)
+    rc_drop_names: lam_drops
   }
   let final_lam_nl = compile_fn(lam_buf, fn_body, lam_locals, lam_nl, lam_ctx, -1)
   let lambda_idx = Array::length(ctx.lambda_table.bodies)
