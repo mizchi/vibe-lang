@@ -49,8 +49,17 @@ is added.
 
 ## Staged plan
 
-### Phase 1 — uniform object header (prerequisite, no RC yet)
+### Phase 1 — uniform object header (prerequisite, no RC yet) — *started*
 
+- **Verification harness in place** (the safety net for the layout change): the
+  selfhost codegen unit tests only check wasm magic bytes (`assert_wasm`), which
+  is too weak to catch a layout regression. `vibe/compiler/codegen_heap_e2e_test.vibe`
+  (task `test-selfhost-heap-e2e`, 9/9) compiles heap-object source programs with
+  the selfhost backend, runs them on wasmtime (`sh_lines("wasmtime run --invoke
+  main …")`), and checks the *result* — covering tuple, nested tuple, array get,
+  array builder, struct field, enum ctor + match payload, closure capture,
+  returned closure, and a tuple-allocating loop. The header rewrite must keep
+  these green.
 - Introduce the `src/`-compatible header `[type_id@0][length@4][payload@8...]`
   for tuple / array / record / enum / closure allocations in the selfhost
   linear backend (`codegen/expr/compile_expr_tail2.vibe`, `compile_lambda.vibe`,

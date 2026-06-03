@@ -1,0 +1,82 @@
+//# Imports
+
+import ./codegen_test_support.vibe {
+  compile_wasi
+}
+
+//# Misc
+
+// Heap-object end-to-end tests for the selfhost LINEAR backend: compile a
+// source program, run the produced wasm on wasmtime, and check the *result*
+// (not just that it is a valid module). assert_wasm only checks the magic
+// bytes, so these are the safety net for the Phase 1 object-header change
+// (docs/spec/selfhost-rc-port.md): the heap layouts of tuples, arrays,
+// records/structs, enums and closures must keep producing the same results
+// when a uniform object header is added.
+
+let assert_result: (String, String, String, String) -> Int with { Error, Fs, Process } = (
+  src,
+  entry,
+  label,
+  expected,
+) -> {
+  let bytes = compile_wasi(src, entry)
+  let path = "/tmp/_heap_e2e_" + label + ".wasm"
+  Fs::write_bytes(path, bytes)
+  let out = sh_lines("wasmtime run --invoke " + entry + " " + path + " 2>/dev/null")
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(out) {
+    if Array::get(out, i) == expected {
+      found = true
+    }
+    i = i + 1
+  }
+  assert(found)
+  0
+}
+
+test "heap e2e: tuple field access" {
+  let src = "let main: () -> Int = () -> {\n  let t = (3, 4)\n  t.0 + t.1\n}"
+  assert_result(src, "main", "tuple", "7")
+}
+
+test "heap e2e: nested tuple field access" {
+  let src = "let main: () -> Int = () -> {\n  let t = ((1, 2), (3, 4))\n  t.0.1 + t.1.0\n}"
+  assert_result(src, "main", "nested_tuple", "5")
+}
+
+test "heap e2e: array get" {
+  let src = "let main: () -> Int = () -> {\n  let a = [10, 20, 30]\n  Array::get(a, 1)\n}"
+  assert_result(src, "main", "array_get", "20")
+}
+
+test "heap e2e: array builder push/freeze" {
+  let src = "let main: () -> Int = () -> {\n  let b = ArrayBuilder::new()\n  ArrayBuilder::push(b, 10)\n  ArrayBuilder::push(b, 20)\n  ArrayBuilder::push(b, 30)\n  let arr = ArrayBuilder::freeze(b)\n  Array::get(arr, 2)\n}"
+  assert_result(src, "main", "array_builder", "30")
+}
+
+test "heap e2e: struct field access" {
+  let src = "struct P { x: Int; y: Int }\nlet main: () -> Int = () -> {\n  let p = P::{ x: 3, y: 4 }\n  p.x + p.y\n}"
+  assert_result(src, "main", "struct", "7")
+}
+
+test "heap e2e: enum ctor + match payload" {
+  let src = "enum E { A(Int); B }\nlet main: () -> Int = () -> {\n  let e = A(5)\n  match e {\n    A(n) => n + 1,\n    B => 0\n  }\n}"
+  assert_result(src, "main", "enum_match", "6")
+}
+
+test "heap e2e: closure capture" {
+  let src = "let main: () -> Int = () -> {\n  let n = 5\n  let f = (x: Int) -> Int { x + n }\n  f(3)\n}"
+  assert_result(src, "main", "closure", "8")
+}
+
+test "heap e2e: returned closure" {
+  let src = "let mk: (Int) -> (Int) -> Int = (n) -> {\n  (x: Int) -> Int { x + n }\n}\nlet main: () -> Int = () -> {\n  let add5 = mk(5)\n  add5(3)\n}"
+  assert_result(src, "main", "returned_closure", "8")
+}
+
+test "heap e2e: loop accumulating tuples" {
+  let src = "let main: () -> Int = () -> {\n  let mut sum = 0\n  let mut i = 0\n  while i < 5 {\n    let t = (i, i + 1)\n    sum = sum + t.0 + t.1\n    i = i + 1\n  }\n  sum\n}"
+  assert_result(src, "main", "loop_tuples", "25")
+}
