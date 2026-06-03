@@ -22,14 +22,24 @@ import .. / wasm_emit {
 
 //# Functions
 
-export let gen_arr_get_body: () -> Bytes = () -> {
+export let gen_arr_get_body: (Bool) -> Bytes = (enable_rc) -> {
   let b = bytebuf_new()
   emit_local_get(b, 0)
+  // ADR-0055 Stage 2b: array value is an odd pointer; untag before use.
+  if enable_rc {
+    emit_i64_const(b, -2)
+    emit_i64_and(b)
+  }
   emit_i32_wrap_i64(b)
   emit_i32_load(b, 2, 8)
   emit_local_set(b, 2)
   emit_local_get(b, 2)
   emit_local_get(b, 1)
+  // ADR-0055 Stage 1: the index arrives tagged (n<<1); untag before use.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_i32_const(b, 3)
   bytebuf_push(b, 116)
@@ -38,52 +48,270 @@ export let gen_arr_get_body: () -> Bytes = () -> {
   b
 }
 
-export let gen_arr_len_body: () -> Bytes = () -> {
+export let gen_arr_len_body: (Bool) -> Bytes = (enable_rc) -> {
   let b = bytebuf_new()
   emit_local_get(b, 0)
+  // ADR-0055 Stage 2b: array value is an odd pointer; untag before use.
+  if enable_rc {
+    emit_i64_const(b, -2)
+    emit_i64_and(b)
+  }
   emit_i32_wrap_i64(b)
   emit_i32_load(b, 2, 4)
   emit_i64_extend_i32_u(b)
+  // ADR-0055 Stage 1: length is a count entering the value world; tag it.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
   b
 }
 
-export let gen_arr_new_body: () -> Bytes = () -> {
+export let gen_arr_new_body: (Bool) -> Bytes = (enable_rc) -> {
   let b = bytebuf_new()
-  emit_global_get(b, 0)
-  emit_local_tee(b, 0)
-  emit_i32_const(b, 76)
-  emit_i32_add(b)
-  emit_global_set(b, 0)
-  emit_local_get(b, 0)
-  emit_i32_const(b, 8)
-  emit_i32_store(b, 2, 0)
-  emit_local_get(b, 0)
-  emit_i32_const(b, 0)
-  emit_i32_store(b, 2, 4)
-  emit_local_get(b, 0)
-  emit_local_get(b, 0)
-  emit_i32_const(b, 12)
-  emit_i32_add(b)
-  emit_i32_store(b, 2, 8)
-  emit_local_get(b, 0)
-  emit_i64_extend_i32_u(b)
+  if enable_rc {
+    // ADR-0055 Stage 2c: give array_new the same RC block header as literal
+    // arrays ([alloc_size@0][rc_count@4][class@7]), value = block+8, so EVERY
+    // odd array pointer is self-describing and the recursive rc_drop can reach
+    // it safely. capacity 8, length 0, data_ptr = value+12 (block+20), inline
+    // buffer 8 slots → total 84 (== a cap-8 literal, so the free-list reuses it).
+    emit_global_get(b, 0)
+    emit_local_tee(b, 0)
+    emit_i32_const(b, 84)
+    emit_i32_add(b)
+    emit_global_set(b, 0)
+    emit_local_get(b, 0)
+    emit_i32_const(b, 84)
+    emit_i32_store(b, 2, 0)
+    emit_local_get(b, 0)
+    emit_i32_const(b, 1)
+    emit_i32_store(b, 2, 4)
+    emit_local_get(b, 0)
+    emit_i32_const(b, 5)
+    emit_i32_store8(b, 0, 7)
+    emit_local_get(b, 0)
+    emit_i32_const(b, 8)
+    emit_i32_store(b, 2, 8)
+    emit_local_get(b, 0)
+    emit_i32_const(b, 0)
+    emit_i32_store(b, 2, 12)
+    emit_local_get(b, 0)
+    emit_local_get(b, 0)
+    emit_i32_const(b, 20)
+    emit_i32_add(b)
+    emit_i32_store(b, 2, 16)
+    emit_local_get(b, 0)
+    emit_i32_const(b, 8)
+    emit_i32_add(b)
+    emit_i64_extend_i32_u(b)
+    emit_i64_const(b, 1)
+    emit_i64_or(b)
+  } else {
+    emit_global_get(b, 0)
+    emit_local_tee(b, 0)
+    emit_i32_const(b, 76)
+    emit_i32_add(b)
+    emit_global_set(b, 0)
+    emit_local_get(b, 0)
+    emit_i32_const(b, 8)
+    emit_i32_store(b, 2, 0)
+    emit_local_get(b, 0)
+    emit_i32_const(b, 0)
+    emit_i32_store(b, 2, 4)
+    emit_local_get(b, 0)
+    emit_local_get(b, 0)
+    emit_i32_const(b, 12)
+    emit_i32_add(b)
+    emit_i32_store(b, 2, 8)
+    emit_local_get(b, 0)
+    emit_i64_extend_i32_u(b)
+  }
   b
 }
 
-export let gen_arr_set_body: () -> Bytes = () -> {
+export let gen_arr_set_body: (Bool) -> Bytes = (enable_rc) -> {
   let b = bytebuf_new()
   emit_local_get(b, 0)
+  // ADR-0055 Stage 2b: array value is an odd pointer; untag before use.
+  if enable_rc {
+    emit_i64_const(b, -2)
+    emit_i64_and(b)
+  }
   emit_i32_wrap_i64(b)
   emit_i32_load(b, 2, 8)
   emit_local_set(b, 3)
   emit_local_get(b, 3)
   emit_local_get(b, 1)
+  // ADR-0055 Stage 1: the index arrives tagged (n<<1); untag before use.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_i32_const(b, 3)
   bytebuf_push(b, 116)
   emit_i32_add(b)
   emit_local_get(b, 2)
   emit_i64_store(b, 3, 0)
+  b
+}
+
+// ADR-0055 Stage 3: the generic recursive rc_drop helper (linear RC backend).
+// Signature (i64 value) -> (): decrement the value's reference count and, at
+// zero, recursively drop its heap fields before pushing the block onto the
+// free-list (global 2). `self_idx` is this function's own wasm index so it can
+// recurse into fields to arbitrary depth.
+//
+// Value representation (ADR-0055): a heap pointer is odd (`(block+8)|1`); an
+// int/bool is even (`n<<1`). The block header is
+//   [alloc_size@block+0][rc_count@block+4 (class id in high byte)] and
+//   value = block+8 → live header at value-8 / value-4, payload at value+8.
+// The drop-class byte (value-1) is: 1 = field-vector (tuple/record/ctor/
+// closure: [_@value+0][count@value+4][fields@value+8+i*8]); 5 = array
+// (length@value+4, data_ptr@value+8, elements at data_ptr+i*8). Anything else
+// (leaf: int/bool/string/float/bare-fn, or an unheadered pointer) is freed
+// without following fields.
+//
+// Locals: 0 = i64 v (param); 1 vptr, 2 class, 3 cnt, 4 idx, 5 dptr (i32);
+// 6 = i64 field value.
+export let gen_rc_drop_body: (Int) -> Bytes = (self_idx) -> {
+  let b = bytebuf_new()
+  // not a heap pointer (even) → nothing to do
+  emit_local_get(b, 0)
+  emit_i64_const(b, 1)
+  emit_i64_and(b)
+  emit_i64_eqz(b)
+  emit_if_void(b)
+  emit_return(b)
+  emit_end(b)
+  // string/bytes fat pointer ((offset<<32)|length): the data offset (>= 64)
+  // lives in the high 32 bits, whereas every heap block address is < 2^32
+  // (high 32 bits == 0). So if (v >> 32) != 0 it is a leaf fat pointer, not an
+  // RC block → skip. (Values here are positive, so shr_s == shr_u.)
+  emit_local_get(b, 0)
+  emit_i64_const(b, 32)
+  emit_i64_shr_s(b)
+  emit_i64_eqz(b)
+  emit_i32_eqz(b)
+  emit_if_void(b)
+  emit_return(b)
+  emit_end(b)
+  // vptr = (v & -2) as i32  (untag the odd pointer to the value pointer)
+  emit_local_get(b, 0)
+  emit_i64_const(b, -2)
+  emit_i64_and(b)
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 1)
+  // rc_count-- : store(vptr-4, load(vptr-4) - 1). The class byte is the high
+  // byte of the same word; subtracting 1 from a non-zero rc never borrows into
+  // it, so it is preserved.
+  emit_local_get(b, 1)
+  emit_i32_const(b, 4)
+  emit_i32_sub(b)
+  emit_local_get(b, 1)
+  emit_i32_const(b, 4)
+  emit_i32_sub(b)
+  emit_i32_load(b, 2, 0)
+  emit_i32_const(b, 1)
+  emit_i32_sub(b)
+  emit_i32_store(b, 2, 0)
+  // if rc (low 24 bits) != 0 → still referenced → return. `* 256` shifts the
+  // class byte out of the 32-bit word so only rc is tested.
+  emit_local_get(b, 1)
+  emit_i32_const(b, 4)
+  emit_i32_sub(b)
+  emit_i32_load(b, 2, 0)
+  emit_i32_const(b, 256)
+  emit_i32_mul(b)
+  emit_i32_eqz(b)
+  emit_i32_eqz(b)
+  emit_if_void(b)
+  emit_return(b)
+  emit_end(b)
+  // class = load8u(vptr-1)
+  emit_local_get(b, 1)
+  emit_i32_const(b, 1)
+  emit_i32_sub(b)
+  emit_i32_load8_u(b, 0, 0)
+  emit_local_set(b, 2)
+  // field-vector (class 1): for idx in 0..count: rc_drop(load_i64(vptr+8+idx*8))
+  emit_local_get(b, 2)
+  emit_i32_const(b, 1)
+  emit_i32_eq(b)
+  emit_if_void(b)
+  emit_local_get(b, 1)
+  emit_i32_load(b, 2, 4)
+  emit_local_set(b, 3)
+  emit_i32_const(b, 0)
+  emit_local_set(b, 4)
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(b, 4)
+  emit_local_get(b, 3)
+  emit_i32_ge_u(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, 1)
+  emit_local_get(b, 4)
+  emit_i32_const(b, 8)
+  emit_i32_mul(b)
+  emit_i32_add(b)
+  emit_i64_load(b, 3, 8)
+  emit_local_set(b, 6)
+  emit_local_get(b, 6)
+  emit_call(b, self_idx)
+  emit_local_get(b, 4)
+  emit_i32_const(b, 1)
+  emit_i32_add(b)
+  emit_local_set(b, 4)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  emit_end(b)
+  // array (class 5): for idx in 0..length: rc_drop(load_i64(data_ptr+idx*8))
+  emit_local_get(b, 2)
+  emit_i32_const(b, 5)
+  emit_i32_eq(b)
+  emit_if_void(b)
+  emit_local_get(b, 1)
+  emit_i32_load(b, 2, 4)
+  emit_local_set(b, 3)
+  emit_local_get(b, 1)
+  emit_i32_load(b, 2, 8)
+  emit_local_set(b, 5)
+  emit_i32_const(b, 0)
+  emit_local_set(b, 4)
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(b, 4)
+  emit_local_get(b, 3)
+  emit_i32_ge_u(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, 5)
+  emit_local_get(b, 4)
+  emit_i32_const(b, 8)
+  emit_i32_mul(b)
+  emit_i32_add(b)
+  emit_i64_load(b, 3, 0)
+  emit_local_set(b, 6)
+  emit_local_get(b, 6)
+  emit_call(b, self_idx)
+  emit_local_get(b, 4)
+  emit_i32_const(b, 1)
+  emit_i32_add(b)
+  emit_local_set(b, 4)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  emit_end(b)
+  // free: push block onto the free-list head (global 2), reusing the rc slot
+  // (vptr-4) as the next pointer — matching the inline allocator/drop.
+  emit_local_get(b, 1)
+  emit_i32_const(b, 4)
+  emit_i32_sub(b)
+  emit_global_get(b, 2)
+  emit_i32_store(b, 2, 0)
+  emit_local_get(b, 1)
+  emit_global_set(b, 2)
   b
 }
 

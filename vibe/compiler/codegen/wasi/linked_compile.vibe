@@ -5,11 +5,11 @@ import .. / .. / core {
 }
 
 import .. / .. / perceus {
-  PerceusAction, build_perceus_plan, pa_is_drop
+  PerceusAction, build_perceus_plan, pa_is_alias_dup, pa_is_drop, pa_is_dup
 }
 
 import .. / builtin_bodies {
-  gen_bytes_append_body, gen_bytes_concat_body, gen_bytes_from_array_body, gen_bytes_get_body, gen_bytes_len_body, gen_bytes_new_body, gen_bytes_push_body, gen_bytes_set_body, gen_bytes_slice_body, gen_bytes_to_array_body, gen_eq_body, gen_selfhost_sources_proper_body, gen_selfhost_sources_stub_body, gen_string_contains_body, gen_string_ends_with_body, gen_string_index_of_body, gen_string_join_body, gen_string_last_index_of_body, gen_string_split_body, gen_string_starts_with_body, gen_string_trim_body, static_arr_concat_body, static_arr_get_body, static_arr_len_body, static_arr_new_body, static_arr_push_all_body, static_arr_push_body, static_arr_set_body, static_arr_slice_body, static_arr_truncate_body, static_double_to_int_body, static_fs_stub_body, static_fs_write_bytes_stub_body, static_identity_body, static_int_to_double_body, static_print_i64_body, static_print_str_body, static_str_char_code_at_body, static_str_concat_body, static_str_eq_body, static_str_from_char_code_body, static_str_len_body, static_str_substring_body
+  gen_rc_drop_body, gen_arr_get_body, gen_arr_len_body, gen_arr_new_body, gen_arr_push_body, gen_arr_set_body, gen_bytes_append_body, gen_bytes_concat_body, gen_bytes_from_array_body, gen_bytes_get_body, gen_bytes_len_body, gen_bytes_new_body, gen_bytes_push_body, gen_bytes_set_body, gen_bytes_slice_body, gen_bytes_to_array_body, gen_eq_body, gen_selfhost_sources_proper_body, gen_selfhost_sources_stub_body, gen_string_contains_body, gen_string_ends_with_body, gen_string_index_of_body, gen_string_join_body, gen_string_last_index_of_body, gen_string_split_body, gen_string_starts_with_body, gen_string_trim_body, static_arr_concat_body, static_arr_get_body, static_arr_len_body, static_arr_new_body, static_arr_push_all_body, static_arr_push_body, static_arr_set_body, static_arr_slice_body, static_arr_truncate_body, static_double_to_int_body, static_fs_stub_body, static_fs_write_bytes_stub_body, static_identity_body, static_int_to_double_body, static_print_i64_body, static_print_str_body, static_str_char_code_at_body, static_str_concat_body, static_str_eq_body, static_str_from_char_code_body, static_str_len_body, static_str_substring_body
 }
 
 import .. / common_analysis {
@@ -447,6 +447,9 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   let bytes_slice_idx = bytes_concat_idx + 1
   let bytes_from_array_idx = bytes_slice_idx + 1
   let bytes_to_array_idx = bytes_from_array_idx + 1
+  // ADR-0055 Stage 3: the generic recursive rc_drop helper occupies the next
+  // generated-function slot (only registered under enable_rc, below).
+  let rc_drop_idx = bytes_to_array_idx + 1
   let env_get_idx = if env_get_import_idx >= 0 {
     env_get_import_idx
   } else {
@@ -535,6 +538,14 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     ("Double::to_i64_bits", 1, identity_idx, 1),
     ("__to_string", 1, identity_idx, 1)
   ]
+  // ADR-0055 Stage 3: register the recursive rc_drop helper as a generated
+  // function (1 i64 arg, no result) only under RC, so the default path keeps
+  // its function indices and stays byte-identical.
+  if enable_rc {
+    Array::push(builtin_defs, ("__rc_drop", 1, rc_drop_idx, 0))
+  } else {
+    ()
+  }
   let mut max_builtin_func_idx = num_imported_funcs - 1
   let mut builtin_idx_i = 0
   while builtin_idx_i < Array::length(builtin_defs) {
@@ -627,21 +638,51 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   Array::push(bodies, static_str_concat_body())
   Array::push(meta_i32, 6)
   Array::push(meta_i64, 0)
-  Array::push(bodies, static_arr_new_body())
-  Array::push(meta_i32, 1)
-  Array::push(meta_i64, 0)
-  Array::push(bodies, static_arr_len_body())
-  Array::push(meta_i32, 0)
-  Array::push(meta_i64, 0)
-  Array::push(bodies, static_arr_get_body())
-  Array::push(meta_i32, 1)
-  Array::push(meta_i64, 0)
-  Array::push(bodies, static_arr_push_body())
-  Array::push(meta_i32, 6)
-  Array::push(meta_i64, 0)
-  Array::push(bodies, static_arr_set_body())
-  Array::push(meta_i32, 1)
-  Array::push(meta_i64, 0)
+  // ADR-0055 Stage 1/2b: under RC, ints are tagged (n<<1) and array pointers are
+  // odd (|1); use the gen bodies that untag the index/pointer, tag the length,
+  // and return odd from array_new. Default path keeps the precompiled static.
+  //
+  // The branch is at STATEMENT level (each arm does its own Array::push), not an
+  // `if`-expression returning the body. The wasm-gc backend (which also compiles
+  // this linear module as a smoke gate) infers the result kind of an
+  // `if`-expression, and the static_arr_* bodies are closures there (their body
+  // references a Bytes const, which the gc backend cannot lift to a global, so
+  // the function has a free var). Kind-inferring a call to such a closure raises
+  // "unknown name". Keeping `static_arr_*()` as a direct Array::push argument —
+  // the form the default path always used — never triggers that inference.
+  if enable_rc {
+    Array::push(bodies, gen_arr_new_body(true))
+    Array::push(meta_i32, 1)
+    Array::push(meta_i64, 0)
+    Array::push(bodies, gen_arr_len_body(true))
+    Array::push(meta_i32, 0)
+    Array::push(meta_i64, 0)
+    Array::push(bodies, gen_arr_get_body(true))
+    Array::push(meta_i32, 1)
+    Array::push(meta_i64, 0)
+    Array::push(bodies, gen_arr_push_body(true))
+    Array::push(meta_i32, 6)
+    Array::push(meta_i64, 0)
+    Array::push(bodies, gen_arr_set_body(true))
+    Array::push(meta_i32, 1)
+    Array::push(meta_i64, 0)
+  } else {
+    Array::push(bodies, static_arr_new_body())
+    Array::push(meta_i32, 1)
+    Array::push(meta_i64, 0)
+    Array::push(bodies, static_arr_len_body())
+    Array::push(meta_i32, 0)
+    Array::push(meta_i64, 0)
+    Array::push(bodies, static_arr_get_body())
+    Array::push(meta_i32, 1)
+    Array::push(meta_i64, 0)
+    Array::push(bodies, static_arr_push_body())
+    Array::push(meta_i32, 6)
+    Array::push(meta_i64, 0)
+    Array::push(bodies, static_arr_set_body())
+    Array::push(meta_i32, 1)
+    Array::push(meta_i64, 0)
+  }
   Array::push(bodies, static_double_to_int_body())
   Array::push(meta_i32, 0)
   Array::push(meta_i64, 0)
@@ -750,6 +791,15 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   Array::push(bodies, gen_bytes_to_array_body(arr_new_idx, arr_push_idx, bytes_len_idx, bytes_get_idx))
   Array::push(meta_i32, 2)
   Array::push(meta_i64, 1)
+  // ADR-0055 Stage 3: recursive rc_drop helper body (last generated builtin,
+  // wasm index rc_drop_idx so it can self-call). 5 i32 + 1 i64 working locals.
+  if enable_rc {
+    Array::push(bodies, gen_rc_drop_body(rc_drop_idx))
+    Array::push(meta_i32, 5)
+    Array::push(meta_i64, 1)
+  } else {
+    ()
+  }
   let mut bi = 0
   while bi < num_user_funcs {
     let __bi_stmt = Array::get(stmts, Array::get(fn_stmt_indices, bi))
@@ -761,6 +811,12 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     let fn_name_dbg = Array::get(fn_names_list, bi)
     // RC: names this function's Perceus plan says to drop at scope end.
     let rc_drops = Array::slice([
+      ""
+    ], 0, 0)
+    let rc_alias_dups = Array::slice([
+      ""
+    ], 0, 0)
+    let rc_dups = Array::slice([
       ""
     ], 0, 0)
     if enable_rc {
@@ -775,6 +831,14 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
         let pa = Array::get(plan, di)
         if pa_is_drop(pa) {
           Array::push(rc_drops, pa.name)
+        } else if pa_is_alias_dup(pa) {
+          Array::push(rc_alias_dups, pa.name)
+        } else if pa_is_dup(pa) {
+          // ADR-0055 Stage 4: a non-alias owning-use dup (e.g. `let u = (t, t)`).
+          // One entry per dup; the binding site emits this many guarded rc_dups.
+          Array::push(rc_dups, pa.name)
+        } else {
+          ()
         }
         di = di + 1
       }
@@ -802,7 +866,17 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       const_int_names: const_int_names_list,
       const_int_values: const_int_values_list,
       enable_rc: enable_rc,
-      rc_drop_names: rc_drops
+      rc_drop_names: rc_drops,
+      rc_alias_dup_names: rc_alias_dups,
+      heap_binding_names: Array::slice([
+        ""
+      ], 0, 0),
+      rc_drop_func_idx: if enable_rc {
+        rc_drop_idx
+      } else {
+        -1
+      },
+      rc_dup_names: rc_dups
     }
     if is_efn(__bi_expr) {
       let __bi_params = get_efn_params(__bi_expr)
@@ -823,6 +897,12 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       Array::push(local_names, "__env")
       let param_count = Array::length(__bi_params) + 1
       let final_nl = compile_expr(body_buf, body, local_names, param_count, compile_ctx, -1)
+      // ADR-0055 Stage 1: the exported Int entry returns a tagged value; untag
+      // at the boundary so the host sees the real integer (else it prints 2n).
+      if enable_rc && fn_name_dbg == entry_name {
+        emit_i64_const(body_buf, 1)
+        emit_i64_shr_s(body_buf)
+      }
       Array::push(bodies, body_buf)
       let extra = if final_nl > param_count {
         final_nl - param_count
@@ -835,6 +915,10 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       Array::push(local_names, "__env")
       let param_count = 1
       let final_nl = compile_expr(body_buf, __bi_expr, local_names, param_count, compile_ctx, -1)
+      if enable_rc && fn_name_dbg == entry_name {
+        emit_i64_const(body_buf, 1)
+        emit_i64_shr_s(body_buf)
+      }
       Array::push(bodies, body_buf)
       let extra = if final_nl > param_count {
         final_nl - param_count
@@ -1130,6 +1214,13 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   Array::push(func_type_indices, 8)
   Array::push(func_type_indices, 3)
   Array::push(func_type_indices, 3)
+  // ADR-0055 Stage 3: rc_drop helper type = (i64) -> () = type index 1. Pushed
+  // after the generated builtins and before user funcs, matching the body order.
+  if enable_rc {
+    Array::push(func_type_indices, 1)
+  } else {
+    ()
+  }
   let mut fti = 0
   while fti < num_user_funcs {
     let upc = Array::get(fn_param_counts, fti)

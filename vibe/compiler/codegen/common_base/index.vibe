@@ -79,7 +79,29 @@ export struct CompileCtx {
   // RC: names of `let` bindings whose value the Perceus analysis says to drop
   // at scope end (computed per function from build_perceus_plan). compile_expr
   // emits an rc_drop for a tuple binding whose name appears here.
-  rc_drop_names: Array[String]
+  rc_drop_names: Array[String];
+  // RC: alias bindings (`let a = t`) whose source `t` is multiply-used, so the
+  // alias takes a duplicated reference — compile_expr emits an rc_dup of the
+  // source at the alias `let`. (PaAliasDup from the Perceus plan.)
+  rc_alias_dup_names: Array[String];
+  // RC: bindings known at codegen time to hold a heap object (bound to a
+  // tuple/record/enum literal, or an alias of such). Built as `let`s compile.
+  // Gates rc_dup / rc_drop so we never touch a non-heap (e.g. Int-returning
+  // call) binding the static Perceus `scalar` flag over-approximates as heap.
+  heap_binding_names: Array[String];
+  // RC: wasm function index of the generic recursive `__rc_drop` helper
+  // (ADR-0055 Stage 3), or -1 when unavailable (non-RC, or the legacy inline
+  // drop). When >= 0, scope-end drops emit a `call` to it so nested heap is
+  // reclaimed to arbitrary depth.
+  rc_drop_func_idx: Int;
+  // RC: names of `let` bindings the Perceus plan marks with a non-alias `PaDup`
+  // (a heap value used in more than one *owning* position, e.g. `let u = (t, t)`
+  // dups `t`). One entry per dup (so a name's multiplicity = its dup budget).
+  // compile_expr emits that many guarded rc_dups at the binding site, giving the
+  // block the extra references its container/owning uses consume — without this
+  // the recursive drop visits the shared child more times than it has refs.
+  // (ADR-0055 Stage 4.)
+  rc_dup_names: Array[String]
 }
 
 // GC backend compilation context (extends CompileCtx with GC-specific fields)
@@ -202,6 +224,25 @@ export let is_etuple: (Expr) -> Bool = (expr) -> {
   }
 }
 
+// Check if expr is an ERecord (struct/record literal). Records are tagged
+// (`ptr | 1`), unlike tuples, so RC drop must untag before touching the header.
+export let is_erecord: (Expr) -> Bool = (expr) -> {
+  match expr {
+    ERecord(_) => true,
+    _ => false
+  }
+}
+
+// Check if expr is an EArray (array literal). Under RC the array object is
+// inline-allocated with the same layout as a tuple (untagged raw pointer,
+// value = block+8), so it drops like a tuple (tagged=false).
+export let is_earray: (Expr) -> Bool = (expr) -> {
+  match expr {
+    EArray(_) => true,
+    _ => false
+  }
+}
+
 // Check pattern type
 export let is_ptuple: (Pat) -> Bool = (p) -> {
   match p {
@@ -240,6 +281,20 @@ export let rec lookup_ctor: (Array[String], String, Int) -> Int = (ctor_names, n
     i
   }
   else lookup_ctor(ctor_names, name, i + 1)
+}
+
+// Is `value` an enum/struct constructor application (`A(...)`)? Such values are
+// heap-allocated and tagged (`ptr | 1`), so under RC they are dropped like
+// records (untag first). A bare nullary ctor parsed as an EIdent is not matched
+// here (it carries no payload and is a conservative leak at worst).
+export let is_ctor_call: (Expr, CtorTable) -> Bool = (value, ct) -> {
+  match value {
+    ECall(callee, _) => match callee {
+      EIdent(nm) => lookup_ctor(ct.names, nm, 0) >= 0,
+      _ => false
+    },
+    _ => false
+  }
 }
 
 export let emit_i32_eqz: (Bytes) -> Unit = (buf) -> {

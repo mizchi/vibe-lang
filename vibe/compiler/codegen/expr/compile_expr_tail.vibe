@@ -9,7 +9,7 @@ import .. / common_analysis {
 }
 
 import .. / common_base {
-  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
+  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_ctor_call, is_earray, is_efn, is_eident, is_erecord, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
 }
 
 import .. / common_extractors {
@@ -38,6 +38,146 @@ import ./compile_match.vibe {
 
 //# Functions
 
+// Push the untagged value pointer (as i32) held in `local_idx`. Records are
+// tagged (`ptr | 1`) so their low bit is cleared first; tuples are raw.
+let emit_rc_value_ptr_i32: (Bytes, Int, Bool) -> Unit = (buf, local_idx, tagged) -> {
+  emit_local_get(buf, local_idx)
+  if tagged {
+    emit_i64_const(buf, -2)
+    emit_i64_and(buf)
+  } else {
+    ()
+  }
+  emit_i32_wrap_i64(buf)
+}
+
+// Emit a non-recursive rc_drop of a heap value held in `local_idx`: decrement
+// rc_count (at value-4) and, at zero, push the block onto the free-list head
+// (global 2), reusing the rc slot as the next pointer. The free-list head holds
+// the (untagged) value pointer, matching the allocator in compile_expr_tail2 /
+// compile_expr_tail4. (docs/spec/selfhost-rc-port.md)
+let emit_rc_drop_local: (Bytes, Int, Bool) -> Unit = (buf, local_idx, tagged) -> {
+  emit_rc_value_ptr_i32(buf, local_idx, tagged)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_rc_value_ptr_i32(buf, local_idx, tagged)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 1)
+  emit_i32_sub(buf)
+  emit_i32_store(buf, 2, 0)
+  emit_rc_value_ptr_i32(buf, local_idx, tagged)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_i32_load(buf, 2, 0)
+  // ADR-0055 Stage 2c: the rc_count word's high byte holds a drop-class id, so
+  // test the low 24 bits (rc) for zero by `* 256` (shifts the class byte out of
+  // the 32-bit word) before `eqz`.
+  emit_i32_const(buf, 256)
+  emit_i32_mul(buf)
+  emit_i32_eqz(buf)
+  emit_if_void(buf)
+  emit_rc_value_ptr_i32(buf, local_idx, tagged)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_global_get(buf, 2)
+  emit_i32_store(buf, 2, 0)
+  emit_rc_value_ptr_i32(buf, local_idx, tagged)
+  emit_global_set(buf, 2)
+  emit_end(buf)
+}
+
+// Emit rc_dup: increment the reference count (at value-4) of a heap object held
+// in `local_idx`. Used for an alias `let a = t` whose source `t` is multiply
+// used, so the alias takes its own owned reference. (docs/spec/selfhost-rc-port.md)
+let emit_rc_dup_local: (Bytes, Int, Bool) -> Unit = (buf, local_idx, tagged) -> {
+  emit_rc_value_ptr_i32(buf, local_idx, tagged)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_rc_value_ptr_i32(buf, local_idx, tagged)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 1)
+  emit_i32_add(buf)
+  emit_i32_store(buf, 2, 0)
+}
+
+// ADR-0055 Stage 4: a runtime-guarded rc_dup of the value held in `local_idx`.
+// Unlike emit_rc_dup_local it first tests the low bit, so it is a no-op on an
+// even (scalar) value — the projected field whose heap-ness is unknown at
+// codegen time (Blocker 3). Used to give an escaping projection its own owned
+// reference before the source container is recursively dropped.
+let emit_rc_dup_guarded: (Bytes, Int) -> Unit = (buf, local_idx) -> {
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, 1)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_if_void(buf)
+  // odd: also require high 32 bits == 0 (a real heap block address, not a
+  // string/bytes fat pointer whose data offset sits in the high 32 bits).
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, 32)
+  emit_i64_shr_s(buf)
+  emit_i64_eqz(buf)
+  emit_if_void(buf)
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 1)
+  emit_i32_add(buf)
+  emit_i32_store(buf, 2, 0)
+  emit_end(buf)
+  emit_end(buf)
+}
+
+// Whether `e` is a field/index projection (EDot). A let bound to one aliases a
+// field of another container (ADR-0055 Stage 4).
+let is_edot: (Expr) -> Bool = (e) -> {
+  match e {
+    EDot(_, _) => true,
+    _ => false
+  }
+}
+
+// The root identifier of a projection chain (EDot(...EDot(EIdent(root))...)), or
+// "" if `e` is not a projection.
+let rec proj_root_ident: (Expr) -> String = (e) -> {
+  match e {
+    EDot(obj, _) => proj_root_ident(obj),
+    EIdent(nm) => nm,
+    _ => ""
+  }
+}
+
+// If the *tail* (result) expression of a scope is a projection chain, return its
+// root identifier; otherwise "". Follows let/seq/assign wrappers to the tail.
+// (ADR-0055 Stage 4: an escaping projection rooted at a dropped binding aliases
+// a field the recursive rc_drop would free — it must be dup'd.)
+let rec scope_tail_proj_root: (Expr) -> String = (e) -> {
+  match e {
+    ELet(_, _, b) => scope_tail_proj_root(b),
+    ELetMut(_, _, b) => scope_tail_proj_root(b),
+    ELetRec(_, _, b) => scope_tail_proj_root(b),
+    ESeq(_, b) => scope_tail_proj_root(b),
+    EAssign(_, _, b) => scope_tail_proj_root(b),
+    EAssignOp(_, _, _, b) => scope_tail_proj_root(b),
+    EDot(obj, _) => proj_root_ident(obj),
+    _ => ""
+  }
+}
+
 export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, expr, local_names, next_local, ctx, ld, compile_expr) -> {
   let __tag = expr_tag(expr)
   if __tag == 9 {
@@ -48,44 +188,139 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     Array::push(local_names, name)
     let nl = compile_expr(buf, value, local_names, next_local + 1, ctx, ld)
     emit_local_set(buf, local_idx)
-    let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
-    // RC: drop a tuple binding the Perceus plan marks for scope-end drop. The
-    // value is a fresh tuple (ptr = block_start+8), rc_count at ptr-4: decrement
-    // and, at zero, push the block onto the free-list head (global 2), reusing
-    // the rc slot (ptr-4) as the next pointer. The body result is already on the
-    // stack and untouched. (docs/spec/selfhost-rc-port.md)
-    if ctx.enable_rc && is_etuple(value) && array_contains_str(ctx.rc_drop_names, name) {
-      emit_local_get(buf, local_idx)
-      emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 4)
-      emit_i32_sub(buf)
-      emit_local_get(buf, local_idx)
-      emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 4)
-      emit_i32_sub(buf)
-      emit_i32_load(buf, 2, 0)
-      emit_i32_const(buf, 1)
-      emit_i32_sub(buf)
-      emit_i32_store(buf, 2, 0)
-      emit_local_get(buf, local_idx)
-      emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 4)
-      emit_i32_sub(buf)
-      emit_i32_load(buf, 2, 0)
-      emit_i32_eqz(buf)
-      emit_if_void(buf)
-      emit_local_get(buf, local_idx)
-      emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 4)
-      emit_i32_sub(buf)
-      emit_global_get(buf, 2)
-      emit_i32_store(buf, 2, 0)
-      emit_local_get(buf, local_idx)
-      emit_i32_wrap_i64(buf)
-      emit_global_set(buf, 2)
-      emit_end(buf)
+    // RC: classify the bound value's heap-ness. rc_kind 0 = not (known) heap,
+    // 1 = heap tuple (raw pointer), 2 = heap tagged (record/enum, or an alias of
+    // any heap kind — the `& -2` untag is a no-op on 8-aligned tuple pointers so
+    // it is safe for aliases of any kind). A binding is registered in
+    // heap_binding_names so a later alias `let a = <this>` can be dup'd/dropped,
+    // and so that drops never touch a non-heap binding the static Perceus
+    // `scalar` flag over-approximates as heap. (docs/spec/selfhost-rc-port.md)
+    let mut rc_kind = 0
+    if ctx.enable_rc {
+      if is_etuple(value) {
+        // ADR-0055 Stage 2: tuples are now odd pointers, so the drop must untag
+        // (& -2) — same as records/enums (rc_kind 2 / tagged=true).
+        rc_kind = 2
+        Array::push(ctx.heap_binding_names, name)
+      } else if is_earray(value) {
+        // ADR-0055 Stage 2b: arrays are now odd pointers; drop must untag.
+        rc_kind = 2
+        Array::push(ctx.heap_binding_names, name)
+      } else if is_erecord(value) {
+        rc_kind = 2
+        Array::push(ctx.heap_binding_names, name)
+      } else if is_ctor_call(value, ctx.ctor_table) {
+        rc_kind = 2
+        Array::push(ctx.heap_binding_names, name)
+      } else if is_eident(value) {
+        let src = get_eident_name(value)
+        if array_contains_str(ctx.heap_binding_names, src) {
+          rc_kind = 2
+          Array::push(ctx.heap_binding_names, name)
+          // Alias of a multiply-used source: take a duplicated reference.
+          if array_contains_str(ctx.rc_alias_dup_names, name) {
+            emit_rc_dup_local(buf, local_idx, true)
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+      } else if expr_tag(value) == 8 {
+        // ADR-0055 Stage 4: a call result is an OWNED heap value — the callee
+        // returns its reference (a fresh allocation, an arg whose ownership was
+        // transferred in under the owning-argument convention, or an escaping
+        // projection the callee already dup'd). Classify it as droppable so the
+        // scope-end drop the analysis already planned (every binding gets
+        // remaining >= 1) actually fires, closing the `let p = f(...)` leak. The
+        // runtime-guarded __rc_drop is a no-op on a scalar result, so an
+        // Int-returning call costs nothing. EXCEPTION: a builtin that returns a
+        // BORROW of a still-live container (Array::get / __index) yields an
+        // element the container still owns — dropping it would double-free.
+        let callee = get_ecall_callee(value)
+        let is_borrow_ret = if is_eident(callee) {
+          let cn = get_eident_name(callee)
+          cn == "Array::get" || cn == "__index"
+        } else {
+          false
+        }
+        if is_borrow_ret {
+          ()
+        } else {
+          rc_kind = 2
+          Array::push(ctx.heap_binding_names, name)
+        }
+      } else if is_edot(value) {
+        // ADR-0055 Stage 4: a projection bound to a let (`let a = t.0`) aliases a
+        // field of another container. The Perceus analysis treats it as a
+        // binding that owns one reference (remaining >= 1) and drops it at scope
+        // end — but `t.0` does not actually take a reference. Give it one with a
+        // guarded dup (a no-op on a scalar/string field): now if `a` escapes it
+        // survives the container's recursive drop, and if it does not, its
+        // analysis-planned drop balances the dup.
+        rc_kind = 2
+        Array::push(ctx.heap_binding_names, name)
+        emit_rc_dup_guarded(buf, local_idx)
+      } else {
+        ()
+      }
+    } else {
+      ()
     }
-    nl2
+    // ADR-0055 Stage 4: emit the non-alias `PaDup` budget for this binding — one
+    // guarded rc_dup per plan PaDup(name). A heap value used in N owning
+    // positions (e.g. `let u = (t, t)` uses `t` twice) needs N-1 extra refs so
+    // each owning consumer's (recursive) drop is balanced; the analysis records
+    // exactly N-1 PaDup(name). Placement is occurrence-agnostic (all uses share
+    // the same block), so emitting them here at the binding is equivalent and
+    // can only raise the refcount — at worst a leak, never a premature free.
+    if ctx.enable_rc && rc_kind > 0 {
+      let mut dbi = 0
+      while dbi < Array::length(ctx.rc_dup_names) {
+        if Array::get(ctx.rc_dup_names, dbi) == name {
+          emit_rc_dup_guarded(buf, local_idx)
+        } else {
+          ()
+        }
+        dbi = dbi + 1
+      }
+    } else {
+      ()
+    }
+    let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
+    // RC: drop a heap binding the Perceus plan marks for scope-end drop. rc_count
+    // at value-4 is decremented and, at zero, the block is pushed onto the
+    // free-list head (global 2). The body result is already on the stack and
+    // untouched. (docs/spec/selfhost-rc-port.md)
+    if ctx.enable_rc && rc_kind > 0 && array_contains_str(ctx.rc_drop_names, name) {
+      // ADR-0055 Stage 4: if the scope result is a projection rooted at THIS
+      // dropped binding (e.g. `let t = (...); t.0`), the result aliases a field
+      // the recursive drop would free — use-after-free. Save the result, dup it
+      // (runtime-guarded, so a scalar field is a no-op), drop, then restore.
+      if ctx.rc_drop_func_idx >= 0 && scope_tail_proj_root(body) == name {
+        emit_local_set(buf, nl2)
+        emit_rc_dup_guarded(buf, nl2)
+        emit_local_get(buf, local_idx)
+        emit_call(buf, ctx.rc_drop_func_idx)
+        emit_local_get(buf, nl2)
+        nl2 + 1
+      } else {
+        if ctx.rc_drop_func_idx >= 0 {
+          // ADR-0055 Stage 3: route the scope-end drop through the recursive
+          // helper so nested heap fields are reclaimed to arbitrary depth. The
+          // helper untags and classifies the value itself.
+          emit_local_get(buf, local_idx)
+          emit_call(buf, ctx.rc_drop_func_idx)
+        } else if rc_kind == 1 {
+          emit_rc_drop_local(buf, local_idx, false)
+        } else {
+          emit_rc_drop_local(buf, local_idx, true)
+        }
+        nl2
+      }
+    } else {
+      nl2
+    }
   } else if __tag == 10 {
     let name = get_eletrec_name(expr)
     let value = get_eletrec_val(expr)

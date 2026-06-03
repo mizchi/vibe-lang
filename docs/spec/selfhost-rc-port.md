@@ -146,19 +146,86 @@ is added.
   (the Phase 2 analysis, now imported by `linked_compile.vibe`) marks for a
   scope-end drop. Non-recursive drop needs no runtime `type_id` dispatch, so it
   sidesteps the type_id-uniformity work for enums/closures.
+- Closures are covered: `compile_lambda` runs `build_perceus_plan` on the
+  lambda body and gives the lambda ctx its own drop set, so a tuple allocated
+  per iteration inside a callback / returned closure is reclaimed too
+  (measured 0 bytes/iteration).
+- **Records are covered**: under `enable_rc`, `ERecord` takes the same free-list
+  RC layout as tuples (`compile_expr_tail4.vibe`), and the `ELet` drop
+  (`compile_expr_tail.vibe`, now sharing the `emit_rc_drop_local` helper)
+  fires for a record binding too. Records stay **tagged** (`(block_start+8) | 1`),
+  so the drop untags before touching the rc header; field access is unchanged
+  because the +8 pointer shift cancels the +8 header offset. A `let p = P::{…}`
+  loop body is reclaimed (measured 0 bytes/iteration, constant 32 B for 1k and
+  11k iterations); results unchanged (heap e2e 19/19 on both paths, incl. nested
+  struct field access).
+- **Enums (constructors) are covered**: `A(x)` takes the same tagged free-list
+  RC layout (`compile_call.vibe`, `[tag@8][field_count@12][values@16…]`), and a
+  ctor binding is dropped via `is_ctor_call`. The match tag / field reads are
+  offset-invariant (the +8 pointer shift cancels the +8 header), so only
+  construction + drop changed. **Analysis change**: a bare-identifier *match
+  scrutinee* is now a **borrow** (like `EDot` / `__index` arg0) in
+  `build_perceus_plan` — matching reads the tag/fields but frees nothing, so the
+  binding keeps its owned reference and is reclaimed by its own scope-end drop.
+  Without this an enum/record/tuple bound then matched in a loop leaked (it was
+  "moved into" the match). A `let e = A(i); match e {…}` loop is now reclaimed
+  (measured 0 bytes/iteration, constant 24 B); results unchanged (heap e2e 20/20
+  on both paths, incl. an enum alloc+match loop).
+- **`rc_dup` for aliased bindings is covered** (the shared-binding case): an
+  alias `let a = t` where the source `t` is used in more than one owning
+  position takes a *duplicated* reference. The Perceus emit pass attributes the
+  dup to the **alias** binding (`PaAliasDup`, keyed by `a` not `t`), which is
+  occurrence-precise without tree-order bookkeeping — the codegen dups the
+  source exactly at `let a = …`. The non-last alias dups; the last takes the
+  original; both aliases are dropped, the source is not, so the refcount reaches
+  0 exactly once. The codegen tracks a per-function `heap_binding_names` set
+  (bindings bound to a tuple/record/enum literal or an alias of one) so dup/drop
+  never touch a non-heap binding the static `scalar` flag over-approximates;
+  untag is uniform `& -2` (a no-op on 8-aligned tuple pointers, so it is correct
+  for an alias of any heap kind). A `let a = t; let b = t` loop is now reclaimed
+  (measured 0 bytes/iteration, constant 32 B); a returned alias is correctly
+  *not* dropped (escape-safe); results unchanged (heap e2e 22/22 on both paths).
+- **Array literals are covered**: under `enable_rc`, `EArray` is inline-allocated
+  (`compile_expr_tail2.vibe`) with the tuple-style RC layout — value = `block+8`,
+  header behind, the array object (`[capacity@0][length@4][data_ptr@8]
+  [inline_data@12…]`) sized to hold the literal inline, `data_ptr = value+12`.
+  Because the value pointer shifts with the object, the array runtime
+  (`Array::get` / `length` / `push`, which read `value+0/+4/+8`) is unchanged.
+  An array binding drops like a tuple (untagged). **Analysis change**: the
+  array-arg of `Array::get` / `length` / `set` / `push` is now a *borrow* (like
+  `__index`), so an array bound then only read/mutated-in-place is reclaimed by
+  its own scope-end drop. A `let a = [i, …]` loop is now reclaimed (measured 0
+  bytes/iteration, constant 84 B). Growth (`Array::push` past capacity) still
+  bump-allocates a new data buffer and leaks the old one (conservative, safe);
+  the array object itself is reclaimed (heap e2e 24/24 on both paths, incl. a
+  grown-array case). Arrays built via `ArrayBuilder` / `array_new` (not literals)
+  stay on the leaky builtin path.
 - Known limitations of this first vertical (all leak conservatively — they
   never corrupt — and only matter under `enable_rc`):
-  - **Closures**: lambda bodies are analysed with an empty drop set, so a tuple
-    allocated per iteration inside a callback / returned closure is not yet
-    reclaimed (each lambda needs its own `build_perceus_plan`).
   - **Mixed tuple sizes**: the free list is head-only exact-fit (as in `src/`),
     so after a size-3 tuple is freed, later size-2 allocations bump rather than
     reuse the stuck size-2 block until the head matches. Same-size loops (the
     common case) are fully reused.
-- Remaining: `rc_dup` for shared (multiply-used) bindings; recursive field drop
-  (needs the uniform `type_id` so a dropped tuple frees nested heap); the same
-  treatment for record / array / enum / closure bindings; per-lambda drop
-  plans; and a segregated / coalescing free list.
+  - **Non-alias owning escapes** (a binding stored into a container or passed
+    to a call without a balancing recursive drop) still leak conservatively:
+    only alias (`let a = t`) owning uses are dup'd; container/call escapes are
+    left to the future recursive-drop work.
+  - **Name shadowing**: `heap_binding_names` is a flat per-function set, so a
+    scalar binding that shadows a same-named heap binding in a sibling scope
+    could in principle be mis-classified for an alias source. Pathological and
+    not hit by the selfhost sources; the immediate-value classification of the
+    binding being dropped is precise, only the alias *source* lookup consults
+    the set.
+- Remaining: recursive field drop — blocked on the selfhost runtime representing
+  **integers as raw `i64`** (no tag) and the **AST carrying no element types**,
+  so neither `src/`-style runtime pointer-dispatch nor a static pointer-bitmap is
+  available; and even a fresh-literal-only subset is unsafe because an extracted
+  field (`t.0`) can escape while the container is dropped. It needs a foundational
+  step first — a **uniform value representation** (integer/float tagging enabling
+  `src/`-style runtime dispatch) plus escape-ownership analysis. Designed in
+  [selfhost-uniform-value-repr.md](selfhost-uniform-value-repr.md) (ADR-0055).
+  Also remaining: freeing grown array data buffers, `ArrayBuilder`-built arrays,
+  and a segregated / coalescing free list.
 - Everything stays gated behind `enable_rc`, default off.
 
 ### Phase 4 — verification & cutover

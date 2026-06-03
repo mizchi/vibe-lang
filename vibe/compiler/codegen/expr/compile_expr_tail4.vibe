@@ -77,6 +77,11 @@ export let compile_expr_tail4: (Bytes, Expr, Array[String], Int, CompileCtx, Int
       }
       let nl1 = compile_expr(buf, obj, local_names, next_local, ctx, ld)
       if fc >= 48 && fc <= 57 {
+        // RC mode: the tuple value is an odd pointer (Stage 2); untag before use.
+        if ctx.enable_rc {
+          emit_i64_const(buf, -2)
+          emit_i64_and(buf)
+        }
         emit_i32_wrap_i64(buf)
         // RC mode: tuples carry an 8-byte header, so the payload starts at +8.
         let toff = if ctx.enable_rc {
@@ -95,43 +100,137 @@ export let compile_expr_tail4: (Bytes, Expr, Array[String], Int, CompileCtx, Int
     },
     ERecord(fields) => {
       let flen = Array::length(fields)
-      let obj_size = 8 + flen * 8
       let ptr_local = next_local
       Array::push(local_names, "__rec_ptr")
-      emit_global_get(buf, 0)
-      emit_i64_extend_i32_u(buf)
-      emit_local_set(buf, ptr_local)
-      emit_global_get(buf, 0)
-      emit_i32_const(buf, obj_size)
-      emit_i32_add(buf)
-      emit_global_set(buf, 0)
-      emit_local_get(buf, ptr_local)
-      emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 0)
-      emit_i32_store(buf, 2, 0)
-      emit_local_get(buf, ptr_local)
-      emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, flen)
-      emit_i32_store(buf, 2, 4)
-      let mut nl_r = next_local + 1
-      let mut ri = 0
-      while ri < flen {
-        let (_, fexpr) = Array::get(fields, ri)
-        nl_r = compile_expr(buf, fexpr, local_names, nl_r, ctx, ld)
-        let val_local = nl_r
-        Array::push(local_names, "__rec_val")
-        emit_local_set(buf, val_local)
-        nl_r = nl_r + 1
+      if ctx.enable_rc {
+        // RC layout (mirrors the tuple in compile_expr_tail2.vibe):
+        //   block_start: [alloc_size@0][rc_count@4][type_id@8][length@12][payload@16...]
+        // The record value is (block_start+8) | 1 (records stay tagged), so the
+        // live header is [alloc_size@ptr-8][rc_count@ptr-4][type_id@ptr+0]
+        // [length@ptr+4] and field access stays at +8 (untag cancels the +8
+        // pointer shift). type_id 0 preserves the existing record read semantics.
+        let total = 16 + flen * 8
+        // Allocate: reuse an exact-fit free-list block (head = global 2) else bump.
+        emit_global_get(buf, 2)
+        emit_i32_eqz(buf)
+        emit_if_void(buf)
+        emit_global_get(buf, 0)
+        emit_i64_extend_i32_u(buf)
+        emit_local_set(buf, ptr_local)
+        emit_global_get(buf, 0)
+        emit_i32_const(buf, total)
+        emit_i32_add(buf)
+        emit_global_set(buf, 0)
+        emit_else(buf)
+        emit_global_get(buf, 2)
+        emit_i32_const(buf, 8)
+        emit_i32_sub(buf)
+        emit_i32_load(buf, 2, 0)
+        emit_i32_const(buf, total)
+        emit_i32_eq(buf)
+        emit_if_void(buf)
+        emit_global_get(buf, 2)
+        emit_i32_const(buf, 8)
+        emit_i32_sub(buf)
+        emit_i64_extend_i32_u(buf)
+        emit_local_set(buf, ptr_local)
+        emit_global_get(buf, 2)
+        emit_i32_const(buf, 4)
+        emit_i32_sub(buf)
+        emit_i32_load(buf, 2, 0)
+        emit_global_set(buf, 2)
+        emit_else(buf)
+        emit_global_get(buf, 0)
+        emit_i64_extend_i32_u(buf)
+        emit_local_set(buf, ptr_local)
+        emit_global_get(buf, 0)
+        emit_i32_const(buf, total)
+        emit_i32_add(buf)
+        emit_global_set(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
         emit_local_get(buf, ptr_local)
         emit_i32_wrap_i64(buf)
-        emit_local_get(buf, val_local)
-        emit_i64_store(buf, 3, 8 + ri * 8)
-        ri = ri + 1
+        emit_i32_const(buf, total)
+        emit_i32_store(buf, 2, 0)
+        emit_local_get(buf, ptr_local)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 1)
+        emit_i32_store(buf, 2, 4)
+        // ADR-0055 Stage 2c/3: drop-class byte (block+7) = 1 (field-vector); a
+        // record is [type_id@value+0][len@value+4][fields@value+8+i*8], the same
+        // shape the recursive rc_drop loops.
+        emit_local_get(buf, ptr_local)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 1)
+        emit_i32_store8(buf, 0, 7)
+        emit_local_get(buf, ptr_local)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 0)
+        emit_i32_store(buf, 2, 8)
+        emit_local_get(buf, ptr_local)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, flen)
+        emit_i32_store(buf, 2, 12)
+        let mut nl_r = next_local + 1
+        let mut ri = 0
+        while ri < flen {
+          let (_, fexpr) = Array::get(fields, ri)
+          nl_r = compile_expr(buf, fexpr, local_names, nl_r, ctx, ld)
+          let val_local = nl_r
+          Array::push(local_names, "__rec_val")
+          emit_local_set(buf, val_local)
+          nl_r = nl_r + 1
+          emit_local_get(buf, ptr_local)
+          emit_i32_wrap_i64(buf)
+          emit_local_get(buf, val_local)
+          emit_i64_store(buf, 3, 16 + ri * 8)
+          ri = ri + 1
+        }
+        // record value = (block_start + 8) | 1
+        emit_local_get(buf, ptr_local)
+        emit_i64_const(buf, 8)
+        emit_i64_add(buf)
+        emit_i64_const(buf, 1)
+        emit_i64_or(buf)
+        nl_r
+      } else {
+        let obj_size = 8 + flen * 8
+        emit_global_get(buf, 0)
+        emit_i64_extend_i32_u(buf)
+        emit_local_set(buf, ptr_local)
+        emit_global_get(buf, 0)
+        emit_i32_const(buf, obj_size)
+        emit_i32_add(buf)
+        emit_global_set(buf, 0)
+        emit_local_get(buf, ptr_local)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 0)
+        emit_i32_store(buf, 2, 0)
+        emit_local_get(buf, ptr_local)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, flen)
+        emit_i32_store(buf, 2, 4)
+        let mut nl_r = next_local + 1
+        let mut ri = 0
+        while ri < flen {
+          let (_, fexpr) = Array::get(fields, ri)
+          nl_r = compile_expr(buf, fexpr, local_names, nl_r, ctx, ld)
+          let val_local = nl_r
+          Array::push(local_names, "__rec_val")
+          emit_local_set(buf, val_local)
+          nl_r = nl_r + 1
+          emit_local_get(buf, ptr_local)
+          emit_i32_wrap_i64(buf)
+          emit_local_get(buf, val_local)
+          emit_i64_store(buf, 3, 8 + ri * 8)
+          ri = ri + 1
+        }
+        emit_local_get(buf, ptr_local)
+        emit_i64_const(buf, 1)
+        emit_i64_or(buf)
+        nl_r
       }
-      emit_local_get(buf, ptr_local)
-      emit_i64_const(buf, 1)
-      emit_i64_or(buf)
-      nl_r
     },
     EMap(fields) => {
       let flen = Array::length(fields)

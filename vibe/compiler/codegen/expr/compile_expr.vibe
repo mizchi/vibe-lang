@@ -73,11 +73,20 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
   if __tag == 0 {
     let n = get_eint_value(expr)
     emit_i64_const(buf, n)
+    // ADR-0055 Stage 1: tag integers as n<<1 under RC. Shift at RUNTIME (not
+    // n<<1 at compile time) so large literals don't overflow the host's own
+    // 62-bit Int — the wasm runtime computes the shift in full i64.
+    if ctx.enable_rc {
+      emit_i64_const(buf, 1)
+      emit_i64_shl(buf)
+    }
     next_local
   } else if __tag == 1 {
     let b_val = get_ebool_value(expr)
+    // ADR-0055 Stage 1: booleans are tagged like ints (true=2, false=0) so a
+    // bool in a heap field stays even and is never misread as an odd pointer.
     emit_i64_const(buf, if b_val {
-      1
+      if ctx.enable_rc { 2 } else { 1 }
     } else {
       0
     })
@@ -130,6 +139,11 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
       }
       if __ci_idx >= 0 {
         emit_i64_const(buf, Array::get(ctx.const_int_values, __ci_idx))
+        // ADR-0055 Stage 1: const-folded ints are tagged like literals.
+        if ctx.enable_rc {
+          emit_i64_const(buf, 1)
+          emit_i64_shl(buf)
+        }
         next_local
       } else {
         let ctor_idx = lookup_ctor(ctx.ctor_table.names, name, 0)
@@ -205,6 +219,11 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
       let nl2 = compile_expr(buf, rhs, local_names, nl1, ctx, ld)
       let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
       emit_call(buf, eq_fidx)
+      // ADR-0055 Stage 1: eq yields a raw 0/1 bool; tag it (0/2).
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shl(buf)
+      }
       nl2
     } else if op == "!=" {
       let nl1 = compile_expr(buf, lhs, local_names, next_local, ctx, ld)
@@ -213,6 +232,10 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
       emit_call(buf, eq_fidx)
       emit_i64_eqz(buf)
       emit_i64_extend_i32_s(buf)
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shl(buf)
+      }
       nl2
     } else if expr_is_floatish(lhs) || expr_is_floatish(rhs) {
       let nl1 = compile_expr(buf, lhs, local_names, next_local, ctx, ld)
@@ -247,6 +270,48 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
         throw(String::concat("unsupported float binop: ", op))
       }
       nl2
+    } else if ctx.enable_rc {
+      // ADR-0055 Stage 1: tagged-int (n<<1) arithmetic corrections.
+      //   + - & | ^ % && || : none (low tag bit is preserved)
+      //   *  -> result >>1   /  -> result <<1
+      //   << -> untag shift amount   >> -> untag both, then re-tag result
+      //   < > <= >= -> result is a bool, tag it (<<1)
+      if op == "<<" {
+        let nl1 = compile_expr(buf, lhs, local_names, next_local, ctx, ld)
+        let nl2 = compile_expr(buf, rhs, local_names, nl1, ctx, ld)
+        emit_i64_const(buf, 1)
+        emit_i64_shr_s(buf)
+        emit_i64_shl(buf)
+        nl2
+      } else if op == ">>" {
+        let nl1 = compile_expr(buf, lhs, local_names, next_local, ctx, ld)
+        emit_i64_const(buf, 1)
+        emit_i64_shr_s(buf)
+        let nl2 = compile_expr(buf, rhs, local_names, nl1, ctx, ld)
+        emit_i64_const(buf, 1)
+        emit_i64_shr_s(buf)
+        emit_i64_shr_s(buf)
+        emit_i64_const(buf, 1)
+        emit_i64_shl(buf)
+        nl2
+      } else {
+        let nl1 = compile_expr(buf, lhs, local_names, next_local, ctx, ld)
+        let nl2 = compile_expr(buf, rhs, local_names, nl1, ctx, ld)
+        emit_binop_op(buf, op)
+        if op == "*" {
+          emit_i64_const(buf, 1)
+          emit_i64_shr_s(buf)
+        } else if op == "/" {
+          emit_i64_const(buf, 1)
+          emit_i64_shl(buf)
+        } else if op == "<" || op == ">" || op == "<=" || op == ">=" {
+          emit_i64_const(buf, 1)
+          emit_i64_shl(buf)
+        } else {
+          ()
+        }
+        nl2
+      }
     } else {
       let nl1 = compile_expr(buf, lhs, local_names, next_local, ctx, ld)
       let nl2 = compile_expr(buf, rhs, local_names, nl1, ctx, ld)
@@ -273,6 +338,11 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
       let nl = compile_expr(buf, operand, local_names, next_local, ctx, ld)
       emit_i64_eqz(buf)
       emit_i64_extend_i32_s(buf)
+      // ADR-0055 Stage 1: tag the bool result (0/2).
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shl(buf)
+      }
       nl
     } else {
       throw(String::concat("unsupported unary op: ", op))

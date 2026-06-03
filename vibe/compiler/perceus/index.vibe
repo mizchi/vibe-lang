@@ -48,7 +48,13 @@ import .. / core / polyfill.vibe {
 
 export enum PerceusActionKind {
   PaDup;
-  PaDrop
+  PaDrop;
+  // A `dup` attributed to an *alias* binding `let a = t`: the source `t` is
+  // used in more than one owning position, so this alias takes a duplicated
+  // reference. Keyed by the ALIAS name `a` (not the source), which makes it
+  // occurrence-precise without tree-order bookkeeping: the codegen dups the
+  // source exactly at `let a = …`. (docs/spec/selfhost-rc-port.md)
+  PaAliasDup
 }
 
 export struct PerceusAction {
@@ -96,13 +102,25 @@ let next_seq_name: (PCtx) -> String = (ctx) -> {
 export let pa_is_drop: (PerceusAction) -> Bool = (a) -> {
   match a.kind {
     PaDrop => true,
-    PaDup => false
+    PaDup => false,
+    PaAliasDup => false
   }
 }
 
 export let pa_is_dup: (PerceusAction) -> Bool = (a) -> {
   match a.kind {
     PaDup => true,
+    PaDrop => false,
+    PaAliasDup => false
+  }
+}
+
+// An alias-attributed dup: `let a = t` where `t` is multiply-used and owned.
+// Keyed by the alias name.
+export let pa_is_alias_dup: (PerceusAction) -> Bool = (a) -> {
+  match a.kind {
+    PaAliasDup => true,
+    PaDup => false,
     PaDrop => false
   }
 }
@@ -230,6 +248,14 @@ let zeros: (Int) -> Array[Int] = (n) -> {
   out
 }
 
+// A call whose arg0 is the container it merely reads/mutates-in-place, not
+// consumes: the array stays live, so arg0 is a *borrow* (like `__index`). This
+// lets an array bound then only get/length/set/push'd be reclaimed by its own
+// scope-end drop. (Array::push grows in place; the object identity is stable.)
+let is_borrow_arg0_call: (String) -> Bool = (f) -> {
+  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push"
+}
+
 export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, expr) -> {
   match expr {
     EInt(_) => 0,
@@ -243,8 +269,9 @@ export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, ex
       // The callee binding is borrowed (a closure stays live across the call).
       match callee {
         EIdent(f) => {
-          // `__index(obj, idx)` borrows the container.
-          if f == "__index" {
+          // `__index` / `Array::*` borrow the container (a builtin name, not a
+          // binding, so there is nothing to borrow-count for the callee itself).
+          if is_borrow_arg0_call(f) {
             0
           } else {
             pc_count_borrow(ctx, scope, f)
@@ -253,7 +280,7 @@ export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, ex
         _ => pc_count(ctx, scope, callee)
       }
       let is_index = match callee {
-        EIdent(f) => f == "__index",
+        EIdent(f) => is_borrow_arg0_call(f),
         _ => false
       }
       let mut i = 0
@@ -424,7 +451,15 @@ export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, ex
       pc_count(ctx, s, lbody)
     },
     EMatch(scrut, arms) => {
-      pc_count(ctx, scope, scrut)
+      // A bare-identifier scrutinee is a *borrow* (like EDot / `__index` arg0):
+      // matching reads the tag/fields but does not consume the value, so the
+      // binding keeps its owned reference and is reclaimed by its own scope-end
+      // drop. Without this an enum/record/tuple bound then matched in a loop
+      // leaks (it is "moved into" the match but the match frees nothing).
+      match scrut {
+        EIdent(sx) => pc_count_borrow(ctx, scope, sx),
+        _ => pc_count(ctx, scope, scrut)
+      }
       let snap_u = copy_ints(ctx.uses)
       let snap_b = copy_ints(ctx.borrows)
       let max_u = zeros(Array::length(snap_u))
@@ -594,9 +629,9 @@ export let rec pc_emit: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, exp
     EStringInterp(_) => 0,
     EIdent(x) => pe_use(ctx, scope, x),
     ECall(callee, args) => {
-      // Borrowed callee / `__index` arg0: no consuming use, no action.
+      // Borrowed callee / `__index` / `Array::*` arg0: no consuming use.
       let is_index = match callee {
-        EIdent(f) => f == "__index",
+        EIdent(f) => is_borrow_arg0_call(f),
         _ => false
       }
       match callee {
@@ -625,7 +660,30 @@ export let rec pc_emit: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, exp
       }
     },
     ELet(name, value, body) => {
-      pc_emit(ctx, scope, value)
+      // An alias `let a = t` consumes one owned reference of `t`. Mirror pe_use's
+      // decrement, but if this is a non-last owning use (rem > 1) attribute the
+      // dup to the ALIAS `a` (PaAliasDup) so the codegen can dup the source at
+      // exactly this `let`. Non-alias values go through the normal emit pass.
+      match value {
+        EIdent(src) => {
+          if Map::has_key(scope, src) {
+            let sid = Map::get(scope, src)
+            let rem = Array::get(ctx.remaining, sid)
+            if rem > 1 && !Array::get(ctx.scalar, sid) {
+              pe_push(ctx, PaAliasDup, name)
+            } else {
+              0
+            }
+            if rem > 0 {
+              Array::set(ctx.remaining, sid, rem - 1)
+            }
+          } else {
+            ()
+          }
+          0
+        },
+        _ => pc_emit(ctx, scope, value)
+      }
       let id = pe_declare(ctx, name)
       pc_emit(ctx, Map::set(scope, name, id), body)
       pe_scope_end(ctx, id, name)
@@ -763,7 +821,12 @@ export let rec pc_emit: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, exp
       0
     },
     EMatch(scrut, arms) => {
-      pc_emit(ctx, scope, scrut)
+      // Mirror the count pass: a bare-identifier scrutinee is borrowed (no use /
+      // no dup), so its owned reference survives to the scope-end drop.
+      match scrut {
+        EIdent(_) => 0,
+        _ => pc_emit(ctx, scope, scrut)
+      }
       let snap = copy_ints(ctx.remaining)
       let mut a = 0
       while a < Array::length(arms) {

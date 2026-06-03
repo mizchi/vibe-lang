@@ -102,6 +102,15 @@ export let compile_expr_tail2: (Bytes, Expr, Array[String], Int, CompileCtx, Int
       emit_i32_wrap_i64(buf)
       emit_i32_const(buf, 1)
       emit_i32_store(buf, 2, 4)
+      // ADR-0055 Stage 2c/3: uniform drop-class byte in the rc_count word's high
+      // byte (block+7 = value-1). rc stays in the low 24 bits, so dec (full-word
+      // -1) and the `*256 == 0` zero-test ignore this byte. 1 = field-vector
+      // ([?@value+0][count@value+4][fields@value+8+i*8]) — the generic recursive
+      // rc_drop loops `count` fields. (docs/spec/selfhost-uniform-value-repr.md)
+      emit_local_get(buf, ptr_local)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 1)
+      emit_i32_store8(buf, 0, 7)
       emit_local_get(buf, ptr_local)
       emit_i32_wrap_i64(buf)
       emit_i32_const(buf, 3)
@@ -118,10 +127,13 @@ export let compile_expr_tail2: (Bytes, Expr, Array[String], Int, CompileCtx, Int
         emit_i64_store(buf, 3, 16 + tri * 8)
         tri = tri + 1
       }
-      // tuple value = block_start + 8
+      // tuple value = (block_start + 8) | 1 (ADR-0055 Stage 2: all heap pointers
+      // are odd so a generic recursive rc_drop can classify fields by `& 1`).
       emit_local_get(buf, ptr_local)
       emit_i64_const(buf, 8)
       emit_i64_add(buf)
+      emit_i64_const(buf, 1)
+      emit_i64_or(buf)
       nl
     } else {
       let alloc_size = num_elems * 8
@@ -147,22 +159,131 @@ export let compile_expr_tail2: (Bytes, Expr, Array[String], Int, CompileCtx, Int
     compile_match(buf, expr, local_names, next_local, ctx, ld, compile_expr)
   } else if __tag == 17 {
     let elems = get_earray_elems(expr)
-    let (arr_new_idx, _, _) = resolve_func(ctx.func_table, "array_new")
-    let (arr_push_idx, _, _) = resolve_func(ctx.func_table, "Array::push")
-    let arr_local = next_local
-    emit_call(buf, arr_new_idx)
-    emit_local_set(buf, arr_local)
-    Array::push(local_names, "__arr_lit")
-    let mut nl = next_local + 1
-    let mut ei = 0
-    while ei < Array::length(elems) {
+    let n_elems = Array::length(elems)
+    if ctx.enable_rc {
+      // RC array literal: inline-allocate the array object with the tuple-style
+      // RC layout so it drops like a tuple (value = block+8, untagged). Object
+      // layout at the value pointer matches the array runtime
+      // (`[capacity@0][length@4][data_ptr@8][inline_data@12...]`); data_ptr points
+      // at the inline buffer (value+12). capacity defaults to 8 (as array_new)
+      // but is sized up for larger literals so all elements fit inline.
+      // The header behind is [alloc_size@-8][rc_count@-4]; the array runtime
+      // (Array::get / length / push) reads value+0/+4/+8, unchanged.
+      // (docs/spec/selfhost-rc-port.md)
+      let cap = if n_elems > 8 {
+        n_elems
+      } else {
+        8
+      }
+      let total = 20 + cap * 8
+      let ptr_local = next_local
+      Array::push(local_names, "__arr_ptr")
+      let mut nl = next_local + 1
+      emit_global_get(buf, 2)
+      emit_i32_eqz(buf)
+      emit_if_void(buf)
+      emit_global_get(buf, 0)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, ptr_local)
+      emit_global_get(buf, 0)
+      emit_i32_const(buf, total)
+      emit_i32_add(buf)
+      emit_global_set(buf, 0)
+      emit_else(buf)
+      emit_global_get(buf, 2)
+      emit_i32_const(buf, 8)
+      emit_i32_sub(buf)
+      emit_i32_load(buf, 2, 0)
+      emit_i32_const(buf, total)
+      emit_i32_eq(buf)
+      emit_if_void(buf)
+      emit_global_get(buf, 2)
+      emit_i32_const(buf, 8)
+      emit_i32_sub(buf)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, ptr_local)
+      emit_global_get(buf, 2)
+      emit_i32_const(buf, 4)
+      emit_i32_sub(buf)
+      emit_i32_load(buf, 2, 0)
+      emit_global_set(buf, 2)
+      emit_else(buf)
+      emit_global_get(buf, 0)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, ptr_local)
+      emit_global_get(buf, 0)
+      emit_i32_const(buf, total)
+      emit_i32_add(buf)
+      emit_global_set(buf, 0)
+      emit_end(buf)
+      emit_end(buf)
+      // header at block_start
+      emit_local_get(buf, ptr_local)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, total)
+      emit_i32_store(buf, 2, 0)
+      emit_local_get(buf, ptr_local)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 1)
+      emit_i32_store(buf, 2, 4)
+      // ADR-0055 Stage 2c/3: drop-class byte (block+7). 5 = array — value+0 is
+      // capacity (not a count) and elements live behind data_ptr@value+8, so the
+      // recursive rc_drop must use the array path, not the field-vector loop.
+      emit_local_get(buf, ptr_local)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 5)
+      emit_i32_store8(buf, 0, 7)
+      // array object at block_start+8 = value: capacity, length, data_ptr
+      emit_local_get(buf, ptr_local)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, cap)
+      emit_i32_store(buf, 2, 8)
+      emit_local_get(buf, ptr_local)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, n_elems)
+      emit_i32_store(buf, 2, 12)
+      // data_ptr = value + 12 = block_start + 20 (inline buffer)
+      emit_local_get(buf, ptr_local)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, ptr_local)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 20)
+      emit_i32_add(buf)
+      emit_i32_store(buf, 2, 16)
+      // store elements at block_start + 20 + i*8
+      let mut ai = 0
+      while ai < n_elems {
+        emit_local_get(buf, ptr_local)
+        emit_i32_wrap_i64(buf)
+        nl = compile_expr(buf, Array::get(elems, ai), local_names, nl, ctx, ld)
+        emit_i64_store(buf, 3, 20 + ai * 8)
+        ai = ai + 1
+      }
+      // array value = (block_start + 8) | 1 (ADR-0055 Stage 2b: odd heap pointer)
+      emit_local_get(buf, ptr_local)
+      emit_i64_const(buf, 8)
+      emit_i64_add(buf)
+      emit_i64_const(buf, 1)
+      emit_i64_or(buf)
+      nl
+    } else {
+      let (arr_new_idx, _, _) = resolve_func(ctx.func_table, "array_new")
+      let (arr_push_idx, _, _) = resolve_func(ctx.func_table, "Array::push")
+      let arr_local = next_local
+      emit_call(buf, arr_new_idx)
+      emit_local_set(buf, arr_local)
+      Array::push(local_names, "__arr_lit")
+      let mut nl = next_local + 1
+      let mut ei = 0
+      while ei < Array::length(elems) {
+        emit_local_get(buf, arr_local)
+        nl = compile_expr(buf, Array::get(elems, ei), local_names, nl, ctx, ld)
+        emit_call(buf, arr_push_idx)
+        ei = ei + 1
+      }
       emit_local_get(buf, arr_local)
-      nl = compile_expr(buf, Array::get(elems, ei), local_names, nl, ctx, ld)
-      emit_call(buf, arr_push_idx)
-      ei = ei + 1
+      nl
     }
-    emit_local_get(buf, arr_local)
-    nl
   } else if __tag == 18 {
     let var_name = get_eforin_name(expr)
     let iter_expr = get_eforin_iter(expr)
