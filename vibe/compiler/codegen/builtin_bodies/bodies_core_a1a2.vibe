@@ -315,6 +315,92 @@ export let gen_rc_drop_body: (Int) -> Bytes = (self_idx) -> {
   b
 }
 
+// ADR-0055 Stage 4: generic free-list allocator. Param 0 (i64) = block size in
+// bytes; returns the i64 block_start of a reusable block. The single LIFO
+// free-list (global 2) holds value pointers linked through the rc_count word
+// (cur-4) with the alloc_size at cur-8. A head-only size check (the previous
+// inline allocator) misses a matching block whenever it is not at the head — so
+// allocating sizes A,B,A,B... while freeing them recursively (which reverses the
+// order on the LIFO) bump-allocates every other block even though a perfectly
+// sized free block exists deeper in the list (a fragmentation "leak"). This
+// helper instead WALKS the list for an exact-fit block and unlinks it, falling
+// back to a bump only when none exists. Exact-fit only (no splitting), so it is
+// drop-in compatible with the recursive rc_drop free path.
+// Locals: 0=size(i64 param) 1=cur 2=prev 3=sz(i32) 4=result.
+export let gen_rc_alloc_body: () -> Bytes = () -> {
+  let b = bytebuf_new()
+  // sz = (i32) size
+  emit_local_get(b, 0)
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 3)
+  // cur = free-list head (global 2); prev = 0
+  emit_global_get(b, 2)
+  emit_local_set(b, 1)
+  emit_i32_const(b, 0)
+  emit_local_set(b, 2)
+  emit_block_void(b)
+  emit_loop_void(b)
+  // cur == 0 → not found, break to the bump path
+  emit_local_get(b, 1)
+  emit_i32_eqz(b)
+  emit_br_if(b, 1)
+  // load(cur-8) == sz → exact-fit block found
+  emit_local_get(b, 1)
+  emit_i32_const(b, 8)
+  emit_i32_sub(b)
+  emit_i32_load(b, 2, 0)
+  emit_local_get(b, 3)
+  emit_i32_eq(b)
+  emit_if_void(b)
+  // unlink cur: prev == 0 ? global2 = load(cur-4) : store(prev-4, load(cur-4))
+  emit_local_get(b, 2)
+  emit_i32_eqz(b)
+  emit_if_void(b)
+  emit_local_get(b, 1)
+  emit_i32_const(b, 4)
+  emit_i32_sub(b)
+  emit_i32_load(b, 2, 0)
+  emit_global_set(b, 2)
+  emit_else(b)
+  emit_local_get(b, 2)
+  emit_i32_const(b, 4)
+  emit_i32_sub(b)
+  emit_local_get(b, 1)
+  emit_i32_const(b, 4)
+  emit_i32_sub(b)
+  emit_i32_load(b, 2, 0)
+  emit_i32_store(b, 2, 0)
+  emit_end(b)
+  // return block_start = cur - 8
+  emit_local_get(b, 1)
+  emit_i32_const(b, 8)
+  emit_i32_sub(b)
+  emit_i64_extend_i32_u(b)
+  emit_return(b)
+  emit_end(b)
+  // prev = cur; cur = load(cur-4); continue
+  emit_local_get(b, 1)
+  emit_local_set(b, 2)
+  emit_local_get(b, 1)
+  emit_i32_const(b, 4)
+  emit_i32_sub(b)
+  emit_i32_load(b, 2, 0)
+  emit_local_set(b, 1)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  // bump: result = global0; global0 += sz; return (i64) result
+  emit_global_get(b, 0)
+  emit_local_set(b, 4)
+  emit_global_get(b, 0)
+  emit_local_get(b, 3)
+  emit_i32_add(b)
+  emit_global_set(b, 0)
+  emit_local_get(b, 4)
+  emit_i64_extend_i32_u(b)
+  b
+}
+
 export let gen_str_len_body: () -> Bytes = () -> {
   let b = bytebuf_new()
   emit_local_get(b, 0)

@@ -129,6 +129,15 @@ reclaim_case array   '"let main: () -> Int = () -> {\n  let mut s = 0\n  let mut
 # the recursive rc_drop helper all three are reclaimed → ~0 B/iter.
 reclaim_case nested  '"let main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let t = ((i, i + 1), (i + 2, i + 3))\n    let a = t.0\n    s = s + a.0\n    i = i + 1\n  }\n  s\n}"'
 
+# ADR-0055 Stage 4: an owned heap binding moved into a container element
+# (`let t = (..); let a = [t]`). Two block sizes (tuple 32 B, container) are
+# allocated then freed-in-reverse each iteration; the old head-only free-list
+# bump-allocated a fresh tuple every iter (32 B/iter leak). The __rc_alloc
+# free-list search reclaims fully. Pins the array / enum / record forms.
+reclaim_case owned_in_array  '"let main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let t = (i, i + 1)\n    let a = [t]\n    s = s + (Array::get(a, 0)).0\n    i = i + 1\n  }\n  s\n}"'
+reclaim_case owned_in_enum   '"enum Box { Wrap((Int, Int)); Empty }\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let t = (i, i + 1)\n    let e = Wrap(t)\n    s = s + match e { Wrap(p) => p.0, Empty => 0 }\n    i = i + 1\n  }\n  s\n}"'
+reclaim_case owned_in_record '"struct H { v: (Int, Int) }\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let t = (i, i + 1)\n    let h = H::{ v: t }\n    s = s + h.v.0\n    i = i + 1\n  }\n  s\n}"'
+
 # KNOWN PRE-EXISTING GAP (not a regression): a *nested* tuple built in a loop
 # (`let t = ((i, i+1), (i+2, i+3))`) fails to compile under RC at BOTH HEAD and
 # the Stage-1 baseline — so it is excluded from the reclamation set rather than

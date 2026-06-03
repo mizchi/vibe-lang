@@ -337,10 +337,35 @@ arithmetic / comparison / bitop / shift / float / nested-data case under
    nor calls — rare — may still under-dup, the original latent/non-reproducing
    case, which is safe.)
 
+   **Free-list search allocator `__rc_alloc` (landed).** Diagnosis of an
+   apparent "container owning escape" leak (`let t = (..); let a = [t]` in a loop
+   leaking 32 B/iter) showed the refcounting was already *correct* — `t` was
+   freed every iteration (verified: 2 frees/iter, results identical to default).
+   The growth was **free-list fragmentation**, not a missing dup. The single LIFO
+   free-list (global 2) was only matched at its **head** by each inline
+   allocator: a head-only exact-size check. Per iteration the program allocates
+   two sizes (tuple 32 B, then container 84/56 B); the container's recursive drop
+   frees the element *then* the container, so the LIFO head becomes the container,
+   and the next iteration's tuple request (32 B) misses it — bump-allocating a
+   fresh block while a perfectly sized free block sits one node deeper. (The
+   inline-literal form `[(i,i+1)]` happened to allocate in the reverse order, so
+   its head always matched — which is why only the *by-name* move leaked.) Fix: a
+   generated `__rc_alloc(size) -> block_start` helper (type `(i64)->(i64)`, the
+   slot after `__rc_drop`) that **walks the free-list for an exact-fit block and
+   unlinks it**, falling back to a bump only when none exists. All four inline
+   object allocators (tuple, array literal, record, ctor payload) now call it via
+   `CompileCtx::rc_alloc_func_idx`. The array / enum-payload / record-field moves
+   now reclaim at a bounded heap (0 B/iter); pinned by three reclaim cases
+   (`owned_in_array/enum/record`) and three heap-e2e result-parity cases. Exact-fit
+   only (no splitting), so it stays drop-in compatible with the recursive
+   `rc_drop` free path, and it is `enable_rc`-only (the default bootstrap path
+   never allocates from the free-list, so it is structurally unaffected).
+
    **Still remaining (leaks, safe; need owned-vs-borrowed typing):**
    - Container **owning** escapes (storing an owned heap value into a longer
-     -lived container that outlives the current scope) are not dup'd → leak
-     (safe), as before.
+     -lived container that *outlives* the current scope — distinct from the
+     fragmentation case above, where the container is dropped in-scope) are not
+     dup'd → leak (safe), as before.
    - Captured closures remain unheadered (the recursion would misread one stored
      in a dropped container — low address, so the high-32 guard does not catch
      it); no opt-in RC path exercises it.
