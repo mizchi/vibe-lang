@@ -75,16 +75,21 @@ is added.
 - Mirrors the validated `src/` semantics: call callee and field access
   (`EDot`, array `__index` arg0) are borrows; pure-borrow / unused non-scalar
   bindings get a scope-end drop; multiply-used owning references dup.
+- `EFn` captures are accounted (free vars via `collect_free_vars` are owning
+  uses of the outer binding; the body is analysed separately as its own
+  function). `EForIn` binds its element per iteration (structural scope-end
+  drop). `EMatch` does branch-max counting across arms and drops arm-local
+  pattern bindings per arm.
 - Unit-tested in isolation via the native vibe CLI
-  (`vibe/compiler/perceus_rc_test.vibe`, task `test-selfhost-perceus`, 8/8):
+  (`vibe/compiler/perceus_rc_test.vibe`, task `test-selfhost-perceus`, 11/11):
   pure-borrow drop, moved-out (no drop), scalar (no drop), dup on double use,
   closure-call borrow + drop, nested borrow, branch-local drop, while-body
-  per-iteration drop.
+  per-iteration drop, for-in element drop, closure capture as owning use,
+  match arm pattern-binding drop.
 - **Remaining in Phase 2** (safe no-ops today — never emit a wrong drop):
-  `EFn` capture accounting, `EMatch` / `EHandle` / `ELoop` / `EForIn`, and
-  cross-branch balancing of outer bindings consumed unevenly across `EIf`
-  arms. The discarded-statement-expr handling (A-1b) maps to `ESeq`/`ELet`
-  here and will be added with those.
+  `EHandle` / `ELoop`, cross-branch balancing of outer bindings consumed
+  unevenly across `EIf` / `EMatch` arms, and the discarded-statement-expr
+  reclamation (A-1b) which maps to `ESeq` here.
 
 ### Phase 3 — port the RC codegen
 

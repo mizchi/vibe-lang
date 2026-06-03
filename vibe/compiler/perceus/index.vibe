@@ -4,6 +4,10 @@ import .. / core {
   Expr, Pat, TypeExpr
 }
 
+import .. / codegen / common_analysis {
+  collect_free_vars
+}
+
 //# Types
 
 // Perceus RC analysis for the selfhost linear backend.
@@ -101,6 +105,53 @@ let is_scalar_expr: (Expr) -> Bool = (e) -> {
   }
 }
 
+// Names bound by a pattern (for match arms).
+let rec pat_names: (Pat, Array[String]) -> Int = (pat, out) -> {
+  match pat {
+    PBind(name) => {
+      Array::push(out, name)
+      0
+    },
+    PCtor(_n, args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        pat_names(Array::get(args, i), out)
+        i = i + 1
+      }
+      0
+    },
+    PTuple(pats) => {
+      let mut i = 0
+      while i < Array::length(pats) {
+        pat_names(Array::get(pats, i), out)
+        i = i + 1
+      }
+      0
+    },
+    POr(l, _r) => pat_names(l, out),
+    PStruct(_n, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        pat_names((Array::get(fields, i)).1, out)
+        i = i + 1
+      }
+      0
+    },
+    _ => 0
+  }
+}
+
+// Value parameter names of an EFn (the `params` array of (name, type?) pairs).
+let fn_param_names: (Array[(String, Option[TypeExpr])]) -> Array[String] = (params) -> {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(params) {
+    Array::push(out, (Array::get(params, i)).0)
+    i = i + 1
+  }
+  out
+}
+
 // --- count pass ---
 
 // Declare a binding during the count pass: allocate an id and zeroed counters.
@@ -153,6 +204,16 @@ let restore_prefix: (Array[Int], Array[Int]) -> Int = (dst, src) -> {
 
 let int_max: (Int, Int) -> Int = (a, b) -> {
   if a > b { a } else { b }
+}
+
+let zeros: (Int) -> Array[Int] = (n) -> {
+  let out: Array[Int] = []
+  let mut i = 0
+  while i < n {
+    Array::push(out, 0)
+    i = i + 1
+  }
+  out
 }
 
 export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, expr) -> {
@@ -305,6 +366,77 @@ export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, ex
         Some(e) => pc_count(ctx, scope, e),
         None => 0
       }
+    },
+    EFn(_tp, _tb, params, _ret, _eff, fbody) => {
+      // A closure captures its free variables: each is an owning use of the
+      // outer binding. The body is compiled as its own function (analysed
+      // separately), so we do not recurse into it with the outer scope.
+      let caps = collect_free_vars(fbody, fn_param_names(params), [])
+      let mut i = 0
+      while i < Array::length(caps) {
+        pc_count_use(ctx, scope, Array::get(caps, i))
+        i = i + 1
+      }
+      0
+    },
+    EForIn(value_name, index_opt, iterable, fbody) => {
+      pc_count(ctx, scope, iterable)
+      let idv = pc_declare(ctx, value_name, false)
+      let s2 = Map::set(scope, value_name, idv)
+      let s3 = match index_opt {
+        Some(idx) => {
+          let idi = pc_declare(ctx, idx, true)
+          Map::set(s2, idx, idi)
+        },
+        None => s2
+      }
+      pc_count(ctx, s3, fbody)
+    },
+    EMatch(scrut, arms) => {
+      pc_count(ctx, scope, scrut)
+      let snap_u = copy_ints(ctx.uses)
+      let snap_b = copy_ints(ctx.borrows)
+      let max_u = zeros(Array::length(snap_u))
+      let max_b = zeros(Array::length(snap_b))
+      let mut a = 0
+      while a < Array::length(arms) {
+        let arm = Array::get(arms, a)
+        restore_prefix(ctx.uses, snap_u)
+        restore_prefix(ctx.borrows, snap_b)
+        let pnames: Array[String] = []
+        pat_names(arm.0, pnames)
+        let mut s = scope
+        let mut k = 0
+        while k < Array::length(pnames) {
+          let nm = Array::get(pnames, k)
+          let pid = pc_declare(ctx, nm, false)
+          s = Map::set(s, nm, pid)
+          k = k + 1
+        }
+        pc_count(ctx, s, arm.1)
+        let mut id = 0
+        while id < Array::length(snap_u) {
+          let du = Array::get(ctx.uses, id) - Array::get(snap_u, id)
+          if du > Array::get(max_u, id) {
+            Array::set(max_u, id, du)
+          }
+          let db = Array::get(ctx.borrows, id) - Array::get(snap_b, id)
+          if db > Array::get(max_b, id) {
+            Array::set(max_b, id, db)
+          }
+          id = id + 1
+        }
+        a = a + 1
+      }
+      restore_prefix(ctx.uses, snap_u)
+      restore_prefix(ctx.borrows, snap_b)
+      let mut id2 = 0
+      while id2 < Array::length(snap_u) {
+        Array::set(ctx.uses, id2, Array::get(snap_u, id2) + Array::get(max_u, id2))
+        Array::set(ctx.borrows, id2, Array::get(snap_b, id2) + Array::get(max_b, id2))
+        id2 = id2 + 1
+      }
+      0
     },
     _ => 0
   }
@@ -484,6 +616,58 @@ export let rec pc_emit: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, exp
         Some(e) => pc_emit(ctx, scope, e),
         None => 0
       }
+    },
+    EFn(_tp, _tb, params, _ret, _eff, fbody) => {
+      let caps = collect_free_vars(fbody, fn_param_names(params), [])
+      let mut i = 0
+      while i < Array::length(caps) {
+        pe_use(ctx, scope, Array::get(caps, i))
+        i = i + 1
+      }
+      0
+    },
+    EForIn(value_name, index_opt, iterable, fbody) => {
+      pc_emit(ctx, scope, iterable)
+      let idv = pe_declare(ctx, value_name)
+      let s2 = Map::set(scope, value_name, idv)
+      let s3 = match index_opt {
+        Some(idx) => {
+          let idi = pe_declare(ctx, idx)
+          Map::set(s2, idx, idi)
+        },
+        None => s2
+      }
+      pc_emit(ctx, s3, fbody)
+      pe_scope_end(ctx, idv, value_name)
+    },
+    EMatch(scrut, arms) => {
+      pc_emit(ctx, scope, scrut)
+      let snap = copy_ints(ctx.remaining)
+      let mut a = 0
+      while a < Array::length(arms) {
+        let arm = Array::get(arms, a)
+        restore_prefix(ctx.remaining, snap)
+        let pnames: Array[String] = []
+        pat_names(arm.0, pnames)
+        let mut s = scope
+        let pids: Array[Int] = []
+        let mut k = 0
+        while k < Array::length(pnames) {
+          let nm = Array::get(pnames, k)
+          let pid = pe_declare(ctx, nm)
+          s = Map::set(s, nm, pid)
+          Array::push(pids, pid)
+          k = k + 1
+        }
+        pc_emit(ctx, s, arm.1)
+        let mut j = 0
+        while j < Array::length(pids) {
+          pe_scope_end(ctx, Array::get(pids, j), Array::get(pnames, j))
+          j = j + 1
+        }
+        a = a + 1
+      }
+      0
     },
     _ => 0
   }
