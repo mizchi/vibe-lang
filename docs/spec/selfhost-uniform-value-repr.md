@@ -278,10 +278,31 @@ arithmetic / comparison / bitop / shift / float / nested-data case under
    `array_new`) before RC is sound for general higher-order programs — track
    with the Stage 4 escape work. Floats-in-heap-fields are likewise unsound
    until boxed.
-4. **Stage 4 — escape ownership (analysis).** Dup on escaping field projections
-   and container/call owning escapes (the general dup-placement work the
-   `PaAliasDup` slice started). Only then are container/call escapes leak-free
-   and recursive drop fully safe.
+4. **Stage 4 — escape ownership (analysis). ◐ PARTIAL (the safety-critical slice
+   landed).** Stage 3's recursive drop turned an *escaping projection* from a
+   benign leak into a **use-after-free**: `let pick = (i) -> { let t = ((i,i+1),
+   (i+2,i+3)); t.0 }` returns the inner tuple while `t` is recursively dropped,
+   so the returned block is freed; with free-list reuse in the caller the result
+   corrupts (a confirmed `default=15` vs `rc=320`). **Fix (landed):** when a
+   scope's tail expression is a projection chain rooted at the binding being
+   dropped (`scope_tail_proj_root(body) == name`), the result is saved, **dup'd
+   runtime-guarded** (`emit_rc_dup_guarded`: `if (v&1) inc rc` — a no-op on an
+   even scalar, since the field's heap-ness is unknown — Blocker 3), then the
+   drop runs, then the result is restored. The escaped reference now survives the
+   container's recursive dec. Pinned by two heap-e2e cases (single escaped
+   projection in a loop; three escaped projections read after reuse).
+
+   **Remaining (leaks, safe; need owned-vs-borrowed typing):**
+   - The dup gives the escaped value rc 1 but its eventual owner is often a
+     `let p = pick(...)` bound to a **call** result, which is not classified as a
+     droppable heap binding (dropping a general call result is unsafe — e.g.
+     `Array::get` returns a *borrow*, dropping it would double-free). So the
+     `pick`-in-a-loop pattern now **leaks 32 B/iter** (was: corrupt). Closing it
+     needs the owned/borrowed distinction so owned call results can be dropped.
+   - `let a = t.0; …; a` (projection bound to a *let* that then escapes) and a
+     projection stored into a fresh container (`(t.0, t.1)`) are not yet handled.
+   - Container/call **owning** escapes (storing/ passing an owned heap value) are
+     still not dup'd → leak (safe), as before.
 5. **Stage 5 — verification & cutover.** Wasmtime RC e2e gate, parity gates with
    RC on, then consider RC as the selfhost linear default when wasm-gc is
    unavailable (issue #493 C/F).

@@ -104,6 +104,63 @@ let emit_rc_dup_local: (Bytes, Int, Bool) -> Unit = (buf, local_idx, tagged) -> 
   emit_i32_store(buf, 2, 0)
 }
 
+// ADR-0055 Stage 4: a runtime-guarded rc_dup of the value held in `local_idx`.
+// Unlike emit_rc_dup_local it first tests the low bit, so it is a no-op on an
+// even (scalar) value — the projected field whose heap-ness is unknown at
+// codegen time (Blocker 3). Used to give an escaping projection its own owned
+// reference before the source container is recursively dropped.
+let emit_rc_dup_guarded: (Bytes, Int) -> Unit = (buf, local_idx) -> {
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, 1)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_if_void(buf)
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 1)
+  emit_i32_add(buf)
+  emit_i32_store(buf, 2, 0)
+  emit_end(buf)
+}
+
+// The root identifier of a projection chain (EDot(...EDot(EIdent(root))...)), or
+// "" if `e` is not a projection.
+let rec proj_root_ident: (Expr) -> String = (e) -> {
+  match e {
+    EDot(obj, _) => proj_root_ident(obj),
+    EIdent(nm) => nm,
+    _ => ""
+  }
+}
+
+// If the *tail* (result) expression of a scope is a projection chain, return its
+// root identifier; otherwise "". Follows let/seq/assign wrappers to the tail.
+// (ADR-0055 Stage 4: an escaping projection rooted at a dropped binding aliases
+// a field the recursive rc_drop would free — it must be dup'd.)
+let rec scope_tail_proj_root: (Expr) -> String = (e) -> {
+  match e {
+    ELet(_, _, b) => scope_tail_proj_root(b),
+    ELetMut(_, _, b) => scope_tail_proj_root(b),
+    ELetRec(_, _, b) => scope_tail_proj_root(b),
+    ESeq(_, b) => scope_tail_proj_root(b),
+    EAssign(_, _, b) => scope_tail_proj_root(b),
+    EAssignOp(_, _, _, b) => scope_tail_proj_root(b),
+    EDot(obj, _) => proj_root_ident(obj),
+    _ => ""
+  }
+}
+
 export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, expr, local_names, next_local, ctx, ld, compile_expr) -> {
   let __tag = expr_tag(expr)
   if __tag == 9 {
@@ -164,21 +221,34 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     // free-list head (global 2). The body result is already on the stack and
     // untouched. (docs/spec/selfhost-rc-port.md)
     if ctx.enable_rc && rc_kind > 0 && array_contains_str(ctx.rc_drop_names, name) {
-      if ctx.rc_drop_func_idx >= 0 {
-        // ADR-0055 Stage 3: route the scope-end drop through the recursive
-        // helper so nested heap fields are reclaimed to arbitrary depth. The
-        // helper untags and classifies the value itself.
+      // ADR-0055 Stage 4: if the scope result is a projection rooted at THIS
+      // dropped binding (e.g. `let t = (...); t.0`), the result aliases a field
+      // the recursive drop would free — use-after-free. Save the result, dup it
+      // (runtime-guarded, so a scalar field is a no-op), drop, then restore.
+      if ctx.rc_drop_func_idx >= 0 && scope_tail_proj_root(body) == name {
+        emit_local_set(buf, nl2)
+        emit_rc_dup_guarded(buf, nl2)
         emit_local_get(buf, local_idx)
         emit_call(buf, ctx.rc_drop_func_idx)
-      } else if rc_kind == 1 {
-        emit_rc_drop_local(buf, local_idx, false)
+        emit_local_get(buf, nl2)
+        nl2 + 1
       } else {
-        emit_rc_drop_local(buf, local_idx, true)
+        if ctx.rc_drop_func_idx >= 0 {
+          // ADR-0055 Stage 3: route the scope-end drop through the recursive
+          // helper so nested heap fields are reclaimed to arbitrary depth. The
+          // helper untags and classifies the value itself.
+          emit_local_get(buf, local_idx)
+          emit_call(buf, ctx.rc_drop_func_idx)
+        } else if rc_kind == 1 {
+          emit_rc_drop_local(buf, local_idx, false)
+        } else {
+          emit_rc_drop_local(buf, local_idx, true)
+        }
+        nl2
       }
     } else {
-      ()
+      nl2
     }
-    nl2
   } else if __tag == 10 {
     let name = get_eletrec_name(expr)
     let value = get_eletrec_val(expr)

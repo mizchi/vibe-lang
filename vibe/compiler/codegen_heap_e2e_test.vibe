@@ -333,6 +333,24 @@ test "heap e2e: record holding tuples drop in loop" {
   assert_result(src, "main", "record_of_tuples_loop", "1680")
 }
 
+// ADR-0055 Stage 4: an escaping heap projection. `pick` returns `t.0` (an inner
+// tuple) while `t` is recursively dropped at pick's scope end — without a dup of
+// the escaping projection the returned block is use-after-freed and, with
+// free-list reuse in the caller loop, corrupts. Must match the default path.
+test "heap e2e: escaping tuple projection from dropped container" {
+  let src = "let pick: (Int) -> (Int, Int) = (i) -> {\n  let t = ((i, i + 1), (i + 2, i + 3))\n  t.0\n}\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 100 {\n    let p = pick(i)\n    s = s + p.0 + p.1\n    i = i + 1\n  }\n  s\n}"
+  assert_result(src, "main", "escaping_projection", "10000")
+}
+
+// Three escaped projections read AFTER intervening allocations that reuse the
+// freed blocks: without the Stage 4 escaping-projection dup, `a` and `c` alias
+// the same reused block and the result corrupts (320 instead of 15). This pins
+// the dup of a projection rooted at a dropped binding (`pick` returns `t.0`).
+test "heap e2e: multiple escaped projections with reuse" {
+  let src = "let pick: (Int) -> (Int, Int) = (i) -> {\n  let t = ((i, i + 1), (i + 100, i + 200))\n  t.0\n}\nlet main: () -> Int = () -> {\n  let a = pick(1)\n  let b = pick(2)\n  let c = pick(3)\n  a.0 + a.1 + b.0 + b.1 + c.0 + c.1\n}"
+  assert_result(src, "main", "multi_escaped_projection", "15")
+}
+
 test "heap e2e: enum payload tuple drop in loop" {
   let src = "enum Box { Wrap((Int, Int)); Empty }\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 40 {\n    let e = Wrap((i, i + 1))\n    s = s + match e {\n      Wrap(p) => p.0 + p.1,\n      Empty => 0\n    }\n    i = i + 1\n  }\n  s\n}"
   assert_result(src, "main", "enum_tuple_loop", "1600")
