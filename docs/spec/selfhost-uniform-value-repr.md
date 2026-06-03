@@ -361,11 +361,33 @@ arithmetic / comparison / bitop / shift / float / nested-data case under
    `rc_drop` free path, and it is `enable_rc`-only (the default bootstrap path
    never allocates from the free-list, so it is structurally unaffected).
 
+   **Heap `mut` reassignment drops the old value (landed).** A heap `mut`
+   binding reassigned in a loop (`let mut b = (0,0); … b = t`) leaked the
+   *previous* block every iteration (32 B/iter, confirmed; result correct) — the
+   Perceus assignment rule "drop the old owner before storing the new value" was
+   unimplemented for `mut` bindings (they were never classified as heap, never
+   dropped). Fix: `ELetMut` now classifies a heap initializer
+   (tuple/array/record/ctor) into `heap_binding_names`, and `EAssign` emits a
+   guarded `__rc_drop` of the binding's current value *before* storing the new
+   one (mirrors `src/`'s `wasm_codegen_stmt.mbt` assignment path). The drop is a
+   guarded **dec** (no-op on a scalar/string, decrements not frees), so an
+   aliased old value — rc > 1 via `PaAliasDup` — is safe. **Safety carve-out:**
+   when the RHS references the assigned name (`b = b.0`, `b = f(b)`,
+   `b = (b.0+i, b.1)`) the drop is *suppressed* — dropping first would free a
+   block the new value derives from (use-after-free); these keep the old, safe
+   leak. The `b = t` loop now reclaims at a bounded 64 B (two blocks cycling
+   through the free-list). Pinned by two heap-e2e result-parity cases
+   (reassign-drops-old; reassign-reads-old stays correct) and the `mut_reassign`
+   reclaim case.
+
    **Still remaining (leaks, safe; need owned-vs-borrowed typing):**
-   - Container **owning** escapes (storing an owned heap value into a longer
-     -lived container that *outlives* the current scope — distinct from the
-     fragmentation case above, where the container is dropped in-scope) are not
-     dup'd → leak (safe), as before.
+   - Container **owning** escapes where the RHS references the target (the
+     reassignment safety carve-out above) or an owned value stored into a
+     container that *outlives* the current scope without a matching drop site are
+     not dup'd/dropped → leak (safe).
+   - The final value of a heap `mut` binding is not dropped at scope end (a
+     bounded, one-time leak — the per-iteration leak is fixed; the scope-end drop
+     needs the same tail-aliasing guard as the `let` projection-escape case).
    - Captured closures remain unheadered (the recursion would misread one stored
      in a dropped container — low address, so the high-32 guard does not catch
      it); no opt-in RC path exercises it.

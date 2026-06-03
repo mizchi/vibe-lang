@@ -138,6 +138,11 @@ reclaim_case owned_in_array  '"let main: () -> Int = () -> {\n  let mut s = 0\n 
 reclaim_case owned_in_enum   '"enum Box { Wrap((Int, Int)); Empty }\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let t = (i, i + 1)\n    let e = Wrap(t)\n    s = s + match e { Wrap(p) => p.0, Empty => 0 }\n    i = i + 1\n  }\n  s\n}"'
 reclaim_case owned_in_record '"struct H { v: (Int, Int) }\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let t = (i, i + 1)\n    let h = H::{ v: t }\n    s = s + h.v.0\n    i = i + 1\n  }\n  s\n}"'
 
+# ADR-0055 Stage 4: reassigning a heap `mut` binding must drop the old value.
+# `b = t` each iteration would otherwise leak the previous tuple (32 B/iter);
+# the assignment drop reclaims it (bounded heap, two blocks cycling).
+reclaim_case mut_reassign '"let main: () -> Int = () -> {\n  let mut b = (0, 0)\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let t = (i, i + 1)\n    b = t\n    i = i + 1\n  }\n  b.0\n}"'
+
 # KNOWN PRE-EXISTING GAP (not a regression): a *nested* tuple built in a loop
 # (`let t = ((i, i+1), (i+2, i+3))`) fails to compile under RC at BOTH HEAD and
 # the Stage-1 baseline — so it is excluded from the reclamation set rather than

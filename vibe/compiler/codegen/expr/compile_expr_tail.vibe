@@ -178,6 +178,19 @@ let rec scope_tail_proj_root: (Expr) -> String = (e) -> {
   }
 }
 
+// ADR-0055 Stage 4: does the assignment RHS reference `name`? If so, dropping
+// the old value of `name` before evaluating the RHS would be a use-after-free
+// (`b = b.0`, `b = f(b)`), so the reassignment drop is suppressed for these.
+let assign_value_mentions: (Expr, String) -> Bool = (value, name) -> {
+  let empty1 = Array::slice([
+    ""
+  ], 0, 0)
+  let empty2 = Array::slice([
+    ""
+  ], 0, 0)
+  array_contains_str(collect_free_vars(value, empty1, empty2), name)
+}
+
 export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, expr, local_names, next_local, ctx, ld, compile_expr) -> {
   let __tag = expr_tag(expr)
   if __tag == 9 {
@@ -386,6 +399,16 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
       let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
       nl2
     } else {
+      // ADR-0055 Stage 4: classify the mut binding's heap-ness from its
+      // initializer (a binding has one type, so this is stable across
+      // reassignments). Registering it in heap_binding_names lets `EAssign` drop
+      // the OLD value before overwriting (otherwise each `b = <heap>` leaks the
+      // previous block — a per-iteration leak in a loop).
+      if ctx.enable_rc && (is_etuple(value) || is_earray(value) || is_erecord(value) || is_ctor_call(value, ctx.ctor_table)) {
+        Array::push(ctx.heap_binding_names, name)
+      } else {
+        ()
+      }
       let nl = compile_expr(buf, value, local_names, next_local + 1, ctx, ld)
       emit_local_set(buf, local_idx)
       let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
@@ -403,6 +426,20 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
       emit_i64_store(buf, 3, 0)
       compile_expr(buf, body, local_names, nl, ctx, ld)
     } else {
+      // ADR-0055 Stage 4: drop the OLD value before overwriting a heap mut
+      // binding (Perceus assignment rule). Without this, `b = <heap>` in a loop
+      // leaks the previous block every iteration. The drop is guarded by
+      // __rc_drop (a no-op on a scalar/string), and a dec (not an unconditional
+      // free), so an aliased old value (rc > 1 via PaAliasDup) is safe.
+      // SAFETY: skip the drop when the RHS references `name` (e.g. `b = b.0` or
+      // `b = f(b)`) — dropping first would free a block the new value derives
+      // from (use-after-free). Those keep the old, safe leak.
+      if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && array_contains_str(ctx.heap_binding_names, name) && !assign_value_mentions(value, name) {
+        emit_local_get(buf, idx)
+        emit_call(buf, ctx.rc_drop_func_idx)
+      } else {
+        ()
+      }
       let nl = compile_expr(buf, value, local_names, next_local, ctx, ld)
       emit_local_set(buf, idx)
       compile_expr(buf, body, local_names, nl, ctx, ld)

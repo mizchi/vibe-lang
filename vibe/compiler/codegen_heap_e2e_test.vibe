@@ -434,6 +434,25 @@ test "heap e2e: owned binding moved into record field (loop)" {
   assert_result(src, "main", "owned_in_record_field", "4950")
 }
 
+// ADR-0055 Stage 4: reassigning a heap `mut` binding (`b = t`) must drop the
+// OLD value (Perceus assignment rule) — otherwise each iteration leaks the
+// previous block. The drop is a guarded rc dec (safe for aliases) emitted before
+// the new value is stored. Pins result parity (default vs RC); reclamation is
+// pinned by the `mut_reassign` case in verify_selfhost_rc.sh.
+test "heap e2e: heap mut reassign drops old value (loop)" {
+  let src = "let main: () -> Int = () -> {\n  let mut b = (0, 0)\n  let mut i = 0\n  while i < 100 {\n    let t = (i, i + 1)\n    b = t\n    i = i + 1\n  }\n  b.0\n}"
+  assert_result(src, "main", "mut_reassign_drop_old", "99")
+}
+
+// ADR-0055 Stage 4 (safety): when the assignment RHS reads the old value
+// (`b = (b.0 + i, b.1)`), the reassignment drop is suppressed (dropping first
+// would free a block the new value derives from). Must still match the default
+// path (no use-after-free / corruption).
+test "heap e2e: heap mut reassign reading old value is correct" {
+  let src = "let main: () -> Int = () -> {\n  let mut b = (1, 2)\n  let mut i = 0\n  while i < 5 {\n    b = (b.0 + i, b.1)\n    i = i + 1\n  }\n  b.0 + b.1\n}"
+  assert_result(src, "main", "mut_reassign_reads_old", "13")
+}
+
 test "heap e2e: enum payload tuple drop in loop" {
   let src = "enum Box { Wrap((Int, Int)); Empty }\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 40 {\n    let e = Wrap((i, i + 1))\n    s = s + match e {\n      Wrap(p) => p.0 + p.1,\n      Empty => 0\n    }\n    i = i + 1\n  }\n  s\n}"
   assert_result(src, "main", "enum_tuple_loop", "1600")
