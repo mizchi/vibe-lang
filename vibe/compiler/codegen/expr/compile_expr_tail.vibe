@@ -83,6 +83,22 @@ let emit_rc_drop_local: (Bytes, Int, Bool) -> Unit = (buf, local_idx, tagged) ->
   emit_end(buf)
 }
 
+// Emit rc_dup: increment the reference count (at value-4) of a heap object held
+// in `local_idx`. Used for an alias `let a = t` whose source `t` is multiply
+// used, so the alias takes its own owned reference. (docs/spec/selfhost-rc-port.md)
+let emit_rc_dup_local: (Bytes, Int, Bool) -> Unit = (buf, local_idx, tagged) -> {
+  emit_rc_value_ptr_i32(buf, local_idx, tagged)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_rc_value_ptr_i32(buf, local_idx, tagged)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 1)
+  emit_i32_add(buf)
+  emit_i32_store(buf, 2, 0)
+}
+
 export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, expr, local_names, next_local, ctx, ld, compile_expr) -> {
   let __tag = expr_tag(expr)
   if __tag == 9 {
@@ -93,22 +109,54 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     Array::push(local_names, name)
     let nl = compile_expr(buf, value, local_names, next_local + 1, ctx, ld)
     emit_local_set(buf, local_idx)
-    let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
-    // RC: drop a tuple or record binding the Perceus plan marks for scope-end
-    // drop. The value is a fresh heap object; rc_count at value-4 is decremented
-    // and, at zero, the block is pushed onto the free-list head (global 2). The
-    // body result is already on the stack and untouched. Records are tagged
-    // (`ptr | 1`) so the drop helper untags them first.
-    // (docs/spec/selfhost-rc-port.md)
-    if ctx.enable_rc && array_contains_str(ctx.rc_drop_names, name) {
+    // RC: classify the bound value's heap-ness. rc_kind 0 = not (known) heap,
+    // 1 = heap tuple (raw pointer), 2 = heap tagged (record/enum, or an alias of
+    // any heap kind — the `& -2` untag is a no-op on 8-aligned tuple pointers so
+    // it is safe for aliases of any kind). A binding is registered in
+    // heap_binding_names so a later alias `let a = <this>` can be dup'd/dropped,
+    // and so that drops never touch a non-heap binding the static Perceus
+    // `scalar` flag over-approximates as heap. (docs/spec/selfhost-rc-port.md)
+    let mut rc_kind = 0
+    if ctx.enable_rc {
       if is_etuple(value) {
-        emit_rc_drop_local(buf, local_idx, false)
+        rc_kind = 1
+        Array::push(ctx.heap_binding_names, name)
       } else if is_erecord(value) {
-        emit_rc_drop_local(buf, local_idx, true)
+        rc_kind = 2
+        Array::push(ctx.heap_binding_names, name)
       } else if is_ctor_call(value, ctx.ctor_table) {
-        emit_rc_drop_local(buf, local_idx, true)
+        rc_kind = 2
+        Array::push(ctx.heap_binding_names, name)
+      } else if is_eident(value) {
+        let src = get_eident_name(value)
+        if array_contains_str(ctx.heap_binding_names, src) {
+          rc_kind = 2
+          Array::push(ctx.heap_binding_names, name)
+          // Alias of a multiply-used source: take a duplicated reference.
+          if array_contains_str(ctx.rc_alias_dup_names, name) {
+            emit_rc_dup_local(buf, local_idx, true)
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
       } else {
         ()
+      }
+    } else {
+      ()
+    }
+    let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
+    // RC: drop a heap binding the Perceus plan marks for scope-end drop. rc_count
+    // at value-4 is decremented and, at zero, the block is pushed onto the
+    // free-list head (global 2). The body result is already on the stack and
+    // untouched. (docs/spec/selfhost-rc-port.md)
+    if ctx.enable_rc && rc_kind > 0 && array_contains_str(ctx.rc_drop_names, name) {
+      if rc_kind == 1 {
+        emit_rc_drop_local(buf, local_idx, false)
+      } else {
+        emit_rc_drop_local(buf, local_idx, true)
       }
     } else {
       ()

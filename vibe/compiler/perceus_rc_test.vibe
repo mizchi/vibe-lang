@@ -1,7 +1,7 @@
 //# Imports
 
 import ./perceus/index.vibe {
-  PerceusAction, build_perceus_plan, pa_is_drop, pa_is_dup
+  PerceusAction, build_perceus_plan, pa_is_alias_dup, pa_is_drop, pa_is_dup
 }
 
 import ./core {
@@ -41,6 +41,19 @@ let count_dups: (Array[PerceusAction], String) -> Int = (plan, name) -> {
   while i < Array::length(plan) {
     let a = Array::get(plan, i)
     if pa_is_dup(a) && a.name == name {
+      n = n + 1
+    }
+    i = i + 1
+  }
+  n
+}
+
+let count_alias_dups: (Array[PerceusAction], String) -> Int = (plan, name) -> {
+  let mut n = 0
+  let mut i = 0
+  while i < Array::length(plan) {
+    let a = Array::get(plan, i)
+    if pa_is_alias_dup(a) && a.name == name {
       n = n + 1
     }
     i = i + 1
@@ -214,6 +227,35 @@ test "perceus: match scrutinee binding is borrowed and dropped" {
   let plan = build_perceus_plan(body)
   assert(count_drops(plan, "e") == 1)
   assert(count_dups(plan, "e") == 0)
+}
+
+// A single alias `let a = t` (t used only once, owning) takes t's original
+// reference: no dup, and a is dropped at scope end (t is not).
+test "perceus: single alias takes ownership, no dup" {
+  // let t = (1, 2); let a = t; a.0
+  let inner = ELet("a", EIdent("t"), EDot(EIdent("a"), "0"))
+  let body = ELet("t", ETuple([EInt(1), EInt(2)]), inner)
+  let plan = build_perceus_plan(body)
+  assert(count_alias_dups(plan, "a") == 0)
+  assert(count_drops(plan, "a") == 1)
+  assert(count_drops(plan, "t") == 0)
+}
+
+// Two aliases of the same source: the first (non-last owning use) takes a
+// duplicated reference (PaAliasDup on `a`), the last (`b`) takes the original.
+// Both aliases are dropped; the source `t` is not.
+test "perceus: multi-alias dups all but the last" {
+  // let t = (1, 2); let a = t; let b = t; a.0 + b.1
+  let use2 = EBinOp("+", EDot(EIdent("a"), "0"), EDot(EIdent("b"), "1"))
+  let innerb = ELet("b", EIdent("t"), use2)
+  let inner = ELet("a", EIdent("t"), innerb)
+  let body = ELet("t", ETuple([EInt(1), EInt(2)]), inner)
+  let plan = build_perceus_plan(body)
+  assert(count_alias_dups(plan, "a") == 1)
+  assert(count_alias_dups(plan, "b") == 0)
+  assert(count_drops(plan, "a") == 1)
+  assert(count_drops(plan, "b") == 1)
+  assert(count_drops(plan, "t") == 0)
 }
 
 // A handler arm-local pattern binding that is only borrowed is dropped.

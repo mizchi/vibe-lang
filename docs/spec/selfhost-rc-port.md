@@ -171,15 +171,39 @@ is added.
   "moved into" the match). A `let e = A(i); match e {…}` loop is now reclaimed
   (measured 0 bytes/iteration, constant 24 B); results unchanged (heap e2e 20/20
   on both paths, incl. an enum alloc+match loop).
+- **`rc_dup` for aliased bindings is covered** (the shared-binding case): an
+  alias `let a = t` where the source `t` is used in more than one owning
+  position takes a *duplicated* reference. The Perceus emit pass attributes the
+  dup to the **alias** binding (`PaAliasDup`, keyed by `a` not `t`), which is
+  occurrence-precise without tree-order bookkeeping — the codegen dups the
+  source exactly at `let a = …`. The non-last alias dups; the last takes the
+  original; both aliases are dropped, the source is not, so the refcount reaches
+  0 exactly once. The codegen tracks a per-function `heap_binding_names` set
+  (bindings bound to a tuple/record/enum literal or an alias of one) so dup/drop
+  never touch a non-heap binding the static `scalar` flag over-approximates;
+  untag is uniform `& -2` (a no-op on 8-aligned tuple pointers, so it is correct
+  for an alias of any heap kind). A `let a = t; let b = t` loop is now reclaimed
+  (measured 0 bytes/iteration, constant 32 B); a returned alias is correctly
+  *not* dropped (escape-safe); results unchanged (heap e2e 22/22 on both paths).
 - Known limitations of this first vertical (all leak conservatively — they
   never corrupt — and only matter under `enable_rc`):
   - **Mixed tuple sizes**: the free list is head-only exact-fit (as in `src/`),
     so after a size-3 tuple is freed, later size-2 allocations bump rather than
     reuse the stuck size-2 block until the head matches. Same-size loops (the
     common case) are fully reused.
-- Remaining: `rc_dup` for shared (multiply-used) bindings; recursive field drop
-  (needs the uniform `type_id` so a dropped tuple / record / enum frees nested
-  heap); the same treatment for array bindings (arrays go through the
+  - **Non-alias owning escapes** (a binding stored into a container or passed
+    to a call without a balancing recursive drop) still leak conservatively:
+    only alias (`let a = t`) owning uses are dup'd; container/call escapes are
+    left to the future recursive-drop work.
+  - **Name shadowing**: `heap_binding_names` is a flat per-function set, so a
+    scalar binding that shadows a same-named heap binding in a sibling scope
+    could in principle be mis-classified for an alias source. Pathological and
+    not hit by the selfhost sources; the immediate-value classification of the
+    binding being dropped is precise, only the alias *source* lookup consults
+    the set.
+- Remaining: recursive field drop (needs the uniform `type_id` so a dropped
+  tuple / record / enum frees nested heap, and lets `rc_dup` cover container
+  escapes too); the same treatment for array bindings (arrays go through the
   `array_new` / `Array::push` runtime, a separate mechanism); and a segregated /
   coalescing free list.
 - Everything stays gated behind `enable_rc`, default off.

@@ -93,6 +93,22 @@ test "heap e2e: closure body loop over tuples" {
   assert_result(src, "main", "closure_loop", "10")
 }
 
+// Aliasing a heap binding (`let a = t; let b = t`) under RC: the analysis dups
+// the source for the non-last alias so the two aliases' scope-end drops are
+// balanced (rc reaches 0 exactly once). Correctness here; the leak (per-iter
+// heap -> 0) is checked by the profiler.
+test "heap e2e: aliased tuple bindings" {
+  let src = "let main: () -> Int = () -> {\n  let t = (3, 4)\n  let a = t\n  let b = t\n  a.0 + b.1\n}"
+  assert_result(src, "main", "aliased_tuple", "7")
+}
+
+// Aliasing in a loop body must reclaim each iteration's tuple (dup + two drops
+// net to a single free per iteration).
+test "heap e2e: aliased tuple in loop" {
+  let src = "let main: () -> Int = () -> {\n  let mut sum = 0\n  let mut i = 0\n  while i < 5 {\n    let t = (i, i + 1)\n    let a = t\n    let b = t\n    sum = sum + a.0 + b.1\n    i = i + 1\n  }\n  sum\n}"
+  assert_result(src, "main", "aliased_loop", "25")
+}
+
 test "heap e2e: returned closure" {
   let src = "let mk: (Int) -> (Int) -> Int = (n) -> {\n  (x: Int) -> Int { x + n }\n}\nlet main: () -> Int = () -> {\n  let add5 = mk(5)\n  add5(3)\n}"
   assert_result(src, "main", "returned_closure", "8")

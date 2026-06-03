@@ -48,7 +48,13 @@ import .. / core / polyfill.vibe {
 
 export enum PerceusActionKind {
   PaDup;
-  PaDrop
+  PaDrop;
+  // A `dup` attributed to an *alias* binding `let a = t`: the source `t` is
+  // used in more than one owning position, so this alias takes a duplicated
+  // reference. Keyed by the ALIAS name `a` (not the source), which makes it
+  // occurrence-precise without tree-order bookkeeping: the codegen dups the
+  // source exactly at `let a = …`. (docs/spec/selfhost-rc-port.md)
+  PaAliasDup
 }
 
 export struct PerceusAction {
@@ -96,13 +102,25 @@ let next_seq_name: (PCtx) -> String = (ctx) -> {
 export let pa_is_drop: (PerceusAction) -> Bool = (a) -> {
   match a.kind {
     PaDrop => true,
-    PaDup => false
+    PaDup => false,
+    PaAliasDup => false
   }
 }
 
 export let pa_is_dup: (PerceusAction) -> Bool = (a) -> {
   match a.kind {
     PaDup => true,
+    PaDrop => false,
+    PaAliasDup => false
+  }
+}
+
+// An alias-attributed dup: `let a = t` where `t` is multiply-used and owned.
+// Keyed by the alias name.
+export let pa_is_alias_dup: (PerceusAction) -> Bool = (a) -> {
+  match a.kind {
+    PaAliasDup => true,
+    PaDup => false,
     PaDrop => false
   }
 }
@@ -633,7 +651,30 @@ export let rec pc_emit: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, exp
       }
     },
     ELet(name, value, body) => {
-      pc_emit(ctx, scope, value)
+      // An alias `let a = t` consumes one owned reference of `t`. Mirror pe_use's
+      // decrement, but if this is a non-last owning use (rem > 1) attribute the
+      // dup to the ALIAS `a` (PaAliasDup) so the codegen can dup the source at
+      // exactly this `let`. Non-alias values go through the normal emit pass.
+      match value {
+        EIdent(src) => {
+          if Map::has_key(scope, src) {
+            let sid = Map::get(scope, src)
+            let rem = Array::get(ctx.remaining, sid)
+            if rem > 1 && !Array::get(ctx.scalar, sid) {
+              pe_push(ctx, PaAliasDup, name)
+            } else {
+              0
+            }
+            if rem > 0 {
+              Array::set(ctx.remaining, sid, rem - 1)
+            }
+          } else {
+            ()
+          }
+          0
+        },
+        _ => pc_emit(ctx, scope, value)
+      }
       let id = pe_declare(ctx, name)
       pc_emit(ctx, Map::set(scope, name, id), body)
       pe_scope_end(ctx, id, name)
