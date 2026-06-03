@@ -197,3 +197,118 @@ test "heap e2e: enum without payload" {
   let src = "enum Color { Red; Green; Blue }\nlet main: () -> Int = () -> {\n  let c = Green\n  match c {\n    Red => 0,\n    Green => 1,\n    Blue => 2\n  }\n}"
   assert_result(src, "main", "enum_nopayload", "1")
 }
+
+// ---------------------------------------------------------------------------
+// Stage 1 (ADR-0055) tagging safety net.
+//
+// docs/spec/selfhost-uniform-value-repr.md proposes representing integers as
+// `n<<1` (and booleans as 0/2) under `enable_rc` so a generic recursive
+// rc_drop can tell heap pointers (odd) from scalars (even). That change touches
+// the WHOLE numeric path: literals, every arithmetic/comparison/bitop/shift
+// operator (each with its own tag correction), if/while conditions, match
+// `PInt`, the `eq` builtin, the int<->heap-field boundary, int-as-array-index,
+// and the export-return boundary.
+//
+// These cases pin the OBSERVABLE result of that whole path on BOTH the default
+// (raw i64) and RC paths. They pass today (both raw i64); once tagging lands
+// they catch any operator whose tag correction is wrong (a mis-tagged value
+// prints as `2n`, an un-tagged shift gives the wrong magnitude, an un-untagged
+// array index reads the wrong slot, an un-tagged bool flips a branch, etc.).
+
+test "heap e2e: arithmetic add/sub" {
+  // (no tag correction expected: a<<1 +/- b<<1 stays tagged)
+  let src = "let main: () -> Int = () -> {\n  100 + 23 - 5\n}"
+  assert_result(src, "main", "arith_addsub", "118")
+}
+
+test "heap e2e: arithmetic mul/div/mod" {
+  // mul/div need a tag correction; mod needs none (2x mod 2y = 2(x mod y))
+  let src = "let main: () -> Int = () -> {\n  7 * 6 / 3 + 17 % 5\n}"
+  assert_result(src, "main", "arith_muldivmod", "16")
+}
+
+test "heap e2e: negative numbers and unary minus" {
+  let src = "let main: () -> Int = () -> {\n  let x = 0 - 42\n  let y = -x\n  y - 100\n}"
+  assert_result(src, "main", "arith_neg", "-58")
+}
+
+test "heap e2e: negative division and modulo (truncating)" {
+  let src = "let main: () -> Int = () -> {\n  let a = (0 - 17) / 5\n  let b = (0 - 17) % 5\n  a * 100 + b\n}"
+  assert_result(src, "main", "arith_negdivmod", "-302")
+}
+
+test "heap e2e: comparison results used arithmetically" {
+  // bool results must be tagged (0/2) so they don't masquerade as pointers;
+  // here each comparison feeds `if`, exercising the tagged-bool truthiness path
+  let src = "let main: () -> Int = () -> {\n  let a = if 3 < 5 { 1 } else { 0 }\n  let b = if 5 <= 5 { 10 } else { 0 }\n  let c = if 9 > 2 { 100 } else { 0 }\n  let d = if 2 >= 9 { 0 } else { 1000 }\n  a + b + c + d\n}"
+  assert_result(src, "main", "cmp_arith", "1111")
+}
+
+test "heap e2e: equality and inequality on ints" {
+  let src = "let main: () -> Int = () -> {\n  let a = if 7 == 7 { 1 } else { 0 }\n  let b = if 7 != 8 { 10 } else { 0 }\n  let c = if 7 == 8 { 0 } else { 100 }\n  a + b + c\n}"
+  assert_result(src, "main", "eq_ne", "111")
+}
+
+test "heap e2e: logical not and and/or" {
+  let src = "let main: () -> Int = () -> {\n  let a = if !(1 == 2) { 1 } else { 0 }\n  let b = if (3 < 4) && (5 < 6) { 10 } else { 0 }\n  let c = if (3 > 4) || (5 < 6) { 100 } else { 0 }\n  a + b + c\n}"
+  assert_result(src, "main", "logic_ops", "111")
+}
+
+test "heap e2e: bitwise and/or/xor" {
+  // &,|,^ on n<<1 stay tagged with no correction
+  let src = "let main: () -> Int = () -> {\n  let a = 12 & 10\n  let b = 12 | 10\n  let c = 12 ^ 10\n  a * 100 + b * 10 + c\n}"
+  assert_result(src, "main", "bitand_or_xor", "956")
+}
+
+test "heap e2e: shift left and right" {
+  // << needs the shift amount untagged; >> needs both operands untagged then
+  // the result re-tagged (the subtle one — low bits matter)
+  let src = "let main: () -> Int = () -> {\n  let a = 3 << 4\n  let b = 7 >> 1\n  let c = 13 >> 2\n  a + b * 100 + c * 10\n}"
+  assert_result(src, "main", "shifts", "378")
+}
+
+test "heap e2e: arithmetic right shift of negative" {
+  let src = "let main: () -> Int = () -> {\n  (0 - 8) >> 1\n}"
+  assert_result(src, "main", "shift_neg", "-4")
+}
+
+test "heap e2e: int stored in heap field round-trips" {
+  // an int crosses into a heap (tuple) field and back out — must keep its tag
+  let src = "let main: () -> Int = () -> {\n  let t = (40 + 2, 7 << 3)\n  t.0 + t.1\n}"
+  assert_result(src, "main", "int_in_heap", "98")
+}
+
+test "heap e2e: bool stored in heap field used as condition" {
+  // a tagged bool stored in a tuple field, read back, used to drive a branch
+  let src = "let main: () -> Int = () -> {\n  let t = (1 < 2, 9)\n  if t.0 { t.1 } else { 0 }\n}"
+  assert_result(src, "main", "bool_in_heap", "9")
+}
+
+test "heap e2e: int used as array index" {
+  // the array-index boundary: a tagged int must be untagged before indexing
+  let src = "let main: () -> Int = () -> {\n  let xs = [10, 20, 30, 40]\n  let i = 1 + 2\n  Array::get(xs, i) + Array::get(xs, 0)\n}"
+  assert_result(src, "main", "int_array_index", "50")
+}
+
+test "heap e2e: loop counter comparison and accumulation" {
+  // while-condition comparison + arithmetic accumulation across iterations
+  let src = "let main: () -> Int = () -> {\n  let mut sum = 0\n  let mut i = 0\n  while i < 10 {\n    sum = sum + i * 2\n    i = i + 1\n  }\n  sum\n}"
+  assert_result(src, "main", "loop_counter", "90")
+}
+
+test "heap e2e: recursion passing ints" {
+  let src = "let rec fib: (Int) -> Int = (n) -> {\n  if n < 2 { n } else { fib(n - 1) + fib(n - 2) }\n}\nlet main: () -> Int = () -> {\n  fib(10)\n}"
+  assert_result(src, "main", "recursion_int", "55")
+}
+
+test "heap e2e: match on int literal" {
+  // PInt comparison: the scrutinee (tagged) vs the tagged literal
+  let src = "let main: () -> Int = () -> {\n  let x = 1 + 1\n  match x {\n    0 => 100,\n    2 => 200,\n    _ => 300\n  }\n}"
+  assert_result(src, "main", "match_pint", "200")
+}
+
+test "heap e2e: large int near literal cap" {
+  // n<<1 must not lose range below the 2^61-1 literal cap; (2^61-1)<<1 fits i64
+  let src = "let main: () -> Int = () -> {\n  let big = 2305843009213693950\n  let a = big + 1\n  a - 2305843009213693900\n}"
+  assert_result(src, "main", "large_int", "51")
+}

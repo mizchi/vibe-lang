@@ -113,16 +113,63 @@ Two options; **box-on-heap** is the conservative first cut:
 
 From the investigation, the integer/value surface is the whole numeric path:
 
-- **Literals**: `EInt` (`compile_expr.vibe` tag 0), `EBool` (tag 1), `EFloat`
-  (tag 2, boxing).
-- **`EBinOp`** (`compile_expr.vibe` tag 5 + `emit_binop_op`): `+ - * / % < > <= >=`
-  and bitops `& | ^ << >>`; plus `==`/`!=` via the `eq` builtin (tagged operands).
-- **`EUnaryOp`** (tag 6): unary `-`, `!`.
+- **Literals**: `EInt` (`compile_expr.vibe` tag 0 → `emit_i64_const(n<<1)`),
+  `EBool` (tag 1 → `0`/`2`), `EFloat` (tag 2, boxing).
+- **`EBinOp`** (`compile_expr.vibe` tag 5 + `common_base::emit_binop_op`).
+- **`EUnaryOp`** (tag 6): unary `-` (`0 - a` — already tag-correct since `0` is
+  tagged-0 and `a` tagged), `!` (needs result re-tag, see table).
 - **Inline `if`-condition comparisons** (`compile_expr.vibe` tag 7) — a second,
-  duplicated comparison path.
-- **`match` `PInt`** literal comparison (`compile_match.vibe`).
-- **Builtin bodies** consuming/producing ints: `eq`, `Array::get`/`set` index
-  args, `print_i64`, fs/host boundaries — untag at the boundary.
+  duplicated comparison path; conditions consume tagged bools (`true`=2 is
+  non-zero → `i32_wrap` truthiness still works, no change needed there).
+- **`match` `PInt`** literal comparison (`compile_match.vibe`) → compare scrutinee
+  against `k<<1`.
+
+### Per-operator tag correction (int = `n<<1`, bool = `0`/`2`)
+
+Worked out from `emit_binop_op` (operands arrive tagged; `a=x<<1`, `b=y<<1`):
+
+| op            | identity                                  | correction |
+|---------------|-------------------------------------------|------------|
+| `+` `-`       | `(x±y)<<1`                                 | **none** |
+| `& \| ^`      | low bit stays 0                           | **none** |
+| `%`           | `2x mod 2y = 2(x mod y)`                   | **none** |
+| `&&` `\|\|`   | `{0,2}` closed under `and`/`or`           | **none** |
+| `*`           | `a*b = xy<<2`                             | result `>> 1` (arith) |
+| `/`           | `a/b = x/y` (trunc, both scaled)          | result `<< 1` |
+| `<<`          | `(x<<1)<<y = (x<<y)<<1`                    | untag **shift amount** (`b>>1`) only |
+| `>>`          | `(2x)>>y ≠ 2(x>>y)` when bit `y-1` set     | untag **both**, shift, **re-tag** result |
+| `== != < > <= >=` | order/equality preserved by `<<1`     | result is a bool → `<< 1` (tag 0/2) |
+| unary `!`     | `eqz`→0/1                                  | result `<< 1` |
+
+So only `* / << >>` and the comparison/`!` **bool results** need touching;
+`+ - & \| ^ % && \|\|` are free. Comparison results MUST be tagged or a `1`
+(true) in a heap field would be misread as an odd pointer.
+
+### Boundary inventory (untag tagged→raw / tag raw→tagged)
+
+Discovered sites where an int is used as an **address/count** (must untag) or a
+raw count enters the value world (must tag):
+
+- **Export-return boundary**: `main`'s returned tagged int must be untagged
+  (`>>1`) before the wasm return, else `--invoke main` prints `2n`.
+- **`emit_i32_wrap_i64` index sites** (dozens in `compile_call.vibe`): any int
+  used as an array index / offset / length needs `>>1` before the wrap.
+- **Named runtime builtins** (generated functions, resolved via `resolve_func`):
+  `Array::get`/`set`/`push`/`make`/`length` (index & length args/returns),
+  `Bytes::*`, `String::length`/`char_code_at`/slice — untag index/length args,
+  tag returned counts.
+- **`eq` builtin body**: operands tagged (equal-tagged ⟺ equal), but it returns
+  a bool → must yield `0`/`2`; pointer-structural path unaffected (pointers stay
+  odd).
+- **Host imports**: `print_i64` / `__to_string` / `Fs` writes — untag at the
+  call boundary.
+
+The safety net for all of the above is in `codegen_heap_e2e_test.vibe`
+(Stage 1 tagging section): each operator, the int↔heap-field round-trip,
+int-as-array-index, tagged-bool branching, loop counters, recursion, `PInt`,
+and a near-cap large int are pinned to identical results on the default and RC
+paths, so a wrong correction surfaces immediately.
+
 - **Pointer tag flip**: tuple construction (`compile_expr_tail2.vibe`), array
   inline alloc (same), tuple field access (`compile_expr_tail4.vibe` EDot numeric
   + `compile_match.vibe` tuple loads) → switch to `tagged=true` / `|1`.
