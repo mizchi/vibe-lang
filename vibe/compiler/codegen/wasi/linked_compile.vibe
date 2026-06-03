@@ -4,6 +4,10 @@ import .. / .. / core {
   Expr, Pat, Stmt, TypeExpr, bytebuf_length, bytebuf_new, bytebuf_push, bytebuf_push_buf, bytebuf_push_section, bytebuf_push_vec_header, bytebuf_to_bytes, leb128_encode_s64, leb128_encode_u32
 }
 
+import .. / .. / perceus {
+  PerceusAction, build_perceus_plan, pa_is_drop
+}
+
 import .. / builtin_bodies {
   gen_bytes_append_body, gen_bytes_concat_body, gen_bytes_from_array_body, gen_bytes_get_body, gen_bytes_len_body, gen_bytes_new_body, gen_bytes_push_body, gen_bytes_set_body, gen_bytes_slice_body, gen_bytes_to_array_body, gen_eq_body, gen_selfhost_sources_proper_body, gen_selfhost_sources_stub_body, gen_string_contains_body, gen_string_ends_with_body, gen_string_index_of_body, gen_string_join_body, gen_string_last_index_of_body, gen_string_split_body, gen_string_starts_with_body, gen_string_trim_body, static_arr_concat_body, static_arr_get_body, static_arr_len_body, static_arr_new_body, static_arr_push_all_body, static_arr_push_body, static_arr_set_body, static_arr_slice_body, static_arr_truncate_body, static_double_to_int_body, static_fs_stub_body, static_fs_write_bytes_stub_body, static_identity_body, static_int_to_double_body, static_print_i64_body, static_print_str_body, static_str_char_code_at_body, static_str_concat_body, static_str_eq_body, static_str_from_char_code_body, static_str_len_body, static_str_substring_body
 }
@@ -34,7 +38,7 @@ import ./linked_helpers.vibe {
 
 //# Functions
 
-export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String, String)], Array[(String, String, Int, Int)], Bool) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, linked_imports, library_mode) -> {
+export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String, String)], Array[(String, String, Int, Int)], Bool, Bool) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, linked_imports, library_mode, enable_rc) -> {
   let fn_names_list = Array::slice([
     ""
   ], 0, 0)
@@ -755,6 +759,26 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       ""
     ], 0, 0)
     let fn_name_dbg = Array::get(fn_names_list, bi)
+    // RC: names this function's Perceus plan says to drop at scope end.
+    let rc_drops = Array::slice([
+      ""
+    ], 0, 0)
+    if enable_rc {
+      let fbody = if is_efn(__bi_expr) {
+        get_efn_body(__bi_expr)
+      } else {
+        __bi_expr
+      }
+      let plan = build_perceus_plan(fbody)
+      let mut di = 0
+      while di < Array::length(plan) {
+        let pa = Array::get(plan, di)
+        if pa_is_drop(pa) {
+          Array::push(rc_drops, pa.name)
+        }
+        di = di + 1
+      }
+    }
     let compile_ctx = CompileCtx::{
       func_table: FuncTable::{
         names: fn_names_list,
@@ -776,7 +800,9 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       },
       thunk_names: thunk_names_list,
       const_int_names: const_int_names_list,
-      const_int_values: const_int_values_list
+      const_int_values: const_int_values_list,
+      enable_rc: enable_rc,
+      rc_drop_names: rc_drops
     }
     if is_efn(__bi_expr) {
       let __bi_params = get_efn_params(__bi_expr)
@@ -1135,7 +1161,13 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   leb128_encode_u32(tag_content, 1)
   bytebuf_push_section(out, 13, tag_content)
   let global_content = bytebuf_new()
-  bytebuf_push_vec_header(global_content, 2)
+  // RC mode adds a third mutable i32 global (index 2): the free-list head used
+  // by tuple rc_drop / rc_alloc (docs/spec/selfhost-rc-port.md).
+  if enable_rc {
+    bytebuf_push_vec_header(global_content, 3)
+  } else {
+    bytebuf_push_vec_header(global_content, 2)
+  }
   bytebuf_push(global_content, 127)
   bytebuf_push(global_content, 1)
   emit_i32_const(global_content, heap_start)
@@ -1144,6 +1176,12 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   bytebuf_push(global_content, 1)
   emit_i64_const(global_content, 0)
   emit_end(global_content)
+  if enable_rc {
+    bytebuf_push(global_content, 127)
+    bytebuf_push(global_content, 1)
+    emit_i32_const(global_content, 0)
+    emit_end(global_content)
+  }
   bytebuf_push_section(out, 6, global_content)
   let start_func_idx = func_offset + num_user_funcs
   let run_func_idx = start_func_idx + 1
@@ -1272,5 +1310,16 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
 export let compile_wasi_module_with_sources_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
   compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false)
+  ], 0, 0), false, false)
+}
+
+// RC-mode entry: same as compile_wasi_module but compiles heap objects with the
+// uniform object header (docs/spec/selfhost-rc-port.md, Phase 1). Used by the
+// heap e2e / leak tests to exercise the headered layout.
+export let compile_wasi_module_rc_impl: (Array[Stmt], String) -> Bytes with { Error } = (stmts, entry_name) -> {
+  compile_wasi_module_linked_impl(stmts, entry_name, Array::slice([
+    ("", "")
+  ], 0, 0), Array::slice([
+    ("", "", 0, 0)
+  ], 0, 0), false, true)
 }
