@@ -469,6 +469,68 @@ export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, ex
       }
       0
     },
+    EHandle(hbody, arms) => {
+      // Treat the handled body as branch 0 and each handler arm as a further
+      // branch (branch-max counting), with arm-local pattern bindings. This is
+      // a conservative approximation of effect control flow (safe: it never
+      // emits a wrong drop).
+      let snap_u = copy_ints(ctx.uses)
+      let snap_b = copy_ints(ctx.borrows)
+      let max_u = zeros(Array::length(snap_u))
+      let max_b = zeros(Array::length(snap_b))
+      pc_count(ctx, scope, hbody)
+      let mut id0 = 0
+      while id0 < Array::length(snap_u) {
+        let du = Array::get(ctx.uses, id0) - Array::get(snap_u, id0)
+        if du > Array::get(max_u, id0) {
+          Array::set(max_u, id0, du)
+        }
+        let db = Array::get(ctx.borrows, id0) - Array::get(snap_b, id0)
+        if db > Array::get(max_b, id0) {
+          Array::set(max_b, id0, db)
+        }
+        id0 = id0 + 1
+      }
+      let mut a = 0
+      while a < Array::length(arms) {
+        let arm = Array::get(arms, a)
+        restore_prefix(ctx.uses, snap_u)
+        restore_prefix(ctx.borrows, snap_b)
+        let pnames: Array[String] = []
+        pat_names(arm.0, pnames)
+        let mut s = scope
+        let mut k = 0
+        while k < Array::length(pnames) {
+          let nm = Array::get(pnames, k)
+          let pid = pc_declare(ctx, nm, false)
+          s = Map::set(s, nm, pid)
+          k = k + 1
+        }
+        pc_count(ctx, s, arm.1)
+        let mut id = 0
+        while id < Array::length(snap_u) {
+          let du = Array::get(ctx.uses, id) - Array::get(snap_u, id)
+          if du > Array::get(max_u, id) {
+            Array::set(max_u, id, du)
+          }
+          let db = Array::get(ctx.borrows, id) - Array::get(snap_b, id)
+          if db > Array::get(max_b, id) {
+            Array::set(max_b, id, db)
+          }
+          id = id + 1
+        }
+        a = a + 1
+      }
+      restore_prefix(ctx.uses, snap_u)
+      restore_prefix(ctx.borrows, snap_b)
+      let mut id2 = 0
+      while id2 < Array::length(snap_u) {
+        Array::set(ctx.uses, id2, Array::get(snap_u, id2) + Array::get(max_u, id2))
+        Array::set(ctx.borrows, id2, Array::get(snap_b, id2) + Array::get(max_b, id2))
+        id2 = id2 + 1
+      }
+      0
+    },
     _ => 0
   }
 }
@@ -703,6 +765,35 @@ export let rec pc_emit: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, exp
     EMatch(scrut, arms) => {
       pc_emit(ctx, scope, scrut)
       let snap = copy_ints(ctx.remaining)
+      let mut a = 0
+      while a < Array::length(arms) {
+        let arm = Array::get(arms, a)
+        restore_prefix(ctx.remaining, snap)
+        let pnames: Array[String] = []
+        pat_names(arm.0, pnames)
+        let mut s = scope
+        let pids: Array[Int] = []
+        let mut k = 0
+        while k < Array::length(pnames) {
+          let nm = Array::get(pnames, k)
+          let pid = pe_declare(ctx, nm)
+          s = Map::set(s, nm, pid)
+          Array::push(pids, pid)
+          k = k + 1
+        }
+        pc_emit(ctx, s, arm.1)
+        let mut j = 0
+        while j < Array::length(pids) {
+          pe_scope_end(ctx, Array::get(pids, j), Array::get(pnames, j))
+          j = j + 1
+        }
+        a = a + 1
+      }
+      0
+    },
+    EHandle(hbody, arms) => {
+      let snap = copy_ints(ctx.remaining)
+      pc_emit(ctx, scope, hbody)
       let mut a = 0
       while a < Array::length(arms) {
         let arm = Array::get(arms, a)

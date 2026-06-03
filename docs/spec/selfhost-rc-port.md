@@ -63,7 +63,7 @@ is added.
 - Risk: high (every offset moves). Mitigation: land incrementally per object
   kind, each guarded by the parity gate.
 
-### Phase 2 — port the Perceus analysis pass — *in progress*
+### Phase 2 — port the Perceus analysis pass — *complete (bar branch balancing)*
 
 - Ported the analysis to `vibe/compiler/perceus/index.vibe`
   (`build_perceus_plan : (Expr) -> Array[PerceusAction]`), pattern-matching the
@@ -91,13 +91,18 @@ is added.
   closure-call borrow + drop, nested borrow, branch-local drop, while-body
   per-iteration drop, for-in element drop, closure capture as owning use,
   match arm pattern-binding drop, discarded sequenced heap value drop (A-1b),
-  discarded scalar (no drop), loop-parameter drop.
-- **Remaining in Phase 2**: `EHandle` (effect handlers) and cross-branch
-  balancing of outer bindings consumed unevenly across `EIf` / `EMatch` arms.
-  Cross-branch balancing needs each balancing drop placed in a specific branch,
-  which requires the action to carry placement (a site) — deferred to Phase 3,
-  where the codegen wiring assigns sites (as the `src/` backend already does).
-  Until then these are safe no-ops (never a wrong drop).
+  discarded scalar (no drop), loop-parameter drop, handle arm pattern-binding
+  drop.
+- `EHandle` is covered: the handled body is branch 0 and each handler arm is a
+  further branch (branch-max counting + arm-local pattern bindings) — a
+  conservative, safe approximation of effect control flow.
+- **Remaining in Phase 2**: only cross-branch *balancing* of outer bindings
+  consumed unevenly across `EIf` / `EMatch` / `EHandle` arms. Each balancing
+  drop must be placed in a specific branch, which requires the action to carry
+  placement (a site) — deferred to Phase 3, where the codegen wiring assigns
+  sites (as the `src/` backend already does). Until then this is a safe no-op
+  (never a wrong drop; at worst an outer binding consumed in only one arm is
+  reclaimed slightly late or left to its enclosing scope's drop).
 
 ### Phase 3 — port the RC codegen
 
