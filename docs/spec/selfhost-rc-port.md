@@ -185,6 +185,21 @@ is added.
   for an alias of any heap kind). A `let a = t; let b = t` loop is now reclaimed
   (measured 0 bytes/iteration, constant 32 B); a returned alias is correctly
   *not* dropped (escape-safe); results unchanged (heap e2e 22/22 on both paths).
+- **Array literals are covered**: under `enable_rc`, `EArray` is inline-allocated
+  (`compile_expr_tail2.vibe`) with the tuple-style RC layout — value = `block+8`,
+  header behind, the array object (`[capacity@0][length@4][data_ptr@8]
+  [inline_data@12…]`) sized to hold the literal inline, `data_ptr = value+12`.
+  Because the value pointer shifts with the object, the array runtime
+  (`Array::get` / `length` / `push`, which read `value+0/+4/+8`) is unchanged.
+  An array binding drops like a tuple (untagged). **Analysis change**: the
+  array-arg of `Array::get` / `length` / `set` / `push` is now a *borrow* (like
+  `__index`), so an array bound then only read/mutated-in-place is reclaimed by
+  its own scope-end drop. A `let a = [i, …]` loop is now reclaimed (measured 0
+  bytes/iteration, constant 84 B). Growth (`Array::push` past capacity) still
+  bump-allocates a new data buffer and leaks the old one (conservative, safe);
+  the array object itself is reclaimed (heap e2e 24/24 on both paths, incl. a
+  grown-array case). Arrays built via `ArrayBuilder` / `array_new` (not literals)
+  stay on the leaky builtin path.
 - Known limitations of this first vertical (all leak conservatively — they
   never corrupt — and only matter under `enable_rc`):
   - **Mixed tuple sizes**: the free list is head-only exact-fit (as in `src/`),
@@ -201,11 +216,14 @@ is added.
     not hit by the selfhost sources; the immediate-value classification of the
     binding being dropped is precise, only the alias *source* lookup consults
     the set.
-- Remaining: recursive field drop (needs the uniform `type_id` so a dropped
-  tuple / record / enum frees nested heap, and lets `rc_dup` cover container
-  escapes too); the same treatment for array bindings (arrays go through the
-  `array_new` / `Array::push` runtime, a separate mechanism); and a segregated /
-  coalescing free list.
+- Remaining: recursive field drop — blocked on the selfhost runtime representing
+  **integers as raw `i64`** (no tag) and the **AST carrying no element types**,
+  so neither `src/`-style runtime pointer-dispatch nor a static pointer-bitmap is
+  available; and even a fresh-literal-only subset is unsafe because an extracted
+  field (`t.0`) can escape while the container is dropped. It needs a foundational
+  step first — integer tagging (enabling `src/`-style runtime dispatch) or a typed
+  IR threaded from the checker. Also remaining: freeing grown array data buffers,
+  `ArrayBuilder`-built arrays, and a segregated / coalescing free list.
 - Everything stays gated behind `enable_rc`, default off.
 
 ### Phase 4 — verification & cutover

@@ -248,6 +248,14 @@ let zeros: (Int) -> Array[Int] = (n) -> {
   out
 }
 
+// A call whose arg0 is the container it merely reads/mutates-in-place, not
+// consumes: the array stays live, so arg0 is a *borrow* (like `__index`). This
+// lets an array bound then only get/length/set/push'd be reclaimed by its own
+// scope-end drop. (Array::push grows in place; the object identity is stable.)
+let is_borrow_arg0_call: (String) -> Bool = (f) -> {
+  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push"
+}
+
 export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, expr) -> {
   match expr {
     EInt(_) => 0,
@@ -261,8 +269,9 @@ export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, ex
       // The callee binding is borrowed (a closure stays live across the call).
       match callee {
         EIdent(f) => {
-          // `__index(obj, idx)` borrows the container.
-          if f == "__index" {
+          // `__index` / `Array::*` borrow the container (a builtin name, not a
+          // binding, so there is nothing to borrow-count for the callee itself).
+          if is_borrow_arg0_call(f) {
             0
           } else {
             pc_count_borrow(ctx, scope, f)
@@ -271,7 +280,7 @@ export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, ex
         _ => pc_count(ctx, scope, callee)
       }
       let is_index = match callee {
-        EIdent(f) => f == "__index",
+        EIdent(f) => is_borrow_arg0_call(f),
         _ => false
       }
       let mut i = 0
@@ -620,9 +629,9 @@ export let rec pc_emit: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, exp
     EStringInterp(_) => 0,
     EIdent(x) => pe_use(ctx, scope, x),
     ECall(callee, args) => {
-      // Borrowed callee / `__index` arg0: no consuming use, no action.
+      // Borrowed callee / `__index` / `Array::*` arg0: no consuming use.
       let is_index = match callee {
-        EIdent(f) => f == "__index",
+        EIdent(f) => is_borrow_arg0_call(f),
         _ => false
       }
       match callee {

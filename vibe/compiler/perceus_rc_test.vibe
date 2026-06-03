@@ -258,6 +258,17 @@ test "perceus: multi-alias dups all but the last" {
   assert(count_drops(plan, "t") == 0)
 }
 
+// An array binding only read via Array::get is borrowed (not consumed), so it
+// is dropped once at scope end — this is what reclaims an array literal in a
+// loop. (Array::get / length / set / push borrow their array arg, like __index.)
+test "perceus: array read via Array::get is borrowed and dropped" {
+  // let a = [1, 2, 3]; Array::get(a, 0)
+  let getcall = ECall(EIdent("Array::get"), [EIdent("a"), EInt(0)])
+  let body = ELet("a", EArray([EInt(1), EInt(2), EInt(3)]), getcall)
+  let plan = build_perceus_plan(body)
+  assert(count_drops(plan, "a") == 1)
+}
+
 // A handler arm-local pattern binding that is only borrowed is dropped.
 test "perceus: handle arm pattern binding is dropped" {
   // handle comp { Op(v) => v.0 }

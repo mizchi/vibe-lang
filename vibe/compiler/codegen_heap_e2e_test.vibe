@@ -149,6 +149,22 @@ test "heap e2e: tuple inequality" {
   assert_result(src, "main", "tuple_neq", "0")
 }
 
+// An array literal allocated per iteration is reclaimed under RC (inline RC
+// layout, dropped like a tuple). Correctness here; the leak is checked by the
+// profiler.
+test "heap e2e: array literal in loop" {
+  let src = "let main: () -> Int = () -> {\n  let mut sum = 0\n  let mut i = 0\n  while i < 5 {\n    let a = [i, i + 1, i + 2]\n    sum = sum + Array::get(a, 0) + Array::get(a, 2)\n    i = i + 1\n  }\n  sum\n}"
+  assert_result(src, "main", "array_loop", "30")
+}
+
+// An RC array literal grown past its inline capacity via Array::push: the
+// builtin push reallocates the data buffer (the old buffer leaks, conservatively
+// safe), but reads stay correct and the array object is still dropped.
+test "heap e2e: RC array literal grown by push" {
+  let src = "let main: () -> Int = () -> {\n  let a = [0]\n  let mut i = 0\n  while i < 12 {\n    Array::push(a, i + 1)\n    i = i + 1\n  }\n  Array::length(a) + Array::get(a, 12)\n}"
+  assert_result(src, "main", "array_grow", "25")
+}
+
 test "heap e2e: array length" {
   let src = "let main: () -> Int = () -> {\n  let a = [5, 6, 7, 8]\n  Array::length(a)\n}"
   assert_result(src, "main", "array_length", "4")
