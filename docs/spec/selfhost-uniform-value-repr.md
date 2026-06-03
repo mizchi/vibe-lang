@@ -216,9 +216,17 @@ arithmetic / comparison / bitop / shift / float / nested-data case under
      (`compile_expr_tail4`) and the 4 tuple pattern-load sites (`compile_match`)
      untag with `& -2`; the drop classifies tuples as `rc_kind 2` (tagged) so
      `emit_rc_drop_local` untags to find the block. Gate-verified 41/41.
-   - **Stage 2b — arrays flipped to `|1`. PENDING.** Arrays have a `data_ptr`
-     indirection and growable-buffer path (`Array::push`, `ArrayBuilder`); a first
-     attempt was reverted unverified. Redo against the genuinely-busted gate.
+   - **Stage 2b — arrays flipped to `|1`. ✅ IMPLEMENTED.** Array literal
+     construction (`compile_expr_tail2`) emits `(block+8)|1`; the array builtins
+     untag the pointer (`& -2`) under RC by routing the RC path through the
+     editable `gen_*` bodies — `gen_arr_get`/`set`/`len`/`push` untag `local 0`,
+     `gen_arr_new` returns `|1`; drop classifies arrays as `rc_kind 2`. The
+     `data_ptr` indirection and growable buffer are unaffected (only the *value*
+     pointer is tagged; internal fields stay even). Verified by
+     `scripts/verify_selfhost_rc.sh`: gate 41/41 (incl. array get/set/length/
+     push/builder/grown) and array reclamation 0 B/iter. (An earlier attempt was
+     reverted when the stale-cache trap hid that the array builtins are reached
+     through `gen_*`; the reliable loop confirms it now.)
 
    > **Verification methodology (learned the hard way — Stage 2).** `vibe test`
    > **memoizes pure-test results**, and `--no-cache` does **not** invalidate that
