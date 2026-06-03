@@ -1,0 +1,118 @@
+//# Imports
+
+import ./perceus/index.vibe {
+  PerceusAction, build_perceus_plan, pa_is_drop, pa_is_dup
+}
+
+import ./core {
+  Expr
+}
+
+//# Misc
+
+let count_drops: (Array[PerceusAction], String) -> Int = (plan, name) -> {
+  let mut n = 0
+  let mut i = 0
+  while i < Array::length(plan) {
+    let a = Array::get(plan, i)
+    if pa_is_drop(a) && a.name == name {
+      n = n + 1
+    }
+    i = i + 1
+  }
+  n
+}
+
+let count_dups: (Array[PerceusAction], String) -> Int = (plan, name) -> {
+  let mut n = 0
+  let mut i = 0
+  while i < Array::length(plan) {
+    let a = Array::get(plan, i)
+    if pa_is_dup(a) && a.name == name {
+      n = n + 1
+    }
+    i = i + 1
+  }
+  n
+}
+
+// A heap binding only borrowed (field access) is dropped once at scope end.
+test "perceus: pure-borrow binding is dropped once" {
+  // let t = (1, 2); t.0
+  let body = ELet("t", ETuple([EInt(1), EInt(2)]), EDot(EIdent("t"), "0"))
+  let plan = build_perceus_plan(body)
+  assert(count_drops(plan, "t") == 1)
+  assert(count_dups(plan, "t") == 0)
+}
+
+// A binding moved out as the body result is not dropped (ownership transfers).
+test "perceus: moved-out binding is not dropped" {
+  // let t = (1, 2); t
+  let body = ELet("t", ETuple([EInt(1), EInt(2)]), EIdent("t"))
+  let plan = build_perceus_plan(body)
+  assert(count_drops(plan, "t") == 0)
+  assert(count_dups(plan, "t") == 0)
+}
+
+// A scalar binding is never dropped.
+test "perceus: scalar binding is not dropped" {
+  // let n = 5; n + 1   (n borrowed? no — n is an owning use in EBinOp; scalar)
+  let body = ELet("n", EInt(5), EBinOp("+", EIdent("n"), EInt(1)))
+  let plan = build_perceus_plan(body)
+  assert(count_drops(plan, "n") == 0)
+}
+
+// A binding consumed twice (into a tuple) dups once and is not dropped.
+test "perceus: binding used twice owning emits one dup" {
+  // let t = (1, 2); (t, t)
+  let body = ELet(
+    "t",
+    ETuple([EInt(1), EInt(2)]),
+    ETuple([EIdent("t"), EIdent("t")])
+  )
+  let plan = build_perceus_plan(body)
+  assert(count_dups(plan, "t") == 1)
+  assert(count_drops(plan, "t") == 0)
+}
+
+// Calling a binding borrows it, so the closure value is dropped at scope end.
+test "perceus: called binding (closure) is borrowed and dropped" {
+  // let g = (x){ x }; g(1)   — represented with an EFn value
+  let lam = EFn([], [], [("x", None)], None, None, EIdent("x"))
+  let body = ELet("g", lam, ECall(EIdent("g"), [EInt(1)]))
+  let plan = build_perceus_plan(body)
+  assert(count_drops(plan, "g") == 1)
+}
+
+// Nested let where the inner borrows the outer: both dropped at their scopes.
+test "perceus: nested borrow drops both bindings" {
+  // let t = (1, 2); let u = (t.0, 3); u.0
+  let inner = ELet(
+    "u",
+    ETuple([EDot(EIdent("t"), "0"), EInt(3)]),
+    EDot(EIdent("u"), "0")
+  )
+  let body = ELet("t", ETuple([EInt(1), EInt(2)]), inner)
+  let plan = build_perceus_plan(body)
+  assert(count_drops(plan, "t") == 1)
+  assert(count_drops(plan, "u") == 1)
+}
+
+// An if/else with a branch-local heap binding drops it inside the branch scope.
+test "perceus: branch-local heap binding is dropped" {
+  // let s = 0; if true { let t = (1,2); t.0 } else { 5 } ; (body result is the if)
+  let then_e = ELet("t", ETuple([EInt(1), EInt(2)]), EDot(EIdent("t"), "0"))
+  let if_e = EIf(EBool(true), then_e, EInt(5))
+  let plan = build_perceus_plan(if_e)
+  assert(count_drops(plan, "t") == 1)
+}
+
+// A per-iteration heap binding inside a while body is dropped each iteration
+// (structurally, via its ELet scope).
+test "perceus: while-body binding is dropped in the loop" {
+  // while cond { let t = (1, 2); t.0 }
+  let loop_body = ELet("t", ETuple([EInt(1), EInt(2)]), EDot(EIdent("t"), "0"))
+  let while_e = EWhile(EBool(true), loop_body)
+  let plan = build_perceus_plan(while_e)
+  assert(count_drops(plan, "t") == 1)
+}

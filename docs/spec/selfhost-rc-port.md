@@ -63,15 +63,28 @@ is added.
 - Risk: high (every offset moves). Mitigation: land incrementally per object
   kind, each guarded by the parity gate.
 
-### Phase 2 — port the Perceus analysis pass
+### Phase 2 — port the Perceus analysis pass — *in progress*
 
-- Port `src/frontend/perceus_poc.mbt::build_perceus_plan` to vibe against the
-  selfhost AST (`expr_tag` / `get_e*` accessors). It is pure
-  (AST → action list), independent of codegen, so it can be unit-tested in
-  isolation against expected action lists before any codegen wiring.
-- Mirror the analysis fixes already made in `src/`: loop/branch/match
-  scope-end drops keyed to the last body statement, call-callee treated as a
-  borrow, discarded statement-expr binding.
+- Ported the analysis to `vibe/compiler/perceus/index.vibe`
+  (`build_perceus_plan : (Expr) -> Array[PerceusAction]`), pattern-matching the
+  selfhost `Expr` enum directly. Because the selfhost AST is
+  expression-oriented, scope is structural: an `ELet(x, val, body)` scopes `x`
+  to `body`, so per-iteration / per-branch bindings fall out of the tree shape
+  (no statement-index bookkeeping). Two passes (`pc_count` then `pc_emit`)
+  share binding ids assigned in tree order.
+- Mirrors the validated `src/` semantics: call callee and field access
+  (`EDot`, array `__index` arg0) are borrows; pure-borrow / unused non-scalar
+  bindings get a scope-end drop; multiply-used owning references dup.
+- Unit-tested in isolation via the native vibe CLI
+  (`vibe/compiler/perceus_rc_test.vibe`, task `test-selfhost-perceus`, 8/8):
+  pure-borrow drop, moved-out (no drop), scalar (no drop), dup on double use,
+  closure-call borrow + drop, nested borrow, branch-local drop, while-body
+  per-iteration drop.
+- **Remaining in Phase 2** (safe no-ops today — never emit a wrong drop):
+  `EFn` capture accounting, `EMatch` / `EHandle` / `ELoop` / `EForIn`, and
+  cross-branch balancing of outer bindings consumed unevenly across `EIf`
+  arms. The discarded-statement-expr handling (A-1b) maps to `ESeq`/`ELet`
+  here and will be added with those.
 
 ### Phase 3 — port the RC codegen
 
