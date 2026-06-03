@@ -138,6 +138,21 @@ test "heap e2e: array length" {
   assert_result(src, "main", "array_length", "4")
 }
 
+// A record allocated per iteration is reclaimed under RC (records are tagged,
+// so the drop must untag before touching the rc header). Correctness only here;
+// the leak (per-iteration heap -> 0) is checked by the heap-leak profiler.
+test "heap e2e: loop accumulating records" {
+  let src = "struct P { x: Int; y: Int }\nlet main: () -> Int = () -> {\n  let mut sum = 0\n  let mut i = 0\n  while i < 5 {\n    let p = P::{ x: i, y: i + 1 }\n    sum = sum + p.x + p.y\n    i = i + 1\n  }\n  sum\n}"
+  assert_result(src, "main", "loop_records", "25")
+}
+
+// Record field access after the RC header shift must still read the right
+// fields (the untag cancels the +8 header offset).
+test "heap e2e: nested struct field access" {
+  let src = "struct P { x: Int; y: Int }\nstruct Q { a: P; b: Int }\nlet main: () -> Int = () -> {\n  let p = P::{ x: 3, y: 4 }\n  let q = Q::{ a: p, b: 5 }\n  q.a.x + q.a.y + q.b\n}"
+  assert_result(src, "main", "nested_struct", "12")
+}
+
 test "heap e2e: enum without payload" {
   let src = "enum Color { Red; Green; Blue }\nlet main: () -> Int = () -> {\n  let c = Green\n  match c {\n    Red => 0,\n    Green => 1,\n    Blue => 2\n  }\n}"
   assert_result(src, "main", "enum_nopayload", "1")

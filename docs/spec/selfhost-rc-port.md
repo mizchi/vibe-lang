@@ -150,6 +150,15 @@ is added.
   lambda body and gives the lambda ctx its own drop set, so a tuple allocated
   per iteration inside a callback / returned closure is reclaimed too
   (measured 0 bytes/iteration).
+- **Records are covered**: under `enable_rc`, `ERecord` takes the same free-list
+  RC layout as tuples (`compile_expr_tail4.vibe`), and the `ELet` drop
+  (`compile_expr_tail.vibe`, now sharing the `emit_rc_drop_local` helper)
+  fires for a record binding too. Records stay **tagged** (`(block_start+8) | 1`),
+  so the drop untags before touching the rc header; field access is unchanged
+  because the +8 pointer shift cancels the +8 header offset. A `let p = P::{…}`
+  loop body is reclaimed (measured 0 bytes/iteration, constant 32 B for 1k and
+  11k iterations); results unchanged (heap e2e 19/19 on both paths, incl. nested
+  struct field access).
 - Known limitations of this first vertical (all leak conservatively — they
   never corrupt — and only matter under `enable_rc`):
   - **Mixed tuple sizes**: the free list is head-only exact-fit (as in `src/`),
@@ -157,9 +166,9 @@ is added.
     reuse the stuck size-2 block until the head matches. Same-size loops (the
     common case) are fully reused.
 - Remaining: `rc_dup` for shared (multiply-used) bindings; recursive field drop
-  (needs the uniform `type_id` so a dropped tuple frees nested heap); the same
-  treatment for record / array / enum / closure bindings; per-lambda drop
-  plans; and a segregated / coalescing free list.
+  (needs the uniform `type_id` so a dropped tuple / record frees nested heap);
+  the same treatment for array / enum bindings; and a segregated / coalescing
+  free list.
 - Everything stays gated behind `enable_rc`, default off.
 
 ### Phase 4 — verification & cutover
