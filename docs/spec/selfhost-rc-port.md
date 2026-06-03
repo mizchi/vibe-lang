@@ -60,6 +60,16 @@ is added.
   array builder, struct field, enum ctor + match payload, closure capture,
   returned closure, and a tuple-allocating loop. The header rewrite must keep
   these green.
+- **Memory-leak profiling in place**: the selfhost backend exports its
+  bump-allocator cursor as the `__heap_ptr` global. `scripts/measure_selfhost_heap.mjs`
+  reads it before/after invoking a function (on a minimal wasm host) to report
+  bytes allocated; `scripts/measure_selfhost_heap_leak.sh` compiles the same
+  allocating loop at two iteration counts and reports per-iteration heap growth.
+  Baseline (bump, no reclamation): **16 bytes/iteration** for a `(i, i+1)`
+  tuple loop — i.e. it leaks linearly. The header change (Phase 1) only grows
+  this by the header size (still leaking, as expected with no RC); once Perceus
+  RC + a free-list land (Phase 3) this per-iteration figure must drop to ~0,
+  which is the concrete leak-fixed acceptance criterion.
 - Introduce the `src/`-compatible header `[type_id@0][length@4][payload@8...]`
   for tuple / array / record / enum / closure allocations in the selfhost
   linear backend (`codegen/expr/compile_expr_tail2.vibe`, `compile_lambda.vibe`,
