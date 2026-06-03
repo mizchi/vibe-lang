@@ -115,6 +115,13 @@ let emit_rc_dup_guarded: (Bytes, Int) -> Unit = (buf, local_idx) -> {
   emit_i64_and(buf)
   emit_i32_wrap_i64(buf)
   emit_if_void(buf)
+  // odd: also require high 32 bits == 0 (a real heap block address, not a
+  // string/bytes fat pointer whose data offset sits in the high 32 bits).
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, 32)
+  emit_i64_shr_s(buf)
+  emit_i64_eqz(buf)
+  emit_if_void(buf)
   emit_local_get(buf, local_idx)
   emit_i64_const(buf, -2)
   emit_i64_and(buf)
@@ -131,6 +138,7 @@ let emit_rc_dup_guarded: (Bytes, Int) -> Unit = (buf, local_idx) -> {
   emit_i32_const(buf, 1)
   emit_i32_add(buf)
   emit_i32_store(buf, 2, 0)
+  emit_end(buf)
   emit_end(buf)
 }
 
@@ -208,6 +216,30 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
           }
         } else {
           ()
+        }
+      } else if expr_tag(value) == 8 {
+        // ADR-0055 Stage 4: a call result is an OWNED heap value — the callee
+        // returns its reference (a fresh allocation, an arg whose ownership was
+        // transferred in under the owning-argument convention, or an escaping
+        // projection the callee already dup'd). Classify it as droppable so the
+        // scope-end drop the analysis already planned (every binding gets
+        // remaining >= 1) actually fires, closing the `let p = f(...)` leak. The
+        // runtime-guarded __rc_drop is a no-op on a scalar result, so an
+        // Int-returning call costs nothing. EXCEPTION: a builtin that returns a
+        // BORROW of a still-live container (Array::get / __index) yields an
+        // element the container still owns — dropping it would double-free.
+        let callee = get_ecall_callee(value)
+        let is_borrow_ret = if is_eident(callee) {
+          let cn = get_eident_name(callee)
+          cn == "Array::get" || cn == "__index"
+        } else {
+          false
+        }
+        if is_borrow_ret {
+          ()
+        } else {
+          rc_kind = 2
+          Array::push(ctx.heap_binding_names, name)
         }
       } else {
         ()

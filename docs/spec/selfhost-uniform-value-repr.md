@@ -292,17 +292,34 @@ arithmetic / comparison / bitop / shift / float / nested-data case under
    container's recursive dec. Pinned by two heap-e2e cases (single escaped
    projection in a loop; three escaped projections read after reuse).
 
-   **Remaining (leaks, safe; need owned-vs-borrowed typing):**
-   - The dup gives the escaped value rc 1 but its eventual owner is often a
-     `let p = pick(...)` bound to a **call** result, which is not classified as a
-     droppable heap binding (dropping a general call result is unsafe — e.g.
-     `Array::get` returns a *borrow*, dropping it would double-free). So the
-     `pick`-in-a-loop pattern now **leaks 32 B/iter** (was: corrupt). Closing it
-     needs the owned/borrowed distinction so owned call results can be dropped.
+   **Call-result drop (leak fix, landed).** The escaping-projection dup gives the
+   result rc 1, and its owner is typically a `let p = f(...)` bound to a call
+   result. The Perceus analysis *already* plans `PaDrop(p)` (every binding gets
+   `remaining >= 1` in `pe_declare`); codegen simply never classified an `ECall`
+   value as a heap binding. Now it does: a call result is an **owned** heap value
+   (the callee returns its reference — fresh allocation, an arg whose ownership
+   transferred in under the owning-argument convention, or an escaping projection
+   the callee already dup'd), so `let p = f(...)` is droppable. The `pick`-loop
+   now reclaims at **0 B/iter** (was 32). Two safety carve-outs make this sound:
+   - **Borrow-returning builtins** (`Array::get` / `__index`) return an element
+     the container still owns; their results are *excluded* from the drop (else
+     the container's recursive drop would double-free). Pinned by an
+     array-of-tuples `Array::get`-in-a-loop case.
+   - **String/bytes fat pointers** (`(offset<<32)|length`) can be *odd* yet are
+     **not** RC blocks. Both `__rc_drop` and the guarded dup now skip any odd
+     value whose **high 32 bits are non-zero** (the data offset ≥ 64) — every
+     heap block address is `< 2^32`. This also closes the Stage 2 string-in-a
+     -heap-field gap (a string field is skipped by the recursive drop). Pinned by
+     a string-returning-call-in-a-loop case.
+
+   **Still remaining (leaks, safe; need owned-vs-borrowed typing):**
    - `let a = t.0; …; a` (projection bound to a *let* that then escapes) and a
      projection stored into a fresh container (`(t.0, t.1)`) are not yet handled.
-   - Container/call **owning** escapes (storing/ passing an owned heap value) are
-     still not dup'd → leak (safe), as before.
+   - Container **owning** escapes (storing an owned heap value into a longer
+     -lived container) are still not dup'd → leak (safe), as before.
+   - Captured closures remain unheadered (the recursion would misread one stored
+     in a dropped container — low address, so the high-32 guard does not catch
+     it); no opt-in RC path exercises it.
 5. **Stage 5 — verification & throughput. ◐ MEASURED.** The RC e2e gate (47/47,
    default vs RC identical on wasmtime) is the correctness signal;
    `scripts/bench_selfhost_rc.{sh,mjs}` measures the payoff: each benchmark
