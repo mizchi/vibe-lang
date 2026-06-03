@@ -1,7 +1,7 @@
 //# Imports
 
 import ./codegen_test_support.vibe {
-  compile_wasi
+  compile_wasi, compile_wasi_rc
 }
 
 //# Misc
@@ -13,14 +13,17 @@ import ./codegen_test_support.vibe {
 // (docs/spec/selfhost-rc-port.md): the heap layouts of tuples, arrays,
 // records/structs, enums and closures must keep producing the same results
 // when a uniform object header is added.
+//
+// Each case is run on BOTH the default path (no header) and the RC path
+// (`compile_wasi_rc`, uniform header) and must produce the same result, so the
+// header change is verified to be result-preserving.
 
-let assert_result: (String, String, String, String) -> Int with { Error, Fs, Process } = (
-  src,
+let run_one: (Bytes, String, String, String) -> Int with { Fs, Process } = (
+  bytes,
   entry,
   label,
   expected,
 ) -> {
-  let bytes = compile_wasi(src, entry)
   let path = "/tmp/_heap_e2e_" + label + ".wasm"
   Fs::write_bytes(path, bytes)
   let out = sh_lines("wasmtime run --invoke " + entry + " " + path + " 2>/dev/null")
@@ -33,6 +36,17 @@ let assert_result: (String, String, String, String) -> Int with { Error, Fs, Pro
     i = i + 1
   }
   assert(found)
+  0
+}
+
+let assert_result: (String, String, String, String) -> Int with { Error, Fs, Process } = (
+  src,
+  entry,
+  label,
+  expected,
+) -> {
+  run_one(compile_wasi(src, entry), entry, label, expected)
+  run_one(compile_wasi_rc(src, entry), entry, label + "_rc", expected)
   0
 }
 
