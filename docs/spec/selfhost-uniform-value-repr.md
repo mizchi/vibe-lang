@@ -303,9 +303,30 @@ arithmetic / comparison / bitop / shift / float / nested-data case under
      projection stored into a fresh container (`(t.0, t.1)`) are not yet handled.
    - Container/call **owning** escapes (storing/ passing an owned heap value) are
      still not dup'd → leak (safe), as before.
-5. **Stage 5 — verification & cutover.** Wasmtime RC e2e gate, parity gates with
-   RC on, then consider RC as the selfhost linear default when wasm-gc is
-   unavailable (issue #493 C/F).
+5. **Stage 5 — verification & throughput. ◐ MEASURED.** The RC e2e gate (47/47,
+   default vs RC identical on wasmtime) is the correctness signal;
+   `scripts/bench_selfhost_rc.{sh,mjs}` measures the payoff: each benchmark
+   `main` runs an N-iteration allocating loop and is compiled both ways, then
+   timed (median, fresh instance per run) with peak heap read from `__heap_ptr`.
+
+   **Result (N = 1,000,000, median of 7):**
+
+   | benchmark      | default time | default heap | RC time  | RC heap | RC time | heap |
+   |----------------|--------------|--------------|----------|---------|---------|------|
+   | flat_tuple     | 7.7 ms       | 15.3 MB      | 16.3 ms  | 96 B    | ×2.11   | 500000× smaller |
+   | nested_tuple   | 24.1 ms      | 45.8 MB      | 41.4 ms  | 96 B    | ×1.72   | 500000× |
+   | record_tuples  | 26.3 ms      | 53.4 MB      | 42.3 ms  | 96 B    | ×1.61   | 583333× |
+   | enum_tuple     | 16.2 ms      | 30.5 MB      | 25.6 ms  | 96 B    | ×1.58   | 571429× |
+
+   The classic RC trade-off: **the heap stays bounded (one block-set, reused via
+   the free-list) instead of growing linearly with the iteration count**, at a
+   ~1.6–2.1× constant-factor time cost (rc inc/dec + recursive drop + free-list).
+   The relative cost shrinks as per-iteration work grows (×1.58 for enum vs ×2.11
+   for the flat tuple), since the rc ops amortize against the allocation work.
+   The default bump allocator never reclaims, so it OOMs the (bounded) wasm
+   linear memory at large N where RC runs indefinitely. Cutover (RC as the
+   selfhost linear default when wasm-gc is unavailable, #493 C/F) is gated on
+   completing Stage 4 leak elimination (owned/borrowed typing).
 
 ## Risk & scope
 
