@@ -321,20 +321,23 @@ arithmetic / comparison / bitop / shift / float / nested-data case under
    read after reuse). A projection stored into a fresh escaping container
    (`(t.1, t.0)`) is verified correct under RC by a gate case as well.
 
+   **Non-alias `PaDup` for shared owned values (landed; codex review #499).**
+   `let u = (t, t)` uses `t` in two owning positions, so the analysis plans one
+   `PaDup(t)`; codegen previously discarded it, leaving `t` at rc 1 while `u`
+   holds two references — the recursive `__rc_drop` then visited the shared child
+   twice. Now the per-name `PaDup` budget is threaded (`CompileCtx::rc_dup_names`,
+   one entry per dup) and emitted as that many **guarded rc_dups at the binding
+   site** of the multiply-used value. Placement is occurrence-agnostic (all uses
+   share one block, so only the dup *count* matters) and capped at the budget, so
+   it can only raise the refcount — at worst a leak, never a premature free. With
+   it, `let u = (t, t)` gives `t` rc 2, `u`'s recursive drop decrements it cleanly
+   to 0 (no underflow), and the `(t,t)` loop reclaims at a bounded 64 B. Pinned by
+   two gate cases (shared tuple in a loop; shared value escaping in a returned
+   container, read after reuse). (Owning uses that are neither container elements
+   nor calls — rare — may still under-dup, the original latent/non-reproducing
+   case, which is safe.)
+
    **Still remaining (leaks, safe; need owned-vs-borrowed typing):**
-   - **Non-alias `PaDup` for shared owned values is not emitted** (codegen threads
-     only `PaDrop` and `PaAliasDup`). For `let u = (t, t)` the analysis plans one
-     `PaDup(t)` so `t` reaches rc 2 to back `u`'s two field references; without it
-     `t` stays rc 1 and the recursive `__rc_drop` visits the same child pointer
-     twice. *Investigated (codex review #499): not reproducible* — every
-     constructed pattern (`(t,t)` / `(t,t,t)` loops, three-alloc desync, escaping
-     `(t,t)` returned and read after reuse, share-in-a-function-then-drain) gives
-     results identical to the default path with bounded heap, because (a) reads
-     precede the scope-end drops and (b) the steady-state free-list cycle absorbs
-     the extra decrement (the corrupted next-pointer is overwritten before it is
-     popped). A proper fix is occurrence-precise dup placement for container/call
-     owning uses (the same general dup-placement work as the next item); the
-     naive "dup every owning use" over-counts (→ leak). Tracked, not yet fixed.
    - Container **owning** escapes (storing an owned heap value into a longer
      -lived container that outlives the current scope) are not dup'd → leak
      (safe), as before.

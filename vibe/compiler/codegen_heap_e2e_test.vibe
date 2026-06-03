@@ -397,6 +397,20 @@ test "heap e2e: projection stored into escaping container" {
   assert_result(src, "main", "projection_in_container", "21")
 }
 
+// ADR-0055 Stage 4: a heap binding used in multiple OWNING positions
+// (`let u = (t, t)`) — the analysis emits a non-alias PaDup so `t` reaches the
+// refcount its two container slots need; without the dup the recursive drop
+// visits the same child twice. Loop so the (mis)balance compounds across reuse.
+test "heap e2e: shared binding in tuple (PaDup)" {
+  let src = "let main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 100 {\n    let t = (i, i + 1)\n    let u = (t, t)\n    s = s + u.0.0 + u.1.1\n    i = i + 1\n  }\n  s\n}"
+  assert_result(src, "main", "shared_tuple_padup", "10000")
+}
+
+test "heap e2e: shared binding escaping in container (PaDup)" {
+  let src = "let pair: (Int) -> ((Int, Int), (Int, Int)) = (k) -> {\n  let t = (k, k + 1)\n  (t, t)\n}\nlet main: () -> Int = () -> {\n  let a = pair(1)\n  let b = pair(2)\n  let c = pair(3)\n  a.0.0 + a.1.1 + b.0.0 + b.1.1 + c.0.0 + c.1.1\n}"
+  assert_result(src, "main", "shared_escape_padup", "15")
+}
+
 test "heap e2e: enum payload tuple drop in loop" {
   let src = "enum Box { Wrap((Int, Int)); Empty }\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 40 {\n    let e = Wrap((i, i + 1))\n    s = s + match e {\n      Wrap(p) => p.0 + p.1,\n      Empty => 0\n    }\n    i = i + 1\n  }\n  s\n}"
   assert_result(src, "main", "enum_tuple_loop", "1600")

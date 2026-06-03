@@ -267,6 +267,26 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     } else {
       ()
     }
+    // ADR-0055 Stage 4: emit the non-alias `PaDup` budget for this binding — one
+    // guarded rc_dup per plan PaDup(name). A heap value used in N owning
+    // positions (e.g. `let u = (t, t)` uses `t` twice) needs N-1 extra refs so
+    // each owning consumer's (recursive) drop is balanced; the analysis records
+    // exactly N-1 PaDup(name). Placement is occurrence-agnostic (all uses share
+    // the same block), so emitting them here at the binding is equivalent and
+    // can only raise the refcount — at worst a leak, never a premature free.
+    if ctx.enable_rc && rc_kind > 0 {
+      let mut dbi = 0
+      while dbi < Array::length(ctx.rc_dup_names) {
+        if Array::get(ctx.rc_dup_names, dbi) == name {
+          emit_rc_dup_guarded(buf, local_idx)
+        } else {
+          ()
+        }
+        dbi = dbi + 1
+      }
+    } else {
+      ()
+    }
     let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
     // RC: drop a heap binding the Perceus plan marks for scope-end drop. rc_count
     // at value-4 is decremented and, at zero, the block is pushed onto the

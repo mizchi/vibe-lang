@@ -5,7 +5,7 @@ import .. / .. / core {
 }
 
 import .. / .. / perceus {
-  PerceusAction, build_perceus_plan, pa_is_alias_dup, pa_is_drop
+  PerceusAction, build_perceus_plan, pa_is_alias_dup, pa_is_drop, pa_is_dup
 }
 
 import .. / builtin_bodies {
@@ -816,6 +816,9 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     let rc_alias_dups = Array::slice([
       ""
     ], 0, 0)
+    let rc_dups = Array::slice([
+      ""
+    ], 0, 0)
     if enable_rc {
       let fbody = if is_efn(__bi_expr) {
         get_efn_body(__bi_expr)
@@ -830,6 +833,10 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
           Array::push(rc_drops, pa.name)
         } else if pa_is_alias_dup(pa) {
           Array::push(rc_alias_dups, pa.name)
+        } else if pa_is_dup(pa) {
+          // ADR-0055 Stage 4: a non-alias owning-use dup (e.g. `let u = (t, t)`).
+          // One entry per dup; the binding site emits this many guarded rc_dups.
+          Array::push(rc_dups, pa.name)
         } else {
           ()
         }
@@ -868,7 +875,8 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
         rc_drop_idx
       } else {
         -1
-      }
+      },
+      rc_dup_names: rc_dups
     }
     if is_efn(__bi_expr) {
       let __bi_params = get_efn_params(__bi_expr)
