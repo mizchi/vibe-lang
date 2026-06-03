@@ -142,6 +142,15 @@ let emit_rc_dup_guarded: (Bytes, Int) -> Unit = (buf, local_idx) -> {
   emit_end(buf)
 }
 
+// Whether `e` is a field/index projection (EDot). A let bound to one aliases a
+// field of another container (ADR-0055 Stage 4).
+let is_edot: (Expr) -> Bool = (e) -> {
+  match e {
+    EDot(_, _) => true,
+    _ => false
+  }
+}
+
 // The root identifier of a projection chain (EDot(...EDot(EIdent(root))...)), or
 // "" if `e` is not a projection.
 let rec proj_root_ident: (Expr) -> String = (e) -> {
@@ -241,6 +250,17 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
           rc_kind = 2
           Array::push(ctx.heap_binding_names, name)
         }
+      } else if is_edot(value) {
+        // ADR-0055 Stage 4: a projection bound to a let (`let a = t.0`) aliases a
+        // field of another container. The Perceus analysis treats it as a
+        // binding that owns one reference (remaining >= 1) and drops it at scope
+        // end — but `t.0` does not actually take a reference. Give it one with a
+        // guarded dup (a no-op on a scalar/string field): now if `a` escapes it
+        // survives the container's recursive drop, and if it does not, its
+        // analysis-planned drop balances the dup.
+        rc_kind = 2
+        Array::push(ctx.heap_binding_names, name)
+        emit_rc_dup_guarded(buf, local_idx)
       } else {
         ()
       }

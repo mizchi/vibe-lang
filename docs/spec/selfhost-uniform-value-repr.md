@@ -312,11 +312,19 @@ arithmetic / comparison / bitop / shift / float / nested-data case under
      -heap-field gap (a string field is skipped by the recursive drop). Pinned by
      a string-returning-call-in-a-loop case.
 
+   **Let-bound projection (landed).** `let a = t.0` is now classified as a heap
+   binding and gets a **guarded dup at the binding** (the Perceus analysis
+   already plans its scope-end drop, assuming it owns one reference, but `t.0`
+   does not take one — the dup makes that assumption true). If `a` escapes it
+   survives `t`'s recursive drop; if it does not, the analysis-planned drop
+   balances the dup. Pinned by a let-bound-escaping-projection case (three calls,
+   read after reuse). A projection stored into a fresh escaping container
+   (`(t.1, t.0)`) is verified correct under RC by a gate case as well.
+
    **Still remaining (leaks, safe; need owned-vs-borrowed typing):**
-   - `let a = t.0; …; a` (projection bound to a *let* that then escapes) and a
-     projection stored into a fresh container (`(t.0, t.1)`) are not yet handled.
    - Container **owning** escapes (storing an owned heap value into a longer
-     -lived container) are still not dup'd → leak (safe), as before.
+     -lived container that outlives the current scope) are not dup'd → leak
+     (safe), as before.
    - Captured closures remain unheadered (the recursion would misread one stored
      in a dropped container — low address, so the high-32 guard does not catch
      it); no opt-in RC path exercises it.

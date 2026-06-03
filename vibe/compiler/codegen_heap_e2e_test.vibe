@@ -379,6 +379,24 @@ test "heap e2e: string-returning call result not corrupted" {
   assert_result(src, "main", "string_call_result", "40")
 }
 
+// ADR-0055 Stage 4: a projection bound to a let that then escapes (`let a = t.0;
+// a`). Without the guarded dup at the binding, `a` aliases an inner block the
+// container's recursive drop frees → use-after-free; with reuse across three
+// calls the result corrupts. Must match the default path.
+test "heap e2e: let-bound escaping projection" {
+  let src = "let pick2: (Int) -> (Int, Int) = (i) -> {\n  let t = ((i, i + 1), (i + 100, i + 200))\n  let a = t.0\n  a\n}\nlet main: () -> Int = () -> {\n  let a = pick2(1)\n  let b = pick2(2)\n  let c = pick2(3)\n  a.0 + a.1 + b.0 + b.1 + c.0 + c.1\n}"
+  assert_result(src, "main", "let_bound_escaping_projection", "15")
+}
+
+// ADR-0055 Stage 4: a projection stored into a FRESH container that escapes
+// (`mk` returns (t.1, t.0)). The returned tuple's fields alias inner blocks of
+// `t`, which is recursively dropped — those fields dangle. Read after reuse
+// across three calls; must match the default path.
+test "heap e2e: projection stored into escaping container" {
+  let src = "let mk: (Int) -> ((Int, Int), (Int, Int)) = (i) -> {\n  let t = ((i, i + 1), (i + 2, i + 3))\n  (t.1, t.0)\n}\nlet main: () -> Int = () -> {\n  let a = mk(1)\n  let b = mk(2)\n  let c = mk(3)\n  a.0.0 + a.1.1 + b.0.0 + b.1.1 + c.0.0 + c.1.1\n}"
+  assert_result(src, "main", "projection_in_container", "21")
+}
+
 test "heap e2e: enum payload tuple drop in loop" {
   let src = "enum Box { Wrap((Int, Int)); Empty }\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 40 {\n    let e = Wrap((i, i + 1))\n    s = s + match e {\n      Wrap(p) => p.0 + p.1,\n      Empty => 0\n    }\n    i = i + 1\n  }\n  s\n}"
   assert_result(src, "main", "enum_tuple_loop", "1600")
