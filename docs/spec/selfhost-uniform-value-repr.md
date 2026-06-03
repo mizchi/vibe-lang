@@ -184,10 +184,29 @@ verified by the RC e2e + leak suite, which must be **expanded** to exercise ever
 arithmetic / comparison / bitop / shift / float / nested-data case under
 `enable_rc` (current coverage is too thin to catch a tagging bug).
 
-1. **Stage 1 — tagged integers.** `EInt`, all int `EBinOp`/`EUnaryOp`,
-   if-condition comparisons, `PInt`, and the `eq` builtin, under `enable_rc`.
-   Add exhaustive RC arithmetic e2e tests first (the safety net). No behavior
-   change expected (results identical); the leak figures are unchanged.
+1. **Stage 1 — tagged integers. ✅ IMPLEMENTED.** `EInt`/`EBool`/const-int
+   literals, all int `EBinOp`/`EUnaryOp` (with the per-operator corrections
+   above), `PInt`/`PBool` match literals, the `eq`/`!=` results, the `Array::get`/
+   `set`/`length` index/length boundary (RC uses the editable `gen_*` bodies that
+   untag the index / tag the length), and the exported Int entry return (untagged
+   at the boundary) — all gated on `enable_rc`. The inline if/while-condition path
+   needs **no** change: `n<<1` preserves signed order and `true=2` is truthy, so
+   comparisons/conditions just work on tagged operands. Verified: the safety net
+   (`codegen_heap_e2e_test.vibe`, 41/41) gives identical default/RC results, RC
+   reclamation is still **0 bytes/iter** (constant 32 B), and no regressions.
+
+   **Selfhost-specific finding:** tagging must shift at **runtime**
+   (`i64.const n; i64.const 1; i64.shl`), not compute `n<<1` at compile time — the
+   selfhost compiler's own Int is 62-bit, so `n<<1` for a near-cap literal would
+   overflow the *host* Int. The runtime shift is computed in full wasm i64 and is
+   correct for the entire `2^61-1` literal range. (The `src/` MoonBit host has a
+   full 64-bit Int and does not hit this.)
+
+   **Deferred from Stage 1 (no gate coverage, documented):** String/Bytes
+   builtins (`String::length`/`char_code_at`/substring, `string_*`) still treat
+   their int args/returns as raw — string-using RC programs are incorrect until a
+   later stage wires the same untag/tag through the string boundary. No heap-e2e
+   or arith-safety-net case exercises strings, so the gates stay green.
 2. **Stage 2 — uniform pointer tags.** Flip tuples/arrays to `|1`; reserve a
    classification for string/bytes/closure-without-RC-header so the drop can skip
    them. Give floats a representation (heap-box). Header `type_id` finalized per

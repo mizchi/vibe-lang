@@ -9,7 +9,7 @@ import .. / .. / perceus {
 }
 
 import .. / builtin_bodies {
-  gen_bytes_append_body, gen_bytes_concat_body, gen_bytes_from_array_body, gen_bytes_get_body, gen_bytes_len_body, gen_bytes_new_body, gen_bytes_push_body, gen_bytes_set_body, gen_bytes_slice_body, gen_bytes_to_array_body, gen_eq_body, gen_selfhost_sources_proper_body, gen_selfhost_sources_stub_body, gen_string_contains_body, gen_string_ends_with_body, gen_string_index_of_body, gen_string_join_body, gen_string_last_index_of_body, gen_string_split_body, gen_string_starts_with_body, gen_string_trim_body, static_arr_concat_body, static_arr_get_body, static_arr_len_body, static_arr_new_body, static_arr_push_all_body, static_arr_push_body, static_arr_set_body, static_arr_slice_body, static_arr_truncate_body, static_double_to_int_body, static_fs_stub_body, static_fs_write_bytes_stub_body, static_identity_body, static_int_to_double_body, static_print_i64_body, static_print_str_body, static_str_char_code_at_body, static_str_concat_body, static_str_eq_body, static_str_from_char_code_body, static_str_len_body, static_str_substring_body
+  gen_arr_get_body, gen_arr_len_body, gen_arr_set_body, gen_bytes_append_body, gen_bytes_concat_body, gen_bytes_from_array_body, gen_bytes_get_body, gen_bytes_len_body, gen_bytes_new_body, gen_bytes_push_body, gen_bytes_set_body, gen_bytes_slice_body, gen_bytes_to_array_body, gen_eq_body, gen_selfhost_sources_proper_body, gen_selfhost_sources_stub_body, gen_string_contains_body, gen_string_ends_with_body, gen_string_index_of_body, gen_string_join_body, gen_string_last_index_of_body, gen_string_split_body, gen_string_starts_with_body, gen_string_trim_body, static_arr_concat_body, static_arr_get_body, static_arr_len_body, static_arr_new_body, static_arr_push_all_body, static_arr_push_body, static_arr_set_body, static_arr_slice_body, static_arr_truncate_body, static_double_to_int_body, static_fs_stub_body, static_fs_write_bytes_stub_body, static_identity_body, static_int_to_double_body, static_print_i64_body, static_print_str_body, static_str_char_code_at_body, static_str_concat_body, static_str_eq_body, static_str_from_char_code_body, static_str_len_body, static_str_substring_body
 }
 
 import .. / common_analysis {
@@ -630,16 +630,18 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   Array::push(bodies, static_arr_new_body())
   Array::push(meta_i32, 1)
   Array::push(meta_i64, 0)
-  Array::push(bodies, static_arr_len_body())
+  // ADR-0055 Stage 1: under RC, ints are tagged (n<<1); use the gen bodies that
+  // untag the index / tag the length. Default path keeps the precompiled static.
+  Array::push(bodies, if enable_rc { gen_arr_len_body(true) } else { static_arr_len_body() })
   Array::push(meta_i32, 0)
   Array::push(meta_i64, 0)
-  Array::push(bodies, static_arr_get_body())
+  Array::push(bodies, if enable_rc { gen_arr_get_body(true) } else { static_arr_get_body() })
   Array::push(meta_i32, 1)
   Array::push(meta_i64, 0)
   Array::push(bodies, static_arr_push_body())
   Array::push(meta_i32, 6)
   Array::push(meta_i64, 0)
-  Array::push(bodies, static_arr_set_body())
+  Array::push(bodies, if enable_rc { gen_arr_set_body(true) } else { static_arr_set_body() })
   Array::push(meta_i32, 1)
   Array::push(meta_i64, 0)
   Array::push(bodies, static_double_to_int_body())
@@ -834,6 +836,12 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       Array::push(local_names, "__env")
       let param_count = Array::length(__bi_params) + 1
       let final_nl = compile_expr(body_buf, body, local_names, param_count, compile_ctx, -1)
+      // ADR-0055 Stage 1: the exported Int entry returns a tagged value; untag
+      // at the boundary so the host sees the real integer (else it prints 2n).
+      if enable_rc && fn_name_dbg == entry_name {
+        emit_i64_const(body_buf, 1)
+        emit_i64_shr_s(body_buf)
+      }
       Array::push(bodies, body_buf)
       let extra = if final_nl > param_count {
         final_nl - param_count
@@ -846,6 +854,10 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       Array::push(local_names, "__env")
       let param_count = 1
       let final_nl = compile_expr(body_buf, __bi_expr, local_names, param_count, compile_ctx, -1)
+      if enable_rc && fn_name_dbg == entry_name {
+        emit_i64_const(body_buf, 1)
+        emit_i64_shr_s(body_buf)
+      }
       Array::push(bodies, body_buf)
       let extra = if final_nl > param_count {
         final_nl - param_count
