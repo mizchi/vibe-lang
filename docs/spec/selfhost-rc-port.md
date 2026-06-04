@@ -202,8 +202,14 @@ is added.
   (separate) data buffer when it drops an array (an inline buffer at `value+12`
   is still freed with the block). A build-and-discard loop that previously leaked
   ~one array block + its grown buffers per iteration now reclaims to 0 B/iter
-  (Stage 4: array buffer reclamation). `ArrayBuilder`-built arrays still stay on
-  the leaky builtin path.
+  (Stage 4: array buffer reclamation). `ArrayBuilder::{new,push,freeze}` are
+  aliases of `array_new` / `Array::push` / `identity`, so they ride the same
+  reclamation: `ArrayBuilder::push` is now a borrow-arg0 call (the builder stays
+  live, mutated in place) so the builder is reclaimed by its own scope-end drop,
+  and `freeze` (identity) transfers ownership of the built array to its result
+  (reclaimed at scope end, or by the caller when returned). An ArrayBuilder
+  build-and-discard loop now reclaims to 0 B/iter (was ~one array block + grown
+  buffers per iteration), and a frozen result that escapes survives correctly.
 - Known limitations of this first vertical (all leak conservatively — they
   never corrupt — and only matter under `enable_rc`):
   - **Mixed tuple sizes**: the free list is head-only exact-fit (as in `src/`),
@@ -228,8 +234,8 @@ is added.
   step first — a **uniform value representation** (integer/float tagging enabling
   `src/`-style runtime dispatch) plus escape-ownership analysis. Designed in
   [selfhost-uniform-value-repr.md](selfhost-uniform-value-repr.md) (ADR-0055).
-  Also remaining: `ArrayBuilder`-built arrays, and a segregated / coalescing free
-  list. (Grown array data buffers are now freed — Stage 4 array buffer
+  Also remaining: a segregated / coalescing free list. (Grown array data buffers
+  and `ArrayBuilder`-built arrays are now reclaimed — Stage 4 array buffer
   reclamation.)
 - Everything stays gated behind `enable_rc`, default off.
 
