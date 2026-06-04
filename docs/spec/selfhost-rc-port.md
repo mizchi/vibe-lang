@@ -210,6 +210,18 @@ is added.
   (reclaimed at scope end, or by the caller when returned). An ArrayBuilder
   build-and-discard loop now reclaims to 0 B/iter (was ~one array block + grown
   buffers per iteration), and a frozen result that escapes survives correctly.
+- **MapBuilder** (`MapBuilder::{new,set,freeze}` + `Map::{get,keys,has_key,set}`)
+  is also reclaimed (Stage 4): `MapBuilder::new` allocates a headered, free-list-
+  backed block via `__rc_alloc`, tagged as an odd pointer with drop-class 6 (map:
+  `count@value+0`, then `count` entries of `key@+8`/`val@+16` on a 16-byte
+  stride). The recursive `rc_drop` handles class 6 by dropping each key and val
+  before freeing the block, so a build-and-discard loop reclaims to 0 B/iter even
+  with heap-valued entries. `MapBuilder::set` / `Map::{get,keys,has_key,set}`
+  borrow arg0 (the map stays live), `Map::get` returns a borrowed entry (like
+  `Array::get`), and map readers untag (`& -2`, a no-op on the still-even
+  `map { … }` literal pointer) before dereferencing. Map **literals** and
+  `Map::set` **results** remain on the even/leaky path (and the selfhost map-
+  literal string-key read has a pre-existing correctness bug, orthogonal to RC).
 - Known limitations of this first vertical (all leak conservatively — they
   never corrupt — and only matter under `enable_rc`):
   - **Mixed tuple sizes**: the free list is head-only exact-fit (as in `src/`),

@@ -909,6 +909,11 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       Array::push(local_names, "__keys_cnt")
       Array::push(local_names, "__keys_i")
       emit_local_set(buf, map_l)
+      // ADR-0055 Stage 4: untag the map pointer once (no-op on an even literal).
+      emit_local_get(buf, map_l)
+      emit_i64_const(buf, -2)
+      emit_i64_and(buf)
+      emit_local_set(buf, map_l)
       emit_call(buf, arr_new_fi)
       emit_local_set(buf, res_l)
       emit_local_get(buf, map_l)
@@ -957,6 +962,11 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       Array::push(local_names, "__map_cnt")
       Array::push(local_names, "__map_i")
       emit_local_set(buf, key_local)
+      emit_local_set(buf, map_local)
+      // ADR-0055 Stage 4: untag the map pointer once (no-op on an even literal).
+      emit_local_get(buf, map_local)
+      emit_i64_const(buf, -2)
+      emit_i64_and(buf)
       emit_local_set(buf, map_local)
       emit_local_get(buf, map_local)
       emit_i32_wrap_i64(buf)
@@ -1013,6 +1023,8 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       Array::push(local_names, "__hk_map"); Array::push(local_names, "__hk_key")
       Array::push(local_names, "__hk_cnt"); Array::push(local_names, "__hk_i")
       emit_local_set(buf, key_l); emit_local_set(buf, map_l)
+      // ADR-0055 Stage 4: untag the map pointer once (no-op on an even literal).
+      emit_local_get(buf, map_l); emit_i64_const(buf, -2); emit_i64_and(buf); emit_local_set(buf, map_l)
       emit_local_get(buf, map_l); emit_i32_wrap_i64(buf)
       emit_i32_load(buf, 2, 0); emit_i64_extend_i32_u(buf); emit_local_set(buf, cnt_l)
       emit_i64_const(buf, 0); emit_local_set(buf, i_l)
@@ -1056,6 +1068,13 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       Array::push(local_names, "__ms_found")
       emit_local_set(buf, val_l)
       emit_local_set(buf, key_l)
+      emit_local_set(buf, map_l)
+      // ADR-0055 Stage 4: untag the source map pointer once (no-op on an even
+      // literal). The freshly-bumped result map (new_l) stays even/headerless —
+      // Map::set result reclamation is out of scope here.
+      emit_local_get(buf, map_l)
+      emit_i64_const(buf, -2)
+      emit_i64_and(buf)
       emit_local_set(buf, map_l)
       emit_local_get(buf, map_l)
       emit_i32_wrap_i64(buf)
@@ -1191,18 +1210,38 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
     else if fname == "MapBuilder::new" {
       let ptr_l = next_local
       Array::push(local_names, "__mb_ptr")
-      emit_global_get(buf, 0)
-      emit_i64_extend_i32_u(buf)
+      // ADR-0055 Stage 4 (MapBuilder reclamation): give the builder block the
+      // same RC block header as arrays/records ([alloc_size@0][rc_count@4]
+      // [class@7]), value = block+8, tagged as an ODD pointer so the recursive
+      // rc_drop reaches it. class 6 = map: count@value+0, then `count` entries of
+      // (key@+8, val@+16) on a 16-byte stride. capacity 8 entries → value region
+      // 136 bytes → total 144 (8 header + 136). Allocate via __rc_alloc so freed
+      // builder blocks are reused; readers untag (`& -2`, a no-op on the still-
+      // even map-literal pointer) before dereferencing.
+      emit_i64_const(buf, 144)
+      emit_call(buf, ctx.rc_alloc_func_idx)
       emit_local_set(buf, ptr_l)
-      emit_global_get(buf, 0)
-      emit_i32_const(buf, 136)
-      emit_i32_add(buf)
-      emit_global_set(buf, 0)
+      emit_local_get(buf, ptr_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 144)
+      emit_i32_store(buf, 2, 0)
+      emit_local_get(buf, ptr_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 1)
+      emit_i32_store(buf, 2, 4)
+      emit_local_get(buf, ptr_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 6)
+      emit_i32_store8(buf, 0, 7)
       emit_local_get(buf, ptr_l)
       emit_i32_wrap_i64(buf)
       emit_i32_const(buf, 0)
-      emit_i32_store(buf, 2, 0)
+      emit_i32_store(buf, 2, 8)
       emit_local_get(buf, ptr_l)
+      emit_i64_const(buf, 8)
+      emit_i64_add(buf)
+      emit_i64_const(buf, 1)
+      emit_i64_or(buf)
       next_local + 1
     }
     else if fname == "MapBuilder::set" {
@@ -1219,6 +1258,12 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       Array::push(local_names, "__mbs_cnt")
       emit_local_set(buf, mv_l)
       emit_local_set(buf, mk_l)
+      emit_local_set(buf, mb_l)
+      // ADR-0055 Stage 4: untag the builder pointer once (no-op on an even
+      // map-literal pointer); all reads/writes below use the value pointer.
+      emit_local_get(buf, mb_l)
+      emit_i64_const(buf, -2)
+      emit_i64_and(buf)
       emit_local_set(buf, mb_l)
       emit_local_get(buf, mb_l)
       emit_i32_wrap_i64(buf)

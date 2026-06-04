@@ -580,6 +580,23 @@ test "heap e2e: arraybuilder frozen result escapes" {
   assert_result(src, "main", "arraybuilder_escape", "1900")
 }
 
+// ADR-0055 Stage 4 (MapBuilder reclamation): MapBuilder::new allocates a
+// headered, free-list-backed block tagged as an odd pointer with drop-class 6
+// (map: count@value+0, key@+8 / val@+16 on a 16-byte stride). MapBuilder::set
+// borrows arg0 (in-place); freeze transfers ownership; Map::get borrows the map
+// and returns a borrowed entry. The recursive rc_drop frees the block and (for
+// class 6) recurses into each key/val, so a build-and-discard loop reclaims to
+// 0 B/iter — including heap-valued entries.
+test "heap e2e: mapbuilder build-and-discard in loop" {
+  let src = "let build: (Int) -> Int = (k) -> {\n  let b = MapBuilder::new()\n  MapBuilder::set(b, k, k * 10)\n  MapBuilder::set(b, k + 1, k + 11)\n  let m = MapBuilder::freeze(b)\n  Map::get(m, k)\n}\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut j = 0\n  while j < 100 {\n    s = s + build(j)\n    j = j + 1\n  }\n  s\n}"
+  assert_result(src, "main", "mapbuilder_discard", "49500")
+}
+
+test "heap e2e: mapbuilder with heap (tuple) values" {
+  let src = "let build: (Int) -> Int = (k) -> {\n  let b = MapBuilder::new()\n  MapBuilder::set(b, k, (k, k + 1))\n  MapBuilder::set(b, k + 1, (k + 2, k + 3))\n  let m = MapBuilder::freeze(b)\n  let p = Map::get(m, k)\n  p.0 + p.1\n}\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut j = 0\n  while j < 100 {\n    s = s + build(j)\n    j = j + 1\n  }\n  s\n}"
+  assert_result(src, "main", "mapbuilder_heap_vals", "9900")
+}
+
 test "heap e2e: enum payload tuple drop in loop" {
   let src = "enum Box { Wrap((Int, Int)); Empty }\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 40 {\n    let e = Wrap((i, i + 1))\n    s = s + match e {\n      Wrap(p) => p.0 + p.1,\n      Empty => 0\n    }\n    i = i + 1\n  }\n  s\n}"
   assert_result(src, "main", "enum_tuple_loop", "1600")
