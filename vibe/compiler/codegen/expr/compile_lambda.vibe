@@ -292,25 +292,63 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
     emit_i64_const(buf, (table_slot<<2)|2)
     next_local
   } else {
-    let alloc_size = 8 + num_captures * 8
     let ptr_local = next_local
     let nl2 = next_local + 1
     Array::push(local_names, "__closure_ptr")
-    emit_global_get(buf, 0)
-    emit_i64_extend_i32_u(buf)
-    emit_local_tee(buf, ptr_local)
-    emit_i32_wrap_i64(buf)
-    emit_i32_const(buf, alloc_size)
-    emit_i32_add(buf)
-    emit_global_set(buf, 0)
-    emit_local_get(buf, ptr_local)
-    emit_i32_wrap_i64(buf)
-    emit_i32_const(buf, table_slot)
-    emit_i32_store(buf, 2, 0)
-    emit_local_get(buf, ptr_local)
-    emit_i32_wrap_i64(buf)
-    emit_i32_const(buf, num_captures)
-    emit_i32_store(buf, 2, 4)
+    // ADR-0055 Stage 4: under RC the closure env is a headered, drop-class-1
+    // (field-vector) block allocated via __rc_alloc, so it is reclaimed and its
+    // heap captures recursively dropped (otherwise a closure capturing a tuple
+    // leaks). The value points at block_start+8 (past the 8-byte header), so the
+    // call path's value-relative offsets (slot@value+0, captures@value+8) and the
+    // `& -4`/`& -2` untags line up exactly as in the unheadered default layout.
+    // Default path stays a raw bump alloc (value = block_start | 1).
+    let cap_off = if ctx.enable_rc {
+      16
+    } else {
+      8
+    }
+    if ctx.enable_rc {
+      let total = 16 + num_captures * 8
+      emit_i64_const(buf, total)
+      emit_call(buf, ctx.rc_alloc_func_idx)
+      emit_local_set(buf, ptr_local)
+      emit_local_get(buf, ptr_local)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, total)
+      emit_i32_store(buf, 2, 0)
+      emit_local_get(buf, ptr_local)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 1)
+      emit_i32_store(buf, 2, 4)
+      emit_local_get(buf, ptr_local)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 1)
+      emit_i32_store8(buf, 0, 7)
+      emit_local_get(buf, ptr_local)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, table_slot)
+      emit_i32_store(buf, 2, 8)
+      emit_local_get(buf, ptr_local)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, num_captures)
+      emit_i32_store(buf, 2, 12)
+    } else {
+      emit_global_get(buf, 0)
+      emit_i64_extend_i32_u(buf)
+      emit_local_tee(buf, ptr_local)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 8 + num_captures * 8)
+      emit_i32_add(buf)
+      emit_global_set(buf, 0)
+      emit_local_get(buf, ptr_local)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, table_slot)
+      emit_i32_store(buf, 2, 0)
+      emit_local_get(buf, ptr_local)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, num_captures)
+      emit_i32_store(buf, 2, 4)
+    }
     let mut csi = 0
     while csi < num_captures {
       let cap_name = Array::get(captures, csi)
@@ -328,18 +366,26 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
         emit_local_get(buf, ptr_local)
         emit_i32_wrap_i64(buf)
         emit_local_get(buf, __cap_resolve)
-        emit_i64_store(buf, 3, 8 + csi * 8)
+        emit_i64_store(buf, 3, cap_off + csi * 8)
       } else {
         emit_local_get(buf, ptr_local)
         emit_i32_wrap_i64(buf)
         emit_i64_const(buf, 0)
-        emit_i64_store(buf, 3, 8 + csi * 8)
+        emit_i64_store(buf, 3, cap_off + csi * 8)
       }
       csi = csi + 1
     }
-    emit_local_get(buf, ptr_local)
-    emit_i64_const(buf, 1)
-    emit_i64_or(buf)
+    if ctx.enable_rc {
+      emit_local_get(buf, ptr_local)
+      emit_i64_const(buf, 8)
+      emit_i64_add(buf)
+      emit_i64_const(buf, 1)
+      emit_i64_or(buf)
+    } else {
+      emit_local_get(buf, ptr_local)
+      emit_i64_const(buf, 1)
+      emit_i64_or(buf)
+    }
     nl2
   }
 }

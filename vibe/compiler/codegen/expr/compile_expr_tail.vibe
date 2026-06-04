@@ -191,6 +191,25 @@ let assign_value_mentions: (Expr, String) -> Bool = (value, name) -> {
   array_contains_str(collect_free_vars(value, empty1, empty2), name)
 }
 
+// ADR-0055 Stage 4: does this EFn capture any free variable? A capturing closure
+// is a headered RC env block (compile_lambda) under RC, so its binding must be
+// classified heap and dropped at scope end (recursively freeing heap captures).
+// A capture-less closure is an immediate value (not heap).
+let efn_is_capturing: (Expr, CompileCtx) -> Bool with { Error } = (value, ctx) -> {
+  let params = get_efn_params(value)
+  let pnames = Array::slice([
+    ""
+  ], 0, 0)
+  let mut pi = 0
+  while pi < Array::length(params) {
+    let (pn, _) = Array::get(params, pi)
+    Array::push(pnames, pn)
+    pi = pi + 1
+  }
+  let caps = collect_free_vars(get_efn_body(value), pnames, Array::concat(ctx.func_table.names, ctx.ctor_table.names))
+  Array::length(caps) > 0
+}
+
 export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, expr, local_names, next_local, ctx, ld, compile_expr) -> {
   let __tag = expr_tag(expr)
   if __tag == 9 {
@@ -274,6 +293,12 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
         rc_kind = 2
         Array::push(ctx.heap_binding_names, name)
         emit_rc_dup_guarded(buf, local_idx)
+      } else if is_efn(value) && efn_is_capturing(value, ctx) {
+        // ADR-0055 Stage 4: a capturing closure is a headered RC env block — its
+        // binding is droppable so the env (and its recursively-dropped heap
+        // captures) is reclaimed at scope end.
+        rc_kind = 2
+        Array::push(ctx.heap_binding_names, name)
       } else {
         ()
       }

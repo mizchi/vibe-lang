@@ -380,14 +380,29 @@ arithmetic / comparison / bitop / shift / float / nested-data case under
    (reassign-drops-old; reassign-reads-old stays correct) and the `mut_reassign`
    reclaim case.
 
-   **Still remaining (leaks, safe; need owned-vs-borrowed typing):**
+   **Closures with captures are RC-managed (landed).** A capturing closure's env
+   block is now a headered, drop-class-1 (field-vector) block allocated via
+   `__rc_alloc`: the value points at `block_start+8` (past the 8-byte header), so
+   the call path's value-relative offsets (slot@value+0, captures@value+8) and the
+   `& -4` / `& -2` untags line up exactly as in the unheadered default layout —
+   the calling convention is unchanged. Capturing a value consumes it (the env
+   takes its reference, no dup), the closure `let` binding is classified heap, and
+   its scope-end drop runs `__rc_drop` (drop-class 1 → recurse the captures, free
+   the env). A capture-less closure stays an immediate (`(slot<<2)|2`, even → the
+   drop skips it). So a closure capturing a heap value, called once or many times
+   (the call borrows it), or returned (escaping — captures survive until the
+   caller drops the closure), reclaims fully. Capture-less and the recursive drop
+   are `enable_rc`-only; the default path keeps the raw bump-allocated env. Pinned
+   by `closure_capture` / `closure_two` (reclaim) and two heap-e2e parity cases.
+
+   **Still remaining (leaks, safe):**
    - Container **owning** escapes where the RHS references the target (the
      reassignment safety carve-out above) or an owned value stored into a
      container that *outlives* the current scope without a matching drop site are
      not dup'd/dropped → leak (safe).
-   - Captured closures remain unheadered (the recursion would misread one stored
-     in a dropped container — low address, so the high-32 guard does not catch
-     it); no opt-in RC path exercises it.
+   - A heap value captured by a closure that is then stored into a longer-lived
+     container (closure escapes via a container, not a return) follows the same
+     container-owning-escape gap.
 
    **Heap `mut` final-value scope-end drop (landed).** The reassignment drop only
    reclaims *overwritten* values; the binding's last value still owns a reference

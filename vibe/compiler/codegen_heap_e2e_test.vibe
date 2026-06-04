@@ -491,6 +491,21 @@ test "heap e2e: heap mut final value dropped (loop)" {
   assert_result(src, "main", "mut_final_drop", "5150")
 }
 
+// ADR-0055 Stage 4 (closures): a closure capturing a heap value is a headered RC
+// env (drop-class 1). Capturing consumes the value; dropping the closure binding
+// recursively frees it. Pins result parity (reclamation in verify_selfhost_rc).
+test "heap e2e: closure capturing heap value in loop" {
+  let src = "let main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 100 {\n    let t = (i, i + 1)\n    let g = () -> { t.0 + t.1 }\n    s = s + g()\n    i = i + 1\n  }\n  s\n}"
+  assert_result(src, "main", "closure_capture_heap", "10000")
+}
+
+// A closure capturing two heap values, called twice (the closure value is
+// borrowed by each call, not consumed).
+test "heap e2e: closure capturing two heap values called twice" {
+  let src = "let main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 100 {\n    let a = (i, i + 1)\n    let b = (i + 2, i + 3)\n    let g = () -> { a.0 + b.1 }\n    s = s + g() + g()\n    i = i + 1\n  }\n  s\n}"
+  assert_result(src, "main", "closure_two_heap", "20400")
+}
+
 test "heap e2e: enum payload tuple drop in loop" {
   let src = "enum Box { Wrap((Int, Int)); Empty }\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 40 {\n    let e = Wrap((i, i + 1))\n    s = s + match e {\n      Wrap(p) => p.0 + p.1,\n      Empty => 0\n    }\n    i = i + 1\n  }\n  s\n}"
   assert_result(src, "main", "enum_tuple_loop", "1600")
