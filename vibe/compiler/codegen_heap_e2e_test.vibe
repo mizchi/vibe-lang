@@ -515,6 +515,39 @@ test "heap e2e: array literal as function return on its own line" {
   assert_result(src, "main", "array_return_own_line", "1225")
 }
 
+// ADR-0055 Stage 4 (reassign-self reclamation): `b = (.. b ..)` reads the old
+// block, so it cannot drop it first. The reassign-self path pre-dups each
+// top-level heap field carried verbatim from the old block, builds the new
+// tuple, then drops the old block — reclaiming it (0 B/iter under RC) without a
+// use-after-free of the carried fields. These cases assert default==RC results.
+test "heap e2e: reassign-self scalar tuple in loop" {
+  let src = "let main: () -> Int = () -> {\n  let mut b = (0, 0)\n  let mut i = 0\n  while i < 1000 {\n    b = (b.0 + i, b.1)\n    i = i + 1\n  }\n  b.0\n}"
+  assert_result(src, "main", "reassign_self_scalar", "499500")
+}
+
+test "heap e2e: reassign-self field swap in loop" {
+  let src = "let main: () -> Int = () -> {\n  let mut b = (3, 7)\n  let mut i = 0\n  while i < 1001 {\n    b = (b.1, b.0)\n    i = i + 1\n  }\n  b.0 * 10 + b.1\n}"
+  assert_result(src, "main", "reassign_self_swap", "73")
+}
+
+test "heap e2e: reassign-self heap field carried in loop" {
+  let src = "let main: () -> Int = () -> {\n  let mut b = ((10, 20), 0)\n  let mut i = 0\n  while i < 1000 {\n    b = (b.0, b.1 + i)\n    i = i + 1\n  }\n  (b.0).0 + b.1\n}"
+  assert_result(src, "main", "reassign_self_heap_carry", "499510")
+}
+
+test "heap e2e: reassign-self both heap fields swapped in loop" {
+  let src = "let main: () -> Int = () -> {\n  let mut d = ((1, 2), (3, 4))\n  let mut j = 0\n  while j < 1000 {\n    d = (d.1, d.0)\n    j = j + 1\n  }\n  (d.0).0 * 1000 + (d.1).0\n}"
+  assert_result(src, "main", "reassign_self_both_heap", "1003")
+}
+
+// Safety carve-out: a reassign-self whose RHS carries `name` through a NESTED
+// constructor (not a bare top-level field) falls back to the old, safe leak
+// rather than the reclamation path — it must still compute the right result.
+test "heap e2e: reassign-self nested-carry falls back safely" {
+  let src = "let main: () -> Int = () -> {\n  let mut b = (5, 6)\n  let mut i = 0\n  while i < 100 {\n    b = ((b.0 + 1, b.1), 0).0\n    i = i + 1\n  }\n  b.0 + b.1\n}"
+  assert_result(src, "main", "reassign_self_nested_fallback", "111")
+}
+
 test "heap e2e: enum payload tuple drop in loop" {
   let src = "enum Box { Wrap((Int, Int)); Empty }\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 40 {\n    let e = Wrap((i, i + 1))\n    s = s + match e {\n      Wrap(p) => p.0 + p.1,\n      Empty => 0\n    }\n    i = i + 1\n  }\n  s\n}"
   assert_result(src, "main", "enum_tuple_loop", "1600")

@@ -191,6 +191,53 @@ let assign_value_mentions: (Expr, String) -> Bool = (value, name) -> {
   array_contains_str(collect_free_vars(value, empty1, empty2), name)
 }
 
+// ADR-0055 Stage 4 (reassign-self reclamation): is every mention of `name` in
+// `e` confined to a position that does NOT carry one of `name`'s heap fields
+// verbatim into the result through a nested constructor/call? A mention is safe
+// when it is (a) a bare carry — `name` itself or a pure projection rooted at
+// `name` (the field is duplicated before the old block is dropped), or (b)
+// consumed by arithmetic into a fresh scalar. Any OTHER carry (a nested
+// tuple/array literal, a constructor, or a call that may take ownership of
+// `name`) could alias a heap field the recursive drop frees — reject it and keep
+// the old, safe leak. (Array indexing lowers to a `__index`/`Array::get` call,
+// so EDot here is only a static tuple/record field projection.)
+let rec reassign_carry_safe: (Expr, String) -> Bool = (e, name) -> {
+  if !assign_value_mentions(e, name) {
+    true
+  } else {
+    match e {
+      EIdent(_) => true,
+      EDot(_, _) => proj_root_ident(e) == name,
+      EBinOp(_, l, r) => reassign_carry_safe(l, name) && reassign_carry_safe(r, name),
+      EUnaryOp(_, x) => reassign_carry_safe(x, name),
+      _ => false
+    }
+  }
+}
+
+// ADR-0055 Stage 4: may `name = value` (where `value` mentions `name`) be
+// reclaimed by the reassign-self path? Restricted to a tuple literal every
+// element of which is a safe carry — then the old block can be dropped after the
+// new tuple is built, with carried fields pre-dup'd to survive.
+let reassign_self_reusable: (Expr, String) -> Bool with { Error } = (value, name) -> {
+  if is_etuple(value) {
+    let elems = get_etuple_elems(value)
+    let mut i = 0
+    let mut ok = true
+    while i < Array::length(elems) {
+      if !reassign_carry_safe(Array::get(elems, i), name) {
+        ok = false
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    ok
+  } else {
+    false
+  }
+}
+
 // ADR-0055 Stage 4: does this EFn capture any free variable? A capturing closure
 // is a headered RC env block (compile_lambda) under RC, so its binding must be
 // classified heap and dropped at scope end (recursively freeing heap captures).
@@ -471,23 +518,61 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
       emit_i64_store(buf, 3, 0)
       compile_expr(buf, body, local_names, nl, ctx, ld)
     } else {
-      // ADR-0055 Stage 4: drop the OLD value before overwriting a heap mut
-      // binding (Perceus assignment rule). Without this, `b = <heap>` in a loop
-      // leaks the previous block every iteration. The drop is guarded by
-      // __rc_drop (a no-op on a scalar/string), and a dec (not an unconditional
-      // free), so an aliased old value (rc > 1 via PaAliasDup) is safe.
-      // SAFETY: skip the drop when the RHS references `name` (e.g. `b = b.0` or
-      // `b = f(b)`) — dropping first would free a block the new value derives
-      // from (use-after-free). Those keep the old, safe leak.
-      if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && array_contains_str(ctx.heap_binding_names, name) && !assign_value_mentions(value, name) {
+      let is_heap_mut = ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && array_contains_str(ctx.heap_binding_names, name)
+      let is_self = assign_value_mentions(value, name)
+      if is_heap_mut && is_self && reassign_self_reusable(value, name) {
+        // ADR-0055 Stage 4 (reassign-self reclamation): `b = (.. b ..)` cannot
+        // drop the old block first (the RHS reads it), so it used to keep the old
+        // block as a per-iteration leak. Instead: pre-dup each top-level heap
+        // field carried verbatim from the old block (a guarded dup — a no-op on
+        // a scalar/string), build the new tuple (still reading the old block),
+        // store it, THEN recursively drop the old block. The dup of each carried
+        // field exactly balances the dec rc_drop applies to it (both use the same
+        // odd + high32==0 heap test), so carried fields survive while the rest of
+        // the old block is reclaimed.
+        let old_temp = next_local
+        let scratch = next_local + 1
+        let base = next_local + 2
         emit_local_get(buf, idx)
+        emit_local_set(buf, old_temp)
+        let elems = get_etuple_elems(value)
+        let mut ei = 0
+        while ei < Array::length(elems) {
+          let elem = Array::get(elems, ei)
+          if (is_eident(elem) && get_eident_name(elem) == name) || (is_edot(elem) && proj_root_ident(elem) == name) {
+            let _ = compile_expr(buf, elem, local_names, base, ctx, ld)
+            emit_local_set(buf, scratch)
+            emit_rc_dup_guarded(buf, scratch)
+          } else {
+            ()
+          }
+          ei = ei + 1
+        }
+        let nl = compile_expr(buf, value, local_names, base, ctx, ld)
+        emit_local_set(buf, idx)
+        emit_local_get(buf, old_temp)
         emit_call(buf, ctx.rc_drop_func_idx)
+        compile_expr(buf, body, local_names, nl, ctx, ld)
       } else {
-        ()
+        // ADR-0055 Stage 4: drop the OLD value before overwriting a heap mut
+        // binding (Perceus assignment rule). Without this, `b = <heap>` in a loop
+        // leaks the previous block every iteration. The drop is guarded by
+        // __rc_drop (a no-op on a scalar/string), and a dec (not an unconditional
+        // free), so an aliased old value (rc > 1 via PaAliasDup) is safe.
+        // SAFETY: skip the drop when the RHS references `name` (e.g. `b = b.0` or
+        // `b = f(b)`) and is not handled by the reassign-self path above —
+        // dropping first would free a block the new value derives from
+        // (use-after-free). Those keep the old, safe leak.
+        if is_heap_mut && !is_self {
+          emit_local_get(buf, idx)
+          emit_call(buf, ctx.rc_drop_func_idx)
+        } else {
+          ()
+        }
+        let nl = compile_expr(buf, value, local_names, next_local, ctx, ld)
+        emit_local_set(buf, idx)
+        compile_expr(buf, body, local_names, nl, ctx, ld)
       }
-      let nl = compile_expr(buf, value, local_names, next_local, ctx, ld)
-      emit_local_set(buf, idx)
-      compile_expr(buf, body, local_names, nl, ctx, ld)
     }
   } else if __tag == 13 {
     let name = get_eassignop_name(expr)
