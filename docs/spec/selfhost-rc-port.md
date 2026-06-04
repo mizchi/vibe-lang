@@ -195,11 +195,15 @@ is added.
   array-arg of `Array::get` / `length` / `set` / `push` is now a *borrow* (like
   `__index`), so an array bound then only read/mutated-in-place is reclaimed by
   its own scope-end drop. A `let a = [i, …]` loop is now reclaimed (measured 0
-  bytes/iteration, constant 84 B). Growth (`Array::push` past capacity) still
-  bump-allocates a new data buffer and leaks the old one (conservative, safe);
-  the array object itself is reclaimed (heap e2e 24/24 on both paths, incl. a
-  grown-array case). Arrays built via `ArrayBuilder` / `array_new` (not literals)
-  stay on the leaky builtin path.
+  bytes/iteration, constant 84 B). Growth (`Array::push` past capacity) now
+  allocates the larger data buffer as a HEADERED, free-list-backed block via
+  `__rc_alloc` and frees the old buffer on regrow; `array_new` allocates via
+  `__rc_alloc` too (not a raw bump); and the recursive `rc_drop` frees a grown
+  (separate) data buffer when it drops an array (an inline buffer at `value+12`
+  is still freed with the block). A build-and-discard loop that previously leaked
+  ~one array block + its grown buffers per iteration now reclaims to 0 B/iter
+  (Stage 4: array buffer reclamation). `ArrayBuilder`-built arrays still stay on
+  the leaky builtin path.
 - Known limitations of this first vertical (all leak conservatively — they
   never corrupt — and only matter under `enable_rc`):
   - **Mixed tuple sizes**: the free list is head-only exact-fit (as in `src/`),
@@ -224,8 +228,9 @@ is added.
   step first — a **uniform value representation** (integer/float tagging enabling
   `src/`-style runtime dispatch) plus escape-ownership analysis. Designed in
   [selfhost-uniform-value-repr.md](selfhost-uniform-value-repr.md) (ADR-0055).
-  Also remaining: freeing grown array data buffers, `ArrayBuilder`-built arrays,
-  and a segregated / coalescing free list.
+  Also remaining: `ArrayBuilder`-built arrays, and a segregated / coalescing free
+  list. (Grown array data buffers are now freed — Stage 4 array buffer
+  reclamation.)
 - Everything stays gated behind `enable_rc`, default off.
 
 ### Phase 4 — verification & cutover

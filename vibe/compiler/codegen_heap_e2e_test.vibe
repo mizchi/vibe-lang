@@ -548,6 +548,22 @@ test "heap e2e: reassign-self nested-carry falls back safely" {
   assert_result(src, "main", "reassign_self_nested_fallback", "111")
 }
 
+// ADR-0055 Stage 4 (array buffer reclamation): Array::push grows an array by
+// allocating a larger HEADERED buffer via __rc_alloc and freeing the old one;
+// rc_drop frees a grown (separate) buffer when the array is dropped; array_new
+// allocates via __rc_alloc too. A build-and-discard loop that previously leaked
+// ~one array block + its grown buffers per iteration now reclaims to 0 B/iter.
+// These assert default==RC results across the cap 8->16->32->64 growth path.
+test "heap e2e: array push growth then read" {
+  let src = "let main: () -> Int = () -> {\n  let a = [0]\n  let mut i = 1\n  while i < 50 {\n    Array::push(a, i)\n    i = i + 1\n  }\n  Array::get(a, 49) + Array::length(a)\n}"
+  assert_result(src, "main", "array_push_growth", "99")
+}
+
+test "heap e2e: array build-and-discard in loop" {
+  let src = "let main: () -> Int = () -> {\n  let mut s = 0\n  let mut j = 0\n  while j < 100 {\n    let a = [0]\n    let mut i = 1\n    while i < 20 {\n      Array::push(a, i)\n      i = i + 1\n    }\n    s = s + Array::get(a, 19)\n    j = j + 1\n  }\n  s\n}"
+  assert_result(src, "main", "array_build_discard", "1900")
+}
+
 test "heap e2e: enum payload tuple drop in loop" {
   let src = "enum Box { Wrap((Int, Int)); Empty }\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 40 {\n    let e = Wrap((i, i + 1))\n    s = s + match e {\n      Wrap(p) => p.0 + p.1,\n      Empty => 0\n    }\n    i = i + 1\n  }\n  s\n}"
   assert_result(src, "main", "enum_tuple_loop", "1600")

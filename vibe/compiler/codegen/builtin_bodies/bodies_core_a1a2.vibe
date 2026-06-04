@@ -67,7 +67,7 @@ export let gen_arr_len_body: (Bool) -> Bytes = (enable_rc) -> {
   b
 }
 
-export let gen_arr_new_body: (Bool) -> Bytes = (enable_rc) -> {
+export let gen_arr_new_body: (Bool, Int) -> Bytes = (enable_rc, rc_alloc_idx) -> {
   let b = bytebuf_new()
   if enable_rc {
     // ADR-0055 Stage 2c: give array_new the same RC block header as literal
@@ -75,11 +75,13 @@ export let gen_arr_new_body: (Bool) -> Bytes = (enable_rc) -> {
     // odd array pointer is self-describing and the recursive rc_drop can reach
     // it safely. capacity 8, length 0, data_ptr = value+12 (block+20), inline
     // buffer 8 slots → total 84 (== a cap-8 literal, so the free-list reuses it).
-    emit_global_get(b, 0)
-    emit_local_tee(b, 0)
-    emit_i32_const(b, 84)
-    emit_i32_add(b)
-    emit_global_set(b, 0)
+    // ADR-0055 Stage 4: allocate via the free-list search helper (__rc_alloc) so
+    // a freed array block is reused — a raw bump leaks one block per array_new in
+    // a build-and-discard loop.
+    emit_i64_const(b, 84)
+    emit_call(b, rc_alloc_idx)
+    emit_i32_wrap_i64(b)
+    emit_local_set(b, 0)
     emit_local_get(b, 0)
     emit_i32_const(b, 84)
     emit_i32_store(b, 2, 0)
@@ -301,6 +303,25 @@ export let gen_rc_drop_body: (Int) -> Bytes = (self_idx) -> {
   emit_local_set(b, 4)
   emit_br(b, 0)
   emit_end(b)
+  emit_end(b)
+  // ADR-0055 Stage 4: free a grown (separate) data buffer. An inline buffer sits
+  // at value+12 (vptr+12) and is freed with the block; a buffer grown by
+  // Array::push is a headered block of its own (data_ptr = its value pointer, so
+  // size@data_ptr-8, next@data_ptr-4) — push onto the free-list head when
+  // data_ptr != vptr+12. Elements were already dropped by the loop above.
+  emit_local_get(b, 5)
+  emit_local_get(b, 1)
+  emit_i32_const(b, 12)
+  emit_i32_add(b)
+  emit_i32_ne(b)
+  emit_if_void(b)
+  emit_local_get(b, 5)
+  emit_i32_const(b, 4)
+  emit_i32_sub(b)
+  emit_global_get(b, 2)
+  emit_i32_store(b, 2, 0)
+  emit_local_get(b, 5)
+  emit_global_set(b, 2)
   emit_end(b)
   emit_end(b)
   // free: push block onto the free-list head (global 2), reusing the rc slot
