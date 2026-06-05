@@ -10,6 +10,16 @@ RUNNER="${PROJECT_ROOT}/scripts/run_wasm_vibe_host_runner.sh"
 mkdir -p "$OUT_DIR"
 rm -f "$OUT_DIR"/*.vibe "$OUT_DIR"/*.wasm "$OUT_DIR"/input.txt
 
+decode_tagged_int() {
+  local raw="$1"
+  local tag=$((raw & 3))
+  if [ "$tag" -ne 0 ]; then
+    echo "expected tagged Int result, got raw '$raw' with tag '$tag'" >&2
+    return 1
+  fi
+  echo $((raw >> 2))
+}
+
 compile_and_run() {
   local name="$1"
   local source="$2"
@@ -17,9 +27,15 @@ compile_and_run() {
   shift 3
   local src_path="$OUT_DIR/${name}.vibe"
   local wasm_path="$OUT_DIR/${name}.wasm"
+  local raw_result
   printf '%s\n' "$source" >"$src_path"
   "$VIBE_EXE" compile --wasm --force-cabi-realloc "$src_path" -o "$wasm_path" >/dev/null
-  bash "$RUNNER" --invoke "$invoke_name" "$wasm_path" "$@" | grep -E '^-?[0-9]+$' | tail -n 1
+  raw_result="$(bash "$RUNNER" --invoke "$invoke_name" "$wasm_path" "$@" | grep -E '^-?[0-9]+$' | tail -n 1)"
+  if [ "$invoke_name" = "_start" ]; then
+    echo "$raw_result"
+    return
+  fi
+  decode_tagged_int "$raw_result"
 }
 
 env_result="$(

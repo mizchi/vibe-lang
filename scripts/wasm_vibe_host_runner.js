@@ -14,6 +14,41 @@ const OBJ_ARRAY = 5;
 const OBJ_BYTES = 13;
 const OBJ_BYTES_VIEW = 14;
 
+let guestStdoutNeedsNewline = false;
+
+function noteGuestStdoutWrite(chunk) {
+  if (chunk === undefined || chunk === null) {
+    return;
+  }
+  if (typeof chunk === "string") {
+    if (chunk.length > 0) {
+      guestStdoutNeedsNewline = !chunk.endsWith("\n");
+    }
+    return;
+  }
+  const bytes = Buffer.isBuffer(chunk)
+    ? chunk
+    : ArrayBuffer.isView(chunk)
+      ? Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength)
+      : Buffer.from(String(chunk));
+  if (bytes.length > 0) {
+    guestStdoutNeedsNewline = bytes[bytes.length - 1] !== 10;
+  }
+}
+
+function writeGuestStdout(chunk) {
+  process.stdout.write(chunk);
+  noteGuestStdoutWrite(chunk);
+}
+
+function printRunnerLine(line) {
+  if (guestStdoutNeedsNewline) {
+    process.stdout.write("\n");
+    guestStdoutNeedsNewline = false;
+  }
+  console.log(line);
+}
+
 function usage() {
   console.error(
     "usage: node scripts/wasm_vibe_host_runner.js [--invoke <name>] [--bench-count <n> --bench-warmup <n> --bench-setup <name>] <module.wasm> [argv...]",
@@ -124,9 +159,22 @@ function decodeUtf8Range(instance, ptr, len) {
   return new TextDecoder().decode(mem.subarray(ptr, ptr + len));
 }
 
+function memoryUsesSharedBuffer(memory) {
+  return (
+    typeof SharedArrayBuffer !== "undefined" &&
+    memory instanceof WebAssembly.Memory &&
+    memory.buffer instanceof SharedArrayBuffer
+  );
+}
+
 function allocPreview2Buffer(instance, size, align = 4) {
   if (typeof instance.exports.cabi_realloc === "function") {
     return instance.exports.cabi_realloc(0, 0, align, size) >>> 0;
+  }
+  if (memoryUsesSharedBuffer(instance.exports.memory)) {
+    throw new Error(
+      "shared memory Preview2 allocation requires exported cabi_realloc; refusing __heap_ptr fallback",
+    );
   }
   const heapGlobal = instance.exports.__heap_ptr;
   if (!heapGlobal) {
@@ -693,7 +741,12 @@ function createPreview2CliStreamsHost() {
         }
         const mem = new Uint8Array(instance.exports.memory.buffer);
         const bytes = mem.subarray(dataPtr, dataPtr + dataLen);
-        resolveWritableStream(handle).write(Buffer.from(bytes));
+        const out = Buffer.from(bytes);
+        if (handle === STDOUT_STREAM_HANDLE) {
+          writeGuestStdout(out);
+        } else {
+          resolveWritableStream(handle).write(out);
+        }
         writeEmptyResultOk(retptr);
       },
       "[method]input-stream.blocking-read"(_handle, _maxLen, retptr) {
@@ -1179,7 +1232,7 @@ async function main() {
         const bytes = mem.slice(ptr, ptr + len);
         const text = new TextDecoder().decode(bytes);
         if (fd === 1) {
-          process.stdout.write(text);
+          writeGuestStdout(text);
         } else {
           process.stderr.write(text);
         }
@@ -1285,12 +1338,12 @@ async function main() {
   const stdoutModule = {
     WriteStream(strTagged) {
       const str = decodeStringArg(instanceRef, strTagged);
-      process.stdout.write(str);
+      writeGuestStdout(str);
       return 0n;
     },
     WriteChar(codeTagged) {
       const code = decodeTaggedInt(codeTagged);
-      process.stdout.write(String.fromCharCode(code));
+      writeGuestStdout(String.fromCharCode(code));
       return 0n;
     },
   };
@@ -1440,7 +1493,7 @@ async function main() {
       invokeExport(invokes[0]);
     }
     const elapsedUs = Number(process.hrtime.bigint() - startNs) / 1000;
-    console.log(String(elapsedUs));
+    printRunnerLine(String(elapsedUs));
     return;
   }
   let result;
@@ -1467,10 +1520,10 @@ async function main() {
         fs.mkdirSync(outDir, { recursive: true });
       }
       fs.writeFileSync(outPath, bytes);
-      console.log(`wrote ${outPath} (${bytes.length} bytes)`);
+      printRunnerLine(`wrote ${outPath} (${bytes.length} bytes)`);
     } else if (isSelfhost) {
       // Selfhost-compiled modules return untagged i64 values — print as-is.
-      console.log(result.toString());
+      printRunnerLine(result.toString());
     } else {
       // For string/array/record results, output display text on first line
       // then raw tagged i64 on second line. CLI checks for VIBE_DISPLAY: prefix.
@@ -1488,85 +1541,98 @@ async function main() {
             if (ptr + 8 + len <= mem.buffer.byteLength) {
               const bytes = new Uint8Array(mem.buffer, ptr + 8, len);
               const text = new TextDecoder().decode(bytes);
-              console.log("VIBE_DISPLAY:" + JSON.stringify(text));
+              printRunnerLine("VIBE_DISPLAY:" + JSON.stringify(text));
             }
           } else if (ty === 5) {
             // Array — show element count
             const len = view.getUint32(ptr + 4, true);
-            console.log("VIBE_DISPLAY:[Array(" + len + ")]");
+            printRunnerLine("VIBE_DISPLAY:[Array(" + len + ")]");
           }
         }
       }
       // Always output raw tagged i64 as last line
-      console.log(result.toString());
+      printRunnerLine(result.toString());
     }
   } else if (result !== undefined) {
-    console.log(String(result));
+    printRunnerLine(String(result));
   }
 }
 
-main().catch((err) => {
-  // Try to decode WASM exception payload (tagged string)
-  if (err instanceof WebAssembly.Exception) {
-    try {
-      // The exception tag exports a single i64 payload
-      const tag = instanceRefGlobal?.exports?.__error_tag;
-      if (tag) {
-        const payload = err.getArg(tag, 0);
-        const msg = tryDecodeExceptionString(instanceRefGlobal, payload);
-        if (msg !== null) {
-          console.error(`Error string: ${msg}`);
-          process.exit(1);
+function runCli() {
+  main().catch((err) => {
+    // Try to decode WASM exception payload (tagged string)
+    if (err instanceof WebAssembly.Exception) {
+      try {
+        // The exception tag exports a single i64 payload
+        const tag = instanceRefGlobal?.exports?.__error_tag;
+        if (tag) {
+          const payload = err.getArg(tag, 0);
+          const msg = tryDecodeExceptionString(instanceRefGlobal, payload);
+          if (msg !== null) {
+            console.error(`Error string: ${msg}`);
+            process.exit(1);
+          }
         }
-      }
-    } catch (_) {}
-    // Fallback: try all exported tags
-    try {
-      if (instanceRefGlobal) {
-        for (const [name, exp] of Object.entries(instanceRefGlobal.exports)) {
-          if (exp instanceof WebAssembly.Tag) {
-            try {
-              const payload = err.getArg(exp, 0);
-              const msg = tryDecodeExceptionString(instanceRefGlobal, payload);
-              if (msg !== null) {
-                console.error(`Error string (tag=${name}): ${msg}`);
-                process.exit(1);
-              }
-              // Try to decode as tagged int
-              if (typeof payload === "bigint" && (payload & TAG_MASK) === TAG_INT) {
-                const intVal = Number(payload >> 2n);
-                console.error(`Exception payload (tag=${name}): tagged int ${intVal} (raw=${payload})`);
-              } else {
-                console.error(`Exception payload (tag=${name}): ${payload}`);
-              }
-              // Also try to brute-force decode nearby memory as string
-              if (typeof payload === "bigint" && instanceRefGlobal?.exports?.memory) {
-                const mem = new Uint8Array(instanceRefGlobal.exports.memory.buffer);
-                for (const tryPtr of [Number(payload), Number(payload & ~TAG_MASK), Number(payload >> 2n)]) {
-                  if (tryPtr > 0 && tryPtr + 8 < mem.length) {
-                    const ty = readU32LE(mem, tryPtr);
-                    if (ty === OBJ_STRING) {
-                      const len = readU32LE(mem, tryPtr + 4);
-                      if (len > 0 && len < 10000 && tryPtr + 8 + len <= mem.length) {
-                        const str = new TextDecoder().decode(mem.subarray(tryPtr + 8, tryPtr + 8 + len));
-                        console.error(`  -> string at ptr=${tryPtr}: "${str}"`);
+      } catch (_) {}
+      // Fallback: try all exported tags
+      try {
+        if (instanceRefGlobal) {
+          for (const [name, exp] of Object.entries(instanceRefGlobal.exports)) {
+            if (exp instanceof WebAssembly.Tag) {
+              try {
+                const payload = err.getArg(exp, 0);
+                const msg = tryDecodeExceptionString(instanceRefGlobal, payload);
+                if (msg !== null) {
+                  console.error(`Error string (tag=${name}): ${msg}`);
+                  process.exit(1);
+                }
+                // Try to decode as tagged int
+                if (typeof payload === "bigint" && (payload & TAG_MASK) === TAG_INT) {
+                  const intVal = Number(payload >> 2n);
+                  console.error(`Exception payload (tag=${name}): tagged int ${intVal} (raw=${payload})`);
+                } else {
+                  console.error(`Exception payload (tag=${name}): ${payload}`);
+                }
+                // Also try to brute-force decode nearby memory as string
+                if (typeof payload === "bigint" && instanceRefGlobal?.exports?.memory) {
+                  const mem = new Uint8Array(instanceRefGlobal.exports.memory.buffer);
+                  for (const tryPtr of [Number(payload), Number(payload & ~TAG_MASK), Number(payload >> 2n)]) {
+                    if (tryPtr > 0 && tryPtr + 8 < mem.length) {
+                      const ty = readU32LE(mem, tryPtr);
+                      if (ty === OBJ_STRING) {
+                        const len = readU32LE(mem, tryPtr + 4);
+                        if (len > 0 && len < 10000 && tryPtr + 8 + len <= mem.length) {
+                          const str = new TextDecoder().decode(mem.subarray(tryPtr + 8, tryPtr + 8 + len));
+                          console.error(`  -> string at ptr=${tryPtr}: "${str}"`);
+                        }
                       }
                     }
                   }
                 }
-              }
-            } catch (_) {}
+              } catch (_) {}
+            }
           }
         }
-      }
-    } catch (_) {}
-  }
-  // usage() is only relevant for argument-parsing errors. Runtime errors
-  // (wasm traps, exceptions, etc.) drop straight to the stack trace so the
-  // failing test output points at the real cause.
-  if (instanceRefGlobal === null) {
-    usage();
-  }
-  console.error(err && err.stack ? err.stack : String(err));
-  process.exit(1);
-});
+      } catch (_) {}
+    }
+    // usage() is only relevant for argument-parsing errors. Runtime errors
+    // (wasm traps, exceptions, etc.) drop straight to the stack trace so the
+    // failing test output points at the real cause.
+    if (instanceRefGlobal === null) {
+      usage();
+    }
+    console.error(err && err.stack ? err.stack : String(err));
+    process.exit(1);
+  });
+}
+
+if (require.main === module) {
+  runCli();
+}
+
+module.exports = {
+  __test: {
+    allocPreview2Buffer,
+    memoryUsesSharedBuffer,
+  },
+};
