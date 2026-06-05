@@ -6,24 +6,24 @@ host vs selfhost output equivalent.
 
 ## Macro: stage-level wallclock
 
-Driver: `scripts/bench_selfhost_perf.sh` → `just bench-selfhost-perf`.
+Driver: `scripts/bench_selfhost_perf.sh` → `pkf run bench-selfhost-perf`.
 
-Compares host CLI vs selfhost wasm (under `moonrun`) on the cases listed in
-`cases.txt`. Median of N runs (default 3) per phase per stage; emits ratio
-gates that `just test-selfhost-perf-gate` enforces.
+Compares host CLI vs selfhost wasm on the cases listed in `cases.txt`. Median
+of N runs (default 3) per phase per stage; emits ratio gates that
+`pkf run test-selfhost-perf-gate` enforces.
 
 Output: `_build/bench/selfhost_perf/{summary,stage_summary}.{e2e,in-memory}.tsv`.
 
 ### wasmtime AOT runtime (default, #402 Phase 2)
 
 The bench driver's `VIBE_SELFHOST_PERF_RUNTIME` defaults to
-`wasmtime-aot`. It runs the stage1 wasm under a small Rust wasmtime
-host (`tools/moonrun_wasmtime`, binary `moonrun_wt`) that
-re-implements the moonbit `--target wasm` import surface
-(`spectest::print_char` + `__moonbit_{fs,time,sys}_unstable::*`,
-32 functions) and Cranelift-JITs the module. `wasmtime-aot` also
-`precompile`s each stage1 wasm to a `.cwasm` sibling so subsequent
-instantiations skip Cranelift entirely.
+`wasmtime-aot`. Despite the historical name, this path does not use the
+project-local `wasmtime` CLI. It runs the stage1 wasm under
+`tools/moonrun_wasmtime` (binary `moonrun_wt`), a small Rust host that embeds
+the `wasmtime` crate and re-implements the moonbit `--target wasm` import
+surface (`spectest::print_char` + `__moonbit_{fs,time,sys}_unstable::*`, 32
+functions). `wasmtime-aot` also `precompile`s each stage1 wasm to a `.cwasm`
+sibling so subsequent instantiations skip Cranelift entirely.
 
 Opt back into the legacy `moonrun` (v8 interp) path with
 `VIBE_SELFHOST_PERF_RUNTIME=moonrun` — useful in environments
@@ -52,9 +52,24 @@ VIBE_SELFHOST_PERF_RUNTIME=wasmtime-aot pkf run bench-selfhost-perf-wasmtime
 scripts/bench_selfhost_perf.sh
 ```
 
-Set `VIBE_SELFHOST_PERF_RUNTIME=wasmtime` to skip the AOT step (loses
-the per-invocation Cranelift cost). Set `MOONRUN_WT_BIN` to point at a
-prebuilt `moonrun_wt` (otherwise the driver builds it on first use).
+Set `VIBE_SELFHOST_PERF_RUNTIME=moonrun-wt` (or the legacy alias
+`wasmtime`) to skip the AOT step, which loses the per-invocation Cranelift
+cost. Set `MOONRUN_WT_BIN` to point at a prebuilt `moonrun_wt` (otherwise the
+driver builds it on first use).
+
+### Ratio gates
+
+The gate env vars are split by scope:
+
+| env | scope |
+| --- | --- |
+| `VIBE_SELFHOST_PERF_MAX_TOTAL_COMPILE_RATIO` | hard gate for summed compile wallclock |
+| `VIBE_SELFHOST_PERF_MAX_TOTAL_CHECK_RATIO` | hard gate for summed check wallclock |
+| `VIBE_SELFHOST_PERF_MAX_CASE_COMPILE_RATIO` | optional per-case compile cap |
+| `VIBE_SELFHOST_PERF_MAX_CASE_CHECK_RATIO` | optional per-case check cap |
+
+For #402, use the `MAX_TOTAL_*` variables and treat per-case/stage ratios as
+diagnostics unless a stricter run explicitly sets the `MAX_CASE_*` variables.
 
 ### Runtime-aware wasm-opt level
 

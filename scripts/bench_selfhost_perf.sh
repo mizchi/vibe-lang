@@ -18,15 +18,18 @@ OUT_DIR="${OUT_DIR:-$PROJECT_ROOT/_build/bench/selfhost_perf}"
 CASES_FILE="${VIBE_SELFHOST_PERF_CASES_FILE:-$PROJECT_ROOT/bench/selfhost_perf/cases.txt}"
 RUNS="${VIBE_SELFHOST_PERF_RUNS:-3}"
 COMPILE_MODE="${VIBE_SELFHOST_PERF_COMPILE_MODE:-e2e}"
-MAX_COMPILE_RATIO="${VIBE_SELFHOST_PERF_MAX_COMPILE_RATIO:-}"
-MAX_CHECK_RATIO="${VIBE_SELFHOST_PERF_MAX_CHECK_RATIO:-}"
+MAX_CASE_COMPILE_RATIO="${VIBE_SELFHOST_PERF_MAX_CASE_COMPILE_RATIO:-}"
+MAX_CASE_CHECK_RATIO="${VIBE_SELFHOST_PERF_MAX_CASE_CHECK_RATIO:-}"
+MAX_TOTAL_COMPILE_RATIO="${VIBE_SELFHOST_PERF_MAX_TOTAL_COMPILE_RATIO:-}"
+MAX_TOTAL_CHECK_RATIO="${VIBE_SELFHOST_PERF_MAX_TOTAL_CHECK_RATIO:-}"
 REBUILD_MODE="${VIBE_SELFHOST_PERF_REBUILD:-auto}"
 WASM_OPT_MODE="${VIBE_SELFHOST_PERF_WASM_OPT:-auto}"
 PROFILE_CALLSTACK="${VIBE_SELFHOST_PERF_PROFILE_CALLSTACK:-}"
 # Runtime that hosts the stage1 wasm.
-#   moonrun        — legacy v8 interpreter (no rust toolchain needed)
-#   wasmtime       — wasmtime via moonrun_wt without precompile
-#   wasmtime-aot   — wasmtime via moonrun_wt with .cwasm precompile (default)
+#   moonrun              — legacy v8 interpreter (no rust toolchain needed)
+#   moonrun-wt|wasmtime  — moonrun_wt custom host, wasmtime crate, no precompile
+#   moonrun-wt-aot|wasmtime-aot
+#                        — moonrun_wt custom host with .cwasm precompile (default)
 # wasmtime-aot was the default starting on this PoC branch (#402 Phase 2);
 # selfhost compile ratio dropped from 2.71 → 0.80 on the KPI cases.
 # Set VIBE_SELFHOST_PERF_RUNTIME=moonrun to opt back into the v8 path
@@ -41,7 +44,8 @@ MOONRUN_WT_BIN="${MOONRUN_WT_BIN:-}"
 # mirrors how a production LSP / vibe-check-as-service would batch
 # work, and matches the host side's session-http amortization.
 #
-# Only applies when SELFHOST_RUNTIME ∈ {wasmtime, wasmtime-aot}.
+# Only applies when SELFHOST_RUNTIME uses moonrun_wt
+# (wasmtime|wasmtime-aot|moonrun-wt|moonrun-wt-aot).
 # Median across RUNS still drops the first (cold) outlier when
 # RUNS ≥ 3; with cross-case daemon mode only request #1 of case #1
 # is cold, the rest are pure-warm-ratio.
@@ -93,6 +97,37 @@ ratio_exceeds() {
   local ratio="$1"
   local limit="$2"
   awk -v r="$ratio" -v l="$limit" 'BEGIN { if (r > l) exit 0; exit 1 }'
+}
+
+runtime_uses_moonrun_wt() {
+  case "$SELFHOST_RUNTIME" in
+    wasmtime|wasmtime-aot|moonrun-wt|moonrun-wt-aot) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+runtime_uses_cwasm() {
+  case "$SELFHOST_RUNTIME" in
+    wasmtime-aot|moonrun-wt-aot) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+runtime_default_wasm_opt_level() {
+  case "$SELFHOST_RUNTIME" in
+    moonrun) printf '%s\n' "-Oz" ;;
+    wasmtime|wasmtime-aot|moonrun-wt|moonrun-wt-aot) printf '%s\n' "-O3" ;;
+    *) printf '%s\n' "-Oz" ;;
+  esac
+}
+
+runtime_label() {
+  case "$SELFHOST_RUNTIME" in
+    moonrun) printf '%s\n' "moonrun/v8" ;;
+    wasmtime|moonrun-wt) printf '%s\n' "moonrun_wt/wasmtime" ;;
+    wasmtime-aot|moonrun-wt-aot) printf '%s\n' "moonrun_wt/wasmtime-aot" ;;
+    *) printf '%s\n' "$SELFHOST_RUNTIME" ;;
+  esac
 }
 
 run_timed() {
@@ -234,11 +269,7 @@ ensure_binaries() {
     # `auto`. Explicit VIBE_SELFHOST_PERF_WASM_OPT_LEVEL overrides this.
     local opt_level="${VIBE_SELFHOST_PERF_WASM_OPT_LEVEL:-auto}"
     if [ "$opt_level" = "auto" ]; then
-      case "$SELFHOST_RUNTIME" in
-        moonrun) opt_level="-Oz" ;;
-        wasmtime|wasmtime-aot) opt_level="-O3" ;;
-        *) opt_level="-Oz" ;;
-      esac
+      opt_level="$(runtime_default_wasm_opt_level)"
     fi
     # Rebuild the wasm-opt artifact if the recorded level doesn't
     # match the runtime-appropriate level. Otherwise we'd be running
@@ -260,7 +291,7 @@ ensure_binaries() {
       if [ -f "$opt_compiler" ]; then STAGE1_COMPILER_WASM="$opt_compiler"; fi
       if [ -f "$opt_checker" ]; then STAGE1_CHECKER_WASM="$opt_checker"; fi
       echo "$opt_level" > "$opt_marker"
-      echo "[selfhost-perf] using wasm-opt'd artifacts under _build/wasm/opt/ (level=$opt_level for runtime=$SELFHOST_RUNTIME)"
+      echo "[selfhost-perf] using wasm-opt'd artifacts under _build/wasm/opt/ (level=$opt_level for runtime=$(runtime_label))"
     fi
   fi
   case "$SELFHOST_RUNTIME" in
@@ -270,21 +301,23 @@ ensure_binaries() {
         exit 1
       fi
       ;;
-    wasmtime|wasmtime-aot)
+    wasmtime|wasmtime-aot|moonrun-wt|moonrun-wt-aot)
       ensure_moonrun_wt
-      if [ "$SELFHOST_RUNTIME" = "wasmtime-aot" ]; then
+      if runtime_uses_cwasm; then
         STAGE1_COMPILER_WASM="$(ensure_cwasm "$STAGE1_COMPILER_WASM")"
         STAGE1_CHECKER_WASM="$(ensure_cwasm "$STAGE1_CHECKER_WASM")"
       fi
       ;;
     *)
-      echo "bench-selfhost-perf: VIBE_SELFHOST_PERF_RUNTIME must be moonrun|wasmtime|wasmtime-aot" >&2
+      echo "bench-selfhost-perf: VIBE_SELFHOST_PERF_RUNTIME must be moonrun|moonrun-wt|moonrun-wt-aot|wasmtime|wasmtime-aot" >&2
       exit 1
       ;;
   esac
 }
 
-# Resolve / build the wasmtime host binary. Released as part of TODO #295.
+# Resolve / build moonrun_wt. This is a custom Rust host that embeds wasmtime
+# as a crate and re-implements moonrun's import surface; it is not the wasmtime
+# CLI used by `scripts/wasmtime_bin.sh`.
 ensure_moonrun_wt() {
   if [ -n "${MOONRUN_WT_BIN:-}" ] && [ -x "$MOONRUN_WT_BIN" ]; then
     return 0
@@ -476,7 +509,7 @@ selfhost_runner() {
     moonrun)
       moonrun "$@"
       ;;
-    wasmtime|wasmtime-aot)
+    wasmtime|wasmtime-aot|moonrun-wt|moonrun-wt-aot)
       "$MOONRUN_WT_BIN" "$@"
       ;;
     *)
@@ -531,7 +564,7 @@ main() {
   # the measurement loop will re-surface any genuine errors.
   local warmup_case="${cases[0]}"
   echo "[selfhost-perf] warmup: ${warmup_case#$PROJECT_ROOT/}"
-  echo "[selfhost-perf] runtime=${SELFHOST_RUNTIME}"
+  echo "[selfhost-perf] runtime=$(runtime_label)"
   selfhost_runner "$STAGE1_COMPILER_WASM" compile-lite --wasm-linear --no-dce --in-memory "$warmup_case" >/dev/null 2>&1 || true
   selfhost_runner "$STAGE1_CHECKER_WASM" --check --file "$warmup_case" >/dev/null 2>&1 || true
 
@@ -542,8 +575,7 @@ main() {
   # loop then unconditionally skips check/selfhost since results
   # already exist.
   local check_daemon_active=0
-  if [ "$CHECK_DAEMON_MODE" = "1" ] \
-     && { [ "$SELFHOST_RUNTIME" = "wasmtime" ] || [ "$SELFHOST_RUNTIME" = "wasmtime-aot" ]; }; then
+  if [ "$CHECK_DAEMON_MODE" = "1" ] && runtime_uses_moonrun_wt; then
     check_daemon_active=1
     echo "[selfhost-perf] check/selfhost: cross-case daemon mode (1 daemon for ${#cases[@]} cases × ${RUNS} runs)"
     PROJECT_ROOT="$PROJECT_ROOT" run_check_all_cases_daemon \
@@ -660,12 +692,12 @@ main() {
     sum_check_host=$((sum_check_host + khost))
     sum_check_self=$((sum_check_self + kself))
 
-    if [ -n "$MAX_COMPILE_RATIO" ] && ratio_exceeds "$cratio" "$MAX_COMPILE_RATIO"; then
-      echo "bench-selfhost-perf: compile ratio exceeded ($rel_case: $cratio > $MAX_COMPILE_RATIO)" >&2
+    if [ -n "$MAX_CASE_COMPILE_RATIO" ] && ratio_exceeds "$cratio" "$MAX_CASE_COMPILE_RATIO"; then
+      echo "bench-selfhost-perf: per-case compile ratio exceeded ($rel_case: $cratio > $MAX_CASE_COMPILE_RATIO)" >&2
       fail_ratio=1
     fi
-    if [ -n "$MAX_CHECK_RATIO" ] && ratio_exceeds "$kratio" "$MAX_CHECK_RATIO"; then
-      echo "bench-selfhost-perf: check ratio exceeded ($rel_case: $kratio > $MAX_CHECK_RATIO)" >&2
+    if [ -n "$MAX_CASE_CHECK_RATIO" ] && ratio_exceeds "$kratio" "$MAX_CASE_CHECK_RATIO"; then
+      echo "bench-selfhost-perf: per-case check ratio exceeded ($rel_case: $kratio > $MAX_CASE_CHECK_RATIO)" >&2
       fail_ratio=1
     fi
 
@@ -728,12 +760,12 @@ main() {
     echo "stage summary: $stage_summary_tsv"
   fi
 
-  if [ -n "$MAX_COMPILE_RATIO" ] && ratio_exceeds "$total_compile_ratio" "$MAX_COMPILE_RATIO"; then
-    echo "bench-selfhost-perf: total compile ratio exceeded (${total_compile_ratio} > ${MAX_COMPILE_RATIO})" >&2
+  if [ -n "$MAX_TOTAL_COMPILE_RATIO" ] && ratio_exceeds "$total_compile_ratio" "$MAX_TOTAL_COMPILE_RATIO"; then
+    echo "bench-selfhost-perf: total compile ratio exceeded (${total_compile_ratio} > ${MAX_TOTAL_COMPILE_RATIO})" >&2
     fail_ratio=1
   fi
-  if [ -n "$MAX_CHECK_RATIO" ] && ratio_exceeds "$total_check_ratio" "$MAX_CHECK_RATIO"; then
-    echo "bench-selfhost-perf: total check ratio exceeded (${total_check_ratio} > ${MAX_CHECK_RATIO})" >&2
+  if [ -n "$MAX_TOTAL_CHECK_RATIO" ] && ratio_exceeds "$total_check_ratio" "$MAX_TOTAL_CHECK_RATIO"; then
+    echo "bench-selfhost-perf: total check ratio exceeded (${total_check_ratio} > ${MAX_TOTAL_CHECK_RATIO})" >&2
     fail_ratio=1
   fi
 
