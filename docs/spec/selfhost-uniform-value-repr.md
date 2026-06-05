@@ -89,7 +89,7 @@ no bootstrap risk):
 ### Floats
 
 > **Float status (2026-06).** Floats were broken in the selfhost linear backend
-> at three layers; the first two are now fixed:
+> at three layers; all three are now fixed (heap-boxing, below, is the next step):
 > 1. ✅ **Numeric conversions were no-ops** (`Int::to_double` / `Double::to_int`
 >    / `Float::*` were intercepted by an identity fast-path in
 >    `compile_call.vibe`, shadowing `gen_double_to_int_body` etc.). Fixed in
@@ -116,12 +116,24 @@ no bootstrap risk):
 >    - Verified: float literals (`4.0`→4, `7.9`→7, `1.5+2.5`→4, `10.0/4.0`→2,
 >      mixed) in `codegen_heap_e2e_test` default **and** RC; byte-parity 74/74;
 >      selfbuild/bootstrap deterministic.
-> 3. ❌ **Blocker-3** (no AST types) still prevents tracking float-ness through a
->    variable, so `let x = 1.5; x + y` is not yet recognised as float arithmetic
->    (`expr_is_floatish` is syntactic). This is the remaining gap before floats
->    are fully general, and is orthogonal to heap-boxing.
+> 3. ✅ **Float-ness through `let` bindings (Blocker-3) — FIXED.** The AST is
+>    untyped, so `expr_is_floatish` was purely syntactic and could not see that
+>    a *variable* held a float (`let x = 1.5; x + y` took the integer `+`).
+>    Fix: track binding float-ness in `ctx.float_binding_names` (mirroring
+>    `heap_binding_names`) — a `let` / `let mut` whose initializer is floatish
+>    registers its name, and `expr_is_floatish` (now shared in
+>    `compile_expr_tail.vibe`, taking `ctx`) reports `EIdent` floatish by
+>    membership. This propagates transitively (`let b = a + 1.5` is floatish
+>    because `a` is), and covers conversion-bound vars (`let x = Int::to_double
+>    (n)`). Verified default + RC; byte-parity 74/74; selfbuild deterministic.
+>    Limitations (syntactic over-approximation, like `heap_binding_names`):
+>    function *parameters* typed `Double` are not tracked (no AST types), nor are
+>    floats captured into a lambda by name, and a name shadowed with a different
+>    type within one function may be misclassified. Full generality needs
+>    threaded inference; the common local-binding cases now work.
 >
-> With literals working, **heap-box** (below) can now proceed.
+> With literals (Blocker-2) and `let`-bound float variables (Blocker-3) working,
+> **heap-box** (below) can now proceed.
 
 Two options; **box-on-heap** is the conservative first cut:
 

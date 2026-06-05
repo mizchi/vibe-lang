@@ -38,6 +38,46 @@ import ./compile_match.vibe {
 
 //# Functions
 
+// Blocker-3 (ADR-0055): does `e` statically evaluate to an f64 bit pattern?
+// Syntactic over-approximation (the AST is untyped): float literals, float
+// arithmetic / comparison over floatish operands, float-producing conversions,
+// and — crucially — a *variable* bound to a floatish value (tracked in
+// ctx.float_binding_names as `let`s compile). This lets `let x = 1.5; x + y`
+// take the f64 path. Shared by compile_expr (binop/unary instruction choice)
+// and the `let` handler below (which populates float_binding_names).
+export let rec expr_is_floatish: (Expr, CompileCtx) -> Bool with { Error } = (e, ctx) -> {
+  let tag = expr_tag(e)
+  if tag == 2 {
+    true
+  } else if tag == 4 {
+    array_contains_str(ctx.float_binding_names, get_eident_name(e))
+  } else if tag == 5 {
+    let op = get_ebinop_op(e)
+    if op == "+" || op == "-" || op == "*" || op == "/" || op == "<" || op == ">" || op == "<=" || op == ">=" {
+      expr_is_floatish(get_ebinop_lhs(e), ctx) || expr_is_floatish(get_ebinop_rhs(e), ctx)
+    } else {
+      false
+    }
+  } else if tag == 6 {
+    let op = get_eunaryop_op(e)
+    if op == "-" {
+      expr_is_floatish(get_eunaryop_expr(e), ctx)
+    } else {
+      false
+    }
+  } else if tag == 8 {
+    let callee = get_ecall_callee(e)
+    if is_eident(callee) {
+      let fname = get_eident_name(callee)
+      fname == "Int::to_double" || fname == "Int::to_float" || fname == "Float::to_double" || fname == "Double::to_float" || fname == "Double::from_i64_bits"
+    } else {
+      false
+    }
+  } else {
+    false
+  }
+}
+
 // Push the untagged value pointer (as i32) held in `local_idx`. Records are
 // tagged (`ptr | 1`) so their low bit is cleared first; tuples are raw.
 let emit_rc_value_ptr_i32: (Bytes, Int, Bool) -> Unit = (buf, local_idx, tagged) -> {
@@ -267,6 +307,11 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     Array::push(local_names, name)
     let nl = compile_expr(buf, value, local_names, next_local + 1, ctx, ld)
     emit_local_set(buf, local_idx)
+    // Blocker-3: remember a binding that holds a float so a later `name + ...`
+    // is recognised as float arithmetic. Independent of RC.
+    if expr_is_floatish(value, ctx) {
+      Array::push(ctx.float_binding_names, name)
+    }
     // RC: classify the bound value's heap-ness. rc_kind 0 = not (known) heap,
     // 1 = heap tuple (raw pointer), 2 = heap tagged (record/enum, or an alias of
     // any heap kind — the `& -2` untag is a no-op on 8-aligned tuple pointers so
@@ -455,6 +500,12 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     let body = get_eletmut_body(expr)
     let local_idx = next_local
     Array::push(local_names, name)
+    // Blocker-3: a mut binding has one type (stable across reassignments), so
+    // classify float-ness from its initializer (covers both the ref-cell and
+    // plain-local branches below).
+    if expr_is_floatish(value, ctx) {
+      Array::push(ctx.float_binding_names, name)
+    }
     if is_mut_captured_in(body, name) {
       Array::push(ctx.ref_cell_names, name)
       emit_global_get(buf, 0)
