@@ -117,9 +117,25 @@ fn threads_shared_value_is_supported_array_type(ty : @core.Type) -> Bool {
 }
 
 ///|
+fn threads_shared_value_is_supported_tuple_type(ty : @core.Type) -> Bool {
+  match ty {
+    @core.Type::Tuple(items) => {
+      for item in items {
+        if !threads_shared_value_is_supported_scalar_type(item) {
+          return false
+        }
+      }
+      true
+    }
+    _ => false
+  }
+}
+
+///|
 fn threads_shared_value_is_supported_type(ty : @core.Type) -> Bool {
   threads_shared_value_is_supported_scalar_type(ty) ||
-  threads_shared_value_is_supported_array_type(ty)
+  threads_shared_value_is_supported_array_type(ty) ||
+  threads_shared_value_is_supported_tuple_type(ty)
 }
 
 ///|

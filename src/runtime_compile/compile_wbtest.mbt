@@ -1533,7 +1533,7 @@ test "compile_module_component rejects plain Int thread worker parameter" {
       assert_true(message.contains("Threads::spawn worker currently supports"))
       assert_true(
         message.contains(
-          "ThreadChannel[Int|String|Array[Int]|Array[String]] -> Int|String|Array[Int]|Array[String]",
+          "ThreadChannel[Int|String|Array[Int]|Array[String]|Tuple[Int|String, ...]] -> Int|String|Array[Int]|Array[String]|Tuple[Int|String, ...]",
         ),
       )
       assert_true(message.contains("worker"))
@@ -1624,6 +1624,34 @@ test "compile_module_component allows Array[String] thread worker return" {
 }
 
 ///|
+test "compile_module_component allows tuple thread worker return" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "threads_component_tuple_worker_return_probe",
+    (
+      #|let worker = (_ch: ThreadChannel[Int]) -> (Int, String) {
+      #|  (7, "green")
+      #|}
+      #|export let thread_worker_probe = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let task = Threads::spawn("worker", ch)
+      #|  let pair = Threads::wait(task)
+      #|  pair.0 * 100 + String::length(pair.1)
+      #|}
+      #|0
+    ),
+  )
+  let component = compile_module_component_with_opt_level(
+    db,
+    "threads_component_tuple_worker_return_probe",
+    thread_backend_id="component-unsafe-os-threads",
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_true(bytes_contains_ascii(component, "thread.spawn-indirect"))
+}
+
+///|
 test "compile_module_component allows Array[Int] thread channel payload" {
   let db = @runtime.VibeDb::new()
   db.set_source(
@@ -1674,6 +1702,35 @@ test "compile_module_component allows Array[String] thread channel payload" {
   let component = compile_module_component_with_opt_level(
     db,
     "threads_component_array_string_channel_payload_probe",
+    thread_backend_id="component-unsafe-os-threads",
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_true(bytes_contains_ascii(component, "thread.spawn-indirect"))
+}
+
+///|
+test "compile_module_component allows tuple thread channel payload" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "threads_component_tuple_channel_payload_probe",
+    (
+      #|let worker = (ch: ThreadChannel[(Int, String)]) -> Int with {Threads} {
+      #|  let pair = Threads::recv(ch)
+      #|  pair.0 * 100 + String::length(pair.1)
+      #|}
+      #|export let thread_worker_probe = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let _ok = Threads::send(ch, (2, "green"))
+      #|  let task = Threads::spawn("worker", ch)
+      #|  Threads::wait(task)
+      #|}
+      #|0
+    ),
+  )
+  let component = compile_module_component_with_opt_level(
+    db,
+    "threads_component_tuple_channel_payload_probe",
     thread_backend_id="component-unsafe-os-threads",
   ) catch {
     err => fail(err.to_string())
@@ -1743,7 +1800,7 @@ test "compile_module_component rejects nested array thread worker return" {
       assert_true(message.contains("Threads::spawn worker currently supports"))
       assert_true(
         message.contains(
-          "ThreadChannel[Int|String|Array[Int]|Array[String]] -> Int|String|Array[Int]|Array[String]",
+          "ThreadChannel[Int|String|Array[Int]|Array[String]|Tuple[Int|String, ...]] -> Int|String|Array[Int]|Array[String]|Tuple[Int|String, ...]",
         ),
       )
       assert_true(message.contains("worker"))
@@ -1949,6 +2006,15 @@ test "compile_module_component emits component unsafe Threads spawn runtime impo
       #|  let xs = Threads::wait(task)
       #|  Array::length(xs) * 100 + String::length(Array::get(xs, 1))
       #|}
+      #|let worker_tuple = (_ch: ThreadChannel[Int]) -> (Int, String) {
+      #|  (7, "green")
+      #|}
+      #|export let thread_worker_tuple_result_probe = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let task = Threads::spawn("worker_tuple", ch)
+      #|  let pair = Threads::wait(task)
+      #|  pair.0 * 100 + String::length(pair.1)
+      #|}
       #|let worker_array_len = (ch: ThreadChannel[Array[Int]]) -> Int with {Threads} {
       #|  let xs = Threads::recv(ch)
       #|  Array::length(xs) * 100 + Array::get(xs, 1)
@@ -1967,6 +2033,16 @@ test "compile_module_component emits component unsafe Threads spawn runtime impo
       #|  let ch = Threads::channel_new(1)
       #|  let _ok = Threads::send(ch, ["red", "green"])
       #|  let task = Threads::spawn("worker_array_string_len", ch)
+      #|  Threads::wait(task)
+      #|}
+      #|let worker_tuple_len = (ch: ThreadChannel[(Int, String)]) -> Int with {Threads} {
+      #|  let pair = Threads::recv(ch)
+      #|  pair.0 * 100 + String::length(pair.1)
+      #|}
+      #|export let thread_worker_tuple_channel_probe = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let _ok = Threads::send(ch, (2, "green"))
+      #|  let task = Threads::spawn("worker_tuple_len", ch)
       #|  Threads::wait(task)
       #|}
       #|export let thread_alloc_probe = () -> Int with {Threads} {
@@ -2015,10 +2091,16 @@ test "compile_module_component emits component unsafe Threads spawn runtime impo
     bytes_contains_ascii(component, "thread-worker-array-string-result-probe"),
   )
   assert_true(
+    bytes_contains_ascii(component, "thread-worker-tuple-result-probe"),
+  )
+  assert_true(
     bytes_contains_ascii(component, "thread-worker-array-channel-probe"),
   )
   assert_true(
     bytes_contains_ascii(component, "thread-worker-array-string-channel-probe"),
+  )
+  assert_true(
+    bytes_contains_ascii(component, "thread-worker-tuple-channel-probe"),
   )
   assert_true(bytes_contains_ascii(component, "thread-alloc-probe"))
   assert_true(bytes_contains_ascii(component, "thread-alloc-many-probe"))

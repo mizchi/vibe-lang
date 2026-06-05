@@ -4058,6 +4058,9 @@ fn emit_module_with_coverage(
   if ctx.linked_fn_imports_list.length() == 0 {
     // Pass 1: identify functions eligible without cross-function Call support
     for i in 0..<funcs.length() {
+      if is_thread_worker_func(ctx, i) {
+        continue
+      }
       let f = funcs[i]
       match f.name {
         Some(name) =>
@@ -4079,6 +4082,9 @@ fn emit_module_with_coverage(
       }
       let mut added = 0
       for i in 0..<funcs.length() {
+        if is_thread_worker_func(ctx, i) {
+          continue
+        }
         let f = funcs[i]
         match f.name {
           Some(name) =>

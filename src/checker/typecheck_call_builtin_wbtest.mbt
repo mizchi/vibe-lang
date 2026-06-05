@@ -384,8 +384,15 @@ test "type_call_builtin: Threads builtins match documented contract" {
       @core.Type::Array(@core.Type::String),
     ]),
   )
+  env.set(
+    "ch_tuple",
+    @core.Type::Named(name="ThreadChannel", args=[
+      @core.Type::Tuple([@core.Type::Int, @core.Type::String]),
+    ]),
+  )
   env.set("xs", @core.Type::Array(@core.Type::Int))
   env.set("strings", @core.Type::Array(@core.Type::String))
+  env.set("pair", @core.Type::Tuple([@core.Type::Int, @core.Type::String]))
   env.set(
     "task_int",
     @core.Type::Named(name="ThreadTask", args=[@core.Type::Int]),
@@ -426,6 +433,19 @@ test "type_call_builtin: Threads builtins match documented contract" {
         ),
       ],
       ret=@core.Type::Array(@core.Type::String),
+      effects=[@core.EffectAtom::Const("Threads")],
+    ),
+  )
+  env.set(
+    "worker_tuple",
+    @core.Type::Func(
+      params=[
+        builtin_test_fn_param(
+          "ch",
+          @core.Type::Named(name="ThreadChannel", args=[@core.Type::Int]),
+        ),
+      ],
+      ret=@core.Type::Tuple([@core.Type::Int, @core.Type::String]),
       effects=[@core.EffectAtom::Const("Threads")],
     ),
   )
@@ -492,6 +512,11 @@ test "type_call_builtin: Threads builtins match documented contract" {
       @core.Type::Bool,
     ),
     (
+      "Threads::send",
+      [builtin_test_ident_arg("ch_tuple"), builtin_test_ident_arg("pair")],
+      @core.Type::Bool,
+    ),
+    (
       "Threads::spawn",
       [builtin_test_string_arg("worker"), builtin_test_ident_arg("ch_int")],
       @core.Type::Named(name="ThreadTask", args=[@core.Type::Int]),
@@ -522,6 +547,16 @@ test "type_call_builtin: Threads builtins match documented contract" {
       ],
       @core.Type::Named(name="ThreadTask", args=[
         @core.Type::Array(@core.Type::String),
+      ]),
+    ),
+    (
+      "Threads::spawn",
+      [
+        builtin_test_string_arg("worker_tuple"),
+        builtin_test_ident_arg("ch_int"),
+      ],
+      @core.Type::Named(name="ThreadTask", args=[
+        @core.Type::Tuple([@core.Type::Int, @core.Type::String]),
       ]),
     ),
     (

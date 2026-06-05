@@ -313,9 +313,30 @@ fn thread_worker_is_supported_shared_array_type(ty : @core.Type) -> Bool {
 }
 
 ///|
+fn thread_worker_is_supported_shared_tuple_type(ty : @core.Type) -> Bool {
+  match ty {
+    @core.Type::Tuple(items) => {
+      for item in items {
+        if !thread_worker_is_supported_shared_scalar_type(item) {
+          return false
+        }
+      }
+      true
+    }
+    _ => false
+  }
+}
+
+///|
 fn thread_worker_is_supported_shared_value_type(ty : @core.Type) -> Bool {
   thread_worker_is_supported_shared_scalar_type(ty) ||
-  thread_worker_is_supported_shared_array_type(ty)
+  thread_worker_is_supported_shared_array_type(ty) ||
+  thread_worker_is_supported_shared_tuple_type(ty)
+}
+
+///|
+fn thread_worker_supported_contract_text() -> String {
+  "ThreadChannel[Int|String|Array[Int]|Array[String]|Tuple[Int|String, ...]] -> Int|String|Array[Int]|Array[String]|Tuple[Int|String, ...]"
 }
 
 ///|
@@ -379,7 +400,9 @@ fn thread_spawn_worker_func_code_from_expr(
             !thread_worker_has_supported_channel_param(ctx, value) ||
             !thread_worker_has_supported_return(ctx, value) {
             raise WasmGenError::Unsupported(
-              "Threads::spawn worker currently supports ThreadChannel[Int|String|Array[Int]|Array[String]] -> Int|String|Array[Int]|Array[String] only: " +
+              "Threads::spawn worker currently supports " +
+              thread_worker_supported_contract_text() +
+              " only: " +
               value,
             )
           }
