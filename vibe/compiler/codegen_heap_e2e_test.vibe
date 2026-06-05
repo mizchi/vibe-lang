@@ -698,7 +698,7 @@ test "float literal: mixed literal + conversion" {
 }
 
 // Blocker-3 (ADR-0055): float-ness is tracked through `let`/`let mut` bindings
-// (ctx.float_binding_names), so a *variable* holding a float makes a later binop
+// (ctx.float_local_slots), so a *variable* holding a float makes a later binop
 // take the f64 path. Without this, `let x = 1.5; x + y` used integer + on the
 // f64 bit patterns. Default and RC.
 test "float var: let x = 1.5; x + 2.5" {
@@ -719,4 +719,19 @@ test "float var: bound to conversion result" {
 
 test "float var: chained through bindings" {
   assert_result("let main: () -> Int = () -> { let a = 2.5; let b = a + 1.5; let c = b * 2.0; Double::to_int(c) }", "main", "fvar_chain", "8")
+}
+
+// Blocker-3 scoping (codex review #507): float-ness is keyed by local SLOT and
+// truncated with local_names, so a shadowing same-name binding of a different
+// type, and slots reused across if/match branches, are NOT misclassified.
+test "float var: inner int shadow of outer float (no leak)" {
+  // outer x is float; inner block rebinds x to an int — inner x + 2 must be
+  // integer arithmetic (=> 3), not f64 over tagged ints.
+  assert_result("let main: () -> Int = () -> { let x = 1.5; let y = { let x = 1; x + 2 }; y }", "main", "fvar_shadow", "3")
+}
+
+test "float var: int binding reusing a float slot across if branches" {
+  // then-branch binds a float at some slot; else-branch reuses that slot for an
+  // int. The else result must be integer (5 + 1 = 6).
+  assert_result("let main: () -> Int = () -> { if false { let a = 1.5; Double::to_int(a + 1.0) } else { let a = 5; a + 1 } }", "main", "fvar_ifreuse", "6")
 }

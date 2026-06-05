@@ -38,30 +38,76 @@ import ./compile_match.vibe {
 
 //# Functions
 
+// Blocker-3 (ADR-0055): is local slot `slot` currently bound to a float?
+// float_local_slots is an append-only log of `slot*2 + flag` entries (flag 1 =
+// float, 0 = a non-float rebind that overrides a previously-float slot). The
+// MOST RECENT entry for a slot wins, mirroring local_names' most-recent-slot
+// resolution — so a shadowing rebind (nested block, or an if/match branch
+// reusing the slot) is classified by its own binding, not a stale one. Kept as
+// an append-only log (no Array::truncate) because the wasm-gc backend cannot
+// truncate a struct-field array; the log only grows for float-related bindings,
+// which are rare, so scans stay short.
+let slot_is_floatish: (CompileCtx, Int) -> Bool = (ctx, slot) -> {
+  let arr = ctx.float_local_slots
+  let mut j = Array::length(arr) - 1
+  let mut result = false
+  while j >= 0 {
+    let entry = Array::get(arr, j)
+    if entry / 2 == slot {
+      result = (entry % 2) == 1
+      j = -1
+    } else {
+      j = j - 1
+    }
+  }
+  result
+}
+
 // Blocker-3 (ADR-0055): does `e` statically evaluate to an f64 bit pattern?
 // Syntactic over-approximation (the AST is untyped): float literals, float
 // arithmetic / comparison over floatish operands, float-producing conversions,
 // and — crucially — a *variable* bound to a floatish value (tracked in
-// ctx.float_binding_names as `let`s compile). This lets `let x = 1.5; x + y`
+// ctx.float_local_slots as `let`s compile). This lets `let x = 1.5; x + y`
 // take the f64 path. Shared by compile_expr (binop/unary instruction choice)
-// and the `let` handler below (which populates float_binding_names).
-export let rec expr_is_floatish: (Expr, CompileCtx) -> Bool with { Error } = (e, ctx) -> {
+// and the `let` handler below (which populates float_local_slots).
+export let rec expr_is_floatish: (Expr, Array[String], CompileCtx) -> Bool with { Error } = (e, local_names, ctx) -> {
   let tag = expr_tag(e)
   if tag == 2 {
     true
   } else if tag == 4 {
-    array_contains_str(ctx.float_binding_names, get_eident_name(e))
+    // Resolve the identifier to its local slot (most-recent binding wins, like
+    // the EIdent codegen) and report float-ness by slot membership. Slot-keyed
+    // (not name-keyed) so a shadowing same-name binding of another type is not
+    // misclassified; float_local_slots is truncated with local_names at scope
+    // boundaries so reused slots across sibling scopes don't leak float-ness.
+    let nm = get_eident_name(e)
+    let len = Array::length(local_names)
+    let mut i = len - 1
+    let mut slot = -1
+    while i >= 0 {
+      if Array::get(local_names, i) == nm {
+        slot = i
+        i = -1
+      } else {
+        i = i - 1
+      }
+    }
+    if slot >= 0 {
+      slot_is_floatish(ctx, slot)
+    } else {
+      false
+    }
   } else if tag == 5 {
     let op = get_ebinop_op(e)
     if op == "+" || op == "-" || op == "*" || op == "/" || op == "<" || op == ">" || op == "<=" || op == ">=" {
-      expr_is_floatish(get_ebinop_lhs(e), ctx) || expr_is_floatish(get_ebinop_rhs(e), ctx)
+      expr_is_floatish(get_ebinop_lhs(e), local_names, ctx) || expr_is_floatish(get_ebinop_rhs(e), local_names, ctx)
     } else {
       false
     }
   } else if tag == 6 {
     let op = get_eunaryop_op(e)
     if op == "-" {
-      expr_is_floatish(get_eunaryop_expr(e), ctx)
+      expr_is_floatish(get_eunaryop_expr(e), local_names, ctx)
     } else {
       false
     }
@@ -307,10 +353,14 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     Array::push(local_names, name)
     let nl = compile_expr(buf, value, local_names, next_local + 1, ctx, ld)
     emit_local_set(buf, local_idx)
-    // Blocker-3: remember a binding that holds a float so a later `name + ...`
-    // is recognised as float arithmetic. Independent of RC.
-    if expr_is_floatish(value, ctx) {
-      Array::push(ctx.float_binding_names, name)
+    // Blocker-3: log this binding's float-ness by slot so a later `name + ...`
+    // is recognised as float arithmetic. Push a float marker; if a non-float
+    // rebind shadows a previously-float slot (branch slot reuse), push an
+    // override so the stale float entry no longer wins. Independent of RC.
+    if expr_is_floatish(value, local_names, ctx) {
+      Array::push(ctx.float_local_slots, local_idx * 2 + 1)
+    } else if slot_is_floatish(ctx, local_idx) {
+      Array::push(ctx.float_local_slots, local_idx * 2)
     }
     // RC: classify the bound value's heap-ness. rc_kind 0 = not (known) heap,
     // 1 = heap tuple (raw pointer), 2 = heap tagged (record/enum, or an alias of
@@ -502,9 +552,11 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     Array::push(local_names, name)
     // Blocker-3: a mut binding has one type (stable across reassignments), so
     // classify float-ness from its initializer (covers both the ref-cell and
-    // plain-local branches below).
-    if expr_is_floatish(value, ctx) {
-      Array::push(ctx.float_binding_names, name)
+    // plain-local branches below). Same slot-log scheme as `let`.
+    if expr_is_floatish(value, local_names, ctx) {
+      Array::push(ctx.float_local_slots, local_idx * 2 + 1)
+    } else if slot_is_floatish(ctx, local_idx) {
+      Array::push(ctx.float_local_slots, local_idx * 2)
     }
     if is_mut_captured_in(body, name) {
       Array::push(ctx.ref_cell_names, name)
