@@ -632,3 +632,26 @@ test "heap e2e: ends_with false" {
   let src = "let main: () -> Int = () -> { if String::ends_with(\"xabab\", \"yz\") { 1 } else { 0 } }"
   assert_result(src, "main", "ends_with_false", "0")
 }
+
+// Regression: Int::to_double / Double::to_int / Float::to_int were intercepted
+// as an identity fast-path in compile_call.vibe, shadowing the real conversion
+// bodies (gen_double_to_int_body = reinterpret_f64 + trunc_f64_s, etc.), so the
+// conversions were no-ops. The selfhost's own float lexer/formatter
+// (lexer.vibe, float_format.vibe) depends on these, so they must actually
+// convert. These use no float *literal* (orthogonal Blocker-2: a normal f64 bit
+// pattern overflows the selfhost's 62-bit Int in emit_f64_const_bits), so they
+// isolate the conversion path. Run on both default and RC (RC tags the int).
+test "conv: Double::to_int(Int::to_double(n)) round-trips" {
+  let src = "let main: () -> Int = () -> { Double::to_int(Int::to_double(7)) }"
+  assert_result(src, "main", "conv_roundtrip", "7")
+}
+
+test "conv: float add of converted ints" {
+  let src = "let main: () -> Int = () -> { Double::to_int(Int::to_double(42) + Int::to_double(8)) }"
+  assert_result(src, "main", "conv_add", "50")
+}
+
+test "conv: float div of converted ints" {
+  let src = "let main: () -> Int = () -> { Double::to_int(Int::to_double(20) / Int::to_double(4)) }"
+  assert_result(src, "main", "conv_div", "5")
+}
