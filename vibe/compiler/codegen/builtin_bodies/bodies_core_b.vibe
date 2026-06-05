@@ -299,10 +299,14 @@ export let gen_string_join_body: (Int, Int, Int) -> Bytes = (arr_len_idx, arr_ge
   b
 }
 
-export let gen_string_trim_body: (Int, Int, Int) -> Bytes = (str_len_idx, str_char_code_at_idx, str_substring_idx) -> {
+export let gen_string_trim_body: (Bool, Int, Int, Int) -> Bytes = (enable_rc, str_len_idx, str_char_code_at_idx, str_substring_idx) -> {
   let b = bytebuf_new()
   emit_local_get(b, 0)
   emit_call(b, str_len_idx)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_local_set(b, 1)
   emit_i32_const(b, 0)
@@ -318,7 +322,16 @@ export let gen_string_trim_body: (Int, Int, Int) -> Bytes = (str_len_idx, str_ch
   emit_local_get(b, 0)
   emit_local_get(b, 2)
   emit_i64_extend_i32_u(b)
+  // ADR-0055: char_code_at is value-world under RC — tag the index it consumes.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
   emit_call(b, str_char_code_at_idx)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_local_tee(b, 4)
   emit_i32_const(b, 32)
@@ -355,7 +368,15 @@ export let gen_string_trim_body: (Int, Int, Int) -> Bytes = (str_len_idx, str_ch
   emit_i32_const(b, 1)
   emit_i32_sub(b)
   emit_i64_extend_i32_u(b)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
   emit_call(b, str_char_code_at_idx)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_local_tee(b, 4)
   emit_i32_const(b, 32)
@@ -423,16 +444,24 @@ export let gen_arr_truncate_body: (Bool) -> Bytes = (enable_rc) -> {
   b
 }
 
-export let gen_string_split_body: (Int, Int, Int, Int, Int) -> Bytes = (arr_new_idx, arr_push_idx, str_len_idx, str_substring_idx, string_index_of_idx) -> {
+export let gen_string_split_body: (Bool, Int, Int, Int, Int, Int) -> Bytes = (enable_rc, arr_new_idx, arr_push_idx, str_len_idx, str_substring_idx, string_index_of_idx) -> {
   let b = bytebuf_new()
   emit_call(b, arr_new_idx)
   emit_local_set(b, 6)
   emit_local_get(b, 0)
   emit_call(b, str_len_idx)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_local_set(b, 2)
   emit_local_get(b, 1)
   emit_call(b, str_len_idx)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_local_set(b, 3)
   emit_i32_const(b, 0)
@@ -447,6 +476,11 @@ export let gen_string_split_body: (Int, Int, Int, Int, Int) -> Bytes = (arr_new_
   emit_call(b, str_substring_idx)
   emit_local_get(b, 1)
   emit_call(b, string_index_of_idx)
+  // ADR-0055: String::index_of returns a tagged index under RC; untag for use.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_local_set(b, 5)
   emit_local_get(b, 5)
@@ -542,14 +576,24 @@ export let gen_string_contains_body: (Int) -> Bytes = (string_index_of_idx) -> {
   b
 }
 
-export let gen_string_index_of_body: (Int, Int, Int) -> Bytes = (str_len_idx, str_substring_idx, str_eq_idx) -> {
+export let gen_string_index_of_body: (Bool, Int, Int, Int) -> Bytes = (enable_rc, str_len_idx, str_substring_idx, str_eq_idx) -> {
   let b = bytebuf_new()
   emit_local_get(b, 0)
   emit_call(b, str_len_idx)
+  // ADR-0055: String::length is value-world (tagged) under RC; untag both lengths
+  // for raw arithmetic, tag the returned index back into the value world.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_local_set(b, 2)
   emit_local_get(b, 1)
   emit_call(b, str_len_idx)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_local_set(b, 3)
   emit_local_get(b, 3)
@@ -557,6 +601,10 @@ export let gen_string_index_of_body: (Int, Int, Int) -> Bytes = (str_len_idx, st
   bytebuf_push(b, 75)
   emit_if_i64(b)
   emit_i64_const(b, -1)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
   emit_else(b)
   emit_i32_const(b, 0)
   emit_local_set(b, 4)
@@ -587,6 +635,10 @@ export let gen_string_index_of_body: (Int, Int, Int) -> Bytes = (str_len_idx, st
   emit_if_void(b)
   emit_local_get(b, 4)
   emit_i64_extend_i32_u(b)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
   emit_br(b, 3)
   emit_end(b)
   emit_local_get(b, 4)
@@ -597,6 +649,10 @@ export let gen_string_index_of_body: (Int, Int, Int) -> Bytes = (str_len_idx, st
   emit_end(b)
   emit_end(b)
   emit_i64_const(b, -1)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
   emit_end(b)
   emit_end(b)
   b
@@ -742,14 +798,24 @@ export let gen_str_char_code_at_body: (Bool) -> Bytes = (enable_rc) -> {
   b
 }
 
-export let gen_string_ends_with_body: (Int, Int, Int) -> Bytes = (str_len_idx, str_substring_idx, str_eq_idx) -> {
+export let gen_string_ends_with_body: (Bool, Int, Int, Int) -> Bytes = (enable_rc, str_len_idx, str_substring_idx, str_eq_idx) -> {
   let b = bytebuf_new()
   emit_local_get(b, 0)
   emit_call(b, str_len_idx)
+  // ADR-0055: String::length is value-world (tagged) under RC; untag to a raw
+  // length. `substring` stays raw, so its args are passed raw as before.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_local_set(b, 2)
   emit_local_get(b, 1)
   emit_call(b, str_len_idx)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_local_set(b, 3)
   emit_local_get(b, 3)
@@ -1068,14 +1134,22 @@ export let gen_str_from_char_code_body: () -> Bytes = () -> {
   b
 }
 
-export let gen_string_starts_with_body: (Int, Int, Int) -> Bytes = (str_len_idx, str_substring_idx, str_eq_idx) -> {
+export let gen_string_starts_with_body: (Bool, Int, Int, Int) -> Bytes = (enable_rc, str_len_idx, str_substring_idx, str_eq_idx) -> {
   let b = bytebuf_new()
   emit_local_get(b, 0)
   emit_call(b, str_len_idx)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_local_set(b, 2)
   emit_local_get(b, 1)
   emit_call(b, str_len_idx)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_local_set(b, 3)
   emit_local_get(b, 3)
@@ -1629,14 +1703,22 @@ export let static_str_concat_body: () -> Bytes = () -> {
   static_str_concat_body_bytes
 }
 
-export let gen_string_last_index_of_body: (Int, Int, Int) -> Bytes = (str_len_idx, str_substring_idx, str_eq_idx) -> {
+export let gen_string_last_index_of_body: (Bool, Int, Int, Int) -> Bytes = (enable_rc, str_len_idx, str_substring_idx, str_eq_idx) -> {
   let b = bytebuf_new()
   emit_local_get(b, 0)
   emit_call(b, str_len_idx)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_local_set(b, 2)
   emit_local_get(b, 1)
   emit_call(b, str_len_idx)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_local_set(b, 3)
   emit_local_get(b, 3)
@@ -1644,6 +1726,10 @@ export let gen_string_last_index_of_body: (Int, Int, Int) -> Bytes = (str_len_id
   bytebuf_push(b, 75)
   emit_if_i64(b)
   emit_i64_const(b, -1)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
   emit_else(b)
   emit_local_get(b, 2)
   emit_local_get(b, 3)
@@ -1672,6 +1758,10 @@ export let gen_string_last_index_of_body: (Int, Int, Int) -> Bytes = (str_len_id
   emit_if_void(b)
   emit_local_get(b, 4)
   emit_i64_extend_i32_u(b)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
   emit_br(b, 3)
   emit_end(b)
   emit_local_get(b, 4)
@@ -1682,6 +1772,10 @@ export let gen_string_last_index_of_body: (Int, Int, Int) -> Bytes = (str_len_id
   emit_end(b)
   emit_end(b)
   emit_i64_const(b, -1)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
   emit_end(b)
   emit_end(b)
   b
