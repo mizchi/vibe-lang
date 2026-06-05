@@ -155,10 +155,20 @@ const signatures = {
   "f32_store": "(Int, Int, Float) -> Unit",
   "f64_store": "(Int, Int, Double) -> Unit",
   "__to_string": "(Any) -> String",
+  "Threads::probe_wat": "() -> String",
+  "Threads::runtime_hints":
+    "() -> {wasm_flags: Array[String], wasi_flags: Array[String], wasm_env: String, wasi_env: String}",
+  "Threads::channel_new": "(Int) -> ThreadChannel[T]",
+  "Threads::send": "(ThreadChannel[T], T) -> Bool  // T currently Int | String",
+  "Threads::recv": "(ThreadChannel[T]) -> T",
+  "Threads::spawn":
+    "(String, ThreadChannel[T]) -> ThreadTask[R]  // R currently Int | String",
+  "Threads::wait": "(ThreadTask[T]) -> T",
 };
 
 const checker_builtin_sources = [
   read_text("src/checker/typecheck_call_builtin_handler_core_io.mbt"),
+  read_text("src/checker/typecheck_call_builtin_handler_threads.mbt"),
   read_text("src/checker/typecheck_call_builtin_handler_collection_numeric.mbt"),
   read_text("src/checker/typecheck_call_builtin_handler_runtime_memory.mbt"),
   read_text("src/checker/typecheck_call_builtin_handler_json_and_fallback.mbt"),
@@ -174,6 +184,7 @@ const codegen_builtin_sources = [
   read_text("src/codegen/wasm_codegen_builtin_misc.mbt"),
   read_text("src/codegen/wasm_codegen_builtin_numeric.mbt"),
   read_text("src/codegen/wasm_codegen_builtin_string.mbt"),
+  read_text("src/codegen/wasm_codegen_builtin_threads.mbt"),
   read_text("src/codegen/wasm_codegen_call.mbt"),
 ];
 

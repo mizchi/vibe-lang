@@ -299,11 +299,56 @@ StdIO (wasi stream primitives for wasm/component-friendly interop):
 Threads (experimental, runtime-gated by `--unstable-threads`):
 - `Threads::probe_wat()` -> `String`
 - `Threads::runtime_hints()` -> `{ wasm_flags: Array[String], wasi_flags: Array[String], wasm_env: String, wasi_env: String }`
-- `Threads::channel_new(capacity: Int)` -> `Int` (channel id)
-- `Threads::send(channel_id: Int, message: String)` -> `Bool`
-- `Threads::recv(channel_id: Int)` -> `String` (`""` when empty)
-- `Threads::spawn(name: String, channel_id: Int)` -> `Int` (task id)
-- `Threads::wait(task_id: Int)` -> `Int` (current minimal runtime returns `0`)
+- `Threads::channel_new(capacity: Int)` -> `ThreadChannel[T]`
+- `Threads::send(channel: ThreadChannel[T], payload: T)` -> `Bool`
+  - current experimental payload lowering supports `Int` and `String`
+- `Threads::recv(channel: ThreadChannel[T])` -> `T`
+- `Threads::spawn(name: String, channel: ThreadChannel[T])` -> `ThreadTask[R]`
+  - for supported string-literal workers, `R` is the worker return type
+  - current experimental worker result lowering supports `Int` and `String`
+  - reserved diagnostic names currently return `ThreadTask[Int]`
+- `Threads::wait(task: ThreadTask[T])` -> `T`
+  - `linear-local` currently returns `0`
+  - `component-unsafe-os-threads` reads the 64-bit tagged slot payload and
+    surfaces worker results through `ThreadTask[R]`
+- `ThreadChannel[T]` is a checker-level payload contract. The current compiled
+  ABI still stores and passes the channel handle as the existing tagged `Int`
+  value, but `send` and `recv` must agree on `T`. Under
+  `component-unsafe-os-threads`, shared channel payload cells store the full
+  64-bit tagged Vibe value with `i64.atomic.store`/`i64.atomic.load`.
+- `ThreadTask[T]` is a checker-level result contract. The current compiled ABI
+  still stores and passes the task handle as the existing tagged `Int` slot
+  pointer, but `Threads::wait` no longer accepts arbitrary `Int` values at the
+  source type layer.
+- `linear-local` compiled lowering is deterministic and not parallel:
+  `channel_new` creates an in-module single-slot channel, `send` overwrites the
+  slot, `recv` consumes it, `spawn` returns a completed task handle, and `wait`
+  returns `0`.
+- `component-unsafe-os-threads` currently lowers `channel_new`/`send`/`recv`
+  to shared memory plus atomic field operations for the generated component
+  staging path.
+  `spawn`/`wait` use the Vibe slot ABI with `canon thread.spawn-indirect`,
+  `memory.atomic.notify`, and `memory.atomic.wait32` on the local
+  `mizchi/wasmtime` fork when `WASMTIME_UNSAFE_COMPONENT_THREAD_OS_SPAWN=1` is
+  set. The returned task handle is a Vibe-owned slot pointer and must not be treated
+  as a canonical `thread.spawn-*` join/result handle.
+- `component-unsafe-os-threads` rejects `enable_rc=true` for now. The current
+  Perceus/RC free-list path is not part of the shared-thread heap contract; only
+  the backend's atomic bump allocation path is covered by the current probes.
+- Builder grow and bulk grow do not use the heap-tip in-place fast path under
+  `component-unsafe-os-threads`; they allocate replacement storage through the
+  shared atomic allocator.
+- `cabi_realloc` uses a shared-memory CAS loop in
+  `component-unsafe-os-threads`, so canonical ABI power-of-two alignment
+  requests reserve aligned ranges from the same shared cursor.
+- `scripts/wasm_vibe_host_runner.js` refuses the legacy `__heap_ptr` Preview2
+  allocation fallback when exported memory is shared; shared-memory host
+  allocation must go through exported `cabi_realloc`.
+  String-literal worker dispatch is currently limited to reserved diagnostic
+  names (`"noop"`, `"alloc-probe"`) or capture-free top-level worker functions
+  in the temporary `ThreadChannel[Int|String] -> Int|String` shape. Dynamic
+  worker names are rejected in this backend until function-value, closure, or
+  richer payload/result semantics are specified.
 - `vibe/prelude/threads.vibe` は test-safe な pure contract 層を分離:
   - `task_spec`, `channel_spec`, `actor_spec`, `deployment_plan`, `recommended_*`
   - これらは通常 `vibe test` で実行可能
