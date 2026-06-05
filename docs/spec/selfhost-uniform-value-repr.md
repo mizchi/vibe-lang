@@ -337,13 +337,105 @@ arithmetic / comparison / bitop / shift / float / nested-data case under
    nor calls — rare — may still under-dup, the original latent/non-reproducing
    case, which is safe.)
 
-   **Still remaining (leaks, safe; need owned-vs-borrowed typing):**
-   - Container **owning** escapes (storing an owned heap value into a longer
-     -lived container that outlives the current scope) are not dup'd → leak
-     (safe), as before.
-   - Captured closures remain unheadered (the recursion would misread one stored
-     in a dropped container — low address, so the high-32 guard does not catch
-     it); no opt-in RC path exercises it.
+   **Free-list search allocator `__rc_alloc` (landed).** Diagnosis of an
+   apparent "container owning escape" leak (`let t = (..); let a = [t]` in a loop
+   leaking 32 B/iter) showed the refcounting was already *correct* — `t` was
+   freed every iteration (verified: 2 frees/iter, results identical to default).
+   The growth was **free-list fragmentation**, not a missing dup. The single LIFO
+   free-list (global 2) was only matched at its **head** by each inline
+   allocator: a head-only exact-size check. Per iteration the program allocates
+   two sizes (tuple 32 B, then container 84/56 B); the container's recursive drop
+   frees the element *then* the container, so the LIFO head becomes the container,
+   and the next iteration's tuple request (32 B) misses it — bump-allocating a
+   fresh block while a perfectly sized free block sits one node deeper. (The
+   inline-literal form `[(i,i+1)]` happened to allocate in the reverse order, so
+   its head always matched — which is why only the *by-name* move leaked.) Fix: a
+   generated `__rc_alloc(size) -> block_start` helper (type `(i64)->(i64)`, the
+   slot after `__rc_drop`) that **walks the free-list for an exact-fit block and
+   unlinks it**, falling back to a bump only when none exists. All four inline
+   object allocators (tuple, array literal, record, ctor payload) now call it via
+   `CompileCtx::rc_alloc_func_idx`. The array / enum-payload / record-field moves
+   now reclaim at a bounded heap (0 B/iter); pinned by three reclaim cases
+   (`owned_in_array/enum/record`) and three heap-e2e result-parity cases. Exact-fit
+   only (no splitting), so it stays drop-in compatible with the recursive
+   `rc_drop` free path, and it is `enable_rc`-only (the default bootstrap path
+   never allocates from the free-list, so it is structurally unaffected).
+
+   **Heap `mut` reassignment drops the old value (landed).** A heap `mut`
+   binding reassigned in a loop (`let mut b = (0,0); … b = t`) leaked the
+   *previous* block every iteration (32 B/iter, confirmed; result correct) — the
+   Perceus assignment rule "drop the old owner before storing the new value" was
+   unimplemented for `mut` bindings (they were never classified as heap, never
+   dropped). Fix: `ELetMut` now classifies a heap initializer
+   (tuple/array/record/ctor) into `heap_binding_names`, and `EAssign` emits a
+   guarded `__rc_drop` of the binding's current value *before* storing the new
+   one (mirrors `src/`'s `wasm_codegen_stmt.mbt` assignment path). The drop is a
+   guarded **dec** (no-op on a scalar/string, decrements not frees), so an
+   aliased old value — rc > 1 via `PaAliasDup` — is safe. **Safety carve-out:**
+   when the RHS references the assigned name (`b = b.0`, `b = f(b)`,
+   `b = (b.0+i, b.1)`) the drop is *suppressed* — dropping first would free a
+   block the new value derives from (use-after-free); these keep the old, safe
+   leak. The `b = t` loop now reclaims at a bounded 64 B (two blocks cycling
+   through the free-list). Pinned by two heap-e2e result-parity cases
+   (reassign-drops-old; reassign-reads-old stays correct) and the `mut_reassign`
+   reclaim case.
+
+   **Closures with captures are RC-managed (landed).** A capturing closure's env
+   block is now a headered, drop-class-1 (field-vector) block allocated via
+   `__rc_alloc`: the value points at `block_start+8` (past the 8-byte header), so
+   the call path's value-relative offsets (slot@value+0, captures@value+8) and the
+   `& -4` / `& -2` untags line up exactly as in the unheadered default layout —
+   the calling convention is unchanged. Capturing a value consumes it (the env
+   takes its reference, no dup), the closure `let` binding is classified heap, and
+   its scope-end drop runs `__rc_drop` (drop-class 1 → recurse the captures, free
+   the env). A capture-less closure stays an immediate (`(slot<<2)|2`, even → the
+   drop skips it). So a closure capturing a heap value, called once or many times
+   (the call borrows it), or returned (escaping — captures survive until the
+   caller drops the closure), reclaims fully. Capture-less and the recursive drop
+   are `enable_rc`-only; the default path keeps the raw bump-allocated env. Pinned
+   by `closure_capture` / `closure_two` (reclaim) and two heap-e2e parity cases.
+
+   **Still remaining (leaks, safe):**
+   - Container **owning** escapes where the RHS references the target (the
+     reassignment safety carve-out above) or an owned value stored into a
+     container that *outlives* the current scope without a matching drop site are
+     not dup'd/dropped → leak (safe).
+   - A heap value captured by a closure that is then stored into a longer-lived
+     container (closure escapes via a container, not a return) follows the same
+     container-owning-escape gap.
+
+   **Heap `mut` final-value scope-end drop (landed).** The reassignment drop only
+   reclaims *overwritten* values; the binding's last value still owns a reference
+   at scope end. `ELetMut` now emits a scope-end drop of the final value (same
+   projection-rooted-at-name tail guard as `let`), so `let mut b = ...; … ; b.0`
+   reclaims fully. Pinned by `mut_final`.
+
+   **Owned parameters (owned-vs-borrowed; landed).** A function parameter is
+   *owned*: the caller transfers its reference in under the owning-argument
+   convention (a call argument is a consuming use). So a heap param used only by
+   borrows (or unused) is never dropped — it leaked. `build_perceus_plan_with
+   _params` now declares the parameters as bindings (count + emit in lockstep, so
+   the existing machinery emits a `PaDrop` for a borrow-only/unused heap param and
+   a `PaDup` for one used in multiple owning positions), and the codegen
+   (compile_lambda + the top-level fn path in linked_compile) classifies the heap
+   params, emits the owning-use dup budget at entry, and drops the owned params at
+   the body tail. The tail drop carries the same projection-escape guard (dup the
+   result first when it is a projection rooted at a dropped param — `fst(p) → p.0`).
+   Heap-ness is read from the param's type (`type_expr_is_heap`): tuple / array /
+   record / enum / concrete struct, but **never** a type containing a function
+   (closures are unheadered — the recursive `__rc_drop` would misread one) nor a
+   type variable / unannotated param (may be a closure → safe, no drop). A
+   top-level fn's param types live on its *signature* (`let f: (A,B) → R`), not on
+   the lambda params, so they are read from the SLet annotation; a single tuple
+   param prints `((A,B)) → R` but parses as multiple args (the outer parens are
+   the param list), so a 1-param lambda with a multi-arg signature reconstructs
+   the param type as the tuple of all args. Pinned by `owned_param`,
+   `owned_param_proj` (reclaim) and three heap-e2e parity cases.
+
+   **Still remaining (smaller, safe):** owned heap params of *nested closures*
+   (compile_lambda) whose types are unannotated are not dropped (the signature
+   lives on an outer binding the lambda does not see) → leak (safe); and the
+   container-escape / reassign-reads-target carve-outs above.
 5. **Stage 5 — verification & throughput. ◐ MEASURED.** The RC e2e gate (47/47,
    default vs RC identical on wasmtime) is the correctness signal;
    `scripts/bench_selfhost_rc.{sh,mjs}` measures the payoff: each benchmark

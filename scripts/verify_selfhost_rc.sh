@@ -129,6 +129,36 @@ reclaim_case array   '"let main: () -> Int = () -> {\n  let mut s = 0\n  let mut
 # the recursive rc_drop helper all three are reclaimed → ~0 B/iter.
 reclaim_case nested  '"let main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let t = ((i, i + 1), (i + 2, i + 3))\n    let a = t.0\n    s = s + a.0\n    i = i + 1\n  }\n  s\n}"'
 
+# ADR-0055 Stage 4: an owned heap binding moved into a container element
+# (`let t = (..); let a = [t]`). Two block sizes (tuple 32 B, container) are
+# allocated then freed-in-reverse each iteration; the old head-only free-list
+# bump-allocated a fresh tuple every iter (32 B/iter leak). The __rc_alloc
+# free-list search reclaims fully. Pins the array / enum / record forms.
+reclaim_case owned_in_array  '"let main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let t = (i, i + 1)\n    let a = [t]\n    s = s + (Array::get(a, 0)).0\n    i = i + 1\n  }\n  s\n}"'
+reclaim_case owned_in_enum   '"enum Box { Wrap((Int, Int)); Empty }\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let t = (i, i + 1)\n    let e = Wrap(t)\n    s = s + match e { Wrap(p) => p.0, Empty => 0 }\n    i = i + 1\n  }\n  s\n}"'
+reclaim_case owned_in_record '"struct H { v: (Int, Int) }\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let t = (i, i + 1)\n    let h = H::{ v: t }\n    s = s + h.v.0\n    i = i + 1\n  }\n  s\n}"'
+
+# ADR-0055 Stage 4: reassigning a heap `mut` binding must drop the old value.
+# `b = t` each iteration would otherwise leak the previous tuple (32 B/iter);
+# the assignment drop reclaims it (bounded heap, two blocks cycling).
+reclaim_case mut_reassign '"let main: () -> Int = () -> {\n  let mut b = (0, 0)\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let t = (i, i + 1)\n    b = t\n    i = i + 1\n  }\n  b.0\n}"'
+
+# ADR-0055 Stage 4: the FINAL value of a heap mut binding is dropped at scope end.
+reclaim_case mut_final '"let main: () -> Int = () -> {\n  let mut acc = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let mut b = (i, i + 1)\n    b = (i + 2, i + 3)\n    acc = acc + b.0\n    i = i + 1\n  }\n  acc\n}"'
+
+# ADR-0055 Stage 4 (owned-vs-borrowed): an owned heap parameter used only by
+# borrows is dropped by the callee, else the caller's transferred tuple leaks.
+reclaim_case owned_param '"let consume: ((Int, Int)) -> Int = (p) -> {\n  p.0 + p.1\n}\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let t = (i, i + 1)\n    s = s + consume(t)\n    i = i + 1\n  }\n  s\n}"'
+# An owned param returned by projection (tail-aliasing guard dups the result).
+reclaim_case owned_param_proj '"let fst: (((Int, Int), (Int, Int))) -> (Int, Int) = (p) -> {\n  p.0\n}\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let t = ((i, i + 1), (i + 2, i + 3))\n    let r = fst(t)\n    s = s + r.0\n    i = i + 1\n  }\n  s\n}"'
+
+# ADR-0055 Stage 4 (closures): a closure capturing a heap value is a headered RC
+# env block (drop-class 1) — capturing consumes the value, dropping the closure
+# binding recursively frees it. Without it the captured tuple + env leak.
+reclaim_case closure_capture '"let main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let t = (i, i + 1)\n    let g = () -> { t.0 + t.1 }\n    s = s + g()\n    i = i + 1\n  }\n  s\n}"'
+# Closure capturing two heap values, called twice (not consumed per call).
+reclaim_case closure_two '"let main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let a = (i, i + 1)\n    let b = (i + 2, i + 3)\n    let g = () -> { a.0 + b.1 }\n    s = s + g() + g()\n    i = i + 1\n  }\n  s\n}"'
+
 # KNOWN PRE-EXISTING GAP (not a regression): a *nested* tuple built in a loop
 # (`let t = ((i, i+1), (i+2, i+3))`) fails to compile under RC at BOTH HEAD and
 # the Stage-1 baseline — so it is excluded from the reclamation set rather than

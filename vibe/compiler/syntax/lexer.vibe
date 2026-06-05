@@ -514,7 +514,13 @@ let lex_decimal: (String, Int, Int) -> (Token, Int) with { Error } = (s, len, i)
   if int_end == i {
     throw("expected digit")
   }
-  if int_end < len && String::char_code_at(s, int_end) == '.' {
+  // Tuple field access `t.0.0`: a number immediately preceded by a single field
+  // dot must NOT absorb a trailing `.<digit>` as a float decimal — that `.` is
+  // the next tuple-index projection, not this number's fraction. (Mirrors
+  // src/parser/lexer.mbt `after_field_dot`.) Excludes `..`/`...` (range/spread)
+  // by requiring the char two back to not also be a dot.
+  let after_field_dot = i >= 1 && String::char_code_at(s, i - 1) == '.' && (i < 2 || String::char_code_at(s, i - 2) != '.')
+  if !after_field_dot && int_end < len && String::char_code_at(s, int_end) == '.' {
     if int_end + 1 < len && is_digit(String::char_code_at(s, int_end + 1)) {
       let int_str = s[i: int_end]
       let int_val = Int::to_double(parse_int_from_string(int_str))
@@ -554,12 +560,47 @@ let lex_number: (String, Int, Int) -> (Token, Int) with { Error } = (s, len, i) 
   } else lex_decimal(s, len, i)
 }
 
+// Does the (whitespace) source region [from, to) contain a newline? Used to make
+// the lexer newline-sensitive for the postfix `[` ambiguity (below).
+let region_has_newline: (String, Int, Int) -> Bool = (s, lo, hi) -> {
+  let mut i = lo
+  let mut found = false
+  while i < hi {
+    if String::char_code_at(s, i) == '\n' {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+// Can this token end a complete (primary) expression? After such a token, a
+// newline followed by `[` starts a NEW statement (an array literal), not a
+// postfix subscript — the lexer inserts a synthetic `;` to disambiguate.
+let is_expr_ending_tok: (Token) -> Bool = (t) -> {
+  match t {
+    TRParen => true,
+    TRBracket => true,
+    TRBrace => true,
+    TIdent(_) => true,
+    TInt(_) => true,
+    TFloat(_) => true,
+    TString(_) => true,
+    _ => false
+  }
+}
+
 export let lex: (String) -> Array[Token] with { Error } = (source) -> {
   let len = String::length(source)
   {
     let b = ArrayBuilder::new()
+    let mut prev_tok = TEof
+    let mut prev_end = 0
     let mut pos = skip_ws(source, len, 0)
     while pos < len {
+      let nl_before = region_has_newline(source, prev_end, pos)
       let c = String::char_code_at(source, pos)
       let (tok, next) = if is_alpha(c) {
         lex_ident(source, len, pos)
@@ -668,7 +709,20 @@ export let lex: (String) -> Array[Token] with { Error } = (source) -> {
       } else if c == '\'' {
         lex_char(source, len, pos)
       } else throw(String::concat("unexpected character: ", String::from_char_code(c)))
+      // Newline-sensitive disambiguation: `expr <newline> [ ... ]` is two
+      // statements (the `[...]` is an array literal), not a postfix subscript
+      // `expr[...]`. The lexer discards newlines, so insert a synthetic `;` when
+      // a `[` is newline-preceded and follows an expression-ending token; the
+      // statement parser already treats `;` as a separator. (Only `[` — the
+      // reported subscript/array-literal ambiguity.)
+      if c == '[' && nl_before && is_expr_ending_tok(prev_tok) {
+        ArrayBuilder::push(b, TSemicolon)
+      } else {
+        ()
+      }
       ArrayBuilder::push(b, tok)
+      prev_tok = tok
+      prev_end = next
       pos = skip_ws(source, len, next)
     }
     ArrayBuilder::push(b, TEof)

@@ -195,11 +195,33 @@ is added.
   array-arg of `Array::get` / `length` / `set` / `push` is now a *borrow* (like
   `__index`), so an array bound then only read/mutated-in-place is reclaimed by
   its own scope-end drop. A `let a = [i, …]` loop is now reclaimed (measured 0
-  bytes/iteration, constant 84 B). Growth (`Array::push` past capacity) still
-  bump-allocates a new data buffer and leaks the old one (conservative, safe);
-  the array object itself is reclaimed (heap e2e 24/24 on both paths, incl. a
-  grown-array case). Arrays built via `ArrayBuilder` / `array_new` (not literals)
-  stay on the leaky builtin path.
+  bytes/iteration, constant 84 B). Growth (`Array::push` past capacity) now
+  allocates the larger data buffer as a HEADERED, free-list-backed block via
+  `__rc_alloc` and frees the old buffer on regrow; `array_new` allocates via
+  `__rc_alloc` too (not a raw bump); and the recursive `rc_drop` frees a grown
+  (separate) data buffer when it drops an array (an inline buffer at `value+12`
+  is still freed with the block). A build-and-discard loop that previously leaked
+  ~one array block + its grown buffers per iteration now reclaims to 0 B/iter
+  (Stage 4: array buffer reclamation). `ArrayBuilder::{new,push,freeze}` are
+  aliases of `array_new` / `Array::push` / `identity`, so they ride the same
+  reclamation: `ArrayBuilder::push` is now a borrow-arg0 call (the builder stays
+  live, mutated in place) so the builder is reclaimed by its own scope-end drop,
+  and `freeze` (identity) transfers ownership of the built array to its result
+  (reclaimed at scope end, or by the caller when returned). An ArrayBuilder
+  build-and-discard loop now reclaims to 0 B/iter (was ~one array block + grown
+  buffers per iteration), and a frozen result that escapes survives correctly.
+- **MapBuilder** (`MapBuilder::{new,set,freeze}` + `Map::{get,keys,has_key,set}`)
+  is also reclaimed (Stage 4): `MapBuilder::new` allocates a headered, free-list-
+  backed block via `__rc_alloc`, tagged as an odd pointer with drop-class 6 (map:
+  `count@value+0`, then `count` entries of `key@+8`/`val@+16` on a 16-byte
+  stride). The recursive `rc_drop` handles class 6 by dropping each key and val
+  before freeing the block, so a build-and-discard loop reclaims to 0 B/iter even
+  with heap-valued entries. `MapBuilder::set` / `Map::{get,keys,has_key,set}`
+  borrow arg0 (the map stays live), `Map::get` returns a borrowed entry (like
+  `Array::get`), and map readers untag (`& -2`, a no-op on the still-even
+  `map { … }` literal pointer) before dereferencing. Map **literals** and
+  `Map::set` **results** remain on the even/leaky path (and the selfhost map-
+  literal string-key read has a pre-existing correctness bug, orthogonal to RC).
 - Known limitations of this first vertical (all leak conservatively — they
   never corrupt — and only matter under `enable_rc`):
   - **Mixed tuple sizes**: the free list is head-only exact-fit (as in `src/`),
@@ -224,8 +246,9 @@ is added.
   step first — a **uniform value representation** (integer/float tagging enabling
   `src/`-style runtime dispatch) plus escape-ownership analysis. Designed in
   [selfhost-uniform-value-repr.md](selfhost-uniform-value-repr.md) (ADR-0055).
-  Also remaining: freeing grown array data buffers, `ArrayBuilder`-built arrays,
-  and a segregated / coalescing free list.
+  Also remaining: a segregated / coalescing free list. (Grown array data buffers
+  and `ArrayBuilder`-built arrays are now reclaimed — Stage 4 array buffer
+  reclamation.)
 - Everything stays gated behind `enable_rc`, default off.
 
 ### Phase 4 — verification & cutover

@@ -94,6 +94,12 @@ export struct CompileCtx {
   // drop). When >= 0, scope-end drops emit a `call` to it so nested heap is
   // reclaimed to arbitrary depth.
   rc_drop_func_idx: Int;
+  // RC: wasm function index of the free-list search allocator `__rc_alloc`
+  // (ADR-0055 Stage 4), or -1 when unavailable (non-RC). When >= 0, heap-object
+  // construction calls it with the block size so an exact-fit free block is found
+  // anywhere in the free-list (not just the head), eliminating the size-ordering
+  // fragmentation a head-only check leaves when interleaved sizes are freed.
+  rc_alloc_func_idx: Int;
   // RC: names of `let` bindings the Perceus plan marks with a non-alias `PaDup`
   // (a heap value used in more than one *owning* position, e.g. `let u = (t, t)`
   // dups `t`). One entry per dup (so a name's multiplicity = its dup budget).
@@ -495,6 +501,29 @@ export let get_slet_name: (Stmt) -> String with { Error } = (stmt) -> {
   match stmt {
     SLet(_, _, name, _, _) => name,
     _ => throw("not SLet")
+  }
+}
+
+// The declared type annotation of an SLet (`let f: T = ...`), or None.
+// ADR-0055 Stage 4: a top-level fn's parameter types live on its signature, not
+// on the lambda params, so owned-param drops read them from here.
+export let get_slet_type: (Stmt) -> Option[TypeExpr] = (stmt) -> {
+  match stmt {
+    SLet(_, _, _, ty, _) => ty,
+    _ => None
+  }
+}
+
+// Extract a function signature's parameter types: Some(arg_types) when `ty` is a
+// function type `(A, B, ...) -> R`, else None.
+export let fn_type_param_types: (Option[TypeExpr]) -> Option[Array[TypeExpr]] = (ty) -> {
+  match ty {
+    Some(t) =>
+      match t {
+        TyFn(args, _, _) => Some(args),
+        _ => None
+      },
+    None => None
   }
 }
 

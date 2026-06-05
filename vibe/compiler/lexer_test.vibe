@@ -220,6 +220,68 @@ test "lex_float" {
   assert(eq(lex_len("3.14"), 2))
 }
 
+test "lex_newline_before_bracket_inserts_semicolon" {
+  // `expr <newline> [..]` is two statements (array literal), not a subscript:
+  // the lexer inserts a synthetic `;` after an expression-ending token.
+  assert(lex_match("a\n[b]", [
+    TIdent("a"),
+    TSemicolon,
+    TLBracket,
+    TIdent("b"),
+    TRBracket,
+    TEof
+  ]))
+}
+
+test "lex_same_line_bracket_is_subscript" {
+  // Same-line `[` stays a postfix subscript (no synthetic `;`).
+  assert(lex_match("a[b]", [
+    TIdent("a"),
+    TLBracket,
+    TIdent("b"),
+    TRBracket,
+    TEof
+  ]))
+}
+
+test "lex_newline_bracket_after_nonexpr_no_semicolon" {
+  // After a non-expression-ending token (`,`), a newline + `[` does NOT get a
+  // synthetic `;` — it is a normal array literal (e.g. a call argument).
+  assert(lex_match("f(a,\n[b])", [
+    TIdent("f"),
+    TLParen,
+    TIdent("a"),
+    TComma,
+    TLBracket,
+    TIdent("b"),
+    TRBracket,
+    TRParen,
+    TEof
+  ]))
+}
+
+test "lex_chained_tuple_index" {
+  // Regression (#---): chained tuple projection `t.0.0` must lex as
+  // ident dot int dot int — NOT ident dot float(0.0). A number right after a
+  // single field dot does not absorb a following `.<digit>` as a float decimal.
+  assert(lex_match("t.0.0", [
+    TIdent("t"),
+    TDot,
+    TInt(0),
+    TDot,
+    TInt(0),
+    TEof
+  ]))
+}
+
+test "lex_tuple_index_then_float_unaffected" {
+  // A real float literal (not after a field dot) still lexes as TFloat.
+  assert(lex_match("0.5", [
+    TFloat(0.5),
+    TEof
+  ]))
+}
+
 test "lex_comment_skip" {
   assert(lex_match("a // comment\nb", [
     TIdent("a"),

@@ -252,8 +252,14 @@ let zeros: (Int) -> Array[Int] = (n) -> {
 // consumes: the array stays live, so arg0 is a *borrow* (like `__index`). This
 // lets an array bound then only get/length/set/push'd be reclaimed by its own
 // scope-end drop. (Array::push grows in place; the object identity is stable.)
+// `ArrayBuilder::push` is an alias of `Array::push` (same in-place-grow builtin),
+// so it borrows arg0 too — without this the builder binding is treated as moved
+// into the first push and loses its scope-end drop (the array + grown buffers
+// leak). `ArrayBuilder::new` (0 args) and `ArrayBuilder::freeze` (identity:
+// consumes the builder and returns it as an owned array) keep the default
+// owning convention and are intentionally not listed here.
 let is_borrow_arg0_call: (String) -> Bool = (f) -> {
-  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push"
+  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "ArrayBuilder::push" || f == "MapBuilder::set" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::set"
 }
 
 export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, expr) -> {
@@ -897,5 +903,122 @@ export let build_perceus_plan: (Expr) -> Array[PerceusAction] = (body) -> {
   ctx.next_id = 0
   ctx.seq_id = 0
   pc_emit(ctx, empty, body)
+  ctx.actions
+}
+
+// ADR-0055 Stage 4 (owned-vs-borrowed): is a type a heap RC block the callee
+// can safely drop? A function parameter is *owned* — the caller transfers its
+// reference in under the owning-argument convention — so a heap param used only
+// by borrows (or unused) must be dropped at the callee's scope end, else it
+// leaks. Conservative: only concrete tuple/array/record/enum/struct types, and
+// NEVER a type that contains a function (closures are unheadered; the recursive
+// __rc_drop would misread one). Type variables and unknown (None) are treated as
+// non-heap (safe leak) since they may be instantiated to a closure.
+let type_name_is_heap: (String) -> Bool = (n) -> {
+  if String::length(n) == 0 {
+    false
+  } else {
+    let c0 = String::char_code_at(n, 0)
+    // Uppercase-initial concrete types only (lowercase = type variable).
+    if c0 < 'A' || c0 > 'Z' {
+      false
+    } else if n == "Int" || n == "Bool" || n == "Double" || n == "Float" || n == "String" || n == "Bytes" || n == "Char" || n == "Unit" {
+      false
+    } else {
+      true
+    }
+  }
+}
+
+let rec type_contains_fn: (TypeExpr) -> Bool = (t) -> {
+  match t {
+    TyFn(_, _, _) => true,
+    TyTuple(elems) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(elems) {
+        if type_contains_fn(Array::get(elems, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    TyApp(_, args) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(args) {
+        if type_contains_fn(Array::get(args, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    TyName(_) => false,
+    TyUnit => false
+  }
+}
+
+export let type_expr_is_heap: (Option[TypeExpr]) -> Bool = (ot) -> {
+  match ot {
+    None => false,
+    Some(t) =>
+      if type_contains_fn(t) {
+        false
+      } else {
+        match t {
+          TyTuple(_) => true,
+          TyApp(_, _) => true,
+          TyName(n) => type_name_is_heap(n),
+          TyFn(_, _, _) => false,
+          TyUnit => false
+        }
+      }
+  }
+}
+
+// Build the plan for a function whose parameters are owned heap values. Params
+// are declared as bindings (in count + emit lockstep, same ids) so the existing
+// machinery emits a PaDrop for a borrowed-only/unused heap param and a PaDup for
+// one used in multiple owning positions. Heap-ness comes from the param's type
+// annotation (scalar params get scalar=true so they are never dropped).
+export let build_perceus_plan_with_params: (Array[(String, Option[TypeExpr])], Expr) -> Array[PerceusAction] = (params, body) -> {
+  let ctx = pctx_new()
+  let mut scope: Map[String, Int] = map {}
+  let mut pi = 0
+  while pi < Array::length(params) {
+    let (pname, ptype) = Array::get(params, pi)
+    let id = pc_declare(ctx, pname, !type_expr_is_heap(ptype))
+    scope = Map::set(scope, pname, id)
+    pi = pi + 1
+  }
+  pc_count(ctx, scope, body)
+  ctx.next_id = 0
+  ctx.seq_id = 0
+  let mut scope2: Map[String, Int] = map {}
+  let param_ids = Array::slice([
+    0
+  ], 0, 0)
+  let mut pj = 0
+  while pj < Array::length(params) {
+    let (pname, _) = Array::get(params, pj)
+    let id = pe_declare(ctx, pname)
+    scope2 = Map::set(scope2, pname, id)
+    Array::push(param_ids, id)
+    pj = pj + 1
+  }
+  pc_emit(ctx, scope2, body)
+  // Scope-end drops for params still owning a live reference (borrow-only/unused).
+  let mut pk = 0
+  while pk < Array::length(params) {
+    let (pname, _) = Array::get(params, pk)
+    pe_scope_end(ctx, Array::get(param_ids, pk), pname)
+    pk = pk + 1
+  }
   ctx.actions
 }
