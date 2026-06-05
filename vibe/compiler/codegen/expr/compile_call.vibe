@@ -459,6 +459,24 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
     else if fname == "Double::to_i64_bits" {
       ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
     }
+    else if fname == "Double::to_i64_bits_lo" || fname == "Double::to_i64_bits_hi" {
+      // Low / high 32 bits of the f64 pattern (the arg leaves its f64 bits as
+      // i64 on the stack). Each half is 0..2^32-1, which fits the 62-bit Int —
+      // letting a float literal pattern survive (Blocker-2, ADR-0055). shr_s +
+      // mask gives the unsigned high 32 (no shr_u needed). Tag as Int per RC.
+      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      if fname == "Double::to_i64_bits_hi" {
+        emit_i64_const(buf, 32)
+        emit_i64_shr_s(buf)
+      }
+      emit_i64_const(buf, 4294967295)
+      emit_i64_and(buf)
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shl(buf)
+      }
+      nl
+    }
     else if fname == "String::ends_with" {
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)

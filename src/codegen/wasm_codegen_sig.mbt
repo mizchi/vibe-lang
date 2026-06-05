@@ -1162,6 +1162,8 @@ fn needs_heap_expr(ctx : CodegenCtx, expr : @core.Expr) -> Bool {
         name == "Array::truncate" ||
         name == "array_contains_str" ||
         name == "Double::to_i64_bits" ||
+        name == "Double::to_i64_bits_lo" ||
+        name == "Double::to_i64_bits_hi" ||
         name == "Double::from_i64_bits" ||
         name == "string_to_data" ||
         name == "MapBuilder::new" ||

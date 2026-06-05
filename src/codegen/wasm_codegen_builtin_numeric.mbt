@@ -967,6 +967,30 @@ fn compile_builtin_numeric(
       // We just need to return the raw bits as-is (already i64)
       // No tagging needed since this is used for raw bit manipulation
     }
+    "Double::to_i64_bits_lo" | "Double::to_i64_bits_hi" => {
+      // Return the low / high 32 bits of the f64 pattern as an i64 in
+      // 0..2^32-1. Each half fits the 62-bit tagged Int, so a selfhost
+      // compiler can carry an f64 literal pattern without overflowing its own
+      // Int (Blocker-2, ADR-0055). Floats are heap-boxed here, so load the raw
+      // bits directly from the box (f64 stored at offset 4) as i64.
+      let pos_args = extract_positional_exprs_with_arity(args, name, 1)
+      let tmp = alloc_temp_local_with_kind(ctx, ValueKind::I64)
+      compile_expr_i32(ctx, buf, pos_args[0])
+      emit_local_set(buf, tmp)
+      emit_untag_ptr(buf, tmp)
+      emit_i64_load(buf, 4)
+      if name == "Double::to_i64_bits_hi" {
+        emit_i64_const_raw(buf, 32L)
+        emit_i64_shr_u(buf)
+      } else {
+        emit_i64_const_raw(buf, 0xFFFFFFFFL)
+        emit_i64_and(buf)
+      }
+      // The half is 0..2^32-1; return it as a normally tagged Int (value << 2,
+      // tag_int = 0) so callers consume it like any Int.
+      emit_i64_const_raw(buf, 2L)
+      emit_i64_shl(buf)
+    }
     "Double::from_i64_bits" => {
       // i64_bits_to_double(int_tagged) -> boxed f64
       // Takes a tagged int, untags it to get raw i64 bits,

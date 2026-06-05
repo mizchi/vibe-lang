@@ -88,6 +88,41 @@ no bootstrap risk):
 
 ### Floats
 
+> **Float status (2026-06).** Floats were broken in the selfhost linear backend
+> at three layers; the first two are now fixed:
+> 1. ✅ **Numeric conversions were no-ops** (`Int::to_double` / `Double::to_int`
+>    / `Float::*` were intercepted by an identity fast-path in
+>    `compile_call.vibe`, shadowing `gen_double_to_int_body` etc.). Fixed in
+>    #505 (and `expr_is_floatish` extended to the float-producing aliases).
+>    `Double::to_int(Int::to_double(7))` = 7.
+> 2. ✅ **Float literals (Blocker-2) — FIXED.** `EFloat` used
+>    `emit_f64_const_bits(buf, Double::to_i64_bits(v))`, but a normal f64 bit
+>    pattern (e.g. `4.0` = `0x4010000000000000`) exceeds `2^61-1`, so it was
+>    truncated when forced into a tagged `Int` → corrupted `f64.const` → every
+>    literal decoded to ≈0. Fix: split the pattern into two 32-bit halves (each
+>    `≤ 2^32-1`, fits the 62-bit Int) via new `Double::to_i64_bits_lo` /
+>    `Double::to_i64_bits_hi : (Double) -> Int` builtins, and emit the
+>    `f64.const` from the halves (`emit_f64_const_lohi`). Implemented in both
+>    compilers:
+>    - **`src/`** (floats heap-boxed): `wasm_codegen_builtin_numeric.mbt` loads
+>      the f64 bits directly from the box (`i64.load` at offset 4), masks /
+>      shifts the half, and tags it as a normal Int (`<< 2`, `tag_int = 0`);
+>      declared in `typecheck_call_builtin_handler_runtime_memory.mbt`,
+>      `purity.mbt`, `address.mbt`, `wasm_codegen_sig.mbt` (`needs_heap`).
+>    - **selfhost** (floats inline f64-bits): `compile_call.vibe` masks
+>      (`shr_s` + `& 0xFFFFFFFF`, no `shr_u` needed) and tags per `enable_rc`
+>      (`<< 1`); declared in `checker/builtins_misc.vibe`. `EFloat`
+>      (`compile_expr.vibe`) now calls `emit_f64_const_lohi`.
+>    - Verified: float literals (`4.0`→4, `7.9`→7, `1.5+2.5`→4, `10.0/4.0`→2,
+>      mixed) in `codegen_heap_e2e_test` default **and** RC; byte-parity 74/74;
+>      selfbuild/bootstrap deterministic.
+> 3. ❌ **Blocker-3** (no AST types) still prevents tracking float-ness through a
+>    variable, so `let x = 1.5; x + y` is not yet recognised as float arithmetic
+>    (`expr_is_floatish` is syntactic). This is the remaining gap before floats
+>    are fully general, and is orthogonal to heap-boxing.
+>
+> With literals working, **heap-box** (below) can now proceed.
+
 Two options; **box-on-heap** is the conservative first cut:
 
 - **Heap-box** every `enable_rc` float as a 1-field heap object (`type_id=float`,
