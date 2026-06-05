@@ -551,9 +551,13 @@ arithmetic / comparison / bitop / shift / float / nested-data case under
    `nested_closure_match` (reclaim, 0 B/iter) and a heap-e2e parity case.
 
    **Still remaining (smaller, safe):** an unannotated owned heap param that is
-   neither projected nor matched in the body (passed through whole to another
-   call, or returned as-is) cannot be *proven* heap, so it keeps the safe leak;
-   and the container-escape / reassign-reads-target carve-outs above.
+   **unused or used only by borrows** (e.g. `(p) -> { 42 }`) cannot be *proven*
+   heap from the body — and is *irreducible without type information*: an unused
+   param could be a string/bytes fat pointer, which the recursive `__rc_drop`
+   would misread, so dropping it unconditionally is unsound. (A param consumed by
+   an owning call — `(p) -> { g(p) }` — already balances: the call moves it, no
+   drop needed.) Plus the reassign-reads-target carve-out above. Closing these
+   needs real param types (escape/type propagation), not a local heuristic.
 5. **Stage 5 — verification & throughput. ◐ MEASURED.** The RC e2e gate (47/47,
    default vs RC identical on wasmtime) is the correctness signal;
    `scripts/bench_selfhost_rc.{sh,mjs}` measures the payoff: each benchmark
