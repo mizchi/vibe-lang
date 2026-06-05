@@ -82,6 +82,35 @@ fn thread_spawn_result_type_from_name_expr(
 }
 
 ///|
+fn threads_payload_is_int_type(ty : @core.Type) -> Bool {
+  match ty {
+    @core.Type::Int => true
+    @core.Type::Named(name="Int", args=[]) => true
+    _ => false
+  }
+}
+
+///|
+fn threads_payload_is_array_int_type(ty : @core.Type) -> Bool {
+  match ty {
+    @core.Type::Array(elem) => threads_payload_is_int_type(elem)
+    @core.Type::Named(name="Array", args=[elem]) =>
+      threads_payload_is_int_type(elem)
+    _ => false
+  }
+}
+
+///|
+fn threads_payload_is_supported_type(ty : @core.Type) -> Bool {
+  match ty {
+    @core.Type::Int | @core.Type::String => true
+    @core.Type::Named(name="Int", args=[]) => true
+    @core.Type::Named(name="String", args=[]) => true
+    other => threads_payload_is_array_int_type(other)
+  }
+}
+
+///|
 fn check_threads_payload_type(
   env : TypeEnv,
   expr : @core.Expr,
@@ -91,15 +120,15 @@ fn check_threads_payload_type(
 ) -> @core.Type raise TypeError {
   let actual = type_expr_eff(env, expr, aliases, effects, allow_effect)
   let resolved = resolve_type(env, actual)
-  match resolved {
-    @core.Type::Int | @core.Type::String => actual
-    _ =>
-      raise TypeError::Mismatch(
-        expected=@core.Type::Named(name="ThreadChannelPayload", args=[]),
-        actual=resolved,
-        span=expr.span(),
-        context=Some("thread channel payload"),
-      )
+  if threads_payload_is_supported_type(resolved) {
+    actual
+  } else {
+    raise TypeError::Mismatch(
+      expected=@core.Type::Named(name="ThreadChannelPayload", args=[]),
+      actual=resolved,
+      span=expr.span(),
+      context=Some("thread channel payload"),
+    )
   }
 }
 

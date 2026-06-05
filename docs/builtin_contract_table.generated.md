@@ -56,7 +56,7 @@ Legend:
 | `Threads::probe_wat` | `() -> String` | `{Threads}` | no | no |
 | `Threads::recv` | `(ThreadChannel[T]) -> T` | `{Threads}` | yes | yes |
 | `Threads::runtime_hints` | `() -> {wasm_flags: Array[String], wasi_flags: Array[String], wasm_env: String, wasi_env: String}` | `{Threads}` | no | no |
-| `Threads::send` | `(ThreadChannel[T], T) -> Bool  // T currently Int \| String` | `{Threads}` | yes | yes |
+| `Threads::send` | `(ThreadChannel[T], T) -> Bool  // T currently Int \| String \| Array[Int]` | `{Threads}` | yes | yes |
 | `Threads::spawn` | `(String, ThreadChannel[T]) -> ThreadTask[R]  // R currently Int \| String \| Array[Int]` | `{Threads}` | yes | yes |
 | `Threads::wait` | `(ThreadTask[T]) -> T` | `{Threads}` | yes | yes |
 | `__add` | `(Num, Num) -> Num` | `-` | yes | yes |

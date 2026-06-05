@@ -308,7 +308,9 @@ fn thread_worker_is_array_int_type(ty : @core.Type) -> Bool {
 fn thread_worker_is_supported_channel_type(ty : @core.Type) -> Bool {
   match ty {
     @core.Type::Named(name="ThreadChannel", args=[payload]) =>
-      thread_worker_is_int_type(payload) || thread_worker_is_string_type(payload)
+      thread_worker_is_int_type(payload) ||
+      thread_worker_is_string_type(payload) ||
+      thread_worker_is_array_int_type(payload)
     _ => false
   }
 }
@@ -368,7 +370,7 @@ fn thread_spawn_worker_func_code_from_expr(
             !thread_worker_has_supported_channel_param(ctx, value) ||
             !thread_worker_has_supported_return(ctx, value) {
             raise WasmGenError::Unsupported(
-              "Threads::spawn worker currently supports ThreadChannel[Int|String] -> Int|String|Array[Int] only: " +
+              "Threads::spawn worker currently supports ThreadChannel[Int|String|Array[Int]] -> Int|String|Array[Int] only: " +
               value,
             )
           }
