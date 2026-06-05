@@ -282,7 +282,9 @@ fn type_call_builtin_handler_runtime_memory(
         @core.Type::Double,
         @core.Type::Int,
       )
-    "Double::to_i64_bits" =>
+    "Double::to_i64_bits"
+    | "Double::to_i64_bits_lo"
+    | "Double::to_i64_bits_hi" =>
       type_check_unary_convert(
         env,
         args,

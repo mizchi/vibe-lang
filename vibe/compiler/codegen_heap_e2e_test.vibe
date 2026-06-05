@@ -670,3 +670,29 @@ test "conv: Float alias div" {
   let src = "let main: () -> Int = () -> { Float::to_int(Int::to_float(20) / Int::to_float(4)) }"
   assert_result(src, "main", "conv_float_alias_div", "5")
 }
+
+// Blocker-2 (ADR-0055): float literals are now emitted correctly. A normal f64
+// pattern exceeds the selfhost's 62-bit Int, so the literal was previously
+// split-free and truncated to ~0. Now EFloat emits via Double::to_i64_bits_lo /
+// _hi (each half fits the 62-bit Int) → emit_f64_const_lohi. These exercise the
+// full path (literal → f64.const → reinterpret → arithmetic → Double::to_int),
+// default and RC.
+test "float literal: Double::to_int(4.0)" {
+  assert_result("let main: () -> Int = () -> { Double::to_int(4.0) }", "main", "flit_40", "4")
+}
+
+test "float literal: truncation 7.9 -> 7" {
+  assert_result("let main: () -> Int = () -> { Double::to_int(7.9) }", "main", "flit_79", "7")
+}
+
+test "float literal: addition 1.5 + 2.5" {
+  assert_result("let main: () -> Int = () -> { Double::to_int(1.5 + 2.5) }", "main", "flit_add", "4")
+}
+
+test "float literal: division 10.0 / 4.0" {
+  assert_result("let main: () -> Int = () -> { Double::to_int(10.0 / 4.0) }", "main", "flit_div", "2")
+}
+
+test "float literal: mixed literal + conversion" {
+  assert_result("let main: () -> Int = () -> { Double::to_int(Int::to_double(5) + 0.5 * 4.0) }", "main", "flit_mix", "7")
+}

@@ -720,6 +720,8 @@ fn is_pure_builtin_name(name : String) -> Bool {
   name == "Double::to_string" ||
   name == "Bool::to_string" ||
   name == "Double::to_i64_bits" ||
+  name == "Double::to_i64_bits_lo" ||
+  name == "Double::to_i64_bits_hi" ||
   name == "Double::from_i64_bits" ||
   name == "f32_neg" ||
   name == "f32_abs" ||
