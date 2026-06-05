@@ -152,6 +152,7 @@ test "threads component model threading probe wast contains current intrinsics" 
   assert_true(wast.contains("(component"))
   assert_true(wast.contains("canon thread.new-indirect"))
   assert_true(wast.contains("canon thread.suspend-to-suspended"))
+  assert_true(wast.contains("canon thread.yield"))
   assert_true(wast.contains("canon thread.unsuspend"))
   assert_true(wast.contains("(assert_return (invoke \"run\")"))
 }
