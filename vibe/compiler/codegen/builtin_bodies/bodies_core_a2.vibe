@@ -28,63 +28,221 @@ export let gen_identity_body: () -> Bytes = () -> {
   b
 }
 
-export let gen_arr_slice_body: () -> Bytes = () -> {
+export let gen_arr_slice_body: (Bool, Int) -> Bytes = (enable_rc, rc_alloc_idx) -> {
   let b = bytebuf_new()
-  emit_local_get(b, 0)
-  emit_i32_wrap_i64(b)
-  emit_local_set(b, 3)
-  emit_local_get(b, 3)
-  emit_i32_load(b, 2, 8)
-  emit_local_set(b, 4)
-  emit_local_get(b, 2)
-  emit_i32_wrap_i64(b)
-  emit_local_get(b, 1)
-  emit_i32_wrap_i64(b)
-  emit_i32_sub(b)
-  emit_local_set(b, 5)
-  emit_local_get(b, 5)
-  emit_i32_const(b, 8)
-  emit_i32_add(b)
-  emit_local_set(b, 8)
-  emit_global_get(b, 0)
-  emit_local_tee(b, 6)
-  emit_i32_const(b, 12)
-  emit_local_get(b, 8)
-  emit_i32_const(b, 3)
-  bytebuf_push(b, 116)
-  emit_i32_add(b)
-  emit_i32_add(b)
-  emit_global_set(b, 0)
-  emit_local_get(b, 6)
-  emit_local_get(b, 8)
-  emit_i32_store(b, 2, 0)
-  emit_local_get(b, 6)
-  emit_local_get(b, 5)
-  emit_i32_store(b, 2, 4)
-  emit_local_get(b, 6)
-  emit_i32_const(b, 12)
-  emit_i32_add(b)
-  emit_local_set(b, 7)
-  emit_local_get(b, 6)
-  emit_local_get(b, 7)
-  emit_i32_store(b, 2, 8)
-  emit_local_get(b, 7)
-  emit_local_get(b, 4)
-  emit_local_get(b, 1)
-  emit_i32_wrap_i64(b)
-  emit_i32_const(b, 3)
-  bytebuf_push(b, 116)
-  emit_i32_add(b)
-  emit_local_get(b, 5)
-  emit_i32_const(b, 3)
-  bytebuf_push(b, 116)
-  emit_memory_copy(b)
-  emit_local_get(b, 6)
-  emit_i64_extend_i32_u(b)
+  if enable_rc {
+    // ADR-0055 Stage 4: build the slice as a self-describing RC block, the same
+    // shape as gen_arr_new / a literal array, so the recursive rc_drop and the
+    // free-list can reach it. Layout: [alloc_size@0][rc_count@4][class=5@7],
+    // value = block+8, value[0]=cap value[4]=len value[8]=data_ptr=block+20.
+    // The copied elements are shared with the source, so each RC-managed element
+    // is dup'd (guarded) — without this the source drop frees them while the
+    // slice still references them (use-after-free / trap, issue #500).
+    // locals: 3=src_val 4=src_data 5=count 6=block 7=data_ptr 8=cap 9=i (i32),
+    //         10=elem (i64).
+    // src_val = wrap(arr & -2)  (untag the odd source pointer)
+    emit_local_get(b, 0)
+    emit_i64_const(b, -2)
+    emit_i64_and(b)
+    emit_i32_wrap_i64(b)
+    emit_local_set(b, 3)
+    // src_data = src_val[8]
+    emit_local_get(b, 3)
+    emit_i32_load(b, 2, 8)
+    emit_local_set(b, 4)
+    // count = untag(end) - untag(start)
+    emit_local_get(b, 2)
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+    emit_i32_wrap_i64(b)
+    emit_local_get(b, 1)
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+    emit_i32_wrap_i64(b)
+    emit_i32_sub(b)
+    emit_local_set(b, 5)
+    // cap = count + 8
+    emit_local_get(b, 5)
+    emit_i32_const(b, 8)
+    emit_i32_add(b)
+    emit_local_set(b, 8)
+    // block = wrap(__rc_alloc(20 + cap*8))
+    emit_i32_const(b, 20)
+    emit_local_get(b, 8)
+    emit_i32_const(b, 3)
+    bytebuf_push(b, 116)
+    emit_i32_add(b)
+    emit_i64_extend_i32_u(b)
+    emit_call(b, rc_alloc_idx)
+    emit_i32_wrap_i64(b)
+    emit_local_set(b, 6)
+    // block[0] = alloc_size = 20 + cap*8
+    emit_local_get(b, 6)
+    emit_i32_const(b, 20)
+    emit_local_get(b, 8)
+    emit_i32_const(b, 3)
+    bytebuf_push(b, 116)
+    emit_i32_add(b)
+    emit_i32_store(b, 2, 0)
+    // block[4] = rc_count = 1
+    emit_local_get(b, 6)
+    emit_i32_const(b, 1)
+    emit_i32_store(b, 2, 4)
+    // block[7] = class = 5 (array); high byte of the rc_count word
+    emit_local_get(b, 6)
+    emit_i32_const(b, 5)
+    emit_i32_store8(b, 0, 7)
+    // value[0] (block+8) = cap
+    emit_local_get(b, 6)
+    emit_local_get(b, 8)
+    emit_i32_store(b, 2, 8)
+    // value[4] (block+12) = len = count
+    emit_local_get(b, 6)
+    emit_local_get(b, 5)
+    emit_i32_store(b, 2, 12)
+    // data_ptr = block+20
+    emit_local_get(b, 6)
+    emit_i32_const(b, 20)
+    emit_i32_add(b)
+    emit_local_set(b, 7)
+    // value[8] (block+16) = data_ptr
+    emit_local_get(b, 6)
+    emit_local_get(b, 7)
+    emit_i32_store(b, 2, 16)
+    // memory_copy: dst=data_ptr, src=src_data + untag(start)*8, len=count*8
+    emit_local_get(b, 7)
+    emit_local_get(b, 4)
+    emit_local_get(b, 1)
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+    emit_i32_wrap_i64(b)
+    emit_i32_const(b, 3)
+    bytebuf_push(b, 116)
+    emit_i32_add(b)
+    emit_local_get(b, 5)
+    emit_i32_const(b, 3)
+    bytebuf_push(b, 116)
+    emit_memory_copy(b)
+    // dup each copied RC-managed element (guarded: odd && high32==0)
+    emit_i32_const(b, 0)
+    emit_local_set(b, 9)
+    emit_block_void(b)
+    emit_loop_void(b)
+    emit_local_get(b, 9)
+    emit_local_get(b, 5)
+    emit_i32_ge_u(b)
+    emit_br_if(b, 1)
+    // elem = load_i64(data_ptr + i*8)
+    emit_local_get(b, 7)
+    emit_local_get(b, 9)
+    emit_i32_const(b, 3)
+    bytebuf_push(b, 116)
+    emit_i32_add(b)
+    emit_i64_load(b, 3, 0)
+    emit_local_set(b, 10)
+    // if (elem & 1) — odd heap pointer
+    emit_local_get(b, 10)
+    emit_i64_const(b, 1)
+    emit_i64_and(b)
+    emit_i32_wrap_i64(b)
+    emit_if_void(b)
+    // if (elem >> 32) == 0 — not a string/bytes fat pointer
+    emit_local_get(b, 10)
+    emit_i64_const(b, 32)
+    emit_i64_shr_s(b)
+    emit_i64_eqz(b)
+    emit_if_void(b)
+    // rc_count++ at (elem & -2) - 4
+    emit_local_get(b, 10)
+    emit_i64_const(b, -2)
+    emit_i64_and(b)
+    emit_i32_wrap_i64(b)
+    emit_i32_const(b, 4)
+    emit_i32_sub(b)
+    emit_local_get(b, 10)
+    emit_i64_const(b, -2)
+    emit_i64_and(b)
+    emit_i32_wrap_i64(b)
+    emit_i32_const(b, 4)
+    emit_i32_sub(b)
+    emit_i32_load(b, 2, 0)
+    emit_i32_const(b, 1)
+    emit_i32_add(b)
+    emit_i32_store(b, 2, 0)
+    emit_end(b)
+    emit_end(b)
+    // i++
+    emit_local_get(b, 9)
+    emit_i32_const(b, 1)
+    emit_i32_add(b)
+    emit_local_set(b, 9)
+    emit_br(b, 0)
+    emit_end(b)
+    emit_end(b)
+    // return (block+8) | 1  (odd-tagged value pointer)
+    emit_local_get(b, 6)
+    emit_i32_const(b, 8)
+    emit_i32_add(b)
+    emit_i64_extend_i32_u(b)
+    emit_i64_const(b, 1)
+    emit_i64_or(b)
+  } else {
+    emit_local_get(b, 0)
+    emit_i32_wrap_i64(b)
+    emit_local_set(b, 3)
+    emit_local_get(b, 3)
+    emit_i32_load(b, 2, 8)
+    emit_local_set(b, 4)
+    emit_local_get(b, 2)
+    emit_i32_wrap_i64(b)
+    emit_local_get(b, 1)
+    emit_i32_wrap_i64(b)
+    emit_i32_sub(b)
+    emit_local_set(b, 5)
+    emit_local_get(b, 5)
+    emit_i32_const(b, 8)
+    emit_i32_add(b)
+    emit_local_set(b, 8)
+    emit_global_get(b, 0)
+    emit_local_tee(b, 6)
+    emit_i32_const(b, 12)
+    emit_local_get(b, 8)
+    emit_i32_const(b, 3)
+    bytebuf_push(b, 116)
+    emit_i32_add(b)
+    emit_i32_add(b)
+    emit_global_set(b, 0)
+    emit_local_get(b, 6)
+    emit_local_get(b, 8)
+    emit_i32_store(b, 2, 0)
+    emit_local_get(b, 6)
+    emit_local_get(b, 5)
+    emit_i32_store(b, 2, 4)
+    emit_local_get(b, 6)
+    emit_i32_const(b, 12)
+    emit_i32_add(b)
+    emit_local_set(b, 7)
+    emit_local_get(b, 6)
+    emit_local_get(b, 7)
+    emit_i32_store(b, 2, 8)
+    emit_local_get(b, 7)
+    emit_local_get(b, 4)
+    emit_local_get(b, 1)
+    emit_i32_wrap_i64(b)
+    emit_i32_const(b, 3)
+    bytebuf_push(b, 116)
+    emit_i32_add(b)
+    emit_local_get(b, 5)
+    emit_i32_const(b, 3)
+    bytebuf_push(b, 116)
+    emit_memory_copy(b)
+    emit_local_get(b, 6)
+    emit_i64_extend_i32_u(b)
+  }
   b
 }
 
-export let gen_bytes_get_body: () -> Bytes = () -> {
+export let gen_bytes_get_body: (Bool) -> Bytes = (enable_rc) -> {
   let b = bytebuf_new()
   emit_local_get(b, 0)
   emit_i32_wrap_i64(b)
@@ -92,19 +250,34 @@ export let gen_bytes_get_body: () -> Bytes = () -> {
   emit_local_set(b, 2)
   emit_local_get(b, 2)
   emit_local_get(b, 1)
+  // ADR-0055 Stage 1: the index arrives tagged (n<<1); untag before use.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_i32_add(b)
   emit_i32_load8_u(b, 0, 0)
   emit_i64_extend_i32_u(b)
+  // ADR-0055 Stage 1: the byte is a count entering the value world; tag it.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
   b
 }
 
-export let gen_bytes_len_body: () -> Bytes = () -> {
+export let gen_bytes_len_body: (Bool) -> Bytes = (enable_rc) -> {
   let b = bytebuf_new()
   emit_local_get(b, 0)
   emit_i32_wrap_i64(b)
   emit_i32_load(b, 2, 4)
   emit_i64_extend_i32_u(b)
+  // ADR-0055 Stage 1: the length is a count entering the value world; tag it.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
   b
 }
 
@@ -131,7 +304,7 @@ export let gen_bytes_new_body: () -> Bytes = () -> {
   b
 }
 
-export let gen_bytes_set_body: () -> Bytes = () -> {
+export let gen_bytes_set_body: (Bool) -> Bytes = (enable_rc) -> {
   let b = bytebuf_new()
   emit_local_get(b, 0)
   emit_i32_wrap_i64(b)
@@ -139,20 +312,39 @@ export let gen_bytes_set_body: () -> Bytes = () -> {
   emit_local_set(b, 3)
   emit_local_get(b, 3)
   emit_local_get(b, 1)
+  // ADR-0055 Stage 1: index arrives tagged; untag before use.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_i32_add(b)
   emit_local_get(b, 2)
+  // ADR-0055 Stage 1: byte value arrives tagged; untag before storing.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_i32_store8(b, 0, 0)
   b
 }
 
-export let gen_bytes_blit_body: (Int, Int) -> Bytes = (bytes_get_idx, bytes_push_idx) -> {
+export let gen_bytes_blit_body: (Bool, Int, Int) -> Bytes = (enable_rc, bytes_get_idx, bytes_push_idx) -> {
   let b = bytebuf_new()
   emit_local_get(b, 2)
+  // ADR-0055 Stage 1: start/end indices arrive tagged; untag for loop bounds.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_local_set(b, 4)
   emit_local_get(b, 3)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_local_set(b, 5)
   emit_block_void(b)
@@ -165,6 +357,11 @@ export let gen_bytes_blit_body: (Int, Int) -> Bytes = (bytes_get_idx, bytes_push
   emit_local_get(b, 1)
   emit_local_get(b, 4)
   emit_i64_extend_i32_u(b)
+  // ADR-0055 Stage 1: tag the index passed to the value-world bytes_get.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
   emit_call(b, bytes_get_idx)
   emit_call(b, bytes_push_idx)
   emit_local_get(b, 4)
@@ -177,11 +374,18 @@ export let gen_bytes_blit_body: (Int, Int) -> Bytes = (bytes_get_idx, bytes_push
   b
 }
 
-export let gen_bytes_fill_body: (Int) -> Bytes = (bytes_push_idx) -> {
+export let gen_bytes_fill_body: (Bool, Int) -> Bytes = (enable_rc, bytes_push_idx) -> {
   let b = bytebuf_new()
   emit_i32_const(b, 0)
   emit_local_set(b, 3)
   emit_local_get(b, 2)
+  // ADR-0055 Stage 1: count arrives tagged; untag for the loop bound. The byte
+  // value (local 1) is passed straight to the value-world bytes_push, which
+  // untags it itself.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_local_set(b, 4)
   emit_block_void(b)
@@ -203,7 +407,7 @@ export let gen_bytes_fill_body: (Int) -> Bytes = (bytes_push_idx) -> {
   b
 }
 
-export let gen_bytes_push_body: () -> Bytes = () -> {
+export let gen_bytes_push_body: (Bool) -> Bytes = (enable_rc) -> {
   let b = bytebuf_new()
   emit_local_get(b, 0)
   emit_i32_wrap_i64(b)
@@ -253,6 +457,11 @@ export let gen_bytes_push_body: () -> Bytes = () -> {
   emit_local_get(b, 4)
   emit_i32_add(b)
   emit_local_get(b, 1)
+  // ADR-0055 Stage 1: byte value arrives tagged; untag before storing.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_i32_store8(b, 0, 0)
   emit_local_get(b, 2)
@@ -263,14 +472,23 @@ export let gen_bytes_push_body: () -> Bytes = () -> {
   b
 }
 
-export let gen_bytes_slice_body: (Int, Int, Int) -> Bytes = (bytes_new_idx, bytes_get_idx, bytes_push_idx) -> {
+export let gen_bytes_slice_body: (Bool, Int, Int, Int) -> Bytes = (enable_rc, bytes_new_idx, bytes_get_idx, bytes_push_idx) -> {
   let b = bytebuf_new()
   emit_call(b, bytes_new_idx)
   emit_local_set(b, 5)
   emit_local_get(b, 1)
+  // ADR-0055 Stage 1: start/end indices arrive tagged; untag for loop bounds.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_local_set(b, 3)
   emit_local_get(b, 2)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_local_set(b, 4)
   emit_block_void(b)
@@ -283,6 +501,11 @@ export let gen_bytes_slice_body: (Int, Int, Int) -> Bytes = (bytes_new_idx, byte
   emit_local_get(b, 0)
   emit_local_get(b, 3)
   emit_i64_extend_i32_u(b)
+  // ADR-0055 Stage 1: tag the index passed to the value-world bytes_get.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
   emit_call(b, bytes_get_idx)
   emit_call(b, bytes_push_idx)
   emit_local_get(b, 3)
@@ -296,85 +519,261 @@ export let gen_bytes_slice_body: (Int, Int, Int) -> Bytes = (bytes_new_idx, byte
   b
 }
 
-export let gen_arr_push_all_body: () -> Bytes = () -> {
+export let gen_arr_push_all_body: (Bool, Int) -> Bytes = (enable_rc, rc_alloc_idx) -> {
   let b = bytebuf_new()
-  emit_local_get(b, 0)
-  emit_i32_wrap_i64(b)
-  emit_local_set(b, 2)
-  emit_local_get(b, 1)
-  emit_i32_wrap_i64(b)
-  emit_local_set(b, 3)
-  emit_local_get(b, 2)
-  emit_i32_load(b, 2, 4)
-  emit_local_set(b, 4)
-  emit_local_get(b, 3)
-  emit_i32_load(b, 2, 4)
-  emit_local_set(b, 5)
-  emit_local_get(b, 2)
-  emit_i32_load(b, 2, 8)
-  emit_local_set(b, 6)
-  emit_local_get(b, 3)
-  emit_i32_load(b, 2, 8)
-  emit_local_set(b, 7)
-  emit_local_get(b, 2)
-  emit_i32_load(b, 2, 0)
-  emit_local_set(b, 8)
-  emit_local_get(b, 4)
-  emit_local_get(b, 5)
-  emit_i32_add(b)
-  emit_local_get(b, 8)
-  emit_i32_gt_u(b)
-  emit_if_void(b)
-  emit_local_get(b, 4)
-  emit_local_get(b, 5)
-  emit_i32_add(b)
-  emit_i32_const(b, 2)
-  emit_i32_mul(b)
-  emit_local_set(b, 9)
-  emit_global_get(b, 0)
-  emit_local_tee(b, 10)
-  emit_local_get(b, 9)
-  emit_i32_const(b, 8)
-  emit_i32_mul(b)
-  emit_i32_add(b)
-  emit_global_set(b, 0)
-  emit_local_get(b, 10)
-  emit_local_get(b, 6)
-  emit_local_get(b, 4)
-  emit_i32_const(b, 8)
-  emit_i32_mul(b)
-  emit_memory_copy(b)
-  emit_local_get(b, 2)
-  emit_local_get(b, 9)
-  emit_i32_store(b, 2, 0)
-  emit_local_get(b, 2)
-  emit_local_get(b, 10)
-  emit_i32_store(b, 2, 8)
-  emit_local_get(b, 10)
-  emit_local_set(b, 6)
-  emit_end(b)
-  emit_local_get(b, 6)
-  emit_local_get(b, 4)
-  emit_i32_const(b, 3)
-  bytebuf_push(b, 116)
-  emit_i32_add(b)
-  emit_local_get(b, 7)
-  emit_local_get(b, 5)
-  emit_i32_const(b, 3)
-  bytebuf_push(b, 116)
-  emit_memory_copy(b)
-  emit_local_get(b, 2)
-  emit_local_get(b, 4)
-  emit_local_get(b, 5)
-  emit_i32_add(b)
-  emit_i32_store(b, 2, 4)
+  if enable_rc {
+    // ADR-0055 Stage 4: in-place append that keeps `a` a valid RC array. Untag
+    // both pointers; grow via __rc_alloc into a headered data block (freeing the
+    // old grown buffer to the free-list, mirroring gen_arr_push); and guard-dup
+    // each appended element from `b` so both `a` and `b` can be dropped safely.
+    // locals: 2=a_val 3=b_val 4=len_a 5=len_b 6=data_a 7=data_b 8=cap_a
+    //         9=newcap 10=block 11=i (i32), 12=elem (i64).
+    emit_local_get(b, 0)
+    emit_i64_const(b, -2)
+    emit_i64_and(b)
+    emit_i32_wrap_i64(b)
+    emit_local_set(b, 2)
+    emit_local_get(b, 1)
+    emit_i64_const(b, -2)
+    emit_i64_and(b)
+    emit_i32_wrap_i64(b)
+    emit_local_set(b, 3)
+    emit_local_get(b, 2)
+    emit_i32_load(b, 2, 4)
+    emit_local_set(b, 4)
+    emit_local_get(b, 3)
+    emit_i32_load(b, 2, 4)
+    emit_local_set(b, 5)
+    emit_local_get(b, 2)
+    emit_i32_load(b, 2, 8)
+    emit_local_set(b, 6)
+    emit_local_get(b, 3)
+    emit_i32_load(b, 2, 8)
+    emit_local_set(b, 7)
+    emit_local_get(b, 2)
+    emit_i32_load(b, 2, 0)
+    emit_local_set(b, 8)
+    // if (len_a + len_b > cap_a): grow
+    emit_local_get(b, 4)
+    emit_local_get(b, 5)
+    emit_i32_add(b)
+    emit_local_get(b, 8)
+    emit_i32_gt_u(b)
+    emit_if_void(b)
+    // newcap = (len_a+len_b)*2
+    emit_local_get(b, 4)
+    emit_local_get(b, 5)
+    emit_i32_add(b)
+    emit_i32_const(b, 2)
+    emit_i32_mul(b)
+    emit_local_set(b, 9)
+    // block = wrap(__rc_alloc(newcap*8 + 8)); data lives at block+8
+    emit_local_get(b, 9)
+    emit_i32_const(b, 8)
+    emit_i32_mul(b)
+    emit_i32_const(b, 8)
+    emit_i32_add(b)
+    emit_i64_extend_i32_u(b)
+    emit_call(b, rc_alloc_idx)
+    emit_i32_wrap_i64(b)
+    emit_local_set(b, 10)
+    emit_local_get(b, 10)
+    emit_local_get(b, 9)
+    emit_i32_const(b, 8)
+    emit_i32_mul(b)
+    emit_i32_const(b, 8)
+    emit_i32_add(b)
+    emit_i32_store(b, 2, 0)
+    // copy old elements into block+8
+    emit_local_get(b, 10)
+    emit_i32_const(b, 8)
+    emit_i32_add(b)
+    emit_local_get(b, 6)
+    emit_local_get(b, 4)
+    emit_i32_const(b, 8)
+    emit_i32_mul(b)
+    emit_memory_copy(b)
+    // free old buffer if it was a separate grown block (data_a != a_val+12)
+    emit_local_get(b, 6)
+    emit_local_get(b, 2)
+    emit_i32_const(b, 12)
+    emit_i32_add(b)
+    emit_i32_ne(b)
+    emit_if_void(b)
+    emit_local_get(b, 6)
+    emit_i32_const(b, 4)
+    emit_i32_sub(b)
+    emit_global_get(b, 2)
+    emit_i32_store(b, 2, 0)
+    emit_local_get(b, 6)
+    emit_global_set(b, 2)
+    emit_end(b)
+    // cap = newcap; data_ptr = block+8; data_a = block+8
+    emit_local_get(b, 2)
+    emit_local_get(b, 9)
+    emit_i32_store(b, 2, 0)
+    emit_local_get(b, 2)
+    emit_local_get(b, 10)
+    emit_i32_const(b, 8)
+    emit_i32_add(b)
+    emit_i32_store(b, 2, 8)
+    emit_local_get(b, 10)
+    emit_i32_const(b, 8)
+    emit_i32_add(b)
+    emit_local_set(b, 6)
+    emit_end(b)
+    // copy b's elements into data_a + len_a*8
+    emit_local_get(b, 6)
+    emit_local_get(b, 4)
+    emit_i32_const(b, 3)
+    bytebuf_push(b, 116)
+    emit_i32_add(b)
+    emit_local_get(b, 7)
+    emit_local_get(b, 5)
+    emit_i32_const(b, 3)
+    bytebuf_push(b, 116)
+    emit_memory_copy(b)
+    // len = len_a + len_b
+    emit_local_get(b, 2)
+    emit_local_get(b, 4)
+    emit_local_get(b, 5)
+    emit_i32_add(b)
+    emit_i32_store(b, 2, 4)
+    // dup each appended element from b (guarded: odd && high32==0)
+    emit_i32_const(b, 0)
+    emit_local_set(b, 11)
+    emit_block_void(b)
+    emit_loop_void(b)
+    emit_local_get(b, 11)
+    emit_local_get(b, 5)
+    emit_i32_ge_u(b)
+    emit_br_if(b, 1)
+    emit_local_get(b, 7)
+    emit_local_get(b, 11)
+    emit_i32_const(b, 3)
+    bytebuf_push(b, 116)
+    emit_i32_add(b)
+    emit_i64_load(b, 3, 0)
+    emit_local_set(b, 12)
+    emit_local_get(b, 12)
+    emit_i64_const(b, 1)
+    emit_i64_and(b)
+    emit_i32_wrap_i64(b)
+    emit_if_void(b)
+    emit_local_get(b, 12)
+    emit_i64_const(b, 32)
+    emit_i64_shr_s(b)
+    emit_i64_eqz(b)
+    emit_if_void(b)
+    emit_local_get(b, 12)
+    emit_i64_const(b, -2)
+    emit_i64_and(b)
+    emit_i32_wrap_i64(b)
+    emit_i32_const(b, 4)
+    emit_i32_sub(b)
+    emit_local_get(b, 12)
+    emit_i64_const(b, -2)
+    emit_i64_and(b)
+    emit_i32_wrap_i64(b)
+    emit_i32_const(b, 4)
+    emit_i32_sub(b)
+    emit_i32_load(b, 2, 0)
+    emit_i32_const(b, 1)
+    emit_i32_add(b)
+    emit_i32_store(b, 2, 0)
+    emit_end(b)
+    emit_end(b)
+    emit_local_get(b, 11)
+    emit_i32_const(b, 1)
+    emit_i32_add(b)
+    emit_local_set(b, 11)
+    emit_br(b, 0)
+    emit_end(b)
+    emit_end(b)
+  } else {
+    emit_local_get(b, 0)
+    emit_i32_wrap_i64(b)
+    emit_local_set(b, 2)
+    emit_local_get(b, 1)
+    emit_i32_wrap_i64(b)
+    emit_local_set(b, 3)
+    emit_local_get(b, 2)
+    emit_i32_load(b, 2, 4)
+    emit_local_set(b, 4)
+    emit_local_get(b, 3)
+    emit_i32_load(b, 2, 4)
+    emit_local_set(b, 5)
+    emit_local_get(b, 2)
+    emit_i32_load(b, 2, 8)
+    emit_local_set(b, 6)
+    emit_local_get(b, 3)
+    emit_i32_load(b, 2, 8)
+    emit_local_set(b, 7)
+    emit_local_get(b, 2)
+    emit_i32_load(b, 2, 0)
+    emit_local_set(b, 8)
+    emit_local_get(b, 4)
+    emit_local_get(b, 5)
+    emit_i32_add(b)
+    emit_local_get(b, 8)
+    emit_i32_gt_u(b)
+    emit_if_void(b)
+    emit_local_get(b, 4)
+    emit_local_get(b, 5)
+    emit_i32_add(b)
+    emit_i32_const(b, 2)
+    emit_i32_mul(b)
+    emit_local_set(b, 9)
+    emit_global_get(b, 0)
+    emit_local_tee(b, 10)
+    emit_local_get(b, 9)
+    emit_i32_const(b, 8)
+    emit_i32_mul(b)
+    emit_i32_add(b)
+    emit_global_set(b, 0)
+    emit_local_get(b, 10)
+    emit_local_get(b, 6)
+    emit_local_get(b, 4)
+    emit_i32_const(b, 8)
+    emit_i32_mul(b)
+    emit_memory_copy(b)
+    emit_local_get(b, 2)
+    emit_local_get(b, 9)
+    emit_i32_store(b, 2, 0)
+    emit_local_get(b, 2)
+    emit_local_get(b, 10)
+    emit_i32_store(b, 2, 8)
+    emit_local_get(b, 10)
+    emit_local_set(b, 6)
+    emit_end(b)
+    emit_local_get(b, 6)
+    emit_local_get(b, 4)
+    emit_i32_const(b, 3)
+    bytebuf_push(b, 116)
+    emit_i32_add(b)
+    emit_local_get(b, 7)
+    emit_local_get(b, 5)
+    emit_i32_const(b, 3)
+    bytebuf_push(b, 116)
+    emit_memory_copy(b)
+    emit_local_get(b, 2)
+    emit_local_get(b, 4)
+    emit_local_get(b, 5)
+    emit_i32_add(b)
+    emit_i32_store(b, 2, 4)
+  }
   b
 }
 
-export let gen_bytes_append_body: (Int, Int, Int) -> Bytes = (bytes_len_idx, bytes_get_idx, bytes_push_idx) -> {
+export let gen_bytes_append_body: (Bool, Int, Int, Int) -> Bytes = (enable_rc, bytes_len_idx, bytes_get_idx, bytes_push_idx) -> {
   let b = bytebuf_new()
   emit_local_get(b, 1)
   emit_call(b, bytes_len_idx)
+  // ADR-0055 Stage 1: bytes_len now returns a tagged count; untag for the bound.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_local_set(b, 2)
   emit_i32_const(b, 0)
@@ -389,6 +788,11 @@ export let gen_bytes_append_body: (Int, Int, Int) -> Bytes = (bytes_len_idx, byt
   emit_local_get(b, 1)
   emit_local_get(b, 3)
   emit_i64_extend_i32_u(b)
+  // ADR-0055 Stage 1: tag the index passed to the value-world bytes_get.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
   emit_call(b, bytes_get_idx)
   emit_call(b, bytes_push_idx)
   emit_local_get(b, 3)
@@ -415,12 +819,17 @@ export let gen_bytes_concat_body: (Int, Int) -> Bytes = (bytes_new_idx, bytes_ap
   b
 }
 
-export let gen_bytes_to_array_body: (Int, Int, Int, Int) -> Bytes = (arr_new_idx, arr_push_idx, bytes_len_idx, bytes_get_idx) -> {
+export let gen_bytes_to_array_body: (Bool, Int, Int, Int, Int) -> Bytes = (enable_rc, arr_new_idx, arr_push_idx, bytes_len_idx, bytes_get_idx) -> {
   let b = bytebuf_new()
   emit_call(b, arr_new_idx)
   emit_local_set(b, 3)
   emit_local_get(b, 0)
   emit_call(b, bytes_len_idx)
+  // ADR-0055 Stage 1: bytes_len now returns a tagged count; untag for the bound.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_local_set(b, 1)
   emit_i32_const(b, 0)
@@ -435,6 +844,12 @@ export let gen_bytes_to_array_body: (Int, Int, Int, Int) -> Bytes = (arr_new_idx
   emit_local_get(b, 0)
   emit_local_get(b, 2)
   emit_i64_extend_i32_u(b)
+  // ADR-0055 Stage 1: tag the index passed to value-world bytes_get. The byte
+  // it returns is tagged, which is exactly what arr_push stores.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
   emit_call(b, bytes_get_idx)
   emit_call(b, arr_push_idx)
   emit_local_get(b, 2)
@@ -448,12 +863,17 @@ export let gen_bytes_to_array_body: (Int, Int, Int, Int) -> Bytes = (arr_new_idx
   b
 }
 
-export let gen_bytes_from_array_body: (Int, Int, Int, Int) -> Bytes = (arr_len_idx, arr_get_idx, bytes_new_idx, bytes_push_idx) -> {
+export let gen_bytes_from_array_body: (Bool, Int, Int, Int, Int) -> Bytes = (enable_rc, arr_len_idx, arr_get_idx, bytes_new_idx, bytes_push_idx) -> {
   let b = bytebuf_new()
   emit_call(b, bytes_new_idx)
   emit_local_set(b, 3)
   emit_local_get(b, 0)
   emit_call(b, arr_len_idx)
+  // ADR-0055 Stage 1: arr_len now returns a tagged count; untag for the bound.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_local_set(b, 1)
   emit_i32_const(b, 0)
@@ -468,6 +888,12 @@ export let gen_bytes_from_array_body: (Int, Int, Int, Int) -> Bytes = (arr_len_i
   emit_local_get(b, 0)
   emit_local_get(b, 2)
   emit_i64_extend_i32_u(b)
+  // ADR-0055 Stage 1: tag the index passed to value-world arr_get. The value it
+  // returns is tagged, which is exactly what the value-world bytes_push untags.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
   emit_call(b, arr_get_idx)
   emit_call(b, bytes_push_idx)
   emit_local_get(b, 2)

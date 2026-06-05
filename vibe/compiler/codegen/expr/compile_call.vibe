@@ -667,17 +667,29 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       let res_l = nl + 2
       let len_l = nl + 3
       let i_l = nl + 4
+      let elem_l = nl + 5
       Array::push(local_names, "__cat_a")
       Array::push(local_names, "__cat_b")
       Array::push(local_names, "__cat_res")
       Array::push(local_names, "__cat_len")
       Array::push(local_names, "__cat_i")
+      Array::push(local_names, "__cat_elem")
+      // ADR-0055: `Array::concat` is inlined as two copy loops over the value-
+      // world `Array::length` / `Array::get` / `Array::push` builtins. Under RC
+      // those return/consume tagged ints, so the raw loop counter must untag the
+      // length bound, tag the index passed to `Array::get`, and guard-dup each
+      // copied element (it is now referenced by both the source and the result)
+      // so the source's drop does not free a live value (issue #500).
       emit_local_set(buf, b_l)
       emit_local_set(buf, a_l)
       emit_call(buf, arr_new_fi)
       emit_local_set(buf, res_l)
       emit_local_get(buf, a_l)
       emit_call(buf, arr_len_fi)
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shr_s(buf)
+      }
       emit_local_set(buf, len_l)
       emit_i64_const(buf, 0)
       emit_local_set(buf, i_l)
@@ -690,7 +702,42 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_local_get(buf, res_l)
       emit_local_get(buf, a_l)
       emit_local_get(buf, i_l)
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shl(buf)
+      }
       emit_call(buf, arr_get_fi)
+      if ctx.enable_rc {
+        emit_local_tee(buf, elem_l)
+        emit_local_get(buf, elem_l)
+        emit_i64_const(buf, 1)
+        emit_i64_and(buf)
+        emit_i32_wrap_i64(buf)
+        emit_if_void(buf)
+        emit_local_get(buf, elem_l)
+        emit_i64_const(buf, 32)
+        emit_i64_shr_s(buf)
+        emit_i64_eqz(buf)
+        emit_if_void(buf)
+        emit_local_get(buf, elem_l)
+        emit_i64_const(buf, -2)
+        emit_i64_and(buf)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 4)
+        emit_i32_sub(buf)
+        emit_local_get(buf, elem_l)
+        emit_i64_const(buf, -2)
+        emit_i64_and(buf)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 4)
+        emit_i32_sub(buf)
+        emit_i32_load(buf, 2, 0)
+        emit_i32_const(buf, 1)
+        emit_i32_add(buf)
+        emit_i32_store(buf, 2, 0)
+        emit_end(buf)
+        emit_end(buf)
+      }
       emit_call(buf, arr_push_fi)
       emit_local_get(buf, i_l)
       emit_i64_const(buf, 1)
@@ -701,6 +748,10 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_end(buf)
       emit_local_get(buf, b_l)
       emit_call(buf, arr_len_fi)
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shr_s(buf)
+      }
       emit_local_set(buf, len_l)
       emit_i64_const(buf, 0)
       emit_local_set(buf, i_l)
@@ -713,7 +764,42 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_local_get(buf, res_l)
       emit_local_get(buf, b_l)
       emit_local_get(buf, i_l)
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shl(buf)
+      }
       emit_call(buf, arr_get_fi)
+      if ctx.enable_rc {
+        emit_local_tee(buf, elem_l)
+        emit_local_get(buf, elem_l)
+        emit_i64_const(buf, 1)
+        emit_i64_and(buf)
+        emit_i32_wrap_i64(buf)
+        emit_if_void(buf)
+        emit_local_get(buf, elem_l)
+        emit_i64_const(buf, 32)
+        emit_i64_shr_s(buf)
+        emit_i64_eqz(buf)
+        emit_if_void(buf)
+        emit_local_get(buf, elem_l)
+        emit_i64_const(buf, -2)
+        emit_i64_and(buf)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 4)
+        emit_i32_sub(buf)
+        emit_local_get(buf, elem_l)
+        emit_i64_const(buf, -2)
+        emit_i64_and(buf)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 4)
+        emit_i32_sub(buf)
+        emit_i32_load(buf, 2, 0)
+        emit_i32_const(buf, 1)
+        emit_i32_add(buf)
+        emit_i32_store(buf, 2, 0)
+        emit_end(buf)
+        emit_end(buf)
+      }
       emit_call(buf, arr_push_fi)
       emit_local_get(buf, i_l)
       emit_i64_const(buf, 1)
@@ -723,7 +809,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_end(buf)
       emit_end(buf)
       emit_local_get(buf, res_l)
-      nl + 5
+      nl + 6
     }
     else if fname == "Array::any" {
       let (arr_len_fi, _, _) = resolve_func(ctx.func_table, "Array::length")

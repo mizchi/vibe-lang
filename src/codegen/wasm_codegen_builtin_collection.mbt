@@ -142,7 +142,7 @@ fn compile_builtin_collection(
       emit_i64_const_raw(buf, tag_obj.to_int64())
       emit_i64_or(buf)
     }
-    "array_contains_str" => {
+    "array_contains_str" if !is_user_fn => {
       // array_contains_str(arr, str) -> Bool
       // Linear scan: compare each element string with str using content comparison
       let pos_args = extract_positional_exprs_with_arity(

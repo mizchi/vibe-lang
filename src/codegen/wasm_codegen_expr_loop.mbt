@@ -122,6 +122,16 @@ fn compile_expr_return(
     Some(expr) => compile_expr(ctx, buf, expr)
     None => emit_i64_const_tagged(buf, 0L)
   }
+  // Flush the bump-allocator pointer to the global before unwinding. The
+  // natural function epilogue (`compile_block`) writes `heap_local ->
+  // heap_global`, but an early `return` skips that epilogue, so without
+  // this the caller's post-call sync reloads a stale (smaller) global and
+  // the heap pointer moves backwards — later allocations then overwrite
+  // objects allocated by this callee (e.g. the value just returned).
+  if ctx.need_heap && ctx.use_heap_global {
+    emit_local_get(buf, ctx.heap_local)
+    emit_global_set(buf, ctx.heap_global)
+  }
   emit_return(buf)
   emit_unreachable(buf)
 }
