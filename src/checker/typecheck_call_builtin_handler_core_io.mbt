@@ -1,4 +1,14 @@
 ///|
+fn threads_channel_string_type() -> @core.Type {
+  @core.Type::Named(name="ThreadChannel", args=[@core.Type::String])
+}
+
+///|
+fn threads_task_int_type() -> @core.Type {
+  @core.Type::Named(name="ThreadTask", args=[@core.Type::Int])
+}
+
+///|
 fn type_call_builtin_handler_core_io(
   env : TypeEnv,
   name : String,
@@ -398,27 +408,37 @@ fn type_call_builtin_handler_core_io(
       ctx.simple(
         "Threads::channel_new",
         [@core.Type::Int],
-        @core.Type::Int,
+        threads_channel_string_type(),
         true,
       )
     "Threads::send" =>
       ctx.simple(
         "Threads::send",
-        [@core.Type::Int, @core.Type::String],
+        [threads_channel_string_type(), @core.Type::String],
         @core.Type::Bool,
         true,
       )
     "Threads::recv" =>
-      ctx.simple("Threads::recv", [@core.Type::Int], @core.Type::String, true)
+      ctx.simple(
+        "Threads::recv",
+        [threads_channel_string_type()],
+        @core.Type::String,
+        true,
+      )
     "Threads::spawn" =>
       ctx.simple(
         "Threads::spawn",
-        [@core.Type::String, @core.Type::Int],
-        @core.Type::Int,
+        [@core.Type::String, threads_channel_string_type()],
+        threads_task_int_type(),
         true,
       )
     "Threads::wait" =>
-      ctx.simple("Threads::wait", [@core.Type::Int], @core.Type::Int, true)
+      ctx.simple(
+        "Threads::wait",
+        [threads_task_int_type()],
+        @core.Type::Int,
+        true,
+      )
     "Llm::complete" => {
       // (system: String, user: String) -> String with { Llm }
       let pos_args = prepare_builtin_pos_args(

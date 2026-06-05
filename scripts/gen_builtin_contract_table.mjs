@@ -157,11 +157,11 @@ const signatures = {
   "Threads::probe_wat": "() -> String",
   "Threads::runtime_hints":
     "() -> {wasm_flags: Array[String], wasi_flags: Array[String], wasm_env: String, wasi_env: String}",
-  "Threads::channel_new": "(Int) -> Int",
-  "Threads::send": "(Int, String) -> Bool",
-  "Threads::recv": "(Int) -> String",
-  "Threads::spawn": "(String, Int) -> Int",
-  "Threads::wait": "(Int) -> Int",
+  "Threads::channel_new": "(Int) -> ThreadChannel[String]",
+  "Threads::send": "(ThreadChannel[String], String) -> Bool",
+  "Threads::recv": "(ThreadChannel[String]) -> String",
+  "Threads::spawn": "(String, ThreadChannel[String]) -> ThreadTask[Int]",
+  "Threads::wait": "(ThreadTask[Int]) -> Int",
   "__to_string": "(Any) -> String",
 };
 

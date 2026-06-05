@@ -52,13 +52,13 @@ Legend:
 | `String::split` | `(String, String) -> Array[String]` | `-` | yes | yes |
 | `String::substring` | `(String, Int, Int) -> String` | `-` | yes | yes |
 | `String::trim` | `(String) -> String` | `-` | yes | yes |
-| `Threads::channel_new` | `(Int) -> Int` | `{Threads}` | yes | yes |
+| `Threads::channel_new` | `(Int) -> ThreadChannel[String]` | `{Threads}` | yes | yes |
 | `Threads::probe_wat` | `() -> String` | `{Threads}` | yes | yes |
-| `Threads::recv` | `(Int) -> String` | `{Threads}` | yes | yes |
+| `Threads::recv` | `(ThreadChannel[String]) -> String` | `{Threads}` | yes | yes |
 | `Threads::runtime_hints` | `() -> {wasm_flags: Array[String], wasi_flags: Array[String], wasm_env: String, wasi_env: String}` | `{Threads}` | yes | yes |
-| `Threads::send` | `(Int, String) -> Bool` | `{Threads}` | yes | yes |
-| `Threads::spawn` | `(String, Int) -> Int` | `{Threads}` | yes | yes |
-| `Threads::wait` | `(Int) -> Int` | `{Threads}` | yes | yes |
+| `Threads::send` | `(ThreadChannel[String], String) -> Bool` | `{Threads}` | yes | yes |
+| `Threads::spawn` | `(String, ThreadChannel[String]) -> ThreadTask[Int]` | `{Threads}` | yes | yes |
+| `Threads::wait` | `(ThreadTask[Int]) -> Int` | `{Threads}` | yes | yes |
 | `__add` | `(Num, Num) -> Num` | `-` | yes | yes |
 | `__assert` | `(Bool) -> Unit` | `-` | yes | yes |
 | `__bit_and` | `(Int, Int) -> Int` | `-` | yes | yes |

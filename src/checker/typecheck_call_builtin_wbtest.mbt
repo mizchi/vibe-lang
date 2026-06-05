@@ -416,11 +416,17 @@ test "type_call_builtin: Threads builtins require Threads effect" {
 }
 
 ///|
-test "type_call_builtin: Threads channel API has minimal typed surface" {
+test "type_call_builtin: Threads channel API has typed handle surface" {
   let env = TypeEnv::new()
   let span = builtin_test_span()
   let aliases : Map[String, @core.Ref] = {}
   let scope = effect_scope_from_list([@core.EffectAtom::Const("Threads")])
+  let channel_handle_ty = @core.Type::Named(name="ThreadChannel", args=[
+    @core.Type::String,
+  ])
+  let task_handle_ty = @core.Type::Named(name="ThreadTask", args=[
+    @core.Type::Int,
+  ])
   let channel_ty = type_call_builtin(
     env,
     "Threads::channel_new",
@@ -432,11 +438,12 @@ test "type_call_builtin: Threads channel API has minimal typed surface" {
   ) catch {
     err => fail(err.to_string())
   }
-  assert_eq(channel_ty, @core.Type::Int)
+  assert_eq(channel_ty, channel_handle_ty)
+  env.set("ch", channel_ty)
   let send_ty = type_call_builtin(
     env,
     "Threads::send",
-    [builtin_test_int_arg(1), builtin_test_string_arg("ok")],
+    [builtin_test_ident_arg("ch"), builtin_test_string_arg("ok")],
     aliases,
     scope,
     true,
@@ -448,7 +455,7 @@ test "type_call_builtin: Threads channel API has minimal typed surface" {
   let recv_ty = type_call_builtin(
     env,
     "Threads::recv",
-    [builtin_test_int_arg(1)],
+    [builtin_test_ident_arg("ch")],
     aliases,
     scope,
     true,
@@ -460,7 +467,7 @@ test "type_call_builtin: Threads channel API has minimal typed surface" {
   let spawn_ty = type_call_builtin(
     env,
     "Threads::spawn",
-    [builtin_test_string_arg("worker"), builtin_test_int_arg(1)],
+    [builtin_test_string_arg("worker"), builtin_test_ident_arg("ch")],
     aliases,
     scope,
     true,
@@ -468,11 +475,12 @@ test "type_call_builtin: Threads channel API has minimal typed surface" {
   ) catch {
     err => fail(err.to_string())
   }
-  assert_eq(spawn_ty, @core.Type::Int)
+  assert_eq(spawn_ty, task_handle_ty)
+  env.set("task", spawn_ty)
   let wait_ty = type_call_builtin(
     env,
     "Threads::wait",
-    [builtin_test_int_arg(1)],
+    [builtin_test_ident_arg("task")],
     aliases,
     scope,
     true,
@@ -481,6 +489,54 @@ test "type_call_builtin: Threads channel API has minimal typed surface" {
     err => fail(err.to_string())
   }
   assert_eq(wait_ty, @core.Type::Int)
+}
+
+///|
+test "type_call_builtin: Threads handles reject raw Int" {
+  let env = TypeEnv::new()
+  let span = builtin_test_span()
+  let aliases : Map[String, @core.Ref] = {}
+  let scope = effect_scope_from_list([@core.EffectAtom::Const("Threads")])
+  let send_result : Result[@core.Type, TypeError] = try? type_call_builtin(
+    env,
+    "Threads::send",
+    [builtin_test_int_arg(1), builtin_test_string_arg("ok")],
+    aliases,
+    scope,
+    true,
+    span,
+  )
+  match send_result {
+    Ok(_) => fail("expected raw Int channel handle to be rejected")
+    Err(TypeError::Mismatch(expected~, actual~, ..)) => {
+      assert_eq(
+        expected,
+        @core.Type::Named(name="ThreadChannel", args=[@core.Type::String]),
+      )
+      assert_eq(actual, @core.Type::Int)
+    }
+    Err(other) => fail("unexpected error: \{other.to_string()}")
+  }
+  let wait_result : Result[@core.Type, TypeError] = try? type_call_builtin(
+    env,
+    "Threads::wait",
+    [builtin_test_int_arg(1)],
+    aliases,
+    scope,
+    true,
+    span,
+  )
+  match wait_result {
+    Ok(_) => fail("expected raw Int task handle to be rejected")
+    Err(TypeError::Mismatch(expected~, actual~, ..)) => {
+      assert_eq(
+        expected,
+        @core.Type::Named(name="ThreadTask", args=[@core.Type::Int]),
+      )
+      assert_eq(actual, @core.Type::Int)
+    }
+    Err(other) => fail("unexpected error: \{other.to_string()}")
+  }
 }
 
 ///|

@@ -1328,7 +1328,9 @@ test "compile_module_wasm_with_opt_level rejects stateful Threads backend mismat
     "main",
     (
       #|export let _start = () -> Int with {Threads} {
-      #|  Threads::channel_new(1)
+      #|  let ch = Threads::channel_new(1)
+      #|  let task = Threads::spawn("worker", ch)
+      #|  Threads::wait(task)
       #|}
     ),
   )

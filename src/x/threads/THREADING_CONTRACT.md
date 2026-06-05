@@ -92,8 +92,10 @@ The compiled linear backend uses the same Vibe-owned handle principle, but it
 does not claim parallelism. It is a single-instance local runtime used to keep
 the source-level contract executable while the Wasmtime fork backend matures.
 
-Local channel handles are opaque Vibe `Int` values whose payload is a raw
-linear-memory pointer to this record:
+Source-level local channel handles are nominal Vibe `ThreadChannel[T]` values.
+The current compiled API instantiates this as `ThreadChannel[String]`. Its
+runtime payload is still the same tagged integer representation used by other
+linear-memory handles: a raw pointer to this record:
 
 | Offset | Field |
 | --- | --- |
@@ -141,8 +143,11 @@ shared channel layout, while parent-side join and terminal status continue to
 use Vibe-owned slots. The canonical `thread.spawn-indirect` return index remains
 ignored in that path.
 
-Local task handles are opaque Vibe `Int` values whose payload is a raw
-linear-memory pointer to this record:
+Source-level local task handles are nominal Vibe `ThreadTask[T]` values. The
+current compiled `Threads::spawn` instantiates this as `ThreadTask[Int]` because
+`Threads::wait` returns a terminal status code today. Its runtime payload is the
+same tagged integer representation used by the local backend: a raw pointer to
+this record:
 
 | Offset | Field |
 | --- | --- |

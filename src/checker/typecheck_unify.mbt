@@ -269,6 +269,18 @@ fn resolve_builtin_type_name(
         None
       }
     "Bytes" => if args.is_empty() { Some(@core.Type::Bytes) } else { None }
+    "ThreadChannel" =>
+      if args.length() == 1 {
+        Some(@core.Type::Named(name~, args~))
+      } else {
+        None
+      }
+    "ThreadTask" =>
+      if args.length() == 1 {
+        Some(@core.Type::Named(name~, args~))
+      } else {
+        None
+      }
     "Int64Array" =>
       if args.is_empty() {
         Some(@core.Type::Named(name="Int64Array", args=[]))
