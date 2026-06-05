@@ -92,6 +92,9 @@ pub struct WasmEmitOptions {
   /// `<offset>`) in lambda labels of the wasm `name` custom section.
   /// Empty disables the upgrade.
   source : String
+  /// Source-level function return types inferred by the checker.
+  /// Used by backends that need contracts not visible from wasm value kinds.
+  known_fn_return_types : Map[String, @core.Type]
   /// Experimental Vibe thread backend selected by the CLI/runtime.
   /// The normal compiler still gates stateful `Threads::*` lowering on this.
   thread_backend_id : String
@@ -119,6 +122,7 @@ pub fn wasm_emit_options(
   rc_actions? : Array[(String, Bool, String)] = [],
   rc_func_actions? : Map[String, Array[(String, Bool, String)]] = {},
   source? : String = "",
+  known_fn_return_types? : Map[String, @core.Type] = {},
   thread_backend_id? : String = "linear-local",
   thread_component_runtime_imports? : Bool = false,
 ) -> WasmEmitOptions {
@@ -135,6 +139,7 @@ pub fn wasm_emit_options(
     rc_actions,
     rc_func_actions,
     source,
+    known_fn_return_types,
     thread_backend_id,
     thread_component_runtime_imports,
   }

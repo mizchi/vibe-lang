@@ -1533,7 +1533,7 @@ test "compile_module_component rejects plain Int thread worker parameter" {
       assert_true(message.contains("Threads::spawn worker currently supports"))
       assert_true(
         message.contains(
-          "ThreadChannel[Int|String|Array[Int]|Array[String]|Tuple[Int|String, ...]] -> Int|String|Array[Int]|Array[String]|Tuple[Int|String, ...]",
+          "ThreadChannel[Int|String|Array[Int]|Array[String]|Tuple[Int|String, ...]|Record[Int|String fields]] -> Int|String|Array[Int]|Array[String]|Tuple[Int|String, ...]|Record[Int|String fields]",
         ),
       )
       assert_true(message.contains("worker"))
@@ -1652,6 +1652,34 @@ test "compile_module_component allows tuple thread worker return" {
 }
 
 ///|
+test "compile_module_component allows record thread worker return" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "threads_component_record_worker_return_probe",
+    (
+      #|let worker = (_ch: ThreadChannel[Int]) {
+      #|  record { score: 7, word: "green" }
+      #|}
+      #|export let thread_worker_probe = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let task = Threads::spawn("worker", ch)
+      #|  let row = Threads::wait(task)
+      #|  row.score * 100 + String::length(row.word)
+      #|}
+      #|0
+    ),
+  )
+  let component = compile_module_component_with_opt_level(
+    db,
+    "threads_component_record_worker_return_probe",
+    thread_backend_id="component-unsafe-os-threads",
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_true(bytes_contains_ascii(component, "thread.spawn-indirect"))
+}
+
+///|
 test "compile_module_component allows Array[Int] thread channel payload" {
   let db = @runtime.VibeDb::new()
   db.set_source(
@@ -1739,6 +1767,99 @@ test "compile_module_component allows tuple thread channel payload" {
 }
 
 ///|
+test "compile_module_component allows record thread channel payload" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "threads_component_record_channel_payload_probe",
+    (
+      #|export let thread_worker_probe = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let _ok = Threads::send(ch, record { score: 2, word: "green" })
+      #|  let task = Threads::spawn("noop", ch)
+      #|  Threads::wait(task)
+      #|}
+      #|0
+    ),
+  )
+  let component = compile_module_component_with_opt_level(
+    db,
+    "threads_component_record_channel_payload_probe",
+    thread_backend_id="component-unsafe-os-threads",
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_true(bytes_contains_ascii(component, "thread.spawn-indirect"))
+}
+
+///|
+test "compile_module_component rejects record thread channel payload with array field" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "threads_component_nested_record_channel_payload_probe",
+    (
+      #|export let thread_worker_probe = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let _ok = Threads::send(ch, record { score: [1, 2], word: "green" })
+      #|  let task = Threads::spawn("noop", ch)
+      #|  Threads::wait(task)
+      #|}
+      #|0
+    ),
+  )
+  let result : Result[Bytes, WasmCompileError] = try? compile_module_component_with_opt_level(
+    db,
+    "threads_component_nested_record_channel_payload_probe",
+    thread_backend_id="component-unsafe-os-threads",
+  )
+  match result {
+    Ok(_) => fail("expected nested record thread channel payload error")
+    Err(err) => {
+      let message = err.user_message()
+      assert_true(message.contains("ThreadChannelPayload"))
+      assert_true(message.contains("thread channel payload"))
+    }
+  }
+}
+
+///|
+test "compile_module_component rejects record thread worker return with array field" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "threads_component_nested_record_worker_return_probe",
+    (
+      #|let worker = (_ch: ThreadChannel[Int]) {
+      #|  record { score: [1, 2], word: "green" }
+      #|}
+      #|export let thread_worker_probe = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let task = Threads::spawn("worker", ch)
+      #|  let row = Threads::wait(task)
+      #|  String::length(row.word)
+      #|}
+      #|0
+    ),
+  )
+  let result : Result[Bytes, WasmCompileError] = try? compile_module_component_with_opt_level(
+    db,
+    "threads_component_nested_record_worker_return_probe",
+    thread_backend_id="component-unsafe-os-threads",
+  )
+  match result {
+    Ok(_) => fail("expected nested record thread worker return error")
+    Err(err) => {
+      let message = err.user_message()
+      assert_true(message.contains("Threads::spawn worker currently supports"))
+      assert_true(
+        message.contains(
+          "ThreadChannel[Int|String|Array[Int]|Array[String]|Tuple[Int|String, ...]|Record[Int|String fields]] -> Int|String|Array[Int]|Array[String]|Tuple[Int|String, ...]|Record[Int|String fields]",
+        ),
+      )
+      assert_true(message.contains("worker"))
+    }
+  }
+}
+
+///|
 test "compile_module_component rejects nested array thread channel payload" {
   let db = @runtime.VibeDb::new()
   db.set_source(
@@ -1800,7 +1921,7 @@ test "compile_module_component rejects nested array thread worker return" {
       assert_true(message.contains("Threads::spawn worker currently supports"))
       assert_true(
         message.contains(
-          "ThreadChannel[Int|String|Array[Int]|Array[String]|Tuple[Int|String, ...]] -> Int|String|Array[Int]|Array[String]|Tuple[Int|String, ...]",
+          "ThreadChannel[Int|String|Array[Int]|Array[String]|Tuple[Int|String, ...]|Record[Int|String fields]] -> Int|String|Array[Int]|Array[String]|Tuple[Int|String, ...]|Record[Int|String fields]",
         ),
       )
       assert_true(message.contains("worker"))
@@ -2015,6 +2136,15 @@ test "compile_module_component emits component unsafe Threads spawn runtime impo
       #|  let pair = Threads::wait(task)
       #|  pair.0 * 100 + String::length(pair.1)
       #|}
+      #|let worker_record = (_ch: ThreadChannel[Int]) {
+      #|  record { score: 7, word: "green" }
+      #|}
+      #|export let thread_worker_record_result_probe = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let task = Threads::spawn("worker_record", ch)
+      #|  let row = Threads::wait(task)
+      #|  row.score * 100 + String::length(row.word)
+      #|}
       #|let worker_array_len = (ch: ThreadChannel[Array[Int]]) -> Int with {Threads} {
       #|  let xs = Threads::recv(ch)
       #|  Array::length(xs) * 100 + Array::get(xs, 1)
@@ -2092,6 +2222,9 @@ test "compile_module_component emits component unsafe Threads spawn runtime impo
   )
   assert_true(
     bytes_contains_ascii(component, "thread-worker-tuple-result-probe"),
+  )
+  assert_true(
+    bytes_contains_ascii(component, "thread-worker-record-result-probe"),
   )
   assert_true(
     bytes_contains_ascii(component, "thread-worker-array-channel-probe"),

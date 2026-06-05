@@ -328,15 +328,31 @@ fn thread_worker_is_supported_shared_tuple_type(ty : @core.Type) -> Bool {
 }
 
 ///|
+fn thread_worker_is_supported_shared_record_type(ty : @core.Type) -> Bool {
+  match ty {
+    @core.Type::Record(fields) => {
+      for _, field_ty in fields {
+        if !thread_worker_is_supported_shared_scalar_type(field_ty) {
+          return false
+        }
+      }
+      true
+    }
+    _ => false
+  }
+}
+
+///|
 fn thread_worker_is_supported_shared_value_type(ty : @core.Type) -> Bool {
   thread_worker_is_supported_shared_scalar_type(ty) ||
   thread_worker_is_supported_shared_array_type(ty) ||
-  thread_worker_is_supported_shared_tuple_type(ty)
+  thread_worker_is_supported_shared_tuple_type(ty) ||
+  thread_worker_is_supported_shared_record_type(ty)
 }
 
 ///|
 fn thread_worker_supported_contract_text() -> String {
-  "ThreadChannel[Int|String|Array[Int]|Array[String]|Tuple[Int|String, ...]] -> Int|String|Array[Int]|Array[String]|Tuple[Int|String, ...]"
+  "ThreadChannel[Int|String|Array[Int]|Array[String]|Tuple[Int|String, ...]|Record[Int|String fields]] -> Int|String|Array[Int]|Array[String]|Tuple[Int|String, ...]|Record[Int|String fields]"
 }
 
 ///|

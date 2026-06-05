@@ -2122,6 +2122,7 @@ fn wasm_emit_options(
   http_host_imports? : Bool = false,
   http_component_wasi_shim? : Bool = false,
   fs_host_imports? : Bool = false,
+  known_fn_return_types? : Map[String, @core.Type] = {},
   thread_backend_id? : String = "linear-local",
   thread_component_runtime_imports? : Bool = false,
 ) -> @codegen.WasmEmitOptions {
@@ -2130,9 +2131,35 @@ fn wasm_emit_options(
     http_host_imports~,
     http_component_wasi_shim~,
     fs_host_imports~,
+    known_fn_return_types~,
     thread_backend_id~,
     thread_component_runtime_imports~,
   )
+}
+
+///|
+fn collect_codegen_fn_return_types(
+  env : @checker.TypeEnv,
+  ast : @core.Module,
+) -> Map[String, @core.Type] {
+  let out : Map[String, @core.Type] = {}
+  for stmt in ast.stmts {
+    let name = match stmt {
+      @core.Stmt::Let(name~, ..)
+      | @core.Stmt::ExportLet(name~, ..)
+      | @core.Stmt::InternalExportLet(name~, ..) => Some(name)
+      _ => None
+    }
+    match name {
+      Some(name) =>
+        match env.get(name) {
+          Some(@core.Type::Func(ret~, ..)) => out[name] = ret
+          _ => ()
+        }
+      None => ()
+    }
+  }
+  out
 }
 
 ///|
@@ -2754,6 +2781,10 @@ pub fn compile_module_component(
       false,
       http_host_imports~,
       http_component_wasi_shim=http_host_imports,
+      known_fn_return_types=collect_codegen_fn_return_types(
+        compiled.type_env,
+        bundled,
+      ),
       thread_backend_id~,
       thread_component_runtime_imports=use_component_thread_runtime,
     ),

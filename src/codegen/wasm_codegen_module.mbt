@@ -4669,6 +4669,9 @@ pub fn emit_module_wasm_with_options(
   )
   ctx.linked_fn_imports_list = options.linked_imports
   ctx.source = options.source
+  for name, ty in options.known_fn_return_types {
+    ctx.fn_return_types[name] = ty
+  }
   if options.enable_rc && thread_backend_uses_shared_memory(ctx) {
     raise WasmGenError::Unsupported(
       "enable_rc is not supported with shared thread backend " +

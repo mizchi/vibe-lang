@@ -302,12 +302,14 @@ Threads (experimental, runtime-gated by `--unstable-threads`):
 - `Threads::channel_new(capacity: Int)` -> `ThreadChannel[T]`
 - `Threads::send(channel: ThreadChannel[T], payload: T)` -> `Bool`
   - current experimental payload lowering supports `Int`, `String`, and
-    `Array[Int]`/`Array[String]`/`Tuple[Int|String, ...]`
+    `Array[Int]`/`Array[String]`/`Tuple[Int|String, ...]`/record values whose
+    fields are `Int` or `String`
 - `Threads::recv(channel: ThreadChannel[T])` -> `T`
 - `Threads::spawn(name: String, channel: ThreadChannel[T])` -> `ThreadTask[R]`
   - for supported string-literal workers, `R` is the worker return type
   - current experimental worker result lowering supports `Int`, `String`, and
-    `Array[Int]`/`Array[String]`/`Tuple[Int|String, ...]`
+    `Array[Int]`/`Array[String]`/`Tuple[Int|String, ...]`/record values whose
+    fields are `Int` or `String`
   - reserved diagnostic names currently return `ThreadTask[Int]`
 - `Threads::wait(task: ThreadTask[T])` -> `T`
   - `linear-local` currently returns `0`
@@ -353,7 +355,7 @@ Threads (experimental, runtime-gated by `--unstable-threads`):
   String-literal worker dispatch is currently limited to reserved diagnostic
   names (`"noop"`, `"alloc-probe"`) or capture-free top-level worker functions
   in the temporary
-  `ThreadChannel[Int|String|Array[Int]|Array[String]|Tuple[Int|String, ...]] -> Int|String|Array[Int]|Array[String]|Tuple[Int|String, ...]`
+  `ThreadChannel[Int|String|Array[Int]|Array[String]|Tuple[Int|String, ...]|Record[Int|String fields]] -> Int|String|Array[Int]|Array[String]|Tuple[Int|String, ...]|Record[Int|String fields]`
   shape.
   Dynamic worker names are rejected in this backend until function-value,
   closure, or richer payload/result semantics are specified.
