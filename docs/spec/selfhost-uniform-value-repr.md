@@ -1,9 +1,12 @@
 # Selfhost uniform value representation — design for runtime pointer discrimination
 
-Status: **accepted, in progress** (ADR-0055). Stages 1–3 implemented, Stage 4
-partial (the safety-critical slice landed), Stage 5 measured; the remaining
-implementation work is **float heap-boxing** (Stage 2) and the residual Stage 4
-escape leaks (container-owning-escape, nested-closure owned params). Prerequisite
+Status: **accepted, in progress** (ADR-0055). Stages 1–3 implemented, Stage 2
+float heap-boxing implemented (#509; NaN-box deferred), Stage 4 partial (the
+safety-critical slice + most leak fixes landed), Stage 5 measured. The only
+remaining implementation work is the **residual Stage 4 escape leaks**
+(container-owning-escape, nested-closure owned params) — all *safe* leaks (no
+use-after-free), and the gate that blocks RC cutover to the selfhost linear
+default. Prerequisite
 for *recursive field drop* in the selfhost Perceus RC port
 (`docs/spec/selfhost-rc-port.md`). `src/` stays authoritative; this documents the
 design the selfhost backend needs before the RC vertical can reclaim **nested**
@@ -546,6 +549,35 @@ arithmetic / comparison / bitop / shift / float / nested-data case under
    linear memory at large N where RC runs indefinitely. Cutover (RC as the
    selfhost linear default when wasm-gc is unavailable, #493 C/F) is gated on
    completing Stage 4 leak elimination (owned/borrowed typing).
+
+   **wasm-gc vs Perceus-RC (`scripts/bench_gc_vs_rc.sh`).** The same four loops,
+   compiled three ways — selfhost linear (bump), selfhost linear+RC, and the
+   `src/` wasm-gc backend (`vibe compile --wasm-gc`, `struct.new` + engine GC) —
+   and timed under a *single* runtime, **wasmtime**. wasmtime (not node) is the
+   fair judge: V8 escape-analyzes the non-escaping loop tuple away and reports a
+   misleadingly fast wasm-gc time, while wasmtime treats `struct.new` + tracing
+   GC as real work. Each backend must reproduce the linear checksum or it is
+   marked a failure (loop-only ms, trivial-twin subtracted; N = 1e6, min of 7):
+
+   | benchmark      | linear | Perceus-RC | wasm-gc          | gc / rc |
+   |----------------|--------|------------|------------------|---------|
+   | flat_tuple     | 12 ms  | 18 ms      | 201 ms           | ×11.2   |
+   | nested_tuple   | 40 ms  | 55 ms      | 652 ms           | ×11.9   |
+   | record_tuples  | 51 ms  | 44 ms      | **FAIL (trap)**  | —       |
+   | enum_tuple     | 27 ms  | 28 ms      | **FAIL (nocompile)** | —   |
+
+   Two findings. (1) **Throughput:** where wasm-gc runs, Perceus-RC is ~11–12×
+   *faster* — inline dup/drop + a free-list (no tracing, no GC pauses) beats
+   `struct.new` + a tracing collector on allocation-heavy code, and RC adds only
+   ~10–40 % over the leak-everything bump baseline. (2) **Maturity:** the `src/`
+   wasm-gc backend runs only 2 of the 4 — `record_tuples` compiles but **traps at
+   runtime with a GC cast-failure** (the documented struct-field-ordering class,
+   CLAUDE.md / `record_field_name_lt`), and `enum_tuple` does not compile (the
+   `src/` parser rejects `match` as a `+` operand, which the selfhost parser
+   accepts — a parser-parity gap; a let-bound rewrite then hits a gc type error
+   `unknown function: Wrap`). So on this workload Perceus-RC is both faster and
+   more complete than wasm-gc; wasm-gc remains the option for GC-capable runtimes
+   where its codegen gaps don't bite (see CLAUDE.md `VIBE_TEST_BACKEND=gc`).
 
 ## Risk & scope
 
