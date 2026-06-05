@@ -305,7 +305,8 @@ Threads (experimental, runtime-gated by `--unstable-threads`):
 - `Threads::recv(channel: ThreadChannel[T])` -> `T`
 - `Threads::spawn(name: String, channel: ThreadChannel[T])` -> `ThreadTask[R]`
   - for supported string-literal workers, `R` is the worker return type
-  - current experimental worker result lowering supports `Int` and `String`
+  - current experimental worker result lowering supports `Int`, `String`, and
+    `Array[Int]`
   - reserved diagnostic names currently return `ThreadTask[Int]`
 - `Threads::wait(task: ThreadTask[T])` -> `T`
   - `linear-local` currently returns `0`
@@ -350,9 +351,9 @@ Threads (experimental, runtime-gated by `--unstable-threads`):
   allocation must go through exported `cabi_realloc`.
   String-literal worker dispatch is currently limited to reserved diagnostic
   names (`"noop"`, `"alloc-probe"`) or capture-free top-level worker functions
-  in the temporary `ThreadChannel[Int|String] -> Int|String` shape. Dynamic
-  worker names are rejected in this backend until function-value, closure, or
-  richer payload/result semantics are specified.
+  in the temporary `ThreadChannel[Int|String] -> Int|String|Array[Int]` shape.
+  Dynamic worker names are rejected in this backend until function-value,
+  closure, or richer payload/result semantics are specified.
 - `vibe/prelude/threads.vibe` は test-safe な pure contract 層を分離:
   - `task_spec`, `channel_spec`, `actor_spec`, `deployment_plan`, `recommended_*`
   - これらは通常 `vibe test` で実行可能

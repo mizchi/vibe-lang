@@ -389,6 +389,19 @@ test "type_call_builtin: Threads builtins match documented contract" {
       effects=[@core.EffectAtom::Const("Threads")],
     ),
   )
+  env.set(
+    "worker_array",
+    @core.Type::Func(
+      params=[
+        builtin_test_fn_param(
+          "ch",
+          @core.Type::Named(name="ThreadChannel", args=[@core.Type::Int]),
+        ),
+      ],
+      ret=@core.Type::Array(@core.Type::Int),
+      effects=[@core.EffectAtom::Const("Threads")],
+    ),
+  )
   let hints_ty = @core.Type::Record({
     "wasm_flags": @core.Type::Array(@core.Type::String),
     "wasi_flags": @core.Type::Array(@core.Type::String),
@@ -420,6 +433,17 @@ test "type_call_builtin: Threads builtins match documented contract" {
         builtin_test_ident_arg("ch_str"),
       ],
       @core.Type::Named(name="ThreadTask", args=[@core.Type::String]),
+    ),
+    (
+      "Threads::spawn",
+      [
+        builtin_test_string_arg("worker_array"),
+        builtin_test_ident_arg("ch_int"),
+      ],
+      @core.Type::Named(
+        name="ThreadTask",
+        args=[@core.Type::Array(@core.Type::Int)],
+      ),
     ),
     ("Threads::wait", [builtin_test_ident_arg("task_int")], @core.Type::Int),
   ]

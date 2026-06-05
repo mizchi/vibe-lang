@@ -162,7 +162,7 @@ const signatures = {
   "Threads::send": "(ThreadChannel[T], T) -> Bool  // T currently Int | String",
   "Threads::recv": "(ThreadChannel[T]) -> T",
   "Threads::spawn":
-    "(String, ThreadChannel[T]) -> ThreadTask[R]  // R currently Int | String",
+    "(String, ThreadChannel[T]) -> ThreadTask[R]  // R currently Int | String | Array[Int]",
   "Threads::wait": "(ThreadTask[T]) -> T",
 };
 
