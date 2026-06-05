@@ -91,23 +91,33 @@ fn threads_payload_is_int_type(ty : @core.Type) -> Bool {
 }
 
 ///|
-fn threads_payload_is_array_int_type(ty : @core.Type) -> Bool {
+fn threads_payload_is_string_type(ty : @core.Type) -> Bool {
   match ty {
-    @core.Type::Array(elem) => threads_payload_is_int_type(elem)
+    @core.Type::String => true
+    @core.Type::Named(name="String", args=[]) => true
+    _ => false
+  }
+}
+
+///|
+fn threads_payload_is_supported_scalar_type(ty : @core.Type) -> Bool {
+  threads_payload_is_int_type(ty) || threads_payload_is_string_type(ty)
+}
+
+///|
+fn threads_payload_is_supported_array_type(ty : @core.Type) -> Bool {
+  match ty {
+    @core.Type::Array(elem) => threads_payload_is_supported_scalar_type(elem)
     @core.Type::Named(name="Array", args=[elem]) =>
-      threads_payload_is_int_type(elem)
+      threads_payload_is_supported_scalar_type(elem)
     _ => false
   }
 }
 
 ///|
 fn threads_payload_is_supported_type(ty : @core.Type) -> Bool {
-  match ty {
-    @core.Type::Int | @core.Type::String => true
-    @core.Type::Named(name="Int", args=[]) => true
-    @core.Type::Named(name="String", args=[]) => true
-    other => threads_payload_is_array_int_type(other)
-  }
+  threads_payload_is_supported_scalar_type(ty) ||
+  threads_payload_is_supported_array_type(ty)
 }
 
 ///|

@@ -1533,7 +1533,7 @@ test "compile_module_component rejects plain Int thread worker parameter" {
       assert_true(message.contains("Threads::spawn worker currently supports"))
       assert_true(
         message.contains(
-          "ThreadChannel[Int|String|Array[Int]] -> Int|String|Array[Int]",
+          "ThreadChannel[Int|String|Array[Int]|Array[String]] -> Int|String|Array[Int]",
         ),
       )
       assert_true(message.contains("worker"))
@@ -1617,6 +1617,35 @@ test "compile_module_component allows Array[Int] thread channel payload" {
   let component = compile_module_component_with_opt_level(
     db,
     "threads_component_array_channel_payload_probe",
+    thread_backend_id="component-unsafe-os-threads",
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_true(bytes_contains_ascii(component, "thread.spawn-indirect"))
+}
+
+///|
+test "compile_module_component allows Array[String] thread channel payload" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "threads_component_array_string_channel_payload_probe",
+    (
+      #|let worker = (ch: ThreadChannel[Array[String]]) -> Int with {Threads} {
+      #|  let xs = Threads::recv(ch)
+      #|  Array::length(xs) * 100 + String::length(Array::get(xs, 1))
+      #|}
+      #|export let thread_worker_probe = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let _ok = Threads::send(ch, ["red", "green"])
+      #|  let task = Threads::spawn("worker", ch)
+      #|  Threads::wait(task)
+      #|}
+      #|0
+    ),
+  )
+  let component = compile_module_component_with_opt_level(
+    db,
+    "threads_component_array_string_channel_payload_probe",
     thread_backend_id="component-unsafe-os-threads",
   ) catch {
     err => fail(err.to_string())
@@ -1823,6 +1852,16 @@ test "compile_module_component emits component unsafe Threads spawn runtime impo
       #|  let task = Threads::spawn("worker_array_len", ch)
       #|  Threads::wait(task)
       #|}
+      #|let worker_array_string_len = (ch: ThreadChannel[Array[String]]) -> Int with {Threads} {
+      #|  let xs = Threads::recv(ch)
+      #|  Array::length(xs) * 100 + String::length(Array::get(xs, 1))
+      #|}
+      #|export let thread_worker_array_string_channel_probe = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let _ok = Threads::send(ch, ["red", "green"])
+      #|  let task = Threads::spawn("worker_array_string_len", ch)
+      #|  Threads::wait(task)
+      #|}
       #|export let thread_alloc_probe = () -> Int with {Threads} {
       #|  let ch = Threads::channel_new(1)
       #|  let task = Threads::spawn("alloc-probe", ch)
@@ -1858,6 +1897,7 @@ test "compile_module_component emits component unsafe Threads spawn runtime impo
   assert_true(bytes_contains_ascii(component, "thread-worker-string-alloc-result-probe"))
   assert_true(bytes_contains_ascii(component, "thread-worker-array-result-probe"))
   assert_true(bytes_contains_ascii(component, "thread-worker-array-channel-probe"))
+  assert_true(bytes_contains_ascii(component, "thread-worker-array-string-channel-probe"))
   assert_true(bytes_contains_ascii(component, "thread-alloc-probe"))
   assert_true(bytes_contains_ascii(component, "thread-alloc-many-probe"))
   assert_true(

@@ -160,7 +160,7 @@ const signatures = {
     "() -> {wasm_flags: Array[String], wasi_flags: Array[String], wasm_env: String, wasi_env: String}",
   "Threads::channel_new": "(Int) -> ThreadChannel[T]",
   "Threads::send":
-    "(ThreadChannel[T], T) -> Bool  // T currently Int | String | Array[Int]",
+    "(ThreadChannel[T], T) -> Bool  // T currently Int | String | Array[Int] | Array[String]",
   "Threads::recv": "(ThreadChannel[T]) -> T",
   "Threads::spawn":
     "(String, ThreadChannel[T]) -> ThreadTask[R]  // R currently Int | String | Array[Int]",

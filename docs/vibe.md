@@ -302,7 +302,7 @@ Threads (experimental, runtime-gated by `--unstable-threads`):
 - `Threads::channel_new(capacity: Int)` -> `ThreadChannel[T]`
 - `Threads::send(channel: ThreadChannel[T], payload: T)` -> `Bool`
   - current experimental payload lowering supports `Int`, `String`, and
-    `Array[Int]`
+    `Array[Int]`/`Array[String]`
 - `Threads::recv(channel: ThreadChannel[T])` -> `T`
 - `Threads::spawn(name: String, channel: ThreadChannel[T])` -> `ThreadTask[R]`
   - for supported string-literal workers, `R` is the worker return type
@@ -353,7 +353,8 @@ Threads (experimental, runtime-gated by `--unstable-threads`):
   String-literal worker dispatch is currently limited to reserved diagnostic
   names (`"noop"`, `"alloc-probe"`) or capture-free top-level worker functions
   in the temporary
-  `ThreadChannel[Int|String|Array[Int]] -> Int|String|Array[Int]` shape.
+  `ThreadChannel[Int|String|Array[Int]|Array[String]] -> Int|String|Array[Int]`
+  shape.
   Dynamic worker names are rejected in this backend until function-value,
   closure, or richer payload/result semantics are specified.
 - `vibe/prelude/threads.vibe` は test-safe な pure contract 層を分離:
