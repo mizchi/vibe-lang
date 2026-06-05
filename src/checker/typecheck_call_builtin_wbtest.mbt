@@ -419,6 +419,19 @@ test "type_call_builtin: Threads builtins match documented contract" {
     ),
   )
   env.set(
+    "worker_array_string",
+    @core.Type::Func(
+      params=[
+        builtin_test_fn_param(
+          "ch",
+          @core.Type::Named(name="ThreadChannel", args=[@core.Type::Int]),
+        ),
+      ],
+      ret=@core.Type::Array(@core.Type::String),
+      effects=[@core.EffectAtom::Const("Threads")],
+    ),
+  )
+  env.set(
     "worker_array_payload",
     @core.Type::Func(
       params=[
@@ -504,6 +517,17 @@ test "type_call_builtin: Threads builtins match documented contract" {
       @core.Type::Named(
         name="ThreadTask",
         args=[@core.Type::Array(@core.Type::Int)],
+      ),
+    ),
+    (
+      "Threads::spawn",
+      [
+        builtin_test_string_arg("worker_array_string"),
+        builtin_test_ident_arg("ch_int"),
+      ],
+      @core.Type::Named(
+        name="ThreadTask",
+        args=[@core.Type::Array(@core.Type::String)],
       ),
     ),
     (

@@ -307,7 +307,7 @@ Threads (experimental, runtime-gated by `--unstable-threads`):
 - `Threads::spawn(name: String, channel: ThreadChannel[T])` -> `ThreadTask[R]`
   - for supported string-literal workers, `R` is the worker return type
   - current experimental worker result lowering supports `Int`, `String`, and
-    `Array[Int]`
+    `Array[Int]`/`Array[String]`
   - reserved diagnostic names currently return `ThreadTask[Int]`
 - `Threads::wait(task: ThreadTask[T])` -> `T`
   - `linear-local` currently returns `0`
@@ -353,7 +353,7 @@ Threads (experimental, runtime-gated by `--unstable-threads`):
   String-literal worker dispatch is currently limited to reserved diagnostic
   names (`"noop"`, `"alloc-probe"`) or capture-free top-level worker functions
   in the temporary
-  `ThreadChannel[Int|String|Array[Int]|Array[String]] -> Int|String|Array[Int]`
+  `ThreadChannel[Int|String|Array[Int]|Array[String]] -> Int|String|Array[Int]|Array[String]`
   shape.
   Dynamic worker names are rejected in this backend until function-value,
   closure, or richer payload/result semantics are specified.

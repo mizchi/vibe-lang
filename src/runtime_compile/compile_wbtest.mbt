@@ -1533,7 +1533,7 @@ test "compile_module_component rejects plain Int thread worker parameter" {
       assert_true(message.contains("Threads::spawn worker currently supports"))
       assert_true(
         message.contains(
-          "ThreadChannel[Int|String|Array[Int]|Array[String]] -> Int|String|Array[Int]",
+          "ThreadChannel[Int|String|Array[Int]|Array[String]] -> Int|String|Array[Int]|Array[String]",
         ),
       )
       assert_true(message.contains("worker"))
@@ -1588,6 +1588,34 @@ test "compile_module_component allows Array[Int] thread worker return" {
   let component = compile_module_component_with_opt_level(
     db,
     "threads_component_array_worker_return_probe",
+    thread_backend_id="component-unsafe-os-threads",
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_true(bytes_contains_ascii(component, "thread.spawn-indirect"))
+}
+
+///|
+test "compile_module_component allows Array[String] thread worker return" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "threads_component_array_string_worker_return_probe",
+    (
+      #|let worker = (_ch: ThreadChannel[Int]) -> Array[String] {
+      #|  ["red", "green"]
+      #|}
+      #|export let thread_worker_probe = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let task = Threads::spawn("worker", ch)
+      #|  let xs = Threads::wait(task)
+      #|  Array::length(xs) * 100 + String::length(Array::get(xs, 1))
+      #|}
+      #|0
+    ),
+  )
+  let component = compile_module_component_with_opt_level(
+    db,
+    "threads_component_array_string_worker_return_probe",
     thread_backend_id="component-unsafe-os-threads",
   ) catch {
     err => fail(err.to_string())
@@ -1842,6 +1870,15 @@ test "compile_module_component emits component unsafe Threads spawn runtime impo
       #|  let task = Threads::spawn("worker_array", ch)
       #|  Array::length(Threads::wait(task))
       #|}
+      #|let worker_array_string = (_ch: ThreadChannel[Int]) -> Array[String] {
+      #|  ["red", "green"]
+      #|}
+      #|export let thread_worker_array_string_result_probe = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let task = Threads::spawn("worker_array_string", ch)
+      #|  let xs = Threads::wait(task)
+      #|  Array::length(xs) * 100 + String::length(Array::get(xs, 1))
+      #|}
       #|let worker_array_len = (ch: ThreadChannel[Array[Int]]) -> Int with {Threads} {
       #|  let xs = Threads::recv(ch)
       #|  Array::length(xs) * 100 + Array::get(xs, 1)
@@ -1896,6 +1933,7 @@ test "compile_module_component emits component unsafe Threads spawn runtime impo
   assert_true(bytes_contains_ascii(component, "thread-worker-string-result-probe"))
   assert_true(bytes_contains_ascii(component, "thread-worker-string-alloc-result-probe"))
   assert_true(bytes_contains_ascii(component, "thread-worker-array-result-probe"))
+  assert_true(bytes_contains_ascii(component, "thread-worker-array-string-result-probe"))
   assert_true(bytes_contains_ascii(component, "thread-worker-array-channel-probe"))
   assert_true(bytes_contains_ascii(component, "thread-worker-array-string-channel-probe"))
   assert_true(bytes_contains_ascii(component, "thread-alloc-probe"))
