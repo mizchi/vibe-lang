@@ -9,7 +9,7 @@ import .. / common_analysis {
 }
 
 import .. / common_base {
-  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_gt_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
+  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_box_float, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_gt_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, emit_unbox_float, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
 }
 
 import .. / common_extractors {
@@ -394,6 +394,10 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       // (n<<1) like every other int. (The dedicated gen_double_to_int_body was
       // shadowed by an identity fast-path here, so this conversion was a no-op.)
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      // ADR-0055 Stage 2: under RC the float arg is heap-boxed; unbox to bits.
+      if ctx.enable_rc {
+        emit_unbox_float(buf)
+      }
       emit_f64_reinterpret_i64(buf)
       emit_i64_trunc_f64_s(buf)
       if ctx.enable_rc {
@@ -403,7 +407,8 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       nl
     }
     else if fname == "Int::to_double" || fname == "Int::to_float" {
-      // int -> f64 bits. Under RC the int arg is tagged; untag before converting.
+      // int -> f64 bits. Under RC the int arg is tagged; untag before converting,
+      // then heap-box the resulting float (ADR-0055 Stage 2).
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       if ctx.enable_rc {
         emit_i64_const(buf, 1)
@@ -411,7 +416,14 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       }
       emit_f64_convert_i64_s(buf)
       emit_i64_reinterpret_f64(buf)
-      nl
+      if ctx.enable_rc {
+        Array::push(local_names, "__fbits")
+        Array::push(local_names, "__fbox")
+        emit_box_float(buf, ctx, nl, nl + 1)
+        nl + 2
+      } else {
+        nl
+      }
     }
     else if fname == "Float::to_double" || fname == "Double::to_float" {
       // Both Float and Double are f64 in the linear backend: identity.
@@ -457,7 +469,13 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       nl
     }
     else if fname == "Double::to_i64_bits" {
-      ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      // ADR-0055 Stage 2: under RC the float arg is heap-boxed; unbox to raw
+      // bits (returned as a raw i64, matching the non-RC inline behaviour).
+      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      if ctx.enable_rc {
+        emit_unbox_float(buf)
+      }
+      nl
     }
     else if fname == "Double::to_i64_bits_lo" || fname == "Double::to_i64_bits_hi" {
       // Low / high 32 bits of the f64 pattern (the arg leaves its f64 bits as
@@ -465,6 +483,10 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       // letting a float literal pattern survive (Blocker-2, ADR-0055). shr_s +
       // mask gives the unsigned high 32 (no shr_u needed). Tag as Int per RC.
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      // ADR-0055 Stage 2: under RC the float arg is heap-boxed; unbox to bits.
+      if ctx.enable_rc {
+        emit_unbox_float(buf)
+      }
       if fname == "Double::to_i64_bits_hi" {
         emit_i64_const(buf, 32)
         emit_i64_shr_s(buf)

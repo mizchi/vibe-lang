@@ -735,3 +735,33 @@ test "float var: int binding reusing a float slot across if branches" {
   // int. The else result must be integer (5 + 1 = 6).
   assert_result("let main: () -> Int = () -> { if false { let a = 1.5; Double::to_int(a + 1.0) } else { let a = 5; a + 1 } }", "main", "fvar_ifreuse", "6")
 }
+
+// ADR-0055 Stage 2: float heap-boxing. Under RC a float is a heap-boxed odd
+// pointer, so it participates in RC: stored in a tuple it is freed by the
+// container's recursive drop, and a multiply-used float is dup'd (no double
+// free). Verified on default (inline) AND RC (boxed).
+test "float box: float in a tuple, dropped" {
+  assert_result("let main: () -> Int = () -> { let t = (1.5, 2.5); Double::to_int(t.0 + t.1) }", "main", "fbox_tuple", "4")
+}
+
+test "float box: multiply-used float in a tuple (dup)" {
+  assert_result("let main: () -> Int = () -> { let x = 1.5; let t = (x, x); Double::to_int(t.0 + t.1) }", "main", "fbox_dup", "3")
+}
+
+test "float box: float bound, used once" {
+  assert_result("let main: () -> Int = () -> { let x = 2.5; let y = x + 1.5; Double::to_int(y) }", "main", "fbox_chain", "4")
+}
+
+test "float box: many floats in a loop (alloc/free churn)" {
+  assert_result("let main: () -> Int = () -> { let mut s = 0; let mut i = 0; while i < 5 { let f = Int::to_double(i) + 0.5; s = s + Double::to_int(f); i = i + 1 }; s }", "main", "fbox_loop", "10")
+}
+
+// ADR-0055 Stage 2: a float comparison yields a (tagged, under RC) bool.
+test "float box: comparison in if-condition" {
+  assert_result("let main: () -> Int = () -> { if 1.5 < 2.5 { 10 } else { 20 } }", "main", "fbox_cmp", "10")
+}
+
+// ADR-0055 Stage 2: a float flowing through a user function (boxed arg + return).
+test "float box: float through a user function" {
+  assert_result("let dbl: (Double) -> Double = (d) -> { d * 2.0 }\nlet main: () -> Int = () -> { Double::to_int(dbl(2.5)) }", "main", "fbox_fn", "5")
+}

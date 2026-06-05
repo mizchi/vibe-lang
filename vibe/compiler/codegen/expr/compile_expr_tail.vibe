@@ -357,7 +357,8 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     // is recognised as float arithmetic. Push a float marker; if a non-float
     // rebind shadows a previously-float slot (branch slot reuse), push an
     // override so the stale float entry no longer wins. Independent of RC.
-    if expr_is_floatish(value, local_names, ctx) {
+    let val_is_float = expr_is_floatish(value, local_names, ctx)
+    if val_is_float {
       Array::push(ctx.float_local_slots, local_idx * 2 + 1)
     } else if slot_is_floatish(ctx, local_idx) {
       Array::push(ctx.float_local_slots, local_idx * 2)
@@ -371,7 +372,14 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     // `scalar` flag over-approximates as heap. (docs/spec/selfhost-rc-port.md)
     let mut rc_kind = 0
     if ctx.enable_rc {
-      if is_etuple(value) {
+      if val_is_float {
+        // ADR-0055 Stage 2: a float is heap-boxed (odd pointer), so its binding
+        // is droppable / dup-able like any heap value. (A float *comparison*
+        // result is an even bool — rc_dup/rc_drop are guarded no-ops on even
+        // values, so classifying it heap here is harmless.)
+        rc_kind = 2
+        Array::push(ctx.heap_binding_names, name)
+      } else if is_etuple(value) {
         // ADR-0055 Stage 2: tuples are now odd pointers, so the drop must untag
         // (& -2) — same as records/enums (rc_kind 2 / tagged=true).
         rc_kind = 2
@@ -579,7 +587,10 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
       // reassignments). Registering it in heap_binding_names lets `EAssign` drop
       // the OLD value before overwriting (otherwise each `b = <heap>` leaks the
       // previous block — a per-iteration leak in a loop).
-      if ctx.enable_rc && (is_etuple(value) || is_earray(value) || is_erecord(value) || is_ctor_call(value, ctx.ctor_table)) {
+      if ctx.enable_rc && (is_etuple(value) || is_earray(value) || is_erecord(value) || is_ctor_call(value, ctx.ctor_table) || expr_is_floatish(value, local_names, ctx)) {
+        // ADR-0055 Stage 2: a float mut holds a heap-boxed value; classify it
+        // heap so EAssign drops the old box on reassignment and the final value
+        // is dropped at scope end.
         Array::push(ctx.heap_binding_names, name)
       } else {
         ()
