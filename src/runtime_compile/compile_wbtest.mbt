@@ -1736,6 +1736,15 @@ test "compile_module_component emits component unsafe Threads spawn runtime impo
       #|  let task = Threads::spawn("worker_string_echo", ch)
       #|  String::length(Threads::wait(task))
       #|}
+      #|let worker_string_append = (ch: ThreadChannel[String]) -> String with {Threads} {
+      #|  String::concat(Threads::recv(ch), "!")
+      #|}
+      #|export let thread_worker_string_alloc_result_probe = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let _ok = Threads::send(ch, "hello")
+      #|  let task = Threads::spawn("worker_string_append", ch)
+      #|  String::length(Threads::wait(task))
+      #|}
       #|export let thread_alloc_probe = () -> Int with {Threads} {
       #|  let ch = Threads::channel_new(1)
       #|  let task = Threads::spawn("alloc-probe", ch)
@@ -1768,6 +1777,7 @@ test "compile_module_component emits component unsafe Threads spawn runtime impo
   assert_true(bytes_contains_ascii(component, "thread-worker-channel-probe"))
   assert_true(bytes_contains_ascii(component, "thread-worker-string-channel-probe"))
   assert_true(bytes_contains_ascii(component, "thread-worker-string-result-probe"))
+  assert_true(bytes_contains_ascii(component, "thread-worker-string-alloc-result-probe"))
   assert_true(bytes_contains_ascii(component, "thread-alloc-probe"))
   assert_true(bytes_contains_ascii(component, "thread-alloc-many-probe"))
   assert_true(

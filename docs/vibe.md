@@ -335,6 +335,10 @@ Threads (experimental, runtime-gated by `--unstable-threads`):
 - `component-unsafe-os-threads` rejects `enable_rc=true` for now. The current
   Perceus/RC free-list path is not part of the shared-thread heap contract; only
   the backend's atomic bump allocation path is covered by the current probes.
+- `component-unsafe-os-threads` shared atomic bump allocation returns at least
+  4-byte aligned Vibe heap object pointers. Shared channel cells and component
+  task slots that contain `i64.atomic.load/store` payload fields are allocated
+  with 8-byte alignment.
 - Builder grow and bulk grow do not use the heap-tip in-place fast path under
   `component-unsafe-os-threads`; they allocate replacement storage through the
   shared atomic allocator.

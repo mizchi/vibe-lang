@@ -277,20 +277,7 @@ fn emit_heap_alloc_atomic(
   size : Int,
   obj_local : Int,
 ) -> Unit {
-  require_heap(ctx)
-  let end_local = alloc_temp_local(ctx)
-  emit_i32_const_raw(buf, 0)
-  emit_i32_const_raw(buf, size)
-  emit_i32_atomic_rmw_add(buf, shared_heap_cursor_offset(ctx))
-  emit_local_set(buf, obj_local)
-  emit_local_get(buf, obj_local)
-  emit_i32_const_raw(buf, size)
-  emit_i32_add(buf)
-  emit_local_set(buf, end_local)
-  emit_heap_ensure_capacity_for_end(ctx, buf, end_local)
-  emit_local_get(buf, end_local)
-  emit_local_set(buf, ctx.heap_local)
-  ctx.heap_synced = false
+  emit_heap_alloc_atomic_aligned(ctx, buf, size, 4, obj_local)
 }
 
 ///|
@@ -332,23 +319,7 @@ fn emit_heap_alloc_local_atomic(
   size_local : Int,
   obj_local : Int,
 ) -> Unit {
-  require_heap(ctx)
-  let raw_local = alloc_temp_local(ctx)
-  let end_local = alloc_temp_local(ctx)
-  emit_i32_const_raw(buf, 0)
-  emit_local_get(buf, size_local)
-  emit_i32_atomic_rmw_add(buf, shared_heap_cursor_offset(ctx))
-  emit_local_set(buf, raw_local)
-  emit_local_get(buf, raw_local)
-  emit_local_set(buf, obj_local)
-  emit_local_get(buf, raw_local)
-  emit_local_get(buf, size_local)
-  emit_i32_add(buf)
-  emit_local_set(buf, end_local)
-  emit_heap_ensure_capacity_for_end(ctx, buf, end_local)
-  emit_local_get(buf, end_local)
-  emit_local_set(buf, ctx.heap_local)
-  ctx.heap_synced = false
+  emit_heap_alloc_local_atomic_aligned(ctx, buf, size_local, 4, obj_local)
 }
 
 ///|
