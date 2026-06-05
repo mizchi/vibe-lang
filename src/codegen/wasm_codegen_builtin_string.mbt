@@ -608,7 +608,7 @@ fn compile_builtin_string(
         emit_string_replace_impl(ctx, buf, pos_args, replace_all=true)
       }
     }
-    "string_to_data" => {
+    "string_to_data" if !is_user_fn => {
       // string_to_data(str) -> Array[Int] of byte values
       // For WASM codegen, strings are stored as (offset, len) pairs in memory
       // This creates an array of character codes

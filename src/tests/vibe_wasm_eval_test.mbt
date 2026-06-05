@@ -4511,3 +4511,29 @@ test "vibe wasm eval Map iter_length / iter_get (ADR-0044 Phase 3)" {
   assert_true(is_tagged_int(res.value))
   assert_eq(decode_int(res.value), 60L)
 }
+
+///|
+/// Regression for issue #500: a user-defined function whose name collides with
+/// a codegen builtin (`string_to_data`, `array_contains_str`) must take
+/// precedence over the builtin. The builtin `string_to_data` returns an
+/// `Array[Int]`, while the selfhost compiler defines its own `string_to_data`
+/// returning `Bytes`; when the builtin shadowed the user definition the
+/// selfhost's data-section builder read the wrong object layout and emitted
+/// `0x00` for string-literal bytes, breaking string `==` and `map` key lookup
+/// in selfhost-compiled programs.
+test "vibe wasm eval: user string_to_data shadows builtin (issue #500)" {
+  let script =
+    #|let string_to_data: (String) -> Bytes = (s) -> {
+    #|  let buf = Bytes::new()
+    #|  let len = String::length(s)
+    #|  let mut i = 0
+    #|  while i < len {
+    #|    Bytes::push(buf, String::char_code_at(s, i))
+    #|    i = i + 1
+    #|  }
+    #|  buf
+    #|}
+    #|let dx = string_to_data("x")
+    #|Bytes::get(dx, 0)
+  assert_wasm_eval_int(script, 120)
+}
