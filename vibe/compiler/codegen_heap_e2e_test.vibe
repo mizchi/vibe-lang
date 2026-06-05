@@ -601,3 +601,34 @@ test "heap e2e: enum payload tuple drop in loop" {
   let src = "enum Box { Wrap((Int, Int)); Empty }\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 40 {\n    let e = Wrap((i, i + 1))\n    s = s + match e {\n      Wrap(p) => p.0 + p.1,\n      Empty => 0\n    }\n    i = i + 1\n  }\n  s\n}"
   assert_result(src, "main", "enum_tuple_loop", "1600")
 }
+
+// Regression: String::last_index_of / String::ends_with were dispatched via
+// hardcoded function indices in compile_call.vibe (emit_call(buf, 30) / 29)
+// that had drifted out of sync with the func table. last_index_of resolved to
+// `contains` (returning a 0/1 bool) and ends_with resolved to `index_of`,
+// so both produced *valid* wasm with wrong results. These execute the result
+// to lock in correct dispatch (assert_wasm/byte-parity could not catch it).
+test "heap e2e: last_index_of returns last match" {
+  let src = "let main: () -> Int = () -> { String::last_index_of(\"abcabc\", \"bc\") }"
+  assert_result(src, "main", "last_index_of_hit", "4")
+}
+
+test "heap e2e: last_index_of no match returns -1" {
+  let src = "let main: () -> Int = () -> { String::last_index_of(\"abcabc\", \"zz\") }"
+  assert_result(src, "main", "last_index_of_miss", "-1")
+}
+
+test "heap e2e: last_index_of repeated needle" {
+  let src = "let main: () -> Int = () -> { String::last_index_of(\"aaaa\", \"a\") }"
+  assert_result(src, "main", "last_index_of_rep", "3")
+}
+
+test "heap e2e: ends_with true" {
+  let src = "let main: () -> Int = () -> { if String::ends_with(\"abcab\", \"ab\") { 1 } else { 0 } }"
+  assert_result(src, "main", "ends_with_true", "1")
+}
+
+test "heap e2e: ends_with false" {
+  let src = "let main: () -> Int = () -> { if String::ends_with(\"xabab\", \"yz\") { 1 } else { 0 } }"
+  assert_result(src, "main", "ends_with_false", "0")
+}
