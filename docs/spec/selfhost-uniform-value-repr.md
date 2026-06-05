@@ -119,18 +119,20 @@ no bootstrap risk):
 > 3. ✅ **Float-ness through `let` bindings (Blocker-3) — FIXED.** The AST is
 >    untyped, so `expr_is_floatish` was purely syntactic and could not see that
 >    a *variable* held a float (`let x = 1.5; x + y` took the integer `+`).
->    Fix: track binding float-ness in `ctx.float_binding_names` (mirroring
->    `heap_binding_names`) — a `let` / `let mut` whose initializer is floatish
->    registers its name, and `expr_is_floatish` (now shared in
->    `compile_expr_tail.vibe`, taking `ctx`) reports `EIdent` floatish by
->    membership. This propagates transitively (`let b = a + 1.5` is floatish
->    because `a` is), and covers conversion-bound vars (`let x = Int::to_double
->    (n)`). Verified default + RC; byte-parity 74/74; selfbuild deterministic.
->    Limitations (syntactic over-approximation, like `heap_binding_names`):
->    function *parameters* typed `Double` are not tracked (no AST types), nor are
->    floats captured into a lambda by name, and a name shadowed with a different
->    type within one function may be misclassified. Full generality needs
->    threaded inference; the common local-binding cases now work.
+>    Fix: track binding float-ness by *local slot* in `ctx.float_local_slots`
+>    (mirroring `heap_binding_names`) — a `let` / `let mut` whose initializer is
+>    floatish registers its slot, and `expr_is_floatish` (shared in
+>    `compile_expr_tail.vibe`, taking `local_names` + `ctx`) resolves an `EIdent`
+>    to its slot (most-recent binding wins, like the codegen) and reports
+>    float-ness by slot membership. Slots are truncated alongside `local_names`
+>    at scope boundaries (if-branches, match arms), so a shadowing same-name
+>    binding of a different type, and slots reused across sibling scopes, are not
+>    misclassified (codex review on #507). Propagates transitively (`let b = a +
+>    1.5`) and covers conversion-bound vars (`let x = Int::to_double(n)`).
+>    Verified default + RC incl. shadow/branch-reuse regressions; byte-parity
+>    74/74; selfbuild deterministic. Remaining limits (no AST types): `Double`
+>    function *parameters* and lambda-captured floats are not tracked. Full
+>    generality needs threaded inference; the common local-binding cases work.
 >
 > With literals (Blocker-2) and `let`-bound float variables (Blocker-3) working,
 > **heap-box** (below) can now proceed.

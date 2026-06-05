@@ -42,26 +42,58 @@ import ./compile_match.vibe {
 // Syntactic over-approximation (the AST is untyped): float literals, float
 // arithmetic / comparison over floatish operands, float-producing conversions,
 // and — crucially — a *variable* bound to a floatish value (tracked in
-// ctx.float_binding_names as `let`s compile). This lets `let x = 1.5; x + y`
+// ctx.float_local_slots as `let`s compile). This lets `let x = 1.5; x + y`
 // take the f64 path. Shared by compile_expr (binop/unary instruction choice)
-// and the `let` handler below (which populates float_binding_names).
-export let rec expr_is_floatish: (Expr, CompileCtx) -> Bool with { Error } = (e, ctx) -> {
+// and the `let` handler below (which populates float_local_slots).
+export let rec expr_is_floatish: (Expr, Array[String], CompileCtx) -> Bool with { Error } = (e, local_names, ctx) -> {
   let tag = expr_tag(e)
   if tag == 2 {
     true
   } else if tag == 4 {
-    array_contains_str(ctx.float_binding_names, get_eident_name(e))
+    // Resolve the identifier to its local slot (most-recent binding wins, like
+    // the EIdent codegen) and report float-ness by slot membership. Slot-keyed
+    // (not name-keyed) so a shadowing same-name binding of another type is not
+    // misclassified; float_local_slots is truncated with local_names at scope
+    // boundaries so reused slots across sibling scopes don't leak float-ness.
+    let nm = get_eident_name(e)
+    let len = Array::length(local_names)
+    let mut i = len - 1
+    let mut slot = -1
+    while i >= 0 {
+      if Array::get(local_names, i) == nm {
+        slot = i
+        i = -1
+      } else {
+        i = i - 1
+      }
+    }
+    if slot >= 0 {
+      let flen = Array::length(ctx.float_local_slots)
+      let mut j = 0
+      let mut found = false
+      while j < flen {
+        if Array::get(ctx.float_local_slots, j) == slot {
+          found = true
+          j = flen
+        } else {
+          j = j + 1
+        }
+      }
+      found
+    } else {
+      false
+    }
   } else if tag == 5 {
     let op = get_ebinop_op(e)
     if op == "+" || op == "-" || op == "*" || op == "/" || op == "<" || op == ">" || op == "<=" || op == ">=" {
-      expr_is_floatish(get_ebinop_lhs(e), ctx) || expr_is_floatish(get_ebinop_rhs(e), ctx)
+      expr_is_floatish(get_ebinop_lhs(e), local_names, ctx) || expr_is_floatish(get_ebinop_rhs(e), local_names, ctx)
     } else {
       false
     }
   } else if tag == 6 {
     let op = get_eunaryop_op(e)
     if op == "-" {
-      expr_is_floatish(get_eunaryop_expr(e), ctx)
+      expr_is_floatish(get_eunaryop_expr(e), local_names, ctx)
     } else {
       false
     }
@@ -307,10 +339,12 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     Array::push(local_names, name)
     let nl = compile_expr(buf, value, local_names, next_local + 1, ctx, ld)
     emit_local_set(buf, local_idx)
-    // Blocker-3: remember a binding that holds a float so a later `name + ...`
-    // is recognised as float arithmetic. Independent of RC.
-    if expr_is_floatish(value, ctx) {
-      Array::push(ctx.float_binding_names, name)
+    // Blocker-3: remember the SLOT of a binding that holds a float so a later
+    // `name + ...` is recognised as float arithmetic. Slot-keyed + scope-
+    // truncated, so shadowing/branch slot reuse can't misclassify. Independent
+    // of RC.
+    if expr_is_floatish(value, local_names, ctx) {
+      Array::push(ctx.float_local_slots, local_idx)
     }
     // RC: classify the bound value's heap-ness. rc_kind 0 = not (known) heap,
     // 1 = heap tuple (raw pointer), 2 = heap tagged (record/enum, or an alias of
@@ -503,8 +537,8 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     // Blocker-3: a mut binding has one type (stable across reassignments), so
     // classify float-ness from its initializer (covers both the ref-cell and
     // plain-local branches below).
-    if expr_is_floatish(value, ctx) {
-      Array::push(ctx.float_binding_names, name)
+    if expr_is_floatish(value, local_names, ctx) {
+      Array::push(ctx.float_local_slots, local_idx)
     }
     if is_mut_captured_in(body, name) {
       Array::push(ctx.ref_cell_names, name)
