@@ -66,7 +66,7 @@ no bootstrap risk):
 |-------------------|---------------------------|-------|
 | integer           | `n << 1` (…0, **even**)   | tag bit 0 = scalar |
 | heap pointer      | `(block+8) \| 1` (**odd**)| tuple/array/record/enum/closure-with-captures |
-| float             | **boxed** on the heap → a heap pointer (odd), or NaN-boxed (see below) |
+| float             | **boxed** on the heap → a heap pointer (odd) under RC; inline f64-bits non-RC. (NaN-box deferred — see below) |
 | bool              | `0` / `1` kept as small even ints, or `n<<1` like Int |
 | string fat ptr    | special-cased (see below) |
 
@@ -158,9 +158,27 @@ Two options; **box-on-heap** is the conservative first cut:
   float-in-tuple drop, multiply-used dup, alloc/free loop churn, comparison,
   and float through a user function (heap-e2e); byte-parity 74/74; wasm-gc 7/7;
   selfbuild deterministic. Cost: an allocation per float (opt-in RC path).
-- **NaN-box** (follow-up): pack pointers into the payload of a quiet-NaN `f64`
-  and keep non-NaN doubles inline. No per-float allocation but a more intricate
-  scheme touching every float op. Deferred unless float-heavy RC code matters.
+- **NaN-box** (follow-up) — **DEFERRED (decision 2026-06; not a localized
+  optimization).** The idea is to keep doubles inline as native `f64` and encode
+  every *non*-float value (ints, pointers, bools) into the ~2^51 quiet-NaN
+  payloads, avoiding a per-float allocation. The blocker is that this is
+  **all-or-nothing and incompatible with the current low-bit-tagged i64
+  representation**: a full `f64` needs all 64 bits, so a value cannot be both an
+  inline double *and* carry a low tag bit. Making floats inline therefore forces
+  the *whole* value world to become f64-centric, which:
+  - **shrinks the `Int` range from 2^61−1 to ~2^50−2^51** (NaN payload width),
+    breaking the documented Int contract (CLAUDE.md, 62-bit tagged), and
+  - touches **every** numeric op, pointer encoding, and comparison in *both*
+    compilers — far larger and riskier than heap-boxing.
+
+  Meanwhile the cost NaN-boxing would save is already small: the heap-box path
+  (implemented above) allocates float blocks through `__rc_alloc`, whose
+  **free-list does exact-fit reuse**, so a float-heavy RC loop recycles the same
+  16-byte block (O(1) pop/push) rather than allocating fresh — and RC is opt-in
+  (correctness-first), so float-heavy RC code is the rare case. Revisit only with
+  a **measured** float-heavy RC bottleneck that the free-list does not absorb;
+  even then a representation change of this magnitude needs explicit sign-off on
+  the Int-range tradeoff.
 
 ### Strings, bytes, closures
 
