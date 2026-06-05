@@ -5,10 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 WAST_PATH="$SCRIPT_DIR/component_model_threading_probe.wast"
 
-SIBLING_WASMTIME="$(cd "$PROJECT_ROOT/.." && pwd)/wasmtime/target/debug/wasmtime"
-if [ -z "${WASMTIME_BIN:-}" ] && [ -x "$SIBLING_WASMTIME" ]; then
-  export WASMTIME_BIN="$SIBLING_WASMTIME"
-fi
+: "${VIBE_USE_WASMTIME_PREBUILT:=1}"
+export VIBE_USE_WASMTIME_PREBUILT
 
 if [ ! -f "$WAST_PATH" ]; then
   echo "probe wast not found: $WAST_PATH" >&2

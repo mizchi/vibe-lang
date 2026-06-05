@@ -13,10 +13,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-SIBLING_WASMTIME="$(cd "$PROJECT_ROOT/.." && pwd)/wasmtime/target/debug/wasmtime"
-if [ -z "${WASMTIME_BIN:-}" ] && [ -x "$SIBLING_WASMTIME" ]; then
-  export WASMTIME_BIN="$SIBLING_WASMTIME"
-fi
+: "${VIBE_USE_WASMTIME_PREBUILT:=1}"
+export VIBE_USE_WASMTIME_PREBUILT
 
 if ! command -v wasm-tools >/dev/null 2>&1; then
   echo "wasm-tools is required. install: cargo install wasm-tools" >&2

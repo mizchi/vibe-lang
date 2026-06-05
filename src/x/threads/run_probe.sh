@@ -7,6 +7,9 @@ WAT_PATH="$SCRIPT_DIR/wasi_threads_probe.wat"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/vibe_wasi_threads_probe.XXXXXX")"
 WASM_PATH="$TMP_DIR/wasi_threads_probe.wasm"
 
+: "${VIBE_USE_WASMTIME_PREBUILT:=1}"
+export VIBE_USE_WASMTIME_PREBUILT
+
 cleanup() {
   rm -rf "$TMP_DIR"
 }
