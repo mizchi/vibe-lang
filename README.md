@@ -225,10 +225,28 @@ pkf run run -- compile --wasm script.vibe -o /tmp/out.wasm
 wasmtime /tmp/out.wasm
 ```
 
-### With `deps/wasmtime` submodule (experimental flags)
+### With a pinned wasmtime prebuilt (experimental flags)
+
+This branch can package a local `mizchi/wasmtime` fork build and install it as a
+project-local prebuilt. That keeps experimental thread probes off the slow
+`deps/wasmtime` source-build path while preserving an explicit binary version.
+See [docs/wasmtime-prebuilt-setup.md](docs/wasmtime-prebuilt-setup.md) for the
+full setup, update, and validation checklist.
 
 ```bash
-# one-time init + build
+# package deps/wasmtime/target/release/wasmtime, then install to .tools/wasmtime
+pkf run package-wasmtime-prebuilt
+pkf run install-wasmtime-prebuilt
+
+# use the prebuilt explicitly
+VIBE_USE_WASMTIME_PREBUILT=1 pkf run component-run -- script.vibe
+VIBE_USE_WASMTIME_PREBUILT=1 pkf run bench-wasmtime
+```
+
+`WASMTIME_BIN` still wins as an explicit override. `deps/wasmtime` remains as a
+source fallback:
+
+```bash
 pkf run wasmtime-submodule-init
 pkf run build-wasmtime-submodule
 
@@ -243,7 +261,7 @@ VIBE_USE_WASMTIME_SUBMODULE=1 pkf run bench-wasmtime
 # (space-separated list; each token is passed as -W / -S)
 VIBE_WASMTIME_WASM_FLAGS='component-model-async=y concurrency-support=y' \
 VIBE_WASMTIME_WASI_FLAGS='p3=y' \
-VIBE_USE_WASMTIME_SUBMODULE=1 \
+VIBE_USE_WASMTIME_PREBUILT=1 \
 pkf run component-run -- script.vibe
 
 # flags are also propagated through justfile-backed tasks

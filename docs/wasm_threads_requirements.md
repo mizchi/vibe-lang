@@ -1,9 +1,11 @@
 # wasm + threads 要件メモ
 
-更新日: 2026-05-22
+更新日: 2026-06-02
 現在の repo 既定:
 
-- `wasmtime 45.0.0` (`deps/wasmtime` submodule / `scripts/install_wasmtime_release.sh`)
+- experimental thread probe は project-local prebuilt を使う。
+- known-good: `wasmtime 46.0.0 (e6ba8b7d8 2026-06-02)`
+- setup: [docs/wasmtime-prebuilt-setup.md](wasmtime-prebuilt-setup.md)
 
 元の実測対象:
 
@@ -72,19 +74,21 @@ WASI Threads モジュールとして必要な形:
 
 - `src/x/threads/wasi_threads_probe.wat`
 - `src/x/threads/run_probe.sh`
-- `just experimental_wasi_threads_probe`
+- `pkf run experimental_wasi_threads_probe`
 
 実行:
 
 ```bash
-# system wasmtime を使う
-just experimental_wasi_threads_probe
+# prebuilt wasmtime を使う
+pkf run package-wasmtime-prebuilt
+pkf run install-wasmtime-prebuilt
+pkf run experimental_wasi_threads_probe
 
 # submodule wasmtime を使う
-VIBE_USE_WASMTIME_SUBMODULE=1 just experimental_wasi_threads_probe
+VIBE_USE_WASMTIME_SUBMODULE=1 pkf run experimental_wasi_threads_probe
 
 # 直接実行
-VIBE_USE_WASMTIME_SUBMODULE=1 src/x/threads/run_probe.sh
+src/x/threads/run_probe.sh
 ```
 
 ## 6. 実装時チェックリスト
