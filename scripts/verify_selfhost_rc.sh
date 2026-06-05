@@ -169,6 +169,14 @@ reclaim_case nested_closure_param '"let main: () -> Int = () -> {\n  let mut s =
 # Same, proven via a match scrutinee instead of a projection.
 reclaim_case nested_closure_match '"enum Box { Wrap((Int, Int)); Empty }\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let unwrap = (e) -> { match e { Wrap(p) => p.0 + p.1, Empty => 0 } }\n    let t = Wrap((i, i + 1))\n    s = s + unwrap(t)\n    i = i + 1\n  }\n  s\n}"'
 
+# ADR-0055 Stage 4 (container-owning-escape via assignment): a projection RHS
+# (`keep = box.0`) makes the outer mut `keep` co-own a field of the live local
+# container `box`. Without a dup at the assignment, box.0 takes no reference, so
+# box.0 escapes into keep while box.0.s recursive drop frees it (16 B/iter leak,
+# then a double-free on the next reassign-drop). The guarded dup at the
+# assignment gives keep its own reference; its reassign/scope-end drop balances.
+reclaim_case escape_assign_proj '"let main: () -> Int = () -> {\n  let mut keep = (0, 0)\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let t = (i, i + 1)\n    let box = (t, i)\n    keep = box.0\n    i = i + 1\n  }\n  keep.0\n}"'
+
 # KNOWN PRE-EXISTING GAP (not a regression): a *nested* tuple built in a loop
 # (`let t = ((i, i+1), (i+2, i+3))`) fails to compile under RC at BOTH HEAD and
 # the Stage-1 baseline — so it is excluded from the reclamation set rather than

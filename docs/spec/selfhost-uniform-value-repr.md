@@ -485,11 +485,23 @@ arithmetic / comparison / bitop / shift / float / nested-data case under
    are `enable_rc`-only; the default path keeps the raw bump-allocated env. Pinned
    by `closure_capture` / `closure_two` (reclaim) and two heap-e2e parity cases.
 
+   **Container-owning-escape via assignment (landed).** Assigning a container
+   projection to an outer mut binding (`keep = box.0`) made `keep` co-own a field
+   of the still-live local `box` without taking a reference: when `box`'s
+   scope-end recursive drop frees the field, `keep` dangles and the next
+   reassign-drop double-frees it (observed as a 16 B/iter leak). Mirroring the
+   let-bound projection (`let a = box.0`), the assignment now emits a **guarded
+   dup of the projected value** (`compile_expr_tail.vibe`, `EAssign`), so `keep`
+   owns its own reference and its reassign / scope-end drop balances it. Limited
+   to the clean `!is_self` case (`keep = keep.0` keeps the reassign-reads-target
+   carve-out). Pinned by `escape_assign_proj` (reclaim, 0 B/iter) and a heap-e2e
+   parity case.
+
    **Still remaining (leaks, safe):**
-   - Container **owning** escapes where the RHS references the target (the
-     reassignment safety carve-out above) or an owned value stored into a
-     container that *outlives* the current scope without a matching drop site are
-     not dup'd/dropped → leak (safe).
+   - An owned value stored into a container that *outlives* the current scope
+     without a matching drop site (e.g. pushed into a builder kept by the caller,
+     or the reassign-reads-target carve-out above) is not dup'd/dropped → leak
+     (safe).
    - A heap value captured by a closure that is then stored into a longer-lived
      container (closure escapes via a container, not a return) follows the same
      container-owning-escape gap.
