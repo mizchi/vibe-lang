@@ -84,7 +84,7 @@ export let gen_arr_slice_body: () -> Bytes = () -> {
   b
 }
 
-export let gen_bytes_get_body: () -> Bytes = () -> {
+export let gen_bytes_get_body: (Bool) -> Bytes = (enable_rc) -> {
   let b = bytebuf_new()
   emit_local_get(b, 0)
   emit_i32_wrap_i64(b)
@@ -92,19 +92,34 @@ export let gen_bytes_get_body: () -> Bytes = () -> {
   emit_local_set(b, 2)
   emit_local_get(b, 2)
   emit_local_get(b, 1)
+  // ADR-0055 Stage 1: the index arrives tagged (n<<1); untag before use.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_i32_add(b)
   emit_i32_load8_u(b, 0, 0)
   emit_i64_extend_i32_u(b)
+  // ADR-0055 Stage 1: the byte is a count entering the value world; tag it.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
   b
 }
 
-export let gen_bytes_len_body: () -> Bytes = () -> {
+export let gen_bytes_len_body: (Bool) -> Bytes = (enable_rc) -> {
   let b = bytebuf_new()
   emit_local_get(b, 0)
   emit_i32_wrap_i64(b)
   emit_i32_load(b, 2, 4)
   emit_i64_extend_i32_u(b)
+  // ADR-0055 Stage 1: the length is a count entering the value world; tag it.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
   b
 }
 
@@ -131,7 +146,7 @@ export let gen_bytes_new_body: () -> Bytes = () -> {
   b
 }
 
-export let gen_bytes_set_body: () -> Bytes = () -> {
+export let gen_bytes_set_body: (Bool) -> Bytes = (enable_rc) -> {
   let b = bytebuf_new()
   emit_local_get(b, 0)
   emit_i32_wrap_i64(b)
@@ -139,20 +154,39 @@ export let gen_bytes_set_body: () -> Bytes = () -> {
   emit_local_set(b, 3)
   emit_local_get(b, 3)
   emit_local_get(b, 1)
+  // ADR-0055 Stage 1: index arrives tagged; untag before use.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_i32_add(b)
   emit_local_get(b, 2)
+  // ADR-0055 Stage 1: byte value arrives tagged; untag before storing.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_i32_store8(b, 0, 0)
   b
 }
 
-export let gen_bytes_blit_body: (Int, Int) -> Bytes = (bytes_get_idx, bytes_push_idx) -> {
+export let gen_bytes_blit_body: (Bool, Int, Int) -> Bytes = (enable_rc, bytes_get_idx, bytes_push_idx) -> {
   let b = bytebuf_new()
   emit_local_get(b, 2)
+  // ADR-0055 Stage 1: start/end indices arrive tagged; untag for loop bounds.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_local_set(b, 4)
   emit_local_get(b, 3)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_local_set(b, 5)
   emit_block_void(b)
@@ -165,6 +199,11 @@ export let gen_bytes_blit_body: (Int, Int) -> Bytes = (bytes_get_idx, bytes_push
   emit_local_get(b, 1)
   emit_local_get(b, 4)
   emit_i64_extend_i32_u(b)
+  // ADR-0055 Stage 1: tag the index passed to the value-world bytes_get.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
   emit_call(b, bytes_get_idx)
   emit_call(b, bytes_push_idx)
   emit_local_get(b, 4)
@@ -177,11 +216,18 @@ export let gen_bytes_blit_body: (Int, Int) -> Bytes = (bytes_get_idx, bytes_push
   b
 }
 
-export let gen_bytes_fill_body: (Int) -> Bytes = (bytes_push_idx) -> {
+export let gen_bytes_fill_body: (Bool, Int) -> Bytes = (enable_rc, bytes_push_idx) -> {
   let b = bytebuf_new()
   emit_i32_const(b, 0)
   emit_local_set(b, 3)
   emit_local_get(b, 2)
+  // ADR-0055 Stage 1: count arrives tagged; untag for the loop bound. The byte
+  // value (local 1) is passed straight to the value-world bytes_push, which
+  // untags it itself.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_local_set(b, 4)
   emit_block_void(b)
@@ -203,7 +249,7 @@ export let gen_bytes_fill_body: (Int) -> Bytes = (bytes_push_idx) -> {
   b
 }
 
-export let gen_bytes_push_body: () -> Bytes = () -> {
+export let gen_bytes_push_body: (Bool) -> Bytes = (enable_rc) -> {
   let b = bytebuf_new()
   emit_local_get(b, 0)
   emit_i32_wrap_i64(b)
@@ -253,6 +299,11 @@ export let gen_bytes_push_body: () -> Bytes = () -> {
   emit_local_get(b, 4)
   emit_i32_add(b)
   emit_local_get(b, 1)
+  // ADR-0055 Stage 1: byte value arrives tagged; untag before storing.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_i32_store8(b, 0, 0)
   emit_local_get(b, 2)
@@ -263,14 +314,23 @@ export let gen_bytes_push_body: () -> Bytes = () -> {
   b
 }
 
-export let gen_bytes_slice_body: (Int, Int, Int) -> Bytes = (bytes_new_idx, bytes_get_idx, bytes_push_idx) -> {
+export let gen_bytes_slice_body: (Bool, Int, Int, Int) -> Bytes = (enable_rc, bytes_new_idx, bytes_get_idx, bytes_push_idx) -> {
   let b = bytebuf_new()
   emit_call(b, bytes_new_idx)
   emit_local_set(b, 5)
   emit_local_get(b, 1)
+  // ADR-0055 Stage 1: start/end indices arrive tagged; untag for loop bounds.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_local_set(b, 3)
   emit_local_get(b, 2)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_local_set(b, 4)
   emit_block_void(b)
@@ -283,6 +343,11 @@ export let gen_bytes_slice_body: (Int, Int, Int) -> Bytes = (bytes_new_idx, byte
   emit_local_get(b, 0)
   emit_local_get(b, 3)
   emit_i64_extend_i32_u(b)
+  // ADR-0055 Stage 1: tag the index passed to the value-world bytes_get.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
   emit_call(b, bytes_get_idx)
   emit_call(b, bytes_push_idx)
   emit_local_get(b, 3)
@@ -371,10 +436,15 @@ export let gen_arr_push_all_body: () -> Bytes = () -> {
   b
 }
 
-export let gen_bytes_append_body: (Int, Int, Int) -> Bytes = (bytes_len_idx, bytes_get_idx, bytes_push_idx) -> {
+export let gen_bytes_append_body: (Bool, Int, Int, Int) -> Bytes = (enable_rc, bytes_len_idx, bytes_get_idx, bytes_push_idx) -> {
   let b = bytebuf_new()
   emit_local_get(b, 1)
   emit_call(b, bytes_len_idx)
+  // ADR-0055 Stage 1: bytes_len now returns a tagged count; untag for the bound.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_local_set(b, 2)
   emit_i32_const(b, 0)
@@ -389,6 +459,11 @@ export let gen_bytes_append_body: (Int, Int, Int) -> Bytes = (bytes_len_idx, byt
   emit_local_get(b, 1)
   emit_local_get(b, 3)
   emit_i64_extend_i32_u(b)
+  // ADR-0055 Stage 1: tag the index passed to the value-world bytes_get.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
   emit_call(b, bytes_get_idx)
   emit_call(b, bytes_push_idx)
   emit_local_get(b, 3)
@@ -415,12 +490,17 @@ export let gen_bytes_concat_body: (Int, Int) -> Bytes = (bytes_new_idx, bytes_ap
   b
 }
 
-export let gen_bytes_to_array_body: (Int, Int, Int, Int) -> Bytes = (arr_new_idx, arr_push_idx, bytes_len_idx, bytes_get_idx) -> {
+export let gen_bytes_to_array_body: (Bool, Int, Int, Int, Int) -> Bytes = (enable_rc, arr_new_idx, arr_push_idx, bytes_len_idx, bytes_get_idx) -> {
   let b = bytebuf_new()
   emit_call(b, arr_new_idx)
   emit_local_set(b, 3)
   emit_local_get(b, 0)
   emit_call(b, bytes_len_idx)
+  // ADR-0055 Stage 1: bytes_len now returns a tagged count; untag for the bound.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_local_set(b, 1)
   emit_i32_const(b, 0)
@@ -435,6 +515,12 @@ export let gen_bytes_to_array_body: (Int, Int, Int, Int) -> Bytes = (arr_new_idx
   emit_local_get(b, 0)
   emit_local_get(b, 2)
   emit_i64_extend_i32_u(b)
+  // ADR-0055 Stage 1: tag the index passed to value-world bytes_get. The byte
+  // it returns is tagged, which is exactly what arr_push stores.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
   emit_call(b, bytes_get_idx)
   emit_call(b, arr_push_idx)
   emit_local_get(b, 2)
@@ -448,12 +534,17 @@ export let gen_bytes_to_array_body: (Int, Int, Int, Int) -> Bytes = (arr_new_idx
   b
 }
 
-export let gen_bytes_from_array_body: (Int, Int, Int, Int) -> Bytes = (arr_len_idx, arr_get_idx, bytes_new_idx, bytes_push_idx) -> {
+export let gen_bytes_from_array_body: (Bool, Int, Int, Int, Int) -> Bytes = (enable_rc, arr_len_idx, arr_get_idx, bytes_new_idx, bytes_push_idx) -> {
   let b = bytebuf_new()
   emit_call(b, bytes_new_idx)
   emit_local_set(b, 3)
   emit_local_get(b, 0)
   emit_call(b, arr_len_idx)
+  // ADR-0055 Stage 1: arr_len now returns a tagged count; untag for the bound.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
   emit_i32_wrap_i64(b)
   emit_local_set(b, 1)
   emit_i32_const(b, 0)
@@ -468,6 +559,12 @@ export let gen_bytes_from_array_body: (Int, Int, Int, Int) -> Bytes = (arr_len_i
   emit_local_get(b, 0)
   emit_local_get(b, 2)
   emit_i64_extend_i32_u(b)
+  // ADR-0055 Stage 1: tag the index passed to value-world arr_get. The value it
+  // returns is tagged, which is exactly what the value-world bytes_push untags.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
   emit_call(b, arr_get_idx)
   emit_call(b, bytes_push_idx)
   emit_local_get(b, 2)
