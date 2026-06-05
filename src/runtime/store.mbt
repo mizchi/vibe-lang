@@ -17,11 +17,22 @@ pub impl Show for Store with fn output(self, logger) {
 ///|
 pub struct RuntimeFeatureFlags {
   unstable_async : Bool
+  unstable_threads : Bool
+  thread_backend_id : String
 } derive(Debug, Eq)
 
 ///|
 pub fn RuntimeFeatureFlags::new(unstable_async : Bool) -> RuntimeFeatureFlags {
-  { unstable_async, }
+  { unstable_async, unstable_threads: false, thread_backend_id: "linear-local" }
+}
+
+///|
+pub fn RuntimeFeatureFlags::with_threads(
+  unstable_async : Bool,
+  unstable_threads : Bool,
+  thread_backend_id : String,
+) -> RuntimeFeatureFlags {
+  { unstable_async, unstable_threads, thread_backend_id }
 }
 
 ///|
@@ -35,10 +46,29 @@ pub fn RuntimeFeatureFlags::unstable_async_only() -> RuntimeFeatureFlags {
 }
 
 ///|
+pub fn RuntimeFeatureFlags::unstable_threads_only() -> RuntimeFeatureFlags {
+  RuntimeFeatureFlags::with_threads(false, true, "linear-local")
+}
+
+///|
 pub fn RuntimeFeatureFlags::is_unstable_async_enabled(
   self : RuntimeFeatureFlags,
 ) -> Bool {
   self.unstable_async
+}
+
+///|
+pub fn RuntimeFeatureFlags::is_unstable_threads_enabled(
+  self : RuntimeFeatureFlags,
+) -> Bool {
+  self.unstable_threads
+}
+
+///|
+pub fn RuntimeFeatureFlags::thread_backend_id(
+  self : RuntimeFeatureFlags,
+) -> String {
+  self.thread_backend_id
 }
 
 ///|

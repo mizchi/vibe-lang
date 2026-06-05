@@ -14,6 +14,8 @@ struct CliRuntimeArgs {
   syntax_mode : @runtime.ParserMode
   cmd_args : Array[String]
   unstable_async : Bool
+  unstable_threads : Bool
+  thread_backend_id : String
   enable_llm : Bool
   permissions : @capability.CapabilitySet?
 }
@@ -24,6 +26,8 @@ struct CliDispatchArgs {
   syntax_mode : @runtime.ParserMode
   cmd_args : Array[String]
   unstable_async : Bool
+  unstable_threads : Bool
+  thread_backend_id : String
   enable_llm : Bool
   permissions : @capability.CapabilitySet?
 }
@@ -71,25 +75,61 @@ fn parse_cli_runtime_args(
 ) -> Result[CliRuntimeArgs, String] {
   let filtered : Array[String] = []
   let mut unstable_async = false
+  let mut unstable_threads = false
+  let mut thread_backend_id = @threads.default_thread_backend_id()
   let mut enable_llm = false
   let allow_flags : Array[String] = []
-  for arg in args {
+  let mut i = 0
+  while i < args.length() {
+    let arg = args[i]
     match arg {
-      "--unstable-async" => unstable_async = true
-      "--llm" => enable_llm = true
+      "--unstable-async" => {
+        unstable_async = true
+        i += 1
+      }
+      "--unstable-threads" => {
+        unstable_threads = true
+        i += 1
+      }
+      "--thread-backend" => {
+        if i + 1 >= args.length() {
+          return Err(cmd_name + ": missing value for --thread-backend")
+        }
+        match parse_thread_backend_id(args[i + 1], cmd_name) {
+          Ok(id) => thread_backend_id = id
+          Err(err) => return Err(err)
+        }
+        i += 2
+      }
+      "--llm" => {
+        enable_llm = true
+        i += 1
+      }
       _ =>
-        if arg == "--allow-all" ||
-          arg == "--allow-fs" ||
-          arg == "--allow-net" ||
-          arg == "--allow-env" ||
-          arg == "--allow-run" ||
-          arg.has_prefix("--allow-fs=") ||
-          arg.has_prefix("--allow-net=") ||
-          arg.has_prefix("--allow-env=") ||
-          arg.has_prefix("--allow-run=") {
-          allow_flags.push(arg)
-        } else {
-          filtered.push(arg)
+        match extract_flag_value(arg, "--thread-backend=") {
+          Some(value) => {
+            match parse_thread_backend_id(value, cmd_name) {
+              Ok(id) => thread_backend_id = id
+              Err(err) => return Err(err)
+            }
+            i += 1
+          }
+          None =>
+            if arg == "--allow-all" ||
+              arg == "--allow-fs" ||
+              arg == "--allow-net" ||
+              arg == "--allow-env" ||
+              arg == "--allow-run" ||
+              arg.has_prefix("--allow-fs=") ||
+              arg.has_prefix("--allow-net=") ||
+              arg.has_prefix("--allow-env=") ||
+              arg.has_prefix("--allow-run=") {
+              allow_flags.push(arg)
+              i += 1
+            } else {
+              filtered.push(arg)
+              i += 1
+            }
         }
     }
   }
@@ -104,10 +144,23 @@ fn parse_cli_runtime_args(
         syntax_mode,
         cmd_args,
         unstable_async,
+        unstable_threads,
+        thread_backend_id,
         enable_llm,
         permissions,
       })
     Err(err) => Err(err)
+  }
+}
+
+///|
+fn parse_thread_backend_id(
+  value : String,
+  cmd_name : String,
+) -> Result[String, String] {
+  match @threads.thread_backend_from_id(value) {
+    Some(_) => Ok(value)
+    None => Err(cmd_name + ": unknown thread backend `" + value + "`")
   }
 }
 
@@ -235,6 +288,8 @@ pub fn parse_cli_dispatch_args(
     return Err("missing command")
   }
   let mut global_unstable_async = false
+  let mut global_unstable_threads = false
+  let mut global_thread_backend_id = @threads.default_thread_backend_id()
   let mut global_enable_llm = false
   let mut cmd_index = 1
   while cmd_index < args.length() {
@@ -243,11 +298,35 @@ pub fn parse_cli_dispatch_args(
         global_unstable_async = true
         cmd_index += 1
       }
+      "--unstable-threads" => {
+        global_unstable_threads = true
+        cmd_index += 1
+      }
+      "--thread-backend" => {
+        if cmd_index + 1 >= args.length() {
+          return Err("missing value for --thread-backend")
+        }
+        match parse_thread_backend_id(args[cmd_index + 1], "vibe") {
+          Ok(id) => global_thread_backend_id = id
+          Err(err) => return Err(err)
+        }
+        cmd_index += 2
+      }
       "--llm" => {
         global_enable_llm = true
         cmd_index += 1
       }
-      _ => break
+      other =>
+        match extract_flag_value(other, "--thread-backend=") {
+          Some(value) => {
+            match parse_thread_backend_id(value, "vibe") {
+              Ok(id) => global_thread_backend_id = id
+              Err(err) => return Err(err)
+            }
+            cmd_index += 1
+          }
+          None => break
+        }
     }
   }
   if cmd_index >= args.length() {
@@ -262,6 +341,13 @@ pub fn parse_cli_dispatch_args(
         syntax_mode: cli_args.syntax_mode,
         cmd_args: cli_args.cmd_args,
         unstable_async: cli_args.unstable_async || global_unstable_async,
+        unstable_threads: cli_args.unstable_threads || global_unstable_threads,
+        thread_backend_id: if cli_args.thread_backend_id !=
+          @threads.default_thread_backend_id() {
+          cli_args.thread_backend_id
+        } else {
+          global_thread_backend_id
+        },
         enable_llm: cli_args.enable_llm || global_enable_llm,
         permissions: cli_args.permissions,
       })

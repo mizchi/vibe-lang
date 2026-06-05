@@ -4,6 +4,7 @@ priv struct WasmFunc {
   locals : Array[ValueKind]
   results : Array[ValueKind]
   body : Array[Byte]
+  shared : Bool
 }
 
 ///|
@@ -265,6 +266,12 @@ fn builtin_type_count(ctx : CodegenCtx) -> Int {
     // host http import arity signatures: (1), (2), (4) -> i64
     count += 3
   }
+  if ctx.need_thread_spawn_indirect {
+    count += 1
+    if ctx.thread_component_runtime_imports {
+      count += 1
+    }
+  }
   count
 }
 
@@ -278,6 +285,20 @@ fn ensure_sig_index(ctx : CodegenCtx, sig : FuncSig) -> Int {
       ctx.fn_sig_type_indices[key] = idx
       ctx.fn_sig_order.push(sig)
       idx
+    }
+  }
+}
+
+///|
+fn ensure_shared_sig_slot(ctx : CodegenCtx, sig : FuncSig) -> Int {
+  let key = func_sig_key(sig)
+  match ctx.shared_fn_sig_slots.get(key) {
+    Some(slot) => slot
+    None => {
+      let slot = ctx.shared_fn_sig_order.length()
+      ctx.shared_fn_sig_slots[key] = slot
+      ctx.shared_fn_sig_order.push(sig)
+      slot
     }
   }
 }
@@ -342,6 +363,9 @@ fn func_import_count(ctx : CodegenCtx) -> Int {
     // http_request + response/status/header/body/close +
     // listen/accept/request_* + respond
     count += 12
+  }
+  if ctx.need_thread_spawn_indirect {
+    count += 1
   }
   // effect_op_imports is already populated with unhandled ops only.
   count += ctx.effect_op_imports.length()
@@ -1389,6 +1413,17 @@ fn param_kinds(
   let out : Array[ValueKind] = []
   for param in params {
     out.push(value_kind_from_type(ctx, param.ty))
+  }
+  out
+}
+
+///|
+fn fn_param_types_from_params(
+  params : Array[@core.FuncParam],
+) -> Array[@core.Type] {
+  let out : Array[@core.Type] = []
+  for param in params {
+    out.push(param.ty)
   }
   out
 }

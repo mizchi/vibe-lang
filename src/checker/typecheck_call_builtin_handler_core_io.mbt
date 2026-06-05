@@ -416,7 +416,7 @@ fn type_call_builtin_handler_core_io(
         false,
       )
     _ =>
-      type_call_builtin_handler_collection_numeric(
+      type_call_builtin_handler_threads(
         env, name, builtin_name, args, aliases, effects, allow_effect, call_span,
       )
   }

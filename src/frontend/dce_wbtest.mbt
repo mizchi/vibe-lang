@@ -14,6 +14,11 @@ fn dce_test_int(value : Int64) -> @core.Expr {
 }
 
 ///|
+fn dce_test_string(value : String) -> @core.Expr {
+  @core.Expr::String(value~, span=dce_test_span())
+}
+
+///|
 fn dce_test_ident(name : String) -> @core.Expr {
   @core.Expr::Ident(name~, span=dce_test_span())
 }
@@ -348,6 +353,56 @@ test "dce keeps extra entry names for export surface" {
   assert_true(names.contains("keep"))
   assert_false(names.contains("drop"))
   assert_eq(filtered.stmts.length(), 2)
+}
+
+///|
+test "dce keeps thread spawn worker named by string literal" {
+  let main_body = @core.Module::{
+    stmts: [
+      @core.Stmt::Expr(
+        expr=dce_test_call("Threads::spawn", [
+          dce_test_string("worker"),
+          dce_test_int(0L),
+        ]),
+        span=dce_test_span(),
+      ),
+    ],
+  }
+  let mod = @core.Module::{
+    stmts: [
+      @core.Stmt::Let(
+        rec=false,
+        name="worker",
+        expr=dce_test_int(42L),
+        span=dce_test_span(),
+      ),
+      @core.Stmt::Let(
+        rec=false,
+        name="unused",
+        expr=dce_test_int(1L),
+        span=dce_test_span(),
+      ),
+      @core.Stmt::ExportLet(
+        rec=false,
+        name="main",
+        expr=@core.Expr::Fn(
+          type_params=[],
+          type_bounds={},
+          params=[],
+          ret=Some(@core.Type::Int),
+          effects=[],
+          body=main_body,
+          span=dce_test_span(),
+        ),
+        span=dce_test_span(),
+      ),
+    ],
+  }
+  let filtered = dce_module(mod)
+  let names = collect_stmt_names(filtered.stmts)
+  assert_true(names.contains("main"))
+  assert_true(names.contains("worker"))
+  assert_false(names.contains("unused"))
 }
 
 ///|

@@ -279,7 +279,6 @@ fn bench_cmd(
   features : @runtime.RuntimeFeatureFlags,
 ) -> Unit {
   @runtime_compile.init_hooks()
-  ignore(features)
   if has_help_flag(args) {
     print_bench_help()
     return
@@ -291,12 +290,15 @@ fn bench_cmd(
     )
   } else {
     let _ = resolve_bench_backend(args, BenchBackend::Wasm)
-    bench_blocks_cmd(args)
+    bench_blocks_cmd(args, features)
   }
 }
 
 ///|
-fn bench_blocks_cmd(args : Array[String]) -> Unit {
+fn bench_blocks_cmd(
+  args : Array[String],
+  features : @runtime.RuntimeFeatureFlags,
+) -> Unit {
   let options = match parse_bench_cmd_args(args) {
     Ok(v) => v
     Err(err) => abort(err)
@@ -331,6 +333,8 @@ fn bench_blocks_cmd(args : Array[String]) -> Unit {
           count,
           options.warmup,
           options.case_filters,
+          thread_backend_id=features.thread_backend_id(),
+          unstable_threads=features.is_unstable_threads_enabled(),
         ) {
         Err(err) => {
           if options.output_json {
@@ -365,6 +369,8 @@ fn bench_blocks_cmd(args : Array[String]) -> Unit {
           options.runs,
           options.warmup,
           options.case_filters,
+          thread_backend_id=features.thread_backend_id(),
+          unstable_threads=features.is_unstable_threads_enabled(),
         ) {
         Err(err) => {
           if options.output_json {
@@ -996,12 +1002,14 @@ fn compile_and_run_bench_file_once(
   entry : String,
   wasm_path : String,
   use_node_runner : Bool,
+  thread_backend_id : String,
 ) -> Result[Int, String] {
   let wasm_bytes = compile_module_wasm_for_exec(
     db,
     entry,
     http_host_imports=use_node_runner,
     fs_host_imports=use_node_runner,
+    thread_backend_id~,
   ) catch {
     e => return Err("compile wasm error: " + e.user_message())
   }
@@ -1240,9 +1248,14 @@ fn compile_bench_script_to_wasm(
   entry_path : String,
   script_kind : String,
   source : String,
+  thread_backend_id? : String = "linear-local",
 ) -> Result[(String, Int, Bool), String] {
   compile_bench_script_to_wasm_with_runner(
-    entry_path, script_kind, source, false,
+    entry_path,
+    script_kind,
+    source,
+    false,
+    thread_backend_id~,
   )
 }
 
@@ -1252,6 +1265,7 @@ fn compile_bench_script_to_wasm_with_runner(
   script_kind : String,
   source : String,
   force_node_runner : Bool,
+  thread_backend_id? : String = "linear-local",
 ) -> Result[(String, Int, Bool), String] {
   let (cache_dir, source_path, wasm_path) = bench_script_cache_paths(
     entry_path, script_kind, source,
@@ -1288,7 +1302,9 @@ fn compile_bench_script_to_wasm_with_runner(
   // serve a linear-backend wasm to a gc-backend bench (or vice versa).
   let backend_suffix = if bench_backend_gc { ":gc" } else { "" }
   let current_mode = (if use_node_runner { "host" } else { "plain" }) +
-    backend_suffix
+    backend_suffix +
+    ":thread=" +
+    thread_backend_id
   let has_cached_hashes = @os_fs.path_exists(cached_hash_path)
   let cached_mode_matches = if @os_fs.path_exists(cached_mode_path) {
     let saved_mode = @os_fs.read_file_to_string(cached_mode_path) catch {
@@ -1370,6 +1386,7 @@ fn compile_bench_script_to_wasm_with_runner(
       debug_errors=bench_debug_errors,
       http_host_imports=true,
       fs_host_imports=true,
+      thread_backend_id~,
     ) catch {
       e => return Err("compile wasm error: " + e.user_message())
     }
@@ -1379,6 +1396,7 @@ fn compile_bench_script_to_wasm_with_runner(
       entry,
       no_dce=bench_no_dce,
       opt_level=None,
+      thread_backend_id~,
     ) catch {
       e => return Err("compile wasm error: " + e.user_message())
     }
@@ -1418,6 +1436,7 @@ fn compile_bench_script_to_wasm_with_runner(
                 debug_errors=bench_debug_errors,
                 http_host_imports=true,
                 fs_host_imports=true,
+                thread_backend_id~,
               ) catch {
                 _ => raw_bytes
               }
@@ -1427,6 +1446,7 @@ fn compile_bench_script_to_wasm_with_runner(
                 entry,
                 no_dce=bench_no_dce,
                 opt_level=Some(level),
+                thread_backend_id~,
               ) catch {
                 _ => raw_bytes
               }
@@ -1457,9 +1477,15 @@ fn run_wasm_case_measure(
   script_kind : String,
   source : String,
   count : Int,
+  thread_backend_id : String,
 ) -> Result[(Double, Double, Int), String] {
   let (wasm_path, wasm_bytes, use_node_runner) = match
-    compile_bench_script_to_wasm(entry_path, script_kind, source) {
+    compile_bench_script_to_wasm(
+      entry_path,
+      script_kind,
+      source,
+      thread_backend_id~,
+    ) {
     Ok(v) => v
     Err(err) => return Err(err)
   }
@@ -1487,6 +1513,7 @@ fn run_wasm_bench_case(
   case_body_source : String,
   count : Int,
   warmup : Int,
+  thread_backend_id : String,
 ) -> Result[WasmBenchResult, WasmBenchFailure] {
   let has_setup = setup_source.length() > 0
   let measured = if has_setup {
@@ -1504,6 +1531,7 @@ fn run_wasm_bench_case(
           "setup_run_" + case_index.to_string(),
           run_source,
           true,
+          thread_backend_id~,
         ) {
         Ok((run_wasm_path, wasm_bytes, use_node_runner)) =>
           if !use_node_runner {
@@ -1553,6 +1581,7 @@ fn run_wasm_bench_case(
           entry_path,
           "warm_" + case_index.to_string() + "_" + warmup.to_string(),
           warm_source,
+          thread_backend_id~,
         ) {
         Ok((warm_wasm_path, _, use_node_runner)) =>
           match
@@ -1566,6 +1595,7 @@ fn run_wasm_bench_case(
                 "run_" + case_index.to_string() + "_" + count.to_string(),
                 run_source,
                 count,
+                thread_backend_id,
               )
             Err(err) => Err("warmup run failed: " + err)
           }
@@ -1578,6 +1608,7 @@ fn run_wasm_bench_case(
         "run_" + case_index.to_string() + "_" + count.to_string(),
         run_source,
         count,
+        thread_backend_id,
       )
     }
   }
@@ -1610,9 +1641,21 @@ fn run_bench_blocks_wasm_entry_with_cases(
   count : Int,
   warmup : Int,
   case_filters : Array[String],
+  thread_backend_id? : String = "linear-local",
+  unstable_threads? : Bool = false,
 ) -> Result[WasmBenchReport, String] {
   let source = @os_fs.read_file_to_string(entry_path) catch {
     e => return Err("read error: " + e.to_string())
+  }
+  let ast = @parser.parse_ast(source) catch {
+    e => return Err("parse error: " + e.to_string())
+  }
+  let features = @runtime.RuntimeFeatureFlags::with_threads(
+    false, unstable_threads, thread_backend_id,
+  )
+  match require_unstable_threads_for_module("bench", features, ast) {
+    Ok(_) => ()
+    Err(err) => return Err(err)
   }
   let raw_plan = match extract_bench_source_plan(source) {
     Ok(v) => v
@@ -1647,6 +1690,7 @@ fn run_bench_blocks_wasm_entry_with_cases(
         case_body_source,
         count,
         warmup,
+        thread_backend_id,
       ) {
       Ok(result) => {
         results.push(result)
@@ -1680,9 +1724,21 @@ fn run_bench_blocks_wasm_statistical_entry_with_cases(
   runs : Int,
   warmup : Int,
   case_filters : Array[String],
+  thread_backend_id? : String = "linear-local",
+  unstable_threads? : Bool = false,
 ) -> Result[WasmBenchSummaryReport, String] {
   let source = @os_fs.read_file_to_string(entry_path) catch {
     e => return Err("read error: " + e.to_string())
+  }
+  let ast = @parser.parse_ast(source) catch {
+    e => return Err("parse error: " + e.to_string())
+  }
+  let features = @runtime.RuntimeFeatureFlags::with_threads(
+    false, unstable_threads, thread_backend_id,
+  )
+  match require_unstable_threads_for_module("bench", features, ast) {
+    Ok(_) => ()
+    Err(err) => return Err(err)
   }
   let raw_plan = match extract_bench_source_plan(source) {
     Ok(v) => v
@@ -1730,6 +1786,7 @@ fn run_bench_blocks_wasm_statistical_entry_with_cases(
           "stat_setup_" + case_index.to_string(),
           run_source,
           true,
+          thread_backend_id~,
         ) {
         Ok(v) => v
         Err(err) => {
@@ -1755,7 +1812,12 @@ fn run_bench_blocks_wasm_statistical_entry_with_cases(
           "_" +
           trial.to_string()
         let (cal_wasm_path, cal_use_node_runner) = match
-          compile_bench_script_to_wasm(entry_path, cal_script_kind, cal_source) {
+          compile_bench_script_to_wasm(
+            entry_path,
+            cal_script_kind,
+            cal_source,
+            thread_backend_id~,
+          ) {
           Err(err) => {
             failures.push(WasmBenchFailure::{
               name: case_name,
@@ -1806,7 +1868,12 @@ fn run_bench_blocks_wasm_statistical_entry_with_cases(
         "_" +
         batch_size.to_string()
       match
-        compile_bench_script_to_wasm(entry_path, run_script_kind, run_source) {
+        compile_bench_script_to_wasm(
+          entry_path,
+          run_script_kind,
+          run_source,
+          thread_backend_id~,
+        ) {
         Ok(v) => v
         Err(err) => {
           failures.push(WasmBenchFailure::{
@@ -2268,7 +2335,7 @@ fn print_wasm_bench_report(path : String, report : WasmBenchReport) -> Bool {
 ///|
 fn bench_file_cmd(
   args : Array[String],
-  _features : @runtime.RuntimeFeatureFlags,
+  features : @runtime.RuntimeFeatureFlags,
 ) -> Unit {
   let mut count = 1000
   let mut warmup = 10
@@ -2328,6 +2395,11 @@ fn bench_file_cmd(
         Err(err) => abort("bench-file: " + err)
         Ok(v) => v
       }
+      match
+        require_unstable_threads_for_entry("bench-file", features, db, entry) {
+        Ok(_) => ()
+        Err(err) => abort(err)
+      }
       let (use_http_host_runner, use_fs_host_runner) = detect_exec_host_runner_requirements(
         db, entry,
       )
@@ -2338,7 +2410,12 @@ fn bench_file_cmd(
       for _ in 0..<warmup {
         let compiled_bytes = match
           compile_and_run_bench_file_once(
-            runner, db, entry, wasm_path, use_node_runner,
+            runner,
+            db,
+            entry,
+            wasm_path,
+            use_node_runner,
+            features.thread_backend_id(),
           ) {
           Ok(v) => v
           Err(err) => abort("bench-file: " + err)
@@ -2349,7 +2426,12 @@ fn bench_file_cmd(
       for _ in 0..<count {
         let compiled_bytes = match
           compile_and_run_bench_file_once(
-            runner, db, entry, wasm_path, use_node_runner,
+            runner,
+            db,
+            entry,
+            wasm_path,
+            use_node_runner,
+            features.thread_backend_id(),
           ) {
           Ok(v) => v
           Err(err) => abort("bench-file: " + err)

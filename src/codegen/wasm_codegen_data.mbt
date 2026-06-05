@@ -134,6 +134,60 @@ fn require_heap(ctx : CodegenCtx) -> Unit {
 }
 
 ///|
+fn thread_backend_uses_atomic_heap(ctx : CodegenCtx) -> Bool {
+  thread_backend_uses_shared_memory(ctx) &&
+  ctx.use_heap_global &&
+  !ctx.enable_rc
+}
+
+///|
+fn shared_heap_cursor_offset(ctx : CodegenCtx) -> Int {
+  if ctx.shared_heap_cursor_offset >= 0 {
+    ctx.shared_heap_cursor_offset
+  } else {
+    align4(ctx.strings.next_offset)
+  }
+}
+
+///|
+fn heap_start_offset(ctx : CodegenCtx, coverage_bytes : Int) -> Int {
+  if thread_backend_uses_atomic_heap(ctx) {
+    align4(shared_heap_cursor_offset(ctx) + 4 + coverage_bytes)
+  } else {
+    align4(ctx.strings.next_offset + coverage_bytes)
+  }
+}
+
+///|
+fn emit_heap_ensure_capacity_for_end(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  end_local : Int,
+) -> Unit {
+  let current_pages_local = alloc_temp_local(ctx)
+  let required_pages_local = alloc_temp_local(ctx)
+  emit_memory_size(buf)
+  emit_local_set(buf, current_pages_local)
+  emit_local_get(buf, end_local)
+  emit_i32_const_raw(buf, 65535)
+  emit_i32_add(buf)
+  emit_i32_const_raw(buf, 16)
+  emit_i32_shr_u(buf)
+  emit_local_set(buf, required_pages_local)
+  emit_local_get(buf, current_pages_local)
+  emit_local_get(buf, required_pages_local)
+  emit_i32_lt_s(buf)
+  buf.push((4).to_byte()) // if
+  buf.push((64).to_byte()) // empty
+  emit_local_get(buf, required_pages_local)
+  emit_local_get(buf, current_pages_local)
+  emit_i32_sub(buf)
+  emit_memory_grow(buf)
+  emit_drop(buf)
+  buf.push((11).to_byte()) // end
+}
+
+///|
 fn emit_heap_reserve(ctx : CodegenCtx, buf : ByteBuf, size : Int) -> Unit {
   require_heap(ctx)
   if size <= 0 {
@@ -170,6 +224,9 @@ fn emit_heap_reserve(ctx : CodegenCtx, buf : ByteBuf, size : Int) -> Unit {
 ///|
 /// S8: Sync heap_local -> heap_global before a call, skipping if already synced.
 fn emit_heap_pre_call_sync(ctx : CodegenCtx, buf : ByteBuf) -> Unit {
+  if thread_backend_uses_atomic_heap(ctx) {
+    return
+  }
   // Always sync before calls. The heap_synced optimization is fragile
   // and causes heap corruption when sync state leaks across control
   // flow boundaries (if/else, match, while, let rec).
@@ -182,6 +239,9 @@ fn emit_heap_pre_call_sync(ctx : CodegenCtx, buf : ByteBuf) -> Unit {
 ///|
 /// S8: Reload heap_global -> heap_local after a call, marking as synced.
 fn emit_heap_post_call_sync(ctx : CodegenCtx, buf : ByteBuf) -> Unit {
+  if thread_backend_uses_atomic_heap(ctx) {
+    return
+  }
   if ctx.heap_local >= 0 && ctx.use_heap_global {
     emit_global_get(buf, ctx.heap_global)
     emit_local_set(buf, ctx.heap_local)
@@ -211,12 +271,133 @@ fn emit_heap_alloc_rc_normal(
 }
 
 ///|
+fn emit_heap_alloc_atomic(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  size : Int,
+  obj_local : Int,
+) -> Unit {
+  require_heap(ctx)
+  let end_local = alloc_temp_local(ctx)
+  emit_i32_const_raw(buf, 0)
+  emit_i32_const_raw(buf, size)
+  emit_i32_atomic_rmw_add(buf, shared_heap_cursor_offset(ctx))
+  emit_local_set(buf, obj_local)
+  emit_local_get(buf, obj_local)
+  emit_i32_const_raw(buf, size)
+  emit_i32_add(buf)
+  emit_local_set(buf, end_local)
+  emit_heap_ensure_capacity_for_end(ctx, buf, end_local)
+  emit_local_get(buf, end_local)
+  emit_local_set(buf, ctx.heap_local)
+  ctx.heap_synced = false
+}
+
+///|
+fn emit_heap_alloc_atomic_aligned(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  size : Int,
+  align : Int,
+  obj_local : Int,
+) -> Unit {
+  require_heap(ctx)
+  let raw_local = alloc_temp_local(ctx)
+  let end_local = alloc_temp_local(ctx)
+  let padded_size = size + align - 1
+  emit_i32_const_raw(buf, 0)
+  emit_i32_const_raw(buf, padded_size)
+  emit_i32_atomic_rmw_add(buf, shared_heap_cursor_offset(ctx))
+  emit_local_set(buf, raw_local)
+  emit_local_get(buf, raw_local)
+  emit_i32_const_raw(buf, align - 1)
+  emit_i32_add(buf)
+  emit_i32_const_raw(buf, -align)
+  emit_i32_and(buf)
+  emit_local_set(buf, obj_local)
+  emit_local_get(buf, raw_local)
+  emit_i32_const_raw(buf, padded_size)
+  emit_i32_add(buf)
+  emit_local_set(buf, end_local)
+  emit_heap_ensure_capacity_for_end(ctx, buf, end_local)
+  emit_local_get(buf, end_local)
+  emit_local_set(buf, ctx.heap_local)
+  ctx.heap_synced = false
+}
+
+///|
+fn emit_heap_alloc_local_atomic(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  size_local : Int,
+  obj_local : Int,
+) -> Unit {
+  require_heap(ctx)
+  let raw_local = alloc_temp_local(ctx)
+  let end_local = alloc_temp_local(ctx)
+  emit_i32_const_raw(buf, 0)
+  emit_local_get(buf, size_local)
+  emit_i32_atomic_rmw_add(buf, shared_heap_cursor_offset(ctx))
+  emit_local_set(buf, raw_local)
+  emit_local_get(buf, raw_local)
+  emit_local_set(buf, obj_local)
+  emit_local_get(buf, raw_local)
+  emit_local_get(buf, size_local)
+  emit_i32_add(buf)
+  emit_local_set(buf, end_local)
+  emit_heap_ensure_capacity_for_end(ctx, buf, end_local)
+  emit_local_get(buf, end_local)
+  emit_local_set(buf, ctx.heap_local)
+  ctx.heap_synced = false
+}
+
+///|
+fn emit_heap_alloc_local_atomic_aligned(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  size_local : Int,
+  align : Int,
+  obj_local : Int,
+) -> Unit {
+  require_heap(ctx)
+  let raw_local = alloc_temp_local(ctx)
+  let padded_size_local = alloc_temp_local(ctx)
+  let end_local = alloc_temp_local(ctx)
+  emit_local_get(buf, size_local)
+  emit_i32_const_raw(buf, align - 1)
+  emit_i32_add(buf)
+  emit_local_set(buf, padded_size_local)
+  emit_i32_const_raw(buf, 0)
+  emit_local_get(buf, padded_size_local)
+  emit_i32_atomic_rmw_add(buf, shared_heap_cursor_offset(ctx))
+  emit_local_set(buf, raw_local)
+  emit_local_get(buf, raw_local)
+  emit_i32_const_raw(buf, align - 1)
+  emit_i32_add(buf)
+  emit_i32_const_raw(buf, -align)
+  emit_i32_and(buf)
+  emit_local_set(buf, obj_local)
+  emit_local_get(buf, raw_local)
+  emit_local_get(buf, padded_size_local)
+  emit_i32_add(buf)
+  emit_local_set(buf, end_local)
+  emit_heap_ensure_capacity_for_end(ctx, buf, end_local)
+  emit_local_get(buf, end_local)
+  emit_local_set(buf, ctx.heap_local)
+  ctx.heap_synced = false
+}
+
+///|
 fn emit_heap_alloc(
   ctx : CodegenCtx,
   buf : ByteBuf,
   size : Int,
   obj_local : Int,
 ) -> Unit {
+  if thread_backend_uses_atomic_heap(ctx) {
+    emit_heap_alloc_atomic(ctx, buf, size, obj_local)
+    return
+  }
   if ctx.enable_rc {
     let total_size = size + ctx.rc_header_size
     // Check reuse candidate: if available and alloc_size matches, use it directly
@@ -273,6 +454,21 @@ fn emit_heap_alloc(
 }
 
 ///|
+fn emit_heap_alloc_aligned(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  size : Int,
+  align : Int,
+  obj_local : Int,
+) -> Unit {
+  if thread_backend_uses_atomic_heap(ctx) {
+    emit_heap_alloc_atomic_aligned(ctx, buf, size, align, obj_local)
+    return
+  }
+  emit_heap_alloc(ctx, buf, size, obj_local)
+}
+
+///|
 /// Bump-only heap allocation without bounds checking.
 /// Safe for small, fixed-size allocations (e.g. 8-byte ref cells) where
 /// the initial memory page (64KB) provides sufficient headroom and
@@ -283,6 +479,10 @@ fn emit_heap_alloc_unchecked(
   size : Int,
   obj_local : Int,
 ) -> Unit {
+  if thread_backend_uses_atomic_heap(ctx) {
+    emit_heap_alloc_atomic(ctx, buf, size, obj_local)
+    return
+  }
   require_heap(ctx)
   emit_local_get(buf, ctx.heap_local)
   emit_local_set(buf, obj_local)
@@ -335,6 +535,10 @@ fn emit_heap_alloc_local(
   size_local : Int,
   obj_local : Int,
 ) -> Unit {
+  if thread_backend_uses_atomic_heap(ctx) {
+    emit_heap_alloc_local_atomic(ctx, buf, size_local, obj_local)
+    return
+  }
   if ctx.enable_rc {
     // Add rc_header_size to size_local for the prepended RC field
     emit_local_get(buf, size_local)
@@ -364,6 +568,21 @@ fn emit_heap_alloc_local(
       debug_alloc_global=ctx.rc_debug_alloc_global,
     )
   }
+}
+
+///|
+fn emit_heap_alloc_local_aligned(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  size_local : Int,
+  align : Int,
+  obj_local : Int,
+) -> Unit {
+  if thread_backend_uses_atomic_heap(ctx) {
+    emit_heap_alloc_local_atomic_aligned(ctx, buf, size_local, align, obj_local)
+    return
+  }
+  emit_heap_alloc_local(ctx, buf, size_local, obj_local)
 }
 
 ///|
@@ -687,7 +906,9 @@ fn compile_func_body(
     None => compile_block_expr(ctx, instr, ast, emit_rc_stmt_actions~)
   }
   ctx.is_tail_position = false
-  if ctx.need_heap && ctx.use_heap_global {
+  if ctx.need_heap &&
+    ctx.use_heap_global &&
+    !thread_backend_uses_atomic_heap(ctx) {
     emit_local_get(instr, ctx.heap_local)
     emit_global_set(instr, ctx.heap_global)
   }
@@ -695,7 +916,11 @@ fn compile_func_body(
   if ctx.need_heap || prelude.length() > 0 {
     let prologue = ByteBuf::new()
     if ctx.need_heap {
-      if ctx.use_heap_global {
+      if thread_backend_uses_atomic_heap(ctx) {
+        emit_i32_const_raw(prologue, 0)
+        emit_i32_atomic_load(prologue, shared_heap_cursor_offset(ctx))
+        emit_local_set(prologue, ctx.heap_local)
+      } else if ctx.use_heap_global {
         emit_global_get(prologue, ctx.heap_global)
         emit_local_set(prologue, ctx.heap_local)
       } else {
@@ -704,7 +929,7 @@ fn compile_func_body(
         } else {
           0
         }
-        let heap_start = align4(ctx.strings.next_offset + coverage_bytes)
+        let heap_start = heap_start_offset(ctx, coverage_bytes)
         if ctx.enable_rc && ctx.rc_heap_start == 0 {
           ctx.rc_heap_start = heap_start
         }
@@ -736,6 +961,7 @@ fn compile_function(
   with_env : Bool,
   capture_is_ref_cell? : Array[Bool] = [],
   emit_rc_stmt_actions? : Bool = false,
+  shared? : Bool = false,
 ) -> WasmFunc raise WasmGenError {
   let saved_locals = ctx.locals
   let saved_kinds = ctx.local_kinds
@@ -950,6 +1176,7 @@ fn compile_function(
     locals,
     results: multi_results,
     body: body_bytes,
+    shared,
   }
   ctx.locals = saved_locals
   ctx.local_kinds = saved_kinds
@@ -976,7 +1203,12 @@ fn compile_cabi_realloc_function(
   }
   let body = ByteBuf::new()
   let ptr_local = 4
-  let align_mask_local = 5
+  let size_local = 5
+  let end_local = 6
+  let current_pages_local = 7
+  let required_pages_local = 8
+  let cursor_local = 9
+  let observed_local = 10
   // if new_size == 0: return align
   emit_local_get(body, 3)
   emit_i32_eqz(body)
@@ -984,43 +1216,112 @@ fn compile_cabi_realloc_function(
   body.push((127).to_byte()) // result i32
   emit_local_get(body, 2)
   body.push((5).to_byte()) // else
-  emit_global_get(body, ctx.heap_global)
-  emit_local_set(body, ptr_local)
-  // canonical ABI passes an alignment (power of two) in param[2].
-  emit_local_get(body, 2)
-  emit_i32_const_raw(body, 1)
-  emit_i32_sub(body)
-  emit_local_set(body, align_mask_local)
-  emit_local_get(body, align_mask_local)
-  emit_i32_eqz(body)
-  body.push((4).to_byte()) // if
-  body.push((64).to_byte()) // empty block
-  body.push((5).to_byte()) // else
-  emit_local_get(body, ptr_local)
-  emit_local_get(body, align_mask_local)
-  emit_i32_add(body)
-  emit_local_get(body, align_mask_local)
-  emit_i32_const_raw(body, -1)
-  emit_i32_xor(body)
-  emit_i32_and(body)
-  emit_local_set(body, ptr_local)
-  body.push((11).to_byte()) // end if
-  emit_local_get(body, ptr_local)
-  emit_local_get(body, 3)
-  emit_i32_add(body)
-  emit_i32_const_raw(body, 3)
-  emit_i32_add(body)
-  emit_i32_const_raw(body, -4)
-  emit_i32_and(body)
-  emit_global_set(body, ctx.heap_global)
+  if thread_backend_uses_atomic_heap(ctx) {
+    // Allocate by CAS so the shared cursor can honor the canonical ABI's
+    // dynamic power-of-two alignment instead of assuming align=4.
+    emit_local_get(body, 3)
+    emit_i32_const_raw(body, 3)
+    emit_i32_add(body)
+    emit_i32_const_raw(body, -4)
+    emit_i32_and(body)
+    emit_local_set(body, size_local)
+    emit_loop(body)
+    emit_i32_const_raw(body, 0)
+    emit_i32_atomic_load(body, shared_heap_cursor_offset(ctx))
+    emit_local_set(body, cursor_local)
+    emit_local_get(body, cursor_local)
+    emit_local_get(body, 2)
+    emit_i32_const_raw(body, 1)
+    emit_i32_sub(body)
+    emit_i32_add(body)
+    emit_local_get(body, 2)
+    emit_i32_const_raw(body, 1)
+    emit_i32_sub(body)
+    emit_i32_const_raw(body, -1)
+    emit_i32_xor(body)
+    emit_i32_and(body)
+    emit_local_set(body, ptr_local)
+    emit_local_get(body, ptr_local)
+    emit_local_get(body, size_local)
+    emit_i32_add(body)
+    emit_local_set(body, end_local)
+    emit_i32_const_raw(body, 0)
+    emit_local_get(body, cursor_local)
+    emit_local_get(body, end_local)
+    emit_i32_atomic_rmw_cmpxchg(body, shared_heap_cursor_offset(ctx))
+    emit_local_set(body, observed_local)
+    emit_local_get(body, observed_local)
+    emit_local_get(body, cursor_local)
+    emit_i32_ne(body)
+    emit_br_if(body, 0)
+    emit_end(body)
+    emit_memory_size(body)
+    emit_local_set(body, current_pages_local)
+    emit_local_get(body, end_local)
+    emit_i32_const_raw(body, 65535)
+    emit_i32_add(body)
+    emit_i32_const_raw(body, 16)
+    emit_i32_shr_u(body)
+    emit_local_set(body, required_pages_local)
+    emit_local_get(body, current_pages_local)
+    emit_local_get(body, required_pages_local)
+    emit_i32_lt_s(body)
+    body.push((4).to_byte()) // if
+    body.push((64).to_byte()) // empty
+    emit_local_get(body, required_pages_local)
+    emit_local_get(body, current_pages_local)
+    emit_i32_sub(body)
+    emit_memory_grow(body)
+    emit_drop(body)
+    body.push((11).to_byte()) // end
+  } else {
+    emit_global_get(body, ctx.heap_global)
+    emit_local_set(body, ptr_local)
+    // canonical ABI passes an alignment (power of two) in param[2].
+    emit_local_get(body, 2)
+    emit_i32_const_raw(body, 1)
+    emit_i32_sub(body)
+    emit_local_set(body, size_local)
+    emit_local_get(body, size_local)
+    emit_i32_eqz(body)
+    body.push((4).to_byte()) // if
+    body.push((64).to_byte()) // empty block
+    body.push((5).to_byte()) // else
+    emit_local_get(body, ptr_local)
+    emit_local_get(body, size_local)
+    emit_i32_add(body)
+    emit_local_get(body, size_local)
+    emit_i32_const_raw(body, -1)
+    emit_i32_xor(body)
+    emit_i32_and(body)
+    emit_local_set(body, ptr_local)
+    body.push((11).to_byte()) // end if
+    emit_local_get(body, ptr_local)
+    emit_local_get(body, 3)
+    emit_i32_add(body)
+    emit_i32_const_raw(body, 3)
+    emit_i32_add(body)
+    emit_i32_const_raw(body, -4)
+    emit_i32_and(body)
+    emit_global_set(body, ctx.heap_global)
+  }
   emit_local_get(body, ptr_local)
   body.push((11).to_byte()) // end if
   body.push((11).to_byte()) // end func
   WasmFunc::{
     params: [ValueKind::I32, ValueKind::I32, ValueKind::I32, ValueKind::I32],
-    locals: [ValueKind::I32, ValueKind::I32],
+    locals: [
+      ValueKind::I32,
+      ValueKind::I32,
+      ValueKind::I32,
+      ValueKind::I32,
+      ValueKind::I32,
+      ValueKind::I32,
+      ValueKind::I32,
+    ],
     results: [ValueKind::I32],
     body: body.to_array(),
+    shared: false,
   }
 }
 
@@ -1036,6 +1337,10 @@ fn compile_http_host_string_new_function(
   let body = ByteBuf::new()
   let len_local = 1
   let obj_local = 2
+  let alloc_size_local = 3
+  let end_local = 4
+  let current_pages_local = 5
+  let required_pages_local = 6
   // len = max(len, 0)
   emit_local_get(body, 0)
   emit_local_set(body, len_local)
@@ -1048,8 +1353,44 @@ fn compile_http_host_string_new_function(
   emit_local_set(body, len_local)
   body.push((11).to_byte()) // end if
   // obj = heap
-  emit_global_get(body, ctx.heap_global)
-  emit_local_set(body, obj_local)
+  if thread_backend_uses_atomic_heap(ctx) {
+    emit_local_get(body, len_local)
+    emit_i32_const_raw(body, 11)
+    emit_i32_add(body)
+    emit_i32_const_raw(body, -4)
+    emit_i32_and(body)
+    emit_local_set(body, alloc_size_local)
+    emit_i32_const_raw(body, 0)
+    emit_local_get(body, alloc_size_local)
+    emit_i32_atomic_rmw_add(body, shared_heap_cursor_offset(ctx))
+    emit_local_set(body, obj_local)
+    emit_local_get(body, obj_local)
+    emit_local_get(body, alloc_size_local)
+    emit_i32_add(body)
+    emit_local_set(body, end_local)
+    emit_memory_size(body)
+    emit_local_set(body, current_pages_local)
+    emit_local_get(body, end_local)
+    emit_i32_const_raw(body, 65535)
+    emit_i32_add(body)
+    emit_i32_const_raw(body, 16)
+    emit_i32_shr_u(body)
+    emit_local_set(body, required_pages_local)
+    emit_local_get(body, current_pages_local)
+    emit_local_get(body, required_pages_local)
+    emit_i32_lt_s(body)
+    body.push((4).to_byte()) // if
+    body.push((64).to_byte()) // empty
+    emit_local_get(body, required_pages_local)
+    emit_local_get(body, current_pages_local)
+    emit_i32_sub(body)
+    emit_memory_grow(body)
+    emit_drop(body)
+    body.push((11).to_byte()) // end
+  } else {
+    emit_global_get(body, ctx.heap_global)
+    emit_local_set(body, obj_local)
+  }
   // obj.ty = obj_string
   emit_local_get(body, obj_local)
   emit_i32_const_raw(body, obj_string)
@@ -1059,14 +1400,16 @@ fn compile_http_host_string_new_function(
   emit_local_get(body, len_local)
   emit_i32_store(body, 4)
   // heap = obj + align4(8 + len)
-  emit_local_get(body, obj_local)
-  emit_local_get(body, len_local)
-  emit_i32_const_raw(body, 11)
-  emit_i32_add(body)
-  emit_i32_const_raw(body, -4)
-  emit_i32_and(body)
-  emit_i32_add(body)
-  emit_global_set(body, ctx.heap_global)
+  if !thread_backend_uses_atomic_heap(ctx) {
+    emit_local_get(body, obj_local)
+    emit_local_get(body, len_local)
+    emit_i32_const_raw(body, 11)
+    emit_i32_add(body)
+    emit_i32_const_raw(body, -4)
+    emit_i32_and(body)
+    emit_i32_add(body)
+    emit_global_set(body, ctx.heap_global)
+  }
   // return tagged string object pointer
   emit_local_get(body, obj_local)
   emit_i64_extend_i32_u(body)
@@ -1075,9 +1418,17 @@ fn compile_http_host_string_new_function(
   body.push((11).to_byte()) // end func
   WasmFunc::{
     params: [ValueKind::I32],
-    locals: [ValueKind::I32, ValueKind::I32],
+    locals: [
+      ValueKind::I32,
+      ValueKind::I32,
+      ValueKind::I32,
+      ValueKind::I32,
+      ValueKind::I32,
+      ValueKind::I32,
+    ],
     results: [ValueKind::I64],
     body: body.to_array(),
+    shared: false,
   }
 }
 
@@ -1104,5 +1455,6 @@ fn compile_public_start_wrapper(run_func_index : Int) -> WasmFunc {
     locals: [ValueKind::I64],
     results: [ValueKind::I64],
     body: body.to_array(),
+    shared: false,
   }
 }

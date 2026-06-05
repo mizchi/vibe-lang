@@ -863,6 +863,7 @@ fn compile_rc_dup_function(heap_start? : Int = 0) -> WasmFunc {
     locals: [ValueKind::I32],
     results: [],
     body: body.to_array(),
+    shared: false,
   }
 }
 
@@ -1364,6 +1365,7 @@ fn compile_rc_drop_function(
     locals,
     results: [],
     body: body.to_array(),
+    shared: false,
   }
 }
 
@@ -1467,6 +1469,7 @@ fn compile_rc_alloc_function(
     locals: [ValueKind::I32, ValueKind::I32],
     results: [ValueKind::I32],
     body: body.to_array(),
+    shared: false,
   }
 }
 
@@ -1738,6 +1741,7 @@ fn compile_rc_try_reuse_function(
     ],
     results: [ValueKind::I32],
     body: body.to_array(),
+    shared: false,
   }
 }
 

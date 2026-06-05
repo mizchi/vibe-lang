@@ -27,6 +27,191 @@ fn bytes_contains_ascii(bytes : Bytes, needle : String) -> Bool {
 }
 
 ///|
+fn bytes_contains_seq(bytes : Bytes, needle : Array[Byte]) -> Bool {
+  let hay_len = bytes.length()
+  let needle_len = needle.length()
+  if needle_len == 0 {
+    return true
+  }
+  let limit = hay_len - needle_len
+  if limit < 0 {
+    return false
+  }
+  for i in 0..<=limit {
+    let mut ok = true
+    for j in 0..<needle_len {
+      if bytes[i + j] != needle[j] {
+        ok = false
+        break
+      }
+    }
+    if ok {
+      return true
+    }
+  }
+  false
+}
+
+///|
+fn maybe_write_thread_component_probe(bytes : Bytes) -> Unit raise Error {
+  match @sys.get_env_var("VIBE_THREAD_COMPONENT_PROBE_OUT") {
+    Some(path) =>
+      if path.length() > 0 {
+        @os_fs.write_bytes_to_file(path, bytes)
+      }
+    None => ()
+  }
+}
+
+///|
+fn wbtest_read_u32_leb_at(bytes : Array[Byte], start : Int) -> (Int, Int) {
+  let mut value = 0
+  let mut shift = 0
+  let mut i = start
+  while true {
+    if i >= bytes.length() {
+      return (value, i)
+    }
+    let b = bytes[i].to_int()
+    value = value | ((b & 0x7f) << shift)
+    i += 1
+    if (b & 0x80) == 0 {
+      return (value, i)
+    }
+    shift += 7
+  }
+  (value, i)
+}
+
+///|
+fn wasm_has_named_export_kind(
+  bytes : Bytes,
+  target_name : String,
+  target_kind : Int,
+) -> Bool {
+  let arr = bytes.to_array()
+  if arr.length() < 8 {
+    return false
+  }
+  let mut i = 8
+  while i < arr.length() {
+    let id = arr[i].to_int()
+    i += 1
+    let (size, next_i) = wbtest_read_u32_leb_at(arr, i)
+    i = next_i
+    let section_end = i + size
+    if section_end > arr.length() {
+      return false
+    }
+    if id == 7 {
+      let (count, after_count) = wbtest_read_u32_leb_at(arr, i)
+      let mut j = after_count
+      for _ in 0..<count {
+        let (name_len, after_name_len) = wbtest_read_u32_leb_at(arr, j)
+        j = after_name_len
+        if j + name_len + 1 > section_end {
+          return false
+        }
+        let mut name_matches = name_len == target_name.length()
+        if name_matches {
+          for k in 0..<name_len {
+            if arr[j + k].to_int() != target_name[k].to_int() {
+              name_matches = false
+              break
+            }
+          }
+        }
+        j = j + name_len
+        let kind = arr[j].to_int()
+        j += 1
+        let (_, after_idx) = wbtest_read_u32_leb_at(arr, j)
+        j = after_idx
+        if name_matches && kind == target_kind {
+          return true
+        }
+      }
+      return false
+    }
+    i = section_end
+  }
+  false
+}
+
+///|
+fn wasm_memory_limits_flag(bytes : Bytes) -> Int? {
+  let arr = bytes.to_array()
+  if arr.length() < 8 {
+    return None
+  }
+  let mut i = 8
+  while i < arr.length() {
+    let id = arr[i].to_int()
+    i += 1
+    let (size, next_i) = wbtest_read_u32_leb_at(arr, i)
+    i = next_i
+    let section_end = i + size
+    if section_end > arr.length() {
+      return None
+    }
+    if id == 5 {
+      let (count, after_count) = wbtest_read_u32_leb_at(arr, i)
+      if count == 0 || after_count >= section_end {
+        return None
+      }
+      return Some(arr[after_count].to_int())
+    }
+    i = section_end
+  }
+  None
+}
+
+///|
+fn wasm_first_global_flags(bytes : Bytes) -> Int? {
+  let arr = bytes.to_array()
+  if arr.length() < 8 {
+    return None
+  }
+  let mut i = 8
+  while i < arr.length() {
+    let id = arr[i].to_int()
+    i += 1
+    let (size, next_i) = wbtest_read_u32_leb_at(arr, i)
+    i = next_i
+    let section_end = i + size
+    if section_end > arr.length() {
+      return None
+    }
+    if id == 6 {
+      let (count, after_count) = wbtest_read_u32_leb_at(arr, i)
+      if count == 0 || after_count + 1 >= section_end {
+        return None
+      }
+      // First global type is encoded as valtype followed by flags.
+      return Some(arr[after_count + 1].to_int())
+    }
+    i = section_end
+  }
+  None
+}
+
+///|
+fn wasm_contains_atomic_subop(bytes : Bytes, subop : Int) -> Bool {
+  let arr = bytes.to_array()
+  if arr.length() < 2 {
+    return false
+  }
+  for i in 0..<(arr.length() - 1) {
+    if arr[i] == b'\xfe' {
+      let (op, _) = wbtest_read_u32_leb_at(arr, i + 1)
+      if op == subop {
+        return true
+      }
+    }
+  }
+  false
+}
+
+///|
 fn name_matches_binding(name : String, binding_name : String) -> Bool {
   name == binding_name || name.has_prefix(binding_name + "$dep$")
 }
@@ -1179,6 +1364,451 @@ test "compile_module_wasm_with_opt_level_profiled separates artifact cache by mo
 }
 
 ///|
+test "compile_module_wasm_with_opt_level_profiled separates artifact cache by thread backend" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "cache_thread_backend_probe", "let cache_thread_backend_probe_unique = () -> Int { 1 + 2 }",
+  )
+  let (_, profile1) = compile_module_wasm_with_opt_level_profiled(
+    db,
+    "cache_thread_backend_probe",
+    no_dce=true,
+  )
+  let (_, profile2) = compile_module_wasm_with_opt_level_profiled(
+    db,
+    "cache_thread_backend_probe",
+    no_dce=true,
+    thread_backend_id="component-unsafe-os-threads",
+  )
+  assert_true(profile1.emit_us > 0)
+  assert_true(profile2.emit_us > 0)
+}
+
+///|
+test "compile_module_wasm_no_dce lowers linear-local Threads channel builtins" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "threads_channel_probe",
+    (
+      #|let main = () -> String with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let _ok = Threads::send(ch, "hello")
+      #|  Threads::recv(ch)
+      #|}
+      #|""
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(
+    db,
+    "threads_channel_probe",
+    thread_backend_id="linear-local",
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_true(wasm_bytes.length() > 8)
+  assert_eq(wasm_bytes[0], b'\x00')
+  assert_eq(wasm_bytes[1], b'\x61')
+  assert_eq(wasm_bytes[2], b'\x73')
+  assert_eq(wasm_bytes[3], b'\x6d')
+}
+
+///|
+test "compile_module_wasm_no_dce lowers component unsafe shared Threads channel builtins" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "threads_component_channel_probe",
+    (
+      #|let main = () -> String with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let _ok = Threads::send(ch, "hello")
+      #|  Threads::recv(ch)
+      #|}
+      #|""
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(
+    db,
+    "threads_component_channel_probe",
+    thread_backend_id="component-unsafe-os-threads",
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_true(wasm_bytes.length() > 8)
+  assert_eq(wasm_bytes[0], b'\x00')
+  assert_eq(wasm_bytes[1], b'\x61')
+  assert_eq(wasm_bytes[2], b'\x73')
+  assert_eq(wasm_bytes[3], b'\x6d')
+  match wasm_memory_limits_flag(wasm_bytes) {
+    Some(flag) => assert_eq(flag, 3)
+    None => fail("missing wasm memory section")
+  }
+  assert_true(wasm_contains_atomic_subop(wasm_bytes, 0x11))
+  assert_true(wasm_contains_atomic_subop(wasm_bytes, 0x18))
+}
+
+///|
+test "compile_module_wasm_no_dce rejects inconsistent Threads channel payload type" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "threads_channel_payload_type_probe",
+    (
+      #|let main = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let _ok = Threads::send(ch, "hello")
+      #|  Threads::recv(ch) + 1
+      #|}
+      #|0
+    ),
+  )
+  let result : Result[Bytes, WasmCompileError] = try? compile_module_wasm_no_dce(
+    db,
+    "threads_channel_payload_type_probe",
+    thread_backend_id="component-unsafe-os-threads",
+  )
+  match result {
+    Ok(_) => fail("expected channel payload type error")
+    Err(err) => {
+      let message = err.user_message()
+      assert_true(message.contains("type mismatch"))
+      assert_true(message.contains("String"))
+      assert_true(message.contains("Int"))
+    }
+  }
+}
+
+///|
+test "compile_module_wasm_no_dce rejects raw Int Threads wait handle" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "threads_wait_raw_int_probe",
+    (
+      #|let main = () -> Int with {Threads} {
+      #|  Threads::wait(1)
+      #|}
+      #|0
+    ),
+  )
+  let result : Result[Bytes, WasmCompileError] = try? compile_module_wasm_no_dce(
+    db,
+    "threads_wait_raw_int_probe",
+    thread_backend_id="component-unsafe-os-threads",
+  )
+  match result {
+    Ok(_) => fail("expected raw Int Threads::wait task error")
+    Err(err) => {
+      let message = err.user_message()
+      assert_true(message.contains("type mismatch"))
+      assert_true(message.contains("ThreadTask"))
+      assert_true(message.contains("Int"))
+    }
+  }
+}
+
+///|
+test "compile_module_component rejects plain Int thread worker parameter" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "threads_component_plain_int_worker_probe",
+    (
+      #|let worker = (_ch: Int) -> Int {
+      #|  42
+      #|}
+      #|export let thread_worker_probe = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let task = Threads::spawn("worker", ch)
+      #|  Threads::wait(task)
+      #|}
+      #|0
+    ),
+  )
+  let result : Result[Bytes, WasmCompileError] = try? compile_module_component_with_opt_level(
+    db,
+    "threads_component_plain_int_worker_probe",
+    thread_backend_id="component-unsafe-os-threads",
+  )
+  match result {
+    Ok(_) => fail("expected ThreadChannel[Int] worker parameter error")
+    Err(err) => {
+      let message = err.user_message()
+      assert_true(message.contains("Threads::spawn worker currently supports"))
+      assert_true(message.contains("ThreadChannel[Int|String] -> Int|String"))
+      assert_true(message.contains("worker"))
+    }
+  }
+}
+
+///|
+test "compile_module_component allows String thread worker return" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "threads_component_string_worker_return_probe",
+    (
+      #|let worker = (_ch: ThreadChannel[Int]) -> String {
+      #|  "done"
+      #|}
+      #|export let thread_worker_probe = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let task = Threads::spawn("worker", ch)
+      #|  String::length(Threads::wait(task))
+      #|}
+      #|0
+    ),
+  )
+  let component = compile_module_component_with_opt_level(
+    db,
+    "threads_component_string_worker_return_probe",
+    thread_backend_id="component-unsafe-os-threads",
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_true(bytes_contains_ascii(component, "thread.spawn-indirect"))
+}
+
+///|
+test "compile_module_component rejects dynamic thread worker name" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "threads_component_dynamic_worker_name_probe",
+    (
+      #|let worker = (_ch: ThreadChannel[Int]) -> Int {
+      #|  42
+      #|}
+      #|export let thread_worker_probe = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let target = "worker"
+      #|  let task = Threads::spawn(target, ch)
+      #|  Threads::wait(task)
+      #|}
+      #|0
+    ),
+  )
+  let result : Result[Bytes, WasmCompileError] = try? compile_module_component_with_opt_level(
+    db,
+    "threads_component_dynamic_worker_name_probe",
+    thread_backend_id="component-unsafe-os-threads",
+  )
+  match result {
+    Ok(_) => fail("expected string-literal worker name error")
+    Err(err) => {
+      let message = err.user_message()
+      assert_true(message.contains("Threads::spawn worker name"))
+      assert_true(message.contains("string literal"))
+    }
+  }
+}
+
+///|
+test "compile_module_wasm_no_dce lowers component unsafe shared Threads spawn wait with wait notify" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "threads_component_spawn_wait_probe",
+    (
+      #|let main = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let task = Threads::spawn("noop", ch)
+      #|  Threads::wait(task)
+      #|}
+      #|0
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(
+    db,
+    "threads_component_spawn_wait_probe",
+    thread_backend_id="component-unsafe-os-threads",
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_true(wasm_contains_atomic_subop(wasm_bytes, 0))
+  assert_true(wasm_contains_atomic_subop(wasm_bytes, 1))
+  assert_true(wasm_contains_atomic_subop(wasm_bytes, 0x11))
+  assert_true(wasm_contains_atomic_subop(wasm_bytes, 0x18))
+  assert_true(wasm_contains_atomic_subop(wasm_bytes, 0x1e))
+}
+
+///|
+test "compile_module_wasm_no_dce component unsafe exports shared indirect function table" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "threads_component_table_probe",
+    (
+      #|let main = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let task = Threads::spawn("noop", ch)
+      #|  Threads::wait(task)
+      #|}
+      #|0
+    ),
+  )
+  let wasm_bytes = compile_module_wasm_no_dce(
+    db,
+    "threads_component_table_probe",
+    thread_backend_id="component-unsafe-os-threads",
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_true(
+    bytes_contains_seq(wasm_bytes, [
+      b'\x04', b'\x06', b'\x01', b'\x65', b'\x70', b'\x03', b'\x01', b'\x01',
+    ]),
+  )
+  assert_true(
+    wasm_has_named_export_kind(wasm_bytes, "__indirect_function_table", 1),
+  )
+  assert_eq(wasm_first_global_flags(wasm_bytes), Some(3))
+}
+
+///|
+test "compile_module_wasm_no_dce rejects missing component unsafe thread worker" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "threads_missing_worker_probe",
+    (
+      #|let main = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let task = Threads::spawn("missing-worker", ch)
+      #|  Threads::wait(task)
+      #|}
+      #|0
+    ),
+  )
+  let result : Result[Bytes, WasmCompileError] = try? compile_module_wasm_no_dce(
+    db,
+    "threads_missing_worker_probe",
+    thread_backend_id="component-unsafe-os-threads",
+  )
+  match result {
+    Ok(_) => fail("expected missing worker compile error")
+    Err(WasmCompileError::Gen(err)) => {
+      let message = err.format_message()
+      assert_true(
+        message.contains(
+          "Threads::spawn worker function not found: missing-worker",
+        ),
+      )
+    }
+    Err(err) => fail("unexpected error: " + err.to_string())
+  }
+}
+
+///|
+test "compile_module_component emits component unsafe Threads spawn runtime imports" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "threads_component_spawn_component_probe",
+    (
+      #|export let thread_probe = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let task = Threads::spawn("noop", ch)
+      #|  Threads::wait(task)
+      #|}
+      #|let worker = (_ch: ThreadChannel[Int]) -> Int {
+      #|  42
+      #|}
+      #|export let thread_worker_probe = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let task = Threads::spawn("worker", ch)
+      #|  Threads::wait(task)
+      #|}
+      #|let worker_recv = (ch: ThreadChannel[Int]) -> Int with {Threads} {
+      #|  Threads::recv(ch) + 21
+      #|}
+      #|export let thread_worker_channel_probe = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let _ok = Threads::send(ch, 21)
+      #|  let task = Threads::spawn("worker_recv", ch)
+      #|  Threads::wait(task)
+      #|}
+      #|let worker_string_len = (ch: ThreadChannel[String]) -> Int with {Threads} {
+      #|  String::length(Threads::recv(ch))
+      #|}
+      #|export let thread_worker_string_channel_probe = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let _ok = Threads::send(ch, "hello")
+      #|  let task = Threads::spawn("worker_string_len", ch)
+      #|  Threads::wait(task)
+      #|}
+      #|let worker_string_echo = (ch: ThreadChannel[String]) -> String with {Threads} {
+      #|  Threads::recv(ch)
+      #|}
+      #|export let thread_worker_string_result_probe = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let _ok = Threads::send(ch, "hello")
+      #|  let task = Threads::spawn("worker_string_echo", ch)
+      #|  String::length(Threads::wait(task))
+      #|}
+      #|export let thread_alloc_probe = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let task = Threads::spawn("alloc-probe", ch)
+      #|  Threads::wait(task)
+      #|}
+      #|export let thread_alloc_many_probe = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let t1 = Threads::spawn("alloc-probe", ch)
+      #|  let t2 = Threads::spawn("alloc-probe", ch)
+      #|  let t3 = Threads::spawn("alloc-probe", ch)
+      #|  let t4 = Threads::spawn("alloc-probe", ch)
+      #|  Threads::wait(t1) + Threads::wait(t2) + Threads::wait(t3) + Threads::wait(t4)
+      #|}
+      #|0
+    ),
+  )
+  let component = compile_module_component_with_opt_level(
+    db,
+    "threads_component_spawn_component_probe",
+    thread_backend_id="component-unsafe-os-threads",
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_true(bytes_contains_ascii(component, "thread.spawn-indirect"))
+  assert_true(bytes_contains_ascii(component, "vibe:thread-runtime"))
+  assert_true(bytes_contains_ascii(component, "__indirect_function_table"))
+  assert_true(bytes_contains_ascii(component, "__vibe_thread_start"))
+  assert_true(bytes_contains_ascii(component, "thread-probe"))
+  assert_true(bytes_contains_ascii(component, "thread-worker-probe"))
+  assert_true(bytes_contains_ascii(component, "thread-worker-channel-probe"))
+  assert_true(bytes_contains_ascii(component, "thread-worker-string-channel-probe"))
+  assert_true(bytes_contains_ascii(component, "thread-worker-string-result-probe"))
+  assert_true(bytes_contains_ascii(component, "thread-alloc-probe"))
+  assert_true(bytes_contains_ascii(component, "thread-alloc-many-probe"))
+  assert_true(
+    bytes_contains_seq(component, [
+      b'\x08', b'\x04', b'\x01', b'\x41', b'\x00', b'\x00',
+    ]),
+  )
+  maybe_write_thread_component_probe(component) catch {
+    err =>
+      fail(
+        "failed to write VIBE_THREAD_COMPONENT_PROBE_OUT: " + err.to_string(),
+      )
+  }
+}
+
+///|
+test "compile_module_component skips thread runtime wrapper after DCE" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "threads_component_spawn_dce_probe",
+    (
+      #|let unused = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let task = Threads::spawn("noop", ch)
+      #|  Threads::wait(task)
+      #|}
+      #|0
+    ),
+  )
+  let component = compile_module_component_with_opt_level(
+    db,
+    "threads_component_spawn_dce_probe",
+    thread_backend_id="component-unsafe-os-threads",
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_false(bytes_contains_ascii(component, "thread.spawn-indirect"))
+  assert_false(bytes_contains_ascii(component, "vibe:thread-runtime"))
+}
+
+///|
 test "check_incompatible_server_builtins detects Http::listen" {
   let db = @runtime.VibeDb::new()
   db.set_source(
@@ -1454,6 +2084,31 @@ test "compile_module_wasm with enable_rc produces valid WASM" {
   assert_eq(wasm_bytes[1], b'\x61')
   assert_eq(wasm_bytes[2], b'\x73')
   assert_eq(wasm_bytes[3], b'\x6d')
+}
+
+///|
+test "compile_module_wasm rejects enable_rc with component unsafe threads" {
+  let db = @runtime.VibeDb::new()
+  let src =
+    #|let x = (1, 2, 3)
+    #|let y = x
+    #|y
+  db.set_source("main", src)
+  let result : Result[Bytes, WasmCompileError] = try? compile_module_wasm(
+    db,
+    "main",
+    enable_rc=true,
+    thread_backend_id="component-unsafe-os-threads",
+  )
+  match result {
+    Ok(_) => fail("expected RC/shared-thread backend rejection")
+    Err(err) => {
+      let message = err.user_message()
+      assert_true(message.contains("enable_rc"))
+      assert_true(message.contains("component-unsafe-os-threads"))
+      assert_true(message.contains("shared thread backend"))
+    }
+  }
 }
 
 ///|

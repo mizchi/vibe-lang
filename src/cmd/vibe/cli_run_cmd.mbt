@@ -734,6 +734,7 @@ fn compile_module_wasm_for_exec(
   entry : String,
   http_host_imports? : Bool = false,
   fs_host_imports? : Bool = false,
+  thread_backend_id? : String = "linear-local",
 ) -> Bytes raise @runtime_compile.WasmCompileError {
   @runtime_compile.compile_module_wasm_with_opt_level(
     db,
@@ -745,6 +746,7 @@ fn compile_module_wasm_for_exec(
     debug_errors=true,
     http_host_imports~,
     fs_host_imports~,
+    thread_backend_id~,
   )
 }
 
@@ -792,8 +794,12 @@ fn run_cmd_wasm_linked(
   resolved : String,
   parent : String,
   cache_dir : String,
+  unstable_threads? : Bool = false,
 ) -> Result[WasmRunValue, String] {
   let _ = entry_path
+  let features = @runtime.RuntimeFeatureFlags::with_threads(
+    false, unstable_threads, "linear-local",
+  )
   // Read cached linked imports
   let imports_cache = cache_dir + "/linked_imports.txt"
   let cached_text = @os_fs.read_file_to_string(imports_cache) catch {
@@ -818,6 +824,11 @@ fn run_cmd_wasm_linked(
       }
     }
   }
+  match
+    require_unstable_threads_for_cached_sources("run", features, hash_cache) {
+    Ok(_) => ()
+    Err(err) => return Err(err)
+  }
   // Verify all library .wasm exist
   let module_names : Map[String, Bool] = {}
   for li in cached_imports {
@@ -835,6 +846,10 @@ fn run_cmd_wasm_linked(
   }
   let raw_ast = @parser.parse_ast(source) catch {
     e => return Err(e.to_string())
+  }
+  match require_unstable_threads_for_module("run", features, raw_ast) {
+    Ok(_) => ()
+    Err(err) => return Err(err)
   }
   let desugared = @frontend.desugar_method_calls(raw_ast, {})
   let ast = @frontend.rewrite_effect_handles(desugared)
@@ -924,13 +939,15 @@ fn run_cmd_wasm_linked(
 fn run_cmd_wasm_backend_with_cache(
   cache : CliEntryDbCache,
   entry_path : String,
+  thread_backend_id? : String = "linear-local",
+  unstable_threads? : Bool = false,
 ) -> Result[WasmRunValue, String] {
   // Default: linked build (debug mode). Use VIBE_RUN_BACKEND=release for monolithic.
   let force_release = match @sys.get_env_var("VIBE_RUN_BACKEND") {
     Some("release") | Some("monolithic") => true
     _ => false
   }
-  if !force_release {
+  if !force_release && thread_backend_id == "linear-local" {
     let resolved = @loader.resolve_entry_path(entry_path)
     let parent = @vibe_fs.parent_path(resolved)
     let (vibe_root, cache_key) = find_vibe_cache_root(resolved)
@@ -938,7 +955,14 @@ fn run_cmd_wasm_backend_with_cache(
     let imports_cache = cache_dir + "/linked_imports.txt"
     // If cache exists, try linked fast path
     if @os_fs.path_exists(imports_cache) {
-      match run_cmd_wasm_linked(entry_path, resolved, parent, cache_dir) {
+      match
+        run_cmd_wasm_linked(
+          entry_path,
+          resolved,
+          parent,
+          cache_dir,
+          unstable_threads~,
+        ) {
         Ok(v) => return Ok(v)
         Err(_) => () // fall through
       }
@@ -950,6 +974,13 @@ fn run_cmd_wasm_backend_with_cache(
   let (db, entry) = match load_db_for_run_with_cache(cache, entry_path) {
     Err(err) => return Err("load error: " + err)
     Ok(v) => v
+  }
+  let features = @runtime.RuntimeFeatureFlags::with_threads(
+    false, unstable_threads, thread_backend_id,
+  )
+  match require_unstable_threads_for_entry("run", features, db, entry) {
+    Ok(_) => ()
+    Err(err) => return Err(err)
   }
   let (use_http_host_runner, use_fs_host_runner) = detect_exec_host_runner_requirements(
     db, entry,
@@ -970,7 +1001,9 @@ fn run_cmd_wasm_backend_with_cache(
   let parent = @vibe_fs.parent_path(entry)
   let stamp = @env.now().to_string() + "_" + vibe_getpid().to_string()
   let (run_cache_dir, cached_wasm_path, cached_hash_path) = run_monolithic_cache_paths(
-    entry, use_node_runner,
+    entry,
+    use_node_runner,
+    thread_backend_id~,
   )
   let current_hashes = collect_source_hash_cache(db, entry, true)
   let has_cached_wasm = @os_fs.path_exists(cached_wasm_path)
@@ -996,6 +1029,7 @@ fn run_cmd_wasm_backend_with_cache(
       entry,
       http_host_imports=use_node_runner,
       fs_host_imports=use_node_runner,
+      thread_backend_id~,
     ) catch {
       e => return Err("compile wasm error: " + e.user_message())
     }
@@ -1105,7 +1139,7 @@ fn print_wasm_run_value(value : WasmRunValue) -> Unit {
 fn run_cmd(
   args : Array[String],
   _syntax_mode : @runtime.ParserMode,
-  _features : @runtime.RuntimeFeatureFlags,
+  features : @runtime.RuntimeFeatureFlags,
   enable_llm~ : Bool,
 ) -> Unit {
   @runtime_compile.init_hooks()
@@ -1125,7 +1159,7 @@ fn run_cmd(
   with_profile(profile_path, fn() {
     let use_session_http = cli_use_session_http()
     if use_session_http {
-      match run_entry_via_session(entry_path, _features) {
+      match run_entry_via_session(entry_path, features) {
         Ok(result) => {
           print_wasm_run_value(result)
           return
@@ -1133,7 +1167,13 @@ fn run_cmd(
         Err(_) => ()
       }
     }
-    match run_cmd_wasm_backend(entry_path) {
+    match
+      run_cmd_wasm_backend_with_cache(
+        CliEntryDbCache::new(),
+        entry_path,
+        thread_backend_id=features.thread_backend_id(),
+        unstable_threads=features.is_unstable_threads_enabled(),
+      ) {
       Ok(result) => {
         print_wasm_run_value(result)
         maybe_create_linked_cache_background(entry_path)

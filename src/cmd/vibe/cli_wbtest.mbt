@@ -554,6 +554,51 @@ test "cli runtime flags parse with unstable async" {
 }
 
 ///|
+test "cli runtime flags parse unstable threads backend" {
+  let parsed = parse_cli_runtime_args(
+    [
+      "--unstable-threads", "--thread-backend", "component-unsafe-os-threads", "main.vibe",
+    ],
+    "run",
+  )
+  match parsed {
+    Ok(opts) => {
+      assert_true(opts.unstable_threads)
+      assert_eq(opts.thread_backend_id, "component-unsafe-os-threads")
+      @debug.assert_eq(opts.cmd_args, ["main.vibe"])
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "cli runtime flags reject unknown thread backend" {
+  let parsed = parse_cli_runtime_args(
+    ["--unstable-threads", "--thread-backend=unknown", "main.vibe"],
+    "run",
+  )
+  match parsed {
+    Ok(_) => fail("expected thread backend error")
+    Err(msg) => assert_eq(msg, "run: unknown thread backend `unknown`")
+  }
+}
+
+///|
+test "cli dispatch thread backend applies to compile command" {
+  let parsed = parse_cli_dispatch_args([
+    "vibe", "--thread-backend=component-unsafe-os-threads", "compile", "main.vibe",
+  ])
+  match parsed {
+    Ok(opts) => {
+      assert_eq(opts.cmd, "compile")
+      assert_eq(opts.thread_backend_id, "component-unsafe-os-threads")
+      @debug.assert_eq(opts.cmd_args, ["main.vibe"])
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
 test "test cmd normalize jobs uses bounded auto default for non-positive input" {
   let prev = @sys.get_env_var("VIBE_TEST_JOBS")
   @sys.unset_env_var("VIBE_TEST_JOBS")
@@ -570,7 +615,9 @@ test "test cmd normalize jobs keeps explicit positive value" {
 
 ///|
 test "cli dispatch args parse leading unstable flags" {
-  let parsed = parse_cli_dispatch_args(["vibe", "--unstable-async", "run", "main.vibe"])
+  let parsed = parse_cli_dispatch_args([
+    "vibe", "--unstable-async", "run", "main.vibe",
+  ])
   match parsed {
     Ok(v) => {
       assert_eq(v.cmd, "run")
@@ -1780,7 +1827,8 @@ test "std layer classification covers primary modules" {
   }
   assert_eq(ref_layer, "ref-model")
 
-  let effect_layer = match std_layer_for_path("/tmp/repo/vibe/prelude/io.vibe") {
+  let effect_layer = match
+    std_layer_for_path("/tmp/repo/vibe/prelude/io.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
@@ -3792,6 +3840,64 @@ test "save source hashes includes entry for linked cache" {
 }
 
 ///|
+test "cached source hashes detect Threads builtins in dependencies" {
+  @runtime_compile.init_hooks()
+  let root = wbtest_make_temp_dir("cached_source_hashes_threads")
+  let cache_dir = root + "/.vibe/debug/test"
+  let hash_path = cache_dir + "/source_hashes.txt"
+  let entry_path = root + "/main.vibe"
+  let dep_path = root + "/dep.vibe"
+  let entry_source = "import ./dep.vibe { dep }\nlet main = dep\n"
+  let dep_source =
+    #|export let dep = () -> String with {Threads} {
+    #|  Threads::recv(Threads::channel_new(1))
+    #|}
+  let db = @runtime.VibeDb::new()
+  db.set_source(entry_path, entry_source)
+  db.set_source(dep_path, dep_source)
+  @os_fs.write_string_to_file(entry_path, entry_source) catch {
+    e => fail("write entry failed: " + e.to_string())
+  }
+  @os_fs.write_string_to_file(dep_path, dep_source) catch {
+    e => fail("write dep failed: " + e.to_string())
+  }
+  let _ = c_system(
+    system_command_bytes("mkdir -p " + shell_quote_command_arg(cache_dir)),
+  )
+  save_source_hashes(db, entry_path, cache_dir, hash_path)
+  match cached_source_hashes_use_threads_builtins(hash_path) {
+    Ok(true) => ()
+    Ok(false) => fail("expected cached dependency Threads::* detection")
+    Err(_) => fail("expected readable cached source hashes")
+  }
+  match
+    require_unstable_threads_for_cached_sources(
+      "run",
+      @runtime.RuntimeFeatureFlags::stable(),
+      hash_path,
+    ) {
+    Ok(_) => fail("expected cached thread feature gate error")
+    Err(err) => assert_eq(err, "run: Threads::* requires --unstable-threads")
+  }
+  match
+    require_unstable_threads_for_cached_sources(
+      "run",
+      @runtime.RuntimeFeatureFlags::unstable_threads_only(),
+      hash_path,
+    ) {
+    Ok(_) => ()
+    Err(err) => fail("unexpected cached thread feature gate error: " + err)
+  }
+  wbtest_remove_if_exists(hash_path)
+  wbtest_remove_if_exists(cache_dir)
+  wbtest_remove_if_exists(root + "/.vibe/debug")
+  wbtest_remove_if_exists(root + "/.vibe")
+  wbtest_remove_if_exists(dep_path)
+  wbtest_remove_if_exists(entry_path)
+  wbtest_remove_if_exists(root)
+}
+
+///|
 test "background linked cache defaults off" {
   assert_false(cli_use_background_linked_cache_with(None))
 }
@@ -3814,6 +3920,22 @@ test "run monolithic cache paths separate http mode" {
 }
 
 ///|
+test "run monolithic cache paths separate thread backend" {
+  let paths1 = run_monolithic_cache_paths("/tmp/project/src/main.vibe", false)
+  let paths2 = run_monolithic_cache_paths(
+    "/tmp/project/src/main.vibe",
+    false,
+    thread_backend_id="component-unsafe-os-threads",
+  )
+  assert_true(paths1.1.has_suffix("/app.wasm"))
+  assert_true(paths2.1.has_suffix("/app_component-unsafe-os-threads.wasm"))
+  assert_true(
+    paths2.2.has_suffix("/source_hashes_component-unsafe-os-threads.txt"),
+  )
+  assert_true(paths1.1 != paths2.1)
+}
+
+///|
 test "compiled test batch cache paths separate http mode" {
   let paths1 = compiled_test_batch_cache_paths(
     "/tmp/project/src/main_test.vibe", false,
@@ -3825,6 +3947,24 @@ test "compiled test batch cache paths separate http mode" {
   assert_true(paths1.1.has_suffix("/batch.wasm"))
   assert_true(paths1.2.has_suffix("/source_hashes.txt"))
   assert_true(paths2.1.has_suffix("/batch_http.wasm"))
+  assert_true(paths1.1 != paths2.1)
+}
+
+///|
+test "compiled test batch cache paths separate thread backend" {
+  let paths1 = compiled_test_batch_cache_paths(
+    "/tmp/project/src/main_test.vibe", false,
+  )
+  let paths2 = compiled_test_batch_cache_paths(
+    "/tmp/project/src/main_test.vibe",
+    false,
+    thread_backend_id="component-unsafe-os-threads",
+  )
+  assert_true(paths1.1.has_suffix("/batch.wasm"))
+  assert_true(paths2.1.has_suffix("/batch_component-unsafe-os-threads.wasm"))
+  assert_true(
+    paths2.2.has_suffix("/source_hashes_component-unsafe-os-threads.txt"),
+  )
   assert_true(paths1.1 != paths2.1)
 }
 
@@ -3925,6 +4065,18 @@ test "session http spawn command exports worker token" {
   assert_true(cmd.contains("--unstable-async"))
   assert_true(cmd.contains("/proc/$$/fd/*"))
   assert_true(cmd.contains("eval \"exec $n<&-\""))
+  let thread_cmd = build_session_http_spawn_command(
+    "/tmp/vibe.exe",
+    36124,
+    @runtime.RuntimeFeatureFlags::with_threads(
+      false, true, "component-unsafe-os-threads",
+    ),
+    "worker-token",
+    424242,
+  )
+  assert_true(thread_cmd.contains("--unstable-threads"))
+  assert_true(thread_cmd.contains("--thread-backend"))
+  assert_true(thread_cmd.contains("component-unsafe-os-threads"))
 }
 
 ///|
@@ -4119,6 +4271,93 @@ test "compiled exec detects modules without http builtins" {
   )
   let ast = db.ast("main")
   assert_false(module_uses_http_builtins(ast))
+}
+
+///|
+test "thread feature gate detects Threads builtins" {
+  let source =
+    #|let main = () -> String with {Threads} {
+    #|  let ch = Threads::channel_new(1)
+    #|  let _ok = Threads::send(ch, "hello")
+    #|  Threads::recv(ch)
+    #|}
+  let ast = @parser.parse_ast(source) catch {
+    e => fail("parse error: " + e.to_string())
+  }
+  assert_true(module_uses_threads_builtins(ast))
+}
+
+///|
+test "thread feature gate rejects Threads builtins without unstable flag" {
+  let db = @runtime.VibeDb::new()
+  let source =
+    #|let main = () -> String with {Threads} {
+    #|  let ch = Threads::channel_new(1)
+    #|  Threads::recv(ch)
+    #|}
+  db.set_source("main", source)
+  match
+    require_unstable_threads_for_entry(
+      "compile",
+      @runtime.RuntimeFeatureFlags::stable(),
+      db,
+      "main",
+    ) {
+    Ok(_) => fail("expected thread feature gate error")
+    Err(err) =>
+      assert_eq(err, "compile: Threads::* requires --unstable-threads")
+  }
+}
+
+///|
+test "thread feature gate rejects imported Threads builtins without unstable flag" {
+  @runtime_compile.init_hooks()
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "./worker.vibe",
+    (
+      #|export let worker = () -> String with {Threads} {
+      #|  Threads::recv(Threads::channel_new(1))
+      #|}
+    ),
+  )
+  db.set_source(
+    "main",
+    (
+      #|import ./worker.vibe { worker }
+      #|let main = worker
+    ),
+  )
+  match
+    require_unstable_threads_for_entry(
+      "run",
+      @runtime.RuntimeFeatureFlags::stable(),
+      db,
+      "main",
+    ) {
+    Ok(_) => fail("expected imported thread feature gate error")
+    Err(err) => assert_eq(err, "run: Threads::* requires --unstable-threads")
+  }
+}
+
+///|
+test "thread feature gate allows Threads builtins with unstable flag" {
+  let db = @runtime.VibeDb::new()
+  let source =
+    #|let main = () -> Int with {Threads} {
+    #|  Threads::wait(Threads::spawn("worker", Threads::channel_new(1)))
+    #|}
+  db.set_source("main", source)
+  match
+    require_unstable_threads_for_entry(
+      "compile",
+      @runtime.RuntimeFeatureFlags::unstable_threads_only(),
+      db,
+      "main",
+    ) {
+    Ok(_) => ()
+    Err(err) => fail("unexpected thread feature gate error: " + err)
+  }
 }
 
 ///|

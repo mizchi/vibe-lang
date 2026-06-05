@@ -217,22 +217,33 @@ fn source_hash_cache_matches(
 }
 
 ///|
+fn thread_backend_cache_suffix(thread_backend_id : String) -> String {
+  if thread_backend_id == "linear-local" {
+    ""
+  } else {
+    "_" + thread_backend_id
+  }
+}
+
+///|
 fn run_monolithic_cache_paths(
   entry_path : String,
   use_http_host_runner : Bool,
+  thread_backend_id? : String = "linear-local",
 ) -> (String, String, String) {
   let resolved = @loader.resolve_entry_path(entry_path)
   let (vibe_root, cache_key) = find_vibe_cache_root(resolved)
   let cache_dir = vibe_root + "/run/" + cache_key
+  let suffix = thread_backend_cache_suffix(thread_backend_id)
   let wasm_name = if use_http_host_runner {
-    "app_http.wasm"
+    "app_http" + suffix + ".wasm"
   } else {
-    "app.wasm"
+    "app" + suffix + ".wasm"
   }
   let hash_name = if use_http_host_runner {
-    "source_hashes_http.txt"
+    "source_hashes_http" + suffix + ".txt"
   } else {
-    "source_hashes.txt"
+    "source_hashes" + suffix + ".txt"
   }
   (cache_dir, cache_dir + "/" + wasm_name, cache_dir + "/" + hash_name)
 }
@@ -241,19 +252,21 @@ fn run_monolithic_cache_paths(
 fn compiled_test_batch_cache_paths(
   entry_path : String,
   use_http_host_runner : Bool,
+  thread_backend_id? : String = "linear-local",
 ) -> (String, String, String) {
   let resolved = @loader.resolve_entry_path(entry_path)
   let (vibe_root, cache_key) = find_vibe_cache_root(resolved)
   let cache_dir = vibe_root + "/test/" + cache_key
+  let suffix = thread_backend_cache_suffix(thread_backend_id)
   let wasm_name = if use_http_host_runner {
-    "batch_http.wasm"
+    "batch_http" + suffix + ".wasm"
   } else {
-    "batch.wasm"
+    "batch" + suffix + ".wasm"
   }
   let hash_name = if use_http_host_runner {
-    "source_hashes_http.txt"
+    "source_hashes_http" + suffix + ".txt"
   } else {
-    "source_hashes.txt"
+    "source_hashes" + suffix + ".txt"
   }
   (cache_dir, cache_dir + "/" + wasm_name, cache_dir + "/" + hash_name)
 }

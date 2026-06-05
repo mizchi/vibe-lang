@@ -37,6 +37,74 @@ fn call_split_test_array(items : Array[@core.Expr]) -> @core.Expr {
 }
 
 ///|
+fn call_split_bytes_contains_ascii(bytes : Bytes, needle : String) -> Bool {
+  let hay_len = bytes.length()
+  let needle_len = needle.length()
+  if needle_len == 0 {
+    return true
+  }
+  let limit = hay_len - needle_len
+  if limit < 0 {
+    return false
+  }
+  for i in 0..<=limit {
+    let mut ok = true
+    for j in 0..<needle_len {
+      if bytes[i + j].to_int() != needle[j].to_int() {
+        ok = false
+        break
+      }
+    }
+    if ok {
+      return true
+    }
+  }
+  false
+}
+
+///|
+fn call_split_bytes_contains_atomic_subop(
+  bytes : Bytes,
+  subop : Int,
+) -> Bool {
+  let arr = bytes.to_array()
+  if arr.length() < 2 {
+    return false
+  }
+  for i in 0..<(arr.length() - 1) {
+    if arr[i] == b'\xfe' {
+      let mut shift = 0
+      let mut value = 0
+      let mut pos = i + 1
+      while pos < arr.length() {
+        let byte = arr[pos].to_int()
+        value = value | ((byte & 0x7f) << shift)
+        pos += 1
+        if (byte & 0x80) == 0 {
+          break
+        }
+        shift += 7
+      }
+      if value == subop {
+        return true
+      }
+    }
+  }
+  false
+}
+
+///|
+fn call_split_bytes_contains_opcode(bytes : Bytes, opcode : Byte) -> Bool {
+  let arr = bytes.to_array()
+  for b in arr {
+    if b == opcode {
+      return true
+    }
+  }
+  false
+}
+
+///|
 test "extract_positional_exprs_with_arity returns positional args" {
   let args = [
     call_split_test_arg(call_split_test_int(1L)),
@@ -152,6 +220,183 @@ test "compile_call_builtin_pre_user keeps user fn priority for fallback names" {
     err => fail(err.to_string())
   }
   assert_false(handled)
+}
+
+///|
+test "wasm emit options carry thread backend id" {
+  let options = wasm_emit_options(
+    thread_backend_id="component-unsafe-os-threads",
+  )
+  assert_eq(options.thread_backend_id, "component-unsafe-os-threads")
+}
+
+///|
+test "wasm emit options carry thread component runtime imports" {
+  let options = wasm_emit_options(thread_component_runtime_imports=true)
+  assert_true(options.thread_component_runtime_imports)
+}
+
+///|
+test "component thread runtime import mode emits spawn-indirect core import" {
+  let ast = try! @parser.parse_ast(
+    (
+      #|let main = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let task = Threads::spawn("noop", ch)
+      #|  Threads::wait(task)
+      #|}
+      #|0
+    ),
+  )
+  let wasm = emit_module_wasm_with_options(
+    ast,
+    wasm_emit_options(
+      thread_backend_id="component-unsafe-os-threads",
+      thread_component_runtime_imports=true,
+    ),
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_true(call_split_bytes_contains_ascii(wasm, "thread.spawn-indirect"))
+  assert_true(call_split_bytes_contains_ascii(wasm, "vibe:thread-runtime"))
+  assert_true(
+    call_split_bytes_contains_ascii(wasm, "__indirect_function_table"),
+  )
+}
+
+///|
+test "compile_call_builtin_pre_user rejects unconnected Threads backend" {
+  let ctx = CodegenCtx::new(false, thread_backend_id="wasi-threads")
+  let buf = ByteBuf::new()
+  let result : Result[Bool, WasmGenError] = try? compile_call_builtin_pre_user(
+    ctx,
+    buf,
+    "Threads::spawn",
+    [
+      call_split_test_arg(call_split_test_string("worker")),
+      call_split_test_arg(call_split_test_int(0L)),
+    ],
+    false,
+  )
+  match result {
+    Ok(_) => fail("expected Unsupported")
+    Err(WasmGenError::Unsupported(message)) =>
+      assert_true(
+        message.contains("Threads::spawn has no compiled thread lowering"),
+      )
+    Err(other) => fail("unexpected error: \{other.to_string()}")
+  }
+}
+
+///|
+test "compile_call_builtin_pre_user lowers linear-local Threads channel builtins" {
+  let cases : Array[(String, Array[@core.CallArg])] = [
+    ("Threads::channel_new", [call_split_test_arg(call_split_test_int(1L))]),
+    (
+      "Threads::send",
+      [
+        call_split_test_arg(call_split_test_int(16L)),
+        call_split_test_arg(call_split_test_string("msg")),
+      ],
+    ),
+    ("Threads::recv", [call_split_test_arg(call_split_test_int(16L))]),
+    (
+      "Threads::spawn",
+      [
+        call_split_test_arg(call_split_test_string("noop")),
+        call_split_test_arg(call_split_test_int(16L)),
+      ],
+    ),
+    ("Threads::wait", [call_split_test_arg(call_split_test_int(1L))]),
+  ]
+  for case in cases {
+    let (name, args) = case
+    let ctx = CodegenCtx::new(false, thread_backend_id="linear-local")
+    let buf = ByteBuf::new()
+    let handled = compile_call_builtin_pre_user(ctx, buf, name, args, false) catch {
+      err => fail("\{name}: \{err.to_string()}")
+    }
+    assert_true(handled)
+    assert_true(buf.len() > 0)
+  }
+}
+
+///|
+test "compile_call_builtin_pre_user lowers shared-atomic Threads spawn wait" {
+  let cases : Array[(String, Array[@core.CallArg])] = [
+    (
+      "Threads::spawn",
+      [
+        call_split_test_arg(call_split_test_string("noop")),
+        call_split_test_arg(call_split_test_int(16L)),
+      ],
+    ),
+    ("Threads::wait", [call_split_test_arg(call_split_test_int(1L))]),
+  ]
+  for case in cases {
+    let (name, args) = case
+    let ctx = CodegenCtx::new(
+      false,
+      thread_backend_id="component-unsafe-os-threads",
+    )
+    let buf = ByteBuf::new()
+    let handled = compile_call_builtin_pre_user(ctx, buf, name, args, false) catch {
+      err => fail("\{name}: \{err.to_string()}")
+    }
+    assert_true(handled)
+    assert_true(buf.len() > 0)
+  }
+}
+
+///|
+test "shared thread builder grow avoids heap tip in-place path" {
+  let ctx = CodegenCtx::new(
+    false,
+    thread_backend_id="component-unsafe-os-threads",
+  )
+  ctx.use_heap_global = true
+  ctx.heap_global = 0
+  ctx.heap_local = alloc_temp_local(ctx)
+  let ptr_local = alloc_temp_local(ctx)
+  let buf = ByteBuf::new()
+  emit_builder_grow_check(ctx, buf, ptr_local, 4)
+  let bytes = buf.to_bytes()
+  assert_true(call_split_bytes_contains_atomic_subop(bytes, 0x1e))
+  assert_false(call_split_bytes_contains_opcode(bytes, b'\x46'))
+}
+
+///|
+test "shared thread builder bulk grow avoids heap tip in-place path" {
+  let ctx = CodegenCtx::new(
+    false,
+    thread_backend_id="component-unsafe-os-threads",
+  )
+  ctx.use_heap_global = true
+  ctx.heap_global = 0
+  ctx.heap_local = alloc_temp_local(ctx)
+  let ptr_local = alloc_temp_local(ctx)
+  let additional_count_local = alloc_temp_local(ctx)
+  let buf = ByteBuf::new()
+  emit_builder_bulk_grow_check(ctx, buf, ptr_local, additional_count_local, 4)
+  let bytes = buf.to_bytes()
+  assert_true(call_split_bytes_contains_atomic_subop(bytes, 0x1e))
+  assert_false(call_split_bytes_contains_opcode(bytes, b'\x46'))
+}
+
+///|
+test "shared thread cabi_realloc uses cmpxchg for dynamic alignment" {
+  let ctx = CodegenCtx::new(
+    false,
+    thread_backend_id="component-unsafe-os-threads",
+  )
+  ctx.use_heap_global = true
+  ctx.heap_global = 0
+  let func = compile_cabi_realloc_function(ctx) catch {
+    err => fail(err.to_string())
+  }
+  let bytes = Bytes::from_array(func.body)
+  assert_true(call_split_bytes_contains_atomic_subop(bytes, 0x48))
+  assert_false(call_split_bytes_contains_atomic_subop(bytes, 0x1e))
 }
 
 ///|

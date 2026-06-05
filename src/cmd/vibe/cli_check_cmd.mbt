@@ -161,6 +161,7 @@ fn run_check_entry_with_cache(
   cache : CliEntryDbCache,
   entry_path : String,
   check_debug : Bool,
+  features? : @runtime.RuntimeFeatureFlags = @runtime.RuntimeFeatureFlags::stable(),
 ) -> CliCheckReport {
   let messages : Array[String] = []
   let start_total = @bench.monotonic_clock_start()
@@ -220,6 +221,24 @@ fn run_check_entry_with_cache(
           }
       }
       let load_us = elapsed_us_from(start_load)
+      match require_unstable_threads_for_entry("check", features, db, entry) {
+        Ok(_) => ()
+        Err(err) => {
+          let total_us = elapsed_us_from(start_total)
+          messages.push(err)
+          return CliCheckReport::{
+            file: entry_path,
+            resolved_entry: entry,
+            graph_head: Some(graph_head),
+            error_count: 1,
+            warning_count: 0,
+            load_us,
+            type_us: 0,
+            total_us,
+            messages,
+          }
+        }
+      }
       let start_type = @bench.monotonic_clock_start()
       if check_debug {
         println("[check_debug] starting db.types: \{entry}")
@@ -404,7 +423,10 @@ fn run_selfhost_check(
 }
 
 ///|
-fn check_cmd(args : Array[String]) -> Unit {
+fn check_cmd(
+  args : Array[String],
+  features? : @runtime.RuntimeFeatureFlags = @runtime.RuntimeFeatureFlags::stable(),
+) -> Unit {
   if has_help_flag(args) {
     print_check_help()
     return
@@ -438,7 +460,9 @@ fn check_cmd(args : Array[String]) -> Unit {
     return
   }
   with_profile(profile_path, fn() {
-    check_cmd_body(check_args, profile_tsv, profile_callstack, builtin_contract)
+    check_cmd_body(
+      check_args, profile_tsv, profile_callstack, builtin_contract, features,
+    )
   })
 }
 
@@ -448,6 +472,7 @@ fn check_cmd_body(
   profile_tsv : String?,
   profile_callstack : String?,
   builtin_contract : String,
+  features : @runtime.RuntimeFeatureFlags,
 ) -> Unit {
   if profile_callstack is Some(_) {
     @profiler.profiler_set_enabled(true)
@@ -466,12 +491,13 @@ fn check_cmd_body(
   let use_session_http = cli_use_session_http()
   for entry_path in check_args {
     let report = if use_session_http {
-      match run_check_entry_via_session(entry_path) {
+      match run_check_entry_via_session(entry_path, features) {
         Ok(v) => v
-        Err(_) => run_check_entry_with_cache(cache, entry_path, check_debug)
+        Err(_) =>
+          run_check_entry_with_cache(cache, entry_path, check_debug, features~)
       }
     } else {
-      run_check_entry_with_cache(cache, entry_path, check_debug)
+      run_check_entry_with_cache(cache, entry_path, check_debug, features~)
     }
     print_cli_check_report(report)
     total_errors += report.error_count

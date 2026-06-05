@@ -55,6 +55,9 @@ pub fn codegen_registered_builtin_names() -> Array[String] {
      "Socket::tcp_connect", "Socket::tcp_read", "Socket::tcp_write", "Socket::tcp_close",
     // Json (host imports when fs_host_imports is set)
      "Json::parse", "Json::stringify", "Json::get", "Json::string",
+    // Threads (experimental stateful codegen gate)
+     "Threads::channel_new", "Threads::send", "Threads::recv", "Threads::spawn",
+    "Threads::wait",
   ]
 }
 
@@ -72,5 +75,7 @@ pub fn codegen_runtime_fallback_builtin_names() -> Array[String] {
     "Fs::mkdir_p", "Fs::getcwd", "Fs::remove", "Fs::rename", "Fs::append",
     // LLM / interactive
      "Llm::complete", "Rlm::run", "Rlm::finalize",
+    // Threads diagnostics are checker-declared but not lowered by wasm codegen.
+     "Threads::probe_wat", "Threads::runtime_hints",
   ]
 }

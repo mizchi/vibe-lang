@@ -54,6 +54,9 @@ let component_section_module : Byte = b'\x01' // section_1: core module
 let component_section_core_instance : Byte = b'\x02' // core instance
 
 ///|
+let component_section_core_type : Byte = b'\x03' // core type section
+
+///|
 let component_section_alias : Byte = b'\x06' // alias
 
 ///|
@@ -71,6 +74,9 @@ let component_section_export : Byte = b'\x0b' // component export section
 ///|
 /// Core sort values for alias
 let core_sort_func : Byte = b'\x00'
+
+///|
+let core_sort_table : Byte = b'\x01'
 
 ///|
 let core_sort_mem : Byte = b'\x02'
@@ -178,6 +184,35 @@ fn emit_core_instance_instantiate_section(
 }
 
 ///|
+fn emit_core_instance_instantiate_section_with_instance_indices(
+  buf : Array[Byte],
+  module_index : Int,
+  module_names : Array[String],
+  instance_indices : Array[Int],
+) -> Unit {
+  buf.push(component_section_core_instance)
+  let content : Array[Byte] = []
+  component_write_uleb128(content, 1)
+  content.push(b'\x00') // instantiate
+  component_write_uleb128(content, module_index)
+  component_write_uleb128(content, module_names.length())
+  for i, module_name in module_names {
+    component_write_name(content, module_name)
+    content.push(component_instantiation_arg_instance)
+    let instance_idx = if i < instance_indices.length() {
+      instance_indices[i]
+    } else {
+      i
+    }
+    component_write_uleb128(content, instance_idx)
+  }
+  component_write_uleb128(buf, content.length())
+  for b in content {
+    buf.push(b)
+  }
+}
+
+///|
 fn emit_core_instance_from_exports_section(
   buf : Array[Byte],
   module_bindings : Array[Array[CoreImportBinding]],
@@ -195,6 +230,33 @@ fn emit_core_instance_from_exports_section(
       component_write_name(content, binding.func_name)
       content.push(core_sort_func)
       component_write_uleb128(content, binding.func_idx)
+    }
+  }
+  component_write_uleb128(buf, content.length())
+  for b in content {
+    buf.push(b)
+  }
+}
+
+///|
+fn emit_core_instance_from_export_entries_section(
+  buf : Array[Byte],
+  instances : Array[Array[(String, Byte, Int)]],
+) -> Unit {
+  if instances.length() == 0 {
+    return
+  }
+  buf.push(component_section_core_instance)
+  let content : Array[Byte] = []
+  component_write_uleb128(content, instances.length())
+  for entries in instances {
+    content.push(b'\x01') // from exports
+    component_write_uleb128(content, entries.length())
+    for entry in entries {
+      let (name, sort, idx) = entry
+      component_write_name(content, name)
+      content.push(sort)
+      component_write_uleb128(content, idx)
     }
   }
   component_write_uleb128(buf, content.length())
@@ -381,8 +443,15 @@ fn parse_core_import_funcs(core_wasm : Bytes) -> Array[CoreImportFunc] {
           if j >= section_end {
             break
           }
-          let form = bytes[j].to_int()
+          let mut form = bytes[j].to_int()
           j += 1
+          if form == 0x65 {
+            if j >= section_end {
+              break
+            }
+            form = bytes[j].to_int()
+            j += 1
+          }
           if form != 0x60 {
             break
           }
@@ -448,8 +517,13 @@ fn parse_core_import_funcs(core_wasm : Bytes) -> Array[CoreImportFunc] {
 ///|
 priv struct CoreExportFunc {
   name : String
-  _func_idx : Int
   sig : CoreFuncSig
+}
+
+///|
+priv struct ComponentLiftExport {
+  name : String
+  sig : ComponentFuncSig
 }
 
 ///|
@@ -532,8 +606,15 @@ fn parse_core_export_funcs(core_wasm : Bytes) -> Array[CoreExportFunc] {
           if j >= section_end {
             break
           }
-          let form = bytes[j].to_int()
+          let mut form = bytes[j].to_int()
           j += 1
+          if form == 0x65 {
+            if j >= section_end {
+              break
+            }
+            form = bytes[j].to_int()
+            j += 1
+          }
           if form != 0x60 {
             break
           }
@@ -635,11 +716,7 @@ fn parse_core_export_funcs(core_wasm : Bytes) -> Array[CoreExportFunc] {
               }
             }
             if type_idx >= 0 && type_idx < type_sigs.length() {
-              exports.push(CoreExportFunc::{
-                name,
-                _func_idx: index,
-                sig: type_sigs[type_idx],
-              })
+              exports.push(CoreExportFunc::{ name, sig: type_sigs[type_idx] })
             }
           }
         }
@@ -647,6 +724,33 @@ fn parse_core_export_funcs(core_wasm : Bytes) -> Array[CoreExportFunc] {
       _ => ()
     }
     i = section_end
+  }
+  exports
+}
+
+///|
+fn is_component_internal_core_func_export(name : String) -> Bool {
+  name == "_start" ||
+  name == "_vibe_run_tagged" ||
+  name == "cabi_realloc" ||
+  name == "vibe_http_host_string_new" ||
+  name.has_prefix("__")
+}
+
+///|
+fn collect_liftable_core_func_exports(
+  core_wasm : Bytes,
+) -> Array[ComponentLiftExport] {
+  let exports : Array[ComponentLiftExport] = []
+  for core_export in parse_core_export_funcs(core_wasm) {
+    if is_component_internal_core_func_export(core_export.name) {
+      continue
+    }
+    match component_sig_from_core(core_export.sig) {
+      Some(sig) =>
+        exports.push(ComponentLiftExport::{ name: core_export.name, sig })
+      None => ()
+    }
   }
   exports
 }
@@ -690,6 +794,10 @@ fn build_core_import_plan(core_wasm : Bytes) -> CoreImportPlan {
   let module_idx_by_name : Map[String, Int] = {}
   let seen_import_names : Map[String, Bool] = {}
   for import_func in parsed_imports {
+    if import_func.module_name == "" &&
+      import_func.func_name == "thread.spawn-indirect" {
+      continue
+    }
     let import_key = import_func.module_name + "||" + import_func.func_name
     if seen_import_names.contains(import_key) {
       continue
@@ -772,6 +880,26 @@ fn emit_component_type_section_for_sigs(
   for sig in sigs {
     emit_component_func_type(content, sig)
   }
+  component_write_uleb128(buf, content.length())
+  for b in content {
+    buf.push(b)
+  }
+}
+
+///|
+/// Emit a component core type section for a shared thread start function.
+/// Binary shape: (type (sub final shared (func (param i32)))).
+fn emit_component_core_type_section_shared_start_func(
+  buf : Array[Byte],
+) -> Unit {
+  buf.push(component_section_core_type)
+  let content : Array[Byte] = []
+  component_write_uleb128(content, 1)
+  content.push(b'\x65') // shared subtype
+  content.push(b'\x60') // core func type
+  component_write_uleb128(content, 1)
+  content.push(b'\x7f') // i32
+  component_write_uleb128(content, 0)
   component_write_uleb128(buf, content.length())
   for b in content {
     buf.push(b)
@@ -1654,27 +1782,116 @@ fn emit_canon_lift_func_with_opts(
 }
 
 ///|
-fn emit_component_type_section_run_result(buf : Array[Byte]) -> Unit {
-  emit_component_type_section_for_sigs(buf, [
+fn emit_component_type_section_run_and_exports(
+  buf : Array[Byte],
+  exports : Array[ComponentLiftExport],
+) -> Unit {
+  let sigs : Array[ComponentFuncSig] = [
     ComponentFuncSig::{
       params: [],
       results: [component_valtype_s64],
       param_names: [],
       is_async: false,
     },
-  ])
+  ]
+  for lift_export in exports {
+    sigs.push(lift_export.sig)
+  }
+  emit_component_type_section_for_sigs(buf, sigs)
 }
 
 ///|
-fn emit_canon_lift_section(
+fn core_wasm_write_section(
   buf : Array[Byte],
-  core_func_idx : Int,
-  type_idx : Int,
+  section_id : Byte,
+  content : Array[Byte],
+) -> Unit {
+  buf.push(section_id)
+  component_write_uleb128(buf, content.length())
+  for b in content {
+    buf.push(b)
+  }
+}
+
+///|
+fn generate_component_thread_runtime_core_module() -> Bytes {
+  let buf : Array[Byte] = []
+  for
+    b in [
+      b'\x00', b'\x61', b'\x73', b'\x6d', b'\x01', b'\x00', b'\x00', b'\x00',
+    ] {
+    buf.push(b)
+  }
+  let table_sec : Array[Byte] = []
+  component_write_uleb128(table_sec, 1)
+  table_sec.push(b'\x65') // shared ref type
+  table_sec.push(b'\x70') // funcref
+  table_sec.push(b'\x03') // limits: min + max + shared
+  component_write_uleb128(table_sec, 1)
+  component_write_uleb128(table_sec, 1)
+  core_wasm_write_section(buf, b'\x04', table_sec)
+  let mem_sec : Array[Byte] = []
+  component_write_uleb128(mem_sec, 1)
+  mem_sec.push(b'\x03') // limits: min + max + shared
+  component_write_uleb128(mem_sec, 1024)
+  component_write_uleb128(mem_sec, 1024)
+  core_wasm_write_section(buf, b'\x05', mem_sec)
+  let export_sec : Array[Byte] = []
+  component_write_uleb128(export_sec, 2)
+  component_write_name(export_sec, "__indirect_function_table")
+  export_sec.push(core_sort_table)
+  component_write_uleb128(export_sec, 0)
+  component_write_name(export_sec, "memory")
+  export_sec.push(core_sort_mem)
+  component_write_uleb128(export_sec, 0)
+  core_wasm_write_section(buf, b'\x07', export_sec)
+  Bytes::from_array(buf)
+}
+
+///|
+fn emit_canon_lift_entries_section(
+  buf : Array[Byte],
+  entries : Array[(Int, Int)],
+) -> Unit {
+  if entries.length() == 0 {
+    return
+  }
+  buf.push(component_section_canon)
+  let content : Array[Byte] = []
+  component_write_uleb128(content, entries.length())
+  for entry in entries {
+    let (core_func_idx, type_idx) = entry
+    emit_canon_lift_func(content, core_func_idx, type_idx)
+  }
+  component_write_uleb128(buf, content.length())
+  for b in content {
+    buf.push(b)
+  }
+}
+
+///|
+/// Emit a single canon `thread.spawn-indirect` definition.
+fn emit_canon_thread_spawn_indirect(
+  buf : Array[Byte],
+  func_ty_idx : Int,
+  table_idx : Int,
+) -> Unit {
+  buf.push(b'\x41')
+  component_write_uleb128(buf, func_ty_idx)
+  component_write_uleb128(buf, table_idx)
+}
+
+///|
+/// Emit a component canon section containing one `thread.spawn-indirect`.
+fn emit_canon_thread_spawn_indirect_section(
+  buf : Array[Byte],
+  func_ty_idx : Int,
+  table_idx : Int,
 ) -> Unit {
   buf.push(component_section_canon)
   let content : Array[Byte] = []
-  component_write_uleb128(content, 1) // 1 canon definition
-  emit_canon_lift_func(content, core_func_idx, type_idx)
+  component_write_uleb128(content, 1)
+  emit_canon_thread_spawn_indirect(content, func_ty_idx, table_idx)
   component_write_uleb128(buf, content.length())
   for b in content {
     buf.push(b)
@@ -1707,6 +1924,31 @@ fn emit_component_export_section(
 }
 
 ///|
+fn emit_component_export_entries_section(
+  buf : Array[Byte],
+  entries : Array[(String, Int)],
+) -> Unit {
+  if entries.length() == 0 {
+    return
+  }
+  buf.push(component_section_export)
+  let content : Array[Byte] = []
+  component_write_uleb128(content, entries.length())
+  for entry in entries {
+    let (name, func_idx) = entry
+    content.push(b'\x00') // plain name discriminator
+    component_write_name(content, component_normalize_export_name(name))
+    content.push(component_extern_func)
+    component_write_uleb128(content, func_idx)
+    component_write_uleb128(content, 0)
+  }
+  component_write_uleb128(buf, content.length())
+  for b in content {
+    buf.push(b)
+  }
+}
+
+///|
 /// Emit a Component WASM with proper Canon lift and export
 /// This creates a fully valid component that can be used with mwac
 pub fn emit_component_wasm_with_lift(
@@ -1715,6 +1957,7 @@ pub fn emit_component_wasm_with_lift(
 ) -> Bytes {
   let import_plan = build_core_import_plan(core_wasm)
   let import_func_count = import_plan.bindings.length()
+  let lift_exports = collect_liftable_core_func_exports(core_wasm)
   let main_instance_idx = import_plan.module_names.length()
   let run_core_func_idx = import_func_count
   let run_type_idx = import_func_count
@@ -1737,10 +1980,97 @@ pub fn emit_component_wasm_with_lift(
   emit_core_instance_from_exports_section(buf, import_plan.module_bindings)
   emit_core_instance_instantiate_section(buf, 0, import_plan.module_names)
   emit_alias_section_run_and_memory(buf, main_instance_idx)
-  emit_component_type_section_run_result(buf)
-  emit_canon_lift_section(buf, run_core_func_idx, run_type_idx)
-  // Section 11: Component export
-  emit_component_export_section(buf, export_name, run_func_idx)
+  let lift_aliases : Array[(String, Byte)] = []
+  for lift_export in lift_exports {
+    lift_aliases.push((lift_export.name, core_sort_func))
+  }
+  emit_alias_section(buf, main_instance_idx, lift_aliases)
+  emit_component_type_section_run_and_exports(buf, lift_exports)
+  let lift_entries : Array[(Int, Int)] = [(run_core_func_idx, run_type_idx)]
+  let export_entries : Array[(String, Int)] = [(export_name, run_func_idx)]
+  for i, lift_export in lift_exports {
+    lift_entries.push((run_core_func_idx + 1 + i, run_type_idx + 1 + i))
+    export_entries.push((lift_export.name, run_func_idx + 1 + i))
+  }
+  emit_canon_lift_entries_section(buf, lift_entries)
+  emit_component_export_entries_section(buf, export_entries)
+  Bytes::from_iter(buf.iter())
+}
+
+///|
+pub fn emit_component_wasm_with_thread_runtime_lift(
+  core_wasm : Bytes,
+  export_name : String,
+) -> Bytes {
+  let runtime_wasm = generate_component_thread_runtime_core_module()
+  let import_plan = build_core_import_plan(core_wasm)
+  let import_func_count = import_plan.bindings.length()
+  let lift_exports = collect_liftable_core_func_exports(core_wasm)
+  let runtime_module_idx = 0
+  let main_module_idx = 1
+  let runtime_instance_idx = import_plan.module_names.length()
+  let thread_spawn_core_func_idx = import_func_count
+  let thread_func_instance_idx = runtime_instance_idx + 1
+  let thread_memory_instance_idx = runtime_instance_idx + 2
+  let main_instance_idx = runtime_instance_idx + 3
+  let run_core_func_idx = import_func_count + 1
+  let run_type_idx = import_func_count
+  let run_func_idx = import_func_count
+  let main_module_names : Array[String] = []
+  let main_instance_indices : Array[Int] = []
+  for i, module_name in import_plan.module_names {
+    main_module_names.push(module_name)
+    main_instance_indices.push(i)
+  }
+  main_module_names.push("")
+  main_instance_indices.push(thread_func_instance_idx)
+  main_module_names.push("vibe:thread-runtime")
+  main_instance_indices.push(thread_memory_instance_idx)
+  let buf : Array[Byte] = []
+  for b in component_magic {
+    buf.push(b)
+  }
+  emit_core_module_section(buf, runtime_wasm)
+  emit_core_module_section(buf, core_wasm)
+  emit_component_type_section_for_sigs(
+    buf,
+    collect_component_import_sigs(import_plan.bindings),
+  )
+  emit_component_import_section_for_funcs(buf, import_plan.bindings)
+  emit_canon_lower_section(buf, import_func_count)
+  emit_core_instance_from_exports_section(buf, import_plan.module_bindings)
+  emit_core_instance_instantiate_section(buf, runtime_module_idx, [])
+  emit_alias_section(buf, runtime_instance_idx, [
+    ("__indirect_function_table", core_sort_table),
+    ("memory", core_sort_mem),
+  ])
+  emit_component_core_type_section_shared_start_func(buf)
+  emit_canon_thread_spawn_indirect_section(buf, 0, 0)
+  emit_core_instance_from_export_entries_section(buf, [
+    [("thread.spawn-indirect", core_sort_func, thread_spawn_core_func_idx)],
+    [
+      ("memory", core_sort_mem, 0),
+      ("__indirect_function_table", core_sort_table, 0),
+    ],
+  ])
+  emit_core_instance_instantiate_section_with_instance_indices(
+    buf, main_module_idx, main_module_names, main_instance_indices,
+  )
+  emit_alias_section_run_and_memory(buf, main_instance_idx)
+  let lift_aliases : Array[(String, Byte)] = []
+  for lift_export in lift_exports {
+    lift_aliases.push((lift_export.name, core_sort_func))
+  }
+  emit_alias_section(buf, main_instance_idx, lift_aliases)
+  emit_component_type_section_run_and_exports(buf, lift_exports)
+  let lift_entries : Array[(Int, Int)] = [(run_core_func_idx, run_type_idx)]
+  let export_entries : Array[(String, Int)] = [(export_name, run_func_idx)]
+  for i, lift_export in lift_exports {
+    lift_entries.push((run_core_func_idx + 1 + i, run_type_idx + 1 + i))
+    export_entries.push((lift_export.name, run_func_idx + 1 + i))
+  }
+  emit_canon_lift_entries_section(buf, lift_entries)
+  emit_component_export_entries_section(buf, export_entries)
   Bytes::from_iter(buf.iter())
 }
 

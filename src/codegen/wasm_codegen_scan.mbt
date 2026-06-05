@@ -68,6 +68,19 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
         | "Bytes::to_string"
         | "Int64Array::make" => ctx.need_heap = true
         "sleep" => ctx.need_sleep = true
+        "Threads::spawn" => {
+          if ctx.thread_component_runtime_imports {
+            ctx.need_thread_spawn_indirect = true
+            ctx.need_heap = true
+          }
+          if args.length() == 2 {
+            match args[0].expr {
+              @core.Expr::String(value~, ..) =>
+                register_thread_worker_func_name(ctx, value)
+              _ => ()
+            }
+          }
+        }
         "Stdout::write_char" | "Stdout::write_stream" =>
           ctx.need_stdout_write_char = true
         "Stdin::read_char" | "Stdin::read_stream" =>

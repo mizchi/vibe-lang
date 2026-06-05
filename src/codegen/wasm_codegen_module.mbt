@@ -16,6 +16,16 @@ fn write_func_type(
 }
 
 ///|
+fn write_shared_func_type(
+  buf : ByteBuf,
+  params : Array[ValueKind],
+  results : Array[ValueKind],
+) -> Unit {
+  buf.push(b'\x65') // shared subtype
+  write_func_type(buf, params, results)
+}
+
+///|
 fn http_host_import_binding(
   ctx : CodegenCtx,
   builtin_name : String,
@@ -121,12 +131,20 @@ fn copy_function_alias_metadata(
     Some(kinds) => ctx.fn_params[alias_name] = kinds
     None => ()
   }
+  match ctx.fn_param_types.get(target_name) {
+    Some(types) => ctx.fn_param_types[alias_name] = types
+    None => ()
+  }
   match ctx.fn_param_names.get(target_name) {
     Some(names) => ctx.fn_param_names[alias_name] = names
     None => ()
   }
   match ctx.fn_returns.get(target_name) {
     Some(ret_kind) => ctx.fn_returns[alias_name] = ret_kind
+    None => ()
+  }
+  match ctx.fn_return_types.get(target_name) {
+    Some(ret_ty) => ctx.fn_return_types[alias_name] = ret_ty
     None => ()
   }
   match ctx.fn_return_sigs.get(target_name) {
@@ -260,6 +278,94 @@ fn collect_emittable_user_exports(ctx : CodegenCtx) -> Array[String] {
 }
 
 ///|
+fn thread_backend_uses_shared_memory(ctx : CodegenCtx) -> Bool {
+  match @threads.thread_backend_from_id(ctx.thread_backend_id) {
+    Some(backend) =>
+      @threads.thread_backend_requires_shared_linear_memory(backend)
+    None => false
+  }
+}
+
+///|
+fn thread_backend_exports_shared_component_table(ctx : CodegenCtx) -> Bool {
+  thread_backend_uses_shared_memory(ctx) &&
+  !ctx.thread_component_runtime_imports
+}
+
+///|
+fn thread_backend_imports_shared_component_table(ctx : CodegenCtx) -> Bool {
+  thread_backend_uses_shared_memory(ctx) &&
+  ctx.thread_component_runtime_imports &&
+  ctx.need_thread_spawn_indirect
+}
+
+///|
+fn thread_backend_uses_shared_heap_global(ctx : CodegenCtx) -> Bool {
+  thread_backend_uses_shared_memory(ctx) && ctx.use_heap_global
+}
+
+///|
+fn thread_spawn_indirect_pre_import_count(ctx : CodegenCtx) -> Int {
+  let mut count = 0
+  if ctx.need_js_length {
+    count += 1
+  }
+  if ctx.need_js_char_code_at {
+    count += 1
+  }
+  if ctx.need_js_substring {
+    count += 1
+  }
+  if ctx.need_js_concat {
+    count += 1
+  }
+  if ctx.need_js_equals {
+    count += 1
+  }
+  if ctx.need_path {
+    count += 1
+  }
+  if ctx.need_dynamic_path_resolve {
+    count += 1
+  }
+  if ctx.need_sh {
+    count += 1
+  }
+  if ctx.need_env_get {
+    count += 1
+  }
+  if ctx.need_env_args_len {
+    count += 1
+  }
+  if ctx.need_env_args_get {
+    count += 1
+  }
+  if ctx.need_sleep {
+    count += 1
+  }
+  if ctx.need_stdout_write_char {
+    count += 2
+  }
+  if ctx.need_stdin_read_char {
+    count += 2
+  }
+  if ctx.need_fs && !ctx.fs_host_imports {
+    count += 7
+  }
+  if ctx.need_fs && ctx.fs_host_imports {
+    count += 19
+  }
+  count += json_host_import_count(ctx)
+  if ctx.need_socket {
+    count += 13
+  }
+  if ctx.need_http && ctx.http_host_imports {
+    count += 12
+  }
+  count
+}
+
+///|
 fn build_module(
   ctx : CodegenCtx,
   funcs : Array[WasmFunc],
@@ -315,6 +421,8 @@ fn build_module(
   let mut fs_host_arity0_type = -1
   let mut fs_host_arity1_type = -1
   let mut fs_host_arity2_type = -1
+  let mut thread_spawn_indirect_type = -1
+  let mut thread_start_func_type = -1
   if ctx.need_js_length {
     js_length_type = type_count
     type_count += 1
@@ -434,16 +542,15 @@ fn build_module(
     fs_host_arity2_type = type_count
     type_count += 1
   }
-  let builtin_count = type_count
-  let func_type_indices : Array[Int] = []
-  for func in funcs {
-    let key = func_sig_key_from_parts(func.params, func.results)
-    let idx = match ctx.fn_sig_type_indices.get(key) {
-      Some(i) => i
-      None => builtin_count
+  if ctx.need_thread_spawn_indirect {
+    thread_spawn_indirect_type = type_count
+    type_count += 1
+    if ctx.thread_component_runtime_imports {
+      thread_start_func_type = type_count
+      type_count += 1
     }
-    func_type_indices.push(idx)
   }
+  let builtin_count = type_count
   let linked_import_type_indices : Array[Int] = []
   for entry in ctx.linked_fn_imports_list {
     let (_, _, param_count, return_count) = entry
@@ -462,6 +569,28 @@ fn build_module(
     }
     linked_import_type_indices.push(type_index)
   }
+  let import_count_for_funcs = func_import_count(ctx)
+  let func_type_indices : Array[Int] = []
+  for array_idx in 0..<funcs.length() {
+    let func = funcs[array_idx]
+    let absolute_idx = import_count_for_funcs + array_idx
+    let idx = if func.shared {
+      if absolute_idx == ctx.thread_start_func_idx {
+        thread_start_func_type
+      } else {
+        let sig = FuncSig::{ params: func.params, results: func.results }
+        let slot = ensure_shared_sig_slot(ctx, sig)
+        builtin_count + ctx.fn_sig_order.length() + slot
+      }
+    } else {
+      let key = func_sig_key_from_parts(func.params, func.results)
+      match ctx.fn_sig_type_indices.get(key) {
+        Some(i) => i
+        None => builtin_count
+      }
+    }
+    func_type_indices.push(idx)
+  }
   let exception_type_count = if ctx.need_exceptions { 1 } else { 0 }
   let stack_switching_type_count = if ctx.need_stack_switching { 3 } else { 0 }
   // Count unique effect op type signatures for type section
@@ -477,8 +606,10 @@ fn build_module(
     effect_arities_seen["P" + arity.to_string() + "R1"] = true
   }
   let effect_type_count = effect_arities_seen.length()
+  let shared_sig_count = ctx.shared_fn_sig_order.length()
   let total_type_count = builtin_count +
     ctx.fn_sig_order.length() +
+    shared_sig_count +
     exception_type_count +
     stack_switching_type_count +
     effect_type_count
@@ -731,11 +862,32 @@ fn build_module(
     write_u32_leb(type_sec, 1)
     type_sec.push((126).to_byte()) // i64
   }
+  if ctx.need_thread_spawn_indirect {
+    type_sec.push(b'\x65') // shared subtype
+    type_sec.push((96).to_byte()) // func type
+    write_u32_leb(type_sec, 2)
+    type_sec.push((127).to_byte()) // i32 callee index
+    type_sec.push((127).to_byte()) // i32 task pointer
+    write_u32_leb(type_sec, 1)
+    type_sec.push((127).to_byte()) // i32 task/result pointer
+    if ctx.thread_component_runtime_imports {
+      type_sec.push(b'\x65') // shared subtype
+      type_sec.push((96).to_byte()) // func type
+      write_u32_leb(type_sec, 1)
+      type_sec.push((127).to_byte()) // i32 task pointer
+      write_u32_leb(type_sec, 0)
+    }
+  }
   for sig in ctx.fn_sig_order {
     write_func_type(type_sec, sig.params, sig.results)
   }
+  for sig in ctx.shared_fn_sig_order {
+    write_shared_func_type(type_sec, sig.params, sig.results)
+  }
   if ctx.need_exceptions {
-    ctx.error_tag_type_index = builtin_count + ctx.fn_sig_order.length()
+    ctx.error_tag_type_index = builtin_count +
+      ctx.fn_sig_order.length() +
+      shared_sig_count
     // tag type: (param <valtype>) -> () (no results)
     type_sec.push((96).to_byte()) // func type
     write_u32_leb(type_sec, 1) // param count = 1
@@ -751,6 +903,7 @@ fn build_module(
     // Await tag type: (func (param i64)) - one-way, no result
     ctx.await_tag_type_index = builtin_count +
       ctx.fn_sig_order.length() +
+      shared_sig_count +
       exception_type_count
     type_sec.push((96).to_byte()) // func type
     write_u32_leb(type_sec, 1) // param count = 1
@@ -779,6 +932,7 @@ fn build_module(
   // type_count at this point is builtin_count; add fn_sig + exception + stack_switching offset
   let effect_type_base = builtin_count +
     ctx.fn_sig_order.length() +
+    shared_sig_count +
     exception_type_count +
     stack_switching_type_count
   let mut effect_type_next = effect_type_base
@@ -872,6 +1026,10 @@ fn build_module(
   if ctx.need_http && ctx.http_host_imports {
     func_import_count += 12
   }
+  if ctx.need_thread_spawn_indirect {
+    ctx.thread_spawn_indirect_import_index = func_import_count
+    func_import_count += 1
+  }
   // Effect operation imports: each operation becomes one import
   for key in effect_op_keys {
     ctx.effect_op_imports[key] = func_import_count
@@ -888,6 +1046,19 @@ fn build_module(
   // Linked mode: import memory and __heap_ptr from library module
   let has_linked_imports = ctx.linked_fn_imports_list.length() > 0
   let linked_memory_import = if has_linked_imports { 1 } else { 0 }
+  let thread_runtime_memory_import = if ctx.thread_component_runtime_imports &&
+    thread_backend_uses_shared_memory(ctx) {
+    1
+  } else {
+    0
+  }
+  let thread_runtime_table_import = if thread_backend_imports_shared_component_table(
+      ctx,
+    ) {
+    1
+  } else {
+    0
+  }
   let linked_global_import = if has_linked_imports && ctx.use_heap_global {
     1
   } else {
@@ -901,7 +1072,9 @@ fn build_module(
     linked_global_import
   let import_count = func_import_count +
     global_import_count +
-    linked_memory_import
+    linked_memory_import +
+    thread_runtime_memory_import +
+    thread_runtime_table_import
   if import_count > 0 {
     let import_sec = ByteBuf::new()
     write_u32_leb(import_sec, import_count)
@@ -1189,6 +1362,12 @@ fn build_module(
         import_sec, ctx, "Http::respond", http_host_arity4_type,
       )
     }
+    if ctx.need_thread_spawn_indirect {
+      write_name(import_sec, "")
+      write_name(import_sec, "thread.spawn-indirect")
+      import_sec.push((0).to_byte()) // func import
+      write_u32_leb(import_sec, thread_spawn_indirect_type)
+    }
     // Effect operation imports
     for key in effect_op_keys {
       let mut sep = 0
@@ -1233,6 +1412,24 @@ fn build_module(
       import_sec.push((0).to_byte()) // limits: no max
       write_u32_leb(import_sec, 1) // initial 1 page (library will have more)
     }
+    if thread_runtime_memory_import > 0 {
+      write_name(import_sec, "vibe:thread-runtime")
+      write_name(import_sec, "memory")
+      import_sec.push((2).to_byte()) // memory import
+      import_sec.push((3).to_byte()) // limits: min + max + shared
+      write_u32_leb(import_sec, 1024)
+      write_u32_leb(import_sec, 1024)
+    }
+    if thread_runtime_table_import > 0 {
+      write_name(import_sec, "vibe:thread-runtime")
+      write_name(import_sec, "__indirect_function_table")
+      import_sec.push((1).to_byte()) // table import
+      import_sec.push(b'\x65') // shared ref type
+      import_sec.push((112).to_byte()) // funcref
+      import_sec.push((3).to_byte()) // limits: min + max + shared
+      write_u32_leb(import_sec, 1)
+      write_u32_leb(import_sec, 1)
+    }
     // TODO: funcref table import for linked builds with closures
     // Linked __heap_ptr global import
     if has_linked_imports && ctx.use_heap_global {
@@ -1265,24 +1462,40 @@ fn build_module(
   // table section (for function values + optional externref table)
   let funcref_slot_count = ctx.fn_table_order.length()
   let has_extern_table = ctx.need_extern_table && ctx.extern_table_next_slot > 0
+  let has_shared_thread_table = thread_backend_exports_shared_component_table(
+    ctx,
+  )
+  let has_imported_shared_thread_table = thread_runtime_table_import > 0
   // Reserve table 0 for funcref when externref table is used,
   // so extern_table_index can stay stable at 1.
-  let has_funcref_table = funcref_slot_count > 0 ||
+  let has_runtime_funcref_table = funcref_slot_count > 0 ||
     has_extern_table ||
     ctx.need_funcref_table
   // TODO: In linked mode with closures, import funcref table from library
   let import_funcref_table = false // not yet implemented
-  let table_count = (if has_funcref_table && !import_funcref_table {
-      1
-    } else {
-      0
-    }) +
+  let runtime_funcref_table_index = if has_shared_thread_table ||
+    has_imported_shared_thread_table {
+    1
+  } else {
+    0
+  }
+  let thread_table_min = 1
+  let table_count = (if has_shared_thread_table { 1 } else { 0 }) +
+    (if has_runtime_funcref_table && !import_funcref_table { 1 } else { 0 }) +
     (if has_extern_table { 1 } else { 0 })
   if table_count > 0 {
     let table_sec = ByteBuf::new()
     write_u32_leb(table_sec, table_count)
-    if has_funcref_table {
-      // table 0: funcref
+    if has_shared_thread_table {
+      // table 0: shared funcref for Component Model thread.spawn-indirect.
+      table_sec.push(b'\x65') // shared ref type
+      table_sec.push((112).to_byte()) // funcref
+      table_sec.push((3).to_byte()) // limits: min + max + shared
+      write_u32_leb(table_sec, thread_table_min)
+      write_u32_leb(table_sec, thread_table_min)
+    }
+    if has_runtime_funcref_table {
+      // runtime table: regular funcref for Vibe function values.
       table_sec.push((112).to_byte()) // funcref
       table_sec.push((0).to_byte()) // limits: min only
       write_u32_leb(table_sec, funcref_slot_count)
@@ -1297,12 +1510,19 @@ fn build_module(
   }
 
   // memory section (skip when importing memory from linked library)
-  if !has_linked_imports {
+  if !has_linked_imports && thread_runtime_memory_import == 0 {
     let mem_sec = ByteBuf::new()
     write_u32_leb(mem_sec, 1)
-    mem_sec.push((0).to_byte())
+    let use_shared_memory = thread_backend_uses_shared_memory(ctx)
     // Reserve enough linear memory for selfhost compile and bench loops.
-    write_u32_leb(mem_sec, 1024)
+    if use_shared_memory {
+      mem_sec.push((3).to_byte()) // limits: min+max+shared
+      write_u32_leb(mem_sec, 1024)
+      write_u32_leb(mem_sec, 1024)
+    } else {
+      mem_sec.push((0).to_byte()) // limits: min only
+      write_u32_leb(mem_sec, 1024)
+    }
     write_section(buf, 5, mem_sec.to_array())
   }
 
@@ -1365,8 +1585,12 @@ fn build_module(
     // Heap pointer global (skip when imported from library)
     if heap_global_in_section {
       global_sec.push((127).to_byte()) // i32
-      global_sec.push((1).to_byte()) // mutable
-      let heap_start = align4(ctx.strings.next_offset + coverage_bytes)
+      if thread_backend_uses_shared_heap_global(ctx) {
+        global_sec.push((3).to_byte()) // mutable + shared
+      } else {
+        global_sec.push((1).to_byte()) // mutable
+      }
+      let heap_start = heap_start_offset(ctx, coverage_bytes)
       ctx.rc_heap_start = heap_start
       emit_i32_const_raw(global_sec, heap_start)
       global_sec.push((11).to_byte()) // end
@@ -1483,8 +1707,12 @@ fn build_module(
     ctx.force_cabi_realloc
   let need_http_host_string_new_export = ctx.need_http && ctx.http_host_imports
   let emit_start = !ctx.library_mode
-  // Library mode: export funcref table for linked builds
-  let export_funcref_table = ctx.library_mode && has_funcref_table
+  // Library mode exports the runtime funcref table for linked builds.
+  // Thread backends export the proposal-shaped shared table instead.
+  let export_shared_thread_table = has_shared_thread_table
+  let export_funcref_table = ctx.library_mode &&
+    has_runtime_funcref_table &&
+    !export_shared_thread_table
   let export_count = (if emit_start { 3 } else { 1 }) + // _start + _vibe_run_tagged + memory, or just memory
     user_export_count +
     exported_env_global_count +
@@ -1495,6 +1723,7 @@ fn build_module(
     (if ctx.coverage_enabled { 2 } else { 0 }) +
     (if need_fs_global { 1 } else { 0 }) +
     (if ctx.use_heap_global { 1 } else { 0 }) + // __heap_ptr global
+    (if export_shared_thread_table { 1 } else { 0 }) +
     (if export_funcref_table { 1 } else { 0 })
   let export_sec = ByteBuf::new()
   write_u32_leb(export_sec, export_count)
@@ -1525,11 +1754,16 @@ fn build_module(
   write_name(export_sec, "memory")
   export_sec.push((2).to_byte()) // memory export
   write_u32_leb(export_sec, 0)
+  if export_shared_thread_table {
+    write_name(export_sec, "__indirect_function_table")
+    export_sec.push((1).to_byte()) // table export
+    write_u32_leb(export_sec, 0) // shared thread table index
+  }
   // Export funcref table for library mode
   if export_funcref_table {
     write_name(export_sec, "__funcref_table")
     export_sec.push((1).to_byte()) // table export
-    write_u32_leb(export_sec, 0) // table index 0
+    write_u32_leb(export_sec, runtime_funcref_table_index)
   }
   // Export user functions (export let ...)
   // Skip "_start" here; handled above to avoid duplicate export.
@@ -1601,17 +1835,43 @@ fn build_module(
   write_section(buf, 7, export_sec.to_array())
 
   // element section
-  let need_elem = funcref_slot_count > 0 || ctx.need_stack_switching
+  let has_thread_start_elem = has_imported_shared_thread_table &&
+    ctx.thread_start_func_idx >= 0
+  let need_elem = funcref_slot_count > 0 ||
+    ctx.need_stack_switching ||
+    has_thread_start_elem
   if need_elem {
     let elem_sec = ByteBuf::new()
     let elem_count = (if funcref_slot_count > 0 { 1 } else { 0 }) +
-      (if ctx.need_stack_switching { 1 } else { 0 })
+      (if ctx.need_stack_switching { 1 } else { 0 }) +
+      (if has_thread_start_elem { 1 } else { 0 })
     write_u32_leb(elem_sec, elem_count)
-    // Active element segment for indirect calls (table)
-    if funcref_slot_count > 0 {
-      elem_sec.push((0).to_byte())
+    if has_thread_start_elem {
+      // Active expression segment for table 0 with explicit shared funcref.
+      elem_sec.push((6).to_byte())
+      write_u32_leb(elem_sec, 0)
       emit_i32_const_raw(elem_sec, 0)
       elem_sec.push((11).to_byte())
+      elem_sec.push(b'\x65') // shared ref type
+      elem_sec.push((112).to_byte()) // funcref
+      write_u32_leb(elem_sec, 1)
+      elem_sec.push(b'\xd2') // ref.func
+      write_u32_leb(elem_sec, ctx.thread_start_func_idx)
+      elem_sec.push((11).to_byte())
+    }
+    // Active element segment for indirect calls (table)
+    if funcref_slot_count > 0 {
+      if runtime_funcref_table_index == 0 {
+        elem_sec.push((0).to_byte())
+      } else {
+        elem_sec.push((2).to_byte())
+        write_u32_leb(elem_sec, runtime_funcref_table_index)
+      }
+      emit_i32_const_raw(elem_sec, 0)
+      elem_sec.push((11).to_byte())
+      if runtime_funcref_table_index != 0 {
+        elem_sec.push((0).to_byte()) // elemkind = funcref
+      }
       write_u32_leb(elem_sec, funcref_slot_count)
       for func_key in ctx.fn_table_order {
         write_u32_leb(
@@ -1665,7 +1925,8 @@ fn build_module(
 
   // data section
   let seg_count = ctx.strings.segments.length()
-  if seg_count > 0 {
+  let has_shared_heap_cursor = thread_backend_uses_atomic_heap(ctx)
+  if seg_count > 0 || has_shared_heap_cursor {
     let data_sec = ByteBuf::new()
     // In linked mode, ctx.strings.next_offset starts at 65536 (set before
     // scan_strings in emit_module_with_coverage), so seg.offset values are
@@ -1676,6 +1937,17 @@ fn build_module(
     } else {
       false
     }
+    let string_data_segment_count = if seg_count == 0 {
+      0
+    } else if use_packed {
+      1
+    } else {
+      seg_count
+    }
+    write_u32_leb(
+      data_sec,
+      string_data_segment_count + (if has_shared_heap_cursor { 1 } else { 0 }),
+    )
     if use_packed {
       let data = pack_string_segments(ctx.strings)
       // Use first segment's offset (already includes linked offset)
@@ -1684,14 +1956,12 @@ fn build_module(
       } else {
         0
       }
-      write_u32_leb(data_sec, 1)
       data_sec.push((0).to_byte())
       emit_i32_const_raw(data_sec, first_offset)
       data_sec.push((11).to_byte())
       write_u32_leb(data_sec, data.length())
       data_sec.extend(data)
-    } else {
-      write_u32_leb(data_sec, seg_count)
+    } else if seg_count > 0 {
       for seg in ctx.strings.segments {
         data_sec.push((0).to_byte())
         emit_i32_const_raw(data_sec, seg.offset)
@@ -1699,6 +1969,18 @@ fn build_module(
         write_u32_leb(data_sec, seg.bytes.length())
         data_sec.extend(seg.bytes)
       }
+    }
+    if has_shared_heap_cursor {
+      let cursor_init : Array[Byte] = []
+      write_u32_le_bytes(
+        cursor_init,
+        heap_start_offset(ctx, coverage_count * 4),
+      )
+      data_sec.push((0).to_byte())
+      emit_i32_const_raw(data_sec, shared_heap_cursor_offset(ctx))
+      data_sec.push((11).to_byte())
+      write_u32_leb(data_sec, cursor_init.length())
+      data_sec.extend(cursor_init)
     }
     write_section(buf, 11, data_sec.to_array())
   }
@@ -1936,8 +2218,9 @@ fn restore_string_string_map(
 ///|
 /// Scope snapshot for the named-function maps.
 ///
-/// `fn_indices` / `fn_params` / `fn_param_names` / `fn_returns`,
-/// `fn_return_sigs`, `fn_multivalue_results` and the three `linked_fn_*` maps
+/// `fn_indices` / `fn_params` / `fn_param_types` / `fn_param_names` /
+/// `fn_returns`, `fn_return_types`, `fn_return_sigs`, `fn_multivalue_results`
+/// and the three `linked_fn_*` maps
 /// are all pre-registered before the compile loop (the big four for every
 /// top-level function, the others for every fn-returning / tuple-returning /
 /// linked-import function). Copying them by value on every block snapshot was
@@ -1988,9 +2271,9 @@ fn restore_named_fn_scope(
   saved : NamedFnScopeSnapshot,
 ) -> Unit {
   // Revert in-region writes to the pre-registered maps (fn_indices, fn_params,
-  // fn_param_names, fn_returns, fn_return_sigs, fn_multivalue_results,
-  // linked_fn_*) by replaying the undo log back to the snapshot marker,
-  // newest first.
+  // fn_param_types, fn_param_names, fn_returns, fn_return_types,
+  // fn_return_sigs, fn_multivalue_results, linked_fn_*) by replaying the undo
+  // log back to the snapshot marker, newest first.
   while ctx.scope_undo.length() > saved.scope_undo_marker {
     match ctx.scope_undo.pop() {
       Some(revert) => revert()
@@ -2012,18 +2295,26 @@ fn compile_function_with_scoped_names(
   capture_kinds : Array[ValueKind],
   capture_is_ref_cell : Array[Bool],
   has_func_rc : Bool,
+  shared? : Bool = false,
 ) -> WasmFunc raise WasmGenError {
   let saved_named_fn_scope = snapshot_named_fn_scope(ctx)
   match f.name {
     Some(name) => {
       scoped_named_map_set(ctx, ctx.fn_indices, name, func_idx)
       scoped_named_map_set(ctx, ctx.fn_params, name, param_kinds)
+      let param_types = fn_param_types_from_params(f.params)
+      scoped_named_map_set(ctx, ctx.fn_param_types, name, param_types)
       let param_names : Array[String] = []
       for p in f.params {
         param_names.push(p.name)
       }
       scoped_named_map_set(ctx, ctx.fn_param_names, name, param_names)
       scoped_named_map_set(ctx, ctx.fn_returns, name, result_kind)
+      match f.ret {
+        Some(ret_ty) =>
+          scoped_named_map_set(ctx, ctx.fn_return_types, name, ret_ty)
+        None => ()
+      }
     }
     None => ()
   }
@@ -2040,6 +2331,7 @@ fn compile_function_with_scoped_names(
     true,
     capture_is_ref_cell~,
     emit_rc_stmt_actions=has_func_rc,
+    shared~,
   )
   restore_named_fn_scope(ctx, saved_named_fn_scope)
   compiled
@@ -3668,6 +3960,9 @@ fn emit_module_with_coverage(
     if ctx.need_http && ctx.http_host_imports {
       pre_import_count += 12
     }
+    if ctx.need_thread_spawn_indirect {
+      pre_import_count += 1
+    }
     // effect_op_imports is already populated with unhandled ops only.
     pre_import_count += ctx.effect_op_imports.length()
     for entry in ctx.linked_fn_imports_list {
@@ -3693,6 +3988,7 @@ fn emit_module_with_coverage(
     match f.name {
       Some(name) => {
         ctx.fn_params[name] = kinds
+        ctx.fn_param_types[name] = fn_param_types_from_params(f.params)
         // Save parameter names for labeled args resolution
         let names : Array[String] = []
         for p in f.params {
@@ -3705,6 +4001,10 @@ fn emit_module_with_coverage(
             None => ValueKind::I64
           }
           ctx.fn_returns[name] = default_ret
+          match f.ret {
+            Some(ret_ty) => ctx.fn_return_types[name] = ret_ty
+            None => ()
+          }
           // Register return signature if function returns a function type
           match f.ret {
             Some(r) =>
@@ -3807,6 +4107,8 @@ fn emit_module_with_coverage(
   } // end linked_fn_imports_list == 0 guard
   ctx.fn_sig_type_indices = {}
   ctx.fn_sig_order = []
+  ctx.shared_fn_sig_slots = {}
+  ctx.shared_fn_sig_order = []
   ctx.fn_type_indices = {}
   for f in funcs {
     for param in f.params {
@@ -3922,6 +4224,12 @@ fn emit_module_with_coverage(
     }
     ctx.heap_global = global_imports
   }
+  if thread_backend_uses_atomic_heap(ctx) {
+    ctx.shared_heap_cursor_offset = align4(ctx.strings.next_offset)
+    if ctx.coverage_enabled {
+      ctx.coverage_base_offset = ctx.shared_heap_cursor_offset + 4
+    }
+  }
   // Pre-compute stack switching indices
   if ctx.need_stack_switching {
     ctx.async_result_global_index = if ctx.use_heap_global { 1 } else { 0 }
@@ -3967,6 +4275,11 @@ fn emit_module_with_coverage(
     }
     ctx.sleep_import_index = import_count
   }
+  if ctx.need_thread_spawn_indirect {
+    ctx.thread_spawn_indirect_import_index = thread_spawn_indirect_pre_import_count(
+      ctx,
+    )
+  }
   // Assign actual global indices for exported fn env globals.
   // Must happen after global layout decisions (heap/async/fs/socket) settle,
   // and before compile_function so the generated code writes the final indices.
@@ -3985,8 +4298,14 @@ fn emit_module_with_coverage(
     }
   }
   // Pre-compute extern_table_index for externref captures.
-  // Table 0 is reserved for funcref table when extern table exists.
-  ctx.extern_table_index = 1
+  // Table 0 is reserved for thread.spawn-indirect when shared threads are
+  // enabled; the regular funcref table stays before externref either way.
+  ctx.extern_table_index = if thread_backend_exports_shared_component_table(ctx) ||
+    thread_backend_imports_shared_component_table(ctx) {
+    2
+  } else {
+    1
+  }
   // Assign effect operation import indices before compile loop.
   // func_import_count(ctx) already includes both effect ops and linked imports,
   // so subtract both to recover the base index where effect imports start.
@@ -4141,6 +4460,7 @@ fn emit_module_with_coverage(
         cap_kinds,
         cap_ref_cells,
         has_func_rc,
+        shared=is_thread_worker_func(ctx, i),
       ),
     )
     let label = match f.name {
@@ -4272,6 +4592,7 @@ fn emit_module_with_coverage(
       [],
       false,
       emit_rc_stmt_actions=ctx.enable_rc,
+      shared=false,
     ),
   )
   let run_func_index = func_import_count(ctx) + run_func_array_index
@@ -4285,6 +4606,11 @@ fn emit_module_with_coverage(
     compiled_funcs.push(compile_public_start_wrapper(run_func_index))
     compiled_func_names.push((start_idx, "_start"))
     start_export_index = Some(start_idx)
+  }
+  if ctx.thread_component_runtime_imports && ctx.need_thread_spawn_indirect {
+    ctx.thread_start_func_idx = func_import_count(ctx) + compiled_funcs.length()
+    compiled_funcs.push(compile_component_thread_start_trampoline_function(ctx))
+    compiled_func_names.push((ctx.thread_start_func_idx, "__vibe_thread_start"))
   }
   @profiler.profiler_leave()
   @profiler.profiler_enter("codegen/build_module")
@@ -4332,9 +4658,18 @@ pub fn emit_module_wasm_with_options(
     fs_host_imports=options.fs_host_imports,
     force_cabi_realloc=options.force_cabi_realloc,
     library_mode=options.library_mode,
+    thread_backend_id=options.thread_backend_id,
+    thread_component_runtime_imports=options.thread_component_runtime_imports,
   )
   ctx.linked_fn_imports_list = options.linked_imports
   ctx.source = options.source
+  if options.enable_rc && thread_backend_uses_shared_memory(ctx) {
+    raise WasmGenError::Unsupported(
+      "enable_rc is not supported with shared thread backend " +
+      options.thread_backend_id +
+      "; component-unsafe-os-threads requires the atomic shared heap path",
+    )
+  }
   if options.enable_rc {
     ctx.enable_rc = true
     ctx.rc_debug = options.rc_debug
@@ -4369,6 +4704,8 @@ pub fn emit_module_wasm_with_source(
     fs_host_imports=default_emit_options().fs_host_imports,
     force_cabi_realloc=default_emit_options().force_cabi_realloc,
     library_mode=default_emit_options().library_mode,
+    thread_backend_id=default_emit_options().thread_backend_id,
+    thread_component_runtime_imports=default_emit_options().thread_component_runtime_imports,
   )
   ctx.source = source
   emit_module(ctx, ast)
@@ -4384,6 +4721,8 @@ pub fn emit_module_wasm_js_string_with_options(
     true,
     coverage_enabled=false,
     embed_error_strings=true,
+    thread_backend_id=options.thread_backend_id,
+    thread_component_runtime_imports=options.thread_component_runtime_imports,
   )
   emit_module(ctx, ast)
 }
@@ -4407,6 +4746,8 @@ pub fn emit_module_wasm_with_coverage_options(
     http_host_imports=options.http_host_imports,
     http_component_wasi_shim=options.http_component_wasi_shim,
     fs_host_imports=options.fs_host_imports,
+    thread_backend_id=options.thread_backend_id,
+    thread_component_runtime_imports=options.thread_component_runtime_imports,
   )
   emit_module_with_coverage(ctx, ast)
 }
@@ -4421,6 +4762,8 @@ pub fn emit_module_wasm_js_string_with_coverage_options(
     true,
     coverage_enabled=true,
     embed_error_strings=true,
+    thread_backend_id=options.thread_backend_id,
+    thread_component_runtime_imports=options.thread_component_runtime_imports,
   )
   emit_module_with_coverage(ctx, ast)
 }

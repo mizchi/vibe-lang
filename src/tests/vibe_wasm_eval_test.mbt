@@ -509,6 +509,7 @@ fn skip_to_else_or_end(code : Cursor) -> Bool raise WasmEvalError {
         skip_leb(code)
         skip_leb(code)
       }
+      254 => skip_atomic_immediates(code) // atomics prefix
       253 => skip_simd_immediates(code) // SIMD (v128) prefix
       _ => ()
     }
@@ -523,6 +524,22 @@ fn skip_to_else_or_end(code : Cursor) -> Bool raise WasmEvalError {
 fn skip_simd_immediates(code : Cursor) -> Unit raise WasmEvalError {
   let subop = code.read_leb_u32()
   if subop == 0 || subop == 11 {
+    skip_leb(code) // align
+    skip_leb(code) // offset
+  }
+}
+
+///|
+/// Skip immediates of atomics instructions used by the experimental shared
+/// thread lowering. The evaluator is single-threaded, but scanners still need
+/// to stay byte-aligned across inactive branches.
+fn skip_atomic_immediates(code : Cursor) -> Unit raise WasmEvalError {
+  let subop = code.read_leb_u32()
+  if subop == 0x00 ||
+    subop == 0x01 ||
+    subop == 0x10 ||
+    subop == 0x17 ||
+    subop == 0x1e {
     skip_leb(code) // align
     skip_leb(code) // offset
   }
@@ -555,6 +572,7 @@ fn skip_to_end(code : Cursor) -> Unit raise WasmEvalError {
         skip_leb(code)
         skip_leb(code)
       }
+      254 => skip_atomic_immediates(code) // atomics prefix
       253 => skip_simd_immediates(code) // SIMD (v128) prefix
       _ => ()
     }
@@ -609,7 +627,8 @@ fn parse_wasm_module(bytes : Bytes) -> WasmModule raise WasmEvalError {
         let sec = Cursor::new(payload)
         let count = sec.read_leb_u32()
         for _ in 0..<count {
-          let tag = sec.read_u8()
+          let first_tag = sec.read_u8()
+          let tag = if first_tag == 0x65 { sec.read_u8() } else { first_tag }
           if tag != 0x60 {
             // Not a func type, skip
             type_param_counts.push(0)
@@ -877,6 +896,15 @@ fn eval_loop(
         let a = stack.unsafe_pop()
         stack.push((a.to_int() * b.to_int()).to_int64())
       }
+      // i32.rem_s
+      111 => {
+        if stack.length() < 2 {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let b = stack.unsafe_pop()
+        let a = stack.unsafe_pop()
+        stack.push((a.to_int() % b.to_int()).to_int64())
+      }
       // i32.eq
       70 => {
         if stack.length() < 2 {
@@ -912,6 +940,17 @@ fn eval_loop(
         let b = stack.unsafe_pop()
         let a = stack.unsafe_pop()
         stack.push(if a.to_int() > b.to_int() { 1L } else { 0L })
+      }
+      // i32.lt_u
+      73 => {
+        if stack.length() < 2 {
+          raise WasmEvalError::Invalid("stack underflow")
+        }
+        let b = stack.unsafe_pop()
+        let a = stack.unsafe_pop()
+        let au = a.to_int().reinterpret_as_uint()
+        let bu = b.to_int().reinterpret_as_uint()
+        stack.push(if au < bu { 1L } else { 0L })
       }
       // i32.gt_u
       75 => {
@@ -1329,6 +1368,75 @@ fn eval_loop(
           }
           _ =>
             raise WasmEvalError::Unsupported("memory op " + subop.to_string())
+        }
+      }
+      // atomics prefix. The test evaluator is single-threaded, so these
+      // preserve the ordinary memory semantics while accepting shared-memory
+      // modules emitted by the experimental thread lowering.
+      254 => {
+        let subop = code.read_leb_u32()
+        match subop {
+          // memory.atomic.notify
+          0x00 => {
+            let _ = code.read_leb_u32()
+            let _ = code.read_leb_u32()
+            if stack.length() < 2 {
+              raise WasmEvalError::Invalid("stack underflow")
+            }
+            let _ = stack.unsafe_pop()
+            let _ = stack.unsafe_pop()
+            stack.push(0L)
+          }
+          // memory.atomic.wait32
+          0x01 => {
+            let _ = code.read_leb_u32()
+            let offset = code.read_leb_u32()
+            if stack.length() < 3 {
+              raise WasmEvalError::Invalid("stack underflow")
+            }
+            let _ = stack.unsafe_pop()
+            let expected = stack.unsafe_pop().to_int()
+            let addr = stack.unsafe_pop().to_int()
+            let current = read_u32_le(mem, addr + offset)
+            stack.push(if current != expected { 1L } else { 2L })
+          }
+          // i32.atomic.load
+          0x10 => {
+            let _ = code.read_leb_u32()
+            let offset = code.read_leb_u32()
+            if stack.is_empty() {
+              raise WasmEvalError::Invalid("stack underflow")
+            }
+            let addr = stack.unsafe_pop().to_int()
+            let value = read_u32_le(mem, addr + offset)
+            stack.push(value.to_int64())
+          }
+          // i32.atomic.store
+          0x17 => {
+            let _ = code.read_leb_u32()
+            let offset = code.read_leb_u32()
+            if stack.length() < 2 {
+              raise WasmEvalError::Invalid("stack underflow")
+            }
+            let value = stack.unsafe_pop().to_int()
+            let addr = stack.unsafe_pop().to_int()
+            write_u32_le(mem, addr + offset, value)
+          }
+          // i32.atomic.rmw.add
+          0x1e => {
+            let _ = code.read_leb_u32()
+            let offset = code.read_leb_u32()
+            if stack.length() < 2 {
+              raise WasmEvalError::Invalid("stack underflow")
+            }
+            let delta = stack.unsafe_pop().to_int()
+            let addr = stack.unsafe_pop().to_int()
+            let old = read_u32_le(mem, addr + offset)
+            write_u32_le(mem, addr + offset, old + delta)
+            stack.push(old.to_int64())
+          }
+          _ =>
+            raise WasmEvalError::Unsupported("atomic op " + subop.to_string())
         }
       }
       // local.get
@@ -2618,6 +2726,234 @@ test "vibe wasm eval supports: String::concat" {
 test "vibe wasm eval supports: String::join" {
   assert_wasm_eval_decodes("String::join([\"a\", \"b\", \"c\"], \",\")")
   assert_wasm_eval_decodes("String::join([\"only\"], \"-\")")
+}
+
+///|
+test "vibe wasm eval: Threads linear-local channel roundtrip" {
+  let db = VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|export let thread_roundtrip = () -> String with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let _ok = Threads::send(ch, "hello")
+      #|  Threads::recv(ch)
+      #|}
+      #|""
+    ),
+  )
+  let wasm = compile_module_wasm(db, "main", thread_backend_id="linear-local") catch {
+    e => fail("compile failed: " + e.to_string())
+  }
+  let res = run_wasm_export(wasm, "thread_roundtrip") catch {
+    e => fail("wasm eval failed: " + e.to_string())
+  }
+  let decoded = decode_tagged_value(res.mem, res.value, 0) catch {
+    e => fail("decode failed: " + e.to_string())
+  }
+  assert_eq(decoded, @core.Value::String("hello"))
+}
+
+///|
+test "vibe wasm eval: Threads component unsafe shared channel roundtrip" {
+  let db = VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|export let thread_roundtrip = () -> String with {Threads} {
+      #|  let ch = Threads::channel_new(2)
+      #|  let _ok = Threads::send(ch, "hello")
+      #|  Threads::recv(ch)
+      #|}
+      #|""
+    ),
+  )
+  let wasm = compile_module_wasm(
+    db,
+    "main",
+    thread_backend_id="component-unsafe-os-threads",
+  ) catch {
+    e => fail("compile failed: " + e.to_string())
+  }
+  let res = run_wasm_export(wasm, "thread_roundtrip") catch {
+    e => fail("wasm eval failed: " + e.to_string())
+  }
+  let decoded = decode_tagged_value(res.mem, res.value, 0) catch {
+    e => fail("decode failed: " + e.to_string())
+  }
+  assert_eq(decoded, @core.Value::String("hello"))
+}
+
+///|
+test "vibe wasm eval: Threads component unsafe shared spawn wait sync slot" {
+  let db = VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|export let thread_spawn_wait = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let task = Threads::spawn("noop", ch)
+      #|  Threads::wait(task)
+      #|}
+      #|""
+    ),
+  )
+  let wasm = compile_module_wasm(
+    db,
+    "main",
+    thread_backend_id="component-unsafe-os-threads",
+  ) catch {
+    e => fail("compile failed: " + e.to_string())
+  }
+  let res = run_wasm_export(wasm, "thread_spawn_wait") catch {
+    e => fail("wasm eval failed: " + e.to_string())
+  }
+  let decoded = decode_tagged_value(res.mem, res.value, 0) catch {
+    e => fail("decode failed: " + e.to_string())
+  }
+  assert_eq(decoded, @core.Value::Int(0L))
+}
+
+///|
+test "vibe wasm eval: Threads component unsafe worker function result" {
+  let db = VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let worker = (_ch: ThreadChannel[Int]) -> Int with {Threads} {
+      #|  42
+      #|}
+      #|export let thread_worker_probe = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let task = Threads::spawn("worker", ch)
+      #|  Threads::wait(task)
+      #|}
+      #|""
+    ),
+  )
+  let wasm = compile_module_wasm(
+    db,
+    "main",
+    thread_backend_id="component-unsafe-os-threads",
+  ) catch {
+    e => fail("compile failed: " + e.to_string())
+  }
+  let res = run_wasm_export(wasm, "thread_worker_probe") catch {
+    e => fail("wasm eval failed: " + e.to_string())
+  }
+  let decoded = decode_tagged_value(res.mem, res.value, 0) catch {
+    e => fail("decode failed: " + e.to_string())
+  }
+  assert_eq(decoded, @core.Value::Int(42L))
+}
+
+///|
+test "vibe wasm eval: Threads component unsafe worker reads channel" {
+  let db = VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|let worker_recv = (ch: ThreadChannel[Int]) -> Int with {Threads} {
+      #|  Threads::recv(ch) + 21
+      #|}
+      #|export let thread_worker_channel_probe = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let _ok = Threads::send(ch, 21)
+      #|  let task = Threads::spawn("worker_recv", ch)
+      #|  Threads::wait(task)
+      #|}
+      #|""
+    ),
+  )
+  let wasm = compile_module_wasm(
+    db,
+    "main",
+    thread_backend_id="component-unsafe-os-threads",
+  ) catch {
+    e => fail("compile failed: " + e.to_string())
+  }
+  let res = run_wasm_export(wasm, "thread_worker_channel_probe") catch {
+    e => fail("wasm eval failed: " + e.to_string())
+  }
+  let decoded = decode_tagged_value(res.mem, res.value, 0) catch {
+    e => fail("decode failed: " + e.to_string())
+  }
+  assert_eq(decoded, @core.Value::Int(42L))
+}
+
+///|
+test "vibe wasm eval: Threads component unsafe alloc probe writes payload" {
+  let db = VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|export let thread_alloc_probe = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let task = Threads::spawn("alloc-probe", ch)
+      #|  Threads::wait(task)
+      #|}
+      #|""
+    ),
+  )
+  let wasm = compile_module_wasm(
+    db,
+    "main",
+    thread_backend_id="component-unsafe-os-threads",
+  ) catch {
+    e => fail("compile failed: " + e.to_string())
+  }
+  let res = run_wasm_export(wasm, "thread_alloc_probe") catch {
+    e => fail("wasm eval failed: " + e.to_string())
+  }
+  let decoded = decode_tagged_value(res.mem, res.value, 0) catch {
+    e => fail("decode failed: " + e.to_string())
+  }
+  match decoded {
+    @core.Value::Int(n) =>
+      if n <= 0L {
+        fail("alloc probe payload must be positive, got " + n.to_string())
+      }
+    other => fail("alloc probe returned non-Int: " + other.to_string())
+  }
+}
+
+///|
+test "vibe wasm eval: Threads component unsafe alloc many probe sums payloads" {
+  let db = VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|export let thread_alloc_many_probe = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let t1 = Threads::spawn("alloc-probe", ch)
+      #|  let t2 = Threads::spawn("alloc-probe", ch)
+      #|  let t3 = Threads::spawn("alloc-probe", ch)
+      #|  let t4 = Threads::spawn("alloc-probe", ch)
+      #|  Threads::wait(t1) + Threads::wait(t2) + Threads::wait(t3) + Threads::wait(t4)
+      #|}
+      #|""
+    ),
+  )
+  let wasm = compile_module_wasm(
+    db,
+    "main",
+    thread_backend_id="component-unsafe-os-threads",
+  ) catch {
+    e => fail("compile failed: " + e.to_string())
+  }
+  let res = run_wasm_export(wasm, "thread_alloc_many_probe") catch {
+    e => fail("wasm eval failed: " + e.to_string())
+  }
+  let decoded = decode_tagged_value(res.mem, res.value, 0) catch {
+    e => fail("decode failed: " + e.to_string())
+  }
+  match decoded {
+    @core.Value::Int(n) =>
+      if n <= 0L {
+        fail("alloc many probe payload must be positive, got " + n.to_string())
+      }
+    other => fail("alloc many probe returned non-Int: " + other.to_string())
+  }
 }
 
 ///|

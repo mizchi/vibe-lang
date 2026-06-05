@@ -570,6 +570,70 @@ fn emit_i32_store(buf : ByteBuf, offset : Int) -> Unit {
 }
 
 ///|
+fn emit_memory_atomic_notify(buf : ByteBuf, offset : Int) -> Unit {
+  buf.push((0xfe).to_byte()) // atomics prefix
+  write_u32_leb(buf, 0x00) // memory.atomic.notify
+  write_u32_leb(buf, 2) // align=4
+  write_u32_leb(buf, offset)
+}
+
+///|
+fn emit_memory_atomic_wait32(buf : ByteBuf, offset : Int) -> Unit {
+  buf.push((0xfe).to_byte()) // atomics prefix
+  write_u32_leb(buf, 0x01) // memory.atomic.wait32
+  write_u32_leb(buf, 2) // align=4
+  write_u32_leb(buf, offset)
+}
+
+///|
+fn emit_i32_atomic_load(buf : ByteBuf, offset : Int) -> Unit {
+  buf.push((0xfe).to_byte()) // atomics prefix
+  write_u32_leb(buf, 0x10) // i32.atomic.load
+  write_u32_leb(buf, 2) // align=4
+  write_u32_leb(buf, offset)
+}
+
+///|
+fn emit_i64_atomic_load(buf : ByteBuf, offset : Int) -> Unit {
+  buf.push((0xfe).to_byte()) // atomics prefix
+  write_u32_leb(buf, 0x11) // i64.atomic.load
+  write_u32_leb(buf, 3) // align=8
+  write_u32_leb(buf, offset)
+}
+
+///|
+fn emit_i32_atomic_store(buf : ByteBuf, offset : Int) -> Unit {
+  buf.push((0xfe).to_byte()) // atomics prefix
+  write_u32_leb(buf, 0x17) // i32.atomic.store
+  write_u32_leb(buf, 2) // align=4
+  write_u32_leb(buf, offset)
+}
+
+///|
+fn emit_i64_atomic_store(buf : ByteBuf, offset : Int) -> Unit {
+  buf.push((0xfe).to_byte()) // atomics prefix
+  write_u32_leb(buf, 0x18) // i64.atomic.store
+  write_u32_leb(buf, 3) // align=8
+  write_u32_leb(buf, offset)
+}
+
+///|
+fn emit_i32_atomic_rmw_add(buf : ByteBuf, offset : Int) -> Unit {
+  buf.push((0xfe).to_byte()) // atomics prefix
+  write_u32_leb(buf, 0x1e) // i32.atomic.rmw.add
+  write_u32_leb(buf, 2) // align=4
+  write_u32_leb(buf, offset)
+}
+
+///|
+fn emit_i32_atomic_rmw_cmpxchg(buf : ByteBuf, offset : Int) -> Unit {
+  buf.push((0xfe).to_byte()) // atomics prefix
+  write_u32_leb(buf, 0x48) // i32.atomic.rmw.cmpxchg
+  write_u32_leb(buf, 2) // align=4
+  write_u32_leb(buf, offset)
+}
+
+///|
 fn register_coverage_point(
   ctx : CodegenCtx,
   kind : WasmCoveragePointKind,

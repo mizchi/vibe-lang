@@ -8,8 +8,10 @@ priv struct CodegenCtx {
   fn_needs_env : Map[Int, Bool] // function index -> closure env required
   fn_needs_heap : Map[String, Bool] // function name -> needs heap allocation
   fn_params : Map[String, Array[ValueKind]]
+  fn_param_types : Map[String, Array[@core.Type]]
   fn_param_names : Map[String, Array[String]] // function name -> param names
   fn_returns : Map[String, ValueKind]
+  fn_return_types : Map[String, @core.Type]
   fn_multivalue_results : Map[String, Array[ValueKind]] // tuple-returning functions -> element kinds
   fn_return_sigs : Map[String, FuncSig] // return sig if function returns a function
   fn_closure_indices : Map[String, Int]
@@ -27,6 +29,8 @@ priv struct CodegenCtx {
   mut fn_local_sigs : Map[String, FuncSig]
   mut fn_sig_type_indices : Map[String, Int]
   mut fn_sig_order : Array[FuncSig]
+  mut shared_fn_sig_slots : Map[String, Int]
+  mut shared_fn_sig_order : Array[FuncSig]
   mut fn_type_indices : Map[String, Int]
   mut need_sh : Bool
   mut need_path : Bool
@@ -116,8 +120,9 @@ priv struct CodegenCtx {
   // For parameterized loop: local indices for loop params
   mut loop_param_locals : Array[Int]
   // Undo log for scoped named-function maps (fn_indices, fn_params,
-  // fn_param_names, fn_returns). These maps are pre-registered to the size
-  // of the whole module, so snapshotting them by value on every block was
+  // fn_param_types, fn_param_names, fn_returns, fn_return_types). These maps
+  // are pre-registered to the size of the whole module, so snapshotting them
+  // by value on every block was
   // O(module_size) per block = O(N^2) over a compile. Instead, in-region
   // writes push a revert closure here; snapshot records the log length and
   // restore pops back to it. O(writes-in-block) per block.
@@ -141,10 +146,22 @@ priv struct CodegenCtx {
   exported_fn_env_globals : Map[String, Int]
   // S8: heap_synced tracks whether heap_local == heap_global
   mut heap_synced : Bool
+  // Shared-memory thread backend: fixed memory word used as the atomic heap
+  // cursor. -1 means the backend does not use the shared cursor.
+  mut shared_heap_cursor_offset : Int
   // Tail call optimization (return_call / return_call_indirect)
   enable_tail_call : Bool
   // Library mode: skip _start, suitable for --preload linking
   library_mode : Bool
+  // Experimental Vibe thread backend selected by CLI/runtime.
+  thread_backend_id : String
+  // Component wrapper path: import thread runtime memory/spawn instead of
+  // emitting standalone shared-memory staging.
+  thread_component_runtime_imports : Bool
+  mut need_thread_spawn_indirect : Bool
+  mut thread_spawn_indirect_import_index : Int
+  mut thread_start_func_idx : Int
+  thread_worker_func_indices : Array[Int]
   // Linked function imports: func_name -> absolute import func index
   // Used for debug linked builds where imported modules are pre-compiled .wasm
   linked_fn_imports : Map[String, Int]
@@ -218,6 +235,8 @@ fn CodegenCtx::new(
   fs_host_imports? : Bool = false,
   force_cabi_realloc? : Bool = false,
   library_mode? : Bool = false,
+  thread_backend_id? : String = "linear-local",
+  thread_component_runtime_imports? : Bool = false,
 ) -> CodegenCtx {
   // Register builtin enum constructors
   let enum_ctor_tags : Map[String, Int] = {}
@@ -239,8 +258,10 @@ fn CodegenCtx::new(
     fn_needs_env: {},
     fn_needs_heap: {},
     fn_params: {},
+    fn_param_types: {},
     fn_param_names: {},
     fn_returns: {},
+    fn_return_types: {},
     fn_multivalue_results: {},
     fn_return_sigs: {},
     fn_closure_indices: {},
@@ -257,6 +278,8 @@ fn CodegenCtx::new(
     fn_local_sigs: {},
     fn_sig_type_indices: {},
     fn_sig_order: [],
+    shared_fn_sig_slots: {},
+    shared_fn_sig_order: [],
     fn_type_indices: {},
     need_sh: false,
     need_path: false,
@@ -349,8 +372,15 @@ fn CodegenCtx::new(
     // Exported closures env globals
     exported_fn_env_globals: {},
     heap_synced: false,
+    shared_heap_cursor_offset: -1,
     enable_tail_call: false,
     library_mode,
+    thread_backend_id,
+    thread_component_runtime_imports,
+    need_thread_spawn_indirect: false,
+    thread_spawn_indirect_import_index: -1,
+    thread_start_func_idx: -1,
+    thread_worker_func_indices: [],
     linked_fn_imports: {},
     linked_fn_param_counts: {},
     linked_fn_return_counts: {},

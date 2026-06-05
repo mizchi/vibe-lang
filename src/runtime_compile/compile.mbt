@@ -1819,6 +1819,7 @@ fn wasm_artifact_cache_namespace(
   fs_host_imports : Bool,
   force_cabi_realloc : Bool,
   library_mode : Bool,
+  thread_backend_id : String,
 ) -> String {
   let buf = StringBuilder::new()
   buf.write_string(bundler_kind)
@@ -1832,6 +1833,8 @@ fn wasm_artifact_cache_namespace(
   buf.write_string(force_cabi_realloc.to_string())
   buf.write_char('\n')
   buf.write_string(library_mode.to_string())
+  buf.write_char('\n')
+  buf.write_string(thread_backend_id)
   buf.to_string()
 }
 
@@ -2119,12 +2122,16 @@ fn wasm_emit_options(
   http_host_imports? : Bool = false,
   http_component_wasi_shim? : Bool = false,
   fs_host_imports? : Bool = false,
+  thread_backend_id? : String = "linear-local",
+  thread_component_runtime_imports? : Bool = false,
 ) -> @codegen.WasmEmitOptions {
   @codegen.wasm_emit_options(
     embed_error_strings=debug_errors,
     http_host_imports~,
     http_component_wasi_shim~,
     fs_host_imports~,
+    thread_backend_id~,
+    thread_component_runtime_imports~,
   )
 }
 
@@ -2194,6 +2201,7 @@ fn wasm_emit_options_with_rc(
   http_component_wasi_shim? : Bool = false,
   fs_host_imports? : Bool = false,
   rc_debug? : Bool = false,
+  thread_backend_id? : String = "linear-local",
 ) -> (@codegen.WasmEmitOptions, @core.Module) {
   // Desugar StringInterp into let-binding chains before Perceus analysis
   // so that intermediate String::concat results are RC-tracked.
@@ -2236,6 +2244,7 @@ fn wasm_emit_options_with_rc(
       rc_debug~,
       rc_actions~,
       rc_func_actions~,
+      thread_backend_id~,
     ),
     desugared_ast,
   )
@@ -2422,6 +2431,7 @@ pub fn compile_module_wasm(
   force_cabi_realloc? : Bool = false,
   enable_rc? : Bool = false,
   rc_debug? : Bool = false,
+  thread_backend_id? : String = "linear-local",
 ) -> Bytes raise WasmCompileError {
   // Threaded for the wasm `name` section: lets the linear codegen
   // convert lambda span offsets to `<line>:<col>` when labels are
@@ -2433,7 +2443,10 @@ pub fn compile_module_wasm(
     Some(s) => s
     None => ""
   }
-  let bare_options = !debug_errors && !http_host_imports && !force_cabi_realloc
+  let bare_options = !debug_errors &&
+    !http_host_imports &&
+    !force_cabi_realloc &&
+    thread_backend_id == "linear-local"
   compile_module_wasm_with(db, path, "default", ast => {
     if enable_rc {
       let (options, desugared_ast) = wasm_emit_options_with_rc(
@@ -2441,6 +2454,7 @@ pub fn compile_module_wasm(
         debug_errors~,
         http_host_imports~,
         rc_debug~,
+        thread_backend_id~,
       )
       @codegen.emit_module_wasm_with_options(desugared_ast, options)
     } else if source.length() > 0 && bare_options {
@@ -2452,6 +2466,7 @@ pub fn compile_module_wasm(
         embed_error_strings=debug_errors,
         http_host_imports~,
         force_cabi_realloc~,
+        thread_backend_id~,
       )
       @codegen.emit_module_wasm_with_options(ast, options)
     }
@@ -2480,6 +2495,7 @@ pub fn compile_module_wasm_with_opt_level(
   fs_host_imports? : Bool = false,
   force_cabi_realloc? : Bool = false,
   library_mode? : Bool = false,
+  thread_backend_id? : String = "linear-local",
 ) -> Bytes raise WasmCompileError {
   let (wasm, _) = compile_module_wasm_with_opt_level_profiled(
     db,
@@ -2491,6 +2507,7 @@ pub fn compile_module_wasm_with_opt_level(
     fs_host_imports~,
     force_cabi_realloc~,
     library_mode~,
+    thread_backend_id~,
   )
   wasm
 }
@@ -2506,6 +2523,7 @@ pub fn compile_module_wasm_with_opt_level_profiled(
   fs_host_imports? : Bool = false,
   force_cabi_realloc? : Bool = false,
   library_mode? : Bool = false,
+  thread_backend_id? : String = "linear-local",
 ) -> (Bytes, WasmCompileStageProfile) raise WasmCompileError {
   ensure_hooks()
   let cache_namespace = wasm_artifact_cache_namespace(
@@ -2519,6 +2537,7 @@ pub fn compile_module_wasm_with_opt_level_profiled(
     fs_host_imports,
     force_cabi_realloc,
     library_mode,
+    thread_backend_id,
   )
   // Threaded for the wasm `name` section: lets the codegen render
   // lambda labels as `<line>:<col>` instead of `<offset>`.
@@ -2534,6 +2553,7 @@ pub fn compile_module_wasm_with_opt_level_profiled(
       force_cabi_realloc~,
       library_mode~,
       source~,
+      thread_backend_id~,
     )
   }
   if no_dce {
@@ -2566,6 +2586,7 @@ pub fn compile_module_wasm_with_coverage(
   run_tests? : Bool = false,
   debug_errors? : Bool = false,
   http_host_imports? : Bool = false,
+  thread_backend_id? : String = "linear-local",
 ) -> WasmCoverageArtifact raise WasmCompileError {
   let coverage = if no_dce {
     compile_module_wasm_no_dce_with_coverage(
@@ -2574,6 +2595,7 @@ pub fn compile_module_wasm_with_coverage(
       run_tests~,
       debug_errors~,
       http_host_imports~,
+      thread_backend_id~,
     )
   } else if run_tests {
     compile_module_wasm_coverage_with(
@@ -2583,7 +2605,11 @@ pub fn compile_module_wasm_with_coverage(
       ast => {
         @codegen.emit_module_wasm_with_coverage_options(
           ast,
-          wasm_emit_options(debug_errors, http_host_imports~),
+          wasm_emit_options(
+            debug_errors,
+            http_host_imports~,
+            thread_backend_id~,
+          ),
         )
       },
       run_tests=true,
@@ -2592,7 +2618,7 @@ pub fn compile_module_wasm_with_coverage(
     compile_module_wasm_coverage_with(db, path, "default", ast => {
       @codegen.emit_module_wasm_with_coverage_options(
         ast,
-        wasm_emit_options(debug_errors, http_host_imports~),
+        wasm_emit_options(debug_errors, http_host_imports~, thread_backend_id~),
       )
     })
   }
@@ -2606,6 +2632,7 @@ fn compile_module_wasm_no_dce_with_coverage(
   run_tests? : Bool = false,
   debug_errors? : Bool = false,
   http_host_imports? : Bool = false,
+  thread_backend_id? : String = "linear-local",
 ) -> WasmCoverageArtifact raise WasmCompileError {
   compile_module_wasm_coverage_with(
     db,
@@ -2614,7 +2641,7 @@ fn compile_module_wasm_no_dce_with_coverage(
     ast => {
       @codegen.emit_module_wasm_with_coverage_options(
         ast,
-        wasm_emit_options(debug_errors, http_host_imports~),
+        wasm_emit_options(debug_errors, http_host_imports~, thread_backend_id~),
       )
     },
     run_tests~,
@@ -2627,11 +2654,12 @@ pub fn compile_module_wasm_js_string(
   db : @runtime.VibeDb,
   path : String,
   debug_errors? : Bool = false,
+  thread_backend_id? : String = "linear-local",
 ) -> Bytes raise WasmCompileError {
   compile_module_wasm_with(db, path, "default", ast => {
     @codegen.emit_module_wasm_js_string_with_options(
       ast,
-      wasm_emit_options(debug_errors),
+      wasm_emit_options(debug_errors, thread_backend_id~),
     )
   })
 }
@@ -2684,6 +2712,7 @@ pub fn compile_module_wasm_no_dce(
   debug_errors? : Bool = false,
   http_host_imports? : Bool = false,
   force_cabi_realloc? : Bool = false,
+  thread_backend_id? : String = "linear-local",
 ) -> Bytes raise WasmCompileError {
   compile_module_wasm_with(db, path, "no_dce", ast => {
     @codegen.emit_module_wasm_with_options(
@@ -2692,6 +2721,7 @@ pub fn compile_module_wasm_no_dce(
         embed_error_strings=debug_errors,
         http_host_imports~,
         force_cabi_realloc~,
+        thread_backend_id~,
       ),
     )
   })
@@ -2704,22 +2734,37 @@ pub fn compile_module_component(
   db : @runtime.VibeDb,
   path : String,
   http_host_imports? : Bool = false,
+  thread_backend_id? : String = "linear-local",
 ) -> Bytes raise WasmCompileError {
   let compiled = compile_module(db, path) catch {
     e => raise WasmCompileError::Compile(e)
   }
   let bundled = bundle_for_wasm(db, path, compiled.ast)
+  let component_thread_builtins = check_pending_component_thread_spawn_builtins(
+    bundled,
+  )
+  let use_component_thread_runtime = (
+      thread_backend_id == "component-unsafe-os-threads" ||
+      thread_backend_id == "component-shared"
+    ) &&
+    component_thread_builtins.length() > 0
   let core_wasm = @codegen.emit_module_wasm_with_options(
     bundled,
     wasm_emit_options(
       false,
       http_host_imports~,
       http_component_wasi_shim=http_host_imports,
+      thread_backend_id~,
+      thread_component_runtime_imports=use_component_thread_runtime,
     ),
   ) catch {
     e => raise WasmCompileError::Gen(e)
   }
-  @codegen.emit_component_wasm_with_lift(core_wasm, "run")
+  if use_component_thread_runtime {
+    @codegen.emit_component_wasm_with_thread_runtime_lift(core_wasm, "run")
+  } else {
+    @codegen.emit_component_wasm_with_lift(core_wasm, "run")
+  }
 }
 
 ///|
@@ -2776,10 +2821,15 @@ pub fn compile_module_component_string_lift_auto(
   path : String,
   opt_level? : String? = None,
   is_async? : Bool = false,
+  thread_backend_id? : String = "linear-local",
 ) -> Bytes raise WasmCompileError {
   let compiled = compile_module(db, path) catch {
     e => raise WasmCompileError::Compile(e)
   }
+  reject_pending_component_thread_spawn_lowering(
+    compiled.ast,
+    thread_backend_id,
+  )
   // Check for incompatible server builtins (listen/accept model is not supported in P3 handler mode)
   let incompatible = check_incompatible_server_builtins(compiled.ast)
   if incompatible.length() > 0 {
@@ -2853,7 +2903,7 @@ pub fn compile_module_component_string_lift_auto(
   let bundled = bundle_for_wasm(db, path, compiled.ast)
   let core_wasm = @codegen.emit_module_wasm_with_options(
     bundled,
-    @codegen.wasm_emit_options(force_cabi_realloc=true),
+    @codegen.wasm_emit_options(force_cabi_realloc=true, thread_backend_id~),
   ) catch {
     e => raise WasmCompileError::Gen(e)
   }
@@ -2867,6 +2917,96 @@ pub fn compile_module_component_string_lift_auto(
     string_result~,
   )
   optimize_wasm_bytes_with_opt_level(component, opt_level)
+}
+
+///|
+fn reject_pending_component_thread_spawn_lowering(
+  ast : @core.Module,
+  thread_backend_id : String,
+) -> Unit raise WasmCompileError {
+  if thread_backend_id != "component-unsafe-os-threads" &&
+    thread_backend_id != "component-shared" {
+    return
+  }
+  let found = check_pending_component_thread_spawn_builtins(ast)
+  if found.length() == 0 {
+    return
+  }
+  raise WasmCompileError::Optimize(
+    "component thread backend " +
+    thread_backend_id +
+    " uses " +
+    found
+    .iter()
+    .fold(init="", fn(acc, name) {
+      if acc == "" {
+        name
+      } else {
+        acc + ", " + name
+      }
+    }) +
+    ", but component-level canon thread.spawn-indirect lowering is not wired yet. " +
+    "Use --wasm for the current shared-memory staging path or keep this backend disabled for --component.",
+  )
+}
+
+///|
+fn check_pending_component_thread_spawn_builtins(
+  ast : @core.Module,
+) -> Array[String] {
+  let found : Array[String] = []
+  let pending_names = ["Threads::spawn", "Threads::wait"]
+  scan_pending_component_thread_builtins_block(ast, pending_names, found)
+  found
+}
+
+///|
+fn scan_pending_component_thread_builtins_block(
+  block : @core.Module,
+  names : Array[String],
+  found : Array[String],
+) -> Unit {
+  for stmt in block.stmts {
+    match stmt {
+      @core.Stmt::Let(expr~, ..)
+      | @core.Stmt::ExportLet(expr~, ..)
+      | @core.Stmt::Expr(expr~, ..)
+      | @core.Stmt::LetMut(expr~, ..)
+      | @core.Stmt::Assign(expr~, ..) =>
+        scan_pending_component_thread_builtins_expr(expr, names, found)
+      _ => ()
+    }
+  }
+}
+
+///|
+fn scan_pending_component_thread_builtins_expr(
+  expr : @core.Expr,
+  names : Array[String],
+  found : Array[String],
+) -> Unit {
+  match expr {
+    @core.Expr::Call(name~, args~, ..) => {
+      for n in names {
+        if name == n && !found.contains(n) {
+          found.push(n)
+        }
+      }
+      for arg in args {
+        scan_pending_component_thread_builtins_expr(arg.expr, names, found)
+      }
+    }
+    @core.Expr::If(cond~, then_body~, else_body~, ..) => {
+      scan_pending_component_thread_builtins_expr(cond, names, found)
+      scan_pending_component_thread_builtins_block(then_body, names, found)
+      scan_pending_component_thread_builtins_block(else_body, names, found)
+    }
+    @core.Expr::Block(body~, ..) =>
+      scan_pending_component_thread_builtins_block(body, names, found)
+    @core.Expr::Fn(body~, ..) =>
+      scan_pending_component_thread_builtins_block(body, names, found)
+    _ => ()
+  }
 }
 
 ///|
@@ -2935,8 +3075,14 @@ pub fn compile_module_component_with_opt_level(
   path : String,
   opt_level? : String? = None,
   http_host_imports? : Bool = false,
+  thread_backend_id? : String = "linear-local",
 ) -> Bytes raise WasmCompileError {
-  let component = compile_module_component(db, path, http_host_imports~)
+  let component = compile_module_component(
+    db,
+    path,
+    http_host_imports~,
+    thread_backend_id~,
+  )
   optimize_wasm_bytes_with_opt_level(component, opt_level)
 }
 
@@ -3004,6 +3150,7 @@ pub fn compile_module_wasm_linked(
   path : String,
   debug_errors? : Bool = false,
   skip_typecheck? : Bool = false,
+  thread_backend_id? : String = "linear-local",
 ) -> (Bytes, Array[LinkedImport]) raise WasmCompileError {
   let compiled_ast = if skip_typecheck {
     let raw_ast = db.ast(path)
@@ -3032,6 +3179,7 @@ pub fn compile_module_wasm_linked(
     @codegen.wasm_emit_options(
       embed_error_strings=debug_errors,
       linked_imports=codegen_linked,
+      thread_backend_id~,
     ),
   ) catch {
     e => raise WasmCompileError::Gen(e)
@@ -3044,10 +3192,15 @@ pub fn compile_module_wasm_linked(
 pub fn emit_wasm_with_linked_imports(
   bundled : @core.Module,
   linked_imports : Array[(String, String, Int, Int)],
+  thread_backend_id? : String = "linear-local",
 ) -> Bytes raise WasmCompileError {
   @codegen.emit_module_wasm_with_options(
     bundled,
-    @codegen.wasm_emit_options(embed_error_strings=true, linked_imports~),
+    @codegen.wasm_emit_options(
+      embed_error_strings=true,
+      linked_imports~,
+      thread_backend_id~,
+    ),
   ) catch {
     e => raise WasmCompileError::Gen(e)
   }
@@ -3057,12 +3210,14 @@ pub fn emit_wasm_with_linked_imports(
 pub fn emit_library_module_wasm(
   ast : @core.Module,
   debug_errors? : Bool = false,
+  thread_backend_id? : String = "linear-local",
 ) -> Bytes raise WasmCompileError {
   @codegen.emit_module_wasm_with_options(
     ast,
     @codegen.wasm_emit_options(
       embed_error_strings=debug_errors,
       library_mode=true,
+      thread_backend_id~,
     ),
   ) catch {
     e => raise WasmCompileError::Gen(e)
@@ -3076,11 +3231,17 @@ pub fn compile_module_wasm_js_string_with_opt_level(
   no_dce? : Bool = false,
   opt_level? : String? = None,
   debug_errors? : Bool = false,
+  thread_backend_id? : String = "linear-local",
 ) -> Bytes raise WasmCompileError {
   let wasm = if no_dce {
-    compile_module_wasm_js_string_no_dce(db, path, debug_errors~)
+    compile_module_wasm_js_string_no_dce(
+      db,
+      path,
+      debug_errors~,
+      thread_backend_id~,
+    )
   } else {
-    compile_module_wasm_js_string(db, path, debug_errors~)
+    compile_module_wasm_js_string(db, path, debug_errors~, thread_backend_id~)
   }
   optimize_wasm_bytes_with_opt_level(wasm, opt_level)
 }
@@ -3093,6 +3254,7 @@ pub fn compile_module_wasm_js_string_with_coverage(
   opt_level? : String? = None,
   run_tests? : Bool = false,
   debug_errors? : Bool = false,
+  thread_backend_id? : String = "linear-local",
 ) -> WasmCoverageArtifact raise WasmCompileError {
   let coverage = if no_dce {
     compile_module_wasm_js_string_no_dce_with_coverage(
@@ -3100,6 +3262,7 @@ pub fn compile_module_wasm_js_string_with_coverage(
       path,
       run_tests~,
       debug_errors~,
+      thread_backend_id~,
     )
   } else if run_tests {
     compile_module_wasm_coverage_with(
@@ -3109,7 +3272,7 @@ pub fn compile_module_wasm_js_string_with_coverage(
       ast => {
         @codegen.emit_module_wasm_js_string_with_coverage_options(
           ast,
-          wasm_emit_options(debug_errors),
+          wasm_emit_options(debug_errors, thread_backend_id~),
         )
       },
       run_tests=true,
@@ -3118,7 +3281,7 @@ pub fn compile_module_wasm_js_string_with_coverage(
     compile_module_wasm_coverage_with(db, path, "default", ast => {
       @codegen.emit_module_wasm_js_string_with_coverage_options(
         ast,
-        wasm_emit_options(debug_errors),
+        wasm_emit_options(debug_errors, thread_backend_id~),
       )
     })
   }
@@ -3131,6 +3294,7 @@ fn compile_module_wasm_js_string_no_dce_with_coverage(
   path : String,
   run_tests? : Bool = false,
   debug_errors? : Bool = false,
+  thread_backend_id? : String = "linear-local",
 ) -> WasmCoverageArtifact raise WasmCompileError {
   compile_module_wasm_coverage_with(
     db,
@@ -3139,7 +3303,7 @@ fn compile_module_wasm_js_string_no_dce_with_coverage(
     ast => {
       @codegen.emit_module_wasm_js_string_with_coverage_options(
         ast,
-        wasm_emit_options(debug_errors),
+        wasm_emit_options(debug_errors, thread_backend_id~),
       )
     },
     run_tests~,
@@ -3152,11 +3316,12 @@ pub fn compile_module_wasm_js_string_no_dce(
   db : @runtime.VibeDb,
   path : String,
   debug_errors? : Bool = false,
+  thread_backend_id? : String = "linear-local",
 ) -> Bytes raise WasmCompileError {
   compile_module_wasm_with(db, path, "no_dce", ast => {
     @codegen.emit_module_wasm_js_string_with_options(
       ast,
-      wasm_emit_options(debug_errors),
+      wasm_emit_options(debug_errors, thread_backend_id~),
     )
   })
 }
@@ -3212,6 +3377,7 @@ pub fn compile_module_component_with_string_lift(
   target_func_name : String,
   export_name : String,
   string_param_count : Int,
+  thread_backend_id? : String = "linear-local",
 ) -> Bytes raise WasmCompileError {
   let compiled = compile_module(db, path) catch {
     e => raise WasmCompileError::Compile(e)
@@ -3219,7 +3385,7 @@ pub fn compile_module_component_with_string_lift(
   let bundled = bundle_for_wasm(db, path, compiled.ast)
   let core_wasm = @codegen.emit_module_wasm_with_options(
     bundled,
-    @codegen.wasm_emit_options(force_cabi_realloc=true),
+    @codegen.wasm_emit_options(force_cabi_realloc=true, thread_backend_id~),
   ) catch {
     e => raise WasmCompileError::Gen(e)
   }

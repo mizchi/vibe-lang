@@ -126,10 +126,16 @@ fn emit_builder_grow_check(
   emit_i32_sub(buf)
   emit_i32_add(buf)
   emit_local_set(buf, old_end_local)
-  // Check if at heap tip: old_end == heap_local
-  emit_local_get(buf, old_end_local)
-  emit_local_get(buf, ctx.heap_local)
-  emit_i32_eq(buf)
+  // Check if at heap tip: old_end == heap_local. The shared-thread backend
+  // uses an atomic cursor, so a Store-local heap_local is not authoritative;
+  // force full realloc there.
+  if thread_backend_uses_atomic_heap(ctx) {
+    emit_i32_const_raw(buf, 0)
+  } else {
+    emit_local_get(buf, old_end_local)
+    emit_local_get(buf, ctx.heap_local)
+    emit_i32_eq(buf)
+  }
   buf.push((4).to_byte()) // if (at heap tip)
   buf.push((64).to_byte()) // void
   // new_cap = cap * 2
@@ -318,10 +324,15 @@ fn emit_builder_bulk_grow_check(
   emit_i32_sub(buf)
   emit_i32_add(buf)
   emit_local_set(buf, old_end_local)
-  // Check if at heap tip
-  emit_local_get(buf, old_end_local)
-  emit_local_get(buf, ctx.heap_local)
-  emit_i32_eq(buf)
+  // Check if at heap tip. The shared-thread backend must not trust
+  // Store-local heap_local for ownership of the global heap tip.
+  if thread_backend_uses_atomic_heap(ctx) {
+    emit_i32_const_raw(buf, 0)
+  } else {
+    emit_local_get(buf, old_end_local)
+    emit_local_get(buf, ctx.heap_local)
+    emit_i32_eq(buf)
+  }
   buf.push((4).to_byte()) // if (at heap tip)
   buf.push((64).to_byte()) // void
   // additional_bytes = (new_cap - cap) * elem_size
@@ -1261,7 +1272,7 @@ fn compile_call_builtin_pre_user_inner(
     (CodegenCtx, ByteBuf, String, Array[@core.CallArg], Bool) -> Unit raise WasmGenError,
   ] = [
     compile_builtin_numeric, compile_builtin_string, compile_builtin_collection,
-    compile_builtin_io, compile_builtin_http, compile_builtin_misc,
+    compile_builtin_io, compile_builtin_http, compile_builtin_threads, compile_builtin_misc,
   ]
   for i = 0; i < handlers.length(); i = i + 1 {
     let result : Result[Unit, WasmGenError] = try? handlers[i](

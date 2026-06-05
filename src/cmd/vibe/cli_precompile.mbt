@@ -63,7 +63,10 @@ fn strip_first_path_component(path : String) -> String {
 }
 
 ///|
-fn precompile_cmd(args : Array[String]) -> Unit {
+fn precompile_cmd(
+  args : Array[String],
+  features : @runtime.RuntimeFeatureFlags,
+) -> Unit {
   let opts = match parse_precompile_cmd_args(args) {
     Ok(v) => v
     Err(msg) => abort(msg)
@@ -111,6 +114,7 @@ fn precompile_cmd(args : Array[String]) -> Unit {
           file_out_dir,
           opts.wasm_js_string,
           opts.opt_level,
+          features,
         ) {
         Ok(out_path) => {
           println("  compiled: " + path + " -> " + out_path)
@@ -142,9 +146,14 @@ fn precompile_one_file(
   out_dir : String,
   wasm_js_string : Bool,
   opt_level : String?,
+  features : @runtime.RuntimeFeatureFlags,
 ) -> Result[String, String] {
   let (db, entry) = match @loader.load_db_with_fs(path, fs) {
     Ok(v) => v
+    Err(err) => return Err(err)
+  }
+  match require_unstable_threads_for_entry("precompile", features, db, entry) {
+    Ok(_) => ()
     Err(err) => return Err(err)
   }
   let wasm_bytes = if wasm_js_string {
@@ -152,11 +161,17 @@ fn precompile_one_file(
       db,
       entry,
       opt_level~,
+      thread_backend_id=features.thread_backend_id(),
     ) catch {
       e => return Err(e.user_message())
     }
   } else {
-    @runtime_compile.compile_module_wasm_with_opt_level(db, entry, opt_level~) catch {
+    @runtime_compile.compile_module_wasm_with_opt_level(
+      db,
+      entry,
+      opt_level~,
+      thread_backend_id=features.thread_backend_id(),
+    ) catch {
       e => return Err(e.user_message())
     }
   }

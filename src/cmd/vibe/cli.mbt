@@ -20,7 +20,11 @@ pub fn run(args : Array[String]) -> Unit {
   let cmd = parsed.cmd
   let cmd_args = parsed.cmd_args
   let syntax_mode = parsed.syntax_mode
-  let runtime_features = @runtime.RuntimeFeatureFlags::new(parsed.unstable_async)
+  let runtime_features = @runtime.RuntimeFeatureFlags::with_threads(
+    parsed.unstable_async,
+    parsed.unstable_threads,
+    parsed.thread_backend_id,
+  )
   let enable_llm = parsed.enable_llm
   @runtime_compile.init_hooks()
   match removed_command_message(cmd) {
@@ -30,7 +34,7 @@ pub fn run(args : Array[String]) -> Unit {
   match cmd {
     "run" => run_cmd(cmd_args, syntax_mode, runtime_features, enable_llm~)
     "test" => test_cmd(cmd_args, runtime_features)
-    "check" => check_cmd(cmd_args)
+    "check" => check_cmd(cmd_args, features=runtime_features)
     "session-http" => session_http_cmd(cmd_args, runtime_features)
     "session-json" => session_json_cmd(cmd_args, runtime_features)
     "finalize" => finalize_cmd(cmd_args)
@@ -42,14 +46,14 @@ pub fn run(args : Array[String]) -> Unit {
     "write-file" | "write_file" => write_file_cmd(cmd_args)
     "fmt" => fmt_cmd(cmd_args)
     "normalize" => normalize_cmd(cmd_args)
-    "compile" => compile_cmd(cmd_args)
-    "build" => build_cmd(cmd_args)
+    "compile" => compile_cmd(cmd_args, runtime_features)
+    "build" => build_cmd(cmd_args, runtime_features)
     "clean" => clean_cmd(cmd_args)
     "emit-module-source" => emit_module_source_cmd(cmd_args)
     "emit-closure-payload" => emit_closure_payload_cmd(cmd_args)
     "compile-closure-payload" => compile_closure_payload_cmd(cmd_args)
-    "compile-lite" => compile_lite_cmd(cmd_args)
-    "precompile" => precompile_cmd(cmd_args)
+    "compile-lite" => compile_lite_cmd(cmd_args, runtime_features)
+    "precompile" => precompile_cmd(cmd_args, runtime_features)
     "bench" => bench_cmd(cmd_args, syntax_mode, runtime_features)
     "bench-file" => bench_file_cmd(cmd_args, runtime_features)
     "profile" => profile_cmd(cmd_args)
@@ -186,6 +190,7 @@ fn usage_lines() -> Array[String] {
     "  symbols <file>              List symbols", "", "Project:", "  init [dir]                  Initialize project",
     "  new <dir>                   Scaffold new project", "  fetch <file>                Resolve imports and sync lock",
     "", "Flags:", "  --syntax vibe               Parser mode", "  --unstable-async            Enable async runtime",
+    "  --unstable-threads          Enable thread runtime features", "  --thread-backend <id>       Select experimental thread backend",
     "  --llm                       Enable LLM capabilities (requires VIBE_LLM_PROVIDER)",
     "", "Run 'vibe <command> --help' for command-specific options.",
   ]

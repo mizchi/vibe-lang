@@ -389,6 +389,17 @@ fn build_session_http_spawn_command(
     } else {
       ""
     }) +
+    (if features.is_unstable_threads_enabled() {
+      " --unstable-threads"
+    } else {
+      ""
+    }) +
+    (if features.thread_backend_id() != @threads.default_thread_backend_id() {
+      " --thread-backend " +
+      shell_quote_command_arg(features.thread_backend_id())
+    } else {
+      ""
+    }) +
     " session-http --port " +
     port.to_string()
   let payload = close_inherited_fds + "; " + exec_worker
@@ -546,12 +557,9 @@ fn parse_cli_check_report_json(json : Json) -> Result[CliCheckReport, String] {
 ///|
 fn run_check_entry_via_session(
   entry_path : String,
+  features : @runtime.RuntimeFeatureFlags,
 ) -> Result[CliCheckReport, String] {
-  let port = match
-    ensure_session_http_worker(
-      entry_path,
-      @runtime.RuntimeFeatureFlags::new(false),
-    ) {
+  let port = match ensure_session_http_worker(entry_path, features) {
     Ok(v) => v
     Err(err) => return Err(err)
   }
@@ -846,7 +854,13 @@ fn handle_cli_session_request(
     CliSessionRequestKind::Run =>
       match req.path {
         Some(path) =>
-          match run_cmd_wasm_backend_with_cache(cache, path) {
+          match
+            run_cmd_wasm_backend_with_cache(
+              cache,
+              path,
+              thread_backend_id=features.thread_backend_id(),
+              unstable_threads=features.is_unstable_threads_enabled(),
+            ) {
             Ok(result) => {
               maybe_create_linked_cache_background(path)
               (make_cli_session_run_result_json(path, result), false)
@@ -865,7 +879,7 @@ fn handle_cli_session_request(
     CliSessionRequestKind::Check =>
       match req.path {
         Some(path) => {
-          let report = run_check_entry_with_cache(cache, path, false)
+          let report = run_check_entry_with_cache(cache, path, false, features~)
           (make_cli_check_report_json(report), false)
         }
         None =>

@@ -185,5 +185,6 @@ fn compile_value_eq_function(self_func_abs_idx : Int) -> WasmFunc {
     ],
     results: [ValueKind::I32],
     body: body.to_array(),
+    shared: false,
   }
 }

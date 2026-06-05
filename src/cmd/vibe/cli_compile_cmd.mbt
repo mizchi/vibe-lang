@@ -1,5 +1,8 @@
 ///|
-fn compile_lite_cmd(args : Array[String]) -> Unit {
+fn compile_lite_cmd(
+  args : Array[String],
+  features : @runtime.RuntimeFeatureFlags,
+) -> Unit {
   let (compile_args, profile_tsv, profile_callstack, in_memory) = match
     split_compile_lite_args(args) {
     Ok(v) => v
@@ -29,6 +32,11 @@ fn compile_lite_cmd(args : Array[String]) -> Unit {
   match @loader.load_db_with_fs(opts.entry_path, fs) {
     Err(err) => abort("compile-lite: " + err)
     Ok((db, entry)) => {
+      match
+        require_unstable_threads_for_entry("compile-lite", features, db, entry) {
+        Ok(_) => ()
+        Err(err) => abort(err)
+      }
       let load_us = elapsed_us_from(start_load)
       @profiler.profiler_leave()
       @profiler.profiler_enter("type")
@@ -54,6 +62,7 @@ fn compile_lite_cmd(args : Array[String]) -> Unit {
           debug_errors=false,
           http_host_imports=false,
           force_cabi_realloc=false,
+          thread_backend_id=features.thread_backend_id(),
         ) catch {
           e => abort("compile-lite: " + e.user_message())
         }
@@ -99,7 +108,10 @@ fn compile_lite_cmd(args : Array[String]) -> Unit {
 }
 
 ///|
-fn compile_cmd(args : Array[String]) -> Unit {
+fn compile_cmd(
+  args : Array[String],
+  features : @runtime.RuntimeFeatureFlags,
+) -> Unit {
   if has_help_flag(args) {
     print_compile_help()
     return
@@ -153,6 +165,10 @@ fn compile_cmd(args : Array[String]) -> Unit {
   match @loader.load_db_with_fs(opts.entry_path, fs) {
     Err(err) => abort("compile: " + err)
     Ok((db, entry)) => {
+      match require_unstable_threads_for_entry("compile", features, db, entry) {
+        Ok(_) => ()
+        Err(err) => abort(err)
+      }
       // Resolve output path with default to dist/
       let resolved_out = match opts.out_path {
         Some(path) => path
@@ -182,6 +198,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
               run_tests=opts.coverage_run_tests,
               debug_errors=opts.debug_errors,
               http_host_imports=opts.http_host_imports,
+              thread_backend_id=features.thread_backend_id(),
             ) catch {
               e => abort("compile: " + e.user_message())
             }
@@ -212,6 +229,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
               fs_host_imports=opts.http_host_imports,
               force_cabi_realloc=opts.force_cabi_realloc,
               library_mode=opts.library_mode,
+              thread_backend_id=features.thread_backend_id(),
             ) catch {
               e => abort("compile: " + e.user_message())
             }
@@ -230,6 +248,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
               opt_level=opts.opt_level,
               run_tests=opts.coverage_run_tests,
               debug_errors=opts.debug_errors,
+              thread_backend_id=features.thread_backend_id(),
             ) catch {
               e => abort("compile: " + e.user_message())
             }
@@ -256,6 +275,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
               no_dce=opts.no_dce,
               opt_level=opts.opt_level,
               debug_errors=opts.debug_errors,
+              thread_backend_id=features.thread_backend_id(),
             ) catch {
               e => abort("compile: " + e.user_message())
             }
@@ -316,6 +336,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
             entry,
             opt_level=opts.opt_level,
             http_host_imports=opts.http_host_imports,
+            thread_backend_id=features.thread_backend_id(),
           ) catch {
             e => abort("compile: " + e.user_message())
           }
@@ -331,6 +352,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
             entry,
             opt_level=opts.opt_level,
             is_async=opts.is_async,
+            thread_backend_id=features.thread_backend_id(),
           ) catch {
             e => abort("compile: " + e.user_message())
           }
@@ -351,6 +373,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
             entry,
             opt_level=opts.opt_level,
             is_async=false,
+            thread_backend_id=features.thread_backend_id(),
           ) catch {
             e => abort("compile: " + e.user_message())
           }
@@ -427,7 +450,10 @@ fn[T] die(msg : String) -> T {
 /// --release: monolithic build (default, same as `compile --wasm`)
 /// --profile: write a pprof / folded / TSV profile to `<path>`
 ///            (format chosen by extension).
-fn build_cmd(args : Array[String]) -> Unit {
+fn build_cmd(
+  args : Array[String],
+  features : @runtime.RuntimeFeatureFlags,
+) -> Unit {
   if has_help_flag(args) {
     print_build_help()
     return
@@ -474,15 +500,19 @@ fn build_cmd(args : Array[String]) -> Unit {
   }
   with_profile(profile_path, fn() {
     if debug_mode {
-      build_cmd_debug(entry, out_path)
+      build_cmd_debug(entry, out_path, features)
     } else {
-      build_cmd_release(entry, out_path)
+      build_cmd_release(entry, out_path, features)
     }
   })
 }
 
 ///|
-fn build_cmd_release(entry : String, out_path : String?) -> Unit {
+fn build_cmd_release(
+  entry : String,
+  out_path : String?,
+  features : @runtime.RuntimeFeatureFlags,
+) -> Unit {
   let resolved_out = match out_path {
     Some(p) => p
     None => {
@@ -498,17 +528,27 @@ fn build_cmd_release(entry : String, out_path : String?) -> Unit {
     Ok(v) => v
     Err(err) => abort("build: " + err)
   }
+  match
+    require_unstable_threads_for_entry("build", features, db, resolved_entry) {
+    Ok(_) => ()
+    Err(err) => abort(err)
+  }
   // Try -Oz optimization; fall back to unoptimized if wite doesn't support
   // the generated opcodes (e.g., exceptions/try_table).
   let optimized : Result[Bytes, _] = try? @runtime_compile.compile_module_wasm_with_opt_level(
     db,
     resolved_entry,
     opt_level=Some("-Oz"),
+    thread_backend_id=features.thread_backend_id(),
   )
   let wasm_bytes = match optimized {
     Ok(bytes) => bytes
     Err(_) =>
-      @runtime_compile.compile_module_wasm_with_opt_level(db, resolved_entry) catch {
+      @runtime_compile.compile_module_wasm_with_opt_level(
+        db,
+        resolved_entry,
+        thread_backend_id=features.thread_backend_id(),
+      ) catch {
         e => abort("build: " + e.user_message())
       }
   }
@@ -526,7 +566,11 @@ fn build_cmd_release(entry : String, out_path : String?) -> Unit {
 }
 
 ///|
-fn build_cmd_debug(entry : String, out_path : String?) -> Unit {
+fn build_cmd_debug(
+  entry : String,
+  out_path : String?,
+  features : @runtime.RuntimeFeatureFlags,
+) -> Unit {
   let resolved_out = match out_path {
     Some(p) => p
     None => {
@@ -582,6 +626,12 @@ fn build_cmd_debug(entry : String, out_path : String?) -> Unit {
         }
       }
     }
+    if all_valid && !features.is_unstable_threads_enabled() {
+      match cached_source_hashes_use_threads_builtins(hash_cache_path) {
+        Ok(false) => ()
+        _ => all_valid = false
+      }
+    }
     all_valid
   } else {
     false
@@ -609,6 +659,10 @@ fn build_cmd_debug(entry : String, out_path : String?) -> Unit {
     let raw_ast = @parser.parse_ast(source) catch {
       e => abort("build --debug: parse error: " + e.to_string())
     }
+    match require_unstable_threads_for_module("build", features, raw_ast) {
+      Ok(_) => ()
+      Err(err) => abort(err)
+    }
     let desugared = @frontend.desugar_method_calls(raw_ast, {})
     let ast = @frontend.rewrite_effect_handles(desugared)
     // Resolve type definitions from entry's ReExport chains (standalone, no db)
@@ -621,7 +675,11 @@ fn build_cmd_debug(entry : String, out_path : String?) -> Unit {
       extra_type_stmts~,
     )
     let maybe_wasm = Some(
-      @runtime_compile.emit_wasm_with_linked_imports(bundled, codegen_linked),
+      @runtime_compile.emit_wasm_with_linked_imports(
+        bundled,
+        codegen_linked,
+        thread_backend_id=features.thread_backend_id(),
+      ),
     ) catch {
       _ => None
     }
@@ -636,10 +694,18 @@ fn build_cmd_debug(entry : String, out_path : String?) -> Unit {
           Ok(v) => v
           Err(err) => abort("build: " + err)
         }
+        match
+          require_unstable_threads_for_entry(
+            "build", features, db, resolved_entry,
+          ) {
+          Ok(_) => ()
+          Err(err) => abort(err)
+        }
         let (wasm, imports) = @runtime_compile.compile_module_wasm_linked(
           db,
           resolved_entry,
           debug_errors=true,
+          thread_backend_id=features.thread_backend_id(),
         ) catch {
           e => abort("build --debug: " + e.user_message())
         }
@@ -656,10 +722,16 @@ fn build_cmd_debug(entry : String, out_path : String?) -> Unit {
       Ok(v) => v
       Err(err) => abort("build: " + err)
     }
+    match
+      require_unstable_threads_for_entry("build", features, db, resolved_entry) {
+      Ok(_) => ()
+      Err(err) => abort(err)
+    }
     let (wasm, imports) = @runtime_compile.compile_module_wasm_linked(
       db,
       resolved_entry,
       debug_errors=true,
+      thread_backend_id=features.thread_backend_id(),
     ) catch {
       e => abort("build --debug: " + e.user_message())
     }
@@ -674,7 +746,7 @@ fn build_cmd_debug(entry : String, out_path : String?) -> Unit {
       _ => ()
     }
     // Compile library modules and save source hashes
-    save_library_modules(db, resolved_entry, imports, cache_dir)
+    save_library_modules(db, resolved_entry, imports, cache_dir, features)
     save_source_hashes(db, resolved_entry, cache_dir, hash_cache_path)
     (wasm, imports)
   }
@@ -712,6 +784,7 @@ fn save_library_modules(
   entry : String,
   imports : Array[@runtime_compile.LinkedImport],
   cache_dir : String,
+  features : @runtime.RuntimeFeatureFlags,
 ) -> Unit {
   let module_names : Map[String, Bool] = {}
   for li in imports {
@@ -724,6 +797,7 @@ fn save_library_modules(
       @runtime_compile.emit_library_module_wasm(
         @runtime_compile.prelude_core_library_module(),
         debug_errors=true,
+        thread_backend_id=features.thread_backend_id(),
       ),
     ) catch {
       e => {
@@ -763,6 +837,7 @@ fn save_library_modules(
       no_dce=true,
       library_mode=true,
       debug_errors=true,
+      thread_backend_id=features.thread_backend_id(),
     ) catch {
       e => {
         println(

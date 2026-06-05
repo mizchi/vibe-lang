@@ -822,7 +822,252 @@ fn collect_refs_expr(
   if keep_for_in_helpers {
     collect_for_in_helper_refs_expr(expr, bound, refs, on_name)
   }
+  collect_thread_spawn_worker_refs_expr(expr, bound, refs, on_name)
   @core.walk_expr_refs(expr, bound, refs, on_name)
+}
+
+///|
+/// `Threads::spawn("worker", ch)` names a top-level worker through a string
+/// literal. Keep that worker as a DCE root without treating arbitrary strings as
+/// symbol references.
+fn collect_thread_spawn_worker_refs_expr(
+  expr : @core.Expr,
+  bound : @core.WalkerScope,
+  refs : Map[String, Bool],
+  on_name : (String, @core.WalkerScope, Map[String, Bool]) -> Unit,
+) -> Unit {
+  match expr {
+    @core.Expr::Int(..)
+    | @core.Expr::Float(..)
+    | @core.Expr::Double(..)
+    | @core.Expr::Bool(..)
+    | @core.Expr::Char(..)
+    | @core.Expr::String(..)
+    | @core.Expr::Ident(..)
+    | @core.Expr::Placeholder(..) => ()
+    @core.Expr::Call(name="Threads::spawn", args~, ..) => {
+      if args.length() >= 1 {
+        match args[0].expr {
+          @core.Expr::String(value~, ..) =>
+            if value != "alloc-probe" {
+              on_name(value, @core.WalkerScope::new(), refs)
+            }
+          _ => ()
+        }
+      }
+      for arg in args {
+        collect_thread_spawn_worker_refs_expr(arg.expr, bound, refs, on_name)
+      }
+    }
+    @core.Expr::Call(args~, ..) =>
+      for arg in args {
+        collect_thread_spawn_worker_refs_expr(arg.expr, bound, refs, on_name)
+      }
+    @core.Expr::Tuple(items~, ..) | @core.Expr::Array(items~, ..) =>
+      for item in items {
+        collect_thread_spawn_worker_refs_expr(item, bound, refs, on_name)
+      }
+    @core.Expr::TupleIndex(expr~, ..) =>
+      collect_thread_spawn_worker_refs_expr(expr, bound, refs, on_name)
+    @core.Expr::Record(fields~, ..) =>
+      for field in fields {
+        collect_thread_spawn_worker_refs_expr(field.expr, bound, refs, on_name)
+      }
+    @core.Expr::Map(fields~, ..) =>
+      for field in fields {
+        collect_thread_spawn_worker_refs_expr(field.expr, bound, refs, on_name)
+      }
+    @core.Expr::StructLit(fields~, ..) =>
+      for field in fields {
+        collect_thread_spawn_worker_refs_expr(field.expr, bound, refs, on_name)
+      }
+    @core.Expr::If(cond~, then_body~, else_body~, ..) => {
+      collect_thread_spawn_worker_refs_expr(cond, bound, refs, on_name)
+      collect_thread_spawn_worker_refs_block(then_body, bound, refs, on_name)
+      collect_thread_spawn_worker_refs_block(else_body, bound, refs, on_name)
+    }
+    @core.Expr::Block(body~, ..) =>
+      collect_thread_spawn_worker_refs_block(body, bound, refs, on_name)
+    @core.Expr::While(cond~, body~, ..) => {
+      collect_thread_spawn_worker_refs_expr(cond, bound, refs, on_name)
+      collect_thread_spawn_worker_refs_block(body, bound, refs, on_name)
+    }
+    @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, ..) => {
+      collect_thread_spawn_worker_refs_expr(iterable, bound, refs, on_name)
+      let for_bound = bound.child()
+      for_bound.bindings[value_name] = true
+      match index_name {
+        Some(idx) => for_bound.bindings[idx] = true
+        None => ()
+      }
+      collect_thread_spawn_worker_refs_block(body, for_bound, refs, on_name)
+    }
+    @core.Expr::Handle(body~, arms~, ..) => {
+      collect_thread_spawn_worker_refs_block(body, bound, refs, on_name)
+      for arm in arms {
+        let arm_bound = bound.child()
+        @core.bind_pattern_names_scope(arm_bound, arm.pat)
+        match arm.cond {
+          Some(cond) =>
+            collect_thread_spawn_worker_refs_expr(
+              cond, arm_bound, refs, on_name,
+            )
+          None => ()
+        }
+        collect_thread_spawn_worker_refs_expr(
+          arm.expr,
+          arm_bound,
+          refs,
+          on_name,
+        )
+      }
+    }
+    @core.Expr::Match(scrutinee~, arms~, ..) => {
+      collect_thread_spawn_worker_refs_expr(scrutinee, bound, refs, on_name)
+      for arm in arms {
+        let arm_bound = bound.child()
+        @core.bind_pattern_names_scope(arm_bound, arm.pat)
+        match arm.cond {
+          Some(cond) =>
+            collect_thread_spawn_worker_refs_expr(
+              cond, arm_bound, refs, on_name,
+            )
+          None => ()
+        }
+        collect_thread_spawn_worker_refs_expr(
+          arm.expr,
+          arm_bound,
+          refs,
+          on_name,
+        )
+      }
+    }
+    @core.Expr::Fn(params~, body~, ..) => {
+      let fn_bound = bound.child()
+      for param in params {
+        fn_bound.bindings[param.name] = true
+      }
+      collect_thread_spawn_worker_refs_block(body, fn_bound, refs, on_name)
+    }
+    @core.Expr::Loop(params~, body~, ..) => {
+      let loop_bound = bound.child()
+      for param in params {
+        collect_thread_spawn_worker_refs_expr(param.init, bound, refs, on_name)
+        loop_bound.bindings[param.name] = true
+      }
+      collect_thread_spawn_worker_refs_block(body, loop_bound, refs, on_name)
+    }
+    @core.Expr::Break(value~, ..) =>
+      match value {
+        Some(inner) =>
+          collect_thread_spawn_worker_refs_expr(inner, bound, refs, on_name)
+        None => ()
+      }
+    @core.Expr::Continue(args~, ..) =>
+      for arg in args {
+        collect_thread_spawn_worker_refs_expr(arg, bound, refs, on_name)
+      }
+    @core.Expr::Return(value~, ..) =>
+      match value {
+        Some(inner) =>
+          collect_thread_spawn_worker_refs_expr(inner, bound, refs, on_name)
+        None => ()
+      }
+    @core.Expr::Yield(expr=value, ..) =>
+      collect_thread_spawn_worker_refs_expr(value, bound, refs, on_name)
+    @core.Expr::Spread(expr~, ..) =>
+      collect_thread_spawn_worker_refs_expr(expr, bound, refs, on_name)
+    @core.Expr::Perform(args~, ..) =>
+      for arg in args {
+        collect_thread_spawn_worker_refs_expr(arg.expr, bound, refs, on_name)
+      }
+    @core.Expr::StringInterp(parts~, ..) =>
+      for part in parts {
+        match part {
+          @core.StringInterpPart::Expr(e) =>
+            collect_thread_spawn_worker_refs_expr(e, bound, refs, on_name)
+          @core.StringInterpPart::Lit(_) => ()
+        }
+      }
+  }
+}
+
+///|
+fn collect_thread_spawn_worker_refs_stmt(
+  stmt : @core.Stmt,
+  scope : @core.WalkerScope,
+  refs : Map[String, Bool],
+  on_name : (String, @core.WalkerScope, Map[String, Bool]) -> Unit,
+) -> Unit {
+  match stmt {
+    @core.Stmt::Let(rec~, name~, expr~, ..)
+    | @core.Stmt::ExportLet(rec~, name~, expr~, ..)
+    | @core.Stmt::InternalExportLet(rec~, name~, expr~, ..) => {
+      if rec {
+        scope.bindings[name] = true
+      }
+      collect_thread_spawn_worker_refs_expr(expr, scope, refs, on_name)
+      if !rec {
+        scope.bindings[name] = true
+      }
+    }
+    @core.Stmt::LetMut(name~, expr~, ..) => {
+      collect_thread_spawn_worker_refs_expr(expr, scope, refs, on_name)
+      scope.bindings[name] = true
+    }
+    @core.Stmt::ExternLet(name~, ..) => scope.bindings[name] = true
+    @core.Stmt::Assign(expr~, ..) =>
+      collect_thread_spawn_worker_refs_expr(expr, scope, refs, on_name)
+    @core.Stmt::IndexAssign(target~, index~, value~, ..) => {
+      collect_thread_spawn_worker_refs_expr(target, scope, refs, on_name)
+      collect_thread_spawn_worker_refs_expr(index, scope, refs, on_name)
+      collect_thread_spawn_worker_refs_expr(value, scope, refs, on_name)
+    }
+    @core.Stmt::LetPat(pat~, expr~, ..) => {
+      collect_thread_spawn_worker_refs_expr(expr, scope, refs, on_name)
+      @core.bind_pattern_names_scope(scope, pat)
+    }
+    @core.Stmt::LetPatElse(pat~, expr~, else_body~, ..) => {
+      collect_thread_spawn_worker_refs_expr(expr, scope, refs, on_name)
+      collect_thread_spawn_worker_refs_block(else_body, scope, refs, on_name)
+      @core.bind_pattern_names_scope(scope, pat)
+    }
+    @core.Stmt::Expr(expr~, ..) =>
+      collect_thread_spawn_worker_refs_expr(expr, scope, refs, on_name)
+    @core.Stmt::Test(body~, ..) | @core.Stmt::Bench(body~, ..) =>
+      collect_thread_spawn_worker_refs_block(body, scope, refs, on_name)
+    @core.Stmt::EnumDef(name~, ..)
+    | @core.Stmt::ExportEnumDef(name~, ..)
+    | @core.Stmt::InternalExportEnumDef(name~, ..)
+    | @core.Stmt::TypeAlias(name~, ..)
+    | @core.Stmt::ExportTypeAlias(name~, ..)
+    | @core.Stmt::InternalExportTypeAlias(name~, ..)
+    | @core.Stmt::StructDef(name~, ..)
+    | @core.Stmt::ExportStructDef(name~, ..)
+    | @core.Stmt::InternalExportStructDef(name~, ..)
+    | @core.Stmt::EffectDef(name~, ..)
+    | @core.Stmt::ExportEffectDef(name~, ..) => scope.bindings[name] = true
+    @core.Stmt::Import(..)
+    | @core.Stmt::AliasDecl(..)
+    | @core.Stmt::TraitDef(..)
+    | @core.Stmt::InternalTraitDef(..)
+    | @core.Stmt::TraitImpl(..)
+    | @core.Stmt::Export(..)
+    | @core.Stmt::ReExport(..) => ()
+  }
+}
+
+///|
+fn collect_thread_spawn_worker_refs_block(
+  body : @core.Module,
+  bound : @core.WalkerScope,
+  refs : Map[String, Bool],
+  on_name : (String, @core.WalkerScope, Map[String, Bool]) -> Unit,
+) -> Unit {
+  let scope = bound.child()
+  for stmt in body.stmts {
+    collect_thread_spawn_worker_refs_stmt(stmt, scope, refs, on_name)
+  }
 }
 
 ///|
@@ -839,6 +1084,7 @@ fn collect_refs_block(
   if keep_for_in_helpers {
     collect_for_in_helper_refs_block(body, bound, refs, on_name)
   }
+  collect_thread_spawn_worker_refs_block(body, bound, refs, on_name)
   @core.walk_block_refs(body, bound, refs, on_name)
   // DCE also needs type-level refs from type definitions in blocks
   for stmt in body.stmts {

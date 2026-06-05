@@ -158,3 +158,55 @@ test "parse_core_export_funcs skips non-function exports" {
   assert_eq(exports.length(), 1)
   assert_eq(exports[0].name, "run")
 }
+
+///|
+test "component core type section emits shared thread start func type" {
+  let buf : Array[Byte] = []
+  emit_component_core_type_section_shared_start_func(buf)
+  let expected = [
+    b'\x03', // component core type section
+     b'\x06', // section content length
+     b'\x01', // type count
+     b'\x65', // shared subtype
+     b'\x60', // core func type
+     b'\x01', // param count
+     b'\x7f', // i32
+     b'\x00', // result count
+  ]
+  assert_eq(buf, expected)
+}
+
+///|
+test "component canon section emits thread.spawn-indirect" {
+  let buf : Array[Byte] = []
+  emit_canon_thread_spawn_indirect_section(buf, 0, 0)
+  let expected = [
+    b'\x08', // component canon section
+     b'\x04', // section content length
+     b'\x01', // canon definition count
+     b'\x41', // thread.spawn-indirect
+     b'\x00', // core func type index
+     b'\x00', // table index
+  ]
+  assert_eq(buf, expected)
+}
+
+///|
+test "component alias section can alias shared indirect function table" {
+  let buf : Array[Byte] = []
+  emit_alias_section(buf, 0, [("__indirect_function_table", core_sort_table)])
+  let expected = [
+    b'\x06', // component alias section
+     b'\x1f', // section content length
+     b'\x01', // alias count
+     b'\x00', // core export from instance
+     b'\x01', // sort: table
+     b'\x01', // alias kind marker: export
+     b'\x00', // core instance index
+     b'\x19', // export name length
+     b'\x5f', b'\x5f', b'\x69', b'\x6e', b'\x64', b'\x69', b'\x72', b'\x65', b'\x63',
+    b'\x74', b'\x5f', b'\x66', b'\x75', b'\x6e', b'\x63', b'\x74', b'\x69', b'\x6f',
+    b'\x6e', b'\x5f', b'\x74', b'\x61', b'\x62', b'\x6c', b'\x65',
+  ]
+  assert_eq(buf, expected)
+}

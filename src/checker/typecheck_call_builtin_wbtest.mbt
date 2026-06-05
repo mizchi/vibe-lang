@@ -359,6 +359,160 @@ test "type_call_builtin: Http::listen requires Net effect" {
 }
 
 ///|
+test "type_call_builtin: Threads builtins match documented contract" {
+  let env = TypeEnv::new()
+  let span = builtin_test_span()
+  let aliases : Map[String, @core.Ref] = {}
+  let scope = effect_scope_from_list([@core.EffectAtom::Const("Threads")])
+  env.set(
+    "ch_str",
+    @core.Type::Named(name="ThreadChannel", args=[@core.Type::String]),
+  )
+  env.set(
+    "ch_int",
+    @core.Type::Named(name="ThreadChannel", args=[@core.Type::Int]),
+  )
+  env.set(
+    "task_int",
+    @core.Type::Named(name="ThreadTask", args=[@core.Type::Int]),
+  )
+  env.set(
+    "worker_string",
+    @core.Type::Func(
+      params=[
+        builtin_test_fn_param(
+          "ch",
+          @core.Type::Named(name="ThreadChannel", args=[@core.Type::String]),
+        ),
+      ],
+      ret=@core.Type::String,
+      effects=[@core.EffectAtom::Const("Threads")],
+    ),
+  )
+  let hints_ty = @core.Type::Record({
+    "wasm_flags": @core.Type::Array(@core.Type::String),
+    "wasi_flags": @core.Type::Array(@core.Type::String),
+    "wasm_env": @core.Type::String,
+    "wasi_env": @core.Type::String,
+  })
+  let cases : Array[(String, Array[@core.CallArg], @core.Type)] = [
+    ("Threads::probe_wat", [], @core.Type::String),
+    ("Threads::runtime_hints", [], hints_ty),
+    (
+      "Threads::send",
+      [builtin_test_ident_arg("ch_str"), builtin_test_string_arg("msg")],
+      @core.Type::Bool,
+    ),
+    (
+      "Threads::send",
+      [builtin_test_ident_arg("ch_int"), builtin_test_int_arg(42)],
+      @core.Type::Bool,
+    ),
+    (
+      "Threads::spawn",
+      [builtin_test_string_arg("worker"), builtin_test_ident_arg("ch_int")],
+      @core.Type::Named(name="ThreadTask", args=[@core.Type::Int]),
+    ),
+    (
+      "Threads::spawn",
+      [
+        builtin_test_string_arg("worker_string"),
+        builtin_test_ident_arg("ch_str"),
+      ],
+      @core.Type::Named(name="ThreadTask", args=[@core.Type::String]),
+    ),
+    ("Threads::wait", [builtin_test_ident_arg("task_int")], @core.Type::Int),
+  ]
+  for case in cases {
+    let (name, args, expected) = case
+    let actual = type_call_builtin(env, name, args, aliases, scope, true, span) catch {
+      err => fail("\{name}: \{err.to_string()}")
+    }
+    assert_eq(actual, expected)
+  }
+  let channel_ty = type_call_builtin(
+    env,
+    "Threads::channel_new",
+    [builtin_test_int_arg(8)],
+    aliases,
+    scope,
+    true,
+    span,
+  ) catch {
+    err => fail("Threads::channel_new: \{err.to_string()}")
+  }
+  match channel_ty {
+    @core.Type::Named(name="ThreadChannel", args=[@core.Type::Var(_)]) => ()
+    other => fail("Threads::channel_new should return ThreadChannel[_]: \{other}")
+  }
+  let recv_ty = type_call_builtin(
+    env,
+    "Threads::recv",
+    [builtin_test_ident_arg("ch_int")],
+    aliases,
+    scope,
+    true,
+    span,
+  ) catch {
+    err => fail("Threads::recv: \{err.to_string()}")
+  }
+  match recv_ty {
+    @core.Type::Int => ()
+    other => fail("Threads::recv should return channel payload type: \{other}")
+  }
+  let wait_bad : Result[@core.Type, TypeError] = try? type_call_builtin(
+    env,
+    "Threads::wait",
+    [builtin_test_int_arg(1)],
+    aliases,
+    scope,
+    true,
+    span,
+  )
+  match wait_bad {
+    Ok(_) => fail("Threads::wait should require ThreadTask[_]")
+    Err(TypeError::Mismatch(context=Some("thread task"), ..)) => ()
+    Err(other) => fail("unexpected Threads::wait error: \{other.to_string()}")
+  }
+}
+
+///|
+test "type_call_builtin: Threads builtins require Threads effect" {
+  let env = TypeEnv::new()
+  let span = builtin_test_span()
+  let aliases : Map[String, @core.Ref] = {}
+  let result : Result[@core.Type, TypeError] = try? type_call_builtin(
+    env,
+    "Threads::channel_new",
+    [builtin_test_int_arg(1)],
+    aliases,
+    effect_scope_from_list([]),
+    true,
+    span,
+  )
+  match result {
+    Ok(_) => fail("expected effect guard error")
+    Err(TypeError::EffectGuardNotSatisfied(operation~, missing_effect~, ..)) => {
+      assert_eq(operation, "Threads::channel_new")
+      @debug.assert_eq(missing_effect, Some("Threads"))
+    }
+    Err(other) => fail("unexpected error: \{other.to_string()}")
+  }
+}
+
+///|
+test "checker_declared_builtin_names includes Threads builtins" {
+  let names = checker_declared_builtin_names()
+  assert_true(names.contains("Threads::probe_wat"))
+  assert_true(names.contains("Threads::runtime_hints"))
+  assert_true(names.contains("Threads::channel_new"))
+  assert_true(names.contains("Threads::send"))
+  assert_true(names.contains("Threads::recv"))
+  assert_true(names.contains("Threads::spawn"))
+  assert_true(names.contains("Threads::wait"))
+}
+
+///|
 test "type_call_builtin: unknown raises BadCall" {
   let env = TypeEnv::new()
   let span = builtin_test_span()
