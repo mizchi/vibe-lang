@@ -1,10 +1,14 @@
 # Selfhost uniform value representation — design for runtime pointer discrimination
 
-Status: **proposed** (ADR-0055). Prerequisite for *recursive field drop* in the
-selfhost Perceus RC port (`docs/spec/selfhost-rc-port.md`). `src/` stays
-authoritative; this documents the design the selfhost backend needs before the
-RC vertical can reclaim **nested** heap (a dropped container freeing its heap
-fields) and **container/call escapes**.
+Status: **accepted, in progress** (ADR-0055). Stages 1–3 implemented, Stage 4
+partial (the safety-critical slice landed), Stage 5 measured; the remaining
+implementation work is **float heap-boxing** (Stage 2) and the residual Stage 4
+escape leaks (container-owning-escape, nested-closure owned params). Prerequisite
+for *recursive field drop* in the selfhost Perceus RC port
+(`docs/spec/selfhost-rc-port.md`). `src/` stays authoritative; this documents the
+design the selfhost backend needs before the RC vertical can reclaim **nested**
+heap (a dropped container freeing its heap fields) and **container/call
+escapes**.
 
 ## Why this is needed
 

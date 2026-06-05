@@ -389,7 +389,32 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_end(buf)
       nl + 6
     }
-    else if fname == "Int::to_double" || fname == "Int::to_float" || fname == "Float::to_int" || fname == "Float::to_double" || fname == "Double::to_int" || fname == "Double::to_float" {
+    else if fname == "Double::to_int" || fname == "Float::to_int" {
+      // f64 bits -> truncate to a signed int. Under RC the int result is tagged
+      // (n<<1) like every other int. (The dedicated gen_double_to_int_body was
+      // shadowed by an identity fast-path here, so this conversion was a no-op.)
+      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      emit_f64_reinterpret_i64(buf)
+      emit_i64_trunc_f64_s(buf)
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shl(buf)
+      }
+      nl
+    }
+    else if fname == "Int::to_double" || fname == "Int::to_float" {
+      // int -> f64 bits. Under RC the int arg is tagged; untag before converting.
+      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shr_s(buf)
+      }
+      emit_f64_convert_i64_s(buf)
+      emit_i64_reinterpret_f64(buf)
+      nl
+    }
+    else if fname == "Float::to_double" || fname == "Double::to_float" {
+      // Both Float and Double are f64 in the linear backend: identity.
       ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
     }
     else if !prefer_bound_call && fname == "resume" {
