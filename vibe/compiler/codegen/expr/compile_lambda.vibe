@@ -4,12 +4,12 @@ import .. / .. / core {
   Expr, Pat, Stmt, TypeExpr, bytebuf_length, bytebuf_new, bytebuf_push, bytebuf_push_section, bytebuf_push_vec_header, bytebuf_to_bytes, leb128_encode_s64, leb128_encode_u32
 }
 
-import .. / common_analysis {
-  collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, is_mut_captured_in, scope_tail_proj_root
+import .. / .. / perceus {
+  build_perceus_plan_with_params, pa_is_alias_dup, pa_is_drop, pa_is_dup, param_is_heap_in_body
 }
 
-import .. / .. / perceus {
-  build_perceus_plan_with_params, pa_is_alias_dup, pa_is_drop, pa_is_dup, type_expr_is_heap
+import .. / common_analysis {
+  collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, is_mut_captured_in, scope_tail_proj_root
 }
 
 import .. / common_base {
@@ -26,10 +26,6 @@ import .. / wasm_emit {
 
 //# Functions
 
-// ADR-0055 Stage 4: a runtime-guarded rc_dup of the value in `local_idx` — a
-// no-op on an even (scalar) value or a string/bytes fat pointer (high 32 bits
-// set). Replica of compile_expr_tail's emit_rc_dup_guarded (avoids a circular
-// import: the tail chain calls compile_lambda).
 let lam_emit_rc_dup_guarded: (Bytes, Int) -> Unit = (buf, local_idx) -> {
   emit_local_get(buf, local_idx)
   emit_i64_const(buf, 1)
@@ -118,13 +114,6 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
     lam_nl = lam_nl + 1
     ci3 = ci3 + 1
   }
-  // RC: a lambda body has its own scope, so run the Perceus analysis on it and
-  // give the lambda ctx its own drop set (otherwise per-iteration tuples in a
-  // callback / returned closure leak). ADR-0055 Stage 4 (owned-vs-borrowed): the
-  // analysis also declares the parameters as owned bindings, so a heap param used
-  // only by borrows is dropped at the body tail rather than leaked.
-  // norm_params = params with the labeled-arg `~`/`?` suffix stripped, matching
-  // how the body references them (and how lam_locals were named).
   let norm_params = Array::slice(params, 0, 0)
   let mut npi = 0
   while npi < Array::length(params) {
@@ -174,7 +163,7 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
     let mut hpi = 0
     while hpi < Array::length(norm_params) {
       let (hpn, hpt) = Array::get(norm_params, hpi)
-      if type_expr_is_heap(hpt) {
+      if param_is_heap_in_body(hpn, hpt, fn_body) {
         Array::push(lam_heap_params, hpn)
       } else {
         ()
@@ -197,18 +186,15 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
     rc_drop_func_idx: ctx.rc_drop_func_idx,
     rc_alloc_func_idx: ctx.rc_alloc_func_idx,
     rc_dup_names: lam_dups,
-    // Fresh scope: the lambda's own `let`s repopulate this; parent float locals
-    // are not in scope here (captures are reached via the env, not by name).
-    float_local_slots: Array::slice([0], 0, 0)
+    float_local_slots: Array::slice([
+      0
+    ], 0, 0)
   }
-  // ADR-0055 Stage 4: emit the owning-use dup budget for heap params at function
-  // entry (one guarded rc_dup per plan PaDup(param)) — a param used in N owning
-  // positions needs N-1 extra refs. Param i lives at local index i.
   if ctx.enable_rc {
     let mut dpi = 0
     while dpi < Array::length(norm_params) {
       let (dpn, dpt) = Array::get(norm_params, dpi)
-      if type_expr_is_heap(dpt) {
+      if param_is_heap_in_body(dpn, dpt, fn_body) {
         let mut dcount = 0
         let mut dqi = 0
         while dqi < Array::length(lam_dups) {
@@ -233,11 +219,6 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
     ()
   }
   let final_lam_nl = compile_fn(lam_buf, fn_body, lam_locals, lam_nl, lam_ctx, -1)
-  // ADR-0055 Stage 4: drop owned heap params (borrow-only / unused, hence in the
-  // plan's drop set) at the body tail. The body result is on the stack. If that
-  // result is a projection rooted at one of the dropped params, dup it first
-  // (the recursive drop would otherwise free the field it aliases — use-after
-  // -free); the guarded dup is a no-op on a scalar result.
   let mut tail_lam_nl = final_lam_nl
   if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
     let tail_root = scope_tail_proj_root(fn_body)
@@ -245,7 +226,7 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
     let mut ti = 0
     while ti < Array::length(norm_params) {
       let (tpn, tpt) = Array::get(norm_params, ti)
-      if type_expr_is_heap(tpt) && array_contains_str(lam_drops, tpn) && tpn == tail_root {
+      if param_is_heap_in_body(tpn, tpt, fn_body) && array_contains_str(lam_drops, tpn) && tpn == tail_root {
         need_dup = true
       } else {
         ()
@@ -263,7 +244,7 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
     let mut tj = 0
     while tj < Array::length(norm_params) {
       let (dpn2, dpt2) = Array::get(norm_params, tj)
-      if type_expr_is_heap(dpt2) && array_contains_str(lam_drops, dpn2) {
+      if param_is_heap_in_body(dpn2, dpt2, fn_body) && array_contains_str(lam_drops, dpn2) {
         emit_local_get(lam_buf, tj)
         emit_call(lam_buf, ctx.rc_drop_func_idx)
       } else {
@@ -298,13 +279,6 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
     let ptr_local = next_local
     let nl2 = next_local + 1
     Array::push(local_names, "__closure_ptr")
-    // ADR-0055 Stage 4: under RC the closure env is a headered, drop-class-1
-    // (field-vector) block allocated via __rc_alloc, so it is reclaimed and its
-    // heap captures recursively dropped (otherwise a closure capturing a tuple
-    // leaks). The value points at block_start+8 (past the 8-byte header), so the
-    // call path's value-relative offsets (slot@value+0, captures@value+8) and the
-    // `& -4`/`& -2` untags line up exactly as in the unheadered default layout.
-    // Default path stays a raw bump alloc (value = block_start | 1).
     let cap_off = if ctx.enable_rc {
       16
     } else {

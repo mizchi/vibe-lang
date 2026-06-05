@@ -4,7 +4,8 @@ Status: **accepted, in progress** (ADR-0055). Stages 1–3 implemented, Stage 2
 float heap-boxing implemented (#509; NaN-box deferred), Stage 4 partial (the
 safety-critical slice + most leak fixes landed), Stage 5 measured. The only
 remaining implementation work is the **residual Stage 4 escape leaks**
-(container-owning-escape, nested-closure owned params) — all *safe* leaks (no
+(container-owning-escape, and the narrow case of an unannotated owned param
+passed through whole rather than projected/matched) — all *safe* leaks (no
 use-after-free), and the gate that blocks RC cutover to the selfhost linear
 default. Prerequisite
 for *recursive field drop* in the selfhost Perceus RC port
@@ -521,10 +522,26 @@ arithmetic / comparison / bitop / shift / float / nested-data case under
    the param type as the tuple of all args. Pinned by `owned_param`,
    `owned_param_proj` (reclaim) and three heap-e2e parity cases.
 
-   **Still remaining (smaller, safe):** owned heap params of *nested closures*
-   (compile_lambda) whose types are unannotated are not dropped (the signature
-   lives on an outer binding the lambda does not see) → leak (safe); and the
-   container-escape / reassign-reads-target carve-outs above.
+   **Unannotated nested-closure owned params (landed).** A nested closure's
+   params carry no type annotation (the signature lives on an outer binding the
+   lambda does not see), so they were classified non-heap and never dropped —
+   leaking the owned argument (32 B/iter). `param_is_heap_in_body`
+   (`perceus/index.vibe`) now recovers heap-ness *from the body*: a param that is
+   **projected (`p.0`) or used as a match scrutinee** is necessarily a
+   tuple/record/enum — a closure value or a scalar can be neither — so it is
+   classified heap and the callee drops it. The signal is **sound by
+   construction** (it never classifies a function-typed param, so the recursive
+   `__rc_drop` is never run on an unheadered closure) and **under-detection is
+   safe** (a param that is neither projected nor matched keeps the prior safe
+   leak, never a premature free). Threaded through `build_perceus_plan_with
+   _params`, `compile_lambda`, and the top-level fn path in `linked_compile` so
+   plan and codegen share one decision. Pinned by `nested_closure_param` /
+   `nested_closure_match` (reclaim, 0 B/iter) and a heap-e2e parity case.
+
+   **Still remaining (smaller, safe):** an unannotated owned heap param that is
+   neither projected nor matched in the body (passed through whole to another
+   call, or returned as-is) cannot be *proven* heap, so it keeps the safe leak;
+   and the container-escape / reassign-reads-target carve-outs above.
 5. **Stage 5 — verification & throughput. ◐ MEASURED.** The RC e2e gate (47/47,
    default vs RC identical on wasmtime) is the correctness signal;
    `scripts/bench_selfhost_rc.{sh,mjs}` measures the payoff: each benchmark

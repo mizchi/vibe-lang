@@ -159,6 +159,16 @@ reclaim_case closure_capture '"let main: () -> Int = () -> {\n  let mut s = 0\n 
 # Closure capturing two heap values, called twice (not consumed per call).
 reclaim_case closure_two '"let main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let a = (i, i + 1)\n    let b = (i + 2, i + 3)\n    let g = () -> { a.0 + b.1 }\n    s = s + g() + g()\n    i = i + 1\n  }\n  s\n}"'
 
+# ADR-0055 Stage 4 (owned param, UNANNOTATED): a nested closure param has no type
+# annotation (the signature lives on an outer binding the lambda does not see),
+# so it used to be classified non-heap and never dropped — leaking the owned
+# argument (32 B/iter). `param_is_heap_in_body` now proves heap-ness from the
+# body: a param that is PROJECTED (`p.0`) or MATCHED is necessarily a
+# tuple/record/enum (a closure or scalar can be neither), so the callee drops it.
+reclaim_case nested_closure_param '"let main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let apply = (p) -> { p.0 + p.1 }\n    let t = (i, i + 1)\n    s = s + apply(t)\n    i = i + 1\n  }\n  s\n}"'
+# Same, proven via a match scrutinee instead of a projection.
+reclaim_case nested_closure_match '"enum Box { Wrap((Int, Int)); Empty }\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let unwrap = (e) -> { match e { Wrap(p) => p.0 + p.1, Empty => 0 } }\n    let t = Wrap((i, i + 1))\n    s = s + unwrap(t)\n    i = i + 1\n  }\n  s\n}"'
+
 # KNOWN PRE-EXISTING GAP (not a regression): a *nested* tuple built in a loop
 # (`let t = ((i, i+1), (i+2, i+3))`) fails to compile under RC at BOTH HEAD and
 # the Stage-1 baseline — so it is excluded from the reclamation set rather than

@@ -4,26 +4,9 @@ import ./codegen_test_support.vibe {
   compile_wasi, compile_wasi_rc
 }
 
-//# Misc
+//# Functions
 
-// Heap-object end-to-end tests for the selfhost LINEAR backend: compile a
-// source program, run the produced wasm on wasmtime, and check the *result*
-// (not just that it is a valid module). assert_wasm only checks the magic
-// bytes, so these are the safety net for the Phase 1 object-header change
-// (docs/spec/selfhost-rc-port.md): the heap layouts of tuples, arrays,
-// records/structs, enums and closures must keep producing the same results
-// when a uniform object header is added.
-//
-// Each case is run on BOTH the default path (no header) and the RC path
-// (`compile_wasi_rc`, uniform header) and must produce the same result, so the
-// header change is verified to be result-preserving.
-
-let run_one: (Bytes, String, String, String) -> Int with { Fs, Process } = (
-  bytes,
-  entry,
-  label,
-  expected,
-) -> {
+let run_one: (Bytes, String, String, String) -> Int with { Fs, Process } = (bytes, entry, label, expected,) -> {
   let path = "/tmp/_heap_e2e_" + label + ".wasm"
   Fs::write_bytes(path, bytes)
   let out = sh_lines("wasmtime run --invoke " + entry + " " + path + " 2>/dev/null")
@@ -39,16 +22,13 @@ let run_one: (Bytes, String, String, String) -> Int with { Fs, Process } = (
   0
 }
 
-let assert_result: (String, String, String, String) -> Int with { Error, Fs, Process } = (
-  src,
-  entry,
-  label,
-  expected,
-) -> {
+let assert_result: (String, String, String, String) -> Int with { Error, Fs, Process } = (src, entry, label, expected,) -> {
   run_one(compile_wasi(src, entry), entry, label, expected)
   run_one(compile_wasi_rc(src, entry), entry, label + "_rc", expected)
   0
 }
+
+//# Misc
 
 test "heap e2e: tuple field access" {
   let src = "let main: () -> Int = () -> {\n  let t = (3, 4)\n  t.0 + t.1\n}"
@@ -85,25 +65,21 @@ test "heap e2e: closure capture" {
   assert_result(src, "main", "closure", "8")
 }
 
-// A tuple allocated per iteration inside a closure body is reclaimed (the
-// lambda gets its own Perceus drop plan). Here we only check correctness; the
-// leak (per-iteration heap -> 0) is checked by the heap-leak profiler.
 test "heap e2e: closure body loop over tuples" {
   let src = "let main: () -> Int = () -> {\n  let run = (m: Int) -> Int {\n    let mut sum = 0\n    let mut i = 0\n    while i < m {\n      let t = (i, i + 1)\n      sum = sum + t.0\n      i = i + 1\n    }\n    sum\n  }\n  run(5)\n}"
   assert_result(src, "main", "closure_loop", "10")
 }
 
-// Aliasing a heap binding (`let a = t; let b = t`) under RC: the analysis dups
-// the source for the non-last alias so the two aliases' scope-end drops are
-// balanced (rc reaches 0 exactly once). Correctness here; the leak (per-iter
-// heap -> 0) is checked by the profiler.
+test "heap e2e: unannotated owned closure param" {
+  let src = "let main: () -> Int = () -> {\n  let apply = (p) -> { p.0 + p.1 }\n  let t = (3, 4)\n  apply(t)\n}"
+  assert_result(src, "main", "unannot_param", "7")
+}
+
 test "heap e2e: aliased tuple bindings" {
   let src = "let main: () -> Int = () -> {\n  let t = (3, 4)\n  let a = t\n  let b = t\n  a.0 + b.1\n}"
   assert_result(src, "main", "aliased_tuple", "7")
 }
 
-// Aliasing in a loop body must reclaim each iteration's tuple (dup + two drops
-// net to a single free per iteration).
 test "heap e2e: aliased tuple in loop" {
   let src = "let main: () -> Int = () -> {\n  let mut sum = 0\n  let mut i = 0\n  while i < 5 {\n    let t = (i, i + 1)\n    let a = t\n    let b = t\n    sum = sum + a.0 + b.1\n    i = i + 1\n  }\n  sum\n}"
   assert_result(src, "main", "aliased_loop", "25")
@@ -129,8 +105,6 @@ test "heap e2e: tuple pattern match" {
   assert_result(src, "main", "tuple_match", "12")
 }
 
-// Nested tuple pattern: the inner element loads must also use the RC payload
-// offset, else `a`/`b` read the inner tuple's type_id/length.
 test "heap e2e: nested tuple pattern match" {
   let src = "let main: () -> Int = () -> {\n  let t = ((1, 2), 3)\n  match t {\n    ((a, b), c) => a * 100 + b * 10 + c\n  }\n}"
   assert_result(src, "main", "nested_tuple_match", "123")
@@ -141,25 +115,16 @@ test "heap e2e: tuple equality (equal)" {
   assert_result(src, "main", "tuple_eq", "1")
 }
 
-// Discriminating: a wrong (header-confused) offset would compare the type_id /
-// length words (equal for both) and wrongly report equality, so this pins that
-// structural equality reads the actual elements.
 test "heap e2e: tuple inequality" {
   let src = "let main: () -> Int = () -> {\n  let a = (1, 2)\n  let b = (1, 3)\n  if a == b { 1 } else { 0 }\n}"
   assert_result(src, "main", "tuple_neq", "0")
 }
 
-// An array literal allocated per iteration is reclaimed under RC (inline RC
-// layout, dropped like a tuple). Correctness here; the leak is checked by the
-// profiler.
 test "heap e2e: array literal in loop" {
   let src = "let main: () -> Int = () -> {\n  let mut sum = 0\n  let mut i = 0\n  while i < 5 {\n    let a = [i, i + 1, i + 2]\n    sum = sum + Array::get(a, 0) + Array::get(a, 2)\n    i = i + 1\n  }\n  sum\n}"
   assert_result(src, "main", "array_loop", "30")
 }
 
-// An RC array literal grown past its inline capacity via Array::push: the
-// builtin push reallocates the data buffer (the old buffer leaks, conservatively
-// safe), but reads stay correct and the array object is still dropped.
 test "heap e2e: RC array literal grown by push" {
   let src = "let main: () -> Int = () -> {\n  let a = [0]\n  let mut i = 0\n  while i < 12 {\n    Array::push(a, i + 1)\n    i = i + 1\n  }\n  Array::length(a) + Array::get(a, 12)\n}"
   assert_result(src, "main", "array_grow", "25")
@@ -170,24 +135,16 @@ test "heap e2e: array length" {
   assert_result(src, "main", "array_length", "4")
 }
 
-// A record allocated per iteration is reclaimed under RC (records are tagged,
-// so the drop must untag before touching the rc header). Correctness only here;
-// the leak (per-iteration heap -> 0) is checked by the heap-leak profiler.
 test "heap e2e: loop accumulating records" {
   let src = "struct P { x: Int; y: Int }\nlet main: () -> Int = () -> {\n  let mut sum = 0\n  let mut i = 0\n  while i < 5 {\n    let p = P::{ x: i, y: i + 1 }\n    sum = sum + p.x + p.y\n    i = i + 1\n  }\n  sum\n}"
   assert_result(src, "main", "loop_records", "25")
 }
 
-// Record field access after the RC header shift must still read the right
-// fields (the untag cancels the +8 header offset).
 test "heap e2e: nested struct field access" {
   let src = "struct P { x: Int; y: Int }\nstruct Q { a: P; b: Int }\nlet main: () -> Int = () -> {\n  let p = P::{ x: 3, y: 4 }\n  let q = Q::{ a: p, b: 5 }\n  q.a.x + q.a.y + q.b\n}"
   assert_result(src, "main", "nested_struct", "12")
 }
 
-// An enum value allocated per iteration and consumed by a match is reclaimed
-// under RC (constructors are tagged like records; match tag/field reads are
-// offset-invariant). Correctness here; the leak is checked by the profiler.
 test "heap e2e: loop allocating + matching enums" {
   let src = "enum E { A(Int); B }\nlet main: () -> Int = () -> {\n  let mut sum = 0\n  let mut i = 0\n  while i < 5 {\n    let e = A(i)\n    sum = sum + match e {\n      A(n) => n,\n      B => 0\n    }\n    i = i + 1\n  }\n  sum\n}"
   assert_result(src, "main", "loop_enums", "10")
@@ -197,23 +154,6 @@ test "heap e2e: enum without payload" {
   let src = "enum Color { Red; Green; Blue }\nlet main: () -> Int = () -> {\n  let c = Green\n  match c {\n    Red => 0,\n    Green => 1,\n    Blue => 2\n  }\n}"
   assert_result(src, "main", "enum_nopayload", "1")
 }
-
-// ---------------------------------------------------------------------------
-// Stage 1 (ADR-0055) tagging safety net.
-//
-// docs/spec/selfhost-uniform-value-repr.md proposes representing integers as
-// `n<<1` (and booleans as 0/2) under `enable_rc` so a generic recursive
-// rc_drop can tell heap pointers (odd) from scalars (even). That change touches
-// the WHOLE numeric path: literals, every arithmetic/comparison/bitop/shift
-// operator (each with its own tag correction), if/while conditions, match
-// `PInt`, the `eq` builtin, the int<->heap-field boundary, int-as-array-index,
-// and the export-return boundary.
-//
-// These cases pin the OBSERVABLE result of that whole path on BOTH the default
-// (raw i64) and RC paths. They pass today (both raw i64); once tagging lands
-// they catch any operator whose tag correction is wrong (a mis-tagged value
-// prints as `2n`, an un-tagged shift gives the wrong magnitude, an un-untagged
-// array index reads the wrong slot, an un-tagged bool flips a branch, etc.).
 
 test "heap e2e: arithmetic add/sub" {
   // (no tag correction expected: a<<1 +/- b<<1 stays tagged)
@@ -313,11 +253,6 @@ test "heap e2e: large int near literal cap" {
   assert_result(src, "main", "large_int", "51")
 }
 
-// ADR-0055 Stage 3: the recursive rc_drop frees nested heap. These cases build
-// nested structures in a loop so each scope-end drop both recurses into inner
-// blocks AND those blocks are reused on the next iteration — a wrong recursion
-// (over-free / use-after-free) would corrupt the reused block and diverge from
-// the default path.
 test "heap e2e: nested tuple drop in loop" {
   let src = "let main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 50 {\n    let t = ((i, i + 1), (i + 2, i + 3))\n    s = s + t.0.0 + t.1.1\n    i = i + 1\n  }\n  s\n}"
   assert_result(src, "main", "nested_drop_loop", "2600")
@@ -333,74 +268,41 @@ test "heap e2e: record holding tuples drop in loop" {
   assert_result(src, "main", "record_of_tuples_loop", "1680")
 }
 
-// ADR-0055 Stage 4: an escaping heap projection. `pick` returns `t.0` (an inner
-// tuple) while `t` is recursively dropped at pick's scope end — without a dup of
-// the escaping projection the returned block is use-after-freed and, with
-// free-list reuse in the caller loop, corrupts. Must match the default path.
 test "heap e2e: escaping tuple projection from dropped container" {
   let src = "let pick: (Int) -> (Int, Int) = (i) -> {\n  let t = ((i, i + 1), (i + 2, i + 3))\n  t.0\n}\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 100 {\n    let p = pick(i)\n    s = s + p.0 + p.1\n    i = i + 1\n  }\n  s\n}"
   assert_result(src, "main", "escaping_projection", "10000")
 }
 
-// Three escaped projections read AFTER intervening allocations that reuse the
-// freed blocks: without the Stage 4 escaping-projection dup, `a` and `c` alias
-// the same reused block and the result corrupts (320 instead of 15). This pins
-// the dup of a projection rooted at a dropped binding (`pick` returns `t.0`).
 test "heap e2e: multiple escaped projections with reuse" {
   let src = "let pick: (Int) -> (Int, Int) = (i) -> {\n  let t = ((i, i + 1), (i + 100, i + 200))\n  t.0\n}\nlet main: () -> Int = () -> {\n  let a = pick(1)\n  let b = pick(2)\n  let c = pick(3)\n  a.0 + a.1 + b.0 + b.1 + c.0 + c.1\n}"
   assert_result(src, "main", "multi_escaped_projection", "15")
 }
 
-// ADR-0055 Stage 4: a call result is classified as an owned, droppable heap
-// binding so `let p = f(...)` no longer leaks — BUT Array::get returns a borrow
-// of an element the array still owns. If that result were dropped, the array's
-// later recursive drop would double-free the element. This pins the borrow
-// exclusion: an array of heap tuples, elements read via Array::get, must match
-// the default path (no corruption from a double-free).
 test "heap e2e: array-of-tuples Array::get borrow not double-freed" {
   let src = "let main: () -> Int = () -> {\n  let arr = [(1, 2), (3, 4), (5, 6)]\n  let mut s = 0\n  let mut i = 0\n  while i < 3 {\n    let x = Array::get(arr, i)\n    s = s + x.0 + x.1\n    i = i + 1\n  }\n  s\n}"
   assert_result(src, "main", "array_get_borrow", "21")
 }
 
-// A function returning a freshly-allocated heap value: the result is owned and
-// must be reclaimed by the caller's scope-end drop (let p = mk()), and the
-// value must be correct.
 test "heap e2e: owned call result reclaimed" {
   let src = "let mk: (Int) -> (Int, Int) = (n) -> {\n  (n, n + 1)\n}\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 10 {\n    let p = mk(i)\n    s = s + p.0 + p.1\n    i = i + 1\n  }\n  s\n}"
   assert_result(src, "main", "owned_call_result", "100")
 }
 
-// ADR-0055 Stage 4: a string-returning call bound to a let is now classified as
-// a (droppable) heap binding, but a string is a fat pointer ((offset<<32)|len),
-// not an RC block — __rc_drop / the guarded dup must skip it via the high-32-bit
-// check, not corrupt memory. Loop so the (non-)drop runs many times.
 test "heap e2e: string-returning call result not corrupted" {
   let src = "let label: (Int) -> String = (k) -> {\n  String::concat(\"v\", \"x\")\n}\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 20 {\n    let name = label(i)\n    s = s + String::length(name)\n    i = i + 1\n  }\n  s\n}"
   assert_result(src, "main", "string_call_result", "40")
 }
 
-// ADR-0055 Stage 4: a projection bound to a let that then escapes (`let a = t.0;
-// a`). Without the guarded dup at the binding, `a` aliases an inner block the
-// container's recursive drop frees → use-after-free; with reuse across three
-// calls the result corrupts. Must match the default path.
 test "heap e2e: let-bound escaping projection" {
   let src = "let pick2: (Int) -> (Int, Int) = (i) -> {\n  let t = ((i, i + 1), (i + 100, i + 200))\n  let a = t.0\n  a\n}\nlet main: () -> Int = () -> {\n  let a = pick2(1)\n  let b = pick2(2)\n  let c = pick2(3)\n  a.0 + a.1 + b.0 + b.1 + c.0 + c.1\n}"
   assert_result(src, "main", "let_bound_escaping_projection", "15")
 }
 
-// ADR-0055 Stage 4: a projection stored into a FRESH container that escapes
-// (`mk` returns (t.1, t.0)). The returned tuple's fields alias inner blocks of
-// `t`, which is recursively dropped — those fields dangle. Read after reuse
-// across three calls; must match the default path.
 test "heap e2e: projection stored into escaping container" {
   let src = "let mk: (Int) -> ((Int, Int), (Int, Int)) = (i) -> {\n  let t = ((i, i + 1), (i + 2, i + 3))\n  (t.1, t.0)\n}\nlet main: () -> Int = () -> {\n  let a = mk(1)\n  let b = mk(2)\n  let c = mk(3)\n  a.0.0 + a.1.1 + b.0.0 + b.1.1 + c.0.0 + c.1.1\n}"
   assert_result(src, "main", "projection_in_container", "21")
 }
 
-// ADR-0055 Stage 4: a heap binding used in multiple OWNING positions
-// (`let u = (t, t)`) — the analysis emits a non-alias PaDup so `t` reaches the
-// refcount its two container slots need; without the dup the recursive drop
-// visits the same child twice. Loop so the (mis)balance compounds across reuse.
 test "heap e2e: shared binding in tuple (PaDup)" {
   let src = "let main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 100 {\n    let t = (i, i + 1)\n    let u = (t, t)\n    s = s + u.0.0 + u.1.1\n    i = i + 1\n  }\n  s\n}"
   assert_result(src, "main", "shared_tuple_padup", "10000")
@@ -411,14 +313,6 @@ test "heap e2e: shared binding escaping in container (PaDup)" {
   assert_result(src, "main", "shared_escape_padup", "15")
 }
 
-// ADR-0055 Stage 4: an owned heap binding moved into a container element
-// (`let t = (..); let a = [t]`) interleaves two block sizes per iteration
-// (tuple 32 B, array 84 B). The recursive drop frees them in an order the
-// single LIFO free-list reversed, so the old head-only allocator bump-allocated
-// a fresh tuple every iteration even though a matching free block existed deeper
-// in the list (a fragmentation leak: 32 B/iter). The __rc_alloc free-list search
-// fixes reclamation; this case pins the *result* parity (default vs RC) for the
-// array, enum-payload and record-field forms of the same move.
 test "heap e2e: owned binding moved into array element (loop)" {
   let src = "let main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 100 {\n    let t = (i, i + 1)\n    let a = [t]\n    s = s + (Array::get(a, 0)).0\n    i = i + 1\n  }\n  s\n}"
   assert_result(src, "main", "owned_in_array_elem", "4950")
@@ -434,92 +328,56 @@ test "heap e2e: owned binding moved into record field (loop)" {
   assert_result(src, "main", "owned_in_record_field", "4950")
 }
 
-// ADR-0055 Stage 4: reassigning a heap `mut` binding (`b = t`) must drop the
-// OLD value (Perceus assignment rule) — otherwise each iteration leaks the
-// previous block. The drop is a guarded rc dec (safe for aliases) emitted before
-// the new value is stored. Pins result parity (default vs RC); reclamation is
-// pinned by the `mut_reassign` case in verify_selfhost_rc.sh.
 test "heap e2e: heap mut reassign drops old value (loop)" {
   let src = "let main: () -> Int = () -> {\n  let mut b = (0, 0)\n  let mut i = 0\n  while i < 100 {\n    let t = (i, i + 1)\n    b = t\n    i = i + 1\n  }\n  b.0\n}"
   assert_result(src, "main", "mut_reassign_drop_old", "99")
 }
 
-// ADR-0055 Stage 4 (safety): when the assignment RHS reads the old value
-// (`b = (b.0 + i, b.1)`), the reassignment drop is suppressed (dropping first
-// would free a block the new value derives from). Must still match the default
-// path (no use-after-free / corruption).
 test "heap e2e: heap mut reassign reading old value is correct" {
   let src = "let main: () -> Int = () -> {\n  let mut b = (1, 2)\n  let mut i = 0\n  while i < 5 {\n    b = (b.0 + i, b.1)\n    i = i + 1\n  }\n  b.0 + b.1\n}"
   assert_result(src, "main", "mut_reassign_reads_old", "13")
 }
 
-// Chained tuple projection `t.0.0` (a fix in the lexer: `.0.0` must not lex as
-// `. float(0.0)`). Compiles and evaluates correctly on both paths now.
 test "heap e2e: chained tuple projection t.0.0" {
   let src = "let main: () -> Int = () -> {\n  let t = ((1, 2), (3, 4))\n  t.0.0 + t.0.1 * 10 + t.1.0 * 100 + t.1.1 * 1000\n}"
   assert_result(src, "main", "chained_projection", "4321")
 }
 
-// Chained projection inside a loop over freshly-allocated nested tuples.
 test "heap e2e: chained projection in loop" {
   let src = "let main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 5 {\n    let t = ((i, i + 1), (i + 2, i + 3))\n    s = s + t.0.0 + t.1.1\n    i = i + 1\n  }\n  s\n}"
   assert_result(src, "main", "chained_projection_loop", "35")
 }
 
-// ADR-0055 Stage 4 (owned-vs-borrowed): a function parameter is owned (the
-// caller transfers its reference under the owning-argument convention). A heap
-// param used only by borrows must be dropped at the callee's scope end, else it
-// leaks. `consume(p)` borrows p.0/p.1 and returns a scalar — the tuple must be
-// reclaimed by the callee. Param type comes from the signature.
 test "heap e2e: owned tuple param dropped by callee (loop)" {
   let src = "let consume: ((Int, Int)) -> Int = (p) -> {\n  p.0 + p.1\n}\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 100 {\n    let t = (i, i + 1)\n    s = s + consume(t)\n    i = i + 1\n  }\n  s\n}"
   assert_result(src, "main", "owned_param_drop", "10000")
 }
 
-// ADR-0055 Stage 4: a param returned by projection (`fst(p) -> p.0`). The owned
-// param is dropped at the tail, but the result aliases a field — the tail guard
-// dups it first so it survives the recursive drop (no use-after-free).
 test "heap e2e: owned param returned by projection (loop)" {
   let src = "let fst: (((Int, Int), (Int, Int))) -> (Int, Int) = (p) -> {\n  p.0\n}\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 100 {\n    let t = ((i, i + 1), (i + 2, i + 3))\n    let r = fst(t)\n    s = s + r.0\n    i = i + 1\n  }\n  s\n}"
   assert_result(src, "main", "owned_param_proj", "4950")
 }
 
-// ADR-0055 Stage 4: the FINAL value of a heap mut binding is dropped at scope
-// end (the reassignment drop only reclaims overwritten values).
 test "heap e2e: heap mut final value dropped (loop)" {
   let src = "let main: () -> Int = () -> {\n  let mut acc = 0\n  let mut i = 0\n  while i < 100 {\n    let mut b = (i, i + 1)\n    b = (i + 2, i + 3)\n    acc = acc + b.0\n    i = i + 1\n  }\n  acc\n}"
   assert_result(src, "main", "mut_final_drop", "5150")
 }
 
-// ADR-0055 Stage 4 (closures): a closure capturing a heap value is a headered RC
-// env (drop-class 1). Capturing consumes the value; dropping the closure binding
-// recursively frees it. Pins result parity (reclamation in verify_selfhost_rc).
 test "heap e2e: closure capturing heap value in loop" {
   let src = "let main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 100 {\n    let t = (i, i + 1)\n    let g = () -> { t.0 + t.1 }\n    s = s + g()\n    i = i + 1\n  }\n  s\n}"
   assert_result(src, "main", "closure_capture_heap", "10000")
 }
 
-// A closure capturing two heap values, called twice (the closure value is
-// borrowed by each call, not consumed).
 test "heap e2e: closure capturing two heap values called twice" {
   let src = "let main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 100 {\n    let a = (i, i + 1)\n    let b = (i + 2, i + 3)\n    let g = () -> { a.0 + b.1 }\n    s = s + g() + g()\n    i = i + 1\n  }\n  s\n}"
   assert_result(src, "main", "closure_two_heap", "20400")
 }
 
-// Newline-sensitive parse: an array literal `[t]` on its own line after a
-// complete `let` is a NEW statement (the function's array return), not a postfix
-// subscript `(i, i+1)[t]`. Previously mis-parsed → invalid wasm. Now both paths
-// compile and agree.
 test "heap e2e: array literal as function return on its own line" {
   let src = "let mk: (Int) -> Array[(Int, Int)] = (i) -> {\n  let t = (i, i + 1)\n  [t]\n}\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 50 {\n    let r = mk(i)\n    s = s + (Array::get(r, 0)).0\n    i = i + 1\n  }\n  s\n}"
   assert_result(src, "main", "array_return_own_line", "1225")
 }
 
-// ADR-0055 Stage 4 (reassign-self reclamation): `b = (.. b ..)` reads the old
-// block, so it cannot drop it first. The reassign-self path pre-dups each
-// top-level heap field carried verbatim from the old block, builds the new
-// tuple, then drops the old block — reclaiming it (0 B/iter under RC) without a
-// use-after-free of the carried fields. These cases assert default==RC results.
 test "heap e2e: reassign-self scalar tuple in loop" {
   let src = "let main: () -> Int = () -> {\n  let mut b = (0, 0)\n  let mut i = 0\n  while i < 1000 {\n    b = (b.0 + i, b.1)\n    i = i + 1\n  }\n  b.0\n}"
   assert_result(src, "main", "reassign_self_scalar", "499500")
@@ -540,20 +398,11 @@ test "heap e2e: reassign-self both heap fields swapped in loop" {
   assert_result(src, "main", "reassign_self_both_heap", "1003")
 }
 
-// Safety carve-out: a reassign-self whose RHS carries `name` through a NESTED
-// constructor (not a bare top-level field) falls back to the old, safe leak
-// rather than the reclamation path — it must still compute the right result.
 test "heap e2e: reassign-self nested-carry falls back safely" {
   let src = "let main: () -> Int = () -> {\n  let mut b = (5, 6)\n  let mut i = 0\n  while i < 100 {\n    b = ((b.0 + 1, b.1), 0).0\n    i = i + 1\n  }\n  b.0 + b.1\n}"
   assert_result(src, "main", "reassign_self_nested_fallback", "111")
 }
 
-// ADR-0055 Stage 4 (array buffer reclamation): Array::push grows an array by
-// allocating a larger HEADERED buffer via __rc_alloc and freeing the old one;
-// rc_drop frees a grown (separate) buffer when the array is dropped; array_new
-// allocates via __rc_alloc too. A build-and-discard loop that previously leaked
-// ~one array block + its grown buffers per iteration now reclaims to 0 B/iter.
-// These assert default==RC results across the cap 8->16->32->64 growth path.
 test "heap e2e: array push growth then read" {
   let src = "let main: () -> Int = () -> {\n  let a = [0]\n  let mut i = 1\n  while i < 50 {\n    Array::push(a, i)\n    i = i + 1\n  }\n  Array::get(a, 49) + Array::length(a)\n}"
   assert_result(src, "main", "array_push_growth", "99")
@@ -564,12 +413,6 @@ test "heap e2e: array build-and-discard in loop" {
   assert_result(src, "main", "array_build_discard", "1900")
 }
 
-// ADR-0055 Stage 4: ArrayBuilder::{new,push,freeze} are aliases of array_new /
-// Array::push / identity. `ArrayBuilder::push` borrows arg0 (the builder stays
-// live, mutated in place), so the builder is reclaimed by its own scope-end
-// drop; `freeze` transfers ownership of the built array to its result, which is
-// then reclaimed (or, when returned, by the caller). Build-and-discard via the
-// ArrayBuilder surface now reclaims like the raw array path.
 test "heap e2e: arraybuilder build-and-freeze discard in loop" {
   let src = "let build: (Int) -> Int = (k) -> {\n  let b = ArrayBuilder::new()\n  let mut i = 0\n  while i < k {\n    ArrayBuilder::push(b, i)\n    i = i + 1\n  }\n  let frozen = ArrayBuilder::freeze(b)\n  Array::length(frozen)\n}\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut j = 0\n  while j < 100 {\n    s = s + build(20)\n    j = j + 1\n  }\n  s\n}"
   assert_result(src, "main", "arraybuilder_freeze_discard", "2000")
@@ -580,13 +423,6 @@ test "heap e2e: arraybuilder frozen result escapes" {
   assert_result(src, "main", "arraybuilder_escape", "1900")
 }
 
-// ADR-0055 Stage 4 (MapBuilder reclamation): MapBuilder::new allocates a
-// headered, free-list-backed block tagged as an odd pointer with drop-class 6
-// (map: count@value+0, key@+8 / val@+16 on a 16-byte stride). MapBuilder::set
-// borrows arg0 (in-place); freeze transfers ownership; Map::get borrows the map
-// and returns a borrowed entry. The recursive rc_drop frees the block and (for
-// class 6) recurses into each key/val, so a build-and-discard loop reclaims to
-// 0 B/iter — including heap-valued entries.
 test "heap e2e: mapbuilder build-and-discard in loop" {
   let src = "let build: (Int) -> Int = (k) -> {\n  let b = MapBuilder::new()\n  MapBuilder::set(b, k, k * 10)\n  MapBuilder::set(b, k + 1, k + 11)\n  let m = MapBuilder::freeze(b)\n  Map::get(m, k)\n}\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut j = 0\n  while j < 100 {\n    s = s + build(j)\n    j = j + 1\n  }\n  s\n}"
   assert_result(src, "main", "mapbuilder_discard", "49500")
@@ -602,12 +438,6 @@ test "heap e2e: enum payload tuple drop in loop" {
   assert_result(src, "main", "enum_tuple_loop", "1600")
 }
 
-// Regression: String::last_index_of / String::ends_with were dispatched via
-// hardcoded function indices in compile_call.vibe (emit_call(buf, 30) / 29)
-// that had drifted out of sync with the func table. last_index_of resolved to
-// `contains` (returning a 0/1 bool) and ends_with resolved to `index_of`,
-// so both produced *valid* wasm with wrong results. These execute the result
-// to lock in correct dispatch (assert_wasm/byte-parity could not catch it).
 test "heap e2e: last_index_of returns last match" {
   let src = "let main: () -> Int = () -> { String::last_index_of(\"abcabc\", \"bc\") }"
   assert_result(src, "main", "last_index_of_hit", "4")
@@ -633,14 +463,6 @@ test "heap e2e: ends_with false" {
   assert_result(src, "main", "ends_with_false", "0")
 }
 
-// Regression: Int::to_double / Double::to_int / Float::to_int were intercepted
-// as an identity fast-path in compile_call.vibe, shadowing the real conversion
-// bodies (gen_double_to_int_body = reinterpret_f64 + trunc_f64_s, etc.), so the
-// conversions were no-ops. The selfhost's own float lexer/formatter
-// (lexer.vibe, float_format.vibe) depends on these, so they must actually
-// convert. These use no float *literal* (orthogonal Blocker-2: a normal f64 bit
-// pattern overflows the selfhost's 62-bit Int in emit_f64_const_bits), so they
-// isolate the conversion path. Run on both default and RC (RC tags the int).
 test "conv: Double::to_int(Int::to_double(n)) round-trips" {
   let src = "let main: () -> Int = () -> { Double::to_int(Int::to_double(7)) }"
   assert_result(src, "main", "conv_roundtrip", "7")
@@ -656,11 +478,6 @@ test "conv: float div of converted ints" {
   assert_result(src, "main", "conv_div", "5")
 }
 
-// Regression (codex review #505): Int::to_float / Float::to_double / Double::to_float
-// now emit real f64 bit patterns, so a binop over them must be detected as
-// floatish (expr_is_floatish) or codegen takes the integer-+ path and adds f64
-// bit patterns as i64. Float::to_int(Int::to_float(42) + Int::to_float(8)) must
-// be 50, not garbage.
 test "conv: Float alias binop takes the float path" {
   let src = "let main: () -> Int = () -> { Float::to_int(Int::to_float(42) + Int::to_float(8)) }"
   assert_result(src, "main", "conv_float_alias_add", "50")
@@ -671,12 +488,6 @@ test "conv: Float alias div" {
   assert_result(src, "main", "conv_float_alias_div", "5")
 }
 
-// Blocker-2 (ADR-0055): float literals are now emitted correctly. A normal f64
-// pattern exceeds the selfhost's 62-bit Int, so the literal was previously
-// split-free and truncated to ~0. Now EFloat emits via Double::to_i64_bits_lo /
-// _hi (each half fits the 62-bit Int) → emit_f64_const_lohi. These exercise the
-// full path (literal → f64.const → reinterpret → arithmetic → Double::to_int),
-// default and RC.
 test "float literal: Double::to_int(4.0)" {
   assert_result("let main: () -> Int = () -> { Double::to_int(4.0) }", "main", "flit_40", "4")
 }
@@ -697,10 +508,6 @@ test "float literal: mixed literal + conversion" {
   assert_result("let main: () -> Int = () -> { Double::to_int(Int::to_double(5) + 0.5 * 4.0) }", "main", "flit_mix", "7")
 }
 
-// Blocker-3 (ADR-0055): float-ness is tracked through `let`/`let mut` bindings
-// (ctx.float_local_slots), so a *variable* holding a float makes a later binop
-// take the f64 path. Without this, `let x = 1.5; x + y` used integer + on the
-// f64 bit patterns. Default and RC.
 test "float var: let x = 1.5; x + 2.5" {
   assert_result("let main: () -> Int = () -> { let x = 1.5; Double::to_int(x + 2.5) }", "main", "fvar_one", "4")
 }
@@ -721,9 +528,6 @@ test "float var: chained through bindings" {
   assert_result("let main: () -> Int = () -> { let a = 2.5; let b = a + 1.5; let c = b * 2.0; Double::to_int(c) }", "main", "fvar_chain", "8")
 }
 
-// Blocker-3 scoping (codex review #507): float-ness is keyed by local SLOT and
-// truncated with local_names, so a shadowing same-name binding of a different
-// type, and slots reused across if/match branches, are NOT misclassified.
 test "float var: inner int shadow of outer float (no leak)" {
   // outer x is float; inner block rebinds x to an int — inner x + 2 must be
   // integer arithmetic (=> 3), not f64 over tagged ints.
@@ -736,10 +540,6 @@ test "float var: int binding reusing a float slot across if branches" {
   assert_result("let main: () -> Int = () -> { if false { let a = 1.5; Double::to_int(a + 1.0) } else { let a = 5; a + 1 } }", "main", "fvar_ifreuse", "6")
 }
 
-// ADR-0055 Stage 2: float heap-boxing. Under RC a float is a heap-boxed odd
-// pointer, so it participates in RC: stored in a tuple it is freed by the
-// container's recursive drop, and a multiply-used float is dup'd (no double
-// free). Verified on default (inline) AND RC (boxed).
 test "float box: float in a tuple, dropped" {
   assert_result("let main: () -> Int = () -> { let t = (1.5, 2.5); Double::to_int(t.0 + t.1) }", "main", "fbox_tuple", "4")
 }
@@ -756,12 +556,10 @@ test "float box: many floats in a loop (alloc/free churn)" {
   assert_result("let main: () -> Int = () -> { let mut s = 0; let mut i = 0; while i < 5 { let f = Int::to_double(i) + 0.5; s = s + Double::to_int(f); i = i + 1 }; s }", "main", "fbox_loop", "10")
 }
 
-// ADR-0055 Stage 2: a float comparison yields a (tagged, under RC) bool.
 test "float box: comparison in if-condition" {
   assert_result("let main: () -> Int = () -> { if 1.5 < 2.5 { 10 } else { 20 } }", "main", "fbox_cmp", "10")
 }
 
-// ADR-0055 Stage 2: a float flowing through a user function (boxed arg + return).
 test "float box: float through a user function" {
   assert_result("let dbl: (Double) -> Double = (d) -> { d * 2.0 }\nlet main: () -> Int = () -> { Double::to_int(dbl(2.5)) }", "main", "fbox_fn", "5")
 }
