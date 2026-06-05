@@ -88,6 +88,58 @@ no bootstrap risk):
 
 ### Floats
 
+> **Prerequisite — Blocker-2: the selfhost cannot even emit a float *literal*
+> today (independent of RC).** Investigation (2026-06, this branch lineage)
+> found floats are broken in the selfhost linear backend at three layers, only
+> the first of which is fixed:
+> 1. ✅ **Numeric conversions were no-ops** (`Int::to_double` / `Double::to_int`
+>    / `Float::*` were intercepted by an identity fast-path in
+>    `compile_call.vibe`, shadowing `gen_double_to_int_body` etc.). Fixed in
+>    #505 (and `expr_is_floatish` extended to the float-producing aliases).
+>    `Double::to_int(Int::to_double(7))` = 7 now works.
+> 2. ❌ **Float literals overflow the selfhost's 62-bit Int.** `EFloat` emits
+>    `emit_f64_const_bits(buf, Double::to_i64_bits(v))`, but a normal f64 bit
+>    pattern (e.g. `4.0` = `0x4010000000000000`) exceeds `2^61-1`, so the value
+>    is truncated when held in the selfhost's tagged `Int` → corrupted
+>    `f64.const` → every float literal decodes to ≈0. (`Int::to_double`-derived
+>    floats are fine because that conversion happens at the wasm level via
+>    `f64.convert_i64_s`, never routing the pattern through a tagged `Int`.)
+> 3. ❌ **Blocker-3** (no AST types) still prevents tracking float-ness through a
+>    variable, so `let x = 1.5; x + y` cannot be recognised as float arithmetic.
+>
+> **Heap-boxing presupposes working float literals, so Blocker-2 must land
+> first.** Chosen fix (issue owner, 2026-06): add an f64-byte primitive rather
+> than re-deriving literals as `Int::to_double(n)/scale`.
+>
+> **Blocker-2 implementation plan (f64-byte primitive):**
+> - Add `Double::to_i64_bits_hi` / `Double::to_i64_bits_lo : (Double) -> Int`,
+>   returning the high / low 32 bits of the f64 (each `≤ 2^32-1`, fits the
+>   62-bit Int). Pure.
+> - **`src/` (authoritative first).** Floats are **boxed** there, so unbox:
+>   checker decl mirroring `Double::to_i64_bits` (`type_check_unary_convert`
+>   Double→Int in `typecheck_call_builtin_handler_runtime_memory.mbt`; add to
+>   `purity.mbt`, `address.mbt`, `wasm_codegen_sig.mbt` value-kind, and the
+>   builtin name lists); codegen in `wasm_codegen_builtin_numeric.mbt`:
+>   `emit_unbox_f64_expr(arg)` → `i64.reinterpret_f64` → `(hi: i64.const 32;
+>   i64.shr_u) | (lo: i64.const 0xFFFFFFFF; i64.and)` → tag as Int. Mirror in
+>   `wasm_gc_codegen.mbt` if the gc path needs it.
+> - **selfhost.** Floats are inline f64-bits, so **no unbox** — just
+>   `i64.reinterpret_f64` (or operate on the i64 directly) → `shr_u` / `and` →
+>   tag per `enable_rc`. Declare the builtin in the selfhost checker + add a
+>   `compile_call.vibe` handler.
+> - Replace `emit_f64_const_bits(buf, bits)` with `emit_f64_const(buf, v :
+>   Double)` that does `lo = to_i64_bits_lo(v); hi = to_i64_bits_hi(v)` and emits
+>   `0x44` + the 4 LE bytes of `lo` + the 4 LE bytes of `hi` (extract each byte
+>   `(half >> 8k) & 255`; ensure `half` is treated as unsigned 32-bit so the
+>   sign bit / negative floats extract correctly). Point the `EFloat` handler at
+>   it.
+> - **Verify:** float literals (`4.0`→4, `7.9`→7, `1.5`) in
+>   `codegen_heap_e2e_test` (default **and** RC). **Re-baseline byte-parity** —
+>   the selfhost's own sources use float literals (`float_format.vibe`,
+>   `lexer.vibe`), so self-compiled output changes; confirm both sides stay
+>   consistent. Then `EFloat` is correct and **heap-box** (below) can proceed;
+>   Blocker-3 still gates float-via-variable.
+
 Two options; **box-on-heap** is the conservative first cut:
 
 - **Heap-box** every `enable_rc` float as a 1-field heap object (`type_id=float`,
