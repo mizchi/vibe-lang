@@ -1682,6 +1682,76 @@ test "compile_module_component allows Array[String] thread channel payload" {
 }
 
 ///|
+test "compile_module_component rejects nested array thread channel payload" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "threads_component_nested_array_channel_payload_probe",
+    (
+      #|let worker = (_ch: ThreadChannel[Int]) -> Int {
+      #|  0
+      #|}
+      #|export let thread_worker_probe = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let _ok = Threads::send(ch, [[1, 2], [3, 4]])
+      #|  let task = Threads::spawn("worker", ch)
+      #|  Threads::wait(task)
+      #|}
+      #|0
+    ),
+  )
+  let result : Result[Bytes, WasmCompileError] = try? compile_module_component_with_opt_level(
+    db,
+    "threads_component_nested_array_channel_payload_probe",
+    thread_backend_id="component-unsafe-os-threads",
+  )
+  match result {
+    Ok(_) => fail("expected nested array thread channel payload error")
+    Err(err) => {
+      let message = err.user_message()
+      assert_true(message.contains("ThreadChannelPayload"))
+      assert_true(message.contains("thread channel payload"))
+    }
+  }
+}
+
+///|
+test "compile_module_component rejects nested array thread worker return" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "threads_component_nested_array_worker_return_probe",
+    (
+      #|let worker = (_ch: ThreadChannel[Int]) -> Array[Array[Int]] {
+      #|  [[1, 2], [3, 4]]
+      #|}
+      #|export let thread_worker_probe = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let task = Threads::spawn("worker", ch)
+      #|  Array::length(Threads::wait(task))
+      #|}
+      #|0
+    ),
+  )
+  let result : Result[Bytes, WasmCompileError] = try? compile_module_component_with_opt_level(
+    db,
+    "threads_component_nested_array_worker_return_probe",
+    thread_backend_id="component-unsafe-os-threads",
+  )
+  match result {
+    Ok(_) => fail("expected nested array thread worker return error")
+    Err(err) => {
+      let message = err.user_message()
+      assert_true(message.contains("Threads::spawn worker currently supports"))
+      assert_true(
+        message.contains(
+          "ThreadChannel[Int|String|Array[Int]|Array[String]] -> Int|String|Array[Int]|Array[String]",
+        ),
+      )
+      assert_true(message.contains("worker"))
+    }
+  }
+}
+
+///|
 test "compile_module_component rejects dynamic thread worker name" {
   let db = @runtime.VibeDb::new()
   db.set_source(
@@ -1929,13 +1999,27 @@ test "compile_module_component emits component unsafe Threads spawn runtime impo
   assert_true(bytes_contains_ascii(component, "thread-probe"))
   assert_true(bytes_contains_ascii(component, "thread-worker-probe"))
   assert_true(bytes_contains_ascii(component, "thread-worker-channel-probe"))
-  assert_true(bytes_contains_ascii(component, "thread-worker-string-channel-probe"))
-  assert_true(bytes_contains_ascii(component, "thread-worker-string-result-probe"))
-  assert_true(bytes_contains_ascii(component, "thread-worker-string-alloc-result-probe"))
-  assert_true(bytes_contains_ascii(component, "thread-worker-array-result-probe"))
-  assert_true(bytes_contains_ascii(component, "thread-worker-array-string-result-probe"))
-  assert_true(bytes_contains_ascii(component, "thread-worker-array-channel-probe"))
-  assert_true(bytes_contains_ascii(component, "thread-worker-array-string-channel-probe"))
+  assert_true(
+    bytes_contains_ascii(component, "thread-worker-string-channel-probe"),
+  )
+  assert_true(
+    bytes_contains_ascii(component, "thread-worker-string-result-probe"),
+  )
+  assert_true(
+    bytes_contains_ascii(component, "thread-worker-string-alloc-result-probe"),
+  )
+  assert_true(
+    bytes_contains_ascii(component, "thread-worker-array-result-probe"),
+  )
+  assert_true(
+    bytes_contains_ascii(component, "thread-worker-array-string-result-probe"),
+  )
+  assert_true(
+    bytes_contains_ascii(component, "thread-worker-array-channel-probe"),
+  )
+  assert_true(
+    bytes_contains_ascii(component, "thread-worker-array-string-channel-probe"),
+  )
   assert_true(bytes_contains_ascii(component, "thread-alloc-probe"))
   assert_true(bytes_contains_ascii(component, "thread-alloc-many-probe"))
   assert_true(

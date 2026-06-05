@@ -374,17 +374,15 @@ test "type_call_builtin: Threads builtins match documented contract" {
   )
   env.set(
     "ch_array",
-    @core.Type::Named(
-      name="ThreadChannel",
-      args=[@core.Type::Array(@core.Type::Int)],
-    ),
+    @core.Type::Named(name="ThreadChannel", args=[
+      @core.Type::Array(@core.Type::Int),
+    ]),
   )
   env.set(
     "ch_array_string",
-    @core.Type::Named(
-      name="ThreadChannel",
-      args=[@core.Type::Array(@core.Type::String)],
-    ),
+    @core.Type::Named(name="ThreadChannel", args=[
+      @core.Type::Array(@core.Type::String),
+    ]),
   )
   env.set("xs", @core.Type::Array(@core.Type::Int))
   env.set("strings", @core.Type::Array(@core.Type::String))
@@ -437,10 +435,9 @@ test "type_call_builtin: Threads builtins match documented contract" {
       params=[
         builtin_test_fn_param(
           "ch",
-          @core.Type::Named(
-            name="ThreadChannel",
-            args=[@core.Type::Array(@core.Type::Int)],
-          ),
+          @core.Type::Named(name="ThreadChannel", args=[
+            @core.Type::Array(@core.Type::Int),
+          ]),
         ),
       ],
       ret=@core.Type::Int,
@@ -453,10 +450,9 @@ test "type_call_builtin: Threads builtins match documented contract" {
       params=[
         builtin_test_fn_param(
           "ch",
-          @core.Type::Named(
-            name="ThreadChannel",
-            args=[@core.Type::Array(@core.Type::String)],
-          ),
+          @core.Type::Named(name="ThreadChannel", args=[
+            @core.Type::Array(@core.Type::String),
+          ]),
         ),
       ],
       ret=@core.Type::Int,
@@ -514,10 +510,9 @@ test "type_call_builtin: Threads builtins match documented contract" {
         builtin_test_string_arg("worker_array"),
         builtin_test_ident_arg("ch_int"),
       ],
-      @core.Type::Named(
-        name="ThreadTask",
-        args=[@core.Type::Array(@core.Type::Int)],
-      ),
+      @core.Type::Named(name="ThreadTask", args=[
+        @core.Type::Array(@core.Type::Int),
+      ]),
     ),
     (
       "Threads::spawn",
@@ -525,10 +520,9 @@ test "type_call_builtin: Threads builtins match documented contract" {
         builtin_test_string_arg("worker_array_string"),
         builtin_test_ident_arg("ch_int"),
       ],
-      @core.Type::Named(
-        name="ThreadTask",
-        args=[@core.Type::Array(@core.Type::String)],
-      ),
+      @core.Type::Named(name="ThreadTask", args=[
+        @core.Type::Array(@core.Type::String),
+      ]),
     ),
     (
       "Threads::spawn",
@@ -568,7 +562,8 @@ test "type_call_builtin: Threads builtins match documented contract" {
   }
   match channel_ty {
     @core.Type::Named(name="ThreadChannel", args=[@core.Type::Var(_)]) => ()
-    other => fail("Threads::channel_new should return ThreadChannel[_]: \{other}")
+    other =>
+      fail("Threads::channel_new should return ThreadChannel[_]: \{other}")
   }
   let recv_ty = type_call_builtin(
     env,
@@ -598,6 +593,41 @@ test "type_call_builtin: Threads builtins match documented contract" {
     Ok(_) => fail("Threads::wait should require ThreadTask[_]")
     Err(TypeError::Mismatch(context=Some("thread task"), ..)) => ()
     Err(other) => fail("unexpected Threads::wait error: \{other.to_string()}")
+  }
+}
+
+///|
+test "type_call_builtin: Threads send rejects nested array payloads" {
+  let env = TypeEnv::new()
+  let span = builtin_test_span()
+  let aliases : Map[String, @core.Ref] = {}
+  let scope = effect_scope_from_list([@core.EffectAtom::Const("Threads")])
+  env.set(
+    "ch_nested",
+    @core.Type::Named(name="ThreadChannel", args=[
+      @core.Type::Array(@core.Type::Array(@core.Type::Int)),
+    ]),
+  )
+  env.set("nested", @core.Type::Array(@core.Type::Array(@core.Type::Int)))
+  let result : Result[@core.Type, TypeError] = try? type_call_builtin(
+    env,
+    "Threads::send",
+    [builtin_test_ident_arg("ch_nested"), builtin_test_ident_arg("nested")],
+    aliases,
+    scope,
+    true,
+    span,
+  )
+  match result {
+    Ok(_) => fail("Threads::send should reject nested array payloads")
+    Err(
+      TypeError::Mismatch(
+        expected=@core.Type::Named(name="ThreadChannelPayload", args=[]),
+        context=Some("thread channel payload"),
+        ..
+      )
+    ) => ()
+    Err(other) => fail("unexpected Threads::send error: \{other.to_string()}")
   }
 }
 

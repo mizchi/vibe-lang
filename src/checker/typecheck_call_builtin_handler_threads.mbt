@@ -82,7 +82,7 @@ fn thread_spawn_result_type_from_name_expr(
 }
 
 ///|
-fn threads_payload_is_int_type(ty : @core.Type) -> Bool {
+fn threads_shared_value_is_int_type(ty : @core.Type) -> Bool {
   match ty {
     @core.Type::Int => true
     @core.Type::Named(name="Int", args=[]) => true
@@ -91,7 +91,7 @@ fn threads_payload_is_int_type(ty : @core.Type) -> Bool {
 }
 
 ///|
-fn threads_payload_is_string_type(ty : @core.Type) -> Bool {
+fn threads_shared_value_is_string_type(ty : @core.Type) -> Bool {
   match ty {
     @core.Type::String => true
     @core.Type::Named(name="String", args=[]) => true
@@ -100,24 +100,26 @@ fn threads_payload_is_string_type(ty : @core.Type) -> Bool {
 }
 
 ///|
-fn threads_payload_is_supported_scalar_type(ty : @core.Type) -> Bool {
-  threads_payload_is_int_type(ty) || threads_payload_is_string_type(ty)
+fn threads_shared_value_is_supported_scalar_type(ty : @core.Type) -> Bool {
+  threads_shared_value_is_int_type(ty) ||
+  threads_shared_value_is_string_type(ty)
 }
 
 ///|
-fn threads_payload_is_supported_array_type(ty : @core.Type) -> Bool {
+fn threads_shared_value_is_supported_array_type(ty : @core.Type) -> Bool {
   match ty {
-    @core.Type::Array(elem) => threads_payload_is_supported_scalar_type(elem)
+    @core.Type::Array(elem) =>
+      threads_shared_value_is_supported_scalar_type(elem)
     @core.Type::Named(name="Array", args=[elem]) =>
-      threads_payload_is_supported_scalar_type(elem)
+      threads_shared_value_is_supported_scalar_type(elem)
     _ => false
   }
 }
 
 ///|
-fn threads_payload_is_supported_type(ty : @core.Type) -> Bool {
-  threads_payload_is_supported_scalar_type(ty) ||
-  threads_payload_is_supported_array_type(ty)
+fn threads_shared_value_is_supported_type(ty : @core.Type) -> Bool {
+  threads_shared_value_is_supported_scalar_type(ty) ||
+  threads_shared_value_is_supported_array_type(ty)
 }
 
 ///|
@@ -130,7 +132,7 @@ fn check_threads_payload_type(
 ) -> @core.Type raise TypeError {
   let actual = type_expr_eff(env, expr, aliases, effects, allow_effect)
   let resolved = resolve_type(env, actual)
-  if threads_payload_is_supported_type(resolved) {
+  if threads_shared_value_is_supported_type(resolved) {
     actual
   } else {
     raise TypeError::Mismatch(
@@ -180,14 +182,7 @@ fn type_call_builtin_handler_threads(
       )
     "Threads::send" => {
       let pos_args = prepare_builtin_pos_args(
-        env,
-        "Threads::send",
-        args,
-        2,
-        effects,
-        allow_effect,
-        call_span,
-        true,
+        env, "Threads::send", args, 2, effects, allow_effect, call_span, true,
       )
       let channel_payload_ty = expect_threads_channel_payload_type(
         env,
@@ -215,14 +210,7 @@ fn type_call_builtin_handler_threads(
     }
     "Threads::recv" => {
       let pos_args = prepare_builtin_pos_args(
-        env,
-        "Threads::recv",
-        args,
-        1,
-        effects,
-        allow_effect,
-        call_span,
-        true,
+        env, "Threads::recv", args, 1, effects, allow_effect, call_span, true,
       )
       expect_threads_channel_payload_type(
         env,
@@ -234,14 +222,7 @@ fn type_call_builtin_handler_threads(
     }
     "Threads::spawn" => {
       let pos_args = prepare_builtin_pos_args(
-        env,
-        "Threads::spawn",
-        args,
-        2,
-        effects,
-        allow_effect,
-        call_span,
-        true,
+        env, "Threads::spawn", args, 2, effects, allow_effect, call_span, true,
       )
       let _ = check_arg_type(
         env,
@@ -258,18 +239,13 @@ fn type_call_builtin_handler_threads(
         effects,
         allow_effect,
       )
-      threads_task_type(thread_spawn_result_type_from_name_expr(env, pos_args[0]))
+      threads_task_type(
+        thread_spawn_result_type_from_name_expr(env, pos_args[0]),
+      )
     }
     "Threads::wait" => {
       let pos_args = prepare_builtin_pos_args(
-        env,
-        "Threads::wait",
-        args,
-        1,
-        effects,
-        allow_effect,
-        call_span,
-        true,
+        env, "Threads::wait", args, 1, effects, allow_effect, call_span, true,
       )
       expect_threads_task_result_type(
         env,

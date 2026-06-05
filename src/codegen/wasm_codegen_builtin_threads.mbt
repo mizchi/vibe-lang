@@ -278,7 +278,7 @@ fn register_thread_worker_func_name(ctx : CodegenCtx, value : String) -> Unit {
 }
 
 ///|
-fn thread_worker_is_int_type(ty : @core.Type) -> Bool {
+fn thread_worker_is_shared_value_int_type(ty : @core.Type) -> Bool {
   match ty {
     @core.Type::Int => true
     @core.Type::Named(name="Int", args=[]) => true
@@ -287,7 +287,7 @@ fn thread_worker_is_int_type(ty : @core.Type) -> Bool {
 }
 
 ///|
-fn thread_worker_is_string_type(ty : @core.Type) -> Bool {
+fn thread_worker_is_shared_value_string_type(ty : @core.Type) -> Bool {
   match ty {
     @core.Type::String => true
     @core.Type::Named(name="String", args=[]) => true
@@ -296,35 +296,33 @@ fn thread_worker_is_string_type(ty : @core.Type) -> Bool {
 }
 
 ///|
-fn thread_worker_is_supported_channel_payload_type(ty : @core.Type) -> Bool {
-  thread_worker_is_int_type(ty) || thread_worker_is_string_type(ty)
+fn thread_worker_is_supported_shared_scalar_type(ty : @core.Type) -> Bool {
+  thread_worker_is_shared_value_int_type(ty) ||
+  thread_worker_is_shared_value_string_type(ty)
 }
 
-fn thread_worker_is_supported_result_array_type(ty : @core.Type) -> Bool {
+///|
+fn thread_worker_is_supported_shared_array_type(ty : @core.Type) -> Bool {
   match ty {
-    @core.Type::Array(elem) => thread_worker_is_supported_channel_payload_type(elem)
+    @core.Type::Array(elem) =>
+      thread_worker_is_supported_shared_scalar_type(elem)
     @core.Type::Named(name="Array", args=[elem]) =>
-      thread_worker_is_supported_channel_payload_type(elem)
+      thread_worker_is_supported_shared_scalar_type(elem)
     _ => false
   }
 }
 
 ///|
-fn thread_worker_is_supported_channel_array_type(ty : @core.Type) -> Bool {
-  match ty {
-    @core.Type::Array(elem) => thread_worker_is_supported_channel_payload_type(elem)
-    @core.Type::Named(name="Array", args=[elem]) =>
-      thread_worker_is_supported_channel_payload_type(elem)
-    _ => false
-  }
+fn thread_worker_is_supported_shared_value_type(ty : @core.Type) -> Bool {
+  thread_worker_is_supported_shared_scalar_type(ty) ||
+  thread_worker_is_supported_shared_array_type(ty)
 }
 
 ///|
 fn thread_worker_is_supported_channel_type(ty : @core.Type) -> Bool {
   match ty {
     @core.Type::Named(name="ThreadChannel", args=[payload]) =>
-      thread_worker_is_supported_channel_payload_type(payload) ||
-      thread_worker_is_supported_channel_array_type(payload)
+      thread_worker_is_supported_shared_value_type(payload)
     _ => false
   }
 }
@@ -344,10 +342,7 @@ fn thread_worker_has_supported_channel_param(
 ///|
 fn thread_worker_has_supported_return(ctx : CodegenCtx, value : String) -> Bool {
   match ctx.fn_return_types.get(value) {
-    Some(ty) =>
-      thread_worker_is_int_type(ty) ||
-      thread_worker_is_string_type(ty) ||
-      thread_worker_is_supported_result_array_type(ty)
+    Some(ty) => thread_worker_is_supported_shared_value_type(ty)
     None => true
   }
 }
@@ -562,7 +557,9 @@ fn compile_threads_shared_atomic(
       emit_i32_add(buf)
       emit_local_set(buf, alloc_size_local)
       require_heap(ctx)
-      emit_heap_alloc_local_aligned(ctx, buf, alloc_size_local, 8, channel_local)
+      emit_heap_alloc_local_aligned(
+        ctx, buf, alloc_size_local, 8, channel_local,
+      )
       emit_shared_channel_atomic_store_field_const(
         buf,
         channel_local,
