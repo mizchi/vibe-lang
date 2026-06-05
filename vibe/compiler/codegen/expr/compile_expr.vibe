@@ -9,7 +9,7 @@ import .. / common_analysis {
 }
 
 import .. / common_base {
-  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
+  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_box_float, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, emit_unbox_float, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
 }
 
 import .. / common_extractors {
@@ -72,7 +72,15 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
     let hi = Double::to_i64_bits_hi(v)
     emit_f64_const_lohi(buf, lo, hi)
     emit_i64_reinterpret_f64(buf)
-    next_local
+    // ADR-0055 Stage 2: heap-box the float under RC so it is an odd pointer.
+    if ctx.enable_rc {
+      Array::push(local_names, "__fbits")
+      Array::push(local_names, "__fbox")
+      emit_box_float(buf, ctx, next_local, next_local + 1)
+      next_local + 2
+    } else {
+      next_local
+    }
   } else if __tag == 3 {
     let s = get_estring_value(expr)
     let idx = str_table_lookup(ctx.str_table.strs, s)
@@ -214,38 +222,58 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
       }
       nl2
     } else if expr_is_floatish(lhs, local_names, ctx) || expr_is_floatish(rhs, local_names, ctx) {
+      // ADR-0055 Stage 2: under RC each float operand is a heap-boxed pointer,
+      // so unbox to its f64 bits before reinterpreting; an arithmetic result is
+      // re-boxed, a comparison result is a tagged bool. (Non-RC stays inline.)
       let nl1 = compile_expr(buf, lhs, local_names, next_local, ctx, ld)
+      if ctx.enable_rc {
+        emit_unbox_float(buf)
+      }
       emit_f64_reinterpret_i64(buf)
       let nl2 = compile_expr(buf, rhs, local_names, nl1, ctx, ld)
-      emit_f64_reinterpret_i64(buf)
-      if op == "+" {
-        emit_f64_add(buf)
-        emit_i64_reinterpret_f64(buf)
-      } else if op == "-" {
-        emit_f64_sub(buf)
-        emit_i64_reinterpret_f64(buf)
-      } else if op == "*" {
-        emit_f64_mul(buf)
-        emit_i64_reinterpret_f64(buf)
-      } else if op == "/" {
-        emit_f64_div(buf)
-        emit_i64_reinterpret_f64(buf)
-      } else if op == "<" {
-        emit_f64_lt(buf)
-        emit_i64_extend_i32_s(buf)
-      } else if op == ">" {
-        emit_f64_gt(buf)
-        emit_i64_extend_i32_s(buf)
-      } else if op == "<=" {
-        emit_f64_le(buf)
-        emit_i64_extend_i32_s(buf)
-      } else if op == ">=" {
-        emit_f64_ge(buf)
-        emit_i64_extend_i32_s(buf)
-      } else {
-        throw(String::concat("unsupported float binop: ", op))
+      if ctx.enable_rc {
+        emit_unbox_float(buf)
       }
-      nl2
+      emit_f64_reinterpret_i64(buf)
+      if op == "+" || op == "-" || op == "*" || op == "/" {
+        if op == "+" {
+          emit_f64_add(buf)
+        } else if op == "-" {
+          emit_f64_sub(buf)
+        } else if op == "*" {
+          emit_f64_mul(buf)
+        } else {
+          emit_f64_div(buf)
+        }
+        emit_i64_reinterpret_f64(buf)
+        if ctx.enable_rc {
+          Array::push(local_names, "__fbits")
+          Array::push(local_names, "__fbox")
+          emit_box_float(buf, ctx, nl2, nl2 + 1)
+          nl2 + 2
+        } else {
+          nl2
+        }
+      } else {
+        if op == "<" {
+          emit_f64_lt(buf)
+        } else if op == ">" {
+          emit_f64_gt(buf)
+        } else if op == "<=" {
+          emit_f64_le(buf)
+        } else if op == ">=" {
+          emit_f64_ge(buf)
+        } else {
+          throw(String::concat("unsupported float binop: ", op))
+        }
+        emit_i64_extend_i32_s(buf)
+        // ADR-0055 Stage 1: a comparison yields a bool; tag it under RC.
+        if ctx.enable_rc {
+          emit_i64_const(buf, 1)
+          emit_i64_shl(buf)
+        }
+        nl2
+      }
     } else if ctx.enable_rc {
       // ADR-0055 Stage 1: tagged-int (n<<1) arithmetic corrections.
       //   + - & | ^ % && || : none (low tag bit is preserved)

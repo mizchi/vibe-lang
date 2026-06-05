@@ -139,10 +139,25 @@ no bootstrap risk):
 
 Two options; **box-on-heap** is the conservative first cut:
 
-- **Heap-box** every `enable_rc` float as a 1-field heap object (`type_id=float`,
-  payload = the f64 bits). Floats become odd pointers, uniformly classified, and
-  recursively dropped like any leaf. Cost: an allocation per float; acceptable
-  for the RC path (opt-in, correctness-first). Field access / arithmetic unbox.
+- ✅ **Heap-box (IMPLEMENTED)** — every `enable_rc` float is a 1-payload heap
+  block `[alloc_size@0][rc_count@4][f64_bits@8]`, value `= (block+8)|1`. Writing
+  `rc_count = 1` as a full i32 zeroes the drop-class byte at block+7 → **class 0
+  (leaf)**, so the existing recursive `__rc_drop` frees it without following
+  fields (no drop-helper change needed) and a float in a heap field is reclaimed
+  by its container's drop. Floats become odd pointers, uniformly classified —
+  closing the soundness hole where an inline f64 bit pattern (possibly odd) was
+  misread as a pointer. Helpers `emit_box_float` / `emit_unbox_float`
+  (`common_base`). Producers box (`EFloat`, float `+ - * /`, `Int::to_double` /
+  `Int::to_float`); consumers unbox (float binop operands, `Double::to_int` /
+  `Float::to_int`, `Double::to_i64_bits[_lo/_hi]`); `Float<->Double` is identity
+  (pointer pass-through). Float `let`/`let mut` bindings are registered in
+  `heap_binding_names`, so the existing Perceus dup/drop machinery retains a
+  multiply-used float (no double-free) and drops it at scope end. A float
+  *comparison* yields an even (tagged) bool — dup/drop are guarded no-ops on it.
+  Non-RC keeps the inline f64-bits representation. Verified default + RC:
+  float-in-tuple drop, multiply-used dup, alloc/free loop churn, comparison,
+  and float through a user function (heap-e2e); byte-parity 74/74; wasm-gc 7/7;
+  selfbuild deterministic. Cost: an allocation per float (opt-in RC path).
 - **NaN-box** (follow-up): pack pointers into the payload of a quiet-NaN `f64`
   and keep non-NaN doubles inline. No per-float allocation but a more intricate
   scheme touching every float op. Deferred unless float-heavy RC code matters.
