@@ -127,6 +127,8 @@ VIBE_USE_WASMTIME_PREBUILT=1 scripts/wasmtime_bin.sh
 prebuilt install 後の最小確認:
 
 ```bash
+pkf run experimental_component_model_unsafe_os_threads_probe
+pkf run experimental_component_model_unsafe_os_threads_speedup_probe
 pkf run experimental_shared_everything_threads_probe
 pkf run experimental_component_model_threading_probe
 pkf run experimental_wasi_threads_probe
@@ -138,8 +140,16 @@ git diff --check
 `src/x/threads/run_*.sh` は既定で `VIBE_USE_WASMTIME_PREBUILT=1` を設定する。
 そのため、prebuilt が未 install の状態では明示的に失敗する。
 
+`experimental_component_model_unsafe_os_threads_*` は
+`src/cmd/thread_probe_codegen` から一時 WAST を生成してから Wasmtime に渡す。
+slot ABI / trampoline 契約の source of truth は `src/x/threads/threads.mbt`。
+WAST template の `@VIBE_*` placeholder は `ComponentThreadSlotAbi` から展開する。
+
 2026-06-06 の local validation:
 
+- `experimental_component_model_unsafe_os_threads_probe`: generated WAST, passed
+- `experimental_component_model_unsafe_os_threads_speedup_probe`: `2.94x` faster
+  than serial, generated WAST
 - `experimental_shared_everything_threads_probe`: passed
 - `experimental_component_model_threading_probe`: passed
 - `experimental_wasi_threads_probe`: passed
@@ -181,6 +191,8 @@ pkf run package-wasmtime-prebuilt
 pkf run install-wasmtime-prebuilt
 "$(VIBE_USE_WASMTIME_PREBUILT=1 scripts/wasmtime_bin.sh)" --version
 
+pkf run experimental_component_model_unsafe_os_threads_probe
+pkf run experimental_component_model_unsafe_os_threads_speedup_probe
 pkf run experimental_shared_everything_threads_probe
 pkf run experimental_component_model_threading_probe
 pkf run experimental_wasi_threads_speedup_probe
