@@ -2129,6 +2129,7 @@ fn repl_tui_cmd(
       compiled_wasm_path,
       scratch_source_ref.val,
       trimmed,
+      features~,
       print_line=push_output_line,
     )
     if next_source != scratch_source_ref.val {
@@ -2943,6 +2944,7 @@ fn run_compiled_repl_line_with_cache(
   wasm_path : String,
   scratch_source : String,
   line : String,
+  features? : @runtime.RuntimeFeatureFlags = @runtime.RuntimeFeatureFlags::stable(),
 ) -> Result[CompiledReplExec, String] {
   let source = repl_build_compiled_source(scratch_source, line)
   let total_start = @bench.monotonic_clock_start()
@@ -2953,6 +2955,10 @@ fn run_compiled_repl_line_with_cache(
     Err(err) => return Err("load error: " + err)
   }
   let load_us = @bench.monotonic_clock_end(load_start).to_int()
+  match require_unstable_threads_for_db_entry(db, entry, features) {
+    Some(err) => return Err(err)
+    None => ()
+  }
   let (use_http_host, use_fs_host) = detect_exec_host_runner_requirements(
     db, entry,
   )
@@ -3065,6 +3071,7 @@ fn run_compiled_shell_line(
   wasm_path : String,
   scratch_source : String,
   line_str : String,
+  features? : @runtime.RuntimeFeatureFlags = @runtime.RuntimeFeatureFlags::stable(),
   print_line? : (String) -> Unit = fn(s) { println(s) },
 ) -> String {
   match
@@ -3119,7 +3126,12 @@ fn run_compiled_shell_line(
   }
   let exec = match
     run_compiled_repl_line_with_cache(
-      cache, source_path, wasm_path, scratch_source, effective_line,
+      cache,
+      source_path,
+      wasm_path,
+      scratch_source,
+      effective_line,
+      features~,
     ) {
     Ok(v) => v
     Err(err) => {
@@ -3201,8 +3213,15 @@ fn run_compiled_line_repl_with_prompt(
       let line_str = trimmed.to_owned()
       if !handle_cd_builtin(rt, line_str, fn(s) { println(s) }) {
         scratch_source = run_compiled_shell_line(
-          cache, rt, syntax_mode, scratch_db_path, source_path, wasm_path, scratch_source,
+          cache,
+          rt,
+          syntax_mode,
+          scratch_db_path,
+          source_path,
+          wasm_path,
+          scratch_source,
           line_str,
+          features~,
         )
       }
       if options.prompt_enabled {
@@ -3277,7 +3296,12 @@ fn wasm_repl_stdin_cmd(args : Array[String]) -> Unit {
           let out_path = out_dir + "/expr_" + counter.to_string() + ".wasm"
           let exec = match
             run_compiled_repl_line_with_cache(
-              cache, source_path, out_path, scratch_source, line_str,
+              cache,
+              source_path,
+              out_path,
+              scratch_source,
+              line_str,
+              features=@runtime.RuntimeFeatureFlags::stable(),
             ) {
             Ok(v) => v
             Err(err) => {
@@ -3454,8 +3478,15 @@ fn repl_ai_cmd(
       }
       let let_name = extract_let_name(line_str)
       let next_source = run_compiled_shell_line(
-        cache, rt, syntax_mode, scratch_db_path, source_path, wasm_path, scratch_source,
+        cache,
+        rt,
+        syntax_mode,
+        scratch_db_path,
+        source_path,
+        wasm_path,
+        scratch_source,
         line_str,
+        features~,
       )
       let changed = next_source != scratch_source
       scratch_source = next_source

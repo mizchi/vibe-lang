@@ -399,6 +399,13 @@ fn register_builtin_effects(env : TypeEnv) -> Unit {
     params: [],
     ops: stdin_ops,
   }
+  // Threads effect. The current experimental surface is exposed as
+  // `Threads::*` builtin calls, not as `perform Threads::...` operations.
+  env.effect_defs["Threads"] = @core.EffectDef_::{
+    name: "Threads",
+    params: [],
+    ops: {},
+  }
 }
 
 ///|

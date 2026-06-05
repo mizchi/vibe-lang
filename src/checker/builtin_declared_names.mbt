@@ -58,6 +58,9 @@ pub fn checker_declared_builtin_names() -> Array[String] {
     "Json::type_of", "Json::string", "Json::get", "Json::index", "Json::number",
     "Json::bool", "Json::is_null", "Json::length", "Json::keys", "Lines::parse",
     "Lines::stringify",
+    // Threads
+     "Threads::probe_wat", "Threads::runtime_hints", "Threads::channel_new", "Threads::send",
+    "Threads::recv", "Threads::spawn", "Threads::wait",
     // LLM / interactive
      "Llm::complete", "Rlm::run", "Rlm::finalize",
   ]

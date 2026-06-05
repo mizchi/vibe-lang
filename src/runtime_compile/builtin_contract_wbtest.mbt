@@ -29,6 +29,16 @@ test "verify_builtin_contract accepts fallback builtins" {
 }
 
 ///|
+test "verify_builtin_contract accepts Threads builtins" {
+  let checker_names = [
+    "Threads::probe_wat", "Threads::runtime_hints", "Threads::channel_new", "Threads::send",
+    "Threads::recv", "Threads::spawn", "Threads::wait",
+  ]
+  let report = verify_builtin_contract(checker_names)
+  assert_eq(report.missing_handlers.length(), 0)
+}
+
+///|
 test "format_builtin_contract_report formats warnings" {
   let report : BuiltinContractReport = {
     missing_handlers: ["Fake::foo"],

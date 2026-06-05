@@ -468,6 +468,7 @@ fn run_compiled_test_case(
   source_path : String,
   wasm_path : String,
   source : String,
+  features : @runtime.RuntimeFeatureFlags,
 ) -> CompiledTestCaseExec {
   let (db, entry) = match
     load_compiled_test_case_db_with_cache(cache, source_path, source) {
@@ -500,6 +501,7 @@ fn run_compiled_test_case(
       entry,
       http_host_imports=use_node_runner,
       fs_host_imports=use_node_runner,
+      features~,
     ) catch {
       e => {
         let msg = e.user_message()
@@ -533,10 +535,15 @@ fn run_test_file_compiled_with_cache(
   cache : CliEntryDbCache,
   entry_path : String,
   stop_on_first_failure : Bool,
+  features : @runtime.RuntimeFeatureFlags,
 ) -> CompiledTestAttempt {
   let (db, entry) = match load_db_for_test_with_cache(cache, entry_path) {
     Err(err) => return CompiledTestAttempt::Error("load error: " + err)
     Ok(v) => v
+  }
+  match require_unstable_threads_for_db_entry(db, entry, features) {
+    Some(err) => return CompiledTestAttempt::Error(err)
+    None => ()
   }
   let ast = db.ast(entry)
   let (use_http_host_runner, use_fs_host_runner) = detect_exec_host_runner_requirements(
@@ -670,7 +677,7 @@ fn run_test_file_compiled_with_cache(
         // Fallback to per-case execution on batch compile failure
         return run_test_file_compiled_per_case(
           cache, cases, source, top_level_source, wrapper_prelude_source, parent,
-          stamp, runner, http_runner, use_node_runner, stop_on_first_failure,
+          stamp, runner, http_runner, use_node_runner, stop_on_first_failure, features,
         )
       }
       Ok(v) => v
@@ -680,6 +687,7 @@ fn run_test_file_compiled_with_cache(
       batch_entry,
       http_host_imports=use_node_runner,
       fs_host_imports=use_node_runner,
+      features~,
     ) catch {
       e => {
         remove_file_if_exists(batch_source_path)
@@ -690,7 +698,7 @@ fn run_test_file_compiled_with_cache(
         // Fallback to per-case execution on batch compile failure
         return run_test_file_compiled_per_case(
           cache, cases, source, top_level_source, wrapper_prelude_source, parent,
-          stamp, runner, http_runner, use_node_runner, stop_on_first_failure,
+          stamp, runner, http_runner, use_node_runner, stop_on_first_failure, features,
         )
       }
     }
@@ -750,7 +758,7 @@ fn run_test_file_compiled_with_cache(
     // not depend on the legacy interpreter path.
     run_test_file_compiled_per_case(
       cache, cases, source, top_level_source, wrapper_prelude_source, parent, stamp,
-      runner, http_runner, use_node_runner, stop_on_first_failure,
+      runner, http_runner, use_node_runner, stop_on_first_failure, features,
     )
   } else {
     // ADR-0026: Save pure test result cache on success
@@ -779,6 +787,7 @@ fn run_test_file_compiled_per_case(
   http_runner : HttpHostRunner?,
   use_node_runner : Bool,
   stop_on_first_failure : Bool,
+  features : @runtime.RuntimeFeatureFlags,
 ) -> CompiledTestAttempt {
   let failures : Array[CliTestFailure] = []
   let mut passed = 0
@@ -800,6 +809,7 @@ fn run_test_file_compiled_per_case(
       ".wasm"
     let outcome = run_compiled_test_case(
       cache, runner, http_runner, use_node_runner, source_path, wasm_path, case_source,
+      features,
     )
     remove_file_if_exists(source_path)
     remove_file_if_exists(wasm_path)
@@ -842,12 +852,13 @@ fn run_test_file_with_backend_with_cache(
   entry_path : String,
   features : @runtime.RuntimeFeatureFlags,
 ) -> TestFileOutcome {
-  ignore(features)
   // Runtime import failures are detected from compiled failure reports, so
   // ordinary failing tests keep the compiled per-case reporting path.
   let stop_on_first_failure = false
   match
-    run_test_file_compiled_with_cache(cache, entry_path, stop_on_first_failure) {
+    run_test_file_compiled_with_cache(
+      cache, entry_path, stop_on_first_failure, features,
+    ) {
     CompiledTestAttempt::Success(report) => {
       if report.failed > 0 &&
         compiled_report_has_runtime_import_failures(report) {
@@ -1717,6 +1728,9 @@ fn test_cmd_parallel(
     }
     if features.is_unstable_async_enabled() {
       sub_args.push("--unstable-async")
+    }
+    if features.is_unstable_threads_enabled() {
+      sub_args.push("--unstable-threads")
     }
     let captured_batch = batch
     let captured_args = sub_args

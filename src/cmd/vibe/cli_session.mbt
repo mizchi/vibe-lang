@@ -168,6 +168,12 @@ fn session_http_port_for_entry_with_features(
   if features.is_unstable_async_enabled() {
     acc = (acc * 131 + 17) % 20000
   }
+  if features.is_unstable_threads_enabled() {
+    acc = (acc * 131 + 31) % 20000
+    for _, ch in features.thread_backend_id() {
+      acc = (acc * 131 + Char::to_int(ch)) % 20000
+    }
+  }
   36000 + acc
 }
 
@@ -386,6 +392,16 @@ fn build_session_http_spawn_command(
     shell_quote_command_arg(self_bin) +
     (if features.is_unstable_async_enabled() {
       " --unstable-async"
+    } else {
+      ""
+    }) +
+    (if features.is_unstable_threads_enabled() {
+      " --unstable-threads"
+    } else {
+      ""
+    }) +
+    (if features.is_unstable_threads_enabled() {
+      " --thread-backend " + features.thread_backend_id()
     } else {
       ""
     }) +
@@ -846,7 +862,7 @@ fn handle_cli_session_request(
     CliSessionRequestKind::Run =>
       match req.path {
         Some(path) =>
-          match run_cmd_wasm_backend_with_cache(cache, path) {
+          match run_cmd_wasm_backend_with_cache(cache, path, features) {
             Ok(result) => {
               maybe_create_linked_cache_background(path)
               (make_cli_session_run_result_json(path, result), false)

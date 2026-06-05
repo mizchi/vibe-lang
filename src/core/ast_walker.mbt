@@ -382,7 +382,14 @@ pub fn is_builtin_name(name : String) -> Bool {
   name == "Set::from_array" ||
   name == "Bytes::new" ||
   name == "Bytes::push" ||
-  name == "Bytes::set"
+  name == "Bytes::set" ||
+  name == "Threads::probe_wat" ||
+  name == "Threads::runtime_hints" ||
+  name == "Threads::channel_new" ||
+  name == "Threads::send" ||
+  name == "Threads::recv" ||
+  name == "Threads::spawn" ||
+  name == "Threads::wait"
 }
 
 ///|

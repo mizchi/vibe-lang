@@ -532,6 +532,7 @@ test "cli runtime flags parse default" {
       assert_eq(opts.syntax_mode, @runtime.ParserMode::VibeMode)
       @debug.assert_eq(opts.cmd_args, ["main.vibe"])
       assert_false(opts.unstable_async)
+      assert_false(opts.unstable_threads)
     }
     Err(msg) => fail("unexpected err: " + msg)
   }
@@ -548,8 +549,54 @@ test "cli runtime flags parse with unstable async" {
       assert_eq(opts.syntax_mode, @runtime.ParserMode::VibeMode)
       @debug.assert_eq(opts.cmd_args, ["main.vibe"])
       assert_true(opts.unstable_async)
+      assert_false(opts.unstable_threads)
     }
     Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "cli runtime flags parse with unstable threads" {
+  let parsed = parse_cli_runtime_args(
+    ["--unstable-threads", "--syntax", "vibe", "main.vibe"],
+    "run",
+  )
+  match parsed {
+    Ok(opts) => {
+      assert_eq(opts.syntax_mode, @runtime.ParserMode::VibeMode)
+      @debug.assert_eq(opts.cmd_args, ["main.vibe"])
+      assert_false(opts.unstable_async)
+      assert_true(opts.unstable_threads)
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "cli runtime flags parse thread backend" {
+  let parsed = parse_cli_runtime_args(
+    ["--thread-backend", "component-unsafe-os-threads", "main.vibe"],
+    "run",
+  )
+  match parsed {
+    Ok(opts) => {
+      @debug.assert_eq(opts.cmd_args, ["main.vibe"])
+      assert_true(opts.unstable_threads)
+      assert_eq(opts.thread_backend_id, "component-unsafe-os-threads")
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "cli runtime flags reject unknown thread backend" {
+  let parsed = parse_cli_runtime_args(
+    ["--thread-backend=unknown", "main.vibe"],
+    "run",
+  )
+  match parsed {
+    Ok(_) => fail("expected error")
+    Err(msg) => assert_true(msg.contains("unknown thread backend"))
   }
 }
 
@@ -570,13 +617,49 @@ test "test cmd normalize jobs keeps explicit positive value" {
 
 ///|
 test "cli dispatch args parse leading unstable flags" {
-  let parsed = parse_cli_dispatch_args(["vibe", "--unstable-async", "run", "main.vibe"])
+  let parsed = parse_cli_dispatch_args([
+    "vibe", "--unstable-async", "run", "main.vibe",
+  ])
   match parsed {
     Ok(v) => {
       assert_eq(v.cmd, "run")
       assert_eq(v.syntax_mode, @runtime.ParserMode::VibeMode)
       @debug.assert_eq(v.cmd_args, ["main.vibe"])
       assert_true(v.unstable_async)
+      assert_false(v.unstable_threads)
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "cli dispatch args parse leading unstable threads" {
+  let parsed = parse_cli_dispatch_args([
+    "vibe", "--unstable-threads", "run", "main.vibe",
+  ])
+  match parsed {
+    Ok(v) => {
+      assert_eq(v.cmd, "run")
+      assert_eq(v.syntax_mode, @runtime.ParserMode::VibeMode)
+      @debug.assert_eq(v.cmd_args, ["main.vibe"])
+      assert_false(v.unstable_async)
+      assert_true(v.unstable_threads)
+    }
+    Err(msg) => fail("unexpected err: " + msg)
+  }
+}
+
+///|
+test "cli dispatch args parse leading thread backend" {
+  let parsed = parse_cli_dispatch_args([
+    "vibe", "--thread-backend", "component-unsafe-os-threads", "run", "main.vibe",
+  ])
+  match parsed {
+    Ok(v) => {
+      assert_eq(v.cmd, "run")
+      @debug.assert_eq(v.cmd_args, ["main.vibe"])
+      assert_true(v.unstable_threads)
+      assert_eq(v.thread_backend_id, "component-unsafe-os-threads")
     }
     Err(msg) => fail("unexpected err: " + msg)
   }
@@ -585,7 +668,8 @@ test "cli dispatch args parse leading unstable flags" {
 ///|
 test "cli dispatch args merges leading and trailing unstable flags" {
   let parsed = parse_cli_dispatch_args([
-    "vibe", "--unstable-async", "run", "--syntax", "vibe", "main.vibe",
+    "vibe", "--unstable-async", "run", "--syntax", "vibe", "--unstable-threads",
+    "main.vibe",
   ])
   match parsed {
     Ok(v) => {
@@ -593,6 +677,7 @@ test "cli dispatch args merges leading and trailing unstable flags" {
       assert_eq(v.syntax_mode, @runtime.ParserMode::VibeMode)
       @debug.assert_eq(v.cmd_args, ["main.vibe"])
       assert_true(v.unstable_async)
+      assert_true(v.unstable_threads)
     }
     Err(msg) => fail("unexpected err: " + msg)
   }
@@ -641,6 +726,501 @@ test "bench help advertises compiled-only surface" {
   assert_true(text.contains("compiled backend"))
   assert_false(text.contains("interpreter"))
   assert_false(text.contains("--expr"))
+}
+
+///|
+test "wasm runtime fallback detector keeps only unsupported Threads builtins" {
+  assert_false(is_wasm_runtime_fallback_builtin_name("Threads::probe_wat"))
+  assert_false(is_wasm_runtime_fallback_builtin_name("Threads::runtime_hints"))
+  assert_false(is_wasm_runtime_fallback_builtin_name("Threads::channel_new"))
+  assert_false(is_wasm_runtime_fallback_builtin_name("Threads::send"))
+  assert_false(is_wasm_runtime_fallback_builtin_name("Threads::recv"))
+  assert_false(is_wasm_runtime_fallback_builtin_name("Threads::spawn"))
+  assert_false(is_wasm_runtime_fallback_builtin_name("Threads::wait"))
+  assert_false(is_wasm_runtime_fallback_builtin_name("Threads::not_builtin"))
+}
+
+///|
+test "compiled exec detects modules that use Threads builtins" {
+  let ast = @parser.parse_ast(
+    (
+      #|export let _start = () -> String with {Threads} {
+      #|  Threads::probe_wat()
+      #|}
+    ),
+  ) catch {
+    e => fail("parse failed: " + e.to_string())
+  }
+  assert_true(module_uses_threads_builtins(ast))
+}
+
+///|
+test "compiled exec gates Threads builtins behind unstable flag" {
+  let ast = @parser.parse_ast(
+    (
+      #|export let _start = () -> String with {Threads} {
+      #|  Threads::probe_wat()
+      #|}
+    ),
+  ) catch {
+    e => fail("parse failed: " + e.to_string())
+  }
+  match
+    require_unstable_threads_for_module(
+      ast,
+      @runtime.RuntimeFeatureFlags::stable(),
+    ) {
+    Some(msg) => assert_true(msg.contains("--unstable-threads"))
+    None => fail("expected --unstable-threads gate")
+  }
+  @debug.assert_eq(
+    require_unstable_threads_for_module(
+      ast,
+      @runtime.RuntimeFeatureFlags::unstable_threads_only(),
+    ),
+    None,
+  )
+}
+
+///|
+test "compiled exec allows metadata-only thread backend builtins" {
+  let ast = @parser.parse_ast(
+    (
+      #|export let _start = () -> String with {Threads} {
+      #|  let hints = Threads::runtime_hints()
+      #|  String::concat(Threads::probe_wat(), hints.wasm_env)
+      #|}
+    ),
+  ) catch {
+    e => fail("parse failed: " + e.to_string())
+  }
+  @debug.assert_eq(
+    require_unstable_threads_for_module(
+      ast,
+      @runtime.RuntimeFeatureFlags::new_with_thread_backend(
+        false, true, "component-unsafe-os-threads",
+      ),
+    ),
+    None,
+  )
+}
+
+///|
+test "compiled exec rejects unconnected thread backend for stateful Threads builtins" {
+  let ast = @parser.parse_ast(
+    (
+      #|export let _start = () -> Int with {Threads} {
+      #|  Threads::channel_new(1)
+      #|}
+    ),
+  ) catch {
+    e => fail("parse failed: " + e.to_string())
+  }
+  match
+    require_unstable_threads_for_module(
+      ast,
+      @runtime.RuntimeFeatureFlags::new_with_thread_backend(
+        false, true, "component-unsafe-os-threads",
+      ),
+    ) {
+    Some(msg) => {
+      assert_true(msg.contains("component-unsafe-os-threads"))
+      assert_true(msg.contains("linear-local"))
+    }
+    None => fail("expected thread backend compatibility gate")
+  }
+}
+
+///|
+test "compiled exec wrapper passes thread backend to runtime hints" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|export let _start = () -> Int with {Threads} {
+      #|  let hints = Threads::runtime_hints()
+      #|  String::length(hints.wasm_env)
+      #|}
+    ),
+  )
+  let wasm = try
+    compile_module_wasm_for_exec(
+      db,
+      "main",
+      features=@runtime.RuntimeFeatureFlags::new_with_thread_backend(
+        false, true, "component-unsafe-os-threads",
+      ),
+    )
+  catch {
+    e => fail("compile failed: " + e.user_message())
+  } noraise {
+    v => v
+  }
+  assert_true(wbtest_bytes_contains_ascii(wasm, "component-model-threading=y"))
+  assert_true(wbtest_bytes_contains_ascii(wasm, "shared-everything-threads=y"))
+}
+
+///|
+test "compiled exec gates imported metadata-only Threads builtins behind unstable flag" {
+  let root = wbtest_make_temp_dir("threads_gate_import_metadata_wb")
+  let dep_path = root + "/dep.vibe"
+  let main_path = root + "/main.vibe"
+  @os_fs.write_string_to_file(
+    dep_path,
+    (
+      #|export let probe = () -> String with {Threads} {
+      #|  let hints = Threads::runtime_hints()
+      #|  String::concat(Threads::probe_wat(), hints.wasm_env)
+      #|}
+    ),
+  ) catch {
+    e => fail("write dep failed: " + e.to_string())
+  }
+  @os_fs.write_string_to_file(
+    main_path,
+    (
+      #|import ./dep.vibe { probe }
+      #|
+      #|export let _start = () -> String with {Threads} {
+      #|  probe()
+      #|}
+    ),
+  ) catch {
+    e => fail("write main failed: " + e.to_string())
+  }
+  let (db, entry) = match
+    load_db_for_run_with_cache(CliEntryDbCache::new(), main_path) {
+    Ok(v) => v
+    Err(err) => fail("load failed: " + err)
+  }
+  match
+    require_unstable_threads_for_db_entry(
+      db,
+      entry,
+      @runtime.RuntimeFeatureFlags::stable(),
+    ) {
+    Some(msg) => assert_true(msg.contains("--unstable-threads"))
+    None => fail("expected imported --unstable-threads gate")
+  }
+  @debug.assert_eq(
+    require_unstable_threads_for_db_entry(
+      db,
+      entry,
+      @runtime.RuntimeFeatureFlags::unstable_threads_only(),
+    ),
+    None,
+  )
+  match
+    require_unstable_threads_for_db_entry(
+      db,
+      entry,
+      @runtime.RuntimeFeatureFlags::new_with_thread_backend(
+        false, true, "component-unsafe-os-threads",
+      ),
+    ) {
+    Some(msg) => fail("unexpected imported thread backend gate: " + msg)
+    None => ()
+  }
+  wbtest_remove_if_exists(dep_path)
+  wbtest_remove_if_exists(main_path)
+  wbtest_remove_if_exists(root + "/index.lock")
+  wbtest_remove_if_exists(root + "/index.vibe")
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "compiled exec rejects imported stateful Threads builtins on unconnected backend" {
+  let root = wbtest_make_temp_dir("threads_gate_import_stateful_wb")
+  let dep_path = root + "/dep.vibe"
+  let main_path = root + "/main.vibe"
+  @os_fs.write_string_to_file(
+    dep_path,
+    (
+      #|export let make_channel = () -> Int with {Threads} {
+      #|  Threads::channel_new(1)
+      #|}
+    ),
+  ) catch {
+    e => fail("write dep failed: " + e.to_string())
+  }
+  @os_fs.write_string_to_file(
+    main_path,
+    (
+      #|import ./dep.vibe { make_channel }
+      #|
+      #|export let _start = () -> Int with {Threads} {
+      #|  make_channel()
+      #|}
+    ),
+  ) catch {
+    e => fail("write main failed: " + e.to_string())
+  }
+  let (db, entry) = match
+    load_db_for_run_with_cache(CliEntryDbCache::new(), main_path) {
+    Ok(v) => v
+    Err(err) => fail("load failed: " + err)
+  }
+  match
+    require_unstable_threads_for_db_entry(
+      db,
+      entry,
+      @runtime.RuntimeFeatureFlags::new_with_thread_backend(
+        false, true, "component-unsafe-os-threads",
+      ),
+    ) {
+    Some(msg) => {
+      assert_true(msg.contains("component-unsafe-os-threads"))
+      assert_true(msg.contains("linear-local"))
+    }
+    None => fail("expected imported thread backend compatibility gate")
+  }
+  wbtest_remove_if_exists(dep_path)
+  wbtest_remove_if_exists(main_path)
+  wbtest_remove_if_exists(root + "/index.lock")
+  wbtest_remove_if_exists(root + "/index.vibe")
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "bench script compile gates Threads builtins behind unstable flag" {
+  let root = wbtest_make_temp_dir("threads_gate_bench_wb")
+  let entry_path = root + "/bench.vibe"
+  @os_fs.write_string_to_file(entry_path, "") catch {
+    e => fail("write bench entry failed: " + e.to_string())
+  }
+  let source =
+    #|export let _start = () -> Int with {Threads} {
+    #|  let _ = Threads::probe_wat()
+    #|  0
+    #|}
+  match compile_bench_script_to_wasm(entry_path, "threads_gate", source) {
+    Ok(_) => fail("expected --unstable-threads gate")
+    Err(err) => assert_true(err.contains("--unstable-threads"))
+  }
+  wbtest_remove_if_exists(entry_path)
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "bench script compile lowers Threads probe builtins with unstable flag" {
+  let root = wbtest_make_temp_dir("threads_probe_bench_wb")
+  let entry_path = root + "/bench.vibe"
+  @os_fs.write_string_to_file(entry_path, "") catch {
+    e => fail("write bench entry failed: " + e.to_string())
+  }
+  let source =
+    #|export let _start = () -> Int with {Threads} {
+    #|  let _hints = Threads::runtime_hints()
+    #|  let ch = Threads::channel_new(2)
+    #|  let _ok = Threads::send(ch, "hello")
+    #|  let _msg = Threads::recv(ch)
+    #|  let probe = Threads::probe_wat()
+    #|  String::length(probe)
+    #|}
+  match
+    compile_bench_script_to_wasm(
+      entry_path,
+      "threads_probe",
+      source,
+      features=@runtime.RuntimeFeatureFlags::unstable_threads_only(),
+    ) {
+    Ok((_wasm_path, raw_bytes_len, _use_node_runner)) =>
+      assert_true(raw_bytes_len > 8)
+    Err(err) => fail("expected unstable Threads probe compile: " + err)
+  }
+  wbtest_remove_if_exists(entry_path)
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "compiled exec runs Threads local channel FIFO" {
+  let root = wbtest_make_temp_dir("threads_channel_exec_wb")
+  let entry_path = root + "/main.vibe"
+  let wasm_path = root + "/main.wasm"
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    entry_path,
+    (
+      #|export let _start = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let ok1 = Threads::send(ch, "hello")
+      #|  let ok2 = Threads::send(ch, "over")
+      #|  let msg = Threads::recv(ch)
+      #|  let empty = Threads::recv(ch)
+      #|  if ok1 {
+      #|    if ok2 { 98 } else {
+      #|      if String::equals(msg, "hello") {
+      #|        if String::equals(empty, "") { 7 } else { 97 }
+      #|      } else { 96 }
+      #|    }
+      #|  } else { 99 }
+      #|}
+    ),
+  )
+  let wasm = try compile_module_wasm_for_exec(db, entry_path) catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  @os_fs.write_bytes_to_file(wasm_path, wasm) catch {
+    e => fail("write wasm failed: " + e.to_string())
+  }
+  let runner = match resolve_bench_wasm_runner(entry_path) {
+    Ok(v) => v
+    Err(err) => fail("resolve runner failed: " + err)
+  }
+  let run_out = run_wasmtime_invoke_run_capture(runner, wasm_path, wasm_path)
+  if run_out.status != 0 {
+    fail(
+      "run failed: " + wasmtime_failure_detail(run_out.stdout, run_out.stderr),
+    )
+  }
+  let tagged = match parse_last_numeric_line_int64(run_out.stdout) {
+    Some(v) => v
+    None => fail("missing numeric result")
+  }
+  let value = match decode_tagged_wasm_run_value(tagged) {
+    Some(v) => v
+    None => fail("unsupported tagged result: " + tagged.to_string())
+  }
+  @debug.assert_eq(value, WasmRunValue::Int(7L))
+  wbtest_remove_if_exists(wasm_path)
+  wbtest_remove_if_exists(entry_path)
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "compiled exec runs Threads local task wait" {
+  let root = wbtest_make_temp_dir("threads_task_exec_wb")
+  let entry_path = root + "/main.vibe"
+  let wasm_path = root + "/main.wasm"
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    entry_path,
+    (
+      #|export let _start = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let task = Threads::spawn("worker", ch)
+      #|  Threads::wait(task)
+      #|}
+    ),
+  )
+  let wasm = try compile_module_wasm_for_exec(db, entry_path) catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  @os_fs.write_bytes_to_file(wasm_path, wasm) catch {
+    e => fail("write wasm failed: " + e.to_string())
+  }
+  let runner = match resolve_bench_wasm_runner(entry_path) {
+    Ok(v) => v
+    Err(err) => fail("resolve runner failed: " + err)
+  }
+  let run_out = run_wasmtime_invoke_run_capture(runner, wasm_path, wasm_path)
+  if run_out.status != 0 {
+    fail(
+      "run failed: " + wasmtime_failure_detail(run_out.stdout, run_out.stderr),
+    )
+  }
+  let tagged = match parse_last_numeric_line_int64(run_out.stdout) {
+    Some(v) => v
+    None => fail("missing numeric result")
+  }
+  let value = match decode_tagged_wasm_run_value(tagged) {
+    Some(v) => v
+    None => fail("unsupported tagged result: " + tagged.to_string())
+  }
+  @debug.assert_eq(value, WasmRunValue::Int(0L))
+  wbtest_remove_if_exists(wasm_path)
+  wbtest_remove_if_exists(entry_path)
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "compiled repl gates Threads builtins behind unstable flag" {
+  let root = wbtest_make_temp_dir("threads_gate_repl_wb")
+  let source_path = root + "/compiled_repl.vibe"
+  let wasm_path = root + "/expr_0.wasm"
+  let cache = CliEntryDbCache::new()
+  let line = "let _thread_probe = () -> String with {Threads} { Threads::probe_wat() }"
+  match
+    run_compiled_repl_line_with_cache(cache, source_path, wasm_path, "", line) {
+    Ok(_) => fail("expected --unstable-threads gate")
+    Err(err) => assert_true(err.contains("--unstable-threads"))
+  }
+  wbtest_remove_if_exists(wasm_path)
+  wbtest_remove_if_exists(source_path)
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "compile load gates Threads builtins behind unstable flag" {
+  let root = wbtest_make_temp_dir("threads_gate_compile_wb")
+  let source_path = root + "/main.vibe"
+  @os_fs.write_string_to_file(
+    source_path,
+    (
+      #|export let _start = () -> String with {Threads} {
+      #|  Threads::probe_wat()
+      #|}
+    ),
+  ) catch {
+    e => fail("write compile source failed: " + e.to_string())
+  }
+  let fs = @io.default_fs_adapter()
+  match
+    load_entry_db_for_compile_with_features(
+      source_path,
+      fs,
+      @runtime.RuntimeFeatureFlags::stable(),
+    ) {
+    Ok(_) => fail("expected --unstable-threads gate")
+    Err(err) => assert_true(err.contains("--unstable-threads"))
+  }
+  wbtest_remove_if_exists(source_path)
+  wbtest_remove_if_exists(root + "/index.lock")
+  wbtest_remove_if_exists(root + "/index.vibe")
+  wbtest_remove_if_exists(root)
+}
+
+///|
+test "precompile file gates Threads builtins behind unstable flag" {
+  let root = wbtest_make_temp_dir("threads_gate_precompile_wb")
+  let source_path = root + "/main.vibe"
+  let out_dir = root + "/dist"
+  @os_fs.write_string_to_file(
+    source_path,
+    (
+      #|export let _start = () -> String with {Threads} {
+      #|  Threads::probe_wat()
+      #|}
+    ),
+  ) catch {
+    e => fail("write precompile source failed: " + e.to_string())
+  }
+  @os_fs.create_dir(out_dir) catch {
+    e => fail("create precompile out dir failed: " + e.to_string())
+  }
+  let fs = @io.default_fs_adapter()
+  match
+    precompile_one_file(
+      fs,
+      source_path,
+      out_dir,
+      false,
+      None,
+      features=@runtime.RuntimeFeatureFlags::stable(),
+    ) {
+    Ok(_) => fail("expected --unstable-threads gate")
+    Err(err) => assert_true(err.contains("--unstable-threads"))
+  }
+  wbtest_remove_if_exists(out_dir + "/main.wasm")
+  wbtest_remove_if_exists(out_dir)
+  wbtest_remove_if_exists(source_path)
+  wbtest_remove_if_exists(root + "/index.lock")
+  wbtest_remove_if_exists(root + "/index.vibe")
+  wbtest_remove_if_exists(root)
 }
 
 ///|
@@ -1780,7 +2360,8 @@ test "std layer classification covers primary modules" {
   }
   assert_eq(ref_layer, "ref-model")
 
-  let effect_layer = match std_layer_for_path("/tmp/repo/vibe/prelude/io.vibe") {
+  let effect_layer = match
+    std_layer_for_path("/tmp/repo/vibe/prelude/io.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }
@@ -3656,6 +4237,7 @@ fn wbtest_run_test_file_compiled(
     CliEntryDbCache::new(),
     entry_path,
     stop_on_first_failure,
+    @runtime.RuntimeFeatureFlags::stable(),
   )
 }
 
@@ -3923,8 +4505,34 @@ test "session http spawn command exports worker token" {
   assert_true(cmd.contains("VIBE_INTERNAL_PARENT_PID=424242"))
   assert_true(cmd.contains("session-http --port 36123"))
   assert_true(cmd.contains("--unstable-async"))
+  assert_false(cmd.contains("--unstable-threads"))
   assert_true(cmd.contains("/proc/$$/fd/*"))
   assert_true(cmd.contains("eval \"exec $n<&-\""))
+}
+
+///|
+test "session http spawn command forwards unstable threads" {
+  let cmd = build_session_http_spawn_command(
+    "/tmp/vibe.exe",
+    36123,
+    @runtime.RuntimeFeatureFlags::unstable_async_and_threads(),
+    "worker-token",
+    424242,
+  )
+  assert_true(cmd.contains("--unstable-async"))
+  assert_true(cmd.contains("--unstable-threads"))
+}
+
+///|
+test "session http spawn command forwards thread backend" {
+  let features = @runtime.RuntimeFeatureFlags::new_with_thread_backend(
+    false, true, "component-unsafe-os-threads",
+  )
+  let cmd = build_session_http_spawn_command(
+    "/tmp/vibe.exe", 36123, features, "worker-token", 424242,
+  )
+  assert_true(cmd.contains("--unstable-threads"))
+  assert_true(cmd.contains("--thread-backend component-unsafe-os-threads"))
 }
 
 ///|
@@ -3947,6 +4555,7 @@ test "session http spawn command escapes embedded single quotes in self_bin" {
 test "session http port separates runtime feature sets" {
   let baseline = @runtime.RuntimeFeatureFlags::new(false)
   let async_only = @runtime.RuntimeFeatureFlags::new(true)
+  let threads_only = @runtime.RuntimeFeatureFlags::unstable_threads_only()
   let base_port = session_http_port_for_entry_with_features(
     "/tmp/project/src/main.vibe", baseline,
   )
@@ -3954,6 +4563,12 @@ test "session http port separates runtime feature sets" {
     base_port !=
     session_http_port_for_entry_with_features(
       "/tmp/project/src/main.vibe", async_only,
+    ),
+  )
+  assert_true(
+    base_port !=
+    session_http_port_for_entry_with_features(
+      "/tmp/project/src/main.vibe", threads_only,
     ),
   )
 }

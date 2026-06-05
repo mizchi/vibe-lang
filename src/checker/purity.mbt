@@ -651,6 +651,13 @@ fn is_effectful_call_name(name : String) -> Bool {
   name == "Http::request_url" ||
   name == "Http::request_header" ||
   name == "Http::request_body" ||
+  name == "Threads::probe_wat" ||
+  name == "Threads::runtime_hints" ||
+  name == "Threads::channel_new" ||
+  name == "Threads::send" ||
+  name == "Threads::recv" ||
+  name == "Threads::spawn" ||
+  name == "Threads::wait" ||
   name == "Array::push" ||
   name == "Array::push_all" ||
   name == "Array::truncate" ||

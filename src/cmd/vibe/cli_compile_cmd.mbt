@@ -1,5 +1,24 @@
 ///|
-fn compile_lite_cmd(args : Array[String]) -> Unit {
+fn load_entry_db_for_compile_with_features(
+  entry_path : String,
+  fs : &@io.FileSystemAdapter,
+  features : @runtime.RuntimeFeatureFlags,
+) -> Result[(@runtime.VibeDb, String), String] {
+  let (db, entry) = match @loader.load_db_with_fs(entry_path, fs) {
+    Err(err) => return Err(err)
+    Ok(v) => v
+  }
+  match require_unstable_threads_for_db_entry(db, entry, features) {
+    Some(err) => Err(err)
+    None => Ok((db, entry))
+  }
+}
+
+///|
+fn compile_lite_cmd(
+  args : Array[String],
+  features? : @runtime.RuntimeFeatureFlags = @runtime.RuntimeFeatureFlags::stable(),
+) -> Unit {
   let (compile_args, profile_tsv, profile_callstack, in_memory) = match
     split_compile_lite_args(args) {
     Ok(v) => v
@@ -26,7 +45,7 @@ fn compile_lite_cmd(args : Array[String]) -> Unit {
   let start_total = @bench.monotonic_clock_start()
   @profiler.profiler_enter("load")
   let start_load = @bench.monotonic_clock_start()
-  match @loader.load_db_with_fs(opts.entry_path, fs) {
+  match load_entry_db_for_compile_with_features(opts.entry_path, fs, features) {
     Err(err) => abort("compile-lite: " + err)
     Ok((db, entry)) => {
       let load_us = elapsed_us_from(start_load)
@@ -99,7 +118,10 @@ fn compile_lite_cmd(args : Array[String]) -> Unit {
 }
 
 ///|
-fn compile_cmd(args : Array[String]) -> Unit {
+fn compile_cmd(
+  args : Array[String],
+  features? : @runtime.RuntimeFeatureFlags = @runtime.RuntimeFeatureFlags::stable(),
+) -> Unit {
   if has_help_flag(args) {
     print_compile_help()
     return
@@ -150,7 +172,7 @@ fn compile_cmd(args : Array[String]) -> Unit {
     println("wrote " + resolved_out)
     return
   }
-  match @loader.load_db_with_fs(opts.entry_path, fs) {
+  match load_entry_db_for_compile_with_features(opts.entry_path, fs, features) {
     Err(err) => abort("compile: " + err)
     Ok((db, entry)) => {
       // Resolve output path with default to dist/
@@ -427,7 +449,10 @@ fn[T] die(msg : String) -> T {
 /// --release: monolithic build (default, same as `compile --wasm`)
 /// --profile: write a pprof / folded / TSV profile to `<path>`
 ///            (format chosen by extension).
-fn build_cmd(args : Array[String]) -> Unit {
+fn build_cmd(
+  args : Array[String],
+  features? : @runtime.RuntimeFeatureFlags = @runtime.RuntimeFeatureFlags::stable(),
+) -> Unit {
   if has_help_flag(args) {
     print_build_help()
     return
@@ -474,15 +499,19 @@ fn build_cmd(args : Array[String]) -> Unit {
   }
   with_profile(profile_path, fn() {
     if debug_mode {
-      build_cmd_debug(entry, out_path)
+      build_cmd_debug(entry, out_path, features~)
     } else {
-      build_cmd_release(entry, out_path)
+      build_cmd_release(entry, out_path, features~)
     }
   })
 }
 
 ///|
-fn build_cmd_release(entry : String, out_path : String?) -> Unit {
+fn build_cmd_release(
+  entry : String,
+  out_path : String?,
+  features? : @runtime.RuntimeFeatureFlags = @runtime.RuntimeFeatureFlags::stable(),
+) -> Unit {
   let resolved_out = match out_path {
     Some(p) => p
     None => {
@@ -494,7 +523,9 @@ fn build_cmd_release(entry : String, out_path : String?) -> Unit {
       base + ".wasm"
     }
   }
-  let (db, resolved_entry) = match @loader.load_db(entry) {
+  let fs = @io.default_fs_adapter()
+  let (db, resolved_entry) = match
+    load_entry_db_for_compile_with_features(entry, fs, features) {
     Ok(v) => v
     Err(err) => abort("build: " + err)
   }
@@ -526,7 +557,11 @@ fn build_cmd_release(entry : String, out_path : String?) -> Unit {
 }
 
 ///|
-fn build_cmd_debug(entry : String, out_path : String?) -> Unit {
+fn build_cmd_debug(
+  entry : String,
+  out_path : String?,
+  features? : @runtime.RuntimeFeatureFlags = @runtime.RuntimeFeatureFlags::stable(),
+) -> Unit {
   let resolved_out = match out_path {
     Some(p) => p
     None => {
@@ -564,22 +599,36 @@ fn build_cmd_debug(entry : String, out_path : String?) -> Unit {
         }
       }
     }
-    // Check source hashes haven't changed
-    if all_valid && @os_fs.path_exists(hash_cache_path) {
-      let hash_text = @os_fs.read_file_to_string(hash_cache_path) catch {
-        _ => ""
-      }
-      let saved_hashes = parse_source_hash_cache(hash_text)
-      for path, saved_hash in saved_hashes {
-        let current_source = @os_fs.read_file_to_string(path) catch { _ => "" }
-        if current_source.length() > 0 {
-          let current_hash = @vibe_core.content_address_hash_string(
-            current_source,
-          )
-          if current_hash != saved_hash {
-            all_valid = false
+    // Check source hashes haven't changed. Older caches without source hash
+    // metadata cannot prove imported sources are thread-free, so reload them.
+    if all_valid {
+      if @os_fs.path_exists(hash_cache_path) {
+        let hash_text = @os_fs.read_file_to_string(hash_cache_path) catch {
+          _ => ""
+        }
+        let saved_hashes = parse_source_hash_cache(hash_text)
+        for path, saved_hash in saved_hashes {
+          let current_source = @os_fs.read_file_to_string(path) catch {
+            _ => ""
+          }
+          if current_source.length() > 0 {
+            let current_hash = @vibe_core.content_address_hash_string(
+              current_source,
+            )
+            if current_hash != saved_hash {
+              all_valid = false
+            }
+            if all_valid && !features.is_unstable_threads_enabled() {
+              match source_uses_threads_builtins(current_source) {
+                Ok(true) => all_valid = false
+                Ok(false) => ()
+                Err(_) => all_valid = false
+              }
+            }
           }
         }
+      } else {
+        all_valid = false
       }
     }
     all_valid
@@ -611,6 +660,10 @@ fn build_cmd_debug(entry : String, out_path : String?) -> Unit {
     }
     let desugared = @frontend.desugar_method_calls(raw_ast, {})
     let ast = @frontend.rewrite_effect_handles(desugared)
+    match require_unstable_threads_for_module(ast, features) {
+      Some(err) => abort("build: " + err)
+      None => ()
+    }
     // Resolve type definitions from entry's ReExport chains (standalone, no db)
     let extra_type_stmts = collect_reexport_type_stmts_standalone(
       resolved, raw_ast,
@@ -632,7 +685,9 @@ fn build_cmd_debug(entry : String, out_path : String?) -> Unit {
         // (e.g. preload-unsafe WASI users). The cache fast path only stores
         // linked imports, so it cannot always reconstruct those inlined defs.
         // Fall back to the full path instead of failing the cached build.
-        let (db, resolved_entry) = match @loader.load_db(entry) {
+        let fs = @io.default_fs_adapter()
+        let (db, resolved_entry) = match
+          load_entry_db_for_compile_with_features(entry, fs, features) {
           Ok(v) => v
           Err(err) => abort("build: " + err)
         }
@@ -652,7 +707,9 @@ fn build_cmd_debug(entry : String, out_path : String?) -> Unit {
     }
   } else {
     // First time: full load for library compilation
-    let (db, resolved_entry) = match @loader.load_db(entry) {
+    let fs = @io.default_fs_adapter()
+    let (db, resolved_entry) = match
+      load_entry_db_for_compile_with_features(entry, fs, features) {
       Ok(v) => v
       Err(err) => abort("build: " + err)
     }

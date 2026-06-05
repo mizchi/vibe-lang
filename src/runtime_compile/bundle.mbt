@@ -1529,7 +1529,14 @@ fn is_preload_unsafe_builtin_name(name : String) -> Bool {
   name == "Http::request_url" ||
   name == "Http::request_header" ||
   name == "Http::request_body" ||
-  name == "Http::respond"
+  name == "Http::respond" ||
+  name == "Threads::probe_wat" ||
+  name == "Threads::runtime_hints" ||
+  name == "Threads::channel_new" ||
+  name == "Threads::send" ||
+  name == "Threads::recv" ||
+  name == "Threads::spawn" ||
+  name == "Threads::wait"
 }
 
 ///|
@@ -1540,7 +1547,8 @@ fn is_preload_unsafe_effect_name(effect_name : String) -> Bool {
   effect_name == "Stdin" ||
   effect_name == "Socket" ||
   effect_name == "Http" ||
-  effect_name == "Process"
+  effect_name == "Process" ||
+  effect_name == "Threads"
 }
 
 ///|

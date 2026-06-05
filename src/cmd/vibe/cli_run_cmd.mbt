@@ -734,6 +734,7 @@ fn compile_module_wasm_for_exec(
   entry : String,
   http_host_imports? : Bool = false,
   fs_host_imports? : Bool = false,
+  features? : @runtime.RuntimeFeatureFlags = @runtime.RuntimeFeatureFlags::stable(),
 ) -> Bytes raise @runtime_compile.WasmCompileError {
   @runtime_compile.compile_module_wasm_with_opt_level(
     db,
@@ -745,6 +746,7 @@ fn compile_module_wasm_for_exec(
     debug_errors=true,
     http_host_imports~,
     fs_host_imports~,
+    thread_backend_id=features.thread_backend_id(),
   )
 }
 
@@ -773,13 +775,16 @@ fn emit_closure_payload_cmd(args : Array[String]) -> Unit {
 }
 
 ///|
-fn compile_closure_payload_cmd(args : Array[String]) -> Unit {
+fn compile_closure_payload_cmd(
+  args : Array[String],
+  features? : @runtime.RuntimeFeatureFlags = @runtime.RuntimeFeatureFlags::stable(),
+) -> Unit {
   if args.length() < 2 || args.length() > 3 {
     abort("compile-closure-payload: expected <in> <out> [mvp|no-dce]")
   }
   let mode = if args.length() == 3 { args[2] } else { "mvp" }
   let fs = @io.default_fs_adapter()
-  match compile_closure_payload_file(args[0], args[1], mode, fs) {
+  match compile_closure_payload_file(args[0], args[1], mode, fs, features~) {
     Ok(_) => ()
     Err(msg) => abort("compile-closure-payload: " + msg)
   }
@@ -792,6 +797,7 @@ fn run_cmd_wasm_linked(
   resolved : String,
   parent : String,
   cache_dir : String,
+  features : @runtime.RuntimeFeatureFlags,
 ) -> Result[WasmRunValue, String] {
   let _ = entry_path
   // Read cached linked imports
@@ -811,6 +817,14 @@ fn run_cmd_wasm_linked(
     for path, saved_hash in saved {
       let src = @os_fs.read_file_to_string(path) catch { _ => "" }
       if src.length() > 0 {
+        if !features.is_unstable_threads_enabled() {
+          match source_uses_threads_builtins(src) {
+            Ok(true) =>
+              return Err("Threads builtins require --unstable-threads")
+            Ok(false) => ()
+            Err(err) => return Err("thread feature gate parse failed: " + err)
+          }
+        }
         let h = @vibe_core.content_address_hash_string(src)
         if h != saved_hash {
           return Err("source changed")
@@ -838,6 +852,10 @@ fn run_cmd_wasm_linked(
   }
   let desugared = @frontend.desugar_method_calls(raw_ast, {})
   let ast = @frontend.rewrite_effect_handles(desugared)
+  match require_unstable_threads_for_module(ast, features) {
+    Some(err) => return Err(err)
+    None => ()
+  }
   let codegen_linked : Array[(String, String, Int, Int)] = []
   for li in cached_imports {
     codegen_linked.push(
@@ -924,6 +942,7 @@ fn run_cmd_wasm_linked(
 fn run_cmd_wasm_backend_with_cache(
   cache : CliEntryDbCache,
   entry_path : String,
+  features : @runtime.RuntimeFeatureFlags,
 ) -> Result[WasmRunValue, String] {
   // Default: linked build (debug mode). Use VIBE_RUN_BACKEND=release for monolithic.
   let force_release = match @sys.get_env_var("VIBE_RUN_BACKEND") {
@@ -938,7 +957,8 @@ fn run_cmd_wasm_backend_with_cache(
     let imports_cache = cache_dir + "/linked_imports.txt"
     // If cache exists, try linked fast path
     if @os_fs.path_exists(imports_cache) {
-      match run_cmd_wasm_linked(entry_path, resolved, parent, cache_dir) {
+      match
+        run_cmd_wasm_linked(entry_path, resolved, parent, cache_dir, features) {
         Ok(v) => return Ok(v)
         Err(_) => () // fall through
       }
@@ -954,6 +974,10 @@ fn run_cmd_wasm_backend_with_cache(
   let (use_http_host_runner, use_fs_host_runner) = detect_exec_host_runner_requirements(
     db, entry,
   )
+  match require_unstable_threads_for_db_entry(db, entry, features) {
+    Some(err) => return Err(err)
+    None => ()
+  }
   let use_node_runner = use_http_host_runner || use_fs_host_runner
   let http_runner = match use_node_runner {
     true =>
@@ -996,6 +1020,7 @@ fn run_cmd_wasm_backend_with_cache(
       entry,
       http_host_imports=use_node_runner,
       fs_host_imports=use_node_runner,
+      features~,
     ) catch {
       e => return Err("compile wasm error: " + e.user_message())
     }
@@ -1089,11 +1114,6 @@ fn extract_vibe_display_line_run(stdout : String) -> String? {
 }
 
 ///|
-fn run_cmd_wasm_backend(entry_path : String) -> Result[WasmRunValue, String] {
-  run_cmd_wasm_backend_with_cache(CliEntryDbCache::new(), entry_path)
-}
-
-///|
 fn print_wasm_run_value(value : WasmRunValue) -> Unit {
   match value {
     WasmRunValue::Int(n) => println("last: " + n.to_string())
@@ -1133,7 +1153,12 @@ fn run_cmd(
         Err(_) => ()
       }
     }
-    match run_cmd_wasm_backend(entry_path) {
+    match
+      run_cmd_wasm_backend_with_cache(
+        CliEntryDbCache::new(),
+        entry_path,
+        _features,
+      ) {
       Ok(result) => {
         print_wasm_run_value(result)
         maybe_create_linked_cache_background(entry_path)

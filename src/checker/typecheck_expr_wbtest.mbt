@@ -76,6 +76,19 @@ test "type_check: partial effect handle reports missing operation" {
 }
 
 ///|
+test "type_check: Threads builtin call is allowed with Threads effect" {
+  let script = "let run = () -> String with { Threads } {\n" +
+    "  Threads::probe_wat()\n" +
+    "}"
+  let ast = @parser.parse_ast(script) catch {
+    err => fail("parse error: \{err.to_string()}")
+  }
+  let _ = type_check(ast) catch {
+    err => fail("unexpected type error: " + err.to_string())
+  }
+}
+
+///|
 test "type_check: recursive enum ctor payload keeps named references" {
   let script = "enum Expr { Lit(Int); Pair(Expr, Expr) }\n" +
     "let mk = (l: Expr, r: Expr) -> Expr { Pair(l, r) }"

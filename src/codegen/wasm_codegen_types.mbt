@@ -92,6 +92,10 @@ pub struct WasmEmitOptions {
   /// `<offset>`) in lambda labels of the wasm `name` custom section.
   /// Empty disables the upgrade.
   source : String
+  /// Experimental Threads backend selected for source-level runtime hints and
+  /// future lowering switches. The current default compiled backend is
+  /// `linear-local`.
+  thread_backend_id : String
 } derive(Debug, Eq)
 
 ///|
@@ -113,6 +117,9 @@ pub fn wasm_emit_options(
   rc_actions? : Array[(String, Bool, String)] = [],
   rc_func_actions? : Map[String, Array[(String, Bool, String)]] = {},
   source? : String = "",
+  thread_backend_id? : String = @threads.thread_backend_id(
+    @threads.ThreadBackend::LinearLocal,
+  ),
 ) -> WasmEmitOptions {
   {
     embed_error_strings,
@@ -127,6 +134,7 @@ pub fn wasm_emit_options(
     rc_actions,
     rc_func_actions,
     source,
+    thread_backend_id,
   }
 }
 

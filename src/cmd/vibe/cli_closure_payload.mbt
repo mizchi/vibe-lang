@@ -216,6 +216,7 @@ pub fn compile_closure_payload_file(
   output_path : String,
   mode : String,
   fs : &@io.FileSystemAdapter,
+  features? : @runtime.RuntimeFeatureFlags = @runtime.RuntimeFeatureFlags::stable(),
 ) -> Result[Unit, String] {
   let payload = match @io.read_string_with(fs, payload_path) {
     Ok(v) => v
@@ -246,6 +247,10 @@ pub fn compile_closure_payload_file(
     Err(err) => return Err("load failed: " + err)
   }
   db.require_path_lock(false)
+  match require_unstable_threads_for_db_entry(db, entry, features) {
+    Some(err) => return Err(err)
+    None => ()
+  }
   let wasm = @runtime_compile.compile_module_wasm_with_opt_level(
     db,
     entry,

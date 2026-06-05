@@ -145,6 +145,8 @@ priv struct CodegenCtx {
   enable_tail_call : Bool
   // Library mode: skip _start, suitable for --preload linking
   library_mode : Bool
+  // Experimental Threads backend selected for source-level lowering metadata.
+  thread_backend_id : String
   // Linked function imports: func_name -> absolute import func index
   // Used for debug linked builds where imported modules are pre-compiled .wasm
   linked_fn_imports : Map[String, Int]
@@ -214,6 +216,9 @@ fn CodegenCtx::new(
   fs_host_imports? : Bool = false,
   force_cabi_realloc? : Bool = false,
   library_mode? : Bool = false,
+  thread_backend_id? : String = @threads.thread_backend_id(
+    @threads.ThreadBackend::LinearLocal,
+  ),
 ) -> CodegenCtx {
   // Register builtin enum constructors
   let enum_ctor_tags : Map[String, Int] = {}
@@ -347,6 +352,7 @@ fn CodegenCtx::new(
     heap_synced: false,
     enable_tail_call: false,
     library_mode,
+    thread_backend_id,
     linked_fn_imports: {},
     linked_fn_param_counts: {},
     linked_fn_return_counts: {},

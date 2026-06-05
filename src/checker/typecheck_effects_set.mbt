@@ -282,6 +282,13 @@ fn builtin_effects(name : String) -> Array[@core.EffectAtom] {
     | "Http::request_header"
     | "Http::request_body"
     | "Http::respond" => [@core.EffectAtom::Const("Http")]
+    "Threads::probe_wat"
+    | "Threads::runtime_hints"
+    | "Threads::channel_new"
+    | "Threads::send"
+    | "Threads::recv"
+    | "Threads::spawn"
+    | "Threads::wait" => [@core.EffectAtom::Const("Threads")]
     "Llm::complete" | "Rlm::run" => [@core.EffectAtom::Const("Llm")]
     _ => []
   }

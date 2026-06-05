@@ -157,6 +157,40 @@ test "compile_closure_payload_file compiles import closure payload" {
 }
 
 ///|
+test "compile_closure_payload_file gates Threads builtins behind unstable flag" {
+  let root = "/workspace"
+  let fs = MemIoAdapter::new(root)
+  let main_path = root + "/main.vibe"
+  let payload_path = root + "/payload.txt"
+  let out_path = root + "/out.wasm"
+  ignore(
+    fs.write_string(
+      main_path,
+      (
+        #|export let _start = () -> String with {Threads} {
+        #|  Threads::probe_wat()
+        #|}
+      ),
+    ),
+  )
+  match emit_closure_payload_file(main_path, payload_path, fs) {
+    Ok(_) => ()
+    Err(err) => fail(err)
+  }
+  match
+    compile_closure_payload_file(
+      payload_path,
+      out_path,
+      "mvp",
+      fs,
+      features=@runtime.RuntimeFeatureFlags::stable(),
+    ) {
+    Ok(_) => fail("expected --unstable-threads gate")
+    Err(err) => assert_true(err.contains("--unstable-threads"))
+  }
+}
+
+///|
 fn split_payload_parts(payload : String) -> Array[String] {
   let parts : Array[String] = []
   for part in payload.split("\u{0}") {

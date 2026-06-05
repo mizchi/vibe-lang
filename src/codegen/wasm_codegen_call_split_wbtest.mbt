@@ -142,6 +142,31 @@ test "compile_call_builtin_pre_user handles String::join" {
 }
 
 ///|
+test "compile_call_builtin_pre_user lowers Threads::probe_wat as a string const" {
+  let ctx = CodegenCtx::new(false)
+  let buf = ByteBuf::new()
+  let args : Array[@core.CallArg] = []
+  let handled = compile_call_builtin_pre_user(
+    ctx, buf, "Threads::probe_wat", args, false,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_true(handled)
+  assert_true(buf.len() > 0)
+}
+
+///|
+test "Threads::probe_wat is not a wasm runtime fallback builtin" {
+  assert_false(is_wasm_runtime_fallback_builtin("Threads::probe_wat"))
+  assert_false(is_wasm_runtime_fallback_builtin("Threads::runtime_hints"))
+  assert_false(is_wasm_runtime_fallback_builtin("Threads::channel_new"))
+  assert_false(is_wasm_runtime_fallback_builtin("Threads::send"))
+  assert_false(is_wasm_runtime_fallback_builtin("Threads::recv"))
+  assert_false(is_wasm_runtime_fallback_builtin("Threads::spawn"))
+  assert_false(is_wasm_runtime_fallback_builtin("Threads::wait"))
+}
+
+///|
 test "compile_call_builtin_pre_user keeps user fn priority for fallback names" {
   let ctx = CodegenCtx::new(false)
   let buf = ByteBuf::new()
@@ -173,6 +198,172 @@ test "compile_call_builtin_pre_user handles __set_index" {
 }
 
 ///|
+test "compile_call_builtin_pre_user lowers Threads::runtime_hints as a record const" {
+  let ctx = CodegenCtx::new(false)
+  let buf = ByteBuf::new()
+  let args : Array[@core.CallArg] = []
+  let handled = compile_call_builtin_pre_user(
+    ctx, buf, "Threads::runtime_hints", args, false,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_true(handled)
+  assert_true(buf.len() > 0)
+}
+
+///|
+fn call_split_record_string_field(
+  expr : @core.Expr,
+  field_name : String,
+) -> String? {
+  match expr {
+    @core.Expr::Record(fields~, ..) => {
+      for field in fields {
+        if field.name == field_name {
+          match field.expr {
+            @core.Expr::String(value~, ..) => return Some(value)
+            _ => return None
+          }
+        }
+      }
+      None
+    }
+    _ => None
+  }
+}
+
+///|
+test "Wasm emit options carry thread backend id into CodegenCtx" {
+  let default_id = @threads.thread_backend_id(
+    @threads.ThreadBackend::LinearLocal,
+  )
+  assert_eq(wasm_emit_options().thread_backend_id, default_id)
+  let options = wasm_emit_options(
+    thread_backend_id="component-unsafe-os-threads",
+  )
+  assert_eq(options.thread_backend_id, "component-unsafe-os-threads")
+  let ctx = CodegenCtx::new(false, thread_backend_id=options.thread_backend_id)
+  assert_eq(ctx.thread_backend_id, "component-unsafe-os-threads")
+}
+
+///|
+test "Threads runtime hints follow selected codegen backend" {
+  let linear = threads_runtime_hints_expr_for_backend(
+    @threads.ThreadBackend::LinearLocal,
+  )
+  @debug.assert_eq(call_split_record_string_field(linear, "wasm_env"), Some(""))
+  @debug.assert_eq(call_split_record_string_field(linear, "wasi_env"), Some(""))
+  let unsafe_os = threads_runtime_hints_expr_for_backend(
+    @threads.ThreadBackend::ComponentModelUnsafeOsThreads,
+  )
+  match call_split_record_string_field(unsafe_os, "wasm_env") {
+    Some(v) => {
+      assert_true(v.contains("component-model-threading=y"))
+      assert_true(v.contains("shared-everything-threads=y"))
+    }
+    None => fail("missing wasm_env")
+  }
+  @debug.assert_eq(
+    call_split_record_string_field(unsafe_os, "wasi_env"),
+    Some(""),
+  )
+}
+
+///|
+test "compile_call_builtin_pre_user lowers Threads channel builtins" {
+  let ctx = CodegenCtx::new(false)
+  let buf = ByteBuf::new()
+  let channel_new = compile_call_builtin_pre_user(
+    ctx,
+    buf,
+    "Threads::channel_new",
+    [call_split_test_arg(call_split_test_int(2L))],
+    false,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_true(channel_new)
+  let send = compile_call_builtin_pre_user(
+    ctx,
+    buf,
+    "Threads::send",
+    [
+      call_split_test_arg(call_split_test_int(1L)),
+      call_split_test_arg(call_split_test_string("msg")),
+    ],
+    false,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_true(send)
+  let recv = compile_call_builtin_pre_user(
+    ctx,
+    buf,
+    "Threads::recv",
+    [call_split_test_arg(call_split_test_int(1L))],
+    false,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_true(recv)
+  assert_true(buf.len() > 0)
+}
+
+///|
+test "compile_call_builtin_pre_user rejects stateful Threads builtins on unconnected backend" {
+  let ctx = CodegenCtx::new(
+    false,
+    thread_backend_id="component-unsafe-os-threads",
+  )
+  let buf = ByteBuf::new()
+  let _handled = compile_call_builtin_pre_user(
+    ctx,
+    buf,
+    "Threads::channel_new",
+    [call_split_test_arg(call_split_test_int(2L))],
+    false,
+  ) catch {
+    err => {
+      let msg = err.to_string()
+      assert_true(msg.contains("component-unsafe-os-threads"))
+      assert_true(msg.contains("linear-local"))
+      return
+    }
+  }
+  fail("expected stateful Threads backend guard")
+}
+
+///|
+test "compile_call_builtin_pre_user lowers Threads task builtins" {
+  let ctx = CodegenCtx::new(false)
+  let buf = ByteBuf::new()
+  let spawn = compile_call_builtin_pre_user(
+    ctx,
+    buf,
+    "Threads::spawn",
+    [
+      call_split_test_arg(call_split_test_string("worker")),
+      call_split_test_arg(call_split_test_int(1L)),
+    ],
+    false,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_true(spawn)
+  let wait = compile_call_builtin_pre_user(
+    ctx,
+    buf,
+    "Threads::wait",
+    [call_split_test_arg(call_split_test_int(1L))],
+    false,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_true(wait)
+  assert_true(buf.len() > 0)
+}
+
+///|
 test "compile_call_by_name handles __set_index" {
   let ctx = CodegenCtx::new(false)
   let buf = ByteBuf::new()
@@ -197,6 +388,56 @@ test "scan_needs_expr enables fs and heap for Json::parse" {
   assert_true(ctx.need_fs)
   assert_true(ctx.need_heap)
   assert_true(ctx.need_json_host_parse)
+}
+
+///|
+test "scan_needs_expr enables heap for Threads task builtins" {
+  let ctx = CodegenCtx::new(false)
+  let spawn = call_split_test_call("Threads::spawn", [
+    call_split_test_arg(call_split_test_string("worker")),
+    call_split_test_arg(call_split_test_int(1L)),
+  ])
+  let wait = call_split_test_call("Threads::wait", [
+    call_split_test_arg(call_split_test_int(1L)),
+  ])
+  scan_needs_expr(ctx, spawn)
+  scan_needs_expr(ctx, wait)
+  assert_true(ctx.need_heap)
+  assert_false(ctx.need_exceptions)
+}
+
+///|
+test "scan_needs_expr enables heap for Threads channel builtins" {
+  let ctx = CodegenCtx::new(false)
+  let channel_new = call_split_test_call("Threads::channel_new", [
+    call_split_test_arg(call_split_test_int(2L)),
+  ])
+  let send = call_split_test_call("Threads::send", [
+    call_split_test_arg(channel_new),
+    call_split_test_arg(call_split_test_string("msg")),
+  ])
+  let recv = call_split_test_call("Threads::recv", [
+    call_split_test_arg(call_split_test_int(1L)),
+  ])
+  scan_needs_expr(ctx, send)
+  scan_needs_expr(ctx, recv)
+  assert_true(ctx.need_heap)
+  assert_false(ctx.need_exceptions)
+}
+
+///|
+test "scan_needs_expr enables heap and fields for Threads::runtime_hints" {
+  let ctx = CodegenCtx::new(false)
+  let expr = call_split_test_call("Threads::runtime_hints", [])
+  scan_needs_expr(ctx, expr)
+  assert_true(ctx.need_heap)
+  assert_true(ctx.rc_has_tuple_or_array)
+  assert_true(ctx.rc_has_record_or_map)
+  assert_true(ctx.known_record_fields.contains("wasm_flags"))
+  assert_true(ctx.known_record_fields.contains("wasi_flags"))
+  assert_true(ctx.known_record_fields.contains("wasm_env"))
+  assert_true(ctx.known_record_fields.contains("wasi_env"))
+  assert_false(ctx.need_exceptions)
 }
 
 ///|

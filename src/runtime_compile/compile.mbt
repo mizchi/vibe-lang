@@ -1819,6 +1819,7 @@ fn wasm_artifact_cache_namespace(
   fs_host_imports : Bool,
   force_cabi_realloc : Bool,
   library_mode : Bool,
+  thread_backend_id : String,
 ) -> String {
   let buf = StringBuilder::new()
   buf.write_string(bundler_kind)
@@ -1832,6 +1833,8 @@ fn wasm_artifact_cache_namespace(
   buf.write_string(force_cabi_realloc.to_string())
   buf.write_char('\n')
   buf.write_string(library_mode.to_string())
+  buf.write_char('\n')
+  buf.write_string(thread_backend_id)
   buf.to_string()
 }
 
@@ -2470,6 +2473,7 @@ pub fn compile_module_wasm_with_opt_level(
   fs_host_imports? : Bool = false,
   force_cabi_realloc? : Bool = false,
   library_mode? : Bool = false,
+  thread_backend_id? : String = @codegen.wasm_emit_options().thread_backend_id,
 ) -> Bytes raise WasmCompileError {
   let (wasm, _) = compile_module_wasm_with_opt_level_profiled(
     db,
@@ -2481,6 +2485,7 @@ pub fn compile_module_wasm_with_opt_level(
     fs_host_imports~,
     force_cabi_realloc~,
     library_mode~,
+    thread_backend_id~,
   )
   wasm
 }
@@ -2496,6 +2501,7 @@ pub fn compile_module_wasm_with_opt_level_profiled(
   fs_host_imports? : Bool = false,
   force_cabi_realloc? : Bool = false,
   library_mode? : Bool = false,
+  thread_backend_id? : String = @codegen.wasm_emit_options().thread_backend_id,
 ) -> (Bytes, WasmCompileStageProfile) raise WasmCompileError {
   ensure_hooks()
   let cache_namespace = wasm_artifact_cache_namespace(
@@ -2509,6 +2515,7 @@ pub fn compile_module_wasm_with_opt_level_profiled(
     fs_host_imports,
     force_cabi_realloc,
     library_mode,
+    thread_backend_id,
   )
   // Threaded for the wasm `name` section: lets the codegen render
   // lambda labels as `<line>:<col>` instead of `<offset>`.
@@ -2524,6 +2531,7 @@ pub fn compile_module_wasm_with_opt_level_profiled(
       force_cabi_realloc~,
       library_mode~,
       source~,
+      thread_backend_id~,
     )
   }
   if no_dce {

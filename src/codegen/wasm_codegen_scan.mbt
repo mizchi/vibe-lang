@@ -151,6 +151,20 @@ fn scan_needs_expr(ctx : CodegenCtx, expr : @core.Expr) -> Unit {
         | "Float::to_string"
         | "Double::to_string"
         | "Bool::to_string" => if !ctx.use_js_strings { ctx.need_heap = true }
+        "Threads::runtime_hints" => {
+          ctx.need_heap = true
+          ctx.rc_has_tuple_or_array = true
+          ctx.rc_has_record_or_map = true
+          ctx.known_record_fields["wasm_flags"] = true
+          ctx.known_record_fields["wasi_flags"] = true
+          ctx.known_record_fields["wasm_env"] = true
+          ctx.known_record_fields["wasi_env"] = true
+        }
+        "Threads::channel_new"
+        | "Threads::send"
+        | "Threads::recv"
+        | "Threads::spawn"
+        | "Threads::wait" => ctx.need_heap = true
         _ =>
           if is_wasm_runtime_fallback_builtin(name) {
             ctx.need_exceptions = true

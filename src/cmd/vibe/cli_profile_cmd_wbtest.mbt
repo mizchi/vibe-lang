@@ -105,3 +105,32 @@ test "build_wasmtime_profile_command emits --profile=guest with us interval" {
   @debug.assert_eq(cmd.contains("-W"), true)
   @debug.assert_eq(cmd.contains("gc=y"), true)
 }
+
+///|
+test "compile_for_profile gates Threads builtins behind unstable flag" {
+  let root = wbtest_make_temp_dir("threads_gate_profile_wb")
+  let source_path = root + "/main.vibe"
+  @os_fs.write_string_to_file(
+    source_path,
+    (
+      #|export let _start = () -> String with {Threads} {
+      #|  Threads::probe_wat()
+      #|}
+    ),
+  ) catch {
+    e => fail("write profile source failed: " + e.to_string())
+  }
+  match
+    compile_for_profile(
+      source_path,
+      ProfileBackend::Wasm,
+      features=@runtime.RuntimeFeatureFlags::stable(),
+    ) {
+    Ok(_) => fail("expected --unstable-threads gate")
+    Err(err) => assert_true(err.contains("--unstable-threads"))
+  }
+  wbtest_remove_if_exists(source_path)
+  wbtest_remove_if_exists(root + "/index.lock")
+  wbtest_remove_if_exists(root + "/index.vibe")
+  wbtest_remove_if_exists(root)
+}

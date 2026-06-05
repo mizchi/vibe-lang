@@ -4324,6 +4324,7 @@ pub fn emit_module_wasm_with_options(
     fs_host_imports=options.fs_host_imports,
     force_cabi_realloc=options.force_cabi_realloc,
     library_mode=options.library_mode,
+    thread_backend_id=options.thread_backend_id,
   )
   ctx.linked_fn_imports_list = options.linked_imports
   ctx.source = options.source
@@ -4361,6 +4362,7 @@ pub fn emit_module_wasm_with_source(
     fs_host_imports=default_emit_options().fs_host_imports,
     force_cabi_realloc=default_emit_options().force_cabi_realloc,
     library_mode=default_emit_options().library_mode,
+    thread_backend_id=default_emit_options().thread_backend_id,
   )
   ctx.source = source
   emit_module(ctx, ast)
@@ -4371,11 +4373,11 @@ pub fn emit_module_wasm_js_string_with_options(
   ast : @core.Module,
   options : WasmEmitOptions,
 ) -> Bytes raise WasmGenError {
-  let _ = options
   let ctx = CodegenCtx::new(
     true,
     coverage_enabled=false,
     embed_error_strings=true,
+    thread_backend_id=options.thread_backend_id,
   )
   emit_module(ctx, ast)
 }
@@ -4399,6 +4401,7 @@ pub fn emit_module_wasm_with_coverage_options(
     http_host_imports=options.http_host_imports,
     http_component_wasi_shim=options.http_component_wasi_shim,
     fs_host_imports=options.fs_host_imports,
+    thread_backend_id=options.thread_backend_id,
   )
   emit_module_with_coverage(ctx, ast)
 }
@@ -4408,11 +4411,11 @@ pub fn emit_module_wasm_js_string_with_coverage_options(
   ast : @core.Module,
   options : WasmEmitOptions,
 ) -> WasmCoverageArtifact raise WasmGenError {
-  let _ = options
   let ctx = CodegenCtx::new(
     true,
     coverage_enabled=true,
     embed_error_strings=true,
+    thread_backend_id=options.thread_backend_id,
   )
   emit_module_with_coverage(ctx, ast)
 }

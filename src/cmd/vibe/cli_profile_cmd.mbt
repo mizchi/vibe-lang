@@ -239,9 +239,10 @@ fn build_wasmtime_profile_command(
 fn compile_for_profile(
   entry_path : String,
   backend : ProfileBackend,
+  features? : @runtime.RuntimeFeatureFlags = @runtime.RuntimeFeatureFlags::stable(),
 ) -> Result[String, String] {
   let fs = @io.default_fs_adapter()
-  match @loader.load_db_with_fs(entry_path, fs) {
+  match load_entry_db_for_compile_with_features(entry_path, fs, features) {
     Err(err) => Err("profile: " + err)
     Ok((db, entry)) => {
       let wasm_bytes = match backend {
@@ -267,7 +268,10 @@ fn compile_for_profile(
 }
 
 ///|
-fn profile_cmd(args : Array[String]) -> Unit {
+fn profile_cmd(
+  args : Array[String],
+  features? : @runtime.RuntimeFeatureFlags = @runtime.RuntimeFeatureFlags::stable(),
+) -> Unit {
   if has_help_flag(args) {
     print_profile_help()
     return
@@ -276,7 +280,8 @@ fn profile_cmd(args : Array[String]) -> Unit {
     Ok(v) => v
     Err(msg) => abort(msg)
   }
-  let wasm_path = match compile_for_profile(opts.entry_path, opts.backend) {
+  let wasm_path = match
+    compile_for_profile(opts.entry_path, opts.backend, features~) {
     Ok(p) => p
     Err(err) => abort(err)
   }

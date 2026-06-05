@@ -1295,6 +1295,63 @@ test "compile_module_wasm_with_opt_level_profiled returns wasm and stage timings
 }
 
 ///|
+test "compile_module_wasm_with_opt_level passes thread backend to runtime hints" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|export let _start = () -> Int with {Threads} {
+      #|  let hints = Threads::runtime_hints()
+      #|  String::length(hints.wasm_env)
+      #|}
+    ),
+  )
+  let wasm = try
+    compile_module_wasm_with_opt_level(
+      db,
+      "main",
+      thread_backend_id="component-unsafe-os-threads",
+    )
+  catch {
+    e => fail("compile failed: " + e.user_message())
+  } noraise {
+    v => v
+  }
+  assert_true(bytes_contains_ascii(wasm, "component-model-threading=y"))
+  assert_true(bytes_contains_ascii(wasm, "shared-everything-threads=y"))
+}
+
+///|
+test "compile_module_wasm_with_opt_level rejects stateful Threads backend mismatch" {
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    "main",
+    (
+      #|export let _start = () -> Int with {Threads} {
+      #|  Threads::channel_new(1)
+      #|}
+    ),
+  )
+  let _wasm = try
+    compile_module_wasm_with_opt_level(
+      db,
+      "main",
+      thread_backend_id="component-unsafe-os-threads",
+    )
+  catch {
+    e => {
+      let msg = e.user_message()
+      assert_true(msg.contains("component-unsafe-os-threads"))
+      assert_true(msg.contains("linear-local"))
+      return
+    }
+  } noraise {
+    v => v
+  }
+  fail("expected stateful Threads backend mismatch")
+}
+
+///|
 test "lower_top_level_tests_to_exprs wraps each test body in a function" {
   let source =
     #|let mut counter = 0

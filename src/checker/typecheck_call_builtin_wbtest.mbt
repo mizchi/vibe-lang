@@ -359,6 +359,131 @@ test "type_call_builtin: Http::listen requires Net effect" {
 }
 
 ///|
+test "type_call_builtin: Threads::runtime_hints returns runtime hint record" {
+  let env = TypeEnv::new()
+  let span = builtin_test_span()
+  let aliases : Map[String, @core.Ref] = {}
+  let actual = type_call_builtin(
+    env,
+    "Threads::runtime_hints",
+    [],
+    aliases,
+    effect_scope_from_list([@core.EffectAtom::Const("Threads")]),
+    true,
+    span,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  match actual {
+    @core.Type::Record(fields) => {
+      @debug.assert_eq(
+        fields.get("wasm_flags"),
+        Some(@core.Type::Array(@core.Type::String)),
+      )
+      @debug.assert_eq(
+        fields.get("wasi_flags"),
+        Some(@core.Type::Array(@core.Type::String)),
+      )
+      @debug.assert_eq(fields.get("wasm_env"), Some(@core.Type::String))
+      @debug.assert_eq(fields.get("wasi_env"), Some(@core.Type::String))
+    }
+    _ => fail("expected record type")
+  }
+}
+
+///|
+test "type_call_builtin: Threads builtins require Threads effect" {
+  let env = TypeEnv::new()
+  let span = builtin_test_span()
+  let aliases : Map[String, @core.Ref] = {}
+  let result : Result[@core.Type, TypeError] = try? type_call_builtin(
+    env,
+    "Threads::probe_wat",
+    [],
+    aliases,
+    effect_scope_from_list([]),
+    true,
+    span,
+  )
+  match result {
+    Ok(_) => fail("expected effect guard error")
+    Err(TypeError::EffectGuardNotSatisfied(operation~, missing_effect~, ..)) => {
+      assert_eq(operation, "Threads::probe_wat")
+      @debug.assert_eq(missing_effect, Some("Threads"))
+    }
+    Err(other) => fail("unexpected error: \{other.to_string()}")
+  }
+}
+
+///|
+test "type_call_builtin: Threads channel API has minimal typed surface" {
+  let env = TypeEnv::new()
+  let span = builtin_test_span()
+  let aliases : Map[String, @core.Ref] = {}
+  let scope = effect_scope_from_list([@core.EffectAtom::Const("Threads")])
+  let channel_ty = type_call_builtin(
+    env,
+    "Threads::channel_new",
+    [builtin_test_int_arg(8)],
+    aliases,
+    scope,
+    true,
+    span,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_eq(channel_ty, @core.Type::Int)
+  let send_ty = type_call_builtin(
+    env,
+    "Threads::send",
+    [builtin_test_int_arg(1), builtin_test_string_arg("ok")],
+    aliases,
+    scope,
+    true,
+    span,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_eq(send_ty, @core.Type::Bool)
+  let recv_ty = type_call_builtin(
+    env,
+    "Threads::recv",
+    [builtin_test_int_arg(1)],
+    aliases,
+    scope,
+    true,
+    span,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_eq(recv_ty, @core.Type::String)
+  let spawn_ty = type_call_builtin(
+    env,
+    "Threads::spawn",
+    [builtin_test_string_arg("worker"), builtin_test_int_arg(1)],
+    aliases,
+    scope,
+    true,
+    span,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_eq(spawn_ty, @core.Type::Int)
+  let wait_ty = type_call_builtin(
+    env,
+    "Threads::wait",
+    [builtin_test_int_arg(1)],
+    aliases,
+    scope,
+    true,
+    span,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_eq(wait_ty, @core.Type::Int)
+}
+
+///|
 test "type_call_builtin: unknown raises BadCall" {
   let env = TypeEnv::new()
   let span = builtin_test_span()

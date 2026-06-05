@@ -70,6 +70,9 @@ pub fn codegen_runtime_fallback_builtin_names() -> Array[String] {
     // Fs (not mapped to wasm imports yet)
      "Fs::chdir", "Fs::copy", "Fs::readdir", "Fs::is_dir", "Fs::is_file", "Fs::mkdir",
     "Fs::mkdir_p", "Fs::getcwd", "Fs::remove", "Fs::rename", "Fs::append",
+    // Threads (experimental source-level API; only probe constants lower today)
+     "Threads::probe_wat", "Threads::runtime_hints", "Threads::channel_new", "Threads::send",
+    "Threads::recv", "Threads::spawn", "Threads::wait",
     // LLM / interactive
      "Llm::complete", "Rlm::run", "Rlm::finalize",
   ]

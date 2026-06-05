@@ -384,6 +384,41 @@ fn type_call_builtin_handler_core_io(
         @core.Type::Unit,
         true,
       )
+    "Threads::probe_wat" =>
+      ctx.simple("Threads::probe_wat", [], @core.Type::String, true)
+    "Threads::runtime_hints" => {
+      let fields : Map[String, @core.Type] = {}
+      fields["wasm_flags"] = @core.Type::Array(@core.Type::String)
+      fields["wasi_flags"] = @core.Type::Array(@core.Type::String)
+      fields["wasm_env"] = @core.Type::String
+      fields["wasi_env"] = @core.Type::String
+      ctx.simple("Threads::runtime_hints", [], @core.Type::Record(fields), true)
+    }
+    "Threads::channel_new" =>
+      ctx.simple(
+        "Threads::channel_new",
+        [@core.Type::Int],
+        @core.Type::Int,
+        true,
+      )
+    "Threads::send" =>
+      ctx.simple(
+        "Threads::send",
+        [@core.Type::Int, @core.Type::String],
+        @core.Type::Bool,
+        true,
+      )
+    "Threads::recv" =>
+      ctx.simple("Threads::recv", [@core.Type::Int], @core.Type::String, true)
+    "Threads::spawn" =>
+      ctx.simple(
+        "Threads::spawn",
+        [@core.Type::String, @core.Type::Int],
+        @core.Type::Int,
+        true,
+      )
+    "Threads::wait" =>
+      ctx.simple("Threads::wait", [@core.Type::Int], @core.Type::Int, true)
     "Llm::complete" => {
       // (system: String, user: String) -> String with { Llm }
       let pos_args = prepare_builtin_pos_args(

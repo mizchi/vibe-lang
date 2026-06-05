@@ -154,6 +154,14 @@ const signatures = {
   "f64_load": "(Int, Int) -> Double",
   "f32_store": "(Int, Int, Float) -> Unit",
   "f64_store": "(Int, Int, Double) -> Unit",
+  "Threads::probe_wat": "() -> String",
+  "Threads::runtime_hints":
+    "() -> {wasm_flags: Array[String], wasi_flags: Array[String], wasm_env: String, wasi_env: String}",
+  "Threads::channel_new": "(Int) -> Int",
+  "Threads::send": "(Int, String) -> Bool",
+  "Threads::recv": "(Int) -> String",
+  "Threads::spawn": "(String, Int) -> Int",
+  "Threads::wait": "(Int) -> Int",
   "__to_string": "(Any) -> String",
 };
 
