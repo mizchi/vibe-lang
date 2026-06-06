@@ -86,25 +86,31 @@ through the real gate path below rather than a probe.)
 
 ## Cutover toggle: `VIBE_RC=1`
 
-The cutover-enabling plumbing (not the default flip itself): the selfhost compile
-entries route through the RC codegen when `VIBE_RC=1` (env; unset → the bump
-default is unchanged). `compile_source_wasi_only_rc`
+The cutover-enabling plumbing (not the default flip itself): the **argv / env
+compile entries** route through the RC codegen when `VIBE_RC=1` (env; unset → the
+bump default is unchanged). `compile_source_wasi_only_rc`
 (`entry/source_compile/wasi_only/preprocess_compile.vibe`) mirrors
 `compile_source_wasi_only` on `compile_wasi_module_rc_impl`; `cli_main`
 (`selfhost_cli_adapter.vibe`) and `selfbuild_cli_args_entry` (`index.vibe` — the
-entry the selfbuild/bootstrap/e2e gates use) consult `VIBE_RC`.
+entry the **cli-adapter** gate uses) consult `VIBE_RC`.
 
 End-to-end verified: the stage1 wasm-compiled selfhost compiler, invoked via
 `selfbuild_cli_args_entry` with `VIBE_RC=1`, compiled a real RC-relevant program
 (enum `Option` with a nullary variant in an `if`, a closure, tuples) to **valid
-wasm that runs to the same result as the default path** (17 == 17). So the gates
-can now be run under RC for the definitive full-scale signal:
+wasm that runs to the same result as the default path** (17 == 17):
 
 ```bash
-# whole selfhost compiler + every gate input compiled under RC:
+# the cli-adapter gate's sample input compiled through the RC path:
 VIBE_RC=1 bash scripts/test_selfhost_cli_adapter.sh
-VIBE_RC=1 bash scripts/test_selfhost_wasi_selfbuild.sh   # (heavier) bootstrap under RC
 ```
+
+**Not yet RC-routed (remaining cutover wiring).** The full selfbuild
+(`scripts/test_selfhost_wasi_selfbuild.sh`) does *not* honor `VIBE_RC`: its
+recursive stage uses `selfbuild_compile_stage2` (`index.vibe`), which calls
+`compile_source_wasi_only` unconditionally and has no `Env` effect to read the
+toggle. Routing the bootstrap self-build through RC (add `Env` to
+`selfbuild_compile_stage2` + its two test callers, branch on `VIBE_RC`) is the
+next step before that command can be advertised as an RC bootstrap gate.
 
 The actual #493 cutover is then flipping the default (unset `VIBE_RC` → RC) once
 the RC bootstrap gate is green and the throughput tradeoff is signed off.
