@@ -41,6 +41,11 @@ struct PCtx {
   actions: Array[PerceusAction]
 }
 
+struct HeapInferCtx {
+  ctors: Array[String]
+  heap_fns: Array[String]
+}
+
 //# Functions
 
 let zeros: (Int) -> Array[Int] = (n) -> {
@@ -60,6 +65,20 @@ let int_max: (Int, Int) -> Int = (a, b) -> {
   } else {
     b
   }
+}
+
+let name_in: (Array[String], String) -> Bool = (arr, s) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arr) {
+    if Array::get(arr, i) == s {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
 }
 
 let pe_push: (PCtx, PerceusActionKind, String) -> Int = (ctx, kind, name) -> {
@@ -263,8 +282,25 @@ let is_heap_literal: (Expr) -> Bool = (e) -> {
   }
 }
 
-let arg_class: (Expr, Map[String, Bool]) -> Bool = (arg, env) -> {
-  if is_heap_literal(arg) {
+let is_heap_value: (Expr, HeapInferCtx) -> Bool = (e, hctx) -> {
+  if is_heap_literal(e) {
+    true
+  } else {
+    match e {
+      ECall(callee, args) =>
+      match callee {
+        EIdent(c) =>
+        (Array::length(args) > 0 && name_in(hctx.ctors, c)) ||
+        name_in(hctx.heap_fns, c),
+        _ => false
+      },
+      _ => false
+    }
+  }
+}
+
+let arg_class: (Expr, Map[String, Bool], HeapInferCtx) -> Bool = (arg, env, hctx) -> {
+  if is_heap_value(arg, hctx) {
     true
   } else {
     match arg {
@@ -278,7 +314,7 @@ let arg_class: (Expr, Map[String, Bool]) -> Bool = (arg, env) -> {
   }
 }
 
-let rec analyze_calls: (String, Expr, Map[String, Bool], Array[Array[Bool]], Array[Bool]) -> Int = (name, e, env, calls, esc) -> {
+let rec analyze_calls: (String, Expr, Map[String, Bool], Array[Array[Bool]], Array[Bool], HeapInferCtx) -> Int = (name, e, env, calls, esc, hctx) -> {
   match e {
     EIdent(n) => {
       if n == name {
@@ -298,80 +334,80 @@ let rec analyze_calls: (String, Expr, Map[String, Bool], Array[Array[Bool]], Arr
         ]
         let mut k = 0
         while k < Array::length(args) {
-          Array::push(cls, arg_class(Array::get(args, k), env))
+          Array::push(cls, arg_class(Array::get(args, k), env, hctx))
           k = k + 1
         }
         Array::push(calls, cls)
       } else {
-        let _ = analyze_calls(name, callee, env, calls, esc)
+        let _ = analyze_calls(name, callee, env, calls, esc, hctx)
         ()
       }
       let mut i = 0
       while i < Array::length(args) {
-        analyze_calls(name, Array::get(args, i), env, calls, esc)
+        analyze_calls(name, Array::get(args, i), env, calls, esc, hctx)
         i = i + 1
       }
       0
     },
-    EDot(obj, _) => analyze_calls(name, obj, env, calls, esc),
+    EDot(obj, _) => analyze_calls(name, obj, env, calls, esc, hctx),
     ELet(n, v, b) => {
-      analyze_calls(name, v, env, calls, esc)
-      analyze_calls(name, b, Map::set(env, n, is_heap_literal(v)), calls, esc)
+      analyze_calls(name, v, env, calls, esc, hctx)
+      analyze_calls(name, b, Map::set(env, n, is_heap_value(v, hctx)), calls, esc, hctx)
       0
     },
     ELetRec(n, v, b) => {
       let env2 = Map::set(env, n, false)
-      analyze_calls(name, v, env2, calls, esc)
-      analyze_calls(name, b, env2, calls, esc)
+      analyze_calls(name, v, env2, calls, esc, hctx)
+      analyze_calls(name, b, env2, calls, esc, hctx)
       0
     },
     ELetMut(n, v, b) => {
-      analyze_calls(name, v, env, calls, esc)
-      analyze_calls(name, b, Map::set(env, n, false), calls, esc)
+      analyze_calls(name, v, env, calls, esc, hctx)
+      analyze_calls(name, b, Map::set(env, n, false), calls, esc, hctx)
       0
     },
     EAssign(_, v, c) => {
-      analyze_calls(name, v, env, calls, esc)
-      analyze_calls(name, c, env, calls, esc)
+      analyze_calls(name, v, env, calls, esc, hctx)
+      analyze_calls(name, c, env, calls, esc, hctx)
       0
     },
     EAssignOp(_, _, v, c) => {
-      analyze_calls(name, v, env, calls, esc)
-      analyze_calls(name, c, env, calls, esc)
+      analyze_calls(name, v, env, calls, esc, hctx)
+      analyze_calls(name, c, env, calls, esc, hctx)
       0
     },
     ESeq(a, b) => {
-      analyze_calls(name, a, env, calls, esc)
-      analyze_calls(name, b, env, calls, esc)
+      analyze_calls(name, a, env, calls, esc, hctx)
+      analyze_calls(name, b, env, calls, esc, hctx)
       0
     },
     EIf(c, t, el) => {
-      analyze_calls(name, c, env, calls, esc)
-      analyze_calls(name, t, env, calls, esc)
-      analyze_calls(name, el, env, calls, esc)
+      analyze_calls(name, c, env, calls, esc, hctx)
+      analyze_calls(name, t, env, calls, esc, hctx)
+      analyze_calls(name, el, env, calls, esc, hctx)
       0
     },
     EWhile(c, b) => {
-      analyze_calls(name, c, env, calls, esc)
-      analyze_calls(name, b, env, calls, esc)
+      analyze_calls(name, c, env, calls, esc, hctx)
+      analyze_calls(name, b, env, calls, esc, hctx)
       0
     },
     EForIn(v0, ix, it, b) => {
-      analyze_calls(name, it, env, calls, esc)
+      analyze_calls(name, it, env, calls, esc, hctx)
       let env1 = Map::set(env, v0, false)
       let env2 = match ix {
         Some(ixn) => Map::set(env1, ixn, false),
         None => env1
       }
-      analyze_calls(name, b, env2, calls, esc)
+      analyze_calls(name, b, env2, calls, esc, hctx)
       0
     },
     EBinOp(_, l, r) => {
-      analyze_calls(name, l, env, calls, esc)
-      analyze_calls(name, r, env, calls, esc)
+      analyze_calls(name, l, env, calls, esc, hctx)
+      analyze_calls(name, r, env, calls, esc, hctx)
       0
     },
-    EUnaryOp(_, o) => analyze_calls(name, o, env, calls, esc),
+    EUnaryOp(_, o) => analyze_calls(name, o, env, calls, esc, hctx),
     EFn(_, _, params, _, _, b) => {
       let mut env2 = env
       let mut pi = 0
@@ -380,13 +416,13 @@ let rec analyze_calls: (String, Expr, Map[String, Bool], Array[Array[Bool]], Arr
         env2 = Map::set(env2, pn, false)
         pi = pi + 1
       }
-      analyze_calls(name, b, env2, calls, esc)
+      analyze_calls(name, b, env2, calls, esc, hctx)
       0
     },
     ETuple(xs) => {
       let mut i = 0
       while i < Array::length(xs) {
-        analyze_calls(name, Array::get(xs, i), env, calls, esc)
+        analyze_calls(name, Array::get(xs, i), env, calls, esc, hctx)
         i = i + 1
       }
       0
@@ -394,27 +430,27 @@ let rec analyze_calls: (String, Expr, Map[String, Bool], Array[Array[Bool]], Arr
     EArray(xs) => {
       let mut i = 0
       while i < Array::length(xs) {
-        analyze_calls(name, Array::get(xs, i), env, calls, esc)
+        analyze_calls(name, Array::get(xs, i), env, calls, esc, hctx)
         i = i + 1
       }
       0
     },
     EMatch(s, arms) => {
-      analyze_calls(name, s, env, calls, esc)
+      analyze_calls(name, s, env, calls, esc, hctx)
       let mut i = 0
       while i < Array::length(arms) {
         let (pat, ab) = Array::get(arms, i)
-        analyze_calls(name, ab, pat_shadow_env(pat, env), calls, esc)
+        analyze_calls(name, ab, pat_shadow_env(pat, env), calls, esc, hctx)
         i = i + 1
       }
       0
     },
     EHandle(b, arms) => {
-      analyze_calls(name, b, env, calls, esc)
+      analyze_calls(name, b, env, calls, esc, hctx)
       let mut i = 0
       while i < Array::length(arms) {
         let (pat, ab) = Array::get(arms, i)
-        analyze_calls(name, ab, pat_shadow_env(pat, env), calls, esc)
+        analyze_calls(name, ab, pat_shadow_env(pat, env), calls, esc, hctx)
         i = i + 1
       }
       0
@@ -424,18 +460,18 @@ let rec analyze_calls: (String, Expr, Map[String, Bool], Array[Array[Bool]], Arr
       let mut i = 0
       while i < Array::length(ps) {
         let (pn, iv) = Array::get(ps, i)
-        analyze_calls(name, iv, env2, calls, esc)
+        analyze_calls(name, iv, env2, calls, esc, hctx)
         env2 = Map::set(env2, pn, false)
         i = i + 1
       }
-      analyze_calls(name, b, env2, calls, esc)
+      analyze_calls(name, b, env2, calls, esc, hctx)
       0
     },
     ERecord(fs) => {
       let mut i = 0
       while i < Array::length(fs) {
         let (_, fv) = Array::get(fs, i)
-        analyze_calls(name, fv, env, calls, esc)
+        analyze_calls(name, fv, env, calls, esc, hctx)
         i = i + 1
       }
       0
@@ -444,24 +480,24 @@ let rec analyze_calls: (String, Expr, Map[String, Bool], Array[Array[Bool]], Arr
       let mut i = 0
       while i < Array::length(fs) {
         let (_, fv) = Array::get(fs, i)
-        analyze_calls(name, fv, env, calls, esc)
+        analyze_calls(name, fv, env, calls, esc, hctx)
         i = i + 1
       }
       0
     },
-    ELabeledArg(_, _, x) => analyze_calls(name, x, env, calls, esc),
-    EThrow(x) => analyze_calls(name, x, env, calls, esc),
-    EReturn(x) => analyze_calls(name, x, env, calls, esc),
-    ESpread(x) => analyze_calls(name, x, env, calls, esc),
+    ELabeledArg(_, _, x) => analyze_calls(name, x, env, calls, esc, hctx),
+    EThrow(x) => analyze_calls(name, x, env, calls, esc, hctx),
+    EReturn(x) => analyze_calls(name, x, env, calls, esc, hctx),
+    ESpread(x) => analyze_calls(name, x, env, calls, esc, hctx),
     EBreak(o) =>
     match o {
-      Some(x) => analyze_calls(name, x, env, calls, esc),
+      Some(x) => analyze_calls(name, x, env, calls, esc, hctx),
       None => 0
     },
     EContinue(xs) => {
       let mut i = 0
       while i < Array::length(xs) {
-        analyze_calls(name, Array::get(xs, i), env, calls, esc)
+        analyze_calls(name, Array::get(xs, i), env, calls, esc, hctx)
         i = i + 1
       }
       0
@@ -577,13 +613,42 @@ export let type_expr_is_heap: (Option[TypeExpr]) -> Bool = (ot) -> {
   }
 }
 
+let collect_ctor_names: (Array[Stmt]) -> Array[String] = (stmts) -> {
+  let out: Array[String] = [
+  ]
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SEnum(_, _, variants) => {
+        let mut j = 0
+        while j < Array::length(variants) {
+          let (vn, _) = Array::get(variants, j)
+          Array::push(out, vn)
+          j = j + 1
+        }
+      },
+      SSuberror(_, _, variants) => {
+        let mut j = 0
+        while j < Array::length(variants) {
+          let (vn, _) = Array::get(variants, j)
+          Array::push(out, vn)
+          j = j + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 let inferred_heap_type: () -> TypeExpr = () -> {
   TyTuple(Array::slice([
     TyUnit
   ], 0, 0))
 }
 
-let fill_lambda_params: (String, Expr, Expr) -> Expr = (name, efn, body) -> {
+let fill_lambda_params: (String, Expr, Expr, HeapInferCtx) -> Expr = (name, efn, body, hctx) -> {
   match efn {
     EFn(tps, bounds, params, ret, eff, fnbody) => {
       let calls: Array[Array[Bool]] = [
@@ -593,7 +658,7 @@ let fill_lambda_params: (String, Expr, Expr) -> Expr = (name, efn, body) -> {
       ]
       let env0: Map[String, Bool] = map {
       }
-      analyze_calls(name, body, env0, calls, esc)
+      analyze_calls(name, body, env0, calls, esc, hctx)
       if Array::get(esc, 0) || Array::length(calls) == 0 {
         efn
       } else {
@@ -620,44 +685,44 @@ let fill_lambda_params: (String, Expr, Expr) -> Expr = (name, efn, body) -> {
   }
 }
 
-let rec elaborate_rw: (Expr) -> Expr = (e) -> {
+let rec elaborate_rw: (Expr, HeapInferCtx) -> Expr = (e, hctx) -> {
   match e {
     ELet(n, v, b) => {
-      let v2 = elaborate_rw(v)
-      let v3 = fill_lambda_params(n, v2, b)
-      ELet(n, v3, elaborate_rw(b))
+      let v2 = elaborate_rw(v, hctx)
+      let v3 = fill_lambda_params(n, v2, b, hctx)
+      ELet(n, v3, elaborate_rw(b, hctx))
     },
     ELetRec(n, v, b) => {
-      let v2 = elaborate_rw(v)
-      let v3 = fill_lambda_params(n, v2, b)
-      ELetRec(n, v3, elaborate_rw(b))
+      let v2 = elaborate_rw(v, hctx)
+      let v3 = fill_lambda_params(n, v2, b, hctx)
+      ELetRec(n, v3, elaborate_rw(b, hctx))
     },
-    ELetMut(n, v, b) => ELetMut(n, elaborate_rw(v), elaborate_rw(b)),
-    EAssign(n, v, c) => EAssign(n, elaborate_rw(v), elaborate_rw(c)),
-    EAssignOp(n, op, v, c) => EAssignOp(n, op, elaborate_rw(v), elaborate_rw(c)),
-    ESeq(a, b) => ESeq(elaborate_rw(a), elaborate_rw(b)),
-    EIf(c, t, el) => EIf(elaborate_rw(c), elaborate_rw(t), elaborate_rw(el)),
-    EWhile(c, b) => EWhile(elaborate_rw(c), elaborate_rw(b)),
-    EForIn(n, ix, it, b) => EForIn(n, ix, elaborate_rw(it), elaborate_rw(b)),
+    ELetMut(n, v, b) => ELetMut(n, elaborate_rw(v, hctx), elaborate_rw(b, hctx)),
+    EAssign(n, v, c) => EAssign(n, elaborate_rw(v, hctx), elaborate_rw(c, hctx)),
+    EAssignOp(n, op, v, c) => EAssignOp(n, op, elaborate_rw(v, hctx), elaborate_rw(c, hctx)),
+    ESeq(a, b) => ESeq(elaborate_rw(a, hctx), elaborate_rw(b, hctx)),
+    EIf(c, t, el) => EIf(elaborate_rw(c, hctx), elaborate_rw(t, hctx), elaborate_rw(el, hctx)),
+    EWhile(c, b) => EWhile(elaborate_rw(c, hctx), elaborate_rw(b, hctx)),
+    EForIn(n, ix, it, b) => EForIn(n, ix, elaborate_rw(it, hctx), elaborate_rw(b, hctx)),
     EFn(tps, bounds, params, ret, eff, fb) =>
-    EFn(tps, bounds, params, ret, eff, elaborate_rw(fb)),
+    EFn(tps, bounds, params, ret, eff, elaborate_rw(fb, hctx)),
     ECall(callee, args) => {
       let new_args = Array::slice(args, 0, 0)
       let mut i = 0
       while i < Array::length(args) {
-        Array::push(new_args, elaborate_rw(Array::get(args, i)))
+        Array::push(new_args, elaborate_rw(Array::get(args, i), hctx))
         i = i + 1
       }
-      ECall(elaborate_rw(callee), new_args)
+      ECall(elaborate_rw(callee, hctx), new_args)
     },
-    EBinOp(op, l, r) => EBinOp(op, elaborate_rw(l), elaborate_rw(r)),
-    EUnaryOp(op, o) => EUnaryOp(op, elaborate_rw(o)),
-    EDot(o, f) => EDot(elaborate_rw(o), f),
+    EBinOp(op, l, r) => EBinOp(op, elaborate_rw(l, hctx), elaborate_rw(r, hctx)),
+    EUnaryOp(op, o) => EUnaryOp(op, elaborate_rw(o, hctx)),
+    EDot(o, f) => EDot(elaborate_rw(o, hctx), f),
     ETuple(xs) => {
       let ys = Array::slice(xs, 0, 0)
       let mut i = 0
       while i < Array::length(xs) {
-        Array::push(ys, elaborate_rw(Array::get(xs, i)))
+        Array::push(ys, elaborate_rw(Array::get(xs, i), hctx))
         i = i + 1
       }
       ETuple(ys)
@@ -666,7 +731,7 @@ let rec elaborate_rw: (Expr) -> Expr = (e) -> {
       let ys = Array::slice(xs, 0, 0)
       let mut i = 0
       while i < Array::length(xs) {
-        Array::push(ys, elaborate_rw(Array::get(xs, i)))
+        Array::push(ys, elaborate_rw(Array::get(xs, i), hctx))
         i = i + 1
       }
       EArray(ys)
@@ -676,37 +741,37 @@ let rec elaborate_rw: (Expr) -> Expr = (e) -> {
       let mut i = 0
       while i < Array::length(arms) {
         let (p, ab) = Array::get(arms, i)
-        Array::push(new_arms, (p, elaborate_rw(ab)))
+        Array::push(new_arms, (p, elaborate_rw(ab, hctx)))
         i = i + 1
       }
-      EMatch(elaborate_rw(s), new_arms)
+      EMatch(elaborate_rw(s, hctx), new_arms)
     },
     EHandle(b, arms) => {
       let new_arms = Array::slice(arms, 0, 0)
       let mut i = 0
       while i < Array::length(arms) {
         let (p, ab) = Array::get(arms, i)
-        Array::push(new_arms, (p, elaborate_rw(ab)))
+        Array::push(new_arms, (p, elaborate_rw(ab, hctx)))
         i = i + 1
       }
-      EHandle(elaborate_rw(b), new_arms)
+      EHandle(elaborate_rw(b, hctx), new_arms)
     },
     ELoop(ps, b) => {
       let new_ps = Array::slice(ps, 0, 0)
       let mut i = 0
       while i < Array::length(ps) {
         let (pn, iv) = Array::get(ps, i)
-        Array::push(new_ps, (pn, elaborate_rw(iv)))
+        Array::push(new_ps, (pn, elaborate_rw(iv, hctx)))
         i = i + 1
       }
-      ELoop(new_ps, elaborate_rw(b))
+      ELoop(new_ps, elaborate_rw(b, hctx))
     },
     ERecord(fs) => {
       let new_fs = Array::slice(fs, 0, 0)
       let mut i = 0
       while i < Array::length(fs) {
         let (fn0, fv) = Array::get(fs, i)
-        Array::push(new_fs, (fn0, elaborate_rw(fv)))
+        Array::push(new_fs, (fn0, elaborate_rw(fv, hctx)))
         i = i + 1
       }
       ERecord(new_fs)
@@ -716,25 +781,25 @@ let rec elaborate_rw: (Expr) -> Expr = (e) -> {
       let mut i = 0
       while i < Array::length(fs) {
         let (fn0, fv) = Array::get(fs, i)
-        Array::push(new_fs, (fn0, elaborate_rw(fv)))
+        Array::push(new_fs, (fn0, elaborate_rw(fv, hctx)))
         i = i + 1
       }
       EMap(new_fs)
     },
-    ELabeledArg(l, k, x) => ELabeledArg(l, k, elaborate_rw(x)),
-    EThrow(x) => EThrow(elaborate_rw(x)),
-    EReturn(x) => EReturn(elaborate_rw(x)),
-    ESpread(x) => ESpread(elaborate_rw(x)),
+    ELabeledArg(l, k, x) => ELabeledArg(l, k, elaborate_rw(x, hctx)),
+    EThrow(x) => EThrow(elaborate_rw(x, hctx)),
+    EReturn(x) => EReturn(elaborate_rw(x, hctx)),
+    ESpread(x) => ESpread(elaborate_rw(x, hctx)),
     EBreak(o) =>
     match o {
-      Some(x) => EBreak(Some(elaborate_rw(x))),
+      Some(x) => EBreak(Some(elaborate_rw(x, hctx))),
       None => EBreak(None)
     },
     EContinue(xs) => {
       let ys = Array::slice(xs, 0, 0)
       let mut i = 0
       while i < Array::length(xs) {
-        Array::push(ys, elaborate_rw(Array::get(xs, i)))
+        Array::push(ys, elaborate_rw(Array::get(xs, i), hctx))
         i = i + 1
       }
       EContinue(ys)
@@ -1326,15 +1391,45 @@ export let build_perceus_plan: (Expr) -> Array[PerceusAction] = (body) -> {
   ctx.actions
 }
 
-// RC-only AST pass: fill unannotated lambda params inferred heap from call sites.
+let collect_heap_ret_fns: (Array[Stmt]) -> Array[String] = (stmts) -> {
+  let out: Array[String] = [
+  ]
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, fname, oty, _) =>
+      match oty {
+        Some(ty) =>
+        match ty {
+          TyFn(_, ret, _) =>
+          if type_expr_is_heap(Some(ret)) {
+            Array::push(out, fname)
+          } else {
+            ()
+          },
+          _ => ()
+        },
+        None => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 export let elaborate_heap_params: (Array[Stmt]) -> Array[Stmt] = (stmts) -> {
+  let hctx = HeapInferCtx::{
+    ctors: collect_ctor_names(stmts),
+    heap_fns: collect_heap_ret_fns(stmts),
+  }
   let out = Array::slice(stmts, 0, 0)
   let mut i = 0
   while i < Array::length(stmts) {
     let s = Array::get(stmts, i)
     let s2 = match s {
-      SLet(a, b, n, t, e) => SLet(a, b, n, t, elaborate_rw(e)),
-      SExpr(e) => SExpr(elaborate_rw(e)),
+      SLet(a, b, n, t, e) => SLet(a, b, n, t, elaborate_rw(e, hctx)),
+      SExpr(e) => SExpr(elaborate_rw(e, hctx)),
       _ => s
     }
     Array::push(out, s2)

@@ -185,6 +185,13 @@ reclaim_case escape_assign_proj '"let main: () -> Int = () -> {\n  let mut keep 
 # heap and the callee drops it.
 reclaim_case unused_param_callsite '"let main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let f = (p) -> { 42 }\n    let t = (i, i + 1)\n    s = s + f(t)\n    i = i + 1\n  }\n  s\n}"'
 
+# ADR-0055 Stage 4 (opaque args): the call-site heap inference also classifies a
+# constructor call carrying a payload (`f(Wrap((i, i+1)))`) and a call to a
+# heap-returning top-level function (`let r = mk(i); f(r)`) as a follow-able heap
+# arg, so an otherwise-unprovable unannotated param is dropped.
+reclaim_case opaque_ctor_arg '"enum Box { Wrap((Int, Int)); Empty }\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let f = (p) -> { 42 }\n    s = s + f(Wrap((i, i + 1)))\n    i = i + 1\n  }\n  s\n}"'
+reclaim_case opaque_fncall_arg '"let mk: (Int) -> (Int, Int) = (x) -> {\n  (x, x + 1)\n}\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let f = (p) -> { 42 }\n    let r = mk(i)\n    s = s + f(r)\n    i = i + 1\n  }\n  s\n}"'
+
 # KNOWN PRE-EXISTING GAP (not a regression): a *nested* tuple built in a loop
 # (`let t = ((i, i+1), (i+2, i+3))`) fails to compile under RC at BOTH HEAD and
 # the Stage-1 baseline — so it is excluded from the reclamation set rather than
