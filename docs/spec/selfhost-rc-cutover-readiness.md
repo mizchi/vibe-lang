@@ -74,3 +74,37 @@ on realistic mixed-feature code, alongside the existing reclaim gate. The residu
 deep-projection opaque args, container-outlives-scope) do not appear in this
 corpus; the remaining cutover work is the mechanical default→RC switch itself
 (#493 C/F) plus any wider-corpus measurement.
+
+## Whole-compiler RC compile
+
+`compile_wasi_rc` applied to the **entire merged compiler source**
+(`selfhost_cli_adapter_merged_source`, entry `cli_main`) runs to completion with
+no error — i.e. **no RC codegen gap across any construct the compiler itself
+uses**. (The output is multi-hundred-KB; the `vibe test` probe hits a wasm
+instance memory ceiling extracting it, so full-scale *validity* is verified
+through the real gate path below rather than a probe.)
+
+## Cutover toggle: `VIBE_RC=1`
+
+The cutover-enabling plumbing (not the default flip itself): the selfhost compile
+entries route through the RC codegen when `VIBE_RC=1` (env; unset → the bump
+default is unchanged). `compile_source_wasi_only_rc`
+(`entry/source_compile/wasi_only/preprocess_compile.vibe`) mirrors
+`compile_source_wasi_only` on `compile_wasi_module_rc_impl`; `cli_main`
+(`selfhost_cli_adapter.vibe`) and `selfbuild_cli_args_entry` (`index.vibe` — the
+entry the selfbuild/bootstrap/e2e gates use) consult `VIBE_RC`.
+
+End-to-end verified: the stage1 wasm-compiled selfhost compiler, invoked via
+`selfbuild_cli_args_entry` with `VIBE_RC=1`, compiled a real RC-relevant program
+(enum `Option` with a nullary variant in an `if`, a closure, tuples) to **valid
+wasm that runs to the same result as the default path** (17 == 17). So the gates
+can now be run under RC for the definitive full-scale signal:
+
+```bash
+# whole selfhost compiler + every gate input compiled under RC:
+VIBE_RC=1 bash scripts/test_selfhost_cli_adapter.sh
+VIBE_RC=1 bash scripts/test_selfhost_wasi_selfbuild.sh   # (heavier) bootstrap under RC
+```
+
+The actual #493 cutover is then flipping the default (unset `VIBE_RC` → RC) once
+the RC bootstrap gate is green and the throughput tradeoff is signed off.
