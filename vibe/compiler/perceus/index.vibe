@@ -9,7 +9,7 @@ import .. / core / polyfill.vibe {
 }
 
 import .. / core {
-  Expr, Pat, TypeExpr
+  Expr, Pat, Stmt, TypeExpr
 }
 
 //# Types
@@ -205,6 +205,178 @@ let pe_scope_end: (PCtx, Int, String) -> Int = (ctx, id, name) -> {
   0
 }
 
+let rec analyze_calls: (String, Expr, Array[Array[Expr]], Array[Bool]) -> Int = (name, e, calls, esc) -> {
+  match e {
+    EIdent(n) => {
+      if n == name {
+        Array::set(esc, 0, true)
+      } else {
+        ()
+      }
+      0
+    },
+    ECall(callee, args) => {
+      let is_self = match callee {
+        EIdent(cn) => cn == name,
+        _ => false
+      }
+      if is_self {
+        Array::push(calls, args)
+      } else {
+        let _ = analyze_calls(name, callee, calls, esc)
+        ()
+      }
+      let mut i = 0
+      while i < Array::length(args) {
+        analyze_calls(name, Array::get(args, i), calls, esc)
+        i = i + 1
+      }
+      0
+    },
+    EDot(obj, _) => analyze_calls(name, obj, calls, esc),
+    ELet(_, v, b) => {
+      analyze_calls(name, v, calls, esc)
+      analyze_calls(name, b, calls, esc)
+      0
+    },
+    ELetRec(_, v, b) => {
+      analyze_calls(name, v, calls, esc)
+      analyze_calls(name, b, calls, esc)
+      0
+    },
+    ELetMut(_, v, b) => {
+      analyze_calls(name, v, calls, esc)
+      analyze_calls(name, b, calls, esc)
+      0
+    },
+    EAssign(_, v, c) => {
+      analyze_calls(name, v, calls, esc)
+      analyze_calls(name, c, calls, esc)
+      0
+    },
+    EAssignOp(_, _, v, c) => {
+      analyze_calls(name, v, calls, esc)
+      analyze_calls(name, c, calls, esc)
+      0
+    },
+    ESeq(a, b) => {
+      analyze_calls(name, a, calls, esc)
+      analyze_calls(name, b, calls, esc)
+      0
+    },
+    EIf(c, t, el) => {
+      analyze_calls(name, c, calls, esc)
+      analyze_calls(name, t, calls, esc)
+      analyze_calls(name, el, calls, esc)
+      0
+    },
+    EWhile(c, b) => {
+      analyze_calls(name, c, calls, esc)
+      analyze_calls(name, b, calls, esc)
+      0
+    },
+    EForIn(_, _, it, b) => {
+      analyze_calls(name, it, calls, esc)
+      analyze_calls(name, b, calls, esc)
+      0
+    },
+    EBinOp(_, l, r) => {
+      analyze_calls(name, l, calls, esc)
+      analyze_calls(name, r, calls, esc)
+      0
+    },
+    EUnaryOp(_, o) => analyze_calls(name, o, calls, esc),
+    EFn(_, _, _, _, _, b) => analyze_calls(name, b, calls, esc),
+    ETuple(xs) => {
+      let mut i = 0
+      while i < Array::length(xs) {
+        analyze_calls(name, Array::get(xs, i), calls, esc)
+        i = i + 1
+      }
+      0
+    },
+    EArray(xs) => {
+      let mut i = 0
+      while i < Array::length(xs) {
+        analyze_calls(name, Array::get(xs, i), calls, esc)
+        i = i + 1
+      }
+      0
+    },
+    EMatch(s, arms) => {
+      analyze_calls(name, s, calls, esc)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, ab) = Array::get(arms, i)
+        analyze_calls(name, ab, calls, esc)
+        i = i + 1
+      }
+      0
+    },
+    EHandle(b, arms) => {
+      analyze_calls(name, b, calls, esc)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, ab) = Array::get(arms, i)
+        analyze_calls(name, ab, calls, esc)
+        i = i + 1
+      }
+      0
+    },
+    ELoop(ps, b) => {
+      let mut i = 0
+      while i < Array::length(ps) {
+        let (_, iv) = Array::get(ps, i)
+        analyze_calls(name, iv, calls, esc)
+        i = i + 1
+      }
+      analyze_calls(name, b, calls, esc)
+      0
+    },
+    ERecord(fs) => {
+      let mut i = 0
+      while i < Array::length(fs) {
+        let (_, fv) = Array::get(fs, i)
+        analyze_calls(name, fv, calls, esc)
+        i = i + 1
+      }
+      0
+    },
+    EMap(fs) => {
+      let mut i = 0
+      while i < Array::length(fs) {
+        let (_, fv) = Array::get(fs, i)
+        analyze_calls(name, fv, calls, esc)
+        i = i + 1
+      }
+      0
+    },
+    ELabeledArg(_, _, x) => analyze_calls(name, x, calls, esc),
+    EThrow(x) => analyze_calls(name, x, calls, esc),
+    EReturn(x) => analyze_calls(name, x, calls, esc),
+    ESpread(x) => analyze_calls(name, x, calls, esc),
+    EBreak(o) => match o {
+      Some(x) => analyze_calls(name, x, calls, esc),
+      None => 0
+    }
+    ,
+    EContinue(xs) => {
+      let mut i = 0
+      while i < Array::length(xs) {
+        analyze_calls(name, Array::get(xs, i), calls, esc)
+        i = i + 1
+      }
+      0
+    },
+    EInt(_) => 0,
+    EFloat(_) => 0,
+    EString(_) => 0,
+    EBool(_) => 0,
+    EStringInterp(_) => 0,
+    EUnit => 0
+  }
+}
+
 let next_seq_name: (PCtx) -> String = (ctx) -> {
   let nm = "__seq" + __to_string(ctx.seq_id)
   ctx.seq_id = ctx.seq_id + 1
@@ -324,6 +496,12 @@ export let type_expr_is_heap: (Option[TypeExpr]) -> Bool = (ot) -> {
       }
     }
   }
+}
+
+let inferred_heap_type: () -> TypeExpr = () -> {
+  TyTuple(Array::slice([
+    TyUnit
+  ], 0, 0))
 }
 
 let is_borrow_arg0_call: (String) -> Bool = (f) -> {
@@ -901,6 +1079,294 @@ export let build_perceus_plan: (Expr) -> Array[PerceusAction] = (body) -> {
   ctx.seq_id = 0
   pc_emit(ctx, empty, body)
   ctx.actions
+}
+
+let rec collect_heap_let_names: (Expr, Array[String]) -> Int = (e, out) -> {
+  match e {
+    ELet(n, v, b) => {
+      let is_heap_lit = match v {
+        ETuple(_) => true,
+        EArray(_) => true,
+        ERecord(_) => true,
+        _ => false
+      }
+      if is_heap_lit {
+        Array::push(out, n)
+      } else {
+        ()
+      }
+      collect_heap_let_names(v, out)
+      collect_heap_let_names(b, out)
+      0
+    },
+    ELetMut(_, v, b) => {
+      collect_heap_let_names(v, out)
+      collect_heap_let_names(b, out)
+      0
+    },
+    ELetRec(_, v, b) => {
+      collect_heap_let_names(v, out)
+      collect_heap_let_names(b, out)
+      0
+    },
+    ESeq(a, b) => {
+      collect_heap_let_names(a, out)
+      collect_heap_let_names(b, out)
+      0
+    },
+    EIf(c, t, el) => {
+      collect_heap_let_names(c, out)
+      collect_heap_let_names(t, out)
+      collect_heap_let_names(el, out)
+      0
+    },
+    EWhile(c, b) => {
+      collect_heap_let_names(c, out)
+      collect_heap_let_names(b, out)
+      0
+    },
+    EForIn(_, _, it, b) => {
+      collect_heap_let_names(it, out)
+      collect_heap_let_names(b, out)
+      0
+    },
+    EMatch(s, arms) => {
+      collect_heap_let_names(s, out)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, ab) = Array::get(arms, i)
+        collect_heap_let_names(ab, out)
+        i = i + 1
+      }
+      0
+    },
+    _ => 0
+  }
+}
+
+let array_contains_str_local: (Array[String], String) -> Bool = (arr, s) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arr) {
+    if Array::get(arr, i) == s {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+let arg_is_heap: (Expr, Array[String]) -> Bool = (arg, heap_names) -> {
+  match arg {
+    ETuple(_) => true,
+    EArray(_) => true,
+    ERecord(_) => true,
+    EIdent(n) => array_contains_str_local(heap_names, n),
+    _ => false
+  }
+}
+
+let all_calls_heap_at: (Int, Array[Array[Expr]], Array[String]) -> Bool = (idx, calls, heap_names) -> {
+  let mut ci = 0
+  let mut all_heap = true
+  while ci < Array::length(calls) {
+    let args = Array::get(calls, ci)
+    if idx >= Array::length(args) {
+      all_heap = false
+    } else if !arg_is_heap(Array::get(args, idx), heap_names) {
+      all_heap = false
+    } else {
+      ()
+    }
+    ci = ci + 1
+  }
+  all_heap
+}
+
+let fill_lambda_params: (String, Expr, Expr) -> Expr = (name, efn, body) -> {
+  match efn {
+    EFn(tps, bounds, params, ret, eff, fnbody) => {
+      let calls: Array[Array[Expr]] = [
+      ]
+      let esc = [
+        false
+      ]
+      analyze_calls(name, body, calls, esc)
+      if Array::get(esc, 0) || Array::length(calls) == 0 {
+        efn
+      } else {
+        let heap_names: Array[String] = [
+        ]
+        collect_heap_let_names(body, heap_names)
+        let new_params = Array::slice(params, 0, 0)
+        let mut pi = 0
+        while pi < Array::length(params) {
+          let (pname, pty) = Array::get(params, pi)
+          let filled = match pty {
+            Some(_) => (pname, pty),
+            None =>
+            if all_calls_heap_at(pi, calls, heap_names) {
+              (pname, Some(inferred_heap_type()))
+            } else {
+              (pname, pty)
+            }
+          }
+          Array::push(new_params, filled)
+          pi = pi + 1
+        }
+        EFn(tps, bounds, new_params, ret, eff, fnbody)
+      }
+    },
+    _ => efn
+  }
+}
+
+let rec elaborate_rw: (Expr) -> Expr = (e) -> {
+  match e {
+    ELet(n, v, b) => {
+      let v2 = elaborate_rw(v)
+      let v3 = fill_lambda_params(n, v2, b)
+      ELet(n, v3, elaborate_rw(b))
+    },
+    ELetRec(n, v, b) => {
+      let v2 = elaborate_rw(v)
+      let v3 = fill_lambda_params(n, v2, b)
+      ELetRec(n, v3, elaborate_rw(b))
+    },
+    ELetMut(n, v, b) => ELetMut(n, elaborate_rw(v), elaborate_rw(b)),
+    EAssign(n, v, c) => EAssign(n, elaborate_rw(v), elaborate_rw(c)),
+    EAssignOp(n, op, v, c) => EAssignOp(n, op, elaborate_rw(v), elaborate_rw(c)),
+    ESeq(a, b) => ESeq(elaborate_rw(a), elaborate_rw(b)),
+    EIf(c, t, el) => EIf(elaborate_rw(c), elaborate_rw(t), elaborate_rw(el)),
+    EWhile(c, b) => EWhile(elaborate_rw(c), elaborate_rw(b)),
+    EForIn(n, ix, it, b) => EForIn(n, ix, elaborate_rw(it), elaborate_rw(b)),
+    EFn(tps, bounds, params, ret, eff, fb) =>
+    EFn(tps, bounds, params, ret, eff, elaborate_rw(fb)),
+    ECall(callee, args) => {
+      let new_args = Array::slice(args, 0, 0)
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(new_args, elaborate_rw(Array::get(args, i)))
+        i = i + 1
+      }
+      ECall(elaborate_rw(callee), new_args)
+    },
+    EBinOp(op, l, r) => EBinOp(op, elaborate_rw(l), elaborate_rw(r)),
+    EUnaryOp(op, o) => EUnaryOp(op, elaborate_rw(o)),
+    EDot(o, f) => EDot(elaborate_rw(o), f),
+    ETuple(xs) => {
+      let ys = Array::slice(xs, 0, 0)
+      let mut i = 0
+      while i < Array::length(xs) {
+        Array::push(ys, elaborate_rw(Array::get(xs, i)))
+        i = i + 1
+      }
+      ETuple(ys)
+    },
+    EArray(xs) => {
+      let ys = Array::slice(xs, 0, 0)
+      let mut i = 0
+      while i < Array::length(xs) {
+        Array::push(ys, elaborate_rw(Array::get(xs, i)))
+        i = i + 1
+      }
+      EArray(ys)
+    },
+    EMatch(s, arms) => {
+      let new_arms = Array::slice(arms, 0, 0)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, ab) = Array::get(arms, i)
+        Array::push(new_arms, (p, elaborate_rw(ab)))
+        i = i + 1
+      }
+      EMatch(elaborate_rw(s), new_arms)
+    },
+    EHandle(b, arms) => {
+      let new_arms = Array::slice(arms, 0, 0)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, ab) = Array::get(arms, i)
+        Array::push(new_arms, (p, elaborate_rw(ab)))
+        i = i + 1
+      }
+      EHandle(elaborate_rw(b), new_arms)
+    },
+    ELoop(ps, b) => {
+      let new_ps = Array::slice(ps, 0, 0)
+      let mut i = 0
+      while i < Array::length(ps) {
+        let (pn, iv) = Array::get(ps, i)
+        Array::push(new_ps, (pn, elaborate_rw(iv)))
+        i = i + 1
+      }
+      ELoop(new_ps, elaborate_rw(b))
+    },
+    ERecord(fs) => {
+      let new_fs = Array::slice(fs, 0, 0)
+      let mut i = 0
+      while i < Array::length(fs) {
+        let (fn0, fv) = Array::get(fs, i)
+        Array::push(new_fs, (fn0, elaborate_rw(fv)))
+        i = i + 1
+      }
+      ERecord(new_fs)
+    },
+    EMap(fs) => {
+      let new_fs = Array::slice(fs, 0, 0)
+      let mut i = 0
+      while i < Array::length(fs) {
+        let (fn0, fv) = Array::get(fs, i)
+        Array::push(new_fs, (fn0, elaborate_rw(fv)))
+        i = i + 1
+      }
+      EMap(new_fs)
+    },
+    ELabeledArg(l, k, x) => ELabeledArg(l, k, elaborate_rw(x)),
+    EThrow(x) => EThrow(elaborate_rw(x)),
+    EReturn(x) => EReturn(elaborate_rw(x)),
+    ESpread(x) => ESpread(elaborate_rw(x)),
+    EBreak(o) =>
+    match o {
+      Some(x) => EBreak(Some(elaborate_rw(x))),
+      None => EBreak(None)
+    },
+    EContinue(xs) => {
+      let ys = Array::slice(xs, 0, 0)
+      let mut i = 0
+      while i < Array::length(xs) {
+        Array::push(ys, elaborate_rw(Array::get(xs, i)))
+        i = i + 1
+      }
+      EContinue(ys)
+    },
+    EInt(_) => e,
+    EFloat(_) => e,
+    EString(_) => e,
+    EBool(_) => e,
+    EIdent(_) => e,
+    EStringInterp(_) => e,
+    EUnit => e
+  }
+}
+
+// RC-only AST pass: fill unannotated lambda params inferred heap from call sites.
+export let elaborate_heap_params: (Array[Stmt]) -> Array[Stmt] = (stmts) -> {
+  let out = Array::slice(stmts, 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let s = Array::get(stmts, i)
+    let s2 = match s {
+      SLet(a, b, n, t, e) => SLet(a, b, n, t, elaborate_rw(e)),
+      SExpr(e) => SExpr(elaborate_rw(e)),
+      _ => s
+    }
+    Array::push(out, s2)
+    i = i + 1
+  }
+  out
 }
 
 let rec expr_projects_or_matches: (String, Expr) -> Bool = (name, e) -> {

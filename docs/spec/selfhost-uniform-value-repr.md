@@ -550,14 +550,30 @@ arithmetic / comparison / bitop / shift / float / nested-data case under
    plan and codegen share one decision. Pinned by `nested_closure_param` /
    `nested_closure_match` (reclaim, 0 B/iter) and a heap-e2e parity case.
 
-   **Still remaining (smaller, safe):** an unannotated owned heap param that is
-   **unused or used only by borrows** (e.g. `(p) -> { 42 }`) cannot be *proven*
-   heap from the body — and is *irreducible without type information*: an unused
-   param could be a string/bytes fat pointer, which the recursive `__rc_drop`
-   would misread, so dropping it unconditionally is unsound. (A param consumed by
-   an owning call — `(p) -> { g(p) }` — already balances: the call moves it, no
-   drop needed.) Plus the reassign-reads-target carve-out above. Closing these
-   needs real param types (escape/type propagation), not a local heuristic.
+   **Local heap-type inference from call sites (landed).** An unannotated param
+   that is **unused or borrow-only** (e.g. `(p) -> { 42 }`) cannot be proven heap
+   from the body, so it leaked the caller-transferred value. The RC-only AST pass
+   `elaborate_heap_params` (`perceus/index.vibe`, run at the head of
+   `compile_wasi_module_rc_impl`) recovers its heap-ness from the **call sites**:
+   for a locally-bound lambda that **does not escape** (only ever appears as a
+   call callee), if **every** call passes a provably follow-able-heap argument (a
+   tuple/array/record literal, or a `let` bound to one) at a position, that param
+   is filled with a synthetic heap type so the existing classification drops it.
+   **Sound by construction:** the call/escape scan is exhaustive over the AST, a
+   param is filled only when *all* visible call sites agree, and a string/scalar/
+   closure arg is never classified heap (so `__rc_drop` never misreads one) —
+   under-filling is a retained safe leak, never a wrong drop. Pinned by
+   `unused_param_callsite` (reclaim, 0 B/iter) and two heap-e2e cases (unused
+   param dropped; string-arg param *not* mis-inferred). (A param consumed by an
+   owning call — `(p) -> { g(p) }` — already balanced without this: the call
+   moves it.)
+
+   **Still remaining (smaller, safe):** a lambda that **escapes** (returned or
+   stored, so not all call sites are visible) or is called with an arg whose
+   heap-ness is itself opaque (a call result, a deep projection) keeps its safe
+   leak; plus container-outlives-scope stores and the reassign-reads-target
+   carve-out. These need richer flow (interprocedural return-type heap-ness,
+   escape sets), an extension of the same local inference.
 5. **Stage 5 — verification & throughput. ◐ MEASURED.** The RC e2e gate (47/47,
    default vs RC identical on wasmtime) is the correctness signal;
    `scripts/bench_selfhost_rc.{sh,mjs}` measures the payoff: each benchmark
