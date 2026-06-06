@@ -31,8 +31,8 @@ trap cleanup EXIT
 prog_eval='let lit = (v) -> { Lit(v) }\n  let mut s = 0\n  let mut i = 0\n  while i < LIM {\n    let e = Add(lit(i), lit(i + 1))\n    s = s + match e {\n      Add(a, b) => (match a { Lit(x) => x, Add(_, _) => 0 }) + (match b { Lit(y) => y, Add(_, _) => 0 }),\n      Lit(x) => x\n    }\n    i = i + 1\n  }\n  s'
 prog_eval_pre='enum Expr { Lit(Int); Add(Expr, Expr) }\n'
 
-prog_record='struct Node { lo: (Int, Int); hi: (Int, Int) }\n'
-prog_record_body='let mut s = 0\n  let mut i = 0\n  while i < LIM {\n    let n = Node::{ lo: (i, i + 1), hi: (i + 2, i + 3) }\n    s = s + n.lo.0 + n.hi.1\n    i = i + 1\n  }\n  s'
+prog_record_pre='struct Node { lo: (Int, Int); hi: (Int, Int) }\n'
+prog_record='let mut s = 0\n  let mut i = 0\n  while i < LIM {\n    let n = Node::{ lo: (i, i + 1), hi: (i + 2, i + 3) }\n    s = s + n.lo.0 + n.hi.1\n    i = i + 1\n  }\n  s'
 
 prog_hof_pre=''
 prog_hof='let apply = (f, x) -> { f(x) }\n  let mut s = 0\n  let mut i = 0\n  while i < LIM {\n    let t = (i, i + 1)\n    let g = (p) -> { p.0 + p.1 }\n    s = s + apply(g, t)\n    i = i + 1\n  }\n  s'
