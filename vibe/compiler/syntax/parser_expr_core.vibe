@@ -161,18 +161,15 @@ let has_placeholder_args: (Array[Expr]) -> Bool = (args) -> {
 
 let rec parse_call_args_rest: (Array[Token], Int, ArrayBuilder[Expr], (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Array[Expr], Int) with { Error } = (tokens, pos, b, parse_recur) -> {
   match peek(tokens, pos) {
-    TComma => {
-      // Allow a trailing comma before the closing `)` in call argument
-      // lists (`f(a, b,)`).
-      match peek(tokens, pos + 1) {
-        TRParen => (ArrayBuilder::freeze(b), pos + 1),
-        _ => {
-          let (e, next) = parse_call_arg(tokens, pos + 1, parse_recur)
-          ArrayBuilder::push(b, e)
-          parse_call_args_rest(tokens, next, b, parse_recur)
-        }
+    TComma => match peek(tokens, pos + 1) {
+      TRParen => (ArrayBuilder::freeze(b), pos + 1),
+      _ => {
+        let (e, next) = parse_call_arg(tokens, pos + 1, parse_recur)
+        ArrayBuilder::push(b, e)
+        parse_call_args_rest(tokens, next, b, parse_recur)
       }
-    },
+    }
+    ,
     _ => (ArrayBuilder::freeze(b), pos)
   }
 }
@@ -301,6 +298,22 @@ let rec parse_postfix: (Array[Token], Int, Expr, (Array[Token], Int, Int) -> (Ex
   match peek(tokens, pos) {
     TLParen => match expr {
       ECall(_, _) => (expr, pos),
+      EArray(_) => (expr, pos),
+      ETuple(_) => (expr, pos),
+      ERecord(_) => (expr, pos),
+      EMap(_) => (expr, pos),
+      EInt(_) => (expr, pos),
+      EFloat(_) => (expr, pos),
+      EString(_) => (expr, pos),
+      EStringInterp(_) => (expr, pos),
+      EBool(_) => (expr, pos),
+      EUnit => (expr, pos),
+      EWhile(_, _) => (expr, pos),
+      EIf(_, _, _) => (expr, pos),
+      EMatch(_, _) => (expr, pos),
+      ELoop(_, _) => (expr, pos),
+      EForIn(_, _, _, _) => (expr, pos),
+      EHandle(_, _) => (expr, pos),
       _ => match peek(tokens, pos + 1) {
         TRParen => parse_postfix(tokens, pos + 2, ECall(expr, empty_exprs()), parse_recur),
         _ => {
@@ -443,9 +456,6 @@ export let parse_infix_no_is: (Array[Token], Int, Int, Int, (Array[Token], Int, 
 
 export let parse_infix: (Array[Token], Int, Int, Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, min_prec, expr_start, parse_recur) -> {
   let (expr, en) = parse_infix_no_is(tokens, pos, min_prec, expr_start, parse_recur)
-  // ADR-0023: `expr is pattern` desugars to `match expr { pattern => true, _ => false }`.
-  // Accept both `TIs` (now a reserved keyword) and the legacy `TIdent("is")`
-  // shape so older bundles continue to lex.
   match peek(tokens, en) {
     TIs => {
       let (pat, pn) = parse_pattern(tokens, en + 1)
