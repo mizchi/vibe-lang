@@ -559,21 +559,32 @@ arithmetic / comparison / bitop / shift / float / nested-data case under
    call callee), if **every** call passes a provably follow-able-heap argument (a
    tuple/array/record literal, or a `let` bound to one) at a position, that param
    is filled with a synthetic heap type so the existing classification drops it.
-   **Sound by construction:** the call/escape scan is exhaustive over the AST, a
-   param is filled only when *all* visible call sites agree, and a string/scalar/
-   closure arg is never classified heap (so `__rc_drop` never misreads one) —
-   under-filling is a retained safe leak, never a wrong drop. Pinned by
-   `unused_param_callsite` (reclaim, 0 B/iter) and two heap-e2e cases (unused
-   param dropped; string-arg param *not* mis-inferred). (A param consumed by an
+   The arg-heap test is **lexically scoped** — `analyze_calls` threads a per-scope
+   env so each call's args resolve against the bindings in scope *there*, and a
+   same-named binding in a sibling branch can never leak in. Heap-ness of an
+   **opaque arg** is also recovered interprocedurally: a constructor call carrying
+   a payload (`Wrap((..))` → a headered block) and a call to a top-level function
+   whose *annotated* return type is heap (`let mk: (..) -> (Int,Int)`) both count
+   (`HeapInferCtx` collects ctor names from enum/suberror decls and heap-returning
+   fn names from signatures). **Sound by construction:** the call/escape scan is
+   exhaustive over the AST, a param is filled only when *all* visible call sites
+   agree, and a string/scalar/closure/nullary-ctor arg is never classified heap
+   (so `__rc_drop` never misreads one) — under-filling is a retained safe leak,
+   never a wrong drop. Pinned by `unused_param_callsite` / `opaque_ctor_arg` /
+   `opaque_fncall_arg` (reclaim, 0 B/iter) and heap-e2e cases (unused param
+   dropped from a tuple/ctor/heap-call arg; string-arg, nullary-ctor, and
+   shadowed-string-branch params *not* mis-inferred). (A param consumed by an
    owning call — `(p) -> { g(p) }` — already balanced without this: the call
    moves it.)
 
    **Still remaining (smaller, safe):** a lambda that **escapes** (returned or
-   stored, so not all call sites are visible) or is called with an arg whose
-   heap-ness is itself opaque (a call result, a deep projection) keeps its safe
-   leak; plus container-outlives-scope stores and the reassign-reads-target
-   carve-out. These need richer flow (interprocedural return-type heap-ness,
-   escape sets), an extension of the same local inference.
+   stored, so not all call sites are visible — e.g. `let f = mk(); f(t)`, where
+   the lambda is not `let`-bound where it is called) keeps its safe leak; so do
+   args whose heap-ness is opaque *and* not a ctor/heap-return call (a deep
+   projection, a borrow-returning builtin), container-outlives-scope stores, and
+   the reassign-reads-target carve-out. Closing the escape case needs
+   whole-program points-to (aggregating call sites across aliases); the others
+   need field/element-type heap-ness — both larger than this local pass.
 5. **Stage 5 — verification & throughput. ◐ MEASURED.** The RC e2e gate (47/47,
    default vs RC identical on wasmtime) is the correctness signal;
    `scripts/bench_selfhost_rc.{sh,mjs}` measures the payoff: each benchmark
