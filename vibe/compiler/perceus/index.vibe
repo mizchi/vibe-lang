@@ -282,7 +282,7 @@ let is_heap_literal: (Expr) -> Bool = (e) -> {
   }
 }
 
-let is_heap_value: (Expr, HeapInferCtx) -> Bool = (e, hctx) -> {
+let is_heap_value: (Expr, Map[String, Bool], HeapInferCtx) -> Bool = (e, env, hctx) -> {
   if is_heap_literal(e) {
     true
   } else {
@@ -290,8 +290,12 @@ let is_heap_value: (Expr, HeapInferCtx) -> Bool = (e, hctx) -> {
       ECall(callee, args) =>
       match callee {
         EIdent(c) =>
-        (Array::length(args) > 0 && name_in(hctx.ctors, c)) ||
-        name_in(hctx.heap_fns, c),
+        if Map::has_key(env, c) {
+          false
+        } else {
+          (Array::length(args) > 0 && name_in(hctx.ctors, c)) ||
+          name_in(hctx.heap_fns, c)
+        },
         _ => false
       },
       _ => false
@@ -300,7 +304,7 @@ let is_heap_value: (Expr, HeapInferCtx) -> Bool = (e, hctx) -> {
 }
 
 let arg_class: (Expr, Map[String, Bool], HeapInferCtx) -> Bool = (arg, env, hctx) -> {
-  if is_heap_value(arg, hctx) {
+  if is_heap_value(arg, env, hctx) {
     true
   } else {
     match arg {
@@ -352,7 +356,7 @@ let rec analyze_calls: (String, Expr, Map[String, Bool], Array[Array[Bool]], Arr
     EDot(obj, _) => analyze_calls(name, obj, env, calls, esc, hctx),
     ELet(n, v, b) => {
       analyze_calls(name, v, env, calls, esc, hctx)
-      analyze_calls(name, b, Map::set(env, n, is_heap_value(v, hctx)), calls, esc, hctx)
+      analyze_calls(name, b, Map::set(env, n, is_heap_value(v, env, hctx)), calls, esc, hctx)
       0
     },
     ELetRec(n, v, b) => {
