@@ -177,6 +177,14 @@ reclaim_case nested_closure_match '"enum Box { Wrap((Int, Int)); Empty }\nlet ma
 # assignment gives keep its own reference; its reassign/scope-end drop balances.
 reclaim_case escape_assign_proj '"let main: () -> Int = () -> {\n  let mut keep = (0, 0)\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let t = (i, i + 1)\n    let box = (t, i)\n    keep = box.0\n    i = i + 1\n  }\n  keep.0\n}"'
 
+# ADR-0055 Stage 4 (local heap-type inference): an UNANNOTATED nested-closure
+# param that is unused / borrow-only in its body cannot be proven heap from the
+# body, so it used to leak the caller-transferred value (32 B/iter). The
+# elaborate_heap_params pass infers it from the CALL SITES: the non-escaping
+# local lambda is only ever called with a follow-able-heap arg, so its param is
+# heap and the callee drops it.
+reclaim_case unused_param_callsite '"let main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let f = (p) -> { 42 }\n    let t = (i, i + 1)\n    s = s + f(t)\n    i = i + 1\n  }\n  s\n}"'
+
 # KNOWN PRE-EXISTING GAP (not a regression): a *nested* tuple built in a loop
 # (`let t = ((i, i+1), (i+2, i+3))`) fails to compile under RC at BOTH HEAD and
 # the Stage-1 baseline — so it is excluded from the reclamation set rather than
