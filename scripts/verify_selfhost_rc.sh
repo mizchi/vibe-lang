@@ -192,6 +192,12 @@ reclaim_case unused_param_callsite '"let main: () -> Int = () -> {\n  let mut s 
 reclaim_case opaque_ctor_arg '"enum Box { Wrap((Int, Int)); Empty }\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let f = (p) -> { 42 }\n    s = s + f(Wrap((i, i + 1)))\n    i = i + 1\n  }\n  s\n}"'
 reclaim_case opaque_fncall_arg '"let mk: (Int) -> (Int, Int) = (x) -> {\n  (x, x + 1)\n}\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let f = (p) -> { 42 }\n    let r = mk(i)\n    s = s + f(r)\n    i = i + 1\n  }\n  s\n}"'
 
+# ADR-0055 cutover: a nullary enum ctor (`None`/`Nil`/`Empty`) is now a headered
+# RC block (alloc via __rc_alloc, drop-class 1, 0 fields), so `let o = Non` is
+# classified heap and reclaimed at scope end. Was an 8 B/iter leak (unheadered
+# bump form, outside RC reclaim) — the last cutover-readiness blocker.
+reclaim_case nullary_ctor '"enum Opt { Som((Int, Int)); Non }\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let o = Non\n    s = s + match o { Som(p) => p.0, Non => 1 }\n    i = i + 1\n  }\n  s\n}"'
+
 # KNOWN PRE-EXISTING GAP (not a regression): a *nested* tuple built in a loop
 # (`let t = ((i, i+1), (i+2, i+3))`) fails to compile under RC at BOTH HEAD and
 # the Stage-1 baseline — so it is excluded from the reclamation set rather than
