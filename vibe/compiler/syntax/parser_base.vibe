@@ -1059,13 +1059,17 @@ let parse_suberror_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error }
 let parse_type_alias_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } = (tokens, pos, exported) -> {
   match peek(tokens, pos) {
     TIdent(name) => {
-      // Optional type-parameter header `type Foo[T] = ...`. Consumed and
-      // discarded (STypeAlias does not carry params; the alias body is
-      // resolved structurally), consistent with generic struct/enum.
-      let after_name = skip_bracketed_args(tokens, pos + 1)
+      // Optional type-parameter header `type Foo[T] = ...`, captured so the
+      // checker can substitute them when the alias is applied (`Foo[X]`).
+      let (params, after_name) = match peek(tokens, pos + 1) {
+        TLBracket => parse_type_params_list(tokens, pos + 2),
+        _ => (Array::slice([
+          ""
+        ], 0, 0), pos + 1)
+      }
       let ep = expect_tk(tokens, after_name, "=")
       let (ty, next) = parse_type_impl(tokens, ep, 0);
-      (STypeAlias(exported, name, ty), next)
+      (STypeAlias(exported, name, params, ty), next)
     },
     _ => throw("expected type alias name")
   }
