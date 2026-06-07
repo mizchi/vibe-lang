@@ -12,60 +12,113 @@ let no_params: () -> Array[Type] = () -> {
   ], 0, 0)
 }
 
+// NOTE: these use `if name == ...` chains, NOT `match name { "lit" => }`.
+// String-literal patterns in `match` do not match at runtime in the compiled
+// selfhost (codegen gap), so the original `match`-based lookups silently
+// returned None for every entry — that is why Stdin/Stdout/Env/sh builtins (and
+// thus io.vibe/markdown/rlm) failed to resolve. `==` comparison works.
 let lookup_io_a: (String) -> Option[Type] = (name) -> {
-  match name {
-    "sh" => Some(CtFn([
+  if name == "sh" {
+    Some(CtFn([
       CtString
-    ], CtString, Some("Process"))),
-    "sh_lines" => Some(CtFn([
+    ], CtString, Some("Process")))
+  } else if name == "sh_lines" {
+    Some(CtFn([
       CtString
-    ], CtArray(CtString), Some("Process"))),
-    "path" => Some(CtFn([
+    ], CtArray(CtString), Some("Process")))
+  } else if name == "path" {
+    Some(CtFn([
       CtString
-    ], CtUnknown, None)),
-    "Path::to_string" => Some(CtFn([
+    ], CtUnknown, None))
+  } else if name == "Path::to_string" {
+    Some(CtFn([
       CtUnknown
-    ], CtString, None)),
-    "Path::is_absolute" => Some(CtFn([
+    ], CtString, None))
+  } else if name == "Path::is_absolute" {
+    Some(CtFn([
       CtString
-    ], CtBool, None)),
-    "PromptText::new" => Some(CtFn([
+    ], CtBool, None))
+  } else if name == "PromptText::new" {
+    Some(CtFn([
       CtString
-    ], CtString, None)),
-    "Stdin::read_char" => Some(CtFn(no_params(), CtInt, Some("Stdin"))),
-    "Stdin::read_stream" => Some(CtFn(no_params(), CtString, Some("Stdin"))),
-    _ => None
+    ], CtString, None))
+  } else if name == "Stdin::read_char" {
+    Some(CtFn(no_params(), CtInt, Some("Stdin")))
+  } else if name == "Stdin::read_stream" {
+    Some(CtFn(no_params(), CtString, Some("Stdin")))
+  } else {
+    None
   }
 }
 
 let lookup_io_b: (String) -> Option[Type] = (name) -> {
-  match name {
-    "Stdout::write_char" => Some(CtFn([
+  if name == "Stdout::write_char" {
+    Some(CtFn([
       CtInt
-    ], CtUnit, None)),
-    "Stdout::write_stream" => Some(CtFn([
+    ], CtUnit, None))
+  } else if name == "Stdout::write_stream" {
+    Some(CtFn([
       CtString
-    ], CtUnit, None)),
-    "Env::get" => Some(CtFn([
+    ], CtUnit, None))
+  } else if name == "Env::get" {
+    Some(CtFn([
       CtString
-    ], CtString, Some("Env"))),
-    "Env::args_len" => Some(CtFn(no_params(), CtInt, Some("Env"))),
-    "Env::args_get" => Some(CtFn([
+    ], CtString, Some("Env")))
+  } else if name == "Env::args_len" {
+    Some(CtFn(no_params(), CtInt, Some("Env")))
+  } else if name == "Env::args_get" {
+    Some(CtFn([
       CtInt
-    ], CtString, Some("Env"))),
-    "sleep" => Some(CtFn([
+    ], CtString, Some("Env")))
+  } else if name == "sleep" {
+    Some(CtFn([
       CtInt
-    ], CtUnit, None)),
-    "Path::resolve" => Some(CtFn([
+    ], CtUnit, None))
+  } else if name == "Path::resolve" {
+    Some(CtFn([
       CtString
-    ], CtString, None)),
-    _ => None
+    ], CtString, None))
+  } else {
+    None
+  }
+}
+
+// Lines / Llm / Rlm builtins (host: src/checker builtin_declared_names +
+// core_io / json_and_fallback handlers). Added for selfhost parity.
+let lookup_io_c: (String) -> Option[Type] = (name) -> {
+  if name == "Lines::parse" {
+    Some(CtFn([
+      CtString
+    ], CtArray(CtString), None))
+  } else if name == "Lines::stringify" {
+    Some(CtFn([
+      CtArray(CtString)
+    ], CtString, None))
+  } else if name == "Llm::complete" {
+    Some(CtFn([
+      CtString,
+      CtString
+    ], CtString, Some("Llm")))
+  } else if name == "Rlm::run" {
+    Some(CtFn([
+      CtString,
+      CtString
+    ], CtString, Some("Llm")))
+  } else if name == "Rlm::finalize" {
+    Some(CtFn([
+      CtString
+    ], CtString, None))
+  } else {
+    None
   }
 }
 
 export let lookup_io: (String) -> Option[Type] = (name) -> {
   match lookup_io_a(name) {
     Some(t) => Some(t),
-    None => lookup_io_b(name)
+    None => match lookup_io_b(name) {
+      Some(t) => Some(t),
+      None => lookup_io_c(name)
+    }
   }
 }
