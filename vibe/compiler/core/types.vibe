@@ -21,7 +21,7 @@ export enum Type {
 }
 
 export enum TypeDef {
-  TDEnum(String, Array[(String, Array[Type])]);
+  TDEnum(String, Array[String], Array[(String, Array[Type])]);
   TDStruct(String, Array[(String, Type)]);
   TDAlias(String, Array[String], Type)
 }
@@ -169,7 +169,7 @@ export let find_typedef: (Array[TypeDef], String) -> Option[TypeDef] = (defs, na
     } else {
       let d = Array::get(defs, i)
       let dname = match d {
-        TDEnum(n, _) => n,
+        TDEnum(n, _, _) => n,
         TDStruct(n, _) => n,
         TDAlias(n, _, _) => n
       }
@@ -999,9 +999,11 @@ export let rec unify: (Type, Type, Subst) -> Option[Subst] = (a, b, s) -> {
                   CtEnum(b_name) => if a_name == b_name {
                     Some(s)
                   } else None,
-                  // Bridge `CtEnum(X)` with a bare `CtNamed(X, [])`; see the
-                  // matching case in types_equal.
-                  CtNamed(b_name, b_args) => if a_name == b_name && Array::length(b_args) == 0 {
+                  // Bridge `CtEnum(X)` with `CtNamed(X, args)` of any arity: an
+                  // enum VALUE carries no type args (constructors yield a bare
+                  // CtEnum), so it must still unify by name with an applied
+                  // annotation like `Result[U, E]`.
+                  CtNamed(b_name, _) => if a_name == b_name {
                     Some(s)
                   } else None,
                   _ => None
@@ -1016,7 +1018,9 @@ export let rec unify: (Type, Type, Subst) -> Option[Subst] = (a, b, s) -> {
                   _ => None
                 },
                 CtNamed(a_name, a_args) => match tb {
-                  CtEnum(b_name) => if a_name == b_name && Array::length(a_args) == 0 {
+                  // Symmetric to the CtEnum bridge: an applied `CtNamed(X, args)`
+                  // unifies with the bare enum value `CtEnum(X)` by name.
+                  CtEnum(b_name) => if a_name == b_name {
                     Some(s)
                   } else None,
                   CtStruct(b_name) => if a_name == b_name && Array::length(a_args) == 0 {
