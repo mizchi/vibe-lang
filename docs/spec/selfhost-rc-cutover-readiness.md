@@ -75,14 +75,53 @@ deep-projection opaque args, container-outlives-scope) do not appear in this
 corpus; the remaining cutover work is the mechanical default→RC switch itself
 (#493 C/F) plus any wider-corpus measurement.
 
-## Whole-compiler RC compile
+## Whole-compiler RC compile + the RC-vs-default parity gate
 
 `compile_wasi_rc` applied to the **entire merged compiler source**
-(`selfhost_cli_adapter_merged_source`, entry `cli_main`) runs to completion with
-no error — i.e. **no RC codegen gap across any construct the compiler itself
-uses**. (The output is multi-hundred-KB; the `vibe test` probe hits a wasm
-instance memory ceiling extracting it, so full-scale *validity* is verified
-through the real gate path below rather than a probe.)
+(`selfhost_cli_adapter_merged_source`, entry `cli_main`), executed on the host
+MoonBit runtime, runs to completion with no error — i.e. **no RC codegen gap
+across any construct the compiler itself uses**.
+
+The stronger signal is to drive the compiler's *real* self-compile vehicle —
+the module-source + source-groups path (`build_selfhost_cli_adapter_bytes`,
+entry `cli_main`) — through **stage1** (the selfhost compiler, itself compiled to
+wasm). `scripts/test_selfhost_rc_bootstrap.sh` does this under both backends via
+new entries `selfbuild_compile_cli_adapter_env` (default) and
+`selfbuild_compile_cli_adapter_rc_env` (RC, on the new
+`compile_with_source_groups_via_module_source_wasi_unchecked_rc` path), and
+asserts **RC-vs-default parity**: RC must reach exactly as far as default. The
+gate auto-upgrades to a full whole-compiler-under-RC green signal once the
+default-path ceiling below is lifted.
+
+**Measured result (2026-06): parity holds.** Both backends reach the *identical*
+point — they fail together at `no functions found to compile`, a **default-path**
+stage1 limitation in the source-group merge, **not** an RC issue. This is the
+cutover-safety invariant we needed: **RC introduces no compile gap at full
+compiler scale that the default bump path does not already have.**
+
+### Default-path blockers found driving the first stage1 whole-compiler self-compile
+
+This was the first time stage1 was asked to compile the *whole* compiler (prior
+gates compile only small samples or a stub), so it surfaced several pre-existing
+**default-path** selfhost limitations. Two were real source bugs and are fixed:
+
+1. **Newline-separated struct fields** — `struct HeapInferCtx { ctors: …\n
+   heap_fns: … }` (no `;`). The host MoonBit parser is lenient; the selfhost
+   parser only accepts `;`/`,`/`}` as field separators, so stage1 threw
+   `expected ';', ',' or '}' in struct`. Fixed by using `;` (the convention
+   every other struct already follows).
+2. **Struct-literal field punning** — `PerceusAction::{ kind, name }` (shorthand).
+   The selfhost parser mis-parses punned fields and runs into the next token
+   (`unexpected token: ->`), per the CLAUDE.md gotcha. Fixed by writing explicit
+   `kind: kind, name: name`.
+
+Remaining (tracked separately from RC, all default-path):
+- **`no functions found to compile`** in the source-group merge at full scale —
+  the current shared ceiling both backends hit.
+- **Checker/parser recursion depth** — stage1's recursive-descent parser and
+  `env_lookup` overflow the host stack on the ~640 KB self-source; the gate runs
+  node with `--stack-size=16000` to push past parse/check before the shared
+  ceiling.
 
 ## Cutover toggle: `VIBE_RC=1`
 

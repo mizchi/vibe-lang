@@ -25,7 +25,7 @@ import ../../../codegen/index.vibe {
 }
 
 import ../../../codegen/wasi/index.vibe {
-  compile_wasi_module_impl
+  compile_wasi_module_impl, compile_wasi_module_rc_impl
 }
 
 import ../../../checker/checker_stmt.vibe {
@@ -621,6 +621,37 @@ export let compile_with_source_groups_via_module_source_wasi_unchecked_cached: (
       let pruned_stmts = prune_entry_stmts(module_stmts, entry_name)
       let bytes = compile_wasi_module_impl(pruned_stmts, entry_name)
       (bytes, db_store_artifact(codegen_db, main_path, "wasi-module-source", entry_name, artifact_fingerprint, bytes))
+    }
+  }
+}
+
+// ADR-0055 #493 cutover: RC-codegen variant of the module-source self-compile
+// path. Identical pipeline to the function above, but emits via the Perceus RC
+// backend (compile_wasi_module_rc_impl). This is the real vehicle the selfhost
+// compiler uses to compile *itself* (build_selfhost_cli_adapter_bytes), so an
+// RC variant gives the whole-compiler-under-RC validity signal for the cutover.
+// A distinct artifact key ("wasi-module-source-rc") keeps the RC and default
+// caches from colliding.
+export let compile_with_source_groups_via_module_source_wasi_unchecked_rc: (TypeDb, String, String, Array[(String, Array[(String, String)])], String) -> (Bytes, TypeDb) with { Error } = (db, main_source, main_path, source_groups, entry_name) -> {
+  let normalized_groups = normalize_source_groups(source_groups, main_path, main_source)
+  let ordered_sources = collect_inline_sources_ordered(
+    main_path,
+    main_source,
+    flatten_source_groups(normalized_groups)
+  )
+  let filtered_groups = filter_source_groups(normalized_groups, ordered_sources)
+  let (merged_source, merge_fingerprint, module_db) = db_grouped_merged_source(db, filtered_groups)
+  let (module_source, codegen_db) = db_module_source(module_db, merge_fingerprint, merged_source)
+  let artifact_fingerprint = artifact_fingerprint_from_source(
+    String::concat(module_source, String::concat("|", entry_name))
+  )
+  match db_load_artifact(codegen_db, main_path, "wasi-module-source-rc", entry_name, artifact_fingerprint) {
+    Some(bytes) => (bytes, codegen_db),
+    None => {
+      let module_stmts = parse_program(lex(module_source))
+      let pruned_stmts = prune_entry_stmts(module_stmts, entry_name)
+      let bytes = compile_wasi_module_rc_impl(pruned_stmts, entry_name)
+      (bytes, db_store_artifact(codegen_db, main_path, "wasi-module-source-rc", entry_name, artifact_fingerprint, bytes))
     }
   }
 }
