@@ -51,6 +51,10 @@ ENTRY="${VIBE_CORPUS_ENTRY:-main}"
 # the `debug`-mode codegen builtin-body-linking confounder. `debug` is still
 # available via VIBE_CORPUS_MODE=debug for codegen-path investigation.
 COMPILE_MODE="${VIBE_CORPUS_MODE:-check}"
+# Give the node wasm host runner extra JS stack for the selfhost compiler's
+# recursive descent on large corpus files (e.g. regexp), so the recursion-depth
+# ceiling (#492) does not masquerade as a checker REAL gap. Overridable.
+export VIBE_NODE_WASM_FLAGS="${VIBE_NODE_WASM_FLAGS:---experimental-wasm-exnref --stack-size=4000}"
 
 GATE=0
 UPDATE_BASELINE=0
