@@ -17,10 +17,17 @@
 #      selfhost compiler parsed + type-checked + linked + codegen'd it; non-0
 #      = a gap (the selfhost error is captured).
 #
+# Gate v2 (#492): compiles in `check` mode (linked parse + typecheck, no
+# codegen) so the signal reflects real selfhost language/checker EXPRESSIVENESS.
+# `--gate` is a regression tripwire against a committed REAL-gap baseline (green
+# when the REAL-failing set equals the baseline; see CORPUS_BASELINE below).
+#
 # Usage:
 #   scripts/test_selfhost_corpus_gate.sh                 # default corpus, report-only
-#   scripts/test_selfhost_corpus_gate.sh --gate          # exit 1 if any file fails
+#   scripts/test_selfhost_corpus_gate.sh --gate          # tripwire vs baseline
+#   scripts/test_selfhost_corpus_gate.sh --update-baseline  # regenerate baseline
 #   scripts/test_selfhost_corpus_gate.sh path/glob ...   # custom corpus
+#   VIBE_CORPUS_MODE=debug scripts/...                  # codegen-path mode (old)
 #   VIBE_CORPUS_INCLUDE_TESTS=1 scripts/...              # also compile *_test.vibe
 #   VIBE_CORPUS_TIMEOUT_SEC=120 scripts/...              # per-file timeout
 #   VIBE_CORPUS_ENTRY=main scripts/...                   # entry name passed to cli_main
@@ -39,12 +46,25 @@ RUNNER="$ROOT/scripts/run_wasm_vibe_host_runner.sh"
 TIMEOUT_SEC="${VIBE_CORPUS_TIMEOUT_SEC:-120}"
 INCLUDE_TESTS="${VIBE_CORPUS_INCLUDE_TESTS:-0}"
 ENTRY="${VIBE_CORPUS_ENTRY:-main}"
+# Gate v2 (#492): default to `check` mode (linked parse + typecheck, no codegen)
+# so the signal reflects real selfhost language/checker EXPRESSIVENESS, without
+# the `debug`-mode codegen builtin-body-linking confounder. `debug` is still
+# available via VIBE_CORPUS_MODE=debug for codegen-path investigation.
+COMPILE_MODE="${VIBE_CORPUS_MODE:-check}"
 
 GATE=0
+UPDATE_BASELINE=0
+# Baseline of currently-known REAL-failing corpus files. `--gate` is green when
+# the REAL-failing set equals the baseline, and trips on any divergence:
+#   * a non-baselined file newly fails REAL  -> regression (a new selfhost gap)
+#   * a baselined file now passes            -> baseline is stale, shrink it
+# Regenerate with `--update-baseline` after intentionally changing the set.
+BASELINE="${VIBE_CORPUS_BASELINE:-$ROOT/scripts/selfhost_corpus_baseline.txt}"
 declare -a ARG_GLOBS=()
 for a in "$@"; do
   case "$a" in
     --gate) GATE=1 ;;
+    --update-baseline) UPDATE_BASELINE=1 ;;
     *) ARG_GLOBS+=("$a") ;;
   esac
 done
@@ -91,27 +111,48 @@ if [ "$INCLUDE_TESTS" != "1" ]; then
   FILES=("${KEPT[@]}")
 fi
 
-echo "[corpus] compiling ${#FILES[@]} files through the selfhost compiler (debug/linked mode, ${TIMEOUT_SEC}s/file)"
+echo "[corpus] compiling ${#FILES[@]} files through the selfhost compiler (${COMPILE_MODE} mode, ${TIMEOUT_SEC}s/file)"
 echo ""
 
-# Classify a failure snippet into one of:
-#   REAL    — a genuine selfhost language/checker gap (parser errors, unknown
-#             feature, type mismatch). These are real cutover blockers and
-#             trip `--gate`.
-#   MODE    — a gate-harness / compile-mode artifact, NOT a selfhost capability
-#             gap: `undefined variable: Ns::method` (the debug/linked mode does
-#             not link builtin/prelude bodies for codegen — the selfhost CHECKER
-#             does know these, cf. the passing check_source_ok builtin tests),
-#             relative-import `fs_read_file failed` (ENOENT), or `no functions
-#             found` (the fixed entry name does not exist in the file).
-#   TRIAGE  — `unknown name: <x>` that is not a `Ns::method` builtin; may be a
-#             real scoping gap or an unlinked prelude helper. Reported, but does
-#             not trip the gate until triaged.
+# Classify a failure snippet into one of (Gate v2, `check` mode):
+#   REAL    — a genuine selfhost checker/parser gap: parse errors, type
+#             mismatches, `unknown name` (incl. unknown builtin `Ns::method` =
+#             missing checker signature, and real scoping gaps). The `check`
+#             mode actually type-checks (the old `debug` mode ran codegen only,
+#             so it never surfaced these), so these are now real cutover blockers
+#             and trip `--gate` unless baselined (see CORPUS_BASELINE).
+#   MODE    — a harness artifact, NOT a language gap: relative/dir-index import
+#             `fs_read_file failed` (ENOENT). (In `debug` mode also: codegen
+#             `undefined variable` for unlinked builtin bodies, and `no functions
+#             found` for a missing fixed entry name.)
+# Host checker prelude intrinsics (src/checker/prelude.mbt `prelude_names`). The
+# host injects these into the check env; the gate's linked check path does not
+# load the prelude, so files using them get a spurious `unknown name`. This is a
+# harness/env-init artifact, not a language gap. Keep in sync with prelude.mbt.
+PRELUDE_INTRINSICS="add sub mul div eq lt not and or assert assert_true to_string iter_require iter_length iter_get assert_eq where __add __sub __mul __div __mod __eq __lt __neg __not __or __and __index __len __slice __to_string __bit_and __bit_or __bit_xor __lshift __rshift __assert __assert_eq"
+
+is_prelude_intrinsic() {
+  # $1 = bare name extracted from `unknown name: <name>`
+  case " $PRELUDE_INTRINSICS " in *" $1 "*) return 0 ;; esac
+  return 1
+}
+
 classify_err() {
   case "$1" in
-    *"undefined variable"*|*"fs_read_file failed"*|*"no functions found"*) echo "MODE" ;;
-    *"unknown name: "*"::"*) echo "MODE" ;;     # Ns::method builtin not linked
-    *"unknown name: "*) echo "TRIAGE" ;;
+    # Import resolution is a harness concern (relative/dir-index path forms), not
+    # a language-expressiveness gap.
+    *"fs_read_file failed"*) echo "MODE" ;;
+    # debug-mode-only artifacts (codegen builtin bodies not linked / fixed entry
+    # name missing). In `check` mode these do not occur.
+    *"undefined variable"*|*"no functions found"*) echo "MODE" ;;
+    # Host-prelude intrinsic not loaded by the gate's check env → harness.
+    *"unknown name: "*)
+      local nm="${1##*unknown name: }"
+      nm="${nm%% *}"
+      if is_prelude_intrinsic "$nm"; then echo "MODE"; else echo "REAL"; fi
+      ;;
+    # Everything else under `check` mode is a genuine selfhost checker/parser gap:
+    # parse errors, type mismatches, genuine unknown names.
     *) echo "REAL" ;;
   esac
 }
@@ -129,7 +170,7 @@ OUT_WASM_REL="$OUT_DIR_REL/_corpus_out.wasm"
 for f in "${FILES[@]}"; do
   errlog="$OUT_DIR/last_err.log"
   VIBE_PREOPEN_DIR="$ROOT" timeout "$TIMEOUT_SEC" \
-    bash "$RUNNER" --invoke cli_main "$SELFHOST_WASM" "$f" "$OUT_WASM_REL" "$ENTRY" debug \
+    bash "$RUNNER" --invoke cli_main "$SELFHOST_WASM" "$f" "$OUT_WASM_REL" "$ENTRY" "$COMPILE_MODE" \
     >"$errlog" 2>&1
   st=$?
   if [ "$st" -eq 0 ]; then
@@ -153,10 +194,9 @@ done
 
 echo ""
 echo "===================== selfhost corpus gate ====================="
-echo "  files: ${#FILES[@]}   pass: $PASS   fail: $FAIL   (timeouts: $TIMEOUTS)"
+echo "  mode: $COMPILE_MODE   files: ${#FILES[@]}   pass: $PASS   fail: $FAIL   (timeouts: $TIMEOUTS)"
 echo "  REAL gaps (gate-tripping): $REAL"
-echo "  MODE artifacts (builtin-not-linked / import / entry — not gaps): $MODE"
-echo "  TRIAGE (unknown name, needs triage): $TRIAGE"
+echo "  MODE artifacts (import resolution / debug-codegen — not gaps): $MODE"
 echo "  full results: $SUMMARY_TSV"
 echo "================================================================"
 if [ "$REAL" -gt 0 ]; then
@@ -164,8 +204,38 @@ if [ "$REAL" -gt 0 ]; then
   grep -P '\tfail\([0-9]+\)\tREAL\t' "$SUMMARY_TSV" 2>/dev/null | cut -f1,4 | sed 's/^/    - /'
 fi
 
-# `--gate` only trips on REAL language/checker gaps, not MODE artifacts.
-if [ "$GATE" -eq 1 ] && [ "$REAL" -gt 0 ]; then
-  exit 1
+# Current REAL-failing set (genuine selfhost checker/parser gaps).
+real_set="$(grep -P '\tfail\([0-9]+\)\tREAL\t' "$SUMMARY_TSV" 2>/dev/null | cut -f1 | sort -u)"
+
+if [ "$UPDATE_BASELINE" -eq 1 ]; then
+  {
+    echo "# Selfhost corpus REAL-gap baseline (scripts/test_selfhost_corpus_gate.sh)."
+    echo "# Files the selfhost compiler cannot yet \`check\` that the host accepts."
+    echo "# Regenerate: scripts/test_selfhost_corpus_gate.sh --update-baseline"
+    printf '%s\n' "$real_set" | grep -v '^$'
+  } > "$BASELINE"
+  echo "[corpus] baseline updated: $BASELINE ($(printf '%s\n' "$real_set" | grep -vc '^$') REAL files)"
+fi
+
+if [ "$GATE" -eq 1 ]; then
+  baseline_set=""
+  [ -f "$BASELINE" ] && baseline_set="$(grep -vE '^[[:space:]]*(#|$)' "$BASELINE" | sort -u)"
+  new_real="$(comm -23 <(printf '%s\n' "$real_set" | grep -v '^$') <(printf '%s\n' "$baseline_set" | grep -v '^$'))"
+  fixed="$(comm -13 <(printf '%s\n' "$real_set" | grep -v '^$') <(printf '%s\n' "$baseline_set" | grep -v '^$'))"
+  gate_fail=0
+  if [ -n "$new_real" ]; then
+    echo ""
+    echo "  REGRESSION — new REAL gap(s) not in baseline ($BASELINE):"
+    printf '%s\n' "$new_real" | sed 's/^/    + /'
+    gate_fail=1
+  fi
+  if [ -n "$fixed" ]; then
+    echo ""
+    echo "  BASELINE STALE — these now pass; remove from baseline (--update-baseline):"
+    printf '%s\n' "$fixed" | sed 's/^/    - /'
+    gate_fail=1
+  fi
+  if [ "$gate_fail" -eq 1 ]; then exit 1; fi
+  echo "  --gate OK: REAL-failing set matches baseline ($(printf '%s\n' "$baseline_set" | grep -vc '^$') known gaps)"
 fi
 exit 0
