@@ -5,11 +5,11 @@ import .. / .. / core {
 }
 
 import .. / .. / perceus {
-  PerceusAction, build_perceus_plan, build_perceus_plan_with_params, pa_is_alias_dup, pa_is_drop, pa_is_dup, type_expr_is_heap
+  PerceusAction, build_perceus_plan, build_perceus_plan_with_params, elaborate_heap_params, pa_is_alias_dup, pa_is_drop, pa_is_dup, param_is_heap_in_body
 }
 
 import .. / builtin_bodies {
-  gen_rc_drop_body, gen_rc_alloc_body, gen_arr_get_body, gen_arr_len_body, gen_arr_new_body, gen_arr_push_body, gen_arr_push_all_body, gen_arr_truncate_body, gen_arr_set_body, gen_arr_slice_body, gen_bytes_append_body, gen_bytes_concat_body, gen_bytes_from_array_body, gen_bytes_get_body, gen_bytes_len_body, gen_bytes_new_body, gen_bytes_push_body, gen_bytes_set_body, gen_bytes_slice_body, gen_bytes_to_array_body, gen_eq_body, gen_selfhost_sources_proper_body, gen_selfhost_sources_stub_body, gen_str_char_code_at_body, gen_str_len_body, gen_str_substring_body, gen_string_contains_body, gen_string_ends_with_body, gen_string_index_of_body, gen_string_join_body, gen_string_last_index_of_body, gen_string_split_body, gen_string_starts_with_body, gen_string_trim_body, static_arr_concat_body, static_arr_get_body, static_arr_len_body, static_arr_new_body, static_arr_push_all_body, static_arr_push_body, static_arr_set_body, static_arr_slice_body, static_arr_truncate_body, static_double_to_int_body, static_fs_stub_body, static_fs_write_bytes_stub_body, static_identity_body, static_int_to_double_body, static_print_i64_body, static_print_str_body, static_str_char_code_at_body, static_str_concat_body, static_str_eq_body, static_str_from_char_code_body, static_str_len_body, static_str_substring_body
+  gen_arr_get_body, gen_arr_len_body, gen_arr_new_body, gen_arr_push_all_body, gen_arr_push_body, gen_arr_set_body, gen_arr_slice_body, gen_arr_truncate_body, gen_bytes_append_body, gen_bytes_concat_body, gen_bytes_from_array_body, gen_bytes_get_body, gen_bytes_len_body, gen_bytes_new_body, gen_bytes_push_body, gen_bytes_set_body, gen_bytes_slice_body, gen_bytes_to_array_body, gen_eq_body, gen_rc_alloc_body, gen_rc_drop_body, gen_selfhost_sources_proper_body, gen_selfhost_sources_stub_body, gen_str_char_code_at_body, gen_str_len_body, gen_str_substring_body, gen_string_contains_body, gen_string_ends_with_body, gen_string_index_of_body, gen_string_join_body, gen_string_last_index_of_body, gen_string_split_body, gen_string_starts_with_body, gen_string_trim_body, static_arr_concat_body, static_arr_get_body, static_arr_len_body, static_arr_new_body, static_arr_push_all_body, static_arr_push_body, static_arr_set_body, static_arr_slice_body, static_arr_truncate_body, static_double_to_int_body, static_fs_stub_body, static_fs_write_bytes_stub_body, static_identity_body, static_int_to_double_body, static_print_i64_body, static_print_str_body, static_str_char_code_at_body, static_str_concat_body, static_str_eq_body, static_str_from_char_code_body, static_str_len_body, static_str_substring_body
 }
 
 import .. / common_analysis {
@@ -38,10 +38,6 @@ import ./linked_helpers.vibe {
 
 //# Functions
 
-// ADR-0055 Stage 4: a runtime-guarded rc_dup of the value in `local_idx` — no-op
-// on an even (scalar) value or a string/bytes fat pointer. Replica of
-// compile_expr_tail's emit_rc_dup_guarded (linked_compile cannot import the tail
-// chain). Used to dup an owned heap param used in multiple owning positions.
 let lc_emit_rc_dup_guarded: (Bytes, Int) -> Unit = (buf, local_idx) -> {
   emit_local_get(buf, local_idx)
   emit_i64_const(buf, 1)
@@ -482,11 +478,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   let bytes_slice_idx = bytes_concat_idx + 1
   let bytes_from_array_idx = bytes_slice_idx + 1
   let bytes_to_array_idx = bytes_from_array_idx + 1
-  // ADR-0055 Stage 3: the generic recursive rc_drop helper occupies the next
-  // generated-function slot (only registered under enable_rc, below).
   let rc_drop_idx = bytes_to_array_idx + 1
-  // ADR-0055 Stage 4: the free-list search allocator occupies the slot after it
-  // (also enable_rc-only).
   let rc_alloc_idx = rc_drop_idx + 1
   let env_get_idx = if env_get_import_idx >= 0 {
     env_get_import_idx
@@ -576,9 +568,6 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     ("Double::to_i64_bits", 1, identity_idx, 1),
     ("__to_string", 1, identity_idx, 1)
   ]
-  // ADR-0055 Stage 3: register the recursive rc_drop helper as a generated
-  // function (1 i64 arg, no result) only under RC, so the default path keeps
-  // its function indices and stays byte-identical.
   if enable_rc {
     Array::push(builtin_defs, ("__rc_drop", 1, rc_drop_idx, 0))
     Array::push(builtin_defs, ("__rc_alloc", 1, rc_alloc_idx, 1))
@@ -681,18 +670,6 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   Array::push(bodies, static_str_concat_body())
   Array::push(meta_i32, 6)
   Array::push(meta_i64, 0)
-  // ADR-0055 Stage 1/2b: under RC, ints are tagged (n<<1) and array pointers are
-  // odd (|1); use the gen bodies that untag the index/pointer, tag the length,
-  // and return odd from array_new. Default path keeps the precompiled static.
-  //
-  // The branch is at STATEMENT level (each arm does its own Array::push), not an
-  // `if`-expression returning the body. The wasm-gc backend (which also compiles
-  // this linear module as a smoke gate) infers the result kind of an
-  // `if`-expression, and the static_arr_* bodies are closures there (their body
-  // references a Bytes const, which the gc backend cannot lift to a global, so
-  // the function has a free var). Kind-inferring a call to such a closure raises
-  // "unknown name". Keeping `static_arr_*()` as a direct Array::push argument —
-  // the form the default path always used — never triggers that inference.
   if enable_rc {
     Array::push(bodies, gen_arr_new_body(true, rc_alloc_idx))
     Array::push(meta_i32, 1)
@@ -858,13 +835,10 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   Array::push(bodies, gen_bytes_to_array_body(enable_rc, arr_new_idx, arr_push_idx, bytes_len_idx, bytes_get_idx))
   Array::push(meta_i32, 2)
   Array::push(meta_i64, 1)
-  // ADR-0055 Stage 3: recursive rc_drop helper body (last generated builtin,
-  // wasm index rc_drop_idx so it can self-call). 5 i32 + 1 i64 working locals.
   if enable_rc {
     Array::push(bodies, gen_rc_drop_body(rc_drop_idx))
     Array::push(meta_i32, 5)
     Array::push(meta_i64, 1)
-    // ADR-0055 Stage 4: free-list search allocator (4 i32 working locals, no i64).
     Array::push(bodies, gen_rc_alloc_body())
     Array::push(meta_i32, 4)
     Array::push(meta_i64, 0)
@@ -880,7 +854,6 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       ""
     ], 0, 0)
     let fn_name_dbg = Array::get(fn_names_list, bi)
-    // RC: names this function's Perceus plan says to drop at scope end.
     let rc_drops = Array::slice([
       ""
     ], 0, 0)
@@ -890,18 +863,8 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     let rc_dups = Array::slice([
       ""
     ], 0, 0)
-    // ADR-0055 Stage 4 (owned-vs-borrowed): top-level fn parameters are owned
-    // heap values; norm_params (suffix-stripped) feeds the param-aware plan, and
-    // lc_heap_params lists the heap-typed ones for binding/drop classification.
     let lc_norm_params = if is_efn(__bi_expr) {
       let ps = get_efn_params(__bi_expr)
-      // A top-level fn's param types live on its signature (`let f: (A,B) -> R`),
-      // not on the lambda params — fall back to the signature arg types when a
-      // lambda param has no annotation. (ADR-0055 Stage 4 owned-param drops.)
-      // A single tuple param prints as `((A,B)) -> R` but parses as multiple
-      // args (the outer parens are the param list); when the lambda has exactly
-      // one param and the signature has >1 args, the param IS the tuple of all
-      // those args — reconstruct it so the param is seen as a heap tuple.
       let sig_args_raw = fn_type_param_types(get_slet_type(__bi_stmt))
       let single_tuple_param = match sig_args_raw {
         Some(a) => Array::length(ps) == 1 && Array::length(a) > 1,
@@ -925,17 +888,17 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
         let resolved_ty = match sty {
           Some(_) => sty,
           None =>
-            match sig_args_raw {
-              Some(args) =>
-                if single_tuple_param {
-                  Some(TyTuple(args))
-                } else if Array::length(args) == Array::length(ps) {
-                  Some(Array::get(args, spi))
-                } else {
-                  None
-                },
-              None => None
-            }
+          match sig_args_raw {
+            Some(args) =>
+            if single_tuple_param {
+              Some(TyTuple(args))
+            } else if Array::length(args) == Array::length(ps) {
+              Some(Array::get(args, spi))
+            } else {
+              None
+            },
+            None => None
+          }
         }
         Array::push(np, (ssn, resolved_ty))
         spi = spi + 1
@@ -959,7 +922,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       let mut lhpi = 0
       while lhpi < Array::length(lc_norm_params) {
         let (lhpn, lhpt) = Array::get(lc_norm_params, lhpi)
-        if type_expr_is_heap(lhpt) {
+        if param_is_heap_in_body(lhpn, lhpt, fbody) {
           Array::push(lc_heap_params, lhpn)
         } else {
           ()
@@ -974,8 +937,6 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
         } else if pa_is_alias_dup(pa) {
           Array::push(rc_alias_dups, pa.name)
         } else if pa_is_dup(pa) {
-          // ADR-0055 Stage 4: a non-alias owning-use dup (e.g. `let u = (t, t)`).
-          // One entry per dup; the binding site emits this many guarded rc_dups.
           Array::push(rc_dups, pa.name)
         } else {
           ()
@@ -1020,7 +981,9 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
         -1
       },
       rc_dup_names: rc_dups,
-      float_local_slots: Array::slice([0], 0, 0)
+      float_local_slots: Array::slice([
+        0
+      ], 0, 0)
     }
     if is_efn(__bi_expr) {
       let __bi_params = get_efn_params(__bi_expr)
@@ -1040,12 +1003,11 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       }
       Array::push(local_names, "__env")
       let param_count = Array::length(__bi_params) + 1
-      // ADR-0055 Stage 4: owning-use dup budget for heap params at fn entry.
       if enable_rc {
         let mut edi = 0
         while edi < Array::length(lc_norm_params) {
-          let (edn, edt) = Array::get(lc_norm_params, edi)
-          if type_expr_is_heap(edt) {
+          let (edn, _edt) = Array::get(lc_norm_params, edi)
+          if array_contains_str(lc_heap_params, edn) {
             let mut edc = 0
             let mut edj = 0
             while edj < Array::length(rc_dups) {
@@ -1070,17 +1032,14 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
         ()
       }
       let final_nl = compile_expr(body_buf, body, local_names, param_count, compile_ctx, -1)
-      // ADR-0055 Stage 4: drop owned heap params (borrow-only/unused) at the body
-      // tail. If the result is a projection rooted at a dropped param, dup it
-      // first to survive the recursive drop (guarded; no-op on a scalar result).
       let mut tail_nl = final_nl
       if enable_rc && rc_drop_idx >= 0 {
         let tail_root = scope_tail_proj_root(body)
         let mut need_dup = false
         let mut tci = 0
         while tci < Array::length(lc_norm_params) {
-          let (tcn, tct) = Array::get(lc_norm_params, tci)
-          if type_expr_is_heap(tct) && array_contains_str(rc_drops, tcn) && tcn == tail_root {
+          let (tcn, _tct) = Array::get(lc_norm_params, tci)
+          if array_contains_str(lc_heap_params, tcn) && array_contains_str(rc_drops, tcn) && tcn == tail_root {
             need_dup = true
           } else {
             ()
@@ -1097,8 +1056,8 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
         }
         let mut tdj = 0
         while tdj < Array::length(lc_norm_params) {
-          let (tdn, tdt) = Array::get(lc_norm_params, tdj)
-          if type_expr_is_heap(tdt) && array_contains_str(rc_drops, tdn) {
+          let (tdn, _tdt) = Array::get(lc_norm_params, tdj)
+          if array_contains_str(lc_heap_params, tdn) && array_contains_str(rc_drops, tdn) {
             emit_local_get(body_buf, tdj)
             emit_call(body_buf, rc_drop_idx)
           } else {
@@ -1114,8 +1073,6 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       } else {
         ()
       }
-      // ADR-0055 Stage 1: the exported Int entry returns a tagged value; untag
-      // at the boundary so the host sees the real integer (else it prints 2n).
       if enable_rc && fn_name_dbg == entry_name {
         emit_i64_const(body_buf, 1)
         emit_i64_shr_s(body_buf)
@@ -1431,11 +1388,8 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   Array::push(func_type_indices, 8)
   Array::push(func_type_indices, 3)
   Array::push(func_type_indices, 3)
-  // ADR-0055 Stage 3: rc_drop helper type = (i64) -> () = type index 1. Pushed
-  // after the generated builtins and before user funcs, matching the body order.
   if enable_rc {
     Array::push(func_type_indices, 1)
-    // ADR-0055 Stage 4: __rc_alloc type = (i64) -> (i64) = base type index 3.
     Array::push(func_type_indices, 3)
   } else {
     ()
@@ -1471,8 +1425,6 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   leb128_encode_u32(tag_content, 1)
   bytebuf_push_section(out, 13, tag_content)
   let global_content = bytebuf_new()
-  // RC mode adds a third mutable i32 global (index 2): the free-list head used
-  // by tuple rc_drop / rc_alloc (docs/spec/selfhost-rc-port.md).
   if enable_rc {
     bytebuf_push_vec_header(global_content, 3)
   } else {
@@ -1504,7 +1456,6 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   if !library_mode {
     Array::push(all_export_names, "_start")
     Array::push(all_export_indices, start_func_idx)
-    // "run" export removed: _start is the sole entry point
   }
   if !library_mode && !array_contains_str(all_export_names, entry_name) {
     Array::push(all_export_names, entry_name)
@@ -1617,19 +1568,20 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   bytebuf_to_bytes(out)
 }
 
-export let compile_wasi_module_with_sources_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
-  compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
-    ("", "", 0, 0)
-  ], 0, 0), false, false)
-}
-
 // RC-mode entry: same as compile_wasi_module but compiles heap objects with the
 // uniform object header (docs/spec/selfhost-rc-port.md, Phase 1). Used by the
 // heap e2e / leak tests to exercise the headered layout.
-export let compile_wasi_module_rc_impl: (Array[Stmt], String) -> Bytes with { Error } = (stmts, entry_name) -> {
+export let compile_wasi_module_rc_impl: (Array[Stmt], String) -> Bytes with { Error } = (stmts_in, entry_name) -> {
+  let stmts = elaborate_heap_params(stmts_in)
   compile_wasi_module_linked_impl(stmts, entry_name, Array::slice([
     ("", "")
   ], 0, 0), Array::slice([
     ("", "", 0, 0)
   ], 0, 0), false, true)
+}
+
+export let compile_wasi_module_with_sources_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
+  compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
+    ("", "", 0, 0)
+  ], 0, 0), false, false)
 }

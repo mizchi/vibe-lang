@@ -1,24 +1,12 @@
 //# Imports
 
-import ../../core/index.vibe {
-  Expr, Pat, Stmt, TypeExpr,
-  bytebuf_push, leb128_encode_u32
+import .. / .. / core {
+  Expr, Pat, Stmt, TypeExpr, bytebuf_push, leb128_encode_u32
 }
 
-import ../wasm_emit/index.vibe {
-  emit_call, emit_call_indirect, emit_else, emit_end, emit_i32_const, emit_i32_load, emit_i32_store, emit_i32_wrap_i64, emit_i64_add, emit_i64_and, emit_i64_const, emit_i64_div_s, emit_i64_eq, emit_i64_eqz, emit_i64_extend_i32_s, emit_i64_ge_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_lt_s, emit_i64_load, emit_i64_mul, emit_i64_ne, emit_i64_or, emit_i64_rem_s, emit_i64_shl, emit_i64_shr_s, emit_i64_store, emit_i64_sub, emit_i64_xor, emit_if_void, emit_local_get, emit_local_set
+import .. / wasm_emit {
+  emit_call, emit_call_indirect, emit_else, emit_end, emit_i32_const, emit_i32_load, emit_i32_store, emit_i32_wrap_i64, emit_i64_add, emit_i64_and, emit_i64_const, emit_i64_div_s, emit_i64_eq, emit_i64_eqz, emit_i64_extend_i32_s, emit_i64_ge_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_load, emit_i64_lt_s, emit_i64_mul, emit_i64_ne, emit_i64_or, emit_i64_rem_s, emit_i64_shl, emit_i64_shr_s, emit_i64_store, emit_i64_sub, emit_i64_xor, emit_if_void, emit_local_get, emit_local_set
 }
-
-// WASM opcodes (local constants for readability)
-let op_i32_eq = 70
-let op_i32_ne = 71
-let op_i32_eqz = 69
-let op_i32_mul = 108
-let op_i32_sub = 107
-let op_i32_ge_u = 79
-let op_i32_gt_u = 75
-let op_i64_load = 41
-let op_i64_store = 55
 
 //# Types
 
@@ -120,52 +108,6 @@ export struct CompileCtx {
   // approximation (the AST is untyped): float function params / lambda-captured
   // floats are not tracked.
   float_local_slots: Array[Int]
-}
-
-// ADR-0055 Stage 2 — float heap-boxing (enable_rc only). A float is stored as a
-// 1-payload heap block so it is an odd tagged pointer like every other heap
-// value, and the generic recursive rc_drop can classify it by `& 1` instead of
-// misreading an inline f64 bit pattern (which may be odd) as a pointer.
-//
-// Block: [alloc_size@0][rc_count@4][f64_bits@8]; value = (block+8) | 1. The
-// rc_count word is written as the full i32 `1`, which also zeroes the
-// drop-class byte at block+7 → class 0 = leaf, so rc_drop frees the block
-// without following fields (no recursion). The f64 bits live at the value
-// pointer itself (block+8), so unbox = untag + i64.load offset 0.
-
-// Box the f64 BITS currently on the stack (i64) into a fresh float block and
-// leave the tagged value pointer (i64) on the stack. Uses two scratch i64
-// locals: `bits_local` (the value being boxed) and `box_local` (block start).
-export let emit_box_float: (Bytes, CompileCtx, Int, Int) -> Unit = (buf, ctx, bits_local, box_local) -> {
-  emit_local_set(buf, bits_local)
-  emit_i64_const(buf, 16)
-  emit_call(buf, ctx.rc_alloc_func_idx)
-  emit_local_set(buf, box_local)
-  emit_local_get(buf, box_local)
-  emit_i32_wrap_i64(buf)
-  emit_i32_const(buf, 16)
-  emit_i32_store(buf, 2, 0)
-  emit_local_get(buf, box_local)
-  emit_i32_wrap_i64(buf)
-  emit_i32_const(buf, 1)
-  emit_i32_store(buf, 2, 4)
-  emit_local_get(buf, box_local)
-  emit_i32_wrap_i64(buf)
-  emit_local_get(buf, bits_local)
-  emit_i64_store(buf, 3, 8)
-  emit_local_get(buf, box_local)
-  emit_i64_const(buf, 8)
-  emit_i64_add(buf)
-  emit_i64_const(buf, 1)
-  emit_i64_or(buf)
-}
-
-// Unbox a tagged float pointer (i64) on the stack into its f64 BITS (i64).
-export let emit_unbox_float: (Bytes) -> Unit = (buf) -> {
-  emit_i64_const(buf, -2)
-  emit_i64_and(buf)
-  emit_i32_wrap_i64(buf)
-  emit_i64_load(buf, 3, 0)
 }
 
 // GC backend compilation context (extends CompileCtx with GC-specific fields)
@@ -272,6 +214,16 @@ export let is_pwild: (Pat) -> Bool = (p) -> {
   }
 }
 
+// Check if expr is an EArray (array literal). Under RC the array object is
+// inline-allocated with the same layout as a tuple (untagged raw pointer,
+// value = block+8), so it drops like a tuple (tagged=false).
+export let is_earray: (Expr) -> Bool = (expr) -> {
+  match expr {
+    EArray(_) => true,
+    _ => false
+  }
+}
+
 // Expr type checks (only those needed inside match arms)
 export let is_eident: (Expr) -> Bool = (expr) -> {
   match expr {
@@ -288,29 +240,23 @@ export let is_etuple: (Expr) -> Bool = (expr) -> {
   }
 }
 
+// Check pattern type
+export let is_ptuple: (Pat) -> Bool = (p) -> {
+  match p {
+    PTuple(_) => true,
+    _ => false
+  }
+}
+
+let op_i32_eq = 70
+
+let op_i32_ne = 71
+
 // Check if expr is an ERecord (struct/record literal). Records are tagged
 // (`ptr | 1`), unlike tuples, so RC drop must untag before touching the header.
 export let is_erecord: (Expr) -> Bool = (expr) -> {
   match expr {
     ERecord(_) => true,
-    _ => false
-  }
-}
-
-// Check if expr is an EArray (array literal). Under RC the array object is
-// inline-allocated with the same layout as a tuple (untagged raw pointer,
-// value = block+8), so it drops like a tuple (tagged=false).
-export let is_earray: (Expr) -> Bool = (expr) -> {
-  match expr {
-    EArray(_) => true,
-    _ => false
-  }
-}
-
-// Check pattern type
-export let is_ptuple: (Pat) -> Bool = (p) -> {
-  match p {
-    PTuple(_) => true,
     _ => false
   }
 }
@@ -321,6 +267,12 @@ export let is_pstring: (Pat) -> Bool = (p) -> {
     _ => false
   }
 }
+
+let op_i32_eqz = 69
+
+let op_i32_mul = 108
+
+let op_i32_sub = 107
 
 export let emit_i32_eq: (Bytes) -> Unit = (buf) -> {
   bytebuf_push(buf, op_i32_eq)
@@ -347,19 +299,11 @@ export let rec lookup_ctor: (Array[String], String, Int) -> Int = (ctor_names, n
   else lookup_ctor(ctor_names, name, i + 1)
 }
 
-// Is `value` an enum/struct constructor application (`A(...)`)? Such values are
-// heap-allocated and tagged (`ptr | 1`), so under RC they are dropped like
-// records (untag first). A bare nullary ctor parsed as an EIdent is not matched
-// here (it carries no payload and is a conservative leak at worst).
-export let is_ctor_call: (Expr, CtorTable) -> Bool = (value, ct) -> {
-  match value {
-    ECall(callee, _) => match callee {
-      EIdent(nm) => lookup_ctor(ct.names, nm, 0) >= 0,
-      _ => false
-    },
-    _ => false
-  }
-}
+let op_i32_ge_u = 79
+
+let op_i32_gt_u = 75
+
+let op_i64_load = 41
 
 export let emit_i32_eqz: (Bytes) -> Unit = (buf) -> {
   bytebuf_push(buf, op_i32_eqz)
@@ -421,6 +365,22 @@ export let get_elet_val: (Expr) -> Expr with { Error } = (expr) -> {
     _ => throw("not ELet")
   }
 }
+
+// Is `value` an enum/struct constructor application (`A(...)`)? Such values are
+// heap-allocated and tagged (`ptr | 1`), so under RC they are dropped like
+// records (untag first). A bare nullary ctor parsed as an EIdent is not matched
+// here (it carries no payload and is a conservative leak at worst).
+export let is_ctor_call: (Expr, CtorTable) -> Bool = (value, ct) -> {
+  match value {
+    ECall(callee, _) => match callee {
+      EIdent(nm) => lookup_ctor(ct.names, nm, 0) >= 0,
+      _ => false
+    },
+    _ => false
+  }
+}
+
+let op_i64_store = 55
 
 // Resolve function: returns (func_index, param_count, has_return)
 export let resolve_func: (FuncTable, String) -> (Int, Int, Int) with { Error } = (ft, name) -> {
@@ -572,19 +532,6 @@ export let get_slet_type: (Stmt) -> Option[TypeExpr] = (stmt) -> {
   }
 }
 
-// Extract a function signature's parameter types: Some(arg_types) when `ty` is a
-// function type `(A, B, ...) -> R`, else None.
-export let fn_type_param_types: (Option[TypeExpr]) -> Option[Array[TypeExpr]] = (ty) -> {
-  match ty {
-    Some(t) =>
-      match t {
-        TyFn(args, _, _) => Some(args),
-        _ => None
-      },
-    None => None
-  }
-}
-
 export let resolve_local: (Array[String], String, String) -> Int with { Error } = (names, name, tag) -> {
   let mut i = Array::length(names) - 1
   let mut result = -1
@@ -597,9 +544,6 @@ export let resolve_local: (Array[String], String, String) -> Int with { Error } 
     }
   }
   if result < 0 {
-    // O(N) via StringBuilder. Previously, each `String::concat(dbg, ..)`
-    // copied the entire growing prefix — total O(N^2) chars copied for
-    // a module with N locals.
     let sb = StringBuilder::new()
     StringBuilder::push(sb, "undefined variable (local): ")
     StringBuilder::push(sb, name)
@@ -626,6 +570,33 @@ export let emit_i64_store: (Bytes, Int, Int) -> Unit = (buf, align, offset) -> {
   leb128_encode_u32(buf, offset)
 }
 
+// Box the f64 BITS currently on the stack (i64) into a fresh float block and
+// leave the tagged value pointer (i64) on the stack. Uses two scratch i64
+// locals: `bits_local` (the value being boxed) and `box_local` (block start).
+export let emit_box_float: (Bytes, CompileCtx, Int, Int) -> Unit = (buf, ctx, bits_local, box_local) -> {
+  emit_local_set(buf, bits_local)
+  emit_i64_const(buf, 16)
+  emit_call(buf, ctx.rc_alloc_func_idx)
+  emit_local_set(buf, box_local)
+  emit_local_get(buf, box_local)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 16)
+  emit_i32_store(buf, 2, 0)
+  emit_local_get(buf, box_local)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 1)
+  emit_i32_store(buf, 2, 4)
+  emit_local_get(buf, box_local)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf, bits_local)
+  emit_i64_store(buf, 3, 8)
+  emit_local_get(buf, box_local)
+  emit_i64_const(buf, 8)
+  emit_i64_add(buf)
+  emit_i64_const(buf, 1)
+  emit_i64_or(buf)
+}
+
 // Find the SLet statement for a given function name
 export let find_func_stmt: (Array[Stmt], String) -> Stmt with { Error } = (stmts, name) -> {
   let len = Array::length(stmts)
@@ -648,4 +619,37 @@ export let find_func_stmt: (Array[Stmt], String) -> Stmt with { Error } = (stmts
     throw(String::concat("function not found: ", name))
   }
   Array::get(stmts, found)
+}
+
+// Unbox a tagged float pointer (i64) on the stack into its f64 BITS (i64).
+export let emit_unbox_float: (Bytes) -> Unit = (buf) -> {
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i64_load(buf, 3, 0)
+}
+
+// Extract a function signature's parameter types: Some(arg_types) when `ty` is a
+// function type `(A, B, ...) -> R`, else None.
+export let fn_type_param_types: (Option[TypeExpr]) -> Option[Array[TypeExpr]] = (ty) -> {
+  match ty {
+    Some(t) =>
+    match t {
+      TyFn(args, _, _) => Some(args),
+      _ => None
+    },
+    None => None
+  }
+}
+
+// A bare nullary constructor (`Non`) — an EIdent that resolves to a constructor.
+// Under RC it is allocated as a headered, follow-able block (drop-class 1, 0
+// fields), so — unlike the old unheadered bump form — it can be classified heap
+// and reclaimed like a payload ctor (ADR-0055 cutover; see
+// docs/spec/selfhost-rc-cutover-readiness.md).
+export let is_nullary_ctor_ident: (Expr, CtorTable) -> Bool = (value, ct) -> {
+  match value {
+    EIdent(nm) => lookup_ctor(ct.names, nm, 0) >= 0,
+    _ => false
+  }
 }

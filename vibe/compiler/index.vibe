@@ -63,7 +63,7 @@ import ./entry/source_compile/index.vibe {
 }
 
 import ./entry/source_compile/wasi_only/index.vibe {
-  compile_source_wasi_only
+  compile_source_wasi_only, compile_source_wasi_only_rc
 }
 
 
@@ -71,6 +71,7 @@ import ./entry/compiler/fs_compile/index.vibe {
   compile_with_modules, compile_with_modules_wasi,
   prepare_modules_cached, compile_with_modules_cached, compile_with_modules_wasi_cached,
   compile_with_source_groups_via_module_source_wasi_unchecked_cached,
+  compile_with_source_groups_via_module_source_wasi_unchecked_rc,
   compile_file_fs, compile_file_fs_module, prepare_file_fs_cached,
   compile_file_fs_cached, compile_file_fs_module_cached
 }
@@ -121,6 +122,27 @@ let build_selfhost_cli_adapter_bytes: () -> Bytes with { Error } = () -> {
   let adapter_path = "vibe/compiler/selfhost_cli_adapter.vibe"
   let source_groups = selfhost_cli_adapter_source_groups()
   let (bytes, _) = compile_with_source_groups_via_module_source_wasi_unchecked_cached(
+    db_new(),
+    module_source,
+    adapter_path,
+    source_groups,
+    "cli_main"
+  )
+  bytes
+}
+
+// ADR-0055 #493 cutover: RC-codegen variant of build_selfhost_cli_adapter_bytes.
+// Compiles the WHOLE selfhost compiler (its own embedded module source) under
+// the Perceus RC backend. Running this through stage1 is the decisive
+// whole-compiler-under-RC validity signal for the cutover.
+let build_selfhost_cli_adapter_bytes_rc: () -> Bytes with { Error } = () -> {
+  let module_source = selfhost_cli_adapter_module_source()
+  if module_source == "" {
+    throw("selfhost_cli_adapter_module_source is empty")
+  }
+  let adapter_path = "vibe/compiler/selfhost_cli_adapter.vibe"
+  let source_groups = selfhost_cli_adapter_source_groups()
+  let (bytes, _) = compile_with_source_groups_via_module_source_wasi_unchecked_rc(
     db_new(),
     module_source,
     adapter_path,
@@ -283,7 +305,15 @@ export let selfbuild_cli_args_entry: () -> Int with { Error, Fs, Env } = () -> {
   }
   else {
     let source = perform Fs::ReadFile(input_path)
-    let bytes = compile_source_wasi_only(source, entry_name)
+    // ADR-0055 #493 cutover toggle: VIBE_RC=1 routes the Perceus RC codegen path
+    // (Env::Get returns "" when unset → default bump path). This is the entry the
+    // selfbuild / bootstrap / e2e gates use, so they can run the whole compiler
+    // under RC for the full-scale validity+correctness signal.
+    let bytes = if perform Env::Get("VIBE_RC") == "1" {
+      compile_source_wasi_only_rc(source, entry_name)
+    } else {
+      compile_source_wasi_only(source, entry_name)
+    }
     Fs::write_bytes(output_path, bytes)
     0
   }
@@ -314,6 +344,33 @@ export let selfbuild_compile_stage2: () -> Bytes with { Error } = () -> {
 
 export let selfbuild_compile_cli_adapter: () -> Bytes with { Error } = () -> {
   build_selfhost_cli_adapter_bytes()
+}
+
+// ADR-0055 #493 cutover: whole-compiler-under-RC entry. Writes the RC-compiled
+// selfhost compiler to VIBE_OUTPUT. Invoked through stage1 by the rc bootstrap
+// gate so the selfhost compiler compiles *itself* under the Perceus RC backend.
+export let selfbuild_compile_cli_adapter_rc_env: () -> Int with { Error, Fs, Env } = () -> {
+  let output_path = perform Env::Get("VIBE_OUTPUT")
+  if output_path == "" {
+    1
+  } else {
+    let bytes = build_selfhost_cli_adapter_bytes_rc()
+    Fs::write_bytes(output_path, bytes)
+    0
+  }
+}
+
+// Companion default-backend entry, so the gate can compare RC vs default for the
+// same whole-compiler self-compile through one code path.
+export let selfbuild_compile_cli_adapter_env: () -> Int with { Error, Fs, Env } = () -> {
+  let output_path = perform Env::Get("VIBE_OUTPUT")
+  if output_path == "" {
+    1
+  } else {
+    let bytes = build_selfhost_cli_adapter_bytes()
+    Fs::write_bytes(output_path, bytes)
+    0
+  }
 }
 
 export let selfbuild_probe_compile_cli_adapter_embedded_module_len: () -> Int with { Error } = () -> {

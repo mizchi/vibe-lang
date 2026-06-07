@@ -159,6 +159,45 @@ reclaim_case closure_capture '"let main: () -> Int = () -> {\n  let mut s = 0\n 
 # Closure capturing two heap values, called twice (not consumed per call).
 reclaim_case closure_two '"let main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let a = (i, i + 1)\n    let b = (i + 2, i + 3)\n    let g = () -> { a.0 + b.1 }\n    s = s + g() + g()\n    i = i + 1\n  }\n  s\n}"'
 
+# ADR-0055 Stage 4 (owned param, UNANNOTATED): a nested closure param has no type
+# annotation (the signature lives on an outer binding the lambda does not see),
+# so it used to be classified non-heap and never dropped — leaking the owned
+# argument (32 B/iter). `param_is_heap_in_body` now proves heap-ness from the
+# body: a param that is PROJECTED (`p.0`) or MATCHED is necessarily a
+# tuple/record/enum (a closure or scalar can be neither), so the callee drops it.
+reclaim_case nested_closure_param '"let main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let apply = (p) -> { p.0 + p.1 }\n    let t = (i, i + 1)\n    s = s + apply(t)\n    i = i + 1\n  }\n  s\n}"'
+# Same, proven via a match scrutinee instead of a projection.
+reclaim_case nested_closure_match '"enum Box { Wrap((Int, Int)); Empty }\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let unwrap = (e) -> { match e { Wrap(p) => p.0 + p.1, Empty => 0 } }\n    let t = Wrap((i, i + 1))\n    s = s + unwrap(t)\n    i = i + 1\n  }\n  s\n}"'
+
+# ADR-0055 Stage 4 (container-owning-escape via assignment): a projection RHS
+# (`keep = box.0`) makes the outer mut `keep` co-own a field of the live local
+# container `box`. Without a dup at the assignment, box.0 takes no reference, so
+# box.0 escapes into keep while box.0.s recursive drop frees it (16 B/iter leak,
+# then a double-free on the next reassign-drop). The guarded dup at the
+# assignment gives keep its own reference; its reassign/scope-end drop balances.
+reclaim_case escape_assign_proj '"let main: () -> Int = () -> {\n  let mut keep = (0, 0)\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let t = (i, i + 1)\n    let box = (t, i)\n    keep = box.0\n    i = i + 1\n  }\n  keep.0\n}"'
+
+# ADR-0055 Stage 4 (local heap-type inference): an UNANNOTATED nested-closure
+# param that is unused / borrow-only in its body cannot be proven heap from the
+# body, so it used to leak the caller-transferred value (32 B/iter). The
+# elaborate_heap_params pass infers it from the CALL SITES: the non-escaping
+# local lambda is only ever called with a follow-able-heap arg, so its param is
+# heap and the callee drops it.
+reclaim_case unused_param_callsite '"let main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let f = (p) -> { 42 }\n    let t = (i, i + 1)\n    s = s + f(t)\n    i = i + 1\n  }\n  s\n}"'
+
+# ADR-0055 Stage 4 (opaque args): the call-site heap inference also classifies a
+# constructor call carrying a payload (`f(Wrap((i, i+1)))`) and a call to a
+# heap-returning top-level function (`let r = mk(i); f(r)`) as a follow-able heap
+# arg, so an otherwise-unprovable unannotated param is dropped.
+reclaim_case opaque_ctor_arg '"enum Box { Wrap((Int, Int)); Empty }\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let f = (p) -> { 42 }\n    s = s + f(Wrap((i, i + 1)))\n    i = i + 1\n  }\n  s\n}"'
+reclaim_case opaque_fncall_arg '"let mk: (Int) -> (Int, Int) = (x) -> {\n  (x, x + 1)\n}\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let f = (p) -> { 42 }\n    let r = mk(i)\n    s = s + f(r)\n    i = i + 1\n  }\n  s\n}"'
+
+# ADR-0055 cutover: a nullary enum ctor (`None`/`Nil`/`Empty`) is now a headered
+# RC block (alloc via __rc_alloc, drop-class 1, 0 fields), so `let o = Non` is
+# classified heap and reclaimed at scope end. Was an 8 B/iter leak (unheadered
+# bump form, outside RC reclaim) — the last cutover-readiness blocker.
+reclaim_case nullary_ctor '"enum Opt { Som((Int, Int)); Non }\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < " + __to_string(n) + " {\n    let o = Non\n    s = s + match o { Som(p) => p.0, Non => 1 }\n    i = i + 1\n  }\n  s\n}"'
+
 # KNOWN PRE-EXISTING GAP (not a regression): a *nested* tuple built in a loop
 # (`let t = ((i, i+1), (i+2, i+3))`) fails to compile under RC at BOTH HEAD and
 # the Stage-1 baseline — so it is excluded from the reclamation set rather than

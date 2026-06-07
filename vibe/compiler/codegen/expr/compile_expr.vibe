@@ -39,15 +39,10 @@ import ./compile_match.vibe {
 //# Functions
 
 export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error } = (buf, expr, local_names, next_local, ctx, ld) -> {
-  // expr_is_floatish moved to compile_expr_tail.vibe (Blocker-3) so the `let`
-  // handler can share it and consult ctx.float_local_slots for variables.
   let __tag = expr_tag(expr)
   if __tag == 0 {
     let n = get_eint_value(expr)
     emit_i64_const(buf, n)
-    // ADR-0055 Stage 1: tag integers as n<<1 under RC. Shift at RUNTIME (not
-    // n<<1 at compile time) so large literals don't overflow the host's own
-    // 62-bit Int — the wasm runtime computes the shift in full i64.
     if ctx.enable_rc {
       emit_i64_const(buf, 1)
       emit_i64_shl(buf)
@@ -55,24 +50,22 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
     next_local
   } else if __tag == 1 {
     let b_val = get_ebool_value(expr)
-    // ADR-0055 Stage 1: booleans are tagged like ints (true=2, false=0) so a
-    // bool in a heap field stays even and is never misread as an odd pointer.
     emit_i64_const(buf, if b_val {
-      if ctx.enable_rc { 2 } else { 1 }
+      if ctx.enable_rc {
+        2
+      } else {
+        1
+      }
     } else {
       0
     })
     next_local
   } else if __tag == 2 {
     let v = get_efloat_value(expr)
-    // Split the f64 pattern into low/high 32-bit halves so a normal f64 literal
-    // (whose pattern exceeds 2^61-1) survives the 62-bit Int (Blocker-2). The
-    // old `Double::to_i64_bits(v)` path lost the pattern here.
     let lo = Double::to_i64_bits_lo(v)
     let hi = Double::to_i64_bits_hi(v)
     emit_f64_const_lohi(buf, lo, hi)
     emit_i64_reinterpret_f64(buf)
-    // ADR-0055 Stage 2: heap-box the float under RC so it is an odd pointer.
     if ctx.enable_rc {
       Array::push(local_names, "__fbits")
       Array::push(local_names, "__fbox")
@@ -123,7 +116,6 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
       }
       if __ci_idx >= 0 {
         emit_i64_const(buf, Array::get(ctx.const_int_values, __ci_idx))
-        // ADR-0055 Stage 1: const-folded ints are tagged like literals.
         if ctx.enable_rc {
           emit_i64_const(buf, 1)
           emit_i64_shl(buf)
@@ -135,25 +127,57 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
           let tag_c = Array::get(ctx.ctor_table.tags, ctor_idx)
           let ptr_l = next_local
           Array::push(local_names, "__ctor_ptr")
-          emit_global_get(buf, 0)
-          emit_i64_extend_i32_u(buf)
-          emit_local_set(buf, ptr_l)
-          emit_global_get(buf, 0)
-          emit_i32_const(buf, 8)
-          emit_i32_add(buf)
-          emit_global_set(buf, 0)
-          emit_local_get(buf, ptr_l)
-          emit_i32_wrap_i64(buf)
-          emit_i32_const(buf, tag_c)
-          emit_i32_store(buf, 2, 0)
-          emit_local_get(buf, ptr_l)
-          emit_i32_wrap_i64(buf)
-          emit_i32_const(buf, 0)
-          emit_i32_store(buf, 2, 4)
-          emit_local_get(buf, ptr_l)
-          emit_i64_const(buf, 1)
-          emit_i64_or(buf)
-          next_local + 1
+          if ctx.enable_rc {
+            emit_i64_const(buf, 16)
+            emit_call(buf, ctx.rc_alloc_func_idx)
+            emit_local_set(buf, ptr_l)
+            emit_local_get(buf, ptr_l)
+            emit_i32_wrap_i64(buf)
+            emit_i32_const(buf, 16)
+            emit_i32_store(buf, 2, 0)
+            emit_local_get(buf, ptr_l)
+            emit_i32_wrap_i64(buf)
+            emit_i32_const(buf, 1)
+            emit_i32_store(buf, 2, 4)
+            emit_local_get(buf, ptr_l)
+            emit_i32_wrap_i64(buf)
+            emit_i32_const(buf, 1)
+            emit_i32_store8(buf, 0, 7)
+            emit_local_get(buf, ptr_l)
+            emit_i32_wrap_i64(buf)
+            emit_i32_const(buf, tag_c)
+            emit_i32_store(buf, 2, 8)
+            emit_local_get(buf, ptr_l)
+            emit_i32_wrap_i64(buf)
+            emit_i32_const(buf, 0)
+            emit_i32_store(buf, 2, 12)
+            emit_local_get(buf, ptr_l)
+            emit_i64_const(buf, 8)
+            emit_i64_add(buf)
+            emit_i64_const(buf, 1)
+            emit_i64_or(buf)
+            next_local + 1
+          } else {
+            emit_global_get(buf, 0)
+            emit_i64_extend_i32_u(buf)
+            emit_local_set(buf, ptr_l)
+            emit_global_get(buf, 0)
+            emit_i32_const(buf, 8)
+            emit_i32_add(buf)
+            emit_global_set(buf, 0)
+            emit_local_get(buf, ptr_l)
+            emit_i32_wrap_i64(buf)
+            emit_i32_const(buf, tag_c)
+            emit_i32_store(buf, 2, 0)
+            emit_local_get(buf, ptr_l)
+            emit_i32_wrap_i64(buf)
+            emit_i32_const(buf, 0)
+            emit_i32_store(buf, 2, 4)
+            emit_local_get(buf, ptr_l)
+            emit_i64_const(buf, 1)
+            emit_i64_or(buf)
+            next_local + 1
+          }
         } else {
           let fn_len = Array::length(ctx.func_table.names)
           let mut __tf_j = 0
@@ -203,7 +227,6 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
       let nl2 = compile_expr(buf, rhs, local_names, nl1, ctx, ld)
       let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
       emit_call(buf, eq_fidx)
-      // ADR-0055 Stage 1: eq yields a raw 0/1 bool; tag it (0/2).
       if ctx.enable_rc {
         emit_i64_const(buf, 1)
         emit_i64_shl(buf)
@@ -222,9 +245,6 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
       }
       nl2
     } else if expr_is_floatish(lhs, local_names, ctx) || expr_is_floatish(rhs, local_names, ctx) {
-      // ADR-0055 Stage 2: under RC each float operand is a heap-boxed pointer,
-      // so unbox to its f64 bits before reinterpreting; an arithmetic result is
-      // re-boxed, a comparison result is a tagged bool. (Non-RC stays inline.)
       let nl1 = compile_expr(buf, lhs, local_names, next_local, ctx, ld)
       if ctx.enable_rc {
         emit_unbox_float(buf)
@@ -267,7 +287,6 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
           throw(String::concat("unsupported float binop: ", op))
         }
         emit_i64_extend_i32_s(buf)
-        // ADR-0055 Stage 1: a comparison yields a bool; tag it under RC.
         if ctx.enable_rc {
           emit_i64_const(buf, 1)
           emit_i64_shl(buf)
@@ -275,11 +294,6 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
         nl2
       }
     } else if ctx.enable_rc {
-      // ADR-0055 Stage 1: tagged-int (n<<1) arithmetic corrections.
-      //   + - & | ^ % && || : none (low tag bit is preserved)
-      //   *  -> result >>1   /  -> result <<1
-      //   << -> untag shift amount   >> -> untag both, then re-tag result
-      //   < > <= >= -> result is a bool, tag it (<<1)
       if op == "<<" {
         let nl1 = compile_expr(buf, lhs, local_names, next_local, ctx, ld)
         let nl2 = compile_expr(buf, rhs, local_names, nl1, ctx, ld)
@@ -342,7 +356,6 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
       let nl = compile_expr(buf, operand, local_names, next_local, ctx, ld)
       emit_i64_eqz(buf)
       emit_i64_extend_i32_s(buf)
-      // ADR-0055 Stage 1: tag the bool result (0/2).
       if ctx.enable_rc {
         emit_i64_const(buf, 1)
         emit_i64_shl(buf)
