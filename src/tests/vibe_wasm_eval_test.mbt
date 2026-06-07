@@ -1951,6 +1951,23 @@ test "vibe wasm eval returns value" {
 }
 
 ///|
+// Regression for #521: `match s { "lit" => ... }` must compare by content, not
+// by tagged pointer, so a COMPUTED scrutinee (here from String::concat) matches
+// the interned literal pattern.
+test "vibe wasm eval: match on computed string compares by content (#521)" {
+  let src =
+    #|let classify = (s: String) -> Int { match s { "ab" => 1, _ => 0 } }
+    #|let computed = String::concat("a", "b")
+    #|classify(computed)
+  let res = try eval_run(src) catch {
+    e => fail(e.to_string())
+  } noraise {
+    r => r
+  }
+  assert_eq(decode_int(res.value), 1L)
+}
+
+///|
 test "vibe wasm export _start returns raw int" {
   let db = VibeDb::new()
   db.set_source("main", "42")
