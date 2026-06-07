@@ -132,8 +132,9 @@ echo ""
 # Host checker prelude intrinsics (src/checker/prelude.mbt `prelude_names`). The
 # host injects these into the check env; the gate's linked check path does not
 # load the prelude, so files using them get a spurious `unknown name`. This is a
-# harness/env-init artifact, not a language gap. Keep in sync with prelude.mbt.
-PRELUDE_INTRINSICS="add sub mul div eq lt not and or assert assert_true to_string iter_require iter_length iter_get assert_eq where __add __sub __mul __div __mod __eq __lt __neg __not __or __and __index __len __slice __to_string __bit_and __bit_or __bit_xor __lshift __rshift __assert __assert_eq"
+# harness/env-init artifact, not a language gap. Keep in sync with prelude.mbt:
+# the bare/`__`-prefixed names plus the full `Ns::method` set from prelude_names().
+PRELUDE_INTRINSICS="add sub mul div eq lt not and or assert assert_true to_string iter_require iter_length iter_get assert_eq where __add __sub __mul __div __mod __eq __lt __neg __not __or __and __index __len __slice __to_string __bit_and __bit_or __bit_xor __lshift __rshift __assert __assert_eq String::iter_length String::iter_get Map::iter_length Map::iter_get Array::map Array::fold Array::filter Array::foreach Array::concat Array::reverse Array::any Array::all Array::find Array::sort Array::contains Array::join Map::get_or Map::map Map::filter"
 
 is_prelude_intrinsic() {
   # $1 = bare name extracted from `unknown name: <name>`
