@@ -4,12 +4,20 @@ import ./codegen / wasi {
   compile_wasi_module_linked_impl
 }
 
+import ./checker / checker_stmt.vibe {
+  check_program
+}
+
 import ./core / ast.vibe {
   Expr, Stmt
 }
 
 import ./entry / source_compile / wasi_only / linked_artifacts.vibe {
   collect_linked_compile_inputs
+}
+
+import ./entry / source_compile / wasi_only / preprocess_interp.vibe {
+  expand_interp_stmts
 }
 
 import ./entry / source_compile / wasi_only / path_utils.vibe {
@@ -93,6 +101,25 @@ export let build_linked_debug_entry: (String, String) -> (Bytes, Array[(String, 
   (bytes, linked_dep_specs)
 }
 
+// Gate v2 (#492): parse + typecheck only, with imports linked. The checker
+// knows builtin signatures, so this surfaces REAL language/checker
+// expressiveness gaps (parse errors, type errors, genuine unknown names)
+// WITHOUT the codegen builtin-body-linking confounder that makes the `debug`
+// mode emit spurious `undefined variable: Ns::method`. No wasm is produced.
+export let check_linked_file: (String) -> Int with { Error, Fs } = (input_path) -> {
+  // Mirrors the front of compile_file_wasi_linked_artifacts exactly (the proven
+  // linked check): keep SImport stmts so check_program registers imported names,
+  // expand interpolation, then check — but stop before codegen. Stripping
+  // imports here would make every imported value read as `unknown name`.
+  let (entry_stmts, resolved_type_stmts, _linked_imports, _linked_dep_specs) = collect_linked_compile_inputs(input_path)
+  let stmts = empty_stmt_array()
+  append_stmt_array(stmts, resolved_type_stmts)
+  append_stmt_array(stmts, entry_stmts)
+  expand_interp_stmts(stmts)
+  let _ = check_program(stmts)
+  0
+}
+
 export let write_linked_debug_build: (String, String, String) -> Unit with { Error, Fs } = (input_path, output_path, entry_name) -> {
   let (entry_bytes, linked_dep_specs) = build_linked_debug_entry(input_path, entry_name)
   Fs::write_bytes(output_path, entry_bytes)
@@ -129,6 +156,9 @@ export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
   else if mode == "debug" {
     write_linked_debug_build(input_path, output_path, entry_name)
     0
+  }
+  else if mode == "check" {
+    check_linked_file(input_path)
   }
   else {
     1
