@@ -47,8 +47,12 @@ mkdir -p "$OUT_DIR/tmp"
 command -v python3 >/dev/null 2>&1 || { echo "bench-selfhost-rss: python3 required" >&2; exit 2; }
 
 # --- ensure binaries ---
-VIBE_CLI_RELEASE=1 source "$PROJECT_ROOT/scripts/ensure_native_cli.sh"
-VIBE_BIN="${VIBE_BIN:-$VIBE_CLI_BIN}"
+# Reuse a caller-provided release CLI (e.g. CI's downloaded artifact) instead of
+# rebuilding it; only fall back to ensure_native_cli.sh when VIBE_BIN is unset.
+if [ -z "${VIBE_BIN:-}" ] || [ ! -x "${VIBE_BIN:-/nonexistent}" ]; then
+  VIBE_CLI_RELEASE=1 source "$PROJECT_ROOT/scripts/ensure_native_cli.sh"
+  VIBE_BIN="${VIBE_BIN:-$VIBE_CLI_BIN}"
+fi
 
 build_wasm() {
   local pkg="$1" out="$2"
