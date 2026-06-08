@@ -1090,6 +1090,55 @@ test "compiled exec runs Threads local channel FIFO" {
 }
 
 ///|
+test "compiled exec runs Threads local channel record payload" {
+  let root = wbtest_make_temp_dir("threads_record_channel_exec_wb")
+  let entry_path = root + "/main.vibe"
+  let wasm_path = root + "/main.wasm"
+  let db = @runtime.VibeDb::new()
+  db.set_source(
+    entry_path,
+    (
+      #|export let _start = () -> Int with {Threads} {
+      #|  let ch = Threads::channel_new(1)
+      #|  let ok = Threads::send(ch, record { value: 41, label: "ok" })
+      #|  let msg = Threads::recv(ch)
+      #|  if ok { msg.value + 1 } else { 0 }
+      #|}
+    ),
+  )
+  let wasm = try compile_module_wasm_for_exec(db, entry_path) catch {
+    e => fail("compile error: " + e.to_string())
+  } noraise {
+    v => v
+  }
+  @os_fs.write_bytes_to_file(wasm_path, wasm) catch {
+    e => fail("write wasm failed: " + e.to_string())
+  }
+  let runner = match resolve_bench_wasm_runner(entry_path) {
+    Ok(v) => v
+    Err(err) => fail("resolve runner failed: " + err)
+  }
+  let run_out = run_wasmtime_invoke_run_capture(runner, wasm_path, wasm_path)
+  if run_out.status != 0 {
+    fail(
+      "run failed: " + wasmtime_failure_detail(run_out.stdout, run_out.stderr),
+    )
+  }
+  let tagged = match parse_last_numeric_line_int64(run_out.stdout) {
+    Some(v) => v
+    None => fail("missing numeric result")
+  }
+  let value = match decode_tagged_wasm_run_value(tagged) {
+    Some(v) => v
+    None => fail("unsupported tagged result: " + tagged.to_string())
+  }
+  @debug.assert_eq(value, WasmRunValue::Int(42L))
+  wbtest_remove_if_exists(wasm_path)
+  wbtest_remove_if_exists(entry_path)
+  wbtest_remove_if_exists(root)
+}
+
+///|
 test "compiled exec runs Threads local task wait" {
   let root = wbtest_make_temp_dir("threads_task_exec_wb")
   let entry_path = root + "/main.vibe"

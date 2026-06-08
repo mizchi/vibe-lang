@@ -99,7 +99,8 @@ Rules:
   - with `--unstable-threads`, `Threads::probe_wat()` and
     `Threads::runtime_hints()` lower as compiled constants,
     `Threads::channel_new`/`send`/`recv` lower to a local Wasm FIFO channel
-    with a nominal `ThreadChannel[String]` handle, and
+    with a nominal `ThreadChannel[T]` handle whose payload type is inferred
+    from `send` or an explicit annotation before `recv`, and
     `Threads::spawn`/`wait` lower to a local immediate-complete
     `ThreadTask[Int]` handle. This default backend is `linear-local`; it is not a
     preemptive/parallel execution backend yet.
@@ -318,10 +319,10 @@ compiled/component lowering today, but `spawn` is still a local
 immediate-complete task and not a preemptive/parallel worker):
 - `Threads::probe_wat()` -> `String` (compiled string constant)
 - `Threads::runtime_hints()` -> `{ wasm_flags: Array[String], wasi_flags: Array[String], wasm_env: String, wasi_env: String }` (compiled record constant selected from the codegen thread backend)
-- `Threads::channel_new(capacity: Int)` -> `ThreadChannel[String]` (opaque local channel handle; `capacity <= 0` means unbounded)
-- `Threads::send(channel: ThreadChannel[String], message: String)` -> `Bool` (`false` when a bounded channel is full)
-- `Threads::recv(channel: ThreadChannel[String])` -> `String` (FIFO pop; `""` when empty)
-- `Threads::spawn(name: String, channel: ThreadChannel[String])` -> `ThreadTask[Int]` (opaque local task handle; currently immediately terminal)
+- `Threads::channel_new(capacity: Int)` -> `ThreadChannel[T]` (opaque local channel handle; `capacity <= 0` means unbounded)
+- `Threads::send(channel: ThreadChannel[T], message: T)` -> `Bool` (`false` when a bounded channel is full)
+- `Threads::recv(channel: ThreadChannel[T])` -> `T` (FIFO pop; `T` must already be constrained by `send` or an annotation)
+- `Threads::spawn(name: String, channel: ThreadChannel[T])` -> `ThreadTask[Int]` (opaque local task handle; currently immediately terminal)
 - `Threads::wait(task: ThreadTask[Int])` -> `Int` (terminal code; `0 = completed`)
 - `vibe/prelude/threads.vibe` は test-safe な pure contract 層を分離:
   - `task_spec`, `channel_spec`, `actor_spec`, `deployment_plan`, `recommended_*`

@@ -93,9 +93,10 @@ does not claim parallelism. It is a single-instance local runtime used to keep
 the source-level contract executable while the Wasmtime fork backend matures.
 
 Source-level local channel handles are nominal Vibe `ThreadChannel[T]` values.
-The current compiled API instantiates this as `ThreadChannel[String]`. Its
-runtime payload is still the same tagged integer representation used by other
-linear-memory handles: a raw pointer to this record:
+The payload type is inferred from `Threads::send` or from an explicit
+annotation before `Threads::recv` is accepted. The runtime payload is still the
+same tagged integer representation used by other linear-memory handles: a raw
+pointer to this record:
 
 | Offset | Field |
 | --- | --- |
@@ -105,7 +106,7 @@ linear-memory handles: a raw pointer to this record:
 | `+8` | head node pointer (`0` when empty) |
 | `+12` | tail node pointer (`0` when empty) |
 
-Local channel nodes are 8 bytes:
+Local channel nodes are 8 bytes and store one tagged Vibe payload:
 
 | Offset | Field |
 | --- | --- |

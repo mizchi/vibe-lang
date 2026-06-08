@@ -1,11 +1,151 @@
 ///|
-fn threads_channel_string_type() -> @core.Type {
-  @core.Type::Named(name="ThreadChannel", args=[@core.Type::String])
+fn threads_channel_type(payload : @core.Type) -> @core.Type {
+  @core.Type::Named(name="ThreadChannel", args=[payload])
+}
+
+///|
+fn threads_task_type(payload : @core.Type) -> @core.Type {
+  @core.Type::Named(name="ThreadTask", args=[payload])
 }
 
 ///|
 fn threads_task_int_type() -> @core.Type {
-  @core.Type::Named(name="ThreadTask", args=[@core.Type::Int])
+  threads_task_type(@core.Type::Int)
+}
+
+///|
+fn type_threads_channel_new(ctx : BuiltinCallCtx) -> @core.Type raise TypeError {
+  let pos_args = prepare_builtin_pos_args(
+    ctx.env,
+    "Threads::channel_new",
+    ctx.args,
+    1,
+    ctx.effects,
+    ctx.allow_effect,
+    ctx.call_span,
+    true,
+  )
+  let _ = check_arg_type(
+    ctx.env,
+    pos_args[0],
+    @core.Type::Int,
+    ctx.aliases,
+    ctx.effects,
+    ctx.allow_effect,
+  )
+  threads_channel_type(fresh_type_var(ctx.env))
+}
+
+///|
+fn type_threads_send(ctx : BuiltinCallCtx) -> @core.Type raise TypeError {
+  let pos_args = prepare_builtin_pos_args(
+    ctx.env,
+    "Threads::send",
+    ctx.args,
+    2,
+    ctx.effects,
+    ctx.allow_effect,
+    ctx.call_span,
+    true,
+  )
+  let channel_ty = type_expr_eff(
+    ctx.env,
+    pos_args[0],
+    ctx.aliases,
+    ctx.effects,
+    ctx.allow_effect,
+  )
+  let message_ty = type_expr_eff(
+    ctx.env,
+    pos_args[1],
+    ctx.aliases,
+    ctx.effects,
+    ctx.allow_effect,
+  )
+  ensure_type(
+    ctx.env,
+    channel_ty,
+    threads_channel_type(message_ty),
+    pos_args[0].span(),
+    "argument",
+  )
+  @core.Type::Bool
+}
+
+///|
+fn type_threads_recv(ctx : BuiltinCallCtx) -> @core.Type raise TypeError {
+  let pos_args = prepare_builtin_pos_args(
+    ctx.env,
+    "Threads::recv",
+    ctx.args,
+    1,
+    ctx.effects,
+    ctx.allow_effect,
+    ctx.call_span,
+    true,
+  )
+  let payload_ty = fresh_type_var(ctx.env)
+  let channel_ty = type_expr_eff(
+    ctx.env,
+    pos_args[0],
+    ctx.aliases,
+    ctx.effects,
+    ctx.allow_effect,
+  )
+  ensure_type(
+    ctx.env,
+    channel_ty,
+    threads_channel_type(payload_ty),
+    pos_args[0].span(),
+    "argument",
+  )
+  let resolved = resolve_type(ctx.env, payload_ty)
+  match resolved {
+    @core.Type::Var(_) =>
+      raise TypeError::BadCall(
+        message="Threads::recv payload type must be constrained by send or annotation",
+        span=pos_args[0].span(),
+      )
+    _ => resolved
+  }
+}
+
+///|
+fn type_threads_spawn(ctx : BuiltinCallCtx) -> @core.Type raise TypeError {
+  let pos_args = prepare_builtin_pos_args(
+    ctx.env,
+    "Threads::spawn",
+    ctx.args,
+    2,
+    ctx.effects,
+    ctx.allow_effect,
+    ctx.call_span,
+    true,
+  )
+  let _ = check_arg_type(
+    ctx.env,
+    pos_args[0],
+    @core.Type::String,
+    ctx.aliases,
+    ctx.effects,
+    ctx.allow_effect,
+  )
+  let payload_ty = fresh_type_var(ctx.env)
+  let channel_ty = type_expr_eff(
+    ctx.env,
+    pos_args[1],
+    ctx.aliases,
+    ctx.effects,
+    ctx.allow_effect,
+  )
+  ensure_type(
+    ctx.env,
+    channel_ty,
+    threads_channel_type(payload_ty),
+    pos_args[1].span(),
+    "argument",
+  )
+  threads_task_int_type()
 }
 
 ///|
@@ -404,34 +544,10 @@ fn type_call_builtin_handler_core_io(
       fields["wasi_env"] = @core.Type::String
       ctx.simple("Threads::runtime_hints", [], @core.Type::Record(fields), true)
     }
-    "Threads::channel_new" =>
-      ctx.simple(
-        "Threads::channel_new",
-        [@core.Type::Int],
-        threads_channel_string_type(),
-        true,
-      )
-    "Threads::send" =>
-      ctx.simple(
-        "Threads::send",
-        [threads_channel_string_type(), @core.Type::String],
-        @core.Type::Bool,
-        true,
-      )
-    "Threads::recv" =>
-      ctx.simple(
-        "Threads::recv",
-        [threads_channel_string_type()],
-        @core.Type::String,
-        true,
-      )
-    "Threads::spawn" =>
-      ctx.simple(
-        "Threads::spawn",
-        [@core.Type::String, threads_channel_string_type()],
-        threads_task_int_type(),
-        true,
-      )
+    "Threads::channel_new" => type_threads_channel_new(ctx)
+    "Threads::send" => type_threads_send(ctx)
+    "Threads::recv" => type_threads_recv(ctx)
+    "Threads::spawn" => type_threads_spawn(ctx)
     "Threads::wait" =>
       ctx.simple(
         "Threads::wait",

@@ -421,9 +421,6 @@ test "type_call_builtin: Threads channel API has typed handle surface" {
   let span = builtin_test_span()
   let aliases : Map[String, @core.Ref] = {}
   let scope = effect_scope_from_list([@core.EffectAtom::Const("Threads")])
-  let channel_handle_ty = @core.Type::Named(name="ThreadChannel", args=[
-    @core.Type::String,
-  ])
   let task_handle_ty = @core.Type::Named(name="ThreadTask", args=[
     @core.Type::Int,
   ])
@@ -438,7 +435,13 @@ test "type_call_builtin: Threads channel API has typed handle surface" {
   ) catch {
     err => fail(err.to_string())
   }
-  assert_eq(channel_ty, channel_handle_ty)
+  match channel_ty {
+    @core.Type::Named(name~, args~) => {
+      assert_eq(name, "ThreadChannel")
+      assert_eq(args.length(), 1)
+    }
+    _ => fail("expected ThreadChannel handle")
+  }
   env.set("ch", channel_ty)
   let send_ty = type_call_builtin(
     env,
@@ -489,6 +492,92 @@ test "type_call_builtin: Threads channel API has typed handle surface" {
     err => fail(err.to_string())
   }
   assert_eq(wait_ty, @core.Type::Int)
+}
+
+///|
+test "type_call_builtin: Threads channel payload is inferred from send" {
+  let env = TypeEnv::new()
+  let span = builtin_test_span()
+  let aliases : Map[String, @core.Ref] = {}
+  let scope = effect_scope_from_list([@core.EffectAtom::Const("Threads")])
+  let fields : Map[String, @core.Type] = {}
+  fields["value"] = @core.Type::Int
+  fields["label"] = @core.Type::String
+  let record_ty = @core.Type::Record(fields)
+  let channel_ty = type_call_builtin(
+    env,
+    "Threads::channel_new",
+    [builtin_test_int_arg(8)],
+    aliases,
+    scope,
+    true,
+    span,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  env.set("ch", channel_ty)
+  env.set("msg", record_ty)
+  let send_ty = type_call_builtin(
+    env,
+    "Threads::send",
+    [builtin_test_ident_arg("ch"), builtin_test_ident_arg("msg")],
+    aliases,
+    scope,
+    true,
+    span,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  assert_eq(send_ty, @core.Type::Bool)
+  let recv_ty = type_call_builtin(
+    env,
+    "Threads::recv",
+    [builtin_test_ident_arg("ch")],
+    aliases,
+    scope,
+    true,
+    span,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  if !type_equal(env, recv_ty, record_ty) {
+    fail("expected recv payload to match record type")
+  }
+}
+
+///|
+test "type_call_builtin: Threads recv requires constrained payload" {
+  let env = TypeEnv::new()
+  let span = builtin_test_span()
+  let aliases : Map[String, @core.Ref] = {}
+  let scope = effect_scope_from_list([@core.EffectAtom::Const("Threads")])
+  let channel_ty = type_call_builtin(
+    env,
+    "Threads::channel_new",
+    [builtin_test_int_arg(8)],
+    aliases,
+    scope,
+    true,
+    span,
+  ) catch {
+    err => fail(err.to_string())
+  }
+  env.set("ch", channel_ty)
+  let recv_result : Result[@core.Type, TypeError] = try? type_call_builtin(
+    env,
+    "Threads::recv",
+    [builtin_test_ident_arg("ch")],
+    aliases,
+    scope,
+    true,
+    span,
+  )
+  match recv_result {
+    Ok(_) => fail("expected unconstrained recv payload to be rejected")
+    Err(TypeError::BadCall(message~, ..)) =>
+      assert_true(message.contains("payload type must be constrained"))
+    Err(other) => fail("unexpected error: \{other.to_string()}")
+  }
 }
 
 ///|
