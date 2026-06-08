@@ -49,6 +49,7 @@ fn AstParser::parse_type_with_params(
       }
       wrapped
     }
+    k if k == record_kw() => self.parse_record_type(params)
     k if k == lparen() =>
       match self.try_parse_fn_type(params) {
         Some(t) => t
@@ -63,6 +64,33 @@ fn AstParser::parse_type_with_params(
       )
   }
   self.parse_type_post_suffixes(base_ty)
+}
+
+///|
+fn AstParser::parse_record_type(
+  self : AstParser,
+  params : Map[String, Bool],
+) -> @core.Type raise ParseError {
+  let _ = self.expect(record_kw(), "record")
+  let _ = self.expect(lbrace(), "{")
+  let fields : Map[String, @core.Type] = {}
+  while ({
+          self.skip_trivia()
+          self.peek_kind() != rbrace()
+        }) {
+    if self.peek_kind() == eof() {
+      raise ParseError::UnexpectedEof(span=self.token_span())
+    }
+    let name_tok = self.expect(name(), "field")
+    self.skip_trivia()
+    let _ = self.expect(colon(), ":")
+    self.skip_trivia()
+    fields[name_tok.text()] = self.parse_type_with_params(params)
+    let _ = self.eat(comma())
+    let _ = self.eat(semicolon())
+  }
+  let _ = self.expect(rbrace(), "}")
+  @core.Type::Record(fields)
 }
 
 ///|

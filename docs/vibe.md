@@ -324,6 +324,8 @@ immediate-complete task and not a preemptive/parallel worker):
 - `Threads::recv(channel: ThreadChannel[T])` -> `T` (FIFO pop; `T` must already be constrained by `send` or an annotation)
 - `Threads::spawn(name: String, channel: ThreadChannel[T])` -> `ThreadTask[Int]` (opaque local task handle; currently immediately terminal)
 - `Threads::wait(task: ThreadTask[Int])` -> `Int` (terminal code; `0 = completed`)
+  - record payload annotation uses `record { field: Type, ... }`, e.g.
+    `ThreadChannel[record { value: Int, label: String }]`
 - `vibe/prelude/threads.vibe` は test-safe な pure contract 層を分離:
   - `task_spec`, `channel_spec`, `actor_spec`, `deployment_plan`, `recommended_*`
   - これらは通常 `vibe test` で実行可能
