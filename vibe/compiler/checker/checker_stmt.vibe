@@ -149,7 +149,7 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
         }
         (new_env, ns, nc)
       },
-      SEnum(_, name, variants) => {
+      SEnum(_, name, params, variants) => {
         let resolved_variants = Array::slice([
           ("", Array::slice([
             CtUnknown
@@ -170,7 +170,7 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
           Array::push(resolved_variants, (vname, resolved_vtypes))
           vi = vi + 1
         }
-        Array::push(defs, TDEnum(name, resolved_variants))
+        Array::push(defs, TDEnum(name, params, resolved_variants))
         let mut env1 = env_bind(env, name, CtEnum(name))
         let mut ci2 = 0
         while ci2 < Array::length(variants) {
@@ -215,8 +215,11 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
         }
         (env_bind(env, name, CtFn(field_types, CtStruct(name), None)), s, c)
       },
-      STypeAlias(_, name, te) => {
+      STypeAlias(_, name, params, te) => {
         let t = resolve_type_expr(te, defs)
+        // Record the alias (with its formal params) so an applied use
+        // `Name[Arg]` expands via subst in resolve_type_expr's TyApp case.
+        Array::push(defs, TDAlias(name, params, t))
         (env_bind(env, name, t), s, c)
       },
       SExternLet(name, te) => {
@@ -266,7 +269,9 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
 
 export let check_program: (Array[Stmt]) -> TypeEnv with { Error } = (stmts) -> {
   let empty_defs = Array::slice([
-    TDAlias("_dummy", CtUnit)
+    TDAlias("_dummy", Array::slice([
+      ""
+    ], 0, 0), CtUnit)
   ], 0, 0)
   let seeded_env = if trait_defined(EnvEmpty, "Eq") {
     EnvEmpty
@@ -287,7 +292,9 @@ export let check_program_with_env: (Array[Stmt], TypeEnv) -> TypeEnv with { Erro
     EnvEmpty => check_program(stmts),
     _ => {
       let empty_defs = Array::slice([
-        TDAlias("_dummy", CtUnit)
+        TDAlias("_dummy", Array::slice([
+      ""
+    ], 0, 0), CtUnit)
       ], 0, 0)
       let cached_env = env_cache(initial_env)
       let seeded_env = if trait_defined(cached_env, "Eq") {

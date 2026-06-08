@@ -1,9 +1,13 @@
 # Selfhost uniform value representation — design for runtime pointer discrimination
 
-Status: **accepted, in progress** (ADR-0055). Stages 1–3 implemented, Stage 4
-partial (the safety-critical slice landed), Stage 5 measured; the remaining
-implementation work is **float heap-boxing** (Stage 2) and the residual Stage 4
-escape leaks (container-owning-escape, nested-closure owned params). Prerequisite
+Status: **accepted, in progress** (ADR-0055). Stages 1–3 implemented, Stage 2
+float heap-boxing implemented (#509; NaN-box deferred), Stage 4 partial (the
+safety-critical slice + most leak fixes landed), Stage 5 measured. The only
+remaining implementation work is the **residual Stage 4 escape leaks**
+(container-owning-escape, and the narrow case of an unannotated owned param
+passed through whole rather than projected/matched) — all *safe* leaks (no
+use-after-free), and the gate that blocks RC cutover to the selfhost linear
+default. Prerequisite
 for *recursive field drop* in the selfhost Perceus RC port
 (`docs/spec/selfhost-rc-port.md`). `src/` stays authoritative; this documents the
 design the selfhost backend needs before the RC vertical can reclaim **nested**
@@ -481,11 +485,23 @@ arithmetic / comparison / bitop / shift / float / nested-data case under
    are `enable_rc`-only; the default path keeps the raw bump-allocated env. Pinned
    by `closure_capture` / `closure_two` (reclaim) and two heap-e2e parity cases.
 
+   **Container-owning-escape via assignment (landed).** Assigning a container
+   projection to an outer mut binding (`keep = box.0`) made `keep` co-own a field
+   of the still-live local `box` without taking a reference: when `box`'s
+   scope-end recursive drop frees the field, `keep` dangles and the next
+   reassign-drop double-frees it (observed as a 16 B/iter leak). Mirroring the
+   let-bound projection (`let a = box.0`), the assignment now emits a **guarded
+   dup of the projected value** (`compile_expr_tail.vibe`, `EAssign`), so `keep`
+   owns its own reference and its reassign / scope-end drop balances it. Limited
+   to the clean `!is_self` case (`keep = keep.0` keeps the reassign-reads-target
+   carve-out). Pinned by `escape_assign_proj` (reclaim, 0 B/iter) and a heap-e2e
+   parity case.
+
    **Still remaining (leaks, safe):**
-   - Container **owning** escapes where the RHS references the target (the
-     reassignment safety carve-out above) or an owned value stored into a
-     container that *outlives* the current scope without a matching drop site are
-     not dup'd/dropped → leak (safe).
+   - An owned value stored into a container that *outlives* the current scope
+     without a matching drop site (e.g. pushed into a builder kept by the caller,
+     or the reassign-reads-target carve-out above) is not dup'd/dropped → leak
+     (safe).
    - A heap value captured by a closure that is then stored into a longer-lived
      container (closure escapes via a container, not a return) follows the same
      container-owning-escape gap.
@@ -518,10 +534,57 @@ arithmetic / comparison / bitop / shift / float / nested-data case under
    the param type as the tuple of all args. Pinned by `owned_param`,
    `owned_param_proj` (reclaim) and three heap-e2e parity cases.
 
-   **Still remaining (smaller, safe):** owned heap params of *nested closures*
-   (compile_lambda) whose types are unannotated are not dropped (the signature
-   lives on an outer binding the lambda does not see) → leak (safe); and the
-   container-escape / reassign-reads-target carve-outs above.
+   **Unannotated nested-closure owned params (landed).** A nested closure's
+   params carry no type annotation (the signature lives on an outer binding the
+   lambda does not see), so they were classified non-heap and never dropped —
+   leaking the owned argument (32 B/iter). `param_is_heap_in_body`
+   (`perceus/index.vibe`) now recovers heap-ness *from the body*: a param that is
+   **projected (`p.0`) or used as a match scrutinee** is necessarily a
+   tuple/record/enum — a closure value or a scalar can be neither — so it is
+   classified heap and the callee drops it. The signal is **sound by
+   construction** (it never classifies a function-typed param, so the recursive
+   `__rc_drop` is never run on an unheadered closure) and **under-detection is
+   safe** (a param that is neither projected nor matched keeps the prior safe
+   leak, never a premature free). Threaded through `build_perceus_plan_with
+   _params`, `compile_lambda`, and the top-level fn path in `linked_compile` so
+   plan and codegen share one decision. Pinned by `nested_closure_param` /
+   `nested_closure_match` (reclaim, 0 B/iter) and a heap-e2e parity case.
+
+   **Local heap-type inference from call sites (landed).** An unannotated param
+   that is **unused or borrow-only** (e.g. `(p) -> { 42 }`) cannot be proven heap
+   from the body, so it leaked the caller-transferred value. The RC-only AST pass
+   `elaborate_heap_params` (`perceus/index.vibe`, run at the head of
+   `compile_wasi_module_rc_impl`) recovers its heap-ness from the **call sites**:
+   for a locally-bound lambda that **does not escape** (only ever appears as a
+   call callee), if **every** call passes a provably follow-able-heap argument (a
+   tuple/array/record literal, or a `let` bound to one) at a position, that param
+   is filled with a synthetic heap type so the existing classification drops it.
+   The arg-heap test is **lexically scoped** — `analyze_calls` threads a per-scope
+   env so each call's args resolve against the bindings in scope *there*, and a
+   same-named binding in a sibling branch can never leak in. Heap-ness of an
+   **opaque arg** is also recovered interprocedurally: a constructor call carrying
+   a payload (`Wrap((..))` → a headered block) and a call to a top-level function
+   whose *annotated* return type is heap (`let mk: (..) -> (Int,Int)`) both count
+   (`HeapInferCtx` collects ctor names from enum/suberror decls and heap-returning
+   fn names from signatures). **Sound by construction:** the call/escape scan is
+   exhaustive over the AST, a param is filled only when *all* visible call sites
+   agree, and a string/scalar/closure/nullary-ctor arg is never classified heap
+   (so `__rc_drop` never misreads one) — under-filling is a retained safe leak,
+   never a wrong drop. Pinned by `unused_param_callsite` / `opaque_ctor_arg` /
+   `opaque_fncall_arg` (reclaim, 0 B/iter) and heap-e2e cases (unused param
+   dropped from a tuple/ctor/heap-call arg; string-arg, nullary-ctor, and
+   shadowed-string-branch params *not* mis-inferred). (A param consumed by an
+   owning call — `(p) -> { g(p) }` — already balanced without this: the call
+   moves it.)
+
+   **Still remaining (smaller, safe):** a lambda that **escapes** (returned or
+   stored, so not all call sites are visible — e.g. `let f = mk(); f(t)`, where
+   the lambda is not `let`-bound where it is called) keeps its safe leak; so do
+   args whose heap-ness is opaque *and* not a ctor/heap-return call (a deep
+   projection, a borrow-returning builtin), container-outlives-scope stores, and
+   the reassign-reads-target carve-out. Closing the escape case needs
+   whole-program points-to (aggregating call sites across aliases); the others
+   need field/element-type heap-ness — both larger than this local pass.
 5. **Stage 5 — verification & throughput. ◐ MEASURED.** The RC e2e gate (47/47,
    default vs RC identical on wasmtime) is the correctness signal;
    `scripts/bench_selfhost_rc.{sh,mjs}` measures the payoff: each benchmark
@@ -546,6 +609,35 @@ arithmetic / comparison / bitop / shift / float / nested-data case under
    linear memory at large N where RC runs indefinitely. Cutover (RC as the
    selfhost linear default when wasm-gc is unavailable, #493 C/F) is gated on
    completing Stage 4 leak elimination (owned/borrowed typing).
+
+   **wasm-gc vs Perceus-RC (`scripts/bench_gc_vs_rc.sh`).** The same four loops,
+   compiled three ways — selfhost linear (bump), selfhost linear+RC, and the
+   `src/` wasm-gc backend (`vibe compile --wasm-gc`, `struct.new` + engine GC) —
+   and timed under a *single* runtime, **wasmtime**. wasmtime (not node) is the
+   fair judge: V8 escape-analyzes the non-escaping loop tuple away and reports a
+   misleadingly fast wasm-gc time, while wasmtime treats `struct.new` + tracing
+   GC as real work. Each backend must reproduce the linear checksum or it is
+   marked a failure (loop-only ms, trivial-twin subtracted; N = 1e6, min of 7):
+
+   | benchmark      | linear | Perceus-RC | wasm-gc          | gc / rc |
+   |----------------|--------|------------|------------------|---------|
+   | flat_tuple     | 12 ms  | 18 ms      | 201 ms           | ×11.2   |
+   | nested_tuple   | 40 ms  | 55 ms      | 652 ms           | ×11.9   |
+   | record_tuples  | 51 ms  | 44 ms      | **FAIL (trap)**  | —       |
+   | enum_tuple     | 27 ms  | 28 ms      | **FAIL (nocompile)** | —   |
+
+   Two findings. (1) **Throughput:** where wasm-gc runs, Perceus-RC is ~11–12×
+   *faster* — inline dup/drop + a free-list (no tracing, no GC pauses) beats
+   `struct.new` + a tracing collector on allocation-heavy code, and RC adds only
+   ~10–40 % over the leak-everything bump baseline. (2) **Maturity:** the `src/`
+   wasm-gc backend runs only 2 of the 4 — `record_tuples` compiles but **traps at
+   runtime with a GC cast-failure** (the documented struct-field-ordering class,
+   CLAUDE.md / `record_field_name_lt`), and `enum_tuple` does not compile (the
+   `src/` parser rejects `match` as a `+` operand, which the selfhost parser
+   accepts — a parser-parity gap; a let-bound rewrite then hits a gc type error
+   `unknown function: Wrap`). So on this workload Perceus-RC is both faster and
+   more complete than wasm-gc; wasm-gc remains the option for GC-capable runtimes
+   where its codegen gaps don't bite (see CLAUDE.md `VIBE_TEST_BACKEND=gc`).
 
 ## Risk & scope
 

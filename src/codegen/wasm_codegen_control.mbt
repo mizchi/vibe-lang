@@ -41,6 +41,92 @@ fn compile_pat_cont(
 }
 
 ///|
+// Structural equality of a string scrutinee (tagged, in `value_idx`) against a
+// string-literal pattern. Leaves i32 (0/1) on the stack. Fixes #521: the
+// previous `emit_i64_eq` compared tagged POINTERS, so a computed scrutinee
+// (e.g. from String::concat) never matched the interned literal. Mirrors the
+// scalar string compare of compile_string_equals_linear (obj_string: len@4,
+// data@8).
+fn emit_pat_string_eq(
+  ctx : CodegenCtx,
+  buf : ByteBuf,
+  value_idx : Int,
+  pat : @core.Pat,
+) -> Unit raise WasmGenError {
+  let a_ptr = alloc_temp_local(ctx)
+  let b_ptr = alloc_temp_local(ctx)
+  let a_len = alloc_temp_local(ctx)
+  let i_local = alloc_temp_local(ctx)
+  let eq_local = alloc_temp_local(ctx)
+  // scrutinee -> untagged ptr
+  emit_local_get(buf, value_idx)
+  emit_untag_ptr_i32(buf)
+  emit_local_set(buf, a_ptr)
+  // pattern literal -> untagged ptr
+  emit_pat_literal(ctx, buf, pat)
+  emit_untag_ptr_i32(buf)
+  emit_local_set(buf, b_ptr)
+  // identical pointers -> equal
+  emit_local_get(buf, a_ptr)
+  emit_local_get(buf, b_ptr)
+  emit_i32_eq(buf)
+  buf.push((4).to_byte()) // if
+  buf.push((127).to_byte()) // result i32
+  emit_i32_const_raw(buf, 1)
+  buf.push((5).to_byte()) // else
+  emit_local_get(buf, a_ptr)
+  emit_i32_load(buf, 4)
+  emit_local_set(buf, a_len)
+  emit_local_get(buf, a_len)
+  emit_local_get(buf, b_ptr)
+  emit_i32_load(buf, 4)
+  emit_i32_eq(buf)
+  buf.push((4).to_byte()) // if (lengths equal)
+  buf.push((127).to_byte()) // result i32
+  emit_i32_const_raw(buf, 1)
+  emit_local_set(buf, eq_local)
+  emit_i32_const_raw(buf, 0)
+  emit_local_set(buf, i_local)
+  emit_block(buf)
+  emit_loop(buf)
+  emit_local_get(buf, i_local)
+  emit_local_get(buf, a_len)
+  emit_i32_lt_s(buf)
+  emit_i32_eqz(buf)
+  emit_br_if(buf, 1)
+  emit_local_get(buf, a_ptr)
+  emit_local_get(buf, i_local)
+  emit_i32_add(buf)
+  emit_i32_load8_u(buf, 8)
+  emit_local_get(buf, b_ptr)
+  emit_local_get(buf, i_local)
+  emit_i32_add(buf)
+  emit_i32_load8_u(buf, 8)
+  emit_i32_eq(buf)
+  emit_i32_eqz(buf)
+  buf.push((4).to_byte()) // if (byte mismatch)
+  buf.push((64).to_byte()) // void
+  emit_i32_const_raw(buf, 0)
+  emit_local_set(buf, eq_local)
+  emit_local_get(buf, a_len)
+  emit_local_set(buf, i_local)
+  buf.push((5).to_byte()) // else
+  emit_local_get(buf, i_local)
+  emit_i32_const_raw(buf, 1)
+  emit_i32_add(buf)
+  emit_local_set(buf, i_local)
+  buf.push((11).to_byte()) // end if (byte)
+  emit_br(buf, 0)
+  emit_end(buf) // loop
+  emit_end(buf) // block
+  emit_local_get(buf, eq_local)
+  buf.push((5).to_byte()) // else (lengths differ)
+  emit_i32_const_raw(buf, 0)
+  buf.push((11).to_byte()) // end if (lengths)
+  buf.push((11).to_byte()) // end if (pointers)
+}
+
+///|
 fn compile_pat_match(
   ctx : CodegenCtx,
   buf : ByteBuf,
@@ -203,10 +289,10 @@ fn compile_pat_match(
         buf.push((11).to_byte())
         adjust_loop_offsets(ctx, -1)
       } else {
-        // Non-js-string mode: compare tagged pointers
-        emit_local_get(buf, value_idx)
-        emit_pat_literal(ctx, buf, pat)
-        emit_i64_eq(buf)
+        // Non-js-string mode: structural string comparison (#521). Comparing
+        // tagged pointers (emit_i64_eq) only matched interned-literal
+        // scrutinees, not computed strings.
+        emit_pat_string_eq(ctx, buf, value_idx, pat)
         buf.push((4).to_byte())
         buf.push((126).to_byte())
         adjust_loop_offsets(ctx, 1)

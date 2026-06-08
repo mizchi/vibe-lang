@@ -10,6 +10,40 @@ import .. / core / types.vibe {
 
 //# Functions
 
+// Substitute a parameterized type alias's formal params with actual type args.
+// The alias body was resolved with its params as free `CtNamed(<param>, _)`
+// names; replace each by the corresponding actual argument (recursively).
+export let rec subst_type_params: (Type, Array[String], Array[Type]) -> Type = (ty, params, args) -> {
+  match ty {
+    CtNamed(name, targs) => {
+      let mut idx = 0 - 1
+      let mut i = 0
+      while i < Array::length(params) {
+        if Array::get(params, i) == name {
+          idx = i
+        }
+        i = i + 1
+      }
+      if idx >= 0 && idx < Array::length(args) {
+        Array::get(args, idx)
+      } else {
+        CtNamed(name, for a in targs {
+          subst_type_params(a, params, args)
+        })
+      }
+    },
+    CtArray(e) => CtArray(subst_type_params(e, params, args)),
+    CtOption(e) => CtOption(subst_type_params(e, params, args)),
+    CtTuple(es) => CtTuple(for e in es {
+      subst_type_params(e, params, args)
+    }),
+    CtFn(ps, ret, eff) => CtFn(for p in ps {
+      subst_type_params(p, params, args)
+    }, subst_type_params(ret, params, args), eff),
+    _ => ty
+  }
+}
+
 export let rec resolve_type_expr: (TypeExpr, Array[TypeDef]) -> Type = (te, defs) -> {
   match te {
     TyUnit => CtUnit,
@@ -17,9 +51,9 @@ export let rec resolve_type_expr: (TypeExpr, Array[TypeDef]) -> Type = (te, defs
       Some(t) => t,
       None => match find_typedef(defs, name) {
         Some(td) => match td {
-          TDEnum(n, _) => CtEnum(n),
+          TDEnum(n, _, _) => CtEnum(n),
           TDStruct(n, _) => CtStruct(n),
-          TDAlias(_, t) => t
+          TDAlias(_, _, t) => t
         },
         None => CtNamed(name, Array::slice([
           CtUnknown
@@ -40,7 +74,17 @@ export let rec resolve_type_expr: (TypeExpr, Array[TypeDef]) -> Type = (te, defs
           CtOption(Array::get(ra, 0))
         }
         else CtNamed(name, ra)
-      } else CtNamed(name, ra)
+      } else {
+        // Expand a parameterized type alias `Foo[A] = Body` applied as `Foo[X]`
+        // by substituting its formal params; otherwise it stays nominal.
+        match find_typedef(defs, name) {
+          Some(td) => match td {
+            TDAlias(_, params, body) => subst_type_params(body, params, ra),
+            _ => CtNamed(name, ra)
+          },
+          None => CtNamed(name, ra)
+        }
+      }
     },
     TyTuple(elems) => {
       let r = for e in elems {

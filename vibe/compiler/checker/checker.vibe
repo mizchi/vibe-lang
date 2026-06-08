@@ -203,6 +203,38 @@ let infer_binop_type: (String, Type, Type, TypeEnv, Subst, Array[String]) -> (Ty
   }
 }
 
+// Recursively replace type-parameter names (those bound to a CtVar in `env`)
+// with that CtVar, including ones nested inside Array/Option/Tuple/Fn/Named type
+// args. Type constructors (enum/struct names, not bound to a CtVar) are kept and
+// their args recursed. This lets a generic annotation like `Map[String, V]`
+// resolve its inner `V` to the function's quantified var, so call sites can
+// instantiate it (the previous shallow lookup only handled the outermost name).
+let rec resolve_tparams_in: (Type, TypeEnv) -> Type = (ty, env) -> {
+  match ty {
+    CtNamed(name, args) => {
+      let ra = for a in args {
+        resolve_tparams_in(a, env)
+      }
+      match env_lookup(env, name) {
+        Some(t) => match t {
+          CtVar(_) => t,
+          _ => CtNamed(name, ra)
+        },
+        None => CtNamed(name, ra)
+      }
+    },
+    CtArray(e) => CtArray(resolve_tparams_in(e, env)),
+    CtOption(e) => CtOption(resolve_tparams_in(e, env)),
+    CtTuple(es) => CtTuple(for e in es {
+      resolve_tparams_in(e, env)
+    }),
+    CtFn(ps, ret, eff) => CtFn(for p in ps {
+      resolve_tparams_in(p, env)
+    }, resolve_tparams_in(ret, env), eff),
+    _ => ty
+  }
+}
+
 export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String]) -> (Type, Subst, Int) = (expr, env, defs, s, c, errors) -> {
   match expr {
     EInt(_) => (CtInt, s, c),
@@ -270,6 +302,47 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       (tt, s3, c3)
     },
     ECall(callee, args) => match callee {
+      // `perform EffName::Op(opargs)` parses as ECall(EIdent("perform"),
+      // [ECall(EIdent("EffName::Op"), opargs)]). The op name may be a builtin
+      // effect (Stdin/Stdout/...) not registered in the checker env, so check
+      // only the op ARGUMENTS (not the op callee) and yield a fresh result type.
+      // `resume(v)` likewise yields the continuation result (a fresh var;
+      // handler arms are otherwise unchecked).
+      EIdent("perform") => if Array::length(args) == 1 {
+        match Array::get(args, 0) {
+          ECall(_, opargs) => {
+            let oalen = Array::length(opargs)
+            let mut s1 = s
+            let mut c1 = c
+            let mut ai = 0
+            while ai < oalen {
+              let (_, ns, nc) = check_expr(Array::get(opargs, ai), env, defs, s1, c1, errors)
+              s1 = ns
+              c1 = nc
+              ai = ai + 1
+            }
+            let (tv, c2) = fresh_var(c1)
+            (tv, s1, c2)
+          },
+          other => check_expr(other, env, defs, s, c, errors)
+        }
+      } else {
+        (CtUnknown, s, c)
+      },
+      EIdent("resume") => {
+        let alen = Array::length(args)
+        let mut s1 = s
+        let mut c1 = c
+        let mut ai = 0
+        while ai < alen {
+          let (_, ns, nc) = check_expr(Array::get(args, ai), env, defs, s1, c1, errors)
+          s1 = ns
+          c1 = nc
+          ai = ai + 1
+        }
+        let (tv, c2) = fresh_var(c1)
+        (tv, s1, c2)
+      },
       EDot(obj, method) => {
         let (obj_ty, s1, c1) = check_expr(obj, env, defs, s, c, errors)
         let resolved = subst_apply(s1, obj_ty)
@@ -550,13 +623,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         let (pt, ns, nc) = match ann {
           Some(te) => {
             let resolved = resolve_type_expr(te, defs)
-            let pt2 = match resolved {
-              CtNamed(tn, _) => match env_lookup(fn_env, tn) {
-                Some(t) => t,
-                None => resolved
-              },
-              _ => resolved
-            }
+            let pt2 = resolve_tparams_in(resolved, fn_env)
             (pt2, s1, c1)
           },
           None => {
@@ -574,13 +641,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       let (final_ret, s3) = match ret_ty {
         Some(te) => {
           let resolved = resolve_type_expr(te, defs)
-          let resolved_ret = match resolved {
-            CtNamed(tn, _) => match env_lookup(fn_env, tn) {
-              Some(t) => t,
-              None => resolved
-            },
-            _ => resolved
-          }
+          let resolved_ret = resolve_tparams_in(resolved, fn_env)
           match unify(bt, resolved_ret, s2) {
             Some(ns) => (subst_apply(ns, resolved_ret), ns),
             None => {
