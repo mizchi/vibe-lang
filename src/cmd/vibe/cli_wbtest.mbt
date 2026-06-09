@@ -570,7 +570,9 @@ test "test cmd normalize jobs keeps explicit positive value" {
 
 ///|
 test "cli dispatch args parse leading unstable flags" {
-  let parsed = parse_cli_dispatch_args(["vibe", "--unstable-async", "run", "main.vibe"])
+  let parsed = parse_cli_dispatch_args([
+    "vibe", "--unstable-async", "run", "main.vibe",
+  ])
   match parsed {
     Ok(v) => {
       assert_eq(v.cmd, "run")
@@ -1780,7 +1782,8 @@ test "std layer classification covers primary modules" {
   }
   assert_eq(ref_layer, "ref-model")
 
-  let effect_layer = match std_layer_for_path("/tmp/repo/vibe/prelude/io.vibe") {
+  let effect_layer = match
+    std_layer_for_path("/tmp/repo/vibe/prelude/io.vibe") {
     Some(v) => std_layer_name(v)
     None => "none"
   }

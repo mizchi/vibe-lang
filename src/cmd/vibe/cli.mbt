@@ -20,7 +20,9 @@ pub fn run(args : Array[String]) -> Unit {
   let cmd = parsed.cmd
   let cmd_args = parsed.cmd_args
   let syntax_mode = parsed.syntax_mode
-  let runtime_features = @runtime.RuntimeFeatureFlags::new(parsed.unstable_async)
+  let runtime_features = @runtime.RuntimeFeatureFlags::new(
+    parsed.unstable_async,
+  )
   let enable_llm = parsed.enable_llm
   @runtime_compile.init_hooks()
   match removed_command_message(cmd) {
