@@ -129,8 +129,10 @@ let is_tk: (Token, String) -> Bool = (tok, name) -> {
 let expect_tk: (Array[Token], Int, String) -> Int with { Error } = (tokens, pos, expected) -> {
   if is_tk(peek(tokens, pos), expected) {
     pos + 1
+  } else {
+    let actual = tk_name(peek(tokens, pos))
+    throw("expected \{expected} but got \{actual}")
   }
-  else throw("expected \{expected} but got \{tk_name(peek(tokens, pos))}")
 }
 
 let skip_semi: (Array[Token], Int) -> Int = (tokens, pos) -> {
@@ -328,7 +330,10 @@ let rec parse_pattern: (Array[Token], Int) -> (Pat, Int) with { Error } = (token
         }
       }
     },
-    _ => throw("unexpected in pattern: \{tk_name(peek(tokens, pos))}")
+    _ => {
+      let actual = tk_name(peek(tokens, pos))
+      throw("unexpected in pattern: \{actual}")
+    }
   }
   match peek(tokens, next) {
     TBitOr => {
@@ -639,7 +644,10 @@ let rec collect_import_path: (Array[Token], Int, String) -> (String, Int) with {
     TType => collect_import_path(tokens, pos + 1, "\{acc}type"),
     TMatch => collect_import_path(tokens, pos + 1, "\{acc}match"),
     TTest => collect_import_path(tokens, pos + 1, "\{acc}test"),
-    _ => throw("unexpected token in import path: \{tk_name(peek(tokens, pos))}")
+    _ => {
+      let actual = tk_name(peek(tokens, pos))
+      throw("unexpected token in import path: \{actual}")
+    }
   }
 }
 
@@ -763,7 +771,10 @@ let rec parse_type_impl: (Array[Token], Int, Int) -> (TypeExpr, Int) with { Erro
         },
         _ => (TyName(name), pos + 1)
       },
-      _ => throw("expected type but got \{tk_name(peek(tokens, pos))}")
+      _ => {
+        let actual = tk_name(peek(tokens, pos))
+        throw("expected type but got \{actual}")
+      }
     }
     match peek(tokens, base_next) {
       TQuestion => (TyApp("Option", [base_ty]), base_next + 1),
@@ -830,7 +841,10 @@ let parse_one_param: (Array[Token], Int) -> ((String, Option[TypeExpr]), Int) wi
       },
       _ => ((name, None), pos + 1)
     },
-    _ => throw("expected parameter name")
+    _ => {
+      let actual = tk_name(peek(tokens, pos))
+      throw("expected parameter name at #\{pos} token=\{actual}")
+    }
   }
 }
 
@@ -845,7 +859,10 @@ let rec parse_param_cont: (Array[Token], Int, ArrayBuilder[(String, Option[TypeE
       }
     },
     TRParen => (ArrayBuilder::freeze(b), pos + 1),
-    _ => throw("expected ',' or ')' in param list")
+    _ => {
+      let actual = tk_name(peek(tokens, pos))
+      throw("expected ',' or ')' in param list at #\{pos} token=\{actual}")
+    }
   }
 }
 
@@ -888,7 +905,6 @@ let rec is_lambda_start_impl: (Array[Token], Int, Int, Bool) -> Bool = (tokens, 
     TRParen => if depth == 0 {
       match peek(tokens, pos + 1) {
         TThinArrow => true,
-        TLBrace => true,
         _ => false
       }
     } else is_lambda_start_impl(tokens, pos + 1, depth - 1, has_colon),
@@ -1075,25 +1091,6 @@ let parse_suberror_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error }
   }
 }
 
-let parse_type_alias_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } = (tokens, pos, exported) -> {
-  match peek(tokens, pos) {
-    TIdent(name) => {
-      // Optional type-parameter header `type Foo[T] = ...`, captured so the
-      // checker can substitute them when the alias is applied (`Foo[X]`).
-      let (params, after_name) = match peek(tokens, pos + 1) {
-        TLBracket => parse_type_params_list(tokens, pos + 2),
-        _ => (Array::slice([
-          ""
-        ], 0, 0), pos + 1)
-      }
-      let ep = expect_tk(tokens, after_name, "=")
-      let (ty, next) = parse_type_impl(tokens, ep, 0);
-      (STypeAlias(exported, name, params, ty), next)
-    },
-    _ => throw("expected type alias name")
-  }
-}
-
 let parse_type_params_list: (Array[Token], Int) -> (Array[String], Int) with { Error } = (tokens, pos) -> {
   let b = ArrayBuilder::new()
   let mut p = pos
@@ -1121,6 +1118,25 @@ let parse_type_params_list: (Array[Token], Int) -> (Array[String], Int) with { E
     }
   }
   (ArrayBuilder::freeze(b), p)
+}
+
+let parse_type_alias_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } = (tokens, pos, exported) -> {
+  match peek(tokens, pos) {
+    TIdent(name) => {
+      // Optional type-parameter header `type Foo[T] = ...`, captured so the
+      // checker can substitute them when the alias is applied (`Foo[X]`).
+      let (params, after_name) = match peek(tokens, pos + 1) {
+        TLBracket => parse_type_params_list(tokens, pos + 2),
+        _ => (Array::slice([
+          ""
+        ], 0, 0), pos + 1)
+      }
+      let ep = expect_tk(tokens, after_name, "=")
+      let (ty, next) = parse_type_impl(tokens, ep, 0);
+      (STypeAlias(exported, name, params, ty), next)
+    },
+    _ => throw("expected type alias name")
+  }
 }
 
 // Parse effect declaration: effect Name[T] { Op(Args) -> Ret; ... }

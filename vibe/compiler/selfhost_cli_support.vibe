@@ -20,22 +20,30 @@ import ./entry / source_compile / wasi_only / preprocess_interp.vibe {
   expand_interp_stmts
 }
 
+import ./entry / source_compile / wasi_only / preprocess_strip.vibe {
+  strip_generic_type_params
+}
+
 import ./entry / source_compile / wasi_only / path_utils.vibe {
   empty_stmt_array
 }
 
-import ./entry / source_compile / wasi_only {
-  compile_file_wasi_library, compile_source_wasi_only
+import ./entry / source_compile / wasi_only / linked_library.vibe {
+  compile_file_wasi_library
+}
+
+import ./syntax / lexer.vibe {
+  lex
+}
+
+import ./syntax / parser.vibe {
+  parse_program
 }
 
 //# Functions
 
 export let read_arg: (Int) -> String with { Env } = (index) -> {
-  if perform Env::ArgsLen > index {
-    perform Env::ArgsGet(index)
-  } else {
-    ""
-  }
+  Env::args_get(index)
 }
 
 let read_arg_or_env: (Int, String) -> String with { Env } = (index, env_name) -> {
@@ -43,8 +51,12 @@ let read_arg_or_env: (Int, String) -> String with { Env } = (index, env_name) ->
   if value != "" {
     value
   } else {
-    perform Env::Get(env_name)
+    Env::get(env_name)
   }
+}
+
+let own_host_string: (String) -> String = (value) -> {
+  String::concat("", value)
 }
 
 let append_stmt_array: (Array[Stmt], Array[Stmt]) -> Unit = (dst, src) -> {
@@ -71,8 +83,14 @@ let empty_source_pairs: () -> Array[(String, String)] = () -> {
 }
 
 export let compile_release_file: (String, String) -> Bytes with { Error, Fs } = (input_path, entry_name) -> {
-  let source = perform Fs::ReadFile(input_path)
-  compile_source_wasi_only(source, entry_name)
+  let source = Fs::read_file(input_path)
+  let stmts = parse_program(lex(source))
+  expand_interp_stmts(stmts)
+  let _ = check_program(stmts)
+  strip_generic_type_params(stmts)
+  compile_wasi_module_linked_impl(stmts, entry_name, empty_source_pairs(), Array::slice([
+    ("", "", 0, 0)
+  ], 0, 0), false, false)
 }
 
 export let compile_debug_library: (String) -> Bytes with { Error, Fs } = (dep_path) -> {
@@ -135,9 +153,9 @@ export let write_linked_debug_build: (String, String, String) -> Unit with { Err
 }
 
 export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
-  let input_path = read_arg_or_env(0, "VIBE_INPUT")
-  let output_path = read_arg_or_env(1, "VIBE_OUTPUT")
-  let entry_name = read_arg_or_env(2, "VIBE_ENTRY")
+  let input_path = own_host_string(read_arg_or_env(0, "VIBE_INPUT"))
+  let output_path = own_host_string(read_arg_or_env(1, "VIBE_OUTPUT"))
+  let entry_name = own_host_string(read_arg_or_env(2, "VIBE_ENTRY"))
   let mode = read_arg(3)
   if input_path == "" {
     1

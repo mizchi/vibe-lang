@@ -303,10 +303,18 @@ export let rec subst_apply: (Subst, Type) -> Type = (s, ty) -> {
       out
     },
     CtFn(params, ret, effect_name) => {
-      let rp = for p in params {
-        subst_apply(s, p)
+      let apply_params: (Array[Type]) -> Array[Type] = (items) -> {
+        let out = Array::slice([
+          CtUnknown
+        ], 0, 0)
+        let mut i = 0
+        while i < Array::length(items) {
+          Array::push(out, subst_apply(s, Array::get(items, i)))
+          i = i + 1
+        }
+        out
       }
-      CtFn(rp, subst_apply(s, ret), effect_name)
+      CtFn(apply_params(params), subst_apply(s, ret), effect_name)
     },
     CtArray(elem) => CtArray(subst_apply(s, elem)),
     CtOption(elem) => CtOption(subst_apply(s, elem)),
@@ -346,18 +354,18 @@ export let rec type_to_string: (Type) -> String = (ty) -> {
       let mut vi = 0
       let mut vacc = ""
       while vi < vlen {
-        let v = "?t\{Array::get(vars, vi)}"
+        let v = String::concat("?t", __to_string(Array::get(vars, vi)))
         let next = if vi > 0 {
-          "\{vacc} \{v}"
+          String::concat(vacc, String::concat(" ", v))
         } else v
         vacc = next
         vi = vi + 1
       }
-      "forall \{vacc}. \{type_to_string(body)}"
+      String::concat("forall ", String::concat(vacc, String::concat(". ", type_to_string(body))))
     },
     CtUnknown => "?",
-    CtArray(elem) => "Array[\{type_to_string(elem)}]",
-    CtOption(elem) => "Option[\{type_to_string(elem)}]",
+    CtArray(elem) => String::concat("Array[", String::concat(type_to_string(elem), "]")),
+    CtOption(elem) => String::concat("Option[", String::concat(type_to_string(elem), "]")),
     CtEnum(name) => name,
     CtStruct(name) => name,
     CtNamed(name, args) => if Array::length(args) == 0 {
@@ -370,11 +378,11 @@ export let rec type_to_string: (Type) -> String = (ty) -> {
       let mut joined = ""
       while i < Array::length(parts) {
         joined = if i > 0 {
-          "\{joined}, \{Array::get(parts, i)}"
+          String::concat(joined, String::concat(", ", Array::get(parts, i)))
         } else Array::get(parts, i)
         i = i + 1
       }
-      "\{name}[\{joined}]"
+      String::concat(name, String::concat("[", String::concat(joined, "]")))
     },
     CtTuple(elems) => {
       let parts = for e in elems {
@@ -384,11 +392,11 @@ export let rec type_to_string: (Type) -> String = (ty) -> {
       let mut joined = ""
       while i < Array::length(parts) {
         joined = if i > 0 {
-          "\{joined}, \{Array::get(parts, i)}"
+          String::concat(joined, String::concat(", ", Array::get(parts, i)))
         } else Array::get(parts, i)
         i = i + 1
       }
-      "(\{joined})"
+      String::concat("(", String::concat(joined, ")"))
     },
     CtFn(params, ret, effect_name) => {
       let parts = for p in params {
@@ -398,13 +406,14 @@ export let rec type_to_string: (Type) -> String = (ty) -> {
       let mut joined = ""
       while i < Array::length(parts) {
         joined = if i > 0 {
-          "\{joined}, \{Array::get(parts, i)}"
+          String::concat(joined, String::concat(", ", Array::get(parts, i)))
         } else Array::get(parts, i)
         i = i + 1
       }
-      let base = "(\{joined}) -> \{type_to_string(ret)}"
+      let ret_text = type_to_string(ret)
+      let base = String::concat("(", String::concat(joined, String::concat(") -> ", ret_text)))
       match effect_name {
-        Some(name) => "\{base} with {\{name}}",
+        Some(name) => String::concat(base, String::concat(" with {", String::concat(name, "}"))),
         None => base
       }
     }

@@ -13,6 +13,7 @@ const OBJ_STRING = 1;
 const OBJ_ARRAY = 5;
 const OBJ_BYTES = 13;
 const OBJ_BYTES_VIEW = 14;
+const HOST_IMPORT_ABI = process.env.VIBE_SELFHOST_IMPORT_ABI || "tagged";
 
 function usage() {
   console.error(
@@ -124,9 +125,23 @@ function decodeUtf8Range(instance, ptr, len) {
   return new TextDecoder().decode(mem.subarray(ptr, ptr + len));
 }
 
+function ensureMemoryCapacity(instance, end) {
+  if (!(instance.exports.memory instanceof WebAssembly.Memory)) {
+    throw new Error("missing exported memory");
+  }
+  const memory = instance.exports.memory;
+  if (end <= memory.buffer.byteLength) {
+    return;
+  }
+  const pagesNeeded = Math.ceil((end - memory.buffer.byteLength) / 65536);
+  memory.grow(pagesNeeded);
+}
+
 function allocPreview2Buffer(instance, size, align = 4) {
   if (typeof instance.exports.cabi_realloc === "function") {
-    return instance.exports.cabi_realloc(0, 0, align, size) >>> 0;
+    const ptr = instance.exports.cabi_realloc(0, 0, align, size) >>> 0;
+    ensureMemoryCapacity(instance, ptr + size);
+    return ptr;
   }
   const heapGlobal = instance.exports.__heap_ptr;
   if (!heapGlobal) {
@@ -220,6 +235,23 @@ function decodeSelfhostPackedString(instance, packed) {
   return new TextDecoder().decode(mem.subarray(start, end));
 }
 
+function decodeSelfhostPackedBytes(instance, packed) {
+  if (typeof packed !== "bigint") {
+    throw new Error(`expected selfhost packed bytes bigint, got ${typeof packed}`);
+  }
+  if (!(instance.exports.memory instanceof WebAssembly.Memory)) {
+    throw new Error("missing exported memory for selfhost bytes decode");
+  }
+  const mem = new Uint8Array(instance.exports.memory.buffer);
+  const ptr = Number(packed >> 32n);
+  const len = Number(packed & 0xffffffffn);
+  const end = ptr + len;
+  if (ptr < 0 || len < 0 || end < ptr || end > mem.length) {
+    throw new Error(`selfhost bytes range out of bounds: ${ptr}..${end}`);
+  }
+  return new Uint8Array(instance.exports.memory.buffer.slice(ptr, end));
+}
+
 function tryDecodeExceptionString(instance, payload) {
   if (!instance || typeof payload !== "bigint") {
     return null;
@@ -258,6 +290,9 @@ function decodeRawStringPtr(instance, ptr) {
 
 function decodeStringArg(instance, value) {
   if (typeof value === "bigint") {
+    if (hostUsesRawAbi()) {
+      return decodeSelfhostPackedString(instance, value);
+    }
     return decodeTaggedString(instance, value);
   }
   if (typeof value === "number") {
@@ -341,6 +376,36 @@ function decodeTaggedInt(value) {
   return Number(value >> 2n);
 }
 
+function decodeTaggedOrRawInt(value) {
+  if (typeof value !== "bigint") {
+    throw new Error(`expected int bigint, got ${typeof value}`);
+  }
+  if ((value & TAG_MASK) === TAG_INT) {
+    return Number(value >> 2n);
+  }
+  return Number(value);
+}
+
+function hostUsesRawAbi() {
+  return HOST_IMPORT_ABI === "raw";
+}
+
+function encodeHostBool(value) {
+  return hostUsesRawAbi() ? (value ? 1n : 0n) : encodeTaggedBool(value);
+}
+
+function encodeHostInt(value) {
+  return hostUsesRawAbi() ? BigInt(value) : encodeTaggedInt(value);
+}
+
+function decodeHostInt(value) {
+  return hostUsesRawAbi() ? Number(value) : decodeTaggedOrRawInt(value);
+}
+
+function encodeHostString(instance, value) {
+  return hostUsesRawAbi() ? encodeSelfhostString(instance, value) : encodeTaggedString(instance, value);
+}
+
 // Decode a tagged Bytes value from WASM memory into a Uint8Array.
 // Supported layouts:
 // - legacy Array[Int]-backed bytes: [type=5][length][tagged elems...]
@@ -400,6 +465,40 @@ function decodeTaggedBytes(instance, tagged) {
     console.error(`[debug bytes] expected WASM magic: 0, 97, 115, 109, 1, 0, 0, 0`);
   }
   return result;
+}
+
+function decodeHostBytes(instance, value) {
+  if (!hostUsesRawAbi()) {
+    return decodeTaggedBytes(instance, value);
+  }
+  if (typeof value !== "bigint") {
+    throw new Error(`expected raw bytes bigint, got ${typeof value}`);
+  }
+  const mem = new Uint8Array(instance.exports.memory.buffer);
+  const rawPtr = Number(value);
+  if (rawPtr >= 0 && rawPtr + 12 <= mem.length) {
+    const len = readU32LE(mem, rawPtr + 4);
+    const dataPtr = readU32LE(mem, rawPtr + 8);
+    if (dataPtr >= 0 && dataPtr + len <= mem.length) {
+      if (process.env.VIBE_DEBUG_BYTES === "1") {
+        console.error(
+          `[debug bytes] host abi=${HOST_IMPORT_ABI} raw_ptr=${rawPtr} len=${len} data_ptr=${dataPtr}`,
+        );
+        console.error(
+          `[debug bytes] data[0..16]: ${Array.from(mem.slice(dataPtr, dataPtr + Math.min(len, 16))).map((b) => b.toString(16).padStart(2, "0")).join(" ")}`,
+        );
+      }
+      return new Uint8Array(instance.exports.memory.buffer.slice(dataPtr, dataPtr + len));
+    }
+  }
+  if (process.env.VIBE_DEBUG_BYTES === "1") {
+    const raw = typeof value === "bigint" ? value : BigInt(value);
+    const ptr = Number(raw);
+    const lo = ptr >= 0 && ptr < mem.length ? ptr : 0;
+    console.error(`[debug bytes] host abi=${HOST_IMPORT_ABI} value=${raw} ptr=${ptr}`);
+    console.error(`[debug bytes] mem[value..value+32]: ${Array.from(mem.slice(lo, lo + 32)).map((b) => b.toString(16).padStart(2, "0")).join(" ")}`);
+  }
+  return decodeSelfhostPackedBytes(instance, value);
 }
 
 function taggedIntToText(tagged) {
@@ -862,8 +961,8 @@ function findClosureEnv(instance, heapStart, tableSlot) {
   }
   const heapEnd = heapGlobal.value;
   const mem = new Uint8Array(instance.exports.memory.buffer);
-  for (let ptr = heapStart; ptr < heapEnd; ptr += 8) {
-    if (readU32LE(mem, ptr) === 7 && readU32LE(mem, ptr + 4) === tableSlot) {
+  for (let ptr = heapStart; ptr + 12 <= heapEnd; ptr += 4) {
+    if (readU32LE(mem, ptr) === 7 && readU32LE(mem, ptr + 8) === tableSlot) {
       return ptr;
     }
   }
@@ -918,7 +1017,7 @@ async function main() {
   }
 
   function encodeJsonHostValue(value) {
-    return encodeTaggedString(instanceRef, JSON.stringify(value));
+    return encodeHostString(instanceRef, JSON.stringify(value));
   }
 
   const vibeModule = new Proxy(
@@ -932,19 +1031,19 @@ async function main() {
         const cmd = decodeStringArg(instanceRef, cmdTagged);
         try {
           const output = cp.execSync(cmd, { encoding: "utf-8", shell: "/bin/bash", stdio: ["pipe", "pipe", "pipe"] });
-          return encodeTaggedString(instanceRef, output.trimEnd());
+          return encodeHostString(instanceRef, output.trimEnd());
         } catch (e) {
           const stderr = e.stderr ? e.stderr.toString().trim() : e.message;
-          return encodeTaggedString(instanceRef, "error: " + stderr);
+          return encodeHostString(instanceRef, "error: " + stderr);
         }
       },
       path(pathValue) {
         const input = decodeStringArg(instanceRef, pathValue);
-        return encodeTaggedString(instanceRef, input);
+        return encodeHostString(instanceRef, input);
       },
       ["resolve-path"](pathTagged) {
         const input = decodeStringArg(instanceRef, pathTagged);
-        return encodeTaggedString(instanceRef, input);
+        return encodeHostString(instanceRef, input);
       },
       resolve_path(pathTagged) {
         return this["resolve-path"](pathTagged);
@@ -953,19 +1052,22 @@ async function main() {
         const filePath = decodeStringArg(instanceRef, pathTagged);
         try {
           const content = fs.readFileSync(filePath, "utf8");
-          return encodeTaggedString(instanceRef, content);
+          if (process.env.VIBE_DEBUG_FS === "1") {
+            console.error(`[fs-read] ${filePath} bytes=${Buffer.byteLength(content, "utf8")}`);
+          }
+          return encodeHostString(instanceRef, content);
         } catch (e) {
           throw new Error(`fs_read_file failed for '${filePath}': ${e.message}`);
         }
       },
       fs_exists(pathTagged) {
         const filePath = decodeStringArg(instanceRef, pathTagged);
-        return encodeTaggedBool(fs.existsSync(filePath));
+        return encodeHostBool(fs.existsSync(filePath));
       },
       fs_stat_token(pathTagged) {
         const filePath = decodeStringArg(instanceRef, pathTagged);
         const { lower, upper } = buildFsMetadataHashParts(filePath);
-        return encodeTaggedInt(BigInt.asUintN(61, lower ^ upper));
+        return encodeHostInt(BigInt.asUintN(61, lower ^ upper));
       },
       fs_write_file(pathTagged, contentTagged) {
         const filePath = decodeStringArg(instanceRef, pathTagged);
@@ -979,7 +1081,7 @@ async function main() {
       },
       fs_write_bytes(pathTagged, bytesTagged) {
         const filePath = decodeStringArg(instanceRef, pathTagged);
-        const bytes = decodeTaggedBytes(instanceRef, bytesTagged);
+        const bytes = decodeHostBytes(instanceRef, bytesTagged);
         const dir = path.dirname(filePath);
         if (dir && !fs.existsSync(dir)) {
           fs.mkdirSync(dir, { recursive: true });
@@ -997,7 +1099,7 @@ async function main() {
         }
       },
       fs_getcwd() {
-        return encodeTaggedString(instanceRef, process.cwd());
+        return encodeHostString(instanceRef, process.cwd());
       },
       fs_chdir(pathTagged) {
         const dirPath = decodeStringArg(instanceRef, pathTagged);
@@ -1011,17 +1113,17 @@ async function main() {
       fs_is_dir(pathTagged) {
         const filePath = decodeStringArg(instanceRef, pathTagged);
         try {
-          return encodeTaggedBool(fs.statSync(filePath).isDirectory());
+          return encodeHostBool(fs.statSync(filePath).isDirectory());
         } catch (e) {
-          return encodeTaggedBool(false);
+          return encodeHostBool(false);
         }
       },
       fs_is_file(pathTagged) {
         const filePath = decodeStringArg(instanceRef, pathTagged);
         try {
-          return encodeTaggedBool(fs.statSync(filePath).isFile());
+          return encodeHostBool(fs.statSync(filePath).isFile());
         } catch (e) {
-          return encodeTaggedBool(false);
+          return encodeHostBool(false);
         }
       },
       fs_mkdir(pathTagged) {
@@ -1084,16 +1186,16 @@ async function main() {
       fs_open_write(pathTagged) {
         const filePath = decodeStringArg(instanceRef, pathTagged);
         const fd = fs.openSync(filePath, "w");
-        return encodeTaggedInt(fd);
+        return encodeHostInt(fd);
       },
       fs_write_chunk(fdTagged, strTagged) {
-        const fd = decodeTaggedInt(fdTagged);
+        const fd = decodeHostInt(fdTagged);
         const str = decodeStringArg(instanceRef, strTagged);
         fs.writeSync(fd, str);
         return 0n;
       },
       fs_close_write(fdTagged) {
-        const fd = decodeTaggedInt(fdTagged);
+        const fd = decodeHostInt(fdTagged);
         fs.closeSync(fd);
         return 0n;
       },
@@ -1105,9 +1207,9 @@ async function main() {
         // inside the vibe interpreter/compiled code.
         try {
           const parsed = JSON.parse(str);
-          return encodeTaggedString(instanceRef, JSON.stringify(parsed));
+          return encodeHostString(instanceRef, JSON.stringify(parsed));
         } catch (e) {
-          return encodeTaggedString(instanceRef, "null");
+          return encodeHostString(instanceRef, "null");
         }
       },
       json_stringify(valueTagged) {
@@ -1131,21 +1233,27 @@ async function main() {
         if (typeof value !== "string") {
           throw new Error("Json::string: not a string");
         }
-        return encodeTaggedString(instanceRef, value);
+        return encodeHostString(instanceRef, value);
       },
       ["env-get"](nameTagged) {
         const name = decodeStringArg(instanceRef, nameTagged);
         const val = process.env[name] || "";
-        return encodeTaggedString(instanceRef, val);
+        if (process.env.VIBE_DEBUG_ENV === "1") {
+          console.error(`[env-get] ${name}=${val}`);
+        }
+        return encodeHostString(instanceRef, val);
       },
       ["args-len"]() {
-        return encodeTaggedInt(passthroughArgs.length);
+        return encodeHostInt(passthroughArgs.length);
       },
       ["args-get"](indexTagged) {
-        const index = decodeTaggedInt(indexTagged);
+        const index = decodeHostInt(indexTagged);
         const val =
           index >= 0 && index < passthroughArgs.length ? passthroughArgs[index] : "";
-        return encodeTaggedString(instanceRef, val);
+        if (process.env.VIBE_DEBUG_ENV === "1") {
+          console.error(`[args-get] ${index}=${val}`);
+        }
+        return encodeHostString(instanceRef, val);
       },
       env_get(nameTagged) {
         return this["env-get"](nameTagged);
@@ -1198,22 +1306,31 @@ async function main() {
   // Selfhost-compiled WASM uses "Env" and "Fs" module names for effect imports
   const envModule = {
     ArgsLen() {
-      return encodeTaggedInt(passthroughArgs.length);
+      return encodeHostInt(passthroughArgs.length);
     },
     ArgsGet(indexTagged) {
-      const index = decodeTaggedInt(indexTagged);
+      const index = decodeHostInt(indexTagged);
       const val =
         index >= 0 && index < passthroughArgs.length ? passthroughArgs[index] : "";
-      return encodeTaggedString(instanceRef, val);
+      if (process.env.VIBE_DEBUG_ENV === "1") {
+        console.error(`[ArgsGet] ${index}=${val}`);
+      }
+      return encodeHostString(instanceRef, val);
     },
     Get(nameTagged) {
       const name = decodeStringArg(instanceRef, nameTagged);
       const val = process.env[name] ?? "";
-      return encodeTaggedString(instanceRef, val);
+      if (process.env.VIBE_DEBUG_ENV === "1") {
+        console.error(`[Get] ${name}=${val}`);
+      }
+      return encodeHostString(instanceRef, val);
     },
   };
   const fsModule = {
     ReadFile(pathTagged) {
+      if (process.env.VIBE_DEBUG_FS === "1") {
+        console.error("[fs-module] ReadFile");
+      }
       return vibeModule.fs_read_file(pathTagged);
     },
     WriteFile(pathTagged, contentTagged) {
@@ -1275,11 +1392,11 @@ async function main() {
   const stdinModule = {
     ReadStream(_maxBytesTagged) {
       // tests run without a controlling TTY; return empty string.
-      return encodeTaggedString(instanceRef, "");
+      return encodeHostString(instanceRef, "");
     },
     ReadChar() {
       // -1 indicates EOF.
-      return encodeTaggedInt(-1);
+      return encodeHostInt(-1);
     },
   };
   const stdoutModule = {
@@ -1289,7 +1406,7 @@ async function main() {
       return 0n;
     },
     WriteChar(codeTagged) {
-      const code = decodeTaggedInt(codeTagged);
+      const code = decodeHostInt(codeTagged);
       process.stdout.write(String.fromCharCode(code));
       return 0n;
     },
@@ -1360,10 +1477,25 @@ async function main() {
       if (resolvedEnvCache.has(invoke)) {
         resolvedEnv = resolvedEnvCache.get(invoke);
       } else {
+        const envExport = instance.exports[`__export_env_${invoke}`];
         const funcIdx = exportFuncIndices[invoke];
         const tableSlot = funcIdx !== undefined ? funcToTableSlot[funcIdx] : undefined;
-        resolvedEnv =
-          tableSlot !== undefined ? findClosureEnv(instance, initHeapBeforeStart, tableSlot) : 0;
+        if (envExport instanceof WebAssembly.Global) {
+          const value = envExport.value;
+          resolvedEnv = typeof value === "bigint" ? Number(value) : value;
+        } else {
+          resolvedEnv =
+            tableSlot !== undefined ? findClosureEnv(instance, initHeapBeforeStart, tableSlot) : 0;
+        }
+        if (process.env.VIBE_DEBUG_INVOKE_ENV === "1") {
+          console.error(
+            `[invoke-env] ${invoke} funcIdx=${funcIdx ?? "<missing>"} tableSlot=${tableSlot ?? "<missing>"} heapStart=${initHeapBeforeStart} heapEnd=${
+              instance.exports.__heap_ptr instanceof WebAssembly.Global
+                ? instance.exports.__heap_ptr.value
+                : "<missing>"
+            } envExport=${envExport instanceof WebAssembly.Global ? envExport.value : "<missing>"} resolvedEnv=${resolvedEnv}`,
+          );
+        }
         resolvedEnvCache.set(invoke, resolvedEnv);
       }
     }
@@ -1457,7 +1589,7 @@ async function main() {
         invoke === "selfbuild_compile_cli_adapter")
     ) {
       // Decode result as Bytes and write to expected output path
-      const bytes = decodeTaggedBytes(instanceRef, result);
+      const bytes = decodeHostBytes(instanceRef, result);
       const outPath =
         invoke === "selfbuild_compile_cli_adapter"
           ? "_build/bench/selfhost_cli_adapter/selfhost_cli_stage1.wasm"

@@ -5,15 +5,15 @@ import .. / checker_trait.vibe {
 }
 
 import .. / core / ast.vibe {
-  Stmt
+  Expr, Stmt, TypeExpr
 }
 
 import .. / core / types.vibe {
-  Subst, Type, TypeDef, TypeEnv, env_bind, env_cache, env_flat_bindings, env_lookup_flat, generalize, impls_overlap_for, resolve_builtin, subst_apply, trait_defined
+  Subst, Type, TypeDef, TypeEnv, env_bind, env_cache, env_flat_bindings, env_lookup_flat, generalize, resolve_builtin, trait_defined
 }
 
 import ./checker.vibe {
-  check_expr
+  check_expr, fn_return_env_name
 }
 
 import ./checker_resolve.vibe {
@@ -62,10 +62,59 @@ let bind_stmt_imports: (TypeEnv, Array[(String, Option[String])]) -> TypeEnv = (
           resolved
         }
       }
-      bind_imports(i + 1, env_bind(acc, bound_name, ty))
+      let acc_with_name = env_bind(acc, bound_name, ty)
+      let acc_with_ret = match env_lookup_flat(env_bindings, fn_return_env_name(name)) {
+        Some(ret_ty) => env_bind(acc_with_name, fn_return_env_name(bound_name), ret_ty),
+        None => acc_with_name
+      }
+      bind_imports(i + 1, acc_with_ret)
     }
   }
   bind_imports(0, env)
+}
+
+let annotation_return_type: (Option[TypeExpr], Array[TypeDef]) -> Option[Type] = (ann, defs) -> {
+  match ann {
+    Some(te) => match te {
+      TyFn(params, ret, _) => {
+        let ret_box = Array::slice([
+          ret
+        ], 0, 1)
+        let _ = Array::length(params)
+        Some(resolve_type_expr(Array::get(ret_box, 0), defs))
+      },
+      _ => None
+    },
+    None => None
+  }
+}
+
+let fn_expr_return_type: (Expr, Array[TypeDef]) -> Option[Type] = (expr, defs) -> {
+  match expr {
+    EFn(_, _, _, ret_ty, _, _) => match ret_ty {
+      Some(te) => Some(resolve_type_expr(te, defs)),
+      None => None
+    },
+    _ => None
+  }
+}
+
+let bind_fn_return: (TypeEnv, String, Type) -> TypeEnv = (env, name, ret_ty) -> {
+  env_bind(env, fn_return_env_name(name), ret_ty)
+}
+
+let bind_annotation_return: (TypeEnv, String, Option[TypeExpr], Array[TypeDef]) -> TypeEnv = (env, name, ann, defs) -> {
+  match annotation_return_type(ann, defs) {
+    Some(ret_ty) => bind_fn_return(env, name, ret_ty),
+    None => env
+  }
+}
+
+let bind_value_or_annotation_return: (TypeEnv, String, Expr, Option[TypeExpr], Array[TypeDef]) -> TypeEnv = (env, name, val, ann, defs) -> {
+  match fn_expr_return_type(val, defs) {
+    Some(ret_ty) => bind_fn_return(env, name, ret_ty),
+    None => bind_annotation_return(env, name, ann, defs)
+  }
 }
 
 export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, Int, Array[String]) -> (TypeEnv, Subst, Int) = (stmts, i, env, defs, s, c, errors) -> {
@@ -84,7 +133,8 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
           Some(te) => resolve_type_expr(te, defs),
           None => generalize(ns, vt)
         }
-        (env_bind(env, name, t), ns, nc)
+        let env1 = env_bind(env, name, t)
+        (bind_value_or_annotation_return(env1, name, val, ann, defs), ns, nc)
       },
       SLetMut(name, ann, val) => {
         let (vt, ns, nc) = check_expr(val, env, defs, s, c, errors)
@@ -92,7 +142,8 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
           Some(te) => resolve_type_expr(te, defs),
           None => vt
         }
-        (env_bind(env, name, t), ns, nc)
+        let env1 = env_bind(env, name, t)
+        (bind_value_or_annotation_return(env1, name, val, ann, defs), ns, nc)
       },
       SLetPat(pat, val) => {
         let (vt, ns, nc) = check_expr(val, env, defs, s, c, errors)
@@ -175,7 +226,7 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
         let mut ci2 = 0
         while ci2 < Array::length(variants) {
           let (vname, vtypes) = Array::get(variants, ci2)
-          if eq(Array::length(vtypes), 0) {
+          if Array::length(vtypes) == 0 {
             env1 = env_bind(env1, vname, CtEnum(name))
           } else {
             let resolved_args = Array::slice([
@@ -187,6 +238,7 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
               ai = ai + 1
             }
             env1 = env_bind(env1, vname, CtFn(resolved_args, CtEnum(name), None))
+            env1 = bind_fn_return(env1, vname, CtEnum(name))
           }
           ci2 = ci2 + 1
         }
@@ -213,7 +265,8 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
           Array::push(field_types, fty)
           fj = fj + 1
         }
-        (env_bind(env, name, CtFn(field_types, CtStruct(name), None)), s, c)
+        let env1 = env_bind(env, name, CtFn(field_types, CtStruct(name), None))
+        (bind_fn_return(env1, name, CtStruct(name)), s, c)
       },
       STypeAlias(_, name, params, te) => {
         let t = resolve_type_expr(te, defs)
@@ -224,7 +277,8 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
       },
       SExternLet(name, te) => {
         let t = resolve_type_expr(te, defs)
-        (env_bind(env, name, t), s, c)
+        let env1 = env_bind(env, name, t)
+        (bind_annotation_return(env1, name, Some(te), defs), s, c)
       },
       STest(_, body) => {
         let (_, ns, nc) = check_expr(body, env, defs, s, c, errors)

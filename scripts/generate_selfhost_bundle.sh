@@ -11,6 +11,7 @@ MANIFEST="${VIBE_SELFHOST_SOURCE_MANIFEST:-$COMPILER_DIR/selfhost_sources_manife
 OUT="${VIBE_SELFHOST_BUNDLE_OUT:-$COMPILER_DIR/selfhost_sources_bundle.vibe}"
 OUT_ADAPTER="${VIBE_SELFHOST_ADAPTER_BUNDLE_OUT:-$COMPILER_DIR/selfhost_cli_adapter_bundle.vibe}"
 OUT_RUNTIME_ENTRY="${VIBE_SELFHOST_RUNTIME_ENTRY_BUNDLE_OUT:-$COMPILER_DIR/selfbuild_runtime_entry_bundle.vibe}"
+ADAPTER_MODULE_SOURCE_OUT="${VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_OUT:-}"
 
 if [ ! -f "$MANIFEST" ]; then
   echo "error: manifest not found: $MANIFEST" >&2
@@ -686,6 +687,10 @@ PY
 write_adapter_bundle "" ""
 ADAPTER_MERGED_SOURCE_FILE="$(build_exact_adapter_merged_source)"
 ADAPTER_MODULE_SOURCE_FILE="$(build_adapter_module_source "$ADAPTER_MERGED_SOURCE_FILE")"
+if [ -n "$ADAPTER_MODULE_SOURCE_OUT" ]; then
+  mkdir -p "$(dirname "$ADAPTER_MODULE_SOURCE_OUT")"
+  cp "$ADAPTER_MODULE_SOURCE_FILE" "$ADAPTER_MODULE_SOURCE_OUT"
+fi
 write_adapter_bundle "$ADAPTER_MERGED_SOURCE_FILE" "$ADAPTER_MODULE_SOURCE_FILE"
 write_runtime_entry_bundle
 

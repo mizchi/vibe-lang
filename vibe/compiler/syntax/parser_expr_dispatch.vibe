@@ -5,7 +5,7 @@ import .. / core {
 }
 
 import ./parser_base.vibe {
-  empty_arms, empty_exprs, expect_tk, mode_block, mode_for_in, mode_handle, mode_if, mode_match, mode_while, parse_enum_stmt, parse_pattern, parse_struct_stmt, parse_type_impl, peek, skip_semi
+  empty_arms, empty_exprs, expect_tk, parse_enum_stmt, parse_pattern, parse_struct_stmt, parse_type_impl, peek, skip_semi, tk_name
 }
 
 import ./parser_expr_core.vibe {
@@ -92,7 +92,7 @@ let parse_block_after_expr: (Array[Token], Int, Expr, (Array[Token], Int, Int) -
   match peek(tokens, pos) {
     TRBrace => (e, pos + 1),
     TSemicolon => {
-      let (rest, end) = parse_recur(tokens, pos + 1, mode_block)
+      let (rest, end) = parse_recur(tokens, pos + 1, 20)
       (ESeq(e, rest), end)
     },
     TEq => match e {
@@ -101,7 +101,7 @@ let parse_block_after_expr: (Array[Token], Int, Expr, (Array[Token], Int, Int) -
         let val = val_pair.0
         let val_next = val_pair.1
         let a = skip_semi(tokens, val_next)
-        let (rest, end) = parse_recur(tokens, a, mode_block)
+        let (rest, end) = parse_recur(tokens, a, 20)
         (EAssign(name, val, rest), end)
       },
       EDot(obj, field) => {
@@ -109,7 +109,7 @@ let parse_block_after_expr: (Array[Token], Int, Expr, (Array[Token], Int, Int) -
         let val = val_pair.0
         let val_next = val_pair.1
         let a = skip_semi(tokens, val_next)
-        let (rest, end) = parse_recur(tokens, a, mode_block)
+        let (rest, end) = parse_recur(tokens, a, 20)
         let set_args = empty_exprs()
         Array::push(set_args, obj)
         Array::push(set_args, EString(field))
@@ -124,7 +124,7 @@ let parse_block_after_expr: (Array[Token], Int, Expr, (Array[Token], Int, Int) -
         let val = val_pair.0
         let val_next = val_pair.1
         let a = skip_semi(tokens, val_next)
-        let (rest, end) = parse_recur(tokens, a, mode_block)
+        let (rest, end) = parse_recur(tokens, a, 20)
         (EAssignOp(name, "+", val, rest), end)
       },
       _ => throw("invalid assignment target")
@@ -135,7 +135,7 @@ let parse_block_after_expr: (Array[Token], Int, Expr, (Array[Token], Int, Int) -
         let val = val_pair.0
         let val_next = val_pair.1
         let a = skip_semi(tokens, val_next)
-        let (rest, end) = parse_recur(tokens, a, mode_block)
+        let (rest, end) = parse_recur(tokens, a, 20)
         (EAssignOp(name, "-", val, rest), end)
       },
       _ => throw("invalid assignment target")
@@ -146,7 +146,7 @@ let parse_block_after_expr: (Array[Token], Int, Expr, (Array[Token], Int, Int) -
         let val = val_pair.0
         let val_next = val_pair.1
         let a = skip_semi(tokens, val_next)
-        let (rest, end) = parse_recur(tokens, a, mode_block)
+        let (rest, end) = parse_recur(tokens, a, 20)
         (EAssignOp(name, "*", val, rest), end)
       },
       _ => throw("invalid assignment target")
@@ -157,7 +157,7 @@ let parse_block_after_expr: (Array[Token], Int, Expr, (Array[Token], Int, Int) -
         let val = val_pair.0
         let val_next = val_pair.1
         let a = skip_semi(tokens, val_next)
-        let (rest, end) = parse_recur(tokens, a, mode_block)
+        let (rest, end) = parse_recur(tokens, a, 20)
         (EAssignOp(name, "/", val, rest), end)
       },
       _ => throw("invalid assignment target")
@@ -168,13 +168,13 @@ let parse_block_after_expr: (Array[Token], Int, Expr, (Array[Token], Int, Int) -
         let val = val_pair.0
         let val_next = val_pair.1
         let a = skip_semi(tokens, val_next)
-        let (rest, end) = parse_recur(tokens, a, mode_block)
+        let (rest, end) = parse_recur(tokens, a, 20)
         (EAssignOp(name, "%", val, rest), end)
       },
       _ => throw("invalid assignment target")
     },
     _ => {
-      let (rest, end) = parse_recur(tokens, pos, mode_block)
+      let (rest, end) = parse_recur(tokens, pos, 20)
       if end <= pos {
         throw("internal parser error: block continuation did not advance")
       } else {
@@ -187,7 +187,7 @@ let parse_block_after_expr: (Array[Token], Int, Expr, (Array[Token], Int, Int) -
 export let parse_impl_dispatch: (Array[Token], Int, Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, mode, parse_recur) -> {
   if mode >= 0 && mode <= 10 {
     parse_infix(tokens, pos, mode, pos, parse_recur)
-  } else if mode == mode_match {
+  } else if mode == 22 {
     let (scrutinee, sn) = parse_recur(tokens, pos, 0)
     let br = expect_tk(tokens, sn, "{")
     match peek(tokens, br) {
@@ -207,7 +207,7 @@ export let parse_impl_dispatch: (Array[Token], Int, Int, (Array[Token], Int, Int
         parse_match_rest(tokens, fn1, scrutinee, b, parse_recur)
       }
     }
-  } else if mode == mode_if {
+  } else if mode == 21 {
     // Parse cond with the no-is variant so a trailing `is pattern` belongs
     // to the if-cond pattern slot rather than collapsing into a Bool match.
     let (cond, cn) = parse_infix_no_is(tokens, pos, 0, pos, parse_recur)
@@ -230,11 +230,11 @@ export let parse_impl_dispatch: (Array[Token], Int, Int, (Array[Token], Int, Int
       _ => ()
     }
     let br = expect_tk(tokens, brace_pos, "{")
-    let (then_e, tn) = parse_recur(tokens, br, mode_block)
+    let (then_e, tn) = parse_recur(tokens, br, 20)
     let (else_e, end_pos) = match peek(tokens, tn) {
       TElse => match peek(tokens, tn + 1) {
-        TIf => parse_recur(tokens, tn + 2, mode_if),
-        TLBrace => parse_recur(tokens, tn + 2, mode_block),
+        TIf => parse_recur(tokens, tn + 2, 21),
+        TLBrace => parse_recur(tokens, tn + 2, 20),
         _ => parse_recur(tokens, tn + 1, 0)
       },
       _ => (EUnit, tn)
@@ -247,14 +247,14 @@ export let parse_impl_dispatch: (Array[Token], Int, Int, (Array[Token], Int, Int
     } else {
       (EIf(cond, then_e, else_e), end_pos)
     }
-  } else if mode == mode_while {
+  } else if mode == 23 {
     let (cond, cn) = parse_recur(tokens, pos, 0)
     let br = expect_tk(tokens, cn, "{")
-    let (body, end) = parse_recur(tokens, br, mode_block)
+    let (body, end) = parse_recur(tokens, br, 20)
     (EWhile(cond, body), end)
-  } else if mode == mode_handle {
+  } else if mode == 24 {
     let br = expect_tk(tokens, pos, "{")
-    let (body, bn) = parse_recur(tokens, br, mode_block)
+    let (body, bn) = parse_recur(tokens, br, 20)
     let wp = expect_tk(tokens, bn, "with")
     let (effect_name, effect_next) = match peek(tokens, wp) {
       TIdent(name) => (name, wp + 1),
@@ -270,7 +270,7 @@ export let parse_impl_dispatch: (Array[Token], Int, Int, (Array[Token], Int, Int
         parse_handle_rest(tokens, next, body, effect_name, b, parse_recur)
       }
     }
-  } else if mode == mode_for_in {
+  } else if mode == 25 {
     match peek(tokens, pos) {
       TIdent(first_name) => match peek(tokens, pos + 1) {
         TComma => match peek(tokens, pos + 2) {
@@ -279,7 +279,7 @@ export let parse_impl_dispatch: (Array[Token], Int, Int, (Array[Token], Int, Int
             match parse_recur(tokens, ip, 0) {
               (iterable, after_iter) => {
                 let bb = expect_tk(tokens, after_iter, "{")
-                let (body, end) = parse_recur(tokens, bb, mode_block)
+                let (body, end) = parse_recur(tokens, bb, 20)
                 (EForIn(second_name, Some(first_name), iterable, body), end)
               },
               _ => throw("unreachable: parse_recur for for-in")
@@ -292,7 +292,7 @@ export let parse_impl_dispatch: (Array[Token], Int, Int, (Array[Token], Int, Int
           match parse_recur(tokens, ip, 0) {
             (iterable, after_iter) => {
               let bb = expect_tk(tokens, after_iter, "{")
-              let (body, end) = parse_recur(tokens, bb, mode_block)
+              let (body, end) = parse_recur(tokens, bb, 20)
               (EForIn(first_name, None, iterable, body), end)
             },
             _ => throw("unreachable: parse_recur for for-in")
@@ -302,12 +302,12 @@ export let parse_impl_dispatch: (Array[Token], Int, Int, (Array[Token], Int, Int
       ,
       _ => throw("expected identifier after 'for'")
     }
-  } else if mode == mode_block {
+  } else if mode == 20 {
     match peek(tokens, pos) {
       TRBrace => (EUnit, pos + 1),
       TEnum => {
         let (enum_stmt, enum_end) = parse_enum_stmt(tokens, pos + 1, false)
-        let (rest, rend) = parse_recur(tokens, enum_end, mode_block)
+        let (rest, rend) = parse_recur(tokens, enum_end, 20)
         match enum_stmt {
           SEnum(_, _, _, variants) => {
             let mut result = rest
@@ -326,7 +326,7 @@ export let parse_impl_dispatch: (Array[Token], Int, Int, (Array[Token], Int, Int
       },
       TStruct => {
         let (_, struct_end) = parse_struct_stmt(tokens, pos + 1, false)
-        parse_recur(tokens, struct_end, mode_block)
+        parse_recur(tokens, struct_end, 20)
       },
       TLet => {
         let next = pos + 1
@@ -345,7 +345,7 @@ export let parse_impl_dispatch: (Array[Token], Int, Int, (Array[Token], Int, Int
               let val = val_pair.0
               let val_next = val_pair.1
               let a = skip_semi(tokens, val_next)
-              let (body, end) = parse_recur(tokens, a, mode_block)
+              let (body, end) = parse_recur(tokens, a, 20)
               if end <= a {
                 throw("internal parser error: block let-rec parser did not advance")
               } else {
@@ -368,7 +368,7 @@ export let parse_impl_dispatch: (Array[Token], Int, Int, (Array[Token], Int, Int
               let val = val_pair.0
               let val_next = val_pair.1
               let a = skip_semi(tokens, val_next)
-              let (body, end) = parse_recur(tokens, a, mode_block)
+              let (body, end) = parse_recur(tokens, a, 20)
               if end <= a {
                 throw("internal parser error: block let-mut parser did not advance")
               } else {
@@ -407,7 +407,7 @@ export let parse_impl_dispatch: (Array[Token], Int, Int, (Array[Token], Int, Int
               let val = val_pair.0
               let val_next = val_pair.1
               let a = skip_semi(tokens, val_next)
-              let (body, end) = parse_recur(tokens, a, mode_block)
+              let (body, end) = parse_recur(tokens, a, 20)
               let val_name = "__struct_destr"
               let mut desugar = body
               match pat {
@@ -435,7 +435,7 @@ export let parse_impl_dispatch: (Array[Token], Int, Int, (Array[Token], Int, Int
               let val = val_pair.0
               let val_next = val_pair.1
               let a = skip_semi(tokens, val_next)
-              let (body, end) = parse_recur(tokens, a, mode_block)
+              let (body, end) = parse_recur(tokens, a, 20)
               let val_name = "__rec_destr"
               let mut desugar = body
               match pat {
@@ -483,7 +483,7 @@ export let parse_impl_dispatch: (Array[Token], Int, Int, (Array[Token], Int, Int
               let val = val_pair.0
               let val_next = val_pair.1
               let a = skip_semi(tokens, val_next)
-              let (body, end) = parse_recur(tokens, a, mode_block)
+              let (body, end) = parse_recur(tokens, a, 20)
               if end <= a {
                 throw("internal parser error: block let-ctor-pat parser did not advance")
               } else {
@@ -504,7 +504,7 @@ export let parse_impl_dispatch: (Array[Token], Int, Int, (Array[Token], Int, Int
               let val = val_pair.0
               let val_next = val_pair.1
               let a = skip_semi(tokens, val_next)
-              let (body, end) = parse_recur(tokens, a, mode_block)
+              let (body, end) = parse_recur(tokens, a, 20)
               if end <= a {
                 throw("internal parser error: block let parser did not advance")
               } else {
@@ -519,7 +519,7 @@ export let parse_impl_dispatch: (Array[Token], Int, Int, (Array[Token], Int, Int
             let val = val_pair.0
             let val_next = val_pair.1
             let a = skip_semi(tokens, val_next)
-            let (body, end) = parse_recur(tokens, a, mode_block)
+            let (body, end) = parse_recur(tokens, a, 20)
             if end <= a {
               throw("internal parser error: block let-pat parser did not advance")
             } else {
@@ -541,6 +541,7 @@ export let parse_impl_dispatch: (Array[Token], Int, Int, (Array[Token], Int, Int
       }
     }
   } else {
-    throw("internal parser error: unknown parse mode")
+    let actual = tk_name(peek(tokens, pos))
+    throw("internal parser error: unknown parse mode \{mode} at #\{pos} token=\{actual}")
   }
 }

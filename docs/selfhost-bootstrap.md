@@ -38,6 +38,22 @@ seed として固定し、stage を分けて検証すること。vibe はこの�
 - seed compiler は毎 commit 更新しない。更新は「bootstrap bump」として
   独立した PR/commit にし、下記 gate を全て通したときだけ許可する。
 
+実装上の seed manifest は `bootstrap/selfhost/seed.json`、固定 seed artifact は
+`bootstrap/selfhost/seed/` 配下に置く。stage 生成物は `_build/selfhost/`
+配下に置く。canonical stage artifact は `cli_main` を持つ
+`vibe/compiler/selfhost_cli_support.vibe` の wasm とし、各世代は次世代の compiler
+source を `cli_main` 経由でビルドできるものとして扱う。
+
+```bash
+pkf run selfhost-generation-seed-info
+pkf run selfhost-generation -- --stage3
+scripts/selfhost_generations.sh adopt --artifact _build/selfhost/generations/<gen>/stage2.wasm
+```
+
+`adopt` は stage2 artifact を seed path にコピーし、`bootstrap/selfhost/seed.json`
+の sha256 を更新する。bootstrap bump ではこの manifest 更新を独立 commit として
+扱う。
+
 ### Rust-style staged build
 
 - stage0: 固定 seed compiler。新しい compiler source をビルドするためだけに使う。

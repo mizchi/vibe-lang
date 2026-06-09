@@ -5,7 +5,7 @@ import .. / core {
 }
 
 import ./parser_base.vibe {
-  _no_tb, _no_tp, collect_effect_names, empty_exprs, expect_tk, is_lambda_start, mode_block, parse_param_list, parse_type_impl, peek, tk_name
+  _no_tb, _no_tp, collect_effect_names, empty_exprs, expect_tk, is_lambda_start, parse_param_list, parse_type_impl, peek, tk_name
 }
 
 import ./token.vibe {
@@ -110,7 +110,7 @@ let parse_loop_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, I
         }
       }
       let body_pos = expect_tk(tokens, cur, "{")
-      let (body, end_pos) = parse_recur(tokens, body_pos, mode_block)
+      let (body, end_pos) = parse_recur(tokens, body_pos, 20)
       // Desugar ELoop into ELetMut + EWhile
       let pnames = ArrayBuilder::freeze(param_names_b)
       let pinits = ArrayBuilder::freeze(param_inits_b)
@@ -128,7 +128,7 @@ let parse_loop_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, I
     },
     _ => {
       let body_pos = expect_tk(tokens, pos + 1, "{")
-      let (body, end_pos) = parse_recur(tokens, body_pos, mode_block)
+      let (body, end_pos) = parse_recur(tokens, body_pos, 20)
       (EWhile(EBool(true), body), end_pos)
     }
   }
@@ -265,7 +265,7 @@ let parse_continue_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Exp
 
 let parse_control_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, parse_recur) -> {
   match peek(tokens, pos) {
-    TLBrace => parse_recur(tokens, pos + 1, mode_block),
+    TLBrace => parse_recur(tokens, pos + 1, 20),
     TIf => parse_recur(tokens, pos + 1, 21),
     TMatch => parse_recur(tokens, pos + 1, 22),
     THandle => parse_recur(tokens, pos + 1, 24),
@@ -280,13 +280,17 @@ let parse_control_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr
     TLoop => parse_loop_primary(tokens, pos, parse_recur),
     TYield => throw("'yield' is not supported"),
     TDeclare => throw("'declare' is not supported"),
-    _ => throw("unexpected token: \{tk_name(peek(tokens, pos))}")
+    _ => {
+      let prev_name = if pos > 0 {
+        tk_name(peek(tokens, pos - 1))
+      } else {
+        "start"
+      }
+      let actual = tk_name(peek(tokens, pos))
+      let next_name = tk_name(peek(tokens, pos + 1))
+      throw("unexpected token at #\{pos}: \{actual} (prev=\{prev_name}, next=\{next_name})")
+    }
   }
-}
-
-let parse_lambda_body_expr: (Array[Token], Array[(String, Option[TypeExpr])], Option[TypeExpr], Option[String], Int, Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, params, ret_ty, effect, body_pos, body_mode, parse_recur) -> {
-  let (body, end) = parse_recur(tokens, body_pos, body_mode)
-  (EFn(_no_tp(), _no_tb(), params, ret_ty, effect, body), end)
 }
 
 let rec parse_ctor_record_fields: (Array[Token], Int, ArrayBuilder[(String, Expr)], (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Array[(String, Expr)], Int) with { Error } = (tokens, pos, b, parse_recur) -> {
@@ -338,11 +342,11 @@ let parse_generic_fn_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (E
       let effect = effect_pair.0
       let effect_next = effect_pair.1
       let body_pos = expect_tk(tokens, effect_next, "{")
-      let (body, end_pos) = parse_recur(tokens, body_pos, mode_block)
+      let (body, end_pos) = parse_recur(tokens, body_pos, 20)
       (EFn(_no_tp(), _no_tb(), params, Some(ret_ty), effect, body), end_pos)
     },
     TLBrace => {
-      let (body, end_pos) = parse_recur(tokens, after_params + 1, mode_block)
+      let (body, end_pos) = parse_recur(tokens, after_params + 1, 20)
       (EFn(_no_tp(), _no_tb(), params, None, None, body), end_pos)
     },
     _ => throw("expected '->' or '{' after generic function params")
@@ -442,48 +446,64 @@ let parse_paren_lambda_primary: (Array[Token], Int, (Array[Token], Int, Int) -> 
         TIdent(_) => {
           let (ty, ty_pos) = parse_type_impl(tokens, after_arrow, 0)
           match peek(tokens, ty_pos) {
-            TLBrace => parse_lambda_body_expr(tokens, params, Some(ty), None, ty_pos + 1, mode_block, parse_recur),
+            TLBrace => {
+              let (body, end) = parse_recur(tokens, ty_pos + 1, 20)
+              (EFn(_no_tp(), _no_tb(), params, Some(ty), None, body), end)
+            },
             TWith => {
               let with_pos = expect_tk(tokens, ty_pos + 1, "{")
               let effect_pair = collect_effect_names(tokens, with_pos, "")
               let effect_name = effect_pair.0
               let effect_next = effect_pair.1
               let body_pos = expect_tk(tokens, effect_next, "{")
-              parse_lambda_body_expr(tokens, params, Some(ty), Some(effect_name), body_pos, mode_block, parse_recur)
+              let (body, end) = parse_recur(tokens, body_pos, 20)
+              (EFn(_no_tp(), _no_tb(), params, Some(ty), Some(effect_name), body), end)
             },
-            _ => parse_lambda_body_expr(tokens, params, None, None, after_arrow, 0, parse_recur)
+            _ => {
+              let (body, end) = parse_recur(tokens, after_arrow, 0)
+              (EFn(_no_tp(), _no_tb(), params, None, None, body), end)
+            }
           }
         },
         TLParen => {
           let (ty, ty_pos) = parse_type_impl(tokens, after_arrow, 0)
           match peek(tokens, ty_pos) {
-            TLBrace => parse_lambda_body_expr(tokens, params, Some(ty), None, ty_pos + 1, mode_block, parse_recur),
+            TLBrace => {
+              let (body, end) = parse_recur(tokens, ty_pos + 1, 20)
+              (EFn(_no_tp(), _no_tb(), params, Some(ty), None, body), end)
+            },
             TWith => {
               let with_pos = expect_tk(tokens, ty_pos + 1, "{")
               let effect_pair = collect_effect_names(tokens, with_pos, "")
               let effect_name = effect_pair.0
               let effect_next = effect_pair.1
               let body_pos = expect_tk(tokens, effect_next, "{")
-              parse_lambda_body_expr(tokens, params, Some(ty), Some(effect_name), body_pos, mode_block, parse_recur)
+              let (body, end) = parse_recur(tokens, body_pos, 20)
+              (EFn(_no_tp(), _no_tb(), params, Some(ty), Some(effect_name), body), end)
             },
-            _ => parse_lambda_body_expr(tokens, params, None, None, after_arrow, 0, parse_recur)
+            _ => {
+              let (body, end) = parse_recur(tokens, after_arrow, 0)
+              (EFn(_no_tp(), _no_tb(), params, None, None, body), end)
+            }
           }
         },
-        _ => parse_lambda_body_expr(tokens, params, None, None, after_arrow, 0, parse_recur)
+        _ => {
+          let (body, end) = parse_recur(tokens, after_arrow, 0)
+          (EFn(_no_tp(), _no_tb(), params, None, None, body), end)
+        }
       }
     },
-    TLBrace => parse_lambda_body_expr(tokens, params, None, None, after_params + 1, mode_block, parse_recur),
+    TLBrace => {
+      let (body, end) = parse_recur(tokens, after_params + 1, 20)
+      (EFn(_no_tp(), _no_tb(), params, None, None, body), end)
+    },
     _ => throw("expected '->' or '{' after fn params")
   }
 }
 
 let parse_paren_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, parse_recur) -> {
   if is_lambda_start(tokens, pos + 1) {
-    handle {
-      parse_paren_lambda_primary(tokens, pos, parse_recur)
-    } with Error {
-      Throw(_) => parse_paren_tuple_primary(tokens, pos, parse_recur)
-    }
+    parse_paren_lambda_primary(tokens, pos, parse_recur)
   } else {
     parse_paren_tuple_primary(tokens, pos, parse_recur)
   }

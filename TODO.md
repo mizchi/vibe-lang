@@ -27,6 +27,11 @@ bootstrap / fallback へ縮退させる。
   / cwasm cache / CI perf-RSS gate を「実行基盤」として整理する。
 - [ ] **compiler wasm artifact 層**: `vibe/compiler/` の selfhost CLI/component/check
   entry と `scripts/build_selfhost_dist.sh` を canonical 配布物として整理する。
+  - `selfhost-generation` 管理層は追加済み (`bootstrap/selfhost/seed.json`,
+    `scripts/selfhost_generations.sh`)。現時点の first blocker:
+    seed `cli_main` で `vibe/compiler/selfhost_cli_support.vibe` を stage1 build
+    すると `Env::ArgsLen > index` が selfhost checker で `type mismatch in '>'`
+    になる。ここを解消してから stage2 を bootstrap bump 候補にする。
 - [ ] **MoonBit `src/` 退役**: まず bootstrap/fallback 専用へ縮退し、通常の
   compile/check/test 経路を selfhost wasm + runner へ向ける。削除は parity/cutover
   gate が CI で継続 green になってから段階的に行う。

@@ -37,7 +37,10 @@ export let parse: (Array[Token]) -> Expr with { Error } = (tokens) -> {
   let (e, next) = parse_impl(tokens, 0, 0)
   match peek(tokens, next) {
     TEof => e,
-    _ => throw("unexpected after expression: \{tk_name(peek(tokens, next))}")
+    _ => {
+      let actual = tk_name(peek(tokens, next))
+      throw("unexpected after expression: \{actual}")
+    }
   }
 }
 
@@ -149,30 +152,37 @@ let apply_fn_annotation_params: (Array[(String, Option[TypeExpr])], Array[TypeEx
   }
 }
 
+let apply_generic_fn_annotation: (Array[String], Array[(String, Array[String])], Option[TypeExpr], Expr, Array[TypeExpr], TypeExpr, Option[String]) -> (Option[TypeExpr], Expr) = (type_params, type_bounds, ann, val, param_types, ret_ty, effect_name) -> {
+  match val {
+    EFn(existing_type_params, existing_type_bounds, params, ret_opt, effect_opt, body) => {
+      let next_params = apply_fn_annotation_params(params, param_types)
+      let next_ret = match ret_opt {
+        Some(_) => ret_opt,
+        None => Some(ret_ty)
+      }
+      let next_effect = match effect_opt {
+        Some(_) => effect_opt,
+        None => effect_name
+      }
+      let next_type_params = if Array::length(type_params) > 0 {
+        type_params
+      } else existing_type_params
+      let next_type_bounds = if Array::length(type_params) > 0 {
+        type_bounds
+      } else existing_type_bounds
+      let next_ann = if Array::length(type_params) > 0 {
+        None
+      } else ann
+      (next_ann, EFn(next_type_params, next_type_bounds, next_params, next_ret, next_effect, body))
+    },
+    _ => (ann, val)
+  }
+}
+
 let apply_generic_let_annotation: (Array[String], Array[(String, Array[String])], Option[TypeExpr], Expr) -> (Option[TypeExpr], Expr) = (type_params, type_bounds, ann, val) -> {
   match ann {
-    Some(TyFn(param_types, ret_ty, effect_name)) => match val {
-      EFn(existing_type_params, existing_type_bounds, params, ret_opt, effect_opt, body) => {
-        let next_params = apply_fn_annotation_params(params, param_types)
-        let next_ret = match ret_opt {
-          Some(_) => ret_opt,
-          None => Some(ret_ty)
-        }
-        let next_effect = match effect_opt {
-          Some(_) => effect_opt,
-          None => effect_name
-        }
-        let next_type_params = if Array::length(type_params) > 0 {
-          type_params
-        } else existing_type_params
-        let next_type_bounds = if Array::length(type_params) > 0 {
-          type_bounds
-        } else existing_type_bounds
-        let next_ann = if Array::length(type_params) > 0 {
-          None
-        } else ann
-        (next_ann, EFn(next_type_params, next_type_bounds, next_params, next_ret, next_effect, body))
-      },
+    Some(ann_ty) => match ann_ty {
+      TyFn(param_types, ret_ty, effect_name) => apply_generic_fn_annotation(type_params, type_bounds, ann, val, param_types, ret_ty, effect_name),
       _ => (ann, val)
     },
     _ => (ann, val)

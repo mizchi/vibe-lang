@@ -5,7 +5,7 @@ import .. / core / ast.vibe {
 }
 
 import .. / core / types.vibe {
-  Subst, Type, TypeDef, TypeEnv, env_bind, env_lookup, find_typedef, fresh_var, generalize, instantiate, resolve_builtin, subst_add_bound, subst_apply, type_implements_trait, unify
+  Subst, Type, TypeDef, TypeEnv, env_bind, env_lookup, find_typedef, fresh_var, generalize, instantiate, subst_add_bound, subst_apply, type_implements_trait, unify
 }
 
 import ./builtins.vibe {
@@ -41,6 +41,89 @@ let prepend_expr: (Expr, Array[Expr]) -> Array[Expr] = (first, rest) -> {
     i = i + 1
   }
   out
+}
+
+let expr_ident_name_or_empty: (Expr) -> String = (expr) -> {
+  match expr {
+    EIdent(name) => name,
+    _ => ""
+  }
+}
+
+let unify_call_args: (Array[Type], Array[Type], Subst) -> Subst = (param_tys, arg_tys, s) -> {
+  let mut out = s
+  let mut ui = 0
+  let ul = min_int(Array::length(arg_tys), Array::length(param_tys))
+  while ui < ul {
+    out = match unify(Array::get(param_tys, ui), Array::get(arg_tys, ui), out) {
+      Some(su) => su,
+      None => out
+    }
+    ui = ui + 1
+  }
+  out
+}
+
+export let fn_return_env_name: (String) -> String = (name) -> {
+  String::concat("__fn_ret__:", name)
+}
+
+let direct_builtin_return: (String) -> Option[Type] = (name) -> {
+  if name == "Bytes::length" {
+    Some(CtInt)
+  }
+  else if name == "Array::length" {
+    Some(CtInt)
+  }
+  else if name == "FixedArray::length" {
+    Some(CtInt)
+  }
+  else if name == "String::length" {
+    Some(CtInt)
+  }
+  else if name == "Bytes::get" || name == "String::index_of" || name == "String::char_code_at" || name == "String::last_index_of" || name == "Char::to_int" || name == "Double::to_int" || name == "Double::to_i64_bits" || name == "Double::to_i64_bits_lo" || name == "Double::to_i64_bits_hi" || name == "Env::args_len" || name == "Stdin::read_char" {
+    Some(CtInt)
+  }
+  else if name == "String::equals" || name == "String::contains" || name == "String::starts_with" || name == "String::ends_with" || name == "Map::has_key" || name == "map_has" || name == "Path::is_absolute" || name == "Fs::exists" || name == "Fs::is_dir" || name == "Fs::is_file" || name == "eq" || name == "not" {
+    Some(CtBool)
+  }
+  else if name == "String::concat" || name == "String::substring" || name == "String::trim" || name == "String::to_lower" || name == "String::to_upper" || name == "String::from_char_code" || name == "String::join" || name == "Path::to_string" || name == "Path::resolve" || name == "PromptText::new" || name == "Stdin::read_stream" || name == "Env::get" || name == "Env::args_get" || name == "Fs::read_file" || name == "Fs::getcwd" || name == "sh" || name == "Lines::stringify" || name == "Llm::complete" || name == "Rlm::run" || name == "Rlm::finalize" || name == "__to_string" {
+    Some(CtString)
+  }
+  else if name == "Bytes::new" || name == "Bytes::concat" || name == "Bytes::slice" || name == "Bytes::from_array" || name == "Fs::read_bytes" {
+    Some(CtBytes)
+  }
+  else if name == "Array::set" || name == "Array::push" || name == "Array::push_all" || name == "Array::truncate" || name == "FixedArray::set" || name == "FixedArray::blit" || name == "FixedArray::unsafe_set" || name == "Bytes::set" || name == "Bytes::push" || name == "Bytes::append" || name == "Bytes::blit" || name == "Bytes::fill" || name == "MapBuilder::set" || name == "Stdout::write_char" || name == "Stdout::write_stream" || name == "sleep" || name == "Fs::copy" || name == "Fs::chdir" || name == "Fs::mkdir" || name == "Fs::append" || name == "Fs::remove" || name == "Fs::write_file" || name == "Fs::write_bytes" || name == "print" || name == "println" || name == "assert" || name == "assert_true" || name == "assert_eq" || name == "__set_field" {
+    Some(CtUnit)
+  }
+  else if name == "Double::from_i64_bits" || name == "Int::to_double" {
+    Some(CtDouble)
+  }
+  else if name == "Char::from_int" {
+    Some(CtChar)
+  }
+  else if name == "Bytes::to_array" {
+    Some(CtArray(CtInt))
+  }
+  else if name == "Map::keys" || name == "sh_lines" || name == "Lines::parse" {
+    Some(CtArray(CtString))
+  }
+  else if name == "Array::slice" || name == "Array::concat" || name == "FixedArray::make" {
+    Some(CtArray(CtUnknown))
+  }
+  else if name == "Some" {
+    Some(CtOption(CtUnknown))
+  }
+  else {
+    None
+  }
+}
+
+let direct_call_return: (TypeEnv, String) -> Option[Type] = (env, name) -> {
+  match env_lookup(env, fn_return_env_name(name)) {
+    Some(t) => Some(t),
+    None => direct_builtin_return(name)
+  }
 }
 
 let is_logic_binop: (String) -> Bool = (op) -> {
@@ -228,9 +311,20 @@ let rec resolve_tparams_in: (Type, TypeEnv) -> Type = (ty, env) -> {
     CtTuple(es) => CtTuple(for e in es {
       resolve_tparams_in(e, env)
     }),
-    CtFn(ps, ret, eff) => CtFn(for p in ps {
-      resolve_tparams_in(p, env)
-    }, resolve_tparams_in(ret, env), eff),
+    CtFn(ps, ret, eff) => {
+      let resolve_params: (Array[Type]) -> Array[Type] = (types) -> {
+        let out = Array::slice([
+          CtUnknown
+        ], 0, 0)
+        let mut i = 0
+        while i < Array::length(types) {
+          Array::push(out, resolve_tparams_in(Array::get(types, i), env))
+          i = i + 1
+        }
+        out
+      }
+      CtFn(resolve_params(ps), resolve_tparams_in(ret, env), eff)
+    },
     _ => ty
   }
 }
@@ -250,7 +344,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         let mut bi = 0
         while bi < nblen {
           let (vid, bounds) = Array::get(new_bounds, bi)
-          if !eq(Array::length(bounds), 0) {
+          if Array::length(bounds) != 0 {
             s1 = subst_add_bound(s1, vid, bounds)
           }
           bi = bi + 1
@@ -308,28 +402,29 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       // only the op ARGUMENTS (not the op callee) and yield a fresh result type.
       // `resume(v)` likewise yields the continuation result (a fresh var;
       // handler arms are otherwise unchecked).
-      EIdent("perform") => if Array::length(args) == 1 {
-        match Array::get(args, 0) {
-          ECall(_, opargs) => {
-            let oalen = Array::length(opargs)
-            let mut s1 = s
-            let mut c1 = c
-            let mut ai = 0
-            while ai < oalen {
-              let (_, ns, nc) = check_expr(Array::get(opargs, ai), env, defs, s1, c1, errors)
-              s1 = ns
-              c1 = nc
-              ai = ai + 1
-            }
-            let (tv, c2) = fresh_var(c1)
-            (tv, s1, c2)
-          },
-          other => check_expr(other, env, defs, s, c, errors)
+      EIdent(name) => if name == "perform" {
+        if Array::length(args) == 1 {
+          match Array::get(args, 0) {
+            ECall(_, opargs) => {
+              let oalen = Array::length(opargs)
+              let mut s1 = s
+              let mut c1 = c
+              let mut ai = 0
+              while ai < oalen {
+                let (_, ns, nc) = check_expr(Array::get(opargs, ai), env, defs, s1, c1, errors)
+                s1 = ns
+                c1 = nc
+                ai = ai + 1
+              }
+              let (tv, c2) = fresh_var(c1)
+              (tv, s1, c2)
+            },
+            other => check_expr(other, env, defs, s, c, errors)
+          }
+        } else {
+          (CtUnknown, s, c)
         }
-      } else {
-        (CtUnknown, s, c)
-      },
-      EIdent("resume") => {
+      } else if name == "resume" {
         let alen = Array::length(args)
         let mut s1 = s
         let mut c1 = c
@@ -342,12 +437,68 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         }
         let (tv, c2) = fresh_var(c1)
         (tv, s1, c2)
+      } else {
+        match direct_call_return(env, name) {
+          Some(ret_ty) => {
+            let alen = Array::length(args)
+            let mut ai = 0
+            let mut s2 = s
+            let mut c2 = c
+            while ai < alen {
+              let (_, ns, nc) = check_expr(Array::get(args, ai), env, defs, s2, c2, errors)
+              s2 = ns
+              c2 = nc
+              ai = ai + 1
+            }
+            (subst_apply(s2, ret_ty), s2, c2)
+          },
+          None => {
+            let (ct, s1, c1) = check_expr(EIdent(name), env, defs, s, c, errors)
+            let alen = Array::length(args)
+            let arg_tys = Array::slice([
+              CtUnknown
+            ], 0, 0)
+            let mut ai = 0
+            let mut s2 = s1
+            let mut c2 = c1
+            while ai < alen {
+              let (at, ns, nc) = check_expr(Array::get(args, ai), env, defs, s2, c2, errors)
+              Array::push(arg_tys, at)
+              s2 = ns
+              c2 = nc
+              ai = ai + 1
+            }
+            let applied_callee_ty = match ct {
+              CtFn(_, _, _) => ct,
+              _ => subst_apply(s2, ct)
+            }
+            match applied_callee_ty {
+              CtFn(param_tys, ret, _) => {
+                let ret_box = Array::slice([
+                  ret
+                ], 0, 1)
+                let call_param_tys = param_tys
+                let plen2 = Array::length(param_tys)
+                let alen3 = Array::length(arg_tys)
+                if alen3 != plen2 {
+                  Array::push(errors, String::concat("function arity mismatch for ", String::concat(name, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))))
+                }
+                let s3 = unify_call_args(call_param_tys, arg_tys, s2)
+                let call_ret = Array::get(ret_box, 0)
+                (subst_apply(s3, call_ret), s3, c2)
+              },
+              CtStruct(sname) => (CtStruct(sname), s2, c2),
+              _ => (CtUnknown, s2, c2)
+            }
+          }
+        }
       },
       EDot(obj, method) => {
         let (obj_ty, s1, c1) = check_expr(obj, env, defs, s, c, errors)
         let resolved = subst_apply(s1, obj_ty)
         let type_prefix = type_name_prefix(resolved)
         let qualified = String::concat(type_prefix, String::concat("::", method))
+        let direct_ret = direct_call_return(env, qualified)
         let method_ty = match env_lookup(env, qualified) {
           Some(t) => {
             let (ti, c2, _) = instantiate(t, c1)
@@ -375,64 +526,130 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
           c3 = nc
           ai = ai + 1
         }
-        match subst_apply(s3, mt) {
+        let applied_method_ty = match mt {
+          CtFn(_, _, _) => mt,
+          _ => subst_apply(s3, mt)
+        }
+        match applied_method_ty {
           CtFn(param_tys, ret, _) => {
+            let ret_box = Array::slice([
+              ret
+            ], 0, 1)
+            let call_param_tys = param_tys
             let plen = Array::length(param_tys)
             let alen2 = Array::length(arg_tys)
             if alen2 != plen {
-              Array::push(errors, String::concat("function arity mismatch: expected ", String::concat(__to_string(plen), String::concat(" args, got ", __to_string(alen2)))))
+              Array::push(errors, String::concat("function arity mismatch for ", String::concat(qualified, String::concat(": expected ", String::concat(__to_string(plen), String::concat(" args, got ", __to_string(alen2)))))))
             }
-            let mut s4 = s3
-            let mut ui = 0
-            while ui < plen {
-              s4 = match unify(Array::get(param_tys, ui), Array::get(arg_tys, ui), s4) {
-                Some(su) => su,
-                None => s4
-              }
-              ui = ui + 1
+            let s4 = unify_call_args(call_param_tys, arg_tys, s3)
+            let call_ret = Array::get(ret_box, 0)
+            let selected_ret = match direct_ret {
+              Some(t) => t,
+              None => call_ret
             }
-            (subst_apply(s4, ret), s4, c3)
+            (subst_apply(s4, selected_ret), s4, c3)
           },
-          _ => (CtUnknown, s3, c3)
+          _ => match direct_ret {
+            Some(t) => (t, s3, c3),
+            None => (CtUnknown, s3, c3)
+          }
         }
       },
       _ => {
-        let (ct, s1, c1) = check_expr(callee, env, defs, s, c, errors)
-        let alen = Array::length(args)
-        let arg_tys = Array::slice([
-          CtUnknown
-        ], 0, 0)
-        let mut ai = 0
-        let mut s2 = s1
-        let mut c2 = c1
-        while ai < alen {
-          let (at, ns, nc) = check_expr(Array::get(args, ai), env, defs, s2, c2, errors)
-          Array::push(arg_tys, at)
-          s2 = ns
-          c2 = nc
-          ai = ai + 1
-        }
-        match subst_apply(s2, ct) {
-          CtFn(param_tys, ret, _) => {
-            let plen2 = Array::length(param_tys)
-            let alen3 = Array::length(arg_tys)
-            if alen3 != plen2 {
-              Array::push(errors, String::concat("function arity mismatch: expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))
-            }
-            let mut s3 = s2
-            let mut ui = 0
-            let ul = min_int(alen3, plen2)
-            while ui < ul {
-              s3 = match unify(Array::get(param_tys, ui), Array::get(arg_tys, ui), s3) {
-                Some(su) => su,
-                None => s3
+        let callee_name0 = expr_ident_name_or_empty(callee)
+        if callee_name0 != "" {
+          match direct_call_return(env, callee_name0) {
+            Some(ret_ty) => {
+              let alen = Array::length(args)
+              let mut ai = 0
+              let mut s2 = s
+              let mut c2 = c
+              while ai < alen {
+                let (_, ns, nc) = check_expr(Array::get(args, ai), env, defs, s2, c2, errors)
+                s2 = ns
+                c2 = nc
+                ai = ai + 1
               }
-              ui = ui + 1
+              (subst_apply(s2, ret_ty), s2, c2)
+            },
+            None => {
+              let (ct, s1, c1) = check_expr(callee, env, defs, s, c, errors)
+              let alen = Array::length(args)
+              let arg_tys = Array::slice([
+                CtUnknown
+              ], 0, 0)
+              let mut ai = 0
+              let mut s2 = s1
+              let mut c2 = c1
+              while ai < alen {
+                let (at, ns, nc) = check_expr(Array::get(args, ai), env, defs, s2, c2, errors)
+                Array::push(arg_tys, at)
+                s2 = ns
+                c2 = nc
+                ai = ai + 1
+              }
+            let applied_callee_ty = match ct {
+              CtFn(_, _, _) => ct,
+              _ => subst_apply(s2, ct)
             }
-            (subst_apply(s3, ret), s3, c2)
-          },
-          CtStruct(sname) => (CtStruct(sname), s2, c2),
-          _ => (CtUnknown, s2, c2)
+            match applied_callee_ty {
+              CtFn(param_tys, ret, _) => {
+                let ret_box = Array::slice([
+                  ret
+                ], 0, 1)
+                let call_param_tys = param_tys
+                let plen2 = Array::length(param_tys)
+                let alen3 = Array::length(arg_tys)
+                if alen3 != plen2 {
+                  Array::push(errors, String::concat("function arity mismatch for ", String::concat(callee_name0, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))))
+                }
+                let s3 = unify_call_args(call_param_tys, arg_tys, s2)
+                let call_ret = Array::get(ret_box, 0)
+                (subst_apply(s3, call_ret), s3, c2)
+              },
+              CtStruct(sname) => (CtStruct(sname), s2, c2),
+              _ => (CtUnknown, s2, c2)
+            }
+            }
+          }
+        } else {
+            let (ct, s1, c1) = check_expr(callee, env, defs, s, c, errors)
+            let alen = Array::length(args)
+            let arg_tys = Array::slice([
+              CtUnknown
+            ], 0, 0)
+            let mut ai = 0
+            let mut s2 = s1
+            let mut c2 = c1
+            while ai < alen {
+              let (at, ns, nc) = check_expr(Array::get(args, ai), env, defs, s2, c2, errors)
+              Array::push(arg_tys, at)
+              s2 = ns
+              c2 = nc
+              ai = ai + 1
+            }
+            let applied_callee_ty = match ct {
+              CtFn(_, _, _) => ct,
+              _ => subst_apply(s2, ct)
+            }
+            match applied_callee_ty {
+              CtFn(param_tys, ret, _) => {
+                let ret_box = Array::slice([
+                  ret
+                ], 0, 1)
+                let call_param_tys = param_tys
+                let plen2 = Array::length(param_tys)
+                let alen3 = Array::length(arg_tys)
+                if alen3 != plen2 {
+                  Array::push(errors, String::concat("function arity mismatch for <expr>: expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))
+                }
+                let s3 = unify_call_args(call_param_tys, arg_tys, s2)
+                let call_ret = Array::get(ret_box, 0)
+                (subst_apply(s3, call_ret), s3, c2)
+              },
+              CtStruct(sname) => (CtStruct(sname), s2, c2),
+              _ => (CtUnknown, s2, c2)
+            }
         }
       }
     },
@@ -476,7 +693,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
     EMatch(scrutinee, arms) => {
       let (scr_ty, s1, c1) = check_expr(scrutinee, env, defs, s, c, errors)
       let alen = Array::length(arms)
-      if eq(alen, 0) {
+      if alen == 0 {
         (CtUnknown, s1, c1)
       }
       else {
@@ -488,7 +705,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
           let (pat, body) = Array::get(arms, ai)
           let arm_env = check_pattern(pat, scr_ty, env, defs)
           let (arm_ty, ns, nc) = check_expr(body, arm_env, defs, si, ci, errors)
-          if eq(ai, 0) {
+          if ai == 0 {
             result_ty = arm_ty
           }
           si = ns
@@ -593,7 +810,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
               }
               tbi = tbi + 1
             }
-            s0 = if eq(Array::length(bounds), 0) {
+            s0 = if Array::length(bounds) == 0 {
               s0
             } else subst_add_bound(s0, vid, bounds)
             tp_env = env_bind(tp_env, tpname, tv)
@@ -652,15 +869,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         },
         None => (subst_apply(s2, bt), s2)
       }
-      let resolved_params = Array::slice([
-        CtUnknown
-      ], 0, 0)
-      let mut rpi = 0
-      while rpi < Array::length(param_types) {
-        Array::push(resolved_params, subst_apply(s3, Array::get(param_types, rpi)))
-        rpi = rpi + 1
-      }
-      (CtFn(resolved_params, final_ret, effect), s3, c2)
+      (CtFn(param_types, final_ret, effect), s3, c2)
     },
     EBreak(opt) => match opt {
       Some(e) => {
@@ -721,7 +930,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       let mut ai = 0
       while ai < ilen {
         let (it, ns, nc) = check_expr(Array::get(items, ai), env, defs, s1, c1, errors)
-        if eq(ai, 0) {
+        if ai == 0 {
           elem_ty = it
         }
         s1 = ns
