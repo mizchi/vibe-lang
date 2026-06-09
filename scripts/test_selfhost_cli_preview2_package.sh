@@ -17,7 +17,7 @@ bash "$SCRIPT_DIR/build_selfhost_cli_preview2_component.sh" "$COMPONENT_PATH" "$
 bash "$SCRIPT_DIR/run_selfhost_cli_preview2_component.sh" "$COMPONENT_PATH" "$INPUT_PATH" "$OUTPUT_PATH" answer
 
 wasm-tools validate "$OUTPUT_PATH" >/dev/null
-env VIBE_WASMTIME_WASM_FLAGS="${VIBE_WASMTIME_WASM_FLAGS:-exceptions=y}" \
+env VIBE_WASMTIME_WASM_FLAGS="${VIBE_WASMTIME_WASM_FLAGS:-exceptions=y,threads=y}" \
   "$SCRIPT_DIR/wasmtime_run.sh" --invoke _start "$OUTPUT_PATH" >"$RUN_LOG"
 
 RESULT="$(grep -E '^-?[0-9]+$' "$RUN_LOG" | tail -n 1 || true)"

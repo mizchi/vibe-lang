@@ -37,23 +37,28 @@ pkf affected --since=origin/main 'test:*'  # diff-aware package tests
 
 vibe compiler は二層構造になっている:
 
-- **`src/` (MoonBit 実装)** — 現状の **authoritative な実装**。バグ修正・
-  新機能はまずここに入れる。`vibe` CLI バイナリはこれをビルドして生成
-  される (`scripts/ensure_native_cli.sh`)。
 - **`vibe/compiler/` (selfhost: vibe で書かれた vibe compiler)** —
-  ADR-0033 で 0.1.0 sign-off 対象として canonical 化される予定だが、
-  日々のコードベースの真実は `src/` 側。ここを直接編集するのは
-  `selfhost_cli_*.vibe` のような **selfhost 専用の adapter / bundle**
-  もしくは parity gate (`scripts/test_selfhost_*.sh`) を通すときのみ。
+  2026-06-09 以降の cutover 方針では canonical 化対象。新しい
+  compiler/checker/codegen の挙動は、原則ここを主対象として設計する。
+  `selfhost_cli_*.vibe` / component adapter / bundle / parity gate もここに属する。
+- **`src/` (MoonBit 実装)** — 移行期間の bootstrap / fallback / host-runner
+  実装。`scripts/ensure_native_cli.sh` や selfhost wasm の stage0 build にはまだ必要だが、
+  長期的には退役させる。`src/` に新規機能を入れる場合は、bootstrap に必要な
+  境界か、selfhost 側へ反映済みかを確認する。
+
+selfhost cutover 後の seed compiler / stage0-stage2 / bootstrap bump の運用は
+[docs/selfhost-bootstrap.md](docs/selfhost-bootstrap.md) に従う。新しい syntax を
+compiler source 自体で使う場合は、先に seed compiler がその syntax を理解できる
+状態を tag し、bootstrap bump を通してから source を移行する。
 
 判断目安:
 - 「`vibe test foo.vibe` で挙動を変えたい / 新 builtin を追加したい」
-  → `src/` 側
+  → まず `vibe/compiler/` 側。bootstrap CLI 経路の互換が必要な場合のみ `src/` も追従
 - 「selfhost が正しく自分でコンパイルできない」「dist wasm が壊れて
   いる」 → `vibe/compiler/` 側 + `pkf run release-check` の selfhost
   ゲート確認
-- 両方に同じ機能を実装する場合は `src/` 先 → parity gate でカバレッジ
-  確認 → 必要なら `vibe/compiler/` も追従
+- 両方に同じ機能を実装する場合は `vibe/compiler/` 先 → parity/cutover gate
+  で確認 → bootstrap 互換のために必要な最小限だけ `src/` へ追従
 
 CI shard では:
 - `scripts/pkfire/selfhost_gates_shard.sh bootstrap|cli|check|coverage`

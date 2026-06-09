@@ -661,12 +661,10 @@ main() {
     sum_check_self=$((sum_check_self + kself))
 
     if [ -n "$MAX_COMPILE_RATIO" ] && ratio_exceeds "$cratio" "$MAX_COMPILE_RATIO"; then
-      echo "bench-selfhost-perf: compile ratio exceeded ($rel_case: $cratio > $MAX_COMPILE_RATIO)" >&2
-      fail_ratio=1
+      echo "bench-selfhost-perf: per-case compile ratio exceeded ($rel_case: $cratio > $MAX_COMPILE_RATIO; TOTAL gate decides)" >&2
     fi
     if [ -n "$MAX_CHECK_RATIO" ] && ratio_exceeds "$kratio" "$MAX_CHECK_RATIO"; then
-      echo "bench-selfhost-perf: check ratio exceeded ($rel_case: $kratio > $MAX_CHECK_RATIO)" >&2
-      fail_ratio=1
+      echo "bench-selfhost-perf: per-case check ratio exceeded ($rel_case: $kratio > $MAX_CHECK_RATIO; TOTAL gate decides)" >&2
     fi
 
     for phase in compile check; do

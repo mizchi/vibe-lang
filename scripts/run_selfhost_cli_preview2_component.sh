@@ -13,7 +13,7 @@ INPUT_PATH="$2"
 OUTPUT_PATH="$3"
 ENTRY_NAME="$4"
 COMPILE_MODE="${5:-mvp}"
-WASMTIME_WASM_FLAGS="${VIBE_WASMTIME_WASM_FLAGS:-exceptions=y}"
+WASMTIME_WASM_FLAGS="${VIBE_WASMTIME_WASM_FLAGS:-exceptions=y,threads=y}"
 WASMTIME_WASI_FLAGS="${VIBE_WASMTIME_WASI_FLAGS:-}"
 COMPONENT_EXPORT_NAME="${VIBE_SELFHOST_CLI_COMPONENT_EXPORT_NAME:-compile-cli-request}"
 
@@ -47,7 +47,7 @@ invoke_component_request() {
     echo "component returned no numeric result for request '$request'" >&2
     return 1
   fi
-  echo $((raw / 4))
+  echo "$raw"
 }
 
 mkdir -p "$(dirname "$OUTPUT_PATH")"
