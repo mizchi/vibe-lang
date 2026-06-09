@@ -82,8 +82,20 @@ if [ ! -x "$VIBE_BIN" ]; then
 fi
 [ -x "$VIBE_BIN" ] || { echo "corpus gate: vibe CLI missing: $VIBE_BIN" >&2; exit 2; }
 
+selfhost_sources_newer_than_wasm() {
+  if [ ! -f "$SELFHOST_WASM" ]; then
+    return 0
+  fi
+  if [ "$SELFHOST_SRC" -nt "$SELFHOST_WASM" ]; then
+    return 0
+  fi
+  local newer
+  newer="$(find "$ROOT/vibe/compiler" -name '*.vibe' -newer "$SELFHOST_WASM" -print -quit 2>/dev/null)"
+  [ -n "$newer" ]
+}
+
 # --- build the selfhost compiler wasm (the vibe-written compiler) ---
-if [ ! -f "$SELFHOST_WASM" ] || [ "$SELFHOST_SRC" -nt "$SELFHOST_WASM" ]; then
+if selfhost_sources_newer_than_wasm; then
   echo "[corpus] building selfhost compiler wasm: host-compile $SELFHOST_SRC"
   if ! "$VIBE_BIN" compile --wasm --force-cabi-realloc "$SELFHOST_SRC" -o "$SELFHOST_WASM"; then
     echo "corpus gate: selfhost compiler build failed" >&2
@@ -206,11 +218,12 @@ echo "  full results: $SUMMARY_TSV"
 echo "================================================================"
 if [ "$REAL" -gt 0 ]; then
   echo "  REAL gaps:"
-  grep -P '\tfail\([0-9]+\)\tREAL\t' "$SUMMARY_TSV" 2>/dev/null | cut -f1,4 | sed 's/^/    - /'
+  awk -F '\t' '$2 ~ /^fail\([0-9]+\)$/ && $3 == "REAL" { print $1 "\t" $4 }' "$SUMMARY_TSV" |
+    sed 's/^/    - /'
 fi
 
 # Current REAL-failing set (genuine selfhost checker/parser gaps).
-real_set="$(grep -P '\tfail\([0-9]+\)\tREAL\t' "$SUMMARY_TSV" 2>/dev/null | cut -f1 | sort -u)"
+real_set="$(awk -F '\t' '$2 ~ /^fail\([0-9]+\)$/ && $3 == "REAL" { print $1 }' "$SUMMARY_TSV" | sort -u)"
 
 if [ "$UPDATE_BASELINE" -eq 1 ]; then
   {
