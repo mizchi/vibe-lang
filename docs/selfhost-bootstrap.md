@@ -21,7 +21,11 @@ selfhost compiler は、自分自身をビルドできるようになった後�
   <https://ghc.gitlab.haskell.org/ghc/doc/users_guide/using.html>
 
 共通しているのは、開発中の HEAD をいきなり信頼せず、既知の compiler を
-seed として固定し、stage を分けて検証すること。
+seed として固定し、stage を分けて検証すること。vibe はこの中でも Rust の
+運用を主参照にし、prebuilt/fixed seed を stage0、現在 source を stage0 で
+ビルドした compiler を stage1、stage1 で再ビルドした compiler を stage2 と
+呼ぶ。stage2 を配布・tag 候補にし、stage3 は同一結果を確認する sanity check
+として扱う。
 
 ## vibe の方針
 
@@ -34,13 +38,17 @@ seed として固定し、stage を分けて検証すること。
 - seed compiler は毎 commit 更新しない。更新は「bootstrap bump」として
   独立した PR/commit にし、下記 gate を全て通したときだけ許可する。
 
-### Staged build
+### Rust-style staged build
 
 - stage0: 固定 seed compiler。新しい compiler source をビルドするためだけに使う。
 - stage1: stage0 が現在の `vibe/compiler/` source から作った compiler。
 - stage2: stage1 が同じ source から作った compiler。配布・tag 候補は stage2。
 - stage3: optional。同じ source を stage2 で再ビルドし、stage2 と stage3 の
   挙動または artifact が一致するかを確認する。
+
+通常開発では stage1 gate を短い feedback loop として使い、seed 更新や release
+候補では stage2 gate を必須にする。stage3 は deterministic artifact 比較または
+corpus parity に差分が出たときの切り分けに使う。
 
 ### Gate
 

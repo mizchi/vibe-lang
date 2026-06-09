@@ -46,7 +46,7 @@ vibe compiler は二層構造になっている:
   長期的には退役させる。`src/` に新規機能を入れる場合は、bootstrap に必要な
   境界か、selfhost 側へ反映済みかを確認する。
 
-selfhost cutover 後の seed compiler / stage0-stage2 / bootstrap bump の運用は
+selfhost cutover 後の Rust-style seed compiler / stage0-stage2 / bootstrap bump の運用は
 [docs/selfhost-bootstrap.md](docs/selfhost-bootstrap.md) に従う。新しい syntax を
 compiler source 自体で使う場合は、先に seed compiler がその syntax を理解できる
 状態を tag し、bootstrap bump を通してから source を移行する。
