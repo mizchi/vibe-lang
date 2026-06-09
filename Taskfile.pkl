@@ -780,6 +780,56 @@ local testSelfhostPerfGate = new Task {
   inputs { ...moonSources; ...scriptSources }
 }
 
+local testSelfhostCorpusGate = new Task {
+  name = "test-selfhost-corpus-gate"
+  cmd = "scripts/test_selfhost_corpus_gate.sh --gate"
+  inputs { ...moonSources; ...scriptSources; "scripts/selfhost_corpus_baseline.txt" }
+}
+
+local selfhostTrialGenerationGate = new Task {
+  name = "selfhost-trial-generation-gate"
+  description = "trial gate: seed -> stage1 -> stage2 -> stage3 selfhost build"
+  cmd = "bash scripts/selfhost_generations.sh build --stage3"
+  cache = false
+  inputs {
+    ...moonSources
+    ...scriptSources
+    "bootstrap/selfhost/seed.json"
+    "bootstrap/selfhost/seed/selfhost_compiler.wasm"
+  }
+  outputs { "_build/selfhost/generations/**" }
+}
+
+local selfhostTrialPerfKpi = new Task {
+  name = "selfhost-trial-perf-kpi"
+  description = "trial gate: selfhost perf KPI with cutover thresholds"
+  cmd =
+    "VIBE_SELFHOST_PERF_RUNS=3 VIBE_SELFHOST_PERF_MAX_COMPILE_RATIO=2.5 VIBE_SELFHOST_PERF_MAX_CHECK_RATIO=1.33 VIBE_SELFHOST_PERF_CASES_FILE=bench/selfhost_perf/kpi_cases.txt scripts/bench_selfhost_perf.sh"
+  inputs { ...moonSources; ...scriptSources; "bench/selfhost_perf/kpi_cases.txt" }
+}
+
+local selfhostTrialRssKpi = new Task {
+  name = "selfhost-trial-rss-kpi"
+  description = "trial gate: selfhost peak RSS KPI with cutover threshold"
+  cmd = "VIBE_SELFHOST_RSS_MAX_RATIO=2.0 scripts/bench_selfhost_rss.sh --gate"
+  inputs { ...moonSources; ...scriptSources; "bench/selfhost_perf/kpi_cases.txt" }
+}
+
+local selfhostTrialPostGenerationGate = new Task {
+  name = "selfhost-trial-post-generation-gate"
+  description = "internal: complete selfhost trial gates that must run after stage generation"
+  cmd = "bash scripts/selfhost_trial_gate.sh --post-generation"
+  cache = false
+  visibility = "internal"
+  inputs {
+    ...moonSources
+    ...scriptSources
+    "bench/selfhost_perf/kpi_cases.txt"
+    "scripts/selfhost_corpus_baseline.txt"
+  }
+  deps { selfhostTrialGenerationGate }
+}
+
 local benchBundleSize = scriptTask("bench-bundle-size", "scripts/bench_bundle_size.sh")
 local benchBundleSizeProduct =
   scriptTask("bench-bundle-size-product", "scripts/bench_bundle_size.sh")
@@ -1266,6 +1316,12 @@ local releaseSelfhostGates = new Task {
   }
 }
 
+local selfhostTrialGate = new Task {
+  name = "selfhost-trial-gate"
+  description = "complete selfhost trial sign-off: staged build + cutover + corpus + perf/RSS KPI"
+  deps { selfhostTrialPostGenerationGate }
+}
+
 local releaseCheck = new Task {
   name = "release-check"
   description =
@@ -1459,6 +1515,11 @@ tasks {
   benchSelfhostCompileHotspots
   benchSelfhostMemory
   testSelfhostPerfGate
+  testSelfhostCorpusGate
+  selfhostTrialGenerationGate
+  selfhostTrialPerfKpi
+  selfhostTrialRssKpi
+  selfhostTrialPostGenerationGate
   benchBundleSize
   benchBundleSizeProduct
   benchBundleSizeUpdate
@@ -1549,6 +1610,7 @@ tasks {
   vibeNormalizeCached
   vibeNormalizeCheck
   releaseSelfhostGates
+  selfhostTrialGate
   releaseCheck
   checkRelease
   playgroundDev

@@ -479,7 +479,7 @@ command_build() {
   validate_wasm_if_available stage1 "$stage1"
   run_generation_compile "stage1 -> stage2" "$stage1" "$entry" "$stage2"
   validate_wasm_if_available stage2 "$stage2"
-  if use_cli_invoke "$entry"; then
+  if [ "$GENERATION_INVOKE_MODE" = "cli" ]; then
     validate_compiler_artifact_if_enabled stage1 "$stage1" "$out_dir"
     validate_compiler_artifact_if_enabled stage2 "$stage2" "$out_dir"
   else
@@ -489,7 +489,7 @@ command_build() {
   if [ "$build_stage3" -eq 1 ]; then
     run_generation_compile "stage2 -> stage3" "$stage2" "$entry" "$stage3"
     validate_wasm_if_available stage3 "$stage3"
-    if use_cli_invoke "$entry"; then
+    if [ "$GENERATION_INVOKE_MODE" = "cli" ]; then
       validate_compiler_artifact_if_enabled stage3 "$stage3" "$out_dir"
     else
       run_start_if_enabled stage3 "$stage3" "$out_dir/stage3_run.out"
