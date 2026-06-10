@@ -6,13 +6,52 @@ host vs selfhost output equivalent.
 
 ## Macro: stage-level wallclock
 
-Driver: `scripts/bench_selfhost_perf.sh` → `just bench-selfhost-perf`.
+Driver: `scripts/bench_selfhost_perf.sh` → `pkf run bench-selfhost-perf`.
 
 Compares host CLI vs selfhost wasm (under `moonrun`) on the cases listed in
 `cases.txt`. Median of N runs (default 3) per phase per stage; emits ratio
-gates that `just test-selfhost-perf-gate` enforces.
+gates that `pkf run test-selfhost-perf-gate` enforces.
 
 Output: `_build/bench/selfhost_perf/{summary,stage_summary}.{e2e,in-memory}.tsv`.
+
+### Compiler artifact selection
+
+By default the selfhost side still uses the historical MoonBit-built
+compiler wasm:
+
+```bash
+_build/wasm/<debug|release>/build/cmd/vibe_compile_wasi/vibe_compile_wasi.wasm
+```
+
+To measure the vibe-side CLI compiler path, opt into the selfhost CLI
+core artifact:
+
+```bash
+VIBE_SELFHOST_PERF_COMPILER_KIND=cli-core scripts/bench_selfhost_perf.sh
+```
+
+This builds `vibe/cli/selfhost_entry.vibe` to
+`_build/bench/selfhost_cli_core/index_stage1.wasm` via
+`scripts/build_selfhost_cli_core.sh`, then runs the normal
+`compile-lite` bench commands against that wasm. Because this artifact
+uses the vibe host ABI (`vibe::env-get`, `vibe::fs-read-file`, etc.),
+the compiler side runs through `scripts/run_wasm_vibe_host_runner.sh`
+instead of `moonrun_wt`; `VIBE_SELFHOST_PERF_RUNTIME` still controls the
+MoonBit-built checker runner when `VIBE_SELFHOST_PERF_CHECKER_KIND=moonbit`.
+When `VIBE_SELFHOST_PERF_COMPILER_KIND=cli-core`, the checker side also
+defaults to `cli-core`, so both compile and check requests go through the
+vibe-side CLI artifact. Override with
+`VIBE_SELFHOST_PERF_CHECKER_KIND=moonbit|cli-core`.
+
+For `cli-core`, compile/selfhost requests default to a JSONL daemon mode
+inside `scripts/wasm_vibe_host_runner.js`
+(`VIBE_SELFHOST_PERF_COMPILE_DAEMON=1`). This keeps the Node host runner
+and WebAssembly instance warm across all cases, matching the checker
+daemon's amortized mode. Set `VIBE_SELFHOST_PERF_COMPILE_DAEMON=0` to
+measure cold per-invocation runner cost; those numbers include Node
+startup and are not comparable to the wasmtime `vibe_compile_wasi` gate.
+`VIBE_SELFHOST_PERF_CHECK_DAEMON=1` enables the same daemon shape for
+checker requests.
 
 ### wasmtime AOT runtime (default, #402 Phase 2)
 

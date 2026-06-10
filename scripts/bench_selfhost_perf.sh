@@ -10,10 +10,28 @@ VIBE_CLI_RELEASE=1 source "$PROJECT_ROOT/scripts/ensure_native_cli.sh"
 
 SELFHOST_WASM_PROFILE="${VIBE_SELFHOST_PERF_WASM_PROFILE:-debug}"
 DEFAULT_STAGE1_COMPILER_WASM="$PROJECT_ROOT/_build/wasm/$SELFHOST_WASM_PROFILE/build/cmd/vibe_compile_wasi/vibe_compile_wasi.wasm"
+DEFAULT_STAGE1_CLI_CORE_WASM="$PROJECT_ROOT/_build/bench/selfhost_cli_core/index_stage1.wasm"
 DEFAULT_STAGE1_CHECKER_WASM="$PROJECT_ROOT/_build/wasm/$SELFHOST_WASM_PROFILE/build/cmd/vibe_check_wasi/vibe_check_wasi.wasm"
 VIBE_BIN="${VIBE_BIN:-$VIBE_CLI_BIN}"
-STAGE1_COMPILER_WASM="${STAGE1_COMPILER_WASM:-$DEFAULT_STAGE1_COMPILER_WASM}"
-STAGE1_CHECKER_WASM="${STAGE1_CHECKER_WASM:-$DEFAULT_STAGE1_CHECKER_WASM}"
+COMPILER_KIND="${VIBE_SELFHOST_PERF_COMPILER_KIND:-moonbit}"
+case "$COMPILER_KIND" in
+  moonbit) STAGE1_COMPILER_WASM="${STAGE1_COMPILER_WASM:-$DEFAULT_STAGE1_COMPILER_WASM}" ;;
+  cli-core) STAGE1_COMPILER_WASM="${STAGE1_COMPILER_WASM:-$DEFAULT_STAGE1_CLI_CORE_WASM}" ;;
+  *) echo "bench-selfhost-perf: VIBE_SELFHOST_PERF_COMPILER_KIND must be moonbit|cli-core" >&2; exit 1 ;;
+esac
+CHECKER_KIND="${VIBE_SELFHOST_PERF_CHECKER_KIND:-}"
+if [ -z "$CHECKER_KIND" ]; then
+  if [ "$COMPILER_KIND" = "cli-core" ]; then
+    CHECKER_KIND=cli-core
+  else
+    CHECKER_KIND=moonbit
+  fi
+fi
+case "$CHECKER_KIND" in
+  moonbit) STAGE1_CHECKER_WASM="${STAGE1_CHECKER_WASM:-$DEFAULT_STAGE1_CHECKER_WASM}" ;;
+  cli-core) STAGE1_CHECKER_WASM="${STAGE1_CHECKER_WASM:-$DEFAULT_STAGE1_CLI_CORE_WASM}" ;;
+  *) echo "bench-selfhost-perf: VIBE_SELFHOST_PERF_CHECKER_KIND must be moonbit|cli-core" >&2; exit 1 ;;
+esac
 OUT_DIR="${OUT_DIR:-$PROJECT_ROOT/_build/bench/selfhost_perf}"
 CASES_FILE="${VIBE_SELFHOST_PERF_CASES_FILE:-$PROJECT_ROOT/bench/selfhost_perf/cases.txt}"
 RUNS="${VIBE_SELFHOST_PERF_RUNS:-3}"
@@ -22,6 +40,11 @@ MAX_COMPILE_RATIO="${VIBE_SELFHOST_PERF_MAX_COMPILE_RATIO:-}"
 MAX_CHECK_RATIO="${VIBE_SELFHOST_PERF_MAX_CHECK_RATIO:-}"
 REBUILD_MODE="${VIBE_SELFHOST_PERF_REBUILD:-auto}"
 WASM_OPT_MODE="${VIBE_SELFHOST_PERF_WASM_OPT:-auto}"
+if [ "$COMPILER_KIND" = "cli-core" ] && [ -z "${VIBE_SELFHOST_PERF_WASM_OPT+x}" ]; then
+  # The legacy wasm-opt helper rewrites moon-built src/cmd artifacts.
+  # Keep cli-core benches on the vibe-side compiler artifact by default.
+  WASM_OPT_MODE="off"
+fi
 PROFILE_CALLSTACK="${VIBE_SELFHOST_PERF_PROFILE_CALLSTACK:-}"
 # Runtime that hosts the stage1 wasm.
 #   moonrun        — legacy v8 interpreter (no rust toolchain needed)
@@ -47,6 +70,14 @@ MOONRUN_WT_RUST_TOOLCHAIN="${MOONRUN_WT_RUST_TOOLCHAIN:-1.93.0}"
 # RUNS ≥ 3; with cross-case daemon mode only request #1 of case #1
 # is cold, the rest are pure-warm-ratio.
 CHECK_DAEMON_MODE="${VIBE_SELFHOST_PERF_CHECK_DAEMON:-0}"
+COMPILE_DAEMON_MODE="${VIBE_SELFHOST_PERF_COMPILE_DAEMON:-}"
+if [ -z "$COMPILE_DAEMON_MODE" ]; then
+  if [ "$COMPILER_KIND" = "cli-core" ]; then
+    COMPILE_DAEMON_MODE=1
+  else
+    COMPILE_DAEMON_MODE=0
+  fi
+fi
 
 is_positive_int() {
   case "$1" in
@@ -276,10 +307,10 @@ ensure_binaries() {
     if [ ! -x "$VIBE_BIN" ] || source_changed_since "$VIBE_BIN"; then
       src_changed_since_host=1
     fi
-    if [ ! -f "$STAGE1_COMPILER_WASM" ] || source_changed_since "$STAGE1_COMPILER_WASM"; then
+    if [ "$COMPILER_KIND" = "moonbit" ] && { [ ! -f "$STAGE1_COMPILER_WASM" ] || source_changed_since "$STAGE1_COMPILER_WASM"; }; then
       src_changed_since_compiler=1
     fi
-    if [ ! -f "$STAGE1_CHECKER_WASM" ] || source_changed_since "$STAGE1_CHECKER_WASM"; then
+    if [ "$CHECKER_KIND" = "moonbit" ] && { [ ! -f "$STAGE1_CHECKER_WASM" ] || source_changed_since "$STAGE1_CHECKER_WASM"; }; then
       src_changed_since_checker=1
     fi
   fi
@@ -289,7 +320,17 @@ ensure_binaries() {
     VIBE_CLI_RELEASE=1 VIBE_CLI_FORCE=1 source "$PROJECT_ROOT/scripts/ensure_native_cli.sh"
     VIBE_BIN="$VIBE_CLI_BIN"
   fi
-  if [ ! -f "$STAGE1_COMPILER_WASM" ] || [ "$src_changed_since_compiler" -eq 1 ]; then
+  if [ "$COMPILER_KIND" = "cli-core" ]; then
+    echo "[selfhost-perf] building selfhost compiler cli-core wasm..."
+    STAGE1_COMPILER_WASM="$(VIBE_SELFHOST_CLI_CORE_OUT_DIR="$PROJECT_ROOT/_build/bench/selfhost_cli_core" \
+      VIBE_SELFHOST_CLI_CORE_REBUILD="${VIBE_SELFHOST_CLI_CORE_REBUILD:-$REBUILD_MODE}" \
+      ENTRY_PATH="${VIBE_SELFHOST_CLI_CORE_ENTRY:-$PROJECT_ROOT/vibe/cli/selfhost_entry.vibe}" \
+      STAGE1_CORE_WASM="$STAGE1_COMPILER_WASM" \
+      bash "$PROJECT_ROOT/scripts/build_selfhost_cli_core.sh")"
+    if [ "$CHECKER_KIND" = "cli-core" ]; then
+      STAGE1_CHECKER_WASM="$STAGE1_COMPILER_WASM"
+    fi
+  elif [ ! -f "$STAGE1_COMPILER_WASM" ] || [ "$src_changed_since_compiler" -eq 1 ]; then
     echo "[selfhost-perf] building selfhost compiler wasm ($SELFHOST_WASM_PROFILE)..."
     if [ "$SELFHOST_WASM_PROFILE" = "release" ]; then
       moon build --target wasm --release src/cmd/vibe_compile_wasi
@@ -297,7 +338,15 @@ ensure_binaries() {
       moon build --target wasm src/cmd/vibe_compile_wasi
     fi
   fi
-  if [ ! -f "$STAGE1_CHECKER_WASM" ] || [ "$src_changed_since_checker" -eq 1 ]; then
+  if [ "$CHECKER_KIND" = "cli-core" ] && [ "$COMPILER_KIND" != "cli-core" ]; then
+    echo "[selfhost-perf] building selfhost checker cli-core wasm..."
+    STAGE1_CHECKER_WASM="$(VIBE_SELFHOST_CLI_CORE_OUT_DIR="$PROJECT_ROOT/_build/bench/selfhost_cli_core" \
+      VIBE_SELFHOST_CLI_CORE_REBUILD="${VIBE_SELFHOST_CLI_CORE_REBUILD:-$REBUILD_MODE}" \
+      ENTRY_PATH="${VIBE_SELFHOST_CLI_CORE_ENTRY:-$PROJECT_ROOT/vibe/cli/selfhost_entry.vibe}" \
+      STAGE1_CORE_WASM="$STAGE1_CHECKER_WASM" \
+      bash "$PROJECT_ROOT/scripts/build_selfhost_cli_core.sh")"
+  fi
+  if [ "$CHECKER_KIND" = "moonbit" ] && { [ ! -f "$STAGE1_CHECKER_WASM" ] || [ "$src_changed_since_checker" -eq 1 ]; }; then
     echo "[selfhost-perf] building selfhost checker wasm ($SELFHOST_WASM_PROFILE)..."
     if [ "$SELFHOST_WASM_PROFILE" = "release" ]; then
       moon build --target wasm --release src/cmd/vibe_check_wasi
@@ -361,8 +410,12 @@ ensure_binaries() {
     else
       local opt_compiler="$PROJECT_ROOT/_build/wasm/opt/vibe_compile_wasi.wasm"
       local opt_checker="$PROJECT_ROOT/_build/wasm/opt/vibe_check_wasi.wasm"
-      if [ -f "$opt_compiler" ]; then STAGE1_COMPILER_WASM="$opt_compiler"; fi
-      if [ -f "$opt_checker" ]; then STAGE1_CHECKER_WASM="$opt_checker"; fi
+      if [ "$COMPILER_KIND" = "moonbit" ] && [ -f "$opt_compiler" ]; then
+        STAGE1_COMPILER_WASM="$opt_compiler"
+      elif [ "$COMPILER_KIND" = "cli-core" ]; then
+        echo "[selfhost-perf] keeping cli-core compiler artifact; wasm-opt helper only applies to moonbit compiler artifacts"
+      fi
+      if [ "$CHECKER_KIND" = "moonbit" ] && [ -f "$opt_checker" ]; then STAGE1_CHECKER_WASM="$opt_checker"; fi
       echo "$opt_level" > "$opt_marker"
       echo "[selfhost-perf] using wasm-opt'd artifacts under _build/wasm/opt/ (level=$opt_level for runtime=$SELFHOST_RUNTIME)"
     fi
@@ -377,8 +430,12 @@ ensure_binaries() {
     wasmtime|wasmtime-aot)
       ensure_moonrun_wt
       if [ "$SELFHOST_RUNTIME" = "wasmtime-aot" ]; then
-        STAGE1_COMPILER_WASM="$(ensure_cwasm "$STAGE1_COMPILER_WASM")"
-        STAGE1_CHECKER_WASM="$(ensure_cwasm "$STAGE1_CHECKER_WASM")"
+        if [ "$COMPILER_KIND" = "moonbit" ]; then
+          STAGE1_COMPILER_WASM="$(ensure_cwasm "$STAGE1_COMPILER_WASM")"
+        fi
+        if [ "$CHECKER_KIND" = "moonbit" ]; then
+          STAGE1_CHECKER_WASM="$(ensure_cwasm "$STAGE1_CHECKER_WASM")"
+        fi
       fi
       ;;
     *)
@@ -533,7 +590,7 @@ with open(resp_file) as rf:
             )
             sys.exit(1)
         elapsed_us = int(d["elapsed_us"])
-        elapsed_ms = elapsed_us // 1000
+        elapsed_ms = max(1, (elapsed_us + 999) // 1000)
         sample_files[safe].write(f"{elapsed_ms}\n")
         profile_file = os.path.join(tmp_dir, f"{safe}.check.selfhost.{run_idx}.profile.tsv")
         with open(profile_file, "w") as pf:
@@ -566,6 +623,267 @@ PY
       local profile_file="${tmp_dir}/${safe}.check.selfhost.${run_idx}.profile.tsv"
       if [ ! -f "$profile_file" ]; then
         echo "bench-selfhost-perf: missing stage profile (check/selfhost daemon): $rel_case run=$run_idx" >&2
+        exit 1
+      fi
+      while IFS=$'\t' read -r stage ms us; do
+        if [ "$stage" = "stage" ] || [ -z "$stage" ]; then continue; fi
+        if [ -z "$us" ]; then us="$((ms * 1000))"; fi
+        printf "%s\t%s\t%s\t%d\t%s\t%s\t%s\n" "$rel_case" "check" "selfhost" "$run_idx" "$stage" "$ms" "$us" >> "$raw_stage_tsv"
+        echo "$us" >> "$OUT_DIR/raw/${safe}.check_stage.selfhost.${stage}.txt"
+      done < "$profile_file"
+      run_idx=$((run_idx + 1))
+    done
+  done
+}
+
+run_compile_cli_core_all_cases_daemon() {
+  local wasm_path="$1"
+  local runs="$2"
+  local tmp_dir="$3"
+  local raw_tsv="$4"
+  local raw_stage_tsv="$5"
+  local compile_mode="$6"
+  shift 6
+  local -a cases=("$@")
+
+  local case_path rel_case safe stage
+  for case_path in "${cases[@]}"; do
+    rel_case="${case_path#$PROJECT_ROOT/}"
+    safe="$(echo "$rel_case" | tr '/: ' '___')"
+    : > "$OUT_DIR/raw/${safe}.compile.selfhost.txt"
+    for stage in load type parse compile write total; do
+      : > "$OUT_DIR/raw/${safe}.compile_stage.selfhost.${stage}.txt"
+    done
+  done
+
+  local req_file="${tmp_dir}/compile.daemon.all.requests.jsonl"
+  local resp_file="${tmp_dir}/compile.daemon.all.responses.jsonl"
+  : > "$req_file"
+
+  local warmup_profile="${tmp_dir}/compile.daemon.warmup.profile.tsv"
+  python3 -c "import json,sys; print(json.dumps({'args':sys.argv[1:]}))" \
+    compile-lite --wasm-linear --no-dce --in-memory --profile-tsv "$warmup_profile" "${cases[0]}" >> "$req_file"
+
+  for case_path in "${cases[@]}"; do
+    rel_case="${case_path#$PROJECT_ROOT/}"
+    safe="$(echo "$rel_case" | tr '/: ' '___')"
+    local run_idx=1
+    while [ "$run_idx" -le "$runs" ]; do
+      local profile_file="${tmp_dir}/${safe}.compile.selfhost.${run_idx}.profile.tsv"
+      local -a args=(compile-lite --wasm-linear --no-dce --profile-tsv "$profile_file")
+      if [ -n "$PROFILE_CALLSTACK" ] && [ "$run_idx" -eq 1 ]; then
+        local callstack_file="${tmp_dir}/${safe}.compile.selfhost.callstack.tsv"
+        args+=(--profile-callstack "$callstack_file")
+      fi
+      if [ "$compile_mode" = "e2e" ]; then
+        args+=("$case_path" -o "$tmp_dir/${safe}.${run_idx}.selfhost.wasm")
+      else
+        args+=(--in-memory "$case_path")
+      fi
+      python3 -c "import json,sys; print(json.dumps({'args':sys.argv[1:]}))" "${args[@]}" >> "$req_file"
+      run_idx=$((run_idx + 1))
+    done
+  done
+
+  if ! VIBE_PREOPEN_DIR="$PROJECT_ROOT" bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
+      --daemon --invoke cli_main "$wasm_path" < "$req_file" > "$resp_file" 2>"${tmp_dir}/compile.daemon.all.stderr"; then
+    echo "bench-selfhost-perf: cli-core compile daemon run failed; stderr at ${tmp_dir}/compile.daemon.all.stderr" >&2
+    exit 1
+  fi
+
+  python3 - "$resp_file" "$tmp_dir" "$OUT_DIR" "$runs" "${cases[@]}" <<'PY'
+import json, os, sys
+resp_file, tmp_dir, out_dir, runs_s = sys.argv[1:5]
+runs = int(runs_s)
+case_paths = sys.argv[5:]
+project_root = os.environ.get("PROJECT_ROOT", "")
+
+def safe_for(case_path: str) -> str:
+    rel = case_path[len(project_root) + 1:] if case_path.startswith(project_root + "/") else case_path
+    return rel.replace("/", "_").replace(":", "_").replace(" ", "_")
+
+sample_files = {}
+for case_path in case_paths:
+    safe = safe_for(case_path)
+    sample_files[safe] = open(os.path.join(out_dir, "raw", f"{safe}.compile.selfhost.txt"), "w")
+
+with open(resp_file) as rf:
+    for i, line in enumerate(rf):
+        line = line.strip()
+        if not line:
+            continue
+        d = json.loads(line)
+        if i == 0:
+            if d.get("exit_code", 0) != 0 or "error" in d:
+                sys.stderr.write(f"bench-selfhost-perf: cli-core compile daemon warmup failed: {d.get('error','?')}\n")
+                sys.exit(1)
+            continue
+        req_i = i - 1
+        case_idx = req_i // runs
+        run_idx = req_i % runs + 1
+        if case_idx >= len(case_paths):
+            sys.stderr.write(f"bench-selfhost-perf: extra compile daemon response #{i+1}, no matching request\n")
+            sys.exit(1)
+        case_path = case_paths[case_idx]
+        safe = safe_for(case_path)
+        if d.get("exit_code", 0) != 0 or "error" in d:
+            sys.stderr.write(
+                f"bench-selfhost-perf: cli-core compile daemon req {i+1} "
+                f"(case={case_path} run={run_idx}) non-zero exit: "
+                f"{d.get('exit_code')} err={d.get('error','?')}\n"
+            )
+            sys.exit(1)
+        elapsed_us = int(d["elapsed_us"])
+        elapsed_ms = max(1, (elapsed_us + 999) // 1000)
+        sample_files[safe].write(f"{elapsed_ms}\n")
+        with open(os.path.join(tmp_dir, f"{safe}.compile.selfhost.{run_idx}.stdout"), "w") as so:
+            so.write(d.get("stdout", ""))
+        open(os.path.join(tmp_dir, f"{safe}.compile.selfhost.{run_idx}.stderr"), "w").close()
+
+for f in sample_files.values():
+    f.close()
+PY
+
+  for case_path in "${cases[@]}"; do
+    rel_case="${case_path#$PROJECT_ROOT/}"
+    safe="$(echo "$rel_case" | tr '/: ' '___')"
+    local sample_file="$OUT_DIR/raw/${safe}.compile.selfhost.txt"
+    local run_idx=1
+    while [ "$run_idx" -le "$runs" ]; do
+      local elapsed
+      elapsed="$(sed -n "${run_idx}p" "$sample_file")"
+      printf "%s\t%s\t%s\t%d\t%s\t%s\n" "$rel_case" "compile" "selfhost" "$run_idx" "$elapsed" "0" >> "$raw_tsv"
+      local profile_file="${tmp_dir}/${safe}.compile.selfhost.${run_idx}.profile.tsv"
+      if [ ! -f "$profile_file" ]; then
+        echo "bench-selfhost-perf: missing stage profile (compile/selfhost daemon): $rel_case run=$run_idx" >&2
+        exit 1
+      fi
+      while IFS=$'\t' read -r stage ms us; do
+        if [ "$stage" = "stage" ] || [ -z "$stage" ]; then continue; fi
+        if [ -z "$us" ]; then us="$((ms * 1000))"; fi
+        printf "%s\t%s\t%s\t%d\t%s\t%s\t%s\n" "$rel_case" "compile" "selfhost" "$run_idx" "$stage" "$ms" "$us" >> "$raw_stage_tsv"
+        echo "$us" >> "$OUT_DIR/raw/${safe}.compile_stage.selfhost.${stage}.txt"
+      done < "$profile_file"
+      run_idx=$((run_idx + 1))
+    done
+  done
+}
+
+run_check_cli_core_all_cases_daemon() {
+  local wasm_path="$1"
+  local runs="$2"
+  local tmp_dir="$3"
+  local raw_tsv="$4"
+  local raw_stage_tsv="$5"
+  shift 5
+  local -a cases=("$@")
+
+  local case_path rel_case safe stage
+  for case_path in "${cases[@]}"; do
+    rel_case="${case_path#$PROJECT_ROOT/}"
+    safe="$(echo "$rel_case" | tr '/: ' '___')"
+    : > "$OUT_DIR/raw/${safe}.check.selfhost.txt"
+    for stage in load type total; do
+      : > "$OUT_DIR/raw/${safe}.check_stage.selfhost.${stage}.txt"
+    done
+  done
+
+  local req_file="${tmp_dir}/check.cli_core.daemon.all.requests.jsonl"
+  local resp_file="${tmp_dir}/check.cli_core.daemon.all.responses.jsonl"
+  : > "$req_file"
+
+  local warmup_profile="${tmp_dir}/check.cli_core.daemon.warmup.profile.tsv"
+  python3 -c "import json,sys; print(json.dumps({'args':sys.argv[1:]}))" \
+    check --profile-tsv "$warmup_profile" "${cases[0]}" >> "$req_file"
+
+  for case_path in "${cases[@]}"; do
+    rel_case="${case_path#$PROJECT_ROOT/}"
+    safe="$(echo "$rel_case" | tr '/: ' '___')"
+    local run_idx=1
+    while [ "$run_idx" -le "$runs" ]; do
+      local profile_file="${tmp_dir}/${safe}.check.selfhost.${run_idx}.profile.tsv"
+      local -a args=(check --profile-tsv "$profile_file")
+      if [ -n "$PROFILE_CALLSTACK" ] && [ "$run_idx" -eq 1 ]; then
+        local callstack_file="${tmp_dir}/${safe}.check.selfhost.callstack.tsv"
+        args+=(--profile-callstack "$callstack_file")
+      fi
+      args+=("$case_path")
+      python3 -c "import json,sys; print(json.dumps({'args':sys.argv[1:]}))" "${args[@]}" >> "$req_file"
+      run_idx=$((run_idx + 1))
+    done
+  done
+
+  if ! VIBE_PREOPEN_DIR="$PROJECT_ROOT" bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
+      --daemon --invoke cli_main "$wasm_path" < "$req_file" > "$resp_file" 2>"${tmp_dir}/check.cli_core.daemon.all.stderr"; then
+    echo "bench-selfhost-perf: cli-core check daemon run failed; stderr at ${tmp_dir}/check.cli_core.daemon.all.stderr" >&2
+    exit 1
+  fi
+
+  python3 - "$resp_file" "$tmp_dir" "$OUT_DIR" "$runs" "${cases[@]}" <<'PY'
+import json, os, sys
+resp_file, tmp_dir, out_dir, runs_s = sys.argv[1:5]
+runs = int(runs_s)
+case_paths = sys.argv[5:]
+project_root = os.environ.get("PROJECT_ROOT", "")
+
+def safe_for(case_path: str) -> str:
+    rel = case_path[len(project_root) + 1:] if case_path.startswith(project_root + "/") else case_path
+    return rel.replace("/", "_").replace(":", "_").replace(" ", "_")
+
+sample_files = {}
+for case_path in case_paths:
+    safe = safe_for(case_path)
+    sample_files[safe] = open(os.path.join(out_dir, "raw", f"{safe}.check.selfhost.txt"), "w")
+
+with open(resp_file) as rf:
+    for i, line in enumerate(rf):
+        line = line.strip()
+        if not line:
+            continue
+        d = json.loads(line)
+        if i == 0:
+            if d.get("exit_code", 0) != 0 or "error" in d:
+                sys.stderr.write(f"bench-selfhost-perf: cli-core check daemon warmup failed: {d.get('error','?')}\n")
+                sys.exit(1)
+            continue
+        req_i = i - 1
+        case_idx = req_i // runs
+        run_idx = req_i % runs + 1
+        if case_idx >= len(case_paths):
+            sys.stderr.write(f"bench-selfhost-perf: extra cli-core check daemon response #{i+1}, no matching request\n")
+            sys.exit(1)
+        case_path = case_paths[case_idx]
+        safe = safe_for(case_path)
+        if d.get("exit_code", 0) != 0 or "error" in d:
+            sys.stderr.write(
+                f"bench-selfhost-perf: cli-core check daemon req {i+1} "
+                f"(case={case_path} run={run_idx}) non-zero exit: "
+                f"{d.get('exit_code')} err={d.get('error','?')}\n"
+            )
+            sys.exit(1)
+        elapsed_us = int(d["elapsed_us"])
+        elapsed_ms = max(1, (elapsed_us + 999) // 1000)
+        sample_files[safe].write(f"{elapsed_ms}\n")
+        with open(os.path.join(tmp_dir, f"{safe}.check.selfhost.{run_idx}.stdout"), "w") as so:
+            so.write(d.get("stdout", ""))
+        open(os.path.join(tmp_dir, f"{safe}.check.selfhost.{run_idx}.stderr"), "w").close()
+
+for f in sample_files.values():
+    f.close()
+PY
+
+  for case_path in "${cases[@]}"; do
+    rel_case="${case_path#$PROJECT_ROOT/}"
+    safe="$(echo "$rel_case" | tr '/: ' '___')"
+    local sample_file="$OUT_DIR/raw/${safe}.check.selfhost.txt"
+    local run_idx=1
+    while [ "$run_idx" -le "$runs" ]; do
+      local elapsed
+      elapsed="$(sed -n "${run_idx}p" "$sample_file")"
+      printf "%s\t%s\t%s\t%d\t%s\t%s\n" "$rel_case" "check" "selfhost" "$run_idx" "$elapsed" "0" >> "$raw_tsv"
+      local profile_file="${tmp_dir}/${safe}.check.selfhost.${run_idx}.profile.tsv"
+      if [ ! -f "$profile_file" ]; then
+        echo "bench-selfhost-perf: missing stage profile (check/selfhost cli-core daemon): $rel_case run=$run_idx" >&2
         exit 1
       fi
       while IFS=$'\t' read -r stage ms us; do
@@ -624,6 +942,42 @@ selfhost_runner() {
   return "$status"
 }
 
+selfhost_cli_core_runner() {
+  local phase profile_tsv profile_callstack start_us end_us elapsed_us status
+  phase="$(detect_profile_phase "$@" || true)"
+  profile_tsv="$(extract_profile_tsv_arg "$@" || true)"
+  profile_callstack="$(extract_profile_callstack_arg "$@" || true)"
+  start_us="$(now_us)"
+  if VIBE_PREOPEN_DIR="$PROJECT_ROOT" bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main "$@"; then
+    status=0
+  else
+    status=$?
+  fi
+  end_us="$(now_us)"
+  elapsed_us="$((end_us - start_us))"
+  if [ "$status" -eq 0 ] && [ -n "$phase" ]; then
+    if ! profile_tsv_has_nonzero_stage "$profile_tsv" "total"; then
+      write_elapsed_profile_tsv "$phase" "$profile_tsv" "$elapsed_us"
+    fi
+    local callstack_stage="compile"
+    if [ "$phase" = "check" ]; then
+      callstack_stage="check"
+    fi
+    if ! profile_tsv_has_nonzero_stage "$profile_callstack" "$callstack_stage"; then
+      write_elapsed_callstack_tsv "$phase" "$profile_callstack" "$elapsed_us"
+    fi
+  fi
+  return "$status"
+}
+
+selfhost_compile_runner() {
+  if [ "$COMPILER_KIND" = "cli-core" ]; then
+    selfhost_cli_core_runner "$@"
+  else
+    selfhost_runner "$@"
+  fi
+}
+
 main() {
   if ! is_positive_int "$RUNS"; then
     echo "bench-selfhost-perf: VIBE_SELFHOST_PERF_RUNS must be positive integer" >&2
@@ -658,7 +1012,15 @@ main() {
 
   echo "[selfhost-perf] cases=${#cases[@]} runs=${RUNS}"
   echo "[selfhost-perf] compile_mode=${COMPILE_MODE}"
+  echo "[selfhost-perf] compiler_kind=${COMPILER_KIND}"
+  echo "[selfhost-perf] checker_kind=${CHECKER_KIND}"
   echo "[selfhost-perf] selfhost_wasm_profile=${SELFHOST_WASM_PROFILE}"
+  echo "[selfhost-perf] compiler_wasm=${STAGE1_COMPILER_WASM#$PROJECT_ROOT/}"
+  echo "[selfhost-perf] checker_wasm=${STAGE1_CHECKER_WASM#$PROJECT_ROOT/}"
+  if [ "$COMPILER_KIND" = "cli-core" ]; then
+    echo "[selfhost-perf] compiler_runtime=vibe-host-runner(node)"
+    echo "[selfhost-perf] compile_daemon=${COMPILE_DAEMON_MODE}"
+  fi
 
   # Warm-up pass: moonrun's first invocation on a stage1 wasm pays a
   # JIT-compile cost (observed locally as a 7× outlier on the first
@@ -670,8 +1032,17 @@ main() {
   local warmup_case="${cases[0]}"
   echo "[selfhost-perf] warmup: ${warmup_case#$PROJECT_ROOT/}"
   echo "[selfhost-perf] runtime=${SELFHOST_RUNTIME}"
-  selfhost_runner "$STAGE1_COMPILER_WASM" compile-lite --wasm-linear --no-dce --in-memory "$warmup_case" >/dev/null 2>&1 || true
+  selfhost_compile_runner "$STAGE1_COMPILER_WASM" compile-lite --wasm-linear --no-dce --in-memory "$warmup_case" >/dev/null 2>&1 || true
   selfhost_runner "$STAGE1_CHECKER_WASM" --check --file "$warmup_case" >/dev/null 2>&1 || true
+
+  local compile_daemon_active=0
+  if [ "$COMPILE_DAEMON_MODE" = "1" ] && [ "$COMPILER_KIND" = "cli-core" ]; then
+    compile_daemon_active=1
+    echo "[selfhost-perf] compile/selfhost: cli-core cross-case daemon mode (1 daemon for ${#cases[@]} cases × ${RUNS} runs)"
+    PROJECT_ROOT="$PROJECT_ROOT" run_compile_cli_core_all_cases_daemon \
+      "$STAGE1_COMPILER_WASM" "$RUNS" "$OUT_DIR/tmp" \
+      "$raw_tsv" "$raw_stage_tsv" "$COMPILE_MODE" "${cases[@]}"
+  fi
 
   # Cross-case daemon pre-pass: one warm wasm instance handles ALL
   # (case × run) check/selfhost requests, so `ensure_builtin_modules`
@@ -680,10 +1051,16 @@ main() {
   # loop then unconditionally skips check/selfhost since results
   # already exist.
   local check_daemon_active=0
-  if [ "$CHECK_DAEMON_MODE" = "1" ] \
+  if [ "$CHECK_DAEMON_MODE" = "1" ] && [ "$CHECKER_KIND" = "cli-core" ]; then
+    check_daemon_active=1
+    echo "[selfhost-perf] check/selfhost: cli-core cross-case daemon mode (1 daemon for ${#cases[@]} cases × ${RUNS} runs)"
+    PROJECT_ROOT="$PROJECT_ROOT" run_check_cli_core_all_cases_daemon \
+      "$STAGE1_CHECKER_WASM" "$RUNS" "$OUT_DIR/tmp" \
+      "$raw_tsv" "$raw_stage_tsv" "${cases[@]}"
+  elif [ "$CHECK_DAEMON_MODE" = "1" ] \
      && { [ "$SELFHOST_RUNTIME" = "wasmtime" ] || [ "$SELFHOST_RUNTIME" = "wasmtime-aot" ]; }; then
     check_daemon_active=1
-    echo "[selfhost-perf] check/selfhost: cross-case daemon mode (1 daemon for ${#cases[@]} cases × ${RUNS} runs)"
+    echo "[selfhost-perf] check/selfhost: moonbit cross-case daemon mode (1 daemon for ${#cases[@]} cases × ${RUNS} runs)"
     PROJECT_ROOT="$PROJECT_ROOT" run_check_all_cases_daemon \
       "$STAGE1_CHECKER_WASM" "$RUNS" "$OUT_DIR/tmp" \
       "$raw_tsv" "$raw_stage_tsv" "${cases[@]}"
@@ -697,6 +1074,10 @@ main() {
       for runtime in host selfhost; do
         # Cross-case daemon pre-pass already populated check/selfhost
         # results for this case — skip the per-iteration loop body.
+        if [ "$compile_daemon_active" = "1" ] \
+           && [ "$phase" = "compile" ] && [ "$runtime" = "selfhost" ]; then
+          continue
+        fi
         if [ "$check_daemon_active" = "1" ] \
            && [ "$phase" = "check" ] && [ "$runtime" = "selfhost" ]; then
           continue
@@ -728,16 +1109,19 @@ main() {
               "$VIBE_BIN" compile-lite --wasm-linear --no-dce --profile-tsv "$profile_file" "${callstack_args[@]+"${callstack_args[@]}"}" "$case_path" -o "$OUT_DIR/tmp/${safe}.${run_idx}.host.wasm")
           elif [ "$phase" = "compile" ] && [ "$runtime" = "selfhost" ] && [ "$COMPILE_MODE" = "e2e" ]; then
             read -r cmd_status elapsed < <(run_timed "$stdout_file" "$stderr_file" \
-              selfhost_runner "$STAGE1_COMPILER_WASM" compile-lite --wasm-linear --no-dce --profile-tsv "$profile_file" "${callstack_args[@]+"${callstack_args[@]}"}" "$case_path" -o "$OUT_DIR/tmp/${safe}.${run_idx}.selfhost.wasm")
+              selfhost_compile_runner "$STAGE1_COMPILER_WASM" compile-lite --wasm-linear --no-dce --profile-tsv "$profile_file" "${callstack_args[@]+"${callstack_args[@]}"}" "$case_path" -o "$OUT_DIR/tmp/${safe}.${run_idx}.selfhost.wasm")
           elif [ "$phase" = "compile" ] && [ "$runtime" = "host" ]; then
             read -r cmd_status elapsed < <(run_timed "$stdout_file" "$stderr_file" \
               "$VIBE_BIN" compile-lite --wasm-linear --no-dce --in-memory --profile-tsv "$profile_file" "${callstack_args[@]+"${callstack_args[@]}"}" "$case_path")
           elif [ "$phase" = "compile" ] && [ "$runtime" = "selfhost" ]; then
             read -r cmd_status elapsed < <(run_timed "$stdout_file" "$stderr_file" \
-              selfhost_runner "$STAGE1_COMPILER_WASM" compile-lite --wasm-linear --no-dce --in-memory --profile-tsv "$profile_file" "${callstack_args[@]+"${callstack_args[@]}"}" "$case_path")
+              selfhost_compile_runner "$STAGE1_COMPILER_WASM" compile-lite --wasm-linear --no-dce --in-memory --profile-tsv "$profile_file" "${callstack_args[@]+"${callstack_args[@]}"}" "$case_path")
           elif [ "$phase" = "check" ] && [ "$runtime" = "host" ]; then
             read -r cmd_status elapsed < <(run_timed "$stdout_file" "$stderr_file" \
               env VIBE_CHECK_DEBUG=0 "$VIBE_BIN" check --profile-tsv "$profile_file" "${callstack_args[@]+"${callstack_args[@]}"}" "$case_path")
+          elif [ "$phase" = "check" ] && [ "$runtime" = "selfhost" ] && [ "$CHECKER_KIND" = "cli-core" ]; then
+            read -r cmd_status elapsed < <(run_timed "$stdout_file" "$stderr_file" \
+              selfhost_cli_core_runner "$STAGE1_CHECKER_WASM" check --profile-tsv "$profile_file" "${callstack_args[@]+"${callstack_args[@]}"}" "$case_path")
           else
             read -r cmd_status elapsed < <(run_timed "$stdout_file" "$stderr_file" \
               selfhost_runner "$STAGE1_CHECKER_WASM" --check --profile-tsv "$profile_file" "${callstack_args[@]+"${callstack_args[@]}"}" --file "$case_path")

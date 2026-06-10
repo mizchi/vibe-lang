@@ -47,6 +47,10 @@ case "$shard" in
     scripts/test_golden_wat.sh
     ;;
   coverage)
+    VIBE_SELFHOST_PERF_COMPILER_KIND=cli-core \
+    VIBE_SELFHOST_PERF_CHECKER_KIND=cli-core \
+    VIBE_SELFHOST_PERF_COMPILE_DAEMON=1 \
+    VIBE_SELFHOST_PERF_CHECK_DAEMON=1 \
     VIBE_SELFHOST_PERF_RUNS=1 \
     VIBE_SELFHOST_PERF_CASES_FILE=bench/selfhost_perf/kpi_cases.txt \
     VIBE_SELFHOST_PERF_MAX_COMPILE_RATIO=2.5 \

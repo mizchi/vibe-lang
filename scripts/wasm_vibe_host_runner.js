@@ -4,6 +4,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const cp = require("node:child_process");
+const readline = require("node:readline");
 
 const TAG_MASK = 3n;
 const TAG_INT = 0n;
@@ -18,7 +19,7 @@ const PROFILE_START_NS = process.hrtime.bigint();
 
 function usage() {
   console.error(
-    "usage: node scripts/wasm_vibe_host_runner.js [--invoke <name>] [--bench-count <n> --bench-warmup <n> --bench-setup <name>] <module.wasm> [argv...]",
+    "usage: node scripts/wasm_vibe_host_runner.js [--daemon] [--invoke <name>] [--bench-count <n> --bench-warmup <n> --bench-setup <name>] <module.wasm> [argv...]",
   );
 }
 
@@ -29,8 +30,13 @@ function parseArgs(argv) {
   let benchCount = null;
   let benchWarmup = 0;
   let benchSetup = null;
+  let daemon = false;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
+    if (arg === "--daemon") {
+      daemon = true;
+      continue;
+    }
     if (arg === "--invoke") {
       if (i + 1 >= argv.length) {
         throw new Error("--invoke requires function name");
@@ -84,7 +90,7 @@ function parseArgs(argv) {
   if (invokes.length === 0) {
     invokes.push("_start");
   }
-  return { invokes, wasmPath, passthroughArgs, benchCount, benchWarmup, benchSetup };
+  return { daemon, invokes, wasmPath, passthroughArgs, benchCount, benchWarmup, benchSetup };
 }
 
 function readU32LE(mem, pos) {
@@ -1048,13 +1054,15 @@ function writeProfileRequest(req, elapsedUs) {
 
 async function main() {
   const {
+    daemon,
     invokes,
     wasmPath,
-    passthroughArgs,
+    passthroughArgs: initialPassthroughArgs,
     benchCount,
     benchWarmup,
     benchSetup,
   } = parseArgs(process.argv.slice(2));
+  let passthroughArgs = initialPassthroughArgs.slice();
   if (passthroughArgs.length > 0) {
     if (process.env.VIBE_INPUT === undefined && passthroughArgs.length >= 1) {
       process.env.VIBE_INPUT = passthroughArgs[0];
@@ -1644,6 +1652,163 @@ async function main() {
       throw err;
     }
   };
+  const resultToExitCode = (result) => {
+    if (typeof result === "bigint") {
+      return decodeTaggedOrRawInt(result);
+    }
+    if (typeof result === "number") {
+      return result | 0;
+    }
+    return 0;
+  };
+
+  const emitResult = (invoke, result, isSelfhost) => {
+    if (typeof result === "bigint") {
+      // Check if the result is a tagged object (could be Bytes from selfbuild)
+      if (
+        (result & TAG_MASK) === TAG_OBJ &&
+        (invoke === "selfbuild_compile_stage2" ||
+          invoke === "selfbuild_compile_cli_adapter")
+      ) {
+        // Decode result as Bytes and write to expected output path
+        const bytes = decodeHostBytes(instanceRef, result);
+        const outPath =
+          invoke === "selfbuild_compile_cli_adapter"
+            ? "_build/bench/selfhost_cli_adapter/selfhost_cli_stage1.wasm"
+            : "_build/bench/selfhost_wasi_selfbuild/index_stage2.wasm";
+        const outDir = path.dirname(outPath);
+        if (!fs.existsSync(outDir)) {
+          fs.mkdirSync(outDir, { recursive: true });
+        }
+        fs.writeFileSync(outPath, bytes);
+        console.log(`wrote ${outPath} (${bytes.length} bytes)`);
+      } else if (isSelfhost) {
+        // Selfhost-compiled modules return untagged i64 values — print as-is.
+        console.log(result.toString());
+      } else {
+        // For string/array/record results, output display text on first line
+        // then raw tagged i64 on second line. CLI checks for VIBE_DISPLAY: prefix.
+        const tag = Number(result & 3n);
+        if (tag === 1) {
+          // Object pointer — try to render display text
+          const ptr = Number(result & ~3n);
+          const mem = instance.exports.memory;
+          if (mem && ptr > 0 && ptr + 8 <= mem.buffer.byteLength) {
+            const view = new DataView(mem.buffer);
+            const ty = view.getUint32(ptr, true);
+            if (ty === 1) {
+              // String object
+              const len = view.getUint32(ptr + 4, true);
+              if (ptr + 8 + len <= mem.buffer.byteLength) {
+                const bytes = new Uint8Array(mem.buffer, ptr + 8, len);
+                const text = new TextDecoder().decode(bytes);
+                console.log("VIBE_DISPLAY:" + JSON.stringify(text));
+              }
+            } else if (ty === 5) {
+              // Array — show element count
+              const len = view.getUint32(ptr + 4, true);
+              console.log("VIBE_DISPLAY:[Array(" + len + ")]");
+            }
+          }
+        }
+        // Always output raw tagged i64 as last line
+        console.log(result.toString());
+      }
+    } else if (result !== undefined) {
+      console.log(String(result));
+    }
+  };
+
+  const runInvokes = (args) => {
+    passthroughArgs = args.slice();
+    const profileRequest = extractProfileRequest(passthroughArgs);
+    const profileStartNs = process.hrtime.bigint();
+    let result;
+    let isSelfhost = false;
+    for (const invoke of invokes) {
+      ({ result, isSelfhost } = invokeExport(invoke));
+    }
+    const elapsedUs = Number(process.hrtime.bigint() - profileStartNs) / 1000;
+    writeProfileRequest(profileRequest, elapsedUs);
+    return { result, isSelfhost, elapsedUs };
+  };
+
+  const decodeExceptionMessage = (err) => {
+    if (!(err instanceof WebAssembly.Exception) || !instanceRefGlobal) {
+      return err?.message || String(err);
+    }
+    for (const exp of Object.values(instanceRefGlobal.exports)) {
+      if (exp instanceof WebAssembly.Tag) {
+        try {
+          const payload = err.getArg(exp, 0);
+          const msg = tryDecodeExceptionString(instanceRefGlobal, payload);
+          if (msg !== null) {
+            return msg;
+          }
+        } catch (_) {}
+      }
+    }
+    return err?.message || String(err);
+  };
+
+  const runDaemon = async () => {
+    if (benchCount !== null) {
+      throw new Error("--daemon cannot be combined with --bench-count");
+    }
+    if (invokes.length !== 1) {
+      throw new Error("--daemon requires exactly one --invoke target");
+    }
+    const rl = readline.createInterface({
+      input: process.stdin,
+      crlfDelay: Infinity,
+    });
+    const originalStdoutWrite = process.stdout.write;
+    const writeResponse = originalStdoutWrite.bind(process.stdout);
+    for await (const line of rl) {
+      const row = line.trim();
+      if (row.length === 0) {
+        continue;
+      }
+      let capturedStdout = "";
+      let response;
+      process.stdout.write = (chunk, encoding, callback) => {
+        if (typeof encoding === "function") {
+          callback = encoding;
+        }
+        capturedStdout += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+        if (typeof callback === "function") {
+          callback();
+        }
+        return true;
+      };
+      try {
+        const req = JSON.parse(row);
+        const args = Array.isArray(req.args) ? req.args.map(String) : [];
+        const { result, elapsedUs } = runInvokes(args);
+        response = {
+          exit_code: resultToExitCode(result),
+          elapsed_us: Math.max(1, Math.round(elapsedUs)),
+          stdout: capturedStdout,
+        };
+      } catch (err) {
+        response = {
+          exit_code: 1,
+          elapsed_us: 1,
+          stdout: capturedStdout,
+          error: decodeExceptionMessage(err),
+        };
+      } finally {
+        process.stdout.write = originalStdoutWrite;
+      }
+      writeResponse(`${JSON.stringify(response)}\n`);
+    }
+  };
+
+  if (daemon) {
+    await runDaemon();
+    return;
+  }
+
   if (benchCount !== null) {
     if (invokes.length !== 1) {
       throw new Error("bench mode requires exactly one --invoke target");
@@ -1662,69 +1827,9 @@ async function main() {
     console.log(String(elapsedUs));
     return;
   }
-  let result;
-  let isSelfhost = false;
-  const profileRequest = extractProfileRequest(passthroughArgs);
-  const profileStartNs = process.hrtime.bigint();
-  for (const invoke of invokes) {
-    ({ result, isSelfhost } = invokeExport(invoke));
-  }
-  writeProfileRequest(profileRequest, Number(process.hrtime.bigint() - profileStartNs) / 1000);
+  const { result, isSelfhost } = runInvokes(passthroughArgs);
   const invoke = invokes[invokes.length - 1];
-  if (typeof result === "bigint") {
-    // Check if the result is a tagged object (could be Bytes from selfbuild)
-    if (
-      (result & TAG_MASK) === TAG_OBJ &&
-      (invoke === "selfbuild_compile_stage2" ||
-        invoke === "selfbuild_compile_cli_adapter")
-    ) {
-      // Decode result as Bytes and write to expected output path
-      const bytes = decodeHostBytes(instanceRef, result);
-      const outPath =
-        invoke === "selfbuild_compile_cli_adapter"
-          ? "_build/bench/selfhost_cli_adapter/selfhost_cli_stage1.wasm"
-          : "_build/bench/selfhost_wasi_selfbuild/index_stage2.wasm";
-      const outDir = path.dirname(outPath);
-      if (!fs.existsSync(outDir)) {
-        fs.mkdirSync(outDir, { recursive: true });
-      }
-      fs.writeFileSync(outPath, bytes);
-      console.log(`wrote ${outPath} (${bytes.length} bytes)`);
-    } else if (isSelfhost) {
-      // Selfhost-compiled modules return untagged i64 values — print as-is.
-      console.log(result.toString());
-    } else {
-      // For string/array/record results, output display text on first line
-      // then raw tagged i64 on second line. CLI checks for VIBE_DISPLAY: prefix.
-      const tag = Number(result & 3n);
-      if (tag === 1) {
-        // Object pointer — try to render display text
-        const ptr = Number(result & ~3n);
-        const mem = instance.exports.memory;
-        if (mem && ptr > 0 && ptr + 8 <= mem.buffer.byteLength) {
-          const view = new DataView(mem.buffer);
-          const ty = view.getUint32(ptr, true);
-          if (ty === 1) {
-            // String object
-            const len = view.getUint32(ptr + 4, true);
-            if (ptr + 8 + len <= mem.buffer.byteLength) {
-              const bytes = new Uint8Array(mem.buffer, ptr + 8, len);
-              const text = new TextDecoder().decode(bytes);
-              console.log("VIBE_DISPLAY:" + JSON.stringify(text));
-            }
-          } else if (ty === 5) {
-            // Array — show element count
-            const len = view.getUint32(ptr + 4, true);
-            console.log("VIBE_DISPLAY:[Array(" + len + ")]");
-          }
-        }
-      }
-      // Always output raw tagged i64 as last line
-      console.log(result.toString());
-    }
-  } else if (result !== undefined) {
-    console.log(String(result));
-  }
+  emitResult(invoke, result, isSelfhost);
 }
 
 main().catch((err) => {

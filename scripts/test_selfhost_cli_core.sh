@@ -37,8 +37,6 @@ DEBUG_STRING_OUTPUT_RUN_LOG="$OUT_DIR/core_debug_string_output_run.log"
 DEBUG_STRING_OUTPUT_DIR="$OUT_DIR/core_debug_string_output.debug"
 DEBUG_STRING_LIB_WASM="$DEBUG_STRING_OUTPUT_DIR/core_debug_string_lib.wasm"
 ENTRY_NAME="answer"
-HOST_VIBE_EXE_RELEASE="$PROJECT_ROOT/_build/native/release/build/cmd/vibe/vibe.exe"
-HOST_VIBE_EXE_DEBUG="$PROJECT_ROOT/_build/native/debug/build/cmd/vibe/vibe.exe"
 HOST_MODE="${VIBE_SELFHOST_CLI_CORE_HOST_MODE:-debug}"
 WASMTIME_RUN="$PROJECT_ROOT/scripts/wasmtime_run.sh"
 WASMTIME_WASM_FLAGS="${VIBE_WASMTIME_WASM_FLAGS:-exceptions=y}"
@@ -113,7 +111,7 @@ run_stage_capture_stdout() {
 }
 
 mkdir -p "$OUT_DIR"
-rm -f "$STAGE1_CORE_WASM" "$OUTPUT_WASM" "$OUTPUT_RUN_LOG" \
+rm -f "$OUTPUT_WASM" "$OUTPUT_RUN_LOG" \
   "$COMMAND_INPUT_SOURCE" "$COMMAND_OUTPUT_WASM" "$COMMAND_OUTPUT_RUN_LOG" \
   "$COMMAND_PROFILE_TSV" "$COMMAND_CALLSTACK_TSV" \
   "$COMPILE_COMMAND_INPUT_SOURCE" "$COMPILE_COMMAND_OUTPUT_WASM" \
@@ -125,16 +123,12 @@ rm -f "$STAGE1_CORE_WASM" "$OUTPUT_WASM" "$OUTPUT_RUN_LOG" \
   "$DEBUG_STRING_OUTPUT_RUN_LOG"
 rm -rf "$DEBUG_OUTPUT_DIR" "$DEBUG_STRING_OUTPUT_DIR"
 
-if [ "$HOST_MODE" = "release" ] && [ -x "$HOST_VIBE_EXE_RELEASE" ]; then
-  HOST_COMPILE_CMD=("$HOST_VIBE_EXE_RELEASE" compile --wasm --force-cabi-realloc)
-elif [ "$HOST_MODE" = "debug" ] && [ -x "$HOST_VIBE_EXE_DEBUG" ]; then
-  HOST_COMPILE_CMD=("$HOST_VIBE_EXE_DEBUG" compile --wasm --force-cabi-realloc)
-else
-  HOST_COMPILE_CMD=(moon run --target native src/cmd/vibe -- compile --wasm --force-cabi-realloc)
-fi
-
-run_stage "stage0 host compiler -> stage1 selfhost compiler core wasm" \
-  "${HOST_COMPILE_CMD[@]}" "$ENTRY_PATH" -o "$STAGE1_CORE_WASM" || exit $?
+STAGE1_CORE_WASM="$(VIBE_SELFHOST_CLI_CORE_OUT_DIR="$OUT_DIR" \
+  VIBE_SELFHOST_CLI_CORE_HOST_MODE="$HOST_MODE" \
+  VIBE_SELFHOST_CLI_CORE_REBUILD=always \
+  ENTRY_PATH="$ENTRY_PATH" \
+  STAGE1_CORE_WASM="$STAGE1_CORE_WASM" \
+  bash "$PROJECT_ROOT/scripts/build_selfhost_cli_core.sh")" || exit $?
 
 cat >"$INPUT_SOURCE" <<'EOF'
 export let answer = () -> Int { 40 + 2 }

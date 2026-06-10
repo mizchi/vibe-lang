@@ -16,6 +16,10 @@ echo "== selfhost trial: corpus REAL-gap gate =="
 bash scripts/test_selfhost_corpus_gate.sh --gate
 
 echo "== selfhost trial: perf KPI =="
+VIBE_SELFHOST_PERF_COMPILER_KIND=cli-core \
+VIBE_SELFHOST_PERF_CHECKER_KIND=cli-core \
+VIBE_SELFHOST_PERF_COMPILE_DAEMON=1 \
+VIBE_SELFHOST_PERF_CHECK_DAEMON=1 \
 VIBE_SELFHOST_PERF_RUNS=3 \
 VIBE_SELFHOST_PERF_MAX_COMPILE_RATIO=2.5 \
 VIBE_SELFHOST_PERF_MAX_CHECK_RATIO=1.33 \
