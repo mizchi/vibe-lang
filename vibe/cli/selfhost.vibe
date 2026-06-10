@@ -293,21 +293,31 @@ export let parse_compile_lite_args: (Array[String]) -> (String, String, String, 
 
 export let selfhost_cli_compile_lite_args: (Array[String]) -> Int with { Error, Fs, Profiler } = (args) -> {
   let (input_path, output_path, entry_name, mode, in_memory, profile_tsv_path, profile_callstack_path) = parse_compile_lite_args_with_profile(args)
-  let total_start = profiler_now_us()
-  let (bytes, load_us, type_us, parse_us, compile_us, _compile_total_us) = compile_release_file_mode_profiled(input_path, entry_name, mode)
-  if in_memory {
-    let total_us = elapsed_profile_us_since(total_start)
-    write_optional_profile(profile_tsv_path, compile_lite_profile_tsv(load_us, type_us, parse_us, compile_us, 0, total_us))
-    write_optional_profile(profile_callstack_path, compile_lite_callstack_profile_tsv(total_us))
-    0
+  if profile_tsv_path == "" && profile_callstack_path == "" {
+    let bytes = compile_release_file_mode(input_path, entry_name, mode)
+    if in_memory {
+      0
+    } else {
+      Fs::write_bytes(output_path, bytes)
+      0
+    }
   } else {
-    let write_start = profiler_now_us()
-    Fs::write_bytes(output_path, bytes)
-    let write_us = elapsed_profile_us_since(write_start)
-    let total_us = elapsed_profile_us_since(total_start)
-    write_optional_profile(profile_tsv_path, compile_lite_profile_tsv(load_us, type_us, parse_us, compile_us, write_us, total_us))
-    write_optional_profile(profile_callstack_path, compile_lite_callstack_profile_tsv(total_us))
-    0
+    let total_start = profiler_now_us()
+    let (bytes, load_us, type_us, parse_us, compile_us, _compile_total_us) = compile_release_file_mode_profiled(input_path, entry_name, mode)
+    if in_memory {
+      let total_us = elapsed_profile_us_since(total_start)
+      write_optional_profile(profile_tsv_path, compile_lite_profile_tsv(load_us, type_us, parse_us, compile_us, 0, total_us))
+      write_optional_profile(profile_callstack_path, compile_lite_callstack_profile_tsv(total_us))
+      0
+    } else {
+      let write_start = profiler_now_us()
+      Fs::write_bytes(output_path, bytes)
+      let write_us = elapsed_profile_us_since(write_start)
+      let total_us = elapsed_profile_us_since(total_start)
+      write_optional_profile(profile_tsv_path, compile_lite_profile_tsv(load_us, type_us, parse_us, compile_us, write_us, total_us))
+      write_optional_profile(profile_callstack_path, compile_lite_callstack_profile_tsv(total_us))
+      0
+    }
   }
 }
 
