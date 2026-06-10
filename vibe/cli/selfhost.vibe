@@ -104,9 +104,33 @@ let read_next_arg_for: (Array[String], Int, String, String) -> String with { Err
   }
 }
 
+let read_next_path_after: (Array[String], Int, String, String) -> String with { Error } = (args, index, command, flag) -> {
+  if index >= Array::length(args) {
+    throw(String::concat(command, String::concat(": missing path after ", flag)))
+  } else {
+    Array::get(args, index)
+  }
+}
+
 //# compile-lite
 
-export let parse_compile_lite_args: (Array[String]) -> (String, String, String, String, Bool) with { Error } = (args) -> {
+let compile_lite_profile_tsv_zero: () -> String = () -> {
+  "stage\telapsed_ms\telapsed_us\nload\t0\t0\ntype\t0\t0\ncompile\t0\t0\nwrite\t0\t0\ntotal\t0\t0\n"
+}
+
+let compile_lite_callstack_profile_zero: () -> String = () -> {
+  "stage\telapsed_ms\telapsed_us\ncompile\t0\t0\n"
+}
+
+let write_optional_profile: (String, String) -> Unit with { Fs } = (path, content) -> {
+  if path == "" {
+    ()
+  } else {
+    Fs::write_file(path, content)
+  }
+}
+
+let parse_compile_lite_args_with_profile: (Array[String]) -> (String, String, String, String, Bool, String, String) with { Error } = (args) -> {
   if Array::length(args) == 0 || Array::get(args, 0) != "compile-lite" {
     throw("compile-lite: expected command")
   } else {
@@ -115,6 +139,8 @@ export let parse_compile_lite_args: (Array[String]) -> (String, String, String, 
     let mut entry_name = "_start"
     let mut mode = "mvp"
     let mut in_memory = false
+    let mut profile_tsv_path = ""
+    let mut profile_callstack_path = ""
     let mut i = 1
     while i < Array::length(args) {
       let arg = Array::get(args, i)
@@ -123,6 +149,36 @@ export let parse_compile_lite_args: (Array[String]) -> (String, String, String, 
         "--wasm-linear" => (),
         "--wasm-gc" => {
           throw("compile-lite: --wasm-gc is not supported by selfhost cli yet")
+          ()
+        },
+        "--coverage" => {
+          throw("compile-lite: --coverage/--coverage-run-tests are not supported")
+          ()
+        },
+        "--coverage-run-tests" => {
+          throw("compile-lite: --coverage/--coverage-run-tests are not supported")
+          ()
+        },
+        "--debug-errors" => {
+          throw("compile-lite: --debug-errors is not supported")
+          ()
+        },
+        "--http-host-imports" => {
+          throw("compile-lite: --http-host-imports is not supported")
+          ()
+        },
+        "--force-cabi-realloc" => {
+          throw("compile-lite: --force-cabi-realloc is not supported")
+          ()
+        },
+        "--async" => {
+          throw("compile-lite: --async is not supported")
+          ()
+        },
+        "--adapter" => {
+          i = i + 1
+          let _ = read_next_arg_for(args, i, "compile", arg)
+          throw("compile-lite: --adapter is not supported")
           ()
         },
         "--no-dce" => {
@@ -150,12 +206,12 @@ export let parse_compile_lite_args: (Array[String]) -> (String, String, String, 
         },
         "--profile-tsv" => {
           i = i + 1
-          let _ = read_next_arg(args, i, arg)
+          profile_tsv_path = read_next_path_after(args, i, "compile-lite", arg)
           ()
         },
         "--profile-callstack" => {
           i = i + 1
-          let _ = read_next_arg(args, i, arg)
+          profile_callstack_path = read_next_path_after(args, i, "compile-lite", arg)
           ()
         },
         _ => if is_opt_level_arg(arg) {
@@ -180,18 +236,27 @@ export let parse_compile_lite_args: (Array[String]) -> (String, String, String, 
     } else if !in_memory && output_path == "" {
       throw("compile-lite: -o/--out is required")
     } else {
-      (input_path, output_path, entry_name, mode, in_memory)
+      (input_path, output_path, entry_name, mode, in_memory, profile_tsv_path, profile_callstack_path)
     }
   }
 }
 
+export let parse_compile_lite_args: (Array[String]) -> (String, String, String, String, Bool) with { Error } = (args) -> {
+  let (input_path, output_path, entry_name, mode, in_memory, _, _) = parse_compile_lite_args_with_profile(args)
+  (input_path, output_path, entry_name, mode, in_memory)
+}
+
 export let selfhost_cli_compile_lite_args: (Array[String]) -> Int with { Error, Fs } = (args) -> {
-  let (input_path, output_path, entry_name, mode, in_memory) = parse_compile_lite_args(args)
+  let (input_path, output_path, entry_name, mode, in_memory, profile_tsv_path, profile_callstack_path) = parse_compile_lite_args_with_profile(args)
   let bytes = compile_release_file_mode(input_path, entry_name, mode)
   if in_memory {
+    write_optional_profile(profile_tsv_path, compile_lite_profile_tsv_zero())
+    write_optional_profile(profile_callstack_path, compile_lite_callstack_profile_zero())
     0
   } else {
     Fs::write_bytes(output_path, bytes)
+    write_optional_profile(profile_tsv_path, compile_lite_profile_tsv_zero())
+    write_optional_profile(profile_callstack_path, compile_lite_callstack_profile_zero())
     0
   }
 }
@@ -221,6 +286,11 @@ export let parse_compile_args: (Array[String]) -> (String, String, String, Strin
       else if arg == "-o" || arg == "--out" {
         i = i + 1
         output_path = read_next_arg_for(args, i, "compile", arg)
+        ()
+      }
+      else if arg == "--profile" {
+        i = i + 1
+        let _ = read_next_path_after(args, i, "compile", arg)
         ()
       }
       else if arg == "--wite" || is_opt_level_arg(arg) {
@@ -315,7 +385,7 @@ export let parse_build_args: (Array[String]) -> (String, String, String, String)
       }
       else if arg == "--profile" {
         i = i + 1
-        let _ = read_next_arg_for(args, i, "build", arg)
+        let _ = read_next_path_after(args, i, "build", arg)
         ()
       }
       else if String::length(arg) > 0 && String::char_code_at(arg, 0) == 45 {
@@ -358,58 +428,97 @@ export let selfhost_cli_build_args: (Array[String]) -> Int with { Error, Fs } = 
 
 //# check
 
-export let parse_check_args: (Array[String]) -> Array[String] with { Error } = (args) -> {
+let check_profile_tsv_zero: () -> String = () -> {
+  "stage\telapsed_ms\telapsed_us\nload\t0\t0\ntype\t0\t0\ntotal\t0\t0\n"
+}
+
+let check_callstack_profile_zero: () -> String = () -> {
+  "stage\telapsed_ms\telapsed_us\ncheck\t0\t0\n"
+}
+
+let check_profile_arg_kind: (String) -> Int = (arg) -> {
+  match arg {
+    "--profile" => 1,
+    "--profile-tsv" => 2,
+    "--profile-callstack" => 3,
+    _ => 0
+  }
+}
+
+let parse_check_args_with_profile: (Array[String]) -> (Array[String], String, String) with { Error } = (args) -> {
   if Array::length(args) == 0 || Array::get(args, 0) != "check" {
     throw("check: expected command")
   } else {
     let paths = Array::slice([
       ""
     ], 0, 0)
+    let mut profile_tsv_path = ""
+    let mut profile_callstack_path = ""
     let mut i = 1
     while i < Array::length(args) {
       let arg = Array::get(args, i)
-      if arg == "--profile-tsv" || arg == "--profile-callstack" {
-        i = i + 1
-        let _ = read_next_arg_for(args, i, "check", arg)
-        ()
-      }
-      else if arg == "--json" || arg == "--human" {
-        ()
-      }
-      else if arg == "--builtin-contract" {
-        i = i + 1
-        let _ = read_next_arg_for(args, i, "check", arg)
-        throw("check: --builtin-contract is not supported by selfhost cli yet")
-        ()
-      }
-      else if starts_with(arg, "--builtin-contract=") {
-        throw("check: --builtin-contract is not supported by selfhost cli yet")
-        ()
-      }
-      else if String::length(arg) > 0 && String::char_code_at(arg, 0) == 45 {
-        throw(String::concat("check: unsupported option: ", arg))
-        ()
-      }
-      else {
-        Array::push(paths, arg)
+      let profile_kind = check_profile_arg_kind(arg)
+      match profile_kind {
+        1 => {
+          i = i + 1
+          let _ = read_next_path_after(args, i, "check", arg)
+          ()
+        },
+        2 => {
+          i = i + 1
+          profile_tsv_path = read_next_path_after(args, i, "check", arg)
+          ()
+        },
+        3 => {
+          i = i + 1
+          profile_callstack_path = read_next_path_after(args, i, "check", arg)
+          ()
+        },
+        _ => if arg == "--json" || arg == "--human" {
+          ()
+        }
+        else if arg == "--builtin-contract" {
+          i = i + 1
+          let _ = read_next_arg_for(args, i, "check", arg)
+          throw("check: --builtin-contract is not supported by selfhost cli yet")
+          ()
+        }
+        else if starts_with(arg, "--builtin-contract=") {
+          throw("check: --builtin-contract is not supported by selfhost cli yet")
+          ()
+        }
+        else if String::length(arg) > 0 && String::char_code_at(arg, 0) == 45 {
+          throw(String::concat("check: unsupported option: ", arg))
+          ()
+        }
+        else {
+          Array::push(paths, arg)
+        }
       }
       i = i + 1
     }
     if Array::length(paths) == 0 {
       throw("check: expected <file...>")
     } else {
-      paths
+      (paths, profile_tsv_path, profile_callstack_path)
     }
   }
 }
 
+export let parse_check_args: (Array[String]) -> Array[String] with { Error } = (args) -> {
+  let (paths, _, _) = parse_check_args_with_profile(args)
+  paths
+}
+
 export let selfhost_cli_check_args: (Array[String]) -> Int with { Error, Fs } = (args) -> {
-  let paths = parse_check_args(args)
+  let (paths, profile_tsv_path, profile_callstack_path) = parse_check_args_with_profile(args)
   let mut i = 0
   while i < Array::length(paths) {
     let _ = check_linked_file(Array::get(paths, i))
     i = i + 1
   }
+  write_optional_profile(profile_tsv_path, check_profile_tsv_zero())
+  write_optional_profile(profile_callstack_path, check_callstack_profile_zero())
   0
 }
 

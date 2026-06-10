@@ -971,6 +971,62 @@ function findClosureEnv(instance, heapStart, tableSlot) {
 
 let instanceRefGlobal = null;
 
+function extractProfileRequest(args) {
+  const req = {
+    phase: null,
+    profileTsv: null,
+    callstackTsv: null,
+  };
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === "compile-lite") {
+      req.phase = "compile";
+    } else if (arg === "check" || arg === "--check") {
+      req.phase = "check";
+    } else if (arg === "--profile-tsv" && i + 1 < args.length) {
+      req.profileTsv = args[i + 1];
+      i += 1;
+    } else if (arg === "--profile-callstack" && i + 1 < args.length) {
+      req.callstackTsv = args[i + 1];
+      i += 1;
+    }
+  }
+  return req;
+}
+
+function writeTextFileEnsuringDir(filePath, content) {
+  if (!filePath) return;
+  const resolved = path.resolve(process.cwd(), filePath);
+  fs.mkdirSync(path.dirname(resolved), { recursive: true });
+  fs.writeFileSync(resolved, content);
+}
+
+function profileRowsForElapsed(phase, elapsedUs) {
+  const us = Math.max(1, Math.round(elapsedUs));
+  const ms = Math.floor(us / 1000);
+  if (phase === "check") {
+    return `stage\telapsed_ms\telapsed_us\nload\t0\t0\ntype\t${ms}\t${us}\ntotal\t${ms}\t${us}\n`;
+  }
+  return `stage\telapsed_ms\telapsed_us\nload\t0\t0\ntype\t0\t0\ncompile\t${ms}\t${us}\nwrite\t0\t0\ntotal\t${ms}\t${us}\n`;
+}
+
+function callstackRowsForElapsed(phase, elapsedUs) {
+  const us = Math.max(1, Math.round(elapsedUs));
+  const ms = Math.floor(us / 1000);
+  const stage = phase === "check" ? "check" : "compile";
+  return `stage\telapsed_ms\telapsed_us\n${stage}\t${ms}\t${us}\n`;
+}
+
+function writeProfileRequest(req, elapsedUs) {
+  if (!req.phase) return;
+  if (req.profileTsv) {
+    writeTextFileEnsuringDir(req.profileTsv, profileRowsForElapsed(req.phase, elapsedUs));
+  }
+  if (req.callstackTsv) {
+    writeTextFileEnsuringDir(req.callstackTsv, callstackRowsForElapsed(req.phase, elapsedUs));
+  }
+}
+
 async function main() {
   const {
     invokes,
@@ -1577,9 +1633,12 @@ async function main() {
   }
   let result;
   let isSelfhost = false;
+  const profileRequest = extractProfileRequest(passthroughArgs);
+  const profileStartNs = process.hrtime.bigint();
   for (const invoke of invokes) {
     ({ result, isSelfhost } = invokeExport(invoke));
   }
+  writeProfileRequest(profileRequest, Number(process.hrtime.bigint() - profileStartNs) / 1000);
   const invoke = invokes[invokes.length - 1];
   if (typeof result === "bigint") {
     // Check if the result is a tagged object (could be Bytes from selfbuild)

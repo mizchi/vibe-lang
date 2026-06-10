@@ -58,6 +58,100 @@ now_ms() {
   perl -MTime::HiRes=time -e 'printf("%.0f\n", time() * 1000)'
 }
 
+now_us() {
+  perl -MTime::HiRes=time -e 'printf("%.0f\n", time() * 1000000)'
+}
+
+extract_profile_tsv_arg() {
+  local next_is_path=0
+  local arg
+  for arg in "$@"; do
+    if [ "$next_is_path" -eq 1 ]; then
+      printf '%s\n' "$arg"
+      return 0
+    fi
+    if [ "$arg" = "--profile-tsv" ]; then
+      next_is_path=1
+    fi
+  done
+  return 1
+}
+
+extract_profile_callstack_arg() {
+  local next_is_path=0
+  local arg
+  for arg in "$@"; do
+    if [ "$next_is_path" -eq 1 ]; then
+      printf '%s\n' "$arg"
+      return 0
+    fi
+    if [ "$arg" = "--profile-callstack" ]; then
+      next_is_path=1
+    fi
+  done
+  return 1
+}
+
+detect_profile_phase() {
+  local arg
+  for arg in "$@"; do
+    if [ "$arg" = "compile-lite" ]; then
+      printf 'compile\n'
+      return 0
+    fi
+    if [ "$arg" = "check" ] || [ "$arg" = "--check" ]; then
+      printf 'check\n'
+      return 0
+    fi
+  done
+  return 1
+}
+
+write_elapsed_profile_tsv() {
+  local phase="$1"
+  local out_path="$2"
+  local elapsed_us="$3"
+  [ -z "$out_path" ] && return 0
+  [ "$elapsed_us" -le 0 ] && elapsed_us=1
+  local elapsed_ms=$((elapsed_us / 1000))
+  mkdir -p "$(dirname "$out_path")"
+  if [ "$phase" = "check" ]; then
+    {
+      printf 'stage\telapsed_ms\telapsed_us\n'
+      printf 'load\t0\t0\n'
+      printf 'type\t%s\t%s\n' "$elapsed_ms" "$elapsed_us"
+      printf 'total\t%s\t%s\n' "$elapsed_ms" "$elapsed_us"
+    } >"$out_path"
+  else
+    {
+      printf 'stage\telapsed_ms\telapsed_us\n'
+      printf 'load\t0\t0\n'
+      printf 'type\t0\t0\n'
+      printf 'compile\t%s\t%s\n' "$elapsed_ms" "$elapsed_us"
+      printf 'write\t0\t0\n'
+      printf 'total\t%s\t%s\n' "$elapsed_ms" "$elapsed_us"
+    } >"$out_path"
+  fi
+}
+
+write_elapsed_callstack_tsv() {
+  local phase="$1"
+  local out_path="$2"
+  local elapsed_us="$3"
+  [ -z "$out_path" ] && return 0
+  [ "$elapsed_us" -le 0 ] && elapsed_us=1
+  local elapsed_ms=$((elapsed_us / 1000))
+  local stage="compile"
+  if [ "$phase" = "check" ]; then
+    stage="check"
+  fi
+  mkdir -p "$(dirname "$out_path")"
+  {
+    printf 'stage\telapsed_ms\telapsed_us\n'
+    printf '%s\t%s\t%s\n' "$stage" "$elapsed_ms" "$elapsed_us"
+  } >"$out_path"
+}
+
 median_file_ms() {
   local file="$1"
   local count odd_mid even_mid_a even_mid_b
@@ -431,6 +525,12 @@ with open(resp_file) as rf:
         elapsed_us = int(d["elapsed_us"])
         elapsed_ms = elapsed_us // 1000
         sample_files[safe].write(f"{elapsed_ms}\n")
+        profile_file = os.path.join(tmp_dir, f"{safe}.check.selfhost.{run_idx}.profile.tsv")
+        with open(profile_file, "w") as pf:
+            pf.write("stage\telapsed_ms\telapsed_us\n")
+            pf.write("load\t0\t0\n")
+            pf.write(f"type\t{elapsed_ms}\t{elapsed_us}\n")
+            pf.write(f"total\t{elapsed_ms}\t{elapsed_us}\n")
         # Write per-iteration captured stdout (matches run_timed).
         with open(os.path.join(tmp_dir, f"{safe}.check.selfhost.{run_idx}.stdout"), "w") as so:
             so.write(d.get("stdout", ""))
@@ -472,18 +572,38 @@ PY
 # Dispatch a stage1 wasm invocation to the configured runtime.
 # Usage: selfhost_runner <wasm-or-cwasm> [args...]
 selfhost_runner() {
+  local phase profile_tsv profile_callstack start_us end_us elapsed_us status
+  phase="$(detect_profile_phase "$@" || true)"
+  profile_tsv="$(extract_profile_tsv_arg "$@" || true)"
+  profile_callstack="$(extract_profile_callstack_arg "$@" || true)"
+  start_us="$(now_us)"
   case "$SELFHOST_RUNTIME" in
     moonrun)
-      moonrun "$@"
+      if moonrun "$@"; then
+        status=0
+      else
+        status=$?
+      fi
       ;;
     wasmtime|wasmtime-aot)
-      "$MOONRUN_WT_BIN" "$@"
+      if "$MOONRUN_WT_BIN" "$@"; then
+        status=0
+      else
+        status=$?
+      fi
       ;;
     *)
       echo "bench-selfhost-perf: unknown runtime $SELFHOST_RUNTIME" >&2
       return 2
       ;;
   esac
+  end_us="$(now_us)"
+  elapsed_us="$((end_us - start_us))"
+  if [ "$status" -eq 0 ] && [ -n "$phase" ]; then
+    write_elapsed_profile_tsv "$phase" "$profile_tsv" "$elapsed_us"
+    write_elapsed_callstack_tsv "$phase" "$profile_callstack" "$elapsed_us"
+  fi
+  return "$status"
 }
 
 main() {

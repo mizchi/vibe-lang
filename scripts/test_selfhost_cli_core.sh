@@ -13,6 +13,8 @@ OUTPUT_RUN_LOG="$OUT_DIR/core_output_run.log"
 COMMAND_INPUT_SOURCE="$OUT_DIR/core_command_input.vibe"
 COMMAND_OUTPUT_WASM="$OUT_DIR/core_command_output.wasm"
 COMMAND_OUTPUT_RUN_LOG="$OUT_DIR/core_command_output_run.log"
+COMMAND_PROFILE_TSV="$OUT_DIR/core_command_profile.tsv"
+COMMAND_CALLSTACK_TSV="$OUT_DIR/core_command_callstack.tsv"
 COMPILE_COMMAND_INPUT_SOURCE="$OUT_DIR/core_compile_command_input.vibe"
 COMPILE_COMMAND_OUTPUT_WASM="$OUT_DIR/core_compile_command_output.wasm"
 COMPILE_COMMAND_OUTPUT_RUN_LOG="$OUT_DIR/core_compile_command_output_run.log"
@@ -20,6 +22,8 @@ BUILD_COMMAND_INPUT_SOURCE="$OUT_DIR/core_build_command_input.vibe"
 BUILD_COMMAND_OUTPUT_WASM="$OUT_DIR/core_build_command_output.wasm"
 BUILD_COMMAND_OUTPUT_RUN_LOG="$OUT_DIR/core_build_command_output_run.log"
 CHECK_COMMAND_INPUT_SOURCE="$OUT_DIR/core_check_command_input.vibe"
+CHECK_COMMAND_PROFILE_TSV="$OUT_DIR/core_check_command_profile.tsv"
+CHECK_COMMAND_CALLSTACK_TSV="$OUT_DIR/core_check_command_callstack.tsv"
 DEBUG_LIB_SOURCE="$OUT_DIR/core_debug_lib.vibe"
 DEBUG_MAIN_SOURCE="$OUT_DIR/core_debug_main.vibe"
 DEBUG_OUTPUT_WASM="$OUT_DIR/core_debug_output.wasm"
@@ -111,10 +115,11 @@ run_stage_capture_stdout() {
 mkdir -p "$OUT_DIR"
 rm -f "$STAGE1_CORE_WASM" "$OUTPUT_WASM" "$OUTPUT_RUN_LOG" \
   "$COMMAND_INPUT_SOURCE" "$COMMAND_OUTPUT_WASM" "$COMMAND_OUTPUT_RUN_LOG" \
+  "$COMMAND_PROFILE_TSV" "$COMMAND_CALLSTACK_TSV" \
   "$COMPILE_COMMAND_INPUT_SOURCE" "$COMPILE_COMMAND_OUTPUT_WASM" \
   "$COMPILE_COMMAND_OUTPUT_RUN_LOG" "$BUILD_COMMAND_INPUT_SOURCE" \
   "$BUILD_COMMAND_OUTPUT_WASM" "$BUILD_COMMAND_OUTPUT_RUN_LOG" \
-  "$CHECK_COMMAND_INPUT_SOURCE" \
+  "$CHECK_COMMAND_INPUT_SOURCE" "$CHECK_COMMAND_PROFILE_TSV" "$CHECK_COMMAND_CALLSTACK_TSV" \
   "$DEBUG_LIB_SOURCE" "$DEBUG_MAIN_SOURCE" "$DEBUG_OUTPUT_WASM" "$DEBUG_OUTPUT_RUN_LOG" \
   "$DEBUG_STRING_LIB_SOURCE" "$DEBUG_STRING_MAIN_SOURCE" "$DEBUG_STRING_OUTPUT_WASM" \
   "$DEBUG_STRING_OUTPUT_RUN_LOG"
@@ -186,6 +191,8 @@ run_stage "stage1 core artifact -> command-style compile-lite wasm compile" \
     compile-lite \
     --wasm \
     --entry "$ENTRY_NAME" \
+    --profile-tsv "${COMMAND_PROFILE_TSV#$PROJECT_ROOT/}" \
+    --profile-callstack "${COMMAND_CALLSTACK_TSV#$PROJECT_ROOT/}" \
     "${COMMAND_INPUT_SOURCE#$PROJECT_ROOT/}" \
     -o "${COMMAND_OUTPUT_WASM#$PROJECT_ROOT/}" || exit $?
 
@@ -193,6 +200,14 @@ unset VIBE_PREOPEN_DIR
 
 if [ ! -f "$COMMAND_OUTPUT_WASM" ]; then
   echo "selfhost cli core gate failed: command-style compile-lite wasm not produced" >&2
+  exit 1
+fi
+if [ ! -f "$COMMAND_PROFILE_TSV" ] || ! grep -Eq $'^total\t[0-9]+\t[1-9][0-9]*$' "$COMMAND_PROFILE_TSV"; then
+  echo "selfhost cli core gate failed: command-style compile-lite profile tsv not produced" >&2
+  exit 1
+fi
+if [ ! -f "$COMMAND_CALLSTACK_TSV" ] || ! grep -Eq $'^compile\t[0-9]+\t[1-9][0-9]*$' "$COMMAND_CALLSTACK_TSV"; then
+  echo "selfhost cli core gate failed: command-style compile-lite callstack profile not produced" >&2
   exit 1
 fi
 
@@ -302,9 +317,20 @@ run_stage "stage1 core artifact -> command-style check" \
     --invoke cli_main \
     "$STAGE1_CORE_WASM" \
     check \
+    --profile-tsv "${CHECK_COMMAND_PROFILE_TSV#$PROJECT_ROOT/}" \
+    --profile-callstack "${CHECK_COMMAND_CALLSTACK_TSV#$PROJECT_ROOT/}" \
     "${CHECK_COMMAND_INPUT_SOURCE#$PROJECT_ROOT/}" || exit $?
 
 unset VIBE_PREOPEN_DIR
+
+if [ ! -f "$CHECK_COMMAND_PROFILE_TSV" ] || ! grep -Eq $'^total\t[0-9]+\t[1-9][0-9]*$' "$CHECK_COMMAND_PROFILE_TSV"; then
+  echo "selfhost cli core gate failed: command-style check profile tsv not produced" >&2
+  exit 1
+fi
+if [ ! -f "$CHECK_COMMAND_CALLSTACK_TSV" ] || ! grep -Eq $'^check\t[0-9]+\t[1-9][0-9]*$' "$CHECK_COMMAND_CALLSTACK_TSV"; then
+  echo "selfhost cli core gate failed: command-style check callstack profile not produced" >&2
+  exit 1
+fi
 
 cat >"$DEBUG_LIB_SOURCE" <<'EOF'
 export let helper = (a: Int, b: Int) -> Int { a + b }
