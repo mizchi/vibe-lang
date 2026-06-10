@@ -159,19 +159,29 @@ let has_placeholder_args: (Array[Expr]) -> Bool = (args) -> {
   found
 }
 
-let rec parse_call_args_rest: (Array[Token], Int, ArrayBuilder[Expr], (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Array[Expr], Int) with { Error } = (tokens, pos, b, parse_recur) -> {
-  match peek(tokens, pos) {
-    TComma => match peek(tokens, pos + 1) {
-      TRParen => (ArrayBuilder::freeze(b), pos + 1),
+let parse_call_args_rest: (Array[Token], Int, ArrayBuilder[Expr], (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Array[Expr], Int) with { Error } = (tokens, pos, b, parse_recur) -> {
+  let mut p = pos
+  let mut done = false
+  while !done {
+    match peek(tokens, p) {
+      TComma => match peek(tokens, p + 1) {
+        TRParen => {
+          p = p + 1
+          done = true
+        },
+        _ => {
+          let (e, next) = parse_call_arg(tokens, p + 1, parse_recur)
+          ArrayBuilder::push(b, e)
+          p = next
+        }
+      }
+      ,
       _ => {
-        let (e, next) = parse_call_arg(tokens, pos + 1, parse_recur)
-        ArrayBuilder::push(b, e)
-        parse_call_args_rest(tokens, next, b, parse_recur)
+        done = true
       }
     }
-    ,
-    _ => (ArrayBuilder::freeze(b), pos)
   }
+  (ArrayBuilder::freeze(b), p)
 }
 
 let slice_from_zero_expr: (Expr, Expr) -> Expr = (cur_expr, end_expr) -> {
