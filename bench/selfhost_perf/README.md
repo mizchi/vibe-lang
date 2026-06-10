@@ -274,6 +274,9 @@ These bench files type-check clean (`vibe check ...` passes) and define
 per-case probes that exercise the selfhost lexer / parser / checker against
 real selfhost sources and synthetic shapes (deep binop chains, wide match,
 chained let / ESeq sequences, closure-heavy codegen).
+`selfhost_parser_bench.vibe` also includes parse-only probes with lazy
+token caches, plus statement/type/expression subcategory probes, so parser
+work can be separated from file read + lex noise before tuning.
 
 **Was blocked** by a host-CLI codegen pathology (not a closure
 capture gap as originally hypothesized). **Now unblocked** by three
