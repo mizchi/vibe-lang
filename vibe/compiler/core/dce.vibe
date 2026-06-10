@@ -266,6 +266,29 @@ let collect_refs: (Expr, Array[String]) -> Array[String] = (expr, bound) -> {
   out
 }
 
+let enqueue_reachable: (Array[String], Array[String], String) -> Unit = (reachable, queue, name) -> {
+  if not(dce_array_contains_str(reachable, name)) {
+    Array::push(reachable, name)
+    Array::push(queue, name)
+  }
+}
+
+let collect_structural_refs_into_queue: (Stmt, Array[String], Array[String], Array[String]) -> Unit = (stmt, bound, reachable, queue) -> {
+  let refs = match stmt {
+    STest(_, expr) => collect_refs(expr, bound),
+    SBench(_, expr) => collect_refs(expr, bound),
+    SExpr(expr) => collect_refs(expr, bound),
+    _ => Array::slice([
+      ""
+    ], 0, 0)
+  }
+  let mut i = 0
+  while i < Array::length(refs) {
+    enqueue_reachable(reachable, queue, Array::get(refs, i))
+    i = i + 1
+  }
+}
+
 let is_type_or_structural: (Stmt) -> Bool = (stmt) -> {
   match stmt {
     SEnum(_, _, _, _) => true,
@@ -337,11 +360,13 @@ export let dce_stmts: (Array[Stmt], Array[String]) -> Array[Stmt] = (stmts, entr
   let mut j = 0
   while j < Array::length(entry_names) {
     let name = Array::get(entry_names, j)
-    if not(dce_array_contains_str(reachable, name)) {
-      Array::push(reachable, name)
-      Array::push(queue, name)
-    }
+    enqueue_reachable(reachable, queue, name)
     j = j + 1
+  }
+  let mut sj = 0
+  while sj < Array::length(stmts) {
+    collect_structural_refs_into_queue(Array::get(stmts, sj), empty_bound, reachable, queue)
+    sj = sj + 1
   }
   let mut qi = 0
   while qi < Array::length(queue) {
