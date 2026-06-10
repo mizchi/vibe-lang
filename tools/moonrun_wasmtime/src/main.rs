@@ -93,6 +93,7 @@ struct HostState {
     // don't get interleaved with the daemon's own protocol traffic.
     capture_stdout: bool,
     captured_stdout: Vec<u8>,
+    start_instant: Instant,
 }
 
 impl HostState {
@@ -106,12 +107,27 @@ impl HostState {
             limits,
             capture_stdout: false,
             captured_stdout: Vec::new(),
+            start_instant: Instant::now(),
         }
     }
 
     fn record_err<E: std::fmt::Display>(&mut self, e: E) -> i32 {
         self.last_error = Some(format!("{e}"));
         -1
+    }
+}
+
+fn encode_tagged_int(value: i64) -> i64 {
+    value << 2
+}
+
+fn elapsed_profile_us(start: Instant) -> i64 {
+    let max = (i64::MAX >> 2) as u128;
+    let elapsed = start.elapsed().as_micros();
+    if elapsed > max {
+        i64::MAX >> 2
+    } else {
+        elapsed as i64
     }
 }
 
@@ -433,6 +449,7 @@ fn daemon(args: Vec<String>) -> Result<i32> {
             host.last_error = None;
             host.pending_bytes = None;
             host.pending_strings = None;
+            host.start_instant = Instant::now();
         }
 
         // Server-side wall-clock for _start. Bench harness uses this to
@@ -733,6 +750,24 @@ fn register_imports(linker: &mut Linker<HostState>) -> Result<()> {
                 MoonValue::Instant(t) => Ok(t.elapsed().as_secs_f64()),
                 _ => bail!("instant_elapsed_as_secs_f64: wrong handle type"),
             })
+        },
+    )?;
+
+    // Selfhost profiling imports. The MoonBit-hosted compiler lowers
+    // `perform Profiler::NowUs` to `Profiler/NowUs(env)`, while the
+    // selfhost WASI backend emits a direct `vibe/profile-now-us` builtin.
+    linker.func_wrap(
+        "Profiler",
+        "NowUs",
+        |caller: Caller<'_, HostState>, _env: i32| -> i64 {
+            encode_tagged_int(elapsed_profile_us(caller.data().start_instant))
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "profile-now-us",
+        |caller: Caller<'_, HostState>| -> i64 {
+            encode_tagged_int(elapsed_profile_us(caller.data().start_instant))
         },
     )?;
 

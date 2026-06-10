@@ -1,7 +1,14 @@
 //# Imports
 
 import ../compiler/selfhost_cli_support.vibe {
-  check_linked_file, compile_release_file_mode, write_linked_debug_build
+  check_linked_file, compile_release_file_mode, compile_release_file_mode_profiled,
+  write_linked_debug_build
+}
+
+//# Effects
+
+effect Profiler {
+  NowUs -> Int
 }
 
 //# Args
@@ -114,12 +121,50 @@ let read_next_path_after: (Array[String], Int, String, String) -> String with { 
 
 //# compile-lite
 
-let compile_lite_profile_tsv_zero: () -> String = () -> {
-  "stage\telapsed_ms\telapsed_us\nload\t0\t0\ntype\t0\t0\ncompile\t0\t0\nwrite\t0\t0\ntotal\t0\t0\n"
+let profiler_now_us: () -> Int with { Profiler } = () -> {
+  perform Profiler::NowUs
 }
 
-let compile_lite_callstack_profile_zero: () -> String = () -> {
-  "stage\telapsed_ms\telapsed_us\ncompile\t0\t0\n"
+let elapsed_profile_us_since: (Int) -> Int with { Profiler } = (start_us) -> {
+  let elapsed = profiler_now_us() - start_us
+  if elapsed < 0 {
+    0
+  } else {
+    elapsed
+  }
+}
+
+let profile_row: (String, Int) -> String = (stage, elapsed_us) -> {
+  let us = if elapsed_us < 0 {
+    0
+  } else {
+    elapsed_us
+  }
+  let ms = us / 1000
+  String::concat(stage, String::concat("\t", String::concat(__to_string(ms), String::concat("\t", String::concat(__to_string(us), "\n")))))
+}
+
+let compile_lite_profile_tsv: (Int, Int, Int, Int, Int, Int) -> String = (load_us, type_us, parse_us, compile_us, write_us, total_us) -> {
+  String::concat(
+    "stage\telapsed_ms\telapsed_us\n",
+    String::concat(
+      profile_row("load", load_us),
+      String::concat(
+        profile_row("type", type_us),
+        String::concat(
+          profile_row("parse", parse_us),
+          String::concat(
+            profile_row("compile", compile_us),
+            String::concat(profile_row("write", write_us), profile_row("total", total_us))
+          )
+        )
+      )
+    )
+  )
+}
+
+let compile_lite_callstack_profile_tsv: (Int) -> String = (total_us) -> {
+  String::concat("stage\telapsed_ms\telapsed_us\n", profile_row("compile", total_us))
 }
 
 let write_optional_profile: (String, String) -> Unit with { Fs } = (path, content) -> {
@@ -246,17 +291,22 @@ export let parse_compile_lite_args: (Array[String]) -> (String, String, String, 
   (input_path, output_path, entry_name, mode, in_memory)
 }
 
-export let selfhost_cli_compile_lite_args: (Array[String]) -> Int with { Error, Fs } = (args) -> {
+export let selfhost_cli_compile_lite_args: (Array[String]) -> Int with { Error, Fs, Profiler } = (args) -> {
   let (input_path, output_path, entry_name, mode, in_memory, profile_tsv_path, profile_callstack_path) = parse_compile_lite_args_with_profile(args)
-  let bytes = compile_release_file_mode(input_path, entry_name, mode)
+  let total_start = profiler_now_us()
+  let (bytes, load_us, type_us, parse_us, compile_us, _compile_total_us) = compile_release_file_mode_profiled(input_path, entry_name, mode)
   if in_memory {
-    write_optional_profile(profile_tsv_path, compile_lite_profile_tsv_zero())
-    write_optional_profile(profile_callstack_path, compile_lite_callstack_profile_zero())
+    let total_us = elapsed_profile_us_since(total_start)
+    write_optional_profile(profile_tsv_path, compile_lite_profile_tsv(load_us, type_us, parse_us, compile_us, 0, total_us))
+    write_optional_profile(profile_callstack_path, compile_lite_callstack_profile_tsv(total_us))
     0
   } else {
+    let write_start = profiler_now_us()
     Fs::write_bytes(output_path, bytes)
-    write_optional_profile(profile_tsv_path, compile_lite_profile_tsv_zero())
-    write_optional_profile(profile_callstack_path, compile_lite_callstack_profile_zero())
+    let write_us = elapsed_profile_us_since(write_start)
+    let total_us = elapsed_profile_us_since(total_start)
+    write_optional_profile(profile_tsv_path, compile_lite_profile_tsv(load_us, type_us, parse_us, compile_us, write_us, total_us))
+    write_optional_profile(profile_callstack_path, compile_lite_callstack_profile_tsv(total_us))
     0
   }
 }
@@ -555,7 +605,7 @@ let low_level_cli_main: () -> Int with { Error, Fs, Env } = () -> {
   }
 }
 
-export let selfhost_cli_main: () -> Int with { Error, Fs, Env } = () -> {
+export let selfhost_cli_main: () -> Int with { Error, Fs, Env, Profiler } = () -> {
   let first_arg = read_arg(0)
   match first_arg {
     "compile-lite" => selfhost_cli_compile_lite_args(collect_cli_args()),
@@ -566,6 +616,6 @@ export let selfhost_cli_main: () -> Int with { Error, Fs, Env } = () -> {
   }
 }
 
-export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
+export let cli_main: () -> Int with { Error, Fs, Env, Profiler } = () -> {
   selfhost_cli_main()
 }

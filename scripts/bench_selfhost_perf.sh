@@ -33,6 +33,7 @@ PROFILE_CALLSTACK="${VIBE_SELFHOST_PERF_PROFILE_CALLSTACK:-}"
 # (e.g. environments without rust + cargo).
 SELFHOST_RUNTIME="${VIBE_SELFHOST_PERF_RUNTIME:-wasmtime-aot}"
 MOONRUN_WT_BIN="${MOONRUN_WT_BIN:-}"
+MOONRUN_WT_RUST_TOOLCHAIN="${MOONRUN_WT_RUST_TOOLCHAIN:-1.93.0}"
 # Opt-in: use moonrun_wt --daemon for selfhost check requests.
 #
 # When set, ALL (case × run) check requests are funneled through a
@@ -127,6 +128,7 @@ write_elapsed_profile_tsv() {
       printf 'stage\telapsed_ms\telapsed_us\n'
       printf 'load\t0\t0\n'
       printf 'type\t0\t0\n'
+      printf 'parse\t0\t0\n'
       printf 'compile\t%s\t%s\n' "$elapsed_ms" "$elapsed_us"
       printf 'write\t0\t0\n'
       printf 'total\t%s\t%s\n' "$elapsed_ms" "$elapsed_us"
@@ -150,6 +152,14 @@ write_elapsed_callstack_tsv() {
     printf 'stage\telapsed_ms\telapsed_us\n'
     printf '%s\t%s\t%s\n' "$stage" "$elapsed_ms" "$elapsed_us"
   } >"$out_path"
+}
+
+profile_tsv_has_nonzero_stage() {
+  local out_path="$1"
+  local stage="$2"
+  [ -n "$out_path" ] || return 1
+  [ -f "$out_path" ] || return 1
+  grep -Eq "^${stage}"$'\t'"[0-9]+"$'\t'"[1-9][0-9]*$" "$out_path"
 }
 
 median_file_ms() {
@@ -385,8 +395,8 @@ ensure_moonrun_wt() {
   fi
   local default_bin="$PROJECT_ROOT/tools/moonrun_wasmtime/target/release/moonrun_wt"
   if [ ! -x "$default_bin" ] || [ "$REBUILD_MODE" = "always" ]; then
-    echo "[selfhost-perf] building moonrun_wt (wasmtime host)..."
-    (cd "$PROJECT_ROOT/tools/moonrun_wasmtime" && cargo build --release >&2)
+    echo "[selfhost-perf] building moonrun_wt (wasmtime host, rust=$MOONRUN_WT_RUST_TOOLCHAIN)..."
+    (cd "$PROJECT_ROOT/tools/moonrun_wasmtime" && cargo "+$MOONRUN_WT_RUST_TOOLCHAIN" build --release >&2)
   fi
   MOONRUN_WT_BIN="$default_bin"
   if [ ! -x "$MOONRUN_WT_BIN" ]; then
@@ -600,8 +610,16 @@ selfhost_runner() {
   end_us="$(now_us)"
   elapsed_us="$((end_us - start_us))"
   if [ "$status" -eq 0 ] && [ -n "$phase" ]; then
-    write_elapsed_profile_tsv "$phase" "$profile_tsv" "$elapsed_us"
-    write_elapsed_callstack_tsv "$phase" "$profile_callstack" "$elapsed_us"
+    if ! profile_tsv_has_nonzero_stage "$profile_tsv" "total"; then
+      write_elapsed_profile_tsv "$phase" "$profile_tsv" "$elapsed_us"
+    fi
+    local callstack_stage="compile"
+    if [ "$phase" = "check" ]; then
+      callstack_stage="check"
+    fi
+    if ! profile_tsv_has_nonzero_stage "$profile_callstack" "$callstack_stage"; then
+      write_elapsed_callstack_tsv "$phase" "$profile_callstack" "$elapsed_us"
+    fi
   fi
   return "$status"
 }
@@ -687,7 +705,7 @@ main() {
         local sample_file="$OUT_DIR/raw/${safe}.${phase}.${runtime}.txt"
         : > "$sample_file"
         if [ "$phase" = "compile" ]; then
-          for stage in load type compile write total; do
+          for stage in load type parse compile write total; do
             : > "$OUT_DIR/raw/${safe}.compile_stage.${runtime}.${stage}.txt"
           done
         else

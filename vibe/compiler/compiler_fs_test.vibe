@@ -30,6 +30,27 @@ let assert_wasm_magic: (Bytes) -> Unit = (bytes) -> {
   assert(Bytes::get(bytes, 3) == 109)
 }
 
+let bytes_contains_ascii: (Bytes, String) -> Bool = (bytes, needle) -> {
+  let blen = Bytes::length(bytes)
+  let nlen = String::length(needle)
+  let mut found = false
+  let mut i = 0
+  while i + nlen <= blen && !found {
+    let mut j = 0
+    let mut same = true
+    while j < nlen && same {
+      same = Bytes::get(bytes, i + j) == String::char_code_at(needle, j)
+      j = j + 1
+    }
+    if same {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
 //# Misc
 
 test "compile_file_wasi_linked_artifacts: returns direct linked deps for library build" {
@@ -84,4 +105,15 @@ test "compile_file_wasi_only: simple file produces valid WASM" {
   Fs::write_bytes(main_path, string_to_bytes("export let answer: () -> Int = () -> { 40 + 2 }\n"))
   let bytes = compile_file_wasi_only(main_path, "answer")
   assert_wasm_magic(bytes)
+}
+
+test "compile_file_wasi_only: profiler effect imports now_us host builtin" {
+  let base_dir = "/tmp/vibe_compiler_profiler_import"
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(main_path, string_to_bytes("effect Profiler { NowUs -> Int }\nexport let answer: () -> Int with { Profiler } = () -> { perform Profiler::NowUs }\n"))
+  let bytes = compile_file_wasi_only(main_path, "answer")
+  assert_wasm_magic(bytes)
+  assert(bytes_contains_ascii(bytes, "vibe"))
+  assert(bytes_contains_ascii(bytes, "profile-now-us"))
 }

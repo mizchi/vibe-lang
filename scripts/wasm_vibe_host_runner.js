@@ -14,6 +14,7 @@ const OBJ_ARRAY = 5;
 const OBJ_BYTES = 13;
 const OBJ_BYTES_VIEW = 14;
 const HOST_IMPORT_ABI = process.env.VIBE_SELFHOST_IMPORT_ABI || "tagged";
+const PROFILE_START_NS = process.hrtime.bigint();
 
 function usage() {
   console.error(
@@ -1001,13 +1002,31 @@ function writeTextFileEnsuringDir(filePath, content) {
   fs.writeFileSync(resolved, content);
 }
 
+function profileNowUs() {
+  return Number((process.hrtime.bigint() - PROFILE_START_NS) / 1000n);
+}
+
+function profileFileHasNonzeroStage(filePath, stage) {
+  if (!filePath) return false;
+  const resolved = path.resolve(process.cwd(), filePath);
+  if (!fs.existsSync(resolved)) return false;
+  const content = fs.readFileSync(resolved, "utf8");
+  const prefix = `${stage}\t`;
+  for (const line of content.split(/\r?\n/)) {
+    if (!line.startsWith(prefix)) continue;
+    const cols = line.split("\t");
+    if (cols.length >= 3 && Number(cols[2]) > 0) return true;
+  }
+  return false;
+}
+
 function profileRowsForElapsed(phase, elapsedUs) {
   const us = Math.max(1, Math.round(elapsedUs));
   const ms = Math.floor(us / 1000);
   if (phase === "check") {
     return `stage\telapsed_ms\telapsed_us\nload\t0\t0\ntype\t${ms}\t${us}\ntotal\t${ms}\t${us}\n`;
   }
-  return `stage\telapsed_ms\telapsed_us\nload\t0\t0\ntype\t0\t0\ncompile\t${ms}\t${us}\nwrite\t0\t0\ntotal\t${ms}\t${us}\n`;
+  return `stage\telapsed_ms\telapsed_us\nload\t0\t0\ntype\t0\t0\nparse\t0\t0\ncompile\t${ms}\t${us}\nwrite\t0\t0\ntotal\t${ms}\t${us}\n`;
 }
 
 function callstackRowsForElapsed(phase, elapsedUs) {
@@ -1019,10 +1038,10 @@ function callstackRowsForElapsed(phase, elapsedUs) {
 
 function writeProfileRequest(req, elapsedUs) {
   if (!req.phase) return;
-  if (req.profileTsv) {
+  if (req.profileTsv && !profileFileHasNonzeroStage(req.profileTsv, "total")) {
     writeTextFileEnsuringDir(req.profileTsv, profileRowsForElapsed(req.phase, elapsedUs));
   }
-  if (req.callstackTsv) {
+  if (req.callstackTsv && !profileFileHasNonzeroStage(req.callstackTsv, req.phase === "check" ? "check" : "compile")) {
     writeTextFileEnsuringDir(req.callstackTsv, callstackRowsForElapsed(req.phase, elapsedUs));
   }
 }
@@ -1311,6 +1330,9 @@ async function main() {
         }
         return encodeHostString(instanceRef, val);
       },
+      ["profile-now-us"]() {
+        return encodeHostInt(profileNowUs());
+      },
       env_get(nameTagged) {
         return this["env-get"](nameTagged);
       },
@@ -1319,6 +1341,9 @@ async function main() {
       },
       args_get(indexTagged) {
         return this["args-get"](indexTagged);
+      },
+      profile_now_us() {
+        return this["profile-now-us"]();
       },
     },
     {
@@ -1467,12 +1492,18 @@ async function main() {
       return 0n;
     },
   };
+  const profilerModule = {
+    NowUs(_envTagged) {
+      return encodeHostInt(profileNowUs());
+    },
+  };
 
   const imports = new Proxy(
     {
       vibe: vibeModule,
       Env: envModule,
       Fs: fsModule,
+      Profiler: profilerModule,
       Stdin: stdinModule,
       Stdout: stdoutModule,
       wasi_snapshot_preview1: wasiModule,

@@ -206,6 +206,14 @@ if [ ! -f "$COMMAND_PROFILE_TSV" ] || ! grep -Eq $'^total\t[0-9]+\t[1-9][0-9]*$'
   echo "selfhost cli core gate failed: command-style compile-lite profile tsv not produced" >&2
   exit 1
 fi
+if ! grep -Eq $'^parse\t[0-9]+\t[0-9]+$' "$COMMAND_PROFILE_TSV"; then
+  echo "selfhost cli core gate failed: command-style compile-lite parse profile stage missing" >&2
+  exit 1
+fi
+if ! grep -Eq $'^write\t[0-9]+\t[1-9][0-9]*$' "$COMMAND_PROFILE_TSV"; then
+  echo "selfhost cli core gate failed: command-style compile-lite internal write profile missing" >&2
+  exit 1
+fi
 if [ ! -f "$COMMAND_CALLSTACK_TSV" ] || ! grep -Eq $'^compile\t[0-9]+\t[1-9][0-9]*$' "$COMMAND_CALLSTACK_TSV"; then
   echo "selfhost cli core gate failed: command-style compile-lite callstack profile not produced" >&2
   exit 1

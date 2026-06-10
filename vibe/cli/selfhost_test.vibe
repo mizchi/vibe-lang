@@ -6,6 +6,12 @@ import ./selfhost.vibe {
   selfhost_cli_compile_lite_args
 }
 
+//# Effects
+
+effect Profiler {
+  NowUs -> Int
+}
+
 //# Functions
 
 let string_to_bytes: (String) -> Bytes = (s) -> {
@@ -19,6 +25,18 @@ let string_to_bytes: (String) -> Bytes = (s) -> {
     i = i + 1
   }
   Bytes::from_array(out)
+}
+
+let run_compile_lite_with_fake_profiler: (Array[String]) -> Int with { Error, Fs } = (args) -> {
+  let mut tick = 1000
+  handle {
+    selfhost_cli_compile_lite_args(args)
+  } with Profiler {
+    NowUs => {
+      tick = tick + 1000
+      resume(tick)
+    }
+  }
 }
 
 //# Misc
@@ -87,7 +105,7 @@ test "selfhost cli compile-lite command writes wasm" {
   let output_path = "/tmp/vibe_selfhost_cli_compile_lite_out.wasm"
   let source = "export let answer: () -> Int = () -> { 40 + 2 }\n"
   Fs::write_bytes(main_path, string_to_bytes(source))
-  let status = selfhost_cli_compile_lite_args([
+  let status = run_compile_lite_with_fake_profiler([
     "compile-lite", "--wasm", "--entry", "answer", main_path, "-o", output_path
   ])
   assert(status == 0)
@@ -101,7 +119,7 @@ test "selfhost cli compile-lite command writes profile tsv" {
   let callstack_path = "/tmp/vibe_selfhost_cli_compile_lite_callstack.tsv"
   let source = "export let answer: () -> Int = () -> { 40 + 2 }\n"
   Fs::write_bytes(main_path, string_to_bytes(source))
-  let status = selfhost_cli_compile_lite_args([
+  let status = run_compile_lite_with_fake_profiler([
     "compile-lite", "--wasm", "--entry", "answer", "--profile-tsv", profile_path,
     "--profile-callstack", callstack_path, main_path, "-o", output_path
   ])
@@ -111,8 +129,17 @@ test "selfhost cli compile-lite command writes profile tsv" {
   assert(Fs::exists(callstack_path))
   let profile = Fs::read_file(profile_path)
   assert(String::contains(profile, "stage\telapsed_ms\telapsed_us"))
-  assert(String::contains(profile, "compile\t0\t0"))
-  assert(String::contains(profile, "total\t0\t0"))
+  assert(String::contains(profile, "load\t"))
+  assert(String::contains(profile, "type\t"))
+  assert(String::contains(profile, "parse\t"))
+  assert(String::contains(profile, "compile\t"))
+  assert(String::contains(profile, "write\t"))
+  assert(String::contains(profile, "total\t"))
+  assert(!String::contains(profile, "write\t0\t0"))
+  assert(!String::contains(profile, "total\t0\t0"))
+  let callstack = Fs::read_file(callstack_path)
+  assert(String::contains(callstack, "compile\t"))
+  assert(!String::contains(callstack, "compile\t0\t0"))
 }
 
 test "selfhost cli parses compile command args" {
