@@ -40,9 +40,11 @@ seed として固定し、stage を分けて検証すること。vibe はこの�
 
 実装上の seed manifest は `bootstrap/selfhost/seed.json`、固定 seed artifact は
 `bootstrap/selfhost/seed/` 配下に置く。stage 生成物は `_build/selfhost/`
-配下に置く。canonical stage artifact は `cli_main` を持つ
-`vibe/compiler/selfhost_cli_support.vibe` の wasm とし、各世代は次世代の compiler
-source を `cli_main` 経由でビルドできるものとして扱う。
+配下に置く。canonical dist / CLI build entry は `cli_main` を持つ
+`vibe/cli/selfhost_entry.vibe` の wasm とし、各世代は次世代の compiler source を
+`cli_main` 経由でビルドできるものとして扱う。CLI の argv parsing / command
+dispatch は `vibe/cli/`、compiler 本体・link/check/build helper は
+`vibe/compiler/` に置き、ビルド単位を分ける。
 
 ```bash
 pkf run selfhost-generation-seed-info
@@ -52,12 +54,17 @@ scripts/selfhost_generations.sh adopt --artifact _build/selfhost/generations/<ge
 
 `adopt` は stage2 artifact を seed path にコピーし、`bootstrap/selfhost/seed.json`
 の sha256 を更新する。bootstrap bump ではこの manifest 更新を独立 commit として
-扱う。
+扱う。現在の固定 seed は CLI 分割前の artifact なので、通常の
+`pkf run selfhost-generation` は seed provenance に従う legacy flat adapter 経路を
+使う。`build-selfhost-dist` / `test-selfhost-cli-core` は新しい
+`vibe/cli/selfhost_entry.vibe` を使い、次回 bootstrap bump 後に generation default も
+この entry へ寄せる。
 
 ### Rust-style staged build
 
 - stage0: 固定 seed compiler。新しい compiler source をビルドするためだけに使う。
-- stage1: stage0 が現在の `vibe/compiler/` source から作った compiler。
+- stage1: stage0 が現在 source から作った compiler。seed 更新前は legacy flat
+  adapter 経路、seed 更新後は `vibe/cli/` entry と `vibe/compiler/` source を使う。
 - stage2: stage1 が同じ source から作った compiler。配布・tag 候補は stage2。
 - stage3: optional。同じ source を stage2 で再ビルドし、stage2 と stage3 の
   挙動または artifact が一致するかを確認する。
@@ -94,7 +101,7 @@ cutover 後も runner と compiler artifact は分ける。
 
 - runner layer: `tools/moonrun_wasmtime`、wasmtime flags、cwasm cache、
   host import、component adapter。
-- compiler wasm layer: `vibe/compiler/` から作る dist/component/check entry。
+- compiler wasm layer: `vibe/cli/` の CLI entry と `vibe/compiler/` の compiler 実装から作る dist/component/check entry。
 
 runner layer は性能・実行基盤の都合で差し替えてよいが、canonical compiler は
 portable selfhost wasm として再構築できることを gate に残す。

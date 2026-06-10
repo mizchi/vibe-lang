@@ -1,0 +1,462 @@
+//# Imports
+
+import ../compiler/selfhost_cli_support.vibe {
+  check_linked_file, compile_release_file_mode, write_linked_debug_build
+}
+
+//# Args
+
+export let read_arg: (Int) -> String with { Env } = (index) -> {
+  Env::args_get(index)
+}
+
+let read_arg_or_env: (Int, String) -> String with { Env } = (index, env_name) -> {
+  let value = read_arg(index)
+  if value != "" {
+    value
+  } else {
+    Env::get(env_name)
+  }
+}
+
+let own_host_string: (String) -> String = (value) -> {
+  String::concat("", value)
+}
+
+let collect_cli_args: () -> Array[String] with { Env } = () -> {
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  let argc = Env::args_len()
+  let mut i = 0
+  while i < argc {
+    Array::push(out, own_host_string(read_arg(i)))
+    i = i + 1
+  }
+  out
+}
+
+//# Path helpers
+
+let is_opt_level_arg: (String) -> Bool = (arg) -> {
+  String::length(arg) >= 2 && arg[0: 2] == "-O"
+}
+
+let starts_with: (String, String) -> Bool = (value, prefix) -> {
+  let prefix_len = String::length(prefix)
+  String::length(value) >= prefix_len && value[0: prefix_len] == prefix
+}
+
+let strip_vibe_suffix: (String) -> String = (path) -> {
+  let len = String::length(path)
+  if len >= 5 && path[len - 5: len] == ".vibe" {
+    path[0: len - 5]
+  } else {
+    path
+  }
+}
+
+let last_slash_index: (String) -> Int = (path) -> {
+  let len = String::length(path)
+  let mut last = -1
+  let mut i = 0
+  while i < len {
+    if String::char_code_at(path, i) == 47 {
+      last = i
+    }
+    i = i + 1
+  }
+  last
+}
+
+let basename_without_vibe_suffix: (String) -> String = (path) -> {
+  let slash = last_slash_index(path)
+  let len = String::length(path)
+  let base = if slash >= 0 {
+    path[slash + 1: len]
+  } else {
+    path
+  }
+  strip_vibe_suffix(base)
+}
+
+let default_compile_output_path: (String) -> String = (input_path) -> {
+  String::concat("dist/", String::concat(basename_without_vibe_suffix(input_path), ".wasm"))
+}
+
+let default_build_output_path: (String) -> String = (input_path) -> {
+  String::concat(strip_vibe_suffix(input_path), ".wasm")
+}
+
+let read_next_arg: (Array[String], Int, String) -> String with { Error } = (args, index, flag) -> {
+  if index >= Array::length(args) {
+    throw(String::concat("compile-lite: missing value after ", flag))
+  } else {
+    Array::get(args, index)
+  }
+}
+
+let read_next_arg_for: (Array[String], Int, String, String) -> String with { Error } = (args, index, command, flag) -> {
+  if index >= Array::length(args) {
+    throw(String::concat(command, String::concat(": missing value after ", flag)))
+  } else {
+    Array::get(args, index)
+  }
+}
+
+//# compile-lite
+
+export let parse_compile_lite_args: (Array[String]) -> (String, String, String, String, Bool) with { Error } = (args) -> {
+  if Array::length(args) == 0 || Array::get(args, 0) != "compile-lite" {
+    throw("compile-lite: expected command")
+  } else {
+    let mut input_path = ""
+    let mut output_path = ""
+    let mut entry_name = "_start"
+    let mut mode = "mvp"
+    let mut in_memory = false
+    let mut i = 1
+    while i < Array::length(args) {
+      let arg = Array::get(args, i)
+      match arg {
+        "--wasm" => (),
+        "--wasm-linear" => (),
+        "--wasm-gc" => {
+          throw("compile-lite: --wasm-gc is not supported by selfhost cli yet")
+          ()
+        },
+        "--no-dce" => {
+          mode = "no-dce"
+          ()
+        },
+        "--entry" => {
+          i = i + 1
+          entry_name = read_next_arg(args, i, arg)
+          ()
+        },
+        "-o" => {
+          i = i + 1
+          output_path = read_next_arg(args, i, arg)
+          ()
+        },
+        "--out" => {
+          i = i + 1
+          output_path = read_next_arg(args, i, arg)
+          ()
+        },
+        "--in-memory" => {
+          in_memory = true
+          ()
+        },
+        "--profile-tsv" => {
+          i = i + 1
+          let _ = read_next_arg(args, i, arg)
+          ()
+        },
+        "--profile-callstack" => {
+          i = i + 1
+          let _ = read_next_arg(args, i, arg)
+          ()
+        },
+        _ => if is_opt_level_arg(arg) {
+          ()
+        }
+        else if String::length(arg) > 0 && String::char_code_at(arg, 0) == 45 {
+          throw(String::concat("compile-lite: unsupported option: ", arg))
+          ()
+        }
+        else if input_path == "" {
+          input_path = arg
+          ()
+        }
+        else {
+          throw(String::concat("compile-lite: unexpected argument: ", arg))
+        }
+      }
+      i = i + 1
+    }
+    if input_path == "" {
+      throw("compile-lite: input path is required")
+    } else if !in_memory && output_path == "" {
+      throw("compile-lite: -o/--out is required")
+    } else {
+      (input_path, output_path, entry_name, mode, in_memory)
+    }
+  }
+}
+
+export let selfhost_cli_compile_lite_args: (Array[String]) -> Int with { Error, Fs } = (args) -> {
+  let (input_path, output_path, entry_name, mode, in_memory) = parse_compile_lite_args(args)
+  let bytes = compile_release_file_mode(input_path, entry_name, mode)
+  if in_memory {
+    0
+  } else {
+    Fs::write_bytes(output_path, bytes)
+    0
+  }
+}
+
+//# compile
+
+export let parse_compile_args: (Array[String]) -> (String, String, String, String) with { Error } = (args) -> {
+  if Array::length(args) == 0 || Array::get(args, 0) != "compile" {
+    throw("compile: expected command")
+  } else {
+    let mut input_path = ""
+    let mut output_path = ""
+    let entry_name = "_start"
+    let mut mode = "mvp"
+    let mut saw_wasm = false
+    let mut i = 1
+    while i < Array::length(args) {
+      let arg = Array::get(args, i)
+      if arg == "--wasm" || arg == "--wasm-linear" {
+        saw_wasm = true
+        ()
+      }
+      else if arg == "--no-dce" {
+        mode = "no-dce"
+        ()
+      }
+      else if arg == "-o" || arg == "--out" {
+        i = i + 1
+        output_path = read_next_arg_for(args, i, "compile", arg)
+        ()
+      }
+      else if arg == "--wite" || is_opt_level_arg(arg) {
+        ()
+      }
+      else if arg == "--wasm-gc" {
+        throw("compile: --wasm-gc is not supported by selfhost cli yet")
+        ()
+      }
+      else if arg == "--wasm-js-string" {
+        throw("compile: --wasm-js-string is not supported by selfhost cli yet")
+        ()
+      }
+      else if arg == "--coverage" || arg == "--coverage-run-tests" {
+        throw("compile: coverage is not supported by selfhost cli yet")
+        ()
+      }
+      else if arg == "--component" || arg == "--component-string-lift" || arg == "--compose-p3" || arg == "--wac" || arg == "--wit" || arg == "--wit-component" {
+        throw(String::concat("compile: unsupported selfhost output mode: ", arg))
+        ()
+      }
+      else if arg == "--adapter" {
+        i = i + 1
+        let _ = read_next_arg_for(args, i, "compile", arg)
+        throw("compile: --adapter is not supported by selfhost cli yet")
+        ()
+      }
+      else if arg == "--debug-errors" || arg == "--http-host-imports" || arg == "--force-cabi-realloc" || arg == "--async" || arg == "--library" {
+        throw(String::concat("compile: unsupported selfhost option: ", arg))
+        ()
+      }
+      else if String::length(arg) > 0 && String::char_code_at(arg, 0) == 45 {
+        throw(String::concat("compile: unsupported option: ", arg))
+        ()
+      }
+      else if input_path == "" {
+        input_path = arg
+        ()
+      }
+      else {
+        throw("compile: too many input files")
+      }
+      i = i + 1
+    }
+    if input_path == "" {
+      throw("compile: missing <file>")
+    } else if !saw_wasm {
+      throw("compile: selfhost cli only supports --wasm/--wasm-linear")
+    } else {
+      let resolved_output = if output_path == "" {
+        default_compile_output_path(input_path)
+      } else {
+        output_path
+      }
+      (input_path, resolved_output, entry_name, mode)
+    }
+  }
+}
+
+export let selfhost_cli_compile_args: (Array[String]) -> Int with { Error, Fs } = (args) -> {
+  let (input_path, output_path, entry_name, mode) = parse_compile_args(args)
+  let bytes = compile_release_file_mode(input_path, entry_name, mode)
+  Fs::write_bytes(output_path, bytes)
+  0
+}
+
+//# build
+
+export let parse_build_args: (Array[String]) -> (String, String, String, String) with { Error } = (args) -> {
+  if Array::length(args) == 0 || Array::get(args, 0) != "build" {
+    throw("build: expected command")
+  } else {
+    let mut input_path = ""
+    let mut output_path = ""
+    let entry_name = "_start"
+    let mut mode = "mvp"
+    let mut i = 1
+    while i < Array::length(args) {
+      let arg = Array::get(args, i)
+      if arg == "--release" {
+        mode = "mvp"
+        ()
+      }
+      else if arg == "--debug" {
+        mode = "debug"
+        ()
+      }
+      else if arg == "-o" || arg == "--out" {
+        i = i + 1
+        output_path = read_next_arg_for(args, i, "build", arg)
+        ()
+      }
+      else if arg == "--profile" {
+        i = i + 1
+        let _ = read_next_arg_for(args, i, "build", arg)
+        ()
+      }
+      else if String::length(arg) > 0 && String::char_code_at(arg, 0) == 45 {
+        throw(String::concat("build: unsupported option: ", arg))
+        ()
+      }
+      else if input_path == "" {
+        input_path = arg
+        ()
+      }
+      else {
+        throw("build: too many input files")
+      }
+      i = i + 1
+    }
+    if input_path == "" {
+      throw("build: missing <file.vibe>")
+    } else {
+      let resolved_output = if output_path == "" {
+        default_build_output_path(input_path)
+      } else {
+        output_path
+      }
+      (input_path, resolved_output, entry_name, mode)
+    }
+  }
+}
+
+export let selfhost_cli_build_args: (Array[String]) -> Int with { Error, Fs } = (args) -> {
+  let (input_path, output_path, entry_name, mode) = parse_build_args(args)
+  if mode == "debug" {
+    write_linked_debug_build(input_path, output_path, entry_name)
+    0
+  } else {
+    let bytes = compile_release_file_mode(input_path, entry_name, mode)
+    Fs::write_bytes(output_path, bytes)
+    0
+  }
+}
+
+//# check
+
+export let parse_check_args: (Array[String]) -> Array[String] with { Error } = (args) -> {
+  if Array::length(args) == 0 || Array::get(args, 0) != "check" {
+    throw("check: expected command")
+  } else {
+    let paths = Array::slice([
+      ""
+    ], 0, 0)
+    let mut i = 1
+    while i < Array::length(args) {
+      let arg = Array::get(args, i)
+      if arg == "--profile-tsv" || arg == "--profile-callstack" {
+        i = i + 1
+        let _ = read_next_arg_for(args, i, "check", arg)
+        ()
+      }
+      else if arg == "--json" || arg == "--human" {
+        ()
+      }
+      else if arg == "--builtin-contract" {
+        i = i + 1
+        let _ = read_next_arg_for(args, i, "check", arg)
+        throw("check: --builtin-contract is not supported by selfhost cli yet")
+        ()
+      }
+      else if starts_with(arg, "--builtin-contract=") {
+        throw("check: --builtin-contract is not supported by selfhost cli yet")
+        ()
+      }
+      else if String::length(arg) > 0 && String::char_code_at(arg, 0) == 45 {
+        throw(String::concat("check: unsupported option: ", arg))
+        ()
+      }
+      else {
+        Array::push(paths, arg)
+      }
+      i = i + 1
+    }
+    if Array::length(paths) == 0 {
+      throw("check: expected <file...>")
+    } else {
+      paths
+    }
+  }
+}
+
+export let selfhost_cli_check_args: (Array[String]) -> Int with { Error, Fs } = (args) -> {
+  let paths = parse_check_args(args)
+  let mut i = 0
+  while i < Array::length(paths) {
+    let _ = check_linked_file(Array::get(paths, i))
+    i = i + 1
+  }
+  0
+}
+
+//# Dispatch
+
+let low_level_cli_main: () -> Int with { Error, Fs, Env } = () -> {
+  let input_path = own_host_string(read_arg_or_env(0, "VIBE_INPUT"))
+  let output_path = own_host_string(read_arg_or_env(1, "VIBE_OUTPUT"))
+  let entry_name = own_host_string(read_arg_or_env(2, "VIBE_ENTRY"))
+  let mode = read_arg(3)
+  if input_path == "" {
+    1
+  }
+  else if output_path == "" {
+    1
+  }
+  else if entry_name == "" {
+    1
+  }
+  else if mode == "" || mode == "release" || mode == "no-dce" || mode == "mvp" {
+    let bytes = compile_release_file_mode(input_path, entry_name, mode)
+    Fs::write_bytes(output_path, bytes)
+    0
+  }
+  else if mode == "debug" {
+    write_linked_debug_build(input_path, output_path, entry_name)
+    0
+  }
+  else if mode == "check" {
+    check_linked_file(input_path)
+  }
+  else {
+    1
+  }
+}
+
+export let selfhost_cli_main: () -> Int with { Error, Fs, Env } = () -> {
+  let first_arg = read_arg(0)
+  match first_arg {
+    "compile-lite" => selfhost_cli_compile_lite_args(collect_cli_args()),
+    "compile" => selfhost_cli_compile_args(collect_cli_args()),
+    "build" => selfhost_cli_build_args(collect_cli_args()),
+    "check" => selfhost_cli_check_args(collect_cli_args()),
+    _ => low_level_cli_main()
+  }
+}
+
+export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
+  selfhost_cli_main()
+}

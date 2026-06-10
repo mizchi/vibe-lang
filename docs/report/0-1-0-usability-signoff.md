@@ -9,7 +9,7 @@ primary supported surface は [ADR-0033](../adr.md) に従う。
 
 - canonical artifact: `_build/dist/selfhost_compiler.wasm`
 - canonical build path: `just build-selfhost-dist`
-- canonical entry: `vibe/compiler/selfhost_cli_support.vibe`
+- canonical entry: `vibe/cli/selfhost_entry.vibe`
 - primary supported surface:
   - `vibe shell`
   - `vibe check`

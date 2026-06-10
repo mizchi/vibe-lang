@@ -4,12 +4,22 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 OUT_DIR="$PROJECT_ROOT/_build/bench/selfhost_cli_core"
-ENTRY_PATH="${ENTRY_PATH:-$PROJECT_ROOT/vibe/compiler/selfhost_cli_support.vibe}"
+ENTRY_PATH="${ENTRY_PATH:-$PROJECT_ROOT/vibe/cli/selfhost_entry.vibe}"
 STAGE_TIMEOUT_SEC="${VIBE_SELFHOST_CLI_CORE_STAGE_TIMEOUT_SEC:-300}"
 STAGE1_CORE_WASM="$OUT_DIR/index_stage1.wasm"
 INPUT_SOURCE="$OUT_DIR/core_env_input.vibe"
 OUTPUT_WASM="$OUT_DIR/core_env_output.wasm"
 OUTPUT_RUN_LOG="$OUT_DIR/core_output_run.log"
+COMMAND_INPUT_SOURCE="$OUT_DIR/core_command_input.vibe"
+COMMAND_OUTPUT_WASM="$OUT_DIR/core_command_output.wasm"
+COMMAND_OUTPUT_RUN_LOG="$OUT_DIR/core_command_output_run.log"
+COMPILE_COMMAND_INPUT_SOURCE="$OUT_DIR/core_compile_command_input.vibe"
+COMPILE_COMMAND_OUTPUT_WASM="$OUT_DIR/core_compile_command_output.wasm"
+COMPILE_COMMAND_OUTPUT_RUN_LOG="$OUT_DIR/core_compile_command_output_run.log"
+BUILD_COMMAND_INPUT_SOURCE="$OUT_DIR/core_build_command_input.vibe"
+BUILD_COMMAND_OUTPUT_WASM="$OUT_DIR/core_build_command_output.wasm"
+BUILD_COMMAND_OUTPUT_RUN_LOG="$OUT_DIR/core_build_command_output_run.log"
+CHECK_COMMAND_INPUT_SOURCE="$OUT_DIR/core_check_command_input.vibe"
 DEBUG_LIB_SOURCE="$OUT_DIR/core_debug_lib.vibe"
 DEBUG_MAIN_SOURCE="$OUT_DIR/core_debug_main.vibe"
 DEBUG_OUTPUT_WASM="$OUT_DIR/core_debug_output.wasm"
@@ -100,6 +110,11 @@ run_stage_capture_stdout() {
 
 mkdir -p "$OUT_DIR"
 rm -f "$STAGE1_CORE_WASM" "$OUTPUT_WASM" "$OUTPUT_RUN_LOG" \
+  "$COMMAND_INPUT_SOURCE" "$COMMAND_OUTPUT_WASM" "$COMMAND_OUTPUT_RUN_LOG" \
+  "$COMPILE_COMMAND_INPUT_SOURCE" "$COMPILE_COMMAND_OUTPUT_WASM" \
+  "$COMPILE_COMMAND_OUTPUT_RUN_LOG" "$BUILD_COMMAND_INPUT_SOURCE" \
+  "$BUILD_COMMAND_OUTPUT_WASM" "$BUILD_COMMAND_OUTPUT_RUN_LOG" \
+  "$CHECK_COMMAND_INPUT_SOURCE" \
   "$DEBUG_LIB_SOURCE" "$DEBUG_MAIN_SOURCE" "$DEBUG_OUTPUT_WASM" "$DEBUG_OUTPUT_RUN_LOG" \
   "$DEBUG_STRING_LIB_SOURCE" "$DEBUG_STRING_MAIN_SOURCE" "$DEBUG_STRING_OUTPUT_WASM" \
   "$DEBUG_STRING_OUTPUT_RUN_LOG"
@@ -157,6 +172,139 @@ if [ "$sample_result" != "42" ]; then
   echo "selfhost cli core gate failed: compiled sample returned '$sample_result' (expected 42)" >&2
   exit 1
 fi
+
+cat >"$COMMAND_INPUT_SOURCE" <<'EOF'
+export let answer = () -> Int { 40 + 2 }
+EOF
+
+export VIBE_PREOPEN_DIR="$PROJECT_ROOT"
+
+run_stage "stage1 core artifact -> command-style compile-lite wasm compile" \
+  bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
+    --invoke cli_main \
+    "$STAGE1_CORE_WASM" \
+    compile-lite \
+    --wasm \
+    --entry "$ENTRY_NAME" \
+    "${COMMAND_INPUT_SOURCE#$PROJECT_ROOT/}" \
+    -o "${COMMAND_OUTPUT_WASM#$PROJECT_ROOT/}" || exit $?
+
+unset VIBE_PREOPEN_DIR
+
+if [ ! -f "$COMMAND_OUTPUT_WASM" ]; then
+  echo "selfhost cli core gate failed: command-style compile-lite wasm not produced" >&2
+  exit 1
+fi
+
+run_stage "validate command-style compile-lite wasm" wasm-tools validate "$COMMAND_OUTPUT_WASM" || exit $?
+
+run_stage_capture_stdout "run command-style compile-lite wasm produced by selfhost core cli" \
+  "$COMMAND_OUTPUT_RUN_LOG" \
+  bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" --invoke _start "$COMMAND_OUTPUT_WASM" || exit $?
+
+command_result="$(grep -E '^-?[0-9]+$' "$COMMAND_OUTPUT_RUN_LOG" | tail -n 1 || true)"
+if [ -z "$command_result" ]; then
+  echo "selfhost cli core gate failed: command-style compile-lite sample returned no numeric result" >&2
+  exit 1
+fi
+
+if [ "$command_result" != "42" ]; then
+  echo "selfhost cli core gate failed: command-style compile-lite sample returned '$command_result' (expected 42)" >&2
+  exit 1
+fi
+
+cat >"$COMPILE_COMMAND_INPUT_SOURCE" <<'EOF'
+export let _start = () -> Int { 40 + 2 }
+EOF
+
+export VIBE_PREOPEN_DIR="$PROJECT_ROOT"
+
+run_stage "stage1 core artifact -> command-style compile wasm compile" \
+  bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
+    --invoke cli_main \
+    "$STAGE1_CORE_WASM" \
+    compile \
+    --wasm \
+    "${COMPILE_COMMAND_INPUT_SOURCE#$PROJECT_ROOT/}" \
+    -o "${COMPILE_COMMAND_OUTPUT_WASM#$PROJECT_ROOT/}" || exit $?
+
+unset VIBE_PREOPEN_DIR
+
+if [ ! -f "$COMPILE_COMMAND_OUTPUT_WASM" ]; then
+  echo "selfhost cli core gate failed: command-style compile wasm not produced" >&2
+  exit 1
+fi
+
+run_stage "validate command-style compile wasm" wasm-tools validate "$COMPILE_COMMAND_OUTPUT_WASM" || exit $?
+
+run_stage_capture_stdout "run command-style compile wasm produced by selfhost core cli" \
+  "$COMPILE_COMMAND_OUTPUT_RUN_LOG" \
+  bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" --invoke _start "$COMPILE_COMMAND_OUTPUT_WASM" || exit $?
+
+compile_command_result="$(grep -E '^-?[0-9]+$' "$COMPILE_COMMAND_OUTPUT_RUN_LOG" | tail -n 1 || true)"
+if [ -z "$compile_command_result" ]; then
+  echo "selfhost cli core gate failed: command-style compile sample returned no numeric result" >&2
+  exit 1
+fi
+
+if [ "$compile_command_result" != "42" ]; then
+  echo "selfhost cli core gate failed: command-style compile sample returned '$compile_command_result' (expected 42)" >&2
+  exit 1
+fi
+
+cat >"$BUILD_COMMAND_INPUT_SOURCE" <<'EOF'
+export let _start = () -> Int { 40 + 2 }
+EOF
+
+export VIBE_PREOPEN_DIR="$PROJECT_ROOT"
+
+run_stage "stage1 core artifact -> command-style build release wasm compile" \
+  bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
+    --invoke cli_main \
+    "$STAGE1_CORE_WASM" \
+    build \
+    --release \
+    "${BUILD_COMMAND_INPUT_SOURCE#$PROJECT_ROOT/}" \
+    -o "${BUILD_COMMAND_OUTPUT_WASM#$PROJECT_ROOT/}" || exit $?
+
+unset VIBE_PREOPEN_DIR
+
+if [ ! -f "$BUILD_COMMAND_OUTPUT_WASM" ]; then
+  echo "selfhost cli core gate failed: command-style build wasm not produced" >&2
+  exit 1
+fi
+
+run_stage "validate command-style build wasm" wasm-tools validate "$BUILD_COMMAND_OUTPUT_WASM" || exit $?
+
+run_stage_capture_stdout "run command-style build wasm produced by selfhost core cli" \
+  "$BUILD_COMMAND_OUTPUT_RUN_LOG" \
+  bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" --invoke _start "$BUILD_COMMAND_OUTPUT_WASM" || exit $?
+
+build_command_result="$(grep -E '^-?[0-9]+$' "$BUILD_COMMAND_OUTPUT_RUN_LOG" | tail -n 1 || true)"
+if [ -z "$build_command_result" ]; then
+  echo "selfhost cli core gate failed: command-style build sample returned no numeric result" >&2
+  exit 1
+fi
+
+if [ "$build_command_result" != "42" ]; then
+  echo "selfhost cli core gate failed: command-style build sample returned '$build_command_result' (expected 42)" >&2
+  exit 1
+fi
+
+cat >"$CHECK_COMMAND_INPUT_SOURCE" <<'EOF'
+let answer = () -> Int { 40 + 2 }
+EOF
+
+export VIBE_PREOPEN_DIR="$PROJECT_ROOT"
+
+run_stage "stage1 core artifact -> command-style check" \
+  bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
+    --invoke cli_main \
+    "$STAGE1_CORE_WASM" \
+    check \
+    "${CHECK_COMMAND_INPUT_SOURCE#$PROJECT_ROOT/}" || exit $?
+
+unset VIBE_PREOPEN_DIR
 
 cat >"$DEBUG_LIB_SOURCE" <<'EOF'
 export let helper = (a: Int, b: Int) -> Int { a + b }

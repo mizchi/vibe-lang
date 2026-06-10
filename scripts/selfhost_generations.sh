@@ -155,7 +155,9 @@ use_cli_invoke() {
   if [ "$CLI_INVOKE" = "0" ]; then
     return 1
   fi
-  [ "$(rel_path "$entry")" = "$SEED_ENTRY" ] && \
+  local entry_rel
+  entry_rel="$(rel_path "$entry")"
+  [ "$entry_rel" = "$SEED_ENTRY" ] && \
     [ "$SEED_ENTRY_NAME" = "cli_main" ] && \
     [ -f "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" ]
 }
@@ -208,7 +210,11 @@ use_flat_cli_source() {
     1) return 0 ;;
     0) return 1 ;;
     auto)
-      [ "$(rel_path "$entry")" = "$SEED_ENTRY" ] && [ "$SEED_ENTRY_NAME" = "cli_main" ]
+      local entry_rel
+      entry_rel="$(rel_path "$entry")"
+      [ "$SEED_ENTRY_NAME" = "cli_main" ] && \
+        [ "$SEED_ENTRY" = "vibe/compiler/selfhost_cli_support.vibe" ] && \
+        [ "$entry_rel" = "$SEED_ENTRY" ]
       ;;
     *) die "VIBE_SELFHOST_GENERATION_FLAT_CLI_SOURCE must be auto, 1, or 0" ;;
   esac
@@ -467,6 +473,10 @@ command_build() {
   fi
   mkdir -p "$out_dir"
   local requested_entry="$entry"
+  if [ "$(rel_path "$requested_entry")" = "vibe/cli/selfhost_entry.vibe" ] && \
+    [ "$SEED_ENTRY" = "vibe/compiler/selfhost_cli_support.vibe" ]; then
+    die "split CLI generation requires a bootstrap bump first; current fixed seed uses legacy selfhost_cli_support.vibe"
+  fi
   select_generation_entry "$out_dir" "$requested_entry"
   entry="$GENERATION_ENTRY"
   local stage0="$out_dir/stage0_seed.wasm"

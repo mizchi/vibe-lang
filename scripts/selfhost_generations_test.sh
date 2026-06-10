@@ -204,3 +204,28 @@ if ! rg -q '^out/selfhost_cli_adapter_module_source\.vibe$' "$CLI_ROOT/invocatio
 fi
 
 echo "selfhost generations cli-seed self-test: ok"
+
+mkdir -p "$CLI_ROOT/vibe/cli"
+printf 'export let cli_main: () -> Int = () -> { 0 }\n' > "$CLI_ROOT/vibe/cli/selfhost_entry.vibe"
+
+set +e
+VIBE_PROJECT_ROOT="$CLI_ROOT" \
+VIBE_SELFHOST_GENERATION_VALIDATE_WASM=0 \
+VIBE_SELFHOST_GENERATION_VALIDATE_RUN=0 \
+  bash "$SCRIPT" build \
+    --manifest "$CLI_ROOT/bootstrap/selfhost/seed.json" \
+    --out-dir "$CLI_ROOT/split-out" \
+    --entry vibe/cli/selfhost_entry.vibe >"$CLI_ROOT/split.stdout" 2>"$CLI_ROOT/split.stderr"
+split_status=$?
+set -e
+if [ "$split_status" -eq 0 ]; then
+  echo "expected legacy seed to reject split CLI generation before bootstrap bump" >&2
+  exit 1
+fi
+if ! rg -q "split CLI generation requires a bootstrap bump" "$CLI_ROOT/split.stderr"; then
+  echo "expected split CLI bootstrap bump diagnostic" >&2
+  cat "$CLI_ROOT/split.stderr" >&2
+  exit 1
+fi
+
+echo "selfhost generations split-cli-entry guard self-test: ok"

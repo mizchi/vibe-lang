@@ -9,7 +9,11 @@ import ./checker / checker_stmt.vibe {
 }
 
 import ./core / ast.vibe {
-  Expr, Stmt
+  Stmt
+}
+
+import ./entry / compiler / file_compile {
+  compile_file_fs_mode_cached
 }
 
 import ./entry / source_compile / wasi_only / linked_artifacts.vibe {
@@ -20,10 +24,6 @@ import ./entry / source_compile / wasi_only / preprocess_interp.vibe {
   expand_interp_stmts
 }
 
-import ./entry / source_compile / wasi_only / preprocess_strip.vibe {
-  strip_generic_type_params
-}
-
 import ./entry / source_compile / wasi_only / path_utils.vibe {
   empty_stmt_array
 }
@@ -32,32 +32,11 @@ import ./entry / source_compile / wasi_only / linked_library.vibe {
   compile_file_wasi_library
 }
 
-import ./syntax / lexer.vibe {
-  lex
-}
-
-import ./syntax / parser.vibe {
-  parse_program
+import ./type_db.vibe {
+  db_new
 }
 
 //# Functions
-
-export let read_arg: (Int) -> String with { Env } = (index) -> {
-  Env::args_get(index)
-}
-
-let read_arg_or_env: (Int, String) -> String with { Env } = (index, env_name) -> {
-  let value = read_arg(index)
-  if value != "" {
-    value
-  } else {
-    Env::get(env_name)
-  }
-}
-
-let own_host_string: (String) -> String = (value) -> {
-  String::concat("", value)
-}
 
 let append_stmt_array: (Array[Stmt], Array[Stmt]) -> Unit = (dst, src) -> {
   let mut i = 0
@@ -82,15 +61,24 @@ let empty_source_pairs: () -> Array[(String, String)] = () -> {
   ], 0, 0)
 }
 
+let normalize_release_mode: (String) -> String with { Error } = (mode) -> {
+  if mode == "" || mode == "release" || mode == "no-dce" {
+    "no-dce"
+  } else if mode == "mvp" {
+    "mvp"
+  } else {
+    throw(String::concat("unsupported release mode: ", mode))
+  }
+}
+
+export let compile_release_file_mode: (String, String, String) -> Bytes with { Error, Fs } = (input_path, entry_name, mode) -> {
+  let compile_mode = normalize_release_mode(mode)
+  let (bytes, _) = compile_file_fs_mode_cached(db_new(), input_path, entry_name, compile_mode)
+  bytes
+}
+
 export let compile_release_file: (String, String) -> Bytes with { Error, Fs } = (input_path, entry_name) -> {
-  let source = Fs::read_file(input_path)
-  let stmts = parse_program(lex(source))
-  expand_interp_stmts(stmts)
-  let _ = check_program(stmts)
-  strip_generic_type_params(stmts)
-  compile_wasi_module_linked_impl(stmts, entry_name, empty_source_pairs(), Array::slice([
-    ("", "", 0, 0)
-  ], 0, 0), false, false)
+  compile_release_file_mode(input_path, entry_name, "no-dce")
 }
 
 export let compile_debug_library: (String) -> Bytes with { Error, Fs } = (dep_path) -> {
@@ -149,36 +137,5 @@ export let write_linked_debug_build: (String, String, String) -> Unit with { Err
     let lib_bytes = compile_debug_library(dep_path)
     Fs::write_bytes(lib_output_path, lib_bytes)
     i = i + 1
-  }
-}
-
-export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
-  let input_path = own_host_string(read_arg_or_env(0, "VIBE_INPUT"))
-  let output_path = own_host_string(read_arg_or_env(1, "VIBE_OUTPUT"))
-  let entry_name = own_host_string(read_arg_or_env(2, "VIBE_ENTRY"))
-  let mode = read_arg(3)
-  if input_path == "" {
-    1
-  }
-  else if output_path == "" {
-    1
-  }
-  else if entry_name == "" {
-    1
-  }
-  else if mode == "" || mode == "release" || mode == "no-dce" || mode == "mvp" {
-    let bytes = compile_release_file(input_path, entry_name)
-    Fs::write_bytes(output_path, bytes)
-    0
-  }
-  else if mode == "debug" {
-    write_linked_debug_build(input_path, output_path, entry_name)
-    0
-  }
-  else if mode == "check" {
-    check_linked_file(input_path)
-  }
-  else {
-    1
   }
 }

@@ -108,7 +108,7 @@ done
 echo ""
 echo "=== Gate 2: Selfhost wasm-gc compilation (P4 gate) ==="
 
-if VIBE_USE_SESSION_HTTP=0 "$VIBE" compile --wasm-gc vibe/compiler/selfhost_cli_support.vibe -o "$TMP_DIR/selfhost_gc.wasm" 2>/dev/null; then
+if VIBE_USE_SESSION_HTTP=0 "$VIBE" compile --wasm-gc vibe/compiler/selfhost_cli_gc_entry.vibe -o "$TMP_DIR/selfhost_gc.wasm" 2>/dev/null; then
   SIZE=$(stat -c%s "$TMP_DIR/selfhost_gc.wasm" 2>/dev/null || stat -f%z "$TMP_DIR/selfhost_gc.wasm" 2>/dev/null)
   GZIP_SIZE=$(gzip -c "$TMP_DIR/selfhost_gc.wasm" | wc -c)
   log_pass "selfhost wasm-gc build: ${SIZE} bytes raw, ${GZIP_SIZE} bytes gzip"

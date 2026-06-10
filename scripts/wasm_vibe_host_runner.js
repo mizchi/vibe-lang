@@ -68,12 +68,12 @@ function parseArgs(argv) {
       i += 1;
       continue;
     }
-    if (arg.startsWith("-")) {
-      throw new Error(`unknown option: ${arg}`);
-    }
     if (wasmPath !== null) {
       passthroughArgs.push(arg);
       continue;
+    }
+    if (arg.startsWith("-")) {
+      throw new Error(`unknown option: ${arg}`);
     }
     wasmPath = arg;
   }

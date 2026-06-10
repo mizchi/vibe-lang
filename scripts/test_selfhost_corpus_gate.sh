@@ -9,9 +9,9 @@
 # .vibe file the host compiles, it shows up here with the selfhost error.
 #
 # How it works:
-#   1. Host-compile `vibe/compiler/selfhost_cli_support.vibe` (the selfhost
-#      compiler's CLI entry, `cli_main`) to wasm. This wasm IS the
-#      vibe-written compiler logic.
+#   1. Host-compile `vibe/cli/selfhost_entry.vibe` (the selfhost compiler's
+#      CLI entry, `cli_main`) to wasm. This wasm IS the vibe-written compiler
+#      logic.
 #   2. For each corpus file, invoke `cli_main` in `debug` (linked) mode so
 #      imports + the prelude resolve, and check the exit code. 0 = the
 #      selfhost compiler parsed + type-checked + linked + codegen'd it; non-0
@@ -39,7 +39,7 @@ cd "$ROOT"
 
 OUT_DIR_REL="_build/bench/selfhost_corpus"
 OUT_DIR="$ROOT/$OUT_DIR_REL"
-SELFHOST_SRC="${VIBE_SELFHOST_CLI_SRC:-vibe/compiler/selfhost_cli_support.vibe}"
+SELFHOST_SRC="${VIBE_SELFHOST_CLI_SRC:-vibe/cli/selfhost_entry.vibe}"
 SELFHOST_WASM="${SELFHOST_WASM:-$OUT_DIR/selfhost_compiler.wasm}"
 VIBE_BIN="${VIBE_BIN:-$ROOT/_build/native/debug/build/cmd/vibe/vibe.exe}"
 RUNNER="$ROOT/scripts/run_wasm_vibe_host_runner.sh"
@@ -90,7 +90,7 @@ selfhost_sources_newer_than_wasm() {
     return 0
   fi
   local newer
-  newer="$(find "$ROOT/vibe/compiler" -name '*.vibe' -newer "$SELFHOST_WASM" -print -quit 2>/dev/null)"
+  newer="$(find "$ROOT/vibe/compiler" "$ROOT/vibe/cli" -name '*.vibe' -newer "$SELFHOST_WASM" -print -quit 2>/dev/null)"
   [ -n "$newer" ]
 }
 

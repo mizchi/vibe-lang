@@ -2,7 +2,7 @@
 # Build distributable selfhost compiler WASM.
 #
 # Pipeline:
-#   1. MoonBit host compiles selfhost_cli_support.vibe → stage1.wasm (host-compiled)
+#   1. MoonBit host compiles vibe/cli/selfhost_entry.vibe → stage1.wasm (host-compiled)
 #   2. (optional) wasm-opt -O3 on stage1 → stage1_opt.wasm
 #   3. Validates output: compiles a sample program and runs it (answer=42)
 #
@@ -13,13 +13,13 @@
 # Env:
 #   VIBE_DIST_SKIP_OPT=1   — skip wasm-opt step
 #   VIBE_DIST_OPT_LEVEL    — wasm-opt level (default: -O3)
-#   VIBE_DIST_ENTRY_PATH   — entry file (default: selfhost_cli_support.vibe)
+#   VIBE_DIST_ENTRY_PATH   — entry file (default: vibe/cli/selfhost_entry.vibe)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 DIST_DIR="$PROJECT_ROOT/_build/dist"
-ENTRY_PATH="${VIBE_DIST_ENTRY_PATH:-$PROJECT_ROOT/vibe/compiler/selfhost_cli_support.vibe}"
+ENTRY_PATH="${VIBE_DIST_ENTRY_PATH:-$PROJECT_ROOT/vibe/cli/selfhost_entry.vibe}"
 OPT_LEVEL="${VIBE_DIST_OPT_LEVEL:--O3}"
 SKIP_OPT="${VIBE_DIST_SKIP_OPT:-0}"
 
