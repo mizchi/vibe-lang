@@ -81,6 +81,76 @@ test "try_collect_manifest_sources_fs: skips manifest rows outside the dependenc
   }
 }
 
+test "try_collect_manifest_sources_fs: does not read closure-external manifest rows" {
+  let base_dir = "/tmp/vibe_compiler_manifest_sources_sparse"
+  let manifest_path = String::concat(base_dir, "/selfhost_sources_manifest.tsv")
+  let helper_path = String::concat(base_dir, "/helper.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(
+    manifest_path,
+    string_to_bytes("# group\tpath\ncore\thelper.vibe\nmisc\tmissing_orphan.vibe\nentry\tmain.vibe\n")
+  )
+  Fs::write_bytes(helper_path, string_to_bytes("export let add: () -> Int = () -> { 1 }"))
+  Fs::write_bytes(main_path, string_to_bytes("import ./helper.vibe { add }\nlet run: () -> Int = () -> { add() }"))
+  match try_collect_manifest_sources_fs(main_path) {
+    Some((_, sources)) => {
+      assert(eq(Array::length(sources), 2))
+      assert(has_source_path(sources, helper_path))
+      assert(has_source_path(sources, main_path))
+    },
+    None => assert(false)
+  }
+}
+
+test "try_collect_manifest_sources_fs: finds parent manifest for nested entry" {
+  let base_dir = "/tmp/vibe_compiler_manifest_sources_parent"
+  let nested_dir = String::concat(base_dir, "/entry/compiler/fs_compile")
+  let manifest_path = String::concat(base_dir, "/selfhost_sources_manifest.tsv")
+  let helper_path = String::concat(base_dir, "/helper.vibe")
+  let main_path = String::concat(nested_dir, "/index.vibe")
+  Fs::mkdir_p(nested_dir)
+  Fs::write_bytes(
+    manifest_path,
+    string_to_bytes("# group\tpath\ncore\thelper.vibe\nmisc\tmissing_orphan.vibe\nentry\tentry/compiler/fs_compile/index.vibe\n")
+  )
+  Fs::write_bytes(helper_path, string_to_bytes("export let add: () -> Int = () -> { 1 }"))
+  Fs::write_bytes(
+    main_path,
+    string_to_bytes("import ../../../helper.vibe { add }\nlet run: () -> Int = () -> { add() }")
+  )
+  match try_collect_manifest_sources_fs(main_path) {
+    Some((_, sources)) => {
+      assert(eq(Array::length(sources), 2))
+      assert(has_source_path(sources, helper_path))
+      assert(has_source_path(sources, main_path))
+    },
+    None => assert(false)
+  }
+}
+
+test "try_collect_manifest_sources_fs: does not read manifest-external selfhost source bundle" {
+  let base_dir = "/tmp/vibe_compiler_manifest_sources_bundle_terminal"
+  let manifest_path = String::concat(base_dir, "/selfhost_sources_manifest.tsv")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(
+    manifest_path,
+    string_to_bytes("# group\tpath\nentry\tmain.vibe\n")
+  )
+  Fs::write_bytes(
+    main_path,
+    string_to_bytes("import ./selfhost_sources_bundle.vibe { selfhost_sources }\nlet run: () -> Int = () -> { 0 }")
+  )
+  match try_collect_manifest_sources_fs(main_path) {
+    Some((_, sources)) => {
+      assert(eq(Array::length(sources), 1))
+      assert(has_source_path(sources, main_path))
+    },
+    None => assert(false)
+  }
+}
+
 test "try_collect_manifest_source_groups_fs: preserves manifest groups for the dependency closure" {
   let base_dir = "/tmp/vibe_compiler_manifest_groups_closure"
   let manifest_path = String::concat(base_dir, "/selfhost_sources_manifest.tsv")
@@ -109,6 +179,63 @@ test "try_collect_manifest_source_groups_fs: preserves manifest groups for the d
       match find_group_sources(groups, "misc") {
         Some(_) => assert(false),
         None => assert(true)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "try_collect_manifest_source_groups_fs: does not read closure-external manifest rows" {
+  let base_dir = "/tmp/vibe_compiler_manifest_groups_sparse"
+  let manifest_path = String::concat(base_dir, "/selfhost_sources_manifest.tsv")
+  let helper_path = String::concat(base_dir, "/helper.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(
+    manifest_path,
+    string_to_bytes("# group\tpath\ncore\thelper.vibe\nmisc\tmissing_orphan.vibe\nentry\tmain.vibe\n")
+  )
+  Fs::write_bytes(helper_path, string_to_bytes("export let add: () -> Int = () -> { 1 }"))
+  Fs::write_bytes(main_path, string_to_bytes("import ./helper.vibe { add }\nlet run: () -> Int = () -> { add() }"))
+  match try_collect_manifest_source_groups_fs(main_path) {
+    Some((_, groups)) => {
+      assert(eq(Array::length(groups), 2))
+      match find_group_sources(groups, "core") {
+        Some(sources) => assert(has_source_path(sources, helper_path)),
+        None => assert(false)
+      }
+      match find_group_sources(groups, "entry") {
+        Some(sources) => assert(has_source_path(sources, main_path)),
+        None => assert(false)
+      }
+      match find_group_sources(groups, "misc") {
+        Some(_) => assert(false),
+        None => assert(true)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "try_collect_manifest_source_groups_fs: does not read manifest-external selfhost source bundle" {
+  let base_dir = "/tmp/vibe_compiler_manifest_groups_bundle_terminal"
+  let manifest_path = String::concat(base_dir, "/selfhost_sources_manifest.tsv")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(
+    manifest_path,
+    string_to_bytes("# group\tpath\nentry\tmain.vibe\n")
+  )
+  Fs::write_bytes(
+    main_path,
+    string_to_bytes("import ./selfhost_sources_bundle.vibe { selfhost_sources }\nlet run: () -> Int = () -> { 0 }")
+  )
+  match try_collect_manifest_source_groups_fs(main_path) {
+    Some((_, groups)) => {
+      assert(eq(Array::length(groups), 1))
+      match find_group_sources(groups, "entry") {
+        Some(sources) => assert(has_source_path(sources, main_path)),
+        None => assert(false)
       }
     },
     None => assert(false)
@@ -317,6 +444,31 @@ test "try_collect_manifest_sources_fs: ignores invalid body escapes after header
     string_to_bytes(
       "import ./helper.vibe { add }\nlet bad = \"\\\\x\"\nlet run: () -> Int = () -> { add() }"
     )
+  )
+  match try_collect_manifest_sources_fs(main_path) {
+    Some((_, sources)) => {
+      assert(eq(Array::length(sources), 2))
+      assert(has_source_path(sources, helper_path))
+      assert(has_source_path(sources, main_path))
+    },
+    None => assert(false)
+  }
+}
+
+test "try_collect_manifest_sources_fs: does not treat export type as re-export path" {
+  let base_dir = "/tmp/vibe_compiler_manifest_export_type_scan"
+  let manifest_path = String::concat(base_dir, "/selfhost_sources_manifest.tsv")
+  let helper_path = String::concat(base_dir, "/helper.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(
+    manifest_path,
+    string_to_bytes("# group\tpath\ncore\thelper.vibe\nentry\tmain.vibe\n")
+  )
+  Fs::write_bytes(helper_path, string_to_bytes("export let add: () -> Int = () -> { 1 }"))
+  Fs::write_bytes(
+    main_path,
+    string_to_bytes("import ./helper.vibe { add }\nexport type Answer = Int\nlet run: () -> Int = () -> { add() }")
   )
   match try_collect_manifest_sources_fs(main_path) {
     Some((_, sources)) => {

@@ -354,20 +354,32 @@ let skip_until_newline: (String, Int, Int) -> Int = (s, len, i) -> {
   out
 }
 
-let skip_ws: (String, Int, Int) -> Int = (s, len, i) -> {
+let skip_ws_with_newline: (String, Int, Int) -> (Int, Bool) = (s, len, i) -> {
   let mut out = i
+  let mut saw_newline = false
   let mut skipping = true
   while skipping && out < len {
     let c = String::char_code_at(s, out)
     if is_ws(c) {
+      if c == '\n' {
+        saw_newline = true
+      } else {
+        ()
+      }
       out = out + 1
     } else if c == '/' && out + 1 < len && String::char_code_at(s, out + 1) == '/' {
-      out = skip_until_newline(s, len, out + 2)
+      let next = skip_until_newline(s, len, out + 2)
+      if next > out + 2 && String::char_code_at(s, next - 1) == '\n' {
+        saw_newline = true
+      } else {
+        ()
+      }
+      out = next
     } else {
       skipping = false
     }
   }
-  out
+  (out, saw_newline)
 }
 
 let concat_string_parts: (Array[String], String) -> String = (parts, tail) -> {
@@ -560,22 +572,6 @@ let lex_number: (String, Int, Int) -> (Token, Int) with { Error } = (s, len, i) 
   } else lex_decimal(s, len, i)
 }
 
-// Does the (whitespace) source region [from, to) contain a newline? Used to make
-// the lexer newline-sensitive for the postfix `[` ambiguity (below).
-let region_has_newline: (String, Int, Int) -> Bool = (s, lo, hi) -> {
-  let mut i = lo
-  let mut found = false
-  while i < hi {
-    if String::char_code_at(s, i) == '\n' {
-      found = true
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  found
-}
-
 // Can this token end a complete (primary) expression? After such a token, a
 // newline followed by `[` starts a NEW statement (an array literal), not a
 // postfix subscript — the lexer inserts a synthetic `;` to disambiguate.
@@ -597,10 +593,10 @@ export let lex: (String) -> Array[Token] with { Error } = (source) -> {
   {
     let b = ArrayBuilder::new()
     let mut prev_tok = TEof
-    let mut prev_end = 0
-    let mut pos = skip_ws(source, len, 0)
+    let first_skip = skip_ws_with_newline(source, len, 0)
+    let mut pos = first_skip.0
+    let mut nl_before = first_skip.1
     while pos < len {
-      let nl_before = region_has_newline(source, prev_end, pos)
       let c = String::char_code_at(source, pos)
       let (tok, next) = if is_alpha(c) {
         lex_ident(source, len, pos)
@@ -724,8 +720,9 @@ export let lex: (String) -> Array[Token] with { Error } = (source) -> {
       }
       ArrayBuilder::push(b, tok)
       prev_tok = tok
-      prev_end = next
-      pos = skip_ws(source, len, next)
+      let skipped = skip_ws_with_newline(source, len, next)
+      pos = skipped.0
+      nl_before = skipped.1
     }
     ArrayBuilder::push(b, TEof)
     ArrayBuilder::freeze(b)
