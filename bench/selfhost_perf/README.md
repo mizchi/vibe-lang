@@ -263,6 +263,7 @@ overhead. The `wasmtime-aot` runtime variant addresses this directly
 Files:
 - `vibe/compiler/lexer_hotspot_probe.vibe` + `selfhost_lexer_bench.vibe`
 - `vibe/compiler/parser_hotspot_probe.vibe` + `selfhost_parser_bench.vibe`
+- `vibe/compiler/selfhost_parser_control_bench.vibe` (optional `parser-control` phase)
 - `vibe/compiler/checker_hotspot_probe.vibe` + `selfhost_checker_bench.vibe`
 - `vibe/compiler/selfhost_bundle_bench.vibe` (optional `bundle` phase)
 - `vibe/compiler/selfhost_codegen_bench.vibe` (optional `codegen` phase)
@@ -277,6 +278,13 @@ chained let / ESeq sequences, closure-heavy codegen).
 `selfhost_parser_bench.vibe` also includes parse-only probes with lazy
 token caches, plus statement/type/expression subcategory probes, so parser
 work can be separated from file read + lex noise before tuning.
+`selfhost_parser_control_bench.vibe` keeps the small block / if / match
+parser-control probes in a separate bench file to reduce calibration
+interaction with the larger file-level parser probes.
+`selfhost_bundle_bench.vibe` covers both source-heavy grouped merge
+(`bundle_grouped_merge_*`) and group-heavy manifest shapes
+(`bundle_many_groups_*`) so source concatenation changes and per-group
+cache overhead can be tuned separately.
 
 **Was blocked** by a host-CLI codegen pathology (not a closure
 capture gap as originally hypothesized). **Now unblocked** by three

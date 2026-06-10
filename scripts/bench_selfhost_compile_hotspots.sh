@@ -16,6 +16,7 @@ PHASES_RAW="${VIBE_SELFHOST_COMPILE_HOTSPOT_PHASES:-lexer,parser,checker}"
 
 LEXER_BENCH_FILE="${VIBE_SELFHOST_LEXER_BENCH_FILE:-$ROOT_DIR/vibe/compiler/selfhost_lexer_bench.vibe}"
 PARSER_BENCH_FILE="${VIBE_SELFHOST_PARSER_BENCH_FILE:-$ROOT_DIR/vibe/compiler/selfhost_parser_bench.vibe}"
+PARSER_CONTROL_BENCH_FILE="${VIBE_SELFHOST_PARSER_CONTROL_BENCH_FILE:-$ROOT_DIR/vibe/compiler/selfhost_parser_control_bench.vibe}"
 CHECKER_BENCH_FILE="${VIBE_SELFHOST_CHECKER_BENCH_FILE:-$ROOT_DIR/vibe/compiler/selfhost_checker_bench.vibe}"
 BUNDLE_BENCH_FILE="${VIBE_SELFHOST_BUNDLE_BENCH_FILE:-$ROOT_DIR/vibe/compiler/selfhost_bundle_bench.vibe}"
 CODEGEN_BENCH_FILE="${VIBE_SELFHOST_CODEGEN_BENCH_FILE:-$ROOT_DIR/vibe/compiler/selfhost_codegen_bench.vibe}"
@@ -60,6 +61,7 @@ for ph in "${PHASES[@]}"; do
   case "$ph" in
     lexer)   run_phase lexer   "$LEXER_BENCH_FILE" ;;
     parser)  run_phase parser  "$PARSER_BENCH_FILE" ;;
+    parser-control) run_phase parser_control "$PARSER_CONTROL_BENCH_FILE" ;;
     checker) run_phase checker "$CHECKER_BENCH_FILE" ;;
     bundle)  run_phase bundle  "$BUNDLE_BENCH_FILE" ;;
     codegen) run_phase codegen "$CODEGEN_BENCH_FILE" ;;

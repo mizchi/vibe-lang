@@ -5,7 +5,7 @@ import .. / core {
 }
 
 import ./parser_base.vibe {
-  collect_import_path, empty_fields, empty_import_items, expect_tk, is_tk, parse_effect_stmt, parse_enum_stmt, parse_impl_stmt_dispatch, parse_import_item, parse_struct_field, parse_suberror_stmt, parse_trait_stmt, parse_type, parse_type_alias_stmt, peek, skip_derive, skip_semi, tk_name
+  collect_import_path, empty_fields, empty_import_items, expect_tk, parse_effect_stmt, parse_enum_stmt, parse_impl_stmt_dispatch, parse_import_item, parse_struct_field, parse_suberror_stmt, parse_trait_stmt, parse_type, parse_type_alias_stmt, peek, skip_derive, tk_name
 }
 
 import ./parser_expr.vibe {
@@ -270,17 +270,18 @@ let parse_extern_let_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (
   (SExternLet(name, ty), end)
 }
 
-export let rec parse_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (tokens, pos) -> {
-  let rec parse_module_body: (Array[Token], Int, ArrayBuilder[Stmt]) -> (Array[Stmt], Int) with { Error } = (tokens, pos, b) -> {
-    match peek(tokens, pos) {
-      TRBrace => (ArrayBuilder::freeze(b), pos + 1),
-      _ => {
-        let (stmt, next) = parse_stmt(tokens, pos)
-        ArrayBuilder::push(b, stmt)
-        parse_module_body(tokens, next, b)
-      }
+let rec parse_module_body_with: ((Array[Token], Int) -> (Stmt, Int) with { Error }, Array[Token], Int, ArrayBuilder[Stmt]) -> (Array[Stmt], Int) with { Error } = (parse_stmt_fn, tokens, pos, b) -> {
+  match peek(tokens, pos) {
+    TRBrace => (ArrayBuilder::freeze(b), pos + 1),
+    _ => {
+      let (stmt, next) = parse_stmt_fn(tokens, pos)
+      ArrayBuilder::push(b, stmt)
+      parse_module_body_with(parse_stmt_fn, tokens, next, b)
     }
   }
+}
+
+export let rec parse_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (tokens, pos) -> {
   let head = peek(tokens, pos)
   match head {
     TLet => parse_let_stmt(tokens, pos + 1, false),
@@ -289,7 +290,7 @@ export let rec parse_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (
         TIdent(name) => {
           let br = expect_tk(tokens, pos + 3, "{")
           {
-            let (stmts, end) = parse_module_body(tokens, br, ArrayBuilder::new());
+            let (stmts, end) = parse_module_body_with(parse_stmt, tokens, br, ArrayBuilder::new());
             (SModule(true, name, stmts), end)
           }
         },
@@ -301,7 +302,7 @@ export let rec parse_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (
       TIdent(name) => {
         let br = expect_tk(tokens, pos + 2, "{")
         {
-          let (stmts, end) = parse_module_body(tokens, br, ArrayBuilder::new());
+          let (stmts, end) = parse_module_body_with(parse_stmt, tokens, br, ArrayBuilder::new());
           (SModule(false, name, stmts), end)
         }
       },
@@ -315,13 +316,11 @@ export let rec parse_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (
     TTest => parse_test_stmt(tokens, pos + 1),
     TBench => parse_bench_stmt(tokens, pos + 1),
     TImport => parse_import_stmt(tokens, pos + 1),
-    TIdent(name) => if name == "effect" {
-      parse_effect_stmt(tokens, pos + 1, false)
-    } else if name == "extern" {
-      parse_extern_let_stmt(tokens, pos + 1)
-    } else if name == "use" {
-      throw("'use' syntax is removed; use 'import <module-ref> { ... }'")
-    } else {
+    TIdent(name) => match name {
+      "effect" => parse_effect_stmt(tokens, pos + 1, false),
+      "extern" => parse_extern_let_stmt(tokens, pos + 1),
+      "use" => throw("'use' syntax is removed; use 'import <module-ref> { ... }'"),
+      _ => {
       let (e, next) = parse_impl(tokens, pos, 0)
       match peek(tokens, next) {
         TEq => match e {
@@ -360,6 +359,7 @@ export let rec parse_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (
           _ => (SExpr(e), next)
         },
         _ => (SExpr(e), next)
+      }
       }
     },
     _ => {

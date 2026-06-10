@@ -1,7 +1,7 @@
 //# Imports
 
 import .. / core {
-  Expr, Pat, Stmt
+  Expr, Pat
 }
 
 import ./parser_base.vibe {
@@ -9,7 +9,7 @@ import ./parser_base.vibe {
 }
 
 import ./parser_expr_core.vibe {
-  parse_infix, parse_infix_no_is
+  parse_infix_no_is
 }
 
 import ./token.vibe {
@@ -184,29 +184,232 @@ let parse_block_after_expr: (Array[Token], Int, Expr, (Array[Token], Int, Int) -
   }
 }
 
-export let parse_impl_dispatch: (Array[Token], Int, Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, mode, parse_recur) -> {
-  if mode >= 0 && mode <= 10 {
-    parse_infix(tokens, pos, mode, pos, parse_recur)
-  } else if mode == 22 {
-    let (scrutinee, sn) = parse_recur(tokens, pos, 0)
-    let br = expect_tk(tokens, sn, "{")
-    match peek(tokens, br) {
-      TRBrace => (EMatch(scrutinee, empty_arms()), br + 1),
-      _ => {
-        let b = ArrayBuilder::new()
-        let (fp, fa) = parse_pattern(tokens, br)
-        let aa = match peek(tokens, fa) {
-          TIf => {
-            let (_, ga) = parse_recur(tokens, fa + 1, 0)
-            expect_tk(tokens, ga, "=>")
+let parse_block_value_body: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Expr, Int, Int) with { Error } = (tokens, eq, parse_recur) -> {
+  let val_pair = parse_recur(tokens, eq, 0)
+  let val = val_pair.0
+  let val_next = val_pair.1
+  let a = skip_semi(tokens, val_next)
+  let (body, end) = parse_recur(tokens, a, 20)
+  (val, body, end, a)
+}
+
+let parse_impl_block: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, parse_recur) -> {
+  match peek(tokens, pos) {
+    TRBrace => (EUnit, pos + 1),
+    TEnum => {
+      let (enum_stmt, enum_end) = parse_enum_stmt(tokens, pos + 1, false)
+      let (rest, rend) = parse_recur(tokens, enum_end, 20)
+      match enum_stmt {
+        SEnum(_, _, _, variants) => {
+          let mut result = rest
+          let mut vi = Array::length(variants) - 1
+          while vi >= 0 {
+            let (vname, vfields) = Array::get(variants, vi)
+            if Array::length(vfields) == 0 {
+              result = ELet(vname, EInt(vi), result)
+            }
+            vi = vi - 1
+          }
+          (result, rend)
+        },
+        _ => (rest, rend)
+      }
+    },
+    TStruct => {
+      let (_, struct_end) = parse_struct_stmt(tokens, pos + 1, false)
+      parse_recur(tokens, struct_end, 20)
+    },
+    TLet => {
+      let next = pos + 1
+      match peek(tokens, next) {
+        TRec => match peek(tokens, next + 1) {
+          TIdent(name) => {
+            let eq_pos_r = match peek(tokens, next + 2) {
+              TColon => {
+                let (_, tp) = parse_type_impl(tokens, next + 3, 0)
+                tp
+              },
+              _ => next + 2
+            }
+            let eq = expect_tk(tokens, eq_pos_r, "=")
+            let (val, body, end, a) = parse_block_value_body(tokens, eq, parse_recur)
+            if end <= a {
+              throw("internal parser error: block let-rec parser did not advance")
+            } else {
+              (ELetRec(name, val, body), end)
+            }
           },
-          _ => expect_tk(tokens, fa, "=>")
-        }
-        let (fe, fn1) = parse_recur(tokens, aa, 0)
-        ArrayBuilder::push(b, (fp, fe))
-        parse_match_rest(tokens, fn1, scrutinee, b, parse_recur)
+          _ => throw("expected identifier after 'let rec'")
+        },
+        TMut => match peek(tokens, next + 1) {
+          TIdent(name) => {
+            let eq_pos_m = match peek(tokens, next + 2) {
+              TColon => {
+                let (_, tp) = parse_type_impl(tokens, next + 3, 0)
+                tp
+              },
+              _ => next + 2
+            }
+            let eq = expect_tk(tokens, eq_pos_m, "=")
+            let (val, body, end, a) = parse_block_value_body(tokens, eq, parse_recur)
+            if end <= a {
+              throw("internal parser error: block let-mut parser did not advance")
+            } else {
+              (ELetMut(name, val, body), end)
+            }
+          },
+          _ => throw("expected identifier after 'let mut'")
+        },
+        TIdent(name) => {
+          let after_name = peek(tokens, next + 1)
+          let next_is_struct_destr = match after_name {
+            TDoubleColon => {
+              let fc = String::char_code_at(name, 0)
+              if fc >= 65 && fc <= 90 {
+                match peek(tokens, next + 2) {
+                  TLBrace => true,
+                  _ => false
+                }
+              } else {
+                false
+              }
+            },
+            _ => false
+          }
+          let next_is_record_destr = match after_name {
+            TLBrace => name == "record",
+            _ => false
+          }
+          if next_is_struct_destr {
+            let (pat, pn) = parse_pattern(tokens, next)
+            let eq = expect_tk(tokens, pn, "=")
+            let (val, body, end, _a) = parse_block_value_body(tokens, eq, parse_recur)
+            let val_name = "__struct_destr"
+            let mut desugar = body
+            match pat {
+              PStruct(_, fields) => {
+                let mut di = Array::length(fields) - 1
+                while di >= 0 {
+                  let (fname, fpat) = Array::get(fields, di)
+                  match fpat {
+                    PBind(bname) => {
+                      desugar = ELet(bname, EDot(EIdent(val_name), fname), desugar)
+                    },
+                    _ => ()
+                  }
+                  di = di - 1
+                }
+              },
+              _ => ()
+            }
+            desugar = ELet(val_name, val, desugar)
+            (desugar, end)
+          } else if next_is_record_destr {
+            let (pat, pn) = parse_pattern(tokens, next)
+            let eq = expect_tk(tokens, pn, "=")
+            let (val, body, end, _a) = parse_block_value_body(tokens, eq, parse_recur)
+            let val_name = "__rec_destr"
+            let mut desugar = body
+            match pat {
+              PTuple(field_pats) => {
+                let mut di = Array::length(field_pats) - 1
+                while di >= 0 {
+                  let fp = Array::get(field_pats, di)
+                  match fp {
+                    PBind(bname) => {
+                      desugar = ELet(bname, ECall(EIdent("__rec_field"), [
+                        EIdent(val_name),
+                        EInt(di)
+                      ]), desugar)
+                    },
+                    PTuple(sub_pats) => {
+                      let sub_name = String::concat("__rec_sub_", __to_string(di))
+                      let mut si = Array::length(sub_pats) - 1
+                      while si >= 0 {
+                        match Array::get(sub_pats, si) {
+                          PBind(sname) => {
+                            desugar = ELet(sname, EDot(EIdent(sub_name), __to_string(si)), desugar)
+                          },
+                          _ => ()
+                        }
+                        si = si - 1
+                      }
+                      desugar = ELet(sub_name, ECall(EIdent("__rec_field"), [
+                        EIdent(val_name),
+                        EInt(di)
+                      ]), desugar)
+                    },
+                    _ => ()
+                  }
+                  di = di - 1
+                }
+              },
+              _ => ()
+            }
+            desugar = ELet(val_name, val, desugar)
+            (desugar, end)
+          } else {
+            match after_name {
+              TLParen => {
+                let (pat, pn) = parse_pattern(tokens, next)
+                let eq = expect_tk(tokens, pn, "=")
+                let (val, body, end, a) = parse_block_value_body(tokens, eq, parse_recur)
+                if end <= a {
+                  throw("internal parser error: block let-ctor-pat parser did not advance")
+                } else {
+                  (EMatch(val, [
+                    (pat, body)
+                  ]), end)
+                }
+              },
+              _ => {
+                let eq_pos = match after_name {
+                  TColon => {
+                    let (_, tp) = parse_type_impl(tokens, next + 2, 0)
+                    tp
+                  },
+                  _ => next + 1
+                }
+                let eq = expect_tk(tokens, eq_pos, "=")
+                let (val, body, end, a) = parse_block_value_body(tokens, eq, parse_recur)
+                if end <= a {
+                  throw("internal parser error: block let parser did not advance")
+                } else {
+                  (ELet(name, val, body), end)
+                }
+              }
+            }
+          }
+        },
+        TLParen => {
+          let (pat, pn) = parse_pattern(tokens, next)
+          let eq = expect_tk(tokens, pn, "=")
+          let (val, body, end, a) = parse_block_value_body(tokens, eq, parse_recur)
+          if end <= a {
+            throw("internal parser error: block let-pat parser did not advance")
+          } else {
+            (EMatch(val, [
+              (pat, body)
+            ]), end)
+          }
+        },
+        _ => throw("expected identifier after 'let'")
+      }
+    },
+    _ => {
+      let (e, next) = parse_recur(tokens, pos, 0)
+      if next <= pos {
+        throw("internal parser error: block expr parser did not advance")
+      } else {
+        parse_block_after_expr(tokens, next, e, parse_recur)
       }
     }
+  }
+}
+
+export let parse_impl_dispatch: (Array[Token], Int, Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, mode, parse_recur) -> {
+  if mode == 20 {
+    parse_impl_block(tokens, pos, parse_recur)
   } else if mode == 21 {
     // Parse cond with the no-is variant so a trailing `is pattern` belongs
     // to the if-cond pattern slot rather than collapsing into a Bool match.
@@ -246,6 +449,26 @@ export let parse_impl_dispatch: (Array[Token], Int, Int, (Array[Token], Int, Int
       ]), end_pos)
     } else {
       (EIf(cond, then_e, else_e), end_pos)
+    }
+  } else if mode == 22 {
+    let (scrutinee, sn) = parse_recur(tokens, pos, 0)
+    let br = expect_tk(tokens, sn, "{")
+    match peek(tokens, br) {
+      TRBrace => (EMatch(scrutinee, empty_arms()), br + 1),
+      _ => {
+        let b = ArrayBuilder::new()
+        let (fp, fa) = parse_pattern(tokens, br)
+        let aa = match peek(tokens, fa) {
+          TIf => {
+            let (_, ga) = parse_recur(tokens, fa + 1, 0)
+            expect_tk(tokens, ga, "=>")
+          },
+          _ => expect_tk(tokens, fa, "=>")
+        }
+        let (fe, fn1) = parse_recur(tokens, aa, 0)
+        ArrayBuilder::push(b, (fp, fe))
+        parse_match_rest(tokens, fn1, scrutinee, b, parse_recur)
+      }
     }
   } else if mode == 23 {
     let (cond, cn) = parse_recur(tokens, pos, 0)
@@ -301,244 +524,6 @@ export let parse_impl_dispatch: (Array[Token], Int, Int, (Array[Token], Int, Int
       }
       ,
       _ => throw("expected identifier after 'for'")
-    }
-  } else if mode == 20 {
-    match peek(tokens, pos) {
-      TRBrace => (EUnit, pos + 1),
-      TEnum => {
-        let (enum_stmt, enum_end) = parse_enum_stmt(tokens, pos + 1, false)
-        let (rest, rend) = parse_recur(tokens, enum_end, 20)
-        match enum_stmt {
-          SEnum(_, _, _, variants) => {
-            let mut result = rest
-            let mut vi = Array::length(variants) - 1
-            while vi >= 0 {
-              let (vname, vfields) = Array::get(variants, vi)
-              if Array::length(vfields) == 0 {
-                result = ELet(vname, EInt(vi), result)
-              }
-              vi = vi - 1
-            }
-            (result, rend)
-          },
-          _ => (rest, rend)
-        }
-      },
-      TStruct => {
-        let (_, struct_end) = parse_struct_stmt(tokens, pos + 1, false)
-        parse_recur(tokens, struct_end, 20)
-      },
-      TLet => {
-        let next = pos + 1
-        match peek(tokens, next) {
-          TRec => match peek(tokens, next + 1) {
-            TIdent(name) => {
-              let eq_pos_r = match peek(tokens, next + 2) {
-                TColon => {
-                  let (_, tp) = parse_type_impl(tokens, next + 3, 0)
-                  tp
-                },
-                _ => next + 2
-              }
-              let eq = expect_tk(tokens, eq_pos_r, "=")
-              let val_pair = parse_recur(tokens, eq, 0)
-              let val = val_pair.0
-              let val_next = val_pair.1
-              let a = skip_semi(tokens, val_next)
-              let (body, end) = parse_recur(tokens, a, 20)
-              if end <= a {
-                throw("internal parser error: block let-rec parser did not advance")
-              } else {
-                (ELetRec(name, val, body), end)
-              }
-            },
-            _ => throw("expected identifier after 'let rec'")
-          },
-          TMut => match peek(tokens, next + 1) {
-            TIdent(name) => {
-              let eq_pos_m = match peek(tokens, next + 2) {
-                TColon => {
-                  let (_, tp) = parse_type_impl(tokens, next + 3, 0)
-                  tp
-                },
-                _ => next + 2
-              }
-              let eq = expect_tk(tokens, eq_pos_m, "=")
-              let val_pair = parse_recur(tokens, eq, 0)
-              let val = val_pair.0
-              let val_next = val_pair.1
-              let a = skip_semi(tokens, val_next)
-              let (body, end) = parse_recur(tokens, a, 20)
-              if end <= a {
-                throw("internal parser error: block let-mut parser did not advance")
-              } else {
-                (ELetMut(name, val, body), end)
-              }
-            },
-            _ => throw("expected identifier after 'let mut'")
-          },
-          TIdent(name) => {
-            let next_is_lbrace = match peek(tokens, next + 1) {
-              TLBrace => true,
-              _ => false
-            }
-            let next_is_lparen = match peek(tokens, next + 1) {
-              TLParen => true,
-              _ => false
-            }
-            let next_is_struct_destr = {
-              let fc = String::char_code_at(name, 0)
-              if fc >= 65 && fc <= 90 {
-                match peek(tokens, next + 1) {
-                  TDoubleColon => match peek(tokens, next + 2) {
-                    TLBrace => true,
-                    _ => false
-                  },
-                  _ => false
-                }
-              } else {
-                false
-              }
-            }
-            if next_is_struct_destr {
-              let (pat, pn) = parse_pattern(tokens, next)
-              let eq = expect_tk(tokens, pn, "=")
-              let val_pair = parse_recur(tokens, eq, 0)
-              let val = val_pair.0
-              let val_next = val_pair.1
-              let a = skip_semi(tokens, val_next)
-              let (body, end) = parse_recur(tokens, a, 20)
-              let val_name = "__struct_destr"
-              let mut desugar = body
-              match pat {
-                PStruct(_, fields) => {
-                  let mut di = Array::length(fields) - 1
-                  while di >= 0 {
-                    let (fname, fpat) = Array::get(fields, di)
-                    match fpat {
-                      PBind(bname) => {
-                        desugar = ELet(bname, EDot(EIdent(val_name), fname), desugar)
-                      },
-                      _ => ()
-                    }
-                    di = di - 1
-                  }
-                },
-                _ => ()
-              }
-              desugar = ELet(val_name, val, desugar)
-              (desugar, end)
-            } else if name == "record" && next_is_lbrace {
-              let (pat, pn) = parse_pattern(tokens, next)
-              let eq = expect_tk(tokens, pn, "=")
-              let val_pair = parse_recur(tokens, eq, 0)
-              let val = val_pair.0
-              let val_next = val_pair.1
-              let a = skip_semi(tokens, val_next)
-              let (body, end) = parse_recur(tokens, a, 20)
-              let val_name = "__rec_destr"
-              let mut desugar = body
-              match pat {
-                PTuple(field_pats) => {
-                  let mut di = Array::length(field_pats) - 1
-                  while di >= 0 {
-                    let fp = Array::get(field_pats, di)
-                    match fp {
-                      PBind(bname) => {
-                        desugar = ELet(bname, ECall(EIdent("__rec_field"), [
-                          EIdent(val_name),
-                          EInt(di)
-                        ]), desugar)
-                      },
-                      PTuple(sub_pats) => {
-                        let sub_name = String::concat("__rec_sub_", __to_string(di))
-                        let mut si = Array::length(sub_pats) - 1
-                        while si >= 0 {
-                          match Array::get(sub_pats, si) {
-                            PBind(sname) => {
-                              desugar = ELet(sname, EDot(EIdent(sub_name), __to_string(si)), desugar)
-                            },
-                            _ => ()
-                          }
-                          si = si - 1
-                        }
-                        desugar = ELet(sub_name, ECall(EIdent("__rec_field"), [
-                          EIdent(val_name),
-                          EInt(di)
-                        ]), desugar)
-                      },
-                      _ => ()
-                    }
-                    di = di - 1
-                  }
-                },
-                _ => ()
-              }
-              desugar = ELet(val_name, val, desugar)
-              (desugar, end)
-            } else if next_is_lparen {
-              let (pat, pn) = parse_pattern(tokens, next)
-              let eq = expect_tk(tokens, pn, "=")
-              let val_pair = parse_recur(tokens, eq, 0)
-              let val = val_pair.0
-              let val_next = val_pair.1
-              let a = skip_semi(tokens, val_next)
-              let (body, end) = parse_recur(tokens, a, 20)
-              if end <= a {
-                throw("internal parser error: block let-ctor-pat parser did not advance")
-              } else {
-                (EMatch(val, [
-                  (pat, body)
-                ]), end)
-              }
-            } else {
-              let eq_pos = match peek(tokens, next + 1) {
-                TColon => {
-                  let (_, tp) = parse_type_impl(tokens, next + 2, 0)
-                  tp
-                },
-                _ => next + 1
-              }
-              let eq = expect_tk(tokens, eq_pos, "=")
-              let val_pair = parse_recur(tokens, eq, 0)
-              let val = val_pair.0
-              let val_next = val_pair.1
-              let a = skip_semi(tokens, val_next)
-              let (body, end) = parse_recur(tokens, a, 20)
-              if end <= a {
-                throw("internal parser error: block let parser did not advance")
-              } else {
-                (ELet(name, val, body), end)
-              }
-            }
-          },
-          TLParen => {
-            let (pat, pn) = parse_pattern(tokens, next)
-            let eq = expect_tk(tokens, pn, "=")
-            let val_pair = parse_recur(tokens, eq, 0)
-            let val = val_pair.0
-            let val_next = val_pair.1
-            let a = skip_semi(tokens, val_next)
-            let (body, end) = parse_recur(tokens, a, 20)
-            if end <= a {
-              throw("internal parser error: block let-pat parser did not advance")
-            } else {
-              (EMatch(val, [
-                (pat, body)
-              ]), end)
-            }
-          },
-          _ => throw("expected identifier after 'let'")
-        }
-      },
-      _ => {
-        let (e, next) = parse_recur(tokens, pos, 0)
-        if next <= pos {
-          throw("internal parser error: block expr parser did not advance")
-        } else {
-          parse_block_after_expr(tokens, next, e, parse_recur)
-        }
-      }
     }
   } else {
     let actual = tk_name(peek(tokens, pos))

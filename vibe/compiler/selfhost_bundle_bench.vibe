@@ -10,6 +10,10 @@ let empty_sources: () -> Array[(String, String)] = () -> {
   Array::slice([("", "")], 0, 0)
 }
 
+let empty_groups: () -> Array[(String, Array[(String, String)])] = () -> {
+  Array::slice([("", empty_sources())], 0, 0)
+}
+
 let source_file_name: (String, Int) -> String = (prefix, index) -> {
   String::concat(prefix, String::concat("_", String::concat(__to_string(index), ".vibe")))
 }
@@ -47,16 +51,33 @@ let synthetic_groups: () -> Array[(String, Array[(String, String)])] = () -> {
   ]
 }
 
+let synthetic_many_groups: (Int, Int) -> Array[(String, Array[(String, String)])] = (group_count, sources_per_group) -> {
+  let groups = empty_groups()
+  let mut i = 0
+  while i < group_count {
+    let group_name = String::concat("group_", __to_string(i))
+    Array::push(groups, (group_name, synthetic_group_sources(group_name, sources_per_group)))
+    i = i + 1
+  }
+  groups
+}
+
 //# Misc
 
 let bench_groups: Array[Array[(String, Array[(String, String)])]] = [synthetic_groups()]
+let bench_many_groups: Array[Array[(String, Array[(String, String)])]] = [synthetic_many_groups(96, 2)]
 let warm_dbs: Array[TypeDb] = [db_new()]
+let warm_many_dbs: Array[TypeDb] = [db_new()]
 
 let bench_setup: () -> Int with { Error } = () -> {
   let groups = synthetic_groups()
   let (_, _, warm_db) = db_grouped_merged_source(db_new(), groups)
+  let many_groups = synthetic_many_groups(96, 2)
+  let (_, _, warm_many_db) = db_grouped_merged_source(db_new(), many_groups)
   bench_groups[0] = groups
+  bench_many_groups[0] = many_groups
   warm_dbs[0] = warm_db
+  warm_many_dbs[0] = warm_many_db
   0
 }
 
@@ -67,5 +88,15 @@ bench "selfhost/bundle_grouped_merge_cold" {
 
 bench "selfhost/bundle_grouped_merge_warm" {
   let (source, _, db2) = db_grouped_merged_source(warm_dbs[0], bench_groups[0])
+  let _ = String::length(source) + db_merge_count(db2)
+}
+
+bench "selfhost/bundle_many_groups_cold" {
+  let (source, _, _) = db_grouped_merged_source(db_new(), bench_many_groups[0])
+  let _ = String::length(source)
+}
+
+bench "selfhost/bundle_many_groups_warm" {
+  let (source, _, db2) = db_grouped_merged_source(warm_many_dbs[0], bench_many_groups[0])
   let _ = String::length(source) + db_merge_count(db2)
 }
