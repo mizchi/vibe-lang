@@ -1,0 +1,71 @@
+//# Imports
+
+import ./type_db.vibe {
+  TypeDb, db_grouped_merged_source, db_merge_count, db_new
+}
+
+//# Functions
+
+let empty_sources: () -> Array[(String, String)] = () -> {
+  Array::slice([("", "")], 0, 0)
+}
+
+let source_file_name: (String, Int) -> String = (prefix, index) -> {
+  String::concat(prefix, String::concat("_", String::concat(__to_string(index), ".vibe")))
+}
+
+let source_fn_name: (String, Int) -> String = (prefix, index) -> {
+  String::concat(prefix, String::concat("_", __to_string(index)))
+}
+
+let source_body: (String, Int) -> String = (prefix, index) -> {
+  let name = source_fn_name(prefix, index)
+  String::concat(
+    "export let ",
+    String::concat(
+      name,
+      String::concat(": () -> Int = () -> { ", String::concat(__to_string(index), " }\n"))
+    )
+  )
+}
+
+let synthetic_group_sources: (String, Int) -> Array[(String, String)] = (prefix, count) -> {
+  let sources = empty_sources()
+  let mut i = 0
+  while i < count {
+    Array::push(sources, (source_file_name(prefix, i), source_body(prefix, i)))
+    i = i + 1
+  }
+  sources
+}
+
+let synthetic_groups: () -> Array[(String, Array[(String, String)])] = () -> {
+  [
+    ("syntax", synthetic_group_sources("syntax", 48)),
+    ("loader", synthetic_group_sources("loader", 48)),
+    ("entry", synthetic_group_sources("entry", 16)),
+  ]
+}
+
+//# Misc
+
+let bench_groups: Array[Array[(String, Array[(String, String)])]] = [synthetic_groups()]
+let warm_dbs: Array[TypeDb] = [db_new()]
+
+let bench_setup: () -> Int with { Error } = () -> {
+  let groups = synthetic_groups()
+  let (_, _, warm_db) = db_grouped_merged_source(db_new(), groups)
+  bench_groups[0] = groups
+  warm_dbs[0] = warm_db
+  0
+}
+
+bench "selfhost/bundle_grouped_merge_cold" {
+  let (source, _, _) = db_grouped_merged_source(db_new(), bench_groups[0])
+  let _ = String::length(source)
+}
+
+bench "selfhost/bundle_grouped_merge_warm" {
+  let (source, _, db2) = db_grouped_merged_source(warm_dbs[0], bench_groups[0])
+  let _ = String::length(source) + db_merge_count(db2)
+}

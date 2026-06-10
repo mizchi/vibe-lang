@@ -264,6 +264,7 @@ Files:
 - `vibe/compiler/lexer_hotspot_probe.vibe` + `selfhost_lexer_bench.vibe`
 - `vibe/compiler/parser_hotspot_probe.vibe` + `selfhost_parser_bench.vibe`
 - `vibe/compiler/checker_hotspot_probe.vibe` + `selfhost_checker_bench.vibe`
+- `vibe/compiler/selfhost_bundle_bench.vibe` (optional `bundle` phase)
 
 Driver (host CLI compiled backend):
 `scripts/bench_selfhost_compile_hotspots.sh` → `just bench-selfhost-compile-hotspots`.

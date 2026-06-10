@@ -17,6 +17,7 @@ PHASES_RAW="${VIBE_SELFHOST_COMPILE_HOTSPOT_PHASES:-lexer,parser,checker}"
 LEXER_BENCH_FILE="${VIBE_SELFHOST_LEXER_BENCH_FILE:-$ROOT_DIR/vibe/compiler/selfhost_lexer_bench.vibe}"
 PARSER_BENCH_FILE="${VIBE_SELFHOST_PARSER_BENCH_FILE:-$ROOT_DIR/vibe/compiler/selfhost_parser_bench.vibe}"
 CHECKER_BENCH_FILE="${VIBE_SELFHOST_CHECKER_BENCH_FILE:-$ROOT_DIR/vibe/compiler/selfhost_checker_bench.vibe}"
+BUNDLE_BENCH_FILE="${VIBE_SELFHOST_BUNDLE_BENCH_FILE:-$ROOT_DIR/vibe/compiler/selfhost_bundle_bench.vibe}"
 
 mkdir -p "$OUT_DIR"
 
@@ -59,6 +60,7 @@ for ph in "${PHASES[@]}"; do
     lexer)   run_phase lexer   "$LEXER_BENCH_FILE" ;;
     parser)  run_phase parser  "$PARSER_BENCH_FILE" ;;
     checker) run_phase checker "$CHECKER_BENCH_FILE" ;;
+    bundle)  run_phase bundle  "$BUNDLE_BENCH_FILE" ;;
     *) echo "bench-selfhost-compile-hotspots: unknown phase '$ph'" >&2; exit 1 ;;
   esac
 done
