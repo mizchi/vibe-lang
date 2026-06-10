@@ -258,13 +258,14 @@ overhead. The `wasmtime-aot` runtime variant addresses this directly
   108 ms (session-http) on sample.vibe. The daemon wins only when
   the client makes many requests in sequence.
 
-## Micro: vibe bench probes (currently blocked)
+## Micro: vibe bench probes
 
 Files:
 - `vibe/compiler/lexer_hotspot_probe.vibe` + `selfhost_lexer_bench.vibe`
 - `vibe/compiler/parser_hotspot_probe.vibe` + `selfhost_parser_bench.vibe`
 - `vibe/compiler/checker_hotspot_probe.vibe` + `selfhost_checker_bench.vibe`
 - `vibe/compiler/selfhost_bundle_bench.vibe` (optional `bundle` phase)
+- `vibe/compiler/selfhost_codegen_bench.vibe` (optional `codegen` phase)
 
 Driver (host CLI compiled backend):
 `scripts/bench_selfhost_compile_hotspots.sh` → `just bench-selfhost-compile-hotspots`.
@@ -272,7 +273,7 @@ Driver (host CLI compiled backend):
 These bench files type-check clean (`vibe check ...` passes) and define
 per-case probes that exercise the selfhost lexer / parser / checker against
 real selfhost sources and synthetic shapes (deep binop chains, wide match,
-chained let / ESeq sequences).
+chained let / ESeq sequences, closure-heavy codegen).
 
 **Was blocked** by a host-CLI codegen pathology (not a closure
 capture gap as originally hypothesized). **Now unblocked** by three

@@ -1,0 +1,83 @@
+//# Imports
+
+import ./ast.vibe {
+  Expr, Stmt, TypeExpr
+}
+
+import ./codegen.vibe {
+  compile_module
+}
+
+//# Functions
+
+let empty_type_params: () -> Array[String] = () -> {
+  Array::slice([
+    ""
+  ], 0, 0)
+}
+
+let empty_type_bounds: () -> Array[(String, Array[String])] = () -> {
+  Array::slice([
+    ("", Array::slice([
+      ""
+    ], 0, 0))
+  ], 0, 0)
+}
+
+let int_param: (String) -> (String, Option[TypeExpr]) = (name) -> {
+  (name, Some(TyName("Int")))
+}
+
+let build_lambda: (Int) -> Expr = (i) -> {
+  let param_name = String::concat("y_", __to_string(i))
+  EFn(
+    empty_type_params(),
+    empty_type_bounds(),
+    [
+      int_param(param_name)
+    ],
+    Some(TyName("Int")),
+    None,
+    EBinOp("+", EIdent("x"), EIdent(param_name))
+  )
+}
+
+let build_lambda_chain_body: (Int) -> Expr = (n) -> {
+  let mut i = n
+  let mut body = EInt(0)
+  while i > 0 {
+    body = ELet(String::concat("f_", __to_string(i)), build_lambda(i), body)
+    i = i - 1
+  }
+  ELet("x", EInt(1), body)
+}
+
+let build_lambda_chain_module: (Int) -> Array[Stmt] = (n) -> {
+  [
+    SLet(
+      true,
+      false,
+      "main",
+      None,
+      EFn(
+        empty_type_params(),
+        empty_type_bounds(),
+        Array::slice([
+          ("", None)
+        ], 0, 0),
+        Some(TyName("Int")),
+        None,
+        build_lambda_chain_body(n)
+      )
+    )
+  ]
+}
+
+//# Misc
+
+let lambda_chain_64 = build_lambda_chain_module(64)
+
+bench "selfhost/codegen_lambda_chain_64" {
+  let bytes = compile_module(lambda_chain_64)
+  let _ = Bytes::length(bytes)
+}
