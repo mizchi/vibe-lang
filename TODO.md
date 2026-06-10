@@ -7,8 +7,9 @@ Completed items are archived in `docs/DONE.md`.
 ## 次の一手 (2026-06-09 時点)
 
 現況スナップショット。selfhost cutover は「移行開始可」。以後は
-wasmtime runner 層と compiler wasm artifact 層を分け、MoonBit `src/` は
-bootstrap / fallback へ縮退させる。
+wasmtime runner 層と compiler wasm artifact 層を分け、compiler/checker/codegen
+と CLI 挙動は `vibe/compiler/` 側で実装する。MoonBit `src/` は legacy
+bootstrap / fallback として通常開発では触らない。
 
 ### 現状サマリ
 
@@ -32,9 +33,9 @@ bootstrap / fallback へ縮退させる。
     seed `cli_main` で `vibe/compiler/selfhost_cli_support.vibe` を stage1 build
     すると `Env::ArgsLen > index` が selfhost checker で `type mismatch in '>'`
     になる。ここを解消してから stage2 を bootstrap bump 候補にする。
-- [ ] **MoonBit `src/` 退役**: まず bootstrap/fallback 専用へ縮退し、通常の
-  compile/check/test 経路を selfhost wasm + runner へ向ける。削除は parity/cutover
-  gate が CI で継続 green になってから段階的に行う。
+- [ ] **MoonBit `src/` 退役**: 通常の compile/check/test/CLI 経路を selfhost
+  wasm + runner へ向ける。新機能や CLI 挙動変更は `src/` に入れない。削除は
+  parity/cutover gate が CI で継続 green になってから段階的に行う。
 
 ### 🟠 open issues (一次ソース)
 
@@ -54,7 +55,8 @@ bootstrap / fallback へ縮退させる。
 ### 🔵 リファクタ / 長期
 
 - [ ] `vibe/types/` `vibe/parser/` 分離、`vibe/compiler` 論理分割
-- [ ] MoonBit host CLI を bootstrap 専用へ縮退
+- [ ] MoonBit host CLI を bootstrap 専用へ縮退し、CLI 実装の source of truth を
+  `vibe/compiler/` へ固定
 - [ ] MoonBit host 重複削減 (§similarity-mbt、残: `src/runtime/db.mbt` の `set_source`/`set_binary_source`)
 
 ---

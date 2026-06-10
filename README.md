@@ -202,6 +202,10 @@ pkf run install
 - `vibe_compile_wasi` では `--wasm` が `wasm-gc` を選ぶ（MVP を使う場合は `--wasm-mvp`）
 - 現状 `wasm-gc` backend は実験段階のため、複雑な文法は `--wasm-mvp` を使う
 
+Note: MoonBit `src/` の CLI は legacy bootstrap / fallback wrapper として扱う。
+compiler/checker/codegen と CLI の新しい挙動は `vibe/compiler/` 側で実装し、
+`src/` に二重実装を追加しない。
+
 ## WASM Execution
 
 ### With async host runtime (supports sleep)
@@ -276,8 +280,8 @@ src/
 ├── runtime/        # Runtime state, caches, compiler hooks, and shell support
 ├── x/fp/           # Floating-point to decimal formatter utilities
 ├── x/module_graph/ # Experimental module graph index and codecs
-├── cmd/vibe/       # CLI command implementation (native/js)
-├── cmd/vibe_wasi/  # WASI line-shell command (wasm)
+├── cmd/vibe/       # Legacy host CLI wrapper (bootstrap/fallback)
+├── cmd/vibe_wasi/  # Legacy WASI line-shell wrapper
 └── tests/          # Integration-like blackbox tests
 
 examples/
@@ -285,6 +289,7 @@ examples/
 └── wasm/           # WASM-only examples (require host)
 
 vibe/
+├── compiler/       # Selfhost compiler and canonical CLI implementation
 └── prelude/        # vibe core library (self-hosted prelude modules)
 
 examples/async_host/  # Rust/wasmtime host runtime

@@ -101,11 +101,16 @@ portable selfhost wasm として再構築できることを gate に残す。
 
 ## MoonBit `src/` の退役
 
-`src/` は selfhost cutover 後、bootstrap/fallback 層へ縮退する。削除は一度に
-行わず、次の順に進める。
+`src/` は selfhost cutover 後、legacy bootstrap/fallback 層へ縮退する。
+新機能、bugfix、CLI 挙動変更、builtin 追加は `src/` に入れず、
+`vibe/compiler/` 側で実装する。削除は一度に行わず、次の順に進める。
 
 1. seed tag と manifest を固定する。
 2. default CLI build/run/check/test を selfhost wasm 経路へ向ける。
 3. CI で seed -> stage1 -> stage2 と corpus/perf/RSS gate を継続 green にする。
 4. MoonBit `src/` を runner/fallback に必要な最小限へ縮小する。
 5. fallback が不要になった時点で archive または削除する。
+
+break-glass として `src/` を変更する場合は、通常 feature commit とは分け、
+bootstrap 復旧または退役作業であることを commit message / PR description に
+明記する。

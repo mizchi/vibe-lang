@@ -9,10 +9,11 @@ passed through whole rather than projected/matched) — all *safe* leaks (no
 use-after-free), and the gate that blocks RC cutover to the selfhost linear
 default. Prerequisite
 for *recursive field drop* in the selfhost Perceus RC port
-(`docs/spec/selfhost-rc-port.md`). `src/` stays authoritative; this documents the
-design the selfhost backend needs before the RC vertical can reclaim **nested**
-heap (a dropped container freeing its heap fields) and **container/call
-escapes**.
+(`docs/spec/selfhost-rc-port.md`). The canonical implementation target is now
+the selfhost compiler under `vibe/compiler/`; the MoonBit `src/` backend is only
+a historical/reference point for this design. This documents the design the
+selfhost backend needs before the RC vertical can reclaim **nested** heap
+(a dropped container freeing its heap fields) and **container/call escapes**.
 
 ## Why this is needed
 
@@ -647,9 +648,10 @@ arithmetic / comparison / bitop / shift / float / nested-data case under
 - **No user-visible payoff until Stage 3+** — Stages 1–2 are pure infrastructure;
   recursive drop (Stage 3) and escape ownership (Stage 4) deliver the actual
   reclamation. This is multi-session work.
-- **`src/` is authoritative** and already does all of this with tagged values;
-  the selfhost port mirrors it, adapted to the 8-byte-slot layout and the
-  `n<<1`/odd-pointer scheme chosen here.
+- **`src/` is no longer the implementation target**. It remains useful as a
+  historical tagged-value reference, but the canonical work happens in the
+  selfhost backend, adapted to the 8-byte-slot layout and the `n<<1`/odd-pointer
+  scheme chosen here.
 
 ## Alternative considered: static pointer bitmap (rejected as primary)
 

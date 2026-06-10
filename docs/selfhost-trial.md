@@ -13,7 +13,7 @@ Status: active trial from 2026-06-10.
 - `13e866ff Fix selfhost corpus real gaps`
 - seed: `bootstrap/selfhost/seed.json`
 - source of truth: `vibe/compiler/`
-- MoonBit `src/`: bootstrap / fallback / host-runner 層
+- MoonBit `src/`: legacy bootstrap / fallback / host-runner 層。通常開発では触らない
 
 開始時点の local gate:
 
@@ -40,8 +40,10 @@ Status: active trial from 2026-06-10.
 ## Development mode
 
 trial 中は、compiler/checker/codegen の挙動変更を `vibe/compiler/` に入れる。
-MoonBit `src/` は、固定 seed から current selfhost compiler を作るための
-bootstrap/fallback 境界、runner、または互換確認が必要な場合だけ変更する。
+CLI のコマンド挙動、adapter、bundle、component entry も `vibe/compiler/`
+側を source of truth とする。MoonBit `src/` は固定 seed から current selfhost
+compiler を作るための legacy bootstrap/fallback 境界として扱い、通常の
+feature / bugfix / CLI 変更では編集しない。
 
 通常の feature / bugfix は次の順で進める。
 
@@ -50,6 +52,10 @@ bootstrap/fallback 境界、runner、または互換確認が必要な場合だ�
 3. 必要なら `scripts/generate_selfhost_bundle.sh` で bundle を同期する。
 4. `pkf run selfhost-trial-gate` を通す。
 5. 互換や配布 artifact に影響する変更だけ `pkf run release-check` も通す。
+
+`src/` を変更する必要があるように見える場合は、先に原因を
+`vibe/compiler/` / bootstrap scripts / seed 管理へ切り分ける。break-glass として
+`src/` を触る場合は、通常 feature commit とは分け、明示的な方針確認を行う。
 
 bootstrap bump は通常の feature commit と分ける。新 syntax を compiler source
 自身で使い始める場合は、先にその syntax を理解する seed を作ってから source を
@@ -94,7 +100,7 @@ trial を継続してよい条件:
 - corpus REAL gap が 0 のまま。
 - perf/RSS が KPI 内に収まる。
 - `release-selfhost-gates` と `release-check` が少なくとも節目 commit で green。
-- 通常の compiler 開発で `src/` へ戻らないと直せない問題が連続しない。
+- 通常の compiler / CLI 開発が `vibe/compiler/` 側だけで進む。
 
 次のどれかが起きたら、完全移行は一時停止して原因を切り分ける。
 
@@ -102,7 +108,7 @@ trial を継続してよい条件:
 - corpus REAL gap が増える。
 - TOTAL compile > 2.5x、TOTAL check > 1.33x、peak RSS > 2.0x が再現する。
 - runner 層の wasmtime/cwasm 依存が portable wasm correctness と乖離する。
-- 新機能の実装に MoonBit `src/` 先行が必要な状態へ戻る。
+- 新機能または CLI 変更の実装に MoonBit `src/` 先行が必要な状態へ戻る。
 
 trial が数日から数週間 green で回るなら、次の段階で default CLI build/run/check
 を selfhost wasm 経路へ向け、MoonBit `src/` の退役範囲を具体化する。

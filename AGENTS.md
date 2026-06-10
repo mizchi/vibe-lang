@@ -39,13 +39,14 @@ pkf affected --since=origin/main 'test:*'  # diff-aware package tests
 vibe compiler は二層構造になっている:
 
 - **`vibe/compiler/` (selfhost: vibe で書かれた vibe compiler)** —
-  2026-06-09 以降の cutover 方針では canonical 化対象。新しい
-  compiler/checker/codegen の挙動は、原則ここを主対象として設計する。
-  `selfhost_cli_*.vibe` / component adapter / bundle / parity gate もここに属する。
-- **`src/` (MoonBit 実装)** — 移行期間の bootstrap / fallback / host-runner
-  実装。`scripts/ensure_native_cli.sh` や selfhost wasm の stage0 build にはまだ必要だが、
-  長期的には退役させる。`src/` に新規機能を入れる場合は、bootstrap に必要な
-  境界か、selfhost 側へ反映済みかを確認する。
+  2026-06-10 以降の完全 selfhost trial では source of truth。
+  parser/checker/codegen/runtime compile だけでなく、CLI のコマンド挙動、
+  adapter、bundle、component entry、parity gate もここを主対象として実装する。
+- **`src/` (MoonBit 実装)** — legacy bootstrap / fallback / host-runner 層。
+  通常開発では触らない。新機能、bugfix、CLI 挙動変更、builtin 追加は
+  `src/` へ入れず、`vibe/compiler/` 側だけで実装する。`src/` を変更するのは、
+  明示的に許可された bootstrap 破損の復旧、退役作業、または別ブランチでの
+  隔離作業に限る。
 
 selfhost cutover 後の Rust-style seed compiler / stage0-stage2 / bootstrap bump の運用は
 [docs/selfhost-bootstrap.md](docs/selfhost-bootstrap.md) に従う。新しい syntax を
@@ -57,17 +58,20 @@ compiler source 自体で使う場合は、先に seed compiler がその syntax
 
 判断目安:
 - 「`vibe test foo.vibe` で挙動を変えたい / 新 builtin を追加したい」
-  → まず `vibe/compiler/` 側。bootstrap CLI 経路の互換が必要な場合のみ `src/` も追従
+  → `vibe/compiler/` 側だけを変更する
+- 「CLI の挙動を変えたい / コマンドを追加したい」
+  → `vibe/compiler/entry` / `selfhost_cli_*.vibe` / component adapter 側で実装する
 - 「selfhost が正しく自分でコンパイルできない」「dist wasm が壊れて
-  いる」 → `vibe/compiler/` 側 + `pkf run release-check` の selfhost
-  ゲート確認
-- 両方に同じ機能を実装する場合は `vibe/compiler/` 先 → parity/cutover gate
-  で確認 → bootstrap 互換のために必要な最小限だけ `src/` へ追従
+  いる」 → まず `vibe/compiler/` / bootstrap scripts / seed 管理を直し、
+  `pkf run selfhost-trial-gate` で確認する。`src/` 修正が必要に見える場合は
+  変更前に方針確認する
+- MoonBit host と selfhost の二重実装は増やさない。parity/cutover gate は
+  selfhost 側の正しさを確認するために使い、`src/` 追従の理由にしない
 
 CI shard では:
 - `scripts/pkfire/selfhost_gates_shard.sh bootstrap|cli|check|coverage`
   が selfhost 側のゲートを走らせる
-- `pkf run check` / `pkf run test` は `src/` 側
+- `pkf run selfhost-trial-gate` を完全 selfhost 継続判断の主 gate とする
 
 ## Coding Convention
 

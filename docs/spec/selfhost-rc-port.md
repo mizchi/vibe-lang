@@ -1,10 +1,10 @@
 # Selfhost Perceus RC port — design & staged plan
 
-Status: planning (issue #493 direction C / item **D**). Tracks porting the
-Perceus reference-counting memory management from the authoritative MoonBit
-`src/` implementation into the vibe-written selfhost compiler
-(`vibe/compiler/`). `src/` stays authoritative; selfhost follows via the
-parity gates (per CLAUDE.md).
+Status: planning (issue #493 direction C / item **D**). Tracks implementing
+Perceus reference-counting memory management in the vibe-written selfhost
+compiler (`vibe/compiler/`). The MoonBit `src/` backend is now a historical
+reference and legacy bootstrap/fallback layer; new RC work targets selfhost
+directly and is guarded by the parity gates (per CLAUDE.md).
 
 ## Why this is not a straight code port
 
