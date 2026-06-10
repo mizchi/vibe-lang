@@ -17,7 +17,7 @@ import ./checker.vibe {
 }
 
 import ./checker_resolve.vibe {
-  resolve_type_expr
+  resolve_type_expr, subst_type_params
 }
 
 //# Functions
@@ -201,6 +201,30 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
         (new_env, ns, nc)
       },
       SEnum(_, name, params, variants) => {
+        let param_len = Array::length(params)
+        let param_var_ids = Array::slice([
+          0
+        ], 0, 0)
+        let param_var_types = Array::slice([
+          CtUnknown
+        ], 0, 0)
+        let mut pi = 0
+        while pi < param_len {
+          let vid = c + pi
+          Array::push(param_var_ids, vid)
+          Array::push(param_var_types, CtVar(vid))
+          pi = pi + 1
+        }
+        let ctor_result_type = if param_len == 0 {
+          CtEnum(name)
+        } else {
+          CtNamed(name, param_var_types)
+        }
+        let ctor_bounds = Array::slice([
+          (0, Array::slice([
+            ""
+          ], 0, 0))
+        ], 0, 0)
         let resolved_variants = Array::slice([
           ("", Array::slice([
             CtUnknown
@@ -214,7 +238,7 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
           ], 0, 0)
           let mut ti = 0
           while ti < Array::length(vtypes) {
-            let vt = resolve_type_expr(Array::get(vtypes, ti), defs)
+            let vt = subst_type_params(resolve_type_expr(Array::get(vtypes, ti), defs), params, param_var_types)
             Array::push(resolved_vtypes, vt)
             ti = ti + 1
           }
@@ -226,23 +250,40 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
         let mut ci2 = 0
         while ci2 < Array::length(variants) {
           let (vname, vtypes) = Array::get(variants, ci2)
-          if Array::length(vtypes) == 0 {
-            env1 = env_bind(env1, vname, CtEnum(name))
+          let ctor_ty = if Array::length(vtypes) == 0 {
+            ctor_result_type
           } else {
             let resolved_args = Array::slice([
               CtUnknown
             ], 0, 0)
             let mut ai = 0
             while ai < Array::length(vtypes) {
-              Array::push(resolved_args, resolve_type_expr(Array::get(vtypes, ai), defs))
+              let arg_ty = subst_type_params(resolve_type_expr(Array::get(vtypes, ai), defs), params, param_var_types)
+              Array::push(resolved_args, arg_ty)
               ai = ai + 1
             }
-            env1 = env_bind(env1, vname, CtFn(resolved_args, CtEnum(name), None))
-            env1 = bind_fn_return(env1, vname, CtEnum(name))
+            CtFn(resolved_args, ctor_result_type, None)
+          }
+          let exported_ctor_ty = if param_len == 0 {
+            ctor_ty
+          } else {
+            CtForAll(param_var_ids, ctor_bounds, ctor_ty)
+          }
+          env1 = env_bind(env1, vname, exported_ctor_ty)
+          match ctor_ty {
+            CtFn(_, ret, _) => {
+              let exported_ret_ty = if param_len == 0 {
+                ret
+              } else {
+                CtForAll(param_var_ids, ctor_bounds, ret)
+              }
+              env1 = bind_fn_return(env1, vname, exported_ret_ty)
+            },
+            _ => ()
           }
           ci2 = ci2 + 1
         }
-        (env1, s, c)
+        (env1, s, c + param_len)
       },
       SStruct(_, name, field_defs) => {
         let resolved_fields = Array::slice([

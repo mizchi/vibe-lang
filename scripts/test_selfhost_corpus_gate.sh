@@ -40,8 +40,11 @@ cd "$ROOT"
 OUT_DIR_REL="_build/bench/selfhost_corpus"
 OUT_DIR="$ROOT/$OUT_DIR_REL"
 SELFHOST_SRC="${VIBE_SELFHOST_CLI_SRC:-vibe/cli/selfhost_entry.vibe}"
+case "$SELFHOST_SRC" in
+  /*) SELFHOST_SRC_ABS="$SELFHOST_SRC" ;;
+  *) SELFHOST_SRC_ABS="$ROOT/$SELFHOST_SRC" ;;
+esac
 SELFHOST_WASM="${SELFHOST_WASM:-$OUT_DIR/selfhost_compiler.wasm}"
-VIBE_BIN="${VIBE_BIN:-$ROOT/_build/native/debug/build/cmd/vibe/vibe.exe}"
 RUNNER="$ROOT/scripts/run_wasm_vibe_host_runner.sh"
 TIMEOUT_SEC="${VIBE_CORPUS_TIMEOUT_SEC:-120}"
 INCLUDE_TESTS="${VIBE_CORPUS_INCLUDE_TESTS:-0}"
@@ -75,32 +78,17 @@ done
 
 mkdir -p "$OUT_DIR"
 
-# --- ensure the native host vibe CLI (used to build the selfhost wasm) ---
-if [ ! -x "$VIBE_BIN" ]; then
-  echo "[corpus] building native vibe CLI (scripts/ensure_native_cli.sh)"
-  bash "$ROOT/scripts/ensure_native_cli.sh" || { echo "corpus gate: native CLI build failed" >&2; exit 2; }
-fi
-[ -x "$VIBE_BIN" ] || { echo "corpus gate: vibe CLI missing: $VIBE_BIN" >&2; exit 2; }
-
-selfhost_sources_newer_than_wasm() {
-  if [ ! -f "$SELFHOST_WASM" ]; then
-    return 0
-  fi
-  if [ "$SELFHOST_SRC" -nt "$SELFHOST_WASM" ]; then
-    return 0
-  fi
-  local newer
-  newer="$(find "$ROOT/vibe/compiler" "$ROOT/vibe/cli" -name '*.vibe' -newer "$SELFHOST_WASM" -print -quit 2>/dev/null)"
-  [ -n "$newer" ]
-}
-
 # --- build the selfhost compiler wasm (the vibe-written compiler) ---
-if selfhost_sources_newer_than_wasm; then
-  echo "[corpus] building selfhost compiler wasm: host-compile $SELFHOST_SRC"
-  if ! "$VIBE_BIN" compile --wasm --force-cabi-realloc "$SELFHOST_SRC" -o "$SELFHOST_WASM"; then
-    echo "corpus gate: selfhost compiler build failed" >&2
-    exit 2
-  fi
+echo "[corpus] resolving selfhost compiler wasm: $SELFHOST_SRC_ABS"
+if ! SELFHOST_WASM="$(
+  VIBE_SELFHOST_CLI_CORE_OUT_DIR="$(dirname "$SELFHOST_WASM")" \
+  ENTRY_PATH="$SELFHOST_SRC_ABS" \
+  STAGE1_CORE_WASM="$SELFHOST_WASM" \
+  VIBE_SELFHOST_CLI_CORE_REBUILD="${VIBE_SELFHOST_CLI_CORE_REBUILD:-auto}" \
+  bash "$ROOT/scripts/build_selfhost_cli_core.sh"
+)"; then
+  echo "corpus gate: selfhost compiler build failed" >&2
+  exit 2
 fi
 echo "[corpus] selfhost compiler: $SELFHOST_WASM ($(wc -c < "$SELFHOST_WASM" | tr -d ' ') bytes)"
 

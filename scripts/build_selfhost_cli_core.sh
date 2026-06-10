@@ -93,7 +93,13 @@ fi
 
 mkdir -p "$(dirname "$STAGE1_CORE_WASM")"
 
-if [ "$HOST_MODE" = "release" ]; then
+if [ -n "${VIBE_BIN:-}" ]; then
+  if [ ! -x "$VIBE_BIN" ]; then
+    echo "build-selfhost-cli-core: VIBE_BIN is not executable: $VIBE_BIN" >&2
+    exit 1
+  fi
+  HOST_COMPILE_CMD=("$VIBE_BIN" compile --wasm --force-cabi-realloc)
+elif [ "$HOST_MODE" = "release" ]; then
   VIBE_CLI_RELEASE=1 source "$PROJECT_ROOT/scripts/ensure_native_cli.sh"
   HOST_COMPILE_CMD=("$VIBE_CLI_BIN" compile --wasm --force-cabi-realloc)
 elif [ -x "$HOST_VIBE_EXE_DEBUG" ]; then
