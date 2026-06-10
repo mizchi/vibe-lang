@@ -2081,14 +2081,11 @@ fn bundle_for_codegen(
   bundle_kind : String,
 ) -> @core.Module raise CompileError {
   @profiler.profiler_enter("compile/bundle/collect")
-  let raw = bundle_for_wasm_no_dce(db, path, ast)
-  @profiler.profiler_leave()
-  @profiler.profiler_enter("compile/bundle/dce")
   let result = match bundle_kind {
-    "default" => @pipeline.dce_module(raw)
-    "gc" => @pipeline.dce_module_gc(raw)
-    "tests" => @pipeline.dce_module_for_tests(raw)
-    _ => raw
+    "default" => bundle_for_wasm(db, path, ast)
+    "gc" => bundle_for_wasm_gc(db, path, ast)
+    "tests" => bundle_for_wasm_test_coverage(db, path, ast)
+    _ => bundle_for_wasm_no_dce(db, path, ast)
   }
   @profiler.profiler_leave()
   result
@@ -2363,6 +2360,7 @@ fn compile_module_wasm_profiled_with(
   emitter : (@core.Module) -> Bytes raise @codegen.WasmGenError,
   cache_namespace : String,
   opt_level : String?,
+  use_artifact_cache? : Bool = true,
 ) -> (Bytes, WasmCompileStageProfile) raise WasmCompileError {
   let start_total = @bench.monotonic_clock_start()
   @profiler.profiler_enter("compile/module")
@@ -2377,24 +2375,33 @@ fn compile_module_wasm_profiled_with(
   let bundled = bundle_for_codegen(db, path, compiled.ast, bundle_kind) catch {
     e => raise WasmCompileError::Compile(e)
   }
-  @profiler.profiler_enter("compile/bundle/cache_key")
-  let cache_key = wasm_artifact_cache_key(
-    bundled,
-    compiled.aliases,
-    cache_namespace,
-    opt_level,
-  )
-  @profiler.profiler_leave()
+  let cache_key : String? = if use_artifact_cache {
+    @profiler.profiler_enter("compile/bundle/cache_key")
+    let key = wasm_artifact_cache_key(
+      bundled,
+      compiled.aliases,
+      cache_namespace,
+      opt_level,
+    )
+    @profiler.profiler_leave()
+    Some(key)
+  } else {
+    None
+  }
   let bundle_us = elapsed_us_from(start_bundle)
   @profiler.profiler_leave()
-  match wasm_artifact_cache.val.get(cache_key) {
-    Some(cached) => {
-      let total_us = elapsed_us_from(start_total)
-      return (
-        cached,
-        { module_us, bundle_us, emit_us: 0, optimize_us: 0, total_us },
-      )
-    }
+  match cache_key {
+    Some(key) =>
+      match wasm_artifact_cache.val.get(key) {
+        Some(cached) => {
+          let total_us = elapsed_us_from(start_total)
+          return (
+            cached,
+            { module_us, bundle_us, emit_us: 0, optimize_us: 0, total_us },
+          )
+        }
+        None => ()
+      }
     None => ()
   }
   @profiler.profiler_enter("compile/emit")
@@ -2407,7 +2414,10 @@ fn compile_module_wasm_profiled_with(
   let optimized = optimize_wasm_bytes_with_opt_level(wasm, opt_level)
   let optimize_us = elapsed_us_from(start_optimize)
   @profiler.profiler_leave()
-  wasm_artifact_cache.val[cache_key] = optimized
+  match cache_key {
+    Some(key) => wasm_artifact_cache.val[key] = optimized
+    None => ()
+  }
   let total_us = elapsed_us_from(start_total)
   (optimized, { module_us, bundle_us, emit_us, optimize_us, total_us })
 }
@@ -2506,6 +2516,7 @@ pub fn compile_module_wasm_with_opt_level_profiled(
   fs_host_imports? : Bool = false,
   force_cabi_realloc? : Bool = false,
   library_mode? : Bool = false,
+  use_artifact_cache? : Bool = true,
 ) -> (Bytes, WasmCompileStageProfile) raise WasmCompileError {
   ensure_hooks()
   let cache_namespace = wasm_artifact_cache_namespace(
@@ -2544,6 +2555,7 @@ pub fn compile_module_wasm_with_opt_level_profiled(
       ast => @codegen.emit_module_wasm_with_options(ast, mk_options()),
       cache_namespace,
       opt_level,
+      use_artifact_cache~,
     )
   } else {
     compile_module_wasm_profiled_with(
@@ -2553,6 +2565,7 @@ pub fn compile_module_wasm_with_opt_level_profiled(
       ast => @codegen.emit_module_wasm_with_options(ast, mk_options()),
       cache_namespace,
       opt_level,
+      use_artifact_cache~,
     )
   }
 }
@@ -3182,15 +3195,28 @@ pub fn compile_module_wasm_gc_with_opt_level_profiled(
   path : String,
   no_dce? : Bool = false,
   opt_level? : String? = None,
+  use_artifact_cache? : Bool = true,
 ) -> (Bytes, WasmCompileStageProfile) raise WasmCompileError {
   let cache_namespace = if no_dce { "gc_no_dce" } else { "gc_default" }
   if no_dce {
     compile_module_wasm_profiled_with(
-      db, path, "no_dce", @codegen.emit_module_wasm_gc, cache_namespace, opt_level,
+      db,
+      path,
+      "no_dce",
+      @codegen.emit_module_wasm_gc,
+      cache_namespace,
+      opt_level,
+      use_artifact_cache~,
     )
   } else {
     compile_module_wasm_profiled_with(
-      db, path, "gc", @codegen.emit_module_wasm_gc, cache_namespace, opt_level,
+      db,
+      path,
+      "gc",
+      @codegen.emit_module_wasm_gc,
+      cache_namespace,
+      opt_level,
+      use_artifact_cache~,
     )
   }
 }

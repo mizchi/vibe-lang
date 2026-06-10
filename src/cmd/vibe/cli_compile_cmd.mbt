@@ -42,6 +42,7 @@ fn compile_lite_cmd(args : Array[String]) -> Unit {
           entry,
           no_dce=opts.no_dce,
           opt_level=opts.opt_level,
+          use_artifact_cache=false,
         ) catch {
           e => abort("compile-lite: " + e.user_message())
         }
@@ -54,6 +55,7 @@ fn compile_lite_cmd(args : Array[String]) -> Unit {
           debug_errors=false,
           http_host_imports=false,
           force_cabi_realloc=false,
+          use_artifact_cache=false,
         ) catch {
           e => abort("compile-lite: " + e.user_message())
         }

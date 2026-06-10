@@ -1,78 +1,67 @@
 ///|
-/// Issue #402: disk snapshot of the prelude value-stmt partition.
+/// Issue #402: static snapshot of the prelude value-stmt partition.
 ///
-/// `prelude_partition_value_stmts` builds a dependency graph + runs a fixpoint
-/// over the prelude value defs to split them into "core" vs "builtin-dependent"
-/// (~0.8ms native / ~2-4ms selfhost-wasm). #479 memoized it per-process, but a
-/// fresh selfhost process (one compile per invocation) re-pays it every time.
-///
-/// The split is fully determined by which value names are builtin-dependent, so
-/// we snapshot just that name set to disk (reusing the #427/#476 `.vibe/ast`
-/// plumbing). A fresh process loads the names and re-splits `prelude_ast()` by
-/// name — an O(stmts) pass with no graph/fixpoint. Bit-for-bit equivalent to
-/// the computed partition (same value-stmt order, same classification).
-///
-/// All best-effort: any disabled cache / miss / fs error / version skew falls
-/// back to computing the partition. Bump `PARTITION_SNAPSHOT_VERSION` if the
-/// partition *logic* changes so stale name sets invalidate.
-
-///|
-const PARTITION_SNAPSHOT_VERSION : Int = 1
-
-///|
-fn partition_snapshot_path() -> String {
-  // The classification is computed over the *parsed/desugared* prelude AST, so
-  // fold in AST_CACHE_PARSER_VERSION (as the #427/#476 caches do): a
-  // parser/desugar change that alters refs for unchanged prelude source must
-  // invalidate the cached name set, since the warm path trusts it without
-  // re-running walk_stmt_refs.
-  ast_disk_cache_dir.val +
-  "/prelude-partition." +
-  @core.content_address_hash_string(prelude_source) +
-  ".v" +
-  PARTITION_SNAPSHOT_VERSION.to_string() +
-  "-p" +
-  AST_CACHE_PARSER_VERSION.to_string() +
-  ".names"
-}
-
-///|
-/// Encode the builtin-dependent name set as a length-prefixed string list.
-fn encode_partition_names(names : Array[String]) -> Bytes {
-  let w = @core.TypeBinWriter::new()
-  w.uint(names.length())
-  for n in names {
-    w.str(n)
+/// `_prelude_partition_value_stmts` builds a dependency graph + runs a fixpoint
+/// over the prelude value defs to split them into "core" vs "builtin-dependent".
+/// A fresh selfhost compiler process used to load a disk snapshot and re-split
+/// the prelude by decoded names, but the one-shot bundle path still paid the
+/// file read + binary decode. The builtin-dependent set is tiny and changes
+/// only when `prelude_source` / partition logic changes, so keep it as a source
+/// snapshot and assert it against the computed partition in whitebox tests.
+fn prelude_static_builtin_value_name(name : String) -> Bool {
+  match name {
+    "add"
+    | "sub"
+    | "mul"
+    | "div"
+    | "eq"
+    | "lt"
+    | "assert"
+    | "assert_true"
+    | "assert_eq"
+    | "to_string"
+    | "iter_length"
+    | "iter_get"
+    | "Map::iter_length"
+    | "Map::iter_get"
+    | "Array::map"
+    | "Array::fold"
+    | "Array::filter"
+    | "Array::foreach"
+    | "Array::concat"
+    | "Array::any"
+    | "Array::all"
+    | "Array::find"
+    | "array_find_index"
+    | "array_find_last_index"
+    | "array_contains_by"
+    | "Array::reverse"
+    | "Array::sort"
+    | "Array::contains"
+    | "Array::join"
+    | "string_concat_all"
+    | "Map::get_or"
+    | "Map::map"
+    | "Map::filter"
+    | "Map::size"
+    | "Map::foreach"
+    | "Map::entries"
+    | "Map::merge"
+    | "where" => true
+    _ => false
   }
-  w.to_bytes()
 }
 
 ///|
-fn decode_partition_names(
-  bytes : Bytes,
-) -> Array[String] raise @core.BinaryDeserializeError {
-  let r = @core.TypeBinReader::new(bytes)
-  let n = r.uint()
-  let names : Array[String] = []
-  for _i in 0..<n {
-    names.push(r.str())
-  }
-  names
-}
-
-///|
-/// Re-split the prelude value stmts by a known builtin-dependent name set,
-/// reproducing `prelude_partition_value_stmts`'s output without the graph.
-fn split_prelude_value_stmts(
+fn split_prelude_value_stmts_by_static_snapshot(
   ast : @core.Module,
-  builtin_names : Map[String, Bool],
 ) -> (Array[@core.Stmt], Array[@core.Stmt]) {
   let core_stmts : Array[@core.Stmt] = []
   let builtin_stmts : Array[@core.Stmt] = []
   for stmt in ast.stmts {
     match prelude_stmt_value_name(stmt) {
       Some(name) =>
-        if builtin_names.contains(name) {
+        if prelude_static_builtin_value_name(name) {
           builtin_stmts.push(stmt)
         } else {
           core_stmts.push(stmt)
@@ -81,52 +70,4 @@ fn split_prelude_value_stmts(
     }
   }
   (core_stmts, builtin_stmts)
-}
-
-///|
-fn builtin_names_of(builtin_stmts : Array[@core.Stmt]) -> Array[String] {
-  let names : Array[String] = []
-  for stmt in builtin_stmts {
-    match prelude_stmt_value_name(stmt) {
-      Some(name) => names.push(name)
-      None => ()
-    }
-  }
-  names
-}
-
-///|
-/// Try to load the partition from disk and re-split. None on
-/// disabled/miss/fs-error/version-skew/corrupt.
-fn try_load_prelude_partition(
-  ast : @core.Module,
-) -> (Array[@core.Stmt], Array[@core.Stmt])? {
-  if !ast_disk_cache_enabled.val {
-    return None
-  }
-  let path = partition_snapshot_path()
-  if !@os_fs.path_exists(path) {
-    return None
-  }
-  let bytes = @os_fs.read_file_to_bytes(path) catch { _ => return None }
-  let names = decode_partition_names(bytes) catch { _ => return None }
-  let set : Map[String, Bool] = {}
-  for n in names {
-    set[n] = true
-  }
-  Some(split_prelude_value_stmts(ast, set))
-}
-
-///|
-fn save_prelude_partition(builtin_stmts : Array[@core.Stmt]) -> Unit {
-  if !ast_disk_cache_enabled.val {
-    return
-  }
-  if !ensure_ast_disk_cache_dir() {
-    return
-  }
-  let bytes = encode_partition_names(builtin_names_of(builtin_stmts))
-  @os_fs.write_bytes_to_file(partition_snapshot_path(), bytes) catch {
-    _ => ()
-  }
 }
