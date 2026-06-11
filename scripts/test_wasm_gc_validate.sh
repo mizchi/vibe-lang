@@ -6,7 +6,7 @@ set -euo pipefail
 # Gate checks:
 # 1. Small wasm-gc files pass wasm-tools validate (type encoding correctness)
 # 2. wasm-gc mainlane E2E tests pass (runtime correctness)
-# 3. Selfhost compiler compiles to wasm-gc (P4 regression check)
+# 3. Selfhost wasm emitter module compiles to wasm-gc (P4 regression check)
 #
 # Requires: moon, wasm-tools, wasmtime (for E2E)
 
@@ -103,24 +103,30 @@ for src in \
   fi
 done
 
-# --- Gate 2: Selfhost compiler compiles to wasm-gc ---
+# --- Gate 2: Selfhost wasm emitter compiles to wasm-gc ---
 
 echo ""
-echo "=== Gate 2: Selfhost wasm-gc compilation (P4 gate) ==="
+echo "=== Gate 2: Selfhost wasm emitter wasm-gc compilation (P4 gate) ==="
 
-if VIBE_USE_SESSION_HTTP=0 "$VIBE" compile --wasm-gc vibe/compiler/selfhost_cli_gc_entry.vibe -o "$TMP_DIR/selfhost_gc.wasm" 2>/dev/null; then
+if VIBE_USE_SESSION_HTTP=0 "$VIBE" compile --wasm-gc vibe/compiler/codegen/wasm_emit/instructions.vibe -o "$TMP_DIR/selfhost_gc.wasm" 2>/dev/null; then
   SIZE=$(stat -c%s "$TMP_DIR/selfhost_gc.wasm" 2>/dev/null || stat -f%z "$TMP_DIR/selfhost_gc.wasm" 2>/dev/null)
   GZIP_SIZE=$(gzip -c "$TMP_DIR/selfhost_gc.wasm" | wc -c)
-  log_pass "selfhost wasm-gc build: ${SIZE} bytes raw, ${GZIP_SIZE} bytes gzip"
+  log_pass "selfhost wasm emitter wasm-gc build: ${SIZE} bytes raw, ${GZIP_SIZE} bytes gzip"
+
+  if wasm-tools validate --features all "$TMP_DIR/selfhost_gc.wasm" 2>/dev/null; then
+    log_pass "selfhost wasm emitter validate"
+  else
+    log_fail "selfhost wasm emitter validate"
+  fi
 
   # Size regression: should be under 500KB raw
   if [ "$SIZE" -lt 512000 ]; then
-    log_pass "selfhost size < 500KB raw"
+    log_pass "selfhost wasm emitter size < 500KB raw"
   else
-    log_fail "selfhost size regression: ${SIZE} bytes (> 500KB)"
+    log_fail "selfhost wasm emitter size regression: ${SIZE} bytes (> 500KB)"
   fi
 else
-  log_fail "selfhost wasm-gc compile failed"
+  log_fail "selfhost wasm emitter wasm-gc compile failed"
 fi
 
 # --- Gate 3: P4 selfhost check (import resolution) ---
