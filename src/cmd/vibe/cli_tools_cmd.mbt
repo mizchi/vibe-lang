@@ -9,7 +9,7 @@ extern "C" fn vibe_process_exists(pid : Int) -> Int = "vibe_process_exists"
 
 ///|
 #borrow(cmd)
-extern "c" fn c_system(cmd : Bytes) -> Int = "system"
+extern "c" fn c_system(cmd : Bytes) -> Int = "vibe_shell_system"
 
 ///|
 fn system_command_bytes(cmd : String) -> Bytes {

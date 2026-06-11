@@ -1,6 +1,6 @@
 ///|
 #borrow(cmd)
-extern "c" fn gc_e2e_system(cmd : Bytes) -> Int = "system"
+extern "c" fn gc_e2e_system(cmd : Bytes) -> Int = "vibe_shell_system"
 
 ///|
 pub fn gc_e2e_system_cmd(cmd : String) -> Int {
