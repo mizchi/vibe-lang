@@ -41,36 +41,33 @@ let bind_stmt_imports: (TypeEnv, Array[(String, Option[String])]) -> TypeEnv = (
     ("", CtUnknown)
   ], 0, 0)
   let nlen = Array::length(names)
-  let rec bind_imports: (Int, TypeEnv) -> TypeEnv = (i, acc) -> {
-    if i >= nlen {
-      acc
+  let mut i = 0
+  let mut acc = env
+  while i < nlen {
+    let (name, alias) = Array::get(names, i)
+    let bound_name = match alias {
+      Some(a) => a,
+      None => name
     }
-    else {
-      let (name, alias) = Array::get(names, i)
-      let bound_name = match alias {
-        Some(a) => a,
-        None => name
-      }
-      let ty = match import_cache_lookup(import_cache, name, 0) {
-        Some(t) => t,
-        None => {
-          let resolved = match env_lookup_flat(env_bindings, name) {
-            Some(t) => t,
-            None => CtUnknown
-          }
-          Array::push(import_cache, (name, resolved))
-          resolved
+    let ty = match import_cache_lookup(import_cache, name, 0) {
+      Some(t) => t,
+      None => {
+        let resolved = match env_lookup_flat(env_bindings, name) {
+          Some(t) => t,
+          None => CtUnknown
         }
+        Array::push(import_cache, (name, resolved))
+        resolved
       }
-      let acc_with_name = env_bind(acc, bound_name, ty)
-      let acc_with_ret = match env_lookup_flat(env_bindings, fn_return_env_name(name)) {
-        Some(ret_ty) => env_bind(acc_with_name, fn_return_env_name(bound_name), ret_ty),
-        None => acc_with_name
-      }
-      bind_imports(i + 1, acc_with_ret)
     }
+    let acc_with_name = env_bind(acc, bound_name, ty)
+    acc = match env_lookup_flat(env_bindings, fn_return_env_name(name)) {
+      Some(ret_ty) => env_bind(acc_with_name, fn_return_env_name(bound_name), ret_ty),
+      None => acc_with_name
+    }
+    i = i + 1
   }
-  bind_imports(0, env)
+  acc
 }
 
 let annotation_return_type: (Option[TypeExpr], Array[TypeDef]) -> Option[Type] = (ann, defs) -> {
@@ -118,10 +115,15 @@ let bind_value_or_annotation_return: (TypeEnv, String, Expr, Option[TypeExpr], A
 }
 
 export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, Int, Array[String]) -> (TypeEnv, Subst, Int) = (stmts, i, env, defs, s, c, errors) -> {
-  if i >= Array::length(stmts) {
-    (env, s, c)
-  } else {
-    let stmt = Array::get(stmts, i)
+  let mut idx = i
+  let mut cur_env = env
+  let mut cur_s = s
+  let mut cur_c = c
+  while idx < Array::length(stmts) {
+    let env = cur_env
+    let s = cur_s
+    let c = cur_c
+    let stmt = Array::get(stmts, idx)
     let (new_env, s1, c1) = match stmt {
       SLet(_, is_rec, name, ann, val) => {
         let (vt, ns, nc) = if is_rec {
@@ -358,8 +360,12 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
       },
       _ => (env, s, c)
     }
-    check_stmts(stmts, i + 1, new_env, defs, s1, c1, errors)
+    cur_env = new_env
+    cur_s = s1
+    cur_c = c1
+    idx = idx + 1
   }
+  (cur_env, cur_s, cur_c)
 }
 
 export let check_program: (Array[Stmt]) -> TypeEnv with { Error } = (stmts) -> {

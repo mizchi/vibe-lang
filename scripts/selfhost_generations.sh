@@ -14,7 +14,7 @@ CLI_INVOKE="${VIBE_SELFHOST_GENERATION_CLI_INVOKE:-auto}"
 SELFBUILD_INVOKE="${VIBE_SELFHOST_GENERATION_SELFBUILD_INVOKE:-auto}"
 FLAT_CLI_SOURCE="${VIBE_SELFHOST_GENERATION_FLAT_CLI_SOURCE:-auto}"
 SELFBUILD_OUT="$PROJECT_ROOT/_build/bench/selfhost_wasi_selfbuild/index_stage2.wasm"
-NODE_STACK_SIZE="${VIBE_SELFHOST_GENERATION_NODE_STACK_SIZE:-65536}"
+NODE_STACK_SIZE="${VIBE_SELFHOST_GENERATION_NODE_STACK_SIZE:-131072}"
 GENERATION_INVOKE_MODE="runner"
 GENERATION_ENTRY=""
 
@@ -226,13 +226,17 @@ prepare_flat_cli_source() {
   local generator="$PROJECT_ROOT/scripts/generate_selfhost_bundle.sh"
   [ -f "$generator" ] || die "selfhost bundle generator not found: $generator"
   local bundle_tmp="$out_dir/.selfhost_bundle"
+  local bundle_log="$out_dir/selfhost_bundle_generation.log"
   mkdir -p "$bundle_tmp"
   echo "[selfhost-gen] prepare flat selfhost compiler source" >&2
-  VIBE_SELFHOST_BUNDLE_OUT="$bundle_tmp/selfhost_sources_bundle.vibe" \
-  VIBE_SELFHOST_ADAPTER_BUNDLE_OUT="$bundle_tmp/selfhost_cli_adapter_bundle.vibe" \
-  VIBE_SELFHOST_RUNTIME_ENTRY_BUNDLE_OUT="$bundle_tmp/selfbuild_runtime_entry_bundle.vibe" \
-  VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_OUT="$out" \
-    bash "$generator" >/dev/null
+  if ! VIBE_SELFHOST_BUNDLE_OUT="$bundle_tmp/selfhost_sources_bundle.vibe" \
+    VIBE_SELFHOST_ADAPTER_BUNDLE_OUT="$bundle_tmp/selfhost_cli_adapter_bundle.vibe" \
+    VIBE_SELFHOST_RUNTIME_ENTRY_BUNDLE_OUT="$bundle_tmp/selfbuild_runtime_entry_bundle.vibe" \
+    VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_OUT="$out" \
+    bash "$generator" >"$bundle_log" 2>&1; then
+    cat "$bundle_log" >&2
+    die "flat selfhost compiler source generation failed"
+  fi
   [ -s "$out" ] || die "flat selfhost compiler source was not produced: $out"
   printf '%s\n' "$out"
 }
