@@ -323,7 +323,7 @@ fn shell_quote_command_arg(value : String) -> String {
 
 ///|
 #borrow(cmd)
-extern "c" fn c_system(cmd : Bytes) -> Int = "system"
+extern "c" fn c_system(cmd : Bytes) -> Int = "vibe_shell_system"
 
 ///|
 extern "c" fn vibe_getpid() -> Int = "getpid"

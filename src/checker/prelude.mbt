@@ -423,7 +423,7 @@ fn prelude_stmt_value_name(stmt : @core.Stmt) -> String? {
 }
 
 ///|
-fn prelude_partition_value_stmts(
+fn _prelude_partition_value_stmts(
   ast : @core.Module,
 ) -> (Array[@core.Stmt], Array[@core.Stmt]) {
   let value_names : Map[String, Bool] = {}
@@ -504,7 +504,7 @@ fn prelude_partition_value_stmts(
 
 ///|
 /// Memoized partition of the prelude AST into (core, builtin) value stmts.
-/// `prelude_partition_value_stmts` builds a dependency graph + runs a fixpoint
+/// `_prelude_partition_value_stmts` builds a dependency graph + runs a fixpoint
 /// over every prelude value def (~0.8ms); it depends only on the (cached,
 /// static) prelude AST, so compute it once per process. Bundling called this
 /// twice on every compile (`prelude_core_value_stmts` +
@@ -519,17 +519,11 @@ fn prelude_partitioned_value_stmts() -> (Array[@core.Stmt], Array[@core.Stmt]) {
     Some(p) => p
     None => {
       let ast = prelude_ast()
-      // #402: load the partition name-set from disk (skip graph+fixpoint) on a
-      // fresh process; on a miss compute it and persist the name-set. Both paths
-      // produce the identical (core, builtin) split.
-      let p = match try_load_prelude_partition(ast) {
-        Some(loaded) => loaded
-        None => {
-          let computed = prelude_partition_value_stmts(ast)
-          save_prelude_partition(computed.1)
-          computed
-        }
-      }
+      // #402: use a source snapshot of builtin-dependent prelude names to avoid
+      // graph/fixpoint work and one-shot disk snapshot decode in selfhost
+      // compiler invocations. Whitebox tests compare this with the computed
+      // partition so prelude changes must update the snapshot.
+      let p = split_prelude_value_stmts_by_static_snapshot(ast)
       cached_prelude_partition.val = Some(p)
       p
     }
@@ -547,33 +541,24 @@ pub fn prelude_builtin_value_stmts() -> Array[@core.Stmt] {
 }
 
 ///|
-/// #402: name -> prelude value stmt index, in canonical (core ++ builtin) order
-/// the bundler emits. Built once per process; only a cheap O(stmts) pass (no
-/// ref walk), so it costs far less than walking every prelude def.
-let cached_prelude_value_index : Ref[Map[String, @core.Stmt]?] = @ref.new(None)
-
-///|
-fn prelude_value_index() -> Map[String, @core.Stmt] {
-  match cached_prelude_value_index.val {
-    Some(idx) => idx
-    None => {
-      let idx : Map[String, @core.Stmt] = {}
-      for stmt in prelude_core_value_stmts() {
-        match prelude_stmt_value_name(stmt) {
-          Some(name) => idx[name] = stmt
-          None => ()
-        }
-      }
-      for stmt in prelude_builtin_value_stmts() {
-        match prelude_stmt_value_name(stmt) {
-          Some(name) => idx[name] = stmt
-          None => ()
-        }
-      }
-      cached_prelude_value_index.val = Some(idx)
-      idx
+fn find_prelude_value_stmt(
+  name : String,
+  core_stmts : Array[@core.Stmt],
+  builtin_stmts : Array[@core.Stmt],
+) -> @core.Stmt? {
+  for stmt in core_stmts {
+    match prelude_stmt_value_name(stmt) {
+      Some(stmt_name) => if stmt_name == name { return Some(stmt) }
+      None => ()
     }
   }
+  for stmt in builtin_stmts {
+    match prelude_stmt_value_name(stmt) {
+      Some(stmt_name) => if stmt_name == name { return Some(stmt) }
+      None => ()
+    }
+  }
+  None
 }
 
 ///|
@@ -595,20 +580,28 @@ pub fn prelude_reachable_value_stmts(
   roots : Map[String, Bool],
   shadowed : Map[String, Bool],
 ) -> Array[@core.Stmt] {
-  let index = prelude_value_index()
+  @profiler.profiler_enter("checker/prelude/reachable/partition")
+  let core_stmts = prelude_core_value_stmts()
+  let builtin_stmts = prelude_builtin_value_stmts()
+  @profiler.profiler_leave()
+  @profiler.profiler_enter("checker/prelude/reachable/closure")
   let reachable : Map[String, Bool] = {}
   let queue : Array[String] = []
   for r, _ in roots {
-    if index.contains(r) && !reachable.contains(r) {
-      reachable[r] = true
-      queue.push(r)
+    match find_prelude_value_stmt(r, core_stmts, builtin_stmts) {
+      Some(_) =>
+        if !reachable.contains(r) {
+          reachable[r] = true
+          queue.push(r)
+        }
+      None => ()
     }
   }
   let mut i = 0
   while i < queue.length() {
     let name = queue[i]
     i = i + 1
-    match index.get(name) {
+    match find_prelude_value_stmt(name, core_stmts, builtin_stmts) {
       Some(stmt) => {
         let refs : Map[String, Bool] = {}
         @core.walk_stmt_refs(
@@ -618,17 +611,24 @@ pub fn prelude_reachable_value_stmts(
           prelude_add_unbound_ref,
         )
         for ref_name, _ in refs {
-          if index.contains(ref_name) && !reachable.contains(ref_name) {
-            reachable[ref_name] = true
-            queue.push(ref_name)
+          if !reachable.contains(ref_name) {
+            match find_prelude_value_stmt(ref_name, core_stmts, builtin_stmts) {
+              Some(_) => {
+                reachable[ref_name] = true
+                queue.push(ref_name)
+              }
+              None => ()
+            }
           }
         }
       }
       None => ()
     }
   }
+  @profiler.profiler_leave()
+  @profiler.profiler_enter("checker/prelude/reachable/output")
   let out : Array[@core.Stmt] = []
-  for stmt in prelude_core_value_stmts() {
+  for stmt in core_stmts {
     match prelude_stmt_value_name(stmt) {
       Some(name) =>
         if reachable.contains(name) && !shadowed.contains(name) {
@@ -637,7 +637,7 @@ pub fn prelude_reachable_value_stmts(
       None => ()
     }
   }
-  for stmt in prelude_builtin_value_stmts() {
+  for stmt in builtin_stmts {
     match prelude_stmt_value_name(stmt) {
       Some(name) =>
         if reachable.contains(name) && !shadowed.contains(name) {
@@ -646,6 +646,7 @@ pub fn prelude_reachable_value_stmts(
       None => ()
     }
   }
+  @profiler.profiler_leave()
   out
 }
 
@@ -668,10 +669,13 @@ pub fn prelude_ast() -> @core.Module {
 pub fn prelude_names() -> Array[String] {
   [
     "add", "sub", "mul", "div", "eq", "lt", "not", "and", "or", "__not", "__or",
-    "assert", "assert_true", "to_string", "iter_require", "iter_length", "iter_get",
-    "String::iter_length", "String::iter_get", "Map::iter_length", "Map::iter_get",
+    "assert", "assert_true", "assert_eq", "to_string", "iter_require", "iter_length",
+    "iter_get", "String::iter_length", "String::iter_get", "Map::iter_length", "Map::iter_get",
     "Array::map", "Array::fold", "Array::filter", "Array::foreach", "Array::concat",
-    "Array::reverse", "Array::any", "Array::all", "Array::find", "assert_eq", "Array::sort",
-    "Array::contains", "Array::join", "Map::get_or", "Map::map", "Map::filter", "where",
+    "Array::any", "Array::all", "Array::find", "array_find_index", "array_find_last_index",
+    "array_contains_by", "Array::reverse", "Array::sort", "Array::contains", "Array::join",
+    "string_concat_all", "option_map", "option_flat_map", "option_or_else", "option_is_some",
+    "option_is_none", "Map::get_or", "Map::map", "Map::filter", "Map::size", "Map::foreach",
+    "Map::entries", "Map::merge", "where",
   ]
 }

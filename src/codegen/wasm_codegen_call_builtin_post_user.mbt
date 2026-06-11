@@ -262,6 +262,7 @@ fn compile_call_builtin_post_user_inner(
       emit_i64_and(buf)
       emit_i32_wrap_i64(buf)
       emit_local_set(buf, xs_ptr_local)
+      emit_builder_follow_forwarding(ctx, buf, xs_ptr_local)
       emit_local_get(buf, xs_ptr_local)
       emit_i32_load(buf, 4)
       emit_local_set(buf, xs_len_local)
@@ -271,6 +272,7 @@ fn compile_call_builtin_post_user_inner(
       emit_i64_and(buf)
       emit_i32_wrap_i64(buf)
       emit_local_set(buf, ys_ptr_local)
+      emit_builder_follow_forwarding(ctx, buf, ys_ptr_local)
       emit_local_get(buf, ys_ptr_local)
       emit_i32_load(buf, 4)
       emit_local_set(buf, ys_len_local)
@@ -355,12 +357,14 @@ fn compile_call_builtin_post_user_inner(
       emit_i64_and(buf)
       emit_i32_wrap_i64(buf)
       emit_local_set(buf, dst_ptr_local)
+      emit_builder_follow_forwarding(ctx, buf, dst_ptr_local)
       // Untag src pointer
       compile_expr_i32(ctx, buf, pos_args[1])
       emit_i64_const_raw(buf, (-4).to_int64())
       emit_i64_and(buf)
       emit_i32_wrap_i64(buf)
       emit_local_set(buf, src_ptr_local)
+      emit_builder_follow_forwarding(ctx, buf, src_ptr_local)
       emit_local_get(buf, src_ptr_local)
       emit_i32_load(buf, 4) // src.len
       emit_local_set(buf, src_len_local)
@@ -420,6 +424,7 @@ fn compile_call_builtin_post_user_inner(
       emit_i64_and(buf)
       emit_i32_wrap_i64(buf)
       emit_local_set(buf, arr_ptr_local)
+      emit_builder_follow_forwarding(ctx, buf, arr_ptr_local)
       // Load array length
       emit_local_get(buf, arr_ptr_local)
       emit_i32_load(buf, 4)

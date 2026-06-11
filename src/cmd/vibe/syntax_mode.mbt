@@ -100,13 +100,7 @@ fn parse_cli_runtime_args(
   }
   match parse_cli_syntax_args(filtered, cmd_name) {
     Ok((syntax_mode, cmd_args)) =>
-      Ok({
-        syntax_mode,
-        cmd_args,
-        unstable_async,
-        enable_llm,
-        permissions,
-      })
+      Ok({ syntax_mode, cmd_args, unstable_async, enable_llm, permissions })
     Err(err) => Err(err)
   }
 }

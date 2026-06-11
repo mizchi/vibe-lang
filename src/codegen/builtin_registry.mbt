@@ -208,6 +208,8 @@ fn entry_divergence(
 /// Divergences (parity contract only — implemented via the legacy arm /
 /// prelude, not the registry):
 /// - `String::compare` (linear-only SIMD, ADR-0054; wasm-gc via prelude),
+///   `Double::to_i64_bits_{lo,hi}` (linear-only split f64 raw bits; wasm-gc
+///   has no boxed-double half extraction path),
 ///   `Array::fold` and the native `Float`/`Double` math (wasm-gc arms; linear
 ///   via prelude).
 fn registry_entries() -> Array[RegistryEntry] {
@@ -666,6 +668,8 @@ fn registry_entries() -> Array[RegistryEntry] {
     entry_linear_only("Set::from_array", Ref, compile_set_from_array_linear),
     // --- divergences (parity contract only; legacy arm / prelude) ---
     entry_divergence("String::compare", Int, true),
+    entry_divergence("Double::to_i64_bits_lo", Int, true),
+    entry_divergence("Double::to_i64_bits_hi", Int, true),
     entry_divergence("Array::fold", Ref, false),
     entry_divergence("Double::ceil", Double, false),
     entry_divergence("Double::floor", Double, false),

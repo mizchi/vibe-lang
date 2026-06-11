@@ -44,12 +44,14 @@ VIBE_SELFHOST_PROJECT_ROOT="$TMP_ROOT" \
 VIBE_SELFHOST_SOURCE_MANIFEST="$TMP_ROOT/vibe/compiler/selfhost_sources_manifest.tsv" \
 VIBE_SELFHOST_BUNDLE_OUT="$TMP_ROOT/vibe/compiler/selfhost_sources_bundle.vibe" \
 VIBE_SELFHOST_ADAPTER_BUNDLE_OUT="$TMP_ROOT/vibe/compiler/selfhost_cli_adapter_bundle.vibe" \
+VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_OUT="$TMP_ROOT/vibe/compiler/selfhost_cli_adapter_module_source.vibe" \
 VIBE_SELFHOST_BUNDLE_EXTRA_ENTRIES="" \
 VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_FROM_MERGED=1 \
 bash "$BUNDLE_SCRIPT" >/dev/null
 
 OUT="$TMP_ROOT/vibe/compiler/selfhost_sources_bundle.vibe"
 OUT_ADAPTER="$TMP_ROOT/vibe/compiler/selfhost_cli_adapter_bundle.vibe"
+OUT_ADAPTER_MODULE="$TMP_ROOT/vibe/compiler/selfhost_cli_adapter_module_source.vibe"
 if [ ! -f "$OUT" ]; then
   echo "generate-selfhost-bundle self-test: expected bundle output" >&2
   exit 1
@@ -57,6 +59,11 @@ fi
 
 if [ ! -f "$OUT_ADAPTER" ]; then
   echo "generate-selfhost-bundle self-test: expected adapter bundle output" >&2
+  exit 1
+fi
+
+if [ ! -f "$OUT_ADAPTER_MODULE" ]; then
+  echo "generate-selfhost-bundle self-test: expected adapter module source output" >&2
   exit 1
 fi
 
@@ -222,9 +229,21 @@ if ! printf '%s\n' "$adapter_module_value_block" | rg -Fq 'let cli_main = () -> 
   exit 1
 fi
 
+if ! rg -Fq 'let cli_main = () -> Int { token() }' "$OUT_ADAPTER_MODULE"; then
+  echo "generate-selfhost-bundle self-test: adapter module source file missing cli_main function" >&2
+  cat "$OUT_ADAPTER_MODULE" >&2
+  exit 1
+fi
+
 if printf '%s\n' "$adapter_module_value_block" | rg -Fq 'let ignored = 1'; then
   echo "generate-selfhost-bundle self-test: adapter module source should drop non-function lets" >&2
   cat "$OUT_ADAPTER" >&2
+  exit 1
+fi
+
+if rg -Fq 'let ignored = 1' "$OUT_ADAPTER_MODULE"; then
+  echo "generate-selfhost-bundle self-test: adapter module source file should drop non-function lets" >&2
+  cat "$OUT_ADAPTER_MODULE" >&2
   exit 1
 fi
 

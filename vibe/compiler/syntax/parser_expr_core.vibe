@@ -159,19 +159,29 @@ let has_placeholder_args: (Array[Expr]) -> Bool = (args) -> {
   found
 }
 
-let rec parse_call_args_rest: (Array[Token], Int, ArrayBuilder[Expr], (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Array[Expr], Int) with { Error } = (tokens, pos, b, parse_recur) -> {
-  match peek(tokens, pos) {
-    TComma => match peek(tokens, pos + 1) {
-      TRParen => (ArrayBuilder::freeze(b), pos + 1),
+let parse_call_args_rest: (Array[Token], Int, ArrayBuilder[Expr], (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Array[Expr], Int) with { Error } = (tokens, pos, b, parse_recur) -> {
+  let mut p = pos
+  let mut done = false
+  while !done {
+    match peek(tokens, p) {
+      TComma => match peek(tokens, p + 1) {
+        TRParen => {
+          p = p + 1
+          done = true
+        },
+        _ => {
+          let (e, next) = parse_call_arg(tokens, p + 1, parse_recur)
+          ArrayBuilder::push(b, e)
+          p = next
+        }
+      }
+      ,
       _ => {
-        let (e, next) = parse_call_arg(tokens, pos + 1, parse_recur)
-        ArrayBuilder::push(b, e)
-        parse_call_args_rest(tokens, next, b, parse_recur)
+        done = true
       }
     }
-    ,
-    _ => (ArrayBuilder::freeze(b), pos)
   }
+  (ArrayBuilder::freeze(b), p)
 }
 
 let slice_from_zero_expr: (Expr, Expr) -> Expr = (cur_expr, end_expr) -> {
@@ -184,7 +194,7 @@ let slice_from_zero_expr: (Expr, Expr) -> Expr = (cur_expr, end_expr) -> {
 
 let wrap_placeholder_arg: (Expr) -> Expr = (arg) -> {
   let mut pc = 0
-  let mut params = Array::slice([
+  let params = Array::slice([
     ("", None)
   ], 0, 0)
   let replaced = match arg {
@@ -416,22 +426,27 @@ let rec parse_infix_loop: (Array[Token], Expr, Int, Int, Int, Bool, (Array[Token
   if should_stop {
     (left, next)
   } else {
+    let is_pipe = match tok {
+      TPipeGt => true,
+      _ => false
+    }
     let op = binop_op(tok)
-    if op == "|>" {
+    if is_pipe {
       if has_non_pipe_infix_top(tokens, expr_start, next) {
         throw("cannot mix '|>' with other infix operators without explicit parentheses")
       }
     }
     let (right0, right_next0) = parse_prefix(tokens, next + 1, parse_recur)
     let (right, rn) = parse_infix_loop(tokens, right0, right_next0, prec + 1, next + 1, false, parse_recur)
-    if op == "|>" {
+    if is_pipe {
       if has_non_pipe_infix_top(tokens, next + 1, rn) {
         throw("cannot mix '|>' with other infix operators without explicit parentheses")
       }
     }
-    let mut combined = EBinOp(op, left, right)
-    if op == "|>" {
-      combined = pipe_desugar(left, right)
+    let combined = if is_pipe {
+      pipe_desugar(left, right)
+    } else {
+      EBinOp(op, left, right)
     }
     let next_cmp_locked = if prec == 3 {
       true

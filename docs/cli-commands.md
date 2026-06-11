@@ -2,6 +2,10 @@
 
 This document clarifies the role of each `vibe` CLI command, with special attention to the compile/build variants and other commonly confused command pairs.
 
+Implementation policy: the canonical CLI source lives in `vibe/compiler/`.
+MoonBit `src/cmd/*` entrypoints are legacy bootstrap/fallback wrappers during
+selfhost cutover; new command behavior should not be added there.
+
 ## Quick Reference: Compile & Build Commands
 
 | Command | Audience | Purpose |

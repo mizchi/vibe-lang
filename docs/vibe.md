@@ -796,6 +796,9 @@ Runtime API:
 - Internal PosixMode preprocessing/desugar remains available for preview
   shell-style command-head rewriting in runtime tests.
 CLI:
+- The canonical compiler / checker / CLI implementation lives under `vibe/compiler/`.
+  MoonBit `src/cmd/*` entrypoints are legacy bootstrap/fallback wrappers and should
+  not receive new CLI behavior.
 - `moon run --target native src/cmd/vibe -- run <file>` executes a script (ignores `test {}`).
 - `moon run --target native src/cmd/vibe -- eval ...` was removed from the public CLI.
   Interactive evaluation now lives under compiled `shell` / `shell-stdin`.
@@ -803,7 +806,9 @@ CLI:
 - `moon run --target native src/cmd/vibe -- compile [--wasm | --wasm-js-string] [-o out] <file>` emits IR (default) or wasm bytes.
 - `moon run --target wasm src/cmd/vibe_compile_wasi -- [compile] [--wasm|--wasm-mvp|--wasm-js-string|--wasm-gc|--component|--wit|--wit-component] [-o out] <file>` runs compile pipeline from wasm target as well.
   - `vibe_compile_wasi` only: `--wasm` prefers `wasm-gc`; use `--wasm-mvp` for core wasm backend (broader language coverage).
-  - selfhost compiler boundary: compile logic stays in `vibe/compiler/*`; filesystem / environ / stdio stay in the host wrapper (`src/cmd/vibe_compile_wasi`). See ADR-0028.
+  - selfhost compiler boundary: compile and CLI semantics stay in `vibe/compiler/*`;
+    filesystem / environ / stdio adapters may still exist in the legacy host wrapper
+    during cutover. Do not add new behavior to `src/cmd/vibe_compile_wasi`.
 - Public CLI parser-consuming commands support `--syntax vibe` only.
 - `moon run --target native src/cmd/vibe -- shell` launches the TUI interactive shell (completion + layout, history).
 - `moon run --target native src/cmd/vibe -- shell-stdin [--no-prompt]` reads lines from stdin and evaluates them.

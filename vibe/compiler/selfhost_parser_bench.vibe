@@ -3,10 +3,59 @@
 import ./parser_hotspot_probe.vibe {
   probe_parse_checker_vibe,
   probe_parse_deep_binop_chain,
+  probe_parse_expr_tokens_repeat_count,
   probe_parse_lexer_vibe,
   probe_parse_parser_vibe,
+  probe_parse_stmt_tokens_repeat_count,
+  probe_parse_tokens_count,
+  probe_parse_type_tokens_repeat_count,
   probe_parse_wide_match
 }
+
+import ./syntax / lexer.vibe {
+  lex
+}
+
+import ./syntax / token.vibe {
+  Token
+}
+
+//# Setup
+
+let empty_tokens: Array[Token] = [TEof]
+
+let lexer_vibe_tokens: Array[Array[Token]] = [empty_tokens]
+let checker_vibe_tokens: Array[Array[Token]] = [empty_tokens]
+let parser_vibe_tokens: Array[Array[Token]] = [empty_tokens]
+let stmt_let_if_tokens: Array[Array[Token]] = [empty_tokens]
+let type_fn_app_tokens: Array[Array[Token]] = [empty_tokens]
+let expr_infix_chain_tokens: Array[Array[Token]] = [empty_tokens]
+let expr_call_postfix_tokens: Array[Array[Token]] = [empty_tokens]
+let expr_match_tokens: Array[Array[Token]] = [empty_tokens]
+
+let ensure_file_tokens: (Array[Array[Token]], String) -> Array[Token] with { Error, Fs } = (box, path) -> {
+  let current = box[0]
+  if Array::length(current) == 1 {
+    let tokens = lex(perform Fs::ReadFile(path))
+    box[0] = tokens
+    tokens
+  } else {
+    current
+  }
+}
+
+let ensure_source_tokens: (Array[Array[Token]], String) -> Array[Token] with { Error } = (box, source) -> {
+  let current = box[0]
+  if Array::length(current) == 1 {
+    let tokens = lex(source)
+    box[0] = tokens
+    tokens
+  } else {
+    current
+  }
+}
+
+//# Benches
 
 bench "selfhost/parse_lexer_vibe" {
   let _ = handle {
@@ -32,9 +81,73 @@ bench "selfhost/parse_parser_vibe" {
   }
 }
 
+bench "selfhost/parse_only_lexer_vibe" {
+  let _ = handle {
+    probe_parse_tokens_count(ensure_file_tokens(lexer_vibe_tokens, "vibe/compiler/syntax/lexer.vibe"))
+  } with Error {
+    Throw(_) => 0
+  }
+}
+
+bench "selfhost/parse_only_checker_vibe" {
+  let _ = handle {
+    probe_parse_tokens_count(ensure_file_tokens(checker_vibe_tokens, "vibe/compiler/checker/checker.vibe"))
+  } with Error {
+    Throw(_) => 0
+  }
+}
+
+bench "selfhost/parse_only_parser_vibe" {
+  let _ = handle {
+    probe_parse_tokens_count(ensure_file_tokens(parser_vibe_tokens, "vibe/compiler/syntax/parser.vibe"))
+  } with Error {
+    Throw(_) => 0
+  }
+}
+
 bench "selfhost/parse_deep_binop_chain" {
   let _ = handle {
     probe_parse_deep_binop_chain()
+  } with Error {
+    Throw(_) => 0
+  }
+}
+
+bench "selfhost/parse_stmt_let_if" {
+  let _ = handle {
+    probe_parse_stmt_tokens_repeat_count(ensure_source_tokens(stmt_let_if_tokens, "let x = if 1 < 2 { 3 } else { 4 }\n"), 64)
+  } with Error {
+    Throw(_) => 0
+  }
+}
+
+bench "selfhost/parse_type_fn_app" {
+  let _ = handle {
+    probe_parse_type_tokens_repeat_count(ensure_source_tokens(type_fn_app_tokens, "(Int, String, Array[Int]) -> Option[Int]"), 64)
+  } with Error {
+    Throw(_) => 0
+  }
+}
+
+bench "selfhost/parse_expr_infix_chain" {
+  let _ = handle {
+    probe_parse_expr_tokens_repeat_count(ensure_source_tokens(expr_infix_chain_tokens, "1 + 2 * 3 - 4 / 5 + 6 << 1 == 10"), 64)
+  } with Error {
+    Throw(_) => 0
+  }
+}
+
+bench "selfhost/parse_expr_call_postfix" {
+  let _ = handle {
+    probe_parse_expr_tokens_repeat_count(ensure_source_tokens(expr_call_postfix_tokens, "foo(1, bar(2), arr[0], arr[1:3], obj.field)"), 64)
+  } with Error {
+    Throw(_) => 0
+  }
+}
+
+bench "selfhost/parse_expr_match" {
+  let _ = handle {
+    probe_parse_expr_tokens_repeat_count(ensure_source_tokens(expr_match_tokens, "match 0 { 0 => 100, 1 => 101, 2 => 102, _ => 999 }"), 64)
   } with Error {
     Throw(_) => 0
   }

@@ -562,6 +562,7 @@ fn compile_lite_cmd(
       entry,
       no_dce=opts.no_dce,
       opt_level=opts.opt_level,
+      use_artifact_cache=false,
     ) catch {
       e => return Err("compile-lite: " + e.to_string())
     }
@@ -573,6 +574,7 @@ fn compile_lite_cmd(
       opt_level=opts.opt_level,
       debug_errors=false,
       http_host_imports=false,
+      use_artifact_cache=false,
     ) catch {
       e => return Err("compile-lite: " + e.to_string())
     }

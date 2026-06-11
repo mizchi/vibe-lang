@@ -429,8 +429,27 @@ export let append_import_alias_rewritten_non_import_stmts: (Array[Stmt], Array[S
   append_import_alias_rewritten_non_import_stmts_skipping(merged, stmts, empty_strings())
 }
 
-export let append_import_alias_rewritten_non_import_stmts_skipping: (Array[Stmt], Array[Stmt], Array[String]) -> Unit = (merged, stmts, skipped_locals) -> {
-  let aliases = alias_map_without_names(collect_import_aliases(stmts), skipped_locals)
+export let rec stmts_have_import_deep: (Array[Stmt]) -> Bool = (stmts) -> {
+  let rec stmt_has_import_deep: (Stmt) -> Bool = (stmt) -> {
+    match stmt {
+      SImport(_, _) => true,
+      SModule(_, _, inner_stmts) => stmts_have_import_deep(inner_stmts),
+      _ => false
+    }
+  }
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(stmts) && !found {
+    if stmt_has_import_deep(Array::get(stmts, i)) {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+export let append_non_import_stmts_without_alias_rewrite: (Array[Stmt], Array[Stmt]) -> Unit = (merged, stmts) -> {
   let mut i = 0
   while i < Array::length(stmts) {
     let stmt = Array::get(stmts, i)
@@ -438,7 +457,28 @@ export let append_import_alias_rewritten_non_import_stmts_skipping: (Array[Stmt]
       SImport(_, _) => (),
       SReExport(_, _) => (),
       SAliasDecl(_, _) => (),
-      _ => Array::push(merged, rewrite_import_alias_stmt(stmt, aliases))
+      _ => Array::push(merged, stmt)
+    }
+    i = i + 1
+  }
+}
+
+export let append_import_alias_rewritten_non_import_stmts_skipping: (Array[Stmt], Array[Stmt], Array[String]) -> Unit = (merged, stmts, skipped_locals) -> {
+  let aliases = alias_map_without_names(collect_import_aliases(stmts), skipped_locals)
+  let should_rewrite = Array::length(aliases) > 0
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
+    match stmt {
+      SImport(_, _) => (),
+      SReExport(_, _) => (),
+      SAliasDecl(_, _) => (),
+      SModule(_, _, _) => Array::push(merged, rewrite_import_alias_stmt(stmt, aliases)),
+      _ => if should_rewrite {
+        Array::push(merged, rewrite_import_alias_stmt(stmt, aliases))
+      } else {
+        Array::push(merged, stmt)
+      }
     }
     i = i + 1
   }
@@ -492,6 +532,22 @@ let namespace_private_name: (String, String) -> String = (path, name) -> {
   String::concat(name, String::concat("_dep_", sanitize_namespace_path(path)))
 }
 
+let namespace_private_name_with_suffix: (String, String) -> String = (namespace_suffix, name) -> {
+  String::concat(name, String::concat("_dep_", namespace_suffix))
+}
+
+let namespace_private_name_lazy: (String, String, Array[String]) -> String = (path, name, suffix_box) -> {
+  let current = Array::get(suffix_box, 0)
+  let suffix = if String::length(current) == 0 {
+    let sanitized = sanitize_namespace_path(path)
+    Array::set(suffix_box, 0, sanitized)
+    sanitized
+  } else {
+    current
+  }
+  namespace_private_name_with_suffix(suffix, name)
+}
+
 let collect_exported_value_names: (Array[Stmt]) -> Array[String] = (stmts) -> {
   let names = empty_strings()
   let mut i = 0
@@ -517,17 +573,16 @@ let collect_exported_value_names: (Array[Stmt]) -> Array[String] = (stmts) -> {
   names
 }
 
-let collect_private_value_renames: (String, Array[Stmt]) -> Array[(String, String)] = (path, stmts) -> {
-  let exported = collect_exported_value_names(stmts)
+let collect_private_value_renames: (String, Array[Stmt], Array[String], Array[String]) -> Array[(String, String)] = (path, stmts, namespace_suffix_box, exported) -> {
   let renames = empty_aliases()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SLet(false, _, name, _, _) => if !string_array_contains(exported, name) {
-        Array::push(renames, (name, namespace_private_name(path, name)))
+        Array::push(renames, (name, namespace_private_name_lazy(path, name, namespace_suffix_box)))
       },
       SLetMut(name, _, _) => if !string_array_contains(exported, name) {
-        Array::push(renames, (name, namespace_private_name(path, name)))
+        Array::push(renames, (name, namespace_private_name_lazy(path, name, namespace_suffix_box)))
       },
       _ => ()
     }
@@ -751,23 +806,22 @@ let rec rewrite_private_type_ctor_expr: (Expr, Array[(String, String)], Array[(S
   }
 }
 
-let collect_private_type_renames: (String, Array[Stmt]) -> Array[(String, String)] = (path, stmts) -> {
-  let exported = collect_exported_value_names(stmts)
+let collect_private_type_renames: (String, Array[Stmt], Array[String], Array[String]) -> Array[(String, String)] = (path, stmts, namespace_suffix_box, exported) -> {
   let renames = empty_aliases()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SEnum(false, name, _, _) => if !string_array_contains(exported, name) {
-        Array::push(renames, (name, namespace_private_name(path, name)))
+        Array::push(renames, (name, namespace_private_name_lazy(path, name, namespace_suffix_box)))
       },
       SStruct(false, name, _) => if !string_array_contains(exported, name) {
-        Array::push(renames, (name, namespace_private_name(path, name)))
+        Array::push(renames, (name, namespace_private_name_lazy(path, name, namespace_suffix_box)))
       },
       STypeAlias(false, name, _, _) => if !string_array_contains(exported, name) {
-        Array::push(renames, (name, namespace_private_name(path, name)))
+        Array::push(renames, (name, namespace_private_name_lazy(path, name, namespace_suffix_box)))
       },
       SSuberror(false, name, _) => if !string_array_contains(exported, name) {
-        Array::push(renames, (name, namespace_private_name(path, name)))
+        Array::push(renames, (name, namespace_private_name_lazy(path, name, namespace_suffix_box)))
       },
       _ => ()
     }
@@ -776,8 +830,7 @@ let collect_private_type_renames: (String, Array[Stmt]) -> Array[(String, String
   renames
 }
 
-let collect_private_ctor_renames: (String, Array[Stmt], Array[(String, String)]) -> Array[(String, String)] = (path, stmts, type_renames) -> {
-  let exported = collect_exported_value_names(stmts)
+let collect_private_ctor_renames: (String, Array[Stmt], Array[(String, String)], Array[String], Array[String]) -> Array[(String, String)] = (path, stmts, type_renames, namespace_suffix_box, exported) -> {
   let renames = empty_aliases()
   let mut i = 0
   while i < Array::length(stmts) {
@@ -786,7 +839,7 @@ let collect_private_ctor_renames: (String, Array[Stmt], Array[(String, String)])
         let mut j = 0
         while j < Array::length(ctors) {
           let (ctor_name, _) = Array::get(ctors, j)
-          Array::push(renames, (ctor_name, namespace_private_name(path, ctor_name)))
+          Array::push(renames, (ctor_name, namespace_private_name_lazy(path, ctor_name, namespace_suffix_box)))
           j = j + 1
         }
       },
@@ -794,7 +847,7 @@ let collect_private_ctor_renames: (String, Array[Stmt], Array[(String, String)])
         let mut j = 0
         while j < Array::length(ctors) {
           let (ctor_name, _) = Array::get(ctors, j)
-          Array::push(renames, (ctor_name, namespace_private_name(path, ctor_name)))
+          Array::push(renames, (ctor_name, namespace_private_name_lazy(path, ctor_name, namespace_suffix_box)))
           j = j + 1
         }
       },
@@ -945,7 +998,9 @@ let namespace_private_stmt: (Stmt, Array[(String, String)]) -> Stmt = (stmt, ren
 }
 
 export let namespace_private_value_stmts: (String, Array[Stmt]) -> Array[Stmt] = (path, stmts) -> {
-  let renames = collect_private_value_renames(path, stmts)
+  let namespace_suffix_box = [""]
+  let exported = collect_exported_value_names(stmts)
+  let renames = collect_private_value_renames(path, stmts, namespace_suffix_box, exported)
   let value_renamed = if Array::length(renames) == 0 {
     stmts
   } else {
@@ -953,8 +1008,8 @@ export let namespace_private_value_stmts: (String, Array[Stmt]) -> Array[Stmt] =
       namespace_private_stmt(stmt, renames)
     }
   }
-  let type_renames = collect_private_type_renames(path, value_renamed)
-  let ctor_renames = collect_private_ctor_renames(path, value_renamed, type_renames)
+  let type_renames = collect_private_type_renames(path, value_renamed, namespace_suffix_box, exported)
+  let ctor_renames = collect_private_ctor_renames(path, value_renamed, type_renames, namespace_suffix_box, exported)
   if Array::length(type_renames) == 0 && Array::length(ctor_renames) == 0 {
     value_renamed
   } else {

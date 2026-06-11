@@ -968,68 +968,26 @@ jobs:
       - name: Run selfhost perf KPI
         env:
           VIBE_USE_SESSION_HTTP: '0'
-          # Daemon-mode for selfhost check (#400). Batches all RUNS
-          # check requests through one warm wasm instance — eliminates
-          # the per-invocation ensure_builtin_modules cold-start cost
-          # that dominated the check_ratio under one-shot moonrun_wt.
-          # Local measurement on the KPI cases (release+O3, runs=3):
-          #   one-shot:  TOTAL check ratio 0.131 (per-case median ~150ms self)
-          #   daemon:    TOTAL check ratio 0.005 (per-case median ~5ms self)
-          # Compile path unchanged (still one-shot).
+          VIBE_SELFHOST_PERF_COMPILER_KIND: cli-core
+          VIBE_SELFHOST_PERF_CHECKER_KIND: cli-core
+          VIBE_SELFHOST_PERF_COMPILE_DAEMON: '1'
           VIBE_SELFHOST_PERF_CHECK_DAEMON: '1'
-        # Switched to wasmtime-aot default (#402 Phase 2).
-        # KPI cases, release + wasm-opt -O3, runs=3 median, with
-        # VIBE_USE_SESSION_HTTP=0 (matches this step's env):
+        # Full selfhost KPI: compiler/checker both run through the
+        # vibe-side cli-core artifact. The JSONL daemon keeps the Node
+        # host runner and wasm instance warm across all KPI cases, so
+        # the TOTAL ratios measure selfhost request work instead of
+        # per-invocation process startup.
         #
-        # One-shot (pre-#400-daemon) CI baseline:
-        #          TOTAL compile  TOTAL check  per-case worst check
-        #   local      0.918         2.522        3.10 (effects)
-        #   CI         1.000         2.878        13.3 (effects, total)
+        # Cutover caps:
+        #   TOTAL compile <= 2.5
+        #   TOTAL check   <= 1.33
         #
-        # With daemon mode (#400) the check ratio collapses by ~25×
-        # because the 179ms ensure_builtin_modules cost is paid once
-        # per case instead of RUNS times. We keep the check cap at
-        # 5.0 conservatively for now — letting the daemon-mode CI
-        # numbers settle for a few PRs before tightening (tightening
-        # the cap to e.g. 1.0 belongs in a follow-up once we have
-        # stable observations).
-        #
-        # The per-case `check/total` numbers swing wide because host
-        # check time per case is tiny (~10 ms) without session-http —
-        # variance hits hard in % terms. The harness gates on TOTAL
-        # ratio across cases, which is what these caps target.
-        #
-        # Caps after #405 (daemon mode landed):
-        #   compile 1.5  (local 0.901 → 1.66× headroom)
-        #   check   1.0  (local 0.096 → 10× headroom)
-        #
-        # First tightening pass — we only have one CI data point on
-        # main under daemon mode (#405 merge) so headroom stays
-        # generous to absorb the ±20-30% CI variance we typically
-        # see vs local. The 1.0 check cap still catches a
-        # moonrun-class regression: the moonrun-baseline check_ratio
-        # was 2.88×, so anything that pushes back near that path
-        # trips the gate.
-        #
-        # Follow-up tightening (e.g. compile 1.2, check 0.5) belongs
-        # in a separate PR once we have 5-10 CI runs of daemon-mode
-        # numbers to characterize variance.
-        #
-        # NOTE: an early version of this step used check cap 0.5
-        # based on a local measurement that accidentally included
-        # session-http daemon spawn cost in `host_check_ms` (~1100
-        # ms/case), which made the ratio look ~30× lower than it
-        # actually is under the CI env. Don't repeat that — keep
-        # VIBE_USE_SESSION_HTTP=0 set wherever this bench runs.
-        #
-        # Opt back into moonrun (e.g. no rust toolchain) with
-        # `VIBE_SELFHOST_PERF_RUNTIME=moonrun` (daemon-mode is a
-        # no-op for moonrun): the moonrun path's check_ratio was
-        # ~5-8 and compile_ratio ~2.7, so these tightened caps will
-        # trip on that runtime. Override the caps in env if you
-        # need to run the moonrun path: `MAX_COMPILE_RATIO=10.0`
-        # `MAX_CHECK_RATIO=8.5`.
-        run: VIBE_SELFHOST_PERF_RUNS=3 VIBE_SELFHOST_PERF_MAX_COMPILE_RATIO=1.5 VIBE_SELFHOST_PERF_MAX_CHECK_RATIO=1.0 VIBE_SELFHOST_PERF_CASES_FILE=bench/selfhost_perf/kpi_cases.txt scripts/bench_selfhost_perf.sh
+        # The harness gates TOTAL ratio across KPI cases; per-case
+        # spikes are diagnostics only. Set
+        # VIBE_SELFHOST_PERF_COMPILER_KIND=moonbit and
+        # VIBE_SELFHOST_PERF_CHECKER_KIND=moonbit only when explicitly
+        # validating the legacy MoonBit-built artifacts.
+        run: VIBE_SELFHOST_PERF_RUNS=3 VIBE_SELFHOST_PERF_MAX_COMPILE_RATIO=2.5 VIBE_SELFHOST_PERF_MAX_CHECK_RATIO=1.33 VIBE_SELFHOST_PERF_CASES_FILE=bench/selfhost_perf/kpi_cases.txt scripts/bench_selfhost_perf.sh
 
       # Peak-RSS gate (#402). Reuses this job's release VIBE_BIN + MOONRUN_WT_BIN;
       # AOT-precompiles the stage1 wasm and compares selfhost vs host peak RSS

@@ -12,7 +12,9 @@ fn prelude_value_name_map(stmts : Array[@core.Stmt]) -> Map[String, Bool] {
 
 ///|
 test "prelude partition keeps logic and option helpers core-eligible" {
-  let (core_stmts, builtin_stmts) = prelude_partition_value_stmts(prelude_ast())
+  let (core_stmts, builtin_stmts) = _prelude_partition_value_stmts(
+    prelude_ast(),
+  )
   let core_names = prelude_value_name_map(core_stmts)
   let builtin_names = prelude_value_name_map(builtin_stmts)
   assert_true(core_names.contains("not"))
@@ -30,7 +32,9 @@ test "prelude partition keeps logic and option helpers core-eligible" {
 
 ///|
 test "prelude partition keeps builtin-dependent helpers out of core set" {
-  let (core_stmts, builtin_stmts) = prelude_partition_value_stmts(prelude_ast())
+  let (core_stmts, builtin_stmts) = _prelude_partition_value_stmts(
+    prelude_ast(),
+  )
   let core_names = prelude_value_name_map(core_stmts)
   let builtin_names = prelude_value_name_map(builtin_stmts)
   assert_true(builtin_names.contains("add"))
@@ -52,7 +56,7 @@ test "prelude partition keeps builtin-dependent helpers out of core set" {
 ///|
 test "prelude partition covers every value statement exactly once" {
   let ast = prelude_ast()
-  let (core_stmts, builtin_stmts) = prelude_partition_value_stmts(ast)
+  let (core_stmts, builtin_stmts) = _prelude_partition_value_stmts(ast)
   let all_names : Map[String, Bool] = {}
   let core_names = prelude_value_name_map(core_stmts)
   let builtin_names = prelude_value_name_map(builtin_stmts)
@@ -71,4 +75,17 @@ test "prelude partition covers every value statement exactly once" {
     assert_true(core_names.contains(name) || builtin_names.contains(name))
     assert_false(core_names.contains(name) && builtin_names.contains(name))
   }
+}
+
+///|
+test "prelude reachable values keep transitive deps and respect shadowing" {
+  let roots : Map[String, Bool] = { "Array::sort": true }
+  let shadowed : Map[String, Bool] = { "div": true }
+  let names = prelude_value_name_map(
+    prelude_reachable_value_stmts(roots, shadowed),
+  )
+  assert_true(names.contains("Array::sort"))
+  assert_true(names.contains("lt"))
+  assert_false(names.contains("div"))
+  assert_false(names.contains("Array::map"))
 }

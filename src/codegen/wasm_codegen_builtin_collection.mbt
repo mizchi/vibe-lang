@@ -299,6 +299,7 @@ fn compile_builtin_collection(
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_untag_ptr_i32(buf)
       emit_local_set(buf, arr_ptr)
+      emit_builder_follow_forwarding(ctx, buf, arr_ptr)
       emit_local_get(buf, arr_ptr)
       emit_i32_load(buf, 0) // obj_type
       emit_i32_const_raw(buf, obj_array_view)
@@ -332,6 +333,7 @@ fn compile_builtin_collection(
       compile_expr_i32(ctx, buf, pos_args[0])
       emit_untag_ptr_i32(buf)
       emit_local_set(buf, arr_ptr)
+      emit_builder_follow_forwarding(ctx, buf, arr_ptr)
       compile_expr_i32(ctx, buf, pos_args[1])
       emit_untag_int_i32(buf)
       emit_local_set(buf, idx_local)

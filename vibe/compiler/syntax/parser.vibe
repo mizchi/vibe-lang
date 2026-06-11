@@ -5,7 +5,7 @@ import .. / core {
 }
 
 import ./parser_base.vibe {
-  collect_import_path, empty_fields, empty_import_items, expect_tk, is_tk, parse_effect_stmt, parse_enum_stmt, parse_impl_stmt_dispatch, parse_import_item, parse_struct_field, parse_suberror_stmt, parse_trait_stmt, parse_type, parse_type_alias_stmt, peek, skip_semi, tk_name
+  collect_import_path, empty_fields, empty_import_items, expect_tk, parse_effect_stmt, parse_enum_stmt, parse_impl_stmt_dispatch, parse_import_item, parse_struct_field, parse_suberror_stmt, parse_trait_stmt, parse_type, parse_type_alias_stmt, peek, skip_derive, tk_name
 }
 
 import ./parser_expr.vibe {
@@ -18,7 +18,7 @@ import ./token.vibe {
 
 //# Functions
 
-let mode_block = 20
+let parser_mode_block = 20
 
 let empty_names: () -> Array[String] = () -> {
   Array::slice([
@@ -30,7 +30,7 @@ let parse_test_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (tokens
   match peek(tokens, pos) {
     TString(name) => {
       let br = expect_tk(tokens, pos + 1, "{")
-      let (body, end) = parse_impl(tokens, br, mode_block);
+      let (body, end) = parse_impl(tokens, br, parser_mode_block);
       (STest(name, body), end)
     },
     _ => throw("expected test name string")
@@ -41,7 +41,7 @@ let parse_bench_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (token
   match peek(tokens, pos) {
     TString(name) => {
       let br = expect_tk(tokens, pos + 1, "{")
-      let (body, end) = parse_impl(tokens, br, mode_block);
+      let (body, end) = parse_impl(tokens, br, parser_mode_block);
       (SBench(name, body), end)
     },
     _ => throw("expected bench name string")
@@ -140,14 +140,14 @@ let parse_import_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (toke
   }
 }
 
-let rec parse_struct_fields_rest: (Array[Token], Int, ArrayBuilder[(String, TypeExpr)]) -> (Array[(String, TypeExpr)], Int) with { Error } = (tokens, pos, b) -> {
+let rec parse_toplevel_struct_fields_rest: (Array[Token], Int, ArrayBuilder[(String, TypeExpr)]) -> (Array[(String, TypeExpr)], Int) with { Error } = (tokens, pos, b) -> {
   match peek(tokens, pos) {
     TSemicolon => match peek(tokens, pos + 1) {
       TRBrace => (ArrayBuilder::freeze(b), pos + 2),
       _ => {
         let (field, next) = parse_struct_field(tokens, pos + 1)
         ArrayBuilder::push(b, field)
-        parse_struct_fields_rest(tokens, next, b)
+        parse_toplevel_struct_fields_rest(tokens, next, b)
       }
     },
     TComma => match peek(tokens, pos + 1) {
@@ -155,7 +155,7 @@ let rec parse_struct_fields_rest: (Array[Token], Int, ArrayBuilder[(String, Type
       _ => {
         let (field, next) = parse_struct_field(tokens, pos + 1)
         ArrayBuilder::push(b, field)
-        parse_struct_fields_rest(tokens, next, b)
+        parse_toplevel_struct_fields_rest(tokens, next, b)
       }
     },
     TRBrace => (ArrayBuilder::freeze(b), pos + 1),
@@ -163,19 +163,19 @@ let rec parse_struct_fields_rest: (Array[Token], Int, ArrayBuilder[(String, Type
   }
 }
 
-let parse_struct_fields: (Array[Token], Int) -> (Array[(String, TypeExpr)], Int) with { Error } = (tokens, pos) -> {
+let parse_toplevel_struct_fields: (Array[Token], Int) -> (Array[(String, TypeExpr)], Int) with { Error } = (tokens, pos) -> {
   match peek(tokens, pos) {
     TRBrace => (empty_fields(), pos + 1),
     _ => {
       let (first, next) = parse_struct_field(tokens, pos)
       let b = ArrayBuilder::new()
       ArrayBuilder::push(b, first)
-      parse_struct_fields_rest(tokens, next, b)
+      parse_toplevel_struct_fields_rest(tokens, next, b)
     }
   }
 }
 
-let parse_struct_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } = (tokens, pos, exported) -> {
+let parse_toplevel_struct_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } = (tokens, pos, exported) -> {
   match peek(tokens, pos) {
     TIdent(name) => {
       // Optional type-parameter header `struct Foo[T] { ... }`. Consumed and
@@ -205,8 +205,9 @@ let parse_struct_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } =
         _ => pos + 1
       }
       let br = expect_tk(tokens, after_name, "{")
-      let (fields, end) = parse_struct_fields(tokens, br);
-      (SStruct(exported, name, fields), end)
+      let (fields, end) = parse_toplevel_struct_fields(tokens, br);
+      let final_pos = skip_derive(tokens, end)
+      (SStruct(exported, name, fields), final_pos)
     },
     _ => throw("expected struct name")
   }
@@ -217,7 +218,7 @@ let parse_export_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (toke
     TLet => parse_let_stmt(tokens, pos + 1, true),
     TEnum => parse_enum_stmt(tokens, pos + 1, true),
     TSuberror => parse_suberror_stmt(tokens, pos + 1, true),
-    TStruct => parse_struct_stmt(tokens, pos + 1, true),
+    TStruct => parse_toplevel_struct_stmt(tokens, pos + 1, true),
     TIdent(ident_name) => if ident_name == "effect" {
       parse_effect_stmt(tokens, pos + 1, true)
     } else {
@@ -246,7 +247,10 @@ let parse_export_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (toke
       let (items, end) = parse_import_items(tokens, br);
       (SReExport(path, items), end)
     },
-    _ => throw("unexpected after 'export': \{tk_name(peek(tokens, pos))}")
+    _ => {
+      let actual = tk_name(peek(tokens, pos))
+      throw("unexpected after 'export': \{actual}")
+    }
   }
 }
 
@@ -266,17 +270,18 @@ let parse_extern_let_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (
   (SExternLet(name, ty), end)
 }
 
-export let rec parse_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (tokens, pos) -> {
-  let rec parse_module_body: (Array[Token], Int, ArrayBuilder[Stmt]) -> (Array[Stmt], Int) with { Error } = (tokens, pos, b) -> {
-    match peek(tokens, pos) {
-      TRBrace => (ArrayBuilder::freeze(b), pos + 1),
-      _ => {
-        let (stmt, next) = parse_stmt(tokens, pos)
-        ArrayBuilder::push(b, stmt)
-        parse_module_body(tokens, next, b)
-      }
+let rec parse_module_body_with: ((Array[Token], Int) -> (Stmt, Int) with { Error }, Array[Token], Int, ArrayBuilder[Stmt]) -> (Array[Stmt], Int) with { Error } = (parse_stmt_fn, tokens, pos, b) -> {
+  match peek(tokens, pos) {
+    TRBrace => (ArrayBuilder::freeze(b), pos + 1),
+    _ => {
+      let (stmt, next) = parse_stmt_fn(tokens, pos)
+      ArrayBuilder::push(b, stmt)
+      parse_module_body_with(parse_stmt_fn, tokens, next, b)
     }
   }
+}
+
+export let rec parse_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (tokens, pos) -> {
   let head = peek(tokens, pos)
   match head {
     TLet => parse_let_stmt(tokens, pos + 1, false),
@@ -285,7 +290,7 @@ export let rec parse_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (
         TIdent(name) => {
           let br = expect_tk(tokens, pos + 3, "{")
           {
-            let (stmts, end) = parse_module_body(tokens, br, ArrayBuilder::new());
+            let (stmts, end) = parse_module_body_with(parse_stmt, tokens, br, ArrayBuilder::new());
             (SModule(true, name, stmts), end)
           }
         },
@@ -297,7 +302,7 @@ export let rec parse_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (
       TIdent(name) => {
         let br = expect_tk(tokens, pos + 2, "{")
         {
-          let (stmts, end) = parse_module_body(tokens, br, ArrayBuilder::new());
+          let (stmts, end) = parse_module_body_with(parse_stmt, tokens, br, ArrayBuilder::new());
           (SModule(false, name, stmts), end)
         }
       },
@@ -305,19 +310,17 @@ export let rec parse_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (
     },
     TEnum => parse_enum_stmt(tokens, pos + 1, false),
     TSuberror => parse_suberror_stmt(tokens, pos + 1, false),
-    TStruct => parse_struct_stmt(tokens, pos + 1, false),
+    TStruct => parse_toplevel_struct_stmt(tokens, pos + 1, false),
     TType => parse_type_alias_stmt(tokens, pos + 1, false),
     TTrait => parse_trait_stmt(tokens, pos + 1, false),
     TTest => parse_test_stmt(tokens, pos + 1),
     TBench => parse_bench_stmt(tokens, pos + 1),
     TImport => parse_import_stmt(tokens, pos + 1),
-    TIdent(name) => if name == "effect" {
-      parse_effect_stmt(tokens, pos + 1, false)
-    } else if name == "extern" {
-      parse_extern_let_stmt(tokens, pos + 1)
-    } else if name == "use" {
-      throw("'use' syntax is removed; use 'import <module-ref> { ... }'")
-    } else {
+    TIdent(name) => match name {
+      "effect" => parse_effect_stmt(tokens, pos + 1, false),
+      "extern" => parse_extern_let_stmt(tokens, pos + 1),
+      "use" => throw("'use' syntax is removed; use 'import <module-ref> { ... }'"),
+      _ => {
       let (e, next) = parse_impl(tokens, pos, 0)
       match peek(tokens, next) {
         TEq => match e {
@@ -357,6 +360,7 @@ export let rec parse_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (
         },
         _ => (SExpr(e), next)
       }
+      }
     },
     _ => {
       let (e, next) = parse_impl(tokens, pos, 0);
@@ -368,18 +372,26 @@ export let rec parse_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (
 export let parse_program: (Array[Token]) -> Array[Stmt] with { Error } = (tokens) -> {
   let b = ArrayBuilder::new()
   let mut pos = 0
-  while !is_tk(peek(tokens, pos), "eof") {
-    pos = skip_semi(tokens, pos)
-    if is_tk(peek(tokens, pos), "eof") {
-      break
+  let mut done = false
+  while !done {
+    match peek(tokens, pos) {
+      TEof => {
+        done = true
+      },
+      TSemicolon => {
+        pos = pos + 1
+      },
+      TImpl => {
+        let (stmt, next) = parse_impl_stmt_dispatch(tokens, pos + 1)
+        ArrayBuilder::push(b, stmt)
+        pos = next
+      },
+      _ => {
+        let (stmt, next) = parse_stmt(tokens, pos)
+        ArrayBuilder::push(b, stmt)
+        pos = next
+      }
     }
-    let (stmt, next) = if is_tk(peek(tokens, pos), "impl") {
-      parse_impl_stmt_dispatch(tokens, pos + 1)
-    } else {
-      parse_stmt(tokens, pos)
-    }
-    ArrayBuilder::push(b, stmt)
-    pos = next
   }
   ArrayBuilder::freeze(b)
 }

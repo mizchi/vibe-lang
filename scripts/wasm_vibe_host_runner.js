@@ -4,6 +4,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const cp = require("node:child_process");
+const readline = require("node:readline");
 
 const TAG_MASK = 3n;
 const TAG_INT = 0n;
@@ -13,10 +14,12 @@ const OBJ_STRING = 1;
 const OBJ_ARRAY = 5;
 const OBJ_BYTES = 13;
 const OBJ_BYTES_VIEW = 14;
+const HOST_IMPORT_ABI = process.env.VIBE_SELFHOST_IMPORT_ABI || "tagged";
+const PROFILE_START_NS = process.hrtime.bigint();
 
 function usage() {
   console.error(
-    "usage: node scripts/wasm_vibe_host_runner.js [--invoke <name>] [--bench-count <n> --bench-warmup <n> --bench-setup <name>] <module.wasm> [argv...]",
+    "usage: node scripts/wasm_vibe_host_runner.js [--daemon] [--invoke <name>] [--bench-count <n> --bench-warmup <n> --bench-setup <name>] <module.wasm> [argv...]",
   );
 }
 
@@ -27,8 +30,13 @@ function parseArgs(argv) {
   let benchCount = null;
   let benchWarmup = 0;
   let benchSetup = null;
+  let daemon = false;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
+    if (arg === "--daemon") {
+      daemon = true;
+      continue;
+    }
     if (arg === "--invoke") {
       if (i + 1 >= argv.length) {
         throw new Error("--invoke requires function name");
@@ -67,12 +75,12 @@ function parseArgs(argv) {
       i += 1;
       continue;
     }
-    if (arg.startsWith("-")) {
-      throw new Error(`unknown option: ${arg}`);
-    }
     if (wasmPath !== null) {
       passthroughArgs.push(arg);
       continue;
+    }
+    if (arg.startsWith("-")) {
+      throw new Error(`unknown option: ${arg}`);
     }
     wasmPath = arg;
   }
@@ -82,7 +90,7 @@ function parseArgs(argv) {
   if (invokes.length === 0) {
     invokes.push("_start");
   }
-  return { invokes, wasmPath, passthroughArgs, benchCount, benchWarmup, benchSetup };
+  return { daemon, invokes, wasmPath, passthroughArgs, benchCount, benchWarmup, benchSetup };
 }
 
 function readU32LE(mem, pos) {
@@ -124,9 +132,23 @@ function decodeUtf8Range(instance, ptr, len) {
   return new TextDecoder().decode(mem.subarray(ptr, ptr + len));
 }
 
+function ensureMemoryCapacity(instance, end) {
+  if (!(instance.exports.memory instanceof WebAssembly.Memory)) {
+    throw new Error("missing exported memory");
+  }
+  const memory = instance.exports.memory;
+  if (end <= memory.buffer.byteLength) {
+    return;
+  }
+  const pagesNeeded = Math.ceil((end - memory.buffer.byteLength) / 65536);
+  memory.grow(pagesNeeded);
+}
+
 function allocPreview2Buffer(instance, size, align = 4) {
   if (typeof instance.exports.cabi_realloc === "function") {
-    return instance.exports.cabi_realloc(0, 0, align, size) >>> 0;
+    const ptr = instance.exports.cabi_realloc(0, 0, align, size) >>> 0;
+    ensureMemoryCapacity(instance, ptr + size);
+    return ptr;
   }
   const heapGlobal = instance.exports.__heap_ptr;
   if (!heapGlobal) {
@@ -220,6 +242,23 @@ function decodeSelfhostPackedString(instance, packed) {
   return new TextDecoder().decode(mem.subarray(start, end));
 }
 
+function decodeSelfhostPackedBytes(instance, packed) {
+  if (typeof packed !== "bigint") {
+    throw new Error(`expected selfhost packed bytes bigint, got ${typeof packed}`);
+  }
+  if (!(instance.exports.memory instanceof WebAssembly.Memory)) {
+    throw new Error("missing exported memory for selfhost bytes decode");
+  }
+  const mem = new Uint8Array(instance.exports.memory.buffer);
+  const ptr = Number(packed >> 32n);
+  const len = Number(packed & 0xffffffffn);
+  const end = ptr + len;
+  if (ptr < 0 || len < 0 || end < ptr || end > mem.length) {
+    throw new Error(`selfhost bytes range out of bounds: ${ptr}..${end}`);
+  }
+  return new Uint8Array(instance.exports.memory.buffer.slice(ptr, end));
+}
+
 function tryDecodeExceptionString(instance, payload) {
   if (!instance || typeof payload !== "bigint") {
     return null;
@@ -258,6 +297,9 @@ function decodeRawStringPtr(instance, ptr) {
 
 function decodeStringArg(instance, value) {
   if (typeof value === "bigint") {
+    if (hostUsesRawAbi()) {
+      return decodeSelfhostPackedString(instance, value);
+    }
     return decodeTaggedString(instance, value);
   }
   if (typeof value === "number") {
@@ -341,6 +383,36 @@ function decodeTaggedInt(value) {
   return Number(value >> 2n);
 }
 
+function decodeTaggedOrRawInt(value) {
+  if (typeof value !== "bigint") {
+    throw new Error(`expected int bigint, got ${typeof value}`);
+  }
+  if ((value & TAG_MASK) === TAG_INT) {
+    return Number(value >> 2n);
+  }
+  return Number(value);
+}
+
+function hostUsesRawAbi() {
+  return HOST_IMPORT_ABI === "raw";
+}
+
+function encodeHostBool(value) {
+  return hostUsesRawAbi() ? (value ? 1n : 0n) : encodeTaggedBool(value);
+}
+
+function encodeHostInt(value) {
+  return hostUsesRawAbi() ? BigInt(value) : encodeTaggedInt(value);
+}
+
+function decodeHostInt(value) {
+  return hostUsesRawAbi() ? Number(value) : decodeTaggedOrRawInt(value);
+}
+
+function encodeHostString(instance, value) {
+  return hostUsesRawAbi() ? encodeSelfhostString(instance, value) : encodeTaggedString(instance, value);
+}
+
 // Decode a tagged Bytes value from WASM memory into a Uint8Array.
 // Supported layouts:
 // - legacy Array[Int]-backed bytes: [type=5][length][tagged elems...]
@@ -400,6 +472,40 @@ function decodeTaggedBytes(instance, tagged) {
     console.error(`[debug bytes] expected WASM magic: 0, 97, 115, 109, 1, 0, 0, 0`);
   }
   return result;
+}
+
+function decodeHostBytes(instance, value) {
+  if (!hostUsesRawAbi()) {
+    return decodeTaggedBytes(instance, value);
+  }
+  if (typeof value !== "bigint") {
+    throw new Error(`expected raw bytes bigint, got ${typeof value}`);
+  }
+  const mem = new Uint8Array(instance.exports.memory.buffer);
+  const rawPtr = Number(value);
+  if (rawPtr >= 0 && rawPtr + 12 <= mem.length) {
+    const len = readU32LE(mem, rawPtr + 4);
+    const dataPtr = readU32LE(mem, rawPtr + 8);
+    if (dataPtr >= 0 && dataPtr + len <= mem.length) {
+      if (process.env.VIBE_DEBUG_BYTES === "1") {
+        console.error(
+          `[debug bytes] host abi=${HOST_IMPORT_ABI} raw_ptr=${rawPtr} len=${len} data_ptr=${dataPtr}`,
+        );
+        console.error(
+          `[debug bytes] data[0..16]: ${Array.from(mem.slice(dataPtr, dataPtr + Math.min(len, 16))).map((b) => b.toString(16).padStart(2, "0")).join(" ")}`,
+        );
+      }
+      return new Uint8Array(instance.exports.memory.buffer.slice(dataPtr, dataPtr + len));
+    }
+  }
+  if (process.env.VIBE_DEBUG_BYTES === "1") {
+    const raw = typeof value === "bigint" ? value : BigInt(value);
+    const ptr = Number(raw);
+    const lo = ptr >= 0 && ptr < mem.length ? ptr : 0;
+    console.error(`[debug bytes] host abi=${HOST_IMPORT_ABI} value=${raw} ptr=${ptr}`);
+    console.error(`[debug bytes] mem[value..value+32]: ${Array.from(mem.slice(lo, lo + 32)).map((b) => b.toString(16).padStart(2, "0")).join(" ")}`);
+  }
+  return decodeSelfhostPackedBytes(instance, value);
 }
 
 function taggedIntToText(tagged) {
@@ -862,8 +968,8 @@ function findClosureEnv(instance, heapStart, tableSlot) {
   }
   const heapEnd = heapGlobal.value;
   const mem = new Uint8Array(instance.exports.memory.buffer);
-  for (let ptr = heapStart; ptr < heapEnd; ptr += 8) {
-    if (readU32LE(mem, ptr) === 7 && readU32LE(mem, ptr + 4) === tableSlot) {
+  for (let ptr = heapStart; ptr + 12 <= heapEnd; ptr += 4) {
+    if (readU32LE(mem, ptr) === 7 && readU32LE(mem, ptr + 8) === tableSlot) {
       return ptr;
     }
   }
@@ -872,15 +978,91 @@ function findClosureEnv(instance, heapStart, tableSlot) {
 
 let instanceRefGlobal = null;
 
+function extractProfileRequest(args) {
+  const req = {
+    phase: null,
+    profileTsv: null,
+    callstackTsv: null,
+  };
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === "compile-lite") {
+      req.phase = "compile";
+    } else if (arg === "check" || arg === "--check") {
+      req.phase = "check";
+    } else if (arg === "--profile-tsv" && i + 1 < args.length) {
+      req.profileTsv = args[i + 1];
+      i += 1;
+    } else if (arg === "--profile-callstack" && i + 1 < args.length) {
+      req.callstackTsv = args[i + 1];
+      i += 1;
+    }
+  }
+  return req;
+}
+
+function writeTextFileEnsuringDir(filePath, content) {
+  if (!filePath) return;
+  const resolved = path.resolve(process.cwd(), filePath);
+  fs.mkdirSync(path.dirname(resolved), { recursive: true });
+  fs.writeFileSync(resolved, content);
+}
+
+function profileNowUs() {
+  return Number((process.hrtime.bigint() - PROFILE_START_NS) / 1000n);
+}
+
+function profileFileHasNonzeroStage(filePath, stage) {
+  if (!filePath) return false;
+  const resolved = path.resolve(process.cwd(), filePath);
+  if (!fs.existsSync(resolved)) return false;
+  const content = fs.readFileSync(resolved, "utf8");
+  const prefix = `${stage}\t`;
+  for (const line of content.split(/\r?\n/)) {
+    if (!line.startsWith(prefix)) continue;
+    const cols = line.split("\t");
+    if (cols.length >= 3 && Number(cols[2]) > 0) return true;
+  }
+  return false;
+}
+
+function profileRowsForElapsed(phase, elapsedUs) {
+  const us = Math.max(1, Math.round(elapsedUs));
+  const ms = Math.floor(us / 1000);
+  if (phase === "check") {
+    return `stage\telapsed_ms\telapsed_us\nload\t0\t0\ntype\t${ms}\t${us}\ntotal\t${ms}\t${us}\n`;
+  }
+  return `stage\telapsed_ms\telapsed_us\nload\t0\t0\ntype\t0\t0\nparse\t0\t0\ncompile\t${ms}\t${us}\nwrite\t0\t0\ntotal\t${ms}\t${us}\n`;
+}
+
+function callstackRowsForElapsed(phase, elapsedUs) {
+  const us = Math.max(1, Math.round(elapsedUs));
+  const ms = Math.floor(us / 1000);
+  const stage = phase === "check" ? "check" : "compile";
+  return `stage\telapsed_ms\telapsed_us\n${stage}\t${ms}\t${us}\n`;
+}
+
+function writeProfileRequest(req, elapsedUs) {
+  if (!req.phase) return;
+  if (req.profileTsv && !profileFileHasNonzeroStage(req.profileTsv, "total")) {
+    writeTextFileEnsuringDir(req.profileTsv, profileRowsForElapsed(req.phase, elapsedUs));
+  }
+  if (req.callstackTsv && !profileFileHasNonzeroStage(req.callstackTsv, req.phase === "check" ? "check" : "compile")) {
+    writeTextFileEnsuringDir(req.callstackTsv, callstackRowsForElapsed(req.phase, elapsedUs));
+  }
+}
+
 async function main() {
   const {
+    daemon,
     invokes,
     wasmPath,
-    passthroughArgs,
+    passthroughArgs: initialPassthroughArgs,
     benchCount,
     benchWarmup,
     benchSetup,
   } = parseArgs(process.argv.slice(2));
+  let passthroughArgs = initialPassthroughArgs.slice();
   if (passthroughArgs.length > 0) {
     if (process.env.VIBE_INPUT === undefined && passthroughArgs.length >= 1) {
       process.env.VIBE_INPUT = passthroughArgs[0];
@@ -918,7 +1100,7 @@ async function main() {
   }
 
   function encodeJsonHostValue(value) {
-    return encodeTaggedString(instanceRef, JSON.stringify(value));
+    return encodeHostString(instanceRef, JSON.stringify(value));
   }
 
   const vibeModule = new Proxy(
@@ -932,19 +1114,19 @@ async function main() {
         const cmd = decodeStringArg(instanceRef, cmdTagged);
         try {
           const output = cp.execSync(cmd, { encoding: "utf-8", shell: "/bin/bash", stdio: ["pipe", "pipe", "pipe"] });
-          return encodeTaggedString(instanceRef, output.trimEnd());
+          return encodeHostString(instanceRef, output.trimEnd());
         } catch (e) {
           const stderr = e.stderr ? e.stderr.toString().trim() : e.message;
-          return encodeTaggedString(instanceRef, "error: " + stderr);
+          return encodeHostString(instanceRef, "error: " + stderr);
         }
       },
       path(pathValue) {
         const input = decodeStringArg(instanceRef, pathValue);
-        return encodeTaggedString(instanceRef, input);
+        return encodeHostString(instanceRef, input);
       },
       ["resolve-path"](pathTagged) {
         const input = decodeStringArg(instanceRef, pathTagged);
-        return encodeTaggedString(instanceRef, input);
+        return encodeHostString(instanceRef, input);
       },
       resolve_path(pathTagged) {
         return this["resolve-path"](pathTagged);
@@ -953,19 +1135,22 @@ async function main() {
         const filePath = decodeStringArg(instanceRef, pathTagged);
         try {
           const content = fs.readFileSync(filePath, "utf8");
-          return encodeTaggedString(instanceRef, content);
+          if (process.env.VIBE_DEBUG_FS === "1") {
+            console.error(`[fs-read] ${filePath} bytes=${Buffer.byteLength(content, "utf8")}`);
+          }
+          return encodeHostString(instanceRef, content);
         } catch (e) {
           throw new Error(`fs_read_file failed for '${filePath}': ${e.message}`);
         }
       },
       fs_exists(pathTagged) {
         const filePath = decodeStringArg(instanceRef, pathTagged);
-        return encodeTaggedBool(fs.existsSync(filePath));
+        return encodeHostBool(fs.existsSync(filePath));
       },
       fs_stat_token(pathTagged) {
         const filePath = decodeStringArg(instanceRef, pathTagged);
         const { lower, upper } = buildFsMetadataHashParts(filePath);
-        return encodeTaggedInt(BigInt.asUintN(61, lower ^ upper));
+        return encodeHostInt(BigInt.asUintN(61, lower ^ upper));
       },
       fs_write_file(pathTagged, contentTagged) {
         const filePath = decodeStringArg(instanceRef, pathTagged);
@@ -979,7 +1164,7 @@ async function main() {
       },
       fs_write_bytes(pathTagged, bytesTagged) {
         const filePath = decodeStringArg(instanceRef, pathTagged);
-        const bytes = decodeTaggedBytes(instanceRef, bytesTagged);
+        const bytes = decodeHostBytes(instanceRef, bytesTagged);
         const dir = path.dirname(filePath);
         if (dir && !fs.existsSync(dir)) {
           fs.mkdirSync(dir, { recursive: true });
@@ -997,7 +1182,7 @@ async function main() {
         }
       },
       fs_getcwd() {
-        return encodeTaggedString(instanceRef, process.cwd());
+        return encodeHostString(instanceRef, process.cwd());
       },
       fs_chdir(pathTagged) {
         const dirPath = decodeStringArg(instanceRef, pathTagged);
@@ -1011,17 +1196,17 @@ async function main() {
       fs_is_dir(pathTagged) {
         const filePath = decodeStringArg(instanceRef, pathTagged);
         try {
-          return encodeTaggedBool(fs.statSync(filePath).isDirectory());
+          return encodeHostBool(fs.statSync(filePath).isDirectory());
         } catch (e) {
-          return encodeTaggedBool(false);
+          return encodeHostBool(false);
         }
       },
       fs_is_file(pathTagged) {
         const filePath = decodeStringArg(instanceRef, pathTagged);
         try {
-          return encodeTaggedBool(fs.statSync(filePath).isFile());
+          return encodeHostBool(fs.statSync(filePath).isFile());
         } catch (e) {
-          return encodeTaggedBool(false);
+          return encodeHostBool(false);
         }
       },
       fs_mkdir(pathTagged) {
@@ -1084,16 +1269,16 @@ async function main() {
       fs_open_write(pathTagged) {
         const filePath = decodeStringArg(instanceRef, pathTagged);
         const fd = fs.openSync(filePath, "w");
-        return encodeTaggedInt(fd);
+        return encodeHostInt(fd);
       },
       fs_write_chunk(fdTagged, strTagged) {
-        const fd = decodeTaggedInt(fdTagged);
+        const fd = decodeHostInt(fdTagged);
         const str = decodeStringArg(instanceRef, strTagged);
         fs.writeSync(fd, str);
         return 0n;
       },
       fs_close_write(fdTagged) {
-        const fd = decodeTaggedInt(fdTagged);
+        const fd = decodeHostInt(fdTagged);
         fs.closeSync(fd);
         return 0n;
       },
@@ -1105,9 +1290,9 @@ async function main() {
         // inside the vibe interpreter/compiled code.
         try {
           const parsed = JSON.parse(str);
-          return encodeTaggedString(instanceRef, JSON.stringify(parsed));
+          return encodeHostString(instanceRef, JSON.stringify(parsed));
         } catch (e) {
-          return encodeTaggedString(instanceRef, "null");
+          return encodeHostString(instanceRef, "null");
         }
       },
       json_stringify(valueTagged) {
@@ -1131,21 +1316,30 @@ async function main() {
         if (typeof value !== "string") {
           throw new Error("Json::string: not a string");
         }
-        return encodeTaggedString(instanceRef, value);
+        return encodeHostString(instanceRef, value);
       },
       ["env-get"](nameTagged) {
         const name = decodeStringArg(instanceRef, nameTagged);
         const val = process.env[name] || "";
-        return encodeTaggedString(instanceRef, val);
+        if (process.env.VIBE_DEBUG_ENV === "1") {
+          console.error(`[env-get] ${name}=${val}`);
+        }
+        return encodeHostString(instanceRef, val);
       },
       ["args-len"]() {
-        return encodeTaggedInt(passthroughArgs.length);
+        return encodeHostInt(passthroughArgs.length);
       },
       ["args-get"](indexTagged) {
-        const index = decodeTaggedInt(indexTagged);
+        const index = decodeHostInt(indexTagged);
         const val =
           index >= 0 && index < passthroughArgs.length ? passthroughArgs[index] : "";
-        return encodeTaggedString(instanceRef, val);
+        if (process.env.VIBE_DEBUG_ENV === "1") {
+          console.error(`[args-get] ${index}=${val}`);
+        }
+        return encodeHostString(instanceRef, val);
+      },
+      ["profile-now-us"]() {
+        return encodeHostInt(profileNowUs());
       },
       env_get(nameTagged) {
         return this["env-get"](nameTagged);
@@ -1155,6 +1349,9 @@ async function main() {
       },
       args_get(indexTagged) {
         return this["args-get"](indexTagged);
+      },
+      profile_now_us() {
+        return this["profile-now-us"]();
       },
     },
     {
@@ -1198,22 +1395,31 @@ async function main() {
   // Selfhost-compiled WASM uses "Env" and "Fs" module names for effect imports
   const envModule = {
     ArgsLen() {
-      return encodeTaggedInt(passthroughArgs.length);
+      return encodeHostInt(passthroughArgs.length);
     },
     ArgsGet(indexTagged) {
-      const index = decodeTaggedInt(indexTagged);
+      const index = decodeHostInt(indexTagged);
       const val =
         index >= 0 && index < passthroughArgs.length ? passthroughArgs[index] : "";
-      return encodeTaggedString(instanceRef, val);
+      if (process.env.VIBE_DEBUG_ENV === "1") {
+        console.error(`[ArgsGet] ${index}=${val}`);
+      }
+      return encodeHostString(instanceRef, val);
     },
     Get(nameTagged) {
       const name = decodeStringArg(instanceRef, nameTagged);
       const val = process.env[name] ?? "";
-      return encodeTaggedString(instanceRef, val);
+      if (process.env.VIBE_DEBUG_ENV === "1") {
+        console.error(`[Get] ${name}=${val}`);
+      }
+      return encodeHostString(instanceRef, val);
     },
   };
   const fsModule = {
     ReadFile(pathTagged) {
+      if (process.env.VIBE_DEBUG_FS === "1") {
+        console.error("[fs-module] ReadFile");
+      }
       return vibeModule.fs_read_file(pathTagged);
     },
     WriteFile(pathTagged, contentTagged) {
@@ -1275,11 +1481,11 @@ async function main() {
   const stdinModule = {
     ReadStream(_maxBytesTagged) {
       // tests run without a controlling TTY; return empty string.
-      return encodeTaggedString(instanceRef, "");
+      return encodeHostString(instanceRef, "");
     },
     ReadChar() {
       // -1 indicates EOF.
-      return encodeTaggedInt(-1);
+      return encodeHostInt(-1);
     },
   };
   const stdoutModule = {
@@ -1289,9 +1495,14 @@ async function main() {
       return 0n;
     },
     WriteChar(codeTagged) {
-      const code = decodeTaggedInt(codeTagged);
+      const code = decodeHostInt(codeTagged);
       process.stdout.write(String.fromCharCode(code));
       return 0n;
+    },
+  };
+  const profilerModule = {
+    NowUs(_envTagged) {
+      return encodeHostInt(profileNowUs());
     },
   };
 
@@ -1300,6 +1511,7 @@ async function main() {
       vibe: vibeModule,
       Env: envModule,
       Fs: fsModule,
+      Profiler: profilerModule,
       Stdin: stdinModule,
       Stdout: stdoutModule,
       wasi_snapshot_preview1: wasiModule,
@@ -1360,10 +1572,25 @@ async function main() {
       if (resolvedEnvCache.has(invoke)) {
         resolvedEnv = resolvedEnvCache.get(invoke);
       } else {
+        const envExport = instance.exports[`__export_env_${invoke}`];
         const funcIdx = exportFuncIndices[invoke];
         const tableSlot = funcIdx !== undefined ? funcToTableSlot[funcIdx] : undefined;
-        resolvedEnv =
-          tableSlot !== undefined ? findClosureEnv(instance, initHeapBeforeStart, tableSlot) : 0;
+        if (envExport instanceof WebAssembly.Global) {
+          const value = envExport.value;
+          resolvedEnv = typeof value === "bigint" ? Number(value) : value;
+        } else {
+          resolvedEnv =
+            tableSlot !== undefined ? findClosureEnv(instance, initHeapBeforeStart, tableSlot) : 0;
+        }
+        if (process.env.VIBE_DEBUG_INVOKE_ENV === "1") {
+          console.error(
+            `[invoke-env] ${invoke} funcIdx=${funcIdx ?? "<missing>"} tableSlot=${tableSlot ?? "<missing>"} heapStart=${initHeapBeforeStart} heapEnd=${
+              instance.exports.__heap_ptr instanceof WebAssembly.Global
+                ? instance.exports.__heap_ptr.value
+                : "<missing>"
+            } envExport=${envExport instanceof WebAssembly.Global ? envExport.value : "<missing>"} resolvedEnv=${resolvedEnv}`,
+          );
+        }
         resolvedEnvCache.set(invoke, resolvedEnv);
       }
     }
@@ -1425,6 +1652,163 @@ async function main() {
       throw err;
     }
   };
+  const resultToExitCode = (result) => {
+    if (typeof result === "bigint") {
+      return decodeTaggedOrRawInt(result);
+    }
+    if (typeof result === "number") {
+      return result | 0;
+    }
+    return 0;
+  };
+
+  const emitResult = (invoke, result, isSelfhost) => {
+    if (typeof result === "bigint") {
+      // Check if the result is a tagged object (could be Bytes from selfbuild)
+      if (
+        (result & TAG_MASK) === TAG_OBJ &&
+        (invoke === "selfbuild_compile_stage2" ||
+          invoke === "selfbuild_compile_cli_adapter")
+      ) {
+        // Decode result as Bytes and write to expected output path
+        const bytes = decodeHostBytes(instanceRef, result);
+        const outPath =
+          invoke === "selfbuild_compile_cli_adapter"
+            ? "_build/bench/selfhost_cli_adapter/selfhost_cli_stage1.wasm"
+            : "_build/bench/selfhost_wasi_selfbuild/index_stage2.wasm";
+        const outDir = path.dirname(outPath);
+        if (!fs.existsSync(outDir)) {
+          fs.mkdirSync(outDir, { recursive: true });
+        }
+        fs.writeFileSync(outPath, bytes);
+        console.log(`wrote ${outPath} (${bytes.length} bytes)`);
+      } else if (isSelfhost) {
+        // Selfhost-compiled modules return untagged i64 values — print as-is.
+        console.log(result.toString());
+      } else {
+        // For string/array/record results, output display text on first line
+        // then raw tagged i64 on second line. CLI checks for VIBE_DISPLAY: prefix.
+        const tag = Number(result & 3n);
+        if (tag === 1) {
+          // Object pointer — try to render display text
+          const ptr = Number(result & ~3n);
+          const mem = instance.exports.memory;
+          if (mem && ptr > 0 && ptr + 8 <= mem.buffer.byteLength) {
+            const view = new DataView(mem.buffer);
+            const ty = view.getUint32(ptr, true);
+            if (ty === 1) {
+              // String object
+              const len = view.getUint32(ptr + 4, true);
+              if (ptr + 8 + len <= mem.buffer.byteLength) {
+                const bytes = new Uint8Array(mem.buffer, ptr + 8, len);
+                const text = new TextDecoder().decode(bytes);
+                console.log("VIBE_DISPLAY:" + JSON.stringify(text));
+              }
+            } else if (ty === 5) {
+              // Array — show element count
+              const len = view.getUint32(ptr + 4, true);
+              console.log("VIBE_DISPLAY:[Array(" + len + ")]");
+            }
+          }
+        }
+        // Always output raw tagged i64 as last line
+        console.log(result.toString());
+      }
+    } else if (result !== undefined) {
+      console.log(String(result));
+    }
+  };
+
+  const runInvokes = (args) => {
+    passthroughArgs = args.slice();
+    const profileRequest = extractProfileRequest(passthroughArgs);
+    const profileStartNs = process.hrtime.bigint();
+    let result;
+    let isSelfhost = false;
+    for (const invoke of invokes) {
+      ({ result, isSelfhost } = invokeExport(invoke));
+    }
+    const elapsedUs = Number(process.hrtime.bigint() - profileStartNs) / 1000;
+    writeProfileRequest(profileRequest, elapsedUs);
+    return { result, isSelfhost, elapsedUs };
+  };
+
+  const decodeExceptionMessage = (err) => {
+    if (!(err instanceof WebAssembly.Exception) || !instanceRefGlobal) {
+      return err?.message || String(err);
+    }
+    for (const exp of Object.values(instanceRefGlobal.exports)) {
+      if (exp instanceof WebAssembly.Tag) {
+        try {
+          const payload = err.getArg(exp, 0);
+          const msg = tryDecodeExceptionString(instanceRefGlobal, payload);
+          if (msg !== null) {
+            return msg;
+          }
+        } catch (_) {}
+      }
+    }
+    return err?.message || String(err);
+  };
+
+  const runDaemon = async () => {
+    if (benchCount !== null) {
+      throw new Error("--daemon cannot be combined with --bench-count");
+    }
+    if (invokes.length !== 1) {
+      throw new Error("--daemon requires exactly one --invoke target");
+    }
+    const rl = readline.createInterface({
+      input: process.stdin,
+      crlfDelay: Infinity,
+    });
+    const originalStdoutWrite = process.stdout.write;
+    const writeResponse = originalStdoutWrite.bind(process.stdout);
+    for await (const line of rl) {
+      const row = line.trim();
+      if (row.length === 0) {
+        continue;
+      }
+      let capturedStdout = "";
+      let response;
+      process.stdout.write = (chunk, encoding, callback) => {
+        if (typeof encoding === "function") {
+          callback = encoding;
+        }
+        capturedStdout += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+        if (typeof callback === "function") {
+          callback();
+        }
+        return true;
+      };
+      try {
+        const req = JSON.parse(row);
+        const args = Array.isArray(req.args) ? req.args.map(String) : [];
+        const { result, elapsedUs } = runInvokes(args);
+        response = {
+          exit_code: resultToExitCode(result),
+          elapsed_us: Math.max(1, Math.round(elapsedUs)),
+          stdout: capturedStdout,
+        };
+      } catch (err) {
+        response = {
+          exit_code: 1,
+          elapsed_us: 1,
+          stdout: capturedStdout,
+          error: decodeExceptionMessage(err),
+        };
+      } finally {
+        process.stdout.write = originalStdoutWrite;
+      }
+      writeResponse(`${JSON.stringify(response)}\n`);
+    }
+  };
+
+  if (daemon) {
+    await runDaemon();
+    return;
+  }
+
   if (benchCount !== null) {
     if (invokes.length !== 1) {
       throw new Error("bench mode requires exactly one --invoke target");
@@ -1443,66 +1827,9 @@ async function main() {
     console.log(String(elapsedUs));
     return;
   }
-  let result;
-  let isSelfhost = false;
-  for (const invoke of invokes) {
-    ({ result, isSelfhost } = invokeExport(invoke));
-  }
+  const { result, isSelfhost } = runInvokes(passthroughArgs);
   const invoke = invokes[invokes.length - 1];
-  if (typeof result === "bigint") {
-    // Check if the result is a tagged object (could be Bytes from selfbuild)
-    if (
-      (result & TAG_MASK) === TAG_OBJ &&
-      (invoke === "selfbuild_compile_stage2" ||
-        invoke === "selfbuild_compile_cli_adapter")
-    ) {
-      // Decode result as Bytes and write to expected output path
-      const bytes = decodeTaggedBytes(instanceRef, result);
-      const outPath =
-        invoke === "selfbuild_compile_cli_adapter"
-          ? "_build/bench/selfhost_cli_adapter/selfhost_cli_stage1.wasm"
-          : "_build/bench/selfhost_wasi_selfbuild/index_stage2.wasm";
-      const outDir = path.dirname(outPath);
-      if (!fs.existsSync(outDir)) {
-        fs.mkdirSync(outDir, { recursive: true });
-      }
-      fs.writeFileSync(outPath, bytes);
-      console.log(`wrote ${outPath} (${bytes.length} bytes)`);
-    } else if (isSelfhost) {
-      // Selfhost-compiled modules return untagged i64 values — print as-is.
-      console.log(result.toString());
-    } else {
-      // For string/array/record results, output display text on first line
-      // then raw tagged i64 on second line. CLI checks for VIBE_DISPLAY: prefix.
-      const tag = Number(result & 3n);
-      if (tag === 1) {
-        // Object pointer — try to render display text
-        const ptr = Number(result & ~3n);
-        const mem = instance.exports.memory;
-        if (mem && ptr > 0 && ptr + 8 <= mem.buffer.byteLength) {
-          const view = new DataView(mem.buffer);
-          const ty = view.getUint32(ptr, true);
-          if (ty === 1) {
-            // String object
-            const len = view.getUint32(ptr + 4, true);
-            if (ptr + 8 + len <= mem.buffer.byteLength) {
-              const bytes = new Uint8Array(mem.buffer, ptr + 8, len);
-              const text = new TextDecoder().decode(bytes);
-              console.log("VIBE_DISPLAY:" + JSON.stringify(text));
-            }
-          } else if (ty === 5) {
-            // Array — show element count
-            const len = view.getUint32(ptr + 4, true);
-            console.log("VIBE_DISPLAY:[Array(" + len + ")]");
-          }
-        }
-      }
-      // Always output raw tagged i64 as last line
-      console.log(result.toString());
-    }
-  } else if (result !== undefined) {
-    console.log(String(result));
-  }
+  emitResult(invoke, result, isSelfhost);
 }
 
 main().catch((err) => {

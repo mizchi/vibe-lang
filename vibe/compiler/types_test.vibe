@@ -84,6 +84,29 @@ test "env_cache handles empty env" {
   }
 }
 
+test "env_bind keeps cached env lookup path" {
+  let base = env_cache(env_bind(EnvEmpty, "base", CtInt))
+  let env = env_bind(base, "x", CtString)
+  match env {
+    EnvCached(_, _) => assert(true),
+    _ => assert(false)
+  }
+  match env_lookup(env, "x") {
+    Some(t) => assert(types_equal(t, CtString)),
+    None => assert(false)
+  }
+}
+
+test "env_bind over cached env remains visible to flat lookup" {
+  let base = env_cache(env_bind(EnvEmpty, "x", CtInt))
+  let env = env_bind(base, "x", CtString)
+  let flat = env_flat_bindings(env)
+  match env_lookup_flat(flat, "x") {
+    Some(t) => assert(types_equal(t, CtString)),
+    None => assert(false)
+  }
+}
+
 test "types_compatible with CtUnknown" {
   assert(types_compatible(CtUnknown, CtInt))
   assert(types_compatible(CtInt, CtUnknown))
@@ -157,6 +180,10 @@ test "type_to_string primitives" {
 test "type_to_string composite" {
   assert(type_to_string(CtArray(CtInt)) == "Array[Int]")
   assert(type_to_string(CtOption(CtString)) == "Option[String]")
+  assert(type_to_string(CtNamed("Result", [
+    CtInt,
+    CtString
+  ])) == "Result[Int, String]")
   assert(type_to_string(CtTuple([
     CtInt,
     CtBool
@@ -167,6 +194,13 @@ test "type_to_string composite" {
   assert(type_to_string(CtFn([
     CtInt
   ], CtString, Some("Error"))) == "(Int) -> String with {Error}")
+  assert(type_to_string(CtForAll([
+    0
+  ], Array::slice([
+    (0, Array::slice([
+      ""
+    ], 0, 0))
+  ], 0, 0), CtVar(0))) == "forall ?t0. ?t0")
 }
 
 test "collect_tvars deduplicates in first-seen order" {

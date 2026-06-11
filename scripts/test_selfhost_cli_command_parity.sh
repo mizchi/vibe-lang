@@ -8,7 +8,7 @@ COMPONENT_PATH="$OUT_DIR/selfhost_cli_preview2.component.wasm"
 WIT_PATH="$OUT_DIR/selfhost_cli_preview2.component.wit"
 VIBE_BIN="${VIBE_BIN:-$PROJECT_ROOT/_build/native/debug/build/cmd/vibe/vibe.exe}"
 WASMTIME_RUN="$PROJECT_ROOT/scripts/wasmtime_run.sh"
-WASMTIME_WASM_FLAGS="${VIBE_WASMTIME_WASM_FLAGS:-exceptions=y}"
+WASMTIME_WASM_FLAGS="${VIBE_WASMTIME_WASM_FLAGS:-exceptions=y,threads=y}"
 
 mkdir -p "$OUT_DIR"
 

@@ -182,6 +182,33 @@ test "compile_module_wasm_with_opt_level_profiled reuses wasm artifact cache" {
 }
 
 ///|
+test "compile_module_wasm_with_opt_level_profiled can bypass wasm artifact cache" {
+  let db = @runtime.VibeDb::new()
+  let before = wasm_artifact_cache.val.length()
+  let path = "profile-cache-bypass-" + before.to_string()
+  db.set_source(path, "let main = () -> Int { 3 + 4 }")
+  let (bytes1, profile1) = compile_module_wasm_with_opt_level_profiled(
+    db,
+    path,
+    no_dce=true,
+    use_artifact_cache=false,
+  )
+  let after_first = wasm_artifact_cache.val.length()
+  let (bytes2, profile2) = compile_module_wasm_with_opt_level_profiled(
+    db,
+    path,
+    no_dce=true,
+    use_artifact_cache=false,
+  )
+  let after_second = wasm_artifact_cache.val.length()
+  assert_eq(bytes1, bytes2)
+  assert_true(profile1.emit_us > 0)
+  assert_true(profile2.emit_us > 0)
+  assert_eq(after_first, before)
+  assert_eq(after_second, before)
+}
+
+///|
 test "compile_module_wasm_no_dce allows entry value shadowing prelude helper" {
   let db = @runtime.VibeDb::new()
   db.set_source(

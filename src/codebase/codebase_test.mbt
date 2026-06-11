@@ -26,7 +26,9 @@ fn test_repo_root() -> String {
 
 ///|
 fn make_temp_dir(prefix : String) -> String {
-  let tmp_root = test_repo_root() + "/_build/vibe_codebase_test"
+  let tmp_root = @vibe_fs.normalize_path(
+    test_repo_root() + "/.tmp/codebase_test",
+  )
   if !@os_fs.path_exists(tmp_root) {
     @os_fs.create_dir(tmp_root) catch {
       e => abort("create temp root failed: " + e.to_string())

@@ -1927,6 +1927,7 @@ fn bundle_for_wasm_impl(
   // re-export-defs + main). A superset of DCE's prelude entry refs, so the
   // reachable prelude closure is a superset of what DCE keeps.
   @profiler.profiler_enter("bundle/collect/prelude_add")
+  @profiler.profiler_enter("bundle/collect/prelude_add/root_refs")
   let prelude_roots : Map[String, Bool] = {}
   for stmt in bundled_stmts {
     @core.walk_stmt_refs(
@@ -1944,12 +1945,15 @@ fn bundle_for_wasm_impl(
       bundle_add_unbound_ref,
     )
   }
+  @profiler.profiler_leave()
+  @profiler.profiler_enter("bundle/collect/prelude_add/reachable")
   for
     stmt in @checker.prelude_reachable_value_stmts(
       prelude_roots, existing_value_names,
     ) {
     bundled_stmts.push(stmt)
   }
+  @profiler.profiler_leave()
   @profiler.profiler_leave()
   for stmt in tail_stmts {
     bundled_stmts.push(stmt)

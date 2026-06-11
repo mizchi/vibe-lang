@@ -9,9 +9,9 @@
 # .vibe file the host compiles, it shows up here with the selfhost error.
 #
 # How it works:
-#   1. Host-compile `vibe/compiler/selfhost_cli_support.vibe` (the selfhost
-#      compiler's CLI entry, `cli_main`) to wasm. This wasm IS the
-#      vibe-written compiler logic.
+#   1. Host-compile `vibe/cli/selfhost_entry.vibe` (the selfhost compiler's
+#      CLI entry, `cli_main`) to wasm. This wasm IS the vibe-written compiler
+#      logic.
 #   2. For each corpus file, invoke `cli_main` in `debug` (linked) mode so
 #      imports + the prelude resolve, and check the exit code. 0 = the
 #      selfhost compiler parsed + type-checked + linked + codegen'd it; non-0
@@ -39,9 +39,12 @@ cd "$ROOT"
 
 OUT_DIR_REL="_build/bench/selfhost_corpus"
 OUT_DIR="$ROOT/$OUT_DIR_REL"
-SELFHOST_SRC="${VIBE_SELFHOST_CLI_SRC:-vibe/compiler/selfhost_cli_support.vibe}"
+SELFHOST_SRC="${VIBE_SELFHOST_CLI_SRC:-vibe/cli/selfhost_entry.vibe}"
+case "$SELFHOST_SRC" in
+  /*) SELFHOST_SRC_ABS="$SELFHOST_SRC" ;;
+  *) SELFHOST_SRC_ABS="$ROOT/$SELFHOST_SRC" ;;
+esac
 SELFHOST_WASM="${SELFHOST_WASM:-$OUT_DIR/selfhost_compiler.wasm}"
-VIBE_BIN="${VIBE_BIN:-$ROOT/_build/native/debug/build/cmd/vibe/vibe.exe}"
 RUNNER="$ROOT/scripts/run_wasm_vibe_host_runner.sh"
 TIMEOUT_SEC="${VIBE_CORPUS_TIMEOUT_SEC:-120}"
 INCLUDE_TESTS="${VIBE_CORPUS_INCLUDE_TESTS:-0}"
@@ -75,20 +78,17 @@ done
 
 mkdir -p "$OUT_DIR"
 
-# --- ensure the native host vibe CLI (used to build the selfhost wasm) ---
-if [ ! -x "$VIBE_BIN" ]; then
-  echo "[corpus] building native vibe CLI (scripts/ensure_native_cli.sh)"
-  bash "$ROOT/scripts/ensure_native_cli.sh" || { echo "corpus gate: native CLI build failed" >&2; exit 2; }
-fi
-[ -x "$VIBE_BIN" ] || { echo "corpus gate: vibe CLI missing: $VIBE_BIN" >&2; exit 2; }
-
 # --- build the selfhost compiler wasm (the vibe-written compiler) ---
-if [ ! -f "$SELFHOST_WASM" ] || [ "$SELFHOST_SRC" -nt "$SELFHOST_WASM" ]; then
-  echo "[corpus] building selfhost compiler wasm: host-compile $SELFHOST_SRC"
-  if ! "$VIBE_BIN" compile --wasm --force-cabi-realloc "$SELFHOST_SRC" -o "$SELFHOST_WASM"; then
-    echo "corpus gate: selfhost compiler build failed" >&2
-    exit 2
-  fi
+echo "[corpus] resolving selfhost compiler wasm: $SELFHOST_SRC_ABS"
+if ! SELFHOST_WASM="$(
+  VIBE_SELFHOST_CLI_CORE_OUT_DIR="$(dirname "$SELFHOST_WASM")" \
+  ENTRY_PATH="$SELFHOST_SRC_ABS" \
+  STAGE1_CORE_WASM="$SELFHOST_WASM" \
+  VIBE_SELFHOST_CLI_CORE_REBUILD="${VIBE_SELFHOST_CLI_CORE_REBUILD:-auto}" \
+  bash "$ROOT/scripts/build_selfhost_cli_core.sh"
+)"; then
+  echo "corpus gate: selfhost compiler build failed" >&2
+  exit 2
 fi
 echo "[corpus] selfhost compiler: $SELFHOST_WASM ($(wc -c < "$SELFHOST_WASM" | tr -d ' ') bytes)"
 
@@ -206,11 +206,12 @@ echo "  full results: $SUMMARY_TSV"
 echo "================================================================"
 if [ "$REAL" -gt 0 ]; then
   echo "  REAL gaps:"
-  grep -P '\tfail\([0-9]+\)\tREAL\t' "$SUMMARY_TSV" 2>/dev/null | cut -f1,4 | sed 's/^/    - /'
+  awk -F '\t' '$2 ~ /^fail\([0-9]+\)$/ && $3 == "REAL" { print $1 "\t" $4 }' "$SUMMARY_TSV" |
+    sed 's/^/    - /'
 fi
 
 # Current REAL-failing set (genuine selfhost checker/parser gaps).
-real_set="$(grep -P '\tfail\([0-9]+\)\tREAL\t' "$SUMMARY_TSV" 2>/dev/null | cut -f1 | sort -u)"
+real_set="$(awk -F '\t' '$2 ~ /^fail\([0-9]+\)$/ && $3 == "REAL" { print $1 }' "$SUMMARY_TSV" | sort -u)"
 
 if [ "$UPDATE_BASELINE" -eq 1 ]; then
   {

@@ -37,9 +37,20 @@ export let rec subst_type_params: (Type, Array[String], Array[Type]) -> Type = (
     CtTuple(es) => CtTuple(for e in es {
       subst_type_params(e, params, args)
     }),
-    CtFn(ps, ret, eff) => CtFn(for p in ps {
-      subst_type_params(p, params, args)
-    }, subst_type_params(ret, params, args), eff),
+    CtFn(ps, ret, eff) => {
+      let subst_params: (Array[Type]) -> Array[Type] = (types) -> {
+        let out = Array::slice([
+          CtUnknown
+        ], 0, 0)
+        let mut i = 0
+        while i < Array::length(types) {
+          Array::push(out, subst_type_params(Array::get(types, i), params, args))
+          i = i + 1
+        }
+        out
+      }
+      CtFn(subst_params(ps), subst_type_params(ret, params, args), eff)
+    },
     _ => ty
   }
 }
@@ -93,10 +104,13 @@ export let rec resolve_type_expr: (TypeExpr, Array[TypeDef]) -> Type = (te, defs
       CtTuple(r)
     },
     TyFn(params, ret, effect_name) => {
+      let ret_box = Array::slice([
+        ret
+      ], 0, 1)
       let rp = for p in params {
         resolve_type_expr(p, defs)
       }
-      CtFn(rp, resolve_type_expr(ret, defs), effect_name)
+      CtFn(rp, resolve_type_expr(Array::get(ret_box, 0), defs), effect_name)
     }
   }
 }

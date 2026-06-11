@@ -18,6 +18,7 @@ pkf run fmt               # format code
 pkf run check             # type check
 pkf run test              # run tests
 pkf run test-update       # update snapshot tests
+pkf run selfhost-trial-gate  # complete selfhost trial gate
 pkf run run -- args       # run main with args
 pkf run info              # generate type definition files
 pkf affected --since=origin/main 'test:*'  # diff-aware package tests
@@ -37,28 +38,40 @@ pkf affected --since=origin/main 'test:*'  # diff-aware package tests
 
 vibe compiler は二層構造になっている:
 
-- **`src/` (MoonBit 実装)** — 現状の **authoritative な実装**。バグ修正・
-  新機能はまずここに入れる。`vibe` CLI バイナリはこれをビルドして生成
-  される (`scripts/ensure_native_cli.sh`)。
 - **`vibe/compiler/` (selfhost: vibe で書かれた vibe compiler)** —
-  ADR-0033 で 0.1.0 sign-off 対象として canonical 化される予定だが、
-  日々のコードベースの真実は `src/` 側。ここを直接編集するのは
-  `selfhost_cli_*.vibe` のような **selfhost 専用の adapter / bundle**
-  もしくは parity gate (`scripts/test_selfhost_*.sh`) を通すときのみ。
+  2026-06-10 以降の完全 selfhost trial では source of truth。
+  parser/checker/codegen/runtime compile だけでなく、CLI のコマンド挙動、
+  adapter、bundle、component entry、parity gate もここを主対象として実装する。
+- **`src/` (MoonBit 実装)** — legacy bootstrap / fallback / host-runner 層。
+  通常開発では触らない。新機能、bugfix、CLI 挙動変更、builtin 追加は
+  `src/` へ入れず、`vibe/compiler/` 側だけで実装する。`src/` を変更するのは、
+  明示的に許可された bootstrap 破損の復旧、退役作業、または別ブランチでの
+  隔離作業に限る。
+
+selfhost cutover 後の Rust-style seed compiler / stage0-stage2 / bootstrap bump の運用は
+[docs/selfhost-bootstrap.md](docs/selfhost-bootstrap.md) に従う。新しい syntax を
+compiler source 自体で使う場合は、先に seed compiler がその syntax を理解できる
+状態を tag し、bootstrap bump を通してから source を移行する。
+2026-06-10 以降の完全 selfhost trial 中は
+[docs/selfhost-trial.md](docs/selfhost-trial.md) の判断基準に従い、節目で
+`pkf run selfhost-trial-gate` を通す。
 
 判断目安:
 - 「`vibe test foo.vibe` で挙動を変えたい / 新 builtin を追加したい」
-  → `src/` 側
+  → `vibe/compiler/` 側だけを変更する
+- 「CLI の挙動を変えたい / コマンドを追加したい」
+  → `vibe/compiler/entry` / `selfhost_cli_*.vibe` / component adapter 側で実装する
 - 「selfhost が正しく自分でコンパイルできない」「dist wasm が壊れて
-  いる」 → `vibe/compiler/` 側 + `pkf run release-check` の selfhost
-  ゲート確認
-- 両方に同じ機能を実装する場合は `src/` 先 → parity gate でカバレッジ
-  確認 → 必要なら `vibe/compiler/` も追従
+  いる」 → まず `vibe/compiler/` / bootstrap scripts / seed 管理を直し、
+  `pkf run selfhost-trial-gate` で確認する。`src/` 修正が必要に見える場合は
+  変更前に方針確認する
+- MoonBit host と selfhost の二重実装は増やさない。parity/cutover gate は
+  selfhost 側の正しさを確認するために使い、`src/` 追従の理由にしない
 
 CI shard では:
 - `scripts/pkfire/selfhost_gates_shard.sh bootstrap|cli|check|coverage`
   が selfhost 側のゲートを走らせる
-- `pkf run check` / `pkf run test` は `src/` 側
+- `pkf run selfhost-trial-gate` を完全 selfhost 継続判断の主 gate とする
 
 ## Coding Convention
 

@@ -45,7 +45,10 @@ export enum Subst {
 //# Functions
 
 export let env_bind: (TypeEnv, String, Type) -> TypeEnv = (env, name, ty) -> {
-  EnvBind(name, ty, env)
+  match env {
+    EnvCached(cache, rest) => EnvCached(cache, EnvBind(name, ty, rest)),
+    _ => EnvBind(name, ty, env)
+  }
 }
 
 export let env_cache: (TypeEnv) -> TypeEnv = (env) -> {
@@ -152,7 +155,7 @@ export let env_bind_all: (TypeEnv, Array[(String, Type)]) -> TypeEnv = (env, bin
   let mut acc = env
   while i < len {
     let (name, ty) = Array::get(bindings, i)
-    acc = EnvBind(name, ty, acc)
+    acc = env_bind(acc, name, ty)
     i = i + 1
   }
   acc
@@ -303,15 +306,26 @@ export let rec subst_apply: (Subst, Type) -> Type = (s, ty) -> {
       out
     },
     CtFn(params, ret, effect_name) => {
-      let rp = for p in params {
-        subst_apply(s, p)
+      let apply_params: (Array[Type]) -> Array[Type] = (items) -> {
+        let out = Array::slice([
+          CtUnknown
+        ], 0, 0)
+        let mut i = 0
+        while i < Array::length(items) {
+          Array::push(out, subst_apply(s, Array::get(items, i)))
+          i = i + 1
+        }
+        out
       }
-      CtFn(rp, subst_apply(s, ret), effect_name)
+      CtFn(apply_params(params), subst_apply(s, ret), effect_name)
     },
     CtArray(elem) => CtArray(subst_apply(s, elem)),
     CtOption(elem) => CtOption(subst_apply(s, elem)),
     CtTuple(elems) => CtTuple(for e in elems {
       subst_apply(s, e)
+    }),
+    CtNamed(name, args) => CtNamed(name, for arg in args {
+      subst_apply(s, arg)
     }),
     CtForAll(_, _, _) => ty,
     _ => ty
@@ -346,18 +360,18 @@ export let rec type_to_string: (Type) -> String = (ty) -> {
       let mut vi = 0
       let mut vacc = ""
       while vi < vlen {
-        let v = "?t\{Array::get(vars, vi)}"
+        let v = String::concat("?t", __to_string(Array::get(vars, vi)))
         let next = if vi > 0 {
-          "\{vacc} \{v}"
+          String::concat(vacc, String::concat(" ", v))
         } else v
         vacc = next
         vi = vi + 1
       }
-      "forall \{vacc}. \{type_to_string(body)}"
+      String::concat("forall ", String::concat(vacc, String::concat(". ", type_to_string(body))))
     },
     CtUnknown => "?",
-    CtArray(elem) => "Array[\{type_to_string(elem)}]",
-    CtOption(elem) => "Option[\{type_to_string(elem)}]",
+    CtArray(elem) => String::concat("Array[", String::concat(type_to_string(elem), "]")),
+    CtOption(elem) => String::concat("Option[", String::concat(type_to_string(elem), "]")),
     CtEnum(name) => name,
     CtStruct(name) => name,
     CtNamed(name, args) => if Array::length(args) == 0 {
@@ -370,11 +384,11 @@ export let rec type_to_string: (Type) -> String = (ty) -> {
       let mut joined = ""
       while i < Array::length(parts) {
         joined = if i > 0 {
-          "\{joined}, \{Array::get(parts, i)}"
+          String::concat(joined, String::concat(", ", Array::get(parts, i)))
         } else Array::get(parts, i)
         i = i + 1
       }
-      "\{name}[\{joined}]"
+      String::concat(name, String::concat("[", String::concat(joined, "]")))
     },
     CtTuple(elems) => {
       let parts = for e in elems {
@@ -384,11 +398,11 @@ export let rec type_to_string: (Type) -> String = (ty) -> {
       let mut joined = ""
       while i < Array::length(parts) {
         joined = if i > 0 {
-          "\{joined}, \{Array::get(parts, i)}"
+          String::concat(joined, String::concat(", ", Array::get(parts, i)))
         } else Array::get(parts, i)
         i = i + 1
       }
-      "(\{joined})"
+      String::concat("(", String::concat(joined, ")"))
     },
     CtFn(params, ret, effect_name) => {
       let parts = for p in params {
@@ -398,13 +412,14 @@ export let rec type_to_string: (Type) -> String = (ty) -> {
       let mut joined = ""
       while i < Array::length(parts) {
         joined = if i > 0 {
-          "\{joined}, \{Array::get(parts, i)}"
+          String::concat(joined, String::concat(", ", Array::get(parts, i)))
         } else Array::get(parts, i)
         i = i + 1
       }
-      let base = "(\{joined}) -> \{type_to_string(ret)}"
+      let ret_text = type_to_string(ret)
+      let base = String::concat("(", String::concat(joined, String::concat(") -> ", ret_text)))
       match effect_name {
-        Some(name) => "\{base} with {\{name}}",
+        Some(name) => String::concat(base, String::concat(" with {", String::concat(name, "}"))),
         None => base
       }
     }
@@ -686,6 +701,33 @@ let option_string_equal: (Option[String], Option[String]) -> Bool = (left, right
   }
 }
 
+let is_effect_var_name: (String) -> Bool = (name) -> {
+  String::length(name) == 1 &&
+  String::char_code_at(name, 0) >= 97 &&
+  String::char_code_at(name, 0) <= 122
+}
+
+let effect_names_compatible: (Option[String], Option[String]) -> Bool = (left, right) -> {
+  if option_string_equal(left, right) {
+    true
+  } else {
+    match left {
+      Some(left_name) => if is_effect_var_name(left_name) {
+        true
+      } else {
+        match right {
+          Some(right_name) => is_effect_var_name(right_name),
+          None => false
+        }
+      },
+      None => match right {
+        Some(right_name) => is_effect_var_name(right_name),
+        None => false
+      }
+    }
+  }
+}
+
 export let rec types_equal: (Type, Type) -> Bool = (a, b) -> {
   match a {
     CtInt => match b {
@@ -804,7 +846,7 @@ export let rec types_equal: (Type, Type) -> Bool = (a, b) -> {
       CtFn(bparams, bret, beffect) =>
       if Array::length(aparams) != Array::length(bparams) {
         false
-      } else if option_string_equal(aeffect, beffect) {
+      } else if effect_names_compatible(aeffect, beffect) {
         let tae_len3 = Array::length(aparams)
         let mut tae_i3 = 0
         let mut tae_result3 = true
@@ -931,7 +973,7 @@ export let rec unify: (Type, Type, Subst) -> Option[Subst] = (a, b, s) -> {
                   CtFn(pb, rb, beffect) => if Array::length(pa) != Array::length(pb) {
                     None
                   }
-                  else if !option_string_equal(aeffect, beffect) {
+                  else if !effect_names_compatible(aeffect, beffect) {
                     None
                   }
                   else {

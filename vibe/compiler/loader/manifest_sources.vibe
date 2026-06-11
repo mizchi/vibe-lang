@@ -285,6 +285,18 @@ let collect_manifest_header_deps_from_source_with_context: (String, String, Map[
   }
 }
 
+let is_manifest_external_terminal_dep: (String) -> Bool = (path) -> {
+  String::ends_with(path, "selfhost_sources_bundle.vibe")
+}
+
+let should_schedule_manifest_dep: (String, Map[String, Bool]) -> Bool = (dep_path, manifest_path_index) -> {
+  if Map::has_key(manifest_path_index, dep_path) {
+    true
+  } else {
+    !(is_manifest_external_terminal_dep(dep_path))
+  }
+}
+
 let load_or_parse_module_header_deps_with_context: (String, String) -> Array[String] with { Error, Fs } = (path, source) -> {
   handle {
     let (deps, _, _) = load_or_parse_module_header_fs_impl(path, source, 0)
@@ -332,6 +344,32 @@ let build_manifest_path_index_from_rows: (String, Array[(String, String)]) -> Ma
     i = i + 1
   }
   MapBuilder::freeze(builder)
+}
+
+let find_manifest_base_dir: (String) -> Option[String] with { Fs } = (entry_path) -> {
+  let mut base_dir = dir_of(entry_path)
+  let mut found = None
+  let mut done = false
+  loop {
+    if done {
+      break
+    }
+    let manifest_path = join_path(base_dir, "selfhost_sources_manifest.tsv")
+    if Fs::exists(manifest_path) {
+      found = Some(base_dir)
+      done = true
+    } else if base_dir == "" {
+      done = true
+    } else {
+      let parent = dir_of(base_dir)
+      if parent == base_dir {
+        done = true
+      } else {
+        base_dir = parent
+      }
+    }
+  }
+  found
 }
 
 let join_path: (String, String) -> String = (base_dir, rel_path) -> {
@@ -539,27 +577,27 @@ let parse_source_manifest_rows: (String) -> Array[(String, String)] with { Error
 }
 
 export let try_load_manifest_rows: (String) -> Option[(String, Array[(String, String)])] with { Error, Fs } = (entry_path) -> {
-  let base_dir = dir_of(entry_path)
-  let manifest_path = join_path(base_dir, "selfhost_sources_manifest.tsv")
-  if !(Fs::exists(manifest_path)) {
-    None
-  } else {
-    let rows = parse_source_manifest_rows(Fs::read_file(manifest_path))
-    let mut has_entry = false
-    let mut i = 0
-    while i < Array::length(rows) {
-      let (_, rel_path) = Array::get(rows, i)
-      let path = join_path(base_dir, rel_path)
-      if path == entry_path {
-        has_entry = true
+  match find_manifest_base_dir(entry_path) {
+    Some(base_dir) => {
+      let manifest_path = join_path(base_dir, "selfhost_sources_manifest.tsv")
+      let rows = parse_source_manifest_rows(Fs::read_file(manifest_path))
+      let mut has_entry = false
+      let mut i = 0
+      while i < Array::length(rows) {
+        let (_, rel_path) = Array::get(rows, i)
+        let path = join_path(base_dir, rel_path)
+        if path == entry_path {
+          has_entry = true
+        }
+        i = i + 1
       }
-      i = i + 1
-    }
-    if has_entry {
-      Some((base_dir, rows))
-    } else {
-      None
-    }
+      if has_entry {
+        Some((base_dir, rows))
+      } else {
+        None
+      }
+    },
+    None => None
   }
 }
 
@@ -573,6 +611,46 @@ export let load_manifest_full_sources: (String, Array[(String, String)]) -> Arra
     i = i + 1
   }
   full_sources
+}
+
+let load_manifest_sources_by_path_index: (String, Array[(String, String)], Map[String, Bool]) -> Array[(String, String)] with { Error, Fs } = (base_dir, rows, needed_path_index) -> {
+  let sources = Array::slice([("", "")], 0, 0)
+  let mut i = 0
+  while i < Array::length(rows) {
+    let (_, rel_path) = Array::get(rows, i)
+    let path = join_path(base_dir, rel_path)
+    if Map::has_key(needed_path_index, path) {
+      Array::push(sources, (path, Fs::read_file(path)))
+    }
+    i = i + 1
+  }
+  sources
+}
+
+let load_manifest_source_groups_by_path_index: (String, Array[(String, String)], Map[String, Bool]) -> Array[(String, Array[(String, String)])] with { Error, Fs } = (base_dir, rows, needed_path_index) -> {
+  let groups = empty_grouped_sources()
+  let mut last_group_name = ""
+  let mut last_group_sources = Array::slice([("", "")], 0, 0)
+  let mut has_last_group = false
+  let mut i = 0
+  while i < Array::length(rows) {
+    let (group_name, rel_path) = Array::get(rows, i)
+    let path = join_path(base_dir, rel_path)
+    if Map::has_key(needed_path_index, path) {
+      let bucket = if has_last_group && last_group_name == group_name {
+        last_group_sources
+      } else {
+        let ensured = ensure_grouped_source_bucket(groups, group_name)
+        last_group_name = group_name
+        last_group_sources = ensured
+        has_last_group = true
+        ensured
+      }
+      Array::push(bucket, (path, Fs::read_file(path)))
+    }
+    i = i + 1
+  }
+  groups
 }
 
 export let build_grouped_sources_from_manifest_rows: (String, Array[(String, String)], Array[(String, String)]) -> Array[(String, Array[(String, String)])] = (base_dir, rows, sources) -> {
@@ -874,7 +952,8 @@ let collect_needed_paths_from_manifest_headers: (String, Map[String, Bool], Arra
       let mut dep_i = 0
       while dep_i < Array::length(deps) {
         let dep_path = Array::get(deps, dep_i)
-        if !Set::contains(scheduled_set, dep_path) {
+        if should_schedule_manifest_dep(dep_path, manifest_path_index) &&
+          !Set::contains(scheduled_set, dep_path) {
           Array::push(worklist, dep_path)
           scheduled_set = Set::add(scheduled_set, dep_path)
           work_len = work_len + 1
@@ -931,7 +1010,8 @@ let collect_needed_paths_and_manifest_headers: (String, Map[String, Bool]) -> (A
       let mut dep_i = 0
       while dep_i < Array::length(deps) {
         let dep_path = Array::get(deps, dep_i)
-        if !Set::contains(scheduled_set, dep_path) {
+        if should_schedule_manifest_dep(dep_path, manifest_path_index) &&
+          !Set::contains(scheduled_set, dep_path) {
           Array::push(worklist, dep_path)
           scheduled_set = Set::add(scheduled_set, dep_path)
           work_len = work_len + 1
@@ -972,7 +1052,8 @@ let collect_needed_paths_from_manifest_scan: (String, Map[String, Bool]) -> Arra
       let mut dep_i = 0
       while dep_i < Array::length(deps) {
         let dep_path = Array::get(deps, dep_i)
-        if !Set::contains(scheduled_set, dep_path) {
+        if should_schedule_manifest_dep(dep_path, manifest_path_index) &&
+          !Set::contains(scheduled_set, dep_path) {
           Array::push(worklist, dep_path)
           scheduled_set = Set::add(scheduled_set, dep_path)
           work_len = work_len + 1
@@ -1085,12 +1166,8 @@ export let try_collect_manifest_sources_fs: (String) -> Option[(String, Array[(S
         manifest_path_index,
         header_rows
       )
-      let preloaded_sources = load_manifest_full_sources(base_dir, rows)
       let needed_path_index = build_manifest_path_index(needed_paths)
-      let sources = filter_manifest_sources_by_path_index(
-        preloaded_sources,
-        needed_path_index
-      )
+      let sources = load_manifest_sources_by_path_index(base_dir, rows, needed_path_index)
       Some((manifest_path, sources))
     },
     None => None
@@ -1112,20 +1189,8 @@ export let try_collect_manifest_source_groups_fs: (String) -> Option[(String, Ar
         manifest_path_index,
         header_rows
       )
-      let preloaded_sources = load_manifest_full_sources(base_dir, rows)
-      let preloaded_source_index = build_manifest_source_index(preloaded_sources)
       let needed_path_index = build_manifest_path_index(needed_paths)
-      let groups = build_grouped_sources_from_manifest_rows_with_lookup(
-        base_dir,
-        rows,
-        (path: String) -> Option[String] {
-          if Map::has_key(needed_path_index, path) {
-            source_lookup_in_index(preloaded_source_index, path)
-          } else {
-            None
-          }
-        }
-      )
+      let groups = load_manifest_source_groups_by_path_index(base_dir, rows, needed_path_index)
       Some((manifest_path, groups))
     },
     None => None

@@ -8,9 +8,11 @@ set -euo pipefail
 # Env:
 #   VIBE_BIN                           — host CLI binary (default: auto-detect)
 #   STAGE1_COMPILER_WASM               — selfhost WASI compiler wasm
-#   VIBE_CUTOVER_REQUIRE_PARITY        — 1: fail on mismatch (default: 1), 0: monitor-only
-#   VIBE_CUTOVER_INCLUDE_COMPILER_SIZE — 1: add bench/compiler_size/cases.txt canaries (default: 1)
-#   VIBE_CUTOVER_INCLUDE_FAIL_CASES    — 1: run expected-fail parity canaries (default: 1)
+#   VIBE_CUTOVER_COMPILER_KIND         — cli-core|moonbit (default: cli-core)
+#   VIBE_CUTOVER_REQUIRE_PARITY        — 1: fail on exit/class mismatch (default: 1), 0: monitor-only
+#   VIBE_CUTOVER_REQUIRE_HASH          — 1: fail on wasm hash mismatch (default: moonbit=1, cli-core=0)
+#   VIBE_CUTOVER_INCLUDE_COMPILER_SIZE — 1: add bench/compiler_size/cases.txt canaries (default: moonbit=1, cli-core=0)
+#   VIBE_CUTOVER_INCLUDE_FAIL_CASES    — 1: run expected-fail parity canaries (default: moonbit=1, cli-core=0)
 #   VIBE_CUTOVER_FAIL_CASES_FILE       — fail canary case list (TSV path)
 #   VIBE_CUTOVER_REQUIRED_FAIL_CLASSES — comma-separated required fail classes (default: parse,type,io)
 #   VIBE_CUTOVER_MODES                 — comma-separated compile-lite modes (default: mvp,no-dce)
@@ -18,16 +20,47 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-VIBE_BIN="${VIBE_BIN:-$PROJECT_ROOT/target/native/release/build/cmd/vibe/vibe.exe}"
-STAGE1_COMPILER_WASM="${STAGE1_COMPILER_WASM:-$PROJECT_ROOT/_build/wasm/debug/build/cmd/vibe_compile_wasi/vibe_compile_wasi.wasm}"
+VIBE_BIN="${VIBE_BIN:-$PROJECT_ROOT/_build/native/release/build/cmd/vibe/vibe.exe}"
 OUT_DIR="${OUT_DIR:-$PROJECT_ROOT/_build/bench/selfhost_cutover}"
+SELFHOST_COMPILER_KIND="${VIBE_CUTOVER_COMPILER_KIND:-cli-core}"
+case "$SELFHOST_COMPILER_KIND" in
+  cli-core|moonbit) ;;
+  *) echo "cutover gate failed: VIBE_CUTOVER_COMPILER_KIND must be cli-core|moonbit" >&2; exit 1 ;;
+esac
+if [ -z "${STAGE1_COMPILER_WASM:-}" ]; then
+  if [ "$SELFHOST_COMPILER_KIND" = "cli-core" ]; then
+    STAGE1_COMPILER_WASM="$OUT_DIR/selfhost_compiler.wasm"
+  else
+    STAGE1_COMPILER_WASM="$PROJECT_ROOT/_build/wasm/debug/build/cmd/vibe_compile_wasi/vibe_compile_wasi.wasm"
+  fi
+fi
 REQUIRE_PARITY="${VIBE_CUTOVER_REQUIRE_PARITY:-1}"
-INCLUDE_COMPILER_SIZE="${VIBE_CUTOVER_INCLUDE_COMPILER_SIZE:-1}"
-INCLUDE_FAIL_CASES="${VIBE_CUTOVER_INCLUDE_FAIL_CASES:-1}"
+if [ -n "${VIBE_CUTOVER_REQUIRE_HASH:-}" ]; then
+  REQUIRE_HASH="$VIBE_CUTOVER_REQUIRE_HASH"
+elif [ "$SELFHOST_COMPILER_KIND" = "moonbit" ]; then
+  REQUIRE_HASH=1
+else
+  REQUIRE_HASH=0
+fi
+if [ -n "${VIBE_CUTOVER_INCLUDE_COMPILER_SIZE:-}" ]; then
+  INCLUDE_COMPILER_SIZE="$VIBE_CUTOVER_INCLUDE_COMPILER_SIZE"
+elif [ "$SELFHOST_COMPILER_KIND" = "moonbit" ]; then
+  INCLUDE_COMPILER_SIZE=1
+else
+  INCLUDE_COMPILER_SIZE=0
+fi
+if [ -n "${VIBE_CUTOVER_INCLUDE_FAIL_CASES:-}" ]; then
+  INCLUDE_FAIL_CASES="$VIBE_CUTOVER_INCLUDE_FAIL_CASES"
+elif [ "$SELFHOST_COMPILER_KIND" = "moonbit" ]; then
+  INCLUDE_FAIL_CASES=1
+else
+  INCLUDE_FAIL_CASES=0
+fi
 FAIL_CASES_FILE="${VIBE_CUTOVER_FAIL_CASES_FILE:-$PROJECT_ROOT/bench/selfhost_cutover/fail_cases.txt}"
 REQUIRED_FAIL_CLASSES_RAW="${VIBE_CUTOVER_REQUIRED_FAIL_CLASSES:-parse,type,io}"
 CUTOVER_MODES_RAW="${VIBE_CUTOVER_MODES:-mvp,no-dce}"
 STAGE_TIMEOUT_SEC="${VIBE_CUTOVER_STAGE_TIMEOUT_SEC:-300}"
+RUNNER="$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh"
 
 run_with_timeout() {
   local timeout_sec="$1"
@@ -78,8 +111,10 @@ fi
 # Canary set
 CANARY_FILES=(
   "$PROJECT_ROOT/examples/basics.vibe"
-  "$PROJECT_ROOT/vibe/compiler/index.vibe"
 )
+if [ "$SELFHOST_COMPILER_KIND" = "moonbit" ]; then
+  CANARY_FILES+=("$PROJECT_ROOT/vibe/compiler/index.vibe")
+fi
 
 # Expand to compiler_size cases if requested
 if [ "$INCLUDE_COMPILER_SIZE" = "1" ] && [ -f "$PROJECT_ROOT/bench/compiler_size/cases.txt" ]; then
@@ -101,19 +136,26 @@ if [ ! -x "$VIBE_BIN" ]; then
   moon build --target native --release src/cmd/vibe --warn-list '-29'
 fi
 
-needs_selfhost_build=0
-if [ ! -f "$STAGE1_COMPILER_WASM" ]; then
-  needs_selfhost_build=1
-fi
-if [ "$needs_selfhost_build" -eq 1 ]; then
-  echo "[cutover] selfhost WASI compiler not found: $STAGE1_COMPILER_WASM" >&2
-  echo "[cutover] building selfhost WASI compiler..." >&2
-  moon build --target wasm src/cmd/vibe_compile_wasi
-fi
+if [ "$SELFHOST_COMPILER_KIND" = "cli-core" ]; then
+  STAGE1_COMPILER_WASM="$(VIBE_SELFHOST_CLI_CORE_OUT_DIR="$OUT_DIR" \
+    ENTRY_PATH="$PROJECT_ROOT/vibe/cli/selfhost_entry.vibe" \
+    STAGE1_CORE_WASM="$STAGE1_COMPILER_WASM" \
+    bash "$PROJECT_ROOT/scripts/build_selfhost_cli_core.sh")"
+else
+  needs_selfhost_build=0
+  if [ ! -f "$STAGE1_COMPILER_WASM" ]; then
+    needs_selfhost_build=1
+  fi
+  if [ "$needs_selfhost_build" -eq 1 ]; then
+    echo "[cutover] selfhost WASI compiler not found: $STAGE1_COMPILER_WASM" >&2
+    echo "[cutover] building selfhost WASI compiler..." >&2
+    moon build --target wasm src/cmd/vibe_compile_wasi
+  fi
 
-if ! command -v moonrun >/dev/null 2>&1; then
-  echo "cutover gate failed: moonrun not found" >&2
-  exit 1
+  if ! command -v moonrun >/dev/null 2>&1; then
+    echo "cutover gate failed: moonrun not found" >&2
+    exit 1
+  fi
 fi
 
 compile_mode() {
@@ -138,7 +180,11 @@ compile_mode() {
     return $?
   fi
   if [ "$runtime" = "selfhost" ]; then
-    run_with_timeout "$STAGE_TIMEOUT_SEC" moonrun "$STAGE1_COMPILER_WASM" compile-lite "${mode_flags[@]}" "$source_file" -o "$output_file" >"$stdout_file" 2>"$stderr_file"
+    if [ "$SELFHOST_COMPILER_KIND" = "cli-core" ]; then
+      run_with_timeout "$STAGE_TIMEOUT_SEC" bash "$RUNNER" --invoke cli_main "$STAGE1_COMPILER_WASM" compile-lite "${mode_flags[@]}" "$source_file" -o "$output_file" >"$stdout_file" 2>"$stderr_file"
+    else
+      run_with_timeout "$STAGE_TIMEOUT_SEC" moonrun "$STAGE1_COMPILER_WASM" compile-lite "${mode_flags[@]}" "$source_file" -o "$output_file" >"$stdout_file" 2>"$stderr_file"
+    fi
     return $?
   fi
 
@@ -227,6 +273,8 @@ total_files=0
 total_cases=0
 parity_ok=0
 parity_fail=0
+hash_ok=0
+hash_fail=0
 deterministic_ok=0
 deterministic_fail=0
 fail_files=0
@@ -284,6 +332,7 @@ for file in "${CANARY_FILES[@]}"; do
       echo "[cutover] MISMATCH exit code: $file (mode=$mode host=$host_status selfhost=$selfhost_status)" >&2
     else
       # Both succeeded — compare hashes
+      parity_ok=$((parity_ok + 1))
       host_hash="$(shasum -a 256 "$host_out" | awk '{print $1}')"
       selfhost_hash="$(shasum -a 256 "$selfhost_out" | awk '{print $1}')"
       host_size="$(wc -c < "$host_out" | tr -d ' ')"
@@ -293,10 +342,10 @@ for file in "${CANARY_FILES[@]}"; do
 
       if [ "$host_hash" = "$selfhost_hash" ]; then
         hash_match="YES"
-        parity_ok=$((parity_ok + 1))
+        hash_ok=$((hash_ok + 1))
       else
         hash_match="NO (host=${host_hash:0:12}... selfhost=${selfhost_hash:0:12}...)"
-        parity_fail=$((parity_fail + 1))
+        hash_fail=$((hash_fail + 1))
         echo "[cutover] MISMATCH hash: $file (mode=$mode)" >&2
         echo "  host:     $host_hash (${host_size}B)" >&2
         echo "  selfhost: $selfhost_hash (${selfhost_size}B)" >&2
@@ -389,6 +438,7 @@ if [ "$INCLUDE_FAIL_CASES" = "1" ]; then
   done
 fi
 
+if [ "$INCLUDE_FAIL_CASES" = "1" ]; then
 for fail_case in "${FAIL_CANARY_CASES[@]}"; do
   IFS='|' read -r fail_rel_path expected_class expected_fragment allow_missing_source <<< "$fail_case"
   fail_file="$PROJECT_ROOT/$fail_rel_path"
@@ -489,19 +539,25 @@ for fail_case in "${FAIL_CANARY_CASES[@]}"; do
     fi
   done
 done
+fi
 
 echo ""
-echo "[cutover] summary: success=${total_files} files + fail=${fail_files} files, modes=${mode_count}, total=${total_cases} cases, parity-ok=${parity_ok}, parity-fail=${parity_fail}, deterministic-ok=${deterministic_ok}, deterministic-fail=${deterministic_fail}, failcase-ok=${fail_parity_ok}, failcase-fail=${fail_parity_fail}"
+echo "[cutover] summary: success=${total_files} files + fail=${fail_files} files, modes=${mode_count}, total=${total_cases} cases, parity-ok=${parity_ok}, parity-fail=${parity_fail}, hash-ok=${hash_ok}, hash-fail=${hash_fail}, deterministic-ok=${deterministic_ok}, deterministic-fail=${deterministic_fail}, failcase-ok=${fail_parity_ok}, failcase-fail=${fail_parity_fail}, require-hash=${REQUIRE_HASH}"
 
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   {
     echo ""
-    echo "**Summary**: success=${total_files} files + fail=${fail_files} files, modes=${mode_count}, total=${total_cases} cases, parity-ok=${parity_ok}, parity-fail=${parity_fail}, deterministic-ok=${deterministic_ok}, deterministic-fail=${deterministic_fail}, failcase-ok=${fail_parity_ok}, failcase-fail=${fail_parity_fail}"
+    echo "**Summary**: success=${total_files} files + fail=${fail_files} files, modes=${mode_count}, total=${total_cases} cases, parity-ok=${parity_ok}, parity-fail=${parity_fail}, hash-ok=${hash_ok}, hash-fail=${hash_fail}, deterministic-ok=${deterministic_ok}, deterministic-fail=${deterministic_fail}, failcase-ok=${fail_parity_ok}, failcase-fail=${fail_parity_fail}, require-hash=${REQUIRE_HASH}"
   } >> "$GITHUB_STEP_SUMMARY" || true
 fi
 
 if [ "$REQUIRE_PARITY" = "1" ] && [ "$parity_fail" -gt 0 ]; then
-  echo "cutover gate failed: ${parity_fail} file(s) with hash mismatch" >&2
+  echo "cutover gate failed: ${parity_fail} file(s) with exit/class mismatch" >&2
+  exit 1
+fi
+
+if [ "$REQUIRE_HASH" = "1" ] && [ "$hash_fail" -gt 0 ]; then
+  echo "cutover gate failed: ${hash_fail} file(s) with hash mismatch" >&2
   exit 1
 fi
 

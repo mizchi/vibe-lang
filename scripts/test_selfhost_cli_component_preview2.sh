@@ -14,7 +14,7 @@ ENTRY_NAME='answer'
 COMPONENT_EXPORT_NAME='compile-cli-request'
 HOST_VIBE_EXE="$PROJECT_ROOT/_build/native/release/build/cmd/vibe/vibe.exe"
 WASMTIME_RUN="$PROJECT_ROOT/scripts/wasmtime_run.sh"
-WASMTIME_WASM_FLAGS="${VIBE_WASMTIME_WASM_FLAGS:-exceptions=y}"
+WASMTIME_WASM_FLAGS="${VIBE_WASMTIME_WASM_FLAGS:-exceptions=y,threads=y}"
 
 run_with_timeout() {
   local timeout_sec="$1"
@@ -68,6 +68,23 @@ run_stage() {
   fi
 }
 
+run_stage_capture_stdout() {
+  local name="$1"
+  local out_path="$2"
+  shift 2
+  echo "[selfhost-cli-component-preview2] $name"
+  set +e
+  run_with_timeout "$STAGE_TIMEOUT_SEC" "$@" >"$out_path"
+  local status=$?
+  set -e
+  if [ "$status" -eq 124 ]; then
+    echo "[selfhost-cli-component-preview2] timeout: $name (${STAGE_TIMEOUT_SEC}s)" >&2
+  fi
+  if [ "$status" -ne 0 ]; then
+    return "$status"
+  fi
+}
+
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
     echo "missing required command: $1" >&2
@@ -97,7 +114,7 @@ invoke_component_request() {
     echo "component returned no numeric result for request '$request'" >&2
     return 1
   fi
-  echo $((raw / 4))
+  echo "$raw"
 }
 
 mkdir -p "$OUT_DIR"
@@ -154,8 +171,10 @@ fi
 
 run_stage "validate compiled sample wasm" wasm-tools validate "$OUTPUT_WASM"
 
-run_stage "run sample wasm produced by preview2 component selfhost cli" \
-  bash -lc "env VIBE_WASMTIME_WASM_FLAGS='$WASMTIME_WASM_FLAGS' '$WASMTIME_RUN' --invoke _start '$OUTPUT_WASM' >'$OUTPUT_RUN_LOG'"
+run_stage_capture_stdout "run sample wasm produced by preview2 component selfhost cli" \
+  "$OUTPUT_RUN_LOG" \
+  env VIBE_WASMTIME_WASM_FLAGS="$WASMTIME_WASM_FLAGS" \
+    "$WASMTIME_RUN" --invoke _start "$OUTPUT_WASM"
 
 sample_result="$(grep -E '^-?[0-9]+$' "$OUTPUT_RUN_LOG" | tail -n 1 || true)"
 if [ -z "$sample_result" ]; then
