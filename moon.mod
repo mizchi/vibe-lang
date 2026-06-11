@@ -8,7 +8,7 @@ import {
   "mizchi/ripple@0.1.4",
   "mizchi/tui@0.6.0",
   "mizchi/x@0.2.0",
-  "moonbitlang/async@0.16.6",
+  "moonbitlang/async@0.19.3",
   "moonbitlang/x@0.4.40",
   "mizchi/cbor@0.1.1",
   "mizchi/flatbuffers@0.1.3",
