@@ -5,7 +5,7 @@ import .. / core / ast.vibe {
 }
 
 import .. / core / types.vibe {
-  Subst, Type, TypeDef, TypeEnv, env_bind, env_lookup, find_typedef, fresh_var, generalize, instantiate, subst_add_bound, subst_apply, type_implements_trait, unify
+  Subst, Type, TypeDef, TypeEnv, env_bind, env_lookup, find_typedef, fresh_var, generalize, instantiate, subst_add_bound, subst_apply, type_implements_trait, type_to_string, unify
 }
 
 import ./builtins.vibe {
@@ -360,8 +360,27 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       }
     },
     ESeq(left, right) => {
-      let (_, s1, c1) = check_expr(left, env, defs, s, c, errors)
-      check_expr(right, env, defs, s1, c1, errors)
+      let mut s1 = s
+      let mut c1 = c
+      let (_, ns0, nc0) = check_expr(left, env, defs, s1, c1, errors)
+      s1 = ns0
+      c1 = nc0
+      let mut cur = right
+      let mut done = false
+      while !done {
+        match cur {
+          ESeq(next_left, next_right) => {
+            let (_, ns, nc) = check_expr(next_left, env, defs, s1, c1, errors)
+            s1 = ns
+            c1 = nc
+            cur = next_right
+          },
+          _ => {
+            done = true
+          }
+        }
+      }
+      check_expr(cur, env, defs, s1, c1, errors)
     },
     ELet(name, val, body) => {
       let (vt, s1, c1) = check_expr(val, env, defs, s, c, errors)
@@ -418,6 +437,10 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
               }
               let (tv, c2) = fresh_var(c1)
               (tv, s1, c2)
+            },
+            EIdent(_) => {
+              let (tv, c2) = fresh_var(c)
+              (tv, s, c2)
             },
             other => check_expr(other, env, defs, s, c, errors)
           }

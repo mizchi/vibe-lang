@@ -50,14 +50,6 @@ import ../cache/persistent_cache.vibe {
   persistent_source_list_cache_path
 }
 
-import ../selfhost_sources_bundle.vibe {
-  selfhost_sources, selfhost_source_groups
-}
-
-import ../selfhost_cli_adapter_bundle.vibe {
-  selfhost_cli_adapter_sources, selfhost_cli_adapter_source_groups
-}
-
 import ../module_graph_path.vibe {
   dir_of_path,
   resolve_import_path,
@@ -66,14 +58,6 @@ import ../module_graph_path.vibe {
 }
 
 //# Path helpers
-
-let dir_of = dir_of_path
-
-let resolve_path = resolve_import_path
-
-let resolve_path_candidates = resolve_import_path_candidates
-
-let contains_str = contains_path
 
 let source_lookup: (Array[(String, String)], String) -> Option[String] = (sources, path_key) -> {
   let mut i = 0
@@ -94,7 +78,7 @@ let source_lookup: (Array[(String, String)], String) -> Option[String] = (source
 }
 
 let resolve_path_in_sources: (String, String, Array[(String, String)]) -> Option[(String, String)] = (base_dir, raw_path, sources) -> {
-  let candidates = resolve_path_candidates(base_dir, raw_path)
+  let candidates = resolve_import_path_candidates(base_dir, raw_path)
   let mut i = 0
   let mut found = None
   while i < Array::length(candidates) {
@@ -116,7 +100,7 @@ let resolve_path_in_sources: (String, String, Array[(String, String)]) -> Option
 }
 
 let resolve_path_fs: (String, String) -> String = (base_dir, raw_path) -> {
-  let candidates = resolve_path_candidates(base_dir, raw_path)
+  let candidates = resolve_import_path_candidates(base_dir, raw_path)
   let mut i = 0
   let mut found = ""
   while i < Array::length(candidates) {
@@ -265,6 +249,78 @@ let empty_source_cache_specs: () -> Array[(String, String, String)] = () -> {
 
 let empty_group_cache_specs: () -> Array[(String, String, String, String)] = () -> {
   Array::slice([("", "", "", "")], 0, 0)
+}
+
+let empty_grouped_sources: () -> Array[(String, Array[(String, String)])] = () -> {
+  Array::slice([("", Array::slice([("", "")], 0, 0))], 0, 0)
+}
+
+let push_grouped_source: (Array[(String, Array[(String, String)])], String, String, String) -> Unit = (groups, group_name, path, source) -> {
+  let group_count = Array::length(groups)
+  let handled_by_tail = if group_count > 0 {
+    let (last_name, last_sources) = Array::get(groups, group_count - 1)
+    if last_name == group_name {
+      Array::push(last_sources, (path, source))
+      true
+    } else {
+      false
+    }
+  } else {
+    false
+  }
+  if !handled_by_tail {
+    let mut i = 0
+    let mut found_index = -1
+    while i < group_count {
+      if found_index == -1 {
+        let (name, sources) = Array::get(groups, i)
+        if name == group_name {
+          Array::push(sources, (path, source))
+          found_index = i
+        }
+      }
+      i = i + 1
+    }
+    if found_index == -1 {
+      let sources = Array::slice([("", "")], 0, 0)
+      Array::push(sources, (path, source))
+      Array::push(groups, (group_name, sources))
+    }
+  }
+}
+
+let push_grouped_source_fingerprint: (Array[(String, Array[(String, String)])], String, String, String) -> Unit = (groups, group_name, path, source_fingerprint) -> {
+  let group_count = Array::length(groups)
+  let handled_by_tail = if group_count > 0 {
+    let (last_name, last_specs) = Array::get(groups, group_count - 1)
+    if last_name == group_name {
+      Array::push(last_specs, (path, source_fingerprint))
+      true
+    } else {
+      false
+    }
+  } else {
+    false
+  }
+  if !handled_by_tail {
+    let mut i = 0
+    let mut found_index = -1
+    while i < group_count {
+      if found_index == -1 {
+        let (name, specs) = Array::get(groups, i)
+        if name == group_name {
+          Array::push(specs, (path, source_fingerprint))
+          found_index = i
+        }
+      }
+      i = i + 1
+    }
+    if found_index == -1 {
+      let specs = Array::slice([("", "")], 0, 0)
+      Array::push(specs, (path, source_fingerprint))
+      Array::push(groups, (group_name, specs))
+    }
+  }
 }
 
 let empty_manifest_header_cache_rows: () -> Array[(String, String, String, String)] = () -> {
@@ -537,40 +593,6 @@ let load_persistent_source_groups_cache_if_valid: (String) -> Option[Array[(Stri
   }
 }
 
-let push_grouped_source_fingerprint: (Array[(String, Array[(String, String)])], String, String, String) -> Unit = (groups, group_name, path, source_fingerprint) -> {
-  let group_count = Array::length(groups)
-  let handled_by_tail = if group_count > 0 {
-    let (last_name, last_specs) = Array::get(groups, group_count - 1)
-    if last_name == group_name {
-      Array::push(last_specs, (path, source_fingerprint))
-      true
-    } else {
-      false
-    }
-  } else {
-    false
-  }
-  if !handled_by_tail {
-    let mut i = 0
-    let mut found_index = -1
-    while i < group_count {
-      if found_index == -1 {
-        let (name, specs) = Array::get(groups, i)
-        if name == group_name {
-          Array::push(specs, (path, source_fingerprint))
-          found_index = i
-        }
-      }
-      i = i + 1
-    }
-    if found_index == -1 {
-      let specs = Array::slice([("", "")], 0, 0)
-      Array::push(specs, (path, source_fingerprint))
-      Array::push(groups, (group_name, specs))
-    }
-  }
-}
-
 let manifest_path_of: (Option[(String, String, String)]) -> Option[String] = (manifest) -> {
   match manifest {
     Some((path, _, _)) => Some(path),
@@ -790,44 +812,6 @@ let store_persistent_source_groups_cache: (String, Option[String], Array[(String
   )
 }
 
-let empty_grouped_sources: () -> Array[(String, Array[(String, String)])] = () -> {
-  Array::slice([("", Array::slice([("", "")], 0, 0))], 0, 0)
-}
-
-let push_grouped_source: (Array[(String, Array[(String, String)])], String, String, String) -> Unit = (groups, group_name, path, source) -> {
-  let group_count = Array::length(groups)
-  let handled_by_tail = if group_count > 0 {
-    let (last_name, last_sources) = Array::get(groups, group_count - 1)
-    if last_name == group_name {
-      Array::push(last_sources, (path, source))
-      true
-    } else {
-      false
-    }
-  } else {
-    false
-  }
-  if !handled_by_tail {
-    let mut i = 0
-    let mut found_index = -1
-    while i < group_count {
-      if found_index == -1 {
-        let (name, sources) = Array::get(groups, i)
-        if name == group_name {
-          Array::push(sources, (path, source))
-          found_index = i
-        }
-      }
-      i = i + 1
-    }
-    if found_index == -1 {
-      let sources = Array::slice([("", "")], 0, 0)
-      Array::push(sources, (path, source))
-      Array::push(groups, (group_name, sources))
-    }
-  }
-}
-
 let copy_grouped_sources: (Array[(String, Array[(String, String)])]) -> Array[(String, Array[(String, String)])] = (groups) -> {
   let out = empty_grouped_sources()
   let mut gi = 0
@@ -880,13 +864,8 @@ let filter_group_sources: (Array[(String, Array[(String, String)])], Array[(Stri
 }
 
 let special_bundle_source_groups: (String) -> Option[Array[(String, Array[(String, String)])]] = (entry_path) -> {
-  if entry_path == "vibe/compiler/index.vibe" {
-    Some(copy_grouped_sources(selfhost_source_groups()))
-  } else if entry_path == "vibe/compiler/selfhost_cli_adapter.vibe" {
-    Some(copy_grouped_sources(selfhost_cli_adapter_source_groups()))
-  } else {
-    None
-  }
+  let _ = entry_path
+  None
 }
 
 let normalize_bundle_source_groups: (Array[(String, Array[(String, String)])], String, String) -> Array[(String, Array[(String, String)])] = (groups, main_path, main_source) -> {
@@ -919,25 +898,13 @@ let normalize_bundle_source_groups: (Array[(String, Array[(String, String)])], S
 }
 
 let special_manifest_sources: (String) -> Option[(String, Array[(String, String)])] = (entry_path) -> {
-  let manifest_path = join_path(dir_of(entry_path), "selfhost_sources_manifest.tsv")
-  if entry_path == "vibe/compiler/index.vibe" {
-    Some((manifest_path, copy_source_specs(selfhost_sources())))
-  } else if entry_path == "vibe/compiler/selfhost_cli_adapter.vibe" {
-    Some((manifest_path, copy_source_specs(selfhost_cli_adapter_sources())))
-  } else {
-    None
-  }
+  let _ = entry_path
+  None
 }
 
 let special_manifest_source_groups: (String) -> Option[(String, Array[(String, Array[(String, String)])])] = (entry_path) -> {
-  let manifest_path = join_path(dir_of(entry_path), "selfhost_sources_manifest.tsv")
-  if entry_path == "vibe/compiler/index.vibe" {
-    Some((manifest_path, copy_grouped_sources(selfhost_source_groups())))
-  } else if entry_path == "vibe/compiler/selfhost_cli_adapter.vibe" {
-    Some((manifest_path, copy_grouped_sources(selfhost_cli_adapter_source_groups())))
-  } else {
-    None
-  }
+  let _ = entry_path
+  None
 }
 
 
@@ -1018,12 +985,12 @@ export let rec check_module: (String, String, Array[(String, String)], Array[Str
     Some(env) => env,
     None => {
       // Cycle detection
-      if contains_str(loading, path) {
+      if contains_path(loading, path) {
         throw(String::concat("import cycle detected: ", path))
       }
       let tokens = lex(source)
       let stmts = parse_program(tokens)
-      let base_dir = dir_of(path)
+      let base_dir = dir_of_path(path)
       // Cycle-detection stack: push self before recursing through this
       // module's imports, truncate back when done. O(1) per frame vs.
       // the previous `Array::concat(loading, [path])`, which copied the
@@ -1041,7 +1008,7 @@ export let rec check_module: (String, String, Array[(String, String)], Array[Str
         import_env = match stmt {
           SImport(raw_path, names) => {
             match resolve_path_in_sources(base_dir, raw_path, sources) {
-              None => throw(String::concat("module not found: ", resolve_path(base_dir, raw_path))),
+              None => throw(String::concat("module not found: ", resolve_import_path(base_dir, raw_path))),
               Some((resolved, mod_source)) => {
                 let mod_env = check_module(mod_source, resolved, sources, loading, checked_cache)
                 bind_checked_imports(names, 0, import_env, mod_env)
@@ -1050,7 +1017,7 @@ export let rec check_module: (String, String, Array[(String, String)], Array[Str
           },
           SReExport(raw_path, names) => {
             match resolve_path_in_sources(base_dir, raw_path, sources) {
-              None => throw(String::concat("module not found: ", resolve_path(base_dir, raw_path))),
+              None => throw(String::concat("module not found: ", resolve_import_path(base_dir, raw_path))),
               Some((resolved, mod_source)) => {
                 let mod_env = check_module(mod_source, resolved, sources, loading, checked_cache)
                 bind_checked_imports(names, 0, import_env, mod_env)
@@ -1081,7 +1048,7 @@ export let rec check_module: (String, String, Array[(String, String)], Array[Str
 //# FS-based source collection
 
 let rec collect_sources_rec: (String, Array[(String, String)], Array[String]) -> Unit with { Error, Fs } = (path, sources, visited) -> {
-  if contains_str(visited, path) {
+  if contains_path(visited, path) {
     ()
   }
   else {

@@ -88,6 +88,10 @@ export struct CompileCtx {
   // anywhere in the free-list (not just the head), eliminating the size-ordering
   // fragmentation a head-only check leaves when interleaved sizes are freed.
   rc_alloc_func_idx: Int;
+  // Linear-memory backend: wasm function index of `__heap_grow_check`, or -1
+  // when the surrounding module does not define the helper. Bump allocations
+  // call it after updating global 0 so low initial memory can grow on demand.
+  heap_grow_check_func_idx: Int;
   // RC: names of `let` bindings the Perceus plan marks with a non-alias `PaDup`
   // (a heap value used in more than one *owning* position, e.g. `let u = (t, t)`
   // dups `t`). One entry per dup (so a name's multiplicity = its dup budget).
@@ -108,6 +112,14 @@ export struct CompileCtx {
   // approximation (the AST is untyped): float function params / lambda-captured
   // floats are not tracked.
   float_local_slots: Array[Int]
+}
+
+export let emit_heap_grow_after_heap_set: (Bytes, CompileCtx) -> Unit = (buf, ctx) -> {
+  if ctx.heap_grow_check_func_idx >= 0 {
+    emit_call(buf, ctx.heap_grow_check_func_idx)
+  } else {
+    ()
+  }
 }
 
 // GC backend compilation context (extends CompileCtx with GC-specific fields)

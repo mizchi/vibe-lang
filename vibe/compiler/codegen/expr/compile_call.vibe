@@ -4,12 +4,16 @@ import .. / .. / core {
   Expr, Pat, Stmt, TypeExpr, bytebuf_length, bytebuf_new, bytebuf_push, bytebuf_push_section, bytebuf_push_vec_header, bytebuf_to_bytes, leb128_encode_s64, leb128_encode_u32
 }
 
+import .. / .. / builtin_name.vibe {
+  canonical_builtin_name
+}
+
 import .. / common_analysis {
   collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, is_mut_captured_in
 }
 
 import .. / common_base {
-  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_box_float, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_gt_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, emit_unbox_float, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
+  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_box_float, emit_heap_grow_after_heap_set, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_gt_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, emit_unbox_float, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
 }
 
 import .. / common_extractors {
@@ -32,7 +36,7 @@ import ./compile_match.vibe {
 
 export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, callee, args, local_names, next_local, ctx, ld, ce) -> {
   if is_eident(callee) {
-    let fname = get_eident_name(callee)
+    let fname = canonical_builtin_name(get_eident_name(callee))
     let fn_len2 = Array::length(ctx.func_table.names)
     let mut fn_idx_in_list = -1
     let mut __tr_j = 0
@@ -169,6 +173,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
         emit_i32_const(buf, obj_size)
         emit_i32_add(buf)
         emit_global_set(buf, 0)
+        emit_heap_grow_after_heap_set(buf, ctx)
         emit_local_get(buf, ptr_local)
         emit_i32_wrap_i64(buf)
         emit_i32_const(buf, tag)
@@ -381,6 +386,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       bytebuf_push(buf, 113)
       emit_i32_add(buf)
       emit_global_set(buf, 0)
+      emit_heap_grow_after_heap_set(buf, ctx)
       emit_local_get(buf, hp_l)
       emit_i64_const(buf, 32)
       emit_i64_shl(buf)
@@ -511,6 +517,31 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       let (lio_idx, _, _) = resolve_func(ctx.func_table, "String::last_index_of")
       emit_call(buf, lio_idx)
+      nl
+    }
+    else if fname == "StringBuilder::new" {
+      let (arr_new_idx, _, _) = resolve_func(ctx.func_table, "array_new")
+      emit_call(buf, arr_new_idx)
+      next_local
+    }
+    else if fname == "StringBuilder::push" {
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      let (arr_push_idx, _, _) = resolve_func(ctx.func_table, "Array::push")
+      emit_call(buf, arr_push_idx)
+      emit_i64_const(buf, 0)
+      nl
+    }
+    else if fname == "StringBuilder::freeze" {
+      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      let empty_idx = str_table_lookup(ctx.str_table.strs, "")
+      emit_str_ref(
+        buf,
+        Array::get(ctx.str_table.offsets, empty_idx),
+        Array::get(ctx.str_table.lengths, empty_idx)
+      )
+      let (join_idx, _, _) = resolve_func(ctx.func_table, "String::join")
+      emit_call(buf, join_idx)
       nl
     }
     else if fname == "__slice" {
@@ -1250,6 +1281,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_i32_add(buf)
       emit_i32_add(buf)
       emit_global_set(buf, 0)
+      emit_heap_grow_after_heap_set(buf, ctx)
       emit_i64_const(buf, 0)
       emit_local_set(buf, idx_l)
       emit_i64_const(buf, 0)
@@ -1403,6 +1435,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
         emit_i32_const(buf, 144)
         emit_i32_add(buf)
         emit_global_set(buf, 0)
+        emit_heap_grow_after_heap_set(buf, ctx)
         emit_local_get(buf, ptr_l)
         emit_i32_wrap_i64(buf)
         emit_i32_const(buf, 0)

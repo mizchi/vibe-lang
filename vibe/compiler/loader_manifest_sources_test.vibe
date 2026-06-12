@@ -428,6 +428,41 @@ test "try_collect_manifest_sources_fs: scans leading re-exports without full par
   }
 }
 
+test "try_collect_manifest_sources_fs: scans re-exports after leading export value" {
+  let base_dir = "/tmp/vibe_compiler_manifest_reexport_after_value"
+  let core_dir = String::concat(base_dir, "/core")
+  let manifest_path = String::concat(base_dir, "/selfhost_sources_manifest.tsv")
+  let ast_path = String::concat(core_dir, "/ast.vibe")
+  let index_path = String::concat(core_dir, "/index.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(core_dir)
+  Fs::write_bytes(
+    manifest_path,
+    string_to_bytes("# group\tpath\ncore\tcore/ast.vibe\ncore\tcore/index.vibe\nentry\tmain.vibe\n")
+  )
+  Fs::write_bytes(
+    ast_path,
+    string_to_bytes("export enum TypeExpr { TyName(String); TyTuple(Array[TypeExpr]) }")
+  )
+  Fs::write_bytes(
+    index_path,
+    string_to_bytes("export let version = \"0.0.1\"\nexport ./ast.vibe { TypeExpr }\n")
+  )
+  Fs::write_bytes(
+    main_path,
+    string_to_bytes("import ./core { TypeExpr }\nlet run: () -> Int = () -> { 0 }")
+  )
+  match try_collect_manifest_sources_fs(main_path) {
+    Some((_, sources)) => {
+      assert(eq(Array::length(sources), 3))
+      assert(has_source_path(sources, ast_path))
+      assert(has_source_path(sources, index_path))
+      assert(has_source_path(sources, main_path))
+    },
+    None => assert(false)
+  }
+}
+
 test "try_collect_manifest_sources_fs: ignores invalid body escapes after header imports" {
   let base_dir = "/tmp/vibe_compiler_manifest_body_escape_scan"
   let manifest_path = String::concat(base_dir, "/selfhost_sources_manifest.tsv")

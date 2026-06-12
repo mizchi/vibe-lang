@@ -32,6 +32,7 @@ export enum TypeEnv {
   EnvTraitDef(String, Array[String], Bool, TypeEnv);
   EnvTraitImpl(String, Type, TypeEnv);
   EnvTraitImplGen(String, Array[String], Array[(String, Array[String])], Type, TypeEnv);
+  EnvFlat(Array[(String, Type)]);
   EnvCached(Map[String, Type], TypeEnv)
 }
 
@@ -61,21 +62,42 @@ export let env_cache: (TypeEnv) -> TypeEnv = (env) -> {
   } else {
     let names = ArrayBuilder::new()
     let types = ArrayBuilder::new()
-    let rec collect: (TypeEnv) -> Unit = (cur) -> {
+    let mut cur = env
+    let mut done = false
+    while !done {
       match cur {
-        EnvEmpty => (),
+        EnvEmpty => {
+          done = true
+        },
         EnvBind(n, ty, rest) => {
           ArrayBuilder::push(names, n)
           ArrayBuilder::push(types, ty)
-          collect(rest)
+          cur = rest
         },
-        EnvTraitDef(_, _, _, rest) => collect(rest),
-        EnvTraitImpl(_, _, rest) => collect(rest),
-        EnvTraitImplGen(_, _, _, _, rest) => collect(rest),
-        EnvCached(_, rest) => collect(rest)
+        EnvTraitDef(_, _, _, rest) => {
+          cur = rest
+        },
+        EnvTraitImpl(_, _, rest) => {
+          cur = rest
+        },
+        EnvTraitImplGen(_, _, _, _, rest) => {
+          cur = rest
+        },
+        EnvFlat(bindings) => {
+          let mut j = 0
+          while j < Array::length(bindings) {
+            let (n, ty) = Array::get(bindings, j)
+            ArrayBuilder::push(names, n)
+            ArrayBuilder::push(types, ty)
+            j = j + 1
+          }
+          done = true
+        },
+        EnvCached(_, rest) => {
+          cur = rest
+        }
       }
     }
-    collect(env)
     let na = ArrayBuilder::freeze(names)
     let ta = ArrayBuilder::freeze(types)
     let cache = MapBuilder::new()
@@ -130,23 +152,54 @@ export let rec occurs_in: (Int, Type) -> Bool = (id, ty) -> {
   }
 }
 
-export let rec env_lookup: (TypeEnv, String) -> Option[Type] = (env, name) -> {
-  match env {
-    EnvEmpty => None,
-    EnvBind(n, ty, rest) => if n == name {
-      Some(ty)
-    } else {
-      env_lookup(rest, name)
-    },
-    EnvTraitDef(_, _, _, rest) => env_lookup(rest, name),
-    EnvTraitImpl(_, _, rest) => env_lookup(rest, name),
-    EnvTraitImplGen(_, _, _, _, rest) => env_lookup(rest, name),
-    EnvCached(cache, rest) => if Map::has_key(cache, name) {
-      Some(Map::get(cache, name))
-    } else {
-      env_lookup(rest, name)
+export let env_lookup: (TypeEnv, String) -> Option[Type] = (env, name) -> {
+  let mut cur = env
+  let mut result = None
+  let mut done = false
+  while !done {
+    match cur {
+      EnvEmpty => {
+        done = true
+      },
+      EnvBind(n, ty, rest) => if n == name {
+        result = Some(ty)
+        done = true
+      } else {
+        cur = rest
+      },
+      EnvTraitDef(_, _, _, rest) => {
+        cur = rest
+      },
+      EnvTraitImpl(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitImplGen(_, _, _, _, rest) => {
+        cur = rest
+      },
+      EnvFlat(bindings) => {
+        let mut j = 0
+        while j < Array::length(bindings) && !done {
+          let (n, ty) = Array::get(bindings, j)
+          if n == name {
+            result = Some(ty)
+            done = true
+          } else {
+            j = j + 1
+          }
+        }
+        if !done {
+          done = true
+        }
+      },
+      EnvCached(cache, rest) => if Map::has_key(cache, name) {
+        result = Some(Map::get(cache, name))
+        done = true
+      } else {
+        cur = rest
+      }
     }
   }
+  result
 }
 
 export let env_bind_all: (TypeEnv, Array[(String, Type)]) -> TypeEnv = (env, bindings) -> {
@@ -230,6 +283,7 @@ export let rec trait_supers: (TypeEnv, String) -> Array[String] = (env, name) ->
     } else trait_supers(rest, name),
     EnvTraitImpl(_, _, rest) => trait_supers(rest, name),
     EnvTraitImplGen(_, _, _, _, rest) => trait_supers(rest, name),
+    EnvFlat(_) => empty,
     EnvCached(_, rest) => trait_supers(rest, name)
   }
 }
@@ -341,6 +395,7 @@ export let rec trait_defined: (TypeEnv, String) -> Bool = (env, name) -> {
     } else trait_defined(rest, name),
     EnvTraitImpl(_, _, rest) => trait_defined(rest, name),
     EnvTraitImplGen(_, _, _, _, rest) => trait_defined(rest, name),
+    EnvFlat(_) => false,
     EnvCached(_, rest) => trait_defined(rest, name)
   }
 }
@@ -652,22 +707,46 @@ let empty_env_bindings: () -> Array[(String, Type)] = () -> {
 }
 
 export let env_flat_bindings: (TypeEnv) -> Array[(String, Type)] = (env) -> {
-  let out = empty_env_bindings()
-  let rec collect: (TypeEnv) -> Unit = (cur) -> {
-    match cur {
-      EnvEmpty => (),
-      EnvBind(name, ty, rest) => {
-        Array::push(out, (name, ty))
-        collect(rest)
-      },
-      EnvTraitDef(_, _, _, rest) => collect(rest),
-      EnvTraitImpl(_, _, rest) => collect(rest),
-      EnvTraitImplGen(_, _, _, _, rest) => collect(rest),
-      EnvCached(_, rest) => collect(rest)
+  match env {
+    EnvFlat(bindings) => bindings,
+    _ => {
+      let out = empty_env_bindings()
+      let mut cur = env
+      let mut done = false
+      while !done {
+        match cur {
+          EnvEmpty => {
+            done = true
+          },
+          EnvBind(name, ty, rest) => {
+            Array::push(out, (name, ty))
+            cur = rest
+          },
+          EnvTraitDef(_, _, _, rest) => {
+            cur = rest
+          },
+          EnvTraitImpl(_, _, rest) => {
+            cur = rest
+          },
+          EnvTraitImplGen(_, _, _, _, rest) => {
+            cur = rest
+          },
+          EnvFlat(bindings) => {
+            let mut j = 0
+            while j < Array::length(bindings) {
+              Array::push(out, Array::get(bindings, j))
+              j = j + 1
+            }
+            done = true
+          },
+          EnvCached(_, rest) => {
+            cur = rest
+          }
+        }
+      }
+      out
     }
   }
-  collect(env)
-  out
 }
 
 let string_array_equal: (Array[String], Array[String]) -> Bool = (left, right) -> {
@@ -1133,6 +1212,7 @@ export let rec impls_overlap_for: (TypeEnv, String, Type) -> Bool = (env, trait_
       else impls_overlap_for(rest, trait_name, new_target)
     } else impls_overlap_for(rest, trait_name, new_target),
     EnvTraitImplGen(_, _, _, _, rest) => impls_overlap_for(rest, trait_name, new_target),
+    EnvFlat(_) => false,
     EnvCached(_, rest) => impls_overlap_for(rest, trait_name, new_target)
   }
 }
@@ -1149,6 +1229,7 @@ let rec type_implements_check_env: (TypeEnv, String, Type) -> Bool = (e, trait_n
       else type_implements_check_env(rest, trait_name, resolved)
     } else type_implements_check_env(rest, trait_name, resolved),
     EnvTraitImplGen(_, _, _, _, rest) => type_implements_check_env(rest, trait_name, resolved),
+    EnvFlat(_) => false,
     EnvCached(_, rest) => type_implements_check_env(rest, trait_name, resolved)
   }
 }
@@ -1218,6 +1299,7 @@ let rec type_implements_check_super: (TypeEnv, TypeEnv, String, Type) -> Bool = 
       else type_implements_check_super(rest, full_env, trait_name, resolved)
     } else type_implements_check_super(rest, full_env, trait_name, resolved),
     EnvTraitImplGen(_, _, _, _, rest) => type_implements_check_super(rest, full_env, trait_name, resolved),
+    EnvFlat(_) => false,
     EnvCached(_, rest) => type_implements_check_super(rest, full_env, trait_name, resolved)
   }
 }

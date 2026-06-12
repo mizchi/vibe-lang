@@ -1,11 +1,58 @@
 //# Imports
 
 import ./type_db.vibe {
-  db_check_env, db_new, db_set_source, db_typecheck, db_typecheck_count
+  db_check_env, db_new, db_set_source, db_typecheck, db_typecheck_count,
+  db_typecheck_fs
 }
 
 import ./types.vibe {
   env_lookup
+}
+
+import ./cache/persistent_cache.vibe {
+  compact_string_fingerprint, persistent_dep_list_cache_path,
+  persistent_leaf_fingerprint_cache_path, persistent_module_header_cache_path,
+  persistent_type_env_cache_path
+}
+
+//# Functions
+
+let remove_file_if_exists: (String) -> Unit with { Fs } = (path) -> {
+  if Fs::exists(path) {
+    Fs::remove(path)
+  } else {
+    ()
+  }
+}
+
+let string_to_bytes: (String) -> Bytes = (s) -> {
+  let out = Bytes::new()
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    Bytes::push(out, String::char_code_at(s, i))
+    i = i + 1
+  }
+  out
+}
+
+let build_test_fingerprint: (String, Array[(String, String)]) -> String = (source, dep_fps) -> {
+  let mut acc = compact_string_fingerprint(source)
+  let mut i = 0
+  while i < Array::length(dep_fps) {
+    let (dep_path, dep_fp) = Array::get(dep_fps, i)
+    acc = compact_string_fingerprint(String::concat(acc, String::concat("|", String::concat(dep_path, String::concat("=", dep_fp)))))
+    i = i + 1
+  }
+  acc
+}
+
+let remove_typecheck_fs_cache: (String, String, String) -> Unit with { Fs } = (path, source, fingerprint) -> {
+  let source_fp = compact_string_fingerprint(source)
+  remove_file_if_exists(persistent_dep_list_cache_path(path, source_fp))
+  remove_file_if_exists(persistent_module_header_cache_path(path, source_fp))
+  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(path, source_fp))
+  remove_file_if_exists(persistent_type_env_cache_path(fingerprint))
 }
 
 //# Misc
@@ -38,6 +85,164 @@ test "cross-module type propagation" {
     None => false
   }
   assert(a_x_is_int)
+}
+
+test "cross-module re-export propagates enum constructors" {
+  let db0 = db_new()
+  let ast_src = "export enum TypeExpr { TyName(String); TyTuple(Array[TypeExpr]) }"
+  let index_src = "export ./ast.vibe { TypeExpr }"
+  let main_src = "import ./index.vibe { TypeExpr }\nlet ann: TypeExpr = TyTuple([TyName(\"Int\")])"
+  let db1 = db_set_source(
+    db_set_source(
+      db_set_source(db0, "main.vibe", main_src),
+      "index.vibe",
+      index_src
+    ),
+    "ast.vibe",
+    ast_src
+  )
+  let db2 = db_typecheck(db1, "main.vibe")
+  let has_ann = match db_check_env(db2, "main.vibe") {
+    Some(e) => match env_lookup(e, "ann") {
+      Some(CtUnknown) => false,
+      Some(_) => true,
+      _ => false
+    },
+    None => false
+  }
+  assert(has_ann)
+  let has_ctor = match db_check_env(db2, "main.vibe") {
+    Some(e) => match env_lookup(e, "TyTuple") {
+      Some(CtUnknown) => false,
+      Some(_) => true,
+      _ => false
+    },
+    None => false
+  }
+  assert(has_ctor)
+}
+
+test "db_typecheck_fs: re-exported enum type imports constructors" {
+  let ast_path = "/tmp/vibe_compiler_reexport_enum_ctor_fs_ast.vibe"
+  let index_path = "/tmp/vibe_compiler_reexport_enum_ctor_fs_index.vibe"
+  let main_path = "/tmp/vibe_compiler_reexport_enum_ctor_fs_main.vibe"
+  let ast_src = "export enum TypeExpr { TyName(String); TyTuple(Array[TypeExpr]) }"
+  let index_src = "export ./vibe_compiler_reexport_enum_ctor_fs_ast.vibe { TypeExpr }"
+  let main_src = "import ./vibe_compiler_reexport_enum_ctor_fs_index.vibe { TypeExpr }\nlet ann: TypeExpr = TyTuple([TyName(\"Int\")])"
+  Fs::write_bytes(ast_path, string_to_bytes(ast_src))
+  Fs::write_bytes(index_path, string_to_bytes(index_src))
+  Fs::write_bytes(main_path, string_to_bytes(main_src))
+  let ast_fp = build_test_fingerprint(ast_src, Array::slice([
+    ("", "")
+  ], 0, 0))
+  let index_fp = build_test_fingerprint(index_src, [
+    (ast_path, ast_fp)
+  ])
+  let main_fp = build_test_fingerprint(main_src, [
+    (index_path, index_fp)
+  ])
+  remove_typecheck_fs_cache(ast_path, ast_src, ast_fp)
+  remove_typecheck_fs_cache(index_path, index_src, index_fp)
+  remove_typecheck_fs_cache(main_path, main_src, main_fp)
+  let db1 = db_set_source(
+    db_set_source(
+      db_set_source(db_new(), ast_path, ast_src),
+      index_path,
+      index_src
+    ),
+    main_path,
+    main_src
+  )
+  let db2 = db_typecheck_fs(db1, main_path)
+  let has_ctor = match db_check_env(db2, main_path) {
+    Some(e) => match env_lookup(e, "TyTuple") {
+      Some(CtUnknown) => false,
+      Some(_) => true,
+      _ => false
+    },
+    None => false
+  }
+  assert(has_ctor)
+}
+
+test "db_typecheck_fs: extensionless directory re-export imports enum constructors" {
+  let base_dir = "/tmp/vibe_compiler_dir_reexport_enum_ctor_fs"
+  let core_dir = String::concat(base_dir, "/core")
+  let ast_path = String::concat(core_dir, "/ast.vibe")
+  let index_path = String::concat(core_dir, "/index.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  let ast_src = "export enum TypeExpr { TyName(String); TyTuple(Array[TypeExpr]) }"
+  let index_src = "export ./ast.vibe { TypeExpr }"
+  let main_src = "import ./core { TypeExpr }\nlet ann: TypeExpr = TyTuple([TyName(\"Int\")])"
+  Fs::mkdir_p(core_dir)
+  Fs::write_bytes(ast_path, string_to_bytes(ast_src))
+  Fs::write_bytes(index_path, string_to_bytes(index_src))
+  Fs::write_bytes(main_path, string_to_bytes(main_src))
+  let ast_fp = build_test_fingerprint(ast_src, Array::slice([
+    ("", "")
+  ], 0, 0))
+  let index_fp = build_test_fingerprint(index_src, [
+    (ast_path, ast_fp)
+  ])
+  let main_fp = build_test_fingerprint(main_src, [
+    (index_path, index_fp)
+  ])
+  remove_typecheck_fs_cache(ast_path, ast_src, ast_fp)
+  remove_typecheck_fs_cache(index_path, index_src, index_fp)
+  remove_typecheck_fs_cache(main_path, main_src, main_fp)
+  let db1 = db_set_source(
+    db_set_source(
+      db_set_source(db_new(), ast_path, ast_src),
+      index_path,
+      index_src
+    ),
+    main_path,
+    main_src
+  )
+  let db2 = db_typecheck_fs(db1, main_path)
+  let has_ctor = match db_check_env(db2, main_path) {
+    Some(e) => match env_lookup(e, "TyTuple") {
+      Some(CtUnknown) => false,
+      Some(_) => true,
+      _ => false
+    },
+    None => false
+  }
+  assert(has_ctor)
+}
+
+test "db_typecheck_fs: source update bypasses current-run cache" {
+  let path = "/tmp/vibe_compiler_type_db_fs_source_update.vibe"
+  let source1 = "export let value = 1"
+  let source2 = "export let value = \"updated\""
+  let fp1 = build_test_fingerprint(source1, Array::slice([
+    ("", "")
+  ], 0, 0))
+  let fp2 = build_test_fingerprint(source2, Array::slice([
+    ("", "")
+  ], 0, 0))
+  remove_typecheck_fs_cache(path, source1, fp1)
+  remove_typecheck_fs_cache(path, source2, fp2)
+  Fs::write_bytes(path, string_to_bytes(source1))
+  let db1 = db_typecheck_fs(db_set_source(db_new(), path, source1), path)
+  let is_int = match db_check_env(db1, path) {
+    Some(e) => match env_lookup(e, "value") {
+      Some(CtInt) => true,
+      _ => false
+    },
+    None => false
+  }
+  assert(is_int)
+  Fs::write_bytes(path, string_to_bytes(source2))
+  let db2 = db_typecheck_fs(db_set_source(db1, path, source2), path)
+  let is_string = match db_check_env(db2, path) {
+    Some(e) => match env_lookup(e, "value") {
+      Some(CtString) => true,
+      _ => false
+    },
+    None => false
+  }
+  assert(is_string)
 }
 
 test "cross-module cold/warm consistency" {

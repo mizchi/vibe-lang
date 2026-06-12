@@ -15,6 +15,13 @@ SELFBUILD_INVOKE="${VIBE_SELFHOST_GENERATION_SELFBUILD_INVOKE:-auto}"
 FLAT_CLI_SOURCE="${VIBE_SELFHOST_GENERATION_FLAT_CLI_SOURCE:-auto}"
 SELFBUILD_OUT="$PROJECT_ROOT/_build/bench/selfhost_wasi_selfbuild/index_stage2.wasm"
 NODE_STACK_SIZE="${VIBE_SELFHOST_GENERATION_NODE_STACK_SIZE:-131072}"
+# Selfhost-generated wasm now emits guest-side memory.grow checks after heap
+# bumps, so raw ABI runs do not need a fixed host pre-grow. Keep the env knob as
+# an emergency rollback for old artifacts that still require a large upfront
+# memory.
+WASM_PRE_GROW_PAGES="${VIBE_SELFHOST_GENERATION_WASM_PRE_GROW_PAGES:-0}"
+DISABLE_PERSISTENT_ARTIFACT_CACHE="${VIBE_SELFHOST_GENERATION_DISABLE_PERSISTENT_ARTIFACT_CACHE:-1}"
+SKIP_RUN_INIT="${VIBE_SELFHOST_GENERATION_SKIP_RUN_INIT:-1}"
 GENERATION_INVOKE_MODE="runner"
 GENERATION_ENTRY=""
 
@@ -136,6 +143,67 @@ verify_seed_artifact() {
   fi
 }
 
+detect_wasm_host_import_abi() {
+  local wasm="$1"
+  [ -f "$wasm" ] || return 0
+  node - "$wasm" <<'NODE'
+const fs = require("node:fs");
+const wasmPath = process.argv[2];
+const buf = fs.readFileSync(wasmPath);
+
+function readUleb(pos, end) {
+  let value = 0;
+  let shift = 0;
+  let cursor = pos;
+  while (cursor < end) {
+    const byte = buf[cursor++];
+    value += (byte & 0x7f) * (2 ** shift);
+    if ((byte & 0x80) === 0) {
+      return { value, next: cursor };
+    }
+    shift += 7;
+    if (shift > 35) process.exit(0);
+  }
+  process.exit(0);
+}
+
+if (
+  buf.length < 8 ||
+  buf[0] !== 0x00 ||
+  buf[1] !== 0x61 ||
+  buf[2] !== 0x73 ||
+  buf[3] !== 0x6d
+) {
+  process.exit(0);
+}
+
+let pos = 8;
+while (pos < buf.length) {
+  const sectionId = buf[pos++];
+  const sectionLen = readUleb(pos, buf.length);
+  pos = sectionLen.next;
+  const sectionEnd = pos + sectionLen.value;
+  if (sectionEnd > buf.length) process.exit(0);
+  if (sectionId === 0) {
+    const nameLen = readUleb(pos, sectionEnd);
+    const nameStart = nameLen.next;
+    const nameEnd = nameStart + nameLen.value;
+    if (nameEnd > sectionEnd) process.exit(0);
+    const name = buf.slice(nameStart, nameEnd).toString("utf8");
+    if (name === "vibe.abi") {
+      const payload = buf.slice(nameEnd, sectionEnd).toString("utf8");
+      const match = payload.match(/(?:^|\n)host_import_abi=(raw|tagged)(?:\n|$)/);
+      if (match) {
+        process.stdout.write(match[1]);
+      }
+      process.exit(0);
+    }
+  }
+  pos = sectionEnd;
+}
+NODE
+}
+
 run_compile() {
   local label="$1"
   local compiler="$2"
@@ -171,10 +239,21 @@ run_cli_compile() {
   local node_flags="${VIBE_NODE_WASM_FLAGS:---experimental-wasm-exnref --stack-size=$NODE_STACK_SIZE}"
   local import_abi="${VIBE_SELFHOST_IMPORT_ABI:-}"
   if [ -z "$import_abi" ]; then
+    import_abi="$(detect_wasm_host_import_abi "$compiler")"
+  fi
+  if [ -z "$import_abi" ]; then
     case "$label" in
       stage0\(*|validate\ stage0\ *) import_abi="tagged" ;;
       *) import_abi="raw" ;;
     esac
+  fi
+  local skip_run_init="${VIBE_SKIP_RUN_INIT:-}"
+  if [ -z "$skip_run_init" ]; then
+    if [ "$import_abi" = "raw" ]; then
+      skip_run_init="$SKIP_RUN_INIT"
+    else
+      skip_run_init=0
+    fi
   fi
   mkdir -p "$(dirname "$out")"
   echo "[selfhost-gen] $label (invoke cli_main)"
@@ -182,6 +261,9 @@ run_cli_compile() {
     cd "$PROJECT_ROOT"
     VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
       VIBE_SELFHOST_IMPORT_ABI="$import_abi" \
+      VIBE_WASM_PRE_GROW_PAGES="${VIBE_WASM_PRE_GROW_PAGES:-$WASM_PRE_GROW_PAGES}" \
+      VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE="${VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE:-$DISABLE_PERSISTENT_ARTIFACT_CACHE}" \
+      VIBE_SKIP_RUN_INIT="$skip_run_init" \
       VIBE_NODE_WASM_FLAGS="$node_flags" \
       bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
         --invoke cli_main \
@@ -270,6 +352,8 @@ run_selfbuild_compile() {
   (
     cd "$PROJECT_ROOT"
     VIBE_SELFHOST_IMPORT_ABI="$import_abi" \
+      VIBE_WASM_PRE_GROW_PAGES="${VIBE_WASM_PRE_GROW_PAGES:-$WASM_PRE_GROW_PAGES}" \
+      VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE="${VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE:-$DISABLE_PERSISTENT_ARTIFACT_CACHE}" \
       VIBE_NODE_WASM_FLAGS="$node_flags" \
       bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" --invoke selfbuild_compile_stage2 "$compiler"
   )

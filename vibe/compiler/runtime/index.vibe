@@ -49,7 +49,8 @@ import ../module_loader.vibe {
 
 import ../module_graph_path.vibe {
   dir_of_path,
-  resolve_import_path
+  resolve_import_path,
+  resolve_import_path_candidates
 }
 
 import ../cache/persistent_cache.vibe {
@@ -105,10 +106,6 @@ let wrap_db: (TypeDbState) -> TypeDb = (state) -> {
   TypeDb(state)
 }
 
-let dir_of = dir_of_path
-
-let resolve_path = resolve_import_path
-
 let parse_program_with_path: (String, String) -> Array[Stmt] with { Error } = (path, source) -> {
   handle {
     parse_program(lex(source))
@@ -123,7 +120,7 @@ let add_dep: (Array[String], String, String) -> Array[String] = (acc, raw_path, 
   if String::length(raw_path) == 0 {
     acc
   } else {
-    let resolved = resolve_path(base_dir, raw_path)
+    let resolved = resolve_import_path(base_dir, raw_path)
     if contains_str(acc, resolved) {
       acc
     } else {
@@ -320,10 +317,98 @@ let lookup_env_cache: (Array[(String, TypeEnv)], String) -> Option[TypeEnv] = (c
   go(0)
 }
 
+let resolve_cached_import_path: (String, String, Array[(String, TypeEnv)]) -> String = (base_dir, raw_path, cache) -> {
+  let candidates = resolve_import_path_candidates(base_dir, raw_path)
+  let mut selected = ""
+  let mut i = 0
+  while i < Array::length(candidates) && selected == "" {
+    let candidate = Array::get(candidates, i)
+    match lookup_env_cache(cache, candidate) {
+      Some(_) => {
+        selected = candidate
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  if selected == "" {
+    resolve_import_path(base_dir, raw_path)
+  } else {
+    selected
+  }
+}
+
 export let db_check_env: (TypeDb, String) -> Option[TypeEnv] = (db, path) -> {
   match unwrap_db(db) {
     TypeDbState(_, cache, _, _, _, _, _, _, _, _) => lookup_env_cache(cache, path)
   }
+}
+
+let starts_with_upper: (String) -> Bool = (name) -> {
+  if String::length(name) == 0 {
+    false
+  } else {
+    let c = String::char_code_at(name, 0)
+    c >= 65 && c <= 90
+  }
+}
+
+let rec type_returns_name: (Type, String) -> Bool = (ty, type_name) -> {
+  match ty {
+    CtEnum(name) => name == type_name,
+    CtNamed(name, _) => name == type_name,
+    CtFn(_, ret, _) => type_returns_name(ret, type_name),
+    CtForAll(_, _, body) => type_returns_name(body, type_name),
+    _ => false
+  }
+}
+
+let bind_enum_constructor_companions: (TypeEnv, Array[(String, Type)], String) -> TypeEnv = (acc, dep_bindings, enum_name) -> {
+  let mut out = acc
+  let mut i = 0
+  while i < Array::length(dep_bindings) {
+    let (candidate_name, candidate_ty) = Array::get(dep_bindings, i)
+    if candidate_name != enum_name && starts_with_upper(candidate_name) && type_returns_name(candidate_ty, enum_name) {
+      out = env_bind(out, candidate_name, candidate_ty)
+    }
+    i = i + 1
+  }
+  out
+}
+
+let bind_import_names_from_cache: (TypeEnv, String, Array[(String, Option[String])], Array[(String, TypeEnv)]) -> TypeEnv = (acc, resolved, names, cache) -> {
+  let dep_env = match lookup_env_cache(cache, resolved) {
+    Some(e) => e,
+    None => EnvEmpty
+  }
+  let dep_bindings = env_flat_bindings(dep_env)
+  let nlen = Array::length(names)
+  let rec bind_names: (Int, TypeEnv) -> TypeEnv = (j, nacc) -> {
+    if j >= nlen {
+      nacc
+    } else {
+      let (name, alias) = Array::get(names, j)
+      let bound_name = match alias {
+        Some(a) => a,
+        None => name
+      }
+      let ty = match env_lookup_flat(dep_bindings, name) {
+        Some(t) => t,
+        None => CtUnknown
+      }
+      let with_name = env_bind(nacc, bound_name, ty)
+      let with_companions = match ty {
+        CtEnum(enum_name) => bind_enum_constructor_companions(with_name, dep_bindings, enum_name),
+        _ => if starts_with_upper(name) {
+          bind_enum_constructor_companions(with_name, dep_bindings, name)
+        } else {
+          with_name
+        }
+      }
+      bind_names(j + 1, with_companions)
+    }
+  }
+  bind_names(0, acc)
 }
 
 let build_import_env: (Array[Stmt], String, Array[(String, TypeEnv)]) -> TypeEnv = (stmts, base_dir, cache) -> {
@@ -334,30 +419,12 @@ let build_import_env: (Array[Stmt], String, Array[(String, TypeEnv)]) -> TypeEnv
     } else {
       let next = match Array::get(stmts, i) {
         SImport(raw_path, names) => {
-          let resolved = resolve_path(base_dir, raw_path)
-          let dep_env = match lookup_env_cache(cache, resolved) {
-            Some(e) => e,
-            None => EnvEmpty
-          }
-          let dep_bindings = env_flat_bindings(dep_env)
-          let nlen = Array::length(names)
-          let rec bind_names: (Int, TypeEnv) -> TypeEnv = (j, nacc) -> {
-            if j >= nlen {
-              nacc
-            } else {
-              let (name, alias) = Array::get(names, j)
-              let bound_name = match alias {
-                Some(a) => a,
-                None => name
-              }
-              let ty = match env_lookup_flat(dep_bindings, name) {
-                Some(t) => t,
-                None => CtUnknown
-              }
-              bind_names(j + 1, env_bind(nacc, bound_name, ty))
-            }
-          }
-          bind_names(0, acc)
+          let resolved = resolve_cached_import_path(base_dir, raw_path, cache)
+          bind_import_names_from_cache(acc, resolved, names, cache)
+        },
+        SReExport(raw_path, names) => {
+          let resolved = resolve_cached_import_path(base_dir, raw_path, cache)
+          bind_import_names_from_cache(acc, resolved, names, cache)
         },
         _ => acc
       }
@@ -487,7 +554,7 @@ let resolve_deps_for_source: (RippleDb, Array[(String, String)], String, String,
           Some(deps) => (deps, dep_source_cache, parse_count),
           None => {
             let stmts = parse_program_with_path(path, source)
-            let deps = collect_import_deps_from_stmts(stmts, dir_of(path))
+            let deps = collect_import_deps_from_stmts(stmts, dir_of_path(path))
             (
               deps,
               upsert_string_pair(dep_source_cache, path, source),
@@ -497,7 +564,7 @@ let resolve_deps_for_source: (RippleDb, Array[(String, String)], String, String,
         }
       } else {
         let stmts = parse_program_with_path(path, source)
-        let deps = collect_import_deps_from_stmts(stmts, dir_of(path))
+        let deps = collect_import_deps_from_stmts(stmts, dir_of_path(path))
         (
           deps,
           upsert_string_pair(dep_source_cache, path, source),
@@ -506,7 +573,7 @@ let resolve_deps_for_source: (RippleDb, Array[(String, String)], String, String,
       },
     None => {
       let stmts = parse_program_with_path(path, source)
-      let deps = collect_import_deps_from_stmts(stmts, dir_of(path))
+      let deps = collect_import_deps_from_stmts(stmts, dir_of_path(path))
       (
         deps,
         upsert_string_pair(dep_source_cache, path, source),
@@ -632,7 +699,7 @@ let rec ensure_fingerprint: (RippleDb, Array[(String, TypeEnv)], Array[(String, 
             } else {
               let stmts = parse_program_with_path(path, source)
               let final_parse_count = parse_count_after_deps + 1
-              let import_env = build_import_env(stmts, dir_of(path), env_cache_after_deps)
+              let import_env = build_import_env(stmts, dir_of_path(path), env_cache_after_deps)
               let checked_env = check_program_with_env(stmts, import_env)
               let next_env_cache = upsert_env_cache(env_cache_after_deps, path, checked_env)
               let next_db = ripple_record_eval(db_after_deps, path, fingerprint, deps)
@@ -647,7 +714,7 @@ let rec ensure_fingerprint: (RippleDb, Array[(String, TypeEnv)], Array[(String, 
           None => {
             let stmts = parse_program_with_path(path, source)
             let final_parse_count = parse_count_after_deps + 1
-            let import_env = build_import_env(stmts, dir_of(path), env_cache_after_deps)
+            let import_env = build_import_env(stmts, dir_of_path(path), env_cache_after_deps)
             let checked_env = check_program_with_env(stmts, import_env)
             let next_env_cache = upsert_env_cache(env_cache_after_deps, path, checked_env)
             let next_db = ripple_record_eval(db_after_deps, path, fingerprint, deps)
@@ -695,166 +762,6 @@ export let db_typecheck: (TypeDb, String) -> TypeDb with { Error } = (db, path) 
           module_source_count,
           codegen_count
         )
-      )
-    }
-  }
-}
-
-let rec ensure_fingerprint_fs: (RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int, String, Array[String]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } = (rdb, env_cache, dep_source_cache, parse_count, path, stack) -> {
-  if contains_str(stack, path) {
-    throw(String::concat("type_db: import cycle detected at ", path))
-  } else {
-    match ripple_get_source(rdb, path) {
-      None => (String::concat("missing:", path), rdb, env_cache, dep_source_cache, parse_count),
-      Some(source) => {
-        match load_persistent_leaf_fingerprint(path, source) {
-          Some(leaf_fingerprint) =>
-            match load_persistent_type_env(leaf_fingerprint) {
-              Some(cached_env) => {
-                let next_env_cache = upsert_env_cache(env_cache, path, cached_env)
-                let next_db = ripple_record_eval(rdb, path, leaf_fingerprint, empty_strings())
-                (
-                  leaf_fingerprint,
-                  next_db,
-                  next_env_cache,
-                  dep_source_cache,
-                  parse_count
-                )
-              },
-              None => continue_fingerprint_fs(rdb, env_cache, dep_source_cache, parse_count, path, stack, source)
-            },
-          None => continue_fingerprint_fs(rdb, env_cache, dep_source_cache, parse_count, path, stack, source)
-        }
-      }
-    }
-  }
-}
-
-let continue_fingerprint_fs: (RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int, String, Array[String], String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } = (rdb, env_cache, dep_source_cache, parse_count, path, stack, source) -> {
-  let (deps, next_dep_source_cache, initial_parse_count) = resolve_deps_for_source_fs(
-    rdb,
-    dep_source_cache,
-    path,
-    source,
-    parse_count
-  )
-  Fs::write_file(
-    persistent_dep_list_cache_path(path, compact_string_fingerprint(source)),
-    persistent_dep_list_text(deps)
-  )
-  let dlen = Array::length(deps)
-  // Cycle-detection stack: push self before recursing, truncate back after.
-  // O(1) per frame vs. previous Array::concat(stack, [path]) which was O(depth) per frame.
-  let saved_stack_len = Array::length(stack)
-  Array::push(stack, path)
-  let dep_fps = empty_dep_fps()
-  let rec load_deps: (Int, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) -> (RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } = (index, current_db, current_env_cache, current_dep_source_cache, current_parse_count) -> {
-    if index >= dlen {
-      (
-        current_db,
-        current_env_cache,
-        current_dep_source_cache,
-        current_parse_count
-      )
-    } else {
-      let dep_path = Array::get(deps, index)
-      let (
-        dep_fp,
-        next_db,
-        next_env_cache,
-        next_dep_source_cache2,
-        next_parse_count
-      ) = ensure_fingerprint_fs(
-        current_db,
-        current_env_cache,
-        current_dep_source_cache,
-        current_parse_count,
-        dep_path,
-        stack
-      )
-      Array::push(dep_fps, (dep_path, dep_fp))
-      load_deps(
-        index + 1,
-        next_db,
-        next_env_cache,
-        next_dep_source_cache2,
-        next_parse_count
-      )
-    }
-  }
-  let (
-    db_after_deps,
-    env_cache_after_deps,
-    dep_source_cache_after_deps,
-    parse_count_after_deps
-  ) = load_deps(0, rdb, env_cache, next_dep_source_cache, initial_parse_count)
-  Array::truncate(stack, saved_stack_len)
-  let fingerprint = build_fingerprint(source, dep_fps)
-  match ripple_get_fingerprint(db_after_deps, path) {
-    Some(cached_fp) =>
-      if cached_fp == fingerprint {
-        (
-          fingerprint,
-          db_after_deps,
-          env_cache_after_deps,
-          dep_source_cache_after_deps,
-          parse_count_after_deps
-        )
-      } else {
-        finish_typecheck_fs(
-          db_after_deps,
-          env_cache_after_deps,
-          dep_source_cache_after_deps,
-          parse_count_after_deps,
-          path,
-          source,
-          deps,
-          fingerprint
-        )
-      },
-    None =>
-      finish_typecheck_fs(
-        db_after_deps,
-        env_cache_after_deps,
-        dep_source_cache_after_deps,
-        parse_count_after_deps,
-        path,
-        source,
-        deps,
-        fingerprint
-      )
-  }
-}
-
-let finish_typecheck_fs: (RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int, String, String, Array[String], String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } = (rdb, env_cache, dep_source_cache, parse_count, path, source, deps, fingerprint) -> {
-  match load_persistent_type_env(fingerprint) {
-    Some(cached_env) => {
-      let next_env_cache = upsert_env_cache(env_cache, path, cached_env)
-      let next_db = ripple_record_eval(rdb, path, fingerprint, deps)
-      (fingerprint, next_db, next_env_cache, dep_source_cache, parse_count)
-    },
-    None => {
-      let stmts = parse_program_with_path(path, source)
-      let final_parse_count = parse_count + 1
-      let import_env = build_import_env(stmts, dir_of(path), env_cache)
-      let checked_env = check_program_with_env(stmts, import_env)
-      store_persistent_type_env(fingerprint, checked_env)
-      if Array::length(deps) == 0 {
-        Fs::write_file(
-          persistent_leaf_fingerprint_cache_path(path, compact_string_fingerprint(source)),
-          persistent_leaf_fingerprint_text(fingerprint)
-        )
-      } else {
-        ()
-      }
-      let next_env_cache = upsert_env_cache(env_cache, path, checked_env)
-      let next_db = ripple_record_eval(rdb, path, fingerprint, deps)
-      (
-        fingerprint,
-        next_db,
-        next_env_cache,
-        dep_source_cache,
-        final_parse_count
       )
     }
   }
@@ -950,7 +857,7 @@ let append_import_alias_collision_defs_from_sources: (Array[Stmt], String, Array
   while i < Array::length(refs) {
     let (raw_path, original, local) = Array::get(refs, i)
     if !contains_str(emitted, local) {
-      let resolved = resolve_path(base_dir, raw_path)
+      let resolved = resolve_import_path(base_dir, raw_path)
       match lookup_source_by_path(sources, resolved) {
         Some(source) => {
           let source_stmts = namespace_private_value_stmts(
