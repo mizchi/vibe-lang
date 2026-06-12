@@ -45,12 +45,29 @@ let assert_wasm_magic: (Bytes) -> Unit = (bytes) -> {
 test "compile_source_wasi: produces valid WASM with entry" {
   let bytes = compile_source_wasi("let main: () -> Int = () -> { 0 }", "main")
   assert_wasm_magic(bytes)
+  assert(bytes_contains(bytes, "vibe.abi"))
+  assert(bytes_contains(bytes, "host_import_abi=raw"))
 }
 
 test "compile_source_wasi: pure entry omits vibe host imports" {
   let bytes = compile_source_wasi("let answer: () -> Int = () -> { 40 + 2 }", "answer")
-  assert(bytes_contains(bytes, "vibe") == false)
   assert(bytes_contains(bytes, "env-get") == false)
   assert(bytes_contains(bytes, "args-len") == false)
   assert(bytes_contains(bytes, "fs_write_bytes") == false)
+}
+
+test "compile_source_wasi: canonicalizes effect builtin aliases in calls" {
+  let bytes = compile_source_wasi(
+    "let answer: () -> Int with { Fs } = () -> { if perform Fs::Exists(\"/tmp\") { 1 } else { 0 } }",
+    "answer"
+  )
+  assert_wasm_magic(bytes)
+}
+
+test "compile_source_wasi: statement Array::push compiles" {
+  let bytes = compile_source_wasi(
+    "let answer: () -> Int = () -> { let xs = Array::slice([0], 0, 0); Array::push(xs, 1); Array::length(xs) }",
+    "answer"
+  )
+  assert_wasm_magic(bytes)
 }

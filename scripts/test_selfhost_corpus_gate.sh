@@ -172,19 +172,18 @@ SUMMARY_TSV="$OUT_DIR/corpus_results.tsv"
 : > "$SUMMARY_TSV"
 OUT_WASM_REL="$OUT_DIR_REL/_corpus_out.wasm"
 
-for f in "${FILES[@]}"; do
-  errlog="$OUT_DIR/last_err.log"
-  VIBE_PREOPEN_DIR="$ROOT" timeout "$TIMEOUT_SEC" \
-    bash "$RUNNER" --invoke cli_main "$SELFHOST_WASM" "$f" "$OUT_WASM_REL" "$ENTRY" "$COMPILE_MODE" \
-    >"$errlog" 2>&1
-  st=$?
+record_result() {
+  local f="$1"
+  local st="$2"
+  local snippet="$3"
   if [ "$st" -eq 0 ]; then
     PASS=$((PASS + 1))
     printf '%s\tok\t\t\n' "$f" >> "$SUMMARY_TSV"
   else
-    snippet="$(grep -m1 -iE 'Error string|error|parse|type|trap|unsupported|unexpected|unknown|expected' "$errlog" 2>/dev/null | sed 's/^[[:space:]]*//' | head -c 200)"
-    [ -z "$snippet" ] && snippet="$(grep -v 'crash debug' "$errlog" 2>/dev/null | head -n1 | head -c 200)"
-    if [ "$st" -eq 124 ]; then TIMEOUTS=$((TIMEOUTS + 1)); snippet="(timeout ${TIMEOUT_SEC}s)"; fi
+    if [ "$st" -eq 124 ]; then
+      TIMEOUTS=$((TIMEOUTS + 1))
+      [ -n "$snippet" ] || snippet="(timeout ${TIMEOUT_SEC}s)"
+    fi
     bucket="$(classify_err "$snippet")"
     case "$bucket" in
       REAL) REAL=$((REAL + 1)) ;;
@@ -195,6 +194,17 @@ for f in "${FILES[@]}"; do
     printf '%s\tfail(%d)\t%s\t%s\n' "$f" "$st" "$bucket" "$snippet" >> "$SUMMARY_TSV"
     printf '  FAIL [%s] %s\n        %s\n' "$bucket" "$f" "$snippet"
   fi
+}
+
+for f in "${FILES[@]}"; do
+  errlog="$OUT_DIR/last_err.log"
+  VIBE_PREOPEN_DIR="$ROOT" timeout "$TIMEOUT_SEC" \
+    bash "$RUNNER" --invoke cli_main "$SELFHOST_WASM" "$f" "$OUT_WASM_REL" "$ENTRY" "$COMPILE_MODE" \
+    >"$errlog" 2>&1
+  st=$?
+  snippet="$(grep -m1 -iE 'Error string|error|parse|type|trap|unsupported|unexpected|unknown|expected' "$errlog" 2>/dev/null | sed 's/^[[:space:]]*//' | head -c 200)"
+  [ -z "$snippet" ] && snippet="$(grep -v 'crash debug' "$errlog" 2>/dev/null | head -n1 | head -c 200)"
+  record_result "$f" "$st" "$snippet"
 done
 
 echo ""

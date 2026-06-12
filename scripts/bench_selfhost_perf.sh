@@ -46,6 +46,13 @@ if [ "$COMPILER_KIND" = "cli-core" ] && [ -z "${VIBE_SELFHOST_PERF_WASM_OPT+x}" 
   WASM_OPT_MODE="off"
 fi
 PROFILE_CALLSTACK="${VIBE_SELFHOST_PERF_PROFILE_CALLSTACK:-}"
+# Selfhost-generated cli-core artifacts grow memory in guest code. Avoid an
+# upfront raw-ABI pre-grow so peak memory measurements reflect actual demand.
+CLI_CORE_WASM_PRE_GROW_PAGES="${VIBE_SELFHOST_PERF_CLI_CORE_WASM_PRE_GROW_PAGES:-0}"
+CLI_CORE_DISABLE_PERSISTENT_ARTIFACT_CACHE="${VIBE_SELFHOST_PERF_CLI_CORE_DISABLE_PERSISTENT_ARTIFACT_CACHE:-1}"
+# Keep command-style cli-core benches on the normal _start initialization path.
+# Low-level generation can skip _start safely, but daemon commands hang without it.
+CLI_CORE_SKIP_RUN_INIT="${VIBE_SELFHOST_PERF_CLI_CORE_SKIP_RUN_INIT:-0}"
 # Runtime that hosts the stage1 wasm.
 #   moonrun        — legacy v8 interpreter (no rust toolchain needed)
 #   wasmtime       — wasmtime via moonrun_wt without precompile
@@ -685,7 +692,11 @@ run_compile_cli_core_all_cases_daemon() {
     done
   done
 
-  if ! VIBE_PREOPEN_DIR="$PROJECT_ROOT" bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
+  if ! VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
+      VIBE_WASM_PRE_GROW_PAGES="${VIBE_WASM_PRE_GROW_PAGES:-$CLI_CORE_WASM_PRE_GROW_PAGES}" \
+      VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE="${VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE:-$CLI_CORE_DISABLE_PERSISTENT_ARTIFACT_CACHE}" \
+      VIBE_SKIP_RUN_INIT="${VIBE_SKIP_RUN_INIT:-$CLI_CORE_SKIP_RUN_INIT}" \
+      bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
       --daemon --invoke cli_main "$wasm_path" < "$req_file" > "$resp_file" 2>"${tmp_dir}/compile.daemon.all.stderr"; then
     echo "bench-selfhost-perf: cli-core compile daemon run failed; stderr at ${tmp_dir}/compile.daemon.all.stderr" >&2
     exit 1
@@ -813,7 +824,11 @@ run_check_cli_core_all_cases_daemon() {
     done
   done
 
-  if ! VIBE_PREOPEN_DIR="$PROJECT_ROOT" bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
+  if ! VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
+      VIBE_WASM_PRE_GROW_PAGES="${VIBE_WASM_PRE_GROW_PAGES:-$CLI_CORE_WASM_PRE_GROW_PAGES}" \
+      VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE="${VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE:-$CLI_CORE_DISABLE_PERSISTENT_ARTIFACT_CACHE}" \
+      VIBE_SKIP_RUN_INIT="${VIBE_SKIP_RUN_INIT:-$CLI_CORE_SKIP_RUN_INIT}" \
+      bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
       --daemon --invoke cli_main "$wasm_path" < "$req_file" > "$resp_file" 2>"${tmp_dir}/check.cli_core.daemon.all.stderr"; then
     echo "bench-selfhost-perf: cli-core check daemon run failed; stderr at ${tmp_dir}/check.cli_core.daemon.all.stderr" >&2
     exit 1
@@ -948,7 +963,11 @@ selfhost_cli_core_runner() {
   profile_tsv="$(extract_profile_tsv_arg "$@" || true)"
   profile_callstack="$(extract_profile_callstack_arg "$@" || true)"
   start_us="$(now_us)"
-  if VIBE_PREOPEN_DIR="$PROJECT_ROOT" bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main "$@"; then
+  if VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
+      VIBE_WASM_PRE_GROW_PAGES="${VIBE_WASM_PRE_GROW_PAGES:-$CLI_CORE_WASM_PRE_GROW_PAGES}" \
+      VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE="${VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE:-$CLI_CORE_DISABLE_PERSISTENT_ARTIFACT_CACHE}" \
+      VIBE_SKIP_RUN_INIT="${VIBE_SKIP_RUN_INIT:-$CLI_CORE_SKIP_RUN_INIT}" \
+      bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main "$@"; then
     status=0
   else
     status=$?

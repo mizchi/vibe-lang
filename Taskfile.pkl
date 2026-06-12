@@ -775,7 +775,7 @@ local benchSelfhostMemory = new Task {
 local testSelfhostPerfGate = new Task {
   name = "test-selfhost-perf-gate"
   cmd =
-    "VIBE_SELFHOST_PERF_COMPILER_KIND=\"${VIBE_SELFHOST_PERF_COMPILER_KIND:-cli-core}\" VIBE_SELFHOST_PERF_CHECKER_KIND=\"${VIBE_SELFHOST_PERF_CHECKER_KIND:-cli-core}\" VIBE_SELFHOST_PERF_COMPILE_DAEMON=\"${VIBE_SELFHOST_PERF_COMPILE_DAEMON:-1}\" VIBE_SELFHOST_PERF_CHECK_DAEMON=\"${VIBE_SELFHOST_PERF_CHECK_DAEMON:-1}\" VIBE_SELFHOST_PERF_RUNS=\"${1:-3}\" VIBE_SELFHOST_PERF_MAX_COMPILE_RATIO=\"${2:-8.0}\" VIBE_SELFHOST_PERF_MAX_CHECK_RATIO=\"${3:-5.5}\" VIBE_SELFHOST_PERF_CASES_FILE=\"${4:-bench/selfhost_perf/kpi_cases.txt}\" scripts/bench_selfhost_perf.sh"
+    "VIBE_SELFHOST_PERF_COMPILER_KIND=\"${VIBE_SELFHOST_PERF_COMPILER_KIND:-cli-core}\" VIBE_SELFHOST_PERF_CHECKER_KIND=\"${VIBE_SELFHOST_PERF_CHECKER_KIND:-cli-core}\" VIBE_SELFHOST_PERF_COMPILE_DAEMON=\"${VIBE_SELFHOST_PERF_COMPILE_DAEMON:-1}\" VIBE_SELFHOST_PERF_CHECK_DAEMON=\"${VIBE_SELFHOST_PERF_CHECK_DAEMON:-1}\" VIBE_SELFHOST_PERF_RUNS=\"${1:-3}\" VIBE_SELFHOST_PERF_MAX_COMPILE_RATIO=\"${2:-2.5}\" VIBE_SELFHOST_PERF_MAX_CHECK_RATIO=\"${3:-1.33}\" VIBE_SELFHOST_PERF_CASES_FILE=\"${4:-bench/selfhost_perf/kpi_cases.txt}\" scripts/bench_selfhost_perf.sh"
   acceptsArgs = true
   inputs { ...moonSources; ...scriptSources }
 }
@@ -786,9 +786,9 @@ local testSelfhostCorpusGate = new Task {
   inputs { ...moonSources; ...scriptSources; "scripts/selfhost_corpus_baseline.txt" }
 }
 
-local selfhostTrialGenerationGate = new Task {
-  name = "selfhost-trial-generation-gate"
-  description = "trial gate: seed -> stage1 -> stage2 -> stage3 selfhost build"
+local selfhostGenerationGate = new Task {
+  name = "selfhost-generation-gate"
+  description = "selfhost operation gate: seed -> stage1 -> stage2 -> stage3 build"
   cmd = "bash scripts/selfhost_generations.sh build --stage3"
   cache = false
   inputs {
@@ -800,25 +800,25 @@ local selfhostTrialGenerationGate = new Task {
   outputs { "_build/selfhost/generations/**" }
 }
 
-local selfhostTrialPerfKpi = new Task {
-  name = "selfhost-trial-perf-kpi"
-  description = "trial gate: selfhost perf KPI with cutover thresholds"
+local selfhostPerfKpi = new Task {
+  name = "selfhost-perf-kpi"
+  description = "selfhost operation gate: perf KPI with cutover thresholds"
   cmd =
     "VIBE_SELFHOST_PERF_COMPILER_KIND=cli-core VIBE_SELFHOST_PERF_CHECKER_KIND=cli-core VIBE_SELFHOST_PERF_COMPILE_DAEMON=1 VIBE_SELFHOST_PERF_CHECK_DAEMON=1 VIBE_SELFHOST_PERF_RUNS=3 VIBE_SELFHOST_PERF_MAX_COMPILE_RATIO=2.5 VIBE_SELFHOST_PERF_MAX_CHECK_RATIO=1.33 VIBE_SELFHOST_PERF_CASES_FILE=bench/selfhost_perf/kpi_cases.txt scripts/bench_selfhost_perf.sh"
   inputs { ...moonSources; ...scriptSources; "bench/selfhost_perf/kpi_cases.txt" }
 }
 
-local selfhostTrialRssKpi = new Task {
-  name = "selfhost-trial-rss-kpi"
-  description = "trial gate: selfhost peak RSS KPI with cutover threshold"
+local selfhostRssKpi = new Task {
+  name = "selfhost-rss-kpi"
+  description = "selfhost operation gate: peak RSS KPI with cutover threshold"
   cmd = "VIBE_SELFHOST_RSS_MAX_RATIO=2.0 scripts/bench_selfhost_rss.sh --gate"
   inputs { ...moonSources; ...scriptSources; "bench/selfhost_perf/kpi_cases.txt" }
 }
 
-local selfhostTrialPostGenerationGate = new Task {
-  name = "selfhost-trial-post-generation-gate"
-  description = "internal: complete selfhost trial gates that must run after stage generation"
-  cmd = "bash scripts/selfhost_trial_gate.sh --post-generation"
+local selfhostPostGenerationGate = new Task {
+  name = "selfhost-post-generation-gate"
+  description = "internal: complete selfhost operation gates that must run after stage generation"
+  cmd = "bash scripts/selfhost_gate.sh --post-generation"
   cache = false
   visibility = "internal"
   inputs {
@@ -827,7 +827,32 @@ local selfhostTrialPostGenerationGate = new Task {
     "bench/selfhost_perf/kpi_cases.txt"
     "scripts/selfhost_corpus_baseline.txt"
   }
-  deps { selfhostTrialGenerationGate }
+  deps { selfhostGenerationGate }
+}
+
+local selfhostTrialGenerationGate = new Task {
+  name = "selfhost-trial-generation-gate"
+  description = "compat alias for selfhost-generation-gate"
+  deps { selfhostGenerationGate }
+}
+
+local selfhostTrialPerfKpi = new Task {
+  name = "selfhost-trial-perf-kpi"
+  description = "compat alias for selfhost-perf-kpi"
+  deps { selfhostPerfKpi }
+}
+
+local selfhostTrialRssKpi = new Task {
+  name = "selfhost-trial-rss-kpi"
+  description = "compat alias for selfhost-rss-kpi"
+  deps { selfhostRssKpi }
+}
+
+local selfhostTrialPostGenerationGate = new Task {
+  name = "selfhost-trial-post-generation-gate"
+  description = "compat alias for selfhost-post-generation-gate"
+  visibility = "internal"
+  deps { selfhostPostGenerationGate }
 }
 
 local benchBundleSize = scriptTask("bench-bundle-size", "scripts/bench_bundle_size.sh")
@@ -1316,10 +1341,16 @@ local releaseSelfhostGates = new Task {
   }
 }
 
+local selfhostGate = new Task {
+  name = "selfhost-gate"
+  description = "complete selfhost sign-off: staged build + cutover + corpus + perf/RSS KPI"
+  deps { selfhostPostGenerationGate }
+}
+
 local selfhostTrialGate = new Task {
   name = "selfhost-trial-gate"
-  description = "complete selfhost trial sign-off: staged build + cutover + corpus + perf/RSS KPI"
-  deps { selfhostTrialPostGenerationGate }
+  description = "compat alias for selfhost-gate"
+  deps { selfhostGate }
 }
 
 local releaseCheck = new Task {
@@ -1516,6 +1547,10 @@ tasks {
   benchSelfhostMemory
   testSelfhostPerfGate
   testSelfhostCorpusGate
+  selfhostGenerationGate
+  selfhostPerfKpi
+  selfhostRssKpi
+  selfhostPostGenerationGate
   selfhostTrialGenerationGate
   selfhostTrialPerfKpi
   selfhostTrialRssKpi
@@ -1610,6 +1645,7 @@ tasks {
   vibeNormalizeCached
   vibeNormalizeCheck
   releaseSelfhostGates
+  selfhostGate
   selfhostTrialGate
   releaseCheck
   checkRelease

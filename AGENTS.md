@@ -18,7 +18,7 @@ pkf run fmt               # format code
 pkf run check             # type check
 pkf run test              # run tests
 pkf run test-update       # update snapshot tests
-pkf run selfhost-trial-gate  # complete selfhost trial gate
+pkf run selfhost-gate        # complete selfhost operation gate
 pkf run run -- args       # run main with args
 pkf run info              # generate type definition files
 pkf affected --since=origin/main 'test:*'  # diff-aware package tests
@@ -39,7 +39,7 @@ pkf affected --since=origin/main 'test:*'  # diff-aware package tests
 vibe compiler は二層構造になっている:
 
 - **`vibe/compiler/` (selfhost: vibe で書かれた vibe compiler)** —
-  2026-06-10 以降の完全 selfhost trial では source of truth。
+  2026-06-12 以降の完全 selfhost 運用では source of truth。
   parser/checker/codegen/runtime compile だけでなく、CLI のコマンド挙動、
   adapter、bundle、component entry、parity gate もここを主対象として実装する。
 - **`src/` (MoonBit 実装)** — legacy bootstrap / fallback / host-runner 層。
@@ -52,9 +52,9 @@ selfhost cutover 後の Rust-style seed compiler / stage0-stage2 / bootstrap bum
 [docs/selfhost-bootstrap.md](docs/selfhost-bootstrap.md) に従う。新しい syntax を
 compiler source 自体で使う場合は、先に seed compiler がその syntax を理解できる
 状態を tag し、bootstrap bump を通してから source を移行する。
-2026-06-10 以降の完全 selfhost trial 中は
+2026-06-12 以降の完全 selfhost 運用では
 [docs/selfhost-trial.md](docs/selfhost-trial.md) の判断基準に従い、節目で
-`pkf run selfhost-trial-gate` を通す。
+`pkf run selfhost-gate` を通す。旧 `pkf run selfhost-trial-gate` は互換 alias。
 
 判断目安:
 - 「`vibe test foo.vibe` で挙動を変えたい / 新 builtin を追加したい」
@@ -63,7 +63,7 @@ compiler source 自体で使う場合は、先に seed compiler がその syntax
   → `vibe/compiler/entry` / `selfhost_cli_*.vibe` / component adapter 側で実装する
 - 「selfhost が正しく自分でコンパイルできない」「dist wasm が壊れて
   いる」 → まず `vibe/compiler/` / bootstrap scripts / seed 管理を直し、
-  `pkf run selfhost-trial-gate` で確認する。`src/` 修正が必要に見える場合は
+  `pkf run selfhost-gate` で確認する。`src/` 修正が必要に見える場合は
   変更前に方針確認する
 - MoonBit host と selfhost の二重実装は増やさない。parity/cutover gate は
   selfhost 側の正しさを確認するために使い、`src/` 追従の理由にしない
@@ -71,7 +71,7 @@ compiler source 自体で使う場合は、先に seed compiler がその syntax
 CI shard では:
 - `scripts/pkfire/selfhost_gates_shard.sh bootstrap|cli|check|coverage`
   が selfhost 側のゲートを走らせる
-- `pkf run selfhost-trial-gate` を完全 selfhost 継続判断の主 gate とする
+- `pkf run selfhost-gate` を完全 selfhost 継続判断の主 gate とする
 
 ## Coding Convention
 

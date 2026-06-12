@@ -25,6 +25,13 @@ let lookup_not: (String) -> Option[Type] = (name) -> {
   else None
 }
 
+let lookup_neg: (String) -> Option[Type] = (name) -> {
+  if name == "__neg" {
+    Some(CtFn(misc_one_param(CtUnknown), CtUnknown, None))
+  }
+  else None
+}
+
 let misc_two_params: (Type, Type) -> Array[Type] = (a, b) -> {
   let arr = misc_no_params()
   Array::push(arr, a)
@@ -139,6 +146,33 @@ let lookup_to_string: (String) -> Option[Type] = (name) -> {
   else None
 }
 
+let lookup_len: (String) -> Option[Type] = (name) -> {
+  if name == "__len" {
+    Some(CtFn(misc_one_param(CtUnknown), CtInt, None))
+  }
+  else None
+}
+
+let lookup_iter_intrinsic: (String) -> Option[Type] = (name) -> {
+  if name == "iter_require" {
+    Some(CtFn(misc_one_param(CtUnknown), CtUnknown, None))
+  } else if name == "iter_length" {
+    Some(CtFn(misc_one_param(CtUnknown), CtInt, None))
+  } else if name == "iter_get" {
+    Some(CtFn(misc_two_params(CtUnknown, CtInt), CtUnknown, None))
+  } else if name == "String::iter_length" {
+    Some(CtFn(misc_one_param(CtString), CtInt, None))
+  } else if name == "String::iter_get" {
+    Some(CtFn(misc_two_params(CtString, CtInt), CtInt, None))
+  } else if name == "Map::iter_length" {
+    Some(CtFn(misc_one_param(CtUnknown), CtInt, None))
+  } else if name == "Map::iter_get" {
+    Some(CtFn(misc_two_params(CtUnknown, CtInt), CtUnknown, None))
+  } else {
+    None
+  }
+}
+
 let lookup_char_to_int: (String) -> Option[Type] = (name) -> {
   if name == "Char::to_int" {
     Some(CtFn(misc_one_param(CtChar), CtInt, None))
@@ -153,9 +187,15 @@ let lookup_misc_group_a: (String) -> Option[Type] = (name) -> {
       Some(t) => Some(t),
       None => match lookup_not(name) {
         Some(t) => Some(t),
-        None => match lookup_to_string(name) {
+        None => match lookup_neg(name) {
           Some(t) => Some(t),
-          None => lookup_index(name)
+          None => match lookup_to_string(name) {
+            Some(t) => Some(t),
+            None => match lookup_len(name) {
+              Some(t) => Some(t),
+              None => lookup_index(name)
+            }
+          }
         }
       }
     }
@@ -184,7 +224,10 @@ let lookup_misc_group_e: (String) -> Option[Type] = (name) -> {
     // Lenient (field type unknown); only needs to resolve, not constrain.
     Some(CtFn(misc_two_params(CtUnknown, CtInt), CtUnknown, None))
   } else {
-    lookup_none(name)
+    match lookup_iter_intrinsic(name) {
+      Some(t) => Some(t),
+      None => lookup_none(name)
+    }
   }
 }
 

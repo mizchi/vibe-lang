@@ -26,9 +26,13 @@ import .. / syntax / token.vibe {
 
 //# Path helpers
 
-let dir_of = dir_of_path
-
-let contains_str = contains_path
+let join_path: (String, String) -> String = (base_dir, rel_path) -> {
+  if base_dir == "" {
+    rel_path
+  } else {
+    String::concat(base_dir, String::concat("/", rel_path))
+  }
+}
 
 let resolve_manifest_dep_path: (String, String, Map[String, Bool]) -> String with { Error, Fs } = (base_dir, raw_path, manifest_path_index) -> {
   if String::length(raw_path) > 0 && String::char_code_at(raw_path, 0) == 64 {
@@ -54,17 +58,9 @@ let resolve_manifest_dep_path: (String, String, Map[String, Bool]) -> String wit
   }
 }
 
-let starts_with_path_token: (Token) -> Bool = (tok) -> {
+let starts_with_reexport_path_token: (Token) -> Bool = (tok) -> {
   match tok {
     TDot => true,
-    TDotDot => true,
-    TSlash => true,
-    TMinus => true,
-    TModule => true,
-    TType => true,
-    TMatch => true,
-    TTest => true,
-    TIdent(_) => true,
     _ => false
   }
 }
@@ -225,7 +221,7 @@ let scan_header_import_dep: (Array[Token], Int, String, Map[String, Bool]) -> (S
 
 let collect_manifest_header_deps_from_source: (String, String, Map[String, Bool]) -> Array[String] with { Error, Fs } = (path, source, manifest_path_index) -> {
   let deps = Array::slice([""], 0, 0)
-  let base_dir = dir_of(path)
+  let base_dir = dir_of_path(path)
   let len = String::length(source)
   let mut pos = 0
   let mut done = false
@@ -254,7 +250,7 @@ let collect_manifest_header_deps_from_source: (String, String, Map[String, Bool]
             Array::push(deps, dep_path)
           },
           TExport => {
-            if starts_with_path_token(peek(tokens, stmt_pos + 1)) {
+            if starts_with_reexport_path_token(peek(tokens, stmt_pos + 1)) {
               let (dep_path, _) = scan_header_import_dep(
                 tokens,
                 stmt_pos + 1,
@@ -262,8 +258,6 @@ let collect_manifest_header_deps_from_source: (String, String, Map[String, Bool]
                 manifest_path_index
               )
               Array::push(deps, dep_path)
-            } else {
-              done = true
             }
           },
           _ => {
@@ -335,6 +329,11 @@ export let build_manifest_path_index: (Array[String]) -> Map[String, Bool] = (pa
   MapBuilder::freeze(builder)
 }
 
+let empty_path_index: () -> Map[String, Bool] = () -> {
+  let builder = MapBuilder::new()
+  MapBuilder::freeze(builder)
+}
+
 let build_manifest_path_index_from_rows: (String, Array[(String, String)]) -> Map[String, Bool] = (base_dir, rows) -> {
   let builder = MapBuilder::new()
   let mut i = 0
@@ -347,7 +346,7 @@ let build_manifest_path_index_from_rows: (String, Array[(String, String)]) -> Ma
 }
 
 let find_manifest_base_dir: (String) -> Option[String] with { Fs } = (entry_path) -> {
-  let mut base_dir = dir_of(entry_path)
+  let mut base_dir = dir_of_path(entry_path)
   let mut found = None
   let mut done = false
   loop {
@@ -361,7 +360,7 @@ let find_manifest_base_dir: (String) -> Option[String] with { Fs } = (entry_path
     } else if base_dir == "" {
       done = true
     } else {
-      let parent = dir_of(base_dir)
+      let parent = dir_of_path(base_dir)
       if parent == base_dir {
         done = true
       } else {
@@ -370,14 +369,6 @@ let find_manifest_base_dir: (String) -> Option[String] with { Fs } = (entry_path
     }
   }
   found
-}
-
-let join_path: (String, String) -> String = (base_dir, rel_path) -> {
-  if base_dir == "" {
-    rel_path
-  } else {
-    String::concat(base_dir, String::concat("/", rel_path))
-  }
 }
 
 let strip_trailing_cr: (String) -> String = (line) -> {
@@ -431,18 +422,16 @@ let split_tsv_fields: (String) -> Array[String] = (line) -> {
 let header_value_separator = String::from_char_code(31)
 
 let join_header_values: (Array[String]) -> String = (values) -> {
-  // O(N) accumulation via StringBuilder; the previous
-  // `out = String::concat(out, ...)` was O(N^2).
-  let sb = StringBuilder::new()
+  let mut out = ""
   let mut i = 0
   while i < Array::length(values) {
     if i > 0 {
-      StringBuilder::push(sb, header_value_separator)
+      out = String::concat(out, header_value_separator)
     }
-    StringBuilder::push(sb, Array::get(values, i))
+    out = String::concat(out, Array::get(values, i))
     i = i + 1
   }
-  StringBuilder::freeze(sb)
+  out
 }
 
 let split_header_values: (String) -> Array[String] = (text) -> {
@@ -653,11 +642,6 @@ let load_manifest_source_groups_by_path_index: (String, Array[(String, String)],
   groups
 }
 
-export let build_grouped_sources_from_manifest_rows: (String, Array[(String, String)], Array[(String, String)]) -> Array[(String, Array[(String, String)])] = (base_dir, rows, sources) -> {
-  let source_index = build_manifest_source_index(sources)
-  build_grouped_sources_from_manifest_row_source_index(base_dir, rows, source_index)
-}
-
 export let build_grouped_sources_from_manifest_row_source_index: (String, Array[(String, String)], Map[String, String]) -> Array[(String, Array[(String, String)])] = (base_dir, rows, source_index) -> {
   build_grouped_sources_from_manifest_rows_with_lookup(
     base_dir,
@@ -666,6 +650,24 @@ export let build_grouped_sources_from_manifest_row_source_index: (String, Array[
       source_lookup_in_index(source_index, path)
     }
   )
+}
+
+export let build_grouped_sources_from_manifest_rows: (String, Array[(String, String)], Array[(String, String)]) -> Array[(String, Array[(String, String)])] = (base_dir, rows, sources) -> {
+  let source_index = build_manifest_source_index(sources)
+  build_grouped_sources_from_manifest_row_source_index(base_dir, rows, source_index)
+}
+
+export let filter_manifest_sources_by_path_index: (Array[(String, String)], Map[String, Bool]) -> Array[(String, String)] = (preloaded_sources, needed_path_index) -> {
+  let filtered_sources = Array::slice([("", "")], 0, 0)
+  let mut i = 0
+  while i < Array::length(preloaded_sources) {
+    let (path, source) = Array::get(preloaded_sources, i)
+    if Map::has_key(needed_path_index, path) {
+      Array::push(filtered_sources, (path, source))
+    }
+    i = i + 1
+  }
+  filtered_sources
 }
 
 export let filter_manifest_sources_by_paths: (Array[(String, String)], Array[String]) -> Array[(String, String)] = (preloaded_sources, needed_paths) -> {
@@ -678,20 +680,7 @@ export let filter_manifest_sources_by_paths_linear: (Array[(String, String)], Ar
   let mut i = 0
   while i < Array::length(preloaded_sources) {
     let (path, source) = Array::get(preloaded_sources, i)
-    if contains_str(needed_paths, path) {
-      Array::push(filtered_sources, (path, source))
-    }
-    i = i + 1
-  }
-  filtered_sources
-}
-
-export let filter_manifest_sources_by_path_index: (Array[(String, String)], Map[String, Bool]) -> Array[(String, String)] = (preloaded_sources, needed_path_index) -> {
-  let filtered_sources = Array::slice([("", "")], 0, 0)
-  let mut i = 0
-  while i < Array::length(preloaded_sources) {
-    let (path, source) = Array::get(preloaded_sources, i)
-    if Map::has_key(needed_path_index, path) {
+    if contains_path(needed_paths, path) {
       Array::push(filtered_sources, (path, source))
     }
     i = i + 1
@@ -922,9 +911,9 @@ let manifest_header_deps_lookup: (Array[(String, String, String, String)], Strin
 let collect_needed_paths_from_manifest_headers: (String, Map[String, Bool], Array[(String, String, String, String)]) -> Array[String] with { Error, Fs } = (path, manifest_path_index, rows) -> {
   let visited = Array::slice([""], 0, 0)
   let worklist = Array::slice([""], 0, 0)
-  let mut scheduled_set = Set::new()
+  let mut scheduled_set = empty_path_index()
   Array::push(worklist, path)
-  scheduled_set = Set::add(scheduled_set, path)
+  scheduled_set = Map::set(scheduled_set, path, true)
   let mut work_len = 1
   let mut work_i = 0
   loop {
@@ -932,7 +921,7 @@ let collect_needed_paths_from_manifest_headers: (String, Map[String, Bool], Arra
       break
     }
     let current = Array::get(worklist, work_i)
-    if !(contains_str(visited, current)) {
+    if !(contains_path(visited, current)) {
       Array::push(visited, current)
       let deps = match manifest_header_deps_lookup(rows, current) {
         Some(found) => found,
@@ -953,9 +942,9 @@ let collect_needed_paths_from_manifest_headers: (String, Map[String, Bool], Arra
       while dep_i < Array::length(deps) {
         let dep_path = Array::get(deps, dep_i)
         if should_schedule_manifest_dep(dep_path, manifest_path_index) &&
-          !Set::contains(scheduled_set, dep_path) {
+          !Map::has_key(scheduled_set, dep_path) {
           Array::push(worklist, dep_path)
-          scheduled_set = Set::add(scheduled_set, dep_path)
+          scheduled_set = Map::set(scheduled_set, dep_path, true)
           work_len = work_len + 1
         }
         dep_i = dep_i + 1
@@ -970,9 +959,9 @@ let collect_needed_paths_and_manifest_headers: (String, Map[String, Bool]) -> (A
   let rows = empty_manifest_header_cache_rows()
   let visited = Array::slice([""], 0, 0)
   let worklist = Array::slice([""], 0, 0)
-  let mut scheduled_set = Set::new()
+  let mut scheduled_set = empty_path_index()
   Array::push(worklist, path)
-  scheduled_set = Set::add(scheduled_set, path)
+  scheduled_set = Map::set(scheduled_set, path, true)
   let mut work_len = 1
   let mut work_i = 0
   loop {
@@ -980,7 +969,7 @@ let collect_needed_paths_and_manifest_headers: (String, Map[String, Bool]) -> (A
       break
     }
     let current = Array::get(worklist, work_i)
-    if !(contains_str(visited, current)) {
+    if !(contains_path(visited, current)) {
       Array::push(visited, current)
       let source = Fs::read_file(current)
       let deps = match manifest_header_deps_lookup(rows, current) {
@@ -1011,9 +1000,9 @@ let collect_needed_paths_and_manifest_headers: (String, Map[String, Bool]) -> (A
       while dep_i < Array::length(deps) {
         let dep_path = Array::get(deps, dep_i)
         if should_schedule_manifest_dep(dep_path, manifest_path_index) &&
-          !Set::contains(scheduled_set, dep_path) {
+          !Map::has_key(scheduled_set, dep_path) {
           Array::push(worklist, dep_path)
-          scheduled_set = Set::add(scheduled_set, dep_path)
+          scheduled_set = Map::set(scheduled_set, dep_path, true)
           work_len = work_len + 1
         }
         dep_i = dep_i + 1
@@ -1027,9 +1016,9 @@ let collect_needed_paths_and_manifest_headers: (String, Map[String, Bool]) -> (A
 let collect_needed_paths_from_manifest_scan: (String, Map[String, Bool]) -> Array[String] with { Error, Fs } = (path, manifest_path_index) -> {
   let visited = Array::slice([""], 0, 0)
   let worklist = Array::slice([""], 0, 0)
-  let mut scheduled_set = Set::new()
+  let mut scheduled_set = empty_path_index()
   Array::push(worklist, path)
-  scheduled_set = Set::add(scheduled_set, path)
+  scheduled_set = Map::set(scheduled_set, path, true)
   let mut work_len = 1
   let mut work_i = 0
   loop {
@@ -1037,7 +1026,7 @@ let collect_needed_paths_from_manifest_scan: (String, Map[String, Bool]) -> Arra
       break
     }
     let current = Array::get(worklist, work_i)
-    if !(contains_str(visited, current)) {
+    if !(contains_path(visited, current)) {
       Array::push(visited, current)
       let source = Fs::read_file(current)
       let deps = if Map::has_key(manifest_path_index, current) {
@@ -1053,9 +1042,9 @@ let collect_needed_paths_from_manifest_scan: (String, Map[String, Bool]) -> Arra
       while dep_i < Array::length(deps) {
         let dep_path = Array::get(deps, dep_i)
         if should_schedule_manifest_dep(dep_path, manifest_path_index) &&
-          !Set::contains(scheduled_set, dep_path) {
+          !Map::has_key(scheduled_set, dep_path) {
           Array::push(worklist, dep_path)
-          scheduled_set = Set::add(scheduled_set, dep_path)
+          scheduled_set = Map::set(scheduled_set, dep_path, true)
           work_len = work_len + 1
         }
         dep_i = dep_i + 1

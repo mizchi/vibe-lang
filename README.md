@@ -203,8 +203,9 @@ pkf run install
 - 現状 `wasm-gc` backend は実験段階のため、複雑な文法は `--wasm-mvp` を使う
 
 Note: MoonBit `src/` の CLI は legacy bootstrap / fallback wrapper として扱う。
-compiler/checker/codegen と CLI の新しい挙動は `vibe/compiler/` 側で実装し、
-`src/` に二重実装を追加しない。
+compiler/checker/codegen と CLI の新しい挙動は `vibe/compiler/` / `vibe/cli/` 側で
+実装し、`src/` に二重実装を追加しない。完全 selfhost の継続判断は
+`pkf run selfhost-gate` を使う。
 
 ## WASM Execution
 
@@ -289,7 +290,8 @@ examples/
 └── wasm/           # WASM-only examples (require host)
 
 vibe/
-├── compiler/       # Selfhost compiler and canonical CLI implementation
+├── cli/            # Selfhost CLI command surface and entrypoints
+├── compiler/       # Selfhost compiler implementation
 └── prelude/        # vibe core library (self-hosted prelude modules)
 
 examples/async_host/  # Rust/wasmtime host runtime

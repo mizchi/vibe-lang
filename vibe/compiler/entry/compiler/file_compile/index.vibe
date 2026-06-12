@@ -8,6 +8,16 @@ import ../../../syntax/parser.vibe {
   parse_program
 }
 
+import ../../../syntax/import_alias_rewrite.vibe {
+  append_import_alias_rewritten_non_import_stmts_skipping,
+  append_non_import_stmts_without_alias_rewrite,
+  collect_import_alias_collision_locals,
+  collect_import_alias_collision_refs,
+  namespace_private_value_stmts,
+  rewrite_imported_value_stmt_to_local,
+  stmts_have_import_deep
+}
+
 import ../../../codegen/index.vibe {
   compile_module, compile_wasi_module
 }
@@ -20,8 +30,16 @@ import ../../../loader/index.vibe {
   collect_source_groups_fs, load_persistent_source_group_fingerprint_if_valid
 }
 
+import ../../../module_graph_path.vibe {
+  dir_of_path, resolve_import_path
+}
+
 import ../../../core/dce.vibe {
   dce_stmts
+}
+
+import ../../source_compile/wasi_only/path_utils.vibe {
+  empty_stmt_array
 }
 
 import ../../../runtime/index.vibe {
@@ -34,6 +52,7 @@ import ../../../cache/persistent_cache.vibe {
   build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint,
   build_file_compile_module_artifact_fingerprint,
   build_file_compile_wasi_artifact_fingerprint,
+  build_source_groups_fingerprint,
   load_persistent_artifact,
   store_persistent_artifact
 }
@@ -96,6 +115,129 @@ let seed_type_db_from_source_groups: (TypeDb, Array[(String, Array[(String, Stri
   seeded
 }
 
+let append_stmt_array: (Array[Stmt], Array[Stmt]) -> Unit = (dst, src) -> {
+  let mut i = 0
+  while i < Array::length(src) {
+    Array::push(dst, Array::get(src, i))
+    i = i + 1
+  }
+}
+
+let string_array_contains: (Array[String], String) -> Bool = (items, target) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) && !found {
+    if Array::get(items, i) == target {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+let lookup_source_by_path: (Array[(String, String)], String) -> Option[String] = (sources, target_path) -> {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(sources) {
+    let (path, source) = Array::get(sources, i)
+    if path == target_path {
+      found = Some(source)
+      i = Array::length(sources)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+let parse_program_for_path: (String, String) -> Array[Stmt] with { Error } = (path, source) -> {
+  handle {
+    parse_program(lex(source))
+  } with Error {
+    Throw(msg) => throw(String::concat(String::concat(path, ": "), msg))
+  }
+}
+
+let append_import_alias_collision_defs_from_sources: (Array[Stmt], String, Array[Stmt], Array[(String, String)]) -> Unit with { Error } = (merged, current_path, stmts, sources) -> {
+  let refs = collect_import_alias_collision_refs(stmts)
+  let emitted = Array::slice([
+    ""
+  ], 0, 0)
+  let base_dir = dir_of_path(current_path)
+  let mut i = 0
+  while i < Array::length(refs) {
+    let (raw_path, original, local) = Array::get(refs, i)
+    if !string_array_contains(emitted, local) {
+      let resolved = resolve_import_path(base_dir, raw_path)
+      match lookup_source_by_path(sources, resolved) {
+        Some(source) => {
+          let source_stmts = namespace_private_value_stmts(
+            resolved,
+            parse_program_for_path(resolved, source)
+          )
+          let mut j = 0
+          let mut done = false
+          while j < Array::length(source_stmts) && !done {
+            match rewrite_imported_value_stmt_to_local(Array::get(source_stmts, j), original, local) {
+              Some(local_stmt) => {
+                Array::push(merged, local_stmt)
+                Array::push(emitted, local)
+                done = true
+              },
+              None => ()
+            }
+            j = j + 1
+          }
+        },
+        None => ()
+      }
+    }
+    i = i + 1
+  }
+}
+
+let build_merged_stmts_from_sources: (String, Array[(String, String)]) -> Array[Stmt] with { Error } = (entry_path, sources) -> {
+  let merged = empty_stmt_array()
+  let source_count = Array::length(sources)
+  let mut si = 0
+  while si < source_count {
+    let (path, source) = Array::get(sources, si)
+    let stmts = parse_program_for_path(path, source)
+    let is_entry_source = if entry_path == "" {
+      si == source_count - 1
+    } else {
+      path == entry_path
+    }
+    let namespaced_stmts = if is_entry_source {
+      stmts
+    } else {
+      namespace_private_value_stmts(path, stmts)
+    }
+    if stmts_have_import_deep(stmts) {
+      let skipped_locals = collect_import_alias_collision_locals(stmts)
+      append_import_alias_collision_defs_from_sources(merged, path, stmts, sources)
+      append_import_alias_rewritten_non_import_stmts_skipping(merged, namespaced_stmts, skipped_locals)
+    } else {
+      append_non_import_stmts_without_alias_rewrite(merged, namespaced_stmts)
+    }
+    si = si + 1
+  }
+  merged
+}
+
+let build_grouped_merged_stmts: (Array[(String, Array[(String, String)])]) -> Array[Stmt] with { Error } = (source_groups) -> {
+  let merged = empty_stmt_array()
+  let mut gi = 0
+  while gi < Array::length(source_groups) {
+    let (_, sources) = Array::get(source_groups, gi)
+    let group_stmts = build_merged_stmts_from_sources("", sources)
+    append_stmt_array(merged, group_stmts)
+    gi = gi + 1
+  }
+  merged
+}
+
 let prepare_file_fs_from_source_groups_cached: (TypeDb, String, Array[(String, Array[(String, String)])]) -> TypeDb with { Error } = (db, entry_path, source_groups) -> {
   let seeded = seed_type_db_from_source_groups(db, source_groups)
   db_typecheck(seeded, entry_path)
@@ -111,16 +253,11 @@ export let prepare_file_fs_cached: (TypeDb, String) -> TypeDb with { Error, Fs }
   prepare_file_fs_from_source_groups_persistent_cached(db, entry_path, source_groups)
 }
 
-export let compile_file_fs: (String, String) -> Bytes with { Error, Fs } = (entry_path, entry_name) -> {
-  let (bytes, _) = compile_file_fs_cached(db_new(), entry_path, entry_name)
-  bytes
-}
-
 export let compile_file_fs_mode: (String, String, String) -> Bytes with { Error, Fs } = (entry_path, entry_name, mode) -> {
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
-  let (merged_source, _, _) = db_grouped_merged_source(next_db, source_groups)
-  let merged_stmts = parse_program(lex(merged_source))
+  let _ = next_db
+  let merged_stmts = build_grouped_merged_stmts(source_groups)
   if mode == "mvp" {
     let pruned_stmts = dce_stmts(merged_stmts, [entry_name])
     compile_wasi_module_impl(pruned_stmts, entry_name)
@@ -131,13 +268,32 @@ export let compile_file_fs_mode: (String, String, String) -> Bytes with { Error,
   }
 }
 
-export let compile_file_fs_module: (String) -> Bytes with { Error, Fs } = (entry_path) -> {
-  let (bytes, _) = compile_file_fs_module_cached(db_new(), entry_path)
-  bytes
-}
-
-export let compile_file_fs_cached: (TypeDb, String, String) -> (Bytes, TypeDb) with { Error, Fs } = (db, entry_path, entry_name) -> {
-  compile_file_fs_mode_cached(db, entry_path, entry_name, "no-dce")
+export let compile_file_fs_mode_profiled: (String, String, String) -> (Bytes, Int, Int, Int, Int, Int, Int) with { Error, Fs, Profiler } = (entry_path, entry_name, mode) -> {
+  let total_start = profiler_now_us()
+  let load_start = profiler_now_us()
+  let source_groups = collect_source_groups_fs(entry_path)
+  let load_us = elapsed_us_since(load_start)
+  let type_start = profiler_now_us()
+  let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
+  let _ = next_db
+  let type_us = elapsed_us_since(type_start)
+  let bundle_start = profiler_now_us()
+  let _ = build_source_groups_fingerprint(source_groups)
+  let bundle_us = elapsed_us_since(bundle_start)
+  let parse_start = profiler_now_us()
+  let merged_stmts = build_grouped_merged_stmts(source_groups)
+  let parse_us = elapsed_us_since(parse_start)
+  let compile_start = profiler_now_us()
+  let bytes = if mode == "mvp" {
+    let pruned_stmts = dce_stmts(merged_stmts, [entry_name])
+    compile_wasi_module_impl(pruned_stmts, entry_name)
+  } else if mode == "no-dce" {
+    compile_wasi_module(merged_stmts, entry_name)
+  } else {
+    throw(String::concat("unsupported compile mode: ", mode))
+  }
+  let compile_us = elapsed_us_since(compile_start)
+  (bytes, load_us, type_us, bundle_us, parse_us, compile_us, elapsed_us_since(total_start))
 }
 
 let compile_file_fs_mode_cached_slow_profiled: (TypeDb, String, String, String, String) -> (Bytes, TypeDb, Int, Int, Int, Int, Int) with { Error, Fs, Profiler } = (db, entry_path, entry_name, mode, persistent_artifact_kind) -> {
@@ -160,7 +316,7 @@ let compile_file_fs_mode_cached_slow_profiled: (TypeDb, String, String, String, 
       let next_db = prepare_file_fs_from_source_groups_persistent_cached(db, entry_path, source_groups)
       let type_us = elapsed_us_since(type_start)
       let bundle_start = profiler_now_us()
-      let (merged_source, merge_fingerprint, codegen_db) = db_grouped_merged_source(next_db, source_groups)
+      let merge_fingerprint = build_source_groups_fingerprint(source_groups)
       let bundle_us = elapsed_us_since(bundle_start)
       let artifact_fingerprint = merge_fingerprint
       let artifact_kind = if mode == "mvp" {
@@ -170,11 +326,11 @@ let compile_file_fs_mode_cached_slow_profiled: (TypeDb, String, String, String, 
       } else {
         throw(String::concat("unsupported compile mode: ", mode))
       }
-      match db_load_artifact(codegen_db, entry_path, artifact_kind, entry_name, artifact_fingerprint) {
-        Some(bytes) => (bytes, codegen_db, load_us, type_us, bundle_us, 0, 0),
+      match db_load_artifact(next_db, entry_path, artifact_kind, entry_name, artifact_fingerprint) {
+        Some(bytes) => (bytes, next_db, load_us, type_us, bundle_us, 0, 0),
         None => {
           let parse_start = profiler_now_us()
-          let merged_stmts = parse_program(lex(merged_source))
+          let merged_stmts = build_grouped_merged_stmts(source_groups)
           let parse_us = elapsed_us_since(parse_start)
           let compile_start = profiler_now_us()
           let bytes = if mode == "mvp" {
@@ -190,7 +346,7 @@ let compile_file_fs_mode_cached_slow_profiled: (TypeDb, String, String, String, 
             bytes
           )
           let compile_us = elapsed_us_since(compile_start)
-          (bytes, db_store_artifact(codegen_db, entry_path, artifact_kind, entry_name, artifact_fingerprint, bytes), load_us, type_us, bundle_us, parse_us, compile_us)
+          (bytes, db_store_artifact(next_db, entry_path, artifact_kind, entry_name, artifact_fingerprint, bytes), load_us, type_us, bundle_us, parse_us, compile_us)
         }
       }
     }
@@ -212,7 +368,7 @@ let compile_file_fs_mode_cached_slow: (TypeDb, String, String, String, String) -
     Some(bytes) => (bytes, db),
     None => {
       let next_db = prepare_file_fs_from_source_groups_persistent_cached(db, entry_path, source_groups)
-      let (merged_source, merge_fingerprint, codegen_db) = db_grouped_merged_source(next_db, source_groups)
+      let merge_fingerprint = build_source_groups_fingerprint(source_groups)
       let artifact_fingerprint = merge_fingerprint
       let artifact_kind = if mode == "mvp" {
         "wasi-mvp"
@@ -221,10 +377,10 @@ let compile_file_fs_mode_cached_slow: (TypeDb, String, String, String, String) -
       } else {
         throw(String::concat("unsupported compile mode: ", mode))
       }
-      match db_load_artifact(codegen_db, entry_path, artifact_kind, entry_name, artifact_fingerprint) {
-        Some(bytes) => (bytes, codegen_db),
+      match db_load_artifact(next_db, entry_path, artifact_kind, entry_name, artifact_fingerprint) {
+        Some(bytes) => (bytes, next_db),
         None => {
-          let merged_stmts = parse_program(lex(merged_source))
+          let merged_stmts = build_grouped_merged_stmts(source_groups)
           let bytes = if mode == "mvp" {
             let pruned_stmts = dce_stmts(merged_stmts, [entry_name])
             compile_wasi_module_impl(pruned_stmts, entry_name)
@@ -237,7 +393,7 @@ let compile_file_fs_mode_cached_slow: (TypeDb, String, String, String, String) -
             persistent_artifact_fingerprint,
             bytes
           )
-          (bytes, db_store_artifact(codegen_db, entry_path, artifact_kind, entry_name, artifact_fingerprint, bytes))
+          (bytes, db_store_artifact(next_db, entry_path, artifact_kind, entry_name, artifact_fingerprint, bytes))
         }
       }
     }
@@ -268,6 +424,15 @@ export let compile_file_fs_mode_cached: (TypeDb, String, String, String) -> (Byt
       },
     None => compile_file_fs_mode_cached_slow(db, entry_path, entry_name, mode, persistent_artifact_kind)
   }
+}
+
+export let compile_file_fs_cached: (TypeDb, String, String) -> (Bytes, TypeDb) with { Error, Fs } = (db, entry_path, entry_name) -> {
+  compile_file_fs_mode_cached(db, entry_path, entry_name, "no-dce")
+}
+
+export let compile_file_fs: (String, String) -> Bytes with { Error, Fs } = (entry_path, entry_name) -> {
+  let (bytes, _) = compile_file_fs_cached(db_new(), entry_path, entry_name)
+  bytes
 }
 
 export let compile_file_fs_mode_cached_profiled: (TypeDb, String, String, String) -> (Bytes, TypeDb, Int, Int, Int, Int, Int, Int) with { Error, Fs, Profiler } = (db, entry_path, entry_name, mode) -> {
@@ -355,4 +520,9 @@ export let compile_file_fs_module_cached: (TypeDb, String) -> (Bytes, TypeDb) wi
       },
     None => compile_file_fs_module_cached_slow(db, entry_path)
   }
+}
+
+export let compile_file_fs_module: (String) -> Bytes with { Error, Fs } = (entry_path) -> {
+  let (bytes, _) = compile_file_fs_module_cached(db_new(), entry_path)
+  bytes
 }

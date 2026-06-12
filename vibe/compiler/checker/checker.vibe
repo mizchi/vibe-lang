@@ -5,7 +5,7 @@ import .. / core / ast.vibe {
 }
 
 import .. / core / types.vibe {
-  Subst, Type, TypeDef, TypeEnv, env_bind, env_lookup, find_typedef, fresh_var, generalize, instantiate, subst_add_bound, subst_apply, type_implements_trait, unify
+  Subst, Type, TypeDef, TypeEnv, env_bind, env_lookup, find_typedef, fresh_var, generalize, instantiate, subst_add_bound, subst_apply, type_implements_trait, type_to_string, unify
 }
 
 import ./builtins.vibe {
@@ -72,6 +72,9 @@ let direct_builtin_return: (String) -> Option[Type] = (name) -> {
   if name == "Bytes::length" {
     Some(CtInt)
   }
+  else if name == "iter_length" || name == "String::iter_length" || name == "Map::iter_length" {
+    Some(CtInt)
+  }
   else if name == "Array::length" {
     Some(CtInt)
   }
@@ -84,16 +87,25 @@ let direct_builtin_return: (String) -> Option[Type] = (name) -> {
   else if name == "Bytes::get" || name == "String::index_of" || name == "String::char_code_at" || name == "String::last_index_of" || name == "Char::to_int" || name == "Double::to_int" || name == "Double::to_i64_bits" || name == "Double::to_i64_bits_lo" || name == "Double::to_i64_bits_hi" || name == "Env::args_len" || name == "Stdin::read_char" {
     Some(CtInt)
   }
-  else if name == "String::equals" || name == "String::contains" || name == "String::starts_with" || name == "String::ends_with" || name == "Map::has_key" || name == "map_has" || name == "Path::is_absolute" || name == "Fs::exists" || name == "Fs::is_dir" || name == "Fs::is_file" || name == "eq" || name == "not" {
+  else if name == "String::equals" || name == "String::contains" || name == "String::starts_with" || name == "String::ends_with" || name == "Array::any" || name == "Array::all" || name == "Array::contains" || name == "Map::has_key" || name == "map_has" || name == "Path::is_absolute" || name == "Fs::exists" || name == "Fs::is_dir" || name == "Fs::is_file" || name == "eq" || name == "not" {
     Some(CtBool)
   }
-  else if name == "String::concat" || name == "String::substring" || name == "String::trim" || name == "String::to_lower" || name == "String::to_upper" || name == "String::from_char_code" || name == "String::join" || name == "Path::to_string" || name == "Path::resolve" || name == "PromptText::new" || name == "Stdin::read_stream" || name == "Env::get" || name == "Env::args_get" || name == "Fs::read_file" || name == "Fs::getcwd" || name == "sh" || name == "Lines::stringify" || name == "Llm::complete" || name == "Rlm::run" || name == "Rlm::finalize" || name == "__to_string" {
+  else if name == "String::concat" || name == "String::substring" || name == "String::trim" || name == "String::to_lower" || name == "String::to_upper" || name == "String::from_char_code" || name == "String::join" || name == "Array::join" || name == "Path::to_string" || name == "Path::resolve" || name == "PromptText::new" || name == "Stdin::read_stream" || name == "Env::get" || name == "Env::args_get" || name == "Fs::read_file" || name == "Fs::getcwd" || name == "sh" || name == "Lines::stringify" || name == "Llm::complete" || name == "Rlm::run" || name == "Rlm::finalize" || name == "__to_string" {
     Some(CtString)
+  }
+  else if name == "__len" {
+    Some(CtInt)
+  }
+  else if name == "String::iter_get" {
+    Some(CtInt)
+  }
+  else if name == "iter_get" || name == "Map::iter_get" || name == "iter_require" || name == "__neg" {
+    Some(CtUnknown)
   }
   else if name == "Bytes::new" || name == "Bytes::concat" || name == "Bytes::slice" || name == "Bytes::from_array" || name == "Fs::read_bytes" {
     Some(CtBytes)
   }
-  else if name == "Array::set" || name == "Array::push" || name == "Array::push_all" || name == "Array::truncate" || name == "FixedArray::set" || name == "FixedArray::blit" || name == "FixedArray::unsafe_set" || name == "Bytes::set" || name == "Bytes::push" || name == "Bytes::append" || name == "Bytes::blit" || name == "Bytes::fill" || name == "MapBuilder::set" || name == "Stdout::write_char" || name == "Stdout::write_stream" || name == "sleep" || name == "Fs::copy" || name == "Fs::chdir" || name == "Fs::mkdir" || name == "Fs::append" || name == "Fs::remove" || name == "Fs::write_file" || name == "Fs::write_bytes" || name == "print" || name == "println" || name == "assert" || name == "assert_true" || name == "assert_eq" || name == "__set_field" {
+  else if name == "Array::set" || name == "Array::push" || name == "Array::push_all" || name == "Array::truncate" || name == "Array::foreach" || name == "FixedArray::set" || name == "FixedArray::blit" || name == "FixedArray::unsafe_set" || name == "Bytes::set" || name == "Bytes::push" || name == "Bytes::append" || name == "Bytes::blit" || name == "Bytes::fill" || name == "MapBuilder::set" || name == "Stdout::write_char" || name == "Stdout::write_stream" || name == "sleep" || name == "Fs::copy" || name == "Fs::chdir" || name == "Fs::mkdir" || name == "Fs::append" || name == "Fs::remove" || name == "Fs::write_file" || name == "Fs::write_bytes" || name == "print" || name == "println" || name == "assert" || name == "assert_true" || name == "assert_eq" || name == "__set_field" {
     Some(CtUnit)
   }
   else if name == "Double::from_i64_bits" || name == "Int::to_double" {
@@ -108,10 +120,10 @@ let direct_builtin_return: (String) -> Option[Type] = (name) -> {
   else if name == "Map::keys" || name == "sh_lines" || name == "Lines::parse" {
     Some(CtArray(CtString))
   }
-  else if name == "Array::slice" || name == "Array::concat" || name == "FixedArray::make" {
+  else if name == "Array::slice" || name == "Array::concat" || name == "Array::filter" || name == "Array::reverse" || name == "Array::sort" || name == "FixedArray::make" {
     Some(CtArray(CtUnknown))
   }
-  else if name == "Some" {
+  else if name == "Some" || name == "Array::find" {
     Some(CtOption(CtUnknown))
   }
   else {
@@ -360,8 +372,27 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       }
     },
     ESeq(left, right) => {
-      let (_, s1, c1) = check_expr(left, env, defs, s, c, errors)
-      check_expr(right, env, defs, s1, c1, errors)
+      let mut s1 = s
+      let mut c1 = c
+      let (_, ns0, nc0) = check_expr(left, env, defs, s1, c1, errors)
+      s1 = ns0
+      c1 = nc0
+      let mut cur = right
+      let mut done = false
+      while !done {
+        match cur {
+          ESeq(next_left, next_right) => {
+            let (_, ns, nc) = check_expr(next_left, env, defs, s1, c1, errors)
+            s1 = ns
+            c1 = nc
+            cur = next_right
+          },
+          _ => {
+            done = true
+          }
+        }
+      }
+      check_expr(cur, env, defs, s1, c1, errors)
     },
     ELet(name, val, body) => {
       let (vt, s1, c1) = check_expr(val, env, defs, s, c, errors)
@@ -418,6 +449,10 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
               }
               let (tv, c2) = fresh_var(c1)
               (tv, s1, c2)
+            },
+            EIdent(_) => {
+              let (tv, c2) = fresh_var(c)
+              (tv, s, c2)
             },
             other => check_expr(other, env, defs, s, c, errors)
           }

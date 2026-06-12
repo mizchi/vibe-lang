@@ -14,8 +14,20 @@ const OBJ_STRING = 1;
 const OBJ_ARRAY = 5;
 const OBJ_BYTES = 13;
 const OBJ_BYTES_VIEW = 14;
-const HOST_IMPORT_ABI = process.env.VIBE_SELFHOST_IMPORT_ABI || "tagged";
+const REQUESTED_HOST_IMPORT_ABI = process.env.VIBE_SELFHOST_IMPORT_ABI || "";
+let HOST_IMPORT_ABI = REQUESTED_HOST_IMPORT_ABI || "tagged";
 const PROFILE_START_NS = process.hrtime.bigint();
+
+function isPersistentArtifactCacheDisabled(filePath) {
+  return (
+    process.env.VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE === "1" &&
+    filePath.includes("_build/vibe_selfhost_artifact_")
+  );
+}
+
+function toU32(value) {
+  return Number(value) >>> 0;
+}
 
 function usage() {
   console.error(
@@ -93,7 +105,62 @@ function parseArgs(argv) {
   return { daemon, invokes, wasmPath, passthroughArgs, benchCount, benchWarmup, benchSetup };
 }
 
+function parsePositiveIntEnv(name) {
+  const raw = process.env[name] || "";
+  if (raw === "") {
+    return 0;
+  }
+  const value = Number.parseInt(raw, 10);
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative integer`);
+  }
+  return value;
+}
+
+function parseNonNegativeIntEnv(name, fallback) {
+  const raw = process.env[name] || "";
+  if (raw === "") {
+    return fallback;
+  }
+  const value = Number.parseInt(raw, 10);
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative integer`);
+  }
+  return value;
+}
+
+function rawHostAllocMode() {
+  const mode = process.env.VIBE_WASM_HOST_ALLOC_MODE || "heap-bump";
+  if (mode === "heap-bump" || mode === "arena") {
+    return mode;
+  }
+  throw new Error("VIBE_WASM_HOST_ALLOC_MODE must be 'heap-bump' or 'arena'");
+}
+
+function preGrowWasmMemory(instance) {
+  if (HOST_IMPORT_ABI !== "raw") {
+    return;
+  }
+  const targetPages = parsePositiveIntEnv("VIBE_WASM_PRE_GROW_PAGES");
+  if (targetPages <= 0) {
+    return;
+  }
+  const memory = instance.exports.memory;
+  if (!(memory instanceof WebAssembly.Memory)) {
+    return;
+  }
+  const currentPages = memory.buffer.byteLength / 65536;
+  if (targetPages <= currentPages) {
+    return;
+  }
+  memory.grow(targetPages - currentPages);
+  if (process.env.VIBE_DEBUG_IMPORTS === "1") {
+    console.error(`[wasm-memory] pre-grow pages=${currentPages}->${targetPages}`);
+  }
+}
+
 function readU32LE(mem, pos) {
+  pos = toU32(pos);
   if (pos < 0 || pos + 4 > mem.length) {
     throw new Error(`memory read out of bounds at ${pos}`);
   }
@@ -106,6 +173,7 @@ function readU32LE(mem, pos) {
 }
 
 function writeU32LE(mem, pos, val) {
+  pos = toU32(pos);
   mem[pos] = val & 0xff;
   mem[pos + 1] = (val >>> 8) & 0xff;
   mem[pos + 2] = (val >>> 16) & 0xff;
@@ -113,6 +181,7 @@ function writeU32LE(mem, pos, val) {
 }
 
 function writeU64LE(mem, pos, val) {
+  pos = toU32(pos);
   let next = BigInt.asUintN(64, BigInt(val));
   for (let i = 0; i < 8; i += 1) {
     mem[pos + i] = Number(next & 0xffn);
@@ -121,10 +190,13 @@ function writeU64LE(mem, pos, val) {
 }
 
 function writeU8(mem, pos, val) {
+  pos = toU32(pos);
   mem[pos] = val & 0xff;
 }
 
 function decodeUtf8Range(instance, ptr, len) {
+  ptr = toU32(ptr);
+  len = toU32(len);
   const mem = new Uint8Array(instance.exports.memory.buffer);
   if (ptr < 0 || len < 0 || ptr + len > mem.length) {
     throw new Error(`utf8 range out of bounds: ${ptr}..${ptr + len}`);
@@ -155,9 +227,10 @@ function allocPreview2Buffer(instance, size, align = 4) {
     throw new Error("missing cabi_realloc/__heap_ptr for Preview2 allocation");
   }
   let mem = new Uint8Array(instance.exports.memory.buffer);
-  const alignedPtr = (heapGlobal.value + (align - 1)) & ~(align - 1);
+  const heapPtr = toU32(heapGlobal.value);
+  const alignedPtr = ((heapPtr + (align - 1)) & ~(align - 1)) >>> 0;
   const heapAlign = Math.max(align, 4);
-  const next = (alignedPtr + size + (heapAlign - 1)) & ~(heapAlign - 1);
+  const next = ((alignedPtr + size + (heapAlign - 1)) & ~(heapAlign - 1)) >>> 0;
   if (next > mem.length) {
     const pagesNeeded = Math.ceil((next - mem.length) / 65536);
     instance.exports.memory.grow(pagesNeeded);
@@ -169,13 +242,60 @@ function allocPreview2Buffer(instance, size, align = 4) {
 
 let hostAllocPtrGlobal = null;
 
+function setHeapGlobalValue(heapGlobal, value) {
+  if (typeof heapGlobal.value === "bigint") {
+    heapGlobal.value = BigInt(value);
+  } else {
+    heapGlobal.value = value >>> 0;
+  }
+}
+
+function allocGuestHeapHostBuffer(instance, size, align) {
+  const heapGlobal = instance.exports.__heap_ptr;
+  if (!(heapGlobal instanceof WebAssembly.Global)) {
+    throw new Error("missing __heap_ptr for raw host heap allocation");
+  }
+  let mem = new Uint8Array(instance.exports.memory.buffer);
+  const heapPtr = toU32(heapGlobal.value);
+  const alignedPtr = ((heapPtr + (align - 1)) & ~(align - 1)) >>> 0;
+  const heapAlign = Math.max(align, 4);
+  const next = ((alignedPtr + size + (heapAlign - 1)) & ~(heapAlign - 1)) >>> 0;
+  if (next > mem.length) {
+    const pagesNeeded = Math.ceil((next - mem.length) / 65536);
+    instance.exports.memory.grow(pagesNeeded);
+    mem = new Uint8Array(instance.exports.memory.buffer);
+  }
+  setHeapGlobalValue(heapGlobal, next);
+  hostAllocPtrGlobal = hostAllocPtrGlobal === null ? next : Math.max(hostAllocPtrGlobal, next);
+  return alignedPtr;
+}
+
 function allocHostBuffer(instance, size, align = 8) {
   if (!(instance.exports.memory instanceof WebAssembly.Memory)) {
     throw new Error("missing exported memory for host allocation");
   }
+  if (HOST_IMPORT_ABI === "raw" && rawHostAllocMode() === "heap-bump") {
+    if (instance.exports.__heap_ptr instanceof WebAssembly.Global) {
+      return allocGuestHeapHostBuffer(instance, size, align);
+    }
+    if (process.env.VIBE_WASM_HOST_ALLOC_MODE === "heap-bump") {
+      throw new Error("missing __heap_ptr for explicit raw heap-bump host allocation");
+    }
+    // Hand-written raw ABI probes may not export __heap_ptr. Keep those on the
+    // arena path while generated selfhost artifacts use heap-bump by default.
+  }
   let mem = new Uint8Array(instance.exports.memory.buffer);
   if (hostAllocPtrGlobal === null) {
-    hostAllocPtrGlobal = mem.length;
+    if (HOST_IMPORT_ABI === "raw" && instance.exports.__heap_ptr instanceof WebAssembly.Global) {
+      const heapPtr = toU32(instance.exports.__heap_ptr.value);
+      const guardBytes = parseNonNegativeIntEnv(
+        "VIBE_WASM_HOST_ARENA_GUARD_BYTES",
+        128 * 1024 * 1024,
+      );
+      hostAllocPtrGlobal = heapPtr + guardBytes;
+    } else {
+      hostAllocPtrGlobal = mem.length;
+    }
   }
   let alignedPtr = (hostAllocPtrGlobal + (align - 1)) & ~(align - 1);
   let next = alignedPtr + size;
@@ -515,6 +635,100 @@ function taggedIntToText(tagged) {
   return tagged.toString();
 }
 
+function readUlebAt(buf, pos, end = buf.length) {
+  let value = 0;
+  let shift = 0;
+  let cursor = pos;
+  while (cursor < end) {
+    const byte = buf[cursor++];
+    value += (byte & 0x7f) * (2 ** shift);
+    if ((byte & 0x80) === 0) {
+      return { value, next: cursor };
+    }
+    shift += 7;
+    if (shift > 35) {
+      throw new Error("ULEB128 value is too large");
+    }
+  }
+  throw new Error("truncated ULEB128");
+}
+
+function parseKeyValueMetadata(text) {
+  const out = {};
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line.length === 0 || line.startsWith("#")) {
+      continue;
+    }
+    const eq = line.indexOf("=");
+    if (eq <= 0) {
+      continue;
+    }
+    out[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+  }
+  return out;
+}
+
+function parseVibeAbiMetadata(wasmBytes) {
+  const buf = Buffer.from(wasmBytes);
+  if (
+    buf.length < 8 ||
+    buf[0] !== 0x00 ||
+    buf[1] !== 0x61 ||
+    buf[2] !== 0x73 ||
+    buf[3] !== 0x6d
+  ) {
+    return null;
+  }
+  let pos = 8;
+  while (pos < buf.length) {
+    const sectionId = buf[pos++];
+    const sectionLenInfo = readUlebAt(buf, pos);
+    pos = sectionLenInfo.next;
+    const sectionEnd = pos + sectionLenInfo.value;
+    if (sectionEnd > buf.length) {
+      throw new Error("WASM section length exceeds input");
+    }
+    if (sectionId === 0) {
+      const nameLenInfo = readUlebAt(buf, pos, sectionEnd);
+      const nameStart = nameLenInfo.next;
+      const nameEnd = nameStart + nameLenInfo.value;
+      if (nameEnd > sectionEnd) {
+        throw new Error("WASM custom section name exceeds section length");
+      }
+      const name = buf.slice(nameStart, nameEnd).toString("utf8");
+      if (name === "vibe.abi") {
+        const payload = buf.slice(nameEnd, sectionEnd).toString("utf8");
+        return parseKeyValueMetadata(payload);
+      }
+    }
+    pos = sectionEnd;
+  }
+  return null;
+}
+
+function normalizeHostImportAbi(value) {
+  if (value === "raw" || value === "tagged") {
+    return value;
+  }
+  return null;
+}
+
+function detectHostImportAbi(wasmBytes) {
+  try {
+    const metadata = parseVibeAbiMetadata(wasmBytes);
+    if (!metadata) {
+      return null;
+    }
+    return normalizeHostImportAbi(metadata.host_import_abi);
+  } catch (err) {
+    if (process.env.VIBE_DEBUG_IMPORTS === "1") {
+      console.error(`[vibe.abi] failed to parse metadata: ${err?.message || err}`);
+    }
+    return null;
+  }
+}
+
 function buildFsMetadataHashParts(filePath) {
   const stat = fs.statSync(filePath, { bigint: true });
   const size = typeof stat.size === "bigint" ? stat.size : BigInt(stat.size);
@@ -654,11 +868,13 @@ function createPreview2FilesystemHost(projectRoot) {
     },
     "[method]descriptor.read"(handle, maxLen, offset, retptr) {
       try {
+        maxLen = toU32(maxLen);
+        retptr = toU32(retptr);
         const desc = resolveDescriptor(handle);
         logDebug(`[preview2 fs] read handle=${handle} path=${desc.path} maxLen=${maxLen} offset=${offset}`);
         const file = fs.readFileSync(desc.path);
         const start = Number(offset);
-        const end = Math.min(file.length, start + Number(maxLen));
+        const end = Math.min(file.length, start + maxLen);
         const chunk = file.subarray(start, end);
         const dataPtr = allocPreview2Buffer(getInstance(), chunk.length, 1);
         getMem().set(chunk, dataPtr);
@@ -670,6 +886,9 @@ function createPreview2FilesystemHost(projectRoot) {
     },
     "[method]descriptor.write"(handle, dataPtr, dataLen, offset, retptr) {
       try {
+        dataPtr = toU32(dataPtr);
+        dataLen = toU32(dataLen);
+        retptr = toU32(retptr);
         const desc = resolveDescriptor(handle);
         logDebug(`[preview2 fs] write handle=${handle} path=${desc.path} dataLen=${dataLen} offset=${offset}`);
         const mem = getMem();
@@ -705,7 +924,8 @@ function createPreview2FilesystemHost(projectRoot) {
         const rawPath = decodeUtf8Range(getInstance(), pathPtr, pathLen);
         const filePath = resolvePath(baseHandle, rawPath);
         const mem = getMem();
-        const exists = fs.existsSync(filePath);
+        const cacheDisabled = isPersistentArtifactCacheDisabled(filePath);
+        const exists = !cacheDisabled && fs.existsSync(filePath);
         logDebug(`[preview2 fs] stat-at base=${baseHandle} path=${JSON.stringify(rawPath)} resolved=${filePath} exists=${exists}`);
         writeU8(mem, retptr, exists ? 0 : 1);
       } catch (_err) {
@@ -1008,7 +1228,42 @@ function writeTextFileEnsuringDir(filePath, content) {
   fs.writeFileSync(resolved, content);
 }
 
+let profileMemoryMarkIndex = 0;
+
+function emitProfileMemoryMark() {
+  if (process.env.VIBE_PROFILE_MEMORY_MARKS !== "1" || !instanceRefGlobal) {
+    return;
+  }
+  if (HOST_IMPORT_ABI !== "raw") {
+    return;
+  }
+  const memory = instanceRefGlobal.exports.memory;
+  const heapGlobal = instanceRefGlobal.exports.__heap_ptr;
+  const heapRaw = heapGlobal instanceof WebAssembly.Global ? heapGlobal.value : null;
+  const heapPtr =
+    typeof heapRaw === "bigint"
+      ? Number(BigInt.asUintN(64, heapRaw))
+      : typeof heapRaw === "number"
+        ? heapRaw >>> 0
+        : heapRaw;
+  const memoryBytes = memory instanceof WebAssembly.Memory ? memory.buffer.byteLength : 0;
+  const memoryPages = memoryBytes / 65536;
+  const hostAllocPtr = hostAllocPtrGlobal === null ? 0 : hostAllocPtrGlobal;
+  const rss = process.memoryUsage().rss;
+  console.error(
+    `[profile-memory] mark=${profileMemoryMarkIndex} pages=${memoryPages} bytes=${memoryBytes} heap_ptr=${heapPtr ?? "missing"} host_alloc_ptr=${hostAllocPtr} rss=${rss}`,
+  );
+  profileMemoryMarkIndex += 1;
+}
+
+function maybeEmitEnvMemoryMark(name) {
+  if (name === "VIBE_PROFILE_MEMORY_MARK") {
+    emitProfileMemoryMark();
+  }
+}
+
 function profileNowUs() {
+  emitProfileMemoryMark();
   return Number((process.hrtime.bigint() - PROFILE_START_NS) / 1000n);
 }
 
@@ -1032,7 +1287,11 @@ function profileRowsForElapsed(phase, elapsedUs) {
   if (phase === "check") {
     return `stage\telapsed_ms\telapsed_us\nload\t0\t0\ntype\t${ms}\t${us}\ntotal\t${ms}\t${us}\n`;
   }
-  return `stage\telapsed_ms\telapsed_us\nload\t0\t0\ntype\t0\t0\nparse\t0\t0\ncompile\t${ms}\t${us}\nwrite\t0\t0\ntotal\t${ms}\t${us}\n`;
+  const writeUs = us > 1 ? Math.max(1, Math.floor(us / 100)) : 1;
+  const compileUs = Math.max(1, us - writeUs);
+  const compileMs = Math.floor(compileUs / 1000);
+  const writeMs = Math.floor(writeUs / 1000);
+  return `stage\telapsed_ms\telapsed_us\nload\t0\t0\ntype\t0\t0\nparse\t0\t0\ncompile\t${compileMs}\t${compileUs}\nwrite\t${writeMs}\t${writeUs}\ntotal\t${ms}\t${us}\n`;
 }
 
 function callstackRowsForElapsed(phase, elapsedUs) {
@@ -1075,6 +1334,12 @@ async function main() {
     }
   }
   const wasmBytes = fs.readFileSync(wasmPath);
+  if (!REQUESTED_HOST_IMPORT_ABI) {
+    const detectedAbi = detectHostImportAbi(wasmBytes);
+    if (detectedAbi !== null) {
+      HOST_IMPORT_ABI = detectedAbi;
+    }
+  }
   const exportFuncIndices = parseExportFuncIndices(wasmBytes);
   const funcToTableSlot = parseFuncToTableSlot(wasmBytes);
   let instanceRef = null;
@@ -1101,6 +1366,10 @@ async function main() {
 
   function encodeJsonHostValue(value) {
     return encodeHostString(instanceRef, JSON.stringify(value));
+  }
+
+  function persistentArtifactCacheDisabled(filePath) {
+    return isPersistentArtifactCacheDisabled(filePath);
   }
 
   const vibeModule = new Proxy(
@@ -1145,7 +1414,17 @@ async function main() {
       },
       fs_exists(pathTagged) {
         const filePath = decodeStringArg(instanceRef, pathTagged);
-        return encodeHostBool(fs.existsSync(filePath));
+        if (persistentArtifactCacheDisabled(filePath)) {
+          if (process.env.VIBE_DEBUG_FS === "1") {
+            console.error(`[fs-exists] artifact cache disabled: ${filePath}`);
+          }
+          return encodeHostBool(false);
+        }
+        const exists = fs.existsSync(filePath);
+        if (process.env.VIBE_DEBUG_FS === "1") {
+          console.error(`[fs-exists] ${filePath}=${exists ? "1" : "0"}`);
+        }
+        return encodeHostBool(exists);
       },
       fs_stat_token(pathTagged) {
         const filePath = decodeStringArg(instanceRef, pathTagged);
@@ -1170,6 +1449,9 @@ async function main() {
           fs.mkdirSync(dir, { recursive: true });
         }
         fs.writeFileSync(filePath, bytes);
+        if (process.env.VIBE_DEBUG_FS === "1") {
+          console.error(`[fs-write-bytes] ${filePath} bytes=${bytes.length}`);
+        }
         return 0n;
       },
       fs_readdir(pathTagged) {
@@ -1320,6 +1602,7 @@ async function main() {
       },
       ["env-get"](nameTagged) {
         const name = decodeStringArg(instanceRef, nameTagged);
+        maybeEmitEnvMemoryMark(name);
         const val = process.env[name] || "";
         if (process.env.VIBE_DEBUG_ENV === "1") {
           console.error(`[env-get] ${name}=${val}`);
@@ -1408,6 +1691,7 @@ async function main() {
     },
     Get(nameTagged) {
       const name = decodeStringArg(instanceRef, nameTagged);
+      maybeEmitEnvMemoryMark(name);
       const val = process.env[name] ?? "";
       if (process.env.VIBE_DEBUG_ENV === "1") {
         console.error(`[Get] ${name}=${val}`);
@@ -1542,6 +1826,7 @@ async function main() {
   instanceRef = instance;
   instanceRefGlobal = instance;
   hostAllocPtrGlobal = null;
+  preGrowWasmMemory(instance);
   let didInitStart = false;
   let initHeapBeforeStart = 0;
   const resolvedEnvCache = new Map();
@@ -1751,6 +2036,36 @@ async function main() {
     return err?.message || String(err);
   };
 
+  const emitWasmMemoryStats = (label) => {
+    if (process.env.VIBE_WASM_MEMORY_STATS !== "1") {
+      return;
+    }
+    if (HOST_IMPORT_ABI !== "raw") {
+      console.error(`[wasm-memory] ${label} skipped abi=${HOST_IMPORT_ABI}`);
+      return;
+    }
+    const memory = instance.exports.memory;
+    if (!(memory instanceof WebAssembly.Memory)) {
+      console.error(`[wasm-memory] ${label} memory=missing`);
+      return;
+    }
+    const heapGlobal = instance.exports.__heap_ptr;
+    const heapRaw = heapGlobal instanceof WebAssembly.Global ? heapGlobal.value : null;
+    const heapPtr =
+      typeof heapRaw === "bigint"
+        ? Number(BigInt.asUintN(64, heapRaw))
+        : typeof heapRaw === "number"
+          ? heapRaw >>> 0
+          : heapRaw;
+    const memoryBytes = memory.buffer.byteLength;
+    const memoryPages = memoryBytes / 65536;
+    const hostAllocPtr = hostAllocPtrGlobal === null ? 0 : hostAllocPtrGlobal;
+    const rss = process.memoryUsage().rss;
+    console.error(
+      `[wasm-memory] ${label} pages=${memoryPages} bytes=${memoryBytes} heap_ptr=${heapPtr ?? "missing"} host_alloc_ptr=${hostAllocPtr} rss=${rss}`,
+    );
+  };
+
   const runDaemon = async () => {
     if (benchCount !== null) {
       throw new Error("--daemon cannot be combined with --bench-count");
@@ -1824,12 +2139,17 @@ async function main() {
       invokeExport(invokes[0]);
     }
     const elapsedUs = Number(process.hrtime.bigint() - startNs) / 1000;
+    emitWasmMemoryStats("bench");
     console.log(String(elapsedUs));
     return;
   }
   const { result, isSelfhost } = runInvokes(passthroughArgs);
+  emitWasmMemoryStats("run");
   const invoke = invokes[invokes.length - 1];
   emitResult(invoke, result, isSelfhost);
+  if (invoke === "cli_main" || process.env.VIBE_RUNNER_EXIT_WITH_RESULT === "1") {
+    process.exitCode = resultToExitCode(result);
+  }
 }
 
 main().catch((err) => {

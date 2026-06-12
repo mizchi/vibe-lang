@@ -2,6 +2,7 @@
 
 import ../compiler/selfhost_cli_support.vibe {
   check_linked_file, compile_release_file_mode, compile_release_file_mode_profiled,
+  compile_release_file_mode_uncached, compile_release_file_mode_uncached_profiled,
   write_linked_debug_build
 }
 
@@ -178,6 +179,22 @@ let write_optional_profile: (String, String) -> Unit with { Fs } = (path, conten
   }
 }
 
+let artifact_cache_disabled: () -> Bool with { Env } = () -> {
+  Env::get("VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE") == "1"
+}
+
+let compile_release_file_mode_for_cli: (String, String, String) -> Bytes with { Error, Fs, Env } = (input_path, entry_name, mode) -> {
+  if artifact_cache_disabled() {
+    compile_release_file_mode_uncached(input_path, entry_name, mode)
+  } else {
+    compile_release_file_mode(input_path, entry_name, mode)
+  }
+}
+
+let input_file_exists: (String) -> Bool with { Fs } = (input_path) -> {
+  Fs::exists(input_path)
+}
+
 let parse_compile_lite_args_with_profile: (Array[String]) -> (String, String, String, String, Bool, String, String) with { Error } = (args) -> {
   if Array::length(args) == 0 || Array::get(args, 0) != "compile-lite" {
     throw("compile-lite: expected command")
@@ -294,10 +311,12 @@ export let parse_compile_lite_args: (Array[String]) -> (String, String, String, 
   (input_path, output_path, entry_name, mode, in_memory)
 }
 
-export let selfhost_cli_compile_lite_args: (Array[String]) -> Int with { Error, Fs, Profiler } = (args) -> {
+export let selfhost_cli_compile_lite_args: (Array[String]) -> Int with { Error, Fs, Env, Profiler } = (args) -> {
   let (input_path, output_path, entry_name, mode, in_memory, profile_tsv_path, profile_callstack_path) = parse_compile_lite_args_with_profile(args)
-  if profile_tsv_path == "" && profile_callstack_path == "" {
-    let bytes = compile_release_file_mode(input_path, entry_name, mode)
+  if !input_file_exists(input_path) {
+    1
+  } else if profile_tsv_path == "" && profile_callstack_path == "" {
+    let bytes = compile_release_file_mode_for_cli(input_path, entry_name, mode)
     if in_memory {
       0
     } else {
@@ -306,7 +325,11 @@ export let selfhost_cli_compile_lite_args: (Array[String]) -> Int with { Error, 
     }
   } else {
     let total_start = profiler_now_us()
-    let (bytes, load_us, type_us, bundle_us, parse_us, compile_us, _compile_total_us) = compile_release_file_mode_profiled(input_path, entry_name, mode)
+    let (bytes, load_us, type_us, bundle_us, parse_us, compile_us, _compile_total_us) = if artifact_cache_disabled() {
+      compile_release_file_mode_uncached_profiled(input_path, entry_name, mode)
+    } else {
+      compile_release_file_mode_profiled(input_path, entry_name, mode)
+    }
     if in_memory {
       let total_us = elapsed_profile_us_since(total_start)
       write_optional_profile(profile_tsv_path, compile_lite_profile_tsv(load_us, type_us, bundle_us, parse_us, compile_us, 0, total_us))
@@ -416,11 +439,15 @@ export let parse_compile_args: (Array[String]) -> (String, String, String, Strin
   }
 }
 
-export let selfhost_cli_compile_args: (Array[String]) -> Int with { Error, Fs } = (args) -> {
+export let selfhost_cli_compile_args: (Array[String]) -> Int with { Error, Fs, Env } = (args) -> {
   let (input_path, output_path, entry_name, mode) = parse_compile_args(args)
-  let bytes = compile_release_file_mode(input_path, entry_name, mode)
-  Fs::write_bytes(output_path, bytes)
-  0
+  if !input_file_exists(input_path) {
+    1
+  } else {
+    let bytes = compile_release_file_mode_for_cli(input_path, entry_name, mode)
+    Fs::write_bytes(output_path, bytes)
+    0
+  }
 }
 
 //# build
@@ -480,13 +507,15 @@ export let parse_build_args: (Array[String]) -> (String, String, String, String)
   }
 }
 
-export let selfhost_cli_build_args: (Array[String]) -> Int with { Error, Fs } = (args) -> {
+export let selfhost_cli_build_args: (Array[String]) -> Int with { Error, Fs, Env } = (args) -> {
   let (input_path, output_path, entry_name, mode) = parse_build_args(args)
-  if mode == "debug" {
+  if !input_file_exists(input_path) {
+    1
+  } else if mode == "debug" {
     write_linked_debug_build(input_path, output_path, entry_name)
     0
   } else {
-    let bytes = compile_release_file_mode(input_path, entry_name, mode)
+    let bytes = compile_release_file_mode_for_cli(input_path, entry_name, mode)
     Fs::write_bytes(output_path, bytes)
     0
   }
@@ -590,11 +619,47 @@ export let selfhost_cli_check_args: (Array[String]) -> Int with { Error, Fs } = 
 
 //# Dispatch
 
-let low_level_cli_main: () -> Int with { Error, Fs, Env } = () -> {
-  let input_path = own_host_string(read_arg_or_env(0, "VIBE_INPUT"))
-  let output_path = own_host_string(read_arg_or_env(1, "VIBE_OUTPUT"))
-  let entry_name = own_host_string(read_arg_or_env(2, "VIBE_ENTRY"))
-  let mode = read_arg(3)
+let profile_tsv_env: () -> String with { Env } = () -> {
+  Env::get("VIBE_PROFILE_TSV")
+}
+
+let profile_callstack_env: () -> String with { Env } = () -> {
+  Env::get("VIBE_PROFILE_CALLSTACK")
+}
+
+export let selfhost_cli_low_level_args_profiled: (String, String, String, String, String, String) -> Int with { Error, Fs, Profiler } = (input_path, output_path, entry_name, mode, profile_tsv_path, profile_callstack_path) -> {
+  if !input_file_exists(input_path) {
+    1
+  } else {
+    let total_start = profiler_now_us()
+    let (bytes, load_us, type_us, bundle_us, parse_us, compile_us, _compile_total_us) = compile_release_file_mode_uncached_profiled(input_path, entry_name, mode)
+    let write_start = profiler_now_us()
+    Fs::write_bytes(output_path, bytes)
+    let write_us = elapsed_profile_us_since(write_start)
+    let total_us = elapsed_profile_us_since(total_start)
+    write_optional_profile(profile_tsv_path, compile_lite_profile_tsv(load_us, type_us, bundle_us, parse_us, compile_us, write_us, total_us))
+    write_optional_profile(profile_callstack_path, compile_lite_callstack_profile_tsv(total_us))
+    0
+  }
+}
+
+let low_level_compile_release_profiled: (String, String, String, String, String, String) -> Int with { Error, Fs, Env, Profiler } = (input_path, output_path, entry_name, mode, profile_tsv_path, profile_callstack_path) -> {
+  if artifact_cache_disabled() {
+    selfhost_cli_low_level_args_profiled(input_path, output_path, entry_name, mode, profile_tsv_path, profile_callstack_path)
+  } else {
+    let total_start = profiler_now_us()
+    let (bytes, load_us, type_us, bundle_us, parse_us, compile_us, _compile_total_us) = compile_release_file_mode_profiled(input_path, entry_name, mode)
+    let write_start = profiler_now_us()
+    Fs::write_bytes(output_path, bytes)
+    let write_us = elapsed_profile_us_since(write_start)
+    let total_us = elapsed_profile_us_since(total_start)
+    write_optional_profile(profile_tsv_path, compile_lite_profile_tsv(load_us, type_us, bundle_us, parse_us, compile_us, write_us, total_us))
+    write_optional_profile(profile_callstack_path, compile_lite_callstack_profile_tsv(total_us))
+    0
+  }
+}
+
+export let selfhost_cli_low_level_args: (String, String, String, String) -> Int with { Error, Fs, Env, Profiler } = (input_path, output_path, entry_name, mode) -> {
   if input_path == "" {
     1
   }
@@ -605,9 +670,19 @@ let low_level_cli_main: () -> Int with { Error, Fs, Env } = () -> {
     1
   }
   else if mode == "" || mode == "release" || mode == "no-dce" || mode == "mvp" {
-    let bytes = compile_release_file_mode(input_path, entry_name, mode)
-    Fs::write_bytes(output_path, bytes)
-    0
+    if !input_file_exists(input_path) {
+      1
+    } else {
+      let profile_tsv_path = profile_tsv_env()
+      let profile_callstack_path = profile_callstack_env()
+      if profile_tsv_path == "" && profile_callstack_path == "" {
+        let bytes = compile_release_file_mode_for_cli(input_path, entry_name, mode)
+        Fs::write_bytes(output_path, bytes)
+        0
+      } else {
+        low_level_compile_release_profiled(input_path, output_path, entry_name, mode, profile_tsv_path, profile_callstack_path)
+      }
+    }
   }
   else if mode == "debug" {
     write_linked_debug_build(input_path, output_path, entry_name)
@@ -619,6 +694,14 @@ let low_level_cli_main: () -> Int with { Error, Fs, Env } = () -> {
   else {
     1
   }
+}
+
+let low_level_cli_main: () -> Int with { Error, Fs, Env, Profiler } = () -> {
+  let input_path = own_host_string(read_arg_or_env(0, "VIBE_INPUT"))
+  let output_path = own_host_string(read_arg_or_env(1, "VIBE_OUTPUT"))
+  let entry_name = own_host_string(read_arg_or_env(2, "VIBE_ENTRY"))
+  let mode = read_arg(3)
+  selfhost_cli_low_level_args(input_path, output_path, entry_name, mode)
 }
 
 export let selfhost_cli_main: () -> Int with { Error, Fs, Env, Profiler } = () -> {

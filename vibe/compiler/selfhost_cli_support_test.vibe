@@ -38,3 +38,23 @@ test "selfhost cli support dispatches mvp through pruned compile path" {
   assert_wasm_magic(bytes_mvp)
   assert(Bytes::length(bytes_mvp) < Bytes::length(bytes_no_dce))
 }
+
+test "selfhost cli support compiles enum constructors imported through index module" {
+  let base_dir = "/tmp/vibe_selfhost_cli_support_enum_index"
+  let core_dir = String::concat(base_dir, "/core")
+  let ast_path = String::concat(core_dir, "/ast.vibe")
+  let index_path = String::concat(core_dir, "/index.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(core_dir)
+  Fs::write_bytes(
+    ast_path,
+    string_to_bytes("export enum TypeExpr { TyName(String); TyTuple(Array[TypeExpr]) }")
+  )
+  Fs::write_bytes(index_path, string_to_bytes("export ./ast.vibe { TypeExpr }"))
+  Fs::write_bytes(
+    main_path,
+    string_to_bytes("import ./core { TypeExpr }\nlet answer: () -> Int = () -> { let ann: TypeExpr = TyTuple([TyName(\"Int\")]); match ann { TyTuple(items) => Array::length(items), _ => 0 } }\n")
+  )
+  let bytes = compile_release_file_mode(main_path, "answer", "no-dce")
+  assert_wasm_magic(bytes)
+}

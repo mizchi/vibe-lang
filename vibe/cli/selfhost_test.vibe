@@ -3,7 +3,7 @@
 import ./selfhost.vibe {
   parse_build_args, parse_check_args, parse_compile_args, parse_compile_lite_args,
   selfhost_cli_build_args, selfhost_cli_check_args, selfhost_cli_compile_args,
-  selfhost_cli_compile_lite_args
+  selfhost_cli_compile_lite_args, selfhost_cli_low_level_args_profiled
 }
 
 //# Effects
@@ -27,10 +27,22 @@ let string_to_bytes: (String) -> Bytes = (s) -> {
   Bytes::from_array(out)
 }
 
-let run_compile_lite_with_fake_profiler: (Array[String]) -> Int with { Error, Fs } = (args) -> {
+let run_compile_lite_with_fake_profiler: (Array[String]) -> Int with { Error, Fs, Env } = (args) -> {
   let mut tick = 1000
   handle {
     selfhost_cli_compile_lite_args(args)
+  } with Profiler {
+    NowUs => {
+      tick = tick + 1000
+      resume(tick)
+    }
+  }
+}
+
+let run_low_level_with_fake_profiler: (String, String, String, String, String, String) -> Int with { Error, Fs } = (input_path, output_path, entry_name, mode, profile_path, callstack_path) -> {
+  let mut tick = 1000
+  handle {
+    selfhost_cli_low_level_args_profiled(input_path, output_path, entry_name, mode, profile_path, callstack_path)
   } with Profiler {
     NowUs => {
       tick = tick + 1000
@@ -164,6 +176,28 @@ test "selfhost cli compile-lite command writes profile tsv" {
   assert(!String::contains(callstack, "compile\t0\t0"))
 }
 
+test "selfhost cli low-level entry writes profile tsv from env" {
+  let main_path = "/tmp/vibe_selfhost_cli_low_level_profile_main.vibe"
+  let output_path = "/tmp/vibe_selfhost_cli_low_level_profile_out.wasm"
+  let profile_path = "/tmp/vibe_selfhost_cli_low_level_profile.tsv"
+  let callstack_path = "/tmp/vibe_selfhost_cli_low_level_callstack.tsv"
+  let source = "export let answer: () -> Int = () -> { 40 + 2 }\n"
+  Fs::write_bytes(main_path, string_to_bytes(source))
+  let status = run_low_level_with_fake_profiler(main_path, output_path, "answer", "mvp", profile_path, callstack_path)
+  assert(status == 0)
+  assert(Fs::exists(output_path))
+  assert(Fs::exists(profile_path))
+  assert(Fs::exists(callstack_path))
+  let profile = Fs::read_file(profile_path)
+  assert(String::contains(profile, "stage\telapsed_ms\telapsed_us"))
+  assert(String::contains(profile, "compile\t"))
+  assert(String::contains(profile, "write\t"))
+  assert(String::contains(profile, "total\t"))
+  assert(!String::contains(profile, "total\t0\t0"))
+  let callstack = Fs::read_file(callstack_path)
+  assert(String::contains(callstack, "compile\t"))
+}
+
 test "selfhost cli parses compile command args" {
   let (input_path, output_path, entry_name, mode) = parse_compile_args([
     "compile", "--wasm-linear", "--no-dce", "main.vibe", "-o", "out.wasm"
@@ -204,6 +238,14 @@ test "selfhost cli compile command writes wasm" {
   ])
   assert(status == 0)
   assert(Fs::exists(output_path))
+}
+
+test "selfhost cli compile rejects missing input before compile" {
+  let missing_path = "/tmp/vibe_selfhost_cli_compile_missing_input_never_exists.vibe"
+  let status = selfhost_cli_compile_args([
+    "compile", "--wasm", missing_path, "-o", "/tmp/vibe_selfhost_cli_missing_out.wasm"
+  ])
+  assert(status == 1)
 }
 
 test "selfhost cli parses build command args" {
