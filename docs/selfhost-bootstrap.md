@@ -31,7 +31,7 @@ seed として固定し、stage を分けて検証すること。vibe はこの�
 
 ### Seed compiler
 
-- 現在の local gate green な状態に annotated tag を打ち、その tag から作った
+- local gate green な状態に annotated tag を打ち、その tag から作った
   selfhost compiler artifact を seed compiler として固定する。
 - seed compiler は version、git tag、source commit、artifact sha256、
   target triple、wasmtime version、build command を manifest に記録する。
@@ -40,7 +40,9 @@ seed として固定し、stage を分けて検証すること。vibe はこの�
 
 実装上の seed manifest は `bootstrap/selfhost/seed.json`、固定 seed artifact は
 `bootstrap/selfhost/seed/` 配下に置く。stage 生成物は `_build/selfhost/`
-配下に置く。canonical dist / CLI build entry は `cli_main` を持つ
+配下に置く。2026-06-12 の cutover seed は
+`selfhost-cutover-base-2026-06-12` / `39eab0519952ca72599b0b7064d00e3fbd2ac302`
+に固定している。canonical dist / CLI build entry は `cli_main` を持つ
 `vibe/cli/selfhost_entry.vibe` の wasm とし、各世代は次世代の compiler source を
 `cli_main` 経由でビルドできるものとして扱う。CLI の argv parsing / command
 dispatch は `vibe/cli/`、compiler 本体・link/check/build helper は
@@ -54,17 +56,19 @@ scripts/selfhost_generations.sh adopt --artifact _build/selfhost/generations/<ge
 
 `adopt` は stage2 artifact を seed path にコピーし、`bootstrap/selfhost/seed.json`
 の sha256 を更新する。bootstrap bump ではこの manifest 更新を独立 commit として
-扱う。現在の固定 seed は CLI 分割前の artifact なので、通常の
-`pkf run selfhost-generation` は seed provenance に従う legacy flat adapter 経路を
-使う。`build-selfhost-dist` / `test-selfhost-cli-core` は新しい
-`vibe/cli/selfhost_entry.vibe` を使い、次回 bootstrap bump 後に generation default も
-この entry へ寄せる。
+扱う。`pkf run selfhost-generation` は seed provenance に従い、安定した
+low-level compiler entry (`vibe/compiler/selfhost_cli_support.vibe`) を flat source
+化して stage を回す。`build-selfhost-dist` / `test-selfhost-cli-core` は
+`vibe/cli/selfhost_entry.vibe` を使う。split CLI entry を generation default に
+昇格する場合は、別の bootstrap bump として stage2/stage3、corpus、perf/RSS を
+通してから manifest entry を切り替える。
 
 ### Rust-style staged build
 
 - stage0: 固定 seed compiler。新しい compiler source をビルドするためだけに使う。
-- stage1: stage0 が現在 source から作った compiler。seed 更新前は legacy flat
-  adapter 経路、seed 更新後は `vibe/cli/` entry と `vibe/compiler/` source を使う。
+- stage1: stage0 が現在 source から作った compiler。現行 generation は固定 seed
+  provenance に従う flat low-level compiler entry を使い、dist/component/CLI gate は
+  `vibe/cli/` entry と `vibe/compiler/` source を使う。
 - stage2: stage1 が同じ source から作った compiler。配布・tag 候補は stage2。
 - stage3: optional。同じ source を stage2 で再ビルドし、stage2 と stage3 の
   挙動または artifact が一致するかを確認する。
@@ -110,10 +114,11 @@ portable selfhost wasm として再構築できることを gate に残す。
 
 `src/` は selfhost cutover 後、legacy bootstrap/fallback 層へ縮退する。
 新機能、bugfix、CLI 挙動変更、builtin 追加は `src/` に入れず、
-`vibe/compiler/` 側で実装する。削除は一度に行わず、次の順に進める。
+`vibe/compiler/` / `vibe/cli/` 側で実装する。削除は一度に行わず、次の順に進める。
 
-1. seed tag と manifest を固定する。
-2. default CLI build/run/check/test を selfhost wasm 経路へ向ける。
+1. seed tag と manifest を固定する。2026-06-12 cutover seed は完了済み。
+2. default CLI build/run/check/test を selfhost wasm 経路へ向ける。新規 CLI 実装は
+   `vibe/cli/` と `vibe/compiler/` 側で行う。
 3. CI で seed -> stage1 -> stage2 と corpus/perf/RSS gate を継続 green にする。
 4. MoonBit `src/` を runner/fallback に必要な最小限へ縮小する。
 5. fallback が不要になった時点で archive または削除する。
