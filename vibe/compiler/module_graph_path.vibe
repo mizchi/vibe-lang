@@ -11,6 +11,15 @@ export let dir_of_path: (String) -> String = (file_path) -> {
   }
 }
 
+// Linear membership scan used by `resolve_reexport_chain` to filter
+// re-exported names. Bounded per-module, not whole-program: `items`
+// (`wanted_names`) is a single re-export selection (typically 1-5 names)
+// and it is scanned once per pub statement of one source file. The
+// original O(N^2)-accumulator survey (#366) classified this as "small N,
+// refactor pointless" and #533 re-confirms it. A `Map[String, Bool]`
+// would NOT help: the selfhost runtime emits `Map::has_key` as a linear
+// search (#395, closed not-planned). See
+// bench/selfhost_perf/README.md ("String-keyed lookup" postmortem).
 export let contains_name: (Array[String], String) -> Bool = (items, name) -> {
   let mut i = 0
   let mut found = false
@@ -24,6 +33,18 @@ export let contains_name: (Array[String], String) -> Bool = (items, name) -> {
   found
 }
 
+// Linear membership scan used by `collect_direct_dep_paths` to dedup the
+// direct dependency paths of one entry file. Bounded by that file's
+// unique imports (≈5-30), so the dedup is O(D^2) with small D (≤ ~900
+// ops, per #366's survey). Kept linear deliberately (#533):
+//   - `Map[String, Bool]` is a no-op — the selfhost runtime emits
+//     `Map::has_key`/`Map::get` as linear searches (#395 not-planned).
+//   - A sort+merge dedup is UNSAFE: the resulting `dep_paths` order is
+//     preserved into `linked_imports`, which the linked codegen turns
+//     into wasm import-section indices (see
+//     vibe/compiler/codegen/wasi/linked_compile.vibe). Reordering would
+//     change the emitted binary, breaking reproducibility/parity.
+// First-occurrence insertion order must therefore be preserved.
 export let contains_path: (Array[String], String) -> Bool = (visited, path) -> {
   let mut i = 0
   let mut found = false
