@@ -20,8 +20,18 @@ let simd_v128_store = 11
 // Splat ops
 let simd_i8x16_splat = 15
 
-// Comparison ops
+// Shuffle / swizzle (i8x16.swizzle = 0x0E)
+let simd_i8x16_swizzle = 14
+
+// Comparison ops (spec sub-opcodes, see binary/instructions SIMD table)
 let simd_i8x16_eq = 35
+// i8x16.le_u = 0x2A, i8x16.ge_u = 0x2C. NB: 38/40 are lt_u/gt_u, not le/ge.
+let simd_i8x16_le_u = 42
+let simd_i8x16_ge_u = 44
+
+// i8x16 arithmetic
+let simd_i8x16_sub = 113
+let simd_i8x16_min_u = 119
 
 // Boolean reduction
 let simd_v128_any_true = 83
@@ -71,16 +81,34 @@ export let emit_i8x16_eq: (Bytes) -> Unit = (buf) -> {
   leb128_encode_u32(buf, simd_i8x16_eq)
 }
 
-// i8x16.le_u  -- lane-wise unsigned less-or-equal
+// i8x16.le_u  -- lane-wise unsigned less-or-equal (0xFD 0x2A)
 export let emit_i8x16_le_u: (Bytes) -> Unit = (buf) -> {
   bytebuf_push(buf, simd_prefix)
-  leb128_encode_u32(buf, 38)
+  leb128_encode_u32(buf, simd_i8x16_le_u)
 }
 
-// i8x16.ge_u  -- lane-wise unsigned greater-or-equal
+// i8x16.ge_u  -- lane-wise unsigned greater-or-equal (0xFD 0x2C)
 export let emit_i8x16_ge_u: (Bytes) -> Unit = (buf) -> {
   bytebuf_push(buf, simd_prefix)
-  leb128_encode_u32(buf, 40)
+  leb128_encode_u32(buf, simd_i8x16_ge_u)
+}
+
+// i8x16.swizzle  -- byte shuffle of first operand by indices in second (0xFD 0x0E)
+export let emit_i8x16_swizzle: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, simd_prefix)
+  leb128_encode_u32(buf, simd_i8x16_swizzle)
+}
+
+// i8x16.sub  -- lane-wise wrapping subtraction (0xFD 0x71)
+export let emit_i8x16_sub: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, simd_prefix)
+  leb128_encode_u32(buf, simd_i8x16_sub)
+}
+
+// i8x16.min_u  -- lane-wise unsigned minimum (0xFD 0x77)
+export let emit_i8x16_min_u: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, simd_prefix)
+  leb128_encode_u32(buf, simd_i8x16_min_u)
 }
 
 //# Boolean Reduction
@@ -124,6 +152,24 @@ export let emit_v128_not: (Bytes) -> Unit = (buf) -> {
 }
 
 //# v128.const
+
+// v128.const with an explicit 16-byte little-endian immediate (0xFD 0x0C).
+// Shorter arrays are zero-padded; longer arrays are truncated to 16 lanes.
+export let emit_v128_const: (Bytes, Array[Int]) -> Unit = (buf, lanes) -> {
+  bytebuf_push(buf, simd_prefix)
+  leb128_encode_u32(buf, simd_v128_const)
+  let n = Array::length(lanes)
+  let mut i = 0
+  while i < 16 {
+    let b = if i < n {
+      Array::get(lanes, i)
+    } else {
+      0
+    }
+    bytebuf_push(buf, b & 255)
+    i = i + 1
+  }
+}
 
 // v128.const -- push 16-byte immediate constant onto stack
 // The 16 bytes are written directly after the opcode.
