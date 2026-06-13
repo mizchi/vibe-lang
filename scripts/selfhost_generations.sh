@@ -305,6 +305,37 @@ use_flat_cli_source() {
 prepare_flat_cli_source() {
   local out_dir="$1"
   local out="$out_dir/selfhost_cli_adapter_module_source.vibe"
+  # Decoupling hook (#533 follow-up / selfhost release-asset bootstrap):
+  # the flat module source is a deterministic function of the committed
+  # compiler source. Regenerating it requires the MoonBit-built host
+  # `vibe.exe` (via emit-module-source), which in turn needs the full
+  # mooncakes registry. In a constrained environment that prebuilt flat
+  # source can instead be PULLED from a release asset (see
+  # scripts/fetch_selfhost_compiler.sh) and supplied here, so the seed ->
+  # stage1 -> stage2 build needs no MoonBit host build at all.
+  #
+  #   VIBE_SELFHOST_PREBUILT_MODULE_SOURCE         path to prebuilt source
+  #   VIBE_SELFHOST_PREBUILT_MODULE_SOURCE_SHA256  optional integrity check
+  #
+  # The caller is responsible for matching the prebuilt source to the
+  # configured seed's source commit; a mismatch is a stale-artifact error,
+  # surfaced as a stage1/stage2 parity failure downstream.
+  local prebuilt="${VIBE_SELFHOST_PREBUILT_MODULE_SOURCE:-}"
+  if [ -n "$prebuilt" ]; then
+    [ -s "$prebuilt" ] || die "prebuilt module source not found or empty: $prebuilt"
+    local want_sha="${VIBE_SELFHOST_PREBUILT_MODULE_SOURCE_SHA256:-}"
+    if [ -n "$want_sha" ]; then
+      local got_sha
+      got_sha="$(sha256_file "$prebuilt")"
+      [ "$got_sha" = "$want_sha" ] || \
+        die "prebuilt module source sha256 mismatch: got=$got_sha want=$want_sha"
+    fi
+    mkdir -p "$out_dir"
+    cp "$prebuilt" "$out"
+    echo "[selfhost-gen] use prebuilt flat selfhost compiler source: $prebuilt" >&2
+    printf '%s\n' "$out"
+    return 0
+  fi
   local generator="$PROJECT_ROOT/scripts/generate_selfhost_bundle.sh"
   [ -f "$generator" ] || die "selfhost bundle generator not found: $generator"
   local bundle_tmp="$out_dir/.selfhost_bundle"
