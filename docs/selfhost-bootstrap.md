@@ -99,6 +99,48 @@ bootstrap bump は最低限、以下を満たす。
 つまり「新機能を実装する commit」と「compiler source が新機能を使い始める
 commit」は分ける。これにより、常に固定 seed から HEAD を復元できる。
 
+## Release asset からの bootstrap (MoonBit host build なし)
+
+selfhost を「保証」するには、stage0 -> stage1 -> stage2 を **MoonBit host を
+ビルドせずに** 回せる必要がある。完全な registry (mooncakes) と native build が
+無い環境 (web/remote container 等) では `moon build src/cmd/vibe` が通らず、
+従来は flatten 工程 (`emit-module-source`) が host `vibe.exe` に依存していた。
+
+これを解消するため、selfhost に必要な 2 つの prebuilt artifact を
+**GitHub Release asset** として配布し、pull して使えるようにする。
+
+- `vibe-selfhost-<tag>.wasm` — stage0 seed compiler wasm。stock wasmtime で
+  instantiate でき、`moonrun` 上で `cli_main` として動く。中身は
+  `bootstrap/selfhost/seed/selfhost_compiler.wasm` (seed.json で sha256 pin)。
+- `vibe-selfhost-module-source-<tag>.vibe` — flatten 済みの flat module source。
+  `emit-module-source` の出力 (= committed compiler source からの決定的関数) を
+  pin したもの。これがあれば flatten で host `vibe.exe` を呼ばない。
+- `vibe-selfhost-seed-<tag>.json` / `release-manifest.json` / `SHA256SUMS.txt` —
+  provenance と整合性メタデータ。manifest の `selfhost` block に各 asset の
+  sha256 と `source_commit` が入る。
+
+publish は `scripts/build_release_assets.sh`、取得は
+`scripts/fetch_selfhost_compiler.sh` (`pkf run fetch-selfhost-compiler`)。
+
+```bash
+# release から pull + sha256 検証し、prebuilt module source の env を出す
+eval "$(pkf run fetch-selfhost-compiler -- <tag> --print-env)"
+# MoonBit host build を一切せず stage0 -> stage1 -> stage2 を回す
+bash scripts/selfhost_generations.sh build
+```
+
+`scripts/selfhost_generations.sh` の `prepare_flat_cli_source` は
+`VIBE_SELFHOST_PREBUILT_MODULE_SOURCE`(+ optional `..._SHA256`)が指定されると
+regeneration を skip して pull 済み flat source を使う。未指定時の挙動
+(host `vibe.exe` で regenerate) は不変。
+
+freshness 契約: prebuilt flat source は **対応する source commit / tag 専用**。
+HEAD 開発で compiler source を変えた場合は stale になるため、その場合は
+従来どおり host `vibe.exe` で regenerate する。stale な artifact を使うと
+flat source が現在の source と食い違い、stage1/stage2 parity 失敗として
+顕在化する (fetch 側は manifest の `source_commit` を、`--adopt-seed` 時は
+`seed.json` の sha256 を突き合わせて誤用を弾く)。
+
 ## Layer split
 
 cutover 後も runner と compiler artifact は分ける。

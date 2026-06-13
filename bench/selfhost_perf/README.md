@@ -498,3 +498,67 @@ selfhost compiler:
    remains `wasm-opt -O3` (already wired) and the moonrun → wasmtime
    AOT switch (blocked on WASI binding reshape), not algorithmic
    improvements.
+
+## Linked-build `contains_name` / `contains_path` scans (#533)
+
+`#533` re-opened the question of the linear `contains_name`
+(`vibe/compiler/entry/source_compile/wasi_only/linked_helpers.vibe`,
+3 sites) and `contains_path`
+(`.../linked_artifacts.vibe`, 2 sites) scans that the linked-build
+path uses to filter re-exported names and to dedup direct dependency
+paths. Both delegate to helpers in `vibe/compiler/module_graph_path.vibe`.
+
+**Re-classification (matches the #366 survey verdict).**
+
+- `contains_name`: bounded by one re-export selection (`wanted_names`,
+  ≈1–5 names) scanned once per pub statement of one source file —
+  per-module, not whole-program. #366 measured ≈5–150 ops.
+- `contains_path`: bounded by one entry file's unique imports
+  (D ≈ 5–30), so the dedup is `O(D²)` with small D (≤ ~900 ops in
+  #366's survey).
+
+Both are dominated by the surrounding `Fs::ReadFile` + `lex` + `parse`
+of the very same files, so the string-equality scans are not the
+linked-build hotspot.
+
+**Why we do not change the algorithm.**
+
+1. **`Map[String, Bool]` is a no-op.** The selfhost runtime emits
+   `Map::has_key`/`Map::get` as linear searches
+   (`wasm_codegen_builtin_collection.mbt`); the dedicated runtime
+   upgrade issue (#395) was closed *not-planned*. See the
+   "String-keyed lookup" postmortem above.
+2. **Sorted index + binary search does not help** — per-comparison
+   cost is still a string-equality walk and D/W are small enough that
+   constant factors dominate (same conclusion as the `resolve_func`
+   postmortem above).
+3. **A custom hash-bucket (`StrIntIndex`) does not pay rent.** The
+   reverted experiment above showed a real 4–5× microbench win that
+   did not translate to measurable selfhost wallclock at any workload
+   size we can exercise.
+4. **Sort + merge dedup of `dep_paths` is unsafe, not merely low-ROI.**
+   The dedup must preserve first-occurrence order: `dep_paths` order
+   flows into `linked_imports`, which `compile_wasi_module_linked_impl`
+   (`vibe/compiler/codegen/wasi/linked_compile.vibe`) turns into wasm
+   import-section indices and emission order. Reordering would change
+   the emitted binary and break selfhost reproducibility/parity. This
+   rules out the "input order normalization / sort + merge" option from
+   the #533 scope on correctness grounds.
+
+**Decision: keep the linear scans, order-preserving, as-is.** The
+sites are now annotated with these bounds and the reorder hazard in
+`module_graph_path.vibe` and `linked_artifacts.vibe` so a future
+contributor does not re-attempt the unsafe sort+merge. The only path
+that would help every string-keyed scan at once is upgrading the
+runtime `Map` to a hash table (#395, not-planned); until then there is
+no bounded improvement to make here without regressing the binary or
+the build.
+
+**Verification used:** static re-read of the call sites and the
+`linked_imports` → wasm import-index data flow. The selfhost gates
+(`scripts/bench_selfhost_perf.sh --gate`,
+`scripts/bench_selfhost_compile_hotspots.sh bundle`,
+`pkf run selfhost-gate`) require the MoonBit toolchain to build the
+stage compiler and were not re-run in this doc-only/comment-only
+change; the change is behavior-preserving (comments + markdown), so
+the compile/check KPI cannot regress.
