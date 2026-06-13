@@ -5,7 +5,7 @@ import ../compiler/file_compile/index.vibe {
 }
 
 import ../../runtime/index.vibe {
-  TypeDb, db_new, db_parse_count, db_typecheck_count
+  TypeDb, db_new, db_typecheck_count
 }
 
 import ../../cache/persistent_cache.vibe {
@@ -255,13 +255,23 @@ export let selfbuild_probe_cli_prepare_batch_parse_counts: () -> Int with { Erro
     shared_main2_path,
     shared_main2_source
   )
-  let fresh_count1 = db_parse_count(prepare_jobs_cached_impl(db_new(), [
+  // Measure the in-memory TypeDb-reuse benefit via db_typecheck_count, not
+  // db_parse_count. The sibling-job sharing this probe checks is an
+  // in-memory TypeDb effect: typechecking [main1, main2] in one shared db
+  // typechecks the common helper once (3 total) vs. typechecking the two
+  // jobs in separate fresh dbs (2 + 2 = 4). db_parse_count does NOT show
+  // this because the dep-list parse is also served by the persistent
+  // filesystem cache (persistent_dep_list_cache_path), which is shared
+  // across the "fresh" dbs and so reports 1/1/2 regardless of TypeDb
+  // sharing — leaving shared == fresh_total (2 == 2) and the
+  // `shared < fresh_total` assertion permanently false. See #540.
+  let fresh_count1 = db_typecheck_count(prepare_jobs_cached_impl(db_new(), [
     (fresh_main1_path, "/tmp/vibe_selfhost_cli_prepare_fresh_main1.wasm", "run")
   ]))
-  let fresh_count2 = db_parse_count(prepare_jobs_cached_impl(db_new(), [
+  let fresh_count2 = db_typecheck_count(prepare_jobs_cached_impl(db_new(), [
     (fresh_main2_path, "/tmp/vibe_selfhost_cli_prepare_fresh_main2.wasm", "run")
   ]))
-  let shared_count = db_parse_count(prepare_jobs_cached_impl(db_new(), [
+  let shared_count = db_typecheck_count(prepare_jobs_cached_impl(db_new(), [
     (shared_main1_path, "/tmp/vibe_selfhost_cli_prepare_shared_main1.wasm", "run"),
     (shared_main2_path, "/tmp/vibe_selfhost_cli_prepare_shared_main2.wasm", "run")
   ]))
