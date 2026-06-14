@@ -10,7 +10,6 @@ import .. / wasm_emit {
 
 //# Types
 
-// Function registry: groups parallel arrays for function metadata
 export struct FuncTable {
   names: Array[String];
   indices: Array[Int];
@@ -19,14 +18,12 @@ export struct FuncTable {
   needs_env: Array[Bool]
 }
 
-// String table: groups string data with their WASM data segment offsets/lengths
 export struct StrTable {
   strs: Array[String];
   offsets: Array[Int];
   lengths: Array[Int]
 }
 
-// Lambda accumulator: collects compiled lambda bodies and metadata
 export struct LambdaTable {
   bodies: Array[Bytes];
   param_counts: Array[Int];
@@ -35,7 +32,6 @@ export struct LambdaTable {
   meta_i64: Array[Int]
 }
 
-// Constructor/struct registry: enum variant + struct constructors
 export struct CtorTable {
   names: Array[String];
   tags: Array[Int];
@@ -45,7 +41,6 @@ export struct CtorTable {
   struct_field_names: Array[Array[String]]
 }
 
-// Compilation context: all shared state for compile_expr
 export struct CompileCtx {
   func_table: FuncTable;
   str_table: StrTable;
@@ -111,18 +106,16 @@ export struct CompileCtx {
   // float-related bindings, which are rare. Still a syntactic over-
   // approximation (the AST is untyped): float function params / lambda-captured
   // floats are not tracked.
-  float_local_slots: Array[Int]
+  float_local_slots: Array[Int];
+  // #545 nesting: declared effect names (excluding `Error`), in tag-assignment
+  // order. Effect `effect_names[i]` is routed through wasm exception tag `3 + i`
+  // with its own resume frontier; `perform` and `handle` both derive the tag
+  // from this list so a perform reaches its own handler through an unrelated
+  // inner handle (which catches a different tag) and uses an independent
+  // frontier. See effect_name_to_tag.
+  effect_names: Array[String]
 }
 
-export let emit_heap_grow_after_heap_set: (Bytes, CompileCtx) -> Unit = (buf, ctx) -> {
-  if ctx.heap_grow_check_func_idx >= 0 {
-    emit_call(buf, ctx.heap_grow_check_func_idx)
-  } else {
-    ()
-  }
-}
-
-// GC backend compilation context (extends CompileCtx with GC-specific fields)
 export struct CompileCtxGc {
   func_table: FuncTable;
   str_table: StrTable;
@@ -152,7 +145,6 @@ export let is_pint: (Pat) -> Bool = (p) -> {
   }
 }
 
-// === Stmt extractors ===
 export let is_slet: (Stmt) -> Bool = (stmt) -> {
   match stmt {
     SLet(_, _, _, _, _) => true,
@@ -160,11 +152,6 @@ export let is_slet: (Stmt) -> Bool = (stmt) -> {
   }
 }
 
-// Expr tag: returns a numeric tag for dispatch without match in let rec
-// 0=EInt, 1=EBool, 2=EFloat, 3=EString, 4=EIdent, 5=EBinOp, 6=EUnaryOp,
-// 7=EIf, 8=ECall, 9=ELet, 10=ELetRec, 11=ELetMut, 12=EAssign, 13=EAssignOp,
-// 14=ESeq, 15=ETuple, 16=EMatch, 17=EArray, 18=EForIn, 19=EWhile,
-// 20=EBreak, 21=EContinue, 22=EUnit, 23=EThrow, 24=EFn, 25=ELoop, 26=EReturn, -1=unknown
 export let expr_tag: (Expr) -> Int = (expr) -> {
   match expr {
     EInt(_) => 0,
@@ -226,9 +213,6 @@ export let is_pwild: (Pat) -> Bool = (p) -> {
   }
 }
 
-// Check if expr is an EArray (array literal). Under RC the array object is
-// inline-allocated with the same layout as a tuple (untagged raw pointer,
-// value = block+8), so it drops like a tuple (tagged=false).
 export let is_earray: (Expr) -> Bool = (expr) -> {
   match expr {
     EArray(_) => true,
@@ -236,7 +220,6 @@ export let is_earray: (Expr) -> Bool = (expr) -> {
   }
 }
 
-// Expr type checks (only those needed inside match arms)
 export let is_eident: (Expr) -> Bool = (expr) -> {
   match expr {
     EIdent(_) => true,
@@ -244,7 +227,6 @@ export let is_eident: (Expr) -> Bool = (expr) -> {
   }
 }
 
-// Check if expr is an ETuple
 export let is_etuple: (Expr) -> Bool = (expr) -> {
   match expr {
     ETuple(_) => true,
@@ -252,7 +234,6 @@ export let is_etuple: (Expr) -> Bool = (expr) -> {
   }
 }
 
-// Check pattern type
 export let is_ptuple: (Pat) -> Bool = (p) -> {
   match p {
     PTuple(_) => true,
@@ -264,8 +245,6 @@ let op_i32_eq = 70
 
 let op_i32_ne = 71
 
-// Check if expr is an ERecord (struct/record literal). Records are tagged
-// (`ptr | 1`), unlike tuples, so RC drop must untag before touching the header.
 export let is_erecord: (Expr) -> Bool = (expr) -> {
   match expr {
     ERecord(_) => true,
@@ -294,13 +273,11 @@ export let emit_i32_ne: (Bytes) -> Unit = (buf) -> {
   bytebuf_push(buf, op_i32_ne)
 }
 
-// Extract pattern from match arm pair
 export let get_arm_pat: ((Pat, Expr)) -> Pat = (arm) -> {
   let (p, _) = arm
   p
 }
 
-// Returns index into ctor_names array, or -1 if not found
 export let rec lookup_ctor: (Array[String], String, Int) -> Int = (ctor_names, name, i) -> {
   if i >= Array::length(ctor_names) {
     -1
@@ -337,7 +314,6 @@ export let emit_str_ref: (Bytes, Int, Int) -> Unit = (buf, offset, length) -> {
   emit_i64_or(buf)
 }
 
-// Extract body from match arm pair
 export let get_arm_body: ((Pat, Expr)) -> Expr = (arm) -> {
   let (_, b) = arm
   b
@@ -378,10 +354,6 @@ export let get_elet_val: (Expr) -> Expr with { Error } = (expr) -> {
   }
 }
 
-// Is `value` an enum/struct constructor application (`A(...)`)? Such values are
-// heap-allocated and tagged (`ptr | 1`), so under RC they are dropped like
-// records (untag first). A bare nullary ctor parsed as an EIdent is not matched
-// here (it carries no payload and is a conservative leak at worst).
 export let is_ctor_call: (Expr, CtorTable) -> Bool = (value, ct) -> {
   match value {
     ECall(callee, _) => match callee {
@@ -394,7 +366,6 @@ export let is_ctor_call: (Expr, CtorTable) -> Bool = (value, ct) -> {
 
 let op_i64_store = 55
 
-// Resolve function: returns (func_index, param_count, has_return)
 export let resolve_func: (FuncTable, String) -> (Int, Int, Int) with { Error } = (ft, name) -> {
   let len = Array::length(ft.names)
   let mut i = 0
@@ -413,7 +384,6 @@ export let resolve_func: (FuncTable, String) -> (Int, Int, Int) with { Error } =
   (Array::get(ft.indices, found), Array::get(ft.params, found), Array::get(ft.returns, found))
 }
 
-// Emit WASM instruction for a binary operator
 export let emit_binop_op: (Bytes, String) -> Unit with { Error } = (buf, op) -> {
   if op == "+" {
     emit_i64_add(buf)
@@ -509,7 +479,6 @@ export let get_elet_name: (Expr) -> String with { Error } = (expr) -> {
   }
 }
 
-// Extract function body from SLet(_, _, _, _, EFn(_, _, _, _, _, body))
 export let get_func_body: (Stmt) -> Expr with { Error } = (stmt) -> {
   match stmt {
     SLet(_, _, _, _, expr) => match expr {
@@ -534,9 +503,6 @@ export let get_slet_name: (Stmt) -> String with { Error } = (stmt) -> {
   }
 }
 
-// The declared type annotation of an SLet (`let f: T = ...`), or None.
-// ADR-0055 Stage 4: a top-level fn's parameter types live on its signature, not
-// on the lambda params, so owned-param drops read them from here.
 export let get_slet_type: (Stmt) -> Option[TypeExpr] = (stmt) -> {
   match stmt {
     SLet(_, _, _, ty, _) => ty,
@@ -567,9 +533,6 @@ export let emit_i64_store: (Bytes, Int, Int) -> Unit = (buf, align, offset) -> {
   leb128_encode_u32(buf, offset)
 }
 
-// Box the f64 BITS currently on the stack (i64) into a fresh float block and
-// leave the tagged value pointer (i64) on the stack. Uses two scratch i64
-// locals: `bits_local` (the value being boxed) and `box_local` (block start).
 export let emit_box_float: (Bytes, CompileCtx, Int, Int) -> Unit = (buf, ctx, bits_local, box_local) -> {
   emit_local_set(buf, bits_local)
   emit_i64_const(buf, 16)
@@ -594,7 +557,6 @@ export let emit_box_float: (Bytes, CompileCtx, Int, Int) -> Unit = (buf, ctx, bi
   emit_i64_or(buf)
 }
 
-// Find the SLet statement for a given function name
 export let find_func_stmt: (Array[Stmt], String) -> Stmt with { Error } = (stmts, name) -> {
   let len = Array::length(stmts)
   let mut i = 0
@@ -618,7 +580,6 @@ export let find_func_stmt: (Array[Stmt], String) -> Stmt with { Error } = (stmts
   Array::get(stmts, found)
 }
 
-// Unbox a tagged float pointer (i64) on the stack into its f64 BITS (i64).
 export let emit_unbox_float: (Bytes) -> Unit = (buf) -> {
   emit_i64_const(buf, -2)
   emit_i64_and(buf)
@@ -626,8 +587,6 @@ export let emit_unbox_float: (Bytes) -> Unit = (buf) -> {
   emit_i64_load(buf, 3, 0)
 }
 
-// Extract a function signature's parameter types: Some(arg_types) when `ty` is a
-// function type `(A, B, ...) -> R`, else None.
 export let fn_type_param_types: (Option[TypeExpr]) -> Option[Array[TypeExpr]] = (ty) -> {
   match ty {
     Some(t) =>
@@ -639,14 +598,52 @@ export let fn_type_param_types: (Option[TypeExpr]) -> Option[Array[TypeExpr]] = 
   }
 }
 
-// A bare nullary constructor (`Non`) — an EIdent that resolves to a constructor.
-// Under RC it is allocated as a headered, follow-able block (drop-class 1, 0
-// fields), so — unlike the old unheadered bump form — it can be classified heap
-// and reclaimed like a payload ctor (ADR-0055 cutover; see
-// docs/spec/selfhost-rc-cutover-readiness.md).
 export let is_nullary_ctor_ident: (Expr, CtorTable) -> Bool = (value, ct) -> {
   match value {
     EIdent(nm) => lookup_ctor(ct.names, nm, 0) >= 0,
     _ => false
+  }
+}
+
+export let name_has_effect_prefix: (String, String) -> Bool = (full, eff) -> {
+  let el = String::length(eff)
+  let fl = String::length(full)
+  if fl < el + 2 {
+    false
+  } else {
+    let mut ok = true
+    let mut j = 0
+    while j < el {
+      if String::char_code_at(full, j) != String::char_code_at(eff, j) {
+        ok = false
+        j = el
+      } else {
+        j = j + 1
+      }
+    }
+    ok && String::char_code_at(full, el) == 58 && String::char_code_at(full, el + 1) == 58
+  }
+}
+
+export let effect_name_to_tag: (Array[String], String) -> Int = (effect_names, full) -> {
+  let n = Array::length(effect_names)
+  let mut result = 3 + n
+  let mut i = 0
+  while i < n {
+    if name_has_effect_prefix(full, Array::get(effect_names, i)) {
+      result = 3 + i
+      i = n
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+
+export let emit_heap_grow_after_heap_set: (Bytes, CompileCtx) -> Unit = (buf, ctx) -> {
+  if ctx.heap_grow_check_func_idx >= 0 {
+    emit_call(buf, ctx.heap_grow_check_func_idx)
+  } else {
+    ()
   }
 }

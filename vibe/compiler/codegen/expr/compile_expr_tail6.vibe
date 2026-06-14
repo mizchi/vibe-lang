@@ -9,7 +9,7 @@ import .. / common_analysis {
 }
 
 import .. / common_base {
-  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
+  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, effect_name_to_tag, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
 }
 
 import .. / common_extractors {
@@ -37,24 +37,46 @@ import ./compile_match.vibe {
 export let compile_expr_tail6: (Bytes, Expr, Array[(Pat, Expr)], Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, body, arms, local_names, next_local, ctx, ld, compile_expr) -> {
   if Array::length(arms) > 0 {
     let (catch_pat, fallback_expr) = Array::get(arms, 0)
-    let catch_tag = if is_pctor(catch_pat) && get_pctor_name(catch_pat) == "Error::Throw" {
+    let is_error = is_pctor(catch_pat) && get_pctor_name(catch_pat) == "Error::Throw"
+    let catch_tag = if is_error {
       2
+    } else if is_pctor(catch_pat) {
+      effect_name_to_tag(ctx.effect_names, get_pctor_name(catch_pat))
     } else {
-      0
+      3 + Array::length(ctx.effect_names)
     }
-    // #545: this handle starts a fresh resume frontier (rcount = 0 on entry) and
-    // re-indexes performs at the top of every replay (pidx = 0).
-    let __eff_base = if ctx.enable_rc {
+    let uses_frontier = !is_error
+    let eff_off = (catch_tag - 3) * 8192
+    let g_rbuf = if ctx.enable_rc {
+      5
+    } else {
+      4
+    }
+    let g_cur = if ctx.enable_rc {
       3
     } else {
       2
     }
-    emit_i64_const(buf, 0)
-    emit_global_set(buf, __eff_base + 1)
+    if uses_frontier {
+      emit_global_get(buf, g_rbuf)
+      emit_i32_const(buf, eff_off)
+      emit_i32_add(buf)
+      emit_i64_const(buf, 0)
+      emit_i64_store(buf, 3, 8)
+    } else {
+      ()
+    }
     emit_block_i64(buf)
     emit_loop_void(buf)
-    emit_i64_const(buf, 0)
-    emit_global_set(buf, __eff_base)
+    if uses_frontier {
+      emit_global_get(buf, g_rbuf)
+      emit_i32_const(buf, eff_off)
+      emit_i32_add(buf)
+      emit_i64_const(buf, 0)
+      emit_i64_store(buf, 3, 0)
+    } else {
+      ()
+    }
     emit_block_i64(buf)
     bytebuf_push(buf, 31)
     bytebuf_push(buf, 126)
@@ -83,6 +105,15 @@ export let compile_expr_tail6: (Bytes, Expr, Array[(Pat, Expr)], Array[String], 
       Array::push(local_names, pname)
     } else {
       emit_drop(buf)
+    }
+    if uses_frontier {
+      emit_global_get(buf, g_rbuf)
+      emit_i32_const(buf, eff_off)
+      emit_i32_add(buf)
+      emit_i64_extend_i32_u(buf)
+      emit_global_set(buf, g_cur)
+    } else {
+      ()
     }
     emit_block_i64(buf)
     bytebuf_push(buf, 31)

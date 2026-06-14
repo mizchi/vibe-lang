@@ -1,11 +1,11 @@
 //# Imports
 
-import .. / .. / core {
-  Expr, Pat, Stmt, TypeExpr, bytebuf_length, bytebuf_new, bytebuf_push, bytebuf_push_section, bytebuf_push_vec_header, bytebuf_to_bytes, leb128_encode_s64, leb128_encode_u32
-}
-
 import .. / .. / builtin_name.vibe {
   canonical_builtin_name
+}
+
+import .. / .. / core {
+  Expr, Pat, Stmt, TypeExpr, bytebuf_length, bytebuf_new, bytebuf_push, bytebuf_push_section, bytebuf_push_vec_header, bytebuf_to_bytes, leb128_encode_s64, leb128_encode_u32
 }
 
 import .. / common_analysis {
@@ -13,7 +13,7 @@ import .. / common_analysis {
 }
 
 import .. / common_base {
-  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_box_float, emit_heap_grow_after_heap_set, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_gt_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, emit_unbox_float, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
+  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, effect_name_to_tag, emit_binop_op, emit_box_float, emit_heap_grow_after_heap_set, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_gt_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, emit_unbox_float, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
 }
 
 import .. / common_extractors {
@@ -111,13 +111,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
         args
       }
       if ctx.enable_rc {
-        // RC layout (mirrors record in compile_expr_tail4.vibe):
-        //   block_start: [alloc_size@0][rc_count@4][tag@8][field_count@12][values@16...]
-        // The ctor value is (block_start+8) | 1 (constructors stay tagged), and
-        // the match tag / field reads are offset-invariant (the +8 pointer shift
-        // cancels the +8 header), so only construction + drop change.
         let total = 16 + fc * 8
-        // ADR-0055 Stage 4: allocate via the free-list search helper (__rc_alloc).
         emit_i64_const(buf, total)
         emit_call(buf, ctx.rc_alloc_func_idx)
         emit_local_set(buf, ptr_local)
@@ -129,9 +123,6 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
         emit_i32_wrap_i64(buf)
         emit_i32_const(buf, 1)
         emit_i32_store(buf, 2, 4)
-        // ADR-0055 Stage 2c/3: drop-class byte (block+7) = 1 (field-vector); a
-        // constructor is [tag@value+0][field_count@value+4][fields@value+8+i*8],
-        // the same shape the recursive rc_drop loops.
         emit_local_get(buf, ptr_local)
         emit_i32_wrap_i64(buf)
         emit_i32_const(buf, 1)
@@ -242,41 +233,11 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
     }
     else if !prefer_bound_call && fname == "perform" {
       let mut nl = next_local
-      let g_pidx = if ctx.enable_rc {
-        3
+      let g_rbuf = if ctx.enable_rc {
+        5
       } else {
-        2
+        4
       }
-      let g_rcount = g_pidx + 1
-      let g_rbuf = g_pidx + 2
-      // #545: index this perform. The index is stashed in the legacy resume
-      // register (global 1, otherwise unused now). pidx advances per perform
-      // within a replay; an already-resumed perform (idx < rcount) returns its
-      // stored value from the resume buffer instead of re-throwing — this lets a
-      // handler body perform more than once without looping forever.
-      emit_global_get(buf, g_pidx)
-      emit_global_set(buf, 1)
-      emit_global_get(buf, g_pidx)
-      emit_i64_const(buf, 1)
-      emit_i64_add(buf)
-      emit_global_set(buf, g_pidx)
-      emit_global_get(buf, 1)
-      emit_global_get(buf, g_rcount)
-      emit_i64_lt_s(buf)
-      emit_if_i64(buf)
-      emit_global_get(buf, g_rbuf)
-      emit_global_get(buf, 1)
-      emit_i64_const(buf, 8)
-      emit_i64_mul(buf)
-      emit_i32_wrap_i64(buf)
-      emit_i32_add(buf)
-      emit_i64_load(buf, 3, 0)
-      emit_else(buf)
-      // Emit the perform payload (then throw tag 0 to the handler). A builtin
-      // effect op (e.g. `Env::Get`, `Fs::Exists`) resolves to a function/import
-      // — call it as before. A user-defined effect op (e.g. `C::Tick`) is not a
-      // resolvable value, so emit its argument as the thrown payload (or 0 for a
-      // nullary op) instead of trying to resolve the op name (#544 follow-up).
       let op_expr = Array::get(args, 0)
       let op_head = if is_eident(op_expr) {
         get_eident_name(op_expr)
@@ -290,6 +251,37 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       } else {
         ""
       }
+      let eff_tag = effect_name_to_tag(ctx.effect_names, op_head)
+      let eff_off = (eff_tag - 3) * 8192
+      emit_global_get(buf, g_rbuf)
+      emit_i32_const(buf, eff_off)
+      emit_i32_add(buf)
+      emit_i64_load(buf, 3, 0)
+      emit_global_set(buf, 1)
+      emit_global_get(buf, g_rbuf)
+      emit_i32_const(buf, eff_off)
+      emit_i32_add(buf)
+      emit_global_get(buf, 1)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_i64_store(buf, 3, 0)
+      emit_global_get(buf, 1)
+      emit_global_get(buf, g_rbuf)
+      emit_i32_const(buf, eff_off)
+      emit_i32_add(buf)
+      emit_i64_load(buf, 3, 8)
+      emit_i64_lt_s(buf)
+      emit_if_i64(buf)
+      emit_global_get(buf, g_rbuf)
+      emit_i32_const(buf, eff_off)
+      emit_i32_add(buf)
+      emit_global_get(buf, 1)
+      emit_i64_const(buf, 8)
+      emit_i64_mul(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i32_add(buf)
+      emit_i64_load(buf, 3, 16)
+      emit_else(buf)
       let op_canon = canonical_builtin_name(op_head)
       let __ft_len = Array::length(ctx.func_table.names)
       let mut op_is_builtin = false
@@ -315,7 +307,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
         emit_i64_const(buf, 0)
       }
       bytebuf_push(buf, 8)
-      bytebuf_push(buf, 0)
+      bytebuf_push(buf, eff_tag)
       emit_end(buf)
       nl
     }
@@ -459,11 +451,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       nl + 6
     }
     else if fname == "Double::to_int" || fname == "Float::to_int" {
-      // f64 bits -> truncate to a signed int. Under RC the int result is tagged
-      // (n<<1) like every other int. (The dedicated gen_double_to_int_body was
-      // shadowed by an identity fast-path here, so this conversion was a no-op.)
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
-      // ADR-0055 Stage 2: under RC the float arg is heap-boxed; unbox to bits.
       if ctx.enable_rc {
         emit_unbox_float(buf)
       }
@@ -476,8 +464,6 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       nl
     }
     else if fname == "Int::to_double" || fname == "Int::to_float" {
-      // int -> f64 bits. Under RC the int arg is tagged; untag before converting,
-      // then heap-box the resulting float (ADR-0055 Stage 2).
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       if ctx.enable_rc {
         emit_i64_const(buf, 1)
@@ -495,32 +481,33 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       }
     }
     else if fname == "Float::to_double" || fname == "Double::to_float" {
-      // Both Float and Double are f64 in the linear backend: identity.
       ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
     }
     else if !prefer_bound_call && fname == "resume" {
-      // #545: store the resumed value at resume_buf[rcount], bump the frontier,
-      // then re-throw tag 1 to replay the body. On replay the matching perform
-      // (idx == old rcount) reads this slot instead of re-throwing.
-      let g_pidx = if ctx.enable_rc {
+      let g_cur = if ctx.enable_rc {
         3
       } else {
         2
       }
-      let g_rcount = g_pidx + 1
-      let g_rbuf = g_pidx + 2
-      emit_global_get(buf, g_rbuf)
-      emit_global_get(buf, g_rcount)
+      emit_global_get(buf, g_cur)
+      emit_i32_wrap_i64(buf)
+      emit_global_get(buf, g_cur)
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, 8)
       emit_i64_const(buf, 8)
       emit_i64_mul(buf)
       emit_i32_wrap_i64(buf)
       emit_i32_add(buf)
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
-      emit_i64_store(buf, 3, 0)
-      emit_global_get(buf, g_rcount)
+      emit_i64_store(buf, 3, 16)
+      emit_global_get(buf, g_cur)
+      emit_i32_wrap_i64(buf)
+      emit_global_get(buf, g_cur)
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, 8)
       emit_i64_const(buf, 1)
       emit_i64_add(buf)
-      emit_global_set(buf, g_rcount)
+      emit_i64_store(buf, 3, 8)
       emit_i64_const(buf, 0)
       bytebuf_push(buf, 8)
       bytebuf_push(buf, 1)
@@ -558,8 +545,6 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       nl
     }
     else if fname == "Double::to_i64_bits" {
-      // ADR-0055 Stage 2: under RC the float arg is heap-boxed; unbox to raw
-      // bits (returned as a raw i64, matching the non-RC inline behaviour).
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       if ctx.enable_rc {
         emit_unbox_float(buf)
@@ -567,12 +552,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       nl
     }
     else if fname == "Double::to_i64_bits_lo" || fname == "Double::to_i64_bits_hi" {
-      // Low / high 32 bits of the f64 pattern (the arg leaves its f64 bits as
-      // i64 on the stack). Each half is 0..2^32-1, which fits the 62-bit Int —
-      // letting a float literal pattern survive (Blocker-2, ADR-0055). shr_s +
-      // mask gives the unsigned high 32 (no shr_u needed). Tag as Int per RC.
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
-      // ADR-0055 Stage 2: under RC the float arg is heap-boxed; unbox to bits.
       if ctx.enable_rc {
         emit_unbox_float(buf)
       }
@@ -618,11 +598,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
     else if fname == "StringBuilder::freeze" {
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       let empty_idx = str_table_lookup(ctx.str_table.strs, "")
-      emit_str_ref(
-        buf,
-        Array::get(ctx.str_table.offsets, empty_idx),
-        Array::get(ctx.str_table.lengths, empty_idx)
-      )
+      emit_str_ref(buf, Array::get(ctx.str_table.offsets, empty_idx), Array::get(ctx.str_table.lengths, empty_idx))
       let (join_idx, _, _) = resolve_func(ctx.func_table, "String::join")
       emit_call(buf, join_idx)
       nl
@@ -857,12 +833,6 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       Array::push(local_names, "__cat_len")
       Array::push(local_names, "__cat_i")
       Array::push(local_names, "__cat_elem")
-      // ADR-0055: `Array::concat` is inlined as two copy loops over the value-
-      // world `Array::length` / `Array::get` / `Array::push` builtins. Under RC
-      // those return/consume tagged ints, so the raw loop counter must untag the
-      // length bound, tag the index passed to `Array::get`, and guard-dup each
-      // copied element (it is now referenced by both the source and the result)
-      // so the source's drop does not free a live value (issue #500).
       emit_local_set(buf, b_l)
       emit_local_set(buf, a_l)
       emit_call(buf, arr_new_fi)
@@ -1178,7 +1148,6 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       Array::push(local_names, "__keys_cnt")
       Array::push(local_names, "__keys_i")
       emit_local_set(buf, map_l)
-      // ADR-0055 Stage 4: untag the map pointer once (no-op on an even literal).
       emit_local_get(buf, map_l)
       emit_i64_const(buf, -2)
       emit_i64_and(buf)
@@ -1232,7 +1201,6 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       Array::push(local_names, "__map_i")
       emit_local_set(buf, key_local)
       emit_local_set(buf, map_local)
-      // ADR-0055 Stage 4: untag the map pointer once (no-op on an even literal).
       emit_local_get(buf, map_local)
       emit_i64_const(buf, -2)
       emit_i64_and(buf)
@@ -1292,7 +1260,6 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       Array::push(local_names, "__hk_map"); Array::push(local_names, "__hk_key")
       Array::push(local_names, "__hk_cnt"); Array::push(local_names, "__hk_i")
       emit_local_set(buf, key_l); emit_local_set(buf, map_l)
-      // ADR-0055 Stage 4: untag the map pointer once (no-op on an even literal).
       emit_local_get(buf, map_l); emit_i64_const(buf, -2); emit_i64_and(buf); emit_local_set(buf, map_l)
       emit_local_get(buf, map_l); emit_i32_wrap_i64(buf)
       emit_i32_load(buf, 2, 0); emit_i64_extend_i32_u(buf); emit_local_set(buf, cnt_l)
@@ -1338,9 +1305,6 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_local_set(buf, val_l)
       emit_local_set(buf, key_l)
       emit_local_set(buf, map_l)
-      // ADR-0055 Stage 4: untag the source map pointer once (no-op on an even
-      // literal). The freshly-bumped result map (new_l) stays even/headerless —
-      // Map::set result reclamation is out of scope here.
       emit_local_get(buf, map_l)
       emit_i64_const(buf, -2)
       emit_i64_and(buf)
@@ -1481,11 +1445,6 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       let ptr_l = next_local
       Array::push(local_names, "__mb_ptr")
       if ctx.enable_rc {
-        // ADR-0055 Stage 4 (MapBuilder reclamation): give the builder block the
-        // same RC block header as arrays/records ([alloc_size@0][rc_count@4]
-        // [class@7]), value = block+8, tagged as an ODD pointer so the recursive
-        // rc_drop reaches it. class 6 = map: count@value+0, then `count` entries
-        // of (key@+8, val@+16) on a 16-byte stride.
         emit_i64_const(buf, 144)
         emit_call(buf, ctx.rc_alloc_func_idx)
         emit_local_set(buf, ptr_l)
@@ -1542,8 +1501,6 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_local_set(buf, mv_l)
       emit_local_set(buf, mk_l)
       emit_local_set(buf, mb_l)
-      // ADR-0055 Stage 4: untag the builder pointer once (no-op on an even
-      // map-literal pointer); all reads/writes below use the value pointer.
       emit_local_get(buf, mb_l)
       emit_i64_const(buf, -2)
       emit_i64_and(buf)
