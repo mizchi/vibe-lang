@@ -250,7 +250,48 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_i64_const(buf, 0)
       emit_global_set(buf, 1)
       emit_else(buf)
-      nl = ce(buf, Array::get(args, 0), local_names, nl, ctx, ld)
+      // Emit the perform payload (then throw tag 0 to the handler). A builtin
+      // effect op (e.g. `Env::Get`, `Fs::Exists`) resolves to a function/import
+      // — call it as before. A user-defined effect op (e.g. `C::Tick`) is not a
+      // resolvable value, so emit its argument as the thrown payload (or 0 for a
+      // nullary op) instead of trying to resolve the op name (#544 follow-up).
+      let op_expr = Array::get(args, 0)
+      let op_head = if is_eident(op_expr) {
+        get_eident_name(op_expr)
+      } else if expr_tag(op_expr) == 8 {
+        let op_callee = get_ecall_callee(op_expr)
+        if is_eident(op_callee) {
+          get_eident_name(op_callee)
+        } else {
+          ""
+        }
+      } else {
+        ""
+      }
+      let op_canon = canonical_builtin_name(op_head)
+      let __ft_len = Array::length(ctx.func_table.names)
+      let mut op_is_builtin = false
+      let mut __op_i = 0
+      while __op_i < __ft_len {
+        if Array::get(ctx.func_table.names, __op_i) == op_canon {
+          op_is_builtin = true
+          __op_i = __ft_len
+        } else {
+          __op_i = __op_i + 1
+        }
+      }
+      if op_is_builtin {
+        nl = ce(buf, op_expr, local_names, nl, ctx, ld)
+      } else if expr_tag(op_expr) == 8 {
+        let op_args = get_ecall_args(op_expr)
+        if Array::length(op_args) > 0 {
+          nl = ce(buf, Array::get(op_args, 0), local_names, nl, ctx, ld)
+        } else {
+          emit_i64_const(buf, 0)
+        }
+      } else {
+        emit_i64_const(buf, 0)
+      }
       bytebuf_push(buf, 8)
       bytebuf_push(buf, 0)
       emit_end(buf)
