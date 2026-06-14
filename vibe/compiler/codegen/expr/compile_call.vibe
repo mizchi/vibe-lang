@@ -242,13 +242,35 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
     }
     else if !prefer_bound_call && fname == "perform" {
       let mut nl = next_local
-      emit_global_get(buf, 1)
-      emit_i64_const(buf, 0)
-      emit_i64_ne(buf)
-      emit_if_i64(buf)
-      emit_global_get(buf, 1)
-      emit_i64_const(buf, 0)
+      let g_pidx = if ctx.enable_rc {
+        3
+      } else {
+        2
+      }
+      let g_rcount = g_pidx + 1
+      let g_rbuf = g_pidx + 2
+      // #545: index this perform. The index is stashed in the legacy resume
+      // register (global 1, otherwise unused now). pidx advances per perform
+      // within a replay; an already-resumed perform (idx < rcount) returns its
+      // stored value from the resume buffer instead of re-throwing — this lets a
+      // handler body perform more than once without looping forever.
+      emit_global_get(buf, g_pidx)
       emit_global_set(buf, 1)
+      emit_global_get(buf, g_pidx)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_global_set(buf, g_pidx)
+      emit_global_get(buf, 1)
+      emit_global_get(buf, g_rcount)
+      emit_i64_lt_s(buf)
+      emit_if_i64(buf)
+      emit_global_get(buf, g_rbuf)
+      emit_global_get(buf, 1)
+      emit_i64_const(buf, 8)
+      emit_i64_mul(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i32_add(buf)
+      emit_i64_load(buf, 3, 0)
       emit_else(buf)
       // Emit the perform payload (then throw tag 0 to the handler). A builtin
       // effect op (e.g. `Env::Get`, `Fs::Exists`) resolves to a function/import
@@ -477,8 +499,28 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
     }
     else if !prefer_bound_call && fname == "resume" {
+      // #545: store the resumed value at resume_buf[rcount], bump the frontier,
+      // then re-throw tag 1 to replay the body. On replay the matching perform
+      // (idx == old rcount) reads this slot instead of re-throwing.
+      let g_pidx = if ctx.enable_rc {
+        3
+      } else {
+        2
+      }
+      let g_rcount = g_pidx + 1
+      let g_rbuf = g_pidx + 2
+      emit_global_get(buf, g_rbuf)
+      emit_global_get(buf, g_rcount)
+      emit_i64_const(buf, 8)
+      emit_i64_mul(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i32_add(buf)
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
-      emit_global_set(buf, 1)
+      emit_i64_store(buf, 3, 0)
+      emit_global_get(buf, g_rcount)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_global_set(buf, g_rcount)
       emit_i64_const(buf, 0)
       bytebuf_push(buf, 8)
       bytebuf_push(buf, 1)

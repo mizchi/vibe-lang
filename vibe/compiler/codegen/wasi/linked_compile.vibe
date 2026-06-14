@@ -1690,7 +1690,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   if total_table_entries > 0 {
     emit_table_section_funcref(out, total_table_entries)
   }
-  emit_memory_section(out, wasi_memory_min_pages_for_heap(heap_start))
+  emit_memory_section(out, wasi_memory_min_pages_for_heap(heap_start + 8192))
   let tag_content = bytebuf_new()
   bytebuf_push_vec_header(tag_content, 3)
   bytebuf_push(tag_content, 0)
@@ -1702,13 +1702,13 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   bytebuf_push_section(out, 13, tag_content)
   let global_content = bytebuf_new()
   if enable_rc {
-    bytebuf_push_vec_header(global_content, 3)
+    bytebuf_push_vec_header(global_content, 6)
   } else {
-    bytebuf_push_vec_header(global_content, 2)
+    bytebuf_push_vec_header(global_content, 5)
   }
   bytebuf_push(global_content, 127)
   bytebuf_push(global_content, 1)
-  emit_i32_const(global_content, heap_start)
+  emit_i32_const(global_content, heap_start + 8192)
   emit_end(global_content)
   bytebuf_push(global_content, 126)
   bytebuf_push(global_content, 1)
@@ -1720,6 +1720,23 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     emit_i32_const(global_content, 0)
     emit_end(global_content)
   }
+  // #545 effect resume buffer: a per-replay perform index, a resume frontier,
+  // and a pointer to an 8KB (1024-slot i64) buffer reserved at heap_start (the
+  // heap itself starts at heap_start+8192). Lets a handler body perform/resume
+  // more than once: each resumed value is stored by index instead of in a single
+  // shared register. base global index = enable_rc ? 3 : 2.
+  bytebuf_push(global_content, 126)
+  bytebuf_push(global_content, 1)
+  emit_i64_const(global_content, 0)
+  emit_end(global_content)
+  bytebuf_push(global_content, 126)
+  bytebuf_push(global_content, 1)
+  emit_i64_const(global_content, 0)
+  emit_end(global_content)
+  bytebuf_push(global_content, 127)
+  bytebuf_push(global_content, 1)
+  emit_i32_const(global_content, heap_start)
+  emit_end(global_content)
   bytebuf_push_section(out, 6, global_content)
   let start_func_idx = func_offset + num_user_funcs
   let run_func_idx = start_func_idx + 1
