@@ -81,6 +81,7 @@ if [ "$SKIP_OPT" = "1" ]; then
 elif command -v wasm-opt >/dev/null 2>&1; then
   echo "[dist] wasm-opt $OPT_LEVEL"
   if wasm-opt "$OPT_LEVEL" \
+    --enable-simd \
     --enable-bulk-memory \
     --enable-multivalue \
     --enable-exception-handling \
