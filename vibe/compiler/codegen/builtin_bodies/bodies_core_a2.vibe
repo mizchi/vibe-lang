@@ -17,7 +17,7 @@ import .. / common_extractors {
 }
 
 import .. / wasm_emit {
-  emit_block_i64, emit_block_void, emit_br, emit_br_if, emit_call, emit_call_indirect, emit_code_section, emit_code_section_with_locals, emit_data_section, emit_data_section_multi, emit_drop, emit_element_section_active, emit_else, emit_end, emit_export_section, emit_export_section_multi, emit_exports_full, emit_exports_with_memory, emit_f64_add, emit_f64_const_bits, emit_f64_convert_i64_s, emit_f64_div, emit_f64_eq, emit_f64_ge, emit_f64_gt, emit_f64_le, emit_f64_lt, emit_f64_mul, emit_f64_ne, emit_f64_neg, emit_f64_reinterpret_i64, emit_f64_sub, emit_func_type_raw, emit_function_section, emit_global_get, emit_global_section_i32_mut, emit_global_set, emit_header, emit_heap_memory_grow_check, emit_i32_add, emit_i32_const, emit_i32_load, emit_i32_load8_u, emit_i32_store, emit_i32_store8, emit_i32_wrap_i64, emit_v128_load, emit_i8x16_splat, emit_i8x16_eq, emit_v128_or, emit_v128_not, emit_i8x16_bitmask, emit_i64_add, emit_i64_and, emit_i64_const, emit_i64_div_s, emit_i64_eq, emit_i64_eqz, emit_i64_extend_i32_s, emit_i64_ge_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_lt_s, emit_i64_mul, emit_i64_ne, emit_i64_or, emit_i64_reinterpret_f64, emit_i64_rem_s, emit_i64_shl, emit_i64_shr_s, emit_i64_sub, emit_i64_trunc_f64_s, emit_i64_xor, emit_if_i64, emit_if_void, emit_import_section_func, emit_local_get, emit_local_set, emit_local_tee, emit_loop_void, emit_memory_section, emit_name, emit_return, emit_table_section_funcref, emit_type_section, emit_type_section_multi, string_to_data
+  emit_block_i64, emit_block_void, emit_br, emit_br_if, emit_call, emit_call_indirect, emit_code_section, emit_code_section_with_locals, emit_data_section, emit_data_section_multi, emit_drop, emit_element_section_active, emit_else, emit_end, emit_export_section, emit_export_section_multi, emit_exports_full, emit_exports_with_memory, emit_f64_add, emit_f64_const_bits, emit_f64_convert_i64_s, emit_f64_div, emit_f64_eq, emit_f64_ge, emit_f64_gt, emit_f64_le, emit_f64_lt, emit_f64_mul, emit_f64_ne, emit_f64_neg, emit_f64_reinterpret_i64, emit_f64_sub, emit_func_type_raw, emit_function_section, emit_global_get, emit_global_section_i32_mut, emit_global_set, emit_header, emit_heap_memory_grow_check, emit_i32_add, emit_i32_const, emit_i32_load, emit_i32_load8_u, emit_i32_store, emit_i32_store8, emit_i32_wrap_i64, emit_v128_load, emit_i8x16_splat, emit_i8x16_eq, emit_i8x16_le_u, emit_i8x16_sub, emit_v128_or, emit_v128_not, emit_i8x16_bitmask, emit_i64_add, emit_i64_and, emit_i64_const, emit_i64_div_s, emit_i64_eq, emit_i64_eqz, emit_i64_extend_i32_s, emit_i64_ge_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_lt_s, emit_i64_mul, emit_i64_ne, emit_i64_or, emit_i64_reinterpret_f64, emit_i64_rem_s, emit_i64_shl, emit_i64_shr_s, emit_i64_sub, emit_i64_trunc_f64_s, emit_i64_xor, emit_if_i64, emit_if_void, emit_import_section_func, emit_local_get, emit_local_set, emit_local_tee, emit_loop_void, emit_memory_section, emit_name, emit_return, emit_table_section_funcref, emit_type_section, emit_type_section_multi, string_to_data
 }
 
 //# Functions
@@ -420,6 +420,177 @@ export let gen_simd_skip_ws_body: (Bool) -> Bytes = (enable_rc) -> {
   emit_end(b)
   // return tag(p)
   emit_local_get(b, 5)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
+  b
+}
+
+// simd_scan_alnum(buf: Bytes, pos: Int, len: Int) -> Int
+// Returns the smallest index i in [pos, len) such that buf[i] is NOT an
+// identifier byte ([A-Za-z0-9_]); returns len if every byte in the range is an
+// identifier byte. Used to scan to the end of an identifier/number run. A SIMD
+// fast path skips whole 16-byte chunks that are entirely identifier bytes; a
+// scalar tail handles the final partial chunk and the chunk that first contains
+// a non-identifier byte. Range membership uses the wrap-subtract trick
+// (x - lo) <=u (hi - lo). v128 stays on the operand stack (no v128 local).
+//   locals: i32 { 3: addr } ; i64 { 4: p, 5: n, 6: byte }
+export let gen_simd_scan_alnum_body: (Bool) -> Bytes = (enable_rc) -> {
+  let b = bytebuf_new()
+  // addr = data pointer of the Bytes object (payload pointer at obj+8)
+  emit_local_get(b, 0)
+  emit_i32_wrap_i64(b)
+  emit_i32_load(b, 2, 8)
+  emit_local_set(b, 3)
+  // p = untag(pos)
+  emit_local_get(b, 1)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
+  emit_local_set(b, 4)
+  // n = untag(len)
+  emit_local_get(b, 2)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
+  emit_local_set(b, 5)
+  // --- SIMD fast path: skip 16-byte chunks that are entirely identifier bytes ---
+  emit_block_void(b)
+  emit_loop_void(b)
+  // if p + 16 > n: leave the fast path
+  emit_local_get(b, 4)
+  emit_i64_const(b, 16)
+  emit_i64_add(b)
+  emit_local_get(b, 5)
+  emit_i64_gt_s(b)
+  emit_br_if(b, 1)
+  // digit: (x - 0x30) <=u 9
+  emit_local_get(b, 3)
+  emit_local_get(b, 4)
+  emit_i32_wrap_i64(b)
+  emit_i32_add(b)
+  emit_v128_load(b, 0, 0)
+  emit_i64_const(b, 48)
+  emit_i32_wrap_i64(b)
+  emit_i8x16_splat(b)
+  emit_i8x16_sub(b)
+  emit_i64_const(b, 9)
+  emit_i32_wrap_i64(b)
+  emit_i8x16_splat(b)
+  emit_i8x16_le_u(b)
+  // upper: (x - 0x41) <=u 25
+  emit_local_get(b, 3)
+  emit_local_get(b, 4)
+  emit_i32_wrap_i64(b)
+  emit_i32_add(b)
+  emit_v128_load(b, 0, 0)
+  emit_i64_const(b, 65)
+  emit_i32_wrap_i64(b)
+  emit_i8x16_splat(b)
+  emit_i8x16_sub(b)
+  emit_i64_const(b, 25)
+  emit_i32_wrap_i64(b)
+  emit_i8x16_splat(b)
+  emit_i8x16_le_u(b)
+  emit_v128_or(b)
+  // lower: (x - 0x61) <=u 25
+  emit_local_get(b, 3)
+  emit_local_get(b, 4)
+  emit_i32_wrap_i64(b)
+  emit_i32_add(b)
+  emit_v128_load(b, 0, 0)
+  emit_i64_const(b, 97)
+  emit_i32_wrap_i64(b)
+  emit_i8x16_splat(b)
+  emit_i8x16_sub(b)
+  emit_i64_const(b, 25)
+  emit_i32_wrap_i64(b)
+  emit_i8x16_splat(b)
+  emit_i8x16_le_u(b)
+  emit_v128_or(b)
+  // underscore: x == 0x5F
+  emit_local_get(b, 3)
+  emit_local_get(b, 4)
+  emit_i32_wrap_i64(b)
+  emit_i32_add(b)
+  emit_v128_load(b, 0, 0)
+  emit_i64_const(b, 95)
+  emit_i32_wrap_i64(b)
+  emit_i8x16_splat(b)
+  emit_i8x16_eq(b)
+  emit_v128_or(b)
+  // non-identifier bitmask: bit set => byte is NOT an identifier byte
+  emit_v128_not(b)
+  emit_i8x16_bitmask(b)
+  // if any non-identifier byte in this chunk, hand off to the scalar tail
+  emit_br_if(b, 1)
+  // whole chunk is identifier bytes: advance 16 and continue
+  emit_local_get(b, 4)
+  emit_i64_const(b, 16)
+  emit_i64_add(b)
+  emit_local_set(b, 4)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  // --- scalar tail: advance p while p < n and buf[p] is an identifier byte ---
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(b, 4)
+  emit_local_get(b, 5)
+  emit_i64_ge_s(b)
+  emit_br_if(b, 1)
+  // byte = load8u(addr + p), widened to i64
+  emit_local_get(b, 3)
+  emit_local_get(b, 4)
+  emit_i32_wrap_i64(b)
+  emit_i32_add(b)
+  emit_i32_load8_u(b, 0, 0)
+  emit_i64_extend_i32_u(b)
+  emit_local_set(b, 6)
+  // is_id = digit + upper + lower + underscore (mutually exclusive => 0 or 1).
+  // each range is (byte >= lo) * (byte <= hi) via i64 compares + i32.mul.
+  emit_local_get(b, 6)
+  emit_i64_const(b, 48)
+  emit_i64_ge_s(b)
+  emit_local_get(b, 6)
+  emit_i64_const(b, 57)
+  emit_i64_le_s(b)
+  emit_i32_mul(b)
+  emit_local_get(b, 6)
+  emit_i64_const(b, 65)
+  emit_i64_ge_s(b)
+  emit_local_get(b, 6)
+  emit_i64_const(b, 90)
+  emit_i64_le_s(b)
+  emit_i32_mul(b)
+  emit_i32_add(b)
+  emit_local_get(b, 6)
+  emit_i64_const(b, 97)
+  emit_i64_ge_s(b)
+  emit_local_get(b, 6)
+  emit_i64_const(b, 122)
+  emit_i64_le_s(b)
+  emit_i32_mul(b)
+  emit_i32_add(b)
+  emit_local_get(b, 6)
+  emit_i64_const(b, 95)
+  emit_i64_eq(b)
+  emit_i32_add(b)
+  // if NOT an identifier byte, stop
+  emit_i32_eqz(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, 4)
+  emit_i64_const(b, 1)
+  emit_i64_add(b)
+  emit_local_set(b, 4)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  // return tag(p)
+  emit_local_get(b, 4)
   if enable_rc {
     emit_i64_const(b, 1)
     emit_i64_shl(b)
