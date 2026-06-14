@@ -436,12 +436,19 @@ export let gen_simd_skip_ws_body: (Bool) -> Bytes = (enable_rc) -> {
 // a non-identifier byte. Range membership uses the wrap-subtract trick
 // (x - lo) <=u (hi - lo). v128 stays on the operand stack (no v128 local).
 //   locals: i32 { 3: addr } ; i64 { 4: p, 5: n, 6: byte }
-export let gen_simd_scan_alnum_body: (Bool) -> Bytes = (enable_rc) -> {
+export let gen_simd_scan_alnum_body: (Bool, Bool) -> Bytes = (enable_rc, is_string) -> {
   let b = bytebuf_new()
-  // addr = data pointer of the Bytes object (payload pointer at obj+8)
+  // addr = pointer to the byte payload. Bytes: the payload pointer lives at
+  // obj+8. String: the value packs (ptr|len) with char data at (value >> 32).
   emit_local_get(b, 0)
-  emit_i32_wrap_i64(b)
-  emit_i32_load(b, 2, 8)
+  if is_string {
+    emit_i64_const(b, 32)
+    emit_i64_shr_s(b)
+    emit_i32_wrap_i64(b)
+  } else {
+    emit_i32_wrap_i64(b)
+    emit_i32_load(b, 2, 8)
+  }
   emit_local_set(b, 3)
   // p = untag(pos)
   emit_local_get(b, 1)
