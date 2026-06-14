@@ -13,13 +13,19 @@ effect Profiler {
 //# Functions
 
 export let cli_main: () -> Int with { Fs, Env } = () -> {
+  // The Error handler must be the *inner* handler: a `throw` from the compile
+  // pipeline is otherwise miscompiled when it unwinds through the Profiler
+  // handler (throw-through-an-unrelated-effect-handler crashes/hangs; see #543),
+  // making the compiler hang on every compile error instead of reporting it.
+  // With Error innermost the throw is caught directly, and `perform NowUs`
+  // unwinds through the Error handler to the outer Profiler handler fine.
   handle {
     handle {
       selfhost_cli_main()
-    } with Profiler {
-      NowUs => resume(0)
+    } with Error {
+      Throw(_) => 1
     }
-  } with Error {
-    Throw(_) => 1
+  } with Profiler {
+    NowUs => resume(0)
   }
 }
