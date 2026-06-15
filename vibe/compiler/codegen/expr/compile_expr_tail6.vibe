@@ -90,7 +90,43 @@ export let compile_expr_tail6: (Bytes, Expr, Array[(Pat, Expr)], Array[String], 
     emit_end(buf)
     if is_pctor(catch_pat) {
       let cargs = get_pctor_args(catch_pat)
-      if Array::length(cargs) > 0 && is_pbind(Array::get(cargs, 0)) {
+      if Array::length(cargs) > 1 {
+        // Multi-value payload (#548): the thrown value is a tuple packed by
+        // `perform`; bind each element to its pattern variable. Element i lives
+        // at payload+i*8 (linear) / payload+8+i*8 with the low tag bit cleared
+        // (RC), matching the tuple layout used by compile_match destructure.
+        let ptr_l = Array::length(local_names)
+        emit_local_set(buf, ptr_l)
+        Array::push(local_names, "__eff_payload")
+        let mut ci = 0
+        while ci < Array::length(cargs) {
+          let cp = Array::get(cargs, ci)
+          if is_pbind(cp) {
+            let pname = get_pbind_name(cp)
+            let fl = Array::length(local_names)
+            emit_local_get(buf, ptr_l)
+            if ctx.enable_rc {
+              emit_i64_const(buf, -2)
+              emit_i64_and(buf)
+            } else {
+              ()
+            }
+            emit_i32_wrap_i64(buf)
+            emit_i64_load(buf, 3, if ctx.enable_rc {
+              8 + ci * 8
+            } else {
+              ci * 8
+            })
+            emit_local_set(buf, fl)
+            Array::push(local_names, pname)
+          } else if is_pwild(cp) {
+            ()
+          } else {
+            throw("handle: only simple bindings or '_' are supported in multi-argument effect op patterns (see #548)")
+          }
+          ci = ci + 1
+        }
+      } else if Array::length(cargs) > 0 && is_pbind(Array::get(cargs, 0)) {
         let pname = get_pbind_name(Array::get(cargs, 0))
         let bl = Array::length(local_names)
         emit_local_set(buf, bl)
