@@ -174,7 +174,14 @@ let parse_perform_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr
     TSemicolon => (EIdent("perform"), pos + 1),
     TEof => (EIdent("perform"), pos + 1),
     _ => {
-      let (arg, next_pos) = parse_recur(tokens, pos + 1, 0)
+      // `perform` binds tighter than binary operators: parse only the
+      // effect-op application (primary + postfix), not a trailing binary
+      // expression, so `perform A::Op + perform B::Op` groups as
+      // `(perform A::Op) + (perform B::Op)` rather than
+      // `perform (A::Op + perform B::Op)` (#550). min_prec 10 is above the
+      // highest binop precedence (9, see binop_prec), so parse_infix_loop
+      // stops before consuming any operator.
+      let (arg, next_pos) = parse_recur(tokens, pos + 1, 10)
       (ECall(EIdent("perform"), [
         arg
       ]), next_pos)
