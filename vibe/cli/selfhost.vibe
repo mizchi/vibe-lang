@@ -31,7 +31,7 @@ let own_host_string: (String) -> String = (value) -> {
   String::concat("", value)
 }
 
-let collect_cli_args: () -> Array[String] with { Env } = () -> {
+export let collect_cli_args: () -> Array[String] with { Env } = () -> {
   let out = Array::slice([
     ""
   ], 0, 0)
@@ -704,15 +704,28 @@ let low_level_cli_main: () -> Int with { Error, Fs, Env, Profiler } = () -> {
   selfhost_cli_low_level_args(input_path, output_path, entry_name, mode)
 }
 
-export let selfhost_cli_main: () -> Int with { Error, Fs, Env, Profiler } = () -> {
-  let first_arg = read_arg(0)
+// Dispatch on an explicit argv array (element 0 is the subcommand). Kept
+// argv-driven rather than reading Env directly so callers/tests can drive the
+// real CLI command routing with injected args. cli_main (selfhost_entry.vibe)
+// wraps this with the Profiler/Error handlers; the regression tests in
+// selfhost_test.vibe drive it through that same wrapper.
+export let selfhost_cli_dispatch_args: (Array[String]) -> Int with { Error, Fs, Env, Profiler } = (args) -> {
+  let first_arg = if Array::length(args) == 0 {
+    ""
+  } else {
+    Array::get(args, 0)
+  }
   match first_arg {
-    "compile-lite" => selfhost_cli_compile_lite_args(collect_cli_args()),
-    "compile" => selfhost_cli_compile_args(collect_cli_args()),
-    "build" => selfhost_cli_build_args(collect_cli_args()),
-    "check" => selfhost_cli_check_args(collect_cli_args()),
+    "compile-lite" => selfhost_cli_compile_lite_args(args),
+    "compile" => selfhost_cli_compile_args(args),
+    "build" => selfhost_cli_build_args(args),
+    "check" => selfhost_cli_check_args(args),
     _ => low_level_cli_main()
   }
+}
+
+export let selfhost_cli_main: () -> Int with { Error, Fs, Env, Profiler } = () -> {
+  selfhost_cli_dispatch_args(collect_cli_args())
 }
 
 export let cli_main: () -> Int with { Error, Fs, Env, Profiler } = () -> {

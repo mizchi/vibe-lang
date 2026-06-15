@@ -6,6 +6,10 @@ import ./selfhost.vibe {
   selfhost_cli_compile_lite_args, selfhost_cli_low_level_args_profiled
 }
 
+import ./selfhost_entry.vibe {
+  run_cli_main_with_args
+}
+
 //# Effects
 
 effect Profiler {
@@ -48,31 +52,6 @@ let run_low_level_with_fake_profiler: (String, String, String, String, String, S
       tick = tick + 1000
       resume(tick)
     }
-  }
-}
-
-// Mirrors the exact handler nesting of `cli_main` in selfhost_entry.vibe:
-// Profiler is the *inner* handler and Error the *outer* one. This ordering is
-// load-bearing — `perform Profiler::NowUs` must be caught directly instead of
-// unwinding through the Error handler (a resume that crosses an unrelated
-// effect handler is miscompiled and corrupts the result; see #543), while
-// `throw` still unwinds through the inner Profiler handler to the outer Error
-// handler thanks to the dedicated exception tag (#544). Flipping the two
-// handlers makes a *successful* `compile-lite --profile-tsv` wrongly exit
-// non-zero — which is what the regression test below pins (it fails under the
-// reversed nesting). The Error arm is kept to reproduce cli_main's structure
-// faithfully; the throw-crossing-Profiler error path is exercised end-to-end by
-// the selfhost-perf KPI / cli-core gates rather than here. Keep in sync with
-// cli_main.
-let run_cli_main_nesting: (Array[String]) -> Int with { Fs, Env } = (args) -> {
-  handle {
-    handle {
-      selfhost_cli_compile_lite_args(args)
-    } with Profiler {
-      NowUs => resume(0)
-    }
-  } with Error {
-    Throw(_) => 1
   }
 }
 
@@ -205,13 +184,15 @@ test "selfhost cli compile-lite command writes profile tsv" {
 // keep a *successful* `--profile-tsv` compile returning 0. The #543 reorder
 // (Error inner) made `perform NowUs` unwind through the Error handler and the
 // miscompiled resume corrupted the result to 1, breaking selfhost-perf-kpi.
+// This drives the production entry wrapper `run_cli_main_with_args` directly, so
+// flipping the handler order in selfhost_entry.vibe fails this test.
 test "cli_main nesting: profiled compile succeeds (exit 0)" {
   let main_path = "/tmp/vibe_selfhost_cli_main_nest_main.vibe"
   let output_path = "/tmp/vibe_selfhost_cli_main_nest_out.wasm"
   let profile_path = "/tmp/vibe_selfhost_cli_main_nest_profile.tsv"
   let source = "export let answer: () -> Int = () -> { 40 + 2 }\n"
   Fs::write_bytes(main_path, string_to_bytes(source))
-  let status = run_cli_main_nesting([
+  let status = run_cli_main_with_args([
     "compile-lite", "--wasm", "--entry", "answer", "--profile-tsv", profile_path,
     main_path, "-o", output_path
   ])
