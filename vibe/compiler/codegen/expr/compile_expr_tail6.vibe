@@ -9,7 +9,7 @@ import .. / common_analysis {
 }
 
 import .. / common_base {
-  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, effect_name_to_tag, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
+  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, effect_name_to_tag, effect_op_declared_arity, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
 }
 
 import .. / common_extractors {
@@ -90,39 +90,41 @@ export let compile_expr_tail6: (Bytes, Expr, Array[(Pat, Expr)], Array[String], 
     emit_end(buf)
     if is_pctor(catch_pat) {
       let cargs = get_pctor_args(catch_pat)
-      if Array::length(cargs) > 1 {
-        // Multi-value payload (#548): the thrown value is a tuple packed by
-        // `perform`; bind each element to its pattern variable. Element i lives
-        // at payload+i*8 (linear) / payload+8+i*8 with the low tag bit cleared
-        // (RC), matching the tuple layout used by compile_match destructure.
+      let decl_arity = effect_op_declared_arity(ctx.effect_op_keys, ctx.effect_op_arities, get_pctor_name(catch_pat))
+      if decl_arity > 1 {
         let ptr_l = Array::length(local_names)
         emit_local_set(buf, ptr_l)
         Array::push(local_names, "__eff_payload")
+        let ncargs = Array::length(cargs)
         let mut ci = 0
-        while ci < Array::length(cargs) {
-          let cp = Array::get(cargs, ci)
-          if is_pbind(cp) {
-            let pname = get_pbind_name(cp)
-            let fl = Array::length(local_names)
-            emit_local_get(buf, ptr_l)
-            if ctx.enable_rc {
-              emit_i64_const(buf, -2)
-              emit_i64_and(buf)
-            } else {
+        while ci < decl_arity {
+          if ci < ncargs {
+            let cp = Array::get(cargs, ci)
+            if is_pbind(cp) {
+              let pname = get_pbind_name(cp)
+              let fl = Array::length(local_names)
+              emit_local_get(buf, ptr_l)
+              if ctx.enable_rc {
+                emit_i64_const(buf, -2)
+                emit_i64_and(buf)
+              } else {
+                ()
+              }
+              emit_i32_wrap_i64(buf)
+              emit_i64_load(buf, 3, if ctx.enable_rc {
+                8 + ci * 8
+              } else {
+                ci * 8
+              })
+              emit_local_set(buf, fl)
+              Array::push(local_names, pname)
+            } else if is_pwild(cp) {
               ()
-            }
-            emit_i32_wrap_i64(buf)
-            emit_i64_load(buf, 3, if ctx.enable_rc {
-              8 + ci * 8
             } else {
-              ci * 8
-            })
-            emit_local_set(buf, fl)
-            Array::push(local_names, pname)
-          } else if is_pwild(cp) {
-            ()
+              throw("handle: only simple bindings or '_' are supported in multi-argument effect op patterns (see #548)")
+            }
           } else {
-            throw("handle: only simple bindings or '_' are supported in multi-argument effect op patterns (see #548)")
+            ()
           }
           ci = ci + 1
         }
