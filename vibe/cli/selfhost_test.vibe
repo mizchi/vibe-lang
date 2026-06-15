@@ -6,6 +6,10 @@ import ./selfhost.vibe {
   selfhost_cli_compile_lite_args, selfhost_cli_low_level_args_profiled
 }
 
+import ./selfhost_entry.vibe {
+  run_cli_main_with_args
+}
+
 //# Effects
 
 effect Profiler {
@@ -174,6 +178,27 @@ test "selfhost cli compile-lite command writes profile tsv" {
   let callstack = Fs::read_file(callstack_path)
   assert(String::contains(callstack, "compile\t"))
   assert(!String::contains(callstack, "compile\t0\t0"))
+}
+
+// Regression: the cli_main handler nesting (Profiler inner / Error outer) must
+// keep a *successful* `--profile-tsv` compile returning 0. The #543 reorder
+// (Error inner) made `perform NowUs` unwind through the Error handler and the
+// miscompiled resume corrupted the result to 1, breaking selfhost-perf-kpi.
+// This drives the production entry wrapper `run_cli_main_with_args` directly, so
+// flipping the handler order in selfhost_entry.vibe fails this test.
+test "cli_main nesting: profiled compile succeeds (exit 0)" {
+  let main_path = "/tmp/vibe_selfhost_cli_main_nest_main.vibe"
+  let output_path = "/tmp/vibe_selfhost_cli_main_nest_out.wasm"
+  let profile_path = "/tmp/vibe_selfhost_cli_main_nest_profile.tsv"
+  let source = "export let answer: () -> Int = () -> { 40 + 2 }\n"
+  Fs::write_bytes(main_path, string_to_bytes(source))
+  let status = run_cli_main_with_args([
+    "compile-lite", "--wasm", "--entry", "answer", "--profile-tsv", profile_path,
+    main_path, "-o", output_path
+  ])
+  assert(status == 0)
+  assert(Fs::exists(output_path))
+  assert(Fs::exists(profile_path))
 }
 
 test "selfhost cli low-level entry writes profile tsv from env" {

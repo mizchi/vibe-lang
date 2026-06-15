@@ -1,7 +1,7 @@
 //# Imports
 
 import ./selfhost.vibe {
-  selfhost_cli_main
+  collect_cli_args, selfhost_cli_dispatch_args
 }
 
 //# Effects
@@ -12,21 +12,32 @@ effect Profiler {
 
 //# Functions
 
-export let cli_main: () -> Int with { Fs, Env } = () -> {
-  // Profiler must be the *inner* handler so `perform NowUs` is caught directly
-  // without unwinding through the Error handler: a resume that crosses an
-  // unrelated effect handler is miscompiled (the continuation returns garbage
-  // and the outer handler's result is corrupted, so `compile-lite --profile-tsv`
-  // wrongly exits non-zero; see #543). `throw` from the compile pipeline still
-  // unwinds correctly through the inner Profiler handler to the outer Error
-  // handler thanks to the dedicated exception tag (#544).
+// Run the CLI for an explicit argv array, discharging the compile pipeline's
+// Profiler and Error effects into a process exit code.
+//
+// Profiler must be the *inner* handler so `perform NowUs` is caught directly
+// without unwinding through the Error handler: a resume that crosses an
+// unrelated effect handler is miscompiled (the continuation returns garbage
+// and the outer handler's result is corrupted, so `compile-lite --profile-tsv`
+// wrongly exits non-zero; see #543). `throw` from the compile pipeline still
+// unwinds correctly through the inner Profiler handler to the outer Error
+// handler thanks to the dedicated exception tag (#544).
+//
+// cli_main and the selfhost_test.vibe regression tests both go through this
+// single wrapper, so the tests observe the real handler order — flipping it
+// here fails them.
+export let run_cli_main_with_args: (Array[String]) -> Int with { Fs, Env } = (args) -> {
   handle {
     handle {
-      selfhost_cli_main()
+      selfhost_cli_dispatch_args(args)
     } with Profiler {
       NowUs => resume(0)
     }
   } with Error {
     Throw(_) => 1
   }
+}
+
+export let cli_main: () -> Int with { Fs, Env } = () -> {
+  run_cli_main_with_args(collect_cli_args())
 }
