@@ -34,6 +34,37 @@ import ./compile_match.vibe {
 
 //# Functions
 
+let t6_emit_rc_dup_guarded: (Bytes, Int) -> Unit = (buf, local_idx) -> {
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, 1)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_if_void(buf)
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, 32)
+  emit_i64_shr_s(buf)
+  emit_i64_eqz(buf)
+  emit_if_void(buf)
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 1)
+  emit_i32_add(buf)
+  emit_i32_store(buf, 2, 0)
+  emit_end(buf)
+  emit_end(buf)
+}
+
 export let compile_expr_tail6: (Bytes, Expr, Array[(Pat, Expr)], Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, body, arms, local_names, next_local, ctx, ld, compile_expr) -> {
   if Array::length(arms) > 0 {
     let (catch_pat, fallback_expr) = Array::get(arms, 0)
@@ -118,6 +149,11 @@ export let compile_expr_tail6: (Bytes, Expr, Array[(Pat, Expr)], Array[String], 
               })
               emit_local_set(buf, fl)
               Array::push(local_names, pname)
+              if ctx.enable_rc {
+                t6_emit_rc_dup_guarded(buf, fl)
+              } else {
+                ()
+              }
             } else if is_pwild(cp) {
               ()
             } else {
@@ -127,6 +163,12 @@ export let compile_expr_tail6: (Bytes, Expr, Array[(Pat, Expr)], Array[String], 
             ()
           }
           ci = ci + 1
+        }
+        if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
+          emit_local_get(buf, ptr_l)
+          emit_call(buf, ctx.rc_drop_func_idx)
+        } else {
+          ()
         }
       } else if Array::length(cargs) > 0 && is_pbind(Array::get(cargs, 0)) {
         let pname = get_pbind_name(Array::get(cargs, 0))

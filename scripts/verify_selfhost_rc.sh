@@ -205,6 +205,68 @@ reclaim_case nullary_ctor '"enum Opt { Som((Int, Int)); Non }\nlet main: () -> I
 # tuple field access" passes). This gap matters for Stage 3 (recursive drop of
 # nested heap) and should be fixed there; until then it is not measurable here.
 
+# ---------------------------------------------------------------------------
+# C. EFFECT MULTI-VALUE PAYLOAD DROP (#548 follow-up)
+# ---------------------------------------------------------------------------
+# A handler arm for an effect op with declared arity > 1 receives its arguments
+# as a single heap tuple (packed at `perform`, compile_call.vibe). Before the
+# drop landed, that payload tuple was never reclaimed: a clean 32 B/iter leak
+# under RC. compile_expr_tail6 now dups each kept heap field and recursively
+# drops the (uniquely-owned) payload tuple after destructuring.
+#
+# NOTE on N: this is measured in the *clean* regime (N <= ~2000). A SEPARATE,
+# pre-existing fragmentation in the effect runtime's frontier/region switching
+# (independent of this drop — it is absent for single-arg effects, which never
+# allocate a payload tuple, and for non-effect tuple loops) lets the heap grow
+# ~7 B/iter once it crosses a threshold around N~2000-4000. That is tracked
+# separately; here we pin only that the gross payload-tuple leak stays fixed,
+# which a regression to 32 B/iter would trip well within these bounds.
+echo "== C. effect multi-value payload drop (bytes/iter, want <= $RECLAIM_THRESHOLD) =="
+EFF_N1=500
+EFF_N2=1500
+eff_probe="$COMPILER_DIR/_verify_eff_mv_${STAMP}_test.vibe"
+TMPFILES+=("$eff_probe")
+cat > "$eff_probe" <<EOF
+import ./codegen_test_support.vibe { compile_wasi_rc }
+import ./core/polyfill.vibe { __to_string }
+let emit: (Int) -> Int with { Error, Fs } = (n) -> {
+  let src = "effect E { Op(Int, Int) -> Int }\n" +
+    "let main: () -> Int = () -> {\n" +
+    "  handle {\n" +
+    "    let mut s = 0\n" +
+    "    let mut i = 0\n" +
+    "    while i < " + __to_string(n) + " {\n" +
+    "      s = s + perform E::Op(i, i + 1)\n" +
+    "      i = i + 1\n" +
+    "    }\n" +
+    "    s\n" +
+    "  } with E {\n" +
+    "    Op(x, y) => resume(x + y)\n" +
+    "  }\n" +
+    "}\n"
+  Fs::write_bytes("/tmp/_verify_eff_mv_${STAMP}_" + __to_string(n) + ".wasm", compile_wasi_rc(src, "main"))
+  0
+}
+test "emit" { emit($EFF_N1); emit($EFF_N2); assert(true) }
+EOF
+"$VIBE_BIN" test --no-cache "$eff_probe" >/dev/null 2>&1 || true
+ew1="/tmp/_verify_eff_mv_${STAMP}_${EFF_N1}.wasm"
+ew2="/tmp/_verify_eff_mv_${STAMP}_${EFF_N2}.wasm"
+TMPFILES+=("$ew1" "$ew2")
+if [ ! -f "$ew1" ] || [ ! -f "$ew2" ]; then
+  red "  effect_mv: FAIL (RC compile produced no wasm)"; FAIL=1
+else
+  eu1="$(node scripts/measure_selfhost_heap.mjs "$ew1" main | node -e 'process.stdin.once("data",d=>console.log(JSON.parse(d).heap_used))')"
+  eu2="$(node scripts/measure_selfhost_heap.mjs "$ew2" main | node -e 'process.stdin.once("data",d=>console.log(JSON.parse(d).heap_used))')"
+  eper="$(node -e "console.log((($eu2)-($eu1))/(($EFF_N2)-($EFF_N1)))")"
+  eover="$(node -e "console.log((($eper) > ($RECLAIM_THRESHOLD)) ? 1 : 0)")"
+  if [ "$eover" = "1" ]; then
+    red "  effect_mv: LEAK ${eper} B/iter (heap ${eu1}->${eu2})"; FAIL=1
+  else
+    green "  effect_mv: OK ${eper} B/iter (heap ${eu1}->${eu2})"
+  fi
+fi
+
 echo
 if [ "$FAIL" = "0" ]; then
   green "ALL VERIFICATION PASSED"
