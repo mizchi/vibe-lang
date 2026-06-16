@@ -100,7 +100,7 @@
 
 | # | Decision | Status |
 |---|----------|--------|
-| 0012 | **Async/Await (Stack Switching + WASI P3)**。`{Async}` effect + Future[T] + Stream[T]。WASM Stack Switching 安定化待ち。P3 HTTP は ADR-0021 の同期 effect で対応可能。 | deferred |
+| 0012 | **Async/Await (WASI 0.3 + Component Model async)**。`{Async}` effect + `Future[T]` + `Stream[T]`。WASI 0.3 が 2026-06-11 に ratify され `stream<T>`/`future<T>` が Component Model first-class 型化。決定: **stack-switching proposal には依存せず、各 `async fn` を stackless 状態機械へ lower して Component Model async の canonical built-ins (`future.read/write`, `stream.read/write`, `task.return`, `waitable-set.wait`, `async-lower/lift`) を直接呼ぶ**（wit-bindgen の Python/JS/C# 方式、wasmtime 45 の `-W component-model-async=y -W component-model-async-builtins=y` で動作）。`Stream[T]` は **既存 `Iterator` (ADR-0044) に寄せた pull ベース async iterator**（`next(Self) -> Future[Option[T]]`、`for await x in s`、`ByteStream = Stream[Int]` が WASI `stream<u8>`）。async は replay ベース effect handler（~16K perform bound, ADR-0055/#553/#556）の**上には載せず**、`Async` は型レベル effect row 注釈・実体は専用 lowering とする。HTTP は `wasi:http/service` + `middleware` world（0.2 `proxy` を置換）。ratified `0.3.0` への cutover は wasmtime 46（async-by-default）待ち、それまでは 45.x + RC フラグ。段階プラン M0–M4 と詳細は [spec/wasi-p3-async.md](spec/wasi-p3-async.md)。 | proposed |
 
 ---
 

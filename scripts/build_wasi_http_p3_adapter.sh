@@ -49,7 +49,7 @@ wit_bindgen::generate!({
       world adapter {
         /// vibe handler: (method, url) -> status code (tagged i64).
         import handler: func(method: string, url: string) -> s64;
-        include wasi:http/service@0.3.0-rc-2026-02-09;
+        include wasi:http/service@0.3.0-rc-2026-03-15;
       }
     "#,
     path: "$PROJECT_ROOT/deps/wasmtime/crates/wasi-http/src/p3/wit",
