@@ -214,16 +214,23 @@ reclaim_case nullary_ctor '"enum Opt { Som((Int, Int)); Non }\nlet main: () -> I
 # under RC. compile_expr_tail6 now dups each kept heap field and recursively
 # drops the (uniquely-owned) payload tuple after destructuring.
 #
-# NOTE on N: this is measured in the *clean* regime (N <= ~2000). A SEPARATE,
-# pre-existing fragmentation in the effect runtime's frontier/region switching
-# (independent of this drop — it is absent for single-arg effects, which never
-# allocate a payload tuple, and for non-effect tuple loops) lets the heap grow
-# ~7 B/iter once it crosses a threshold around N~2000-4000. That is tracked
-# separately; here we pin only that the gross payload-tuple leak stays fixed,
-# which a regression to 32 B/iter would trip well within these bounds.
+# NOTE on N (#553, resolved): this is now pinned over the FULL regime (the
+# standard N1/N2, default 1000/11000), not just a clean sub-2000 window. A
+# previously-separate fragmentation lived in the effect runtime's per-effect
+# region: the replay-based handler stores one i64 resume-memo entry per
+# `perform` resolved within a `handle`, but the region was a fixed 8192 B
+# (~1022 entries). A loop performing more than ~1022-2046 times overflowed the
+# region into the live heap, where the growing memo array chased and clobbered
+# the reused payload-tuple free block (~8 B/iter past the threshold). It was
+# absent for single-arg effects (no payload tuple to clobber) and non-effect
+# tuple loops. The per-effect region stride was enlarged to 131072 B (16382
+# entries) so the full regime stays within the region; the memo never reaches
+# the heap, so heap_used is flat (~32 B fixed, not per-iter) across N. Programs
+# performing more than ~16K times within one handle would still spill (a hard
+# bound of the replay-based handler — see linked_compile.vibe).
 echo "== C. effect multi-value payload drop (bytes/iter, want <= $RECLAIM_THRESHOLD) =="
-EFF_N1=500
-EFF_N2=1500
+EFF_N1="$N1"
+EFF_N2="$N2"
 eff_probe="$COMPILER_DIR/_verify_eff_mv_${STAMP}_test.vibe"
 TMPFILES+=("$eff_probe")
 cat > "$eff_probe" <<EOF
