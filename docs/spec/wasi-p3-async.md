@@ -200,6 +200,32 @@ emit すべき正確なバイト列（wasmtime 45 で検証済み）。`componen
 計算）で `task.return` 経路を通し、その後 `await(Future::ready(x))` → 単一
 `future.read` ブロックへ広げる。
 
+### 3.3 M1b codegen stage 1（landed）+ stage 2 の前提発見
+
+**stage 1（done）**: `component_codegen.vibe` に async component emitter を実装:
+`emit_canon_task_return` / `emit_canon_lift_async_section`（async canonopt
+`0x06`）/ `emit_comp_async_functype_section`（opcode `0x43`）/
+`comp_emit_component_wasm_async`。`component_codegen_test.vibe` 10/10 で、emit
+結果が §3.2 の検証済みバイト列と一致すること（および sync lift には async
+option が混入しないこと）を確認。emitter は既存 sync lift と同じ構成ヘルパ
+（header / core module / core instance / alias / export）を再利用するため、
+runnable な probe とのバイト一致＝全体も valid と判断できる。
+
+**stage 2 で判明した前提（重要）**: selfhost ツリーには **`--component`
+オーケストレーションが存在しない**（`comp_emit_component_wasm*` は定義・テスト
+のみで、CLI からは呼ばれていない。`vibe compile --component` / `--compose-p3`
+の実体は host (`src/`) 側）。したがって「実 `.vibe` → async component を
+`vibe compile` で生成して wasmtime で動かす」真の E2E には、まず **selfhost 側に
+component-compile オーケストレーション（entry → core wasm → component wrap）を
+構築する**必要がある。これは linked_compile の小改修ではなく独立した feature で、
+core-side の async entry 生成（`cm.task-return` import + void entry）もその中に
+位置づくべき。M1b は「emitter（stage 1, done）」と「orchestration + core-side
+（stage 2, 別 feature）」に再分割する。
+
+stage 2 の真の E2E 検証は、selfhost component-compile orchestration 着地後に
+`vibe compile --component async.vibe` → wasmtime 45 で実施する。それまでの
+emitter の正しさは byte-exact 一致（runnable probe 基準）で担保する。
+
 ## 4. WASI 0.3 境界マッピング
 
 | vibe | WASI 0.3 |
@@ -238,7 +264,8 @@ ratified `0.3.0` への最終 cutover は wasmtime 46（async-by-default）リ�
 |---|---|---|
 | **M0** | wasmtime 45.0.2 bump、P3 WIT 文字列を `rc-2026-03-15` に統一、ADR-0012 更新 + 本 spec 起票 | done |
 | **M1a** | async front-end: `await` builtin (`(Future[T]) -> T with { Async }`) + `Future::ready` + `Future[T]`=CtNamed、effect-escape 検証。lexer/parser/core-Type 非変更 | done |
-| **M1b** | codegen: `await` を含む関数を **stackful 直線形**で lower（§3.1 spike 確定）、`task.return` + async-lift を emit、単一 host future を await して wasmtime 45 で run する縦串 PoC | spike done / 実装未着手 |
+| **M1b-1** | codegen emitter（component 側）: `comp_emit_component_wasm_async` + `task.return` canon + async lift + async functype。byte-exact verified（test 10/10） | done |
+| **M1b-2** | selfhost **component-compile orchestration**（entry → core wasm → component wrap）+ core-side async entry（`cm.task-return` import + void entry）+ `--component` の async-entry 検出。これは独立 feature。完了後に `vibe compile --component` → wasmtime 45 で真の E2E | 未着手 |
 | **M2** | `Stream[T]`/`ByteStream` を `stream.read` 上の async iterator に。HTTP body を stream 化、`for await` | 未着手 |
 | **M3** | outbound async HTTP client（`Future[Response]` + streaming body）、`wasi:http/service` + `middleware` world | 未着手 |
 | **M4** | parity/gate/CI、docs、ADR-0012 → accepted | 未着手 |
