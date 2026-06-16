@@ -1208,3 +1208,82 @@ export let comp_emit_component_wasm_with_string_lift: (Bytes, String, String, In
   emit_comp_export_section(buf, export_name, lifted_func_idx)
   bytebuf_to_bytes(buf)
 }
+
+// WASI 0.3 async (M1b, docs/spec/wasi-p3-async.md §3.2). The `task.return`
+// canonical built-in lowers to a core func `(param <result>) -> ()` that
+// delivers an async-lifted export's result. Encoding verified byte-for-byte
+// against src/x/cm_async/cm_async_lift_probe.wat (runs on wasmtime 45):
+// section 0x08, body `01 09 00 <valtype> 00` (count=1; opcode 0x09; result
+// Some(valtype); empty options).
+let emit_canon_task_return: (Bytes, Int) -> Unit = (buf, result_valtype) -> {
+  bytebuf_push(buf, section_canon)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 9)
+  bytebuf_push(content, 0)
+  bytebuf_push(content, result_valtype)
+  bytebuf_push(content, 0)
+  emit_raw_content(buf, content)
+}
+
+// Async (callback-less / stackful) `canon lift`. Unlike emit_canon_lift_func it
+// carries the async canonopt (0x06). Verified body: `01 00 00 <core_func_idx>
+// 01 06 <type_idx>` (count=1; lift; core-func sort; idx; 1 option = async).
+let emit_canon_lift_async_section: (Bytes, Int, Int) -> Unit = (buf, core_func_idx, type_idx) -> {
+  bytebuf_push(buf, section_canon)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 0)
+  bytebuf_push(content, 0)
+  leb128_encode_u32(content, core_func_idx)
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 6)
+  leb128_encode_u32(content, type_idx)
+  emit_raw_content(buf, content)
+}
+
+// Component type section with a single async func type `() -> <result>`.
+// Verified body: `01 43 00 00 <valtype>` (count=1; async functype opcode 0x43;
+// 0 params; result-form 0x00 + valtype).
+let emit_comp_async_functype_section: (Bytes, Int) -> Unit = (buf, result_valtype) -> {
+  bytebuf_push(buf, section_type)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 67)
+  bytebuf_push(content, 0)
+  bytebuf_push(content, 0)
+  bytebuf_push(content, result_valtype)
+  emit_raw_content(buf, content)
+}
+
+// Wrap a core module that imports ("cm","task-return") and exports a void `run`
+// into an async-lifted component export. Section order mirrors
+// cm_async_lift_probe.wat (verified to run on wasmtime 45 with
+// -W concurrency-support=y component-model-async=y component-model-async-stackful=y).
+// `result_valtype` is the component valtype of the lifted result (e.g.
+// comp_valtype_s64 for vibe Int).
+export let comp_emit_component_wasm_async: (Bytes, String, Int) -> Bytes = (core_wasm, export_name, result_valtype) -> {
+  let buf = bytebuf_new()
+  emit_component_header(buf)
+  emit_core_module_section(buf, core_wasm)
+  emit_canon_task_return(buf, result_valtype)
+  emit_core_instance_from_exports(buf, 1, [
+    1
+  ], [
+    "task-return"
+  ], [
+    0
+  ])
+  emit_core_instance_instantiate_section(buf, 0, [
+    "cm"
+  ])
+  emit_comp_async_functype_section(buf, result_valtype)
+  emit_alias_section(buf, 1, [
+    "run"
+  ], [
+    core_sort_func
+  ])
+  emit_canon_lift_async_section(buf, 1, 0)
+  emit_comp_export_section(buf, export_name, 0)
+  bytebuf_to_bytes(buf)
+}
