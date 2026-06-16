@@ -248,6 +248,27 @@ trampoline core module は result valtype（vibe Int = i64 = `0x7e`）を埋め�
 env-alias, tramp) / async functype / alias tramp.run / async lift / export）。
 さらに orchestration（async entry → main core wasm → wrap → 出力）と CLI 配線。
 
+### 3.5 M1b-2c orchestration（landed）+ M1b-2d（WASI import 配線）
+
+`compile_source_wasi_only`（cli adapter 経路 `selfbuild_cli_args_entry` が通る
+universal な source-compile）に、entry が `() -> Int with { Async }`（name
+"run"、no params）であることを **AST の TyFn effect 注釈から検出**して
+`comp_emit_component_wasm_async_trampolined` で包む hook を追加。
+
+**実測（stage1 selfhost compiler、`let run: () -> Int with { Async } = () -> { 42 }`）**:
+- 出力が **component**（magic `0d 00 01 00`）になり `wasm-tools validate` OK。
+- 非 async entry（`run : () -> Int`）は **plain core module のまま**（無回帰）。
+- ただし wasmtime 実行は instantiate で失敗: main core module が
+  `wasi_snapshot_preview1.fd_write` を 1 件 import しており、async component が
+  これを充足していない。
+
+**M1b-2d**: selfhost の core module は WASI preview1 module なので、component
+として instantiate/run するには `wasi_snapshot_preview1` import を preview1
+adapter（既存 host componentize と同じ）で充足する配線が要る。これは sync
+component 経路（`comp_emit_component_wasm_with_lift` の build_import_plan /
+canon lower / import section）と同種の機構で、async 経路にも導入する。完了で
+selfhost からの async component が wasmtime 45 で実行可能になる。
+
 ## 4. WASI 0.3 境界マッピング
 
 | vibe | WASI 0.3 |
@@ -289,7 +310,8 @@ ratified `0.3.0` への最終 cutover は wasmtime 46（async-by-default）リ�
 | **M1b-1** | codegen emitter（component 側）: `comp_emit_component_wasm_async` + `task.return` canon + async lift + async functype。byte-exact verified（test 10/10） | done |
 | **M1b-2a** | アプローチ確定（**trampoline 方式**、`linked_compile` 無改修）を実測（`cm_async_trampoline_probe.wat` が wasmtime 45 で 42）。2-module 合成の exact byte blueprint 確定 | done |
 | **M1b-2b** | emitter 実装: `comp_generate_async_trampoline` + `comp_emit_component_wasm_async_trampolined`（2-module 合成）+ byte test | 未着手 |
-| **M1b-2c** | selfhost component-compile orchestration（async entry → main core wasm → wrap → 出力）+ `--component` async 検出 → `vibe compile --component` で wasmtime 45 真の E2E | 未着手 |
+| **M1b-2c** | orchestration: `compile_source_wasi_only` が entry の `() -> Int with { Async }`（name="run"）を AST から検出し、core wasm を `comp_emit_component_wasm_async_trampolined` で包む。selfhost compiler（stage1）で `.vibe` → **component を出力**（magic 0d 00 01 00、`wasm-tools validate` OK）、非 async は plain core のまま（無回帰） | done |
+| **M1b-2d** | 真の run: main core module の `wasi_snapshot_preview1`（実測: `fd_write` 1 件）import を component で充足（preview1 adapter 配線）。完了で `vibe`(selfhost) → async component → wasmtime 45 実行の縦串完成 | 未着手 |
 | **M2** | `Stream[T]`/`ByteStream` を `stream.read` 上の async iterator に。HTTP body を stream 化、`for await` | 未着手 |
 | **M3** | outbound async HTTP client（`Future[Response]` + streaming body）、`wasi:http/service` + `middleware` world | 未着手 |
 | **M4** | parity/gate/CI、docs、ADR-0012 → accepted | 未着手 |

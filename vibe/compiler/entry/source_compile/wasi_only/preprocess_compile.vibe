@@ -24,7 +24,61 @@ import ./preprocess_strip.vibe {
   strip_generic_type_params
 }
 
+import .. / .. / .. / core / ast.vibe {
+  Stmt, TypeExpr
+}
+
+import .. / .. / .. / component_codegen.vibe {
+  comp_emit_component_wasm_async_trampolined
+}
+
 //# Functions
+
+// M1b-2c (docs/spec/wasi-p3-async.md): does the entry declare
+// `() -> Int with { Async }` (no params)? If so its compiled core wasm should be
+// wrapped into an async-lifted WASM component. Detected from the declared TyFn
+// effect annotation (before generic-param stripping).
+let entry_declares_async_int: (Array[Stmt], String) -> Bool = (stmts, entry_name) -> {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, Some(ty), _) => if name == entry_name {
+        match ty {
+          TyFn(params, ret, Some(eff)) => if String::contains(eff, "Async") && Array::length(params) == 0 {
+            match ret {
+              TyName(rn) => if rn == "Int" {
+                found = true
+              } else {
+                ()
+              },
+              _ => ()
+            }
+          } else {
+            ()
+          },
+          _ => ()
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+// Wrap the core wasm into an async component when the entry is async. The
+// trampoline imports/aliases the main export by name "run", so this narrow PoC
+// only triggers for an entry named "run".
+let maybe_wrap_async_component: (Bytes, Bool) -> Bytes = (bytes, wrap_async) -> {
+  if wrap_async {
+    comp_emit_component_wasm_async_trampolined(bytes, "run", 120)
+  } else {
+    bytes
+  }
+}
 
 export let compile_source_wasi_only: (String, String) -> Bytes with { Error } = (source, entry_name) -> {
   let tokens = lex(source)
@@ -32,8 +86,9 @@ export let compile_source_wasi_only: (String, String) -> Bytes with { Error } = 
   expand_interp_stmts(stmts)
   // Check before stripping generic type params (see merge_sources.vibe).
   let _ = check_program(stmts)
+  let wrap_async = (entry_name == "run") && entry_declares_async_int(stmts, entry_name)
   strip_generic_type_params(stmts)
-  compile_wasi_module_impl(stmts, entry_name)
+  maybe_wrap_async_component(compile_wasi_module_impl(stmts, entry_name), wrap_async)
 }
 
 // ADR-0055 #493 cutover: same pipeline on the Perceus RC codegen path. Lets the
@@ -45,6 +100,7 @@ export let compile_source_wasi_only_rc: (String, String) -> Bytes with { Error }
   let stmts = parse_program(tokens)
   expand_interp_stmts(stmts)
   let _ = check_program(stmts)
+  let wrap_async = (entry_name == "run") && entry_declares_async_int(stmts, entry_name)
   strip_generic_type_params(stmts)
-  compile_wasi_module_rc_impl(stmts, entry_name)
+  maybe_wrap_async_component(compile_wasi_module_rc_impl(stmts, entry_name), wrap_async)
 }
