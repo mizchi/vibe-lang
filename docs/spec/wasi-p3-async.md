@@ -98,8 +98,9 @@ vibe は compiled でネイティブ coroutine を持たないため、各 `asyn
 canonical built-ins を直接呼ぶ。これは wit-bindgen が Python/JS/C# 向けに採る
 方式と同じで、**WASM stack-switching proposal（エンジン未安定）に依存しない**。
 
-使用する canonical built-ins（wasmtime 45 で
-`-W component-model-async=y -W component-model-async-builtins=y` により利用可）:
+使用する canonical built-ins（wasmtime 45 のフラグ — §3.1 の M1b spike で
+確定 — `-W concurrency-support=y -W component-model-async=y` ＋ stackful
+form では `-W component-model-async-stackful=y`）:
 
 - `future.new` / `future.read` / `future.write` / `future.cancel-read`
 - `stream.new` / `stream.read` / `stream.write` / `stream.cancel-read`
@@ -122,8 +123,44 @@ lowering 概要:
 (`vibe/compiler/codegen/`) に実装する（CLAUDE.md の source-of-truth 方針）。
 既存の effect region / replay 機構とは独立した新パスとする。
 
-検証基盤: `src/x/cm_async/`（既存プローブ）が `component-model-async` フラグ下で
-基本コンポーネントが動くことを確認済み。M1 はここを足がかりにする。
+### 3.1 M1b feasibility spike（landed、実測 — wasmtime 45.0.0 / x86_64 linux）
+
+wit-bindgen の `async func() -> u32` を手動で最小化し、async-lifted export が
+wasmtime 45 で**実際に動く**ことと、emit すべき最小形を確定した
+（blueprint: `src/x/cm_async/cm_async_lift_probe.wat`、戻り値 42 を確認）。
+
+確定した最小形（callback-less / **stackful** form）:
+
+- 戻り値型の component type は async: `(type (func async (result T)))`。
+- `task.return` は `(core func (canon task.return (result T)))` で lower し、
+  core module に import として供給。
+- async lift は `(canon lift (core func ...) async)`（callback 無し）。
+- **stackful form では core function は値を返さない（void）**。結果は
+  `task.return` 経由のみで届ける。status-i32 を返すのは callback/stackless
+  form で、stackful では reject される。
+- フラグ: `-W concurrency-support=y -W component-model-async=y
+  -W component-model-async-stackful=y`。
+
+**設計含意（重要）**: stackful form なら **backend は straight-line code を
+emit できる**（結果計算 → `task.return` → return）。await を含む場合も
+`future.read` / `waitable-set.wait` で**ブロックする直線コード**を書けばよく、
+§3 冒頭の明示的 stackless 状態機械分割は **不要**。wasmtime の
+`component-model-async-stackful` は host fiber 実装で、WASM stack-switching
+proposal（非 x86_64 で未サポート）とは別物のため、エンジン依存も回避できる。
+これは当初の stackless 設計を大幅に簡素化する。
+
+トレードオフ / 未確認:
+- callback/stackless form（wit-bindgen が採用）は stackful フラグ不要
+  （`concurrency-support=y component-model-async=y` のみで動作）だが、明示的な
+  callback 状態機械の生成が必要で codegen が重い。**PoC は stackful 直線形を
+  主とし、callback form を portable fallback として記録**。
+- `component-model-async-stackful` の非 x86_64 / wasmtime 46 default での
+  可用性は要確認。
+- 別途、`component-model-async-builtins` は **wasmtime 45.0.0 では無効な
+  `-W` フラグ**（M0 で誤記載していた。docs/report も修正）。
+
+検証基盤: 既存 `src/x/cm_async/cm_async_probe.wat`（flag 受理の sync probe）に
+加え、本 spike の `cm_async_lift_probe.wat`（async-lift 実動 probe）を追加。
 
 ## 4. WASI 0.3 境界マッピング
 
@@ -163,7 +200,7 @@ ratified `0.3.0` への最終 cutover は wasmtime 46（async-by-default）リ�
 |---|---|---|
 | **M0** | wasmtime 45.0.2 bump、P3 WIT 文字列を `rc-2026-03-15` に統一、ADR-0012 更新 + 本 spec 起票 | done |
 | **M1a** | async front-end: `await` builtin (`(Future[T]) -> T with { Async }`) + `Future::ready` + `Future[T]`=CtNamed、effect-escape 検証。lexer/parser/core-Type 非変更 | done |
-| **M1b** | codegen: `await` を含む関数を stackless 状態機械へ lower、CM async canonical built-ins を emit、単一 host future を await して wasmtime 45 で run する縦串 PoC | 未着手 |
+| **M1b** | codegen: `await` を含む関数を **stackful 直線形**で lower（§3.1 spike 確定）、`task.return` + async-lift を emit、単一 host future を await して wasmtime 45 で run する縦串 PoC | spike done / 実装未着手 |
 | **M2** | `Stream[T]`/`ByteStream` を `stream.read` 上の async iterator に。HTTP body を stream 化、`for await` | 未着手 |
 | **M3** | outbound async HTTP client（`Future[Response]` + streaming body）、`wasi:http/service` + `middleware` world | 未着手 |
 | **M4** | parity/gate/CI、docs、ADR-0012 → accepted | 未着手 |

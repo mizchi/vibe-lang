@@ -15,6 +15,11 @@ M0 で実施した整合:
   → vendored submodule 実体の **`@0.3.0-rc-2026-03-15`** に統一（不一致だと
   wit-bindgen が解決失敗するための correctness 修正）。`wasi:http` の world は
   0.2 `proxy` を廃した `service` / `middleware`。
+- 訂正: `-W component-model-async-builtins` は **wasmtime 45.0.0 では無効な
+  フラグ**（本レポート冒頭の旧記載は誤り）。M1b spike で確認した有効な async
+  フラグは `-W concurrency-support=y -W component-model-async=y`（callback-less
+  stackful form は加えて `-W component-model-async-stackful=y`）。詳細は
+  [../spec/wasi-p3-async.md](../spec/wasi-p3-async.md) §3.1。
 - `src/codegen/*` の `@0.3.0-draft` は legacy MoonBit host 経路のため据え置き
   （CLAUDE.md: `src/` は通常触らない）。別途追跡。
 
