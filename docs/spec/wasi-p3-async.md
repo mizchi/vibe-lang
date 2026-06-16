@@ -50,14 +50,36 @@ async モデルへ寄せていくための設計判断と段階プランを定�
 
 ### 2.2 構文
 
-- `async fn` / `async (...) -> T { ... }` — async 関数・ラムダ。
-- `await expr` — `Future[T]` を待って `T` を得る。`async` 文脈内のみ許可。
-- `for await x in s { ... }` — `Stream[T]` を逐次 pull（`s.next()` を
-  `await` するループへ desugar）。`for x in xs`（ADR-0044 同期 iterator）の
-  async 版。
-- 型付け上、`await` を含む計算は `Async` effect を帯びる
-  （`with { Async }`、ADR-0012）。これは型システム上の表現であり、実体は
-  §3 の lowering が担う（replay effect handler の上には載せない）。
+vibe には `fn` キーワードが無く、関数は `let f: (A) -> B with { E } = (x) -> {}`
+形式で副作用は effect row (`with { E }`) で表現する。したがって **`async`
+キーワードは導入しない**。代わりに:
+
+- **`await` は effectful な操作**で、`Async` effect を帯びる。`throw`→`Error`
+  / `perform Eff::Op`→`Eff` と同じ扱い。「async 関数」= **effect row に
+  `Async` を持つ関数**（`with { Async }`）であり、特別な宣言構文ではない。
+  `await(f)` は `Future[T]` を待って `T` を得る。
+- `Async` を持つ計算を非 `Async` 文脈で使うと、既存の effect-escape チェック
+  (`checker_effects.vibe` の `EEEffectfulCallOutsideEffect`) がエラーにする。
+- `for await x in s { ... }`（`Stream[T]` の逐次 pull、`s.next()` を `await`
+  するループへ desugar）は M2 で導入予定の糖衣。
+
+実体（状態機械 lowering）は §3 が担い、replay effect handler の上には載せない。
+
+#### M1a 実装メモ（landed）
+
+front-end は **lexer/parser/AST/core-Type の変更ゼロ**で着地した:
+
+- `await` は予約語ではないため `await(f)` は通常の呼び出し
+  `ECall(EIdent("await"), [f])` として既存 parser でそのまま通る。
+- checker builtin として登録（`vibe/compiler/checker/builtins_async.vibe`、
+  `lookup_builtin` 経由）:
+  - `await : (Future[T]) -> T with { Async }`（`throw` と同型、effect=`Async`）
+  - `Future::ready : (T) -> Future[T]`（pure、テスト用に future を構築）
+- `Future[T]` は `CtNamed("Future", [..])` で構造的に表現（core `Type` enum
+  非変更）。要素型は他 builtin と同様 `CtUnknown`（gradual）。
+- `Async` は open string の effect 名なので effect-escape チェックがそのまま
+  機能する。検証: `checker_async_test.vibe` 6/6、`checker_effects_test.vibe`
+  19/19（無回帰）。bundle 再生成済み（sync OK）。
 
 ### 2.3 同期 effect との関係
 
@@ -139,8 +161,9 @@ ratified `0.3.0` への最終 cutover は wasmtime 46（async-by-default）リ�
 
 | Stage | 内容 | 状態 |
 |---|---|---|
-| **M0** | wasmtime 45.0.2 bump、P3 WIT 文字列を `rc-2026-03-15` に統一、ADR-0012 更新 + 本 spec 起票 | this PR |
-| **M1** | 最小 `Future[T]`: `async fn` が単一 host future を await → 状態機械 lower、wasmtime 45 で run/serve する縦串 PoC | 未着手 |
+| **M0** | wasmtime 45.0.2 bump、P3 WIT 文字列を `rc-2026-03-15` に統一、ADR-0012 更新 + 本 spec 起票 | done |
+| **M1a** | async front-end: `await` builtin (`(Future[T]) -> T with { Async }`) + `Future::ready` + `Future[T]`=CtNamed、effect-escape 検証。lexer/parser/core-Type 非変更 | done |
+| **M1b** | codegen: `await` を含む関数を stackless 状態機械へ lower、CM async canonical built-ins を emit、単一 host future を await して wasmtime 45 で run する縦串 PoC | 未着手 |
 | **M2** | `Stream[T]`/`ByteStream` を `stream.read` 上の async iterator に。HTTP body を stream 化、`for await` | 未着手 |
 | **M3** | outbound async HTTP client（`Future[Response]` + streaming body）、`wasi:http/service` + `middleware` world | 未着手 |
 | **M4** | parity/gate/CI、docs、ADR-0012 → accepted | 未着手 |
