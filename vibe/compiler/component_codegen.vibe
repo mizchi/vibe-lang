@@ -5,7 +5,7 @@ import ./bytebuf.vibe {
 }
 
 import ./wasm_emit.vibe {
-  emit_code_section, emit_export_section, emit_func_type_raw, emit_function_section, emit_header, emit_i32_add, emit_i32_const, emit_i32_store, emit_local_get, emit_local_set, emit_name
+  emit_code_section, emit_export_section, emit_func_type_raw, emit_function_section, emit_header, emit_i32_add, emit_i32_const, emit_i32_store, emit_i64_const, emit_local_get, emit_local_set, emit_name
 }
 
 //# Functions
@@ -1324,9 +1324,11 @@ let comp_generate_async_trampoline: (Int) -> Bytes = (core_valtype) -> {
   emit_header(out)
   let tc = bytebuf_new()
   bytebuf_push_vec_header(tc, 3)
-  emit_func_type_raw(tc, Array::slice([
-    0
-  ], 0, 0), [
+  // type0: the entry `run` — a nullary vibe fn compiles to (param i64) -> result
+  // (the i64 is the unit argument), so the trampoline passes a dummy i64.
+  emit_func_type_raw(tc, [
+    126
+  ], [
     core_valtype
   ])
   emit_func_type_raw(tc, [
@@ -1356,6 +1358,7 @@ let comp_generate_async_trampoline: (Int) -> Bytes = (core_valtype) -> {
   ])
   emit_export_section(out, "run", 2)
   let body = bytebuf_new()
+  emit_i64_const(body, 0)
   bytebuf_push(body, 16)
   leb128_encode_u32(body, 0)
   bytebuf_push(body, 16)
@@ -1429,6 +1432,95 @@ export let comp_emit_component_wasm_async_trampolined: (Bytes, String, Int) -> B
   ])
   emit_comp_async_functype_section(buf, comp_result_valtype)
   emit_alias_section(buf, 3, [
+    "run"
+  ], [
+    core_sort_func
+  ])
+  emit_canon_lift_async_section(buf, 2, 0)
+  emit_comp_export_section(buf, export_name, 0)
+  bytebuf_to_bytes(buf)
+}
+
+// M1b-2d: a no-op `wasi_snapshot_preview1.fd_write` stub core module
+// (`(i32,i32,i32,i32) -> i32` returning 0). selfhost-compiled core modules
+// import fd_write from wasi_snapshot_preview1 for their runtime preamble; the
+// stub satisfies that import so the async component is self-contained and
+// instantiable without an external preview1 adapter.
+let comp_generate_wasi_fd_write_stub: () -> Bytes = () -> {
+  let out = bytebuf_new()
+  emit_header(out)
+  let tc = bytebuf_new()
+  bytebuf_push_vec_header(tc, 1)
+  emit_func_type_raw(tc, [
+    127,
+    127,
+    127,
+    127
+  ], [
+    127
+  ])
+  bytebuf_push_section(out, 1, tc)
+  emit_function_section(out, [
+    0
+  ])
+  emit_export_section(out, "fd_write", 0)
+  let body = bytebuf_new()
+  emit_i32_const(body, 0)
+  emit_code_section(out, [
+    body
+  ])
+  bytebuf_to_bytes(out)
+}
+
+// Like comp_emit_component_wasm_async_trampolined, but for a main core module
+// that imports `wasi_snapshot_preview1.fd_write` (every selfhost core does). A
+// fd_write stub module is instantiated first and supplied to the main module's
+// instantiation, making the async component fully self-contained / runnable.
+// core instances: 0=wasi-stub, 1=main(+wasi), 2=cm(task-return), 3=env(run),
+// 4=trampoline. core funcs: 0=task.return, 1=main.run, 2=trampoline.run.
+export let comp_emit_component_wasm_async_trampolined_p1: (Bytes, String, Int) -> Bytes = (main_core_wasm, export_name, comp_result_valtype) -> {
+  let buf = bytebuf_new()
+  emit_component_header(buf)
+  emit_core_module_section(buf, main_core_wasm)
+  emit_core_module_section(buf, comp_generate_async_trampoline(comp_valtype_to_core(comp_result_valtype)))
+  emit_core_module_section(buf, comp_generate_wasi_fd_write_stub())
+  emit_core_instance_instantiate_section(buf, 2, Array::slice([
+    ""
+  ], 0, 0))
+  emit_core_instance_instantiate_args(buf, 0, [
+    "wasi_snapshot_preview1"
+  ], [
+    0
+  ])
+  emit_canon_task_return(buf, comp_result_valtype)
+  emit_core_instance_from_exports(buf, 1, [
+    1
+  ], [
+    "task-return"
+  ], [
+    0
+  ])
+  emit_alias_section(buf, 1, [
+    "run"
+  ], [
+    core_sort_func
+  ])
+  emit_core_instance_from_exports(buf, 1, [
+    1
+  ], [
+    "run"
+  ], [
+    1
+  ])
+  emit_core_instance_instantiate_args(buf, 1, [
+    "main",
+    "cm"
+  ], [
+    3,
+    2
+  ])
+  emit_comp_async_functype_section(buf, comp_result_valtype)
+  emit_alias_section(buf, 4, [
     "run"
   ], [
     core_sort_func
