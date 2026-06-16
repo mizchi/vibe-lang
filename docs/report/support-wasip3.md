@@ -1,5 +1,28 @@
 # WASI P3 サポート状況レポート
 
+## 更新 (2026-06-16): WASI 0.3 ratify + async 設計
+
+WASI 0.3 が 2026-06-11 に ratify され、`stream<T>`/`future<T>` が Component
+Model first-class 型化。async 移行の設計判断・段階プラン (M0–M4) は
+[../spec/wasi-p3-async.md](../spec/wasi-p3-async.md)（ADR-0012 を更新）に集約。
+本レポート以下の「Model 1 (同期 effect)」は引き続き有効だが、async
+(`Future[T]`/`Stream[T]`/`await`) はその上位として別途定義する。
+
+M0 で実施した整合:
+- wasmtime install 既定を 45.0.0 → 45.0.2（WASIp1 fd_renumber leak の security
+  patch。p3 WIT 不変）。
+- P3 アダプタ/プローブスクリプトの WIT バージョンを `@0.3.0-rc-2026-02-09`
+  → vendored submodule 実体の **`@0.3.0-rc-2026-03-15`** に統一（不一致だと
+  wit-bindgen が解決失敗するための correctness 修正）。`wasi:http` の world は
+  0.2 `proxy` を廃した `service` / `middleware`。
+- 訂正: `-W component-model-async-builtins` は **wasmtime 45.0.0 では無効な
+  フラグ**（本レポート冒頭の旧記載は誤り）。M1b spike で確認した有効な async
+  フラグは `-W concurrency-support=y -W component-model-async=y`（callback-less
+  stackful form は加えて `-W component-model-async-stackful=y`）。詳細は
+  [../spec/wasi-p3-async.md](../spec/wasi-p3-async.md) §3.1。
+- `src/codegen/*` の `@0.3.0-draft` は legacy MoonBit host 経路のため据え置き
+  （CLAUDE.md: `src/` は通常触らない）。別途追跡。
+
 ## 現在の状態 (2026-05-22)
 
 ### 動作確認済み

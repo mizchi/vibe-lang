@@ -1,0 +1,38 @@
+//# Imports
+
+import .. / core / types.vibe {
+  Type
+}
+
+//# Functions
+
+// WASI 0.3 async front-end (M1a). See docs/spec/wasi-p3-async.md, ADR-0012.
+//
+// `await` is an effectful operation introducing the `Async` effect, modelled
+// exactly like `throw`->`Error`: any function using `await` must be declared
+// `with { Async }` (enforced by checker_effects.vibe via the open effect-name
+// machinery). `Future[T]` is represented structurally as CtNamed("Future", _)
+// so no core `Type` enum change is needed (mirrors how generic named types are
+// represented). Result/element types use CtUnknown, consistent with the rest of
+// the builtin table (gradual). Codegen — stackless state-machine lowering onto
+// the Component Model async canonical ABI (future.read/task.return/...) — is
+// M1b; these entries are front-end / type-level only.
+export let lookup_async: (String) -> Option[Type] = (name) -> {
+  if name == "await" {
+    // await: (Future[T]) -> T with { Async }
+    Some(CtFn([
+      CtNamed("Future", [
+        CtUnknown
+      ])
+    ], CtUnknown, Some("Async")))
+  } else if name == "Future::ready" {
+    // Future::ready: (T) -> Future[T]   (pure; an already-resolved future)
+    Some(CtFn([
+      CtUnknown
+    ], CtNamed("Future", [
+      CtUnknown
+    ]), None))
+  } else {
+    None
+  }
+}

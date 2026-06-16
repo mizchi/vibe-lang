@@ -1,15 +1,15 @@
 //# Imports
 
 import ./bytebuf.vibe {
-  bytebuf_new, bytebuf_push, bytebuf_push_section, bytebuf_push_vec_header, bytebuf_to_bytes
+  bytebuf_new, bytebuf_push, bytebuf_push_section, bytebuf_push_vec_header, bytebuf_to_bytes, leb128_encode_u32
 }
 
 import ./component_codegen.vibe {
-  comp_emit_component_wasm, comp_emit_component_wasm_with_lift, comp_emit_component_wasm_with_string_lift, comp_generate_string_trampoline
+  comp_emit_component_wasm, comp_emit_component_wasm_async, comp_emit_component_wasm_with_lift, comp_emit_component_wasm_with_string_lift, comp_generate_string_trampoline
 }
 
 import ./wasm_emit.vibe {
-  emit_code_section, emit_export_section, emit_exports_with_memory, emit_func_type_raw, emit_function_section, emit_header, emit_i32_const, emit_i64_add, emit_i64_const, emit_local_get, emit_memory_section, emit_type_section
+  emit_code_section, emit_export_section, emit_exports_with_memory, emit_func_type_raw, emit_function_section, emit_header, emit_i32_const, emit_i64_add, emit_i64_const, emit_import_section_func, emit_local_get, emit_memory_section, emit_type_section
 }
 
 //# Functions
@@ -159,7 +159,93 @@ let build_test_core_with_memory_and_run: () -> Bytes = () -> {
   bytebuf_to_bytes(out)
 }
 
+let bytes_contains_seq: (Bytes, Array[Int]) -> Int = (hay, needle) -> {
+  let hay_len = Bytes::length(hay)
+  let needle_len = Array::length(needle)
+  if needle_len == 0 {
+    1
+  }
+  else {
+    let limit = hay_len - needle_len
+    let mut found = 0
+    let mut i = 0
+    while (i <= limit) && (found == 0) {
+      let mut ok = 1
+      let mut j = 0
+      while (j < needle_len) && (ok == 1) {
+        if Bytes::get(hay, i + j) != Array::get(needle, j) {
+          ok = 0
+        }
+        j = j + 1
+      }
+      if ok == 1 {
+        found = 1
+      }
+      i = i + 1
+    }
+    found
+  }
+}
+
+// Core module that imports ("cm","task-return") and exports a void `run` which
+// hands a constant to task.return — the shape comp_emit_component_wasm_async wraps.
+let build_async_test_core: () -> Bytes = () -> {
+  let out = bytebuf_new()
+  emit_header(out)
+  let tc = bytebuf_new()
+  bytebuf_push_vec_header(tc, 2)
+  emit_func_type_raw(tc, [
+    127
+  ], Array::slice([
+    0
+  ], 0, 0))
+  emit_func_type_raw(tc, Array::slice([
+    0
+  ], 0, 0), Array::slice([
+    0
+  ], 0, 0))
+  bytebuf_push_section(out, 1, tc)
+  emit_import_section_func(out, "cm", "task-return", 0)
+  emit_function_section(out, [
+    1
+  ])
+  emit_export_section(out, "run", 1)
+  let body = bytebuf_new()
+  emit_i32_const(body, 42)
+  bytebuf_push(body, 16)
+  leb128_encode_u32(body, 0)
+  emit_code_section(out, [
+    body
+  ])
+  bytebuf_to_bytes(out)
+}
+
 //# Misc
+
+test "component async: emits task.return canon, async functype, async lift" {
+  let core = build_async_test_core()
+  let comp = comp_emit_component_wasm_async(core, "run", 120)
+  assert(Bytes::get(comp, 0) == 0)
+  assert(Bytes::get(comp, 4) == 13)
+  assert(bytes_contains_seq(comp, [
+    8, 5, 1, 9, 0, 120, 0
+  ]) == 1)
+  assert(bytes_contains_seq(comp, [
+    7, 5, 1, 67, 0, 0, 120
+  ]) == 1)
+  assert(bytes_contains_seq(comp, [
+    8, 7, 1, 0, 0, 1, 1, 6, 0
+  ]) == 1)
+  assert(component_bytes_contains(comp, "run") == 1)
+}
+
+test "component async: sync lift carries no async canonopt" {
+  let core = build_test_core()
+  let comp = comp_emit_component_wasm_with_lift(core, "run")
+  assert(bytes_contains_seq(comp, [
+    8, 7, 1, 0, 0, 1, 1, 6, 0
+  ]) == 0)
+}
 
 test "component: simple wrap has component header" {
   let core = build_test_core()
