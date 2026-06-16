@@ -162,6 +162,44 @@ proposal（非 x86_64 で未サポート）とは別物のため、エンジン�
 検証基盤: 既存 `src/x/cm_async/cm_async_probe.wat`（flag 受理の sync probe）に
 加え、本 spike の `cm_async_lift_probe.wat`（async-lift 実動 probe）を追加。
 
+### 3.2 M1b 実装ブループリント（byte-level encoding map）
+
+`cm_async_lift_probe.wat` を `wasm-tools dump` して抽出した、selfhost encoder が
+emit すべき正確なバイト列（wasmtime 45 で検証済み）。`component_codegen.vibe`
+は既に async func type opcode `0x43`(67) と sync canon lift を持つので、不足は
+(a) async lift option、(b) `task.return` canon、(c) core 側の import + void entry。
+
+**core module**（`linked_compile.vibe`、async entry のとき）:
+- import section: `import "cm" "task-return"`、func 型 `(param i32) (result)`
+  = `02 63 6d  0b 74 61 73 6b 2d 72 65 74 75 72 6e  00 00`
+  （module名"cm" / name"task-return" / kind=func(00) / typeidx=0）。
+- entry func body: 値を計算し `call $task_return` して **void で return**
+  = 例 `41 2a  10 00  0b`（i32.const 42; call task_return; end）。
+- 型: task_return 用 `(param i32)->()` = `60 01 7f 00`、entry `()->()` = `60 00 00`。
+
+**component sections**（`component_codegen.vibe`）:
+- task.return canon: section `08`、内容 `01` + `09 00 79 00`
+  （`09`=task.return opcode、`00 79`=result Some(u32, valtype `0x79`)、`00`=options空）。
+  valtype をパラメタ化（s32=`0x7a`? 等は要確認、u32=`0x79` は実測済み）。
+- async component func type: `43 00 00 79`
+  （`0x43`=async functype opcode、`00`=params数0、`00`=result-form tag、`79`=u32）。
+  既存 `emit_comp_func_type(is_async=1)` が `0x43` を出すが result は s64(`0x78`)
+  固定 — 結果型をパラメタ化する必要あり。
+- core instance: task.return core func を `FromExports`("task-return") で 1 つの
+  core instance にし、main module 実体化の `cm` 引数に渡す。
+- async canon lift: `00 00 <core_func_idx> 01 06 00`
+  （`00`=lift, `00`=func sort, core_func_idx, options vec len `01`, **async opt
+  `0x06`**, type_idx）。現 `emit_canon_lift_func` は options に async(`0x06`)を
+  含めないので async 変種を追加する。
+- export: 既存 `emit_comp_export_section` を流用。
+
+**フラグ**: `-W concurrency-support=y -W component-model-async=y
+-W component-model-async-stackful=y`。
+
+最初の縦串 PoC は await 無し（`() -> Int with { Async }` の body が定数 / 純粋
+計算）で `task.return` 経路を通し、その後 `await(Future::ready(x))` → 単一
+`future.read` ブロックへ広げる。
+
 ## 4. WASI 0.3 境界マッピング
 
 | vibe | WASI 0.3 |
