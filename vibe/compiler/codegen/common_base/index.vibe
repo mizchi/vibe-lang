@@ -113,7 +113,15 @@ export struct CompileCtx {
   // from this list so a perform reaches its own handler through an unrelated
   // inner handle (which catches a different tag) and uses an independent
   // frontier. See effect_name_to_tag.
-  effect_names: Array[String]
+  effect_names: Array[String];
+  // #548 multi-value payloads: parallel arrays keyed by full op name
+  // ("Effect::Op") giving each effect op's DECLARED parameter count. The handle
+  // arm uses the declared arity (not the pattern arity) to decide whether the
+  // thrown payload is a packed tuple to destructure (arity > 1) or a single
+  // value — so an extra continuation-slot bind like `Question(q, k)` on a
+  // 1-arg op is not mistaken for a 2-tuple. See effect_op_declared_arity.
+  effect_op_keys: Array[String];
+  effect_op_arities: Array[Int]
 }
 
 export struct CompileCtxGc {
@@ -632,6 +640,21 @@ export let effect_name_to_tag: (Array[String], String) -> Int = (effect_names, f
   while i < n {
     if name_has_effect_prefix(full, Array::get(effect_names, i)) {
       result = 3 + i
+      i = n
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+
+export let effect_op_declared_arity: (Array[String], Array[Int], String) -> Int = (keys, arities, full) -> {
+  let n = Array::length(keys)
+  let mut result = -1
+  let mut i = 0
+  while i < n {
+    if Array::get(keys, i) == full {
+      result = Array::get(arities, i)
       i = n
     } else {
       i = i + 1

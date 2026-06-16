@@ -366,14 +366,26 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   }
   let heap_start = ((str_pos + 7) / 8) * 8
   let effect_names_list = lc_fresh_string_array()
+  let effect_op_keys_list = lc_fresh_string_array()
+  let effect_op_arities_list = Array::slice([
+    0
+  ], 0, 0)
   let mut eff_collect_i = 0
   while eff_collect_i < Array::length(stmts) {
     match Array::get(stmts, eff_collect_i) {
-      SEffectDef(_, eff_name, _, _) =>
-      if eff_name != "Error" && !array_contains_str(effect_names_list, eff_name) {
-        Array::push(effect_names_list, eff_name)
-      } else {
-        ()
+      SEffectDef(_, eff_name, _, ops) => {
+        if eff_name != "Error" && !array_contains_str(effect_names_list, eff_name) {
+          Array::push(effect_names_list, eff_name)
+        } else {
+          ()
+        }
+        let mut op_i = 0
+        while op_i < Array::length(ops) {
+          let (op_name, op_params, _) = Array::get(ops, op_i)
+          Array::push(effect_op_keys_list, String::concat(String::concat(eff_name, "::"), op_name))
+          Array::push(effect_op_arities_list, Array::length(op_params))
+          op_i = op_i + 1
+        }
       },
       _ => ()
     }
@@ -1260,7 +1272,9 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       heap_grow_check_func_idx: heap_grow_check_idx,
       rc_dup_names: rc_dups,
       float_local_slots: lc_fresh_int_array(),
-      effect_names: effect_names_list
+      effect_names: effect_names_list,
+      effect_op_keys: effect_op_keys_list,
+      effect_op_arities: effect_op_arities_list
     }
     if is_efn(__bi_expr) {
       let __bi_params = get_efn_params(__bi_expr)
