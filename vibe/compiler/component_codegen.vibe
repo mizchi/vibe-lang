@@ -1,11 +1,11 @@
 //# Imports
 
 import ./bytebuf.vibe {
-  bytebuf_new, bytebuf_push, bytebuf_push_buf, bytebuf_push_section, bytebuf_to_bytes, leb128_encode_s64, leb128_encode_u32
+  bytebuf_new, bytebuf_push, bytebuf_push_buf, bytebuf_push_section, bytebuf_push_vec_header, bytebuf_to_bytes, leb128_encode_s64, leb128_encode_u32
 }
 
 import ./wasm_emit.vibe {
-  emit_i32_add, emit_i32_const, emit_i32_store, emit_local_get, emit_local_set, emit_name
+  emit_code_section, emit_export_section, emit_func_type_raw, emit_function_section, emit_header, emit_i32_add, emit_i32_const, emit_i32_store, emit_local_get, emit_local_set, emit_name
 }
 
 //# Functions
@@ -1284,6 +1284,156 @@ export let comp_emit_component_wasm_async: (Bytes, String, Int) -> Bytes = (core
     core_sort_func
   ])
   emit_canon_lift_async_section(buf, 1, 0)
+  emit_comp_export_section(buf, export_name, 0)
+  bytebuf_to_bytes(buf)
+}
+
+// Map a component valtype to the core valtype it lowers from (inverse of
+// core_to_comp_valtype). Used to type the trampoline module's entry/task-return.
+let comp_valtype_to_core: (Int) -> Int = (v) -> {
+  if v == comp_valtype_s64 {
+    126
+  }
+  else {
+    if v == comp_valtype_s32 {
+      127
+    }
+    else {
+      if v == comp_valtype_f32 {
+        125
+      }
+      else {
+        if v == comp_valtype_f64 {
+          124
+        }
+        else {
+          127
+        }
+      }
+    }
+  }
+}
+
+// M1b-2 (docs/spec/wasi-p3-async.md §3.4). Async trampoline core module: imports
+// the normally-compiled entry ("main","run" : () -> <core_valtype>) and
+// ("cm","task-return" : (<core_valtype>) -> ()), and exports a void `run` that
+// calls the entry and forwards its result to task.return. Byte template verified
+// against src/x/cm_async/cm_async_trampoline_probe.wat (runs on wasmtime 45).
+let comp_generate_async_trampoline: (Int) -> Bytes = (core_valtype) -> {
+  let out = bytebuf_new()
+  emit_header(out)
+  let tc = bytebuf_new()
+  bytebuf_push_vec_header(tc, 3)
+  emit_func_type_raw(tc, Array::slice([
+    0
+  ], 0, 0), [
+    core_valtype
+  ])
+  emit_func_type_raw(tc, [
+    core_valtype
+  ], Array::slice([
+    0
+  ], 0, 0))
+  emit_func_type_raw(tc, Array::slice([
+    0
+  ], 0, 0), Array::slice([
+    0
+  ], 0, 0))
+  bytebuf_push_section(out, 1, tc)
+  let ic = bytebuf_new()
+  bytebuf_push_vec_header(ic, 2)
+  emit_name(ic, "main")
+  emit_name(ic, "run")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 0)
+  emit_name(ic, "cm")
+  emit_name(ic, "task-return")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 1)
+  bytebuf_push_section(out, 2, ic)
+  emit_function_section(out, [
+    2
+  ])
+  emit_export_section(out, "run", 2)
+  let body = bytebuf_new()
+  bytebuf_push(body, 16)
+  leb128_encode_u32(body, 0)
+  bytebuf_push(body, 16)
+  leb128_encode_u32(body, 1)
+  emit_code_section(out, [
+    body
+  ])
+  bytebuf_to_bytes(out)
+}
+
+// Instantiate a core module with explicit (arg-name -> core-instance-index) args.
+// Unlike emit_core_instance_instantiate_section, the arg instance indices need
+// not be sequential.
+let emit_core_instance_instantiate_args: (Bytes, Int, Array[String], Array[Int]) -> Unit = (buf, module_index, arg_names, arg_instance_indices) -> {
+  bytebuf_push(buf, section_core_instance)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 0)
+  leb128_encode_u32(content, module_index)
+  leb128_encode_u32(content, Array::length(arg_names))
+  let mut i = 0
+  while i < Array::length(arg_names) {
+    emit_name(content, Array::get(arg_names, i))
+    bytebuf_push(content, comp_inst_arg_instance)
+    leb128_encode_u32(content, Array::get(arg_instance_indices, i))
+    i = i + 1
+  }
+  emit_raw_content(buf, content)
+}
+
+// Wrap a normally-compiled core module (exporting `run : () -> <core>`, value
+// returned directly) into an async-lifted component export via the trampoline
+// (two-module) approach — no change to the core module / linked_compile needed.
+// `comp_result_valtype` is the component valtype of the lifted result
+// (comp_valtype_s64 for vibe Int). Section order mirrors
+// cm_async_trampoline_probe.wat (verified to run on wasmtime 45).
+export let comp_emit_component_wasm_async_trampolined: (Bytes, String, Int) -> Bytes = (main_core_wasm, export_name, comp_result_valtype) -> {
+  let buf = bytebuf_new()
+  emit_component_header(buf)
+  emit_core_module_section(buf, main_core_wasm)
+  emit_core_module_section(buf, comp_generate_async_trampoline(comp_valtype_to_core(comp_result_valtype)))
+  emit_core_instance_instantiate_section(buf, 0, Array::slice([
+    ""
+  ], 0, 0))
+  emit_canon_task_return(buf, comp_result_valtype)
+  emit_core_instance_from_exports(buf, 1, [
+    1
+  ], [
+    "task-return"
+  ], [
+    0
+  ])
+  emit_alias_section(buf, 0, [
+    "run"
+  ], [
+    core_sort_func
+  ])
+  emit_core_instance_from_exports(buf, 1, [
+    1
+  ], [
+    "run"
+  ], [
+    1
+  ])
+  emit_core_instance_instantiate_args(buf, 1, [
+    "main",
+    "cm"
+  ], [
+    2,
+    1
+  ])
+  emit_comp_async_functype_section(buf, comp_result_valtype)
+  emit_alias_section(buf, 3, [
+    "run"
+  ], [
+    core_sort_func
+  ])
+  emit_canon_lift_async_section(buf, 2, 0)
   emit_comp_export_section(buf, export_name, 0)
   bytebuf_to_bytes(buf)
 }
