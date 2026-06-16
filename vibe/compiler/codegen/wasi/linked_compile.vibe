@@ -391,7 +391,20 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     }
     eff_collect_i = eff_collect_i + 1
   }
-  let eff_reserve = (Array::length(effect_names_list) + 1) * 8192
+  // Per-effect region stride (#553). Each effect tag gets a reserved region
+  // below the heap frontier holding the replay-handler control words (+0
+  // perform counter, +8 resume-memo count) and the resume-memo array (+16 +
+  // k*8). The replay model stores one i64 per `perform` resolved within a
+  // `handle`, so the region is O(performs). At 8192 B (1022 entries) a loop
+  // performing more than ~1022-2046 times overflowed the region into the live
+  // heap, where the growing memo chased and clobbered the reused payload-tuple
+  // free block (~8 B/iter past the threshold, ADR-0055). 131072 B (16382
+  // entries) covers the full verify regime (N2=11000) with headroom; programs
+  // performing more than ~16K times within one handle still spill (a hard
+  // bound of the replay-based handler — unbounded performs need a
+  // continuation-based handler). MUST stay in sync with the `* 131072` strides
+  // in compile_call.vibe (perform) and compile_expr_tail6.vibe (handler arm).
+  let eff_reserve = (Array::length(effect_names_list) + 1) * 131072
   let need_env_get_builtin = stmts_use_builtin(stmts, fn_names_list, "Env::get")
   let need_env_args_len_builtin = stmts_use_builtin(stmts, fn_names_list, "Env::args_len")
   let need_env_args_get_builtin = stmts_use_builtin(stmts, fn_names_list, "Env::args_get")
