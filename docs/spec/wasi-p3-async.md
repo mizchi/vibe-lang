@@ -286,6 +286,11 @@ universal な source-compile）に、entry が `() -> Int with { Async }`（name
 宣言）。`await` 本体の codegen、非 Int 戻り値、param 付き entry、複数 wasi
 import（fd_write 以外）、entry 名一般化は後続。
 
+回帰保護: この E2E は `scripts/test_selfhost_async_component_gate.sh`
+（pkf task `test-selfhost-async-component`、CI selfhost-gates `cli` shard）に
+固定。wasmtime/wasm-tools 不在時は graceful skip。非 async control が plain
+core module のままであること（async wrap が通常ビルドに漏れない）も検証する。
+
 ## 4. WASI 0.3 境界マッピング
 
 | vibe | WASI 0.3 |
