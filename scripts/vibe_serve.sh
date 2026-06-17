@@ -168,6 +168,6 @@ echo ""
 exec "$WASMTIME_BIN" serve \
   -Sp3 \
   -W component-model-async=y \
-  -W component-model-async-builtins=y \
+  -W component-model-async-stackful=y -W exceptions=y -W concurrency-support=y \
   --addr "$LISTEN" \
   "$COMPONENT"

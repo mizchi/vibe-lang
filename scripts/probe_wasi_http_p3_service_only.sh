@@ -119,7 +119,7 @@ echo "[probe] serve smoke on $SERVE_ADDR"
 ( wasmtime serve \
     -Sp3 -Shttp \
     -W component-model-async=y \
-    -W component-model-async-builtins=y \
+    -W component-model-async-stackful=y -W exceptions=y -W concurrency-support=y \
     --addr "$SERVE_ADDR" \
     "$SERVICE_COMPONENT" >"$SERVE_LOG" 2>&1 & echo $! > "$SERVE_PID_FILE" )
 sleep 2
