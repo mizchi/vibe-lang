@@ -79,9 +79,11 @@ impl Guest for Component {
         };
         let url = request.get_path_with_query().unwrap_or_else(|| "/".to_string());
 
-        // Call vibe handler with method and url (returns tagged status code)
+        // Call vibe handler with method and url (returns the status code).
+        // vibe Int crosses the component boundary as a plain s64 in the default
+        // compile path (raw i64, untagged), so no bit-untag is applied here.
         let status_tagged = handler(&method, &url);
-        let status_code = (status_tagged >> 2) as u16; // untag int
+        let status_code = status_tagged as u16; // status code (no tag in default path)
 
         // Build P3 response with body
         let body_text = format!("method={} url={} status={}", method, url, status_code);
@@ -114,4 +116,4 @@ popd >/dev/null
 
 echo "wrote $OUT_PATH"
 echo "note: wasmtime serve で async p3 component を起動するには少なくとも次が必要"
-echo "  wasmtime serve -Sp3 -W component-model-async=y -W component-model-async-builtins=y <component.wasm>"
+echo "  wasmtime serve -Sp3 -W component-model-async=y -W component-model-async-stackful=y -W exceptions=y -W concurrency-support=y <component.wasm>"

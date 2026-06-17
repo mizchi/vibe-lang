@@ -14,7 +14,7 @@ set -euo pipefail
 #   handler returns -2   → proxy POST to URL from ?target= query param
 #
 # Output: a WASI P3 component that can be served with:
-#   wasmtime serve -Sp3 -W component-model-async=y -W component-model-async-builtins=y output.wasm
+#   wasmtime serve -Sp3 -W component-model-async=y -W component-model-async-stackful=y -W exceptions=y -W concurrency-support=y output.wasm
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -69,4 +69,4 @@ $VIBE compile --compose-p3 --adapter "$ADAPTER" "$INPUT" -o "$OUTPUT"
 # Step 3: Validate
 wasm-tools validate --features all "$OUTPUT"
 echo "[compose] wrote $OUTPUT"
-echo "[compose] serve with: wasmtime serve -Sp3 -W component-model-async=y -W component-model-async-builtins=y $OUTPUT"
+echo "[compose] serve with: wasmtime serve -Sp3 -W component-model-async=y -W component-model-async-stackful=y -W exceptions=y -W concurrency-support=y $OUTPUT"

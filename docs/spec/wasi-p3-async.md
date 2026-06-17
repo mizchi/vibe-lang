@@ -377,6 +377,36 @@ blueprint→byte で進められるが、async 全体で最大の塊。
 
 worlds: 受信は `wasi:http/service`、proxy/中継は `wasi:http/middleware`。
 
+### 4.1 M3 spike — async HTTP serve 実機確認（wasmtime 45 で HTTP 200）
+
+既存 P3 adapter（Rust wit-bindgen async、M0 で WIT を rc-2026-03-15 に整合）を
+使い、vibe handler → host `--compose-p3` → `wasmtime serve` → curl の縦串を
+wasmtime 45 で確認した。2 つの修正で **HTTP 200** が返るようになった:
+
+1. **serve フラグ修正**: 全 P3 スクリプトが使っていた `-W
+   component-model-async-builtins=y` は **wasmtime 45 で無効**（reject）。正しい
+   セットは `-Sp3 -Shttp -W exceptions=y -W concurrency-support=y -W
+   component-model-async=y -W component-model-async-stackful=y`。6 スクリプトを
+   修正（compose/probe/e2e/serve/adapter hints）。
+2. **adapter untag 修正**: minimal adapter が handler 戻り値を `status >> 2` で
+   untag していたが、vibe `Int` は default 経路で **raw i64（untag 済み）** で
+   component 境界を渡るため `>> 2` は誤り（`200>>2=50` → 無効 status →
+   `InternalError` → HTTP 500）。`>> 2` を除去 → `set_status_code(200)` →
+   **HTTP 200**。
+
+実測: `export let handler = (method, url) -> Int { 200 }` →
+service-only adapter で compose → `wasmtime serve`（上記フラグ）→ curl で
+**HTTP 200**。**async HTTP serve は wasmtime 45 で動作する**。
+
+未解決（M3 の残り）:
+- **combined adapter（client/proxy 経路）は validate 不可**: `unknown type 1:
+  type index out of bounds` — `wasi:http/client` import を含む合成で type-index
+  バグ。host `--compose-p3`（`src/`、legacy）の current toolchain 非互換が疑い。
+  service-only（直接レスポンス）経路は OK。
+- compose は host `--compose-p3`（`src/`）依存。selfhost 経路化は別途。
+- handler は現状 status code のみ（body/headers/method/url の本格 ABI、
+  `wasi:http/service` の async handler 化は後続）。
+
 ## 5. バージョン / WIT 整合（M0、本コミットで実施）
 
 WASI 0.3 RC のバージョン文字列がリポジトリ内で 3 重にズレていた:
