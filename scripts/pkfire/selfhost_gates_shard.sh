@@ -36,6 +36,7 @@ case "$shard" in
     bash scripts/test_selfhost_rc_bootstrap.sh
     bash scripts/test_selfhost_async_component_gate.sh
     bash scripts/test_wasi_http_p3_body_gate.sh
+    bash scripts/test_wasi_http_p3_reqbody_gate.sh
     ;;
   check)
     bash scripts/test_selfhost_check_preview2_package.sh

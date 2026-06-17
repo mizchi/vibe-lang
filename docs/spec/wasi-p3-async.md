@@ -412,8 +412,14 @@ shard、serve+curl で body 一致を検証、tooling 不在時 skip）。
   バグ。host `--compose-p3`（`src/`、legacy）の current toolchain 非互換が疑い。
   service-only（直接レスポンス）経路は OK。
 - compose は host `--compose-p3`（`src/`）依存。selfhost 経路化は別途。
-- handler は現状 status code のみ（body/headers/method/url の本格 ABI、
-  `wasi:http/service` の async handler 化は後続）。
+- **request body（landed）**: `build_wasi_http_p3_reqbody_adapter.sh`
+  （`handler: func(method, url, body) -> string`）が p3 `Request::consume-body`
+  でリクエスト body を読み handler に渡す。`handler = (method, url, body) ->
+  String { concat("echo: ", body) }` に POST → **`echo: <body>` を HTTP 200** で
+  返すことを実測。gate `test_wasi_http_p3_reqbody_gate.sh`（pkf
+  `test-wasi-http-p3-reqbody`、CI cli shard）。
+- 残り: status+body 同時返却、response/request headers、trailers、`wasi:http
+  /service` async handler の本格 ABI。selfhost compose 経路化。
 
 ## 5. バージョン / WIT 整合（M0、本コミットで実施）
 
