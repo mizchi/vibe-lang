@@ -34,6 +34,7 @@ case "$shard" in
     bash scripts/test_selfhost_cli_direct_parity.sh
     scripts/test_selfhost_cutover_gate.sh
     bash scripts/test_selfhost_rc_bootstrap.sh
+    bash scripts/test_selfhost_async_component_gate.sh
     ;;
   check)
     bash scripts/test_selfhost_check_preview2_package.sh

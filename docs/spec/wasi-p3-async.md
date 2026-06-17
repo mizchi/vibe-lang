@@ -286,6 +286,53 @@ universal な source-compile）に、entry が `() -> Int with { Async }`（name
 宣言）。`await` 本体の codegen、非 Int 戻り値、param 付き entry、複数 wasi
 import（fd_write 以外）、entry 名一般化は後続。
 
+回帰保護: この E2E は `scripts/test_selfhost_async_component_gate.sh`
+（pkf task `test-selfhost-async-component`、CI selfhost-gates `cli` shard）に
+固定。wasmtime/wasm-tools 不在時は graceful skip。非 async control が plain
+core module のままであること（async wrap が通常ビルドに漏れない）も検証する。
+
+### 3.6 M1b-3（`await` 本体 codegen）spike — canon built-in blueprint
+
+wit-bindgen で `future<u32>` を await する component（`import await-val: func()
+-> future<u32>` を `run: async func() -> u32` が `.await`）を生成し、`await` の
+lowering に必要な canonical built-ins を抽出した:
+
+| canon | 用途 |
+|---|---|
+| `future.new <ty>` | future 生成 → (writable, readable) handle |
+| `future.read <ty> (memory M) async` | readable を読む（buffer へ）。status: COMPLETED / BLOCKED |
+| `future.write <ty> (memory M) async` | writable へ書く（`Future::ready` の resolve） |
+| `future.drop-readable/writable <ty>` | handle 破棄 |
+| `future.cancel-read/write <ty>` | 読み書きキャンセル |
+| `waitable-set.new` / `.poll (memory M)` / `.drop` / `waitable.join` | BLOCKED 時の待機 |
+| `context.get/set i32 <n>` | task-local context（executor 用） |
+| `task.return (result T)` / `task.cancel` | 結果返却（M1b で実装済） |
+
+これらは **core-level canonical built-ins**で、core module に import として供給
+する（`task.return` と同様）。
+
+**重要な発見**: `await` は **単一 call ではなくループ**。`future.read` が
+COMPLETED なら buffer から値を load、**BLOCKED なら waitable-set に登録して
+`.wait`/`.poll` で待ち、ready 後に再 read** する必要がある（wit-bindgen が
+futures-rs executor 一式を取り込むのはこのため）。stackful lift 下では待機が
+fiber を suspend するので明示的状態機械は不要だが、**read→(block時)wait→retry の
+ループ + memory buffer 管理**を core codegen で emit する必要があり、`task.return`
+（単発 call）より大幅に重い。
+
+**M1b-3b（landed、ready-future fast path）**: `await(Future::ready(x))` のような
+**ready future の await は値 `x` と等価**なので、`compile_call.vibe` の builtin
+dispatch に identity lowering を追加した（`await`/`Future::ready` を引数の値へ
+lower）。これにより **await を使う async プログラムが初めてコンパイル&実行可能**に
+なった（従来は codegen 無しで不可）。gate を `await(Future::ready(42))` body へ
+更新し、selfhost → async component → wasmtime 45 で **42** を実測。
+
+**M1b-3c（todo、真の blocking await）**: 実 async ソース（host async import /
+subtask spawn）から得た future を待つ場合は §3.6 のとおり `future.read` +
+waitable-set 待機ループが必要。これは (a) async source 基盤、(b) core module へ
+の future canon built-in import + buffer + ループ emit、(c) component への
+future<T> 型 + canon 定義、を要する本格改修。spike で canon の signature/option
+は判明済みなので blueprint→byte で進められる。
+
 ## 4. WASI 0.3 境界マッピング
 
 | vibe | WASI 0.3 |
@@ -329,6 +376,10 @@ ratified `0.3.0` への最終 cutover は wasmtime 46（async-by-default）リ�
 | **M1b-2b** | emitter 実装: `comp_generate_async_trampoline` + `comp_emit_component_wasm_async_trampolined`（2-module 合成）+ byte test | 未着手 |
 | **M1b-2c** | orchestration: `compile_source_wasi_only` が entry の `() -> Int with { Async }`（name="run"）を AST から検出し、core wasm を `comp_emit_component_wasm_async_trampolined` で包む。selfhost compiler（stage1）で `.vibe` → **component を出力**（magic 0d 00 01 00、`wasm-tools validate` OK）、非 async は plain core のまま（無回帰） | done |
 | **M1b-2d** | 真の run: fd_write stub module を component に同梱し main の instantiation に供給、entry の `(param i64)->i64` 規約に合わせ trampoline が dummy i64 引数で呼ぶよう修正、wasmtime に exceptions flag。**縦串完成: selfhost が `.vibe` async entry → async component → wasmtime 45 で 42 を返す** | **done** |
+| **M1b-2e** | 回帰保護 gate（`test-selfhost-async-component`）＋ CI 配線 | done |
+| **M1b-3a** | `await` codegen spike: wit-bindgen reference から `future.new/read/write` + waitable-set 等 canon built-in の signature/option を抽出（§3.6） | done |
+| **M1b-3b** | `await`/`Future::ready` の codegen（ready-future identity lowering）: `await(x)`/`Future::ready(x)` を引数の値へ lower。**await を使う async プログラムが初めてコンパイル&実行可能**。gate を `await(Future::ready(42))` body に更新し E2E で 42 | done |
+| **M1b-3c** | 真の blocking await: `future.read` + waitable-set 待機ループ（async source = host async import / subtask spawn が前提）。core codegen に future canon built-in の import + buffer + ループを emit | 未着手 |
 | **M2** | `Stream[T]`/`ByteStream` を `stream.read` 上の async iterator に。HTTP body を stream 化、`for await` | 未着手 |
 | **M3** | outbound async HTTP client（`Future[Response]` + streaming body）、`wasi:http/service` + `middleware` world | 未着手 |
 | **M4** | parity/gate/CI、docs、ADR-0012 → accepted | 未着手 |
