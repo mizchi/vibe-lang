@@ -398,6 +398,14 @@ wasmtime 45 で確認した。2 つの修正で **HTTP 200** が返るように�
 service-only adapter で compose → `wasmtime serve`（上記フラグ）→ curl で
 **HTTP 200**。**async HTTP serve は wasmtime 45 で動作する**。
 
+**handler が response body を返す（landed）**: `build_wasi_http_p3_body_adapter.sh`
+（`import handler: func(method, url) -> string;`、status 200 固定）を追加。vibe
+handler が**レスポンス body を制御**できる:
+`export let handler = (method, url) -> String { "..." }` → compose → serve →
+curl が **handler の返した body を HTTP 200 で返す**ことを実測。回帰 gate
+`scripts/test_wasi_http_p3_body_gate.sh`（pkf `test-wasi-http-p3-body`、CI cli
+shard、serve+curl で body 一致を検証、tooling 不在時 skip）。
+
 未解決（M3 の残り）:
 - **combined adapter（client/proxy 経路）は validate 不可**: `unknown type 1:
   type index out of bounds` — `wasi:http/client` import を含む合成で type-index
