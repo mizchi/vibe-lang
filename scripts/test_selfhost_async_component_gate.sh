@@ -75,7 +75,7 @@ if [ "$(magic8 "$STAGE1_CORE_WASM")" != "0061736d01000000" ]; then
   echo "[async-gate] FAIL: stage1 is not a core module" >&2; exit 1
 fi
 
-printf 'let run: () -> Int with { Async } = () -> { %s }\n' "$EXPECTED" > "$ASYNC_INPUT"
+printf 'let run: () -> Int with { Async } = () -> { await(Future::ready(%s)) }\n' "$EXPECTED" > "$ASYNC_INPUT"
 printf 'let run: () -> Int = () -> { %s }\n' "$EXPECTED" > "$PLAIN_INPUT"
 
 export VIBE_PREOPEN_DIR="$PROJECT_ROOT"

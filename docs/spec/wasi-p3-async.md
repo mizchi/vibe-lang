@@ -319,12 +319,19 @@ fiber を suspend するので明示的状態機械は不要だが、**read→(b
 ループ + memory buffer 管理**を core codegen で emit する必要があり、`task.return`
 （単発 call）より大幅に重い。
 
-**M1b-3 の実装範囲**: (a) `Future::ready(x)` を `future.new` + `future.write`
-へ、(b) `await(f)` を `future.read` + waitable-set 待機ループへ lower（core
-module に該当 import + buffer + component に future<T> 型と canon 定義を追加）。
-これは core codegen（`linked_compile` / builtin codegen）への本格改修。spike で
-canon の正確な signature/option（`future.read <ty> (memory) async` 等）が
-判明したので、M1b-1/-2 と同じ blueprint→byte 方式で進められる。
+**M1b-3b（landed、ready-future fast path）**: `await(Future::ready(x))` のような
+**ready future の await は値 `x` と等価**なので、`compile_call.vibe` の builtin
+dispatch に identity lowering を追加した（`await`/`Future::ready` を引数の値へ
+lower）。これにより **await を使う async プログラムが初めてコンパイル&実行可能**に
+なった（従来は codegen 無しで不可）。gate を `await(Future::ready(42))` body へ
+更新し、selfhost → async component → wasmtime 45 で **42** を実測。
+
+**M1b-3c（todo、真の blocking await）**: 実 async ソース（host async import /
+subtask spawn）から得た future を待つ場合は §3.6 のとおり `future.read` +
+waitable-set 待機ループが必要。これは (a) async source 基盤、(b) core module へ
+の future canon built-in import + buffer + ループ emit、(c) component への
+future<T> 型 + canon 定義、を要する本格改修。spike で canon の signature/option
+は判明済みなので blueprint→byte で進められる。
 
 ## 4. WASI 0.3 境界マッピング
 
@@ -371,7 +378,8 @@ ratified `0.3.0` への最終 cutover は wasmtime 46（async-by-default）リ�
 | **M1b-2d** | 真の run: fd_write stub module を component に同梱し main の instantiation に供給、entry の `(param i64)->i64` 規約に合わせ trampoline が dummy i64 引数で呼ぶよう修正、wasmtime に exceptions flag。**縦串完成: selfhost が `.vibe` async entry → async component → wasmtime 45 で 42 を返す** | **done** |
 | **M1b-2e** | 回帰保護 gate（`test-selfhost-async-component`）＋ CI 配線 | done |
 | **M1b-3a** | `await` codegen spike: wit-bindgen reference から `future.new/read/write` + waitable-set 等 canon built-in の signature/option を抽出（§3.6） | done |
-| **M1b-3b** | `await` codegen 実装: `Future::ready`→`future.new`+`future.write`、`await`→`future.read`+waitable-set 待機ループ（core codegen 改修）。`await(Future::ready(42))` body で E2E | 未着手 |
+| **M1b-3b** | `await`/`Future::ready` の codegen（ready-future identity lowering）: `await(x)`/`Future::ready(x)` を引数の値へ lower。**await を使う async プログラムが初めてコンパイル&実行可能**。gate を `await(Future::ready(42))` body に更新し E2E で 42 | done |
+| **M1b-3c** | 真の blocking await: `future.read` + waitable-set 待機ループ（async source = host async import / subtask spawn が前提）。core codegen に future canon built-in の import + buffer + ループを emit | 未着手 |
 | **M2** | `Stream[T]`/`ByteStream` を `stream.read` 上の async iterator に。HTTP body を stream 化、`for await` | 未着手 |
 | **M3** | outbound async HTTP client（`Future[Response]` + streaming body）、`wasi:http/service` + `middleware` world | 未着手 |
 | **M4** | parity/gate/CI、docs、ADR-0012 → accepted | 未着手 |
