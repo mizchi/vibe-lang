@@ -421,6 +421,34 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       ]), loop_body), EIdent("__tb_arr")))))
       ce(buf, synth, local_names, next_local, ctx, ld)
     }
+    else if !prefer_bound_call && fname == "Stream::to_string" {
+      // Stream::to_string(bs) : String  (ByteStream -> String, docs/spec
+      // §M2c-2). Collect a Stream[Int] of byte codes into a String, e.g. to
+      // build a response body. Synthesized as `let mut acc = ""; while i <
+      // length(bs) { acc = String::concat(acc, String::from_char_code(bs[i]));
+      // i = i + 1 }; acc` and lowered via `ce` (linked_compile always seeds ""
+      // into the string table, so the accumulator literal resolves).
+      let bs_expr = Array::get(args, 0)
+      let ts_body = ESeq(EAssign("__ts_acc", ECall(EIdent("String::concat"), [
+        EIdent("__ts_acc"),
+        ECall(EIdent("String::from_char_code"), [
+          ECall(EIdent("Array::get"), [
+            EIdent("__ts_arr"),
+            EIdent("__ts_i")
+          ])
+        ])
+      ]), EUnit), EAssign("__ts_i", ECall(EIdent("add"), [
+        EIdent("__ts_i"),
+        EInt(1)
+      ]), EUnit))
+      let synth = ELet("__ts_arr", bs_expr, ELetMut("__ts_acc", EString(""), ELetMut("__ts_i", EInt(0), ESeq(EWhile(ECall(EIdent("lt"), [
+        EIdent("__ts_i"),
+        ECall(EIdent("Array::length"), [
+          EIdent("__ts_arr")
+        ])
+      ]), ts_body), EIdent("__ts_acc")))))
+      ce(buf, synth, local_names, next_local, ctx, ld)
+    }
     else if !prefer_bound_call && fname == "add" {
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
