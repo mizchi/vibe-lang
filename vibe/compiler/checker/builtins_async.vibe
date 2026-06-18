@@ -6,18 +6,25 @@ import .. / core / types.vibe {
 
 //# Functions
 
-// WASI 0.3 async front-end (M1a). See docs/spec/wasi-p3-async.md, ADR-0012.
+// WASI 0.3 async front-end (M1a/M2/M-conc). See docs/spec/wasi-p3-async.md,
+// ADR-0012.
 //
-// `await` is an effectful operation introducing the `Async` effect, modelled
-// exactly like `throw`->`Error`: any function using `await` must be declared
-// `with { Async }` (enforced by checker_effects.vibe via the open effect-name
-// machinery). `Future[T]` is represented structurally as CtNamed("Future", _)
-// so no core `Type` enum change is needed (mirrors how generic named types are
-// represented). Result/element types use CtUnknown, consistent with the rest of
-// the builtin table (gradual). Codegen — stackless state-machine lowering onto
-// the Component Model async canonical ABI (future.read/task.return/...) — is
-// M1b; these entries are front-end / type-level only.
-export let lookup_async: (String) -> Option[Type] = (name) -> {
+// These are type-level / front-end only (no codegen yet): `Future[T]`,
+// `Stream[T]`, `Task[T]` are represented structurally as CtNamed(name, _) so no
+// core `Type` enum change is needed, and element/result types use CtUnknown
+// (gradual), consistent with the rest of the builtin table. Operations that
+// suspend or touch the async runtime carry the open-string `Async` effect, so
+// the existing effect-escape check (checker_effects.vibe) requires them to be
+// used inside `with { Async }` (or a handle body) — exactly like `throw`/`Error`.
+
+let async_no_params: () -> Array[Type] = () -> {
+  Array::slice([
+    CtUnknown
+  ], 0, 0)
+}
+
+// Future[T] + await (M1a).
+let lookup_future: (String) -> Option[Type] = (name) -> {
   if name == "await" {
     // await: (Future[T]) -> T with { Async }
     Some(CtFn([
@@ -34,5 +41,124 @@ export let lookup_async: (String) -> Option[Type] = (name) -> {
     ]), None))
   } else {
     None
+  }
+}
+
+// Stream[T] — a pull-based async iterator (WASI 0.3 stream<T>), the async
+// sibling of Iterator (ADR-0044): the same combinator shape (map/filter/fold)
+// as the sync Iterator, but `next` yields a Future and `fold` is Async.
+let lookup_stream: (String) -> Option[Type] = (name) -> {
+  if name == "Stream::empty" {
+    // Stream::empty: () -> Stream[T]   (pure)
+    Some(CtFn(async_no_params(), CtNamed("Stream", [
+      CtUnknown
+    ]), None))
+  } else if name == "Stream::once" {
+    // Stream::once: (T) -> Stream[T]   (pure; single-element stream)
+    Some(CtFn([
+      CtUnknown
+    ], CtNamed("Stream", [
+      CtUnknown
+    ]), None))
+  } else if name == "Stream::next" {
+    // Stream::next: (Stream[T]) -> Future[Option[T]] with { Async }
+    // None terminates the stream.
+    Some(CtFn([
+      CtNamed("Stream", [
+        CtUnknown
+      ])
+    ], CtNamed("Future", [
+      CtOption(CtUnknown)
+    ]), Some("Async")))
+  } else if name == "Stream::map" {
+    // Stream::map: (Stream[T], (T) -> U) -> Stream[U]   (lazy)
+    Some(CtFn([
+      CtNamed("Stream", [
+        CtUnknown
+      ]),
+      CtUnknown
+    ], CtNamed("Stream", [
+      CtUnknown
+    ]), None))
+  } else if name == "Stream::filter" {
+    // Stream::filter: (Stream[T], (T) -> Bool) -> Stream[T]   (lazy)
+    Some(CtFn([
+      CtNamed("Stream", [
+        CtUnknown
+      ]),
+      CtUnknown
+    ], CtNamed("Stream", [
+      CtUnknown
+    ]), None))
+  } else if name == "Stream::fold" {
+    // Stream::fold: (Stream[T], A, (A, T) -> A) -> Future[A] with { Async }
+    Some(CtFn([
+      CtNamed("Stream", [
+        CtUnknown
+      ]),
+      CtUnknown,
+      CtUnknown
+    ], CtNamed("Future", [
+      CtUnknown
+    ]), Some("Async")))
+  } else {
+    None
+  }
+}
+
+// Task[T] — structured concurrency + cancellation (WASI 0.3 task / waitable-set
+// / future.cancel-*). spawn creates a child task bound to the enclosing async
+// scope; join awaits it; cancel requests cancellation; race/timeout combine.
+let lookup_concurrency: (String) -> Option[Type] = (name) -> {
+  if name == "Task::spawn" {
+    // Task::spawn: (() -> T with { Async }) -> Task[T] with { Async }
+    Some(CtFn([
+      CtUnknown
+    ], CtNamed("Task", [
+      CtUnknown
+    ]), Some("Async")))
+  } else if name == "Task::join" {
+    // Task::join: (Task[T]) -> T with { Async }
+    Some(CtFn([
+      CtNamed("Task", [
+        CtUnknown
+      ])
+    ], CtUnknown, Some("Async")))
+  } else if name == "Task::cancel" {
+    // Task::cancel: (Task[T]) -> Unit with { Async }
+    Some(CtFn([
+      CtNamed("Task", [
+        CtUnknown
+      ])
+    ], CtUnit, Some("Async")))
+  } else if name == "Task::race" {
+    // Task::race: (Task[T], Task[T]) -> T with { Async }  (loser is cancelled)
+    Some(CtFn([
+      CtNamed("Task", [
+        CtUnknown
+      ]),
+      CtNamed("Task", [
+        CtUnknown
+      ])
+    ], CtUnknown, Some("Async")))
+  } else if name == "Task::timeout" {
+    // Task::timeout: (Int, () -> T with { Async }) -> Option[T] with { Async }
+    // None on deadline (the inner task is cancelled).
+    Some(CtFn([
+      CtInt,
+      CtUnknown
+    ], CtOption(CtUnknown), Some("Async")))
+  } else {
+    None
+  }
+}
+
+export let lookup_async: (String) -> Option[Type] = (name) -> {
+  match lookup_future(name) {
+    Some(t) => Some(t),
+    None => match lookup_stream(name) {
+      Some(t) => Some(t),
+      None => lookup_concurrency(name)
+    }
   }
 }

@@ -91,6 +91,56 @@ vibe の既存 effect system（`handle`/`perform`/`resume`）は **replay ベー
 （§3）に分岐する。同期 effect（Error/Stdout/HttpRequest 等）の意味論・実装は
 不変。
 
+### 2.4 `Stream[T]` — async iterator（WASI 0.3 `stream<T>`）
+
+WASI 0.3 の `stream<T>` を、vibe の `Iterator`（ADR-0044）と**同じコンビネータ
+形**で扱う pull ベースの async 列として言語に取り込む。sync の `Iterator::*` と
+同形の API で、`next` が `Future` を返し `fold` が `Async` を帯びる点だけが違う:
+
+- `Stream::next : (Stream[T]) -> Future[Option[T]] with { Async }`（`None` で終端）
+- `Stream::empty : () -> Stream[T]` / `Stream::once : (T) -> Stream[T]`（pure）
+- `Stream::map : (Stream[T], (T)->U) -> Stream[U]`（lazy, pure）
+- `Stream::filter : (Stream[T], (T)->Bool) -> Stream[T]`（lazy, pure）
+- `Stream::fold : (Stream[T], A, (A,T)->A) -> Future[A] with { Async }`
+- `ByteStream = Stream[Int]` が WASI `stream<u8>` / HTTP body に直結。
+- 将来構文 `for await x in s { ... }`（`s.next()` を `await` するループへ desugar）
+  は M1a の `await` と同じく後続（front-end は builtin 呼び出しで先行）。
+
+**狙い**: sync collection と async stream を**同じ pipeline コード**で書ける
+（effect row が `{}` か `{ Async }` かの差だけ）。`Iterator` の async 兄弟。
+
+### 2.5 構造化並行 + キャンセル — `Task[T]`（WASI 0.3 task / waitable-set / cancel）
+
+WASI 0.3 の task / `waitable-set` / `future.cancel-*` を、**構造化並行**と
+**キャンセル**として言語に取り込む。子タスクは囲う async スコープに束縛され、
+スコープ離脱で join/cancel される（leak/孤児タスク無し）:
+
+- `Task::spawn : (() -> T with { Async }) -> Task[T] with { Async }` — 子タスク生成
+- `Task::join : (Task[T]) -> T with { Async }` — 結果を待つ
+- `Task::cancel : (Task[T]) -> Unit with { Async }` — キャンセル要求
+- `Task::race : (Task[T], Task[T]) -> T with { Async }` — 先着、敗者は cancel
+- `Task::timeout : (Int, () -> T with { Async }) -> Option[T] with { Async }`
+  — 期限切れで `None`（内側 task を cancel）
+
+`await` がキャンセル点であり、cancellation は `Async` effect row に沿って伝播
+する。effect handler と相性が良く、spawn/join/cancel をハンドラで mock/制御
+できる（テスト容易・合成可能）。将来構文 `scope { ... }`（離脱で子を join/cancel）
+は後続。
+
+#### 2.4/2.5 front-end（landed）
+
+M1a と同じ要領で、lexer/parser/core-Type を変えずに着地:
+- `Stream[T]` / `Task[T]` は `CtNamed("Stream"/"Task", _)` で構造表現（要素型は
+  gradual な `CtUnknown`）。`Future[Option[T]]` は `CtNamed("Future",
+  [CtOption(CtUnknown)])`。
+- builtin は `vibe/compiler/checker/builtins_async.vibe`（`lookup_stream` /
+  `lookup_concurrency`、`lookup_builtin` 経由）に登録。suspend / runtime 接触
+  操作（`*::next`/`fold`/`spawn`/`join`/`cancel`/`race`/`timeout`）は `Async`
+  effect を帯び、effect-escape チェックがそのまま機能する。
+- 検証: `checker_async_test.vibe` 13/13、`checker_effects_test.vibe` 19/19
+  （無回帰）。codegen（`stream.read` ループ / subtask spawn / waitable-set /
+  cancel）は M2/M-conc として後続（§3.6 / §3.7 の blueprint 上に構築）。
+
 ## 3. codegen 戦略: Component Model async canonical ABI（stackless）
 
 vibe は compiled でネイティブ coroutine を持たないため、各 `async` 関数を
