@@ -398,14 +398,28 @@ wasmtime 45 で確認した。2 つの修正で **HTTP 200** が返るように�
 service-only adapter で compose → `wasmtime serve`（上記フラグ）→ curl で
 **HTTP 200**。**async HTTP serve は wasmtime 45 で動作する**。
 
+**handler が response body を返す（landed）**: `build_wasi_http_p3_body_adapter.sh`
+（`import handler: func(method, url) -> string;`、status 200 固定）を追加。vibe
+handler が**レスポンス body を制御**できる:
+`export let handler = (method, url) -> String { "..." }` → compose → serve →
+curl が **handler の返した body を HTTP 200 で返す**ことを実測。回帰 gate
+`scripts/test_wasi_http_p3_body_gate.sh`（pkf `test-wasi-http-p3-body`、CI cli
+shard、serve+curl で body 一致を検証、tooling 不在時 skip）。
+
 未解決（M3 の残り）:
 - **combined adapter（client/proxy 経路）は validate 不可**: `unknown type 1:
   type index out of bounds` — `wasi:http/client` import を含む合成で type-index
   バグ。host `--compose-p3`（`src/`、legacy）の current toolchain 非互換が疑い。
   service-only（直接レスポンス）経路は OK。
 - compose は host `--compose-p3`（`src/`）依存。selfhost 経路化は別途。
-- handler は現状 status code のみ（body/headers/method/url の本格 ABI、
-  `wasi:http/service` の async handler 化は後続）。
+- **request body（landed）**: `build_wasi_http_p3_reqbody_adapter.sh`
+  （`handler: func(method, url, body) -> string`）が p3 `Request::consume-body`
+  でリクエスト body を読み handler に渡す。`handler = (method, url, body) ->
+  String { concat("echo: ", body) }` に POST → **`echo: <body>` を HTTP 200** で
+  返すことを実測。gate `test_wasi_http_p3_reqbody_gate.sh`（pkf
+  `test-wasi-http-p3-reqbody`、CI cli shard）。
+- 残り: status+body 同時返却、response/request headers、trailers、`wasi:http
+  /service` async handler の本格 ABI。selfhost compose 経路化。
 
 ## 5. バージョン / WIT 整合（M0、本コミットで実施）
 
