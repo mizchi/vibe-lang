@@ -189,9 +189,20 @@ M1a と同じ要領で、lexer/parser/core-Type を変えずに着地:
   entry を追加（body → map → `to_string` → 再度 `to_bytes` → fold → 42）。これで
   handler が request body を ByteStream で消費し、response body を ByteStream から
   生成できる（両方向そろった）。
-- 後続: 真の subtask spawn（waitable-set / `future.cancel-*` による実並行・
-  キャンセル）、真の `stream.read` ベース async iterator（`for await`、HTTP
-  boundary を string 規約から本物の `stream<u8>` へ）（§3.6 / §3.7）。
+- **`for await` サーフェス構文（async iterator surface, landed）**: `for await x
+  in stream { ... }` で Stream を要素ごとに消費できる。`await` は keyword では
+  なく builtin call `await(...)` なので、parser（mode 25）は `for` の直後の
+  `await` ident に binding 名が続く場合にマーカーとして skip する（loop 変数名が
+  `await` の `for await in e` は `await` の後が `in` なので従来通り binding 扱い）。
+  eager Stream model では `Stream[T]` は実行時 `Array[T]` なので、`EForIn`（tag
+  18 = `Array::length`/`Array::get` ループ）へそのまま lower される（新 AST node
+  なし）。checker の `EForIn` を `Stream[T]` でも iterate できるよう拡張（`CtArray`
+  に加え `CtNamed("Stream", [elem])` を受理し elem を bind）。gate に `for await`
+  entry を追加（`String::to_bytes("ABC")` を for-await で sum → 198 − 156 → 42）。
+- 後続: `for await` を eager Array model から真の `stream.read` ベース反復へ
+  置換（suspend point ごとに状態機械分割、HTTP boundary を string 規約から本物の
+  `stream<u8>` へ）、真の subtask spawn（waitable-set / `future.cancel-*` による
+  実並行・キャンセル）（§3.6 / §3.7）。
 
 ## 3. codegen 戦略: Component Model async canonical ABI（stackless）
 
@@ -561,7 +572,8 @@ ratified `0.3.0` への最終 cutover は wasmtime 46（async-by-default）リ�
 | **M2b** | `Stream::next`（`Future[Option[T]]`、Option 構築 codegen）+ `Task::timeout`: 実 `Some`/`None` ctor を AST 合成して `ce` に委譲。gate の Option entry が Some/None 両経路 + timeout を網羅（→ 42、wasmtime 45） | done |
 | **M2c-1** | HTTP body を ByteStream 化（consume）: `String::to_bytes(s) : Stream[Int]`（`ByteStream`）。handler が request body を Stream combinator で消費可能。AST 合成 loop を `ce` に委譲（RC tagging 安全、byte 単位）。gate に body entry 追加（→ 42、wasmtime 45） | done |
 | **M2c-2** | response body 生成 `Stream::to_string`（`Stream[Int] -> String`）: AST 合成 loop を `ce` に委譲。`linked_compile` が `""` を常に str_table へ seed（`StringBuilder::freeze` の脆弱性も解消）。gate に round-trip entry 追加（body → map → to_string → to_bytes → fold → 42）。**handler の request/response body 両方向が ByteStream で扱える** | done |
-| **M2c-3** | 真の `stream.read` 上の async iterator、HTTP boundary を本物の `stream<u8>` へ、`for await` | 未着手 |
+| **M2c-3 (surface)** | `for await x in stream { ... }` サーフェス構文: parser が `await` マーカーを skip、checker の `EForIn` が `Stream[T]` を iterate、eager model では `EForIn` へそのまま lower。gate に for-await entry 追加（sum bytes("ABC") − 156 → 42） | done |
+| **M2c-3 (runtime)** | `for await` を真の `stream.read` ベース反復へ、HTTP boundary を本物の `stream<u8>` へ、真の subtask spawn | 未着手 |
 | **M3** | outbound async HTTP client（`Future[Response]` + streaming body）、`wasi:http/service` + `middleware` world | 未着手 |
 | **M4** | parity/gate/CI、docs、ADR-0012 → accepted | 未着手 |
 

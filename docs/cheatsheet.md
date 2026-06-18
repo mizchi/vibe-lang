@@ -140,6 +140,7 @@ while cond { body }
 // for-in (collects into array)
 for x in arr { x * 2 }         // -> Array
 for i, x in arr { i + x }      // with index
+for await b in byte_stream { b }  // iterate a Stream[T] (async iterator)
 
 // loop (parameterized tail-recursion)
 let result = loop (i = 0, sum = 0) {
