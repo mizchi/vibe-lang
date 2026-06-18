@@ -170,9 +170,20 @@ M1a と同じ要領で、lexer/parser/core-Type を変えずに着地:
     deadline は評価して捨てる）。
   合成式経由なので `match { Some(x) => … None => … }` が正しく動く（gate の
   Option entry が Some/None 両経路 + timeout を網羅 → 42）。
-- 後続: 真の subtask spawn（waitable-set / `future.cancel-*` による実並行・
-  キャンセル）と、真の `stream.read` ベース async iterator（HTTP body の
-  stream 化 / `for await`）（§3.6 / §3.7）。
+- **`String::to_bytes` codegen（ByteStream consume, landed）**: HTTP body を
+  Stream 化する第一歩。`String::to_bytes(s) : Stream[Int]`（= `ByteStream`、
+  WASI 0.3 `stream<u8>`）が文字列のバイト列を eager に Array へ展開し、handler
+  が request body を Stream combinator（map/filter/fold/next）で消費できる。
+  `compile_call` で `let mut arr = []; while i < length(s) { Array::push(arr,
+  char_code_at(s, i)); i = i + 1 }; arr` を AST 合成して `ce` に委譲するため、
+  `String::length`/`char_code_at`（`i32.load8_u` で byte 単位）と loop counter
+  が source と同じ (RC) tagging 規約に従う。gate に body entry を追加（`")"` →
+  map(+1) → filter(>0) → fold(sum) → 42）。
+- 後続: response body 生成側の `Stream::to_string`（`Stream[Int] -> String`、
+  空文字列 seed が str_table 依存なので別途）、真の subtask spawn（waitable-set
+  / `future.cancel-*` による実並行・キャンセル）、真の `stream.read` ベース async
+  iterator（`for await`、HTTP boundary を string 規約から本物の `stream<u8>` へ）
+  （§3.6 / §3.7）。
 
 ## 3. codegen 戦略: Component Model async canonical ABI（stackless）
 
@@ -540,7 +551,8 @@ ratified `0.3.0` への最終 cutover は wasmtime 46（async-by-default）リ�
 | **M-conc-2** | 真の subtask spawn（waitable-set / `future.cancel-*`）+ `Task::timeout`（Option 構築） | 未着手 |
 | **M2a** | `Stream[T]` codegen（eager Array-backed model）: `map`/`fold` を inline `Array::map`/`Array::fold` へ remap、`empty`=`array_new`、`once`=`array_new`+`push`、`filter` を inline loop で emit。gate に Stream entry 追加（empty/once/map/filter/fold → 42、wasmtime 45） | done |
 | **M2b** | `Stream::next`（`Future[Option[T]]`、Option 構築 codegen）+ `Task::timeout`: 実 `Some`/`None` ctor を AST 合成して `ce` に委譲。gate の Option entry が Some/None 両経路 + timeout を網羅（→ 42、wasmtime 45） | done |
-| **M2c** | 真の `stream.read` 上の async iterator、HTTP body を stream 化、`for await` | 未着手 |
+| **M2c-1** | HTTP body を ByteStream 化（consume）: `String::to_bytes(s) : Stream[Int]`（`ByteStream`）。handler が request body を Stream combinator で消費可能。AST 合成 loop を `ce` に委譲（RC tagging 安全、byte 単位）。gate に body entry 追加（→ 42、wasmtime 45） | done |
+| **M2c-2** | response body 生成 `Stream::to_string`（空文字列 seed の str_table 対応）、真の `stream.read` 上の async iterator、HTTP boundary を本物の `stream<u8>` へ、`for await` | 未着手 |
 | **M3** | outbound async HTTP client（`Future[Response]` + streaming body）、`wasi:http/service` + `middleware` world | 未着手 |
 | **M4** | parity/gate/CI、docs、ADR-0012 → accepted | 未着手 |
 

@@ -153,12 +153,32 @@ let lookup_concurrency: (String) -> Option[Type] = (name) -> {
   }
 }
 
+// ByteStream = Stream[Int] — WASI 0.3 stream<u8> / HTTP body bridge (M2c).
+// `String::to_bytes` exposes a String's bytes as a ByteStream so request/response
+// bodies can be consumed with the Stream combinators (map/filter/fold/next). It
+// is pure & eager on the linear backend (the bytes are already in memory).
+let lookup_bytestream: (String) -> Option[Type] = (name) -> {
+  if name == "String::to_bytes" {
+    // String::to_bytes: (String) -> Stream[Int]   (ByteStream)
+    Some(CtFn([
+      CtString
+    ], CtNamed("Stream", [
+      CtInt
+    ]), None))
+  } else {
+    None
+  }
+}
+
 export let lookup_async: (String) -> Option[Type] = (name) -> {
   match lookup_future(name) {
     Some(t) => Some(t),
     None => match lookup_stream(name) {
       Some(t) => Some(t),
-      None => lookup_concurrency(name)
+      None => match lookup_concurrency(name) {
+        Some(t) => Some(t),
+        None => lookup_bytestream(name)
+      }
     }
   }
 }
