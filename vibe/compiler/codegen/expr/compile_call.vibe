@@ -36,7 +36,18 @@ import ./compile_match.vibe {
 
 export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, callee, args, local_names, next_local, ctx, ld, ce) -> {
   if is_eident(callee) {
-    let fname = canonical_builtin_name(get_eident_name(callee))
+    let fname0 = canonical_builtin_name(get_eident_name(callee))
+    // Stream[T] (docs/spec/wasi-p3-async.md §2.4) is backed by the eager Array
+    // machinery on the linear backend: map/fold reuse the existing inline
+    // Array::map / Array::fold lowering verbatim (same arg order, same value
+    // representation). empty/once/filter are handled explicitly below.
+    let fname = if fname0 == "Stream::map" {
+      "Array::map"
+    } else if fname0 == "Stream::fold" {
+      "Array::fold"
+    } else {
+      fname0
+    }
     let fn_len2 = Array::length(ctx.func_table.names)
     let mut fn_idx_in_list = -1
     let mut __tr_j = 0
@@ -255,6 +266,94 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       emit_drop(buf)
       nl
+    }
+    else if !prefer_bound_call && fname == "Stream::empty" {
+      // Empty stream = empty backing array.
+      let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
+      emit_call(buf, arr_new_fi)
+      next_local
+    }
+    else if !prefer_bound_call && fname == "Stream::once" {
+      // Singleton stream = one-element backing array.
+      let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
+      let (arr_push_fi, _, _) = resolve_func(ctx.func_table, "Array::push")
+      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      let val_l = nl
+      let arr_l = nl + 1
+      Array::push(local_names, "__once_val")
+      Array::push(local_names, "__once_arr")
+      emit_local_set(buf, val_l)
+      emit_call(buf, arr_new_fi)
+      emit_local_set(buf, arr_l)
+      emit_local_get(buf, arr_l)
+      emit_local_get(buf, val_l)
+      emit_call(buf, arr_push_fi)
+      emit_local_get(buf, arr_l)
+      nl + 2
+    }
+    else if !prefer_bound_call && fname == "Stream::filter" {
+      // Eager filter: walk the backing array, keep elements whose predicate is
+      // truthy. Mirrors the Array::map loop but pushes conditionally.
+      let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
+      let (arr_len_fi, _, _) = resolve_func(ctx.func_table, "Array::length")
+      let (arr_get_fi, _, _) = resolve_func(ctx.func_table, "Array::get")
+      let (arr_push_fi, _, _) = resolve_func(ctx.func_table, "Array::push")
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      let arr_l = nl
+      let fn_l = nl + 1
+      let res_l = nl + 2
+      let len_l = nl + 3
+      let i_l = nl + 4
+      let slot_l = nl + 5
+      let env_l = nl + 6
+      let elem_l = nl + 7
+      Array::push(local_names, "__filter_arr")
+      Array::push(local_names, "__filter_fn")
+      Array::push(local_names, "__filter_res")
+      Array::push(local_names, "__filter_len")
+      Array::push(local_names, "__filter_i")
+      Array::push(local_names, "__filter_slot")
+      Array::push(local_names, "__filter_env")
+      Array::push(local_names, "__filter_elem")
+      emit_local_set(buf, fn_l)
+      emit_local_set(buf, arr_l)
+      emit_call(buf, arr_new_fi)
+      emit_local_set(buf, res_l)
+      emit_local_get(buf, arr_l)
+      emit_call(buf, arr_len_fi)
+      emit_local_set(buf, len_l)
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, i_l)
+      emit_closure_resolve(buf, fn_l, slot_l, env_l)
+      emit_block_void(buf)
+      emit_loop_void(buf)
+      emit_local_get(buf, i_l)
+      emit_local_get(buf, len_l)
+      emit_i64_ge_s(buf)
+      emit_br_if(buf, 1)
+      emit_local_get(buf, arr_l)
+      emit_local_get(buf, i_l)
+      emit_call(buf, arr_get_fi)
+      emit_local_set(buf, elem_l)
+      emit_local_get(buf, elem_l)
+      emit_closure_call_tail(buf, env_l, slot_l, 9, 1)
+      emit_i64_const(buf, 0)
+      emit_i64_ne(buf)
+      emit_if_void(buf)
+      emit_local_get(buf, res_l)
+      emit_local_get(buf, elem_l)
+      emit_call(buf, arr_push_fi)
+      emit_end(buf)
+      emit_local_get(buf, i_l)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_local_set(buf, i_l)
+      emit_br(buf, 0)
+      emit_end(buf)
+      emit_end(buf)
+      emit_local_get(buf, res_l)
+      nl + 8
     }
     else if !prefer_bound_call && fname == "add" {
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
