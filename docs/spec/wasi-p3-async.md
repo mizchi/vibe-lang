@@ -418,8 +418,20 @@ shard、serve+curl で body 一致を検証、tooling 不在時 skip）。
   String { concat("echo: ", body) }` に POST → **`echo: <body>` を HTTP 200** で
   返すことを実測。gate `test_wasi_http_p3_reqbody_gate.sh`（pkf
   `test-wasi-http-p3-reqbody`、CI cli shard）。
-- 残り: status+body 同時返却、response/request headers、trailers、`wasi:http
-  /service` async handler の本格 ABI。selfhost compose 経路化。
+- **status + body（landed、routing）**: handler が status と body の両方を返す。
+  clean な `-> tuple<s64, string>` は **host `--compose-p3` string-lift が
+  single-value 返却のみ対応**で不可（vibe tuple が core で `(result i64 i64)` に
+  なり、trampoline の `(result i64)` と不一致 → `target_func` type mismatch で
+  serve 不能、実測）。回避策として **handler は `"STATUS\nBODY"` 文字列を返し**、
+  `build_wasi_http_p3_status_body_adapter.sh` が先頭行を status code として
+  parse する。実測: `handler (method,url,body) -> String { if url=="/health"
+  { "200\nok" } else { "404\nnot found" } }` → `/health` で **200 "ok"**、
+  `/other` で **404 "not found"**。gate `test_wasi_http_p3_status_body_gate.sh`
+  （pkf `test-wasi-http-p3-status-body`、CI cli shard。reqbody/body の serve
+  経路も包含するため CI ではこの comprehensive gate に集約）。
+- 残り: response/request headers、trailers、`wasi:http/service` async handler の
+  本格 ABI（tuple 返却を可能にする string-lift 拡張 or selfhost compose）、
+  selfhost compose 経路化、combined-adapter validate バグ。
 
 ## 5. バージョン / WIT 整合（M0、本コミットで実施）
 
