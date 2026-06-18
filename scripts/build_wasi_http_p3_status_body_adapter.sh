@@ -60,10 +60,12 @@ wit_bindgen::generate!({
       package vibe:http-status-body-adapter;
 
       world adapter {
-        /// vibe handler: (method, url, request-body) -> "STATUS\nBODY".
-        /// The first line of the returned string is the HTTP status code; the
-        /// remainder is the response body. (A single string is used because the
-        /// host --compose-p3 string-lift supports only single-value returns, not
+        /// vibe handler: (method, url, request-body) -> HTTP-response string
+        ///   "STATUS\n<Header: value lines>\n\n<body>"   (headers optional;
+        ///   with no blank line it degrades to "STATUS\nBODY").
+        /// First line = status code; lines up to a blank line = response headers;
+        /// the rest = body. (A single string is used because the host
+        /// --compose-p3 string-lift supports only single-value returns, not
         /// tuples — see docs/spec/wasi-p3-async.md §4.1.)
         import handler: func(method: string, url: string, body: string) -> string;
         include wasi:http/service@0.3.0-rc-2026-03-15;
@@ -100,16 +102,25 @@ impl Guest for Component {
         let req_body_bytes = req_body_rx.collect().await;
         let req_body = String::from_utf8_lossy(&req_body_bytes).into_owned();
 
-        // The vibe handler returns "STATUS\nBODY"; split the leading status line.
+        // The vibe handler returns an HTTP-response-like string:
+        //   "STATUS\n<Header: value lines>\n\n<body>"   (headers optional).
+        // With no blank line it degrades to "STATUS\nBODY" (no headers).
         let raw = handler(&method, &url, &req_body);
-        let (status_code, resp_text) = match raw.split_once('\n') {
-            Some((s, rest)) => (s.trim().parse::<u16>().unwrap_or(200), rest.to_string()),
-            None => (200u16, raw),
-        };
+        let (status_line, rest) = raw.split_once('\n').unwrap_or(("200", raw.as_str()));
+        let status_code = status_line.trim().parse::<u16>().unwrap_or(200);
+        let (headers_block, body) = rest.split_once("\n\n").unwrap_or(("", rest));
+        let resp_text = body.to_string();
+
+        let fields = Fields::new();
+        for hline in headers_block.lines() {
+            if let Some((name, value)) = hline.split_once(':') {
+                let _ = fields.append(&name.trim().to_string(), &value.trim().as_bytes().to_vec());
+            }
+        }
 
         let (mut body_tx, body_rx) = wit_stream::new();
         let (body_result_tx, body_result_rx) = wit_future::new(|| Ok(None));
-        let (resp, _transmit) = Response::new(Fields::new(), Some(body_rx), body_result_rx);
+        let (resp, _transmit) = Response::new(fields, Some(body_rx), body_result_rx);
         resp.set_status_code(status_code)
             .map_err(|_| ErrorCode::InternalError(None))?;
         drop(body_result_tx);

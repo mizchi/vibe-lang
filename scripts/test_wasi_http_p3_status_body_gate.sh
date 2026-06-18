@@ -42,7 +42,7 @@ echo "[http-routing-gate] wasmtime: $($WASMTIME_BIN --version)"
 echo "[http-routing-gate] build status+body adapter"
 bash "$SCRIPT_DIR/build_wasi_http_p3_status_body_adapter.sh" "$ADAPTER" >/dev/null
 
-printf 'export let handler = (method: String, url: String, body: String) -> String { if String::equals(url, "/health") { "200\\nok" } else { "404\\nnot found" } }\n' > "$HANDLER_SRC"
+printf 'export let handler = (method: String, url: String, body: String) -> String { if String::equals(url, "/health") { "200\\ncontent-type: text/plain\\n\\nok" } else { "404\\nnot found" } }\n' > "$HANDLER_SRC"
 
 echo "[http-routing-gate] compose"
 "$VIBE" compile --compose-p3 --adapter "$ADAPTER" "$HANDLER_SRC" -o "$COMPONENT" >/dev/null
@@ -75,6 +75,14 @@ check() {
 
 check "/health" "200" "ok"
 check "/other"  "404" "not found"
+
+# Verify the handler-set response header is present.
+headers="$(curl -s -i --max-time 5 "http://$ADDR/health" || true)"
+case "$headers" in
+  *"content-type: text/plain"*) echo "[http-routing-gate] /health content-type header OK" ;;
+  *) echo "[http-routing-gate] FAIL: /health missing handler-set content-type header" >&2
+     echo "$headers" | head -8 >&2; exit 1 ;;
+esac
 
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   {

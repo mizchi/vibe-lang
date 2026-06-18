@@ -429,9 +429,15 @@ shard、serve+curl で body 一致を検証、tooling 不在時 skip）。
   `/other` で **404 "not found"**。gate `test_wasi_http_p3_status_body_gate.sh`
   （pkf `test-wasi-http-p3-status-body`、CI cli shard。reqbody/body の serve
   経路も包含するため CI ではこの comprehensive gate に集約）。
-- 残り: response/request headers、trailers、`wasi:http/service` async handler の
-  本格 ABI（tuple 返却を可能にする string-lift 拡張 or selfhost compose）、
-  selfhost compose 経路化、combined-adapter validate バグ。
+- **response headers（landed）**: `status_body` adapter を拡張し handler 文字列を
+  **HTTP 応答風 `"STATUS\n<Header: value 行>\n\n<body>"`** として parse、`Fields`
+  を構築する（空行が無ければ `"STATUS\nBODY"` に degrade、後方互換）。実測:
+  `handler -> "200\ncontent-type: application/json\nx-vibe: hi\n\n{\"ok\":true}"`
+  → `curl -i` が `content-type: application/json` / `x-vibe: hi` ＋ body を返す。
+  routing gate が `/health` の `content-type` ヘッダも検証。
+- 残り: request headers の handler への伝達、trailers、`wasi:http/service` async
+  handler の本格 ABI（tuple 返却を可能にする string-lift 拡張 or selfhost
+  compose）、selfhost compose 経路化、combined-adapter validate バグ。
 
 ## 5. バージョン / WIT 整合（M0、本コミットで実施）
 
