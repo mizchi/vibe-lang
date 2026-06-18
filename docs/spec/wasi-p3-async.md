@@ -138,8 +138,23 @@ M1a と同じ要領で、lexer/parser/core-Type を変えずに着地:
   操作（`*::next`/`fold`/`spawn`/`join`/`cancel`/`race`/`timeout`）は `Async`
   effect を帯び、effect-escape チェックがそのまま機能する。
 - 検証: `checker_async_test.vibe` 13/13、`checker_effects_test.vibe` 19/19
-  （無回帰）。codegen（`stream.read` ループ / subtask spawn / waitable-set /
-  cancel）は M2/M-conc として後続（§3.6 / §3.7 の blueprint 上に構築）。
+  （無回帰）。
+- **`Task[T]` codegen（synchronous eager model, landed）**: 単一スレッドの
+  linear backend では「spawn = thunk を即時実行し、Task 値 = 解決済み結果」
+  「join = identity」「cancel = drop して Unit」「race = 先行 task の値」という
+  同期セマンティクスへ lower（`compile_call.vibe`）。`Task::spawn` は 0 引数
+  closure（thunk）を `call_indirect`（closure type 9）で呼ぶ。`await` /
+  `Future::ready` と同じ系列で、async component（`with { Async }`）に包まれ
+  wasmtime 45 上で実行可能。回帰 gate `test_selfhost_async_component_gate.sh`
+  に Task entry を追加（spawn/join/cancel/race → 42）。
+  - **free-var capture 修正**: inlined async builtin（`await`/`Future::ready`/
+    `Task::spawn|join|cancel|race`）は func table に居ないため、nested lambda
+    body 内で free 変数として捕捉され誤った indirect-apply に lower される
+    バグがあった（`() -> { Task::join(t) }` が `Task::join` を closure 値として
+    capture）。`collect_free_vars_expr` でこれら名前を演算子同様に除外して修正。
+- 真の subtask spawn（waitable-set / `future.cancel-*` による実並行・キャンセル）
+  と `Task::timeout`（Option 構築）、`Stream[T]` codegen（`stream.read` ループ）
+  は M2/M-conc として後続（§3.6 / §3.7 の blueprint 上に構築）。
 
 ## 3. codegen 戦略: Component Model async canonical ABI（stackless）
 
@@ -503,6 +518,8 @@ ratified `0.3.0` への最終 cutover は wasmtime 46（async-by-default）リ�
 | **M1b-3a** | `await` codegen spike: wit-bindgen reference から `future.new/read/write` + waitable-set 等 canon built-in の signature/option を抽出（§3.6） | done |
 | **M1b-3b** | `await`/`Future::ready` の codegen（ready-future identity lowering）: `await(x)`/`Future::ready(x)` を引数の値へ lower。**await を使う async プログラムが初めてコンパイル&実行可能**。gate を `await(Future::ready(42))` body に更新し E2E で 42 | done |
 | **M1b-3c** | 真の blocking await: `future.read` + waitable-set 待機ループ（async source = host async import / subtask spawn が前提）。core codegen に future canon built-in の import + buffer + ループを emit | spike done（§3.7、mechanics 実機確認）/ codegen 未着手 |
+| **M-conc-1** | `Task[T]` codegen（synchronous eager model）: `spawn`（thunk を即時実行・closure type 9 で `call_indirect`）/`join`（identity）/`cancel`（drop→Unit）/`race`（先行値）を `compile_call` で lower。inlined async builtin の free-var capture バグ（nested lambda 内で `Task::join` 等を closure として捕捉）を `collect_free_vars_expr` で修正。gate に Task entry 追加（spawn/join/cancel/race → 42、wasmtime 45） | done |
+| **M-conc-2** | 真の subtask spawn（waitable-set / `future.cancel-*`）+ `Task::timeout`（Option 構築） | 未着手 |
 | **M2** | `Stream[T]`/`ByteStream` を `stream.read` 上の async iterator に。HTTP body を stream 化、`for await` | 未着手 |
 | **M3** | outbound async HTTP client（`Future[Response]` + streaming body）、`wasi:http/service` + `middleware` world | 未着手 |
 | **M4** | parity/gate/CI、docs、ADR-0012 → accepted | 未着手 |

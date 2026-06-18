@@ -24,6 +24,8 @@ STAGE_TIMEOUT_SEC="${VIBE_SELFHOST_ASYNC_STAGE_TIMEOUT_SEC:-600}"
 STAGE1_CORE_WASM="$OUT_DIR/index_stage1.wasm"
 ASYNC_INPUT="$OUT_DIR/async_input.vibe"
 ASYNC_OUTPUT="$OUT_DIR/async_output.wasm"
+TASK_INPUT="$OUT_DIR/task_input.vibe"
+TASK_OUTPUT="$OUT_DIR/task_output.wasm"
 PLAIN_INPUT="$OUT_DIR/plain_input.vibe"
 PLAIN_OUTPUT="$OUT_DIR/plain_output.wasm"
 HOST_VIBE_EXE="$PROJECT_ROOT/_build/native/release/build/cmd/vibe/vibe.exe"
@@ -67,7 +69,7 @@ else
 fi
 
 mkdir -p "$OUT_DIR"
-rm -f "$STAGE1_CORE_WASM" "$ASYNC_OUTPUT" "$PLAIN_OUTPUT"
+rm -f "$STAGE1_CORE_WASM" "$ASYNC_OUTPUT" "$TASK_OUTPUT" "$PLAIN_OUTPUT"
 
 echo "[async-gate] stage0 -> stage1 selfhost compiler core wasm"
 run_with_timeout "$STAGE_TIMEOUT_SEC" "${HOST_COMPILE[@]}" "$ENTRY_PATH" -o "$STAGE1_CORE_WASM"
@@ -76,6 +78,16 @@ if [ "$(magic8 "$STAGE1_CORE_WASM")" != "0061736d01000000" ]; then
 fi
 
 printf 'let run: () -> Int with { Async } = () -> { await(Future::ready(%s)) }\n' "$EXPECTED" > "$ASYNC_INPUT"
+# Structured concurrency (docs/spec §2.5): spawn a thunk, join it, race against
+# a cancelled task. Synchronous eager model must still resolve to EXPECTED.
+{
+  printf 'let run: () -> Int with { Async } = () -> {\n'
+  printf '  let t = Task::spawn(() -> { %s })\n' "$EXPECTED"
+  printf '  let other = Task::spawn(() -> { 0 })\n'
+  printf '  let _ = Task::cancel(other)\n'
+  printf '  Task::race(Task::spawn(() -> { Task::join(t) }), other)\n'
+  printf '}\n'
+} > "$TASK_INPUT"
 printf 'let run: () -> Int = () -> { %s }\n' "$EXPECTED" > "$PLAIN_INPUT"
 
 export VIBE_PREOPEN_DIR="$PROJECT_ROOT"
@@ -90,6 +102,8 @@ compile_via_stage1() {
 
 echo "[async-gate] stage1 compiles async entry"
 compile_via_stage1 "$ASYNC_INPUT" "$ASYNC_OUTPUT"
+echo "[async-gate] stage1 compiles structured-concurrency (Task) entry"
+compile_via_stage1 "$TASK_INPUT" "$TASK_OUTPUT"
 echo "[async-gate] stage1 compiles non-async control entry"
 compile_via_stage1 "$PLAIN_INPUT" "$PLAIN_OUTPUT"
 unset VIBE_PREOPEN_DIR
@@ -109,10 +123,23 @@ echo "[async-gate] non-async control is a plain core module (no regression)"
 wasm-tools validate --features all "$ASYNC_OUTPUT" >/dev/null
 echo "[async-gate] async component validates"
 
+# Task entry must also be an async-lifted component (it carries the Async effect)
+if [ "$(magic8 "$TASK_OUTPUT")" != "0061736d0d000100" ]; then
+  echo "[async-gate] FAIL: task output is not a component (magic=$(magic8 "$TASK_OUTPUT"))" >&2; exit 1
+fi
+wasm-tools validate --features all "$TASK_OUTPUT" >/dev/null
+echo "[async-gate] structured-concurrency (Task) component validates"
+
 result="$("$WASMTIME_BIN" run "${WASM_RUN_FLAGS[@]}" --invoke "run()" "$ASYNC_OUTPUT" 2>&1 | grep -E '^-?[0-9]+$' | tail -n 1 || true)"
 if [ "$result" != "$EXPECTED" ]; then
   echo "[async-gate] FAIL: async component returned '$result' (expected $EXPECTED)" >&2; exit 1
 fi
+
+task_result="$("$WASMTIME_BIN" run "${WASM_RUN_FLAGS[@]}" --invoke "run()" "$TASK_OUTPUT" 2>&1 | grep -E '^-?[0-9]+$' | tail -n 1 || true)"
+if [ "$task_result" != "$EXPECTED" ]; then
+  echo "[async-gate] FAIL: Task component returned '$task_result' (expected $EXPECTED)" >&2; exit 1
+fi
+echo "[async-gate] structured-concurrency (Task) component runs -> $task_result"
 
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   {
