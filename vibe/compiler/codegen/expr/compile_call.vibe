@@ -355,6 +355,42 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_local_get(buf, res_l)
       nl + 8
     }
+    else if !prefer_bound_call && fname == "Stream::next" {
+      // Stream::next(s) : Future[Option[T]] (docs/spec §2.4). On the eager
+      // Array-backed model `next` peeks the head: Some(s[0]) if non-empty else
+      // None. Synthesize the Option expression and reuse the existing ctor +
+      // Array::length/get lowering via `ce`. (await unwraps the ready future.)
+      let s_expr = Array::get(args, 0)
+      let synth = ELet("__nx_s", s_expr, EIf(ECall(EIdent("lt"), [
+        EInt(0),
+        ECall(EIdent("Array::length"), [
+          EIdent("__nx_s")
+        ])
+      ]), ECall(EIdent("Some"), [
+        ECall(EIdent("Array::get"), [
+          EIdent("__nx_s"),
+          EInt(0)
+        ])
+      ]), ECall(EIdent("None"), Array::slice([
+        EUnit
+      ], 0, 0))))
+      ce(buf, synth, local_names, next_local, ctx, ld)
+    }
+    else if !prefer_bound_call && fname == "Task::timeout" {
+      // Task::timeout(ms, thunk) : Option[T] (docs/spec §2.5). Synchronous eager
+      // model: the thunk always completes, so the result is Some(thunk()); the
+      // deadline is evaluated for its effects then ignored. Synthesized and
+      // lowered via `ce` so the Some ctor + 0-arg closure call reuse existing
+      // lowering.
+      let ms_expr = Array::get(args, 0)
+      let thunk_expr = Array::get(args, 1)
+      let synth = ELet("__to_fn", thunk_expr, ELet("__to_ms", ms_expr, ECall(EIdent("Some"), [
+        ECall(EIdent("__to_fn"), Array::slice([
+          EUnit
+        ], 0, 0))
+      ])))
+      ce(buf, synth, local_names, next_local, ctx, ld)
+    }
     else if !prefer_bound_call && fname == "add" {
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)

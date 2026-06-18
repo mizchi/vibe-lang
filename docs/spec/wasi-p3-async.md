@@ -160,9 +160,19 @@ M1a と同じ要領で、lexer/parser/core-Type を変えずに着地:
   `Stream::filter` は述語が truthy な要素のみ push する loop を inline emit。
   gate に Stream entry を追加（empty/once/map/filter/fold → 42、wasmtime 45）。
   inline builtin の free-var capture 除外に Stream 名も追加。
-- 後続: `Stream::next`（`Future[Option[T]]` を返す → Option 構築 codegen が
-  必要、`Task::timeout` と同じ ctor emit 基盤を共有）と、真の subtask spawn
-  （waitable-set / `future.cancel-*` による実並行・キャンセル、§3.6 / §3.7）。
+- **`Stream::next` / `Task::timeout` codegen（Option 構築, landed）**: いずれも
+  実 `Option` ctor（`Some`/`None` は linear backend で常に tag 0/1 登録済み）を
+  生成する。`compile_call` で **Option 式を AST 合成して `ce` に委譲**し、既存の
+  ctor lowering と `Array::length`/`get`・0 引数 closure 呼び出しを再利用:
+  - `Stream::next(s)` → `let s = …; if 0 < length(s) { Some(s[0]) } else { None }`
+    （eager model では head を peek。`await` が ready future を unwrap）。
+  - `Task::timeout(ms, thunk)` → `Some(thunk())`（同期 model では必ず完了、
+    deadline は評価して捨てる）。
+  合成式経由なので `match { Some(x) => … None => … }` が正しく動く（gate の
+  Option entry が Some/None 両経路 + timeout を網羅 → 42）。
+- 後続: 真の subtask spawn（waitable-set / `future.cancel-*` による実並行・
+  キャンセル）と、真の `stream.read` ベース async iterator（HTTP body の
+  stream 化 / `for await`）（§3.6 / §3.7）。
 
 ## 3. codegen 戦略: Component Model async canonical ABI（stackless）
 
@@ -529,7 +539,8 @@ ratified `0.3.0` への最終 cutover は wasmtime 46（async-by-default）リ�
 | **M-conc-1** | `Task[T]` codegen（synchronous eager model）: `spawn`（thunk を即時実行・closure type 9 で `call_indirect`）/`join`（identity）/`cancel`（drop→Unit）/`race`（先行値）を `compile_call` で lower。inlined async builtin の free-var capture バグ（nested lambda 内で `Task::join` 等を closure として捕捉）を `collect_free_vars_expr` で修正。gate に Task entry 追加（spawn/join/cancel/race → 42、wasmtime 45） | done |
 | **M-conc-2** | 真の subtask spawn（waitable-set / `future.cancel-*`）+ `Task::timeout`（Option 構築） | 未着手 |
 | **M2a** | `Stream[T]` codegen（eager Array-backed model）: `map`/`fold` を inline `Array::map`/`Array::fold` へ remap、`empty`=`array_new`、`once`=`array_new`+`push`、`filter` を inline loop で emit。gate に Stream entry 追加（empty/once/map/filter/fold → 42、wasmtime 45） | done |
-| **M2b** | `Stream::next`（`Future[Option[T]]`、Option 構築 codegen）+ `Task::timeout`。真の `stream.read` 上の async iterator、HTTP body を stream 化、`for await` | 未着手 |
+| **M2b** | `Stream::next`（`Future[Option[T]]`、Option 構築 codegen）+ `Task::timeout`: 実 `Some`/`None` ctor を AST 合成して `ce` に委譲。gate の Option entry が Some/None 両経路 + timeout を網羅（→ 42、wasmtime 45） | done |
+| **M2c** | 真の `stream.read` 上の async iterator、HTTP body を stream 化、`for await` | 未着手 |
 | **M3** | outbound async HTTP client（`Future[Response]` + streaming body）、`wasi:http/service` + `middleware` world | 未着手 |
 | **M4** | parity/gate/CI、docs、ADR-0012 → accepted | 未着手 |
 
