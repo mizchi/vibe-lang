@@ -34,6 +34,8 @@ BYTES_INPUT="$OUT_DIR/bytes_input.vibe"
 BYTES_OUTPUT="$OUT_DIR/bytes_output.wasm"
 STR_INPUT="$OUT_DIR/str_input.vibe"
 STR_OUTPUT="$OUT_DIR/str_output.wasm"
+ITER_INPUT="$OUT_DIR/iter_input.vibe"
+ITER_OUTPUT="$OUT_DIR/iter_output.wasm"
 PLAIN_INPUT="$OUT_DIR/plain_input.vibe"
 PLAIN_OUTPUT="$OUT_DIR/plain_output.wasm"
 HOST_VIBE_EXE="$PROJECT_ROOT/_build/native/release/build/cmd/vibe/vibe.exe"
@@ -77,7 +79,7 @@ else
 fi
 
 mkdir -p "$OUT_DIR"
-rm -f "$STAGE1_CORE_WASM" "$ASYNC_OUTPUT" "$TASK_OUTPUT" "$STREAM_OUTPUT" "$OPTION_OUTPUT" "$BYTES_OUTPUT" "$STR_OUTPUT" "$PLAIN_OUTPUT"
+rm -f "$STAGE1_CORE_WASM" "$ASYNC_OUTPUT" "$TASK_OUTPUT" "$STREAM_OUTPUT" "$OPTION_OUTPUT" "$BYTES_OUTPUT" "$STR_OUTPUT" "$ITER_OUTPUT" "$PLAIN_OUTPUT"
 
 echo "[async-gate] stage0 -> stage1 selfhost compiler core wasm"
 run_with_timeout "$STAGE_TIMEOUT_SEC" "${HOST_COMPILE[@]}" "$ENTRY_PATH" -o "$STAGE1_CORE_WASM"
@@ -146,6 +148,18 @@ printf 'let run: () -> Int with { Async } = () -> { await(Future::ready(%s)) }\n
   printf '  await(Stream::fold(String::to_bytes(echoed), 0, (acc, b) -> { acc + b }))\n'
   printf '}\n'
 } > "$STR_INPUT"
+# Async-iterator surface (docs/spec §M2c-3): `for await x in stream { ... }`
+# consumes a ByteStream element-by-element. Sum the bytes of "ABC" (65+66+67 =
+# 198), minus 156 -> 42.
+{
+  printf 'let run: () -> Int with { Async } = () -> {\n'
+  printf '  let mut total = 0\n'
+  printf '  for await b in String::to_bytes("ABC") {\n'
+  printf '    total = total + b\n'
+  printf '  }\n'
+  printf '  total - 156\n'
+  printf '}\n'
+} > "$ITER_INPUT"
 printf 'let run: () -> Int = () -> { %s }\n' "$EXPECTED" > "$PLAIN_INPUT"
 
 export VIBE_PREOPEN_DIR="$PROJECT_ROOT"
@@ -170,6 +184,8 @@ echo "[async-gate] stage1 compiles HTTP-body-as-ByteStream (String::to_bytes) en
 compile_via_stage1 "$BYTES_INPUT" "$BYTES_OUTPUT"
 echo "[async-gate] stage1 compiles ByteStream-to-String (Stream::to_string) entry"
 compile_via_stage1 "$STR_INPUT" "$STR_OUTPUT"
+echo "[async-gate] stage1 compiles for-await async-iterator entry"
+compile_via_stage1 "$ITER_INPUT" "$ITER_OUTPUT"
 echo "[async-gate] stage1 compiles non-async control entry"
 compile_via_stage1 "$PLAIN_INPUT" "$PLAIN_OUTPUT"
 unset VIBE_PREOPEN_DIR
@@ -250,6 +266,17 @@ if [ "$str_result" != "$EXPECTED" ]; then
   echo "[async-gate] FAIL: to_string component returned '$str_result' (expected $EXPECTED)" >&2; exit 1
 fi
 echo "[async-gate] ByteStream-to-String (Stream::to_string) component runs -> $str_result"
+
+if [ "$(magic8 "$ITER_OUTPUT")" != "0061736d0d000100" ]; then
+  echo "[async-gate] FAIL: iter output is not a component (magic=$(magic8 "$ITER_OUTPUT"))" >&2; exit 1
+fi
+wasm-tools validate --features all "$ITER_OUTPUT" >/dev/null
+echo "[async-gate] for-await async-iterator component validates"
+iter_result="$("$WASMTIME_BIN" run "${WASM_RUN_FLAGS[@]}" --invoke "run()" "$ITER_OUTPUT" 2>&1 | grep -E '^-?[0-9]+$' | tail -n 1 || true)"
+if [ "$iter_result" != "$EXPECTED" ]; then
+  echo "[async-gate] FAIL: for-await component returned '$iter_result' (expected $EXPECTED)" >&2; exit 1
+fi
+echo "[async-gate] for-await async-iterator (for await x in stream) component runs -> $iter_result"
 
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   {

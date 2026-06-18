@@ -788,8 +788,13 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
     },
     EForIn(name, index_name, iterable, body) => {
       let (it, s1, c1) = check_expr(iterable, env, defs, s, c, errors)
-      let et = match it {
+      // `for x in arr` iterates an Array[T]; `for await x in stream` iterates a
+      // Stream[T] (eager Array-backed model, docs/spec §M2c-3) — both yield T.
+      let et = match subst_apply(s1, it) {
         CtArray(elem) => elem,
+        CtNamed("Stream", args) => if Array::length(args) > 0 {
+          Array::get(args, 0)
+        } else CtUnknown,
         _ => CtUnknown
       }
       let env2 = env_bind(env, name, et)

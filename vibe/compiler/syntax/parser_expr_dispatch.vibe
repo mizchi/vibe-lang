@@ -628,11 +628,27 @@ export let parse_impl_dispatch: (Array[Token], Int, Int, (Array[Token], Int, Int
       }
     }
   } else if mode == 25 {
+    // `for await x in stream { ... }`: `await` is not a keyword (it is the
+    // builtin call `await(...)`), so detect the async-iterator marker as an
+    // `await` identifier immediately followed by the binding name, and skip it.
+    // The eager Stream model lowers identically to `for x in arr` (docs/spec
+    // §M2c-3); a loop variable literally named `await` (`for await in e`) is
+    // still parsed as a binding because `await` is then followed by `in`.
+    let mut start = pos
     match peek(tokens, pos) {
-      TIdent(first_name) => match peek(tokens, pos + 1) {
-        TComma => match peek(tokens, pos + 2) {
+      TIdent(marker) => if marker == "await" {
+        match peek(tokens, pos + 1) {
+          TIdent(_) => { start = pos + 1 },
+          _ => ()
+        }
+      } else (),
+      _ => ()
+    }
+    match peek(tokens, start) {
+      TIdent(first_name) => match peek(tokens, start + 1) {
+        TComma => match peek(tokens, start + 2) {
           TIdent(second_name) => {
-            let ip = expect_tk(tokens, pos + 3, "in")
+            let ip = expect_tk(tokens, start + 3, "in")
             match parse_recur(tokens, ip, 0) {
               (iterable, after_iter) => {
                 let bb = expect_tk(tokens, after_iter, "{")
@@ -645,7 +661,7 @@ export let parse_impl_dispatch: (Array[Token], Int, Int, (Array[Token], Int, Int
           _ => throw("expected value binding name after ','")
         },
         _ => {
-          let ip = expect_tk(tokens, pos + 1, "in")
+          let ip = expect_tk(tokens, start + 1, "in")
           match parse_recur(tokens, ip, 0) {
             (iterable, after_iter) => {
               let bb = expect_tk(tokens, after_iter, "{")
