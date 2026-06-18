@@ -391,6 +391,36 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       ])))
       ce(buf, synth, local_names, next_local, ctx, ld)
     }
+    else if !prefer_bound_call && fname == "String::to_bytes" {
+      // String::to_bytes(s) : Stream[Int]  (ByteStream, docs/spec §2.4/§4.1).
+      // Eagerly materialise the string's bytes into the Array that backs a
+      // Stream[Int], so request/response bodies can be consumed with the Stream
+      // combinators. Synthesized as a `let mut arr = []; while i < length(s) {
+      // Array::push(arr, char_code_at(s, i)); i = i + 1 }; arr` loop and lowered
+      // via `ce`, so String::length/char_code_at + the loop counter follow the
+      // same (RC) tagging conventions as ordinary source. char_code_at reads one
+      // byte (i32.load8_u), so this is byte-accurate.
+      let s_expr = Array::get(args, 0)
+      let loop_body = ESeq(ECall(EIdent("Array::push"), [
+        EIdent("__tb_arr"),
+        ECall(EIdent("String::char_code_at"), [
+          EIdent("__tb_s"),
+          EIdent("__tb_i")
+        ])
+      ]), EAssign("__tb_i", ECall(EIdent("add"), [
+        EIdent("__tb_i"),
+        EInt(1)
+      ]), EUnit))
+      let synth = ELet("__tb_s", s_expr, ELetMut("__tb_arr", EArray(Array::slice([
+        EUnit
+      ], 0, 0)), ELetMut("__tb_i", EInt(0), ESeq(EWhile(ECall(EIdent("lt"), [
+        EIdent("__tb_i"),
+        ECall(EIdent("String::length"), [
+          EIdent("__tb_s")
+        ])
+      ]), loop_body), EIdent("__tb_arr")))))
+      ce(buf, synth, local_names, next_local, ctx, ld)
+    }
     else if !prefer_bound_call && fname == "add" {
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)

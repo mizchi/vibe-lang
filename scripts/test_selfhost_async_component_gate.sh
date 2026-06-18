@@ -30,6 +30,8 @@ STREAM_INPUT="$OUT_DIR/stream_input.vibe"
 STREAM_OUTPUT="$OUT_DIR/stream_output.wasm"
 OPTION_INPUT="$OUT_DIR/option_input.vibe"
 OPTION_OUTPUT="$OUT_DIR/option_output.wasm"
+BYTES_INPUT="$OUT_DIR/bytes_input.vibe"
+BYTES_OUTPUT="$OUT_DIR/bytes_output.wasm"
 PLAIN_INPUT="$OUT_DIR/plain_input.vibe"
 PLAIN_OUTPUT="$OUT_DIR/plain_output.wasm"
 HOST_VIBE_EXE="$PROJECT_ROOT/_build/native/release/build/cmd/vibe/vibe.exe"
@@ -73,7 +75,7 @@ else
 fi
 
 mkdir -p "$OUT_DIR"
-rm -f "$STAGE1_CORE_WASM" "$ASYNC_OUTPUT" "$TASK_OUTPUT" "$STREAM_OUTPUT" "$OPTION_OUTPUT" "$PLAIN_OUTPUT"
+rm -f "$STAGE1_CORE_WASM" "$ASYNC_OUTPUT" "$TASK_OUTPUT" "$STREAM_OUTPUT" "$OPTION_OUTPUT" "$BYTES_OUTPUT" "$PLAIN_OUTPUT"
 
 echo "[async-gate] stage0 -> stage1 selfhost compiler core wasm"
 run_with_timeout "$STAGE_TIMEOUT_SEC" "${HOST_COMPILE[@]}" "$ENTRY_PATH" -o "$STAGE1_CORE_WASM"
@@ -120,6 +122,18 @@ printf 'let run: () -> Int with { Async } = () -> { await(Future::ready(%s)) }\n
   printf '  }\n'
   printf '}\n'
 } > "$OPTION_INPUT"
+# HTTP body as ByteStream (docs/spec §2.4/§4.1): consume a "body" string as a
+# Stream[Int] of bytes and process it with the Stream combinators. ")" = byte 41;
+# map(+1) -> 42; filter(>0) keeps it; fold(sum) -> 42.
+{
+  printf 'let run: () -> Int with { Async } = () -> {\n'
+  printf '  let body = ")"\n'
+  printf '  let bytes = String::to_bytes(body)\n'
+  printf '  let shifted = Stream::map(bytes, (b) -> { b + 1 })\n'
+  printf '  let kept = Stream::filter(shifted, (b) -> { b > 0 })\n'
+  printf '  await(Stream::fold(kept, 0, (acc, b) -> { acc + b }))\n'
+  printf '}\n'
+} > "$BYTES_INPUT"
 printf 'let run: () -> Int = () -> { %s }\n' "$EXPECTED" > "$PLAIN_INPUT"
 
 export VIBE_PREOPEN_DIR="$PROJECT_ROOT"
@@ -140,6 +154,8 @@ echo "[async-gate] stage1 compiles Stream[T] async-iterator entry"
 compile_via_stage1 "$STREAM_INPUT" "$STREAM_OUTPUT"
 echo "[async-gate] stage1 compiles Option-construction (Stream::next / Task::timeout) entry"
 compile_via_stage1 "$OPTION_INPUT" "$OPTION_OUTPUT"
+echo "[async-gate] stage1 compiles HTTP-body-as-ByteStream (String::to_bytes) entry"
+compile_via_stage1 "$BYTES_INPUT" "$BYTES_OUTPUT"
 echo "[async-gate] stage1 compiles non-async control entry"
 compile_via_stage1 "$PLAIN_INPUT" "$PLAIN_OUTPUT"
 unset VIBE_PREOPEN_DIR
@@ -198,6 +214,17 @@ if [ "$option_result" != "$EXPECTED" ]; then
   echo "[async-gate] FAIL: Option component returned '$option_result' (expected $EXPECTED)" >&2; exit 1
 fi
 echo "[async-gate] Option-construction (Stream::next / Task::timeout) component runs -> $option_result"
+
+if [ "$(magic8 "$BYTES_OUTPUT")" != "0061736d0d000100" ]; then
+  echo "[async-gate] FAIL: bytes output is not a component (magic=$(magic8 "$BYTES_OUTPUT"))" >&2; exit 1
+fi
+wasm-tools validate --features all "$BYTES_OUTPUT" >/dev/null
+echo "[async-gate] HTTP-body-as-ByteStream component validates"
+bytes_result="$("$WASMTIME_BIN" run "${WASM_RUN_FLAGS[@]}" --invoke "run()" "$BYTES_OUTPUT" 2>&1 | grep -E '^-?[0-9]+$' | tail -n 1 || true)"
+if [ "$bytes_result" != "$EXPECTED" ]; then
+  echo "[async-gate] FAIL: ByteStream component returned '$bytes_result' (expected $EXPECTED)" >&2; exit 1
+fi
+echo "[async-gate] HTTP-body-as-ByteStream (String::to_bytes) component runs -> $bytes_result"
 
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   {
