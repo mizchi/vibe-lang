@@ -35,7 +35,7 @@ case "$shard" in
     scripts/test_selfhost_cutover_gate.sh
     bash scripts/test_selfhost_rc_bootstrap.sh
     bash scripts/test_selfhost_async_component_gate.sh
-    bash scripts/test_wasi_http_p3_status_body_gate.sh
+    bash scripts/test_wasi_http_p3_full_gate.sh
     ;;
   check)
     bash scripts/test_selfhost_check_preview2_package.sh

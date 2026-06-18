@@ -435,9 +435,18 @@ shard、serve+curl で body 一致を検証、tooling 不在時 skip）。
   `handler -> "200\ncontent-type: application/json\nx-vibe: hi\n\n{\"ok\":true}"`
   → `curl -i` が `content-type: application/json` / `x-vibe: hi` ＋ body を返す。
   routing gate が `/health` の `content-type` ヘッダも検証。
-- 残り: request headers の handler への伝達、trailers、`wasi:http/service` async
-  handler の本格 ABI（tuple 返却を可能にする string-lift 拡張 or selfhost
-  compose）、selfhost compose 経路化、combined-adapter validate バグ。
+- **request headers（landed、full handler）**: `build_wasi_http_p3_full_adapter.sh`
+  が `request.get-headers().copy-all()` を `"name: value\n"` 行に serialize し、
+  handler に 4 引数 `(method, url, headers, body) -> response` で渡す。これで
+  vibe handler は **完全な request（method/url/headers/body）→ 完全な response
+  （status/headers/body）** を扱える。実測（auth）: `if String::contains(headers,
+  "x-token: secret") { "200\n...\n\nok" } else { "401\nunauthorized" }` →
+  `x-token` ありで **200**、なしで **401**。gate
+  `test_wasi_http_p3_full_gate.sh`（pkf `test-wasi-http-p3-full`）が CI cli shard
+  の HTTP serve gate（body/reqbody/status_body を包含する最 comprehensive 版）。
+- 残り（architectural）: trailers、tuple 返却を可能にする host string-lift 拡張、
+  selfhost compose 経路化（host `--compose-p3` 依存の解消）、combined-adapter
+  validate バグ（`wasi:http/client` proxy 経路）。
 
 ## 5. バージョン / WIT 整合（M0、本コミットで実施）
 
