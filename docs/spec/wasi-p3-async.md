@@ -377,76 +377,46 @@ blueprint→byte で進められるが、async 全体で最大の塊。
 
 worlds: 受信は `wasi:http/service`、proxy/中継は `wasi:http/middleware`。
 
-### 4.1 M3 spike — async HTTP serve 実機確認（wasmtime 45 で HTTP 200）
+### 4.1 M3 — async HTTP handler（wasmtime 45 で実動、full adapter に集約）
 
-既存 P3 adapter（Rust wit-bindgen async、M0 で WIT を rc-2026-03-15 に整合）を
-使い、vibe handler → host `--compose-p3` → `wasmtime serve` → curl の縦串を
-wasmtime 45 で確認した。2 つの修正で **HTTP 200** が返るようになった:
+vibe handler → host `--compose-p3` → `wasmtime serve` → curl の縦串を wasmtime 45
+で確立した。試行錯誤で複数の adapter 派生（status / body / reqbody / status_body）
+を作ったが、**最 comprehensive な `build_wasi_http_p3_full_adapter.sh` に集約し、
+派生は削除**した（CI gate も `test_wasi_http_p3_full_gate.sh` 1 本）。
 
-1. **serve フラグ修正**: 全 P3 スクリプトが使っていた `-W
-   component-model-async-builtins=y` は **wasmtime 45 で無効**（reject）。正しい
-   セットは `-Sp3 -Shttp -W exceptions=y -W concurrency-support=y -W
-   component-model-async=y -W component-model-async-stackful=y`。6 スクリプトを
-   修正（compose/probe/e2e/serve/adapter hints）。
-2. **adapter untag 修正**: minimal adapter が handler 戻り値を `status >> 2` で
-   untag していたが、vibe `Int` は default 経路で **raw i64（untag 済み）** で
-   component 境界を渡るため `>> 2` は誤り（`200>>2=50` → 無効 status →
-   `InternalError` → HTTP 500）。`>> 2` を除去 → `set_status_code(200)` →
-   **HTTP 200**。
+**full adapter のコントラクト**: handler は
+`(method: String, url: String, headers: String, body: String) -> String`。
+- 入力: request の method / url / **headers**（`request.get-headers().copy-all()`
+  を `"name: value\n"` 行に serialize）/ **body**（`Request::consume-body` +
+  `StreamReader::collect`）。
+- 出力: HTTP 応答風文字列 `"STATUS\n<Header: value 行>\n\n<body>"`。先頭行 =
+  status code、空行までの行 = response headers（`Fields::append`）、残り = body。
+  空行が無ければ `"STATUS\nBODY"` に degrade。
 
-実測: `export let handler = (method, url) -> Int { 200 }` →
-service-only adapter で compose → `wasmtime serve`（上記フラグ）→ curl で
-**HTTP 200**。**async HTTP serve は wasmtime 45 で動作する**。
+実測（wasmtime 45、auth + routing + headers）:
+`handler = (method, url, headers, body) -> String { if String::contains(headers,
+"x-token: secret") { "200\ncontent-type: text/plain\n\nok" } else { "401\n
+unauthorized" } }` → `x-token` ありで **200 "ok"**（`content-type` ヘッダ付き）、
+なしで **401 "unauthorized"**。gate `test_wasi_http_p3_full_gate.sh`（pkf
+`test-wasi-http-p3-full`、CI selfhost-gates cli shard、serve+curl で検証、
+tooling 不在時 skip）。
 
-**handler が response body を返す（landed）**: `build_wasi_http_p3_body_adapter.sh`
-（`import handler: func(method, url) -> string;`、status 200 固定）を追加。vibe
-handler が**レスポンス body を制御**できる:
-`export let handler = (method, url) -> String { "..." }` → compose → serve →
-curl が **handler の返した body を HTTP 200 で返す**ことを実測。回帰 gate
-`scripts/test_wasi_http_p3_body_gate.sh`（pkf `test-wasi-http-p3-body`、CI cli
-shard、serve+curl で body 一致を検証、tooling 不在時 skip）。
+**確立できた point**:
+- serve フラグ（wasmtime 45）: `-Sp3 -Shttp -W exceptions=y -W
+  concurrency-support=y -W component-model-async=y
+  -W component-model-async-stackful=y`。旧 P3 スクリプトの
+  `-W component-model-async-builtins=y` は **wasmtime 45 で無効**（reject）だった。
+- handler 戻り値の status untag は不要: vibe `Int`/`String` は default 経路で
+  **raw**（untag 済み）で component 境界を渡る。
 
-未解決（M3 の残り）:
-- **combined adapter（client/proxy 経路）は validate 不可**: `unknown type 1:
-  type index out of bounds` — `wasi:http/client` import を含む合成で type-index
-  バグ。host `--compose-p3`（`src/`、legacy）の current toolchain 非互換が疑い。
-  service-only（直接レスポンス）経路は OK。
-- compose は host `--compose-p3`（`src/`）依存。selfhost 経路化は別途。
-- **request body（landed）**: `build_wasi_http_p3_reqbody_adapter.sh`
-  （`handler: func(method, url, body) -> string`）が p3 `Request::consume-body`
-  でリクエスト body を読み handler に渡す。`handler = (method, url, body) ->
-  String { concat("echo: ", body) }` に POST → **`echo: <body>` を HTTP 200** で
-  返すことを実測。gate `test_wasi_http_p3_reqbody_gate.sh`（pkf
-  `test-wasi-http-p3-reqbody`、CI cli shard）。
-- **status + body（landed、routing）**: handler が status と body の両方を返す。
-  clean な `-> tuple<s64, string>` は **host `--compose-p3` string-lift が
-  single-value 返却のみ対応**で不可（vibe tuple が core で `(result i64 i64)` に
-  なり、trampoline の `(result i64)` と不一致 → `target_func` type mismatch で
-  serve 不能、実測）。回避策として **handler は `"STATUS\nBODY"` 文字列を返し**、
-  `build_wasi_http_p3_status_body_adapter.sh` が先頭行を status code として
-  parse する。実測: `handler (method,url,body) -> String { if url=="/health"
-  { "200\nok" } else { "404\nnot found" } }` → `/health` で **200 "ok"**、
-  `/other` で **404 "not found"**。gate `test_wasi_http_p3_status_body_gate.sh`
-  （pkf `test-wasi-http-p3-status-body`、CI cli shard。reqbody/body の serve
-  経路も包含するため CI ではこの comprehensive gate に集約）。
-- **response headers（landed）**: `status_body` adapter を拡張し handler 文字列を
-  **HTTP 応答風 `"STATUS\n<Header: value 行>\n\n<body>"`** として parse、`Fields`
-  を構築する（空行が無ければ `"STATUS\nBODY"` に degrade、後方互換）。実測:
-  `handler -> "200\ncontent-type: application/json\nx-vibe: hi\n\n{\"ok\":true}"`
-  → `curl -i` が `content-type: application/json` / `x-vibe: hi` ＋ body を返す。
-  routing gate が `/health` の `content-type` ヘッダも検証。
-- **request headers（landed、full handler）**: `build_wasi_http_p3_full_adapter.sh`
-  が `request.get-headers().copy-all()` を `"name: value\n"` 行に serialize し、
-  handler に 4 引数 `(method, url, headers, body) -> response` で渡す。これで
-  vibe handler は **完全な request（method/url/headers/body）→ 完全な response
-  （status/headers/body）** を扱える。実測（auth）: `if String::contains(headers,
-  "x-token: secret") { "200\n...\n\nok" } else { "401\nunauthorized" }` →
-  `x-token` ありで **200**、なしで **401**。gate
-  `test_wasi_http_p3_full_gate.sh`（pkf `test-wasi-http-p3-full`）が CI cli shard
-  の HTTP serve gate（body/reqbody/status_body を包含する最 comprehensive 版）。
-- 残り（architectural）: trailers、tuple 返却を可能にする host string-lift 拡張、
-  selfhost compose 経路化（host `--compose-p3` 依存の解消）、combined-adapter
-  validate バグ（`wasi:http/client` proxy 経路）。
+**未解決（architectural）**:
+- clean な `-> tuple<s64, string>` 返却は不可: host `--compose-p3` string-lift が
+  **single-value 返却のみ対応**で、vibe tuple が core で `(result i64 i64)` になり
+  trampoline の `(result i64)` と不一致（`target_func` type mismatch で serve
+  不能、実測）。そのため status+headers+body を単一文字列規約で符号化している。
+  本来の tuple/record 返却には string-lift 拡張 or selfhost compose が必要。
+- compose は host `--compose-p3`（`src/`、legacy）依存。selfhost compose 経路化、
+  trailers、client/proxy（outbound）経路は後続。
 
 ## 5. バージョン / WIT 整合（M0、本コミットで実施）
 
