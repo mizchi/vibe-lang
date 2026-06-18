@@ -65,10 +65,13 @@ vibe/wasi/
 
 ### Active Adapter Scripts
 
-| adapter | WIT import | handler 返り値 | 用途 |
-|---------|-----------|--------------|------|
-| `build_wasi_http_p3_adapter.sh` | `func(string, string) -> s64` | Int (tagged) | 最小の P3 adapter。`compile --compose-p3 --adapter ...` の基準 |
-| `build_wasi_http_p3_combined_adapter.sh` | `func(string, string) -> s64` + `wasi:http/client` | Int (tagged) | `compose_http_p3_handler.sh` / `vibe_serve.sh` の serve 向け adapter |
+> 注（2026-06-18 更新）: 旧 P3 adapter/probe 群（`build_wasi_http_p3_adapter.sh`、
+> `build_wasi_http_p3_combined_adapter.sh`、`compose_http_p3_handler.sh`、
+> `vibe_serve.sh`、`probe_wasi_http_p3_*`、`test_wasi_p3_e2e.sh` 等）は
+> **`build_wasi_http_p3_full_adapter.sh` に集約して削除**した。現行の正は
+> [docs/spec/wasi-p3-async.md](../spec/wasi-p3-async.md) §4.1（full adapter:
+> `handler(method, url, headers, body) -> "STATUS\nHeaders\n\nBody"`、gate
+> `test_wasi_http_p3_full_gate.sh`）。
 
 ## 既知の問題
 

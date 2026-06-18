@@ -24,8 +24,6 @@ case "$shard" in
     # wrapper assertions that this invocation incidentally exercised.
     ;;
   http)
-    VIBE_WASI_HTTP_P3_REQUIRE_READY=0 VIBE_WASI_HTTP_P3_RUN_COMPOSE=0 ./scripts/test_wasi_http_p3_blocked_gate.sh
-    ./scripts/test_wasi_p3_e2e.sh
     ./scripts/test_http_wasm_fallback.sh
     ./scripts/test_http_wasm_host_imports.sh
     # TODO(release-blockers): restore once the compiled-backend HTTP
@@ -36,7 +34,6 @@ case "$shard" in
     # up). Removed from the quick shard so the rest of the http gate
     # can pass on real regressions.
     # ./scripts/test_compiled_backend_http_policy.sh
-    ./scripts/test_http_p3_handler_gate.sh
     ;;
   *)
     echo "unknown shard: $shard (expected: core|compare|http)" >&2

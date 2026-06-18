@@ -607,12 +607,17 @@ top-level 関数が他の top-level 関数を機械的に capture すると、�
 
 ### 実務上の扱い
 
-- 「P3 adapter の build」までは再現可能にし、`scripts/build_wasi_http_p3_adapter.sh` に固定。
-- `wac` 経路の再現は `scripts/probe_wasi_http_p3_compose.sh` に固定（`plug` / `validate` / `serve smoke`）。
-- compose 非依存の再現は `scripts/probe_wasi_http_p3_service_only.sh` に固定（service-only build + `serve smoke`）。
-- CI は `scripts/test_wasi_http_p3_blocked_gate.sh` を monitor-only で実行し、既知ブロッカーは fail させない。
-  - `VIBE_WASI_HTTP_P3_REQUIRE_READY=0`（default）: known blocker を許容
-  - `VIBE_WASI_HTTP_P3_REQUIRE_READY=1`: ready でない場合は fail（昇格用）
+> 注（2026-06-18 更新）: 下記の旧 P3 adapter/probe 群は wasmtime 45 で動く
+> `scripts/build_wasi_http_p3_full_adapter.sh` + gate
+> `scripts/test_wasi_http_p3_full_gate.sh` に集約して削除した。serve は
+> `-Sp3 -Shttp -W exceptions=y -W concurrency-support=y -W component-model-async=y
+> -W component-model-async-stackful=y` で実動する。詳細は
+> [docs/spec/wasi-p3-async.md](spec/wasi-p3-async.md) §4.1。以下は当時の経緯。
+
+- 「P3 adapter の build」までは再現可能にし、`scripts/build_wasi_http_p3_adapter.sh` に固定。（削除済 → full adapter）
+- `wac` 経路の再現は `scripts/probe_wasi_http_p3_compose.sh` に固定（`plug` / `validate` / `serve smoke`）。（削除済）
+- compose 非依存の再現は `scripts/probe_wasi_http_p3_service_only.sh` に固定（service-only build + `serve smoke`）。（削除済）
+- CI は `scripts/test_wasi_http_p3_blocked_gate.sh` を monitor-only で実行し、既知ブロッカーは fail させない。（削除済 → full gate）
 - 「adapter + vibe run の compose/serve」は toolchain 側の async resource 対応待ち（または compose 実装更新）を blocker として管理。
 
 ### 教訓

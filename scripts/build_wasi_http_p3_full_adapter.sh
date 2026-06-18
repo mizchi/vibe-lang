@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build a WASI P3 HTTP adapter that passes the REQUEST body to the vibe handler.
+# Build the comprehensive WASI P3 HTTP adapter: the vibe handler sees the full
+# request (method, url, request headers, request body) and returns a full
+# HTTP response (status + response headers + body).
 #
-# The vibe handler reads method, url AND the request body, and returns the
-# response body:
-#   export let handler = (method: String, url: String, body: String) -> String { ... }
-# Served with HTTP 200. Enables POST/PUT handlers that consume the request body.
+#   export let handler =
+#     (method: String, url: String, headers: String, body: String) -> String {
+#       // headers: request headers as "name: value\n" lines
+#       // return: "STATUS\n<Header: value lines>\n\n<body>"  (headers optional)
+#     }
 #
 # Serve with (wasmtime 45):
 #   wasmtime serve -Sp3 -Shttp -W exceptions=y -W concurrency-support=y \
@@ -14,8 +17,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-OUT_PATH="${1:-$PROJECT_ROOT/_build/http_adapter/vibe_http_p3_reqbody_adapter.component.wasm}"
-TMP_DIR="$(mktemp -d /tmp/vibe_http_p3_reqbody_adapter.XXXXXX)"
+OUT_PATH="${1:-$PROJECT_ROOT/_build/http_adapter/vibe_http_p3_full_adapter.component.wasm}"
+TMP_DIR="$(mktemp -d /tmp/vibe_http_p3_full_adapter.XXXXXX)"
 
 cleanup() {
   rm -rf "$TMP_DIR"
@@ -41,7 +44,7 @@ mkdir -p "$(dirname "$OUT_PATH")"
 
 cat >"$TMP_DIR/Cargo.toml" <<'EOF'
 [package]
-name = "vibe_http_p3_reqbody_adapter"
+name = "vibe_http_p3_full_adapter"
 version = "0.1.0"
 edition = "2024"
 
@@ -55,16 +58,18 @@ EOF
 cat >"$TMP_DIR/src/lib.rs" <<EOF
 wit_bindgen::generate!({
     inline: r#"
-      package vibe:http-reqbody-adapter;
+      package vibe:http-full-adapter;
 
       world adapter {
-        /// vibe handler: (method, url, request-body) -> response body string.
-        import handler: func(method: string, url: string, body: string) -> string;
+        /// vibe handler: (method, url, request-headers, request-body) ->
+        ///   "STATUS\n<Header: value lines>\n\n<body>".
+        /// request-headers are passed as "name: value\n" lines.
+        import handler: func(method: string, url: string, headers: string, body: string) -> string;
         include wasi:http/service@0.3.0-rc-2026-03-15;
       }
     "#,
     path: "$PROJECT_ROOT/deps/wasmtime/crates/wasi-http/src/p3/wit",
-    world: "vibe:http-reqbody-adapter/adapter",
+    world: "vibe:http-full-adapter/adapter",
     pub_export_macro: true,
     generate_all,
 });
@@ -76,7 +81,6 @@ struct Component;
 
 impl Guest for Component {
     async fn handle(request: Request) -> Result<Response, ErrorCode> {
-        // Read method + url (borrowing) BEFORE consuming the request body.
         let method = match request.get_method() {
             wasi::http::types::Method::Get => "GET".to_string(),
             wasi::http::types::Method::Post => "POST".to_string(),
@@ -90,19 +94,37 @@ impl Guest for Component {
         };
         let url = request.get_path_with_query().unwrap_or_else(|| "/".to_string());
 
-        // Consume the request body stream into a String.
+        // Serialize request headers as "name: value\n" lines (borrow before consume).
+        let req_headers = request
+            .get_headers()
+            .copy_all()
+            .into_iter()
+            .map(|(n, v)| format!("{}: {}", n, String::from_utf8_lossy(&v)))
+            .collect::<Vec<_>>()
+            .join("\n");
+
         let (_, result_rx) = wit_future::new::<Result<(), ErrorCode>>(|| Ok(()));
         let (req_body_rx, _trailers_rx) = Request::consume_body(request, result_rx);
-        let req_body_bytes = req_body_rx.collect().await;
-        let req_body = String::from_utf8_lossy(&req_body_bytes).into_owned();
+        let req_body = String::from_utf8_lossy(&req_body_rx.collect().await).into_owned();
 
-        // The vibe handler produces the response body from method/url/req-body.
-        let resp_text = handler(&method, &url, &req_body);
+        // The vibe handler returns "STATUS\n<headers>\n\n<body>" (headers optional).
+        let raw = handler(&method, &url, &req_headers, &req_body);
+        let (status_line, rest) = raw.split_once('\n').unwrap_or(("200", raw.as_str()));
+        let status_code = status_line.trim().parse::<u16>().unwrap_or(200);
+        let (headers_block, body) = rest.split_once("\n\n").unwrap_or(("", rest));
+        let resp_text = body.to_string();
+
+        let fields = Fields::new();
+        for hline in headers_block.lines() {
+            if let Some((name, value)) = hline.split_once(':') {
+                let _ = fields.append(&name.trim().to_string(), &value.trim().as_bytes().to_vec());
+            }
+        }
 
         let (mut body_tx, body_rx) = wit_stream::new();
         let (body_result_tx, body_result_rx) = wit_future::new(|| Ok(None));
-        let (resp, _transmit) = Response::new(Fields::new(), Some(body_rx), body_result_rx);
-        resp.set_status_code(200)
+        let (resp, _transmit) = Response::new(fields, Some(body_rx), body_result_rx);
+        resp.set_status_code(status_code)
             .map_err(|_| ErrorCode::InternalError(None))?;
         drop(body_result_tx);
 
@@ -121,7 +143,7 @@ EOF
 pushd "$TMP_DIR" >/dev/null
 cargo build --target wasm32-unknown-unknown --release
 wasm-tools component new \
-  target/wasm32-unknown-unknown/release/vibe_http_p3_reqbody_adapter.wasm \
+  target/wasm32-unknown-unknown/release/vibe_http_p3_full_adapter.wasm \
   -o "$OUT_PATH"
 wasm-tools validate --features all "$OUT_PATH"
 popd >/dev/null
