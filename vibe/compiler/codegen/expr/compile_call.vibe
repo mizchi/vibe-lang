@@ -424,29 +424,38 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
     else if !prefer_bound_call && fname == "Stream::to_string" {
       // Stream::to_string(bs) : String  (ByteStream -> String, docs/spec
       // §M2c-2). Collect a Stream[Int] of byte codes into a String, e.g. to
-      // build a response body. Synthesized as `let mut acc = ""; while i <
-      // length(bs) { acc = String::concat(acc, String::from_char_code(bs[i]));
-      // i = i + 1 }; acc` and lowered via `ce` (linked_compile always seeds ""
-      // into the string table, so the accumulator literal resolves).
+      // build a response body. Synthesized as `let parts = []; while i <
+      // length(bs) { Array::push(parts, String::from_char_code(bs[i])); i = i +
+      // 1 }; String::join(parts, "")` and lowered via `ce`. Pushing one-char
+      // pieces and joining once is O(n); the earlier `acc = String::concat(acc,
+      // ...)` accumulator was O(n^2) (each concat copied the whole prefix), the
+      // dominant cost in the streaming bench (4 KB to_string: 1.77s -> see
+      // scripts/bench_streaming.sh). linked_compile always seeds "" into the
+      // string table, so the join separator literal resolves.
       let bs_expr = Array::get(args, 0)
-      let ts_body = ESeq(EAssign("__ts_acc", ECall(EIdent("String::concat"), [
-        EIdent("__ts_acc"),
+      let ts_body = ESeq(ECall(EIdent("Array::push"), [
+        EIdent("__ts_parts"),
         ECall(EIdent("String::from_char_code"), [
           ECall(EIdent("Array::get"), [
             EIdent("__ts_arr"),
             EIdent("__ts_i")
           ])
         ])
-      ]), EUnit), EAssign("__ts_i", ECall(EIdent("add"), [
+      ]), EAssign("__ts_i", ECall(EIdent("add"), [
         EIdent("__ts_i"),
         EInt(1)
       ]), EUnit))
-      let synth = ELet("__ts_arr", bs_expr, ELetMut("__ts_acc", EString(""), ELetMut("__ts_i", EInt(0), ESeq(EWhile(ECall(EIdent("lt"), [
+      let synth = ELet("__ts_arr", bs_expr, ELetMut("__ts_parts", EArray(Array::slice([
+        EUnit
+      ], 0, 0)), ELetMut("__ts_i", EInt(0), ESeq(EWhile(ECall(EIdent("lt"), [
         EIdent("__ts_i"),
         ECall(EIdent("Array::length"), [
           EIdent("__ts_arr")
         ])
-      ]), ts_body), EIdent("__ts_acc")))))
+      ]), ts_body), ECall(EIdent("String::join"), [
+        EIdent("__ts_parts"),
+        EString("")
+      ])))))
       ce(buf, synth, local_names, next_local, ctx, ld)
     }
     else if !prefer_bound_call && fname == "add" {

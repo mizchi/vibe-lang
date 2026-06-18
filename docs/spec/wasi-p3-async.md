@@ -199,6 +199,18 @@ M1a と同じ要領で、lexer/parser/core-Type を変えずに着地:
   なし）。checker の `EForIn` を `Stream[T]` でも iterate できるよう拡張（`CtArray`
   に加え `CtNamed("Stream", [elem])` を受理し elem を bind）。gate に `for await`
   entry を追加（`String::to_bytes("ABC")` を for-await で sum → 198 − 156 → 42）。
+- **streaming ベンチ & `String::join` の O(n) 化（perf, landed）**:
+  `scripts/bench_streaming.sh`（`pkf run bench-streaming`）が stage1 経由で
+  streaming ops を wasm 化し wasmtime で計測する。初回計測（4 KB × 300 iters）で
+  `Stream::to_string` が 1.77s と突出（他 ops は 0.03〜0.06s）。原因は
+  `Stream::to_string` → `String::join(parts, "")` の `String::join` が
+  `acc = concat(acc, piece)` を繰り返す **O(n²)**（毎回 prefix 全体を copy、
+  bump heap に O(n²) のゴミ→4 KB で OOM/OOB リスク）だった。`gen_string_join_body`
+  を **単一確保 + memcpy の O(n)**（pass1 で総 length を合算、一度確保、pass2 で
+  各 piece と separator を memcpy）に書き換え。結果 `to_string` 1.77s→**0.117s
+  (~15×)**、`pipeline` 1.24s→**0.155s (~8×)**。`StringBuilder::freeze`
+  （= `join(parts, "")`）も同経路で高速化。`Stream::to_string` の codegen も
+  acc-concat ループから parts 配列 + 1 回 join へ変更（O(n²)→O(n)）。
 - 後続: `for await` を eager Array model から真の `stream.read` ベース反復へ
   置換（suspend point ごとに状態機械分割、HTTP boundary を string 規約から本物の
   `stream<u8>` へ）、真の subtask spawn（waitable-set / `future.cancel-*` による
