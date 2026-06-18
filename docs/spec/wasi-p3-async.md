@@ -211,10 +211,16 @@ M1a と同じ要領で、lexer/parser/core-Type を変えずに着地:
   (~15×)**、`pipeline` 1.24s→**0.155s (~8×)**。`StringBuilder::freeze`
   （= `join(parts, "")`）も同経路で高速化。`Stream::to_string` の codegen も
   acc-concat ループから parts 配列 + 1 回 join へ変更（O(n²)→O(n)）。
+- **M2c-3 stream.read feasibility spike（landed）**: 真の `stream<u8>` canonical
+  built-ins が wasmtime 45 で実行可能なことと最小形を確定（§3.3、
+  `src/x/cm_async/cm_stream_read_probe.wat`）。`stream.new` は base フラグで実行
+  可、`stream.read`/`write` は `-W component-model-more-async-builtins=y` が必須。
+  単一タスク self round-trip は deadlock するため並行 producer が要る、という
+  次スライスの要件も確定。
 - 後続: `for await` を eager Array model から真の `stream.read` ベース反復へ
-  置換（suspend point ごとに状態機械分割、HTTP boundary を string 規約から本物の
-  `stream<u8>` へ）、真の subtask spawn（waitable-set / `future.cancel-*` による
-  実並行・キャンセル）（§3.6 / §3.7）。
+  置換（並行 producer = subtask spawn / host readable end、HTTP boundary を string
+  規約から本物の `stream<u8>` へ）、真の subtask spawn（waitable-set /
+  `future.cancel-*` による実並行・キャンセル）（§3.3 / §3.6 / §3.7）。
 
 ## 3. codegen 戦略: Component Model async canonical ABI（stackless）
 
@@ -282,10 +288,51 @@ proposal（非 x86_64 で未サポート）とは別物のため、エンジン�
 - `component-model-async-stackful` の非 x86_64 / wasmtime 46 default での
   可用性は要確認。
 - 別途、`component-model-async-builtins` は **wasmtime 45.0.0 では無効な
-  `-W` フラグ**（M0 で誤記載していた。docs/report も修正）。
+  `-W` フラグ**（M0 で誤記載していた。docs/report も修正）。**正しいフラグ名は
+  `component-model-more-async-builtins`（🚝）**で、stream/future の canonical
+  built-ins はこれで有効化される（§3.3 の M2c-3 spike で確定）。
 
 検証基盤: 既存 `src/x/cm_async/cm_async_probe.wat`（flag 受理の sync probe）に
 加え、本 spike の `cm_async_lift_probe.wat`（async-lift 実動 probe）を追加。
+
+### 3.3 M2c-3 feasibility spike: 真の `stream<u8>` canonical built-ins（landed）
+
+M2c までの `Stream[T]` は eager Array backing（`String::to_bytes` /
+`Stream::to_string` / `for await` が body を先頭で materialize）。M2c-3 は WASI
+0.3 `stream<u8>` の **`stream.read` ベース**へ置き換え、handler が request body
+を逐次読み body 全体を保持しない形にする。codegen 着手前に §3.1 と同様、
+wasmtime 45 が受理する最小形を手書き probe で確定した
+（`src/x/cm_async/cm_stream_read_probe.wat` / `run_stream_probe.sh`、`run` => 42）。
+
+確定事項（wasmtime 45.0.0 / wasm-tools 1.252, x86_64 linux）:
+
+1. **runtime 実行を確認**（parse だけでなく）。`stream.new` は **base M1b フラグ
+   のみで実行可**（probe の `run` が `stream.new` を呼び、非ゼロの packed handle
+   pair が返れば 42）。一方 **`stream.read` / `stream.write` は
+   `-W component-model-more-async-builtins=y`（🚝）が必須**（無いと module が
+   parse 失敗）。これで §3.1 の「async-builtins フラグは 45 で無効」を補正
+   （正しい名は `more-` 付き）。
+2. wasm-tools 1.252 が受理する WAT 形:
+   - `(core func $snew (canon stream.new $st))` — lower 後 `[] -> [i64]`
+     （readable | writable<<32 の packed end indices）。
+   - `(core func $sread (canon stream.read $st (memory $li "memory")))` /
+     `stream.write` 同様 — `(param i32 i32 i32) -> i32`（handle, ptr, len → status）。
+3. **memory cycle**: read/write の canon は、それらを import する core instance
+   と同じ memory を参照できない（instance ↔ canon の循環）。先に別の libc memory
+   module を instantiate し、canon は `(memory $li "memory")` を指す。
+4. **単一タスクの self write→read は deadlock**: reader 不在の `stream.write` は
+   block（stackful suspend）し、同じタスクが唯一の reader 候補のため進まない
+   （probe で instantiate→実行→block を確認）。つまり実 `stream.read` には
+   **並行 producer**（spawn した subtask、もしくは host 提供の readable end =
+   HTTP request body）が必要。この producer 配線が M2c-3 の次スライス。
+
+実装順（次以降）:
+- (a) subtask spawn（async-lower した local async func / waitable-set）で producer
+  を別タスク化し、self stream の read→write round-trip を非 deadlock で通す。
+- (b) `component_codegen.vibe` に stream canon（new/read/write）の emit と
+  `more-async-builtins` 前提の component 構成を追加。
+- (c) HTTP boundary を string 規約から本物の `stream<u8>` import へ繋ぎ、
+  `for await` / `Stream::next` を eager Array から `stream.read` ループへ lower。
 
 ### 3.2 M1b 実装ブループリント（byte-level encoding map）
 
@@ -585,7 +632,8 @@ ratified `0.3.0` への最終 cutover は wasmtime 46（async-by-default）リ�
 | **M2c-1** | HTTP body を ByteStream 化（consume）: `String::to_bytes(s) : Stream[Int]`（`ByteStream`）。handler が request body を Stream combinator で消費可能。AST 合成 loop を `ce` に委譲（RC tagging 安全、byte 単位）。gate に body entry 追加（→ 42、wasmtime 45） | done |
 | **M2c-2** | response body 生成 `Stream::to_string`（`Stream[Int] -> String`）: AST 合成 loop を `ce` に委譲。`linked_compile` が `""` を常に str_table へ seed（`StringBuilder::freeze` の脆弱性も解消）。gate に round-trip entry 追加（body → map → to_string → to_bytes → fold → 42）。**handler の request/response body 両方向が ByteStream で扱える** | done |
 | **M2c-3 (surface)** | `for await x in stream { ... }` サーフェス構文: parser が `await` マーカーを skip、checker の `EForIn` が `Stream[T]` を iterate、eager model では `EForIn` へそのまま lower。gate に for-await entry 追加（sum bytes("ABC") − 156 → 42） | done |
-| **M2c-3 (runtime)** | `for await` を真の `stream.read` ベース反復へ、HTTP boundary を本物の `stream<u8>` へ、真の subtask spawn | 未着手 |
+| **M2c-3 (spike)** | 真の `stream<u8>` canon built-ins の wasmtime 45 実行可否と最小形を確定（§3.3、`cm_stream_read_probe.wat` → 42）。`stream.read`/`write` は `more-async-builtins` 必須、self round-trip は producer 不在で deadlock | done |
+| **M2c-3 (runtime)** | 並行 producer（subtask spawn / host readable end）で stream round-trip、`component_codegen` に stream canon emit、HTTP boundary を本物の `stream<u8>` へ、`for await`/`Stream::next` を `stream.read` ループへ | 未着手 |
 | **M3** | outbound async HTTP client（`Future[Response]` + streaming body）、`wasi:http/service` + `middleware` world | 未着手 |
 | **M4** | parity/gate/CI、docs、ADR-0012 → accepted | 未着手 |
 
