@@ -2670,6 +2670,14 @@ fn type_arg_with_context(
   match expr {
     @core.Expr::Fn(params=fn_params, ..) =>
       match expected {
+        // Adopt contextual param types + effect row for inline lambdas that need
+        // parameter inference. NOTE: routing *fully-annotated* lambdas here too
+        // (to apply the effect row independent of param inference) was tried but
+        // regressed monomorphization: type_lambda_with_context eagerly unifies
+        // the expected return type, binding a callee's generic return var early
+        // and defeating monoify's per-call callback specialization
+        // (src/frontend/monoify_wbtest.mbt). So an inline effectful callback with
+        // explicitly-typed params still needs an explicit `with { E }` row.
         Some(exp_ty) if has_infer_placeholder(fn_params) =>
           type_lambda_with_context(
             env, expr, exp_ty, aliases, effects, allow_effect,
@@ -2695,7 +2703,11 @@ fn type_lambda_with_context(
       // Resolve the expected type first
       let resolved_expected = resolve_type(env, expected)
       match resolved_expected {
-        @core.Type::Func(params=expected_params, ret=expected_ret, ..) => {
+        @core.Type::Func(
+          params=expected_params,
+          ret=expected_ret,
+          effects=expected_effects
+        ) => {
           let scope_env = clone_env(env)
           let resolved_params : Array[@core.FuncParam] = []
           for i in 0..<params.length() {
@@ -2729,7 +2741,17 @@ fn type_lambda_with_context(
               bounds: declared_param_bounds(env, param_ty, param.bounds),
             })
           }
-          let normalized_effects = normalize_effects(fn_effects, span)
+          let declared_effects = normalize_effects(fn_effects, span)
+          // Bidirectional effect checking: when an inline lambda argument omits
+          // its own effect row, adopt the effect row from the expected parameter
+          // type so its body may perform those effects (e.g. an effectful
+          // callback passed to a higher-order function). An explicit row on the
+          // lambda still wins.
+          let normalized_effects = if declared_effects.length() > 0 {
+            declared_effects
+          } else {
+            normalize_effects(expected_effects, span)
+          }
           let fn_scope = effect_scope_from_list(normalized_effects)
           // Push the (declared or expected) return type for any inner
           // `return` expressions to typecheck against.
