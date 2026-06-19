@@ -1976,6 +1976,7 @@ pub fn compile_module(
     additional_specializable=imported_specializable,
   )
   @core.clear_string_for_in_spans()
+  @core.clear_pull_for_in_spans()
   let rewritten = @frontend.rewrite_string_add(mono.ast, expr_type_index)
   let resolved_ast = db.rewrite_imports_to_hash(path, rewritten)
   let ir = module_to_sexp(resolved_ast, aliases)
@@ -2070,6 +2071,7 @@ fn prepare_bundled_ast_for_codegen(
   let expr_type_index = typed_env.expr_type_index()
   let mono = @frontend.monoify_module(ast, expr_type_index)
   @core.clear_string_for_in_spans()
+  @core.clear_pull_for_in_spans()
   @frontend.rewrite_string_add(mono.ast, expr_type_index)
 }
 

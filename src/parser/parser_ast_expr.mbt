@@ -618,6 +618,18 @@ fn AstParser::parse_for_in_expr(
 ) -> @core.Expr raise ParseError {
   let start = self.pos
   let _ = self.expect(for_kw(), "for") // consume keyword "for"
+  // `for await x in s` — `await` is a marker (not a keyword) distinguishing
+  // async-stream iteration; it desugars to the same ForIn node. Skip it when a
+  // binding name follows. `for await in s` (binding literally named "await") is
+  // preserved because the token after `await` is then the `in` keyword.
+  self.skip_trivia()
+  let marker = self.peek()
+  if marker.kind() == name() &&
+    marker.text() == "await" &&
+    self.peek_non_trivia_ahead(1) == name() {
+    let _ = self.bump()
+    self.skip_trivia()
+  }
   // Parse first binding name
   let first_name = self.expect(name(), "binding name").text()
   self.skip_trivia()
