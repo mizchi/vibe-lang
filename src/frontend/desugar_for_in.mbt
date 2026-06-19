@@ -66,7 +66,9 @@ fn dfi_rewrite_expr(expr : @core.Expr) -> @core.Expr {
       // wrap it in a Block expression so it slots in as a single expr.
       let iterable = dfi_rewrite_expr(iterable)
       let body = dfi_rewrite_module(body)
-      let lowered = if @core.is_string_for_in(span.start) {
+      let lowered = if @core.is_pull_for_in(span.start) {
+        @core.desugar_for_in_pull(value_name, iterable, body, span)
+      } else if @core.is_string_for_in(span.start) {
         @core.desugar_for_in_string(
           value_name, index_name, iterable, body, span,
         )

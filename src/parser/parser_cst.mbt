@@ -780,6 +780,16 @@ fn Parser::parse_for_in_expr(self : Parser) -> Unit {
   self.builder.start_node(while_expr())
   self.bump() // for
   self.skip_trivia()
+  // `for await x in s` — skip the `await` marker (not a keyword) when a binding
+  // name follows, keeping it in the node so formatting preserves it. `for await
+  // in s` (binding named "await") is left intact.
+  let marker = self.peek()
+  if marker.kind() == name() &&
+    marker.text() == "await" &&
+    self.peek_non_trivia_ahead(1) == name() {
+    self.bump() // await marker
+    self.skip_trivia()
+  }
   // Parse binding name(s)
   self.expect(name())
   self.skip_trivia()
