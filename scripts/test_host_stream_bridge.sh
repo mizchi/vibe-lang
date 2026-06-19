@@ -95,4 +95,40 @@ check_split() {
 check_split "hello" "hel" "lo"
 check_split "abcdefg" "abc" "defg"
 
+# ByteStream "for await" consume: stream_echo pulls the body in 4-byte chunks and
+# prints each verbatim; the concatenation equals the body (runner appends the
+# Unit return "0").
+check_stream_echo() {
+  local feed="$1"
+  local out
+  out="$(VIBE_STDIN_BYTES="$feed" bash "$RUNNER" --invoke stream_echo "$WASM" 0 2>/dev/null \
+    | tr -d '\n' || true)"
+  if [ "$out" = "${feed}0" ]; then
+    echo "[host-stream-gate] PASS: stream_echo '$feed' (chunked verbatim)"
+  else
+    echo "[host-stream-gate] FAIL: stream_echo '$feed' -> '$out' (expected '${feed}0')" >&2
+    exit 1
+  fi
+}
+
+# ByteStream fold: stream_total prints the total byte count of the body.
+check_stream_total() {
+  local feed="$1" expected="$2"
+  local out
+  out="$(VIBE_STDIN_BYTES="$feed" bash "$RUNNER" --invoke stream_total "$WASM" 0 2>/dev/null \
+    | grep -E '^[0-9]+$' | head -n1 || true)"
+  if [ "$out" = "$expected" ]; then
+    echo "[host-stream-gate] PASS: stream_total '$feed' -> $out"
+  else
+    echo "[host-stream-gate] FAIL: stream_total '$feed' -> '$out' (expected $expected)" >&2
+    exit 1
+  fi
+}
+
+check_stream_echo "streaming body"
+check_stream_echo "abcdefghij"
+check_stream_total "streaming body" 14
+check_stream_total "abcdefghij" 10
+check_stream_total "" 0
+
 echo "[host-stream-gate] done"
