@@ -35,24 +35,32 @@ export let read_line: () -> String with { Stdin } = () -> {
   }
 }
 
-// Drain the input stream to EOF and return the whole body as a String. This is
-// the "read the entire request body" primitive a WASI HTTP handler needs; on
-// the WASI 0.2 input-stream bridge (docs/spec/wasi-p3-async.md §3.3) the host
-// supplies the bytes and this consumes them via the read_char() loop.
-//
-// Accumulate into a StringBuilder and freeze once at EOF: real HTTP bodies are
-// large, so per-byte "\{acc}\{c}" concatenation (O(n^2) copies) is unacceptable.
+// Read up to `n` bytes from the input stream, returning whatever is available
+// in a single bounded pull (a short read while the stream is open is returned
+// as-is; "" signals EOF). This is the "pull a chunk" primitive a stream.read
+// loop / Stream::next uses: `Stdin::read_stream` issues ONE
+// input-stream.blocking-read with len=n rather than n single-byte reads, so it
+// preserves short reads and avoids per-byte host-call overhead
+// (docs/spec/wasi-p3-async.md §3.3). The stream cursor advances, so repeated
+// calls read successive chunks. `n <= 0` yields "".
+export let read_n: (Int) -> String with { Stdin } = (n) -> {
+  Stdin::read_stream(n)
+}
+
+// Drain the input stream to EOF and return the whole body as a String — the
+// "read the entire request body" primitive a WASI HTTP handler needs. Pulls
+// bounded chunks via read_n until EOF ("") and accumulates into a StringBuilder
+// (frozen once), so large bodies cost O(n) and a bounded number of host calls.
 export let read_all: () -> String with { Stdin } = () -> {
   {
     let sb = StringBuilder::new()
     let mut done = false
     while not(done) {
-      let c = Stdin::read_char()
-      done = c < 0
-      if c < 0 {
-        ()
+      let chunk = read_n(65536)
+      if String::length(chunk) == 0 {
+        done = true
       } else {
-        StringBuilder::push(sb, String::from_char_code(c))
+        StringBuilder::push(sb, chunk)
       }
     }
     StringBuilder::freeze(sb)

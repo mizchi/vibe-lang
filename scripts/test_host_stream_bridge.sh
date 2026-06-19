@@ -77,4 +77,22 @@ check_echo() {
 check_echo "hello world"
 check_echo "vibe"
 
+# Chunked read: split_stdin prints read_n(3) then read_all() on two lines,
+# proving the stream cursor advances. Feed "$feed", expect "$head\n$tail".
+check_split() {
+  local feed="$1" head="$2" tail="$3"
+  local out
+  out="$(VIBE_STDIN_BYTES="$feed" bash "$RUNNER" --invoke split_stdin "$WASM" 0 2>/dev/null \
+    | sed -n '1,2p' | paste -sd'|' - || true)"
+  if [ "$out" = "${head}|${tail}" ]; then
+    echo "[host-stream-gate] PASS: split '$feed' -> '$head' + '$tail'"
+  else
+    echo "[host-stream-gate] FAIL: split '$feed' -> '$out' (expected '${head}|${tail}')" >&2
+    exit 1
+  fi
+}
+
+check_split "hello" "hel" "lo"
+check_split "abcdefg" "abc" "defg"
+
 echo "[host-stream-gate] done"
