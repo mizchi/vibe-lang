@@ -218,7 +218,10 @@ function ensureMemoryCapacity(instance, end) {
 
 function allocPreview2Buffer(instance, size, align = 4) {
   if (typeof instance.exports.cabi_realloc === "function") {
-    const ptr = instance.exports.cabi_realloc(0, 0, align, size) >>> 0;
+    // cabi_realloc returns a pointer that may be an i64 (BigInt) on the linear
+    // backend; normalize before the i32 coercion (`>>> 0` throws on BigInt).
+    const rawPtr = instance.exports.cabi_realloc(0, 0, align, size);
+    const ptr = (typeof rawPtr === "bigint" ? Number(rawPtr) : rawPtr) >>> 0;
     ensureMemoryCapacity(instance, ptr + size);
     return ptr;
   }
@@ -977,6 +980,17 @@ function createPreview2CliStreamsHost() {
   const STDERR_STREAM_HANDLE = 2;
   const STDIN_STREAM_HANDLE = 3;
 
+  // M2c-3 (0.2 input-stream bridge): when VIBE_STDIN_BYTES is set, feed its
+  // UTF-8 bytes to input-stream.blocking-read so a handler can consume a
+  // host-provided byte stream incrementally (the testable stand-in for the WASI
+  // 0.3 stream<u8> HTTP body; docs/spec/wasi-p3-async.md §3.3). Unset =>
+  // legacy EOF behaviour, so existing tests are unaffected.
+  const stdinFeed =
+    process.env.VIBE_STDIN_BYTES !== undefined
+      ? Buffer.from(process.env.VIBE_STDIN_BYTES, "utf8")
+      : null;
+  let stdinCursor = 0;
+
   function writeEmptyResultOk(retptr) {
     const mem = new Uint8Array(instanceRefGlobal.exports.memory.buffer);
     writeU8(mem, retptr, 0);
@@ -1022,18 +1036,41 @@ function createPreview2CliStreamsHost() {
         resolveWritableStream(handle).write(Buffer.from(bytes));
         writeEmptyResultOk(retptr);
       },
-      "[method]input-stream.blocking-read"(_handle, _maxLen, retptr) {
-        // Tests run without an interactive stdin; signal EOF (empty list) so
-        // callers like `Stdin::read_char` see `-1` and `read_line` returns "".
+      "[method]input-stream.blocking-read"(handle, maxLen, retptr) {
         const instance = instanceRefGlobal;
         if (!(instance?.exports?.memory instanceof WebAssembly.Memory)) {
           throw new Error("missing exported memory for input-stream read");
         }
+        // WIT signature is `blocking-read(len: u64)`, so `maxLen` arrives as a
+        // BigInt; `handle`/`retptr` may also be BigInt. Normalize to numbers.
+        const handleNum = Number(handle);
+        const maxLenNum = Number(maxLen);
+        const retptrNum = Number(retptr);
+        // With VIBE_STDIN_BYTES set, serve the feed buffer incrementally
+        // (respecting maxLen) so the guest's read loop drains a real
+        // host-provided byte stream; EOF (empty ok list) once exhausted.
+        if (
+          stdinFeed !== null &&
+          handleNum === STDIN_STREAM_HANDLE &&
+          stdinCursor < stdinFeed.length
+        ) {
+          const want = Math.min(maxLenNum, stdinFeed.length - stdinCursor);
+          const ptr = allocPreview2Buffer(instance, want, 1);
+          const mem = new Uint8Array(instance.exports.memory.buffer);
+          mem.set(stdinFeed.subarray(stdinCursor, stdinCursor + want), ptr);
+          stdinCursor += want;
+          // result<list<u8>, stream-error>: tag=0 (ok), then list { ptr, len }
+          writeU8(mem, retptrNum, 0);
+          writeU32LE(mem, retptrNum + 4, ptr);
+          writeU32LE(mem, retptrNum + 8, want);
+          return;
+        }
+        // Default / exhausted: signal EOF (empty list) so callers like
+        // `Stdin::read_char` see `-1` and `read_line` returns "".
         const mem = new Uint8Array(instance.exports.memory.buffer);
-        // result<list<u8>, stream-error>: tag=0 (ok), then list { ptr=0, len=0 }
-        writeU8(mem, retptr, 0);
-        writeU32LE(mem, retptr + 4, 0); // ptr
-        writeU32LE(mem, retptr + 8, 0); // len
+        writeU8(mem, retptrNum, 0);
+        writeU32LE(mem, retptrNum + 4, 0); // ptr
+        writeU32LE(mem, retptrNum + 8, 0); // len
       },
       "[resource-drop]output-stream"(_handle) {},
       "[resource-drop]input-stream"(_handle) {},
