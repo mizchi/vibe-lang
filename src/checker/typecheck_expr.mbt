@@ -2668,9 +2668,15 @@ fn type_arg_with_context(
   allow_effect : Bool,
 ) -> @core.Type raise TypeError {
   match expr {
-    @core.Expr::Fn(params=fn_params, ..) =>
+    @core.Expr::Fn(..) =>
       match expected {
-        Some(exp_ty) if has_infer_placeholder(fn_params) =>
+        // Route inline lambda arguments through the contextual path whenever an
+        // expected type is available — not only when the params need inference.
+        // `type_lambda_with_context` uses the lambda's declared param types when
+        // present and falls back to normal typing for non-Func expected types,
+        // so this also applies the expected effect row to lambdas with
+        // explicitly-typed params (e.g. `(c: Int) -> { write_char(c) }`).
+        Some(exp_ty) =>
           type_lambda_with_context(
             env, expr, exp_ty, aliases, effects, allow_effect,
           )
