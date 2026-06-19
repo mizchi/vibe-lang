@@ -2668,15 +2668,17 @@ fn type_arg_with_context(
   allow_effect : Bool,
 ) -> @core.Type raise TypeError {
   match expr {
-    @core.Expr::Fn(..) =>
+    @core.Expr::Fn(params=fn_params, ..) =>
       match expected {
-        // Route inline lambda arguments through the contextual path whenever an
-        // expected type is available — not only when the params need inference.
-        // `type_lambda_with_context` uses the lambda's declared param types when
-        // present and falls back to normal typing for non-Func expected types,
-        // so this also applies the expected effect row to lambdas with
-        // explicitly-typed params (e.g. `(c: Int) -> { write_char(c) }`).
-        Some(exp_ty) =>
+        // Adopt contextual param types + effect row for inline lambdas that need
+        // parameter inference. NOTE: routing *fully-annotated* lambdas here too
+        // (to apply the effect row independent of param inference) was tried but
+        // regressed monomorphization: type_lambda_with_context eagerly unifies
+        // the expected return type, binding a callee's generic return var early
+        // and defeating monoify's per-call callback specialization
+        // (src/frontend/monoify_wbtest.mbt). So an inline effectful callback with
+        // explicitly-typed params still needs an explicit `with { E }` row.
+        Some(exp_ty) if has_infer_placeholder(fn_params) =>
           type_lambda_with_context(
             env, expr, exp_ty, aliases, effects, allow_effect,
           )
