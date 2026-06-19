@@ -75,10 +75,8 @@ pub fn desugar_for_in_pull(
     Span::new(span.start + offset, span.start + offset + 1)
   }
   let suffix = span.start.to_string()
-  let next_span = synth_span(1)
   let b_span = synth_span(2)
   let done_span = synth_span(3)
-  let next_ident = Expr::Ident(name="__pull_next" + suffix, span=next_span)
   let b_ident = Expr::Ident(name="__pull_b" + suffix, span=b_span)
   let done_ident = Expr::Ident(name="__pull_done" + suffix, span=done_span)
   // let __pull_next = iterable
