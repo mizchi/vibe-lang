@@ -57,16 +57,19 @@ check "ABC" 198   # 65 + 66 + 67
 check "AA"  130   # 65 + 65
 check ""    0     # empty body -> EOF immediately
 
-# read_all round-trip: feed a body and assert echo_stdin returns it verbatim.
+# read_all round-trip: feed a body and assert echo_stdin emits it verbatim.
+# echo_stdin uses `print` (no trailing newline), so stdout is byte-for-byte the
+# body; the runner then prints the function's Unit return ("0") right after it,
+# so the full captured output is "<body>0".
 check_echo() {
   local feed="$1"
   local out
   out="$(VIBE_STDIN_BYTES="$feed" bash "$RUNNER" --invoke echo_stdin "$WASM" 0 2>/dev/null \
-    | head -n1 || true)"
-  if [ "$out" = "$feed" ]; then
-    echo "[host-stream-gate] PASS: echo '$feed'"
+    | tr -d '\n' || true)"
+  if [ "$out" = "${feed}0" ]; then
+    echo "[host-stream-gate] PASS: echo '$feed' (verbatim)"
   else
-    echo "[host-stream-gate] FAIL: echo '$feed' -> '$out'" >&2
+    echo "[host-stream-gate] FAIL: echo '$feed' -> '$out' (expected '${feed}0')" >&2
     exit 1
   fi
 }
