@@ -2695,7 +2695,11 @@ fn type_lambda_with_context(
       // Resolve the expected type first
       let resolved_expected = resolve_type(env, expected)
       match resolved_expected {
-        @core.Type::Func(params=expected_params, ret=expected_ret, ..) => {
+        @core.Type::Func(
+          params=expected_params,
+          ret=expected_ret,
+          effects=expected_effects
+        ) => {
           let scope_env = clone_env(env)
           let resolved_params : Array[@core.FuncParam] = []
           for i in 0..<params.length() {
@@ -2729,7 +2733,17 @@ fn type_lambda_with_context(
               bounds: declared_param_bounds(env, param_ty, param.bounds),
             })
           }
-          let normalized_effects = normalize_effects(fn_effects, span)
+          let declared_effects = normalize_effects(fn_effects, span)
+          // Bidirectional effect checking: when an inline lambda argument omits
+          // its own effect row, adopt the effect row from the expected parameter
+          // type so its body may perform those effects (e.g. an effectful
+          // callback passed to a higher-order function). An explicit row on the
+          // lambda still wins.
+          let normalized_effects = if declared_effects.length() > 0 {
+            declared_effects
+          } else {
+            normalize_effects(expected_effects, span)
+          }
           let fn_scope = effect_scope_from_list(normalized_effects)
           // Push the (declared or expected) return type for any inner
           // `return` expressions to typecheck against.
