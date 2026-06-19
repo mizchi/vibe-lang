@@ -57,4 +57,21 @@ check "ABC" 198   # 65 + 66 + 67
 check "AA"  130   # 65 + 65
 check ""    0     # empty body -> EOF immediately
 
+# read_all round-trip: feed a body and assert echo_stdin returns it verbatim.
+check_echo() {
+  local feed="$1"
+  local out
+  out="$(VIBE_STDIN_BYTES="$feed" bash "$RUNNER" --invoke echo_stdin "$WASM" 0 2>/dev/null \
+    | head -n1 || true)"
+  if [ "$out" = "$feed" ]; then
+    echo "[host-stream-gate] PASS: echo '$feed'"
+  else
+    echo "[host-stream-gate] FAIL: echo '$feed' -> '$out'" >&2
+    exit 1
+  fi
+}
+
+check_echo "hello world"
+check_echo "vibe"
+
 echo "[host-stream-gate] done"
