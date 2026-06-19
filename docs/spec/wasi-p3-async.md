@@ -217,10 +217,13 @@ M1a と同じ要領で、lexer/parser/core-Type を変えずに着地:
   可、`stream.read`/`write` は `-W component-model-more-async-builtins=y` が必須。
   単一タスク self round-trip は deadlock するため並行 producer が要る、という
   次スライスの要件も確定。
-- 後続: `for await` を eager Array model から真の `stream.read` ベース反復へ
-  置換（並行 producer = subtask spawn / host readable end、HTTP boundary を string
-  規約から本物の `stream<u8>` へ）、真の subtask spawn（waitable-set /
-  `future.cancel-*` による実並行・キャンセル）（§3.3 / §3.6 / §3.7）。
+- **M2c-3 producer 調査（landed）**: intra-wasm subtask producer は
+  cross-component reentrance trap で不可と確定し、producer は host（HTTP body の
+  readable `stream<u8>`）とする pivot を記録（§3.3.1）。
+- 後続: `component_codegen` に `stream.read` canon emit、host 供給の readable
+  `stream<u8>`（`wasi:http` incoming-body / host harness）を `stream.read` ループ
+  で消費し `for await` / `Stream::next` をそこへ lower。真の subtask spawn
+  （waitable-set / `future.cancel-*` による実並行・キャンセル）（§3.3 / §3.6 / §3.7）。
 
 ## 3. codegen 戦略: Component Model async canonical ABI（stackless）
 
@@ -326,13 +329,39 @@ wasmtime 45 が受理する最小形を手書き probe で確定した
    **並行 producer**（spawn した subtask、もしくは host 提供の readable end =
    HTTP request body）が必要。この producer 配線が M2c-3 の次スライス。
 
-実装順（次以降）:
-- (a) subtask spawn（async-lower した local async func / waitable-set）で producer
-  を別タスク化し、self stream の read→write round-trip を非 deadlock で通す。
-- (b) `component_codegen.vibe` に stream canon（new/read/write）の emit と
-  `more-async-builtins` 前提の component 構成を追加。
-- (c) HTTP boundary を string 規約から本物の `stream<u8>` import へ繋ぎ、
-  `for await` / `Stream::next` を eager Array から `stream.read` ループへ lower。
+### 3.3.1 producer 調査: intra-wasm subtask は不可、producer は host（追記）
+
+§3.3 の deadlock を解消する producer を**コンポーネント内の subtask** で用意できるか
+を WAT で検証した結果、**この方向は wasmtime 45 では行き止まり**と判明した。確定事項:
+
+- async-lowered cross-component 呼び出しの core ABI を確定:
+  `(canon lower (func $f) async (memory $li "memory"))` は core func
+  `(param <result-area-ptr>) -> (i32 status)` を生成（同期 lower は param なしで
+  結果を直接返す）。`waitable-set.new` / `waitable-set.wait (memory ...)` の
+  canon も wasm-tools 1.252 が受理する。
+- **しかし async-lifted な親 `run` から別コンポーネント instance の関数を呼ぶと
+  `wasm trap: cannot enter component instance` で trap する。これは async 固有
+  ではなく、sync 親 → sync 子でも同じく trap する**（component instance の
+  reentrance 制約）。つまり「self-stream の writable 端を別 wasm subtask に渡して
+  並行に書く」構成は、コンポーネント境界の reentrance 制約に阻まれて成立しない。
+- 単一タスク self round-trip は §3.3 の通り deadlock。両 intra-wasm 経路が塞がる。
+
+**設計含意（pivot）**: 実 `stream.read` の producer は **host 側**であるべき。WASI
+0.3 の HTTP handler では request body の readable end（`stream<u8>`）を **wasmtime
+（host）が供給**し、handler はそれを `stream.read` で読むだけ。host が producer
+なので wasm↔wasm の reentrance は発生せず、deadlock もしない。したがって M2c-3 の
+codegen は「self stream を作って書いて読む」ではなく、「**import した
+`wasi:http` の readable stream を `stream.read` で消費する**」形を直接の目標とする。
+
+実装順（改訂）:
+- (a) `component_codegen.vibe` に `stream.read` の canon emit（`(memory ...)`
+  option 付き、`more-async-builtins` 前提）と、readable `stream<u8>` を引数に取る
+  async import の lower を追加。
+- (b) host 供給の readable stream（まずは `wasi:http/types` の incoming-body、
+  または最小の host test harness が供給する `stream<u8>`）を `stream.read` ループ
+  で Array に読み込み、`for await` / `Stream::next` をそのループへ lower。
+- (c) gate / probe は host 提供 stream を使う（`--invoke` だけでは host stream を
+  供給できないため、wasi:http world での e2e、もしくは host harness を用意する）。
 
 ### 3.2 M1b 実装ブループリント（byte-level encoding map）
 
@@ -633,7 +662,8 @@ ratified `0.3.0` への最終 cutover は wasmtime 46（async-by-default）リ�
 | **M2c-2** | response body 生成 `Stream::to_string`（`Stream[Int] -> String`）: AST 合成 loop を `ce` に委譲。`linked_compile` が `""` を常に str_table へ seed（`StringBuilder::freeze` の脆弱性も解消）。gate に round-trip entry 追加（body → map → to_string → to_bytes → fold → 42）。**handler の request/response body 両方向が ByteStream で扱える** | done |
 | **M2c-3 (surface)** | `for await x in stream { ... }` サーフェス構文: parser が `await` マーカーを skip、checker の `EForIn` が `Stream[T]` を iterate、eager model では `EForIn` へそのまま lower。gate に for-await entry 追加（sum bytes("ABC") − 156 → 42） | done |
 | **M2c-3 (spike)** | 真の `stream<u8>` canon built-ins の wasmtime 45 実行可否と最小形を確定（§3.3、`cm_stream_read_probe.wat` → 42）。`stream.read`/`write` は `more-async-builtins` 必須、self round-trip は producer 不在で deadlock | done |
-| **M2c-3 (runtime)** | 並行 producer（subtask spawn / host readable end）で stream round-trip、`component_codegen` に stream canon emit、HTTP boundary を本物の `stream<u8>` へ、`for await`/`Stream::next` を `stream.read` ループへ | 未着手 |
+| **M2c-3 (producer 調査)** | producer を intra-wasm subtask で用意する案を検証 → cross-component reentrance（`cannot enter component instance`）で行き止まり。producer は **host**（HTTP body の readable `stream<u8>`）とする pivot を確定（§3.3.1） | done |
+| **M2c-3 (runtime)** | `component_codegen` に `stream.read` canon emit、host 供給の readable `stream<u8>`（`wasi:http` incoming-body / host harness）を `stream.read` ループで消費、`for await`/`Stream::next` をそのループへ lower | 未着手 |
 | **M3** | outbound async HTTP client（`Future[Response]` + streaming body）、`wasi:http/service` + `middleware` world | 未着手 |
 | **M4** | parity/gate/CI、docs、ADR-0012 → accepted | 未着手 |
 
