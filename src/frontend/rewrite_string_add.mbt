@@ -79,6 +79,27 @@ fn rsa_rewrite_stmt(
 }
 
 ///|
+
+///|
+/// Whether `expr` is a 0-arg pull closure returning `Option[_]` (the iterable of
+/// a lazy `for await x in pull { .. }`). Marked so codegen drains it via the
+/// pull desugar instead of indexing.
+fn rsa_is_pull_valued(
+  expr : @core.Expr,
+  expr_types : @core.ExprTypeIndex,
+) -> Bool {
+  match expr_types.get_expr_type(expr.span()) {
+    Some(@core.Type::Func(params~, ret~, ..)) =>
+      params.length() == 0 &&
+      (match ret {
+        @core.Type::Named(name="Option", ..) => true
+        _ => false
+      })
+    _ => false
+  }
+}
+
+///|
 fn rsa_is_string_valued(
   expr : @core.Expr,
   expr_types : @core.ExprTypeIndex,
@@ -218,7 +239,9 @@ fn rsa_rewrite_expr(
         span~,
       )
     @core.Expr::ForIn(value_name~, index_name~, iterable~, body~, span~) => {
-      if rsa_is_string_valued(iterable, expr_types) {
+      if rsa_is_pull_valued(iterable, expr_types) {
+        @core.mark_pull_for_in(span.start)
+      } else if rsa_is_string_valued(iterable, expr_types) {
         @core.mark_string_for_in(span.start)
       }
       @core.Expr::ForIn(

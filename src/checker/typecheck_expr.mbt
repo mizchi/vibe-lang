@@ -920,12 +920,18 @@ fn type_expr_eff(
       // `iter_require` / `iter_length` / `iter_get` desugar so the Iterable
       // trait constraint is enforced (ADR-0044 Phase 2).
       let iter_ty = type_expr_eff(env, iterable, aliases, effects, allow_effect)
-      let desugared = match iter_ty {
+      let desugared = match resolve_type(env, iter_ty) {
         @core.Type::String =>
           @core.desugar_for_in_with(
             value_name, index_name, iterable, body, span, "String::length", "String::char_code_at",
             false,
           )
+        // Lazy `for await x in pull { .. }`: a 0-arg closure returning Option[T]
+        // is a pull iterator — drain it to None instead of indexing (codegen
+        // marks the span via the post-typecheck rewrite pass).
+        @core.Type::Func(params=fn_params, ret~, ..) if fn_params.length() == 0 &&
+          is_option_type(resolve_type(env, ret)) =>
+          @core.desugar_for_in_pull(value_name, iterable, body, span)
         _ => @core.desugar_for_in(value_name, index_name, iterable, body, span)
       }
       type_block(env, desugared, aliases, effects, true, share_subs=true)
@@ -2685,6 +2691,15 @@ fn type_arg_with_context(
         _ => type_expr_eff(env, expr, aliases, effects, allow_effect)
       }
     _ => type_expr_eff(env, expr, aliases, effects, allow_effect)
+  }
+}
+
+///|
+/// Whether a type is `Option[_]` (host represents it as `Named("Option", ..)`).
+fn is_option_type(ty : @core.Type) -> Bool {
+  match ty {
+    @core.Type::Named(name="Option", ..) => true
+    _ => false
   }
 }
 

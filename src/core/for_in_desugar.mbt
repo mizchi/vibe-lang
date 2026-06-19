@@ -23,6 +23,166 @@ pub fn clear_string_for_in_spans() -> Unit {
 }
 
 ///|
+/// Global set of ForIn span starts whose iterable is a pull closure
+/// (`() -> Option[T]`), i.e. lazy `for await x in stream { ... }`. Populated by
+/// the checker, consumed by codegen to dispatch to the pull desugar.
+let pull_for_in_spans : Map[Int, Bool] = {}
+
+///|
+/// Register a ForIn span as iterating over a pull closure (lazy `for await`).
+pub fn mark_pull_for_in(span_start : Int) -> Unit {
+  pull_for_in_spans[span_start] = true
+}
+
+///|
+/// Check whether a ForIn span iterates over a pull closure.
+pub fn is_pull_for_in(span_start : Int) -> Bool {
+  pull_for_in_spans.contains(span_start)
+}
+
+///|
+/// Clear the pull for-in registry (call before each compilation unit).
+pub fn clear_pull_for_in_spans() -> Unit {
+  pull_for_in_spans.clear()
+}
+
+///|
+/// Desugar a lazy `for await x in pull { body }` where `pull : () -> Option[T]`
+/// into a pull loop that drains the iterator to `None`:
+///
+/// {
+///   let __pull_next = pull
+///   let __pull_b = ArrayBuilder::new()
+///   let mut __pull_done = false
+///   while not(__pull_done) {
+///     match __pull_next() {
+///       Some(x) => { <body init>; ArrayBuilder::push(__pull_b, <last_expr>) }
+///       None => { __pull_done = true; () }
+///     }
+///   }
+///   ArrayBuilder::freeze(__pull_b)
+/// }
+///
+/// Like `desugar_for_in`, the loop collects each iteration's last expression so
+/// the for-in expression yields `Array[bodyresult]`.
+pub fn desugar_for_in_pull(
+  value_name : String,
+  iterable : Expr,
+  body : Module,
+  span : Span,
+) -> Module {
+  let synth_span = fn(offset : Int) -> Span {
+    Span::new(span.start + offset, span.start + offset + 1)
+  }
+  let suffix = span.start.to_string()
+  let b_span = synth_span(2)
+  let done_span = synth_span(3)
+  let b_ident = Expr::Ident(name="__pull_b" + suffix, span=b_span)
+  let done_ident = Expr::Ident(name="__pull_done" + suffix, span=done_span)
+  // let __pull_next = iterable
+  let let_next = Stmt::Let(
+    rec=false,
+    name="__pull_next" + suffix,
+    expr=iterable,
+    span~,
+  )
+  // let __pull_b = ArrayBuilder::new()
+  let let_b = Stmt::Let(
+    rec=false,
+    name="__pull_b" + suffix,
+    expr=Expr::Call(name="ArrayBuilder::new", type_args=[], args=[], span~),
+    span~,
+  )
+  // let mut __pull_done = false
+  let let_done = Stmt::LetMut(
+    name="__pull_done" + suffix,
+    expr=Expr::Bool(value=false, span=done_span),
+    span~,
+  )
+  // not(__pull_done)
+  let cond = Expr::Call(
+    name="not",
+    type_args=[],
+    args=[CallArg::{ label: None, expr: done_ident, span: done_span }],
+    span~,
+  )
+  // __pull_next()
+  let pull_call = Expr::Call(
+    name="__pull_next" + suffix,
+    type_args=[],
+    args=[],
+    span~,
+  )
+  let (init_stmts, collect_expr) = desugar_split_body_last_expr(body, span)
+  // Some(x) arm: { <body init>; ArrayBuilder::push(__pull_b, <last_expr>) }
+  let some_stmts : Array[Stmt] = []
+  for stmt in init_stmts {
+    some_stmts.push(stmt)
+  }
+  some_stmts.push(
+    Stmt::Expr(
+      expr=Expr::Call(
+        name="ArrayBuilder::push",
+        type_args=[],
+        args=[
+          CallArg::{ label: None, expr: b_ident, span: b_span },
+          CallArg::{
+            label: None,
+            expr: collect_expr,
+            span: collect_expr.span(),
+          },
+        ],
+        span~,
+      ),
+      span~,
+    ),
+  )
+  let some_arm = MatchArm::{
+    pat: Pat::Ctor(name="Some", args=[Pat::Bind(name=value_name, span~)], span~),
+    cond: None,
+    expr: Expr::Block(body=Module::{ stmts: some_stmts }, span~),
+    span,
+  }
+  // None arm: { __pull_done = true; () }
+  let none_stmts : Array[Stmt] = [
+    Stmt::Assign(
+      name="__pull_done" + suffix,
+      expr=Expr::Bool(value=true, span=done_span),
+      span~,
+    ),
+    Stmt::Expr(expr=Expr::Tuple(items=[], span~), span~),
+  ]
+  let none_arm = MatchArm::{
+    pat: Pat::Ctor(name="None", args=[], span~),
+    cond: None,
+    expr: Expr::Block(body=Module::{ stmts: none_stmts }, span~),
+    span,
+  }
+  let match_expr = Expr::Match(
+    scrutinee=pull_call,
+    arms=[some_arm, none_arm],
+    span~,
+  )
+  let while_body = Module::{ stmts: [Stmt::Expr(expr=match_expr, span~)] }
+  let while_expr = Expr::While(cond~, body=while_body, span~)
+  let freeze_expr = Expr::Call(
+    name="ArrayBuilder::freeze",
+    type_args=[],
+    args=[CallArg::{ label: None, expr: b_ident, span: b_span }],
+    span~,
+  )
+  Module::{
+    stmts: [
+      let_next,
+      let_b,
+      let_done,
+      Stmt::Expr(expr=while_expr, span~),
+      Stmt::Expr(expr=freeze_expr, span~),
+    ],
+  }
+}
+
+///|
 /// Desugar ForIn AST node into a Block with array builder pattern.
 ///
 /// for x in iterable { body } →

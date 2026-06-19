@@ -131,4 +131,23 @@ check_stream_total "streaming body" 14
 check_stream_total "abcdefghij" 10
 check_stream_total "" 0
 
+# Lazy `for await x in stdin_stream(4) { print(x) }` — the async-iterator syntax
+# connected to a real host source. Echoes the body verbatim (runner appends the
+# Unit return "0").
+check_for_await() {
+  local feed="$1"
+  local out
+  out="$(VIBE_STDIN_BYTES="$feed" bash "$RUNNER" --invoke for_await_echo "$WASM" 0 2>/dev/null \
+    | tr -d '\n' || true)"
+  if [ "$out" = "${feed}0" ]; then
+    echo "[host-stream-gate] PASS: for_await_echo '$feed' (lazy stream)"
+  else
+    echo "[host-stream-gate] FAIL: for_await_echo '$feed' -> '$out' (expected '${feed}0')" >&2
+    exit 1
+  fi
+}
+
+check_for_await "streaming!"
+check_for_await "for await body"
+
 echo "[host-stream-gate] done"
