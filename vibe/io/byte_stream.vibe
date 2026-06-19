@@ -30,30 +30,31 @@ export let stdin_stream: (Int) -> (() -> Option[String] with { Stdin }) = (chunk
   }
 }
 
-// Terminal left-fold: pull every chunk and fold it onto the accumulator. This is
-// the workhorse consumer (sum/length/reconstruct) for a ByteStream.
-export let stream_fold: [U](() -> Option[String] with { Stdin }, U, (U, String) -> U) -> U with { Stdin } = (next, init, f) -> {
+// Terminal byte length: pull every chunk and sum its length — the body size.
+// This is a concrete scalar consumer; see the NOTE below on why a fully generic
+// `stream_fold[U]` is intentionally not exported.
+export let stream_byte_length: (() -> Option[String] with { Stdin }) -> Int with { Stdin } = (next) -> {
   {
-    let mut acc = init
+    let mut total = 0
     let mut done = false
     while not(done) {
       match next() {
         Some(chunk) => {
-          acc = f(acc, chunk)
+          total = total + String::length(chunk)
         },
         None => {
           done = true
         }
       }
     }
-    acc
+    total
   }
 }
 
 // Terminal drain-to-String: concatenate every chunk into the full body. Uses a
-// local StringBuilder (O(n)) rather than threading one through `stream_fold` —
-// the generic fold accumulator is a scalar slot and mishandles a heap-object
-// (StringBuilder) accumulator, so reconstruction needs this monomorphic form.
+// local StringBuilder (O(n)). See the NOTE below: a generic fold cannot safely
+// thread a heap-object (StringBuilder) accumulator, so reconstruction is a
+// dedicated monomorphic consumer.
 export let stream_to_string: (() -> Option[String] with { Stdin }) -> String with { Stdin } = (next) -> {
   {
     let sb = StringBuilder::new()
@@ -72,12 +73,18 @@ export let stream_to_string: (() -> Option[String] with { Stdin }) -> String wit
   }
 }
 
-// NOTE: a `for await`-style `stream_for_each(next, action)` that runs an
-// effectful action per chunk is not shipped yet — passing an effectful closure
-// through a higher-order param currently (a) does not infer the action's effect
-// row from the param type and (b) panics host codegen in combination with other
-// functions. Until that is fixed, run side effects by reconstructing via
-// `stream_fold` (see stream_echo) or by consuming `stream_collect`.
+// NOTE: this module intentionally ships only concrete terminal consumers
+// (stream_byte_length / stream_to_string / stream_collect) rather than a fully
+// generic `stream_fold[U]`. Two host-codegen limitations make a generic
+// higher-order fold unsafe as a public API today:
+//   1. A generic fold accumulator is stored in a scalar slot, so a heap-object
+//      accumulator (e.g. StringBuilder/ArrayBuilder) traps at runtime — yet
+//      `[U]` is unconstrained, so such a call still type-checks (a footgun).
+//   2. Passing an effectful closure through a higher-order param neither infers
+//      the closure's effect row from the param type nor survives codegen in
+//      combination with other functions, so a `for await`-style
+//      `stream_for_each(next, action)` cannot run effectful actions yet.
+// Until those are fixed, reconstruct/consume via the concrete terminals above.
 
 // Terminal collect: drain the stream into an Array of chunks.
 export let stream_collect: (() -> Option[String] with { Stdin }) -> Array[String] with { Stdin } = (next) -> {
