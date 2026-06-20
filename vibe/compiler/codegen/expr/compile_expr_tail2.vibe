@@ -219,6 +219,7 @@ export let compile_expr_tail2: (Bytes, Expr, Array[String], Int, CompileCtx, Int
       nl
     }
   } else if __tag == 18 {
+    let names_len_at_forin = Array::length(local_names)
     let var_name = get_eforin_name(expr)
     let iter_expr = get_eforin_iter(expr)
     let body = get_eforin_body(expr)
@@ -284,7 +285,18 @@ export let compile_expr_tail2: (Bytes, Expr, Array[String], Int, CompileCtx, Int
     emit_end(buf)
     emit_end(buf)
     emit_local_get(buf, result_local)
-    nl3 + 1
+    // Restore the outer scope. The loop's internal bindings (result/arr/i, the
+    // optional index name, the value name, and the body temp) must not leak into
+    // later identifier lookups, which scan local_names from the end and would
+    // otherwise resolve a shadowed outer var to a stale loop slot. Mirror
+    // compile_match: truncate back to the entry length, then pad with placeholders
+    // up to the high-water local count so slot numbering is preserved.
+    let final_nl = nl3 + 1
+    Array::truncate(local_names, names_len_at_forin)
+    while Array::length(local_names) < final_nl {
+      Array::push(local_names, "")
+    }
+    final_nl
   } else {
     compile_expr_tail3(buf, expr, local_names, next_local, ctx, ld, compile_expr)
   }
