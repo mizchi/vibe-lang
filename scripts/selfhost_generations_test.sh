@@ -81,6 +81,21 @@ assert.equal(data.stages.stage3.built_by, "stage2");
 assert.equal(typeof data.result.stage3_equal_stage2, "boolean");
 NODE
 
+status_out="$(VIBE_PROJECT_ROOT="$TMP_ROOT" bash "$SCRIPT" status \
+  --manifest "$TMP_ROOT/bootstrap/selfhost/seed.json" --out-dir "$TMP_ROOT/out")"
+echo "$status_out" | rg -q "^seed\.name=test-seed$" || { echo "status missing seed.name" >&2; echo "$status_out" >&2; exit 1; }
+echo "$status_out" | rg -q "^seed\.artifact\.pin=ok " || { echo "status missing pin ok" >&2; echo "$status_out" >&2; exit 1; }
+echo "$status_out" | rg -q "^generation\.manifest=" || { echo "status missing generation manifest" >&2; echo "$status_out" >&2; exit 1; }
+echo "$status_out" | rg -q "^stage2\.sha256=" || { echo "status missing stage2 sha" >&2; echo "$status_out" >&2; exit 1; }
+echo "$status_out" | rg -q "^stage3_equal_stage2=" || { echo "status missing stage3_equal_stage2" >&2; echo "$status_out" >&2; exit 1; }
+
+# status against an unbuilt out-dir reports not-built without failing.
+status_empty="$(VIBE_PROJECT_ROOT="$TMP_ROOT" bash "$SCRIPT" status \
+  --manifest "$TMP_ROOT/bootstrap/selfhost/seed.json" --out-dir "$TMP_ROOT/never-built")"
+echo "$status_empty" | rg -q "^generation\.status=not-built$" || { echo "status missing not-built state" >&2; echo "$status_empty" >&2; exit 1; }
+
+echo "selfhost generations status self-test: ok"
+
 cp "$TMP_ROOT/bootstrap/selfhost/seed.json" "$TMP_ROOT/bootstrap/selfhost/bad-seed.json"
 node - "$TMP_ROOT/bootstrap/selfhost/bad-seed.json" <<'NODE'
 const fs = require("node:fs");

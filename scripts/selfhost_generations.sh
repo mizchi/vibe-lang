@@ -29,12 +29,18 @@ usage() {
   cat >&2 <<'USAGE'
 usage:
   scripts/selfhost_generations.sh seed-info [--manifest PATH]
+  scripts/selfhost_generations.sh status [--manifest PATH] [--out-dir DIR]
   scripts/selfhost_generations.sh build [--manifest PATH] [--out-dir DIR] [--entry PATH] [--stage3]
   scripts/selfhost_generations.sh adopt --artifact PATH [--manifest PATH] [--name NAME] [--tag TAG] [--source-commit COMMIT]
   scripts/selfhost_generations.sh host-bootstrap-seed [--manifest PATH] [--entry PATH]
 
 The build command implements the Rust-style compiler generation policy:
 stage0 fixed seed -> stage1 current source -> stage2 current source.
+
+The status command is read-only: it reports the pinned seed (with sha
+verification), the current source commit, and the latest generation manifest
+(stage shas + stage3==stage2) so the stage0 -> stage1 -> stage2 -> bump flow is
+traceable without rebuilding.
 USAGE
 }
 
@@ -566,6 +572,73 @@ command_seed_info() {
   fi
 }
 
+default_generation_out_dir() {
+  printf '%s\n' "$DEFAULT_OUT_ROOT/$(sanitize_name "$SEED_NAME")_$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo local)"
+}
+
+command_status() {
+  local manifest="$DEFAULT_MANIFEST"
+  local out_dir=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --manifest) manifest="$(abs_path "$2")"; shift 2 ;;
+      --out-dir) out_dir="$(abs_path "$2")"; shift 2 ;;
+      -h|--help) usage; exit 0 ;;
+      *) die "unknown status arg: $1" ;;
+    esac
+  done
+  load_seed "$manifest"
+  echo "# seed"
+  echo "seed.name=$SEED_NAME"
+  echo "seed.tag=$SEED_TAG"
+  echo "seed.source_commit=$SEED_SOURCE_COMMIT"
+  echo "seed.entry=$SEED_ENTRY ($SEED_ENTRY_NAME)"
+  echo "seed.artifact.path=$(rel_path "$SEED_ARTIFACT_PATH")"
+  if [ ! -f "$SEED_ARTIFACT_PATH" ]; then
+    echo "seed.artifact.pin=missing"
+  else
+    local actual
+    actual="$(sha256_file "$SEED_ARTIFACT_PATH")"
+    if [ -z "$SEED_ARTIFACT_SHA" ]; then
+      echo "seed.artifact.pin=unpinned (actual=$actual)"
+    elif [ "$actual" = "$SEED_ARTIFACT_SHA" ]; then
+      echo "seed.artifact.pin=ok ($actual)"
+    else
+      echo "seed.artifact.pin=MISMATCH expected=$SEED_ARTIFACT_SHA actual=$actual"
+    fi
+  fi
+  echo ""
+  echo "# source"
+  echo "head_commit=$(git_commit)"
+  echo "dirty=$(git_dirty)"
+  echo ""
+  echo "# latest generation"
+  if [ -z "$out_dir" ]; then
+    out_dir="$(default_generation_out_dir)"
+  fi
+  local gen_json="$out_dir/generation.json"
+  if [ ! -f "$gen_json" ]; then
+    echo "generation.status=not-built"
+    echo "generation.expected_out_dir=$(rel_path "$out_dir")"
+    echo "hint: run 'bash scripts/selfhost_generations.sh build --stage3'"
+    return 0
+  fi
+  echo "generation.manifest=$(rel_path "$gen_json")"
+  echo "generated_at=$(manifest_value "$gen_json" generated_at || echo unknown)"
+  echo "source.commit=$(manifest_value "$gen_json" source.commit || echo unknown)"
+  echo "source.dirty=$(manifest_value "$gen_json" source.dirty || echo unknown)"
+  local stage
+  for stage in stage0 stage1 stage2 stage3; do
+    local sha
+    sha="$(manifest_value "$gen_json" "stages.$stage.sha256" 2>/dev/null || true)"
+    if [ -n "$sha" ]; then
+      echo "$stage.sha256=${sha:0:16}"
+    fi
+  done
+  echo "stage2_distribution_candidate=$(manifest_value "$gen_json" result.stage2_distribution_candidate || echo unknown)"
+  echo "stage3_equal_stage2=$(manifest_value "$gen_json" result.stage3_equal_stage2 || echo n/a)"
+}
+
 command_build() {
   local manifest="$DEFAULT_MANIFEST"
   local out_dir=""
@@ -728,6 +801,7 @@ main() {
   local command="${1:-}"
   case "$command" in
     seed-info) shift; command_seed_info "$@" ;;
+    status) shift; command_status "$@" ;;
     build) shift; command_build "$@" ;;
     adopt) shift; command_adopt "$@" ;;
     host-bootstrap-seed) shift; command_host_bootstrap_seed "$@" ;;
