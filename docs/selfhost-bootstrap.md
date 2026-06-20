@@ -152,6 +152,57 @@ cutover 後も runner と compiler artifact は分ける。
 runner layer は性能・実行基盤の都合で差し替えてよいが、canonical compiler は
 portable selfhost wasm として再構築できることを gate に残す。
 
+## Compiler wasm artifact 層の contract (#529)
+
+compiler wasm layer には、用途の異なる 2 つの生成入口がある。両者は同じ
+compiler source から作られるが、**ビルド主体が異なるため byte 列は一致しない**。
+役割を取り違えないこと。
+
+| artifact | 入口 | builder | 用途 |
+| --- | --- | --- | --- |
+| **dist** | `scripts/build_selfhost_dist.sh` → `_build/dist/selfhost_compiler.wasm` | MoonBit host が `vibe/cli/selfhost_entry.vibe` を直接 wasm へ compile (+ `wasm-opt -O3`) | 配布する **shipping artifact**。速い。`pkf run build-selfhost-dist`。 |
+| **stage2** | `scripts/selfhost_generations.sh build` → `_build/selfhost/generations/<seed>_<sha>/stage2.wasm` | stage0(pinned seed) → stage1 → stage2 の self-reproduction。`generation.json` に `stage2_distribution_candidate` として記録 | bootstrap **再現性 candidate**。seed pin に依存し遅い。`pkf run selfhost-generation`。 |
+
+両者は同一 compiler source なので「同じ compiler」として振る舞う必要がある。
+これを **byte 列の統一ではなく contract + parity gate** で保証する:
+
+- `scripts/test_selfhost_dist_stage2_parity.sh` (`pkf run
+  test-selfhost-dist-stage2-parity`) が dist / stage2 の両 compiler で同じ
+  sample を compile し、(1) 出力 wasm の `vibe.abi` custom section 一致、
+  (2) 両方が 42 を返す挙動一致、(3) 既定では出力 wasm の byte 一致
+  (`VIBE_DIST_PARITY_REQUIRE_HASH=0` で behavioral parity に緩和) を assert する。
+- この gate は `release-selfhost-gates` に含まれる。
+
+### `vibe.abi` custom section contract
+
+selfhost codegen (`vibe/compiler/codegen/wasm_emit/metadata.vibe` ::
+`emit_vibe_abi_custom_section`、呼び出しは
+`vibe/compiler/codegen/wasi/linked_compile.vibe`) は、**自身が生成する** wasm に
+custom section `vibe.abi` を埋め込む。これが artifact 層の ABI 契約メタデータ。
+
+- section name: `vibe.abi`
+- payload (ASCII):
+
+  ```
+  version=1
+  host_import_abi=<abi>
+  ```
+
+- `version` は contract schema。互換性を壊す変更で bump する。
+- `host_import_abi` は wasm が前提とする host import ABI (既定 `raw`)。
+  runner layer (`scripts/run_wasm_vibe_host_runner.sh` 等の
+  `VIBE_SELFHOST_IMPORT_ABI`) が供給すべき host import の選択に対応する。
+- これは compiler が **出力する program wasm** に付くものであり、compiler
+  binary 自体には付かない。MoonBit host (`src/`) codegen は `vibe.abi` を
+  emit しない。そのため dist / stage2 の **compiler binary** 同士で `vibe.abi`
+  を比較しても意味がなく、parity gate は両 compiler が **生成した output** の
+  `vibe.abi` を突き合わせる (上記)。
+
+runner layer が出力 wasm を instantiate する際は、`vibe.abi` の
+`host_import_abi` を見てどの host import set を提供するかを決められる。section
+が無い wasm は host import を必要としない pure module、または非 selfhost 生成物
+として扱う。
+
 ## MoonBit `src/` の退役
 
 `src/` は selfhost cutover 後、legacy bootstrap/fallback 層へ縮退する。

@@ -29,10 +29,14 @@ bootstrap / fallback として通常開発では触らない。
 - [ ] **compiler wasm artifact 層**: `vibe/compiler/` の selfhost CLI/component/check
   entry と `scripts/build_selfhost_dist.sh` を canonical 配布物として整理する。
   - `selfhost-generation` 管理層は追加済み (`bootstrap/selfhost/seed.json`,
-    `scripts/selfhost_generations.sh`)。現時点の first blocker:
-    seed `cli_main` で `vibe/compiler/selfhost_cli_support.vibe` を stage1 build
-    すると `Env::ArgsLen > index` が selfhost checker で `type mismatch in '>'`
-    になる。ここを解消してから stage2 を bootstrap bump 候補にする。
+    `scripts/selfhost_generations.sh`)。
+  - [x] dist (host-compiled shipping) と stage2 (self-reproduced candidate) の
+    役割・`vibe.abi` custom section contract を `docs/selfhost-bootstrap.md`
+    「Compiler wasm artifact 層の contract (#529)」に明文化。両入口の挙動等価性は
+    byte 統一ではなく parity gate (`test-selfhost-dist-stage2-parity`,
+    `release-selfhost-gates` 配下) で保証する。
+  - first blocker だった `perform > n` (order 比較) の seed trap は #584 で
+    切り分け済み (seed bump 要)。bump 完了後に stage2 を bootstrap bump 候補にする。
 - [ ] **MoonBit `src/` 退役**: 通常の compile/check/test/CLI 経路を selfhost
   wasm + runner へ向ける。新機能や CLI 挙動変更は `src/` に入れない。削除は
   parity/cutover gate が CI で継続 green になってから段階的に行う。
