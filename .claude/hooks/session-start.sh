@@ -2,18 +2,25 @@
 #
 # SessionStart hook for Claude Code on the web.
 #
-# Initializes the toolchains that vibe's build / test / bench gates need but
-# that are NOT on PATH by default in a fresh remote container:
+# Provisions the toolchains that vibe's build / test / bench gates need but that
+# are NOT reliably on PATH in a fresh remote container. The guiding principle is
+# to install the SAME toolchain CI uses (.github/actions/setup-vibe), so a web
+# session reproduces CI behavior and can build the current source:
 #
 #   1. nix       (already installed under ~/.nix-profile, just not on PATH)
-#   2. moon      (MoonBit; ~/.moon/bin if pre-baked, else nix-installed from .#moon)
-#   3. wasmtime  (installed on demand via scripts/install_wasmtime_release.sh)
-#   4. pkf       (pkfire task runner; installed via nix from the upstream flake)
+#   2. moon      (MoonBit; ~/.moon if pre-baked, else scripts/install_moonbit.sh
+#                 — the official CDN "latest", identical to CI. The CDN cannot
+#                 serve pinned versions, so the project tracks latest by design;
+#                 do NOT substitute a frozen nix pin here, it will be too stale
+#                 to build the current source.)
+#   3. wasmtime  (scripts/install_wasmtime_release.sh — version pinned in-script)
+#   4. pkf       (pkfire task runner; nix install pinned to v0.10.0, as CI uses)
 #
-# Each is persisted into $CLAUDE_ENV_FILE so that every subsequent Bash tool
-# invocation in the session can resolve these tools on PATH. The repo helper
-# scripts/wasmtime_bin.sh locates wasmtime via `command -v wasmtime`, so putting
-# ~/.wasmtime/bin on PATH is what makes the `pkf` wasm gates work.
+# Each tool's location is persisted into $CLAUDE_ENV_FILE so every subsequent
+# Bash tool invocation resolves it on PATH. After provisioning, a verification
+# gate asserts the required tools resolve and exits non-zero if any are missing,
+# so a half-provisioned environment fails loudly instead of surfacing later as
+# confusing build errors.
 #
 # The hook is idempotent and non-interactive.
 
@@ -41,6 +48,28 @@ persist_env() {
   export "${line?}"
 }
 
+# retry <max> <description> <cmd...> — run cmd with exponential backoff (2,4,8…).
+# Returns the command's status; emits a WARNING (not fatal) after the last try so
+# the verification gate can decide what is actually required.
+retry() {
+  local max="$1" desc="$2"
+  shift 2
+  local n=1 delay=2
+  while true; do
+    if "$@"; then
+      return 0
+    fi
+    if [ "$n" -ge "$max" ]; then
+      echo "[session-start] WARNING: $desc failed after ${max} attempts" >&2
+      return 1
+    fi
+    echo "[session-start] $desc failed (attempt ${n}/${max}); retrying in ${delay}s..." >&2
+    sleep "$delay"
+    delay=$((delay * 2))
+    n=$((n + 1))
+  done
+}
+
 # --- 1. nix --------------------------------------------------------------
 NIX_PROFILE_BIN="$HOME/.nix-profile/bin"
 NIX_PROFILE_SH="$HOME/.nix-profile/etc/profile.d/nix.sh"
@@ -64,53 +93,33 @@ else
 fi
 
 # --- 2. moonbit (moon) ---------------------------------------------------
-# wasmtime is only useful here if vibe can be (re)built, and `moon` is what
-# builds it. moon ships under ~/.moon/bin but is only added to PATH by the
-# interactive section of ~/.bashrc, so non-interactive tool shells miss it.
-#
-# Some container images do NOT pre-bake ~/.moon. In that case fall back to a
-# reproducible nix install of the MoonBit toolchain from this repo's flake
-# (`.#moon`, pinned by flake.lock — the same toolchain `nix develop` uses) into
-# a dedicated profile, mirroring the pkfire install below.
+# Use ~/.moon if the image pre-baked it (the common, fast path); otherwise
+# install via scripts/install_moonbit.sh — the exact installer CI's setup-vibe
+# action uses (official CDN "latest", with internal retries). This keeps the
+# web toolchain identical to CI. install_moonbit.sh also runs `moon update`
+# (fetches core) and stamps .moon-version (gitignored).
 MOON_BIN="$HOME/.moon/bin"
-MOON_PROFILE="$HOME/.nix-profiles/moonbit"
-MOON_RESOLVED=""
+if ! [ -x "$MOON_BIN/moon" ]; then
+  echo "[session-start] installing moonbit via scripts/install_moonbit.sh ..."
+  MOONBIT_INSTALL_DIR="$HOME/.moon" bash "$PROJECT_DIR/scripts/install_moonbit.sh" \
+    || echo "[session-start] WARNING: install_moonbit.sh failed" >&2
+fi
 if [ -x "$MOON_BIN/moon" ]; then
   persist_env "PATH=$MOON_BIN:$PATH"
-  MOON_RESOLVED="$MOON_BIN/moon"
   echo "[session-start] moon: $("$MOON_BIN/moon" version 2>/dev/null)"
-elif [ -x "$HOME/.nix-profile/bin/nix" ]; then
-  NIX="$HOME/.nix-profile/bin/nix"
-  if ! [ -x "$MOON_PROFILE/bin/moon" ]; then
-    echo "[session-start] installing moonbit via nix (no ~/.moon present) ..."
-    rm -rf /homeless-shelter 2>/dev/null || true
-    mkdir -p "$(dirname "$MOON_PROFILE")"
-    "$NIX" profile install --profile "$MOON_PROFILE" \
-      "path:$PROJECT_DIR#moon" \
-      --extra-experimental-features 'nix-command flakes' || \
-      echo "[session-start] WARNING: moonbit nix install failed" >&2
-  fi
-  if [ -x "$MOON_PROFILE/bin/moon" ]; then
-    persist_env "PATH=$MOON_PROFILE/bin:$PATH"
-    MOON_RESOLVED="$MOON_PROFILE/bin/moon"
-    echo "[session-start] moon (nix): $("$MOON_PROFILE/bin/moon" version 2>/dev/null)"
-  else
-    echo "[session-start] WARNING: moon not found (nix fallback failed)" >&2
-  fi
 else
-  echo "[session-start] WARNING: moon not found under ~/.moon/bin and nix unavailable" >&2
+  echo "[session-start] WARNING: moon not found under ~/.moon/bin" >&2
 fi
 
 # wasm-opt: dist optimization (scripts/build_selfhost_dist.sh) calls `wasm-opt`.
 # MoonBit bundles binaryen as `moon-wasm-opt`; expose it under the expected name
 # when no standalone wasm-opt is on PATH. ~/.local/bin is writable and on PATH.
-if [ -n "$MOON_RESOLVED" ] && ! command -v wasm-opt >/dev/null 2>&1; then
-  MOON_WASM_OPT="$(dirname "$MOON_RESOLVED")/moon-wasm-opt"
-  if [ -x "$MOON_WASM_OPT" ]; then
+if [ -x "$MOON_BIN/moon" ] && ! command -v wasm-opt >/dev/null 2>&1; then
+  if [ -x "$MOON_BIN/moon-wasm-opt" ]; then
     mkdir -p "$HOME/.local/bin"
-    ln -sf "$MOON_WASM_OPT" "$HOME/.local/bin/wasm-opt"
+    ln -sf "$MOON_BIN/moon-wasm-opt" "$HOME/.local/bin/wasm-opt"
     persist_env "PATH=$HOME/.local/bin:$PATH"
-    echo "[session-start] wasm-opt -> $MOON_WASM_OPT"
+    echo "[session-start] wasm-opt -> $MOON_BIN/moon-wasm-opt"
   fi
 fi
 
@@ -119,7 +128,9 @@ WASMTIME_DIR="$HOME/.wasmtime"
 WASMTIME_BIN="$WASMTIME_DIR/bin/wasmtime"
 if ! [ -x "$WASMTIME_BIN" ] && ! command -v wasmtime >/dev/null 2>&1; then
   echo "[session-start] installing wasmtime ..."
-  WASMTIME_INSTALL_DIR="$WASMTIME_DIR" bash "$PROJECT_DIR/scripts/install_wasmtime_release.sh"
+  retry 3 "wasmtime install" \
+    env WASMTIME_INSTALL_DIR="$WASMTIME_DIR" bash "$PROJECT_DIR/scripts/install_wasmtime_release.sh" \
+    || true
 fi
 if [ -x "$WASMTIME_BIN" ]; then
   persist_env "PATH=$WASMTIME_DIR/bin:$PATH"
@@ -149,10 +160,11 @@ if [ -x "$NIX" ] && ! [ -x "$PKF_BIN" ]; then
   # breaks the purity check, so clear it before building.
   rm -rf /homeless-shelter 2>/dev/null || true
   mkdir -p "$(dirname "$PKF_PROFILE")"
-  "$NIX" profile install --profile "$PKF_PROFILE" \
+  retry 3 "pkf install" \
+    "$NIX" profile install --profile "$PKF_PROFILE" \
     'git+https://github.com/mizchi/pkfire?ref=refs/tags/v0.10.0' \
-    --extra-experimental-features 'nix-command flakes' || \
-    echo "[session-start] WARNING: pkf install failed" >&2
+    --extra-experimental-features 'nix-command flakes' \
+    || true
 fi
 if [ -x "$PKF_BIN" ]; then
   persist_env "PATH=$PKF_PROFILE/bin:$PATH"
@@ -165,7 +177,8 @@ if [ -x "$PKF_BIN" ]; then
   PKL_BIN_DIR="$(grep -oE '/nix/store/[a-z0-9]+-pkl-[0-9.]+/bin' "$PKF_BIN" 2>/dev/null | head -1 || true)"
   CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
   if [ -n "$PKL_BIN_DIR" ] && [ -x "$PKL_BIN_DIR/pkl" ] && [ -f "$PROJECT_DIR/Taskfile.pkl" ] && [ -e "$CA_BUNDLE" ]; then
-    if "$PKL_BIN_DIR/pkl" eval --ca-certificates="$CA_BUNDLE" "$PROJECT_DIR/Taskfile.pkl" >/dev/null 2>&1; then
+    if retry 3 "pkl cache warm" \
+      "$PKL_BIN_DIR/pkl" eval --ca-certificates="$CA_BUNDLE" "$PROJECT_DIR/Taskfile.pkl" >/dev/null 2>&1; then
       echo "[session-start] pkl package cache warmed"
     else
       echo "[session-start] WARNING: pkl cache warm failed (run pkf with pkl --ca-certificates)" >&2
@@ -180,6 +193,33 @@ if [ -x "$PKF_BIN" ]; then
       echo "[session-start] pkf git hooks installed"
     fi
   fi
+fi
+
+# --- 5. verification gate ------------------------------------------------
+# Fail loudly if a required tool did not land on PATH, instead of letting the
+# session proceed half-provisioned. Optional tools only warn.
+verify_fail=0
+verify_tool() {
+  local kind="$1" name="$2" ver_cmd="$3"
+  if command -v "$name" >/dev/null 2>&1; then
+    echo "[session-start] ok: $name — $(eval "$ver_cmd" 2>/dev/null | head -1)"
+  elif [ "$kind" = required ]; then
+    echo "[session-start] MISSING (required): $name" >&2
+    verify_fail=1
+  else
+    echo "[session-start] WARNING (optional): $name not found" >&2
+  fi
+}
+verify_tool required moon "moon version"
+verify_tool required moonc "moonc -v"
+verify_tool required moonrun "moonrun --version"
+verify_tool required wasmtime "wasmtime --version"
+verify_tool required pkf "pkf --version"
+verify_tool optional wasm-opt "wasm-opt --version"
+
+if [ "$verify_fail" = 1 ]; then
+  echo "[session-start] toolchain verification FAILED — required tools missing (see above)" >&2
+  exit 1
 fi
 
 echo "[session-start] toolchain init complete"

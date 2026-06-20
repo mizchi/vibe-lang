@@ -89,22 +89,13 @@
         };
       in
       {
-        # Reproducible toolchain packages. `packages.moon` is a self-contained
-        # MoonBit toolchain (moon + moonc + moonrun + moon-wasm-opt + bundled
-        # core). The Claude Code on the web SessionStart hook installs it via
-        # `nix profile install .#moon` (pinned by flake.lock) when the container
-        # image has no pre-baked ~/.moon.
-        #
-        # NB: the devShell uses `moon-patched_latest`, whose own bin holds only
-        # moon+moonrun and relies on nix propagating moonc/core onto PATH — that
-        # works inside `nix develop` but NOT for `nix profile install`. The
-        # `moonbit_latest` package bundles the full toolchain in one bin/, so it
-        # is the correct target for a standalone profile install.
-        packages = {
-          default = moonbit-overlay.packages.${system}.moonbit_latest;
-          moon = moonbit-overlay.packages.${system}.moonbit_latest;
-        };
-
+        # NB: the MoonBit toolchain here (moonbit-overlay, pinned via flake.lock)
+        # is NOT the project's canonical compiler. vibe-lang tracks the official
+        # CDN "latest" moon — CI installs it via scripts/install_moonbit.sh and
+        # the CDN cannot serve pinned versions. The flake/devShell is a
+        # convenience for nix users and may lag behind what builds the current
+        # source. The Claude Code on the web SessionStart hook deliberately
+        # installs moon via scripts/install_moonbit.sh (CI-aligned), not nix.
         devShells.default = pkgs.mkShell {
           buildInputs = [
             # MoonBit toolchain (from moonbit-overlay)
