@@ -6,7 +6,7 @@
 # that are NOT on PATH by default in a fresh remote container:
 #
 #   1. nix       (already installed under ~/.nix-profile, just not on PATH)
-#   2. moon      (MoonBit; ships under ~/.moon/bin, only added by interactive bashrc)
+#   2. moon      (MoonBit; ~/.moon/bin if pre-baked, else nix-installed from .#moon)
 #   3. wasmtime  (installed on demand via scripts/install_wasmtime_release.sh)
 #   4. pkf       (pkfire task runner; installed via nix from the upstream flake)
 #
@@ -67,12 +67,51 @@ fi
 # wasmtime is only useful here if vibe can be (re)built, and `moon` is what
 # builds it. moon ships under ~/.moon/bin but is only added to PATH by the
 # interactive section of ~/.bashrc, so non-interactive tool shells miss it.
+#
+# Some container images do NOT pre-bake ~/.moon. In that case fall back to a
+# reproducible nix install of the MoonBit toolchain from this repo's flake
+# (`.#moon`, pinned by flake.lock — the same toolchain `nix develop` uses) into
+# a dedicated profile, mirroring the pkfire install below.
 MOON_BIN="$HOME/.moon/bin"
+MOON_PROFILE="$HOME/.nix-profiles/moonbit"
+MOON_RESOLVED=""
 if [ -x "$MOON_BIN/moon" ]; then
   persist_env "PATH=$MOON_BIN:$PATH"
+  MOON_RESOLVED="$MOON_BIN/moon"
   echo "[session-start] moon: $("$MOON_BIN/moon" version 2>/dev/null)"
+elif [ -x "$HOME/.nix-profile/bin/nix" ]; then
+  NIX="$HOME/.nix-profile/bin/nix"
+  if ! [ -x "$MOON_PROFILE/bin/moon" ]; then
+    echo "[session-start] installing moonbit via nix (no ~/.moon present) ..."
+    rm -rf /homeless-shelter 2>/dev/null || true
+    mkdir -p "$(dirname "$MOON_PROFILE")"
+    "$NIX" profile install --profile "$MOON_PROFILE" \
+      "path:$PROJECT_DIR#moon" \
+      --extra-experimental-features 'nix-command flakes' || \
+      echo "[session-start] WARNING: moonbit nix install failed" >&2
+  fi
+  if [ -x "$MOON_PROFILE/bin/moon" ]; then
+    persist_env "PATH=$MOON_PROFILE/bin:$PATH"
+    MOON_RESOLVED="$MOON_PROFILE/bin/moon"
+    echo "[session-start] moon (nix): $("$MOON_PROFILE/bin/moon" version 2>/dev/null)"
+  else
+    echo "[session-start] WARNING: moon not found (nix fallback failed)" >&2
+  fi
 else
-  echo "[session-start] WARNING: moon not found under ~/.moon/bin" >&2
+  echo "[session-start] WARNING: moon not found under ~/.moon/bin and nix unavailable" >&2
+fi
+
+# wasm-opt: dist optimization (scripts/build_selfhost_dist.sh) calls `wasm-opt`.
+# MoonBit bundles binaryen as `moon-wasm-opt`; expose it under the expected name
+# when no standalone wasm-opt is on PATH. ~/.local/bin is writable and on PATH.
+if [ -n "$MOON_RESOLVED" ] && ! command -v wasm-opt >/dev/null 2>&1; then
+  MOON_WASM_OPT="$(dirname "$MOON_RESOLVED")/moon-wasm-opt"
+  if [ -x "$MOON_WASM_OPT" ]; then
+    mkdir -p "$HOME/.local/bin"
+    ln -sf "$MOON_WASM_OPT" "$HOME/.local/bin/wasm-opt"
+    persist_env "PATH=$HOME/.local/bin:$PATH"
+    echo "[session-start] wasm-opt -> $MOON_WASM_OPT"
+  fi
 fi
 
 # --- 3. wasmtime ---------------------------------------------------------

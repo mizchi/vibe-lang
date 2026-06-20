@@ -89,6 +89,22 @@
         };
       in
       {
+        # Reproducible toolchain packages. `packages.moon` is a self-contained
+        # MoonBit toolchain (moon + moonc + moonrun + moon-wasm-opt + bundled
+        # core). The Claude Code on the web SessionStart hook installs it via
+        # `nix profile install .#moon` (pinned by flake.lock) when the container
+        # image has no pre-baked ~/.moon.
+        #
+        # NB: the devShell uses `moon-patched_latest`, whose own bin holds only
+        # moon+moonrun and relies on nix propagating moonc/core onto PATH — that
+        # works inside `nix develop` but NOT for `nix profile install`. The
+        # `moonbit_latest` package bundles the full toolchain in one bin/, so it
+        # is the correct target for a standalone profile install.
+        packages = {
+          default = moonbit-overlay.packages.${system}.moonbit_latest;
+          moon = moonbit-overlay.packages.${system}.moonbit_latest;
+        };
+
         devShells.default = pkgs.mkShell {
           buildInputs = [
             # MoonBit toolchain (from moonbit-overlay)
@@ -101,6 +117,9 @@
             wasmtimeRelease
             pkgs.wasm-tools
             pkgs.wac-cli
+            # wasm-opt — dist artifact optimization (scripts/build_selfhost_dist.sh).
+            # Scripts degrade gracefully without it, but the optimized dist needs it.
+            pkgs.binaryen
 
             # Node.js (for moon test --target js)
             pkgs.nodejs_24
