@@ -13,7 +13,7 @@
 #                 serve pinned versions, so the project tracks latest by design;
 #                 do NOT substitute a frozen nix pin here, it will be too stale
 #                 to build the current source.) Also fetches project deps into
-#                 .mooncakes (moon update + install) so the first build works.
+#                 .mooncakes (moon update + check) so the first build works.
 #   3. wasmtime  (scripts/install_wasmtime_release.sh — version pinned in-script)
 #   4. pkf       (pkfire task runner; nix install pinned to v0.10.0, as CI uses)
 #
@@ -121,9 +121,14 @@ fi
 if [ -x "$MOON_BIN/moon" ] \
   && { [ -f "$PROJECT_DIR/moon.mod" ] || [ -f "$PROJECT_DIR/moon.mod.json" ]; } \
   && [ ! -d "$PROJECT_DIR/.mooncakes" ]; then
-  echo "[session-start] fetching MoonBit deps (moon update + install) ..."
+  echo "[session-start] fetching MoonBit deps (moon update + check) ..."
   ( cd "$PROJECT_DIR" && retry 3 "moon update" "$MOON_BIN/moon" update ) || true
-  ( cd "$PROJECT_DIR" && retry 3 "moon install" "$MOON_BIN/moon" install ) || true
+  # `moon check` resolves and downloads the deps declared in moon.mod into
+  # .mooncakes (the non-deprecated path — bare `moon install` is deprecated) and
+  # doubles as a build smoke test. Output is suppressed; the status line below
+  # reports whether .mooncakes ended up present.
+  moon_fetch_deps() { ( cd "$PROJECT_DIR" && "$MOON_BIN/moon" check >/dev/null 2>&1 ); }
+  retry 3 "moon check" moon_fetch_deps || true
 fi
 if [ -x "$MOON_BIN/moon" ] \
   && { [ -f "$PROJECT_DIR/moon.mod" ] || [ -f "$PROJECT_DIR/moon.mod.json" ]; }; then
