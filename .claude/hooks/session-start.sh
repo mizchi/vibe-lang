@@ -12,7 +12,8 @@
 #                 — the official CDN "latest", identical to CI. The CDN cannot
 #                 serve pinned versions, so the project tracks latest by design;
 #                 do NOT substitute a frozen nix pin here, it will be too stale
-#                 to build the current source.)
+#                 to build the current source.) Also fetches project deps into
+#                 .mooncakes (moon update + install) so the first build works.
 #   3. wasmtime  (scripts/install_wasmtime_release.sh — version pinned in-script)
 #   4. pkf       (pkfire task runner; nix install pinned to v0.10.0, as CI uses)
 #
@@ -109,6 +110,28 @@ if [ -x "$MOON_BIN/moon" ]; then
   echo "[session-start] moon: $("$MOON_BIN/moon" version 2>/dev/null)"
 else
   echo "[session-start] WARNING: moon not found under ~/.moon/bin" >&2
+fi
+
+# --- 2b. project dependencies (.mooncakes) -------------------------------
+# A fresh clone has no .mooncakes, and even a pre-baked ~/.moon can carry a
+# stale registry index (deps fail with "module not found"). Refresh the index
+# (moon update) and fetch the deps declared in moon.mod (moon install) so the
+# first check/build/test in the session works. Best-effort: a transient network
+# failure here should not abort the whole session (the build will surface it).
+if [ -x "$MOON_BIN/moon" ] \
+  && { [ -f "$PROJECT_DIR/moon.mod" ] || [ -f "$PROJECT_DIR/moon.mod.json" ]; } \
+  && [ ! -d "$PROJECT_DIR/.mooncakes" ]; then
+  echo "[session-start] fetching MoonBit deps (moon update + install) ..."
+  ( cd "$PROJECT_DIR" && retry 3 "moon update" "$MOON_BIN/moon" update ) || true
+  ( cd "$PROJECT_DIR" && retry 3 "moon install" "$MOON_BIN/moon" install ) || true
+fi
+if [ -x "$MOON_BIN/moon" ] \
+  && { [ -f "$PROJECT_DIR/moon.mod" ] || [ -f "$PROJECT_DIR/moon.mod.json" ]; }; then
+  if [ -d "$PROJECT_DIR/.mooncakes" ]; then
+    echo "[session-start] MoonBit deps present (.mooncakes)"
+  else
+    echo "[session-start] WARNING: .mooncakes missing — deps not fetched" >&2
+  fi
 fi
 
 # wasm-opt: dist optimization (scripts/build_selfhost_dist.sh) calls `wasm-opt`.
