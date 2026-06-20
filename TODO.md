@@ -29,11 +29,14 @@ bootstrap / fallback として通常開発では触らない。
 - [ ] **compiler wasm artifact 層**: `vibe/compiler/` の selfhost CLI/component/check
   entry と `scripts/build_selfhost_dist.sh` を canonical 配布物として整理する。
   - `selfhost-generation` 管理層は追加済み (`bootstrap/selfhost/seed.json`,
-    `scripts/selfhost_generations.sh`)。現時点の first blocker:
-    seed `cli_main` で `vibe/compiler/selfhost_cli_support.vibe` を stage1 build
-    すると `Env::ArgsLen > index` (perform 結果の order 比較) を pinned seed が
-    扱えず stage1 で trap する (**#584** で再現・切り分け済み)。seed bump で
-    解消してから stage2 を bootstrap bump 候補にする。
+    `scripts/selfhost_generations.sh`)。seed → stage1 → stage2 → stage3 は
+    pinned seed のまま deterministic に通る状態に復旧済み (**#584** 解決)。
+    真因は seed 非互換ではなく、#557/#558 (WASI 0.3 async) が
+    `checker/builtins_async.vibe` と `component_codegen.vibe` を
+    `selfhost_sources_manifest.tsv` に登録し忘れ、flat bundle が定義欠落の
+    dangling ref を含んでいたこと + 新 prelude (`String::replace_all`) /
+    nested pattern を seed 非互換に使っていたこと。manifest 追記と
+    seed 互換書き換えで解消 (seed bump 不要)。
 - [ ] **MoonBit `src/` 退役**: 通常の compile/check/test/CLI 経路を selfhost
   wasm + runner へ向ける。新機能や CLI 挙動変更は `src/` に入れない。削除は
   parity/cutover gate が CI で継続 green になってから段階的に行う。
