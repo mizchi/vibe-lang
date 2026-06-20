@@ -43,6 +43,8 @@ bootstrap / fallback として通常開発では触らない。
 - [ ] **#482** host `mizchi/ripple` verifier の O(n²) memo scan — **upstream publish 待ちで bump のみ**。host typecheck hot path に効く(selfhost 側 ripple は #483 で O(N) 化済)。`moon.mod` の `mizchi/ripple` を修正版公開後に bump。
 - [ ] **#415** codegen builtin を 2 backend 共有 registry に refactor (Phase B) — linear↔wasm-gc の parity 117 件ずれ、新 builtin 追加時の silent regression 温床。3-6 週、namespace 単位の小 PR 5-7 本。wasm-gc default 化 (Phase D) の前提。
 - [ ] **#418** ADR-0052 Phase 2/3 — `mut` struct field の `state_local` effect 分類 + escape 検査。ADR-0017 `state_local` 実装が前提。大規模・既存コード影響大。
+- [x] **#581** selfhost linear backend の indexed for-in (`for i, x in arr`) で index 変数が束縛されない — gc 側の index binding を `compile_expr_tail2.vibe` に移植して解消（RC 時は `<<1`）。selfbuild + async gate green。
+- [x] **#582** `for await` = pull-only を**言語仕様として確定**（spec 収束）。selfhost は parser マーカーで強制済み。host は現状型ベースの permissive 実装のままとし（spec 適合プログラムは両者一致）、host の hard enforcement は ROI 低で見送り。docs (spec/cheatsheet/ADR-0012) 更新済み。
 
 ### 🟡 機能 / 品質 (issue 化候補、TODO 内に詳細あり)
 

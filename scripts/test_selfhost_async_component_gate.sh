@@ -148,13 +148,27 @@ printf 'let run: () -> Int with { Async } = () -> { await(Future::ready(%s)) }\n
   printf '  await(Stream::fold(String::to_bytes(echoed), 0, (acc, b) -> { acc + b }))\n'
   printf '}\n'
 } > "$STR_INPUT"
-# Async-iterator surface (docs/spec §M2c-3): `for await x in stream { ... }`
-# consumes a ByteStream element-by-element. Sum the bytes of "ABC" (65+66+67 =
-# 198), minus 156 -> 42.
+# Async-iterator surface (docs/spec §M2c-3): `for await x in pull { ... }` drives
+# a pull closure `() -> Option[T]` to `None`. The selfhost desugar calls the
+# closure once per step (build_pull_for_in), so the iterable here is a real pull
+# source (a 0-arg closure yielding the bytes of "ABC" then None), not an eager
+# array. Sum the bytes of "ABC" (65+66+67 = 198), minus 156 -> 42.
 {
   printf 'let run: () -> Int with { Async } = () -> {\n'
+  printf '  let bytes = String::to_bytes("ABC")\n'
+  printf '  let len = Array::length(bytes)\n'
+  printf '  let mut i = 0\n'
+  printf '  let next = () -> {\n'
+  printf '    if i < len {\n'
+  printf '      let b = Array::get(bytes, i)\n'
+  printf '      i = i + 1\n'
+  printf '      Some(b)\n'
+  printf '    } else {\n'
+  printf '      None\n'
+  printf '    }\n'
+  printf '  }\n'
   printf '  let mut total = 0\n'
-  printf '  for await b in String::to_bytes("ABC") {\n'
+  printf '  for await b in next {\n'
   printf '    total = total + b\n'
   printf '  }\n'
   printf '  total - 156\n'

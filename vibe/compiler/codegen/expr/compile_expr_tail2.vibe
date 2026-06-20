@@ -13,7 +13,7 @@ import .. / common_base {
 }
 
 import .. / common_extractors {
-  array_contains_str, emit_assignop_op, emit_memory_copy, find_catchall_idx, get_earray_elems, get_eassign_body, get_eassign_name, get_eassign_val, get_eassignop_body, get_eassignop_name, get_eassignop_op, get_eassignop_val, get_ebinop_lhs, get_ebinop_rhs, get_ebool_value, get_ecall_args, get_ecall_callee, get_efloat_value, get_efn_params, get_eforin_body, get_eforin_iter, get_eforin_name, get_eident_name, get_eint_value, get_eletmut_body, get_eletmut_name, get_eletmut_val, get_eletrec_body, get_eletrec_name, get_eletrec_val, get_eseq_first, get_eseq_second, get_estring_value, get_ethrow_expr, get_etuple_elems, get_eunaryop_expr, get_eunaryop_op, get_ewhile_body, get_ewhile_cond, get_match_arms, get_match_scrutinee, get_pbind_name, get_pbool_value, get_pctor_args, get_pctor_name, get_pint_value, get_pstring_value, get_ptuple_pats, get_slet_export, str_table_lookup
+  array_contains_str, emit_assignop_op, emit_memory_copy, find_catchall_idx, get_earray_elems, get_eassign_body, get_eassign_name, get_eassign_val, get_eassignop_body, get_eassignop_name, get_eassignop_op, get_eassignop_val, get_ebinop_lhs, get_ebinop_rhs, get_ebool_value, get_ecall_args, get_ecall_callee, get_efloat_value, get_efn_params, get_eforin_body, get_eforin_index, get_eforin_iter, get_eforin_name, get_eident_name, get_eint_value, get_eletmut_body, get_eletmut_name, get_eletmut_val, get_eletrec_body, get_eletrec_name, get_eletrec_val, get_eseq_first, get_eseq_second, get_estring_value, get_ethrow_expr, get_etuple_elems, get_eunaryop_expr, get_eunaryop_op, get_ewhile_body, get_ewhile_cond, get_match_arms, get_match_scrutinee, get_pbind_name, get_pbool_value, get_pctor_args, get_pctor_name, get_pint_value, get_pstring_value, get_ptuple_pats, get_slet_export, str_table_lookup
 }
 
 import .. / wasm_emit {
@@ -219,6 +219,7 @@ export let compile_expr_tail2: (Bytes, Expr, Array[String], Int, CompileCtx, Int
       nl
     }
   } else if __tag == 18 {
+    let names_len_at_forin = Array::length(local_names)
     let var_name = get_eforin_name(expr)
     let iter_expr = get_eforin_iter(expr)
     let body = get_eforin_body(expr)
@@ -245,13 +246,30 @@ export let compile_expr_tail2: (Bytes, Expr, Array[String], Int, CompileCtx, Int
     emit_call(buf, arr_len_fi)
     emit_i64_ge_s(buf)
     emit_br_if(buf, 1)
-    let var_local = nl1
+    // Indexed `for i, x in arr`: bind the loop counter to the user index name
+    // before the value var (gc backend parity — backend_expr.vibe). The counter
+    // `i_local` is a raw i64; under RC ints are `value << 1`, so shift to match
+    // the user-visible Int representation (same as EInt codegen).
+    let index_name = get_eforin_index(expr)
+    let var_local = match index_name {
+      Some(idx_name) => {
+        emit_local_get(buf, i_local)
+        if ctx.enable_rc {
+          emit_i64_const(buf, 1)
+          emit_i64_shl(buf)
+        }
+        emit_local_set(buf, nl1)
+        Array::push(local_names, idx_name)
+        nl1 + 1
+      },
+      None => nl1
+    }
     emit_local_get(buf, arr_local)
     emit_local_get(buf, i_local)
     emit_call(buf, arr_get_fi)
     emit_local_set(buf, var_local)
     Array::push(local_names, var_name)
-    let nl2 = nl1 + 1
+    let nl2 = var_local + 1
     let nl3 = compile_expr(buf, body, local_names, nl2, ctx, ld + 1)
     let body_val = nl3
     Array::push(local_names, "__forin_val")
@@ -267,7 +285,18 @@ export let compile_expr_tail2: (Bytes, Expr, Array[String], Int, CompileCtx, Int
     emit_end(buf)
     emit_end(buf)
     emit_local_get(buf, result_local)
-    nl3 + 1
+    // Restore the outer scope. The loop's internal bindings (result/arr/i, the
+    // optional index name, the value name, and the body temp) must not leak into
+    // later identifier lookups, which scan local_names from the end and would
+    // otherwise resolve a shadowed outer var to a stale loop slot. Mirror
+    // compile_match: truncate back to the entry length, then pad with placeholders
+    // up to the high-water local count so slot numbering is preserved.
+    let final_nl = nl3 + 1
+    Array::truncate(local_names, names_len_at_forin)
+    while Array::length(local_names) < final_nl {
+      Array::push(local_names, "")
+    }
+    final_nl
   } else {
     compile_expr_tail3(buf, expr, local_names, next_local, ctx, ld, compile_expr)
   }

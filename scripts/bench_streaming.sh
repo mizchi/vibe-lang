@@ -112,8 +112,20 @@ emit_program() {
         printf '    let s = Stream::to_string(bs)\n'
         printf '    acc = acc + String::length(s)\n' ;;
       for_await)
+        printf '    let bytes = String::to_bytes(input)\n'
+        printf '    let len = Array::length(bytes)\n'
+        printf '    let mut i = 0\n'
+        printf '    let next = () -> {\n'
+        printf '      if i < len {\n'
+        printf '        let b = Array::get(bytes, i)\n'
+        printf '        i = i + 1\n'
+        printf '        Some(b)\n'
+        printf '      } else {\n'
+        printf '        None\n'
+        printf '      }\n'
+        printf '    }\n'
         printf '    let mut total = 0\n'
-        printf '    for await b in String::to_bytes(input) {\n'
+        printf '    for await b in next {\n'
         printf '      total = total + b\n'
         printf '    }\n'
         printf '    acc = acc + total\n' ;;
