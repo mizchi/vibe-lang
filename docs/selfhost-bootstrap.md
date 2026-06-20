@@ -50,9 +50,15 @@ dispatch は `vibe/cli/`、compiler 本体・link/check/build helper は
 
 ```bash
 pkf run selfhost-generation-seed-info
+pkf run selfhost-generation-status   # read-only: seed pin + latest generation
 pkf run selfhost-generation -- --stage3
 scripts/selfhost_generations.sh adopt --artifact _build/selfhost/generations/<gen>/stage2.wasm
 ```
+
+`status` (= `scripts/selfhost_generations.sh status`) は rebuild せずに、pin
+された seed (sha 検証付き)、現在の source commit、直近の generation manifest
+(stage0..stage3 の sha と `stage3_equal_stage2`) を一覧する。stage0 -> stage1 ->
+stage2 -> bootstrap bump の流れを追跡したいときの入口にする。
 
 `adopt` は stage2 artifact を seed path にコピーし、`bootstrap/selfhost/seed.json`
 の sha256 を更新する。bootstrap bump ではこの manifest 更新を独立 commit として

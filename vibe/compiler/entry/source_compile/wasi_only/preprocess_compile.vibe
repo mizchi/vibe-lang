@@ -43,21 +43,31 @@ let entry_declares_async_int: (Array[Stmt], String) -> Bool = (stmts, entry_name
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SLet(_, _, name, Some(ty), _) => if name == entry_name {
-        match ty {
-          TyFn(params, ret, Some(eff)) => if String::contains(eff, "Async") && Array::length(params) == 0 {
-            match ret {
-              TyName(rn) => if rn == "Int" {
-                found = true
+      SLet(_, _, name, opt_ty, _) => if name == entry_name {
+        // Flattened patterns: the pinned selfhost seed does not bind variables
+        // inside nested constructor patterns (e.g. `Some(ty)` as a sub-pattern),
+        // so match each Option level separately to stay seed-buildable
+        // (docs/selfhost-bootstrap.md, new-feature rule).
+        match opt_ty {
+          Some(ty) => match ty {
+            TyFn(params, ret, opt_eff) => match opt_eff {
+              Some(eff) => if String::contains(eff, "Async") && Array::length(params) == 0 {
+                match ret {
+                  TyName(rn) => if rn == "Int" {
+                    found = true
+                  } else {
+                    ()
+                  },
+                  _ => ()
+                }
               } else {
                 ()
               },
-              _ => ()
-            }
-          } else {
-            ()
+              None => ()
+            },
+            _ => ()
           },
-          _ => ()
+          None => ()
         }
       } else {
         ()

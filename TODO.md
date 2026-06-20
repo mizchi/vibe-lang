@@ -29,10 +29,14 @@ bootstrap / fallback として通常開発では触らない。
 - [ ] **compiler wasm artifact 層**: `vibe/compiler/` の selfhost CLI/component/check
   entry と `scripts/build_selfhost_dist.sh` を canonical 配布物として整理する。
   - `selfhost-generation` 管理層は追加済み (`bootstrap/selfhost/seed.json`,
-    `scripts/selfhost_generations.sh`)。現時点の first blocker:
-    seed `cli_main` で `vibe/compiler/selfhost_cli_support.vibe` を stage1 build
-    すると `Env::ArgsLen > index` が selfhost checker で `type mismatch in '>'`
-    になる。ここを解消してから stage2 を bootstrap bump 候補にする。
+    `scripts/selfhost_generations.sh`)。seed → stage1 → stage2 → stage3 は
+    pinned seed のまま deterministic に通る状態に復旧済み (**#584** 解決)。
+    真因は seed 非互換ではなく、#557/#558 (WASI 0.3 async) が
+    `checker/builtins_async.vibe` と `component_codegen.vibe` を
+    `selfhost_sources_manifest.tsv` に登録し忘れ、flat bundle が定義欠落の
+    dangling ref を含んでいたこと + 新 prelude (`String::replace_all`) /
+    nested pattern を seed 非互換に使っていたこと。manifest 追記と
+    seed 互換書き換えで解消 (seed bump 不要)。
 - [ ] **MoonBit `src/` 退役**: 通常の compile/check/test/CLI 経路を selfhost
   wasm + runner へ向ける。新機能や CLI 挙動変更は `src/` に入れない。削除は
   parity/cutover gate が CI で継続 green になってから段階的に行う。
@@ -40,6 +44,7 @@ bootstrap / fallback として通常開発では触らない。
 ### 🟠 open issues (一次ソース)
 
 - [ ] **#402** selfhost cutover tracking — perf/RSS/corpus gate は通過。残りは移行配線。
+- [ ] **#584** pinned seed が `perform <Effect> > n` (order 比較) を含む現 source を build できず stage1 で trap。修正は bootstrap bump (seed 再生成 → adopt → bump gate)。#529 first blocker の切り出し。
 - [ ] **#482** host `mizchi/ripple` verifier の O(n²) memo scan — **upstream publish 待ちで bump のみ**。host typecheck hot path に効く(selfhost 側 ripple は #483 で O(N) 化済)。`moon.mod` の `mizchi/ripple` を修正版公開後に bump。
 - [ ] **#415** codegen builtin を 2 backend 共有 registry に refactor (Phase B) — linear↔wasm-gc の parity 117 件ずれ、新 builtin 追加時の silent regression 温床。3-6 週、namespace 単位の小 PR 5-7 本。wasm-gc default 化 (Phase D) の前提。
 - [ ] **#418** ADR-0052 Phase 2/3 — `mut` struct field の `state_local` effect 分類 + escape 検査。ADR-0017 `state_local` 実装が前提。大規模・既存コード影響大。
