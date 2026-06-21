@@ -113,13 +113,31 @@ Assignment: `=` `+=` `-=` `*=` `/=` `%=` (statement, not expr)
 
 ```vibe
 x |> f            // f(x)
-x |> f(a, b)      // f(x, a, b)
+x |> f(a, b)      // f(x, a, b)   — value is prepended
+x |> f(a, _)      // f(a, x)      — `_` marks where the value goes
+x |> g(a, _, b)   // g(a, x, b)
 x |> f |> g       // g(f(x))
 arr |> Array::length
 s |> String::trim |> String::length
 ```
 
+Without a `_`, the piped value becomes the **first** argument. A bare `_` in
+the call's arguments substitutes the value at that position instead (no
+prepend). A *compound* placeholder such as `_ * 2` is a section lambda
+(`(v) -> v * 2`), not a pipe slot — so `xs |> Array::map(_, _ * 2)` reads as
+`Array::map(xs, (v) -> v * 2)`.
+
 `.` is field access only. No method call sugar (`obj.method()` is error).
+
+### Function combinators (point-free)
+
+```vibe
+// vibe has no `>>` compose operator (`>>` is arithmetic shift) — use functions
+compose(f, g)            // (x) -> g(f(x))   apply f then g
+identity                 // (x) -> x         no-op stage / default
+flip(f)                  // (b, a) -> f(a, b)
+Array::map(xs, compose(parse, render))
+```
 
 ## Control Flow
 
@@ -261,6 +279,35 @@ let fetch_user: (String) -> Result[String, String] = (raw) -> {
   |> Result::and_then(validate_id)
   |> Result::and_then(load_user)
 }
+```
+
+### Railway bind (`let*`)
+
+`let* x = e` unwraps an `Ok` and binds `x`, or short-circuits the whole block
+with the `Err`. It desugars to `match e { Ok(x) => <rest>, Err(e) => Err(e) }`,
+so the enclosing function must return a `Result`. Handy when stages need
+names instead of point-free `and_then`:
+
+```vibe
+let fetch_user: (String) -> Result[String, String] = (raw) -> {
+  let* id   = parse_id(raw)        // returns Err early on failure
+  let* valid = validate_id(id)
+  load_user(valid)                 // last expr is the block's Result
+}
+```
+
+### Debugging a pipeline (`tap`)
+
+`tap` runs a side effect on the value and returns it unchanged — observe a
+stage without breaking the `|>` chain. Railway variants `tap_ok` / `tap_err` /
+`tap_some` observe only one track:
+
+```vibe
+x
+|> tap((v) -> stdout_write("step: \{Int::to_string(v)}\n"))
+|> next_stage
+
+result |> tap_ok((v) -> stdout_write("ok\n")) |> tap_err((e) -> stdout_write("err\n"))
 ```
 
 ### Error boundary (`throw` / `handle`)
