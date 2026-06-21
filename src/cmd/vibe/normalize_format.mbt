@@ -647,6 +647,19 @@ fn collect_rb_expr(
 }
 
 ///|
+fn rb_span_brackets_braces(source : String, b : RedundantBlockSpan) -> Bool {
+  if b.block_start < 0 ||
+    b.block_end > source.length() ||
+    b.block_start >= b.block_end ||
+    b.inner_start < b.block_start ||
+    b.inner_end > b.block_end {
+    return false
+  }
+  source.unsafe_substring(start=b.block_start, end=b.block_start + 1) == "{" &&
+  source.unsafe_substring(start=b.block_end - 1, end=b.block_end) == "}"
+}
+
+///|
 fn strip_redundant_blocks_once(source : String) -> String {
   let ast = @parser.parse_ast(source) catch { _ => return source }
   let blocks : Array[RedundantBlockSpan] = []
@@ -659,6 +672,12 @@ fn strip_redundant_blocks_once(source : String) -> String {
   let mut cursor = 0
   for b in blocks {
     if b.block_start < cursor {
+      continue
+    }
+    // Only collapse spans that actually bracket a literal `{ ... }`. Desugars
+    // such as `let*` synthesize Block nodes whose spans cover non-brace source
+    // (e.g. `let* x = e`); rewriting by those spans would corrupt the file.
+    if not(rb_span_brackets_braces(source, b)) {
       continue
     }
     out.write_string(source.unsafe_substring(start=cursor, end=b.block_start))

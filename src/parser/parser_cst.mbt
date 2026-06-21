@@ -533,6 +533,11 @@ fn Parser::parse_let_stmt(self : Parser) -> Unit {
   self.builder.start_node(let_stmt())
   self.bump() // let
   self.skip_trivia()
+  // `let*` railway bind: keep the `*` token so the formatter preserves it.
+  if self.at(star()) {
+    self.bump()
+    self.skip_trivia()
+  }
   if self.at(rec_kw()) {
     self.bump()
     self.skip_trivia()
