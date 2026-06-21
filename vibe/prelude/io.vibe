@@ -1,3 +1,13 @@
+//# Imports
+
+import ./result.vibe {
+  Result
+}
+
+import ./option.vibe {
+  Option
+}
+
 //# Functions
 
 export let stdin_read = (max_bytes: Int) -> String with { Stdin } {
@@ -13,6 +23,50 @@ export let ansi_escape = (suffix: String) -> Unit with { Stdout } {
 
 export let stdout_write = (s: String) -> Unit with { Stdout } {
   perform Stdout::WriteStream(s)
+}
+
+// `tap` runs a side-effecting callback on a value and returns it unchanged —
+// the generic pipeline tap for printing intermediate values:
+//   x |> tap((v) -> stdout_write("step: \{Int::to_string(v)}\n")) |> next
+// The callback is fixed to the concrete `Stdout` effect.
+export let tap = [T](x: T, f: (v: T) -> Unit with { Stdout }) -> T with { Stdout } {
+  f(x)
+  x
+}
+
+// Railway taps for Result/Option live here (effect-boundary), not in the
+// pure-data result/option modules: per the prelude Effect Signature Policy a
+// pure-data module must not expose `with {...}` in its public surface.
+// `r |> tap_ok((v) -> stdout_write(...)) |> next` observes the Ok track
+// without leaving the pipeline.
+export let tap_ok = [T, E](res: Result[T, E], f: (v: T) -> Unit with { Stdout }) -> Result[T, E] with { Stdout } {
+  match res {
+    Ok(value) => {
+      f(value)
+      Ok(value)
+    },
+    Err(e) => Err(e)
+  }
+}
+
+export let tap_err = [T, E](res: Result[T, E], f: (v: E) -> Unit with { Stdout }) -> Result[T, E] with { Stdout } {
+  match res {
+    Ok(value) => Ok(value),
+    Err(e) => {
+      f(e)
+      Err(e)
+    }
+  }
+}
+
+export let tap_some = [T](opt: Option[T], f: (v: T) -> Unit with { Stdout }) -> Option[T] with { Stdout } {
+  match opt {
+    Some(value) => {
+      f(value)
+      Some(value)
+    },
+    _ => None
+  }
 }
 
 export let stdout_writeln = (s: String) -> Unit with { Stdout } {
