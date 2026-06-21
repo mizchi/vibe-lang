@@ -158,6 +158,59 @@ cutover 後も runner と compiler artifact は分ける。
 runner layer は性能・実行基盤の都合で差し替えてよいが、canonical compiler は
 portable selfhost wasm として再構築できることを gate に残す。
 
+## Compiler wasm artifact 層の contract (#529)
+
+compiler wasm を作る入口は 2 つある。両者は **同じ compiler source** を入力に
+するが、**builder が異なる**ため成果物の byte は一致しない。これは設計上の前提
+であり、等価性は byte 統一ではなく contract + parity gate で保証する。
+
+| artifact | builder | 出力先 | 役割 |
+|---|---|---|---|
+| dist | `scripts/build_selfhost_dist.sh` | `_build/dist/selfhost_compiler.wasm` (+ `_raw`) | MoonBit host-compiled の shipping artifact。配布・実行用。wasm-opt `-O3` を通す。 |
+| stage2 | `scripts/selfhost_generations.sh build` | `_build/selfhost/generations/<ts>/stage2.wasm` | pinned seed から self-reproduce した candidate。bootstrap bump 判断用。 |
+
+- dist は host (`src/`) MoonBit codegen の出力、stage2 は selfhost wasm codegen の
+  出力なので、**compiler binary 同士の byte 比較は意味がない**。生成入口を
+  一本化せず役割で分けるのが canonical な扱い。
+- `scripts/selfhost_generations.sh status` で seed pin / source commit / 直近
+  generation manifest (stage0..stage3 の sha, stage3==stage2) を rebuild 無しで
+  確認できる。stage0 → stage1 → stage2 → bump の追跡入口。
+
+### `vibe.abi` custom section contract
+
+selfhost codegen (`vibe/compiler/codegen/wasm_emit/metadata.vibe::emit_vibe_abi_custom_section`)
+は **生成する program wasm** に custom section `vibe.abi` を埋め込む。これは
+compiler binary 自身にも (selfhost が自分自身を compile した結果なので) 載る。
+
+```
+section id 0 (custom), name "vibe.abi", payload:
+  version=1
+  host_import_abi=<abi>
+```
+
+- `version` は section レイアウトの版。
+- `host_import_abi` は runner 層 (`VIBE_SELFHOST_IMPORT_ABI`) の host import 選択に
+  対応する (現状 `raw`)。runner はこの値で import の解決方法を切り替える。
+- host (`src/`) codegen はこの section を emit しない。したがって host-compiled な
+  dist binary 自体には載らないが、**dist / stage2 のどちらで compile しても、出力
+  program wasm の `vibe.abi` は一致しなければならない** (= ABI contract)。
+
+### parity gate
+
+`scripts/test_selfhost_dist_stage2_parity.sh`
+(`pkf run test-selfhost-dist-stage2-parity`) が contract を検証する。dist / stage2
+両 compiler で同一 sample を compile し、
+
+1. 出力 program wasm の `vibe.abi` 一致、
+2. 両方 42 を返す behavioural parity、
+3. 既定で出力 wasm の byte 一致 (`VIBE_DIST_PARITY_REQUIRE_HASH=0` で behavioural +
+   ABI のみに緩和)
+
+を assert する。`--self-test` は build 無しで pinned seed wasm に対し `vibe.abi`
+抽出ロジックだけを検証する (CI/build 不要の smoke)。gate は
+`release-selfhost-gates` に組み込む。stage2 再生成が前提なので、初回 green は
+seed が build 環境にある状態で確認する。
+
 ## MoonBit `src/` の退役
 
 `src/` は selfhost cutover 後、legacy bootstrap/fallback 層へ縮退する。
