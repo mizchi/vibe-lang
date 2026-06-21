@@ -285,6 +285,14 @@ just component-run script.vibe
 
 ## 12. wasi threads / atomics / concurrent 実測 (2026-02-09)
 
+> ⚠️ **deprecation (#486):** 本節の `-S threads=y`（WASI Threads /
+> `wasm32-wasip1-threads`）は **Wasmtime 47.0.0 (2026-07-20 予定) で hard error に
+> なり削除される**。以下は当時の実測記録（historical）。新規開発では `-S threads=y`
+> を使わず、core wasm の atomics + shared memory（`-W threads=y` /
+> `-W shared-memory=y`、非廃止）に閉じること。将来のマルチスレッドは
+> shared-everything-threads (#488) に移行する。詳細は
+> [docs/wasm_threads_requirements.md](./wasm_threads_requirements.md)。
+
 検証環境:
 
 - system: `wasmtime 41.0.3 (db1c043b5 2026-02-04)`
@@ -350,22 +358,15 @@ just component-run script.vibe
     は `concurrency support must be enabled ...` で失敗。
 - 41 では `-W concurrency-support=...` 自体が unknown option。
 
-### 12.5 vibe リポジトリ内の最小プローブ
+### 12.5 vibe リポジトリ内の最小プローブ（撤去済み）
 
-この検証を再実行できるように、以下を追加した:
+当時の検証用 probe (`src/x/threads/wasi_threads_probe.wat` /
+`src/x/threads/run_probe.sh` / `scripts/run_wasi_threads_probe.sh` /
+`just experimental_wasi_threads_probe`) は wasi-threads 非推奨化 (#486) に伴い
+**既に撤去済み**。再導入する場合は廃止予定の `-S threads=y` ではなく
+shared-everything-threads (#488) を前提にする。
 
-- `src/x/threads/wasi_threads_probe.wat`
-- `src/x/threads/run_probe.sh`
-- `scripts/run_wasi_threads_probe.sh`
-- `just experimental_wasi_threads_probe`
+なお当時の probe は未指定時に次を適用していた（historical）:
 
-実行例:
-
-```bash
-VIBE_USE_WASMTIME_SUBMODULE=1 just experimental_wasi_threads_probe
-```
-
-デフォルト（未指定時）では次のフラグを適用する:
-
-- `VIBE_WASMTIME_WASM_FLAGS='threads=y shared-memory=y'`
-- `VIBE_WASMTIME_WASI_FLAGS='threads=y'`
+- `VIBE_WASMTIME_WASM_FLAGS='threads=y shared-memory=y'`（→ `-W`、非廃止）
+- `VIBE_WASMTIME_WASI_FLAGS='threads=y'`（→ `-S threads=y`、**47.0.0 で削除**）
