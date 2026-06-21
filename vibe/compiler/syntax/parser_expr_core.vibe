@@ -75,11 +75,51 @@ let index_expr: (Expr, Expr) -> Expr = (cur_expr, idx) -> {
   ECall(EIdent("__index"), args)
 }
 
+// `x |> f(a, _)` substitutes the piped value at each bare `_` placeholder
+// (`f(a, x)`) instead of prepending. With no `_`, the piped value is
+// prepended as the first argument (`x |> f(a)` => `f(x, a)`). Bare `_`
+// call arguments are preserved as `EIdent("_")` holes by
+// `desugar_placeholder_args`; compound placeholders like `_ * 2` are already
+// lowered to section lambdas before they reach here.
+let pipe_arg_is_hole: (Expr) -> Bool = (arg) -> {
+  match arg {
+    EIdent(n) => n == "_",
+    _ => false
+  }
+}
+
 let pipe_desugar: (Expr, Expr) -> Expr = (lhs, rhs) -> {
   match rhs {
-    ECall(callee, args) => ECall(callee, Array::concat([
-      lhs
-    ], args)),
+    ECall(callee, args) => {
+      let mut has_hole = false
+      let mut i = 0
+      while i < Array::length(args) {
+        if pipe_arg_is_hole(Array::get(args, i)) {
+          has_hole = true
+          i = Array::length(args)
+        } else {
+          i = i + 1
+        }
+      }
+      if has_hole {
+        let out = empty_exprs()
+        let mut j = 0
+        while j < Array::length(args) {
+          let a = Array::get(args, j)
+          if pipe_arg_is_hole(a) {
+            Array::push(out, lhs)
+          } else {
+            Array::push(out, a)
+          }
+          j = j + 1
+        }
+        ECall(callee, out)
+      } else {
+        ECall(callee, Array::concat([
+          lhs
+        ], args))
+      }
+    },
     _ => ECall(rhs, [
       lhs
     ])
@@ -294,7 +334,11 @@ let desugar_placeholder_args: (Array[Expr]) -> Array[Expr] = (args) -> {
   let mut i = 0
   while i < Array::length(args) {
     let arg = Array::get(args, i)
-    if has_placeholder_arg(arg) {
+    if pipe_arg_is_hole(arg) {
+      // Bare `_` stays a hole so a surrounding `|>` can substitute the
+      // piped value at this position; compound placeholders still lower.
+      Array::push(out, arg)
+    } else if has_placeholder_arg(arg) {
       Array::push(out, wrap_placeholder_arg(arg))
     } else {
       Array::push(out, arg)
