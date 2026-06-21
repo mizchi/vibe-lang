@@ -32,6 +32,8 @@
 # Env:
 #   VIBE_DIST_PARITY_REQUIRE_HASH  — 1 (default) strict byte parity of output
 #                                    wasm; 0 = behavioural + ABI parity only.
+#   VIBE_DIST_PARITY_REUSE_STAGE2  — 1 (default) reuse a recent generation's
+#                                    stage2.wasm if present; 0 = always rebuild.
 #   VIBE_DIST_PARITY_KEEP          — 1 to keep the scratch dir for inspection.
 set -euo pipefail
 
@@ -120,9 +122,18 @@ echo "[dist-parity] building dist compiler..."
 bash "$SCRIPT_DIR/build_selfhost_dist.sh"
 [ -f "$DIST_WASM" ] || die "dist compiler not produced: $DIST_WASM"
 
-echo "[dist-parity] building stage2 compiler..."
-bash "$SCRIPT_DIR/selfhost_generations.sh" build
+# Reuse a stage2 from a recent generation when present (the selfhost gate
+# builds stage3 just before this gate runs); only rebuild when absent. Set
+# VIBE_DIST_PARITY_REUSE_STAGE2=0 to always rebuild.
+REUSE_STAGE2="${VIBE_DIST_PARITY_REUSE_STAGE2:-1}"
 STAGE2_WASM="$(ls -t "$PROJECT_ROOT"/_build/selfhost/generations/*/stage2.wasm 2>/dev/null | head -n 1 || true)"
+if [ "$REUSE_STAGE2" = "1" ] && [ -n "$STAGE2_WASM" ] && [ -f "$STAGE2_WASM" ]; then
+  echo "[dist-parity] reusing existing stage2: $STAGE2_WASM"
+else
+  echo "[dist-parity] building stage2 compiler..."
+  bash "$SCRIPT_DIR/selfhost_generations.sh" build
+  STAGE2_WASM="$(ls -t "$PROJECT_ROOT"/_build/selfhost/generations/*/stage2.wasm 2>/dev/null | head -n 1 || true)"
+fi
 [ -n "$STAGE2_WASM" ] && [ -f "$STAGE2_WASM" ] || die "stage2 compiler not produced under _build/selfhost/generations"
 echo "[dist-parity] stage2: $STAGE2_WASM"
 

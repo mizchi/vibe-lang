@@ -207,8 +207,13 @@ section id 0 (custom), name "vibe.abi", payload:
    ABI のみに緩和)
 
 を assert する。`--self-test` は build 無しで pinned seed wasm に対し `vibe.abi`
-抽出ロジックだけを検証する (CI/build 不要の smoke)。gate は
-`release-selfhost-gates` に組み込む。stage2 再生成が前提なので、初回 green は
+抽出ロジックだけを検証する (CI/build 不要の smoke)。
+
+gate は `release-selfhost-gates` に組み込まれ、`pkf run selfhost-gate`
+(`selfhost_trial_gate.sh`) の本流で走る。selfhost gate は本 gate の直前に
+`selfhost_generations.sh build --stage3` で stage2/stage3 を生成するため、
+gate は既定 (`VIBE_DIST_PARITY_REUSE_STAGE2=1`) でその stage2 を再利用し、
+dist のみ fresh に build して比較する。stage2 再生成が前提なので、初回 green は
 seed が build 環境にある状態で確認する。
 
 ## MoonBit `src/` の退役
