@@ -931,6 +931,11 @@ fn needs_space(
       if prev_pipe && curr_kind == gt() {
         return false
       }
+      // `let*` railway bind: keep the `*` attached to `let` (no space before it).
+      // The space after `*` (before the bound name) is handled normally.
+      if prev == let_kw() && curr_kind == star() {
+        return false
+      }
       if curr_kind == rparen() ||
         curr_kind == rbracket() ||
         curr_kind == rbrace() ||

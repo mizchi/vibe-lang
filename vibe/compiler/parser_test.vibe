@@ -348,3 +348,29 @@ test "parse handle" {
   }
   assert(ok)
 }
+
+test "parse let* railway bind chain" {
+  // `let* x = e` is the railway bind: it must parse (and desugar) without
+  // error, including chained binds (proposal 4).
+  let ok = handle {
+    let _ = parse_program(lex("let run = () -> { let* x = foo() \n let* y = bar(x) \n Ok(y) }\n0"))
+    "ok"
+  } with Error {
+    Throw(_) => "threw"
+  }
+  assert(ok == "ok")
+}
+
+test "let* desugars to a Result match" {
+  // `let* x = e <rest>` desugars to
+  //   match e { Ok(x) => <rest>, Err(__bind_err) => Err(__bind_err) }
+  let printed = handle {
+    print_program(parse_program(lex("let run = () -> { let* x = foo() \n Ok(x) }")))
+  } with Error {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(String::contains(printed, "match"))
+  assert(String::contains(printed, "Ok"))
+  assert(String::contains(printed, "Err"))
+  assert(String::contains(printed, "__bind_err"))
+}

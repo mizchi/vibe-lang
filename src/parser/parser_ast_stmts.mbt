@@ -1920,6 +1920,20 @@ fn AstParser::parse_module_stmt(
 ///|
 fn AstParser::parse_block(self : AstParser) -> @core.Module raise ParseError {
   let _ = self.expect(lbrace(), "{")
+  let stmts = self.parse_block_body()
+  let _ = self.expect(rbrace(), "}")
+  @core.Module::{ stmts, }
+}
+
+///|
+/// Collect statements up to (but not consuming) the closing `}`.
+///
+/// `let* x = e` (railway bind) is handled here rather than in `parse_stmt`
+/// because its desugar is continuation-based: the remainder of the block
+/// becomes the `Ok` arm of a `match`, so we recurse to parse that tail.
+fn AstParser::parse_block_body(
+  self : AstParser,
+) -> Array[@core.Stmt] raise ParseError {
   let stmts : Array[@core.Stmt] = []
   while ({
           self.skip_trivia()
@@ -1927,6 +1941,15 @@ fn AstParser::parse_block(self : AstParser) -> @core.Module raise ParseError {
         }) {
     if self.peek_kind() == eof() {
       raise ParseError::UnexpectedEof(span=self.token_span())
+    }
+    if self.peek_kind() == let_kw() &&
+      self.peek_non_trivia_kind(self.pos + 1) == star() {
+      let bind_match = self.parse_let_bind_rest()
+      let span = bind_match.span()
+      stmts.push(@core.Stmt::Expr(expr=bind_match, span~))
+      // The match consumes the rest of the block as its `Ok` arm, so this
+      // is the block's tail expression — stop collecting.
+      return stmts
     }
     match self.parse_stmt() {
       Some(stmt) => stmts.push(stmt)
@@ -1937,8 +1960,84 @@ fn AstParser::parse_block(self : AstParser) -> @core.Module raise ParseError {
     }
     self.pending_stmts = []
   }
-  let _ = self.expect(rbrace(), "}")
-  @core.Module::{ stmts, }
+  stmts
+}
+
+///|
+/// Parse `let* name = value` plus the remaining block, returning the
+/// desugared railway-bind `match`:
+///
+///   let* x = e
+///   <rest>
+///
+/// becomes
+///
+///   match e {
+///     Ok(x) => <rest>,
+///     Err(__bind_err) => Err(__bind_err)
+///   }
+fn AstParser::parse_let_bind_rest(
+  self : AstParser,
+) -> @core.Expr raise ParseError {
+  let start = self.pos
+  let _ = self.expect(let_kw(), "let")
+  self.skip_trivia()
+  let _ = self.expect(star(), "*")
+  self.skip_trivia()
+  let bind_name = self.parse_type_member_name("name")
+  let _ = self.expect(eq(), "=")
+  let value = self.parse_expr()
+  let _ = self.eat(semicolon())
+  // Defensive: a value expression should not lower pending statements, but
+  // flush any so they are not silently dropped by the early return below.
+  let pending = self.pending_stmts
+  self.pending_stmts = []
+  let rest_stmts = self.parse_block_body()
+  for stmt in rest_stmts {
+    pending.push(stmt)
+  }
+  let span = self.span_from(start)
+  let rest_expr = @core.Expr::Block(
+    body=@core.Module::{ stmts: pending },
+    span~,
+  )
+  @core.Expr::Match(
+    scrutinee=value,
+    arms=[
+      @core.MatchArm::{
+        pat: @core.Pat::Ctor(
+          name="Ok",
+          args=[@core.Pat::Bind(name=bind_name, span~)],
+          span~,
+        ),
+        cond: None,
+        expr: rest_expr,
+        span,
+      },
+      @core.MatchArm::{
+        pat: @core.Pat::Ctor(
+          name="Err",
+          args=[@core.Pat::Bind(name="__bind_err", span~)],
+          span~,
+        ),
+        cond: None,
+        expr: @core.Expr::Call(
+          name="Err",
+          type_args=[],
+          args=[
+            @core.CallArg::{
+              label: None,
+              expr: @core.Expr::Ident(name="__bind_err", span~),
+              span,
+            },
+          ],
+          span~,
+        ),
+        span,
+      },
+    ],
+    span~,
+  )
 }
 
 ///|
