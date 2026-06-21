@@ -28,7 +28,8 @@ enum BlockStep {
   StepAssignOp(String, String, Expr);
   StepPattern(Pat, Expr);
   StepStructDestr(Pat, Expr);
-  StepRecordDestr(Pat, Expr)
+  StepRecordDestr(Pat, Expr);
+  StepBind(String, Expr)
 }
 
 let rec parse_match_rest: (Array[Token], Int, Expr, ArrayBuilder[(Pat, Expr)], (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, scrutinee, b, parse_recur) -> {
@@ -288,7 +289,20 @@ let apply_block_step: (BlockStep, Expr) -> Expr = (step, rest) -> {
       (pat, rest)
     ]),
     StepStructDestr(pat, val) => apply_struct_destr(pat, val, rest),
-    StepRecordDestr(pat, val) => apply_record_destr(pat, val, rest)
+    StepRecordDestr(pat, val) => apply_record_destr(pat, val, rest),
+    // `let* x = e` (railway bind): short-circuit on Err, continue on Ok.
+    // `let* x = e <rest>` desugars to
+    //   match e { Ok(x) => <rest>, Err(__bind_err) => Err(__bind_err) }
+    StepBind(name, val) => EMatch(val, [
+      (PCtor("Ok", [
+        PBind(name)
+      ]), rest),
+      (PCtor("Err", [
+        PBind("__bind_err")
+      ]), ECall(EIdent("Err"), [
+        EIdent("__bind_err")
+      ]))
+    ])
   }
 }
 
@@ -377,6 +391,19 @@ let parse_impl_block: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int
               }
             },
             _ => throw("expected identifier after 'let mut'")
+          },
+          TStar => match peek(tokens, next + 1) {
+            TIdent(name) => {
+              let eq = expect_tk(tokens, next + 2, "=")
+              let (val, next_pos) = parse_block_value_only(tokens, eq, parse_recur)
+              if next_pos <= eq {
+                throw("internal parser error: block let* parser did not advance")
+              } else {
+                ArrayBuilder::push(steps, StepBind(name, val))
+                p = next_pos
+              }
+            },
+            _ => throw("expected identifier after 'let*'")
           },
           TIdent(name) => {
             let after_name = peek(tokens, next + 1)
