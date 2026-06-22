@@ -1,0 +1,85 @@
+//# Imports
+
+// Runnable reference for the pipeline-ergonomics features documented in
+// docs/cheatsheet.md ("Function combinators", "Railway bind", "Debugging a
+// pipeline"). Co-located with the prelude it imports so `vibe test` can run it.
+//
+//   vibe test vibe/prelude/pipeline_ergonomics_test.vibe
+
+import ./result.vibe {
+  Result
+}
+
+import ./func.vibe {
+  compose, flip, identity
+}
+
+import ./io.vibe {
+  tap, tap_err, tap_ok
+}
+
+//# Functions
+
+let double: (Int) -> Int = (x) -> x * 2
+
+let add1: (Int) -> Int = (x) -> x + 1
+
+let scale: (Int, Int) -> Int = (factor, x) -> x * factor
+
+// railway: each stage names its result; an Err short-circuits the block
+let checked: (Int) -> Result[Int, String] = (n) -> {
+  let* positive = if n > 0 { Ok(n) } else { Err("non-positive") }
+  let* small = if positive < 100 { Ok(positive) } else { Err("too big") }
+  Ok(small * 10)
+}
+
+//# Misc
+
+test "pipe `_` placeholder: substitute at a non-first slot" {
+  // 3 |> scale(10, _) == scale(10, 3); without `_` it would prepend.
+  assert((3 |> scale(10, _)) == 30)
+  assert((3 |> scale(10, _) |> scale(2, _)) == 60)
+  assert((3 |> scale(10)) == 30) // no hole -> prepend (scale(3, 10))
+}
+
+test "function combinators: compose / identity / flip" {
+  let inc_then_double = compose(add1, double) // double(add1(x))
+  assert(inc_then_double(3) == 8)
+  assert(identity(42) == 42)
+  let sub: (Int, Int) -> Int = (a, b) -> a - b
+  assert(flip(sub)(3, 10) == 7) // sub(10, 3)
+}
+
+test "railway bind: let* short-circuits on Err" {
+  match checked(5) {
+    Ok(v) => assert(v == 50)
+    Err(_) => assert(false)
+  }
+  match checked(0) {
+    Ok(_) => assert(false)
+    Err(e) => assert(e == "non-positive")
+  }
+  match checked(250) {
+    Ok(_) => assert(false)
+    Err(e) => assert(e == "too big")
+  }
+}
+
+test "tap: observe a stage without breaking the chain" {
+  // tap returns its input unchanged (side effect omitted here).
+  let result = 5 |> tap((_v) -> ()) |> double
+  assert(result == 10)
+}
+
+test "tap_ok / tap_err: observe one railway track" {
+  let good: Result[Int, String] = Ok(7)
+  let bad: Result[Int, String] = Err("boom")
+  match good |> tap_ok((_v) -> ()) |> tap_err((_e) -> ()) {
+    Ok(v) => assert(v == 7)
+    Err(_) => assert(false)
+  }
+  match bad |> tap_ok((_v) -> ()) |> tap_err((_e) -> ()) {
+    Ok(_) => assert(false)
+    Err(e) => assert(e == "boom")
+  }
+}
