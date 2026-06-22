@@ -163,6 +163,16 @@ let decode_instr = (body: Bytes, pos: Int) -> (Int, Int, Int) {
     let (_, next) = read_uleb128(body, pos + 1)
     (op, 0, next)
   }
+  else if op == 0xD2 {
+    // ref.func <funcidx>
+    let (val, next) = read_uleb128(body, pos + 1)
+    (op, val, next)
+  }
+  else if op == 0xD0 {
+    // ref.null <heaptype> (single sleb byte for func/extern, sleb for gc)
+    let (_, next) = read_sleb128(body, pos + 1)
+    (op, 0, next)
+  }
   else if op == 0x1F {
     // try_table <blocktype> vec(catch): catch/catch_ref take tag+label,
     // catch_all/catch_all_ref take label only.
@@ -1295,7 +1305,7 @@ let peephole_body = (body: Bytes) -> Bytes {
   }
 }
 
-let rewrite_body_calls = (body: Bytes, fwd_lookup: Array[Int], max_func: Int) -> Bytes {
+let rewrite_body_calls = (body: Bytes, fwd_lookup: Array[Int], max_func: Int, remap_reffunc: Bool) -> Bytes {
   let body_len = Bytes::length(body)
   if body_len < 2 {
     copy_bytes(body, 0, body_len)
@@ -1332,6 +1342,19 @@ let rewrite_body_calls = (body: Bytes, fwd_lookup: Array[Int], max_func: Int) ->
             let new_target = Array::get(fwd_lookup, target)
             if new_target >= 0 {
               Bytes::push(out, 0x10)
+              write_uleb128(out, new_target)
+            } else {
+              copy_span_bytes(out, body, s_i, e_i)
+            }
+          } else {
+            copy_span_bytes(out, body, s_i, e_i)
+          }
+        } else if remap_reffunc && (op_i == 0xD2) {
+          let target = span_read_uleb_imm(body, s_i)
+          if (target >= 0) && (target <= max_func) {
+            let new_target = Array::get(fwd_lookup, target)
+            if new_target >= 0 {
+              Bytes::push(out, 0xD2)
               write_uleb128(out, new_target)
             } else {
               copy_span_bytes(out, body, s_i, e_i)
@@ -2054,6 +2077,25 @@ let collect_func_roots = (bytes: Bytes) -> Array[Int] {
         e = e + 1
       }
     }
+    else if sid == 10 {
+      // ref.func takes a function as a first-class value; the referenced
+      // function may be called through that reference, so it is a root.
+      let raw_bodies = parse_code_bodies(bytes, off, sz)
+      let mut bi = 0
+      while bi < Array::length(raw_bodies) {
+        let body = Array::get(raw_bodies, bi)
+        let spans = parse_full_body_spans(body)
+        let mut si = 0
+        while si < Array::length(spans) {
+          let (s_i, _, op_i) = Array::get(spans, si)
+          if op_i == 0xD2 {
+            Array::push(roots, span_read_uleb_imm(body, s_i))
+          }
+          si = si + 1
+        }
+        bi = bi + 1
+      }
+    }
     s = s + 1
   }
   roots
@@ -2344,7 +2386,7 @@ export let dce_remove = (bytes: Bytes) -> Bytes {
               let fi = Array::get(kept_defined, ki)
               if fi < Array::length(raw_bodies) {
                 let body = Array::get(raw_bodies, fi)
-                Array::push(new_bodies, rewrite_body_calls(body, idx_map, total_funcs - 1))
+                Array::push(new_bodies, rewrite_body_calls(body, idx_map, total_funcs - 1, true))
               }
               ki = ki + 1
             }
@@ -2830,7 +2872,7 @@ let rewrite_calls_forwarding = (bytes: Bytes, offset: Int, size: Int, fwd_lookup
   ], 0, 0)
   let mut fi = 0
   while fi < Array::length(raw_bodies) {
-    Array::push(optimized, rewrite_body_calls(Array::get(raw_bodies, fi), fwd_lookup, max_func))
+    Array::push(optimized, rewrite_body_calls(Array::get(raw_bodies, fi), fwd_lookup, max_func, false))
     fi = fi + 1
   }
   rebuild_code_section(optimized)
@@ -3413,12 +3455,47 @@ let fold_table_size_body = (body: Bytes, table_mins: Array[Int]) -> Bytes {
 // (no imported tables shift the index space) and no table.grow exists (so the
 // current size equals the declared minimum). The resulting `i32.const; drop`
 // is cleaned by peephole, often emptying the body.
+// True if the module exports any table (kind 1). An exported table can be
+// grown by the embedder between calls, so its `table.size` is not statically
+// the declared minimum.
+let any_table_exported = (bytes: Bytes) -> Bool {
+  let sections = list_sections(bytes)
+  let mut found = false
+  let mut s = 0
+  while s < Array::length(sections) {
+    let (sid, off, sz) = Array::get(sections, s)
+    if sid == 7 {
+      let end_pos = off + sz
+      let (cnt, pos0) = read_uleb128(bytes, off)
+      let mut pos = pos0
+      let mut i = 0
+      while (i < cnt) && (pos < end_pos) {
+        let (_, np) = read_name(bytes, pos)
+        pos = np
+        let kind = bytes[pos]
+        pos = pos + 1
+        let (_, np2) = read_uleb128(bytes, pos)
+        pos = np2
+        if kind == 1 {
+          found = true
+        }
+        i = i + 1
+      }
+    }
+    s = s + 1
+  }
+  found
+}
+
 export let fold_table_size = (bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
     copy_bytes(bytes, 0, len)
   }
   else if count_imported_tables(bytes) > 0 {
+    copy_bytes(bytes, 0, len)
+  }
+  else if any_table_exported(bytes) {
     copy_bytes(bytes, 0, len)
   }
   else {
