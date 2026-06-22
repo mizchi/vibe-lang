@@ -490,7 +490,13 @@ fn pipe_apply(
       if has_hole {
         for arg in args {
           if arg.expr is @core.Expr::Placeholder(..) {
-            out.push(@core.CallArg::{ label: None, expr: left, span: left_span })
+            // Replace only the expr; keep the slot's label and span so a
+            // labeled hole (`x |> f(a=1, b=_)`) stays `f(a=1, b=x)`.
+            out.push(@core.CallArg::{
+              label: arg.label,
+              expr: left,
+              span: arg.span,
+            })
           } else {
             out.push(arg)
           }

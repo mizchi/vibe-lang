@@ -46,6 +46,29 @@ test "parse pipe placeholder substitutes at hole" {
 }
 
 ///|
+/// A labeled hole keeps its label: `x |> f(a=1, b=_)` => `f(a=1, b=x)`,
+/// not a positional `f(a=1, x)` (the checker would reject that). Regression
+/// for the #590 Codex review.
+test "parse pipe placeholder preserves a labeled slot" {
+  let ast = parse_ast("x |> f(a=1, b=_)")
+  match ast.stmts[0] {
+    @core.Stmt::Expr(expr~, ..) =>
+      match expr {
+        @core.Expr::Call(name="f", args~, ..) => {
+          assert_eq(args.length(), 2)
+          assert_eq(args[1].label, Some("b"))
+          match args[1].expr {
+            @core.Expr::Ident(name="x", ..) => ()
+            other => fail("expected b slot filled with x, got: \{other}")
+          }
+        }
+        other => fail("expected Call f, got: \{other}")
+      }
+    _ => fail("expected Expr stmt")
+  }
+}
+
+///|
 /// Pipe without a `_` hole still prepends the piped value as the first arg:
 /// `x |> f(a)` → `f(x, a)`.
 test "parse pipe without placeholder prepends" {
