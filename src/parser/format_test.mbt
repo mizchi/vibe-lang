@@ -693,3 +693,31 @@ test "vibe format trait impl top-level spacing" {
     #|impl Eq for Int
   inspect(format_script(input), content=expected)
 }
+
+///|
+test "vibe format pipe operator spacing" {
+  // `|>` (pipe_gt) must be surrounded by spaces, and tight input normalizes.
+  let input =
+    #|let p: (Int) -> Int = (n) -> { n|>f|>g }
+    #|let q: (Int) -> Int = (n) -> { n |> slot(10, _) |> Result::and_then(h) }
+  let formatted = format_script(input)
+  if !formatted.contains("n |> f |> g") {
+    fail("[pipe spacing] expected `n |> f |> g`\n---\n\{formatted}")
+  }
+  if !formatted.contains("n |> slot(10, _) |> Result::and_then(h)") {
+    fail(
+      "[pipe spacing] expected spaced pipe with call/placeholder\n---\n\{formatted}",
+    )
+  }
+  // Idempotent.
+  let twice = format_script(formatted)
+  inspect(twice, content=formatted)
+  // Parse-equivalent before/after formatting.
+  let before = parse_ast(input) catch {
+    e => fail("[before-format] parse failed: \{e.to_string()}")
+  }
+  let after = parse_ast(formatted) catch {
+    e => fail("[after-format] parse failed: \{e.to_string()}")
+  }
+  assert_eq(@core.normalize_module(after), @core.normalize_module(before))
+}

@@ -1054,7 +1054,8 @@ fn is_operator_kind(kind : @cst.SyntaxKind) -> Bool {
   kind == or_or() ||
   kind == arrow() ||
   kind == thin_arrow() ||
-  kind == pipe()
+  kind == pipe() ||
+  kind == pipe_gt()
 }
 
 ///|
