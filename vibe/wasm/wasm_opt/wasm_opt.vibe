@@ -4045,6 +4045,602 @@ export let inline_calls = (bytes: Bytes) -> Bytes {
   }
 }
 
+// Count imported entries of a given external kind (0=func,1=table,2=mem,
+// 3=global,4=tag). Used to decide whether the corresponding index space starts
+// above 0 (we bail on imports for tag/global DCE to keep renumbering simple).
+let count_import_kind = (bytes: Bytes, want_kind: Int) -> Int {
+  let sections = list_sections(bytes)
+  let mut n = 0
+  let mut s = 0
+  while s < Array::length(sections) {
+    let (sid, off, sz) = Array::get(sections, s)
+    if sid == 2 {
+      let end_pos = off + sz
+      let (cnt, pos0) = read_uleb128(bytes, off)
+      let mut pos = pos0
+      let mut i = 0
+      while (i < cnt) && (pos < end_pos) {
+        let (mlen, mp) = read_uleb128(bytes, pos); pos = mp + mlen
+        let (flen, fp) = read_uleb128(bytes, pos); pos = fp + flen
+        if pos < end_pos {
+          let kind = bytes[pos]; pos = pos + 1
+          if kind == want_kind {
+            n = n + 1
+          }
+          if kind == 0 {
+            let (_, np) = read_uleb128(bytes, pos); pos = np
+          } else if kind == 1 {
+            let (_, np) = read_uleb128(bytes, pos); pos = np
+            let flag = bytes[pos]; pos = pos + 1
+            let (_, np2) = read_uleb128(bytes, pos); pos = np2
+            if flag == 1 {
+              let (_, np3) = read_uleb128(bytes, pos); pos = np3
+            }
+          } else if kind == 2 {
+            let flag = bytes[pos]; pos = pos + 1
+            let (_, np2) = read_uleb128(bytes, pos); pos = np2
+            if flag == 1 {
+              let (_, np3) = read_uleb128(bytes, pos); pos = np3
+            }
+          } else if kind == 3 {
+            pos = pos + 2
+          } else if kind == 4 {
+            pos = pos + 1
+            let (_, np) = read_uleb128(bytes, pos); pos = np
+          } else {
+            pos = end_pos
+          }
+        }
+        i = i + 1
+      }
+    }
+    s = s + 1
+  }
+  n
+}
+
+// Reserialize an export section, remapping the index of exports whose kind
+// matches want_kind through idx_map (old index -> new index, -1 = removed).
+let remap_export_kind = (bytes: Bytes, offset: Int, size: Int, want_kind: Int, idx_map: Array[Int]) -> Bytes {
+  let end_pos = offset + size
+  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let mut pos = pos0
+  let out = Bytes::new()
+  write_uleb128(out, cnt)
+  let mut i = 0
+  while (i < cnt) && (pos < end_pos) {
+    let (name, np) = read_name(bytes, pos)
+    pos = np
+    let kind = bytes[pos]
+    pos = pos + 1
+    let (index, np2) = read_uleb128(bytes, pos)
+    pos = np2
+    write_uleb128(out, String::length(name))
+    let mut ci = 0
+    while ci < String::length(name) {
+      Bytes::push(out, String::char_code_at(name, ci))
+      ci = ci + 1
+    }
+    Bytes::push(out, kind)
+    let new_index = if (kind == want_kind) && (index < Array::length(idx_map)) && (Array::get(idx_map, index) >= 0) {
+      Array::get(idx_map, index)
+    } else {
+      index
+    }
+    write_uleb128(out, new_index)
+    i = i + 1
+  }
+  out
+}
+
+// Rewrite a code body remapping tag indices in throw (0x08) and try_table
+// (0x1F) catch clauses through tmap.
+let rewrite_body_tags = (body: Bytes, tmap: Array[Int]) -> Bytes {
+  let body_len = Bytes::length(body)
+  if body_len < 2 {
+    copy_bytes(body, 0, body_len)
+  }
+  else {
+    let (local_count, lp) = read_uleb128(body, 0)
+    let mut pos = lp
+    let mut lc = 0
+    while lc < local_count {
+      let (_, tp) = read_uleb128(body, pos)
+      pos = tp + 1
+      lc = lc + 1
+    }
+    let code_start = pos
+    let code_end = body_len - 1
+    if code_start >= code_end {
+      copy_bytes(body, 0, body_len)
+    }
+    else {
+      let spans = parse_body_spans(body, code_start, code_end)
+      let out = Bytes::new()
+      let mut ci = 0
+      while ci < code_start {
+        Bytes::push(out, body[ci]); ci = ci + 1
+      }
+      let mut i = 0
+      while i < Array::length(spans) {
+        let (s_i, e_i, op_i) = Array::get(spans, i)
+        if op_i == 0x08 {
+          let (tag, _) = read_uleb128(body, s_i + 1)
+          Bytes::push(out, 0x08)
+          let nt = if (tag < Array::length(tmap)) && (Array::get(tmap, tag) >= 0) {
+            Array::get(tmap, tag)
+          } else {
+            tag
+          }
+          write_uleb128(out, nt)
+        } else if op_i == 0x1F {
+          Bytes::push(out, 0x1F)
+          let (_, p1) = read_sleb128(body, s_i + 1)
+          let mut bp = s_i + 1
+          while bp < p1 {
+            Bytes::push(out, body[bp]); bp = bp + 1
+          }
+          let (cnt, p2) = read_uleb128(body, p1)
+          write_uleb128(out, cnt)
+          let mut pp = p2
+          let mut k = 0
+          while k < cnt {
+            let kind = body[pp]
+            Bytes::push(out, kind)
+            pp = pp + 1
+            if (kind == 0) || (kind == 1) {
+              let (tag, pa) = read_uleb128(body, pp)
+              let nt = if (tag < Array::length(tmap)) && (Array::get(tmap, tag) >= 0) {
+                Array::get(tmap, tag)
+              } else {
+                tag
+              }
+              write_uleb128(out, nt)
+              let (label, pb) = read_uleb128(body, pa)
+              write_uleb128(out, label)
+              pp = pb
+            } else {
+              let (label, pa) = read_uleb128(body, pp)
+              write_uleb128(out, label)
+              pp = pa
+            }
+            k = k + 1
+          }
+        } else {
+          copy_span_bytes(out, body, s_i, e_i)
+        }
+        i = i + 1
+      }
+      Bytes::push(out, 0x0B)
+      out
+    }
+  }
+}
+
+// Remove tags that are never referenced by code (throw / try_table catch) and
+// never exported. Renumbers throw/try_table/export tag indices. Bails on
+// imported tags. This is the unused-tag cleanup that function inlining unlocks
+// (an inlined effect helper can leave its tag unreferenced).
+export let drop_unused_tags = (bytes: Bytes) -> Bytes {
+  let len = Bytes::length(bytes)
+  if len < 8 {
+    copy_bytes(bytes, 0, len)
+  }
+  else {
+    let sections = list_sections(bytes)
+    let mut tag_off = -1
+    let mut tag_sz = 0
+    let mut code_off = -1
+    let mut code_sz = 0
+    let mut export_off = -1
+    let mut export_sz = 0
+    let mut s0 = 0
+    while s0 < Array::length(sections) {
+      let (sid, off, sz) = Array::get(sections, s0)
+      if sid == 13 {
+        tag_off = off; tag_sz = sz
+      } else if sid == 10 {
+        code_off = off; code_sz = sz
+      } else if sid == 7 {
+        export_off = off; export_sz = sz
+      }
+      s0 = s0 + 1
+    }
+    if (tag_off < 0) || (count_import_kind(bytes, 4) > 0) {
+      copy_bytes(bytes, 0, len)
+    }
+    else {
+      let (tag_count, p0) = read_uleb128(bytes, tag_off)
+      let starts = Array::slice([
+        (0)
+      ], 0, 0)
+      let ends = Array::slice([
+        (0)
+      ], 0, 0)
+      let mut pos = p0
+      let mut ti = 0
+      while ti < tag_count {
+        let estart = pos
+        pos = pos + 1
+        let (_, np) = read_uleb128(bytes, pos)
+        pos = np
+        Array::push(starts, estart)
+        Array::push(ends, pos)
+        ti = ti + 1
+      }
+      let used = FixedArray::make(tag_count, false)
+      if export_off >= 0 {
+        let (ecnt, ep0) = read_uleb128(bytes, export_off)
+        let mut epos = ep0
+        let mut ei = 0
+        while ei < ecnt {
+          let (_, np) = read_name(bytes, epos)
+          epos = np
+          let kind = bytes[epos]
+          epos = epos + 1
+          let (index, np2) = read_uleb128(bytes, epos)
+          epos = np2
+          if (kind == 4) && (index >= 0) && (index < tag_count) {
+            FixedArray::set(used, index, true)
+          }
+          ei = ei + 1
+        }
+      }
+      let bodies = if code_off >= 0 {
+        parse_code_bodies(bytes, code_off, code_sz)
+      } else {
+        Array::slice([
+          (Bytes::new())
+        ], 0, 0)
+      }
+      let mut bi = 0
+      while bi < Array::length(bodies) {
+        let body = Array::get(bodies, bi)
+        let spans = parse_full_body_spans(body)
+        let mut k = 0
+        while k < Array::length(spans) {
+          let (s_k, _, op_k) = Array::get(spans, k)
+          if op_k == 0x08 {
+            let (tag, _) = read_uleb128(body, s_k + 1)
+            if (tag >= 0) && (tag < tag_count) {
+              FixedArray::set(used, tag, true)
+            }
+          } else if op_k == 0x1F {
+            let (_, p1) = read_sleb128(body, s_k + 1)
+            let (cnt, p2) = read_uleb128(body, p1)
+            let mut pp = p2
+            let mut cj = 0
+            while cj < cnt {
+              let kind = body[pp]
+              pp = pp + 1
+              if (kind == 0) || (kind == 1) {
+                let (tag, pa) = read_uleb128(body, pp)
+                if (tag >= 0) && (tag < tag_count) {
+                  FixedArray::set(used, tag, true)
+                }
+                let (_, pb) = read_uleb128(body, pa)
+                pp = pb
+              } else {
+                let (_, pa) = read_uleb128(body, pp)
+                pp = pa
+              }
+              cj = cj + 1
+            }
+          }
+          k = k + 1
+        }
+        bi = bi + 1
+      }
+      let mut removed = 0
+      let mut ui = 0
+      while ui < tag_count {
+        if FixedArray::get(used, ui) == false {
+          removed = removed + 1
+        }
+        ui = ui + 1
+      }
+      if removed == 0 {
+        copy_bytes(bytes, 0, len)
+      }
+      else {
+        let tmap = Array::slice([
+          (0)
+        ], 0, 0)
+        let mut newidx = 0
+        let mut mi = 0
+        while mi < tag_count {
+          if FixedArray::get(used, mi) {
+            Array::push(tmap, newidx)
+            newidx = newidx + 1
+          } else {
+            Array::push(tmap, -1)
+          }
+          mi = mi + 1
+        }
+        let newtag = Bytes::new()
+        write_uleb128(newtag, tag_count - removed)
+        let mut ki = 0
+        while ki < tag_count {
+          if FixedArray::get(used, ki) {
+            copy_span_bytes(newtag, bytes, Array::get(starts, ki), Array::get(ends, ki))
+          }
+          ki = ki + 1
+        }
+        let newbodies = Array::slice([
+          (Bytes::new())
+        ], 0, 0)
+        let mut ri = 0
+        while ri < Array::length(bodies) {
+          Array::push(newbodies, rewrite_body_tags(Array::get(bodies, ri), tmap))
+          ri = ri + 1
+        }
+        let out = Bytes::new()
+        let mut hi = 0
+        while hi < 8 {
+          Bytes::push(out, bytes[hi]); hi = hi + 1
+        }
+        let mut s = 0
+        while s < Array::length(sections) {
+          let (sid, off, sz) = Array::get(sections, s)
+          if sid == 13 {
+            emit_section(out, 13, newtag)
+          } else if sid == 10 {
+            emit_section(out, 10, rebuild_code_section(newbodies))
+          } else if sid == 7 {
+            emit_section(out, 7, remap_export_kind(bytes, off, sz, 4, tmap))
+          } else {
+            let content = copy_bytes(bytes, off, off + sz)
+            emit_section(out, sid, content)
+          }
+          s = s + 1
+        }
+        out
+      }
+    }
+  }
+}
+
+// Rewrite a code body remapping global indices in global.get (0x23) and
+// global.set (0x24) through gmap.
+let rewrite_body_globals = (body: Bytes, gmap: Array[Int]) -> Bytes {
+  let body_len = Bytes::length(body)
+  if body_len < 2 {
+    copy_bytes(body, 0, body_len)
+  }
+  else {
+    let (local_count, lp) = read_uleb128(body, 0)
+    let mut pos = lp
+    let mut lc = 0
+    while lc < local_count {
+      let (_, tp) = read_uleb128(body, pos)
+      pos = tp + 1
+      lc = lc + 1
+    }
+    let code_start = pos
+    let code_end = body_len - 1
+    if code_start >= code_end {
+      copy_bytes(body, 0, body_len)
+    }
+    else {
+      let spans = parse_body_spans(body, code_start, code_end)
+      let out = Bytes::new()
+      let mut ci = 0
+      while ci < code_start {
+        Bytes::push(out, body[ci]); ci = ci + 1
+      }
+      let mut i = 0
+      while i < Array::length(spans) {
+        let (s_i, e_i, op_i) = Array::get(spans, i)
+        if (op_i == 0x23) || (op_i == 0x24) {
+          let (g, _) = read_uleb128(body, s_i + 1)
+          let ng = if (g < Array::length(gmap)) && (Array::get(gmap, g) >= 0) {
+            Array::get(gmap, g)
+          } else {
+            g
+          }
+          Bytes::push(out, op_i)
+          write_uleb128(out, ng)
+        } else {
+          copy_span_bytes(out, body, s_i, e_i)
+        }
+        i = i + 1
+      }
+      Bytes::push(out, 0x0B)
+      out
+    }
+  }
+}
+
+// True if any global init expr contains a global.get (0x23). Defined-global
+// inits may reference imported globals; we bail in that case to avoid having to
+// renumber inside init exprs.
+let global_init_refs_global = (bytes: Bytes, gbl_off: Int, gbl_sz: Int) -> Bool {
+  let end_pos = gbl_off + gbl_sz
+  let mut pos = gbl_off
+  let mut found = false
+  while (pos < end_pos) && (found == false) {
+    if bytes[pos] == 0x23 {
+      found = true
+    }
+    pos = pos + 1
+  }
+  found
+}
+
+// Remove globals that are never referenced by code (global.get/set) and never
+// exported. Renumbers global.get/set and export global indices. Bails on
+// imported globals or any global.get inside init/offset exprs. This is the
+// unused-global cleanup that function inlining unlocks.
+export let drop_unused_globals = (bytes: Bytes) -> Bytes {
+  let len = Bytes::length(bytes)
+  if len < 8 {
+    copy_bytes(bytes, 0, len)
+  }
+  else {
+    let sections = list_sections(bytes)
+    let mut gbl_off = -1
+    let mut gbl_sz = 0
+    let mut code_off = -1
+    let mut code_sz = 0
+    let mut export_off = -1
+    let mut export_sz = 0
+    let mut s0 = 0
+    while s0 < Array::length(sections) {
+      let (sid, off, sz) = Array::get(sections, s0)
+      if sid == 6 {
+        gbl_off = off; gbl_sz = sz
+      } else if sid == 10 {
+        code_off = off; code_sz = sz
+      } else if sid == 7 {
+        export_off = off; export_sz = sz
+      }
+      s0 = s0 + 1
+    }
+    if (gbl_off < 0) || (count_import_kind(bytes, 3) > 0) || global_init_refs_global(bytes, gbl_off, gbl_sz) {
+      copy_bytes(bytes, 0, len)
+    }
+    else {
+      let (gbl_count, p0) = read_uleb128(bytes, gbl_off)
+      let starts = Array::slice([
+        (0)
+      ], 0, 0)
+      let ends = Array::slice([
+        (0)
+      ], 0, 0)
+      let mut pos = p0
+      let mut gi = 0
+      while gi < gbl_count {
+        let estart = pos
+        pos = pos + 1
+        pos = pos + 1
+        // step the init expr's instructions (decode_instr skips each opcode's
+        // immediates correctly, so a const whose LEB byte is 0x0B is not
+        // mistaken for the terminating `end`).
+        let mut done = false
+        while done == false {
+          if bytes[pos] == 0x0B {
+            pos = pos + 1
+            done = true
+          } else {
+            let (_, _, next) = decode_instr(bytes, pos)
+            pos = next
+          }
+        }
+        Array::push(starts, estart)
+        Array::push(ends, pos)
+        gi = gi + 1
+      }
+      let used = FixedArray::make(gbl_count, false)
+      if export_off >= 0 {
+        let (ecnt, ep0) = read_uleb128(bytes, export_off)
+        let mut epos = ep0
+        let mut ei = 0
+        while ei < ecnt {
+          let (_, np) = read_name(bytes, epos)
+          epos = np
+          let kind = bytes[epos]
+          epos = epos + 1
+          let (index, np2) = read_uleb128(bytes, epos)
+          epos = np2
+          if (kind == 3) && (index >= 0) && (index < gbl_count) {
+            FixedArray::set(used, index, true)
+          }
+          ei = ei + 1
+        }
+      }
+      let bodies = if code_off >= 0 {
+        parse_code_bodies(bytes, code_off, code_sz)
+      } else {
+        Array::slice([
+          (Bytes::new())
+        ], 0, 0)
+      }
+      let mut bi = 0
+      while bi < Array::length(bodies) {
+        let spans = parse_full_body_spans(Array::get(bodies, bi))
+        let body = Array::get(bodies, bi)
+        let mut k = 0
+        while k < Array::length(spans) {
+          let (s_k, _, op_k) = Array::get(spans, k)
+          if (op_k == 0x23) || (op_k == 0x24) {
+            let (g, _) = read_uleb128(body, s_k + 1)
+            if (g >= 0) && (g < gbl_count) {
+              FixedArray::set(used, g, true)
+            }
+          }
+          k = k + 1
+        }
+        bi = bi + 1
+      }
+      let mut removed = 0
+      let mut ui = 0
+      while ui < gbl_count {
+        if FixedArray::get(used, ui) == false {
+          removed = removed + 1
+        }
+        ui = ui + 1
+      }
+      if removed == 0 {
+        copy_bytes(bytes, 0, len)
+      }
+      else {
+        let gmap = Array::slice([
+          (0)
+        ], 0, 0)
+        let mut newidx = 0
+        let mut mi = 0
+        while mi < gbl_count {
+          if FixedArray::get(used, mi) {
+            Array::push(gmap, newidx)
+            newidx = newidx + 1
+          } else {
+            Array::push(gmap, -1)
+          }
+          mi = mi + 1
+        }
+        let newgbl = Bytes::new()
+        write_uleb128(newgbl, gbl_count - removed)
+        let mut ki = 0
+        while ki < gbl_count {
+          if FixedArray::get(used, ki) {
+            copy_span_bytes(newgbl, bytes, Array::get(starts, ki), Array::get(ends, ki))
+          }
+          ki = ki + 1
+        }
+        let newbodies = Array::slice([
+          (Bytes::new())
+        ], 0, 0)
+        let mut ri = 0
+        while ri < Array::length(bodies) {
+          Array::push(newbodies, rewrite_body_globals(Array::get(bodies, ri), gmap))
+          ri = ri + 1
+        }
+        let out = Bytes::new()
+        let mut hi = 0
+        while hi < 8 {
+          Bytes::push(out, bytes[hi]); hi = hi + 1
+        }
+        let mut s = 0
+        while s < Array::length(sections) {
+          let (sid, off, sz) = Array::get(sections, s)
+          if sid == 6 {
+            emit_section(out, 6, newgbl)
+          } else if sid == 10 {
+            emit_section(out, 10, rebuild_code_section(newbodies))
+          } else if sid == 7 {
+            emit_section(out, 7, remap_export_kind(bytes, off, sz, 3, gmap))
+          } else {
+            let content = copy_bytes(bytes, off, off + sz)
+            emit_section(out, sid, content)
+          }
+          s = s + 1
+        }
+        out
+      }
+    }
+  }
+}
+
 export let minify = (bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
@@ -4080,7 +4676,9 @@ export let minify = (bytes: Bytes) -> Bytes {
     } else {
       dce(s4)
     }
-    let s6 = coalesce_locals(s5)
+    let s5g = drop_unused_globals(s5)
+    let s5t = drop_unused_tags(s5g)
+    let s6 = coalesce_locals(s5t)
     let s7 = remove_unused_types(s6)
     remove_empty_sections(s7)
   }

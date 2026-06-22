@@ -46,10 +46,12 @@ as the baseline):
 
 | program (selfhost-compiled) | baseline | vibe minify | runs | wasm-opt -Oz |
 |-----------------------------|---------:|------------:|------|-------------:|
-| examples/selfhost_features  |     4153 |         861 | 0    |          707 |
-| examples/perform_handle     |     4613 |         867 | 86   |          720 |
+| examples/selfhost_features  |     4153 |         834 | 0    |          707 |
+| examples/perform_handle     |     4613 |         858 | 86   |          720 |
 
-~80% reduction on real output; ~80–150 B behind `wasm-opt -Oz`.
+~80% reduction on real output; on small programs now at or below `wasm-opt -Oz`
+(rec: 366 vs 371). The larger examples still trail (general body-level
+simplify-locals is the remaining lever).
 
 ### Function inlining (`inline_calls`) — closes most of the real-code gap
 
@@ -76,9 +78,33 @@ block. This is what keeps effectful programs (vibe effects → wasm EH) valid �
 `perform_handle` stays VALID and runs to the same value with `inline_calls`
 active. (`inline_empty_calls` still handles empty `() -> ()` callees separately.)
 
-With `inline_calls` the rec gap to `wasm-opt -Oz` is **22 B** (393 vs 371), down
-from ~80–150 B. The remaining delta is the unused-global / unused-tag cleanup
-that a deeper inline cascade unlocks.
+The cleanup that inlining unlocks is now also implemented:
+
+- **`drop_unused_globals`** — removes globals never referenced by code
+  (`global.get`/`global.set`) and never exported, renumbering the survivors in
+  code and export entries. Bails on imported globals or any `global.get` inside
+  init/offset exprs.
+- **`drop_unused_tags`** — removes tags never referenced by `throw` /
+  `try_table` catch clauses and never exported, renumbering throw/try_table and
+  export tag indices. Bails on imported tags.
+
+After an inline cascade frees a helper's globals/tags, these drop them. On `rec`
+this brings vibe `minify` to **366 B — smaller than `wasm-opt -Oz` (371 B)** —
+with the same global/tag counts (1 global, 1 tag) wasm-opt produces. `minify`
+was 393 B before these passes.
+
+Validated numbers (selfhost-compiled, every output VALID under wasm-opt and
+run-matching the baseline):
+
+| program          | baseline | vibe minify | red% | wasm-opt -Oz |
+|------------------|---------:|------------:|-----:|-------------:|
+| rec              |     3848 |     **366** |  90% |          371 |
+| enum/match       |     3922 |         464 |  88% |            — |
+| loop             |     3855 |         509 |  87% |            — |
+| str              |     3926 |         583 |  85% |            — |
+| arr              |     4001 |         816 |  80% |            — |
+| selfhost_features|     4153 |         834 |  80% |          707 |
+| perform_handle   |     4613 |         858 |  81% |          720 |
 
 Correctness has been validated end-to-end on 7 real programs (arrays, recursion,
 strings, enums/match, loops, plus examples/selfhost_features and
@@ -88,13 +114,13 @@ range 79–90%:
 
 | program          | baseline | vibe minify | red% | valid | runs-match |
 |------------------|---------:|------------:|-----:|-------|-----------|
-| arr              |     4001 |         843 |  79% | ✅    | ✅ (15)    |
-| rec              |     3848 |         393 |  90% | ✅    | ✅ (55)    |
-| str              |     3926 |         610 |  84% | ✅    | ✅ (0)     |
-| enum/match       |     3922 |         491 |  87% | ✅    | ✅ (20)    |
-| loop             |     3855 |         536 |  86% | ✅    | ✅ (5050)  |
-| selfhost_features|     4153 |         861 |  79% | ✅    | ✅ (0)     |
-| perform_handle   |     4613 |         867 |  81% | ✅    | ✅ (86)    |
+| arr              |     4001 |         816 |  80% | ✅    | ✅ (15)    |
+| rec              |     3848 |         366 |  90% | ✅    | ✅ (55)    |
+| str              |     3926 |         583 |  85% | ✅    | ✅ (0)     |
+| enum/match       |     3922 |         464 |  88% | ✅    | ✅ (20)    |
+| loop             |     3855 |         509 |  87% | ✅    | ✅ (5050)  |
+| selfhost_features|     4153 |         834 |  80% | ✅    | ✅ (0)     |
+| perform_handle   |     4613 |         858 |  81% | ✅    | ✅ (86)    |
 
 Baselines come from binaryen (installed via `npm i binaryen`):
 

@@ -1,7 +1,7 @@
 //# Imports
 
 import ./index.vibe {
-  binary_size, build_call_graph, coalesce_locals, count_exports, count_functions, count_types, dce, dce_remove, inline_empty_calls, inline_calls, fold_table_size, drop_unused_tables, eliminate_dead_stores, filter_exports, find_reachable, minify, minify_converge, minify_fast, optimize, optimize_code_section, remove_empty_sections, remove_unused_types, section_sizes, strip_custom_sections, strip_empty_data, strip_named_section
+  binary_size, build_call_graph, coalesce_locals, count_exports, count_functions, count_types, dce, dce_remove, inline_empty_calls, inline_calls, fold_table_size, drop_unused_tables, drop_unused_globals, drop_unused_tags, eliminate_dead_stores, filter_exports, find_reachable, minify, minify_converge, minify_fast, optimize, optimize_code_section, remove_empty_sections, remove_unused_types, section_sizes, strip_custom_sections, strip_empty_data, strip_named_section
 }
 
 //# Functions
@@ -2417,4 +2417,86 @@ test "inline_calls is a no-op when no single-use callee exists" {
   let opt = inline_calls(m)
   assert(opt[0] == 0)
   assert(opt[4] == 1)
+}
+
+test "drop_unused_globals removes an unexported unused global" {
+  // 2 globals (both i32 mut), only global 0 is exported; no code refs.
+  let m = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 4, 1, 96, 0, 0,
+    3, 2, 1, 0,
+    6, 11, 2, 127, 1, 65, 5, 11, 127, 1, 65, 6, 11,
+    7, 5, 1, 1, 103, 3, 0,
+    10, 4, 1, 2, 0, 11
+  ])
+  let expected = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 4, 1, 96, 0, 0,
+    3, 2, 1, 0,
+    6, 6, 1, 127, 1, 65, 5, 11,
+    7, 5, 1, 1, 103, 3, 0,
+    10, 4, 1, 2, 0, 11
+  ])
+  assert(bytes_eq(drop_unused_globals(m), expected))
+}
+
+test "drop_unused_globals is a no-op when both globals are exported" {
+  let m = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 4, 1, 96, 0, 0,
+    3, 2, 1, 0,
+    6, 11, 2, 127, 1, 65, 5, 11, 127, 1, 65, 6, 11,
+    7, 9, 2, 1, 103, 3, 0, 1, 104, 3, 1,
+    10, 4, 1, 2, 0, 11
+  ])
+  assert(bytes_eq(drop_unused_globals(m), m))
+}
+
+test "drop_unused_tags removes an unexported unused tag" {
+  // 2 tags (both type 0), only tag 0 exported; no throw/try_table in code.
+  let m = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 4, 1, 96, 0, 0,
+    13, 5, 2, 0, 0, 0, 0,
+    7, 5, 1, 1, 101, 4, 0
+  ])
+  let expected = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 4, 1, 96, 0, 0,
+    13, 3, 1, 0, 0,
+    7, 5, 1, 1, 101, 4, 0
+  ])
+  assert(bytes_eq(drop_unused_tags(m), expected))
+}
+
+test "drop_unused_tags is a no-op when both tags are exported" {
+  let m = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 4, 1, 96, 0, 0,
+    13, 5, 2, 0, 0, 0, 0,
+    7, 9, 2, 1, 101, 4, 0, 1, 102, 4, 1
+  ])
+  assert(bytes_eq(drop_unused_tags(m), m))
+}
+
+test "drop_unused_globals handles a const whose LEB byte is 0x0B" {
+  // global 1 (unused) has init i32.const 11 -> bytes 65, 11; the value byte 11
+  // (0x0B) must not be mistaken for the init-expr's terminating `end`.
+  let m = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 4, 1, 96, 0, 0,
+    3, 2, 1, 0,
+    6, 11, 2, 127, 1, 65, 5, 11, 127, 1, 65, 11, 11,
+    7, 5, 1, 1, 103, 3, 0,
+    10, 4, 1, 2, 0, 11
+  ])
+  let expected = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 4, 1, 96, 0, 0,
+    3, 2, 1, 0,
+    6, 6, 1, 127, 1, 65, 5, 11,
+    7, 5, 1, 1, 103, 3, 0,
+    10, 4, 1, 2, 0, 11
+  ])
+  assert(bytes_eq(drop_unused_globals(m), expected))
 }
