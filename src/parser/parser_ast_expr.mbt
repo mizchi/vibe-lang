@@ -476,10 +476,36 @@ fn pipe_apply(
     @core.Expr::Call(name~, type_args~, args~, span~) => {
       let left_span = left.span()
       let call_span = @core.Span::merge(left_span, span)
-      let out : Array[@core.CallArg] = []
-      out.push(@core.CallArg::{ label: None, expr: left, span: left_span })
+      // Bare `_` placeholder slot: `x |> f(a, _)` substitutes the piped value
+      // at each `_` hole (`f(a, x)`) instead of prepending. Only direct args
+      // are checked; a compound `_ * 2` arg is a section lambda and still
+      // triggers the prepend path (matches selfhost `pipe_desugar`).
+      let mut has_hole = false
       for arg in args {
-        out.push(arg)
+        if arg.expr is @core.Expr::Placeholder(..) {
+          has_hole = true
+        }
+      }
+      let out : Array[@core.CallArg] = []
+      if has_hole {
+        for arg in args {
+          if arg.expr is @core.Expr::Placeholder(..) {
+            // Replace only the expr; keep the slot's label and span so a
+            // labeled hole (`x |> f(a=1, b=_)`) stays `f(a=1, b=x)`.
+            out.push(@core.CallArg::{
+              label: arg.label,
+              expr: left,
+              span: arg.span,
+            })
+          } else {
+            out.push(arg)
+          }
+        }
+      } else {
+        out.push(@core.CallArg::{ label: None, expr: left, span: left_span })
+        for arg in args {
+          out.push(arg)
+        }
       }
       @core.Expr::Call(name~, type_args~, args=out, span=call_span)
     }

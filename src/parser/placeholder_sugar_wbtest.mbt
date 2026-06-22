@@ -24,6 +24,73 @@ test "parse placeholder sugar does not wrap enclosing non-op call" {
 }
 
 ///|
+/// Pipe `_` slot: `x |> f(a, _)` substitutes the piped value at the hole
+/// (`f(a, x)`) instead of prepending. Host parity with selfhost `pipe_desugar`.
+test "parse pipe placeholder substitutes at hole" {
+  let ast = parse_ast("x |> f(a, _)")
+  match ast.stmts[0] {
+    @core.Stmt::Expr(expr~, ..) =>
+      match expr {
+        @core.Expr::Call(name="f", args~, ..) => {
+          assert_eq(args.length(), 2)
+          match (args[0].expr, args[1].expr) {
+            (@core.Expr::Ident(name="a", ..), @core.Expr::Ident(name="x", ..)) =>
+              ()
+            other => fail("expected args [a, x], got: \{other}")
+          }
+        }
+        other => fail("expected Call f, got: \{other}")
+      }
+    _ => fail("expected Expr stmt")
+  }
+}
+
+///|
+/// A labeled hole keeps its label: `x |> f(a=1, b=_)` => `f(a=1, b=x)`,
+/// not a positional `f(a=1, x)` (the checker would reject that). Regression
+/// for the #590 Codex review.
+test "parse pipe placeholder preserves a labeled slot" {
+  let ast = parse_ast("x |> f(a=1, b=_)")
+  match ast.stmts[0] {
+    @core.Stmt::Expr(expr~, ..) =>
+      match expr {
+        @core.Expr::Call(name="f", args~, ..) => {
+          assert_eq(args.length(), 2)
+          assert_eq(args[1].label, Some("b"))
+          match args[1].expr {
+            @core.Expr::Ident(name="x", ..) => ()
+            other => fail("expected b slot filled with x, got: \{other}")
+          }
+        }
+        other => fail("expected Call f, got: \{other}")
+      }
+    _ => fail("expected Expr stmt")
+  }
+}
+
+///|
+/// Pipe without a `_` hole still prepends the piped value as the first arg:
+/// `x |> f(a)` → `f(x, a)`.
+test "parse pipe without placeholder prepends" {
+  let ast = parse_ast("x |> f(a)")
+  match ast.stmts[0] {
+    @core.Stmt::Expr(expr~, ..) =>
+      match expr {
+        @core.Expr::Call(name="f", args~, ..) => {
+          assert_eq(args.length(), 2)
+          match (args[0].expr, args[1].expr) {
+            (@core.Expr::Ident(name="x", ..), @core.Expr::Ident(name="a", ..)) =>
+              ()
+            other => fail("expected args [x, a], got: \{other}")
+          }
+        }
+        other => fail("expected Call f, got: \{other}")
+      }
+    _ => fail("expected Expr stmt")
+  }
+}
+
+///|
 /// Operator-chain placeholders stay in the same lambda scope:
 /// `_ % 2 == 0` → `x -> x % 2 == 0` (one Fn, not nested).
 test "parse placeholder sugar spans operator chain" {
