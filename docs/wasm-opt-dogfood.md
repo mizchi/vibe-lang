@@ -4,14 +4,53 @@ The size optimizer in [`vibe/wasm/wasm_opt`](../vibe/wasm/wasm_opt) is written i
 vibe and optimizes vibe-compiled wasm. This note records how we benchmark it
 against binaryen's `wasm-opt` and where we currently stand.
 
-## Measurement loop
+## Measurement loops
 
-`Fs::read_bytes` is declared but has no codegen support (host MVP backend and
-selfhost WASI codegen both only implement `read_file`/`write_bytes`), so the
-optimizer cannot yet be driven as a file-reading CLI. We measure instead by
-**embedding real wasm modules inline** as byte arrays in `vibe test` and calling
-`minify_converge` on them — this runs the real compiled optimizer with no host
-FS dependency. See `fixtures_inline_test.vibe`.
+### Inline (CI) — small fixtures
+We embed real wasm modules inline as byte arrays in `vibe test` and call
+`minify_converge` on them — runs the real compiled optimizer with no host FS
+dependency. See `fixtures_inline_test.vibe`.
+
+### End-to-end on real compiler output (local dogfood)
+To validate/measure on *real, non-trivial* programs we run the optimizer over
+the selfhost compiler's own output. The selfhost CLI's low-level path
+(`cli_main`) executes effectful `main` (the host compiler's final-expression
+model does not), so we host-build a selfhost compiler with an opt-in
+post-optimize hook and drive it via the node host runner:
+
+```bash
+# 1) local-only hook in vibe/cli/selfhost.vibe: gate maybe-minify on
+#    VIBE_MINIFY_PASS (import minify_converge etc. from ../wasm/wasm_opt). DO
+#    NOT COMMIT — it couples wasm_opt into the selfhost compiler (+~700 KB) and
+#    the fixed seed cannot self-compile it.
+# 2) host-build the dogfood compiler (~8s):
+vibe compile --wasm --force-cabi-realloc vibe/cli/selfhost_entry.vibe -o /tmp/sc.wasm
+# 3) compile a sample with/without a pass, then validate + run:
+export VIBE_PREOPEN_DIR="$(pwd)"
+bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main /tmp/sc.wasm \
+  examples/selfhost_features.vibe out.wasm main           # baseline
+VIBE_MINIFY_PASS=minify bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
+  /tmp/sc.wasm examples/selfhost_features.vibe out.min.wasm main
+wasm-opt --all-features out.min.wasm -o /dev/null         # validate
+bash scripts/run_wasm_vibe_host_runner.sh --invoke _start out.min.wasm  # run (compare result)
+```
+
+This loop **caught a critical correctness bug**: `decode_instr` did not consume
+the immediates of `throw`/`try_table`, so minify corrupted *every* effectful
+program (vibe effects compile to wasm exception handling). Real-code validation
+is what surfaced it — the inline fixtures had no exception handling. Fixed in
+`decode_instr`; regression-tested in `wasm_opt_test.vibe`.
+
+Validated real-code results (output VALID per wasm-opt, runs to the same value
+as the baseline):
+
+| program (selfhost-compiled) | baseline | vibe minify | runs | wasm-opt -Oz |
+|-----------------------------|---------:|------------:|------|-------------:|
+| examples/selfhost_features  |     4153 |         865 | 0    |          707 |
+| examples/perform_handle     |     4613 |         867 | 86   |          720 |
+
+~80% reduction on real output; ~150 B behind `wasm-opt -Oz` (the simplify-locals
+/ true-coalesce gap).
 
 Baselines come from binaryen (installed via `npm i binaryen`):
 
