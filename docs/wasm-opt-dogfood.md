@@ -49,8 +49,28 @@ as the baseline):
 | examples/selfhost_features  |     4153 |         865 | 0    |          707 |
 | examples/perform_handle     |     4613 |         867 | 86   |          720 |
 
-~80% reduction on real output; ~150 B behind `wasm-opt -Oz` (the simplify-locals
-/ true-coalesce gap).
+~80% reduction on real output; ~80–150 B behind `wasm-opt -Oz`.
+
+### Where the remaining real-code gap actually is
+
+Disassembling `rec.vibe` (selfhost-compiled, baseline 53 functions):
+
+- our `minify`: **53 → 6 functions** (DCE is correct — all 6 survivors are
+  genuinely `call`-reachable from `_start`/`main`).
+- `wasm-opt -Oz`: **→ 3 functions**.
+
+The extra 3 functions wasm-opt removes are small single-use helpers it
+**inlines** into their callers, which then become dead; that cascade also frees
+their globals and tags (we keep `(global $1..$4)` and `(tag $1..$3)` that
+wasm-opt drops). So on selfhost output the gap is **function inlining** (and the
+unused-global / unused-tag cleanup it unlocks) — *not* simplify-locals. Our
+`inline_empty_calls` only handles empty `() -> ()` callees; general inlining
+(param/local/return remapping, multi-value) is the next big lever.
+
+Correctness has been validated end-to-end on 8 real programs (arrays, recursion,
+strings, enums/match, effects/handlers, loops, plus examples/selfhost_features
+and examples/perform_handle): every `minify` output is VALID under wasm-opt and
+runs to the same result as the baseline.
 
 Baselines come from binaryen (installed via `npm i binaryen`):
 
