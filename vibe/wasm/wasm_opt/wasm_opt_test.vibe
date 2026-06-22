@@ -1,7 +1,7 @@
 //# Imports
 
 import ./index.vibe {
-  binary_size, build_call_graph, coalesce_locals, count_exports, count_functions, count_types, dce, dce_remove, filter_exports, find_reachable, minify, minify_converge, minify_fast, optimize, optimize_code_section, remove_empty_sections, remove_unused_types, section_sizes, strip_custom_sections, strip_empty_data, strip_named_section
+  binary_size, build_call_graph, coalesce_locals, count_exports, count_functions, count_types, dce, dce_remove, inline_empty_calls, filter_exports, find_reachable, minify, minify_converge, minify_fast, optimize, optimize_code_section, remove_empty_sections, remove_unused_types, section_sizes, strip_custom_sections, strip_empty_data, strip_named_section
 }
 
 //# Functions
@@ -2182,4 +2182,40 @@ test "peephole removes nop" {
   assert(binary_size(opt) < binary_size(m))
   assert(opt[0] == 0)
   assert(opt[4] == 1)
+}
+
+// inline_empty_calls: a `call F` to an empty () -> () function F is a no-op and
+// is deleted. Input/expected verified VALID by binaryen wasm-opt.
+test "inline_empty_calls deletes calls to empty void functions" {
+  // func0 empty ()->(); func1 ()->() calls func0; export "main" = func1.
+  let input = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 4, 1, 96, 0, 0,
+    3, 3, 2, 0, 0,
+    7, 8, 1, 4, 109, 97, 105, 110, 0, 1,
+    10, 9, 2, 2, 0, 11, 4, 0, 16, 0, 11
+  ])
+  let expected = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 4, 1, 96, 0, 0,
+    3, 3, 2, 0, 0,
+    7, 8, 1, 4, 109, 97, 105, 110, 0, 1,
+    10, 7, 2, 2, 0, 11, 2, 0, 11
+  ])
+  assert(bytes_eq(inline_empty_calls(input), expected))
+  // end to end: empty callee then becomes dead and is removed by DCE
+  // (wasm-opt -Oz reaches 34 on this input)
+  assert(binary_size(minify_converge(input)) <= 34)
+}
+
+test "inline_empty_calls no-op when no empty void funcs" {
+  // const-returning func: not empty, must be left unchanged
+  let m = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 5, 1, 96, 0, 1, 127,
+    3, 2, 1, 0,
+    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
+    10, 6, 1, 4, 0, 65, 42, 11
+  ])
+  assert(bytes_eq(inline_empty_calls(m), m))
 }

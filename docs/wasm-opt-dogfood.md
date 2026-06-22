@@ -32,7 +32,7 @@ to the correct value by `wasmtime` before being asserted byte-for-byte in
 | br_to_exit           |   26 |            8 |                    8 | ✅ match |
 | elided-br            |   33 |            8 |                    8 | ✅ match |
 | directize_gain       |   56 |           50 |                   50 | ✅ match |
-| complexBinaryNames   |   73 |           41 |                  ~45 | gap 4 |
+| complexBinaryNames   |   73 |           41 |                   41 | ✅ match |
 | rume_gain            |   65 |           33 |                ~56-64 | gap (table DCE) |
 | base64 (real)        | 9024 |         6962 |                ~8700 | gap (body opts) |
 
@@ -46,6 +46,9 @@ to the correct value by `wasmtime` before being asserted byte-for-byte in
 - **constant folding** — i32 arith/shift/compare + `eqz`, 32-bit-correct
   wraparound; identity elimination for i32 and i64 (`x+0`, `x*1`, `x<<0`, …);
   `nop` removal.
+- **empty-void-call inlining** (`inline_empty_calls`) — deletes `call F` where F
+  is an empty `() -> ()` function (a no-op); the callee then becomes dead and is
+  removed by DCE. Reaches parity on complexBinaryNames.
 - section stripping, `local.tee`, `drop`/`br_if 0` elimination, local coalescing.
 
 ## Gap analysis / roadmap toward `wasm-opt` parity
@@ -58,8 +61,9 @@ genuinely reachable in our call graph). They need:
    `call_indirect`, the table is never indexed, so its element segments and
    table-only functions are dead and can be dropped. Requires proving the table
    is unused (no `call_indirect`/`table.*`, not exported/imported).
-2. **Function inlining** (complexBinaryNames → 41): inlining trivial/empty
-   callees, after which the callee becomes dead and is removed.
+2. **Function inlining beyond empty void callees** (general): inlining small
+   non-empty callees. (Empty `() -> ()` callees are already handled, which
+   brought complexBinaryNames to parity.)
 3. **Body-level optimization** (base64 → 6962): the bulk of base64 is its code
    section; wasm-opt shrinks bodies via local coalescing/reuse, instruction
    combining, and in-body dead-code elimination beyond our current peephole.
