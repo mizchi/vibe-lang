@@ -5,6 +5,10 @@ WASM-targeting, pure-by-default language with algebraic effects. Compiled via Mo
 ## Quick Start
 
 ```vibe
+// `stdout_write` is a prelude helper, not a builtin — import it (otherwise the
+// checker reports `unknown function: String::stdout_write`).
+import ./vibe/prelude/io.vibe { stdout_write }
+
 let main: () -> Unit with { Stdout } = () -> {
   stdout_write("hello world\n")
 }
