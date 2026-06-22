@@ -3529,6 +3529,105 @@ export let drop_unused_tables = (bytes: Bytes) -> Bytes {
   }
 }
 
+// Replace `local.set N` with `drop` when local N is never read anywhere in the
+// function (no local.get/local.tee references it). Since "never read" is a
+// whole-function property it is independent of control flow, so this is always
+// safe; the resulting `<pure expr>; drop` is then cleaned by peephole and the
+// now-unused local declaration by coalesce_locals.
+let eliminate_dead_stores_body = (body: Bytes) -> Bytes {
+  let body_len = Bytes::length(body)
+  if body_len < 2 {
+    copy_bytes(body, 0, body_len)
+  }
+  else {
+    let (local_count, lp) = read_uleb128(body, 0)
+    let mut pos = lp
+    let mut lc = 0
+    while lc < local_count {
+      let (_, tp) = read_uleb128(body, pos)
+      pos = tp + 1
+      lc = lc + 1
+    }
+    let code_start = pos
+    let code_end = body_len - 1
+    if code_start >= code_end {
+      copy_bytes(body, 0, body_len)
+    }
+    else {
+      let spans = parse_body_spans(body, code_start, code_end)
+      let reads = Array::slice([
+        (0)
+      ], 0, 0)
+      let mut ri = 0
+      while ri < Array::length(spans) {
+        let (s_i, _, op_i) = Array::get(spans, ri)
+        if (op_i == 0x20) || (op_i == 0x22) {
+          Array::push(reads, span_read_uleb_imm(body, s_i))
+        }
+        ri = ri + 1
+      }
+      let out = Bytes::new()
+      let mut ci = 0
+      while ci < code_start {
+        Bytes::push(out, body[ci]); ci = ci + 1
+      }
+      let mut i = 0
+      while i < Array::length(spans) {
+        let (s_i, e_i, op_i) = Array::get(spans, i)
+        if op_i == 0x21 {
+          let idx = span_read_uleb_imm(body, s_i)
+          if array_contains_int(reads, idx) {
+            copy_span_bytes(out, body, s_i, e_i)
+          } else {
+            Bytes::push(out, 0x1A)
+          }
+        } else {
+          copy_span_bytes(out, body, s_i, e_i)
+        }
+        i = i + 1
+      }
+      Bytes::push(out, 0x0B)
+      out
+    }
+  }
+}
+
+export let eliminate_dead_stores = (bytes: Bytes) -> Bytes {
+  let len = Bytes::length(bytes)
+  if len < 8 {
+    copy_bytes(bytes, 0, len)
+  }
+  else {
+    let sections = list_sections(bytes)
+    let out = Bytes::new()
+    let mut hi = 0
+    while hi < 8 {
+      Bytes::push(out, bytes[hi]); hi = hi + 1
+    }
+    let mut s = 0
+    while s < Array::length(sections) {
+      let (sid, off, sz) = Array::get(sections, s)
+      if sid == 10 {
+        let raw_bodies = parse_code_bodies(bytes, off, sz)
+        let new_bodies = Array::slice([
+          (Bytes::new())
+        ], 0, 0)
+        let mut bi = 0
+        while bi < Array::length(raw_bodies) {
+          Array::push(new_bodies, eliminate_dead_stores_body(Array::get(raw_bodies, bi)))
+          bi = bi + 1
+        }
+        emit_section(out, 10, rebuild_code_section(new_bodies))
+      } else {
+        let content = copy_bytes(bytes, off, off + sz)
+        emit_section(out, sid, content)
+      }
+      s = s + 1
+    }
+    out
+  }
+}
+
 export let minify = (bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
@@ -3553,7 +3652,8 @@ export let minify = (bytes: Bytes) -> Bytes {
     let s2 = directize(stripped)
     let s3 = call_forwarding(s2)
     let s3t = fold_table_size(s3)
-    let s4a = optimize_code_section(s3t)
+    let s3d = eliminate_dead_stores(s3t)
+    let s4a = optimize_code_section(s3d)
     let s4b = inline_empty_calls(s4a)
     let s4 = drop_unused_tables(s4b)
     let s5_removed = dce_remove(s4)
