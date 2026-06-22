@@ -65,8 +65,22 @@ genuinely reachable in our call graph). They need:
    non-empty callees. (Empty `() -> ()` callees are already handled, which
    brought complexBinaryNames to parity.)
 3. **Body-level optimization** (base64 → 6962): the bulk of base64 is its code
-   section; wasm-opt shrinks bodies via local coalescing/reuse, instruction
-   combining, and in-body dead-code elimination beyond our current peephole.
+   section. Per-pass `wasm-opt` measurement on base64 (9024 B) shows the biggest
+   single levers are dataflow on locals:
+
+   | wasm-opt pass                   | base64 size |
+   |---------------------------------|------------:|
+   | `--simplify-locals`             |        8312 |
+   | `--coalesce-locals`             |        8675 |
+   | `--precompute`                  |        8917 |
+   | `--optimize-instructions`       |        8912 |
+   | `--remove-unused-module-elements` |      8963 |
+   | (`-Oz`, all combined)           |        6962 |
+
+   `simplify-locals` (copy propagation / redundant `local.set`/`local.get`
+   elimination via dataflow) is the top remaining lever; our peephole only does
+   the adjacent `local.set x; local.get x -> local.tee x` case. A real
+   simplify-locals needs per-function def/use dataflow.
 
 These are tracked as follow-up work; each is validated with the
 `wasm-opt`/`wasmtime` oracle loop above before landing.
