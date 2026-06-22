@@ -2617,3 +2617,29 @@ export let optimize = (bytes: Bytes) -> Bytes {
   let step3 = dce(step2)
   step3
 }
+
+// Run `minify` repeatedly until it stops shrinking the binary (wite's
+// `--converge`). Passes feed each other across rounds: `directize` exposes
+// dead functions for `dce`, `dce` exposes unused types for `remove_unused_types`,
+// and deep constant-fold chains finish past `peephole_body`'s internal cap.
+// Monotonic: a round is kept only if it is strictly smaller, so the result is
+// never larger than a single `minify`. `max_rounds` bounds the work.
+let minify_converge_n = (bytes: Bytes, max_rounds: Int) -> Bytes {
+  let mut cur = minify(bytes)
+  let mut rounds = 0
+  let mut keep_going = true
+  while keep_going && (rounds < max_rounds) {
+    let next = minify(cur)
+    if binary_size(next) < binary_size(cur) {
+      cur = next
+      rounds = rounds + 1
+    } else {
+      keep_going = false
+    }
+  }
+  cur
+}
+
+export let minify_converge = (bytes: Bytes) -> Bytes {
+  minify_converge_n(bytes, 16)
+}
