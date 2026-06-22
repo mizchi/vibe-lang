@@ -2141,20 +2141,32 @@ test "dce_remove removes dead func and renumbers calls" {
   assert(count_functions(dce_remove(input)) == 2)
 }
 
-test "dce_remove bails (no change) when an element section is present" {
-  // module with an element section (id 9) must be returned unchanged, so table
-  // function references are never invalidated; minify falls back to stub dce.
-  // (this is the directize_gain fixture, which carries a table + elements)
-  let m = make_bytes([
+test "dce_remove with element section: remove dead func, renumber table" {
+  // 3 funcs (all ()->i32): func0 exported "main"=42, func1 dead=99, func2=7
+  // placed in table[0] via an element segment. func1 is unreachable -> removed;
+  // the element's table entry func2 (old idx 2) must be renumbered to 1.
+  // Input and expected output both verified VALID by binaryen wasm-opt and run
+  // to 42 by wasmtime.
+  let input = make_bytes([
     0, 97, 115, 109, 1, 0, 0, 0,
-    1, 7, 2, 96, 0, 0, 96, 0, 0,
-    3, 2, 1, 1,
+    1, 5, 1, 96, 0, 1, 127,
+    3, 4, 3, 0, 0, 0,
     4, 4, 1, 112, 0, 1,
-    7, 7, 1, 3, 114, 117, 110, 0, 0,
-    9, 7, 1, 0, 65, 0, 11, 1, 0,
-    10, 9, 1, 7, 0, 65, 0, 17, 1, 0, 11
+    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
+    9, 7, 1, 0, 65, 0, 11, 1, 2,
+    10, 16, 3, 4, 0, 65, 42, 11, 4, 0, 65, 99, 11, 4, 0, 65, 7, 11
   ])
-  assert(bytes_eq(dce_remove(m), m))
+  let expected = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 5, 1, 96, 0, 1, 127,
+    3, 3, 2, 0, 0,
+    4, 4, 1, 112, 0, 1,
+    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
+    9, 7, 1, 0, 65, 0, 11, 1, 1,
+    10, 11, 2, 4, 0, 65, 42, 11, 4, 0, 65, 7, 11
+  ])
+  assert(bytes_eq(dce_remove(input), expected))
+  assert(count_functions(dce_remove(input)) == 2)
 }
 
 test "peephole removes nop" {
