@@ -1923,3 +1923,46 @@ test "minify_converge handles empty/tiny modules" {
   let header = make_bytes([0, 97, 115, 109, 1, 0, 0, 0])
   assert(binary_size(minify_converge(header)) == 8)
 }
+
+// i32.shl/shr_s/shr_u by a constant 0 is the identity: `x << 0` == `x`.
+// Body: i32.const 7, i32.const 0, <shift>, end  ->  i32.const 7, end.
+let module_shift_identity = (shift_op: Int) -> Bytes {
+  make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 5, 1, 96, 0, 1, 127,
+    3, 2, 1, 0,
+    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
+    10, 9, 1, 7, 0, 65, 7, 65, 0, shift_op, 11
+  ])
+}
+
+test "peephole shift-by-zero identity (shl)" {
+  let m = module_shift_identity(0x74)
+  let optimized = optimize_code_section(m)
+  // const 0 + shl removed -> smaller, still one valid function
+  assert(binary_size(optimized) < binary_size(m))
+  assert(count_functions(optimized) == 1)
+  assert(optimized[0] == 0)
+  assert(optimized[4] == 1)
+}
+
+test "peephole shift-by-zero identity (shr_s, shr_u)" {
+  let ms = module_shift_identity(0x75)
+  assert(binary_size(optimize_code_section(ms)) < binary_size(ms))
+  let mu = module_shift_identity(0x76)
+  assert(binary_size(optimize_code_section(mu)) < binary_size(mu))
+}
+
+test "peephole shift-by-nonzero is preserved" {
+  // i32.const 7, i32.const 3, i32.shl, end -- not an identity, must not shrink
+  let m = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 5, 1, 96, 0, 1, 127,
+    3, 2, 1, 0,
+    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
+    10, 9, 1, 7, 0, 65, 7, 65, 3, 0x74, 11
+  ])
+  let optimized = optimize_code_section(m)
+  // shift amount is 3, not foldable here; size must be unchanged
+  assert(binary_size(optimized) == binary_size(m))
+}

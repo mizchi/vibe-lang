@@ -20,6 +20,14 @@ let is_i32_binop = (op: Int) -> Bool {
   (op == 0x6A) || (op == 0x6B) || (op == 0x6C) || (op == 0x71) || (op == 0x72) || (op == 0x73)
 }
 
+// i32.shl / i32.shr_s / i32.shr_u. Kept separate from is_i32_binop on purpose:
+// these gate identity elimination (`x << 0` -> `x`) but NOT constant folding,
+// since apply_i32_binop does not implement shifts (and 62-bit Int folding would
+// not honor wasm's 32-bit shift-amount masking / wraparound).
+let is_i32_shift = (op: Int) -> Bool {
+  (op == 0x74) || (op == 0x75) || (op == 0x76)
+}
+
 let read_sleb128 = (buf: Bytes, offset: Int) -> (Int, Int) {
   let len = Bytes::length(buf)
   let mut i = offset
@@ -349,7 +357,12 @@ let is_identity_op = (op: Int, imm: Int) -> Bool {
             imm == 0
           }
           else {
-            false
+            if (op == 0x74) || (op == 0x75) || (op == 0x76) {
+              imm == 0
+            }
+            else {
+              false
+            }
           }
         }
       }
@@ -1048,7 +1061,7 @@ let peephole_spans = (body: Bytes, spans: Array[(Int, Int, Int)]) -> (Bytes, Boo
         i = i + 3
         changed = true
       } else {
-        if (op_j == 0x41) && (is_i32_binop(op_k)) {
+        if (op_j == 0x41) && (is_i32_binop(op_k) || is_i32_shift(op_k)) {
           let imm_j = span_read_sleb_imm(body, s_j)
           if is_identity_op(op_k, imm_j) {
             copy_span_bytes(out, body, s_i, e_i)
