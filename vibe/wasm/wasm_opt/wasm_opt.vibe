@@ -20,12 +20,17 @@ let is_i32_binop = (op: Int) -> Bool {
   (op == 0x6A) || (op == 0x6B) || (op == 0x6C) || (op == 0x71) || (op == 0x72) || (op == 0x73)
 }
 
-// i32.shl / i32.shr_s / i32.shr_u. Kept separate from is_i32_binop on purpose:
-// these gate identity elimination (`x << 0` -> `x`) but NOT constant folding,
-// since apply_i32_binop does not implement shifts (and 62-bit Int folding would
-// not honor wasm's 32-bit shift-amount masking / wraparound).
+// i32.shl / i32.shr_s / i32.shr_u. Kept separate from is_i32_binop so callers
+// can ask for "binop" vs "shift" specifically; apply_i32_fold handles both
+// (with wasm's 32-bit shift-amount masking and wraparound).
 let is_i32_shift = (op: Int) -> Bool {
   (op == 0x74) || (op == 0x75) || (op == 0x76)
+}
+
+// Opcodes whose `i32.const a; i32.const b; OP` triple can be constant-folded.
+// div/rem are excluded: folding `x / 0` would silently drop a wasm trap.
+let is_i32_foldable = (op: Int) -> Bool {
+  is_i32_binop(op) || is_i32_shift(op)
 }
 
 // i64 identity: `x OP <i64.const k>` collapses to `x` when (OP, k) is an
@@ -388,32 +393,49 @@ let is_identity_op = (op: Int, imm: Int) -> Bool {
   }
 }
 
-let apply_i32_binop = (op: Int, a: Int, b: Int) -> Int {
-  if op == 0x6A {
-    a + b
+// Normalize a 62-bit Int result to a signed wasm i32 (two's complement,
+// -2^31 .. 2^31-1) so constant folding matches wasm's wraparound semantics
+// instead of leaking out-of-range values into the rewritten i32.const.
+let wrap_i32 = (v: Int) -> Int {
+  let m = v & 0xFFFFFFFF
+  if (m & 0x80000000) != 0 {
+    m - 4294967296
   }
   else {
-    if op == 0x6B {
-      a - b
-    }
-    else {
-      if op == 0x6C {
-        a * b
-      }
-      else {
-        if op == 0x71 {
-          a&b
-        }
-        else {
-          if op == 0x72 {
-            a|b
-          }
-          else {
-            a^b
-          }
-        }
-      }
-    }
+    m
+  }
+}
+
+let apply_i32_fold = (op: Int, a: Int, b: Int) -> Int {
+  if op == 0x6A {
+    wrap_i32(a + b)
+  }
+  else if op == 0x6B {
+    wrap_i32(a - b)
+  }
+  else if op == 0x6C {
+    wrap_i32(a * b)
+  }
+  else if op == 0x71 {
+    wrap_i32(a & b)
+  }
+  else if op == 0x72 {
+    wrap_i32(a | b)
+  }
+  else if op == 0x73 {
+    wrap_i32(a ^ b)
+  }
+  else if op == 0x74 {
+    wrap_i32(a << (b & 31))
+  }
+  else if op == 0x75 {
+    // shr_s: arithmetic shift of the signed 32-bit value (vibe >> sign-extends)
+    wrap_i32(wrap_i32(a) >> (b & 31))
+  }
+  else {
+    // shr_u (0x76): logical shift of the unsigned 32-bit value
+    let ua = a & 0xFFFFFFFF
+    wrap_i32(ua >> (b & 31))
   }
 }
 
@@ -1070,10 +1092,10 @@ let peephole_spans = (body: Bytes, spans: Array[(Int, Int, Int)]) -> (Bytes, Boo
     if (i + 2) < n {
       let (s_j, _, op_j) = Array::get(spans, i + 1)
       let (_, _, op_k) = Array::get(spans, i + 2)
-      if (op_i == 0x41) && (op_j == 0x41) && (is_i32_binop(op_k)) {
+      if (op_i == 0x41) && (op_j == 0x41) && (is_i32_foldable(op_k)) {
         let imm_i = span_read_sleb_imm(body, s_i)
         let imm_j = span_read_sleb_imm(body, s_j)
-        let folded = apply_i32_binop(op_k, imm_i, imm_j)
+        let folded = apply_i32_fold(op_k, imm_i, imm_j)
         Bytes::push(out, 0x41)
         write_sleb128(out, folded)
         i = i + 3

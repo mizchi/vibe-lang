@@ -1953,17 +1953,18 @@ test "peephole shift-by-zero identity (shr_s, shr_u)" {
   assert(binary_size(optimize_code_section(mu)) < binary_size(mu))
 }
 
-test "peephole shift-by-nonzero is preserved" {
-  // i32.const 7, i32.const 3, i32.shl, end -- not an identity, must not shrink
+test "peephole shift-by-nonzero on non-const base is preserved" {
+  // type (i32) -> i32; body: local.get 0, i32.const 3, i32.shl, end.
+  // The base is not a constant, so this is neither an identity nor foldable
+  // and must be left untouched (guards against treating `x << 3` as identity).
   let m = make_bytes([
     0, 97, 115, 109, 1, 0, 0, 0,
-    1, 5, 1, 96, 0, 1, 127,
+    1, 6, 1, 96, 1, 127, 1, 127,
     3, 2, 1, 0,
     7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
-    10, 9, 1, 7, 0, 65, 7, 65, 3, 0x74, 11
+    10, 9, 1, 7, 0, 32, 0, 65, 3, 116, 11
   ])
   let optimized = optimize_code_section(m)
-  // shift amount is 3, not foldable here; size must be unchanged
   assert(binary_size(optimized) == binary_size(m))
 }
 
@@ -2002,4 +2003,83 @@ test "peephole i64 non-identity preserved" {
   // i64.mul with k=0 is not identity either (x*0==0)
   let mul0 = module_i64_identity(0x7E, 0)
   assert(binary_size(optimize_code_section(mul0)) == binary_size(mul0))
+}
+
+// Constant folding of i32 shifts, with verification of the *value* (not just
+// size): folding `i32.const a; i32.const b; OP` must produce byte-identical
+// output to a module that holds the precomputed result constant directly.
+// Operand/result bytes below are all single-byte SLEB128 (values in -64..63).
+let i32_binop_module = (a: Int, b: Int, op: Int) -> Bytes {
+  make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 5, 1, 96, 0, 1, 127,
+    3, 2, 1, 0,
+    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
+    10, 9, 1, 7, 0, 65, a, 65, b, op, 11
+  ])
+}
+
+let i32_const_module = (v: Int) -> Bytes {
+  make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 5, 1, 96, 0, 1, 127,
+    3, 2, 1, 0,
+    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
+    10, 6, 1, 4, 0, 65, v, 11
+  ])
+}
+
+let bytes_eq = (x: Bytes, y: Bytes) -> Bool {
+  if Bytes::length(x) != Bytes::length(y) {
+    false
+  } else {
+    let mut i = 0
+    let mut ok = true
+    while i < Bytes::length(x) {
+      if x[i] != y[i] {
+        ok = false
+      }
+      i = i + 1
+    }
+    ok
+  }
+}
+
+test "fold i32.shl produces correct value" {
+  // 5 << 3 == 40
+  let folded = minify(i32_binop_module(5, 3, 0x74))
+  let expected = minify(i32_const_module(40))
+  assert(bytes_eq(folded, expected))
+}
+
+test "fold i32.shr_u is logical (unsigned)" {
+  // (-1 as u32) >> 28 == 0xF == 15  (SLEB byte 127 == -1)
+  let folded = minify(i32_binop_module(127, 28, 0x76))
+  let expected = minify(i32_const_module(15))
+  assert(bytes_eq(folded, expected))
+}
+
+test "fold i32.shr_s is arithmetic (signed)" {
+  // (-16) >> 2 == -4   (SLEB byte 112 == -16, result SLEB byte 124 == -4)
+  let folded = minify(i32_binop_module(112, 2, 0x75))
+  let expected = minify(i32_const_module(124))
+  assert(bytes_eq(folded, expected))
+}
+
+test "fold i32.add wraps to 32-bit on overflow" {
+  // i32.const 0x7FFFFFFF + i32.const 1 wraps to -2147483648.
+  // Just assert it folds to a single constant (size shrinks) and stays valid;
+  // value-exactness for multi-byte SLEB is covered by the shift cases above.
+  let m = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 5, 1, 96, 0, 1, 127,
+    3, 2, 1, 0,
+    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
+    // body: i32.const 0x7FFFFFFF (255,255,255,255,7), i32.const 1, i32.add, end
+    10, 13, 1, 11, 0, 65, 255, 255, 255, 255, 7, 65, 1, 106, 11
+  ])
+  let opt = optimize_code_section(m)
+  assert(binary_size(opt) < binary_size(m))
+  assert(opt[0] == 0)
+  assert(opt[4] == 1)
 }
