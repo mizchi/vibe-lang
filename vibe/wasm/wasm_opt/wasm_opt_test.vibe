@@ -1,7 +1,7 @@
 //# Imports
 
 import ./index.vibe {
-  binary_size, build_call_graph, coalesce_locals, count_exports, count_functions, count_types, dce, dce_remove, inline_empty_calls, filter_exports, find_reachable, minify, minify_converge, minify_fast, optimize, optimize_code_section, remove_empty_sections, remove_unused_types, section_sizes, strip_custom_sections, strip_empty_data, strip_named_section
+  binary_size, build_call_graph, coalesce_locals, count_exports, count_functions, count_types, dce, dce_remove, inline_empty_calls, fold_table_size, drop_unused_tables, filter_exports, find_reachable, minify, minify_converge, minify_fast, optimize, optimize_code_section, remove_empty_sections, remove_unused_types, section_sizes, strip_custom_sections, strip_empty_data, strip_named_section
 }
 
 //# Functions
@@ -2218,4 +2218,63 @@ test "inline_empty_calls no-op when no empty void funcs" {
     10, 6, 1, 4, 0, 65, 42, 11
   ])
   assert(bytes_eq(inline_empty_calls(m), m))
+}
+
+// decode_instr regression: a body containing `table.size` (0xFC 16 <tableidx>)
+// must be parsed with its tableidx immediate consumed, so peephole does not
+// corrupt it. With no applicable peephole, optimize_code_section is a no-op.
+let module_table_size = () -> Bytes {
+  make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 4, 1, 96, 0, 0,
+    3, 2, 1, 0,
+    4, 4, 1, 112, 0, 5,
+    7, 5, 1, 1, 102, 0, 0,
+    9, 7, 1, 0, 65, 0, 11, 1, 0,
+    10, 8, 1, 6, 0, 252, 16, 0, 26, 11
+  ])
+}
+
+test "decode_instr handles table.size without corruption" {
+  let m = module_table_size()
+  assert(bytes_eq(optimize_code_section(m), m))
+}
+
+test "fold_table_size replaces table.size with i32.const" {
+  // body `table.size 0; drop; end` -> `i32.const 5; drop; end` (table min = 5).
+  // Input/output both verified VALID by binaryen wasm-opt.
+  let expected = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 4, 1, 96, 0, 0,
+    3, 2, 1, 0,
+    4, 4, 1, 112, 0, 5,
+    7, 5, 1, 1, 102, 0, 0,
+    9, 7, 1, 0, 65, 0, 11, 1, 0,
+    10, 7, 1, 5, 0, 65, 5, 26, 11
+  ])
+  assert(bytes_eq(fold_table_size(module_table_size()), expected))
+}
+
+test "fold_table_size bails when table.grow present" {
+  // body `i32.const 0; table.grow 0; drop; end` (0xFC 15) must not be folded.
+  let m = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 4, 1, 96, 0, 0,
+    3, 2, 1, 0,
+    4, 4, 1, 112, 0, 5,
+    7, 5, 1, 1, 102, 0, 0,
+    9, 7, 1, 0, 65, 0, 11, 1, 0,
+    10, 11, 1, 9, 0, 211, 0, 65, 0, 252, 15, 0, 26, 11
+  ])
+  assert(bytes_eq(fold_table_size(m), m))
+}
+
+test "drop_unused_tables removes table+element when no table ops" {
+  // After table.size is folded away the table is unused -> table (id4) and
+  // element (id9) sections are dropped.
+  let folded = fold_table_size(module_table_size())
+  let dropped = drop_unused_tables(optimize_code_section(folded))
+  assert(binary_size(dropped) < binary_size(folded))
+  assert(dropped[0] == 0)
+  assert(dropped[4] == 1)
 }

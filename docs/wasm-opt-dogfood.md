@@ -33,8 +33,11 @@ to the correct value by `wasmtime` before being asserted byte-for-byte in
 | elided-br            |   33 |            8 |                    8 | ✅ match |
 | directize_gain       |   56 |           50 |                   50 | ✅ match |
 | complexBinaryNames   |   73 |           41 |                   41 | ✅ match |
-| rume_gain            |   65 |           33 |                ~56-64 | gap (table DCE) |
+| rume_gain            |   65 |           33 |                   33 | ✅ match |
 | base64 (real)        | 9024 |         6962 |                ~8700 | gap (body opts) |
+
+Five of six match `wasm-opt -Oz` exactly; every fixture output above is
+byte-identical to a module that `wasm-opt` validates and `wasmtime` runs.
 
 ## What we do
 
@@ -49,7 +52,17 @@ to the correct value by `wasmtime` before being asserted byte-for-byte in
 - **empty-void-call inlining** (`inline_empty_calls`) — deletes `call F` where F
   is an empty `() -> ()` function (a no-op); the callee then becomes dead and is
   removed by DCE. Reaches parity on complexBinaryNames.
+- **table.size folding + table DCE** (`fold_table_size`, `drop_unused_tables`) —
+  `table.size t` folds to the table's declared minimum (when no `table.grow` and
+  no imported tables); once no table opcode remains and no table is exported, the
+  table and element sections are dropped and the element-only functions collapse.
+  Reaches parity on rume_gain.
 - section stripping, `local.tee`, `drop`/`br_if 0` elimination, local coalescing.
+
+A prerequisite fix landed here too: `decode_instr` now consumes the immediates
+of every `0xFC`-prefixed op (table/memory bulk ops). Previously `table.size`'s
+table index was misparsed as a separate instruction, which `nop`/peephole could
+corrupt — so the old "rume reduction" was actually invalid output.
 
 ## Gap analysis / roadmap toward `wasm-opt` parity
 

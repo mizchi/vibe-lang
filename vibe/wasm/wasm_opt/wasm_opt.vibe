@@ -233,10 +233,25 @@ let decode_instr = (body: Bytes, pos: Int) -> (Int, Int, Int) {
                               } else {
                                 if op == 0xFC {
                                   let (sub_op, p1) = read_uleb128(body, pos + 1)
-                                  if (sub_op == 10) || (sub_op == 11) {
-                                    (op, 0, p1 + 2)
-                                  } else {
+                                  if sub_op <= 7 {
                                     (op, 0, p1)
+                                  } else if sub_op == 8 {
+                                    let (_, p2) = read_uleb128(body, p1)
+                                    (op, 0, p2 + 1)
+                                  } else if sub_op == 9 {
+                                    let (_, p2) = read_uleb128(body, p1)
+                                    (op, 0, p2)
+                                  } else if sub_op == 10 {
+                                    (op, 0, p1 + 2)
+                                  } else if sub_op == 11 {
+                                    (op, 0, p1 + 1)
+                                  } else if (sub_op == 12) || (sub_op == 14) {
+                                    let (_, p2) = read_uleb128(body, p1)
+                                    let (_, p3) = read_uleb128(body, p2)
+                                    (op, 0, p3)
+                                  } else {
+                                    let (_, p2) = read_uleb128(body, p1)
+                                    (op, 0, p2)
                                   }
                                 } else {
                                   (op, 0, pos + 1)
@@ -3216,6 +3231,297 @@ export let inline_empty_calls = (bytes: Bytes) -> Bytes {
   }
 }
 
+// Parse instruction spans of a whole function body (locals header skipped).
+let parse_full_body_spans = (body: Bytes) -> Array[(Int, Int, Int)] {
+  let body_len = Bytes::length(body)
+  if body_len < 2 {
+    Array::slice([
+      (0, 0, 0)
+    ], 0, 0)
+  }
+  else {
+    let (local_count, lp) = read_uleb128(body, 0)
+    let mut pos = lp
+    let mut lc = 0
+    while lc < local_count {
+      let (_, tp) = read_uleb128(body, pos)
+      pos = tp + 1
+      lc = lc + 1
+    }
+    parse_body_spans(body, pos, body_len - 1)
+  }
+}
+
+// Minimum size of each *defined* table (index space after imported tables).
+let parse_table_mins = (bytes: Bytes) -> Array[Int] {
+  let result = Array::slice([
+    (0)
+  ], 0, 0)
+  let sections = list_sections(bytes)
+  let mut s = 0
+  while s < Array::length(sections) {
+    let (sid, off, sz) = Array::get(sections, s)
+    if sid == 4 {
+      let end_pos = off + sz
+      let (cnt, pos0) = read_uleb128(bytes, off)
+      let mut pos = pos0
+      let mut i = 0
+      while (i < cnt) && (pos < end_pos) {
+        pos = pos + 1
+        let flag = bytes[pos]
+        pos = pos + 1
+        let (min_v, np) = read_uleb128(bytes, pos)
+        pos = np
+        if flag == 1 {
+          let (_, np2) = read_uleb128(bytes, pos)
+          pos = np2
+        }
+        Array::push(result, min_v)
+        i = i + 1
+      }
+    }
+    s = s + 1
+  }
+  result
+}
+
+// True if any body uses a table opcode: call_indirect, table.get/set, or any
+// 0xFC table.* (init/drop/copy/grow/size/fill). Used to decide table removal.
+let code_uses_any_table_op = (bytes: Bytes) -> Bool {
+  let sections = list_sections(bytes)
+  let mut found = false
+  let mut s = 0
+  while s < Array::length(sections) {
+    let (sid, off, sz) = Array::get(sections, s)
+    if sid == 10 {
+      let raw_bodies = parse_code_bodies(bytes, off, sz)
+      let mut bi = 0
+      while bi < Array::length(raw_bodies) {
+        let body = Array::get(raw_bodies, bi)
+        let spans = parse_full_body_spans(body)
+        let mut i = 0
+        while i < Array::length(spans) {
+          let (s_i, _, op_i) = Array::get(spans, i)
+          if (op_i == 0x11) || (op_i == 0x25) || (op_i == 0x26) {
+            found = true
+          }
+          else if op_i == 0xFC {
+            let (sub, _) = read_uleb128(body, s_i + 1)
+            if (sub >= 12) && (sub <= 17) {
+              found = true
+            }
+          }
+          i = i + 1
+        }
+        bi = bi + 1
+      }
+    }
+    s = s + 1
+  }
+  found
+}
+
+// Replace `table.size t` with `i32.const <min size of table t>` in one body.
+let fold_table_size_body = (body: Bytes, table_mins: Array[Int]) -> Bytes {
+  let body_len = Bytes::length(body)
+  if body_len < 2 {
+    copy_bytes(body, 0, body_len)
+  }
+  else {
+    let (local_count, lp) = read_uleb128(body, 0)
+    let mut pos = lp
+    let mut lc = 0
+    while lc < local_count {
+      let (_, tp) = read_uleb128(body, pos)
+      pos = tp + 1
+      lc = lc + 1
+    }
+    let code_start = pos
+    let code_end = body_len - 1
+    if code_start >= code_end {
+      copy_bytes(body, 0, body_len)
+    }
+    else {
+      let spans = parse_body_spans(body, code_start, code_end)
+      let out = Bytes::new()
+      let mut ci = 0
+      while ci < code_start {
+        Bytes::push(out, body[ci]); ci = ci + 1
+      }
+      let mut i = 0
+      while i < Array::length(spans) {
+        let (s_i, e_i, op_i) = Array::get(spans, i)
+        if op_i == 0xFC {
+          let (sub, p_after_sub) = read_uleb128(body, s_i + 1)
+          if sub == 16 {
+            let (tidx, _) = read_uleb128(body, p_after_sub)
+            if (tidx >= 0) && (tidx < Array::length(table_mins)) {
+              Bytes::push(out, 0x41)
+              write_sleb128(out, Array::get(table_mins, tidx))
+            } else {
+              copy_span_bytes(out, body, s_i, e_i)
+            }
+          } else {
+            copy_span_bytes(out, body, s_i, e_i)
+          }
+        } else {
+          copy_span_bytes(out, body, s_i, e_i)
+        }
+        i = i + 1
+      }
+      Bytes::push(out, 0x0B)
+      out
+    }
+  }
+}
+
+// table.size -> i32.const folding. Only when every table is locally defined
+// (no imported tables shift the index space) and no table.grow exists (so the
+// current size equals the declared minimum). The resulting `i32.const; drop`
+// is cleaned by peephole, often emptying the body.
+export let fold_table_size = (bytes: Bytes) -> Bytes {
+  let len = Bytes::length(bytes)
+  if len < 8 {
+    copy_bytes(bytes, 0, len)
+  }
+  else if count_imported_tables(bytes) > 0 {
+    copy_bytes(bytes, 0, len)
+  }
+  else {
+    let table_mins = parse_table_mins(bytes)
+    if Array::length(table_mins) == 0 {
+      copy_bytes(bytes, 0, len)
+    }
+    else {
+      // bail if any table.grow (0xFC 15) is present
+      let sections = list_sections(bytes)
+      let mut has_grow = false
+      let mut gs = 0
+      while gs < Array::length(sections) {
+        let (sid, off, sz) = Array::get(sections, gs)
+        if sid == 10 {
+          let raw_bodies = parse_code_bodies(bytes, off, sz)
+          let mut bi = 0
+          while bi < Array::length(raw_bodies) {
+            let body = Array::get(raw_bodies, bi)
+            let spans = parse_full_body_spans(body)
+            let mut i = 0
+            while i < Array::length(spans) {
+              let (s_i, _, op_i) = Array::get(spans, i)
+              if op_i == 0xFC {
+                let (sub, _) = read_uleb128(body, s_i + 1)
+                if sub == 15 {
+                  has_grow = true
+                }
+              }
+              i = i + 1
+            }
+            bi = bi + 1
+          }
+        }
+        gs = gs + 1
+      }
+      if has_grow {
+        copy_bytes(bytes, 0, len)
+      }
+      else {
+        let out = Bytes::new()
+        let mut hi = 0
+        while hi < 8 {
+          Bytes::push(out, bytes[hi]); hi = hi + 1
+        }
+        let mut s = 0
+        while s < Array::length(sections) {
+          let (sid, off, sz) = Array::get(sections, s)
+          if sid == 10 {
+            let raw_bodies = parse_code_bodies(bytes, off, sz)
+            let new_bodies = Array::slice([
+              (Bytes::new())
+            ], 0, 0)
+            let mut bi = 0
+            while bi < Array::length(raw_bodies) {
+              Array::push(new_bodies, fold_table_size_body(Array::get(raw_bodies, bi), table_mins))
+              bi = bi + 1
+            }
+            emit_section(out, 10, rebuild_code_section(new_bodies))
+          } else {
+            let content = copy_bytes(bytes, off, off + sz)
+            emit_section(out, sid, content)
+          }
+          s = s + 1
+        }
+        out
+      }
+    }
+  }
+}
+
+// Drop the table and element sections when no table opcode references any table
+// and no table is exported or imported. The functions that were only kept alive
+// by element segments then become dead and are removed by the following DCE.
+export let drop_unused_tables = (bytes: Bytes) -> Bytes {
+  let len = Bytes::length(bytes)
+  if len < 8 {
+    copy_bytes(bytes, 0, len)
+  }
+  else if count_imported_tables(bytes) > 0 {
+    copy_bytes(bytes, 0, len)
+  }
+  else {
+    let sections = list_sections(bytes)
+    let mut has_table = false
+    let mut table_exported = false
+    let mut s0 = 0
+    while s0 < Array::length(sections) {
+      let (sid, off, sz) = Array::get(sections, s0)
+      if sid == 4 {
+        has_table = true
+      }
+      else if sid == 7 {
+        let end_pos = off + sz
+        let (cnt, pos0) = read_uleb128(bytes, off)
+        let mut pos = pos0
+        let mut i = 0
+        while (i < cnt) && (pos < end_pos) {
+          let (_, np) = read_name(bytes, pos)
+          pos = np
+          let kind = bytes[pos]
+          pos = pos + 1
+          let (_, np2) = read_uleb128(bytes, pos)
+          pos = np2
+          if kind == 1 {
+            table_exported = true
+          }
+          i = i + 1
+        }
+      }
+      s0 = s0 + 1
+    }
+    if (has_table == false) || table_exported || code_uses_any_table_op(bytes) {
+      copy_bytes(bytes, 0, len)
+    }
+    else {
+      let out = Bytes::new()
+      let mut hi = 0
+      while hi < 8 {
+        Bytes::push(out, bytes[hi]); hi = hi + 1
+      }
+      let mut s = 0
+      while s < Array::length(sections) {
+        let (sid, off, sz) = Array::get(sections, s)
+        if (sid == 4) || (sid == 9) {
+          ()
+        } else {
+          let content = copy_bytes(bytes, off, off + sz)
+          emit_section(out, sid, content)
+        }
+        s = s + 1
+      }
+      out
+    }
+  }
+}
+
 export let minify = (bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
@@ -3239,8 +3545,10 @@ export let minify = (bytes: Bytes) -> Bytes {
     }
     let s2 = directize(stripped)
     let s3 = call_forwarding(s2)
-    let s4a = optimize_code_section(s3)
-    let s4 = inline_empty_calls(s4a)
+    let s3t = fold_table_size(s3)
+    let s4a = optimize_code_section(s3t)
+    let s4b = inline_empty_calls(s4a)
+    let s4 = drop_unused_tables(s4b)
     let s5_removed = dce_remove(s4)
     let s5 = if binary_size(s5_removed) < binary_size(s4) {
       s5_removed
