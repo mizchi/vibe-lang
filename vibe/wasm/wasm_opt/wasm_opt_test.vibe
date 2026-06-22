@@ -2083,3 +2083,35 @@ test "fold i32.add wraps to 32-bit on overflow" {
   assert(opt[0] == 0)
   assert(opt[4] == 1)
 }
+
+// i32.const c; i32.eqz module (type () -> i32).
+let i32_eqz_module = (c: Int) -> Bytes {
+  make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 5, 1, 96, 0, 1, 127,
+    3, 2, 1, 0,
+    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
+    10, 7, 1, 5, 0, 65, c, 69, 11
+  ])
+}
+
+test "fold i32 comparison eq/lt_s value" {
+  // 5 == 5 -> 1
+  assert(bytes_eq(minify(i32_binop_module(5, 5, 0x46)), minify(i32_const_module(1))))
+  // 3 < 4 (signed) -> 1 ; 4 < 3 -> 0
+  assert(bytes_eq(minify(i32_binop_module(3, 4, 0x48)), minify(i32_const_module(1))))
+  assert(bytes_eq(minify(i32_binop_module(4, 3, 0x48)), minify(i32_const_module(0))))
+}
+
+test "fold i32 comparison distinguishes signed vs unsigned" {
+  // a = -1 (SLEB byte 127), b = 1.
+  // lt_s: -1 < 1 -> 1 ; lt_u: 0xFFFFFFFF < 1 -> 0
+  assert(bytes_eq(minify(i32_binop_module(127, 1, 0x48)), minify(i32_const_module(1))))
+  assert(bytes_eq(minify(i32_binop_module(127, 1, 0x49)), minify(i32_const_module(0))))
+}
+
+test "fold i32.eqz of constant" {
+  // 0 -> 1, nonzero -> 0
+  assert(bytes_eq(minify(i32_eqz_module(0)), minify(i32_const_module(1))))
+  assert(bytes_eq(minify(i32_eqz_module(7)), minify(i32_const_module(0))))
+}

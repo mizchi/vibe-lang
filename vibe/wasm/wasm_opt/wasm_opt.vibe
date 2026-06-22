@@ -33,6 +33,12 @@ let is_i32_foldable = (op: Int) -> Bool {
   is_i32_binop(op) || is_i32_shift(op)
 }
 
+// i32 relational ops (eq/ne and signed/unsigned lt/gt/le/ge), 0x46..0x4F.
+// Folding `i32.const a; i32.const b; CMP` yields `i32.const 0|1`.
+let is_i32_cmp = (op: Int) -> Bool {
+  (op >= 0x46) && (op <= 0x4F)
+}
+
 // i64 identity: `x OP <i64.const k>` collapses to `x` when (OP, k) is an
 // identity. Mirrors is_identity_op for the i64 opcodes: add/sub/or/xor/shl/
 // shr_s/shr_u with k == 0, and mul with k == 1. `and` is intentionally absent
@@ -436,6 +442,46 @@ let apply_i32_fold = (op: Int, a: Int, b: Int) -> Int {
     // shr_u (0x76): logical shift of the unsigned 32-bit value
     let ua = a & 0xFFFFFFFF
     wrap_i32(ua >> (b & 31))
+  }
+}
+
+// Evaluate an i32 relational op on two constants, returning 0 or 1. Signed
+// ops compare the sign-extended i32 values; unsigned ops compare the low
+// 32 bits as non-negative magnitudes.
+let apply_i32_cmp = (op: Int, a: Int, b: Int) -> Int {
+  let sa = wrap_i32(a)
+  let sb = wrap_i32(b)
+  let ua = a & 0xFFFFFFFF
+  let ub = b & 0xFFFFFFFF
+  if op == 0x46 {
+    if sa == sb { 1 } else { 0 }
+  }
+  else if op == 0x47 {
+    if sa != sb { 1 } else { 0 }
+  }
+  else if op == 0x48 {
+    if sa < sb { 1 } else { 0 }
+  }
+  else if op == 0x49 {
+    if ua < ub { 1 } else { 0 }
+  }
+  else if op == 0x4A {
+    if sa > sb { 1 } else { 0 }
+  }
+  else if op == 0x4B {
+    if ua > ub { 1 } else { 0 }
+  }
+  else if op == 0x4C {
+    if sa <= sb { 1 } else { 0 }
+  }
+  else if op == 0x4D {
+    if ua <= ub { 1 } else { 0 }
+  }
+  else if op == 0x4E {
+    if sa >= sb { 1 } else { 0 }
+  }
+  else {
+    if ua >= ub { 1 } else { 0 }
   }
 }
 
@@ -1066,16 +1112,21 @@ let peephole_try2 = (out: Bytes, body: Bytes, spans: Array[(Int, Int, Int)], i: 
           false
         }
       } else {
-        if (op_i == 0x45) && (op_next == 0x45) {
+        if (op_i == 0x41) && (op_next == 0x45) {
+          // i32.const c; i32.eqz  ->  i32.const (c == 0 ? 1 : 0)
+          let c = span_read_sleb_imm(body, s_i)
+          Bytes::push(out, 0x41)
+          write_sleb128(out, if wrap_i32(c) == 0 { 1 } else { 0 })
+          true
+        }
+        else if (op_i == 0x45) && (op_next == 0x45) {
+          true
+        }
+        else if ((op_i == 0x41) || (op_i == 0x20)) && (op_next == 0x1A) {
           true
         }
         else {
-          if ((op_i == 0x41) || (op_i == 0x20)) && (op_next == 0x1A) {
-            true
-          }
-          else {
-            false
-          }
+          false
         }
       }
     }
@@ -1092,10 +1143,14 @@ let peephole_spans = (body: Bytes, spans: Array[(Int, Int, Int)]) -> (Bytes, Boo
     if (i + 2) < n {
       let (s_j, _, op_j) = Array::get(spans, i + 1)
       let (_, _, op_k) = Array::get(spans, i + 2)
-      if (op_i == 0x41) && (op_j == 0x41) && (is_i32_foldable(op_k)) {
+      if (op_i == 0x41) && (op_j == 0x41) && (is_i32_foldable(op_k) || is_i32_cmp(op_k)) {
         let imm_i = span_read_sleb_imm(body, s_i)
         let imm_j = span_read_sleb_imm(body, s_j)
-        let folded = apply_i32_fold(op_k, imm_i, imm_j)
+        let folded = if is_i32_cmp(op_k) {
+          apply_i32_cmp(op_k, imm_i, imm_j)
+        } else {
+          apply_i32_fold(op_k, imm_i, imm_j)
+        }
         Bytes::push(out, 0x41)
         write_sleb128(out, folded)
         i = i + 3
