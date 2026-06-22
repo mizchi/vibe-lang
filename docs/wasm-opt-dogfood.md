@@ -91,9 +91,20 @@ genuinely reachable in our call graph). They need:
    | (`-Oz`, all combined)           |        6962 |
 
    `simplify-locals` (copy propagation / redundant `local.set`/`local.get`
-   elimination via dataflow) is the top remaining lever; our peephole only does
-   the adjacent `local.set x; local.get x -> local.tee x` case. A real
-   simplify-locals needs per-function def/use dataflow.
+   elimination via dataflow) is the top remaining lever. We currently do the
+   provably-safe local adjacencies — `local.set x; local.get x -> local.tee x`
+   and `local.tee x; drop -> local.set x` — but the bulk of the win is
+   control-flow-aware copy propagation of a value from its `local.set` to a
+   later single `local.get`.
+
+   **Blocker:** that transform is only safe with per-function def/use dataflow,
+   and shipping it responsibly needs validating the optimizer's output on the
+   real target (base64). We can validate small hand-built cases offline with
+   `wasm-opt`/`wasmtime`, but cannot yet extract `minify`'s output for an
+   arbitrary embedded module: `Fs::read_bytes` is unimplemented and the host
+   runner does not execute an effectful `main`'s `Fs::write_bytes`. Unblocking
+   output extraction (or a `vibe wasm-opt` CLI once `Fs::read_bytes` lands) is
+   the prerequisite for landing dataflow simplify-locals.
 
 These are tracked as follow-up work; each is validated with the
 `wasm-opt`/`wasmtime` oracle loop above before landing.
