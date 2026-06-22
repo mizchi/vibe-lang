@@ -158,7 +158,34 @@ export let minify_fast = (bytes: Bytes) -> Bytes {
 
 let decode_instr = (body: Bytes, pos: Int) -> (Int, Int, Int) {
   let op = body[pos]
-  if op == 0x41 {
+  if op == 0x08 {
+    // throw <tagidx>
+    let (_, next) = read_uleb128(body, pos + 1)
+    (op, 0, next)
+  }
+  else if op == 0x1F {
+    // try_table <blocktype> vec(catch): catch/catch_ref take tag+label,
+    // catch_all/catch_all_ref take label only.
+    let (_, p1) = read_sleb128(body, pos + 1)
+    let (cnt, p2) = read_uleb128(body, p1)
+    let mut pp = p2
+    let mut ci = 0
+    while ci < cnt {
+      let kind = body[pp]
+      pp = pp + 1
+      if (kind == 0) || (kind == 1) {
+        let (_, pa) = read_uleb128(body, pp)
+        let (_, pb) = read_uleb128(body, pa)
+        pp = pb
+      } else {
+        let (_, pa) = read_uleb128(body, pp)
+        pp = pa
+      }
+      ci = ci + 1
+    }
+    (op, 0, pp)
+  }
+  else if op == 0x41 {
     let (val, next) = read_sleb128(body, pos + 1)
     (0x41, val, next)
   } else {
