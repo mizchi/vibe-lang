@@ -1966,3 +1966,40 @@ test "peephole shift-by-nonzero is preserved" {
   // shift amount is 3, not foldable here; size must be unchanged
   assert(binary_size(optimized) == binary_size(m))
 }
+
+// i64 identity elimination: `x OP <i64.const k>` -> `x`.
+// Body: i64.const 7, i64.const k, <op>, end. Type () -> i64 (0x7E result).
+let module_i64_identity = (op: Int, k: Int) -> Bytes {
+  make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 5, 1, 96, 0, 1, 126,
+    3, 2, 1, 0,
+    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
+    10, 9, 1, 7, 0, 66, 7, 66, k, op, 11
+  ])
+}
+
+test "peephole i64 identity (add 0, sub 0, or 0, xor 0)" {
+  assert(binary_size(optimize_code_section(module_i64_identity(0x7C, 0))) < binary_size(module_i64_identity(0x7C, 0)))
+  assert(binary_size(optimize_code_section(module_i64_identity(0x7D, 0))) < binary_size(module_i64_identity(0x7D, 0)))
+  assert(binary_size(optimize_code_section(module_i64_identity(0x84, 0))) < binary_size(module_i64_identity(0x84, 0)))
+  assert(binary_size(optimize_code_section(module_i64_identity(0x85, 0))) < binary_size(module_i64_identity(0x85, 0)))
+}
+
+test "peephole i64 identity (mul 1, shl 0, shr_s 0, shr_u 0)" {
+  assert(binary_size(optimize_code_section(module_i64_identity(0x7E, 1))) < binary_size(module_i64_identity(0x7E, 1)))
+  assert(binary_size(optimize_code_section(module_i64_identity(0x86, 0))) < binary_size(module_i64_identity(0x86, 0)))
+  assert(binary_size(optimize_code_section(module_i64_identity(0x87, 0))) < binary_size(module_i64_identity(0x87, 0)))
+  assert(binary_size(optimize_code_section(module_i64_identity(0x88, 0))) < binary_size(module_i64_identity(0x88, 0)))
+}
+
+test "peephole i64 non-identity preserved" {
+  // i64.add with k=5 is not identity; i64.and with k=0 is not identity (x&0==0)
+  let add5 = module_i64_identity(0x7C, 5)
+  assert(binary_size(optimize_code_section(add5)) == binary_size(add5))
+  let and0 = module_i64_identity(0x83, 0)
+  assert(binary_size(optimize_code_section(and0)) == binary_size(and0))
+  // i64.mul with k=0 is not identity either (x*0==0)
+  let mul0 = module_i64_identity(0x7E, 0)
+  assert(binary_size(optimize_code_section(mul0)) == binary_size(mul0))
+}

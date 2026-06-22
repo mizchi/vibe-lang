@@ -28,6 +28,24 @@ let is_i32_shift = (op: Int) -> Bool {
   (op == 0x74) || (op == 0x75) || (op == 0x76)
 }
 
+// i64 identity: `x OP <i64.const k>` collapses to `x` when (OP, k) is an
+// identity. Mirrors is_identity_op for the i64 opcodes: add/sub/or/xor/shl/
+// shr_s/shr_u with k == 0, and mul with k == 1. `and` is intentionally absent
+// (x & 0 == 0, not x). Pure elimination, no arithmetic computed.
+let is_i64_identity_op = (op: Int, imm: Int) -> Bool {
+  if (op == 0x7C) || (op == 0x7D) || (op == 0x84) || (op == 0x85) || (op == 0x86) || (op == 0x87) || (op == 0x88) {
+    imm == 0
+  }
+  else {
+    if op == 0x7E {
+      imm == 1
+    }
+    else {
+      false
+    }
+  }
+}
+
 let read_sleb128 = (buf: Bytes, offset: Int) -> (Int, Int) {
   let len = Bytes::length(buf)
   let mut i = offset
@@ -1061,22 +1079,12 @@ let peephole_spans = (body: Bytes, spans: Array[(Int, Int, Int)]) -> (Bytes, Boo
         i = i + 3
         changed = true
       } else {
-        if (op_j == 0x41) && (is_i32_binop(op_k) || is_i32_shift(op_k)) {
-          let imm_j = span_read_sleb_imm(body, s_j)
-          if is_identity_op(op_k, imm_j) {
-            copy_span_bytes(out, body, s_i, e_i)
-            i = i + 3
-            changed = true
-          } else {
-            let matched2 = peephole_try2(out, body, spans, i, n)
-            if matched2 {
-              i = i + 2
-              changed = true
-            } else {
-              copy_span_bytes(out, body, s_i, e_i)
-              i = i + 1
-            }
-          }
+        let is_i32_id = (op_j == 0x41) && (is_i32_binop(op_k) || is_i32_shift(op_k)) && is_identity_op(op_k, span_read_sleb_imm(body, s_j))
+        let is_i64_id = (op_j == 0x42) && is_i64_identity_op(op_k, span_read_sleb_imm(body, s_j))
+        if is_i32_id || is_i64_id {
+          copy_span_bytes(out, body, s_i, e_i)
+          i = i + 3
+          changed = true
         } else {
           let matched2 = peephole_try2(out, body, spans, i, n)
           if matched2 {
