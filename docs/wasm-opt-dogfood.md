@@ -46,31 +46,55 @@ as the baseline):
 
 | program (selfhost-compiled) | baseline | vibe minify | runs | wasm-opt -Oz |
 |-----------------------------|---------:|------------:|------|-------------:|
-| examples/selfhost_features  |     4153 |         865 | 0    |          707 |
+| examples/selfhost_features  |     4153 |         861 | 0    |          707 |
 | examples/perform_handle     |     4613 |         867 | 86   |          720 |
 
 ~80% reduction on real output; ~80–150 B behind `wasm-opt -Oz`.
 
-### Where the remaining real-code gap actually is
+### Function inlining (`inline_calls`) — closes most of the real-code gap
 
 Disassembling `rec.vibe` (selfhost-compiled, baseline 53 functions):
 
-- our `minify`: **53 → 6 functions** (DCE is correct — all 6 survivors are
-  genuinely `call`-reachable from `_start`/`main`).
-- `wasm-opt -Oz`: **→ 3 functions**.
+- our `minify` **before** `inline_calls`: **53 → 6 functions** (DCE is correct —
+  all 6 survivors are genuinely `call`-reachable from `_start`/`main`).
+- our `minify` **with** `inline_calls`: **→ 4 functions**, 393 B.
+- `wasm-opt -Oz`: **→ 3 functions**, 371 B.
 
-The extra 3 functions wasm-opt removes are small single-use helpers it
-**inlines** into their callers, which then become dead; that cascade also frees
-their globals and tags (we keep `(global $1..$4)` and `(tag $1..$3)` that
-wasm-opt drops). So on selfhost output the gap is **function inlining** (and the
-unused-global / unused-tag cleanup it unlocks) — *not* simplify-locals. Our
-`inline_empty_calls` only handles empty `() -> ()` callees; general inlining
-(param/local/return remapping, multi-value) is the next big lever.
+The functions wasm-opt removes are small single-use helpers it **inlines** into
+their callers, which then become dead; that cascade also frees their globals and
+tags. `inline_calls` implements that lever: it picks a non-root callee that is
+`call`ed exactly once (and not self-recursive), inlines its body at the single
+call site (storing args into appended param locals, wrapping the body in a
+`block` of the callee's result type, remapping the callee's locals by `+base`,
+and rewriting top-level `return` to `br <depth>`), and lets the following DCE
+delete the now-uncalled callee. One inline per pass; `converge` repeats.
 
-Correctness has been validated end-to-end on 8 real programs (arrays, recursion,
-strings, enums/match, effects/handlers, loops, plus examples/selfhost_features
-and examples/perform_handle): every `minify` output is VALID under wasm-opt and
-runs to the same result as the baseline.
+It is **conservative for correctness**: it bails on any callee whose body
+contains `br`/`br_if`/`br_table`, `try_table`, or `throw`, because those branch
+targets / exception scopes would shift when the body is wrapped in the inliner's
+block. This is what keeps effectful programs (vibe effects → wasm EH) valid —
+`perform_handle` stays VALID and runs to the same value with `inline_calls`
+active. (`inline_empty_calls` still handles empty `() -> ()` callees separately.)
+
+With `inline_calls` the rec gap to `wasm-opt -Oz` is **22 B** (393 vs 371), down
+from ~80–150 B. The remaining delta is the unused-global / unused-tag cleanup
+that a deeper inline cascade unlocks.
+
+Correctness has been validated end-to-end on 7 real programs (arrays, recursion,
+strings, enums/match, loops, plus examples/selfhost_features and
+examples/perform_handle): every `minify` output (now including `inline_calls`)
+is VALID under wasm-opt and runs to the same result as the baseline. Reductions
+range 79–90%:
+
+| program          | baseline | vibe minify | red% | valid | runs-match |
+|------------------|---------:|------------:|-----:|-------|-----------|
+| arr              |     4001 |         843 |  79% | ✅    | ✅ (15)    |
+| rec              |     3848 |         393 |  90% | ✅    | ✅ (55)    |
+| str              |     3926 |         610 |  84% | ✅    | ✅ (0)     |
+| enum/match       |     3922 |         491 |  87% | ✅    | ✅ (20)    |
+| loop             |     3855 |         536 |  86% | ✅    | ✅ (5050)  |
+| selfhost_features|     4153 |         861 |  79% | ✅    | ✅ (0)     |
+| perform_handle   |     4613 |         867 |  81% | ✅    | ✅ (86)    |
 
 Baselines come from binaryen (installed via `npm i binaryen`):
 
