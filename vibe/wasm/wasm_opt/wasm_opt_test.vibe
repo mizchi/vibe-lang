@@ -1,7 +1,7 @@
 //# Imports
 
 import ./index.vibe {
-  binary_size, build_call_graph, coalesce_locals, count_exports, count_functions, count_types, dce, filter_exports, find_reachable, minify, minify_converge, minify_fast, optimize, optimize_code_section, remove_empty_sections, remove_unused_types, section_sizes, strip_custom_sections, strip_empty_data, strip_named_section
+  binary_size, build_call_graph, coalesce_locals, count_exports, count_functions, count_types, dce, dce_remove, filter_exports, find_reachable, minify, minify_converge, minify_fast, optimize, optimize_code_section, remove_empty_sections, remove_unused_types, section_sizes, strip_custom_sections, strip_empty_data, strip_named_section
 }
 
 //# Functions
@@ -807,9 +807,10 @@ test "minify pipeline" {
     11
   ])
   let optimized = minify(m)
-  // Should be smaller: custom section stripped + const folded + dead func stubbed
+  // Should be smaller: custom section stripped + const folded + dead func removed
   assert(binary_size(optimized) < binary_size(m))
-  assert(count_functions(optimized) == 2)
+  // true DCE physically removes the unreachable func -> only the exported one left
+  assert(count_functions(optimized) == 1)
 }
 
 test "minify convergence" {
@@ -1271,8 +1272,8 @@ test "wasm-opt: dce unreachable func" {
   let before = binary_size(m)
   let opt = minify(m)
   assert(binary_size(opt) < before)
-  // func 0 still works (exported), func 1 stubbed
-  assert(count_functions(opt) == 2)
+  // func 0 still works (exported); func 1 unreachable -> removed entirely
+  assert(count_functions(opt) == 1)
 }
 
 test "wasm-opt: dce keeps called func" {
@@ -2114,4 +2115,44 @@ test "fold i32.eqz of constant" {
   // 0 -> 1, nonzero -> 0
   assert(bytes_eq(minify(i32_eqz_module(0)), minify(i32_const_module(1))))
   assert(bytes_eq(minify(i32_eqz_module(7)), minify(i32_const_module(0))))
+}
+
+// True DCE byte-level validation: removing dead func1 from a 3-function module
+// must renumber func0's `call 2` to `call 1` (func2 -> new index 1) and rebuild
+// the function/code/export sections. Expected output verified VALID by binaryen
+// wasm-opt and semantically (main returns 42) by wasmtime.
+test "dce_remove removes dead func and renumbers calls" {
+  let input = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 5, 1, 96, 0, 1, 127,
+    3, 4, 3, 0, 0, 0,
+    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
+    10, 16, 3, 4, 0, 16, 2, 11, 4, 0, 65, 99, 11, 4, 0, 65, 42, 11
+  ])
+  let expected = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 5, 1, 96, 0, 1, 127,
+    3, 3, 2, 0, 0,
+    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
+    10, 11, 2, 4, 0, 16, 1, 11, 4, 0, 65, 42, 11
+  ])
+  assert(bytes_eq(dce_remove(input), expected))
+  // count drops from 3 to 2 functions
+  assert(count_functions(dce_remove(input)) == 2)
+}
+
+test "dce_remove bails (no change) when an element section is present" {
+  // module with an element section (id 9) must be returned unchanged, so table
+  // function references are never invalidated; minify falls back to stub dce.
+  // (this is the directize_gain fixture, which carries a table + elements)
+  let m = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 7, 2, 96, 0, 0, 96, 0, 0,
+    3, 2, 1, 1,
+    4, 4, 1, 112, 0, 1,
+    7, 7, 1, 3, 114, 117, 110, 0, 0,
+    9, 7, 1, 0, 65, 0, 11, 1, 0,
+    10, 9, 1, 7, 0, 65, 0, 17, 1, 0, 11
+  ])
+  assert(bytes_eq(dce_remove(m), m))
 }

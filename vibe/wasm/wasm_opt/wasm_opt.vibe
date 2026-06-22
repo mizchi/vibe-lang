@@ -1970,6 +1970,278 @@ export let dce = (bytes: Bytes) -> Bytes {
   }
 }
 
+// Roots for true DCE: exported functions plus any function named by a start
+// section. (Element-referenced functions are handled by dce_remove bailing out
+// when an element section is present, so they are never wrongly removed.)
+let collect_func_roots = (bytes: Bytes) -> Array[Int] {
+  let roots = Array::slice([
+    (0)
+  ], 0, 0)
+  let exp = get_export_func_indices(bytes)
+  let mut i = 0
+  while i < Array::length(exp) {
+    Array::push(roots, Array::get(exp, i))
+    i = i + 1
+  }
+  let sections = list_sections(bytes)
+  let mut s = 0
+  while s < Array::length(sections) {
+    let (sid, off, _) = Array::get(sections, s)
+    if sid == 8 {
+      let (fidx, _) = read_uleb128(bytes, off)
+      Array::push(roots, fidx)
+    }
+    s = s + 1
+  }
+  roots
+}
+
+// BFS over the call graph from an explicit root set (generalizes find_reachable).
+let reachable_from = (bytes: Bytes, roots: Array[Int]) -> Array[Int] {
+  let graph = build_call_graph(bytes)
+  let import_count = count_import_funcs(bytes)
+  let mut max_func_idx = import_count
+  let mut gi2 = 0
+  while gi2 < Array::length(graph) {
+    let (func_idx, callees) = Array::get(graph, gi2)
+    if func_idx >= max_func_idx {
+      max_func_idx = func_idx + 1
+    }
+    let mut ci2 = 0
+    while ci2 < Array::length(callees) {
+      let callee = Array::get(callees, ci2)
+      if callee >= max_func_idx {
+        max_func_idx = callee + 1
+      }
+      ci2 = ci2 + 1
+    }
+    gi2 = gi2 + 1
+  }
+  let mut ri0 = 0
+  while ri0 < Array::length(roots) {
+    let r = Array::get(roots, ri0)
+    if r >= max_func_idx {
+      max_func_idx = r + 1
+    }
+    ri0 = ri0 + 1
+  }
+  let visited = FixedArray::make(max_func_idx + 2, 0)
+  let reachable = Array::slice([
+    (0)
+  ], 0, 0)
+  let queue = Array::slice([
+    (0)
+  ], 0, 0)
+  let mut ri = 0
+  while ri < Array::length(roots) {
+    let root = Array::get(roots, ri)
+    if (root >= 0) && (root <= max_func_idx) && (FixedArray::get(visited, root) == 0) {
+      FixedArray::set(visited, root, 1)
+      Array::push(queue, root)
+      Array::push(reachable, root)
+    }
+    ri = ri + 1
+  }
+  let mut qi = 0
+  while qi < Array::length(queue) {
+    let current = Array::get(queue, qi)
+    let mut gi = 0
+    while gi < Array::length(graph) {
+      let (func_idx, callees) = Array::get(graph, gi)
+      if func_idx == current {
+        let mut ci = 0
+        while ci < Array::length(callees) {
+          let callee = Array::get(callees, ci)
+          if (callee >= 0) && (callee <= max_func_idx) && (FixedArray::get(visited, callee) == 0) {
+            FixedArray::set(visited, callee, 1)
+            Array::push(reachable, callee)
+            Array::push(queue, callee)
+          }
+          ci = ci + 1
+        }
+      }
+      gi = gi + 1
+    }
+    qi = qi + 1
+  }
+  reachable
+}
+
+// Reserialize an export section, remapping function-export indices (kind 0)
+// through idx_map (old global func index -> new index).
+let remap_export_section = (bytes: Bytes, offset: Int, size: Int, idx_map: Array[Int]) -> Bytes {
+  let end_pos = offset + size
+  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let mut pos = pos0
+  let out = Bytes::new()
+  write_uleb128(out, cnt)
+  let mut i = 0
+  while (i < cnt) && (pos < end_pos) {
+    let (name, np) = read_name(bytes, pos)
+    pos = np
+    let kind = bytes[pos]
+    pos = pos + 1
+    let (index, np2) = read_uleb128(bytes, pos)
+    pos = np2
+    write_uleb128(out, String::length(name))
+    let mut ci = 0
+    while ci < String::length(name) {
+      Bytes::push(out, String::char_code_at(name, ci))
+      ci = ci + 1
+    }
+    Bytes::push(out, kind)
+    let new_index = if (kind == 0) && (index < Array::length(idx_map)) {
+      Array::get(idx_map, index)
+    } else {
+      index
+    }
+    write_uleb128(out, if new_index >= 0 { new_index } else { index })
+    i = i + 1
+  }
+  out
+}
+
+// True dead-function elimination: physically remove unreachable defined
+// functions and renumber every surviving function reference (calls, exports,
+// start), unlike `dce` which only stubs dead bodies. Bails (returns the input
+// unchanged) when an element section is present, so table/element function
+// references are never invalidated; callers fall back to `dce` in that case.
+export let dce_remove = (bytes: Bytes) -> Bytes {
+  let len = Bytes::length(bytes)
+  if len < 8 {
+    copy_bytes(bytes, 0, len)
+  }
+  else {
+    let sections = list_sections(bytes)
+    let mut has_elem = false
+    let mut si0 = 0
+    while si0 < Array::length(sections) {
+      let (sid, _, _) = Array::get(sections, si0)
+      if sid == 9 {
+        has_elem = true
+      }
+      si0 = si0 + 1
+    }
+    if has_elem {
+      copy_bytes(bytes, 0, len)
+    }
+    else {
+      let import_count = count_import_funcs(bytes)
+      let total_funcs = count_functions(bytes)
+      let defined_type_indices = parse_func_type_indices(bytes)
+      let roots = collect_func_roots(bytes)
+      let reachable = reachable_from(bytes, roots)
+      let keep = FixedArray::make(total_funcs + 1, 0)
+      let mut ic = 0
+      while ic < import_count {
+        if ic <= total_funcs {
+          FixedArray::set(keep, ic, 1)
+        }
+        ic = ic + 1
+      }
+      let mut rr = 0
+      while rr < Array::length(reachable) {
+        let idx = Array::get(reachable, rr)
+        if (idx >= 0) && (idx <= total_funcs) {
+          FixedArray::set(keep, idx, 1)
+        }
+        rr = rr + 1
+      }
+      let idx_map = Array::slice([
+        (0)
+      ], 0, 0)
+      let mut next_new = 0
+      let mut gi = 0
+      while gi < total_funcs {
+        if FixedArray::get(keep, gi) == 1 {
+          Array::push(idx_map, next_new)
+          next_new = next_new + 1
+        } else {
+          Array::push(idx_map, -1)
+        }
+        gi = gi + 1
+      }
+      let kept_defined = Array::slice([
+        (0)
+      ], 0, 0)
+      let mut df = 0
+      while df < (total_funcs - import_count) {
+        let g = import_count + df
+        if (g <= total_funcs) && (FixedArray::get(keep, g) == 1) {
+          Array::push(kept_defined, df)
+        }
+        df = df + 1
+      }
+      let kept_count = Array::length(kept_defined)
+      let out = Bytes::new()
+      let mut bi = 0
+      while bi < 8 {
+        Bytes::push(out, bytes[bi]); bi = bi + 1
+      }
+      let mut s = 0
+      while s < Array::length(sections) {
+        let (sid, off, sz) = Array::get(sections, s)
+        if sid == 3 {
+          if kept_count > 0 {
+            let fsec = Bytes::new()
+            write_uleb128(fsec, kept_count)
+            let mut ki = 0
+            while ki < kept_count {
+              let fi = Array::get(kept_defined, ki)
+              let tidx = if fi < Array::length(defined_type_indices) {
+                Array::get(defined_type_indices, fi)
+              } else {
+                0
+              }
+              write_uleb128(fsec, tidx)
+              ki = ki + 1
+            }
+            emit_section(out, 3, fsec)
+          }
+        }
+        else if sid == 10 {
+          if kept_count > 0 {
+            let raw_bodies = parse_code_bodies(bytes, off, sz)
+            let new_bodies = Array::slice([
+              (Bytes::new())
+            ], 0, 0)
+            let mut ki = 0
+            while ki < kept_count {
+              let fi = Array::get(kept_defined, ki)
+              if fi < Array::length(raw_bodies) {
+                let body = Array::get(raw_bodies, fi)
+                Array::push(new_bodies, rewrite_body_calls(body, idx_map, total_funcs - 1))
+              }
+              ki = ki + 1
+            }
+            emit_section(out, 10, rebuild_code_section(new_bodies))
+          }
+        }
+        else if sid == 7 {
+          emit_section(out, 7, remap_export_section(bytes, off, sz, idx_map))
+        }
+        else if sid == 8 {
+          let (fidx, _) = read_uleb128(bytes, off)
+          let new_fidx = if (fidx < Array::length(idx_map)) && (Array::get(idx_map, fidx) >= 0) {
+            Array::get(idx_map, fidx)
+          } else {
+            fidx
+          }
+          let ssec = Bytes::new()
+          write_uleb128(ssec, new_fidx)
+          emit_section(out, 8, ssec)
+        }
+        else {
+          let content = copy_bytes(bytes, off, off + sz)
+          emit_section(out, sid, content)
+        }
+        s = s + 1
+      }
+      out
+    }
+  }
+}
+
 let parse_element_table_map = (bytes: Bytes, elem_off: Int, elem_sz: Int) -> Array[(Int, Int)] {
   let end_pos = elem_off + elem_sz
   let result = Array::slice([
@@ -2702,7 +2974,12 @@ export let minify = (bytes: Bytes) -> Bytes {
     let s2 = directize(stripped)
     let s3 = call_forwarding(s2)
     let s4 = optimize_code_section(s3)
-    let s5 = dce(s4)
+    let s5_removed = dce_remove(s4)
+    let s5 = if binary_size(s5_removed) < binary_size(s4) {
+      s5_removed
+    } else {
+      dce(s4)
+    }
     let s6 = coalesce_locals(s5)
     let s7 = remove_unused_types(s6)
     remove_empty_sections(s7)
