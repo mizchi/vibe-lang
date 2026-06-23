@@ -1,32 +1,14 @@
 #!/usr/bin/env bash
+# selfhost-only (#594): the former trial gate ran host<->selfhost corpus parity
+# and perf/RSS-vs-host benches (test_selfhost_corpus_gate.sh,
+# bench_selfhost_perf.sh, bench_selfhost_rss.sh) plus the preview2/component
+# release gates — all comparisons against the MoonBit host, retired with src/.
+# The canonical moon-free gate is now scripts/selfhost_only_gate.sh
+# (bundle/module-source sync + seed->stage1->stage2->stage3 fixpoint +
+# compile/run validation). Redirect here so existing entry points
+# (selfhost_gate.sh, the `selfhost-gate` / `selfhost-trial-gate` tasks) keep
+# working. The `--post-generation` flag is accepted and ignored (the gate runs
+# its own staged generation).
 set -euo pipefail
-
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$ROOT"
-
-if [ "${1:-}" != "--post-generation" ]; then
-  echo "== selfhost gate: stage generation =="
-  bash scripts/selfhost_generations.sh build --stage3
-fi
-
-echo "== selfhost gate: release selfhost gates =="
-pkf run release-selfhost-gates
-
-echo "== selfhost gate: corpus REAL-gap gate =="
-bash scripts/test_selfhost_corpus_gate.sh --gate
-
-echo "== selfhost gate: perf KPI =="
-VIBE_SELFHOST_PERF_COMPILER_KIND=cli-core \
-VIBE_SELFHOST_PERF_CHECKER_KIND=cli-core \
-VIBE_SELFHOST_PERF_COMPILE_DAEMON=1 \
-VIBE_SELFHOST_PERF_CHECK_DAEMON=1 \
-VIBE_SELFHOST_PERF_RUNS=3 \
-VIBE_SELFHOST_PERF_MAX_COMPILE_RATIO=2.5 \
-VIBE_SELFHOST_PERF_MAX_CHECK_RATIO=1.33 \
-VIBE_SELFHOST_PERF_CASES_FILE=bench/selfhost_perf/kpi_cases.txt \
-  scripts/bench_selfhost_perf.sh
-
-echo "== selfhost gate: peak RSS KPI =="
-VIBE_SELFHOST_RSS_MAX_RATIO=2.0 scripts/bench_selfhost_rss.sh --gate
-
-echo "selfhost gate: ok"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+exec bash "$SCRIPT_DIR/selfhost_only_gate.sh"
