@@ -146,9 +146,20 @@ host↔selfhost parity / dist-via-host で、`src/` 退役と共に **obsolete �
 - `fmt`/`normalize` は host が CST formatter / semver・依存解決を使い、各々独立移植 (大)。
   `vibe-normalize` gate は release-check 依存 → 移植 or gate 置換が必要。
 
-### Stage 5 — `src/` 物理削除 (Stage 3 default-flip + Stage 4 完了後)
-- gate が moon 無しで継続 green を確認の上で `src/`・`moon.mod`・各 `moon.pkg`・`.mooncakes`・
-  MoonBit toolchain (flake)・host 専用 script/CI を削除。release-check を selfhost-only に再定義。
+### Stage 5 — `src/` 物理削除 — 完了 (本 PR)
+- **`src/` (7.3MB, 32 `moon.pkg`) と `moon.mod` を削除**。vibe は selfhost-only に。
+- moon-free な post-deletion gate `scripts/selfhost_only_gate.sh` を新設し、`release-check` を
+  これに再定義 (bundle/module-source sync + seed→stage1→stage2→stage3 fixpoint + compile/run 検証)。
+  host `vibe.exe` 退避 + `moon` stub + `src/` 削除済みの条件で green を検証。
+- flake から MoonBit toolchain (moonbit-overlay / moon-patched / similarity-mbt / `moon update`) を削除。
+- CI: `ci.yml` を selfhost-only-gate 1 job に置換。host 依存 workflow (flaker-ci / flaker-scheduled /
+  playground) は `workflow_dispatch` 専用に無効化。
+- **既知の degradation / follow-up** (selfhost-only 化に伴い host で提供していた dev 機能が一時的に未提供):
+  - `fmt` / `normalize` / `run` / `test` の host CLI、multi-file FS-compile (selfhost loader にパス
+    破損 bug `fs_read_file '<digits>.vibe'` あり), `vibe/cli` の moon-free build (cross-layer bundling)。
+  - host-only script (~120) と対応 Taskfile task は dead として残置 (default gate/CI からは不参照)。
+    follow-up で prune する。
+- 復旧点: 退役前の最後の MoonBit-host 状態は tag `moonbit-host-final-2026-06-23` (`59ef040`)。
 
 ### Stage 4.5 — 未移植 (unported) feature の parity 監査 ★deletion gate★
 `src/` (MoonBit host) にあって selfhost (`vibe/`) に**まだ無い**機能が残っていないかを、

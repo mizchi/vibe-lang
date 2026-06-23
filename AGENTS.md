@@ -1,6 +1,17 @@
-# MoonBit Project
+# vibe (selfhost-only)
 
-This is a [MoonBit](https://docs.moonbitlang.com) project.
+> **Status (2026-06-23, #594):** vibe is now **selfhost-only**. The MoonBit host
+> implementation (`src/`, `moon.mod`) was retired. The compiler is built,
+> checked, and run entirely from the committed seed (`bootstrap/selfhost/seed/`)
+> + selfhost source (`vibe/compiler/`, `vibe/cli/`) via the Rust/node wasm runner
+> — **no MoonBit toolchain (`moon`) is required**. The default gate is the
+> moon-free `pkf run release-check` → `scripts/selfhost_only_gate.sh`.
+>
+> Sections below that reference `moon` (`moon fmt/test/check/info`) or `src/`
+> describe the **retired** host flow and are kept only for historical context;
+> they no longer run. Recovery point for the last MoonBit-host state: tag
+> `moonbit-host-final-2026-06-23` (`59ef040`). Migration record:
+> [docs/moonbit-retirement.md](docs/moonbit-retirement.md).
 
 ## vibe 言語リファレンス
 
