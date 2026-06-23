@@ -1,7 +1,7 @@
 //# Imports
 
 import ./index.vibe {
-  binary_size, build_call_graph, coalesce_locals, count_exports, count_functions, count_types, dce, dce_remove, inline_empty_calls, inline_calls, fold_table_size, drop_unused_tables, drop_unused_globals, drop_unused_tags, eliminate_dead_stores, filter_exports, find_reachable, minify, minify_converge, minify_fast, optimize, optimize_code_section, remove_empty_sections, remove_unused_types, section_sizes, strip_custom_sections, strip_empty_data, strip_named_section
+  binary_size, build_call_graph, coalesce_locals, propagate_local_copies, count_exports, count_functions, count_types, dce, dce_remove, inline_empty_calls, inline_calls, fold_table_size, drop_unused_tables, drop_unused_globals, drop_unused_tags, eliminate_dead_stores, filter_exports, find_reachable, minify, minify_converge, minify_fast, optimize, optimize_code_section, remove_empty_sections, remove_unused_types, section_sizes, strip_custom_sections, strip_empty_data, strip_named_section
 }
 
 //# Functions
@@ -2499,4 +2499,43 @@ test "drop_unused_globals handles a const whose LEB byte is 0x0B" {
     10, 4, 1, 2, 0, 11
   ])
   assert(bytes_eq(drop_unused_globals(m), expected))
+}
+
+test "propagate_local_copies removes a self-copy local.get x; local.set x" {
+  // () -> i32 with 1 local: const 5; set0; (get0; set0 = no-op); get0; end
+  let m = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 5, 1, 96, 0, 1, 127,
+    3, 2, 1, 0,
+    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
+    10, 16, 1, 14, 1, 1, 127, 101, 5, 33, 0, 32, 0, 33, 0, 32, 0, 11
+  ])
+  let expected = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 5, 1, 96, 0, 1, 127,
+    3, 2, 1, 0,
+    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
+    10, 12, 1, 10, 1, 1, 127, 101, 5, 33, 0, 32, 0, 11
+  ])
+  assert(bytes_eq(propagate_local_copies(m), expected))
+}
+
+test "propagate_local_copies forwards local.get a; local.set b to the single use" {
+  // () -> i32, 2 locals: const 7; set0; get0; set1; get1; end
+  // -> const 7; set0; get0; end  (the get1 use becomes get0, $1 dead)
+  let m = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 5, 1, 96, 0, 1, 127,
+    3, 2, 1, 0,
+    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
+    10, 16, 1, 14, 1, 2, 127, 101, 7, 33, 0, 32, 0, 33, 1, 32, 1, 11
+  ])
+  let expected = make_bytes([
+    0, 97, 115, 109, 1, 0, 0, 0,
+    1, 5, 1, 96, 0, 1, 127,
+    3, 2, 1, 0,
+    7, 8, 1, 4, 109, 97, 105, 110, 0, 0,
+    10, 12, 1, 10, 1, 2, 127, 101, 7, 33, 0, 32, 0, 11
+  ])
+  assert(bytes_eq(propagate_local_copies(m), expected))
 }

@@ -167,6 +167,13 @@ byte-identical to a module that `wasm-opt` validates and `wasmtime` runs.
   table and element sections are dropped and the element-only functions collapse.
   Reaches parity on rume_gain.
 - section stripping, `local.tee`, `drop`/`br_if 0` elimination, local coalescing.
+- **local copy-propagation** (`propagate_local_copies`) — a conservative slice
+  of `simplify-locals`: deletes self-copy pairs (`local.get $x; local.set $x`)
+  and forwards `local.get $a; local.set $b` to the single later use of `$b` when
+  `$a` is not rewritten in between (then `$b` is dead for coalesce/DCE). This is
+  the safe, bytecode-level subset; the rest of `simplify-locals`' win is
+  AST-level expression sinking, which needs an expression IR we don't build.
+  Helps copy-heavy code (e.g. array loops: `arr` 816 → 781 B).
 
 A prerequisite fix landed here too: `decode_instr` now consumes the immediates
 of every `0xFC`-prefixed op (table/memory bulk ops). Previously `table.size`'s
