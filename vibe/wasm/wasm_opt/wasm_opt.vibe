@@ -3129,6 +3129,222 @@ export let optimize_code_section = (bytes: Bytes) -> Bytes {
   }
 }
 
+// Unwrap `block` (0x02) scopes whose label no branch uses. vibe codegen
+// (especially around inlined call bodies) wraps regions in `block` scopes that
+// no `br` jumps to; binaryen's remove-unused-brs strips them. We remove a block
+// only when it is the fully safe case: no br/br_if/br_table (or try_table catch)
+// targets it AND no inner branch escapes it. Then dropping its header+end needs
+// no label renumbering, so removal cannot change any branch's meaning.
+// loop/if/try_table scopes are never removed.
+//
+// try_table catch clauses carry branch labels resolved in the scope *enclosing*
+// the try_table (its own label is not counted), so the catch target sits at
+// sp - 2 - label; a catch that targets or escapes a block marks it just like a
+// `br`. Getting this wrong would corrupt effectful programs (vibe effects
+// compile to wasm exception handling). A single forward pass suffices: every
+// branch inside a block is seen before the block's `end`.
+let remove_dead_blocks_body = (body: Bytes) -> Bytes {
+  let body_len = Bytes::length(body)
+  if body_len < 2 {
+    copy_bytes(body, 0, body_len)
+  }
+  else {
+    let mut pos = 0
+    let (local_count, lp) = read_uleb128(body, 0)
+    pos = lp
+    let mut lc = 0
+    while lc < local_count {
+      let (_, tp) = read_uleb128(body, pos)
+      pos = tp + 1
+      lc = lc + 1
+    }
+    let code_start = pos
+    let code_end = body_len - 1
+    if code_start >= code_end {
+      copy_bytes(body, 0, body_len)
+    } else {
+      let cap = code_end - code_start + 1
+      let frame_op = FixedArray::make(cap + 1, 0)
+      let frame_hdr_start = FixedArray::make(cap + 1, 0)
+      let frame_hdr_end = FixedArray::make(cap + 1, 0)
+      // frame_bad[sp] == 1: a branch/catch targets this frame, or an inner
+      // branch escapes it (both block removal here).
+      let frame_bad = FixedArray::make(cap + 1, 0)
+      let skip = FixedArray::make(cap + 1, 0)
+      let mut sp = 0
+      let mut p = code_start
+      let mut any = 0
+      while p < code_end {
+        let op = body[p]
+        let (_, _, next) = decode_instr(body, p)
+        if (op == 0x02) || (op == 0x03) || (op == 0x04) {
+          FixedArray::set(frame_op, sp, op)
+          FixedArray::set(frame_hdr_start, sp, p)
+          FixedArray::set(frame_hdr_end, sp, next)
+          FixedArray::set(frame_bad, sp, 0)
+          sp = sp + 1
+        }
+        else if op == 0x1F {
+          FixedArray::set(frame_op, sp, op)
+          FixedArray::set(frame_hdr_start, sp, p)
+          FixedArray::set(frame_hdr_end, sp, next)
+          FixedArray::set(frame_bad, sp, 0)
+          sp = sp + 1
+          let (_, q1) = read_sleb128(body, p + 1)
+          let (cnt, q2) = read_uleb128(body, q1)
+          let mut qq = q2
+          let mut ki = 0
+          while ki < cnt {
+            let kind = body[qq]
+            qq = qq + 1
+            let label = if (kind == 0) || (kind == 1) {
+              let (_, qa) = read_uleb128(body, qq)
+              let (lab, qb) = read_uleb128(body, qa)
+              qq = qb
+              lab
+            } else {
+              let (lab, qa) = read_uleb128(body, qq)
+              qq = qa
+              lab
+            }
+            // mark the catch target and every block it crosses (target at
+            // sp - 2 - label; the just-pushed try_table frame is not counted).
+            let ti = sp - 2 - label
+            let lo = if ti < 0 {
+              0
+            } else {
+              ti
+            }
+            let mut j = lo
+            while j < sp {
+              FixedArray::set(frame_bad, j, 1)
+              j = j + 1
+            }
+            ki = ki + 1
+          }
+        }
+        else if op == 0x0B {
+          if sp > 0 {
+            sp = sp - 1
+            if (FixedArray::get(frame_op, sp) == 0x02) && (FixedArray::get(frame_bad, sp) == 0) {
+              let hs = FixedArray::get(frame_hdr_start, sp)
+              let he = FixedArray::get(frame_hdr_end, sp)
+              let mut b = hs
+              while b < he {
+                FixedArray::set(skip, b - code_start, 1)
+                b = b + 1
+              }
+              FixedArray::set(skip, p - code_start, 1)
+              any = 1
+            }
+          }
+        }
+        else if (op == 0x0C) || (op == 0x0D) {
+          let (label, _) = read_uleb128(body, p + 1)
+          // mark the branch target and every block it escapes (target at
+          // sp - 1 - label)
+          let ti = sp - 1 - label
+          let lo = if ti < 0 {
+            0
+          } else {
+            ti
+          }
+          let mut j = lo
+          while j < sp {
+            FixedArray::set(frame_bad, j, 1)
+            j = j + 1
+          }
+        }
+        else if op == 0x0E {
+          let (cnt, q0) = read_uleb128(body, p + 1)
+          let mut q = q0
+          let mut bi = 0
+          while bi <= cnt {
+            let (label, qn) = read_uleb128(body, q)
+            q = qn
+            let ti = sp - 1 - label
+            let lo = if ti < 0 {
+              0
+            } else {
+              ti
+            }
+            let mut j = lo
+            while j < sp {
+              FixedArray::set(frame_bad, j, 1)
+              j = j + 1
+            }
+            bi = bi + 1
+          }
+        }
+        else {
+          ()
+        }
+        p = next
+      }
+      if any == 0 {
+        copy_bytes(body, 0, body_len)
+      } else {
+        let out = Bytes::new()
+        let mut hi = 0
+        while hi < code_start {
+          Bytes::push(out, body[hi])
+          hi = hi + 1
+        }
+        let mut ci = code_start
+        while ci < code_end {
+          if FixedArray::get(skip, ci - code_start) == 0 {
+            Bytes::push(out, body[ci])
+          }
+          ci = ci + 1
+        }
+        Bytes::push(out, body[code_end])
+        out
+      }
+    }
+  }
+}
+
+let remove_dead_blocks_code_section = (bytes: Bytes, offset: Int, size: Int) -> Bytes {
+  let raw_bodies = parse_code_bodies(bytes, offset, size)
+  let optimized = Array::slice([
+    (Bytes::new())
+  ], 0, 0)
+  let mut fi = 0
+  while fi < Array::length(raw_bodies) {
+    Array::push(optimized, remove_dead_blocks_body(Array::get(raw_bodies, fi)))
+    fi = fi + 1
+  }
+  rebuild_code_section(optimized)
+}
+
+export let remove_dead_blocks = (bytes: Bytes) -> Bytes {
+  let len = Bytes::length(bytes)
+  if len < 8 {
+    copy_bytes(bytes, 0, len)
+  }
+  else {
+    let out = Bytes::new()
+    let mut i = 0
+    while i < 8 {
+      Bytes::push(out, bytes[i]); i = i + 1
+    }
+    let sections = list_sections(bytes)
+    let mut s = 0
+    while s < Array::length(sections) {
+      let (sid, off, sz) = Array::get(sections, s)
+      if sid == 10 {
+        let new_content = remove_dead_blocks_code_section(bytes, off, sz)
+        emit_section(out, 10, new_content)
+      } else {
+        let content = copy_bytes(bytes, off, off + sz)
+        emit_section(out, sid, content)
+      }
+      s = s + 1
+    }
+    out
+  }
+}
+
 // Result-arity of a function type (mirror of get_type_param_count).
 let get_type_result_count = (bytes: Bytes, type_sec_off: Int, type_sec_sz: Int, type_idx: Int) -> Int {
   let end_pos = type_sec_off + type_sec_sz
@@ -4858,7 +5074,8 @@ export let minify = (bytes: Bytes) -> Bytes {
     let s4a = optimize_code_section(s3d)
     let s4b = inline_empty_calls(s4a)
     let s4c = inline_calls(s4b)
-    let s4 = drop_unused_tables(s4c)
+    let s4d = remove_dead_blocks(s4c)
+    let s4 = drop_unused_tables(s4d)
     let s5_removed = dce_remove(s4)
     let s5 = if binary_size(s5_removed) < binary_size(s4) {
       s5_removed
