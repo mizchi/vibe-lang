@@ -68,4 +68,33 @@ if [ "$fsres" != "42" ]; then
 fi
 echo "[selfhost-only-gate] multi-file FS-compile ok (42)"
 
+# 5. test-block regression (#594): a file with only `test {}` blocks (no entry)
+#    must compile to a valid module whose `_start` runs every test; a passing
+#    file exits clean and a failing assert traps. Guards the codegen fix that
+#    stopped exporting a nonexistent entry function (call/export index -1).
+echo "[selfhost-only-gate] 5/5 test-block compile+run regression"
+tdir="_build/_gate_testblock"
+rm -rf "$tdir"; mkdir -p "$tdir"
+printf 'test "ok" {\n  assert_eq(2 + 2, 4)\n}\n' > "$tdir/pass_test.vibe"
+printf 'test "bad" {\n  assert_eq(2 + 2, 5)\n}\n' > "$tdir/fail_test.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$tdir/pass_test.vibe" "$tdir/pass_test.wasm" __no_entry__ >/dev/null 2>&1
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$tdir/fail_test.vibe" "$tdir/fail_test.wasm" __no_entry__ >/dev/null 2>&1
+if [ ! -s "$tdir/pass_test.wasm" ] || [ ! -s "$tdir/fail_test.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: test-block compile produced no wasm" >&2; exit 1
+fi
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke _start "$tdir/pass_test.wasm" >/dev/null 2>&1; then
+  echo "[selfhost-only-gate] FAIL: passing test file did not run clean" >&2; exit 1
+fi
+if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke _start "$tdir/fail_test.wasm" >/dev/null 2>&1; then
+  echo "[selfhost-only-gate] FAIL: failing test file did not trap" >&2; exit 1
+fi
+rm -rf "$tdir"
+echo "[selfhost-only-gate] test-block regression ok"
+
 echo "[selfhost-only-gate] ok"
