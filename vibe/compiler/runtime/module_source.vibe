@@ -1,0 +1,51 @@
+//# Imports
+
+import ../core/index.vibe {
+  Stmt,
+  dce_keep_flags
+}
+
+import ../syntax/index.vibe {
+  lex_with_offsets,
+  parse_program_spans
+}
+
+//# Module source emission (selfhost port of host `emit-module-source`)
+
+// Reconstruct a flat module source containing only the top-level statements
+// reachable from `entry_name` (via DCE), emitted as their original source text.
+//
+// Mirrors the MoonBit host `emit-module-source`
+// (`src/cmd/vibe/cli_module_source.mbt`) but recovers statement source spans
+// from the selfhost lexer (`lex_with_offsets`) + parser (`parse_program_spans`)
+// instead of AST node spans, since the selfhost AST does not carry offsets.
+// Pure: no filesystem or host calls.
+export let build_module_source_from_source: (String, String) -> String with { Error } = (source, entry_name) -> {
+  let lexed = lex_with_offsets(source)
+  let tokens = lexed.0
+  let starts = lexed.1
+  let ends = lexed.2
+  let parsed = parse_program_spans(tokens, starts, ends)
+  let stmts = parsed.0
+  let span_start = parsed.1
+  let span_end = parsed.2
+  let keep = dce_keep_flags(stmts, [entry_name])
+  let buf = StringBuilder::new()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    if Array::get(keep, i) {
+      let s = Array::get(span_start, i)
+      let e = Array::get(span_end, i)
+      if e > s {
+        let snippet = String::substring(source, s, e)
+        StringBuilder::push(buf, snippet)
+        let n = String::length(snippet)
+        if n == 0 || String::char_code_at(snippet, n - 1) != '\n' {
+          StringBuilder::push(buf, "\n")
+        }
+      }
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(buf)
+}

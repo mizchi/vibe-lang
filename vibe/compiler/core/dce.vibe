@@ -410,3 +410,116 @@ export let dce_stmts: (Array[Stmt], Array[String]) -> Array[Stmt] = (stmts, entr
   result
   }
 }
+
+// Compute the set of reachable top-level names from `entry_names`, following
+// value-definition refs and structural (type/test/expr) refs to a fixpoint.
+// Mirrors the reachability computation inside `dce_stmts`; kept as a separate
+// (currently unwired) function so module-source emission can reuse it without
+// changing `dce_stmts` (a bootstrap-reachable hot path).
+let dce_reachable_names: (Array[Stmt], Array[String]) -> Array[String] = (stmts, entry_names) -> {
+  let empty_bound = Array::slice([
+    ""
+  ], 0, 0)
+  let def_names = Array::slice([
+    ""
+  ], 0, 0)
+  let def_refs = Array::slice([
+    Array::slice([
+      ""
+    ], 0, 0)
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
+    match stmt_name(stmt) {
+      Some(name) => {
+        Array::push(def_names, name)
+        let refs = match stmt {
+          SLet(_, _, _, _, expr) => collect_refs(expr, empty_bound),
+          SLetMut(_, _, expr) => collect_refs(expr, empty_bound),
+          _ => Array::slice([
+            ""
+          ], 0, 0)
+        }
+        Array::push(def_refs, refs)
+        0
+      },
+      None => 0
+    }
+    i = i + 1
+  }
+  let reachable = Array::slice([
+    ""
+  ], 0, 0)
+  let queue = Array::slice([
+    ""
+  ], 0, 0)
+  let mut j = 0
+  while j < Array::length(entry_names) {
+    let name = Array::get(entry_names, j)
+    enqueue_reachable(reachable, queue, name)
+    j = j + 1
+  }
+  let mut sj = 0
+  while sj < Array::length(stmts) {
+    collect_structural_refs_into_queue(Array::get(stmts, sj), empty_bound, reachable, queue)
+    sj = sj + 1
+  }
+  let mut qi = 0
+  while qi < Array::length(queue) {
+    let current = Array::get(queue, qi)
+    qi = qi + 1
+    let mut k = 0
+    while k < Array::length(def_names) {
+      if Array::get(def_names, k) == current {
+        let refs = Array::get(def_refs, k)
+        let mut r = 0
+        while r < Array::length(refs) {
+          let dep = Array::get(refs, r)
+          if not(dce_array_contains_str(reachable, dep)) {
+            Array::push(reachable, dep)
+            Array::push(queue, dep)
+          }
+          r = r + 1
+        }
+      }
+      k = k + 1
+    }
+  }
+  reachable
+}
+
+// Whether DCE keeps `stmt` given the reachable name set: type/structural
+// statements are always kept; named value defs are kept iff reachable; unnamed
+// statements are kept. (Same per-statement rule `dce_stmts` applies.)
+let dce_keep_stmt: (Stmt, Array[String]) -> Bool = (stmt, reachable) -> {
+  if is_type_or_structural(stmt) {
+    true
+  } else {
+    match stmt_name(stmt) {
+      Some(name) => dce_array_contains_str(reachable, name),
+      None => true
+    }
+  }
+}
+
+// Per-original-index keep flags from DCE, parallel to `stmts`. Lets callers
+// (e.g. module-source emission) map surviving statements back to their source
+// spans without relying on statement identity/equality. Result length equals
+// `Array::length(stmts)`.
+export let dce_keep_flags: (Array[Stmt], Array[String]) -> Array[Bool] = (stmts, entry_names) -> {
+  let flags = Array::slice([
+    true
+  ], 0, 0)
+  if Array::length(stmts) == 0 {
+    flags
+  } else {
+    let reachable = dce_reachable_names(stmts, entry_names)
+    let mut m = 0
+    while m < Array::length(stmts) {
+      Array::push(flags, dce_keep_stmt(Array::get(stmts, m), reachable))
+      m = m + 1
+    }
+    flags
+  }
+}
