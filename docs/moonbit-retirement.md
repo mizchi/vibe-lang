@@ -123,10 +123,32 @@
   `build_selfhost_cli_core.sh`=host build に fallback; `VIBE_SELFHOST_CLI_WASM` で
   moon-free build 済み wasm を差し込み可能)。
 
-### Stage 4 — 直接 `moon`/`src/` 参照の除去
-- `moon` を直接呼ぶ script (~60) と Taskfile.pkl の 32 箇所を、seam か selfhost 経路へ移行。
-- moon-only の補助 (coverage_moon, contract_moon, test_moon_info_regen 等) を退役 or 置換。
-- CI shard (`scripts/pkfire/selfhost_gates_shard.sh`) が moon 無しで完走することを確認。
+### Stage 2.5 — bootstrap bump: seed が emit を持つ (完了)
+- seed を current fixpoint stage2 (`stage2==stage3`) に re-pin (`selfhost-emit-2026-06-23`,
+  sha `2f1d5c89`)。新 seed は emit-module-source を持ち、自分で次世代を build できることを検証。
+- `generate_selfhost_bundle.sh` の emit と `check_selfhost_module_source_sync.sh` を seed 経由
+  (moon-free) に切替。committed prebuilt は seed-emitted。**bootstrap pipeline 全体が host 不要**。
+
+### Stage 4 — 直接 `moon`/`src/` 参照の除去 (残・大)
+依存マップ (調査 2026-06-23): host CLI seam を使う script 51、`moon` 直呼び script 59、
+`src/` 参照 script 57、CI workflow 6、flake に moonbit toolchain。多くは host の unit test /
+host↔selfhost parity / dist-via-host で、`src/` 退役と共に **obsolete 化** する (削除対象)。
+- `selfhost-gate` の corpus-parity / perf・RSS-vs-host は host 比較 gate → `src/` 削除時に退役し、
+  selfhost 単独の絶対 gate に置換する。
+- default CLI seam (`run_cached_vibe`/`ensure_native_cli` = `moon build src/cmd/vibe`) を
+  selfhost 経路へ。**未解決の技術ギャップ**:
+  - 汎用 CLI (`vibe/cli/selfhost_entry.vibe`, compile/build/check) の **moon-free build** には
+    cross-layer (vibe/cli ↔ vibe/compiler) の merged-source 生成が必要 (現 `generate_selfhost_bundle.sh`
+    は compiler-dir 固定・root=adapter 固定)。
+  - seed への **FS-compile mode** (`compile_file_fs_mode` を cli_main から到達可能化) を試行したが、
+    multi-file の FS loader 経路が runner 上で trap (persistent-cache 周りの疑い)。要 debug。
+    → これが解ければ `run`/`test`/CLI build が seed 単体で moon-free 化できる。
+- `fmt`/`normalize` は host が CST formatter / semver・依存解決を使い、各々独立移植 (大)。
+  `vibe-normalize` gate は release-check 依存 → 移植 or gate 置換が必要。
+
+### Stage 5 — `src/` 物理削除 (Stage 3 default-flip + Stage 4 完了後)
+- gate が moon 無しで継続 green を確認の上で `src/`・`moon.mod`・各 `moon.pkg`・`.mooncakes`・
+  MoonBit toolchain (flake)・host 専用 script/CI を削除。release-check を selfhost-only に再定義。
 
 ### Stage 4.5 — 未移植 (unported) feature の parity 監査 ★deletion gate★
 `src/` (MoonBit host) にあって selfhost (`vibe/`) に**まだ無い**機能が残っていないかを、
