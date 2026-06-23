@@ -439,7 +439,7 @@ run_start_if_enabled() {
   env VIBE_WASMTIME_WASM_FLAGS="${VIBE_SELFHOST_GENERATION_WASMTIME_FLAGS:-unknown-imports-default=y exceptions=y}" \
     "$PROJECT_ROOT/scripts/wasmtime_run.sh" --invoke _start "$wasm" >"$out"
   local value
-  value="$(rg -v '^warning' "$out" | tail -n 1)"
+  value="$(grep -v '^warning' "$out" | tail -n 1)"
   if ! [[ "$value" =~ ^-?[0-9]+$ ]]; then
     die "$label did not return numeric value: $value"
   fi
@@ -470,7 +470,7 @@ VIBE
   fi
   env VIBE_WASMTIME_WASM_FLAGS="${VIBE_SELFHOST_GENERATION_WASMTIME_FLAGS:-exceptions=y}" \
     "$PROJECT_ROOT/scripts/wasmtime_run.sh" --invoke _start "$sample_wasm" >"$sample_out"
-  value="$(rg -v '^warning' "$sample_out" | tail -n 1)"
+  value="$(grep -v '^warning' "$sample_out" | tail -n 1)"
   if [ "$value" != "42" ]; then
     die "$label sample returned $value, expected 42"
   fi
