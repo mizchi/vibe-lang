@@ -45,16 +45,25 @@
 - [x] 依存マップ確定 (本ドキュメント)。
 
 ### Stage 1 — `emit-module-source` の moon-free 化 (critical path)
-`src/` 無しで flat module source を得られるようにする。次のいずれか:
-- **(1a) prebuilt 固定 + sync gate (推奨・最小リスク)**: `cli_main` 用 flat module source を
-  リポジトリに commit (または release-asset で pin) し、`generate_selfhost_bundle.sh` を
-  prebuilt 優先に切替。`check_selfhost_bundle_sync.sh` を拡張し、commit 済み source と
-  現 compiler source の決定性を CI で検証 (stale を弾く)。host `vibe.exe` 経由の
-  regenerate は break-glass としてのみ残す。
-- **(1b) selfhost 実装**: `emit-module-source` (flatten/dedup, `cli_main` entry 解決) を
-  `vibe/compiler/` に移植。より純粋だが工数大。
-- 検証: moon を使わず flat module source が得られること、その source から
-  stage1 が立ち上がること。
+`src/` 無しで flat module source を得られるようにする。
+
+**(1a) prebuilt 固定 + sync gate — 実装済み (本 PR):**
+- `cli_main` 用 flat module source を `vibe/compiler/selfhost_cli_adapter_module_source.vibe`
+  に commit (他の selfhost bundle と同じ扱い)。
+- `generate_selfhost_bundle.sh::build_adapter_module_source` を **commit 済み prebuilt 優先**に
+  切替。`VIBE_SELFHOST_REGEN_MODULE_SOURCE=1` のときだけ host `vibe.exe` で再生成
+  (sync gate / 意図的 bump 用の break-glass)。これで既定の bundle 生成経路から moon 依存が消える。
+- freshness gate `scripts/check_selfhost_module_source_sync.sh` を追加し、
+  `release-selfhost-gates` と CI shard (`bootstrap` / `bootstrap-core`) に組込み。
+  host があるとき再生成して drift を弾き、host が無い環境では skip (pin を信頼)。
+- 検証済み: host `vibe.exe` を隠し `moon` を stub した状態で `generate_selfhost_bundle.sh` が
+  成功し module source が commit 済みと一致 (= moon-free)。既存 bundle-sync gate も緑。
+
+**(1b) selfhost 実装 — 残課題 (full moon 除去に必要):**
+- freshness gate は今も host (`vibe.exe`/`moon`) で再生成して照合するため、**CI の gate には
+  まだ moon が要る**。完全 moon 除去には `emit-module-source` (flatten/dedup, `cli_main`
+  entry 解決; 現在 `src/cmd/vibe/cli_module_source.mbt`) を `vibe/compiler/` に移植し、
+  gate もそれで回す必要がある。Stage 4.5 / Stage 5 までに対応する。
 
 ### Stage 2 — moon-free な canonical cli wasm の生成
 - seed (stage0) → stage1 → stage2 を **moon 無し**で回す

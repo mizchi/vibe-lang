@@ -448,6 +448,22 @@ PY
     printf '%s\n' "$module_source_path"
     return 0
   fi
+  # Moon-free default (#594 Stage 1): prefer the committed prebuilt flat
+  # module source so that seed -> stage1 -> stage2 needs no MoonBit host.
+  # emit-module-source is a deterministic function of the compiler source;
+  # the committed copy is kept fresh by scripts/check_selfhost_module_source_sync.sh
+  # (run in selfhost-gate). Force regeneration through the host compiler with
+  # VIBE_SELFHOST_REGEN_MODULE_SOURCE=1 (used by that gate and by intentional
+  # module-source bumps).
+  local committed_module_source="$COMPILER_DIR/selfhost_cli_adapter_module_source.vibe"
+  if [ "${VIBE_SELFHOST_REGEN_MODULE_SOURCE:-0}" != "1" ] && [ -s "$committed_module_source" ]; then
+    local module_source_path
+    mkdir -p "$PROJECT_ROOT/_build"
+    module_source_path="$(mktemp "$PROJECT_ROOT/_build/selfhost_cli_adapter_module_source.XXXXXX")"
+    cp "$committed_module_source" "$module_source_path"
+    printf '%s\n' "$module_source_path"
+    return 0
+  fi
   local module_source_path
   mkdir -p "$PROJECT_ROOT/_build"
   module_source_path="$(mktemp "$PROJECT_ROOT/_build/selfhost_cli_adapter_module_source.XXXXXX")"

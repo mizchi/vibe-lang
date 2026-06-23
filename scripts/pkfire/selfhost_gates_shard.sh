@@ -8,6 +8,7 @@ shard="${1:?missing shard argument: bootstrap|bootstrap-core|selfbuild|cli|check
 case "$shard" in
   bootstrap-core)
     bash scripts/check_selfhost_bundle_sync.sh
+    bash scripts/check_selfhost_module_source_sync.sh
     scripts/test_selfhost_bootstrap_gate.sh
     ;;
   selfbuild)
@@ -18,6 +19,7 @@ case "$shard" in
     ;;
   bootstrap)
     bash scripts/check_selfhost_bundle_sync.sh
+    bash scripts/check_selfhost_module_source_sync.sh
     scripts/test_selfhost_bootstrap_gate.sh
     VIBE_SELFHOST_SELFBUILD_STRICT_RECURSIVE=1 \
     VIBE_SELFHOST_SELFBUILD_REQUIRE_TRUE_RECURSIVE=1 \
