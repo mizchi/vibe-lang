@@ -4980,10 +4980,17 @@ export let propagate_local_copies = (bytes: Bytes) -> Bytes {
               } else if (a != b) && (a >= 0) && (a <= maxidx) && (b >= 0) && (b <= maxidx)
                 && (FixedArray::get(reads, b) == 1) && (FixedArray::get(writes, b) == 1) {
                 let gb = FixedArray::get(read_pos, b)
-                // Safe iff $b's single read comes after the set and $a is not
+                // Safe iff $b's single read comes after the set, $a is not
                 // rewritten between the copy and that read (so $a still holds
-                // the copied value at the use).
+                // the copied value at the use), and the set dominates the read.
+                // Dominance: the span between the set and the read must be
+                // straight-line (no control-flow ops) — otherwise the set may be
+                // conditional (e.g. inside an `if` arm) while the read runs
+                // unconditionally, and on the untaken path $b keeps its prior /
+                // zero-init value rather than $a's. A nested block/branch between
+                // the two is rejected conservatively.
                 let mut a_clobbered = false
+                let mut crosses_branch = false
                 let mut w = p + 2
                 while w < gb {
                   let (s_w, _, op_w) = Array::get(spans, w)
@@ -4992,9 +4999,15 @@ export let propagate_local_copies = (bytes: Bytes) -> Bytes {
                       a_clobbered = true
                     }
                   }
+                  if (op_w == 0x00) || (op_w == 0x02) || (op_w == 0x03) || (op_w == 0x04) ||
+                  (op_w == 0x05) || (op_w == 0x08) || (op_w == 0x0A) || (op_w == 0x0B) ||
+                  (op_w == 0x0C) || (op_w == 0x0D) || (op_w == 0x0E) || (op_w == 0x0F) ||
+                  (op_w == 0x1F) {
+                    crosses_branch = true
+                  }
                   w = w + 1
                 }
-                if (gb > (p + 1)) && (a_clobbered == false) {
+                if (gb > (p + 1)) && (a_clobbered == false) && (crosses_branch == false) {
                   target_fi = fi
                   a_idx = a
                   b_idx = b
