@@ -396,6 +396,45 @@ export let parse_program: (Array[Token]) -> Array[Stmt] with { Error } = (tokens
   ArrayBuilder::freeze(b)
 }
 
+// Like `parse_program`, but also returns per top-level statement its source
+// byte span (start, end), derived from the token offset arrays produced by
+// `lex_with_offsets`. start = first token's start offset; end = last token's
+// end offset. The three returned arrays are parallel (one entry per stmt).
+export let parse_program_spans: (Array[Token], Array[Int], Array[Int]) -> (Array[Stmt], Array[Int], Array[Int]) with { Error } = (tokens, starts, ends) -> {
+  let b = ArrayBuilder::new()
+  let span_start = ArrayBuilder::new()
+  let span_end = ArrayBuilder::new()
+  let mut pos = 0
+  let mut done = false
+  while !done {
+    match peek(tokens, pos) {
+      TEof => {
+        done = true
+      },
+      TSemicolon => {
+        pos = pos + 1
+      },
+      TImpl => {
+        let st = Array::get(starts, pos)
+        let (stmt, next) = parse_impl_stmt_dispatch(tokens, pos + 1)
+        ArrayBuilder::push(b, stmt)
+        ArrayBuilder::push(span_start, st)
+        ArrayBuilder::push(span_end, Array::get(ends, next - 1))
+        pos = next
+      },
+      _ => {
+        let st = Array::get(starts, pos)
+        let (stmt, next) = parse_stmt(tokens, pos)
+        ArrayBuilder::push(b, stmt)
+        ArrayBuilder::push(span_start, st)
+        ArrayBuilder::push(span_end, Array::get(ends, next - 1))
+        pos = next
+      }
+    }
+  }
+  (ArrayBuilder::freeze(b), ArrayBuilder::freeze(span_start), ArrayBuilder::freeze(span_end))
+}
+
 //# Misc
 
 export {

@@ -8,7 +8,6 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    moonbit-overlay.url = "github:moonbit-community/moonbit-overlay";
     # pkfire (pkf) — canonical task runner (Taskfile.pkl). Not in nixpkgs;
     # pinned to the same tag CI and the session-start hook use (v0.10.0).
     pkfire = {
@@ -17,7 +16,7 @@
     };
   };
 
-  outputs = { self, nixpkgs, flake-utils, rust-overlay, moonbit-overlay, pkfire }:
+  outputs = { self, nixpkgs, flake-utils, rust-overlay, pkfire }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs {
@@ -75,25 +74,10 @@
             };
           };
         };
-
-        # MoonBit code duplication detector (crates.io / github:mizchi/similarity)
-        similarity-mbt = pkgs.rustPlatform.buildRustPackage rec {
-          pname = "similarity-mbt";
-          version = "0.5.2";
-          src = pkgs.fetchCrate {
-            inherit pname version;
-            hash = "sha256-PTsTXYk6keh92HHbb8E3XD2qi49sg/JPwFKWzPoeqtw=";
-          };
-          cargoHash = "sha256-U5c+C99+bwCTpkEDV3nLFITmIk+n56eWQoq0oqc7qMI=";
-          doCheck = false;
-        };
       in
       {
         devShells.default = pkgs.mkShell {
           buildInputs = [
-            # MoonBit toolchain (from moonbit-overlay)
-            moonbit-overlay.packages.${system}.moon-patched_latest
-
             # Rust toolchain (for wasmtime build + wasm components)
             rustToolchain
 
@@ -102,13 +86,12 @@
             pkgs.wasm-tools
             pkgs.wac-cli
 
-            # Node.js (for moon test --target js)
+            # Node.js (selfhost wasm runner host)
             pkgs.nodejs_24
 
             # Build tools
             pkgs.ripgrep
             pkgs.ast-grep
-            similarity-mbt
 
             # Pkl CLI — required by pkfire (Taskfile.pkl) and by
             # pkspec for evaluating local schemas.
@@ -122,12 +105,6 @@
 
           shellHook = ''
             export VIBE_USE_WASMTIME_SUBMODULE=0
-
-            # Fetch mooncakes registry on first use
-            if [ ! -d .mooncakes ]; then
-              echo "Running moon update to fetch dependencies..."
-              moon update 2>/dev/null || true
-            fi
 
             # pkf (pkfire) is provided by the `pkfire` flake input above. Keep
             # a fallback hint in case the shell is entered without it on PATH
