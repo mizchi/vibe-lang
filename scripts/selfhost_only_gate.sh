@@ -124,6 +124,17 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
 if ! cmp -s "$ndir/out.vibe" "$ndir/out2.vibe"; then
   echo "[selfhost-only-gate] FAIL: normalize not idempotent" >&2; exit 1
 fi
+# Flattened output must still typecheck: intra-module refs are qualified
+# (`m::run` calls `m::helper`), so compiling a copy with an entry must succeed.
+cp "$ndir/out.vibe" "$ndir/compile.vibe"
+printf '\nexport let _start: () -> Int = () -> { m::run() }\n' >> "$ndir/compile.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$ndir/compile.vibe" "$ndir/out.wasm" _start >/dev/null 2>&1
+if [ ! -s "$ndir/out.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: normalized output does not compile" >&2
+  cat "$ndir/compile.vibe" >&2; exit 1
+fi
 rm -rf "$ndir"
 echo "[selfhost-only-gate] normalize regression ok"
 

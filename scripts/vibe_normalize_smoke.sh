@@ -58,12 +58,29 @@ cat > "$WORK/03.expected.vibe" <<'EOF'
 
 let math::helper: () -> Int = () -> { 1 }
 
-export let math::run: () -> Int = () -> { helper() }
+export let math::run: () -> Int = () -> { math::helper() }
 
-export let math::run_io: () -> Int with { Error } = () -> { run() }
+export let math::run_io: () -> Int with { Error } = () -> { math::run() }
 EOF
 
-for case in 01 03; do
+# Aggregate-only export: `export { run }` is the sole export marker. `run` and
+# its helper must survive DCE and `run` must be promoted to `export let` (the
+# aggregate `export { .. }` statement itself is dropped).
+cat > "$WORK/agg.in.vibe" <<'EOF'
+let helper: () -> Int = () -> { 1 }
+let run: () -> Int = () -> { helper() }
+let dead: () -> Int = () -> { 2 }
+export { run }
+EOF
+cat > "$WORK/agg.expected.vibe" <<'EOF'
+//# Functions
+
+let helper: () -> Int = () -> { 1 }
+
+export let run: () -> Int = () -> { helper() }
+EOF
+
+for case in 01 03 agg; do
   bash "$ROOT_DIR/scripts/vibe_normalize.sh" --stdout "$WORK/$case.in.vibe" > "$WORK/$case.got.vibe" 2>/dev/null
   if ! cmp -s "$WORK/$case.expected.vibe" "$WORK/$case.got.vibe"; then
     echo "[vibe-normalize-smoke] FAIL: fixture $case mismatch" >&2

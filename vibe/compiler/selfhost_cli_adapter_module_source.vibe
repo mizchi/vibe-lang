@@ -28188,30 +28188,54 @@ let join_module_name: (String, String) -> String = (prefix, name) -> {
     String::concat(prefix, String::concat("::", name))
   }
 }
-let rec flatten_into: (Array[Stmt], String, Array[Stmt]) -> Int = (stmts, prefix, out) -> {
+let rec module_value_aliases: (Array[Stmt], String, Array[(String, String)]) -> Int = (body, prefix, out) -> {
   let mut i = 0
-  while i < Array::length(stmts) {
-    let stmt = Array::get(stmts, i)
-    match stmt {
-      SModule(_, name, body) => {
-        let inner_prefix = join_module_name(prefix, name)
-        let _ = flatten_into(body, inner_prefix, out)
+  while i < Array::length(body) {
+    match Array::get(body, i) {
+      SLet(_, _, name, _, _) => {
+        Array::push(out, (name, join_module_name(prefix, name)))
         0
       },
-      SLet(exp, is_rec, name, ty, body) => {
-        Array::push(out, SLet(exp, is_rec, join_module_name(prefix, name), ty, body))
+      SLetMut(name, _, _) => {
+        Array::push(out, (name, join_module_name(prefix, name)))
         0
       },
-      SLetMut(name, ty, body) => {
-        Array::push(out, SLetMut(join_module_name(prefix, name), ty, body))
+      SExternLet(name, _) => {
+        Array::push(out, (name, join_module_name(prefix, name)))
+        0
+      },
+      SModule(_, inner, inner_body) => {
+        let _ = module_value_aliases(inner_body, join_module_name(prefix, inner), out)
+        0
+      },
+      _ => 0
+    }
+    i = i + 1
+  }
+  0
+}
+let rec flatten_module_body: (Array[Stmt], String, Array[(String, String)], Array[Stmt]) -> Int = (body, prefix, aliases, out) -> {
+  let mut i = 0
+  while i < Array::length(body) {
+    match Array::get(body, i) {
+      SLet(exp, is_rec, name, ty, b) => {
+        Array::push(out, SLet(exp, is_rec, join_module_name(prefix, name), ty, rewrite_import_alias_expr(b, aliases)))
+        0
+      },
+      SLetMut(name, ty, b) => {
+        Array::push(out, SLetMut(join_module_name(prefix, name), ty, rewrite_import_alias_expr(b, aliases)))
         0
       },
       SExternLet(name, ty) => {
         Array::push(out, SExternLet(join_module_name(prefix, name), ty))
         0
       },
-      _ => {
-        Array::push(out, stmt)
+      SModule(_, inner, inner_body) => {
+        let _ = flatten_module_body(inner_body, join_module_name(prefix, inner), aliases, out)
+        0
+      },
+      other => {
+        Array::push(out, other)
         0
       }
     }
@@ -28236,11 +28260,68 @@ let exported_value_names: (Array[Stmt]) -> Array[String] = (stmts) -> {
       SLetMut(name, _, _) => if String::contains(name, "::") {
         Array::push(roots, name)
       },
+      SExport(names) => {
+        let mut j = 0
+        while j < Array::length(names) {
+          Array::push(roots, Array::get(names, j))
+          j = j + 1
+        }
+        0
+      },
       _ => 0
     }
     i = i + 1
   }
   roots
+}
+let aggregate_export_names: (Array[Stmt]) -> Array[String] = (stmts) -> {
+  let names = empty_strs()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SExport(exported) => {
+        let mut j = 0
+        while j < Array::length(exported) {
+          Array::push(names, Array::get(exported, j))
+          j = j + 1
+        }
+        0
+      },
+      _ => 0
+    }
+    i = i + 1
+  }
+  names
+}
+let str_array_has: (Array[String], String) -> Bool = (arr, target) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arr) && !found {
+    if Array::get(arr, i) == target {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+let promote_aggregate_exports: (Array[Stmt], Array[String]) -> Array[Stmt] = (stmts, agg) -> {
+  let result = empty_stmts()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
+    let promoted = match stmt {
+      SLet(exp, is_rec, name, ty, body) => if !exp && str_array_has(agg, name) {
+        SLet(true, is_rec, name, ty, body)
+      } else {
+        stmt
+      },
+      _ => stmt
+    }
+    Array::push(result, promoted)
+    i = i + 1
+  }
+  result
 }
 let rec collect_type_names_into: (TypeExpr, Array[String]) -> Int = (ty, out) -> {
   match ty {
@@ -28317,18 +28398,6 @@ let collect_stmt_type_refs_into: (Stmt, Array[String]) -> Int = (stmt, out) -> {
     },
     _ => 0
   }
-}
-let str_array_has: (Array[String], String) -> Bool = (arr, target) -> {
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(arr) && !found {
-    if Array::get(arr, i) == target {
-      found = true
-    } else {
-      i = i + 1
-    }
-  }
-  found
 }
 let drop_unused_type_aliases: (Array[Stmt]) -> Array[Stmt] = (stmts) -> {
   let referenced = empty_strs()
@@ -28421,14 +28490,19 @@ export let normalize_stmts: (Array[Stmt]) -> Array[Stmt] = (stmts) -> {
     match Array::get(stmts, m) {
       SModule(_, name, body) => {
         let live_body = dce_stmts(body, exported_value_names(body))
-        let _ = flatten_into(live_body, name, result)
+        let aliases = Array::slice([
+          ("", "")
+        ], 0, 0)
+        let _ = module_value_aliases(live_body, name, aliases)
+        let _ = flatten_module_body(live_body, name, aliases, result)
         0
       },
       _ => 0
     }
     m = m + 1
   }
-  drop_unused_type_aliases(result)
+  let promoted = promote_aggregate_exports(result, aggregate_export_names(stmts))
+  drop_unused_type_aliases(promoted)
 }
 export let normalize_source: (String) -> String with { Error } = (src) -> {
   let stmts = parse_program(lex(src))
