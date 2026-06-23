@@ -59,18 +59,38 @@
 - 検証済み: host `vibe.exe` を隠し `moon` を stub した状態で `generate_selfhost_bundle.sh` が
   成功し module source が commit 済みと一致 (= moon-free)。既存 bundle-sync gate も緑。
 
-**(1b) selfhost 実装 — 残課題 (full moon 除去に必要):**
+**(1b) selfhost 実装 — 調査結果: span tracking 不在によりブロック:**
 - freshness gate は今も host (`vibe.exe`/`moon`) で再生成して照合するため、**CI の gate には
-  まだ moon が要る**。完全 moon 除去には `emit-module-source` (flatten/dedup, `cli_main`
-  entry 解決; 現在 `src/cmd/vibe/cli_module_source.mbt`) を `vibe/compiler/` に移植し、
-  gate もそれで回す必要がある。Stage 4.5 / Stage 5 までに対応する。
+  まだ moon が要る**。完全 moon 除去には `emit-module-source` を `vibe/compiler/` に移植する必要がある。
+- **ブロッカー (調査 2026-06-23)**: host の `emit-module-source` は「parse → entry からの DCE →
+  生き残った top-level stmt の **span で元ソースを slice**」(`src/cmd/vibe/cli_module_source.mbt`)。
+  selfhost 側は DCE (`vibe/compiler/core/dce.vibe::dce_stmts`) は持つが、**lexer の `Token`
+  (`vibe/compiler/syntax/token.vibe`) も parser の `Stmt` enum (`vibe/compiler/core/ast.vibe`) も
+  source offset/span を一切保持しない**。よって host と byte 一致する span-slice 実装は、
+  front-end 全体 (lexer→parser→AST) に span を通す大規模改修なしには不可能。
+- 候補アプローチ (いずれも別タスク規模):
+  1. front-end に span tracking を追加 (lexer が token 開始 offset を併走出力 → parser が
+     stmt→token range→byte span を導出)。最も忠実だが cross-cutting。
+  2. span を使わず、DCE 由来の生存 **name 集合**で元ソースの top-level block を filter する
+     source splitter を実装。byte 一致は捨て、selfhost emit を source of truth にして
+     prebuilt を再生成 + bootstrap 検証で正しさを担保。
+- それまでは (1a) の prebuilt + host freshness gate で「既定 build は moon-free、gate のみ
+  host 依存」を維持する。Stage 5 までに 1 か 2 を入れる。
 
-### Stage 2 — moon-free な canonical cli wasm の生成
-- seed (stage0) → stage1 → stage2 を **moon 無し**で回す
-  (`VIBE_SELFHOST_PREBUILT_MODULE_SOURCE` を Stage 1 の成果物で供給)。
-- `vibe/cli/selfhost_entry.vibe` (raw ABI) ベースの cli wasm を成果物に固定。
-- 検証: `selfhost_generations.sh build --stage3` 相当を moon 無しで緑、
-  stage2==stage3、`release-selfhost-gates` の parity/perf/RSS を満たす。
+### Stage 2 — moon-free な canonical cli wasm の生成 — 検証済み (本 PR)
+- seed (stage0) → stage1 → stage2 を **moon 無し**で回す。Stage 1(1a) の prebuilt module
+  source により flat-source 段が moon-free になり、`scripts/selfhost_generations.sh` の
+  default `build` 経路 (stage0→stage1→stage2) は moon を呼ばない (`moon build vibe_compile_wasi`
+  は `host-bootstrap-seed` 専用で default build には無い)。
+- **検証済み (実測)**: host `vibe.exe` 群を退避し `moon` を fail stub にした状態で
+  `selfhost_generations.sh build` が成功:
+  `stage0(seed)→stage1`, `stage1→stage2`, stage1/stage2 の validate(sample) すべて exit 0。
+  stage2 candidate を生成 (`_build/selfhost/generations/<gen>/stage2.wasm`)。host バイナリは復元済み。
+- 補足: stage1≠stage2 は正常 (seed は HEAD より旧版の compiler。fixpoint 判定は stage2==stage3 で、
+  既存 selfhost-gate の `build --stage3` が担保)。`release-selfhost-gates` の parity/perf/RSS は
+  別途 gate 側で継続確認する。
+- 残: canonical CLI wasm を `vibe/cli/selfhost_entry.vibe` (raw ABI) ベースに固定するのは
+  Stage 3 の seam 切替と合わせて行う。
 
 ### Stage 3 — default CLI を selfhost wasm seam へ向ける
 - `scripts/run_cached_vibe.sh` / `ensure_native_cli.sh` を、`moon build src/cmd/vibe`
