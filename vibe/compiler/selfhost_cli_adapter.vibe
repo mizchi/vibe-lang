@@ -4,7 +4,24 @@ import ./entry / source_compile / wasi_only / preprocess.vibe {
   compile_source_wasi_only, compile_source_wasi_only_rc
 }
 
+import ./runtime / module_source.vibe {
+  build_module_source_from_source
+}
+
 //# Functions
+
+let adapter_string_to_bytes: (String) -> Bytes = (s) -> {
+  let out = Array::slice([
+    0
+  ], 0, 0)
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    Array::push(out, String::char_code_at(s, i))
+    i = i + 1
+  }
+  Bytes::from_array(out)
+}
 
 let read_arg_or_env: (Int, String) -> String with { Env } = (index, env_name) -> {
   let value = Env::args_get(index)
@@ -43,13 +60,25 @@ export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
   let mark_memory = Env::get("VIBE_PROFILE_MEMORY_MARKS") == "1"
   let source = Fs::read_file(input_path)
   profile_memory_mark(mark_memory)
-  // ADR-0055 #493 cutover toggle: VIBE_RC=1 compiles on the Perceus RC codegen
-  // path (Env::get returns "" when unset, so default stays the bump path). Lets
-  // the selfbuild/bootstrap/e2e gates exercise the whole compiler under RC.
-  let rc_flag = Env::get("VIBE_RC")
-  let bytes = compile_source_for_rc_flag(source, entry_name, rc_flag)
-  profile_memory_mark(mark_memory)
-  Fs::write_bytes(output_path, bytes)
-  profile_memory_mark(mark_memory)
-  0
+  // #594 Stage 1b: emit-module-source mode. VIBE_EMIT_MODULE_SOURCE=1 reuses the
+  // same (input, output, entry) interface but, instead of compiling, writes the
+  // flat module source for `entry_name` (DCE from the entry, surviving statements
+  // emitted as their original source text). This is the selfhost replacement for
+  // the MoonBit host `emit-module-source`, so the flat-source step needs no host.
+  if Env::get("VIBE_EMIT_MODULE_SOURCE") == "1" {
+    let module_source = build_module_source_from_source(source, entry_name)
+    Fs::write_bytes(output_path, adapter_string_to_bytes(module_source))
+    profile_memory_mark(mark_memory)
+    0
+  } else {
+    // ADR-0055 #493 cutover toggle: VIBE_RC=1 compiles on the Perceus RC codegen
+    // path (Env::get returns "" when unset, so default stays the bump path). Lets
+    // the selfbuild/bootstrap/e2e gates exercise the whole compiler under RC.
+    let rc_flag = Env::get("VIBE_RC")
+    let bytes = compile_source_for_rc_flag(source, entry_name, rc_flag)
+    profile_memory_mark(mark_memory)
+    Fs::write_bytes(output_path, bytes)
+    profile_memory_mark(mark_memory)
+    0
+  }
 }
