@@ -107,11 +107,21 @@
   Stage 3 の seam 切替と合わせて行う。
 
 ### Stage 3 — default CLI を selfhost wasm seam へ向ける
-- `scripts/run_cached_vibe.sh` / `ensure_native_cli.sh` を、`moon build src/cmd/vibe`
-  ではなく Stage 2 の cli wasm を runner 経由で呼ぶ薄い shim に置換
-  (既存の `VIBE_CLI_BIN_OVERRIDE` hook を活用)。argv 規約 (compile/check/test/run/build)
-  を `vibe.exe` と一致させる。
-- 検証: 50 seam-script の代表 (compile→run=42, check, test, bench) が moon 無しで緑。
+- **opt-in shim 実装済み (本 PR)**: `scripts/vibe_selfhost_cli.sh` — `VIBE_CLI_BIN_OVERRIDE`
+  経由で seam (`run_cached_vibe`) を selfhost CLI wasm (`vibe/cli/selfhost_entry.vibe` →
+  `--invoke cli_main`) に向ける薄い wrapper。path を preopen(root) 相対へ書換え、対応
+  command は selfhost CLI 実装分 (`compile`/`build`/`check`/`compile-lite`/`bundle`)。
+  smoke: `pkf run test-selfhost-cli-seam` (`scripts/vibe_selfhost_cli_smoke.sh`) が
+  compile→run=42 を runtime moon-free で検証。
+- **default flip は Stage 4.5 依存 (未実施)**: 既定 seam を flip すると selfhost CLI 未実装の
+  `run`/`test`/`fmt`/`normalize`/`bench`/… が壊れる。これらを移植 (Stage 4.5) してから default を
+  flip する。`fmt` は host が CST formatter (`src/parser/format.mbt` の `parse_cst`+token整形,
+  コメント保持) を使い、`normalize` は semver/依存解決/dedup を含むため、いずれも単純な
+  parse+print では移植できず、各々が独立した移植タスク。
+- CLI wasm の build 自体を moon-free 化するには 1b の selfhost `emit-module-source` で
+  `selfhost_entry` の module source を出し seed で compile する経路を使う (現状 shim は
+  `build_selfhost_cli_core.sh`=host build に fallback; `VIBE_SELFHOST_CLI_WASM` で
+  moon-free build 済み wasm を差し込み可能)。
 
 ### Stage 4 — 直接 `moon`/`src/` 参照の除去
 - `moon` を直接呼ぶ script (~60) と Taskfile.pkl の 32 箇所を、seam か selfhost 経路へ移行。
