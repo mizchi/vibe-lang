@@ -75,6 +75,29 @@
 - moon-only の補助 (coverage_moon, contract_moon, test_moon_info_regen 等) を退役 or 置換。
 - CI shard (`scripts/pkfire/selfhost_gates_shard.sh`) が moon 無しで完走することを確認。
 
+### Stage 4.5 — 未移植 (unported) feature の parity 監査 ★deletion gate★
+`src/` (MoonBit host) にあって selfhost (`vibe/`) に**まだ無い**機能が残っていないかを、
+削除の**前提条件**として網羅監査する。1 つでも load-bearing な未移植があれば Stage 5 に進まない。
+監査軸:
+- **CLI subcommand**: host (`src/cmd/vibe/cli.mbt`) は ~40 commands を dispatch するが、
+  selfhost CLI (`vibe/cli/selfhost.vibe`) が直接持つのは compiler-core 中心
+  (compile / compile-lite / build / check / bundle / parse / type / load / write)。
+  未カバー候補: `run` `test` `fmt` `normalize` `bench` `bench-file` `profile` `shell`
+  `shell-stdin` `wasm-shell-stdin` `eval` `init` `new` `clean` `precompile`
+  `session-http` `session-json` `finalize` `apply` `symbols` `history` `write-file`
+  `hash` `save` `fetch` `update-lock` `explain-import` `expand` `ide` `lsif` `index`
+  `serve` `lsp` `dist` `emit-module-source` 等。各々について「selfhost/script/runner の
+  どこかで等価提供されているか」「dev-only/obsolete で退役可か」を判定する。
+- **builtin / host import / intrinsic**: host codegen の builtin/import table と
+  selfhost 側 (`vibe/compiler/`) を突き合わせ、host のみの builtin が無いか確認。
+- **codegen backend**: linear / wasm-gc 双方の gap (HOF/Iterator, read_word, LZ77 等、
+  `docs/codegen/wasm-gc-vs-selfhost-analysis.md` / `docs/report/wasm-gc-hof-gap-2026-05-25.md`)。
+  selfhost 既定の linear 経路で実利用機能が full carry されているかを確認する。
+- **その他**: `src/` の各 module に対応する `vibe/` counterpart が無い機能 (pass, 言語構文, lint 等)。
+判定結果は「(a) 等価提供あり / (b) 退役可 (dev-only/obsolete) / (c) **要 selfhost 移植**」に分類し、
+(c) を Stage 5 のブロッカーとして潰し切る。既存の parity gate (corpus check parity REAL gap=0、
+dist/stage2 parity、cutover gate) はこの監査の自動化部分として活用する。
+
 ### Stage 5 — `src/` 物理削除
 - gate が moon 無しで継続的に緑であることを確認した上で、`src/`・`moon.mod`・各 `moon.pkg`・
   `.mooncakes`・`target/`・MoonBit 専用 toolchain 設定を削除 (または `docs/archive/` へ退避)。
