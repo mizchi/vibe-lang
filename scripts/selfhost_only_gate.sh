@@ -41,4 +41,31 @@ if s2 != s3:
 print(f"[selfhost-only-gate] fixpoint ok: stage2==stage3 ({s2[:12]})")
 PY
 
+# 4. multi-file compile regression (#594): the selfhost compiler must resolve
+#    imports from the filesystem. collect_import_path once built import paths via
+#    string interpolation, which a selfhost codegen bug rendered as garbage (only
+#    hit by real `import` statements, which the merged/bundle selfbuild source
+#    strips — so the fixpoint above does not exercise it). Compile a 2-file
+#    program via the fresh stage2 (VIBE_FS_COMPILE) and assert it runs to 42.
+echo "[selfhost-only-gate] 4/4 multi-file FS-compile regression"
+fsdir="_build/_gate_fscompile"
+rm -rf "$fsdir"; mkdir -p "$fsdir"
+printf 'export let add = (a: Int, b: Int) -> Int { a + b }\n' > "$fsdir/helper.vibe"
+printf 'import ./helper.vibe { add }\nexport let _start = () -> Int { add(40, 2) }\n' > "$fsdir/main.vibe"
+stage2_wasm="${latest_gen}stage2.wasm"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$fsdir/main.vibe" "$fsdir/main.wasm" _start
+if [ ! -s "$fsdir/main.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: multi-file FS-compile produced no wasm" >&2
+  exit 1
+fi
+fsres="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$fsdir/main.wasm" 2>/dev/null | tr -dc '0-9')"
+rm -rf "$fsdir"
+if [ "$fsres" != "42" ]; then
+  echo "[selfhost-only-gate] FAIL: multi-file FS-compile sample returned '$fsres' (expected 42)" >&2
+  exit 1
+fi
+echo "[selfhost-only-gate] multi-file FS-compile ok (42)"
+
 echo "[selfhost-only-gate] ok"
