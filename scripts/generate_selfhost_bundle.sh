@@ -400,6 +400,26 @@ run_host_vibe_cmd() {
   local release_vibe="$SCRIPT_PROJECT_ROOT/_build/native/release/build/cmd/vibe/vibe.exe"
   local debug_vibe="$SCRIPT_PROJECT_ROOT/_build/native/debug/build/cmd/vibe/vibe.exe"
   if [ "$cmd" = "emit-module-source" ]; then
+    # #594 Stage 1b/seed-bump: prefer the selfhost seed compiler (moon-free).
+    # The seed carries emit-module-source (VIBE_EMIT_MODULE_SOURCE mode), so the
+    # flat module source needs no MoonBit host. Args are (input, output, entry),
+    # rewritten to repo-root-relative for the wasm preopen. Force the legacy host
+    # path with VIBE_SELFHOST_EMIT_VIA_HOST=1.
+    local seed_wasm="$SCRIPT_PROJECT_ROOT/bootstrap/selfhost/seed/selfhost_compiler.wasm"
+    if [ -f "$seed_wasm" ] && [ "${VIBE_SELFHOST_EMIT_VIA_HOST:-0}" != "1" ]; then
+      local emit_in="${1#"$SCRIPT_PROJECT_ROOT"/}"
+      local emit_out="${2#"$SCRIPT_PROJECT_ROOT"/}"
+      local emit_entry="${3:-cli_main}"
+      (
+        cd "$SCRIPT_PROJECT_ROOT" &&
+          VIBE_PREOPEN_DIR="$SCRIPT_PROJECT_ROOT" \
+            VIBE_EMIT_MODULE_SOURCE=1 \
+            VIBE_SELFHOST_IMPORT_ABI="${VIBE_SELFHOST_IMPORT_ABI:-raw}" \
+            bash "$SCRIPT_PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
+            --invoke cli_main "$seed_wasm" "$emit_in" "$emit_out" "$emit_entry"
+      )
+      return 0
+    fi
     if [ -x "$release_vibe" ]; then
       (cd "$SCRIPT_PROJECT_ROOT" && "$release_vibe" "$cmd" "$@")
       return 0

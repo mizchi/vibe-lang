@@ -24,20 +24,28 @@ if [ ! -f "$EXPECTED" ]; then
   exit 1
 fi
 
-# Detect a usable host compiler; skip the freshness check if absent.
-have_host=0
-if [ -x "$PROJECT_ROOT/_build/native/release/build/cmd/vibe/vibe.exe" ] ||
+# Prefer the selfhost seed compiler (moon-free) to regenerate; the seed carries
+# emit-module-source. Fall back to the MoonBit host only if the seed is absent.
+# If neither is available, the freshness check cannot run and is skipped.
+have_emit=0
+if [ -f "$PROJECT_ROOT/bootstrap/selfhost/seed/selfhost_compiler.wasm" ] &&
+  [ "${VIBE_SELFHOST_EMIT_VIA_HOST:-0}" != "1" ]; then
+  have_emit=1
+elif [ -x "$PROJECT_ROOT/_build/native/release/build/cmd/vibe/vibe.exe" ] ||
   [ -x "$PROJECT_ROOT/_build/native/debug/build/cmd/vibe/vibe.exe" ] ||
   [ -x "$PROJECT_ROOT/target/native/release/build/cmd/vibe/vibe.exe" ] ||
   command -v moon >/dev/null 2>&1; then
-  have_host=1
+  have_emit=1
 fi
-if [ "$have_host" -ne 1 ]; then
-  echo "selfhost module source sync: skipped (no host compiler; trusting pinned prebuilt)"
+if [ "$have_emit" -ne 1 ]; then
+  echo "selfhost module source sync: skipped (no seed or host compiler; trusting pinned prebuilt)"
   exit 0
 fi
 
-TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/vibe_selfhost_module_source_sync.XXXXXX")"
+# Outputs must live under the repo root: the seed emit runs with the repo root as
+# its wasm preopen and cannot write outside it.
+mkdir -p "$PROJECT_ROOT/_build"
+TMP_ROOT="$(mktemp -d "$PROJECT_ROOT/_build/vibe_selfhost_module_source_sync.XXXXXX")"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 TMP_MODULE_SOURCE="$TMP_ROOT/selfhost_cli_adapter_module_source.vibe"
 
