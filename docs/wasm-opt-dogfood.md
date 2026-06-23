@@ -167,6 +167,25 @@ byte-identical to a module that `wasm-opt` validates and `wasmtime` runs.
   table and element sections are dropped and the element-only functions collapse.
   Reaches parity on rume_gain.
 - section stripping, `local.tee`, `drop`/`br_if 0` elimination, local coalescing.
+- **local copy-propagation** (`propagate_local_copies`) — a conservative slice
+  of `simplify-locals`: deletes self-copy pairs (`local.get $x; local.set $x`)
+  and forwards `local.get $a; local.set $b` to the single later use of `$b` when
+  `$a` is not rewritten in between (then `$b` is dead for coalesce/DCE). This is
+  the safe, bytecode-level subset; the rest of `simplify-locals`' win is
+  AST-level expression sinking, which needs an expression IR we don't build.
+  Helps copy-heavy code (e.g. array loops: `arr` 816 → 781 B).
+- **dead `block` removal** (`remove_dead_blocks`) — binaryen's
+  `remove-unused-brs` analog. Runs right after `inline_calls`, where inlined
+  call bodies leave `block` scopes that nothing branches to. A `block` (`0x02`)
+  is unwrapped (header + matching `end` dropped) only in the fully safe case: no
+  `br`/`br_if`/`br_table` **or** `try_table` catch label targets it, and no
+  inner branch escapes it — so removal changes no branch's meaning and needs no
+  label renumbering. `loop`/`if`/`try_table` are never removed. Correct
+  `try_table` handling is load-bearing for effectful code: catch labels resolve
+  in the scope *enclosing* the try_table (its own label not counted, target at
+  `sp - 2 - label`), so a catch that targets or crosses a block pins it.
+  Validated on real effectful output (`perform_handle`, runs to 86) and shrinks
+  `selfhost_features` 834 → 824 B.
 
 A prerequisite fix landed here too: `decode_instr` now consumes the immediates
 of every `0xFC`-prefixed op (table/memory bulk ops). Previously `table.size`'s
