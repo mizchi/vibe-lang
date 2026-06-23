@@ -98,6 +98,39 @@
 (c) を Stage 5 のブロッカーとして潰し切る。既存の parity gate (corpus check parity REAL gap=0、
 dist/stage2 parity、cutover gate) はこの監査の自動化部分として活用する。
 
+#### 初期監査結果 (2026-06-23, 要再確認の項目あり)
+
+**(c) 要 selfhost 移植 — Stage 5 ブロッカー候補:**
+- `emit-module-source` — moon-free bootstrap の核心。Stage 1 で prebuilt 固定 or 移植で解消。
+  実装 host のみ (`src/cmd/vibe/cli_module_source.mbt`)、selfhost 無し。
+- `fmt` (formatter, `src/cmd/vibe/cli_fmt.mbt`) — selfhost 無し。公開 CLI として期待される。
+- `normalize` (`src/cmd/vibe/cli_normalize.mbt`) — selfhost 無し。**`pkf run release-check` の
+  `vibe-normalize` で使用**しており project gate に直結。要対応。
+- builtin: `Set::*` (new/add/remove/contains/size/from_array/to_array)、`Int64Array::*`
+  (Array[Int] 32-bit truncation #429 の回避用)、`Path::ref` — host checker
+  (`src/checker/builtin_declared_names.mbt`) にあり selfhost checker に無い疑い。**要確認**:
+  実プログラム/compiler source 自身が使うなら移植必須、未使用なら退役可。
+
+**(b) 退役可 (dev-only / obsolete / 別 layer 提供):**
+- IDE/LSP 系: `ide` `lsif` `index` `lsp` `serve` — エディタ統合 dev tooling。
+- REPL/shell: `shell` `shell-stdin` `wasm-shell-stdin` `eval`(既に alias 化)。
+- bench/profile: `bench` `bench-file` `profile` — script/runner 側で代替可。
+- closure payload: `emit-closure-payload` `compile-closure-payload` `precompile` — 特殊 codegen。
+- effect/WASI 系 host import (`Fs::*` `Http::*` `Socket::*` `Env::*` `Stdin/Stdout`) は
+  selfhost wasm + runner 側で提供する設計であり「未移植」ではない。
+- `bundle` は既に `compile`/`precompile` へ alias 化済み。
+
+**(a) 等価提供あり / 設計上 OK:**
+- compiler-core: `compile` `compile-lite` `build` `check` `parse` `type` — selfhost CLI 実装済み。
+- `run` `test` — selfhost wasm で compile → Rust runner で実行、の合成で提供 (要 e2e 確認)。
+- codegen backend: selfhost は **linear backend のみ** mirror (`docs/spec/codegen-dual-backend.md`)。
+  wasm-gc codegen は selfhost 未実装だが、selfhost 既定経路は linear なので削除ブロッカーでは
+  ない (wasm-gc は将来課題として別管理)。
+- Perceus RC: selfhost で実装・検証済み (`docs/spec/selfhost-rc-cutover-readiness.md`)。
+
+> 注: builtin/`fmt`/`normalize` の有無は host の宣言表ベースの一次判定。Stage 4.5 本実行時に
+> selfhost checker/CLI を直接確認して (a)/(b)/(c) を確定し、本表を更新する。
+
 ### Stage 5 — `src/` 物理削除
 - gate が moon 無しで継続的に緑であることを確認した上で、`src/`・`moon.mod`・各 `moon.pkg`・
   `.mooncakes`・`target/`・MoonBit 専用 toolchain 設定を削除 (または `docs/archive/` へ退避)。
