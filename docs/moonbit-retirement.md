@@ -59,23 +59,28 @@
 - 検証済み: host `vibe.exe` を隠し `moon` を stub した状態で `generate_selfhost_bundle.sh` が
   成功し module source が commit 済みと一致 (= moon-free)。既存 bundle-sync gate も緑。
 
-**(1b) selfhost 実装 — 調査結果: span tracking 不在によりブロック:**
-- freshness gate は今も host (`vibe.exe`/`moon`) で再生成して照合するため、**CI の gate には
-  まだ moon が要る**。完全 moon 除去には `emit-module-source` を `vibe/compiler/` に移植する必要がある。
-- **ブロッカー (調査 2026-06-23)**: host の `emit-module-source` は「parse → entry からの DCE →
-  生き残った top-level stmt の **span で元ソースを slice**」(`src/cmd/vibe/cli_module_source.mbt`)。
-  selfhost 側は DCE (`vibe/compiler/core/dce.vibe::dce_stmts`) は持つが、**lexer の `Token`
-  (`vibe/compiler/syntax/token.vibe`) も parser の `Stmt` enum (`vibe/compiler/core/ast.vibe`) も
-  source offset/span を一切保持しない**。よって host と byte 一致する span-slice 実装は、
-  front-end 全体 (lexer→parser→AST) に span を通す大規模改修なしには不可能。
-- 候補アプローチ (いずれも別タスク規模):
-  1. front-end に span tracking を追加 (lexer が token 開始 offset を併走出力 → parser が
-     stmt→token range→byte span を導出)。最も忠実だが cross-cutting。
-  2. span を使わず、DCE 由来の生存 **name 集合**で元ソースの top-level block を filter する
-     source splitter を実装。byte 一致は捨て、selfhost emit を source of truth にして
-     prebuilt を再生成 + bootstrap 検証で正しさを担保。
-- それまでは (1a) の prebuilt + host freshness gate で「既定 build は moon-free、gate のみ
-  host 依存」を維持する。Stage 5 までに 1 か 2 を入れる。
+**(1b) selfhost 実装 — 採用: approach 1 (span tracking)。core 実装済み (本 PR):**
+- host の `emit-module-source` は「parse → entry からの DCE → 生き残った top-level stmt の
+  **span で元ソースを slice**」(`src/cmd/vibe/cli_module_source.mbt`)。selfhost の `Token`
+  /`Stmt` は source offset を持たないため、**top-level stmt span だけ**を復元する最小限の
+  span tracking を追加 (front-end 全体改修は不要だった):
+  - `lexer.vibe`: token 分類を `lex_one_token` に抽出 (codegen 1 コピー) し、per-token の
+    start/end byte offset を返す `lex_with_offsets` を追加。`lex` の挙動は不変。
+  - `parser.vibe`: token offset から top-level stmt の byte span を導出する
+    `parse_program_spans` を追加。`parse_program` は不変。
+  - `core/dce.vibe`: 既存の到達可能性を再利用し per-index keep flag を返す
+    `dce_keep_flags` を追加 (`dce_stmts` は不変)。
+  - `runtime/module_source.vibe`: `build_module_source_from_source` — entry から DCE し、
+    生存 stmt の元ソース slice を emit。host 実装と等価。
+- 検証済み: unit test (emit 3/3, dce 15/15, lexer 1/1)、および **host 隠蔽 + moon stub での
+  moon-free selfbuild (seed→stage1→stage2, 両 stage validate 通過)**。bundle/prebuilt 再生成し
+  両 sync gate 緑。bootstrap fragility 対策として hot path を byte 不変に保ち、共有 `lex_one_token`
+  で codegen 重複 (= seed OOM) を回避した。
+- **残り (wiring, 次ステップ)**: `build_module_source_from_source` を selfhost CLI の
+  `emit-module-source` コマンドとして公開 (manifest 追加 + argv/FS 配線) し、
+  `generate_selfhost_bundle.sh` の REGEN と freshness gate を host から selfhost compiler 経由に
+  切替える。これで gate からも moon が外れる。selfhost が新 emit を使い始めるのは別 commit
+  (bootstrap discipline: 実装と使用開始を分ける)。それまでは gate のみ host 依存。
 
 ### Stage 2 — moon-free な canonical cli wasm の生成 — 検証済み (本 PR)
 - seed (stage0) → stage1 → stage2 を **moon 無し**で回す。Stage 1(1a) の prebuilt module
