@@ -76,11 +76,20 @@
   moon-free selfbuild (seed→stage1→stage2, 両 stage validate 通過)**。bundle/prebuilt 再生成し
   両 sync gate 緑。bootstrap fragility 対策として hot path を byte 不変に保ち、共有 `lex_one_token`
   で codegen 重複 (= seed OOM) を回避した。
-- **残り (wiring, 次ステップ)**: `build_module_source_from_source` を selfhost CLI の
-  `emit-module-source` コマンドとして公開 (manifest 追加 + argv/FS 配線) し、
-  `generate_selfhost_bundle.sh` の REGEN と freshness gate を host から selfhost compiler 経由に
-  切替える。これで gate からも moon が外れる。selfhost が新 emit を使い始めるのは別 commit
-  (bootstrap discipline: 実装と使用開始を分ける)。それまでは gate のみ host 依存。
+**(1b) wiring — 実装済み (本 PR):**
+- adapter `cli_main` に env gate を追加: `VIBE_EMIT_MODULE_SOURCE=1` で同じ
+  (input, output, entry) i/f のまま compile せず `build_module_source_from_source` を書き出す。
+  `runtime/module_source.vibe` を manifest に追加し compiler の一部に。
+- **moon-free 実証済み** (host 隠蔽 + moon stub): emit を cli_main から到達可能にした状態でも
+  seed→stage1→stage2 が自己コンパイル; generation 産の stage2 が merged source に対し emit を
+  host 無しで実行; その (host より lean な) module source が seed→stage1→stage2 + validate を通過
+  してブートストラップ成功。lean なのは host が dead export を残すのに対し selfhost emit は
+  cli_main 到達 + structural のみ残すため (cli_main entry には十分)。
+- **残り (gate flip = bootstrap bump、別 PR)**: freshness gate / `generate_selfhost_bundle.sh`
+  REGEN の既定を host→selfhost compiler に切替えるには、seed が emit を持つ必要がある
+  = seed re-pin (bootstrap bump)。docs/selfhost-bootstrap.md に従い、独立 PR で stage2/stage3・
+  perf/RSS・corpus gate を通してから seed を adopt する。それまで committed prebuilt は
+  host-emitted のままで既存 sync gate を緑に保つ (既定 build は 1a で既に moon-free)。
 
 ### Stage 2 — moon-free な canonical cli wasm の生成 — 検証済み (本 PR)
 - seed (stage0) → stage1 → stage2 を **moon 無し**で回す。Stage 1(1a) の prebuilt module
