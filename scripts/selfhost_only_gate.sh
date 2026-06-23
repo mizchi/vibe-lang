@@ -97,4 +97,34 @@ fi
 rm -rf "$tdir"
 echo "[selfhost-only-gate] test-block regression ok"
 
+# 6. normalize regression (#594): `vibe normalize` (VIBE_NORMALIZE=1) canonicalizes
+#    a source file — module flatten + DCE from exported roots + section layout —
+#    via the in-compiler engine. Guards that a future seed keeps it working and
+#    idempotent. The flat selfbuild source strips imports/modules, so the
+#    fixpoint above does not exercise the normalize entry; assert it directly.
+echo "[selfhost-only-gate] 6/6 normalize compile+run regression"
+ndir="_build/_gate_normalize"
+rm -rf "$ndir"; mkdir -p "$ndir"
+printf 'export module m {\n  let dead: () -> Int = () -> { 0 }\n  let helper: () -> Int = () -> { 1 }\n  export let run: () -> Int = () -> { helper() }\n}\n' > "$ndir/in.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$ndir/in.vibe" "$ndir/out.vibe" >/dev/null 2>&1
+if [ ! -s "$ndir/out.vibe" ]; then
+  echo "[selfhost-only-gate] FAIL: normalize produced no output" >&2; exit 1
+fi
+# `dead` must be eliminated; `m::helper` (reached from the exported `m::run`) kept.
+if grep -q "dead" "$ndir/out.vibe" || ! grep -q "m::helper" "$ndir/out.vibe"; then
+  echo "[selfhost-only-gate] FAIL: normalize DCE/flatten incorrect" >&2
+  cat "$ndir/out.vibe" >&2; exit 1
+fi
+# Idempotency: normalize(normalize(x)) == normalize(x).
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$ndir/out.vibe" "$ndir/out2.vibe" >/dev/null 2>&1
+if ! cmp -s "$ndir/out.vibe" "$ndir/out2.vibe"; then
+  echo "[selfhost-only-gate] FAIL: normalize not idempotent" >&2; exit 1
+fi
+rm -rf "$ndir"
+echo "[selfhost-only-gate] normalize regression ok"
+
 echo "[selfhost-only-gate] ok"

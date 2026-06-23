@@ -1,0 +1,342 @@
+//# `vibe normalize` engine (selfhost vertical slice, #594)
+//#
+//# A canonicalizing source transform built on the compiler's own AST. The first
+//# slice implements the structural pipeline:
+//#
+//#   parse -> flatten modules (`module m { let f }` => `let m::f`)
+//#         -> dead-code elimination from exported roots
+//#         -> drop redundant aggregate `export { .. }` statements
+//#         -> categorize into Imports / Types / Functions / Tests sections
+//#         -> render via the AST printer with section headers + blank lines
+//#
+//# Deferred to follow-ups (the host engine is ~6.6k lines): inline/const fold,
+//# inferred type annotations, decl-separator / labeled-arg quickfixes, and
+//# semver dependency `latest` resolution.
+
+//# Imports
+
+import ../core/ast.vibe {
+  Stmt, TypeExpr
+}
+
+import ../core/dce.vibe {
+  dce_stmts
+}
+
+import ../syntax/index.vibe {
+  lex, parse_program, print_stmt
+}
+
+//# Module flattening
+
+let empty_stmts: () -> Array[Stmt] = () -> {
+  Array::slice([
+    SExport([])
+  ], 0, 0)
+}
+
+let empty_strs: () -> Array[String] = () -> {
+  Array::slice([
+    ""
+  ], 0, 0)
+}
+
+// Prefix a binding name with the enclosing module path (`math` + `helper` =>
+// `math::helper`). Empty prefix leaves the name unchanged.
+let join_module_name: (String, String) -> String = (prefix, name) -> {
+  if prefix == "" {
+    name
+  } else {
+    String::concat(prefix, String::concat("::", name))
+  }
+}
+
+let rec flatten_into: (Array[Stmt], String, Array[Stmt]) -> Int = (stmts, prefix, out) -> {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
+    match stmt {
+      SModule(_, name, body) => {
+        let inner_prefix = join_module_name(prefix, name)
+        let _ = flatten_into(body, inner_prefix, out)
+        0
+      },
+      SLet(exp, is_rec, name, ty, body) => {
+        Array::push(out, SLet(exp, is_rec, join_module_name(prefix, name), ty, body))
+        0
+      },
+      SLetMut(name, ty, body) => {
+        Array::push(out, SLetMut(join_module_name(prefix, name), ty, body))
+        0
+      },
+      SExternLet(name, ty) => {
+        Array::push(out, SExternLet(join_module_name(prefix, name), ty))
+        0
+      },
+      _ => {
+        Array::push(out, stmt)
+        0
+      }
+    }
+    i = i + 1
+  }
+  0
+}
+
+let is_module_stmt: (Stmt) -> Bool = (stmt) -> {
+  match stmt {
+    SModule(_, _, _) => true,
+    _ => false
+  }
+}
+
+//# Exported roots for DCE
+
+// Roots for top-level DCE: exported value bindings, plus any already
+// module-qualified binding (a `m::f` name). Flattening renames a kept module
+// member to `m::f` while leaving its body referencing the short `f`, so a
+// second normalize pass must not drop those by name — keeping all `::` names
+// (module members are live by construction) makes normalize idempotent.
+let exported_value_names: (Array[Stmt]) -> Array[String] = (stmts) -> {
+  let roots = empty_strs()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exp, _, name, _, _) => if exp || String::contains(name, "::") {
+        Array::push(roots, name)
+      },
+      SLetMut(name, _, _) => if String::contains(name, "::") {
+        Array::push(roots, name)
+      },
+      _ => 0
+    }
+    i = i + 1
+  }
+  roots
+}
+
+//# Type-alias DCE: drop non-exported aliases whose name is never referenced.
+
+let rec collect_type_names_into: (TypeExpr, Array[String]) -> Int = (ty, out) -> {
+  match ty {
+    TyName(n) => {
+      Array::push(out, n)
+      0
+    },
+    TyApp(n, args) => {
+      Array::push(out, n)
+      let mut i = 0
+      while i < Array::length(args) {
+        let _ = collect_type_names_into(Array::get(args, i), out)
+        i = i + 1
+      }
+      0
+    },
+    TyFn(params, ret, _) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let _ = collect_type_names_into(Array::get(params, i), out)
+        i = i + 1
+      }
+      let _ = collect_type_names_into(ret, out)
+      0
+    },
+    TyTuple(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        let _ = collect_type_names_into(Array::get(items, i), out)
+        i = i + 1
+      }
+      0
+    },
+    TyUnit => 0
+  }
+}
+
+let collect_opt_type_into: (Option[TypeExpr], Array[String]) -> Int = (ty_opt, out) -> {
+  match ty_opt {
+    Some(ty) => collect_type_names_into(ty, out),
+    None => 0
+  }
+}
+
+// Collect every type-name referenced by a statement.
+let collect_stmt_type_refs_into: (Stmt, Array[String]) -> Int = (stmt, out) -> {
+  match stmt {
+    SLet(_, _, _, ty, _) => collect_opt_type_into(ty, out),
+    SLetMut(_, ty, _) => collect_opt_type_into(ty, out),
+    SExternLet(_, ty) => collect_type_names_into(ty, out),
+    STypeAlias(_, _, _, rhs) => collect_type_names_into(rhs, out),
+    SStruct(_, _, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fty) = Array::get(fields, i)
+        let _ = collect_type_names_into(fty, out)
+        i = i + 1
+      }
+      0
+    },
+    SEnum(_, _, _, ctors) => {
+      let mut i = 0
+      while i < Array::length(ctors) {
+        let (_, args) = Array::get(ctors, i)
+        let mut j = 0
+        while j < Array::length(args) {
+          let _ = collect_type_names_into(Array::get(args, j), out)
+          j = j + 1
+        }
+        i = i + 1
+      }
+      0
+    },
+    SImpl(_, _, _, type_name) => {
+      Array::push(out, type_name)
+      0
+    },
+    _ => 0
+  }
+}
+
+let str_array_has: (Array[String], String) -> Bool = (arr, target) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arr) && !found {
+    if Array::get(arr, i) == target {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+let drop_unused_type_aliases: (Array[Stmt]) -> Array[Stmt] = (stmts) -> {
+  let referenced = empty_strs()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let _ = collect_stmt_type_refs_into(Array::get(stmts, i), referenced)
+    i = i + 1
+  }
+  let result = empty_stmts()
+  let mut k = 0
+  while k < Array::length(stmts) {
+    let stmt = Array::get(stmts, k)
+    let keep = match stmt {
+      STypeAlias(exp, name, _, _) => exp || str_array_has(referenced, name),
+      _ => true
+    }
+    if keep {
+      Array::push(result, stmt)
+    }
+    k = k + 1
+  }
+  result
+}
+
+//# Categorize + render
+
+// 0 = import, 1 = type/structural, 2 = function/value, 3 = test/bench,
+// 9 = drop (aggregate export / bare expression).
+let stmt_section: (Stmt) -> Int = (stmt) -> {
+  match stmt {
+    SImport(_, _) => 0,
+    SReExport(_, _) => 0,
+    SAliasDecl(_, _) => 0,
+    SEnum(_, _, _, _) => 1,
+    SSuberror(_, _, _) => 1,
+    SStruct(_, _, _) => 1,
+    STypeAlias(_, _, _, _) => 1,
+    STrait(_, _, _) => 1,
+    SImpl(_, _, _, _) => 1,
+    SEffectDef(_, _, _, _) => 1,
+    SExternLet(_, _) => 1,
+    SLet(_, _, _, _, _) => 2,
+    SLetMut(_, _, _) => 2,
+    SLetPat(_, _) => 2,
+    STest(_, _) => 3,
+    SBench(_, _) => 3,
+    SExport(_) => 9,
+    SExpr(_) => 9,
+    _ => 9
+  }
+}
+
+let section_header: (Int) -> String = (section) -> {
+  if section == 0 {
+    "//# Imports"
+  } else if section == 1 {
+    "//# Types"
+  } else if section == 2 {
+    "//# Functions"
+  } else {
+    "//# Tests"
+  }
+}
+
+// Render all statements in one section (already filtered) joined by blank lines,
+// prefixed by the section header. Returns "" when the section is empty.
+let render_section: (Array[Stmt], Int) -> String = (stmts, section) -> {
+  let parts = empty_strs()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
+    if stmt_section(stmt) == section {
+      Array::push(parts, print_stmt(stmt))
+    }
+    i = i + 1
+  }
+  if Array::length(parts) == 0 {
+    ""
+  } else {
+    let body = String::join(parts, "\n\n")
+    String::concat(section_header(section), String::concat("\n\n", body))
+  }
+}
+
+// DCE is name-based, so it must run while module members still carry their
+// short names (a body says `helper()`, not `math::helper()`). We therefore DCE
+// each scope before flattening renames its bindings:
+//   - top-level non-module decls are DCE'd against the exported top-level roots;
+//   - each module body is DCE'd against its own exported members, then renamed.
+export let normalize_stmts: (Array[Stmt]) -> Array[Stmt] = (stmts) -> {
+  let nonmods = empty_stmts()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
+    if !is_module_stmt(stmt) {
+      Array::push(nonmods, stmt)
+    }
+    i = i + 1
+  }
+  let result = empty_stmts()
+  let live_top = dce_stmts(nonmods, exported_value_names(nonmods))
+  Array::push_all(result, live_top)
+  let mut m = 0
+  while m < Array::length(stmts) {
+    match Array::get(stmts, m) {
+      SModule(_, name, body) => {
+        let live_body = dce_stmts(body, exported_value_names(body))
+        let _ = flatten_into(live_body, name, result)
+        0
+      },
+      _ => 0
+    }
+    m = m + 1
+  }
+  drop_unused_type_aliases(result)
+}
+
+export let normalize_source: (String) -> String with { Error } = (src) -> {
+  let stmts = parse_program(lex(src))
+  let kept = normalize_stmts(stmts)
+  let sections = empty_strs()
+  let mut s = 0
+  while s <= 3 {
+    let rendered = render_section(kept, s)
+    if rendered != "" {
+      Array::push(sections, rendered)
+    }
+    s = s + 1
+  }
+  String::concat(String::join(sections, "\n\n"), "\n")
+}
