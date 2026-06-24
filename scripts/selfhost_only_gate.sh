@@ -175,4 +175,38 @@ fi
 rm -rf "$pdir"
 echo "[selfhost-only-gate] literal sub-pattern regression ok"
 
+# 8. labeled-param round-trip regression (#604): normalizing a function with
+#    labeled (`x~`) / optional (`x?`) parameters must preserve the parameter
+#    names (previously they printed as numeric gensyms via a mis-serialized
+#    string-interpolation) and the result must still compile + run.
+echo "[selfhost-only-gate] 8/8 labeled-param round-trip regression"
+ldir="_build/_gate_labeled"
+rm -rf "$ldir"; mkdir -p "$ldir"
+printf 'let sum: (x~: Int, y~: Int) -> Int = (x~, y~) -> { x + y }\nexport let run: () -> Int = () -> { sum(x=1, y=2) }\nexport { run }\n' > "$ldir/in.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$ldir/in.vibe" "$ldir/out.vibe" >/dev/null 2>&1
+if [ ! -s "$ldir/out.vibe" ]; then
+  echo "[selfhost-only-gate] FAIL: labeled-param normalize produced no output" >&2; exit 1
+fi
+# Param names must survive verbatim; a digit before `~` means the gensym bug is back.
+if ! grep -q "(x~, y~)" "$ldir/out.vibe" || grep -Eq "[0-9]+~" "$ldir/out.vibe"; then
+  echo "[selfhost-only-gate] FAIL: labeled param names mangled (#604 regressed)" >&2
+  cat "$ldir/out.vibe" >&2; exit 1
+fi
+# The normalized output must still compile + run.
+cp "$ldir/out.vibe" "$ldir/compile.vibe"
+printf '\nexport let _start: () -> Int = () -> { run() }\n' >> "$ldir/compile.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$ldir/compile.vibe" "$ldir/out.wasm" _start >/dev/null 2>&1
+labeled_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$ldir/out.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$labeled_out" != "3" ]; then
+  echo "[selfhost-only-gate] FAIL: normalized labeled-param output did not compile/run to 3 (got '$labeled_out')" >&2
+  cat "$ldir/compile.vibe" >&2; exit 1
+fi
+rm -rf "$ldir"
+echo "[selfhost-only-gate] labeled-param round-trip regression ok"
+
 echo "[selfhost-only-gate] ok"
