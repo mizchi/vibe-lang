@@ -1,5 +1,55 @@
 # Coverage strategy (MoonBit + WASM)
 
+> **Status (selfhost-only):** MoonBit host が退役 (#594) したため、下記 1)
+> `coverage-moon` と 2) `coverage-deno` は `src/` 依存で **動かない**（driver
+> script も削除済み）。3) の vibe ソース span coverage も計測側
+> (`vibe compile --coverage`) が MoonBit host 専用で、selfhost には移植され
+> ていない。**現在 selfhost で動くのは下記「0) selfhost コンパイラの関数
+> カバレッジ」**。1〜3 は歴史的経緯として残す。
+
+## 0) selfhost コンパイラの関数カバレッジ（#cov, selfhost-only で動く）
+
+コンパイラ自身を **計測ビルド**して、ワークロード実行時にどの compiler
+関数が呼ばれたかを集計する。MoonBit host 不要（committed seed + node runner）。
+
+```bash
+scripts/coverage_selfhost_fn.sh                  # 既定: コンパイラの self-compile を計測
+scripts/coverage_selfhost_fn.sh path/to/foo.vibe # foo.vibe をコンパイルする経路を計測 (FS mode)
+VIBE_COV_SHOW_MISSED=1 scripts/coverage_selfhost_fn.sh   # 未実行関数も列挙
+```
+
+仕組み:
+- `VIBE_COVERAGE=1` でコンパイルすると、codegen が各 user 関数の入口に
+  「ヒットフラグを 1 立てる」store を挿入し（heap 直下の予約領域に 1 byte/関数
+  の bitmap）、`vibe_cov` custom section に `cov_base` / `cov_count` / 関数名を
+  埋め込む。
+- この計測コンパイラを実行 → bitmap が埋まる → runner が `VIBE_COV_OUT` 指定時に
+  memory の bitmap を読み、関数名と突き合わせて report.json を出力。
+- `VIBE_COVERAGE` を立てない通常ビルドは **byte 単位で従来と同一**（gate の
+  stage2==stage3 fixpoint で担保）。計測は bootstrap に影響しない。
+
+生成物 (`_build/coverage/selfhost-fn/`):
+- `compiler_cov.wasm` — 計測コンパイラ
+- `report.json` — `{total, hit, missed, rate, hit_fns[], missed_fns[]}`
+
+環境変数:
+- `VIBE_COV_SEED` (計測ビルドに使う seed; 既定は committed seed)
+- `VIBE_COV_DIR` (出力先)
+- `VIBE_COV_SHOW_MISSED` (`1` で未実行関数を表示)
+
+低レベル API:
+- `VIBE_COVERAGE=1 cli_main <src> <out.wasm> <entry>` — 計測 wasm を生成
+- `VIBE_COV_OUT=<report.json>` を runner に渡すと、実行後に bitmap を dump
+
+粒度は関数レベル（line/branch ではない）。AST がソース位置を保持しないため
+line/branch は span 配線が前提で別途実装が必要。関数レベルでも「未到達・
+未テスト経路の検出」には十分有効（例: dead な `__to_string` inline path のような
+穴は missed_fns に現れる）。
+
+---
+
+以下は MoonBit host 時代の coverage（歴史的経緯、現在は動かない）。
+
 このプロジェクトでは coverage を 3 つに分けて測る。
 
 1. MoonBit 本体コードの行カバレッジ

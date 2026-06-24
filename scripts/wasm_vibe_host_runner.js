@@ -710,6 +710,50 @@ function parseVibeAbiMetadata(wasmBytes) {
   return null;
 }
 
+// #cov: parse the `vibe_cov` custom section emitted by coverage builds.
+// Payload layout: i32 LE cov_base, i32 LE cov_count, then user-function names
+// (one per line, in bitmap-index order). Returns {base, count, names} or null.
+function parseVibeCovSection(wasmBytes) {
+  const buf = Buffer.from(wasmBytes);
+  if (
+    buf.length < 8 ||
+    buf[0] !== 0x00 ||
+    buf[1] !== 0x61 ||
+    buf[2] !== 0x73 ||
+    buf[3] !== 0x6d
+  ) {
+    return null;
+  }
+  let pos = 8;
+  while (pos < buf.length) {
+    const sectionId = buf[pos++];
+    const sectionLenInfo = readUlebAt(buf, pos);
+    pos = sectionLenInfo.next;
+    const sectionEnd = pos + sectionLenInfo.value;
+    if (sectionEnd > buf.length) {
+      break;
+    }
+    if (sectionId === 0) {
+      const nameLenInfo = readUlebAt(buf, pos, sectionEnd);
+      const nameStart = nameLenInfo.next;
+      const nameEnd = nameStart + nameLenInfo.value;
+      const name = buf.slice(nameStart, nameEnd).toString("utf8");
+      if (name === "vibe_cov" && nameEnd + 8 <= sectionEnd) {
+        const base = buf.readUInt32LE(nameEnd);
+        const count = buf.readUInt32LE(nameEnd + 4);
+        const namesText = buf.slice(nameEnd + 8, sectionEnd).toString("utf8");
+        const names = namesText.split("\n");
+        if (names.length && names[names.length - 1] === "") {
+          names.pop();
+        }
+        return { base, count, names };
+      }
+    }
+    pos = sectionEnd;
+  }
+  return null;
+}
+
 function normalizeHostImportAbi(value) {
   if (value === "raw" || value === "tagged") {
     return value;
@@ -2182,6 +2226,40 @@ async function main() {
   }
   const { result, isSelfhost } = runInvokes(passthroughArgs);
   emitWasmMemoryStats("run");
+  // #cov: after running an instrumented build, dump the per-function hit bitmap
+  // (read live from memory at cov_base) keyed by the `vibe_cov` section names.
+  const covOut = process.env.VIBE_COV_OUT;
+  if (covOut) {
+    const cov = parseVibeCovSection(wasmBytes);
+    const mem = instanceRefGlobal?.exports?.memory;
+    if (cov && mem) {
+      const bytes = new Uint8Array(mem.buffer);
+      const hitFns = [];
+      const missedFns = [];
+      for (let i = 0; i < cov.count; i += 1) {
+        const nm = cov.names[i] ?? `#${i}`;
+        if (bytes[cov.base + i]) {
+          hitFns.push(nm);
+        } else {
+          missedFns.push(nm);
+        }
+      }
+      const report = {
+        total: cov.count,
+        hit: hitFns.length,
+        missed: missedFns.length,
+        rate: cov.count ? hitFns.length / cov.count : 0,
+        missed_fns: missedFns,
+        hit_fns: hitFns,
+      };
+      fs.writeFileSync(covOut, `${JSON.stringify(report, null, 2)}\n`);
+      console.error(
+        `[vibe-cov] ${hitFns.length}/${cov.count} functions hit (${(report.rate * 100).toFixed(2)}%) -> ${covOut}`,
+      );
+    } else {
+      console.error("[vibe-cov] no vibe_cov section or memory; not a coverage build?");
+    }
+  }
   const invoke = invokes[invokes.length - 1];
   emitResult(invoke, result, isSelfhost);
   if (invoke === "cli_main" || process.env.VIBE_RUNNER_EXIT_WITH_RESULT === "1") {

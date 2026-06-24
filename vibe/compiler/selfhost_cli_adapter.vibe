@@ -1,7 +1,7 @@
 //# Imports
 
 import ./entry / source_compile / wasi_only / preprocess.vibe {
-  compile_source_wasi_only, compile_source_wasi_only_rc
+  compile_source_wasi_only, compile_source_wasi_only_coverage, compile_source_wasi_only_rc
 }
 
 import ./runtime / module_source.vibe {
@@ -96,7 +96,13 @@ export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
     // path (Env::get returns "" when unset, so default stays the bump path). Lets
     // the selfbuild/bootstrap/e2e gates exercise the whole compiler under RC.
     let rc_flag = Env::get("VIBE_RC")
-    let bytes = compile_source_for_rc_flag(source, entry_name, rc_flag)
+    // #cov: function-level coverage build (same source pipeline, instrumented
+    // codegen). Running the produced wasm records which compiler functions ran.
+    let bytes = if Env::get("VIBE_COVERAGE") == "1" {
+      compile_source_wasi_only_coverage(source, entry_name)
+    } else {
+      compile_source_for_rc_flag(source, entry_name, rc_flag)
+    }
     profile_memory_mark(mark_memory)
     Fs::write_bytes(output_path, bytes)
     profile_memory_mark(mark_memory)

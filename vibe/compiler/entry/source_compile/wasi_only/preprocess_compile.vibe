@@ -5,7 +5,7 @@ import .. / .. / .. / checker / checker_stmt.vibe {
 }
 
 import .. / .. / .. / codegen / wasi {
-  compile_wasi_module_impl, compile_wasi_module_rc_impl
+  compile_wasi_module_impl, compile_wasi_module_coverage_impl, compile_wasi_module_rc_impl
 }
 
 import .. / .. / .. / syntax / lexer.vibe {
@@ -99,6 +99,19 @@ export let compile_source_wasi_only: (String, String) -> Bytes with { Error } = 
   let wrap_async = (entry_name == "run") && entry_declares_async_int(stmts, entry_name)
   strip_generic_type_params(stmts)
   maybe_wrap_async_component(compile_wasi_module_impl(stmts, entry_name), wrap_async)
+}
+
+// Coverage (#cov): same source pipeline as compile_source_wasi_only but routes
+// through the coverage codegen, so compiling the flat compiler source under
+// VIBE_COVERAGE=1 yields an instrumented compiler (per-function hit bitmap +
+// `vibe_cov` section).
+export let compile_source_wasi_only_coverage: (String, String) -> Bytes with { Error } = (source, entry_name) -> {
+  let tokens = lex(source)
+  let stmts = parse_program(tokens)
+  expand_interp_stmts(stmts)
+  let _ = check_program(stmts)
+  strip_generic_type_params(stmts)
+  compile_wasi_module_coverage_impl(stmts, entry_name)
 }
 
 // ADR-0055 #493 cutover: same pipeline on the Perceus RC codegen path. Lets the

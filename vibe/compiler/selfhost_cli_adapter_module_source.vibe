@@ -16304,7 +16304,7 @@ export let wasi_memory_min_pages_for_heap: (Int) -> Int = (heap_start) -> {
     default_wasi_memory_min_pages
   }
 }
-export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String, String)], Array[(String, String, Int, Int)], Bool, Bool) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, linked_imports, library_mode, enable_rc) -> {
+export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String, String)], Array[(String, String, Int, Int)], Bool, Bool, Bool) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, linked_imports, library_mode, enable_rc, coverage) -> {
   let fn_names_list = lc_fresh_string_array()
   let fn_param_counts = lc_fresh_int_array()
   let fn_needs_env_list = lc_fresh_bool_array()
@@ -16591,6 +16591,13 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     eff_collect_i = eff_collect_i + 1
   }
   let eff_reserve = (Array::length(effect_names_list) + 1) * 131072
+  let cov_count = num_user_funcs
+  let cov_base = heap_start + eff_reserve
+  let cov_reserve = if coverage {
+    ((cov_count + 7) / 8) * 8
+  } else {
+    0
+  }
   let need_env_get_builtin = stmts_use_builtin(stmts, fn_names_list, "Env::get")
   let need_env_args_len_builtin = stmts_use_builtin(stmts, fn_names_list, "Env::args_len")
   let need_env_args_get_builtin = stmts_use_builtin(stmts, fn_names_list, "Env::args_get")
@@ -17344,6 +17351,13 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     let __bi_stmt = Array::get(stmts, Array::get(fn_stmt_indices, bi))
     let __bi_expr = get_slet_expr(__bi_stmt)
     let body_buf = bytebuf_new()
+    if coverage {
+      emit_i32_const(body_buf, cov_base + bi)
+      emit_i32_const(body_buf, 1)
+      emit_i32_store8(body_buf, 0, 0)
+    } else {
+      ()
+    }
     let local_names = lc_fresh_string_array()
     let fn_name_dbg = Array::get(fn_names_list, bi)
     let rc_drops = Array::slice([
@@ -17770,6 +17784,39 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   let out = bytebuf_new()
   emit_header(out)
   emit_vibe_abi_custom_section(out, "raw")
+  if coverage {
+    let cov_content = bytebuf_new()
+    let cov_name = "vibe_cov"
+    leb128_encode_u32(cov_content, String::length(cov_name))
+    let mut cni = 0
+    while cni < String::length(cov_name) {
+      bytebuf_push(cov_content, String::char_code_at(cov_name, cni))
+      cni = cni + 1
+    }
+    bytebuf_push(cov_content, cov_base & 255)
+    bytebuf_push(cov_content, (cov_base >> 8) & 255)
+    bytebuf_push(cov_content, (cov_base >> 16) & 255)
+    bytebuf_push(cov_content, (cov_base >> 24) & 255)
+    bytebuf_push(cov_content, cov_count & 255)
+    bytebuf_push(cov_content, (cov_count >> 8) & 255)
+    bytebuf_push(cov_content, (cov_count >> 16) & 255)
+    bytebuf_push(cov_content, (cov_count >> 24) & 255)
+    let mut covni = 0
+    while covni < num_user_funcs {
+      let covnm = Array::get(fn_names_list, covni)
+      let covnml = String::length(covnm)
+      let mut covci = 0
+      while covci < covnml {
+        bytebuf_push(cov_content, String::char_code_at(covnm, covci))
+        covci = covci + 1
+      }
+      bytebuf_push(cov_content, 10)
+      covni = covni + 1
+    }
+    bytebuf_push_section(out, 0, cov_content)
+  } else {
+    ()
+  }
   bytebuf_push_section(out, 1, type_content)
   let import_content = bytebuf_new()
   bytebuf_push_vec_header(import_content, num_imported_funcs)
@@ -17920,7 +17967,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   if total_table_entries > 0 {
     emit_table_section_funcref(out, total_table_entries)
   }
-  emit_memory_section(out, wasi_memory_min_pages_for_heap(heap_start + eff_reserve))
+  emit_memory_section(out, wasi_memory_min_pages_for_heap(heap_start + eff_reserve + cov_reserve))
   let tag_content = bytebuf_new()
   let num_tags = Array::length(effect_names_list) + 4
   bytebuf_push_vec_header(tag_content, num_tags)
@@ -17939,7 +17986,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   }
   bytebuf_push(global_content, 127)
   bytebuf_push(global_content, 1)
-  emit_i32_const(global_content, heap_start + eff_reserve)
+  emit_i32_const(global_content, heap_start + eff_reserve + cov_reserve)
   emit_end(global_content)
   bytebuf_push(global_content, 126)
   bytebuf_push(global_content, 1)
@@ -18082,20 +18129,31 @@ export let compile_wasi_module_rc_impl: (Array[Stmt], String) -> Bytes with { Er
     ("", "")
   ], 0, 0), Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, true)
+  ], 0, 0), false, true, false)
 }
 export let compile_wasi_module_with_sources_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
   compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, false)
+  ], 0, 0), false, false, false)
+}
+export let compile_wasi_module_with_sources_coverage_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
+  compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
+    ("", "", 0, 0)
+  ], 0, 0), false, false, true)
 }
 export {
   compile_wasi_module_linked_impl,
   compile_wasi_module_with_sources_impl,
+  compile_wasi_module_with_sources_coverage_impl,
   compile_wasi_module_rc_impl
 }
 export let compile_wasi_module_impl: (Array[Stmt], String) -> Bytes with { Error } = (stmts, entry_name) -> {
   compile_wasi_module_with_sources_impl(stmts, entry_name, Array::slice([
+    ("", "")
+  ], 0, 0))
+}
+export let compile_wasi_module_coverage_impl: (Array[Stmt], String) -> Bytes with { Error } = (stmts, entry_name) -> {
+  compile_wasi_module_with_sources_coverage_impl(stmts, entry_name, Array::slice([
     ("", "")
   ], 0, 0))
 }
@@ -22956,6 +23014,14 @@ export let compile_source_wasi_only: (String, String) -> Bytes with { Error } = 
   strip_generic_type_params(stmts)
   maybe_wrap_async_component(compile_wasi_module_impl(stmts, entry_name), wrap_async)
 }
+export let compile_source_wasi_only_coverage: (String, String) -> Bytes with { Error } = (source, entry_name) -> {
+  let tokens = lex(source)
+  let stmts = parse_program(tokens)
+  expand_interp_stmts(stmts)
+  let _ = check_program(stmts)
+  strip_generic_type_params(stmts)
+  compile_wasi_module_coverage_impl(stmts, entry_name)
+}
 export let compile_source_wasi_only_rc: (String, String) -> Bytes with { Error } = (source, entry_name) -> {
   let tokens = lex(source)
   let stmts = parse_program(tokens)
@@ -22966,7 +23032,7 @@ export let compile_source_wasi_only_rc: (String, String) -> Bytes with { Error }
   maybe_wrap_async_component(compile_wasi_module_rc_impl(stmts, entry_name), wrap_async)
 }
 export {
-  expand_interp_stmts, compile_source_wasi_only, compile_source_wasi_only_rc, strip_generic_type_params
+  expand_interp_stmts, compile_source_wasi_only, compile_source_wasi_only_coverage, compile_source_wasi_only_rc, strip_generic_type_params
 }
 let join: (Array[String], String) -> String = (arr, sep) -> {
   let len = Array::length(arr)
@@ -28923,7 +28989,11 @@ export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
     0
   } else {
     let rc_flag = Env::get("VIBE_RC")
-    let bytes = compile_source_for_rc_flag(source, entry_name, rc_flag)
+    let bytes = if Env::get("VIBE_COVERAGE") == "1" {
+      compile_source_wasi_only_coverage(source, entry_name)
+    } else {
+      compile_source_for_rc_flag(source, entry_name, rc_flag)
+    }
     profile_memory_mark(mark_memory)
     Fs::write_bytes(output_path, bytes)
     profile_memory_mark(mark_memory)
