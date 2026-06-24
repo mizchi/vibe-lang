@@ -209,4 +209,32 @@ fi
 rm -rf "$ldir"
 echo "[selfhost-only-gate] labeled-param round-trip regression ok"
 
+# 9. constant-folding regression (#594): `vibe normalize` folds `+ - *` over int
+#    literals. The folded value must replace the expression and the result must
+#    compile + run unchanged.
+echo "[selfhost-only-gate] 9/9 constant-folding regression"
+fdir="_build/_gate_fold"
+rm -rf "$fdir"; mkdir -p "$fdir"
+printf 'let x = 40 + 2 * 10\nexport let run: () -> Int = () -> { x }\nexport { run }\n' > "$fdir/in.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$fdir/in.vibe" "$fdir/out.vibe" >/dev/null 2>&1
+# 40 + 2*10 = 60; the arithmetic must be gone and `60` present.
+if ! grep -q "let x = 60" "$fdir/out.vibe" || grep -q "40 + 2" "$fdir/out.vibe"; then
+  echo "[selfhost-only-gate] FAIL: constant folding incorrect" >&2
+  cat "$fdir/out.vibe" >&2; exit 1
+fi
+cp "$fdir/out.vibe" "$fdir/compile.vibe"
+printf '\nexport let _start: () -> Int = () -> { run() }\n' >> "$fdir/compile.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$fdir/compile.vibe" "$fdir/out.wasm" _start >/dev/null 2>&1
+fold_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$fdir/out.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$fold_out" != "60" ]; then
+  echo "[selfhost-only-gate] FAIL: folded program did not run to 60 (got '$fold_out')" >&2; exit 1
+fi
+rm -rf "$fdir"
+echo "[selfhost-only-gate] constant-folding regression ok"
+
 echo "[selfhost-only-gate] ok"
