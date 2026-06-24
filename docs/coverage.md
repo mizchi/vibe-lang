@@ -81,6 +81,35 @@ per-workload 内訳 + union 結果（`per_fn` / `top_gaps`）が出る。
 異なるのでマージ不可。runner 側は `VIBE_COV_RAW=1` のとき report に id 単位の
 bitmap（`raw.fn_bitmap` / `raw.branch_bitmap` + 静的な name/owner 表）を足す。
 
+#### コーパス（大量プログラム）でのマージ
+
+`coverage_selfhost_merge.sh` の固定 3 ワークロードでは分岐 ~56% で頭打ちになる。
+`coverage_selfhost_corpus.sh` は 1 つの計測コンパイラを **多数の .vibe**
+（`examples/` `fixtures/` `vibe/prelude/`）に対して compile / normalize / rc で
+走らせ、全 run を union する。
+
+```bash
+scripts/coverage_selfhost_corpus.sh                 # 既定: examples fixtures
+VIBE_COV_MAX=200 scripts/coverage_selfhost_corpus.sh
+VIBE_COV_SHOW_BRANCH_GAPS=1 scripts/coverage_selfhost_corpus.sh
+```
+
+実測（669 ファイル + base self-compile + RC-stress）:
+**関数 929/1174 (79.1%)・分岐 4024/6679 (60.3%)**。`_build/coverage/selfhost-corpus/`
+に `acc.json`（running union）/ `merged.json` / `fails.txt`。
+
+注意点（ドッグフーディングで判明）:
+- **計測対象は「コンパイル」のみ**。生成された wasm を実行しても、それは別の
+  （非計測）バイナリなので計測コンパイラのカバレッジは増えない。
+- 失敗ファイルは bitmap を残さない（失敗 compile は寄与 0）。**エントリ名は
+  ファイルに実在するものを選ぶ**こと（test ファイルは sentinel → `_start`）。
+  この修正前は test ファイルが軒並み main 解決に失敗し寄与 0 だった。
+- bump モード（既定）は Perceus（`pc_*`/`elaborate_rw`）を踏まないので、
+  heap-heavy な小プログラムを `VIBE_RC=1` で別途 compile する RC-stress を含める。
+- 残ギャップの上位はエラー経路（`check_expr`/`unify`/`tk_name` 等の防御分岐）と
+  trait/cache の未踏経路。trait モジュールの単体 FS-compile は trap するため、
+  実テストスイート全体での計測は別途 FS-path 修正が要る（既知の制約）。
+
 仕組み:
 - `VIBE_COVERAGE=1` でコンパイルすると、codegen が
   - 各 user 関数の入口に「ヒットフラグを 1 立てる」store を挿入し（heap 直下の
