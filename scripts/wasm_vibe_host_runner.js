@@ -754,6 +754,45 @@ function parseVibeCovSection(wasmBytes) {
   return null;
 }
 
+// #cov branch: parse the `vibe_cov_branch` custom section. Payload: i32 LE base,
+// i32 LE count, then count i32 LE owning-function-index entries (id order).
+// Returns {base, count, owners:[fnIndex...]} or null.
+function parseVibeCovBranchSection(wasmBytes) {
+  const buf = Buffer.from(wasmBytes);
+  if (buf.length < 8 || buf[0] !== 0x00 || buf[1] !== 0x61 || buf[2] !== 0x73 || buf[3] !== 0x6d) {
+    return null;
+  }
+  let pos = 8;
+  while (pos < buf.length) {
+    const sectionId = buf[pos++];
+    const sectionLenInfo = readUlebAt(buf, pos);
+    pos = sectionLenInfo.next;
+    const sectionEnd = pos + sectionLenInfo.value;
+    if (sectionEnd > buf.length) {
+      break;
+    }
+    if (sectionId === 0) {
+      const nameLenInfo = readUlebAt(buf, pos, sectionEnd);
+      const nameStart = nameLenInfo.next;
+      const nameEnd = nameStart + nameLenInfo.value;
+      const name = buf.slice(nameStart, nameEnd).toString("utf8");
+      if (name === "vibe_cov_branch" && nameEnd + 8 <= sectionEnd) {
+        const base = buf.readUInt32LE(nameEnd);
+        const count = buf.readUInt32LE(nameEnd + 4);
+        const owners = [];
+        let p = nameEnd + 8;
+        for (let i = 0; i < count && p + 4 <= sectionEnd; i += 1) {
+          owners.push(buf.readUInt32LE(p));
+          p += 4;
+        }
+        return { base, count, owners };
+      }
+    }
+    pos = sectionEnd;
+  }
+  return null;
+}
+
 function normalizeHostImportAbi(value) {
   if (value === "raw" || value === "tagged") {
     return value;
@@ -2252,9 +2291,47 @@ async function main() {
         missed_fns: missedFns,
         hit_fns: hitFns,
       };
+      // #cov branch: if a vibe_cov_branch section is present, attribute each
+      // branch hit/miss to its owning function and add branch totals + a
+      // per-function breakdown to the report.
+      const covb = parseVibeCovBranchSection(wasmBytes);
+      if (covb) {
+        let bhit = 0;
+        const perFn = new Map();
+        for (let i = 0; i < covb.count; i += 1) {
+          const owner = covb.owners[i] ?? -1;
+          const fnName = cov.names[owner] ?? `#${owner}`;
+          const hit = bytes[covb.base + i] ? 1 : 0;
+          bhit += hit;
+          const e = perFn.get(fnName) ?? { total: 0, hit: 0 };
+          e.total += 1;
+          e.hit += hit;
+          perFn.set(fnName, e);
+        }
+        const branchPerFn = {};
+        const branchGaps = [];
+        for (const [fn, e] of perFn) {
+          branchPerFn[fn] = e;
+          if (e.hit < e.total) {
+            branchGaps.push({ fn, taken: e.hit, total: e.total });
+          }
+        }
+        branchGaps.sort((a, b) => (b.total - b.taken) - (a.total - a.taken));
+        report.branch = {
+          total: covb.count,
+          hit: bhit,
+          missed: covb.count - bhit,
+          rate: covb.count ? bhit / covb.count : 0,
+          per_fn: branchPerFn,
+          top_gaps: branchGaps.slice(0, 50),
+        };
+      }
       fs.writeFileSync(covOut, `${JSON.stringify(report, null, 2)}\n`);
+      const branchMsg = report.branch
+        ? `, ${report.branch.hit}/${report.branch.total} branches taken (${(report.branch.rate * 100).toFixed(2)}%)`
+        : "";
       console.error(
-        `[vibe-cov] ${hitFns.length}/${cov.count} functions hit (${(report.rate * 100).toFixed(2)}%) -> ${covOut}`,
+        `[vibe-cov] ${hitFns.length}/${cov.count} functions hit (${(report.rate * 100).toFixed(2)}%)${branchMsg} -> ${covOut}`,
       );
     } else {
       console.error("[vibe-cov] no vibe_cov section or memory; not a coverage build?");

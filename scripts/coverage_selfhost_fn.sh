@@ -61,14 +61,22 @@ fi
 [ -s "$REPORT" ] || { echo "coverage_selfhost_fn: no report produced" >&2; exit 1; }
 
 # 3. Summarize.
-python3 - "$REPORT" "${VIBE_COV_SHOW_MISSED:-0}" <<'PY'
+python3 - "$REPORT" "${VIBE_COV_SHOW_MISSED:-0}" "${VIBE_COV_SHOW_BRANCH_GAPS:-0}" <<'PY'
 import json, sys
 r = json.load(open(sys.argv[1]))
 show_missed = sys.argv[2] == "1"
+show_branch_gaps = sys.argv[3] == "1"
 print(f"[coverage_selfhost_fn] {r['hit']}/{r['total']} functions hit ({r['rate']*100:.2f}%), {r['missed']} missed")
+b = r.get("branch")
+if b:
+    print(f"[coverage_selfhost_fn] {b['hit']}/{b['total']} branches taken ({b['rate']*100:.2f}%), {b['missed']} not taken")
 if show_missed:
     print("missed functions:")
     for nm in r["missed_fns"]:
         print(f"  {nm}")
+if show_branch_gaps and b:
+    print("top functions with untaken branches:")
+    for g in b["top_gaps"]:
+        print(f"  {g['fn']}: {g['taken']}/{g['total']} taken")
 PY
 echo "[coverage_selfhost_fn] report: $REPORT" >&2

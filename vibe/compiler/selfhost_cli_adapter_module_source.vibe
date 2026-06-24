@@ -8478,6 +8478,30 @@ export struct CtorTable {
   struct_names: Array[String];
   struct_field_names: Array[Array[String]]
 }
+export struct CovState {
+  enabled: Bool;
+  base: Int;
+  cap: Int;
+  next: Array[Int];
+  cur_fn: Array[Int];
+  owners: Array[Int]
+}
+export let cov_emit_branch: (Bytes, CovState) -> Unit = (buf, cov) -> {
+  if cov.enabled {
+    let id = Array::get(cov.next, 0)
+    if id < cov.cap {
+      Array::set(cov.next, 0, id + 1)
+      Array::push(cov.owners, Array::get(cov.cur_fn, 0))
+      emit_i32_const(buf, cov.base + id)
+      emit_i32_const(buf, 1)
+      emit_i32_store8(buf, 0, 0)
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+}
 export struct CompileCtx {
   func_table: FuncTable;
   str_table: StrTable;
@@ -8500,7 +8524,8 @@ export struct CompileCtx {
   float_local_slots: Array[Int];
   effect_names: Array[String];
   effect_op_keys: Array[String];
-  effect_op_arities: Array[Int]
+  effect_op_arities: Array[Int];
+  cov: CovState
 }
 export struct CompileCtxGc {
   func_table: FuncTable;
@@ -11967,7 +11992,8 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
     ], 0, 0),
     effect_names: ctx.effect_names,
     effect_op_keys: ctx.effect_op_keys,
-    effect_op_arities: ctx.effect_op_arities
+    effect_op_arities: ctx.effect_op_arities,
+    cov: ctx.cov
   }
   if ctx.enable_rc {
     let mut dpi = 0
@@ -12330,6 +12356,7 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
         }
       }
     }
+    cov_emit_branch(buf, ctx.cov)
     let ld_arm = if ld >= 0 {
       ld + ai + 1
     } else {
@@ -12427,6 +12454,11 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
     let __catch_arm = Array::get(__match_arms, catchall_idx)
     let (__catch_p, __catch_body) = __catch_arm
     0
+    if num_cond_arms > 0 {
+      cov_emit_branch(buf, ctx.cov)
+    } else {
+      ()
+    }
     if is_pbind(__catch_p) {
       let bname = get_pbind_name(__catch_p)
       let bind_local = Array::length(local_names)
@@ -16191,9 +16223,11 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
       -1
     }
     let names_len_before = Array::length(local_names)
+    cov_emit_branch(buf, ctx.cov)
     let nl2 = compile_expr(buf, then_e, local_names, nl1, ctx, ld_inner)
     emit_else(buf)
     Array::truncate(local_names, names_len_before)
+    cov_emit_branch(buf, ctx.cov)
     let nl3 = compile_expr(buf, else_e, local_names, nl1, ctx, ld_inner)
     emit_end(buf)
     let max_nl_if = if nl2 > nl3 {
@@ -16597,6 +16631,25 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     ((cov_count + 7) / 8) * 8
   } else {
     0
+  }
+  let cov_branch_cap = 65536
+  let cov_branch_base = cov_base + cov_reserve
+  let cov_branch_reserve = if coverage {
+    cov_branch_cap
+  } else {
+    0
+  }
+  let cov_state = CovState::{
+    enabled: coverage,
+    base: cov_branch_base,
+    cap: cov_branch_cap,
+    next: [
+      0
+    ],
+    cur_fn: [
+      0
+    ],
+    owners: ArrayBuilder::freeze(ArrayBuilder::new())
   }
   let need_env_get_builtin = stmts_use_builtin(stmts, fn_names_list, "Env::get")
   let need_env_args_len_builtin = stmts_use_builtin(stmts, fn_names_list, "Env::args_len")
@@ -17355,6 +17408,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       emit_i32_const(body_buf, cov_base + bi)
       emit_i32_const(body_buf, 1)
       emit_i32_store8(body_buf, 0, 0)
+      Array::set(cov_state.cur_fn, 0, bi)
     } else {
       ()
     }
@@ -17487,7 +17541,8 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       float_local_slots: lc_fresh_int_array(),
       effect_names: effect_names_list,
       effect_op_keys: effect_op_keys_list,
-      effect_op_arities: effect_op_arities_list
+      effect_op_arities: effect_op_arities_list,
+      cov: cov_state
     }
     if is_efn(__bi_expr) {
       let __bi_params = get_efn_params(__bi_expr)
@@ -17814,6 +17869,33 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       covni = covni + 1
     }
     bytebuf_push_section(out, 0, cov_content)
+    let covb_content = bytebuf_new()
+    let covb_name = "vibe_cov_branch"
+    leb128_encode_u32(covb_content, String::length(covb_name))
+    let mut covbni = 0
+    while covbni < String::length(covb_name) {
+      bytebuf_push(covb_content, String::char_code_at(covb_name, covbni))
+      covbni = covbni + 1
+    }
+    let covb_count = Array::get(cov_state.next, 0)
+    bytebuf_push(covb_content, cov_branch_base & 255)
+    bytebuf_push(covb_content, (cov_branch_base >> 8) & 255)
+    bytebuf_push(covb_content, (cov_branch_base >> 16) & 255)
+    bytebuf_push(covb_content, (cov_branch_base >> 24) & 255)
+    bytebuf_push(covb_content, covb_count & 255)
+    bytebuf_push(covb_content, (covb_count >> 8) & 255)
+    bytebuf_push(covb_content, (covb_count >> 16) & 255)
+    bytebuf_push(covb_content, (covb_count >> 24) & 255)
+    let mut covbi = 0
+    while covbi < covb_count {
+      let owner = Array::get(cov_state.owners, covbi)
+      bytebuf_push(covb_content, owner & 255)
+      bytebuf_push(covb_content, (owner >> 8) & 255)
+      bytebuf_push(covb_content, (owner >> 16) & 255)
+      bytebuf_push(covb_content, (owner >> 24) & 255)
+      covbi = covbi + 1
+    }
+    bytebuf_push_section(out, 0, covb_content)
   } else {
     ()
   }
@@ -17967,7 +18049,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   if total_table_entries > 0 {
     emit_table_section_funcref(out, total_table_entries)
   }
-  emit_memory_section(out, wasi_memory_min_pages_for_heap(heap_start + eff_reserve + cov_reserve))
+  emit_memory_section(out, wasi_memory_min_pages_for_heap(heap_start + eff_reserve + cov_reserve + cov_branch_reserve))
   let tag_content = bytebuf_new()
   let num_tags = Array::length(effect_names_list) + 4
   bytebuf_push_vec_header(tag_content, num_tags)
@@ -17986,7 +18068,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   }
   bytebuf_push(global_content, 127)
   bytebuf_push(global_content, 1)
-  emit_i32_const(global_content, heap_start + eff_reserve + cov_reserve)
+  emit_i32_const(global_content, heap_start + eff_reserve + cov_reserve + cov_branch_reserve)
   emit_end(global_content)
   bytebuf_push(global_content, 126)
   bytebuf_push(global_content, 1)

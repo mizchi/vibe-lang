@@ -7,34 +7,47 @@
 > ていない。**現在 selfhost で動くのは下記「0) selfhost コンパイラの関数
 > カバレッジ」**。1〜3 は歴史的経緯として残す。
 
-## 0) selfhost コンパイラの関数カバレッジ（#cov, selfhost-only で動く）
+## 0) selfhost コンパイラの関数 / 分岐カバレッジ（#cov, selfhost-only で動く）
 
 コンパイラ自身を **計測ビルド**して、ワークロード実行時にどの compiler
-関数が呼ばれたかを集計する。MoonBit host 不要（committed seed + node runner）。
+関数が呼ばれたか（関数カバレッジ）と、どの `if`/`match` 分岐が実行されたか
+（分岐カバレッジ）を集計する。MoonBit host 不要（committed seed + node runner）。
 
 ```bash
 scripts/coverage_selfhost_fn.sh                  # 既定: コンパイラの self-compile を計測
 scripts/coverage_selfhost_fn.sh path/to/foo.vibe # foo.vibe をコンパイルする経路を計測 (FS mode)
-VIBE_COV_SHOW_MISSED=1 scripts/coverage_selfhost_fn.sh   # 未実行関数も列挙
+VIBE_COV_SHOW_MISSED=1 scripts/coverage_selfhost_fn.sh        # 未実行関数も列挙
+VIBE_COV_SHOW_BRANCH_GAPS=1 scripts/coverage_selfhost_fn.sh   # 未到達分岐が多い関数 top50
 ```
 
 仕組み:
-- `VIBE_COVERAGE=1` でコンパイルすると、codegen が各 user 関数の入口に
-  「ヒットフラグを 1 立てる」store を挿入し（heap 直下の予約領域に 1 byte/関数
-  の bitmap）、`vibe_cov` custom section に `cov_base` / `cov_count` / 関数名を
-  埋め込む。
-- この計測コンパイラを実行 → bitmap が埋まる → runner が `VIBE_COV_OUT` 指定時に
-  memory の bitmap を読み、関数名と突き合わせて report.json を出力。
+- `VIBE_COVERAGE=1` でコンパイルすると、codegen が
+  - 各 user 関数の入口に「ヒットフラグを 1 立てる」store を挿入し（heap 直下の
+    予約領域に 1 byte/関数の bitmap）、`vibe_cov` custom section に `cov_base` /
+    `cov_count` / 関数名を埋め込む。
+  - 各 `if` の then/else と各 `match` アーム（catch-all 含む。条件アームが 1 つ
+    以上あるときのみ）の先頭に、同じく 1 byte/分岐の store を挿入する。分岐 id は
+    codegen 走査順に採番（`CovState` の可変セル経由）、固定上限 65536。
+    `vibe_cov_branch` custom section に `base` / `count` / 各分岐の所属関数 index
+    を埋め込む。
+- 計測コンパイラを実行 → 両 bitmap が埋まる → runner が `VIBE_COV_OUT` 指定時に
+  memory を読み、関数名・所属関数と突き合わせて report.json を出力。分岐は所属
+  関数ごとに集計され、未到達分岐の多い関数が `branch.top_gaps` に並ぶ。
 - `VIBE_COVERAGE` を立てない通常ビルドは **byte 単位で従来と同一**（gate の
   stage2==stage3 fixpoint で担保）。計測は bootstrap に影響しない。
+- 分岐は `if`/`match` のみ（`&&`/`||` の短絡は未計測）。真の **行単位**カバレッジは
+  AST がソース位置を持たず、recursive-descent parser に byte 位置を配線する大改修が
+  必要なため未実装（別タスク）。
 
 生成物 (`_build/coverage/selfhost-fn/`):
 - `compiler_cov.wasm` — 計測コンパイラ
-- `report.json` — `{total, hit, missed, rate, hit_fns[], missed_fns[]}`
+- `report.json` — `{total, hit, missed, rate, hit_fns[], missed_fns[],
+  branch: {total, hit, missed, rate, per_fn{}, top_gaps[]}}`
 
 環境変数:
 - `VIBE_COV_SEED` (計測ビルドに使う seed; 既定は committed seed)
 - `VIBE_COV_DIR` (出力先)
+- `VIBE_COV_SHOW_MISSED` / `VIBE_COV_SHOW_BRANCH_GAPS` (サマリ詳細)
 - `VIBE_COV_SHOW_MISSED` (`1` で未実行関数を表示)
 
 低レベル API:
