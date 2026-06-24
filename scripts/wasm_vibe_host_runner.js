@@ -2328,7 +2328,9 @@ async function main() {
       }
       fs.writeFileSync(covOut, `${JSON.stringify(report, null, 2)}\n`);
       const branchMsg = report.branch
-        ? `, ${report.branch.hit}/${report.branch.total} branches taken (${(report.branch.rate * 100).toFixed(2)}%)`
+        ? report.branch.total
+          ? `, ${report.branch.hit}/${report.branch.total} branches taken (${(report.branch.rate * 100).toFixed(2)}%)`
+          : ", 0 branches"
         : "";
       console.error(
         `[vibe-cov] ${hitFns.length}/${cov.count} functions hit (${(report.rate * 100).toFixed(2)}%)${branchMsg} -> ${covOut}`,

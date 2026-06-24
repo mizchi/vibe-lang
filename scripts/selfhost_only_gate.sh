@@ -350,4 +350,53 @@ fi
 rm -rf "$idir"
 echo "[selfhost-only-gate] string-interpolation conversion regression ok"
 
+# 13. coverage instrumentation regression (#cov): VIBE_COVERAGE=1 must produce an
+#     instrumented build whose vibe_cov / vibe_cov_branch sections the runner can
+#     read. A test that exercises only the then-branch of an `if` must report
+#     both functions hit and exactly one of the two branches taken — the signal
+#     that powers `vibe test --coverage`.
+echo "[selfhost-only-gate] 13/13 coverage instrumentation regression"
+cdir="_build/_gate_cov"
+rm -rf "$cdir"; mkdir -p "$cdir"
+cat > "$cdir/cov_test.vibe" <<'EOF'
+let pick: (Int) -> Int = (n) -> {
+  if n > 0 {
+    1
+  } else {
+    2
+  }
+}
+test "pos" {
+  assert(pick(5) == 1)
+}
+EOF
+VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$cdir/cov_test.vibe" "$cdir/cov_test.wasm" __vibe_test_no_entry__ >/dev/null 2>&1
+if [ ! -s "$cdir/cov_test.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: coverage build produced no wasm (#cov regressed)" >&2; exit 1
+fi
+VIBE_COV_OUT="$cdir/cov.json" VIBE_PREOPEN_DIR="$ROOT_DIR" \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$cdir/cov_test.wasm" >/dev/null 2>&1
+if [ ! -s "$cdir/cov.json" ]; then
+  echo "[selfhost-only-gate] FAIL: no coverage report produced (vibe_cov section missing?)" >&2; exit 1
+fi
+cov_check="$(python3 - "$cdir/cov.json" <<'PY'
+import json, sys
+r = json.load(open(sys.argv[1]))
+b = r.get("branch") or {}
+# pick + __test_pos both run -> all functions hit; only the then-branch of `if`
+# is taken -> 1 of 2 branches. `pick` must appear hit and with a branch gap.
+ok = (r.get("hit") == r.get("total") and r.get("total", 0) >= 2
+      and b.get("total") == 2 and b.get("hit") == 1
+      and "pick" in r.get("hit_fns", []))
+print("ok" if ok else f"bad fn={r.get('hit')}/{r.get('total')} br={b.get('hit')}/{b.get('total')}")
+PY
+)"
+if [ "$cov_check" != "ok" ]; then
+  echo "[selfhost-only-gate] FAIL: coverage report wrong ($cov_check -> #cov regressed)" >&2; exit 1
+fi
+rm -rf "$cdir"
+echo "[selfhost-only-gate] coverage instrumentation regression ok"
+
 echo "[selfhost-only-gate] ok"

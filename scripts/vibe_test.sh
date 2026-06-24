@@ -115,6 +115,19 @@ PY
       cov_br_hit=$((cov_br_hit + b_hit)); cov_br_total=$((cov_br_total + b_total))
       cov_files=$((cov_files + 1))
       printf 'ok   %s  [cov fn %d/%d, branch %d/%d]\n' "$src_rel" "$f_hit" "$f_total" "$b_hit" "$b_total"
+      if [ "${VIBE_COV_SHOW_GAPS:-0}" = "1" ]; then
+        # Surface WHAT is uncovered (the CLI summary alone is not actionable):
+        # never-called functions and functions with untaken if/match branches.
+        python3 - "$cov_out" <<'PY'
+import json, sys
+r = json.load(open(sys.argv[1]))
+missed = r.get("missed_fns", [])
+if missed:
+    print("       uncovered functions: " + ", ".join(missed))
+for g in (r.get("branch") or {}).get("top_gaps", []):
+    print(f"       branch gap: {g['fn']} {g['taken']}/{g['total']} taken")
+PY
+      fi
     else
       echo "ok   $src_rel"
     fi
@@ -127,9 +140,9 @@ done
 
 echo "[vibe-test] $pass passed, $fail failed (${#files[@]} files)"
 if [ "$coverage" = "1" ] && [ "$cov_files" -gt 0 ]; then
-  fn_pct=$(python3 -c "print(f'{($cov_fn_hit/$cov_fn_total*100) if $cov_fn_total else 0:.2f}')")
-  br_pct=$(python3 -c "print(f'{($cov_br_hit/$cov_br_total*100) if $cov_br_total else 0:.2f}')")
-  echo "[vibe-test] coverage: functions $cov_fn_hit/$cov_fn_total (${fn_pct}%), branches $cov_br_hit/$cov_br_total (${br_pct}%) over $cov_files file(s)"
+  fn_pct=$(python3 -c "print(f'{($cov_fn_hit/$cov_fn_total*100):.2f}%' if $cov_fn_total else 'n/a')")
+  br_pct=$(python3 -c "print(f'{($cov_br_hit/$cov_br_total*100):.2f}%' if $cov_br_total else 'n/a')")
+  echo "[vibe-test] coverage: functions $cov_fn_hit/$cov_fn_total ($fn_pct), branches $cov_br_hit/$cov_br_total ($br_pct) over $cov_files file(s)"
   echo "[vibe-test] per-file coverage JSON: $covdir/"
 fi
 [ "$fail" -eq 0 ]
