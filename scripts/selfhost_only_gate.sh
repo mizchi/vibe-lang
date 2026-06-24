@@ -175,10 +175,13 @@ fi
 rm -rf "$pdir"
 echo "[selfhost-only-gate] literal sub-pattern regression ok"
 
-# 8. labeled-param round-trip regression (#604): normalizing a function with
-#    labeled (`x~`) / optional (`x?`) parameters must preserve the parameter
-#    names (previously they printed as numeric gensyms via a mis-serialized
-#    string-interpolation) and the result must still compile + run.
+# 8. labeled-param round-trip regression (#604/#606): normalizing a function
+#    with labeled (`x~`) / optional (`x?`) parameters must preserve the parameter
+#    names. `parse_one_param` builds the names with string interpolation
+#    (`"\{name}~"`); before the #606 `__to_string` root fix this leaked a heap
+#    pointer (`(1285664100319233~)`), and the #604 mitigation routed around it
+#    with `String::concat`. With the root fix the interpolation form is correct,
+#    so this guards the root fix directly. The result must still compile + run.
 echo "[selfhost-only-gate] 8/8 labeled-param round-trip regression"
 ldir="_build/_gate_labeled"
 rm -rf "$ldir"; mkdir -p "$ldir"
@@ -236,5 +239,164 @@ if [ "$fold_out" != "60" ]; then
 fi
 rm -rf "$fdir"
 echo "[selfhost-only-gate] constant-folding regression ok"
+
+# 10. nested constructor sub-pattern regression (#608): a constructor pattern
+#     whose argument is itself a constructor (`SL(_, None, _)` vs
+#     `SL(_, Some(x), _)`) must (a) discriminate on the nested tag — arms sharing
+#     the outer tag must route distinctly — and (b) bind the nested fields, so
+#     using `x` in the arm body compiles instead of trapping codegen. Adjacent to
+#     #603 (literal sub-patterns); both live in the single-condition PCtor path.
+echo "[selfhost-only-gate] 10/10 nested ctor sub-pattern regression"
+ndir="_build/_gate_nestedctor"
+rm -rf "$ndir"; mkdir -p "$ndir"
+cat > "$ndir/nested.vibe" <<'EOF'
+enum Stmt { SL(Int, Option[Int], Int) }
+let classify: (Stmt) -> Int = (stmt) -> {
+  match stmt {
+    SL(a, None, c) => a + c,
+    SL(a, Some(x), c) => a + x + c,
+    _ => 0
+  }
+}
+export let _start: () -> Int = () -> {
+  classify(SL(4, None, 6)) + classify(SL(4, Some(7), 6))
+}
+EOF
+# Expected: (4+6) + (4+7+6) = 10 + 17 = 27.
+# The bound `x` in Some(x) must compile (no trap), and Some must not route to None.
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$ndir/nested.vibe" "$ndir/nested.wasm" _start >/dev/null 2>&1
+if [ ! -s "$ndir/nested.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: nested ctor sub-pattern program did not compile (#608 regressed: codegen trap)" >&2; exit 1
+fi
+nested_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$ndir/nested.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$nested_out" != "27" ]; then
+  echo "[selfhost-only-gate] FAIL: nested ctor sub-pattern mismatch (got '$nested_out', want 27 -> #608 regressed)" >&2
+  exit 1
+fi
+rm -rf "$ndir"
+echo "[selfhost-only-gate] nested ctor sub-pattern regression ok"
+
+# 11. forward-reference regression (#602): a top-level `let` may reference another
+#     top-level `let` defined later in the same file. The checker now hoists
+#     top-level binding signatures, so this compiles instead of aborting with an
+#     opaque trap. A genuinely-undefined name must still error (no over-permit).
+echo "[selfhost-only-gate] 11/11 forward-reference regression"
+wdir="_build/_gate_fwdref"
+rm -rf "$wdir"; mkdir -p "$wdir"
+cat > "$wdir/fwd.vibe" <<'EOF'
+let early: () -> Int = () -> { late() }
+let late: () -> Int = () -> { 41 }
+export let _start: () -> Int = () -> { early() + 1 }
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$wdir/fwd.vibe" "$wdir/fwd.wasm" _start >/dev/null 2>&1
+if [ ! -s "$wdir/fwd.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: forward-reference program did not compile (#602 regressed: checker trap)" >&2; exit 1
+fi
+fwd_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$wdir/fwd.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$fwd_out" != "42" ]; then
+  echo "[selfhost-only-gate] FAIL: forward-reference mismatch (got '$fwd_out', want 42 -> #602 regressed)" >&2
+  exit 1
+fi
+# Guard: a genuinely-undefined name must still be rejected (hoist only adds names
+# that are actually defined later).
+printf 'export let _start: () -> Int = () -> { genuinely_undefined_name() }\n' > "$wdir/undef.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$wdir/undef.vibe" "$wdir/undef.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$wdir/undef.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: undefined name compiled (#602 hoist over-permitted)" >&2; exit 1
+fi
+rm -rf "$wdir"
+echo "[selfhost-only-gate] forward-reference regression ok"
+
+# 12. string-interpolation conversion regression (#606): `"\{e}"` lowers to
+#     `__to_string(e)`, which was an `identity` stub (so interpolating an int
+#     yielded garbage) reachable only via a dead inline path. The root fix makes
+#     `__to_string` always use the real conversion (int -> decimal, string ->
+#     passthrough with an in-bounds pointer check). Assert an int interpolates to
+#     its digits and a string interpolates verbatim.
+echo "[selfhost-only-gate] 12/12 string-interpolation conversion regression"
+idir="_build/_gate_interp"
+rm -rf "$idir"; mkdir -p "$idir"
+cat > "$idir/interp.vibe" <<'EOF'
+export let _start: () -> Int = () -> {
+  let n = 42
+  let s = "v\{n}"
+  let name = "ab"
+  let t = "\{name}!"
+  // s = "v42" (length 3, s[1]='4'=52), t = "ab!" (length 3, t[0]='a'=97).
+  String::length(s) * 1000 + String::char_code_at(s, 1) * 100 + String::length(t) * 10 + (String::char_code_at(t, 0) - 97)
+}
+EOF
+# 3*1000 + 52*100 + 3*10 + 0 = 3000 + 5200 + 30 = 8230
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$idir/interp.vibe" "$idir/interp.wasm" _start >/dev/null 2>&1
+if [ ! -s "$idir/interp.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: interpolation program did not compile" >&2; exit 1
+fi
+interp_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$idir/interp.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$interp_out" != "8230" ]; then
+  echo "[selfhost-only-gate] FAIL: interpolation mismatch (got '$interp_out', want 8230 -> #606 regressed)" >&2
+  exit 1
+fi
+rm -rf "$idir"
+echo "[selfhost-only-gate] string-interpolation conversion regression ok"
+
+# 13. coverage instrumentation regression (#cov): VIBE_COVERAGE=1 must produce an
+#     instrumented build whose vibe_cov / vibe_cov_branch sections the runner can
+#     read. A test that exercises only the then-branch of an `if` must report
+#     both functions hit and exactly one of the two branches taken — the signal
+#     that powers `vibe test --coverage`.
+echo "[selfhost-only-gate] 13/13 coverage instrumentation regression"
+cdir="_build/_gate_cov"
+rm -rf "$cdir"; mkdir -p "$cdir"
+cat > "$cdir/cov_test.vibe" <<'EOF'
+let pick: (Int) -> Int = (n) -> {
+  if n > 0 {
+    1
+  } else {
+    2
+  }
+}
+test "pos" {
+  assert(pick(5) == 1)
+}
+EOF
+VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$cdir/cov_test.vibe" "$cdir/cov_test.wasm" __vibe_test_no_entry__ >/dev/null 2>&1
+if [ ! -s "$cdir/cov_test.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: coverage build produced no wasm (#cov regressed)" >&2; exit 1
+fi
+VIBE_COV_OUT="$cdir/cov.json" VIBE_PREOPEN_DIR="$ROOT_DIR" \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$cdir/cov_test.wasm" >/dev/null 2>&1
+if [ ! -s "$cdir/cov.json" ]; then
+  echo "[selfhost-only-gate] FAIL: no coverage report produced (vibe_cov section missing?)" >&2; exit 1
+fi
+cov_check="$(python3 - "$cdir/cov.json" <<'PY'
+import json, sys
+r = json.load(open(sys.argv[1]))
+b = r.get("branch") or {}
+# pick + __test_pos both run -> all functions hit; only the then-branch of `if`
+# is taken -> 1 of 2 branches. `pick` must appear hit and with a branch gap.
+ok = (r.get("hit") == r.get("total") and r.get("total", 0) >= 2
+      and b.get("total") == 2 and b.get("hit") == 1
+      and "pick" in r.get("hit_fns", []))
+print("ok" if ok else f"bad fn={r.get('hit')}/{r.get('total')} br={b.get('hit')}/{b.get('total')}")
+PY
+)"
+if [ "$cov_check" != "ok" ]; then
+  echo "[selfhost-only-gate] FAIL: coverage report wrong ($cov_check -> #cov regressed)" >&2; exit 1
+fi
+rm -rf "$cdir"
+echo "[selfhost-only-gate] coverage instrumentation regression ok"
 
 echo "[selfhost-only-gate] ok"

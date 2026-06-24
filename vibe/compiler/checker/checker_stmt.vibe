@@ -119,6 +119,31 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
   let mut cur_env = env
   let mut cur_s = s
   let mut cur_c = c
+  // #602: hoist top-level binding signatures so a `let` may reference another
+  // top-level `let` defined later in the same statement list (a forward
+  // reference). Without this, checking the earlier binding's body raised
+  // "unknown name" and aborted the whole compile with an opaque trap.
+  // check_stmts is only used for program / module statement lists — local
+  // `let`s are ELet expressions checked in check_expr — so this does not affect
+  // block scoping. An annotated binding hoists its declared type; an
+  // un-annotated one hoists as CtUnknown (its precise type is filled in when its
+  // own statement is reached, which shadows this pre-binding). Pre-binding only
+  // adds names, and a later real binding shadows it, so ordered
+  // (backward-reference) code is checked exactly as before.
+  let mut hoist_i = idx
+  while hoist_i < Array::length(stmts) {
+    match Array::get(stmts, hoist_i) {
+      SLet(_, _, hname, hann, _) => {
+        let ht = match hann {
+          Some(hte) => resolve_type_expr(hte, defs),
+          None => CtUnknown
+        }
+        cur_env = env_bind(cur_env, hname, ht)
+      },
+      _ => ()
+    }
+    hoist_i = hoist_i + 1
+  }
   while idx < Array::length(stmts) {
     let env = cur_env
     let s = cur_s

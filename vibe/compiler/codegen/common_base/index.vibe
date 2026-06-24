@@ -5,7 +5,7 @@ import .. / .. / core {
 }
 
 import .. / wasm_emit {
-  emit_call, emit_call_indirect, emit_else, emit_end, emit_i32_const, emit_i32_load, emit_i32_store, emit_i32_wrap_i64, emit_i64_add, emit_i64_and, emit_i64_const, emit_i64_div_s, emit_i64_eq, emit_i64_eqz, emit_i64_extend_i32_s, emit_i64_ge_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_load, emit_i64_lt_s, emit_i64_mul, emit_i64_ne, emit_i64_or, emit_i64_rem_s, emit_i64_shl, emit_i64_shr_s, emit_i64_store, emit_i64_sub, emit_i64_xor, emit_if_void, emit_local_get, emit_local_set
+  emit_call, emit_call_indirect, emit_else, emit_end, emit_i32_const, emit_i32_load, emit_i32_store, emit_i32_store8, emit_i32_wrap_i64, emit_i64_add, emit_i64_and, emit_i64_const, emit_i64_div_s, emit_i64_eq, emit_i64_eqz, emit_i64_extend_i32_s, emit_i64_ge_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_load, emit_i64_lt_s, emit_i64_mul, emit_i64_ne, emit_i64_or, emit_i64_rem_s, emit_i64_shl, emit_i64_shr_s, emit_i64_store, emit_i64_sub, emit_i64_xor, emit_if_void, emit_local_get, emit_local_set
 }
 
 //# Types
@@ -39,6 +39,63 @@ export struct CtorTable {
   type_names: Array[String];
   struct_names: Array[String];
   struct_field_names: Array[Array[String]]
+}
+
+// #cov branch coverage state, threaded via CompileCtx. Linear-backend only;
+// active only when `enabled` (VIBE_COVERAGE=1 build). `base`/`cap` bound a fixed
+// reserved memory region (1 byte per branch id). `next` is a 1-element mutable
+// counter cell assigning sequential branch ids in codegen-traversal order;
+// `cur_fn` is a 1-element cell holding the index of the function currently being
+// compiled (set before each top-level body). `owners` accumulates, per branch
+// id in id order, the owning function index so the report attributes branches to
+// functions (reusing the `vibe_cov` function-name table). When disabled all of
+// this is inert and codegen output is byte-identical to a normal build.
+export struct CovState {
+  enabled: Bool;
+  base: Int;
+  cap: Int;
+  next: Array[Int];
+  cur_fn: Array[Int];
+  owners: Array[Int]
+}
+
+// A disabled CovState (coverage off): inert, used by the normal compile path and
+// the non-WASI module entry. Fresh 1-element cells keep Array::get safe.
+export let cov_disabled: () -> CovState = () -> {
+  CovState::{
+    enabled: false,
+    base: 0,
+    cap: 0,
+    next: [
+      0
+    ],
+    cur_fn: [
+      0
+    ],
+    owners: ArrayBuilder::freeze(ArrayBuilder::new())
+  }
+}
+
+// #cov: emit a stack-neutral hit store for one branch target and assign it the
+// next sequential branch id, recording the owning function index. No-op when
+// coverage is off or the fixed-cap region is full. Called at the start of each
+// branch arm's instruction sequence (if/else, match arm), so the store runs
+// only when that branch is actually taken at run time.
+export let cov_emit_branch: (Bytes, CovState) -> Unit = (buf, cov) -> {
+  if cov.enabled {
+    let id = Array::get(cov.next, 0)
+    if id < cov.cap {
+      Array::set(cov.next, 0, id + 1)
+      Array::push(cov.owners, Array::get(cov.cur_fn, 0))
+      emit_i32_const(buf, cov.base + id)
+      emit_i32_const(buf, 1)
+      emit_i32_store8(buf, 0, 0)
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
 }
 
 export struct CompileCtx {
@@ -121,7 +178,9 @@ export struct CompileCtx {
   // value — so an extra continuation-slot bind like `Question(q, k)` on a
   // 1-arg op is not mistaken for a 2-tuple. See effect_op_declared_arity.
   effect_op_keys: Array[String];
-  effect_op_arities: Array[Int]
+  effect_op_arities: Array[Int];
+  // #cov branch coverage state (linear backend). cov_disabled() when off.
+  cov: CovState
 }
 
 export struct CompileCtxGc {

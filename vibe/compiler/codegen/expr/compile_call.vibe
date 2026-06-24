@@ -576,7 +576,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
     else if !prefer_bound_call && fname == "__float_bits" {
       ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
     }
-    else if !prefer_bound_call && fname == "__to_string" {
+    else if fname == "__to_string" {
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       let val_l = nl
       let neg_l = nl + 1
@@ -599,8 +599,22 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_i64_const(buf, 0)
       emit_i64_gt_s(buf)
       emit_local_get(buf, abs_l)
-      emit_global_get(buf, 0)
+      // #606: a string is represented as (ptr << 32) | len, and `__to_string`
+      // returns the value unchanged when it looks like a string pointer. A
+      // string can live anywhere in linear memory — including the static data
+      // section (token / literal strings), whose offset is ABOVE the heap bump
+      // pointer during early compilation. The old bound `ptr < heap_ptr`
+      // (global 0) misclassified such strings as ints and stringified their raw
+      // i64, leaking a heap pointer (e.g. labeled param `x~` printed as
+      // `1285664100319233~`). Use the full linear-memory size (memory.size
+      // pages * 65536) as the upper bound so any in-bounds pointer is
+      // recognized; a small int still has a zero high word and takes the int
+      // path below.
+      bytebuf_push(buf, 63)
+      bytebuf_push(buf, 0)
       emit_i64_extend_i32_u(buf)
+      emit_i64_const(buf, 65536)
+      emit_i64_mul(buf)
       emit_i64_lt_s(buf)
       bytebuf_push(buf, 113)
       emit_if_void(buf)

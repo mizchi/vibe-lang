@@ -1,7 +1,7 @@
 //# Imports
 
 import ./entry / source_compile / wasi_only / preprocess.vibe {
-  compile_source_wasi_only, compile_source_wasi_only_rc
+  compile_source_wasi_only, compile_source_wasi_only_coverage, compile_source_wasi_only_rc
 }
 
 import ./runtime / module_source.vibe {
@@ -9,7 +9,7 @@ import ./runtime / module_source.vibe {
 }
 
 import ./entry / compiler / file_compile {
-  compile_file_fs_mode
+  compile_file_fs_mode, compile_file_fs_mode_coverage
 }
 
 import ./normalize/index.vibe {
@@ -68,7 +68,14 @@ export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
   let mark_memory = Env::get("VIBE_PROFILE_MEMORY_MARKS") == "1"
   // #594 Stage 3 (debug): file-mode compile resolving imports from the FS.
   if Env::get("VIBE_FS_COMPILE") == "1" {
-    let bytes = compile_file_fs_mode(input_path, entry_name, "no-dce")
+    // #cov: `vibe test/run --coverage` sets VIBE_COVERAGE=1 so the user file (and
+    // its imports) is compiled with function/branch hit instrumentation; running
+    // the produced wasm fills the bitmap that the runner reads via VIBE_COV_OUT.
+    let bytes = if Env::get("VIBE_COVERAGE") == "1" {
+      compile_file_fs_mode_coverage(input_path, entry_name)
+    } else {
+      compile_file_fs_mode(input_path, entry_name, "no-dce")
+    }
     Fs::write_bytes(output_path, bytes)
     return 0
   }
@@ -96,7 +103,13 @@ export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
     // path (Env::get returns "" when unset, so default stays the bump path). Lets
     // the selfbuild/bootstrap/e2e gates exercise the whole compiler under RC.
     let rc_flag = Env::get("VIBE_RC")
-    let bytes = compile_source_for_rc_flag(source, entry_name, rc_flag)
+    // #cov: function-level coverage build (same source pipeline, instrumented
+    // codegen). Running the produced wasm records which compiler functions ran.
+    let bytes = if Env::get("VIBE_COVERAGE") == "1" {
+      compile_source_wasi_only_coverage(source, entry_name)
+    } else {
+      compile_source_for_rc_flag(source, entry_name, rc_flag)
+    }
     profile_memory_mark(mark_memory)
     Fs::write_bytes(output_path, bytes)
     profile_memory_mark(mark_memory)

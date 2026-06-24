@@ -9,7 +9,7 @@ import .. / common_analysis {
 }
 
 import .. / common_base {
-  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
+  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, cov_emit_branch, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
 }
 
 import .. / common_extractors {
@@ -97,23 +97,46 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
               }
               emit_i64_eq(buf)
               bytebuf_push(buf, 113)
-            } else {
-              if is_pstring(__sp) {
-                let __sv = get_pstring_value(__sp)
-                let __si = str_table_lookup(ctx.str_table.strs, __sv)
-                if __si >= 0 {
-                  let (__seq_fi, _, _) = resolve_func(ctx.func_table, "eq")
-                  emit_local_get(buf, scrut_local)
-                  emit_i64_const(buf, -2)
-                  emit_i64_and(buf)
-                  emit_i32_wrap_i64(buf)
-                  emit_i64_load(buf, 3, 8 + __ck * 8)
-                  emit_str_ref(buf, Array::get(ctx.str_table.offsets, __si), Array::get(ctx.str_table.lengths, __si))
-                  emit_call(buf, __seq_fi)
-                  emit_i32_wrap_i64(buf)
-                  bytebuf_push(buf, 113)
-                }
+            } else if is_pstring(__sp) {
+              let __sv = get_pstring_value(__sp)
+              let __si = str_table_lookup(ctx.str_table.strs, __sv)
+              if __si >= 0 {
+                let (__seq_fi, _, _) = resolve_func(ctx.func_table, "eq")
+                emit_local_get(buf, scrut_local)
+                emit_i64_const(buf, -2)
+                emit_i64_and(buf)
+                emit_i32_wrap_i64(buf)
+                emit_i64_load(buf, 3, 8 + __ck * 8)
+                emit_str_ref(buf, Array::get(ctx.str_table.offsets, __si), Array::get(ctx.str_table.lengths, __si))
+                emit_call(buf, __seq_fi)
+                emit_i32_wrap_i64(buf)
+                bytebuf_push(buf, 113)
               }
+            } else if is_pctor(__sp) {
+              // #608: a nested constructor sub-pattern (`None`, `Some(_)`,
+              // `Ctor(..)`) must discriminate on the nested tag too, else two
+              // arms sharing the outer tag (`SL(_, None, _)` vs `SL(_, Some(_),
+              // _)`) both match the first. Load field __ck (itself a tagged ctor
+              // pointer), clear its tag, read its tag word, and AND-in the test.
+              let __ncname = get_pctor_name(__sp)
+              let __nci = lookup_ctor(ctx.ctor_table.names, __ncname, 0)
+              let __ntag = if __nci >= 0 {
+                Array::get(ctx.ctor_table.tags, __nci)
+              } else {
+                -1
+              }
+              emit_local_get(buf, scrut_local)
+              emit_i64_const(buf, -2)
+              emit_i64_and(buf)
+              emit_i32_wrap_i64(buf)
+              emit_i64_load(buf, 3, 8 + __ck * 8)
+              emit_i64_const(buf, -2)
+              emit_i64_and(buf)
+              emit_i32_wrap_i64(buf)
+              emit_i32_load(buf, 2, 0)
+              emit_i32_const(buf, __ntag)
+              emit_i32_eq(buf)
+              bytebuf_push(buf, 113)
             }
             __ck = __ck + 1
           }
@@ -193,6 +216,8 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
         }
       }
     }
+    // #cov branch: this conditional arm was taken (start of the if-then block).
+    cov_emit_branch(buf, ctx.cov)
     let ld_arm = if ld >= 0 {
       ld + ai + 1
     } else {
@@ -241,6 +266,37 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
             }
             ti = ti + 1
           }
+        } else if is_pctor(__sub_p) {
+          // #608: bind the fields of a nested constructor sub-pattern (e.g. `x`
+          // in `Some(x)`). Without this the inner binding is never emitted and
+          // any use of it in the arm body traps codegen (resolve_local fails).
+          // Load field cbi (the nested ctor, a tagged pointer), then load each
+          // PBind sub-field at the nested ctor's own layout (clear tag, 8+j*8).
+          let __nargs = get_pctor_args(__sub_p)
+          let __ntmp = Array::length(local_names)
+          emit_local_get(buf, scrut_local)
+          emit_i64_const(buf, -2)
+          emit_i64_and(buf)
+          emit_i32_wrap_i64(buf)
+          emit_i64_load(buf, 3, 8 + cbi * 8)
+          emit_local_set(buf, __ntmp)
+          Array::push(local_names, "__ctor_nested")
+          let mut __nj = 0
+          while __nj < Array::length(__nargs) {
+            let __np = Array::get(__nargs, __nj)
+            if is_pbind(__np) {
+              let __npname = get_pbind_name(__np)
+              let __nfl = Array::length(local_names)
+              emit_local_get(buf, __ntmp)
+              emit_i64_const(buf, -2)
+              emit_i64_and(buf)
+              emit_i32_wrap_i64(buf)
+              emit_i64_load(buf, 3, 8 + __nj * 8)
+              emit_local_set(buf, __nfl)
+              Array::push(local_names, __npname)
+            }
+            __nj = __nj + 1
+          }
         }
         cbi = cbi + 1
       }
@@ -264,6 +320,13 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
     let __catch_arm = Array::get(__match_arms, catchall_idx)
     let (__catch_p, __catch_body) = __catch_arm
     0
+    // #cov branch: the catch-all (none of the conditional arms matched). Only a
+    // real decision point when there is at least one conditional arm.
+    if num_cond_arms > 0 {
+      cov_emit_branch(buf, ctx.cov)
+    } else {
+      ()
+    }
     if is_pbind(__catch_p) {
       let bname = get_pbind_name(__catch_p)
       let bind_local = Array::length(local_names)

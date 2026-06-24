@@ -1,5 +1,158 @@
 # Coverage strategy (MoonBit + WASM)
 
+> **Status (selfhost-only):** MoonBit host が退役 (#594) したため、下記 1)
+> `coverage-moon` と 2) `coverage-deno` は `src/` 依存で **動かない**（driver
+> script も削除済み）。3) の vibe ソース span coverage も計測側
+> (`vibe compile --coverage`) が MoonBit host 専用で、selfhost には移植され
+> ていない。**現在 selfhost で動くのは下記「0) selfhost コンパイラの関数
+> カバレッジ」**。1〜3 は歴史的経緯として残す。
+
+## 0) selfhost コンパイラの関数 / 分岐カバレッジ（#cov, selfhost-only で動く）
+
+コンパイラ自身を **計測ビルド**して、ワークロード実行時にどの compiler
+関数が呼ばれたか（関数カバレッジ）と、どの `if`/`match` 分岐が実行されたか
+（分岐カバレッジ）を集計する。MoonBit host 不要（committed seed + node runner）。
+
+### CLI: `vibe test --coverage`
+
+ユーザーの **テスト対象**（テストファイルとその import）のカバレッジは
+`vibe test --coverage` で計測する。テストファイルを計測ビルドして実行し、
+どの関数・分岐がテストで踏まれたかを per-file + 集計で表示する。
+
+```bash
+scripts/vibe_test.sh --coverage path/to/foo_test.vibe   # 単一ファイル
+scripts/vibe_test.sh --coverage vibe/prelude            # ディレクトリ配下の *_test.vibe
+```
+
+出力例（負数入力を踏まないテストだと `n < 0` アームが未到達 → 3/4）:
+
+```
+ok   foo_test.vibe  [cov fn 3/3, branch 3/4]
+[vibe-test] 1 passed, 0 failed (1 files)
+[vibe-test] coverage: functions 3/3 (100.00%), branches 3/4 (75.00%) over 1 file(s)
+```
+
+`vibe run --coverage`（単一プログラムを実行しつつ計測）も同じ仕組み:
+
+```bash
+scripts/vibe_run.sh --coverage path/to/prog.vibe [entry]
+```
+
+プログラムの出力は stdout、`[vibe-cov]` サマリは stderr、JSON は
+`_build/vibe_run/<name>.cov.json`。
+
+per-file の JSON は `_build/vibe_test/coverage/<file>.json`
+（`{total,hit,missed,rate,hit_fns,missed_fns,branch{...}}`）。仕組みは
+`VIBE_FS_COMPILE` 経路が `VIBE_COVERAGE=1` を尊重して計測コンパイル
+（`compile_file_fs_mode_coverage`）するだけで、下記の self-compile 計測と同じ
+instrumentation を共有する。
+
+### コンパイラ自身を計測
+
+```bash
+scripts/coverage_selfhost_fn.sh                  # 既定: コンパイラの self-compile を計測
+scripts/coverage_selfhost_fn.sh path/to/foo.vibe # foo.vibe をコンパイルする経路を計測 (FS mode)
+VIBE_COV_SHOW_MISSED=1 scripts/coverage_selfhost_fn.sh        # 未実行関数も列挙
+VIBE_COV_SHOW_BRANCH_GAPS=1 scripts/coverage_selfhost_fn.sh   # 未到達分岐が多い関数 top50
+```
+
+#### 複数ワークロードのマージ
+
+単一ワークロードは経路が偏る: self-compile は parser/checker/codegen を踏むが
+printer（`print_expr`/`print_stmt`）は `normalize` でしか、Perceus RC
+（`pc_count`/`pc_emit`/`elaborate_rw`）は `VIBE_RC=1` でしか踏まれない。
+`coverage_selfhost_merge.sh` は **1 つの計測コンパイラ**を複数ワークロードで
+走らせ、ヒット bitmap を **union 合成**する（同一バイナリ＝同一 id なので
+正確に OR できる）。
+
+```bash
+scripts/coverage_selfhost_merge.sh                 # 既定: compile + normalize + rc
+scripts/coverage_selfhost_merge.sh extra1.vibe ... # 追加で各ファイルを FS-compile
+VIBE_COV_SHOW_BRANCH_GAPS=1 scripts/coverage_selfhost_merge.sh
+```
+
+実測（合成効果）: compile 単体 646fn/2436br → **merged 733fn(62.4%) /
+2835br(42.5%)**。`print_*` は normalize で、`pc_*`/`elaborate_rw` は rc で
+0% から点灯する。`_build/coverage/selfhost-merge/merged.json` に
+per-workload 内訳 + union 結果（`per_fn` / `top_gaps`）が出る。
+
+マージは **同一の計測バイナリ**を別ワークロードで回した結果にのみ有効
+（関数/分岐 id が一致するため）。別々にコンパイルしたモジュール同士は id が
+異なるのでマージ不可。runner 側は `VIBE_COV_RAW=1` のとき report に id 単位の
+bitmap（`raw.fn_bitmap` / `raw.branch_bitmap` + 静的な name/owner 表）を足す。
+
+#### コーパス（大量プログラム）でのマージ
+
+`coverage_selfhost_merge.sh` の固定 3 ワークロードでは分岐 ~56% で頭打ちになる。
+`coverage_selfhost_corpus.sh` は 1 つの計測コンパイラを **多数の .vibe**
+（`examples/` `fixtures/` `vibe/prelude/`）に対して compile / normalize / rc で
+走らせ、全 run を union する。
+
+```bash
+scripts/coverage_selfhost_corpus.sh                 # 既定: examples fixtures
+VIBE_COV_MAX=200 scripts/coverage_selfhost_corpus.sh
+VIBE_COV_SHOW_BRANCH_GAPS=1 scripts/coverage_selfhost_corpus.sh
+```
+
+実測（669 ファイル + base self-compile + RC-stress）:
+**関数 929/1174 (79.1%)・分岐 4024/6679 (60.3%)**。`_build/coverage/selfhost-corpus/`
+に `acc.json`（running union）/ `merged.json` / `fails.txt`。
+
+注意点（ドッグフーディングで判明）:
+- **計測対象は「コンパイル」のみ**。生成された wasm を実行しても、それは別の
+  （非計測）バイナリなので計測コンパイラのカバレッジは増えない。
+- 失敗ファイルは bitmap を残さない（失敗 compile は寄与 0）。**エントリ名は
+  ファイルに実在するものを選ぶ**こと（test ファイルは sentinel → `_start`）。
+  この修正前は test ファイルが軒並み main 解決に失敗し寄与 0 だった。
+- bump モード（既定）は Perceus（`pc_*`/`elaborate_rw`）を踏まないので、
+  heap-heavy な小プログラムを `VIBE_RC=1` で別途 compile する RC-stress を含める。
+- 残ギャップの上位はエラー経路（`check_expr`/`unify`/`tk_name` 等の防御分岐）と
+  trait/cache の未踏経路。trait モジュールの単体 FS-compile は trap するため、
+  実テストスイート全体での計測は別途 FS-path 修正が要る（既知の制約）。
+
+仕組み:
+- `VIBE_COVERAGE=1` でコンパイルすると、codegen が
+  - 各 user 関数の入口に「ヒットフラグを 1 立てる」store を挿入し（heap 直下の
+    予約領域に 1 byte/関数の bitmap）、`vibe_cov` custom section に `cov_base` /
+    `cov_count` / 関数名を埋め込む。
+  - 各 `if` の then/else と各 `match` アーム（catch-all 含む。条件アームが 1 つ
+    以上あるときのみ）の先頭に、同じく 1 byte/分岐の store を挿入する。分岐 id は
+    codegen 走査順に採番（`CovState` の可変セル経由）、固定上限 65536。
+    `vibe_cov_branch` custom section に `base` / `count` / 各分岐の所属関数 index
+    を埋め込む。
+- 計測コンパイラを実行 → 両 bitmap が埋まる → runner が `VIBE_COV_OUT` 指定時に
+  memory を読み、関数名・所属関数と突き合わせて report.json を出力。分岐は所属
+  関数ごとに集計され、未到達分岐の多い関数が `branch.top_gaps` に並ぶ。
+- `VIBE_COVERAGE` を立てない通常ビルドは **byte 単位で従来と同一**（gate の
+  stage2==stage3 fixpoint で担保）。計測は bootstrap に影響しない。
+- 分岐は `if`/`match` のみ（`&&`/`||` の短絡は未計測）。真の **行単位**カバレッジは
+  AST がソース位置を持たず、recursive-descent parser に byte 位置を配線する大改修が
+  必要なため未実装（別タスク）。
+
+生成物 (`_build/coverage/selfhost-fn/`):
+- `compiler_cov.wasm` — 計測コンパイラ
+- `report.json` — `{total, hit, missed, rate, hit_fns[], missed_fns[],
+  branch: {total, hit, missed, rate, per_fn{}, top_gaps[]}}`
+
+環境変数:
+- `VIBE_COV_SEED` (計測ビルドに使う seed; 既定は committed seed)
+- `VIBE_COV_DIR` (出力先)
+- `VIBE_COV_SHOW_MISSED` / `VIBE_COV_SHOW_BRANCH_GAPS` (サマリ詳細)
+- `VIBE_COV_SHOW_MISSED` (`1` で未実行関数を表示)
+
+低レベル API:
+- `VIBE_COVERAGE=1 cli_main <src> <out.wasm> <entry>` — 計測 wasm を生成
+- `VIBE_COV_OUT=<report.json>` を runner に渡すと、実行後に bitmap を dump
+
+粒度は関数レベル（line/branch ではない）。AST がソース位置を保持しないため
+line/branch は span 配線が前提で別途実装が必要。関数レベルでも「未到達・
+未テスト経路の検出」には十分有効（例: dead な `__to_string` inline path のような
+穴は missed_fns に現れる）。
+
+---
+
+以下は MoonBit host 時代の coverage（歴史的経緯、現在は動かない）。
+
 このプロジェクトでは coverage を 3 つに分けて測る。
 
 1. MoonBit 本体コードの行カバレッジ

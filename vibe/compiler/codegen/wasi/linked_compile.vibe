@@ -17,7 +17,7 @@ import .. / common_analysis {
 }
 
 import .. / common_base {
-  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, fn_type_param_types, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, get_slet_type, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
+  CompileCtx, CovState, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, fn_type_param_types, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, get_slet_type, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
 }
 
 import .. / common_extractors {
@@ -108,7 +108,7 @@ export let wasi_memory_min_pages_for_heap: (Int) -> Int = (heap_start) -> {
   }
 }
 
-export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String, String)], Array[(String, String, Int, Int)], Bool, Bool) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, linked_imports, library_mode, enable_rc) -> {
+export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String, String)], Array[(String, String, Int, Int)], Bool, Bool, Bool) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, linked_imports, library_mode, enable_rc, coverage) -> {
   let fn_names_list = lc_fresh_string_array()
   let fn_param_counts = lc_fresh_int_array()
   let fn_needs_env_list = lc_fresh_bool_array()
@@ -412,6 +412,43 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   // continuation-based handler). MUST stay in sync with the `* 131072` strides
   // in compile_call.vibe (perform) and compile_expr_tail6.vibe (handler arm).
   let eff_reserve = (Array::length(effect_names_list) + 1) * 131072
+  // Function-level coverage (gated by `coverage`): a 1-byte-per-user-function
+  // hit bitmap placed in a dedicated reserve ABOVE the effect regions and BELOW
+  // the heap frontier, so it never collides with effect words or the live heap.
+  // `cov_base` is a compile-time-constant address baked into each function's
+  // prologue store. When coverage is off, cov_reserve is 0 and codegen output is
+  // byte-identical to the normal build (the self-host fixpoint is unaffected).
+  let cov_count = num_user_funcs
+  let cov_base = heap_start + eff_reserve
+  let cov_reserve = if coverage {
+    ((cov_count + 7) / 8) * 8
+  } else {
+    0
+  }
+  // #cov branch coverage: a second 1-byte-per-branch hit region directly above
+  // the function-hit region. Branch ids are assigned sequentially during codegen
+  // (CovState.next), so the count is not known up front — reserve a fixed cap.
+  // 65536 branches is generous headroom (the whole compiler has a few thousand).
+  // Off => branch_reserve is 0 and the layout/codegen is byte-identical.
+  let cov_branch_cap = 65536
+  let cov_branch_base = cov_base + cov_reserve
+  let cov_branch_reserve = if coverage {
+    cov_branch_cap
+  } else {
+    0
+  }
+  let cov_state = CovState::{
+    enabled: coverage,
+    base: cov_branch_base,
+    cap: cov_branch_cap,
+    next: [
+      0
+    ],
+    cur_fn: [
+      0
+    ],
+    owners: ArrayBuilder::freeze(ArrayBuilder::new())
+  }
   let need_env_get_builtin = stmts_use_builtin(stmts, fn_names_list, "Env::get")
   let need_env_args_len_builtin = stmts_use_builtin(stmts, fn_names_list, "Env::args_len")
   let need_env_args_get_builtin = stmts_use_builtin(stmts, fn_names_list, "Env::args_get")
@@ -1165,6 +1202,18 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     let __bi_stmt = Array::get(stmts, Array::get(fn_stmt_indices, bi))
     let __bi_expr = get_slet_expr(__bi_stmt)
     let body_buf = bytebuf_new()
+    // #cov: mark this user function as executed (store 1 at cov_base + bi).
+    // Stack-neutral and local-free, so prepending it to the body is safe.
+    if coverage {
+      emit_i32_const(body_buf, cov_base + bi)
+      emit_i32_const(body_buf, 1)
+      emit_i32_store8(body_buf, 0, 0)
+      // #cov branch: tell branch instrumentation which function owns the branches
+      // emitted while compiling this body.
+      Array::set(cov_state.cur_fn, 0, bi)
+    } else {
+      ()
+    }
     let local_names = lc_fresh_string_array()
     let fn_name_dbg = Array::get(fn_names_list, bi)
     let rc_drops = Array::slice([
@@ -1294,7 +1343,8 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       float_local_slots: lc_fresh_int_array(),
       effect_names: effect_names_list,
       effect_op_keys: effect_op_keys_list,
-      effect_op_arities: effect_op_arities_list
+      effect_op_arities: effect_op_arities_list,
+      cov: cov_state
     }
     if is_efn(__bi_expr) {
       let __bi_params = get_efn_params(__bi_expr)
@@ -1591,6 +1641,77 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   let out = bytebuf_new()
   emit_header(out)
   emit_vibe_abi_custom_section(out, "raw")
+  // #cov: emit a `vibe_cov` custom section describing the function-hit bitmap.
+  // Layout of the payload: i32 LE cov_base, i32 LE cov_count, then the
+  // user-function names (one per line, in bitmap-index order). The consumer
+  // reads memory[cov_base .. cov_base+cov_count] after running and maps each
+  // hit byte back to a name. Only present in coverage builds.
+  if coverage {
+    let cov_content = bytebuf_new()
+    let cov_name = "vibe_cov"
+    leb128_encode_u32(cov_content, String::length(cov_name))
+    let mut cni = 0
+    while cni < String::length(cov_name) {
+      bytebuf_push(cov_content, String::char_code_at(cov_name, cni))
+      cni = cni + 1
+    }
+    bytebuf_push(cov_content, cov_base & 255)
+    bytebuf_push(cov_content, (cov_base >> 8) & 255)
+    bytebuf_push(cov_content, (cov_base >> 16) & 255)
+    bytebuf_push(cov_content, (cov_base >> 24) & 255)
+    bytebuf_push(cov_content, cov_count & 255)
+    bytebuf_push(cov_content, (cov_count >> 8) & 255)
+    bytebuf_push(cov_content, (cov_count >> 16) & 255)
+    bytebuf_push(cov_content, (cov_count >> 24) & 255)
+    let mut covni = 0
+    while covni < num_user_funcs {
+      let covnm = Array::get(fn_names_list, covni)
+      let covnml = String::length(covnm)
+      let mut covci = 0
+      while covci < covnml {
+        bytebuf_push(cov_content, String::char_code_at(covnm, covci))
+        covci = covci + 1
+      }
+      bytebuf_push(cov_content, 10)
+      covni = covni + 1
+    }
+    bytebuf_push_section(out, 0, cov_content)
+    // #cov branch: a `vibe_cov_branch` custom section describing the branch-hit
+    // bitmap. Payload: i32 LE branch_base, i32 LE branch_count, then
+    // branch_count i32 LE entries giving the owning user-function index per
+    // branch id (in id order). The consumer reads memory[base .. base+count]
+    // after running and attributes each hit branch to its function (names from
+    // the `vibe_cov` section), so it can report per-function branch coverage.
+    let covb_content = bytebuf_new()
+    let covb_name = "vibe_cov_branch"
+    leb128_encode_u32(covb_content, String::length(covb_name))
+    let mut covbni = 0
+    while covbni < String::length(covb_name) {
+      bytebuf_push(covb_content, String::char_code_at(covb_name, covbni))
+      covbni = covbni + 1
+    }
+    let covb_count = Array::get(cov_state.next, 0)
+    bytebuf_push(covb_content, cov_branch_base & 255)
+    bytebuf_push(covb_content, (cov_branch_base >> 8) & 255)
+    bytebuf_push(covb_content, (cov_branch_base >> 16) & 255)
+    bytebuf_push(covb_content, (cov_branch_base >> 24) & 255)
+    bytebuf_push(covb_content, covb_count & 255)
+    bytebuf_push(covb_content, (covb_count >> 8) & 255)
+    bytebuf_push(covb_content, (covb_count >> 16) & 255)
+    bytebuf_push(covb_content, (covb_count >> 24) & 255)
+    let mut covbi = 0
+    while covbi < covb_count {
+      let owner = Array::get(cov_state.owners, covbi)
+      bytebuf_push(covb_content, owner & 255)
+      bytebuf_push(covb_content, (owner >> 8) & 255)
+      bytebuf_push(covb_content, (owner >> 16) & 255)
+      bytebuf_push(covb_content, (owner >> 24) & 255)
+      covbi = covbi + 1
+    }
+    bytebuf_push_section(out, 0, covb_content)
+  } else {
+    ()
+  }
   bytebuf_push_section(out, 1, type_content)
   let import_content = bytebuf_new()
   bytebuf_push_vec_header(import_content, num_imported_funcs)
@@ -1741,7 +1862,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   if total_table_entries > 0 {
     emit_table_section_funcref(out, total_table_entries)
   }
-  emit_memory_section(out, wasi_memory_min_pages_for_heap(heap_start + eff_reserve))
+  emit_memory_section(out, wasi_memory_min_pages_for_heap(heap_start + eff_reserve + cov_reserve + cov_branch_reserve))
   let tag_content = bytebuf_new()
   let num_tags = Array::length(effect_names_list) + 4
   bytebuf_push_vec_header(tag_content, num_tags)
@@ -1760,7 +1881,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   }
   bytebuf_push(global_content, 127)
   bytebuf_push(global_content, 1)
-  emit_i32_const(global_content, heap_start + eff_reserve)
+  emit_i32_const(global_content, heap_start + eff_reserve + cov_reserve + cov_branch_reserve)
   emit_end(global_content)
   bytebuf_push(global_content, 126)
   bytebuf_push(global_content, 1)
@@ -1904,11 +2025,20 @@ export let compile_wasi_module_rc_impl: (Array[Stmt], String) -> Bytes with { Er
     ("", "")
   ], 0, 0), Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, true)
+  ], 0, 0), false, true, false)
 }
 
 export let compile_wasi_module_with_sources_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
   compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, false)
+  ], 0, 0), false, false, false)
+}
+
+// Coverage build (#cov): compile with function-level hit instrumentation +
+// `vibe_cov` custom section. Same as compile_wasi_module_with_sources_impl but
+// with coverage enabled.
+export let compile_wasi_module_with_sources_coverage_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
+  compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
+    ("", "", 0, 0)
+  ], 0, 0), false, false, true)
 }

@@ -19,7 +19,7 @@ import ../../../syntax/import_alias_rewrite.vibe {
 }
 
 import ../../../codegen/index.vibe {
-  compile_module, compile_wasi_module
+  compile_module, compile_wasi_module, compile_wasi_module_coverage
 }
 
 import ../../../codegen/wasi/index.vibe {
@@ -266,6 +266,18 @@ export let compile_file_fs_mode: (String, String, String) -> Bytes with { Error,
   } else {
     throw(String::concat("unsupported compile mode: ", mode))
   }
+}
+
+// Coverage (#cov): FS-mode compile with function-level hit instrumentation.
+// Same load/merge as compile_file_fs_mode "no-dce" but routes through the
+// coverage codegen so the output wasm carries the hit bitmap + `vibe_cov`
+// section. Used by `cli_main` under VIBE_COVERAGE=1.
+export let compile_file_fs_mode_coverage: (String, String) -> Bytes with { Error, Fs } = (entry_path, entry_name) -> {
+  let source_groups = collect_source_groups_fs(entry_path)
+  let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
+  let _ = next_db
+  let merged_stmts = build_grouped_merged_stmts(source_groups)
+  compile_wasi_module_coverage(merged_stmts, entry_name)
 }
 
 export let compile_file_fs_mode_profiled: (String, String, String) -> (Bytes, Int, Int, Int, Int, Int, Int) with { Error, Fs, Profiler } = (entry_path, entry_name, mode) -> {
