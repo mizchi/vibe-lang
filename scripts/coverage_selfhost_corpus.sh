@@ -47,8 +47,13 @@ raw = run.get("raw")
 if not raw:
     sys.exit(0)
 fb, bb = raw["fn_bitmap"], raw.get("branch_bitmap", [])
+acc = None
 if os.path.exists(acc_path):
-    acc = json.load(open(acc_path))
+    try:
+        acc = json.load(open(acc_path))          # tolerate a corrupt/partial acc
+    except Exception:
+        acc = None
+if acc is not None:
     fn, br = acc["fn"], acc["br"]
     for i, v in enumerate(fb):
         if v: fn[i] = 1
@@ -57,7 +62,10 @@ if os.path.exists(acc_path):
 else:
     acc = {"fn_names": raw["fn_names"], "br_owners": raw.get("branch_owners", []),
            "fn": [1 if v else 0 for v in fb], "br": [1 if v else 0 for v in bb]}
-json.dump(acc, open(acc_path, "w"))
+tmp = acc_path + ".tmp"                            # atomic write: never leave a partial acc
+with open(tmp, "w") as fh:
+    json.dump(acc, fh)
+os.replace(tmp, acc_path)
 PY
 
 # accumulate one workload run (env... -- runner args)

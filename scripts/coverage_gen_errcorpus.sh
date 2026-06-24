@@ -165,4 +165,109 @@ emit f_bool    'export let main: () -> Bool = () -> {
   let c = !a
   a || b && c }'
 
-echo "[gen] wrote $(ls "$OUT"/*.vibe | wc -l) programs to $OUT"
+# ---- multi-module sets (#cov): compiling a FS-mode entry that imports modules
+#      with PRIVATE enums/structs/type-aliases/suberrors/lets/nested-modules
+#      drives the namespace pass (namespace_private_value_stmts,
+#      rewrite_private_type_ctor_expr, collect_private_{value,type,ctor}_renames)
+#      and the import-alias rewrites — ~130 branches a single-file compile never
+#      reaches. Each set is its own subdir (entry imports the siblings); the
+#      corpus driver finds every *.vibe recursively and FS-compiles the entry. ----
+mkfile() { mkdir -p "$OUT/$(dirname "$1")"; printf '%s\n' "$2" > "$OUT/$1"; }
+
+# Set 1: private enum/struct/type-alias/suberror used by exported API.
+mkfile mod_kitchen/lib.vibe 'enum PColor { PRed; PGreen; PBlue(Int) }
+let pmk: () -> PColor = () -> { PBlue(5) }
+let puse: (PColor) -> Int = (c) -> { match c { PRed => 1, PGreen => 2, PBlue(n) => n } }
+struct PPoint { x: Int; y: Int }
+let pmkpt: () -> PPoint = () -> { PPoint::{ x: 1, y: 2 } }
+let pgetx: (PPoint) -> Int = (p) -> { p.x + p.y }
+type PInts = Array[Int]
+let psum: (PInts) -> Int = (xs) -> { let mut s = 0; for x in xs { s = s + x }; s }
+export let compute: () -> Int = () -> { puse(pmk()) + pgetx(pmkpt()) + psum([1, 2, 3]) }
+export enum PubColor { URed; UGreen }
+export let pubmk: () -> PubColor = () -> { URed }'
+mkfile mod_kitchen/main.vibe 'import ./lib.vibe { compute, PubColor, pubmk }
+export let main: () -> Int = () -> { compute() + match pubmk() { URed => 1, UGreen => 2 } }'
+
+# Set 2: aliased imports (`X as Y`) drive collision-def + alias rewrite paths.
+mkfile mod_alias/lib.vibe 'export enum Status { Active; Idle(Int) }
+export let make: (Int) -> Status = (n) -> { if n > 0 { Idle(n) } else { Active } }
+export let label: (Status) -> Int = (s) -> { match s { Active => 0, Idle(n) => n } }'
+mkfile mod_alias/main.vibe 'import ./lib.vibe { Status as St, make as mk, label as lbl }
+export let main: () -> Int = () -> { lbl(mk(7)) + match mk(0) { Active => 100, Idle(_) => 0 } }'
+
+# Set 3: re-export facade (export ./mod { ... }) + shared private helpers.
+mkfile mod_reexport/core.vibe 'export enum Tok { TNum(Int); TStr(String) }
+export let tnum: (Int) -> Tok = (n) -> { TNum(n) }
+export let tval: (Tok) -> Int = (t) -> { match t { TNum(n) => n, TStr(s) => String::length(s) } }'
+mkfile mod_reexport/facade.vibe 'export ./core { Tok, tnum, tval }
+export { Tok, tnum, tval }'
+mkfile mod_reexport/main.vibe 'import ./facade.vibe { Tok, tnum, tval }
+export let main: () -> Int = () -> { tval(tnum(42)) + tval(TStr("hi")) }'
+
+# Set 4: private nested module + private lets used by exported function.
+mkfile mod_nested/lib.vibe 'module Helpers {
+  let bump: (Int) -> Int = (n) -> { n + 1 }
+  export let twice: (Int) -> Int = (n) -> { bump(bump(n)) }
+}
+let secret: Int = 41
+let derive: (Int) -> Int = (n) -> { n + secret }
+export let go: (Int) -> Int = (n) -> { Helpers::twice(derive(n)) }'
+mkfile mod_nested/main.vibe 'import ./lib.vibe { go }
+export let main: () -> Int = () -> { go(0) }'
+
+# Set 5: diamond imports (two modules importing a shared base) + struct fields.
+mkfile mod_diamond/base.vibe 'export struct Cfg { width: Int; height: Int }
+export let area: (Cfg) -> Int = (c) -> { c.width * c.height }
+export let mkcfg: (Int, Int) -> Cfg = (w, h) -> { Cfg::{ width: w, height: h } }'
+mkfile mod_diamond/left.vibe 'import ./base.vibe { Cfg, area, mkcfg }
+export let wide: () -> Int = () -> { area(mkcfg(100, 2)) }'
+mkfile mod_diamond/right.vibe 'import ./base.vibe { Cfg, area, mkcfg }
+export let tall: () -> Int = () -> { area(mkcfg(2, 100)) }'
+mkfile mod_diamond/main.vibe 'import ./left.vibe { wide }
+import ./right.vibe { tall }
+export let main: () -> Int = () -> { wide() + tall() }'
+
+# ---- feature breadth (#cov): well-formed programs exercising parser + codegen
+#      arms (impl blocks, traits, generics, effects, bit ops, nested patterns,
+#      labeled args, pipes, early return) the type-error corpus never reaches. ----
+emit f_suberror 'suberror PBad(String)
+let pfail: (Int) -> Int = (n) -> {
+  handle { if n < 0 { throw(PBad("neg")) } else { n } } with Error { Throw(_) => 0 } }
+export let main: () -> Int = () -> { pfail(-1) + pfail(7) }'
+emit f_generic 'let id: [T](T) -> T = (x) -> { x }
+let pair: [A, B](A, B) -> (A, B) = (a, b) -> { (a, b) }
+export let main: () -> Int = () -> { let (x, _) = pair(id(5), id("s")); x }'
+emit f_bitops 'export let main: () -> Int = () -> {
+  let a = 0xFF & 0x0F
+  let b = 1 << 4
+  let c = 255 >> 2
+  let d = 5 ^ 3
+  (a + b + c + d) | 1 }'
+emit f_nested_pat 'enum Tree { Leaf(Int); Node(Tree, Tree) }
+let rec depth: (Tree) -> Int = (t) -> {
+  match t {
+    Leaf(_) => 1,
+    Node(Leaf(_), Leaf(_)) => 2,
+    Node(l, r) => 1 + (if depth(l) > depth(r) { depth(l) } else { depth(r) })
+  } }
+export let main: () -> Int = () -> { depth(Node(Node(Leaf(1), Leaf(2)), Leaf(3))) }'
+emit f_lit_pat 'enum Cmd { Op(Int, Bool) }
+let run: (Cmd) -> Int = (c) -> {
+  match c { Op(0, true) => 1, Op(0, false) => 2, Op(n, true) => n + 10, Op(n, false) => n } }
+export let main: () -> Int = () -> { run(Op(0, true)) + run(Op(5, false)) + run(Op(3, true)) }'
+emit f_string_ops 'export let main: () -> Int = () -> {
+  let s = "hello world"
+  let n = String::length(s)
+  let parts = String::split(s, " ")
+  n + Array::length(parts) }'
+emit f_pipe 'let inc: (Int) -> Int = (n) -> { n + 1 }
+let dbl: (Int) -> Int = (n) -> { n * 2 }
+export let main: () -> Int = () -> { 5 |> inc |> dbl |> inc }'
+emit f_early_ret 'let classify: (Int) -> Int = (n) -> {
+  if n < 0 { return 0 }
+  if n == 0 { return 1 }
+  n + 100 }
+export let main: () -> Int = () -> { classify(-1) + classify(0) + classify(5) }'
+
+echo "[gen] wrote $(find "$OUT" -name '*.vibe' | wc -l) programs to $OUT"
