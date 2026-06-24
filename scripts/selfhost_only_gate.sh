@@ -237,4 +237,43 @@ fi
 rm -rf "$fdir"
 echo "[selfhost-only-gate] constant-folding regression ok"
 
+# 10. nested constructor sub-pattern regression (#608): a constructor pattern
+#     whose argument is itself a constructor (`SL(_, None, _)` vs
+#     `SL(_, Some(x), _)`) must (a) discriminate on the nested tag — arms sharing
+#     the outer tag must route distinctly — and (b) bind the nested fields, so
+#     using `x` in the arm body compiles instead of trapping codegen. Adjacent to
+#     #603 (literal sub-patterns); both live in the single-condition PCtor path.
+echo "[selfhost-only-gate] 10/10 nested ctor sub-pattern regression"
+ndir="_build/_gate_nestedctor"
+rm -rf "$ndir"; mkdir -p "$ndir"
+cat > "$ndir/nested.vibe" <<'EOF'
+enum Stmt { SL(Int, Option[Int], Int) }
+let classify: (Stmt) -> Int = (stmt) -> {
+  match stmt {
+    SL(a, None, c) => a + c,
+    SL(a, Some(x), c) => a + x + c,
+    _ => 0
+  }
+}
+export let _start: () -> Int = () -> {
+  classify(SL(4, None, 6)) + classify(SL(4, Some(7), 6))
+}
+EOF
+# Expected: (4+6) + (4+7+6) = 10 + 17 = 27.
+# The bound `x` in Some(x) must compile (no trap), and Some must not route to None.
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$ndir/nested.vibe" "$ndir/nested.wasm" _start >/dev/null 2>&1
+if [ ! -s "$ndir/nested.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: nested ctor sub-pattern program did not compile (#608 regressed: codegen trap)" >&2; exit 1
+fi
+nested_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$ndir/nested.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$nested_out" != "27" ]; then
+  echo "[selfhost-only-gate] FAIL: nested ctor sub-pattern mismatch (got '$nested_out', want 27 -> #608 regressed)" >&2
+  exit 1
+fi
+rm -rf "$ndir"
+echo "[selfhost-only-gate] nested ctor sub-pattern regression ok"
+
 echo "[selfhost-only-gate] ok"
