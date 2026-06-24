@@ -1317,6 +1317,102 @@ function findClosureEnv(instance, heapStart, tableSlot) {
 }
 
 let instanceRefGlobal = null;
+let covWasmBytesGlobal = null;
+
+// #cov: dump the function/branch hit bitmaps from the (possibly trapped)
+// instance's live memory to VIBE_COV_OUT. Called both after a clean run AND from
+// the top-level catch — a compile that throws (parse/type error) still exercised
+// many branches before unwinding, so capturing its coverage is essential for
+// corpus/error-path measurement. Returns true if a report was written.
+function dumpCoverage(reason) {
+  const covOut = process.env.VIBE_COV_OUT;
+  if (!covOut || !covWasmBytesGlobal) {
+    return false;
+  }
+  const wasmBytes = covWasmBytesGlobal;
+  const cov = parseVibeCovSection(wasmBytes);
+  const mem = instanceRefGlobal?.exports?.memory;
+  if (!cov || !mem) {
+    return false;
+  }
+  const bytes = new Uint8Array(mem.buffer);
+  const hitFns = [];
+  const missedFns = [];
+  for (let i = 0; i < cov.count; i += 1) {
+    const nm = cov.names[i] ?? `#${i}`;
+    if (bytes[cov.base + i]) {
+      hitFns.push(nm);
+    } else {
+      missedFns.push(nm);
+    }
+  }
+  const report = {
+    total: cov.count,
+    hit: hitFns.length,
+    missed: missedFns.length,
+    rate: cov.count ? hitFns.length / cov.count : 0,
+    missed_fns: missedFns,
+    hit_fns: hitFns,
+  };
+  const covb = parseVibeCovBranchSection(wasmBytes);
+  if (covb) {
+    let bhit = 0;
+    const perFn = new Map();
+    for (let i = 0; i < covb.count; i += 1) {
+      const owner = covb.owners[i] ?? -1;
+      const fnName = cov.names[owner] ?? `#${owner}`;
+      const hit = bytes[covb.base + i] ? 1 : 0;
+      bhit += hit;
+      const e = perFn.get(fnName) ?? { total: 0, hit: 0 };
+      e.total += 1;
+      e.hit += hit;
+      perFn.set(fnName, e);
+    }
+    const branchPerFn = {};
+    const branchGaps = [];
+    for (const [fn, e] of perFn) {
+      branchPerFn[fn] = e;
+      if (e.hit < e.total) {
+        branchGaps.push({ fn, taken: e.hit, total: e.total });
+      }
+    }
+    branchGaps.sort((a, b) => (b.total - b.taken) - (a.total - a.taken));
+    report.branch = {
+      total: covb.count,
+      hit: bhit,
+      missed: covb.count - bhit,
+      rate: covb.count ? bhit / covb.count : 0,
+      per_fn: branchPerFn,
+      top_gaps: branchGaps.slice(0, 50),
+    };
+  }
+  if (process.env.VIBE_COV_RAW === "1") {
+    const fnBitmap = [];
+    for (let i = 0; i < cov.count; i += 1) {
+      fnBitmap.push(bytes[cov.base + i] ? 1 : 0);
+    }
+    report.raw = { fn_names: cov.names.slice(0, cov.count), fn_bitmap: fnBitmap };
+    if (covb) {
+      const brBitmap = [];
+      for (let i = 0; i < covb.count; i += 1) {
+        brBitmap.push(bytes[covb.base + i] ? 1 : 0);
+      }
+      report.raw.branch_owners = covb.owners;
+      report.raw.branch_bitmap = brBitmap;
+    }
+  }
+  fs.writeFileSync(covOut, `${JSON.stringify(report, null, 2)}\n`);
+  const branchMsg = report.branch
+    ? report.branch.total
+      ? `, ${report.branch.hit}/${report.branch.total} branches taken (${(report.branch.rate * 100).toFixed(2)}%)`
+      : ", 0 branches"
+    : "";
+  const tag = reason ? ` (${reason})` : "";
+  console.error(
+    `[vibe-cov]${tag} ${hitFns.length}/${cov.count} functions hit (${(report.rate * 100).toFixed(2)}%)${branchMsg} -> ${covOut}`,
+  );
+  return true;
+}
 
 function extractProfileRequest(args) {
   const req = {
@@ -1454,6 +1550,7 @@ async function main() {
     }
   }
   const wasmBytes = fs.readFileSync(wasmPath);
+  covWasmBytesGlobal = wasmBytes;
   if (!REQUESTED_HOST_IMPORT_ABI) {
     const detectedAbi = detectHostImportAbi(wasmBytes);
     if (detectedAbi !== null) {
@@ -2265,95 +2362,9 @@ async function main() {
   }
   const { result, isSelfhost } = runInvokes(passthroughArgs);
   emitWasmMemoryStats("run");
-  // #cov: after running an instrumented build, dump the per-function hit bitmap
-  // (read live from memory at cov_base) keyed by the `vibe_cov` section names.
-  const covOut = process.env.VIBE_COV_OUT;
-  if (covOut) {
-    const cov = parseVibeCovSection(wasmBytes);
-    const mem = instanceRefGlobal?.exports?.memory;
-    if (cov && mem) {
-      const bytes = new Uint8Array(mem.buffer);
-      const hitFns = [];
-      const missedFns = [];
-      for (let i = 0; i < cov.count; i += 1) {
-        const nm = cov.names[i] ?? `#${i}`;
-        if (bytes[cov.base + i]) {
-          hitFns.push(nm);
-        } else {
-          missedFns.push(nm);
-        }
-      }
-      const report = {
-        total: cov.count,
-        hit: hitFns.length,
-        missed: missedFns.length,
-        rate: cov.count ? hitFns.length / cov.count : 0,
-        missed_fns: missedFns,
-        hit_fns: hitFns,
-      };
-      // #cov branch: if a vibe_cov_branch section is present, attribute each
-      // branch hit/miss to its owning function and add branch totals + a
-      // per-function breakdown to the report.
-      const covb = parseVibeCovBranchSection(wasmBytes);
-      if (covb) {
-        let bhit = 0;
-        const perFn = new Map();
-        for (let i = 0; i < covb.count; i += 1) {
-          const owner = covb.owners[i] ?? -1;
-          const fnName = cov.names[owner] ?? `#${owner}`;
-          const hit = bytes[covb.base + i] ? 1 : 0;
-          bhit += hit;
-          const e = perFn.get(fnName) ?? { total: 0, hit: 0 };
-          e.total += 1;
-          e.hit += hit;
-          perFn.set(fnName, e);
-        }
-        const branchPerFn = {};
-        const branchGaps = [];
-        for (const [fn, e] of perFn) {
-          branchPerFn[fn] = e;
-          if (e.hit < e.total) {
-            branchGaps.push({ fn, taken: e.hit, total: e.total });
-          }
-        }
-        branchGaps.sort((a, b) => (b.total - b.taken) - (a.total - a.taken));
-        report.branch = {
-          total: covb.count,
-          hit: bhit,
-          missed: covb.count - bhit,
-          rate: covb.count ? bhit / covb.count : 0,
-          per_fn: branchPerFn,
-          top_gaps: branchGaps.slice(0, 50),
-        };
-      }
-      // #cov merge: VIBE_COV_RAW=1 adds id-level hit bitmaps + the static
-      // name/owner tables, so multiple workloads of the SAME instrumented binary
-      // (same ids) can be union-merged exactly (coverage_selfhost_merge.sh).
-      if (process.env.VIBE_COV_RAW === "1") {
-        const fnBitmap = [];
-        for (let i = 0; i < cov.count; i += 1) {
-          fnBitmap.push(bytes[cov.base + i] ? 1 : 0);
-        }
-        report.raw = { fn_names: cov.names.slice(0, cov.count), fn_bitmap: fnBitmap };
-        if (covb) {
-          const brBitmap = [];
-          for (let i = 0; i < covb.count; i += 1) {
-            brBitmap.push(bytes[covb.base + i] ? 1 : 0);
-          }
-          report.raw.branch_owners = covb.owners;
-          report.raw.branch_bitmap = brBitmap;
-        }
-      }
-      fs.writeFileSync(covOut, `${JSON.stringify(report, null, 2)}\n`);
-      const branchMsg = report.branch
-        ? report.branch.total
-          ? `, ${report.branch.hit}/${report.branch.total} branches taken (${(report.branch.rate * 100).toFixed(2)}%)`
-          : ", 0 branches"
-        : "";
-      console.error(
-        `[vibe-cov] ${hitFns.length}/${cov.count} functions hit (${(report.rate * 100).toFixed(2)}%)${branchMsg} -> ${covOut}`,
-      );
-    } else {
+  // #cov: after running an instrumented build, dump the hit bitmaps.
+  if (process.env.VIBE_COV_OUT) {
+    if (!dumpCoverage(null)) {
       console.error("[vibe-cov] no vibe_cov section or memory; not a coverage build?");
     }
   }
@@ -2365,6 +2376,11 @@ async function main() {
 }
 
 main().catch((err) => {
+  // #cov: even a failed run (parse/type error, trap) exercised many branches
+  // before unwinding — capture its coverage from the still-live instance memory.
+  try {
+    dumpCoverage("aborted");
+  } catch (_) {}
   // Try to decode WASM exception payload (tagged string)
   if (err instanceof WebAssembly.Exception) {
     try {
