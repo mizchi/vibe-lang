@@ -175,10 +175,13 @@ fi
 rm -rf "$pdir"
 echo "[selfhost-only-gate] literal sub-pattern regression ok"
 
-# 8. labeled-param round-trip regression (#604): normalizing a function with
-#    labeled (`x~`) / optional (`x?`) parameters must preserve the parameter
-#    names (previously they printed as numeric gensyms via a mis-serialized
-#    string-interpolation) and the result must still compile + run.
+# 8. labeled-param round-trip regression (#604/#606): normalizing a function
+#    with labeled (`x~`) / optional (`x?`) parameters must preserve the parameter
+#    names. `parse_one_param` builds the names with string interpolation
+#    (`"\{name}~"`); before the #606 `__to_string` root fix this leaked a heap
+#    pointer (`(1285664100319233~)`), and the #604 mitigation routed around it
+#    with `String::concat`. With the root fix the interpolation form is correct,
+#    so this guards the root fix directly. The result must still compile + run.
 echo "[selfhost-only-gate] 8/8 labeled-param round-trip regression"
 ldir="_build/_gate_labeled"
 rm -rf "$ldir"; mkdir -p "$ldir"
@@ -311,5 +314,40 @@ if [ -s "$wdir/undef.wasm" ]; then
 fi
 rm -rf "$wdir"
 echo "[selfhost-only-gate] forward-reference regression ok"
+
+# 12. string-interpolation conversion regression (#606): `"\{e}"` lowers to
+#     `__to_string(e)`, which was an `identity` stub (so interpolating an int
+#     yielded garbage) reachable only via a dead inline path. The root fix makes
+#     `__to_string` always use the real conversion (int -> decimal, string ->
+#     passthrough with an in-bounds pointer check). Assert an int interpolates to
+#     its digits and a string interpolates verbatim.
+echo "[selfhost-only-gate] 12/12 string-interpolation conversion regression"
+idir="_build/_gate_interp"
+rm -rf "$idir"; mkdir -p "$idir"
+cat > "$idir/interp.vibe" <<'EOF'
+export let _start: () -> Int = () -> {
+  let n = 42
+  let s = "v\{n}"
+  let name = "ab"
+  let t = "\{name}!"
+  // s = "v42" (length 3, s[1]='4'=52), t = "ab!" (length 3, t[0]='a'=97).
+  String::length(s) * 1000 + String::char_code_at(s, 1) * 100 + String::length(t) * 10 + (String::char_code_at(t, 0) - 97)
+}
+EOF
+# 3*1000 + 52*100 + 3*10 + 0 = 3000 + 5200 + 30 = 8230
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$idir/interp.vibe" "$idir/interp.wasm" _start >/dev/null 2>&1
+if [ ! -s "$idir/interp.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: interpolation program did not compile" >&2; exit 1
+fi
+interp_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$idir/interp.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$interp_out" != "8230" ]; then
+  echo "[selfhost-only-gate] FAIL: interpolation mismatch (got '$interp_out', want 8230 -> #606 regressed)" >&2
+  exit 1
+fi
+rm -rf "$idir"
+echo "[selfhost-only-gate] string-interpolation conversion regression ok"
 
 echo "[selfhost-only-gate] ok"
