@@ -46,16 +46,42 @@ for sf in support_files:
 
 asserts = '''
 let assert: (Bool) -> Int with { Error } = (b) -> { if b { 1 } else { throw("assert failed") } }
-let assert_eq: (Int, Int) -> Int with { Error } = (a, b) -> { if a == b { 1 } else { throw("assert_eq failed") } }
+let assert_eq: [T: Eq](T, T) -> Int with { Error } = (a, b) -> { if eq(a, b) { 1 } else { throw("assert_eq failed") } }
+let assert_neq: [T: Eq](T, T) -> Int with { Error } = (a, b) -> { if eq(a, b) { throw("assert_neq failed") } else { 1 } }
 '''
 fns, calls, n = [], [], 0
 for tf in test_files:
-    p = os.path.join(ROOT, 'vibe/compiler', tf)
-    if not os.path.exists(p): continue
-    for body in extract_tests(open(p).read()):
+    pth = os.path.join(ROOT, 'vibe/compiler', tf)
+    if not os.path.exists(pth): continue
+    body_src = strip_module(open(pth).read())
+    # convert each `test "name" { ... }` / `bench` to `let cov_ut_N: () -> Int with { Error } = () -> { ... 0 }`
+    def repl(m):
+        global n
+        return ''  # handled below
+    # extract test blocks (and their spans) then replace with driver fns; keep file-level lets
+    spans = []
+    i = 0
+    while True:
+        m = re.search(r'(?:test|bench)\s+"([^"]*)"\s*\{', body_src[i:])
+        if not m: break
+        start = i + m.start(); bstart = i + m.end(); depth = 1; j = bstart
+        while j < len(body_src) and depth > 0:
+            c = body_src[j]
+            if c == '{': depth += 1
+            elif c == '}': depth -= 1
+            j += 1
+        spans.append((start, j, body_src[bstart:j-1]))
+        i = j
+    # rebuild: file-level content with test blocks replaced by driver fns
+    out_parts = []; last = 0
+    for (st, en, tbody) in spans:
+        out_parts.append(body_src[last:st])
         n += 1
-        fns.append(f'let cov_ut_{n}: () -> Int with {{ Error }} = () -> {{\n{body}\n  0\n}}')
+        out_parts.append(f'let cov_ut_{n}: () -> Int with {{ Error }} = () -> {{\n{tbody}\n  0\n}}\n')
         calls.append(f'  let _ = handle {{ cov_ut_{n}() }} with Error {{ Throw(_) => 0 }}')
+        last = en
+    out_parts.append(body_src[last:])
+    fns.append(''.join(out_parts))
 main = 'let cov_driver_main: () -> Int = () -> {\n' + '\n'.join(calls) + '\n  0\n}\n'
 out = '\n'.join(helpers) + asserts + '\n'.join(fns) + '\n' + main
 open('/tmp/ut_driver.vibe','w').write(out)
