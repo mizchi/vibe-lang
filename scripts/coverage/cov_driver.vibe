@@ -1,0 +1,98 @@
+// Coverage driver (#cov): appended to the flat module source
+// (vibe/compiler/selfhost_cli_adapter_module_source.vibe) and compiled+run as
+// its own entry `cov_driver_main`. It calls the compiler's type/trait/env
+// functions directly with edge-case inputs (every Type variant, all unify/
+// types_equal pairs, a trait-bearing TypeEnv) that the black-box corpus never
+// triggers. This is the test-execution coverage lever for the deep checker
+// functions, bypassing the cyclic re-export blocker that stops the in-tree
+// *_test.vibe from FS-compiling (see docs/coverage.md).
+let cov_t1: () -> Array[Type] = () -> {
+  let a = Array::slice([CtInt], 0, 0)
+  Array::push(a, CtInt); Array::push(a, CtDouble); Array::push(a, CtBool)
+  Array::push(a, CtString); Array::push(a, CtChar); Array::push(a, CtUnit)
+  Array::push(a, CtBytes); Array::push(a, CtUnknown)
+  Array::push(a, CtArray(CtInt)); Array::push(a, CtArray(CtArray(CtBool)))
+  Array::push(a, CtOption(CtString)); Array::push(a, CtOption(CtVar(0)))
+  Array::push(a, CtTuple(Array::slice([CtInt, CtBool], 0, 2)))
+  Array::push(a, CtFn(Array::slice([CtInt, CtString], 0, 2), CtBool, None))
+  Array::push(a, CtFn(Array::slice([CtVar(0)], 0, 1), CtVar(0), Some("io")))
+  Array::push(a, CtEnum("Foo")); Array::push(a, CtStruct("Bar"))
+  Array::push(a, CtNamed("Map", Array::slice([CtString, CtInt], 0, 2)))
+  Array::push(a, CtVar(0)); Array::push(a, CtVar(1))
+  Array::push(a, CtForAll(Array::slice([0], 0, 1), Array::slice([(0, Array::slice(["Eq"], 0, 1))], 0, 1), CtVar(0)))
+  a
+}
+let cov_str: (Array[Type]) -> Int = (ts) -> {
+  let mut acc = 0
+  let mut k = 0
+  while k < Array::length(ts) {
+    let t = Array::get(ts, k)
+    acc = acc + String::length(type_to_string(t)) + String::length(serialize_type(t)) + Array::length(collect_tvars(t))
+    let g = generalize(SubstEmpty, t)
+    acc = acc + String::length(type_to_string(g))
+    let sa = subst_apply(SubstBind(0, CtInt, SubstEmpty), t)
+    acc = acc + String::length(serialize_type(sa))
+    let oc = if occurs_in(0, t) { 1 } else { 0 }
+    acc = acc + oc
+    k = k + 1
+  }
+  acc
+}
+let cov_pairs: (Array[Type]) -> Int = (ts) -> {
+  let n = Array::length(ts)
+  let mut acc = 0
+  let mut i = 0
+  while i < n {
+    let mut j = 0
+    while j < n {
+      let u = match unify(Array::get(ts, i), Array::get(ts, j), SubstEmpty) { Some(_) => 1, None => 0 }
+      let e = if types_equal(Array::get(ts, i), Array::get(ts, j)) { 1 } else { 0 }
+      acc = acc + u + e
+      j = j + 1
+    }
+    i = i + 1
+  }
+  acc
+}
+
+let cov_trait_env: () -> TypeEnv = () -> {
+  let e = EnvTraitDef("Eq", Array::slice([""], 0, 0), false, EnvEmpty)
+  let e2 = EnvTraitDef("Ord", Array::slice(["Eq"], 0, 1), false, e)
+  let e3 = EnvTraitImpl("Eq", CtInt, e2)
+  let e4 = EnvTraitImpl("Ord", CtInt, e3)
+  e4
+}
+let cov_traits: () -> Int = () -> {
+  let env = cov_trait_env()
+  let mut acc = Array::length(trait_supers(env, "Ord")) + Array::length(trait_supers(env, "Eq"))
+  acc = acc + (if trait_defined(env, "Eq") { 1 } else { 0 })
+  acc = acc + (if trait_defined(env, "Nope") { 1 } else { 0 })
+  acc = acc + (if trait_is_subtrait(env, "Ord", "Eq") { 1 } else { 0 })
+  acc = acc + (if trait_is_subtrait(env, "Eq", "Ord") { 1 } else { 0 })
+  acc = acc + (if type_implements_trait(env, SubstEmpty, CtInt, "Eq") { 1 } else { 0 })
+  acc = acc + (if type_implements_trait(env, SubstEmpty, CtBool, "Eq") { 1 } else { 0 })
+  acc
+}
+let cov_more: (Array[Type]) -> Int = (ts) -> {
+  let mut acc = 0
+  let mut k = 0
+  while k < Array::length(ts) {
+    let t = Array::get(ts, k)
+    let (it, _, _) = instantiate(t, 50)
+    acc = acc + String::length(serialize_type(it))
+    let sl = match subst_lookup(SubstBind(0, CtInt, SubstEmpty), 0) { Some(_) => 1, None => 0 }
+    acc = acc + sl
+    let ec = env_cache(env_bind(EnvEmpty, "z", t))
+    let el = match env_lookup(ec, "z") { Some(_) => 1, None => 0 }
+    acc = acc + el
+    k = k + 1
+  }
+  let binds = Array::slice([("a", CtInt), ("b", CtString)], 0, 2)
+  let elf = match env_lookup_flat(binds, "a") { Some(_) => 1, None => 0 }
+  acc + elf
+}
+
+let cov_driver_main: () -> Int = () -> {
+  let ts = cov_t1()
+  cov_str(ts) + cov_pairs(ts) + cov_traits() + cov_more(ts)
+}
