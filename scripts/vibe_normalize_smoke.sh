@@ -119,12 +119,34 @@ EOF
 cat > "$WORK/fold.expected.vibe" <<'EOF'
 //# Functions
 
-let x = 7
+let x: Int = 7
 
 export let run: () -> Int = () -> { x }
 EOF
 
-for case in 01 03 agg hoist generic fold; do
+# Literal type annotation: a `let` initialized by a literal (after folding) gets
+# `: T`; a `let` initialized by something needing inference (a call) is left
+# un-annotated; an already-annotated lambda binding is untouched.
+cat > "$WORK/annot.in.vibe" <<'EOF'
+let mk: () -> Int = () -> { 9 }
+let lit = 3 + 4
+let called = mk()
+export let run = () -> Int { lit + called }
+export { run }
+EOF
+cat > "$WORK/annot.expected.vibe" <<'EOF'
+//# Functions
+
+let mk: () -> Int = () -> { 9 }
+
+let lit: Int = 7
+
+let called = mk()
+
+export let run: () -> Int = () -> { (lit + called) }
+EOF
+
+for case in 01 03 agg hoist generic fold annot; do
   bash "$ROOT_DIR/scripts/vibe_normalize.sh" --stdout "$WORK/$case.in.vibe" > "$WORK/$case.got.vibe" 2>/dev/null
   if ! cmp -s "$WORK/$case.expected.vibe" "$WORK/$case.got.vibe"; then
     echo "[vibe-normalize-smoke] FAIL: fixture $case mismatch" >&2
@@ -148,4 +170,4 @@ if ! bash "$ROOT_DIR/scripts/vibe_normalize.sh" --check "$WORK/01.normalized.vib
   echo "[vibe-normalize-smoke] FAIL: --check rejected normalized file" >&2; exit 1
 fi
 
-echo "[vibe-normalize-smoke] ok (fixtures 01/03 + agg + hoist + generic + fold + idempotent + --check)"
+echo "[vibe-normalize-smoke] ok (fixtures 01/03 + agg + hoist + generic + fold + annot + idempotent + --check)"

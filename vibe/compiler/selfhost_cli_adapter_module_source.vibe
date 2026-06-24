@@ -28724,6 +28724,36 @@ let fold_stmts: (Array[Stmt]) -> Array[Stmt] = (stmts) -> {
   }
   out
 }
+let literal_type: (Expr) -> Option[TypeExpr] = (e) -> {
+  match e {
+    EInt(_) => Some(TyName("Int")),
+    EBool(_) => Some(TyName("Bool")),
+    EString(_) => Some(TyName("String")),
+    EFloat(_) => Some(TyName("Double")),
+    _ => None
+  }
+}
+let annotate_literal_let: (Stmt) -> Stmt = (stmt) -> {
+  match stmt {
+    SLet(exp, is_rec, name, ty, body) => match ty {
+      Some(_) => stmt,
+      None => match literal_type(body) {
+        Some(t) => SLet(exp, is_rec, name, Some(t), body),
+        None => stmt
+      }
+    },
+    _ => stmt
+  }
+}
+let annotate_literal_lets: (Array[Stmt]) -> Array[Stmt] = (stmts) -> {
+  let out = empty_stmts()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    Array::push(out, annotate_literal_let(Array::get(stmts, i)))
+    i = i + 1
+  }
+  out
+}
 export let normalize_stmts: (Array[Stmt]) -> Array[Stmt] = (stmts) -> {
   let nonmods = empty_stmts()
   let mut i = 0
@@ -28754,7 +28784,7 @@ export let normalize_stmts: (Array[Stmt]) -> Array[Stmt] = (stmts) -> {
     m = m + 1
   }
   let promoted = promote_aggregate_exports(result, aggregate_export_names(stmts))
-  hoist_lambda_lets(fold_stmts(drop_unused_type_aliases(promoted)))
+  hoist_lambda_lets(annotate_literal_lets(fold_stmts(drop_unused_type_aliases(promoted))))
 }
 export let normalize_source: (String) -> String with { Error } = (src) -> {
   let stmts = parse_program(lex(src))
