@@ -2326,6 +2326,24 @@ async function main() {
           top_gaps: branchGaps.slice(0, 50),
         };
       }
+      // #cov merge: VIBE_COV_RAW=1 adds id-level hit bitmaps + the static
+      // name/owner tables, so multiple workloads of the SAME instrumented binary
+      // (same ids) can be union-merged exactly (coverage_selfhost_merge.sh).
+      if (process.env.VIBE_COV_RAW === "1") {
+        const fnBitmap = [];
+        for (let i = 0; i < cov.count; i += 1) {
+          fnBitmap.push(bytes[cov.base + i] ? 1 : 0);
+        }
+        report.raw = { fn_names: cov.names.slice(0, cov.count), fn_bitmap: fnBitmap };
+        if (covb) {
+          const brBitmap = [];
+          for (let i = 0; i < covb.count; i += 1) {
+            brBitmap.push(bytes[covb.base + i] ? 1 : 0);
+          }
+          report.raw.branch_owners = covb.owners;
+          report.raw.branch_bitmap = brBitmap;
+        }
+      }
       fs.writeFileSync(covOut, `${JSON.stringify(report, null, 2)}\n`);
       const branchMsg = report.branch
         ? report.branch.total

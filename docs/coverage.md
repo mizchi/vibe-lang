@@ -56,6 +56,31 @@ VIBE_COV_SHOW_MISSED=1 scripts/coverage_selfhost_fn.sh        # 未実行関数�
 VIBE_COV_SHOW_BRANCH_GAPS=1 scripts/coverage_selfhost_fn.sh   # 未到達分岐が多い関数 top50
 ```
 
+#### 複数ワークロードのマージ
+
+単一ワークロードは経路が偏る: self-compile は parser/checker/codegen を踏むが
+printer（`print_expr`/`print_stmt`）は `normalize` でしか、Perceus RC
+（`pc_count`/`pc_emit`/`elaborate_rw`）は `VIBE_RC=1` でしか踏まれない。
+`coverage_selfhost_merge.sh` は **1 つの計測コンパイラ**を複数ワークロードで
+走らせ、ヒット bitmap を **union 合成**する（同一バイナリ＝同一 id なので
+正確に OR できる）。
+
+```bash
+scripts/coverage_selfhost_merge.sh                 # 既定: compile + normalize + rc
+scripts/coverage_selfhost_merge.sh extra1.vibe ... # 追加で各ファイルを FS-compile
+VIBE_COV_SHOW_BRANCH_GAPS=1 scripts/coverage_selfhost_merge.sh
+```
+
+実測（合成効果）: compile 単体 646fn/2436br → **merged 733fn(62.4%) /
+2835br(42.5%)**。`print_*` は normalize で、`pc_*`/`elaborate_rw` は rc で
+0% から点灯する。`_build/coverage/selfhost-merge/merged.json` に
+per-workload 内訳 + union 結果（`per_fn` / `top_gaps`）が出る。
+
+マージは **同一の計測バイナリ**を別ワークロードで回した結果にのみ有効
+（関数/分岐 id が一致するため）。別々にコンパイルしたモジュール同士は id が
+異なるのでマージ不可。runner 側は `VIBE_COV_RAW=1` のとき report に id 単位の
+bitmap（`raw.fn_bitmap` / `raw.branch_bitmap` + 静的な name/owner 表）を足す。
+
 仕組み:
 - `VIBE_COVERAGE=1` でコンパイルすると、codegen が
   - 各 user 関数の入口に「ヒットフラグを 1 立てる」store を挿入し（heap 直下の
