@@ -220,7 +220,7 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$fdir/in.vibe" "$fdir/out.vibe" >/dev/null 2>&1
 # 40 + 2*10 = 60; the arithmetic must be gone and `60` present.
-if ! grep -q "let x = 60" "$fdir/out.vibe" || grep -q "40 + 2" "$fdir/out.vibe"; then
+if ! grep -q "let x: Int = 60" "$fdir/out.vibe" || grep -q "40 + 2" "$fdir/out.vibe"; then
   echo "[selfhost-only-gate] FAIL: constant folding incorrect" >&2
   cat "$fdir/out.vibe" >&2; exit 1
 fi
