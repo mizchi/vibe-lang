@@ -97,6 +97,29 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
               }
               emit_i64_eq(buf)
               bytebuf_push(buf, 113)
+            } else if is_pbool(__sp) {
+              // #613: a boolean literal constructor sub-pattern must also be
+              // checked, else `C(false, x)` matches `C(true, _)` (the literal was
+              // treated as a wildcard). Bools are stored as tagged ints (false=0,
+              // true=1), so AND-in the same field-vs-literal test as PInt. This
+              // bug silently broke `match stmt { SEnum(false, ...) => ... }` in the
+              // compiler's own namespace pass, mis-namespacing exported enums.
+              emit_local_get(buf, scrut_local)
+              emit_i64_const(buf, -2)
+              emit_i64_and(buf)
+              emit_i32_wrap_i64(buf)
+              emit_i64_load(buf, 3, 8 + __ck * 8)
+              emit_i64_const(buf, if get_pbool_value(__sp) {
+                1
+              } else {
+                0
+              })
+              if ctx.enable_rc {
+                emit_i64_const(buf, 1)
+                emit_i64_shl(buf)
+              }
+              emit_i64_eq(buf)
+              bytebuf_push(buf, 113)
             } else if is_pstring(__sp) {
               let __sv = get_pstring_value(__sp)
               let __si = str_table_lookup(ctx.str_table.strs, __sv)
