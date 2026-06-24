@@ -6245,6 +6245,55 @@ let op_i64_extend_i32_u = 173
 let common_analysis_fresh_string_array: () -> Array[String] = () -> {
   ArrayBuilder::freeze(ArrayBuilder::new())
 }
+let rec collect_strings_pat: (Pat, Array[String]) -> Int = (pat, out) -> {
+  match pat {
+    PString(s) => {
+      let mut pf = false
+      let mut pi = 0
+      while pi < Array::length(out) {
+        if Array::get(out, pi) == s {
+          pf = true
+        }
+        pi = pi + 1
+      }
+      if !pf {
+        Array::push(out, s)
+      }
+      0
+    },
+    PCtor(_, args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        let _ = collect_strings_pat(Array::get(args, i), out)
+        i = i + 1
+      }
+      0
+    },
+    PTuple(pats) => {
+      let mut i = 0
+      while i < Array::length(pats) {
+        let _ = collect_strings_pat(Array::get(pats, i), out)
+        i = i + 1
+      }
+      0
+    },
+    POr(l, r) => {
+      let _ = collect_strings_pat(l, out)
+      let _ = collect_strings_pat(r, out)
+      0
+    },
+    PStruct(_, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        let _ = collect_strings_pat(fp, out)
+        i = i + 1
+      }
+      0
+    },
+    _ => 0
+  }
+}
 export let rec collect_strings_expr: (Expr, Array[String]) -> Int = (expr, out) -> {
   match expr {
     EString(s) => {
@@ -6333,23 +6382,7 @@ export let rec collect_strings_expr: (Expr, Array[String]) -> Int = (expr, out) 
       let mut i = 0
       while i < Array::length(arms) {
         let (pat, arm_expr) = Array::get(arms, i)
-        match pat {
-          PString(s) => {
-            let mut pf = false
-            let mut pi = 0
-            while pi < Array::length(out) {
-              if Array::get(out, pi) == s {
-                pf = true
-              }
-              pi = pi + 1
-            }
-            if !pf {
-              Array::push(out, s)
-            }
-            0
-          },
-          _ => 0
-        }
+        let _ = collect_strings_pat(pat, out)
         collect_strings_expr(arm_expr, out)
         i = i + 1
       }
@@ -12152,6 +12185,43 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
           emit_i32_load(buf, 2, 0)
           emit_i32_const(buf, expected_tag)
           emit_i32_eq(buf)
+          let __cargs_cond = get_pctor_args(__cond_p)
+          let mut __ck = 0
+          while __ck < Array::length(__cargs_cond) {
+            let __sp = Array::get(__cargs_cond, __ck)
+            if is_pint(__sp) {
+              emit_local_get(buf, scrut_local)
+              emit_i64_const(buf, -2)
+              emit_i64_and(buf)
+              emit_i32_wrap_i64(buf)
+              emit_i64_load(buf, 3, 8 + __ck * 8)
+              emit_i64_const(buf, get_pint_value(__sp))
+              if ctx.enable_rc {
+                emit_i64_const(buf, 1)
+                emit_i64_shl(buf)
+              }
+              emit_i64_eq(buf)
+              bytebuf_push(buf, 113)
+            } else {
+              if is_pstring(__sp) {
+                let __sv = get_pstring_value(__sp)
+                let __si = str_table_lookup(ctx.str_table.strs, __sv)
+                if __si >= 0 {
+                  let (__seq_fi, _, _) = resolve_func(ctx.func_table, "eq")
+                  emit_local_get(buf, scrut_local)
+                  emit_i64_const(buf, -2)
+                  emit_i64_and(buf)
+                  emit_i32_wrap_i64(buf)
+                  emit_i64_load(buf, 3, 8 + __ck * 8)
+                  emit_str_ref(buf, Array::get(ctx.str_table.offsets, __si), Array::get(ctx.str_table.lengths, __si))
+                  emit_call(buf, __seq_fi)
+                  emit_i32_wrap_i64(buf)
+                  bytebuf_push(buf, 113)
+                }
+              }
+            }
+            __ck = __ck + 1
+          }
           emit_if_i64(buf)
           0
         } else {
