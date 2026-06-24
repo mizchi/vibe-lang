@@ -276,4 +276,40 @@ fi
 rm -rf "$ndir"
 echo "[selfhost-only-gate] nested ctor sub-pattern regression ok"
 
+# 11. forward-reference regression (#602): a top-level `let` may reference another
+#     top-level `let` defined later in the same file. The checker now hoists
+#     top-level binding signatures, so this compiles instead of aborting with an
+#     opaque trap. A genuinely-undefined name must still error (no over-permit).
+echo "[selfhost-only-gate] 11/11 forward-reference regression"
+wdir="_build/_gate_fwdref"
+rm -rf "$wdir"; mkdir -p "$wdir"
+cat > "$wdir/fwd.vibe" <<'EOF'
+let early: () -> Int = () -> { late() }
+let late: () -> Int = () -> { 41 }
+export let _start: () -> Int = () -> { early() + 1 }
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$wdir/fwd.vibe" "$wdir/fwd.wasm" _start >/dev/null 2>&1
+if [ ! -s "$wdir/fwd.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: forward-reference program did not compile (#602 regressed: checker trap)" >&2; exit 1
+fi
+fwd_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$wdir/fwd.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$fwd_out" != "42" ]; then
+  echo "[selfhost-only-gate] FAIL: forward-reference mismatch (got '$fwd_out', want 42 -> #602 regressed)" >&2
+  exit 1
+fi
+# Guard: a genuinely-undefined name must still be rejected (hoist only adds names
+# that are actually defined later).
+printf 'export let _start: () -> Int = () -> { genuinely_undefined_name() }\n' > "$wdir/undef.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$wdir/undef.vibe" "$wdir/undef.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$wdir/undef.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: undefined name compiled (#602 hoist over-permitted)" >&2; exit 1
+fi
+rm -rf "$wdir"
+echo "[selfhost-only-gate] forward-reference regression ok"
+
 echo "[selfhost-only-gate] ok"
