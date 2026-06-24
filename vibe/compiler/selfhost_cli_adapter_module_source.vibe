@@ -28616,6 +28616,114 @@ let hoist_lambda_lets: (Array[Stmt]) -> Array[Stmt] = (stmts) -> {
   }
   out
 }
+let fold_int_binop: (String, Int, Int) -> Option[Int] = (op, a, b) -> {
+  if op == "+" {
+    Some(a + b)
+  } else if op == "-" {
+    Some(a - b)
+  } else if op == "*" {
+    Some(a * b)
+  } else {
+    None
+  }
+}
+let rec fold_expr: (Expr) -> Expr = (expr) -> {
+  match expr {
+    EInt(_) => expr,
+    EFloat(_) => expr,
+    EString(_) => expr,
+    EBool(_) => expr,
+    EIdent(_) => expr,
+    EUnit => expr,
+    EStringInterp(_) => expr,
+    ETuple(items) => ETuple(for it in items {
+      fold_expr(it)
+    }),
+    EArray(items) => EArray(for it in items {
+      fold_expr(it)
+    }),
+    ERecord(fields) => ERecord(for f in fields {
+      let (n, v) = f
+      (n, fold_expr(v))
+    }),
+    EIf(c, t, e) => EIf(fold_expr(c), fold_expr(t), fold_expr(e)),
+    ELet(n, v, b) => ELet(n, fold_expr(v), fold_expr(b)),
+    ELetRec(n, v, b) => ELetRec(n, fold_expr(v), fold_expr(b)),
+    ELetMut(n, v, b) => ELetMut(n, fold_expr(v), fold_expr(b)),
+    EAssign(n, v, b) => EAssign(n, fold_expr(v), fold_expr(b)),
+    EAssignOp(op, n, v, b) => EAssignOp(op, n, fold_expr(v), fold_expr(b)),
+    ESeq(a, b) => ESeq(fold_expr(a), fold_expr(b)),
+    EMatch(s, arms) => EMatch(fold_expr(s), for a in arms {
+      let (p, e) = a
+      (p, fold_expr(e))
+    }),
+    EHandle(s, arms) => EHandle(fold_expr(s), for a in arms {
+      let (p, e) = a
+      (p, fold_expr(e))
+    }),
+    EWhile(c, b) => EWhile(fold_expr(c), fold_expr(b)),
+    ELoop(params, b) => ELoop(for pr in params {
+      let (n, init) = pr
+      (n, fold_expr(init))
+    }, fold_expr(b)),
+    EForIn(n, idx, it, b) => EForIn(n, idx, fold_expr(it), fold_expr(b)),
+    ECall(callee, args) => ECall(fold_expr(callee), for a in args {
+      fold_expr(a)
+    }),
+    EBinOp(op, l, r) => {
+      let fl = fold_expr(l)
+      let fr = fold_expr(r)
+      match fl {
+        EInt(a) => match fr {
+          EInt(b) => match fold_int_binop(op, a, b) {
+            Some(v) => EInt(v),
+            None => EBinOp(op, fl, fr)
+          },
+          _ => EBinOp(op, fl, fr)
+        },
+        _ => EBinOp(op, fl, fr)
+      }
+    },
+    EUnaryOp(op, e) => EUnaryOp(op, fold_expr(e)),
+    EFn(tp, bounds, params, ret, eff, body) => EFn(tp, bounds, params, ret, eff, fold_expr(body)),
+    EDot(e, field) => EDot(fold_expr(e), field),
+    ELabeledArg(label, modifier, v) => ELabeledArg(label, modifier, fold_expr(v)),
+    EThrow(e) => EThrow(fold_expr(e)),
+    EReturn(e) => EReturn(fold_expr(e)),
+    EBreak(opt) => match opt {
+      Some(v) => EBreak(Some(fold_expr(v))),
+      None => EBreak(None)
+    },
+    EContinue(args) => EContinue(for a in args {
+      fold_expr(a)
+    }),
+    EMap(fields) => EMap(for f in fields {
+      let (k, v) = f
+      (k, fold_expr(v))
+    }),
+    ESpread(e) => ESpread(fold_expr(e))
+  }
+}
+let fold_stmt: (Stmt) -> Stmt = (stmt) -> {
+  match stmt {
+    SLet(exp, is_rec, name, ty, body) => SLet(exp, is_rec, name, ty, fold_expr(body)),
+    SLetMut(name, ty, body) => SLetMut(name, ty, fold_expr(body)),
+    STest(n, body) => STest(n, fold_expr(body)),
+    SBench(n, body) => SBench(n, fold_expr(body)),
+    SExpr(e) => SExpr(fold_expr(e)),
+    SLetPat(p, body) => SLetPat(p, fold_expr(body)),
+    _ => stmt
+  }
+}
+let fold_stmts: (Array[Stmt]) -> Array[Stmt] = (stmts) -> {
+  let out = empty_stmts()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    Array::push(out, fold_stmt(Array::get(stmts, i)))
+    i = i + 1
+  }
+  out
+}
 export let normalize_stmts: (Array[Stmt]) -> Array[Stmt] = (stmts) -> {
   let nonmods = empty_stmts()
   let mut i = 0
@@ -28646,7 +28754,7 @@ export let normalize_stmts: (Array[Stmt]) -> Array[Stmt] = (stmts) -> {
     m = m + 1
   }
   let promoted = promote_aggregate_exports(result, aggregate_export_names(stmts))
-  hoist_lambda_lets(drop_unused_type_aliases(promoted))
+  hoist_lambda_lets(fold_stmts(drop_unused_type_aliases(promoted)))
 }
 export let normalize_source: (String) -> String with { Error } = (src) -> {
   let stmts = parse_program(lex(src))

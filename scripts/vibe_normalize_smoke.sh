@@ -109,7 +109,22 @@ cat > "$WORK/generic.expected.vibe" <<'EOF'
 export let id = [T](x: T) -> T { x }
 EOF
 
-for case in 01 03 agg hoist generic; do
+# Constant folding: `+ - *` over int literals are folded (respecting precedence,
+# bottom-up): `1 + 2 * 3` -> `7`.
+cat > "$WORK/fold.in.vibe" <<'EOF'
+let x = 1 + 2 * 3
+export let run = () -> Int { x }
+export { run }
+EOF
+cat > "$WORK/fold.expected.vibe" <<'EOF'
+//# Functions
+
+let x = 7
+
+export let run: () -> Int = () -> { x }
+EOF
+
+for case in 01 03 agg hoist generic fold; do
   bash "$ROOT_DIR/scripts/vibe_normalize.sh" --stdout "$WORK/$case.in.vibe" > "$WORK/$case.got.vibe" 2>/dev/null
   if ! cmp -s "$WORK/$case.expected.vibe" "$WORK/$case.got.vibe"; then
     echo "[vibe-normalize-smoke] FAIL: fixture $case mismatch" >&2
@@ -133,4 +148,4 @@ if ! bash "$ROOT_DIR/scripts/vibe_normalize.sh" --check "$WORK/01.normalized.vib
   echo "[vibe-normalize-smoke] FAIL: --check rejected normalized file" >&2; exit 1
 fi
 
-echo "[vibe-normalize-smoke] ok (fixtures 01/03 + agg + hoist + generic + idempotent + --check)"
+echo "[vibe-normalize-smoke] ok (fixtures 01/03 + agg + hoist + generic + fold + idempotent + --check)"
