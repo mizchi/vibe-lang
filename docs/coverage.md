@@ -13,6 +13,33 @@
 関数が呼ばれたか（関数カバレッジ）と、どの `if`/`match` 分岐が実行されたか
 （分岐カバレッジ）を集計する。MoonBit host 不要（committed seed + node runner）。
 
+### CLI: `vibe test --coverage`
+
+ユーザーの **テスト対象**（テストファイルとその import）のカバレッジは
+`vibe test --coverage` で計測する。テストファイルを計測ビルドして実行し、
+どの関数・分岐がテストで踏まれたかを per-file + 集計で表示する。
+
+```bash
+scripts/vibe_test.sh --coverage path/to/foo_test.vibe   # 単一ファイル
+scripts/vibe_test.sh --coverage vibe/prelude            # ディレクトリ配下の *_test.vibe
+```
+
+出力例（負数入力を踏まないテストだと `n < 0` アームが未到達 → 3/4）:
+
+```
+ok   foo_test.vibe  [cov fn 3/3, branch 3/4]
+[vibe-test] 1 passed, 0 failed (1 files)
+[vibe-test] coverage: functions 3/3 (100.00%), branches 3/4 (75.00%) over 1 file(s)
+```
+
+per-file の JSON は `_build/vibe_test/coverage/<file>.json`
+（`{total,hit,missed,rate,hit_fns,missed_fns,branch{...}}`）。仕組みは
+`VIBE_FS_COMPILE` 経路が `VIBE_COVERAGE=1` を尊重して計測コンパイル
+（`compile_file_fs_mode_coverage`）するだけで、下記の self-compile 計測と同じ
+instrumentation を共有する。
+
+### コンパイラ自身を計測
+
 ```bash
 scripts/coverage_selfhost_fn.sh                  # 既定: コンパイラの self-compile を計測
 scripts/coverage_selfhost_fn.sh path/to/foo.vibe # foo.vibe をコンパイルする経路を計測 (FS mode)
