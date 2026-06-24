@@ -381,6 +381,97 @@ let render_section: (Array[Stmt], Int) -> String = (stmts, section) -> {
   }
 }
 
+//# Lambda-annotation hoisting
+
+let normalize_empty_type_exprs: () -> Array[TypeExpr] = () -> {
+  Array::slice([
+    TyUnit
+  ], 0, 0)
+}
+
+let all_params_typed: (Array[(String, Option[TypeExpr])]) -> Bool = (params) -> {
+  let mut i = 0
+  let mut ok = true
+  while i < Array::length(params) {
+    let (_, ty_opt) = Array::get(params, i)
+    match ty_opt {
+      Some(_) => 0,
+      None => {
+        ok = false
+        0
+      }
+    }
+    i = i + 1
+  }
+  ok
+}
+
+let param_type_list: (Array[(String, Option[TypeExpr])]) -> Array[TypeExpr] = (params) -> {
+  let out = normalize_empty_type_exprs()
+  let mut i = 0
+  while i < Array::length(params) {
+    let (_, ty_opt) = Array::get(params, i)
+    match ty_opt {
+      Some(ty) => Array::push(out, ty),
+      None => 0
+    }
+    i = i + 1
+  }
+  out
+}
+
+let strip_param_types: (Array[(String, Option[TypeExpr])]) -> Array[(String, Option[TypeExpr])] = (params) -> {
+  let out = Array::slice([
+    ("", None)
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(params) {
+    let (name, _) = Array::get(params, i)
+    Array::push(out, (name, None))
+    i = i + 1
+  }
+  out
+}
+
+// Canonicalize an old-syntax lambda binding `let f = (x: T) -> R { body }` to
+// the annotated form `let f: (T) -> R = (x) -> { body }`: move the parameter
+// types + return type into a `TyFn` let-annotation and strip them from the
+// lambda. Only when the let has no annotation yet, the value is a return-type
+// annotated lambda, and every parameter carries a type (full type recoverable).
+let hoist_lambda_let: (Stmt) -> Stmt = (stmt) -> {
+  match stmt {
+    SLet(exp, is_rec, name, ty, value) => match ty {
+      Some(_) => stmt,
+      None => match value {
+        EFn(type_params, bounds, params, ret_opt, effect, body) => match ret_opt {
+          None => stmt,
+          // Skip generic lambdas: their `[T]` type params scope the lambda, not
+          // the let annotation, so hoisting `[T](x: T) -> T` to `: (T) -> T =
+          // [T](x) -> {...}` would leave `T` unbound in the annotation and the
+          // normalized output would not compile.
+          Some(ret_ty) => if Array::length(type_params) == 0 && all_params_typed(params) {
+            SLet(exp, is_rec, name, Some(TyFn(param_type_list(params), ret_ty, effect)), EFn(type_params, bounds, strip_param_types(params), None, None, body))
+          } else {
+            stmt
+          }
+        },
+        _ => stmt
+      }
+    },
+    _ => stmt
+  }
+}
+
+let hoist_lambda_lets: (Array[Stmt]) -> Array[Stmt] = (stmts) -> {
+  let out = empty_stmts()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    Array::push(out, hoist_lambda_let(Array::get(stmts, i)))
+    i = i + 1
+  }
+  out
+}
+
 // DCE is name-based, so it must run while module members still carry their
 // short names (a body says `helper()`, not `math::helper()`). We therefore DCE
 // each scope before flattening renames its bindings:
@@ -416,7 +507,7 @@ export let normalize_stmts: (Array[Stmt]) -> Array[Stmt] = (stmts) -> {
     m = m + 1
   }
   let promoted = promote_aggregate_exports(result, aggregate_export_names(stmts))
-  drop_unused_type_aliases(promoted)
+  hoist_lambda_lets(drop_unused_type_aliases(promoted))
 }
 
 export let normalize_source: (String) -> String with { Error } = (src) -> {
