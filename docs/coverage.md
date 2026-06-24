@@ -171,9 +171,40 @@ compile+run すると、コンパイラの型/trait/env 関数を**直接** edge
 scripts/coverage_selfhost_driver.sh   # corpus acc.json へ (fn,local_branch) キーで union
 ```
 
+driver は flat source の全 top-level 関数（export 有無を問わず同一ファイル内で
+in-scope）を直接叩ける。型/trait/env に加え以下も edge-case 入力で網羅する:
+- **tk_name / is_non_pipe_infix**: 全 Token variant を構築して呼ぶ
+  (tk_name 38→86/87、is_non_pipe_infix 2→19/19)。各 token の error 表示 arm は
+  パーサが各 token で失敗しないと踏めないが、driver は 1 回で全部踏む。
+- **persistent-cache parsers**: `parse_persistent_manifest_header_cache` /
+  `source_list_cache` / `source_group_cache` / `split_header_values` を多様な
+  TSV 文字列で呼ぶ。FS compile 経路では grouped path が辿らず 0% だが純粋
+  String parser なので直接到達 (manifest_header_cache 0→18/26 等)。
+- **canonical_builtin_name**: 全 Fs/Env/Profiler builtin 名で呼ぶ (2→20/20)。
+- **Expr 系**: 全 Expr variant を構築し `expr_projects_or_matches` (18→46/60)・
+  `desugar_loop_body` (12→23/26)・`rewrite_private_type_ctor_expr` (16→34/35)。
+- 一方 `compile_*` / `check_expr` / `fold_expr` 等は 728-file corpus が compile
+  時に必ず通すので driver からは +0〜+4（冗長）。
+
 実測（黒箱 corpus + driver + test-execution の union）:
-**分岐 4749/6694 (70.94%)**・関数 1026/1176 (87.24%)。
-内訳: corpus 68.76% → +driver 70.44% (+112) → +test-exec 70.94% (+34)。
+**分岐 4955/6694 (74.02%)**・関数 1026/1176 (87.24%)。
+内訳: corpus 68.76% → +driver 74.0% (+255) → +test-exec 74.02%。
+
+#### 80% への残差（74% で頭打ちの理由）
+
+残 ~1740 dark の主因:
+- `compile_call`(52: 大半が Stream/Task/Future の async builtin。async プログラム
+  が examples に無い)・`compile_wasi_module_linked_impl`(45: compile mode/flag)・
+  `compile_expr`(39)・`check_expr`(50) 等は **コンパイラ自身の unit test**
+  (`*_test.vibe`) が深い arm を踏むが、120/148 が **builtins⇄checker の循環
+  re-export** で FS-compile 不能（recursive collection が cyclic facade を辿ると
+  heap OOB / `import cycle detected`）。manifest self-compile は通るので gate に
+  影響しないが、解放には循環 re-export を recursive 経路で扱う設計変更が要る。
+- host が shadow する関数（`__to_string` 24: runtime builtin が intercept）・
+  Fs 状態依存（`matches_cached_file_spec` 20）等は構造的に到達不能。
+
+**80% は循環 re-export 対応（120 test の解放）が前提**。driver は解放され次第
+そのまま (fn,local) merge でスケールする。
 
 **80% への壁は「コンパイラ自身のユニットテスト 148 本中 120 本が FS-compile
 できない」こと**。原因は **import cycle の明示的拒否**:
