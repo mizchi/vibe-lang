@@ -155,6 +155,26 @@ diamond import）で namespace 経路も点灯（`namespace_private_value_stmts`
 実測（黒箱 corpus + test-execution）: **分岐 4695/6694 (70.1%)**・関数 87%。
 black-box corpus 単体は 68.8%。
 
+#### driver 計測（cyclic blocker を迂回した直接呼び出し）
+
+flat module source（`selfhost_cli_adapter_module_source.vibe` = コンパイラ全体を
+import 無しで 1 ファイルに inline したもの）は循環 re-export を持たない。ここへ
+`scripts/coverage/cov_driver.vibe` を append し、entry `cov_driver_main` で
+compile+run すると、コンパイラの型/trait/env 関数を**直接** edge-case 入力で
+叩ける（`type_to_string`/`serialize_type` を全 Type variant、`unify`/`types_equal`
+を全ペア、trait 付き TypeEnv で `trait_supers`/`type_implements_trait`、
+`canonical_builtin_name`/`lookup_array_group_b`/`type_name_prefix` 等）。
+黒箱 compile では絶対に踏めない arm が点灯する: `type_to_string` 3→27/29、
+`types_equal` 66→83/99、`subst_apply` ~0→21/22、`type_name_prefix` 0→13/13。
+
+```bash
+scripts/coverage_selfhost_driver.sh   # corpus acc.json へ (fn,local_branch) キーで union
+```
+
+実測（黒箱 corpus + driver + test-execution の union）:
+**分岐 4749/6694 (70.94%)**・関数 1026/1176 (87.24%)。
+内訳: corpus 68.76% → +driver 70.44% (+112) → +test-exec 70.94% (+34)。
+
 **80% への壁は「コンパイラ自身のユニットテスト 148 本中 120 本が FS-compile
 できない」こと**。原因は **import cycle の明示的拒否**:
 `builtins.vibe` が `export ./checker {...}`、`checker/index.vibe` が
