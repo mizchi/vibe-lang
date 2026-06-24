@@ -89,26 +89,66 @@ bitmap（`raw.fn_bitmap` / `raw.branch_bitmap` + 静的な name/owner 表）を�
 走らせ、全 run を union する。
 
 ```bash
-scripts/coverage_selfhost_corpus.sh                 # 既定: examples fixtures
+scripts/coverage_selfhost_corpus.sh                 # 既定: examples fixtures + 生成エラーコーパス
 VIBE_COV_MAX=200 scripts/coverage_selfhost_corpus.sh
 VIBE_COV_SHOW_BRANCH_GAPS=1 scripts/coverage_selfhost_corpus.sh
 ```
 
-実測（669 ファイル + base self-compile + RC-stress）:
-**関数 929/1174 (79.1%)・分岐 4024/6679 (60.3%)**。`_build/coverage/selfhost-corpus/`
+corpus は base self-compile / RC-stress に加えて以下のワークロードを束ねる:
+- **cache-orch**: `selfhost_sources_manifest.tsv` を持つコンパイラツリーと
+  複数 import の example を、`_build/vibe_selfhost_*` の各キャッシュファイルを
+  選択的に無効化しながら繰り返し compile する。これにより
+  persistent-cache の read 経路（`parse_persistent_*_cache` /
+  `matches_cached_file_spec` / `scan_header_*` / `serialize_type` 等、
+  単発 compile では絶対に踏めない分岐）が点灯する（`serialize_type` は
+  0→17/19 に上がった）。
+- **生成エラーコーパス** (`scripts/coverage_gen_errcorpus.sh` →
+  `_build/errcorpus/`): 意図的に ill-typed / mis-parse なプログラムを多数生成。
+  「失敗 compile も abort 時に bitmap を dump する」修正（commit 1ea7b6f）と
+  併せて、診断系関数（`tk_name` / `type_to_string` / `check_expr` の防御アーム）
+  を点灯させる。
+
+実測（examples + fixtures + errcorpus + cache-orch + RC-stress, 626+ files）:
+**関数 1020/1174 (86.9%)・分岐 4490/6679 (67.2%)**。`_build/coverage/selfhost-corpus/`
 に `acc.json`（running union）/ `merged.json` / `fails.txt`。
 
 注意点（ドッグフーディングで判明）:
 - **計測対象は「コンパイル」のみ**。生成された wasm を実行しても、それは別の
   （非計測）バイナリなので計測コンパイラのカバレッジは増えない。
-- 失敗ファイルは bitmap を残さない（失敗 compile は寄与 0）。**エントリ名は
-  ファイルに実在するものを選ぶ**こと（test ファイルは sentinel → `_start`）。
-  この修正前は test ファイルが軒並み main 解決に失敗し寄与 0 だった。
+- 失敗ファイルも abort 時に bitmap を dump する（commit 1ea7b6f 以降）。
+  **エントリ名はファイルに実在するものを選ぶ**こと（test ファイルは
+  sentinel → `_start`）。
 - bump モード（既定）は Perceus（`pc_*`/`elaborate_rw`）を踏まないので、
   heap-heavy な小プログラムを `VIBE_RC=1` で別途 compile する RC-stress を含める。
-- 残ギャップの上位はエラー経路（`check_expr`/`unify`/`tk_name` 等の防御分岐）と
-  trait/cache の未踏経路。trait モジュールの単体 FS-compile は trap するため、
-  実テストスイート全体での計測は別途 FS-path 修正が要る（既知の制約）。
+
+#### 分岐カバレッジの実効上限（2026-06-24, ブラックボックス計測）
+
+`vibe test --coverage` / corpus は **「コンパイラに任意の入力を食わせて
+コンパイルさせる」ブラックボックス計測**なので、構造的な上限がある。
+広いコーパス + cache-orch + error/feature corpus を総動員しても **分岐 ~67%
+で頭打ち**になる（関数は ~87%）。未到達 ~2189 分岐の内訳:
+
+| 区分 | 未到達分岐 | 性質 |
+|------|-----------|------|
+| 散在する防御アーム（"other", 371 fns） | ~795 | 各関数 1〜2 個の "should not happen" throw / レアパス。関数ごとに専用トリガが要る |
+| parser 防御アーム | ~301 | 特定トークンが unexpected になる組合せ（`tk_name` の 87 アームは各トークン種ごとに別プログラムが要る） |
+| persistent-cache 状態 | ~272 | manifest header 再読込・fingerprint mismatch 等、多段の cache 状態を厳密に作り込む必要 |
+| checker アーム（`check_expr`/`unify`/`types_equal`） | ~239 | 大半が型エラー診断・防御分岐 |
+| codegen アーム（`compile_call`/`compile_expr`/`compile_wasi_*`） | ~201 | builtin dispatch・compile mode/flag の分岐 |
+| import/module rewrite | ~191 | private 値/型・alias import の multi-file 構成が要る |
+| 診断フォーマット（`type_to_string`/`__to_string`/`tk_name`） | ~190 | 各型/トークン形ごとにエラーを起こす専用入力が要る。`__to_string`(24) は通常 compile 経路で呼ばれない |
+
+**80% は本計測方式では非現実的**（仮に攻めやすい import/module + cache +
+checker/parser を全部取っても ~75% 止まり、残る "other" 795 が壁）。
+80% 級を狙うなら方式自体を変える必要がある:
+1. 計測コンパイラを `vibe/compiler/**/*_test.vibe` のような **内部関数を直接
+   呼ぶユニットテスト**経由で動かす（ただし現状の instrument は「コンパイル中の
+   実行」しか数えないため、テストを *コンパイル* するだけでは内部関数は走らない。
+   テスト実行も計測対象に含める runner 拡張が要る）。
+2. 到達不能な防御 throw を `assert`/型で消す（分母の正規化）。
+
+現実的な KPI: **分岐は 65% を下限ガード**として回帰検知に使い、関数（~87%）を
+主 KPI とする。新機能で関数カバレッジが落ちたら穴を埋める運用が費用対効果に合う。
 
 仕組み:
 - `VIBE_COVERAGE=1` でコンパイルすると、codegen が
