@@ -32,6 +32,15 @@ ok   foo_test.vibe  [cov fn 3/3, branch 3/4]
 [vibe-test] coverage: functions 3/3 (100.00%), branches 3/4 (75.00%) over 1 file(s)
 ```
 
+`vibe run --coverage`（単一プログラムを実行しつつ計測）も同じ仕組み:
+
+```bash
+scripts/vibe_run.sh --coverage path/to/prog.vibe [entry]
+```
+
+プログラムの出力は stdout、`[vibe-cov]` サマリは stderr、JSON は
+`_build/vibe_run/<name>.cov.json`。
+
 per-file の JSON は `_build/vibe_test/coverage/<file>.json`
 （`{total,hit,missed,rate,hit_fns,missed_fns,branch{...}}`）。仕組みは
 `VIBE_FS_COMPILE` 経路が `VIBE_COVERAGE=1` を尊重して計測コンパイル
