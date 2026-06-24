@@ -190,40 +190,80 @@ in-scope）を直接叩ける。型/trait/env に加え以下も edge-case 入�
 **分岐 4955/6694 (74.02%)**・関数 1026/1176 (87.24%)。
 内訳: corpus 68.76% → +driver 74.0% (+255) → +test-exec 74.02%。
 
-#### 80% への残差（74% で頭打ちの理由）
+#### 80% 達成（no-DCE merged source + direct-call drivers）
 
-残 ~1740 dark の主因:
-- `compile_call`(52: 大半が Stream/Task/Future の async builtin。async プログラム
-  が examples に無い)・`compile_wasi_module_linked_impl`(45: compile mode/flag)・
-  `compile_expr`(39)・`check_expr`(50) 等は **コンパイラ自身の unit test**
-  (`*_test.vibe`) が深い arm を踏むが、120/148 が **builtins⇄checker の循環
-  re-export** で FS-compile 不能（recursive collection が cyclic facade を辿ると
-  heap OOB / `import cycle detected`）。manifest self-compile は通るので gate に
-  影響しないが、解放には循環 re-export を recursive 経路で扱う設計変更が要る。
-- host が shadow する関数（`__to_string` 24: runtime builtin が intercept）・
-  Fs 状態依存（`matches_cached_file_spec` 20）等は構造的に到達不能。
+**分岐 5378/6694 (80.34%)**・関数 1037/1176 (88.18%) に到達。
+74% で頭打ちだった主因（コンパイラ自身の unit test 120/148 が builtins⇄checker
+の循環 re-export で FS-compile 不能）を、**循環 re-export を直さずに**回避した。
 
-**80% は循環 re-export 対応（120 test の解放）が前提**。driver は解放され次第
-そのまま (fn,local) merge でスケールする。
+鍵は **no-DCE merged source** (`_build/coverage/merged_nodce.vibe`)。flat module
+source (`selfhost_cli_adapter_module_source.vibe`) は `build_module_source_from_source`
+が entry `cli_main` から DCE するため、テストだけが使う ~530 関数が欠落していた。
+代わりに `build_exact_adapter_merged_source` 相当の **DCE 前 merged source**
+（manifest 全ファイルを import 除去で連結 = 全 top-level 関数が in-scope、しかも
+import 文が無いので循環 re-export blocker も踏まない）を base にする。
 
-**80% への壁は「コンパイラ自身のユニットテスト 148 本中 120 本が FS-compile
-できない」こと**。原因は **import cycle の明示的拒否**:
-`builtins.vibe` が `export ./checker {...}`、`checker/index.vibe` が
-`export ./builtins.vibe {...}` で **builtins ↔ checker の循環 re-export** を成す。
-self-compile は manifest（明示 group 化）経由なので通るが、テストは manifest に
-無いので recursive 収集 → `ensure_fingerprint_fs_go`
-(`runtime/typecheck_fs.vibe:400`) の `throw("type_db: import cycle detected")` で
-失敗する（最小再現: 3 ファイルの相互 `export ./other.vibe {...}`）。この 120 本が
-通れば checker/codegen の深いアーム（`compile_call`/`check_expr`/`unify`/
-`types_equal`）が test-execution で大量に点灯し 80% 級が射程に入る。
-解放には recursive FS 経路での循環 re-export 対応（または compiler module の
-脱循環）が要る — 設計レベルの別タスク。self-compile は manifest 経路で独立なので
-gate には影響しない。
+この base へ小さな entry を append し、coverage 付き compile+run して実行分岐を
+corpus acc.json に (fn_name, local_branch_index) キーで union する。分母（seed
+コンパイラの分岐）は不変なので、seed に存在する関数の未踏 arm だけが点灯する。
 
-到達不能な防御 throw を `assert`/型で消す（分母の正規化）も併用しうる。
+レバー別の寄与（76.25% から）:
+- **no-DCE unit-tests** (`coverage_selfhost_unittests.sh` + `VIBE_COV_FLAT`):
+  flat の代わりに no-DCE merged を base にし、`*_test.vibe` を 28→**68 本**実行
+  (+82)。残 80 本は seed に無い standalone module（`desugar`/`monoify`/`cst_lower`/
+  `analyze_purity` 等）を import するため分母外で無意味。
+- **direct-call drivers** (`coverage_selfhost_drivers.sh`): seed の under-tested
+  関数を crafted 入力で直接叩く。**黒箱 compile では構造的に踏めない category**:
+  - `cov_async.vibe`: inlined async/stream builtin (`Task::spawn`/`Stream::map`/
+    `await`/…) — examples に async プログラムが無い (+32)。
+  - `cov_lookup.vibe`: builtin name→Type dispatch chain
+    (`lookup_array_group_b`/`lookup_io_b`) を全 builtin 名で呼ぶ (+25)。
+  - `cov_cachetext.vibe`: persistent-cache フォーマット parser の version/arity/
+    unknown-tag/CR arm を crafted TSV で (+16)。
+  - `cov_units.vibe` / `cov_units2.vibe`: 小 helper を直接呼ぶ
+    (`strip_trailing_cr`/`emit_assignop_op`/`lookup_iter_intrinsic`/
+    `matches_cached_file_spec` の exists/stat/fingerprint 全 arm 等) (+26)。
+  - `cov_traitenv.vibe`: `type_implements_check_super` の TypeEnv 全 variant
+    (`EnvTraitImpl` の eq+sub/eq+nosub/neq、`EnvFlat`/`EnvCached`/…) を構築 (+11)。
+  - `cov_link.vibe`: `compile_wasi_module_linked_impl` の linked_imports>0 /
+    library_mode arm（shipped compiler では DCE 済み caller 経由でしか到達不能）
+    を synthetic linked import で直接 (+11)。
+  - `cov_builtins.vibe` / `cov_parse.vibe`: Array/String/Map/Bytes builtin、parser
+    arm（多くは self-compile で既出、残差を補う）。
+- **manifest-header cache** (`coverage_selfhost_manifestcache.sh`): 非 special な
+  manifest project を cold/warm/部分 invalidation で FS-compile し、
+  `matches_cached_file_spec`/`try_collect_manifest_source_groups_fs`/
+  `collect_needed_paths_from_manifest_headers` を点灯 (+32)。コンパイラ自身の
+  manifest は cold で trap するため cache が書かれず、この cluster が dark だった。
+- **multi-module merge** (`coverage_selfhost_multimodule.sh`): 非 entry module が
+  private let/enum/struct/type-alias を持ち、entry が同名 export を別 alias で
+  import する（衝突）project を FS-compile → `namespace_private_value_stmts`/
+  `append_import_alias_collision_defs_from_sources` 系を点灯 (+16)。
+- **feature programs** (`coverage_selfhost_features.sh`): trait/効果/mut capture/
+  pattern 等の breadth (+14)。
 
-現実的な KPI: **分岐は 68% を下限ガード**として回帰検知に使い、関数（~87%）を
-主 KPI とする。test-execution は cycle 対応が入り次第スケールする。
+再現:
+```bash
+scripts/coverage_selfhost_corpus.sh        # base acc.json + compiler_cov.wasm
+scripts/coverage_selfhost_unittests.sh     # VIBE_COV_FLAT=_build/coverage/merged_nodce.vibe で再実行も可
+scripts/coverage_selfhost_drivers.sh       # async/lookup/cachetext/units/traitenv/link/…
+scripts/coverage_selfhost_manifestcache.sh
+scripts/coverage_selfhost_multimodule.sh
+scripts/coverage_selfhost_features.sh
+```
+
+#### 構造的に到達不能な残差（~19 dark）
+
+80% 到達後も残るのは大半が構造的:
+- `__to_string`(18): runtime builtin が intercept する host-shadowed 関数（vibe
+  本体は dead）。
+- `compile_wasi_module_linked_impl` 残 arm: 実 linked dep の resolved_type_stmts
+  を要する path（synthetic linked import では届かない）。
+- `check_expr`/`compile_expr`/`compile_call` の深い防御 arm: 728-file corpus が
+  既に飽和しており、ordinary/error プログラムでは +0（battery/error 実測で確認）。
+
+KPI: **分岐 80% を下限ガード**、関数（~88%）と併用。driver suite は
+seed に新関数が増えても (fn,local) merge でそのままスケールする。
 
 仕組み:
 - `VIBE_COVERAGE=1` でコンパイルすると、codegen が

@@ -1,0 +1,57 @@
+
+// #cov unit driver 2 (Fs): cover the Fs-touching validators and parse-time
+// helpers that need crafted inputs — matches_cached_file_spec (every
+// exists/stat-token/fingerprint arm), collect_import_deps_from_stmts,
+// parse_struct_fields_rest, has_non_pipe_infix_top. Requires _build/covproj/a.vibe
+// to exist (the harness recreates it before running).
+let cov_u2_spec: (String, String, String) -> Int = (path, stat, fp) -> {
+  handle { if matches_cached_file_spec(path, stat, fp) { 1 } else { 0 } } with Error { Throw(_) => 0 }
+}
+let cov_u2_parse: (String) -> Array[Stmt] = (src) -> {
+  handle { load_and_parse(src) } with Error { Throw(_) => Array::slice([SExpr(EInt(0))], 0, 0) }
+}
+let cov_u2_infix: (String) -> Int = (src) -> {
+  handle {
+    let toks = lex(src)
+    if has_non_pipe_infix_top(toks, 0, Array::length(toks)) { 1 } else { 0 }
+  } with Error { Throw(_) => 0 }
+}
+
+export let cov_units2_main: () -> Int with { Error, Fs } = () -> {
+  let mut acc = 0
+  let p = "_build/covproj/a.vibe"
+  // real fingerprint + stat token for the existing file
+  let fp = handle { compact_string_fingerprint(Fs::read_file(p)) } with Error { Throw(_) => "" }
+  let stat = handle { __to_string(Fs::stat_token(p)) } with Error { Throw(_) => "" }
+  // 1. non-existent file -> false arm
+  acc = acc + cov_u2_spec("_build/covproj/__no_such__.vibe", stat, fp)
+  // 2. exists + matching stat token -> true arm
+  acc = acc + cov_u2_spec(p, stat, fp)
+  // 3. exists + mismatched stat + matching fingerprint -> fingerprint-true arm
+  acc = acc + cov_u2_spec(p, "0:0:0", fp)
+  // 4. exists + mismatched stat + mismatched fingerprint -> false arm
+  acc = acc + cov_u2_spec(p, "0:0:0", "deadbeef")
+  // 5. exists + mismatched stat + empty fingerprint -> false arm
+  acc = acc + cov_u2_spec(p, "0:0:0", "")
+  // 6. exists + no stat token + matching fingerprint -> true arm
+  acc = acc + cov_u2_spec(p, "", fp)
+  // 7. exists + no stat token + mismatched fingerprint -> false arm
+  acc = acc + cov_u2_spec(p, "", "deadbeef")
+  // 8. exists + no stat token + empty fingerprint -> false arm
+  acc = acc + cov_u2_spec(p, "", "")
+  // collect_import_deps_from_stmts on real imports under covproj
+  let istmts = cov_u2_parse("import ./b.vibe { b_val }\nimport ./c.vibe { c_val }\nexport let main: () -> Int = () -> { 0 }")
+  acc = acc + handle { Array::length(collect_import_deps_from_stmts(istmts, "_build/covproj")) } with Error { Throw(_) => 0 }
+  // parse_struct_fields_rest: varied struct declarations (multi-field, derive, nested types)
+  acc = acc + Array::length(cov_u2_parse("struct A { x: Int }"))
+  acc = acc + Array::length(cov_u2_parse("struct B { a: Int; b: String; c: Array[Int] } derive(Eq)"))
+  acc = acc + Array::length(cov_u2_parse("struct C { only: (Int, String) -> Bool }"))
+  acc = acc + Array::length(cov_u2_parse("struct D { p: Option[Int]; q: Map[String, Int]; r: Box[Pair[Int, Int]] }"))
+  // has_non_pipe_infix_top: pipe-only vs has-infix token streams
+  acc = acc + cov_u2_infix("a + b")
+  acc = acc + cov_u2_infix("a |> b |> c")
+  acc = acc + cov_u2_infix("a")
+  acc = acc + cov_u2_infix("a * b + c - d")
+  acc = acc + cov_u2_infix("f(x) |> g")
+  acc
+}

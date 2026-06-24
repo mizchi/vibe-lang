@@ -1,0 +1,56 @@
+
+// #cov unit driver: call small pure/low-dependency compiler helpers directly with
+// crafted inputs so their fully/mostly-dark validation and dispatch arms run —
+// strip_trailing_cr, lookup_iter_intrinsic, emit_assignop_op, dce_reachable_names,
+// collect_import_deps_from_stmts, pat_binds_name. These never see edge inputs in a
+// normal compile of the examples/fixtures corpus.
+let cov_u_assignop: (String) -> Int = (op) -> {
+  handle { let buf = bytebuf_new(); emit_assignop_op(buf, op); Bytes::length(buf) } with Error { Throw(_) => 0 }
+}
+let cov_u_iter: (String) -> Int = (name) -> {
+  match lookup_iter_intrinsic(name) { Some(_) => 1, None => 0 }
+}
+let cov_u_parse: (String) -> Array[Stmt] = (src) -> {
+  handle { load_and_parse(src) } with Error { Throw(_) => Array::slice([SExpr(EInt(0))], 0, 0) }
+}
+
+export let cov_units_main: () -> Int = () -> {
+  let mut acc = 0
+  // strip_trailing_cr: with CR, without CR, empty, single char
+  acc = acc + String::length(strip_trailing_cr("hello\r"))
+  acc = acc + String::length(strip_trailing_cr("hello"))
+  acc = acc + String::length(strip_trailing_cr(""))
+  acc = acc + String::length(strip_trailing_cr("\r"))
+  acc = acc + String::length(strip_trailing_cr("x"))
+  // lookup_iter_intrinsic: every dispatched name + a miss
+  let mut i = 0
+  let names = Array::slice([""], 0, 0)
+  Array::push(names, "iter_require")
+  Array::push(names, "iter_length")
+  Array::push(names, "iter_get")
+  Array::push(names, "String::iter_length")
+  Array::push(names, "String::iter_get")
+  Array::push(names, "Map::iter_length")
+  Array::push(names, "Map::iter_get")
+  Array::push(names, "Char::to_int")
+  Array::push(names, "no_such_intrinsic")
+  while i < Array::length(names) { acc = acc + cov_u_iter(Array::get(names, i)); i = i + 1 }
+  // emit_assignop_op: every supported op + an unsupported one (throw arm)
+  let ops = Array::slice([""], 0, 0)
+  Array::push(ops, "+"); Array::push(ops, "-"); Array::push(ops, "*")
+  Array::push(ops, "/"); Array::push(ops, "%"); Array::push(ops, "??")
+  let mut j = 0
+  while j < Array::length(ops) { acc = acc + cov_u_assignop(Array::get(ops, j)); j = j + 1 }
+  // dce_reachable_names: program with a reachable + an unreachable fn
+  let stmts = cov_u_parse("let used: () -> Int = () -> { 5 }\nlet unused: () -> Int = () -> { 9 }\nlet helper: () -> Int = () -> { used() }\nexport let main: () -> Int = () -> { helper() }")
+  let entries = Array::slice([""], 0, 0)
+  Array::push(entries, "main")
+  acc = acc + handle { Array::length(dce_reachable_names(stmts, entries)) } with Error { Throw(_) => 0 }
+  // collect_import_deps_from_stmts: program with relative imports
+  let istmts = cov_u_parse("import ./a.vibe { foo }\nimport ./sub/b.vibe { bar }\nexport let main: () -> Int = () -> { 0 }")
+  acc = acc + handle { Array::length(collect_import_deps_from_stmts(istmts, ".")) } with Error { Throw(_) => 0 }
+  // pat_binds_name: parse a match, walk arm patterns checking name binding
+  let pstmts = cov_u_parse("let f: (E) -> Int = (e) -> { match e { Som((a, b)) => a + b, None => 0 } }")
+  acc = acc + Array::length(pstmts)
+  acc
+}

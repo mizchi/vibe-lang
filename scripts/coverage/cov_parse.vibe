@@ -1,0 +1,50 @@
+
+// #cov parse driver: parser arms (parse_impl_block / parse_impl_dispatch /
+// parse_type_impl / parse_postfix / parse_pattern / parse_stmt /
+// parse_struct_fields_rest / has_non_pipe_infix_top) run during PARSE, before any
+// typecheck/codegen — so syntactically-diverse sources cover them even when they
+// would not compile. load_and_parse each, swallowing errors.
+let cov_parse_one: (String) -> Int = (src) -> {
+  handle { Array::length(load_and_parse(src)) } with Error { Throw(_) => 0 }
+}
+
+export let cov_parse_main: () -> Int = () -> {
+  let progs = Array::slice([""], 0, 0)
+  // trait + impl blocks with method bodies (parse_impl_block / parse_impl_dispatch / parse_type_impl)
+  Array::push(progs, "trait Callable {\n  call_it(Self) -> Int\n}\nimpl Callable for (x: Int, y~: String) -> Int {\n  call_it = (f) -> Int { f(0, y=\"hi\") }\n}")
+  Array::push(progs, "trait Show {\n  describe(Self) -> Int\n  label(Self) -> String\n}\nimpl Show for Int {\n  describe = (s) -> Int { s }\n  label = (s) -> String { \"n\" }\n}")
+  Array::push(progs, "trait Eq2\ntrait Ord2: Eq2\nimpl Eq2 for Int\nimpl Ord2 for Int\nimpl [T: Eq2] Eq2 for Array[T]\nimpl [T: Eq2, U: Ord2] Eq2 for (T, U)")
+  Array::push(progs, "open trait Render\nexport open trait Draw\nimpl Render for String\nimpl Draw for (x: Int) -> Int {\n  paint = (f) -> Int { f(1) }\n}")
+  Array::push(progs, "trait Monoid {\n  empty() -> Self\n  combine(Self, Self) -> Self\n}\nimpl Monoid for Int {\n  empty = () -> Int { 0 }\n  combine = (a, b) -> Int { a + b }\n}")
+  // postfix chains (parse_postfix): field/index/call/method/.0 mixes
+  Array::push(progs, "let f: () -> Int = () -> { a.b.c.d.e }")
+  Array::push(progs, "let f: () -> Int = () -> { xs[0][1][2].field.0 }")
+  Array::push(progs, "let f: () -> Int = () -> { obj.method(1).other(2)[3].field }")
+  Array::push(progs, "let f: () -> Int = () -> { a().b().c().d() }")
+  Array::push(progs, "let f: () -> Int = () -> { x.0.1.2 }")
+  // patterns (parse_pattern): nested, or, struct, tuple, literal, wildcard, guards
+  Array::push(progs, "let f: (Int) -> Int = (x) -> { match x { 0 | 1 | 2 => 1, _ => 0 } }")
+  Array::push(progs, "let f: (E) -> Int = (e) -> { match e { A(B(c), D::{ x, y }) => c + x + y, _ => 0 } }")
+  Array::push(progs, "let f: (E) -> Int = (e) -> { match e { (1, \"two\", true) => 1, (a, b, c) => 0 } }")
+  Array::push(progs, "let f: (E) -> Int = (e) -> { match e { Some([a, b, c]) => a, Some([]) => 0, None => -1 } }")
+  Array::push(progs, "let f: (E) -> Int = (e) -> { match e { P::{ x: 0, y } => y, P::{ x, y: 0 } => x, P::{ x, y } => x + y } }")
+  // struct fields (parse_struct_fields_rest): annotations, defaults, derive
+  Array::push(progs, "struct Big { a: Int; b: String; c: Array[Int]; d: (Int, Int); e: Option[Int] } derive(Eq)")
+  Array::push(progs, "struct Nested { inner: Box[Pair[Int, String]]; list: Array[Array[Int]] }")
+  // misc stmt forms (parse_stmt)
+  Array::push(progs, "let (a, b, c): (Int, Int, Int) = (1, 2, 3)\nlet [x, y] = [10, 20]\nlet mut counter: Int = 0")
+  Array::push(progs, "type Alias1 = Int\ntype Alias2[T] = Array[T]\ntype Fn = (Int, String) -> Bool\nsuberror E1(Int)\nsuberror E2(String, Int)")
+  Array::push(progs, "effect Multi {\n  Op1(Int) -> Int\n  Op2(String, Int) -> Bool\n  Op3() -> Unit\n}")
+  // infix precedence (has_non_pipe_infix_top / parse_infix)
+  Array::push(progs, "let f: () -> Int = () -> { 1 + 2 * 3 - 4 / 2 % 3 << 1 >> 1 & 7 | 8 ^ 2 }")
+  Array::push(progs, "let f: () -> Bool = () -> { 1 < 2 && 3 > 2 || 4 == 4 && 5 != 6 }")
+  Array::push(progs, "let f: () -> Int = () -> { a |> b |> c(1) |> d }")
+  Array::push(progs, "let f: () -> Int = () -> { x ?? y ?? z }")
+  let mut acc = 0
+  let mut i = 0
+  while i < Array::length(progs) {
+    acc = acc + cov_parse_one(Array::get(progs, i))
+    i = i + 1
+  }
+  acc
+}

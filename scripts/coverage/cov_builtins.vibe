@@ -1,0 +1,65 @@
+
+// #cov builtins driver: every Array/String/Map/Bytes/Int builtin has its own
+// checker dispatch arm (lookup_array_group_*, lookup_string_*, lookup_map_*,
+// lookup_bytes_*) and codegen path, but the example/fixture corpus only uses a
+// handful (get/length/push/map/concat), leaving the rest dark. Compile a program
+// per builtin so each dispatch + codegen arm runs.
+let cov_bi_one: (String) -> Int = (src) -> {
+  handle { Bytes::length(compile_source_wasi_only(src, "main")) } with Error { Throw(_) => 0 }
+}
+
+export let cov_builtins_main: () -> Int = () -> {
+  let progs = Array::slice([""], 0, 0)
+  // Array
+  Array::push(progs, "export let main: () -> Bool = () -> { Array::all([1, 2, 3], _ > 0) }")
+  Array::push(progs, "export let main: () -> Bool = () -> { Array::any([1, 2, 3], _ > 2) }")
+  Array::push(progs, "export let main: () -> Int = () -> { Array::length(Array::concat([1, 2], [3, 4])) }")
+  Array::push(progs, "export let main: () -> Bool = () -> { Array::contains([1, 2, 3], 2) }")
+  Array::push(progs, "export let main: () -> Int = () -> { Array::length(Array::filter([1, 2, 3, 4], _ > 2)) }")
+  Array::push(progs, "export let main: () -> Int = () -> { match Array::find([1, 2, 3], _ > 1) { Som(x) => x, Non => 0 } }")
+  Array::push(progs, "export let main: () -> Int = () -> { Array::fold([1, 2, 3], 0, (a: Int, b: Int) -> Int { a + b }) }")
+  Array::push(progs, "export let main: () -> Int = () -> { let mut s = 0; Array::foreach([1, 2, 3], (x: Int) -> Unit { s = s + x }); s }")
+  Array::push(progs, "export let main: () -> Int = () -> { String::length(Array::join([\"a\", \"b\", \"c\"], \",\")) }")
+  Array::push(progs, "export let main: () -> Int = () -> { Array::length(Array::reverse([1, 2, 3])) }")
+  Array::push(progs, "export let main: () -> Int = () -> { let mut a = [1, 2, 3, 4]; Array::truncate(a, 2); Array::length(a) }")
+  Array::push(progs, "export let main: () -> Int = () -> { let mut a = [1, 2]; Array::push_all(a, [3, 4]); Array::length(a) }")
+  Array::push(progs, "export let main: () -> Int = () -> { Array::length(Array::sort([3, 1, 2], (a: Int, b: Int) -> Int { a - b })) }")
+  // String
+  Array::push(progs, "export let main: () -> Bool = () -> { String::contains(\"hello\", \"ell\") }")
+  Array::push(progs, "export let main: () -> Bool = () -> { String::ends_with(\"hello\", \"lo\") }")
+  Array::push(progs, "export let main: () -> Bool = () -> { String::starts_with(\"hello\", \"he\") }")
+  Array::push(progs, "export let main: () -> Bool = () -> { String::equals(\"a\", \"a\") }")
+  Array::push(progs, "export let main: () -> Int = () -> { String::index_of(\"hello\", \"l\") }")
+  Array::push(progs, "export let main: () -> Int = () -> { String::last_index_of(\"hello\", \"l\") }")
+  Array::push(progs, "export let main: () -> Int = () -> { Array::length(String::split(\"a,b,c\", \",\")) }")
+  Array::push(progs, "export let main: () -> Int = () -> { String::length(String::to_lower(\"ABC\")) }")
+  Array::push(progs, "export let main: () -> Int = () -> { String::length(String::to_upper(\"abc\")) }")
+  Array::push(progs, "export let main: () -> Int = () -> { String::length(String::trim(\"  hi  \")) }")
+  Array::push(progs, "export let main: () -> Int = () -> { String::length(String::from_char_code(65)) }")
+  Array::push(progs, "export let main: () -> Int = () -> { String::iter_length(\"abc\") }")
+  Array::push(progs, "export let main: () -> Int = () -> { String::iter_get(\"abc\", 0) }")
+  Array::push(progs, "export let main: () -> Int = () -> { String::length(String::join([\"x\", \"y\"], \"-\")) }")
+  // Map
+  Array::push(progs, "export let main: () -> Bool = () -> { let m = map { \"k\": 1 }; Map::has_key(m, \"k\") }")
+  Array::push(progs, "export let main: () -> Int = () -> { let m = map { \"k\": 5 }; match Map::get(m, \"k\") { Som(v) => v, Non => 0 } }")
+  Array::push(progs, "export let main: () -> Int = () -> { let mut m = map { \"k\": 1 }; Map::set(m, \"j\", 2); Array::length(Map::keys(m)) }")
+  Array::push(progs, "export let main: () -> Int = () -> { let m = map { \"a\": 1, \"b\": 2 }; Map::iter_length(m) }")
+  // Bytes
+  Array::push(progs, "export let main: () -> Int = () -> { let b = Bytes::new(4); Bytes::set(b, 0, 65); Bytes::get(b, 0) }")
+  Array::push(progs, "export let main: () -> Int = () -> { let b = Bytes::from_array([1, 2, 3]); Bytes::length(b) }")
+  Array::push(progs, "export let main: () -> Int = () -> { let b = Bytes::new(2); Bytes::push(b, 9); Bytes::length(b) }")
+  Array::push(progs, "export let main: () -> Int = () -> { let b = Bytes::concat(Bytes::new(1), Bytes::new(2)); Bytes::length(b) }")
+  Array::push(progs, "export let main: () -> Int = () -> { let b = Bytes::new(4); Bytes::fill(b, 7); Bytes::get(b, 1) }")
+  Array::push(progs, "export let main: () -> Int = () -> { let b = Bytes::from_array([1, 2, 3, 4]); Array::length(Bytes::to_array(Bytes::slice(b, 1, 3))) }")
+  Array::push(progs, "export let main: () -> Int = () -> { let b = Bytes::new(2); let c = Bytes::new(2); Bytes::blit(b, 0, c, 0, 2); Bytes::length(b) }")
+  Array::push(progs, "export let main: () -> Int = () -> { let mut b = Bytes::new(1); Bytes::append(b, Bytes::new(1)); Bytes::length(b) }")
+  // Int
+  Array::push(progs, "export let main: () -> Int = () -> { let d = Int::to_double(5); 0 }")
+  let mut acc = 0
+  let mut i = 0
+  while i < Array::length(progs) {
+    acc = acc + cov_bi_one(Array::get(progs, i))
+    i = i + 1
+  }
+  acc
+}

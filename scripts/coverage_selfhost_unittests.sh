@@ -8,7 +8,12 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; cd "$ROOT"
 SEED="bootstrap/selfhost/seed/selfhost_compiler.wasm"
-FLAT="vibe/compiler/selfhost_cli_adapter_module_source.vibe"
+# FLAT defaults to the committed DCE'd flat source; override with VIBE_COV_FLAT
+# (e.g. the no-DCE merged source) to unblock test files that reference
+# cli_main-unreachable (DCE'd) functions. Merge still counts only branches in
+# corpus-present functions, so a richer base only adds executed bits, never
+# inflates the denominator.
+FLAT="${VIBE_COV_FLAT:-vibe/compiler/selfhost_cli_adapter_module_source.vibe}"
 RUNNER="scripts/run_wasm_vibe_host_runner.sh"
 ACC="_build/coverage/selfhost-corpus/acc.json"
 OUT="_build/coverage/selfhost-ut"; rm -rf "$OUT"; mkdir -p "$OUT"
