@@ -76,6 +76,47 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
           emit_i32_load(buf, 2, 0)
           emit_i32_const(buf, expected_tag)
           emit_i32_eq(buf)
+          // #603: the tag test alone is not enough — a literal sub-pattern must
+          // also be checked, else `I("x")` matches `I("y")` (and `I(1)` matches
+          // `I(2)`). AND-in a test for each PInt/PString constructor argument.
+          // Binding/wildcard/nested sub-patterns add no test here (unchanged).
+          let __cargs_cond = get_pctor_args(__cond_p)
+          let mut __ck = 0
+          while __ck < Array::length(__cargs_cond) {
+            let __sp = Array::get(__cargs_cond, __ck)
+            if is_pint(__sp) {
+              emit_local_get(buf, scrut_local)
+              emit_i64_const(buf, -2)
+              emit_i64_and(buf)
+              emit_i32_wrap_i64(buf)
+              emit_i64_load(buf, 3, 8 + __ck * 8)
+              emit_i64_const(buf, get_pint_value(__sp))
+              if ctx.enable_rc {
+                emit_i64_const(buf, 1)
+                emit_i64_shl(buf)
+              }
+              emit_i64_eq(buf)
+              bytebuf_push(buf, 113)
+            } else {
+              if is_pstring(__sp) {
+                let __sv = get_pstring_value(__sp)
+                let __si = str_table_lookup(ctx.str_table.strs, __sv)
+                if __si >= 0 {
+                  let (__seq_fi, _, _) = resolve_func(ctx.func_table, "eq")
+                  emit_local_get(buf, scrut_local)
+                  emit_i64_const(buf, -2)
+                  emit_i64_and(buf)
+                  emit_i32_wrap_i64(buf)
+                  emit_i64_load(buf, 3, 8 + __ck * 8)
+                  emit_str_ref(buf, Array::get(ctx.str_table.offsets, __si), Array::get(ctx.str_table.lengths, __si))
+                  emit_call(buf, __seq_fi)
+                  emit_i32_wrap_i64(buf)
+                  bytebuf_push(buf, 113)
+                }
+              }
+            }
+            __ck = __ck + 1
+          }
           emit_if_i64(buf)
           0
         } else {

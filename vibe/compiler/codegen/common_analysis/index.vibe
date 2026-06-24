@@ -21,6 +21,60 @@ let common_analysis_fresh_string_array: () -> Array[String] = () -> {
   ArrayBuilder::freeze(ArrayBuilder::new())
 }
 
+// Collect string literals appearing anywhere in a pattern, including inside
+// constructor / tuple / or / struct sub-patterns. #603: codegen now tests a
+// `PString` sub-pattern of a `PCtor`, so its literal must be registered in the
+// string table (previously only top-level `PString` arms were collected).
+let rec collect_strings_pat: (Pat, Array[String]) -> Int = (pat, out) -> {
+  match pat {
+    PString(s) => {
+      let mut pf = false
+      let mut pi = 0
+      while pi < Array::length(out) {
+        if Array::get(out, pi) == s {
+          pf = true
+        }
+        pi = pi + 1
+      }
+      if !pf {
+        Array::push(out, s)
+      }
+      0
+    },
+    PCtor(_, args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        let _ = collect_strings_pat(Array::get(args, i), out)
+        i = i + 1
+      }
+      0
+    },
+    PTuple(pats) => {
+      let mut i = 0
+      while i < Array::length(pats) {
+        let _ = collect_strings_pat(Array::get(pats, i), out)
+        i = i + 1
+      }
+      0
+    },
+    POr(l, r) => {
+      let _ = collect_strings_pat(l, out)
+      let _ = collect_strings_pat(r, out)
+      0
+    },
+    PStruct(_, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        let _ = collect_strings_pat(fp, out)
+        i = i + 1
+      }
+      0
+    },
+    _ => 0
+  }
+}
+
 export let rec collect_strings_expr: (Expr, Array[String]) -> Int = (expr, out) -> {
   match expr {
     EString(s) => {
@@ -109,23 +163,7 @@ export let rec collect_strings_expr: (Expr, Array[String]) -> Int = (expr, out) 
       let mut i = 0
       while i < Array::length(arms) {
         let (pat, arm_expr) = Array::get(arms, i)
-        match pat {
-          PString(s) => {
-            let mut pf = false
-            let mut pi = 0
-            while pi < Array::length(out) {
-              if Array::get(out, pi) == s {
-                pf = true
-              }
-              pi = pi + 1
-            }
-            if !pf {
-              Array::push(out, s)
-            }
-            0
-          },
-          _ => 0
-        }
+        let _ = collect_strings_pat(pat, out)
         collect_strings_expr(arm_expr, out)
         i = i + 1
       }

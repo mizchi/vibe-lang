@@ -138,4 +138,41 @@ fi
 rm -rf "$ndir"
 echo "[selfhost-only-gate] normalize regression ok"
 
+# 7. literal sub-pattern regression (#603): a literal (PInt/PString) argument of a
+#    constructor pattern must be tested, not just the tag — `I("x")` must not
+#    match `I("y")`, `I(1)` must not match `I(2)`. Guards the match-codegen fix.
+echo "[selfhost-only-gate] 7/7 literal sub-pattern regression"
+pdir="_build/_gate_litpat"
+rm -rf "$pdir"; mkdir -p "$pdir"
+cat > "$pdir/litpat.vibe" <<'EOF'
+enum E { I(Int); S(String); N }
+let classify: (E) -> Int = (e) -> {
+  match e {
+    I(7) => 10,
+    I(_) => 11,
+    S("perform") => 20,
+    S(_) => 21,
+    N => 30
+  }
+}
+export let _start: () -> Int = () -> {
+  classify(I(5)) + classify(S("foo")) + classify(I(7)) + classify(S("perform"))
+}
+EOF
+# Expected: 11 + 21 + 10 + 20 = 62
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$pdir/litpat.vibe" "$pdir/litpat.wasm" _start >/dev/null 2>&1
+if [ ! -s "$pdir/litpat.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: literal sub-pattern program did not compile" >&2; exit 1
+fi
+litpat_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$pdir/litpat.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$litpat_out" != "62" ]; then
+  echo "[selfhost-only-gate] FAIL: literal sub-pattern mismatch (got '$litpat_out', want 62 -> #603 regressed)" >&2
+  exit 1
+fi
+rm -rf "$pdir"
+echo "[selfhost-only-gate] literal sub-pattern regression ok"
+
 echo "[selfhost-only-gate] ok"
