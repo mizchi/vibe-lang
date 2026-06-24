@@ -80,7 +80,23 @@ let helper: () -> Int = () -> { 1 }
 export let run: () -> Int = () -> { helper() }
 EOF
 
-for case in 01 03 agg; do
+# Lambda-annotation hoisting: old-syntax `let f = (x: T) -> R { body }` is
+# canonicalized to `let f: (T) -> R = (x) -> { body }` (parameter + return types
+# moved into the let annotation, stripped from the lambda).
+cat > "$WORK/hoist.in.vibe" <<'EOF'
+let id = (x: Int) -> Int { x }
+export let run = () -> Int { id(1) }
+export { run }
+EOF
+cat > "$WORK/hoist.expected.vibe" <<'EOF'
+//# Functions
+
+let id: (Int) -> Int = (x) -> { x }
+
+export let run: () -> Int = () -> { id(1) }
+EOF
+
+for case in 01 03 agg hoist; do
   bash "$ROOT_DIR/scripts/vibe_normalize.sh" --stdout "$WORK/$case.in.vibe" > "$WORK/$case.got.vibe" 2>/dev/null
   if ! cmp -s "$WORK/$case.expected.vibe" "$WORK/$case.got.vibe"; then
     echo "[vibe-normalize-smoke] FAIL: fixture $case mismatch" >&2
@@ -104,4 +120,4 @@ if ! bash "$ROOT_DIR/scripts/vibe_normalize.sh" --check "$WORK/01.normalized.vib
   echo "[vibe-normalize-smoke] FAIL: --check rejected normalized file" >&2; exit 1
 fi
 
-echo "[vibe-normalize-smoke] ok (fixtures 01/03 + idempotent + --check)"
+echo "[vibe-normalize-smoke] ok (fixtures 01/03 + agg + hoist + idempotent + --check)"
