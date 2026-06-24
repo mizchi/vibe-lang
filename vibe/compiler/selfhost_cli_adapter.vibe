@@ -9,7 +9,7 @@ import ./runtime / module_source.vibe {
 }
 
 import ./entry / compiler / file_compile {
-  compile_file_fs_mode
+  compile_file_fs_mode, compile_file_fs_mode_coverage
 }
 
 import ./normalize/index.vibe {
@@ -68,7 +68,14 @@ export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
   let mark_memory = Env::get("VIBE_PROFILE_MEMORY_MARKS") == "1"
   // #594 Stage 3 (debug): file-mode compile resolving imports from the FS.
   if Env::get("VIBE_FS_COMPILE") == "1" {
-    let bytes = compile_file_fs_mode(input_path, entry_name, "no-dce")
+    // #cov: `vibe test/run --coverage` sets VIBE_COVERAGE=1 so the user file (and
+    // its imports) is compiled with function/branch hit instrumentation; running
+    // the produced wasm fills the bitmap that the runner reads via VIBE_COV_OUT.
+    let bytes = if Env::get("VIBE_COVERAGE") == "1" {
+      compile_file_fs_mode_coverage(input_path, entry_name)
+    } else {
+      compile_file_fs_mode(input_path, entry_name, "no-dce")
+    }
     Fs::write_bytes(output_path, bytes)
     return 0
   }

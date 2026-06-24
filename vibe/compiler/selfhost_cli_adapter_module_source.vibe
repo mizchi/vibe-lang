@@ -24603,6 +24603,9 @@ export let rec namespace_private_value_stmts: (String, Array[Stmt]) -> Array[Stm
 export let compile_wasi_module: (Array[Stmt], String) -> Bytes with { Error } = (stmts, entry_name) -> {
   compile_wasi_module_impl(stmts, entry_name)
 }
+export let compile_wasi_module_coverage: (Array[Stmt], String) -> Bytes with { Error } = (stmts, entry_name) -> {
+  compile_wasi_module_coverage_impl(stmts, entry_name)
+}
 export let contains_str: (Array[String], String) -> Bool = (arr, target) -> {
   let rec go: (Int) -> Bool = (i) -> {
     if i >= Array::length(arr) {
@@ -28450,6 +28453,13 @@ export let compile_file_fs_mode: (String, String, String) -> Bytes with { Error,
     throw(String::concat("unsupported compile mode: ", mode))
   }
 }
+export let compile_file_fs_mode_coverage: (String, String) -> Bytes with { Error, Fs } = (entry_path, entry_name) -> {
+  let source_groups = collect_source_groups_fs(entry_path)
+  let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
+  let _ = next_db
+  let merged_stmts = build_grouped_merged_stmts(source_groups)
+  compile_wasi_module_coverage(merged_stmts, entry_name)
+}
 let empty_stmts: () -> Array[Stmt] = () -> {
   Array::slice([
     SExport([])
@@ -29053,7 +29063,11 @@ export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
   let entry_name = own_host_string(read_arg_or_env(2, "VIBE_ENTRY"))
   let mark_memory = Env::get("VIBE_PROFILE_MEMORY_MARKS") == "1"
   if Env::get("VIBE_FS_COMPILE") == "1" {
-    let bytes = compile_file_fs_mode(input_path, entry_name, "no-dce")
+    let bytes = if Env::get("VIBE_COVERAGE") == "1" {
+      compile_file_fs_mode_coverage(input_path, entry_name)
+    } else {
+      compile_file_fs_mode(input_path, entry_name, "no-dce")
+    }
     Fs::write_bytes(output_path, bytes)
     return 0
   }
