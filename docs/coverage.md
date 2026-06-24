@@ -138,17 +138,41 @@ corpus は base self-compile / RC-stress に加えて以下のワークロード
 | import/module rewrite | ~191 | private 値/型・alias import の multi-file 構成が要る |
 | 診断フォーマット（`type_to_string`/`__to_string`/`tk_name`） | ~190 | 各型/トークン形ごとにエラーを起こす専用入力が要る。`__to_string`(24) は通常 compile 経路で呼ばれない |
 
-**80% は本計測方式では非現実的**（仮に攻めやすい import/module + cache +
-checker/parser を全部取っても ~75% 止まり、残る "other" 795 が壁）。
-80% 級を狙うなら方式自体を変える必要がある:
-1. 計測コンパイラを `vibe/compiler/**/*_test.vibe` のような **内部関数を直接
-   呼ぶユニットテスト**経由で動かす（ただし現状の instrument は「コンパイル中の
-   実行」しか数えないため、テストを *コンパイル* するだけでは内部関数は走らない。
-   テスト実行も計測対象に含める runner 拡張が要る）。
-2. 到達不能な防御 throw を `assert`/型で消す（分母の正規化）。
+#### test-execution 計測（2026-06-24, 上記方式 #1 を実装）
 
-現実的な KPI: **分岐は 65% を下限ガード**として回帰検知に使い、関数（~87%）を
-主 KPI とする。新機能で関数カバレッジが落ちたら穴を埋める運用が費用対効果に合う。
+`scripts/coverage_selfhost_testexec.sh` は `vibe/compiler/*_test.vibe` を
+**coverage 付きでコンパイル → 生成 wasm を実行**し、実行された分岐を corpus に
+`(関数名, 関数内 local 分岐 index)` キーで union する（別バイナリだが同一ソース
+関数なら local 分岐順が一致するのでマージできる）。テストは `type_to_string` /
+`unify` / `types_equal` 等の内部関数を assert で直接呼ぶため、ブラックボックス
+compile では届かない分岐が点灯する（例: `types_test` 実行で `type_to_string`
+21/29、黒箱では ~3/29）。
+
+multi-module ワークロード（`coverage_gen_errcorpus.sh` の `mod_*/`: private
+enum/struct/type-alias を export API 経由で使う・alias import・re-export facade・
+diamond import）で namespace 経路も点灯（`namespace_private_value_stmts` 2→22 等）。
+
+実測（黒箱 corpus + test-execution）: **分岐 4695/6694 (70.1%)**・関数 87%。
+black-box corpus 単体は 68.8%。
+
+**80% への壁は「コンパイラ自身のユニットテスト 148 本中 120 本が FS-compile
+できない」こと**。原因は **import cycle の明示的拒否**:
+`builtins.vibe` が `export ./checker {...}`、`checker/index.vibe` が
+`export ./builtins.vibe {...}` で **builtins ↔ checker の循環 re-export** を成す。
+self-compile は manifest（明示 group 化）経由なので通るが、テストは manifest に
+無いので recursive 収集 → `ensure_fingerprint_fs_go`
+(`runtime/typecheck_fs.vibe:400`) の `throw("type_db: import cycle detected")` で
+失敗する（最小再現: 3 ファイルの相互 `export ./other.vibe {...}`）。この 120 本が
+通れば checker/codegen の深いアーム（`compile_call`/`check_expr`/`unify`/
+`types_equal`）が test-execution で大量に点灯し 80% 級が射程に入る。
+解放には recursive FS 経路での循環 re-export 対応（または compiler module の
+脱循環）が要る — 設計レベルの別タスク。self-compile は manifest 経路で独立なので
+gate には影響しない。
+
+到達不能な防御 throw を `assert`/型で消す（分母の正規化）も併用しうる。
+
+現実的な KPI: **分岐は 68% を下限ガード**として回帰検知に使い、関数（~87%）を
+主 KPI とする。test-execution は cycle 対応が入り次第スケールする。
 
 仕組み:
 - `VIBE_COVERAGE=1` でコンパイルすると、codegen が
