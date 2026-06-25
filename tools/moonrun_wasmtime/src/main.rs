@@ -100,6 +100,22 @@ struct HostState {
     // no-op even when the module imports it.
     break_set: Arc<Vec<String>>,
     break_auto: bool,
+    // span-arc step5: line-granularity breakpoints. VIBE_BREAK entries of the
+    // form `<file>:<line>` or bare `<line>` are parsed into this set (alongside
+    // the function-name `break_set`). At a `vibe::dbg_break` pause we resolve the
+    // entering function's declaration line via `funcmap` and pause when it is in
+    // this set (file matched against `break_file` when a file is given). This
+    // reuses the existing per-function-entry hook — no new codegen instrumentation
+    // — so the default self-compile path stays byte-identical (fixpoint holds).
+    // Each entry is (optional file basename, 1-based line).
+    line_break_set: Arc<Vec<(Option<String>, u32)>>,
+    // function-name -> 1-based declaration line, parsed from the `.funcmap`
+    // sidecar named by VIBE_FUNCMAP. Lets the line-break-set match an entering
+    // function to its source line. Empty => no line resolution => no line hits.
+    funcmap: Arc<std::collections::HashMap<String, u32>>,
+    // basename of the entry source file (VIBE_BREAK_FILE), used to confirm a
+    // `<file>:<line>` spec's file matches the program being run.
+    break_file: Option<String>,
     // debugger argument inspection (DAP P2): addresses of the dbgargs region,
     // parsed from the module's `vibe.dbgargs` custom section at load time (only
     // present in break builds). count_addr holds an i32 arg count; base holds
@@ -139,7 +155,11 @@ enum StepMode {
 
 impl HostState {
     fn new(args: Vec<String>, limits: StoreLimits) -> Self {
-        let break_set: Vec<String> = std::env::var("VIBE_BREAK")
+        // VIBE_BREAK is a comma-separated list mixing function-name specs and
+        // line specs. A line spec is either `<file>:<line>` or a bare `<line>`
+        // (all-digit). Everything else is a function name. Split them so both
+        // kinds keep working (function break + new line break).
+        let raw_break: Vec<String> = std::env::var("VIBE_BREAK")
             .ok()
             .map(|s| {
                 s.split(',')
@@ -148,6 +168,23 @@ impl HostState {
                     .collect()
             })
             .unwrap_or_default();
+        let mut break_set: Vec<String> = Vec::new();
+        let mut line_break_set: Vec<(Option<String>, u32)> = Vec::new();
+        for spec in raw_break {
+            if let Some((file, line)) = parse_line_break_spec(&spec) {
+                line_break_set.push((file, line));
+            } else {
+                break_set.push(spec);
+            }
+        }
+        // .funcmap sidecar (name<TAB>declLine) used to resolve an entering
+        // function to its source line for line-break matching.
+        let funcmap: std::collections::HashMap<String, u32> = std::env::var("VIBE_FUNCMAP")
+            .ok()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .map(|text| parse_funcmap(&text))
+            .unwrap_or_default();
+        let break_file = std::env::var("VIBE_BREAK_FILE").ok().filter(|s| !s.is_empty());
         // break_auto: auto-continue at every pause WITHOUT reading stdin. Only
         // VIBE_BREAK_AUTO=1 enables this. Note: we intentionally do NOT treat a
         // non-TTY stdin as auto — DAP P3 stepping reads debugger commands from
@@ -166,6 +203,9 @@ impl HostState {
             start_instant: Instant::now(),
             break_set: Arc::new(break_set),
             break_auto,
+            line_break_set: Arc::new(line_break_set),
+            funcmap: Arc::new(funcmap),
+            break_file,
             dbgargs_count_addr: None,
             dbgargs_base: None,
             dbgargs_tag_mode: 0,
@@ -1104,12 +1144,12 @@ fn dbg_read_args(caller: &mut Caller<'_, HostState>, entering: &str) -> Option<S
 
 fn vibe_dbg_break(mut caller: Caller<'_, HostState>) -> Result<()> {
     let break_set = Arc::clone(&caller.data().break_set);
+    let line_break_set = Arc::clone(&caller.data().line_break_set);
     let step_mode = caller.data().step_mode;
-    // Fast path: nothing can ever pause us. No explicit breakpoints AND we are
-    // in plain Continue mode (which is the only mode reachable when break_set is
-    // empty, but be explicit). The hook stays a no-op, so non-break / no-match
-    // runs pay only a backtrace-free early return.
-    if break_set.is_empty() && step_mode == StepMode::Continue {
+    // Fast path: nothing can ever pause us. No explicit breakpoints (neither
+    // function-name NOR line) AND we are in plain Continue mode. The hook stays a
+    // no-op, so non-break / no-match runs pay only a backtrace-free early return.
+    if break_set.is_empty() && line_break_set.is_empty() && step_mode == StepMode::Continue {
         return Ok(());
     }
     let frames = dbg_break_frames(&caller);
@@ -1125,7 +1165,28 @@ fn vibe_dbg_break(mut caller: Caller<'_, HostState>) -> Result<()> {
     // DAP P3: decide whether to pause at THIS entry. An explicit break_set hit
     // always pauses (and keeps the `breakpoint hit:` label so existing tests
     // pass). Otherwise the active step mode decides.
-    let is_break_hit = break_set.iter().any(|b| *b == entering);
+    let is_name_hit = break_set.iter().any(|b| *b == entering);
+    // span-arc step5: resolve the entering function's declaration line via the
+    // funcmap; pause when it is in the line-break-set. A line spec with a file
+    // matches only when the file basename equals VIBE_BREAK_FILE (the program's
+    // entry file); a bare-line spec matches any file. The hit line drives the
+    // `breakpoint hit: <file>:<line>` label below.
+    let entering_line = caller.data().funcmap.get(&entering).copied();
+    let break_file = caller.data().break_file.clone();
+    let line_hit: Option<u32> = entering_line.and_then(|ln| {
+        if line_break_set.iter().any(|(file, l)| {
+            *l == ln
+                && match file {
+                    Some(f) => break_file.as_deref() == Some(f.as_str()),
+                    None => true,
+                }
+        }) {
+            Some(ln)
+        } else {
+            None
+        }
+    });
+    let is_break_hit = is_name_hit || line_hit.is_some();
     let step_pause = match step_mode {
         StepMode::Continue => false,
         StepMode::StepInto => true,
@@ -1143,10 +1204,25 @@ fn vibe_dbg_break(mut caller: Caller<'_, HostState>) -> Result<()> {
     {
         let stderr = std::io::stderr();
         let mut h = stderr.lock();
-        // Keep `breakpoint hit:` for explicit break_set hits (existing tests grep
-        // for it); a pure step-induced pause is labelled `stopped at:`.
+        // Keep `breakpoint hit:` for explicit break hits (existing tests grep for
+        // it); a pure step-induced pause is labelled `stopped at:`. A LINE break
+        // hit is labelled `breakpoint hit: <file>:<line>` (span-arc step5) so the
+        // launcher/annotator and DAP can read which line paused; a NAME hit keeps
+        // the `breakpoint hit: <fn>` form.
         if is_break_hit {
-            let _ = writeln!(h, "breakpoint hit: {entering}");
+            match line_hit {
+                Some(ln) if !is_name_hit => {
+                    let file = break_file.as_deref().unwrap_or("");
+                    if file.is_empty() {
+                        let _ = writeln!(h, "breakpoint hit: {ln}");
+                    } else {
+                        let _ = writeln!(h, "breakpoint hit: {file}:{ln}");
+                    }
+                }
+                _ => {
+                    let _ = writeln!(h, "breakpoint hit: {entering}");
+                }
+            }
         } else {
             let _ = writeln!(h, "stopped at: {entering}");
         }
@@ -1694,6 +1770,53 @@ fn find_custom_section(wasm: &[u8], want_name: &str) -> Option<Vec<u8>> {
 fn read_u32_le(bytes: &[u8], off: usize) -> Option<u32> {
     let b = bytes.get(off..off + 4)?;
     Some(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+}
+
+// span-arc step5: parse a single VIBE_BREAK entry as a LINE breakpoint spec.
+// Accepts `<file>:<line>` (e.g. `prog.vibe:5`) -> (Some("prog.vibe"), 5), or a
+// bare all-digit `<line>` (e.g. `5`) -> (None, 5). Returns None when the spec is
+// not a line spec (a function name), leaving it for the function-name break_set.
+// The file part keeps its basename only so a spec with a directory prefix still
+// matches VIBE_BREAK_FILE (which is a basename).
+fn parse_line_break_spec(spec: &str) -> Option<(Option<String>, u32)> {
+    if !spec.is_empty() && spec.bytes().all(|b| b.is_ascii_digit()) {
+        return spec.parse::<u32>().ok().map(|n| (None, n));
+    }
+    // `<file>:<line>` — split on the LAST colon so Windows-ish paths still work.
+    let idx = spec.rfind(':')?;
+    let (file, rest) = (&spec[..idx], &spec[idx + 1..]);
+    if file.is_empty() || rest.is_empty() || !rest.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let line = rest.parse::<u32>().ok()?;
+    let base = std::path::Path::new(file)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(file)
+        .to_string();
+    Some((Some(base), line))
+}
+
+// span-arc step5: parse a `.funcmap` sidecar (one `name<TAB>declLine` per line,
+// as written by the selfhost `build_funcmap_from_source`) into name -> line.
+fn parse_funcmap(text: &str) -> std::collections::HashMap<String, u32> {
+    let mut map = std::collections::HashMap::new();
+    for line in text.split('\n') {
+        if line.is_empty() {
+            continue;
+        }
+        let mut fields = line.splitn(2, '\t');
+        let name = match fields.next() {
+            Some(n) if !n.is_empty() => n,
+            _ => continue,
+        };
+        if let Some(num) = fields.next() {
+            if let Ok(n) = num.trim().parse::<u32>() {
+                map.insert(name.to_string(), n);
+            }
+        }
+    }
+    map
 }
 
 // DAP P4: parse the `vibe.dbgnames` custom-section content into a function-name

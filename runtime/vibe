@@ -278,6 +278,18 @@ case "$cmd" in
     # prefix (bash would treat it as a command).
     break_env=""
     [ "$brk" = "1" ] && break_env="VIBE_BREAK=$break_spec"
+    # span-arc step5: line-granularity breakpoints. A `--break <file>:<line>` (or
+    # bare `<line>`) spec passes through VIBE_BREAK unchanged; the runner resolves
+    # the entering function's source line via the `.funcmap` sidecar (name<TAB>
+    # declLine) we already generate for trap annotation. Hand the runner the
+    # funcmap path + the entry file's basename so it can confirm the spec's file.
+    # Function-name `--break <fn>` specs are unaffected (no line match attempted).
+    funcmap_env=""
+    breakfile_env=""
+    if [ "$brk" = "1" ] && [ -s "$out.funcmap" ]; then
+      funcmap_env="VIBE_FUNCMAP=$out.funcmap"
+      breakfile_env="VIBE_BREAK_FILE=$(basename "$src")"
+    fi
     # Stream the runner's stderr through the funcmap annotator LIVE via a FIFO,
     # so an interactive `--break` pause (and the VS Code DAP adapter) sees
     # "breakpoint hit:" / frames the moment they happen — not buffered until the
@@ -323,7 +335,7 @@ case "$cmd" in
       cat < "$rerr_fifo" >&2 &
     fi
     annot_pid=$!
-    env $trace_env $break_env "$RUNNER" "$out" 2>"$rerr_fifo" || status=$?
+    env $trace_env $break_env $funcmap_env $breakfile_env "$RUNNER" "$out" 2>"$rerr_fifo" || status=$?
     wait "$annot_pid" 2>/dev/null || true
     rm -f "$rerr_fifo"
     exit "$status"
