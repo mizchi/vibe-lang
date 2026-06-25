@@ -110,9 +110,17 @@
    指すようになった（pipeline を end-to-end で実証）。selfhost gate green、
    located 診断 7/7（call-site 精度の回帰 + marker leak guard 含む）。
    worktree agent → cherry-pick 統合。
-2. **ECall / EDot へ offset 付与** — EIdent と同じ構造 refactor（variant に Int
-   field 追加 → 全 construct/match site 更新 → bundle 再生成）。call-site の
-   go-to-definition / hover の土台。arity/field 診断の正確化もここで効く。
+2. ✅ **ECall へ offset 付与（着地）** — `ECall(Expr, Array[Expr])` →
+   `ECall(Expr, Array[Expr], Int)`（EIdent と同じ構造 refactor: variant に Int
+   field 追加 → 全 construct/match site 更新 → bundle 再生成）。parser は callee
+   start offset を `callee_offset(expr)` で thread、AST 保存パス（desugar /
+   normalize / perceus / import_alias_rewrite / expand_interp / eval_loader）は
+   offset を pass-through、synthetic site（index/slice/len sugar、interp、spread
+   等）は `-1`。**consumer 配線**: checker の arity 診断が ECall offset を
+   `off_marker(call_off)` 経由で消費し、arity mismatch が**呼び出し位置**を指す
+   （`s.length(99)` が定義行でなく `line 6:3` を報告）。selfhost gate green
+   （stage2==stage3 fixpoint、bootstrap bump 不要）、`test_located_diagnostics.sh`
+   8/8。残: **EDot** offset（field hover / field 診断の土台）。
 3. **型付き hover** —
    - ✅ **3a env-visible MVP（着地）** — `vibe type-at` + `type_at_source`
      （位置の EIdent → `check_program` → `env_lookup` + `type_to_string`）を実装し
