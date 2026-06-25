@@ -361,8 +361,23 @@ VS Code（DAP クライアント）から breakpoint を張り、停止・変数
       `test_name_section.sh`、cli-install 34/0、selfhost gate fixpoint green）。
       残: imported-module 関数の行（現状エントリファイルのみ）、命令オフセット粒度の
       行マップ（DAP step 実行用、source span の全 Expr 化が前提）。
-- [~] **3-P1 breakpoint DAP**（M3）— stop/continue + source 表示の DAP サーバー。
-      **groundwork 着地**: `vibe run --trace` = function-call 実行トレース。opt-in の
+- [x] **3-P1 breakpoint DAP**（M3）— **live breakpoint 着地**: `vibe run --break <fn>[,<fn>]`
+      が指定関数の入口で停止し、**コールスタック**（各フレーム `(file:line)` 注釈）を
+      表示して継続（TTY は stdin 待ち、非対話は auto-continue、`q` で中断）。opt-in の
+      debug-break codegen が各ユーザー関数入口に `call vibe::dbg_break` host hook を出す
+      （条件付き import、func_offset が整合シフト、type idx 2 = `()->()`）。runner が
+      wasm backtrace + name section で入口関数を特定し `VIBE_BREAK` 集合と照合して停止。
+      既定（非 break）codegen は不変で selfhost fixpoint 維持。検証済み
+      （`scripts/test_vibe_break.sh` 5/5: `breakpoint hit: helper` + main フレーム + 継続で 42、
+      plain run / `--trace` 非回帰、cli-install 34/0、gate green）。
+      残: stop/continue を超えた step 実行・変数検査（P2/P3）と DAP プロトコル化。
+      実行例:
+      ```
+      breakpoint hit: helper
+        at helper (prog.vibe:1)
+        at main (prog.vibe:2)
+      ```
+- [x] **3-P1 groundwork** — `vibe run --trace` = function-call 実行トレース。opt-in の
       debug codegen（`VIBE_DEBUG`）が各ユーザー関数入口で user-index を in-memory
       trace log に追記（coverage hit 領域と同方式、wasm import 追加なし＝関数
       index 不変）。`vibe.trace` カスタムセクションが log 配置 + 関数名を記録、runner

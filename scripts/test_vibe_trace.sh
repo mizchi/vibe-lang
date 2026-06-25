@@ -23,7 +23,11 @@ cd "$ROOT_DIR"
 
 # 1. runner
 RT="$ROOT_DIR/tools/moonrun_wasmtime/target/release/moonrun_wt"
-[ -x "$RT" ] || cargo build --release --manifest-path tools/moonrun_wasmtime/Cargo.toml >/dev/null
+# Rebuild the runner if it is missing OR older than any runner source (a stale
+# local binary would lack newly added host imports like vibe::dbg_break).
+if [ ! -x "$RT" ] || [ -n "$(find tools/moonrun_wasmtime/src -name "*.rs" -newer "$RT" 2>/dev/null | head -1)" ]; then
+  cargo build --release --manifest-path tools/moonrun_wasmtime/Cargo.toml >/dev/null
+fi
 
 # 2. a fresh CLI wasm carrying the funcmap sidecar support
 cli="$(bash scripts/build_cli_wasm.sh)"
