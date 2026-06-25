@@ -154,8 +154,22 @@
      すると seed parser が trap するため、結果型タグは match を tail position の
      flat なまま内側 result 式に付与する方式に留めた。
    残: シンボル span の JSON 露出、診断 range の AST 化（現状は line:col prefix 経由）。
-5. **codegen source-line map（`vibe.func_map`）** — 命令 offset→ソース行の custom
-   section。DAP P1-P4（breakpoint/variables/step）の前提。name section は実装済み。
+5. 🟡 **行ベース breakpoint（一部着地）** — `vibe run --break <file>:<line>`
+   （bare `<line>` も可）が、その行に宣言された関数で停止する。runner 側のみで
+   実装（codegen 不変 → 既定 codegen は byte-identical、stage2==stage3 fixpoint は
+   構造的に保証）: runner が `VIBE_BREAK` を関数名集合と行集合に分割、`.funcmap`
+   sidecar（`VIBE_FUNCMAP`）と entry basename（`VIBE_BREAK_FILE`）から entering
+   関数の宣言行を解決し行一致で pause。`breakpoint hit: <file>:<line>` + call stack
+   を表示。launcher が `VIBE_FUNCMAP`/`VIBE_BREAK_FILE` を export、`VIBE_BREAK` は
+   そのまま flow。`test_vibe_break_line.sh` 9/9、既存 break/break_args/step/dap
+   全 green、selfhost gate green。
+   **残（post-GA）**: 真の関数内**任意行** breakpoint / 行 step。これは codegen の
+   `vibe::dbg_line` instrumentation + `vibe.linemap` section が必要で、その前提と
+   して selfhost AST（`Stmt`/`Expr`）が**文単位の source offset** を持つ必要がある
+   （現状 `parse_program_spans` は top-level statement span のみ露出、ECall/EDot の
+   式 offset は step2 で入ったが文単位は未導入）。seed-parser fragility 制約下で
+   invasive な AST 拡張になるため GA 後に分離する。name section / 関数 funcmap /
+   DAP（行→関数名 map）は実装済み。
 
 - **codegen の関数 index↔name 対応** — ✅ wasm name section（土台B / debugger P0）
   は実装済み（`func_offset + i` で user 関数を正確に命名）。

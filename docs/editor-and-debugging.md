@@ -93,9 +93,16 @@ trace: helper (prog.vibe:1)
 ### Breakpoints (`--break`)
 
 ```bash
-vibe run --break helper prog.vibe              # break at one function
+vibe run --break helper prog.vibe              # break at one function (by name)
 vibe run --break helper,worker prog.vibe       # break at several
+vibe run --break prog.vibe:3 prog.vibe         # break at the function declared on line 3
+vibe run --break 3 prog.vibe                    # bare line (any file)
 ```
+
+Breakpoints are by function: a name breaks at that function's entry, and a
+`<file>:<line>` (or bare `<line>`) breaks at the function **declared on** that
+line. Both forms can be mixed in one comma-separated spec. (Arbitrary interior
+lines are a post-GA item — see span-arc step 5 in the roadmap.)
 
 Execution pauses at the entry of each named function and prints, to stderr:
 
