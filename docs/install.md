@@ -68,6 +68,7 @@ vibe compile <file.vibe> -o <out>     compile to a .wasm
 vibe build   <file.vibe> -o <out>     alias of compile
 vibe check   <file.vibe> [entry]      parse + typecheck (no output kept)
 vibe test    <file_test.vibe>...      compile + run test {} blocks
+vibe fetch   [project_dir]            vendor git/URL deps from vibe.deps + lock
 vibe version                          print toolchain versions
 vibe self update --cli-wasm <path>    refresh compiler wasm + rebuild .cwasm
 vibe help                             usage
@@ -75,6 +76,33 @@ vibe help                             usage
 
 The default entry function is `main`. Pass a different entry as the second
 argument to `run`/`check`, or via `--entry` to `compile`/`build`.
+
+## Dependencies (git/URL, MVP)
+
+Remote dependencies are vendored into the project (git/URL 分散 model). Declare
+them in `vibe.deps` (one `<name> <url>` per line; `#` comments allowed):
+
+```
+# vibe.deps
+mathlib https://example.com/mathlib.vibe
+```
+
+Then vendor + lock them, and import via the vendored path:
+
+```bash
+vibe fetch                     # downloads into ./deps/, writes vibe.lock (sha256)
+```
+
+```vibe
+import ./deps/mathlib.vibe { add }
+export let main = () -> Int { add(40, 2) }
+```
+
+`vibe fetch` content-addresses each dep (cached under `$VIBE_HOME/cache/<sha256>`)
+and records the resolved hash in `vibe.lock` for reproducible builds. `file://`
+and local paths are supported for offline/local deps. This is an MVP of
+[docs/release-roadmap.md](release-roadmap.md) テーマ2 — seamless `import "<url>"`
+syntax and transitive resolution are tracked there.
 
 ## Updating the compiler independently of the runner
 

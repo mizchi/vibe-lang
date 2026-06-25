@@ -83,5 +83,17 @@ check "vibe test pass exit" "0" "$rc"
 "$VIBE" test "$proj/fail_test.vibe" >/dev/null 2>&1 && rc=0 || rc=$?
 check "vibe test fail exit" "1" "$rc"
 
+# fetch: vendor a file:// dep, then run a program that imports it.
+fproj="$WORK/fproj"
+mkdir -p "$fproj"
+printf 'export let add = (a: Int, b: Int) -> Int { a + b }\n' > "$WORK/mathlib_src.vibe"
+printf 'mathlib file://%s/mathlib_src.vibe\n' "$WORK" > "$fproj/vibe.deps"
+printf 'import ./deps/mathlib.vibe { add }\nexport let main = () -> Int { add(40, 2) }\n' > "$fproj/app.vibe"
+"$VIBE" fetch "$fproj" >/dev/null 2>&1 && rc=0 || rc=$?
+check "vibe fetch exit" "0" "$rc"
+check "vibe fetch wrote lock" "yes" "$([ -s "$fproj/vibe.lock" ] && echo yes || echo no)"
+check "vibe fetch vendored dep" "yes" "$([ -s "$fproj/deps/mathlib.vibe" ] && echo yes || echo no)"
+check "vibe run vendored dep" "42" "$("$VIBE" run "$fproj/app.vibe" 2>/dev/null | tr -dc '0-9')"
+
 echo "[test] $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

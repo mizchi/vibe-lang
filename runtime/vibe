@@ -16,6 +16,7 @@
 #   vibe build   <file.vibe> -o <out>     alias of compile
 #   vibe check   <file.vibe>              parse + typecheck (no output kept)
 #   vibe test    <file_test.vibe>...      compile + run test {} blocks
+#   vibe fetch   [project_dir]            vendor git/URL deps from vibe.deps + lock
 #   vibe version                          print toolchain versions
 #   vibe self update [--cli-wasm <path>]  refresh compiler wasm + rebuild .cwasm
 #   vibe help                             this message
@@ -132,6 +133,40 @@ case "$cmd" in
       rm -f "$out"
     done
     exit "$failed"
+    ;;
+  fetch)
+    # vibe fetch [project_dir]
+    # Vendor remote (git/URL 分散) deps declared in <dir>/vibe.deps into
+    # <dir>/deps/ and write a content-addressed <dir>/vibe.lock. Each manifest
+    # line is `<name> <url>` (# comments allowed). Import a vendored dep with
+    # `import ./deps/<name>.vibe { ... }`. (docs/release-roadmap.md テーマ2 MVP.)
+    dir="${1:-.}"
+    manifest="$dir/vibe.deps"
+    [ -f "$manifest" ] || die "no manifest: $manifest (declare deps as '<name> <url>' lines)"
+    cache="${VIBE_CACHE:-$VIBE_HOME/cache}"
+    mkdir -p "$cache" "$dir/deps"
+    lock="$dir/vibe.lock"
+    : > "$lock.tmp"
+    while read -r name url _rest || [ -n "$name" ]; do
+      case "$name" in ""|\#*) continue ;; esac
+      [ -n "$url" ] || die "manifest line for '$name' has no url"
+      tmp="$(mktemp -t vibe-fetch-XXXXXX)"
+      case "$url" in
+        file://*) cp "${url#file://}" "$tmp" || die "fetch failed: $url" ;;
+        http://*|https://*) curl -fsSL "$url" -o "$tmp" || die "fetch failed: $url" ;;
+        git+*) die "git+ specs not yet supported in this MVP: $url" ;;
+        *) cp "$url" "$tmp" || die "fetch failed (local path): $url" ;;
+      esac
+      sha="$(sha256sum "$tmp" | cut -d' ' -f1)"
+      cp -f "$tmp" "$cache/$sha"
+      mkdir -p "$(dirname "$dir/deps/$name.vibe")"
+      cp -f "$cache/$sha" "$dir/deps/$name.vibe"
+      rm -f "$tmp"
+      printf '%s\t%s\tsha256:%s\n' "$name" "$url" "$sha" >> "$lock.tmp"
+      echo "fetched $name <- $url (sha256:${sha:0:12})"
+    done < "$manifest"
+    mv "$lock.tmp" "$lock"
+    echo "wrote $lock"
     ;;
   version|--version|-V)
     echo "vibe (selfhost launcher)"

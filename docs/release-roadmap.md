@@ -171,7 +171,18 @@ content-addressed に再現可能で動く。中央 registry の有無を含め�
 
 ### マイルストーン
 
-- [ ] **2-1 リモート import 解決** — git/URL から外部ソースを取得し
+- [x] **2-1a fetch + lock MVP（launcher）** — `vibe fetch` が `vibe.deps`
+      (`<name> <url>` 行) を読み、`file://`/`http(s)://`/ローカルパスを取得して
+      content-addressed cache (`$VIBE_HOME/cache/<sha256>`) + `./deps/<name>.vibe`
+      に vendor し、`vibe.lock`（sha256）を書く。import は `import ./deps/<name>.vibe`。
+      検証済み（`scripts/test_vibe_cli_install.sh` の fetch ケース）。
+- [ ] **2-1b seamless `import "<url>"` 構文** — string-literal import を parser で
+      受け、resolver で `.vibe/deps/` ミラーに写像する案を試作したが、
+      **selfhost codegen の既知の脆さ**（`collect_import_path` の string 補間 /
+      import 解決ホットパスでの String 操作が NUL garbage を生む。
+      `selfhost_only_gate.sh` step4 のコメント参照）に当たり revert。
+      seed 互換な codegen 修正を先に固めてから再導入する。
+- [ ] **2-1 リモート import 解決（完全版）** — git/URL から外部ソースを取得し
       `$HOME/.vibe/lib` / content store にキャッシュ。`index.lock` に hash を固定。
 - [ ] **2-2 依存解決器** — transitive 依存と semver 整合の最小実装
       （まずは「lock があれば再現、無ければ解決して書き出す」）。
