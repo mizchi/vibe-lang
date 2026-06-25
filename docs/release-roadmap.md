@@ -52,18 +52,20 @@
 - ✅ **located parse 診断** — `parse_program_located`（文単位で `line:col` を
   付与）を追加し、FS-compile の header-load parse に配線。`vibe check`/`run` が
   `foo.vibe: line 2:1: unexpected token ...` を表示。LSP は `line N:col M:`
-  プレフィックスから正確な range を生成（`test_vibe_lsp.js` 11/11）。
+  プレフィックスから正確な range を生成。
+- ✅ **located 型エラー（common case）** — FS typecheck の error handler で
+  `unknown name:` / `function arity mismatch for` / `unknown field` /
+  `unknown constructor` のシンボルを source から探し `line:col` を付与
+  （`offset_to_line_col`）。`foo.vibe: line 3:31: unknown name: zzz` のように
+  正確な列まで出る。LSP は range を識別子に絞る（`test_vibe_lsp.js` 11/11）。
 
-残り（次スライス）:
+残り（次スライス、いずれも real AST span が前提で大きい）:
 
-- **located 型エラー** — 型エラーは現状 location 無し（CLI）/ LSP のシンボル
-  ヒューリスティックのみ。real span 化には `parse_program_spans`（文ごと span は
-  既存）を checker に渡し、`check_stmts` の文単位エラー帰属を実装する必要がある
-  （merge 後の文→元 span 対応が課題）。
-- **式レベル span** — 正確なトークン範囲には AST ノードへの位置付与が必要
-  （`EIdent` 1 variant で 183 箇所 × 39 ファイル、全 variant で数千箇所）。
-- **他の parse 箇所** — `typecheck_fs`/`runtime/index`/`compile_source_wasi_only`
-  も located 化すれば全経路で行番号が出る（header_cache 経路は対応済み）。
+- **type mismatch 等シンボルを含まない型エラー** — 現状 location 無し。正確化には
+  AST ノードへの位置付与が必要（式が直接位置を持つ）。
+- **式レベルの正確な span** — `EIdent` 1 variant で 183 箇所 × 39 ファイル、全
+  variant で数千箇所。parser への offset スレッディングも要る massive refactor。
+- **型付き hover / DAP source-line map** — 上の AST span が前提。
 
 - **codegen の関数 index↔name 対応** — ✅ wasm name section（土台B / debugger P0）
   は実装済み（`func_offset + i` で user 関数を正確に命名）。
