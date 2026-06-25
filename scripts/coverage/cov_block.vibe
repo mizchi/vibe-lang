@@ -1,0 +1,40 @@
+
+// #cov block driver: parse_impl_block (block-body parser) reached directly via the
+// parse_impl callback. Drive its block-local let-rec / let-mut / let-star / enum /
+// struct arms plus its error throws (eof-in-block, "expected identifier after
+// 'let rec'/'let mut'", "did not advance") with well-formed and malformed bodies.
+let blk: (String) -> Int = (s) -> {
+  handle { let r = parse_impl_block(lex(s), 0, parse_impl); match r.0 { _ => 1 } } with Error { Throw(_) => 0 }
+}
+
+let blk_ok: () -> Int = () -> {
+  let mut acc = 0
+  acc = acc + blk("{ let x = 1; x }")
+  acc = acc + blk("{ let rec g: (Int) -> Int = (n) -> { if n <= 0 { 0 } else { g(n - 1) } }; g(3) }")
+  acc = acc + blk("{ let mut y = 0; y = y + 1; y }")
+  acc = acc + blk("{ let mut z: Int = 5; z }")
+  acc = acc + blk("{ enum E { A; B(Int) }; B(1) }")
+  acc = acc + blk("{ struct S { x: Int; y: Int }; S::{ x: 1, y: 2 } }")
+  acc = acc + blk("{ let a = 1; let b = 2; a + b }")
+  acc = acc + blk("{ 1 + 2 }")
+  acc = acc + blk("{ }")
+  acc
+}
+let blk_err: () -> Int = () -> {
+  let mut acc = 0
+  acc = acc + blk("{ let rec }")                  // expected identifier after 'let rec'
+  acc = acc + blk("{ let rec 5 }")                // not an identifier
+  acc = acc + blk("{ let mut }")                  // expected identifier after 'let mut'
+  acc = acc + blk("{ let mut 9 }")
+  acc = acc + blk("{ let rec g }")                // missing '='
+  acc = acc + blk("{ enum }")                     // malformed enum
+  acc = acc + blk("{ struct }")                   // malformed struct
+  acc = acc + blk("{ let x = 1")                  // eof in block (no close)
+  acc = acc + blk("{ let x =")                    // eof after '='
+  acc = acc + blk("{")                            // bare open
+  acc
+}
+
+export let cov_block_main: () -> Int = () -> {
+  blk_ok() + blk_err()
+}

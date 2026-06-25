@@ -1,0 +1,48 @@
+
+// #cov push85 driver: remaining token / import-header / namespace arms.
+//  - has_non_pipe_infix_top: depth tracking (parens/brackets/braces) + top-level
+//    infix vs pipe vs prefix vs nested.
+//  - collect_import_path / scan_header_import_dep: dotted/aliased import headers.
+//  - namespace_private_value_stmts: an SImpl-bearing private body.
+let h_inf: (String) -> Int = (s) -> {
+  handle { let t = lex(s); if has_non_pipe_infix_top(t, 0, Array::length(t)) { 1 } else { 0 } } with Error { Throw(_) => 0 }
+}
+let h_cip: (String) -> Int = (s) -> {
+  handle { let r = collect_import_path(lex(s), 0, "base"); String::length(r.0) } with Error { Throw(_) => 0 }
+}
+let h_empty_map: () -> Map[String, Bool] = () -> { MapBuilder::freeze(MapBuilder::new()) }
+let h_shd: (String, Int) -> Int = (s, p) -> {
+  handle { let r = scan_header_import_dep(lex(s), p, "base", h_empty_map()); String::length(r.0) } with Error { Throw(_) => 0 }
+}
+
+let push_infix: () -> Int = () -> {
+  let mut acc = 0
+  acc = acc + h_inf("a + b") + h_inf("a |> b") + h_inf("a |> b |> c")
+  acc = acc + h_inf("a + b |> c") + h_inf("(a + b)") + h_inf("[a + b]")
+  acc = acc + h_inf("{ a + b }") + h_inf("f(a + b) + c") + h_inf("f(a + b)")
+  acc = acc + h_inf("- a") + h_inf("a") + h_inf("((a + b))")
+  acc = acc + h_inf("a == b && c < d") + h_inf("[a, b][0] + 1")
+  acc
+}
+let push_import: () -> Int = () -> {
+  let mut acc = 0
+  acc = acc + h_cip("./a/b.vibe") + h_cip("../m.vibe") + h_cip("./x.vibe")
+  acc = acc + h_cip("a/b/c.vibe") + h_cip("@scope/pkg")
+  acc = acc + h_shd("./a.vibe { x }", 0) + h_shd("./a.vibe as A { x }", 0)
+  acc = acc + h_shd("@pkg/mod { y }", 0) + h_shd("../b/c.vibe { z }", 0)
+  acc
+}
+let push_ns: () -> Int = () -> {
+  let body = Array::slice([SExpr(EUnit)], 0, 0)
+  Array::push(body, STrait(false, "PrivTr", Array::slice(["f"], 0, 1)))
+  Array::push(body, SStruct(false, "PrivW", Array::slice([("v", TyName("Int"))], 0, 1)))
+  Array::push(body, SImpl(Array::slice([""], 0, 0), Array::slice([("", Array::slice([""], 0, 0))], 0, 0), "PrivTr", "PrivW"))
+  Array::push(body, SLet(false, false, "mk", None, ERecord(Array::slice([("v", EInt(1))], 0, 1))))
+  Array::push(body, SLet(true, false, "use_priv", Some(TyName("PrivW")), EIdent("mk")))
+  Array::push(body, SExport(Array::slice(["use_priv"], 0, 1)))
+  Array::length(namespace_private_value_stmts("NS", body))
+}
+
+export let cov_push85_main: () -> Int = () -> {
+  push_infix() + push_import() + push_ns()
+}
