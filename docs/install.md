@@ -115,17 +115,37 @@ This is an MVP of [docs/release-roadmap.md](release-roadmap.md) テーマ2 — s
 
 ## Editor support (LSP, MVP)
 
-`vibe lsp` starts a stdio LSP server that reports diagnostics as you edit, by
-driving the selfhost compiler. Point your editor's LSP client at `vibe lsp` for
-the `vibe` language. Example (Neovim):
+`vibe lsp` starts a stdio LSP server that drives the selfhost compiler. It
+provides: live diagnostics (located parse + common type errors), document
+outline, go-to-definition, hover, completion, find-references, and rename.
+Point your editor's LSP client at `vibe lsp` for the `vibe` language.
+
+**VS Code**: install `integrations/vscode-vibe` (it launches `vibe lsp`).
+
+**Neovim**:
 
 ```lua
 vim.lsp.start({ name = "vibe", cmd = { "vibe", "lsp" }, root_dir = vim.fn.getcwd() })
 ```
 
-This MVP provides push diagnostics with an approximate range (the selfhost
-frontend does not yet track source spans). Document symbols, go-to-definition,
-and hover are tracked in [docs/release-roadmap.md](release-roadmap.md) テーマ4.
+**Helix** (`~/.config/helix/languages.toml`):
+
+```toml
+[language-server.vibe-lsp]
+command = "vibe"
+args = ["lsp"]
+
+[[language]]
+name = "vibe"
+scope = "source.vibe"
+file-types = ["vibe"]
+language-servers = ["vibe-lsp"]
+```
+
+Diagnostics carry an exact line:col for parse errors and common type errors
+(unknown name / arity / field / ctor); other locations are approximate until
+the selfhost frontend tracks full source spans (typed hover and scope-accurate
+rename also await that). See [docs/release-roadmap.md](release-roadmap.md) テーマ4.
 
 ## Updating the compiler independently of the runner
 
