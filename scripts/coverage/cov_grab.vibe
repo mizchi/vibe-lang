@@ -1,0 +1,105 @@
+
+// #cov grab driver: sweep the long tail of small tractable type/trait/env/heap/
+// token/AST helpers, each driven directly with constructed inputs. Split into many
+// small sub-functions (a single huge body trips a seed codegen bug).
+let g_t2s: (Type) -> Int = (t) -> { String::length(type_to_string(t)) }
+
+let grab_types: () -> Int = () -> {
+  let mut acc = 0
+  let tys = Array::slice([CtInt], 0, 0)
+  Array::push(tys, CtInt); Array::push(tys, CtDouble); Array::push(tys, CtBool); Array::push(tys, CtString)
+  Array::push(tys, CtChar); Array::push(tys, CtUnit); Array::push(tys, CtBytes); Array::push(tys, CtUnknown)
+  Array::push(tys, CtVar(2)); Array::push(tys, CtEnum("E")); Array::push(tys, CtStruct("S"))
+  Array::push(tys, CtArray(CtInt)); Array::push(tys, CtOption(CtBool))
+  Array::push(tys, CtTuple(Array::slice([CtInt, CtBool], 0, 2)))
+  Array::push(tys, CtFn(Array::slice([CtInt], 0, 1), CtBool, Some("Eff")))
+  Array::push(tys, CtNamed("N", Array::slice([CtInt], 0, 1)))
+  Array::push(tys, CtForAll(Array::slice([0], 0, 1), Array::slice([(0, Array::slice([""], 0, 0))], 0, 0), CtVar(0)))
+  let mut i = 0
+  while i < Array::length(tys) { acc = acc + g_t2s(Array::get(tys, i)); i = i + 1 }
+  // subst_type_params
+  let ps = Array::slice(["a"], 0, 1)
+  let args = Array::slice([CtInt], 0, 1)
+  acc = acc + String::length(type_to_string(subst_type_params(CtNamed("a", Array::slice([CtInt], 0, 0)), ps, args)))
+  acc = acc + String::length(type_to_string(subst_type_params(CtArray(CtNamed("a", Array::slice([CtInt], 0, 0))), ps, args)))
+  acc
+}
+let grab_typeexpr: () -> Int = () -> {
+  let mut acc = 0
+  acc = acc + (if type_contains_fn(TyFn(Array::slice([TyName("Int")], 0, 1), TyName("Bool"), None)) { 1 } else { 0 })
+  acc = acc + (if type_contains_fn(TyName("Int")) { 1 } else { 0 })
+  acc = acc + (if type_contains_fn(TyApp("Array", Array::slice([TyFn(Array::slice([TyName("Int")], 0, 1), TyName("Int"), None)], 0, 1))) { 1 } else { 0 })
+  acc = acc + (if type_expr_is_heap(Some(TyName("String"))) { 1 } else { 0 })
+  acc = acc + (if type_expr_is_heap(Some(TyName("Int"))) { 1 } else { 0 })
+  acc = acc + (if type_expr_is_heap(None) { 1 } else { 0 })
+  acc = acc + (if type_expr_is_heap(Some(TyApp("Array", Array::slice([TyName("Int")], 0, 1)))) { 1 } else { 0 })
+  acc
+}
+let grab_binop: () -> Int = () -> {
+  let mut acc = 0
+  let env = EnvEmpty
+  let ops = Array::slice([""], 0, 0)
+  Array::push(ops, "+"); Array::push(ops, "-"); Array::push(ops, "*"); Array::push(ops, "=="); Array::push(ops, "<"); Array::push(ops, "&&")
+  let mut i = 0
+  while i < Array::length(ops) {
+    acc = acc + (handle { let (t, _) = infer_binop_type(Array::get(ops, i), CtInt, CtInt, env, SubstEmpty, Array::slice([""], 0, 0)); match t { _ => 1 } } with Error { Throw(_) => 0 })
+    i = i + 1
+  }
+  acc
+}
+let grab_env: () -> Int = () -> {
+  let mut acc = 0
+  let def_eq = EnvTraitDef("Eq", Array::slice([""], 0, 0), false, EnvEmpty)
+  let def_ord = EnvTraitDef("Ord", Array::slice(["Eq"], 0, 1), false, def_eq)
+  let env = EnvTraitImpl("Ord", CtInt, def_ord)
+  acc = acc + (if trait_defined(env, "Ord") { 1 } else { 0 })
+  acc = acc + (if trait_defined(env, "Nope") { 1 } else { 0 })
+  acc = acc + (if trait_is_subtrait(env, "Ord", "Eq") { 1 } else { 0 })
+  acc = acc + (if trait_is_subtrait(env, "Eq", "Ord") { 1 } else { 0 })
+  acc = acc + (if type_implements_check_env(env, "Ord", CtInt) { 1 } else { 0 })
+  acc = acc + (if type_implements_check_env(env, "Ord", CtBool) { 1 } else { 0 })
+  acc = acc + Array::length(env_flat_bindings(EnvBind("x", CtInt, EnvFlat(Array::slice([("y", CtBool)], 0, 1)))))
+  acc = acc + (match env_cache(EnvBind("x", CtInt, EnvEmpty)) { _ => 1 })
+  acc = acc + (match env_lookup(EnvFlat(Array::slice([("x", CtInt)], 0, 1)), "x") { Some(_) => 1, None => 0 })
+  acc
+}
+let grab_heap: () -> Int = () -> {
+  let mut acc = 0
+  acc = acc + (if is_heap_literal(EArray(Array::slice([EInt(1)], 0, 1))) { 1 } else { 0 })
+  acc = acc + (if is_heap_literal(EString("s")) { 1 } else { 0 })
+  acc = acc + (if is_heap_literal(EInt(1)) { 1 } else { 0 })
+  acc = acc + (if is_heap_literal(ETuple(Array::slice([EInt(1)], 0, 1))) { 1 } else { 0 })
+  let m0 = Array::slice([Array::slice([true], 0, 1)], 0, 0)
+  Array::push(m0, Array::slice([true, false], 0, 2))
+  Array::push(m0, Array::slice([false], 0, 1))
+  acc = acc + (if all_calls_heap_at(0, m0) { 1 } else { 0 })
+  acc = acc + (if all_calls_heap_at(1, m0) { 1 } else { 0 })
+  acc
+}
+let grab_ast: () -> Int = () -> {
+  let mut acc = 0
+  let body = Array::slice([SExpr(EUnit)], 0, 0)
+  Array::push(body, SLet(true, false, "k", None, EInt(1)))
+  Array::push(body, SLet(false, false, "p", None, ECall(EIdent("k"), Array::slice([EUnit], 0, 0))))
+  Array::push(body, SExport(Array::slice(["k"], 0, 1)))
+  acc = acc + Array::length(exported_value_names(body))
+  acc = acc + Array::length(dce_reachable_names(body, Array::slice(["p"], 0, 1)))
+  acc = acc + module_value_aliases(body, "M", Array::slice([("k", "M_k")], 0, 1))
+  let out = Array::slice([SExpr(EUnit)], 0, 0)
+  acc = acc + flatten_module_body(body, "M", Array::slice([("k", "M_k")], 0, 1), out)
+  acc = acc + String::length(print_stmt(SImport("m", Array::slice([("x", Some("y"))], 0, 1))))
+  acc = acc + String::length(print_stmt(SExport(Array::slice(["a"], 0, 1))))
+  acc
+}
+let grab_tok: () -> Int = () -> {
+  let mut acc = 0
+  acc = acc + (handle { skip_derive(lex("derive(Eq, Show) struct S { x: Int }"), 0) } with Error { Throw(_) => 0 })
+  acc = acc + (handle { skip_derive(lex("struct S { x: Int }"), 0) } with Error { Throw(_) => 0 })
+  acc = acc + (handle { let t = lex("a + b"); if has_non_pipe_infix_top(t, 0, Array::length(t)) { 1 } else { 0 } } with Error { Throw(_) => 0 })
+  acc = acc + (handle { let r = collect_import_path(lex("import ./x/y.vibe { z }"), 1, "b"); String::length(r.0) } with Error { Throw(_) => 0 })
+  acc
+}
+
+export let cov_grab_main: () -> Int = () -> {
+  grab_types() + grab_typeexpr() + grab_binop() + grab_env() + grab_heap() + grab_ast() + grab_tok()
+}

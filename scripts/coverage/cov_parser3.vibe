@@ -1,0 +1,55 @@
+
+// #cov parser-internals driver: parse_impl matches the parse_recur callback
+// signature, so the mutually-recursive parser primitives can be called directly.
+// Drive parse_postfix's expr-type stop-cases (a while/loop/for/handle/match/if expr
+// immediately followed by '(' is NOT a call) — shapes normal parsing never yields —
+// plus parse_impl across its mode dispatch and parse_impl_block on block bodies.
+let pp: (Expr) -> Int = (e) -> {
+  handle { let r = parse_postfix(lex("(a)"), 0, e, parse_impl); match r.0 { _ => 1 } } with Error { Throw(_) => 0 }
+}
+let pm: (Int) -> Int = (mode) -> {
+  handle { let r = parse_impl(lex("a + b"), 0, mode); match r.0 { _ => 1 } } with Error { Throw(_) => 0 }
+}
+let pblk: (String) -> Int = (src) -> {
+  handle { let r = parse_impl_block(lex(src), 0, parse_impl); match r.0 { _ => 1 } } with Error { Throw(_) => 0 }
+}
+
+let pp_stopcases: () -> Int = () -> {
+  let mut acc = 0
+  acc = acc + pp(EWhile(EUnit, EUnit))
+  acc = acc + pp(ELoop(Array::slice([("", EUnit)], 0, 0), EUnit))
+  acc = acc + pp(EForIn("i", None, EUnit, EUnit))
+  acc = acc + pp(EHandle(EUnit, Array::slice([(PWild, EUnit)], 0, 0)))
+  acc = acc + pp(EMatch(EUnit, Array::slice([(PWild, EUnit)], 0, 0)))
+  acc = acc + pp(EIf(EUnit, EUnit, EUnit))
+  acc = acc + pp(EInt(1))
+  acc = acc + pp(EArray(Array::slice([EInt(1)], 0, 1)))
+  acc = acc + pp(ETuple(Array::slice([EInt(1)], 0, 1)))
+  acc = acc + pp(ERecord(Array::slice([("f", EInt(1))], 0, 1)))
+  acc = acc + pp(EString("s"))
+  acc = acc + pp(EStringInterp(Array::slice(["a"], 0, 1)))
+  acc = acc + pp(EBool(true))
+  acc = acc + pp(EUnit)
+  acc
+}
+let pp_modes: () -> Int = () -> {
+  let mut acc = 0
+  let mut m = 0
+  while m < 30 { acc = acc + pm(m); m = m + 1 }
+  acc
+}
+let pp_blocks: () -> Int = () -> {
+  let mut acc = 0
+  acc = acc + pblk("{ let x = 1; x }")
+  acc = acc + pblk("{ let rec g: (Int) -> Int = (n) -> { n }; g(1) }")
+  acc = acc + pblk("{ let mut y = 0; y = 1; y }")
+  acc = acc + pblk("{ enum E { A; B(Int) }; A }")
+  acc = acc + pblk("{ struct S { x: Int }; 0 }")
+  acc = acc + pblk("{ }")
+  acc = acc + pblk("{ 1 + 2 }")
+  acc
+}
+
+export let cov_parser3_main: () -> Int = () -> {
+  pp_stopcases() + pp_modes() + pp_blocks()
+}

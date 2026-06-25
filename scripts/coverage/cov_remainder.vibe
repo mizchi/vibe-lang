@@ -1,0 +1,50 @@
+
+// #cov remainder driver: the remaining small tractable helpers — literal_type
+// (Expr literal arms), annotate_literal_let, build_pull_for_in (index Some/None),
+// skip_brace_list / collect_import_path / has_non_pipe_infix_top (lexed tokens),
+// exported_value_names, entry_declares_async_int.
+let r_lit: (Expr) -> Int = (e) -> { match literal_type(e) { Some(_) => 1, None => 0 } }
+let r_skip: (String) -> Int = (src) -> {
+  handle { skip_brace_list(lex(src), 0) } with Error { Throw(_) => 0 }
+}
+let r_imp: (String) -> Int = (src) -> {
+  handle { let r = collect_import_path(lex(src), 1, "base"); String::length(r.0) } with Error { Throw(_) => 0 }
+}
+let r_infix: (String, Int) -> Int = (src, st) -> {
+  handle { let t = lex(src); if has_non_pipe_infix_top(t, st, Array::length(t)) { 1 } else { 0 } }
+  with Error { Throw(_) => 0 }
+}
+
+export let cov_remainder_main: () -> Int = () -> {
+  let mut acc = 0
+  // literal_type: each literal arm + default
+  acc = acc + r_lit(EInt(1)) + r_lit(EBool(true)) + r_lit(EString("s"))
+  acc = acc + r_lit(EFloat(1.0)) + r_lit(EIdent("x")) + r_lit(EUnit)
+  // annotate_literal_let: SLet with no type + literal body (annotated), with type (kept), non-literal
+  acc = acc + (match annotate_literal_let(SLet(false, false, "a", None, EInt(1))) { _ => 1 })
+  acc = acc + (match annotate_literal_let(SLet(false, false, "a", Some(TyName("Int")), EInt(1))) { _ => 1 })
+  acc = acc + (match annotate_literal_let(SLet(false, false, "a", None, EIdent("x"))) { _ => 1 })
+  acc = acc + (match annotate_literal_let(SExpr(EUnit)) { _ => 1 })
+  // build_pull_for_in: index Some vs None
+  acc = acc + (match build_pull_for_in("v", Some("i"), EIdent("xs"), EIdent("v"), 0) { _ => 1 })
+  acc = acc + (match build_pull_for_in("v", None, EIdent("xs"), EIdent("v"), 1) { _ => 1 })
+  // skip_brace_list: nested braces / non-brace
+  acc = acc + r_skip("{ a b { c d } e }")
+  acc = acc + r_skip("a b")
+  // collect_import_path: dotted relative path / bare
+  acc = acc + r_imp("import ./a/b.vibe { x }")
+  acc = acc + r_imp("import ../m.vibe { y }")
+  // has_non_pipe_infix_top: infix / pipe-only / none
+  acc = acc + r_infix("a + b * c", 0)
+  acc = acc + r_infix("a |> f", 0)
+  acc = acc + r_infix("x", 0)
+  // exported_value_names / entry_declares_async_int over a stmt body
+  let body = Array::slice([SExpr(EUnit)], 0, 0)
+  Array::push(body, SLet(true, false, "k", None, EInt(1)))
+  Array::push(body, SLet(false, false, "p", None, EInt(2)))
+  Array::push(body, SExport(Array::slice(["k"], 0, 1)))
+  acc = acc + Array::length(exported_value_names(body))
+  acc = acc + (if entry_declares_async_int(body, "k") { 1 } else { 0 })
+  acc = acc + (if entry_declares_async_int(body, "missing") { 1 } else { 0 })
+  acc
+}

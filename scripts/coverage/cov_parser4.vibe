@@ -1,0 +1,70 @@
+
+// #cov parser-internals driver #2: call the remaining parser primitives directly
+// with lexed token sequences (and parse_impl as the parse_recur callback) to reach
+// pattern/type/stmt/primary/decl arms the black-box parser leaves dark.
+let p4_pat: (String) -> Int = (s) -> {
+  handle { let r = parse_pattern(lex(s), 0); match r.0 { _ => 1 } } with Error { Throw(_) => 0 }
+}
+let p4_ty: (String, Int) -> Int = (s, m) -> {
+  handle { let r = parse_type_impl(lex(s), 0, m); match r.0 { _ => 1 } } with Error { Throw(_) => 0 }
+}
+let p4_stmt: (String) -> Int = (s) -> {
+  handle { let r = parse_stmt(lex(s), 0); match r.0 { _ => 1 } } with Error { Throw(_) => 0 }
+}
+let p4_disp: (String, Int) -> Int = (s, m) -> {
+  handle { let r = parse_impl_dispatch(lex(s), 0, m, parse_impl); match r.0 { _ => 1 } } with Error { Throw(_) => 0 }
+}
+
+let p4_patterns: () -> Int = () -> {
+  let mut acc = 0
+  acc = acc + p4_pat("_") + p4_pat("x") + p4_pat("1") + p4_pat("\"s\"") + p4_pat("true")
+  acc = acc + p4_pat("(a, b)") + p4_pat("(a, b, c)") + p4_pat("Some(x)") + p4_pat("None")
+  acc = acc + p4_pat("Cons(h, t)") + p4_pat("1 | 2 | 3") + p4_pat("S { x, y }")
+  acc = acc + p4_pat("S { x: a, y: _ }") + p4_pat("Node(Leaf(x), r)")
+  acc
+}
+let p4_types: () -> Int = () -> {
+  let mut acc = 0
+  let mut m = 0
+  while m < 4 {
+    acc = acc + p4_ty("Int", m) + p4_ty("Array[Int]", m) + p4_ty("(Int, Bool)", m)
+    acc = acc + p4_ty("(Int) -> Bool", m) + p4_ty("Option[Int]", m) + p4_ty("Map[String, Int]", m)
+    m = m + 1
+  }
+  acc
+}
+let p4_stmts: () -> Int = () -> {
+  let mut acc = 0
+  acc = acc + p4_stmt("let x: Int = 1") + p4_stmt("let mut y = 2") + p4_stmt("let rec g: (Int) -> Int = (n) -> { n }")
+  acc = acc + p4_stmt("enum E { A; B(Int) }") + p4_stmt("struct S { x: Int }") + p4_stmt("type T = Int")
+  acc = acc + p4_stmt("suberror Er { Bad }") + p4_stmt("trait Tr { f: (Self) -> Int }")
+  acc = acc + p4_stmt("import ./m.vibe { x }") + p4_stmt("export { a, b }")
+  acc = acc + p4_stmt("test \"t\" { 0 }") + p4_stmt("bench \"b\" { 0 }")
+  acc
+}
+let p4_primaries: () -> Int = () -> {
+  let mut acc = 0
+  acc = acc + (handle { let r = parse_perform_primary(lex("perform St::get()"), 1, parse_impl); match r.0 { _ => 1 } } with Error { Throw(_) => 0 })
+  acc = acc + (handle { let r = parse_generic_fn_primary(lex("fn[a](x: a) -> a { x }"), 1, parse_impl); match r.0 { _ => 1 } } with Error { Throw(_) => 0 })
+  acc = acc + (handle { let r = parse_call_arg(lex("label: 1"), 0, parse_impl); match r.0 { _ => 1 } } with Error { Throw(_) => 0 })
+  acc = acc + (handle { let r = parse_call_arg(lex("42"), 0, parse_impl); match r.0 { _ => 1 } } with Error { Throw(_) => 0 })
+  let mut m = 20
+  while m < 28 { acc = acc + p4_disp("if a { 1 } else { 2 }", m); m = m + 1 }
+  acc
+}
+let p4_decls: () -> Int = () -> {
+  let mut acc = 0
+  acc = acc + (handle { let r = parse_enum_stmt(lex("E { A; B(Int); C(Int, Bool) }"), 0, false); match r.0 { _ => 1 } } with Error { Throw(_) => 0 })
+  acc = acc + (handle { let r = parse_enum_stmt(lex("E { A }"), 0, true); match r.0 { _ => 1 } } with Error { Throw(_) => 0 })
+  acc = acc + (handle { let r = parse_export_stmt(lex("export { a, b as c }"), 1); match r.0 { _ => 1 } } with Error { Throw(_) => 0 })
+  acc = acc + (handle { let r = parse_one_param(lex("x: Int"), 0); match r.0 { _ => 1 } } with Error { Throw(_) => 0 })
+  acc = acc + (handle { let r = parse_one_param(lex("y"), 0); match r.0 { _ => 1 } } with Error { Throw(_) => 0 })
+  acc = acc + (handle { let r = parse_impl_type_params(lex("[a, b]"), 0); match r.0 { _ => 1 } } with Error { Throw(_) => 0 })
+  acc = acc + (handle { let r = parse_export_name(lex("foo as bar"), 0); match r.0 { _ => 1 } } with Error { Throw(_) => 0 })
+  acc = acc + (handle { let r = parse_export_name(lex("baz"), 0); match r.0 { _ => 1 } } with Error { Throw(_) => 0 })
+  acc
+}
+
+export let cov_parser4_main: () -> Int = () -> {
+  p4_patterns() + p4_types() + p4_stmts() + p4_primaries() + p4_decls()
+}
