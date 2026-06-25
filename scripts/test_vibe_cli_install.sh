@@ -95,5 +95,21 @@ check "vibe fetch wrote lock" "yes" "$([ -s "$fproj/vibe.lock" ] && echo yes || 
 check "vibe fetch vendored dep" "yes" "$([ -s "$fproj/deps/mathlib.vibe" ] && echo yes || echo no)"
 check "vibe run vendored dep" "42" "$("$VIBE" run "$fproj/app.vibe" 2>/dev/null | tr -dc '0-9')"
 
+# fetch: a git+ dependency from a local repo, vendored as a directory.
+if command -v git >/dev/null 2>&1; then
+  repo="$WORK/gitrepo"; mkdir -p "$repo"
+  printf 'export let triple = (x: Int) -> Int { x * 3 }\n' > "$repo/index.vibe"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t && git add -A && git commit -q -m init )
+  gproj="$WORK/gproj"; mkdir -p "$gproj"
+  printf 'mathgit git+file://%s\n' "$repo" > "$gproj/vibe.deps"
+  printf 'import ./deps/mathgit/index.vibe { triple }\nexport let main = () -> Int { triple(14) }\n' > "$gproj/app.vibe"
+  "$VIBE" fetch "$gproj" >/dev/null 2>&1 && rc=0 || rc=$?
+  check "vibe fetch git+ exit" "0" "$rc"
+  check "vibe fetch git+ records commit" "yes" "$(grep -q 'git:' "$gproj/vibe.lock" && echo yes || echo no)"
+  check "vibe run git+ dep" "42" "$("$VIBE" run "$gproj/app.vibe" 2>/dev/null | tr -dc '0-9')"
+else
+  echo "info: git not available; skipping git+ fetch assertions"
+fi
+
 echo "[test] $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

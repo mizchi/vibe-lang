@@ -201,10 +201,12 @@ content-addressed に再現可能で動く。中央 registry の有無を含め�
 ### マイルストーン
 
 - [x] **2-1a fetch + lock MVP（launcher）** — `vibe fetch` が `vibe.deps`
-      (`<name> <url>` 行) を読み、`file://`/`http(s)://`/ローカルパスを取得して
-      content-addressed cache (`$VIBE_HOME/cache/<sha256>`) + `./deps/<name>.vibe`
-      に vendor し、`vibe.lock`（sha256）を書く。import は `import ./deps/<name>.vibe`。
-      検証済み（`scripts/test_vibe_cli_install.sh` の fetch ケース）。
+      (`<name> <url>` 行) を読んで vendor + `vibe.lock` を書く:
+      - 単一ファイル（`file://`/`http(s)://`/ローカル）→ sha256 で content-addressed
+        cache + `./deps/<name>.vibe`、lock に `sha256:<hash>`。
+      - **git（`git+<remote>[#<ref>]`）** → clone + ref checkout → `./deps/<name>/`
+        ディレクトリに vendor、lock に解決した commit `git:<sha>` を固定。
+      検証済み（`scripts/test_vibe_cli_install.sh`、git+ 含め 15/15）。
 - [ ] **2-1b seamless `import "<url>"` 構文** — string-literal import を parser で
       受け、resolver で `.vibe/deps/` ミラーに写像する案を試作したが、
       **selfhost codegen の既知の脆さ**（`collect_import_path` の string 補間 /

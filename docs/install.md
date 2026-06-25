@@ -85,25 +85,33 @@ them in `vibe.deps` (one `<name> <url>` per line; `#` comments allowed):
 
 ```
 # vibe.deps
-mathlib https://example.com/mathlib.vibe
+mathlib  https://example.com/mathlib.vibe          # single-file URL
+mymod    git+https://example.com/u/mymod.git#v1.2   # git repo, pinned to a ref
 ```
 
 Then vendor + lock them, and import via the vendored path:
 
 ```bash
-vibe fetch                     # downloads into ./deps/, writes vibe.lock (sha256)
+vibe fetch                     # downloads into ./deps/, writes vibe.lock
 ```
 
 ```vibe
-import ./deps/mathlib.vibe { add }
+import ./deps/mathlib.vibe { add }        # single-file dep
+import ./deps/mymod/index.vibe { thing }  # git dep (vendored as a directory)
 export let main = () -> Int { add(40, 2) }
 ```
 
-`vibe fetch` content-addresses each dep (cached under `$VIBE_HOME/cache/<sha256>`)
-and records the resolved hash in `vibe.lock` for reproducible builds. `file://`
-and local paths are supported for offline/local deps. This is an MVP of
-[docs/release-roadmap.md](release-roadmap.md) テーマ2 — seamless `import "<url>"`
-syntax and transitive resolution are tracked there.
+`vibe fetch` records each dep's resolved identity in `vibe.lock` for
+reproducible builds:
+
+- **single-file** (`https://`, `file://`, local path): content-addressed by
+  sha256, cached under `$VIBE_HOME/cache/<sha256>`, vendored to
+  `./deps/<name>.vibe`.
+- **git** (`git+<remote>[#<ref>]`): cloned, checked out at `<ref>`, vendored as
+  a directory `./deps/<name>/`, and pinned to the resolved commit (`git:<sha>`).
+
+This is an MVP of [docs/release-roadmap.md](release-roadmap.md) テーマ2 — seamless
+`import "<url>"` syntax and transitive resolution are tracked there.
 
 ## Editor support (LSP, MVP)
 

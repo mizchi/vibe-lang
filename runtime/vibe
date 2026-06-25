@@ -152,11 +152,36 @@ case "$cmd" in
     while read -r name url _rest || [ -n "$name" ]; do
       case "$name" in ""|\#*) continue ;; esac
       [ -n "$url" ] || die "manifest line for '$name' has no url"
+      case "$url" in
+        git+*)
+          # git dependency: `git+<remote>[#<ref>]`, vendored as a directory
+          # deps/<name>/; import e.g. `import ./deps/<name>/index.vibe`.
+          remote="${url#git+}"; ref=""
+          case "$remote" in *"#"*) ref="${remote##*#}"; remote="${remote%#*}" ;; esac
+          gtmp="$(mktemp -d -t vibe-git-XXXXXX)"
+          command -v git >/dev/null 2>&1 || die "git is required for git+ deps"
+          if [ -n "$ref" ]; then
+            git clone --quiet --depth 1 --branch "$ref" "$remote" "$gtmp" 2>/dev/null \
+              || git clone --quiet "$remote" "$gtmp" || die "git clone failed: $remote"
+            ( cd "$gtmp" && git checkout --quiet "$ref" 2>/dev/null ) || true
+          else
+            git clone --quiet --depth 1 "$remote" "$gtmp" || die "git clone failed: $remote"
+          fi
+          gsha="$( cd "$gtmp" && git rev-parse HEAD 2>/dev/null || echo unknown )"
+          rm -rf "$gtmp/.git"
+          gcache="$cache/git/$gsha"
+          rm -rf "$gcache"; mkdir -p "$gcache"; cp -R "$gtmp/." "$gcache/"
+          rm -rf "$dir/deps/$name"; mkdir -p "$dir/deps/$name"; cp -R "$gcache/." "$dir/deps/$name/"
+          rm -rf "$gtmp"
+          printf '%s\t%s\tgit:%s\n' "$name" "$url" "$gsha" >> "$lock.tmp"
+          echo "fetched $name <- $url (git:${gsha:0:12})"
+          continue
+          ;;
+      esac
       tmp="$(mktemp -t vibe-fetch-XXXXXX)"
       case "$url" in
         file://*) cp "${url#file://}" "$tmp" || die "fetch failed: $url" ;;
         http://*|https://*) curl -fsSL "$url" -o "$tmp" || die "fetch failed: $url" ;;
-        git+*) die "git+ specs not yet supported in this MVP: $url" ;;
         *) cp "$url" "$tmp" || die "fetch failed (local path): $url" ;;
       esac
       sha="$(sha256sum "$tmp" | cut -d' ' -f1)"
