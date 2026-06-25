@@ -123,6 +123,23 @@ if command -v git >/dev/null 2>&1; then
   check "vibe fetch transitive exit" "0" "$rc"
   check "vibe fetch vendored nested dep" "yes" "$([ -s "$tproj/deps/a/deps/base/index.vibe" ] && echo yes || echo no)"
   check "vibe run transitive dep tree" "42" "$("$VIBE" run "$tproj/app.vibe" 2>/dev/null | tr -dc '0-9')"
+
+  # --frozen: pin to the lock's commit even after upstream moves on.
+  fzproj="$WORK/fzproj"; mkdir -p "$fzproj"
+  printf 'mathgit git+file://%s\n' "$repo" > "$fzproj/vibe.deps"
+  "$VIBE" fetch "$fzproj" >/dev/null 2>&1 && rc=0 || rc=$?
+  check "vibe fetch (pre-frozen) exit" "0" "$rc"
+  pinsha="$(awk '/^mathgit/{print $3}' "$fzproj/vibe.lock" | sed 's/git://')"
+  # Move the upstream repo forward so HEAD != the locked commit.
+  printf 'export let triple = (x: Int) -> Int { x * 4 }\n' > "$repo/index.vibe"
+  ( cd "$repo" && git add -A && git commit -q -m bump )
+  # Re-fetch with --frozen: must restore the *old* commit's source (x*3).
+  "$VIBE" fetch --frozen "$fzproj" >/dev/null 2>&1 && rc=0 || rc=$?
+  check "vibe fetch --frozen exit" "0" "$rc"
+  printf 'import ./deps/mathgit/index.vibe { triple }\nexport let main = () -> Int { triple(14) }\n' > "$fzproj/app.vibe"
+  check "vibe fetch --frozen pins commit" "42" "$("$VIBE" run "$fzproj/app.vibe" 2>/dev/null | tr -dc '0-9')"
+  newsha="$(awk '/^mathgit/{print $3}' "$fzproj/vibe.lock" | sed 's/git://')"
+  check "vibe fetch --frozen keeps lock sha" "$pinsha" "$newsha"
 else
   echo "info: git not available; skipping git+ fetch assertions"
 fi

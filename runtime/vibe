@@ -18,7 +18,7 @@
 #   vibe test    <file_test.vibe>...      compile + run test {} blocks
 #   vibe new     <dir>                    scaffold a starter project
 #   vibe add     <name> <url> [dir]       add a dependency to vibe.deps + fetch
-#   vibe fetch   [project_dir]            vendor git/URL deps from vibe.deps + lock
+#   vibe fetch   [--frozen] [dir]        vendor git/URL deps from vibe.deps + lock
 #   vibe lsp                              start the stdio LSP server (diagnostics)
 #   vibe version                          print toolchain versions
 #   vibe self update [--cli-wasm <path>]  refresh compiler wasm + rebuild .cwasm
@@ -164,17 +164,22 @@ case "$cmd" in
     exec "$LAUNCHER" fetch "$adir"
     ;;
   fetch)
-    # vibe fetch [project_dir]
+    # vibe fetch [--frozen] [project_dir]
     # Vendor remote (git/URL 分散) deps declared in <dir>/vibe.deps into
     # <dir>/deps/ and write a content-addressed <dir>/vibe.lock. Each manifest
     # line is `<name> <url>` (# comments allowed). Import a vendored dep with
-    # `import ./deps/<name>.vibe { ... }`. (docs/release-roadmap.md テーマ2 MVP.)
+    # `import ./deps/<name>.vibe { ... }`. With --frozen, git deps are pinned to
+    # the commit recorded in the existing vibe.lock (reproducible builds).
+    frozen=0
+    while [ "$#" -gt 0 ] && case "$1" in --frozen) frozen=1; shift; true ;; *) false ;; esac; do :; done
     dir="${1:-.}"
     manifest="$dir/vibe.deps"
     [ -f "$manifest" ] || die "no manifest: $manifest (declare deps as '<name> <url>' lines)"
     cache="${VIBE_CACHE:-$VIBE_HOME/cache}"
     mkdir -p "$cache" "$dir/deps"
     lock="$dir/vibe.lock"
+    # Read any existing lock so --frozen can pin git deps to recorded commits.
+    locked_commit() { [ -f "$lock" ] && awk -v n="$1" '$1==n {print $3}' "$lock" | sed 's/^git://'; }
     : > "$lock.tmp"
     while read -r name url _rest || [ -n "$name" ]; do
       case "$name" in ""|\#*) continue ;; esac
@@ -185,9 +190,23 @@ case "$cmd" in
           # deps/<name>/; import e.g. `import ./deps/<name>/index.vibe`.
           remote="${url#git+}"; ref=""
           case "$remote" in *"#"*) ref="${remote##*#}"; remote="${remote%#*}" ;; esac
+          # With --frozen, the recorded commit (a full SHA, not a branch) wins
+          # over any manifest ref so the build reproduces exactly.
+          pinned=""
+          if [ "$frozen" = "1" ]; then
+            pinned="$(locked_commit "$name")"
+            [ -n "$pinned" ] || die "--frozen: no locked commit for '$name' (run 'vibe fetch' first)"
+            ref="$pinned"
+          fi
           gtmp="$(mktemp -d -t vibe-git-XXXXXX)"
           command -v git >/dev/null 2>&1 || die "git is required for git+ deps"
-          if [ -n "$ref" ]; then
+          if [ -n "$pinned" ]; then
+            # A full SHA can't be reached by --branch/--depth 1; clone fully then
+            # check it out so a moved upstream HEAD still resolves the pin.
+            git clone --quiet "$remote" "$gtmp" || die "git clone failed: $remote"
+            ( cd "$gtmp" && git checkout --quiet "$pinned" ) \
+              || die "--frozen: locked commit $pinned not found in $remote"
+          elif [ -n "$ref" ]; then
             git clone --quiet --depth 1 --branch "$ref" "$remote" "$gtmp" 2>/dev/null \
               || git clone --quiet "$remote" "$gtmp" || die "git clone failed: $remote"
             ( cd "$gtmp" && git checkout --quiet "$ref" 2>/dev/null ) || true
@@ -209,7 +228,8 @@ case "$cmd" in
             depth="${VIBE_FETCH_DEPTH:-0}"
             if [ "$depth" -lt "${VIBE_FETCH_MAX_DEPTH:-16}" ]; then
               echo "  resolving transitive deps of $name"
-              VIBE_FETCH_DEPTH="$((depth + 1))" "$LAUNCHER" fetch "$dir/deps/$name" >/dev/null \
+              fzarg=""; [ "$frozen" = "1" ] && [ -f "$dir/deps/$name/vibe.lock" ] && fzarg="--frozen"
+              VIBE_FETCH_DEPTH="$((depth + 1))" "$LAUNCHER" fetch $fzarg "$dir/deps/$name" >/dev/null \
                 || die "transitive fetch failed for $name"
             else
               die "transitive dependency depth exceeded at $name (cycle?)"

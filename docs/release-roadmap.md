@@ -238,7 +238,7 @@ content-addressed に再現可能で動く。中央 registry の有無を含め�
         cache + `./deps/<name>.vibe`、lock に `sha256:<hash>`。
       - **git（`git+<remote>[#<ref>]`）** → clone + ref checkout → `./deps/<name>/`
         ディレクトリに vendor、lock に解決した commit `git:<sha>` を固定。
-      検証済み（`scripts/test_vibe_cli_install.sh`、git+ 含め 15/15）。
+      検証済み（`scripts/test_vibe_cli_install.sh`、git+/transitive/frozen 含め 28/28）。
 - [ ] **2-1b seamless `import "<url>"` 構文** — string-literal import を parser で
       受け、resolver で `.vibe/deps/` ミラーに写像する案を試作したが、
       **selfhost codegen の既知の脆さ**（`collect_import_path` の string 補間 /
@@ -247,8 +247,13 @@ content-addressed に再現可能で動く。中央 registry の有無を含め�
       seed 互換な codegen 修正を先に固めてから再導入する。
 - [ ] **2-1 リモート import 解決（完全版）** — git/URL から外部ソースを取得し
       `$HOME/.vibe/lib` / content store にキャッシュ。`index.lock` に hash を固定。
-- [ ] **2-2 依存解決器** — transitive 依存と semver 整合の最小実装
-      （まずは「lock があれば再現、無ければ解決して書き出す」）。
+- [~] **2-2 依存解決器** — transitive 依存の自動解決を実装（git dep が自身の
+      `vibe.deps` を宣言していれば、その dep の `deps/` に再帰 vendor。
+      `VIBE_FETCH_MAX_DEPTH=16` で cycle guard、`VIBE_NO_TRANSITIVE=1` で無効化）。
+      **`vibe fetch --frozen`** で再現ビルド（既存 `vibe.lock` の commit に git dep を
+      pin、upstream HEAD が進んでも lock の sha を維持。transitive にも伝播）。
+      検証済み（`scripts/test_vibe_cli_install.sh` transitive/frozen ケース）。
+      残: semver バージョン制約の解決（現状は lock-or-HEAD のみ）。
 - [ ] **2-3 `vibe add` / `vibe publish`（または equivalent）** — 依存追加と
       公開の CLI 導線。2-0 の選択次第で publish は「git push + tag」かもしれない。
 - [ ] **2-4 整合性・供給網** — checksum/hash 検証、（必要なら）署名。
