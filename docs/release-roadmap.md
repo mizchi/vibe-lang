@@ -92,19 +92,29 @@
 
 ### マイルストーン
 
-- [ ] **1-1 runner/compiler 分離の確定** — `moonrun_wt` を「実行基盤」、
-      compiler wasm を「差し替え可能 artifact」として正式分離
-      （TODO.md「wasmtime runner 層 / compiler wasm artifact 層」）。
-- [ ] **1-2 install-time `.cwasm` ビルド** — installer が runner 取得後に
-      ホストで compiler wasm を `.cwasm` へ AOT precompile しキャッシュ。
-      wasmtime バージョン差で cache key が壊れない運用（ADR-0049 と同様）。
-- [ ] **1-3 マルチプラットフォーム CI** — release.yml を拡張し、対象 OS/arch
-      ごとに runner をビルド + smoke test（`vibe run` / `vibe check`）。
-- [ ] **1-4 ワンライナー installer** — `install.sh`（+ Windows 用）で runner +
-      compiler wasm を取得 → `.cwasm` 生成 → PATH 設定。バージョン pin 可能に。
-- [ ] **1-5 compiler-only update 導線** — runner 据え置きで compiler wasm だけ
-      bump する `vibe self update`（仮）的な経路。
-- [ ] **1-6 docs** — README に「Install」節、`docs/install.md` を新設。
+- [x] **1-1 runner/compiler 分離の確定** — `moonrun_wt` に selfhost CLI が使う
+      raw-ABI host import (`vibe::env-get`/`args-get`/`fs_*`) を実装し、runner が
+      compiler wasm を実行基盤として動かせるようにした。compiler wasm は
+      差し替え可能 artifact として分離（`tools/moonrun_wasmtime/src/main.rs`）。
+- [x] **1-2 install-time `.cwasm` ビルド** — `scripts/install.sh` が runner 取得後に
+      `moonrun_wt --precompile` で compiler wasm を host 固有 `.cwasm` へ AOT。
+      launcher は runner より古い `.cwasm` を検出すると portable wasm に fallback。
+- [~] **1-3 マルチプラットフォーム CI** — release.yml を拡張し OS/arch ごとに
+      runner をビルド + smoke test。（CI ワークフロー追加は環境依存のため残作業）
+- [x] **1-4 ワンライナー installer** — `scripts/install.sh` が runner build +
+      compiler wasm 配置 + `.cwasm` 生成 + `vibe` launcher 配置 + PATH link。
+      `--prefix`/`--runner`/`--cli-wasm`/`--bin-dir`/`--no-link` 対応。
+- [x] **1-5 compiler-only update 導線** — `vibe self update --cli-wasm <path>` が
+      runner 据え置きで compiler wasm を差し替え `.cwasm` を再生成。
+- [x] **1-6 docs** — README「Install」節 + `docs/install.md`（layout/options/
+      update 手順）。
+
+> 実装メモ: launcher (`runtime/vibe`) が `run`/`compile`/`build`/`check`/
+> `version`/`self update`/`help` を提供。`run` は compile→別プロセス実行の
+> 2 段（selfhost CLI は compile 専用のため orchestration は launcher 側）。
+> 検証済み: 単一/マルチファイル `vibe run` → 42、`vibe check` の成功/失敗、
+> `.cwasm` 経路の利用。残: `vibe test`/`vibe fmt` の launcher 統合、
+> 型エラー診断テキストの host 表面化（現状 trap メッセージのみ）。
 
 ---
 

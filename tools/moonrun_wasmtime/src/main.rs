@@ -313,7 +313,17 @@ fn run(args: Vec<String>) -> Result<i32> {
             if let Some(ExitTrap(code)) = e.downcast_ref::<ExitTrap>() {
                 return Ok(*code);
             }
-            eprintln!("moonrun_wt: {e:?}");
+            // A guest trap (e.g. an uncaught vibe `throw`/type error surfacing as
+            // a Wasm exception) should read as a tool error, not a runner crash —
+            // show only the message. Set VIBE_RUNNER_BACKTRACE=1 (or RUST_BACKTRACE)
+            // for the full anyhow backtrace when debugging the runner itself.
+            if std::env::var_os("VIBE_RUNNER_BACKTRACE").is_some()
+                || std::env::var_os("RUST_BACKTRACE").is_some()
+            {
+                eprintln!("moonrun_wt: {e:?}");
+            } else {
+                eprintln!("moonrun_wt: {e}");
+            }
             Ok(1)
         }
     }

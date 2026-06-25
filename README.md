@@ -2,6 +2,22 @@
 
 vibe language prototype and runtime (MoonBit).
 
+## Install
+
+vibe ships as a small wasmtime runner (`moonrun_wt`) plus a portable compiler
+wasm; the installer AOT-compiles the compiler for your machine at install time.
+
+```bash
+bash scripts/install.sh
+vibe version
+echo 'export let main = () -> Int { 40 + 2 }' > hello.vibe
+vibe run hello.vibe        # -> 42
+```
+
+See [docs/install.md](docs/install.md) for the install layout, options, and how
+to update the compiler independently of the runner. The distribution design is
+tracked in [docs/release-roadmap.md](docs/release-roadmap.md) (テーマ1).
+
 ## Features
 
 ### Language

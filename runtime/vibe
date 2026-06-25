@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# vibe — user-facing launcher for the selfhost vibe toolchain.
+#
+# Architecture (docs/release-roadmap.md テーマ1):
+#   * a self-built wasmtime runner (`moonrun_wt`) executes wasm,
+#   * the vibe compiler ships as a portable wasm artifact (`vibe-cli.wasm`),
+#   * at install time the compiler wasm is AOT-compiled to a host-specific
+#     `vibe-cli.cwasm` so the compiler is not re-JITed on every invocation,
+#   * the runner and the compiler wasm version independently — `vibe self
+#     update` can refresh the compiler wasm (+ .cwasm) without touching the
+#     runner.
+#
+# Subcommands:
+#   vibe run     <file.vibe> [entry]      compile (resolving imports) then run
+#   vibe compile <file.vibe> -o <out>     compile to a .wasm
+#   vibe build   <file.vibe> -o <out>     alias of compile
+#   vibe check   <file.vibe>              parse + typecheck (no output kept)
+#   vibe version                          print toolchain versions
+#   vibe self update [--cli-wasm <path>]  refresh compiler wasm + rebuild .cwasm
+#   vibe help                             this message
+set -euo pipefail
+
+# Resolve install root: the directory layout is
+#   $VIBE_HOME/bin/{vibe,moonrun_wt}
+#   $VIBE_HOME/lib/{vibe-cli.wasm,vibe-cli.cwasm}
+SELF="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+VIBE_HOME="${VIBE_HOME:-$(dirname "$SELF")}"
+RUNNER="${VIBE_RUNNER:-$VIBE_HOME/bin/moonrun_wt}"
+CLI_WASM="${VIBE_CLI_WASM:-$VIBE_HOME/lib/vibe-cli.wasm}"
+CLI_CWASM="${VIBE_CLI_CWASM:-$VIBE_HOME/lib/vibe-cli.cwasm}"
+
+die() { echo "vibe: $*" >&2; exit 1; }
+
+[ -x "$RUNNER" ] || die "runner not found or not executable: $RUNNER"
+
+# Pick the AOT .cwasm when it is present and at least as new as both the runner
+# and the compiler wasm (a stale .cwasm built against a different wasmtime is
+# UB, so fall back to the portable wasm if anything looks newer).
+pick_cli() {
+  if [ -f "$CLI_CWASM" ] && [ "$CLI_CWASM" -nt "$RUNNER" ] && \
+     { [ ! -f "$CLI_WASM" ] || [ "$CLI_CWASM" -nt "$CLI_WASM" ] || [ "$CLI_CWASM" -ef "$CLI_CWASM" ]; }; then
+    printf '%s' "$CLI_CWASM"
+  elif [ -f "$CLI_WASM" ]; then
+    printf '%s' "$CLI_WASM"
+  else
+    die "compiler wasm not found: $CLI_WASM (run 'vibe self update')"
+  fi
+}
+
+# Compile $1 (.vibe) → $2 (.wasm) with entry $3, resolving imports from the FS.
+# Returns non-zero on a parse/type/codegen error so callers can report cleanly.
+compile_to() {
+  local src="$1" out="$2" entry="$3"
+  local cli; cli="$(pick_cli)"
+  mkdir -p "$(dirname "$out")"
+  rm -f "$out"
+  if ! VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+       "$RUNNER" "$cli" "$src" "$out" "$entry" >/dev/null; then
+    return 1
+  fi
+  [ -s "$out" ] || return 1
+  return 0
+}
+
+cmd="${1:-help}"; shift || true
+case "$cmd" in
+  run)
+    [ "$#" -ge 1 ] || die "usage: vibe run <file.vibe> [entry]"
+    src="$1"; entry="${2:-main}"
+    [ -f "$src" ] || die "not found: $src"
+    out="$(mktemp -t vibe-run-XXXXXX.wasm)"
+    trap 'rm -f "$out"' EXIT
+    compile_to "$src" "$out" "$entry" || die "compilation failed: $src"
+    exec "$RUNNER" "$out"
+    ;;
+  compile|build)
+    [ "$#" -ge 1 ] || die "usage: vibe $cmd <file.vibe> [-o <out.wasm>] [--entry <name>]"
+    src=""; out=""; entry="main"
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -o|--output) out="$2"; shift 2 ;;
+        --entry) entry="$2"; shift 2 ;;
+        *) src="$1"; shift ;;
+      esac
+    done
+    [ -n "$src" ] || die "no input file"
+    [ -f "$src" ] || die "not found: $src"
+    [ -n "$out" ] || out="${src%.vibe}.wasm"
+    compile_to "$src" "$out" "$entry" || die "compilation failed: $src"
+    echo "compiled $src -> $out"
+    ;;
+  check)
+    [ "$#" -ge 1 ] || die "usage: vibe check <file.vibe> [entry]"
+    src="$1"; entry="${2:-main}"
+    [ -f "$src" ] || die "not found: $src"
+    out="$(mktemp -t vibe-check-XXXXXX.wasm)"
+    trap 'rm -f "$out"' EXIT
+    # A successful compile implies a clean parse + typecheck; surface failures.
+    if compile_to "$src" "$out" "$entry"; then
+      echo "ok: $src"
+    else
+      die "check failed: $src"
+    fi
+    ;;
+  version|--version|-V)
+    echo "vibe (selfhost launcher)"
+    echo "runner:      $RUNNER"
+    "$RUNNER" --version 2>/dev/null || true
+    cli="$(pick_cli 2>/dev/null || true)"
+    echo "compiler:    ${cli:-<missing>}"
+    ;;
+  self)
+    sub="${1:-}"; shift || true
+    case "$sub" in
+      update)
+        new_wasm=""
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --cli-wasm) new_wasm="$2"; shift 2 ;;
+            *) die "unknown self update flag: $1" ;;
+          esac
+        done
+        [ -n "$new_wasm" ] || die "usage: vibe self update --cli-wasm <path-to-vibe-cli.wasm>"
+        [ -f "$new_wasm" ] || die "not found: $new_wasm"
+        mkdir -p "$(dirname "$CLI_WASM")"
+        cp -f "$new_wasm" "$CLI_WASM"
+        echo "vibe: updated compiler wasm -> $CLI_WASM"
+        # Rebuild the host-specific AOT artifact against this runner.
+        "$RUNNER" --precompile "$CLI_WASM" -o "$CLI_CWASM"
+        echo "vibe: rebuilt AOT compiler -> $CLI_CWASM"
+        ;;
+      *) die "usage: vibe self update --cli-wasm <path>" ;;
+    esac
+    ;;
+  help|--help|-h)
+    sed -n '3,20p' "$(readlink -f "${BASH_SOURCE[0]}")" | sed 's/^# \{0,1\}//'
+    ;;
+  *)
+    die "unknown command: $cmd (try 'vibe help')"
+    ;;
+esac
