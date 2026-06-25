@@ -361,7 +361,16 @@ VS Code（DAP クライアント）から breakpoint を張り、停止・変数
       `test_name_section.sh`、cli-install 34/0、selfhost gate fixpoint green）。
       残: imported-module 関数の行（現状エントリファイルのみ）、命令オフセット粒度の
       行マップ（DAP step 実行用、source span の全 Expr 化が前提）。
-- [ ] **3-P1 breakpoint DAP**（M3）— stop/continue + source 表示の DAP サーバー。
+- [~] **3-P1 breakpoint DAP**（M3）— stop/continue + source 表示の DAP サーバー。
+      **groundwork 着地**: `vibe run --trace` = function-call 実行トレース。opt-in の
+      debug codegen（`VIBE_DEBUG`）が各ユーザー関数入口で user-index を in-memory
+      trace log に追記（coverage hit 領域と同方式、wasm import 追加なし＝関数
+      index 不変）。`vibe.trace` カスタムセクションが log 配置 + 関数名を記録、runner
+      が入口列を dump、launcher が funcmap で `(file:line)` 注釈。既定（非 debug）の
+      codegen は不変で selfhost fixpoint 維持。検証済み（`scripts/test_vibe_trace_calls.sh`
+      6/6: `main`/`helper×2` を行付きでトレース、plain run 非回帰、cli-install 34/0、
+      gate green）。残: 関数入口での**停止**（runner pause loop + breakpoint 集合）と
+      DAP プロトコル化（次段）。
 - [ ] **3-P2 変数検査**（M3）— locals/args のメタデータ出力 + tagged 値の decode。
 - [ ] **3-P3 step 実行**（M3）— next / stepIn / stepOut。
 - [ ] **3-P4 watch 式**（M4）— 停止フレームでの式評価。
