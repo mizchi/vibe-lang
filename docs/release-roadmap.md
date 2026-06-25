@@ -24,7 +24,8 @@
 > ほぼ達成。PR #642 を main に merge 済み。以降の DAP P3 step / `vibe binding-at` /
 > rename 配線 / CI wasmtime 修正は branch `claude/kind-fermat-lxtjov` に在り
 > （main は authoritative selfhost-gate green、cli-install は wasmtime CLI 未導入で
-> 一時 red — branch の修正で解消）。残: DAP P4 watch、scope 精度 rename、span-arc。
+> 一時 red — branch の修正で解消）。テーマ3 debugger は P0-P4 + 3-D 完了。
+> 残: 任意式 watch（将来拡張）、span-arc（行粒度 step / call-site hover）。
 >
 > **CI 根本原因メモ（vibe-eh-ci, RESOLVED）**: fresh compiler build は standalone
 > `wasmtime` CLI を要するが CI 未導入 → seed fallback で diagnostics/type-at が機能せず。
@@ -139,7 +140,7 @@
 | --- | --- | --- | --- |
 | **M1: 配布確定** | install + module の配布方法を凍結し、外部の人が「入れて使える」 | (1)(2) | ✅ 達成（install 配布物確定 + module fetch/lock/transitive/semver/frozen/verify） |
 | **M2: 開発体験 MVP** | LSP MVP（診断/シンボル/hover）+ debugger P0（source-mapped trace） | (3)(4) | ✅ 達成（型付き hover、parser error recovery で全診断、trap→source-line） |
-| **M3: 開発体験フル** | LSP 補完/リファクタ + DAP step 実行 | (3)(4) | ✅ 達成（DAP P1-P3 = breakpoint/変数(引数)検査/step 実行 + 3-D VS Code debug adapter、rename/references は scope 精度の `vibe binding-at` で AST 精度化）。残: DAP P4 watch |
+| **M3: 開発体験フル** | LSP 補完/リファクタ + DAP step 実行 | (3)(4) | ✅ 達成（DAP P1-P4 = breakpoint/名前付き変数検査/step 実行 + 3-D VS Code debug adapter、rename/references は scope 精度の `vibe binding-at` で AST 精度化）。テーマ3 debugger は P0-P4 + 3-D 完了 |
 | **M4: GA (1.0)** | 上記を統合し、言語仕様 freeze + docs 完備で一般公開 | 全部 | — |
 
 ### 横断的な前提（どのテーマにも効く 2 つの土台）
@@ -408,8 +409,14 @@ VS Code（DAP クライアント）から breakpoint を張り、停止・変数
       backtrace のコール深さで step を判定（関数粒度）。`stopped at: <fn>` 表示。
       検証済み（`scripts/test_vibe_step.sh` 14/14）。残: 行粒度 step（per-statement
       span が前提）。
-- [ ] **3-P4 watch 式**（M4）— 停止フレームでの式評価（または名前付きローカル検査）。
-- [x] **3-D editor 統合（着地）** — `js/vibe/dap_server.js`（stdio DAP server: 行→関数 breakpoint、step s/n/o/c、stack/args を `vibe run --break` から翻訳）+ `integrations/vscode-vibe`（debuggers contribution + adapter factory）。launcher は `--break`/`--trace` の stderr を FIFO で live stream（対話/DAP 用）。`scripts/test_vibe_dap.js` 22/22（純関数）。E2E は VS Code 必要。
+- [x] **3-P4 名前付きローカル検査 着地**（M4）— codegen が `vibe.dbgnames`
+      custom section（関数ごとに param 名を `\t` 区切りで記録、最大16）を埋め、
+      runner が `vibe.dbgargs` の値と突き合わせて停止フレームの引数を
+      `name=value` 形式（例 `args: [x=20]`）で表示。count 不一致時は positional に
+      fallback。DAP `variables` も名前付きで返す。検証済み
+      （`scripts/test_vibe_break_args.sh` 6/6、`scripts/test_vibe_dap.js` 25/25）。
+      残: 任意の式評価（watch）。
+- [x] **3-D editor 統合（着地）** — `js/vibe/dap_server.js`（stdio DAP server: 行→関数 breakpoint、step s/n/o/c、stack/args を `vibe run --break` から翻訳）+ `integrations/vscode-vibe`（debuggers contribution + adapter factory）。launcher は `--break`/`--trace` の stderr を FIFO で live stream（対話/DAP 用）。`scripts/test_vibe_dap.js` 25/25（純関数）。E2E は VS Code 必要。
 
 > **DAP P1-P4 の実装設計（2026-06-25 調査）** — これは LSP サーバ構築に匹敵する
 > 多コンポーネントの大型機能で、専用の focused 作業が必要:
