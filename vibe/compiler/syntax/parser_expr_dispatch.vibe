@@ -32,7 +32,7 @@ enum BlockStep {
   StepBind(String, Expr)
 }
 
-let rec parse_match_rest: (Array[Token], Int, Expr, ArrayBuilder[(Pat, Expr)], (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, scrutinee, b, parse_recur) -> {
+let rec parse_match_rest: (Array[Token], Array[Int], Int, Expr, ArrayBuilder[(Pat, Expr)], (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, pos, scrutinee, b, parse_recur) -> {
   match peek(tokens, pos) {
     TComma => match peek(tokens, pos + 1) {
       TRBrace => (EMatch(scrutinee, ArrayBuilder::freeze(b)), pos + 2),
@@ -47,7 +47,7 @@ let rec parse_match_rest: (Array[Token], Int, Expr, ArrayBuilder[(Pat, Expr)], (
         }
         let (ea, en) = parse_recur(tokens, a2, 0)
         ArrayBuilder::push(b, (pa, ea))
-        parse_match_rest(tokens, en, scrutinee, b, parse_recur)
+        parse_match_rest(tokens, starts, en, scrutinee, b, parse_recur)
       }
     },
     TRBrace => (EMatch(scrutinee, ArrayBuilder::freeze(b)), pos + 1),
@@ -62,7 +62,7 @@ let rec parse_match_rest: (Array[Token], Int, Expr, ArrayBuilder[(Pat, Expr)], (
       }
       let (ea, en) = parse_recur(tokens, a2, 0)
       ArrayBuilder::push(b, (pa, ea))
-      parse_match_rest(tokens, en, scrutinee, b, parse_recur)
+      parse_match_rest(tokens, starts, en, scrutinee, b, parse_recur)
     }
   }
 }
@@ -79,7 +79,7 @@ let rec qualify_handle_arm_pattern: (String, Pat) -> Pat = (effect_name, pat) ->
   }
 }
 
-let parse_handle_arm: (Array[Token], Int, String, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> ((Pat, Expr), Int) with { Error } = (tokens, pos, effect_name, parse_recur) -> {
+let parse_handle_arm: (Array[Token], Array[Int], Int, String, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> ((Pat, Expr), Int) with { Error } = (tokens, starts, pos, effect_name, parse_recur) -> {
   let (pat, pat_next) = parse_pattern(tokens, pos)
   let qualified_pat = qualify_handle_arm_pattern(effect_name, pat)
   let arrow_pos = expect_tk(tokens, pat_next, "=>")
@@ -87,14 +87,14 @@ let parse_handle_arm: (Array[Token], Int, String, (Array[Token], Int, Int) -> (E
   ((qualified_pat, expr), next)
 }
 
-let rec parse_handle_rest: (Array[Token], Int, Expr, String, ArrayBuilder[(Pat, Expr)], (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, body, effect_name, b, parse_recur) -> {
+let rec parse_handle_rest: (Array[Token], Array[Int], Int, Expr, String, ArrayBuilder[(Pat, Expr)], (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, pos, body, effect_name, b, parse_recur) -> {
   match peek(tokens, pos) {
     TSemicolon => match peek(tokens, pos + 1) {
       TRBrace => (EHandle(body, ArrayBuilder::freeze(b)), pos + 2),
       _ => {
-        let (arm, next) = parse_handle_arm(tokens, pos + 1, effect_name, parse_recur)
+        let (arm, next) = parse_handle_arm(tokens, starts, pos + 1, effect_name, parse_recur)
         ArrayBuilder::push(b, arm)
-        parse_handle_rest(tokens, next, body, effect_name, b, parse_recur)
+        parse_handle_rest(tokens, starts, next, body, effect_name, b, parse_recur)
       }
     },
     TRBrace => (EHandle(body, ArrayBuilder::freeze(b)), pos + 1),
@@ -316,7 +316,7 @@ let fold_block_steps: (Array[BlockStep]) -> Expr = (steps) -> {
   result
 }
 
-let parse_impl_block: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, parse_recur) -> {
+let parse_impl_block: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, pos, parse_recur) -> {
   let steps = ArrayBuilder::new()
   let mut p = pos
   let mut end_pos = pos
@@ -596,13 +596,13 @@ let build_pull_for_in: (String, Option[String], Expr, Expr, Int) -> Expr = (valu
   ELet(next_var, iterable, with_index)
 }
 
-export let parse_impl_dispatch: (Array[Token], Int, Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, mode, parse_recur) -> {
+export let parse_impl_dispatch: (Array[Token], Array[Int], Int, Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, pos, mode, parse_recur) -> {
   if mode == 20 {
-    parse_impl_block(tokens, pos, parse_recur)
+    parse_impl_block(tokens, starts, pos, parse_recur)
   } else if mode == 21 {
     // Parse cond with the no-is variant so a trailing `is pattern` belongs
     // to the if-cond pattern slot rather than collapsing into a Bool match.
-    let (cond, cn) = parse_infix_no_is(tokens, pos, 0, pos, parse_recur)
+    let (cond, cn) = parse_infix_no_is(tokens, starts, pos, 0, pos, parse_recur)
     let mut is_mode = false
     let mut is_pat_val = PWild
     let mut brace_pos = cn
@@ -656,7 +656,7 @@ export let parse_impl_dispatch: (Array[Token], Int, Int, (Array[Token], Int, Int
         }
         let (fe, fn1) = parse_recur(tokens, aa, 0)
         ArrayBuilder::push(b, (fp, fe))
-        parse_match_rest(tokens, fn1, scrutinee, b, parse_recur)
+        parse_match_rest(tokens, starts, fn1, scrutinee, b, parse_recur)
       }
     }
   } else if mode == 23 {
@@ -677,9 +677,9 @@ export let parse_impl_dispatch: (Array[Token], Int, Int, (Array[Token], Int, Int
       TRBrace => (EHandle(body, empty_arms()), hb + 1),
       _ => {
         let b = ArrayBuilder::new()
-        let (arm, next) = parse_handle_arm(tokens, hb, effect_name, parse_recur)
+        let (arm, next) = parse_handle_arm(tokens, starts, hb, effect_name, parse_recur)
         ArrayBuilder::push(b, arm)
-        parse_handle_rest(tokens, next, body, effect_name, b, parse_recur)
+        parse_handle_rest(tokens, starts, next, body, effect_name, b, parse_recur)
       }
     }
   } else if mode == 25 {

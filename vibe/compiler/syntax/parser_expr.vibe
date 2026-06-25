@@ -22,19 +22,19 @@ import ./token.vibe {
 
 //# Functions
 
-export let parse_impl: (Array[Token], Int, Int) -> (Expr, Int) with { Error } = (tokens, pos, mode) -> {
+export let parse_impl: (Array[Token], Array[Int], Int, Int) -> (Expr, Int) with { Error } = (tokens, starts, pos, mode) -> {
   let rec parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error } = (rtoks, rpos, rmode) -> {
     if rmode >= 0 && rmode <= 10 {
-      parse_infix(rtoks, rpos, rmode, rpos, parse_recur)
+      parse_infix(rtoks, starts, rpos, rmode, rpos, parse_recur)
     } else {
-      parse_impl_dispatch(rtoks, rpos, rmode, parse_recur)
+      parse_impl_dispatch(rtoks, starts, rpos, rmode, parse_recur)
     }
   }
   parse_recur(tokens, pos, mode)
 }
 
 export let parse: (Array[Token]) -> Expr with { Error } = (tokens) -> {
-  let (e, next) = parse_impl(tokens, 0, 0)
+  let (e, next) = parse_impl(tokens, [], 0, 0)
   match peek(tokens, next) {
     TEof => e,
     _ => {
@@ -54,7 +54,7 @@ export let parse_ok: (Array[Token]) -> Bool = (tokens) -> {
 }
 
 export let parse_expr: (Array[Token], Int) -> (Expr, Int) with { Error } = (tokens, pos) -> {
-  parse_impl(tokens, pos, 0)
+  parse_impl(tokens, [], pos, 0)
 }
 
 let parse_type_param_bound_names: (Array[Token], Int) -> (Array[String], Int) with { Error } = (tokens, pos) -> {
@@ -272,7 +272,7 @@ let parse_value_bracket_header: (Array[Token], Int) -> (Array[String], Array[(St
   }
 }
 
-let parse_let_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } = (tokens, pos, exported) -> {
+let parse_let_stmt: (Array[Token], Array[Int], Int, Bool) -> (Stmt, Int) with { Error } = (tokens, starts, pos, exported) -> {
   match peek(tokens, pos) {
     TRec => {
       let (name, name_next) = parse_binding_name(tokens, pos + 1)
@@ -285,7 +285,7 @@ let parse_let_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } = (t
       }
       let ep = expect_tk(tokens, eq_pos, "=")
       let (bracket_tps, bracket_tbs, val_start_r) = parse_value_bracket_header(tokens, ep)
-      let val_pair = parse_impl(tokens, val_start_r, 0)
+      let val_pair = parse_impl(tokens, starts, val_start_r, 0)
       let val_with_tp = apply_value_bracket_type_params(bracket_tps, bracket_tbs, val_pair.0)
       let (final_ty_opt, val) = apply_generic_let_annotation(type_params, type_bounds, ty_opt, val_with_tp)
       let val_next = val_pair.1
@@ -301,7 +301,7 @@ let parse_let_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } = (t
           _ => (None, pos + 2)
         }
         let ep = expect_tk(tokens, eq_pos, "=")
-        let val_pair = parse_impl(tokens, ep, 0)
+        let val_pair = parse_impl(tokens, starts, ep, 0)
         let val = val_pair.0
         let val_next = val_pair.1
         (SLetMut(name, ty_opt, val), val_next)
@@ -311,7 +311,7 @@ let parse_let_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } = (t
     TLParen => {
       let (pat, pat_next) = parse_pattern(tokens, pos)
       let ep = expect_tk(tokens, pat_next, "=")
-      let val_pair = parse_impl(tokens, ep, 0)
+      let val_pair = parse_impl(tokens, starts, ep, 0)
       let val = val_pair.0
       let val_next = val_pair.1
       (SLetPat(pat, val), val_next)
@@ -327,7 +327,7 @@ let parse_let_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } = (t
       if is_struct_destructure {
         let (pat, pat_next) = parse_pattern(tokens, pos)
         let ep = expect_tk(tokens, pat_next, "=")
-        let val_pair = parse_impl(tokens, ep, 0)
+        let val_pair = parse_impl(tokens, starts, ep, 0)
         let val = val_pair.0
         let val_next = val_pair.1
         (SLetPat(pat, val), val_next)
@@ -342,7 +342,7 @@ let parse_let_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } = (t
         }
         let ep = expect_tk(tokens, eq_pos, "=")
         let (bracket_tps, bracket_tbs, val_start) = parse_value_bracket_header(tokens, ep)
-        let val_pair = parse_impl(tokens, val_start, 0)
+        let val_pair = parse_impl(tokens, starts, val_start, 0)
         let val_with_tp = apply_value_bracket_type_params(bracket_tps, bracket_tbs, val_pair.0)
         let (final_ty_opt, val) = apply_generic_let_annotation(type_params, type_bounds, ty_opt, val_with_tp)
         let val_next = val_pair.1
