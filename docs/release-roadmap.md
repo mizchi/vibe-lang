@@ -142,7 +142,17 @@
      hover で型が出る**（`test_vibe_type_at.sh` 5/5: param `n`→Int, local `g`→Int）。
      selfhost gate green。残: 束縛**定義**位置（EIdent でない）と式ノードの型は
      未記録（use サイトは解決）。scope 精度の高い補完・rename もこの上に乗せられる。
-4. **span 露出 CLI / LSP 連携（一部着地）** — `vibe type-at` で offset→型を露出済み。
+4. **span 露出 CLI / LSP 連携（大部分着地）** — `vibe type-at` で offset→型を露出済み。
+   - ✅ **call-site / field-access hover（着地）** — step 2 の ECall/EDot offset を
+     LSP 側の consumer として配線。checker の per-node 型テーブル（3b）を ECall arm
+     （call の**結果型**を `tab_call_ty` で direct/method/general/no-name 各 callee
+     path にタグ、`call_off >= 0` のみ）と EDot arm（field 型を `(dot_off, field_ty)`、
+     `dot_off >= 0`）へ拡張。`vibe type-at` がカーソル位置の**呼び出し**・
+     **フィールドアクセス**でも型を返す（`is_pos(5)`→`Bool`、`p.x`→`Int`）。
+     `test_vibe_type_at.sh` 7/7、selfhost gate green（fixpoint 維持）。
+     **seed 制約メモ**: 巨大 `match callee {...}` を `let`/block/arg で一段ネスト
+     すると seed parser が trap するため、結果型タグは match を tail position の
+     flat なまま内側 result 式に付与する方式に留めた。
    残: シンボル span の JSON 露出、診断 range の AST 化（現状は line:col prefix 経由）。
 5. **codegen source-line map（`vibe.func_map`）** — 命令 offset→ソース行の custom
    section。DAP P1-P4（breakpoint/variables/step）の前提。name section は実装済み。
