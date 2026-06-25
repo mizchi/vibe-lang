@@ -41,7 +41,7 @@ export enum Expr {
   EBinOp(String, Expr, Expr);
   EUnaryOp(String, Expr);
   EFn(Array[String], Array[(String, Array[String])], Array[(String, Option[TypeExpr])], Option[TypeExpr], Option[String], Expr);
-  EDot(Expr, String);
+  EDot(Expr, String, Int);
   ELabeledArg(String, String, Expr);
   EThrow(Expr);
   EReturn(Expr);
@@ -483,7 +483,7 @@ let rec collect_refs_into: (Expr, Array[String], Array[String]) -> Int = (expr, 
       collect_refs_into(body, bound2, out)
       0
     },
-    EDot(obj, _) => {
+    EDot(obj, _, _) => {
       collect_refs_into(obj, bound, out)
       0
     },
@@ -4586,7 +4586,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
           }
         }
       },
-      EDot(obj, method) => {
+      EDot(obj, method, _) => {
         let (obj_ty, s1, c1) = check_expr(obj, env, defs, s, c, errors, tytab)
         let resolved = subst_apply(s1, obj_ty)
         let type_prefix = type_name_prefix(resolved)
@@ -4854,24 +4854,30 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       let (bt, s2, c2) = check_expr(body, env3, defs, s1, c1, errors, tytab)
       (CtArray(bt), s2, c2)
     },
-    EDot(obj, field) => {
+    EDot(obj, field, dot_off) => {
       let (obj_ty, s1, c1) = check_expr(obj, env, defs, s, c, errors, tytab)
       let resolved = subst_apply(s1, obj_ty)
       let field_ty = match resolved {
         CtStruct(sname) => match find_typedef(defs, sname) {
           Some(td) => match td {
             TDStruct(_, fields) => {
-              let rec find_field: (Int) -> Type = (i) -> {
+              let rec find_field: (Int) -> Option[Type] = (i) -> {
                 if i >= Array::length(fields) {
-                  CtUnknown
+                  None
                 } else {
                   let (fname, ftype) = Array::get(fields, i)
                   if fname == field {
-                    ftype
+                    Some(ftype)
                   } else find_field(i + 1)
                 }
               }
-              find_field(0)
+              match find_field(0) {
+                Some(ft) => ft,
+                None => {
+                  Array::push(errors, String::concat(String::concat("unknown field '", String::concat(field, String::concat("' on struct ", sname))), off_marker(dot_off)))
+                  CtUnknown
+                }
+              }
             },
             _ => CtUnknown
           },
@@ -6561,7 +6567,7 @@ export let rec collect_strings_expr: (Expr, Array[String]) -> Int = (expr, out) 
       }
       0
     },
-    EDot(obj, _) => collect_strings_expr(obj, out),
+    EDot(obj, _, _) => collect_strings_expr(obj, out),
     ELabeledArg(_, _, val) => collect_strings_expr(val, out),
     _ => 0
   }
@@ -6798,7 +6804,7 @@ export let rec collect_free_vars_expr: (Expr, Array[String], Array[String], Arra
       }
       0
     },
-    EDot(obj, _) => collect_free_vars_expr(obj, bound, fn_names, out),
+    EDot(obj, _, _) => collect_free_vars_expr(obj, bound, fn_names, out),
     ERecord(fields) => {
       let mut ri = 0
       while ri < Array::length(fields) {
@@ -6820,7 +6826,7 @@ export let collect_free_vars: (Expr, Array[String], Array[String]) -> Array[Stri
 }
 export let rec proj_root_ident: (Expr) -> String = (e) -> {
   match e {
-    EDot(obj, _) => proj_root_ident(obj),
+    EDot(obj, _, _) => proj_root_ident(obj),
     EIdent(nm, _) => nm,
     _ => ""
   }
@@ -6833,7 +6839,7 @@ export let rec scope_tail_proj_root: (Expr) -> String = (e) -> {
     ESeq(_, b) => scope_tail_proj_root(b),
     EAssign(_, _, b) => scope_tail_proj_root(b),
     EAssignOp(_, _, _, b) => scope_tail_proj_root(b),
-    EDot(obj, _) => proj_root_ident(obj),
+    EDot(obj, _, _) => proj_root_ident(obj),
     _ => ""
   }
 }
@@ -7269,7 +7275,7 @@ let rec analyze_calls: (String, Expr, Map[String, Bool], Array[Array[Bool]], Arr
       }
       0
     },
-    EDot(obj, _) => analyze_calls(name, obj, env, calls, esc, hctx),
+    EDot(obj, _, _) => analyze_calls(name, obj, env, calls, esc, hctx),
     ELet(n, v, b) => {
       analyze_calls(name, v, env, calls, esc, hctx)
       analyze_calls(name, b, Map::set(env, n, is_heap_value(v, env, hctx)), calls, esc, hctx)
@@ -7625,7 +7631,7 @@ let rec elaborate_rw: (Expr, HeapInferCtx) -> Expr = (e, hctx) -> {
     },
     EBinOp(op, l, r) => EBinOp(op, elaborate_rw(l, hctx), elaborate_rw(r, hctx)),
     EUnaryOp(op, o) => EUnaryOp(op, elaborate_rw(o, hctx)),
-    EDot(o, f) => EDot(elaborate_rw(o, hctx), f),
+    EDot(o, f, off) => EDot(elaborate_rw(o, hctx), f, off),
     ETuple(xs) => {
       let ys = Array::slice(xs, 0, 0)
       let mut i = 0
@@ -7757,7 +7763,7 @@ export let rec pc_emit: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, exp
       }
       0
     },
-    EDot(obj, _field) => match obj {
+    EDot(obj, _field, _) => match obj {
       EIdent(_, _) => 0,
       _ => pc_emit(ctx, scope, obj)
     }
@@ -8027,7 +8033,7 @@ export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, ex
       }
       0
     },
-    EDot(obj, _field) => match obj {
+    EDot(obj, _field, _) => match obj {
       EIdent(x, _) => pc_count_borrow(ctx, scope, x),
       _ => pc_count(ctx, scope, obj)
     }
@@ -8330,7 +8336,7 @@ export let elaborate_heap_params: (Array[Stmt]) -> Array[Stmt] = (stmts) -> {
 }
 let rec expr_projects_or_matches: (String, Expr) -> Bool = (name, e) -> {
   match e {
-    EDot(obj, _) =>
+    EDot(obj, _, _) =>
     match obj {
       EIdent(n, _) => n == name,
       _ => expr_projects_or_matches(name, obj)
@@ -14858,7 +14864,7 @@ export let compile_expr_tail5: (Bytes, Expr, Array[String], Int, CompileCtx, Int
 }
 export let compile_expr_tail4: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, expr, local_names, next_local, ctx, ld, compile_expr) -> {
   match expr {
-    EDot(obj, field) => {
+    EDot(obj, field, _) => {
       let fc = String::char_code_at(field, 0)
       let mut field_idx = if fc >= 48 && fc <= 57 {
         let mut vi = 0
@@ -15354,7 +15360,7 @@ export let compile_expr_tail2: (Bytes, Expr, Array[String], Int, CompileCtx, Int
 }
 let is_edot: (Expr) -> Bool = (e) -> {
   match e {
-    EDot(_, _) => true,
+    EDot(_, _, _) => true,
     _ => false
   }
 }
@@ -15480,7 +15486,7 @@ let rec reassign_carry_safe: (Expr, String) -> Bool = (e, name) -> {
   } else {
     match e {
       EIdent(_, _) => true,
-      EDot(_, _) => proj_root_ident(e) == name,
+      EDot(_, _, _) => proj_root_ident(e) == name,
       EBinOp(_, l, r) => reassign_carry_safe(l, name) && reassign_carry_safe(r, name),
       EUnaryOp(_, x) => reassign_carry_safe(x, name),
       _ => false
@@ -20684,7 +20690,7 @@ let rec desugar_loop_body: (Expr, Array[String]) -> Expr = (expr, param_names) -
     ELetRec(n, v, b) => ELetRec(n, desugar_loop_body(v, param_names), desugar_loop_body(b, param_names)),
     EThrow(e) => EThrow(desugar_loop_body(e, param_names)),
     EUnaryOp(op, e) => EUnaryOp(op, desugar_loop_body(e, param_names)),
-    EDot(obj, field) => EDot(desugar_loop_body(obj, param_names), field),
+    EDot(obj, field, off) => EDot(desugar_loop_body(obj, param_names), field, off),
     EAssignOp(n, op, v, c) => EAssignOp(n, op, desugar_loop_body(v, param_names), desugar_loop_body(c, param_names)),
     _ => expr
   }
@@ -21232,7 +21238,7 @@ let binop_prec: (Token) -> Int = (tok) -> {
 let callee_offset: (Expr) -> Int = (callee) -> {
   match callee {
     EIdent(_, off) => off,
-    EDot(inner, _) => callee_offset(inner),
+    EDot(inner, _, off) => if off >= 0 { off } else { callee_offset(inner) },
     ECall(inner, _, off) => if off >= 0 { off } else { callee_offset(inner) },
     _ => -1
   }
@@ -21581,8 +21587,8 @@ let rec parse_postfix: (Array[Token], Array[Int], Int, Expr, (Array[Token], Int,
       }
     },
     TDot => match peek(tokens, pos + 1) {
-      TIdent(field) => parse_postfix(tokens, starts, pos + 2, EDot(expr, field), parse_recur),
-      TInt(idx) => parse_postfix(tokens, starts, pos + 2, EDot(expr, __to_string(idx)), parse_recur),
+      TIdent(field) => parse_postfix(tokens, starts, pos + 2, EDot(expr, field, callee_offset(expr)), parse_recur),
+      TInt(idx) => parse_postfix(tokens, starts, pos + 2, EDot(expr, __to_string(idx), callee_offset(expr)), parse_recur),
       _ => (expr, pos)
     },
     _ => (expr, pos)
@@ -21766,7 +21772,7 @@ let apply_struct_destr: (Pat, Expr, Expr) -> Expr = (pat, val, rest) -> {
         let (fname, fpat) = Array::get(fields, di)
         match fpat {
           PBind(bname) => {
-            desugar = ELet(bname, EDot(EIdent(val_name, -1), fname), desugar)
+            desugar = ELet(bname, EDot(EIdent(val_name, -1), fname, -1), desugar)
           },
           _ => ()
         }
@@ -21798,7 +21804,7 @@ let apply_record_destr: (Pat, Expr, Expr) -> Expr = (pat, val, rest) -> {
             while si >= 0 {
               match Array::get(sub_pats, si) {
                 PBind(sname) => {
-                  desugar = ELet(sname, EDot(EIdent(sub_name, -1), __to_string(si)), desugar)
+                  desugar = ELet(sname, EDot(EIdent(sub_name, -1), __to_string(si), -1), desugar)
                 },
                 _ => ()
               }
@@ -22042,7 +22048,7 @@ let parse_impl_block: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -
                 ArrayBuilder::push(steps, StepAssign(name, val))
                 p = next_pos
               },
-              EDot(obj, field) => {
+              EDot(obj, field, _) => {
                 let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur)
                 let set_args = empty_exprs()
                 Array::push(set_args, obj)
@@ -23935,7 +23941,7 @@ export let rec print_expr: (Expr) -> String = (e) -> {
       }
       String::concat(tp_str, String::concat("(", String::concat(join(parts, ", "), ret_str)))
     },
-    EDot(expr, field) => String::concat(print_expr(expr), String::concat(".", field)),
+    EDot(expr, field, _) => String::concat(print_expr(expr), String::concat(".", field)),
     EThrow(e) => String::concat("throw(", String::concat(print_expr(e), ")")),
     EReturn(e) => String::concat("return ", print_expr(e)),
     EBreak(opt) => match opt {
@@ -24448,7 +24454,7 @@ export let rec rewrite_import_alias_expr: (Expr, Array[(String, String)]) -> Exp
       effect,
       rewrite_import_alias_expr(body, alias_map_without_params(aliases, params))
     ),
-    EDot(obj, field) => EDot(rewrite_import_alias_expr(obj, aliases), field),
+    EDot(obj, field, off) => EDot(rewrite_import_alias_expr(obj, aliases), field, off),
     ELabeledArg(label, name, body) => ELabeledArg(label, name, rewrite_import_alias_expr(body, aliases)),
     EThrow(value) => EThrow(rewrite_import_alias_expr(value, aliases)),
     EReturn(value) => EReturn(rewrite_import_alias_expr(value, aliases)),
@@ -24907,7 +24913,7 @@ let rec rewrite_private_type_ctor_expr: (Expr, Array[(String, String)], Array[(S
       effect,
       rewrite_private_type_ctor_expr(body, type_renames, alias_map_without_params(ctor_renames, params))
     ),
-    EDot(obj, field) => EDot(rewrite_private_type_ctor_expr(obj, type_renames, ctor_renames), field),
+    EDot(obj, field, off) => EDot(rewrite_private_type_ctor_expr(obj, type_renames, ctor_renames), field, off),
     ELabeledArg(label, name, body) => ELabeledArg(label, name, rewrite_private_type_ctor_expr(body, type_renames, ctor_renames)),
     EThrow(value) => EThrow(rewrite_private_type_ctor_expr(value, type_renames, ctor_renames)),
     EReturn(value) => EReturn(rewrite_private_type_ctor_expr(value, type_renames, ctor_renames)),
@@ -29587,7 +29593,7 @@ let rec fold_expr: (Expr) -> Expr = (expr) -> {
     },
     EUnaryOp(op, e) => EUnaryOp(op, fold_expr(e)),
     EFn(tp, bounds, params, ret, eff, body) => EFn(tp, bounds, params, ret, eff, fold_expr(body)),
-    EDot(e, field) => EDot(fold_expr(e), field),
+    EDot(e, field, off) => EDot(fold_expr(e), field, off),
     ELabeledArg(label, modifier, v) => ELabeledArg(label, modifier, fold_expr(v)),
     EThrow(e) => EThrow(fold_expr(e)),
     EReturn(e) => EReturn(fold_expr(e)),
@@ -29807,7 +29813,7 @@ let rec collect_expr: (Expr, Array[IdentHit]) -> Unit = (expr, acc) -> {
     },
     EUnaryOp(_, e) => collect_expr(e, acc),
     EFn(_, _, _, _, _, body) => collect_expr(body, acc),
-    EDot(e, _) => collect_expr(e, acc),
+    EDot(e, _, _) => collect_expr(e, acc),
     ELabeledArg(_, _, v) => collect_expr(v, acc),
     EThrow(e) => collect_expr(e, acc),
     EReturn(e) => collect_expr(e, acc),
@@ -30275,7 +30281,7 @@ let rec bind_walk_expr: (BindState, Expr) -> Unit = (st, expr) -> {
       bind_walk_expr(st, body)
       bind_pop_scope(st, mark)
     },
-    EDot(e, _) => bind_walk_expr(st, e),
+    EDot(e, _, _) => bind_walk_expr(st, e),
     ELabeledArg(_, _, v) => bind_walk_expr(st, v),
     EThrow(e) => bind_walk_expr(st, e),
     EReturn(e) => bind_walk_expr(st, e),

@@ -563,7 +563,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
           }
         }
       },
-      EDot(obj, method) => {
+      EDot(obj, method, _) => {
         let (obj_ty, s1, c1) = check_expr(obj, env, defs, s, c, errors, tytab)
         let resolved = subst_apply(s1, obj_ty)
         let type_prefix = type_name_prefix(resolved)
@@ -833,24 +833,30 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       let (bt, s2, c2) = check_expr(body, env3, defs, s1, c1, errors, tytab)
       (CtArray(bt), s2, c2)
     },
-    EDot(obj, field) => {
+    EDot(obj, field, dot_off) => {
       let (obj_ty, s1, c1) = check_expr(obj, env, defs, s, c, errors, tytab)
       let resolved = subst_apply(s1, obj_ty)
       let field_ty = match resolved {
         CtStruct(sname) => match find_typedef(defs, sname) {
           Some(td) => match td {
             TDStruct(_, fields) => {
-              let rec find_field: (Int) -> Type = (i) -> {
+              let rec find_field: (Int) -> Option[Type] = (i) -> {
                 if i >= Array::length(fields) {
-                  CtUnknown
+                  None
                 } else {
                   let (fname, ftype) = Array::get(fields, i)
                   if fname == field {
-                    ftype
+                    Some(ftype)
                   } else find_field(i + 1)
                 }
               }
-              find_field(0)
+              match find_field(0) {
+                Some(ft) => ft,
+                None => {
+                  Array::push(errors, String::concat(String::concat("unknown field '", String::concat(field, String::concat("' on struct ", sname))), off_marker(dot_off)))
+                  CtUnknown
+                }
+              }
             },
             _ => CtUnknown
           },
