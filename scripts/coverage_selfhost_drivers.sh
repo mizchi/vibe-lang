@@ -157,6 +157,7 @@ run_driver cov_units2_main     scripts/coverage/cov_units2.vibe     units2      
 run_driver cov_traitenv_main   scripts/coverage/cov_traitenv.vibe   traitenv    # type_implements_check_super env walk
 run_driver cov_link_main       scripts/coverage/cov_link.vibe       link        # compile_wasi_module_linked_impl arms
 run_driver cov_parse_main      scripts/coverage/cov_parse.vibe      parse       # parser arms (impl/postfix/pattern)
+run_driver cov_helpers_main    scripts/coverage/cov_helpers.vibe    helpers     # unique pure helpers: valtype/int/io-dispatch/double/async-int
 rm -f _build/vibe_selfhost_* 2>/dev/null || true
 
 now=$(python3 -c "import json;print(sum(json.load(open('$ACC'))['br']))")

@@ -192,7 +192,8 @@ in-scope）を直接叩ける。型/trait/env に加え以下も edge-case 入�
 
 #### 80% 達成（no-DCE merged source + direct-call drivers）
 
-**分岐 5378/6694 (80.34%)**・関数 1037/1176 (88.18%) に到達。
+**分岐 5406/6694 (80.76%)**・関数 1037/1176 (88.18%) に到達（下限ガード 80% =
+5356 に対し +50 分岐のマージン）。
 74% で頭打ちだった主因（コンパイラ自身の unit test 120/148 が builtins⇄checker
 の循環 re-export で FS-compile 不能）を、**循環 re-export を直さずに**回避した。
 
@@ -230,6 +231,13 @@ corpus acc.json に (fn_name, local_branch_index) キーで union する。分�
     を synthetic linked import で直接 (+11)。
   - `cov_builtins.vibe` / `cov_parse.vibe`: Array/String/Map/Bytes builtin、parser
     arm（多くは self-compile で既出、残差を補う）。
+  - `cov_helpers.vibe`: **unique-named** pure helper を全入力 partition で叩く
+    (`comp_valtype_to_core` の全 valtype、`parse_int_unwrap` の符号/空/非数字、
+    `lookup_io_a`/`lookup_io_c` の dispatch chain、`double_to_string_compiler` の
+    繰り上げ/frac==0、`entry_declares_async_int`) (+28)。注: `(fn,local)` merge は
+    関数名で union するため、merged source 内に**重複定義**を持つ helper
+    (`strip_trailing_cr`/`parse_struct_fields_rest` 等) は local-index がずれて
+    点灯しない — driver は unique-named 関数に限定する。
 - **manifest-header cache** (`coverage_selfhost_manifestcache.sh`): 非 special な
   manifest project を cold/warm/部分 invalidation で FS-compile し、
   `matches_cached_file_spec`/`try_collect_manifest_source_groups_fs`/
@@ -246,7 +254,7 @@ corpus acc.json に (fn_name, local_branch_index) キーで union する。分�
 ```bash
 scripts/coverage_selfhost_corpus.sh        # base acc.json + compiler_cov.wasm
 scripts/coverage_selfhost_unittests.sh     # VIBE_COV_FLAT=_build/coverage/merged_nodce.vibe で再実行も可
-scripts/coverage_selfhost_drivers.sh       # async/lookup/cachetext/units/traitenv/link/…
+scripts/coverage_selfhost_drivers.sh       # async/lookup/cachetext/units/traitenv/link/helpers/…
 scripts/coverage_selfhost_manifestcache.sh
 scripts/coverage_selfhost_multimodule.sh
 scripts/coverage_selfhost_features.sh
