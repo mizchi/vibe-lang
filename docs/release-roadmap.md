@@ -20,14 +20,19 @@
 
 ## 実装進捗 (2026-06-25 セッション)
 
-> **マイルストーン**: M1（配布確定）+ M2（開発体験 MVP）+ M3（開発体験フル）達成。
-> M4（GA）は ADR 決定事項を全確定（install/module/LSP host/仕様 freeze =
+> **マイルストーン**: M1（配布確定）+ M2（開発体験 MVP）+ M3（開発体験フル）+
+> M4（GA）content gate 達成 → 実装側 **GA-ready**（[GA readiness](report/1-0-ga-readiness.md)）。
+> ADR 決定事項を全確定（install/module/LSP host/仕様 freeze =
 > [spec/1.0-freeze.md](spec/1.0-freeze.md)）。PR #642 を main に merge 済み。
 > 以降の DAP P3 step/P4 named-local / `vibe binding-at` / rename 配線 /
-> CI wasmtime 修正 / 仕様 freeze は branch `claude/kind-fermat-lxtjov` に在り
-> （main は authoritative selfhost-gate green、cli-install は wasmtime CLI 未導入で
-> 一時 red — branch の修正で解消）。テーマ3 debugger は P0-P4 + 3-D 完了。
-> 残: 任意式 watch（将来拡張）、span-arc（行粒度 step / call-site hover）、docs 完備。
+> CI wasmtime 修正 / 仕様 freeze / span-arc step2–5 / docs は branch
+> `claude/kind-fermat-lxtjov` に在り（main は authoritative selfhost-gate green、
+> cli-install は wasmtime CLI 未導入で一時 red — branch の修正で解消）。
+> テーマ3 debugger は P0-P4 + 3-D + 関数行 breakpoint 完了。span-arc は
+> step1（診断 offset）/ step2（ECall+EDot offset）/ step3（typed hover）/
+> step4（call/field hover）着地、step5 は関数宣言行 breakpoint まで。
+> 残（リリース運用）: 1.0 タグ / version bump / main land。
+> 残（post-GA）: 任意式 watch、関数内任意行 step、LSP span JSON / 診断 range AST。
 >
 > **CI 根本原因メモ（vibe-eh-ci, RESOLVED）**: fresh compiler build は standalone
 > `wasmtime` CLI を要するが CI 未導入 → seed fallback で diagnostics/type-at が機能せず。
@@ -183,7 +188,7 @@
 | **M1: 配布確定** | install + module の配布方法を凍結し、外部の人が「入れて使える」 | (1)(2) | ✅ 達成（install 配布物確定 + module fetch/lock/transitive/semver/frozen/verify） |
 | **M2: 開発体験 MVP** | LSP MVP（診断/シンボル/hover）+ debugger P0（source-mapped trace） | (3)(4) | ✅ 達成（型付き hover、parser error recovery で全診断、trap→source-line） |
 | **M3: 開発体験フル** | LSP 補完/リファクタ + DAP step 実行 | (3)(4) | ✅ 達成（DAP P1-P4 = breakpoint/名前付き変数検査/step 実行 + 3-D VS Code debug adapter、rename/references は scope 精度の `vibe binding-at` で AST 精度化）。テーマ3 debugger は P0-P4 + 3-D 完了 |
-| **M4: GA (1.0)** | 上記を統合し、言語仕様 freeze + docs 完備で一般公開 | 全部 | 🟡 進行中（仕様 freeze = [spec/1.0-freeze.md](spec/1.0-freeze.md) 確定、docs 完備 = install/module/editor+debug ガイド整備済み。残: span-arc 精度、最終 sign-off タグ） |
+| **M4: GA (1.0)** | 上記を統合し、言語仕様 freeze + docs 完備で一般公開 | 全部 | ✅ content gate 達成（仕様 freeze = [spec/1.0-freeze.md](spec/1.0-freeze.md)、docs = install/module/editor+debug、span-arc step1–4 + step5 関数行 breakpoint、[GA readiness](report/1-0-ga-readiness.md)）。残: 1.0 タグ / version bump / main land（リリース運用判断）、post-GA = 任意行 debug・LSP span JSON |
 
 ### 横断的な前提（どのテーマにも効く 2 つの土台）
 
