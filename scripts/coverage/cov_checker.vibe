@@ -1,0 +1,87 @@
+
+// #cov checker driver: drive the unique type-inference primitives directly with
+// constructed Type/Subst/Pat values — unify (var-bind / occurs / structural
+// recurse / mismatch arms), occurs_in, subst_apply (every Subst + Type shape),
+// subst_lookup, types_equal's deep CtFn-label / CtForAll-bound residual, and
+// check_pattern. The corpus only feeds checker-built shapes; these reach the rest.
+let c_uni: (Type, Type) -> Int = (a, b) -> {
+  match unify(a, b, SubstEmpty) { Some(_) => 1, None => 0 }
+}
+let c_occ: (Type) -> Int = (t) -> { if occurs_in(0, t) { 1 } else { 0 } }
+let c_app: (Subst, Type) -> Int = (s, t) -> { match subst_apply(s, t) { _ => 1 } }
+let c_look: (Subst) -> Int = (s) -> { match subst_lookup(s, 0) { Some(_) => 1, None => 0 } }
+let c_ty: (Type, Type) -> Int = (a, b) -> { if types_equal(a, b) { 1 } else { 0 } }
+
+export let cov_checker_main: () -> Int = () -> {
+  let mut acc = 0
+  let v0 = CtVar(0)
+  let v1 = CtVar(1)
+  // unify: types-equal short-circuit / var-bind both sides / occurs-fail /
+  // structural recurse (array, option, tuple, fn, named) / mismatch
+  acc = acc + c_uni(CtInt, CtInt)                              // equal -> Some
+  acc = acc + c_uni(v0, CtInt)                                 // a is var -> bind
+  acc = acc + c_uni(CtInt, v0)                                 // b is var -> bind
+  acc = acc + c_uni(v0, CtArray(v0))                           // occurs -> None
+  acc = acc + c_uni(CtArray(v0), CtArray(CtInt))              // array recurse
+  acc = acc + c_uni(CtOption(v0), CtOption(CtInt))           // option recurse
+  acc = acc + c_uni(CtTuple(Array::slice([v0, CtInt], 0, 2)), CtTuple(Array::slice([CtInt, CtInt], 0, 2)))  // tuple recurse
+  acc = acc + c_uni(CtTuple(Array::slice([CtInt], 0, 1)), CtTuple(Array::slice([CtInt, CtInt], 0, 2)))      // tuple len mismatch
+  acc = acc + c_uni(CtFn(Array::slice([v0], 0, 1), CtInt, None), CtFn(Array::slice([CtInt], 0, 1), CtInt, None))  // fn recurse
+  acc = acc + c_uni(CtNamed("N", Array::slice([v0], 0, 1)), CtNamed("N", Array::slice([CtInt], 0, 1)))      // named recurse
+  acc = acc + c_uni(CtInt, CtBool)                            // mismatch -> None
+  // occurs_in: var present in nested positions / absent
+  acc = acc + c_occ(v0)
+  acc = acc + c_occ(CtArray(v0))
+  acc = acc + c_occ(CtOption(v0))
+  acc = acc + c_occ(CtTuple(Array::slice([CtInt, v0], 0, 2)))
+  acc = acc + c_occ(CtFn(Array::slice([v0], 0, 1), CtInt, None))
+  acc = acc + c_occ(CtFn(Array::slice([CtInt], 0, 1), v0, None))
+  acc = acc + c_occ(CtNamed("N", Array::slice([v0], 0, 1)))
+  acc = acc + c_occ(CtTuple(Array::slice([v1], 0, 1)))         // absent -> false
+  acc = acc + c_occ(CtInt)                                      // base -> false
+  // subst_apply: each Subst variant applied to var + structural types
+  let sb = SubstBind(0, CtInt, SubstEmpty)
+  let sbd = SubstBound(0, Array::slice(["Eq"], 0, 1), SubstEmpty)
+  let scache = SubstCached(cov_empty_type_map(), cov_empty_bound_map(), SubstEmpty)
+  acc = acc + c_app(SubstEmpty, v0)
+  acc = acc + c_app(sb, v0)                                     // bound var -> Int
+  acc = acc + c_app(sb, v1)                                     // unbound var
+  acc = acc + c_app(sb, CtArray(v0))                          // recurse into array
+  acc = acc + c_app(sb, CtOption(v0))
+  acc = acc + c_app(sb, CtTuple(Array::slice([v0, CtInt], 0, 2)))
+  acc = acc + c_app(sb, CtFn(Array::slice([v0], 0, 1), v0, None))
+  acc = acc + c_app(sb, CtNamed("N", Array::slice([v0], 0, 1)))
+  acc = acc + c_app(sb, CtForAll(Array::slice([1], 0, 1), cov_empty_bounds(), v0))
+  acc = acc + c_app(sbd, v0)
+  acc = acc + c_app(scache, v0)
+  acc = acc + c_app(sb, CtInt)                                  // base passthrough
+  // subst_lookup: each Subst variant
+  acc = acc + c_look(SubstEmpty)
+  acc = acc + c_look(sb)
+  acc = acc + c_look(SubstBind(5, CtInt, SubstEmpty))          // id mismatch -> recurse -> empty
+  acc = acc + c_look(sbd)
+  acc = acc + c_look(scache)
+  // types_equal deep residual: CtFn label compare + CtForAll non-empty bounds
+  let lbl = CtFn(Array::slice([CtInt], 0, 1), CtBool, Some("eff"))
+  acc = acc + c_ty(lbl, lbl)
+  acc = acc + c_ty(lbl, CtFn(Array::slice([CtInt], 0, 1), CtBool, Some("other")))
+  acc = acc + c_ty(lbl, CtFn(Array::slice([CtInt], 0, 1), CtBool, None))
+  let fa = CtForAll(Array::slice([0, 1], 0, 2), cov_te_bounds(), CtVar(0))
+  acc = acc + c_ty(fa, fa)
+  acc = acc + c_ty(fa, CtForAll(Array::slice([0], 0, 1), cov_te_bounds(), CtVar(0)))   // var-count mismatch
+  acc
+}
+
+let cov_empty_type_map: () -> Map[String, Type] = () -> { MapBuilder::freeze(MapBuilder::new()) }
+let cov_empty_bound_map: () -> Map[String, Array[String]] = () -> {
+  let b = MapBuilder::new()
+  MapBuilder::freeze(b)
+}
+let cov_empty_bounds: () -> Array[(Int, Array[String])] = () -> {
+  Array::slice([(0, Array::slice([""], 0, 0))], 0, 0)
+}
+let cov_te_bounds: () -> Array[(Int, Array[String])] = () -> {
+  let a = Array::slice([(0, Array::slice([""], 0, 0))], 0, 0)
+  Array::push(a, (0, Array::slice(["Eq"], 0, 1)))
+  a
+}

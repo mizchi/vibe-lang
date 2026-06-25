@@ -1,0 +1,82 @@
+
+// #cov walker-breadth driver #2: drive the remaining unique full-AST-walk
+// functions directly with one constructed value per variant — printers
+// (print_expr/print_stmt), Stmt predicates (is_type_or_structural/dce_keep_stmt/
+// stmts_use_builtin/dce_reachable_names), and Expr/Pat walkers
+// (scope_tail_proj_root/desugar_loop_body/reassign_self_reusable/
+// infer_handle_effect_name_from_pat). No compile needed; covers every arm.
+let w_pe: (Expr) -> Int = (e) -> { String::length(print_expr(e)) }
+let w_proj: (Expr) -> Int = (e) -> { String::length(scope_tail_proj_root(e)) }
+let w_desugar: (Expr) -> Int = (e) -> { match desugar_loop_body(e, Array::slice([""], 0, 0)) { _ => 1 } }
+let w_reassign: (Expr) -> Int = (e) -> {
+  handle { if reassign_self_reusable(e, "x") { 1 } else { 0 } } with Error { Throw(_) => 0 }
+}
+let w_ps: (Stmt) -> Int = (s) -> { String::length(print_stmt(s)) }
+let w_struct: (Stmt) -> Int = (s) -> { if is_type_or_structural(s) { 1 } else { 0 } }
+let w_dcek: (Stmt) -> Int = (s) -> {
+  if dce_keep_stmt(s, Array::slice(["m"], 0, 1)) { 1 } else { 0 }
+}
+let w_pat: (Pat) -> Int = (pp) -> { match infer_handle_effect_name_from_pat(pp) { Some(_) => 1, None => 0 } }
+
+export let cov_walker2_main: () -> Int = () -> {
+  let mut acc = 0
+  let xid = EIdent("x")
+  // Expr battery (every variant) -> print_expr / scope_tail_proj_root / desugar / reassign
+  let es = Array::slice([EUnit], 0, 0)
+  Array::push(es, EInt(1)); Array::push(es, EFloat(1.0)); Array::push(es, EString("s"))
+  Array::push(es, EBool(true)); Array::push(es, EUnit); Array::push(es, xid)
+  Array::push(es, ETuple(Array::slice([xid], 0, 1))); Array::push(es, EArray(Array::slice([xid], 0, 1)))
+  Array::push(es, ERecord(Array::slice([("f", xid)], 0, 1))); Array::push(es, EMap(Array::slice([("k", xid)], 0, 1)))
+  Array::push(es, EIf(xid, EInt(1), EInt(2))); Array::push(es, ELet("a", xid, EIdent("a")))
+  Array::push(es, ELetRec("a", xid, EIdent("a"))); Array::push(es, ELetMut("a", xid, EUnit))
+  Array::push(es, EAssign("x", EInt(1), EUnit)); Array::push(es, EAssignOp("+", "x", EInt(1), EUnit))
+  Array::push(es, ESeq(xid, EUnit)); Array::push(es, EWhile(xid, EUnit))
+  Array::push(es, EForIn("i", None, xid, EUnit)); Array::push(es, EForIn("i", Some("j"), xid, EUnit))
+  Array::push(es, ECall(EIdent("f"), Array::slice([xid], 0, 1))); Array::push(es, EBinOp("+", xid, EInt(1)))
+  Array::push(es, EUnaryOp("-", xid)); Array::push(es, EDot(xid, "field"))
+  Array::push(es, EThrow(xid)); Array::push(es, EReturn(xid))
+  Array::push(es, EBreak(Some(xid))); Array::push(es, EBreak(None))
+  Array::push(es, EContinue(Array::slice([xid], 0, 1))); Array::push(es, ESpread(xid))
+  Array::push(es, EStringInterp(Array::slice(["a", "b"], 0, 2)))
+  Array::push(es, ELabeledArg("lbl", "nm", xid))
+  let mut i = 0
+  while i < Array::length(es) {
+    let e = Array::get(es, i)
+    acc = acc + w_pe(e) + w_proj(e) + w_desugar(e) + w_reassign(e)
+    i = i + 1
+  }
+  // Stmt battery -> print_stmt / is_type_or_structural / dce_keep_stmt
+  let intty = TyName("Int")
+  let ss = Array::slice([SExpr(EUnit)], 0, 0)
+  Array::push(ss, SLet(false, false, "a", None, EInt(1)))
+  Array::push(ss, SLet(true, false, "a", Some(intty), EInt(1)))     // exported + typed
+  Array::push(ss, SLetMut("b", None, EInt(2)))
+  Array::push(ss, SStruct(false, "S", Array::slice([("f", intty)], 0, 1)))
+  Array::push(ss, SEnum(false, "E", Array::slice([""], 0, 0), Array::slice([("A", Array::slice([intty], 0, 0))], 0, 1)))
+  Array::push(ss, SSuberror(false, "Err", Array::slice([("Bad", Array::slice([intty], 0, 0))], 0, 1)))
+  Array::push(ss, STypeAlias(false, "T", Array::slice([""], 0, 0), intty))
+  Array::push(ss, STrait(false, "Tr", Array::slice([""], 0, 0)))
+  Array::push(ss, SExternLet("h", TyFn(Array::slice([intty], 0, 1), intty, None)))
+  Array::push(ss, SImport("m", Array::slice([("x", None)], 0, 1)))
+  Array::push(ss, STest("t", EUnit)); Array::push(ss, SBench("b", EUnit))
+  Array::push(ss, SExpr(EInt(1))); Array::push(ss, SExport(Array::slice(["m"], 0, 1)))
+  Array::push(ss, SAliasDecl("a", "b")); Array::push(ss, SLetPat(PWild, EInt(1)))
+  let mut j = 0
+  while j < Array::length(ss) {
+    let st = Array::get(ss, j)
+    acc = acc + w_ps(st) + w_struct(st) + w_dcek(st)
+    j = j + 1
+  }
+  // whole-program Stmt-array walkers
+  acc = acc + Array::length(dce_reachable_names(ss, Array::slice(["m"], 0, 1)))
+  acc = acc + (if stmts_use_builtin(ss, Array::slice(["Array::push"], 0, 1), "Array::push") { 1 } else { 0 })
+  // Pat battery -> infer_handle_effect_name_from_pat (PCtor / POr / default)
+  let ps = Array::slice([PWild], 0, 0)
+  Array::push(ps, PWild); Array::push(ps, PBind("x"))
+  Array::push(ps, PCtor("Get", Array::slice([PWild], 0, 0)))
+  Array::push(ps, POr(PCtor("Put", Array::slice([PWild], 0, 0)), PWild))
+  Array::push(ps, POr(PWild, PCtor("Get", Array::slice([PWild], 0, 0))))
+  let mut k = 0
+  while k < Array::length(ps) { acc = acc + w_pat(Array::get(ps, k)); k = k + 1 }
+  acc
+}
