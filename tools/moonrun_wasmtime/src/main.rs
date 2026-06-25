@@ -109,6 +109,25 @@ struct HostState {
     dbgargs_count_addr: Option<usize>,
     dbgargs_base: Option<usize>,
     dbgargs_tag_mode: u32,
+    // debugger step execution (DAP P3): at a pause the runner reads a command and
+    // sets a step mode, consulted at every function-entry dbg_break hook to decide
+    // WHEN to pause next. pause_depth records the call depth (backtrace frame
+    // count) at the last pause, used by StepOver/StepOut to compare against the
+    // entering frame's depth.
+    step_mode: StepMode,
+    pause_depth: usize,
+}
+
+// DAP P3 step modes. Continue: only pause at explicit break_set hits. StepInto:
+// pause at the very next function entry. StepOver: pause at the next entry whose
+// depth <= pause_depth (skip nested calls). StepOut: pause once we return to a
+// shallower frame (depth < pause_depth).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StepMode {
+    Continue,
+    StepInto,
+    StepOver,
+    StepOut,
 }
 
 impl HostState {
@@ -122,8 +141,12 @@ impl HostState {
                     .collect()
             })
             .unwrap_or_default();
-        let break_auto = std::env::var("VIBE_BREAK_AUTO").as_deref() == Ok("1")
-            || !atty_stdin();
+        // break_auto: auto-continue at every pause WITHOUT reading stdin. Only
+        // VIBE_BREAK_AUTO=1 enables this. Note: we intentionally do NOT treat a
+        // non-TTY stdin as auto — DAP P3 stepping reads debugger commands from
+        // piped/scripted stdin, and on real EOF the read path falls back to
+        // continue-and-don't-block (so a pipe with no data still completes).
+        let break_auto = std::env::var("VIBE_BREAK_AUTO").as_deref() == Ok("1");
         Self {
             last_error: None,
             args: Arc::new(args),
@@ -139,6 +162,8 @@ impl HostState {
             dbgargs_count_addr: None,
             dbgargs_base: None,
             dbgargs_tag_mode: 0,
+            step_mode: StepMode::Continue,
+            pause_depth: 0,
         }
     }
 
@@ -148,8 +173,10 @@ impl HostState {
     }
 }
 
-// True when stdin is an interactive terminal. Used by the debugger breakpoint
-// hook to decide whether to read a line (interactive pause) or auto-continue.
+// True when stdin is an interactive terminal. Retained for future TTY-aware
+// prompting; debugger pausing now reads stdin regardless (DAP P3 scripted steps)
+// and only VIBE_BREAK_AUTO=1 skips the read.
+#[allow(dead_code)]
 fn atty_stdin() -> bool {
     use std::io::IsTerminal;
     std::io::stdin().is_terminal()
@@ -1048,7 +1075,12 @@ fn dbg_read_args(caller: &mut Caller<'_, HostState>) -> Option<String> {
 
 fn vibe_dbg_break(mut caller: Caller<'_, HostState>) -> Result<()> {
     let break_set = Arc::clone(&caller.data().break_set);
-    if break_set.is_empty() {
+    let step_mode = caller.data().step_mode;
+    // Fast path: nothing can ever pause us. No explicit breakpoints AND we are
+    // in plain Continue mode (which is the only mode reachable when break_set is
+    // empty, but be explicit). The hook stays a no-op, so non-break / no-match
+    // runs pay only a backtrace-free early return.
+    if break_set.is_empty() && step_mode == StepMode::Continue {
         return Ok(());
     }
     let frames = dbg_break_frames(&caller);
@@ -1058,7 +1090,20 @@ fn vibe_dbg_break(mut caller: Caller<'_, HostState>) -> Result<()> {
         Some(n) => n.clone(),
         None => return Ok(()),
     };
-    if !break_set.iter().any(|b| *b == entering) {
+    // Current call depth = number of named frames on the stack. Used by
+    // StepOver/StepOut to compare against the depth recorded at the last pause.
+    let depth = frames.len();
+    // DAP P3: decide whether to pause at THIS entry. An explicit break_set hit
+    // always pauses (and keeps the `breakpoint hit:` label so existing tests
+    // pass). Otherwise the active step mode decides.
+    let is_break_hit = break_set.iter().any(|b| *b == entering);
+    let step_pause = match step_mode {
+        StepMode::Continue => false,
+        StepMode::StepInto => true,
+        StepMode::StepOver => depth <= caller.data().pause_depth,
+        StepMode::StepOut => depth < caller.data().pause_depth,
+    };
+    if !is_break_hit && !step_pause {
         return Ok(());
     }
     // DAP P2: read the spilled argument values for the entering function out of
@@ -1069,7 +1114,13 @@ fn vibe_dbg_break(mut caller: Caller<'_, HostState>) -> Result<()> {
     {
         let stderr = std::io::stderr();
         let mut h = stderr.lock();
-        let _ = writeln!(h, "breakpoint hit: {entering}");
+        // Keep `breakpoint hit:` for explicit break_set hits (existing tests grep
+        // for it); a pure step-induced pause is labelled `stopped at:`.
+        if is_break_hit {
+            let _ = writeln!(h, "breakpoint hit: {entering}");
+        } else {
+            let _ = writeln!(h, "stopped at: {entering}");
+        }
         if let Some(line) = &args_line {
             let _ = writeln!(h, "  args: {line}");
         }
@@ -1080,19 +1131,44 @@ fn vibe_dbg_break(mut caller: Caller<'_, HostState>) -> Result<()> {
     }
     let auto = caller.data().break_auto;
     if auto {
+        // VIBE_BREAK_AUTO: continue without reading stdin (preserves existing
+        // auto tests). A step mode could only have been set interactively, so in
+        // auto mode this stays Continue throughout.
         return Ok(());
     }
-    // Interactive: read one line from stdin. Empty => continue; `q` => abort.
+    // Interactive (or scripted-stdin): read one debugger command. We read whether
+    // or not stdin is a TTY — this is what enables scripted step tests. The hook
+    // only exists in break builds, so a non-break run never reaches here.
     use std::io::BufRead;
     let mut line = String::new();
     let stdin = std::io::stdin();
     let n = stdin.lock().read_line(&mut line).unwrap_or(0);
     if n == 0 {
-        // EOF on stdin: behave like auto-continue.
+        // EOF on stdin: continue and don't block again (drop to Continue mode so
+        // no later entry tries to read from the now-closed stdin).
+        caller.data_mut().step_mode = StepMode::Continue;
         return Ok(());
     }
-    if line.trim() == "q" {
-        return Err(BreakAbort.into());
+    let cmd = line.trim();
+    match cmd {
+        "q" | "quit" => return Err(BreakAbort.into()),
+        "s" | "step" | "stepi" => {
+            caller.data_mut().step_mode = StepMode::StepInto;
+        }
+        "n" | "next" => {
+            let host = caller.data_mut();
+            host.step_mode = StepMode::StepOver;
+            host.pause_depth = depth;
+        }
+        "o" | "out" | "finish" => {
+            let host = caller.data_mut();
+            host.step_mode = StepMode::StepOut;
+            host.pause_depth = depth;
+        }
+        // `c` / `continue` / empty (and anything unrecognised) => continue.
+        _ => {
+            caller.data_mut().step_mode = StepMode::Continue;
+        }
     }
     Ok(())
 }
