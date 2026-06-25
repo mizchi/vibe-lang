@@ -1,0 +1,38 @@
+
+// #cov typeeq driver: the loop-mismatch-mid-iteration branches of types_equal's
+// CtNamed / CtTuple / CtFn / CtForAll arms — reached only when a multi-element type
+// matches on the first element(s) then mismatches on a later one (so the loop
+// continues once, then breaks with result=false). Also feed unify the same shapes.
+let te: (Type, Type) -> Int = (a, b) -> { if types_equal(a, b) { 1 } else { 0 } }
+let un: (Type, Type) -> Int = (a, b) -> { match unify(a, b, SubstEmpty) { Some(_) => 1, None => 0 } }
+let two: (Type, Type) -> Array[Type] = (x, y) -> { let a = Array::slice([x], 0, 1); Array::push(a, y); a }
+
+export let cov_typeeq_main: () -> Int = () -> {
+  let mut acc = 0
+  // CtNamed multi-arg: all-match / match-then-mismatch
+  acc = acc + te(CtNamed("N", two(CtInt, CtBool)), CtNamed("N", two(CtInt, CtBool)))   // all match
+  acc = acc + te(CtNamed("N", two(CtInt, CtBool)), CtNamed("N", two(CtInt, CtString))) // 1st match, 2nd mismatch
+  acc = acc + te(CtNamed("N", two(CtInt, CtBool)), CtNamed("N", two(CtString, CtBool))) // 1st mismatch
+  acc = acc + un(CtNamed("N", two(CtInt, CtBool)), CtNamed("N", two(CtInt, CtString)))
+  // CtTuple multi-elem: match-then-mismatch
+  acc = acc + te(CtTuple(two(CtInt, CtBool)), CtTuple(two(CtInt, CtBool)))
+  acc = acc + te(CtTuple(two(CtInt, CtBool)), CtTuple(two(CtInt, CtString)))
+  acc = acc + un(CtTuple(two(CtInt, CtBool)), CtTuple(two(CtInt, CtString)))
+  // CtFn multi-param: param match-then-mismatch / ret mismatch / effect arms
+  acc = acc + te(CtFn(two(CtInt, CtBool), CtUnit, None), CtFn(two(CtInt, CtBool), CtUnit, None))
+  acc = acc + te(CtFn(two(CtInt, CtBool), CtUnit, None), CtFn(two(CtInt, CtString), CtUnit, None)) // 2nd param mismatch
+  acc = acc + te(CtFn(Array::slice([CtInt], 0, 1), CtBool, None), CtFn(Array::slice([CtInt], 0, 1), CtString, None)) // ret mismatch
+  acc = acc + te(CtFn(Array::slice([CtInt], 0, 1), CtBool, Some("E")), CtFn(Array::slice([CtInt], 0, 1), CtBool, Some("E")))   // eff match
+  acc = acc + te(CtFn(Array::slice([CtInt], 0, 1), CtBool, Some("E")), CtFn(Array::slice([CtInt], 0, 1), CtBool, Some("F")))   // eff mismatch
+  acc = acc + te(CtFn(Array::slice([CtInt], 0, 1), CtBool, Some("E")), CtFn(Array::slice([CtInt], 0, 1), CtBool, None))        // eff Some vs None
+  acc = acc + un(CtFn(two(CtInt, CtBool), CtUnit, None), CtFn(two(CtInt, CtString), CtUnit, None))
+  // CtForAll: var-count match + bound match/mismatch + body match/mismatch
+  let vs = Array::slice([0, 1], 0, 2)
+  let b1 = Array::slice([(0, Array::slice(["Eq"], 0, 1))], 0, 1)
+  let b2 = Array::slice([(0, Array::slice(["Ord"], 0, 1))], 0, 1)
+  acc = acc + te(CtForAll(vs, b1, CtVar(0)), CtForAll(vs, b1, CtVar(0)))   // all match
+  acc = acc + te(CtForAll(vs, b1, CtVar(0)), CtForAll(vs, b2, CtVar(0)))   // bound mismatch
+  acc = acc + te(CtForAll(vs, b1, CtVar(0)), CtForAll(vs, b1, CtVar(1)))   // body mismatch
+  acc = acc + te(CtForAll(vs, b1, CtVar(0)), CtForAll(Array::slice([0], 0, 1), b1, CtVar(0)))  // var-count mismatch
+  acc
+}
