@@ -28,8 +28,10 @@
   `scripts/build_cli_wasm.sh`、`docs/install.md`、CI（`cli-install.yml`）。
 - **診断表面化 (UX/LSP 基盤)** — コンパイルエラーを `<output>.diag` に書き
   launcher が `error: <file>: <message>` 表示（trap/backtrace を置換）。
-- **テーマ2 (modules) MVP** — `vibe fetch` で git/URL 分散 deps を content-addressed
-  に vendor + `vibe.lock`。
+- **テーマ2 (modules) ほぼ完了** — `vibe fetch`（file/http/git+、content-addressed
+  vendor + `vibe.lock`）、transitive 自動解決、`--frozen` 再現ビルド、`vibe add`、
+  `vibe verify`（tree digest で改竄検出）、配布 docs。残: semver バージョン制約
+  解決、seamless `import "<url>"`（codegen 脆弱性 block）。M1「配布凍結」に到達。
 
 - **テーマ3 (debugger) P0 着手** — wasm name section を実装し、trap backtrace が
   user 関数名を表示するようになった（`<wasm function N>` → `main`/`boom`）。
@@ -85,7 +87,7 @@
 
 | マイルストーン | 内容 | 主テーマ | 状態 |
 | --- | --- | --- | --- |
-| **M1: 配布確定** | install + module の配布方法を凍結し、外部の人が「入れて使える」 | (1)(2) | 未着手 |
+| **M1: 配布確定** | install + module の配布方法を凍結し、外部の人が「入れて使える」 | (1)(2) | ほぼ達成（install 配布物確定 + module fetch/lock/verify。残: semver 制約） |
 | **M2: 開発体験 MVP** | LSP MVP（診断/シンボル/hover）+ debugger P0（source-mapped trace） | (3)(4) | 一部基盤あり |
 | **M3: 開発体験フル** | LSP 補完/リファクタ + DAP step 実行 | (3)(4) | 提案段階 |
 | **M4: GA (1.0)** | 上記を統合し、言語仕様 freeze + docs 完備で一般公開 | 全部 | — |
@@ -262,7 +264,9 @@ content-addressed に再現可能で動く。中央 registry の有無を含め�
       lock へ再帰）。git dep の tree digest は vendor 物の `deps/`・lock を除外し、
       ネストした dep は各自の lock で別途検証。署名は将来課題。
       検証済み（`scripts/test_vibe_cli_install.sh` verify clean/tamper/transitive）。
-- [ ] **2-5 docs** — `docs/module-system.md` に配布節、チュートリアル追加。
+- [x] **2-5 docs** — `docs/module-system.md` に「配布とパッケージ管理（git/URL
+      分散）」節を追加（`vibe.deps`/`fetch`/`--frozen`/`add`/`verify`/lock 形式/
+      import 規約/publish=git push+tag）。
 
 ### 決めるべきこと（2-0 の選択肢）
 
