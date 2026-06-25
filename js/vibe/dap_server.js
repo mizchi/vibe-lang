@@ -350,8 +350,27 @@ function main() {
     // Pending pause being assembled across the frame/args lines that follow a
     // "breakpoint hit"/"stopped at" header.
     let pending = null;
+    // At a real pause the runner prints the header + frames + args and then
+    // BLOCKS reading one stdin command, so no terminating line arrives to close
+    // the block. Once at least one frame is collected, schedule an idle flush so
+    // the DAP `stopped` event fires promptly while the runner waits on stdin.
+    let pendingTimer = null;
+    function clearPendingTimer() {
+      if (pendingTimer) {
+        clearTimeout(pendingTimer);
+        pendingTimer = null;
+      }
+    }
+    function schedulePendingFlush() {
+      clearPendingTimer();
+      pendingTimer = setTimeout(() => {
+        pendingTimer = null;
+        flushPending();
+      }, 30);
+    }
 
     function flushPending() {
+      clearPendingTimer();
       if (!pending) return;
       state.frames = pending.frames;
       state.args = pending.args;
@@ -376,11 +395,14 @@ function main() {
         const frame = parseFrame(line);
         if (frame) {
           pending.frames.push(frame);
+          // The runner may now block on stdin; arm the idle flush.
+          schedulePendingFlush();
           return;
         }
         const a = parseArgs(line);
         if (a) {
           pending.args = a;
+          schedulePendingFlush();
           return;
         }
         // A non-frame, non-args line ends the pause block; emit the stopped
