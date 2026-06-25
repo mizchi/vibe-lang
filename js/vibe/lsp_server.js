@@ -188,9 +188,14 @@ function locate(text, message) {
     const li = Math.max(0, parseInt(lc[1], 10) - 1);
     const co = Math.max(0, parseInt(lc[2], 10) - 1);
     const lineText = lines[li] || "";
+    // Tighten the end to the identifier under the column when there is one
+    // (the message carries no token length); else highlight to end of line.
+    let end = co;
+    while (end < lineText.length && /[A-Za-z0-9_]/.test(lineText[end])) end++;
+    if (end === co) end = lineText.length > co ? lineText.length : co + 1;
     return {
       start: { line: li, character: co },
-      end: { line: li, character: Math.max(co + 1, lineText.length) },
+      end: { line: li, character: end },
     };
   }
   // Pull a quoted or "unknown name: X" / "... 'op' ..." symbol out of the msg.

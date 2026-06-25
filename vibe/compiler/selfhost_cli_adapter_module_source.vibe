@@ -27732,6 +27732,44 @@ let write_persistent_dep_list_if_missing: (String, String, Array[String]) -> Uni
     ()
   }
 }
+let typecheck_ident_run: (String, Int) -> Int = (s, start) -> {
+  let len = String::length(s)
+  let mut e = start
+  let mut go = true
+  while go && e < len {
+    let c = String::char_code_at(s, e)
+    let is_id = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+    if is_id {
+      e = e + 1
+    } else {
+      go = false
+    }
+  }
+  e
+}
+let locate_type_error: (String, String) -> String = (source, msg) -> {
+  let marker = "unknown name: "
+  let mi = String::index_of(msg, marker)
+  if mi < 0 {
+    msg
+  } else {
+    let sstart = mi + String::length(marker)
+    let send = typecheck_ident_run(msg, sstart)
+    if send <= sstart {
+      msg
+    } else {
+      let sym = String::substring(msg, sstart, send)
+      let off = String::index_of(source, sym)
+      if off < 0 {
+        msg
+      } else {
+        let (line, col) = offset_to_line_col(source, off)
+        let loc = String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
+        String::concat(loc, msg)
+      }
+    }
+  }
+}
 let finish_typecheck_fs_impl: (RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int, String, String, Array[String], String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } = (rdb, env_cache, dep_source_cache, parse_count, path, source, deps, fingerprint) -> {
   if Fs::exists(persistent_type_env_cache_path(fingerprint)) {
     let next_db = ripple_record_eval(rdb, path, fingerprint, deps)
@@ -27747,7 +27785,7 @@ let finish_typecheck_fs_impl: (RippleDb, Array[(String, TypeEnv)], Array[(String
         _ => check_program_with_env(stmts, import_env)
       }
     } with Error {
-      Throw(msg) => throw(String::concat(String::concat(path, ": "), msg))
+      Throw(msg) => throw(String::concat(String::concat(path, ": "), locate_type_error(source, msg)))
     }
     store_persistent_type_env(fingerprint, checked_env)
     if Array::length(deps) == 0 {

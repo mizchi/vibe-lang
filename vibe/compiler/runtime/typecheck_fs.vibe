@@ -25,7 +25,7 @@ import .. / ripple {
 }
 
 import .. / syntax {
-  lex, parse_program
+  lex, parse_program, offset_to_line_col
 }
 
 import ./eval_loader {
@@ -314,6 +314,52 @@ let write_persistent_dep_list_if_missing: (String, String, Array[String]) -> Uni
   }
 }
 
+// Span of an identifier run starting at `start` (returns the end offset).
+let typecheck_ident_run: (String, Int) -> Int = (s, start) -> {
+  let len = String::length(s)
+  let mut e = start
+  let mut go = true
+  while go && e < len {
+    let c = String::char_code_at(s, e)
+    let is_id = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+    if is_id {
+      e = e + 1
+    } else {
+      go = false
+    }
+  }
+  e
+}
+
+// Best-effort `line:col` for a type error: pull the symbol out of
+// `unknown name: X` and locate its first occurrence in the source. Real
+// expression-level spans (AST node positions) remain future work; this gives
+// the common case a line number in both CLI and LSP (which parses the prefix).
+// Built with String::concat only (not `+`) to avoid the selfhost NUL fragility.
+let locate_type_error: (String, String) -> String = (source, msg) -> {
+  let marker = "unknown name: "
+  let mi = String::index_of(msg, marker)
+  if mi < 0 {
+    msg
+  } else {
+    let sstart = mi + String::length(marker)
+    let send = typecheck_ident_run(msg, sstart)
+    if send <= sstart {
+      msg
+    } else {
+      let sym = String::substring(msg, sstart, send)
+      let off = String::index_of(source, sym)
+      if off < 0 {
+        msg
+      } else {
+        let (line, col) = offset_to_line_col(source, off)
+        let loc = String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
+        String::concat(loc, msg)
+      }
+    }
+  }
+}
+
 let finish_typecheck_fs_impl: (RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int, String, String, Array[String], String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } = (rdb, env_cache, dep_source_cache, parse_count, path, source, deps, fingerprint) -> {
   if Fs::exists(persistent_type_env_cache_path(fingerprint)) {
     let next_db = ripple_record_eval(rdb, path, fingerprint, deps)
@@ -329,7 +375,7 @@ let finish_typecheck_fs_impl: (RippleDb, Array[(String, TypeEnv)], Array[(String
         _ => check_program_with_env(stmts, import_env)
       }
     } with Error {
-      Throw(msg) => throw(String::concat(String::concat(path, ": "), msg))
+      Throw(msg) => throw(String::concat(String::concat(path, ": "), locate_type_error(source, msg)))
     }
     store_persistent_type_env(fingerprint, checked_env)
     if Array::length(deps) == 0 {
