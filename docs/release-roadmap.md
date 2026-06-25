@@ -120,7 +120,15 @@
    `off_marker(call_off)` 経由で消費し、arity mismatch が**呼び出し位置**を指す
    （`s.length(99)` が定義行でなく `line 6:3` を報告）。selfhost gate green
    （stage2==stage3 fixpoint、bootstrap bump 不要）、`test_located_diagnostics.sh`
-   8/8。残: **EDot** offset（field hover / field 診断の土台）。
+   8/8。
+   - ✅ **EDot offset（着地）** — `EDot(Expr, String)` → `EDot(Expr, String, Int)`。
+     parser は base 式の start offset を `callee_offset` で thread、AST 保存パスは
+     pass-through、synthetic（record-pattern projection / CST lowering）は `-1`。
+     **consumer 配線**: checker の standalone EDot arm が、base が既知 struct で
+     field が無い場合に `unknown field '<f>' on struct <S>` を `off_marker(dot_off)`
+     付きで報告（`find_field` を `CtUnknown` 返却から `Option[Type]` へ変更し
+     「missing field」を区別）。`p.z` が `line 3:3` を指す。gate green、
+     `test_located_diagnostics.sh` 10/10。**step 2 完了**（ECall + EDot）。
 3. **型付き hover** —
    - ✅ **3a env-visible MVP（着地）** — `vibe type-at` + `type_at_source`
      （位置の EIdent → `check_program` → `env_lookup` + `type_to_string`）を実装し
