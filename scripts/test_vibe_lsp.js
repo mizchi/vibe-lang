@@ -63,6 +63,7 @@ const isDiag = (uri) => (m) => m.method === "textDocument/publishDiagnostics" &&
   const badUri = "file:///tmp/vibe-lsp-test-bad.vibe";
   send({ jsonrpc: "2.0", method: "textDocument/didOpen", params: { textDocument: { uri: badUri, languageId: "vibe", version: 1, text: "export let main = () -> Int { zzz }\n" } } });
   const badDiag = await waitFor(isDiag(badUri));
+  console.error(`[debug] bad doc diagnostics: ${JSON.stringify(badDiag.params.diagnostics)}`);
   check("bad doc yields >=1 diagnostic", badDiag.params.diagnostics.length >= 1);
   if (badDiag.params.diagnostics.length) {
     const d = badDiag.params.diagnostics[0];

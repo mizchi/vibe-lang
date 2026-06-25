@@ -87,7 +87,20 @@ jobs:
           # Default install builds a fresh compiler wasm (with diagnostics) the
           # LSP server relies on for messages.
           bash scripts/install.sh >/dev/null
-          VIBE_BIN="$VIBE_BIN_DIR/vibe" node scripts/test_vibe_lsp.js
+          VIBE="$VIBE_BIN_DIR/vibe"
+          # --- temporary diagnostic: show what vibe diagnostics/type-at emit in
+          # this CI environment (they pass locally but the LSP test fails in CI).
+          printf 'export let main = () -> Int { zzz }\n' > /tmp/ci-bad.vibe
+          printf 'export let helper = (x: Int) -> Int { x * 2 }\nexport let main = () -> Int { helper(21) }\n' > /tmp/ci-good.vibe
+          echo "::group::diag-debug"
+          echo "[which cli]"; "$VIBE" version 2>&1 || true
+          echo "[diagnostics bad]"; "$VIBE" diagnostics /tmp/ci-bad.vibe; echo "(rc=$?)"
+          echo "[diagnostics good]"; "$VIBE" diagnostics /tmp/ci-good.vibe; echo "(rc=$?)"
+          echo "[type-at good 2:31]"; "$VIBE" type-at /tmp/ci-good.vibe 2 31; echo "(rc=$?)"
+          echo "[env VIBE_*]"; env | grep -i '^VIBE' || echo "(none)"
+          echo "::endgroup::"
+          # --- end diagnostic
+          VIBE_BIN="$VIBE" node scripts/test_vibe_lsp.js
 
       - name: Name section (debugger P0) regression test
         run: bash scripts/test_name_section.sh
