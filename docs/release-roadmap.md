@@ -99,11 +99,16 @@
 2. **ECall / EDot へ offset 付与** — EIdent と同じ構造 refactor（variant に Int
    field 追加 → 全 construct/match site 更新 → bundle 再生成）。call-site の
    go-to-definition / hover の土台。arity/field 診断の正確化もここで効く。
-3. **checker 位置→型テーブル** — `check_expr` が各ノードの offset→推論型を記録
-   （`Array[(Int, Type)]` か interval tree）。型付き hover の核。
-4. **span 露出 CLI / LSP 連携** — `vibe` が offset→型・シンボル span を JSON で
-   出す経路を足し、`js/vibe/lsp_server.js` を text-scan から AST span 消費へ。
-   typed hover / 正確な診断 range / scope 精度 rename。
+3. **型付き hover** —
+   - ✅ **3a env-visible MVP（着地）** — `vibe type-at` + `type_at_source`
+     （位置の EIdent → `check_program` → `env_lookup` + `type_to_string`）を実装し
+     LSP hover に配線。トップレベル/import 名の推論型が editor で出る。
+     selfhost gate green、`test_vibe_type_at.sh` 3/3 / `test_vibe_lsp.js` 14/14。
+   - [ ] **3b per-node 型テーブル** — `check_expr` が各ノードの offset→推論型を記録
+     （`Array[(Int, Type)]` か interval tree）。ローカル変数・パラメータ・式の型を
+     hover で出すために必要。scope 精度の高い補完・rename もこの上に乗る。
+4. **span 露出 CLI / LSP 連携（一部着地）** — `vibe type-at` で offset→型を露出済み。
+   残: シンボル span の JSON 露出、診断 range の AST 化（現状は line:col prefix 経由）。
 5. **codegen source-line map（`vibe.func_map`）** — 命令 offset→ソース行の custom
    section。DAP P1-P4（breakpoint/variables/step）の前提。name section は実装済み。
 
@@ -408,14 +413,21 @@ install/​debugger と runtime 前提を一本化する。`vibe lsp` を selfho
       span 未実装のため、診断メッセージ中のシンボルを文書テキストから探して範囲を
       近似。**documentSymbol / definition / hover** をトップレベル宣言のテキスト走査で
       提供（go-to-definition は宣言行へジャンプ、hover は宣言テキストを表示）。
-      検証済み（`scripts/test_vibe_lsp.js` 8/8）。残: 型付き hover（checker の型
-      クエリ + source span が前提）, 正確な診断範囲（source span）, references/rename。
+      **型付き hover も着地**（下記 4-3）: hover は `vibe type-at` で推論型を
+      表示し、取れない時のみ宣言テキストに fallback。診断範囲も source span
+      着地で正確化（`[@off=N]` → 実 line:col）。検証済み（`scripts/test_vibe_lsp.js`
+      14/14、型付き hover assertion 含む）。
 - [ ] **4-2 selfhost への index 移植**（M2–M3）— `src/frontend/symbol_index.mbt`
       相当を `vibe/compiler/` 側に持ち、host 依存を外す。
 - [~] **4-3 definition / hover / completion / references / rename**（M3）—
-      definition / hover / completion / references / rename をテキスト走査ベースで
-      実装済み（`scripts/test_vibe_lsp.js` 13/13）。型付き hover / スコープ精度の
-      高い補完・rename は checker の部分型情報 API + source span が前提。
+      definition / completion / references / rename をテキスト走査ベースで実装済み。
+      **hover は型付きに昇格**: `vibe type-at <file> <line> <col>`（selfhost の
+      `type_at_source`: 位置の EIdent を実オフセットで特定 → `check_program` →
+      `env_lookup` + `type_to_string`）で推論型を返し、LSP hover が表示する
+      （`js/vibe/lsp_server.js`、`scripts/test_vibe_type_at.sh` 3/3 +
+      `test_vibe_lsp.js` 14/14）。**MVP スコープ**: トップレベル / import された
+      value 名のみ解決。ローカル変数・パラメータは未対応（per-node 型テーブル＝
+      span-arc step3b が前提）。スコープ精度の高い補完・rename も同 step が前提。
 - [x] **4-5 editor 配線** — `integrations/vscode-vibe` に LSP client
       （`extension.js`、vscode-languageclient）を追加し `vibe lsp` を起動。
       `vibe.serverPath` 設定対応。tree-sitter/zed は grammar 済み（LSP 配線は今後）。

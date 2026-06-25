@@ -138,9 +138,19 @@ function handle(msg) {
       const doc = docs.get(uri);
       if (!doc) { reply(msg.id, null); break; }
       const word = wordAt(doc.text, msg.params.position);
+      // Prefer the compiler's inferred type (typed hover); fall back to the
+      // declaration line when the type is unavailable (local/param, parse error).
+      const ty = typeAt(uri, msg.params.position);
       const decl = word ? findDeclaration(doc.text, word) : null;
-      if (!decl) { reply(msg.id, null); break; }
-      reply(msg.id, { contents: { kind: "markdown", value: "```vibe\n" + decl.line.trim() + "\n```" } });
+      if (!ty && !decl) { reply(msg.id, null); break; }
+      let value;
+      if (ty) {
+        value = "```vibe\n" + (word ? word + ": " : "") + ty + "\n```";
+        if (decl) value += "\n---\n```vibe\n" + decl.line.trim() + "\n```";
+      } else {
+        value = "```vibe\n" + decl.line.trim() + "\n```";
+      }
+      reply(msg.id, { contents: { kind: "markdown", value } });
       break;
     }
     case "initialized":
@@ -255,6 +265,31 @@ function locate(text, message) {
     }
   }
   return { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } };
+}
+
+// Query the compiler for the inferred type at a position via `vibe type-at`.
+// Returns a trimmed type string, or "" when the compiler reports none (e.g. a
+// local/param — see type_at.vibe's MVP scope — or a non-identifier position).
+// Mirrors runCheck's temp-file dance so relative imports still resolve.
+function typeAt(uri, position) {
+  const doc = docs.get(uri);
+  if (!doc) return "";
+  const filePath = uriToPath(uri);
+  const dir = fs.existsSync(path.dirname(filePath)) ? path.dirname(filePath) : os.tmpdir();
+  const tmp = path.join(dir, `.vibe-lsp-ty-${process.pid}-${Math.abs(hash(uri))}.vibe`);
+  try {
+    fs.writeFileSync(tmp, doc.text, "utf8");
+    // LSP positions are 0-based; `vibe type-at` expects 1-based line/col.
+    const line = String(position.line + 1);
+    const col = String(position.character + 1);
+    const res = spawnSync(VIBE_BIN, ["type-at", tmp, line, col], { encoding: "utf8" });
+    return (res.stdout || "").trim();
+  } catch {
+    return "";
+  } finally {
+    try { fs.unlinkSync(tmp); } catch {}
+    try { fs.unlinkSync(`${tmp}.diag`); } catch {}
+  }
 }
 
 function runCheck(uri) {

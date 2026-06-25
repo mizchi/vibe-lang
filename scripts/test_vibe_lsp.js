@@ -107,6 +107,10 @@ const isDiag = (uri) => (m) => m.method === "textDocument/publishDiagnostics" &&
   send({ jsonrpc: "2.0", id: 5, method: "textDocument/hover", params: { textDocument: { uri: goodUri }, position: { line: 2, character: helperCol + 1 } } });
   const hov = await waitFor((m) => m.id === 5);
   check("hover shows declaration", hov.result && /helper/.test(JSON.stringify(hov.result.contents)));
+  // typed hover: the compiler's inferred type for `helper` ((Int) -> Int) is
+  // surfaced via `vibe type-at`, not just the declaration text.
+  const hovVal = hov.result ? JSON.stringify(hov.result.contents) : "";
+  check("hover shows inferred type", /Int/.test(hovVal) && /->|-&gt;/.test(hovVal));
 
   // references: all occurrences of the symbol under the cursor
   send({ jsonrpc: "2.0", id: 7, method: "textDocument/references", params: { textDocument: { uri: goodUri }, position: { line: 2, character: helperCol + 1 }, context: { includeDeclaration: true } } });
