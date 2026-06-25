@@ -139,7 +139,7 @@
 | --- | --- | --- | --- |
 | **M1: 配布確定** | install + module の配布方法を凍結し、外部の人が「入れて使える」 | (1)(2) | ✅ 達成（install 配布物確定 + module fetch/lock/transitive/semver/frozen/verify） |
 | **M2: 開発体験 MVP** | LSP MVP（診断/シンボル/hover）+ debugger P0（source-mapped trace） | (3)(4) | ✅ 達成（型付き hover、parser error recovery で全診断、trap→source-line） |
-| **M3: 開発体験フル** | LSP 補完/リファクタ + DAP step 実行 | (3)(4) | ✅ ほぼ達成（DAP P1-P3 = breakpoint/変数(引数)検査/step 実行、rename/references は `vibe binding-at` で AST 精度化）。残: DAP P4 watch、scope 精度 rename（shadowing）、DAP editor 配線 |
+| **M3: 開発体験フル** | LSP 補完/リファクタ + DAP step 実行 | (3)(4) | ✅ 達成（DAP P1-P3 = breakpoint/変数(引数)検査/step 実行 + 3-D VS Code debug adapter、rename/references は scope 精度の `vibe binding-at` で AST 精度化）。残: DAP P4 watch |
 | **M4: GA (1.0)** | 上記を統合し、言語仕様 freeze + docs 完備で一般公開 | 全部 | — |
 
 ### 横断的な前提（どのテーマにも効く 2 つの土台）
@@ -409,7 +409,7 @@ VS Code（DAP クライアント）から breakpoint を張り、停止・変数
       検証済み（`scripts/test_vibe_step.sh` 14/14）。残: 行粒度 step（per-statement
       span が前提）。
 - [ ] **3-P4 watch 式**（M4）— 停止フレームでの式評価（または名前付きローカル検査）。
-- [ ] **3-D editor 統合** — `integrations/vscode-vibe` に debug adapter を配線。
+- [x] **3-D editor 統合（着地）** — `js/vibe/dap_server.js`（stdio DAP server: 行→関数 breakpoint、step s/n/o/c、stack/args を `vibe run --break` から翻訳）+ `integrations/vscode-vibe`（debuggers contribution + adapter factory）。launcher は `--break`/`--trace` の stderr を FIFO で live stream（対話/DAP 用）。`scripts/test_vibe_dap.js` 22/22（純関数）。E2E は VS Code 必要。
 
 > **DAP P1-P4 の実装設計（2026-06-25 調査）** — これは LSP サーバ構築に匹敵する
 > 多コンポーネントの大型機能で、専用の focused 作業が必要:
@@ -500,7 +500,10 @@ install/​debugger と runtime 前提を一本化する。`vibe lsp` を selfho
       識別子の binding を特定し、その occurrence の char-span を返す）を LSP rename/
       references が消費し、文字列/コメント/部分語の誤マッチを排除（テキスト走査に
       fallback）。検証済み（`scripts/test_vibe_binding_at.sh`、`test_vibe_lsp.js` 16/16）。
-      残: scope/shadowing 精度（同名の別 binding を区別）= 進行中。
+      **scope/shadowing 精度も着地**: `binding_occurrences` が scope-stack walk で
+      カーソル識別子を最近接の binding（let/param/for/match binder）に解決し、その
+      binding の occurrence のみ返す（f の `x` と g の `x` を区別、トップレベルは
+      file-wide）。`test_vibe_binding_at.sh` 7/7。
       **hover は型付きに昇格**: `vibe type-at <file> <line> <col>`（selfhost の
       `type_at_source`: 位置の EIdent を実オフセットで特定 → `check_program` →
       `env_lookup` + `type_to_string`）で推論型を返し、LSP hover が表示する
