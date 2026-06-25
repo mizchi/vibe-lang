@@ -36,8 +36,17 @@ set -euo pipefail
 # Resolve install root: the directory layout is
 #   $VIBE_HOME/bin/{vibe,moonrun_wt}
 #   $VIBE_HOME/lib/{vibe-cli.wasm,vibe-cli.cwasm}
-LAUNCHER="$(readlink -f "${BASH_SOURCE[0]}")"
-SELF="$(cd "$(dirname "$LAUNCHER")" && pwd)"
+# Resolve this script's real path WITHOUT `readlink -f` (a GNU extension that
+# macOS/BSD readlink lacks — `readlink -f` there errors and breaks every install).
+# Walk symlinks portably instead.
+_src="${BASH_SOURCE[0]}"
+while [ -L "$_src" ]; do
+  _dir="$(cd -P "$(dirname "$_src")" && pwd)"
+  _src="$(readlink "$_src")"
+  case "$_src" in /*) ;; *) _src="$_dir/$_src" ;; esac
+done
+LAUNCHER="$(cd -P "$(dirname "$_src")" && pwd)/$(basename "$_src")"
+SELF="$(cd -P "$(dirname "$LAUNCHER")" && pwd)"
 VIBE_HOME="${VIBE_HOME:-$(dirname "$SELF")}"
 RUNNER="${VIBE_RUNNER:-$VIBE_HOME/bin/moonrun_wt}"
 CLI_WASM="${VIBE_CLI_WASM:-$VIBE_HOME/lib/vibe-cli.wasm}"
@@ -166,8 +175,14 @@ tree_digest() {
 # and the compiler wasm (a stale .cwasm built against a different wasmtime is
 # UB, so fall back to the portable wasm if anything looks newer).
 pick_cli() {
-  if [ -f "$CLI_CWASM" ] && [ "$CLI_CWASM" -nt "$RUNNER" ] && \
-     { [ ! -f "$CLI_WASM" ] || [ "$CLI_CWASM" -nt "$CLI_WASM" ] || [ "$CLI_CWASM" -ef "$CLI_CWASM" ]; }; then
+  # Use the .cwasm only when NOTHING it depends on is newer than it: neither the
+  # runner (a different wasmtime would make the AOT image UB) nor the portable
+  # wasm (if the wasm was refreshed without re-precompiling, the .cwasm is stale
+  # — fall back to it). Using `! older-than` also accepts an equal-mtime .cwasm
+  # built right after the wasm. (A previous `-ef $CLI_CWASM` self-comparison was
+  # always true and defeated the wasm-staleness guard entirely.)
+  if [ -f "$CLI_CWASM" ] && [ ! "$RUNNER" -nt "$CLI_CWASM" ] && \
+     { [ ! -f "$CLI_WASM" ] || [ ! "$CLI_WASM" -nt "$CLI_CWASM" ]; }; then
     printf '%s' "$CLI_CWASM"
   elif [ -f "$CLI_WASM" ]; then
     printf '%s' "$CLI_WASM"
@@ -360,10 +375,14 @@ case "$cmd" in
     cli="$(pick_cli)"
     out="$(mktemp -t vibe-typeat-XXXXXX)"
     trap 'rm -f "$out"' EXIT
-    VIBE_TYPE_AT=1 VIBE_TYPE_LINE="$ta_line" VIBE_TYPE_COL="$ta_col" \
+    # Clear any inherited compile-mode envs so this query can't be diverted to
+    # the compile path (which would emit wasm bytes instead of the type string).
+    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE \
+        -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
+      VIBE_TYPE_AT=1 VIBE_TYPE_LINE="$ta_line" VIBE_TYPE_COL="$ta_col" \
       VIBE_SELFHOST_IMPORT_ABI=raw \
       "$RUNNER" "$cli" "$src" "$out" >/dev/null 2>&1 || die "type-at failed: $src"
-    [ -s "$out" ] && cat "$out"
+    if [ -s "$out" ]; then cat "$out"; fi
     ;;
   diagnostics)
     # vibe diagnostics <file.vibe>
@@ -376,10 +395,16 @@ case "$cmd" in
     cli="$(pick_cli)"
     out="$(mktemp -t vibe-diag-XXXXXX)"
     trap 'rm -f "$out"' EXIT
-    VIBE_DIAGNOSTICS=1 \
+    # Clear any inherited compile-mode envs so a leaked VIBE_FS_COMPILE (etc.)
+    # can't divert this into compiling and emitting wasm bytes as "diagnostics".
+    env -u VIBE_FS_COMPILE -u VIBE_TYPE_AT -u VIBE_NORMALIZE \
+        -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
+      VIBE_DIAGNOSTICS=1 \
       VIBE_SELFHOST_IMPORT_ABI=raw \
       "$RUNNER" "$cli" "$src" "$out" >/dev/null 2>&1 || die "diagnostics failed: $src"
-    [ -s "$out" ] && cat "$out"
+    # A clean file yields empty output; this subcommand always exits 0 (a report,
+    # not a failure), so the LSP can treat empty as "no diagnostics".
+    if [ -s "$out" ]; then cat "$out"; fi
     ;;
   test)
     [ "$#" -ge 1 ] || die "usage: vibe test <file_test.vibe> [more_test.vibe...]"

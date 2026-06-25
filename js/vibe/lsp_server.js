@@ -332,38 +332,25 @@ function runCheck(uri) {
     fs.writeFileSync(tmp, doc.text, "utf8");
     // `vibe diagnostics` runs the recovering parser and reports EVERY located
     // syntax error (one per line), or the single located type error on a clean
-    // parse. Publish them all. Fall back to `vibe check` if the subcommand is
-    // unavailable (older compiler) so a single diagnostic still surfaces.
+    // parse; empty = clean. Be robust: key off STDOUT (a clean file may exit
+    // non-zero) and accept ONLY well-formed located lines ("line N:M: <msg>"),
+    // so a stray/garbled line can never become a spurious diagnostic, and never
+    // fabricate one on a tooling hiccup (which would pollute every document).
     const dres = spawnSync(VIBE_BIN, ["diagnostics", tmp], { encoding: "utf8" });
-    const dout = (dres.stdout || "").trim();
-    if (dres.status === 0) {
-      diagnostics = dout
-        ? dout.split(/\r?\n/).filter((l) => l.trim().length).map((message) => ({
-            range: locate(doc.text, message),
-            severity: 1, // Error
-            source: "vibe",
-            message,
-          }))
-        : [];
-    } else {
-      const res = spawnSync(VIBE_BIN, ["check", tmp], { encoding: "utf8" });
-      const out = `${res.stdout || ""}\n${res.stderr || ""}`;
-      if ((res.status && res.status !== 0) || /\berror:/.test(out)) {
-        const message = parseMessage(out);
-        diagnostics = [
-          { range: locate(doc.text, message), severity: 1, source: "vibe", message },
-        ];
-      }
-    }
-  } catch (e) {
-    diagnostics = [
-      {
-        range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
-        severity: 2,
-        source: "vibe-lsp",
-        message: `internal: ${e.message}`,
-      },
-    ];
+    diagnostics = (dres.stdout || "")
+      .split(/\r?\n/)
+      .map((l) => l.replace(/\s+$/, ""))
+      .filter((l) => /^\s*line\s+\d+:\d+:/.test(l))
+      .map((message) => ({
+        range: locate(doc.text, message),
+        severity: 1, // Error
+        source: "vibe",
+        message: message.trim(),
+      }));
+  } catch {
+    // Tooling hiccup (e.g. a failed temp write): report nothing rather than
+    // attach a spurious diagnostic to the user's document.
+    diagnostics = [];
   } finally {
     try {
       fs.unlinkSync(tmp);
