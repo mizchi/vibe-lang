@@ -107,7 +107,21 @@ vibe のモジュール配布は **git/URL 分散モデル**（Deno/Go 風）。
 | 単一ファイル (`http(s)://`) | `mathlib https://example.com/lib.vibe` | `deps/<name>.vibe` |
 | git リポジトリ | `mathgit git+https://host/repo#v1.2.0` | `deps/<name>/`（ディレクトリ） |
 
-git url は `git+<remote>[#<ref>]`。`#<ref>` は tag/branch/commit。
+git url は `git+<remote>[#<ref>]`。`#<ref>` は tag/branch/commit、または
+**semver 制約**。制約はリモートの tag 一覧から最高の満たすものを解決する:
+
+| 制約 | 意味 |
+| --- | --- |
+| `^1.2.3` | `>=1.2.3 <2.0.0`（major 固定。`^0.2.3` は `>=0.2.3 <0.3.0`） |
+| `~1.2.3` | `>=1.2.3 <1.3.0`（minor 固定） |
+| `>=1.2`, `>1.2`, `<=2.0`, `<2.0`, `=1.2.3` | 比較演算子 |
+| `1.2` | partial（`>=1.2.0 <1.3.0`） |
+| `1` | partial（`>=1.0.0 <2.0.0`） |
+| `*` / 省略 | 任意（最高 tag） |
+
+完全な `1.2.3`（演算子なし）・branch 名・commit sha・`v` 付き tag は
+**そのまま literal** に扱う（制約と解釈しない）。tag は `v` prefix の有無
+どちらも可。解決した具体 tag/commit が `vibe.lock` に固定される。
 
 ### 取得: `vibe fetch [--frozen] [dir]`
 

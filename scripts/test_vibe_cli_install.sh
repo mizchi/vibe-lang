@@ -150,6 +150,27 @@ if command -v git >/dev/null 2>&1; then
   # verify recurses into transitive locks (clean tproj passes).
   "$VIBE" verify "$tproj" >/dev/null 2>&1 && rc=0 || rc=$?
   check "vibe verify transitive exit" "0" "$rc"
+
+  # semver constraint: a git dep with tagged releases resolves `^1.0` to the
+  # highest matching tag (v1.2.0), not v2.0.0 and not the unmatched v1.3.0-only.
+  srepo="$WORK/srepo"; mkdir -p "$srepo"
+  ( cd "$srepo" && git init -q && git config user.email t@t && git config user.name t )
+  printf 'export let v = () -> Int { 100 }\n' > "$srepo/index.vibe"
+  ( cd "$srepo" && git add -A && git commit -q -m v1 && git tag v1.0.0 )
+  printf 'export let v = () -> Int { 120 }\n' > "$srepo/index.vibe"
+  ( cd "$srepo" && git add -A && git commit -q -m v12 && git tag v1.2.0 )
+  printf 'export let v = () -> Int { 200 }\n' > "$srepo/index.vibe"
+  ( cd "$srepo" && git add -A && git commit -q -m v2 && git tag v2.0.0 )
+  sproj="$WORK/sproj"; mkdir -p "$sproj"
+  printf 'semlib git+file://%s#^1.0\n' "$srepo" > "$sproj/vibe.deps"
+  printf 'import ./deps/semlib/index.vibe { v }\nexport let main = () -> Int { v() }\n' > "$sproj/app.vibe"
+  "$VIBE" fetch "$sproj" >/dev/null 2>&1 && rc=0 || rc=$?
+  check "vibe fetch semver exit" "0" "$rc"
+  check "vibe fetch ^1.0 picks v1.2.0" "120" "$("$VIBE" run "$sproj/app.vibe" 2>/dev/null | tr -dc '0-9')"
+  # An unsatisfiable constraint fails clearly.
+  printf 'semlib git+file://%s#^9.0\n' "$srepo" > "$sproj/vibe.deps"
+  "$VIBE" fetch "$sproj" >/dev/null 2>&1 && rc=0 || rc=$?
+  check "vibe fetch unsat constraint fails" "1" "$rc"
 else
   echo "info: git not available; skipping git+ fetch assertions"
 fi

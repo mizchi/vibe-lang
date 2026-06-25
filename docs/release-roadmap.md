@@ -29,9 +29,10 @@
 - **診断表面化 (UX/LSP 基盤)** — コンパイルエラーを `<output>.diag` に書き
   launcher が `error: <file>: <message>` 表示（trap/backtrace を置換）。
 - **テーマ2 (modules) ほぼ完了** — `vibe fetch`（file/http/git+、content-addressed
-  vendor + `vibe.lock`）、transitive 自動解決、`--frozen` 再現ビルド、`vibe add`、
-  `vibe verify`（tree digest で改竄検出）、配布 docs。残: semver バージョン制約
-  解決、seamless `import "<url>"`（codegen 脆弱性 block）。M1「配布凍結」に到達。
+  vendor + `vibe.lock`）、transitive 自動解決、semver バージョン制約解決、
+  `--frozen` 再現ビルド、`vibe add`、`vibe verify`（tree digest で改竄検出）、
+  配布 docs。残: seamless `import "<url>"`（codegen 脆弱性 block）。
+  M1「配布凍結」に到達。
 
 - **テーマ3 (debugger) P0 着手** — wasm name section を実装し、trap backtrace が
   user 関数名を表示するようになった（`<wasm function N>` → `main`/`boom`）。
@@ -249,13 +250,16 @@ content-addressed に再現可能で動く。中央 registry の有無を含め�
       seed 互換な codegen 修正を先に固めてから再導入する。
 - [ ] **2-1 リモート import 解決（完全版）** — git/URL から外部ソースを取得し
       `$HOME/.vibe/lib` / content store にキャッシュ。`index.lock` に hash を固定。
-- [~] **2-2 依存解決器** — transitive 依存の自動解決を実装（git dep が自身の
+- [x] **2-2 依存解決器** — transitive 依存の自動解決を実装（git dep が自身の
       `vibe.deps` を宣言していれば、その dep の `deps/` に再帰 vendor。
       `VIBE_FETCH_MAX_DEPTH=16` で cycle guard、`VIBE_NO_TRANSITIVE=1` で無効化）。
       **`vibe fetch --frozen`** で再現ビルド（既存 `vibe.lock` の commit に git dep を
       pin、upstream HEAD が進んでも lock の sha を維持。transitive にも伝播）。
-      検証済み（`scripts/test_vibe_cli_install.sh` transitive/frozen ケース）。
-      残: semver バージョン制約の解決（現状は lock-or-HEAD のみ）。
+      **semver バージョン制約解決** — git ref が `^1.2`/`~1.2.3`/`>=1.0`/`1.x`/`*`
+      等なら、リモートの tag 一覧から最高の満たすものを解決して clone・lock する
+      （完全な `1.2.3`・branch・commit・`v` tag は literal 扱い）。
+      検証済み（`scripts/test_vibe_cli_install.sh` transitive/frozen/semver ケース、
+      semver comparator の unit 検証含む）。
 - [ ] **2-3 `vibe add` / `vibe publish`（または equivalent）** — 依存追加と
       公開の CLI 導線。2-0 の選択次第で publish は「git push + tag」かもしれない。
 - [x] **2-4 整合性・供給網** — `vibe.lock` に content hash を固定（単一ファイルは

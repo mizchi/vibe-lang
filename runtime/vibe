@@ -38,6 +38,103 @@ CLI_CWASM="${VIBE_CLI_CWASM:-$VIBE_HOME/lib/vibe-cli.cwasm}"
 
 die() { echo "vibe: $*" >&2; exit 1; }
 
+# --- semver constraint resolution for git deps -------------------------------
+# A git ref of `#<constraint>` (^1.2, ~1.2.3, >=1.0, 1.x, *, ...) resolves to the
+# highest matching tag on the remote. A bare exact version (1.2.3) or any
+# non-semver string (a branch / commit / `v`-tag) is used literally.
+
+# Echo "MAJOR MINOR PATCH" for a version/tag (strips leading v, pre-release/build).
+ver_parts() {
+  local v="${1#[vV]}"; v="${v%%+*}"; v="${v%%-*}"
+  local IFS=.; set -- $v; echo "${1:-0} ${2:-0} ${3:-0}"
+}
+# Echo -1/0/1 for ($1 < / = / > $2).
+ver_cmp() {
+  local a b; a="$(ver_parts "$1")"; b="$(ver_parts "$2")"
+  local a1 a2 a3 b1 b2 b3
+  read -r a1 a2 a3 <<EOF
+$a
+EOF
+  read -r b1 b2 b3 <<EOF
+$b
+EOF
+  local p
+  for p in "$a1 $b1" "$a2 $b2" "$a3 $b3"; do
+    set -- $p
+    [ "$1" -lt "$2" ] && { echo -1; return; }
+    [ "$1" -gt "$2" ] && { echo 1; return; }
+  done
+  echo 0
+}
+ver_ge() { [ "$(ver_cmp "$1" "$2")" != "-1" ]; }
+ver_gt() { [ "$(ver_cmp "$1" "$2")" = "1" ]; }
+ver_lt() { [ "$(ver_cmp "$1" "$2")" = "-1" ]; }
+ver_le() { [ "$(ver_cmp "$1" "$2")" != "1" ]; }
+
+# Does a concrete version $1 satisfy constraint $2? Supports ^ ~ >= > <= < =,
+# partial (1, 1.2), and * / "" (any).
+ver_satisfies() {
+  local v="$1" c="$2" maj min pat base
+  case "$c" in ""|"*"|x|X) return 0 ;; esac
+  case "$c" in
+    ^*) base="${c#^}"; read -r maj min pat <<EOF
+$(ver_parts "$base")
+EOF
+        ver_ge "$v" "$base" || return 1
+        if [ "$maj" -gt 0 ]; then ver_lt "$v" "$((maj+1)).0.0"
+        elif [ "$min" -gt 0 ]; then ver_lt "$v" "0.$((min+1)).0"
+        else ver_lt "$v" "0.0.$((pat+1))"; fi ;;
+    ~*) base="${c#\~}"; read -r maj min pat <<EOF
+$(ver_parts "$base")
+EOF
+        ver_ge "$v" "$base" && ver_lt "$v" "$maj.$((min+1)).0" ;;
+    ">="*) ver_ge "$v" "${c#>=}" ;;
+    "<="*) ver_le "$v" "${c#<=}" ;;
+    ">"*)  ver_gt "$v" "${c#>}" ;;
+    "<"*)  ver_lt "$v" "${c#<}" ;;
+    "="*)  [ "$(ver_cmp "$v" "${c#=}")" = "0" ] ;;
+    *)
+      # Partial (1 or 1.2) → range; full x.y.z → exact.
+      case "$c" in
+        *.*.*) [ "$(ver_cmp "$v" "$c")" = "0" ] ;;
+        *.*)   read -r maj min pat <<EOF
+$(ver_parts "$c")
+EOF
+               ver_ge "$v" "$maj.$min.0" && ver_lt "$v" "$maj.$((min+1)).0" ;;
+        *)     case "$c" in *[!0-9]*) return 1 ;; esac
+               ver_ge "$v" "$c.0.0" && ver_lt "$v" "$((c+1)).0.0" ;;
+      esac ;;
+  esac
+}
+# Is $1 a semver constraint (vs a plain branch/commit/exact tag)?
+is_constraint() {
+  case "$1" in
+    "*"|x|X) return 0 ;;
+    ^*|\~*|">="*|"<="*|">"*|"<"*|"="*) return 0 ;;
+    *[!0-9.vV]*) return 1 ;;           # contains letters/other → branch or sha
+    *.*.*) return 1 ;;                 # full x.y.z → exact, treat literally
+    *.*|[0-9]*) return 0 ;;            # partial 1 or 1.2 → constraint
+    *) return 1 ;;
+  esac
+}
+# Resolve constraint $2 against the tags of remote $1; echo the winning tag.
+resolve_git_constraint() {
+  local remote="$1" constraint="$2" best="" bestv="" tag v
+  while IFS= read -r tag; do
+    [ -n "$tag" ] || continue
+    case "$tag" in *'^{}'*) continue ;; esac    # skip deref tags
+    v="${tag#[vV]}"
+    case "$v" in ''|*[!0-9.]*) continue ;; esac   # keep numeric-dotted only
+    if ver_satisfies "$v" "$constraint"; then
+      if [ -z "$best" ] || ver_gt "$v" "$bestv"; then best="$tag"; bestv="$v"; fi
+    fi
+  done <<EOF
+$(git ls-remote --tags --refs "$remote" 2>/dev/null | sed 's#.*refs/tags/##')
+EOF
+  [ -n "$best" ] && printf '%s' "$best"
+}
+# -----------------------------------------------------------------------------
+
 # Deterministic content digest of a vendored directory: hash each file as
 # "<relpath>\0<sha256>" over a sorted file list, then hash the stream. Lets
 # `vibe verify` detect tampering of a git dep (whose lock records a commit sha,
@@ -217,8 +314,17 @@ case "$cmd" in
             [ -n "$pinned" ] || die "--frozen: no locked commit for '$name' (run 'vibe fetch' first)"
             ref="$pinned"
           fi
-          gtmp="$(mktemp -d -t vibe-git-XXXXXX)"
           command -v git >/dev/null 2>&1 || die "git is required for git+ deps"
+          # A semver constraint ref (^1.2, ~1.2.3, >=1.0, 1.x, ...) resolves to
+          # the highest matching tag on the remote. Exact tags / branches /
+          # commits pass through literally. Skipped when --frozen (commit wins).
+          if [ -z "$pinned" ] && [ -n "$ref" ] && is_constraint "$ref"; then
+            resolved="$(resolve_git_constraint "$remote" "$ref")"
+            [ -n "$resolved" ] || die "no tag on $remote satisfies '$ref' (dep '$name')"
+            echo "resolved $name: $ref -> $resolved"
+            ref="$resolved"
+          fi
+          gtmp="$(mktemp -d -t vibe-git-XXXXXX)"
           if [ -n "$pinned" ]; then
             # A full SHA can't be reached by --branch/--depth 1; clone fully then
             # check it out so a moved upstream HEAD still resolves the pin.
