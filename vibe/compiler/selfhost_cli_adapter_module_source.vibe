@@ -22715,6 +22715,90 @@ export let parse_program_located: (Array[Token], Array[Int], String) -> Array[St
   }
   ArrayBuilder::freeze(b)
 }
+let is_recovery_point: (Token) -> Bool = (t) -> {
+  match t {
+    TLet => true,
+    TExport => true,
+    TModule => true,
+    TEnum => true,
+    TSuberror => true,
+    TStruct => true,
+    TType => true,
+    TTrait => true,
+    TTest => true,
+    TBench => true,
+    TImport => true,
+    TImpl => true,
+    TDeclare => true,
+    TOpen => true,
+    TSemicolon => true,
+    TEof => true,
+    _ => false
+  }
+}
+export let parse_program_recovering: (Array[Token], Array[Int], String) -> (Array[Stmt], Array[String]) with { Error } = (tokens, starts, source) -> {
+  let b = ArrayBuilder::new()
+  let diags = ArrayBuilder::new()
+  let n = Array::length(tokens)
+  let mut pos = 0
+  let mut done = false
+  while !done {
+    match peek(tokens, pos) {
+      TEof => {
+        done = true
+      },
+      TSemicolon => {
+        pos = pos + 1
+      },
+      _ => {
+        let start_pos = pos
+        let res = handle {
+          let (stmt, next) = match peek(tokens, pos) {
+            TImpl => parse_impl_stmt_dispatch(tokens, pos + 1),
+            _ => parse_stmt(tokens, starts, pos)
+          }
+          Some((stmt, next))
+        } with Error {
+          Throw(msg) => {
+            let off = if start_pos < Array::length(starts) {
+              Array::get(starts, start_pos)
+            } else {
+              0
+            }
+            let (line, col) = offset_to_line_col(source, off)
+            let loc = String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
+            ArrayBuilder::push(diags, String::concat(loc, msg))
+            None
+          }
+        }
+        match res {
+          Some((stmt, next)) => {
+            ArrayBuilder::push(b, stmt)
+            pos = next
+          },
+          None => {
+            let mut rp = start_pos + 1
+            let mut sync = false
+            while !sync {
+              if rp >= n {
+                sync = true
+              } else {
+                let t = peek(tokens, rp)
+                if is_recovery_point(t) {
+                  sync = true
+                } else {
+                  rp = rp + 1
+                }
+              }
+            }
+            pos = rp
+          }
+        }
+      }
+    }
+  }
+  (ArrayBuilder::freeze(b), ArrayBuilder::freeze(diags))
+}
 export let parse_program_spans: (Array[Token], Array[Int], Array[Int]) -> (Array[Stmt], Array[Int], Array[Int]) with { Error } = (tokens, starts, ends) -> {
   let b = ArrayBuilder::new()
   let span_start = ArrayBuilder::new()
@@ -28160,6 +28244,24 @@ export let ensure_fingerprint_fs_impl: (RippleDb, Array[(String, TypeEnv)], Arra
   let final_env_cache = ensure_env_cache_for_path(next_db, next_env_cache, path)
   (fingerprint, next_db, final_env_cache, next_dep_source_cache, next_parse_count)
 }
+export let collect_all_diagnostics: (String) -> Array[String] with { Error } = (source) -> {
+  let (tokens, starts, _ends) = lex_with_offsets(source)
+  let (stmts, parse_diags) = parse_program_recovering(tokens, starts, source)
+  if Array::length(parse_diags) > 0 {
+    parse_diags
+  } else {
+    handle {
+      let _env = check_program(stmts)
+      Array::slice([
+        "_"
+      ], 0, 0)
+    } with Error {
+      Throw(msg) => [
+        locate_type_error(source, msg)
+      ]
+    }
+  }
+}
 enum StringTriple {
   StringTriple(String, String, String)
 }
@@ -29636,6 +29738,20 @@ export let type_at_source: (String, Int, Int) -> String = (source, line, col) ->
     Throw(_) => ""
   }
 }
+let join_lines: (Array[String]) -> String = (items) -> {
+  let n = Array::length(items)
+  if n == 0 {
+    ""
+  } else {
+    let mut acc = Array::get(items, 0)
+    let mut i = 1
+    while i < n {
+      acc = String::concat(acc, String::concat("\n", Array::get(items, i)))
+      i = i + 1
+    }
+    acc
+  }
+}
 let parse_int_or: (String, Int) -> Int = (s, default) -> {
   let len = String::length(s)
   if len == 0 {
@@ -29742,6 +29858,12 @@ export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
     let col = parse_int_or(Env::get("VIBE_TYPE_COL"), 1)
     let ty = type_at_source(src, line, col)
     Fs::write_bytes(output_path, adapter_string_to_bytes(ty))
+    return 0
+  }
+  if Env::get("VIBE_DIAGNOSTICS") == "1" {
+    let src = Fs::read_file(input_path)
+    let diags = collect_all_diagnostics(src)
+    Fs::write_bytes(output_path, adapter_string_to_bytes(join_lines(diags)))
     return 0
   }
   let source = Fs::read_file(input_path)

@@ -20,7 +20,28 @@ import ./runtime / type_at.vibe {
   type_at_source
 }
 
+import ./runtime / typecheck_fs.vibe {
+  collect_all_diagnostics
+}
+
 //# Functions
+
+// Join `items` with "\n" using String::concat only (no `+`/interpolation, which
+// can miscodegen NUL in selfhost). Empty array -> "".
+let join_lines: (Array[String]) -> String = (items) -> {
+  let n = Array::length(items)
+  if n == 0 {
+    ""
+  } else {
+    let mut acc = Array::get(items, 0)
+    let mut i = 1
+    while i < n {
+      acc = String::concat(acc, String::concat("\n", Array::get(items, i)))
+      i = i + 1
+    }
+    acc
+  }
+}
 
 // Parse a non-negative decimal int from `s`; on any non-digit (or empty) return
 // `default`. String::concat-safe (no `+`/interpolation): folds digits via
@@ -169,6 +190,15 @@ export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
     let col = parse_int_or(Env::get("VIBE_TYPE_COL"), 1)
     let ty = type_at_source(src, line, col)
     Fs::write_bytes(output_path, adapter_string_to_bytes(ty))
+    return 0
+  }
+  // `vibe diagnostics`: collect ALL syntax errors (recovering parser) or the
+  // single located type error, one per line. A report, not a failure — always
+  // returns 0 (empty output means clean).
+  if Env::get("VIBE_DIAGNOSTICS") == "1" {
+    let src = Fs::read_file(input_path)
+    let diags = collect_all_diagnostics(src)
+    Fs::write_bytes(output_path, adapter_string_to_bytes(join_lines(diags)))
     return 0
   }
   let source = Fs::read_file(input_path)

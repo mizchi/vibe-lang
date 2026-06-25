@@ -25,7 +25,7 @@ import .. / ripple {
 }
 
 import .. / syntax {
-  lex_with_offsets, parse_program_located, offset_to_line_col
+  lex_with_offsets, parse_program_located, parse_program_recovering, offset_to_line_col
 }
 
 import ./eval_loader {
@@ -700,4 +700,28 @@ export let ensure_fingerprint_fs_impl: (RippleDb, Array[(String, TypeEnv)], Arra
   let (fingerprint, next_db, next_env_cache, next_dep_source_cache, next_parse_count) = ensure_fingerprint_fs_go(rdb, env_cache, dep_source_cache, parse_count, path, stack)
   let final_env_cache = ensure_env_cache_for_path(next_db, next_env_cache, path)
   (fingerprint, next_db, final_env_cache, next_dep_source_cache, next_parse_count)
+}
+
+// Collect ALL diagnostics for `source` as located (`line:col`) message strings.
+// Uses the recovering parser to gather every top-level syntax error; only if
+// the parse is clean does it run the type checker and report the (single,
+// located) type error. Returns [] when the source parses and checks cleanly.
+// Foundation for `vibe check` / LSP multi-diagnostic reporting.
+export let collect_all_diagnostics: (String) -> Array[String] with { Error } = (source) -> {
+  let (tokens, starts, _ends) = lex_with_offsets(source)
+  let (stmts, parse_diags) = parse_program_recovering(tokens, starts, source)
+  if Array::length(parse_diags) > 0 {
+    parse_diags
+  } else {
+    handle {
+      let _env = check_program(stmts)
+      Array::slice([
+        "_"
+      ], 0, 0)
+    } with Error {
+      Throw(msg) => [
+        locate_type_error(source, msg)
+      ]
+    }
+  }
 }

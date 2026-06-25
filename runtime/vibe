@@ -16,6 +16,7 @@
 #   vibe build   <file.vibe> -o <out>     alias of compile
 #   vibe check   <file.vibe>              parse + typecheck (no output kept)
 #   vibe type-at <file.vibe> <line> <col> print the inferred type at a position
+#   vibe diagnostics <file.vibe>          print all syntax/type diagnostics
 #   vibe test    <file_test.vibe>...      compile + run test {} blocks
 #   vibe new     <dir>                    scaffold a starter project
 #   vibe add     <name> <url> [dir]       add a dependency to vibe.deps + fetch
@@ -299,6 +300,22 @@ case "$cmd" in
       "$RUNNER" "$cli" "$src" "$out" >/dev/null 2>&1 || die "type-at failed: $src"
     [ -s "$out" ] && cat "$out"
     ;;
+  diagnostics)
+    # vibe diagnostics <file.vibe>
+    # Print ALL diagnostics, one per line: every top-level syntax error (the
+    # recovering parser resynchronizes past each failed statement) or, when the
+    # file parses clean, the single located type error. Empty output = clean.
+    [ "$#" -ge 1 ] || die "usage: vibe diagnostics <file.vibe>"
+    src="$1"
+    [ -f "$src" ] || die "not found: $src"
+    cli="$(pick_cli)"
+    out="$(mktemp -t vibe-diag-XXXXXX)"
+    trap 'rm -f "$out"' EXIT
+    VIBE_DIAGNOSTICS=1 \
+      VIBE_SELFHOST_IMPORT_ABI=raw \
+      "$RUNNER" "$cli" "$src" "$out" >/dev/null 2>&1 || die "diagnostics failed: $src"
+    [ -s "$out" ] && cat "$out"
+    ;;
   test)
     [ "$#" -ge 1 ] || die "usage: vibe test <file_test.vibe> [more_test.vibe...]"
     failed=0
@@ -536,7 +553,7 @@ case "$cmd" in
     esac
     ;;
   help|--help|-h)
-    sed -n '13,27p' "$LAUNCHER" | sed 's/^# \{0,1\}//'
+    sed -n '13,28p' "$LAUNCHER" | sed 's/^# \{0,1\}//'
     ;;
   *)
     die "unknown command: $cmd (try 'vibe help')"
