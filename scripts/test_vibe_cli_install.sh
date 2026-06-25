@@ -120,5 +120,11 @@ check "vibe add wrote manifest + lock" "yes" "$([ -s "$aproj/vibe.deps" ] && [ -
 printf 'import ./deps/inclib.vibe { inc }\nexport let main = () -> Int { inc(41) }\n' > "$aproj/app.vibe"
 check "vibe run added dep" "42" "$("$VIBE" run "$aproj/app.vibe" 2>/dev/null | tr -dc '0-9')"
 
+# new: scaffold a project and run it
+"$VIBE" new "$WORK/scaffold" >/dev/null 2>&1 && rc=0 || rc=$?
+check "vibe new exit" "0" "$rc"
+check "vibe new scaffolds main + deps" "yes" "$([ -s "$WORK/scaffold/main.vibe" ] && [ -f "$WORK/scaffold/vibe.deps" ] && echo yes || echo no)"
+check "vibe run scaffold" "42" "$("$VIBE" run "$WORK/scaffold/main.vibe" 2>/dev/null | tr -dc '0-9')"
+
 echo "[test] $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1
