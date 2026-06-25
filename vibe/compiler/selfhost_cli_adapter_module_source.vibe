@@ -4089,6 +4089,13 @@ let min_int: (Int, Int) -> Int = (a, b) -> {
     b
   }
 }
+let off_marker: (Int) -> String = (off) -> {
+  if off >= 0 {
+    String::concat(" [@off=", String::concat(__to_string(off), "]"))
+  } else {
+    ""
+  }
+}
 let prepend_expr: (Expr, Array[Expr]) -> Array[Expr] = (first, rest) -> {
   let out = Array::slice([
     EUnit
@@ -4386,7 +4393,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
     EString(_) => (CtString, s, c),
     EBool(_) => (CtBool, s, c),
     EUnit => (CtUnit, s, c),
-    EIdent(name, _) => match env_lookup(env, name) {
+    EIdent(name, ident_off) => match env_lookup(env, name) {
       Some(t) => {
         let (ti, c1, new_bounds) = instantiate(t, c)
         let nblen = Array::length(new_bounds)
@@ -4404,7 +4411,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       None => match lookup_builtin(name) {
         Some(t) => (t, s, c),
         None => {
-          Array::push(errors, String::concat("unknown name: ", name))
+          Array::push(errors, String::concat(String::concat("unknown name: ", name), off_marker(ident_off)))
           (CtUnknown, s, c)
         }
       }
@@ -4465,7 +4472,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       (tt, s3, c3)
     },
     ECall(callee, args) => match callee {
-      EIdent(name, _) => if name == "perform" {
+      EIdent(name, callee_off) => if name == "perform" {
         if Array::length(args) == 1 {
           match Array::get(args, 0) {
             ECall(_, opargs) => {
@@ -4555,7 +4562,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
                 let plen2 = Array::length(param_tys)
                 let alen3 = Array::length(arg_tys)
                 if alen3 != plen2 {
-                  Array::push(errors, String::concat("function arity mismatch for ", String::concat(name, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))))
+                  Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(name, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))), off_marker(callee_off)))
                 }
                 let s3 = unify_call_args(call_param_tys, arg_tys, s2)
                 let call_ret = Array::get(ret_box, 0)
@@ -4613,7 +4620,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
             let plen = Array::length(param_tys)
             let alen2 = Array::length(arg_tys)
             if alen2 != plen {
-              Array::push(errors, String::concat("function arity mismatch for ", String::concat(qualified, String::concat(": expected ", String::concat(__to_string(plen), String::concat(" args, got ", __to_string(alen2)))))))
+              Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(qualified, String::concat(": expected ", String::concat(__to_string(plen), String::concat(" args, got ", __to_string(alen2)))))), off_marker(-1)))
             }
             let s4 = unify_call_args(call_param_tys, arg_tys, s3)
             let call_ret = Array::get(ret_box, 0)
@@ -4675,7 +4682,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
                 let plen2 = Array::length(param_tys)
                 let alen3 = Array::length(arg_tys)
                 if alen3 != plen2 {
-                  Array::push(errors, String::concat("function arity mismatch for ", String::concat(callee_name0, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))))
+                  Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(callee_name0, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))), off_marker(-1)))
                 }
                 let s3 = unify_call_args(call_param_tys, arg_tys, s2)
                 let call_ret = Array::get(ret_box, 0)
@@ -27726,7 +27733,8 @@ let upsert_string_pair: (Array[(String, String)], String, String) -> Array[(Stri
 }
 let parse_program_with_path: (String, String) -> Array[Stmt] with { Error } = (path, source) -> {
   handle {
-    parse_program(lex(source))
+    let (tokens, starts, _ends) = lex_with_offsets(source)
+    parse_program_located(tokens, starts, source)
   } with Error {
     Throw(msg) => throw(String::concat(String::concat(path, ": "), msg))
   }
@@ -27779,7 +27787,7 @@ let locate_by_marker: (String, String, String) -> String = (source, msg, marker)
     }
   }
 }
-let locate_type_error: (String, String) -> String = (source, msg) -> {
+let locate_type_error_heuristic: (String, String) -> String = (source, msg) -> {
   if String::index_of(msg, "line ") == 0 {
     msg
   } else {
@@ -27797,6 +27805,55 @@ let locate_type_error: (String, String) -> String = (source, msg) -> {
         } else {
           locate_by_marker(source, msg, "unknown constructor ")
         }
+      }
+    }
+  }
+}
+let offset_line_col_prefix: (String, Int) -> String = (source, off) -> {
+  let (line, col) = offset_to_line_col(source, off)
+  String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
+}
+let parse_offset_digits: (String, Int, Int) -> Int = (msg, start, end) -> {
+  if end <= start {
+    -1
+  } else {
+    let mut i = start
+    let mut acc = 0
+    let mut ok = true
+    while ok && i < end {
+      let c = String::char_code_at(msg, i)
+      if c >= '0' && c <= '9' {
+        acc = acc * 10 + (c - '0')
+        i = i + 1
+      } else {
+        ok = false
+      }
+    }
+    if ok {
+      acc
+    } else {
+      -1
+    }
+  }
+}
+let locate_type_error: (String, String) -> String = (source, msg) -> {
+  let marker = " [@off="
+  let mi = String::index_of(msg, marker)
+  if mi < 0 {
+    locate_type_error_heuristic(source, msg)
+  } else {
+    let num_start = mi + String::length(marker)
+    let rel_end = String::index_of(String::substring(msg, num_start, String::length(msg)), "]")
+    if rel_end < 0 {
+      locate_type_error_heuristic(source, String::substring(msg, 0, mi))
+    } else {
+      let num_end = num_start + rel_end
+      let n = parse_offset_digits(msg, num_start, num_end)
+      let stripped = String::concat(String::substring(msg, 0, mi), String::substring(msg, num_end + 1, String::length(msg)))
+      if n >= 0 && n < String::length(source) {
+        String::concat(offset_line_col_prefix(source, n), stripped)
+      } else {
+        locate_type_error_heuristic(source, stripped)
       }
     }
   }

@@ -42,6 +42,30 @@ expect_contains "unknown-name type error located" "line 1:" \
 expect_contains "arity mismatch located" "function arity mismatch" \
   'let h = (a: Int, b: Int) -> Int { a + b }\nexport let main = () -> Int { h(1) }\n'
 
+# arity mismatch -> located at the CALL site, not the DEFINITION.
+# `helper` is defined on line 1 but called with wrong arity on line 4; the
+# located diagnostic must point at the call (line 4) via the real AST offset
+# threaded through the [@off=N] marker, NOT the first text occurrence (line 1).
+expect_contains "arity mismatch located at call site (line 4)" "line 4:" \
+  'let helper = (a: Int, b: Int) -> Int { a + b }\nexport let l2 = 0\nexport let l3 = 0\nexport let main = () -> Int { helper(1) }\n'
+
+# the internal [@off=N] offset marker must never leak into user-facing output.
+expect_missing() { # <desc> <needle-that-must-be-absent> <file.vibe content>
+  local desc="$1" needle="$2"; shift 2
+  local f="$WORK/case.vibe"
+  printf '%b' "$1" > "$f"
+  local out; out="$("$VIBE" check "$f" 2>&1 || true)"
+  if printf '%s' "$out" | grep -qF "$needle"; then
+    echo "FAIL: $desc (unwanted '$needle' in: $out)" >&2; fail=$((fail + 1))
+  else
+    echo "ok: $desc"; pass=$((pass + 1))
+  fi
+}
+expect_missing "no [@off= marker leak (arity)" "[@off=" \
+  'let helper = (a: Int, b: Int) -> Int { a + b }\nexport let l2 = 0\nexport let main = () -> Int { helper(1) }\n'
+expect_missing "no [@off= marker leak (unknown name)" "[@off=" \
+  'export let a = 1\nexport let main = () -> Int { zzz }\n'
+
 # a good program -> check passes (no error)
 printf 'export let main = () -> Int { 40 + 2 }\n' > "$WORK/ok.vibe"
 if "$VIBE" check "$WORK/ok.vibe" >/dev/null 2>&1; then

@@ -25,7 +25,7 @@ import .. / ripple {
 }
 
 import .. / syntax {
-  lex, parse_program, offset_to_line_col
+  lex_with_offsets, parse_program_located, offset_to_line_col
 }
 
 import ./eval_loader {
@@ -295,7 +295,13 @@ let upsert_string_pair: (Array[(String, String)], String, String) -> Array[(Stri
 
 let parse_program_with_path: (String, String) -> Array[Stmt] with { Error } = (path, source) -> {
   handle {
-    parse_program(lex(source))
+    // Located lex+parse so EIdent (and other) nodes carry real source char
+    // offsets; the checker rides those offsets into type diagnostics via the
+    // [@off=N] marker (decoded by locate_type_error). The plain
+    // `parse_program(lex(source))` passed an empty starts array, leaving every
+    // offset at -1, so located type errors fell back to a first-occurrence scan.
+    let (tokens, starts, _ends) = lex_with_offsets(source)
+    parse_program_located(tokens, starts, source)
   } with Error {
     Throw(msg) => throw(String::concat(String::concat(path, ": "), msg))
   }
@@ -361,7 +367,9 @@ let locate_by_marker: (String, String, String) -> String = (source, msg, marker)
   }
 }
 
-let locate_type_error: (String, String) -> String = (source, msg) -> {
+// First-occurrence heuristic locator (the original behavior). Kept separate so
+// the offset-marker path can fall through to it on the marker-stripped message.
+let locate_type_error_heuristic: (String, String) -> String = (source, msg) -> {
   // Already located (e.g. a parse error that bubbled here)? leave it.
   if String::index_of(msg, "line ") == 0 {
     msg
@@ -380,6 +388,71 @@ let locate_type_error: (String, String) -> String = (source, msg) -> {
         } else {
           locate_by_marker(source, msg, "unknown constructor ")
         }
+      }
+    }
+  }
+}
+
+// Build the `line L:col C: ` prefix for a source char offset (same format as
+// locate_by_marker). String::concat only — the selfhost `+`/interpolation NUL
+// hazard applies here too.
+let offset_line_col_prefix: (String, Int) -> String = (source, off) -> {
+  let (line, col) = offset_to_line_col(source, off)
+  String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
+}
+
+// Parse a non-negative decimal integer from msg[start..end). Returns -1 if the
+// span is empty or contains a non-digit (callers then fall through to the text
+// heuristic).
+let parse_offset_digits: (String, Int, Int) -> Int = (msg, start, end) -> {
+  if end <= start {
+    -1
+  } else {
+    let mut i = start
+    let mut acc = 0
+    let mut ok = true
+    while ok && i < end {
+      let c = String::char_code_at(msg, i)
+      if c >= '0' && c <= '9' {
+        acc = acc * 10 + (c - '0')
+        i = i + 1
+      } else {
+        ok = false
+      }
+    }
+    if ok {
+      acc
+    } else {
+      -1
+    }
+  }
+}
+
+// Decode (and ALWAYS strip) the ` [@off=N]` marker the checker may have
+// appended. If N is a valid in-range offset, prefix the stripped message with
+// its exact `line:col`. Otherwise strip the marker and fall through to the
+// existing first-occurrence heuristics on the cleaned message. If no marker is
+// present, returns msg unchanged.
+let locate_type_error: (String, String) -> String = (source, msg) -> {
+  let marker = " [@off="
+  let mi = String::index_of(msg, marker)
+  if mi < 0 {
+    locate_type_error_heuristic(source, msg)
+  } else {
+    let num_start = mi + String::length(marker)
+    let rel_end = String::index_of(String::substring(msg, num_start, String::length(msg)), "]")
+    if rel_end < 0 {
+      // Malformed marker (no closing `]`): strip from the marker onward.
+      locate_type_error_heuristic(source, String::substring(msg, 0, mi))
+    } else {
+      let num_end = num_start + rel_end
+      let n = parse_offset_digits(msg, num_start, num_end)
+      // Strip the full ` [@off=...]` segment (marker .. closing `]` inclusive).
+      let stripped = String::concat(String::substring(msg, 0, mi), String::substring(msg, num_end + 1, String::length(msg)))
+      if n >= 0 && n < String::length(source) {
+        String::concat(offset_line_col_prefix(source, n), stripped)
+      } else {
+        locate_type_error_heuristic(source, stripped)
       }
     }
   }
