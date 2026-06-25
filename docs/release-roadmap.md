@@ -143,7 +143,7 @@
 | **M1: 配布確定** | install + module の配布方法を凍結し、外部の人が「入れて使える」 | (1)(2) | ✅ 達成（install 配布物確定 + module fetch/lock/transitive/semver/frozen/verify） |
 | **M2: 開発体験 MVP** | LSP MVP（診断/シンボル/hover）+ debugger P0（source-mapped trace） | (3)(4) | ✅ 達成（型付き hover、parser error recovery で全診断、trap→source-line） |
 | **M3: 開発体験フル** | LSP 補完/リファクタ + DAP step 実行 | (3)(4) | ✅ 達成（DAP P1-P4 = breakpoint/名前付き変数検査/step 実行 + 3-D VS Code debug adapter、rename/references は scope 精度の `vibe binding-at` で AST 精度化）。テーマ3 debugger は P0-P4 + 3-D 完了 |
-| **M4: GA (1.0)** | 上記を統合し、言語仕様 freeze + docs 完備で一般公開 | 全部 | — |
+| **M4: GA (1.0)** | 上記を統合し、言語仕様 freeze + docs 完備で一般公開 | 全部 | 🟡 進行中（仕様 freeze = [spec/1.0-freeze.md](spec/1.0-freeze.md) 確定、docs 完備 = install/module/editor+debug ガイド整備済み。残: span-arc 精度、最終 sign-off タグ） |
 
 ### 横断的な前提（どのテーマにも効く 2 つの土台）
 
