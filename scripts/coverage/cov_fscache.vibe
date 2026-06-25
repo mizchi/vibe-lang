@@ -1,0 +1,36 @@
+
+// #cov fs-cache driver: load_source_if_cached_file_spec_matches(path, stat_token,
+// fingerprint) is a unique 8-path Fs validator — missing / stat-match /
+// stat-miss+fp-match / stat-miss+fp-miss / stat-miss+fp-empty / no-stat+fp-match /
+// no-stat+fp-miss / no-stat+fp-empty. The corpus only hits the happy paths. Read a
+// real fixture's actual stat_token + fingerprint, then feed matching and
+// deliberately-wrong values to route through every arm. Needs _build/covfs/f.vibe.
+let cov_fc_one: (String, String, String) -> Int = (p, st, fp) -> {
+  handle {
+    match load_source_if_cached_file_spec_matches(p, st, fp) {
+      Some(_) => 1,
+      None => 0
+    }
+  } with Error {
+    Throw(_) => 0
+  }
+}
+
+export let cov_fscache_main: () -> Int = () -> {
+  let mut acc = 0
+  let path = "_build/covfs/f.vibe"
+  // missing file
+  acc = acc + cov_fc_one("_build/covfs/nope.vibe", "x", "y")
+  let real_stat = handle { __to_string(Fs::stat_token(path)) } with Error { Throw(_) => "" }
+  let real_fp = handle { compact_string_fingerprint(Fs::read_file(path)) } with Error { Throw(_) => "" }
+  // has stat-token: match / mismatch+fp-match / mismatch+fp-miss / mismatch+fp-empty
+  acc = acc + cov_fc_one(path, real_stat, "")
+  acc = acc + cov_fc_one(path, "wrong-stat-token", real_fp)
+  acc = acc + cov_fc_one(path, "wrong-stat-token", "wrong-fp")
+  acc = acc + cov_fc_one(path, "wrong-stat-token", "")
+  // no stat-token: fp-match / fp-miss / fp-empty
+  acc = acc + cov_fc_one(path, "", real_fp)
+  acc = acc + cov_fc_one(path, "", "wrong-fp")
+  acc = acc + cov_fc_one(path, "", "")
+  acc
+}

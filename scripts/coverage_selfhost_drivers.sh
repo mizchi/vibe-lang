@@ -146,6 +146,9 @@ mkdir -p _build/covproj
 printf 'export let a_val: () -> Int = () -> { 41 }\n' > _build/covproj/a.vibe
 printf 'import ./a.vibe { a_val }\nexport let b_val: () -> Int = () -> { a_val() }\n' > _build/covproj/b.vibe
 printf 'export let c_val: () -> Int = () -> { 5 }\n' > _build/covproj/c.vibe
+# covfs/f.vibe is the real fixture cov_fscache reads its stat-token/fingerprint from.
+mkdir -p _build/covfs
+printf 'export let f: () -> Int = () -> { 123 }\n' > _build/covfs/f.vibe
 
 base=$(python3 -c "import json;print(sum(json.load(open('$ACC'))['br']))")
 run_driver cov_async_main      scripts/coverage/cov_async.vibe      async       # inlined async/stream builtins
@@ -160,6 +163,7 @@ run_driver cov_parse_main      scripts/coverage/cov_parse.vibe      parse       
 run_driver cov_helpers_main    scripts/coverage/cov_helpers.vibe    helpers     # unique pure helpers: valtype/int/io-dispatch/double/async-int
 run_driver cov_syntax_main     scripts/coverage/cov_syntax.vibe     syntax      # parser arms: slices/block-local let-rec-mut/enum-struct/impl/match-modes
 run_driver cov_exprwalk_main   scripts/coverage/cov_exprwalk.vibe   exprwalk    # Expr/Pat walkers: is_mut_captured_in/rewrite_import_alias_expr/wrap_placeholder_arg/pat_binds_name
+run_driver cov_fscache_main    scripts/coverage/cov_fscache.vibe    fscache     # Fs validator load_source_if_cached_file_spec_matches: every stat-token/fingerprint arm
 rm -f _build/vibe_selfhost_* 2>/dev/null || true
 
 now=$(python3 -c "import json;print(sum(json.load(open('$ACC'))['br']))")
