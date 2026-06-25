@@ -248,10 +248,15 @@ VS Code（DAP クライアント）から breakpoint を張り、停止・変数
 VS Code / Neovim / Zed で「保存時診断 + hover で型 + 定義ジャンプ + 文書シンボル +
 フォーマット」が動く LSP を、selfhost compiler をバックエンドに提供する。
 
+### 決定（2026-06-25）
+
+**LSP サーバーは native runner + selfhost wasm で動かす（node 非依存）。**
+install/​debugger と runtime 前提を一本化する。`vibe lsp` を selfhost
+コンパイラをバックエンドにした language server として実装し、
+`js/vibe/lsp.js` の transport 抽象はブラウザ/embedding 用途の補助に留める。
+
 ### マイルストーン
 
-- [ ] **4-0 ホスト方針の決定（ADR）** — LSP サーバーを (a) node bridge(`js/vibe/`)
-      + wasm、(b) native runner + selfhost wasm のどちらで動かすか。
 - [ ] **4-A parser error recovery**（= 横断土台 A、M2 前提）— 編集中ソースで
       部分 AST + 診断を返せるようにする。
 - [ ] **4-1 LSP MVP**（M2）— 既存 transport + index を結線し
@@ -292,14 +297,16 @@ VS Code / Neovim / Zed で「保存時診断 + hover で型 + 定義ジャンプ
    compiler は runner と独立に更新（テーマ 1）。
 2. ✅ **module 配布モデル** — git/URL 分散（Deno/Go 風）、中央 registry なし、
    content hash で lock（テーマ 2）。
+3. ✅ **LSP ホスト** — **native runner + selfhost wasm に寄せる（node 非依存）**。
+   install を独自 wasmtime runner に決めたのと整合させ、runtime 前提を 1 本化する。
+   `vibe lsp` は同 runner 上で動く selfhost LSP サーバーとして提供し、
+   `js/vibe/lsp.js` の transport 抽象はブラウザ/embedding 用途の補助に留める
+   （テーマ 4）。
 
 未決（要 ADR）:
 
-3. **LSP ホスト**（テーマ 4-0）— node bridge(`js/vibe/`) か native runner か。
-   install を「独自 wasmtime runner」に寄せた以上、LSP も同 runner +
-   selfhost wasm に寄せると runtime 前提が 1 本化でき保守が楽になる
-   （node 非依存に倒す方向が install 決定と整合）。要確認。
 4. **言語仕様 freeze の範囲**（M4）— どこまでを 1.0 で凍結し SemVer 保証するか。
 
-> install を独自 runner に決めたので、**3 も「native runner に寄せる」が自然な
-> 既定**。最終確認のうえ ADR 化する。
+> runtime 前提は install・LSP・debugger すべて「独自 wasmtime runner +
+> selfhost wasm」に一本化された。node は補助（`js/vibe/`、ブラウザ playground）
+> に限定する。残る ADR は仕様 freeze（4）のみ。
