@@ -27,6 +27,7 @@
 #   vibe build   <file.vibe> -o <out>     alias of compile
 #   vibe check   <file.vibe>              parse + typecheck (no output kept)
 #   vibe type-at <file.vibe> <line> <col> print the inferred type at a position
+#   vibe binding-at <file.vibe> <line> <col> print binding occurrence spans (START END per line)
 #   vibe diagnostics <file.vibe>          print all syntax/type diagnostics
 #   vibe test    <file_test.vibe>...      compile + run test {} blocks
 #   vibe new     <dir>                    scaffold a starter project
@@ -398,6 +399,33 @@ case "$cmd" in
       "$RUNNER" "$cli" "$src" "$out" >/dev/null 2>&1 || true
     if [ -s "$out" ]; then cat "$out"; fi
     ;;
+  binding-at)
+    # vibe binding-at <file.vibe> <line> <col>
+    # Print the source spans of every occurrence of the identifier binding under
+    # a 1-based (line, col), one `START END` (two char offsets) per line. AST-
+    # accurate (no string/comment/substring false matches). Empty output means
+    # there is no identifier there. Groundwork for scope-precision rename /
+    # references (name-based MVP, no shadowing analysis yet).
+    [ "$#" -ge 3 ] || die "usage: vibe binding-at <file.vibe> <line> <col>"
+    src="$1"; ba_line="$2"; ba_col="$3"
+    [ -f "$src" ] || die "not found: $src"
+    # Use the portable .wasm (not the AOT .cwasm): the recovering parser path
+    # trapped under the precompiled image on some hosts, and these LSP queries are
+    # latency-amortized, so prefer correctness.
+    cli="$CLI_WASM"; [ -f "$cli" ] || cli="$(pick_cli)"
+    out="$(mktemp -t vibe-bindat-XXXXXX)"
+    trap 'rm -f "$out"' EXIT
+    # Clear any inherited compile-mode envs so this query can't be diverted to the
+    # compile path (which would emit wasm bytes instead of the occurrence list).
+    # Don't `die` on a non-zero exit — emit whatever (possibly empty) result was
+    # written so the LSP degrades gracefully instead of the whole query failing.
+    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT \
+        -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
+      VIBE_BINDING_AT=1 VIBE_TYPE_LINE="$ba_line" VIBE_TYPE_COL="$ba_col" \
+      VIBE_SELFHOST_IMPORT_ABI=raw \
+      "$RUNNER" "$cli" "$src" "$out" >/dev/null 2>&1 || true
+    if [ -s "$out" ]; then cat "$out"; fi
+    ;;
   diagnostics)
     # vibe diagnostics <file.vibe>
     # Print ALL diagnostics, one per line: every top-level syntax error (the
@@ -661,7 +689,7 @@ case "$cmd" in
     esac
     ;;
   help|--help|-h)
-    sed -n '13,33p' "$LAUNCHER" | sed 's/^# \{0,1\}//'
+    sed -n '13,34p' "$LAUNCHER" | sed 's/^# \{0,1\}//'
     ;;
   *)
     die "unknown command: $cmd (try 'vibe help')"

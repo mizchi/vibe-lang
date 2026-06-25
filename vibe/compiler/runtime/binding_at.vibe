@@ -1,0 +1,379 @@
+//# Imports
+
+// `vibe binding-at` — AST-accurate binding occurrences, the foundation for
+// scope-precision rename / references (テーマ4). Given a (line, col), locate the
+// identifier under the cursor, take its NAME, and return the source spans of
+// EVERY occurrence of that name across the AST: all `EIdent(name, off)` uses
+// (with real source offsets) plus the located top-level/module binding NAMEs.
+//
+// Why this is better than a text scan: occurrences are taken from the real
+// parsed AST, so there are NO false matches inside string literals, comments, or
+// as substrings of a longer word — only actual identifier nodes count.
+//
+// MVP scope / LIMITATION (honest): matching is by NAME across the WHOLE file.
+// There is NO scope / shadowing analysis yet (a later refinement). So two
+// distinct same-named locals (e.g. an `x` parameter in one function and an
+// unrelated `x` local in another) are treated as the SAME binding and grouped
+// together. This is still strictly more accurate than the previous whole-file
+// text scan and is the intended MVP for scope-precision groundwork.
+//
+// All strings are built with String::concat only (never `+`, never "\{x}"
+// interpolation): both mis-codegen to NUL in selfhost.
+
+import ../core {
+  Stmt, Expr, Pat
+}
+
+import ../syntax {
+  lex_with_offsets, parse_program_located, parse_program_spans
+}
+
+//# Functions
+
+// 1-based (line, col) -> 0-based char offset. Mirror of type_at.vibe's
+// line_col_to_offset: count newlines to reach the target line, add (col - 1),
+// clamp to [0, len].
+let bind_line_col_to_offset: (String, Int, Int) -> Int = (source, line, col) -> {
+  let len = String::length(source)
+  let mut i = 0
+  let mut cur_line = 1
+  while cur_line < line && i < len {
+    if String::char_code_at(source, i) == 10 {
+      cur_line = cur_line + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let off = i + (col - 1)
+  if off < 0 {
+    0
+  } else if off > len {
+    len
+  } else {
+    off
+  }
+}
+
+// A located ident occurrence: name + start source offset. Its span is
+// [off, off + length(name)). `off` is -1 for synthetic / non-located nodes,
+// which the search ignores.
+enum BindHit {
+  BindHit(String, Int)
+}
+
+let bind_empty_hits: () -> Array[BindHit] = () -> {
+  Array::slice([
+    BindHit("", -1)
+  ], 0, 0)
+}
+
+// Read-only walker collecting every located `EIdent` node. Every Expr arm is
+// enumerated so a new variant is a compile error here, keeping the collector in
+// sync with the AST.
+let rec bind_collect_expr: (Expr, Array[BindHit]) -> Unit = (expr, acc) -> {
+  match expr {
+    EInt(_) => (),
+    EFloat(_) => (),
+    EString(_) => (),
+    EBool(_) => (),
+    EIdent(name, off) => {
+      if off >= 0 {
+        Array::push(acc, BindHit(name, off))
+      } else {
+        ()
+      }
+    },
+    EUnit => (),
+    EStringInterp(_) => (),
+    ETuple(items) => bind_collect_exprs(items, acc),
+    EArray(items) => bind_collect_exprs(items, acc),
+    ERecord(fields) => bind_collect_field_exprs(fields, acc),
+    EIf(c, t, e) => {
+      bind_collect_expr(c, acc)
+      bind_collect_expr(t, acc)
+      bind_collect_expr(e, acc)
+    },
+    ELet(_, v, b) => {
+      bind_collect_expr(v, acc)
+      bind_collect_expr(b, acc)
+    },
+    ELetRec(_, v, b) => {
+      bind_collect_expr(v, acc)
+      bind_collect_expr(b, acc)
+    },
+    ELetMut(_, v, b) => {
+      bind_collect_expr(v, acc)
+      bind_collect_expr(b, acc)
+    },
+    EAssign(_, v, b) => {
+      bind_collect_expr(v, acc)
+      bind_collect_expr(b, acc)
+    },
+    EAssignOp(_, _, v, b) => {
+      bind_collect_expr(v, acc)
+      bind_collect_expr(b, acc)
+    },
+    ESeq(a, b) => {
+      bind_collect_expr(a, acc)
+      bind_collect_expr(b, acc)
+    },
+    EMatch(s, arms) => {
+      bind_collect_expr(s, acc)
+      bind_collect_arm_exprs(arms, acc)
+    },
+    EHandle(s, arms) => {
+      bind_collect_expr(s, acc)
+      bind_collect_arm_exprs(arms, acc)
+    },
+    EWhile(c, b) => {
+      bind_collect_expr(c, acc)
+      bind_collect_expr(b, acc)
+    },
+    ELoop(params, b) => {
+      bind_collect_loop_param_exprs(params, acc)
+      bind_collect_expr(b, acc)
+    },
+    EForIn(_, _, it, b) => {
+      bind_collect_expr(it, acc)
+      bind_collect_expr(b, acc)
+    },
+    ECall(callee, args) => {
+      bind_collect_expr(callee, acc)
+      bind_collect_exprs(args, acc)
+    },
+    EBinOp(_, l, r) => {
+      bind_collect_expr(l, acc)
+      bind_collect_expr(r, acc)
+    },
+    EUnaryOp(_, e) => bind_collect_expr(e, acc),
+    EFn(_, _, _, _, _, body) => bind_collect_expr(body, acc),
+    EDot(e, _) => bind_collect_expr(e, acc),
+    ELabeledArg(_, _, v) => bind_collect_expr(v, acc),
+    EThrow(e) => bind_collect_expr(e, acc),
+    EReturn(e) => bind_collect_expr(e, acc),
+    EBreak(opt) => match opt {
+      Some(v) => bind_collect_expr(v, acc),
+      None => ()
+    },
+    EContinue(args) => bind_collect_exprs(args, acc),
+    EMap(fields) => bind_collect_field_exprs(fields, acc),
+    ESpread(e) => bind_collect_expr(e, acc)
+  }
+}
+
+let bind_collect_exprs: (Array[Expr], Array[BindHit]) -> Unit = (items, acc) -> {
+  let mut i = 0
+  while i < Array::length(items) {
+    bind_collect_expr(Array::get(items, i), acc)
+    i = i + 1
+  }
+}
+
+let bind_collect_field_exprs: (Array[(String, Expr)], Array[BindHit]) -> Unit = (fields, acc) -> {
+  let mut i = 0
+  while i < Array::length(fields) {
+    let (_, v) = Array::get(fields, i)
+    bind_collect_expr(v, acc)
+    i = i + 1
+  }
+}
+
+let bind_collect_arm_exprs: (Array[(Pat, Expr)], Array[BindHit]) -> Unit = (arms, acc) -> {
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (_, e) = Array::get(arms, i)
+    bind_collect_expr(e, acc)
+    i = i + 1
+  }
+}
+
+let bind_collect_loop_param_exprs: (Array[(String, Expr)], Array[BindHit]) -> Unit = (params, acc) -> {
+  let mut i = 0
+  while i < Array::length(params) {
+    let (_, init) = Array::get(params, i)
+    bind_collect_expr(init, acc)
+    i = i + 1
+  }
+}
+
+let bind_collect_stmt: (Stmt, Array[BindHit]) -> Unit = (stmt, acc) -> {
+  match stmt {
+    SLet(_, _, _, _, body) => bind_collect_expr(body, acc),
+    SLetMut(_, _, body) => bind_collect_expr(body, acc),
+    STest(_, body) => bind_collect_expr(body, acc),
+    SBench(_, body) => bind_collect_expr(body, acc),
+    SExpr(e) => bind_collect_expr(e, acc),
+    SLetPat(_, body) => bind_collect_expr(body, acc),
+    SModule(_, _, body) => bind_collect_stmts(body, acc),
+    _ => ()
+  }
+}
+
+let bind_collect_stmts: (Array[Stmt], Array[BindHit]) -> Unit = (stmts, acc) -> {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    bind_collect_stmt(Array::get(stmts, i), acc)
+    i = i + 1
+  }
+}
+
+// True when `source[off]` is NOT an identifier char (or off out of range) — a
+// word boundary. Used to match a binding name as a whole word.
+let bind_is_boundary_at: (String, Int) -> Bool = (source, off) -> {
+  if off < 0 || off >= String::length(source) {
+    true
+  } else {
+    let c = String::char_code_at(source, off)
+    let is_id = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+    !is_id
+  }
+}
+
+// Find the first whole-word occurrence of `name` in `source[start..end)` and, if
+// found, push a located BindHit. Recovers a source offset for a let-binding
+// NAME, which the parser stores only as a String on the Stmt (not an EIdent, so
+// no offset).
+let bind_push_binding_name_hit: (String, Int, Int, String, Array[BindHit]) -> Unit = (source, start, end, name, acc) -> {
+  let nlen = String::length(name)
+  if nlen == 0 {
+    ()
+  } else {
+    let limit = if end > String::length(source) { String::length(source) } else { end }
+    let mut i = if start < 0 { 0 } else { start }
+    let mut found = false
+    while !found && i + nlen <= limit {
+      if String::substring(source, i, i + nlen) == name && bind_is_boundary_at(source, i - 1) && bind_is_boundary_at(source, i + nlen) {
+        Array::push(acc, BindHit(name, i))
+        found = true
+      } else {
+        i = i + 1
+      }
+    }
+  }
+}
+
+// Add located hits for the NAMES of top-level (and module-body) value bindings,
+// using each statement's source span (from parse_program_spans) to scope the
+// whole-word search. Only SLet/SLetMut names are value bindings.
+let bind_collect_binding_name_hits: (Array[Stmt], Array[Int], Array[Int], String, Array[BindHit]) -> Unit = (stmts, span_start, span_end, source, acc) -> {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let start = if i < Array::length(span_start) { Array::get(span_start, i) } else { 0 }
+    let end = if i < Array::length(span_end) { Array::get(span_end, i) } else { String::length(source) }
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, _) => bind_push_binding_name_hit(source, start, end, name, acc),
+      SLetMut(name, _, _) => bind_push_binding_name_hit(source, start, end, name, acc),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+// Among all hits whose span [off, off+len(name)) contains `tgt`, pick the one
+// with the largest `off` (innermost / closest start). Returns "" when none.
+let bind_pick_name_at: (Array[BindHit], Int) -> String = (hits, tgt) -> {
+  let mut best_name = ""
+  let mut best_off = -1
+  let mut i = 0
+  while i < Array::length(hits) {
+    match Array::get(hits, i) {
+      BindHit(name, off) => {
+        let span_end = off + String::length(name)
+        if off <= tgt && tgt < span_end && off > best_off {
+          best_name = name
+          best_off = off
+        } else {
+          ()
+        }
+      }
+    }
+    i = i + 1
+  }
+  best_name
+}
+
+// Insert (start, end) into `out` keeping it sorted by start ascending and
+// de-duplicated (skip when an identical start is already present — equal starts
+// imply equal spans because the name length is fixed).
+let bind_insert_sorted_unique: (Array[(Int, Int)], Int, Int) -> Unit = (out, start, end) -> {
+  let n = Array::length(out)
+  let mut dup = false
+  let mut idx = n
+  let mut j = 0
+  while j < n {
+    let (s, _) = Array::get(out, j)
+    if s == start {
+      dup = true
+    } else {
+      ()
+    }
+    if s > start && idx == n {
+      idx = j
+    } else {
+      ()
+    }
+    j = j + 1
+  }
+  if dup {
+    ()
+  } else if idx == n {
+    Array::push(out, (start, end))
+  } else {
+    // Shift right to open a slot at idx, then place the new span.
+    Array::push(out, Array::get(out, n - 1))
+    let mut k = n - 1
+    while k > idx {
+      Array::set(out, k, Array::get(out, k - 1))
+      k = k - 1
+    }
+    Array::set(out, idx, (start, end))
+  }
+}
+
+// Collect the (start, end) source spans of every occurrence of the identifier
+// binding under the cursor at 1-based (line, col). Steps:
+//   1. lex + parse located; collect all located EIdent hits + binding-name hits.
+//   2. find the name covering the cursor offset; "" -> no occurrences.
+//   3. emit a span for every hit whose name equals that target, de-duplicated
+//      and sorted by start.
+// AST-accurate (no string/comment/substring false matches). Name-based across
+// the whole file — NO shadowing analysis yet (see file header LIMITATION). Any
+// failure is swallowed and yields an empty list.
+export let binding_occurrences: (String, Int, Int) -> Array[(Int, Int)] = (source, line, col) -> {
+  handle {
+    let tgt = bind_line_col_to_offset(source, line, col)
+    let (tokens, starts, ends) = lex_with_offsets(source)
+    let stmts = parse_program_located(tokens, starts, source)
+    let hits = bind_empty_hits()
+    bind_collect_stmts(stmts, hits)
+    let (span_stmts, span_start, span_end) = parse_program_spans(tokens, starts, ends)
+    bind_collect_binding_name_hits(span_stmts, span_start, span_end, source, hits)
+    let name = bind_pick_name_at(hits, tgt)
+    let out = Array::slice([
+      (0, 0)
+    ], 0, 0)
+    if name == "" {
+      out
+    } else {
+      let mut i = 0
+      while i < Array::length(hits) {
+        match Array::get(hits, i) {
+          BindHit(hname, hoff) => {
+            if hname == name && hoff >= 0 {
+              bind_insert_sorted_unique(out, hoff, hoff + String::length(hname))
+            } else {
+              ()
+            }
+          }
+        }
+        i = i + 1
+      }
+      out
+    }
+  } with Error {
+    Throw(_) => Array::slice([
+      (0, 0)
+    ], 0, 0)
+  }
+}

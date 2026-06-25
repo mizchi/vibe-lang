@@ -29929,6 +29929,305 @@ export let type_at_source: (String, Int, Int) -> String = (source, line, col) ->
     Throw(_) => ""
   }
 }
+let bind_line_col_to_offset: (String, Int, Int) -> Int = (source, line, col) -> {
+  let len = String::length(source)
+  let mut i = 0
+  let mut cur_line = 1
+  while cur_line < line && i < len {
+    if String::char_code_at(source, i) == 10 {
+      cur_line = cur_line + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let off = i + (col - 1)
+  if off < 0 {
+    0
+  } else if off > len {
+    len
+  } else {
+    off
+  }
+}
+enum BindHit {
+  BindHit(String, Int)
+}
+let bind_empty_hits: () -> Array[BindHit] = () -> {
+  Array::slice([
+    BindHit("", -1)
+  ], 0, 0)
+}
+let rec bind_collect_expr: (Expr, Array[BindHit]) -> Unit = (expr, acc) -> {
+  match expr {
+    EInt(_) => (),
+    EFloat(_) => (),
+    EString(_) => (),
+    EBool(_) => (),
+    EIdent(name, off) => {
+      if off >= 0 {
+        Array::push(acc, BindHit(name, off))
+      } else {
+        ()
+      }
+    },
+    EUnit => (),
+    EStringInterp(_) => (),
+    ETuple(items) => bind_collect_exprs(items, acc),
+    EArray(items) => bind_collect_exprs(items, acc),
+    ERecord(fields) => bind_collect_field_exprs(fields, acc),
+    EIf(c, t, e) => {
+      bind_collect_expr(c, acc)
+      bind_collect_expr(t, acc)
+      bind_collect_expr(e, acc)
+    },
+    ELet(_, v, b) => {
+      bind_collect_expr(v, acc)
+      bind_collect_expr(b, acc)
+    },
+    ELetRec(_, v, b) => {
+      bind_collect_expr(v, acc)
+      bind_collect_expr(b, acc)
+    },
+    ELetMut(_, v, b) => {
+      bind_collect_expr(v, acc)
+      bind_collect_expr(b, acc)
+    },
+    EAssign(_, v, b) => {
+      bind_collect_expr(v, acc)
+      bind_collect_expr(b, acc)
+    },
+    EAssignOp(_, _, v, b) => {
+      bind_collect_expr(v, acc)
+      bind_collect_expr(b, acc)
+    },
+    ESeq(a, b) => {
+      bind_collect_expr(a, acc)
+      bind_collect_expr(b, acc)
+    },
+    EMatch(s, arms) => {
+      bind_collect_expr(s, acc)
+      bind_collect_arm_exprs(arms, acc)
+    },
+    EHandle(s, arms) => {
+      bind_collect_expr(s, acc)
+      bind_collect_arm_exprs(arms, acc)
+    },
+    EWhile(c, b) => {
+      bind_collect_expr(c, acc)
+      bind_collect_expr(b, acc)
+    },
+    ELoop(params, b) => {
+      bind_collect_loop_param_exprs(params, acc)
+      bind_collect_expr(b, acc)
+    },
+    EForIn(_, _, it, b) => {
+      bind_collect_expr(it, acc)
+      bind_collect_expr(b, acc)
+    },
+    ECall(callee, args) => {
+      bind_collect_expr(callee, acc)
+      bind_collect_exprs(args, acc)
+    },
+    EBinOp(_, l, r) => {
+      bind_collect_expr(l, acc)
+      bind_collect_expr(r, acc)
+    },
+    EUnaryOp(_, e) => bind_collect_expr(e, acc),
+    EFn(_, _, _, _, _, body) => bind_collect_expr(body, acc),
+    EDot(e, _) => bind_collect_expr(e, acc),
+    ELabeledArg(_, _, v) => bind_collect_expr(v, acc),
+    EThrow(e) => bind_collect_expr(e, acc),
+    EReturn(e) => bind_collect_expr(e, acc),
+    EBreak(opt) => match opt {
+      Some(v) => bind_collect_expr(v, acc),
+      None => ()
+    },
+    EContinue(args) => bind_collect_exprs(args, acc),
+    EMap(fields) => bind_collect_field_exprs(fields, acc),
+    ESpread(e) => bind_collect_expr(e, acc)
+  }
+}
+let bind_collect_exprs: (Array[Expr], Array[BindHit]) -> Unit = (items, acc) -> {
+  let mut i = 0
+  while i < Array::length(items) {
+    bind_collect_expr(Array::get(items, i), acc)
+    i = i + 1
+  }
+}
+let bind_collect_field_exprs: (Array[(String, Expr)], Array[BindHit]) -> Unit = (fields, acc) -> {
+  let mut i = 0
+  while i < Array::length(fields) {
+    let (_, v) = Array::get(fields, i)
+    bind_collect_expr(v, acc)
+    i = i + 1
+  }
+}
+let bind_collect_arm_exprs: (Array[(Pat, Expr)], Array[BindHit]) -> Unit = (arms, acc) -> {
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (_, e) = Array::get(arms, i)
+    bind_collect_expr(e, acc)
+    i = i + 1
+  }
+}
+let bind_collect_loop_param_exprs: (Array[(String, Expr)], Array[BindHit]) -> Unit = (params, acc) -> {
+  let mut i = 0
+  while i < Array::length(params) {
+    let (_, init) = Array::get(params, i)
+    bind_collect_expr(init, acc)
+    i = i + 1
+  }
+}
+let bind_collect_stmt: (Stmt, Array[BindHit]) -> Unit = (stmt, acc) -> {
+  match stmt {
+    SLet(_, _, _, _, body) => bind_collect_expr(body, acc),
+    SLetMut(_, _, body) => bind_collect_expr(body, acc),
+    STest(_, body) => bind_collect_expr(body, acc),
+    SBench(_, body) => bind_collect_expr(body, acc),
+    SExpr(e) => bind_collect_expr(e, acc),
+    SLetPat(_, body) => bind_collect_expr(body, acc),
+    SModule(_, _, body) => bind_collect_stmts(body, acc),
+    _ => ()
+  }
+}
+let bind_collect_stmts: (Array[Stmt], Array[BindHit]) -> Unit = (stmts, acc) -> {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    bind_collect_stmt(Array::get(stmts, i), acc)
+    i = i + 1
+  }
+}
+let bind_is_boundary_at: (String, Int) -> Bool = (source, off) -> {
+  if off < 0 || off >= String::length(source) {
+    true
+  } else {
+    let c = String::char_code_at(source, off)
+    let is_id = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+    !is_id
+  }
+}
+let bind_push_binding_name_hit: (String, Int, Int, String, Array[BindHit]) -> Unit = (source, start, end, name, acc) -> {
+  let nlen = String::length(name)
+  if nlen == 0 {
+    ()
+  } else {
+    let limit = if end > String::length(source) { String::length(source) } else { end }
+    let mut i = if start < 0 { 0 } else { start }
+    let mut found = false
+    while !found && i + nlen <= limit {
+      if String::substring(source, i, i + nlen) == name && bind_is_boundary_at(source, i - 1) && bind_is_boundary_at(source, i + nlen) {
+        Array::push(acc, BindHit(name, i))
+        found = true
+      } else {
+        i = i + 1
+      }
+    }
+  }
+}
+let bind_collect_binding_name_hits: (Array[Stmt], Array[Int], Array[Int], String, Array[BindHit]) -> Unit = (stmts, span_start, span_end, source, acc) -> {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let start = if i < Array::length(span_start) { Array::get(span_start, i) } else { 0 }
+    let end = if i < Array::length(span_end) { Array::get(span_end, i) } else { String::length(source) }
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, _) => bind_push_binding_name_hit(source, start, end, name, acc),
+      SLetMut(name, _, _) => bind_push_binding_name_hit(source, start, end, name, acc),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+let bind_pick_name_at: (Array[BindHit], Int) -> String = (hits, tgt) -> {
+  let mut best_name = ""
+  let mut best_off = -1
+  let mut i = 0
+  while i < Array::length(hits) {
+    match Array::get(hits, i) {
+      BindHit(name, off) => {
+        let span_end = off + String::length(name)
+        if off <= tgt && tgt < span_end && off > best_off {
+          best_name = name
+          best_off = off
+        } else {
+          ()
+        }
+      }
+    }
+    i = i + 1
+  }
+  best_name
+}
+let bind_insert_sorted_unique: (Array[(Int, Int)], Int, Int) -> Unit = (out, start, end) -> {
+  let n = Array::length(out)
+  let mut dup = false
+  let mut idx = n
+  let mut j = 0
+  while j < n {
+    let (s, _) = Array::get(out, j)
+    if s == start {
+      dup = true
+    } else {
+      ()
+    }
+    if s > start && idx == n {
+      idx = j
+    } else {
+      ()
+    }
+    j = j + 1
+  }
+  if dup {
+    ()
+  } else if idx == n {
+    Array::push(out, (start, end))
+  } else {
+    Array::push(out, Array::get(out, n - 1))
+    let mut k = n - 1
+    while k > idx {
+      Array::set(out, k, Array::get(out, k - 1))
+      k = k - 1
+    }
+    Array::set(out, idx, (start, end))
+  }
+}
+export let binding_occurrences: (String, Int, Int) -> Array[(Int, Int)] = (source, line, col) -> {
+  handle {
+    let tgt = bind_line_col_to_offset(source, line, col)
+    let (tokens, starts, ends) = lex_with_offsets(source)
+    let stmts = parse_program_located(tokens, starts, source)
+    let hits = bind_empty_hits()
+    bind_collect_stmts(stmts, hits)
+    let (span_stmts, span_start, span_end) = parse_program_spans(tokens, starts, ends)
+    bind_collect_binding_name_hits(span_stmts, span_start, span_end, source, hits)
+    let name = bind_pick_name_at(hits, tgt)
+    let out = Array::slice([
+      (0, 0)
+    ], 0, 0)
+    if name == "" {
+      out
+    } else {
+      let mut i = 0
+      while i < Array::length(hits) {
+        match Array::get(hits, i) {
+          BindHit(hname, hoff) => {
+            if hname == name && hoff >= 0 {
+              bind_insert_sorted_unique(out, hoff, hoff + String::length(hname))
+            } else {
+              ()
+            }
+          }
+        }
+        i = i + 1
+      }
+      out
+    }
+  } with Error {
+    Throw(_) => Array::slice([
+      (0, 0)
+    ], 0, 0)
+  }
+}
 let join_lines: (Array[String]) -> String = (items) -> {
   let n = Array::length(items)
   if n == 0 {
@@ -29938,6 +30237,23 @@ let join_lines: (Array[String]) -> String = (items) -> {
     let mut i = 1
     while i < n {
       acc = String::concat(acc, String::concat("\n", Array::get(items, i)))
+      i = i + 1
+    }
+    acc
+  }
+}
+let join_binding_occurrences: (Array[(Int, Int)]) -> String = (occ) -> {
+  let n = Array::length(occ)
+  if n == 0 {
+    ""
+  } else {
+    let (s0, e0) = Array::get(occ, 0)
+    let mut acc = String::concat(__to_string(s0), String::concat(" ", __to_string(e0)))
+    let mut i = 1
+    while i < n {
+      let (s, e) = Array::get(occ, i)
+      let line = String::concat(__to_string(s), String::concat(" ", __to_string(e)))
+      acc = String::concat(acc, String::concat("\n", line))
       i = i + 1
     }
     acc
@@ -30053,6 +30369,14 @@ export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
     let col = parse_int_or(Env::get("VIBE_TYPE_COL"), 1)
     let ty = type_at_source(src, line, col)
     Fs::write_bytes(output_path, adapter_string_to_bytes(ty))
+    return 0
+  }
+  if Env::get("VIBE_BINDING_AT") == "1" {
+    let src = Fs::read_file(input_path)
+    let line = parse_int_or(Env::get("VIBE_TYPE_LINE"), 1)
+    let col = parse_int_or(Env::get("VIBE_TYPE_COL"), 1)
+    let occ = binding_occurrences(src, line, col)
+    Fs::write_bytes(output_path, adapter_string_to_bytes(join_binding_occurrences(occ)))
     return 0
   }
   if Env::get("VIBE_DIAGNOSTICS") == "1" {
