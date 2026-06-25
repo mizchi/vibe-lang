@@ -354,6 +354,22 @@ let rec resolve_tparams_in: (Type, TypeEnv) -> Type = (ty, env) -> {
   }
 }
 
+// Record a call-site node's (raw, pre-final-subst) result type `ty` keyed by
+// its real source char offset `call_off`, for typed-hover (vibe type-at) on
+// `foo(x)` / `obj.method(x)`, then return `ty` unchanged so it can be dropped
+// into the call-result tuple in place. Synthetic calls (call_off < 0) skip the
+// push. Used at the ECall result sites (NOT by wrapping the giant ECall match,
+// which the bootstrap seed parser cannot reparse when that match is nested one
+// level deeper — only the interior result types are tagged).
+let tab_call_ty: (Array[(Int, Type)], Int, Type) -> Type = (tytab, call_off, ty) -> {
+  if call_off >= 0 {
+    Array::push(tytab, (call_off, ty))
+  } else {
+    ()
+  }
+  ty
+}
+
 export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int) = (expr, env, defs, s, c, errors, tytab) -> {
   match expr {
     EInt(_) => (CtInt, s, c),
@@ -503,9 +519,9 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       } else if name == "Some" {
         if Array::length(args) == 1 {
           let (at, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
-          (CtOption(subst_apply(s1, at)), s1, c1)
+          (tab_call_ty(tytab, call_off, CtOption(subst_apply(s1, at))), s1, c1)
         } else {
-          (CtOption(CtUnknown), s, c)
+          (tab_call_ty(tytab, call_off, CtOption(CtUnknown)), s, c)
         }
       } else {
         match direct_call_return(env, name) {
@@ -520,7 +536,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
               c2 = nc
               ai = ai + 1
             }
-            (subst_apply(s2, ret_ty), s2, c2)
+            (tab_call_ty(tytab, call_off, subst_apply(s2, ret_ty)), s2, c2)
           },
           None => {
             let (ct, s1, c1) = check_expr(EIdent(name, -1), env, defs, s, c, errors, tytab)
@@ -555,10 +571,10 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
                 }
                 let s3 = unify_call_args(call_param_tys, arg_tys, s2)
                 let call_ret = Array::get(ret_box, 0)
-                (subst_apply(s3, call_ret), s3, c2)
+                (tab_call_ty(tytab, call_off, subst_apply(s3, call_ret)), s3, c2)
               },
-              CtStruct(sname) => (CtStruct(sname), s2, c2),
-              _ => (CtUnknown, s2, c2)
+              CtStruct(sname) => (tab_call_ty(tytab, call_off, CtStruct(sname)), s2, c2),
+              _ => (tab_call_ty(tytab, call_off, CtUnknown), s2, c2)
             }
           }
         }
@@ -617,11 +633,11 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
               Some(t) => t,
               None => call_ret
             }
-            (subst_apply(s4, selected_ret), s4, c3)
+            (tab_call_ty(tytab, call_off, subst_apply(s4, selected_ret)), s4, c3)
           },
           _ => match direct_ret {
-            Some(t) => (t, s3, c3),
-            None => (CtUnknown, s3, c3)
+            Some(t) => (tab_call_ty(tytab, call_off, t), s3, c3),
+            None => (tab_call_ty(tytab, call_off, CtUnknown), s3, c3)
           }
         }
       },
@@ -640,7 +656,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
                 c2 = nc
                 ai = ai + 1
               }
-              (subst_apply(s2, ret_ty), s2, c2)
+              (tab_call_ty(tytab, call_off, subst_apply(s2, ret_ty)), s2, c2)
             },
             None => {
               let (ct, s1, c1) = check_expr(callee, env, defs, s, c, errors, tytab)
@@ -675,10 +691,10 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
                 }
                 let s3 = unify_call_args(call_param_tys, arg_tys, s2)
                 let call_ret = Array::get(ret_box, 0)
-                (subst_apply(s3, call_ret), s3, c2)
+                (tab_call_ty(tytab, call_off, subst_apply(s3, call_ret)), s3, c2)
               },
-              CtStruct(sname) => (CtStruct(sname), s2, c2),
-              _ => (CtUnknown, s2, c2)
+              CtStruct(sname) => (tab_call_ty(tytab, call_off, CtStruct(sname)), s2, c2),
+              _ => (tab_call_ty(tytab, call_off, CtUnknown), s2, c2)
             }
             }
           }
@@ -715,10 +731,10 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
                 }
                 let s3 = unify_call_args(call_param_tys, arg_tys, s2)
                 let call_ret = Array::get(ret_box, 0)
-                (subst_apply(s3, call_ret), s3, c2)
+                (tab_call_ty(tytab, call_off, subst_apply(s3, call_ret)), s3, c2)
               },
-              CtStruct(sname) => (CtStruct(sname), s2, c2),
-              _ => (CtUnknown, s2, c2)
+              CtStruct(sname) => (tab_call_ty(tytab, call_off, CtStruct(sname)), s2, c2),
+              _ => (tab_call_ty(tytab, call_off, CtUnknown), s2, c2)
             }
         }
       }
@@ -863,6 +879,14 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
           None => CtUnknown
         },
         _ => CtUnknown
+      }
+      // Record this field-access node's (raw, pre-final-subst) projection type
+      // keyed by its real source offset, for typed-hover on `obj.field`.
+      // Synthetic accesses (dot_off < 0) are skipped.
+      if dot_off >= 0 {
+        Array::push(tytab, (dot_off, field_ty))
+      } else {
+        ()
       }
       (field_ty, s1, c1)
     },
