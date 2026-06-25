@@ -47,8 +47,13 @@ raw = run.get("raw")
 if not raw:
     sys.exit(0)
 fb, bb = raw["fn_bitmap"], raw.get("branch_bitmap", [])
+acc = None
 if os.path.exists(acc_path):
-    acc = json.load(open(acc_path))
+    try:
+        acc = json.load(open(acc_path))          # tolerate a corrupt/partial acc
+    except Exception:
+        acc = None
+if acc is not None:
     fn, br = acc["fn"], acc["br"]
     for i, v in enumerate(fb):
         if v: fn[i] = 1
@@ -57,7 +62,10 @@ if os.path.exists(acc_path):
 else:
     acc = {"fn_names": raw["fn_names"], "br_owners": raw.get("branch_owners", []),
            "fn": [1 if v else 0 for v in fb], "br": [1 if v else 0 for v in bb]}
-json.dump(acc, open(acc_path, "w"))
+tmp = acc_path + ".tmp"                            # atomic write: never leave a partial acc
+with open(tmp, "w") as fh:
+    json.dump(acc, fh)
+os.replace(tmp, acc_path)
 PY
 
 # accumulate one workload run (env... -- runner args)
@@ -113,8 +121,53 @@ for rp in tree closure alias; do
     bash "$RUNNER" --invoke cli_main "$COMPILER_COV" "$(rel "$OUT_DIR/rcprog/$rp.vibe")" "$OUT_DIR/o.wasm" main || true
 done
 
-# Gather corpus files.
-targets=("$@"); [ "${#targets[@]}" -eq 0 ] && targets=(examples fixtures)
+# Loader / persistent-cache orchestration (#cov): the cache read+manifest branches
+# (parse_persistent_*_cache, matches_cached_file_spec, scan_header_*, manifest header
+# parse) are NEVER reached by a plain one-shot compile of an examples/fixtures file —
+# they only fire when (a) a project carries a `selfhost_sources_manifest.tsv` (only the
+# compiler tree does), and (b) a prior run already wrote the persistent cache so the
+# next run takes the read path. We drive both: compile a manifest-rooted entry and a
+# multi-import example repeatedly while selectively invalidating individual cache files
+# between runs so each cache-state branch (groups-hit / list-read / manifest-read /
+# fingerprint-miss) is taken at least once. Cache files live in ./_build/vibe_selfhost_*.
+cache_clear() { rm -f _build/vibe_selfhost_* 2>/dev/null || true; }
+fs_compile_run() { # label entry_path entry_name
+  acc_run env VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+    bash "$RUNNER" --invoke cli_main "$COMPILER_COV" "$(rel "$2")" "$OUT_DIR/o.wasm" "$3" || true
+}
+ORCH_ENTRIES=(
+  "vibe/compiler/selfhost_cli_adapter.vibe:cli_main"
+  "examples/module_import.vibe:main"
+  "examples/module_types_import.vibe:main"
+)
+for spec in "${ORCH_ENTRIES[@]}"; do
+  ep="${spec%%:*}"; en="${spec##*:}"
+  [ -f "$ep" ] || continue
+  echo "[corpus] cache-orch: $ep ($en)" >&2
+  cache_clear
+  fs_compile_run cold "$ep" "$en"                                    # cold: writes caches
+  fs_compile_run warm "$ep" "$en"                                    # warm: groups-cache hit
+  rm -f _build/vibe_selfhost_source_groups_* 2>/dev/null || true     # force source-list read path
+  fs_compile_run listread "$ep" "$en"
+  rm -f _build/vibe_selfhost_type_env_* 2>/dev/null || true          # force type recheck w/ source caches
+  fs_compile_run typrecheck "$ep" "$en"
+  rm -f _build/vibe_selfhost_module_header_* _build/vibe_selfhost_leaf_fp_* 2>/dev/null || true
+  fs_compile_run hdrread "$ep" "$en"                                 # force header/leaf re-read
+done
+cache_clear
+
+# Gather corpus files. errcorpus (malformed / ill-typed programs) is folded into the
+# default set: failed compiles now dump their hit bitmap on abort, so the error/
+# diagnostic branches (type_to_string, serialize_type, defensive check_expr arms) get
+# exercised too.
+targets=("$@")
+if [ "${#targets[@]}" -eq 0 ]; then
+  # Regenerate the synthetic error/feature corpus (deterministic; committed
+  # generator) so the diagnostic + breadth programs are always present.
+  [ -x scripts/coverage_gen_errcorpus.sh ] && bash scripts/coverage_gen_errcorpus.sh _build/errcorpus >&2 || true
+  targets=(examples fixtures)
+  [ -d _build/errcorpus ] && targets+=(_build/errcorpus)
+fi
 files=()
 for t in "${targets[@]}"; do
   if [ -d "$t" ]; then

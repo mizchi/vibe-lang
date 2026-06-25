@@ -114,7 +114,52 @@ let bind_value_or_annotation_return: (TypeEnv, String, Expr, Option[TypeExpr], A
   }
 }
 
-export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, Int, Array[String]) -> (TypeEnv, Subst, Int) = (stmts, i, env, defs, s, c, errors) -> {
+let stmt_is_type_decl: (Stmt) -> Bool = (stmt) -> {
+  match stmt {
+    SEnum(_, _, _, _) => true,
+    SSuberror(_, _, _) => true,
+    SStruct(_, _, _) => true,
+    STypeAlias(_, _, _, _) => true,
+    _ => false
+  }
+}
+
+// #613: process type declarations (enum / struct / type-alias / suberror) before
+// value definitions so a `let` may construct or reference a type or constructor
+// declared LATER in the same statement list (a forward reference). check_stmts
+// records each type into `defs` and binds its constructors into `env` only when
+// the declaration statement is reached, so without this a value defined before
+// its enum saw neither the type nor its constructors and aborted the compile
+// with an opaque trap (e.g. an imported module whose function constructs an enum
+// value lands before the enum in the merged statement list). Codegen is already
+// order-independent (the ctor table scans every statement up front), so this
+// check-side reorder is sufficient. The partition is STABLE, so already-ordered
+// (type-before-value) code is processed exactly as before, and relative order
+// within each group is preserved.
+let reorder_type_decls_first: (Array[Stmt], Int) -> Array[Stmt] = (stmts, start) -> {
+  let out = Array::slice(stmts, 0, start)
+  let n = Array::length(stmts)
+  let mut i = start
+  while i < n {
+    let st = Array::get(stmts, i)
+    if stmt_is_type_decl(st) {
+      Array::push(out, st)
+    }
+    i = i + 1
+  }
+  let mut j = start
+  while j < n {
+    let st = Array::get(stmts, j)
+    if !stmt_is_type_decl(st) {
+      Array::push(out, st)
+    }
+    j = j + 1
+  }
+  out
+}
+
+export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, Int, Array[String]) -> (TypeEnv, Subst, Int) = (raw_stmts, i, env, defs, s, c, errors) -> {
+  let stmts = reorder_type_decls_first(raw_stmts, i)
   let mut idx = i
   let mut cur_env = env
   let mut cur_s = s

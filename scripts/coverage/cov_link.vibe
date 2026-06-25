@@ -1,0 +1,63 @@
+
+// #cov linked/library driver: the linked_imports>0 and library_mode=true arms of
+// compile_wasi_module_linked_impl are reached in the shipped compiler only through
+// callers that DCE away from cli_main, so the bulk corpus leaves ~45 of its
+// branches dark. Here we call it directly with synthetic linked imports and both
+// library_mode values, plus test/bench/generic statement shapes, so each arm runs.
+let cov_link_empty_pairs: () -> Array[(String, String)] = () -> {
+  Array::slice([("", "")], 0, 0)
+}
+
+let cov_link_linked: () -> Array[(String, String, Int, Int)] = () -> {
+  let xs = Array::slice([("", "", 0, 0)], 0, 0)
+  Array::push(xs, ("ext", "extfn", 1, 1))
+  Array::push(xs, ("ext", "extfn2", 2, 1))
+  xs
+}
+
+let cov_link_compile_one: (String, String, Bool, Bool, Bool) -> Int with { Error } = (src, entry, library_mode, enable_rc, coverage) -> {
+  let stmts = load_and_parse(src)
+  let bytes = compile_wasi_module_linked_impl(
+    stmts, entry, cov_link_empty_pairs(), cov_link_linked(),
+    library_mode, enable_rc, coverage
+  )
+  Bytes::length(bytes)
+}
+
+let cov_link_safe: (String, String, Bool, Bool, Bool) -> Int = (src, entry, library_mode, enable_rc, coverage) -> {
+  handle {
+    cov_link_compile_one(src, entry, library_mode, enable_rc, coverage)
+  } with Error {
+    Throw(_) => 0
+  }
+}
+
+export let cov_link_main: () -> Int = () -> {
+  let mut acc = 0
+  let prog = "export let main: () -> Int = () -> { extfn(3) + extfn2(1, 2) }"
+  // 1. linked imports, library_mode = false (linked executable)
+  acc = acc + cov_link_safe(prog, "main", false, false, false)
+  // 2. library_mode = true (library module, exports kept, no _start)
+  acc = acc + cov_link_safe(prog, "main", true, false, false)
+  // 3. RC + coverage codegen flags with linked imports
+  acc = acc + cov_link_safe(prog, "main", false, true, true)
+  // 4. test/bench statements (STest/SBench rewrite arms) + library mode
+  let progt = "export let main: () -> Int = () -> { 0 }\ntest \"t1\" { let _ = extfn(1); 0 }\nbench \"b1\" { extfn2(1, 2) }"
+  acc = acc + cov_link_safe(progt, "main", false, false, false)
+  // 5. generic-typed top-level fn (tparam erasure arm) + enum decl (ctor table)
+  let progg = "enum Col { Red; Green; Blue }\nlet idg: [T](x: T) -> T = (x) -> { x }\nexport let main: () -> Int = () -> { let _ = idg(5); extfn(7) }"
+  acc = acc + cov_link_safe(progg, "main", true, false, false)
+  // 6. struct + suberror + map + string-interp (struct/ctor registration, map-key /
+  //    interp string collection arms) under linked imports
+  let progs = "struct Pt { x: Int; y: Int }\nsuberror LErr(Int)\nenum Sh { Circ(Int); Quad(Int, Int) }\nexport let pt: () -> Int = () -> { let p = Pt::{ x: 1, y: 2 }; p.x + p.y }\nexport let main: () -> Int = () -> { let m = map { \"a\": 1, \"b\": 2 }; let n = \"v=${extfn(9)}\"; pt() + String::length(n) + extfn2(3, 4) }"
+  acc = acc + cov_link_safe(progs, "main", false, false, false)
+  acc = acc + cov_link_safe(progs, "main", true, false, false)
+  // 7. all-private (no exports) with library_mode -> exports come only from library_mode
+  let progp = "let h1: () -> Int = () -> { extfn(1) }\nlet h2: (Int) -> Int = (n) -> { extfn2(n, n) }\nlet main: () -> Int = () -> { h1() + h2(2) }"
+  acc = acc + cov_link_safe(progp, "main", true, false, false)
+  // 8. const-int top-levels (const_int registration arm) + thunk (non-fn export)
+  let progc = "let k1: Int = 42\nexport let k2: Int = 7\nexport let thunk: Int = extfn(5)\nexport let main: () -> Int = () -> { k1 + k2 + thunk }"
+  acc = acc + cov_link_safe(progc, "main", false, false, false)
+  acc = acc + cov_link_safe(progc, "main", true, false, false)
+  acc
+}

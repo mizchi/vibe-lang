@@ -89,26 +89,189 @@ bitmap（`raw.fn_bitmap` / `raw.branch_bitmap` + 静的な name/owner 表）を�
 走らせ、全 run を union する。
 
 ```bash
-scripts/coverage_selfhost_corpus.sh                 # 既定: examples fixtures
+scripts/coverage_selfhost_corpus.sh                 # 既定: examples fixtures + 生成エラーコーパス
 VIBE_COV_MAX=200 scripts/coverage_selfhost_corpus.sh
 VIBE_COV_SHOW_BRANCH_GAPS=1 scripts/coverage_selfhost_corpus.sh
 ```
 
-実測（669 ファイル + base self-compile + RC-stress）:
-**関数 929/1174 (79.1%)・分岐 4024/6679 (60.3%)**。`_build/coverage/selfhost-corpus/`
+corpus は base self-compile / RC-stress に加えて以下のワークロードを束ねる:
+- **cache-orch**: `selfhost_sources_manifest.tsv` を持つコンパイラツリーと
+  複数 import の example を、`_build/vibe_selfhost_*` の各キャッシュファイルを
+  選択的に無効化しながら繰り返し compile する。これにより
+  persistent-cache の read 経路（`parse_persistent_*_cache` /
+  `matches_cached_file_spec` / `scan_header_*` / `serialize_type` 等、
+  単発 compile では絶対に踏めない分岐）が点灯する（`serialize_type` は
+  0→17/19 に上がった）。
+- **生成エラーコーパス** (`scripts/coverage_gen_errcorpus.sh` →
+  `_build/errcorpus/`): 意図的に ill-typed / mis-parse なプログラムを多数生成。
+  「失敗 compile も abort 時に bitmap を dump する」修正（commit 1ea7b6f）と
+  併せて、診断系関数（`tk_name` / `type_to_string` / `check_expr` の防御アーム）
+  を点灯させる。
+
+実測（examples + fixtures + errcorpus + cache-orch + RC-stress, 626+ files）:
+**関数 1020/1174 (86.9%)・分岐 4490/6679 (67.2%)**。`_build/coverage/selfhost-corpus/`
 に `acc.json`（running union）/ `merged.json` / `fails.txt`。
 
 注意点（ドッグフーディングで判明）:
 - **計測対象は「コンパイル」のみ**。生成された wasm を実行しても、それは別の
   （非計測）バイナリなので計測コンパイラのカバレッジは増えない。
-- 失敗ファイルは bitmap を残さない（失敗 compile は寄与 0）。**エントリ名は
-  ファイルに実在するものを選ぶ**こと（test ファイルは sentinel → `_start`）。
-  この修正前は test ファイルが軒並み main 解決に失敗し寄与 0 だった。
+- 失敗ファイルも abort 時に bitmap を dump する（commit 1ea7b6f 以降）。
+  **エントリ名はファイルに実在するものを選ぶ**こと（test ファイルは
+  sentinel → `_start`）。
 - bump モード（既定）は Perceus（`pc_*`/`elaborate_rw`）を踏まないので、
   heap-heavy な小プログラムを `VIBE_RC=1` で別途 compile する RC-stress を含める。
-- 残ギャップの上位はエラー経路（`check_expr`/`unify`/`tk_name` 等の防御分岐）と
-  trait/cache の未踏経路。trait モジュールの単体 FS-compile は trap するため、
-  実テストスイート全体での計測は別途 FS-path 修正が要る（既知の制約）。
+
+#### 分岐カバレッジの実効上限（2026-06-24, ブラックボックス計測）
+
+`vibe test --coverage` / corpus は **「コンパイラに任意の入力を食わせて
+コンパイルさせる」ブラックボックス計測**なので、構造的な上限がある。
+広いコーパス + cache-orch + error/feature corpus を総動員しても **分岐 ~67%
+で頭打ち**になる（関数は ~87%）。未到達 ~2189 分岐の内訳:
+
+| 区分 | 未到達分岐 | 性質 |
+|------|-----------|------|
+| 散在する防御アーム（"other", 371 fns） | ~795 | 各関数 1〜2 個の "should not happen" throw / レアパス。関数ごとに専用トリガが要る |
+| parser 防御アーム | ~301 | 特定トークンが unexpected になる組合せ（`tk_name` の 87 アームは各トークン種ごとに別プログラムが要る） |
+| persistent-cache 状態 | ~272 | manifest header 再読込・fingerprint mismatch 等、多段の cache 状態を厳密に作り込む必要 |
+| checker アーム（`check_expr`/`unify`/`types_equal`） | ~239 | 大半が型エラー診断・防御分岐 |
+| codegen アーム（`compile_call`/`compile_expr`/`compile_wasi_*`） | ~201 | builtin dispatch・compile mode/flag の分岐 |
+| import/module rewrite | ~191 | private 値/型・alias import の multi-file 構成が要る |
+| 診断フォーマット（`type_to_string`/`__to_string`/`tk_name`） | ~190 | 各型/トークン形ごとにエラーを起こす専用入力が要る。`__to_string`(24) は通常 compile 経路で呼ばれない |
+
+#### test-execution 計測（2026-06-24, 上記方式 #1 を実装）
+
+`scripts/coverage_selfhost_testexec.sh` は `vibe/compiler/*_test.vibe` を
+**coverage 付きでコンパイル → 生成 wasm を実行**し、実行された分岐を corpus に
+`(関数名, 関数内 local 分岐 index)` キーで union する（別バイナリだが同一ソース
+関数なら local 分岐順が一致するのでマージできる）。テストは `type_to_string` /
+`unify` / `types_equal` 等の内部関数を assert で直接呼ぶため、ブラックボックス
+compile では届かない分岐が点灯する（例: `types_test` 実行で `type_to_string`
+21/29、黒箱では ~3/29）。
+
+multi-module ワークロード（`coverage_gen_errcorpus.sh` の `mod_*/`: private
+enum/struct/type-alias を export API 経由で使う・alias import・re-export facade・
+diamond import）で namespace 経路も点灯（`namespace_private_value_stmts` 2→22 等）。
+
+実測（黒箱 corpus + test-execution）: **分岐 4695/6694 (70.1%)**・関数 87%。
+black-box corpus 単体は 68.8%。
+
+#### driver 計測（cyclic blocker を迂回した直接呼び出し）
+
+flat module source（`selfhost_cli_adapter_module_source.vibe` = コンパイラ全体を
+import 無しで 1 ファイルに inline したもの）は循環 re-export を持たない。ここへ
+`scripts/coverage/cov_driver.vibe` を append し、entry `cov_driver_main` で
+compile+run すると、コンパイラの型/trait/env 関数を**直接** edge-case 入力で
+叩ける（`type_to_string`/`serialize_type` を全 Type variant、`unify`/`types_equal`
+を全ペア、trait 付き TypeEnv で `trait_supers`/`type_implements_trait`、
+`canonical_builtin_name`/`lookup_array_group_b`/`type_name_prefix` 等）。
+黒箱 compile では絶対に踏めない arm が点灯する: `type_to_string` 3→27/29、
+`types_equal` 66→83/99、`subst_apply` ~0→21/22、`type_name_prefix` 0→13/13。
+
+```bash
+scripts/coverage_selfhost_driver.sh   # corpus acc.json へ (fn,local_branch) キーで union
+```
+
+driver は flat source の全 top-level 関数（export 有無を問わず同一ファイル内で
+in-scope）を直接叩ける。型/trait/env に加え以下も edge-case 入力で網羅する:
+- **tk_name / is_non_pipe_infix**: 全 Token variant を構築して呼ぶ
+  (tk_name 38→86/87、is_non_pipe_infix 2→19/19)。各 token の error 表示 arm は
+  パーサが各 token で失敗しないと踏めないが、driver は 1 回で全部踏む。
+- **persistent-cache parsers**: `parse_persistent_manifest_header_cache` /
+  `source_list_cache` / `source_group_cache` / `split_header_values` を多様な
+  TSV 文字列で呼ぶ。FS compile 経路では grouped path が辿らず 0% だが純粋
+  String parser なので直接到達 (manifest_header_cache 0→18/26 等)。
+- **canonical_builtin_name**: 全 Fs/Env/Profiler builtin 名で呼ぶ (2→20/20)。
+- **Expr 系**: 全 Expr variant を構築し `expr_projects_or_matches` (18→46/60)・
+  `desugar_loop_body` (12→23/26)・`rewrite_private_type_ctor_expr` (16→34/35)。
+- 一方 `compile_*` / `check_expr` / `fold_expr` 等は 728-file corpus が compile
+  時に必ず通すので driver からは +0〜+4（冗長）。
+
+実測（黒箱 corpus + driver + test-execution の union）:
+**分岐 4955/6694 (74.02%)**・関数 1026/1176 (87.24%)。
+内訳: corpus 68.76% → +driver 74.0% (+255) → +test-exec 74.02%。
+
+#### 80% 達成（no-DCE merged source + direct-call drivers）
+
+**分岐 5406/6694 (80.76%)**・関数 1037/1176 (88.18%) に到達（下限ガード 80% =
+5356 に対し +50 分岐のマージン）。
+74% で頭打ちだった主因（コンパイラ自身の unit test 120/148 が builtins⇄checker
+の循環 re-export で FS-compile 不能）を、**循環 re-export を直さずに**回避した。
+
+鍵は **no-DCE merged source** (`_build/coverage/merged_nodce.vibe`)。flat module
+source (`selfhost_cli_adapter_module_source.vibe`) は `build_module_source_from_source`
+が entry `cli_main` から DCE するため、テストだけが使う ~530 関数が欠落していた。
+代わりに `build_exact_adapter_merged_source` 相当の **DCE 前 merged source**
+（manifest 全ファイルを import 除去で連結 = 全 top-level 関数が in-scope、しかも
+import 文が無いので循環 re-export blocker も踏まない）を base にする。
+
+この base へ小さな entry を append し、coverage 付き compile+run して実行分岐を
+corpus acc.json に (fn_name, local_branch_index) キーで union する。分母（seed
+コンパイラの分岐）は不変なので、seed に存在する関数の未踏 arm だけが点灯する。
+
+レバー別の寄与（76.25% から）:
+- **no-DCE unit-tests** (`coverage_selfhost_unittests.sh` + `VIBE_COV_FLAT`):
+  flat の代わりに no-DCE merged を base にし、`*_test.vibe` を 28→**68 本**実行
+  (+82)。残 80 本は seed に無い standalone module（`desugar`/`monoify`/`cst_lower`/
+  `analyze_purity` 等）を import するため分母外で無意味。
+- **direct-call drivers** (`coverage_selfhost_drivers.sh`): seed の under-tested
+  関数を crafted 入力で直接叩く。**黒箱 compile では構造的に踏めない category**:
+  - `cov_async.vibe`: inlined async/stream builtin (`Task::spawn`/`Stream::map`/
+    `await`/…) — examples に async プログラムが無い (+32)。
+  - `cov_lookup.vibe`: builtin name→Type dispatch chain
+    (`lookup_array_group_b`/`lookup_io_b`) を全 builtin 名で呼ぶ (+25)。
+  - `cov_cachetext.vibe`: persistent-cache フォーマット parser の version/arity/
+    unknown-tag/CR arm を crafted TSV で (+16)。
+  - `cov_units.vibe` / `cov_units2.vibe`: 小 helper を直接呼ぶ
+    (`strip_trailing_cr`/`emit_assignop_op`/`lookup_iter_intrinsic`/
+    `matches_cached_file_spec` の exists/stat/fingerprint 全 arm 等) (+26)。
+  - `cov_traitenv.vibe`: `type_implements_check_super` の TypeEnv 全 variant
+    (`EnvTraitImpl` の eq+sub/eq+nosub/neq、`EnvFlat`/`EnvCached`/…) を構築 (+11)。
+  - `cov_link.vibe`: `compile_wasi_module_linked_impl` の linked_imports>0 /
+    library_mode arm（shipped compiler では DCE 済み caller 経由でしか到達不能）
+    を synthetic linked import で直接 (+11)。
+  - `cov_builtins.vibe` / `cov_parse.vibe`: Array/String/Map/Bytes builtin、parser
+    arm（多くは self-compile で既出、残差を補う）。
+  - `cov_helpers.vibe`: **unique-named** pure helper を全入力 partition で叩く
+    (`comp_valtype_to_core` の全 valtype、`parse_int_unwrap` の符号/空/非数字、
+    `lookup_io_a`/`lookup_io_c` の dispatch chain、`double_to_string_compiler` の
+    繰り上げ/frac==0、`entry_declares_async_int`) (+28)。注: `(fn,local)` merge は
+    関数名で union するため、merged source 内に**重複定義**を持つ helper
+    (`strip_trailing_cr`/`parse_struct_fields_rest` 等) は local-index がずれて
+    点灯しない — driver は unique-named 関数に限定する。
+- **manifest-header cache** (`coverage_selfhost_manifestcache.sh`): 非 special な
+  manifest project を cold/warm/部分 invalidation で FS-compile し、
+  `matches_cached_file_spec`/`try_collect_manifest_source_groups_fs`/
+  `collect_needed_paths_from_manifest_headers` を点灯 (+32)。コンパイラ自身の
+  manifest は cold で trap するため cache が書かれず、この cluster が dark だった。
+- **multi-module merge** (`coverage_selfhost_multimodule.sh`): 非 entry module が
+  private let/enum/struct/type-alias を持ち、entry が同名 export を別 alias で
+  import する（衝突）project を FS-compile → `namespace_private_value_stmts`/
+  `append_import_alias_collision_defs_from_sources` 系を点灯 (+16)。
+- **feature programs** (`coverage_selfhost_features.sh`): trait/効果/mut capture/
+  pattern 等の breadth (+14)。
+
+再現:
+```bash
+scripts/coverage_selfhost_corpus.sh        # base acc.json + compiler_cov.wasm
+scripts/coverage_selfhost_unittests.sh     # VIBE_COV_FLAT=_build/coverage/merged_nodce.vibe で再実行も可
+scripts/coverage_selfhost_drivers.sh       # async/lookup/cachetext/units/traitenv/link/helpers/…
+scripts/coverage_selfhost_manifestcache.sh
+scripts/coverage_selfhost_multimodule.sh
+scripts/coverage_selfhost_features.sh
+```
+
+#### 構造的に到達不能な残差（~19 dark）
+
+80% 到達後も残るのは大半が構造的:
+- `__to_string`(18): runtime builtin が intercept する host-shadowed 関数（vibe
+  本体は dead）。
+- `compile_wasi_module_linked_impl` 残 arm: 実 linked dep の resolved_type_stmts
+  を要する path（synthetic linked import では届かない）。
+- `check_expr`/`compile_expr`/`compile_call` の深い防御 arm: 728-file corpus が
+  既に飽和しており、ordinary/error プログラムでは +0（battery/error 実測で確認）。
+
+KPI: **分岐 80% を下限ガード**、関数（~88%）と併用。driver suite は
+seed に新関数が増えても (fn,local) merge でそのままスケールする。
 
 仕組み:
 - `VIBE_COVERAGE=1` でコンパイルすると、codegen が

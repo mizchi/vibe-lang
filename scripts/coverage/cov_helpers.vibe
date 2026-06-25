@@ -1,0 +1,82 @@
+
+// #cov helpers driver: small pure helpers whose every-arm coverage the corpus
+// never completes because real programs only feed them one or two shapes.
+// Drive each directly across its full input partition:
+//   - comp_valtype_to_core: every valtype constant + an unknown (5 arms)
+//   - strip_trailing_cr: CR-terminated / plain / empty
+//   - parse_int_unwrap: positive / negative / empty / non-digit / trailing-junk
+let cov_h_valtype: () -> Int = () -> {
+  let mut acc = 0
+  acc = acc + comp_valtype_to_core(comp_valtype_s64)
+  acc = acc + comp_valtype_to_core(comp_valtype_s32)
+  acc = acc + comp_valtype_to_core(comp_valtype_f32)
+  acc = acc + comp_valtype_to_core(comp_valtype_f64)
+  acc = acc + comp_valtype_to_core(0 - 999)
+  acc
+}
+let cov_h_cr: () -> Int = () -> {
+  let mut acc = 0
+  acc = acc + String::length(strip_trailing_cr("abc\r"))
+  acc = acc + String::length(strip_trailing_cr("abc"))
+  acc = acc + String::length(strip_trailing_cr(""))
+  acc
+}
+let cov_h_int: () -> Int = () -> {
+  let mut acc = 0
+  acc = acc + parse_int_unwrap("123", 7)
+  acc = acc + parse_int_unwrap("-45", 7)
+  acc = acc + parse_int_unwrap("", 7)
+  acc = acc + parse_int_unwrap("12x", 7)
+  acc = acc + parse_int_unwrap("x9", 7)
+  acc = acc + parse_int_unwrap("0", 7)
+  acc
+}
+
+// lookup_io_a / lookup_io_c are unique sibling dispatch chains to lookup_io_b
+// (covered separately) whose Some-arms the corpus never exercises. Hit each name.
+let cov_h_io_a: (String) -> Int = (n) -> { match lookup_io_a(n) { Some(_) => 1, None => 0 } }
+let cov_h_io_c: (String) -> Int = (n) -> { match lookup_io_c(n) { Some(_) => 1, None => 0 } }
+let cov_h_io: () -> Int = () -> {
+  let mut acc = 0
+  let a = Array::slice([""], 0, 0)
+  Array::push(a, "sh"); Array::push(a, "sh_lines"); Array::push(a, "path")
+  Array::push(a, "Path::to_string"); Array::push(a, "Path::is_absolute")
+  Array::push(a, "PromptText::new"); Array::push(a, "Stdin::read_char")
+  Array::push(a, "Stdin::read_stream"); Array::push(a, "IO::nope")
+  let mut i = 0
+  while i < Array::length(a) { acc = acc + cov_h_io_a(Array::get(a, i)); i = i + 1 }
+  let c = Array::slice([""], 0, 0)
+  Array::push(c, "Lines::parse"); Array::push(c, "Lines::stringify")
+  Array::push(c, "Llm::complete"); Array::push(c, "Rlm::run")
+  Array::push(c, "Rlm::finalize"); Array::push(c, "IO::nope")
+  let mut j = 0
+  while j < Array::length(c) { acc = acc + cov_h_io_c(Array::get(c, j)); j = j + 1 }
+  acc
+}
+
+// double_to_string_compiler: neg / non-neg, frac round-to-1000000 carry, frac==0,
+// fractional — plus its trim_trailing_zeros / zero_pad_6 helpers for free.
+let cov_h_dbl: () -> Int = () -> {
+  let mut acc = 0
+  acc = acc + String::length(double_to_string_compiler(0.0))
+  acc = acc + String::length(double_to_string_compiler(0.5))
+  acc = acc + String::length(double_to_string_compiler(0.0 - 2.5))
+  acc = acc + String::length(double_to_string_compiler(0.9999999))
+  acc = acc + String::length(double_to_string_compiler(3.0))
+  acc = acc + String::length(double_to_string_compiler(12.125))
+  acc
+}
+
+// entry_declares_async_int over a parsed entry that returns an async Int vs one
+// that does not — drives both the found-and-async and the not-found arms.
+let cov_h_async_int: () -> Int = () -> {
+  let mut acc = 0
+  let p1 = load_and_parse("export let main: () -> Int = () -> { 1 }")
+  acc = acc + (if entry_declares_async_int(p1, "main") { 1 } else { 0 })
+  acc = acc + (if entry_declares_async_int(p1, "absent") { 1 } else { 0 })
+  acc
+}
+
+export let cov_helpers_main: () -> Int = () -> {
+  cov_h_valtype() + cov_h_cr() + cov_h_int() + cov_h_io() + cov_h_dbl() + cov_h_async_int()
+}

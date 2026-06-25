@@ -1,0 +1,67 @@
+
+// #cov cache-text driver: parse_persistent_source_group_cache /
+// parse_persistent_source_list_cache parse the on-disk cache format and have many
+// version/arity/error arms (v1 vs v2 layout, wrong field counts, unknown tags, CR
+// line endings) that a normal warm compile — which only ever writes/reads the
+// current v2 happy path — never exercises. Feed each parser a battery of crafted
+// cache texts so every validation branch runs.
+let cov_ct_group: (String) -> Int = (raw) -> {
+  handle {
+    let (v, _, rows) = parse_persistent_source_group_cache(raw)
+    v + Array::length(rows)
+  } with Error { Throw(_) => 0 }
+}
+let cov_ct_list: (String) -> Int = (raw) -> {
+  handle {
+    let (v, _, srcs) = parse_persistent_source_list_cache(raw)
+    v + Array::length(srcs)
+  } with Error { Throw(_) => 0 }
+}
+
+export let cov_cachetext_main: () -> Int = () -> {
+  let mut acc = 0
+  // group cache: v2 happy path (manifest + group rows)
+  acc = acc + cov_ct_group("version\t2\nmanifest\t/m.tsv\tFP\tSTAT\ngroup\tg\t/a.vibe\tFP1\tSTAT1\ngroup\tg\t/b.vibe\tFP2\tSTAT2\n")
+  // group cache: v1 happy path (3-field manifest, 4-field group)
+  acc = acc + cov_ct_group("version\t1\nmanifest\t/m.tsv\tSTAT\ngroup\tg\t/a.vibe\tSTAT1\n")
+  // group cache: CR line endings + blank lines
+  acc = acc + cov_ct_group("version\t2\r\n\r\ngroup\tg\t/a.vibe\tFP\tSTAT\r\n")
+  // group cache: invalid version value
+  acc = acc + cov_ct_group("version\t9\n")
+  // group cache: version row wrong arity
+  acc = acc + cov_ct_group("version\t2\textra\n")
+  // group cache: v2 manifest wrong arity
+  acc = acc + cov_ct_group("version\t2\nmanifest\t/m.tsv\tFP\n")
+  // group cache: v1 manifest wrong arity
+  acc = acc + cov_ct_group("version\t1\nmanifest\t/m.tsv\tFP\tEXTRA\n")
+  // group cache: v2 group wrong arity
+  acc = acc + cov_ct_group("version\t2\ngroup\tg\t/a.vibe\tFP\n")
+  // group cache: v1 group wrong arity
+  acc = acc + cov_ct_group("version\t1\ngroup\tg\t/a.vibe\tFP\tEXTRA\n")
+  // group cache: unknown tag
+  acc = acc + cov_ct_group("version\t2\nbogus\tx\ty\n")
+  // list cache: v2 happy path
+  acc = acc + cov_ct_list("version\t2\nmanifest\t/m.tsv\tFP\tSTAT\nsource\t/a.vibe\tFP1\tSTAT1\nsource\t/b.vibe\tFP2\tSTAT2\n")
+  // list cache: v1 happy path
+  acc = acc + cov_ct_list("version\t1\nmanifest\t/m.tsv\tSTAT\nsource\t/a.vibe\tSTAT1\n")
+  // list cache: CR + blank lines
+  acc = acc + cov_ct_list("version\t2\r\n\r\nsource\t/a.vibe\tFP\tSTAT\r\n")
+  // list cache: invalid version
+  acc = acc + cov_ct_list("version\tx\n")
+  // list cache: version wrong arity
+  acc = acc + cov_ct_list("version\t2\textra\n")
+  // list cache: v2 manifest wrong arity
+  acc = acc + cov_ct_list("version\t2\nmanifest\t/m.tsv\tFP\n")
+  // list cache: v1 manifest wrong arity
+  acc = acc + cov_ct_list("version\t1\nmanifest\t/m.tsv\tFP\tEXTRA\n")
+  // list cache: v2 source wrong arity
+  acc = acc + cov_ct_list("version\t2\nsource\t/a.vibe\tFP\n")
+  // list cache: v1 source wrong arity
+  acc = acc + cov_ct_list("version\t1\nsource\t/a.vibe\tFP\tEXTRA\n")
+  // list cache: unknown tag
+  acc = acc + cov_ct_list("version\t2\nbogus\tx\n")
+  // empty input (no lines)
+  acc = acc + cov_ct_group("")
+  acc = acc + cov_ct_list("")
+  acc
+}
