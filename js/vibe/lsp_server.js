@@ -73,10 +73,17 @@ function handle(msg) {
       reply(msg.id, {
         capabilities: {
           textDocumentSync: 1, // full
+          documentSymbolProvider: true,
         },
         serverInfo: { name: "vibe-lsp", version: "0.1.0" },
       });
       break;
+    case "textDocument/documentSymbol": {
+      const uri = msg.params.textDocument.uri;
+      const doc = docs.get(uri);
+      reply(msg.id, doc ? documentSymbols(doc.text) : []);
+      break;
+    }
     case "initialized":
       break;
     case "shutdown":
@@ -235,4 +242,42 @@ function hash(s) {
   let h = 0;
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
   return h;
+}
+
+// Outline via a lightweight scan of top-level declarations. The selfhost
+// frontend does not expose spans yet, so symbols are derived from the source
+// text; ranges target the declared name. SymbolKind per LSP spec.
+const SYMBOL_PATTERNS = [
+  { re: /^\s*(?:export\s+)?let\s+([A-Za-z_][A-Za-z0-9_]*)/, kind: 13 }, // Variable (functions are let-bound)
+  { re: /^\s*(?:export\s+)?enum\s+([A-Za-z_][A-Za-z0-9_]*)/, kind: 10 }, // Enum
+  { re: /^\s*(?:export\s+)?struct\s+([A-Za-z_][A-Za-z0-9_]*)/, kind: 23 }, // Struct
+  { re: /^\s*(?:export\s+)?trait\s+([A-Za-z_][A-Za-z0-9_]*)/, kind: 11 }, // Interface
+  { re: /^\s*(?:export\s+)?module\s+([A-Za-z_][A-Za-z0-9_]*)/, kind: 2 }, // Module
+  { re: /^\s*(?:export\s+)?type\s+([A-Za-z_][A-Za-z0-9_]*)/, kind: 26 }, // TypeParameter-ish
+];
+
+function documentSymbols(text) {
+  const lines = text.split(/\r?\n/);
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    for (const { re, kind } of SYMBOL_PATTERNS) {
+      const m = re.exec(line);
+      if (m) {
+        const name = m[1];
+        const ch = line.indexOf(name, m.index);
+        const range = {
+          start: { line: i, character: 0 },
+          end: { line: i, character: line.length },
+        };
+        const selectionRange = {
+          start: { line: i, character: ch },
+          end: { line: i, character: ch + name.length },
+        };
+        out.push({ name, kind, range, selectionRange });
+        break;
+      }
+    }
+  }
+  return out;
 }

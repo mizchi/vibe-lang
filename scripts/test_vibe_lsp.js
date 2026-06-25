@@ -75,9 +75,16 @@ const isDiag = (uri) => (m) => m.method === "textDocument/publishDiagnostics" &&
 
   // good document -> expect empty diagnostics
   const goodUri = "file:///tmp/vibe-lsp-test-good.vibe";
-  send({ jsonrpc: "2.0", method: "textDocument/didOpen", params: { textDocument: { uri: goodUri, languageId: "vibe", version: 1, text: "export let main = () -> Int { 40 + 2 }\n" } } });
+  const goodText = "export enum Color { Red; Green }\nexport let helper = (x: Int) -> Int { x * 2 }\nexport let main = () -> Int { helper(21) }\n";
+  send({ jsonrpc: "2.0", method: "textDocument/didOpen", params: { textDocument: { uri: goodUri, languageId: "vibe", version: 1, text: goodText } } });
   const goodDiag = await waitFor(isDiag(goodUri));
   check("good doc yields 0 diagnostics", goodDiag.params.diagnostics.length === 0);
+
+  // documentSymbol -> outline of top-level declarations
+  send({ jsonrpc: "2.0", id: 3, method: "textDocument/documentSymbol", params: { textDocument: { uri: goodUri } } });
+  const sym = await waitFor((m) => m.id === 3);
+  const names = (sym.result || []).map((s) => s.name);
+  check("documentSymbol lists declarations", names.includes("Color") && names.includes("helper") && names.includes("main"));
 
   send({ jsonrpc: "2.0", id: 2, method: "shutdown", params: {} });
   await waitFor((m) => m.id === 2);
