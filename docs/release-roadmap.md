@@ -59,21 +59,22 @@
   （`offset_to_line_col`）。`foo.vibe: line 3:31: unknown name: zzz` のように
   正確な列まで出る。LSP は range を識別子に絞る（`test_vibe_lsp.js` 11/11）。
 
-進行中:
+- ✅ **EIdent への位置フィールド（構造 foundation 着地）** — `EIdent(String)` →
+  `EIdent(String, Int)`（char offset）を全コンパイラ（~62 source / 375 sites）+
+  legacy tree に適用。worktree agent が実施し cherry-pick で本セッションの作業
+  （located 診断・name section・NUL 修正）とクリーンに統合、selfhost-only gate
+  green（fixpoint 維持）。**現状 offset は全て -1**（構造のみ）。
 
-- 🔧 **AST ノードへの位置付与（着手）** — `EIdent(String)` → `EIdent(String, Int)`
-  （char offset）への atomic な refactor を worktree で実施中（~183 箇所 ×~30
-  ファイル）。これが式レベル span の最初のブリックで、型付き hover・DAP・正確な
-  型エラー location がこの上に乗る。
+残り（段階的、いずれも大きめ）:
 
-残り（AST span 完成後）:
-
-- **type mismatch 等シンボルを含まない型エラーの正確 location** — EIdent 等の式が
-  位置を持てば checker から正確に出せる。
-- **全 Expr variant への位置付与 + parser offset スレッディング** — EIdent に続け
-  て段階的に。
-- **型付き hover / DAP source-line map** — 上の AST span + 型テーブル / codegen
-  map が前提。
+- **offset の実値化** — `lex_with_offsets` の `starts` を parser_expr の
+  `parse_recur` クロージャ型（`(Array[Token], Int, Int) -> ...`）と ~25 helper に
+  通し、ユーザ識別子 EIdent に実位置を入れる。合成識別子（`__lt`/`perform` 等）は
+  -1 のままで正しい。これで unknown-name の location が「first-occurrence
+  ヒューリスティック」→「正確な AST 位置」に上がる。
+- **全 Expr variant への位置付与** — EIdent に続き ECall/EBinop… へ段階的に。
+- **checker 位置→型テーブル / codegen source-line map** — 型付き hover / DAP
+  P1-P4 の前提。AST 位置の上に構築。
 
 - **codegen の関数 index↔name 対応** — ✅ wasm name section（土台B / debugger P0）
   は実装済み（`func_offset + i` で user 関数を正確に命名）。
