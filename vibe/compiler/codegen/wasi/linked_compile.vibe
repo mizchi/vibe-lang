@@ -29,7 +29,7 @@ import .. / expr {
 }
 
 import .. / wasm_emit {
-  emit_block_i64, emit_block_void, emit_br, emit_br_if, emit_call, emit_call_indirect, emit_code_section, emit_code_section_with_locals, emit_data_section, emit_data_section_multi, emit_drop, emit_element_section_active, emit_else, emit_end, emit_export_section, emit_export_section_multi, emit_exports_full, emit_exports_with_memory, emit_f64_add, emit_f64_const_bits, emit_f64_convert_i64_s, emit_f64_div, emit_f64_eq, emit_f64_ge, emit_f64_gt, emit_f64_le, emit_f64_lt, emit_f64_mul, emit_f64_ne, emit_f64_neg, emit_f64_reinterpret_i64, emit_f64_sub, emit_func_type_raw, emit_function_section, emit_global_get, emit_global_section_i32_mut, emit_global_set, emit_header, emit_heap_memory_grow_check, emit_i32_add, emit_i32_const, emit_i32_load, emit_i32_load8_u, emit_i32_store, emit_i32_store8, emit_i32_wrap_i64, emit_i64_add, emit_i64_and, emit_i64_const, emit_i64_div_s, emit_i64_eq, emit_i64_eqz, emit_i64_extend_i32_s, emit_i64_ge_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_lt_s, emit_i64_mul, emit_i64_ne, emit_i64_or, emit_i64_reinterpret_f64, emit_i64_rem_s, emit_i64_shl, emit_i64_shr_s, emit_i64_sub, emit_i64_trunc_f64_s, emit_i64_xor, emit_if_i64, emit_if_void, emit_import_section_func, emit_local_get, emit_local_set, emit_local_tee, emit_loop_void, emit_memory_section, emit_name, emit_return, emit_table_section_funcref, emit_type_section, emit_type_section_multi, emit_vibe_abi_custom_section, emit_function_name_section, string_to_data
+  emit_block_i64, emit_block_void, emit_br, emit_br_if, emit_call, emit_call_indirect, emit_code_section, emit_code_section_with_locals, emit_data_section, emit_data_section_multi, emit_drop, emit_element_section_active, emit_else, emit_end, emit_export_section, emit_export_section_multi, emit_exports_full, emit_exports_with_memory, emit_f64_add, emit_f64_const_bits, emit_f64_convert_i64_s, emit_f64_div, emit_f64_eq, emit_f64_ge, emit_f64_gt, emit_f64_le, emit_f64_lt, emit_f64_mul, emit_f64_ne, emit_f64_neg, emit_f64_reinterpret_i64, emit_f64_sub, emit_func_type_raw, emit_function_section, emit_global_get, emit_global_section_i32_mut, emit_global_set, emit_header, emit_heap_memory_grow_check, emit_i32_add, emit_i32_const, emit_i32_load, emit_i32_load8_u, emit_i32_store, emit_i32_store8, emit_i64_store, emit_i32_wrap_i64, emit_i64_add, emit_i64_and, emit_i64_const, emit_i64_div_s, emit_i64_eq, emit_i64_eqz, emit_i64_extend_i32_s, emit_i64_ge_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_lt_s, emit_i64_mul, emit_i64_ne, emit_i64_or, emit_i64_reinterpret_f64, emit_i64_rem_s, emit_i64_shl, emit_i64_shr_s, emit_i64_sub, emit_i64_trunc_f64_s, emit_i64_xor, emit_if_i64, emit_if_void, emit_import_section_func, emit_local_get, emit_local_set, emit_local_tee, emit_loop_void, emit_memory_section, emit_name, emit_return, emit_table_section_funcref, emit_type_section, emit_type_section_multi, emit_vibe_abi_custom_section, emit_function_name_section, string_to_data
 }
 
 import ./linked_helpers.vibe {
@@ -450,6 +450,23 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   let trace_log_base = trace_counter_addr + 4
   let trace_reserve = if debug_trace {
     4 + trace_cap * 4
+  } else {
+    0
+  }
+  // debugger argument inspection (DAP P2, gated by `debug_break`). A dedicated
+  // region directly above the trace region holds a 4-byte count cell followed by
+  // a fixed-cap array of i64 slots. At each user function entry, in break mode,
+  // the function's i64 parameters are spilled here (capped at dbgargs_cap) and
+  // the count cell is set, BEFORE calling the `vibe::dbg_break` host hook. The
+  // hook reads them out of guest memory and prints `args: [...]`. A
+  // `vibe.dbgargs` custom section publishes the two addresses to the runner.
+  // Off => dbgargs_reserve is 0 and the layout/codegen is byte-identical to a
+  // normal build (the self-host fixpoint is unaffected).
+  let dbgargs_cap = 16
+  let dbgargs_count_addr = trace_counter_addr + trace_reserve
+  let dbgargs_base = dbgargs_count_addr + 8
+  let dbgargs_reserve = if debug_break {
+    8 + dbgargs_cap * 8
   } else {
     0
   }
@@ -1280,6 +1297,29 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     // wasm backtrace to name the entering function and pauses when it is in the
     // breakpoint set. Stack-neutral (() -> ()), so prepending is safe.
     if debug_break {
+      // DAP P2: spill this function's i64 parameters into the dbgargs region so
+      // the host hook can read and print them. All user-function wasm params are
+      // i64 (vibe value ABI); locals 0..nparams-1 hold the params at entry.
+      let dbg_nparams = if is_efn(__bi_expr) {
+        Array::length(get_efn_params(__bi_expr))
+      } else {
+        0
+      }
+      let dbg_n = if dbg_nparams > dbgargs_cap {
+        dbgargs_cap
+      } else {
+        dbg_nparams
+      }
+      let mut dbg_pi = 0
+      while dbg_pi < dbg_n {
+        emit_i32_const(body_buf, dbgargs_base + dbg_pi * 8)
+        emit_local_get(body_buf, dbg_pi)
+        emit_i64_store(body_buf, 3, 0)
+        dbg_pi = dbg_pi + 1
+      }
+      emit_i32_const(body_buf, dbgargs_count_addr)
+      emit_i32_const(body_buf, dbg_n)
+      emit_i32_store(body_buf, 2, 0)
       emit_call(body_buf, dbg_break_import_idx)
     } else {
       ()
@@ -1825,6 +1865,45 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   } else {
     ()
   }
+  // debugger argument inspection (DAP P2): emit a `vibe.dbgargs` custom section
+  // publishing the addresses + value ABI the runner reads. Payload layout:
+  // i32 LE dbgargs_count_addr, i32 LE dbgargs_base, i32 LE tag_mode. At a
+  // breakpoint the runner reads memory[count_addr] (i32) for the arg count, then
+  // that many i64 values from dbgargs_base, decoding each per tag_mode:
+  //   tag_mode 0 (enable_rc off): values are plain untagged i64 ints.
+  //   tag_mode 1 (enable_rc on):  values are 1-bit tagged — low bit 0 => int
+  //                               (raw >> 1), low bit 1 => heap pointer (hex).
+  // Only present in break builds.
+  if debug_break {
+    let da_content = bytebuf_new()
+    let da_name = "vibe.dbgargs"
+    leb128_encode_u32(da_content, String::length(da_name))
+    let mut dani = 0
+    while dani < String::length(da_name) {
+      bytebuf_push(da_content, String::char_code_at(da_name, dani))
+      dani = dani + 1
+    }
+    bytebuf_push(da_content, dbgargs_count_addr & 255)
+    bytebuf_push(da_content, (dbgargs_count_addr >> 8) & 255)
+    bytebuf_push(da_content, (dbgargs_count_addr >> 16) & 255)
+    bytebuf_push(da_content, (dbgargs_count_addr >> 24) & 255)
+    bytebuf_push(da_content, dbgargs_base & 255)
+    bytebuf_push(da_content, (dbgargs_base >> 8) & 255)
+    bytebuf_push(da_content, (dbgargs_base >> 16) & 255)
+    bytebuf_push(da_content, (dbgargs_base >> 24) & 255)
+    let da_tag_mode = if enable_rc {
+      1
+    } else {
+      0
+    }
+    bytebuf_push(da_content, da_tag_mode & 255)
+    bytebuf_push(da_content, (da_tag_mode >> 8) & 255)
+    bytebuf_push(da_content, (da_tag_mode >> 16) & 255)
+    bytebuf_push(da_content, (da_tag_mode >> 24) & 255)
+    bytebuf_push_section(out, 0, da_content)
+  } else {
+    ()
+  }
   bytebuf_push_section(out, 1, type_content)
   let import_content = bytebuf_new()
   bytebuf_push_vec_header(import_content, num_imported_funcs)
@@ -1981,7 +2060,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   if total_table_entries > 0 {
     emit_table_section_funcref(out, total_table_entries)
   }
-  emit_memory_section(out, wasi_memory_min_pages_for_heap(heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve))
+  emit_memory_section(out, wasi_memory_min_pages_for_heap(heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve + dbgargs_reserve))
   let tag_content = bytebuf_new()
   let num_tags = Array::length(effect_names_list) + 4
   bytebuf_push_vec_header(tag_content, num_tags)
@@ -2000,7 +2079,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   }
   bytebuf_push(global_content, 127)
   bytebuf_push(global_content, 1)
-  emit_i32_const(global_content, heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve)
+  emit_i32_const(global_content, heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve + dbgargs_reserve)
   emit_end(global_content)
   bytebuf_push(global_content, 126)
   bytebuf_push(global_content, 1)

@@ -100,6 +100,15 @@ struct HostState {
     // no-op even when the module imports it.
     break_set: Arc<Vec<String>>,
     break_auto: bool,
+    // debugger argument inspection (DAP P2): addresses of the dbgargs region,
+    // parsed from the module's `vibe.dbgargs` custom section at load time (only
+    // present in break builds). count_addr holds an i32 arg count; base holds
+    // that many i64 vibe values. None => no section => no `args:` line.
+    // dbgargs_tag_mode: 0 => plain untagged i64 ints (enable_rc off); 1 => 1-bit
+    // tagged (low bit 0 => int raw>>1, low bit 1 => heap pointer shown as hex).
+    dbgargs_count_addr: Option<usize>,
+    dbgargs_base: Option<usize>,
+    dbgargs_tag_mode: u32,
 }
 
 impl HostState {
@@ -127,6 +136,9 @@ impl HostState {
             start_instant: Instant::now(),
             break_set: Arc::new(break_set),
             break_auto,
+            dbgargs_count_addr: None,
+            dbgargs_base: None,
+            dbgargs_tag_mode: 0,
         }
     }
 
@@ -315,6 +327,24 @@ fn run(args: Vec<String>) -> Result<i32> {
 
     let mut store = Store::new(&engine, HostState::new(prog_args, limits));
     store.limiter(|s| &mut s.limits);
+
+    // DAP P2: if the module is a break build it carries a `vibe.dbgargs` custom
+    // section publishing the two addresses of the spilled-argument region. Parse
+    // them once here so the `vibe::dbg_break` hook can read argument values out
+    // of guest memory at a breakpoint. (Break builds always pass a fresh `.wasm`.)
+    if let Ok(wasm) = std::fs::read(wasm_path) {
+        if let Some(section) = find_custom_section(&wasm, "vibe.dbgargs") {
+            if let (Some(count_addr), Some(base)) =
+                (read_u32_le(&section, 0), read_u32_le(&section, 4))
+            {
+                let tag_mode = read_u32_le(&section, 8).unwrap_or(0);
+                let data = store.data_mut();
+                data.dbgargs_count_addr = Some(count_addr as usize);
+                data.dbgargs_base = Some(base as usize);
+                data.dbgargs_tag_mode = tag_mode;
+            }
+        }
+    }
 
     let mut linker = Linker::new(&engine);
     register_imports(&mut linker)?;
@@ -875,6 +905,17 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
     )?;
     linker.func_wrap(
         "vibe",
+        "args-len",
+        // `Env::args_len` -> number of USER arguments. args[0] is the runner
+        // name, so the user-visible count is args.len() - 1 (raw i64 per the raw
+        // ABI). Without this import a program using Env::args_len fails to
+        // instantiate with an unknown import before user code runs.
+        |caller: Caller<'_, HostState>| -> i64 {
+            (caller.data().args.len().saturating_sub(1)) as i64
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
         "fs_read_file",
         |mut caller: Caller<'_, HostState>, path: i64| -> Result<i64> {
             let path = vibe_read_packed_str(&mut caller, path)?;
@@ -966,7 +1007,46 @@ impl std::fmt::Display for BreakAbort {
 
 impl std::error::Error for BreakAbort {}
 
-fn vibe_dbg_break(caller: Caller<'_, HostState>) -> Result<()> {
+// DAP P2: read the argument values the codegen spilled into the dbgargs region
+// before calling this hook, and format them as `[v0, v1, ...]`. Returns None if
+// the module has no `vibe.dbgargs` section (non-break build) or memory access
+// fails. Each value is a 62-bit tagged i64; a tagged INT (low 2 bits == 00) is
+// printed as `raw >> 2`, anything else as `0x<hex>` of the raw bits.
+fn dbg_read_args(caller: &mut Caller<'_, HostState>) -> Option<String> {
+    let count_addr = caller.data().dbgargs_count_addr?;
+    let base = caller.data().dbgargs_base?;
+    let tag_mode = caller.data().dbgargs_tag_mode;
+    let memory = caller.get_export("memory").and_then(|e| e.into_memory())?;
+    let mut count_buf = [0u8; 4];
+    if memory.read(&*caller, count_addr, &mut count_buf).is_err() {
+        return None;
+    }
+    let count = (u32::from_le_bytes(count_buf) as usize).min(16);
+    let mut parts: Vec<String> = Vec::with_capacity(count);
+    let mut i = 0usize;
+    while i < count {
+        let mut val_buf = [0u8; 8];
+        if memory.read(&*caller, base + i * 8, &mut val_buf).is_err() {
+            break;
+        }
+        let raw = i64::from_le_bytes(val_buf);
+        // tag_mode 0: plain untagged i64 int. tag_mode 1: 1-bit tagged — low bit
+        // 0 => int (raw >> 1), low bit 1 => heap pointer shown as raw hex.
+        if tag_mode == 1 {
+            if raw & 1 == 0 {
+                parts.push(format!("{}", raw >> 1));
+            } else {
+                parts.push(format!("0x{:x}", raw));
+            }
+        } else {
+            parts.push(format!("{raw}"));
+        }
+        i += 1;
+    }
+    Some(format!("[{}]", parts.join(", ")))
+}
+
+fn vibe_dbg_break(mut caller: Caller<'_, HostState>) -> Result<()> {
     let break_set = Arc::clone(&caller.data().break_set);
     if break_set.is_empty() {
         return Ok(());
@@ -981,10 +1061,18 @@ fn vibe_dbg_break(caller: Caller<'_, HostState>) -> Result<()> {
     if !break_set.iter().any(|b| *b == entering) {
         return Ok(());
     }
+    // DAP P2: read the spilled argument values for the entering function out of
+    // guest memory and format them. count_addr holds an i32 arg count; base holds
+    // that many i64 vibe values. Decode each: a tagged INT (low 2 bits == 00) is
+    // shown as the integer (raw >> 2); anything else is shown as `0x<hex>` raw.
+    let args_line = dbg_read_args(&mut caller);
     {
         let stderr = std::io::stderr();
         let mut h = stderr.lock();
         let _ = writeln!(h, "breakpoint hit: {entering}");
+        if let Some(line) = &args_line {
+            let _ = writeln!(h, "  args: {line}");
+        }
         for f in &frames {
             let _ = writeln!(h, "  at {f}");
         }

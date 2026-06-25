@@ -5820,6 +5820,9 @@ export let emit_block_i64: (Bytes) -> Unit = (buf) -> {
 export let emit_i32_store: (Bytes, Int, Int) -> Unit = (buf, align, offset) -> {
   bytebuf_push_opcode_u32_u32(buf, op_i32_store, align, offset)
 }
+export let emit_i64_store: (Bytes, Int, Int) -> Unit = (buf, align, offset) -> {
+  bytebuf_push_opcode_u32_u32(buf, 55, align, offset)
+}
 export let emit_i64_const: (Bytes, Int) -> Unit = (buf, value) -> {
   bytebuf_push_opcode_s64(buf, op_i64_const, value)
 }
@@ -16763,6 +16766,14 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   } else {
     0
   }
+  let dbgargs_cap = 16
+  let dbgargs_count_addr = trace_counter_addr + trace_reserve
+  let dbgargs_base = dbgargs_count_addr + 8
+  let dbgargs_reserve = if debug_break {
+    8 + dbgargs_cap * 8
+  } else {
+    0
+  }
   let cov_state = CovState::{
     enabled: coverage,
     base: cov_branch_base,
@@ -17569,6 +17580,26 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       ()
     }
     if debug_break {
+      let dbg_nparams = if is_efn(__bi_expr) {
+        Array::length(get_efn_params(__bi_expr))
+      } else {
+        0
+      }
+      let dbg_n = if dbg_nparams > dbgargs_cap {
+        dbgargs_cap
+      } else {
+        dbg_nparams
+      }
+      let mut dbg_pi = 0
+      while dbg_pi < dbg_n {
+        emit_i32_const(body_buf, dbgargs_base + dbg_pi * 8)
+        emit_local_get(body_buf, dbg_pi)
+        emit_i64_store(body_buf, 3, 0)
+        dbg_pi = dbg_pi + 1
+      }
+      emit_i32_const(body_buf, dbgargs_count_addr)
+      emit_i32_const(body_buf, dbg_n)
+      emit_i32_store(body_buf, 2, 0)
       emit_call(body_buf, dbg_break_import_idx)
     } else {
       ()
@@ -18097,6 +18128,36 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   } else {
     ()
   }
+  if debug_break {
+    let da_content = bytebuf_new()
+    let da_name = "vibe.dbgargs"
+    leb128_encode_u32(da_content, String::length(da_name))
+    let mut dani = 0
+    while dani < String::length(da_name) {
+      bytebuf_push(da_content, String::char_code_at(da_name, dani))
+      dani = dani + 1
+    }
+    bytebuf_push(da_content, dbgargs_count_addr & 255)
+    bytebuf_push(da_content, (dbgargs_count_addr >> 8) & 255)
+    bytebuf_push(da_content, (dbgargs_count_addr >> 16) & 255)
+    bytebuf_push(da_content, (dbgargs_count_addr >> 24) & 255)
+    bytebuf_push(da_content, dbgargs_base & 255)
+    bytebuf_push(da_content, (dbgargs_base >> 8) & 255)
+    bytebuf_push(da_content, (dbgargs_base >> 16) & 255)
+    bytebuf_push(da_content, (dbgargs_base >> 24) & 255)
+    let da_tag_mode = if enable_rc {
+      1
+    } else {
+      0
+    }
+    bytebuf_push(da_content, da_tag_mode & 255)
+    bytebuf_push(da_content, (da_tag_mode >> 8) & 255)
+    bytebuf_push(da_content, (da_tag_mode >> 16) & 255)
+    bytebuf_push(da_content, (da_tag_mode >> 24) & 255)
+    bytebuf_push_section(out, 0, da_content)
+  } else {
+    ()
+  }
   bytebuf_push_section(out, 1, type_content)
   let import_content = bytebuf_new()
   bytebuf_push_vec_header(import_content, num_imported_funcs)
@@ -18253,7 +18314,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   if total_table_entries > 0 {
     emit_table_section_funcref(out, total_table_entries)
   }
-  emit_memory_section(out, wasi_memory_min_pages_for_heap(heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve))
+  emit_memory_section(out, wasi_memory_min_pages_for_heap(heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve + dbgargs_reserve))
   let tag_content = bytebuf_new()
   let num_tags = Array::length(effect_names_list) + 4
   bytebuf_push_vec_header(tag_content, num_tags)
@@ -18272,7 +18333,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   }
   bytebuf_push(global_content, 127)
   bytebuf_push(global_content, 1)
-  emit_i32_const(global_content, heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve)
+  emit_i32_const(global_content, heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve + dbgargs_reserve)
   emit_end(global_content)
   bytebuf_push(global_content, 126)
   bytebuf_push(global_content, 1)
