@@ -78,11 +78,31 @@
   selfhost-only gate green（stage2==stage3 fixpoint）、located 診断 4/4。
   worktree agent 実施 → cherry-pick 統合。
 
-残り（段階的、いずれも大きめ）:
+### 次の実装ステップ（span 消費 → hover/DAP）— 順序付き
 
-- **全 Expr variant への位置付与** — EIdent に続き ECall/EBinop… へ段階的に。
-- **checker 位置→型テーブル / codegen source-line map** — 型付き hover / DAP
-  P1-P4 の前提。AST 位置の上に構築。
+> **重要**: EIdent の offset は構造的に通ったが、**まだ consumer が無い**
+> （located 診断は `locate_by_marker` の first-occurrence text heuristic を使い、
+> AST offset を読んでいない）。foundation を「実際に効かせる」のが次の最小段。
+> 各段は compiler source 変更 → selfhost fixpoint gate を要するので worktree
+> agent + cherry-pick で隔離する。
+
+1. **【最小 payoff】診断を AST offset 消費に切替** — checker の `unknown name` /
+   arity / field / ctor throw 時に、対象ノードの offset を error channel に乗せ、
+   `locate_type_error` が text 検索ではなく実 offset → `offset_to_line_col` で
+   正確な line:col を出す。error channel は現状 `Array[String]`。string marker
+   leak を避けるため、`Array[(String, Int)]`（msg, offset）へ広げるのが正攻法
+   （locate は -1 のとき従来 heuristic に fallback）。これで「同名識別子が複数
+   ある時に誤った位置を指す」欠陥が解消し、pipeline が end-to-end で実証される。
+2. **ECall / EDot へ offset 付与** — EIdent と同じ構造 refactor（variant に Int
+   field 追加 → 全 construct/match site 更新 → bundle 再生成）。call-site の
+   go-to-definition / hover の土台。arity/field 診断の正確化もここで効く。
+3. **checker 位置→型テーブル** — `check_expr` が各ノードの offset→推論型を記録
+   （`Array[(Int, Type)]` か interval tree）。型付き hover の核。
+4. **span 露出 CLI / LSP 連携** — `vibe` が offset→型・シンボル span を JSON で
+   出す経路を足し、`js/vibe/lsp_server.js` を text-scan から AST span 消費へ。
+   typed hover / 正確な診断 range / scope 精度 rename。
+5. **codegen source-line map（`vibe.func_map`）** — 命令 offset→ソース行の custom
+   section。DAP P1-P4（breakpoint/variables/step）の前提。name section は実装済み。
 
 - **codegen の関数 index↔name 対応** — ✅ wasm name section（土台B / debugger P0）
   は実装済み（`func_offset + i` で user 関数を正確に命名）。
