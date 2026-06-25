@@ -92,7 +92,10 @@ function handle(msg) {
       if (!doc || !newName) { reply(msg.id, null); break; }
       const word = wordAt(doc.text, msg.params.position);
       if (!word) { reply(msg.id, null); break; }
-      const edits = findReferences(doc.text, word).map((range) => ({ range, newText: newName }));
+      // Prefer AST-accurate occurrences (vibe binding-at); fall back to the
+      // whole-word text scan when unavailable.
+      const ranges = bindingOccurrences(uri, msg.params.position) || findReferences(doc.text, word);
+      const edits = ranges.map((range) => ({ range, newText: newName }));
       reply(msg.id, { changes: { [uri]: edits } });
       break;
     }
@@ -101,7 +104,9 @@ function handle(msg) {
       const doc = docs.get(uri);
       if (!doc) { reply(msg.id, []); break; }
       const word = wordAt(doc.text, msg.params.position);
-      reply(msg.id, word ? findReferences(doc.text, word).map((range) => ({ uri, range })) : []);
+      if (!word) { reply(msg.id, []); break; }
+      const refs = bindingOccurrences(uri, msg.params.position) || findReferences(doc.text, word);
+      reply(msg.id, refs.map((range) => ({ uri, range })));
       break;
     }
     case "textDocument/documentHighlight": {
@@ -313,6 +318,42 @@ function typeAt(uri, position) {
     return (res.stdout || "").trim();
   } catch {
     return "";
+  } finally {
+    try { fs.unlinkSync(tmp); } catch {}
+    try { fs.unlinkSync(`${tmp}.diag`); } catch {}
+  }
+}
+
+// Convert a 0-based char offset into an LSP {line, character} position.
+function offsetToPosition(text, off) {
+  let line = 0, lineStart = 0;
+  const n = Math.min(off, text.length);
+  for (let i = 0; i < n; i++) if (text[i] === "\n") { line++; lineStart = i + 1; }
+  return { line, character: off - lineStart };
+}
+
+// AST-accurate occurrences of the binding under `position`, via `vibe
+// binding-at` (one "START END" char-span per line). Returns LSP ranges, or null
+// when unavailable (older compiler / non-identifier position) so callers can
+// fall back to the whole-word text scan. Unlike the text scan, this never
+// matches inside strings/comments or partial words.
+function bindingOccurrences(uri, position) {
+  const doc = docs.get(uri);
+  if (!doc) return null;
+  const filePath = uriToPath(uri);
+  const dir = fs.existsSync(path.dirname(filePath)) ? path.dirname(filePath) : os.tmpdir();
+  const tmp = path.join(dir, `.vibe-lsp-ba-${process.pid}-${Math.abs(hash(uri))}.vibe`);
+  try {
+    fs.writeFileSync(tmp, doc.text, "utf8");
+    const res = spawnSync(VIBE_BIN, ["binding-at", tmp, String(position.line + 1), String(position.character + 1)], { encoding: "utf8" });
+    const ranges = [];
+    for (const l of (res.stdout || "").split(/\r?\n/)) {
+      const m = /^\s*(\d+)\s+(\d+)\s*$/.exec(l);
+      if (m) ranges.push({ start: offsetToPosition(doc.text, +m[1]), end: offsetToPosition(doc.text, +m[2]) });
+    }
+    return ranges.length ? ranges : null;
+  } catch {
+    return null;
   } finally {
     try { fs.unlinkSync(tmp); } catch {}
     try { fs.unlinkSync(`${tmp}.diag`); } catch {}
