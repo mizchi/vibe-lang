@@ -37,33 +37,33 @@
 
 残テーマ (3/4/土台) は**共通基盤の不足**がボトルネック。スコープを明確化:
 
-### source span 基盤 — 調査結果（2026-06-25）
+### source span 基盤 — 着手・進行中（2026-06-25）
 
-着手して以下を確定した。**当初想定より進んでいるが、2 つの実ブロッカーがある。**
+ユーザー選択に従い着手。**最初の可視スライス（located parse 診断）まで到達。**
 
-- **token-level span インフラは既に存在**（`vibe/compiler/syntax/`）:
-  - `lex_with_offsets(source) -> (Array[Token], Array[Int], Array[Int])` —
-    各トークンの start/end char offset を返す。
-  - `parse_program_spans(tokens, starts, ends) -> (Array[Stmt], Array[Int], Array[Int])`
-    — 文ごとの (start, end) byte span を返す。
-  - **ただし両者とも未使用**（診断・LSP に未配線）。`offset_to_line_col` 相当の
-    helper も無い。AST ノード自体は span を持たない（式レベルの正確な位置は別途）。
-- **ブロッカー1: parse 経路が散在** — entry/import の parse は
-  `file_compile/index.vibe`・`runtime/typecheck_fs.vibe`・`runtime/index.vibe`・
-  `compile_source_wasi_only`・loader に各々 `parse_program(lex(source))` を持つ。
-  located 化には全箇所を `lex_with_offsets` + 文単位ハンドラ（または
-  `parse_program_spans` + checker 帰属）へ移す必要がある。
-- **ブロッカー2: FS-compile の parse エラー診断が NUL 化（pre-existing codegen バグ）**
-  — `vibe foo.vibe`（FS mode）で構文エラーを出すと `<output>.diag` が
-  175 byte の NUL garbage になる。**単一ソース compile では正しく出る**
-  (`unexpected token at #4: = ...`) ため、parser ではなく FS 経路の string 伝搬
-  （`String::concat`/handle 再 throw の selfhost codegen）が原因。StringBuilder
-  化でも解消せず、`selfhost_only_gate.sh` step4 が言及する string 脆弱性と同根。
-  **FS-path located 診断を可視化する前にこの codegen バグ修正が必要。**
+完了:
 
-→ 次の着手順: (a) FS-parse-error NUL の codegen 修正 → (b) `offset_to_line_col`
-追加 + 全 parse 箇所を located 化 → (c) `parse_program_spans` を checker に渡し
-型エラーを文単位で located 化 → (d) 式レベル span（AST ノード拡張、~数千箇所）。
+- ✅ **NUL codegen バグ修正** — FS-compile の parse エラー診断が 175 byte の NUL
+  garbage になっていた。根因は `loader/header_cache.vibe` が `+` 演算子で
+  文字列連結していたこと（`+`-string-concat が selfhost codegen で NUL 化）。
+  `String::concat` 化で解消。これが located 診断の前提ブロッカーだった。
+- ✅ **token-level span インフラ活用** — 既存の `lex_with_offsets`（トークン
+  start/end offset）に `offset_to_line_col` helper を追加。
+- ✅ **located parse 診断** — `parse_program_located`（文単位で `line:col` を
+  付与）を追加し、FS-compile の header-load parse に配線。`vibe check`/`run` が
+  `foo.vibe: line 2:1: unexpected token ...` を表示。LSP は `line N:col M:`
+  プレフィックスから正確な range を生成（`test_vibe_lsp.js` 11/11）。
+
+残り（次スライス）:
+
+- **located 型エラー** — 型エラーは現状 location 無し（CLI）/ LSP のシンボル
+  ヒューリスティックのみ。real span 化には `parse_program_spans`（文ごと span は
+  既存）を checker に渡し、`check_stmts` の文単位エラー帰属を実装する必要がある
+  （merge 後の文→元 span 対応が課題）。
+- **式レベル span** — 正確なトークン範囲には AST ノードへの位置付与が必要
+  （`EIdent` 1 variant で 183 箇所 × 39 ファイル、全 variant で数千箇所）。
+- **他の parse 箇所** — `typecheck_fs`/`runtime/index`/`compile_source_wasi_only`
+  も located 化すれば全経路で行番号が出る（header_cache 経路は対応済み）。
 
 - **codegen の関数 index↔name 対応** — ✅ wasm name section（土台B / debugger P0）
   は実装済み（`func_offset + i` で user 関数を正確に命名）。
