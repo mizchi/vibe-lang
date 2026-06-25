@@ -1,0 +1,60 @@
+
+// #cov parser-breadth driver: feed ~50 exotic-but-valid and deliberately-malformed
+// snippets through load_and_parse. Malformed input takes the `expect_tk ... else
+// throw` error branch (the dark side) of each parse_* function before the throw
+// fires; exotic-valid input takes the rare constructs the corpus never writes.
+// Per-snippet errors are swallowed so one bad parse still banks every arm it reached.
+let p: (String) -> Int = (src) -> {
+  handle { Array::length(load_and_parse(src)) } with Error { Throw(_) => 0 }
+}
+
+export let cov_parser2_main: () -> Int = () -> {
+  let mut acc = 0
+  let s = Array::slice([""], 0, 0)
+  // --- malformed: trigger expect/throw error branches across the parser ---
+  Array::push(s, "export let m: () -> Int = () -> { let x = }")          // incomplete let
+  Array::push(s, "export let m: () -> Int = () -> { match x { }")         // unclosed match
+  Array::push(s, "export let m: () -> Int = () -> { if x }")              // if no block
+  Array::push(s, "export let m: () -> Int = () -> { f( }")                // unclosed call
+  Array::push(s, "export let m: () -> Int = () -> { [1, 2 }")             // unclosed array
+  Array::push(s, "export let m: () -> Int = () -> { (1, 2 }")             // unclosed tuple
+  Array::push(s, "export let m: () -> Int = () -> { a[1: }")              // unclosed slice
+  Array::push(s, "export let m: () -> Int = () -> { a. }")                // dot no field
+  Array::push(s, "struct S {")                                            // unclosed struct
+  Array::push(s, "enum E {")                                              // unclosed enum
+  Array::push(s, "trait T")                                               // incomplete trait
+  Array::push(s, "impl T for")                                            // incomplete impl
+  Array::push(s, "type")                                                  // incomplete type alias
+  Array::push(s, "import")                                                // incomplete import
+  Array::push(s, "export")                                                // incomplete export
+  Array::push(s, "export let m: () -> Int = () -> { match x { (a, => 0 } }")  // malformed pattern
+  Array::push(s, "export let m: () -> Int = () -> { { } }")               // empty record/block
+  Array::push(s, "export let m: () -> Int = () -> { record { x: } }")     // malformed record
+  // --- exotic-valid: rare constructs the corpus rarely writes ---
+  Array::push(s, "export let m: () -> Int = () -> { let a = [0]; a[:]; a[0:]; a[:1]; a[0:1] }")  // all slice forms
+  Array::push(s, "export let m: () -> Int = () -> { match (1, 2) { (0, _) => 0, (_, 0) => 1, (a, b) => a + b } }")
+  Array::push(s, "export let m: () -> Int = () -> { match 1 { 0 => 0, 1 | 2 | 3 => 1, _ => 9 } }")  // or-patterns
+  Array::push(s, "struct P { x: Int; y: Int }\nexport let m: (P) -> Int = (p) -> { match p { P::{ x: 0, y } => y, P::{ x, y } => x + y } }")  // struct patterns
+  Array::push(s, "enum E { A(Int, Int) }\nexport let m: (E) -> Int = (e) -> { match e { A(0, y) => y, A(x, _) => x } }")  // ctor patterns nested
+  Array::push(s, "let id: (a) -> a = (x) -> { x }\nexport let m: () -> Int = () -> { id(1) }")  // generic fn
+  Array::push(s, "let pair: (a, b) -> (a, b) = (x, y) -> { (x, y) }\nexport let m: () -> Int = () -> { let (p, q) = pair(1, 2); p + q }")
+  Array::push(s, "export let m: () -> Int = () -> { let mp = { \"a\": 1, \"b\": 2 }; 0 }")  // map literal
+  Array::push(s, "export let m: () -> Int = () -> { let f = (x: Int) -> Int { x + 1 }; f(2) }")  // typed paren lambda
+  Array::push(s, "export let m: () -> Int = () -> { loop { break 5 } }")   // loop with break value
+  Array::push(s, "export let m: (Int) -> Int = (n) -> { return n }")       // return
+  Array::push(s, "export let m: () -> Int = () -> { let mut i = 0; loop { if i > 3 { break 0 } else { i = i + 1; continue } } }")  // continue
+  Array::push(s, "suberror Fail { Bad; Worse(Int) }\nexport let m: () -> Int = () -> { 0 }")
+  Array::push(s, "trait Eq2 { eq2: (Self, Self) -> Bool }\nstruct N { v: Int }\nimpl Eq2 for N { eq2: (a, b) -> Bool = a.v == b.v }\nexport let m: () -> Int = () -> { 0 }")
+  Array::push(s, "import ./x.vibe { foo as bar, baz }\nexport let m: () -> Int = () -> { 0 }")  // import items + alias
+  Array::push(s, "export ./mod.vibe { a, b as c }\nexport let m: () -> Int = () -> { 0 }")      // re-export facade
+  Array::push(s, "export let m: () -> Int = () -> { let r = record { x: 1, y: 2 }; r.x }")      // record literal
+  Array::push(s, "export let m: () -> Int = () -> { let r = record { x: 1 }; record { ..r, x: 2 }.x }")  // record update
+  Array::push(s, "effect St { get: () -> Int; put: (Int) -> Unit }\nexport let m: () -> Int = () -> { 0 }")  // effect decl
+  Array::push(s, "export let m: () -> Int = () -> { handle { 1 } with St { Get(k) => k(0), Put(v, k) => k() } }")  // handle effect ops
+  Array::push(s, "export let m: () -> Int = () -> { let xs = [1, 2, 3]; Array::fold(xs, 0, (a, x) -> { a + x }) }")
+  Array::push(s, "extern let host: (Int) -> Int\nexport let m: () -> Int = () -> { 0 }")        // extern let
+  Array::push(s, "test \"x\" { let _ = 1 }\nbench \"y\" { let _ = 2 }\nexport let m: () -> Int = () -> { 0 }")
+  let mut i = 0
+  while i < Array::length(s) { acc = acc + p(Array::get(s, i)); i = i + 1 }
+  acc
+}

@@ -1,0 +1,71 @@
+
+// #cov misc driver: remaining unique single-value walkers/classifiers —
+// stmt_section (Stmt -> section int, all variants), is_expr_end_token (Token, all
+// true-arms + false), has_non_pipe_infix_top (lexed token ranges), check_pattern
+// (leaf/tuple/or arms), module_value_aliases / flatten_module_body (Stmt-array).
+let m_sec: (Stmt) -> Int = (s) -> { stmt_section(s) }
+let m_eet: (Token) -> Int = (tk) -> { if is_expr_end_token(tk) { 1 } else { 0 } }
+let m_infix: (String) -> Int = (src) -> {
+  handle {
+    let toks = lex(src)
+    if has_non_pipe_infix_top(toks, 0, Array::length(toks)) { 1 } else { 0 }
+  } with Error { Throw(_) => 0 }
+}
+let m_cp: (Pat, Type) -> Int = (pp, ty) -> {
+  handle { match check_pattern(pp, ty, EnvEmpty, Array::slice([TDAlias("T", Array::slice([""], 0, 0), CtInt)], 0, 0)) { _ => 1 } }
+  with Error { Throw(_) => 0 }
+}
+
+export let cov_misc_main: () -> Int = () -> {
+  let mut acc = 0
+  let intty = TyName("Int")
+  // stmt_section over every Stmt variant
+  let ss = Array::slice([SExpr(EUnit)], 0, 0)
+  Array::push(ss, SImport("m", Array::slice([("x", None)], 0, 1)))
+  Array::push(ss, SAliasDecl("a", "b"))
+  Array::push(ss, SEnum(false, "E", Array::slice([""], 0, 0), Array::slice([("A", Array::slice([CtInt], 0, 0))], 0, 1)))
+  Array::push(ss, SSuberror(false, "Er", Array::slice([("B", Array::slice([CtInt], 0, 0))], 0, 1)))
+  Array::push(ss, SStruct(false, "S", Array::slice([("f", intty)], 0, 1)))
+  Array::push(ss, STypeAlias(false, "T", Array::slice([""], 0, 0), intty))
+  Array::push(ss, STrait(false, "Tr", Array::slice([""], 0, 0)))
+  Array::push(ss, SExternLet("h", intty))
+  Array::push(ss, SLet(false, false, "x", None, EInt(1)))
+  Array::push(ss, SLetMut("y", None, EInt(2)))
+  Array::push(ss, SLetPat(PWild, EInt(3)))
+  Array::push(ss, STest("t", EUnit)); Array::push(ss, SBench("b", EUnit))
+  Array::push(ss, SExport(Array::slice(["x"], 0, 1))); Array::push(ss, SExpr(EInt(1)))
+  let mut i = 0
+  while i < Array::length(ss) { acc = acc + m_sec(Array::get(ss, i)); i = i + 1 }
+  // is_expr_end_token over every true-arm token + a false token
+  let tks = Array::slice([TLet], 0, 0)
+  Array::push(tks, TInt(1)); Array::push(tks, TFloat(1.0)); Array::push(tks, TString("s"))
+  Array::push(tks, TStringInterp(Array::slice(["a"], 0, 1))); Array::push(tks, TIdent("x"))
+  Array::push(tks, TRParen); Array::push(tks, TRBracket); Array::push(tks, TRBrace)
+  Array::push(tks, TLet); Array::push(tks, TPlus)
+  let mut j = 0
+  while j < Array::length(tks) { acc = acc + m_eet(Array::get(tks, j)); j = j + 1 }
+  // has_non_pipe_infix_top: infix present / pipe-only / none / single
+  acc = acc + m_infix("a + b")
+  acc = acc + m_infix("a == b && c")
+  acc = acc + m_infix("a |> b")
+  acc = acc + m_infix("a")
+  acc = acc + m_infix("f(x)")
+  // check_pattern leaf/tuple/or arms
+  acc = acc + m_cp(PWild, CtInt)
+  acc = acc + m_cp(PBind("x"), CtInt)
+  acc = acc + m_cp(PInt(1), CtInt)
+  acc = acc + m_cp(PBool(true), CtBool)
+  acc = acc + m_cp(PString("s"), CtString)
+  acc = acc + m_cp(PTuple(Array::slice([PBind("x"), PWild], 0, 2)), CtTuple(Array::slice([CtInt, CtBool], 0, 2)))
+  acc = acc + m_cp(POr(PInt(1), PInt(2)), CtInt)
+  // module_value_aliases / flatten_module_body over a module body
+  let body = Array::slice([SExpr(EUnit)], 0, 0)
+  Array::push(body, SLet(true, false, "k", None, EInt(1)))
+  Array::push(body, SLet(false, false, "p", None, EInt(2)))
+  Array::push(body, SExport(Array::slice(["k"], 0, 1)))
+  let al = Array::slice([("k", "M_k")], 0, 1)
+  acc = acc + module_value_aliases(body, "M", al)
+  let out = Array::slice([SExpr(EUnit)], 0, 0)
+  acc = acc + flatten_module_body(body, "M", al, out)
+  acc
+}

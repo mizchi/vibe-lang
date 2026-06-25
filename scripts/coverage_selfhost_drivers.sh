@@ -164,6 +164,11 @@ run_driver cov_helpers_main    scripts/coverage/cov_helpers.vibe    helpers     
 run_driver cov_syntax_main     scripts/coverage/cov_syntax.vibe     syntax      # parser arms: slices/block-local let-rec-mut/enum-struct/impl/match-modes
 run_driver cov_exprwalk_main   scripts/coverage/cov_exprwalk.vibe   exprwalk    # Expr/Pat walkers: is_mut_captured_in/rewrite_import_alias_expr/wrap_placeholder_arg/pat_binds_name
 run_driver cov_fscache_main    scripts/coverage/cov_fscache.vibe    fscache     # Fs validator load_source_if_cached_file_spec_matches: every stat-token/fingerprint arm
+run_driver cov_parser2_main    scripts/coverage/cov_parser2.vibe    parser2     # parser error/exotic arms via malformed+rare syntax through load_and_parse
+run_driver cov_walker2_main    scripts/coverage/cov_walker2.vibe    walker2     # print_expr/print_stmt + Stmt/Expr/Pat predicate walkers (full-variant)
+run_driver cov_checker_main    scripts/coverage/cov_checker.vibe    checker     # unify/occurs_in/subst_apply/subst_lookup + types_equal deep residual
+run_driver cov_transform_main  scripts/coverage/cov_transform.vibe  transform   # resolve_type_expr/type_contains_fn/env_lookup/trait_supers/rewrite_*/namespace + Pat/TypeExpr walkers
+run_driver cov_misc_main       scripts/coverage/cov_misc.vibe       misc        # stmt_section/is_expr_end_token/has_non_pipe_infix_top/check_pattern/module_value_aliases/flatten_module_body
 rm -f _build/vibe_selfhost_* 2>/dev/null || true
 
 now=$(python3 -c "import json;print(sum(json.load(open('$ACC'))['br']))")
