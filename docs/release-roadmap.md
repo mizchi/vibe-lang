@@ -127,8 +127,8 @@
 | マイルストーン | 内容 | 主テーマ | 状態 |
 | --- | --- | --- | --- |
 | **M1: 配布確定** | install + module の配布方法を凍結し、外部の人が「入れて使える」 | (1)(2) | ほぼ達成（install 配布物確定 + module fetch/lock/verify。残: semver 制約） |
-| **M2: 開発体験 MVP** | LSP MVP（診断/シンボル/hover）+ debugger P0（source-mapped trace） | (3)(4) | ほぼ達成（型付き hover + trap→source-line 着地。残: parser error recovery） |
-| **M3: 開発体験フル** | LSP 補完/リファクタ + DAP step 実行 | (3)(4) | 提案段階 |
+| **M2: 開発体験 MVP** | LSP MVP（診断/シンボル/hover）+ debugger P0（source-mapped trace） | (3)(4) | ✅ 達成（型付き hover、parser error recovery で全診断、trap→source-line） |
+| **M3: 開発体験フル** | LSP 補完/リファクタ + DAP step 実行 | (3)(4) | 一部（補完/rename/references 済、text-scan ベース）。残: DAP step 実行（P1-P4）、scope 精度 refactor |
 | **M4: GA (1.0)** | 上記を統合し、言語仕様 freeze + docs 完備で一般公開 | 全部 | — |
 
 ### 横断的な前提（どのテーマにも効く 2 つの土台）
