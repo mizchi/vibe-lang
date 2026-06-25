@@ -88,17 +88,22 @@ jobs:
           # LSP server relies on for messages.
           bash scripts/install.sh >/dev/null
           VIBE="$VIBE_BIN_DIR/vibe"
-          # --- temporary diagnostic: show what vibe diagnostics/type-at emit in
-          # this CI environment (they pass locally but the LSP test fails in CI).
+          # --- temporary diagnostic: the runner exits non-zero on `vibe
+          # diagnostics <type-error file>` in CI (passes locally). Capture the
+          # runner stderr and compare .cwasm vs .wasm to root-cause. set +e so a
+          # failing probe does not abort the step before the LSP test runs.
+          set +e
           printf 'export let main = () -> Int { zzz }\n' > /tmp/ci-bad.vibe
-          printf 'export let helper = (x: Int) -> Int { x * 2 }\nexport let main = () -> Int { helper(21) }\n' > /tmp/ci-good.vibe
+          RT="$VIBE_HOME/bin/moonrun_wt"
           echo "::group::diag-debug"
-          echo "[which cli]"; "$VIBE" version 2>&1 || true
-          echo "[diagnostics bad]"; "$VIBE" diagnostics /tmp/ci-bad.vibe; echo "(rc=$?)"
-          echo "[diagnostics good]"; "$VIBE" diagnostics /tmp/ci-good.vibe; echo "(rc=$?)"
-          echo "[type-at good 2:31]"; "$VIBE" type-at /tmp/ci-good.vibe 2 31; echo "(rc=$?)"
-          echo "[env VIBE_*]"; env | grep -i '^VIBE' || echo "(none)"
+          for art in vibe-cli.cwasm vibe-cli.wasm; do
+            echo "[diagnostics bad via $art]"
+            env VIBE_DIAGNOSTICS=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+              "$RT" "$VIBE_HOME/lib/$art" /tmp/ci-bad.vibe /tmp/ci-bad.out
+            echo "(rc=$?) out=[$(cat /tmp/ci-bad.out 2>/dev/null)]"
+          done
           echo "::endgroup::"
+          set -e
           # --- end diagnostic
           VIBE_BIN="$VIBE" node scripts/test_vibe_lsp.js
 

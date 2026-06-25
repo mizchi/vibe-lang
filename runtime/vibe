@@ -372,16 +372,21 @@ case "$cmd" in
     [ "$#" -ge 3 ] || die "usage: vibe type-at <file.vibe> <line> <col>"
     src="$1"; ta_line="$2"; ta_col="$3"
     [ -f "$src" ] || die "not found: $src"
-    cli="$(pick_cli)"
+    # Use the portable .wasm (not the AOT .cwasm) for this query: the recovering
+    # parser / type-error path trapped under the precompiled image on some hosts,
+    # and these LSP queries are latency-amortized, so prefer correctness.
+    cli="$CLI_WASM"; [ -f "$cli" ] || cli="$(pick_cli)"
     out="$(mktemp -t vibe-typeat-XXXXXX)"
     trap 'rm -f "$out"' EXIT
     # Clear any inherited compile-mode envs so this query can't be diverted to
     # the compile path (which would emit wasm bytes instead of the type string).
+    # Don't `die` on a non-zero exit — emit whatever (possibly empty) result was
+    # written so the LSP degrades gracefully instead of the whole query failing.
     env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE \
         -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
       VIBE_TYPE_AT=1 VIBE_TYPE_LINE="$ta_line" VIBE_TYPE_COL="$ta_col" \
       VIBE_SELFHOST_IMPORT_ABI=raw \
-      "$RUNNER" "$cli" "$src" "$out" >/dev/null 2>&1 || die "type-at failed: $src"
+      "$RUNNER" "$cli" "$src" "$out" >/dev/null 2>&1 || true
     if [ -s "$out" ]; then cat "$out"; fi
     ;;
   diagnostics)
@@ -392,16 +397,20 @@ case "$cmd" in
     [ "$#" -ge 1 ] || die "usage: vibe diagnostics <file.vibe>"
     src="$1"
     [ -f "$src" ] || die "not found: $src"
-    cli="$(pick_cli)"
+    # Use the portable .wasm (not the AOT .cwasm): the recovering-parser /
+    # type-error path trapped under the precompiled image on some hosts.
+    cli="$CLI_WASM"; [ -f "$cli" ] || cli="$(pick_cli)"
     out="$(mktemp -t vibe-diag-XXXXXX)"
     trap 'rm -f "$out"' EXIT
     # Clear any inherited compile-mode envs so a leaked VIBE_FS_COMPILE (etc.)
     # can't divert this into compiling and emitting wasm bytes as "diagnostics".
+    # Don't `die` on a non-zero exit — emit whatever was written (a report, not a
+    # failure) so the LSP treats empty as "no diagnostics" / falls back.
     env -u VIBE_FS_COMPILE -u VIBE_TYPE_AT -u VIBE_NORMALIZE \
         -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
       VIBE_DIAGNOSTICS=1 \
       VIBE_SELFHOST_IMPORT_ABI=raw \
-      "$RUNNER" "$cli" "$src" "$out" >/dev/null 2>&1 || die "diagnostics failed: $src"
+      "$RUNNER" "$cli" "$src" "$out" >/dev/null 2>&1 || true
     # A clean file yields empty output; this subcommand always exits 0 (a report,
     # not a failure), so the LSP can treat empty as "no diagnostics".
     if [ -s "$out" ]; then cat "$out"; fi

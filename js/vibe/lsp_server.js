@@ -337,16 +337,29 @@ function runCheck(uri) {
     // so a stray/garbled line can never become a spurious diagnostic, and never
     // fabricate one on a tooling hiccup (which would pollute every document).
     const dres = spawnSync(VIBE_BIN, ["diagnostics", tmp], { encoding: "utf8" });
-    diagnostics = (dres.stdout || "")
+    const located = (dres.stdout || "")
       .split(/\r?\n/)
       .map((l) => l.replace(/\s+$/, ""))
-      .filter((l) => /^\s*line\s+\d+:\d+:/.test(l))
-      .map((message) => ({
+      .filter((l) => /^\s*line\s+\d+:\d+:/.test(l));
+    if (located.length) {
+      diagnostics = located.map((message) => ({
         range: locate(doc.text, message),
         severity: 1, // Error
         source: "vibe",
         message: message.trim(),
       }));
+    } else {
+      // No located diagnostics: either the file is clean OR `vibe diagnostics`
+      // could not produce them in this environment. Confirm with `vibe check`
+      // (the always-available compile path) — a real error surfaces a single
+      // located diagnostic; a clean file yields none.
+      const res = spawnSync(VIBE_BIN, ["check", tmp], { encoding: "utf8" });
+      const out = `${res.stdout || ""}\n${res.stderr || ""}`;
+      if ((res.status && res.status !== 0) || /\berror:/.test(out)) {
+        const message = parseMessage(out);
+        diagnostics = [{ range: locate(doc.text, message), severity: 1, source: "vibe", message }];
+      }
+    }
   } catch {
     // Tooling hiccup (e.g. a failed temp write): report nothing rather than
     // attach a spurious diagnostic to the user's document.
