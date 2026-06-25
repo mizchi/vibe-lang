@@ -78,6 +78,7 @@ function handle(msg) {
           hoverProvider: true,
           referencesProvider: true,
           renameProvider: true,
+          documentHighlightProvider: true,
           completionProvider: { triggerCharacters: ["."] },
         },
         serverInfo: { name: "vibe-lsp", version: "0.1.0" },
@@ -100,6 +101,15 @@ function handle(msg) {
       if (!doc) { reply(msg.id, []); break; }
       const word = wordAt(doc.text, msg.params.position);
       reply(msg.id, word ? findReferences(doc.text, word).map((range) => ({ uri, range })) : []);
+      break;
+    }
+    case "textDocument/documentHighlight": {
+      const uri = msg.params.textDocument.uri;
+      const doc = docs.get(uri);
+      if (!doc) { reply(msg.id, []); break; }
+      const word = wordAt(doc.text, msg.params.position);
+      // DocumentHighlightKind.Text = 1
+      reply(msg.id, word ? findReferences(doc.text, word).map((range) => ({ range, kind: 1 })) : []);
       break;
     }
     case "textDocument/completion": {
