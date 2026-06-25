@@ -186,6 +186,7 @@ run_driver cov_walk3_main      scripts/coverage/cov_walk3.vibe      walk3       
 run_driver cov_cache2_main     scripts/coverage/cov_cache2.vibe     cache2      # normalize_path / parse_source_manifest_rows / parse_persistent_manifest_header_cache string arms
 run_driver cov_final_main      scripts/coverage/cov_final.vibe      final       # entry_declares_async_int async-entry sigs + collect_import_path + grouped-source/module-alias accumulators
 run_driver cov_final2_main     scripts/coverage/cov_final2.vibe     final2      # print_stmt type-decl variants + env_lookup/resolve_type_expr/rewrite_import_alias_expr/scan_header_import_dep residuals
+run_driver cov_typeeq_main     scripts/coverage/cov_typeeq.vibe     typeeq      # types_equal/unify CtNamed/CtTuple/CtFn/CtForAll loop-mismatch-mid-iteration arms
 rm -f _build/vibe_selfhost_* 2>/dev/null || true
 
 now=$(python3 -c "import json;print(sum(json.load(open('$ACC'))['br']))")
