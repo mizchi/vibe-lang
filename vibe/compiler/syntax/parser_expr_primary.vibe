@@ -36,7 +36,7 @@ let rec desugar_loop_body: (Expr, Array[String]) -> Expr = (expr, param_names) -
         let mut result = EContinue(Array::slice([EUnit], 0, 0))
         let mut ci = nargs - 1
         while ci >= 0 {
-          result = EAssign(Array::get(param_names, ci), EIdent(String::concat("__lt", __to_string(ci))), result)
+          result = EAssign(Array::get(param_names, ci), EIdent(String::concat("__lt", __to_string(ci)), -1), result)
           ci = ci - 1
         }
         let mut ci2 = nargs - 1
@@ -117,7 +117,7 @@ let parse_loop_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, I
       let transformed_body = desugar_loop_body(body, pnames)
       let while_expr = EWhile(EBool(true), transformed_body)
       let result = ELetMut("__loop_result", EInt(0),
-        ESeq(while_expr, EIdent("__loop_result")))
+        ESeq(while_expr, EIdent("__loop_result", -1)))
       let mut wrapped = result
       let mut wi = Array::length(pnames) - 1
       while wi >= 0 {
@@ -167,12 +167,12 @@ let parse_return_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr,
 
 let parse_perform_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, parse_recur) -> {
   match peek(tokens, pos + 1) {
-    TRParen => (EIdent("perform"), pos + 1),
-    TRBracket => (EIdent("perform"), pos + 1),
-    TRBrace => (EIdent("perform"), pos + 1),
-    TComma => (EIdent("perform"), pos + 1),
-    TSemicolon => (EIdent("perform"), pos + 1),
-    TEof => (EIdent("perform"), pos + 1),
+    TRParen => (EIdent("perform", -1), pos + 1),
+    TRBracket => (EIdent("perform", -1), pos + 1),
+    TRBrace => (EIdent("perform", -1), pos + 1),
+    TComma => (EIdent("perform", -1), pos + 1),
+    TSemicolon => (EIdent("perform", -1), pos + 1),
+    TEof => (EIdent("perform", -1), pos + 1),
     _ => {
       // `perform` binds tighter than binary operators: parse only the
       // effect-op application (primary + postfix), not a trailing binary
@@ -182,7 +182,7 @@ let parse_perform_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr
       // highest binop precedence (9, see binop_prec), so parse_infix_loop
       // stops before consuming any operator.
       let (arg, next_pos) = parse_recur(tokens, pos + 1, 10)
-      (ECall(EIdent("perform"), [
+      (ECall(EIdent("perform", -1), [
         arg
       ]), next_pos)
     }
@@ -521,8 +521,8 @@ let rec parse_record_literal_fields: (Array[Token], Int, ArrayBuilder[(String, E
     TRBrace => (ArrayBuilder::freeze(b), pos + 1),
     TIdent(fname) => {
       let (val, next_pos) = match peek(tokens, pos + 1) {
-        TComma => (EIdent(fname), pos + 1),
-        TRBrace => (EIdent(fname), pos + 1),
+        TComma => (EIdent(fname, -1), pos + 1),
+        TRBrace => (EIdent(fname, -1), pos + 1),
         _ => {
           let colon_pos = expect_tk(tokens, pos + 1, ":")
           parse_recur(tokens, colon_pos, 0)
@@ -553,7 +553,7 @@ let parse_ident_primary: (Array[Token], Int, String, (Array[Token], Int, Int) ->
         let (fields, end_pos) = parse_record_literal_fields(tokens, pos + 2, b, parse_recur)
         (ERecord(fields), end_pos)
       },
-      _ => (EIdent(name), pos + 1)
+      _ => (EIdent(name, -1), pos + 1)
     }
   } else if name == "map" {
     match peek(tokens, pos + 1) {
@@ -562,20 +562,20 @@ let parse_ident_primary: (Array[Token], Int, String, (Array[Token], Int, Int) ->
         let (fields, end_pos) = parse_map_literal_fields(tokens, pos + 2, b, parse_recur)
         (EMap(fields), end_pos)
       },
-      _ => (EIdent(name), pos + 1)
+      _ => (EIdent(name, -1), pos + 1)
     }
   } else {
     match peek(tokens, pos + 1) {
       TDoubleColon => match peek(tokens, pos + 2) {
-        TIdent(member) => (EIdent(String::concat(name, String::concat("::", member))), pos + 3),
+        TIdent(member) => (EIdent(String::concat(name, String::concat("::", member)), -1), pos + 3),
         TLBrace => {
           let b = ArrayBuilder::new()
           let (fields, end_pos) = parse_ctor_record_fields(tokens, pos + 3, b, parse_recur)
           (ERecord(fields), end_pos)
         },
-        _ => (EIdent(name), pos + 1)
+        _ => (EIdent(name, -1), pos + 1)
       },
-      _ => (EIdent(name), pos + 1)
+      _ => (EIdent(name, -1), pos + 1)
     }
   }
 }

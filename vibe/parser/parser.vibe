@@ -1148,7 +1148,7 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
       TInt(n) => (EInt(n), pos + 1),
       TFloat(n) => {
         let bits = Double::to_i64_bits(n)
-        (ECall(EIdent("__float_bits"), [
+        (ECall(EIdent("__float_bits", -1), [
           EInt(bits)
         ]), pos + 1)
       },
@@ -1168,8 +1168,8 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
                 TRBrace => (ArrayBuilder::freeze(b), p + 1),
                 TIdent(fname) => {
                   let (val, vn) = match peek(toks, p + 1) {
-                    TComma => (EIdent(fname), p + 1),
-                    TRBrace => (EIdent(fname), p + 1),
+                    TComma => (EIdent(fname, -1), p + 1),
+                    TRBrace => (EIdent(fname, -1), p + 1),
                     _ => {
                       let cn = expect_tk(toks, p + 1, ":")
                       parse_impl(toks, cn, 0)
@@ -1189,7 +1189,7 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
             let (fields, end) = parse_rec_fields(tokens, pos + 2, rb);
             (ERecord(fields), end)
           },
-          _ => (EIdent(name), pos + 1)
+          _ => (EIdent(name, -1), pos + 1)
         }
       }
       else if name == "map" {
@@ -1225,12 +1225,12 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
             let (fields, end) = parse_map_fields(tokens, pos + 2, mb);
             (EMap(fields), end)
           },
-          _ => (EIdent(name), pos + 1)
+          _ => (EIdent(name, -1), pos + 1)
         }
       }
       else match peek(tokens, pos + 1) {
         TDoubleColon => match peek(tokens, pos + 2) {
-          TIdent(member) => (EIdent(String::concat(name, String::concat("::", member))), pos + 3),
+          TIdent(member) => (EIdent(String::concat(name, String::concat("::", member)), -1), pos + 3),
           TLBrace => {
             let rec parse_record_fields = (toks: Array[Token], p: Int, b: ArrayBuilder[(String, Expr)]) -> (Array[(String, Expr)], Int)with { Error } {
               match peek(toks, p) {
@@ -1252,9 +1252,9 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
             let (fields, end) = parse_record_fields(tokens, pos + 3, rb);
             (ERecord(fields), end)
           },
-          _ => (EIdent(name), pos + 1)
+          _ => (EIdent(name, -1), pos + 1)
         },
-        _ => (EIdent(name), pos + 1)
+        _ => (EIdent(name, -1), pos + 1)
       },
       TLParen => if is_lambda_start(tokens, pos + 1) {
         let (params, ap) = parse_param_list(tokens, pos + 1)
@@ -1567,18 +1567,18 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
                 while hpi < Array::length(args) {
                   let arg = Array::get(args, hpi)
                   match arg {
-                    EIdent(n) => if n == "_" {
+                    EIdent(n, _) => if n == "_" {
                       hp = true
                     },
                     EBinOp(_, l, r) => {
                       match l {
-                        EIdent(n) => if n == "_" {
+                        EIdent(n, _) => if n == "_" {
                           hp = true
                         },
                         _ => ()
                       }
                       match r {
-                        EIdent(n) => if n == "_" {
+                        EIdent(n, _) => if n == "_" {
                           hp = true
                         },
                         _ => ()
@@ -1598,14 +1598,14 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
                 while dai < Array::length(args) {
                   let arg = Array::get(args, dai)
                   let arg_has_ph = match arg {
-                    EIdent(n) => n == "_",
+                    EIdent(n, _) => n == "_",
                     EBinOp(_, l, r) => {
                       let lh = match l {
-                        EIdent(n) => n == "_",
+                        EIdent(n, _) => n == "_",
                         _ => false
                       }
                       let rh = match r {
-                        EIdent(n) => n == "_",
+                        EIdent(n, _) => n == "_",
                         _ => false
                       }
                       lh || rh
@@ -1618,27 +1618,27 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
                       ("", None)
                     ], 0, 0)
                     let replaced = match arg {
-                      EIdent(n) => if n == "_" {
+                      EIdent(n, _) => if n == "_" {
                         let pn = "__ph0"
                         Array::push(params, (pn, None))
-                        EIdent(pn)
+                        EIdent(pn, -1)
                       } else arg,
                       EBinOp(op, l, r) => {
                         let nl = match l {
-                          EIdent(n) => if n == "_" {
+                          EIdent(n, _) => if n == "_" {
                             let pn = String::concat("__ph", __to_string(pc))
                             Array::push(params, (pn, None))
                             pc = pc + 1
-                            EIdent(pn)
+                            EIdent(pn, -1)
                           } else l,
                           _ => l
                         }
                         let nr = match r {
-                          EIdent(n) => if n == "_" {
+                          EIdent(n, _) => if n == "_" {
                             let pn = String::concat("__ph", __to_string(pc))
                             Array::push(params, (pn, None))
                             pc = pc + 1
-                            EIdent(pn)
+                            EIdent(pn, -1)
                           } else r,
                           _ => r
                         }
@@ -1663,10 +1663,10 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
         TLBracket => match peek(tokens, cur_pos + 1) {
           TColon => match peek(tokens, cur_pos + 2) {
             TRBracket => {
-              cur_expr = ECall(EIdent("__slice"), [
+              cur_expr = ECall(EIdent("__slice", -1), [
                 cur_expr,
                 EInt(0),
-                ECall(EIdent("__len"), [
+                ECall(EIdent("__len", -1), [
                   cur_expr
                 ])
               ])
@@ -1675,7 +1675,7 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
             _ => {
               let (end_expr, en) = parse_impl(tokens, cur_pos + 2, 0)
               let en2 = expect_tk(tokens, en, "]")
-              cur_expr = ECall(EIdent("__slice"), [
+              cur_expr = ECall(EIdent("__slice", -1), [
                 cur_expr,
                 EInt(0),
                 end_expr
@@ -1688,10 +1688,10 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
             match peek(tokens, n1) {
               TColon => match peek(tokens, n1 + 1) {
                 TRBracket => {
-                  cur_expr = ECall(EIdent("__slice"), [
+                  cur_expr = ECall(EIdent("__slice", -1), [
                     cur_expr,
                     idx,
-                    ECall(EIdent("__len"), [
+                    ECall(EIdent("__len", -1), [
                       cur_expr
                     ])
                   ])
@@ -1700,7 +1700,7 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
                 _ => {
                   let (end_expr, en) = parse_impl(tokens, n1 + 1, 0)
                   let en2 = expect_tk(tokens, en, "]")
-                  cur_expr = ECall(EIdent("__slice"), [
+                  cur_expr = ECall(EIdent("__slice", -1), [
                     cur_expr,
                     idx,
                     end_expr
@@ -1710,7 +1710,7 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
               },
               _ => {
                 let en = expect_tk(tokens, n1, "]")
-                cur_expr = ECall(EIdent("__index"), [
+                cur_expr = ECall(EIdent("__index", -1), [
                   cur_expr,
                   idx
                 ])
@@ -1932,7 +1932,7 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
         (ESeq(e, rest), end)
       },
       TEq => match e {
-        EIdent(name) => {
+        EIdent(name, _) => {
           let (val, vn) = parse_impl(tokens, pos + 1, 0)
           let a = skip_semi(tokens, vn)
           let (rest, end) = parse_impl(tokens, a, mode_block);
@@ -1941,7 +1941,7 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
         _ => throw("invalid assignment target")
       },
       TPlusEq => match e {
-        EIdent(name) => {
+        EIdent(name, _) => {
           let (val, vn) = parse_impl(tokens, pos + 1, 0)
           let a = skip_semi(tokens, vn)
           let (rest, end) = parse_impl(tokens, a, mode_block);
@@ -1950,7 +1950,7 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
         _ => throw("invalid assignment target")
       },
       TMinusEq => match e {
-        EIdent(name) => {
+        EIdent(name, _) => {
           let (val, vn) = parse_impl(tokens, pos + 1, 0)
           let a = skip_semi(tokens, vn)
           let (rest, end) = parse_impl(tokens, a, mode_block);
@@ -1959,7 +1959,7 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
         _ => throw("invalid assignment target")
       },
       TStarEq => match e {
-        EIdent(name) => {
+        EIdent(name, _) => {
           let (val, vn) = parse_impl(tokens, pos + 1, 0)
           let a = skip_semi(tokens, vn)
           let (rest, end) = parse_impl(tokens, a, mode_block);
@@ -1968,7 +1968,7 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
         _ => throw("invalid assignment target")
       },
       TSlashEq => match e {
-        EIdent(name) => {
+        EIdent(name, _) => {
           let (val, vn) = parse_impl(tokens, pos + 1, 0)
           let a = skip_semi(tokens, vn)
           let (rest, end) = parse_impl(tokens, a, mode_block);
@@ -1977,7 +1977,7 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
         _ => throw("invalid assignment target")
       },
       TPercentEq => match e {
-        EIdent(name) => {
+        EIdent(name, _) => {
           let (val, vn) = parse_impl(tokens, pos + 1, 0)
           let a = skip_semi(tokens, vn)
           let (rest, end) = parse_impl(tokens, a, mode_block);
@@ -2168,8 +2168,8 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
                   let fp = Array::get(field_pats, di)
                   match fp {
                     PBind(bname) => {
-                      desugar = ELet(bname, ECall(EIdent("__rec_field"), [
-                        EIdent(val_name),
+                      desugar = ELet(bname, ECall(EIdent("__rec_field", -1), [
+                        EIdent(val_name, -1),
                         EInt(di)
                       ]), desugar)
                     },
@@ -2179,14 +2179,14 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
                       while si >= 0 {
                         match Array::get(sub_pats, si) {
                           PBind(sname) => {
-                            desugar = ELet(sname, EDot(EIdent(sub_name), __to_string(si)), desugar)
+                            desugar = ELet(sname, EDot(EIdent(sub_name, -1), __to_string(si)), desugar)
                           },
                           _ => ()
                         }
                         si = si - 1
                       }
-                      desugar = ELet(sub_name, ECall(EIdent("__rec_field"), [
-                        EIdent(val_name),
+                      desugar = ELet(sub_name, ECall(EIdent("__rec_field", -1), [
+                        EIdent(val_name, -1),
                         EInt(di)
                       ]), desugar)
                     },
@@ -2249,7 +2249,7 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
                   let tp = Array::get(tpats, ti)
                   match tp {
                     PBind(bname) => {
-                      result = ELet(bname, EDot(EIdent(base_name), __to_string(ti)), result)
+                      result = ELet(bname, EDot(EIdent(base_name, -1), __to_string(ti)), result)
                     },
                     PTuple(sub_pats) => {
                       let sub_name = String::concat(base_name, String::concat("_", __to_string(ti)))
@@ -2257,7 +2257,7 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
                       while si >= 0 {
                         match Array::get(sub_pats, si) {
                           PBind(sname) => {
-                            result = ELet(sname, EDot(EIdent(sub_name), __to_string(si)), result)
+                            result = ELet(sname, EDot(EIdent(sub_name, -1), __to_string(si)), result)
                           },
                           PTuple(deep_pats) => {
                             let deep_name = String::concat(sub_name, String::concat("_", __to_string(si)))
@@ -2265,19 +2265,19 @@ export let rec parse_impl = (tokens: Array[Token], pos: Int, mode: Int) -> (Expr
                             while di2 >= 0 {
                               match Array::get(deep_pats, di2) {
                                 PBind(dname) => {
-                                  result = ELet(dname, EDot(EIdent(deep_name), __to_string(di2)), result)
+                                  result = ELet(dname, EDot(EIdent(deep_name, -1), __to_string(di2)), result)
                                 },
                                 _ => ()
                               }
                               di2 = di2 - 1
                             }
-                            result = ELet(deep_name, EDot(EIdent(sub_name), __to_string(si)), result)
+                            result = ELet(deep_name, EDot(EIdent(sub_name, -1), __to_string(si)), result)
                           },
                           _ => ()
                         }
                         si = si - 1
                       }
-                      result = ELet(sub_name, EDot(EIdent(base_name), __to_string(ti)), result)
+                      result = ELet(sub_name, EDot(EIdent(base_name, -1), __to_string(ti)), result)
                     },
                     _ => ()
                   }

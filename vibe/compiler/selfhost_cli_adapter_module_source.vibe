@@ -21,7 +21,7 @@ export enum Expr {
   EFloat(Double);
   EString(String);
   EBool(Bool);
-  EIdent(String);
+  EIdent(String, Int);
   ETuple(Array[Expr]);
   EArray(Array[Expr]);
   ERecord(Array[(String, Expr)]);
@@ -328,7 +328,7 @@ let rec collect_pat_bindings: (Pat, Array[String]) -> Int = (pat, bound) -> {
 }
 let rec collect_refs_into: (Expr, Array[String], Array[String]) -> Int = (expr, bound, out) -> {
   match expr {
-    EIdent(name) => add_ref(out, bound, name),
+    EIdent(name, _) => add_ref(out, bound, name),
     EInt(_) => 0,
     EFloat(_) => 0,
     EString(_) => 0,
@@ -4103,7 +4103,7 @@ let prepend_expr: (Expr, Array[Expr]) -> Array[Expr] = (first, rest) -> {
 }
 let expr_ident_name_or_empty: (Expr) -> String = (expr) -> {
   match expr {
-    EIdent(name) => name,
+    EIdent(name, _) => name,
     _ => ""
   }
 }
@@ -4386,7 +4386,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
     EString(_) => (CtString, s, c),
     EBool(_) => (CtBool, s, c),
     EUnit => (CtUnit, s, c),
-    EIdent(name) => match env_lookup(env, name) {
+    EIdent(name, _) => match env_lookup(env, name) {
       Some(t) => {
         let (ti, c1, new_bounds) = instantiate(t, c)
         let nblen = Array::length(new_bounds)
@@ -4465,7 +4465,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       (tt, s3, c3)
     },
     ECall(callee, args) => match callee {
-      EIdent(name) => if name == "perform" {
+      EIdent(name, _) => if name == "perform" {
         if Array::length(args) == 1 {
           match Array::get(args, 0) {
             ECall(_, opargs) => {
@@ -4482,7 +4482,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
               let (tv, c2) = fresh_var(c1)
               (tv, s1, c2)
             },
-            EIdent(_) => {
+            EIdent(_, _) => {
               let (tv, c2) = fresh_var(c)
               (tv, s, c2)
             },
@@ -4527,7 +4527,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
             (subst_apply(s2, ret_ty), s2, c2)
           },
           None => {
-            let (ct, s1, c1) = check_expr(EIdent(name), env, defs, s, c, errors)
+            let (ct, s1, c1) = check_expr(EIdent(name, -1), env, defs, s, c, errors)
             let alen = Array::length(args)
             let arg_tys = Array::slice([
               CtUnknown
@@ -6037,7 +6037,7 @@ export let get_eforin_index: (Expr) -> Option[String] with { Error } = (expr) ->
 }
 export let get_eident_name: (Expr) -> String with { Error } = (expr) -> {
   match expr {
-    EIdent(name) => name,
+    EIdent(name, _) => name,
     _ => throw("not EIdent")
   }
 }
@@ -6601,7 +6601,7 @@ let is_inlined_async_builtin: (String) -> Bool = (name) -> {
 }
 export let rec collect_free_vars_expr: (Expr, Array[String], Array[String], Array[String]) -> Int = (expr, bound, fn_names, out) -> {
   match expr {
-    EIdent(name) => if array_contains_str(bound, name) {
+    EIdent(name, _) => if array_contains_str(bound, name) {
       0
     }
     else if array_contains_str(fn_names, name) {
@@ -6769,7 +6769,7 @@ export let collect_free_vars: (Expr, Array[String], Array[String]) -> Array[Stri
 export let rec proj_root_ident: (Expr) -> String = (e) -> {
   match e {
     EDot(obj, _) => proj_root_ident(obj),
-    EIdent(nm) => nm,
+    EIdent(nm, _) => nm,
     _ => ""
   }
 }
@@ -6787,7 +6787,7 @@ export let rec scope_tail_proj_root: (Expr) -> String = (e) -> {
 }
 export let rec is_mut_captured_in: (Expr, String) -> Bool = (expr, name) -> {
   match expr {
-    EIdent(_) => false,
+    EIdent(_, _) => false,
     EInt(_) => false,
     EBool(_) => false,
     EFloat(_) => false,
@@ -7155,7 +7155,7 @@ let is_heap_value: (Expr, Map[String, Bool], HeapInferCtx) -> Bool = (e, env, hc
     match e {
       ECall(callee, args) =>
       match callee {
-        EIdent(c) =>
+        EIdent(c, _) =>
         if Map::has_key(env, c) {
           false
         } else {
@@ -7173,7 +7173,7 @@ let arg_class: (Expr, Map[String, Bool], HeapInferCtx) -> Bool = (arg, env, hctx
     true
   } else {
     match arg {
-      EIdent(n) => if Map::has_key(env, n) {
+      EIdent(n, _) => if Map::has_key(env, n) {
         Map::get(env, n)
       } else {
         false
@@ -7184,7 +7184,7 @@ let arg_class: (Expr, Map[String, Bool], HeapInferCtx) -> Bool = (arg, env, hctx
 }
 let rec analyze_calls: (String, Expr, Map[String, Bool], Array[Array[Bool]], Array[Bool], HeapInferCtx) -> Int = (name, e, env, calls, esc, hctx) -> {
   match e {
-    EIdent(n) => {
+    EIdent(n, _) => {
       if n == name {
         Array::set(esc, 0, true)
       } else {
@@ -7194,7 +7194,7 @@ let rec analyze_calls: (String, Expr, Map[String, Bool], Array[Array[Bool]], Arr
     },
     ECall(callee, args) => {
       let is_self = match callee {
-        EIdent(cn) => cn == name,
+        EIdent(cn, _) => cn == name,
         _ => false
       }
       if is_self {
@@ -7664,7 +7664,7 @@ let rec elaborate_rw: (Expr, HeapInferCtx) -> Expr = (e, hctx) -> {
     EFloat(_) => e,
     EString(_) => e,
     EBool(_) => e,
-    EIdent(_) => e,
+    EIdent(_, _) => e,
     EStringInterp(_) => e,
     EUnit => e
   }
@@ -7680,14 +7680,14 @@ export let rec pc_emit: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, exp
     EBool(_) => 0,
     EUnit => 0,
     EStringInterp(_) => 0,
-    EIdent(x) => pe_use(ctx, scope, x),
+    EIdent(x, _) => pe_use(ctx, scope, x),
     ECall(callee, args) => {
       let is_index = match callee {
-        EIdent(f) => is_borrow_arg0_call(f),
+        EIdent(f, _) => is_borrow_arg0_call(f),
         _ => false
       }
       match callee {
-        EIdent(_) => 0,
+        EIdent(_, _) => 0,
         _ => pc_emit(ctx, scope, callee)
       }
       let mut i = 0
@@ -7695,7 +7695,7 @@ export let rec pc_emit: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, exp
         let arg = Array::get(args, i)
         if is_index && i == 0 {
           match arg {
-            EIdent(_) => 0,
+            EIdent(_, _) => 0,
             _ => pc_emit(ctx, scope, arg)
           }
         } else {
@@ -7706,13 +7706,13 @@ export let rec pc_emit: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, exp
       0
     },
     EDot(obj, _field) => match obj {
-      EIdent(_) => 0,
+      EIdent(_, _) => 0,
       _ => pc_emit(ctx, scope, obj)
     }
     ,
     ELet(name, value, body) => {
       match value {
-        EIdent(src) => {
+        EIdent(src, _) => {
           if Map::has_key(scope, src) {
             let sid = Map::get(scope, src)
             let rem = Array::get(ctx.remaining, sid)
@@ -7871,7 +7871,7 @@ export let rec pc_emit: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, exp
     },
     EMatch(scrut, arms) => {
       match scrut {
-        EIdent(_) => 0,
+        EIdent(_, _) => 0,
         _ => pc_emit(ctx, scope, scrut)
       }
       let snap = copy_ints(ctx.remaining)
@@ -7945,10 +7945,10 @@ export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, ex
     EBool(_) => 0,
     EUnit => 0,
     EStringInterp(_) => 0,
-    EIdent(x) => pc_count_use(ctx, scope, x),
+    EIdent(x, _) => pc_count_use(ctx, scope, x),
     ECall(callee, args) => {
       match callee {
-        EIdent(f) => if is_borrow_arg0_call(f) {
+        EIdent(f, _) => if is_borrow_arg0_call(f) {
           0
         } else {
           pc_count_borrow(ctx, scope, f)
@@ -7957,7 +7957,7 @@ export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, ex
         _ => pc_count(ctx, scope, callee)
       }
       let is_index = match callee {
-        EIdent(f) => is_borrow_arg0_call(f),
+        EIdent(f, _) => is_borrow_arg0_call(f),
         _ => false
       }
       let mut i = 0
@@ -7965,7 +7965,7 @@ export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, ex
         let arg = Array::get(args, i)
         if is_index && i == 0 {
           match arg {
-            EIdent(obj) => pc_count_borrow(ctx, scope, obj),
+            EIdent(obj, _) => pc_count_borrow(ctx, scope, obj),
             _ => pc_count(ctx, scope, arg)
           }
         } else {
@@ -7976,7 +7976,7 @@ export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, ex
       0
     },
     EDot(obj, _field) => match obj {
-      EIdent(x) => pc_count_borrow(ctx, scope, x),
+      EIdent(x, _) => pc_count_borrow(ctx, scope, x),
       _ => pc_count(ctx, scope, obj)
     }
     ,
@@ -8121,7 +8121,7 @@ export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, ex
     },
     EMatch(scrut, arms) => {
       match scrut {
-        EIdent(sx) => pc_count_borrow(ctx, scope, sx),
+        EIdent(sx, _) => pc_count_borrow(ctx, scope, sx),
         _ => pc_count(ctx, scope, scrut)
       }
       let snap_u = copy_ints(ctx.uses)
@@ -8280,12 +8280,12 @@ let rec expr_projects_or_matches: (String, Expr) -> Bool = (name, e) -> {
   match e {
     EDot(obj, _) =>
     match obj {
-      EIdent(n) => n == name,
+      EIdent(n, _) => n == name,
       _ => expr_projects_or_matches(name, obj)
     },
     EMatch(scrut, arms) => {
       let hit = match scrut {
-        EIdent(n) => n == name,
+        EIdent(n, _) => n == name,
         _ => expr_projects_or_matches(name, scrut)
       }
       if hit {
@@ -8450,7 +8450,7 @@ let rec expr_projects_or_matches: (String, Expr) -> Bool = (name, e) -> {
     EFloat(_) => false,
     EString(_) => false,
     EBool(_) => false,
-    EIdent(_) => false,
+    EIdent(_, _) => false,
     EStringInterp(_) => false,
     EUnit => false
   }
@@ -8613,7 +8613,7 @@ export let expr_tag: (Expr) -> Int = (expr) -> {
     EBool(_) => 1,
     EFloat(_) => 2,
     EString(_) => 3,
-    EIdent(_) => 4,
+    EIdent(_, _) => 4,
     EBinOp(_, _, _) => 5,
     EUnaryOp(_, _) => 6,
     EIf(_, _, _) => 7,
@@ -8671,7 +8671,7 @@ export let is_earray: (Expr) -> Bool = (expr) -> {
 }
 export let is_eident: (Expr) -> Bool = (expr) -> {
   match expr {
-    EIdent(_) => true,
+    EIdent(_, _) => true,
     _ => false
   }
 }
@@ -8771,7 +8771,7 @@ export let get_elet_val: (Expr) -> Expr with { Error } = (expr) -> {
 export let is_ctor_call: (Expr, CtorTable) -> Bool = (value, ct) -> {
   match value {
     ECall(callee, _) => match callee {
-      EIdent(nm) => lookup_ctor(ct.names, nm, 0) >= 0,
+      EIdent(nm, _) => lookup_ctor(ct.names, nm, 0) >= 0,
       _ => false
     },
     _ => false
@@ -8963,7 +8963,7 @@ export let fn_type_param_types: (Option[TypeExpr]) -> Option[Array[TypeExpr]] = 
 }
 export let is_nullary_ctor_ident: (Expr, CtorTable) -> Bool = (value, ct) -> {
   match value {
-    EIdent(nm) => lookup_ctor(ct.names, nm, 0) >= 0,
+    EIdent(nm, _) => lookup_ctor(ct.names, nm, 0) >= 0,
     _ => false
   }
 }
@@ -12938,17 +12938,17 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
     }
     else if !prefer_bound_call && fname == "Stream::next" {
       let s_expr = Array::get(args, 0)
-      let synth = ELet("__nx_s", s_expr, EIf(ECall(EIdent("lt"), [
+      let synth = ELet("__nx_s", s_expr, EIf(ECall(EIdent("lt", -1), [
         EInt(0),
-        ECall(EIdent("Array::length"), [
-          EIdent("__nx_s")
+        ECall(EIdent("Array::length", -1), [
+          EIdent("__nx_s", -1)
         ])
-      ]), ECall(EIdent("Some"), [
-        ECall(EIdent("Array::get"), [
-          EIdent("__nx_s"),
+      ]), ECall(EIdent("Some", -1), [
+        ECall(EIdent("Array::get", -1), [
+          EIdent("__nx_s", -1),
           EInt(0)
         ])
-      ]), ECall(EIdent("None"), Array::slice([
+      ]), ECall(EIdent("None", -1), Array::slice([
         EUnit
       ], 0, 0))))
       ce(buf, synth, local_names, next_local, ctx, ld)
@@ -12956,8 +12956,8 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
     else if !prefer_bound_call && fname == "Task::timeout" {
       let ms_expr = Array::get(args, 0)
       let thunk_expr = Array::get(args, 1)
-      let synth = ELet("__to_fn", thunk_expr, ELet("__to_ms", ms_expr, ECall(EIdent("Some"), [
-        ECall(EIdent("__to_fn"), Array::slice([
+      let synth = ELet("__to_fn", thunk_expr, ELet("__to_ms", ms_expr, ECall(EIdent("Some", -1), [
+        ECall(EIdent("__to_fn", -1), Array::slice([
           EUnit
         ], 0, 0))
       ])))
@@ -12965,49 +12965,49 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
     }
     else if !prefer_bound_call && fname == "String::to_bytes" {
       let s_expr = Array::get(args, 0)
-      let loop_body = ESeq(ECall(EIdent("Array::push"), [
-        EIdent("__tb_arr"),
-        ECall(EIdent("String::char_code_at"), [
-          EIdent("__tb_s"),
-          EIdent("__tb_i")
+      let loop_body = ESeq(ECall(EIdent("Array::push", -1), [
+        EIdent("__tb_arr", -1),
+        ECall(EIdent("String::char_code_at", -1), [
+          EIdent("__tb_s", -1),
+          EIdent("__tb_i", -1)
         ])
-      ]), EAssign("__tb_i", ECall(EIdent("add"), [
-        EIdent("__tb_i"),
+      ]), EAssign("__tb_i", ECall(EIdent("add", -1), [
+        EIdent("__tb_i", -1),
         EInt(1)
       ]), EUnit))
       let synth = ELet("__tb_s", s_expr, ELetMut("__tb_arr", EArray(Array::slice([
         EUnit
-      ], 0, 0)), ELetMut("__tb_i", EInt(0), ESeq(EWhile(ECall(EIdent("lt"), [
-        EIdent("__tb_i"),
-        ECall(EIdent("String::length"), [
-          EIdent("__tb_s")
+      ], 0, 0)), ELetMut("__tb_i", EInt(0), ESeq(EWhile(ECall(EIdent("lt", -1), [
+        EIdent("__tb_i", -1),
+        ECall(EIdent("String::length", -1), [
+          EIdent("__tb_s", -1)
         ])
-      ]), loop_body), EIdent("__tb_arr")))))
+      ]), loop_body), EIdent("__tb_arr", -1)))))
       ce(buf, synth, local_names, next_local, ctx, ld)
     }
     else if !prefer_bound_call && fname == "Stream::to_string" {
       let bs_expr = Array::get(args, 0)
-      let ts_body = ESeq(ECall(EIdent("Array::push"), [
-        EIdent("__ts_parts"),
-        ECall(EIdent("String::from_char_code"), [
-          ECall(EIdent("Array::get"), [
-            EIdent("__ts_arr"),
-            EIdent("__ts_i")
+      let ts_body = ESeq(ECall(EIdent("Array::push", -1), [
+        EIdent("__ts_parts", -1),
+        ECall(EIdent("String::from_char_code", -1), [
+          ECall(EIdent("Array::get", -1), [
+            EIdent("__ts_arr", -1),
+            EIdent("__ts_i", -1)
           ])
         ])
-      ]), EAssign("__ts_i", ECall(EIdent("add"), [
-        EIdent("__ts_i"),
+      ]), EAssign("__ts_i", ECall(EIdent("add", -1), [
+        EIdent("__ts_i", -1),
         EInt(1)
       ]), EUnit))
       let synth = ELet("__ts_arr", bs_expr, ELetMut("__ts_parts", EArray(Array::slice([
         EUnit
-      ], 0, 0)), ELetMut("__ts_i", EInt(0), ESeq(EWhile(ECall(EIdent("lt"), [
-        EIdent("__ts_i"),
-        ECall(EIdent("Array::length"), [
-          EIdent("__ts_arr")
+      ], 0, 0)), ELetMut("__ts_i", EInt(0), ESeq(EWhile(ECall(EIdent("lt", -1), [
+        EIdent("__ts_i", -1),
+        ECall(EIdent("Array::length", -1), [
+          EIdent("__ts_arr", -1)
         ])
-      ]), ts_body), ECall(EIdent("String::join"), [
-        EIdent("__ts_parts"),
+      ]), ts_body), ECall(EIdent("String::join", -1), [
+        EIdent("__ts_parts", -1),
         EString("")
       ])))))
       ce(buf, synth, local_names, next_local, ctx, ld)
@@ -14757,12 +14757,12 @@ export let compile_expr_tail7: (Bytes, Array[String], Array[String], Int, Compil
     let args = ArrayBuilder::freeze(ArrayBuilder::new())
     Array::push(args, lhs)
     Array::push(args, rhs)
-    ECall(EIdent("String::concat"), args)
+    ECall(EIdent("String::concat", -1), args)
   }
   let make_to_string_expr: (String) -> Expr = (name) -> {
     let args = ArrayBuilder::freeze(ArrayBuilder::new())
-    Array::push(args, EIdent(name))
-    ECall(EIdent("__to_string"), args)
+    Array::push(args, EIdent(name, -1))
+    ECall(EIdent("__to_string", -1), args)
   }
   let plen = Array::length(parts)
   let mut result = EString("")
@@ -15427,7 +15427,7 @@ let rec reassign_carry_safe: (Expr, String) -> Bool = (e, name) -> {
     true
   } else {
     match e {
-      EIdent(_) => true,
+      EIdent(_, _) => true,
       EDot(_, _) => proj_root_ident(e) == name,
       EBinOp(_, l, r) => reassign_carry_safe(l, name) && reassign_carry_safe(r, name),
       EUnaryOp(_, x) => reassign_carry_safe(x, name),
@@ -20378,7 +20378,7 @@ let rec desugar_loop_body: (Expr, Array[String]) -> Expr = (expr, param_names) -
         let mut result = EContinue(Array::slice([EUnit], 0, 0))
         let mut ci = nargs - 1
         while ci >= 0 {
-          result = EAssign(Array::get(param_names, ci), EIdent(String::concat("__lt", __to_string(ci))), result)
+          result = EAssign(Array::get(param_names, ci), EIdent(String::concat("__lt", __to_string(ci)), -1), result)
           ci = ci - 1
         }
         let mut ci2 = nargs - 1
@@ -20449,7 +20449,7 @@ let parse_loop_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, I
       let transformed_body = desugar_loop_body(body, pnames)
       let while_expr = EWhile(EBool(true), transformed_body)
       let result = ELetMut("__loop_result", EInt(0),
-        ESeq(while_expr, EIdent("__loop_result")))
+        ESeq(while_expr, EIdent("__loop_result", -1)))
       let mut wrapped = result
       let mut wi = Array::length(pnames) - 1
       while wi >= 0 {
@@ -20495,15 +20495,15 @@ let parse_return_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr,
 }
 let parse_perform_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, parse_recur) -> {
   match peek(tokens, pos + 1) {
-    TRParen => (EIdent("perform"), pos + 1),
-    TRBracket => (EIdent("perform"), pos + 1),
-    TRBrace => (EIdent("perform"), pos + 1),
-    TComma => (EIdent("perform"), pos + 1),
-    TSemicolon => (EIdent("perform"), pos + 1),
-    TEof => (EIdent("perform"), pos + 1),
+    TRParen => (EIdent("perform", -1), pos + 1),
+    TRBracket => (EIdent("perform", -1), pos + 1),
+    TRBrace => (EIdent("perform", -1), pos + 1),
+    TComma => (EIdent("perform", -1), pos + 1),
+    TSemicolon => (EIdent("perform", -1), pos + 1),
+    TEof => (EIdent("perform", -1), pos + 1),
     _ => {
       let (arg, next_pos) = parse_recur(tokens, pos + 1, 10)
-      (ECall(EIdent("perform"), [
+      (ECall(EIdent("perform", -1), [
         arg
       ]), next_pos)
     }
@@ -20826,8 +20826,8 @@ let rec parse_record_literal_fields: (Array[Token], Int, ArrayBuilder[(String, E
     TRBrace => (ArrayBuilder::freeze(b), pos + 1),
     TIdent(fname) => {
       let (val, next_pos) = match peek(tokens, pos + 1) {
-        TComma => (EIdent(fname), pos + 1),
-        TRBrace => (EIdent(fname), pos + 1),
+        TComma => (EIdent(fname, -1), pos + 1),
+        TRBrace => (EIdent(fname, -1), pos + 1),
         _ => {
           let colon_pos = expect_tk(tokens, pos + 1, ":")
           parse_recur(tokens, colon_pos, 0)
@@ -20857,7 +20857,7 @@ let parse_ident_primary: (Array[Token], Int, String, (Array[Token], Int, Int) ->
         let (fields, end_pos) = parse_record_literal_fields(tokens, pos + 2, b, parse_recur)
         (ERecord(fields), end_pos)
       },
-      _ => (EIdent(name), pos + 1)
+      _ => (EIdent(name, -1), pos + 1)
     }
   } else if name == "map" {
     match peek(tokens, pos + 1) {
@@ -20866,20 +20866,20 @@ let parse_ident_primary: (Array[Token], Int, String, (Array[Token], Int, Int) ->
         let (fields, end_pos) = parse_map_literal_fields(tokens, pos + 2, b, parse_recur)
         (EMap(fields), end_pos)
       },
-      _ => (EIdent(name), pos + 1)
+      _ => (EIdent(name, -1), pos + 1)
     }
   } else {
     match peek(tokens, pos + 1) {
       TDoubleColon => match peek(tokens, pos + 2) {
-        TIdent(member) => (EIdent(String::concat(name, String::concat("::", member))), pos + 3),
+        TIdent(member) => (EIdent(String::concat(name, String::concat("::", member)), -1), pos + 3),
         TLBrace => {
           let b = ArrayBuilder::new()
           let (fields, end_pos) = parse_ctor_record_fields(tokens, pos + 3, b, parse_recur)
           (ERecord(fields), end_pos)
         },
-        _ => (EIdent(name), pos + 1)
+        _ => (EIdent(name, -1), pos + 1)
       },
-      _ => (EIdent(name), pos + 1)
+      _ => (EIdent(name, -1), pos + 1)
     }
   }
 }
@@ -20947,11 +20947,11 @@ let index_expr: (Expr, Expr) -> Expr = (cur_expr, idx) -> {
   let args = empty_exprs()
   Array::push(args, cur_expr)
   Array::push(args, idx)
-  ECall(EIdent("__index"), args)
+  ECall(EIdent("__index", -1), args)
 }
 let pipe_arg_is_hole: (Expr) -> Bool = (arg) -> {
   match arg {
-    EIdent(n) => n == "_",
+    EIdent(n, _) => n == "_",
     _ => false
   }
 }
@@ -21026,14 +21026,14 @@ let parse_call_arg: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int) 
 }
 let has_placeholder_arg: (Expr) -> Bool = (arg) -> {
   match arg {
-    EIdent(n) => n == "_",
+    EIdent(n, _) => n == "_",
     EBinOp(_, l, r) => {
       let left_has = match l {
-        EIdent(n) => n == "_",
+        EIdent(n, _) => n == "_",
         _ => false
       }
       let right_has = match r {
-        EIdent(n) => n == "_",
+        EIdent(n, _) => n == "_",
         _ => false
       }
       left_has || right_has
@@ -21046,7 +21046,7 @@ let slice_from_idx_expr: (Expr, Expr, Expr) -> Expr = (cur_expr, idx, end_expr) 
   Array::push(args, cur_expr)
   Array::push(args, idx)
   Array::push(args, end_expr)
-  ECall(EIdent("__slice"), args)
+  ECall(EIdent("__slice", -1), args)
 }
 let has_placeholder_args: (Array[Expr]) -> Bool = (args) -> {
   let mut i = 0
@@ -21090,7 +21090,7 @@ let slice_from_zero_expr: (Expr, Expr) -> Expr = (cur_expr, end_expr) -> {
   Array::push(args, cur_expr)
   Array::push(args, EInt(0))
   Array::push(args, end_expr)
-  ECall(EIdent("__slice"), args)
+  ECall(EIdent("__slice", -1), args)
 }
 let wrap_placeholder_arg: (Expr) -> Expr = (arg) -> {
   let mut pc = 0
@@ -21098,21 +21098,21 @@ let wrap_placeholder_arg: (Expr) -> Expr = (arg) -> {
     ("", None)
   ], 0, 0)
   let replaced = match arg {
-    EIdent(n) => if n == "_" {
+    EIdent(n, _) => if n == "_" {
       let pn = "__ph0"
       Array::push(params, (pn, None))
-      EIdent(pn)
+      EIdent(pn, -1)
     } else {
       arg
     }
     ,
     EBinOp(op, l, r) => {
       let nl = match l {
-        EIdent(n) => if n == "_" {
+        EIdent(n, _) => if n == "_" {
           let pn = String::concat("__ph", __to_string(pc))
           Array::push(params, (pn, None))
           pc = pc + 1
-          EIdent(pn)
+          EIdent(pn, -1)
         } else {
           l
         }
@@ -21120,11 +21120,11 @@ let wrap_placeholder_arg: (Expr) -> Expr = (arg) -> {
         _ => l
       }
       let nr = match r {
-        EIdent(n) => if n == "_" {
+        EIdent(n, _) => if n == "_" {
           let pn = String::concat("__ph", __to_string(pc))
           Array::push(params, (pn, None))
           pc = pc + 1
-          EIdent(pn)
+          EIdent(pn, -1)
         } else {
           r
         }
@@ -21243,7 +21243,7 @@ let rec parse_postfix: (Array[Token], Int, Expr, (Array[Token], Int, Int) -> (Ex
     TLBracket => match peek(tokens, pos + 1) {
       TColon => match peek(tokens, pos + 2) {
         TRBracket => {
-          let end_expr = ECall(EIdent("__len"), [
+          let end_expr = ECall(EIdent("__len", -1), [
             expr
           ])
           parse_postfix(tokens, pos + 3, slice_from_zero_expr(expr, end_expr), parse_recur)
@@ -21262,7 +21262,7 @@ let rec parse_postfix: (Array[Token], Int, Expr, (Array[Token], Int, Int) -> (Ex
         match peek(tokens, idx_next) {
           TColon => match peek(tokens, idx_next + 1) {
             TRBracket => {
-              let end_expr = ECall(EIdent("__len"), [
+              let end_expr = ECall(EIdent("__len", -1), [
                 expr
               ])
               parse_postfix(tokens, idx_next + 2, slice_from_idx_expr(expr, idx, end_expr), parse_recur)
@@ -21472,7 +21472,7 @@ let apply_struct_destr: (Pat, Expr, Expr) -> Expr = (pat, val, rest) -> {
         let (fname, fpat) = Array::get(fields, di)
         match fpat {
           PBind(bname) => {
-            desugar = ELet(bname, EDot(EIdent(val_name), fname), desugar)
+            desugar = ELet(bname, EDot(EIdent(val_name, -1), fname), desugar)
           },
           _ => ()
         }
@@ -21493,8 +21493,8 @@ let apply_record_destr: (Pat, Expr, Expr) -> Expr = (pat, val, rest) -> {
         let fp = Array::get(field_pats, di)
         match fp {
           PBind(bname) => {
-            desugar = ELet(bname, ECall(EIdent("__rec_field"), [
-              EIdent(val_name),
+            desugar = ELet(bname, ECall(EIdent("__rec_field", -1), [
+              EIdent(val_name, -1),
               EInt(di)
             ]), desugar)
           },
@@ -21504,14 +21504,14 @@ let apply_record_destr: (Pat, Expr, Expr) -> Expr = (pat, val, rest) -> {
             while si >= 0 {
               match Array::get(sub_pats, si) {
                 PBind(sname) => {
-                  desugar = ELet(sname, EDot(EIdent(sub_name), __to_string(si)), desugar)
+                  desugar = ELet(sname, EDot(EIdent(sub_name, -1), __to_string(si)), desugar)
                 },
                 _ => ()
               }
               si = si - 1
             }
-            desugar = ELet(sub_name, ECall(EIdent("__rec_field"), [
-              EIdent(val_name),
+            desugar = ELet(sub_name, ECall(EIdent("__rec_field", -1), [
+              EIdent(val_name, -1),
               EInt(di)
             ]), desugar)
           },
@@ -21544,8 +21544,8 @@ let apply_block_step: (BlockStep, Expr) -> Expr = (step, rest) -> {
       ]), rest),
       (PCtor("Err", [
         PBind("__bind_err")
-      ]), ECall(EIdent("Err"), [
-        EIdent("__bind_err")
+      ]), ECall(EIdent("Err", -1), [
+        EIdent("__bind_err", -1)
       ]))
     ])
   }
@@ -21743,7 +21743,7 @@ let parse_impl_block: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int
               p = next + 1
             },
             TEq => match e {
-              EIdent(name) => {
+              EIdent(name, _) => {
                 let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur)
                 ArrayBuilder::push(steps, StepAssign(name, val))
                 p = next_pos
@@ -21754,13 +21754,13 @@ let parse_impl_block: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int
                 Array::push(set_args, obj)
                 Array::push(set_args, EString(field))
                 Array::push(set_args, val)
-                ArrayBuilder::push(steps, StepSeq(ECall(EIdent("__set_field"), set_args)))
+                ArrayBuilder::push(steps, StepSeq(ECall(EIdent("__set_field", -1), set_args)))
                 p = next_pos
               },
               _ => throw("invalid assignment target")
             },
             TPlusEq => match e {
-              EIdent(name) => {
+              EIdent(name, _) => {
                 let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur)
                 ArrayBuilder::push(steps, StepAssignOp(name, "+", val))
                 p = next_pos
@@ -21768,7 +21768,7 @@ let parse_impl_block: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int
               _ => throw("invalid assignment target")
             },
             TMinusEq => match e {
-              EIdent(name) => {
+              EIdent(name, _) => {
                 let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur)
                 ArrayBuilder::push(steps, StepAssignOp(name, "-", val))
                 p = next_pos
@@ -21776,7 +21776,7 @@ let parse_impl_block: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int
               _ => throw("invalid assignment target")
             },
             TStarEq => match e {
-              EIdent(name) => {
+              EIdent(name, _) => {
                 let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur)
                 ArrayBuilder::push(steps, StepAssignOp(name, "*", val))
                 p = next_pos
@@ -21784,7 +21784,7 @@ let parse_impl_block: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int
               _ => throw("invalid assignment target")
             },
             TSlashEq => match e {
-              EIdent(name) => {
+              EIdent(name, _) => {
                 let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur)
                 ArrayBuilder::push(steps, StepAssignOp(name, "/", val))
                 p = next_pos
@@ -21792,7 +21792,7 @@ let parse_impl_block: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int
               _ => throw("invalid assignment target")
             },
             TPercentEq => match e {
-              EIdent(name) => {
+              EIdent(name, _) => {
                 let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur)
                 ArrayBuilder::push(steps, StepAssignOp(name, "%", val))
                 p = next_pos
@@ -21814,14 +21814,14 @@ let build_pull_for_in: (String, Option[String], Expr, Expr, Int) -> Expr = (valu
   let next_var = "__pull_next_\{uid}"
   let cont_var = "__pull_continue_\{uid}"
   let some_arm = match index_name {
-    Some(ix) => ESeq(body, EAssign(ix, EBinOp("+", EIdent(ix), EInt(1)), EUnit)),
+    Some(ix) => ESeq(body, EAssign(ix, EBinOp("+", EIdent(ix, -1), EInt(1)), EUnit)),
     None => ESeq(body, EUnit)
   }
-  let loop_body = EMatch(ECall(EIdent(next_var), []), [
+  let loop_body = EMatch(ECall(EIdent(next_var, -1), []), [
     (PCtor("Some", [PBind(value_name)]), some_arm),
     (PCtor("None", []), EAssign(cont_var, EBool(false), EUnit))
   ])
-  let core_loop = ELetMut(cont_var, EBool(true), EWhile(EIdent(cont_var), loop_body))
+  let core_loop = ELetMut(cont_var, EBool(true), EWhile(EIdent(cont_var, -1), loop_body))
   let with_index = match index_name {
     Some(ix) => ELetMut(ix, EInt(0), core_loop),
     None => core_loop
@@ -22548,35 +22548,35 @@ export let rec parse_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (
       let (e, next) = parse_impl(tokens, pos, 0)
       match peek(tokens, next) {
         TEq => match e {
-          EIdent(name) => {
+          EIdent(name, _) => {
             let (val, vn) = parse_impl(tokens, next + 1, 0)
             (SExpr(EAssign(name, val, EUnit)), vn)
           },
           _ => (SExpr(e), next)
         },
         TPlusEq => match e {
-          EIdent(name) => {
+          EIdent(name, _) => {
             let (val, vn) = parse_impl(tokens, next + 1, 0)
             (SExpr(EAssignOp(name, "+", val, EUnit)), vn)
           },
           _ => (SExpr(e), next)
         },
         TMinusEq => match e {
-          EIdent(name) => {
+          EIdent(name, _) => {
             let (val, vn) = parse_impl(tokens, next + 1, 0)
             (SExpr(EAssignOp(name, "-", val, EUnit)), vn)
           },
           _ => (SExpr(e), next)
         },
         TStarEq => match e {
-          EIdent(name) => {
+          EIdent(name, _) => {
             let (val, vn) = parse_impl(tokens, next + 1, 0)
             (SExpr(EAssignOp(name, "*", val, EUnit)), vn)
           },
           _ => (SExpr(e), next)
         },
         TSlashEq => match e {
-          EIdent(name) => {
+          EIdent(name, _) => {
             let (val, vn) = parse_impl(tokens, next + 1, 0)
             (SExpr(EAssignOp(name, "/", val, EUnit)), vn)
           },
@@ -22716,7 +22716,7 @@ export let collect_interp_exprs: (Array[String]) -> Array[Expr] with { Error } =
       let expr_src = Array::get(parts, i + 1)
       let part_tokens = lex(expr_src)
       let part_expr = parse_interp_expr(part_tokens)
-      ArrayBuilder::push(exprs, ECall(EIdent("__to_string"), [
+      ArrayBuilder::push(exprs, ECall(EIdent("__to_string", -1), [
         part_expr
       ]))
     }
@@ -22729,7 +22729,7 @@ let concat_exprs: (Expr, Expr) -> Expr = (lhs, rhs) -> {
   ArrayBuilder::push(b, lhs)
   ArrayBuilder::push(b, rhs)
   let args = ArrayBuilder::freeze(b)
-  ECall(EIdent("String::concat"), args)
+  ECall(EIdent("String::concat", -1), args)
 }
 export let fold_interp_exprs_loop: (Array[Expr], Int, Expr, Int) -> Expr = (result_arr, result_len, result0, j0) -> {
   let mut result = result0
@@ -23472,7 +23472,7 @@ export let rec print_expr: (Expr) -> String = (e) -> {
     EBool(b) => if b {
       "true"
     } else "false",
-    EIdent(name) => name,
+    EIdent(name, _) => name,
     EUnit => "()",
     ETuple(elems) => String::concat("(", String::concat(join(map_to_strings(elems, print_expr), ", "), ")")),
     EArray(elems) => String::concat("[", String::concat(join(map_to_strings(elems, print_expr), ", "), "]")),
@@ -23524,7 +23524,7 @@ export let rec print_expr: (Expr) -> String = (e) -> {
       String::concat("for ", String::concat(binding, String::concat(" in ", String::concat(print_expr(iterable), String::concat(" { ", String::concat(print_expr(body), " }"))))))
     },
     ECall(callee, args) => match callee {
-      EIdent("perform") => if Array::length(args) == 1 {
+      EIdent("perform", _) => if Array::length(args) == 1 {
         String::concat("perform ", print_expr(Array::get(args, 0)))
       } else {
         String::concat(print_expr(callee), String::concat("(", String::concat(join(map_to_strings(args, print_expr), ", "), ")")))
@@ -23931,8 +23931,8 @@ let alias_map_without_params: (Array[(String, String)], Array[(String, Option[Ty
 }
 export let rec rewrite_import_alias_expr: (Expr, Array[(String, String)]) -> Expr = (expr, aliases) -> {
   match expr {
-    EIdent(name) => match lookup_alias(aliases, name) {
-      Some(original) => EIdent(original),
+    EIdent(name, _) => match lookup_alias(aliases, name) {
+      Some(original) => EIdent(original, -1),
       None => expr
     },
     ETuple(items) => ETuple(for item in items {
@@ -24378,8 +24378,8 @@ let rec rewrite_private_type_ctor_pat: (Pat, Array[(String, String)], Array[(Str
 }
 let rec rewrite_private_type_ctor_expr: (Expr, Array[(String, String)], Array[(String, String)]) -> Expr = (expr, type_renames, ctor_renames) -> {
   match expr {
-    EIdent(name) => match lookup_alias(ctor_renames, name) {
-      Some(renamed) => EIdent(renamed),
+    EIdent(name, _) => match lookup_alias(ctor_renames, name) {
+      Some(renamed) => EIdent(renamed, -1),
       None => expr
     },
     ETuple(items) => ETuple(for item in items {
@@ -29035,7 +29035,7 @@ let rec fold_expr: (Expr) -> Expr = (expr) -> {
     EFloat(_) => expr,
     EString(_) => expr,
     EBool(_) => expr,
-    EIdent(_) => expr,
+    EIdent(_, _) => expr,
     EUnit => expr,
     EStringInterp(_) => expr,
     ETuple(items) => ETuple(for it in items {

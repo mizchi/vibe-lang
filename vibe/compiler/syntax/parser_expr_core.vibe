@@ -72,7 +72,7 @@ let index_expr: (Expr, Expr) -> Expr = (cur_expr, idx) -> {
   let args = empty_exprs()
   Array::push(args, cur_expr)
   Array::push(args, idx)
-  ECall(EIdent("__index"), args)
+  ECall(EIdent("__index", -1), args)
 }
 
 // `x |> f(a, _)` substitutes the piped value at each bare `_` placeholder
@@ -83,7 +83,7 @@ let index_expr: (Expr, Expr) -> Expr = (cur_expr, idx) -> {
 // lowered to section lambdas before they reach here.
 let pipe_arg_is_hole: (Expr) -> Bool = (arg) -> {
   match arg {
-    EIdent(n) => n == "_",
+    EIdent(n, _) => n == "_",
     _ => false
   }
 }
@@ -161,14 +161,14 @@ let parse_call_arg: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int) 
 
 let has_placeholder_arg: (Expr) -> Bool = (arg) -> {
   match arg {
-    EIdent(n) => n == "_",
+    EIdent(n, _) => n == "_",
     EBinOp(_, l, r) => {
       let left_has = match l {
-        EIdent(n) => n == "_",
+        EIdent(n, _) => n == "_",
         _ => false
       }
       let right_has = match r {
-        EIdent(n) => n == "_",
+        EIdent(n, _) => n == "_",
         _ => false
       }
       left_has || right_has
@@ -182,7 +182,7 @@ let slice_from_idx_expr: (Expr, Expr, Expr) -> Expr = (cur_expr, idx, end_expr) 
   Array::push(args, cur_expr)
   Array::push(args, idx)
   Array::push(args, end_expr)
-  ECall(EIdent("__slice"), args)
+  ECall(EIdent("__slice", -1), args)
 }
 
 let has_placeholder_args: (Array[Expr]) -> Bool = (args) -> {
@@ -229,7 +229,7 @@ let slice_from_zero_expr: (Expr, Expr) -> Expr = (cur_expr, end_expr) -> {
   Array::push(args, cur_expr)
   Array::push(args, EInt(0))
   Array::push(args, end_expr)
-  ECall(EIdent("__slice"), args)
+  ECall(EIdent("__slice", -1), args)
 }
 
 let wrap_placeholder_arg: (Expr) -> Expr = (arg) -> {
@@ -238,21 +238,21 @@ let wrap_placeholder_arg: (Expr) -> Expr = (arg) -> {
     ("", None)
   ], 0, 0)
   let replaced = match arg {
-    EIdent(n) => if n == "_" {
+    EIdent(n, _) => if n == "_" {
       let pn = "__ph0"
       Array::push(params, (pn, None))
-      EIdent(pn)
+      EIdent(pn, -1)
     } else {
       arg
     }
     ,
     EBinOp(op, l, r) => {
       let nl = match l {
-        EIdent(n) => if n == "_" {
+        EIdent(n, _) => if n == "_" {
           let pn = String::concat("__ph", __to_string(pc))
           Array::push(params, (pn, None))
           pc = pc + 1
-          EIdent(pn)
+          EIdent(pn, -1)
         } else {
           l
         }
@@ -260,11 +260,11 @@ let wrap_placeholder_arg: (Expr) -> Expr = (arg) -> {
         _ => l
       }
       let nr = match r {
-        EIdent(n) => if n == "_" {
+        EIdent(n, _) => if n == "_" {
           let pn = String::concat("__ph", __to_string(pc))
           Array::push(params, (pn, None))
           pc = pc + 1
-          EIdent(pn)
+          EIdent(pn, -1)
         } else {
           r
         }
@@ -388,7 +388,7 @@ let rec parse_postfix: (Array[Token], Int, Expr, (Array[Token], Int, Int) -> (Ex
     TLBracket => match peek(tokens, pos + 1) {
       TColon => match peek(tokens, pos + 2) {
         TRBracket => {
-          let end_expr = ECall(EIdent("__len"), [
+          let end_expr = ECall(EIdent("__len", -1), [
             expr
           ])
           parse_postfix(tokens, pos + 3, slice_from_zero_expr(expr, end_expr), parse_recur)
@@ -407,7 +407,7 @@ let rec parse_postfix: (Array[Token], Int, Expr, (Array[Token], Int, Int) -> (Ex
         match peek(tokens, idx_next) {
           TColon => match peek(tokens, idx_next + 1) {
             TRBracket => {
-              let end_expr = ECall(EIdent("__len"), [
+              let end_expr = ECall(EIdent("__len", -1), [
                 expr
               ])
               parse_postfix(tokens, idx_next + 2, slice_from_idx_expr(expr, idx, end_expr), parse_recur)
