@@ -158,7 +158,7 @@ let reorder_type_decls_first: (Array[Stmt], Int) -> Array[Stmt] = (stmts, start)
   out
 }
 
-export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, Int, Array[String]) -> (TypeEnv, Subst, Int) = (raw_stmts, i, env, defs, s, c, errors) -> {
+export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (TypeEnv, Subst, Int) = (raw_stmts, i, env, defs, s, c, errors, tytab) -> {
   let stmts = reorder_type_decls_first(raw_stmts, i)
   let mut idx = i
   let mut cur_env = env
@@ -197,9 +197,9 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
     let (new_env, s1, c1) = match stmt {
       SLet(_, is_rec, name, ann, val) => {
         let (vt, ns, nc) = if is_rec {
-          check_expr(val, env_bind(env, name, CtUnknown), defs, s, c, errors)
+          check_expr(val, env_bind(env, name, CtUnknown), defs, s, c, errors, tytab)
         } else {
-          check_expr(val, env, defs, s, c, errors)
+          check_expr(val, env, defs, s, c, errors, tytab)
         }
         let t = match ann {
           Some(te) => resolve_type_expr(te, defs),
@@ -209,7 +209,7 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
         (bind_value_or_annotation_return(env1, name, val, ann, defs), ns, nc)
       },
       SLetMut(name, ann, val) => {
-        let (vt, ns, nc) = check_expr(val, env, defs, s, c, errors)
+        let (vt, ns, nc) = check_expr(val, env, defs, s, c, errors, tytab)
         let t = match ann {
           Some(te) => resolve_type_expr(te, defs),
           None => vt
@@ -218,7 +218,7 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
         (bind_value_or_annotation_return(env1, name, val, ann, defs), ns, nc)
       },
       SLetPat(pat, val) => {
-        let (vt, ns, nc) = check_expr(val, env, defs, s, c, errors)
+        let (vt, ns, nc) = check_expr(val, env, defs, s, c, errors, tytab)
         let new_env = match pat {
           PTuple(pats) => match vt {
             CtTuple(types) => {
@@ -394,19 +394,19 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
         (bind_annotation_return(env1, name, Some(te), defs), s, c)
       },
       STest(_, body) => {
-        let (_, ns, nc) = check_expr(body, env, defs, s, c, errors)
+        let (_, ns, nc) = check_expr(body, env, defs, s, c, errors, tytab)
         (env, ns, nc)
       },
       SBench(_, body) => {
-        let (_, ns, nc) = check_expr(body, env, defs, s, c, errors)
+        let (_, ns, nc) = check_expr(body, env, defs, s, c, errors, tytab)
         (env, ns, nc)
       },
       SExpr(expr) => {
-        let (_, ns, nc) = check_expr(expr, env, defs, s, c, errors)
+        let (_, ns, nc) = check_expr(expr, env, defs, s, c, errors, tytab)
         (env, ns, nc)
       },
       SModule(_, _, body) => {
-        let _ = check_stmts(body, 0, env, defs, s, c, errors)
+        let _ = check_stmts(body, 0, env, defs, s, c, errors, tytab)
         (env, s, c)
       },
       SImport(_, names) => (bind_stmt_imports(env, names), s, c)
@@ -452,11 +452,46 @@ export let check_program: (Array[Stmt]) -> TypeEnv with { Error } = (stmts) -> {
   let seeded_env = env_cache(seeded_raw_env)
   let errors = ArrayBuilder::new()
   let frozen_errors = ArrayBuilder::freeze(errors)
-  let (env, _, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors)
+  let tytab = Array::slice([
+    (0, CtUnit)
+  ], 0, 0)
+  let (env, _, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
   if Array::length(frozen_errors) > 0 {
     throw(Array::get(frozen_errors, 0))
   }
   env
+}
+
+// Collecting variant of check_program for typed hover (vibe type-at): runs the
+// same inference but RETURNS the recorded (offset, Type) table plus the FINAL
+// substitution (check_stmts' 2nd value), instead of the TypeEnv. It degrades
+// gracefully: any type error is swallowed and whatever table was collected so
+// far is returned, so hovering inside a partially-bad file still resolves the
+// names that were checked before the error. The table holds RAW (pre-final
+// subst) types; callers resolve via subst_apply(finalSubst, ty).
+export let check_program_type_table: (Array[Stmt]) -> (Array[(Int, Type)], Subst) with { Error } = (stmts) -> {
+  let empty_defs = Array::slice([
+    TDAlias("_dummy", Array::slice([
+      ""
+    ], 0, 0), CtUnit)
+  ], 0, 0)
+  let seeded_raw_env = if trait_defined(EnvEmpty, "Eq") {
+    EnvEmpty
+  } else {
+    register_builtin_traits(EnvEmpty)
+  }
+  let seeded_env = env_cache(seeded_raw_env)
+  let errors = ArrayBuilder::new()
+  let frozen_errors = ArrayBuilder::freeze(errors)
+  let tytab = Array::slice([
+    (0, CtUnit)
+  ], 0, 0)
+  handle {
+    let (_, final_s, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
+    (tytab, final_s)
+  } with Error {
+    Throw(_) => (tytab, SubstEmpty)
+  }
 }
 
 export let check_program_with_env: (Array[Stmt], TypeEnv) -> TypeEnv with { Error } = (stmts, initial_env) -> {
@@ -477,7 +512,10 @@ export let check_program_with_env: (Array[Stmt], TypeEnv) -> TypeEnv with { Erro
       let seeded_env = env_cache(seeded_raw_env)
       let errors = ArrayBuilder::new()
       let frozen_errors = ArrayBuilder::freeze(errors)
-      let (env, _, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors)
+      let tytab = Array::slice([
+        (0, CtUnit)
+      ], 0, 0)
+      let (env, _, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
       if Array::length(frozen_errors) > 0 {
         throw(Array::get(frozen_errors, 0))
       }

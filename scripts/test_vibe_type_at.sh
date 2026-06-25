@@ -58,5 +58,27 @@ else
   echo "FAIL: type-at on a use of 'add' (2:31) should contain Int, got '$ty_use'" >&2; fail=$((fail + 1))
 fi
 
+# LOCALS and PARAMETERS resolve via the per-node type table (they live in nested
+# inference scopes, gone from the returned TypeEnv, so the env-lookup fallback
+# alone would yield ""). File: `export let f = (n: Int) -> Int { let g = n * 2`
+# / `  g }`.  The USE of the parameter `n` in `n * 2` is line 1 col 42; the USE
+# of the local `g` returned on line 2 col 3. Both must resolve to Int.
+h="$WORK/local.vibe"
+printf 'export let f = (n: Int) -> Int { let g = n * 2\n  g }\n' > "$h"
+
+ty_param="$("$VIBE" type-at "$h" 1 42 2>/dev/null || true)"
+if printf '%s' "$ty_param" | grep -qF "Int"; then
+  echo "ok: type-at on parameter use 'n' (1:42) contains Int -> '$ty_param'"; pass=$((pass + 1))
+else
+  echo "FAIL: type-at on parameter use 'n' (1:42) should contain Int, got '$ty_param'" >&2; fail=$((fail + 1))
+fi
+
+ty_local="$("$VIBE" type-at "$h" 2 3 2>/dev/null || true)"
+if printf '%s' "$ty_local" | grep -qF "Int"; then
+  echo "ok: type-at on local use 'g' (2:3) contains Int -> '$ty_local'"; pass=$((pass + 1))
+else
+  echo "FAIL: type-at on local use 'g' (2:3) should contain Int, got '$ty_local'" >&2; fail=$((fail + 1))
+fi
+
 echo "[vibe-type-at] $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

@@ -4251,7 +4251,7 @@ let infer_named_trait_binop: (TypeEnv, Type, Type, String, Subst) -> Option[(Typ
     None => None
   }
 }
-let infer_binop_type: (String, Type, Type, TypeEnv, Subst, Array[String]) -> (Type, Subst) = (op, left_ty, right_ty, env, s, errors) -> {
+let infer_binop_type: (String, Type, Type, TypeEnv, Subst, Array[String], Array[(Int, Type)]) -> (Type, Subst) = (op, left_ty, right_ty, env, s, errors, tytab) -> {
   if is_logic_binop(op) {
     match unify_binop_candidate(left_ty, right_ty, CtBool, s) {
       Some(s1) => (CtBool, s1),
@@ -4386,7 +4386,7 @@ let rec resolve_tparams_in: (Type, TypeEnv) -> Type = (ty, env) -> {
     _ => ty
   }
 }
-export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String]) -> (Type, Subst, Int) = (expr, env, defs, s, c, errors) -> {
+export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int) = (expr, env, defs, s, c, errors, tytab) -> {
   match expr {
     EInt(_) => (CtInt, s, c),
     EFloat(_) => (CtDouble, s, c),
@@ -4406,10 +4406,22 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
           }
           bi = bi + 1
         }
+        if ident_off >= 0 {
+          Array::push(tytab, (ident_off, ti))
+        } else {
+          ()
+        }
         (ti, s1, c1)
       },
       None => match lookup_builtin(name) {
-        Some(t) => (t, s, c),
+        Some(t) => {
+          if ident_off >= 0 {
+            Array::push(tytab, (ident_off, t))
+          } else {
+            ()
+          }
+          (t, s, c)
+        },
         None => {
           Array::push(errors, String::concat(String::concat("unknown name: ", name), off_marker(ident_off)))
           (CtUnknown, s, c)
@@ -4419,7 +4431,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
     ESeq(left, right) => {
       let mut s1 = s
       let mut c1 = c
-      let (_, ns0, nc0) = check_expr(left, env, defs, s1, c1, errors)
+      let (_, ns0, nc0) = check_expr(left, env, defs, s1, c1, errors, tytab)
       s1 = ns0
       c1 = nc0
       let mut cur = right
@@ -4427,7 +4439,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       while !done {
         match cur {
           ESeq(next_left, next_right) => {
-            let (_, ns, nc) = check_expr(next_left, env, defs, s1, c1, errors)
+            let (_, ns, nc) = check_expr(next_left, env, defs, s1, c1, errors, tytab)
             s1 = ns
             c1 = nc
             cur = next_right
@@ -4437,29 +4449,29 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
           }
         }
       }
-      check_expr(cur, env, defs, s1, c1, errors)
+      check_expr(cur, env, defs, s1, c1, errors, tytab)
     },
     ELet(name, val, body) => {
-      let (vt, s1, c1) = check_expr(val, env, defs, s, c, errors)
+      let (vt, s1, c1) = check_expr(val, env, defs, s, c, errors, tytab)
       let gen = generalize(s1, vt)
-      check_expr(body, env_bind(env, name, gen), defs, s1, c1, errors)
+      check_expr(body, env_bind(env, name, gen), defs, s1, c1, errors, tytab)
     },
     ELetRec(name, val, body) => {
       let (tv, c1) = fresh_var(c)
-      let (vt, s1, c2) = check_expr(val, env_bind(env, name, tv), defs, s, c1, errors)
+      let (vt, s1, c2) = check_expr(val, env_bind(env, name, tv), defs, s, c1, errors, tytab)
       let s2 = match unify(tv, vt, s1) {
         Some(su) => su,
         None => s1
       }
       let gen = generalize(s2, tv)
-      check_expr(body, env_bind(env, name, gen), defs, s2, c2, errors)
+      check_expr(body, env_bind(env, name, gen), defs, s2, c2, errors, tytab)
     },
     ELetMut(name, val, body) => {
-      let (vt, s1, c1) = check_expr(val, env, defs, s, c, errors)
-      check_expr(body, env_bind(env, name, vt), defs, s1, c1, errors)
+      let (vt, s1, c1) = check_expr(val, env, defs, s, c, errors, tytab)
+      check_expr(body, env_bind(env, name, vt), defs, s1, c1, errors, tytab)
     },
     EIf(cond, then_e, else_e) => {
-      let (ct, s1, c1) = check_expr(cond, env, defs, s, c, errors)
+      let (ct, s1, c1) = check_expr(cond, env, defs, s, c, errors, tytab)
       let resolved_ct = subst_apply(s1, ct)
       match resolved_ct {
         CtBool => (),
@@ -4467,8 +4479,8 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         CtVar(_) => (),
         _ => Array::push(errors, "if condition must be Bool")
       }
-      let (tt, s2, c2) = check_expr(then_e, env, defs, s1, c1, errors)
-      let (_, s3, c3) = check_expr(else_e, env, defs, s2, c2, errors)
+      let (tt, s2, c2) = check_expr(then_e, env, defs, s1, c1, errors, tytab)
+      let (_, s3, c3) = check_expr(else_e, env, defs, s2, c2, errors, tytab)
       (tt, s3, c3)
     },
     ECall(callee, args) => match callee {
@@ -4481,7 +4493,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
               let mut c1 = c
               let mut ai = 0
               while ai < oalen {
-                let (_, ns, nc) = check_expr(Array::get(opargs, ai), env, defs, s1, c1, errors)
+                let (_, ns, nc) = check_expr(Array::get(opargs, ai), env, defs, s1, c1, errors, tytab)
                 s1 = ns
                 c1 = nc
                 ai = ai + 1
@@ -4493,7 +4505,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
               let (tv, c2) = fresh_var(c)
               (tv, s, c2)
             },
-            other => check_expr(other, env, defs, s, c, errors)
+            other => check_expr(other, env, defs, s, c, errors, tytab)
           }
         } else {
           (CtUnknown, s, c)
@@ -4504,7 +4516,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         let mut c1 = c
         let mut ai = 0
         while ai < alen {
-          let (_, ns, nc) = check_expr(Array::get(args, ai), env, defs, s1, c1, errors)
+          let (_, ns, nc) = check_expr(Array::get(args, ai), env, defs, s1, c1, errors, tytab)
           s1 = ns
           c1 = nc
           ai = ai + 1
@@ -4513,7 +4525,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         (tv, s1, c2)
       } else if name == "Some" {
         if Array::length(args) == 1 {
-          let (at, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors)
+          let (at, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
           (CtOption(subst_apply(s1, at)), s1, c1)
         } else {
           (CtOption(CtUnknown), s, c)
@@ -4526,7 +4538,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
             let mut s2 = s
             let mut c2 = c
             while ai < alen {
-              let (_, ns, nc) = check_expr(Array::get(args, ai), env, defs, s2, c2, errors)
+              let (_, ns, nc) = check_expr(Array::get(args, ai), env, defs, s2, c2, errors, tytab)
               s2 = ns
               c2 = nc
               ai = ai + 1
@@ -4534,7 +4546,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
             (subst_apply(s2, ret_ty), s2, c2)
           },
           None => {
-            let (ct, s1, c1) = check_expr(EIdent(name, -1), env, defs, s, c, errors)
+            let (ct, s1, c1) = check_expr(EIdent(name, -1), env, defs, s, c, errors, tytab)
             let alen = Array::length(args)
             let arg_tys = Array::slice([
               CtUnknown
@@ -4543,7 +4555,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
             let mut s2 = s1
             let mut c2 = c1
             while ai < alen {
-              let (at, ns, nc) = check_expr(Array::get(args, ai), env, defs, s2, c2, errors)
+              let (at, ns, nc) = check_expr(Array::get(args, ai), env, defs, s2, c2, errors, tytab)
               Array::push(arg_tys, at)
               s2 = ns
               c2 = nc
@@ -4575,7 +4587,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         }
       },
       EDot(obj, method) => {
-        let (obj_ty, s1, c1) = check_expr(obj, env, defs, s, c, errors)
+        let (obj_ty, s1, c1) = check_expr(obj, env, defs, s, c, errors, tytab)
         let resolved = subst_apply(s1, obj_ty)
         let type_prefix = type_name_prefix(resolved)
         let qualified = String::concat(type_prefix, String::concat("::", method))
@@ -4601,7 +4613,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         let mut s3 = s2
         let mut c3 = c2
         while ai < alen {
-          let (at, ns, nc) = check_expr(Array::get(all_args, ai), env, defs, s3, c3, errors)
+          let (at, ns, nc) = check_expr(Array::get(all_args, ai), env, defs, s3, c3, errors, tytab)
           Array::push(arg_tys, at)
           s3 = ns
           c3 = nc
@@ -4646,7 +4658,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
               let mut s2 = s
               let mut c2 = c
               while ai < alen {
-                let (_, ns, nc) = check_expr(Array::get(args, ai), env, defs, s2, c2, errors)
+                let (_, ns, nc) = check_expr(Array::get(args, ai), env, defs, s2, c2, errors, tytab)
                 s2 = ns
                 c2 = nc
                 ai = ai + 1
@@ -4654,7 +4666,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
               (subst_apply(s2, ret_ty), s2, c2)
             },
             None => {
-              let (ct, s1, c1) = check_expr(callee, env, defs, s, c, errors)
+              let (ct, s1, c1) = check_expr(callee, env, defs, s, c, errors, tytab)
               let alen = Array::length(args)
               let arg_tys = Array::slice([
                 CtUnknown
@@ -4663,7 +4675,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
               let mut s2 = s1
               let mut c2 = c1
               while ai < alen {
-                let (at, ns, nc) = check_expr(Array::get(args, ai), env, defs, s2, c2, errors)
+                let (at, ns, nc) = check_expr(Array::get(args, ai), env, defs, s2, c2, errors, tytab)
                 Array::push(arg_tys, at)
                 s2 = ns
                 c2 = nc
@@ -4694,7 +4706,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
             }
           }
         } else {
-            let (ct, s1, c1) = check_expr(callee, env, defs, s, c, errors)
+            let (ct, s1, c1) = check_expr(callee, env, defs, s, c, errors, tytab)
             let alen = Array::length(args)
             let arg_tys = Array::slice([
               CtUnknown
@@ -4703,7 +4715,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
             let mut s2 = s1
             let mut c2 = c1
             while ai < alen {
-              let (at, ns, nc) = check_expr(Array::get(args, ai), env, defs, s2, c2, errors)
+              let (at, ns, nc) = check_expr(Array::get(args, ai), env, defs, s2, c2, errors, tytab)
               Array::push(arg_tys, at)
               s2 = ns
               c2 = nc
@@ -4735,13 +4747,13 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       }
     },
     EBinOp(op, left, right) => {
-      let (left_ty, s1, c1) = check_expr(left, env, defs, s, c, errors)
-      let (right_ty, s2, c2) = check_expr(right, env, defs, s1, c1, errors)
-      let (result_ty, s3) = infer_binop_type(op, subst_apply(s2, left_ty), subst_apply(s2, right_ty), env, s2, errors)
+      let (left_ty, s1, c1) = check_expr(left, env, defs, s, c, errors, tytab)
+      let (right_ty, s2, c2) = check_expr(right, env, defs, s1, c1, errors, tytab)
+      let (result_ty, s3) = infer_binop_type(op, subst_apply(s2, left_ty), subst_apply(s2, right_ty), env, s2, errors, tytab)
       (subst_apply(s3, result_ty), s3, c2)
     },
     EUnaryOp(op, operand) => {
-      let (operand_ty, s1, c1) = check_expr(operand, env, defs, s, c, errors)
+      let (operand_ty, s1, c1) = check_expr(operand, env, defs, s, c, errors, tytab)
       if op == "!" {
         match subst_apply(s1, operand_ty) {
           CtBool => (CtBool, s1, c1),
@@ -4764,15 +4776,15 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       } else (CtUnknown, s1, c1)
     },
     EAssign(_, val, body) => {
-      let (_, s1, c1) = check_expr(val, env, defs, s, c, errors)
-      check_expr(body, env, defs, s1, c1, errors)
+      let (_, s1, c1) = check_expr(val, env, defs, s, c, errors, tytab)
+      check_expr(body, env, defs, s1, c1, errors, tytab)
     },
     EAssignOp(_, _, val, body) => {
-      let (_, s1, c1) = check_expr(val, env, defs, s, c, errors)
-      check_expr(body, env, defs, s1, c1, errors)
+      let (_, s1, c1) = check_expr(val, env, defs, s, c, errors, tytab)
+      check_expr(body, env, defs, s1, c1, errors, tytab)
     },
     EMatch(scrutinee, arms) => {
-      let (scr_ty, s1, c1) = check_expr(scrutinee, env, defs, s, c, errors)
+      let (scr_ty, s1, c1) = check_expr(scrutinee, env, defs, s, c, errors, tytab)
       let alen = Array::length(arms)
       if alen == 0 {
         (CtUnknown, s1, c1)
@@ -4785,7 +4797,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         while ai < alen {
           let (pat, body) = Array::get(arms, ai)
           let arm_env = check_pattern(pat, scr_ty, env, defs)
-          let (arm_ty, ns, nc) = check_expr(body, arm_env, defs, si, ci, errors)
+          let (arm_ty, ns, nc) = check_expr(body, arm_env, defs, si, ci, errors, tytab)
           if ai == 0 {
             result_ty = arm_ty
           }
@@ -4796,9 +4808,9 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         (result_ty, si, ci)
       }
     },
-    EHandle(body, _) => check_expr(body, env, defs, s, c, errors),
+    EHandle(body, _) => check_expr(body, env, defs, s, c, errors, tytab),
     EWhile(cond, body) => {
-      let (ct, s1, c1) = check_expr(cond, env, defs, s, c, errors)
+      let (ct, s1, c1) = check_expr(cond, env, defs, s, c, errors, tytab)
       let resolved_ct = subst_apply(s1, ct)
       match resolved_ct {
         CtBool => (),
@@ -4806,7 +4818,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         CtVar(_) => (),
         _ => Array::push(errors, "while condition must be Bool")
       }
-      let (_, s2, c2) = check_expr(body, env, defs, s1, c1, errors)
+      let (_, s2, c2) = check_expr(body, env, defs, s1, c1, errors, tytab)
       (CtUnit, s2, c2)
     },
     ELoop(params, body) => {
@@ -4816,17 +4828,17 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       let mut i = 0
       while i < Array::length(params) {
         let (name, init) = Array::get(params, i)
-        let (pt, ns, nc) = check_expr(init, env1, defs, s1, c1, errors)
+        let (pt, ns, nc) = check_expr(init, env1, defs, s1, c1, errors, tytab)
         env1 = env_bind(env1, name, pt)
         s1 = ns
         c1 = nc
         i = i + 1
       }
-      let (_, s2, c2) = check_expr(body, env1, defs, s1, c1, errors)
+      let (_, s2, c2) = check_expr(body, env1, defs, s1, c1, errors, tytab)
       (CtUnit, s2, c2)
     },
     EForIn(name, index_name, iterable, body) => {
-      let (it, s1, c1) = check_expr(iterable, env, defs, s, c, errors)
+      let (it, s1, c1) = check_expr(iterable, env, defs, s, c, errors, tytab)
       let et = match subst_apply(s1, it) {
         CtArray(elem) => elem,
         CtNamed("Stream", args) => if Array::length(args) > 0 {
@@ -4839,11 +4851,11 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         Some(index_name) => env_bind(env2, index_name, CtInt),
         None => env2
       }
-      let (bt, s2, c2) = check_expr(body, env3, defs, s1, c1, errors)
+      let (bt, s2, c2) = check_expr(body, env3, defs, s1, c1, errors, tytab)
       (CtArray(bt), s2, c2)
     },
     EDot(obj, field) => {
-      let (obj_ty, s1, c1) = check_expr(obj, env, defs, s, c, errors)
+      let (obj_ty, s1, c1) = check_expr(obj, env, defs, s, c, errors, tytab)
       let resolved = subst_apply(s1, obj_ty)
       let field_ty = match resolved {
         CtStruct(sname) => match find_typedef(defs, sname) {
@@ -4938,7 +4950,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         c1 = nc
         pi = pi + 1
       }
-      let (bt, s2, c2) = check_expr(body, fn_env, defs, s1, c1, errors)
+      let (bt, s2, c2) = check_expr(body, fn_env, defs, s1, c1, errors, tytab)
       let (final_ret, s3) = match ret_ty {
         Some(te) => {
           let resolved = resolve_type_expr(te, defs)
@@ -4957,7 +4969,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
     },
     EBreak(opt) => match opt {
       Some(e) => {
-        let (_, s1, c1) = check_expr(e, env, defs, s, c, errors)
+        let (_, s1, c1) = check_expr(e, env, defs, s, c, errors, tytab)
         (CtUnit, s1, c1)
       },
       None => (CtUnit, s, c)
@@ -4968,7 +4980,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       let mut c1 = c
       let mut ai = 0
       while ai < alen {
-        let (_, ns, nc) = check_expr(Array::get(args, ai), env, defs, s1, c1, errors)
+        let (_, ns, nc) = check_expr(Array::get(args, ai), env, defs, s1, c1, errors, tytab)
         s1 = ns
         c1 = nc
         ai = ai + 1
@@ -4982,7 +4994,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       let mut fi = 0
       while fi < flen {
         let (_, fval) = Array::get(fields, fi)
-        let (_, ns, nc) = check_expr(fval, env, defs, s1, c1, errors)
+        let (_, ns, nc) = check_expr(fval, env, defs, s1, c1, errors, tytab)
         s1 = ns
         c1 = nc
         fi = fi + 1
@@ -4998,7 +5010,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       ], 0, 0)
       let mut ti = 0
       while ti < ilen {
-        let (it, ns, nc) = check_expr(Array::get(items, ti), env, defs, s1, c1, errors)
+        let (it, ns, nc) = check_expr(Array::get(items, ti), env, defs, s1, c1, errors, tytab)
         Array::push(tys, it)
         s1 = ns
         c1 = nc
@@ -5013,7 +5025,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       let mut elem_ty = CtUnknown
       let mut ai = 0
       while ai < ilen {
-        let (it, ns, nc) = check_expr(Array::get(items, ai), env, defs, s1, c1, errors)
+        let (it, ns, nc) = check_expr(Array::get(items, ai), env, defs, s1, c1, errors, tytab)
         if ai == 0 {
           elem_ty = it
         }
@@ -5024,7 +5036,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       (CtArray(elem_ty), s1, c1)
     },
     EReturn(e) => {
-      let (_, s1, c1) = check_expr(e, env, defs, s, c, errors)
+      let (_, s1, c1) = check_expr(e, env, defs, s, c, errors, tytab)
       (CtUnknown, s1, c1)
     },
     _ => (CtUnknown, s, c)
@@ -5145,7 +5157,7 @@ let reorder_type_decls_first: (Array[Stmt], Int) -> Array[Stmt] = (stmts, start)
   }
   out
 }
-export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, Int, Array[String]) -> (TypeEnv, Subst, Int) = (raw_stmts, i, env, defs, s, c, errors) -> {
+export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (TypeEnv, Subst, Int) = (raw_stmts, i, env, defs, s, c, errors, tytab) -> {
   let stmts = reorder_type_decls_first(raw_stmts, i)
   let mut idx = i
   let mut cur_env = env
@@ -5173,9 +5185,9 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
     let (new_env, s1, c1) = match stmt {
       SLet(_, is_rec, name, ann, val) => {
         let (vt, ns, nc) = if is_rec {
-          check_expr(val, env_bind(env, name, CtUnknown), defs, s, c, errors)
+          check_expr(val, env_bind(env, name, CtUnknown), defs, s, c, errors, tytab)
         } else {
-          check_expr(val, env, defs, s, c, errors)
+          check_expr(val, env, defs, s, c, errors, tytab)
         }
         let t = match ann {
           Some(te) => resolve_type_expr(te, defs),
@@ -5185,7 +5197,7 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
         (bind_value_or_annotation_return(env1, name, val, ann, defs), ns, nc)
       },
       SLetMut(name, ann, val) => {
-        let (vt, ns, nc) = check_expr(val, env, defs, s, c, errors)
+        let (vt, ns, nc) = check_expr(val, env, defs, s, c, errors, tytab)
         let t = match ann {
           Some(te) => resolve_type_expr(te, defs),
           None => vt
@@ -5194,7 +5206,7 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
         (bind_value_or_annotation_return(env1, name, val, ann, defs), ns, nc)
       },
       SLetPat(pat, val) => {
-        let (vt, ns, nc) = check_expr(val, env, defs, s, c, errors)
+        let (vt, ns, nc) = check_expr(val, env, defs, s, c, errors, tytab)
         let new_env = match pat {
           PTuple(pats) => match vt {
             CtTuple(types) => {
@@ -5368,19 +5380,19 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
         (bind_annotation_return(env1, name, Some(te), defs), s, c)
       },
       STest(_, body) => {
-        let (_, ns, nc) = check_expr(body, env, defs, s, c, errors)
+        let (_, ns, nc) = check_expr(body, env, defs, s, c, errors, tytab)
         (env, ns, nc)
       },
       SBench(_, body) => {
-        let (_, ns, nc) = check_expr(body, env, defs, s, c, errors)
+        let (_, ns, nc) = check_expr(body, env, defs, s, c, errors, tytab)
         (env, ns, nc)
       },
       SExpr(expr) => {
-        let (_, ns, nc) = check_expr(expr, env, defs, s, c, errors)
+        let (_, ns, nc) = check_expr(expr, env, defs, s, c, errors, tytab)
         (env, ns, nc)
       },
       SModule(_, _, body) => {
-        let _ = check_stmts(body, 0, env, defs, s, c, errors)
+        let _ = check_stmts(body, 0, env, defs, s, c, errors, tytab)
         (env, s, c)
       },
       SImport(_, names) => (bind_stmt_imports(env, names), s, c)
@@ -5425,11 +5437,38 @@ export let check_program: (Array[Stmt]) -> TypeEnv with { Error } = (stmts) -> {
   let seeded_env = env_cache(seeded_raw_env)
   let errors = ArrayBuilder::new()
   let frozen_errors = ArrayBuilder::freeze(errors)
-  let (env, _, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors)
+  let tytab = Array::slice([
+    (0, CtUnit)
+  ], 0, 0)
+  let (env, _, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
   if Array::length(frozen_errors) > 0 {
     throw(Array::get(frozen_errors, 0))
   }
   env
+}
+export let check_program_type_table: (Array[Stmt]) -> (Array[(Int, Type)], Subst) with { Error } = (stmts) -> {
+  let empty_defs = Array::slice([
+    TDAlias("_dummy", Array::slice([
+      ""
+    ], 0, 0), CtUnit)
+  ], 0, 0)
+  let seeded_raw_env = if trait_defined(EnvEmpty, "Eq") {
+    EnvEmpty
+  } else {
+    register_builtin_traits(EnvEmpty)
+  }
+  let seeded_env = env_cache(seeded_raw_env)
+  let errors = ArrayBuilder::new()
+  let frozen_errors = ArrayBuilder::freeze(errors)
+  let tytab = Array::slice([
+    (0, CtUnit)
+  ], 0, 0)
+  handle {
+    let (_, final_s, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
+    (tytab, final_s)
+  } with Error {
+    Throw(_) => (tytab, SubstEmpty)
+  }
 }
 export let check_program_with_env: (Array[Stmt], TypeEnv) -> TypeEnv with { Error } = (stmts, initial_env) -> {
   match initial_env {
@@ -5449,7 +5488,10 @@ export let check_program_with_env: (Array[Stmt], TypeEnv) -> TypeEnv with { Erro
       let seeded_env = env_cache(seeded_raw_env)
       let errors = ArrayBuilder::new()
       let frozen_errors = ArrayBuilder::freeze(errors)
-      let (env, _, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors)
+      let tytab = Array::slice([
+        (0, CtUnit)
+      ], 0, 0)
+      let (env, _, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
       if Array::length(frozen_errors) > 0 {
         throw(Array::get(frozen_errors, 0))
       }
@@ -29498,6 +29540,38 @@ let pick_ident_at: (Array[IdentHit], Int) -> String = (hits, tgt) -> {
   }
   best_name
 }
+let pick_ident_off: (Array[IdentHit], Int) -> Int = (hits, tgt) -> {
+  let mut best_off = -1
+  let mut i = 0
+  while i < Array::length(hits) {
+    match Array::get(hits, i) {
+      IdentHit(name, off) => {
+        let span_end = off + String::length(name)
+        if off <= tgt && tgt < span_end && off > best_off {
+          best_off = off
+        } else {
+          ()
+        }
+      }
+    }
+    i = i + 1
+  }
+  best_off
+}
+let tytab_lookup: (Array[(Int, Type)], Int) -> Option[Type] = (table, off) -> {
+  let mut found = None
+  let mut i = 0
+  while i < Array::length(table) {
+    let (toff, tty) = Array::get(table, i)
+    if toff == off {
+      found = Some(tty)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
 export let type_at_source: (String, Int, Int) -> String = (source, line, col) -> {
   handle {
     let tgt = line_col_to_offset(source, line, col)
@@ -29511,10 +29585,22 @@ export let type_at_source: (String, Int, Int) -> String = (source, line, col) ->
     if name == "" {
       ""
     } else {
-      let env = check_program(stmts)
-      match env_lookup(env, name) {
-        Some(t) => type_to_string(t),
-        None => ""
+      let chosen_off = pick_ident_off(hits, tgt)
+      let (table, final_s) = check_program_type_table(stmts)
+      let table_hit = if chosen_off >= 0 {
+        tytab_lookup(table, chosen_off)
+      } else {
+        None
+      }
+      match table_hit {
+        Some(rec_ty) => type_to_string(subst_apply(final_s, rec_ty)),
+        None => {
+          let env = check_program(stmts)
+          match env_lookup(env, name) {
+            Some(t) => type_to_string(t),
+            None => ""
+          }
+        }
       }
     }
   } with Error {

@@ -16,11 +16,11 @@
 // __to_string.
 
 import ../core {
-  Stmt, Expr, Pat, Type, TypeEnv, env_lookup, type_to_string
+  Stmt, Expr, Pat, Type, TypeEnv, Subst, env_lookup, subst_apply, type_to_string
 }
 
 import ../checker/checker_stmt.vibe {
-  check_program
+  check_program, check_program_type_table
 }
 
 import ../syntax {
@@ -298,10 +298,55 @@ let pick_ident_at: (Array[IdentHit], Int) -> String = (hits, tgt) -> {
   best_name
 }
 
+// Same selection as pick_ident_at, but returns the chosen ident's source
+// `off` (the innermost / largest-off hit covering `tgt`), or -1 when none.
+// Used to query the per-node type table by the hovered EIdent's offset.
+let pick_ident_off: (Array[IdentHit], Int) -> Int = (hits, tgt) -> {
+  let mut best_off = -1
+  let mut i = 0
+  while i < Array::length(hits) {
+    match Array::get(hits, i) {
+      IdentHit(name, off) => {
+        let span_end = off + String::length(name)
+        if off <= tgt && tgt < span_end && off > best_off {
+          best_off = off
+        } else {
+          ()
+        }
+      }
+    }
+    i = i + 1
+  }
+  best_off
+}
+
+// Look up the recorded type for source offset `off` in the per-node type table
+// produced by check_program_type_table. Returns None when no node recorded that
+// exact offset. When multiple entries share an offset (re-checked node), the
+// last recorded one wins (closest to the final inference state).
+let tytab_lookup: (Array[(Int, Type)], Int) -> Option[Type] = (table, off) -> {
+  let mut found = None
+  let mut i = 0
+  while i < Array::length(table) {
+    let (toff, tty) = Array::get(table, i)
+    if toff == off {
+      found = Some(tty)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 // Locate the identifier at (line, col), typecheck the program, and return its
-// inferred type as a string. Returns "" when: the position is not over a
-// located identifier; the file fails to parse or typecheck; or the name is not
-// env-visible (see the LIMITATION note at the top of this file).
+// inferred type as a string. Resolution order:
+//   1. per-node type table (covers LOCALS and PARAMETERS — names that live in
+//      nested inference scopes and are gone from the returned TypeEnv);
+//   2. fall back to the top-level TypeEnv lookup (top-level / imported names,
+//      and let-binding definition sites whose offset is not an EIdent node).
+// Returns "" when the position is not over a located identifier, or the name
+// resolves nowhere. Any failure is swallowed and yields "".
 export let type_at_source: (String, Int, Int) -> String = (source, line, col) -> {
   handle {
     let tgt = line_col_to_offset(source, line, col)
@@ -318,10 +363,24 @@ export let type_at_source: (String, Int, Int) -> String = (source, line, col) ->
     if name == "" {
       ""
     } else {
-      let env = check_program(stmts)
-      match env_lookup(env, name) {
-        Some(t) => type_to_string(t),
-        None => ""
+      let chosen_off = pick_ident_off(hits, tgt)
+      // 1. per-node type table (locals + parameters).
+      let (table, final_s) = check_program_type_table(stmts)
+      let table_hit = if chosen_off >= 0 {
+        tytab_lookup(table, chosen_off)
+      } else {
+        None
+      }
+      match table_hit {
+        Some(rec_ty) => type_to_string(subst_apply(final_s, rec_ty)),
+        None => {
+          // 2. fall back to the top-level env (top-level / imported names).
+          let env = check_program(stmts)
+          match env_lookup(env, name) {
+            Some(t) => type_to_string(t),
+            None => ""
+          }
+        }
       }
     }
   } with Error {
