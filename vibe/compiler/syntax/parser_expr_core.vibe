@@ -68,11 +68,24 @@ let binop_prec: (Token) -> Int = (tok) -> {
   }
 }
 
+// Extract the source char offset of a callee expression so that the ECall
+// node can carry the call-site offset (callee start). Mirrors how EIdent
+// threads `offset_at(starts, pos)`. Falls back to -1 for callees that do
+// not carry an offset (synthetic / nested forms).
+let callee_offset: (Expr) -> Int = (callee) -> {
+  match callee {
+    EIdent(_, off) => off,
+    EDot(inner, _) => callee_offset(inner),
+    ECall(inner, _, off) => if off >= 0 { off } else { callee_offset(inner) },
+    _ => -1
+  }
+}
+
 let index_expr: (Expr, Expr) -> Expr = (cur_expr, idx) -> {
   let args = empty_exprs()
   Array::push(args, cur_expr)
   Array::push(args, idx)
-  ECall(EIdent("__index", -1), args)
+  ECall(EIdent("__index", -1), args, -1)
 }
 
 // `x |> f(a, _)` substitutes the piped value at each bare `_` placeholder
@@ -90,7 +103,7 @@ let pipe_arg_is_hole: (Expr) -> Bool = (arg) -> {
 
 let pipe_desugar: (Expr, Expr) -> Expr = (lhs, rhs) -> {
   match rhs {
-    ECall(callee, args) => {
+    ECall(callee, args, off) => {
       let mut has_hole = false
       let mut i = 0
       while i < Array::length(args) {
@@ -113,16 +126,16 @@ let pipe_desugar: (Expr, Expr) -> Expr = (lhs, rhs) -> {
           }
           j = j + 1
         }
-        ECall(callee, out)
+        ECall(callee, out, off)
       } else {
         ECall(callee, Array::concat([
           lhs
-        ], args))
+        ], args), off)
       }
     },
     _ => ECall(rhs, [
       lhs
-    ])
+    ], callee_offset(rhs))
   }
 }
 
@@ -182,7 +195,7 @@ let slice_from_idx_expr: (Expr, Expr, Expr) -> Expr = (cur_expr, idx, end_expr) 
   Array::push(args, cur_expr)
   Array::push(args, idx)
   Array::push(args, end_expr)
-  ECall(EIdent("__slice", -1), args)
+  ECall(EIdent("__slice", -1), args, -1)
 }
 
 let has_placeholder_args: (Array[Expr]) -> Bool = (args) -> {
@@ -229,7 +242,7 @@ let slice_from_zero_expr: (Expr, Expr) -> Expr = (cur_expr, end_expr) -> {
   Array::push(args, cur_expr)
   Array::push(args, EInt(0))
   Array::push(args, end_expr)
-  ECall(EIdent("__slice", -1), args)
+  ECall(EIdent("__slice", -1), args, -1)
 }
 
 let wrap_placeholder_arg: (Expr) -> Expr = (arg) -> {
@@ -351,7 +364,7 @@ let desugar_placeholder_args: (Array[Expr]) -> Array[Expr] = (args) -> {
 let rec parse_postfix: (Array[Token], Array[Int], Int, Expr, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, pos, expr, parse_recur) -> {
   match peek(tokens, pos) {
     TLParen => match expr {
-      ECall(_, _) => (expr, pos),
+      ECall(_, _, _) => (expr, pos),
       EArray(_) => (expr, pos),
       ETuple(_) => (expr, pos),
       ERecord(_) => (expr, pos),
@@ -369,7 +382,7 @@ let rec parse_postfix: (Array[Token], Array[Int], Int, Expr, (Array[Token], Int,
       EForIn(_, _, _, _) => (expr, pos),
       EHandle(_, _) => (expr, pos),
       _ => match peek(tokens, pos + 1) {
-        TRParen => parse_postfix(tokens, starts, pos + 2, ECall(expr, empty_exprs()), parse_recur),
+        TRParen => parse_postfix(tokens, starts, pos + 2, ECall(expr, empty_exprs(), callee_offset(expr)), parse_recur),
         _ => {
           let b = ArrayBuilder::new()
           let (first_arg, next_pos) = parse_call_arg(tokens, starts, pos + 1, parse_recur)
@@ -381,7 +394,7 @@ let rec parse_postfix: (Array[Token], Array[Int], Int, Expr, (Array[Token], Int,
           } else {
             args
           }
-          parse_postfix(tokens, starts, close_pos, ECall(expr, call_args), parse_recur)
+          parse_postfix(tokens, starts, close_pos, ECall(expr, call_args, callee_offset(expr)), parse_recur)
         }
       },
     },
@@ -390,7 +403,7 @@ let rec parse_postfix: (Array[Token], Array[Int], Int, Expr, (Array[Token], Int,
         TRBracket => {
           let end_expr = ECall(EIdent("__len", -1), [
             expr
-          ])
+          ], -1)
           parse_postfix(tokens, starts, pos + 3, slice_from_zero_expr(expr, end_expr), parse_recur)
         },
         _ => {
@@ -409,7 +422,7 @@ let rec parse_postfix: (Array[Token], Array[Int], Int, Expr, (Array[Token], Int,
             TRBracket => {
               let end_expr = ECall(EIdent("__len", -1), [
                 expr
-              ])
+              ], -1)
               parse_postfix(tokens, starts, idx_next + 2, slice_from_idx_expr(expr, idx, end_expr), parse_recur)
             },
             _ => {

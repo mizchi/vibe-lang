@@ -49,6 +49,14 @@ expect_contains "arity mismatch located" "function arity mismatch" \
 expect_contains "arity mismatch located at call site (line 4)" "line 4:" \
   'let helper = (a: Int, b: Int) -> Int { a + b }\nexport let l2 = 0\nexport let l3 = 0\nexport let main = () -> Int { helper(1) }\n'
 
+# method-style call (EDot callee) arity mismatch -> located at the CALL site
+# (span-arc step2: the ECall source offset feeds the EDot-callee arity
+# diagnostic, which previously emitted off_marker(-1) and could not be located
+# precisely). `s.length(99)` calls the 1-arg String::length with 2 args on
+# line 6, so the located diagnostic must point at line 6.
+expect_contains "method-call arity located at call site (line 6)" "line 6:" \
+  'export let l1 = 0\nexport let l2 = 0\nexport let l3 = 0\nexport let main = () -> Int {\n  let s = "hi"\n  s.length(99)\n}\n'
+
 # the internal [@off=N] offset marker must never leak into user-facing output.
 expect_missing() { # <desc> <needle-that-must-be-absent> <file.vibe content>
   local desc="$1" needle="$2"; shift 2
