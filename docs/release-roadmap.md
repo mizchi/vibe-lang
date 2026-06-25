@@ -72,29 +72,39 @@
 「3 つの代表 OS（Linux/macOS/Windows）で 1 コマンドで入り、`vibe run hello.vibe`
 が通る」状態を、再現可能な CI ジョブで保証する。
 
+### 決定（2026-06-25）
+
+**canonical = 独自ビルドの wasmtime runner + vibe コンパイラ wasm の分離配布。
+インストール時に各環境で `.cwasm`（AOT precompile）をビルドする。**
+
+- 実行基盤は `tools/moonrun_wasmtime`（`moonrun_wt`）を「独自ビルドの wasmtime
+  runner」として配布する。runner は portable wasm を受け取り、インストール時に
+  ホスト固有の `.cwasm` へ AOT コンパイルしてキャッシュする
+  （既存の `.cwasm` cache 機構 / ADR-0050・ADR-0056 を install フローに昇格）。
+- **runner 層と compiler wasm 層を分離**する（TODO.md「Cutover work」と一致）。
+  vibe コンパイラ本体は wasm artifact として runner とは独立に更新できる
+  （runner を入れ替えずに `vibe` 自身を bump 可能）。
+- これにより DWARF 的なネイティブ依存を増やさず、stock でない wasmtime 拡張も
+  自前 runner に閉じ込められる。
+
+> 補足: npm / 単一ネイティブバイナリは canonical からは外す。必要になれば
+> 補助配布として後付け検討（JS 埋め込み用途は `js/vibe/` を維持）。
+
 ### マイルストーン
 
-- [ ] **1-0 配布形態の決定（ADR）** — 下記オプションから canonical を選び ADR 化。
-- [ ] **1-1 self-contained ランチャ** — 選んだ形態で `vibe` 単体が
-      wasm + runner を内包/解決して動く（PATH に runtime 前提を置かない）。
-- [ ] **1-2 マルチプラットフォーム CI** — release.yml を拡張し、
-      対象 OS/arch ごとに artifact をビルド + smoke test（`vibe run` / `vibe check`）。
-- [ ] **1-3 ワンライナー installer** — `install.sh`（+ Windows 用）で
-      最新 release を取得 → PATH 設定。バージョン pin 可能に。
-- [ ] **1-4 パッケージマネージャ配布**（M4 向け）— npm / Homebrew tap 等のうち
-      1-0 で決めた経路を 1 つ以上整備。
-- [ ] **1-5 docs** — README に「Install」節、`docs/install.md` を新設。
-
-### 決めるべきこと（1-0 の選択肢）
-
-| 案 | 内容 | 長所 | 短所 |
-| --- | --- | --- | --- |
-| **A. npm package** | `@vibe-lang/cli`。selfhost wasm + node 製 wasm runner を同梱 | クロスプラットフォーム 1 本、`npx` 即実行、JS 資産(`js/vibe/`)と整合 | node 依存、起動オーバーヘッド |
-| **B. native binary** | `moonrun_wt`(Rust) に selfhost wasm を埋め込んだ単一実行ファイル | 依存ゼロ、最速起動 | OS/arch ごとビルド・署名が必要 |
-| **C. curl installer** | `curl … | sh` で B の binary を取得 | UNIX で慣習的 | Windows 別経路、供給網の信頼が前提 |
-
-> 推奨たたき台: **B を canonical**（依存ゼロの単一バイナリ）+ **C で配布**、
-> JS 埋め込み用途に **A を補助**。最終判断は 1-0 ADR で。
+- [ ] **1-1 runner/compiler 分離の確定** — `moonrun_wt` を「実行基盤」、
+      compiler wasm を「差し替え可能 artifact」として正式分離
+      （TODO.md「wasmtime runner 層 / compiler wasm artifact 層」）。
+- [ ] **1-2 install-time `.cwasm` ビルド** — installer が runner 取得後に
+      ホストで compiler wasm を `.cwasm` へ AOT precompile しキャッシュ。
+      wasmtime バージョン差で cache key が壊れない運用（ADR-0049 と同様）。
+- [ ] **1-3 マルチプラットフォーム CI** — release.yml を拡張し、対象 OS/arch
+      ごとに runner をビルド + smoke test（`vibe run` / `vibe check`）。
+- [ ] **1-4 ワンライナー installer** — `install.sh`（+ Windows 用）で runner +
+      compiler wasm を取得 → `.cwasm` 生成 → PATH 設定。バージョン pin 可能に。
+- [ ] **1-5 compiler-only update 導線** — runner 据え置きで compiler wasm だけ
+      bump する `vibe self update`（仮）的な経路。
+- [ ] **1-6 docs** — README に「Install」節、`docs/install.md` を新設。
 
 ---
 
@@ -129,10 +139,20 @@
 「第三者のライブラリを宣言 → `vibe fetch` で取得・lock → import して使う」が
 content-addressed に再現可能で動く。中央 registry の有無を含め配布モデルを凍結。
 
+### 決定（2026-06-25）
+
+**git/URL 分散モデル（Deno/Go 風）。中央 registry は持たない。**
+
+- import は git/URL を直接指し、取得物は content hash で `index.lock` に固定する。
+- 既存資産（content-addressed `.vdb` の `hash:<sha1>`、pinned hash import
+  `import ./dep.vibe#hash`、`refs/bit/index/...` 分散 ref、`$HOME/.vibe/lib`
+  キャッシュ）の上に最短で接続する。
+- `vibe publish` は「git push + tag」で代替し、専用 registry サーバーは建てない。
+- 発見性（検索）が必要になれば、後付けで軽量 index（tap 風）を足す余地は残す。
+
 ### マイルストーン
 
-- [ ] **2-0 配布モデルの決定（ADR）** — registry 集中か、git/URL 分散か。
-- [ ] **2-1 リモート import 解決** — 決めた経路で外部ソースを取得し
+- [ ] **2-1 リモート import 解決** — git/URL から外部ソースを取得し
       `$HOME/.vibe/lib` / content store にキャッシュ。`index.lock` に hash を固定。
 - [ ] **2-2 依存解決器** — transitive 依存と semver 整合の最小実装
       （まずは「lock があれば再現、無ければ解決して書き出す」）。
@@ -263,12 +283,23 @@ VS Code / Neovim / Zed で「保存時診断 + hover で型 + 定義ジャンプ
   「実用的な開発体験」の最低ラインに乗る。
 - **M1 の核**: install + module の配布凍結。ここが無いと誰も試せない。
 
-## 未決事項（ADR 化が必要な決定）
+## 決定事項・未決事項（ADR 化対象）
 
-1. install canonical artifact（テーマ 1-0）— native binary か npm か。
-2. module 配布モデル（テーマ 2-0）— git/URL 分散か中央 registry か。
-3. LSP ホスト（テーマ 4-0）— node bridge か native runner か。
-4. 言語仕様 freeze の範囲（M4）— どこまでを 1.0 で凍結し SemVer 保証するか。
+決定済み（2026-06-25）:
 
-> 上記 1–3 は互いにある程度独立だが、**ランタイム前提（node を要求するか否か）**を
-> install と LSP で揃えると保守が楽。先に 1-0 を決めると 4-0 が従う。
+1. ✅ **install canonical artifact** — 独自ビルドの wasmtime runner +
+   compiler wasm の分離配布、install 時に各環境で `.cwasm` AOT ビルド。
+   compiler は runner と独立に更新（テーマ 1）。
+2. ✅ **module 配布モデル** — git/URL 分散（Deno/Go 風）、中央 registry なし、
+   content hash で lock（テーマ 2）。
+
+未決（要 ADR）:
+
+3. **LSP ホスト**（テーマ 4-0）— node bridge(`js/vibe/`) か native runner か。
+   install を「独自 wasmtime runner」に寄せた以上、LSP も同 runner +
+   selfhost wasm に寄せると runtime 前提が 1 本化でき保守が楽になる
+   （node 非依存に倒す方向が install 決定と整合）。要確認。
+4. **言語仕様 freeze の範囲**（M4）— どこまでを 1.0 で凍結し SemVer 保証するか。
+
+> install を独自 runner に決めたので、**3 も「native runner に寄せる」が自然な
+> 既定**。最終確認のうえ ADR 化する。
