@@ -17,6 +17,7 @@
 #   vibe check   <file.vibe>              parse + typecheck (no output kept)
 #   vibe test    <file_test.vibe>...      compile + run test {} blocks
 #   vibe fetch   [project_dir]            vendor git/URL deps from vibe.deps + lock
+#   vibe lsp                              start the stdio LSP server (diagnostics)
 #   vibe version                          print toolchain versions
 #   vibe self update [--cli-wasm <path>]  refresh compiler wasm + rebuild .cwasm
 #   vibe help                             this message
@@ -25,7 +26,8 @@ set -euo pipefail
 # Resolve install root: the directory layout is
 #   $VIBE_HOME/bin/{vibe,moonrun_wt}
 #   $VIBE_HOME/lib/{vibe-cli.wasm,vibe-cli.cwasm}
-SELF="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+LAUNCHER="$(readlink -f "${BASH_SOURCE[0]}")"
+SELF="$(cd "$(dirname "$LAUNCHER")" && pwd)"
 VIBE_HOME="${VIBE_HOME:-$(dirname "$SELF")}"
 RUNNER="${VIBE_RUNNER:-$VIBE_HOME/bin/moonrun_wt}"
 CLI_WASM="${VIBE_CLI_WASM:-$VIBE_HOME/lib/vibe-cli.wasm}"
@@ -168,6 +170,16 @@ case "$cmd" in
     mv "$lock.tmp" "$lock"
     echo "wrote $lock"
     ;;
+  lsp)
+    # Start the stdio LSP server (diagnostics). Editors configure `vibe lsp`.
+    # The node server is JSON-RPC plumbing; it drives this same launcher's
+    # `vibe check` for the actual compile. (docs/release-roadmap.md テーマ4 MVP.)
+    server="$VIBE_HOME/lib/lsp_server.js"
+    [ -f "$server" ] || server="$SELF/../../js/vibe/lsp_server.js"
+    [ -f "$server" ] || die "lsp server not found (looked in $VIBE_HOME/lib and repo js/vibe)"
+    command -v node >/dev/null 2>&1 || die "node is required for 'vibe lsp'"
+    exec env VIBE_BIN="$LAUNCHER" node "$server" "$@"
+    ;;
   version|--version|-V)
     echo "vibe (selfhost launcher)"
     echo "runner:      $RUNNER"
@@ -199,7 +211,7 @@ case "$cmd" in
     esac
     ;;
   help|--help|-h)
-    sed -n '3,20p' "$(readlink -f "${BASH_SOURCE[0]}")" | sed 's/^# \{0,1\}//'
+    sed -n '13,23p' "$LAUNCHER" | sed 's/^# \{0,1\}//'
     ;;
   *)
     die "unknown command: $cmd (try 'vibe help')"

@@ -314,9 +314,12 @@ install/​debugger と runtime 前提を一本化する。`vibe lsp` を selfho
 
 - [ ] **4-A parser error recovery**（= 横断土台 A、M2 前提）— 編集中ソースで
       部分 AST + 診断を返せるようにする。
-- [ ] **4-1 LSP MVP**（M2）— 既存 transport + index を結線し
-      `textDocument/{publishDiagnostics, documentSymbol, definition, hover, formatting}`。
-      診断は既存 checker、symbol は既存 index を流用。
+- [~] **4-1 LSP MVP**（M2）— `js/vibe/lsp_server.js`（stdio JSON-RPC）+ launcher
+      `vibe lsp` を実装。`textDocument/publishDiagnostics` を提供（didOpen/
+      didChange/didSave で native `vibe check` を駆動 → 診断を publish）。source
+      span 未実装のため、診断メッセージ中のシンボルを文書テキストから探して範囲を
+      近似。検証済み（`scripts/test_vibe_lsp.js` 5/5）。残: documentSymbol /
+      definition / hover（symbol index 移植 4-2 が前提）, 正確な範囲（source span）。
 - [ ] **4-2 selfhost への index 移植**（M2–M3）— `src/frontend/symbol_index.mbt`
       相当を `vibe/compiler/` 側に持ち、host 依存を外す。
 - [ ] **4-3 completion / references / rename**（M3）— checker に部分型情報 API を

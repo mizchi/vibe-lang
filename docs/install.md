@@ -69,6 +69,7 @@ vibe build   <file.vibe> -o <out>     alias of compile
 vibe check   <file.vibe> [entry]      parse + typecheck (no output kept)
 vibe test    <file_test.vibe>...      compile + run test {} blocks
 vibe fetch   [project_dir]            vendor git/URL deps from vibe.deps + lock
+vibe lsp                              start the stdio LSP server (diagnostics)
 vibe version                          print toolchain versions
 vibe self update --cli-wasm <path>    refresh compiler wasm + rebuild .cwasm
 vibe help                             usage
@@ -103,6 +104,20 @@ and records the resolved hash in `vibe.lock` for reproducible builds. `file://`
 and local paths are supported for offline/local deps. This is an MVP of
 [docs/release-roadmap.md](release-roadmap.md) テーマ2 — seamless `import "<url>"`
 syntax and transitive resolution are tracked there.
+
+## Editor support (LSP, MVP)
+
+`vibe lsp` starts a stdio LSP server that reports diagnostics as you edit, by
+driving the selfhost compiler. Point your editor's LSP client at `vibe lsp` for
+the `vibe` language. Example (Neovim):
+
+```lua
+vim.lsp.start({ name = "vibe", cmd = { "vibe", "lsp" }, root_dir = vim.fn.getcwd() })
+```
+
+This MVP provides push diagnostics with an approximate range (the selfhost
+frontend does not yet track source spans). Document symbols, go-to-definition,
+and hover are tracked in [docs/release-roadmap.md](release-roadmap.md) テーマ4.
 
 ## Updating the compiler independently of the runner
 

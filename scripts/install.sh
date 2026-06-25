@@ -81,9 +81,13 @@ say "AOT-compiling host-specific .cwasm…"
   -o "$VIBE_HOME/lib/vibe-cli.cwasm"
 say "AOT compiler -> $VIBE_HOME/lib/vibe-cli.cwasm"
 
-# 4. launcher --------------------------------------------------------------
+# 4. launcher + LSP server -------------------------------------------------
 install -m 0755 "$ROOT_DIR/runtime/vibe" "$VIBE_HOME/bin/vibe"
 say "launcher -> $VIBE_HOME/bin/vibe"
+if [ -f "$ROOT_DIR/js/vibe/lsp_server.js" ]; then
+  install -m 0644 "$ROOT_DIR/js/vibe/lsp_server.js" "$VIBE_HOME/lib/lsp_server.js"
+  say "lsp server -> $VIBE_HOME/lib/lsp_server.js"
+fi
 
 if [ "$DO_LINK" = "1" ]; then
   mkdir -p "$BIN_DIR"
