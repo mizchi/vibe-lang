@@ -29269,6 +29269,282 @@ export let normalize_source: (String) -> String with { Error } = (src) -> {
   }
   String::concat(String::join(sections, "\n\n"), "\n")
 }
+let line_col_to_offset: (String, Int, Int) -> Int = (source, line, col) -> {
+  let len = String::length(source)
+  let mut i = 0
+  let mut cur_line = 1
+  while cur_line < line && i < len {
+    if String::char_code_at(source, i) == 10 {
+      cur_line = cur_line + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let off = i + (col - 1)
+  if off < 0 {
+    0
+  } else if off > len {
+    len
+  } else {
+    off
+  }
+}
+enum IdentHit {
+  IdentHit(String, Int)
+}
+let empty_hits: () -> Array[IdentHit] = () -> {
+  Array::slice([
+    IdentHit("", -1)
+  ], 0, 0)
+}
+let rec collect_expr: (Expr, Array[IdentHit]) -> Unit = (expr, acc) -> {
+  match expr {
+    EInt(_) => (),
+    EFloat(_) => (),
+    EString(_) => (),
+    EBool(_) => (),
+    EIdent(name, off) => {
+      if off >= 0 {
+        Array::push(acc, IdentHit(name, off))
+      } else {
+        ()
+      }
+    },
+    EUnit => (),
+    EStringInterp(_) => (),
+    ETuple(items) => collect_exprs(items, acc),
+    EArray(items) => collect_exprs(items, acc),
+    ERecord(fields) => collect_field_exprs(fields, acc),
+    EIf(c, t, e) => {
+      collect_expr(c, acc)
+      collect_expr(t, acc)
+      collect_expr(e, acc)
+    },
+    ELet(_, v, b) => {
+      collect_expr(v, acc)
+      collect_expr(b, acc)
+    },
+    ELetRec(_, v, b) => {
+      collect_expr(v, acc)
+      collect_expr(b, acc)
+    },
+    ELetMut(_, v, b) => {
+      collect_expr(v, acc)
+      collect_expr(b, acc)
+    },
+    EAssign(_, v, b) => {
+      collect_expr(v, acc)
+      collect_expr(b, acc)
+    },
+    EAssignOp(_, _, v, b) => {
+      collect_expr(v, acc)
+      collect_expr(b, acc)
+    },
+    ESeq(a, b) => {
+      collect_expr(a, acc)
+      collect_expr(b, acc)
+    },
+    EMatch(s, arms) => {
+      collect_expr(s, acc)
+      collect_arm_exprs(arms, acc)
+    },
+    EHandle(s, arms) => {
+      collect_expr(s, acc)
+      collect_arm_exprs(arms, acc)
+    },
+    EWhile(c, b) => {
+      collect_expr(c, acc)
+      collect_expr(b, acc)
+    },
+    ELoop(params, b) => {
+      collect_loop_param_exprs(params, acc)
+      collect_expr(b, acc)
+    },
+    EForIn(_, _, it, b) => {
+      collect_expr(it, acc)
+      collect_expr(b, acc)
+    },
+    ECall(callee, args) => {
+      collect_expr(callee, acc)
+      collect_exprs(args, acc)
+    },
+    EBinOp(_, l, r) => {
+      collect_expr(l, acc)
+      collect_expr(r, acc)
+    },
+    EUnaryOp(_, e) => collect_expr(e, acc),
+    EFn(_, _, _, _, _, body) => collect_expr(body, acc),
+    EDot(e, _) => collect_expr(e, acc),
+    ELabeledArg(_, _, v) => collect_expr(v, acc),
+    EThrow(e) => collect_expr(e, acc),
+    EReturn(e) => collect_expr(e, acc),
+    EBreak(opt) => match opt {
+      Some(v) => collect_expr(v, acc),
+      None => ()
+    },
+    EContinue(args) => collect_exprs(args, acc),
+    EMap(fields) => collect_field_exprs(fields, acc),
+    ESpread(e) => collect_expr(e, acc)
+  }
+}
+let collect_exprs: (Array[Expr], Array[IdentHit]) -> Unit = (items, acc) -> {
+  let mut i = 0
+  while i < Array::length(items) {
+    collect_expr(Array::get(items, i), acc)
+    i = i + 1
+  }
+}
+let collect_field_exprs: (Array[(String, Expr)], Array[IdentHit]) -> Unit = (fields, acc) -> {
+  let mut i = 0
+  while i < Array::length(fields) {
+    let (_, v) = Array::get(fields, i)
+    collect_expr(v, acc)
+    i = i + 1
+  }
+}
+let collect_arm_exprs: (Array[(Pat, Expr)], Array[IdentHit]) -> Unit = (arms, acc) -> {
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (_, e) = Array::get(arms, i)
+    collect_expr(e, acc)
+    i = i + 1
+  }
+}
+let collect_loop_param_exprs: (Array[(String, Expr)], Array[IdentHit]) -> Unit = (params, acc) -> {
+  let mut i = 0
+  while i < Array::length(params) {
+    let (_, init) = Array::get(params, i)
+    collect_expr(init, acc)
+    i = i + 1
+  }
+}
+let collect_stmt: (Stmt, Array[IdentHit]) -> Unit = (stmt, acc) -> {
+  match stmt {
+    SLet(_, _, _, _, body) => collect_expr(body, acc),
+    SLetMut(_, _, body) => collect_expr(body, acc),
+    STest(_, body) => collect_expr(body, acc),
+    SBench(_, body) => collect_expr(body, acc),
+    SExpr(e) => collect_expr(e, acc),
+    SLetPat(_, body) => collect_expr(body, acc),
+    SModule(_, _, body) => collect_stmts(body, acc),
+    _ => ()
+  }
+}
+let collect_stmts: (Array[Stmt], Array[IdentHit]) -> Unit = (stmts, acc) -> {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    collect_stmt(Array::get(stmts, i), acc)
+    i = i + 1
+  }
+}
+let is_boundary_at: (String, Int) -> Bool = (source, off) -> {
+  if off < 0 || off >= String::length(source) {
+    true
+  } else {
+    let c = String::char_code_at(source, off)
+    let is_id = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+    !is_id
+  }
+}
+let push_binding_name_hit: (String, Int, Int, String, Array[IdentHit]) -> Unit = (source, start, end, name, acc) -> {
+  let nlen = String::length(name)
+  if nlen == 0 {
+    ()
+  } else {
+    let limit = if end > String::length(source) { String::length(source) } else { end }
+    let mut i = if start < 0 { 0 } else { start }
+    let mut found = false
+    while !found && i + nlen <= limit {
+      if String::substring(source, i, i + nlen) == name && is_boundary_at(source, i - 1) && is_boundary_at(source, i + nlen) {
+        Array::push(acc, IdentHit(name, i))
+        found = true
+      } else {
+        i = i + 1
+      }
+    }
+  }
+}
+let collect_binding_name_hits: (Array[Stmt], Array[Int], Array[Int], String, Array[IdentHit]) -> Unit = (stmts, span_start, span_end, source, acc) -> {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let start = if i < Array::length(span_start) { Array::get(span_start, i) } else { 0 }
+    let end = if i < Array::length(span_end) { Array::get(span_end, i) } else { String::length(source) }
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, _) => push_binding_name_hit(source, start, end, name, acc),
+      SLetMut(name, _, _) => push_binding_name_hit(source, start, end, name, acc),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+let pick_ident_at: (Array[IdentHit], Int) -> String = (hits, tgt) -> {
+  let mut best_name = ""
+  let mut best_off = -1
+  let mut i = 0
+  while i < Array::length(hits) {
+    match Array::get(hits, i) {
+      IdentHit(name, off) => {
+        let span_end = off + String::length(name)
+        if off <= tgt && tgt < span_end && off > best_off {
+          best_name = name
+          best_off = off
+        } else {
+          ()
+        }
+      }
+    }
+    i = i + 1
+  }
+  best_name
+}
+export let type_at_source: (String, Int, Int) -> String = (source, line, col) -> {
+  handle {
+    let tgt = line_col_to_offset(source, line, col)
+    let (tokens, starts, ends) = lex_with_offsets(source)
+    let stmts = parse_program_located(tokens, starts, source)
+    let hits = empty_hits()
+    collect_stmts(stmts, hits)
+    let (span_stmts, span_start, span_end) = parse_program_spans(tokens, starts, ends)
+    collect_binding_name_hits(span_stmts, span_start, span_end, source, hits)
+    let name = pick_ident_at(hits, tgt)
+    if name == "" {
+      ""
+    } else {
+      let env = check_program(stmts)
+      match env_lookup(env, name) {
+        Some(t) => type_to_string(t),
+        None => ""
+      }
+    }
+  } with Error {
+    Throw(_) => ""
+  }
+}
+let parse_int_or: (String, Int) -> Int = (s, default) -> {
+  let len = String::length(s)
+  if len == 0 {
+    default
+  } else {
+    let mut i = 0
+    let mut acc = 0
+    let mut ok = true
+    while ok && i < len {
+      let c = String::char_code_at(s, i)
+      if c >= '0' && c <= '9' {
+        acc = acc * 10 + (c - '0')
+        i = i + 1
+      } else {
+        ok = false
+      }
+    }
+    if ok {
+      acc
+    } else {
+      default
+    }
+  }
+}
 let adapter_string_to_bytes: (String) -> Bytes = (s) -> {
   let out = Array::slice([
     0
@@ -29332,6 +29608,14 @@ export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
   if Env::get("VIBE_NORMALIZE") == "1" {
     let normalized = normalize_source(Fs::read_file(input_path))
     Fs::write_bytes(output_path, adapter_string_to_bytes(normalized))
+    return 0
+  }
+  if Env::get("VIBE_TYPE_AT") == "1" {
+    let src = Fs::read_file(input_path)
+    let line = parse_int_or(Env::get("VIBE_TYPE_LINE"), 1)
+    let col = parse_int_or(Env::get("VIBE_TYPE_COL"), 1)
+    let ty = type_at_source(src, line, col)
+    Fs::write_bytes(output_path, adapter_string_to_bytes(ty))
     return 0
   }
   let source = Fs::read_file(input_path)

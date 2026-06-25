@@ -1,0 +1,330 @@
+//# Imports
+
+// `vibe type-at` — first typed-hover (LSP) consumer of the real EIdent source
+// offsets. Given a (line, col), locate the identifier node whose source span
+// covers that position, typecheck the program, and return the inferred type of
+// that name via env_lookup + type_to_string.
+//
+// MVP scope / LIMITATION: only env-visible names resolve — top-level bindings
+// and imported names that the checker records in the returned TypeEnv. Locals
+// and function parameters are NOT in that env (they live in nested scopes during
+// inference and are gone by the time check_program returns), so hovering one
+// yields "". A future per-node type table would lift this restriction.
+//
+// All strings are built with String::concat only (never `+`, never "\{x}"
+// interpolation): both mis-codegen to NUL in selfhost. Ints stringify via
+// __to_string.
+
+import ../core {
+  Stmt, Expr, Pat, Type, TypeEnv, env_lookup, type_to_string
+}
+
+import ../checker/checker_stmt.vibe {
+  check_program
+}
+
+import ../syntax {
+  lex_with_offsets, parse_program_located, parse_program_spans, offset_to_line_col
+}
+
+//# Functions
+
+// 1-based (line, col) -> 0-based char offset, the inverse of offset_to_line_col.
+// `col` is the position WITHIN a line (col 1 = first char of the line). We count
+// newlines: the offset of the start of line L is just past the (L-1)th newline,
+// then add (col - 1). Defensive: clamp at the source length.
+let line_col_to_offset: (String, Int, Int) -> Int = (source, line, col) -> {
+  let len = String::length(source)
+  let mut i = 0
+  let mut cur_line = 1
+  // Advance to the first char of the target line.
+  while cur_line < line && i < len {
+    if String::char_code_at(source, i) == 10 {
+      cur_line = cur_line + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  // i now points at the first char of `line` (or end). Add the column offset.
+  let off = i + (col - 1)
+  if off < 0 {
+    0
+  } else if off > len {
+    len
+  } else {
+    off
+  }
+}
+
+// A located EIdent hit: name + source span [off, off + length(name)). `off` is
+// -1 for synthetic / non-located idents (those are ignored by the search).
+enum IdentHit {
+  IdentHit(String, Int)
+}
+
+let empty_hits: () -> Array[IdentHit] = () -> {
+  Array::slice([
+    IdentHit("", -1)
+  ], 0, 0)
+}
+
+// Read-only walker over the Expr structure (templated on normalize/index.vibe's
+// `fold_expr`, but it only COLLECTS located EIdent nodes — it never rebuilds the
+// tree). Every variant is enumerated so a new Expr arm is a compile error here,
+// keeping the collector in sync with the AST.
+let rec collect_expr: (Expr, Array[IdentHit]) -> Unit = (expr, acc) -> {
+  match expr {
+    EInt(_) => (),
+    EFloat(_) => (),
+    EString(_) => (),
+    EBool(_) => (),
+    EIdent(name, off) => {
+      if off >= 0 {
+        Array::push(acc, IdentHit(name, off))
+      } else {
+        ()
+      }
+    },
+    EUnit => (),
+    EStringInterp(_) => (),
+    ETuple(items) => collect_exprs(items, acc),
+    EArray(items) => collect_exprs(items, acc),
+    ERecord(fields) => collect_field_exprs(fields, acc),
+    EIf(c, t, e) => {
+      collect_expr(c, acc)
+      collect_expr(t, acc)
+      collect_expr(e, acc)
+    },
+    ELet(_, v, b) => {
+      collect_expr(v, acc)
+      collect_expr(b, acc)
+    },
+    ELetRec(_, v, b) => {
+      collect_expr(v, acc)
+      collect_expr(b, acc)
+    },
+    ELetMut(_, v, b) => {
+      collect_expr(v, acc)
+      collect_expr(b, acc)
+    },
+    EAssign(_, v, b) => {
+      collect_expr(v, acc)
+      collect_expr(b, acc)
+    },
+    EAssignOp(_, _, v, b) => {
+      collect_expr(v, acc)
+      collect_expr(b, acc)
+    },
+    ESeq(a, b) => {
+      collect_expr(a, acc)
+      collect_expr(b, acc)
+    },
+    EMatch(s, arms) => {
+      collect_expr(s, acc)
+      collect_arm_exprs(arms, acc)
+    },
+    EHandle(s, arms) => {
+      collect_expr(s, acc)
+      collect_arm_exprs(arms, acc)
+    },
+    EWhile(c, b) => {
+      collect_expr(c, acc)
+      collect_expr(b, acc)
+    },
+    ELoop(params, b) => {
+      collect_loop_param_exprs(params, acc)
+      collect_expr(b, acc)
+    },
+    EForIn(_, _, it, b) => {
+      collect_expr(it, acc)
+      collect_expr(b, acc)
+    },
+    ECall(callee, args) => {
+      collect_expr(callee, acc)
+      collect_exprs(args, acc)
+    },
+    EBinOp(_, l, r) => {
+      collect_expr(l, acc)
+      collect_expr(r, acc)
+    },
+    EUnaryOp(_, e) => collect_expr(e, acc),
+    EFn(_, _, _, _, _, body) => collect_expr(body, acc),
+    EDot(e, _) => collect_expr(e, acc),
+    ELabeledArg(_, _, v) => collect_expr(v, acc),
+    EThrow(e) => collect_expr(e, acc),
+    EReturn(e) => collect_expr(e, acc),
+    EBreak(opt) => match opt {
+      Some(v) => collect_expr(v, acc),
+      None => ()
+    },
+    EContinue(args) => collect_exprs(args, acc),
+    EMap(fields) => collect_field_exprs(fields, acc),
+    ESpread(e) => collect_expr(e, acc)
+  }
+}
+
+let collect_exprs: (Array[Expr], Array[IdentHit]) -> Unit = (items, acc) -> {
+  let mut i = 0
+  while i < Array::length(items) {
+    collect_expr(Array::get(items, i), acc)
+    i = i + 1
+  }
+}
+
+let collect_field_exprs: (Array[(String, Expr)], Array[IdentHit]) -> Unit = (fields, acc) -> {
+  let mut i = 0
+  while i < Array::length(fields) {
+    let (_, v) = Array::get(fields, i)
+    collect_expr(v, acc)
+    i = i + 1
+  }
+}
+
+let collect_arm_exprs: (Array[(Pat, Expr)], Array[IdentHit]) -> Unit = (arms, acc) -> {
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (_, e) = Array::get(arms, i)
+    collect_expr(e, acc)
+    i = i + 1
+  }
+}
+
+let collect_loop_param_exprs: (Array[(String, Expr)], Array[IdentHit]) -> Unit = (params, acc) -> {
+  let mut i = 0
+  while i < Array::length(params) {
+    let (_, init) = Array::get(params, i)
+    collect_expr(init, acc)
+    i = i + 1
+  }
+}
+
+let collect_stmt: (Stmt, Array[IdentHit]) -> Unit = (stmt, acc) -> {
+  match stmt {
+    SLet(_, _, _, _, body) => collect_expr(body, acc),
+    SLetMut(_, _, body) => collect_expr(body, acc),
+    STest(_, body) => collect_expr(body, acc),
+    SBench(_, body) => collect_expr(body, acc),
+    SExpr(e) => collect_expr(e, acc),
+    SLetPat(_, body) => collect_expr(body, acc),
+    SModule(_, _, body) => collect_stmts(body, acc),
+    _ => ()
+  }
+}
+
+let collect_stmts: (Array[Stmt], Array[IdentHit]) -> Unit = (stmts, acc) -> {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    collect_stmt(Array::get(stmts, i), acc)
+    i = i + 1
+  }
+}
+
+// True when `source[off]` is NOT an identifier char (or off is out of range) —
+// i.e. a valid word boundary. Used to match a binding name as a whole word.
+let is_boundary_at: (String, Int) -> Bool = (source, off) -> {
+  if off < 0 || off >= String::length(source) {
+    true
+  } else {
+    let c = String::char_code_at(source, off)
+    let is_id = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+    !is_id
+  }
+}
+
+// Find the first whole-word occurrence of `name` in `source[start..end)` and, if
+// found, push a located IdentHit for it. This recovers a source offset for a
+// let-binding NAME, which the parser stores only as a String on the Stmt (it is
+// not an EIdent and so carries no offset). Binding names are exactly the
+// env-visible top-level names, so making their definition site hoverable is the
+// useful case for this MVP.
+let push_binding_name_hit: (String, Int, Int, String, Array[IdentHit]) -> Unit = (source, start, end, name, acc) -> {
+  let nlen = String::length(name)
+  if nlen == 0 {
+    ()
+  } else {
+    let limit = if end > String::length(source) { String::length(source) } else { end }
+    let mut i = if start < 0 { 0 } else { start }
+    let mut found = false
+    while !found && i + nlen <= limit {
+      if String::substring(source, i, i + nlen) == name && is_boundary_at(source, i - 1) && is_boundary_at(source, i + nlen) {
+        Array::push(acc, IdentHit(name, i))
+        found = true
+      } else {
+        i = i + 1
+      }
+    }
+  }
+}
+
+// Add located hits for the NAMES of top-level (and module-body) value bindings,
+// using each statement's source span (from parse_program_spans) to scope the
+// whole-word search. Only SLet/SLetMut names are env-visible value bindings.
+let collect_binding_name_hits: (Array[Stmt], Array[Int], Array[Int], String, Array[IdentHit]) -> Unit = (stmts, span_start, span_end, source, acc) -> {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let start = if i < Array::length(span_start) { Array::get(span_start, i) } else { 0 }
+    let end = if i < Array::length(span_end) { Array::get(span_end, i) } else { String::length(source) }
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, _) => push_binding_name_hit(source, start, end, name, acc),
+      SLetMut(name, _, _) => push_binding_name_hit(source, start, end, name, acc),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+// Among all collected idents whose span [off, off+len(name)) contains `tgt`,
+// pick the one with the largest `off` (innermost / closest start). Returns ""
+// when no ident covers the position.
+let pick_ident_at: (Array[IdentHit], Int) -> String = (hits, tgt) -> {
+  let mut best_name = ""
+  let mut best_off = -1
+  let mut i = 0
+  while i < Array::length(hits) {
+    match Array::get(hits, i) {
+      IdentHit(name, off) => {
+        let span_end = off + String::length(name)
+        if off <= tgt && tgt < span_end && off > best_off {
+          best_name = name
+          best_off = off
+        } else {
+          ()
+        }
+      }
+    }
+    i = i + 1
+  }
+  best_name
+}
+
+// Locate the identifier at (line, col), typecheck the program, and return its
+// inferred type as a string. Returns "" when: the position is not over a
+// located identifier; the file fails to parse or typecheck; or the name is not
+// env-visible (see the LIMITATION note at the top of this file).
+export let type_at_source: (String, Int, Int) -> String = (source, line, col) -> {
+  handle {
+    let tgt = line_col_to_offset(source, line, col)
+    let (tokens, starts, ends) = lex_with_offsets(source)
+    let stmts = parse_program_located(tokens, starts, source)
+    let hits = empty_hits()
+    // Identifier USES carry real offsets on their EIdent nodes.
+    collect_stmts(stmts, hits)
+    // Identifier DEFINITIONS (let-binding names) carry none, so recover their
+    // source offset from each statement's span and the source text.
+    let (span_stmts, span_start, span_end) = parse_program_spans(tokens, starts, ends)
+    collect_binding_name_hits(span_stmts, span_start, span_end, source, hits)
+    let name = pick_ident_at(hits, tgt)
+    if name == "" {
+      ""
+    } else {
+      let env = check_program(stmts)
+      match env_lookup(env, name) {
+        Some(t) => type_to_string(t),
+        None => ""
+      }
+    }
+  } with Error {
+    Throw(_) => ""
+  }
+}

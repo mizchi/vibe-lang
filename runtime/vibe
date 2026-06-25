@@ -15,6 +15,7 @@
 #   vibe compile <file.vibe> -o <out>     compile to a .wasm
 #   vibe build   <file.vibe> -o <out>     alias of compile
 #   vibe check   <file.vibe>              parse + typecheck (no output kept)
+#   vibe type-at <file.vibe> <line> <col> print the inferred type at a position
 #   vibe test    <file_test.vibe>...      compile + run test {} blocks
 #   vibe new     <dir>                    scaffold a starter project
 #   vibe add     <name> <url> [dir]       add a dependency to vibe.deps + fetch
@@ -233,6 +234,22 @@ case "$cmd" in
     else
       die "check failed: $src"
     fi
+    ;;
+  type-at)
+    # vibe type-at <file.vibe> <line> <col>
+    # Print the inferred type of the identifier at a 1-based (line, col). Empty
+    # output means there is no env-visible identifier there. First LSP-hover
+    # consumer of the real EIdent source offsets.
+    [ "$#" -ge 3 ] || die "usage: vibe type-at <file.vibe> <line> <col>"
+    src="$1"; ta_line="$2"; ta_col="$3"
+    [ -f "$src" ] || die "not found: $src"
+    cli="$(pick_cli)"
+    out="$(mktemp -t vibe-typeat-XXXXXX)"
+    trap 'rm -f "$out"' EXIT
+    VIBE_TYPE_AT=1 VIBE_TYPE_LINE="$ta_line" VIBE_TYPE_COL="$ta_col" \
+      VIBE_SELFHOST_IMPORT_ABI=raw \
+      "$RUNNER" "$cli" "$src" "$out" >/dev/null 2>&1 || die "type-at failed: $src"
+    [ -s "$out" ] && cat "$out"
     ;;
   test)
     [ "$#" -ge 1 ] || die "usage: vibe test <file_test.vibe> [more_test.vibe...]"
@@ -471,7 +488,7 @@ case "$cmd" in
     esac
     ;;
   help|--help|-h)
-    sed -n '13,26p' "$LAUNCHER" | sed 's/^# \{0,1\}//'
+    sed -n '13,27p' "$LAUNCHER" | sed 's/^# \{0,1\}//'
     ;;
   *)
     die "unknown command: $cmd (try 'vibe help')"

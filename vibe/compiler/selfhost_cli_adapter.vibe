@@ -16,7 +16,39 @@ import ./normalize/index.vibe {
   normalize_source
 }
 
+import ./runtime / type_at.vibe {
+  type_at_source
+}
+
 //# Functions
+
+// Parse a non-negative decimal int from `s`; on any non-digit (or empty) return
+// `default`. String::concat-safe (no `+`/interpolation): folds digits via
+// `acc * 10 + (c - '0')`.
+let parse_int_or: (String, Int) -> Int = (s, default) -> {
+  let len = String::length(s)
+  if len == 0 {
+    default
+  } else {
+    let mut i = 0
+    let mut acc = 0
+    let mut ok = true
+    while ok && i < len {
+      let c = String::char_code_at(s, i)
+      if c >= '0' && c <= '9' {
+        acc = acc * 10 + (c - '0')
+        i = i + 1
+      } else {
+        ok = false
+      }
+    }
+    if ok {
+      acc
+    } else {
+      default
+    }
+  }
+}
 
 let adapter_string_to_bytes: (String) -> Bytes = (s) -> {
   let out = Array::slice([
@@ -97,6 +129,18 @@ export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
   if Env::get("VIBE_NORMALIZE") == "1" {
     let normalized = normalize_source(Fs::read_file(input_path))
     Fs::write_bytes(output_path, adapter_string_to_bytes(normalized))
+    return 0
+  }
+  // `vibe type-at`: typed hover (first LSP consumer of real EIdent offsets).
+  // VIBE_TYPE_LINE/COL are 1-based (matching offset_to_line_col). Writes the
+  // inferred type string of the identifier at that position, or empty when there
+  // is no env-visible ident there (see type_at.vibe LIMITATION note).
+  if Env::get("VIBE_TYPE_AT") == "1" {
+    let src = Fs::read_file(input_path)
+    let line = parse_int_or(Env::get("VIBE_TYPE_LINE"), 1)
+    let col = parse_int_or(Env::get("VIBE_TYPE_COL"), 1)
+    let ty = type_at_source(src, line, col)
+    Fs::write_bytes(output_path, adapter_string_to_bytes(ty))
     return 0
   }
   let source = Fs::read_file(input_path)
