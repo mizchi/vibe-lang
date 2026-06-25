@@ -1,0 +1,114 @@
+name: cli-install
+
+# Build the wasmtime runner and smoke-test the `vibe` install slice
+# (docs/release-roadmap.md テーマ1) on each supported OS. Keeps the
+# runner ↔ compiler-wasm ↔ launcher contract from regressing.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "tools/moonrun_wasmtime/**"
+      - "runtime/vibe"
+      - "scripts/install.sh"
+      - "scripts/build_cli_wasm.sh"
+      - "scripts/test_vibe_cli_install.sh"
+      - "scripts/test_vibe_lsp.js"
+      - "scripts/test_name_section.sh"
+      - "scripts/test_vibe_type_at.sh"
+      - "scripts/test_vibe_trace.sh"
+      - "scripts/test_vibe_diagnostics.sh"
+      - "scripts/test_vibe_trace_calls.sh"
+      - "scripts/test_vibe_break.sh"
+      - "scripts/test_vibe_break_args.sh"
+      - "js/vibe/lsp_server.js"
+      - "bootstrap/selfhost/seed/**"
+      - ".github/workflows/cli-install.yml"
+  pull_request:
+    paths:
+      - "tools/moonrun_wasmtime/**"
+      - "runtime/vibe"
+      - "scripts/install.sh"
+      - "scripts/build_cli_wasm.sh"
+      - "scripts/test_vibe_cli_install.sh"
+      - "scripts/test_vibe_lsp.js"
+      - "scripts/test_name_section.sh"
+      - "scripts/test_vibe_type_at.sh"
+      - "scripts/test_vibe_trace.sh"
+      - "scripts/test_vibe_diagnostics.sh"
+      - "scripts/test_vibe_trace_calls.sh"
+      - "scripts/test_vibe_break.sh"
+      - "scripts/test_vibe_break_args.sh"
+      - "js/vibe/lsp_server.js"
+      - ".github/workflows/cli-install.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: cli-install-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  install-smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Cache cargo + runner build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            tools/moonrun_wasmtime/target
+          key: cli-install-cargo-${{ matrix.os }}-${{ hashFiles('tools/moonrun_wasmtime/Cargo.lock', 'tools/moonrun_wasmtime/src/**') }}
+          restore-keys: |
+            cli-install-cargo-${{ matrix.os }}-
+
+      - name: Build runner
+        run: cargo build --release --manifest-path tools/moonrun_wasmtime/Cargo.toml
+
+      - name: Install (seed compiler) + smoke test
+        run: bash scripts/test_vibe_cli_install.sh
+
+      - name: LSP server smoke test (fresh compiler for diagnostics)
+        run: |
+          export VIBE_HOME="$RUNNER_TEMP/vibe-home"
+          export VIBE_BIN_DIR="$RUNNER_TEMP/vibe-bin"
+          # Default install builds a fresh compiler wasm (with diagnostics) the
+          # LSP server relies on for messages.
+          bash scripts/install.sh >/dev/null
+          VIBE_BIN="$VIBE_BIN_DIR/vibe" node scripts/test_vibe_lsp.js
+
+      - name: Name section (debugger P0) regression test
+        run: bash scripts/test_name_section.sh
+
+      - name: Located diagnostics regression test
+        run: bash scripts/test_located_diagnostics.sh
+
+      - name: Typed hover (vibe type-at) regression test
+        run: bash scripts/test_vibe_type_at.sh
+
+      - name: Trap source-line annotation regression test
+        run: bash scripts/test_vibe_trace.sh
+
+      - name: Parser error-recovery diagnostics regression test
+        run: bash scripts/test_vibe_diagnostics.sh
+
+      - name: Function-call trace (vibe run --trace) regression test
+        run: bash scripts/test_vibe_trace_calls.sh
+
+      - name: Live breakpoint (vibe run --break) regression test
+        run: bash scripts/test_vibe_break.sh
+
+      - name: Breakpoint argument inspection (vibe run --break) regression test
+        run: bash scripts/test_vibe_break_args.sh

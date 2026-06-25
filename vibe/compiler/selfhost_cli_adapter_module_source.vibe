@@ -21,7 +21,7 @@ export enum Expr {
   EFloat(Double);
   EString(String);
   EBool(Bool);
-  EIdent(String);
+  EIdent(String, Int);
   ETuple(Array[Expr]);
   EArray(Array[Expr]);
   ERecord(Array[(String, Expr)]);
@@ -328,7 +328,7 @@ let rec collect_pat_bindings: (Pat, Array[String]) -> Int = (pat, bound) -> {
 }
 let rec collect_refs_into: (Expr, Array[String], Array[String]) -> Int = (expr, bound, out) -> {
   match expr {
-    EIdent(name) => add_ref(out, bound, name),
+    EIdent(name, _) => add_ref(out, bound, name),
     EInt(_) => 0,
     EFloat(_) => 0,
     EString(_) => 0,
@@ -4089,6 +4089,13 @@ let min_int: (Int, Int) -> Int = (a, b) -> {
     b
   }
 }
+let off_marker: (Int) -> String = (off) -> {
+  if off >= 0 {
+    String::concat(" [@off=", String::concat(__to_string(off), "]"))
+  } else {
+    ""
+  }
+}
 let prepend_expr: (Expr, Array[Expr]) -> Array[Expr] = (first, rest) -> {
   let out = Array::slice([
     EUnit
@@ -4103,7 +4110,7 @@ let prepend_expr: (Expr, Array[Expr]) -> Array[Expr] = (first, rest) -> {
 }
 let expr_ident_name_or_empty: (Expr) -> String = (expr) -> {
   match expr {
-    EIdent(name) => name,
+    EIdent(name, _) => name,
     _ => ""
   }
 }
@@ -4244,7 +4251,7 @@ let infer_named_trait_binop: (TypeEnv, Type, Type, String, Subst) -> Option[(Typ
     None => None
   }
 }
-let infer_binop_type: (String, Type, Type, TypeEnv, Subst, Array[String]) -> (Type, Subst) = (op, left_ty, right_ty, env, s, errors) -> {
+let infer_binop_type: (String, Type, Type, TypeEnv, Subst, Array[String], Array[(Int, Type)]) -> (Type, Subst) = (op, left_ty, right_ty, env, s, errors, tytab) -> {
   if is_logic_binop(op) {
     match unify_binop_candidate(left_ty, right_ty, CtBool, s) {
       Some(s1) => (CtBool, s1),
@@ -4379,14 +4386,14 @@ let rec resolve_tparams_in: (Type, TypeEnv) -> Type = (ty, env) -> {
     _ => ty
   }
 }
-export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String]) -> (Type, Subst, Int) = (expr, env, defs, s, c, errors) -> {
+export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int) = (expr, env, defs, s, c, errors, tytab) -> {
   match expr {
     EInt(_) => (CtInt, s, c),
     EFloat(_) => (CtDouble, s, c),
     EString(_) => (CtString, s, c),
     EBool(_) => (CtBool, s, c),
     EUnit => (CtUnit, s, c),
-    EIdent(name) => match env_lookup(env, name) {
+    EIdent(name, ident_off) => match env_lookup(env, name) {
       Some(t) => {
         let (ti, c1, new_bounds) = instantiate(t, c)
         let nblen = Array::length(new_bounds)
@@ -4399,12 +4406,24 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
           }
           bi = bi + 1
         }
+        if ident_off >= 0 {
+          Array::push(tytab, (ident_off, ti))
+        } else {
+          ()
+        }
         (ti, s1, c1)
       },
       None => match lookup_builtin(name) {
-        Some(t) => (t, s, c),
+        Some(t) => {
+          if ident_off >= 0 {
+            Array::push(tytab, (ident_off, t))
+          } else {
+            ()
+          }
+          (t, s, c)
+        },
         None => {
-          Array::push(errors, String::concat("unknown name: ", name))
+          Array::push(errors, String::concat(String::concat("unknown name: ", name), off_marker(ident_off)))
           (CtUnknown, s, c)
         }
       }
@@ -4412,7 +4431,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
     ESeq(left, right) => {
       let mut s1 = s
       let mut c1 = c
-      let (_, ns0, nc0) = check_expr(left, env, defs, s1, c1, errors)
+      let (_, ns0, nc0) = check_expr(left, env, defs, s1, c1, errors, tytab)
       s1 = ns0
       c1 = nc0
       let mut cur = right
@@ -4420,7 +4439,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       while !done {
         match cur {
           ESeq(next_left, next_right) => {
-            let (_, ns, nc) = check_expr(next_left, env, defs, s1, c1, errors)
+            let (_, ns, nc) = check_expr(next_left, env, defs, s1, c1, errors, tytab)
             s1 = ns
             c1 = nc
             cur = next_right
@@ -4430,29 +4449,29 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
           }
         }
       }
-      check_expr(cur, env, defs, s1, c1, errors)
+      check_expr(cur, env, defs, s1, c1, errors, tytab)
     },
     ELet(name, val, body) => {
-      let (vt, s1, c1) = check_expr(val, env, defs, s, c, errors)
+      let (vt, s1, c1) = check_expr(val, env, defs, s, c, errors, tytab)
       let gen = generalize(s1, vt)
-      check_expr(body, env_bind(env, name, gen), defs, s1, c1, errors)
+      check_expr(body, env_bind(env, name, gen), defs, s1, c1, errors, tytab)
     },
     ELetRec(name, val, body) => {
       let (tv, c1) = fresh_var(c)
-      let (vt, s1, c2) = check_expr(val, env_bind(env, name, tv), defs, s, c1, errors)
+      let (vt, s1, c2) = check_expr(val, env_bind(env, name, tv), defs, s, c1, errors, tytab)
       let s2 = match unify(tv, vt, s1) {
         Some(su) => su,
         None => s1
       }
       let gen = generalize(s2, tv)
-      check_expr(body, env_bind(env, name, gen), defs, s2, c2, errors)
+      check_expr(body, env_bind(env, name, gen), defs, s2, c2, errors, tytab)
     },
     ELetMut(name, val, body) => {
-      let (vt, s1, c1) = check_expr(val, env, defs, s, c, errors)
-      check_expr(body, env_bind(env, name, vt), defs, s1, c1, errors)
+      let (vt, s1, c1) = check_expr(val, env, defs, s, c, errors, tytab)
+      check_expr(body, env_bind(env, name, vt), defs, s1, c1, errors, tytab)
     },
     EIf(cond, then_e, else_e) => {
-      let (ct, s1, c1) = check_expr(cond, env, defs, s, c, errors)
+      let (ct, s1, c1) = check_expr(cond, env, defs, s, c, errors, tytab)
       let resolved_ct = subst_apply(s1, ct)
       match resolved_ct {
         CtBool => (),
@@ -4460,12 +4479,12 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         CtVar(_) => (),
         _ => Array::push(errors, "if condition must be Bool")
       }
-      let (tt, s2, c2) = check_expr(then_e, env, defs, s1, c1, errors)
-      let (_, s3, c3) = check_expr(else_e, env, defs, s2, c2, errors)
+      let (tt, s2, c2) = check_expr(then_e, env, defs, s1, c1, errors, tytab)
+      let (_, s3, c3) = check_expr(else_e, env, defs, s2, c2, errors, tytab)
       (tt, s3, c3)
     },
     ECall(callee, args) => match callee {
-      EIdent(name) => if name == "perform" {
+      EIdent(name, callee_off) => if name == "perform" {
         if Array::length(args) == 1 {
           match Array::get(args, 0) {
             ECall(_, opargs) => {
@@ -4474,7 +4493,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
               let mut c1 = c
               let mut ai = 0
               while ai < oalen {
-                let (_, ns, nc) = check_expr(Array::get(opargs, ai), env, defs, s1, c1, errors)
+                let (_, ns, nc) = check_expr(Array::get(opargs, ai), env, defs, s1, c1, errors, tytab)
                 s1 = ns
                 c1 = nc
                 ai = ai + 1
@@ -4482,11 +4501,11 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
               let (tv, c2) = fresh_var(c1)
               (tv, s1, c2)
             },
-            EIdent(_) => {
+            EIdent(_, _) => {
               let (tv, c2) = fresh_var(c)
               (tv, s, c2)
             },
-            other => check_expr(other, env, defs, s, c, errors)
+            other => check_expr(other, env, defs, s, c, errors, tytab)
           }
         } else {
           (CtUnknown, s, c)
@@ -4497,7 +4516,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         let mut c1 = c
         let mut ai = 0
         while ai < alen {
-          let (_, ns, nc) = check_expr(Array::get(args, ai), env, defs, s1, c1, errors)
+          let (_, ns, nc) = check_expr(Array::get(args, ai), env, defs, s1, c1, errors, tytab)
           s1 = ns
           c1 = nc
           ai = ai + 1
@@ -4506,7 +4525,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         (tv, s1, c2)
       } else if name == "Some" {
         if Array::length(args) == 1 {
-          let (at, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors)
+          let (at, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
           (CtOption(subst_apply(s1, at)), s1, c1)
         } else {
           (CtOption(CtUnknown), s, c)
@@ -4519,7 +4538,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
             let mut s2 = s
             let mut c2 = c
             while ai < alen {
-              let (_, ns, nc) = check_expr(Array::get(args, ai), env, defs, s2, c2, errors)
+              let (_, ns, nc) = check_expr(Array::get(args, ai), env, defs, s2, c2, errors, tytab)
               s2 = ns
               c2 = nc
               ai = ai + 1
@@ -4527,7 +4546,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
             (subst_apply(s2, ret_ty), s2, c2)
           },
           None => {
-            let (ct, s1, c1) = check_expr(EIdent(name), env, defs, s, c, errors)
+            let (ct, s1, c1) = check_expr(EIdent(name, -1), env, defs, s, c, errors, tytab)
             let alen = Array::length(args)
             let arg_tys = Array::slice([
               CtUnknown
@@ -4536,7 +4555,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
             let mut s2 = s1
             let mut c2 = c1
             while ai < alen {
-              let (at, ns, nc) = check_expr(Array::get(args, ai), env, defs, s2, c2, errors)
+              let (at, ns, nc) = check_expr(Array::get(args, ai), env, defs, s2, c2, errors, tytab)
               Array::push(arg_tys, at)
               s2 = ns
               c2 = nc
@@ -4555,7 +4574,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
                 let plen2 = Array::length(param_tys)
                 let alen3 = Array::length(arg_tys)
                 if alen3 != plen2 {
-                  Array::push(errors, String::concat("function arity mismatch for ", String::concat(name, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))))
+                  Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(name, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))), off_marker(callee_off)))
                 }
                 let s3 = unify_call_args(call_param_tys, arg_tys, s2)
                 let call_ret = Array::get(ret_box, 0)
@@ -4568,7 +4587,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         }
       },
       EDot(obj, method) => {
-        let (obj_ty, s1, c1) = check_expr(obj, env, defs, s, c, errors)
+        let (obj_ty, s1, c1) = check_expr(obj, env, defs, s, c, errors, tytab)
         let resolved = subst_apply(s1, obj_ty)
         let type_prefix = type_name_prefix(resolved)
         let qualified = String::concat(type_prefix, String::concat("::", method))
@@ -4594,7 +4613,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         let mut s3 = s2
         let mut c3 = c2
         while ai < alen {
-          let (at, ns, nc) = check_expr(Array::get(all_args, ai), env, defs, s3, c3, errors)
+          let (at, ns, nc) = check_expr(Array::get(all_args, ai), env, defs, s3, c3, errors, tytab)
           Array::push(arg_tys, at)
           s3 = ns
           c3 = nc
@@ -4613,7 +4632,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
             let plen = Array::length(param_tys)
             let alen2 = Array::length(arg_tys)
             if alen2 != plen {
-              Array::push(errors, String::concat("function arity mismatch for ", String::concat(qualified, String::concat(": expected ", String::concat(__to_string(plen), String::concat(" args, got ", __to_string(alen2)))))))
+              Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(qualified, String::concat(": expected ", String::concat(__to_string(plen), String::concat(" args, got ", __to_string(alen2)))))), off_marker(-1)))
             }
             let s4 = unify_call_args(call_param_tys, arg_tys, s3)
             let call_ret = Array::get(ret_box, 0)
@@ -4639,7 +4658,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
               let mut s2 = s
               let mut c2 = c
               while ai < alen {
-                let (_, ns, nc) = check_expr(Array::get(args, ai), env, defs, s2, c2, errors)
+                let (_, ns, nc) = check_expr(Array::get(args, ai), env, defs, s2, c2, errors, tytab)
                 s2 = ns
                 c2 = nc
                 ai = ai + 1
@@ -4647,7 +4666,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
               (subst_apply(s2, ret_ty), s2, c2)
             },
             None => {
-              let (ct, s1, c1) = check_expr(callee, env, defs, s, c, errors)
+              let (ct, s1, c1) = check_expr(callee, env, defs, s, c, errors, tytab)
               let alen = Array::length(args)
               let arg_tys = Array::slice([
                 CtUnknown
@@ -4656,7 +4675,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
               let mut s2 = s1
               let mut c2 = c1
               while ai < alen {
-                let (at, ns, nc) = check_expr(Array::get(args, ai), env, defs, s2, c2, errors)
+                let (at, ns, nc) = check_expr(Array::get(args, ai), env, defs, s2, c2, errors, tytab)
                 Array::push(arg_tys, at)
                 s2 = ns
                 c2 = nc
@@ -4675,7 +4694,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
                 let plen2 = Array::length(param_tys)
                 let alen3 = Array::length(arg_tys)
                 if alen3 != plen2 {
-                  Array::push(errors, String::concat("function arity mismatch for ", String::concat(callee_name0, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))))
+                  Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(callee_name0, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))), off_marker(-1)))
                 }
                 let s3 = unify_call_args(call_param_tys, arg_tys, s2)
                 let call_ret = Array::get(ret_box, 0)
@@ -4687,7 +4706,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
             }
           }
         } else {
-            let (ct, s1, c1) = check_expr(callee, env, defs, s, c, errors)
+            let (ct, s1, c1) = check_expr(callee, env, defs, s, c, errors, tytab)
             let alen = Array::length(args)
             let arg_tys = Array::slice([
               CtUnknown
@@ -4696,7 +4715,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
             let mut s2 = s1
             let mut c2 = c1
             while ai < alen {
-              let (at, ns, nc) = check_expr(Array::get(args, ai), env, defs, s2, c2, errors)
+              let (at, ns, nc) = check_expr(Array::get(args, ai), env, defs, s2, c2, errors, tytab)
               Array::push(arg_tys, at)
               s2 = ns
               c2 = nc
@@ -4728,13 +4747,13 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       }
     },
     EBinOp(op, left, right) => {
-      let (left_ty, s1, c1) = check_expr(left, env, defs, s, c, errors)
-      let (right_ty, s2, c2) = check_expr(right, env, defs, s1, c1, errors)
-      let (result_ty, s3) = infer_binop_type(op, subst_apply(s2, left_ty), subst_apply(s2, right_ty), env, s2, errors)
+      let (left_ty, s1, c1) = check_expr(left, env, defs, s, c, errors, tytab)
+      let (right_ty, s2, c2) = check_expr(right, env, defs, s1, c1, errors, tytab)
+      let (result_ty, s3) = infer_binop_type(op, subst_apply(s2, left_ty), subst_apply(s2, right_ty), env, s2, errors, tytab)
       (subst_apply(s3, result_ty), s3, c2)
     },
     EUnaryOp(op, operand) => {
-      let (operand_ty, s1, c1) = check_expr(operand, env, defs, s, c, errors)
+      let (operand_ty, s1, c1) = check_expr(operand, env, defs, s, c, errors, tytab)
       if op == "!" {
         match subst_apply(s1, operand_ty) {
           CtBool => (CtBool, s1, c1),
@@ -4757,15 +4776,15 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       } else (CtUnknown, s1, c1)
     },
     EAssign(_, val, body) => {
-      let (_, s1, c1) = check_expr(val, env, defs, s, c, errors)
-      check_expr(body, env, defs, s1, c1, errors)
+      let (_, s1, c1) = check_expr(val, env, defs, s, c, errors, tytab)
+      check_expr(body, env, defs, s1, c1, errors, tytab)
     },
     EAssignOp(_, _, val, body) => {
-      let (_, s1, c1) = check_expr(val, env, defs, s, c, errors)
-      check_expr(body, env, defs, s1, c1, errors)
+      let (_, s1, c1) = check_expr(val, env, defs, s, c, errors, tytab)
+      check_expr(body, env, defs, s1, c1, errors, tytab)
     },
     EMatch(scrutinee, arms) => {
-      let (scr_ty, s1, c1) = check_expr(scrutinee, env, defs, s, c, errors)
+      let (scr_ty, s1, c1) = check_expr(scrutinee, env, defs, s, c, errors, tytab)
       let alen = Array::length(arms)
       if alen == 0 {
         (CtUnknown, s1, c1)
@@ -4778,7 +4797,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         while ai < alen {
           let (pat, body) = Array::get(arms, ai)
           let arm_env = check_pattern(pat, scr_ty, env, defs)
-          let (arm_ty, ns, nc) = check_expr(body, arm_env, defs, si, ci, errors)
+          let (arm_ty, ns, nc) = check_expr(body, arm_env, defs, si, ci, errors, tytab)
           if ai == 0 {
             result_ty = arm_ty
           }
@@ -4789,9 +4808,9 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         (result_ty, si, ci)
       }
     },
-    EHandle(body, _) => check_expr(body, env, defs, s, c, errors),
+    EHandle(body, _) => check_expr(body, env, defs, s, c, errors, tytab),
     EWhile(cond, body) => {
-      let (ct, s1, c1) = check_expr(cond, env, defs, s, c, errors)
+      let (ct, s1, c1) = check_expr(cond, env, defs, s, c, errors, tytab)
       let resolved_ct = subst_apply(s1, ct)
       match resolved_ct {
         CtBool => (),
@@ -4799,7 +4818,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         CtVar(_) => (),
         _ => Array::push(errors, "while condition must be Bool")
       }
-      let (_, s2, c2) = check_expr(body, env, defs, s1, c1, errors)
+      let (_, s2, c2) = check_expr(body, env, defs, s1, c1, errors, tytab)
       (CtUnit, s2, c2)
     },
     ELoop(params, body) => {
@@ -4809,17 +4828,17 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       let mut i = 0
       while i < Array::length(params) {
         let (name, init) = Array::get(params, i)
-        let (pt, ns, nc) = check_expr(init, env1, defs, s1, c1, errors)
+        let (pt, ns, nc) = check_expr(init, env1, defs, s1, c1, errors, tytab)
         env1 = env_bind(env1, name, pt)
         s1 = ns
         c1 = nc
         i = i + 1
       }
-      let (_, s2, c2) = check_expr(body, env1, defs, s1, c1, errors)
+      let (_, s2, c2) = check_expr(body, env1, defs, s1, c1, errors, tytab)
       (CtUnit, s2, c2)
     },
     EForIn(name, index_name, iterable, body) => {
-      let (it, s1, c1) = check_expr(iterable, env, defs, s, c, errors)
+      let (it, s1, c1) = check_expr(iterable, env, defs, s, c, errors, tytab)
       let et = match subst_apply(s1, it) {
         CtArray(elem) => elem,
         CtNamed("Stream", args) => if Array::length(args) > 0 {
@@ -4832,11 +4851,11 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         Some(index_name) => env_bind(env2, index_name, CtInt),
         None => env2
       }
-      let (bt, s2, c2) = check_expr(body, env3, defs, s1, c1, errors)
+      let (bt, s2, c2) = check_expr(body, env3, defs, s1, c1, errors, tytab)
       (CtArray(bt), s2, c2)
     },
     EDot(obj, field) => {
-      let (obj_ty, s1, c1) = check_expr(obj, env, defs, s, c, errors)
+      let (obj_ty, s1, c1) = check_expr(obj, env, defs, s, c, errors, tytab)
       let resolved = subst_apply(s1, obj_ty)
       let field_ty = match resolved {
         CtStruct(sname) => match find_typedef(defs, sname) {
@@ -4931,7 +4950,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         c1 = nc
         pi = pi + 1
       }
-      let (bt, s2, c2) = check_expr(body, fn_env, defs, s1, c1, errors)
+      let (bt, s2, c2) = check_expr(body, fn_env, defs, s1, c1, errors, tytab)
       let (final_ret, s3) = match ret_ty {
         Some(te) => {
           let resolved = resolve_type_expr(te, defs)
@@ -4950,7 +4969,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
     },
     EBreak(opt) => match opt {
       Some(e) => {
-        let (_, s1, c1) = check_expr(e, env, defs, s, c, errors)
+        let (_, s1, c1) = check_expr(e, env, defs, s, c, errors, tytab)
         (CtUnit, s1, c1)
       },
       None => (CtUnit, s, c)
@@ -4961,7 +4980,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       let mut c1 = c
       let mut ai = 0
       while ai < alen {
-        let (_, ns, nc) = check_expr(Array::get(args, ai), env, defs, s1, c1, errors)
+        let (_, ns, nc) = check_expr(Array::get(args, ai), env, defs, s1, c1, errors, tytab)
         s1 = ns
         c1 = nc
         ai = ai + 1
@@ -4975,7 +4994,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       let mut fi = 0
       while fi < flen {
         let (_, fval) = Array::get(fields, fi)
-        let (_, ns, nc) = check_expr(fval, env, defs, s1, c1, errors)
+        let (_, ns, nc) = check_expr(fval, env, defs, s1, c1, errors, tytab)
         s1 = ns
         c1 = nc
         fi = fi + 1
@@ -4991,7 +5010,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       ], 0, 0)
       let mut ti = 0
       while ti < ilen {
-        let (it, ns, nc) = check_expr(Array::get(items, ti), env, defs, s1, c1, errors)
+        let (it, ns, nc) = check_expr(Array::get(items, ti), env, defs, s1, c1, errors, tytab)
         Array::push(tys, it)
         s1 = ns
         c1 = nc
@@ -5006,7 +5025,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       let mut elem_ty = CtUnknown
       let mut ai = 0
       while ai < ilen {
-        let (it, ns, nc) = check_expr(Array::get(items, ai), env, defs, s1, c1, errors)
+        let (it, ns, nc) = check_expr(Array::get(items, ai), env, defs, s1, c1, errors, tytab)
         if ai == 0 {
           elem_ty = it
         }
@@ -5017,7 +5036,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       (CtArray(elem_ty), s1, c1)
     },
     EReturn(e) => {
-      let (_, s1, c1) = check_expr(e, env, defs, s, c, errors)
+      let (_, s1, c1) = check_expr(e, env, defs, s, c, errors, tytab)
       (CtUnknown, s1, c1)
     },
     _ => (CtUnknown, s, c)
@@ -5138,7 +5157,7 @@ let reorder_type_decls_first: (Array[Stmt], Int) -> Array[Stmt] = (stmts, start)
   }
   out
 }
-export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, Int, Array[String]) -> (TypeEnv, Subst, Int) = (raw_stmts, i, env, defs, s, c, errors) -> {
+export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (TypeEnv, Subst, Int) = (raw_stmts, i, env, defs, s, c, errors, tytab) -> {
   let stmts = reorder_type_decls_first(raw_stmts, i)
   let mut idx = i
   let mut cur_env = env
@@ -5166,9 +5185,9 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
     let (new_env, s1, c1) = match stmt {
       SLet(_, is_rec, name, ann, val) => {
         let (vt, ns, nc) = if is_rec {
-          check_expr(val, env_bind(env, name, CtUnknown), defs, s, c, errors)
+          check_expr(val, env_bind(env, name, CtUnknown), defs, s, c, errors, tytab)
         } else {
-          check_expr(val, env, defs, s, c, errors)
+          check_expr(val, env, defs, s, c, errors, tytab)
         }
         let t = match ann {
           Some(te) => resolve_type_expr(te, defs),
@@ -5178,7 +5197,7 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
         (bind_value_or_annotation_return(env1, name, val, ann, defs), ns, nc)
       },
       SLetMut(name, ann, val) => {
-        let (vt, ns, nc) = check_expr(val, env, defs, s, c, errors)
+        let (vt, ns, nc) = check_expr(val, env, defs, s, c, errors, tytab)
         let t = match ann {
           Some(te) => resolve_type_expr(te, defs),
           None => vt
@@ -5187,7 +5206,7 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
         (bind_value_or_annotation_return(env1, name, val, ann, defs), ns, nc)
       },
       SLetPat(pat, val) => {
-        let (vt, ns, nc) = check_expr(val, env, defs, s, c, errors)
+        let (vt, ns, nc) = check_expr(val, env, defs, s, c, errors, tytab)
         let new_env = match pat {
           PTuple(pats) => match vt {
             CtTuple(types) => {
@@ -5361,19 +5380,19 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
         (bind_annotation_return(env1, name, Some(te), defs), s, c)
       },
       STest(_, body) => {
-        let (_, ns, nc) = check_expr(body, env, defs, s, c, errors)
+        let (_, ns, nc) = check_expr(body, env, defs, s, c, errors, tytab)
         (env, ns, nc)
       },
       SBench(_, body) => {
-        let (_, ns, nc) = check_expr(body, env, defs, s, c, errors)
+        let (_, ns, nc) = check_expr(body, env, defs, s, c, errors, tytab)
         (env, ns, nc)
       },
       SExpr(expr) => {
-        let (_, ns, nc) = check_expr(expr, env, defs, s, c, errors)
+        let (_, ns, nc) = check_expr(expr, env, defs, s, c, errors, tytab)
         (env, ns, nc)
       },
       SModule(_, _, body) => {
-        let _ = check_stmts(body, 0, env, defs, s, c, errors)
+        let _ = check_stmts(body, 0, env, defs, s, c, errors, tytab)
         (env, s, c)
       },
       SImport(_, names) => (bind_stmt_imports(env, names), s, c)
@@ -5418,11 +5437,38 @@ export let check_program: (Array[Stmt]) -> TypeEnv with { Error } = (stmts) -> {
   let seeded_env = env_cache(seeded_raw_env)
   let errors = ArrayBuilder::new()
   let frozen_errors = ArrayBuilder::freeze(errors)
-  let (env, _, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors)
+  let tytab = Array::slice([
+    (0, CtUnit)
+  ], 0, 0)
+  let (env, _, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
   if Array::length(frozen_errors) > 0 {
     throw(Array::get(frozen_errors, 0))
   }
   env
+}
+export let check_program_type_table: (Array[Stmt]) -> (Array[(Int, Type)], Subst) with { Error } = (stmts) -> {
+  let empty_defs = Array::slice([
+    TDAlias("_dummy", Array::slice([
+      ""
+    ], 0, 0), CtUnit)
+  ], 0, 0)
+  let seeded_raw_env = if trait_defined(EnvEmpty, "Eq") {
+    EnvEmpty
+  } else {
+    register_builtin_traits(EnvEmpty)
+  }
+  let seeded_env = env_cache(seeded_raw_env)
+  let errors = ArrayBuilder::new()
+  let frozen_errors = ArrayBuilder::freeze(errors)
+  let tytab = Array::slice([
+    (0, CtUnit)
+  ], 0, 0)
+  handle {
+    let (_, final_s, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
+    (tytab, final_s)
+  } with Error {
+    Throw(_) => (tytab, SubstEmpty)
+  }
 }
 export let check_program_with_env: (Array[Stmt], TypeEnv) -> TypeEnv with { Error } = (stmts, initial_env) -> {
   match initial_env {
@@ -5442,7 +5488,10 @@ export let check_program_with_env: (Array[Stmt], TypeEnv) -> TypeEnv with { Erro
       let seeded_env = env_cache(seeded_raw_env)
       let errors = ArrayBuilder::new()
       let frozen_errors = ArrayBuilder::freeze(errors)
-      let (env, _, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors)
+      let tytab = Array::slice([
+        (0, CtUnit)
+      ], 0, 0)
+      let (env, _, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
       if Array::length(frozen_errors) > 0 {
         throw(Array::get(frozen_errors, 0))
       }
@@ -5580,6 +5629,25 @@ export let emit_func_type_raw: (Bytes, Array[Int], Array[Int]) -> Unit = (buf, p
     j = j + 1
   }
 }
+export let emit_function_name_section: (Bytes, Array[String], Int) -> Unit = (out, names, base_index) -> {
+  let count = Array::length(names)
+  if count == 0 {
+    ()
+  } else {
+    let content = bytebuf_new()
+    bytebuf_push_string(content, "name")
+    let namemap = bytebuf_new()
+    leb128_encode_u32(namemap, count)
+    let mut i = 0
+    while i < count {
+      leb128_encode_u32(namemap, base_index + i)
+      bytebuf_push_string(namemap, Array::get(names, i))
+      i = i + 1
+    }
+    bytebuf_push_section(content, 1, namemap)
+    bytebuf_push_section(out, 0, content)
+  }
+}
 let emit_ascii_payload: (Bytes, String) -> Unit = (buf, text) -> {
   let len = String::length(text)
   let mut i = 0
@@ -5597,7 +5665,7 @@ export let emit_vibe_abi_custom_section: (Bytes, String) -> Unit = (out, host_im
   bytebuf_push_section(out, 0, content)
 }
 export {
-  emit_end, emit_name, emit_header, emit_func_type, emit_i32_const, emit_global_get, emit_global_set, emit_heap_memory_grow_check, emit_code_section, emit_data_section, emit_exports_full, emit_type_section, emit_export_memory, emit_func_type_raw, emit_export_section, emit_memory_section, emit_function_section, emit_type_section_multi, emit_exports_with_memory, emit_import_section_func, emit_export_section_multi, emit_global_section_i32_mut, emit_code_section_with_locals, emit_vibe_abi_custom_section
+  emit_end, emit_name, emit_header, emit_func_type, emit_i32_const, emit_global_get, emit_global_set, emit_heap_memory_grow_check, emit_code_section, emit_data_section, emit_exports_full, emit_type_section, emit_export_memory, emit_func_type_raw, emit_export_section, emit_memory_section, emit_function_section, emit_type_section_multi, emit_exports_with_memory, emit_import_section_func, emit_export_section_multi, emit_global_section_i32_mut, emit_code_section_with_locals, emit_vibe_abi_custom_section, emit_function_name_section
 }
 let op_br = 12
 let op_if = 4
@@ -5751,6 +5819,9 @@ export let emit_block_i64: (Bytes) -> Unit = (buf) -> {
 }
 export let emit_i32_store: (Bytes, Int, Int) -> Unit = (buf, align, offset) -> {
   bytebuf_push_opcode_u32_u32(buf, op_i32_store, align, offset)
+}
+export let emit_i64_store: (Bytes, Int, Int) -> Unit = (buf, align, offset) -> {
+  bytebuf_push_opcode_u32_u32(buf, 55, align, offset)
 }
 export let emit_i64_const: (Bytes, Int) -> Unit = (buf, value) -> {
   bytebuf_push_opcode_s64(buf, op_i64_const, value)
@@ -6018,7 +6089,7 @@ export let get_eforin_index: (Expr) -> Option[String] with { Error } = (expr) ->
 }
 export let get_eident_name: (Expr) -> String with { Error } = (expr) -> {
   match expr {
-    EIdent(name) => name,
+    EIdent(name, _) => name,
     _ => throw("not EIdent")
   }
 }
@@ -6582,7 +6653,7 @@ let is_inlined_async_builtin: (String) -> Bool = (name) -> {
 }
 export let rec collect_free_vars_expr: (Expr, Array[String], Array[String], Array[String]) -> Int = (expr, bound, fn_names, out) -> {
   match expr {
-    EIdent(name) => if array_contains_str(bound, name) {
+    EIdent(name, _) => if array_contains_str(bound, name) {
       0
     }
     else if array_contains_str(fn_names, name) {
@@ -6750,7 +6821,7 @@ export let collect_free_vars: (Expr, Array[String], Array[String]) -> Array[Stri
 export let rec proj_root_ident: (Expr) -> String = (e) -> {
   match e {
     EDot(obj, _) => proj_root_ident(obj),
-    EIdent(nm) => nm,
+    EIdent(nm, _) => nm,
     _ => ""
   }
 }
@@ -6768,7 +6839,7 @@ export let rec scope_tail_proj_root: (Expr) -> String = (e) -> {
 }
 export let rec is_mut_captured_in: (Expr, String) -> Bool = (expr, name) -> {
   match expr {
-    EIdent(_) => false,
+    EIdent(_, _) => false,
     EInt(_) => false,
     EBool(_) => false,
     EFloat(_) => false,
@@ -7136,7 +7207,7 @@ let is_heap_value: (Expr, Map[String, Bool], HeapInferCtx) -> Bool = (e, env, hc
     match e {
       ECall(callee, args) =>
       match callee {
-        EIdent(c) =>
+        EIdent(c, _) =>
         if Map::has_key(env, c) {
           false
         } else {
@@ -7154,7 +7225,7 @@ let arg_class: (Expr, Map[String, Bool], HeapInferCtx) -> Bool = (arg, env, hctx
     true
   } else {
     match arg {
-      EIdent(n) => if Map::has_key(env, n) {
+      EIdent(n, _) => if Map::has_key(env, n) {
         Map::get(env, n)
       } else {
         false
@@ -7165,7 +7236,7 @@ let arg_class: (Expr, Map[String, Bool], HeapInferCtx) -> Bool = (arg, env, hctx
 }
 let rec analyze_calls: (String, Expr, Map[String, Bool], Array[Array[Bool]], Array[Bool], HeapInferCtx) -> Int = (name, e, env, calls, esc, hctx) -> {
   match e {
-    EIdent(n) => {
+    EIdent(n, _) => {
       if n == name {
         Array::set(esc, 0, true)
       } else {
@@ -7175,7 +7246,7 @@ let rec analyze_calls: (String, Expr, Map[String, Bool], Array[Array[Bool]], Arr
     },
     ECall(callee, args) => {
       let is_self = match callee {
-        EIdent(cn) => cn == name,
+        EIdent(cn, _) => cn == name,
         _ => false
       }
       if is_self {
@@ -7645,7 +7716,7 @@ let rec elaborate_rw: (Expr, HeapInferCtx) -> Expr = (e, hctx) -> {
     EFloat(_) => e,
     EString(_) => e,
     EBool(_) => e,
-    EIdent(_) => e,
+    EIdent(_, _) => e,
     EStringInterp(_) => e,
     EUnit => e
   }
@@ -7661,14 +7732,14 @@ export let rec pc_emit: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, exp
     EBool(_) => 0,
     EUnit => 0,
     EStringInterp(_) => 0,
-    EIdent(x) => pe_use(ctx, scope, x),
+    EIdent(x, _) => pe_use(ctx, scope, x),
     ECall(callee, args) => {
       let is_index = match callee {
-        EIdent(f) => is_borrow_arg0_call(f),
+        EIdent(f, _) => is_borrow_arg0_call(f),
         _ => false
       }
       match callee {
-        EIdent(_) => 0,
+        EIdent(_, _) => 0,
         _ => pc_emit(ctx, scope, callee)
       }
       let mut i = 0
@@ -7676,7 +7747,7 @@ export let rec pc_emit: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, exp
         let arg = Array::get(args, i)
         if is_index && i == 0 {
           match arg {
-            EIdent(_) => 0,
+            EIdent(_, _) => 0,
             _ => pc_emit(ctx, scope, arg)
           }
         } else {
@@ -7687,13 +7758,13 @@ export let rec pc_emit: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, exp
       0
     },
     EDot(obj, _field) => match obj {
-      EIdent(_) => 0,
+      EIdent(_, _) => 0,
       _ => pc_emit(ctx, scope, obj)
     }
     ,
     ELet(name, value, body) => {
       match value {
-        EIdent(src) => {
+        EIdent(src, _) => {
           if Map::has_key(scope, src) {
             let sid = Map::get(scope, src)
             let rem = Array::get(ctx.remaining, sid)
@@ -7852,7 +7923,7 @@ export let rec pc_emit: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, exp
     },
     EMatch(scrut, arms) => {
       match scrut {
-        EIdent(_) => 0,
+        EIdent(_, _) => 0,
         _ => pc_emit(ctx, scope, scrut)
       }
       let snap = copy_ints(ctx.remaining)
@@ -7926,10 +7997,10 @@ export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, ex
     EBool(_) => 0,
     EUnit => 0,
     EStringInterp(_) => 0,
-    EIdent(x) => pc_count_use(ctx, scope, x),
+    EIdent(x, _) => pc_count_use(ctx, scope, x),
     ECall(callee, args) => {
       match callee {
-        EIdent(f) => if is_borrow_arg0_call(f) {
+        EIdent(f, _) => if is_borrow_arg0_call(f) {
           0
         } else {
           pc_count_borrow(ctx, scope, f)
@@ -7938,7 +8009,7 @@ export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, ex
         _ => pc_count(ctx, scope, callee)
       }
       let is_index = match callee {
-        EIdent(f) => is_borrow_arg0_call(f),
+        EIdent(f, _) => is_borrow_arg0_call(f),
         _ => false
       }
       let mut i = 0
@@ -7946,7 +8017,7 @@ export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, ex
         let arg = Array::get(args, i)
         if is_index && i == 0 {
           match arg {
-            EIdent(obj) => pc_count_borrow(ctx, scope, obj),
+            EIdent(obj, _) => pc_count_borrow(ctx, scope, obj),
             _ => pc_count(ctx, scope, arg)
           }
         } else {
@@ -7957,7 +8028,7 @@ export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, ex
       0
     },
     EDot(obj, _field) => match obj {
-      EIdent(x) => pc_count_borrow(ctx, scope, x),
+      EIdent(x, _) => pc_count_borrow(ctx, scope, x),
       _ => pc_count(ctx, scope, obj)
     }
     ,
@@ -8102,7 +8173,7 @@ export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, ex
     },
     EMatch(scrut, arms) => {
       match scrut {
-        EIdent(sx) => pc_count_borrow(ctx, scope, sx),
+        EIdent(sx, _) => pc_count_borrow(ctx, scope, sx),
         _ => pc_count(ctx, scope, scrut)
       }
       let snap_u = copy_ints(ctx.uses)
@@ -8261,12 +8332,12 @@ let rec expr_projects_or_matches: (String, Expr) -> Bool = (name, e) -> {
   match e {
     EDot(obj, _) =>
     match obj {
-      EIdent(n) => n == name,
+      EIdent(n, _) => n == name,
       _ => expr_projects_or_matches(name, obj)
     },
     EMatch(scrut, arms) => {
       let hit = match scrut {
-        EIdent(n) => n == name,
+        EIdent(n, _) => n == name,
         _ => expr_projects_or_matches(name, scrut)
       }
       if hit {
@@ -8431,7 +8502,7 @@ let rec expr_projects_or_matches: (String, Expr) -> Bool = (name, e) -> {
     EFloat(_) => false,
     EString(_) => false,
     EBool(_) => false,
-    EIdent(_) => false,
+    EIdent(_, _) => false,
     EStringInterp(_) => false,
     EUnit => false
   }
@@ -8594,7 +8665,7 @@ export let expr_tag: (Expr) -> Int = (expr) -> {
     EBool(_) => 1,
     EFloat(_) => 2,
     EString(_) => 3,
-    EIdent(_) => 4,
+    EIdent(_, _) => 4,
     EBinOp(_, _, _) => 5,
     EUnaryOp(_, _) => 6,
     EIf(_, _, _) => 7,
@@ -8652,7 +8723,7 @@ export let is_earray: (Expr) -> Bool = (expr) -> {
 }
 export let is_eident: (Expr) -> Bool = (expr) -> {
   match expr {
-    EIdent(_) => true,
+    EIdent(_, _) => true,
     _ => false
   }
 }
@@ -8752,7 +8823,7 @@ export let get_elet_val: (Expr) -> Expr with { Error } = (expr) -> {
 export let is_ctor_call: (Expr, CtorTable) -> Bool = (value, ct) -> {
   match value {
     ECall(callee, _) => match callee {
-      EIdent(nm) => lookup_ctor(ct.names, nm, 0) >= 0,
+      EIdent(nm, _) => lookup_ctor(ct.names, nm, 0) >= 0,
       _ => false
     },
     _ => false
@@ -8944,7 +9015,7 @@ export let fn_type_param_types: (Option[TypeExpr]) -> Option[Array[TypeExpr]] = 
 }
 export let is_nullary_ctor_ident: (Expr, CtorTable) -> Bool = (value, ct) -> {
   match value {
-    EIdent(nm) => lookup_ctor(ct.names, nm, 0) >= 0,
+    EIdent(nm, _) => lookup_ctor(ct.names, nm, 0) >= 0,
     _ => false
   }
 }
@@ -12919,17 +12990,17 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
     }
     else if !prefer_bound_call && fname == "Stream::next" {
       let s_expr = Array::get(args, 0)
-      let synth = ELet("__nx_s", s_expr, EIf(ECall(EIdent("lt"), [
+      let synth = ELet("__nx_s", s_expr, EIf(ECall(EIdent("lt", -1), [
         EInt(0),
-        ECall(EIdent("Array::length"), [
-          EIdent("__nx_s")
+        ECall(EIdent("Array::length", -1), [
+          EIdent("__nx_s", -1)
         ])
-      ]), ECall(EIdent("Some"), [
-        ECall(EIdent("Array::get"), [
-          EIdent("__nx_s"),
+      ]), ECall(EIdent("Some", -1), [
+        ECall(EIdent("Array::get", -1), [
+          EIdent("__nx_s", -1),
           EInt(0)
         ])
-      ]), ECall(EIdent("None"), Array::slice([
+      ]), ECall(EIdent("None", -1), Array::slice([
         EUnit
       ], 0, 0))))
       ce(buf, synth, local_names, next_local, ctx, ld)
@@ -12937,8 +13008,8 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
     else if !prefer_bound_call && fname == "Task::timeout" {
       let ms_expr = Array::get(args, 0)
       let thunk_expr = Array::get(args, 1)
-      let synth = ELet("__to_fn", thunk_expr, ELet("__to_ms", ms_expr, ECall(EIdent("Some"), [
-        ECall(EIdent("__to_fn"), Array::slice([
+      let synth = ELet("__to_fn", thunk_expr, ELet("__to_ms", ms_expr, ECall(EIdent("Some", -1), [
+        ECall(EIdent("__to_fn", -1), Array::slice([
           EUnit
         ], 0, 0))
       ])))
@@ -12946,49 +13017,49 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
     }
     else if !prefer_bound_call && fname == "String::to_bytes" {
       let s_expr = Array::get(args, 0)
-      let loop_body = ESeq(ECall(EIdent("Array::push"), [
-        EIdent("__tb_arr"),
-        ECall(EIdent("String::char_code_at"), [
-          EIdent("__tb_s"),
-          EIdent("__tb_i")
+      let loop_body = ESeq(ECall(EIdent("Array::push", -1), [
+        EIdent("__tb_arr", -1),
+        ECall(EIdent("String::char_code_at", -1), [
+          EIdent("__tb_s", -1),
+          EIdent("__tb_i", -1)
         ])
-      ]), EAssign("__tb_i", ECall(EIdent("add"), [
-        EIdent("__tb_i"),
+      ]), EAssign("__tb_i", ECall(EIdent("add", -1), [
+        EIdent("__tb_i", -1),
         EInt(1)
       ]), EUnit))
       let synth = ELet("__tb_s", s_expr, ELetMut("__tb_arr", EArray(Array::slice([
         EUnit
-      ], 0, 0)), ELetMut("__tb_i", EInt(0), ESeq(EWhile(ECall(EIdent("lt"), [
-        EIdent("__tb_i"),
-        ECall(EIdent("String::length"), [
-          EIdent("__tb_s")
+      ], 0, 0)), ELetMut("__tb_i", EInt(0), ESeq(EWhile(ECall(EIdent("lt", -1), [
+        EIdent("__tb_i", -1),
+        ECall(EIdent("String::length", -1), [
+          EIdent("__tb_s", -1)
         ])
-      ]), loop_body), EIdent("__tb_arr")))))
+      ]), loop_body), EIdent("__tb_arr", -1)))))
       ce(buf, synth, local_names, next_local, ctx, ld)
     }
     else if !prefer_bound_call && fname == "Stream::to_string" {
       let bs_expr = Array::get(args, 0)
-      let ts_body = ESeq(ECall(EIdent("Array::push"), [
-        EIdent("__ts_parts"),
-        ECall(EIdent("String::from_char_code"), [
-          ECall(EIdent("Array::get"), [
-            EIdent("__ts_arr"),
-            EIdent("__ts_i")
+      let ts_body = ESeq(ECall(EIdent("Array::push", -1), [
+        EIdent("__ts_parts", -1),
+        ECall(EIdent("String::from_char_code", -1), [
+          ECall(EIdent("Array::get", -1), [
+            EIdent("__ts_arr", -1),
+            EIdent("__ts_i", -1)
           ])
         ])
-      ]), EAssign("__ts_i", ECall(EIdent("add"), [
-        EIdent("__ts_i"),
+      ]), EAssign("__ts_i", ECall(EIdent("add", -1), [
+        EIdent("__ts_i", -1),
         EInt(1)
       ]), EUnit))
       let synth = ELet("__ts_arr", bs_expr, ELetMut("__ts_parts", EArray(Array::slice([
         EUnit
-      ], 0, 0)), ELetMut("__ts_i", EInt(0), ESeq(EWhile(ECall(EIdent("lt"), [
-        EIdent("__ts_i"),
-        ECall(EIdent("Array::length"), [
-          EIdent("__ts_arr")
+      ], 0, 0)), ELetMut("__ts_i", EInt(0), ESeq(EWhile(ECall(EIdent("lt", -1), [
+        EIdent("__ts_i", -1),
+        ECall(EIdent("Array::length", -1), [
+          EIdent("__ts_arr", -1)
         ])
-      ]), ts_body), ECall(EIdent("String::join"), [
-        EIdent("__ts_parts"),
+      ]), ts_body), ECall(EIdent("String::join", -1), [
+        EIdent("__ts_parts", -1),
         EString("")
       ])))))
       ce(buf, synth, local_names, next_local, ctx, ld)
@@ -14738,12 +14809,12 @@ export let compile_expr_tail7: (Bytes, Array[String], Array[String], Int, Compil
     let args = ArrayBuilder::freeze(ArrayBuilder::new())
     Array::push(args, lhs)
     Array::push(args, rhs)
-    ECall(EIdent("String::concat"), args)
+    ECall(EIdent("String::concat", -1), args)
   }
   let make_to_string_expr: (String) -> Expr = (name) -> {
     let args = ArrayBuilder::freeze(ArrayBuilder::new())
-    Array::push(args, EIdent(name))
-    ECall(EIdent("__to_string"), args)
+    Array::push(args, EIdent(name, -1))
+    ECall(EIdent("__to_string", -1), args)
   }
   let plen = Array::length(parts)
   let mut result = EString("")
@@ -15408,7 +15479,7 @@ let rec reassign_carry_safe: (Expr, String) -> Bool = (e, name) -> {
     true
   } else {
     match e {
-      EIdent(_) => true,
+      EIdent(_, _) => true,
       EDot(_, _) => proj_root_ident(e) == name,
       EBinOp(_, l, r) => reassign_carry_safe(l, name) && reassign_carry_safe(r, name),
       EUnaryOp(_, x) => reassign_carry_safe(x, name),
@@ -16386,7 +16457,7 @@ export let wasi_memory_min_pages_for_heap: (Int) -> Int = (heap_start) -> {
     default_wasi_memory_min_pages
   }
 }
-export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String, String)], Array[(String, String, Int, Int)], Bool, Bool, Bool) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, linked_imports, library_mode, enable_rc, coverage) -> {
+export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String, String)], Array[(String, String, Int, Int)], Bool, Bool, Bool, Bool, Bool) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, linked_imports, library_mode, enable_rc, coverage, debug_trace, debug_break) -> {
   let fn_names_list = lc_fresh_string_array()
   let fn_param_counts = lc_fresh_int_array()
   let fn_needs_env_list = lc_fresh_bool_array()
@@ -16687,6 +16758,22 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   } else {
     0
   }
+  let trace_cap = 4096
+  let trace_counter_addr = cov_branch_base + cov_branch_reserve
+  let trace_log_base = trace_counter_addr + 4
+  let trace_reserve = if debug_trace {
+    4 + trace_cap * 4
+  } else {
+    0
+  }
+  let dbgargs_cap = 16
+  let dbgargs_count_addr = trace_counter_addr + trace_reserve
+  let dbgargs_base = dbgargs_count_addr + 8
+  let dbgargs_reserve = if debug_break {
+    8 + dbgargs_cap * 8
+  } else {
+    0
+  }
   let cov_state = CovState::{
     enabled: coverage,
     base: cov_branch_base,
@@ -16766,6 +16853,13 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     -1
   }
   let profiler_now_us_import_idx = if need_profiler_now_us_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let dbg_break_import_idx = if debug_break {
     let idx = next_import_idx
     next_import_idx = next_import_idx + 1
     idx
@@ -17460,6 +17554,56 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     } else {
       ()
     }
+    if debug_trace {
+      emit_i32_const(body_buf, trace_counter_addr)
+      emit_i32_load(body_buf, 2, 0)
+      emit_i32_const(body_buf, trace_cap)
+      emit_i32_ge_u(body_buf)
+      emit_i32_eqz(body_buf)
+      emit_if_void(body_buf)
+      emit_i32_const(body_buf, trace_log_base)
+      emit_i32_const(body_buf, trace_counter_addr)
+      emit_i32_load(body_buf, 2, 0)
+      emit_i32_const(body_buf, 4)
+      emit_i32_mul(body_buf)
+      emit_i32_add(body_buf)
+      emit_i32_const(body_buf, bi)
+      emit_i32_store(body_buf, 2, 0)
+      emit_i32_const(body_buf, trace_counter_addr)
+      emit_i32_const(body_buf, trace_counter_addr)
+      emit_i32_load(body_buf, 2, 0)
+      emit_i32_const(body_buf, 1)
+      emit_i32_add(body_buf)
+      emit_i32_store(body_buf, 2, 0)
+      emit_end(body_buf)
+    } else {
+      ()
+    }
+    if debug_break {
+      let dbg_nparams = if is_efn(__bi_expr) {
+        Array::length(get_efn_params(__bi_expr))
+      } else {
+        0
+      }
+      let dbg_n = if dbg_nparams > dbgargs_cap {
+        dbgargs_cap
+      } else {
+        dbg_nparams
+      }
+      let mut dbg_pi = 0
+      while dbg_pi < dbg_n {
+        emit_i32_const(body_buf, dbgargs_base + dbg_pi * 8)
+        emit_local_get(body_buf, dbg_pi)
+        emit_i64_store(body_buf, 3, 0)
+        dbg_pi = dbg_pi + 1
+      }
+      emit_i32_const(body_buf, dbgargs_count_addr)
+      emit_i32_const(body_buf, dbg_n)
+      emit_i32_store(body_buf, 2, 0)
+      emit_call(body_buf, dbg_break_import_idx)
+    } else {
+      ()
+    }
     let local_names = lc_fresh_string_array()
     let fn_name_dbg = Array::get(fn_names_list, bi)
     let rc_drops = Array::slice([
@@ -17947,6 +18091,73 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   } else {
     ()
   }
+  if debug_trace {
+    let tr_content = bytebuf_new()
+    let tr_name = "vibe.trace"
+    leb128_encode_u32(tr_content, String::length(tr_name))
+    let mut trni = 0
+    while trni < String::length(tr_name) {
+      bytebuf_push(tr_content, String::char_code_at(tr_name, trni))
+      trni = trni + 1
+    }
+    bytebuf_push(tr_content, trace_counter_addr & 255)
+    bytebuf_push(tr_content, (trace_counter_addr >> 8) & 255)
+    bytebuf_push(tr_content, (trace_counter_addr >> 16) & 255)
+    bytebuf_push(tr_content, (trace_counter_addr >> 24) & 255)
+    bytebuf_push(tr_content, trace_log_base & 255)
+    bytebuf_push(tr_content, (trace_log_base >> 8) & 255)
+    bytebuf_push(tr_content, (trace_log_base >> 16) & 255)
+    bytebuf_push(tr_content, (trace_log_base >> 24) & 255)
+    bytebuf_push(tr_content, trace_cap & 255)
+    bytebuf_push(tr_content, (trace_cap >> 8) & 255)
+    bytebuf_push(tr_content, (trace_cap >> 16) & 255)
+    bytebuf_push(tr_content, (trace_cap >> 24) & 255)
+    let mut trni2 = 0
+    while trni2 < num_user_funcs {
+      let trnm = Array::get(fn_names_list, trni2)
+      let trnml = String::length(trnm)
+      let mut trci = 0
+      while trci < trnml {
+        bytebuf_push(tr_content, String::char_code_at(trnm, trci))
+        trci = trci + 1
+      }
+      bytebuf_push(tr_content, 10)
+      trni2 = trni2 + 1
+    }
+    bytebuf_push_section(out, 0, tr_content)
+  } else {
+    ()
+  }
+  if debug_break {
+    let da_content = bytebuf_new()
+    let da_name = "vibe.dbgargs"
+    leb128_encode_u32(da_content, String::length(da_name))
+    let mut dani = 0
+    while dani < String::length(da_name) {
+      bytebuf_push(da_content, String::char_code_at(da_name, dani))
+      dani = dani + 1
+    }
+    bytebuf_push(da_content, dbgargs_count_addr & 255)
+    bytebuf_push(da_content, (dbgargs_count_addr >> 8) & 255)
+    bytebuf_push(da_content, (dbgargs_count_addr >> 16) & 255)
+    bytebuf_push(da_content, (dbgargs_count_addr >> 24) & 255)
+    bytebuf_push(da_content, dbgargs_base & 255)
+    bytebuf_push(da_content, (dbgargs_base >> 8) & 255)
+    bytebuf_push(da_content, (dbgargs_base >> 16) & 255)
+    bytebuf_push(da_content, (dbgargs_base >> 24) & 255)
+    let da_tag_mode = if enable_rc {
+      1
+    } else {
+      0
+    }
+    bytebuf_push(da_content, da_tag_mode & 255)
+    bytebuf_push(da_content, (da_tag_mode >> 8) & 255)
+    bytebuf_push(da_content, (da_tag_mode >> 16) & 255)
+    bytebuf_push(da_content, (da_tag_mode >> 24) & 255)
+    bytebuf_push_section(out, 0, da_content)
+  } else {
+    ()
+  }
   bytebuf_push_section(out, 1, type_content)
   let import_content = bytebuf_new()
   bytebuf_push_vec_header(import_content, num_imported_funcs)
@@ -18007,6 +18218,12 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     emit_name(import_content, "profile-now-us")
     bytebuf_push(import_content, 0)
     leb128_encode_u32(import_content, 5)
+  }
+  if dbg_break_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "dbg_break")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 2)
   }
   let mut li_emit = 0
   while li_emit < Array::length(linked_imports) {
@@ -18097,7 +18314,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   if total_table_entries > 0 {
     emit_table_section_funcref(out, total_table_entries)
   }
-  emit_memory_section(out, wasi_memory_min_pages_for_heap(heap_start + eff_reserve + cov_reserve + cov_branch_reserve))
+  emit_memory_section(out, wasi_memory_min_pages_for_heap(heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve + dbgargs_reserve))
   let tag_content = bytebuf_new()
   let num_tags = Array::length(effect_names_list) + 4
   bytebuf_push_vec_header(tag_content, num_tags)
@@ -18116,7 +18333,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   }
   bytebuf_push(global_content, 127)
   bytebuf_push(global_content, 1)
-  emit_i32_const(global_content, heap_start + eff_reserve + cov_reserve + cov_branch_reserve)
+  emit_i32_const(global_content, heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve + dbgargs_reserve)
   emit_end(global_content)
   bytebuf_push(global_content, 126)
   bytebuf_push(global_content, 1)
@@ -18251,6 +18468,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     }
     emit_data_section_multi(out, data_offsets, data_bufs)
   }
+  emit_function_name_section(out, fn_names_list, func_offset)
   bytebuf_to_bytes(out)
 }
 export let compile_wasi_module_rc_impl: (Array[Stmt], String) -> Bytes with { Error } = (stmts_in, entry_name) -> {
@@ -18259,22 +18477,34 @@ export let compile_wasi_module_rc_impl: (Array[Stmt], String) -> Bytes with { Er
     ("", "")
   ], 0, 0), Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, true, false)
+  ], 0, 0), false, true, false, false, false)
 }
 export let compile_wasi_module_with_sources_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
   compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, false, false)
+  ], 0, 0), false, false, false, false, false)
 }
 export let compile_wasi_module_with_sources_coverage_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
   compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, false, true)
+  ], 0, 0), false, false, true, false, false)
+}
+export let compile_wasi_module_with_sources_trace_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
+  compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
+    ("", "", 0, 0)
+  ], 0, 0), false, false, false, true, false)
+}
+export let compile_wasi_module_with_sources_break_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
+  compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
+    ("", "", 0, 0)
+  ], 0, 0), false, false, false, false, true)
 }
 export {
   compile_wasi_module_linked_impl,
   compile_wasi_module_with_sources_impl,
   compile_wasi_module_with_sources_coverage_impl,
+  compile_wasi_module_with_sources_trace_impl,
+  compile_wasi_module_with_sources_break_impl,
   compile_wasi_module_rc_impl
 }
 export let compile_wasi_module_impl: (Array[Stmt], String) -> Bytes with { Error } = (stmts, entry_name) -> {
@@ -18284,6 +18514,16 @@ export let compile_wasi_module_impl: (Array[Stmt], String) -> Bytes with { Error
 }
 export let compile_wasi_module_coverage_impl: (Array[Stmt], String) -> Bytes with { Error } = (stmts, entry_name) -> {
   compile_wasi_module_with_sources_coverage_impl(stmts, entry_name, Array::slice([
+    ("", "")
+  ], 0, 0))
+}
+export let compile_wasi_module_trace_impl: (Array[Stmt], String) -> Bytes with { Error } = (stmts, entry_name) -> {
+  compile_wasi_module_with_sources_trace_impl(stmts, entry_name, Array::slice([
+    ("", "")
+  ], 0, 0))
+}
+export let compile_wasi_module_break_impl: (Array[Stmt], String) -> Bytes with { Error } = (stmts, entry_name) -> {
+  compile_wasi_module_with_sources_break_impl(stmts, entry_name, Array::slice([
     ("", "")
   ], 0, 0))
 }
@@ -19132,6 +19372,23 @@ export let lex_with_offsets: (String) -> (Array[Token], Array[Int], Array[Int]) 
     ArrayBuilder::push(ends, len)
     (ArrayBuilder::freeze(b), ArrayBuilder::freeze(starts), ArrayBuilder::freeze(ends))
   }
+}
+export let offset_to_line_col: (String, Int) -> (Int, Int) = (source, offset) -> {
+  let len = String::length(source)
+  let bound = if offset < len { offset } else { len }
+  let mut i = 0
+  let mut line = 1
+  let mut col = 1
+  while i < bound {
+    if String::char_code_at(source, i) == 10 {
+      line = line + 1
+      col = 1
+    } else {
+      col = col + 1
+    }
+    i = i + 1
+  }
+  (line, col)
 }
 export let lex: (String) -> Array[Token] with { Error } = (source) -> {
   let len = String::length(source)
@@ -20341,7 +20598,7 @@ let rec desugar_loop_body: (Expr, Array[String]) -> Expr = (expr, param_names) -
         let mut result = EContinue(Array::slice([EUnit], 0, 0))
         let mut ci = nargs - 1
         while ci >= 0 {
-          result = EAssign(Array::get(param_names, ci), EIdent(String::concat("__lt", __to_string(ci))), result)
+          result = EAssign(Array::get(param_names, ci), EIdent(String::concat("__lt", __to_string(ci)), -1), result)
           ci = ci - 1
         }
         let mut ci2 = nargs - 1
@@ -20373,7 +20630,7 @@ let rec desugar_loop_body: (Expr, Array[String]) -> Expr = (expr, param_names) -
     _ => expr
   }
 }
-let parse_loop_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, parse_recur) -> {
+let parse_loop_primary: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, pos, parse_recur) -> {
   match peek(tokens, pos + 1) {
     TLParen => {
       let param_names_b = ArrayBuilder::new()
@@ -20412,7 +20669,7 @@ let parse_loop_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, I
       let transformed_body = desugar_loop_body(body, pnames)
       let while_expr = EWhile(EBool(true), transformed_body)
       let result = ELetMut("__loop_result", EInt(0),
-        ESeq(while_expr, EIdent("__loop_result")))
+        ESeq(while_expr, EIdent("__loop_result", -1)))
       let mut wrapped = result
       let mut wi = Array::length(pnames) - 1
       while wi >= 0 {
@@ -20428,7 +20685,7 @@ let parse_loop_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, I
     }
   }
 }
-let parse_break_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, parse_recur) -> {
+let parse_break_primary: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, pos, parse_recur) -> {
   match peek(tokens, pos + 1) {
     TRBrace => (EBreak(None), pos + 1),
     TSemicolon => (EBreak(None), pos + 1),
@@ -20439,13 +20696,13 @@ let parse_break_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, 
     }
   }
 }
-let parse_throw_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, parse_recur) -> {
+let parse_throw_primary: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, pos, parse_recur) -> {
   let open_pos = expect_tk(tokens, pos + 1, "(")
   let (expr, next_pos) = parse_recur(tokens, open_pos, 0)
   let close_pos = expect_tk(tokens, next_pos, ")")
   (EThrow(expr), close_pos)
 }
-let parse_return_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, parse_recur) -> {
+let parse_return_primary: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, pos, parse_recur) -> {
   match peek(tokens, pos + 1) {
     TRBrace => (EReturn(EUnit), pos + 1),
     TSemicolon => (EReturn(EUnit), pos + 1),
@@ -20456,23 +20713,23 @@ let parse_return_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr,
     }
   }
 }
-let parse_perform_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, parse_recur) -> {
+let parse_perform_primary: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, pos, parse_recur) -> {
   match peek(tokens, pos + 1) {
-    TRParen => (EIdent("perform"), pos + 1),
-    TRBracket => (EIdent("perform"), pos + 1),
-    TRBrace => (EIdent("perform"), pos + 1),
-    TComma => (EIdent("perform"), pos + 1),
-    TSemicolon => (EIdent("perform"), pos + 1),
-    TEof => (EIdent("perform"), pos + 1),
+    TRParen => (EIdent("perform", -1), pos + 1),
+    TRBracket => (EIdent("perform", -1), pos + 1),
+    TRBrace => (EIdent("perform", -1), pos + 1),
+    TComma => (EIdent("perform", -1), pos + 1),
+    TSemicolon => (EIdent("perform", -1), pos + 1),
+    TEof => (EIdent("perform", -1), pos + 1),
     _ => {
       let (arg, next_pos) = parse_recur(tokens, pos + 1, 10)
-      (ECall(EIdent("perform"), [
+      (ECall(EIdent("perform", -1), [
         arg
       ]), next_pos)
     }
   }
 }
-let rec parse_array_elems_rest: (Array[Token], Int, ArrayBuilder[Expr], (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Array[Expr], Int) with { Error } = (tokens, pos, b, parse_recur) -> {
+let rec parse_array_elems_rest: (Array[Token], Array[Int], Int, ArrayBuilder[Expr], (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Array[Expr], Int) with { Error } = (tokens, starts, pos, b, parse_recur) -> {
   match peek(tokens, pos) {
     TComma => {
       let next_pos = pos + 1
@@ -20481,26 +20738,26 @@ let rec parse_array_elems_rest: (Array[Token], Int, ArrayBuilder[Expr], (Array[T
         TDotDotDot => {
           let (expr, end_pos) = parse_recur(tokens, next_pos + 1, 0)
           ArrayBuilder::push(b, ESpread(expr))
-          parse_array_elems_rest(tokens, end_pos, b, parse_recur)
+          parse_array_elems_rest(tokens, starts, end_pos, b, parse_recur)
         },
         _ => {
           let (expr, end_pos) = parse_recur(tokens, next_pos, 0)
           ArrayBuilder::push(b, expr)
-          parse_array_elems_rest(tokens, end_pos, b, parse_recur)
+          parse_array_elems_rest(tokens, starts, end_pos, b, parse_recur)
         }
       }
     },
     _ => (ArrayBuilder::freeze(b), pos)
   }
 }
-let parse_array_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, parse_recur) -> {
+let parse_array_primary: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, pos, parse_recur) -> {
   match peek(tokens, pos + 1) {
     TRBracket => (EArray(empty_exprs()), pos + 2),
     TDotDotDot => {
       let b = ArrayBuilder::new()
       let (first, next_pos) = parse_recur(tokens, pos + 2, 0)
       ArrayBuilder::push(b, ESpread(first))
-      let (items, end_pos) = parse_array_elems_rest(tokens, next_pos, b, parse_recur)
+      let (items, end_pos) = parse_array_elems_rest(tokens, starts, next_pos, b, parse_recur)
       let close_pos = expect_tk(tokens, end_pos, "]")
       (EArray(items), close_pos)
     },
@@ -20508,13 +20765,13 @@ let parse_array_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, 
       let b = ArrayBuilder::new()
       let (first, next_pos) = parse_recur(tokens, pos + 1, 0)
       ArrayBuilder::push(b, first)
-      let (items, end_pos) = parse_array_elems_rest(tokens, next_pos, b, parse_recur)
+      let (items, end_pos) = parse_array_elems_rest(tokens, starts, next_pos, b, parse_recur)
       let close_pos = expect_tk(tokens, end_pos, "]")
       (EArray(items), close_pos)
     }
   }
 }
-let rec parse_comma_exprs_rest: (Array[Token], Int, ArrayBuilder[Expr], (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Array[Expr], Int) with { Error } = (tokens, pos, b, parse_recur) -> {
+let rec parse_comma_exprs_rest: (Array[Token], Array[Int], Int, ArrayBuilder[Expr], (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Array[Expr], Int) with { Error } = (tokens, starts, pos, b, parse_recur) -> {
   match peek(tokens, pos) {
     TComma => {
       match peek(tokens, pos + 1) {
@@ -20522,14 +20779,14 @@ let rec parse_comma_exprs_rest: (Array[Token], Int, ArrayBuilder[Expr], (Array[T
         _ => {
           let (e, next) = parse_recur(tokens, pos + 1, 0)
           ArrayBuilder::push(b, e)
-          parse_comma_exprs_rest(tokens, next, b, parse_recur)
+          parse_comma_exprs_rest(tokens, starts, next, b, parse_recur)
         }
       }
     },
     _ => (ArrayBuilder::freeze(b), pos)
   }
 }
-let parse_continue_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, parse_recur) -> {
+let parse_continue_primary: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, pos, parse_recur) -> {
   match peek(tokens, pos + 1) {
     TLParen => {
       let b = ArrayBuilder::new()
@@ -20538,7 +20795,7 @@ let parse_continue_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Exp
         _ => {
           let (first, next_pos) = parse_recur(tokens, pos + 2, 0)
           ArrayBuilder::push(b, first)
-          let (args, end_pos) = parse_comma_exprs_rest(tokens, next_pos, b, parse_recur)
+          let (args, end_pos) = parse_comma_exprs_rest(tokens, starts, next_pos, b, parse_recur)
           let close_pos = expect_tk(tokens, end_pos, ")")
           (EContinue(args), close_pos)
         }
@@ -20547,7 +20804,7 @@ let parse_continue_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Exp
     _ => (EContinue(empty_exprs()), pos + 1)
   }
 }
-let parse_control_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, parse_recur) -> {
+let parse_control_primary: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, pos, parse_recur) -> {
   match peek(tokens, pos) {
     TLBrace => parse_recur(tokens, pos + 1, 20),
     TIf => parse_recur(tokens, pos + 1, 21),
@@ -20555,13 +20812,13 @@ let parse_control_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr
     THandle => parse_recur(tokens, pos + 1, 24),
     TWhile => parse_recur(tokens, pos + 1, 23),
     TFor => parse_recur(tokens, pos + 1, 25),
-    TThrow => parse_throw_primary(tokens, pos, parse_recur),
-    TBreak => parse_break_primary(tokens, pos, parse_recur),
-    TContinue => parse_continue_primary(tokens, pos, parse_recur),
+    TThrow => parse_throw_primary(tokens, starts, pos, parse_recur),
+    TBreak => parse_break_primary(tokens, starts, pos, parse_recur),
+    TContinue => parse_continue_primary(tokens, starts, pos, parse_recur),
     TRaise => throw("'raise' is deprecated, use 'throw(expr)' instead"),
-    TReturn => parse_return_primary(tokens, pos, parse_recur),
+    TReturn => parse_return_primary(tokens, starts, pos, parse_recur),
     TDo => throw("'do' is reserved; use 'while' or 'for' instead"),
-    TLoop => parse_loop_primary(tokens, pos, parse_recur),
+    TLoop => parse_loop_primary(tokens, starts, pos, parse_recur),
     TYield => throw("'yield' is not supported"),
     TDeclare => throw("'declare' is not supported"),
     _ => {
@@ -20576,7 +20833,7 @@ let parse_control_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr
     }
   }
 }
-let rec parse_ctor_record_fields: (Array[Token], Int, ArrayBuilder[(String, Expr)], (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Array[(String, Expr)], Int) with { Error } = (tokens, pos, b, parse_recur) -> {
+let rec parse_ctor_record_fields: (Array[Token], Array[Int], Int, ArrayBuilder[(String, Expr)], (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Array[(String, Expr)], Int) with { Error } = (tokens, starts, pos, b, parse_recur) -> {
   match peek(tokens, pos) {
     TRBrace => (ArrayBuilder::freeze(b), pos + 1),
     TIdent(fname) => {
@@ -20584,7 +20841,7 @@ let rec parse_ctor_record_fields: (Array[Token], Int, ArrayBuilder[(String, Expr
       let (val, next_pos) = parse_recur(tokens, colon_pos, 0)
       ArrayBuilder::push(b, (fname, val))
       match peek(tokens, next_pos) {
-        TComma => parse_ctor_record_fields(tokens, next_pos + 1, b, parse_recur),
+        TComma => parse_ctor_record_fields(tokens, starts, next_pos + 1, b, parse_recur),
         TRBrace => (ArrayBuilder::freeze(b), next_pos + 1),
         _ => throw("expected ',' or '}' in record literal")
       }
@@ -20592,7 +20849,7 @@ let rec parse_ctor_record_fields: (Array[Token], Int, ArrayBuilder[(String, Expr
     _ => throw("expected field name or '}' in record literal")
   }
 }
-let parse_generic_fn_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, parse_recur) -> {
+let parse_generic_fn_primary: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, pos, parse_recur) -> {
   let mut skip_pos = pos + 1
   let mut depth = 1
   while depth > 0 {
@@ -20662,14 +20919,14 @@ let is_generic_fn_start: (Array[Token], Int) -> Bool = (tokens, pos) -> {
     _ => false
   }
 }
-let parse_bracket_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, parse_recur) -> {
+let parse_bracket_primary: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, pos, parse_recur) -> {
   if is_generic_fn_start(tokens, pos) {
-    parse_generic_fn_primary(tokens, pos, parse_recur)
+    parse_generic_fn_primary(tokens, starts, pos, parse_recur)
   } else {
-    parse_array_primary(tokens, pos, parse_recur)
+    parse_array_primary(tokens, starts, pos, parse_recur)
   }
 }
-let rec parse_map_literal_fields: (Array[Token], Int, ArrayBuilder[(String, Expr)], (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Array[(String, Expr)], Int) with { Error } = (tokens, pos, b, parse_recur) -> {
+let rec parse_map_literal_fields: (Array[Token], Array[Int], Int, ArrayBuilder[(String, Expr)], (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Array[(String, Expr)], Int) with { Error } = (tokens, starts, pos, b, parse_recur) -> {
   match peek(tokens, pos) {
     TRBrace => (ArrayBuilder::freeze(b), pos + 1),
     TIdent(fname) => {
@@ -20677,7 +20934,7 @@ let rec parse_map_literal_fields: (Array[Token], Int, ArrayBuilder[(String, Expr
       let (val, next_pos) = parse_recur(tokens, colon_pos, 0)
       ArrayBuilder::push(b, (fname, val))
       match peek(tokens, next_pos) {
-        TComma => parse_map_literal_fields(tokens, next_pos + 1, b, parse_recur),
+        TComma => parse_map_literal_fields(tokens, starts, next_pos + 1, b, parse_recur),
         TRBrace => (ArrayBuilder::freeze(b), next_pos + 1),
         _ => throw("expected ',' or '}' in map literal")
       }
@@ -20687,7 +20944,7 @@ let rec parse_map_literal_fields: (Array[Token], Int, ArrayBuilder[(String, Expr
       let (val, next_pos) = parse_recur(tokens, colon_pos, 0)
       ArrayBuilder::push(b, (skey, val))
       match peek(tokens, next_pos) {
-        TComma => parse_map_literal_fields(tokens, next_pos + 1, b, parse_recur),
+        TComma => parse_map_literal_fields(tokens, starts, next_pos + 1, b, parse_recur),
         TRBrace => (ArrayBuilder::freeze(b), next_pos + 1),
         _ => throw("expected ',' or '}' in map literal")
       }
@@ -20695,7 +20952,7 @@ let rec parse_map_literal_fields: (Array[Token], Int, ArrayBuilder[(String, Expr
     _ => throw("expected field name or '}' in map literal")
   }
 }
-let parse_paren_tuple_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, parse_recur) -> {
+let parse_paren_tuple_primary: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, pos, parse_recur) -> {
   match peek(tokens, pos + 1) {
     TRParen => (EUnit, pos + 2),
     _ => {
@@ -20705,7 +20962,7 @@ let parse_paren_tuple_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (
         TComma => {
           let b = ArrayBuilder::new()
           ArrayBuilder::push(b, first)
-          let (items, end_pos) = parse_comma_exprs_rest(tokens, next_pos, b, parse_recur)
+          let (items, end_pos) = parse_comma_exprs_rest(tokens, starts, next_pos, b, parse_recur)
           let close_pos = expect_tk(tokens, end_pos, ")")
           (ETuple(items), close_pos)
         },
@@ -20714,7 +20971,7 @@ let parse_paren_tuple_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (
     }
   }
 }
-let parse_paren_lambda_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, parse_recur) -> {
+let parse_paren_lambda_primary: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, pos, parse_recur) -> {
   let (params, after_params) = parse_param_list(tokens, pos + 1)
   match peek(tokens, after_params) {
     TThinArrow => {
@@ -20777,20 +21034,20 @@ let parse_paren_lambda_primary: (Array[Token], Int, (Array[Token], Int, Int) -> 
     _ => throw("expected '->' or '{' after fn params")
   }
 }
-let parse_paren_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, parse_recur) -> {
+let parse_paren_primary: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, pos, parse_recur) -> {
   if is_lambda_start(tokens, pos + 1) {
-    parse_paren_lambda_primary(tokens, pos, parse_recur)
+    parse_paren_lambda_primary(tokens, starts, pos, parse_recur)
   } else {
-    parse_paren_tuple_primary(tokens, pos, parse_recur)
+    parse_paren_tuple_primary(tokens, starts, pos, parse_recur)
   }
 }
-let rec parse_record_literal_fields: (Array[Token], Int, ArrayBuilder[(String, Expr)], (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Array[(String, Expr)], Int) with { Error } = (tokens, pos, b, parse_recur) -> {
+let rec parse_record_literal_fields: (Array[Token], Array[Int], Int, ArrayBuilder[(String, Expr)], (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Array[(String, Expr)], Int) with { Error } = (tokens, starts, pos, b, parse_recur) -> {
   match peek(tokens, pos) {
     TRBrace => (ArrayBuilder::freeze(b), pos + 1),
     TIdent(fname) => {
       let (val, next_pos) = match peek(tokens, pos + 1) {
-        TComma => (EIdent(fname), pos + 1),
-        TRBrace => (EIdent(fname), pos + 1),
+        TComma => (EIdent(fname, -1), pos + 1),
+        TRBrace => (EIdent(fname, -1), pos + 1),
         _ => {
           let colon_pos = expect_tk(tokens, pos + 1, ":")
           parse_recur(tokens, colon_pos, 0)
@@ -20798,7 +21055,7 @@ let rec parse_record_literal_fields: (Array[Token], Int, ArrayBuilder[(String, E
       }
       ArrayBuilder::push(b, (fname, val))
       match peek(tokens, next_pos) {
-        TComma => parse_record_literal_fields(tokens, next_pos + 1, b, parse_recur),
+        TComma => parse_record_literal_fields(tokens, starts, next_pos + 1, b, parse_recur),
         TRBrace => (ArrayBuilder::freeze(b), next_pos + 1),
         _ => throw("expected ',' or '}' in record literal")
       }
@@ -20806,56 +21063,63 @@ let rec parse_record_literal_fields: (Array[Token], Int, ArrayBuilder[(String, E
     _ => throw("expected field name or '}' in record literal")
   }
 }
-let parse_ident_primary: (Array[Token], Int, String, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, name, parse_recur) -> {
+let offset_at: (Array[Int], Int) -> Int = (starts, p) -> {
+  if p >= 0 && p < Array::length(starts) {
+    Array::get(starts, p)
+  } else {
+    -1
+  }
+}
+let parse_ident_primary: (Array[Token], Array[Int], Int, String, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, pos, name, parse_recur) -> {
   if name == "true" {
     (EBool(true), pos + 1)
   } else if name == "false" {
     (EBool(false), pos + 1)
   } else if name == "perform" {
-    parse_perform_primary(tokens, pos, parse_recur)
+    parse_perform_primary(tokens, starts, pos, parse_recur)
   } else if name == "record" {
     match peek(tokens, pos + 1) {
       TLBrace => {
         let b = ArrayBuilder::new()
-        let (fields, end_pos) = parse_record_literal_fields(tokens, pos + 2, b, parse_recur)
+        let (fields, end_pos) = parse_record_literal_fields(tokens, starts, pos + 2, b, parse_recur)
         (ERecord(fields), end_pos)
       },
-      _ => (EIdent(name), pos + 1)
+      _ => (EIdent(name, offset_at(starts, pos)), pos + 1)
     }
   } else if name == "map" {
     match peek(tokens, pos + 1) {
       TLBrace => {
         let b = ArrayBuilder::new()
-        let (fields, end_pos) = parse_map_literal_fields(tokens, pos + 2, b, parse_recur)
+        let (fields, end_pos) = parse_map_literal_fields(tokens, starts, pos + 2, b, parse_recur)
         (EMap(fields), end_pos)
       },
-      _ => (EIdent(name), pos + 1)
+      _ => (EIdent(name, offset_at(starts, pos)), pos + 1)
     }
   } else {
     match peek(tokens, pos + 1) {
       TDoubleColon => match peek(tokens, pos + 2) {
-        TIdent(member) => (EIdent(String::concat(name, String::concat("::", member))), pos + 3),
+        TIdent(member) => (EIdent(String::concat(name, String::concat("::", member)), offset_at(starts, pos)), pos + 3),
         TLBrace => {
           let b = ArrayBuilder::new()
-          let (fields, end_pos) = parse_ctor_record_fields(tokens, pos + 3, b, parse_recur)
+          let (fields, end_pos) = parse_ctor_record_fields(tokens, starts, pos + 3, b, parse_recur)
           (ERecord(fields), end_pos)
         },
-        _ => (EIdent(name), pos + 1)
+        _ => (EIdent(name, offset_at(starts, pos)), pos + 1)
       },
-      _ => (EIdent(name), pos + 1)
+      _ => (EIdent(name, offset_at(starts, pos)), pos + 1)
     }
   }
 }
-export let parse_primary: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, parse_recur) -> {
+export let parse_primary: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, pos, parse_recur) -> {
   match peek(tokens, pos) {
     TInt(n) => (EInt(n), pos + 1),
     TFloat(n) => (EFloat(n), pos + 1),
     TString(s) => (EString(s), pos + 1),
     TStringInterp(parts) => (EStringInterp(parts), pos + 1),
-    TIdent(name) => parse_ident_primary(tokens, pos, name, parse_recur),
-    TLParen => parse_paren_primary(tokens, pos, parse_recur),
-    TLBracket => parse_bracket_primary(tokens, pos, parse_recur),
-    _ => parse_control_primary(tokens, pos, parse_recur)
+    TIdent(name) => parse_ident_primary(tokens, starts, pos, name, parse_recur),
+    TLParen => parse_paren_primary(tokens, starts, pos, parse_recur),
+    TLBracket => parse_bracket_primary(tokens, starts, pos, parse_recur),
+    _ => parse_control_primary(tokens, starts, pos, parse_recur)
   }
 }
 let binop_op: (Token) -> String with { Error } = (tok) -> {
@@ -20910,11 +21174,11 @@ let index_expr: (Expr, Expr) -> Expr = (cur_expr, idx) -> {
   let args = empty_exprs()
   Array::push(args, cur_expr)
   Array::push(args, idx)
-  ECall(EIdent("__index"), args)
+  ECall(EIdent("__index", -1), args)
 }
 let pipe_arg_is_hole: (Expr) -> Bool = (arg) -> {
   match arg {
-    EIdent(n) => n == "_",
+    EIdent(n, _) => n == "_",
     _ => false
   }
 }
@@ -20955,7 +21219,7 @@ let pipe_desugar: (Expr, Expr) -> Expr = (lhs, rhs) -> {
     ])
   }
 }
-let parse_call_arg: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, parse_recur) -> {
+let parse_call_arg: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, pos, parse_recur) -> {
   match peek(tokens, pos) {
     TIdent(name) => match peek(tokens, pos + 1) {
       TThinArrow => {
@@ -20989,14 +21253,14 @@ let parse_call_arg: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int) 
 }
 let has_placeholder_arg: (Expr) -> Bool = (arg) -> {
   match arg {
-    EIdent(n) => n == "_",
+    EIdent(n, _) => n == "_",
     EBinOp(_, l, r) => {
       let left_has = match l {
-        EIdent(n) => n == "_",
+        EIdent(n, _) => n == "_",
         _ => false
       }
       let right_has = match r {
-        EIdent(n) => n == "_",
+        EIdent(n, _) => n == "_",
         _ => false
       }
       left_has || right_has
@@ -21009,7 +21273,7 @@ let slice_from_idx_expr: (Expr, Expr, Expr) -> Expr = (cur_expr, idx, end_expr) 
   Array::push(args, cur_expr)
   Array::push(args, idx)
   Array::push(args, end_expr)
-  ECall(EIdent("__slice"), args)
+  ECall(EIdent("__slice", -1), args)
 }
 let has_placeholder_args: (Array[Expr]) -> Bool = (args) -> {
   let mut i = 0
@@ -21024,7 +21288,7 @@ let has_placeholder_args: (Array[Expr]) -> Bool = (args) -> {
   }
   found
 }
-let parse_call_args_rest: (Array[Token], Int, ArrayBuilder[Expr], (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Array[Expr], Int) with { Error } = (tokens, pos, b, parse_recur) -> {
+let parse_call_args_rest: (Array[Token], Array[Int], Int, ArrayBuilder[Expr], (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Array[Expr], Int) with { Error } = (tokens, starts, pos, b, parse_recur) -> {
   let mut p = pos
   let mut done = false
   while !done {
@@ -21035,7 +21299,7 @@ let parse_call_args_rest: (Array[Token], Int, ArrayBuilder[Expr], (Array[Token],
           done = true
         },
         _ => {
-          let (e, next) = parse_call_arg(tokens, p + 1, parse_recur)
+          let (e, next) = parse_call_arg(tokens, starts, p + 1, parse_recur)
           ArrayBuilder::push(b, e)
           p = next
         }
@@ -21053,7 +21317,7 @@ let slice_from_zero_expr: (Expr, Expr) -> Expr = (cur_expr, end_expr) -> {
   Array::push(args, cur_expr)
   Array::push(args, EInt(0))
   Array::push(args, end_expr)
-  ECall(EIdent("__slice"), args)
+  ECall(EIdent("__slice", -1), args)
 }
 let wrap_placeholder_arg: (Expr) -> Expr = (arg) -> {
   let mut pc = 0
@@ -21061,21 +21325,21 @@ let wrap_placeholder_arg: (Expr) -> Expr = (arg) -> {
     ("", None)
   ], 0, 0)
   let replaced = match arg {
-    EIdent(n) => if n == "_" {
+    EIdent(n, _) => if n == "_" {
       let pn = "__ph0"
       Array::push(params, (pn, None))
-      EIdent(pn)
+      EIdent(pn, -1)
     } else {
       arg
     }
     ,
     EBinOp(op, l, r) => {
       let nl = match l {
-        EIdent(n) => if n == "_" {
+        EIdent(n, _) => if n == "_" {
           let pn = String::concat("__ph", __to_string(pc))
           Array::push(params, (pn, None))
           pc = pc + 1
-          EIdent(pn)
+          EIdent(pn, -1)
         } else {
           l
         }
@@ -21083,11 +21347,11 @@ let wrap_placeholder_arg: (Expr) -> Expr = (arg) -> {
         _ => l
       }
       let nr = match r {
-        EIdent(n) => if n == "_" {
+        EIdent(n, _) => if n == "_" {
           let pn = String::concat("__ph", __to_string(pc))
           Array::push(params, (pn, None))
           pc = pc + 1
-          EIdent(pn)
+          EIdent(pn, -1)
         } else {
           r
         }
@@ -21166,7 +21430,7 @@ let desugar_placeholder_args: (Array[Expr]) -> Array[Expr] = (args) -> {
   }
   out
 }
-let rec parse_postfix: (Array[Token], Int, Expr, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, expr, parse_recur) -> {
+let rec parse_postfix: (Array[Token], Array[Int], Int, Expr, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, pos, expr, parse_recur) -> {
   match peek(tokens, pos) {
     TLParen => match expr {
       ECall(_, _) => (expr, pos),
@@ -21187,29 +21451,29 @@ let rec parse_postfix: (Array[Token], Int, Expr, (Array[Token], Int, Int) -> (Ex
       EForIn(_, _, _, _) => (expr, pos),
       EHandle(_, _) => (expr, pos),
       _ => match peek(tokens, pos + 1) {
-        TRParen => parse_postfix(tokens, pos + 2, ECall(expr, empty_exprs()), parse_recur),
+        TRParen => parse_postfix(tokens, starts, pos + 2, ECall(expr, empty_exprs()), parse_recur),
         _ => {
           let b = ArrayBuilder::new()
-          let (first_arg, next_pos) = parse_call_arg(tokens, pos + 1, parse_recur)
+          let (first_arg, next_pos) = parse_call_arg(tokens, starts, pos + 1, parse_recur)
           ArrayBuilder::push(b, first_arg)
-          let (args, end_pos) = parse_call_args_rest(tokens, next_pos, b, parse_recur)
+          let (args, end_pos) = parse_call_args_rest(tokens, starts, next_pos, b, parse_recur)
           let close_pos = expect_tk(tokens, end_pos, ")")
           let call_args = if has_placeholder_args(args) {
             desugar_placeholder_args(args)
           } else {
             args
           }
-          parse_postfix(tokens, close_pos, ECall(expr, call_args), parse_recur)
+          parse_postfix(tokens, starts, close_pos, ECall(expr, call_args), parse_recur)
         }
       },
     },
     TLBracket => match peek(tokens, pos + 1) {
       TColon => match peek(tokens, pos + 2) {
         TRBracket => {
-          let end_expr = ECall(EIdent("__len"), [
+          let end_expr = ECall(EIdent("__len", -1), [
             expr
           ])
-          parse_postfix(tokens, pos + 3, slice_from_zero_expr(expr, end_expr), parse_recur)
+          parse_postfix(tokens, starts, pos + 3, slice_from_zero_expr(expr, end_expr), parse_recur)
         },
         _ => {
           let (end_expr, end_next) = parse_recur(tokens, pos + 2, 0)
@@ -21217,7 +21481,7 @@ let rec parse_postfix: (Array[Token], Int, Expr, (Array[Token], Int, Int) -> (Ex
             TRBracket => end_next + 1,
             _ => throw("expected ']'")
           }
-          parse_postfix(tokens, close_pos, slice_from_zero_expr(expr, end_expr), parse_recur)
+          parse_postfix(tokens, starts, close_pos, slice_from_zero_expr(expr, end_expr), parse_recur)
         }
       },
       _ => {
@@ -21225,10 +21489,10 @@ let rec parse_postfix: (Array[Token], Int, Expr, (Array[Token], Int, Int) -> (Ex
         match peek(tokens, idx_next) {
           TColon => match peek(tokens, idx_next + 1) {
             TRBracket => {
-              let end_expr = ECall(EIdent("__len"), [
+              let end_expr = ECall(EIdent("__len", -1), [
                 expr
               ])
-              parse_postfix(tokens, idx_next + 2, slice_from_idx_expr(expr, idx, end_expr), parse_recur)
+              parse_postfix(tokens, starts, idx_next + 2, slice_from_idx_expr(expr, idx, end_expr), parse_recur)
             },
             _ => {
               let (end_expr, end_next) = parse_recur(tokens, idx_next + 1, 0)
@@ -21236,7 +21500,7 @@ let rec parse_postfix: (Array[Token], Int, Expr, (Array[Token], Int, Int) -> (Ex
                 TRBracket => end_next + 1,
                 _ => throw("expected ']'")
               }
-              parse_postfix(tokens, close_pos, slice_from_idx_expr(expr, idx, end_expr), parse_recur)
+              parse_postfix(tokens, starts, close_pos, slice_from_idx_expr(expr, idx, end_expr), parse_recur)
             }
           },
           _ => {
@@ -21244,36 +21508,36 @@ let rec parse_postfix: (Array[Token], Int, Expr, (Array[Token], Int, Int) -> (Ex
               TRBracket => idx_next + 1,
               _ => throw("expected ']'")
             }
-            parse_postfix(tokens, close_pos, index_expr(expr, idx), parse_recur)
+            parse_postfix(tokens, starts, close_pos, index_expr(expr, idx), parse_recur)
           }
         }
       }
     },
     TDot => match peek(tokens, pos + 1) {
-      TIdent(field) => parse_postfix(tokens, pos + 2, EDot(expr, field), parse_recur),
-      TInt(idx) => parse_postfix(tokens, pos + 2, EDot(expr, __to_string(idx)), parse_recur),
+      TIdent(field) => parse_postfix(tokens, starts, pos + 2, EDot(expr, field), parse_recur),
+      TInt(idx) => parse_postfix(tokens, starts, pos + 2, EDot(expr, __to_string(idx)), parse_recur),
       _ => (expr, pos)
     },
     _ => (expr, pos)
   }
 }
-let rec parse_prefix: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, parse_recur) -> {
+let rec parse_prefix: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, pos, parse_recur) -> {
   match peek(tokens, pos) {
     TMinus => {
-      let (e, next) = parse_prefix(tokens, pos + 1, parse_recur)
+      let (e, next) = parse_prefix(tokens, starts, pos + 1, parse_recur)
       (EUnaryOp("-", e), next)
     },
     TNot => {
-      let (e, next) = parse_prefix(tokens, pos + 1, parse_recur)
+      let (e, next) = parse_prefix(tokens, starts, pos + 1, parse_recur)
       (EUnaryOp("!", e), next)
     },
     _ => {
-      let (e, next) = parse_primary(tokens, pos, parse_recur)
-      parse_postfix(tokens, next, e, parse_recur)
+      let (e, next) = parse_primary(tokens, starts, pos, parse_recur)
+      parse_postfix(tokens, starts, next, e, parse_recur)
     }
   }
 }
-let rec parse_infix_loop: (Array[Token], Expr, Int, Int, Int, Bool, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, left, next, min_prec, expr_start, cmp_locked, parse_recur) -> {
+let rec parse_infix_loop: (Array[Token], Array[Int], Expr, Int, Int, Int, Bool, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, left, next, min_prec, expr_start, cmp_locked, parse_recur) -> {
   let tok = peek(tokens, next)
   let prec = binop_prec(tok)
   let should_stop = if prec < min_prec {
@@ -21296,8 +21560,8 @@ let rec parse_infix_loop: (Array[Token], Expr, Int, Int, Int, Bool, (Array[Token
         throw("cannot mix '|>' with other infix operators without explicit parentheses")
       }
     }
-    let (right0, right_next0) = parse_prefix(tokens, next + 1, parse_recur)
-    let (right, rn) = parse_infix_loop(tokens, right0, right_next0, prec + 1, next + 1, false, parse_recur)
+    let (right0, right_next0) = parse_prefix(tokens, starts, next + 1, parse_recur)
+    let (right, rn) = parse_infix_loop(tokens, starts, right0, right_next0, prec + 1, next + 1, false, parse_recur)
     if is_pipe {
       if has_non_pipe_infix_top(tokens, next + 1, rn) {
         throw("cannot mix '|>' with other infix operators without explicit parentheses")
@@ -21313,15 +21577,15 @@ let rec parse_infix_loop: (Array[Token], Expr, Int, Int, Int, Bool, (Array[Token
     } else {
       cmp_locked
     }
-    parse_infix_loop(tokens, combined, rn, min_prec, expr_start, next_cmp_locked, parse_recur)
+    parse_infix_loop(tokens, starts, combined, rn, min_prec, expr_start, next_cmp_locked, parse_recur)
   }
 }
-export let parse_infix_no_is: (Array[Token], Int, Int, Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, min_prec, expr_start, parse_recur) -> {
-  let (left0, next0) = parse_prefix(tokens, pos, parse_recur)
-  parse_infix_loop(tokens, left0, next0, min_prec, expr_start, false, parse_recur)
+export let parse_infix_no_is: (Array[Token], Array[Int], Int, Int, Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, pos, min_prec, expr_start, parse_recur) -> {
+  let (left0, next0) = parse_prefix(tokens, starts, pos, parse_recur)
+  parse_infix_loop(tokens, starts, left0, next0, min_prec, expr_start, false, parse_recur)
 }
-export let parse_infix: (Array[Token], Int, Int, Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, min_prec, expr_start, parse_recur) -> {
-  let (expr, en) = parse_infix_no_is(tokens, pos, min_prec, expr_start, parse_recur)
+export let parse_infix: (Array[Token], Array[Int], Int, Int, Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, pos, min_prec, expr_start, parse_recur) -> {
+  let (expr, en) = parse_infix_no_is(tokens, starts, pos, min_prec, expr_start, parse_recur)
   match peek(tokens, en) {
     TIs => {
       let (pat, pn) = parse_pattern(tokens, en + 1)
@@ -21355,7 +21619,7 @@ enum BlockStep {
   StepRecordDestr(Pat, Expr);
   StepBind(String, Expr)
 }
-let rec parse_match_rest: (Array[Token], Int, Expr, ArrayBuilder[(Pat, Expr)], (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, scrutinee, b, parse_recur) -> {
+let rec parse_match_rest: (Array[Token], Array[Int], Int, Expr, ArrayBuilder[(Pat, Expr)], (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, pos, scrutinee, b, parse_recur) -> {
   match peek(tokens, pos) {
     TComma => match peek(tokens, pos + 1) {
       TRBrace => (EMatch(scrutinee, ArrayBuilder::freeze(b)), pos + 2),
@@ -21370,7 +21634,7 @@ let rec parse_match_rest: (Array[Token], Int, Expr, ArrayBuilder[(Pat, Expr)], (
         }
         let (ea, en) = parse_recur(tokens, a2, 0)
         ArrayBuilder::push(b, (pa, ea))
-        parse_match_rest(tokens, en, scrutinee, b, parse_recur)
+        parse_match_rest(tokens, starts, en, scrutinee, b, parse_recur)
       }
     },
     TRBrace => (EMatch(scrutinee, ArrayBuilder::freeze(b)), pos + 1),
@@ -21385,7 +21649,7 @@ let rec parse_match_rest: (Array[Token], Int, Expr, ArrayBuilder[(Pat, Expr)], (
       }
       let (ea, en) = parse_recur(tokens, a2, 0)
       ArrayBuilder::push(b, (pa, ea))
-      parse_match_rest(tokens, en, scrutinee, b, parse_recur)
+      parse_match_rest(tokens, starts, en, scrutinee, b, parse_recur)
     }
   }
 }
@@ -21400,21 +21664,21 @@ let rec qualify_handle_arm_pattern: (String, Pat) -> Pat = (effect_name, pat) ->
     _ => pat
   }
 }
-let parse_handle_arm: (Array[Token], Int, String, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> ((Pat, Expr), Int) with { Error } = (tokens, pos, effect_name, parse_recur) -> {
+let parse_handle_arm: (Array[Token], Array[Int], Int, String, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> ((Pat, Expr), Int) with { Error } = (tokens, starts, pos, effect_name, parse_recur) -> {
   let (pat, pat_next) = parse_pattern(tokens, pos)
   let qualified_pat = qualify_handle_arm_pattern(effect_name, pat)
   let arrow_pos = expect_tk(tokens, pat_next, "=>")
   let (expr, next) = parse_recur(tokens, arrow_pos, 0)
   ((qualified_pat, expr), next)
 }
-let rec parse_handle_rest: (Array[Token], Int, Expr, String, ArrayBuilder[(Pat, Expr)], (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, body, effect_name, b, parse_recur) -> {
+let rec parse_handle_rest: (Array[Token], Array[Int], Int, Expr, String, ArrayBuilder[(Pat, Expr)], (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, pos, body, effect_name, b, parse_recur) -> {
   match peek(tokens, pos) {
     TSemicolon => match peek(tokens, pos + 1) {
       TRBrace => (EHandle(body, ArrayBuilder::freeze(b)), pos + 2),
       _ => {
-        let (arm, next) = parse_handle_arm(tokens, pos + 1, effect_name, parse_recur)
+        let (arm, next) = parse_handle_arm(tokens, starts, pos + 1, effect_name, parse_recur)
         ArrayBuilder::push(b, arm)
-        parse_handle_rest(tokens, next, body, effect_name, b, parse_recur)
+        parse_handle_rest(tokens, starts, next, body, effect_name, b, parse_recur)
       }
     },
     TRBrace => (EHandle(body, ArrayBuilder::freeze(b)), pos + 1),
@@ -21435,7 +21699,7 @@ let apply_struct_destr: (Pat, Expr, Expr) -> Expr = (pat, val, rest) -> {
         let (fname, fpat) = Array::get(fields, di)
         match fpat {
           PBind(bname) => {
-            desugar = ELet(bname, EDot(EIdent(val_name), fname), desugar)
+            desugar = ELet(bname, EDot(EIdent(val_name, -1), fname), desugar)
           },
           _ => ()
         }
@@ -21456,8 +21720,8 @@ let apply_record_destr: (Pat, Expr, Expr) -> Expr = (pat, val, rest) -> {
         let fp = Array::get(field_pats, di)
         match fp {
           PBind(bname) => {
-            desugar = ELet(bname, ECall(EIdent("__rec_field"), [
-              EIdent(val_name),
+            desugar = ELet(bname, ECall(EIdent("__rec_field", -1), [
+              EIdent(val_name, -1),
               EInt(di)
             ]), desugar)
           },
@@ -21467,14 +21731,14 @@ let apply_record_destr: (Pat, Expr, Expr) -> Expr = (pat, val, rest) -> {
             while si >= 0 {
               match Array::get(sub_pats, si) {
                 PBind(sname) => {
-                  desugar = ELet(sname, EDot(EIdent(sub_name), __to_string(si)), desugar)
+                  desugar = ELet(sname, EDot(EIdent(sub_name, -1), __to_string(si)), desugar)
                 },
                 _ => ()
               }
               si = si - 1
             }
-            desugar = ELet(sub_name, ECall(EIdent("__rec_field"), [
-              EIdent(val_name),
+            desugar = ELet(sub_name, ECall(EIdent("__rec_field", -1), [
+              EIdent(val_name, -1),
               EInt(di)
             ]), desugar)
           },
@@ -21507,8 +21771,8 @@ let apply_block_step: (BlockStep, Expr) -> Expr = (step, rest) -> {
       ]), rest),
       (PCtor("Err", [
         PBind("__bind_err")
-      ]), ECall(EIdent("Err"), [
-        EIdent("__bind_err")
+      ]), ECall(EIdent("Err", -1), [
+        EIdent("__bind_err", -1)
       ]))
     ])
   }
@@ -21522,7 +21786,7 @@ let fold_block_steps: (Array[BlockStep]) -> Expr = (steps) -> {
   }
   result
 }
-let parse_impl_block: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, parse_recur) -> {
+let parse_impl_block: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, pos, parse_recur) -> {
   let steps = ArrayBuilder::new()
   let mut p = pos
   let mut end_pos = pos
@@ -21706,7 +21970,7 @@ let parse_impl_block: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int
               p = next + 1
             },
             TEq => match e {
-              EIdent(name) => {
+              EIdent(name, _) => {
                 let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur)
                 ArrayBuilder::push(steps, StepAssign(name, val))
                 p = next_pos
@@ -21717,13 +21981,13 @@ let parse_impl_block: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int
                 Array::push(set_args, obj)
                 Array::push(set_args, EString(field))
                 Array::push(set_args, val)
-                ArrayBuilder::push(steps, StepSeq(ECall(EIdent("__set_field"), set_args)))
+                ArrayBuilder::push(steps, StepSeq(ECall(EIdent("__set_field", -1), set_args)))
                 p = next_pos
               },
               _ => throw("invalid assignment target")
             },
             TPlusEq => match e {
-              EIdent(name) => {
+              EIdent(name, _) => {
                 let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur)
                 ArrayBuilder::push(steps, StepAssignOp(name, "+", val))
                 p = next_pos
@@ -21731,7 +21995,7 @@ let parse_impl_block: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int
               _ => throw("invalid assignment target")
             },
             TMinusEq => match e {
-              EIdent(name) => {
+              EIdent(name, _) => {
                 let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur)
                 ArrayBuilder::push(steps, StepAssignOp(name, "-", val))
                 p = next_pos
@@ -21739,7 +22003,7 @@ let parse_impl_block: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int
               _ => throw("invalid assignment target")
             },
             TStarEq => match e {
-              EIdent(name) => {
+              EIdent(name, _) => {
                 let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur)
                 ArrayBuilder::push(steps, StepAssignOp(name, "*", val))
                 p = next_pos
@@ -21747,7 +22011,7 @@ let parse_impl_block: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int
               _ => throw("invalid assignment target")
             },
             TSlashEq => match e {
-              EIdent(name) => {
+              EIdent(name, _) => {
                 let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur)
                 ArrayBuilder::push(steps, StepAssignOp(name, "/", val))
                 p = next_pos
@@ -21755,7 +22019,7 @@ let parse_impl_block: (Array[Token], Int, (Array[Token], Int, Int) -> (Expr, Int
               _ => throw("invalid assignment target")
             },
             TPercentEq => match e {
-              EIdent(name) => {
+              EIdent(name, _) => {
                 let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur)
                 ArrayBuilder::push(steps, StepAssignOp(name, "%", val))
                 p = next_pos
@@ -21777,25 +22041,25 @@ let build_pull_for_in: (String, Option[String], Expr, Expr, Int) -> Expr = (valu
   let next_var = "__pull_next_\{uid}"
   let cont_var = "__pull_continue_\{uid}"
   let some_arm = match index_name {
-    Some(ix) => ESeq(body, EAssign(ix, EBinOp("+", EIdent(ix), EInt(1)), EUnit)),
+    Some(ix) => ESeq(body, EAssign(ix, EBinOp("+", EIdent(ix, -1), EInt(1)), EUnit)),
     None => ESeq(body, EUnit)
   }
-  let loop_body = EMatch(ECall(EIdent(next_var), []), [
+  let loop_body = EMatch(ECall(EIdent(next_var, -1), []), [
     (PCtor("Some", [PBind(value_name)]), some_arm),
     (PCtor("None", []), EAssign(cont_var, EBool(false), EUnit))
   ])
-  let core_loop = ELetMut(cont_var, EBool(true), EWhile(EIdent(cont_var), loop_body))
+  let core_loop = ELetMut(cont_var, EBool(true), EWhile(EIdent(cont_var, -1), loop_body))
   let with_index = match index_name {
     Some(ix) => ELetMut(ix, EInt(0), core_loop),
     None => core_loop
   }
   ELet(next_var, iterable, with_index)
 }
-export let parse_impl_dispatch: (Array[Token], Int, Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, pos, mode, parse_recur) -> {
+export let parse_impl_dispatch: (Array[Token], Array[Int], Int, Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, pos, mode, parse_recur) -> {
   if mode == 20 {
-    parse_impl_block(tokens, pos, parse_recur)
+    parse_impl_block(tokens, starts, pos, parse_recur)
   } else if mode == 21 {
-    let (cond, cn) = parse_infix_no_is(tokens, pos, 0, pos, parse_recur)
+    let (cond, cn) = parse_infix_no_is(tokens, starts, pos, 0, pos, parse_recur)
     let mut is_mode = false
     let mut is_pat_val = PWild
     let mut brace_pos = cn
@@ -21849,7 +22113,7 @@ export let parse_impl_dispatch: (Array[Token], Int, Int, (Array[Token], Int, Int
         }
         let (fe, fn1) = parse_recur(tokens, aa, 0)
         ArrayBuilder::push(b, (fp, fe))
-        parse_match_rest(tokens, fn1, scrutinee, b, parse_recur)
+        parse_match_rest(tokens, starts, fn1, scrutinee, b, parse_recur)
       }
     }
   } else if mode == 23 {
@@ -21870,9 +22134,9 @@ export let parse_impl_dispatch: (Array[Token], Int, Int, (Array[Token], Int, Int
       TRBrace => (EHandle(body, empty_arms()), hb + 1),
       _ => {
         let b = ArrayBuilder::new()
-        let (arm, next) = parse_handle_arm(tokens, hb, effect_name, parse_recur)
+        let (arm, next) = parse_handle_arm(tokens, starts, hb, effect_name, parse_recur)
         ArrayBuilder::push(b, arm)
-        parse_handle_rest(tokens, next, body, effect_name, b, parse_recur)
+        parse_handle_rest(tokens, starts, next, body, effect_name, b, parse_recur)
       }
     }
   } else if mode == 25 {
@@ -21933,12 +22197,12 @@ export let parse_impl_dispatch: (Array[Token], Int, Int, (Array[Token], Int, Int
     throw("internal parser error: unknown parse mode \{mode} at #\{pos} token=\{actual}")
   }
 }
-export let parse_impl: (Array[Token], Int, Int) -> (Expr, Int) with { Error } = (tokens, pos, mode) -> {
+export let parse_impl: (Array[Token], Array[Int], Int, Int) -> (Expr, Int) with { Error } = (tokens, starts, pos, mode) -> {
   let rec parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error } = (rtoks, rpos, rmode) -> {
     if rmode >= 0 && rmode <= 10 {
-      parse_infix(rtoks, rpos, rmode, rpos, parse_recur)
+      parse_infix(rtoks, starts, rpos, rmode, rpos, parse_recur)
     } else {
-      parse_impl_dispatch(rtoks, rpos, rmode, parse_recur)
+      parse_impl_dispatch(rtoks, starts, rpos, rmode, parse_recur)
     }
   }
   parse_recur(tokens, pos, mode)
@@ -22139,7 +22403,7 @@ let parse_value_bracket_header: (Array[Token], Int) -> (Array[String], Array[(St
     }
   }
 }
-let parse_let_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } = (tokens, pos, exported) -> {
+let parse_let_stmt: (Array[Token], Array[Int], Int, Bool) -> (Stmt, Int) with { Error } = (tokens, starts, pos, exported) -> {
   match peek(tokens, pos) {
     TRec => {
       let (name, name_next) = parse_binding_name(tokens, pos + 1)
@@ -22152,7 +22416,7 @@ let parse_let_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } = (t
       }
       let ep = expect_tk(tokens, eq_pos, "=")
       let (bracket_tps, bracket_tbs, val_start_r) = parse_value_bracket_header(tokens, ep)
-      let val_pair = parse_impl(tokens, val_start_r, 0)
+      let val_pair = parse_impl(tokens, starts, val_start_r, 0)
       let val_with_tp = apply_value_bracket_type_params(bracket_tps, bracket_tbs, val_pair.0)
       let (final_ty_opt, val) = apply_generic_let_annotation(type_params, type_bounds, ty_opt, val_with_tp)
       let val_next = val_pair.1
@@ -22168,7 +22432,7 @@ let parse_let_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } = (t
           _ => (None, pos + 2)
         }
         let ep = expect_tk(tokens, eq_pos, "=")
-        let val_pair = parse_impl(tokens, ep, 0)
+        let val_pair = parse_impl(tokens, starts, ep, 0)
         let val = val_pair.0
         let val_next = val_pair.1
         (SLetMut(name, ty_opt, val), val_next)
@@ -22178,7 +22442,7 @@ let parse_let_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } = (t
     TLParen => {
       let (pat, pat_next) = parse_pattern(tokens, pos)
       let ep = expect_tk(tokens, pat_next, "=")
-      let val_pair = parse_impl(tokens, ep, 0)
+      let val_pair = parse_impl(tokens, starts, ep, 0)
       let val = val_pair.0
       let val_next = val_pair.1
       (SLetPat(pat, val), val_next)
@@ -22194,7 +22458,7 @@ let parse_let_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } = (t
       if is_struct_destructure {
         let (pat, pat_next) = parse_pattern(tokens, pos)
         let ep = expect_tk(tokens, pat_next, "=")
-        let val_pair = parse_impl(tokens, ep, 0)
+        let val_pair = parse_impl(tokens, starts, ep, 0)
         let val = val_pair.0
         let val_next = val_pair.1
         (SLetPat(pat, val), val_next)
@@ -22209,7 +22473,7 @@ let parse_let_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } = (t
         }
         let ep = expect_tk(tokens, eq_pos, "=")
         let (bracket_tps, bracket_tbs, val_start) = parse_value_bracket_header(tokens, ep)
-        let val_pair = parse_impl(tokens, val_start, 0)
+        let val_pair = parse_impl(tokens, starts, val_start, 0)
         let val_with_tp = apply_value_bracket_type_params(bracket_tps, bracket_tbs, val_pair.0)
         let (final_ty_opt, val) = apply_generic_let_annotation(type_params, type_bounds, ty_opt, val_with_tp)
         let val_next = val_pair.1
@@ -22231,21 +22495,21 @@ let empty_names: () -> Array[String] = () -> {
     "_"
   ], 0, 0)
 }
-let parse_test_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (tokens, pos) -> {
+let parse_test_stmt: (Array[Token], Array[Int], Int) -> (Stmt, Int) with { Error } = (tokens, starts, pos) -> {
   match peek(tokens, pos) {
     TString(name) => {
       let br = expect_tk(tokens, pos + 1, "{")
-      let (body, end) = parse_impl(tokens, br, parser_mode_block);
+      let (body, end) = parse_impl(tokens, starts, br, parser_mode_block);
       (STest(name, body), end)
     },
     _ => throw("expected test name string")
   }
 }
-let parse_bench_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (tokens, pos) -> {
+let parse_bench_stmt: (Array[Token], Array[Int], Int) -> (Stmt, Int) with { Error } = (tokens, starts, pos) -> {
   match peek(tokens, pos) {
     TString(name) => {
       let br = expect_tk(tokens, pos + 1, "{")
-      let (body, end) = parse_impl(tokens, br, parser_mode_block);
+      let (body, end) = parse_impl(tokens, starts, br, parser_mode_block);
       (SBench(name, body), end)
     },
     _ => throw("expected bench name string")
@@ -22404,9 +22668,9 @@ let parse_toplevel_struct_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { 
     _ => throw("expected struct name")
   }
 }
-let parse_export_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (tokens, pos) -> {
+let parse_export_stmt: (Array[Token], Array[Int], Int) -> (Stmt, Int) with { Error } = (tokens, starts, pos) -> {
   match peek(tokens, pos) {
-    TLet => parse_let_stmt(tokens, pos + 1, true),
+    TLet => parse_let_stmt(tokens, starts, pos + 1, true),
     TEnum => parse_enum_stmt(tokens, pos + 1, true),
     TSuberror => parse_suberror_stmt(tokens, pos + 1, true),
     TStruct => parse_toplevel_struct_stmt(tokens, pos + 1, true),
@@ -22468,28 +22732,31 @@ let rec parse_module_body_with: ((Array[Token], Int) -> (Stmt, Int) with { Error
     }
   }
 }
-export let rec parse_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (tokens, pos) -> {
+export let rec parse_stmt: (Array[Token], Array[Int], Int) -> (Stmt, Int) with { Error } = (tokens, starts, pos) -> {
+  let parse_stmt_closure: (Array[Token], Int) -> (Stmt, Int) with { Error } = (t, p) -> {
+    parse_stmt(t, starts, p)
+  }
   let head = peek(tokens, pos)
   match head {
-    TLet => parse_let_stmt(tokens, pos + 1, false),
+    TLet => parse_let_stmt(tokens, starts, pos + 1, false),
     TExport => match peek(tokens, pos + 1) {
       TModule => match peek(tokens, pos + 2) {
         TIdent(name) => {
           let br = expect_tk(tokens, pos + 3, "{")
           {
-            let (stmts, end) = parse_module_body_with(parse_stmt, tokens, br, ArrayBuilder::new());
+            let (stmts, end) = parse_module_body_with(parse_stmt_closure, tokens, br, ArrayBuilder::new());
             (SModule(true, name, stmts), end)
           }
         },
         _ => throw("expected module name")
       },
-      _ => parse_export_stmt(tokens, pos + 1)
+      _ => parse_export_stmt(tokens, starts, pos + 1)
     },
     TModule => match peek(tokens, pos + 1) {
       TIdent(name) => {
         let br = expect_tk(tokens, pos + 2, "{")
         {
-          let (stmts, end) = parse_module_body_with(parse_stmt, tokens, br, ArrayBuilder::new());
+          let (stmts, end) = parse_module_body_with(parse_stmt_closure, tokens, br, ArrayBuilder::new());
           (SModule(false, name, stmts), end)
         }
       },
@@ -22500,47 +22767,47 @@ export let rec parse_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (
     TStruct => parse_toplevel_struct_stmt(tokens, pos + 1, false),
     TType => parse_type_alias_stmt(tokens, pos + 1, false),
     TTrait => parse_trait_stmt(tokens, pos + 1, false),
-    TTest => parse_test_stmt(tokens, pos + 1),
-    TBench => parse_bench_stmt(tokens, pos + 1),
+    TTest => parse_test_stmt(tokens, starts, pos + 1),
+    TBench => parse_bench_stmt(tokens, starts, pos + 1),
     TImport => parse_import_stmt(tokens, pos + 1),
     TIdent(name) => match name {
       "effect" => parse_effect_stmt(tokens, pos + 1, false),
       "extern" => parse_extern_let_stmt(tokens, pos + 1),
       "use" => throw("'use' syntax is removed; use 'import <module-ref> { ... }'"),
       _ => {
-      let (e, next) = parse_impl(tokens, pos, 0)
+      let (e, next) = parse_impl(tokens, starts, pos, 0)
       match peek(tokens, next) {
         TEq => match e {
-          EIdent(name) => {
-            let (val, vn) = parse_impl(tokens, next + 1, 0)
+          EIdent(name, _) => {
+            let (val, vn) = parse_impl(tokens, starts, next + 1, 0)
             (SExpr(EAssign(name, val, EUnit)), vn)
           },
           _ => (SExpr(e), next)
         },
         TPlusEq => match e {
-          EIdent(name) => {
-            let (val, vn) = parse_impl(tokens, next + 1, 0)
+          EIdent(name, _) => {
+            let (val, vn) = parse_impl(tokens, starts, next + 1, 0)
             (SExpr(EAssignOp(name, "+", val, EUnit)), vn)
           },
           _ => (SExpr(e), next)
         },
         TMinusEq => match e {
-          EIdent(name) => {
-            let (val, vn) = parse_impl(tokens, next + 1, 0)
+          EIdent(name, _) => {
+            let (val, vn) = parse_impl(tokens, starts, next + 1, 0)
             (SExpr(EAssignOp(name, "-", val, EUnit)), vn)
           },
           _ => (SExpr(e), next)
         },
         TStarEq => match e {
-          EIdent(name) => {
-            let (val, vn) = parse_impl(tokens, next + 1, 0)
+          EIdent(name, _) => {
+            let (val, vn) = parse_impl(tokens, starts, next + 1, 0)
             (SExpr(EAssignOp(name, "*", val, EUnit)), vn)
           },
           _ => (SExpr(e), next)
         },
         TSlashEq => match e {
-          EIdent(name) => {
-            let (val, vn) = parse_impl(tokens, next + 1, 0)
+          EIdent(name, _) => {
+            let (val, vn) = parse_impl(tokens, starts, next + 1, 0)
             (SExpr(EAssignOp(name, "/", val, EUnit)), vn)
           },
           _ => (SExpr(e), next)
@@ -22550,7 +22817,7 @@ export let rec parse_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (
       }
     },
     _ => {
-      let (e, next) = parse_impl(tokens, pos, 0);
+      let (e, next) = parse_impl(tokens, starts, pos, 0);
       (SExpr(e), next)
     }
   }
@@ -22573,13 +22840,135 @@ export let parse_program: (Array[Token]) -> Array[Stmt] with { Error } = (tokens
         pos = next
       },
       _ => {
-        let (stmt, next) = parse_stmt(tokens, pos)
+        let (stmt, next) = parse_stmt(tokens, [], pos)
         ArrayBuilder::push(b, stmt)
         pos = next
       }
     }
   }
   ArrayBuilder::freeze(b)
+}
+export let parse_program_located: (Array[Token], Array[Int], String) -> Array[Stmt] with { Error } = (tokens, starts, source) -> {
+  let b = ArrayBuilder::new()
+  let mut pos = 0
+  let mut done = false
+  while !done {
+    match peek(tokens, pos) {
+      TEof => {
+        done = true
+      },
+      TSemicolon => {
+        pos = pos + 1
+      },
+      _ => {
+        let start_pos = pos
+        let (stmt, next) = handle {
+          match peek(tokens, pos) {
+            TImpl => parse_impl_stmt_dispatch(tokens, pos + 1),
+            _ => parse_stmt(tokens, starts, pos)
+          }
+        } with Error {
+          Throw(msg) => {
+            let off = if start_pos < Array::length(starts) {
+              Array::get(starts, start_pos)
+            } else {
+              0
+            }
+            let (line, col) = offset_to_line_col(source, off)
+            let loc = String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
+            throw(String::concat(loc, msg))
+          }
+        }
+        ArrayBuilder::push(b, stmt)
+        pos = next
+      }
+    }
+  }
+  ArrayBuilder::freeze(b)
+}
+let is_recovery_point: (Token) -> Bool = (t) -> {
+  match t {
+    TLet => true,
+    TExport => true,
+    TModule => true,
+    TEnum => true,
+    TSuberror => true,
+    TStruct => true,
+    TType => true,
+    TTrait => true,
+    TTest => true,
+    TBench => true,
+    TImport => true,
+    TImpl => true,
+    TDeclare => true,
+    TOpen => true,
+    TSemicolon => true,
+    TEof => true,
+    _ => false
+  }
+}
+export let parse_program_recovering: (Array[Token], Array[Int], String) -> (Array[Stmt], Array[String]) with { Error } = (tokens, starts, source) -> {
+  let b = ArrayBuilder::new()
+  let diags = ArrayBuilder::new()
+  let n = Array::length(tokens)
+  let mut pos = 0
+  let mut done = false
+  while !done {
+    match peek(tokens, pos) {
+      TEof => {
+        done = true
+      },
+      TSemicolon => {
+        pos = pos + 1
+      },
+      _ => {
+        let start_pos = pos
+        let res = handle {
+          let (stmt, next) = match peek(tokens, pos) {
+            TImpl => parse_impl_stmt_dispatch(tokens, pos + 1),
+            _ => parse_stmt(tokens, starts, pos)
+          }
+          Some((stmt, next))
+        } with Error {
+          Throw(msg) => {
+            let off = if start_pos < Array::length(starts) {
+              Array::get(starts, start_pos)
+            } else {
+              0
+            }
+            let (line, col) = offset_to_line_col(source, off)
+            let loc = String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
+            ArrayBuilder::push(diags, String::concat(loc, msg))
+            None
+          }
+        }
+        match res {
+          Some((stmt, next)) => {
+            ArrayBuilder::push(b, stmt)
+            pos = next
+          },
+          None => {
+            let mut rp = start_pos + 1
+            let mut sync = false
+            while !sync {
+              if rp >= n {
+                sync = true
+              } else {
+                let t = peek(tokens, rp)
+                if is_recovery_point(t) {
+                  sync = true
+                } else {
+                  rp = rp + 1
+                }
+              }
+            }
+            pos = rp
+          }
+        }
+      }
+    }
+  }
+  (ArrayBuilder::freeze(b), ArrayBuilder::freeze(diags))
 }
 export let parse_program_spans: (Array[Token], Array[Int], Array[Int]) -> (Array[Stmt], Array[Int], Array[Int]) with { Error } = (tokens, starts, ends) -> {
   let b = ArrayBuilder::new()
@@ -22605,7 +22994,7 @@ export let parse_program_spans: (Array[Token], Array[Int], Array[Int]) -> (Array
       },
       _ => {
         let st = Array::get(starts, pos)
-        let (stmt, next) = parse_stmt(tokens, pos)
+        let (stmt, next) = parse_stmt(tokens, starts, pos)
         ArrayBuilder::push(b, stmt)
         ArrayBuilder::push(span_start, st)
         ArrayBuilder::push(span_end, Array::get(ends, next - 1))
@@ -22622,7 +23011,7 @@ export {
   Pat, Expr, Stmt, parse, TypeExpr, parse_ok, parse_expr, parse_stmt, parse_type, parse_program
 }
 export let parse_interp_expr: (Array[Token]) -> Expr with { Error } = (tokens) -> {
-  let (stmt, _) = parse_stmt(tokens, 0)
+  let (stmt, _) = parse_stmt(tokens, [], 0)
   match stmt {
     SExpr(expr) => expr,
     _ => throw("expected interpolation expression")
@@ -22641,7 +23030,7 @@ export let collect_interp_exprs: (Array[String]) -> Array[Expr] with { Error } =
       let expr_src = Array::get(parts, i + 1)
       let part_tokens = lex(expr_src)
       let part_expr = parse_interp_expr(part_tokens)
-      ArrayBuilder::push(exprs, ECall(EIdent("__to_string"), [
+      ArrayBuilder::push(exprs, ECall(EIdent("__to_string", -1), [
         part_expr
       ]))
     }
@@ -22654,7 +23043,7 @@ let concat_exprs: (Expr, Expr) -> Expr = (lhs, rhs) -> {
   ArrayBuilder::push(b, lhs)
   ArrayBuilder::push(b, rhs)
   let args = ArrayBuilder::freeze(b)
-  ECall(EIdent("String::concat"), args)
+  ECall(EIdent("String::concat", -1), args)
 }
 export let fold_interp_exprs_loop: (Array[Expr], Int, Expr, Int) -> Expr = (result_arr, result_len, result0, j0) -> {
   let mut result = result0
@@ -23397,7 +23786,7 @@ export let rec print_expr: (Expr) -> String = (e) -> {
     EBool(b) => if b {
       "true"
     } else "false",
-    EIdent(name) => name,
+    EIdent(name, _) => name,
     EUnit => "()",
     ETuple(elems) => String::concat("(", String::concat(join(map_to_strings(elems, print_expr), ", "), ")")),
     EArray(elems) => String::concat("[", String::concat(join(map_to_strings(elems, print_expr), ", "), "]")),
@@ -23449,7 +23838,7 @@ export let rec print_expr: (Expr) -> String = (e) -> {
       String::concat("for ", String::concat(binding, String::concat(" in ", String::concat(print_expr(iterable), String::concat(" { ", String::concat(print_expr(body), " }"))))))
     },
     ECall(callee, args) => match callee {
-      EIdent("perform") => if Array::length(args) == 1 {
+      EIdent("perform", _) => if Array::length(args) == 1 {
         String::concat("perform ", print_expr(Array::get(args, 0)))
       } else {
         String::concat(print_expr(callee), String::concat("(", String::concat(join(map_to_strings(args, print_expr), ", "), ")")))
@@ -23682,6 +24071,35 @@ export let build_module_source_from_source: (String, String) -> String with { Er
   }
   StringBuilder::freeze(buf)
 }
+export let build_funcmap_from_source: (String) -> String with { Error } = (source) -> {
+  let lexed = lex_with_offsets(source)
+  let tokens = lexed.0
+  let starts = lexed.1
+  let ends = lexed.2
+  let parsed = parse_program_spans(tokens, starts, ends)
+  let stmts = parsed.0
+  let span_start = parsed.1
+  let buf = StringBuilder::new()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
+    let entry = match stmt {
+      SLet(_, _, name, _, expr) => match expr {
+        EFn(_, _, _, _, _, _) => {
+          let off = Array::get(span_start, i)
+          let lc = offset_to_line_col(source, off)
+          let line = lc.0
+          String::concat(name, String::concat("\t", String::concat(__to_string(line), "\n")))
+        },
+        _ => ""
+      },
+      _ => ""
+    }
+    StringBuilder::push(buf, entry)
+    i = i + 1
+  }
+  StringBuilder::freeze(buf)
+}
 let empty_aliases: () -> Array[(String, String)] = () -> {
   Array::slice([
     ("", "")
@@ -23856,8 +24274,8 @@ let alias_map_without_params: (Array[(String, String)], Array[(String, Option[Ty
 }
 export let rec rewrite_import_alias_expr: (Expr, Array[(String, String)]) -> Expr = (expr, aliases) -> {
   match expr {
-    EIdent(name) => match lookup_alias(aliases, name) {
-      Some(original) => EIdent(original),
+    EIdent(name, _) => match lookup_alias(aliases, name) {
+      Some(original) => EIdent(original, -1),
       None => expr
     },
     ETuple(items) => ETuple(for item in items {
@@ -24303,8 +24721,8 @@ let rec rewrite_private_type_ctor_pat: (Pat, Array[(String, String)], Array[(Str
 }
 let rec rewrite_private_type_ctor_expr: (Expr, Array[(String, String)], Array[(String, String)]) -> Expr = (expr, type_renames, ctor_renames) -> {
   match expr {
-    EIdent(name) => match lookup_alias(ctor_renames, name) {
-      Some(renamed) => EIdent(renamed),
+    EIdent(name, _) => match lookup_alias(ctor_renames, name) {
+      Some(renamed) => EIdent(renamed, -1),
       None => expr
     },
     ETuple(items) => ETuple(for item in items {
@@ -24653,6 +25071,12 @@ export let compile_wasi_module: (Array[Stmt], String) -> Bytes with { Error } = 
 }
 export let compile_wasi_module_coverage: (Array[Stmt], String) -> Bytes with { Error } = (stmts, entry_name) -> {
   compile_wasi_module_coverage_impl(stmts, entry_name)
+}
+export let compile_wasi_module_trace: (Array[Stmt], String) -> Bytes with { Error } = (stmts, entry_name) -> {
+  compile_wasi_module_trace_impl(stmts, entry_name)
+}
+export let compile_wasi_module_break: (Array[Stmt], String) -> Bytes with { Error } = (stmts, entry_name) -> {
+  compile_wasi_module_break_impl(stmts, entry_name)
 }
 export let contains_str: (Array[String], String) -> Bool = (arr, target) -> {
   let rec go: (Int) -> Bool = (i) -> {
@@ -25068,10 +25492,11 @@ export let load_or_parse_module_header_fs_impl: (String, String, Int) -> (Array[
     let header_result = match special_bundle_header(path) {
       Some((deps, exports)) => (deps, exports, parse_count),
       None => {
+        let (tokens, starts, _ends) = lex_with_offsets(source)
         let stmts = handle {
-          parse_program(lex(source))
+          parse_program_located(tokens, starts, source)
         } with Error {
-          Throw(msg) => throw("load_or_parse_module_header_fs_impl(" + path + "): " + msg)
+          Throw(msg) => throw(String::concat(path, String::concat(": ", msg)))
         }
         (collect_import_deps_from_stmts(stmts, dir_of_path(path)), collect_exports(stmts), parse_count + 1)
       }
@@ -27640,7 +28065,8 @@ let upsert_string_pair: (Array[(String, String)], String, String) -> Array[(Stri
 }
 let parse_program_with_path: (String, String) -> Array[Stmt] with { Error } = (path, source) -> {
   handle {
-    parse_program(lex(source))
+    let (tokens, starts, _ends) = lex_with_offsets(source)
+    parse_program_located(tokens, starts, source)
   } with Error {
     Throw(msg) => throw(String::concat(String::concat(path, ": "), msg))
   }
@@ -27654,6 +28080,114 @@ let write_persistent_dep_list_if_missing: (String, String, Array[String]) -> Uni
     Fs::write_file(dep_cache_path, persistent_dep_list_text(deps))
   } else {
     ()
+  }
+}
+let typecheck_ident_run: (String, Int) -> Int = (s, start) -> {
+  let len = String::length(s)
+  let mut e = start
+  let mut go = true
+  while go && e < len {
+    let c = String::char_code_at(s, e)
+    let is_id = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+    if is_id {
+      e = e + 1
+    } else {
+      go = false
+    }
+  }
+  e
+}
+let locate_by_marker: (String, String, String) -> String = (source, msg, marker) -> {
+  let mi = String::index_of(msg, marker)
+  if mi < 0 {
+    msg
+  } else {
+    let sstart = mi + String::length(marker)
+    let send = typecheck_ident_run(msg, sstart)
+    if send <= sstart {
+      msg
+    } else {
+      let sym = String::substring(msg, sstart, send)
+      let off = String::index_of(source, sym)
+      if off < 0 {
+        msg
+      } else {
+        let (line, col) = offset_to_line_col(source, off)
+        let loc = String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
+        String::concat(loc, msg)
+      }
+    }
+  }
+}
+let locate_type_error_heuristic: (String, String) -> String = (source, msg) -> {
+  if String::index_of(msg, "line ") == 0 {
+    msg
+  } else {
+    let with_name = locate_by_marker(source, msg, "unknown name: ")
+    if with_name != msg {
+      with_name
+    } else {
+      let with_arity = locate_by_marker(source, msg, "function arity mismatch for ")
+      if with_arity != msg {
+        with_arity
+      } else {
+        let with_field = locate_by_marker(source, msg, "unknown field ")
+        if with_field != msg {
+          with_field
+        } else {
+          locate_by_marker(source, msg, "unknown constructor ")
+        }
+      }
+    }
+  }
+}
+let offset_line_col_prefix: (String, Int) -> String = (source, off) -> {
+  let (line, col) = offset_to_line_col(source, off)
+  String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
+}
+let parse_offset_digits: (String, Int, Int) -> Int = (msg, start, end) -> {
+  if end <= start {
+    -1
+  } else {
+    let mut i = start
+    let mut acc = 0
+    let mut ok = true
+    while ok && i < end {
+      let c = String::char_code_at(msg, i)
+      if c >= '0' && c <= '9' {
+        acc = acc * 10 + (c - '0')
+        i = i + 1
+      } else {
+        ok = false
+      }
+    }
+    if ok {
+      acc
+    } else {
+      -1
+    }
+  }
+}
+let locate_type_error: (String, String) -> String = (source, msg) -> {
+  let marker = " [@off="
+  let mi = String::index_of(msg, marker)
+  if mi < 0 {
+    locate_type_error_heuristic(source, msg)
+  } else {
+    let num_start = mi + String::length(marker)
+    let rel_end = String::index_of(String::substring(msg, num_start, String::length(msg)), "]")
+    if rel_end < 0 {
+      locate_type_error_heuristic(source, String::substring(msg, 0, mi))
+    } else {
+      let num_end = num_start + rel_end
+      let n = parse_offset_digits(msg, num_start, num_end)
+      let stripped = String::concat(String::substring(msg, 0, mi), String::substring(msg, num_end + 1, String::length(msg)))
+      if n >= 0 && n < String::length(source) {
+        String::concat(offset_line_col_prefix(source, n), stripped)
+      } else {
+        locate_type_error_heuristic(source, stripped)
+      }
+    }
   }
 }
 let finish_typecheck_fs_impl: (RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int, String, String, Array[String], String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } = (rdb, env_cache, dep_source_cache, parse_count, path, source, deps, fingerprint) -> {
@@ -27671,7 +28205,7 @@ let finish_typecheck_fs_impl: (RippleDb, Array[(String, TypeEnv)], Array[(String
         _ => check_program_with_env(stmts, import_env)
       }
     } with Error {
-      Throw(msg) => throw(String::concat(String::concat(path, ": "), msg))
+      Throw(msg) => throw(String::concat(String::concat(path, ": "), locate_type_error(source, msg)))
     }
     store_persistent_type_env(fingerprint, checked_env)
     if Array::length(deps) == 0 {
@@ -27886,6 +28420,24 @@ export let ensure_fingerprint_fs_impl: (RippleDb, Array[(String, TypeEnv)], Arra
   let (fingerprint, next_db, next_env_cache, next_dep_source_cache, next_parse_count) = ensure_fingerprint_fs_go(rdb, env_cache, dep_source_cache, parse_count, path, stack)
   let final_env_cache = ensure_env_cache_for_path(next_db, next_env_cache, path)
   (fingerprint, next_db, final_env_cache, next_dep_source_cache, next_parse_count)
+}
+export let collect_all_diagnostics: (String) -> Array[String] with { Error } = (source) -> {
+  let (tokens, starts, _ends) = lex_with_offsets(source)
+  let (stmts, parse_diags) = parse_program_recovering(tokens, starts, source)
+  if Array::length(parse_diags) > 0 {
+    parse_diags
+  } else {
+    handle {
+      let _env = check_program(stmts)
+      Array::slice([
+        "_"
+      ], 0, 0)
+    } with Error {
+      Throw(msg) => [
+        locate_type_error(source, msg)
+      ]
+    }
+  }
 }
 enum StringTriple {
   StringTriple(String, String, String)
@@ -28508,6 +29060,20 @@ export let compile_file_fs_mode_coverage: (String, String) -> Bytes with { Error
   let merged_stmts = build_grouped_merged_stmts(source_groups)
   compile_wasi_module_coverage(merged_stmts, entry_name)
 }
+export let compile_file_fs_mode_trace: (String, String) -> Bytes with { Error, Fs } = (entry_path, entry_name) -> {
+  let source_groups = collect_source_groups_fs(entry_path)
+  let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
+  let _ = next_db
+  let merged_stmts = build_grouped_merged_stmts(source_groups)
+  compile_wasi_module_trace(merged_stmts, entry_name)
+}
+export let compile_file_fs_mode_break: (String, String) -> Bytes with { Error, Fs } = (entry_path, entry_name) -> {
+  let source_groups = collect_source_groups_fs(entry_path)
+  let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
+  let _ = next_db
+  let merged_stmts = build_grouped_merged_stmts(source_groups)
+  compile_wasi_module_break(merged_stmts, entry_name)
+}
 let empty_stmts: () -> Array[Stmt] = () -> {
   Array::slice([
     SExport([])
@@ -28900,7 +29466,7 @@ let rec fold_expr: (Expr) -> Expr = (expr) -> {
     EFloat(_) => expr,
     EString(_) => expr,
     EBool(_) => expr,
-    EIdent(_) => expr,
+    EIdent(_, _) => expr,
     EUnit => expr,
     EStringInterp(_) => expr,
     ETuple(items) => ETuple(for it in items {
@@ -29067,6 +29633,340 @@ export let normalize_source: (String) -> String with { Error } = (src) -> {
   }
   String::concat(String::join(sections, "\n\n"), "\n")
 }
+let line_col_to_offset: (String, Int, Int) -> Int = (source, line, col) -> {
+  let len = String::length(source)
+  let mut i = 0
+  let mut cur_line = 1
+  while cur_line < line && i < len {
+    if String::char_code_at(source, i) == 10 {
+      cur_line = cur_line + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let off = i + (col - 1)
+  if off < 0 {
+    0
+  } else if off > len {
+    len
+  } else {
+    off
+  }
+}
+enum IdentHit {
+  IdentHit(String, Int)
+}
+let empty_hits: () -> Array[IdentHit] = () -> {
+  Array::slice([
+    IdentHit("", -1)
+  ], 0, 0)
+}
+let rec collect_expr: (Expr, Array[IdentHit]) -> Unit = (expr, acc) -> {
+  match expr {
+    EInt(_) => (),
+    EFloat(_) => (),
+    EString(_) => (),
+    EBool(_) => (),
+    EIdent(name, off) => {
+      if off >= 0 {
+        Array::push(acc, IdentHit(name, off))
+      } else {
+        ()
+      }
+    },
+    EUnit => (),
+    EStringInterp(_) => (),
+    ETuple(items) => collect_exprs(items, acc),
+    EArray(items) => collect_exprs(items, acc),
+    ERecord(fields) => collect_field_exprs(fields, acc),
+    EIf(c, t, e) => {
+      collect_expr(c, acc)
+      collect_expr(t, acc)
+      collect_expr(e, acc)
+    },
+    ELet(_, v, b) => {
+      collect_expr(v, acc)
+      collect_expr(b, acc)
+    },
+    ELetRec(_, v, b) => {
+      collect_expr(v, acc)
+      collect_expr(b, acc)
+    },
+    ELetMut(_, v, b) => {
+      collect_expr(v, acc)
+      collect_expr(b, acc)
+    },
+    EAssign(_, v, b) => {
+      collect_expr(v, acc)
+      collect_expr(b, acc)
+    },
+    EAssignOp(_, _, v, b) => {
+      collect_expr(v, acc)
+      collect_expr(b, acc)
+    },
+    ESeq(a, b) => {
+      collect_expr(a, acc)
+      collect_expr(b, acc)
+    },
+    EMatch(s, arms) => {
+      collect_expr(s, acc)
+      collect_arm_exprs(arms, acc)
+    },
+    EHandle(s, arms) => {
+      collect_expr(s, acc)
+      collect_arm_exprs(arms, acc)
+    },
+    EWhile(c, b) => {
+      collect_expr(c, acc)
+      collect_expr(b, acc)
+    },
+    ELoop(params, b) => {
+      collect_loop_param_exprs(params, acc)
+      collect_expr(b, acc)
+    },
+    EForIn(_, _, it, b) => {
+      collect_expr(it, acc)
+      collect_expr(b, acc)
+    },
+    ECall(callee, args) => {
+      collect_expr(callee, acc)
+      collect_exprs(args, acc)
+    },
+    EBinOp(_, l, r) => {
+      collect_expr(l, acc)
+      collect_expr(r, acc)
+    },
+    EUnaryOp(_, e) => collect_expr(e, acc),
+    EFn(_, _, _, _, _, body) => collect_expr(body, acc),
+    EDot(e, _) => collect_expr(e, acc),
+    ELabeledArg(_, _, v) => collect_expr(v, acc),
+    EThrow(e) => collect_expr(e, acc),
+    EReturn(e) => collect_expr(e, acc),
+    EBreak(opt) => match opt {
+      Some(v) => collect_expr(v, acc),
+      None => ()
+    },
+    EContinue(args) => collect_exprs(args, acc),
+    EMap(fields) => collect_field_exprs(fields, acc),
+    ESpread(e) => collect_expr(e, acc)
+  }
+}
+let collect_exprs: (Array[Expr], Array[IdentHit]) -> Unit = (items, acc) -> {
+  let mut i = 0
+  while i < Array::length(items) {
+    collect_expr(Array::get(items, i), acc)
+    i = i + 1
+  }
+}
+let collect_field_exprs: (Array[(String, Expr)], Array[IdentHit]) -> Unit = (fields, acc) -> {
+  let mut i = 0
+  while i < Array::length(fields) {
+    let (_, v) = Array::get(fields, i)
+    collect_expr(v, acc)
+    i = i + 1
+  }
+}
+let collect_arm_exprs: (Array[(Pat, Expr)], Array[IdentHit]) -> Unit = (arms, acc) -> {
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (_, e) = Array::get(arms, i)
+    collect_expr(e, acc)
+    i = i + 1
+  }
+}
+let collect_loop_param_exprs: (Array[(String, Expr)], Array[IdentHit]) -> Unit = (params, acc) -> {
+  let mut i = 0
+  while i < Array::length(params) {
+    let (_, init) = Array::get(params, i)
+    collect_expr(init, acc)
+    i = i + 1
+  }
+}
+let collect_stmt: (Stmt, Array[IdentHit]) -> Unit = (stmt, acc) -> {
+  match stmt {
+    SLet(_, _, _, _, body) => collect_expr(body, acc),
+    SLetMut(_, _, body) => collect_expr(body, acc),
+    STest(_, body) => collect_expr(body, acc),
+    SBench(_, body) => collect_expr(body, acc),
+    SExpr(e) => collect_expr(e, acc),
+    SLetPat(_, body) => collect_expr(body, acc),
+    SModule(_, _, body) => collect_stmts(body, acc),
+    _ => ()
+  }
+}
+let collect_stmts: (Array[Stmt], Array[IdentHit]) -> Unit = (stmts, acc) -> {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    collect_stmt(Array::get(stmts, i), acc)
+    i = i + 1
+  }
+}
+let is_boundary_at: (String, Int) -> Bool = (source, off) -> {
+  if off < 0 || off >= String::length(source) {
+    true
+  } else {
+    let c = String::char_code_at(source, off)
+    let is_id = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+    !is_id
+  }
+}
+let push_binding_name_hit: (String, Int, Int, String, Array[IdentHit]) -> Unit = (source, start, end, name, acc) -> {
+  let nlen = String::length(name)
+  if nlen == 0 {
+    ()
+  } else {
+    let limit = if end > String::length(source) { String::length(source) } else { end }
+    let mut i = if start < 0 { 0 } else { start }
+    let mut found = false
+    while !found && i + nlen <= limit {
+      if String::substring(source, i, i + nlen) == name && is_boundary_at(source, i - 1) && is_boundary_at(source, i + nlen) {
+        Array::push(acc, IdentHit(name, i))
+        found = true
+      } else {
+        i = i + 1
+      }
+    }
+  }
+}
+let collect_binding_name_hits: (Array[Stmt], Array[Int], Array[Int], String, Array[IdentHit]) -> Unit = (stmts, span_start, span_end, source, acc) -> {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let start = if i < Array::length(span_start) { Array::get(span_start, i) } else { 0 }
+    let end = if i < Array::length(span_end) { Array::get(span_end, i) } else { String::length(source) }
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, _) => push_binding_name_hit(source, start, end, name, acc),
+      SLetMut(name, _, _) => push_binding_name_hit(source, start, end, name, acc),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+let pick_ident_at: (Array[IdentHit], Int) -> String = (hits, tgt) -> {
+  let mut best_name = ""
+  let mut best_off = -1
+  let mut i = 0
+  while i < Array::length(hits) {
+    match Array::get(hits, i) {
+      IdentHit(name, off) => {
+        let span_end = off + String::length(name)
+        if off <= tgt && tgt < span_end && off > best_off {
+          best_name = name
+          best_off = off
+        } else {
+          ()
+        }
+      }
+    }
+    i = i + 1
+  }
+  best_name
+}
+let pick_ident_off: (Array[IdentHit], Int) -> Int = (hits, tgt) -> {
+  let mut best_off = -1
+  let mut i = 0
+  while i < Array::length(hits) {
+    match Array::get(hits, i) {
+      IdentHit(name, off) => {
+        let span_end = off + String::length(name)
+        if off <= tgt && tgt < span_end && off > best_off {
+          best_off = off
+        } else {
+          ()
+        }
+      }
+    }
+    i = i + 1
+  }
+  best_off
+}
+let tytab_lookup: (Array[(Int, Type)], Int) -> Option[Type] = (table, off) -> {
+  let mut found = None
+  let mut i = 0
+  while i < Array::length(table) {
+    let (toff, tty) = Array::get(table, i)
+    if toff == off {
+      found = Some(tty)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+export let type_at_source: (String, Int, Int) -> String = (source, line, col) -> {
+  handle {
+    let tgt = line_col_to_offset(source, line, col)
+    let (tokens, starts, ends) = lex_with_offsets(source)
+    let stmts = parse_program_located(tokens, starts, source)
+    let hits = empty_hits()
+    collect_stmts(stmts, hits)
+    let (span_stmts, span_start, span_end) = parse_program_spans(tokens, starts, ends)
+    collect_binding_name_hits(span_stmts, span_start, span_end, source, hits)
+    let name = pick_ident_at(hits, tgt)
+    if name == "" {
+      ""
+    } else {
+      let chosen_off = pick_ident_off(hits, tgt)
+      let (table, final_s) = check_program_type_table(stmts)
+      let table_hit = if chosen_off >= 0 {
+        tytab_lookup(table, chosen_off)
+      } else {
+        None
+      }
+      match table_hit {
+        Some(rec_ty) => type_to_string(subst_apply(final_s, rec_ty)),
+        None => {
+          let env = check_program(stmts)
+          match env_lookup(env, name) {
+            Some(t) => type_to_string(t),
+            None => ""
+          }
+        }
+      }
+    }
+  } with Error {
+    Throw(_) => ""
+  }
+}
+let join_lines: (Array[String]) -> String = (items) -> {
+  let n = Array::length(items)
+  if n == 0 {
+    ""
+  } else {
+    let mut acc = Array::get(items, 0)
+    let mut i = 1
+    while i < n {
+      acc = String::concat(acc, String::concat("\n", Array::get(items, i)))
+      i = i + 1
+    }
+    acc
+  }
+}
+let parse_int_or: (String, Int) -> Int = (s, default) -> {
+  let len = String::length(s)
+  if len == 0 {
+    default
+  } else {
+    let mut i = 0
+    let mut acc = 0
+    let mut ok = true
+    while ok && i < len {
+      let c = String::char_code_at(s, i)
+      if c >= '0' && c <= '9' {
+        acc = acc * 10 + (c - '0')
+        i = i + 1
+      } else {
+        ok = false
+      }
+    }
+    if ok {
+      acc
+    } else {
+      default
+    }
+  }
+}
 let adapter_string_to_bytes: (String) -> Bytes = (s) -> {
   let out = Array::slice([
     0
@@ -29105,23 +30005,60 @@ let compile_source_for_rc_flag: (String, String, String) -> Bytes with { Error }
     compile_source_wasi_only(source, entry_name)
   }
 }
+let emit_compile_diag: (String, String) -> Int with { Fs } = (output_path, msg) -> {
+  Fs::write_file(String::concat(output_path, ".diag"), msg)
+  1
+}
+let write_funcmap_sidecar: (String, String) -> Int with { Fs, Error } = (input_path, output_path) -> {
+  let src = Fs::read_file(input_path)
+  let text = build_funcmap_from_source(src)
+  Fs::write_bytes(String::concat(output_path, ".funcmap"), adapter_string_to_bytes(text))
+  0
+}
 export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
   let input_path = own_host_string(read_arg_or_env(0, "VIBE_INPUT"))
   let output_path = own_host_string(read_arg_or_env(1, "VIBE_OUTPUT"))
   let entry_name = own_host_string(read_arg_or_env(2, "VIBE_ENTRY"))
   let mark_memory = Env::get("VIBE_PROFILE_MEMORY_MARKS") == "1"
   if Env::get("VIBE_FS_COMPILE") == "1" {
-    let bytes = if Env::get("VIBE_COVERAGE") == "1" {
-      compile_file_fs_mode_coverage(input_path, entry_name)
-    } else {
-      compile_file_fs_mode(input_path, entry_name, "no-dce")
+    return handle {
+      let bytes = if Env::get("VIBE_COVERAGE") == "1" {
+        compile_file_fs_mode_coverage(input_path, entry_name)
+      } else if Env::get("VIBE_DEBUG_BREAK") == "1" {
+        compile_file_fs_mode_break(input_path, entry_name)
+      } else if Env::get("VIBE_DEBUG") == "1" {
+        compile_file_fs_mode_trace(input_path, entry_name)
+      } else {
+        compile_file_fs_mode(input_path, entry_name, "no-dce")
+      }
+      Fs::write_bytes(output_path, bytes)
+      let _funcmap_rc = handle {
+        write_funcmap_sidecar(input_path, output_path)
+      } with Error {
+        Throw(_) => 0
+      }
+      0
+    } with Error {
+      Throw(msg) => emit_compile_diag(output_path, msg)
     }
-    Fs::write_bytes(output_path, bytes)
-    return 0
   }
   if Env::get("VIBE_NORMALIZE") == "1" {
     let normalized = normalize_source(Fs::read_file(input_path))
     Fs::write_bytes(output_path, adapter_string_to_bytes(normalized))
+    return 0
+  }
+  if Env::get("VIBE_TYPE_AT") == "1" {
+    let src = Fs::read_file(input_path)
+    let line = parse_int_or(Env::get("VIBE_TYPE_LINE"), 1)
+    let col = parse_int_or(Env::get("VIBE_TYPE_COL"), 1)
+    let ty = type_at_source(src, line, col)
+    Fs::write_bytes(output_path, adapter_string_to_bytes(ty))
+    return 0
+  }
+  if Env::get("VIBE_DIAGNOSTICS") == "1" {
+    let src = Fs::read_file(input_path)
+    let diags = collect_all_diagnostics(src)
+    Fs::write_bytes(output_path, adapter_string_to_bytes(join_lines(diags)))
     return 0
   }
   let source = Fs::read_file(input_path)
@@ -29132,15 +30069,19 @@ export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
     profile_memory_mark(mark_memory)
     0
   } else {
-    let rc_flag = Env::get("VIBE_RC")
-    let bytes = if Env::get("VIBE_COVERAGE") == "1" {
-      compile_source_wasi_only_coverage(source, entry_name)
-    } else {
-      compile_source_for_rc_flag(source, entry_name, rc_flag)
+    handle {
+      let rc_flag = Env::get("VIBE_RC")
+      let bytes = if Env::get("VIBE_COVERAGE") == "1" {
+        compile_source_wasi_only_coverage(source, entry_name)
+      } else {
+        compile_source_for_rc_flag(source, entry_name, rc_flag)
+      }
+      profile_memory_mark(mark_memory)
+      Fs::write_bytes(output_path, bytes)
+      profile_memory_mark(mark_memory)
+      0
+    } with Error {
+      Throw(msg) => emit_compile_diag(output_path, msg)
     }
-    profile_memory_mark(mark_memory)
-    Fs::write_bytes(output_path, bytes)
-    profile_memory_mark(mark_memory)
-    0
   }
 }

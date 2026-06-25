@@ -87,3 +87,91 @@ let v = math::inc(1)
 ## 今後の拡張候補
 - module 本体で許可する statement の拡張
 - module import の wasm import 連携方針の整理
+
+---
+
+## 配布とパッケージ管理 (git/URL 分散)
+
+vibe のモジュール配布は **git/URL 分散モデル**（Deno/Go 風）。中央 registry は
+持たず、依存は git/URL を直接指し、取得物は content hash で lock する
+（`docs/release-roadmap.md` テーマ2 の決定）。
+
+### マニフェスト: `vibe.deps`
+
+プロジェクト直下の `vibe.deps` に `<name> <url>` を 1 行ずつ書く（`#` 始まりは
+コメント）。url は次の形式に対応:
+
+| 形式 | 例 | vendor 先 |
+| --- | --- | --- |
+| 単一ファイル (`file://`) | `mathlib file:///abs/path/lib.vibe` | `deps/<name>.vibe` |
+| 単一ファイル (`http(s)://`) | `mathlib https://example.com/lib.vibe` | `deps/<name>.vibe` |
+| git リポジトリ | `mathgit git+https://host/repo#v1.2.0` | `deps/<name>/`（ディレクトリ） |
+
+git url は `git+<remote>[#<ref>]`。`#<ref>` は tag/branch/commit、または
+**semver 制約**。制約はリモートの tag 一覧から最高の満たすものを解決する:
+
+| 制約 | 意味 |
+| --- | --- |
+| `^1.2.3` | `>=1.2.3 <2.0.0`（major 固定。`^0.2.3` は `>=0.2.3 <0.3.0`） |
+| `~1.2.3` | `>=1.2.3 <1.3.0`（minor 固定） |
+| `>=1.2`, `>1.2`, `<=2.0`, `<2.0`, `=1.2.3` | 比較演算子 |
+| `1.2` | partial（`>=1.2.0 <1.3.0`） |
+| `1` | partial（`>=1.0.0 <2.0.0`） |
+| `*` / 省略 | 任意（最高 tag） |
+
+完全な `1.2.3`（演算子なし）・branch 名・commit sha・`v` 付き tag は
+**そのまま literal** に扱う（制約と解釈しない）。tag は `v` prefix の有無
+どちらも可。解決した具体 tag/commit が `vibe.lock` に固定される。
+
+### 取得: `vibe fetch [--frozen] [dir]`
+
+`vibe.deps` を読み、依存を `deps/` 配下に vendor し、`vibe.lock` を書く。
+
+- **単一ファイル** → sha256 で content-addressed cache + `deps/<name>.vibe`、
+  lock に `sha256:<hash>`。
+- **git** → clone + ref checkout → `deps/<name>/` に vendor、lock に解決した
+  commit `git:<sha>` と content tree digest `tree:<sha>`。
+- **transitive 解決** — vendor した git dep 自身が `vibe.deps` を宣言していれば、
+  その dep の `deps/` に再帰 vendor する（相対 import がネストする）。
+  `VIBE_FETCH_MAX_DEPTH=16` で cycle guard、`VIBE_NO_TRANSITIVE=1` で無効化。
+- **`--frozen`** — 既存 `vibe.lock` に記録した commit に git dep を pin する
+  （再現ビルド）。upstream HEAD が進んでも lock の sha を維持。lock に該当
+  エントリが無ければエラー。transitive にも伝播する。
+
+### 追加: `vibe add <name> <url> [dir]`
+
+`vibe.deps` に 1 行追記して即 `fetch` する糖衣。
+
+### 検証: `vibe verify [dir]`
+
+vendor 済みの実体を `vibe.lock` に照合し、改竄・欠落を検出する（供給網整合性）。
+
+- 単一ファイル dep → sha256 を再計算して比較。
+- git dep → tree digest を再計算して比較（vendor 物の `deps/`・lock は除外
+  するので transitive 解決の影響を受けない）。ネストした dep は各自の lock へ
+  再帰して検証。
+- いずれかが不一致/欠落なら非ゼロ終了。
+
+### import 側
+
+vendor された依存は相対 import で参照する:
+
+```vibe
+import ./deps/mathlib.vibe { add }       // 単一ファイル dep
+import ./deps/mathgit/index.vibe { triple } // git dep（ディレクトリ）
+```
+
+### lock 形式 (`vibe.lock`)
+
+タブ区切り。後方互換のため git dep の `tree:` は 4 列目に付与する。
+
+```
+mathlib   file:///abs/lib.vibe        sha256:<64hex>
+mathgit   git+https://host/repo#v1    git:<40hex>      tree:<64hex>
+```
+
+### `vibe publish`
+
+専用 registry は建てない。公開は **git push + tag** で代替する。利用側は
+`git+<remote>#<tag>` で参照し、`vibe fetch` が tag を解決して commit を lock
+する。発見性（検索）が要れば、後付けで軽量 index を足す余地は残す。

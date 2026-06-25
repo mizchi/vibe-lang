@@ -2,12 +2,14 @@
 
 import ../core/index.vibe {
   Stmt,
+  Expr,
   dce_keep_flags
 }
 
 import ../syntax/index.vibe {
   lex_with_offsets,
-  parse_program_spans
+  parse_program_spans,
+  offset_to_line_col
 }
 
 //# Module source emission (selfhost port of host `emit-module-source`)
@@ -45,6 +47,51 @@ export let build_module_source_from_source: (String, String) -> String with { Er
         }
       }
     }
+    i = i + 1
+  }
+  StringBuilder::freeze(buf)
+}
+
+// debugger テーマ3 / M2: build a `.funcmap` sidecar text mapping each ENTRY-file
+// top-level function definition to its 1-based source line, one `name<TAB>line\n`
+// per function. The launcher (`runtime/vibe`) reads this to annotate runtime trap
+// backtrace frames (which name user functions via the wasm "name" section) with
+// `(file:line)`.
+//
+// MVP scope: ENTRY-file top-level functions only. Imported-module functions are
+// not yet covered (future work) — they are flattened into the program at compile
+// time but their original source lines are not recovered here.
+//
+// Reuses the lexer offsets + parse_program_spans span table (same as
+// build_module_source_from_source) so it needs no checker. A top-level `SLet`
+// whose bound expr is a function (`EFn`) maps `name` -> line of the statement's
+// start offset. All strings via String::concat + __to_string only (never `+`,
+// never "\{}" interpolation): both mis-codegen to NUL in selfhost.
+export let build_funcmap_from_source: (String) -> String with { Error } = (source) -> {
+  let lexed = lex_with_offsets(source)
+  let tokens = lexed.0
+  let starts = lexed.1
+  let ends = lexed.2
+  let parsed = parse_program_spans(tokens, starts, ends)
+  let stmts = parsed.0
+  let span_start = parsed.1
+  let buf = StringBuilder::new()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
+    let entry = match stmt {
+      SLet(_, _, name, _, expr) => match expr {
+        EFn(_, _, _, _, _, _) => {
+          let off = Array::get(span_start, i)
+          let lc = offset_to_line_col(source, off)
+          let line = lc.0
+          String::concat(name, String::concat("\t", String::concat(__to_string(line), "\n")))
+        },
+        _ => ""
+      },
+      _ => ""
+    }
+    StringBuilder::push(buf, entry)
     i = i + 1
   }
   StringBuilder::freeze(buf)

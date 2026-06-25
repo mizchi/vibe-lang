@@ -5,18 +5,71 @@ import ./entry / source_compile / wasi_only / preprocess.vibe {
 }
 
 import ./runtime / module_source.vibe {
-  build_module_source_from_source
+  build_module_source_from_source, build_funcmap_from_source
 }
 
 import ./entry / compiler / file_compile {
-  compile_file_fs_mode, compile_file_fs_mode_coverage
+  compile_file_fs_mode, compile_file_fs_mode_coverage, compile_file_fs_mode_trace, compile_file_fs_mode_break
 }
 
 import ./normalize/index.vibe {
   normalize_source
 }
 
+import ./runtime / type_at.vibe {
+  type_at_source
+}
+
+import ./runtime / typecheck_fs.vibe {
+  collect_all_diagnostics
+}
+
 //# Functions
+
+// Join `items` with "\n" using String::concat only (no `+`/interpolation, which
+// can miscodegen NUL in selfhost). Empty array -> "".
+let join_lines: (Array[String]) -> String = (items) -> {
+  let n = Array::length(items)
+  if n == 0 {
+    ""
+  } else {
+    let mut acc = Array::get(items, 0)
+    let mut i = 1
+    while i < n {
+      acc = String::concat(acc, String::concat("\n", Array::get(items, i)))
+      i = i + 1
+    }
+    acc
+  }
+}
+
+// Parse a non-negative decimal int from `s`; on any non-digit (or empty) return
+// `default`. String::concat-safe (no `+`/interpolation): folds digits via
+// `acc * 10 + (c - '0')`.
+let parse_int_or: (String, Int) -> Int = (s, default) -> {
+  let len = String::length(s)
+  if len == 0 {
+    default
+  } else {
+    let mut i = 0
+    let mut acc = 0
+    let mut ok = true
+    while ok && i < len {
+      let c = String::char_code_at(s, i)
+      if c >= '0' && c <= '9' {
+        acc = acc * 10 + (c - '0')
+        i = i + 1
+      } else {
+        ok = false
+      }
+    }
+    if ok {
+      acc
+    } else {
+      default
+    }
+  }
+}
 
 let adapter_string_to_bytes: (String) -> Bytes = (s) -> {
   let out = Array::slice([
@@ -61,6 +114,34 @@ let compile_source_for_rc_flag: (String, String, String) -> Bytes with { Error }
   }
 }
 
+// On a parse/type/codegen error the checker throws a formatted diagnostic
+// String. Surface it to tooling by writing it to an `<output>.diag` sidecar so
+// the `vibe` launcher can print a real message instead of an opaque wasm trap.
+// Returns a non-zero exit code. (#594 usability / docs/release-roadmap.md.)
+let emit_compile_diag: (String, String) -> Int with { Fs } = (output_path, msg) -> {
+  Fs::write_file(String::concat(output_path, ".diag"), msg)
+  1
+}
+
+// debugger テーマ3 / M2: best-effort `.funcmap` sidecar beside the compiled wasm.
+// Maps each ENTRY-file top-level function to its 1-based source line so the
+// `vibe run` launcher can annotate trap backtrace frames with (file:line). The
+// wasm "name" section (debugger P0) already names the frames; this adds lines.
+//
+// Best-effort: a failure to build/write the funcmap must NOT fail the compile —
+// the wasm write already returned 0. So we wrap the work in its own handler and
+// swallow any Error::Throw. Entry-file functions only (imported modules: future
+// work).
+// Returns 0 (the value is consumed at the call site so the call is never DCE'd:
+// it is a discarded `Unit` side-effect otherwise, which aggressive DCE in the
+// seed compiler may drop).
+let write_funcmap_sidecar: (String, String) -> Int with { Fs, Error } = (input_path, output_path) -> {
+  let src = Fs::read_file(input_path)
+  let text = build_funcmap_from_source(src)
+  Fs::write_bytes(String::concat(output_path, ".funcmap"), adapter_string_to_bytes(text))
+  0
+}
+
 export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
   let input_path = own_host_string(read_arg_or_env(0, "VIBE_INPUT"))
   let output_path = own_host_string(read_arg_or_env(1, "VIBE_OUTPUT"))
@@ -71,19 +152,64 @@ export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
     // #cov: `vibe test/run --coverage` sets VIBE_COVERAGE=1 so the user file (and
     // its imports) is compiled with function/branch hit instrumentation; running
     // the produced wasm fills the bitmap that the runner reads via VIBE_COV_OUT.
-    let bytes = if Env::get("VIBE_COVERAGE") == "1" {
-      compile_file_fs_mode_coverage(input_path, entry_name)
-    } else {
-      compile_file_fs_mode(input_path, entry_name, "no-dce")
+    return handle {
+      // debugger trace (DAP P1 groundwork): `vibe run --trace` sets VIBE_DEBUG=1
+      // so the user file (and its imports) is compiled with function-call
+      // execution-trace instrumentation; running the produced wasm fills the
+      // in-memory trace log that the runner dumps via VIBE_TRACE_OUT.
+      let bytes = if Env::get("VIBE_COVERAGE") == "1" {
+        compile_file_fs_mode_coverage(input_path, entry_name)
+      } else if Env::get("VIBE_DEBUG_BREAK") == "1" {
+        // debugger breakpoint (DAP P1): `vibe run --break` sets VIBE_DEBUG_BREAK=1
+        // so the user file is compiled with `vibe::dbg_break` host-hook calls at
+        // each user function entry; the runner pauses on the named breakpoints.
+        compile_file_fs_mode_break(input_path, entry_name)
+      } else if Env::get("VIBE_DEBUG") == "1" {
+        compile_file_fs_mode_trace(input_path, entry_name)
+      } else {
+        compile_file_fs_mode(input_path, entry_name, "no-dce")
+      }
+      Fs::write_bytes(output_path, bytes)
+      // Best-effort `.funcmap` sidecar (entry-file top-level funcs -> line). A
+      // failure to build/write it must NOT fail the compile (the wasm is already
+      // written), so swallow any Error::Throw here. The discarded result is bound
+      // so the call is not DCE'd as a dead Unit side-effect.
+      let _funcmap_rc = handle {
+        write_funcmap_sidecar(input_path, output_path)
+      } with Error {
+        Throw(_) => 0
+      }
+      0
+    } with Error {
+      Throw(msg) => emit_compile_diag(output_path, msg)
     }
-    Fs::write_bytes(output_path, bytes)
-    return 0
   }
   // #594 `vibe normalize`: canonicalize a source file (module flatten + DCE +
   // section layout) and write the result. Same (input, output) interface.
   if Env::get("VIBE_NORMALIZE") == "1" {
     let normalized = normalize_source(Fs::read_file(input_path))
     Fs::write_bytes(output_path, adapter_string_to_bytes(normalized))
+    return 0
+  }
+  // `vibe type-at`: typed hover (first LSP consumer of real EIdent offsets).
+  // VIBE_TYPE_LINE/COL are 1-based (matching offset_to_line_col). Writes the
+  // inferred type string of the identifier at that position, or empty when there
+  // is no env-visible ident there (see type_at.vibe LIMITATION note).
+  if Env::get("VIBE_TYPE_AT") == "1" {
+    let src = Fs::read_file(input_path)
+    let line = parse_int_or(Env::get("VIBE_TYPE_LINE"), 1)
+    let col = parse_int_or(Env::get("VIBE_TYPE_COL"), 1)
+    let ty = type_at_source(src, line, col)
+    Fs::write_bytes(output_path, adapter_string_to_bytes(ty))
+    return 0
+  }
+  // `vibe diagnostics`: collect ALL syntax errors (recovering parser) or the
+  // single located type error, one per line. A report, not a failure — always
+  // returns 0 (empty output means clean).
+  if Env::get("VIBE_DIAGNOSTICS") == "1" {
+    let src = Fs::read_file(input_path)
+    let diags = collect_all_diagnostics(src)
+    Fs::write_bytes(output_path, adapter_string_to_bytes(join_lines(diags)))
     return 0
   }
   let source = Fs::read_file(input_path)
@@ -102,17 +228,21 @@ export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
     // ADR-0055 #493 cutover toggle: VIBE_RC=1 compiles on the Perceus RC codegen
     // path (Env::get returns "" when unset, so default stays the bump path). Lets
     // the selfbuild/bootstrap/e2e gates exercise the whole compiler under RC.
-    let rc_flag = Env::get("VIBE_RC")
-    // #cov: function-level coverage build (same source pipeline, instrumented
-    // codegen). Running the produced wasm records which compiler functions ran.
-    let bytes = if Env::get("VIBE_COVERAGE") == "1" {
-      compile_source_wasi_only_coverage(source, entry_name)
-    } else {
-      compile_source_for_rc_flag(source, entry_name, rc_flag)
+    handle {
+      let rc_flag = Env::get("VIBE_RC")
+      // #cov: function-level coverage build (same source pipeline, instrumented
+      // codegen). Running the produced wasm records which compiler functions ran.
+      let bytes = if Env::get("VIBE_COVERAGE") == "1" {
+        compile_source_wasi_only_coverage(source, entry_name)
+      } else {
+        compile_source_for_rc_flag(source, entry_name, rc_flag)
+      }
+      profile_memory_mark(mark_memory)
+      Fs::write_bytes(output_path, bytes)
+      profile_memory_mark(mark_memory)
+      0
+    } with Error {
+      Throw(msg) => emit_compile_diag(output_path, msg)
     }
-    profile_memory_mark(mark_memory)
-    Fs::write_bytes(output_path, bytes)
-    profile_memory_mark(mark_memory)
-    0
   }
 }

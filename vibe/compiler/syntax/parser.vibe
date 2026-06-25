@@ -16,6 +16,10 @@ import ./token.vibe {
   Token
 }
 
+import ./lexer.vibe {
+  offset_to_line_col
+}
+
 //# Functions
 
 let parser_mode_block = 20
@@ -26,22 +30,22 @@ let empty_names: () -> Array[String] = () -> {
   ], 0, 0)
 }
 
-let parse_test_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (tokens, pos) -> {
+let parse_test_stmt: (Array[Token], Array[Int], Int) -> (Stmt, Int) with { Error } = (tokens, starts, pos) -> {
   match peek(tokens, pos) {
     TString(name) => {
       let br = expect_tk(tokens, pos + 1, "{")
-      let (body, end) = parse_impl(tokens, br, parser_mode_block);
+      let (body, end) = parse_impl(tokens, starts, br, parser_mode_block);
       (STest(name, body), end)
     },
     _ => throw("expected test name string")
   }
 }
 
-let parse_bench_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (tokens, pos) -> {
+let parse_bench_stmt: (Array[Token], Array[Int], Int) -> (Stmt, Int) with { Error } = (tokens, starts, pos) -> {
   match peek(tokens, pos) {
     TString(name) => {
       let br = expect_tk(tokens, pos + 1, "{")
-      let (body, end) = parse_impl(tokens, br, parser_mode_block);
+      let (body, end) = parse_impl(tokens, starts, br, parser_mode_block);
       (SBench(name, body), end)
     },
     _ => throw("expected bench name string")
@@ -213,9 +217,9 @@ let parse_toplevel_struct_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { 
   }
 }
 
-let parse_export_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (tokens, pos) -> {
+let parse_export_stmt: (Array[Token], Array[Int], Int) -> (Stmt, Int) with { Error } = (tokens, starts, pos) -> {
   match peek(tokens, pos) {
-    TLet => parse_let_stmt(tokens, pos + 1, true),
+    TLet => parse_let_stmt(tokens, starts, pos + 1, true),
     TEnum => parse_enum_stmt(tokens, pos + 1, true),
     TSuberror => parse_suberror_stmt(tokens, pos + 1, true),
     TStruct => parse_toplevel_struct_stmt(tokens, pos + 1, true),
@@ -281,28 +285,31 @@ let rec parse_module_body_with: ((Array[Token], Int) -> (Stmt, Int) with { Error
   }
 }
 
-export let rec parse_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (tokens, pos) -> {
+export let rec parse_stmt: (Array[Token], Array[Int], Int) -> (Stmt, Int) with { Error } = (tokens, starts, pos) -> {
+  let parse_stmt_closure: (Array[Token], Int) -> (Stmt, Int) with { Error } = (t, p) -> {
+    parse_stmt(t, starts, p)
+  }
   let head = peek(tokens, pos)
   match head {
-    TLet => parse_let_stmt(tokens, pos + 1, false),
+    TLet => parse_let_stmt(tokens, starts, pos + 1, false),
     TExport => match peek(tokens, pos + 1) {
       TModule => match peek(tokens, pos + 2) {
         TIdent(name) => {
           let br = expect_tk(tokens, pos + 3, "{")
           {
-            let (stmts, end) = parse_module_body_with(parse_stmt, tokens, br, ArrayBuilder::new());
+            let (stmts, end) = parse_module_body_with(parse_stmt_closure, tokens, br, ArrayBuilder::new());
             (SModule(true, name, stmts), end)
           }
         },
         _ => throw("expected module name")
       },
-      _ => parse_export_stmt(tokens, pos + 1)
+      _ => parse_export_stmt(tokens, starts, pos + 1)
     },
     TModule => match peek(tokens, pos + 1) {
       TIdent(name) => {
         let br = expect_tk(tokens, pos + 2, "{")
         {
-          let (stmts, end) = parse_module_body_with(parse_stmt, tokens, br, ArrayBuilder::new());
+          let (stmts, end) = parse_module_body_with(parse_stmt_closure, tokens, br, ArrayBuilder::new());
           (SModule(false, name, stmts), end)
         }
       },
@@ -313,47 +320,47 @@ export let rec parse_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (
     TStruct => parse_toplevel_struct_stmt(tokens, pos + 1, false),
     TType => parse_type_alias_stmt(tokens, pos + 1, false),
     TTrait => parse_trait_stmt(tokens, pos + 1, false),
-    TTest => parse_test_stmt(tokens, pos + 1),
-    TBench => parse_bench_stmt(tokens, pos + 1),
+    TTest => parse_test_stmt(tokens, starts, pos + 1),
+    TBench => parse_bench_stmt(tokens, starts, pos + 1),
     TImport => parse_import_stmt(tokens, pos + 1),
     TIdent(name) => match name {
       "effect" => parse_effect_stmt(tokens, pos + 1, false),
       "extern" => parse_extern_let_stmt(tokens, pos + 1),
       "use" => throw("'use' syntax is removed; use 'import <module-ref> { ... }'"),
       _ => {
-      let (e, next) = parse_impl(tokens, pos, 0)
+      let (e, next) = parse_impl(tokens, starts, pos, 0)
       match peek(tokens, next) {
         TEq => match e {
-          EIdent(name) => {
-            let (val, vn) = parse_impl(tokens, next + 1, 0)
+          EIdent(name, _) => {
+            let (val, vn) = parse_impl(tokens, starts, next + 1, 0)
             (SExpr(EAssign(name, val, EUnit)), vn)
           },
           _ => (SExpr(e), next)
         },
         TPlusEq => match e {
-          EIdent(name) => {
-            let (val, vn) = parse_impl(tokens, next + 1, 0)
+          EIdent(name, _) => {
+            let (val, vn) = parse_impl(tokens, starts, next + 1, 0)
             (SExpr(EAssignOp(name, "+", val, EUnit)), vn)
           },
           _ => (SExpr(e), next)
         },
         TMinusEq => match e {
-          EIdent(name) => {
-            let (val, vn) = parse_impl(tokens, next + 1, 0)
+          EIdent(name, _) => {
+            let (val, vn) = parse_impl(tokens, starts, next + 1, 0)
             (SExpr(EAssignOp(name, "-", val, EUnit)), vn)
           },
           _ => (SExpr(e), next)
         },
         TStarEq => match e {
-          EIdent(name) => {
-            let (val, vn) = parse_impl(tokens, next + 1, 0)
+          EIdent(name, _) => {
+            let (val, vn) = parse_impl(tokens, starts, next + 1, 0)
             (SExpr(EAssignOp(name, "*", val, EUnit)), vn)
           },
           _ => (SExpr(e), next)
         },
         TSlashEq => match e {
-          EIdent(name) => {
-            let (val, vn) = parse_impl(tokens, next + 1, 0)
+          EIdent(name, _) => {
+            let (val, vn) = parse_impl(tokens, starts, next + 1, 0)
             (SExpr(EAssignOp(name, "/", val, EUnit)), vn)
           },
           _ => (SExpr(e), next)
@@ -363,7 +370,7 @@ export let rec parse_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (
       }
     },
     _ => {
-      let (e, next) = parse_impl(tokens, pos, 0);
+      let (e, next) = parse_impl(tokens, starts, pos, 0);
       (SExpr(e), next)
     }
   }
@@ -387,13 +394,159 @@ export let parse_program: (Array[Token]) -> Array[Stmt] with { Error } = (tokens
         pos = next
       },
       _ => {
-        let (stmt, next) = parse_stmt(tokens, pos)
+        let (stmt, next) = parse_stmt(tokens, [], pos)
         ArrayBuilder::push(b, stmt)
         pos = next
       }
     }
   }
   ArrayBuilder::freeze(b)
+}
+
+// Like parse_program but, on a syntax error, prefixes the message with the
+// failing statement's `line:col` (from `lex_with_offsets` token start offsets).
+// Per-statement wrapping keeps the change local. Build the prefix with
+// String::concat (not `+` or interpolation) to avoid selfhost string-concat
+// NUL fragility. Source-span foundation: located parse diagnostics.
+export let parse_program_located: (Array[Token], Array[Int], String) -> Array[Stmt] with { Error } = (tokens, starts, source) -> {
+  let b = ArrayBuilder::new()
+  let mut pos = 0
+  let mut done = false
+  while !done {
+    match peek(tokens, pos) {
+      TEof => {
+        done = true
+      },
+      TSemicolon => {
+        pos = pos + 1
+      },
+      _ => {
+        let start_pos = pos
+        let (stmt, next) = handle {
+          match peek(tokens, pos) {
+            TImpl => parse_impl_stmt_dispatch(tokens, pos + 1),
+            _ => parse_stmt(tokens, starts, pos)
+          }
+        } with Error {
+          Throw(msg) => {
+            let off = if start_pos < Array::length(starts) {
+              Array::get(starts, start_pos)
+            } else {
+              0
+            }
+            let (line, col) = offset_to_line_col(source, off)
+            let loc = String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
+            throw(String::concat(loc, msg))
+          }
+        }
+        ArrayBuilder::push(b, stmt)
+        pos = next
+      }
+    }
+  }
+  ArrayBuilder::freeze(b)
+}
+
+// True when `t` is a resynchronization point for `parse_program_recovering`:
+// it begins a top-level statement, OR is a statement separator (TSemicolon),
+// OR ends input (TEof). Folding TSemicolon/TEof in here lets the resync loop
+// use a single `if is_recovery_point(...)` test instead of a mixed
+// constructor/catch-all `match` (the latter traps the seed codegen on this
+// shape — keep this a flat function returning Bool).
+let is_recovery_point: (Token) -> Bool = (t) -> {
+  match t {
+    TLet => true,
+    TExport => true,
+    TModule => true,
+    TEnum => true,
+    TSuberror => true,
+    TStruct => true,
+    TType => true,
+    TTrait => true,
+    TTest => true,
+    TBench => true,
+    TImport => true,
+    TImpl => true,
+    TDeclare => true,
+    TOpen => true,
+    TSemicolon => true,
+    TEof => true,
+    _ => false
+  }
+}
+
+// Like `parse_program_located`, but NEVER rethrows. On a per-statement syntax
+// error it records the located (`line:col`) message into a diagnostics array,
+// then resynchronizes by advancing `pos` to the next top-level statement start
+// (or TSemicolon / TEof). At least one token is always consumed to guarantee
+// progress. Returns the partial AST plus all collected diagnostics. Build all
+// strings with String::concat (not `+`/interpolation) to avoid selfhost
+// string-concat NUL fragility. Foundation: collect-all parse diagnostics (LSP).
+export let parse_program_recovering: (Array[Token], Array[Int], String) -> (Array[Stmt], Array[String]) with { Error } = (tokens, starts, source) -> {
+  let b = ArrayBuilder::new()
+  let diags = ArrayBuilder::new()
+  let n = Array::length(tokens)
+  let mut pos = 0
+  let mut done = false
+  while !done {
+    match peek(tokens, pos) {
+      TEof => {
+        done = true
+      },
+      TSemicolon => {
+        pos = pos + 1
+      },
+      _ => {
+        let start_pos = pos
+        let res = handle {
+          let (stmt, next) = match peek(tokens, pos) {
+            TImpl => parse_impl_stmt_dispatch(tokens, pos + 1),
+            _ => parse_stmt(tokens, starts, pos)
+          }
+          Some((stmt, next))
+        } with Error {
+          Throw(msg) => {
+            let off = if start_pos < Array::length(starts) {
+              Array::get(starts, start_pos)
+            } else {
+              0
+            }
+            let (line, col) = offset_to_line_col(source, off)
+            let loc = String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
+            ArrayBuilder::push(diags, String::concat(loc, msg))
+            None
+          }
+        }
+        match res {
+          Some((stmt, next)) => {
+            ArrayBuilder::push(b, stmt)
+            pos = next
+          },
+          None => {
+            // Resynchronize: skip at least one token (guarantee progress),
+            // then advance to the next recovery point (top-level statement
+            // start, TSemicolon, or TEof — see is_recovery_point).
+            let mut rp = start_pos + 1
+            let mut sync = false
+            while !sync {
+              if rp >= n {
+                sync = true
+              } else {
+                let t = peek(tokens, rp)
+                if is_recovery_point(t) {
+                  sync = true
+                } else {
+                  rp = rp + 1
+                }
+              }
+            }
+            pos = rp
+          }
+        }
+      }
+    }
+  }
+  (ArrayBuilder::freeze(b), ArrayBuilder::freeze(diags))
 }
 
 // Like `parse_program`, but also returns per top-level statement its source
@@ -424,7 +577,7 @@ export let parse_program_spans: (Array[Token], Array[Int], Array[Int]) -> (Array
       },
       _ => {
         let st = Array::get(starts, pos)
-        let (stmt, next) = parse_stmt(tokens, pos)
+        let (stmt, next) = parse_stmt(tokens, starts, pos)
         ArrayBuilder::push(b, stmt)
         ArrayBuilder::push(span_start, st)
         ArrayBuilder::push(span_end, Array::get(ends, next - 1))

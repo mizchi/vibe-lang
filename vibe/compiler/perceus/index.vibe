@@ -289,7 +289,7 @@ let is_heap_value: (Expr, Map[String, Bool], HeapInferCtx) -> Bool = (e, env, hc
     match e {
       ECall(callee, args) =>
       match callee {
-        EIdent(c) =>
+        EIdent(c, _) =>
         if Map::has_key(env, c) {
           false
         } else {
@@ -308,7 +308,7 @@ let arg_class: (Expr, Map[String, Bool], HeapInferCtx) -> Bool = (arg, env, hctx
     true
   } else {
     match arg {
-      EIdent(n) => if Map::has_key(env, n) {
+      EIdent(n, _) => if Map::has_key(env, n) {
         Map::get(env, n)
       } else {
         false
@@ -320,7 +320,7 @@ let arg_class: (Expr, Map[String, Bool], HeapInferCtx) -> Bool = (arg, env, hctx
 
 let rec analyze_calls: (String, Expr, Map[String, Bool], Array[Array[Bool]], Array[Bool], HeapInferCtx) -> Int = (name, e, env, calls, esc, hctx) -> {
   match e {
-    EIdent(n) => {
+    EIdent(n, _) => {
       if n == name {
         Array::set(esc, 0, true)
       } else {
@@ -330,7 +330,7 @@ let rec analyze_calls: (String, Expr, Map[String, Bool], Array[Array[Bool]], Arr
     },
     ECall(callee, args) => {
       let is_self = match callee {
-        EIdent(cn) => cn == name,
+        EIdent(cn, _) => cn == name,
         _ => false
       }
       if is_self {
@@ -812,7 +812,7 @@ let rec elaborate_rw: (Expr, HeapInferCtx) -> Expr = (e, hctx) -> {
     EFloat(_) => e,
     EString(_) => e,
     EBool(_) => e,
-    EIdent(_) => e,
+    EIdent(_, _) => e,
     EStringInterp(_) => e,
     EUnit => e
   }
@@ -830,14 +830,14 @@ export let rec pc_emit: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, exp
     EBool(_) => 0,
     EUnit => 0,
     EStringInterp(_) => 0,
-    EIdent(x) => pe_use(ctx, scope, x),
+    EIdent(x, _) => pe_use(ctx, scope, x),
     ECall(callee, args) => {
       let is_index = match callee {
-        EIdent(f) => is_borrow_arg0_call(f),
+        EIdent(f, _) => is_borrow_arg0_call(f),
         _ => false
       }
       match callee {
-        EIdent(_) => 0,
+        EIdent(_, _) => 0,
         _ => pc_emit(ctx, scope, callee)
       }
       let mut i = 0
@@ -845,7 +845,7 @@ export let rec pc_emit: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, exp
         let arg = Array::get(args, i)
         if is_index && i == 0 {
           match arg {
-            EIdent(_) => 0,
+            EIdent(_, _) => 0,
             _ => pc_emit(ctx, scope, arg)
           }
         } else {
@@ -856,13 +856,13 @@ export let rec pc_emit: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, exp
       0
     },
     EDot(obj, _field) => match obj {
-      EIdent(_) => 0,
+      EIdent(_, _) => 0,
       _ => pc_emit(ctx, scope, obj)
     }
     ,
     ELet(name, value, body) => {
       match value {
-        EIdent(src) => {
+        EIdent(src, _) => {
           if Map::has_key(scope, src) {
             let sid = Map::get(scope, src)
             let rem = Array::get(ctx.remaining, sid)
@@ -1021,7 +1021,7 @@ export let rec pc_emit: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, exp
     },
     EMatch(scrut, arms) => {
       match scrut {
-        EIdent(_) => 0,
+        EIdent(_, _) => 0,
         _ => pc_emit(ctx, scope, scrut)
       }
       let snap = copy_ints(ctx.remaining)
@@ -1096,10 +1096,10 @@ export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, ex
     EBool(_) => 0,
     EUnit => 0,
     EStringInterp(_) => 0,
-    EIdent(x) => pc_count_use(ctx, scope, x),
+    EIdent(x, _) => pc_count_use(ctx, scope, x),
     ECall(callee, args) => {
       match callee {
-        EIdent(f) => if is_borrow_arg0_call(f) {
+        EIdent(f, _) => if is_borrow_arg0_call(f) {
           0
         } else {
           pc_count_borrow(ctx, scope, f)
@@ -1108,7 +1108,7 @@ export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, ex
         _ => pc_count(ctx, scope, callee)
       }
       let is_index = match callee {
-        EIdent(f) => is_borrow_arg0_call(f),
+        EIdent(f, _) => is_borrow_arg0_call(f),
         _ => false
       }
       let mut i = 0
@@ -1116,7 +1116,7 @@ export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, ex
         let arg = Array::get(args, i)
         if is_index && i == 0 {
           match arg {
-            EIdent(obj) => pc_count_borrow(ctx, scope, obj),
+            EIdent(obj, _) => pc_count_borrow(ctx, scope, obj),
             _ => pc_count(ctx, scope, arg)
           }
         } else {
@@ -1127,7 +1127,7 @@ export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, ex
       0
     },
     EDot(obj, _field) => match obj {
-      EIdent(x) => pc_count_borrow(ctx, scope, x),
+      EIdent(x, _) => pc_count_borrow(ctx, scope, x),
       _ => pc_count(ctx, scope, obj)
     }
     ,
@@ -1272,7 +1272,7 @@ export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, ex
     },
     EMatch(scrut, arms) => {
       match scrut {
-        EIdent(sx) => pc_count_borrow(ctx, scope, sx),
+        EIdent(sx, _) => pc_count_borrow(ctx, scope, sx),
         _ => pc_count(ctx, scope, scrut)
       }
       let snap_u = copy_ints(ctx.uses)
@@ -1446,12 +1446,12 @@ let rec expr_projects_or_matches: (String, Expr) -> Bool = (name, e) -> {
   match e {
     EDot(obj, _) =>
     match obj {
-      EIdent(n) => n == name,
+      EIdent(n, _) => n == name,
       _ => expr_projects_or_matches(name, obj)
     },
     EMatch(scrut, arms) => {
       let hit = match scrut {
-        EIdent(n) => n == name,
+        EIdent(n, _) => n == name,
         _ => expr_projects_or_matches(name, scrut)
       }
       if hit {
@@ -1616,7 +1616,7 @@ let rec expr_projects_or_matches: (String, Expr) -> Bool = (name, e) -> {
     EFloat(_) => false,
     EString(_) => false,
     EBool(_) => false,
-    EIdent(_) => false,
+    EIdent(_, _) => false,
     EStringInterp(_) => false,
     EUnit => false
   }

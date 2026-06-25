@@ -25,7 +25,7 @@ import .. / ripple {
 }
 
 import .. / syntax {
-  lex, parse_program
+  lex_with_offsets, parse_program_located, parse_program_recovering, offset_to_line_col
 }
 
 import ./eval_loader {
@@ -295,7 +295,13 @@ let upsert_string_pair: (Array[(String, String)], String, String) -> Array[(Stri
 
 let parse_program_with_path: (String, String) -> Array[Stmt] with { Error } = (path, source) -> {
   handle {
-    parse_program(lex(source))
+    // Located lex+parse so EIdent (and other) nodes carry real source char
+    // offsets; the checker rides those offsets into type diagnostics via the
+    // [@off=N] marker (decoded by locate_type_error). The plain
+    // `parse_program(lex(source))` passed an empty starts array, leaving every
+    // offset at -1, so located type errors fell back to a first-occurrence scan.
+    let (tokens, starts, _ends) = lex_with_offsets(source)
+    parse_program_located(tokens, starts, source)
   } with Error {
     Throw(msg) => throw(String::concat(String::concat(path, ": "), msg))
   }
@@ -314,6 +320,144 @@ let write_persistent_dep_list_if_missing: (String, String, Array[String]) -> Uni
   }
 }
 
+// Span of an identifier run starting at `start` (returns the end offset).
+let typecheck_ident_run: (String, Int) -> Int = (s, start) -> {
+  let len = String::length(s)
+  let mut e = start
+  let mut go = true
+  while go && e < len {
+    let c = String::char_code_at(s, e)
+    let is_id = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+    if is_id {
+      e = e + 1
+    } else {
+      go = false
+    }
+  }
+  e
+}
+
+// Best-effort `line:col` for a type error: pull the symbol out of
+// `unknown name: X` and locate its first occurrence in the source. Real
+// expression-level spans (AST node positions) remain future work; this gives
+// the common case a line number in both CLI and LSP (which parses the prefix).
+// Built with String::concat only (not `+`) to avoid the selfhost NUL fragility.
+// Prefix `msg` with the source `line:col` of the symbol that follows `marker`
+// in `msg` (if both are found); otherwise return `msg` unchanged.
+let locate_by_marker: (String, String, String) -> String = (source, msg, marker) -> {
+  let mi = String::index_of(msg, marker)
+  if mi < 0 {
+    msg
+  } else {
+    let sstart = mi + String::length(marker)
+    let send = typecheck_ident_run(msg, sstart)
+    if send <= sstart {
+      msg
+    } else {
+      let sym = String::substring(msg, sstart, send)
+      let off = String::index_of(source, sym)
+      if off < 0 {
+        msg
+      } else {
+        let (line, col) = offset_to_line_col(source, off)
+        let loc = String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
+        String::concat(loc, msg)
+      }
+    }
+  }
+}
+
+// First-occurrence heuristic locator (the original behavior). Kept separate so
+// the offset-marker path can fall through to it on the marker-stripped message.
+let locate_type_error_heuristic: (String, String) -> String = (source, msg) -> {
+  // Already located (e.g. a parse error that bubbled here)? leave it.
+  if String::index_of(msg, "line ") == 0 {
+    msg
+  } else {
+    let with_name = locate_by_marker(source, msg, "unknown name: ")
+    if with_name != msg {
+      with_name
+    } else {
+      let with_arity = locate_by_marker(source, msg, "function arity mismatch for ")
+      if with_arity != msg {
+        with_arity
+      } else {
+        let with_field = locate_by_marker(source, msg, "unknown field ")
+        if with_field != msg {
+          with_field
+        } else {
+          locate_by_marker(source, msg, "unknown constructor ")
+        }
+      }
+    }
+  }
+}
+
+// Build the `line L:col C: ` prefix for a source char offset (same format as
+// locate_by_marker). String::concat only — the selfhost `+`/interpolation NUL
+// hazard applies here too.
+let offset_line_col_prefix: (String, Int) -> String = (source, off) -> {
+  let (line, col) = offset_to_line_col(source, off)
+  String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
+}
+
+// Parse a non-negative decimal integer from msg[start..end). Returns -1 if the
+// span is empty or contains a non-digit (callers then fall through to the text
+// heuristic).
+let parse_offset_digits: (String, Int, Int) -> Int = (msg, start, end) -> {
+  if end <= start {
+    -1
+  } else {
+    let mut i = start
+    let mut acc = 0
+    let mut ok = true
+    while ok && i < end {
+      let c = String::char_code_at(msg, i)
+      if c >= '0' && c <= '9' {
+        acc = acc * 10 + (c - '0')
+        i = i + 1
+      } else {
+        ok = false
+      }
+    }
+    if ok {
+      acc
+    } else {
+      -1
+    }
+  }
+}
+
+// Decode (and ALWAYS strip) the ` [@off=N]` marker the checker may have
+// appended. If N is a valid in-range offset, prefix the stripped message with
+// its exact `line:col`. Otherwise strip the marker and fall through to the
+// existing first-occurrence heuristics on the cleaned message. If no marker is
+// present, returns msg unchanged.
+let locate_type_error: (String, String) -> String = (source, msg) -> {
+  let marker = " [@off="
+  let mi = String::index_of(msg, marker)
+  if mi < 0 {
+    locate_type_error_heuristic(source, msg)
+  } else {
+    let num_start = mi + String::length(marker)
+    let rel_end = String::index_of(String::substring(msg, num_start, String::length(msg)), "]")
+    if rel_end < 0 {
+      // Malformed marker (no closing `]`): strip from the marker onward.
+      locate_type_error_heuristic(source, String::substring(msg, 0, mi))
+    } else {
+      let num_end = num_start + rel_end
+      let n = parse_offset_digits(msg, num_start, num_end)
+      // Strip the full ` [@off=...]` segment (marker .. closing `]` inclusive).
+      let stripped = String::concat(String::substring(msg, 0, mi), String::substring(msg, num_end + 1, String::length(msg)))
+      if n >= 0 && n < String::length(source) {
+        String::concat(offset_line_col_prefix(source, n), stripped)
+      } else {
+        locate_type_error_heuristic(source, stripped)
+      }
+    }
+  }
+}
+
 let finish_typecheck_fs_impl: (RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int, String, String, Array[String], String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with { Error, Fs } = (rdb, env_cache, dep_source_cache, parse_count, path, source, deps, fingerprint) -> {
   if Fs::exists(persistent_type_env_cache_path(fingerprint)) {
     let next_db = ripple_record_eval(rdb, path, fingerprint, deps)
@@ -329,7 +473,7 @@ let finish_typecheck_fs_impl: (RippleDb, Array[(String, TypeEnv)], Array[(String
         _ => check_program_with_env(stmts, import_env)
       }
     } with Error {
-      Throw(msg) => throw(String::concat(String::concat(path, ": "), msg))
+      Throw(msg) => throw(String::concat(String::concat(path, ": "), locate_type_error(source, msg)))
     }
     store_persistent_type_env(fingerprint, checked_env)
     if Array::length(deps) == 0 {
@@ -556,4 +700,28 @@ export let ensure_fingerprint_fs_impl: (RippleDb, Array[(String, TypeEnv)], Arra
   let (fingerprint, next_db, next_env_cache, next_dep_source_cache, next_parse_count) = ensure_fingerprint_fs_go(rdb, env_cache, dep_source_cache, parse_count, path, stack)
   let final_env_cache = ensure_env_cache_for_path(next_db, next_env_cache, path)
   (fingerprint, next_db, final_env_cache, next_dep_source_cache, next_parse_count)
+}
+
+// Collect ALL diagnostics for `source` as located (`line:col`) message strings.
+// Uses the recovering parser to gather every top-level syntax error; only if
+// the parse is clean does it run the type checker and report the (single,
+// located) type error. Returns [] when the source parses and checks cleanly.
+// Foundation for `vibe check` / LSP multi-diagnostic reporting.
+export let collect_all_diagnostics: (String) -> Array[String] with { Error } = (source) -> {
+  let (tokens, starts, _ends) = lex_with_offsets(source)
+  let (stmts, parse_diags) = parse_program_recovering(tokens, starts, source)
+  if Array::length(parse_diags) > 0 {
+    parse_diags
+  } else {
+    handle {
+      let _env = check_program(stmts)
+      Array::slice([
+        "_"
+      ], 0, 0)
+    } with Error {
+      Throw(msg) => [
+        locate_type_error(source, msg)
+      ]
+    }
+  }
 }

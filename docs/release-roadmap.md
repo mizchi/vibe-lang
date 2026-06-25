@@ -1,0 +1,535 @@
+# vibe リリースロードマップ
+
+> 作成: 2026-06-25 / 対象: 0.1.0 sign-off 済みの selfhost-only コンパイラを
+> 「外部ユーザーが実利用できる公開リリース」まで持っていくための工程表。
+>
+> 言語コア（parser / checker / codegen / selfhost bootstrap）は 0.1.0 sign-off
+> （`docs/report/0-1-0-usability-signoff.md`, TODO.md「0.1.0 release sign-off」）で
+> 一定の完成度に達している。本ロードマップは **プロダクトとしての配布・利用・
+> 開発体験** に残る 4 テーマを「リリース blocker」として整理する:
+>
+> 1. install 配布方法の確定
+> 2. モジュール配布方法の確定
+> 3. debugger の実装
+> 4. LSP の実装
+
+各テーマは GitHub Issue（一次管理）と本ファイル（ロードマップ概要）で追う。
+設計判断は `docs/adr.md` に記録する。
+
+---
+
+## 実装進捗 (2026-06-25 セッション)
+
+完了・検証済み（selfhost-only gate green、`scripts/test_vibe_cli_install.sh` 12/12）:
+
+- **テーマ1 (install) ほぼ完了** — `moonrun_wt` に selfhost CLI 用 raw-ABI host
+  import を実装、`vibe` launcher（run/compile/build/check/test/fetch/version/
+  self-update/help）、`scripts/install.sh`（install 時 `.cwasm` AOT）、
+  `scripts/build_cli_wasm.sh`、`docs/install.md`、CI（`cli-install.yml`）。
+- **診断表面化 (UX/LSP 基盤)** — コンパイルエラーを `<output>.diag` に書き
+  launcher が `error: <file>: <message>` 表示（trap/backtrace を置換）。
+- **テーマ2 (modules) ほぼ完了** — `vibe fetch`（file/http/git+、content-addressed
+  vendor + `vibe.lock`）、transitive 自動解決、semver バージョン制約解決、
+  `--frozen` 再現ビルド、`vibe add`、`vibe verify`（tree digest で改竄検出）、
+  配布 docs。残: seamless `import "<url>"`（codegen 脆弱性 block）。
+  M1「配布凍結」に到達。
+
+- **テーマ3 (debugger) P0 着手** — wasm name section を実装し、trap backtrace が
+  user 関数名を表示するようになった（`<wasm function N>` → `main`/`boom`）。
+  DAP 本体（P1-P4）と source-line map は source span が前提で未着手。
+
+残テーマ (3/4/土台) は**共通基盤の不足**がボトルネック。スコープを明確化:
+
+### source span 基盤 — 着手・進行中（2026-06-25）
+
+ユーザー選択に従い着手。**最初の可視スライス（located parse 診断）まで到達。**
+
+完了:
+
+- ✅ **NUL codegen バグ修正** — FS-compile の parse エラー診断が 175 byte の NUL
+  garbage になっていた。根因は `loader/header_cache.vibe` が `+` 演算子で
+  文字列連結していたこと（`+`-string-concat が selfhost codegen で NUL 化）。
+  `String::concat` 化で解消。これが located 診断の前提ブロッカーだった。
+- ✅ **token-level span インフラ活用** — 既存の `lex_with_offsets`（トークン
+  start/end offset）に `offset_to_line_col` helper を追加。
+- ✅ **located parse 診断** — `parse_program_located`（文単位で `line:col` を
+  付与）を追加し、FS-compile の header-load parse に配線。`vibe check`/`run` が
+  `foo.vibe: line 2:1: unexpected token ...` を表示。LSP は `line N:col M:`
+  プレフィックスから正確な range を生成。
+- ✅ **located 型エラー（common case）** — FS typecheck の error handler で
+  `unknown name:` / `function arity mismatch for` / `unknown field` /
+  `unknown constructor` のシンボルを source から探し `line:col` を付与
+  （`offset_to_line_col`）。`foo.vibe: line 3:31: unknown name: zzz` のように
+  正確な列まで出る。LSP は range を識別子に絞る（`test_vibe_lsp.js` 11/11）。
+
+- ✅ **EIdent への位置フィールド（構造 foundation 着地）** — `EIdent(String)` →
+  `EIdent(String, Int)`（char offset）を全コンパイラ（~62 source / 375 sites）+
+  legacy tree に適用。worktree agent が実施し cherry-pick で本セッションの作業
+  （located 診断・name section・NUL 修正）とクリーンに統合、selfhost-only gate
+  green（fixpoint 維持）。**現状 offset は全て -1**（構造のみ）。
+
+- ✅ **offset の実値化（着地）** — `lex_with_offsets` の `starts` を statement /
+  expression parser に通し、ユーザ識別子 EIdent に実 char offset を入れた。
+  `parse_recur` クロージャ型は不変（`parse_impl` のクロージャが `starts` を
+  capture）、直接 helper シグネチャにのみ `starts: Array[Int]` を追加。合成識別子
+  （`__lt`/`perform`/`String::concat` 等）は -1 のまま。located path
+  （`parse_program_located`/`parse_program_spans`）に実 starts が流れ、非 located
+  entry（`parse`/`parse_expr`/`parse_program`）は `[]` で従来通り -1。
+  selfhost-only gate green（stage2==stage3 fixpoint）、located 診断 4/4。
+  worktree agent 実施 → cherry-pick 統合。
+
+### 次の実装ステップ（span 消費 → hover/DAP）— 順序付き
+
+> **重要**: EIdent の offset は構造的に通ったが、**まだ consumer が無い**
+> （located 診断は `locate_by_marker` の first-occurrence text heuristic を使い、
+> AST offset を読んでいない）。foundation を「実際に効かせる」のが次の最小段。
+> 各段は compiler source 変更 → selfhost fixpoint gate を要するので worktree
+> agent + cherry-pick で隔離する。
+
+1. ✅ **【最小 payoff】診断を AST offset 消費に切替（着地）** — checker が各 EIdent の
+   実 offset を `[@off=N]` 除去可能マーカーでエラー文字列に乗せ、
+   `locate_type_error` が正確な `line:col` に変換（マーカーは表示前に必ず除去、
+   無い時は従来 first-occurrence heuristic に fallback）。**併せて FS typecheck の
+   parse を `parse_program` → `lex_with_offsets`+`parse_program_located` に切替**
+   （これが無いと FS 経路の starts が空で offset が全て -1 のまま＝土台が効かない
+   発見）。これで arity mismatch が「関数の定義行」ではなく「実際の呼び出し行」を
+   指すようになった（pipeline を end-to-end で実証）。selfhost gate green、
+   located 診断 7/7（call-site 精度の回帰 + marker leak guard 含む）。
+   worktree agent → cherry-pick 統合。
+2. **ECall / EDot へ offset 付与** — EIdent と同じ構造 refactor（variant に Int
+   field 追加 → 全 construct/match site 更新 → bundle 再生成）。call-site の
+   go-to-definition / hover の土台。arity/field 診断の正確化もここで効く。
+3. **型付き hover** —
+   - ✅ **3a env-visible MVP（着地）** — `vibe type-at` + `type_at_source`
+     （位置の EIdent → `check_program` → `env_lookup` + `type_to_string`）を実装し
+     LSP hover に配線。トップレベル/import 名の推論型が editor で出る。
+     selfhost gate green、`test_vibe_type_at.sh` 3/3 / `test_vibe_lsp.js` 14/14。
+   - ✅ **3b per-node 型テーブル（着地）** — `check_expr`/`check_stmts` に
+     `errors` と並走する `(Int, Type)` レコーダーを通し、推論中に各 EIdent の型を
+     記録。`check_program_type_table` が「テーブル + 最終 subst」を返し
+     （`check_program` の公開シグネチャは不変）、`type_at_source` が
+     `subst_apply` で解決して offset で引く。**ローカル変数・パラメータの use も
+     hover で型が出る**（`test_vibe_type_at.sh` 5/5: param `n`→Int, local `g`→Int）。
+     selfhost gate green。残: 束縛**定義**位置（EIdent でない）と式ノードの型は
+     未記録（use サイトは解決）。scope 精度の高い補完・rename もこの上に乗せられる。
+4. **span 露出 CLI / LSP 連携（一部着地）** — `vibe type-at` で offset→型を露出済み。
+   残: シンボル span の JSON 露出、診断 range の AST 化（現状は line:col prefix 経由）。
+5. **codegen source-line map（`vibe.func_map`）** — 命令 offset→ソース行の custom
+   section。DAP P1-P4（breakpoint/variables/step）の前提。name section は実装済み。
+
+- **codegen の関数 index↔name 対応** — ✅ wasm name section（土台B / debugger P0）
+  は実装済み（`func_offset + i` で user 関数を正確に命名）。
+
+## 全体方針とリリースの段階
+
+リリースは一括ではなく、テーマ単位のマイルストーンを刻んで段階的にタグを打つ。
+
+| マイルストーン | 内容 | 主テーマ | 状態 |
+| --- | --- | --- | --- |
+| **M1: 配布確定** | install + module の配布方法を凍結し、外部の人が「入れて使える」 | (1)(2) | ほぼ達成（install 配布物確定 + module fetch/lock/verify。残: semver 制約） |
+| **M2: 開発体験 MVP** | LSP MVP（診断/シンボル/hover）+ debugger P0（source-mapped trace） | (3)(4) | ✅ 達成（型付き hover、parser error recovery で全診断、trap→source-line） |
+| **M3: 開発体験フル** | LSP 補完/リファクタ + DAP step 実行 | (3)(4) | 一部（補完/rename/references 済、text-scan ベース）。残: DAP step 実行（P1-P4）、scope 精度 refactor |
+| **M4: GA (1.0)** | 上記を統合し、言語仕様 freeze + docs 完備で一般公開 | 全部 | — |
+
+### 横断的な前提（どのテーマにも効く 2 つの土台）
+
+先に潰すと 4 テーマ全部のコストが下がる共有基盤。**優先度高**。
+
+- **A. parser のエラー回復 (error recovery)** — 現状 `vibe/parser/parser.vibe` は
+  最初の `expect_tk` 失敗で `with { Error }` throw して停止する。これは
+  LSP（編集中の壊れたソースで診断/補完を出す）と UX 両方の天井になっている。
+  recovery point（`;` / `}` / トップレベル宣言境界で再同期）を入れる。
+- **B. source location / wasm name section** — 現状 codegen は name section も
+  source map も出さない（`grep source.?map vibe/compiler/codegen` → 0 件）。
+  ランタイム trap / panic がソース行を指せない。ADR-0035 P0 の
+  `vibe.func_map` + wasm name section を入れると、debugger だけでなく
+  実行時エラーの可読性も上がる。
+
+---
+
+## テーマ 1: install 配布方法の確定
+
+### 現状
+
+- `pkf run install`（`Taskfile.pkl`）が native CLI を `~/.local/bin/vibe` に
+  コピーする。これは開発者向けで、外部ユーザー向けの導線ではない。
+- `scripts/build_release_assets.sh` が GitHub Release 用 asset を生成する:
+  - `vibe-<tag>.wasm`（MoonBit host `src/lib` の wasm-gc library）
+  - `vibe-selfhost-<tag>.wasm`（stage0 seed compiler、stock wasmtime で実行可）
+  - `vibe-selfhost-module-source-<tag>.vibe` / `-seed-<tag>.json` / `SHA256SUMS.txt`
+  - `v*` tag push で `.github/workflows/release.yml` が公開。
+- 実行基盤は `tools/moonrun_wasmtime`（Rust, `moonrun_wt`）。compiler は
+  selfhost wasm + wasmtime runner で動く（ADR-0056 cutover）。
+
+### ギャップ（未確定）
+
+- **正規の配布物が未定**。「native binary」「selfhost wasm + runner」「npm」の
+  どれを *外部ユーザー向けの canonical artifact* にするか決まっていない。
+- npm / Homebrew / `cargo install` / `curl | sh` のいずれも未整備。
+- README に一般ユーザー向けの「インストール手順」セクションがない。
+- wasm を実行するための wasmtime / runner の同梱・前提が未定義。
+
+### ゴール
+
+「3 つの代表 OS（Linux/macOS/Windows）で 1 コマンドで入り、`vibe run hello.vibe`
+が通る」状態を、再現可能な CI ジョブで保証する。
+
+### 決定（2026-06-25）
+
+**canonical = 独自ビルドの wasmtime runner + vibe コンパイラ wasm の分離配布。
+インストール時に各環境で `.cwasm`（AOT precompile）をビルドする。**
+
+- 実行基盤は `tools/moonrun_wasmtime`（`moonrun_wt`）を「独自ビルドの wasmtime
+  runner」として配布する。runner は portable wasm を受け取り、インストール時に
+  ホスト固有の `.cwasm` へ AOT コンパイルしてキャッシュする
+  （既存の `.cwasm` cache 機構 / ADR-0050・ADR-0056 を install フローに昇格）。
+- **runner 層と compiler wasm 層を分離**する（TODO.md「Cutover work」と一致）。
+  vibe コンパイラ本体は wasm artifact として runner とは独立に更新できる
+  （runner を入れ替えずに `vibe` 自身を bump 可能）。
+- これにより DWARF 的なネイティブ依存を増やさず、stock でない wasmtime 拡張も
+  自前 runner に閉じ込められる。
+
+> 補足: npm / 単一ネイティブバイナリは canonical からは外す。必要になれば
+> 補助配布として後付け検討（JS 埋め込み用途は `js/vibe/` を維持）。
+
+### マイルストーン
+
+- [x] **1-1 runner/compiler 分離の確定** — `moonrun_wt` に selfhost CLI が使う
+      raw-ABI host import (`vibe::env-get`/`args-get`/`fs_*`) を実装し、runner が
+      compiler wasm を実行基盤として動かせるようにした。compiler wasm は
+      差し替え可能 artifact として分離（`tools/moonrun_wasmtime/src/main.rs`）。
+- [x] **1-2 install-time `.cwasm` ビルド** — `scripts/install.sh` が runner 取得後に
+      `moonrun_wt --precompile` で compiler wasm を host 固有 `.cwasm` へ AOT。
+      launcher は runner より古い `.cwasm` を検出すると portable wasm に fallback。
+- [x] **1-3 マルチプラットフォーム CI** — `.github/workflows/cli-install.yml` が
+      ubuntu/macos で runner build + `scripts/test_vibe_cli_install.sh` smoke test。
+      （Windows は launcher が bash 依存のため対象外。残: arch matrix 拡張）
+- [x] **1-4 ワンライナー installer** — `scripts/install.sh` が runner build +
+      compiler wasm 配置 + `.cwasm` 生成 + `vibe` launcher 配置 + PATH link。
+      `--prefix`/`--runner`/`--cli-wasm`/`--bin-dir`/`--no-link` 対応。
+- [x] **1-5 compiler-only update 導線** — `vibe self update --cli-wasm <path>` が
+      runner 据え置きで compiler wasm を差し替え `.cwasm` を再生成。
+- [x] **1-6 docs** — README「Install」節 + `docs/install.md`（layout/options/
+      update 手順）。
+
+> 実装メモ: launcher (`runtime/vibe`) が `run`/`compile`/`build`/`check`/
+> `test`/`version`/`self update`/`help` を提供。`run`/`test` は compile→別プロセス
+> 実行の 2 段（selfhost CLI は compile 専用のため orchestration は launcher 側）。
+> 検証済み: 単一/マルチファイル `vibe run` → 42、`vibe check` の成功/失敗、
+> `vibe test` の pass/fail 集約、`.cwasm` 経路の利用。installer は
+> `scripts/build_cli_wasm.sh` で最新 source からコンパイラ wasm を build（seed
+> fallback あり）。残: `vibe fmt` の launcher 統合。
+>
+> **診断表面化 (UX/LSP 前提)**: コンパイルエラー時、selfhost CLI が整形済み
+> 診断 String を `<output>.diag` サイドカーに書き、launcher が `error: <file>:
+> <message>` として表示するようにした（`selfhost_cli_adapter.vibe` cli_main を
+> `handle ... with Error { Throw(msg) => ... }` で包む）。trap/バックトレースの
+> 代わりに `unknown name: zzz` / `type mismatch ...` が出る。selfhost-only gate
+> （bundle/module-source sync + stage2==stage3 fixpoint）green。
+
+---
+
+## テーマ 2: モジュール配布方法の確定
+
+### 現状（想定より進んでいる）
+
+- 相対パス import/export（`import ./lib.vibe { f }`、`export use`）は実装済み
+  （`docs/module-system.md`, `vibe/compiler/module_*.vibe`）。
+- **lock workflow 実装済み**（`docs/spec/decisions.md`）:
+  `vibe fetch` / `vibe update-lock` が `index.lock`
+  （`path`/`version`/`symbol`/`module`/`annotation` マップ）を維持。
+  path import は lock entry に対して検証され、import 診断は compile-fatal。
+- **semver の足場あり**: `index.vibe` ルートレジストリは
+  `export let version = "x.y.z"` を要求。
+- **content-addressed store あり**: `.vdb` が `hash:<sha1>` を指せる。
+  alias は `VIBE_LIB_DIR`（fallback `$HOME/.vibe/lib`）から解決。
+- **分散 ref PoC**: advanced graph の snapshot/delta を git/bit object として
+  `refs/bit/index/<scope>/graph/...` で addressing（実験段階）。
+- pinned path import（`import ./dep.vibe#hash`）で content lock 可能。
+
+### ギャップ（未確定）
+
+- **`@pkg` / `@lib/path` 構文は spec 記載のみで未実装**（ADR discussion）。
+- **リモートからの third-party 取得が無い**: registry も `vibe publish` も
+  URL/git import の解決も未実装。`vibe fetch` はローカル lock 維持に閉じる。
+- transitive dependency の自動解決・バージョン整合（SAT/semver resolver）が無い。
+- 「公開された vibe ライブラリを 1 行で使う」体験が存在しない。
+
+### ゴール
+
+「第三者のライブラリを宣言 → `vibe fetch` で取得・lock → import して使う」が
+content-addressed に再現可能で動く。中央 registry の有無を含め配布モデルを凍結。
+
+### 決定（2026-06-25）
+
+**git/URL 分散モデル（Deno/Go 風）。中央 registry は持たない。**
+
+- import は git/URL を直接指し、取得物は content hash で `index.lock` に固定する。
+- 既存資産（content-addressed `.vdb` の `hash:<sha1>`、pinned hash import
+  `import ./dep.vibe#hash`、`refs/bit/index/...` 分散 ref、`$HOME/.vibe/lib`
+  キャッシュ）の上に最短で接続する。
+- `vibe publish` は「git push + tag」で代替し、専用 registry サーバーは建てない。
+- 発見性（検索）が必要になれば、後付けで軽量 index（tap 風）を足す余地は残す。
+
+### マイルストーン
+
+- [x] **2-1a fetch + lock MVP（launcher）** — `vibe fetch` が `vibe.deps`
+      (`<name> <url>` 行) を読んで vendor + `vibe.lock` を書く:
+      - 単一ファイル（`file://`/`http(s)://`/ローカル）→ sha256 で content-addressed
+        cache + `./deps/<name>.vibe`、lock に `sha256:<hash>`。
+      - **git（`git+<remote>[#<ref>]`）** → clone + ref checkout → `./deps/<name>/`
+        ディレクトリに vendor、lock に解決した commit `git:<sha>` を固定。
+      検証済み（`scripts/test_vibe_cli_install.sh`、git+/transitive/frozen 含め 28/28）。
+- [ ] **2-1b seamless `import "<url>"` 構文** — string-literal import を parser で
+      受け、resolver で `.vibe/deps/` ミラーに写像する案を試作したが、
+      **selfhost codegen の既知の脆さ**（`collect_import_path` の string 補間 /
+      import 解決ホットパスでの String 操作が NUL garbage を生む。
+      `selfhost_only_gate.sh` step4 のコメント参照）に当たり revert。
+      seed 互換な codegen 修正を先に固めてから再導入する。
+- [ ] **2-1 リモート import 解決（完全版）** — git/URL から外部ソースを取得し
+      `$HOME/.vibe/lib` / content store にキャッシュ。`index.lock` に hash を固定。
+- [x] **2-2 依存解決器** — transitive 依存の自動解決を実装（git dep が自身の
+      `vibe.deps` を宣言していれば、その dep の `deps/` に再帰 vendor。
+      `VIBE_FETCH_MAX_DEPTH=16` で cycle guard、`VIBE_NO_TRANSITIVE=1` で無効化）。
+      **`vibe fetch --frozen`** で再現ビルド（既存 `vibe.lock` の commit に git dep を
+      pin、upstream HEAD が進んでも lock の sha を維持。transitive にも伝播）。
+      **semver バージョン制約解決** — git ref が `^1.2`/`~1.2.3`/`>=1.0`/`1.x`/`*`
+      等なら、リモートの tag 一覧から最高の満たすものを解決して clone・lock する
+      （完全な `1.2.3`・branch・commit・`v` tag は literal 扱い）。
+      検証済み（`scripts/test_vibe_cli_install.sh` transitive/frozen/semver ケース、
+      semver comparator の unit 検証含む）。
+- [ ] **2-3 `vibe add` / `vibe publish`（または equivalent）** — 依存追加と
+      公開の CLI 導線。2-0 の選択次第で publish は「git push + tag」かもしれない。
+- [x] **2-4 整合性・供給網** — `vibe.lock` に content hash を固定（単一ファイルは
+      `sha256:`、git dep は commit `git:` に加え content tree digest `tree:`）。
+      **`vibe verify`** で vendored 物を lock に照合（改竄/欠落を検出、transitive
+      lock へ再帰）。git dep の tree digest は vendor 物の `deps/`・lock を除外し、
+      ネストした dep は各自の lock で別途検証。署名は将来課題。
+      検証済み（`scripts/test_vibe_cli_install.sh` verify clean/tamper/transitive）。
+- [x] **2-5 docs** — `docs/module-system.md` に「配布とパッケージ管理（git/URL
+      分散）」節を追加（`vibe.deps`/`fetch`/`--frozen`/`add`/`verify`/lock 形式/
+      import 規約/publish=git push+tag）。
+
+### 決めるべきこと（2-0 の選択肢）
+
+| 案 | 内容 | 長所 | 短所 |
+| --- | --- | --- | --- |
+| **A. git/URL 分散（Deno/Go 風）** | `import "git+https://…#tag"`、content hash で lock | 中央サーバ不要、既存の `.vdb`/hash/分散 ref 資産と整合 | 名前空間衝突、検索性が低い |
+| **B. 中央 registry（npm/crates 風）** | `vibe publish` → registry、`vibe add name` | 検索/発見性、versioning が綺麗 | サーバ運用・ホスティング・モデレーションコスト |
+| **C. git + 軽量 index** | 実体は git、index だけ集約（Homebrew tap 風） | 運用軽量、移行容易 | 二段構えの複雑さ |
+
+> 推奨たたき台: 既存実装（content-addressed `.vdb`, 分散 ref, pinned hash import,
+> `index.lock`）は **A（git/URL + content-addressed lock）** に最短で接続できる。
+> A を MVP として凍結し、発見性が要れば後付けで C の index を足す。
+
+---
+
+## テーマ 3: debugger の実装
+
+### 現状
+
+- **方針は ADR-0035（proposed）で確定済み**
+  （`docs/archive/adr/0035-debug-adapter-protocol.md`）:
+  - DWARF は不採用（vibe の i64 tagged 値 + closure ABI が C 的メモリモデルと
+    impedance mismatch）。
+  - 既存の **coverage instrumentation 基盤**（`--coverage`, span/coverage point,
+    `.wasm.cov.json` サイドカー）を再利用して独自 DAP サーバーを建てる。
+- フェーズ P0–P4 が定義済み。いずれも **未実装**、0.1.0 対象外。
+- 関連: `vibe build --debug` は「linked debug build（高速 incremental compile）」で
+  あって *対話デバッガではない*（用語の衝突に注意）。
+
+### ギャップ
+
+- name section / `vibe.func_map` / `vibe.debug_map` custom section が未出力（横断土台 B）。
+- DAP サーバー本体（breakpoint / variables / step / watch）が未実装。
+
+### ゴール
+
+VS Code（DAP クライアント）から breakpoint を張り、停止・変数検査・step 実行が
+できる。最低でも「panic/trap がソース行を指す」を M2 で達成。
+
+### マイルストーン（ADR-0035 のフェーズに対応）
+
+- [x] **3-P0 source map 基盤**（= 横断土台 B、M2）— **wasm name section を実装**
+      （`emit_function_name_section`）。trap backtrace が `<wasm function N>` →
+      `boom` 等の関数名表示に。**さらに trap がソース行を指すように**: FS-compile が
+      `<output>.funcmap` サイドカー（エントリファイルのトップレベル関数名→ソース行、
+      `build_funcmap_from_source` = `parse_program_spans` + `offset_to_line_col`）を
+      best-effort 出力し、`vibe run` が runner の backtrace を捕捉して named frame に
+      `(file:line)` を付与する。trap が `<unknown>!boom (prog.vibe:1)` と表示される。
+      codegen/runner 変更不要。検証済み（`scripts/test_vibe_trace.sh`、
+      `test_name_section.sh`、cli-install 34/0、selfhost gate fixpoint green）。
+      残: imported-module 関数の行（現状エントリファイルのみ）、命令オフセット粒度の
+      行マップ（DAP step 実行用、source span の全 Expr 化が前提）。
+- [x] **3-P1 breakpoint DAP**（M3）— **live breakpoint 着地**: `vibe run --break <fn>[,<fn>]`
+      が指定関数の入口で停止し、**コールスタック**（各フレーム `(file:line)` 注釈）を
+      表示して継続（TTY は stdin 待ち、非対話は auto-continue、`q` で中断）。opt-in の
+      debug-break codegen が各ユーザー関数入口に `call vibe::dbg_break` host hook を出す
+      （条件付き import、func_offset が整合シフト、type idx 2 = `()->()`）。runner が
+      wasm backtrace + name section で入口関数を特定し `VIBE_BREAK` 集合と照合して停止。
+      既定（非 break）codegen は不変で selfhost fixpoint 維持。検証済み
+      （`scripts/test_vibe_break.sh` 5/5: `breakpoint hit: helper` + main フレーム + 継続で 42、
+      plain run / `--trace` 非回帰、cli-install 34/0、gate green）。
+      残: stop/continue を超えた step 実行・変数検査（P2/P3）と DAP プロトコル化。
+      実行例:
+      ```
+      breakpoint hit: helper
+        at helper (prog.vibe:1)
+        at main (prog.vibe:2)
+      ```
+- [x] **3-P1 groundwork** — `vibe run --trace` = function-call 実行トレース。opt-in の
+      debug codegen（`VIBE_DEBUG`）が各ユーザー関数入口で user-index を in-memory
+      trace log に追記（coverage hit 領域と同方式、wasm import 追加なし＝関数
+      index 不変）。`vibe.trace` カスタムセクションが log 配置 + 関数名を記録、runner
+      が入口列を dump、launcher が funcmap で `(file:line)` 注釈。既定（非 debug）の
+      codegen は不変で selfhost fixpoint 維持。検証済み（`scripts/test_vibe_trace_calls.sh`
+      6/6: `main`/`helper×2` を行付きでトレース、plain run 非回帰、cli-install 34/0、
+      gate green）。残: 関数入口での**停止**（runner pause loop + breakpoint 集合）と
+      DAP プロトコル化（次段）。
+- [ ] **3-P2 変数検査**（M3）— locals/args のメタデータ出力 + tagged 値の decode。
+- [ ] **3-P3 step 実行**（M3）— next / stepIn / stepOut。
+- [ ] **3-P4 watch 式**（M4）— 停止フレームでの式評価。
+- [ ] **3-D editor 統合** — `integrations/vscode-vibe` に debug adapter を配線。
+
+> **DAP P1-P4 の実装設計（2026-06-25 調査）** — これは LSP サーバ構築に匹敵する
+> 多コンポーネントの大型機能で、専用の focused 作業が必要:
+>
+> 1. **codegen: debug-line instrumentation** — coverage（`vibe_cov` bitmap）は
+>    点ごとの**ソース span を発見済み**だが、実行機構が memory bitmap への store
+>    なので「停止」には使えない。新たに「文ごとに host import `vibe::dbg_line(line, fp)`
+>    を call する」debug 計装モードを足す（coverage の span 発見ロジックを再利用して
+>    行番号を得る）。`VIBE_DEBUG=1` 系の codegen variant。
+> 2. **runner: pause loop** — `moonrun_wt` に `vibe::dbg_line` host import を実装し、
+>    breakpoint 集合と照合 → hit なら停止して DAP セッション（stdio JSON）を駆動。
+>    変数検査は host ABI 経由で linear memory / locals を読み tagged 値を decode。
+> 3. **DAP プロトコルサーバ** — `js/vibe/`（LSP と同様の transport 抽象を再利用）
+>    または runner 内に DAP（initialize/setBreakpoints/stackTrace/scopes/variables/
+>    continue/next/stepIn）を実装。`integrations/vscode-vibe` に debug adapter 配線。
+>
+> P0（trap→source-line）は着地済みで M2 の体感価値は確保。P1-P4 は M3 の中核として
+> 上記設計で別途着手する。命令オフセット粒度の行マップが要るため、source span の
+> 全 Expr variant への拡張（span-arc step2）も前提に含む。
+
+---
+
+## テーマ 4: LSP の実装
+
+### 現状
+
+- **transport 層は実装済み**: `js/vibe/lsp.js`
+  （`bindLspTransport` / `createLspBridge` / `createWebSocketTransport`、
+  stdio/ws 非依存）。`tests/integration-deno/vibe_lsp_transport_test.ts` あり。
+- **シンボル index バックエンドは存在**（ただし MoonBit host `src/` 側）:
+  `vibe ide`（outline / peek-def / search）と `vibe lsif` が
+  共有 symbol index（`src/frontend/symbol_index.mbt`）を消費。
+  `js/vibe/index.js` が `createVibeService`（`check`/`ideOutline`/`idePeekDef`/
+  `ideSearch`/`checkProject`）を wasm 経由で公開。
+- **エディタ拡張は実装済み**（syntax のみ、language server 機能なし）:
+  - `integrations/vscode-vibe/`（tmLanguage, language-configuration）
+  - `integrations/treesitter-vibe/`（grammar + highlights/tags queries、corpus tests）
+  - `integrations/zed-vibe/`（tree-sitter 参照、outline/brackets/indents queries）
+
+### ギャップ
+
+- **LSP サーバー本体が無い**: `vibe lsp` コマンドは docs 記載のみ。
+  diagnostics / hover / go-to-def / completion / document symbols / formatting を
+  LSP メソッドとして話す層が未実装。
+- **バックエンドが host (`src/`) 依存**: selfhost-only 方針に対し、
+  symbol index が MoonBit 側にある。selfhost `vibe/compiler/` への移植が要る。
+- **parser に error recovery が無い**（横断土台 A）— 編集中ソースで診断/補完が
+  破綻する。LSP 品質の最大ボトルネック。
+- 型チェッカが部分的な型情報（hover 用の式の型、補完候補）を返す API を持たない。
+
+### ゴール
+
+VS Code / Neovim / Zed で「保存時診断 + hover で型 + 定義ジャンプ + 文書シンボル +
+フォーマット」が動く LSP を、selfhost compiler をバックエンドに提供する。
+
+### 決定（2026-06-25）
+
+**LSP サーバーは native runner + selfhost wasm で動かす（node 非依存）。**
+install/​debugger と runtime 前提を一本化する。`vibe lsp` を selfhost
+コンパイラをバックエンドにした language server として実装し、
+`js/vibe/lsp.js` の transport 抽象はブラウザ/embedding 用途の補助に留める。
+
+### マイルストーン
+
+- [x] **4-A parser error recovery**（= 横断土台 A、M2 前提）— `parse_program_recovering`
+      （throw せずトップレベル文境界で再同期し、**全構文エラー** + 部分 AST を収集）を
+      新設。厳格パス（`parse_program`/`parse_program_located`、コンパイラ self-compile
+      用）は不変。`collect_all_diagnostics` → `vibe diagnostics <file>` で全診断を出力し、
+      LSP（`runCheck`）が全件 publish（取れない時のみ `vibe check` 単発に fallback）。
+      検証済み（`scripts/test_vibe_diagnostics.sh` 3/3、`test_vibe_lsp.js` 15/15:
+      2行に跨る同時診断、selfhost gate fixpoint green、located-diagnostics 7/7 非回帰）。
+      残: 単一文**内**の複数エラー（現状は文単位で最初の1つ）。
+- [~] **4-1 LSP MVP**（M2）— `js/vibe/lsp_server.js`（stdio JSON-RPC）+ launcher
+      `vibe lsp` を実装。`textDocument/publishDiagnostics` を提供（didOpen/
+      didChange/didSave で native `vibe check` を駆動 → 診断を publish）。source
+      span 未実装のため、診断メッセージ中のシンボルを文書テキストから探して範囲を
+      近似。**documentSymbol / definition / hover** をトップレベル宣言のテキスト走査で
+      提供（go-to-definition は宣言行へジャンプ、hover は宣言テキストを表示）。
+      **型付き hover も着地**（下記 4-3）: hover は `vibe type-at` で推論型を
+      表示し、取れない時のみ宣言テキストに fallback。診断範囲も source span
+      着地で正確化（`[@off=N]` → 実 line:col）。検証済み（`scripts/test_vibe_lsp.js`
+      14/14、型付き hover assertion 含む）。
+- [ ] **4-2 selfhost への index 移植**（M2–M3）— `src/frontend/symbol_index.mbt`
+      相当を `vibe/compiler/` 側に持ち、host 依存を外す。
+- [~] **4-3 definition / hover / completion / references / rename**（M3）—
+      definition / completion / references / rename をテキスト走査ベースで実装済み。
+      **hover は型付きに昇格**: `vibe type-at <file> <line> <col>`（selfhost の
+      `type_at_source`: 位置の EIdent を実オフセットで特定 → `check_program` →
+      `env_lookup` + `type_to_string`）で推論型を返し、LSP hover が表示する
+      （`js/vibe/lsp_server.js`、`scripts/test_vibe_type_at.sh` 3/3 +
+      `test_vibe_lsp.js` 16/16）。**signatureHelp も追加**: 呼び出し `foo(│)` の
+      中で callee の推論シグネチャ `foo: (Int) -> Int` を表示（`vibe type-at`
+      再利用、enclosingCall でバランス括弧を遡り activeParameter も算出）。
+      **MVP スコープ**: トップレベル / import された
+      value 名のみ解決。ローカル変数・パラメータは未対応（per-node 型テーブル＝
+      span-arc step3b が前提）。スコープ精度の高い補完・rename も同 step が前提。
+- [x] **4-5 editor 配線** — `integrations/vscode-vibe` に LSP client
+      （`extension.js`、vscode-languageclient）を追加し `vibe lsp` を起動。
+      `vibe.serverPath` 設定対応。tree-sitter/zed は grammar 済み（LSP 配線は今後）。
+- [ ] **4-4 incremental**（M4, 任意）— 大規模プロジェクト向けに incremental
+      parse/check。まずは module 単位キャッシュ（実装済み）で十分か評価。
+
+
+---
+
+## 依存関係と推奨順序
+
+```
+横断土台 A (parser error recovery) ──┬─→ 4 LSP (診断/補完の品質)
+横断土台 B (name section/source map) ─┼─→ 3 debugger P0→P4
+                                      └─→ 実行時エラーの可読性 (UX 全般)
+
+1 install ──→ 外部ユーザーが触れる前提（最優先で着手可、他テーマと独立）
+2 module  ──→ 実プロジェクトで使える前提（install と並行可）
+```
+
+- **すぐ着手**: テーマ 1（install）と土台 A/B は他に依存せず並行できる。
+- **M2 の核**: 土台 A → LSP MVP、土台 B → debugger P0。この 2 つで
+  「実用的な開発体験」の最低ラインに乗る。
+- **M1 の核**: install + module の配布凍結。ここが無いと誰も試せない。
+
+## 決定事項・未決事項（ADR 化対象）
+
+決定済み（2026-06-25）:
+
+1. ✅ **install canonical artifact** — 独自ビルドの wasmtime runner +
+   compiler wasm の分離配布、install 時に各環境で `.cwasm` AOT ビルド。
+   compiler は runner と独立に更新（テーマ 1）。
+2. ✅ **module 配布モデル** — git/URL 分散（Deno/Go 風）、中央 registry なし、
+   content hash で lock（テーマ 2）。
+3. ✅ **LSP ホスト** — **native runner + selfhost wasm に寄せる（node 非依存）**。
+   install を独自 wasmtime runner に決めたのと整合させ、runtime 前提を 1 本化する。
+   `vibe lsp` は同 runner 上で動く selfhost LSP サーバーとして提供し、
+   `js/vibe/lsp.js` の transport 抽象はブラウザ/embedding 用途の補助に留める
+   （テーマ 4）。
+
+未決（要 ADR）:
+
+4. **言語仕様 freeze の範囲**（M4）— どこまでを 1.0 で凍結し SemVer 保証するか。
+
+> runtime 前提は install・LSP・debugger すべて「独自 wasmtime runner +
+> selfhost wasm」に一本化された。node は補助（`js/vibe/`、ブラウザ playground）
+> に限定する。残る ADR は仕様 freeze（4）のみ。

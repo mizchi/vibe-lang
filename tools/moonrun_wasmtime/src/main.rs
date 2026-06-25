@@ -22,7 +22,7 @@ use std::time::Instant;
 
 use wasmtime::{
     bail, format_err, Caller, Config, Engine, ExternRef, ExternType, Linker, Module, Result,
-    Rooted, Store, StoreLimits, StoreLimitsBuilder, Strategy, TypedFunc, ValType,
+    Rooted, Store, StoreLimits, StoreLimitsBuilder, Strategy, TypedFunc, Val, ValType,
 };
 
 const FFI_END_OF_STRING_ARRAY: &str = "ffi_end_of_/string_array";
@@ -94,10 +94,36 @@ struct HostState {
     capture_stdout: bool,
     captured_stdout: Vec<u8>,
     start_instant: Instant,
+    // debugger breakpoints (DAP P1): set of function names to pause at (from
+    // VIBE_BREAK), and whether to auto-continue without reading stdin (not a
+    // TTY, or VIBE_BREAK_AUTO=1). Empty set => the `vibe::dbg_break` hook is a
+    // no-op even when the module imports it.
+    break_set: Arc<Vec<String>>,
+    break_auto: bool,
+    // debugger argument inspection (DAP P2): addresses of the dbgargs region,
+    // parsed from the module's `vibe.dbgargs` custom section at load time (only
+    // present in break builds). count_addr holds an i32 arg count; base holds
+    // that many i64 vibe values. None => no section => no `args:` line.
+    // dbgargs_tag_mode: 0 => plain untagged i64 ints (enable_rc off); 1 => 1-bit
+    // tagged (low bit 0 => int raw>>1, low bit 1 => heap pointer shown as hex).
+    dbgargs_count_addr: Option<usize>,
+    dbgargs_base: Option<usize>,
+    dbgargs_tag_mode: u32,
 }
 
 impl HostState {
     fn new(args: Vec<String>, limits: StoreLimits) -> Self {
+        let break_set: Vec<String> = std::env::var("VIBE_BREAK")
+            .ok()
+            .map(|s| {
+                s.split(',')
+                    .map(|p| p.trim().to_string())
+                    .filter(|p| !p.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let break_auto = std::env::var("VIBE_BREAK_AUTO").as_deref() == Ok("1")
+            || !atty_stdin();
         Self {
             last_error: None,
             args: Arc::new(args),
@@ -108,6 +134,11 @@ impl HostState {
             capture_stdout: false,
             captured_stdout: Vec::new(),
             start_instant: Instant::now(),
+            break_set: Arc::new(break_set),
+            break_auto,
+            dbgargs_count_addr: None,
+            dbgargs_base: None,
+            dbgargs_tag_mode: 0,
         }
     }
 
@@ -115,6 +146,13 @@ impl HostState {
         self.last_error = Some(format!("{e}"));
         -1
     }
+}
+
+// True when stdin is an interactive terminal. Used by the debugger breakpoint
+// hook to decide whether to read a line (interactive pause) or auto-continue.
+fn atty_stdin() -> bool {
+    use std::io::IsTerminal;
+    std::io::stdin().is_terminal()
 }
 
 fn encode_tagged_int(value: i64) -> i64 {
@@ -161,6 +199,9 @@ fn engine_config() -> Config {
     cfg.wasm_simd(true);
     cfg.wasm_relaxed_simd(true);
     cfg.wasm_tail_call(true);
+    // debugger breakpoint (DAP P1): wasm backtraces are enabled by default in
+    // wasmtime, so `vibe::dbg_break` can name the entering function and the call
+    // stack via the name section without extra config.
     cfg
 }
 
@@ -287,6 +328,24 @@ fn run(args: Vec<String>) -> Result<i32> {
     let mut store = Store::new(&engine, HostState::new(prog_args, limits));
     store.limiter(|s| &mut s.limits);
 
+    // DAP P2: if the module is a break build it carries a `vibe.dbgargs` custom
+    // section publishing the two addresses of the spilled-argument region. Parse
+    // them once here so the `vibe::dbg_break` hook can read argument values out
+    // of guest memory at a breakpoint. (Break builds always pass a fresh `.wasm`.)
+    if let Ok(wasm) = std::fs::read(wasm_path) {
+        if let Some(section) = find_custom_section(&wasm, "vibe.dbgargs") {
+            if let (Some(count_addr), Some(base)) =
+                (read_u32_le(&section, 0), read_u32_le(&section, 4))
+            {
+                let tag_mode = read_u32_le(&section, 8).unwrap_or(0);
+                let data = store.data_mut();
+                data.dbgargs_count_addr = Some(count_addr as usize);
+                data.dbgargs_base = Some(base as usize);
+                data.dbgargs_tag_mode = tag_mode;
+            }
+        }
+    }
+
     let mut linker = Linker::new(&engine);
     register_imports(&mut linker)?;
 
@@ -305,6 +364,14 @@ fn run(args: Vec<String>) -> Result<i32> {
         }
     }
 
+    // debugger trace (DAP P1 groundwork): if VIBE_TRACE_OUT=1 and the module
+    // carries a `vibe.trace` custom section (debug-trace build), dump the
+    // function-call entry sequence to stderr. Runs after the program finishes,
+    // success OR trap, mirroring the coverage-bitmap read model.
+    if std::env::var("VIBE_TRACE_OUT").as_deref() == Ok("1") {
+        dump_trace(wasm_path, &instance, &mut store);
+    }
+
     match result {
         Ok(()) => Ok(0),
         Err(e) => {
@@ -313,7 +380,22 @@ fn run(args: Vec<String>) -> Result<i32> {
             if let Some(ExitTrap(code)) = e.downcast_ref::<ExitTrap>() {
                 return Ok(*code);
             }
-            eprintln!("moonrun_wt: {e:?}");
+            // `vibe::dbg_break` user abort (`q` at an interactive breakpoint).
+            if e.downcast_ref::<BreakAbort>().is_some() {
+                eprintln!("moonrun_wt: run aborted at breakpoint");
+                return Ok(130);
+            }
+            // A guest trap (e.g. an uncaught vibe `throw`/type error surfacing as
+            // a Wasm exception) should read as a tool error, not a runner crash —
+            // show only the message. Set VIBE_RUNNER_BACKTRACE=1 (or RUST_BACKTRACE)
+            // for the full anyhow backtrace when debugging the runner itself.
+            if std::env::var_os("VIBE_RUNNER_BACKTRACE").is_some()
+                || std::env::var_os("RUST_BACKTRACE").is_some()
+            {
+                eprintln!("moonrun_wt: {e:?}");
+            } else {
+                eprintln!("moonrun_wt: {e}");
+            }
             Ok(1)
         }
     }
@@ -682,7 +764,341 @@ fn wasi_fd_write(
     WASI_ERRNO_SUCCESS
 }
 
+// ---- selfhost raw-ABI (`vibe::*`) host imports ----
+//
+// The selfhost CLI wasm (entry `cli_main`) talks to the host through `vibe::*`
+// imports under the "raw" ABI (`VIBE_SELFHOST_IMPORT_ABI=raw`). Strings cross
+// the boundary packed into a single i64 = `(ptr << 32) | len` referencing the
+// guest's exported linear `memory`. Host-produced strings are bump-allocated on
+// the guest's exported `__heap_ptr` global. Ints/Bools are passed as raw i64.
+// This mirrors the JS host (`scripts/wasm_vibe_host_runner.js`) so the Rust
+// runner can run the same selfhost CLI artifacts as the production `vibe`
+// command (`docs/release-roadmap.md`, テーマ 1).
+
+fn vibe_memory(caller: &mut Caller<'_, HostState>) -> Result<wasmtime::Memory> {
+    caller
+        .get_export("memory")
+        .and_then(|e| e.into_memory())
+        .ok_or_else(|| format_err!("vibe host import: missing exported `memory`"))
+}
+
+fn vibe_read_packed_str(caller: &mut Caller<'_, HostState>, packed: i64) -> Result<String> {
+    let mem = vibe_memory(caller)?;
+    let u = packed as u64;
+    let ptr = (u >> 32) as usize;
+    let len = (u & 0xffff_ffff) as usize;
+    let mut buf = vec![0u8; len];
+    mem.read(&*caller, ptr, &mut buf)
+        .map_err(|e| format_err!("vibe host import: string read @{ptr}+{len}: {e}"))?;
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+// raw Bytes value is a pointer to a struct `{ _cap@0, len@4, data_ptr@8 }`.
+fn vibe_read_packed_bytes(caller: &mut Caller<'_, HostState>, value: i64) -> Result<Vec<u8>> {
+    let mem = vibe_memory(caller)?;
+    let base = (value as u64) as usize;
+    let mut hdr = [0u8; 4];
+    mem.read(&*caller, base + 4, &mut hdr)
+        .map_err(|e| format_err!("vibe host import: bytes len read: {e}"))?;
+    let len = u32::from_le_bytes(hdr) as usize;
+    mem.read(&*caller, base + 8, &mut hdr)
+        .map_err(|e| format_err!("vibe host import: bytes ptr read: {e}"))?;
+    let data_ptr = u32::from_le_bytes(hdr) as usize;
+    let mut buf = vec![0u8; len];
+    mem.read(&*caller, data_ptr, &mut buf)
+        .map_err(|e| format_err!("vibe host import: bytes data read: {e}"))?;
+    Ok(buf)
+}
+
+// Bump-allocate `s` on the guest heap and return it packed as `(ptr << 32) | len`.
+fn vibe_alloc_packed_str(caller: &mut Caller<'_, HostState>, s: &str) -> Result<i64> {
+    let bytes = s.as_bytes();
+    let mem = vibe_memory(caller)?;
+    let heap = caller
+        .get_export("__heap_ptr")
+        .and_then(|e| e.into_global())
+        .ok_or_else(|| format_err!("vibe host import: missing `__heap_ptr` global"))?;
+    let (cur, is_i64) = match heap.get(&mut *caller) {
+        Val::I32(v) => (v as u32 as u64, false),
+        Val::I64(v) => (v as u64, true),
+        other => bail!("vibe host import: __heap_ptr unexpected type: {other:?}"),
+    };
+    let align = 8u64;
+    let aligned = (cur + (align - 1)) & !(align - 1);
+    let size = bytes.len() as u64;
+    let next = (aligned + size + (align - 1)) & !(align - 1);
+    let cur_size = mem.data_size(&*caller) as u64;
+    if next > cur_size {
+        let pages = (next - cur_size).div_ceil(65536);
+        mem.grow(&mut *caller, pages)
+            .map_err(|e| format_err!("vibe host import: memory.grow({pages}): {e}"))?;
+    }
+    mem.write(&mut *caller, aligned as usize, bytes)
+        .map_err(|e| format_err!("vibe host import: string write @{aligned}: {e}"))?;
+    let set = if is_i64 {
+        Val::I64(next as i64)
+    } else {
+        Val::I32(next as i32)
+    };
+    heap.set(&mut *caller, set)
+        .map_err(|e| format_err!("vibe host import: set __heap_ptr: {e}"))?;
+    Ok(((aligned as i64) << 32) | (size as i64))
+}
+
+fn vibe_ensure_parent_dir(path: &str) {
+    if let Some(dir) = std::path::Path::new(path).parent() {
+        if !dir.as_os_str().is_empty() {
+            let _ = fs::create_dir_all(dir);
+        }
+    }
+}
+
+// fnv-ish stat token mixing size + mtime; mirrors the JS host so cwasm/cache
+// keys agree across runners. Only needs to change when the file changes.
+fn vibe_stat_token(path: &str) -> i64 {
+    match fs::metadata(path) {
+        Ok(meta) => {
+            let size = meta.len();
+            let mtime_ns = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0);
+            let lower =
+                size.wrapping_mul(0x9e37_79b1_85eb_ca87) ^ mtime_ns ^ 0x243f_6a88_85a3_08d3;
+            let upper = (mtime_ns << 1) ^ (size << 17) ^ 0x1319_8a2e_0370_7344;
+            ((lower ^ upper) & ((1u64 << 61) - 1)) as i64
+        }
+        Err(_) => 0,
+    }
+}
+
+fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
+    linker.func_wrap(
+        "vibe",
+        "env-get",
+        |mut caller: Caller<'_, HostState>, name: i64| -> Result<i64> {
+            let name = vibe_read_packed_str(&mut caller, name)?;
+            let val = std::env::var(&name).unwrap_or_default();
+            vibe_alloc_packed_str(&mut caller, &val)
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "args-get",
+        |mut caller: Caller<'_, HostState>, index: i64| -> Result<i64> {
+            // HostState.args[0] is the runner name; program args start at [1],
+            // so `vibe args-get(0)` is the first user argument.
+            let val = if index < 0 {
+                String::new()
+            } else {
+                caller
+                    .data()
+                    .args
+                    .get(index as usize + 1)
+                    .cloned()
+                    .unwrap_or_default()
+            };
+            vibe_alloc_packed_str(&mut caller, &val)
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "args-len",
+        // `Env::args_len` -> number of USER arguments. args[0] is the runner
+        // name, so the user-visible count is args.len() - 1 (raw i64 per the raw
+        // ABI). Without this import a program using Env::args_len fails to
+        // instantiate with an unknown import before user code runs.
+        |caller: Caller<'_, HostState>| -> i64 {
+            (caller.data().args.len().saturating_sub(1)) as i64
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "fs_read_file",
+        |mut caller: Caller<'_, HostState>, path: i64| -> Result<i64> {
+            let path = vibe_read_packed_str(&mut caller, path)?;
+            let content =
+                fs::read(&path).map_err(|e| format_err!("vibe fs_read_file '{path}': {e}"))?;
+            let s = String::from_utf8_lossy(&content).into_owned();
+            vibe_alloc_packed_str(&mut caller, &s)
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "fs_exists",
+        |mut caller: Caller<'_, HostState>, path: i64| -> Result<i64> {
+            let path = vibe_read_packed_str(&mut caller, path)?;
+            Ok(i64::from(std::path::Path::new(&path).exists()))
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "fs_stat_token",
+        |mut caller: Caller<'_, HostState>, path: i64| -> Result<i64> {
+            let path = vibe_read_packed_str(&mut caller, path)?;
+            Ok(vibe_stat_token(&path))
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "fs_write_file",
+        |mut caller: Caller<'_, HostState>, path: i64, content: i64| -> Result<()> {
+            let path = vibe_read_packed_str(&mut caller, path)?;
+            let content = vibe_read_packed_str(&mut caller, content)?;
+            vibe_ensure_parent_dir(&path);
+            fs::write(&path, content.as_bytes())
+                .map_err(|e| format_err!("vibe fs_write_file '{path}': {e}"))?;
+            Ok(())
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "fs_write_bytes",
+        |mut caller: Caller<'_, HostState>, path: i64, bytes: i64| -> Result<()> {
+            let path = vibe_read_packed_str(&mut caller, path)?;
+            let data = vibe_read_packed_bytes(&mut caller, bytes)?;
+            vibe_ensure_parent_dir(&path);
+            fs::write(&path, &data).map_err(|e| format_err!("vibe fs_write_bytes '{path}': {e}"))?;
+            Ok(())
+        },
+    )?;
+    // debugger breakpoint (DAP P1): the break-mode codegen emits a bare
+    // `call vibe::dbg_break` at each user function entry. We capture the wasm
+    // backtrace, name the entering function (the innermost user frame via the
+    // name section), and pause when it is in the VIBE_BREAK set, printing the
+    // call stack, then continue. Always registered (harmless no-op when the
+    // module doesn't import it, or when VIBE_BREAK is empty).
+    linker.func_wrap(
+        "vibe",
+        "dbg_break",
+        |caller: Caller<'_, HostState>| -> Result<()> {
+            vibe_dbg_break(caller)
+        },
+    )?;
+    Ok(())
+}
+
+// Capture frame names from the wasm backtrace, innermost first. Frame 0 is the
+// `vibe::dbg_break` import call site (the entering user function). Unnamed
+// frames are skipped. Returns the named frame list (e.g. ["helper", "main"]).
+fn dbg_break_frames(caller: &Caller<'_, HostState>) -> Vec<String> {
+    let bt = wasmtime::WasmBacktrace::capture(caller);
+    let mut out = Vec::new();
+    for frame in bt.frames() {
+        if let Some(name) = frame.func_name() {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
+// Sentinel: user typed `q` at an interactive breakpoint to abort the run. The
+// run loop maps it to exit code 130 (128 + SIGINT), like a Ctrl-C.
+#[derive(Debug)]
+struct BreakAbort;
+
+impl std::fmt::Display for BreakAbort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "breakpoint: aborted by user")
+    }
+}
+
+impl std::error::Error for BreakAbort {}
+
+// DAP P2: read the argument values the codegen spilled into the dbgargs region
+// before calling this hook, and format them as `[v0, v1, ...]`. Returns None if
+// the module has no `vibe.dbgargs` section (non-break build) or memory access
+// fails. Each value is a 62-bit tagged i64; a tagged INT (low 2 bits == 00) is
+// printed as `raw >> 2`, anything else as `0x<hex>` of the raw bits.
+fn dbg_read_args(caller: &mut Caller<'_, HostState>) -> Option<String> {
+    let count_addr = caller.data().dbgargs_count_addr?;
+    let base = caller.data().dbgargs_base?;
+    let tag_mode = caller.data().dbgargs_tag_mode;
+    let memory = caller.get_export("memory").and_then(|e| e.into_memory())?;
+    let mut count_buf = [0u8; 4];
+    if memory.read(&*caller, count_addr, &mut count_buf).is_err() {
+        return None;
+    }
+    let count = (u32::from_le_bytes(count_buf) as usize).min(16);
+    let mut parts: Vec<String> = Vec::with_capacity(count);
+    let mut i = 0usize;
+    while i < count {
+        let mut val_buf = [0u8; 8];
+        if memory.read(&*caller, base + i * 8, &mut val_buf).is_err() {
+            break;
+        }
+        let raw = i64::from_le_bytes(val_buf);
+        // tag_mode 0: plain untagged i64 int. tag_mode 1: 1-bit tagged — low bit
+        // 0 => int (raw >> 1), low bit 1 => heap pointer shown as raw hex.
+        if tag_mode == 1 {
+            if raw & 1 == 0 {
+                parts.push(format!("{}", raw >> 1));
+            } else {
+                parts.push(format!("0x{:x}", raw));
+            }
+        } else {
+            parts.push(format!("{raw}"));
+        }
+        i += 1;
+    }
+    Some(format!("[{}]", parts.join(", ")))
+}
+
+fn vibe_dbg_break(mut caller: Caller<'_, HostState>) -> Result<()> {
+    let break_set = Arc::clone(&caller.data().break_set);
+    if break_set.is_empty() {
+        return Ok(());
+    }
+    let frames = dbg_break_frames(&caller);
+    // The entering function is the innermost named frame (the body that just
+    // called dbg_break). If we can't name it, there is nothing to match on.
+    let entering = match frames.first() {
+        Some(n) => n.clone(),
+        None => return Ok(()),
+    };
+    if !break_set.iter().any(|b| *b == entering) {
+        return Ok(());
+    }
+    // DAP P2: read the spilled argument values for the entering function out of
+    // guest memory and format them. count_addr holds an i32 arg count; base holds
+    // that many i64 vibe values. Decode each: a tagged INT (low 2 bits == 00) is
+    // shown as the integer (raw >> 2); anything else is shown as `0x<hex>` raw.
+    let args_line = dbg_read_args(&mut caller);
+    {
+        let stderr = std::io::stderr();
+        let mut h = stderr.lock();
+        let _ = writeln!(h, "breakpoint hit: {entering}");
+        if let Some(line) = &args_line {
+            let _ = writeln!(h, "  args: {line}");
+        }
+        for f in &frames {
+            let _ = writeln!(h, "  at {f}");
+        }
+        let _ = h.flush();
+    }
+    let auto = caller.data().break_auto;
+    if auto {
+        return Ok(());
+    }
+    // Interactive: read one line from stdin. Empty => continue; `q` => abort.
+    use std::io::BufRead;
+    let mut line = String::new();
+    let stdin = std::io::stdin();
+    let n = stdin.lock().read_line(&mut line).unwrap_or(0);
+    if n == 0 {
+        // EOF on stdin: behave like auto-continue.
+        return Ok(());
+    }
+    if line.trim() == "q" {
+        return Err(BreakAbort.into());
+    }
+    Ok(())
+}
+
 fn register_imports(linker: &mut Linker<HostState>) -> Result<()> {
+    register_vibe_imports(linker)?;
     // Current moon emits WASI Preview1 fd_write for stdout/stderr.
     linker.func_wrap(
         "wasi_snapshot_preview1",
@@ -1116,6 +1532,136 @@ fn register_imports(linker: &mut Linker<HostState>) -> Result<()> {
     )?;
 
     Ok(())
+}
+
+// Read a LEB128 unsigned integer at `bytes[*pos..]`, advancing `*pos`.
+fn read_leb_u32(bytes: &[u8], pos: &mut usize) -> Option<u32> {
+    let mut result: u32 = 0;
+    let mut shift = 0u32;
+    loop {
+        let b = *bytes.get(*pos)?;
+        *pos += 1;
+        result |= ((b & 0x7f) as u32) << shift;
+        if b & 0x80 == 0 {
+            return Some(result);
+        }
+        shift += 7;
+        if shift >= 32 {
+            return None;
+        }
+    }
+}
+
+// Locate a wasm custom section by name and return its content bytes (after the
+// section's name field). Scans the section list directly from the raw module
+// bytes (the trace launcher always passes a fresh `.wasm`, not a cwasm).
+fn find_custom_section(wasm: &[u8], want_name: &str) -> Option<Vec<u8>> {
+    if wasm.len() < 8 || &wasm[0..4] != b"\0asm" {
+        return None;
+    }
+    let mut pos = 8usize;
+    while pos < wasm.len() {
+        let id = *wasm.get(pos)?;
+        pos += 1;
+        let size = read_leb_u32(wasm, &mut pos)? as usize;
+        let body_start = pos;
+        let body_end = body_start.checked_add(size)?;
+        if body_end > wasm.len() {
+            return None;
+        }
+        if id == 0 {
+            // custom section: LEB name-len, name bytes, then content
+            let mut npos = body_start;
+            let name_len = read_leb_u32(wasm, &mut npos)? as usize;
+            let name_end = npos.checked_add(name_len)?;
+            if name_end <= body_end {
+                let name = &wasm[npos..name_end];
+                if name == want_name.as_bytes() {
+                    return Some(wasm[name_end..body_end].to_vec());
+                }
+            }
+        }
+        pos = body_end;
+    }
+    None
+}
+
+fn read_u32_le(bytes: &[u8], off: usize) -> Option<u32> {
+    let b = bytes.get(off..off + 4)?;
+    Some(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+}
+
+// Dump the function-call execution trace recorded in the guest's in-memory
+// trace log. Layout of the `vibe.trace` custom section: i32 LE counter_addr,
+// i32 LE log_base, i32 LE cap, then the user-function names (one per line, in
+// user-index order). After the program finishes, memory[counter_addr] holds the
+// number of recorded entries; each entry is a user-function index stored as i32
+// at log_base + i*4. Prints one `trace: <name>` line per entry to stderr.
+fn dump_trace(
+    wasm_path: &str,
+    instance: &wasmtime::Instance,
+    store: &mut Store<HostState>,
+) {
+    let wasm = match std::fs::read(wasm_path) {
+        Ok(b) => b,
+        Err(_) => return,
+    };
+    let section = match find_custom_section(&wasm, "vibe.trace") {
+        Some(s) => s,
+        None => return,
+    };
+    let counter_addr = match read_u32_le(&section, 0) {
+        Some(v) => v as usize,
+        None => return,
+    };
+    let log_base = match read_u32_le(&section, 4) {
+        Some(v) => v as usize,
+        None => return,
+    };
+    let cap = match read_u32_le(&section, 8) {
+        Some(v) => v as usize,
+        None => return,
+    };
+    // Names: newline-separated, in user-index order, starting after the 12-byte
+    // header.
+    let names: Vec<String> = section
+        .get(12..)
+        .map(|rest| {
+            String::from_utf8_lossy(rest)
+                .split('\n')
+                .map(|s| s.to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    let memory = match instance
+        .get_export(&mut *store, "memory")
+        .and_then(|e| e.into_memory())
+    {
+        Some(m) => m,
+        None => return,
+    };
+    let mut counter_buf = [0u8; 4];
+    if memory.read(&*store, counter_addr, &mut counter_buf).is_err() {
+        return;
+    }
+    let count = u32::from_le_bytes(counter_buf) as usize;
+    let count = count.min(cap);
+    let stderr = std::io::stderr();
+    let mut h = stderr.lock();
+    let mut i = 0usize;
+    while i < count {
+        let mut entry_buf = [0u8; 4];
+        if memory
+            .read(&*store, log_base + i * 4, &mut entry_buf)
+            .is_err()
+        {
+            break;
+        }
+        let idx = u32::from_le_bytes(entry_buf) as usize;
+        let name = names.get(idx).map(|s| s.as_str()).unwrap_or("?");
+        let _ = writeln!(h, "trace: {name}");
+        i += 1;
+    }
 }
 
 fn main() {
