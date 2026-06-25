@@ -1,0 +1,44 @@
+
+// #cov namespace #3: the Stmt kinds namespace_private_value_stmts handles that the
+// earlier drivers missed — SModule (recurses into nested body), SImpl, SEffectDef,
+// SReExport, SAliasDecl — with private trait/type/enum decls they reference.
+let ns3_int: () -> Array[TypeExpr] = () -> { Array::slice([TyName("Int")], 0, 1) }
+let ns3_no: () -> Array[TypeExpr] = () -> { Array::slice([TyName("Int")], 0, 0) }
+let ns3_nobound: () -> Array[(String, Array[String])] = () -> { Array::slice([("", Array::slice([""], 0, 0))], 0, 0) }
+let ns3_effops: () -> Array[(String, Array[TypeExpr], TypeExpr)] = () -> {
+  Array::slice([("op", ns3_int(), TyName("Unit"))], 0, 1)
+}
+
+let ns3_inner_body: () -> Array[Stmt] = () -> {
+  let b = Array::slice([SExpr(EUnit)], 0, 0)
+  Array::push(b, SEnum(false, "IE", Array::slice([""], 0, 0), Array::slice([("IA", ns3_no())], 0, 1)))
+  Array::push(b, SLet(false, false, "iv", Some(TyName("IE")), ECall(EIdent("IA"), Array::slice([EUnit], 0, 0))))
+  Array::push(b, SExport(Array::slice(["iv"], 0, 1)))
+  b
+}
+
+export let cov_namespace3_main: () -> Int = () -> {
+  let body = Array::slice([SExpr(EUnit)], 0, 0)
+  // private trait + struct + enum the impl/refs use
+  Array::push(body, STrait(false, "PT", Array::slice(["m"], 0, 1)))
+  Array::push(body, SStruct(false, "PW", Array::slice([("v", TyName("Int"))], 0, 1)))
+  Array::push(body, SEnum(false, "PE", Array::slice([""], 0, 0), Array::slice([("A", ns3_int())], 0, 1)))
+  // SImpl over private trait+type
+  Array::push(body, SImpl(Array::slice([""], 0, 0), ns3_nobound(), "PT", "PW"))
+  // SEffectDef (private)
+  Array::push(body, SEffectDef(false, "PEff", Array::slice([""], 0, 0), ns3_effops()))
+  // SModule with nested private decls (recursion)
+  Array::push(body, SModule(false, "Inner", ns3_inner_body()))
+  Array::push(body, SModule(true, "PubMod", ns3_inner_body()))
+  // SReExport + SAliasDecl
+  Array::push(body, SReExport("./m.vibe", Array::slice([("x", Some("y"))], 0, 1)))
+  Array::push(body, SAliasDecl("PE", "PEalias"))
+  // a value using the private enum ctor
+  Array::push(body, SLet(true, false, "use_pe", Some(TyName("PE")), ECall(EIdent("A"), ns3_int_e())))
+  Array::push(body, SExport(Array::slice(["use_pe"], 0, 1)))
+  let r1 = namespace_private_value_stmts("Mod", body)
+  let r2 = namespace_private_value_stmts("Other", r1)
+  Array::length(r1) + Array::length(r2)
+}
+
+let ns3_int_e: () -> Array[Expr] = () -> { Array::slice([EInt(1)], 0, 1) }
