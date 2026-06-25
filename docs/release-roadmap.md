@@ -104,9 +104,14 @@
      （位置の EIdent → `check_program` → `env_lookup` + `type_to_string`）を実装し
      LSP hover に配線。トップレベル/import 名の推論型が editor で出る。
      selfhost gate green、`test_vibe_type_at.sh` 3/3 / `test_vibe_lsp.js` 14/14。
-   - [ ] **3b per-node 型テーブル** — `check_expr` が各ノードの offset→推論型を記録
-     （`Array[(Int, Type)]` か interval tree）。ローカル変数・パラメータ・式の型を
-     hover で出すために必要。scope 精度の高い補完・rename もこの上に乗る。
+   - ✅ **3b per-node 型テーブル（着地）** — `check_expr`/`check_stmts` に
+     `errors` と並走する `(Int, Type)` レコーダーを通し、推論中に各 EIdent の型を
+     記録。`check_program_type_table` が「テーブル + 最終 subst」を返し
+     （`check_program` の公開シグネチャは不変）、`type_at_source` が
+     `subst_apply` で解決して offset で引く。**ローカル変数・パラメータの use も
+     hover で型が出る**（`test_vibe_type_at.sh` 5/5: param `n`→Int, local `g`→Int）。
+     selfhost gate green。残: 束縛**定義**位置（EIdent でない）と式ノードの型は
+     未記録（use サイトは解決）。scope 精度の高い補完・rename もこの上に乗せられる。
 4. **span 露出 CLI / LSP 連携（一部着地）** — `vibe type-at` で offset→型を露出済み。
    残: シンボル span の JSON 露出、診断 range の AST 化（現状は line:col prefix 経由）。
 5. **codegen source-line map（`vibe.func_map`）** — 命令 offset→ソース行の custom
