@@ -22,7 +22,7 @@ use std::time::Instant;
 
 use wasmtime::{
     bail, format_err, Caller, Config, Engine, ExternRef, ExternType, Linker, Module, Result,
-    Rooted, Store, StoreLimits, StoreLimitsBuilder, Strategy, TypedFunc, ValType,
+    Rooted, Store, StoreLimits, StoreLimitsBuilder, Strategy, TypedFunc, Val, ValType,
 };
 
 const FFI_END_OF_STRING_ARRAY: &str = "ffi_end_of_/string_array";
@@ -682,7 +682,200 @@ fn wasi_fd_write(
     WASI_ERRNO_SUCCESS
 }
 
+// ---- selfhost raw-ABI (`vibe::*`) host imports ----
+//
+// The selfhost CLI wasm (entry `cli_main`) talks to the host through `vibe::*`
+// imports under the "raw" ABI (`VIBE_SELFHOST_IMPORT_ABI=raw`). Strings cross
+// the boundary packed into a single i64 = `(ptr << 32) | len` referencing the
+// guest's exported linear `memory`. Host-produced strings are bump-allocated on
+// the guest's exported `__heap_ptr` global. Ints/Bools are passed as raw i64.
+// This mirrors the JS host (`scripts/wasm_vibe_host_runner.js`) so the Rust
+// runner can run the same selfhost CLI artifacts as the production `vibe`
+// command (`docs/release-roadmap.md`, テーマ 1).
+
+fn vibe_memory(caller: &mut Caller<'_, HostState>) -> Result<wasmtime::Memory> {
+    caller
+        .get_export("memory")
+        .and_then(|e| e.into_memory())
+        .ok_or_else(|| format_err!("vibe host import: missing exported `memory`"))
+}
+
+fn vibe_read_packed_str(caller: &mut Caller<'_, HostState>, packed: i64) -> Result<String> {
+    let mem = vibe_memory(caller)?;
+    let u = packed as u64;
+    let ptr = (u >> 32) as usize;
+    let len = (u & 0xffff_ffff) as usize;
+    let mut buf = vec![0u8; len];
+    mem.read(&*caller, ptr, &mut buf)
+        .map_err(|e| format_err!("vibe host import: string read @{ptr}+{len}: {e}"))?;
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+// raw Bytes value is a pointer to a struct `{ _cap@0, len@4, data_ptr@8 }`.
+fn vibe_read_packed_bytes(caller: &mut Caller<'_, HostState>, value: i64) -> Result<Vec<u8>> {
+    let mem = vibe_memory(caller)?;
+    let base = (value as u64) as usize;
+    let mut hdr = [0u8; 4];
+    mem.read(&*caller, base + 4, &mut hdr)
+        .map_err(|e| format_err!("vibe host import: bytes len read: {e}"))?;
+    let len = u32::from_le_bytes(hdr) as usize;
+    mem.read(&*caller, base + 8, &mut hdr)
+        .map_err(|e| format_err!("vibe host import: bytes ptr read: {e}"))?;
+    let data_ptr = u32::from_le_bytes(hdr) as usize;
+    let mut buf = vec![0u8; len];
+    mem.read(&*caller, data_ptr, &mut buf)
+        .map_err(|e| format_err!("vibe host import: bytes data read: {e}"))?;
+    Ok(buf)
+}
+
+// Bump-allocate `s` on the guest heap and return it packed as `(ptr << 32) | len`.
+fn vibe_alloc_packed_str(caller: &mut Caller<'_, HostState>, s: &str) -> Result<i64> {
+    let bytes = s.as_bytes();
+    let mem = vibe_memory(caller)?;
+    let heap = caller
+        .get_export("__heap_ptr")
+        .and_then(|e| e.into_global())
+        .ok_or_else(|| format_err!("vibe host import: missing `__heap_ptr` global"))?;
+    let (cur, is_i64) = match heap.get(&mut *caller) {
+        Val::I32(v) => (v as u32 as u64, false),
+        Val::I64(v) => (v as u64, true),
+        other => bail!("vibe host import: __heap_ptr unexpected type: {other:?}"),
+    };
+    let align = 8u64;
+    let aligned = (cur + (align - 1)) & !(align - 1);
+    let size = bytes.len() as u64;
+    let next = (aligned + size + (align - 1)) & !(align - 1);
+    let cur_size = mem.data_size(&*caller) as u64;
+    if next > cur_size {
+        let pages = (next - cur_size).div_ceil(65536);
+        mem.grow(&mut *caller, pages)
+            .map_err(|e| format_err!("vibe host import: memory.grow({pages}): {e}"))?;
+    }
+    mem.write(&mut *caller, aligned as usize, bytes)
+        .map_err(|e| format_err!("vibe host import: string write @{aligned}: {e}"))?;
+    let set = if is_i64 {
+        Val::I64(next as i64)
+    } else {
+        Val::I32(next as i32)
+    };
+    heap.set(&mut *caller, set)
+        .map_err(|e| format_err!("vibe host import: set __heap_ptr: {e}"))?;
+    Ok(((aligned as i64) << 32) | (size as i64))
+}
+
+fn vibe_ensure_parent_dir(path: &str) {
+    if let Some(dir) = std::path::Path::new(path).parent() {
+        if !dir.as_os_str().is_empty() {
+            let _ = fs::create_dir_all(dir);
+        }
+    }
+}
+
+// fnv-ish stat token mixing size + mtime; mirrors the JS host so cwasm/cache
+// keys agree across runners. Only needs to change when the file changes.
+fn vibe_stat_token(path: &str) -> i64 {
+    match fs::metadata(path) {
+        Ok(meta) => {
+            let size = meta.len();
+            let mtime_ns = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0);
+            let lower =
+                size.wrapping_mul(0x9e37_79b1_85eb_ca87) ^ mtime_ns ^ 0x243f_6a88_85a3_08d3;
+            let upper = (mtime_ns << 1) ^ (size << 17) ^ 0x1319_8a2e_0370_7344;
+            ((lower ^ upper) & ((1u64 << 61) - 1)) as i64
+        }
+        Err(_) => 0,
+    }
+}
+
+fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
+    linker.func_wrap(
+        "vibe",
+        "env-get",
+        |mut caller: Caller<'_, HostState>, name: i64| -> Result<i64> {
+            let name = vibe_read_packed_str(&mut caller, name)?;
+            let val = std::env::var(&name).unwrap_or_default();
+            vibe_alloc_packed_str(&mut caller, &val)
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "args-get",
+        |mut caller: Caller<'_, HostState>, index: i64| -> Result<i64> {
+            // HostState.args[0] is the runner name; program args start at [1],
+            // so `vibe args-get(0)` is the first user argument.
+            let val = if index < 0 {
+                String::new()
+            } else {
+                caller
+                    .data()
+                    .args
+                    .get(index as usize + 1)
+                    .cloned()
+                    .unwrap_or_default()
+            };
+            vibe_alloc_packed_str(&mut caller, &val)
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "fs_read_file",
+        |mut caller: Caller<'_, HostState>, path: i64| -> Result<i64> {
+            let path = vibe_read_packed_str(&mut caller, path)?;
+            let content =
+                fs::read(&path).map_err(|e| format_err!("vibe fs_read_file '{path}': {e}"))?;
+            let s = String::from_utf8_lossy(&content).into_owned();
+            vibe_alloc_packed_str(&mut caller, &s)
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "fs_exists",
+        |mut caller: Caller<'_, HostState>, path: i64| -> Result<i64> {
+            let path = vibe_read_packed_str(&mut caller, path)?;
+            Ok(i64::from(std::path::Path::new(&path).exists()))
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "fs_stat_token",
+        |mut caller: Caller<'_, HostState>, path: i64| -> Result<i64> {
+            let path = vibe_read_packed_str(&mut caller, path)?;
+            Ok(vibe_stat_token(&path))
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "fs_write_file",
+        |mut caller: Caller<'_, HostState>, path: i64, content: i64| -> Result<()> {
+            let path = vibe_read_packed_str(&mut caller, path)?;
+            let content = vibe_read_packed_str(&mut caller, content)?;
+            vibe_ensure_parent_dir(&path);
+            fs::write(&path, content.as_bytes())
+                .map_err(|e| format_err!("vibe fs_write_file '{path}': {e}"))?;
+            Ok(())
+        },
+    )?;
+    linker.func_wrap(
+        "vibe",
+        "fs_write_bytes",
+        |mut caller: Caller<'_, HostState>, path: i64, bytes: i64| -> Result<()> {
+            let path = vibe_read_packed_str(&mut caller, path)?;
+            let data = vibe_read_packed_bytes(&mut caller, bytes)?;
+            vibe_ensure_parent_dir(&path);
+            fs::write(&path, &data).map_err(|e| format_err!("vibe fs_write_bytes '{path}': {e}"))?;
+            Ok(())
+        },
+    )?;
+    Ok(())
+}
+
 fn register_imports(linker: &mut Linker<HostState>) -> Result<()> {
+    register_vibe_imports(linker)?;
     // Current moon emits WASI Preview1 fd_write for stdout/stderr.
     linker.func_wrap(
         "wasi_snapshot_preview1",
