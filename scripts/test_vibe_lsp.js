@@ -98,6 +98,12 @@ const isDiag = (uri) => (m) => m.method === "textDocument/publishDiagnostics" &&
   const hov = await waitFor((m) => m.id === 5);
   check("hover shows declaration", hov.result && /helper/.test(JSON.stringify(hov.result.contents)));
 
+  // completion: keywords + document declarations
+  send({ jsonrpc: "2.0", id: 6, method: "textDocument/completion", params: { textDocument: { uri: goodUri }, position: { line: 2, character: 0 } } });
+  const comp = await waitFor((m) => m.id === 6);
+  const labels = (comp.result || []).map((c) => c.label);
+  check("completion offers keywords + symbols", labels.includes("let") && labels.includes("helper") && labels.includes("Color"));
+
   send({ jsonrpc: "2.0", id: 2, method: "shutdown", params: {} });
   await waitFor((m) => m.id === 2);
   send({ jsonrpc: "2.0", method: "exit", params: {} });

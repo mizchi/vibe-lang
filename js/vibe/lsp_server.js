@@ -76,10 +76,17 @@ function handle(msg) {
           documentSymbolProvider: true,
           definitionProvider: true,
           hoverProvider: true,
+          completionProvider: { triggerCharacters: ["."] },
         },
         serverInfo: { name: "vibe-lsp", version: "0.1.0" },
       });
       break;
+    case "textDocument/completion": {
+      const uri = msg.params.textDocument.uri;
+      const doc = docs.get(uri);
+      reply(msg.id, doc ? completionItems(doc.text) : []);
+      break;
+    }
     case "textDocument/documentSymbol": {
       const uri = msg.params.textDocument.uri;
       const doc = docs.get(uri);
@@ -309,6 +316,26 @@ function findDeclaration(text, name) {
     }
   }
   return null;
+}
+
+const VIBE_KEYWORDS = [
+  "let", "mut", "export", "import", "enum", "struct", "trait", "module", "type",
+  "if", "else", "match", "while", "for", "in", "return", "with", "handle",
+  "test", "bench", "true", "false", "throw", "as",
+];
+
+// Completion: vibe keywords + the document's declared names. CompletionItemKind:
+// 14 = Keyword, 6 = Variable, 3 = Function-ish. Heuristic (no compiler change).
+function completionItems(text) {
+  const items = VIBE_KEYWORDS.map((k) => ({ label: k, kind: 14 }));
+  const seen = new Set(VIBE_KEYWORDS);
+  for (const s of documentSymbols(text)) {
+    if (!seen.has(s.name)) {
+      seen.add(s.name);
+      items.push({ label: s.name, kind: 6 });
+    }
+  }
+  return items;
 }
 
 function documentSymbols(text) {
