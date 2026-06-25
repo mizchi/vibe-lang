@@ -158,6 +158,8 @@ run_driver cov_traitenv_main   scripts/coverage/cov_traitenv.vibe   traitenv    
 run_driver cov_link_main       scripts/coverage/cov_link.vibe       link        # compile_wasi_module_linked_impl arms
 run_driver cov_parse_main      scripts/coverage/cov_parse.vibe      parse       # parser arms (impl/postfix/pattern)
 run_driver cov_helpers_main    scripts/coverage/cov_helpers.vibe    helpers     # unique pure helpers: valtype/int/io-dispatch/double/async-int
+run_driver cov_syntax_main     scripts/coverage/cov_syntax.vibe     syntax      # parser arms: slices/block-local let-rec-mut/enum-struct/impl/match-modes
+run_driver cov_exprwalk_main   scripts/coverage/cov_exprwalk.vibe   exprwalk    # Expr/Pat walkers: is_mut_captured_in/rewrite_import_alias_expr/wrap_placeholder_arg/pat_binds_name
 rm -f _build/vibe_selfhost_* 2>/dev/null || true
 
 now=$(python3 -c "import json;print(sum(json.load(open('$ACC'))['br']))")

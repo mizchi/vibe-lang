@@ -1,0 +1,51 @@
+
+// #cov syntax-breadth driver: route the parser through arms the 728-file corpus
+// leaves dark — slice forms, postfix chains on unusual exprs, block-local
+// let rec / let mut / enum / struct (parse_impl_block), and the if/else-if /
+// is-pattern / match expression modes of parse_impl_dispatch. Parsing alone hits
+// these (load_and_parse runs the full parser); errors are swallowed so a partial
+// parse still lights the arms reached before any failure.
+let cov_sx_parse: (String) -> Int = (src) -> {
+  handle {
+    let stmts = load_and_parse(src)
+    Array::length(stmts)
+  } with Error {
+    Throw(_) => 0
+  }
+}
+
+export let cov_syntax_main: () -> Int = () -> {
+  let mut acc = 0
+  let progs = Array::slice([""], 0, 0)
+  // slice forms (parse_postfix index/slice arms)
+  Array::push(progs, "export let m: () -> Int = () -> { let a = [1, 2, 3]; let _ = a[:]; let _ = a[1:]; let _ = a[:2]; let _ = a[1:2]; 0 }")
+  // postfix chains: field, method, call, index in sequence
+  Array::push(progs, "export let m: () -> Int = () -> { let a = [[1]]; let _ = Array::length(a); let _ = a[0][0]; 0 }")
+  // call applied right after a parenthesised lambda
+  Array::push(progs, "export let m: () -> Int = () -> { let f = (x) -> { x + 1 }; f(2) }")
+  // block-local let rec
+  Array::push(progs, "export let m: () -> Int = () -> { let rec g: (Int) -> Int = (n) -> { if n <= 0 { 0 } else { g(n - 1) } }; g(3) }")
+  // block-local let mut + reassignment
+  Array::push(progs, "export let m: () -> Int = () -> { let mut s = 0; let mut i = 0; while i < 3 { s = s + i; i = i + 1 }; s }")
+  // block-local enum with zero-field + field variants, then match
+  Array::push(progs, "export let m: () -> Int = () -> { enum E { A; B(Int) }; let v = B(5); match v { A => 0, B(n) => n } }")
+  // block-local struct + field projection
+  Array::push(progs, "export let m: () -> Int = () -> { struct P { x: Int; y: Int }; let p = P::{ x: 1, y: 2 }; p.x + p.y }")
+  // if / else-if chain (parse_impl_dispatch mode 21)
+  Array::push(progs, "export let m: (Int) -> Int = (n) -> { if n == 0 { 10 } else if n == 1 { 11 } else if n == 2 { 12 } else { 13 } }")
+  // match with guard arm (parse_impl_dispatch mode 22, TIf guard)
+  Array::push(progs, "export let m: (Int) -> Int = (n) -> { match n { 0 => 100, x => if x > 0 { x } else { 0 - x } } }")
+  // nested match in else position
+  Array::push(progs, "export let m: (Int) -> Int = (n) -> { if n > 0 { 1 } else { match n { 0 => 0, _ => 0 - 1 } } }")
+  // loop with break value + for-in
+  Array::push(progs, "export let m: () -> Int = () -> { let mut t = 0; for x in [1, 2, 3] { t = t + x }; t }")
+  // tuple destructuring let + nested tuple pattern in match
+  Array::push(progs, "export let m: () -> Int = () -> { let (a, b) = (1, 2); match (a, b) { (0, _) => 0, (x, y) => x + y } }")
+  // trait + impl block
+  Array::push(progs, "trait Show { show: (Self) -> Int }\nstruct W { v: Int }\nimpl Show for W { show: (self) -> Int = self.v }\nexport let m: () -> Int = () -> { Show::show(W::{ v: 7 }) }")
+  // string interpolation postfix
+  Array::push(progs, "export let m: () -> String = () -> { let n = 3; \"n=${n}\" }")
+  let mut i = 0
+  while i < Array::length(progs) { acc = acc + cov_sx_parse(Array::get(progs, i)); i = i + 1 }
+  acc
+}

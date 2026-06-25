@@ -192,8 +192,8 @@ in-scope）を直接叩ける。型/trait/env に加え以下も edge-case 入�
 
 #### 80% 達成（no-DCE merged source + direct-call drivers）
 
-**分岐 5406/6694 (80.76%)**・関数 1037/1176 (88.18%) に到達（下限ガード 80% =
-5356 に対し +50 分岐のマージン）。
+**分岐 5439/6694 (81.25%)**・関数 1037/1176 (88.18%) に到達（下限ガード 80% =
+5356 に対し +83 分岐のマージン）。
 74% で頭打ちだった主因（コンパイラ自身の unit test 120/148 が builtins⇄checker
 の循環 re-export で FS-compile 不能）を、**循環 re-export を直さずに**回避した。
 
@@ -238,6 +238,17 @@ corpus acc.json に (fn_name, local_branch_index) キーで union する。分�
     関数名で union するため、merged source 内に**重複定義**を持つ helper
     (`strip_trailing_cr`/`parse_struct_fields_rest` 等) は local-index がずれて
     点灯しない — driver は unique-named 関数に限定する。
+  - `cov_syntax.vibe`: parser を corpus が踏まない arm へ — slice 記法
+    (`a[:]`/`a[1:]`/`a[:2]`)、block-local `let rec`/`let mut`/enum/struct
+    (`parse_impl_block`)、if/else-if・is-pattern・match expression mode
+    (`parse_impl_dispatch`)。`load_and_parse` で parse のみ走らせ error は握り潰す。
+  - `cov_exprwalk.vibe`: unique な再帰 Expr/Pat walker を全 variant 構築で直接叩く
+    — `is_mut_captured_in`(`||` 短絡の else 側・`let n==name` shadowing arm)、
+    `rewrite_import_alias_expr`、`wrap_placeholder_arg`、`pat_binds_name`(全 Pat
+    variant)。Expr/Pat コンストラクタを手で組むため compile 不要で全 arm を踏む
+    (`pat_binds_name`/`wrap_placeholder_arg` は 0 dark まで到達) (+25)。注:
+    whole-program compile を増やしても corpus が飽和済みで +0〜+1（実測で確認）—
+    伸びるのは「特定 helper/walker を直接呼ぶ」driver に限る。
 - **manifest-header cache** (`coverage_selfhost_manifestcache.sh`): 非 special な
   manifest project を cold/warm/部分 invalidation で FS-compile し、
   `matches_cached_file_spec`/`try_collect_manifest_source_groups_fs`/

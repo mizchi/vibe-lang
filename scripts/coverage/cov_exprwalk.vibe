@@ -1,0 +1,108 @@
+
+// #cov expr-walk driver: is_mut_captured_in / rewrite_import_alias_expr /
+// wrap_placeholder_arg are unique recursive Expr walkers whose per-variant arms
+// the corpus only partially exercises (real ASTs never hit every shape). Build one
+// Expr of each variant they branch on and feed it through all three directly.
+let cov_ew_mut: (Expr) -> Int = (e) -> { if is_mut_captured_in(e, "x") { 1 } else { 0 } }
+let cov_ew_rw: (Expr, Array[(String, String)]) -> Int = (e, al) -> {
+  match rewrite_import_alias_expr(e, al) { _ => 1 }
+}
+let cov_ew_wrap: (Expr) -> Int = (e) -> { match wrap_placeholder_arg(e) { _ => 1 } }
+
+let cov_ew_all: (Expr, Array[(String, String)]) -> Int = (e, al) -> {
+  cov_ew_mut(e) + cov_ew_rw(e, al) + cov_ew_wrap(e)
+}
+let cov_ew_proj: (Expr) -> Int = (e) -> { if expr_projects_or_matches("x", e) { 1 } else { 0 } }
+let cov_ew_pat: (Pat) -> Int = (p) -> { if pat_binds_name(p, "x") { 1 } else { 0 } }
+
+export let cov_exprwalk_main: () -> Int = () -> {
+  let mut acc = 0
+  let al = Array::slice([("x", "y")], 0, 1)        // alias map [("x","y")]
+  let noexpr = Array::slice([EUnit], 0, 0)          // empty Array[Expr]
+  let xid = EIdent("x")
+  let ph = EIdent("_")
+  let es = Array::slice([xid], 0, 0)                 // empty Array[Expr]
+  Array::push(es, xid)
+  // one Expr per branched variant (leaves + every recursive shape)
+  let progs = Array::slice([EUnit], 0, 0)
+  Array::push(progs, EInt(1))
+  Array::push(progs, EFloat(1.0))
+  Array::push(progs, EString("s"))
+  Array::push(progs, EBool(true))
+  Array::push(progs, EUnit)
+  Array::push(progs, xid)
+  Array::push(progs, ph)
+  Array::push(progs, ETuple(es))
+  Array::push(progs, EArray(es))
+  Array::push(progs, ERecord(Array::slice([("f", xid)], 0, 1)))
+  Array::push(progs, EMap(Array::slice([("k", xid)], 0, 1)))
+  Array::push(progs, EIf(xid, EInt(1), EInt(2)))
+  Array::push(progs, ELet("a", xid, EIdent("a")))
+  Array::push(progs, ELetRec("a", xid, EIdent("a")))
+  Array::push(progs, ELetMut("a", xid, EAssign("a", EInt(1), EUnit)))
+  Array::push(progs, EAssign("x", EInt(1), EUnit))
+  Array::push(progs, EAssignOp("+", "x", EInt(1), EUnit))
+  Array::push(progs, ESeq(xid, EUnit))
+  Array::push(progs, EWhile(xid, EUnit))
+  Array::push(progs, EForIn("i", None, xid, EUnit))
+  Array::push(progs, ECall(EIdent("f"), Array::slice([xid, ph], 0, 2)))
+  Array::push(progs, EBinOp("+", xid, ph))
+  Array::push(progs, EBinOp("+", EInt(1), EInt(2)))
+  Array::push(progs, EUnaryOp("-", xid))
+  Array::push(progs, EDot(ph, "field"))
+  Array::push(progs, EThrow(xid))
+  Array::push(progs, EReturn(xid))
+  Array::push(progs, EBreak(Some(xid)))
+  Array::push(progs, EBreak(None))
+  Array::push(progs, EContinue(Array::slice([xid], 0, 1)))
+  Array::push(progs, ESpread(xid))
+  Array::push(progs, EStringInterp(Array::slice(["a", "b"], 0, 2)))
+  // second-position / shadowing shapes: drive the `||` short-circuit's else side
+  // and the `let n == name` shadowing arms of is_mut_captured_in.
+  Array::push(progs, EBinOp("+", EInt(1), xid))          // x in rhs only
+  Array::push(progs, EIf(EInt(0), EInt(1), xid))         // x in else only
+  Array::push(progs, EIf(EInt(0), xid, EInt(1)))         // x in then only
+  Array::push(progs, ECall(EIdent("f"), Array::slice([EInt(1), xid], 0, 2)))  // x in later arg
+  Array::push(progs, ECall(xid, noexpr))                 // x in callee
+  Array::push(progs, ELet("x", EInt(1), EIdent("x")))    // shadowing: n == name
+  Array::push(progs, ELetRec("x", EInt(1), EIdent("x"))) // shadowing
+  Array::push(progs, ELetMut("x", EInt(1), EIdent("x"))) // shadowing
+  Array::push(progs, EForIn("i", None, EInt(0), xid))    // x in body only
+  Array::push(progs, EWhile(EInt(0), xid))               // x in body only
+  Array::push(progs, ESeq(EInt(0), xid))                 // x in second only
+  Array::push(progs, EAssign("y", xid, EUnit))           // x in assigned value
+  let mut i = 0
+  while i < Array::length(progs) { acc = acc + cov_ew_all(Array::get(progs, i), al); i = i + 1 }
+
+  // expr_projects_or_matches: EIdent / EDot / EMatch / EHandle (+ default)
+  let arms = Array::slice([(PWild, EUnit)], 0, 1)         // one arm [(PWild, EUnit)]
+  let pexprs = Array::slice([EUnit], 0, 0)
+  Array::push(pexprs, EIdent("x"))
+  Array::push(pexprs, EIdent("z"))
+  Array::push(pexprs, EDot(EIdent("x"), "f"))
+  Array::push(pexprs, EMatch(EIdent("x"), arms))
+  Array::push(pexprs, EHandle(EIdent("x"), arms))
+  Array::push(pexprs, EInt(1))
+  let mut j = 0
+  while j < Array::length(pexprs) { acc = acc + cov_ew_proj(Array::get(pexprs, j)); j = j + 1 }
+
+  // pat_binds_name: every Pat variant, with the bound name present and absent
+  let pats = Array::slice([PWild], 0, 0)
+  Array::push(pats, PWild)
+  Array::push(pats, PInt(1))
+  Array::push(pats, PString("s"))
+  Array::push(pats, PBool(true))
+  Array::push(pats, PBind("x"))
+  Array::push(pats, PBind("y"))
+  Array::push(pats, PCtor("C", Array::slice([PBind("x")], 0, 1)))
+  Array::push(pats, PCtor("C", Array::slice([PWild], 0, 1)))
+  Array::push(pats, PTuple(Array::slice([PBind("x")], 0, 1)))
+  Array::push(pats, PTuple(Array::slice([PWild], 0, 1)))
+  Array::push(pats, POr(PBind("x"), PWild))
+  Array::push(pats, POr(PWild, PBind("x")))
+  Array::push(pats, PStruct("S", Array::slice([("f", PBind("x"))], 0, 1)))
+  Array::push(pats, PStruct("S", Array::slice([("f", PWild)], 0, 1)))
+  let mut k = 0
+  while k < Array::length(pats) { acc = acc + cov_ew_pat(Array::get(pats, k)); k = k + 1 }
+  acc
+}
