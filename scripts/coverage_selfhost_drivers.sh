@@ -167,6 +167,7 @@ run_driver cov_fscache_main    scripts/coverage/cov_fscache.vibe    fscache     
 run_driver cov_parser2_main    scripts/coverage/cov_parser2.vibe    parser2     # parser error/exotic arms via malformed+rare syntax through load_and_parse
 run_driver cov_walker2_main    scripts/coverage/cov_walker2.vibe    walker2     # print_expr/print_stmt + Stmt/Expr/Pat predicate walkers (full-variant)
 run_driver cov_checker_main    scripts/coverage/cov_checker.vibe    checker     # unify/occurs_in/subst_apply/subst_lookup + types_equal deep residual
+run_driver cov_transform_main  scripts/coverage/cov_transform.vibe  transform   # resolve_type_expr/type_contains_fn/env_lookup/trait_supers/rewrite_*/namespace + Pat/TypeExpr walkers
 rm -f _build/vibe_selfhost_* 2>/dev/null || true
 
 now=$(python3 -c "import json;print(sum(json.load(open('$ACC'))['br']))")

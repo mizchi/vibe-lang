@@ -1,0 +1,88 @@
+
+// #cov transform/IR + type-resolve driver: drive the unique TypeExpr / TypeEnv /
+// Stmt / Pat transform walkers directly across every variant — resolve_type_expr,
+// type_contains_fn, rewrite_private_type_expr (TypeExpr); env_lookup, trait_supers
+// (TypeEnv); rewrite_import_alias_stmt, rewrite_imported_value_stmt_to_local,
+// namespace_private_value_stmts (Stmt); rewrite_private_type_ctor_pat,
+// qualify_handle_arm_pattern (Pat); lookup_assert (builtin names); add_dep.
+let t_rte: (TypeExpr) -> Int = (te) -> { match resolve_type_expr(te, cov_tx_typedefs()) { _ => 1 } }
+let t_cfn: (TypeExpr) -> Int = (te) -> { if type_contains_fn(te) { 1 } else { 0 } }
+let t_rpte: (TypeExpr) -> Int = (te) -> { match rewrite_private_type_expr(te, cov_tx_renames()) { _ => 1 } }
+let t_env: (TypeEnv) -> Int = (e) -> { match env_lookup(e, "x") { Some(_) => 1, None => 0 } }
+let t_sup: (TypeEnv) -> Int = (e) -> { Array::length(trait_supers(e, "Ord")) }
+let t_ras: (Stmt) -> Int = (s) -> { match rewrite_import_alias_stmt(s, cov_tx_aliases()) { _ => 1 } }
+let t_riv: (Stmt) -> Int = (s) -> { match rewrite_imported_value_stmt_to_local(s, "m", "p") { Some(_) => 1, None => 0 } }
+let t_pat: (Pat) -> Int = (pp) -> { match rewrite_private_type_ctor_pat(pp, cov_tx_renames(), cov_tx_renames()) { _ => 1 } }
+let t_qual: (Pat) -> Int = (pp) -> { match qualify_handle_arm_pattern("Eff", pp) { _ => 1 } }
+let t_asrt: (String) -> Int = (n) -> { match lookup_assert(n) { Some(_) => 1, None => 0 } }
+
+let cov_tx_typedefs: () -> Array[TypeDef] = () -> {
+  let a = Array::slice([TDStruct("S", Array::slice([("f", CtInt)], 0, 1))], 0, 1)
+  Array::push(a, TDEnum("E", Array::slice([""], 0, 0), Array::slice([("A", Array::slice([CtInt], 0, 0))], 0, 1)))
+  Array::push(a, TDAlias("T", Array::slice([""], 0, 0), CtInt))
+  a
+}
+let cov_tx_renames: () -> Array[(String, String)] = () -> { Array::slice([("E", "M_E")], 0, 1) }
+let cov_tx_aliases: () -> Array[(String, String)] = () -> { Array::slice([("x", "y")], 0, 1) }
+
+export let cov_transform_main: () -> Int = () -> {
+  let mut acc = 0
+  // TypeExpr battery
+  let tes = Array::slice([TyUnit], 0, 0)
+  Array::push(tes, TyUnit); Array::push(tes, TyName("Int")); Array::push(tes, TyName("E"))
+  Array::push(tes, TyApp("Array", Array::slice([TyName("Int")], 0, 1)))
+  Array::push(tes, TyApp("E", Array::slice([TyName("Int")], 0, 1)))
+  Array::push(tes, TyFn(Array::slice([TyName("Int")], 0, 1), TyName("Bool"), None))
+  Array::push(tes, TyFn(Array::slice([TyName("Int")], 0, 1), TyName("Bool"), Some("Eff")))
+  Array::push(tes, TyTuple(Array::slice([TyName("Int"), TyName("Bool")], 0, 2)))
+  let mut i = 0
+  while i < Array::length(tes) {
+    let te = Array::get(tes, i)
+    acc = acc + t_rte(te) + t_cfn(te) + t_rpte(te)
+    i = i + 1
+  }
+  // TypeEnv battery
+  let envs = Array::slice([EnvEmpty], 0, 0)
+  Array::push(envs, EnvEmpty)
+  Array::push(envs, EnvBind("x", CtInt, EnvEmpty))
+  Array::push(envs, EnvBind("z", CtInt, EnvBind("x", CtBool, EnvEmpty)))
+  Array::push(envs, EnvFlat(Array::slice([("x", CtInt)], 0, 1)))
+  Array::push(envs, EnvTraitDef("Ord", Array::slice(["Eq"], 0, 1), false, EnvEmpty))
+  Array::push(envs, EnvTraitImpl("Ord", CtInt, EnvTraitDef("Ord", Array::slice(["Eq"], 0, 1), false, EnvEmpty)))
+  let mut j = 0
+  while j < Array::length(envs) { let e = Array::get(envs, j); acc = acc + t_env(e) + t_sup(e); j = j + 1 }
+  // Stmt battery
+  let intty = TyName("Int")
+  let ss = Array::slice([SExpr(EUnit)], 0, 0)
+  Array::push(ss, SLet(false, false, "x", None, EIdent("x")))
+  Array::push(ss, SLet(true, false, "x", Some(intty), EIdent("x")))
+  Array::push(ss, SLetMut("x", None, EIdent("x")))
+  Array::push(ss, SLetPat(PBind("x"), EIdent("x")))
+  Array::push(ss, SExpr(ECall(EIdent("x"), Array::slice([EIdent("x")], 0, 1))))
+  Array::push(ss, STest("t", EIdent("x"))); Array::push(ss, SBench("b", EIdent("x")))
+  Array::push(ss, SImport("m", Array::slice([("x", Some("y"))], 0, 1)))
+  Array::push(ss, SExport(Array::slice(["x"], 0, 1)))
+  let mut k = 0
+  while k < Array::length(ss) { let s = Array::get(ss, k); acc = acc + t_ras(s) + t_riv(s); k = k + 1 }
+  acc = acc + Array::length(namespace_private_value_stmts("M", ss))
+  // Pat battery
+  let ps = Array::slice([PWild], 0, 0)
+  Array::push(ps, PWild); Array::push(ps, PBind("x")); Array::push(ps, PInt(1))
+  Array::push(ps, PCtor("E", Array::slice([PBind("y")], 0, 1)))
+  Array::push(ps, PTuple(Array::slice([PBind("x"), PWild], 0, 2)))
+  Array::push(ps, POr(PCtor("A", Array::slice([PWild], 0, 0)), PWild))
+  Array::push(ps, PStruct("S", Array::slice([("f", PBind("x"))], 0, 1)))
+  let mut m = 0
+  while m < Array::length(ps) { let pp = Array::get(ps, m); acc = acc + t_pat(pp) + t_qual(pp); m = m + 1 }
+  // lookup_assert names
+  let ns = Array::slice([""], 0, 0)
+  Array::push(ns, "assert"); Array::push(ns, "assert_true"); Array::push(ns, "assert_eq"); Array::push(ns, "nope")
+  let mut q = 0
+  while q < Array::length(ns) { acc = acc + t_asrt(Array::get(ns, q)); q = q + 1 }
+  // add_dep: new dep / duplicate dep
+  let deps = Array::slice([""], 0, 0)
+  let d1 = add_dep(deps, "a", "x")
+  let d2 = add_dep(d1, "a", "x")
+  acc = acc + Array::length(d2)
+  acc
+}
