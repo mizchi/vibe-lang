@@ -190,6 +190,8 @@ run_driver cov_typeeq_main     scripts/coverage/cov_typeeq.vibe     typeeq      
 run_driver cov_grind_main      scripts/coverage/cov_grind.vibe      grind       # collect_private_type_renames exported-skip arms + collect_needed_paths_from_manifest_headers rows-lookup
 run_driver cov_grind2_main     scripts/coverage/cov_grind2.vibe     grind2      # namespace_private_value_stmts STest/SBench/SLetPat/SExternLet ref-rewrite + parse_perform/generic/call_arg primaries
 run_driver cov_margin_main     scripts/coverage/cov_margin.vibe     margin      # parse_perform_primary stop-tokens + parse_call_arg ->/~=/?= forms + parse_generic_fn_primary bracket-depth
+run_driver cov_parser5_main    scripts/coverage/cov_parser5.vibe    parser5     # parse_type_impl modes x type forms + parse_pattern/parse_export_stmt/parse_one_param internals
+run_driver cov_namespace3_main scripts/coverage/cov_namespace3.vibe namespace3  # namespace_private_value_stmts SModule/SImpl/SEffectDef/SReExport/SAliasDecl arms
 rm -f _build/vibe_selfhost_* 2>/dev/null || true
 
 now=$(python3 -c "import json;print(sum(json.load(open('$ACC'))['br']))")
