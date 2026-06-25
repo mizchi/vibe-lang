@@ -94,10 +94,27 @@ struct HostState {
     capture_stdout: bool,
     captured_stdout: Vec<u8>,
     start_instant: Instant,
+    // debugger breakpoints (DAP P1): set of function names to pause at (from
+    // VIBE_BREAK), and whether to auto-continue without reading stdin (not a
+    // TTY, or VIBE_BREAK_AUTO=1). Empty set => the `vibe::dbg_break` hook is a
+    // no-op even when the module imports it.
+    break_set: Arc<Vec<String>>,
+    break_auto: bool,
 }
 
 impl HostState {
     fn new(args: Vec<String>, limits: StoreLimits) -> Self {
+        let break_set: Vec<String> = std::env::var("VIBE_BREAK")
+            .ok()
+            .map(|s| {
+                s.split(',')
+                    .map(|p| p.trim().to_string())
+                    .filter(|p| !p.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let break_auto = std::env::var("VIBE_BREAK_AUTO").as_deref() == Ok("1")
+            || !atty_stdin();
         Self {
             last_error: None,
             args: Arc::new(args),
@@ -108,6 +125,8 @@ impl HostState {
             capture_stdout: false,
             captured_stdout: Vec::new(),
             start_instant: Instant::now(),
+            break_set: Arc::new(break_set),
+            break_auto,
         }
     }
 
@@ -115,6 +134,13 @@ impl HostState {
         self.last_error = Some(format!("{e}"));
         -1
     }
+}
+
+// True when stdin is an interactive terminal. Used by the debugger breakpoint
+// hook to decide whether to read a line (interactive pause) or auto-continue.
+fn atty_stdin() -> bool {
+    use std::io::IsTerminal;
+    std::io::stdin().is_terminal()
 }
 
 fn encode_tagged_int(value: i64) -> i64 {
@@ -161,6 +187,9 @@ fn engine_config() -> Config {
     cfg.wasm_simd(true);
     cfg.wasm_relaxed_simd(true);
     cfg.wasm_tail_call(true);
+    // debugger breakpoint (DAP P1): wasm backtraces are enabled by default in
+    // wasmtime, so `vibe::dbg_break` can name the entering function and the call
+    // stack via the name section without extra config.
     cfg
 }
 
@@ -320,6 +349,11 @@ fn run(args: Vec<String>) -> Result<i32> {
             // Recover the code and propagate as our exit status.
             if let Some(ExitTrap(code)) = e.downcast_ref::<ExitTrap>() {
                 return Ok(*code);
+            }
+            // `vibe::dbg_break` user abort (`q` at an interactive breakpoint).
+            if e.downcast_ref::<BreakAbort>().is_some() {
+                eprintln!("moonrun_wt: run aborted at breakpoint");
+                return Ok(130);
             }
             // A guest trap (e.g. an uncaught vibe `throw`/type error surfacing as
             // a Wasm exception) should read as a tool error, not a runner crash —
@@ -889,6 +923,89 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
             Ok(())
         },
     )?;
+    // debugger breakpoint (DAP P1): the break-mode codegen emits a bare
+    // `call vibe::dbg_break` at each user function entry. We capture the wasm
+    // backtrace, name the entering function (the innermost user frame via the
+    // name section), and pause when it is in the VIBE_BREAK set, printing the
+    // call stack, then continue. Always registered (harmless no-op when the
+    // module doesn't import it, or when VIBE_BREAK is empty).
+    linker.func_wrap(
+        "vibe",
+        "dbg_break",
+        |caller: Caller<'_, HostState>| -> Result<()> {
+            vibe_dbg_break(caller)
+        },
+    )?;
+    Ok(())
+}
+
+// Capture frame names from the wasm backtrace, innermost first. Frame 0 is the
+// `vibe::dbg_break` import call site (the entering user function). Unnamed
+// frames are skipped. Returns the named frame list (e.g. ["helper", "main"]).
+fn dbg_break_frames(caller: &Caller<'_, HostState>) -> Vec<String> {
+    let bt = wasmtime::WasmBacktrace::capture(caller);
+    let mut out = Vec::new();
+    for frame in bt.frames() {
+        if let Some(name) = frame.func_name() {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
+// Sentinel: user typed `q` at an interactive breakpoint to abort the run. The
+// run loop maps it to exit code 130 (128 + SIGINT), like a Ctrl-C.
+#[derive(Debug)]
+struct BreakAbort;
+
+impl std::fmt::Display for BreakAbort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "breakpoint: aborted by user")
+    }
+}
+
+impl std::error::Error for BreakAbort {}
+
+fn vibe_dbg_break(caller: Caller<'_, HostState>) -> Result<()> {
+    let break_set = Arc::clone(&caller.data().break_set);
+    if break_set.is_empty() {
+        return Ok(());
+    }
+    let frames = dbg_break_frames(&caller);
+    // The entering function is the innermost named frame (the body that just
+    // called dbg_break). If we can't name it, there is nothing to match on.
+    let entering = match frames.first() {
+        Some(n) => n.clone(),
+        None => return Ok(()),
+    };
+    if !break_set.iter().any(|b| *b == entering) {
+        return Ok(());
+    }
+    {
+        let stderr = std::io::stderr();
+        let mut h = stderr.lock();
+        let _ = writeln!(h, "breakpoint hit: {entering}");
+        for f in &frames {
+            let _ = writeln!(h, "  at {f}");
+        }
+        let _ = h.flush();
+    }
+    let auto = caller.data().break_auto;
+    if auto {
+        return Ok(());
+    }
+    // Interactive: read one line from stdin. Empty => continue; `q` => abort.
+    use std::io::BufRead;
+    let mut line = String::new();
+    let stdin = std::io::stdin();
+    let n = stdin.lock().read_line(&mut line).unwrap_or(0);
+    if n == 0 {
+        // EOF on stdin: behave like auto-continue.
+        return Ok(());
+    }
+    if line.trim() == "q" {
+        return Err(BreakAbort.into());
+    }
     Ok(())
 }
 

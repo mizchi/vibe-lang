@@ -108,7 +108,7 @@ export let wasi_memory_min_pages_for_heap: (Int) -> Int = (heap_start) -> {
   }
 }
 
-export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String, String)], Array[(String, String, Int, Int)], Bool, Bool, Bool, Bool) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, linked_imports, library_mode, enable_rc, coverage, debug_trace) -> {
+export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String, String)], Array[(String, String, Int, Int)], Bool, Bool, Bool, Bool, Bool) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, linked_imports, library_mode, enable_rc, coverage, debug_trace, debug_break) -> {
   let fn_names_list = lc_fresh_string_array()
   let fn_param_counts = lc_fresh_int_array()
   let fn_needs_env_list = lc_fresh_bool_array()
@@ -532,6 +532,16 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     -1
   }
   let profiler_now_us_import_idx = if need_profiler_now_us_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // debugger breakpoint (DAP P1): in break mode emit a conditional `vibe::dbg_break`
+  // host import (() -> ()) called at each user-function entry. Default OFF, so
+  // num_imported_funcs / func_offset are unchanged for normal builds (fixpoint).
+  let dbg_break_import_idx = if debug_break {
     let idx = next_import_idx
     next_import_idx = next_import_idx + 1
     idx
@@ -1265,6 +1275,15 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     } else {
       ()
     }
+    // debugger breakpoint (DAP P1): in break mode, call the host hook
+    // `vibe::dbg_break` at this user function's entry. The hook inspects the
+    // wasm backtrace to name the entering function and pauses when it is in the
+    // breakpoint set. Stack-neutral (() -> ()), so prepending is safe.
+    if debug_break {
+      emit_call(body_buf, dbg_break_import_idx)
+    } else {
+      ()
+    }
     let local_names = lc_fresh_string_array()
     let fn_name_dbg = Array::get(fn_names_list, bi)
     let rc_drops = Array::slice([
@@ -1867,6 +1886,12 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     bytebuf_push(import_content, 0)
     leb128_encode_u32(import_content, 5)
   }
+  if dbg_break_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "dbg_break")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 2)
+  }
   let mut li_emit = 0
   while li_emit < Array::length(linked_imports) {
     let (lmod, lfn, lparams, _) = Array::get(linked_imports, li_emit)
@@ -2123,13 +2148,13 @@ export let compile_wasi_module_rc_impl: (Array[Stmt], String) -> Bytes with { Er
     ("", "")
   ], 0, 0), Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, true, false, false)
+  ], 0, 0), false, true, false, false, false)
 }
 
 export let compile_wasi_module_with_sources_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
   compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, false, false, false)
+  ], 0, 0), false, false, false, false, false)
 }
 
 // Coverage build (#cov): compile with function-level hit instrumentation +
@@ -2138,7 +2163,7 @@ export let compile_wasi_module_with_sources_impl: (Array[Stmt], String, Array[(S
 export let compile_wasi_module_with_sources_coverage_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
   compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, false, true, false)
+  ], 0, 0), false, false, true, false, false)
 }
 
 // Trace build (debugger / DAP P1 groundwork): compile with function-call
@@ -2147,5 +2172,14 @@ export let compile_wasi_module_with_sources_coverage_impl: (Array[Stmt], String,
 export let compile_wasi_module_with_sources_trace_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
   compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, false, false, true)
+  ], 0, 0), false, false, false, true, false)
+}
+
+// Break build (debugger / DAP P1): compile with `vibe::dbg_break` host-hook
+// instrumentation at each user function entry. Same as
+// compile_wasi_module_with_sources_impl but with debug_break enabled.
+export let compile_wasi_module_with_sources_break_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
+  compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
+    ("", "", 0, 0)
+  ], 0, 0), false, false, false, false, true)
 }

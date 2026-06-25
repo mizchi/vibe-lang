@@ -14,6 +14,9 @@
 #   vibe run     <file.vibe> [entry]      compile (resolving imports) then run
 #   vibe run --trace <file.vibe> [entry]  run + print the function-call trace
 #                                         (each entry annotated with file:line)
+#   vibe run --break <fn>[,<fn>...] <file.vibe> [entry]
+#                                         pause at each named function's entry,
+#                                         print the call stack, then continue
 #   vibe compile <file.vibe> -o <out>     compile to a .wasm
 #   vibe build   <file.vibe> -o <out>     alias of compile
 #   vibe check   <file.vibe>              parse + typecheck (no output kept)
@@ -176,19 +179,22 @@ pick_cli() {
 # Compile $1 (.vibe) → $2 (.wasm) with entry $3, resolving imports from the FS.
 # Returns non-zero on a parse/type/codegen error so callers can report cleanly.
 compile_to() {
-  local src="$1" out="$2" entry="$3" debug="${4:-}"
+  local src="$1" out="$2" entry="$3" debug="${4:-}" brk="${5:-}"
   local cli; cli="$(pick_cli)"
   mkdir -p "$(dirname "$out")"
   rm -f "$out" "$out.diag"
   local rerr; rerr="$(mktemp -t vibe-rerr-XXXXXX)"
   # `vibe run --trace` sets debug=1 so the compiler instruments user-function
   # entries (VIBE_DEBUG=1 -> `vibe.trace` custom section + in-memory trace log).
-  # Default (no --trace) leaves VIBE_DEBUG unset, so codegen is unchanged.
+  # `vibe run --break` sets brk=1 so the compiler emits a `vibe::dbg_break` host
+  # hook at each user-function entry (VIBE_DEBUG_BREAK=1). Default (neither flag)
+  # leaves both unset, so codegen is unchanged.
   # A variable assignment produced by expansion ($debug_env) is NOT treated as
   # an assignment prefix by bash, so route it through `env` (which parses
   # VAR=val arguments). Empty $debug_env expands to nothing → unchanged default.
   local debug_env=""
   [ "$debug" = "1" ] && debug_env="VIBE_DEBUG=1"
+  [ "$brk" = "1" ] && debug_env="VIBE_DEBUG_BREAK=1"
   env VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw $debug_env \
     "$RUNNER" "$cli" "$src" "$out" "$entry" >/dev/null 2>"$rerr" || true
   if [ -s "$out" ]; then
@@ -213,20 +219,25 @@ case "$cmd" in
     # execution-trace instrumentation and dump the entry sequence (each line
     # annotated with its source location via the funcmap, like trap frames).
     trace=0
+    brk=0
+    break_spec=""
     args=()
-    for a in "$@"; do
-      case "$a" in
-        --trace) trace=1 ;;
-        *) args+=("$a") ;;
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --trace) trace=1; shift ;;
+        --break) brk=1; break_spec="$2"; shift 2 ;;
+        --break=*) brk=1; break_spec="${1#--break=}"; shift ;;
+        *) args+=("$1"); shift ;;
       esac
     done
     set -- "${args[@]}"
-    [ "$#" -ge 1 ] || die "usage: vibe run [--trace] <file.vibe> [entry]"
+    [ "$#" -ge 1 ] || die "usage: vibe run [--trace] [--break <fn>[,<fn>...]] <file.vibe> [entry]"
+    [ "$brk" = "1" ] && [ -z "$break_spec" ] && die "usage: vibe run --break <fn>[,<fn>...] <file.vibe> [entry]"
     src="$1"; entry="${2:-main}"
     [ -f "$src" ] || die "not found: $src"
     out="$(mktemp -t vibe-run-XXXXXX.wasm)"
     trap 'rm -f "$out" "$out.funcmap"' EXIT
-    compile_to "$src" "$out" "$entry" "$trace" || die "compilation failed: $src"
+    compile_to "$src" "$out" "$entry" "$trace" "$brk" || die "compilation failed: $src"
     # debugger テーマ3 / M2: runtime traps point at the SOURCE LINE. The wasm
     # "name" custom section already makes trap backtrace frames name the user
     # function (e.g. `<unknown>!boom`). The FS compile also wrote a `<out>.funcmap`
@@ -241,7 +252,13 @@ case "$cmd" in
     status=0
     trace_env=""
     [ "$trace" = "1" ] && trace_env="VIBE_TRACE_OUT=1"
-    env $trace_env "$RUNNER" "$out" 2>"$rerr" || status=$?
+    # `--break`: pass the breakpoint spec via VIBE_BREAK and keep stdin attached
+    # so interactive pausing works (the runner auto-continues when stdin is not a
+    # TTY or VIBE_BREAK_AUTO=1). The expansion-produced assignment must go through
+    # `env`, not as a bare `$var` prefix (bash would treat it as a command).
+    break_env=""
+    [ "$brk" = "1" ] && break_env="VIBE_BREAK=$break_spec"
+    env $trace_env $break_env "$RUNNER" "$out" 2>"$rerr" || status=$?
     if [ -s "$out.funcmap" ] && [ -s "$rerr" ]; then
       VIBE_FUNCMAP="$out.funcmap" VIBE_SRCBASE="$(basename "$src")" \
         awk '
@@ -266,6 +283,18 @@ case "$cmd" in
               sub(/[ \t\r\n].*$/, "", tname)
               if (tname in fmline) {
                 printf "%s (%s:%s)\n", $0, base, fmline[tname]
+                next
+              }
+              print $0
+              next
+            }
+            # A breakpoint stack frame names a user function after "  at "
+            # (--break dump), e.g. "  at helper":
+            if (substr($0, 1, 5) == "  at ") {
+              bname = substr($0, 6)
+              sub(/[ \t\r\n].*$/, "", bname)
+              if (bname in fmline) {
+                printf "%s (%s:%s)\n", $0, base, fmline[bname]
                 next
               }
               print $0
@@ -589,7 +618,7 @@ case "$cmd" in
     esac
     ;;
   help|--help|-h)
-    sed -n '13,28p' "$LAUNCHER" | sed 's/^# \{0,1\}//'
+    sed -n '13,33p' "$LAUNCHER" | sed 's/^# \{0,1\}//'
     ;;
   *)
     die "unknown command: $cmd (try 'vibe help')"
