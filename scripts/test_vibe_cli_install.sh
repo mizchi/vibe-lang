@@ -107,6 +107,22 @@ if command -v git >/dev/null 2>&1; then
   check "vibe fetch git+ exit" "0" "$rc"
   check "vibe fetch git+ records commit" "yes" "$(grep -q 'git:' "$gproj/vibe.lock" && echo yes || echo no)"
   check "vibe run git+ dep" "42" "$("$VIBE" run "$gproj/app.vibe" 2>/dev/null | tr -dc '0-9')"
+
+  # transitive: project -> A (git) -> B (git); A declares B in its own vibe.deps
+  rb="$WORK/rb"; mkdir -p "$rb"
+  printf 'export let base = (x: Int) -> Int { x * 10 }\n' > "$rb/index.vibe"
+  ( cd "$rb" && git init -q && git config user.email t@t && git config user.name t && git add -A && git commit -q -m b )
+  ra="$WORK/ra"; mkdir -p "$ra"
+  printf 'base git+file://%s\n' "$rb" > "$ra/vibe.deps"
+  printf 'import ./deps/base/index.vibe { base }\nexport let mid = (x: Int) -> Int { base(x) + 2 }\n' > "$ra/index.vibe"
+  ( cd "$ra" && git init -q && git config user.email t@t && git config user.name t && git add -A && git commit -q -m a )
+  tproj="$WORK/tproj"; mkdir -p "$tproj"
+  printf 'a git+file://%s\n' "$ra" > "$tproj/vibe.deps"
+  printf 'import ./deps/a/index.vibe { mid }\nexport let main = () -> Int { mid(4) }\n' > "$tproj/app.vibe"
+  "$VIBE" fetch "$tproj" >/dev/null 2>&1 && rc=0 || rc=$?
+  check "vibe fetch transitive exit" "0" "$rc"
+  check "vibe fetch vendored nested dep" "yes" "$([ -s "$tproj/deps/a/deps/base/index.vibe" ] && echo yes || echo no)"
+  check "vibe run transitive dep tree" "42" "$("$VIBE" run "$tproj/app.vibe" 2>/dev/null | tr -dc '0-9')"
 else
   echo "info: git not available; skipping git+ fetch assertions"
 fi

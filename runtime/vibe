@@ -202,6 +202,19 @@ case "$cmd" in
           rm -rf "$gtmp"
           printf '%s\t%s\tgit:%s\n' "$name" "$url" "$gsha" >> "$lock.tmp"
           echo "fetched $name <- $url (git:${gsha:0:12})"
+          # Transitive resolution: if the git dep declares its own dependencies,
+          # vendor them under the dep's own deps/ (relative imports nest), unless
+          # disabled. Guard against runaway recursion with VIBE_FETCH_DEPTH.
+          if [ "${VIBE_NO_TRANSITIVE:-0}" != "1" ] && [ -f "$dir/deps/$name/vibe.deps" ]; then
+            depth="${VIBE_FETCH_DEPTH:-0}"
+            if [ "$depth" -lt "${VIBE_FETCH_MAX_DEPTH:-16}" ]; then
+              echo "  resolving transitive deps of $name"
+              VIBE_FETCH_DEPTH="$((depth + 1))" "$LAUNCHER" fetch "$dir/deps/$name" >/dev/null \
+                || die "transitive fetch failed for $name"
+            else
+              die "transitive dependency depth exceeded at $name (cycle?)"
+            fi
+          fi
           continue
           ;;
       esac
