@@ -1,0 +1,44 @@
+
+// #cov fs2 driver: build_module_source_from_source (source-text -> DCE'd module
+// source; no FS) over several entry/DCE shapes, plus the cold-path arms of the
+// Fs source collectors (collect_all_sources_fs / collect_source_groups_fs) and the
+// persistent-cache loaders (load_persistent_dep_list / load_persistent_type_env)
+// against a real manifest project + missing cache (the None / cold arms). Needs
+// _build/covfs2/{main.vibe,selfhost_sources_manifest.tsv}.
+let f_bms: (String) -> Int = (src) -> {
+  handle { String::length(build_module_source_from_source(src, "m")) } with Error { Throw(_) => 0 }
+}
+let f_all: (String) -> Int = (p) -> {
+  handle { Array::length(collect_all_sources_fs(p)) } with Error { Throw(_) => 0 }
+}
+let f_grp: (String) -> Int = (p) -> {
+  handle { Array::length(collect_source_groups_fs(p)) } with Error { Throw(_) => 0 }
+}
+let f_dep: (String, String) -> Int = (a, b) -> {
+  handle { match load_persistent_dep_list(a, b) { Some(_) => 1, None => 0 } } with Error { Throw(_) => 0 }
+}
+let f_env: (String) -> Int = (p) -> {
+  handle { match load_persistent_type_env(p) { Some(_) => 1, None => 0 } } with Error { Throw(_) => 0 }
+}
+
+export let cov_fs2_main: () -> Int = () -> {
+  let mut acc = 0
+  // build_module_source_from_source: DCE keep/drop, multiple decls, unused private
+  acc = acc + f_bms("export let m: () -> Int = () -> { 1 }")
+  acc = acc + f_bms("let unused: () -> Int = () -> { 9 }\nlet used: () -> Int = () -> { 2 }\nexport let m: () -> Int = () -> { used() }")
+  acc = acc + f_bms("enum E { A; B(Int) }\nlet helper: (E) -> Int = (e) -> { match e { A => 0, B(n) => n } }\nexport let m: () -> Int = () -> { helper(B(3)) }")
+  acc = acc + f_bms("struct S { x: Int }\nexport let m: () -> Int = () -> { S::{ x: 5 }.x }")
+  acc = acc + f_bms("let a: () -> Int = () -> { 1 }\nlet b: () -> Int = () -> { a() }\nlet c: () -> Int = () -> { b() }\nexport let m: () -> Int = () -> { c() }")
+  // cold FS: real manifest project (no cache yet) -> collectors take the
+  // manifest-rows path; loaders find no cache file -> None.
+  let proj = "_build/covfs2/main.vibe"
+  acc = acc + f_all(proj)
+  acc = acc + f_grp(proj)
+  acc = acc + f_dep(proj, "m")
+  acc = acc + f_env(proj)
+  // missing entry -> error/None arms
+  acc = acc + f_all("_build/covfs2/nope.vibe")
+  acc = acc + f_dep("_build/covfs2/nope.vibe", "m")
+  acc = acc + f_env("_build/covfs2/nope.vibe")
+  acc
+}

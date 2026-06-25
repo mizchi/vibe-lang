@@ -1,0 +1,52 @@
+
+// #cov serialize driver: serialize_type (Type -> cache string) and parse_cached_type
+// (cache string -> Type) are an inverse pair; round-tripping every Type variant
+// covers both walkers' arms at once. Plus the grouped-source accumulators
+// (push_grouped_source / ensure_grouped_source_bucket: new-bucket vs existing) and
+// collect_private_type_renames over a private-decl Stmt body.
+let s_rt: (Type) -> Int = (ty) -> {
+  let enc = serialize_type(ty)
+  handle { match parse_cached_type(enc, 0) { _ => String::length(enc) } } with Error { Throw(_) => String::length(enc) }
+}
+
+export let cov_serialize_main: () -> Int = () -> {
+  let mut acc = 0
+  // every Type variant through serialize -> parse
+  let tys = Array::slice([CtInt], 0, 0)
+  Array::push(tys, CtInt); Array::push(tys, CtDouble); Array::push(tys, CtBool)
+  Array::push(tys, CtString); Array::push(tys, CtChar); Array::push(tys, CtUnit)
+  Array::push(tys, CtBytes); Array::push(tys, CtUnknown)
+  Array::push(tys, CtVar(3)); Array::push(tys, CtEnum("E")); Array::push(tys, CtStruct("S"))
+  Array::push(tys, CtArray(CtInt)); Array::push(tys, CtOption(CtBool))
+  Array::push(tys, CtTuple(Array::slice([CtInt, CtBool], 0, 2)))
+  Array::push(tys, CtTuple(Array::slice([CtInt], 0, 0)))                       // empty tuple
+  Array::push(tys, CtFn(Array::slice([CtInt], 0, 1), CtBool, None))
+  Array::push(tys, CtFn(Array::slice([CtInt, CtString], 0, 2), CtUnit, Some("Eff")))
+  Array::push(tys, CtNamed("N", Array::slice([CtInt], 0, 1)))
+  Array::push(tys, CtNamed("M", Array::slice([CtInt], 0, 0)))                  // named no args
+  Array::push(tys, CtArray(CtArray(CtOption(CtInt))))                          // nested recurse
+  Array::push(tys, CtForAll(Array::slice([0], 0, 1), Array::slice([(0, Array::slice([""], 0, 0))], 0, 0), CtVar(0)))
+  let mut i = 0
+  while i < Array::length(tys) { acc = acc + s_rt(Array::get(tys, i)); i = i + 1 }
+  // parse_cached_type error arms: truncated / unknown tag / trailing junk
+  acc = acc + (handle { match parse_cached_type("", 0) { _ => 1 } } with Error { Throw(_) => 0 })
+  acc = acc + (handle { match parse_cached_type("Z", 0) { _ => 1 } } with Error { Throw(_) => 0 })
+  acc = acc + (handle { match parse_cached_type("A", 0) { _ => 1 } } with Error { Throw(_) => 0 })  // array, no elem
+  // grouped-source accumulators: new bucket, then existing bucket
+  let groups = Array::slice([("", Array::slice([("", "")], 0, 0))], 0, 0)
+  push_grouped_source(groups, "g1", "a.vibe", "src_a")
+  push_grouped_source(groups, "g1", "b.vibe", "src_b")    // existing bucket
+  push_grouped_source(groups, "g2", "c.vibe", "src_c")    // new bucket
+  acc = acc + Array::length(groups)
+  let bucket = ensure_grouped_source_bucket(groups, "g1")  // existing
+  acc = acc + Array::length(bucket)
+  let bucket2 = ensure_grouped_source_bucket(groups, "g3") // new
+  acc = acc + Array::length(bucket2)
+  // collect_private_type_renames over a body with private + exported type decls
+  let body = Array::slice([SExpr(EUnit)], 0, 0)
+  Array::push(body, SStruct(false, "Priv", Array::slice([("f", TyName("Int"))], 0, 1)))
+  Array::push(body, SEnum(true, "Pub", Array::slice([""], 0, 0), Array::slice([("A", Array::slice([CtInt], 0, 0))], 0, 1)))
+  Array::push(body, STypeAlias(false, "PrivAlias", Array::slice([""], 0, 0), TyName("Int")))
+  acc = acc + Array::length(collect_private_type_renames("M", body, Array::slice(["Pub"], 0, 1), Array::slice([""], 0, 0)))
+  acc
+}

@@ -149,6 +149,9 @@ printf 'export let c_val: () -> Int = () -> { 5 }\n' > _build/covproj/c.vibe
 # covfs/f.vibe is the real fixture cov_fscache reads its stat-token/fingerprint from.
 mkdir -p _build/covfs
 printf 'export let f: () -> Int = () -> { 123 }\n' > _build/covfs/f.vibe
+mkdir -p _build/covfs2
+printf 'export let m: () -> Int = () -> { 7 }\n' > _build/covfs2/main.vibe
+printf '# group\tpath\ngrp\tmain.vibe\n' > _build/covfs2/selfhost_sources_manifest.tsv
 
 base=$(python3 -c "import json;print(sum(json.load(open('$ACC'))['br']))")
 run_driver cov_async_main      scripts/coverage/cov_async.vibe      async       # inlined async/stream builtins
@@ -169,6 +172,8 @@ run_driver cov_walker2_main    scripts/coverage/cov_walker2.vibe    walker2     
 run_driver cov_checker_main    scripts/coverage/cov_checker.vibe    checker     # unify/occurs_in/subst_apply/subst_lookup + types_equal deep residual
 run_driver cov_transform_main  scripts/coverage/cov_transform.vibe  transform   # resolve_type_expr/type_contains_fn/env_lookup/trait_supers/rewrite_*/namespace + Pat/TypeExpr walkers
 run_driver cov_misc_main       scripts/coverage/cov_misc.vibe       misc        # stmt_section/is_expr_end_token/has_non_pipe_infix_top/check_pattern/module_value_aliases/flatten_module_body
+run_driver cov_fs2_main        scripts/coverage/cov_fs2.vibe        fs2         # build_module_source_from_source + cold collect_all_sources_fs/collect_source_groups_fs/load_persistent_*
+run_driver cov_serialize_main  scripts/coverage/cov_serialize.vibe  serialize   # serialize_type<->parse_cached_type round-trip + grouped-source accumulators + collect_private_type_renames
 rm -f _build/vibe_selfhost_* 2>/dev/null || true
 
 now=$(python3 -c "import json;print(sum(json.load(open('$ACC'))['br']))")
