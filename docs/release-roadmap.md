@@ -37,15 +37,36 @@
 
 残テーマ (3/4/土台) は**共通基盤の不足**がボトルネック。スコープを明確化:
 
-- **source span（行・列）が AST/lexer/parser に未実装** — located 診断、LSP の
-  hover/go-to-def/正確な診断範囲、debugger の source map がすべてこれに依存。
-  lexer→parser→全 AST ノード→checker を貫く大改修で、先に seed 互換性を確保し
-  bootstrap を通す必要がある。**M2/M3 の最初の前提作業**。
-- **selfhost codegen の string 脆弱性** — import-path/string 補間ホットパスで
-  NUL garbage が出る既知の脆さ（テーマ2 2-1b で遭遇、`selfhost_only_gate.sh`
-  step4 コメント）。深い frontend 変更前に codegen 安定化が要る。
-- **codegen の関数 index↔name 対応** — wasm name section（土台B / debugger P0）に
-  必要。imports + 条件付き builtins + user 関数の index 会計を要する。
+### source span 基盤 — 調査結果（2026-06-25）
+
+着手して以下を確定した。**当初想定より進んでいるが、2 つの実ブロッカーがある。**
+
+- **token-level span インフラは既に存在**（`vibe/compiler/syntax/`）:
+  - `lex_with_offsets(source) -> (Array[Token], Array[Int], Array[Int])` —
+    各トークンの start/end char offset を返す。
+  - `parse_program_spans(tokens, starts, ends) -> (Array[Stmt], Array[Int], Array[Int])`
+    — 文ごとの (start, end) byte span を返す。
+  - **ただし両者とも未使用**（診断・LSP に未配線）。`offset_to_line_col` 相当の
+    helper も無い。AST ノード自体は span を持たない（式レベルの正確な位置は別途）。
+- **ブロッカー1: parse 経路が散在** — entry/import の parse は
+  `file_compile/index.vibe`・`runtime/typecheck_fs.vibe`・`runtime/index.vibe`・
+  `compile_source_wasi_only`・loader に各々 `parse_program(lex(source))` を持つ。
+  located 化には全箇所を `lex_with_offsets` + 文単位ハンドラ（または
+  `parse_program_spans` + checker 帰属）へ移す必要がある。
+- **ブロッカー2: FS-compile の parse エラー診断が NUL 化（pre-existing codegen バグ）**
+  — `vibe foo.vibe`（FS mode）で構文エラーを出すと `<output>.diag` が
+  175 byte の NUL garbage になる。**単一ソース compile では正しく出る**
+  (`unexpected token at #4: = ...`) ため、parser ではなく FS 経路の string 伝搬
+  （`String::concat`/handle 再 throw の selfhost codegen）が原因。StringBuilder
+  化でも解消せず、`selfhost_only_gate.sh` step4 が言及する string 脆弱性と同根。
+  **FS-path located 診断を可視化する前にこの codegen バグ修正が必要。**
+
+→ 次の着手順: (a) FS-parse-error NUL の codegen 修正 → (b) `offset_to_line_col`
+追加 + 全 parse 箇所を located 化 → (c) `parse_program_spans` を checker に渡し
+型エラーを文単位で located 化 → (d) 式レベル span（AST ノード拡張、~数千箇所）。
+
+- **codegen の関数 index↔name 対応** — ✅ wasm name section（土台B / debugger P0）
+  は実装済み（`func_offset + i` で user 関数を正確に命名）。
 
 ## 全体方針とリリースの段階
 
