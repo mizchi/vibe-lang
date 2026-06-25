@@ -18158,6 +18158,65 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   } else {
     ()
   }
+  if debug_break {
+    let dn_content = bytebuf_new()
+    let dn_name = "vibe.dbgnames"
+    leb128_encode_u32(dn_content, String::length(dn_name))
+    let mut dnni = 0
+    while dnni < String::length(dn_name) {
+      bytebuf_push(dn_content, String::char_code_at(dn_name, dnni))
+      dnni = dnni + 1
+    }
+    let mut dnfi = 0
+    while dnfi < num_user_funcs {
+      let dn_fnname = Array::get(fn_names_list, dnfi)
+      let mut dn_fci = 0
+      while dn_fci < String::length(dn_fnname) {
+        bytebuf_push(dn_content, String::char_code_at(dn_fnname, dn_fci))
+        dn_fci = dn_fci + 1
+      }
+      let dn_stmt = Array::get(stmts, Array::get(fn_stmt_indices, dnfi))
+      let dn_expr = get_slet_expr(dn_stmt)
+      if is_efn(dn_expr) {
+        let dn_params = get_efn_params(dn_expr)
+        let dn_np = Array::length(dn_params)
+        let dn_n = if dn_np > dbgargs_cap {
+          dbgargs_cap
+        } else {
+          dn_np
+        }
+        let mut dn_pi = 0
+        while dn_pi < dn_n {
+          let (dn_pname_raw, _) = Array::get(dn_params, dn_pi)
+          let dn_pnl = String::length(dn_pname_raw)
+          let dn_pname = if dn_pnl > 0 {
+            let dn_plc = String::char_code_at(dn_pname_raw, dn_pnl - 1)
+            if dn_plc == '~' || dn_plc == '?' {
+              dn_pname_raw[0: dn_pnl - 1]
+            } else {
+              dn_pname_raw
+            }
+          } else {
+            dn_pname_raw
+          }
+          bytebuf_push(dn_content, 9)
+          let mut dn_ci = 0
+          while dn_ci < String::length(dn_pname) {
+            bytebuf_push(dn_content, String::char_code_at(dn_pname, dn_ci))
+            dn_ci = dn_ci + 1
+          }
+          dn_pi = dn_pi + 1
+        }
+      } else {
+        ()
+      }
+      bytebuf_push(dn_content, 10)
+      dnfi = dnfi + 1
+    }
+    bytebuf_push_section(out, 0, dn_content)
+  } else {
+    ()
+  }
   bytebuf_push_section(out, 1, type_content)
   let import_content = bytebuf_new()
   bytebuf_push_vec_header(import_content, num_imported_funcs)

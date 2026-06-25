@@ -193,9 +193,13 @@ function parseFrame(line) {
   return null;
 }
 
-// Parse a runner args line: "  args: [20, 1]". Returns an array of values
-// (numbers when numeric, else trimmed string tokens), or null when the line is
-// not an args line. An empty list "[]" yields [].
+// Parse a runner args line. Two token shapes are accepted (DAP P4):
+//   named:  "  args: [n=20, m=1]"  -> [{name:'n',value:'20'},{name:'m',value:'1'}]
+//   bare:   "  args: [20, 1]"      -> [20, 1]   (backward compat, DAP P2)
+// A token with a top-level `name=` prefix (name being an identifier) yields a
+// {name, value} object with the value kept as a trimmed string; a bare token is
+// coerced to a number when numeric, else kept as a trimmed string. Returns null
+// when the line is not an args line; an empty list "[]" yields [].
 function parseArgs(line) {
   if (typeof line !== "string") return null;
   const m = /^\s*args:\s*\[(.*)\]\s*$/.exec(line);
@@ -204,6 +208,10 @@ function parseArgs(line) {
   if (inner === "") return [];
   return splitTopLevel(inner).map((tok) => {
     const t = tok.trim();
+    const eq = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(t);
+    if (eq) {
+      return { name: eq[1], value: eq[2].trim() };
+    }
     if (/^-?\d+$/.test(t)) return parseInt(t, 10);
     if (/^-?\d*\.\d+$/.test(t)) return parseFloat(t);
     return t;
@@ -573,11 +581,24 @@ function main() {
         break;
 
       case "variables": {
-        const variables = state.args.map((v, i) => ({
-          name: `arg${i}`,
-          value: String(v),
-          variablesReference: 0,
-        }));
+        // DAP P4: a parsed arg may be a {name, value} object (named parameter
+        // from the runner's `n=20` form) or a bare value (DAP P2 positional
+        // fallback). Named args surface under their real name; bare args keep the
+        // `arg0..argN` positional naming for backward compatibility.
+        const variables = state.args.map((v, i) => {
+          if (v && typeof v === "object" && "name" in v) {
+            return {
+              name: String(v.name),
+              value: String(v.value),
+              variablesReference: 0,
+            };
+          }
+          return {
+            name: `arg${i}`,
+            value: String(v),
+            variablesReference: 0,
+          };
+        });
         respond(msg, { variables });
         break;
       }

@@ -109,6 +109,13 @@ struct HostState {
     dbgargs_count_addr: Option<usize>,
     dbgargs_base: Option<usize>,
     dbgargs_tag_mode: u32,
+    // debugger named-parameter inspection (DAP P4): per-function parameter names
+    // parsed from the module's `vibe.dbgnames` custom section at load time (only
+    // present in break builds). Keyed by function name; the value is that
+    // function's parameter names in declaration order. Used to pair the spilled
+    // dbgargs values with their names so a breakpoint prints `args: [name=value]`.
+    // Empty => no section => fall back to positional values.
+    dbgnames: Arc<std::collections::HashMap<String, Vec<String>>>,
     // debugger step execution (DAP P3): at a pause the runner reads a command and
     // sets a step mode, consulted at every function-entry dbg_break hook to decide
     // WHEN to pause next. pause_depth records the call depth (backtrace frame
@@ -162,6 +169,7 @@ impl HostState {
             dbgargs_count_addr: None,
             dbgargs_base: None,
             dbgargs_tag_mode: 0,
+            dbgnames: Arc::new(std::collections::HashMap::new()),
             step_mode: StepMode::Continue,
             pause_depth: 0,
         }
@@ -370,6 +378,14 @@ fn run(args: Vec<String>) -> Result<i32> {
                 data.dbgargs_base = Some(base as usize);
                 data.dbgargs_tag_mode = tag_mode;
             }
+        }
+        // DAP P4: parse the `vibe.dbgnames` custom section (break builds only) into
+        // a function-name -> parameter-names map so the dbg_break hook can label
+        // the spilled values. Records are newline-delimited; within a record the
+        // first tab-delimited field is the function name and the rest are its
+        // parameter names. Absent => empty map => positional fallback.
+        if let Some(section) = find_custom_section(&wasm, "vibe.dbgnames") {
+            store.data_mut().dbgnames = Arc::new(parse_dbgnames(&section));
         }
     }
 
@@ -1034,21 +1050,27 @@ impl std::fmt::Display for BreakAbort {
 
 impl std::error::Error for BreakAbort {}
 
-// DAP P2: read the argument values the codegen spilled into the dbgargs region
-// before calling this hook, and format them as `[v0, v1, ...]`. Returns None if
-// the module has no `vibe.dbgargs` section (non-break build) or memory access
-// fails. Each value is a 62-bit tagged i64; a tagged INT (low 2 bits == 00) is
-// printed as `raw >> 2`, anything else as `0x<hex>` of the raw bits.
-fn dbg_read_args(caller: &mut Caller<'_, HostState>) -> Option<String> {
+// DAP P2/P4: read the argument values the codegen spilled into the dbgargs region
+// before calling this hook, and format them as `[name=v0, name=v1, ...]`. Returns
+// None if the module has no `vibe.dbgargs` section (non-break build) or memory
+// access fails. Each value is decoded per tag_mode (see below). When the entering
+// function's parameter names are known (from the `vibe.dbgnames` section, DAP P4)
+// AND the name count matches the spilled value count, each value is labelled
+// `name=value`; otherwise it falls back to a bare positional `value`.
+fn dbg_read_args(caller: &mut Caller<'_, HostState>, entering: &str) -> Option<String> {
     let count_addr = caller.data().dbgargs_count_addr?;
     let base = caller.data().dbgargs_base?;
     let tag_mode = caller.data().dbgargs_tag_mode;
+    let names = caller.data().dbgnames.get(entering).cloned();
     let memory = caller.get_export("memory").and_then(|e| e.into_memory())?;
     let mut count_buf = [0u8; 4];
     if memory.read(&*caller, count_addr, &mut count_buf).is_err() {
         return None;
     }
     let count = (u32::from_le_bytes(count_buf) as usize).min(16);
+    // Only label by name when the name count matches the value count exactly;
+    // any mismatch (missing section, cap truncation skew) falls back to positional.
+    let use_names = names.as_ref().map(|n| n.len() == count).unwrap_or(false);
     let mut parts: Vec<String> = Vec::with_capacity(count);
     let mut i = 0usize;
     while i < count {
@@ -1059,14 +1081,21 @@ fn dbg_read_args(caller: &mut Caller<'_, HostState>) -> Option<String> {
         let raw = i64::from_le_bytes(val_buf);
         // tag_mode 0: plain untagged i64 int. tag_mode 1: 1-bit tagged — low bit
         // 0 => int (raw >> 1), low bit 1 => heap pointer shown as raw hex.
-        if tag_mode == 1 {
+        let val = if tag_mode == 1 {
             if raw & 1 == 0 {
-                parts.push(format!("{}", raw >> 1));
+                format!("{}", raw >> 1)
             } else {
-                parts.push(format!("0x{:x}", raw));
+                format!("0x{:x}", raw)
             }
         } else {
-            parts.push(format!("{raw}"));
+            format!("{raw}")
+        };
+        if use_names {
+            // SAFETY: use_names implies names.len() == count, so index i is valid.
+            let nm = &names.as_ref().unwrap()[i];
+            parts.push(format!("{nm}={val}"));
+        } else {
+            parts.push(val);
         }
         i += 1;
     }
@@ -1110,7 +1139,7 @@ fn vibe_dbg_break(mut caller: Caller<'_, HostState>) -> Result<()> {
     // guest memory and format them. count_addr holds an i32 arg count; base holds
     // that many i64 vibe values. Decode each: a tagged INT (low 2 bits == 00) is
     // shown as the integer (raw >> 2); anything else is shown as `0x<hex>` raw.
-    let args_line = dbg_read_args(&mut caller);
+    let args_line = dbg_read_args(&mut caller, &entering);
     {
         let stderr = std::io::stderr();
         let mut h = stderr.lock();
@@ -1665,6 +1694,29 @@ fn find_custom_section(wasm: &[u8], want_name: &str) -> Option<Vec<u8>> {
 fn read_u32_le(bytes: &[u8], off: usize) -> Option<u32> {
     let b = bytes.get(off..off + 4)?;
     Some(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+}
+
+// DAP P4: parse the `vibe.dbgnames` custom-section content into a function-name
+// -> parameter-names map. Records are newline (\n) delimited; within a record
+// fields are tab (\t) delimited, the first field being the function name and the
+// remaining fields the parameter names (in declaration order). Empty/garbled
+// records are skipped. Robust to trailing newline and missing-param functions.
+fn parse_dbgnames(section: &[u8]) -> std::collections::HashMap<String, Vec<String>> {
+    let mut map = std::collections::HashMap::new();
+    let text = String::from_utf8_lossy(section);
+    for line in text.split('\n') {
+        if line.is_empty() {
+            continue;
+        }
+        let mut fields = line.split('\t');
+        let fname = match fields.next() {
+            Some(f) if !f.is_empty() => f.to_string(),
+            _ => continue,
+        };
+        let params: Vec<String> = fields.map(|p| p.to_string()).collect();
+        map.insert(fname, params);
+    }
+    map
 }
 
 // Dump the function-call execution trace recorded in the guest's in-memory

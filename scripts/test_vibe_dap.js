@@ -123,11 +123,27 @@ eq(
 ok(dap.parseFrame("breakpoint hit: helper") === null, "parseFrame rejects a header line");
 ok(dap.parseFrame("random noise") === null, "parseFrame rejects noise");
 
-// parseArgs: numeric list, multi-arg, empty, and non-args lines.
-eq(dap.parseArgs("  args: [20]"), [20], "parseArgs single int");
-eq(dap.parseArgs("  args: [20, 1]"), [20, 1], "parseArgs two ints");
+// parseArgs: numeric (bare/positional, DAP P2), empty, and non-args lines.
+eq(dap.parseArgs("  args: [20]"), [20], "parseArgs single int (bare)");
+eq(dap.parseArgs("  args: [20, 1]"), [20, 1], "parseArgs two ints (bare)");
 eq(dap.parseArgs("  args: []"), [], "parseArgs empty list");
 ok(dap.parseArgs("  at helper (prog.vibe:1)") === null, "parseArgs rejects a frame line");
+// parseArgs: named form (DAP P4) -> {name, value} tokens.
+eq(
+  dap.parseArgs("  args: [n=20]"),
+  [{ name: "n", value: "20" }],
+  "parseArgs single named",
+);
+eq(
+  dap.parseArgs("  args: [n=20, m=1]"),
+  [{ name: "n", value: "20" }, { name: "m", value: "1" }],
+  "parseArgs two named",
+);
+eq(
+  dap.parseArgs("  args: [n=0x2a]"),
+  [{ name: "n", value: "0x2a" }],
+  "parseArgs named heap-pointer hex value",
+);
 
 // parsePauseLine: classify the two pause headers.
 eq(
