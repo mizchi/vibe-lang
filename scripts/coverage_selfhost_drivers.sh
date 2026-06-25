@@ -176,6 +176,7 @@ run_driver cov_fs2_main        scripts/coverage/cov_fs2.vibe        fs2         
 run_driver cov_serialize_main  scripts/coverage/cov_serialize.vibe  serialize   # serialize_type<->parse_cached_type round-trip + grouped-source accumulators + collect_private_type_renames
 run_driver cov_remainder_main  scripts/coverage/cov_remainder.vibe  remainder   # literal_type/annotate_literal_let/build_pull_for_in/skip_brace_list/collect_import_path/has_non_pipe_infix_top/exported_value_names
 run_driver cov_grab_main       scripts/coverage/cov_grab.vibe       grab        # long-tail type/trait/env/heap/token/AST helpers (type_to_string/trait_*/env_*/is_heap_literal/...)
+run_driver cov_lookup2_main    scripts/coverage/cov_lookup2.vibe    lookup2     # every dark lookup_* builtin dispatcher x full builtin-name union (generated)
 rm -f _build/vibe_selfhost_* 2>/dev/null || true
 
 now=$(python3 -c "import json;print(sum(json.load(open('$ACC'))['br']))")
