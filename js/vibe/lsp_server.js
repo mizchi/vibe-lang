@@ -76,11 +76,20 @@ function handle(msg) {
           documentSymbolProvider: true,
           definitionProvider: true,
           hoverProvider: true,
+          referencesProvider: true,
           completionProvider: { triggerCharacters: ["."] },
         },
         serverInfo: { name: "vibe-lsp", version: "0.1.0" },
       });
       break;
+    case "textDocument/references": {
+      const uri = msg.params.textDocument.uri;
+      const doc = docs.get(uri);
+      if (!doc) { reply(msg.id, []); break; }
+      const word = wordAt(doc.text, msg.params.position);
+      reply(msg.id, word ? findReferences(doc.text, word).map((range) => ({ uri, range })) : []);
+      break;
+    }
     case "textDocument/completion": {
       const uri = msg.params.textDocument.uri;
       const doc = docs.get(uri);
@@ -287,6 +296,27 @@ function hash(s) {
   let h = 0;
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
   return h;
+}
+
+// All whole-word occurrences of `name` in the document (references). Text-based
+// (no compiler change); exact scoping awaits source spans / a symbol index.
+function findReferences(text, name) {
+  const lines = text.split(/\r?\n/);
+  const ranges = [];
+  const re = new RegExp(`(^|[^A-Za-z0-9_])(${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})(?![A-Za-z0-9_])`, "g");
+  for (let i = 0; i < lines.length; i++) {
+    let m;
+    re.lastIndex = 0;
+    while ((m = re.exec(lines[i])) !== null) {
+      const col = m.index + m[1].length;
+      ranges.push({
+        start: { line: i, character: col },
+        end: { line: i, character: col + name.length },
+      });
+      if (re.lastIndex === m.index) re.lastIndex++;
+    }
+  }
+  return ranges;
 }
 
 // Outline via a lightweight scan of top-level declarations. The selfhost

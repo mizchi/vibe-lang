@@ -108,6 +108,12 @@ const isDiag = (uri) => (m) => m.method === "textDocument/publishDiagnostics" &&
   const hov = await waitFor((m) => m.id === 5);
   check("hover shows declaration", hov.result && /helper/.test(JSON.stringify(hov.result.contents)));
 
+  // references: all occurrences of the symbol under the cursor
+  send({ jsonrpc: "2.0", id: 7, method: "textDocument/references", params: { textDocument: { uri: goodUri }, position: { line: 2, character: helperCol + 1 }, context: { includeDeclaration: true } } });
+  const refs = await waitFor((m) => m.id === 7);
+  // `helper` appears twice in goodText (declaration line 1 + call line 2)
+  check("references finds both helper occurrences", (refs.result || []).length === 2);
+
   // completion: keywords + document declarations
   send({ jsonrpc: "2.0", id: 6, method: "textDocument/completion", params: { textDocument: { uri: goodUri }, position: { line: 2, character: 0 } } });
   const comp = await waitFor((m) => m.id === 6);
