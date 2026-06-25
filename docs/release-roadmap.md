@@ -99,8 +99,9 @@
 - [x] **1-2 install-time `.cwasm` ビルド** — `scripts/install.sh` が runner 取得後に
       `moonrun_wt --precompile` で compiler wasm を host 固有 `.cwasm` へ AOT。
       launcher は runner より古い `.cwasm` を検出すると portable wasm に fallback。
-- [~] **1-3 マルチプラットフォーム CI** — release.yml を拡張し OS/arch ごとに
-      runner をビルド + smoke test。（CI ワークフロー追加は環境依存のため残作業）
+- [x] **1-3 マルチプラットフォーム CI** — `.github/workflows/cli-install.yml` が
+      ubuntu/macos で runner build + `scripts/test_vibe_cli_install.sh` smoke test。
+      （Windows は launcher が bash 依存のため対象外。残: arch matrix 拡張）
 - [x] **1-4 ワンライナー installer** — `scripts/install.sh` が runner build +
       compiler wasm 配置 + `.cwasm` 生成 + `vibe` launcher 配置 + PATH link。
       `--prefix`/`--runner`/`--cli-wasm`/`--bin-dir`/`--no-link` 対応。
