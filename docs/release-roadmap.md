@@ -20,12 +20,14 @@
 
 ## 実装進捗 (2026-06-25 セッション)
 
-> **マイルストーン**: M1（配布確定）+ M2（開発体験 MVP）達成、M3（開発体験フル）
-> ほぼ達成。PR #642 を main に merge 済み。以降の DAP P3 step / `vibe binding-at` /
-> rename 配線 / CI wasmtime 修正は branch `claude/kind-fermat-lxtjov` に在り
+> **マイルストーン**: M1（配布確定）+ M2（開発体験 MVP）+ M3（開発体験フル）達成。
+> M4（GA）は ADR 決定事項を全確定（install/module/LSP host/仕様 freeze =
+> [spec/1.0-freeze.md](spec/1.0-freeze.md)）。PR #642 を main に merge 済み。
+> 以降の DAP P3 step/P4 named-local / `vibe binding-at` / rename 配線 /
+> CI wasmtime 修正 / 仕様 freeze は branch `claude/kind-fermat-lxtjov` に在り
 > （main は authoritative selfhost-gate green、cli-install は wasmtime CLI 未導入で
 > 一時 red — branch の修正で解消）。テーマ3 debugger は P0-P4 + 3-D 完了。
-> 残: 任意式 watch（将来拡張）、span-arc（行粒度 step / call-site hover）。
+> 残: 任意式 watch（将来拡張）、span-arc（行粒度 step / call-site hover）、docs 完備。
 >
 > **CI 根本原因メモ（vibe-eh-ci, RESOLVED）**: fresh compiler build は standalone
 > `wasmtime` CLI を要するが CI 未導入 → seed fallback で diagnostics/type-at が機能せず。
@@ -561,10 +563,11 @@ install/​debugger と runtime 前提を一本化する。`vibe lsp` を selfho
    `js/vibe/lsp.js` の transport 抽象はブラウザ/embedding 用途の補助に留める
    （テーマ 4）。
 
-未決（要 ADR）:
-
-4. **言語仕様 freeze の範囲**（M4）— どこまでを 1.0 で凍結し SemVer 保証するか。
+4. ✅ **言語仕様 freeze の範囲**（M4, ADR-0057）— 1.0 で SemVer 2.0.0 保証する
+   stable surface（言語コア / prelude / CLI / フォーマット）と、対象外の
+   unstable surface（async / component model / capability / SIMD / span-arc /
+   incremental / wasm-gc gap）を [spec/1.0-freeze.md](spec/1.0-freeze.md) に確定。
 
 > runtime 前提は install・LSP・debugger すべて「独自 wasmtime runner +
 > selfhost wasm」に一本化された。node は補助（`js/vibe/`、ブラウザ playground）
-> に限定する。残る ADR は仕様 freeze（4）のみ。
+> に限定する。ADR 決定事項はすべて確定（install/module/LSP host/仕様 freeze）。

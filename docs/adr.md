@@ -96,6 +96,12 @@
 | 0053 | **background linked cache build は opt-in**。`vibe run` 成功後の `vibe build --debug` fire-and-forget 起動は `VIBE_LINKED_CACHE_BACKGROUND=1` で明示した場合だけ有効にする。既定経路は foreground の one-shot compile/run に留める。 | accepted |
 | 0056 | **Selfhost cutover は runner 層と compiler wasm 層を分離して進める**。2026-06-12 の cutover sign-off で stage2==stage3、perf TOTAL compile 1.143× ≤2.5、check 0.116× ≤1.33、peak RSS compile 1.402× / check 0.920× ≤2.0、corpus REAL=0、`selfhost-gate` green を確認し、`selfhost-cutover-base-2026-06-12` tag と seed manifest に固定した。以後は `tools/moonrun_wasmtime` / cwasm cache / wasmtime flags を実行基盤、`vibe/compiler/` と `vibe/cli/` から作る dist/component/check entry を canonical compiler artifact として扱い、MoonBit `src/` は bootstrap/fallback へ縮退する。Rust-style の stage0(seed) -> stage1 -> stage2 bootstrap bump を `selfhost-gate` で明示 gate とする。新 syntax を compiler source が使い始めるのは、その syntax を理解する seed を先に tag してから。詳細は [selfhost bootstrap policy](selfhost-bootstrap.md)。削除は selfhost wasm 経路が CI で継続 green になってから段階的に行う。 | accepted |
 
+## Release / GA
+
+| # | Decision | Status |
+|---|----------|--------|
+| 0057 | **1.0 言語仕様 freeze の範囲を確定**。`docs/release-roadmap.md` の未決 ADR #4 (言語仕様 freeze) に対応。1.0 で SemVer 2.0.0 保証する **stable surface** を [spec/1.0-freeze.md](spec/1.0-freeze.md) に列挙: (1) 言語コア (値/型/束縛/関数/制御構文/型定義/trait/effect/module — ADR-0006/0016/0017/0020/0021 P1/0023/0044-0047/0050/0052 等、0.1.0 sign-off 実証済み)、(2) prelude/stdlib の安定シンボル (cheatsheet "Key Builtins")、(3) CLI 表面 (`runtime/vibe` の run/compile/build/check/test/new/add/fetch/verify/lsp/type-at/binding-at/diagnostics/version/self-update + install/module 配布モデル ADR 決定 #1/#2)、(4) フォーマット正準化 (decisions.md)。stable への破壊的変更は Major、後方互換追加は Minor、振る舞い不変の修正は Patch。**unstable surface** (1.0 SemVer 対象外、Minor で破壊変更可): Async/構造化並行/WASI 0.3 (ADR-0012)、Component Model `#import` (ADR-0021 P2/3)、capability DCE/`--profile` (ADR-0043)、`_start` capability (ADR-0041/0042)、SIMD、デバッガ行粒度 step/任意式 watch (span-arc)、LSP incremental、wasm-gc backend codegen ギャップ。unstable が安定化したら freeze doc の §2–§5 へ移し対応 ADR を accepted に更新する。`vibe version` の toolchain version が SemVer 基準。 | accepted |
+
 ## Deferred
 
 | # | Decision | Status |
