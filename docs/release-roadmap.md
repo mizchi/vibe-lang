@@ -68,13 +68,18 @@
   （located 診断・name section・NUL 修正）とクリーンに統合、selfhost-only gate
   green（fixpoint 維持）。**現状 offset は全て -1**（構造のみ）。
 
+- ✅ **offset の実値化（着地）** — `lex_with_offsets` の `starts` を statement /
+  expression parser に通し、ユーザ識別子 EIdent に実 char offset を入れた。
+  `parse_recur` クロージャ型は不変（`parse_impl` のクロージャが `starts` を
+  capture）、直接 helper シグネチャにのみ `starts: Array[Int]` を追加。合成識別子
+  （`__lt`/`perform`/`String::concat` 等）は -1 のまま。located path
+  （`parse_program_located`/`parse_program_spans`）に実 starts が流れ、非 located
+  entry（`parse`/`parse_expr`/`parse_program`）は `[]` で従来通り -1。
+  selfhost-only gate green（stage2==stage3 fixpoint）、located 診断 4/4。
+  worktree agent 実施 → cherry-pick 統合。
+
 残り（段階的、いずれも大きめ）:
 
-- **offset の実値化** — `lex_with_offsets` の `starts` を parser_expr の
-  `parse_recur` クロージャ型（`(Array[Token], Int, Int) -> ...`）と ~25 helper に
-  通し、ユーザ識別子 EIdent に実位置を入れる。合成識別子（`__lt`/`perform` 等）は
-  -1 のままで正しい。これで unknown-name の location が「first-occurrence
-  ヒューリスティック」→「正確な AST 位置」に上がる。
 - **全 Expr variant への位置付与** — EIdent に続き ECall/EBinop… へ段階的に。
 - **checker 位置→型テーブル / codegen source-line map** — 型付き hover / DAP
   P1-P4 の前提。AST 位置の上に構築。
