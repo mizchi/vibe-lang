@@ -140,6 +140,16 @@ if command -v git >/dev/null 2>&1; then
   check "vibe fetch --frozen pins commit" "42" "$("$VIBE" run "$fzproj/app.vibe" 2>/dev/null | tr -dc '0-9')"
   newsha="$(awk '/^mathgit/{print $3}' "$fzproj/vibe.lock" | sed 's/git://')"
   check "vibe fetch --frozen keeps lock sha" "$pinsha" "$newsha"
+
+  # verify: clean tree passes, tampering a vendored git dep is detected.
+  "$VIBE" verify "$gproj" >/dev/null 2>&1 && rc=0 || rc=$?
+  check "vibe verify clean exit" "0" "$rc"
+  printf 'export let triple = (x: Int) -> Int { x * 999 }\n' > "$gproj/deps/mathgit/index.vibe"
+  "$VIBE" verify "$gproj" >/dev/null 2>&1 && rc=0 || rc=$?
+  check "vibe verify detects tamper" "1" "$rc"
+  # verify recurses into transitive locks (clean tproj passes).
+  "$VIBE" verify "$tproj" >/dev/null 2>&1 && rc=0 || rc=$?
+  check "vibe verify transitive exit" "0" "$rc"
 else
   echo "info: git not available; skipping git+ fetch assertions"
 fi

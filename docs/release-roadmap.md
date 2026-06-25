@@ -256,7 +256,12 @@ content-addressed に再現可能で動く。中央 registry の有無を含め�
       残: semver バージョン制約の解決（現状は lock-or-HEAD のみ）。
 - [ ] **2-3 `vibe add` / `vibe publish`（または equivalent）** — 依存追加と
       公開の CLI 導線。2-0 の選択次第で publish は「git push + tag」かもしれない。
-- [ ] **2-4 整合性・供給網** — checksum/hash 検証、（必要なら）署名。
+- [x] **2-4 整合性・供給網** — `vibe.lock` に content hash を固定（単一ファイルは
+      `sha256:`、git dep は commit `git:` に加え content tree digest `tree:`）。
+      **`vibe verify`** で vendored 物を lock に照合（改竄/欠落を検出、transitive
+      lock へ再帰）。git dep の tree digest は vendor 物の `deps/`・lock を除外し、
+      ネストした dep は各自の lock で別途検証。署名は将来課題。
+      検証済み（`scripts/test_vibe_cli_install.sh` verify clean/tamper/transitive）。
 - [ ] **2-5 docs** — `docs/module-system.md` に配布節、チュートリアル追加。
 
 ### 決めるべきこと（2-0 の選択肢）

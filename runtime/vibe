@@ -19,6 +19,7 @@
 #   vibe new     <dir>                    scaffold a starter project
 #   vibe add     <name> <url> [dir]       add a dependency to vibe.deps + fetch
 #   vibe fetch   [--frozen] [dir]        vendor git/URL deps from vibe.deps + lock
+#   vibe verify  [dir]                    re-check vendored deps against vibe.lock
 #   vibe lsp                              start the stdio LSP server (diagnostics)
 #   vibe version                          print toolchain versions
 #   vibe self update [--cli-wasm <path>]  refresh compiler wasm + rebuild .cwasm
@@ -36,6 +37,24 @@ CLI_WASM="${VIBE_CLI_WASM:-$VIBE_HOME/lib/vibe-cli.wasm}"
 CLI_CWASM="${VIBE_CLI_CWASM:-$VIBE_HOME/lib/vibe-cli.cwasm}"
 
 die() { echo "vibe: $*" >&2; exit 1; }
+
+# Deterministic content digest of a vendored directory: hash each file as
+# "<relpath>\0<sha256>" over a sorted file list, then hash the stream. Lets
+# `vibe verify` detect tampering of a git dep (whose lock records a commit sha,
+# not a content hash) without needing the original .git. Vendor artifacts
+# (./deps/ and lock files) are excluded so the digest covers only the dep's own
+# source — they appear after the digest is taken (transitive resolution) and are
+# verified separately by recursing into their own lock.
+tree_digest() {
+  ( cd "$1" && find . -type f \
+        ! -path './.git/*' ! -path './deps/*' \
+        ! -name 'vibe.lock' ! -name 'vibe.lock.tmp' -print0 \
+      | LC_ALL=C sort -z \
+      | while IFS= read -r -d '' f; do
+          printf '%s\0' "$f"; sha256sum "$f" | cut -d' ' -f1
+        done \
+      | sha256sum | cut -d' ' -f1 )
+}
 
 [ -x "$RUNNER" ] || die "runner not found or not executable: $RUNNER"
 
@@ -219,7 +238,8 @@ case "$cmd" in
           rm -rf "$gcache"; mkdir -p "$gcache"; cp -R "$gtmp/." "$gcache/"
           rm -rf "$dir/deps/$name"; mkdir -p "$dir/deps/$name"; cp -R "$gcache/." "$dir/deps/$name/"
           rm -rf "$gtmp"
-          printf '%s\t%s\tgit:%s\n' "$name" "$url" "$gsha" >> "$lock.tmp"
+          gtree="$(tree_digest "$dir/deps/$name")"
+          printf '%s\t%s\tgit:%s\ttree:%s\n' "$name" "$url" "$gsha" "$gtree" >> "$lock.tmp"
           echo "fetched $name <- $url (git:${gsha:0:12})"
           # Transitive resolution: if the git dep declares its own dependencies,
           # vendor them under the dep's own deps/ (relative imports nest), unless
@@ -254,6 +274,55 @@ case "$cmd" in
     done < "$manifest"
     mv "$lock.tmp" "$lock"
     echo "wrote $lock"
+    ;;
+  verify)
+    # vibe verify [dir]
+    # Re-check every vendored dep against the hash recorded in vibe.lock
+    # (supply-chain integrity). Single-file deps are checked by sha256; git
+    # deps by the recorded tree digest. Exits non-zero on any mismatch or
+    # missing vendored file. Recurses into nested locks of git deps.
+    vdir="${1:-.}"
+    vlock="$vdir/vibe.lock"
+    [ -f "$vlock" ] || die "no lock: $vlock (run 'vibe fetch' first)"
+    vfail=0; vok=0
+    while IFS=$'\t' read -r vname vurl vhash vtree _ || [ -n "$vname" ]; do
+      case "$vname" in ""|\#*) continue ;; esac
+      case "$vhash" in
+        sha256:*)
+          want="${vhash#sha256:}"; file="$vdir/deps/$vname.vibe"
+          if [ ! -f "$file" ]; then
+            echo "MISSING $vname ($file)" >&2; vfail=$((vfail+1)); continue
+          fi
+          got="$(sha256sum "$file" | cut -d' ' -f1)"
+          if [ "$got" = "$want" ]; then vok=$((vok+1))
+          else echo "TAMPERED $vname (sha256 ${got:0:12} != ${want:0:12})" >&2; vfail=$((vfail+1)); fi
+          ;;
+        git:*)
+          ddir="$vdir/deps/$vname"
+          if [ ! -d "$ddir" ]; then
+            echo "MISSING $vname ($ddir)" >&2; vfail=$((vfail+1)); continue
+          fi
+          case "$vtree" in
+            tree:*)
+              want="${vtree#tree:}"; got="$(tree_digest "$ddir")"
+              if [ "$got" = "$want" ]; then vok=$((vok+1))
+              else echo "TAMPERED $vname (tree ${got:0:12} != ${want:0:12})" >&2; vfail=$((vfail+1)); fi
+              ;;
+            *) echo "info: $vname predates tree digest; skipping content check" ;;
+          esac
+          # Verify the dep's own lock too, if it vendored transitive deps.
+          if [ -f "$ddir/vibe.lock" ]; then
+            "$LAUNCHER" verify "$ddir" || vfail=$((vfail+1))
+          fi
+          ;;
+        *) echo "info: $vname has unrecognized lock hash '$vhash'; skipping" ;;
+      esac
+    done < "$vlock"
+    if [ "$vfail" -eq 0 ]; then
+      echo "verified $vok dep(s) in $vlock"
+    else
+      die "integrity check failed for $vfail dep(s) in $vlock"
+    fi
     ;;
   lsp)
     # Start the stdio LSP server (diagnostics). Editors configure `vibe lsp`.
@@ -296,7 +365,7 @@ case "$cmd" in
     esac
     ;;
   help|--help|-h)
-    sed -n '13,25p' "$LAUNCHER" | sed 's/^# \{0,1\}//'
+    sed -n '13,26p' "$LAUNCHER" | sed 's/^# \{0,1\}//'
     ;;
   *)
     die "unknown command: $cmd (try 'vibe help')"
