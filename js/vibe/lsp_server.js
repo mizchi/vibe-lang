@@ -181,6 +181,18 @@ function uriToPath(uri) {
 // likely offending token. Falls back to the first non-empty line.
 function locate(text, message) {
   const lines = text.split(/\r?\n/);
+  // Exact location: the compiler now prefixes parse diagnostics with
+  // `line N:col M:` (source-span foundation). Prefer it when present.
+  let lc;
+  if ((lc = /\bline\s+(\d+):(\d+):/.exec(message))) {
+    const li = Math.max(0, parseInt(lc[1], 10) - 1);
+    const co = Math.max(0, parseInt(lc[2], 10) - 1);
+    const lineText = lines[li] || "";
+    return {
+      start: { line: li, character: co },
+      end: { line: li, character: Math.max(co + 1, lineText.length) },
+    };
+  }
   // Pull a quoted or "unknown name: X" / "... 'op' ..." symbol out of the msg.
   let needle = null;
   let m;

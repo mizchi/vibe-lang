@@ -73,6 +73,16 @@ const isDiag = (uri) => (m) => m.method === "textDocument/publishDiagnostics" &&
     check("diagnostic range targets the zzz token", slice === "zzz");
   }
 
+  // syntax-error document -> diagnostic located at the failing line (the
+  // compiler now emits `line N:col M:`, which the server maps to a range).
+  const synUri = "file:///tmp/vibe-lsp-test-syntax.vibe";
+  send({ jsonrpc: "2.0", method: "textDocument/didOpen", params: { textDocument: { uri: synUri, languageId: "vibe", version: 1, text: "export let a = 1\nexport let bad = = 5\n" } } });
+  const synDiag = await waitFor(isDiag(synUri));
+  check("syntax error yields a diagnostic", synDiag.params.diagnostics.length >= 1);
+  if (synDiag.params.diagnostics.length) {
+    check("syntax diagnostic located on line 2", synDiag.params.diagnostics[0].range.start.line === 1);
+  }
+
   // good document -> expect empty diagnostics
   const goodUri = "file:///tmp/vibe-lsp-test-good.vibe";
   const goodText = "export enum Color { Red; Green }\nexport let helper = (x: Int) -> Int { x * 2 }\nexport let main = () -> Int { helper(21) }\n";
