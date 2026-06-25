@@ -8,6 +8,10 @@ VSCode extension for the [Vibe programming language](https://github.com/mizchi/v
 - Bracket matching and auto-closing
 - Comment toggling (`//`)
 - String interpolation highlighting (`\(expr)`)
+- **Language server** (`vibe lsp`): live diagnostics, document outline,
+  go-to-definition, and hover. Requires the `vibe` launcher on `PATH` (install
+  with `bash scripts/install.sh`; see `docs/install.md`). Set `vibe.serverPath`
+  if the launcher lives elsewhere.
 
 ## Install
 
