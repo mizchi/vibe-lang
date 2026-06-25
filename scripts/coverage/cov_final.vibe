@@ -1,0 +1,60 @@
+
+// #cov final driver: residual arms of entry_declares_async_int (async-Int entry
+// signature variations), collect_import_path (token import paths), and the
+// grouped-source / module-alias accumulators.
+let fn_async: (Array[Stmt]) -> Int = (ss) -> { if entry_declares_async_int(ss, "main") { 1 } else { 0 } }
+let fn_one: (Bool, String, Option[TypeExpr]) -> Array[Stmt] = (exp, nm, ty) -> {
+  Array::slice([SLet(exp, false, nm, ty, EUnit)], 0, 1)
+}
+let async_fn: (TypeExpr, Option[String], Array[TypeExpr]) -> Option[TypeExpr] = (ret, eff, params) -> {
+  Some(TyFn(params, ret, eff))
+}
+
+let fin_async: () -> Int = () -> {
+  let mut acc = 0
+  let noparam = Array::slice([TyName("Int")], 0, 0)
+  let oneparam = Array::slice([TyName("Int")], 0, 1)
+  acc = acc + fn_async(fn_one(true, "main", async_fn(TyName("Int"), Some("Async"), noparam)))     // async Int 0-param -> true
+  acc = acc + fn_async(fn_one(true, "main", async_fn(TyName("Int"), Some("Other"), noparam)))     // eff not Async
+  acc = acc + fn_async(fn_one(true, "main", async_fn(TyName("Bool"), Some("Async"), noparam)))    // ret not Int
+  acc = acc + fn_async(fn_one(true, "main", async_fn(TyName("Int"), Some("Async"), oneparam)))    // has param
+  acc = acc + fn_async(fn_one(true, "main", async_fn(TyName("Int"), None, noparam)))              // no eff
+  acc = acc + fn_async(fn_one(true, "main", Some(TyName("Int"))))                                 // non-fn type
+  acc = acc + fn_async(fn_one(true, "main", None))                                                // no type
+  acc = acc + fn_async(fn_one(true, "other", async_fn(TyName("Int"), Some("Async"), noparam)))    // name mismatch
+  acc = acc + fn_async(Array::slice([SExpr(EUnit)], 0, 1))                                        // non-SLet
+  acc
+}
+let fin_import: () -> Int = () -> {
+  let mut acc = 0
+  let srcs = Array::slice([""], 0, 0)
+  Array::push(srcs, "./a.vibe"); Array::push(srcs, "../b/c.vibe"); Array::push(srcs, "a/b/c.vibe")
+  Array::push(srcs, "./x"); Array::push(srcs, "@scope/pkg/mod"); Array::push(srcs, "single")
+  let mut i = 0
+  while i < Array::length(srcs) {
+    acc = acc + (handle { let r = collect_import_path(lex(Array::get(srcs, i)), 0, "base"); String::length(r.0) } with Error { Throw(_) => 0 })
+    i = i + 1
+  }
+  acc
+}
+let fin_groups: () -> Int = () -> {
+  let mut acc = 0
+  let groups = Array::slice([("", Array::slice([("", "")], 0, 0))], 0, 0)
+  push_grouped_source(groups, "g1", "a.vibe", "sa")
+  push_grouped_source(groups, "g1", "b.vibe", "sb")
+  push_grouped_source(groups, "g2", "c.vibe", "sc")
+  push_grouped_source(groups, "g1", "d.vibe", "sd")
+  acc = acc + Array::length(groups)
+  let body = Array::slice([SExpr(EUnit)], 0, 0)
+  Array::push(body, SLet(true, false, "k", None, EIdent("k")))
+  Array::push(body, SLet(false, false, "p", None, ECall(EIdent("k"), Array::slice([EUnit], 0, 0))))
+  Array::push(body, SExport(Array::slice(["k"], 0, 1)))
+  acc = acc + module_value_aliases(body, "M", Array::slice([("k", "M_k"), ("p", "M_p")], 0, 2))
+  acc = acc + module_value_aliases(body, "M", Array::slice([("", "")], 0, 0))
+  handle { acc = acc + Array::length(collect_source_groups_fs("_build/covwarm/main.vibe")) } with Error { Throw(_) => () }
+  acc
+}
+
+export let cov_final_main: () -> Int = () -> {
+  fin_async() + fin_import() + fin_groups()
+}
