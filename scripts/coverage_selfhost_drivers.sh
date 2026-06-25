@@ -174,6 +174,7 @@ run_driver cov_transform_main  scripts/coverage/cov_transform.vibe  transform   
 run_driver cov_misc_main       scripts/coverage/cov_misc.vibe       misc        # stmt_section/is_expr_end_token/has_non_pipe_infix_top/check_pattern/module_value_aliases/flatten_module_body
 run_driver cov_fs2_main        scripts/coverage/cov_fs2.vibe        fs2         # build_module_source_from_source + cold collect_all_sources_fs/collect_source_groups_fs/load_persistent_*
 run_driver cov_serialize_main  scripts/coverage/cov_serialize.vibe  serialize   # serialize_type<->parse_cached_type round-trip + grouped-source accumulators + collect_private_type_renames
+run_driver cov_remainder_main  scripts/coverage/cov_remainder.vibe  remainder   # literal_type/annotate_literal_let/build_pull_for_in/skip_brace_list/collect_import_path/has_non_pipe_infix_top/exported_value_names
 rm -f _build/vibe_selfhost_* 2>/dev/null || true
 
 now=$(python3 -c "import json;print(sum(json.load(open('$ACC'))['br']))")
