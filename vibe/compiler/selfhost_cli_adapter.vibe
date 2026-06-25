@@ -61,6 +61,15 @@ let compile_source_for_rc_flag: (String, String, String) -> Bytes with { Error }
   }
 }
 
+// On a parse/type/codegen error the checker throws a formatted diagnostic
+// String. Surface it to tooling by writing it to an `<output>.diag` sidecar so
+// the `vibe` launcher can print a real message instead of an opaque wasm trap.
+// Returns a non-zero exit code. (#594 usability / docs/release-roadmap.md.)
+let emit_compile_diag: (String, String) -> Int with { Fs } = (output_path, msg) -> {
+  Fs::write_file(String::concat(output_path, ".diag"), msg)
+  1
+}
+
 export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
   let input_path = own_host_string(read_arg_or_env(0, "VIBE_INPUT"))
   let output_path = own_host_string(read_arg_or_env(1, "VIBE_OUTPUT"))
@@ -71,13 +80,17 @@ export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
     // #cov: `vibe test/run --coverage` sets VIBE_COVERAGE=1 so the user file (and
     // its imports) is compiled with function/branch hit instrumentation; running
     // the produced wasm fills the bitmap that the runner reads via VIBE_COV_OUT.
-    let bytes = if Env::get("VIBE_COVERAGE") == "1" {
-      compile_file_fs_mode_coverage(input_path, entry_name)
-    } else {
-      compile_file_fs_mode(input_path, entry_name, "no-dce")
+    return handle {
+      let bytes = if Env::get("VIBE_COVERAGE") == "1" {
+        compile_file_fs_mode_coverage(input_path, entry_name)
+      } else {
+        compile_file_fs_mode(input_path, entry_name, "no-dce")
+      }
+      Fs::write_bytes(output_path, bytes)
+      0
+    } with Error {
+      Throw(msg) => emit_compile_diag(output_path, msg)
     }
-    Fs::write_bytes(output_path, bytes)
-    return 0
   }
   // #594 `vibe normalize`: canonicalize a source file (module flatten + DCE +
   // section layout) and write the result. Same (input, output) interface.
@@ -102,17 +115,21 @@ export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
     // ADR-0055 #493 cutover toggle: VIBE_RC=1 compiles on the Perceus RC codegen
     // path (Env::get returns "" when unset, so default stays the bump path). Lets
     // the selfbuild/bootstrap/e2e gates exercise the whole compiler under RC.
-    let rc_flag = Env::get("VIBE_RC")
-    // #cov: function-level coverage build (same source pipeline, instrumented
-    // codegen). Running the produced wasm records which compiler functions ran.
-    let bytes = if Env::get("VIBE_COVERAGE") == "1" {
-      compile_source_wasi_only_coverage(source, entry_name)
-    } else {
-      compile_source_for_rc_flag(source, entry_name, rc_flag)
+    handle {
+      let rc_flag = Env::get("VIBE_RC")
+      // #cov: function-level coverage build (same source pipeline, instrumented
+      // codegen). Running the produced wasm records which compiler functions ran.
+      let bytes = if Env::get("VIBE_COVERAGE") == "1" {
+        compile_source_wasi_only_coverage(source, entry_name)
+      } else {
+        compile_source_for_rc_flag(source, entry_name, rc_flag)
+      }
+      profile_memory_mark(mark_memory)
+      Fs::write_bytes(output_path, bytes)
+      profile_memory_mark(mark_memory)
+      0
+    } with Error {
+      Throw(msg) => emit_compile_diag(output_path, msg)
     }
-    profile_memory_mark(mark_memory)
-    Fs::write_bytes(output_path, bytes)
-    profile_memory_mark(mark_memory)
-    0
   }
 }

@@ -29105,19 +29105,27 @@ let compile_source_for_rc_flag: (String, String, String) -> Bytes with { Error }
     compile_source_wasi_only(source, entry_name)
   }
 }
+let emit_compile_diag: (String, String) -> Int with { Fs } = (output_path, msg) -> {
+  Fs::write_file(String::concat(output_path, ".diag"), msg)
+  1
+}
 export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
   let input_path = own_host_string(read_arg_or_env(0, "VIBE_INPUT"))
   let output_path = own_host_string(read_arg_or_env(1, "VIBE_OUTPUT"))
   let entry_name = own_host_string(read_arg_or_env(2, "VIBE_ENTRY"))
   let mark_memory = Env::get("VIBE_PROFILE_MEMORY_MARKS") == "1"
   if Env::get("VIBE_FS_COMPILE") == "1" {
-    let bytes = if Env::get("VIBE_COVERAGE") == "1" {
-      compile_file_fs_mode_coverage(input_path, entry_name)
-    } else {
-      compile_file_fs_mode(input_path, entry_name, "no-dce")
+    return handle {
+      let bytes = if Env::get("VIBE_COVERAGE") == "1" {
+        compile_file_fs_mode_coverage(input_path, entry_name)
+      } else {
+        compile_file_fs_mode(input_path, entry_name, "no-dce")
+      }
+      Fs::write_bytes(output_path, bytes)
+      0
+    } with Error {
+      Throw(msg) => emit_compile_diag(output_path, msg)
     }
-    Fs::write_bytes(output_path, bytes)
-    return 0
   }
   if Env::get("VIBE_NORMALIZE") == "1" {
     let normalized = normalize_source(Fs::read_file(input_path))
@@ -29132,15 +29140,19 @@ export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
     profile_memory_mark(mark_memory)
     0
   } else {
-    let rc_flag = Env::get("VIBE_RC")
-    let bytes = if Env::get("VIBE_COVERAGE") == "1" {
-      compile_source_wasi_only_coverage(source, entry_name)
-    } else {
-      compile_source_for_rc_flag(source, entry_name, rc_flag)
+    handle {
+      let rc_flag = Env::get("VIBE_RC")
+      let bytes = if Env::get("VIBE_COVERAGE") == "1" {
+        compile_source_wasi_only_coverage(source, entry_name)
+      } else {
+        compile_source_for_rc_flag(source, entry_name, rc_flag)
+      }
+      profile_memory_mark(mark_memory)
+      Fs::write_bytes(output_path, bytes)
+      profile_memory_mark(mark_memory)
+      0
+    } with Error {
+      Throw(msg) => emit_compile_diag(output_path, msg)
     }
-    profile_memory_mark(mark_memory)
-    Fs::write_bytes(output_path, bytes)
-    profile_memory_mark(mark_memory)
-    0
   }
 }

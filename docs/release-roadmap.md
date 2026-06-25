@@ -113,8 +113,16 @@
 > `test`/`version`/`self update`/`help` を提供。`run`/`test` は compile→別プロセス
 > 実行の 2 段（selfhost CLI は compile 専用のため orchestration は launcher 側）。
 > 検証済み: 単一/マルチファイル `vibe run` → 42、`vibe check` の成功/失敗、
-> `vibe test` の pass/fail 集約、`.cwasm` 経路の利用。残: `vibe fmt` の launcher
-> 統合、型エラー診断テキストの host 表面化（現状 trap メッセージのみ）。
+> `vibe test` の pass/fail 集約、`.cwasm` 経路の利用。installer は
+> `scripts/build_cli_wasm.sh` で最新 source からコンパイラ wasm を build（seed
+> fallback あり）。残: `vibe fmt` の launcher 統合。
+>
+> **診断表面化 (UX/LSP 前提)**: コンパイルエラー時、selfhost CLI が整形済み
+> 診断 String を `<output>.diag` サイドカーに書き、launcher が `error: <file>:
+> <message>` として表示するようにした（`selfhost_cli_adapter.vibe` cli_main を
+> `handle ... with Error { Throw(msg) => ... }` で包む）。trap/バックトレースの
+> 代わりに `unknown name: zzz` / `type mismatch ...` が出る。selfhost-only gate
+> （bundle/module-source sync + stage2==stage3 fixpoint）green。
 
 ---
 

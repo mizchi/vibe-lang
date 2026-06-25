@@ -59,9 +59,17 @@ install -m 0755 "$RUNNER_SRC" "$VIBE_HOME/bin/moonrun_wt"
 say "runner -> $VIBE_HOME/bin/moonrun_wt"
 
 # 2. compiler wasm ---------------------------------------------------------
+# Prefer a freshly built compiler (latest source, incl. diagnostics); fall back
+# to the committed seed if the build toolchain/runner is unavailable.
 if [ -z "$CLI_WASM_SRC" ]; then
-  CLI_WASM_SRC="$ROOT_DIR/bootstrap/selfhost/seed/selfhost_compiler.wasm"
-  say "using committed seed compiler as the CLI wasm"
+  built=""
+  if built="$(bash "$ROOT_DIR/scripts/build_cli_wasm.sh" 2>/dev/null)" && [ -s "$built" ]; then
+    CLI_WASM_SRC="$built"
+    say "using freshly built compiler wasm: $CLI_WASM_SRC"
+  else
+    CLI_WASM_SRC="$ROOT_DIR/bootstrap/selfhost/seed/selfhost_compiler.wasm"
+    say "build unavailable; using committed seed compiler as the CLI wasm"
+  fi
 fi
 [ -f "$CLI_WASM_SRC" ] || die "compiler wasm not found: $CLI_WASM_SRC"
 install -m 0644 "$CLI_WASM_SRC" "$VIBE_HOME/lib/vibe-cli.wasm"

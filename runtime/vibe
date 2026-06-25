@@ -54,13 +54,23 @@ compile_to() {
   local src="$1" out="$2" entry="$3"
   local cli; cli="$(pick_cli)"
   mkdir -p "$(dirname "$out")"
-  rm -f "$out"
-  if ! VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
-       "$RUNNER" "$cli" "$src" "$out" "$entry" >/dev/null; then
-    return 1
+  rm -f "$out" "$out.diag"
+  local rerr; rerr="$(mktemp -t vibe-rerr-XXXXXX)"
+  VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+    "$RUNNER" "$cli" "$src" "$out" "$entry" >/dev/null 2>"$rerr" || true
+  if [ -s "$out" ]; then
+    rm -f "$out.diag" "$rerr"
+    return 0
   fi
-  [ -s "$out" ] || return 1
-  return 0
+  # Compile failed. Prefer the structured diagnostic the compiler wrote to the
+  # `<out>.diag` sidecar (real message + location); fall back to runner stderr.
+  if [ -s "$out.diag" ]; then
+    echo "error: $(cat "$out.diag")" >&2
+  elif [ -s "$rerr" ]; then
+    cat "$rerr" >&2
+  fi
+  rm -f "$out.diag" "$rerr"
+  return 1
 }
 
 cmd="${1:-help}"; shift || true

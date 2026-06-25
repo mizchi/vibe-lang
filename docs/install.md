@@ -15,7 +15,9 @@ bash scripts/install.sh
 This will:
 
 1. build (or reuse) the `moonrun_wt` runner from `tools/moonrun_wasmtime`,
-2. install the committed seed compiler as `vibe-cli.wasm`,
+2. build a fresh compiler wasm from the current source (`scripts/build_cli_wasm.sh`,
+   seed → stage1 → stage2), falling back to the committed seed if the build
+   toolchain is unavailable,
 3. AOT-compile it to `vibe-cli.cwasm` for this machine,
 4. install the `vibe` launcher and link it onto your `PATH`.
 
