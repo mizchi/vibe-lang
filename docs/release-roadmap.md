@@ -18,6 +18,31 @@
 
 ---
 
+## 実装進捗 (2026-06-25 セッション)
+
+完了・検証済み（selfhost-only gate green、`scripts/test_vibe_cli_install.sh` 12/12）:
+
+- **テーマ1 (install) ほぼ完了** — `moonrun_wt` に selfhost CLI 用 raw-ABI host
+  import を実装、`vibe` launcher（run/compile/build/check/test/fetch/version/
+  self-update/help）、`scripts/install.sh`（install 時 `.cwasm` AOT）、
+  `scripts/build_cli_wasm.sh`、`docs/install.md`、CI（`cli-install.yml`）。
+- **診断表面化 (UX/LSP 基盤)** — コンパイルエラーを `<output>.diag` に書き
+  launcher が `error: <file>: <message>` 表示（trap/backtrace を置換）。
+- **テーマ2 (modules) MVP** — `vibe fetch` で git/URL 分散 deps を content-addressed
+  に vendor + `vibe.lock`。
+
+残テーマ (3/4/土台) は**共通基盤の不足**がボトルネック。スコープを明確化:
+
+- **source span（行・列）が AST/lexer/parser に未実装** — located 診断、LSP の
+  hover/go-to-def/正確な診断範囲、debugger の source map がすべてこれに依存。
+  lexer→parser→全 AST ノード→checker を貫く大改修で、先に seed 互換性を確保し
+  bootstrap を通す必要がある。**M2/M3 の最初の前提作業**。
+- **selfhost codegen の string 脆弱性** — import-path/string 補間ホットパスで
+  NUL garbage が出る既知の脆さ（テーマ2 2-1b で遭遇、`selfhost_only_gate.sh`
+  step4 コメント）。深い frontend 変更前に codegen 安定化が要る。
+- **codegen の関数 index↔name 対応** — wasm name section（土台B / debugger P0）に
+  必要。imports + 条件付き builtins + user 関数の index 会計を要する。
+
 ## 全体方針とリリースの段階
 
 リリースは一括ではなく、テーマ単位のマイルストーンを刻んで段階的にタグを打つ。
