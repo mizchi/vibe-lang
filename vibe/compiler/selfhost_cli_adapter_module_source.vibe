@@ -23816,6 +23816,35 @@ export let build_module_source_from_source: (String, String) -> String with { Er
   }
   StringBuilder::freeze(buf)
 }
+export let build_funcmap_from_source: (String) -> String with { Error } = (source) -> {
+  let lexed = lex_with_offsets(source)
+  let tokens = lexed.0
+  let starts = lexed.1
+  let ends = lexed.2
+  let parsed = parse_program_spans(tokens, starts, ends)
+  let stmts = parsed.0
+  let span_start = parsed.1
+  let buf = StringBuilder::new()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
+    let entry = match stmt {
+      SLet(_, _, name, _, expr) => match expr {
+        EFn(_, _, _, _, _, _) => {
+          let off = Array::get(span_start, i)
+          let lc = offset_to_line_col(source, off)
+          let line = lc.0
+          String::concat(name, String::concat("\t", String::concat(__to_string(line), "\n")))
+        },
+        _ => ""
+      },
+      _ => ""
+    }
+    StringBuilder::push(buf, entry)
+    i = i + 1
+  }
+  StringBuilder::freeze(buf)
+}
 let empty_aliases: () -> Array[(String, String)] = () -> {
   Array::slice([
     ("", "")
@@ -29673,6 +29702,12 @@ let emit_compile_diag: (String, String) -> Int with { Fs } = (output_path, msg) 
   Fs::write_file(String::concat(output_path, ".diag"), msg)
   1
 }
+let write_funcmap_sidecar: (String, String) -> Int with { Fs, Error } = (input_path, output_path) -> {
+  let src = Fs::read_file(input_path)
+  let text = build_funcmap_from_source(src)
+  Fs::write_bytes(String::concat(output_path, ".funcmap"), adapter_string_to_bytes(text))
+  0
+}
 export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
   let input_path = own_host_string(read_arg_or_env(0, "VIBE_INPUT"))
   let output_path = own_host_string(read_arg_or_env(1, "VIBE_OUTPUT"))
@@ -29686,6 +29721,11 @@ export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
         compile_file_fs_mode(input_path, entry_name, "no-dce")
       }
       Fs::write_bytes(output_path, bytes)
+      let _funcmap_rc = handle {
+        write_funcmap_sidecar(input_path, output_path)
+      } with Error {
+        Throw(_) => 0
+      }
       0
     } with Error {
       Throw(msg) => emit_compile_diag(output_path, msg)

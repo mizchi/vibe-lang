@@ -5,7 +5,7 @@ import ./entry / source_compile / wasi_only / preprocess.vibe {
 }
 
 import ./runtime / module_source.vibe {
-  build_module_source_from_source
+  build_module_source_from_source, build_funcmap_from_source
 }
 
 import ./entry / compiler / file_compile {
@@ -102,6 +102,25 @@ let emit_compile_diag: (String, String) -> Int with { Fs } = (output_path, msg) 
   1
 }
 
+// debugger テーマ3 / M2: best-effort `.funcmap` sidecar beside the compiled wasm.
+// Maps each ENTRY-file top-level function to its 1-based source line so the
+// `vibe run` launcher can annotate trap backtrace frames with (file:line). The
+// wasm "name" section (debugger P0) already names the frames; this adds lines.
+//
+// Best-effort: a failure to build/write the funcmap must NOT fail the compile —
+// the wasm write already returned 0. So we wrap the work in its own handler and
+// swallow any Error::Throw. Entry-file functions only (imported modules: future
+// work).
+// Returns 0 (the value is consumed at the call site so the call is never DCE'd:
+// it is a discarded `Unit` side-effect otherwise, which aggressive DCE in the
+// seed compiler may drop).
+let write_funcmap_sidecar: (String, String) -> Int with { Fs, Error } = (input_path, output_path) -> {
+  let src = Fs::read_file(input_path)
+  let text = build_funcmap_from_source(src)
+  Fs::write_bytes(String::concat(output_path, ".funcmap"), adapter_string_to_bytes(text))
+  0
+}
+
 export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
   let input_path = own_host_string(read_arg_or_env(0, "VIBE_INPUT"))
   let output_path = own_host_string(read_arg_or_env(1, "VIBE_OUTPUT"))
@@ -119,6 +138,15 @@ export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
         compile_file_fs_mode(input_path, entry_name, "no-dce")
       }
       Fs::write_bytes(output_path, bytes)
+      // Best-effort `.funcmap` sidecar (entry-file top-level funcs -> line). A
+      // failure to build/write it must NOT fail the compile (the wasm is already
+      // written), so swallow any Error::Throw here. The discarded result is bound
+      // so the call is not DCE'd as a dead Unit side-effect.
+      let _funcmap_rc = handle {
+        write_funcmap_sidecar(input_path, output_path)
+      } with Error {
+        Throw(_) => 0
+      }
       0
     } with Error {
       Throw(msg) => emit_compile_diag(output_path, msg)

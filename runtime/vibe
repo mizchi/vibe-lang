@@ -202,9 +202,57 @@ case "$cmd" in
     src="$1"; entry="${2:-main}"
     [ -f "$src" ] || die "not found: $src"
     out="$(mktemp -t vibe-run-XXXXXX.wasm)"
-    trap 'rm -f "$out"' EXIT
+    trap 'rm -f "$out" "$out.funcmap"' EXIT
     compile_to "$src" "$out" "$entry" || die "compilation failed: $src"
-    exec "$RUNNER" "$out"
+    # debugger テーマ3 / M2: runtime traps point at the SOURCE LINE. The wasm
+    # "name" custom section already makes trap backtrace frames name the user
+    # function (e.g. `<unknown>!boom`). The FS compile also wrote a `<out>.funcmap`
+    # sidecar (name<TAB>line) for the entry file's top-level functions. We run the
+    # runner capturing stderr, and for each frame naming a funcmap function append
+    # ` (<basename>:<line>)`, e.g. `<unknown>!boom (prog.vibe:1)`. stdout and the
+    # exit status pass through unchanged; with no funcmap/no match stderr is
+    # untouched. (See scripts/test_vibe_trace.sh.)
+    rerr="$(mktemp -t vibe-run-err-XXXXXX)"
+    # `set -e` must not abort on a trapping/non-zero program: capture its status
+    # and re-emit it ourselves below.
+    status=0
+    "$RUNNER" "$out" 2>"$rerr" || status=$?
+    if [ -s "$out.funcmap" ] && [ -s "$rerr" ]; then
+      VIBE_FUNCMAP="$out.funcmap" VIBE_SRCBASE="$(basename "$src")" \
+        awk '
+          BEGIN {
+            fm = ENVIRON["VIBE_FUNCMAP"]; base = ENVIRON["VIBE_SRCBASE"]
+            while ((getline line < fm) > 0) {
+              t = index(line, "\t")
+              if (t > 0) {
+                nm = substr(line, 1, t - 1)
+                ln = substr(line, t + 1)
+                sub(/[ \t\r\n]+$/, "", ln)
+                if (nm != "") fmline[nm] = ln
+              }
+            }
+            close(fm)
+          }
+          {
+            # A trap frame names a user function after "!" (wasmtime/name section):
+            #   <addr> - <unknown>!boom
+            b = index($0, "!")
+            if (b > 0) {
+              name = substr($0, b + 1)
+              sub(/[ \t\r\n].*$/, "", name)
+              if (name in fmline) {
+                printf "%s (%s:%s)\n", $0, base, fmline[name]
+                next
+              }
+            }
+            print $0
+          }
+        ' "$rerr" >&2
+    else
+      cat "$rerr" >&2
+    fi
+    rm -f "$rerr"
+    exit "$status"
     ;;
   compile|build)
     [ "$#" -ge 1 ] || die "usage: vibe $cmd <file.vibe> [-o <out.wasm>] [--entry <name>]"
