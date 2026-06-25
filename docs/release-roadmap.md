@@ -110,11 +110,11 @@
       update 手順）。
 
 > 実装メモ: launcher (`runtime/vibe`) が `run`/`compile`/`build`/`check`/
-> `version`/`self update`/`help` を提供。`run` は compile→別プロセス実行の
-> 2 段（selfhost CLI は compile 専用のため orchestration は launcher 側）。
+> `test`/`version`/`self update`/`help` を提供。`run`/`test` は compile→別プロセス
+> 実行の 2 段（selfhost CLI は compile 専用のため orchestration は launcher 側）。
 > 検証済み: 単一/マルチファイル `vibe run` → 42、`vibe check` の成功/失敗、
-> `.cwasm` 経路の利用。残: `vibe test`/`vibe fmt` の launcher 統合、
-> 型エラー診断テキストの host 表面化（現状 trap メッセージのみ）。
+> `vibe test` の pass/fail 集約、`.cwasm` 経路の利用。残: `vibe fmt` の launcher
+> 統合、型エラー診断テキストの host 表面化（現状 trap メッセージのみ）。
 
 ---
 

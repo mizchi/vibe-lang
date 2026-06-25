@@ -15,6 +15,7 @@
 #   vibe compile <file.vibe> -o <out>     compile to a .wasm
 #   vibe build   <file.vibe> -o <out>     alias of compile
 #   vibe check   <file.vibe>              parse + typecheck (no output kept)
+#   vibe test    <file_test.vibe>...      compile + run test {} blocks
 #   vibe version                          print toolchain versions
 #   vibe self update [--cli-wasm <path>]  refresh compiler wasm + rebuild .cwasm
 #   vibe help                             this message
@@ -101,6 +102,26 @@ case "$cmd" in
     else
       die "check failed: $src"
     fi
+    ;;
+  test)
+    [ "$#" -ge 1 ] || die "usage: vibe test <file_test.vibe> [more_test.vibe...]"
+    failed=0
+    for src in "$@"; do
+      [ -f "$src" ] || die "not found: $src"
+      out="$(mktemp -t vibe-test-XXXXXX.wasm)"
+      # `__no_entry__` makes the compiler emit a `_start` that runs every
+      # `test {}` block in the file; a failing assert traps the module.
+      if ! compile_to "$src" "$out" "__no_entry__"; then
+        echo "FAIL (compile): $src"; failed=1; rm -f "$out"; continue
+      fi
+      if "$RUNNER" "$out"; then
+        echo "ok:   $src"
+      else
+        echo "FAIL: $src"; failed=1
+      fi
+      rm -f "$out"
+    done
+    exit "$failed"
     ;;
   version|--version|-V)
     echo "vibe (selfhost launcher)"

@@ -65,6 +65,7 @@ vibe run     <file.vibe> [entry]      compile (resolving imports) then run
 vibe compile <file.vibe> -o <out>     compile to a .wasm
 vibe build   <file.vibe> -o <out>     alias of compile
 vibe check   <file.vibe> [entry]      parse + typecheck (no output kept)
+vibe test    <file_test.vibe>...      compile + run test {} blocks
 vibe version                          print toolchain versions
 vibe self update --cli-wasm <path>    refresh compiler wasm + rebuild .cwasm
 vibe help                             usage
