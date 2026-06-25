@@ -7,9 +7,10 @@
 # false matches inside strings/comments/partial words. Hovering whitespace (no
 # identifier) prints nothing.
 #
-# MVP LIMITATION (honest): matching is name-based across the whole file, with NO
-# shadowing analysis yet — distinct same-named locals are grouped as one. Still
-# strictly more accurate than a whole-file text scan.
+# Scope-aware (テーマ4): the cursor identifier is resolved to its nearest
+# enclosing binding (let / param / for / match binder) via a scope-stack walk, so
+# distinct same-named locals in different scopes are NOT conflated. Top-level /
+# module bindings still group file-wide by name.
 #
 # The committed seed predates this feature, so this test builds a FRESH compiler
 # via scripts/install.sh (default, no --cli-wasm seed override) into a throwaway
@@ -90,6 +91,68 @@ if [ -z "$occ_ws" ]; then
   echo "ok: binding-at on whitespace (1:7) is empty"; pass=$((pass + 1))
 else
   echo "FAIL: binding-at on whitespace (1:7) should be empty, got '$occ_ws'" >&2; fail=$((fail + 1))
+fi
+
+# --- Scope precision (テーマ4): distinct same-named locals must NOT be conflated.
+#   line 1: export let f = (x: Int) -> Int { x + 1 }
+#   line 2: export let g = (x: Int) -> Int { x * 2 }
+# Line 1 is exactly 40 chars + newline, so line 1 spans char offsets [0, 40] and
+# line 2 starts at offset 41. The `x` parameter in `f` is at offset 16 (1-based
+# column 17); its use is at offset 33. `binding-at <file> 1 17` must return ONLY
+# those two line-1 `x` spans (the param + its single use in f), and NOT the two
+# `x` spans in g on line 2 (offsets 57, 74). A pre-scope (name-wide) result would
+# return all FOUR `x` spans.
+fg="$WORK/fg.vibe"
+printf 'export let f = (x: Int) -> Int { x + 1 }\nexport let g = (x: Int) -> Int { x * 2 }\n' > "$fg"
+
+occ_fg="$("$VIBE" binding-at "$fg" 1 17 2>/dev/null || true)"
+fg_count="$(printf '%s\n' "$occ_fg" | grep -c '[0-9]' || true)"
+if [ "${fg_count:-0}" -eq 2 ]; then
+  echo "ok: scope-precise binding-at on 'x' in f (1:17) returned exactly 2 occurrences (param + use in f)"; pass=$((pass + 1))
+else
+  echo "FAIL: scope-precise binding-at on 'x' in f (1:17) should return exactly 2 occurrences (not g's x), got $fg_count:" >&2
+  printf '%s\n' "$occ_fg" >&2; fail=$((fail + 1))
+fi
+
+# Every returned span must fall on LINE 1 (offset < 41) — proving g's line-2 `x`
+# (offsets 57/74) was excluded by the scope analysis.
+fg_lines_ok=1
+fg_seen=0
+while IFS=' ' read -r s e; do
+  [ -n "$s" ] || continue
+  fg_seen=$((fg_seen + 1))
+  if [ "$s" -ge 41 ] || [ "$e" -gt 41 ]; then
+    echo "FAIL: span ($s,$e) is on line 2 (offset >= 41) — g's x leaked into f's binding" >&2
+    fg_lines_ok=0
+  fi
+done <<EOF
+$occ_fg
+EOF
+if [ "$fg_lines_ok" -eq 1 ] && [ "$fg_seen" -eq 2 ]; then
+  echo "ok: both f-scope 'x' spans fall within line 1 (g's line-2 'x' excluded)"; pass=$((pass + 1))
+else
+  echo "FAIL: f-scope 'x' spans must all be on line 1 and number 2 (seen $fg_seen)" >&2; fail=$((fail + 1))
+fi
+
+# Symmetry: `x` in g (line 2, column 17 -> offset 57) must return ONLY g's two
+# line-2 spans, never touching f's line-1 `x`.
+occ_g="$("$VIBE" binding-at "$fg" 2 17 2>/dev/null || true)"
+g_count="$(printf '%s\n' "$occ_g" | grep -c '[0-9]' || true)"
+g_lines_ok=1
+while IFS=' ' read -r s e; do
+  [ -n "$s" ] || continue
+  if [ "$s" -lt 41 ]; then
+    echo "FAIL: g's binding span ($s,$e) leaked onto line 1 (f's x)" >&2
+    g_lines_ok=0
+  fi
+done <<EOF
+$occ_g
+EOF
+if [ "${g_count:-0}" -eq 2 ] && [ "$g_lines_ok" -eq 1 ]; then
+  echo "ok: scope-precise binding-at on 'x' in g (2:17) returned exactly its own 2 line-2 spans"; pass=$((pass + 1))
+else
+  echo "FAIL: scope-precise binding-at on 'x' in g (2:17) should return exactly 2 line-2 spans, got $g_count:" >&2
+  printf '%s\n' "$occ_g" >&2; fail=$((fail + 1))
 fi
 
 echo "[vibe-binding-at] $pass passed, $fail failed"
