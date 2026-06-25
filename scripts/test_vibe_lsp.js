@@ -83,6 +83,14 @@ const isDiag = (uri) => (m) => m.method === "textDocument/publishDiagnostics" &&
     check("syntax diagnostic located on line 2", synDiag.params.diagnostics[0].range.start.line === 1);
   }
 
+  // error recovery: two independent syntax errors -> TWO diagnostics on
+  // different lines (the recovering parser collects past the first error).
+  const multiUri = "file:///tmp/vibe-lsp-test-multi.vibe";
+  send({ jsonrpc: "2.0", method: "textDocument/didOpen", params: { textDocument: { uri: multiUri, languageId: "vibe", version: 1, text: "export let a = = 1\nexport let ok = 2\nexport let b = = 3\n" } } });
+  const multiDiag = await waitFor(isDiag(multiUri));
+  const multiLines = new Set((multiDiag.params.diagnostics || []).map((d) => d.range.start.line));
+  check("error recovery yields diagnostics on >=2 lines", multiLines.size >= 2 && multiLines.has(0) && multiLines.has(2));
+
   // good document -> expect empty diagnostics
   const goodUri = "file:///tmp/vibe-lsp-test-good.vibe";
   const goodText = "export enum Color { Red; Green }\nexport let helper = (x: Int) -> Int { x * 2 }\nexport let main = () -> Int { helper(21) }\n";

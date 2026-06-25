@@ -303,18 +303,30 @@ function runCheck(uri) {
   let diagnostics = [];
   try {
     fs.writeFileSync(tmp, doc.text, "utf8");
-    const res = spawnSync(VIBE_BIN, ["check", tmp], { encoding: "utf8" });
-    const out = `${res.stdout || ""}\n${res.stderr || ""}`;
-    if ((res.status && res.status !== 0) || /\berror:/.test(out)) {
-      const message = parseMessage(out);
-      diagnostics = [
-        {
-          range: locate(doc.text, message),
-          severity: 1, // Error
-          source: "vibe",
-          message,
-        },
-      ];
+    // `vibe diagnostics` runs the recovering parser and reports EVERY located
+    // syntax error (one per line), or the single located type error on a clean
+    // parse. Publish them all. Fall back to `vibe check` if the subcommand is
+    // unavailable (older compiler) so a single diagnostic still surfaces.
+    const dres = spawnSync(VIBE_BIN, ["diagnostics", tmp], { encoding: "utf8" });
+    const dout = (dres.stdout || "").trim();
+    if (dres.status === 0) {
+      diagnostics = dout
+        ? dout.split(/\r?\n/).filter((l) => l.trim().length).map((message) => ({
+            range: locate(doc.text, message),
+            severity: 1, // Error
+            source: "vibe",
+            message,
+          }))
+        : [];
+    } else {
+      const res = spawnSync(VIBE_BIN, ["check", tmp], { encoding: "utf8" });
+      const out = `${res.stdout || ""}\n${res.stderr || ""}`;
+      if ((res.status && res.status !== 0) || /\berror:/.test(out)) {
+        const message = parseMessage(out);
+        diagnostics = [
+          { range: locate(doc.text, message), severity: 1, source: "vibe", message },
+        ];
+      }
     }
   } catch (e) {
     diagnostics = [
