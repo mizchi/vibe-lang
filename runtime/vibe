@@ -16,6 +16,7 @@
 #   vibe build   <file.vibe> -o <out>     alias of compile
 #   vibe check   <file.vibe>              parse + typecheck (no output kept)
 #   vibe test    <file_test.vibe>...      compile + run test {} blocks
+#   vibe add     <name> <url> [dir]       add a dependency to vibe.deps + fetch
 #   vibe fetch   [project_dir]            vendor git/URL deps from vibe.deps + lock
 #   vibe lsp                              start the stdio LSP server (diagnostics)
 #   vibe version                          print toolchain versions
@@ -136,6 +137,21 @@ case "$cmd" in
     done
     exit "$failed"
     ;;
+  add)
+    # vibe add <name> <url> [project_dir]
+    # Append a dependency to <dir>/vibe.deps (creating it if needed) and fetch.
+    [ "$#" -ge 2 ] || die "usage: vibe add <name> <url> [project_dir]"
+    aname="$1"; aurl="$2"; adir="${3:-.}"
+    amanifest="$adir/vibe.deps"
+    mkdir -p "$adir"
+    # Skip if an identical name is already declared; else append.
+    if [ -f "$amanifest" ] && awk -v n="$aname" '$1==n {found=1} END{exit !found}' "$amanifest"; then
+      die "dependency '$aname' already declared in $amanifest"
+    fi
+    printf '%s %s\n' "$aname" "$aurl" >> "$amanifest"
+    echo "added $aname -> $aurl ($amanifest)"
+    exec "$LAUNCHER" fetch "$adir"
+    ;;
   fetch)
     # vibe fetch [project_dir]
     # Vendor remote (git/URL 分散) deps declared in <dir>/vibe.deps into
@@ -236,7 +252,7 @@ case "$cmd" in
     esac
     ;;
   help|--help|-h)
-    sed -n '13,23p' "$LAUNCHER" | sed 's/^# \{0,1\}//'
+    sed -n '13,24p' "$LAUNCHER" | sed 's/^# \{0,1\}//'
     ;;
   *)
     die "unknown command: $cmd (try 'vibe help')"

@@ -111,5 +111,14 @@ else
   echo "info: git not available; skipping git+ fetch assertions"
 fi
 
+# add: `vibe add` appends to vibe.deps and fetches in one step
+aproj="$WORK/aproj"; mkdir -p "$aproj"
+printf 'export let inc = (x: Int) -> Int { x + 1 }\n' > "$WORK/inclib.vibe"
+"$VIBE" add inclib "file://$WORK/inclib.vibe" "$aproj" >/dev/null 2>&1 && rc=0 || rc=$?
+check "vibe add exit" "0" "$rc"
+check "vibe add wrote manifest + lock" "yes" "$([ -s "$aproj/vibe.deps" ] && [ -s "$aproj/vibe.lock" ] && echo yes || echo no)"
+printf 'import ./deps/inclib.vibe { inc }\nexport let main = () -> Int { inc(41) }\n' > "$aproj/app.vibe"
+check "vibe run added dep" "42" "$("$VIBE" run "$aproj/app.vibe" 2>/dev/null | tr -dc '0-9')"
+
 echo "[test] $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1
