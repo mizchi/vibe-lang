@@ -456,7 +456,10 @@ install/​debugger と runtime 前提を一本化する。`vibe lsp` を selfho
       `type_at_source`: 位置の EIdent を実オフセットで特定 → `check_program` →
       `env_lookup` + `type_to_string`）で推論型を返し、LSP hover が表示する
       （`js/vibe/lsp_server.js`、`scripts/test_vibe_type_at.sh` 3/3 +
-      `test_vibe_lsp.js` 14/14）。**MVP スコープ**: トップレベル / import された
+      `test_vibe_lsp.js` 16/16）。**signatureHelp も追加**: 呼び出し `foo(│)` の
+      中で callee の推論シグネチャ `foo: (Int) -> Int` を表示（`vibe type-at`
+      再利用、enclosingCall でバランス括弧を遡り activeParameter も算出）。
+      **MVP スコープ**: トップレベル / import された
       value 名のみ解決。ローカル変数・パラメータは未対応（per-node 型テーブル＝
       span-arc step3b が前提）。スコープ精度の高い補完・rename も同 step が前提。
 - [x] **4-5 editor 配線** — `integrations/vscode-vibe` に LSP client

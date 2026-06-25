@@ -80,6 +80,7 @@ function handle(msg) {
           renameProvider: true,
           documentHighlightProvider: true,
           completionProvider: { triggerCharacters: ["."] },
+          signatureHelpProvider: { triggerCharacters: ["(", ","] },
         },
         serverInfo: { name: "vibe-lsp", version: "0.1.0" },
       });
@@ -151,6 +152,32 @@ function handle(msg) {
         value = "```vibe\n" + decl.line.trim() + "\n```";
       }
       reply(msg.id, { contents: { kind: "markdown", value } });
+      break;
+    }
+    case "textDocument/signatureHelp": {
+      const uri = msg.params.textDocument.uri;
+      const doc = docs.get(uri);
+      if (!doc) { reply(msg.id, null); break; }
+      // Find the enclosing call: scan back from the cursor over balanced parens
+      // to the `name(` that opened the current argument list, then ask the
+      // compiler for `name`'s inferred type and present it as the signature.
+      const call = enclosingCall(doc.text, msg.params.position);
+      if (!call) { reply(msg.id, null); break; }
+      const ty = typeAt(uri, { line: call.line, character: call.character });
+      if (!ty) { reply(msg.id, null); break; }
+      // Parameter list = between the outermost "(" and its matching ")" in the
+      // type string; split on top-level commas to count args for activeParameter.
+      const params = signatureParams(ty);
+      reply(msg.id, {
+        signatures: [
+          {
+            label: call.name + ": " + ty,
+            parameters: params.map((p) => ({ label: p })),
+          },
+        ],
+        activeSignature: 0,
+        activeParameter: Math.min(call.argIndex, Math.max(0, params.length - 1)),
+      });
       break;
     }
     case "initialized":
@@ -365,6 +392,55 @@ function hash(s) {
   let h = 0;
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
   return h;
+}
+
+// Scan backward from a position over balanced parens to find the call whose
+// argument list the cursor is inside. Returns the callee identifier, its
+// position (for type-at), and the 0-based index of the current argument.
+function enclosingCall(text, position) {
+  const lines = text.split(/\r?\n/);
+  // Linear offset of the cursor.
+  let off = 0;
+  for (let i = 0; i < position.line && i < lines.length; i++) off += lines[i].length + 1;
+  off += position.character;
+  let depth = 0, commas = 0;
+  for (let p = off - 1; p >= 0; p--) {
+    const ch = text[p];
+    if (ch === ")") depth++;
+    else if (ch === "(") {
+      if (depth === 0) {
+        // Found the opening paren of the current call; the callee is the
+        // identifier immediately before it.
+        let e = p - 1;
+        while (e >= 0 && /\s/.test(text[e])) e--;
+        let s = e;
+        while (s >= 0 && /[A-Za-z0-9_]/.test(text[s])) s--;
+        const name = text.slice(s + 1, e + 1);
+        if (!name) return null;
+        // Convert the name-start offset back to line/character.
+        let ln = 0, base = 0;
+        while (ln < lines.length && base + lines[ln].length + 1 <= s + 1) { base += lines[ln].length + 1; ln++; }
+        return { name, line: ln, character: s + 1 - base, argIndex: commas };
+      }
+      depth--;
+    } else if (ch === "," && depth === 0) commas++;
+  }
+  return null;
+}
+
+// Split a function type's parameter list ("(A, B) -> C") into ["A","B"] at the
+// top level (so nested arrows/tuples don't over-split). Returns [] if not a fn.
+function signatureParams(ty) {
+  const open = ty.indexOf("(");
+  if (open < 0) return [];
+  let depth = 0, start = open + 1, parts = [];
+  for (let i = open; i < ty.length; i++) {
+    const c = ty[i];
+    if (c === "(" || c === "[") depth++;
+    else if (c === ")" || c === "]") { depth--; if (depth === 0) { const seg = ty.slice(start, i).trim(); if (seg) parts.push(seg); break; } }
+    else if (c === "," && depth === 1) { parts.push(ty.slice(start, i).trim()); start = i + 1; }
+  }
+  return parts;
 }
 
 // All whole-word occurrences of `name` in the document (references). Text-based

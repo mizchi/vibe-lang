@@ -132,6 +132,13 @@ const isDiag = (uri) => (m) => m.method === "textDocument/publishDiagnostics" &&
   const edits = ren.result && ren.result.changes && ren.result.changes[goodUri];
   check("rename edits both occurrences to new name", Array.isArray(edits) && edits.length === 2 && edits.every((e) => e.newText === "doubler"));
 
+  // signatureHelp: cursor inside `helper(...)` on line 2 -> show helper's
+  // inferred signature ((Int) -> Int) via vibe type-at.
+  send({ jsonrpc: "2.0", id: 9, method: "textDocument/signatureHelp", params: { textDocument: { uri: goodUri }, position: { line: 2, character: helperCol + 7 } } });
+  const sig = await waitFor((m) => m.id === 9);
+  const sigLabel = sig.result && sig.result.signatures && sig.result.signatures[0] && sig.result.signatures[0].label;
+  check("signatureHelp shows inferred signature", !!sigLabel && /helper/.test(sigLabel) && /Int/.test(sigLabel));
+
   // completion: keywords + document declarations
   send({ jsonrpc: "2.0", id: 6, method: "textDocument/completion", params: { textDocument: { uri: goodUri }, position: { line: 2, character: 0 } } });
   const comp = await waitFor((m) => m.id === 6);
