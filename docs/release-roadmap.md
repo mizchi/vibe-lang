@@ -31,6 +31,10 @@
 - **テーマ2 (modules) MVP** — `vibe fetch` で git/URL 分散 deps を content-addressed
   に vendor + `vibe.lock`。
 
+- **テーマ3 (debugger) P0 着手** — wasm name section を実装し、trap backtrace が
+  user 関数名を表示するようになった（`<wasm function N>` → `main`/`boom`）。
+  DAP 本体（P1-P4）と source-line map は source span が前提で未着手。
+
 残テーマ (3/4/土台) は**共通基盤の不足**がボトルネック。スコープを明確化:
 
 - **source span（行・列）が AST/lexer/parser に未実装** — located 診断、LSP の
@@ -256,8 +260,12 @@ VS Code（DAP クライアント）から breakpoint を張り、停止・変数
 
 ### マイルストーン（ADR-0035 のフェーズに対応）
 
-- [ ] **3-P0 source map 基盤**（= 横断土台 B、M2）— `vibe.func_map` +
-      wasm name section 出力。**まずランタイム trap がソース行を表示**できる所まで。
+- [~] **3-P0 source map 基盤**（= 横断土台 B、M2）— **wasm name section を実装**
+      （`emit_function_name_section`、`compile_wasi_module_linked_impl` から呼ぶ）。
+      compiled wasm の function-names subsection が user 関数を命名し、wasmtime の
+      trap backtrace が `<wasm function N>` → `boom` 等の関数名表示になった。
+      検証済み（`scripts/test_name_section.sh`、selfhost-only gate fixpoint green）。
+      残: `vibe.func_map`（命令オフセット→ソース行）= source span 実装が前提。
 - [ ] **3-P1 breakpoint DAP**（M3）— stop/continue + source 表示の DAP サーバー。
       coverage point を breakpoint anchor に流用。
 - [ ] **3-P2 変数検査**（M3）— locals/args のメタデータ出力 + tagged 値の decode。

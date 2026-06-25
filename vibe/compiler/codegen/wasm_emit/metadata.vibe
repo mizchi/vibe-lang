@@ -1,10 +1,37 @@
 //# Imports
 
 import .. / .. / core {
-  bytebuf_new, bytebuf_push, bytebuf_push_section, bytebuf_push_string
+  bytebuf_new, bytebuf_push, bytebuf_push_section, bytebuf_push_string, leb128_encode_u32
 }
 
 //# Functions
+
+// Emit the standard WebAssembly "name" custom section with a function-names
+// subsection (id 1) naming `count` consecutive functions starting at
+// `base_index`. Custom sections are ignored at execution time, so this only
+// improves tooling/trace readability (e.g. wasm backtraces show `main` instead
+// of `<wasm function N>`). This is debugger P0 groundwork (ADR-0035 /
+// docs/release-roadmap.md テーマ3): a source-line map can be layered on later.
+export let emit_function_name_section: (Bytes, Array[String], Int) -> Unit = (out, names, base_index) -> {
+  let count = Array::length(names)
+  if count == 0 {
+    ()
+  } else {
+    let content = bytebuf_new()
+    bytebuf_push_string(content, "name")
+    // function-names subsection: vec of (funcidx, name), funcidx ascending.
+    let namemap = bytebuf_new()
+    leb128_encode_u32(namemap, count)
+    let mut i = 0
+    while i < count {
+      leb128_encode_u32(namemap, base_index + i)
+      bytebuf_push_string(namemap, Array::get(names, i))
+      i = i + 1
+    }
+    bytebuf_push_section(content, 1, namemap)
+    bytebuf_push_section(out, 0, content)
+  }
+}
 
 let emit_ascii_payload: (Bytes, String) -> Unit = (buf, text) -> {
   let len = String::length(text)
