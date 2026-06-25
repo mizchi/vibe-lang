@@ -86,13 +86,16 @@
 > 各段は compiler source 変更 → selfhost fixpoint gate を要するので worktree
 > agent + cherry-pick で隔離する。
 
-1. **【最小 payoff】診断を AST offset 消費に切替** — checker の `unknown name` /
-   arity / field / ctor throw 時に、対象ノードの offset を error channel に乗せ、
-   `locate_type_error` が text 検索ではなく実 offset → `offset_to_line_col` で
-   正確な line:col を出す。error channel は現状 `Array[String]`。string marker
-   leak を避けるため、`Array[(String, Int)]`（msg, offset）へ広げるのが正攻法
-   （locate は -1 のとき従来 heuristic に fallback）。これで「同名識別子が複数
-   ある時に誤った位置を指す」欠陥が解消し、pipeline が end-to-end で実証される。
+1. ✅ **【最小 payoff】診断を AST offset 消費に切替（着地）** — checker が各 EIdent の
+   実 offset を `[@off=N]` 除去可能マーカーでエラー文字列に乗せ、
+   `locate_type_error` が正確な `line:col` に変換（マーカーは表示前に必ず除去、
+   無い時は従来 first-occurrence heuristic に fallback）。**併せて FS typecheck の
+   parse を `parse_program` → `lex_with_offsets`+`parse_program_located` に切替**
+   （これが無いと FS 経路の starts が空で offset が全て -1 のまま＝土台が効かない
+   発見）。これで arity mismatch が「関数の定義行」ではなく「実際の呼び出し行」を
+   指すようになった（pipeline を end-to-end で実証）。selfhost gate green、
+   located 診断 7/7（call-site 精度の回帰 + marker leak guard 含む）。
+   worktree agent → cherry-pick 統合。
 2. **ECall / EDot へ offset 付与** — EIdent と同じ構造 refactor（variant に Int
    field 追加 → 全 construct/match site 更新 → bundle 再生成）。call-site の
    go-to-definition / hover の土台。arity/field 診断の正確化もここで効く。
