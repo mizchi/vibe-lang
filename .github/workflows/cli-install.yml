@@ -87,6 +87,27 @@ jobs:
           # Default install builds a fresh compiler wasm (with diagnostics) the
           # LSP server relies on for messages.
           bash scripts/install.sh >/dev/null
+          # --- temporary: capture the runner STDERR for diagnostics/type-at,
+          # which trap only in CI (both .wasm and .cwasm). set +e so probes don't
+          # abort the step before the LSP test runs.
+          set +e
+          RT="$VIBE_HOME/bin/moonrun_wt"; W="$VIBE_HOME/lib/vibe-cli.wasm"
+          ls -l "$VIBE_HOME/lib/"
+          printf 'export let main = () -> Int { zzz }\n' > /tmp/d-type.vibe
+          printf 'export let a = = 1\nexport let ok = 2\nexport let b = = 3\n' > /tmp/d-syn.vibe
+          printf 'export let helper = (x: Int) -> Int { x * 2 }\nexport let main = () -> Int { helper(21) }\n' > /tmp/d-good.vibe
+          echo "::group::diag-stderr"
+          echo "[diagnostics type-error — stderr visible]"
+          env VIBE_DIAGNOSTICS=1 VIBE_SELFHOST_IMPORT_ABI=raw "$RT" "$W" /tmp/d-type.vibe /tmp/o1; echo "rc=$? out=[$(cat /tmp/o1 2>/dev/null)]"
+          echo "[diagnostics syntax-errors — stderr visible]"
+          env VIBE_DIAGNOSTICS=1 VIBE_SELFHOST_IMPORT_ABI=raw "$RT" "$W" /tmp/d-syn.vibe /tmp/o2; echo "rc=$? out=[$(cat /tmp/o2 2>/dev/null)]"
+          echo "[type-at good — stderr visible]"
+          env VIBE_TYPE_AT=1 VIBE_TYPE_LINE=2 VIBE_TYPE_COL=31 VIBE_SELFHOST_IMPORT_ABI=raw "$RT" "$W" /tmp/d-good.vibe /tmp/o3; echo "rc=$? out=[$(cat /tmp/o3 2>/dev/null)]"
+          echo "[plain check type-error for comparison]"
+          env VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw "$RT" "$W" /tmp/d-type.vibe /tmp/o4 main; echo "rc=$? diag=[$(cat /tmp/o4.diag 2>/dev/null)]"
+          echo "::endgroup::"
+          set -e
+          # --- end temporary
           VIBE_BIN="$VIBE_BIN_DIR/vibe" node scripts/test_vibe_lsp.js
 
       - name: Name section (debugger P0) regression test
