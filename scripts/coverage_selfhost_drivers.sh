@@ -179,6 +179,7 @@ run_driver cov_grab_main       scripts/coverage/cov_grab.vibe       grab        
 run_driver cov_lookup2_main    scripts/coverage/cov_lookup2.vibe    lookup2     # every dark lookup_* builtin dispatcher x full builtin-name union (generated)
 run_driver cov_parser3_main    scripts/coverage/cov_parser3.vibe    parser3     # parse_postfix expr-type stop-cases + parse_impl mode dispatch + parse_impl_block bodies (direct via parse_impl callback)
 run_driver cov_parser4_main    scripts/coverage/cov_parser4.vibe    parser4     # parse_pattern/parse_type_impl/parse_stmt/parse_*_primary/parse_*_stmt internals (direct, lexed tokens)
+run_driver cov_namespace_main  scripts/coverage/cov_namespace.vibe  namespace   # namespace_private_value_stmts: private+exported enum/struct/suberror/alias body with ctor/type rewrites
 rm -f _build/vibe_selfhost_* 2>/dev/null || true
 
 now=$(python3 -c "import json;print(sum(json.load(open('$ACC'))['br']))")
