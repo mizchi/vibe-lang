@@ -1,0 +1,42 @@
+
+// #cov grind2 driver: namespace_private_value_stmts over a body exercising the
+// Stmt kinds its first driver missed — STest / SBench / SLetPat / SExpr /
+// SExternLet — each referencing the private enum/struct (so the ctor/type rewrite
+// walks their bodies). Plus parser primaries parse_perform_primary /
+// parse_generic_fn_primary / parse_call_arg via the parse_impl callback.
+let pe_a: () -> Expr = () -> { ECall(EIdent("A"), Array::slice([EInt(1)], 0, 1)) }
+
+let gr2_ns: () -> Int = () -> {
+  let body = Array::slice([SExpr(EUnit)], 0, 0)
+  let no = Array::slice([TyName("Int")], 0, 0)
+  let ii = Array::slice([TyName("Int")], 0, 1)
+  Array::push(body, SEnum(false, "PE", Array::slice([""], 0, 0), Array::slice([("A", ii), ("N", no)], 0, 2)))
+  Array::push(body, SStruct(false, "PS", Array::slice([("f", TyName("Int"))], 0, 1)))
+  // refs to the private ctor/type across many Stmt kinds:
+  Array::push(body, SExpr(pe_a()))
+  let arms = Array::slice([(PCtor("A", Array::slice([PBind("x")], 0, 1)), EIdent("x"))], 0, 1)
+  Array::push(arms, (PCtor("N", Array::slice([PWild], 0, 0)), EInt(0)))
+  Array::push(body, STest("t", EMatch(pe_a(), arms)))
+  Array::push(body, SBench("b", pe_a()))
+  Array::push(body, SLetPat(PCtor("A", Array::slice([PBind("y")], 0, 1)), pe_a()))
+  Array::push(body, SLetMut("mv", Some(TyName("PS")), ERecord(Array::slice([("f", EInt(2))], 0, 1))))
+  Array::push(body, SExternLet("ext", TyName("PS")))
+  Array::push(body, SLet(true, false, "use_it", Some(TyName("PE")), pe_a()))
+  Array::push(body, SExport(Array::slice(["use_it"], 0, 1)))
+  Array::length(namespace_private_value_stmts("M", body)) + Array::length(namespace_private_value_stmts("X", namespace_private_value_stmts("M", body)))
+}
+let gr2_perform: () -> Int = () -> {
+  let mut acc = 0
+  acc = acc + (handle { let r = parse_perform_primary(lex("perform St::get()"), 1, parse_impl); match r.0 { _ => 1 } } with Error { Throw(_) => 0 })
+  acc = acc + (handle { let r = parse_perform_primary(lex("perform Eff::put(1, 2)"), 1, parse_impl); match r.0 { _ => 1 } } with Error { Throw(_) => 0 })
+  acc = acc + (handle { let r = parse_generic_fn_primary(lex("fn[a, b](x: a, y: b) -> a { x }"), 1, parse_impl); match r.0 { _ => 1 } } with Error { Throw(_) => 0 })
+  acc = acc + (handle { let r = parse_generic_fn_primary(lex("fn[a](x: a) -> a { x }"), 1, parse_impl); match r.0 { _ => 1 } } with Error { Throw(_) => 0 })
+  acc = acc + (handle { let r = parse_call_arg(lex("lbl: 5"), 0, parse_impl); match r.0 { _ => 1 } } with Error { Throw(_) => 0 })
+  acc = acc + (handle { let r = parse_call_arg(lex("...rest"), 0, parse_impl); match r.0 { _ => 1 } } with Error { Throw(_) => 0 })
+  acc = acc + (handle { let r = parse_call_arg(lex("plain"), 0, parse_impl); match r.0 { _ => 1 } } with Error { Throw(_) => 0 })
+  acc
+}
+
+export let cov_grind2_main: () -> Int = () -> {
+  gr2_ns() + gr2_perform()
+}

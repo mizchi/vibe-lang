@@ -1,0 +1,38 @@
+
+// #cov grind driver: constructible-input residual arms.
+//  - collect_private_type_renames: private SEnum/SStruct/STypeAlias/SSuberror with
+//    the name present vs absent in `exported` (push vs skip arm for each kind).
+//  - collect_needed_paths_from_manifest_headers: rows containing the entry path
+//    (manifest_header_deps_lookup Some-arm) + Map::has_key true, avoiding Fs reads.
+let g_renames: (Array[String]) -> Int = (exported) -> {
+  let body = Array::slice([SExpr(EUnit)], 0, 0)
+  let no = Array::slice([TyName("Int")], 0, 0)
+  let ii = Array::slice([TyName("Int")], 0, 1)
+  Array::push(body, SEnum(false, "PE", Array::slice([""], 0, 0), Array::slice([("A", no)], 0, 1)))
+  Array::push(body, SStruct(false, "PS", Array::slice([("f", TyName("Int"))], 0, 1)))
+  Array::push(body, STypeAlias(false, "PT", Array::slice([""], 0, 0), TyName("Int")))
+  Array::push(body, SSuberror(false, "PER", Array::slice([("X", ii)], 0, 1)))
+  Array::push(body, SEnum(true, "PubE", Array::slice([""], 0, 0), Array::slice([("B", no)], 0, 1)))
+  let box = Array::slice([""], 0, 0)
+  Array::length(collect_private_type_renames("M", body, box, exported))
+}
+let g_rows4: (String, String) -> (String, String, String, String) = (a, b) -> { (a, b, "", "") }
+
+export let cov_grind_main: () -> Int = () -> {
+  let mut acc = 0
+  // renames: nothing exported (all private pushed)
+  acc = acc + g_renames(Array::slice([""], 0, 0))
+  // renames: each kind in turn marked exported (skip arm)
+  acc = acc + g_renames(Array::slice(["PE"], 0, 1))
+  acc = acc + g_renames(Array::slice(["PS"], 0, 1))
+  acc = acc + g_renames(Array::slice(["PT"], 0, 1))
+  acc = acc + g_renames(Array::slice(["PER"], 0, 1))
+  // collect_needed_paths_from_manifest_headers: rows contain the entry path
+  let rows = Array::slice([g_rows4("e.vibe", "d.vibe")], 0, 1)
+  Array::push(rows, g_rows4("e.vibe", "d2.vibe"))
+  let idx = Map::set(empty_path_index(), "e.vibe", true)
+  acc = acc + (handle { Array::length(collect_needed_paths_from_manifest_headers("e.vibe", idx, rows)) } with Error { Throw(_) => 0 })
+  // empty rows -> None lookup -> Fs path (covers the None arm; Fs may fail, swallowed)
+  acc = acc + (handle { Array::length(collect_needed_paths_from_manifest_headers("_build/covwarm/main.vibe", empty_path_index(), Array::slice([g_rows4("x", "y")], 0, 0))) } with Error { Throw(_) => 0 })
+  acc
+}
