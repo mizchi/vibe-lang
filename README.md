@@ -18,6 +18,34 @@ See [docs/install.md](docs/install.md) for the install layout, options, and how
 to update the compiler independently of the runner. The distribution design is
 tracked in [docs/release-roadmap.md](docs/release-roadmap.md) (テーマ1).
 
+### Packages & dependencies
+
+Dependencies are distributed over git/URLs (Deno/Go style — no central
+registry) and pinned by content hash. Declare them in `vibe.deps`:
+
+```
+mathlib  https://example.com/mathlib.vibe
+geom     git+https://github.com/you/vibe-geom#^1.2     # semver constraint
+```
+
+```bash
+vibe add geom git+https://github.com/you/vibe-geom#^1.2  # declare + fetch
+vibe fetch                 # vendor deps into ./deps/ and write vibe.lock
+vibe fetch --frozen        # reproducible: pin git deps to the locked commit
+vibe verify                # re-check vendored deps against vibe.lock
+```
+
+Then import a vendored dep relatively:
+
+```vibe
+import ./deps/geom/index.vibe { area }
+import ./deps/mathlib.vibe { add }
+```
+
+`vibe fetch` resolves transitive deps and semver constraints (`^`, `~`, `>=`,
+`1.x`, …) against the remote's tags. See
+[docs/module-system.md](docs/module-system.md#配布とパッケージ管理-giturl-分散).
+
 ## Features
 
 ### Language
