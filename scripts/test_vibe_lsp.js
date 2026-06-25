@@ -114,6 +114,12 @@ const isDiag = (uri) => (m) => m.method === "textDocument/publishDiagnostics" &&
   // `helper` appears twice in goodText (declaration line 1 + call line 2)
   check("references finds both helper occurrences", (refs.result || []).length === 2);
 
+  // rename: produce a workspace edit replacing all occurrences of the symbol
+  send({ jsonrpc: "2.0", id: 8, method: "textDocument/rename", params: { textDocument: { uri: goodUri }, position: { line: 2, character: helperCol + 1 }, newName: "doubler" } });
+  const ren = await waitFor((m) => m.id === 8);
+  const edits = ren.result && ren.result.changes && ren.result.changes[goodUri];
+  check("rename edits both occurrences to new name", Array.isArray(edits) && edits.length === 2 && edits.every((e) => e.newText === "doubler"));
+
   // completion: keywords + document declarations
   send({ jsonrpc: "2.0", id: 6, method: "textDocument/completion", params: { textDocument: { uri: goodUri }, position: { line: 2, character: 0 } } });
   const comp = await waitFor((m) => m.id === 6);

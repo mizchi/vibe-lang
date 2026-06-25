@@ -77,11 +77,23 @@ function handle(msg) {
           definitionProvider: true,
           hoverProvider: true,
           referencesProvider: true,
+          renameProvider: true,
           completionProvider: { triggerCharacters: ["."] },
         },
         serverInfo: { name: "vibe-lsp", version: "0.1.0" },
       });
       break;
+    case "textDocument/rename": {
+      const uri = msg.params.textDocument.uri;
+      const doc = docs.get(uri);
+      const newName = msg.params.newName;
+      if (!doc || !newName) { reply(msg.id, null); break; }
+      const word = wordAt(doc.text, msg.params.position);
+      if (!word) { reply(msg.id, null); break; }
+      const edits = findReferences(doc.text, word).map((range) => ({ range, newText: newName }));
+      reply(msg.id, { changes: { [uri]: edits } });
+      break;
+    }
     case "textDocument/references": {
       const uri = msg.params.textDocument.uri;
       const doc = docs.get(uri);

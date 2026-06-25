@@ -358,9 +358,9 @@ install/​debugger と runtime 前提を一本化する。`vibe lsp` を selfho
 - [ ] **4-2 selfhost への index 移植**（M2–M3）— `src/frontend/symbol_index.mbt`
       相当を `vibe/compiler/` 側に持ち、host 依存を外す。
 - [~] **4-3 definition / hover / completion / references / rename**（M3）—
-      definition / hover / completion（キーワード + 文書内シンボル）をテキスト走査
-      ベースで実装済み（`scripts/test_vibe_lsp.js` 9/9）。references / rename と
-      型付き hover / スコープ精度の高い補完は checker の部分型情報 API + source span が前提。
+      definition / hover / completion / references / rename をテキスト走査ベースで
+      実装済み（`scripts/test_vibe_lsp.js` 13/13）。型付き hover / スコープ精度の
+      高い補完・rename は checker の部分型情報 API + source span が前提。
 - [x] **4-5 editor 配線** — `integrations/vscode-vibe` に LSP client
       （`extension.js`、vscode-languageclient）を追加し `vibe lsp` を起動。
       `vibe.serverPath` 設定対応。tree-sitter/zed は grammar 済み（LSP 配線は今後）。
