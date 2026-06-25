@@ -326,13 +326,15 @@ install/​debugger と runtime 前提を一本化する。`vibe lsp` を selfho
       `vibe lsp` を実装。`textDocument/publishDiagnostics` を提供（didOpen/
       didChange/didSave で native `vibe check` を駆動 → 診断を publish）。source
       span 未実装のため、診断メッセージ中のシンボルを文書テキストから探して範囲を
-      近似。**documentSymbol（アウトライン）** はトップレベル宣言のテキスト走査で提供。
-      検証済み（`scripts/test_vibe_lsp.js` 6/6）。残: definition / hover（symbol
-      index 移植 4-2 が前提）, 正確な範囲（source span）。
+      近似。**documentSymbol / definition / hover** をトップレベル宣言のテキスト走査で
+      提供（go-to-definition は宣言行へジャンプ、hover は宣言テキストを表示）。
+      検証済み（`scripts/test_vibe_lsp.js` 8/8）。残: 型付き hover（checker の型
+      クエリ + source span が前提）, 正確な診断範囲（source span）, references/rename。
 - [ ] **4-2 selfhost への index 移植**（M2–M3）— `src/frontend/symbol_index.mbt`
       相当を `vibe/compiler/` 側に持ち、host 依存を外す。
-- [ ] **4-3 completion / references / rename**（M3）— checker に部分型情報 API を
-      足して補完を実装。
+- [~] **4-3 definition / hover / completion / references / rename**（M3）—
+      definition / hover はテキスト走査ベースで実装済み（4-1 参照）。completion /
+      references / rename と型付き hover は checker の部分型情報 API + source span が前提。
 - [ ] **4-4 incremental**（M4, 任意）— 大規模プロジェクト向けに incremental
       parse/check。まずは module 単位キャッシュ（実装済み）で十分か評価。
 - [ ] **4-5 editor 配線** — `integrations/*` 各拡張から `vibe lsp` を起動する設定。

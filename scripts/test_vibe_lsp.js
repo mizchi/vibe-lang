@@ -86,6 +86,18 @@ const isDiag = (uri) => (m) => m.method === "textDocument/publishDiagnostics" &&
   const names = (sym.result || []).map((s) => s.name);
   check("documentSymbol lists declarations", names.includes("Color") && names.includes("helper") && names.includes("main"));
 
+  // definition: cursor on `helper` in main's body -> jumps to helper's decl (line 1)
+  const callLine = goodText.split(/\r?\n/)[2]; // "export let main = () -> Int { helper(21) }"
+  const helperCol = callLine.indexOf("helper");
+  send({ jsonrpc: "2.0", id: 4, method: "textDocument/definition", params: { textDocument: { uri: goodUri }, position: { line: 2, character: helperCol + 1 } } });
+  const def = await waitFor((m) => m.id === 4);
+  check("definition jumps to declaration line", def.result && def.result.range && def.result.range.start.line === 1);
+
+  // hover: shows the declaration of the symbol under the cursor
+  send({ jsonrpc: "2.0", id: 5, method: "textDocument/hover", params: { textDocument: { uri: goodUri }, position: { line: 2, character: helperCol + 1 } } });
+  const hov = await waitFor((m) => m.id === 5);
+  check("hover shows declaration", hov.result && /helper/.test(JSON.stringify(hov.result.contents)));
+
   send({ jsonrpc: "2.0", id: 2, method: "shutdown", params: {} });
   await waitFor((m) => m.id === 2);
   send({ jsonrpc: "2.0", method: "exit", params: {} });

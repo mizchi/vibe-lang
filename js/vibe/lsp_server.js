@@ -74,6 +74,8 @@ function handle(msg) {
         capabilities: {
           textDocumentSync: 1, // full
           documentSymbolProvider: true,
+          definitionProvider: true,
+          hoverProvider: true,
         },
         serverInfo: { name: "vibe-lsp", version: "0.1.0" },
       });
@@ -82,6 +84,25 @@ function handle(msg) {
       const uri = msg.params.textDocument.uri;
       const doc = docs.get(uri);
       reply(msg.id, doc ? documentSymbols(doc.text) : []);
+      break;
+    }
+    case "textDocument/definition": {
+      const uri = msg.params.textDocument.uri;
+      const doc = docs.get(uri);
+      if (!doc) { reply(msg.id, null); break; }
+      const word = wordAt(doc.text, msg.params.position);
+      const decl = word ? findDeclaration(doc.text, word) : null;
+      reply(msg.id, decl ? { uri, range: decl.selectionRange } : null);
+      break;
+    }
+    case "textDocument/hover": {
+      const uri = msg.params.textDocument.uri;
+      const doc = docs.get(uri);
+      if (!doc) { reply(msg.id, null); break; }
+      const word = wordAt(doc.text, msg.params.position);
+      const decl = word ? findDeclaration(doc.text, word) : null;
+      if (!decl) { reply(msg.id, null); break; }
+      reply(msg.id, { contents: { kind: "markdown", value: "```vibe\n" + decl.line.trim() + "\n```" } });
       break;
     }
     case "initialized":
@@ -255,6 +276,40 @@ const SYMBOL_PATTERNS = [
   { re: /^\s*(?:export\s+)?module\s+([A-Za-z_][A-Za-z0-9_]*)/, kind: 2 }, // Module
   { re: /^\s*(?:export\s+)?type\s+([A-Za-z_][A-Za-z0-9_]*)/, kind: 26 }, // TypeParameter-ish
 ];
+
+// Identifier under a (line, character) position.
+function wordAt(text, pos) {
+  const lines = text.split(/\r?\n/);
+  const line = lines[pos.line] || "";
+  let s = pos.character, e = pos.character;
+  const isWord = (c) => /[A-Za-z0-9_]/.test(c);
+  while (s > 0 && isWord(line[s - 1])) s--;
+  while (e < line.length && isWord(line[e])) e++;
+  const w = line.slice(s, e);
+  return w.length ? w : null;
+}
+
+// Locate the top-level declaration of `name`; returns its line text + range.
+function findDeclaration(text, name) {
+  const lines = text.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    for (const { re } of SYMBOL_PATTERNS) {
+      const m = re.exec(line);
+      if (m && m[1] === name) {
+        const ch = line.indexOf(name, m.index);
+        return {
+          line,
+          selectionRange: {
+            start: { line: i, character: ch },
+            end: { line: i, character: ch + name.length },
+          },
+        };
+      }
+    }
+  }
+  return null;
+}
 
 function documentSymbols(text) {
   const lines = text.split(/\r?\n/);
