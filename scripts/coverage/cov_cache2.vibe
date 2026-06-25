@@ -1,0 +1,34 @@
+
+// #cov cache2 driver: string-input path/manifest/header-cache parsers —
+// normalize_path (absolute / '.' / '..' / empty / double-sep arms),
+// parse_source_manifest_rows (comment / blank / row / malformed), and
+// parse_persistent_manifest_header_cache (version / manifest / entry / CR / empty).
+let c2_np: (String) -> Int = (p) -> { String::length(normalize_path(p)) }
+let c2_rows: (String) -> Int = (s) -> {
+  handle { Array::length(parse_source_manifest_rows(s)) } with Error { Throw(_) => 0 }
+}
+let c2_hdr: (String) -> Int = (s) -> {
+  handle { let r = parse_persistent_manifest_header_cache(s); r.0 } with Error { Throw(_) => 0 }
+}
+
+export let cov_cache2_main: () -> Int = () -> {
+  let mut acc = 0
+  // normalize_path
+  acc = acc + c2_np("/abs/path") + c2_np("a/./b") + c2_np("a/../b/c")
+  acc = acc + c2_np("../x/y") + c2_np("") + c2_np("a//b///c")
+  acc = acc + c2_np("./rel") + c2_np("/") + c2_np("a/b/..")
+  // parse_source_manifest_rows
+  acc = acc + c2_rows("# comment\ngrp\ta.vibe\ngrp\tb.vibe\n")
+  acc = acc + c2_rows("\n\ngrp\tc.vibe\n")
+  acc = acc + c2_rows("grp\ta.vibe")
+  acc = acc + c2_rows("malformed_no_tab\n")
+  acc = acc + c2_rows("")
+  // parse_persistent_manifest_header_cache
+  acc = acc + c2_hdr("version\t1\nmanifest\tm.tsv\t100\tfp\nentry\te.vibe\t1\t2\t3\n")
+  acc = acc + c2_hdr("version\t1\n")
+  acc = acc + c2_hdr("version\t2\n")                 // unexpected version
+  acc = acc + c2_hdr("entry\te.vibe\t1\t2\t3\r\n")   // CR ending
+  acc = acc + c2_hdr("garbage line\n")               // unknown tag
+  acc = acc + c2_hdr("")
+  acc
+}

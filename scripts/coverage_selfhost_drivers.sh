@@ -183,6 +183,7 @@ run_driver cov_namespace_main  scripts/coverage/cov_namespace.vibe  namespace   
 run_driver cov_push85_main     scripts/coverage/cov_push85.vibe     push85      # has_non_pipe_infix_top depth cases + collect_import_path/scan_header_import_dep + namespace SImpl body
 run_driver cov_block_main      scripts/coverage/cov_block.vibe      block       # parse_impl_block block-local let-rec/mut/enum/struct + eof/identifier error throws
 run_driver cov_walk3_main      scripts/coverage/cov_walk3.vibe      walk3       # expr_projects_or_matches/is_mut_captured_in residual name-in-sub-position recursion arms
+run_driver cov_cache2_main     scripts/coverage/cov_cache2.vibe     cache2      # normalize_path / parse_source_manifest_rows / parse_persistent_manifest_header_cache string arms
 rm -f _build/vibe_selfhost_* 2>/dev/null || true
 
 now=$(python3 -c "import json;print(sum(json.load(open('$ACC'))['br']))")
