@@ -336,8 +336,9 @@ let typecheck_ident_run: (String, Int) -> Int = (s, start) -> {
 // expression-level spans (AST node positions) remain future work; this gives
 // the common case a line number in both CLI and LSP (which parses the prefix).
 // Built with String::concat only (not `+`) to avoid the selfhost NUL fragility.
-let locate_type_error: (String, String) -> String = (source, msg) -> {
-  let marker = "unknown name: "
+// Prefix `msg` with the source `line:col` of the symbol that follows `marker`
+// in `msg` (if both are found); otherwise return `msg` unchanged.
+let locate_by_marker: (String, String, String) -> String = (source, msg, marker) -> {
   let mi = String::index_of(msg, marker)
   if mi < 0 {
     msg
@@ -355,6 +356,30 @@ let locate_type_error: (String, String) -> String = (source, msg) -> {
         let (line, col) = offset_to_line_col(source, off)
         let loc = String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
         String::concat(loc, msg)
+      }
+    }
+  }
+}
+
+let locate_type_error: (String, String) -> String = (source, msg) -> {
+  // Already located (e.g. a parse error that bubbled here)? leave it.
+  if String::index_of(msg, "line ") == 0 {
+    msg
+  } else {
+    let with_name = locate_by_marker(source, msg, "unknown name: ")
+    if with_name != msg {
+      with_name
+    } else {
+      let with_arity = locate_by_marker(source, msg, "function arity mismatch for ")
+      if with_arity != msg {
+        with_arity
+      } else {
+        let with_field = locate_by_marker(source, msg, "unknown field ")
+        if with_field != msg {
+          with_field
+        } else {
+          locate_by_marker(source, msg, "unknown constructor ")
+        }
       }
     }
   }
