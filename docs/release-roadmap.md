@@ -127,7 +127,7 @@
 | マイルストーン | 内容 | 主テーマ | 状態 |
 | --- | --- | --- | --- |
 | **M1: 配布確定** | install + module の配布方法を凍結し、外部の人が「入れて使える」 | (1)(2) | ほぼ達成（install 配布物確定 + module fetch/lock/verify。残: semver 制約） |
-| **M2: 開発体験 MVP** | LSP MVP（診断/シンボル/hover）+ debugger P0（source-mapped trace） | (3)(4) | 一部基盤あり |
+| **M2: 開発体験 MVP** | LSP MVP（診断/シンボル/hover）+ debugger P0（source-mapped trace） | (3)(4) | ほぼ達成（型付き hover + trap→source-line 着地。残: parser error recovery） |
 | **M3: 開発体験フル** | LSP 補完/リファクタ + DAP step 実行 | (3)(4) | 提案段階 |
 | **M4: GA (1.0)** | 上記を統合し、言語仕様 freeze + docs 完備で一般公開 | 全部 | — |
 
@@ -350,12 +350,17 @@ VS Code（DAP クライアント）から breakpoint を張り、停止・変数
 
 ### マイルストーン（ADR-0035 のフェーズに対応）
 
-- [~] **3-P0 source map 基盤**（= 横断土台 B、M2）— **wasm name section を実装**
-      （`emit_function_name_section`、`compile_wasi_module_linked_impl` から呼ぶ）。
-      compiled wasm の function-names subsection が user 関数を命名し、wasmtime の
-      trap backtrace が `<wasm function N>` → `boom` 等の関数名表示になった。
-      検証済み（`scripts/test_name_section.sh`、selfhost-only gate fixpoint green）。
-      残: `vibe.func_map`（命令オフセット→ソース行）= source span 実装が前提。
+- [x] **3-P0 source map 基盤**（= 横断土台 B、M2）— **wasm name section を実装**
+      （`emit_function_name_section`）。trap backtrace が `<wasm function N>` →
+      `boom` 等の関数名表示に。**さらに trap がソース行を指すように**: FS-compile が
+      `<output>.funcmap` サイドカー（エントリファイルのトップレベル関数名→ソース行、
+      `build_funcmap_from_source` = `parse_program_spans` + `offset_to_line_col`）を
+      best-effort 出力し、`vibe run` が runner の backtrace を捕捉して named frame に
+      `(file:line)` を付与する。trap が `<unknown>!boom (prog.vibe:1)` と表示される。
+      codegen/runner 変更不要。検証済み（`scripts/test_vibe_trace.sh`、
+      `test_name_section.sh`、cli-install 34/0、selfhost gate fixpoint green）。
+      残: imported-module 関数の行（現状エントリファイルのみ）、命令オフセット粒度の
+      行マップ（DAP step 実行用、source span の全 Expr 化が前提）。
 - [ ] **3-P1 breakpoint DAP**（M3）— stop/continue + source 表示の DAP サーバー。
       coverage point を breakpoint anchor に流用。
 - [ ] **3-P2 変数検査**（M3）— locals/args のメタデータ出力 + tagged 値の decode。
