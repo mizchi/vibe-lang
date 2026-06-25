@@ -59,13 +59,21 @@
   （`offset_to_line_col`）。`foo.vibe: line 3:31: unknown name: zzz` のように
   正確な列まで出る。LSP は range を識別子に絞る（`test_vibe_lsp.js` 11/11）。
 
-残り（次スライス、いずれも real AST span が前提で大きい）:
+進行中:
 
-- **type mismatch 等シンボルを含まない型エラー** — 現状 location 無し。正確化には
-  AST ノードへの位置付与が必要（式が直接位置を持つ）。
-- **式レベルの正確な span** — `EIdent` 1 variant で 183 箇所 × 39 ファイル、全
-  variant で数千箇所。parser への offset スレッディングも要る massive refactor。
-- **型付き hover / DAP source-line map** — 上の AST span が前提。
+- 🔧 **AST ノードへの位置付与（着手）** — `EIdent(String)` → `EIdent(String, Int)`
+  （char offset）への atomic な refactor を worktree で実施中（~183 箇所 ×~30
+  ファイル）。これが式レベル span の最初のブリックで、型付き hover・DAP・正確な
+  型エラー location がこの上に乗る。
+
+残り（AST span 完成後）:
+
+- **type mismatch 等シンボルを含まない型エラーの正確 location** — EIdent 等の式が
+  位置を持てば checker から正確に出せる。
+- **全 Expr variant への位置付与 + parser offset スレッディング** — EIdent に続け
+  て段階的に。
+- **型付き hover / DAP source-line map** — 上の AST span + 型テーブル / codegen
+  map が前提。
 
 - **codegen の関数 index↔name 対応** — ✅ wasm name section（土台B / debugger P0）
   は実装済み（`func_offset + i` で user 関数を正確に命名）。
