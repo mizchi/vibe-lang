@@ -1,0 +1,51 @@
+
+// #cov round driver: 4-dark residuals — parse_enum_stmt forms, parse_export_name
+// (plain / aliased), print_stmt remaining Stmt variants (SImpl/SModule/SReExport/
+// SAliasDecl/SLetPat/STest/SBench/SEffectDef), has_non_pipe_infix_top more ranges.
+let r_enum: (String, Bool) -> Int = (s, e) -> {
+  handle { let r = parse_enum_stmt(lex(s), 0, e); match r.0 { _ => 1 } } with Error { Throw(_) => 0 }
+}
+let r_expname: (String) -> Int = (s) -> {
+  handle { let r = parse_export_name(lex(s), 0); String::length(r.0) } with Error { Throw(_) => 0 }
+}
+let r_ps: (Stmt) -> Int = (st) -> { String::length(print_stmt(st)) }
+let r_inf: (String, Int, Int) -> Int = (s, a, b) -> {
+  handle { if has_non_pipe_infix_top(lex(s), a, b) { 1 } else { 0 } } with Error { Throw(_) => 0 }
+}
+
+let r_enums: () -> Int = () -> {
+  let mut acc = 0
+  acc = acc + r_enum("E { A; B(Int); C(Int, Bool) }", false)
+  acc = acc + r_enum("E { A }", true)
+  acc = acc + r_enum("E[a] { Some(a); None }", false)
+  acc = acc + r_enum("E { }", false)
+  acc = acc + r_enum("E", false)            // malformed
+  acc = acc + r_expname("foo") + r_expname("foo as bar") + r_expname("x as y as z")
+  acc
+}
+let r_prints: () -> Int = () -> {
+  let mut acc = 0
+  let no = Array::slice([""], 0, 0)
+  acc = acc + r_ps(SImpl(no, Array::slice([("", Array::slice([""], 0, 0))], 0, 0), "Tr", "Ty"))
+  acc = acc + r_ps(SModule(false, "M", Array::slice([SExpr(EUnit)], 0, 1)))
+  acc = acc + r_ps(SReExport("./m.vibe", Array::slice([("x", Some("y"))], 0, 1)))
+  acc = acc + r_ps(SAliasDecl("a", "b"))
+  acc = acc + r_ps(SLetPat(PBind("x"), EInt(1)))
+  acc = acc + r_ps(STest("t", EUnit))
+  acc = acc + r_ps(SBench("b", EUnit))
+  acc = acc + r_ps(SEffectDef(false, "Eff", no, Array::slice([("op", Array::slice([TyName("Int")], 0, 1), TyName("Unit"))], 0, 1)))
+  acc = acc + r_ps(SExternLet("h", TyName("Int")))
+  acc = acc + r_ps(SImport("m", Array::slice([("x", None)], 0, 1)))
+  acc
+}
+let r_infixes: () -> Int = () -> {
+  let mut acc = 0
+  acc = acc + r_inf("a + b", 0, 3) + r_inf("a |> b", 0, 3) + r_inf("(a + b) * c", 0, 7)
+  acc = acc + r_inf("a + b", 1, 3) + r_inf("a + b", 0, 1) + r_inf("a", 0, 1)
+  acc = acc + r_inf("{ a + b }", 0, 5) + r_inf("[a, b]", 0, 5) + r_inf("f(a) + b", 0, 6)
+  acc
+}
+
+export let cov_round_main: () -> Int = () -> {
+  r_enums() + r_prints() + r_infixes()
+}
