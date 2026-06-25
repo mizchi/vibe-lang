@@ -362,14 +362,29 @@ VS Code（DAP クライアント）から breakpoint を張り、停止・変数
       残: imported-module 関数の行（現状エントリファイルのみ）、命令オフセット粒度の
       行マップ（DAP step 実行用、source span の全 Expr 化が前提）。
 - [ ] **3-P1 breakpoint DAP**（M3）— stop/continue + source 表示の DAP サーバー。
-      coverage point を breakpoint anchor に流用。
 - [ ] **3-P2 変数検査**（M3）— locals/args のメタデータ出力 + tagged 値の decode。
 - [ ] **3-P3 step 実行**（M3）— next / stepIn / stepOut。
 - [ ] **3-P4 watch 式**（M4）— 停止フレームでの式評価。
 - [ ] **3-D editor 統合** — `integrations/vscode-vibe` に debug adapter を配線。
 
-> 優先は **P0**。デバッガ全体が無くても「エラーがソース行を指す」だけで
-> 実利用の体感が大きく変わるため、M2 の必須項目に格上げする。
+> **DAP P1-P4 の実装設計（2026-06-25 調査）** — これは LSP サーバ構築に匹敵する
+> 多コンポーネントの大型機能で、専用の focused 作業が必要:
+>
+> 1. **codegen: debug-line instrumentation** — coverage（`vibe_cov` bitmap）は
+>    点ごとの**ソース span を発見済み**だが、実行機構が memory bitmap への store
+>    なので「停止」には使えない。新たに「文ごとに host import `vibe::dbg_line(line, fp)`
+>    を call する」debug 計装モードを足す（coverage の span 発見ロジックを再利用して
+>    行番号を得る）。`VIBE_DEBUG=1` 系の codegen variant。
+> 2. **runner: pause loop** — `moonrun_wt` に `vibe::dbg_line` host import を実装し、
+>    breakpoint 集合と照合 → hit なら停止して DAP セッション（stdio JSON）を駆動。
+>    変数検査は host ABI 経由で linear memory / locals を読み tagged 値を decode。
+> 3. **DAP プロトコルサーバ** — `js/vibe/`（LSP と同様の transport 抽象を再利用）
+>    または runner 内に DAP（initialize/setBreakpoints/stackTrace/scopes/variables/
+>    continue/next/stepIn）を実装。`integrations/vscode-vibe` に debug adapter 配線。
+>
+> P0（trap→source-line）は着地済みで M2 の体感価値は確保。P1-P4 は M3 の中核として
+> 上記設計で別途着手する。命令オフセット粒度の行マップが要るため、source span の
+> 全 Expr variant への拡張（span-arc step2）も前提に含む。
 
 ---
 
