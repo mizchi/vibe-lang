@@ -12,6 +12,8 @@
 #
 # Subcommands:
 #   vibe run     <file.vibe> [entry]      compile (resolving imports) then run
+#   vibe run --trace <file.vibe> [entry]  run + print the function-call trace
+#                                         (each entry annotated with file:line)
 #   vibe compile <file.vibe> -o <out>     compile to a .wasm
 #   vibe build   <file.vibe> -o <out>     alias of compile
 #   vibe check   <file.vibe>              parse + typecheck (no output kept)
@@ -174,12 +176,20 @@ pick_cli() {
 # Compile $1 (.vibe) → $2 (.wasm) with entry $3, resolving imports from the FS.
 # Returns non-zero on a parse/type/codegen error so callers can report cleanly.
 compile_to() {
-  local src="$1" out="$2" entry="$3"
+  local src="$1" out="$2" entry="$3" debug="${4:-}"
   local cli; cli="$(pick_cli)"
   mkdir -p "$(dirname "$out")"
   rm -f "$out" "$out.diag"
   local rerr; rerr="$(mktemp -t vibe-rerr-XXXXXX)"
-  VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  # `vibe run --trace` sets debug=1 so the compiler instruments user-function
+  # entries (VIBE_DEBUG=1 -> `vibe.trace` custom section + in-memory trace log).
+  # Default (no --trace) leaves VIBE_DEBUG unset, so codegen is unchanged.
+  # A variable assignment produced by expansion ($debug_env) is NOT treated as
+  # an assignment prefix by bash, so route it through `env` (which parses
+  # VAR=val arguments). Empty $debug_env expands to nothing → unchanged default.
+  local debug_env=""
+  [ "$debug" = "1" ] && debug_env="VIBE_DEBUG=1"
+  env VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw $debug_env \
     "$RUNNER" "$cli" "$src" "$out" "$entry" >/dev/null 2>"$rerr" || true
   if [ -s "$out" ]; then
     rm -f "$out.diag" "$rerr"
@@ -199,12 +209,24 @@ compile_to() {
 cmd="${1:-help}"; shift || true
 case "$cmd" in
   run)
-    [ "$#" -ge 1 ] || die "usage: vibe run <file.vibe> [entry]"
+    # `--trace` (debugger / DAP P1 groundwork): compile with function-call
+    # execution-trace instrumentation and dump the entry sequence (each line
+    # annotated with its source location via the funcmap, like trap frames).
+    trace=0
+    args=()
+    for a in "$@"; do
+      case "$a" in
+        --trace) trace=1 ;;
+        *) args+=("$a") ;;
+      esac
+    done
+    set -- "${args[@]}"
+    [ "$#" -ge 1 ] || die "usage: vibe run [--trace] <file.vibe> [entry]"
     src="$1"; entry="${2:-main}"
     [ -f "$src" ] || die "not found: $src"
     out="$(mktemp -t vibe-run-XXXXXX.wasm)"
     trap 'rm -f "$out" "$out.funcmap"' EXIT
-    compile_to "$src" "$out" "$entry" || die "compilation failed: $src"
+    compile_to "$src" "$out" "$entry" "$trace" || die "compilation failed: $src"
     # debugger テーマ3 / M2: runtime traps point at the SOURCE LINE. The wasm
     # "name" custom section already makes trap backtrace frames name the user
     # function (e.g. `<unknown>!boom`). The FS compile also wrote a `<out>.funcmap`
@@ -217,7 +239,9 @@ case "$cmd" in
     # `set -e` must not abort on a trapping/non-zero program: capture its status
     # and re-emit it ourselves below.
     status=0
-    "$RUNNER" "$out" 2>"$rerr" || status=$?
+    trace_env=""
+    [ "$trace" = "1" ] && trace_env="VIBE_TRACE_OUT=1"
+    env $trace_env "$RUNNER" "$out" 2>"$rerr" || status=$?
     if [ -s "$out.funcmap" ] && [ -s "$rerr" ]; then
       VIBE_FUNCMAP="$out.funcmap" VIBE_SRCBASE="$(basename "$src")" \
         awk '
@@ -235,6 +259,18 @@ case "$cmd" in
             close(fm)
           }
           {
+            # A trace line names a user function after "trace: " (--trace dump):
+            #   trace: helper
+            if (substr($0, 1, 7) == "trace: ") {
+              tname = substr($0, 8)
+              sub(/[ \t\r\n].*$/, "", tname)
+              if (tname in fmline) {
+                printf "%s (%s:%s)\n", $0, base, fmline[tname]
+                next
+              }
+              print $0
+              next
+            }
             # A trap frame names a user function after "!" (wasmtime/name section):
             #   <addr> - <unknown>!boom
             b = index($0, "!")

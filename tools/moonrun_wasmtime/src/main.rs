@@ -305,6 +305,14 @@ fn run(args: Vec<String>) -> Result<i32> {
         }
     }
 
+    // debugger trace (DAP P1 groundwork): if VIBE_TRACE_OUT=1 and the module
+    // carries a `vibe.trace` custom section (debug-trace build), dump the
+    // function-call entry sequence to stderr. Runs after the program finishes,
+    // success OR trap, mirroring the coverage-bitmap read model.
+    if std::env::var("VIBE_TRACE_OUT").as_deref() == Ok("1") {
+        dump_trace(wasm_path, &instance, &mut store);
+    }
+
     match result {
         Ok(()) => Ok(0),
         Err(e) => {
@@ -1319,6 +1327,136 @@ fn register_imports(linker: &mut Linker<HostState>) -> Result<()> {
     )?;
 
     Ok(())
+}
+
+// Read a LEB128 unsigned integer at `bytes[*pos..]`, advancing `*pos`.
+fn read_leb_u32(bytes: &[u8], pos: &mut usize) -> Option<u32> {
+    let mut result: u32 = 0;
+    let mut shift = 0u32;
+    loop {
+        let b = *bytes.get(*pos)?;
+        *pos += 1;
+        result |= ((b & 0x7f) as u32) << shift;
+        if b & 0x80 == 0 {
+            return Some(result);
+        }
+        shift += 7;
+        if shift >= 32 {
+            return None;
+        }
+    }
+}
+
+// Locate a wasm custom section by name and return its content bytes (after the
+// section's name field). Scans the section list directly from the raw module
+// bytes (the trace launcher always passes a fresh `.wasm`, not a cwasm).
+fn find_custom_section(wasm: &[u8], want_name: &str) -> Option<Vec<u8>> {
+    if wasm.len() < 8 || &wasm[0..4] != b"\0asm" {
+        return None;
+    }
+    let mut pos = 8usize;
+    while pos < wasm.len() {
+        let id = *wasm.get(pos)?;
+        pos += 1;
+        let size = read_leb_u32(wasm, &mut pos)? as usize;
+        let body_start = pos;
+        let body_end = body_start.checked_add(size)?;
+        if body_end > wasm.len() {
+            return None;
+        }
+        if id == 0 {
+            // custom section: LEB name-len, name bytes, then content
+            let mut npos = body_start;
+            let name_len = read_leb_u32(wasm, &mut npos)? as usize;
+            let name_end = npos.checked_add(name_len)?;
+            if name_end <= body_end {
+                let name = &wasm[npos..name_end];
+                if name == want_name.as_bytes() {
+                    return Some(wasm[name_end..body_end].to_vec());
+                }
+            }
+        }
+        pos = body_end;
+    }
+    None
+}
+
+fn read_u32_le(bytes: &[u8], off: usize) -> Option<u32> {
+    let b = bytes.get(off..off + 4)?;
+    Some(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+}
+
+// Dump the function-call execution trace recorded in the guest's in-memory
+// trace log. Layout of the `vibe.trace` custom section: i32 LE counter_addr,
+// i32 LE log_base, i32 LE cap, then the user-function names (one per line, in
+// user-index order). After the program finishes, memory[counter_addr] holds the
+// number of recorded entries; each entry is a user-function index stored as i32
+// at log_base + i*4. Prints one `trace: <name>` line per entry to stderr.
+fn dump_trace(
+    wasm_path: &str,
+    instance: &wasmtime::Instance,
+    store: &mut Store<HostState>,
+) {
+    let wasm = match std::fs::read(wasm_path) {
+        Ok(b) => b,
+        Err(_) => return,
+    };
+    let section = match find_custom_section(&wasm, "vibe.trace") {
+        Some(s) => s,
+        None => return,
+    };
+    let counter_addr = match read_u32_le(&section, 0) {
+        Some(v) => v as usize,
+        None => return,
+    };
+    let log_base = match read_u32_le(&section, 4) {
+        Some(v) => v as usize,
+        None => return,
+    };
+    let cap = match read_u32_le(&section, 8) {
+        Some(v) => v as usize,
+        None => return,
+    };
+    // Names: newline-separated, in user-index order, starting after the 12-byte
+    // header.
+    let names: Vec<String> = section
+        .get(12..)
+        .map(|rest| {
+            String::from_utf8_lossy(rest)
+                .split('\n')
+                .map(|s| s.to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    let memory = match instance
+        .get_export(&mut *store, "memory")
+        .and_then(|e| e.into_memory())
+    {
+        Some(m) => m,
+        None => return,
+    };
+    let mut counter_buf = [0u8; 4];
+    if memory.read(&*store, counter_addr, &mut counter_buf).is_err() {
+        return;
+    }
+    let count = u32::from_le_bytes(counter_buf) as usize;
+    let count = count.min(cap);
+    let stderr = std::io::stderr();
+    let mut h = stderr.lock();
+    let mut i = 0usize;
+    while i < count {
+        let mut entry_buf = [0u8; 4];
+        if memory
+            .read(&*store, log_base + i * 4, &mut entry_buf)
+            .is_err()
+        {
+            break;
+        }
+        let idx = u32::from_le_bytes(entry_buf) as usize;
+        let name = names.get(idx).map(|s| s.as_str()).unwrap_or("?");
+        let _ = writeln!(h, "trace: {name}");
+        i += 1;
+    }
 }
 
 fn main() {
