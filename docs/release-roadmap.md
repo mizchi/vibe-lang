@@ -20,7 +20,18 @@
 
 ## 実装進捗 (2026-06-25 セッション)
 
-完了・検証済み（selfhost-only gate green、`scripts/test_vibe_cli_install.sh` 12/12）:
+> **マイルストーン**: M1（配布確定）+ M2（開発体験 MVP）達成、M3（開発体験フル）
+> ほぼ達成。PR #642 を main に merge 済み。以降の DAP P3 step / `vibe binding-at` /
+> rename 配線 / CI wasmtime 修正は branch `claude/kind-fermat-lxtjov` に在り
+> （main は authoritative selfhost-gate green、cli-install は wasmtime CLI 未導入で
+> 一時 red — branch の修正で解消）。残: DAP P4 watch、scope 精度 rename、span-arc。
+>
+> **CI 根本原因メモ（vibe-eh-ci, RESOLVED）**: fresh compiler build は standalone
+> `wasmtime` CLI を要するが CI 未導入 → seed fallback で diagnostics/type-at が機能せず。
+> wasm-EH のバグではない。`cli-install.yml` に wasmtime 導入 step を追加して解消。
+> 詳細 `docs/known-issues.md`。
+
+完了・検証済み（selfhost-only gate green、`scripts/test_vibe_cli_install.sh` 34/34）:
 
 - **テーマ1 (install) ほぼ完了** — `moonrun_wt` に selfhost CLI 用 raw-ABI host
   import を実装、`vibe` launcher（run/compile/build/check/test/fetch/version/
@@ -126,9 +137,9 @@
 
 | マイルストーン | 内容 | 主テーマ | 状態 |
 | --- | --- | --- | --- |
-| **M1: 配布確定** | install + module の配布方法を凍結し、外部の人が「入れて使える」 | (1)(2) | ほぼ達成（install 配布物確定 + module fetch/lock/verify。残: semver 制約） |
+| **M1: 配布確定** | install + module の配布方法を凍結し、外部の人が「入れて使える」 | (1)(2) | ✅ 達成（install 配布物確定 + module fetch/lock/transitive/semver/frozen/verify） |
 | **M2: 開発体験 MVP** | LSP MVP（診断/シンボル/hover）+ debugger P0（source-mapped trace） | (3)(4) | ✅ 達成（型付き hover、parser error recovery で全診断、trap→source-line） |
-| **M3: 開発体験フル** | LSP 補完/リファクタ + DAP step 実行 | (3)(4) | 一部（補完/rename/references 済、text-scan ベース）。残: DAP step 実行（P1-P4）、scope 精度 refactor |
+| **M3: 開発体験フル** | LSP 補完/リファクタ + DAP step 実行 | (3)(4) | ✅ ほぼ達成（DAP P1-P3 = breakpoint/変数(引数)検査/step 実行、rename/references は `vibe binding-at` で AST 精度化）。残: DAP P4 watch、scope 精度 rename（shadowing）、DAP editor 配線 |
 | **M4: GA (1.0)** | 上記を統合し、言語仕様 freeze + docs 完備で一般公開 | 全部 | — |
 
 ### 横断的な前提（どのテーマにも効く 2 つの土台）
@@ -386,9 +397,18 @@ VS Code（DAP クライアント）から breakpoint を張り、停止・変数
       6/6: `main`/`helper×2` を行付きでトレース、plain run 非回帰、cli-install 34/0、
       gate green）。残: 関数入口での**停止**（runner pause loop + breakpoint 集合）と
       DAP プロトコル化（次段）。
-- [ ] **3-P2 変数検査**（M3）— locals/args のメタデータ出力 + tagged 値の decode。
-- [ ] **3-P3 step 実行**（M3）— next / stepIn / stepOut。
-- [ ] **3-P4 watch 式**（M4）— 停止フレームでの式評価。
+- [x] **3-P2 変数検査（引数）着地**（M3）— break モードの codegen が各ユーザー
+      関数入口で i64 パラメータを予約メモリ（`dbgargs` 領域）に spill し、`vibe.dbgargs`
+      custom section にアドレス + tag mode を記録。runner が breakpoint hit 時に読み出し
+      tagged 値を decode して `args: [...]` 表示（`vibe run --break`）。
+      検証済み（`scripts/test_vibe_break_args.sh`）。残: 全 locals + local-name map
+      （任意の名前付きローカルの検査）は将来拡張。
+- [x] **3-P3 step 実行 着地**（M3）— 停止フレームで `s`(step into)/`n`(step over)/
+      `o`(finish)/`c`(continue)/`q`(quit) を stdin で受け、runner の pause loop が
+      backtrace のコール深さで step を判定（関数粒度）。`stopped at: <fn>` 表示。
+      検証済み（`scripts/test_vibe_step.sh` 14/14）。残: 行粒度 step（per-statement
+      span が前提）。
+- [ ] **3-P4 watch 式**（M4）— 停止フレームでの式評価（または名前付きローカル検査）。
 - [ ] **3-D editor 統合** — `integrations/vscode-vibe` に debug adapter を配線。
 
 > **DAP P1-P4 の実装設計（2026-06-25 調査）** — これは LSP サーバ構築に匹敵する
@@ -475,7 +495,12 @@ install/​debugger と runtime 前提を一本化する。`vibe lsp` を selfho
 - [ ] **4-2 selfhost への index 移植**（M2–M3）— `src/frontend/symbol_index.mbt`
       相当を `vibe/compiler/` 側に持ち、host 依存を外す。
 - [~] **4-3 definition / hover / completion / references / rename**（M3）—
-      definition / completion / references / rename をテキスト走査ベースで実装済み。
+      definition / completion はテキスト走査ベース。**references / rename は AST 精度化**:
+      `vibe binding-at <file> <line> <col>`（selfhost の `binding_occurrences`: 位置の
+      識別子の binding を特定し、その occurrence の char-span を返す）を LSP rename/
+      references が消費し、文字列/コメント/部分語の誤マッチを排除（テキスト走査に
+      fallback）。検証済み（`scripts/test_vibe_binding_at.sh`、`test_vibe_lsp.js` 16/16）。
+      残: scope/shadowing 精度（同名の別 binding を区別）= 進行中。
       **hover は型付きに昇格**: `vibe type-at <file> <line> <col>`（selfhost の
       `type_at_source`: 位置の EIdent を実オフセットで特定 → `check_program` →
       `env_lookup` + `type_to_string`）で推論型を返し、LSP hover が表示する
