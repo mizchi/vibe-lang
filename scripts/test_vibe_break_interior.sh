@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# Regression test for INTERIOR-line breakpoints (span-arc step5, docs/release-
+# roadmap.md テーマ3 debugger). Unlike the function-declaration-line breakpoints
+# (test_vibe_break_line.sh), these pause at a statement IN THE MIDDLE of a
+# function body: the break-mode codegen emits `call vibe::dbg_line(<line>)` at
+# each ELet/ELetMut/ESeq boundary, and the runner pauses when that line is in the
+# break-set or on a step. v1-scoped to single-file entry programs.
+#
+# Builds a FRESH compiler+runner via scripts/install.sh into a throwaway
+# VIBE_HOME/VIBE_BIN_DIR (the committed seed predates dbg_line).
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
+
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+export VIBE_HOME="$WORK/home"
+export VIBE_BIN_DIR="$WORK/bin"
+unset RUST_BACKTRACE || true
+
+bash scripts/install.sh >/dev/null 2>&1
+VIBE="$VIBE_BIN_DIR/vibe"
+[ -x "$VIBE" ] || { echo "FAIL: launcher not installed" >&2; exit 1; }
+
+pass=0; fail=0
+ok()  { echo "ok: $1"; pass=$((pass + 1)); }
+bad() { echo "FAIL: $1" >&2; fail=$((fail + 1)); }
+
+# A single-file program whose body has interior statements on known lines.
+#   line 2: let a = 1       (literal value -> no offset -> not breakable, by design)
+#   line 3: let b = a + 2   (identifier-led -> breakable)
+#   line 4: let c = b + 3   (identifier-led -> breakable)
+P="$WORK/p.vibe"
+printf 'export let main = () -> Int {\n  let a = 1\n  let b = a + 2\n  let c = b + 3\n  c\n}\n' > "$P"
+
+# 1. break at interior line 3 (mid-function, NOT the function decl line).
+out3="$(VIBE_BREAK_AUTO=1 "$VIBE" run --break "$P:3" "$P" 2>&1 || true)"
+if printf '%s' "$out3" | grep -qF "breakpoint hit: p.vibe:3"; then
+  ok "interior line 3 pauses (breakpoint hit: p.vibe:3)"
+else
+  bad "interior line 3 should pause; got: $out3"
+fi
+
+# 2. break at interior line 4.
+out4="$(VIBE_BREAK_AUTO=1 "$VIBE" run --break "$P:4" "$P" 2>&1 || true)"
+if printf '%s' "$out4" | grep -qF "breakpoint hit: p.vibe:4"; then
+  ok "interior line 4 pauses (breakpoint hit: p.vibe:4)"
+else
+  bad "interior line 4 should pause; got: $out4"
+fi
+
+# 3. the broken run still computes its result (42-style: here main returns 6).
+if printf '%s' "$out3" | grep -qx "6"; then
+  ok "broken run still computes 6 (continued)"
+else
+  bad "broken run should still print 6; got: $out3"
+fi
+
+# 4. line STEPPING: break at line 3, then `s` (step) stops at the next statement
+#    line 4 (labelled `stopped at:`). Confirms dbg_line drives line-granularity
+#    step, not just breakpoints.
+outs="$(printf 's\nc\n' | "$VIBE" run --break "$P:3" "$P" 2>&1 || true)"
+if printf '%s' "$outs" | grep -qF "stopped at: p.vibe:4"; then
+  ok "step (s) from line 3 advances to the next statement line 4"
+else
+  bad "step from line 3 should stop at line 4; got: $outs"
+fi
+
+# 5. a non-matching interior line (99) does not pause; the program runs clean.
+out99="$(VIBE_BREAK_AUTO=1 "$VIBE" run --break "$P:99" "$P" 2>&1 || true)"
+if printf '%s' "$out99" | grep -qx "6" && ! printf '%s' "$out99" | grep -q "breakpoint hit"; then
+  ok "non-matching interior line 99 does not pause"
+else
+  bad "interior line 99 should not pause; got: $out99"
+fi
+
+# 6. the DEFAULT run (no --break) is unaffected: no debug output, just the result.
+outd="$("$VIBE" run "$P" 2>&1 || true)"
+if printf '%s' "$outd" | grep -qx "6" && ! printf '%s' "$outd" | grep -q "breakpoint\|stopped at"; then
+  ok "default run is unaffected (no instrumentation output)"
+else
+  bad "default run should be clean; got: $outd"
+fi
+
+echo "----"
+echo "[test_vibe_break_interior] passed: $pass, failed: $fail"
+[ "$fail" -eq 0 ]

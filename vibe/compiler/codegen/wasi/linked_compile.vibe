@@ -21,7 +21,7 @@ import .. / common_base {
 }
 
 import .. / common_extractors {
-  array_contains_str, emit_assignop_op, emit_memory_copy, find_catchall_idx, get_earray_elems, get_eassign_body, get_eassign_name, get_eassign_val, get_eassignop_body, get_eassignop_name, get_eassignop_op, get_eassignop_val, get_ebinop_lhs, get_ebinop_rhs, get_ebool_value, get_ecall_args, get_ecall_callee, get_efloat_value, get_efn_params, get_eforin_body, get_eforin_iter, get_eforin_name, get_eident_name, get_eint_value, get_eletmut_body, get_eletmut_name, get_eletmut_val, get_eletrec_body, get_eletrec_name, get_eletrec_val, get_eseq_first, get_eseq_second, get_estring_value, get_ethrow_expr, get_etuple_elems, get_eunaryop_expr, get_eunaryop_op, get_ewhile_body, get_ewhile_cond, get_match_arms, get_match_scrutinee, get_pbind_name, get_pbool_value, get_pctor_args, get_pctor_name, get_pint_value, get_pstring_value, get_ptuple_pats, get_slet_export, str_table_lookup
+  array_contains_str, build_newline_offsets, emit_assignop_op, emit_memory_copy, find_catchall_idx, get_earray_elems, get_eassign_body, get_eassign_name, get_eassign_val, get_eassignop_body, get_eassignop_name, get_eassignop_op, get_eassignop_val, get_ebinop_lhs, get_ebinop_rhs, get_ebool_value, get_ecall_args, get_ecall_callee, get_efloat_value, get_efn_params, get_eforin_body, get_eforin_iter, get_eforin_name, get_eident_name, get_eint_value, get_eletmut_body, get_eletmut_name, get_eletmut_val, get_eletrec_body, get_eletrec_name, get_eletrec_val, get_eseq_first, get_eseq_second, get_estring_value, get_ethrow_expr, get_etuple_elems, get_eunaryop_expr, get_eunaryop_op, get_ewhile_body, get_ewhile_cond, get_match_arms, get_match_scrutinee, get_pbind_name, get_pbool_value, get_pctor_args, get_pctor_name, get_pint_value, get_pstring_value, get_ptuple_pats, get_slet_export, str_table_lookup
 }
 
 import .. / expr {
@@ -108,7 +108,7 @@ export let wasi_memory_min_pages_for_heap: (Int) -> Int = (heap_start) -> {
   }
 }
 
-export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String, String)], Array[(String, String, Int, Int)], Bool, Bool, Bool, Bool, Bool) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, linked_imports, library_mode, enable_rc, coverage, debug_trace, debug_break) -> {
+export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String, String)], Array[(String, String, Int, Int)], Bool, Bool, Bool, Bool, Bool, String) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, linked_imports, library_mode, enable_rc, coverage, debug_trace, debug_break, entry_source) -> {
   let fn_names_list = lc_fresh_string_array()
   let fn_param_counts = lc_fresh_int_array()
   let fn_needs_env_list = lc_fresh_bool_array()
@@ -564,6 +564,23 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     idx
   } else {
     -1
+  }
+  // Interior-line breakpoints (span-arc step5): in break mode AND when a single
+  // entry source is available, reserve a `vibe::dbg_line (i32) -> ()` host import
+  // called at each statement boundary. Gated on `debug_break && entry_source`, so
+  // default / multi-file builds reserve nothing and stay byte-identical.
+  let dbg_line_on = debug_break && String::length(entry_source) > 0
+  let dbg_line_import_idx = if dbg_line_on {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let dbg_line_newlines = if dbg_line_on {
+    build_newline_offsets(entry_source)
+  } else {
+    lc_fresh_int_array()
   }
   let linked_import_indices = lc_fresh_int_array()
   let linked_import_names = lc_fresh_string_array()
@@ -1454,7 +1471,9 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       effect_names: effect_names_list,
       effect_op_keys: effect_op_keys_list,
       effect_op_arities: effect_op_arities_list,
-      cov: cov_state
+      cov: cov_state,
+      dbg_line_idx: dbg_line_import_idx,
+      dbg_line_nl: dbg_line_newlines
     }
     if is_efn(__bi_expr) {
       let __bi_params = get_efn_params(__bi_expr)
@@ -1678,8 +1697,24 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   } else {
     0
   }
+  // Interior-line breakpoints (span-arc step5): when active, the `vibe::dbg_line`
+  // import needs an `(i32) -> ()` func type. No existing base type is `(i32)->()`
+  // (type 1 is `(i64)->()`), so append one new type AFTER all base + closure
+  // types at index `num_base_types + num_closure_types`. This is strictly beyond
+  // every linked-import type index (which use `num_base_types + lparams`, bounded
+  // by num_closure_types), so existing indices are unshifted. -1 when off.
+  let dbg_line_type_idx = if dbg_line_on {
+    num_base_types + num_closure_types
+  } else {
+    -1
+  }
+  let extra_dbg_types = if dbg_line_on {
+    1
+  } else {
+    0
+  }
   let type_content = bytebuf_new()
-  bytebuf_push_vec_header(type_content, num_base_types + num_closure_types)
+  bytebuf_push_vec_header(type_content, num_base_types + num_closure_types + extra_dbg_types)
   emit_func_type_raw(type_content, [
     127,
     127,
@@ -1747,6 +1782,17 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       126
     ])
     cti = cti + 1
+  }
+  // Interior-line breakpoints: append the `(i32) -> ()` type for `vibe::dbg_line`
+  // (127 = i32). Only when active, so the type section is byte-identical off.
+  if dbg_line_on {
+    emit_func_type_raw(type_content, [
+      127
+    ], Array::slice([
+      0
+    ], 0, 0))
+  } else {
+    ()
   }
   let out = bytebuf_new()
   emit_header(out)
@@ -2041,6 +2087,17 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     bytebuf_push(import_content, 0)
     leb128_encode_u32(import_content, 2)
   }
+  // Interior-line breakpoints (span-arc step5): emit the `vibe::dbg_line` import
+  // descriptor here, AFTER dbg_break and BEFORE the linked imports, matching its
+  // reserved import index order. Type index is the appended `(i32) -> ()` type.
+  if dbg_line_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "dbg_line")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, dbg_line_type_idx)
+  } else {
+    ()
+  }
   let mut li_emit = 0
   while li_emit < Array::length(linked_imports) {
     let (lmod, lfn, lparams, _) = Array::get(linked_imports, li_emit)
@@ -2297,13 +2354,13 @@ export let compile_wasi_module_rc_impl: (Array[Stmt], String) -> Bytes with { Er
     ("", "")
   ], 0, 0), Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, true, false, false, false)
+  ], 0, 0), false, true, false, false, false, "")
 }
 
 export let compile_wasi_module_with_sources_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
   compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, false, false, false, false)
+  ], 0, 0), false, false, false, false, false, "")
 }
 
 // Coverage build (#cov): compile with function-level hit instrumentation +
@@ -2312,7 +2369,7 @@ export let compile_wasi_module_with_sources_impl: (Array[Stmt], String, Array[(S
 export let compile_wasi_module_with_sources_coverage_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
   compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, false, true, false, false)
+  ], 0, 0), false, false, true, false, false, "")
 }
 
 // Trace build (debugger / DAP P1 groundwork): compile with function-call
@@ -2321,14 +2378,14 @@ export let compile_wasi_module_with_sources_coverage_impl: (Array[Stmt], String,
 export let compile_wasi_module_with_sources_trace_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
   compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, false, false, true, false)
+  ], 0, 0), false, false, false, true, false, "")
 }
 
 // Break build (debugger / DAP P1): compile with `vibe::dbg_break` host-hook
 // instrumentation at each user function entry. Same as
 // compile_wasi_module_with_sources_impl but with debug_break enabled.
-export let compile_wasi_module_with_sources_break_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
+export let compile_wasi_module_with_sources_break_impl: (Array[Stmt], String, Array[(String, String)], String) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, entry_source) -> {
   compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, false, false, false, true)
+  ], 0, 0), false, false, false, false, true, entry_source)
 }

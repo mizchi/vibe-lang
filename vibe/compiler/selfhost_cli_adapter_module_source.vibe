@@ -6011,6 +6011,56 @@ let emit_i64_load: (Bytes, Int, Int) -> Unit = (buf, align, offset) -> {
   leb128_encode_u32(buf, offset)
 }
 let op_prefix = 252
+export let rec first_offset: (Expr) -> Int = (e) -> {
+  match e {
+    EIdent(_, off) => off,
+    ECall(callee, _, off) => if off >= 0 { off } else { first_offset(callee) },
+    EDot(base, _, off) => if off >= 0 { off } else { first_offset(base) },
+    EBinOp(_, lhs, _) => first_offset(lhs),
+    EUnaryOp(_, inner) => first_offset(inner),
+    ELet(_, val, _) => first_offset(val),
+    ELetRec(_, val, _) => first_offset(val),
+    ELetMut(_, val, _) => first_offset(val),
+    EAssign(_, val, _) => first_offset(val),
+    EAssignOp(_, _, val, _) => first_offset(val),
+    ESeq(first, _) => first_offset(first),
+    EIf(cond, _, _) => first_offset(cond),
+    EMatch(scrut, _) => first_offset(scrut),
+    EThrow(inner) => first_offset(inner),
+    EReturn(inner) => first_offset(inner),
+    _ => -1
+  }
+}
+export let offset_to_line: (Array[Int], Int) -> Int = (nl, off) -> {
+  let n = Array::length(nl)
+  let mut i = 0
+  let mut count = 0
+  while i < n {
+    if Array::get(nl, i) < off {
+      count = count + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  count + 1
+}
+export let build_newline_offsets: (String) -> Array[Int] = (src) -> {
+  let arr = Array::slice([
+    0
+  ], 0, 0)
+  let n = String::length(src)
+  let mut i = 0
+  while i < n {
+    if String::char_code_at(src, i) == 10 {
+      Array::push(arr, i)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  arr
+}
 export let get_ebinop_lhs: (Expr) -> Expr with { Error } = (expr) -> {
   match expr {
     EBinOp(_, lhs, _) => lhs,
@@ -8653,7 +8703,9 @@ export struct CompileCtx {
   effect_names: Array[String];
   effect_op_keys: Array[String];
   effect_op_arities: Array[Int];
-  cov: CovState
+  cov: CovState;
+  dbg_line_idx: Int;
+  dbg_line_nl: Array[Int]
 }
 export struct CompileCtxGc {
   func_table: FuncTable;
@@ -12121,7 +12173,9 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
     effect_names: ctx.effect_names,
     effect_op_keys: ctx.effect_op_keys,
     effect_op_arities: ctx.effect_op_arities,
-    cov: ctx.cov
+    cov: ctx.cov,
+    dbg_line_idx: ctx.dbg_line_idx,
+    dbg_line_nl: ctx.dbg_line_nl
   }
   if ctx.enable_rc {
     let mut dpi = 0
@@ -15378,6 +15432,20 @@ export let compile_expr_tail2: (Bytes, Expr, Array[String], Int, CompileCtx, Int
     compile_expr_tail3(buf, expr, local_names, next_local, ctx, ld, compile_expr)
   }
 }
+let emit_dbg_line_for: (Bytes, Expr, CompileCtx) -> Unit = (buf, value, ctx) -> {
+  if ctx.dbg_line_idx >= 0 {
+    let off = first_offset(value)
+    if off >= 0 {
+      let line = offset_to_line(ctx.dbg_line_nl, off)
+      emit_i32_const(buf, line)
+      emit_call(buf, ctx.dbg_line_idx)
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+}
 let is_edot: (Expr) -> Bool = (e) -> {
   match e {
     EDot(_, _, _) => true,
@@ -15588,6 +15656,7 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     let value = get_elet_val(expr)
     let body = get_elet_body(expr)
     let local_idx = next_local
+    emit_dbg_line_for(buf, value, ctx)
     Array::push(local_names, name)
     let nl = compile_expr(buf, value, local_names, next_local + 1, ctx, ld)
     emit_local_set(buf, local_idx)
@@ -15741,6 +15810,7 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     let value = get_eletmut_val(expr)
     let body = get_eletmut_body(expr)
     let local_idx = next_local
+    emit_dbg_line_for(buf, value, ctx)
     Array::push(local_names, name)
     if expr_is_floatish(value, local_names, ctx) {
       Array::push(ctx.float_local_slots, local_idx * 2 + 1)
@@ -15870,6 +15940,7 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
   } else if __tag == 14 {
     let first = get_eseq_first(expr)
     let second = get_eseq_second(expr)
+    emit_dbg_line_for(buf, first, ctx)
     let nl = compile_expr(buf, first, local_names, next_local, ctx, ld)
     emit_drop(buf)
     compile_expr(buf, second, local_names, nl, ctx, ld)
@@ -16483,7 +16554,7 @@ export let wasi_memory_min_pages_for_heap: (Int) -> Int = (heap_start) -> {
     default_wasi_memory_min_pages
   }
 }
-export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String, String)], Array[(String, String, Int, Int)], Bool, Bool, Bool, Bool, Bool) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, linked_imports, library_mode, enable_rc, coverage, debug_trace, debug_break) -> {
+export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String, String)], Array[(String, String, Int, Int)], Bool, Bool, Bool, Bool, Bool, String) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, linked_imports, library_mode, enable_rc, coverage, debug_trace, debug_break, entry_source) -> {
   let fn_names_list = lc_fresh_string_array()
   let fn_param_counts = lc_fresh_int_array()
   let fn_needs_env_list = lc_fresh_bool_array()
@@ -16891,6 +16962,19 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     idx
   } else {
     -1
+  }
+  let dbg_line_on = debug_break && String::length(entry_source) > 0
+  let dbg_line_import_idx = if dbg_line_on {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let dbg_line_newlines = if dbg_line_on {
+    build_newline_offsets(entry_source)
+  } else {
+    lc_fresh_int_array()
   }
   let linked_import_indices = lc_fresh_int_array()
   let linked_import_names = lc_fresh_string_array()
@@ -17760,7 +17844,9 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       effect_names: effect_names_list,
       effect_op_keys: effect_op_keys_list,
       effect_op_arities: effect_op_arities_list,
-      cov: cov_state
+      cov: cov_state,
+      dbg_line_idx: dbg_line_import_idx,
+      dbg_line_nl: dbg_line_newlines
     }
     if is_efn(__bi_expr) {
       let __bi_params = get_efn_params(__bi_expr)
@@ -17984,8 +18070,18 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   } else {
     0
   }
+  let dbg_line_type_idx = if dbg_line_on {
+    num_base_types + num_closure_types
+  } else {
+    -1
+  }
+  let extra_dbg_types = if dbg_line_on {
+    1
+  } else {
+    0
+  }
   let type_content = bytebuf_new()
-  bytebuf_push_vec_header(type_content, num_base_types + num_closure_types)
+  bytebuf_push_vec_header(type_content, num_base_types + num_closure_types + extra_dbg_types)
   emit_func_type_raw(type_content, [
     127,
     127,
@@ -18053,6 +18149,15 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       126
     ])
     cti = cti + 1
+  }
+  if dbg_line_on {
+    emit_func_type_raw(type_content, [
+      127
+    ], Array::slice([
+      0
+    ], 0, 0))
+  } else {
+    ()
   }
   let out = bytebuf_new()
   emit_header(out)
@@ -18310,6 +18415,14 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     bytebuf_push(import_content, 0)
     leb128_encode_u32(import_content, 2)
   }
+  if dbg_line_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "dbg_line")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, dbg_line_type_idx)
+  } else {
+    ()
+  }
   let mut li_emit = 0
   while li_emit < Array::length(linked_imports) {
     let (lmod, lfn, lparams, _) = Array::get(linked_imports, li_emit)
@@ -18562,27 +18675,27 @@ export let compile_wasi_module_rc_impl: (Array[Stmt], String) -> Bytes with { Er
     ("", "")
   ], 0, 0), Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, true, false, false, false)
+  ], 0, 0), false, true, false, false, false, "")
 }
 export let compile_wasi_module_with_sources_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
   compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, false, false, false, false)
+  ], 0, 0), false, false, false, false, false, "")
 }
 export let compile_wasi_module_with_sources_coverage_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
   compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, false, true, false, false)
+  ], 0, 0), false, false, true, false, false, "")
 }
 export let compile_wasi_module_with_sources_trace_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
   compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, false, false, true, false)
+  ], 0, 0), false, false, false, true, false, "")
 }
-export let compile_wasi_module_with_sources_break_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
+export let compile_wasi_module_with_sources_break_impl: (Array[Stmt], String, Array[(String, String)], String) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, entry_source) -> {
   compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, false, false, false, true)
+  ], 0, 0), false, false, false, false, true, entry_source)
 }
 export {
   compile_wasi_module_linked_impl,
@@ -18607,10 +18720,10 @@ export let compile_wasi_module_trace_impl: (Array[Stmt], String) -> Bytes with {
     ("", "")
   ], 0, 0))
 }
-export let compile_wasi_module_break_impl: (Array[Stmt], String) -> Bytes with { Error } = (stmts, entry_name) -> {
+export let compile_wasi_module_break_impl: (Array[Stmt], String, String) -> Bytes with { Error } = (stmts, entry_name, entry_source) -> {
   compile_wasi_module_with_sources_break_impl(stmts, entry_name, Array::slice([
     ("", "")
-  ], 0, 0))
+  ], 0, 0), entry_source)
 }
 let zero_pad_6: (Int) -> String = (n) -> {
   let s = __to_string(n)
@@ -25169,8 +25282,8 @@ export let compile_wasi_module_coverage: (Array[Stmt], String) -> Bytes with { E
 export let compile_wasi_module_trace: (Array[Stmt], String) -> Bytes with { Error } = (stmts, entry_name) -> {
   compile_wasi_module_trace_impl(stmts, entry_name)
 }
-export let compile_wasi_module_break: (Array[Stmt], String) -> Bytes with { Error } = (stmts, entry_name) -> {
-  compile_wasi_module_break_impl(stmts, entry_name)
+export let compile_wasi_module_break: (Array[Stmt], String, String) -> Bytes with { Error } = (stmts, entry_name, entry_source) -> {
+  compile_wasi_module_break_impl(stmts, entry_name, entry_source)
 }
 export let contains_str: (Array[String], String) -> Bool = (arr, target) -> {
   let rec go: (Int) -> Bool = (i) -> {
@@ -29073,7 +29186,8 @@ let lookup_source_by_path: (Array[(String, String)], String) -> Option[String] =
 }
 let parse_program_for_path: (String, String) -> Array[Stmt] with { Error } = (path, source) -> {
   handle {
-    parse_program(lex(source))
+    let (tokens, starts, _ends) = lex_with_offsets(source)
+    parse_program_located(tokens, starts, source)
   } with Error {
     Throw(msg) => throw(String::concat(String::concat(path, ": "), msg))
   }
@@ -29154,6 +29268,19 @@ let build_grouped_merged_stmts: (Array[(String, Array[(String, String)])]) -> Ar
   }
   merged
 }
+let single_file_entry_source: (Array[(String, Array[(String, String)])]) -> String = (source_groups) -> {
+  if Array::length(source_groups) == 1 {
+    let (_, sources) = Array::get(source_groups, 0)
+    if Array::length(sources) == 1 {
+      let (_, src) = Array::get(sources, 0)
+      src
+    } else {
+      ""
+    }
+  } else {
+    ""
+  }
+}
 let prepare_file_fs_from_source_groups_persistent_cached: (TypeDb, String, Array[(String, Array[(String, String)])]) -> TypeDb with { Error, Fs } = (db, entry_path, source_groups) -> {
   let seeded = seed_type_db_from_source_groups(db, source_groups)
   db_typecheck_fs(seeded, entry_path)
@@ -29191,7 +29318,8 @@ export let compile_file_fs_mode_break: (String, String) -> Bytes with { Error, F
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
   let merged_stmts = build_grouped_merged_stmts(source_groups)
-  compile_wasi_module_break(merged_stmts, entry_name)
+  let entry_source = single_file_entry_source(source_groups)
+  compile_wasi_module_break(merged_stmts, entry_name, entry_source)
 }
 let empty_stmts: () -> Array[Stmt] = () -> {
   Array::slice([

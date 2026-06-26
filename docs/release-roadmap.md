@@ -188,22 +188,29 @@
      13 regression）。
    残（post-GA）: field error の end も compiler 由来にする（EDot への field
    offset 追加が前提）— 現状 JS named-token で実用上は解決済み。
-5. 🟡 **行ベース breakpoint（一部着地）** — `vibe run --break <file>:<line>`
-   （bare `<line>` も可）が、その行に宣言された関数で停止する。runner 側のみで
-   実装（codegen 不変 → 既定 codegen は byte-identical、stage2==stage3 fixpoint は
-   構造的に保証）: runner が `VIBE_BREAK` を関数名集合と行集合に分割、`.funcmap`
-   sidecar（`VIBE_FUNCMAP`）と entry basename（`VIBE_BREAK_FILE`）から entering
-   関数の宣言行を解決し行一致で pause。`breakpoint hit: <file>:<line>` + call stack
-   を表示。launcher が `VIBE_FUNCMAP`/`VIBE_BREAK_FILE` を export、`VIBE_BREAK` は
-   そのまま flow。`test_vibe_break_line.sh` 9/9、既存 break/break_args/step/dap
-   全 green、selfhost gate green。
-   **残（post-GA）**: 真の関数内**任意行** breakpoint / 行 step。これは codegen の
-   `vibe::dbg_line` instrumentation + `vibe.linemap` section が必要で、その前提と
-   して selfhost AST（`Stmt`/`Expr`）が**文単位の source offset** を持つ必要がある
-   （現状 `parse_program_spans` は top-level statement span のみ露出、ECall/EDot の
-   式 offset は step2 で入ったが文単位は未導入）。seed-parser fragility 制約下で
-   invasive な AST 拡張になるため GA 後に分離する。name section / 関数 funcmap /
-   DAP（行→関数名 map）は実装済み。
+5. ✅ **行ベース breakpoint（関数行 + 関数内任意行、着地）** —
+   `vibe run --break <file>:<line>`（bare `<line>` も可）。
+   - **関数宣言行**（既着地）: runner が `VIBE_BREAK` を関数名集合と行集合に分割、
+     `.funcmap` sidecar（`VIBE_FUNCMAP`）と entry basename（`VIBE_BREAK_FILE`）から
+     entering 関数の宣言行を解決し行一致で pause。
+   - ✅ **関数内任意行 + 行 step（着地）** — break-mode codegen が各文境界
+     （ELet/ELetMut/ESeq）で `call vibe::dbg_line(<line>)` を発行し、runner の
+     `vibe_dbg_line` hook がその行を line-break-set と照合 / step 判定で pause。
+     行は codegen 側で算出: 文の値部分式の leftmost offset（`first_offset`、
+     EIdent/ECall/EDot の char-offset）を newline-index（`build_newline_offsets`/
+     `offset_to_line`）で 1-based 行へ変換。`CompileCtx` に `dbg_line_idx` /
+     `dbg_line_nl` を追加し、`(i32)->()` 型 + import を break 時のみ追加。
+     **完全 gate**: `debug_break && 単一ファイル entry source` のときだけ発行する
+     ため、既定 / multi-file codegen は byte-identical（fixpoint 786e8f1 維持）。
+     FS-compile path を `parse_program_located` 化して EIdent offset を供給
+     （codegen は offset を読まないので既定出力は不変）。
+     **scope (v1)**: 単一ファイル entry のみ（import ありは merge で offset が
+     衝突するため関数行 breakpoint に degrade）。値が裸リテラルの文
+     （`let a = 1`）は offset を持たず個別 break 不可。
+     `test_vibe_break_interior.sh` 6/6（行 hit・行 step・既定不変・非マッチ）、
+     既存 break/break_line/step/dap 全 green、selfhost gate green。
+   **残（post-GA）**: multi-file entry の関数内行 break（文単位の source provenance
+   が前提）、`vibe.linemap` section 化。
 
 - **codegen の関数 index↔name 対応** — ✅ wasm name section（土台B / debugger P0）
   は実装済み（`func_offset + i` で user 関数を正確に命名）。

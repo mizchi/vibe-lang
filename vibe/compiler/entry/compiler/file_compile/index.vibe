@@ -1,11 +1,11 @@
 //# Imports
 
 import ../../../syntax/lexer.vibe {
-  lex,
+  lex, lex_with_offsets,
 }
 
 import ../../../syntax/parser.vibe {
-  parse_program
+  parse_program, parse_program_located
 }
 
 import ../../../syntax/import_alias_rewrite.vibe {
@@ -153,7 +153,13 @@ let lookup_source_by_path: (Array[(String, String)], String) -> Option[String] =
 
 let parse_program_for_path: (String, String) -> Array[Stmt] with { Error } = (path, source) -> {
   handle {
-    parse_program(lex(source))
+    // Interior-line breakpoints (span-arc step5): parse via the span-aware
+    // `parse_program_located` so EIdent nodes carry real source char-offsets
+    // (offset_to_line then maps them to lines for `vibe::dbg_line`). Offsets are
+    // inert for normal codegen (no codegen path reads them), so the default
+    // wasm output is unchanged — only the gated break path consumes them.
+    let (tokens, starts, _ends) = lex_with_offsets(source)
+    parse_program_located(tokens, starts, source)
   } with Error {
     Throw(msg) => throw(String::concat(String::concat(path, ": "), msg))
   }
@@ -238,6 +244,25 @@ let build_grouped_merged_stmts: (Array[(String, Array[(String, String)])]) -> Ar
   merged
 }
 
+// Interior-line breakpoints (span-arc step5): return the entry source text when
+// `source_groups` is exactly one group with exactly one source (a single-file
+// entry, no imports); otherwise "". Multi-file entries MERGE sources so AST
+// char-offsets from different files collide, which would mislead the line
+// mapping — so interior-line break is v1-scoped to single-file entries only.
+let single_file_entry_source: (Array[(String, Array[(String, String)])]) -> String = (source_groups) -> {
+  if Array::length(source_groups) == 1 {
+    let (_, sources) = Array::get(source_groups, 0)
+    if Array::length(sources) == 1 {
+      let (_, src) = Array::get(sources, 0)
+      src
+    } else {
+      ""
+    }
+  } else {
+    ""
+  }
+}
+
 let prepare_file_fs_from_source_groups_cached: (TypeDb, String, Array[(String, Array[(String, String)])]) -> TypeDb with { Error } = (db, entry_path, source_groups) -> {
   let seeded = seed_type_db_from_source_groups(db, source_groups)
   db_typecheck(seeded, entry_path)
@@ -303,7 +328,11 @@ export let compile_file_fs_mode_break: (String, String) -> Bytes with { Error, F
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
   let merged_stmts = build_grouped_merged_stmts(source_groups)
-  compile_wasi_module_break(merged_stmts, entry_name)
+  // Interior-line breakpoints (span-arc step5): pass the single-file entry source
+  // (or "" for multi-file) so the break codegen can emit `vibe::dbg_line` at
+  // statement boundaries with correct line numbers.
+  let entry_source = single_file_entry_source(source_groups)
+  compile_wasi_module_break(merged_stmts, entry_name, entry_source)
 }
 
 export let compile_file_fs_mode_profiled: (String, String, String) -> (Bytes, Int, Int, Int, Int, Int, Int) with { Error, Fs, Profiler } = (entry_path, entry_name, mode) -> {
