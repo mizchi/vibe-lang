@@ -1889,7 +1889,7 @@ let rec type_implements_check_env: (TypeEnv, String, Type) -> Bool = (e, trait_n
     EnvCached(_, rest) => type_implements_check_env(rest, trait_name, resolved)
   }
 }
-let collect_subst_bounds_pairs: (Subst) -> Array[(Int, Array[String])] = (s) -> {
+export let collect_subst_bounds_pairs: (Subst) -> Array[(Int, Array[String])] = (s) -> {
   let out = Array::slice([
     (0, Array::slice([
       ""
@@ -5449,6 +5449,31 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
   }
   (cur_env, cur_s, cur_c)
 }
+let check_program_bounds: (TypeEnv, Subst, Array[String]) -> Unit = (env, s, errors) -> {
+  let pairs = collect_subst_bounds_pairs(s)
+  let n = Array::length(pairs)
+  let mut i = 0
+  while i < n {
+    let (vid, bounds) = Array::get(pairs, i)
+    let resolved = subst_apply(s, CtVar(vid))
+    match resolved {
+      CtVar(_) => (),
+      CtUnknown => (),
+      _ => {
+        let bn = Array::length(bounds)
+        let mut bi = 0
+        while bi < bn {
+          let b = Array::get(bounds, bi)
+          if b != "" && not(type_implements_trait(env, s, resolved, b)) {
+            Array::push(errors, String::concat("no impl `", String::concat(b, String::concat("` for `", String::concat(type_to_string(resolved), "`")))))
+          }
+          bi = bi + 1
+        }
+      }
+    }
+    i = i + 1
+  }
+}
 export let check_program: (Array[Stmt]) -> TypeEnv with { Error } = (stmts) -> {
   let empty_defs = Array::slice([
     TDAlias("_dummy", Array::slice([
@@ -5466,7 +5491,8 @@ export let check_program: (Array[Stmt]) -> TypeEnv with { Error } = (stmts) -> {
   let tytab = Array::slice([
     (0, CtUnit)
   ], 0, 0)
-  let (env, _, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
+  let (env, final_s, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
+  check_program_bounds(env, final_s, frozen_errors)
   if Array::length(frozen_errors) > 0 {
     throw(Array::get(frozen_errors, 0))
   }
