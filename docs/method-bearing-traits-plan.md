@@ -105,6 +105,30 @@ or codegen change was needed. The seed was bumped so the toolchain understands t
 syntax. Deferred to PR-2/PR-3: bound enforcement, dictionary passing, and passing a
 qualified method (`Point::measure`) as a first-class HOF value.
 
+### PR-2 blocker found (bound enforcement is NOT just "wire up the dead check")
+
+`check_bounds_satisfied` / `satisfies_bound` (`checker_trait.vibe`) are dead, and
+the obvious hook is: capture the final subst in `check_program`
+(`checker_stmt.vibe:441`), walk `collect_subst_bounds_pairs` (`core/types.vibe:1237`),
+`subst_apply` each bounded var, and for concrete (non-`CtVar`) results call
+`type_implements_trait`, emitting ``no impl `Trait` for `Type` `` (the message
+`fixtures/err_type_trait_call_bound_violation.vibe` expects).
+
+BUT `type_implements_trait` **ignores generic impls**: both
+`type_implements_check_env` and `type_implements_check_super` (`core/types.vibe`)
+fall through `EnvTraitImplGen(_,_,_,_,rest)` without matching. So `impl [T] Eq for
+Array[T]` is invisible, and naive enforcement would false-positive ``no impl `Eq`
+for `Array[..]` `` on the compiler's own generic-over-container code, breaking the
+selfbuild. PR-2 must therefore be split:
+- **PR-2a**: harden `type_implements_trait` to match `EnvTraitImplGen` (unify the
+  generic impl's target constructor against the resolved type, e.g. `Array[T]` vs
+  `Array[Int]`), with `fixtures/typecheck` coverage for both pass and fail.
+- **PR-2b**: enforce bounds in `check_program` only after PR-2a (skip unresolved
+  `CtVar` results — those propagate to the eventual concrete call site).
+
+Only check concrete resolutions; bounds on still-polymorphic vars are inherited,
+not violated.
+
 Original full design (for reference / superseded parts):
 1. AST: extend `STrait` with a method-signature list (model on `SEffectDef`) and
    `SImpl` with `(method_name, EFn-body)` pairs. Update all match sites.
