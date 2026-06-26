@@ -803,4 +803,30 @@ fi
 rm -rf "$eidir"
 echo "[selfhost-only-gate] cross-import trait-iterator element-type regression ok"
 
+# 21. prelude iterator combinator suites: compile + run the real prelude test
+#     files through the fresh stage2 and assert every `test "..."` block passes
+#     (each `assert` traps on failure, so a clean `_start` run == all passed).
+#     Covers the sync `lazy_iter` and async `async_iter` combinator libraries
+#     (take / drop / take_while / enumerate / zip / flat_map / find / any / all,
+#     and the async `for await`-driven terminals) — these prelude tests are not
+#     otherwise exercised by the moon-free gate.
+echo "[selfhost-only-gate] 21/21 prelude iterator combinator suites"
+for suite in vibe/prelude/lazy_iter_test.vibe vibe/prelude/async_iter_test.vibe; do
+  out="_build/_gate_prelude_iter_$(basename "${suite%.vibe}").wasm"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$suite" "$out" _start >/dev/null 2>&1
+  if [ ! -s "$out" ]; then
+    echo "[selfhost-only-gate] FAIL: $suite did not compile" >&2
+    cat "$out.diag" 2>/dev/null >&2; exit 1
+  fi
+  if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+      --invoke _start "$out" >/dev/null 2>&1; then
+    echo "[selfhost-only-gate] FAIL: $suite has a failing test (assert trapped)" >&2
+    exit 1
+  fi
+  rm -f "$out" "$out.diag" "$out.funcmap"
+done
+echo "[selfhost-only-gate] prelude iterator combinator suites ok"
+
 echo "[selfhost-only-gate] ok"
