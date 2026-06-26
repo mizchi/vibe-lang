@@ -4,6 +4,10 @@ import .. / checker_trait.vibe {
   register_builtin_traits
 }
 
+import .. / checker_effects.vibe {
+  check_async_effects_stmts, effect_error_to_string
+}
+
 import .. / core / ast.vibe {
   Expr, Stmt, TypeExpr
 }
@@ -512,6 +516,20 @@ let check_program_bounds: (TypeEnv, Subst, Array[String]) -> Unit = (env, s, err
   }
 }
 
+// Append `Async`-escape diagnostics (an async primitive used outside an
+// `{Async}` context) to the type-error list, but only when type checking is
+// otherwise clean so we surface the real error first.
+let collect_async_effect_errors: (Array[Stmt], TypeEnv, Array[String]) -> Unit = (stmts, env, frozen_errors) -> {
+  if Array::length(frozen_errors) == 0 {
+    let eff_errs = check_async_effects_stmts(stmts, env)
+    let mut i = 0
+    while i < Array::length(eff_errs) {
+      Array::push(frozen_errors, effect_error_to_string(Array::get(eff_errs, i)))
+      i = i + 1
+    }
+  }
+}
+
 export let check_program: (Array[Stmt]) -> TypeEnv with { Error } = (stmts) -> {
   let empty_defs = Array::slice([
     TDAlias("_dummy", Array::slice([
@@ -531,6 +549,7 @@ export let check_program: (Array[Stmt]) -> TypeEnv with { Error } = (stmts) -> {
   ], 0, 0)
   let (env, final_s, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
   check_program_bounds(env, final_s, frozen_errors)
+  collect_async_effect_errors(stmts, env, frozen_errors)
   if Array::length(frozen_errors) > 0 {
     throw(Array::get(frozen_errors, 0))
   }
@@ -591,6 +610,7 @@ export let check_program_with_env: (Array[Stmt], TypeEnv) -> TypeEnv with { Erro
         (0, CtUnit)
       ], 0, 0)
       let (env, _, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
+      collect_async_effect_errors(stmts, env, frozen_errors)
       if Array::length(frozen_errors) > 0 {
         throw(Array::get(frozen_errors, 0))
       }

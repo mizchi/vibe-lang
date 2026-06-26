@@ -394,3 +394,236 @@ export let effect_error_to_string: (EffectError) -> String = (err) -> {
     EEEffectfulCallOutsideEffect(name) => String::concat("effectful call outside effectful context: ", name)
   }
 }
+
+//# Async-scoped effect enforcement (the pass wired into `check_program`)
+//
+// The general `check_effects_expr` above treats every effect identically and is
+// far too strict to enable across the un-annotated selfhost source (441 `throw`
+// sites alone would fail). This pass enforces ONLY the `Async` effect, and only
+// for async PRIMITIVES — the builtins `await(..)` / `sleep(..)` / `Stream::next`
+// whose type carries `with { Async }`, including the `await(..)` the `for await`
+// desugar injects over a Future-returning iterator. A primitive must appear
+// inside a function/lambda annotated `with { Async }`.
+//
+// Crucially it does NOT propagate to user functions that merely COMPOSE async
+// work: calling a `with { Async }` helper (e.g. `async_iter_collect`) from a
+// sync context is allowed (await is the identity on the synchronous backend,
+// and on a real async backend the value/Future mismatch is a separate type
+// error). Only env-absent BUILTIN primitives are checked, so the compiler /
+// prelude — which use `Async` only in the disciplined async_iter terminals —
+// stay green while `for await` over an async stream becomes sound (#2+#3).
+
+let effect_opt_is_async: (Option[String]) -> Bool = (eff) -> {
+  match eff {
+    Some(s) => String::contains(s, "Async"),
+    None => false
+  }
+}
+
+// True only for async-effect BUILTIN primitives (await/sleep/Stream::next/...).
+// A name bound in `env` (a user/prelude function) is intentionally NOT treated
+// as a primitive even if its type is `with { Async }`.
+let is_async_primitive: (String, TypeEnv) -> Bool = (name, env) -> {
+  match env_lookup(env, name) {
+    Some(_) => false,
+    None => {
+      let normalized = canonical_builtin_name(name)
+      match lookup_builtin(normalized) {
+        Some(ty) => match ty {
+          CtFn(_, _, eff) => effect_opt_is_async(eff),
+          _ => false
+        },
+        None => false
+      }
+    }
+  }
+}
+
+let append_eff_errs: (Array[EffectError], Array[EffectError]) -> Unit = (dst, src) -> {
+  let mut i = 0
+  while i < Array::length(src) {
+    Array::push(dst, Array::get(src, i))
+    i = i + 1
+  }
+}
+
+export let rec check_async_effects_expr: (Expr, TypeEnv, Bool) -> Array[EffectError] = (expr, env, in_async) -> {
+  let errors = Array::slice([
+    EEThrowOutsideEffect("")
+  ], 0, 0)
+  match expr {
+    ECall(callee, args, _) => {
+      match callee {
+        EIdent(name, _) => if !in_async && is_async_primitive(name, env) {
+          Array::push(errors, EEEffectfulCallOutsideEffect(name))
+        }
+        ,
+        _ => ()
+      }
+      append_eff_errs(errors, check_async_effects_expr(callee, env, in_async))
+      let mut ai = 0
+      while ai < Array::length(args) {
+        append_eff_errs(errors, check_async_effects_expr(Array::get(args, ai), env, in_async))
+        ai = ai + 1
+      }
+      errors
+    },
+    EFn(_, _, _, _, effect, body) => {
+      append_eff_errs(errors, check_async_effects_expr(body, env, effect_opt_is_async(effect)))
+      errors
+    },
+    EHandle(body, arms) => {
+      append_eff_errs(errors, check_async_effects_expr(body, env, in_async))
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (_, arm_body) = Array::get(arms, ai)
+        append_eff_errs(errors, check_async_effects_expr(arm_body, env, in_async))
+        ai = ai + 1
+      }
+      errors
+    },
+    ELet(_, val, body) => {
+      append_eff_errs(errors, check_async_effects_expr(val, env, in_async))
+      append_eff_errs(errors, check_async_effects_expr(body, env, in_async))
+      errors
+    },
+    ELetRec(_, val, body) => {
+      append_eff_errs(errors, check_async_effects_expr(val, env, in_async))
+      append_eff_errs(errors, check_async_effects_expr(body, env, in_async))
+      errors
+    },
+    ELetMut(_, val, body) => {
+      append_eff_errs(errors, check_async_effects_expr(val, env, in_async))
+      append_eff_errs(errors, check_async_effects_expr(body, env, in_async))
+      errors
+    },
+    ESeq(a, b) => {
+      append_eff_errs(errors, check_async_effects_expr(a, env, in_async))
+      append_eff_errs(errors, check_async_effects_expr(b, env, in_async))
+      errors
+    },
+    EIf(cond, then_e, else_e) => {
+      append_eff_errs(errors, check_async_effects_expr(cond, env, in_async))
+      append_eff_errs(errors, check_async_effects_expr(then_e, env, in_async))
+      append_eff_errs(errors, check_async_effects_expr(else_e, env, in_async))
+      errors
+    },
+    EMatch(scrutinee, arms) => {
+      append_eff_errs(errors, check_async_effects_expr(scrutinee, env, in_async))
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (_, arm_body) = Array::get(arms, ai)
+        append_eff_errs(errors, check_async_effects_expr(arm_body, env, in_async))
+        ai = ai + 1
+      }
+      errors
+    },
+    EWhile(cond, body) => {
+      append_eff_errs(errors, check_async_effects_expr(cond, env, in_async))
+      append_eff_errs(errors, check_async_effects_expr(body, env, in_async))
+      errors
+    },
+    ELoop(params, body) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (_, init) = Array::get(params, i)
+        append_eff_errs(errors, check_async_effects_expr(init, env, in_async))
+        i = i + 1
+      }
+      append_eff_errs(errors, check_async_effects_expr(body, env, in_async))
+      errors
+    },
+    EForIn(_, _, iter, body) => {
+      append_eff_errs(errors, check_async_effects_expr(iter, env, in_async))
+      append_eff_errs(errors, check_async_effects_expr(body, env, in_async))
+      errors
+    },
+    EBinOp(_, left, right) => {
+      append_eff_errs(errors, check_async_effects_expr(left, env, in_async))
+      append_eff_errs(errors, check_async_effects_expr(right, env, in_async))
+      errors
+    },
+    EReturn(e) => check_async_effects_expr(e, env, in_async),
+    EUnaryOp(_, operand) => check_async_effects_expr(operand, env, in_async),
+    EThrow(e) => check_async_effects_expr(e, env, in_async),
+    EAssign(_, val, cont) => {
+      append_eff_errs(errors, check_async_effects_expr(val, env, in_async))
+      append_eff_errs(errors, check_async_effects_expr(cont, env, in_async))
+      errors
+    },
+    EAssignOp(_, _, val, cont) => {
+      append_eff_errs(errors, check_async_effects_expr(val, env, in_async))
+      append_eff_errs(errors, check_async_effects_expr(cont, env, in_async))
+      errors
+    },
+    EDot(obj, _, _) => check_async_effects_expr(obj, env, in_async),
+    ETuple(elems) => {
+      let mut ei = 0
+      while ei < Array::length(elems) {
+        append_eff_errs(errors, check_async_effects_expr(Array::get(elems, ei), env, in_async))
+        ei = ei + 1
+      }
+      errors
+    },
+    EArray(elems) => {
+      let mut ei = 0
+      while ei < Array::length(elems) {
+        append_eff_errs(errors, check_async_effects_expr(Array::get(elems, ei), env, in_async))
+        ei = ei + 1
+      }
+      errors
+    },
+    ERecord(fields) => {
+      let mut fi = 0
+      while fi < Array::length(fields) {
+        let (_, fval) = Array::get(fields, fi)
+        append_eff_errs(errors, check_async_effects_expr(fval, env, in_async))
+        fi = fi + 1
+      }
+      errors
+    },
+    _ => errors
+  }
+}
+
+// A function body runs in an `{Async}` context if EITHER the lambda's inline
+// effect OR the binding's declared signature type carries `Async`.
+let sig_type_is_async: (Option[TypeExpr]) -> Bool = (topt) -> {
+  match topt {
+    Some(TyFn(_, _, eff)) => effect_opt_is_async(eff),
+    _ => false
+  }
+}
+
+let check_async_effects_binding: (Option[TypeExpr], Expr, TypeEnv) -> Array[EffectError] = (ty, body, env) -> {
+  let sig_async = sig_type_is_async(ty)
+  match body {
+    EFn(_, _, _, _, eff, fbody) => check_async_effects_expr(fbody, env, sig_async || effect_opt_is_async(eff)),
+    _ => check_async_effects_expr(body, env, sig_async)
+  }
+}
+
+export let check_async_effects_stmt: (Stmt, TypeEnv) -> Array[EffectError] = (stmt, env) -> {
+  match stmt {
+    SLet(_, _, _, ty, body) => check_async_effects_binding(ty, body, env),
+    SLetMut(_, ty, body) => check_async_effects_binding(ty, body, env),
+    STest(_, body) => check_async_effects_expr(body, env, false),
+    SBench(_, body) => check_async_effects_expr(body, env, false),
+    SExpr(e) => check_async_effects_expr(e, env, false),
+    _ => Array::slice([
+      EEThrowOutsideEffect("")
+    ], 0, 0)
+  }
+}
+
+export let check_async_effects_stmts: (Array[Stmt], TypeEnv) -> Array[EffectError] = (stmts, env) -> {
+  let errors = Array::slice([
+    EEThrowOutsideEffect("")
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    append_eff_errs(errors, check_async_effects_stmt(Array::get(stmts, i), env))
+    i = i + 1
+  }
+  errors
+}
