@@ -5989,6 +5989,64 @@ let builtin_call_effect: (String) -> Option[String] = (name) -> {
     }
   }
 }
+let labels_union: (Array[String], Array[String]) -> Array[String] = (a, b) -> {
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(a) {
+    Array::push(out, Array::get(a, i))
+    i = i + 1
+  }
+  let mut j = 0
+  while j < Array::length(b) {
+    let l = Array::get(b, j)
+    let mut seen = false
+    let mut k = 0
+    while k < Array::length(out) {
+      if Array::get(out, k) == l {
+        seen = true
+      }
+      k = k + 1
+    }
+    if !seen {
+      Array::push(out, l)
+    }
+    j = j + 1
+  }
+  out
+}
+let collect_handle_effects: (Array[(Pat, Expr)]) -> Array[String] = (arms) -> {
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (pat, _) = Array::get(arms, i)
+    match pat {
+      PCtor(name, _) => {
+        let idx = String::index_of(name, "::")
+        if idx > 0 {
+          let eff = name[0:idx]
+          let mut seen = false
+          let mut j = 0
+          while j < Array::length(out) {
+            if Array::get(out, j) == eff {
+              seen = true
+            }
+            j = j + 1
+          }
+          if !seen {
+            Array::push(out, eff)
+          }
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
 export let rec check_perform_effects_expr: (Expr, Array[String], Bool) -> Array[EffectError] = (expr, declared, in_handle) -> {
   let errors = Array::slice([
     EEThrowOutsideEffect("")
@@ -6033,7 +6091,14 @@ export let rec check_perform_effects_expr: (Expr, Array[String], Bool) -> Array[
       errors
     },
     EHandle(body, arms) => {
-      append_eff_errs(errors, check_perform_effects_expr(body, declared, true))
+      let discharged = collect_handle_effects(arms)
+      let body_declared = labels_union(declared, discharged)
+      let body_in_handle = if Array::length(discharged) == 0 {
+        true
+      } else {
+        in_handle
+      }
+      append_eff_errs(errors, check_perform_effects_expr(body, body_declared, body_in_handle))
       let mut ai = 0
       while ai < Array::length(arms) {
         let (_, arm_body) = Array::get(arms, ai)
@@ -6150,33 +6215,6 @@ let sig_type_effect_labels: (Option[TypeExpr]) -> Array[String] = (topt) -> {
     Some(TyFn(_, _, eff)) => effect_decl_labels(eff),
     _ => effect_decl_labels(None)
   }
-}
-let labels_union: (Array[String], Array[String]) -> Array[String] = (a, b) -> {
-  let out = Array::slice([
-    ""
-  ], 0, 0)
-  let mut i = 0
-  while i < Array::length(a) {
-    Array::push(out, Array::get(a, i))
-    i = i + 1
-  }
-  let mut j = 0
-  while j < Array::length(b) {
-    let l = Array::get(b, j)
-    let mut seen = false
-    let mut k = 0
-    while k < Array::length(out) {
-      if Array::get(out, k) == l {
-        seen = true
-      }
-      k = k + 1
-    }
-    if !seen {
-      Array::push(out, l)
-    }
-    j = j + 1
-  }
-  out
 }
 let check_perform_effects_binding: (Option[TypeExpr], Expr) -> Array[EffectError] = (ty, body) -> {
   let sig_labels = sig_type_effect_labels(ty)

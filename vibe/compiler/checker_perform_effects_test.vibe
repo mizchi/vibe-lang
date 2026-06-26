@@ -1,7 +1,7 @@
 //# Imports
 
 import ./ast.vibe {
-  Expr, Stmt, TypeExpr
+  Expr, Pat, Stmt, TypeExpr
 }
 
 import ./checker_effects.vibe {
@@ -140,5 +140,40 @@ test "calling a pure builtin is never flagged" {
     EIdent("xs", -1)
   ], -1)
   let errors = check_perform_effects_expr(call, no_labels(), false)
+  assert(eq(Array::length(errors), 0))
+}
+
+// #626 criterion 2: a `handle ... with E` discharges E (its arms are qualified
+// `E::Op`), so a perform of E inside needs no declaration — but a different
+// effect still leaks.
+
+test "handle discharges its own effect for an undeclared perform" {
+  let body = perform_op("Console::Print", EString("hi"))
+  let handle_expr = EHandle(body, [
+    (PCtor("Console::Print", [
+      PBind("s")
+    ]), EInt(0))
+  ])
+  let errors = check_perform_effects_expr(handle_expr, no_labels(), false)
+  assert(eq(Array::length(errors), 0))
+}
+
+test "handle does not discharge a different effect" {
+  let body = perform_op("Logger::Log", EString("hi"))
+  let handle_expr = EHandle(body, [
+    (PCtor("Console::Print", [
+      PBind("s")
+    ]), EInt(0))
+  ])
+  let errors = check_perform_effects_expr(handle_expr, no_labels(), false)
+  assert(Array::length(errors) > 0)
+}
+
+test "handle with an unqualified arm stays conservative" {
+  let body = perform_op("Logger::Log", EString("hi"))
+  let handle_expr = EHandle(body, [
+    (PBind("k"), EInt(0))
+  ])
+  let errors = check_perform_effects_expr(handle_expr, no_labels(), false)
   assert(eq(Array::length(errors), 0))
 }

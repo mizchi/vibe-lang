@@ -1070,4 +1070,52 @@ fi
 rm -rf "$pfdir"
 echo "[selfhost-only-gate] effect-call discipline ok"
 
+# 27. handle effect discharge (#626 criterion 2): `handle ... with E` discharges
+#     E for its body (a perform of E inside need not be declared), but ONLY E —
+#     a perform of a DIFFERENT undeclared effect inside the same handle still
+#     leaks and is a type error. The parser qualifies arm patterns as `E::Op`, so
+#     the discharged effect is recovered from the handler arms.
+echo "[selfhost-only-gate] 27/27 handle effect discharge"
+hdir="_build/_gate_handle"
+rm -rf "$hdir"; mkdir -p "$hdir"
+cat > "$hdir/discharge.vibe" <<'EOF'
+effect Console { Print(String) -> Unit }
+let greet: () -> Int = () -> {
+  handle {
+    perform Console::Print("hi")
+    7
+  } with Console {
+    Print(s) => resume(0)
+  }
+}
+export let _start: () -> Int = () -> { greet() }
+EOF
+cat > "$hdir/leak.vibe" <<'EOF'
+effect Console { Print(String) -> Unit }
+effect Logger { Log(String) -> Unit }
+let greet: () -> Int = () -> {
+  handle {
+    perform Logger::Log("hi")
+    7
+  } with Console {
+    Print(s) => resume(0)
+  }
+}
+export let _start: () -> Int = () -> { greet() }
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$hdir/discharge.vibe" "$hdir/discharge.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$hdir/discharge.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: handle did not discharge its own effect (#626 criterion 2 over-rejects)" >&2; exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$hdir/leak.vibe" "$hdir/leak.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$hdir/leak.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: a different undeclared effect leaked through a handle (#626 criterion 2 regressed)" >&2; exit 1
+fi
+rm -rf "$hdir"
+echo "[selfhost-only-gate] handle effect discharge ok"
+
 echo "[selfhost-only-gate] ok"
