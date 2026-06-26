@@ -237,7 +237,10 @@ export let ast_binary_read_bool: (AstBinaryReader) -> Bool = (r) -> {
 export let ast_binary_read_string: (AstBinaryReader) -> String = (r) -> {
   let byte_len = ast_binary_read_varint(r)
   let end = r.pos + byte_len
-  let mut out = ""
+  // O(N) build via StringBuilder; the previous `out = String::concat(out, c)`
+  // per character was O(L²) over the string length, paid on every string when
+  // loading a cached AST (issue #366).
+  let out = StringBuilder::new()
   while r.pos < end {
     let b0 = ast_binary_read_byte(r)
     let mut code_point = 0
@@ -269,13 +272,13 @@ export let ast_binary_read_string: (AstBinaryReader) -> String = (r) -> {
       // the runtime. This branch is unused by the prelude (ASCII-only)
       // so we keep the slow path explicit and tested by the cross-impl
       // fixture once non-BMP characters get added.
-      out = String::concat(out, String::from_char_code(high))
-      out = String::concat(out, String::from_char_code(low))
+      StringBuilder::push(out, String::from_char_code(high))
+      StringBuilder::push(out, String::from_char_code(low))
     } else {
-      out = String::concat(out, String::from_char_code(code_point))
+      StringBuilder::push(out, String::from_char_code(code_point))
     }
   }
-  out
+  StringBuilder::freeze(out)
 }
 
 export let ast_binary_read_optstr: (AstBinaryReader) -> Option[String] = (r) -> {
