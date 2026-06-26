@@ -399,4 +399,47 @@ fi
 rm -rf "$cdir"
 echo "[selfhost-only-gate] coverage instrumentation regression ok"
 
+# 14. method-bearing-trait dictionary passing regression (#641 PR-3): a
+#     `[T: Trait]` generic calling `T::method(x)` must dispatch to the concrete
+#     impl via a synthesized witness dictionary (desugar_trait_dict.vibe). Covers
+#     a primitive impl, a struct impl, multiple methods (incl. `Self`-returning
+#     `scale`), and both literal and let-bound receivers.
+echo "[selfhost-only-gate] 14/14 method-bearing-trait dict-passing regression"
+mbtdir="_build/_gate_mbtrait"
+rm -rf "$mbtdir"; mkdir -p "$mbtdir"
+cat > "$mbtdir/mbt.vibe" <<'EOF'
+trait Measurable { measure(Self) -> Int; scale(Self, Int) -> Self }
+struct Point { x: Int; y: Int }
+impl Measurable for Int {
+  measure(self) -> Int { self }
+  scale(self, k) -> Int { self * k }
+}
+impl Measurable for Point {
+  measure(self) -> Int { self.x + self.y }
+  scale(self, k) -> Point { Point::{ x: self.x * k, y: self.y * k } }
+}
+let measure_one = [T: Measurable](x: T) -> Int { T::measure(x) }
+let twice = [T: Measurable](x: T) -> Int { T::measure(T::scale(x, 2)) }
+export let _start: () -> Int = () -> {
+  let p = Point::{ x: 40, y: 2 }
+  measure_one(42) + twice(21) + measure_one(p) + twice(p)
+}
+EOF
+# Expected: 42 + 42 + 42 + 84 = 210
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$mbtdir/mbt.vibe" "$mbtdir/mbt.wasm" _start >/dev/null 2>&1
+if [ ! -s "$mbtdir/mbt.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: trait dict-passing program did not compile" >&2
+  cat "$mbtdir/mbt.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+mbt_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$mbtdir/mbt.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$mbt_out" != "210" ]; then
+  echo "[selfhost-only-gate] FAIL: trait dict-passing mismatch (got '$mbt_out', want 210 -> #641 PR-3 regressed)" >&2
+  exit 1
+fi
+rm -rf "$mbtdir"
+echo "[selfhost-only-gate] method-bearing-trait dict-passing regression ok"
+
 echo "[selfhost-only-gate] ok"
