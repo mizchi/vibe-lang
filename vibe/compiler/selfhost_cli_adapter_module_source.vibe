@@ -59,7 +59,7 @@ export enum Stmt {
   SSuberror(Bool, String, Array[(String, Array[TypeExpr])]);
   SStruct(Bool, String, Array[(String, TypeExpr)]);
   STypeAlias(Bool, String, Array[String], TypeExpr);
-  STrait(Bool, String, Array[String]);
+  STrait(Bool, String, Array[String], Array[(String, Array[TypeExpr], TypeExpr)]);
   SImpl(Array[String], Array[(String, Array[String])], String, String);
   SExternLet(String, TypeExpr);
   SImport(String, Array[(String, Option[String])]);
@@ -542,7 +542,7 @@ let is_type_or_structural: (Stmt) -> Bool = (stmt) -> {
     SEffectDef(_, _, _, _) => true,
     SStruct(_, _, _) => true,
     STypeAlias(_, _, _, _) => true,
-    STrait(_, _, _) => true,
+    STrait(_, _, _, _) => true,
     SImpl(_, _, _, _) => true,
     SExternLet(_, _) => true,
     SImport(_, _) => true,
@@ -5427,7 +5427,7 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
       ,
       SAliasDecl(_, _) => (env, s, c)
       ,
-      STrait(_, name, supers) => {
+      STrait(_, name, supers, _) => {
         let is_open = false
         (EnvTraitDef(name, supers, is_open, env), s, c)
       },
@@ -20045,6 +20045,48 @@ export let skip_braced_body: (Array[Token], Int) -> Int = (tokens, pos) -> {
     _ => pos
   }
 }
+let parse_trait_methods: (Array[Token], Int) -> (Array[(String, Array[TypeExpr], TypeExpr)], Int) with { Error } = (tokens, pos) -> {
+  match peek(tokens, pos) {
+    TLBrace => {
+      let sigs_b = ArrayBuilder::new()
+      let mut p = pos + 1
+      while true {
+        match peek(tokens, p) {
+          TRBrace => {
+            p = p + 1
+            break
+          },
+          TIdent(method_name) => {
+            let (params, after_method_params) = match peek(tokens, p + 1) {
+              TLParen => {
+                let (params_ty, after_paren) = parse_type_impl(tokens, p + 1, 1)
+                let params = match params_ty {
+                  TyUnit => empty_type_exprs(),
+                  TyTuple(elems) => elems,
+                  _ => [
+                    params_ty
+                  ]
+                }
+                (params, after_paren)
+              },
+              _ => (empty_type_exprs(), p + 1)
+            }
+            let arrow_pos = expect_tk(tokens, after_method_params, "->")
+            let (ret_type, after_ret) = parse_type_impl(tokens, arrow_pos, 0)
+            ArrayBuilder::push(sigs_b, (method_name, params, ret_type))
+            p = match peek(tokens, after_ret) {
+              TSemicolon => after_ret + 1,
+              _ => after_ret
+            }
+          },
+          _ => throw("expected trait method signature or '}'")
+        }
+      }
+      (ArrayBuilder::freeze(sigs_b), p)
+    },
+    _ => (ArrayBuilder::freeze(ArrayBuilder::new()), pos)
+  }
+}
 let parse_trait_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } = (tokens, pos, exported) -> {
   let empty_strings = Array::slice([
     "_"
@@ -20074,12 +20116,12 @@ let parse_trait_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } = 
           }
         }
         let np = p
-        let body_end = skip_braced_body(tokens, np)
-        (STrait(exported, name, supers), body_end)
+        let (methods, body_end) = parse_trait_methods(tokens, np)
+        (STrait(exported, name, supers, methods), body_end)
       },
       _ => {
-        let body_end = skip_braced_body(tokens, pos + 1)
-        (STrait(exported, name, empty_strings), body_end)
+        let (methods, body_end) = parse_trait_methods(tokens, pos + 1)
+        (STrait(exported, name, empty_strings, methods), body_end)
       }
     },
     _ => throw("expected trait name")
@@ -24307,12 +24349,26 @@ export let rec print_stmt: (Stmt) -> String = (s) -> {
       String::concat(prefix(exported), String::concat("struct ", String::concat(name, String::concat(" { ", String::concat(join(parts, "; "), " }")))))
     },
     STypeAlias(exported, name, _, ty) => String::concat(prefix(exported), String::concat("type ", String::concat(name, String::concat(" = ", print_type_expr(ty))))),
-    STrait(exported, name, supers) => {
+    STrait(exported, name, supers, methods) => {
       let base = String::concat(prefix(exported), String::concat("trait ", name))
-      if Array::length(supers) == 0 {
+      let head = if Array::length(supers) == 0 {
         base
       }
       else String::concat(base, String::concat(": ", join(supers, " + ")))
+      if Array::length(methods) == 0 {
+        head
+      } else {
+        let method_parts = for m in methods {
+          let (method_name, params, ret) = m
+          let params_str = if Array::length(params) > 0 {
+            String::concat("(", String::concat(join(for pt in params {
+              print_type_expr(pt)
+            }, ", "), ")"))
+          } else ""
+          String::concat("  ", String::concat(method_name, String::concat(params_str, String::concat(" -> ", print_type_expr(ret)))))
+        }
+        String::concat(head, String::concat(" {\n", String::concat(join(method_parts, ";\n"), "\n}")))
+      }
     },
     SImpl(tparams, _, trait_name, type_name) => {
       let head = if Array::length(tparams) == 0 {
@@ -29780,7 +29836,7 @@ let stmt_section: (Stmt) -> Int = (stmt) -> {
     SSuberror(_, _, _) => 1,
     SStruct(_, _, _) => 1,
     STypeAlias(_, _, _, _) => 1,
-    STrait(_, _, _) => 1,
+    STrait(_, _, _, _) => 1,
     SImpl(_, _, _, _) => 1,
     SEffectDef(_, _, _, _) => 1,
     SExternLet(_, _) => 1,
@@ -30881,7 +30937,7 @@ let rec sym_walk_stmt: (Array[(String, Int, Int, Int)], String, Stmt, Array[Int]
     SSuberror(_, name, _) => sym_emit(out, source, name, 10, floor, hi),
     SStruct(_, name, _) => sym_emit(out, source, name, 23, floor, hi),
     STypeAlias(_, name, _, _) => sym_emit(out, source, name, 26, floor, hi),
-    STrait(_, name, _) => sym_emit(out, source, name, 11, floor, hi),
+    STrait(_, name, _, _) => sym_emit(out, source, name, 11, floor, hi),
     SEffectDef(_, name, _, _) => sym_emit(out, source, name, 24, floor, hi),
     SModule(_, name, body) => {
       sym_emit(out, source, name, 2, floor, hi)
