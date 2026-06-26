@@ -51,10 +51,14 @@ GA の content gate は (1) 4 テーマの実装、(2) 言語仕様 freeze、(3)
 | P3 | step 実行 (s/n/o/c/q) | `test_vibe_step.sh` 14/14 |
 | P4 | 名前付きローカル検査 (`vibe.dbgnames`) | `test_vibe_break_args.sh`（`args: [x=20]`） |
 | 行 | `--break <file>:<line>`（関数宣言行） | `test_vibe_break_line.sh` 9/9 |
+| 任意行 | `--break <file>:<line>`（関数内任意行 + 行 step、`vibe::dbg_line`） | `test_vibe_break_interior.sh` 6/6 |
 | 3-D | VS Code DAP adapter | `test_vibe_dap.js` 25/25 |
 
 - docs: [editor-and-debugging.md](../editor-and-debugging.md)。
-- **post-GA**: 関数内**任意行** breakpoint / 行 step（文単位 AST offset が前提）。
+- 関数内**任意行** breakpoint / 行 step は着地（break-mode codegen の
+  `vibe::dbg_line` 計装、既定 codegen は byte-identical で fixpoint 維持）。
+  v1 scope = 単一ファイル entry。**post-GA**: multi-file entry の関数内行 break
+  （文単位の source provenance が前提）。
 
 ### テーマ4: LSP
 
