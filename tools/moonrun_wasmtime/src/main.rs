@@ -21,8 +21,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use wasmtime::{
-    bail, format_err, Caller, Config, Engine, ExternRef, ExternType, Linker, Module, Result,
-    Rooted, Store, StoreLimits, StoreLimitsBuilder, Strategy, TypedFunc, Val, ValType,
+    bail, format_err, Caller, Config, Engine, ExternRef, ExternType, Linker, Module, ResourceLimiter,
+    Result, Rooted, Store, StoreLimits, StoreLimitsBuilder, Strategy, TypedFunc, Val, ValType,
 };
 
 const FFI_END_OF_STRING_ARRAY: &str = "ffi_end_of_/string_array";
@@ -80,13 +80,55 @@ struct StringArrayReader {
     pos: usize,
 }
 
+// Memory ResourceLimiter that delegates the size cap to an inner StoreLimits but
+// also records every accepted `memory.grow` as a growth-timeline event (tier 2
+// of docs/spec/profiling.md). Recording is gated (`record`) so non-profiling runs
+// pay nothing. wasmtime routes BOTH guest `memory.grow` and host `Memory::grow`
+// (the bump-string allocator) through this, so the timeline is complete.
+struct MemLimiter {
+    inner: StoreLimits,
+    record: bool,
+    start: Instant,
+    // (elapsed_ns, from_bytes, to_bytes) per accepted growth.
+    events: Vec<(u128, u64, u64)>,
+}
+
+impl MemLimiter {
+    fn new(inner: StoreLimits) -> Self {
+        MemLimiter { inner, record: false, start: Instant::now(), events: Vec::new() }
+    }
+}
+
+impl ResourceLimiter for MemLimiter {
+    fn memory_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> Result<bool> {
+        let allowed = self.inner.memory_growing(current, desired, maximum)?;
+        if self.record && allowed && desired > current {
+            self.events.push((self.start.elapsed().as_nanos(), current as u64, desired as u64));
+        }
+        Ok(allowed)
+    }
+    fn table_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> Result<bool> {
+        self.inner.table_growing(current, desired, maximum)
+    }
+}
+
 struct HostState {
     last_error: Option<String>,
     args: Arc<Vec<String>>,
     print_buf: Vec<u16>,
     pending_bytes: Option<Arc<Vec<u8>>>,
     pending_strings: Option<Arc<Vec<String>>>,
-    limits: StoreLimits,
+    mem: MemLimiter,
     // Daemon mode: when set, print_char's flushed lines go into
     // captured_stdout instead of host stdout. The daemon loop emits
     // them as part of the per-request JSON response envelope so they
@@ -160,7 +202,7 @@ enum StepMode {
 }
 
 impl HostState {
-    fn new(args: Vec<String>, limits: StoreLimits) -> Self {
+    fn new(args: Vec<String>, mem: MemLimiter) -> Self {
         // VIBE_BREAK is a comma-separated list mixing function-name specs and
         // line specs. A line spec is either `<file>:<line>` or a bare `<line>`
         // (all-digit). Everything else is a function name. Split them so both
@@ -203,7 +245,7 @@ impl HostState {
             print_buf: Vec::new(),
             pending_bytes: None,
             pending_strings: None,
-            limits,
+            mem,
             capture_stdout: false,
             captured_stdout: Vec::new(),
             start_instant: Instant::now(),
@@ -407,8 +449,8 @@ fn run(args: Vec<String>) -> Result<i32> {
         .memory_size(memory_mb * 1024 * 1024)
         .build();
 
-    let mut store = Store::new(&engine, HostState::new(prog_args, limits));
-    store.limiter(|s| &mut s.limits);
+    let mut store = Store::new(&engine, HostState::new(prog_args, MemLimiter::new(limits)));
+    store.limiter(|s| &mut s.mem);
 
     // DAP P2: if the module is a break build it carries a `vibe.dbgargs` custom
     // section publishing the two addresses of the spilled-argument region. Parse
@@ -453,6 +495,14 @@ fn run(args: Vec<String>) -> Result<i32> {
     // overhead. Gated by VIBE_MEM=1 (set by `vibe run --mem`).
     let mem_profile = std::env::var("VIBE_MEM").as_deref() == Ok("1");
     let heap_base = if mem_profile { read_heap_ptr(&instance, &mut store) } else { None };
+    if mem_profile {
+        // Start recording memory.grow events (tier 2 timeline) relative to the
+        // run, from this point — before `_start`, after instantiation.
+        let m = &mut store.data_mut().mem;
+        m.record = true;
+        m.start = Instant::now();
+        m.events.clear();
+    }
 
     let result = start.call(&mut store, ());
 
@@ -482,7 +532,8 @@ fn run(args: Vec<String>) -> Result<i32> {
         let committed = instance
             .get_memory(&mut store, "memory")
             .map(|m| m.data_size(&store) as u64);
-        report_memory(heap_base, heap_peak, committed);
+        let events = std::mem::take(&mut store.data_mut().mem.events);
+        report_memory(heap_base, heap_peak, committed, &events);
     }
 
     match result {
@@ -575,10 +626,10 @@ fn bench(args: Vec<String>) -> Result<i32> {
     let limits = StoreLimitsBuilder::new()
         .memory_size(memory_mb * 1024 * 1024)
         .build();
-    let mut state = HostState::new(vec!["moonrun_wt".to_string()], limits);
+    let mut state = HostState::new(vec!["moonrun_wt".to_string()], MemLimiter::new(limits));
     state.capture_stdout = true; // suppress per-iteration program output
     let mut store = Store::new(&engine, state);
-    store.limiter(|s| &mut s.limits);
+    store.limiter(|s| &mut s.mem);
     let mut linker = Linker::new(&engine);
     register_imports(&mut linker)?;
     let instance = linker.instantiate(&mut store, &module)?;
@@ -679,10 +730,10 @@ fn daemon(args: Vec<String>) -> Result<i32> {
     // Empty initial args; daemon will populate per-request before each
     // `_start` call. capture_stdout is set true so per-request output
     // accumulates in HostState.captured_stdout for the JSON envelope.
-    let mut state = HostState::new(vec!["moonrun_wt".to_string()], limits);
+    let mut state = HostState::new(vec!["moonrun_wt".to_string()], MemLimiter::new(limits));
     state.capture_stdout = true;
     let mut store = Store::new(&engine, state);
-    store.limiter(|s| &mut s.limits);
+    store.limiter(|s| &mut s.mem);
 
     let mut linker = Linker::new(&engine);
     register_imports(&mut linker)?;
@@ -1125,18 +1176,48 @@ fn human_bytes(n: u64) -> String {
 // Print the `--mem` report to stderr: a machine-readable line + a human line.
 // `allocated` = peak − base (everything the run bump-allocated; the linear
 // backend never frees, so peak == total). `committed` = wasm memory pages.
-fn report_memory(base: Option<u64>, peak: Option<u64>, committed: Option<u64>) {
+fn report_memory(
+    base: Option<u64>,
+    peak: Option<u64>,
+    committed: Option<u64>,
+    grow_events: &[(u128, u64, u64)],
+) {
     match (base, peak) {
         (Some(b), Some(p)) => {
             let allocated = p.saturating_sub(b);
             let c = committed.unwrap_or(0);
-            eprintln!("vibe::mem heap_base={b} heap_peak={p} allocated={allocated} committed={c}");
+            eprintln!("vibe::mem heap_base={b} heap_peak={p} allocated={allocated} committed={c} grow_events={}", grow_events.len());
             eprintln!(
-                "vibe: memory — allocated {} ({allocated} B), peak heap {}, committed {}",
+                "vibe: memory — allocated {} ({allocated} B), peak heap {}, committed {}, {} growth event(s)",
                 human_bytes(allocated),
                 human_bytes(p),
                 human_bytes(c),
+                grow_events.len(),
             );
+            // Growth timeline (tier 2): one machine-readable line per
+            // `memory.grow`, with the time since run start and the page-commitment
+            // jump. Empty for programs that stay within the module's initial
+            // memory. A trailing human summary of the first/last event bounds the
+            // timeline without flooding for allocation-heavy runs.
+            for (elapsed_ns, from, to) in grow_events {
+                let pages = to.saturating_sub(*from) / 65536;
+                eprintln!(
+                    "vibe::memgrow t_us={} from={from} to={to} pages=+{pages}",
+                    elapsed_ns / 1_000
+                );
+            }
+            if let (Some((t0, f0, _)), Some((t1, _, l1))) =
+                (grow_events.first(), grow_events.last())
+            {
+                eprintln!(
+                    "vibe:   growth {} -> {} across {} event(s), {} … {}",
+                    human_bytes(*f0),
+                    human_bytes(*l1),
+                    grow_events.len(),
+                    fmt_ns(*t0),
+                    fmt_ns(*t1),
+                );
+            }
         }
         _ => eprintln!("vibe: memory — unavailable (module exports no `__heap_ptr` global)"),
     }

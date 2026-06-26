@@ -19,7 +19,7 @@ guest＋host を合わせた総ヒープ使用量を表す。
 | tier | 内容 | 計装 | 状態 |
 |---|---|---|---|
 | **1** | 総ヒープ / ピーク（`__heap_ptr` 差分）| ゼロ | ✅ **実装済み**: `vibe run --mem` |
-| 2 | `memory.grow` イベント（成長タイムライン）| ホストのみ | 設計済み（wasmtime `ResourceLimiter`）|
+| **2** | `memory.grow` イベント（成長タイムライン）| ホストのみ | ✅ **実装済み**: `--mem` の一部 |
 | 3 | アロケーション時系列サンプリング | `dbg_line` / epoch 流用 | 設計済み |
 | 4 | サイト別 alloc 属性（massif/heaptrack 相当）| opt-in ビルド（`vibe::alloc_site`）| 設計済み |
 
@@ -43,6 +43,31 @@ pure / 純計算プログラムは `allocated=0`。`committed` は wasm memory �
 
 実装: runner は `VIBE_MEM=1`（`--mem` が設定）のとき `__heap_ptr`（`read_heap_ptr`）と
 `memory` サイズを読んで `report_memory` で出力（trap しても出る）。test: `scripts/test_vibe_mem.sh`。
+
+## Tier 2: 成長タイムライン（実装済み）
+
+`--mem` 実行時、runner は wasmtime の `ResourceLimiter`（`MemLimiter`）で `memory.grow` を
+すべて記録する。guest の `memory.grow` も host の `Memory::grow`（bump 文字列確保）も
+wasmtime はこの limiter を通すので、タイムラインは完全。計装ゼロ・ホスト側のみ。
+
+```
+$ vibe run --mem grow.vibe          # >4 MiB を確保するプログラム
+vibe::mem heap_base=131144 heap_peak=6270152 allocated=6139008 committed=6291456 grow_events=32
+vibe: memory — allocated 5.9 MiB …, committed 6.0 MiB, 32 growth event(s)
+vibe::memgrow t_us=2066 from=4194304 to=4259840 pages=+1
+vibe::memgrow t_us=2107 from=4259840 to=4325376 pages=+1
+…
+vibe:   growth 4.0 MiB -> 6.0 MiB across 32 event(s), 2.07 ms … 2.50 ms
+```
+
+各 `vibe::memgrow` 行は機械可読（`t_us` = run 開始からの経過、`from`/`to` = bytes、`pages` = 追加ページ）。
+
+**限界**: 生成 wasm の初期メモリは **64 ページ（4 MiB, `default_wasi_memory_min_pages`）** なので、
+4 MiB 未満で収まるプログラムは grow が発生せず `grow_events=0`。つまりこれは**ページコミットの
+粗いタイムライン**（4 MiB 超のときに有効）。細粒度のアロケーション曲線が要るなら tier 3
+（`__heap_ptr` を `dbg_line`/epoch でサンプリング）。
+上の例は bump allocator が **1 ページ（64 KiB）ずつ** grow していることも示している
+（syscall を減らすなら成長チャンクを大きくする余地）。
 
 ## `vibe bench`（実装済み）
 
