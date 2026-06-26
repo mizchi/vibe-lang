@@ -268,10 +268,11 @@ async function e2e() {
 
   const events = [];
   let stopped = null;
+  let stopCount = 0;
   let terminated = false;
   const { child, request } = dapClient(serverPath, (ev) => {
     events.push(ev.event);
-    if (ev.event === "stopped") stopped = ev.body;
+    if (ev.event === "stopped") { stopped = ev.body; stopCount += 1; }
     if (ev.event === "terminated") terminated = true;
   });
 
@@ -287,6 +288,25 @@ async function e2e() {
       "E2E: setBreakpoints verifies the breakpoint",
     );
     await request("configurationDone", {});
+
+    // Does this launcher actually emit break instrumentation? Probe directly
+    // with VIBE_BREAK_AUTO=1 (auto-continues, needs no stdin) and look for the
+    // pause header. If it DOES, then a missing live `stopped` below is a real
+    // failure (e.g. the launcher's annotator block-buffered the runner's stderr,
+    // deadlocking interactive pausing) — not a "no instrumentation" skip.
+    const bin = process.env.VIBE_BIN || "vibe";
+    let breakSupported = false;
+    try {
+      const probe = spawnSync(bin, ["run", "--break", "main", prog], {
+        encoding: "utf8",
+        timeout: 30000,
+        env: Object.assign({}, process.env, { VIBE_BREAK_AUTO: "1" }),
+        input: "",
+      });
+      breakSupported = /breakpoint hit:/.test((probe.stderr || "") + (probe.stdout || ""));
+    } catch {
+      breakSupported = false;
+    }
 
     // Wait (briefly) for the first stopped event.
     const deadline = Date.now() + 20000;
@@ -305,15 +325,29 @@ async function e2e() {
         (vars.body.variables || []).some((v) => v.value === "20"),
         "E2E: first hit exposes arg value 20",
       );
-      // Continue to completion.
-      await request("continue", { threadId: 1 });
-      const d2 = Date.now() + 20000;
+      // Continue to completion. The breakpoint is on `helper`, which `main`
+      // calls TWICE (helper(20) + helper(1)), so the runner pauses again at the
+      // second hit; keep continuing until the program terminates. (A single
+      // `continue` would leave the runner paused at the 2nd hit forever.)
+      const d2 = Date.now() + 30000;
       while (!terminated && Date.now() < d2) {
-        await new Promise((r) => setTimeout(r, 50));
+        const before = stopCount;
+        await request("continue", { threadId: 1 });
+        // Wait for either the next pause or termination before continuing again.
+        while (!terminated && stopCount === before && Date.now() < d2) {
+          await new Promise((r) => setTimeout(r, 50));
+        }
       }
-      ok(terminated, "E2E: program terminates after continue");
+      ok(terminated, "E2E: program terminates after continuing through all hits");
+      ok(stopCount >= 2, "E2E: paused at both helper() calls (live stops, not buffered)");
+    } else if (breakSupported) {
+      // The launcher emits `breakpoint hit:` (probe above) yet the DAP server
+      // never saw a live `stopped` while the runner was paused — this is the
+      // interactive-debug deadlock (annotator buffered the runner's stderr until
+      // continue), so fail loudly instead of skipping.
+      ok(false, "E2E: launcher supports breakpoints but no live `stopped` arrived (interactive-pause deadlock)");
     } else {
-      console.log("[dap-test] E2E: no stopped event observed (runner may lack break instrumentation); skipping E2E asserts");
+      console.log("[dap-test] E2E: no stopped event observed (runner lacks break instrumentation); skipping E2E asserts");
     }
     await request("disconnect", {});
   } finally {

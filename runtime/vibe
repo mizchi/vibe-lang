@@ -235,6 +235,68 @@ compile_to() {
   return 1
 }
 
+# Live, line-buffered funcmap annotator for the runner's stderr (replaces an awk
+# filter whose block-buffered FIFO input deadlocked interactive `--break` / DAP
+# stepping — see the FIFO comment in the `run` case). Reads stdin, writes the
+# annotated stream to stdout, appending ` (<base>:<line>)` to every trace/frame
+# line that names a funcmap function. A bash `read` loop is line-buffered by
+# construction, so a paused runner's frames flush immediately.
+#
+# Per-frame lookup MUST be O(1): the DAP server (js/vibe/dap_server.js) resets a
+# 30ms idle-flush timer on each frame line and emits `stopped` once no further
+# frame arrives within that window. A funcmap can hold thousands of entries (the
+# generated selfhost adapter), so an O(n) scan per frame could open a >30ms gap
+# between frames, truncating the stack the client sees. We therefore mirror the
+# original awk's associative-array lookup using bash variable indirection (one
+# `_fmln_<name>` variable per entry), which is O(1) and works on bash 3.2 (macOS)
+# where associative arrays do not exist. Names are validated to a safe identifier
+# shape before they touch `eval`/indirection (funcmap names are top-level vibe
+# functions, i.e. `[A-Za-z_][A-Za-z0-9_]*`).
+#   $1 = funcmap path ("" / missing => pass input through unannotated)
+#   $2 = entry source basename (the (<base>:<line>) suffix)
+annotate_run_stream() {
+  local fm="$1" base="$2"
+  local _nm _ln line rest name varname hit tab
+  tab="$(printf '\t')"
+  # Load the funcmap (one "name<TAB>declLine" per line) into per-name variables
+  # `_fmln_<name>` for O(1) indirect lookup. Runs in the backgrounded subshell
+  # that calls this function, so these never leak into the launcher's scope.
+  if [ -n "$fm" ] && [ -s "$fm" ]; then
+    while IFS="$tab" read -r _nm _ln || [ -n "$_nm" ]; do
+      _ln="${_ln%%[[:space:]]*}"          # keep only the leading line number
+      case "$_nm" in [A-Za-z_]*) ;; *) continue ;; esac
+      case "$_nm" in *[!A-Za-z0-9_]*) continue ;; esac
+      case "$_ln" in ""|*[!0-9]*) continue ;; esac
+      eval "_fmln_${_nm}=${_ln}"
+    done < "$fm"
+  fi
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      "trace: "*) rest="${line#trace: }"; name="${rest%%[[:space:]]*}" ;;
+      "  at "*)   rest="${line#  at }";   name="${rest%%[[:space:]]*}" ;;
+      *"!"*)      rest="${line#*!}";      name="${rest%%[[:space:]]*}" ;;
+      *)          printf '%s\n' "$line"; continue ;;
+    esac
+    hit=""
+    # Only plain identifiers can be funcmap keys; anything else (e.g. `Env::get`)
+    # is never in the map, so skip the lookup. `${!varname+x}` is set-u safe even
+    # when the target is unset (the `+` test never dereferences an unset name).
+    case "$name" in
+      [A-Za-z_]*) case "$name" in *[!A-Za-z0-9_]*) name="" ;; esac ;;
+      *) name="" ;;
+    esac
+    if [ -n "$name" ]; then
+      varname="_fmln_${name}"
+      if [ -n "${!varname+x}" ]; then hit="${!varname}"; fi
+    fi
+    if [ -n "$hit" ]; then
+      printf '%s (%s:%s)\n' "$line" "$base" "$hit"
+    else
+      printf '%s\n' "$line"
+    fi
+  done
+}
+
 cmd="${1:-help}"; shift || true
 case "$cmd" in
   run)
@@ -297,44 +359,19 @@ case "$cmd" in
     # runner exits, which would deadlock interactive stepping (the runner pauses
     # waiting for stdin while its prompt sits unflushed). stdin stays attached so
     # step commands drive the runner; the annotator runs in the background
-    # reading the FIFO and `fflush()`es each line; we wait on it to drain.
+    # reading the FIFO line by line; we wait on it to drain.
+    #
+    # NOTE: the annotator MUST be line-buffered on INPUT, not just output. An awk
+    # filter (mawk) opens the FIFO as a block-buffered stdio stream: it waits to
+    # fill a full block before yielding the first line, so the runner's flushed
+    # "breakpoint hit:" sits unread until the FIFO gets more bytes / closes — i.e.
+    # only once the program continues. That silently reinstates the exact deadlock
+    # this FIFO exists to avoid (the DAP `stopped` event never fires while paused,
+    # so VS Code can't inspect a breakpoint). `awk`'s `fflush()` only fixes its
+    # OUTPUT side and cannot fix this. A bash `read` loop is line-buffered by
+    # construction, so each frame is emitted the instant the runner prints it.
     rerr_fifo="$(mktemp -u -t vibe-run-err-XXXXXX)"; mkfifo "$rerr_fifo"
-    if [ -s "$out.funcmap" ]; then
-      awk -v fm="$out.funcmap" -v base="$(basename "$src")" '
-        BEGIN {
-          while ((getline line < fm) > 0) {
-            t = index(line, "\t")
-            if (t > 0) {
-              nm = substr(line, 1, t - 1)
-              ln = substr(line, t + 1)
-              sub(/[ \t\r\n]+$/, "", ln)
-              if (nm != "") fmline[nm] = ln
-            }
-          }
-          close(fm)
-        }
-        {
-          if (substr($0, 1, 7) == "trace: ") {
-            tname = substr($0, 8); sub(/[ \t\r\n].*$/, "", tname)
-            if (tname in fmline) { printf "%s (%s:%s)\n", $0, base, fmline[tname]; fflush(); next }
-            print $0; fflush(); next
-          }
-          if (substr($0, 1, 5) == "  at ") {
-            bname = substr($0, 6); sub(/[ \t\r\n].*$/, "", bname)
-            if (bname in fmline) { printf "%s (%s:%s)\n", $0, base, fmline[bname]; fflush(); next }
-            print $0; fflush(); next
-          }
-          b = index($0, "!")
-          if (b > 0) {
-            name = substr($0, b + 1); sub(/[ \t\r\n].*$/, "", name)
-            if (name in fmline) { printf "%s (%s:%s)\n", $0, base, fmline[name]; fflush(); next }
-          }
-          print $0; fflush()
-        }
-      ' < "$rerr_fifo" >&2 &
-    else
-      cat < "$rerr_fifo" >&2 &
-    fi
+    annotate_run_stream "$out.funcmap" "$(basename "$src")" < "$rerr_fifo" >&2 &
     annot_pid=$!
     env $trace_env $break_env $funcmap_env $breakfile_env "$RUNNER" "$out" 2>"$rerr_fifo" || status=$?
     wait "$annot_pid" 2>/dev/null || true
