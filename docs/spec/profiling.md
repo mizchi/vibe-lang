@@ -20,8 +20,8 @@ guest＋host を合わせた総ヒープ使用量を表す。
 |---|---|---|---|
 | **1** | 総ヒープ / ピーク（`__heap_ptr` 差分）| ゼロ | ✅ **実装済み**: `vibe run --mem` |
 | **2** | `memory.grow` イベント（成長タイムライン）| ホストのみ | ✅ **実装済み**: `--mem` の一部 |
-| 3 | アロケーション時系列サンプリング | `dbg_line` / epoch 流用 | 設計済み |
-| 4 | サイト別 alloc 属性（massif/heaptrack 相当）| opt-in ビルド（`vibe::alloc_site`）| 設計済み |
+| **3** | アロケーション時系列サンプリング | ホストのみ（epoch）| ✅ **実装済み**: `--mem-sample` |
+| **4** | 関数別 alloc 属性（massif/heaptrack 相当）| break ビルド再利用（`dbg_break`）| ✅ **実装済み**: `--alloc-site` |
 
 ## Tier 1: `vibe run --mem`（実装済み）
 
@@ -69,6 +69,65 @@ vibe:   growth 4.0 MiB -> 6.0 MiB across 32 event(s), 2.07 ms … 2.50 ms
 上の例は bump allocator が **1 ページ（64 KiB）ずつ** grow していることも示している
 （syscall を減らすなら成長チャンクを大きくする余地）。
 
+## Tier 3: 時系列サンプリング（実装済み）
+
+`vibe run --mem-sample[=MS]`（既定 1ms 間隔）。runner は wasmtime の **epoch interruption** を
+使い、バックグラウンドスレッドが MS ごとに engine epoch を increment、ゲストのチェックポイント
+（関数入口・ループ back-edge）で epoch-deadline コールバックが発火して `__heap_ptr` を読む。
+これで **初期メモリ（4 MiB）内**でも heap の推移が見える（tier 2 の grow イベントが拾えない領域）。
+ホスト側のみ・計装なし。epoch checks のコストは `--mem-sample` 時のみ（通常 / `vibe bench` は無影響）。
+
+```
+$ vibe run --mem-sample long.vibe
+vibe::memsample t_us=1235 heap=2459624
+vibe::memsample t_us=2314 heap=4571336
+…
+vibe: heap samples — 12 over 1.21 ms … 13.36 ms, 2.4 MiB -> 19.2 MiB (peak 19.2 MiB)
+```
+
+各 `vibe::memsample` 行は機械可読（`t_us`=経過、`heap`=`__heap_ptr` bytes）。サンプル数は
+実行時間と間隔に依存（プログラムが 1 間隔より速いと 0 サンプル）。
+
+## Tier 4: 関数別 alloc 属性（実装済み）
+
+`vibe run --alloc-site[=N]`。**massif/heaptrack 相当の by-frame アロケーションプロファイル**を、
+**新しい計装なしで** break ビルドを再利用して得る。break codegen は全ユーザー関数の入口に
+`vibe::dbg_break`、各文境界に `vibe::dbg_line` を出すので（DAP の breakpoint/step 用）、runner は
+その両 hook を**サンプル点**として使い、各点で `__heap_ptr` を読んで **前回サンプルからの bump 差分を
+「その時点で実行中だった最内関数（backtrace の frame[0]）」へ加算**する。文境界でも毎回 backtrace を
+読み直すので、ヘルパーが return した後にその呼び出し元が次の文で確保した分は**呼び出し元**に付く
+（入口のみのサンプルだと return した callee に誤って付く問題を緩和）。`dbg_break` は let/mut に
+関係なく必ず発火するので関数単位のカバレッジは完全（pure な mut ループの関数も捕捉する）。
+break ビルド再利用なので、デフォルトの自己コンパイル経路は byte-identical（fixpoint 維持）。
+
+```
+$ vibe run --alloc-site sites.vibe        # heavy()/light() を呼ぶプログラム
+1250
+vibe::allocsite fn=heavy line=1 bytes=181200
+vibe::allocsite fn=light line=7 bytes=1456
+vibe: alloc sites — 2 function(s), 178.4 KiB attributed total, top 2 shown
+```
+
+各 `vibe::allocsite` 行は機械可読（`fn`=関数名、`line`=宣言行 [funcmap 解決、無いと `?`]、
+`bytes`=加算されたヒープ増分）。stderr に出し、stdout はプログラム出力のまま。`=N` または
+`VIBE_ALLOC_SITE_TOP` で報告する上位件数を制限（既定 20）。`VIBE_ALLOC_SITE=1` で runner が
+有効化、launcher が `--break` と同じ計装でコンパイルしつつ `VIBE_BREAK` は設定しない（pause なし）。
+
+**粒度と限界**: 属性は**関数単位**（行単位ではない）のリーフ属性で、サンプル点（関数入口＋文境界）
+**間**の差分を1関数に丸めるため近似である。`__heap_ptr` 差分ベースなので arena（解放なし）の*確保*量で
+あり live-set ではない（メモリモデル参照）。毎サンプルで backtrace を取るので `--alloc-site` 実行は
+通常より遅い（プロファイル実行のみのコスト）。
+
+**残る誤属性**: 呼び出し元が helper を呼んだ後、**文境界の無い区間**（`mut` 代入のみの while ループ等。
+`mut` let / 代入は `dbg_line` を出さない）で確保すると、その間サンプルが取れず、tail 加算が直近の
+sample 点の関数（= 戻ってきた callee）にまとめて付く。例:
+`let x = helper(); let mut t=""; while … { t = concat(t, …) }` では大きな確保が helper に誤計上される。
+正確な per-allocation 属性には**確保サイト計装（codegen で各確保点に hook）か return hook** が要る
+— これは設計当初から tier 4 の opt-in 計装ビルド（`vibe::alloc_site`）として想定した重い変更で、
+本実装（runner のみ・codegen 非変更）の範囲外。現状はリーフが文境界で確保する一般形
+（builder が concat して返す等）で正しく、上記パターンで粗くなる近似プロファイラとして使う。
+test: `scripts/test_vibe_alloc_site.sh`。
+
 ## `vibe bench`（実装済み）
 
 `bench "name" { }` 構文と `vibe::profile-now-us` はあったが計測ハーネスが無かった。`vibe bench`
@@ -88,10 +147,26 @@ bench simple_bench.vibe: 1000 iters — 49 ns/op (min 47 ns, p50 49 ns, p95 51 n
 `vibe bench <file> [--iters N] [--warmup N]`。`vibe::bench …` は機械可読（CI/比較が parse）。
 env: `VIBE_BENCH_ITERS` / `VIBE_BENCH_WARMUP` / `VIBE_BENCH_LABEL`。test: `scripts/test_vibe_bench.sh`。
 
-**現状の粒度と限界**: `__bench_*` は未 export なので **ファイル単位**（その file の bench/test body の和）
-で測る。`*_bench.vibe` に bench を 1 つ置く運用なら実質ピンポイント。次段で精度を上げるなら:
+**粒度: bench ブロック個別（実装済み）**: codegen が各 `bench "name" { }` を `__bench_<name>` 関数として
+export する（`__no_entry__` ビルド時のみ。通常ビルド・コンパイラ自己コンパイルは byte-identical）。
+runner（`--bench`）は export を列挙して **ブロックごとに warm 計測**し、`label=<file>::<name>` で
+1 行ずつ報告する。`__bench_*` が無い wasm（旧コンパイラ生成 / `test {}` のみのファイル）は
+`_start` 全体（ファイル単位）にフォールバックする。
 
-- `__bench_<name>` を export → runner が **bench ブロック個別**に計時（codegen 変更が要る）
+```
+$ vibe bench multi_bench.vibe
+vibe::bench label=multi_bench.vibe::light iters=1000 ns_min=… … bytes_per_op=0
+bench multi_bench.vibe::light: 1000 iters — … ns/op …
+vibe::bench label=multi_bench.vibe::heavy iters=1000 ns_min=… … bytes_per_op=0
+bench multi_bench.vibe::heavy: 1000 iters — … ns/op …
+```
+
+実装: codegen は `vibe/compiler/codegen/wasi/linked_compile.vibe`（export セクションで `test_fn_names` の
+`__bench_*` を `all_export_names` に追加）、計時は runner（`bench()` が module export を走査して
+ブロック単位 / フォールバックを選ぶ）。test: `scripts/test_vibe_bench.sh`（per-block 3 assertions）。
+
+さらに精度を上げるなら:
+
 - µs 級でなく ns 級を狙うなら内側 batch（K 回回して割る）で per-call overhead を相殺
 - 2 backend（linear / gc）の別レポート
 - 回帰検出: `(label, backend, source-hash)` で baseline 比較、% 退行を flag → CI ゲート

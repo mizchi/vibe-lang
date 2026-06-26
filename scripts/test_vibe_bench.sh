@@ -78,5 +78,27 @@ done
 printf '%s\n' "$alloc_out" | grep -qE "bench .*: 200 iters — .*/op .*ops/s" \
   && ok "human summary line present" || bad "missing human summary (got: $alloc_out)"
 
+# 5. per-block granularity: a file with multiple `bench {}` blocks reports a row
+#    per block, each labelled `<file>::<block>` (codegen exports `__bench_<name>`,
+#    the runner times each in isolation). `light` does ~half the work of `heavy`.
+cat > "$proj/multi_bench.vibe" <<'EOF'
+let work = (n: Int) -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < n { acc = acc + (i & 3); i = i + 1 }
+  acc
+}
+bench "light" { let _ = work(500) }
+bench "heavy" { let _ = work(1000) }
+EOF
+multi_out="$("$VIBE" bench "$proj/multi_bench.vibe" --iters 200 --warmup 20 2>&1)"
+printf '%s\n' "$multi_out" | grep -qE "vibe::bench label=multi_bench\.vibe::light " \
+  && ok "per-block: 'light' block reported separately" || bad "per-block: missing 'light' row (got: $multi_out)"
+printf '%s\n' "$multi_out" | grep -qE "vibe::bench label=multi_bench\.vibe::heavy " \
+  && ok "per-block: 'heavy' block reported separately" || bad "per-block: missing 'heavy' row (got: $multi_out)"
+mlines="$(printf '%s\n' "$multi_out" | grep -cE '^vibe::bench ' || true)"
+[ "${mlines:-0}" -eq 2 ] && ok "per-block: exactly 2 machine-readable rows for 2 blocks" \
+  || bad "per-block: expected 2 vibe::bench rows, got $mlines (out: $multi_out)"
+
 echo "[test_vibe_bench] $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1
