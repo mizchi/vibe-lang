@@ -224,12 +224,16 @@ resolve.
   generic function + HOF runs correctly. PR-3 = generate that automatically.
 
 ### Four components (each non-trivial; do in order, each its own commit + gate)
-1. **Trait method signatures in the AST** (the deferred PR-1 change). Extend `STrait`
-   to carry `Array[(String, Array[TypeExpr], TypeExpr)]` (model on `SEffectDef`),
-   parse the trait `{ sig; ... }` block (clone `parse_effect_stmt`), print it
-   (`syntax/printer.vibe`), and add the 5th field to every `STrait` match site
-   (~10 files, mostly `_` wildcards — see `grep -rn STrait`). Store the signatures in
-   `EnvTraitDef` (`core/types.vibe:32`) and populate at `checker_stmt.vibe:418`.
+1. **Trait method signatures in the AST** (the deferred PR-1 change). — **LANDED
+   (component 1, this branch).** `STrait` now carries
+   `Array[(String, Array[TypeExpr], TypeExpr)]` (modeled on `SEffectDef`);
+   `parse_trait_methods` (`syntax/parser_base.vibe`) parses the `{ sig; ... }`
+   block, `syntax/printer.vibe` emits it (idempotent under `VIBE_NORMALIZE=1`),
+   and every `STrait` match/construct site was updated to the new arity. Storage
+   in `EnvTraitDef` was **deferred to component 2** (where it is consumed) to keep
+   the commit bisectable — `checker_stmt.vibe` currently ignores the methods field.
+   A `trait Measurable { measure(Self)->Int; scale(Self,Int)->Self }` program
+   compiles, runs, and round-trips through normalize against the rebuilt stage2.
 2. **Checker resolution of `T::method`.** In `check_expr` `EIdent`/`ECall`, when the
    qualified head is a bounded type param `T` (bound recorded via `subst_add_bound`,
    PR-2 machinery) and the trait declares `method`, type it as the method signature

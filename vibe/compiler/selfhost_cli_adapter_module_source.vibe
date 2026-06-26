@@ -775,7 +775,7 @@ export enum TypeDef {
 export enum TypeEnv {
   EnvEmpty;
   EnvBind(String, Type, TypeEnv);
-  EnvTraitDef(String, Array[String], Bool, TypeEnv);
+  EnvTraitDef(String, Array[String], Bool, Array[(String, Array[TypeExpr], TypeExpr)], TypeEnv);
   EnvTraitImpl(String, Type, TypeEnv);
   EnvTraitImplGen(String, Array[String], Array[(String, Array[String])], Type, TypeEnv);
   EnvFlat(Array[(String, Type)]);
@@ -815,7 +815,7 @@ export let env_cache: (TypeEnv) -> TypeEnv = (env) -> {
           ArrayBuilder::push(types, ty)
           cur = rest
         },
-        EnvTraitDef(_, _, _, rest) => {
+        EnvTraitDef(_, _, _, _, rest) => {
           cur = rest
         },
         EnvTraitImpl(_, _, rest) => {
@@ -905,7 +905,7 @@ export let env_lookup: (TypeEnv, String) -> Option[Type] = (env, name) -> {
       } else {
         cur = rest
       },
-      EnvTraitDef(_, _, _, rest) => {
+      EnvTraitDef(_, _, _, _, rest) => {
         cur = rest
       },
       EnvTraitImpl(_, _, rest) => {
@@ -1001,7 +1001,7 @@ export let rec trait_supers: (TypeEnv, String) -> Array[String] = (env, name) ->
   match env {
     EnvEmpty => empty,
     EnvBind(_, _, rest) => trait_supers(rest, name),
-    EnvTraitDef(tname, supers, _, rest) => if tname == name {
+    EnvTraitDef(tname, supers, _, _, rest) => if tname == name {
       supers
     } else trait_supers(rest, name),
     EnvTraitImpl(_, _, rest) => trait_supers(rest, name),
@@ -1009,6 +1009,76 @@ export let rec trait_supers: (TypeEnv, String) -> Array[String] = (env, name) ->
     EnvFlat(_) => empty,
     EnvCached(_, rest) => trait_supers(rest, name)
   }
+}
+export let rec trait_method_sig: (TypeEnv, String, String) -> Option[(Array[TypeExpr], TypeExpr)] = (env, trait_name, method_name) -> {
+  match env {
+    EnvEmpty => None,
+    EnvBind(_, _, rest) => trait_method_sig(rest, trait_name, method_name),
+    EnvTraitDef(tname, _, _, methods, rest) => if tname == trait_name {
+      let mlen = Array::length(methods)
+      let mut i = 0
+      let mut found = None
+      while i < mlen {
+        let (mname, params, ret) = Array::get(methods, i)
+        if mname == method_name {
+          found = Some((params, ret))
+          i = mlen
+        } else {
+          i = i + 1
+        }
+      }
+      match found {
+        Some(sig) => Some(sig),
+        None => trait_method_sig(rest, trait_name, method_name)
+      }
+    } else trait_method_sig(rest, trait_name, method_name),
+    EnvTraitImpl(_, _, rest) => trait_method_sig(rest, trait_name, method_name),
+    EnvTraitImplGen(_, _, _, _, rest) => trait_method_sig(rest, trait_name, method_name),
+    EnvFlat(_) => None,
+    EnvCached(_, rest) => trait_method_sig(rest, trait_name, method_name)
+  }
+}
+export let subst_bounds_for: (Subst, Int) -> Array[String] = (s, id) -> {
+  let out = ArrayBuilder::new()
+  let mut cur = s
+  let mut done = false
+  while !done {
+    match cur {
+      SubstEmpty => {
+        done = true
+      },
+      SubstBind(_, _, rest) => {
+        cur = rest
+      },
+      SubstBound(bid, bounds, rest) => {
+        if bid == id {
+          let mut i = 0
+          while i < Array::length(bounds) {
+            ArrayBuilder::push(out, Array::get(bounds, i))
+            i = i + 1
+          }
+        } else {
+          ()
+        }
+        cur = rest
+      },
+      SubstCached(_, bounds_cache, rest) => {
+        let key = __to_string(id)
+        if Map::has_key(bounds_cache, key) {
+          let bounds = Map::get(bounds_cache, key)
+          let mut i = 0
+          while i < Array::length(bounds) {
+            ArrayBuilder::push(out, Array::get(bounds, i))
+            i = i + 1
+          }
+        } else {
+          ()
+        }
+        cur = rest
+      }
+    }
+  }
+  ArrayBuilder::freeze(out)
 }
 let rec array_has_int: (Array[Int], Int, Int) -> Bool = (arr, val, i) -> {
   if i >= Array::length(arr) {
@@ -1109,7 +1179,7 @@ export let rec trait_defined: (TypeEnv, String) -> Bool = (env, name) -> {
   match env {
     EnvEmpty => false,
     EnvBind(_, _, rest) => trait_defined(rest, name),
-    EnvTraitDef(tname, _, _, rest) => if tname == name {
+    EnvTraitDef(tname, _, _, _, rest) => if tname == name {
       true
     } else trait_defined(rest, name),
     EnvTraitImpl(_, _, rest) => trait_defined(rest, name),
@@ -1422,7 +1492,7 @@ export let env_flat_bindings: (TypeEnv) -> Array[(String, Type)] = (env) -> {
             Array::push(out, (name, ty))
             cur = rest
           },
-          EnvTraitDef(_, _, _, rest) => {
+          EnvTraitDef(_, _, _, _, rest) => {
             cur = rest
           },
           EnvTraitImpl(_, _, rest) => {
@@ -1877,7 +1947,7 @@ let rec type_implements_check_env: (TypeEnv, String, Type) -> Bool = (e, trait_n
   match e {
     EnvEmpty => false,
     EnvBind(_, _, rest) => type_implements_check_env(rest, trait_name, resolved),
-    EnvTraitDef(_, _, _, rest) => type_implements_check_env(rest, trait_name, resolved),
+    EnvTraitDef(_, _, _, _, rest) => type_implements_check_env(rest, trait_name, resolved),
     EnvTraitImpl(tname, target, rest) => if tname == trait_name {
       if types_equal(target, resolved) {
         true
@@ -1944,7 +2014,7 @@ let rec type_implements_check_super: (TypeEnv, TypeEnv, String, Type) -> Bool = 
   match e2 {
     EnvEmpty => false,
     EnvBind(_, _, rest) => type_implements_check_super(rest, full_env, trait_name, resolved),
-    EnvTraitDef(_, _, _, rest) => type_implements_check_super(rest, full_env, trait_name, resolved),
+    EnvTraitDef(_, _, _, _, rest) => type_implements_check_super(rest, full_env, trait_name, resolved),
     EnvTraitImpl(tname, target, rest) => if types_equal(target, resolved) {
       if trait_is_subtrait(full_env, tname, trait_name) {
         true
@@ -1978,10 +2048,16 @@ export {
 export {
   Type, Subst, unify, TypeDef, TypeEnv, env_bind, env_cache, fresh_var, occurs_in, env_lookup, generalize, instantiate, subst_apply, types_equal, env_bind_all, find_typedef, subst_lookup, trait_supers, collect_tvars, trait_defined, type_to_string, env_lookup_flat, resolve_builtin, subst_add_bound, types_compatible, env_flat_bindings, impls_overlap_for, trait_is_subtrait, type_implements_trait
 }
+export {
+  Pat, Expr, Stmt, TypeExpr
+}
 let one_super: (String) -> Array[String] = (name) -> {
   [
     name
   ]
+}
+let no_trait_methods: () -> Array[(String, Array[TypeExpr], TypeExpr)] = () -> {
+  ArrayBuilder::freeze(ArrayBuilder::new())
 }
 let no_type_args: () -> Array[Type] = () -> {
   Array::slice([
@@ -2002,12 +2078,13 @@ export let register_builtin_traits: (TypeEnv) -> TypeEnv = (env) -> {
   let u32_type = CtNamed("u32", no_type_args())
   let u64_type = CtNamed("u64", no_type_args())
   let i16_type = CtNamed("i16", no_type_args())
-  let e1 = EnvTraitDef("Eq", no_supers, false, env)
-  let e2 = EnvTraitDef("Ord", eq_supers, false, e1)
-  let e3 = EnvTraitDef("Add", no_supers, false, e2)
-  let e4 = EnvTraitDef("Sub", no_supers, false, e3)
-  let e5 = EnvTraitDef("Mul", no_supers, false, e4)
-  let e6 = EnvTraitDef("Div", no_supers, false, e5)
+  let nm = no_trait_methods()
+  let e1 = EnvTraitDef("Eq", no_supers, false, nm, env)
+  let e2 = EnvTraitDef("Ord", eq_supers, false, nm, e1)
+  let e3 = EnvTraitDef("Add", no_supers, false, nm, e2)
+  let e4 = EnvTraitDef("Sub", no_supers, false, nm, e3)
+  let e5 = EnvTraitDef("Mul", no_supers, false, nm, e4)
+  let e6 = EnvTraitDef("Div", no_supers, false, nm, e5)
   let e7 = EnvTraitImpl("Eq", CtInt, e6)
   let e8 = EnvTraitImpl("Eq", CtDouble, e7)
   let e9 = EnvTraitImpl("Eq", CtString, e8)
@@ -4115,6 +4192,72 @@ let prepend_expr: (Expr, Array[Expr]) -> Array[Expr] = (first, rest) -> {
   }
   out
 }
+let rec subst_self_in_type: (Type, Type) -> Type = (ty, self_ty) -> {
+  match ty {
+    CtNamed(n, args) => if n == "Self" {
+      self_ty
+    } else {
+      let ra = for a in args {
+        subst_self_in_type(a, self_ty)
+      }
+      CtNamed(n, ra)
+    },
+    CtArray(e) => CtArray(subst_self_in_type(e, self_ty)),
+    CtOption(e) => CtOption(subst_self_in_type(e, self_ty)),
+    CtTuple(elems) => CtTuple(for e in elems {
+      subst_self_in_type(e, self_ty)
+    }),
+    CtFn(ps, ret, eff) => CtFn(for p in ps {
+      subst_self_in_type(p, self_ty)
+    }, subst_self_in_type(ret, self_ty), eff),
+    _ => ty
+  }
+}
+let resolve_trait_method_ident: (String, TypeEnv, Array[TypeDef], Subst) -> Option[Type] = (name, env, defs, s) -> {
+  let idx = String::index_of(name, "::")
+  if idx < 0 {
+    None
+  } else {
+    let head = String::substring(name, 0, idx)
+    let method = String::substring(name, idx + 2, String::length(name))
+    match env_lookup(env, head) {
+      Some(head_ty) => match head_ty {
+        CtVar(vid) => {
+          let bounds = subst_bounds_for(s, vid)
+          let self_ty = CtVar(vid)
+          let mut result = None
+          let mut bi = 0
+          while bi < Array::length(bounds) {
+            let pending = match result {
+              None => true,
+              _ => false
+            }
+            if pending {
+              let trait_name = Array::get(bounds, bi)
+              match trait_method_sig(env, trait_name, method) {
+                Some(sig) => {
+                  let (params_te, ret_te) = sig
+                  let resolved_params = for pte in params_te {
+                    subst_self_in_type(resolve_type_expr(pte, defs), self_ty)
+                  }
+                  let resolved_ret = subst_self_in_type(resolve_type_expr(ret_te, defs), self_ty)
+                  result = Some(CtFn(resolved_params, resolved_ret, None))
+                },
+                None => ()
+              }
+            } else {
+              ()
+            }
+            bi = bi + 1
+          }
+          result
+        },
+        _ => None
+      },
+      None => None
+    }
+  }
+}
 let expr_ident_name_or_empty: (Expr) -> String = (expr) -> {
   match expr {
     EIdent(name, _) => name,
@@ -4437,9 +4580,19 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
           }
           (t, s, c)
         },
-        None => {
-          Array::push(errors, String::concat(String::concat("unknown name: ", name), off_marker_len(ident_off, String::length(name))))
-          (CtUnknown, s, c)
+        None => match resolve_trait_method_ident(name, env, defs, s) {
+          Some(mty) => {
+            if ident_off >= 0 {
+              Array::push(tytab, (ident_off, mty))
+            } else {
+              ()
+            }
+            (mty, s, c)
+          },
+          None => {
+            Array::push(errors, String::concat(String::concat("unknown name: ", name), off_marker_len(ident_off, String::length(name))))
+            (CtUnknown, s, c)
+          }
         }
       }
     },
@@ -5427,9 +5580,9 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
       ,
       SAliasDecl(_, _) => (env, s, c)
       ,
-      STrait(_, name, supers, _) => {
+      STrait(_, name, supers, methods) => {
         let is_open = false
-        (EnvTraitDef(name, supers, is_open, env), s, c)
+        (EnvTraitDef(name, supers, is_open, methods, env), s, c)
       },
       SImpl(_, _, trait_name, type_name) => {
         let target = match resolve_builtin(type_name) {
