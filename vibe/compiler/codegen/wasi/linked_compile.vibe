@@ -17,7 +17,7 @@ import .. / common_analysis {
 }
 
 import .. / common_base {
-  CompileCtx, CovState, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, fn_type_param_types, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, get_slet_type, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
+  CompileCtx, CovState, CtorTable, DbgProv, FuncTable, LambdaTable, StrTable, empty_dbg_prov, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, fn_type_param_types, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, get_slet_type, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
 }
 
 import .. / common_extractors {
@@ -108,7 +108,7 @@ export let wasi_memory_min_pages_for_heap: (Int) -> Int = (heap_start) -> {
   }
 }
 
-export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String, String)], Array[(String, String, Int, Int)], Bool, Bool, Bool, Bool, Bool, String) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, linked_imports, library_mode, enable_rc, coverage, debug_trace, debug_break, entry_source) -> {
+export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String, String)], Array[(String, String, Int, Int)], Bool, Bool, Bool, Bool, Bool, DbgProv) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, linked_imports, library_mode, enable_rc, coverage, debug_trace, debug_break, prov) -> {
   let fn_names_list = lc_fresh_string_array()
   let fn_param_counts = lc_fresh_int_array()
   let fn_needs_env_list = lc_fresh_bool_array()
@@ -565,22 +565,19 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   } else {
     -1
   }
-  // Interior-line breakpoints (span-arc step5): in break mode AND when a single
-  // entry source is available, reserve a `vibe::dbg_line (i32) -> ()` host import
-  // called at each statement boundary. Gated on `debug_break && entry_source`, so
-  // default / multi-file builds reserve nothing and stay byte-identical.
-  let dbg_line_on = debug_break && String::length(entry_source) > 0
+  // Interior-line breakpoints (span-arc step5): in break mode with per-file
+  // provenance, reserve a `vibe::dbg_line (i32 file_id, i32 line) -> ()` host
+  // import called at each statement boundary. Each function's line is mapped
+  // against ITS OWN source file (prov.file_nls[file_id]) so multi-file entries
+  // work. Gated on `debug_break && prov has files`, so default builds reserve
+  // nothing and stay byte-identical.
+  let dbg_line_on = debug_break && Array::length(prov.files) > 0
   let dbg_line_import_idx = if dbg_line_on {
     let idx = next_import_idx
     next_import_idx = next_import_idx + 1
     idx
   } else {
     -1
-  }
-  let dbg_line_newlines = if dbg_line_on {
-    build_newline_offsets(entry_source)
-  } else {
-    lc_fresh_int_array()
   }
   let linked_import_indices = lc_fresh_int_array()
   let linked_import_names = lc_fresh_string_array()
@@ -1431,6 +1428,18 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
         di = di + 1
       }
     }
+    // Interior-line breakpoints: this function's source file id + that file's
+    // newline index (for mapping its statement offsets to lines). Off => 0/empty.
+    let dbg_fid = if dbg_line_on {
+      Array::get(prov.stmt_file_id, Array::get(fn_stmt_indices, bi))
+    } else {
+      0
+    }
+    let dbg_nls = if dbg_line_on {
+      Array::get(prov.file_nls, dbg_fid)
+    } else {
+      lc_fresh_int_array()
+    }
     let compile_ctx = CompileCtx::{
       func_table: FuncTable::{
         names: all_fn_names_list,
@@ -1473,7 +1482,8 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       effect_op_arities: effect_op_arities_list,
       cov: cov_state,
       dbg_line_idx: dbg_line_import_idx,
-      dbg_line_nl: dbg_line_newlines
+      dbg_line_nl: dbg_nls,
+      dbg_line_file_id: dbg_fid
     }
     if is_efn(__bi_expr) {
       let __bi_params = get_efn_params(__bi_expr)
@@ -1783,10 +1793,12 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     ])
     cti = cti + 1
   }
-  // Interior-line breakpoints: append the `(i32) -> ()` type for `vibe::dbg_line`
-  // (127 = i32). Only when active, so the type section is byte-identical off.
+  // Interior-line breakpoints: append the `(i32, i32) -> ()` type for
+  // `vibe::dbg_line` (127 = i32; params = file_id, line). Only when active, so the
+  // type section is byte-identical off.
   if dbg_line_on {
     emit_func_type_raw(type_content, [
+      127,
       127
     ], Array::slice([
       0
@@ -2017,6 +2029,36 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       dnfi = dnfi + 1
     }
     bytebuf_push_section(out, 0, dn_content)
+  } else {
+    ()
+  }
+  // Interior-line breakpoints (span-arc step5, multi-file): emit a `vibe.dbgfiles`
+  // custom section listing the source-file basenames in file-id order, one per
+  // line (terminated by newline 10). `vibe::dbg_line(file_id, line)` passes the
+  // file id; the runner indexes this table to recover the basename and match a
+  // `--break <file>:<line>` spec. Only present when dbg_line is active, so off =>
+  // byte-identical (fixpoint preserved).
+  if dbg_line_on {
+    let df_content = bytebuf_new()
+    let df_name = "vibe.dbgfiles"
+    leb128_encode_u32(df_content, String::length(df_name))
+    let mut dfni = 0
+    while dfni < String::length(df_name) {
+      bytebuf_push(df_content, String::char_code_at(df_name, dfni))
+      dfni = dfni + 1
+    }
+    let mut dffi = 0
+    while dffi < Array::length(prov.files) {
+      let df_base = Array::get(prov.files, dffi)
+      let mut df_ci = 0
+      while df_ci < String::length(df_base) {
+        bytebuf_push(df_content, String::char_code_at(df_base, df_ci))
+        df_ci = df_ci + 1
+      }
+      bytebuf_push(df_content, 10)
+      dffi = dffi + 1
+    }
+    bytebuf_push_section(out, 0, df_content)
   } else {
     ()
   }
@@ -2354,13 +2396,13 @@ export let compile_wasi_module_rc_impl: (Array[Stmt], String) -> Bytes with { Er
     ("", "")
   ], 0, 0), Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, true, false, false, false, "")
+  ], 0, 0), false, true, false, false, false, empty_dbg_prov())
 }
 
 export let compile_wasi_module_with_sources_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
   compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, false, false, false, false, "")
+  ], 0, 0), false, false, false, false, false, empty_dbg_prov())
 }
 
 // Coverage build (#cov): compile with function-level hit instrumentation +
@@ -2369,7 +2411,7 @@ export let compile_wasi_module_with_sources_impl: (Array[Stmt], String, Array[(S
 export let compile_wasi_module_with_sources_coverage_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
   compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, false, true, false, false, "")
+  ], 0, 0), false, false, true, false, false, empty_dbg_prov())
 }
 
 // Trace build (debugger / DAP P1 groundwork): compile with function-call
@@ -2378,14 +2420,14 @@ export let compile_wasi_module_with_sources_coverage_impl: (Array[Stmt], String,
 export let compile_wasi_module_with_sources_trace_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
   compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, false, false, true, false, "")
+  ], 0, 0), false, false, false, true, false, empty_dbg_prov())
 }
 
 // Break build (debugger / DAP P1): compile with `vibe::dbg_break` host-hook
 // instrumentation at each user function entry. Same as
 // compile_wasi_module_with_sources_impl but with debug_break enabled.
-export let compile_wasi_module_with_sources_break_impl: (Array[Stmt], String, Array[(String, String)], String) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, entry_source) -> {
+export let compile_wasi_module_with_sources_break_impl: (Array[Stmt], String, Array[(String, String)], DbgProv) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, prov) -> {
   compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, false, false, false, true, entry_source)
+  ], 0, 0), false, false, false, false, true, prov)
 }

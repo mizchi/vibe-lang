@@ -193,24 +193,27 @@
    - **関数宣言行**（既着地）: runner が `VIBE_BREAK` を関数名集合と行集合に分割、
      `.funcmap` sidecar（`VIBE_FUNCMAP`）と entry basename（`VIBE_BREAK_FILE`）から
      entering 関数の宣言行を解決し行一致で pause。
-   - ✅ **関数内任意行 + 行 step（着地）** — break-mode codegen が各文境界
-     （ELet/ELetMut/ESeq）で `call vibe::dbg_line(<line>)` を発行し、runner の
-     `vibe_dbg_line` hook がその行を line-break-set と照合 / step 判定で pause。
-     行は codegen 側で算出: 文の値部分式の leftmost offset（`first_offset`、
-     EIdent/ECall/EDot の char-offset）を newline-index（`build_newline_offsets`/
-     `offset_to_line`）で 1-based 行へ変換。`CompileCtx` に `dbg_line_idx` /
-     `dbg_line_nl` を追加し、`(i32)->()` 型 + import を break 時のみ追加。
-     **完全 gate**: `debug_break && 単一ファイル entry source` のときだけ発行する
-     ため、既定 / multi-file codegen は byte-identical（fixpoint 786e8f1 維持）。
-     FS-compile path を `parse_program_located` 化して EIdent offset を供給
-     （codegen は offset を読まないので既定出力は不変）。
-     **scope (v1)**: 単一ファイル entry のみ（import ありは merge で offset が
-     衝突するため関数行 breakpoint に degrade）。値が裸リテラルの文
-     （`let a = 1`）は offset を持たず個別 break 不可。
-     `test_vibe_break_interior.sh` 6/6（行 hit・行 step・既定不変・非マッチ）、
-     既存 break/break_line/step/dap 全 green、selfhost gate green。
-   **残（post-GA）**: multi-file entry の関数内行 break（文単位の source provenance
-   が前提）、`vibe.linemap` section 化。
+   - ✅ **関数内任意行 + 行 step（multi-file 含め着地）** — break-mode codegen が
+     各文境界（ELet/ELetMut/ESeq）で `call vibe::dbg_line(<file_id>, <line>)` を
+     発行し、runner の `vibe_dbg_line` hook がその (file, line) を line-break-set と
+     照合 / step 判定で pause。行は codegen 側で算出: 文の値部分式の leftmost
+     offset（`first_offset`、EIdent/ECall/EDot の char-offset）を、その関数の
+     **自ファイル**の newline-index（`offset_to_line`）で 1-based 行へ変換。
+     **multi-file**: merge は各文の出所ファイルを `DbgProv`（file 一覧 + 各ファイルの
+     newline 表 + 文→file_id）として記録（append の length delta で alignment）。
+     codegen は per-function に file_id + その file の newline 表を `CompileCtx`
+     （`dbg_line_idx`/`dbg_line_nl`/`dbg_line_file_id`）へ載せ、`vibe.dbgfiles`
+     custom section（basename 一覧）を発行。runner は file_id→basename を解決し
+     `--break <file>:<line>` の file と照合するので、`helper.vibe:3`（import 先）と
+     `main.vibe:3`（entry）を正しく区別する。
+     **完全 gate**: `debug_break && DbgProv に file あり` のときだけ発行するため
+     既定 codegen は byte-identical（fixpoint d21309a 維持）。FS-compile path を
+     `parse_program_located` 化して offset を供給（codegen は offset を読まないので
+     既定出力は不変）。値が裸リテラルの文（`let a = 1`）は offset を持たず個別
+     break 不可。`test_vibe_break_interior.sh` 8/8（単一/multi-file の行 hit・
+     行 step・file 区別・既定不変・非マッチ）、既存 break/break_line/step/dap 全
+     green、selfhost gate green。
+   **残（post-GA）**: `vibe.linemap` 命令オフセット粒度化（現状は文境界粒度）。
 
 - **codegen の関数 index↔name 対応** — ✅ wasm name section（土台B / debugger P0）
   は実装済み（`func_offset + i` で user 関数を正確に命名）。

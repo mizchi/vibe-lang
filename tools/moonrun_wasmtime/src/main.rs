@@ -132,6 +132,12 @@ struct HostState {
     // dbgargs values with their names so a breakpoint prints `args: [name=value]`.
     // Empty => no section => fall back to positional values.
     dbgnames: Arc<std::collections::HashMap<String, Vec<String>>>,
+    // interior-line breakpoints (span-arc step5, multi-file): source-file
+    // basenames indexed by file id, parsed from the `vibe.dbgfiles` custom section
+    // (break builds with dbg_line only). `vibe::dbg_line(file_id, line)` passes the
+    // file id; we index this to recover the basename and match a `--break
+    // <file>:<line>` spec's file against it. Empty => bare-line specs still match.
+    dbgfiles: Arc<Vec<String>>,
     // debugger step execution (DAP P3): at a pause the runner reads a command and
     // sets a step mode, consulted at every function-entry dbg_break hook to decide
     // WHEN to pause next. pause_depth records the call depth (backtrace frame
@@ -210,6 +216,7 @@ impl HostState {
             dbgargs_base: None,
             dbgargs_tag_mode: 0,
             dbgnames: Arc::new(std::collections::HashMap::new()),
+            dbgfiles: Arc::new(Vec::new()),
             step_mode: StepMode::Continue,
             pause_depth: 0,
         }
@@ -426,6 +433,11 @@ fn run(args: Vec<String>) -> Result<i32> {
         // parameter names. Absent => empty map => positional fallback.
         if let Some(section) = find_custom_section(&wasm, "vibe.dbgnames") {
             store.data_mut().dbgnames = Arc::new(parse_dbgnames(&section));
+        }
+        // Interior-line breakpoints (span-arc step5): the source-file table for
+        // `vibe::dbg_line(file_id, line)` -> basename resolution.
+        if let Some(section) = find_custom_section(&wasm, "vibe.dbgfiles") {
+            store.data_mut().dbgfiles = Arc::new(parse_dbgfiles(&section));
         }
     }
 
@@ -1067,8 +1079,8 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
     linker.func_wrap(
         "vibe",
         "dbg_line",
-        |caller: Caller<'_, HostState>, line: i32| -> Result<()> {
-            vibe_dbg_line(caller, line)
+        |caller: Caller<'_, HostState>, file_id: i32, line: i32| -> Result<()> {
+            vibe_dbg_line(caller, file_id, line)
         },
     )?;
     Ok(())
@@ -1304,18 +1316,26 @@ fn dbg_apply_command(caller: &mut Caller<'_, HostState>, depth: usize) -> Result
 // says so, reusing the same pause/step epilogue as the function-entry hook. A
 // no-op when nothing can pause (empty line set + Continue) so non-break runs and
 // unmatched lines pay only an early return.
-fn vibe_dbg_line(mut caller: Caller<'_, HostState>, line: i32) -> Result<()> {
+fn vibe_dbg_line(mut caller: Caller<'_, HostState>, file_id: i32, line: i32) -> Result<()> {
     let line_break_set = Arc::clone(&caller.data().line_break_set);
     let step_mode = caller.data().step_mode;
     if line_break_set.is_empty() && step_mode == StepMode::Continue {
         return Ok(());
     }
     let cur: u32 = if line < 0 { return Ok(()) } else { line as u32 };
-    let break_file = caller.data().break_file.clone();
+    // Resolve this statement's source file basename from the dbgfiles table; a
+    // `--break <file>:<line>` spec matches only when its file equals that basename
+    // (bare-line specs match any file).
+    let dbgfiles = Arc::clone(&caller.data().dbgfiles);
+    let cur_file: Option<&str> = if file_id >= 0 {
+        dbgfiles.get(file_id as usize).map(|s| s.as_str())
+    } else {
+        None
+    };
     let is_line_hit = line_break_set.iter().any(|(file, l)| {
         *l == cur
             && match file {
-                Some(f) => break_file.as_deref() == Some(f.as_str()),
+                Some(f) => cur_file == Some(f.as_str()),
                 None => true,
             }
     });
@@ -1333,7 +1353,7 @@ fn vibe_dbg_line(mut caller: Caller<'_, HostState>, line: i32) -> Result<()> {
     {
         let stderr = std::io::stderr();
         let mut h = stderr.lock();
-        let file = break_file.as_deref().unwrap_or("");
+        let file = cur_file.unwrap_or("");
         // An explicit line hit keeps `breakpoint hit:` (tests/DAP grep for it); a
         // pure step pause is `stopped at:`. Both carry `<file>:<line>` so the
         // annotator/DAP can read the paused line.
@@ -1897,6 +1917,17 @@ fn parse_funcmap(text: &str) -> std::collections::HashMap<String, u32> {
 // fields are tab (\t) delimited, the first field being the function name and the
 // remaining fields the parameter names (in declaration order). Empty/garbled
 // records are skipped. Robust to trailing newline and missing-param functions.
+// Interior-line breakpoints (span-arc step5): parse the `vibe.dbgfiles` section
+// (source-file basenames, one per line in file-id order) into a Vec indexed by
+// file id. `vibe::dbg_line(file_id, line)` uses the id to look up the basename.
+fn parse_dbgfiles(section: &[u8]) -> Vec<String> {
+    String::from_utf8_lossy(section)
+        .split('\n')
+        .filter(|l| !l.is_empty())
+        .map(|l| l.to_string())
+        .collect()
+}
+
 fn parse_dbgnames(section: &[u8]) -> std::collections::HashMap<String, Vec<String>> {
     let mut map = std::collections::HashMap::new();
     let text = String::from_utf8_lossy(section);

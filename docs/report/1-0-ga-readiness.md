@@ -51,14 +51,14 @@ GA の content gate は (1) 4 テーマの実装、(2) 言語仕様 freeze、(3)
 | P3 | step 実行 (s/n/o/c/q) | `test_vibe_step.sh` 14/14 |
 | P4 | 名前付きローカル検査 (`vibe.dbgnames`) | `test_vibe_break_args.sh`（`args: [x=20]`） |
 | 行 | `--break <file>:<line>`（関数宣言行） | `test_vibe_break_line.sh` 9/9 |
-| 任意行 | `--break <file>:<line>`（関数内任意行 + 行 step、`vibe::dbg_line`） | `test_vibe_break_interior.sh` 6/6 |
+| 任意行 | `--break <file>:<line>`（関数内任意行 + 行 step、`vibe::dbg_line`、multi-file 対応） | `test_vibe_break_interior.sh` 8/8 |
 | 3-D | VS Code DAP adapter | `test_vibe_dap.js` 25/25 |
 
 - docs: [editor-and-debugging.md](../editor-and-debugging.md)。
-- 関数内**任意行** breakpoint / 行 step は着地（break-mode codegen の
-  `vibe::dbg_line` 計装、既定 codegen は byte-identical で fixpoint 維持）。
-  v1 scope = 単一ファイル entry。**post-GA**: multi-file entry の関数内行 break
-  （文単位の source provenance が前提）。
+- 関数内**任意行** breakpoint / 行 step は **multi-file 含め着地**（break-mode
+  codegen の `vibe::dbg_line(file_id, line)` 計装 + `vibe.dbgfiles` table で
+  file を区別、既定 codegen は byte-identical で fixpoint 維持）。
+  **post-GA**: `vibe.linemap` 命令オフセット粒度化（現状は文境界粒度）。
 
 ### テーマ4: LSP
 

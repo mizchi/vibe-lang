@@ -114,12 +114,13 @@ declarations: a single-file program compiled in break mode emits a
 pauses when execution reaches line 7 even mid-function. Stepping (`s`/`n`) then
 advances at line granularity.
 
-Two scope notes: (1) a statement whose value is a bare literal (e.g. `let a = 1`)
-carries no source offset, so it is not individually breakable — put the
-breakpoint on a neighbouring line that references a name. (2) Interior-line
-breakpoints are emitted only for **single-file** entry programs; a program with
-imports falls back to function-declaration-line breakpoints (the merge of
-multiple files would otherwise collide source offsets).
+Interior-line breakpoints work across **multiple files**: `--break helper.vibe:3`
+pauses inside an imported module while `--break main.vibe:3` pauses in the entry
+file, even though both are "line 3" — the compiler records each statement's source
+file (a `vibe.dbgfiles` table) so the runner matches the breakpoint's `<file>`
+against the right one. One scope note: a statement whose value is a bare literal
+(e.g. `let a = 1`) carries no source offset, so it is not individually breakable —
+put the breakpoint on a neighbouring line that references a name.
 
 Execution pauses at the entry of each named function and prints, to stderr:
 

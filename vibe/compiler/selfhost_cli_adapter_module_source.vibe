@@ -6010,6 +6010,549 @@ let emit_i64_load: (Bytes, Int, Int) -> Unit = (buf, align, offset) -> {
   leb128_encode_u32(buf, align)
   leb128_encode_u32(buf, offset)
 }
+export struct FuncTable {
+  names: Array[String];
+  indices: Array[Int];
+  params: Array[Int];
+  returns: Array[Int];
+  needs_env: Array[Bool]
+}
+export struct StrTable {
+  strs: Array[String];
+  offsets: Array[Int];
+  lengths: Array[Int]
+}
+export struct LambdaTable {
+  bodies: Array[Bytes];
+  param_counts: Array[Int];
+  captures: Array[Array[String]];
+  meta_i32: Array[Int];
+  meta_i64: Array[Int]
+}
+export struct CtorTable {
+  names: Array[String];
+  tags: Array[Int];
+  field_counts: Array[Int];
+  type_names: Array[String];
+  struct_names: Array[String];
+  struct_field_names: Array[Array[String]]
+}
+export struct CovState {
+  enabled: Bool;
+  base: Int;
+  cap: Int;
+  next: Array[Int];
+  cur_fn: Array[Int];
+  owners: Array[Int]
+}
+export let cov_emit_branch: (Bytes, CovState) -> Unit = (buf, cov) -> {
+  if cov.enabled {
+    let id = Array::get(cov.next, 0)
+    if id < cov.cap {
+      Array::set(cov.next, 0, id + 1)
+      Array::push(cov.owners, Array::get(cov.cur_fn, 0))
+      emit_i32_const(buf, cov.base + id)
+      emit_i32_const(buf, 1)
+      emit_i32_store8(buf, 0, 0)
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+}
+export struct CompileCtx {
+  func_table: FuncTable;
+  str_table: StrTable;
+  lambda_table: LambdaTable;
+  num_user_funcs: Int;
+  func_offset: Int;
+  ref_cell_names: Array[String];
+  ctor_table: CtorTable;
+  thunk_names: Array[String];
+  const_int_names: Array[String];
+  const_int_values: Array[Int];
+  enable_rc: Bool;
+  rc_drop_names: Array[String];
+  rc_alias_dup_names: Array[String];
+  heap_binding_names: Array[String];
+  rc_drop_func_idx: Int;
+  rc_alloc_func_idx: Int;
+  heap_grow_check_func_idx: Int;
+  rc_dup_names: Array[String];
+  float_local_slots: Array[Int];
+  effect_names: Array[String];
+  effect_op_keys: Array[String];
+  effect_op_arities: Array[Int];
+  cov: CovState;
+  dbg_line_idx: Int;
+  dbg_line_nl: Array[Int];
+  dbg_line_file_id: Int
+}
+export struct DbgProv {
+  files: Array[String];
+  file_nls: Array[Array[Int]];
+  stmt_file_id: Array[Int]
+}
+export let empty_dbg_prov: () -> DbgProv = () -> {
+  DbgProv::{
+    files: Array::slice([
+      ""
+    ], 0, 0),
+    file_nls: Array::slice([
+      Array::slice([
+        0
+      ], 0, 0)
+    ], 0, 0),
+    stmt_file_id: Array::slice([
+      0
+    ], 0, 0)
+  }
+}
+export struct CompileCtxGc {
+  func_table: FuncTable;
+  str_table: StrTable;
+  lambda_table: LambdaTable;
+  num_user_funcs: Int;
+  func_offset: Int;
+  ref_cell_names: Array[String];
+  ref_local_indices: Array[Int];
+  refcell_type_idx: Int;
+  closure_type_base: Int;
+  ctor_table: CtorTable
+}
+export let is_efn: (Expr) -> Bool = (expr) -> {
+  match expr {
+    EFn(_, _, _, _, _, _) => true,
+    _ => false
+  }
+}
+export let is_pint: (Pat) -> Bool = (p) -> {
+  match p {
+    PInt(_) => true,
+    _ => false
+  }
+}
+export let is_slet: (Stmt) -> Bool = (stmt) -> {
+  match stmt {
+    SLet(_, _, _, _, _) => true,
+    _ => false
+  }
+}
+export let expr_tag: (Expr) -> Int = (expr) -> {
+  match expr {
+    EInt(_) => 0,
+    EBool(_) => 1,
+    EFloat(_) => 2,
+    EString(_) => 3,
+    EIdent(_, _) => 4,
+    EBinOp(_, _, _) => 5,
+    EUnaryOp(_, _) => 6,
+    EIf(_, _, _) => 7,
+    ECall(_, _, _) => 8,
+    ELet(_, _, _) => 9,
+    ELetRec(_, _, _) => 10,
+    ELetMut(_, _, _) => 11,
+    EAssign(_, _, _) => 12,
+    EAssignOp(_, _, _, _) => 13,
+    ESeq(_, _) => 14,
+    ETuple(_) => 15,
+    EMatch(_, _) => 16,
+    EArray(_) => 17,
+    EForIn(_, _, _, _) => 18,
+    EWhile(_, _) => 19,
+    EBreak(_) => 20,
+    EContinue(_) => 21,
+    EUnit => 22,
+    EThrow(_) => 23,
+    EFn(_, _, _, _, _, _) => 24,
+    ELoop(_, _) => 25,
+    EReturn(_) => 26,
+    _ => -1
+  }
+}
+export let is_pbind: (Pat) -> Bool = (p) -> {
+  match p {
+    PBind(_) => true,
+    _ => false
+  }
+}
+export let is_pbool: (Pat) -> Bool = (p) -> {
+  match p {
+    PBool(_) => true,
+    _ => false
+  }
+}
+export let is_pctor: (Pat) -> Bool = (p) -> {
+  match p {
+    PCtor(_, _) => true,
+    _ => false
+  }
+}
+export let is_pwild: (Pat) -> Bool = (p) -> {
+  match p {
+    PWild => true,
+    _ => false
+  }
+}
+export let is_earray: (Expr) -> Bool = (expr) -> {
+  match expr {
+    EArray(_) => true,
+    _ => false
+  }
+}
+export let is_eident: (Expr) -> Bool = (expr) -> {
+  match expr {
+    EIdent(_, _) => true,
+    _ => false
+  }
+}
+export let is_etuple: (Expr) -> Bool = (expr) -> {
+  match expr {
+    ETuple(_) => true,
+    _ => false
+  }
+}
+export let is_ptuple: (Pat) -> Bool = (p) -> {
+  match p {
+    PTuple(_) => true,
+    _ => false
+  }
+}
+let op_i32_eq = 70
+let op_i32_ne = 71
+export let is_erecord: (Expr) -> Bool = (expr) -> {
+  match expr {
+    ERecord(_) => true,
+    _ => false
+  }
+}
+export let is_pstring: (Pat) -> Bool = (p) -> {
+  match p {
+    PString(_) => true,
+    _ => false
+  }
+}
+let op_i32_eqz = 69
+let op_i32_mul = 108
+let op_i32_sub = 107
+export let emit_i32_eq: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i32_eq)
+}
+export let emit_i32_ne: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i32_ne)
+}
+export let rec lookup_ctor: (Array[String], String, Int) -> Int = (ctor_names, name, i) -> {
+  if i >= Array::length(ctor_names) {
+    -1
+  }
+  else if Array::get(ctor_names, i) == name {
+    i
+  }
+  else lookup_ctor(ctor_names, name, i + 1)
+}
+let op_i32_ge_u = 79
+let op_i32_gt_u = 75
+let op_i64_load = 41
+export let emit_i32_eqz: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i32_eqz)
+}
+export let emit_i32_mul: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i32_mul)
+}
+export let emit_i32_sub: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i32_sub)
+}
+export let emit_str_ref: (Bytes, Int, Int) -> Unit = (buf, offset, length) -> {
+  emit_i64_const(buf, offset)
+  emit_i64_const(buf, 32)
+  emit_i64_shl(buf)
+  emit_i64_const(buf, length)
+  emit_i64_or(buf)
+}
+export let get_efn_body: (Expr) -> Expr with { Error } = (expr) -> {
+  match expr {
+    EFn(_, _, _, _, _, body) => body,
+    _ => throw("not EFn")
+  }
+}
+export let get_eif_cond: (Expr) -> Expr with { Error } = (expr) -> {
+  match expr {
+    EIf(c, _, _) => c,
+    _ => throw("not EIf")
+  }
+}
+export let get_eif_else: (Expr) -> Expr with { Error } = (expr) -> {
+  match expr {
+    EIf(_, _, e) => e,
+    _ => throw("not EIf")
+  }
+}
+export let get_eif_then: (Expr) -> Expr with { Error } = (expr) -> {
+  match expr {
+    EIf(_, t, _) => t,
+    _ => throw("not EIf")
+  }
+}
+export let get_elet_val: (Expr) -> Expr with { Error } = (expr) -> {
+  match expr {
+    ELet(_, val, _) => val,
+    _ => throw("not ELet")
+  }
+}
+export let is_ctor_call: (Expr, CtorTable) -> Bool = (value, ct) -> {
+  match value {
+    ECall(callee, _, _) => match callee {
+      EIdent(nm, _) => lookup_ctor(ct.names, nm, 0) >= 0,
+      _ => false
+    },
+    _ => false
+  }
+}
+let op_i64_store = 55
+export let resolve_func: (FuncTable, String) -> (Int, Int, Int) with { Error } = (ft, name) -> {
+  let len = Array::length(ft.names)
+  let mut i = 0
+  let mut found = -1
+  while i < len {
+    if Array::get(ft.names, i) == name {
+      found = i
+      i = len
+    } else {
+      i = i + 1
+    }
+  }
+  if found < 0 {
+    throw(String::concat("undefined function: ", name))
+  };
+  (Array::get(ft.indices, found), Array::get(ft.params, found), Array::get(ft.returns, found))
+}
+export let emit_binop_op: (Bytes, String) -> Unit with { Error } = (buf, op) -> {
+  if op == "+" {
+    emit_i64_add(buf)
+  }
+  else if op == "-" {
+    emit_i64_sub(buf)
+  }
+  else if op == "*" {
+    emit_i64_mul(buf)
+  }
+  else if op == "/" {
+    emit_i64_div_s(buf)
+  }
+  else if op == "%" {
+    emit_i64_rem_s(buf)
+  }
+  else if op == "&" {
+    emit_i64_and(buf)
+  }
+  else if op == "|" {
+    emit_i64_or(buf)
+  }
+  else if op == "^" {
+    emit_i64_xor(buf)
+  }
+  else if op == "<<" {
+    emit_i64_shl(buf)
+  }
+  else if op == ">>" {
+    emit_i64_shr_s(buf)
+  }
+  else if op == "==" {
+    emit_i64_eq(buf); emit_i64_extend_i32_s(buf)
+  }
+  else if op == "!=" {
+    emit_i64_ne(buf); emit_i64_extend_i32_s(buf)
+  }
+  else if op == "<" {
+    emit_i64_lt_s(buf); emit_i64_extend_i32_s(buf)
+  }
+  else if op == ">" {
+    emit_i64_gt_s(buf); emit_i64_extend_i32_s(buf)
+  }
+  else if op == "<=" {
+    emit_i64_le_s(buf); emit_i64_extend_i32_s(buf)
+  }
+  else if op == ">=" {
+    emit_i64_ge_s(buf); emit_i64_extend_i32_s(buf)
+  }
+  else if op == "&&" {
+    emit_i64_and(buf)
+  }
+  else if op == "||" {
+    emit_i64_or(buf)
+  }
+  else {
+    throw(String::concat("unsupported binop: ", op))
+  }
+}
+export let emit_i32_ge_u: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i32_ge_u)
+}
+export let emit_i32_gt_u: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i32_gt_u)
+}
+export let emit_i64_load: (Bytes, Int, Int) -> Unit = (buf, align, offset) -> {
+  bytebuf_push(buf, op_i64_load)
+  leb128_encode_u32(buf, align)
+  leb128_encode_u32(buf, offset)
+}
+export let get_ebinop_op: (Expr) -> String with { Error } = (expr) -> {
+  match expr {
+    EBinOp(op, _, _) => op,
+    _ => throw("not EBinOp")
+  }
+}
+export let get_elet_body: (Expr) -> Expr with { Error } = (expr) -> {
+  match expr {
+    ELet(_, _, body) => body,
+    _ => throw("not ELet")
+  }
+}
+export let get_elet_name: (Expr) -> String with { Error } = (expr) -> {
+  match expr {
+    ELet(name, _, _) => name,
+    _ => throw("not ELet")
+  }
+}
+export let get_slet_expr: (Stmt) -> Expr with { Error } = (stmt) -> {
+  match stmt {
+    SLet(_, _, _, _, expr) => expr,
+    _ => throw("not SLet")
+  }
+}
+export let get_slet_name: (Stmt) -> String with { Error } = (stmt) -> {
+  match stmt {
+    SLet(_, _, name, _, _) => name,
+    _ => throw("not SLet")
+  }
+}
+export let get_slet_type: (Stmt) -> Option[TypeExpr] = (stmt) -> {
+  match stmt {
+    SLet(_, _, _, ty, _) => ty,
+    _ => None
+  }
+}
+export let resolve_local: (Array[String], String, String) -> Int with { Error } = (names, name, tag) -> {
+  let mut i = Array::length(names) - 1
+  let mut result = -1
+  while i >= 0 {
+    if Array::get(names, i) == name {
+      result = i
+      i = -1
+    } else {
+      i = i - 1
+    }
+  }
+  if result < 0 {
+    throw(String::concat(String::concat("undefined variable (local): ", name), String::concat(" @", tag)))
+  }
+  result
+}
+export let emit_i64_store: (Bytes, Int, Int) -> Unit = (buf, align, offset) -> {
+  bytebuf_push(buf, op_i64_store)
+  leb128_encode_u32(buf, align)
+  leb128_encode_u32(buf, offset)
+}
+export let emit_box_float: (Bytes, CompileCtx, Int, Int) -> Unit = (buf, ctx, bits_local, box_local) -> {
+  emit_local_set(buf, bits_local)
+  emit_i64_const(buf, 16)
+  emit_call(buf, ctx.rc_alloc_func_idx)
+  emit_local_set(buf, box_local)
+  emit_local_get(buf, box_local)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 16)
+  emit_i32_store(buf, 2, 0)
+  emit_local_get(buf, box_local)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 1)
+  emit_i32_store(buf, 2, 4)
+  emit_local_get(buf, box_local)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf, bits_local)
+  emit_i64_store(buf, 3, 8)
+  emit_local_get(buf, box_local)
+  emit_i64_const(buf, 8)
+  emit_i64_add(buf)
+  emit_i64_const(buf, 1)
+  emit_i64_or(buf)
+}
+export let emit_unbox_float: (Bytes) -> Unit = (buf) -> {
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i64_load(buf, 3, 0)
+}
+export let fn_type_param_types: (Option[TypeExpr]) -> Option[Array[TypeExpr]] = (ty) -> {
+  match ty {
+    Some(t) =>
+    match t {
+      TyFn(args, _, _) => Some(args),
+      _ => None
+    },
+    None => None
+  }
+}
+export let is_nullary_ctor_ident: (Expr, CtorTable) -> Bool = (value, ct) -> {
+  match value {
+    EIdent(nm, _) => lookup_ctor(ct.names, nm, 0) >= 0,
+    _ => false
+  }
+}
+export let name_has_effect_prefix: (String, String) -> Bool = (full, eff) -> {
+  let el = String::length(eff)
+  let fl = String::length(full)
+  if fl < el + 2 {
+    false
+  } else {
+    let mut ok = true
+    let mut j = 0
+    while j < el {
+      if String::char_code_at(full, j) != String::char_code_at(eff, j) {
+        ok = false
+        j = el
+      } else {
+        j = j + 1
+      }
+    }
+    ok && String::char_code_at(full, el) == 58 && String::char_code_at(full, el + 1) == 58
+  }
+}
+export let effect_name_to_tag: (Array[String], String) -> Int = (effect_names, full) -> {
+  let n = Array::length(effect_names)
+  let mut result = 3 + n
+  let mut i = 0
+  while i < n {
+    if name_has_effect_prefix(full, Array::get(effect_names, i)) {
+      result = 3 + i
+      i = n
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+export let effect_op_declared_arity: (Array[String], Array[Int], String) -> Int = (keys, arities, full) -> {
+  let n = Array::length(keys)
+  let mut result = -1
+  let mut i = 0
+  while i < n {
+    if Array::get(keys, i) == full {
+      result = Array::get(arities, i)
+      i = n
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+export let emit_heap_grow_after_heap_set: (Bytes, CompileCtx) -> Unit = (buf, ctx) -> {
+  if ctx.heap_grow_check_func_idx >= 0 {
+    emit_call(buf, ctx.heap_grow_check_func_idx)
+  } else {
+    ()
+  }
+}
 let op_prefix = 252
 export let rec first_offset: (Expr) -> Int = (e) -> {
   match e {
@@ -6044,22 +6587,6 @@ export let offset_to_line: (Array[Int], Int) -> Int = (nl, off) -> {
     i = i + 1
   }
   count + 1
-}
-export let build_newline_offsets: (String) -> Array[Int] = (src) -> {
-  let arr = Array::slice([
-    0
-  ], 0, 0)
-  let n = String::length(src)
-  let mut i = 0
-  while i < n {
-    if String::char_code_at(src, i) == 10 {
-      Array::push(arr, i)
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  arr
 }
 export let get_ebinop_lhs: (Expr) -> Expr with { Error } = (expr) -> {
   match expr {
@@ -8628,528 +9155,6 @@ export let build_perceus_plan_with_params: (Array[(String, Option[TypeExpr])], E
     pk = pk + 1
   }
   ctx.actions
-}
-export struct FuncTable {
-  names: Array[String];
-  indices: Array[Int];
-  params: Array[Int];
-  returns: Array[Int];
-  needs_env: Array[Bool]
-}
-export struct StrTable {
-  strs: Array[String];
-  offsets: Array[Int];
-  lengths: Array[Int]
-}
-export struct LambdaTable {
-  bodies: Array[Bytes];
-  param_counts: Array[Int];
-  captures: Array[Array[String]];
-  meta_i32: Array[Int];
-  meta_i64: Array[Int]
-}
-export struct CtorTable {
-  names: Array[String];
-  tags: Array[Int];
-  field_counts: Array[Int];
-  type_names: Array[String];
-  struct_names: Array[String];
-  struct_field_names: Array[Array[String]]
-}
-export struct CovState {
-  enabled: Bool;
-  base: Int;
-  cap: Int;
-  next: Array[Int];
-  cur_fn: Array[Int];
-  owners: Array[Int]
-}
-export let cov_emit_branch: (Bytes, CovState) -> Unit = (buf, cov) -> {
-  if cov.enabled {
-    let id = Array::get(cov.next, 0)
-    if id < cov.cap {
-      Array::set(cov.next, 0, id + 1)
-      Array::push(cov.owners, Array::get(cov.cur_fn, 0))
-      emit_i32_const(buf, cov.base + id)
-      emit_i32_const(buf, 1)
-      emit_i32_store8(buf, 0, 0)
-    } else {
-      ()
-    }
-  } else {
-    ()
-  }
-}
-export struct CompileCtx {
-  func_table: FuncTable;
-  str_table: StrTable;
-  lambda_table: LambdaTable;
-  num_user_funcs: Int;
-  func_offset: Int;
-  ref_cell_names: Array[String];
-  ctor_table: CtorTable;
-  thunk_names: Array[String];
-  const_int_names: Array[String];
-  const_int_values: Array[Int];
-  enable_rc: Bool;
-  rc_drop_names: Array[String];
-  rc_alias_dup_names: Array[String];
-  heap_binding_names: Array[String];
-  rc_drop_func_idx: Int;
-  rc_alloc_func_idx: Int;
-  heap_grow_check_func_idx: Int;
-  rc_dup_names: Array[String];
-  float_local_slots: Array[Int];
-  effect_names: Array[String];
-  effect_op_keys: Array[String];
-  effect_op_arities: Array[Int];
-  cov: CovState;
-  dbg_line_idx: Int;
-  dbg_line_nl: Array[Int]
-}
-export struct CompileCtxGc {
-  func_table: FuncTable;
-  str_table: StrTable;
-  lambda_table: LambdaTable;
-  num_user_funcs: Int;
-  func_offset: Int;
-  ref_cell_names: Array[String];
-  ref_local_indices: Array[Int];
-  refcell_type_idx: Int;
-  closure_type_base: Int;
-  ctor_table: CtorTable
-}
-export let is_efn: (Expr) -> Bool = (expr) -> {
-  match expr {
-    EFn(_, _, _, _, _, _) => true,
-    _ => false
-  }
-}
-export let is_pint: (Pat) -> Bool = (p) -> {
-  match p {
-    PInt(_) => true,
-    _ => false
-  }
-}
-export let is_slet: (Stmt) -> Bool = (stmt) -> {
-  match stmt {
-    SLet(_, _, _, _, _) => true,
-    _ => false
-  }
-}
-export let expr_tag: (Expr) -> Int = (expr) -> {
-  match expr {
-    EInt(_) => 0,
-    EBool(_) => 1,
-    EFloat(_) => 2,
-    EString(_) => 3,
-    EIdent(_, _) => 4,
-    EBinOp(_, _, _) => 5,
-    EUnaryOp(_, _) => 6,
-    EIf(_, _, _) => 7,
-    ECall(_, _, _) => 8,
-    ELet(_, _, _) => 9,
-    ELetRec(_, _, _) => 10,
-    ELetMut(_, _, _) => 11,
-    EAssign(_, _, _) => 12,
-    EAssignOp(_, _, _, _) => 13,
-    ESeq(_, _) => 14,
-    ETuple(_) => 15,
-    EMatch(_, _) => 16,
-    EArray(_) => 17,
-    EForIn(_, _, _, _) => 18,
-    EWhile(_, _) => 19,
-    EBreak(_) => 20,
-    EContinue(_) => 21,
-    EUnit => 22,
-    EThrow(_) => 23,
-    EFn(_, _, _, _, _, _) => 24,
-    ELoop(_, _) => 25,
-    EReturn(_) => 26,
-    _ => -1
-  }
-}
-export let is_pbind: (Pat) -> Bool = (p) -> {
-  match p {
-    PBind(_) => true,
-    _ => false
-  }
-}
-export let is_pbool: (Pat) -> Bool = (p) -> {
-  match p {
-    PBool(_) => true,
-    _ => false
-  }
-}
-export let is_pctor: (Pat) -> Bool = (p) -> {
-  match p {
-    PCtor(_, _) => true,
-    _ => false
-  }
-}
-export let is_pwild: (Pat) -> Bool = (p) -> {
-  match p {
-    PWild => true,
-    _ => false
-  }
-}
-export let is_earray: (Expr) -> Bool = (expr) -> {
-  match expr {
-    EArray(_) => true,
-    _ => false
-  }
-}
-export let is_eident: (Expr) -> Bool = (expr) -> {
-  match expr {
-    EIdent(_, _) => true,
-    _ => false
-  }
-}
-export let is_etuple: (Expr) -> Bool = (expr) -> {
-  match expr {
-    ETuple(_) => true,
-    _ => false
-  }
-}
-export let is_ptuple: (Pat) -> Bool = (p) -> {
-  match p {
-    PTuple(_) => true,
-    _ => false
-  }
-}
-let op_i32_eq = 70
-let op_i32_ne = 71
-export let is_erecord: (Expr) -> Bool = (expr) -> {
-  match expr {
-    ERecord(_) => true,
-    _ => false
-  }
-}
-export let is_pstring: (Pat) -> Bool = (p) -> {
-  match p {
-    PString(_) => true,
-    _ => false
-  }
-}
-let op_i32_eqz = 69
-let op_i32_mul = 108
-let op_i32_sub = 107
-export let emit_i32_eq: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_i32_eq)
-}
-export let emit_i32_ne: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_i32_ne)
-}
-export let rec lookup_ctor: (Array[String], String, Int) -> Int = (ctor_names, name, i) -> {
-  if i >= Array::length(ctor_names) {
-    -1
-  }
-  else if Array::get(ctor_names, i) == name {
-    i
-  }
-  else lookup_ctor(ctor_names, name, i + 1)
-}
-let op_i32_ge_u = 79
-let op_i32_gt_u = 75
-let op_i64_load = 41
-export let emit_i32_eqz: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_i32_eqz)
-}
-export let emit_i32_mul: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_i32_mul)
-}
-export let emit_i32_sub: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_i32_sub)
-}
-export let emit_str_ref: (Bytes, Int, Int) -> Unit = (buf, offset, length) -> {
-  emit_i64_const(buf, offset)
-  emit_i64_const(buf, 32)
-  emit_i64_shl(buf)
-  emit_i64_const(buf, length)
-  emit_i64_or(buf)
-}
-export let get_efn_body: (Expr) -> Expr with { Error } = (expr) -> {
-  match expr {
-    EFn(_, _, _, _, _, body) => body,
-    _ => throw("not EFn")
-  }
-}
-export let get_eif_cond: (Expr) -> Expr with { Error } = (expr) -> {
-  match expr {
-    EIf(c, _, _) => c,
-    _ => throw("not EIf")
-  }
-}
-export let get_eif_else: (Expr) -> Expr with { Error } = (expr) -> {
-  match expr {
-    EIf(_, _, e) => e,
-    _ => throw("not EIf")
-  }
-}
-export let get_eif_then: (Expr) -> Expr with { Error } = (expr) -> {
-  match expr {
-    EIf(_, t, _) => t,
-    _ => throw("not EIf")
-  }
-}
-export let get_elet_val: (Expr) -> Expr with { Error } = (expr) -> {
-  match expr {
-    ELet(_, val, _) => val,
-    _ => throw("not ELet")
-  }
-}
-export let is_ctor_call: (Expr, CtorTable) -> Bool = (value, ct) -> {
-  match value {
-    ECall(callee, _, _) => match callee {
-      EIdent(nm, _) => lookup_ctor(ct.names, nm, 0) >= 0,
-      _ => false
-    },
-    _ => false
-  }
-}
-let op_i64_store = 55
-export let resolve_func: (FuncTable, String) -> (Int, Int, Int) with { Error } = (ft, name) -> {
-  let len = Array::length(ft.names)
-  let mut i = 0
-  let mut found = -1
-  while i < len {
-    if Array::get(ft.names, i) == name {
-      found = i
-      i = len
-    } else {
-      i = i + 1
-    }
-  }
-  if found < 0 {
-    throw(String::concat("undefined function: ", name))
-  };
-  (Array::get(ft.indices, found), Array::get(ft.params, found), Array::get(ft.returns, found))
-}
-export let emit_binop_op: (Bytes, String) -> Unit with { Error } = (buf, op) -> {
-  if op == "+" {
-    emit_i64_add(buf)
-  }
-  else if op == "-" {
-    emit_i64_sub(buf)
-  }
-  else if op == "*" {
-    emit_i64_mul(buf)
-  }
-  else if op == "/" {
-    emit_i64_div_s(buf)
-  }
-  else if op == "%" {
-    emit_i64_rem_s(buf)
-  }
-  else if op == "&" {
-    emit_i64_and(buf)
-  }
-  else if op == "|" {
-    emit_i64_or(buf)
-  }
-  else if op == "^" {
-    emit_i64_xor(buf)
-  }
-  else if op == "<<" {
-    emit_i64_shl(buf)
-  }
-  else if op == ">>" {
-    emit_i64_shr_s(buf)
-  }
-  else if op == "==" {
-    emit_i64_eq(buf); emit_i64_extend_i32_s(buf)
-  }
-  else if op == "!=" {
-    emit_i64_ne(buf); emit_i64_extend_i32_s(buf)
-  }
-  else if op == "<" {
-    emit_i64_lt_s(buf); emit_i64_extend_i32_s(buf)
-  }
-  else if op == ">" {
-    emit_i64_gt_s(buf); emit_i64_extend_i32_s(buf)
-  }
-  else if op == "<=" {
-    emit_i64_le_s(buf); emit_i64_extend_i32_s(buf)
-  }
-  else if op == ">=" {
-    emit_i64_ge_s(buf); emit_i64_extend_i32_s(buf)
-  }
-  else if op == "&&" {
-    emit_i64_and(buf)
-  }
-  else if op == "||" {
-    emit_i64_or(buf)
-  }
-  else {
-    throw(String::concat("unsupported binop: ", op))
-  }
-}
-export let emit_i32_ge_u: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_i32_ge_u)
-}
-export let emit_i32_gt_u: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_i32_gt_u)
-}
-export let emit_i64_load: (Bytes, Int, Int) -> Unit = (buf, align, offset) -> {
-  bytebuf_push(buf, op_i64_load)
-  leb128_encode_u32(buf, align)
-  leb128_encode_u32(buf, offset)
-}
-export let get_ebinop_op: (Expr) -> String with { Error } = (expr) -> {
-  match expr {
-    EBinOp(op, _, _) => op,
-    _ => throw("not EBinOp")
-  }
-}
-export let get_elet_body: (Expr) -> Expr with { Error } = (expr) -> {
-  match expr {
-    ELet(_, _, body) => body,
-    _ => throw("not ELet")
-  }
-}
-export let get_elet_name: (Expr) -> String with { Error } = (expr) -> {
-  match expr {
-    ELet(name, _, _) => name,
-    _ => throw("not ELet")
-  }
-}
-export let get_slet_expr: (Stmt) -> Expr with { Error } = (stmt) -> {
-  match stmt {
-    SLet(_, _, _, _, expr) => expr,
-    _ => throw("not SLet")
-  }
-}
-export let get_slet_name: (Stmt) -> String with { Error } = (stmt) -> {
-  match stmt {
-    SLet(_, _, name, _, _) => name,
-    _ => throw("not SLet")
-  }
-}
-export let get_slet_type: (Stmt) -> Option[TypeExpr] = (stmt) -> {
-  match stmt {
-    SLet(_, _, _, ty, _) => ty,
-    _ => None
-  }
-}
-export let resolve_local: (Array[String], String, String) -> Int with { Error } = (names, name, tag) -> {
-  let mut i = Array::length(names) - 1
-  let mut result = -1
-  while i >= 0 {
-    if Array::get(names, i) == name {
-      result = i
-      i = -1
-    } else {
-      i = i - 1
-    }
-  }
-  if result < 0 {
-    throw(String::concat(String::concat("undefined variable (local): ", name), String::concat(" @", tag)))
-  }
-  result
-}
-export let emit_i64_store: (Bytes, Int, Int) -> Unit = (buf, align, offset) -> {
-  bytebuf_push(buf, op_i64_store)
-  leb128_encode_u32(buf, align)
-  leb128_encode_u32(buf, offset)
-}
-export let emit_box_float: (Bytes, CompileCtx, Int, Int) -> Unit = (buf, ctx, bits_local, box_local) -> {
-  emit_local_set(buf, bits_local)
-  emit_i64_const(buf, 16)
-  emit_call(buf, ctx.rc_alloc_func_idx)
-  emit_local_set(buf, box_local)
-  emit_local_get(buf, box_local)
-  emit_i32_wrap_i64(buf)
-  emit_i32_const(buf, 16)
-  emit_i32_store(buf, 2, 0)
-  emit_local_get(buf, box_local)
-  emit_i32_wrap_i64(buf)
-  emit_i32_const(buf, 1)
-  emit_i32_store(buf, 2, 4)
-  emit_local_get(buf, box_local)
-  emit_i32_wrap_i64(buf)
-  emit_local_get(buf, bits_local)
-  emit_i64_store(buf, 3, 8)
-  emit_local_get(buf, box_local)
-  emit_i64_const(buf, 8)
-  emit_i64_add(buf)
-  emit_i64_const(buf, 1)
-  emit_i64_or(buf)
-}
-export let emit_unbox_float: (Bytes) -> Unit = (buf) -> {
-  emit_i64_const(buf, -2)
-  emit_i64_and(buf)
-  emit_i32_wrap_i64(buf)
-  emit_i64_load(buf, 3, 0)
-}
-export let fn_type_param_types: (Option[TypeExpr]) -> Option[Array[TypeExpr]] = (ty) -> {
-  match ty {
-    Some(t) =>
-    match t {
-      TyFn(args, _, _) => Some(args),
-      _ => None
-    },
-    None => None
-  }
-}
-export let is_nullary_ctor_ident: (Expr, CtorTable) -> Bool = (value, ct) -> {
-  match value {
-    EIdent(nm, _) => lookup_ctor(ct.names, nm, 0) >= 0,
-    _ => false
-  }
-}
-export let name_has_effect_prefix: (String, String) -> Bool = (full, eff) -> {
-  let el = String::length(eff)
-  let fl = String::length(full)
-  if fl < el + 2 {
-    false
-  } else {
-    let mut ok = true
-    let mut j = 0
-    while j < el {
-      if String::char_code_at(full, j) != String::char_code_at(eff, j) {
-        ok = false
-        j = el
-      } else {
-        j = j + 1
-      }
-    }
-    ok && String::char_code_at(full, el) == 58 && String::char_code_at(full, el + 1) == 58
-  }
-}
-export let effect_name_to_tag: (Array[String], String) -> Int = (effect_names, full) -> {
-  let n = Array::length(effect_names)
-  let mut result = 3 + n
-  let mut i = 0
-  while i < n {
-    if name_has_effect_prefix(full, Array::get(effect_names, i)) {
-      result = 3 + i
-      i = n
-    } else {
-      i = i + 1
-    }
-  }
-  result
-}
-export let effect_op_declared_arity: (Array[String], Array[Int], String) -> Int = (keys, arities, full) -> {
-  let n = Array::length(keys)
-  let mut result = -1
-  let mut i = 0
-  while i < n {
-    if Array::get(keys, i) == full {
-      result = Array::get(arities, i)
-      i = n
-    } else {
-      i = i + 1
-    }
-  }
-  result
-}
-export let emit_heap_grow_after_heap_set: (Bytes, CompileCtx) -> Unit = (buf, ctx) -> {
-  if ctx.heap_grow_check_func_idx >= 0 {
-    emit_call(buf, ctx.heap_grow_check_func_idx)
-  } else {
-    ()
-  }
 }
 export let gen_eq_body: (Int) -> Bytes = (str_eq_idx) -> {
   let b = bytebuf_new()
@@ -12175,7 +12180,8 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
     effect_op_arities: ctx.effect_op_arities,
     cov: ctx.cov,
     dbg_line_idx: ctx.dbg_line_idx,
-    dbg_line_nl: ctx.dbg_line_nl
+    dbg_line_nl: ctx.dbg_line_nl,
+    dbg_line_file_id: ctx.dbg_line_file_id
   }
   if ctx.enable_rc {
     let mut dpi = 0
@@ -15437,6 +15443,7 @@ let emit_dbg_line_for: (Bytes, Expr, CompileCtx) -> Unit = (buf, value, ctx) -> 
     let off = first_offset(value)
     if off >= 0 {
       let line = offset_to_line(ctx.dbg_line_nl, off)
+      emit_i32_const(buf, ctx.dbg_line_file_id)
       emit_i32_const(buf, line)
       emit_call(buf, ctx.dbg_line_idx)
     } else {
@@ -16554,7 +16561,7 @@ export let wasi_memory_min_pages_for_heap: (Int) -> Int = (heap_start) -> {
     default_wasi_memory_min_pages
   }
 }
-export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String, String)], Array[(String, String, Int, Int)], Bool, Bool, Bool, Bool, Bool, String) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, linked_imports, library_mode, enable_rc, coverage, debug_trace, debug_break, entry_source) -> {
+export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String, String)], Array[(String, String, Int, Int)], Bool, Bool, Bool, Bool, Bool, DbgProv) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, linked_imports, library_mode, enable_rc, coverage, debug_trace, debug_break, prov) -> {
   let fn_names_list = lc_fresh_string_array()
   let fn_param_counts = lc_fresh_int_array()
   let fn_needs_env_list = lc_fresh_bool_array()
@@ -16963,18 +16970,13 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   } else {
     -1
   }
-  let dbg_line_on = debug_break && String::length(entry_source) > 0
+  let dbg_line_on = debug_break && Array::length(prov.files) > 0
   let dbg_line_import_idx = if dbg_line_on {
     let idx = next_import_idx
     next_import_idx = next_import_idx + 1
     idx
   } else {
     -1
-  }
-  let dbg_line_newlines = if dbg_line_on {
-    build_newline_offsets(entry_source)
-  } else {
-    lc_fresh_int_array()
   }
   let linked_import_indices = lc_fresh_int_array()
   let linked_import_names = lc_fresh_string_array()
@@ -17804,6 +17806,16 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
         di = di + 1
       }
     }
+    let dbg_fid = if dbg_line_on {
+      Array::get(prov.stmt_file_id, Array::get(fn_stmt_indices, bi))
+    } else {
+      0
+    }
+    let dbg_nls = if dbg_line_on {
+      Array::get(prov.file_nls, dbg_fid)
+    } else {
+      lc_fresh_int_array()
+    }
     let compile_ctx = CompileCtx::{
       func_table: FuncTable::{
         names: all_fn_names_list,
@@ -17846,7 +17858,8 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       effect_op_arities: effect_op_arities_list,
       cov: cov_state,
       dbg_line_idx: dbg_line_import_idx,
-      dbg_line_nl: dbg_line_newlines
+      dbg_line_nl: dbg_nls,
+      dbg_line_file_id: dbg_fid
     }
     if is_efn(__bi_expr) {
       let __bi_params = get_efn_params(__bi_expr)
@@ -18152,6 +18165,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   }
   if dbg_line_on {
     emit_func_type_raw(type_content, [
+      127,
       127
     ], Array::slice([
       0
@@ -18345,6 +18359,30 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       dnfi = dnfi + 1
     }
     bytebuf_push_section(out, 0, dn_content)
+  } else {
+    ()
+  }
+  if dbg_line_on {
+    let df_content = bytebuf_new()
+    let df_name = "vibe.dbgfiles"
+    leb128_encode_u32(df_content, String::length(df_name))
+    let mut dfni = 0
+    while dfni < String::length(df_name) {
+      bytebuf_push(df_content, String::char_code_at(df_name, dfni))
+      dfni = dfni + 1
+    }
+    let mut dffi = 0
+    while dffi < Array::length(prov.files) {
+      let df_base = Array::get(prov.files, dffi)
+      let mut df_ci = 0
+      while df_ci < String::length(df_base) {
+        bytebuf_push(df_content, String::char_code_at(df_base, df_ci))
+        df_ci = df_ci + 1
+      }
+      bytebuf_push(df_content, 10)
+      dffi = dffi + 1
+    }
+    bytebuf_push_section(out, 0, df_content)
   } else {
     ()
   }
@@ -18675,27 +18713,27 @@ export let compile_wasi_module_rc_impl: (Array[Stmt], String) -> Bytes with { Er
     ("", "")
   ], 0, 0), Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, true, false, false, false, "")
+  ], 0, 0), false, true, false, false, false, empty_dbg_prov())
 }
 export let compile_wasi_module_with_sources_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
   compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, false, false, false, false, "")
+  ], 0, 0), false, false, false, false, false, empty_dbg_prov())
 }
 export let compile_wasi_module_with_sources_coverage_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
   compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, false, true, false, false, "")
+  ], 0, 0), false, false, true, false, false, empty_dbg_prov())
 }
 export let compile_wasi_module_with_sources_trace_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
   compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, false, false, true, false, "")
+  ], 0, 0), false, false, false, true, false, empty_dbg_prov())
 }
-export let compile_wasi_module_with_sources_break_impl: (Array[Stmt], String, Array[(String, String)], String) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, entry_source) -> {
+export let compile_wasi_module_with_sources_break_impl: (Array[Stmt], String, Array[(String, String)], DbgProv) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, prov) -> {
   compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, false, false, false, true, entry_source)
+  ], 0, 0), false, false, false, false, true, prov)
 }
 export {
   compile_wasi_module_linked_impl,
@@ -18720,10 +18758,10 @@ export let compile_wasi_module_trace_impl: (Array[Stmt], String) -> Bytes with {
     ("", "")
   ], 0, 0))
 }
-export let compile_wasi_module_break_impl: (Array[Stmt], String, String) -> Bytes with { Error } = (stmts, entry_name, entry_source) -> {
+export let compile_wasi_module_break_impl: (Array[Stmt], String, DbgProv) -> Bytes with { Error } = (stmts, entry_name, prov) -> {
   compile_wasi_module_with_sources_break_impl(stmts, entry_name, Array::slice([
     ("", "")
-  ], 0, 0), entry_source)
+  ], 0, 0), prov)
 }
 let zero_pad_6: (Int) -> String = (n) -> {
   let s = __to_string(n)
@@ -25282,8 +25320,8 @@ export let compile_wasi_module_coverage: (Array[Stmt], String) -> Bytes with { E
 export let compile_wasi_module_trace: (Array[Stmt], String) -> Bytes with { Error } = (stmts, entry_name) -> {
   compile_wasi_module_trace_impl(stmts, entry_name)
 }
-export let compile_wasi_module_break: (Array[Stmt], String, String) -> Bytes with { Error } = (stmts, entry_name, entry_source) -> {
-  compile_wasi_module_break_impl(stmts, entry_name, entry_source)
+export let compile_wasi_module_break: (Array[Stmt], String, DbgProv) -> Bytes with { Error } = (stmts, entry_name, prov) -> {
+  compile_wasi_module_break_impl(stmts, entry_name, prov)
 }
 export let contains_str: (Array[String], String) -> Bool = (arr, target) -> {
   let rec go: (Int) -> Bool = (i) -> {
@@ -29268,18 +29306,85 @@ let build_grouped_merged_stmts: (Array[(String, Array[(String, String)])]) -> Ar
   }
   merged
 }
-let single_file_entry_source: (Array[(String, Array[(String, String)])]) -> String = (source_groups) -> {
-  if Array::length(source_groups) == 1 {
-    let (_, sources) = Array::get(source_groups, 0)
-    if Array::length(sources) == 1 {
-      let (_, src) = Array::get(sources, 0)
-      src
+let path_basename: (String) -> String = (p) -> {
+  let n = String::length(p)
+  let mut last = 0 - 1
+  let mut i = 0
+  while i < n {
+    if String::char_code_at(p, i) == 47 {
+      last = i
     } else {
-      ""
+      ()
     }
-  } else {
-    ""
+    i = i + 1
   }
+  String::substring(p, last + 1, n)
+}
+let file_newline_offsets: (String) -> Array[Int] = (src) -> {
+  let arr = Array::slice([
+    0
+  ], 0, 0)
+  let n = String::length(src)
+  let mut i = 0
+  while i < n {
+    if String::char_code_at(src, i) == 10 {
+      Array::push(arr, i)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  arr
+}
+let build_grouped_merged_stmts_prov: (Array[(String, Array[(String, String)])]) -> (Array[Stmt], Array[String], Array[Array[Int]], Array[Int]) with { Error } = (source_groups) -> {
+  let merged = empty_stmt_array()
+  let files = Array::slice([
+    ""
+  ], 0, 0)
+  let file_nls = Array::slice([
+    Array::slice([
+      0
+    ], 0, 0)
+  ], 0, 0)
+  let stmt_file_id = Array::slice([
+    0
+  ], 0, 0)
+  let mut gi = 0
+  while gi < Array::length(source_groups) {
+    let (_, sources) = Array::get(source_groups, gi)
+    let source_count = Array::length(sources)
+    let mut si = 0
+    while si < source_count {
+      let (path, source) = Array::get(sources, si)
+      let file_id = Array::length(files)
+      Array::push(files, path_basename(path))
+      Array::push(file_nls, file_newline_offsets(source))
+      let before = Array::length(merged)
+      let stmts = parse_program_for_path(path, source)
+      let is_entry_source = si == source_count - 1
+      let namespaced_stmts = if is_entry_source {
+        stmts
+      } else {
+        namespace_private_value_stmts(path, stmts)
+      }
+      if stmts_have_import_deep(stmts) {
+        let skipped_locals = collect_import_alias_collision_locals(stmts)
+        append_import_alias_collision_defs_from_sources(merged, path, stmts, sources)
+        append_import_alias_rewritten_non_import_stmts_skipping(merged, namespaced_stmts, skipped_locals)
+      } else {
+        append_non_import_stmts_without_alias_rewrite(merged, namespaced_stmts)
+      }
+      let after = Array::length(merged)
+      let mut k = before
+      while k < after {
+        Array::push(stmt_file_id, file_id)
+        k = k + 1
+      }
+      si = si + 1
+    }
+    gi = gi + 1
+  }
+  (merged, files, file_nls, stmt_file_id)
 }
 let prepare_file_fs_from_source_groups_persistent_cached: (TypeDb, String, Array[(String, Array[(String, String)])]) -> TypeDb with { Error, Fs } = (db, entry_path, source_groups) -> {
   let seeded = seed_type_db_from_source_groups(db, source_groups)
@@ -29317,9 +29422,12 @@ export let compile_file_fs_mode_break: (String, String) -> Bytes with { Error, F
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
-  let merged_stmts = build_grouped_merged_stmts(source_groups)
-  let entry_source = single_file_entry_source(source_groups)
-  compile_wasi_module_break(merged_stmts, entry_name, entry_source)
+  let (merged_stmts, dbg_files, dbg_file_nls, dbg_stmt_file_id) = build_grouped_merged_stmts_prov(source_groups)
+  compile_wasi_module_break(merged_stmts, entry_name, DbgProv::{
+    files: dbg_files,
+    file_nls: dbg_file_nls,
+    stmt_file_id: dbg_stmt_file_id
+  })
 }
 let empty_stmts: () -> Array[Stmt] = () -> {
   Array::slice([

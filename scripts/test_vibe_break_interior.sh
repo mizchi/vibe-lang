@@ -83,6 +83,26 @@ else
   bad "default run should be clean; got: $outd"
 fi
 
+# 7-8. MULTI-FILE: a `--break <file>:<line>` resolves to the right FILE. `compute`
+#      lives in helper.vibe; main.vibe imports it. dbg_line carries a file id so
+#      `helper.vibe:3` breaks in the imported module and `main.vibe:3` in the entry
+#      — the per-file provenance + `vibe.dbgfiles` table disambiguate colliding
+#      line numbers across files.
+printf 'export let compute = (n: Int) -> Int {\n  let doubled = n + n\n  let plused = doubled + 5\n  plused\n}\n' > "$WORK/helper.vibe"
+printf 'import ./helper.vibe { compute }\nexport let main = () -> Int {\n  let r = compute(10)\n  r\n}\n' > "$WORK/main.vibe"
+outh="$(VIBE_BREAK_AUTO=1 "$VIBE" run --break "helper.vibe:3" "$WORK/main.vibe" 2>&1 || true)"
+if printf '%s' "$outh" | grep -qF "breakpoint hit: helper.vibe:3"; then
+  ok "multi-file: interior line in an IMPORTED module (helper.vibe:3) pauses"
+else
+  bad "multi-file helper.vibe:3 should pause; got: $outh"
+fi
+outm="$(VIBE_BREAK_AUTO=1 "$VIBE" run --break "main.vibe:3" "$WORK/main.vibe" 2>&1 || true)"
+if printf '%s' "$outm" | grep -qF "breakpoint hit: main.vibe:3" && ! printf '%s' "$outm" | grep -qF "helper.vibe:3"; then
+  ok "multi-file: interior line in the ENTRY file (main.vibe:3) pauses, not the import"
+else
+  bad "multi-file main.vibe:3 should pause (and not helper); got: $outm"
+fi
+
 echo "----"
 echo "[test_vibe_break_interior] passed: $pass, failed: $fail"
 [ "$fail" -eq 0 ]

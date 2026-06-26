@@ -22,6 +22,10 @@ import ../../../codegen/index.vibe {
   compile_module, compile_wasi_module, compile_wasi_module_coverage, compile_wasi_module_trace, compile_wasi_module_break
 }
 
+import ../../../codegen/common_base/index.vibe {
+  DbgProv
+}
+
 import ../../../codegen/wasi/index.vibe {
   compile_wasi_module_impl
 }
@@ -244,23 +248,103 @@ let build_grouped_merged_stmts: (Array[(String, Array[(String, String)])]) -> Ar
   merged
 }
 
-// Interior-line breakpoints (span-arc step5): return the entry source text when
-// `source_groups` is exactly one group with exactly one source (a single-file
-// entry, no imports); otherwise "". Multi-file entries MERGE sources so AST
-// char-offsets from different files collide, which would mislead the line
-// mapping — so interior-line break is v1-scoped to single-file entries only.
-let single_file_entry_source: (Array[(String, Array[(String, String)])]) -> String = (source_groups) -> {
-  if Array::length(source_groups) == 1 {
-    let (_, sources) = Array::get(source_groups, 0)
-    if Array::length(sources) == 1 {
-      let (_, src) = Array::get(sources, 0)
-      src
+// Interior-line breakpoints (span-arc step5): the basename of a file path (text
+// after the last '/'). Used as the `vibe.dbgfiles` key the runner matches a
+// `--break <file>:<line>` spec against. String::concat-free (substring only).
+let path_basename: (String) -> String = (p) -> {
+  let n = String::length(p)
+  let mut last = 0 - 1
+  let mut i = 0
+  while i < n {
+    if String::char_code_at(p, i) == 47 {
+      last = i
     } else {
-      ""
+      ()
     }
-  } else {
-    ""
+    i = i + 1
   }
+  String::substring(p, last + 1, n)
+}
+
+// Interior-line breakpoints: sorted char-offsets of each '\n' in `src` (local
+// copy of the codegen helper, to avoid an entry->codegen import).
+let file_newline_offsets: (String) -> Array[Int] = (src) -> {
+  let arr = Array::slice([
+    0
+  ], 0, 0)
+  let n = String::length(src)
+  let mut i = 0
+  while i < n {
+    if String::char_code_at(src, i) == 10 {
+      Array::push(arr, i)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  arr
+}
+
+// Interior-line breakpoints (span-arc step5, multi-file): like
+// build_grouped_merged_stmts but ALSO records, per merged top-level statement,
+// which SOURCE FILE it came from — so codegen can map each statement's char
+// offset to a line IN ITS OWN FILE (offsets from different files collide after
+// the merge). Returns (merged, file_basenames, file_newlines, stmt_file_id):
+//   file_basenames[k] / file_newlines[k]  — the k-th distinct source file
+//   stmt_file_id[s]                        — file id of merged top-level stmt s
+// Provenance is captured by measuring the merged-array length delta around each
+// source's append, so it stays aligned no matter how many statements a source
+// contributes; the append calls themselves mirror build_merged_stmts_from_sources
+// exactly, so `merged` is identical to the normal path.
+let build_grouped_merged_stmts_prov: (Array[(String, Array[(String, String)])]) -> (Array[Stmt], Array[String], Array[Array[Int]], Array[Int]) with { Error } = (source_groups) -> {
+  let merged = empty_stmt_array()
+  let files = Array::slice([
+    ""
+  ], 0, 0)
+  let file_nls = Array::slice([
+    Array::slice([
+      0
+    ], 0, 0)
+  ], 0, 0)
+  let stmt_file_id = Array::slice([
+    0
+  ], 0, 0)
+  let mut gi = 0
+  while gi < Array::length(source_groups) {
+    let (_, sources) = Array::get(source_groups, gi)
+    let source_count = Array::length(sources)
+    let mut si = 0
+    while si < source_count {
+      let (path, source) = Array::get(sources, si)
+      let file_id = Array::length(files)
+      Array::push(files, path_basename(path))
+      Array::push(file_nls, file_newline_offsets(source))
+      let before = Array::length(merged)
+      let stmts = parse_program_for_path(path, source)
+      let is_entry_source = si == source_count - 1
+      let namespaced_stmts = if is_entry_source {
+        stmts
+      } else {
+        namespace_private_value_stmts(path, stmts)
+      }
+      if stmts_have_import_deep(stmts) {
+        let skipped_locals = collect_import_alias_collision_locals(stmts)
+        append_import_alias_collision_defs_from_sources(merged, path, stmts, sources)
+        append_import_alias_rewritten_non_import_stmts_skipping(merged, namespaced_stmts, skipped_locals)
+      } else {
+        append_non_import_stmts_without_alias_rewrite(merged, namespaced_stmts)
+      }
+      let after = Array::length(merged)
+      let mut k = before
+      while k < after {
+        Array::push(stmt_file_id, file_id)
+        k = k + 1
+      }
+      si = si + 1
+    }
+    gi = gi + 1
+  }
+  (merged, files, file_nls, stmt_file_id)
 }
 
 let prepare_file_fs_from_source_groups_cached: (TypeDb, String, Array[(String, Array[(String, String)])]) -> TypeDb with { Error } = (db, entry_path, source_groups) -> {
@@ -327,12 +411,17 @@ export let compile_file_fs_mode_break: (String, String) -> Bytes with { Error, F
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
-  let merged_stmts = build_grouped_merged_stmts(source_groups)
-  // Interior-line breakpoints (span-arc step5): pass the single-file entry source
-  // (or "" for multi-file) so the break codegen can emit `vibe::dbg_line` at
-  // statement boundaries with correct line numbers.
-  let entry_source = single_file_entry_source(source_groups)
-  compile_wasi_module_break(merged_stmts, entry_name, entry_source)
+  // Interior-line breakpoints (span-arc step5): merge WITH per-file provenance so
+  // the break codegen can emit `vibe::dbg_line(<file_id>, <line>)` at every
+  // statement boundary, mapping each statement's char offset to a line in its OWN
+  // source file (multi-file: offsets from different files collide). `merged` is
+  // identical to the non-break merge.
+  let (merged_stmts, dbg_files, dbg_file_nls, dbg_stmt_file_id) = build_grouped_merged_stmts_prov(source_groups)
+  compile_wasi_module_break(merged_stmts, entry_name, DbgProv::{
+    files: dbg_files,
+    file_nls: dbg_file_nls,
+    stmt_file_id: dbg_stmt_file_id
+  })
 }
 
 export let compile_file_fs_mode_profiled: (String, String, String) -> (Bytes, Int, Int, Int, Int, Int, Int) with { Error, Fs, Profiler } = (entry_path, entry_name, mode) -> {
