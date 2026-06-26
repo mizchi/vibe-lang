@@ -1,0 +1,69 @@
+// Substrate regression guard for method-bearing traits (#641 Phase 1).
+//
+// These tests pin the *desugared encoding* that method-bearing-trait dispatch
+// will lower to, proven to type-check / compile / run on the seed compiler
+// (spikes G-1, G-2, G-3 in docs/method-bearing-traits-plan.md). They do NOT
+// use trait-method *syntax* yet (the parser still skips trait/impl bodies);
+// they guard the runtime substrate the feature depends on, so accidental
+// codegen regressions are caught before PR-1 lands.
+//
+//   G-1: closures stored in a struct field (dictionary cell) — read + call
+//   G-2: `let Type::method = ...` desugar target (impl method / Self -> target)
+//   G-3: dictionary-passing through a generic function + HOF
+
+//# Types
+
+struct Point { x: Int; y: Int }
+
+// A dictionary is a (generic) struct of closures — the witness for a trait impl.
+struct MeasurableDict[T] { measure: (T) -> Int; scale: (T, Int) -> T }
+
+//# Functions
+
+// G-2: impl methods desugar to qualified free functions. `Self` resolves to the
+// implementing type in both parameter (`self: Point`) and return position.
+let Point::measure = (self: Point) -> Int { self.x + self.y }
+let Point::scale = (self: Point, k: Int) -> Point {
+  Point::{ x: self.x * k, y: self.y * k }
+}
+
+// G-3: the synthesis target for `twice[T: Measurable](x: T)` — the witness
+// dictionary is threaded as a hidden parameter and methods dispatch through it.
+let twice = [T](d: MeasurableDict[T], x: T) -> Int {
+  (d.measure)((d.scale)(x, 2))
+}
+
+let run_with = [T](d: MeasurableDict[T], xs: Array[T]) -> Int {
+  Array::fold(xs, 0, (acc, x) -> { acc + twice(d, x) })
+}
+
+//# Tests
+
+test "G1: non-capturing closure stored in a struct field, read and called" {
+  let d = MeasurableDict::{ measure: (x) -> { x + 1 }, scale: (x, k) -> { x * k } }
+  assert_eq((d.measure)(41), 42)
+  assert_eq((d.scale)(6, 7), 42)
+}
+
+test "G1: capturing closure (heap closure) stored in a field" {
+  let make = (n: Int) -> {
+    MeasurableDict::{ measure: (x) -> { x + n }, scale: (x, k) -> { x * k } }
+  }
+  let d = make(40)
+  assert_eq((d.measure)(2), 42)
+}
+
+test "G2: Self-in-params and Self-in-return desugar target" {
+  let p = Point::{ x: 40, y: 2 }
+  assert_eq(Point::measure(p), 42)
+  let q = Point::scale(p, 2)
+  assert_eq(Point::measure(q), 84)
+}
+
+test "G3: generic function dispatches through a dictionary witness" {
+  let dict = MeasurableDict::{ measure: Point::measure, scale: Point::scale }
+  let p = Point::{ x: 40, y: 2 }
+  assert_eq(twice(dict, p), 84)
+  let ps = [Point::{ x: 1, y: 0 }, Point::{ x: 0, y: 3 }]
+  assert_eq(run_with(dict, ps), 8)
+}

@@ -178,34 +178,46 @@ let mode_for_in = 25
 
 let mode_handle = 24
 
-export let skip_derive: (Array[Token], Int) -> Int with { Error } = (tokens, pos) -> {
+// Parse a `derive(A, B, ...)` clause into the list of derived trait names plus
+// the position after the clause. Any identifier is accepted (the set of
+// structurally-derivable traits is validated later); a missing clause yields an
+// empty list. Supports multiple comma-separated names (#638).
+export let parse_derive_names: (Array[Token], Int) -> (Array[String], Int) with { Error } = (tokens, pos) -> {
+  let names = Array::slice([
+    ""
+  ], 0, 0)
   match peek(tokens, pos) {
     TDerive => match peek(tokens, pos + 1) {
       TLParen => {
-        match peek(tokens, pos + 2) {
-          TIdent(name) => if name != "Eq" {
-            throw("unknown derive: \{name}")
-          },
-          _ => throw("expected derive identifier")
-        }
         let mut dp = pos + 2
         let mut dd = true
         while dd {
           match peek(tokens, dp) {
             TRParen => {
               dd = false
-            },
-            _ => {
               dp = dp + 1
-            }
+            },
+            TComma => {
+              dp = dp + 1
+            },
+            TIdent(name) => {
+              Array::push(names, name)
+              dp = dp + 1
+            },
+            _ => throw("expected derive identifier")
           }
         }
-        dp + 1
+        (names, dp)
       },
-      _ => pos
+      _ => (names, pos)
     },
-    _ => pos
+    _ => (names, pos)
   }
+}
+
+export let skip_derive: (Array[Token], Int) -> Int with { Error } = (tokens, pos) -> {
+  let (_, next) = parse_derive_names(tokens, pos)
+  next
 }
 
 let empty_fields: () -> Array[(String, TypeExpr)] = () -> {
@@ -380,7 +392,7 @@ let empty_type_exprs: () -> Array[TypeExpr] = () -> {
   ], 0, 0)
 }
 
-let skip_braced_body: (Array[Token], Int) -> Int = (tokens, pos) -> {
+export let skip_braced_body: (Array[Token], Int) -> Int = (tokens, pos) -> {
   match peek(tokens, pos) {
     TLBrace => {
       let mut bp = pos + 1
@@ -406,41 +418,90 @@ let skip_braced_body: (Array[Token], Int) -> Int = (tokens, pos) -> {
   }
 }
 
+let parse_trait_methods: (Array[Token], Int) -> (Array[(String, Array[TypeExpr], TypeExpr)], Int) with { Error } = (tokens, pos) -> {
+  match peek(tokens, pos) {
+    TLBrace => {
+      let sigs_b = ArrayBuilder::new()
+      let mut p = pos + 1
+      while true {
+        match peek(tokens, p) {
+          TRBrace => {
+            p = p + 1
+            break
+          },
+          TIdent(method_name) => {
+            let (params, after_method_params) = match peek(tokens, p + 1) {
+              TLParen => {
+                let (params_ty, after_paren) = parse_type_impl(tokens, p + 1, 1)
+                let params = match params_ty {
+                  TyUnit => empty_type_exprs(),
+                  TyTuple(elems) => elems,
+                  _ => [
+                    params_ty
+                  ]
+                }
+                (params, after_paren)
+              },
+              _ => (empty_type_exprs(), p + 1)
+            }
+            let arrow_pos = expect_tk(tokens, after_method_params, "->")
+            let (ret_type, after_ret) = parse_type_impl(tokens, arrow_pos, 0)
+            ArrayBuilder::push(sigs_b, (method_name, params, ret_type))
+            p = match peek(tokens, after_ret) {
+              TSemicolon => after_ret + 1,
+              _ => after_ret
+            }
+          },
+          _ => throw("expected trait method signature or '}'")
+        }
+      }
+      (ArrayBuilder::freeze(sigs_b), p)
+    },
+    _ => (ArrayBuilder::freeze(ArrayBuilder::new()), pos)
+  }
+}
+
 let parse_trait_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } = (tokens, pos, exported) -> {
   let empty_strings = Array::slice([
     "_"
   ], 0, 0)
   match peek(tokens, pos) {
-    TIdent(name) => match peek(tokens, pos + 1) {
-      TColon => {
-        let supers = empty_strings
-        let mut p = pos + 2
-        let mut done = false
-        while !done {
-          match peek(tokens, p) {
-            TIdent(sname) => match peek(tokens, p + 1) {
-              TPlus => {
-                Array::push(supers, sname)
-                p = p + 2
+    TIdent(name) => {
+      // Optional type-parameter header `trait Iterator[T] { ... }`. Consumed
+      // and discarded — the uniform tagged representation erases type params, so
+      // the element type T only constrains the method signatures (#636).
+      let after_name = skip_bracketed_args(tokens, pos + 1)
+      match peek(tokens, after_name) {
+        TColon => {
+          let supers = empty_strings
+          let mut p = after_name + 1
+          let mut done = false
+          while !done {
+            match peek(tokens, p) {
+              TIdent(sname) => match peek(tokens, p + 1) {
+                TPlus => {
+                  Array::push(supers, sname)
+                  p = p + 2
+                },
+                _ => {
+                  Array::push(supers, sname)
+                  p = p + 1
+                  done = true
+                }
               },
               _ => {
-                Array::push(supers, sname)
-                p = p + 1
                 done = true
               }
-            },
-            _ => {
-              done = true
             }
           }
+          let np = p
+          let (methods, body_end) = parse_trait_methods(tokens, np)
+          (STrait(exported, name, supers, methods), body_end)
+        },
+        _ => {
+          let (methods, body_end) = parse_trait_methods(tokens, after_name)
+          (STrait(exported, name, empty_strings, methods), body_end)
         }
-        let np = p
-        let body_end = skip_braced_body(tokens, np)
-        (STrait(exported, name, supers), body_end)
-      },
-      _ => {
-        let body_end = skip_braced_body(tokens, pos + 1)
-        (STrait(exported, name, empty_strings), body_end)
       }
     },
     _ => throw("expected trait name")
@@ -1070,9 +1131,12 @@ let parse_impl_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (tokens
       let fp = expect_tk(tokens, after_tp + 1, "for")
       match peek(tokens, fp) {
         TIdent(type_name) => {
+          // Return the position at the impl body `{` (or the next token when
+          // the impl is body-less). The caller (parser.vibe) either expands the
+          // method block into `Type::method` let-bindings or skips it; this
+          // parser layer cannot reach `parse_expr` to parse method bodies.
           let after_targs = skip_bracketed_args(tokens, fp + 1)
-          let body_end = skip_braced_body(tokens, after_targs)
-          (SImpl(type_params, type_bounds, trait_name, type_name), body_end)
+          (SImpl(type_params, type_bounds, trait_name, type_name), after_targs)
         },
         _ => throw("expected type name after 'for'")
       }
@@ -1221,8 +1285,8 @@ let parse_struct_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } =
       let after_name = skip_bracketed_args(tokens, pos + 1)
       let br = expect_tk(tokens, after_name, "{")
       let (fields, end) = parse_struct_fields(tokens, br);
-      let final_pos = skip_derive(tokens, end)
-      (SStruct(exported, name, fields), final_pos)
+      let (derives, final_pos) = parse_derive_names(tokens, end)
+      (SStruct(exported, name, fields, derives), final_pos)
     },
     _ => throw("expected struct name")
   }
@@ -1231,13 +1295,13 @@ let parse_struct_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } =
 //# Misc
 
 export {
-  _no_tb, _no_tp, collect_effect_names, collect_import_path, empty_arms, empty_exprs, empty_fields, empty_import_items, empty_params, empty_pats, empty_type_exprs, expect_tk, is_expr_end_token, is_lambda_start, is_non_pipe_infix, is_tk, mode_block, mode_for_in, mode_handle, mode_if, mode_match, mode_while, parse_binding_name, parse_effect_stmt, parse_enum_stmt, parse_impl_stmt_dispatch, parse_import_item, parse_param_list, parse_pattern, parse_struct_field, parse_struct_stmt, parse_suberror_stmt, parse_trait_stmt, parse_type, parse_type_alias_stmt, parse_type_impl, peek, skip_derive, skip_semi, tk_name
+  _no_tb, _no_tp, collect_effect_names, collect_import_path, empty_arms, empty_exprs, empty_fields, empty_import_items, empty_params, empty_pats, empty_type_exprs, expect_tk, is_expr_end_token, is_lambda_start, is_non_pipe_infix, is_tk, mode_block, mode_for_in, mode_handle, mode_if, mode_match, mode_while, parse_binding_name, parse_effect_stmt, parse_enum_stmt, parse_impl_stmt_dispatch, parse_import_item, parse_param_list, parse_pattern, parse_struct_field, parse_struct_stmt, parse_suberror_stmt, parse_trait_stmt, parse_type, parse_type_alias_stmt, parse_type_impl, parse_derive_names, peek, skip_derive, skip_semi, tk_name
 }
 
 export {
-  peek, is_tk, _no_tb, _no_tp, mode_if, tk_name, expect_tk, skip_semi, skip_derive, empty_arms, empty_pats, mode_block, mode_match, mode_while, parse_type, empty_exprs, mode_for_in, mode_handle, empty_fields, empty_params, parse_pattern, is_lambda_start, parse_enum_stmt, parse_type_impl, empty_type_exprs, parse_param_list, parse_trait_stmt, is_expr_end_token, is_non_pipe_infix, parse_effect_stmt, parse_import_item, parse_struct_stmt, empty_import_items, parse_binding_name, parse_struct_field, collect_import_path, parse_suberror_stmt, collect_effect_names, parse_type_alias_stmt, parse_impl_stmt_dispatch
+  peek, is_tk, _no_tb, _no_tp, mode_if, tk_name, expect_tk, skip_semi, skip_derive, parse_derive_names, empty_arms, empty_pats, mode_block, mode_match, mode_while, parse_type, empty_exprs, mode_for_in, mode_handle, empty_fields, empty_params, parse_pattern, is_lambda_start, parse_enum_stmt, parse_type_impl, empty_type_exprs, parse_param_list, parse_trait_stmt, is_expr_end_token, is_non_pipe_infix, parse_effect_stmt, parse_import_item, parse_struct_stmt, empty_import_items, parse_binding_name, parse_struct_field, collect_import_path, parse_suberror_stmt, collect_effect_names, parse_type_alias_stmt, parse_impl_stmt_dispatch
 }
 
 export {
-  peek, is_tk, _no_tb, _no_tp, mode_if, tk_name, expect_tk, skip_semi, empty_arms, empty_pats, mode_block, mode_match, mode_while, parse_type, empty_exprs, mode_for_in, mode_handle, skip_derive, empty_fields, empty_params, parse_pattern, is_lambda_start, parse_enum_stmt, parse_type_impl, empty_type_exprs, parse_param_list, parse_trait_stmt, is_expr_end_token, is_non_pipe_infix, parse_effect_stmt, parse_import_item, parse_struct_stmt, empty_import_items, parse_binding_name, parse_struct_field, collect_import_path, parse_suberror_stmt, collect_effect_names, parse_type_alias_stmt, parse_impl_stmt_dispatch
+  peek, is_tk, _no_tb, _no_tp, mode_if, tk_name, expect_tk, skip_semi, empty_arms, empty_pats, mode_block, mode_match, mode_while, parse_type, empty_exprs, mode_for_in, mode_handle, skip_derive, parse_derive_names, empty_fields, empty_params, parse_pattern, is_lambda_start, parse_enum_stmt, parse_type_impl, empty_type_exprs, parse_param_list, parse_trait_stmt, is_expr_end_token, is_non_pipe_infix, parse_effect_stmt, parse_import_item, parse_struct_stmt, empty_import_items, parse_binding_name, parse_struct_field, collect_import_path, parse_suberror_stmt, collect_effect_names, parse_type_alias_stmt, parse_impl_stmt_dispatch
 }

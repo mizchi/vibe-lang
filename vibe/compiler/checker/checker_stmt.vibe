@@ -9,7 +9,7 @@ import .. / core / ast.vibe {
 }
 
 import .. / core / types.vibe {
-  Subst, Type, TypeDef, TypeEnv, env_bind, env_cache, env_flat_bindings, env_lookup_flat, generalize, resolve_builtin, trait_defined
+  Subst, Type, TypeDef, TypeEnv, collect_subst_bounds_pairs, env_bind, env_cache, env_flat_bindings, env_lookup_flat, generalize, resolve_builtin, subst_apply, trait_defined, type_implements_trait, type_to_string
 }
 
 import ./checker.vibe {
@@ -114,11 +114,25 @@ let bind_value_or_annotation_return: (TypeEnv, String, Expr, Option[TypeExpr], A
   }
 }
 
+let struct_derives_has: (Array[String], String) -> Bool = (derives, name) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(derives) {
+    if Array::get(derives, i) == name {
+      found = true
+      i = Array::length(derives)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
 let stmt_is_type_decl: (Stmt) -> Bool = (stmt) -> {
   match stmt {
     SEnum(_, _, _, _) => true,
     SSuberror(_, _, _) => true,
-    SStruct(_, _, _) => true,
+    SStruct(_, _, _, _) => true,
     STypeAlias(_, _, _, _) => true,
     _ => false
   }
@@ -357,7 +371,7 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
         }
         (env1, s, c + param_len)
       },
-      SStruct(_, name, field_defs) => {
+      SStruct(_, name, field_defs, derives) => {
         let resolved_fields = Array::slice([
           ("", CtUnit)
         ], 0, 0)
@@ -379,7 +393,26 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
           fj = fj + 1
         }
         let env1 = env_bind(env, name, CtFn(field_types, CtStruct(name), None))
-        (bind_fn_return(env1, name, CtStruct(name)), s, c)
+        // #638: pre-bind the signatures of the structural functions that the
+        // derive desugar will generate, so `Type::compare` / `Type::to_string`
+        // resolve at check time (the FS-compile path checks before the
+        // codegen-time desugar runs).
+        let env2 = if struct_derives_has(derives, "Ord") {
+          env_bind(env1, String::concat(name, "::compare"), CtFn([
+            CtStruct(name),
+            CtStruct(name)
+          ], CtInt, None))
+        } else {
+          env1
+        }
+        let env3 = if struct_derives_has(derives, "Show") {
+          env_bind(env2, String::concat(name, "::to_string"), CtFn([
+            CtStruct(name)
+          ], CtString, None))
+        } else {
+          env2
+        }
+        (bind_fn_return(env3, name, CtStruct(name)), s, c)
       },
       STypeAlias(_, name, params, te) => {
         let t = resolve_type_expr(te, defs)
@@ -415,9 +448,9 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
       ,
       SAliasDecl(_, _) => (env, s, c)
       ,
-      STrait(_, name, supers) => {
+      STrait(_, name, supers, methods) => {
         let is_open = false
-        (EnvTraitDef(name, supers, is_open, env), s, c)
+        (EnvTraitDef(name, supers, is_open, methods, env), s, c)
       },
       SImpl(_, _, trait_name, type_name) => {
         let target = match resolve_builtin(type_name) {
@@ -438,6 +471,37 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
   (cur_env, cur_s, cur_c)
 }
 
+// #641 PR-2: enforce trait bounds. After inference, every bounded type variable
+// recorded in the final substitution that resolved to a CONCRETE type must
+// satisfy its bounds. Unresolved (still-polymorphic) vars are inherited by the
+// caller, not violated, so they are skipped. One `no impl `Trait` for `Type``
+// error per unsatisfied bound (matches fixtures/err_type_trait_*bound* messages).
+let check_program_bounds: (TypeEnv, Subst, Array[String]) -> Unit = (env, s, errors) -> {
+  let pairs = collect_subst_bounds_pairs(s)
+  let n = Array::length(pairs)
+  let mut i = 0
+  while i < n {
+    let (vid, bounds) = Array::get(pairs, i)
+    let resolved = subst_apply(s, CtVar(vid))
+    match resolved {
+      CtVar(_) => (),
+      CtUnknown => (),
+      _ => {
+        let bn = Array::length(bounds)
+        let mut bi = 0
+        while bi < bn {
+          let b = Array::get(bounds, bi)
+          if b != "" && not(type_implements_trait(env, s, resolved, b)) {
+            Array::push(errors, String::concat("no impl `", String::concat(b, String::concat("` for `", String::concat(type_to_string(resolved), "`")))))
+          }
+          bi = bi + 1
+        }
+      }
+    }
+    i = i + 1
+  }
+}
+
 export let check_program: (Array[Stmt]) -> TypeEnv with { Error } = (stmts) -> {
   let empty_defs = Array::slice([
     TDAlias("_dummy", Array::slice([
@@ -455,7 +519,8 @@ export let check_program: (Array[Stmt]) -> TypeEnv with { Error } = (stmts) -> {
   let tytab = Array::slice([
     (0, CtUnit)
   ], 0, 0)
-  let (env, _, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
+  let (env, final_s, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
+  check_program_bounds(env, final_s, frozen_errors)
   if Array::length(frozen_errors) > 0 {
     throw(Array::get(frozen_errors, 0))
   }

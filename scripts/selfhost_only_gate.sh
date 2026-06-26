@@ -399,4 +399,330 @@ fi
 rm -rf "$cdir"
 echo "[selfhost-only-gate] coverage instrumentation regression ok"
 
+# 14. method-bearing-trait dictionary passing regression (#641 PR-3): a
+#     `[T: Trait]` generic calling `T::method(x)` must dispatch to the concrete
+#     impl via a synthesized witness dictionary (desugar_trait_dict.vibe). Covers
+#     a primitive impl, a struct impl, multiple methods (incl. `Self`-returning
+#     `scale`), literal and let-bound receivers, generic->generic dict
+#     forwarding, and supertrait method inheritance (flattened witness).
+echo "[selfhost-only-gate] 14/14 method-bearing-trait dict-passing regression"
+mbtdir="_build/_gate_mbtrait"
+rm -rf "$mbtdir"; mkdir -p "$mbtdir"
+cat > "$mbtdir/mbt.vibe" <<'EOF'
+trait Measurable { measure(Self) -> Int; scale(Self, Int) -> Self }
+trait Sized: Measurable { bump(Self) -> Int }
+struct Point { x: Int; y: Int }
+impl Measurable for Int {
+  measure(self) -> Int { self }
+  scale(self, k) -> Int { self * k }
+}
+impl Measurable for Point {
+  measure(self) -> Int { self.x + self.y }
+  scale(self, k) -> Point { Point::{ x: self.x * k, y: self.y * k } }
+}
+impl Sized for Int { bump(self) -> Int { self + 1 } }
+impl Sized for Point { bump(self) -> Int { self.x + self.y + 1 } }
+let measure_one = [T: Measurable](x: T) -> Int { T::measure(x) }
+let twice = [T: Measurable](x: T) -> Int { T::measure(T::scale(x, 2)) }
+let forward = [T: Measurable](x: T) -> Int { measure_one(x) + twice(x) }
+let sized_sum = [T: Sized](x: T) -> Int { T::measure(x) + T::bump(x) }
+export let _start: () -> Int = () -> {
+  let p = Point::{ x: 40, y: 2 }
+  measure_one(42) + twice(21) + measure_one(p) + twice(p)
+  + forward(10) + sized_sum(7) + sized_sum(p)
+}
+EOF
+# Expected: 42 + 42 + 42 + 84 + (10+20) + (7+8) + (42+43) = 340
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$mbtdir/mbt.vibe" "$mbtdir/mbt.wasm" _start >/dev/null 2>&1
+if [ ! -s "$mbtdir/mbt.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: trait dict-passing program did not compile" >&2
+  cat "$mbtdir/mbt.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+mbt_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$mbtdir/mbt.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$mbt_out" != "340" ]; then
+  echo "[selfhost-only-gate] FAIL: trait dict-passing mismatch (got '$mbt_out', want 340 -> #641 PR-3 regressed)" >&2
+  exit 1
+fi
+rm -rf "$mbtdir"
+echo "[selfhost-only-gate] method-bearing-trait dict-passing regression ok"
+
+# 15. derive(...) structural generation regression (#638): `derive(Ord)` and
+#     `derive(Show)` on a struct must generate working `Type::compare` (-1/0/1
+#     lexicographic over fields) and `Type::to_string` free functions. Also
+#     covers multiple-derive and `Eq` accepted as a no-op marker.
+echo "[selfhost-only-gate] 15/15 derive(Ord/Show) structural-generation regression"
+drvdir="_build/_gate_derive"
+rm -rf "$drvdir"; mkdir -p "$drvdir"
+cat > "$drvdir/drv.vibe" <<'EOF'
+struct P { x: Int; y: Int } derive(Eq, Ord, Show)
+export let _start: () -> Int = () -> {
+  P::compare(P::{ x: 1, y: 1 }, P::{ x: 1, y: 2 })
+  + P::compare(P::{ x: 2, y: 0 }, P::{ x: 1, y: 9 })
+  + P::compare(P::{ x: 5, y: 5 }, P::{ x: 5, y: 5 })
+  + String::length(P::to_string(P::{ x: 7, y: 9 }))
+}
+EOF
+# Expected: -1 + 1 + 0 + len("P { x: 7, y: 9 }")=16 -> 16
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$drvdir/drv.vibe" "$drvdir/drv.wasm" _start >/dev/null 2>&1
+if [ ! -s "$drvdir/drv.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: derive program did not compile" >&2
+  cat "$drvdir/drv.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+drv_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$drvdir/drv.wasm" 2>/dev/null | tr -dc '0-9-')"
+if [ "$drv_out" != "16" ]; then
+  echo "[selfhost-only-gate] FAIL: derive mismatch (got '$drv_out', want 16 -> #638 regressed)" >&2
+  exit 1
+fi
+rm -rf "$drvdir"
+echo "[selfhost-only-gate] derive(Ord/Show) structural-generation regression ok"
+
+# 16. trait type parameters / Iterator regression (#636): a method-bearing trait
+#     with a type parameter (`Iterator[T] { next(Self) -> Option[T] }`) must be
+#     declarable, and a `[I: Iterator]` generic must dispatch `I::next` through
+#     the witness dictionary — driving a stateful, functional iterator
+#     (`next(Self) -> Option[(T, Self)]`) to completion.
+echo "[selfhost-only-gate] 16/16 trait-type-parameter / Iterator regression"
+itdir="_build/_gate_iter"
+rm -rf "$itdir"; mkdir -p "$itdir"
+cat > "$itdir/iter.vibe" <<'EOF'
+trait Iter[T] { next(Self) -> Option[(T, Self)] }
+trait Iterable[T] { iter(Self) -> Range }
+struct Range { lo: Int; hi: Int }
+struct Span { from: Int; to: Int }
+impl Iterable for Span { iter(self) -> Range { Range::{ lo: self.from, hi: self.to } } }
+impl Iter for Range {
+  next(self) -> Option[(Int, Range)] {
+    if self.lo < self.hi {
+      Some((self.lo, Range::{ lo: self.lo + 1, hi: self.hi }))
+    } else {
+      None
+    }
+  }
+}
+let iter_sum = [I: Iter](it: I) -> Int {
+  let mut acc = 0
+  let mut cur = it
+  let mut go = true
+  while go {
+    match I::next(cur) {
+      Some(pair) => { let (v, rest) = pair; acc = acc + v; cur = rest },
+      None => { go = false }
+    }
+  }
+  acc
+}
+export let _start: () -> Int = () -> {
+  // `for x in <iterator>` desugars to a next-driven loop (10);
+  // `for x in <iterable>` calls iter() then drives next (10);
+  // iter_sum dispatches I::next through the witness dict (10).
+  let mut acc = 0
+  for x in Range::{ lo: 1, hi: 5 } { acc = acc + x }
+  for y in Span::{ from: 1, to: 5 } { acc = acc + y }
+  acc + iter_sum(Range::{ lo: 1, hi: 5 })
+}
+EOF
+# Expected: (1+2+3+4) + (1+2+3+4) + (1+2+3+4) = 30
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$itdir/iter.vibe" "$itdir/iter.wasm" _start >/dev/null 2>&1
+if [ ! -s "$itdir/iter.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: Iterator trait program did not compile" >&2
+  cat "$itdir/iter.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+it_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$itdir/iter.wasm" 2>/dev/null | tr -dc '0-9-')"
+if [ "$it_out" != "30" ]; then
+  echo "[selfhost-only-gate] FAIL: Iterator dispatch mismatch (got '$it_out', want 30 -> #636 regressed)" >&2
+  exit 1
+fi
+rm -rf "$itdir"
+echo "[selfhost-only-gate] trait-type-parameter / Iterator regression ok"
+
+# 17. lazy iterator combinators regression (#636): a lazy `Stream` (a struct
+#     holding a `pull` closure) with `impl Iter for Stream` supports lazy
+#     `map`/`filter` and eager `fold`/`sum`/`count` consumers (driven by the
+#     `for` desugar) — the trait-based replacement for prelude/lazy_iter.vibe's
+#     `() -> Option[T]` function iterator. All library code, no compiler support
+#     beyond the trait machinery.
+echo "[selfhost-only-gate] 17/17 lazy iterator combinators regression"
+lcdir="_build/_gate_lazyiter"
+rm -rf "$lcdir"; mkdir -p "$lcdir"
+cat > "$lcdir/lc.vibe" <<'EOF'
+trait Iter[T] { next(Self) -> Option[(T, Self)] }
+struct Stream { pull: (Int) -> Option[(Int, Int)]; state: Int }
+impl Iter for Stream {
+  next(self) -> Option[(Int, Stream)] {
+    match (self.pull)(self.state) {
+      Some(p) => { let (v, ns) = p; Some((v, Stream::{ pull: self.pull, state: ns })) },
+      None => None
+    }
+  }
+}
+let range = (lo: Int, hi: Int) -> Stream {
+  Stream::{ pull: (s) -> { if s < hi { Some((s, s + 1)) } else { None } }, state: lo }
+}
+let smap = (s: Stream, f: (Int) -> Int) -> Stream {
+  Stream::{ pull: (st) -> { match (s.pull)(st) { Some(p) => { let (v, ns) = p; Some((f(v), ns)) }, None => None } }, state: s.state }
+}
+let sfilter = (s: Stream, pred: (Int) -> Bool) -> Stream {
+  Stream::{ pull: (st) -> {
+    let mut cur = st
+    let mut result = None
+    let mut go = true
+    while go {
+      match (s.pull)(cur) {
+        Some(p) => { let (v, ns) = p; if pred(v) { result = Some((v, ns)); go = false } else { cur = ns } },
+        None => { go = false }
+      }
+    }
+    result
+  }, state: s.state }
+}
+let sfold = (s: Stream, init: Int, f: (Int, Int) -> Int) -> Int {
+  let mut acc = init
+  for x in s { acc = f(acc, x) }
+  acc
+}
+let ssum = (s: Stream) -> Int { sfold(s, 0, (a, b) -> { a + b }) }
+let scount = (s: Stream) -> Int { sfold(s, 0, (a, _) -> { a + 1 }) }
+let is_even = (x: Int) -> Bool { x - (x / 2) * 2 == 0 }
+export let _start: () -> Int = () -> {
+  ssum(smap(range(1, 5), (x) -> { x * 2 }))   // 2+4+6+8 = 20
+  + ssum(sfilter(range(1, 10), is_even))       // 2+4+6+8 = 20
+  + scount(range(0, 7))                        // 7
+}
+EOF
+# Expected: 20 + 20 + 7 = 47
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$lcdir/lc.vibe" "$lcdir/lc.wasm" _start >/dev/null 2>&1
+if [ ! -s "$lcdir/lc.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: lazy combinators program did not compile" >&2
+  cat "$lcdir/lc.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+lc_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$lcdir/lc.wasm" 2>/dev/null | tr -dc '0-9-')"
+if [ "$lc_out" != "47" ]; then
+  echo "[selfhost-only-gate] FAIL: lazy combinators mismatch (got '$lc_out', want 47 -> #636 regressed)" >&2
+  exit 1
+fi
+rm -rf "$lcdir"
+echo "[selfhost-only-gate] lazy iterator combinators regression ok"
+
+# 18. cross-import trait-iterator regression (#636): the iterator type + its
+#     `impl ::next` + a `for x in <iter>` driver live in an IMPORTED module
+#     (the prelude shape — lazy_iter.vibe is always imported). A qualified impl
+#     method `LazyIter::next` is a non-exported `let`, so the import namespacer
+#     used to path-suffix it (`LazyIter::next$path`), orphaning it from the
+#     `LazyIter` type and making the `for` desugar's `Type::next` lookup miss —
+#     the loop silently fell back to array iteration and trapped. Qualified
+#     `Type::method` names must follow the *type's* namespacing, not get an
+#     independent value suffix. Guards import_alias_rewrite + the generic-struct
+#     `for`-iterator desugar across the import boundary.
+echo "[selfhost-only-gate] 18/18 cross-import trait-iterator regression"
+xidir="_build/_gate_import_iter"
+rm -rf "$xidir"; mkdir -p "$xidir"
+cat > "$xidir/li.vibe" <<'EOF'
+export trait Iterator[T] { next(Self) -> Option[(T, Self)] }
+export struct LazyIter[T] { pull: (Int) -> Option[(T, Int)]; state: Int }
+impl Iterator for LazyIter {
+  next(self) -> Option[(T, LazyIter)] {
+    match (self.pull)(self.state) {
+      Some(p) => { let (v, ns) = p; Some((v, LazyIter::{ pull: self.pull, state: ns })) },
+      None => None
+    }
+  }
+}
+export let lazy_iter_arr = [T](xs: Array[T]) -> LazyIter[T] {
+  LazyIter::{ pull: (i) -> Option[(T, Int)] {
+    if i < Array::length(xs) { Some((Array::get(xs, i), i + 1)) } else { None }
+  }, state: 0 }
+}
+export let lazy_iter_count = [T](src: LazyIter[T]) -> Int {
+  let mut n = 0
+  for x in src { n = n + 1 }
+  n
+}
+EOF
+cat > "$xidir/main.vibe" <<'EOF'
+import ./li.vibe { lazy_iter_arr, lazy_iter_count }
+export let _start: () -> Int = () -> { lazy_iter_count(lazy_iter_arr([10, 20, 30, 40, 50])) }
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$xidir/main.vibe" "$xidir/main.wasm" _start >/dev/null 2>&1
+if [ ! -s "$xidir/main.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: cross-import trait-iterator program did not compile" >&2
+  exit 1
+fi
+xi_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$xidir/main.wasm" 2>/dev/null | tr -dc '0-9-')"
+if [ "$xi_out" != "5" ]; then
+  echo "[selfhost-only-gate] FAIL: cross-import trait-iterator mismatch (got '$xi_out', want 5 -> import method namespacing regressed)" >&2
+  exit 1
+fi
+rm -rf "$xidir"
+echo "[selfhost-only-gate] cross-import trait-iterator regression ok"
+
+# 19. `for await` unification regression (#636): `for await x in s` shares one
+#     type-directed desugar with sync `for`. The parser wraps the iterable in a
+#     `__await_iter` marker (the checker unwraps it; the desugar strips it) so
+#     the desugar — which has type info the parser lacks — picks the loop shape:
+#       - a struct `C` with `C::next -> Future[Option[..]]` (an AsyncIterator /
+#         `Stream[T]`) drives an `await`-wrapped next loop (`await` unwraps the
+#         ready future on the synchronous backend), and
+#       - any other iterable (a pull closure `() -> Option[T]`, the pre-existing
+#         M2c-3 model) drives the pull-to-`None` loop.
+#     Guards the parser marker + checker unwrap + always-run desugar pass.
+echo "[selfhost-only-gate] 19/19 for-await unification regression"
+fadir="_build/_gate_forawait"
+rm -rf "$fadir"; mkdir -p "$fadir"
+cat > "$fadir/fa.vibe" <<'EOF'
+trait AsyncIterator[T] { next(Self) -> Future[Option[(T, Self)]] }
+struct AStream { pull: (Int) -> Option[(Int, Int)]; state: Int }
+impl AsyncIterator for AStream {
+  next(self) -> Future[Option[(Int, AStream)]] {
+    Future::ready(match (self.pull)(self.state) {
+      Some(p) => { let (v, ns) = p; Some((v, AStream::{ pull: self.pull, state: ns })) },
+      None => None
+    })
+  }
+}
+let mkstream = (xs: Array[Int]) -> AStream {
+  AStream::{ pull: (i) -> Option[(Int, Int)] { if i < Array::length(xs) { Some((Array::get(xs, i), i + 1)) } else { None } }, state: 0 }
+}
+let counter_stream = () -> (() -> Option[Int]) {
+  let mut n = 0
+  () -> Option[Int] { if n < 4 { n = n + 1; Some(n) } else { None } }
+}
+export let _start: () -> Int with { Async } = () -> {
+  let mut t = 0
+  for await x in mkstream([10, 20, 30]) { t = t + x }
+  for await y in counter_stream() { t = t + y }
+  t
+}
+EOF
+# Expected: async iterator 10+20+30 = 60, pull closure 1+2+3+4 = 10 -> 70.
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$fadir/fa.vibe" "$fadir/fa.wasm" _start >/dev/null 2>&1
+if [ ! -s "$fadir/fa.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: for-await program did not compile" >&2
+  cat "$fadir/fa.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+fa_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$fadir/fa.wasm" 2>/dev/null | tr -dc '0-9-')"
+if [ "$fa_out" != "70" ]; then
+  echo "[selfhost-only-gate] FAIL: for-await unification mismatch (got '$fa_out', want 70 -> #636 regressed)" >&2
+  exit 1
+fi
+rm -rf "$fadir"
+echo "[selfhost-only-gate] for-await unification regression ok"
+
 echo "[selfhost-only-gate] ok"

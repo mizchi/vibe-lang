@@ -573,12 +573,52 @@ let collect_exported_value_names: (Array[Stmt]) -> Array[String] = (stmts) -> {
   names
 }
 
-let collect_private_value_renames: (String, Array[Stmt], Array[String], Array[String]) -> Array[(String, String)] = (path, stmts, namespace_suffix_box, exported) -> {
-  let renames = empty_aliases()
+// The names of types declared `export` in `stmts` (struct/enum/trait/alias/
+// suberror). A qualified method `Type::m` whose `Type` is exported is part of
+// that type's public surface, so it must NOT be module-private-renamed.
+let collect_exported_type_names: (Array[Stmt]) -> Array[String] = (stmts) -> {
+  let names = empty_strings()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SLet(false, _, name, _, _) => if !string_array_contains(exported, name) {
+      SStruct(true, name, _, _) => Array::push(names, name),
+      SEnum(true, name, _, _) => Array::push(names, name),
+      STrait(true, name, _, _) => Array::push(names, name),
+      STypeAlias(true, name, _, _) => Array::push(names, name),
+      SSuberror(true, name, _) => Array::push(names, name),
+      _ => ()
+    }
+    i = i + 1
+  }
+  names
+}
+
+// A qualified `Head::member` value (an impl/trait method `let Type::m = ..`)
+// whose `Head` type is exported. Such methods are resolved globally by the
+// (public) receiver type and are referenced unqualified by that type's name, so
+// path-suffixing them in an imported module (`Strm::next` -> `Strm::next$path`)
+// would orphan them from `Strm` — breaking method dispatch and the trait /
+// `for`-iterator desugar's `Type::method` lookup. (Methods on a *private* type
+// keep the old whole-name renaming: that type is itself renamed and its call
+// sites are rewritten through the same value-rename map, so they stay
+// consistent.)
+let qualified_method_of_exported_type: (String, Array[String]) -> Bool = (name, exported_types) -> {
+  let idx = String::index_of(name, "::")
+  if idx < 0 {
+    false
+  } else {
+    let head = String::substring(name, 0, idx)
+    string_array_contains(exported_types, head)
+  }
+}
+
+let collect_private_value_renames: (String, Array[Stmt], Array[String], Array[String]) -> Array[(String, String)] = (path, stmts, namespace_suffix_box, exported) -> {
+  let renames = empty_aliases()
+  let exported_types = collect_exported_type_names(stmts)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(false, _, name, _, _) => if !string_array_contains(exported, name) && !qualified_method_of_exported_type(name, exported_types) {
         Array::push(renames, (name, namespace_private_name_lazy(path, name, namespace_suffix_box)))
       },
       SLetMut(name, _, _) => if !string_array_contains(exported, name) {
@@ -815,7 +855,7 @@ let collect_private_type_renames: (String, Array[Stmt], Array[String], Array[Str
       SEnum(false, name, _, _) => if !string_array_contains(exported, name) {
         Array::push(renames, (name, namespace_private_name_lazy(path, name, namespace_suffix_box)))
       },
-      SStruct(false, name, _) => if !string_array_contains(exported, name) {
+      SStruct(false, name, _, _) => if !string_array_contains(exported, name) {
         Array::push(renames, (name, namespace_private_name_lazy(path, name, namespace_suffix_box)))
       },
       STypeAlias(false, name, _, _) => if !string_array_contains(exported, name) {
@@ -923,7 +963,7 @@ export let rec namespace_private_value_stmts: (String, Array[Stmt]) -> Array[Stm
           })
         })
       },
-      SStruct(exported, name, fields) => {
+      SStruct(exported, name, fields, derives) => {
         let next_name = if exported {
           name
         } else {
@@ -935,7 +975,7 @@ export let rec namespace_private_value_stmts: (String, Array[Stmt]) -> Array[Stm
         SStruct(exported, next_name, for field in fields {
           let (field_name, field_ty) = field
           (field_name, rewrite_private_type_expr(field_ty, type_renames))
-        })
+        }, derives)
       },
       STypeAlias(exported, name, params, target) => {
         let next_name = if exported {
@@ -1080,7 +1120,7 @@ let namespace_private_type_ctor_stmt: (Stmt, Array[(String, String)], Array[(Str
         })
       })
     },
-    SStruct(exported, name, fields) => {
+    SStruct(exported, name, fields, derives) => {
       let next_name = if exported {
         name
       } else {
@@ -1092,7 +1132,7 @@ let namespace_private_type_ctor_stmt: (Stmt, Array[(String, String)], Array[(Str
       SStruct(exported, next_name, for field in fields {
         let (field_name, field_ty) = field
         (field_name, rewrite_private_type_expr(field_ty, type_renames))
-      })
+      }, derives)
     },
     STypeAlias(exported, name, params, target) => {
       let next_name = if exported {

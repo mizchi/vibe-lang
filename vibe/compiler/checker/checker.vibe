@@ -5,7 +5,7 @@ import .. / core / ast.vibe {
 }
 
 import .. / core / types.vibe {
-  Subst, Type, TypeDef, TypeEnv, env_bind, env_lookup, find_typedef, fresh_var, generalize, instantiate, subst_add_bound, subst_apply, type_implements_trait, type_to_string, unify
+  Subst, Type, TypeDef, TypeEnv, env_bind, env_lookup, find_typedef, fresh_var, generalize, instantiate, resolve_builtin, subst_add_bound, subst_apply, subst_bounds_for, trait_method_sig_deep, type_implements_trait, type_to_string, unify
 }
 
 import ./builtins.vibe {
@@ -71,6 +71,118 @@ let prepend_expr: (Expr, Array[Expr]) -> Array[Expr] = (first, rest) -> {
     i = i + 1
   }
   out
+}
+
+// Replace the abstract `Self` type (resolved as `CtNamed("Self", _)`) inside a
+// trait-method signature with the concrete receiver type, when typing a
+// `T::method` call against a bounded generic parameter T.
+let rec subst_self_in_type: (Type, Type) -> Type = (ty, self_ty) -> {
+  match ty {
+    CtNamed(n, args) => if n == "Self" {
+      self_ty
+    } else {
+      let ra = for a in args {
+        subst_self_in_type(a, self_ty)
+      }
+      CtNamed(n, ra)
+    },
+    CtArray(e) => CtArray(subst_self_in_type(e, self_ty)),
+    CtOption(e) => CtOption(subst_self_in_type(e, self_ty)),
+    CtTuple(elems) => CtTuple(for e in elems {
+      subst_self_in_type(e, self_ty)
+    }),
+    CtFn(ps, ret, eff) => CtFn(for p in ps {
+      subst_self_in_type(p, self_ty)
+    }, subst_self_in_type(ret, self_ty), eff),
+    _ => ty
+  }
+}
+
+// Relax a trait type parameter (e.g. the `T` in `Iterator[T] { next(Self) ->
+// Option[T] }`) to `CtUnknown` so it unifies at the call site. A name that
+// resolves to a real type (primitive or declared) is kept; only truly-unknown
+// named types — the trait's own element type params, which the uniform
+// representation erases — are relaxed. (#636.)
+let rec relax_unknown_named: (Type, Array[TypeDef]) -> Type = (ty, defs) -> {
+  match ty {
+    CtNamed(n, args) => {
+      let known = match find_typedef(defs, n) {
+        Some(_) => true,
+        None => match resolve_builtin(n) {
+          Some(_) => true,
+          None => false
+        }
+      }
+      if known {
+        CtNamed(n, for a in args {
+          relax_unknown_named(a, defs)
+        })
+      } else {
+        CtUnknown
+      }
+    },
+    CtArray(e) => CtArray(relax_unknown_named(e, defs)),
+    CtOption(e) => CtOption(relax_unknown_named(e, defs)),
+    CtTuple(es) => CtTuple(for e in es {
+      relax_unknown_named(e, defs)
+    }),
+    CtFn(ps, r, eff) => CtFn(for p in ps {
+      relax_unknown_named(p, defs)
+    }, relax_unknown_named(r, defs), eff),
+    _ => ty
+  }
+}
+
+// Resolve a qualified identifier `T::method` where `T` is a bounded generic
+// type parameter (`[T: Trait]`). If the head resolves to a type variable whose
+// recorded bounds include a trait declaring `method`, return that method's
+// signature with `Self` substituted by T. Returns None for any other qualified
+// name (concrete `Type::method`, module-qualified names, etc.) so the existing
+// resolution paths are untouched. (PR-3 component 2.)
+let resolve_trait_method_ident: (String, TypeEnv, Array[TypeDef], Subst) -> Option[Type] = (name, env, defs, s) -> {
+  let idx = String::index_of(name, "::")
+  if idx < 0 {
+    None
+  } else {
+    let head = String::substring(name, 0, idx)
+    let method = String::substring(name, idx + 2, String::length(name))
+    match env_lookup(env, head) {
+      Some(head_ty) => match head_ty {
+        CtVar(vid) => {
+          let bounds = subst_bounds_for(s, vid)
+          let self_ty = CtVar(vid)
+          let mut result = None
+          let mut bi = 0
+          while bi < Array::length(bounds) {
+            let pending = match result {
+              None => true,
+              _ => false
+            }
+            if pending {
+              let trait_name = Array::get(bounds, bi)
+              match trait_method_sig_deep(env, trait_name, method) {
+                Some(sig) => {
+                  let (params_te, ret_te) = sig
+                  let resolved_params = for pte in params_te {
+                    relax_unknown_named(subst_self_in_type(resolve_type_expr(pte, defs), self_ty), defs)
+                  }
+                  let resolved_ret = relax_unknown_named(subst_self_in_type(resolve_type_expr(ret_te, defs), self_ty), defs)
+                  result = Some(CtFn(resolved_params, resolved_ret, None))
+                },
+                None => ()
+              }
+            } else {
+              ()
+            }
+            bi = bi + 1
+          }
+          result
+        },
+        _ => None
+      },
+      None => None
+    }
+  }
 }
 
 let expr_ident_name_or_empty: (Expr) -> String = (expr) -> {
@@ -426,9 +538,19 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
           }
           (t, s, c)
         },
-        None => {
-          Array::push(errors, String::concat(String::concat("unknown name: ", name), off_marker_len(ident_off, String::length(name))))
-          (CtUnknown, s, c)
+        None => match resolve_trait_method_ident(name, env, defs, s) {
+          Some(mty) => {
+            if ident_off >= 0 {
+              Array::push(tytab, (ident_off, mty))
+            } else {
+              ()
+            }
+            (mty, s, c)
+          },
+          None => {
+            Array::push(errors, String::concat(String::concat("unknown name: ", name), off_marker_len(ident_off, String::length(name))))
+            (CtUnknown, s, c)
+          }
         }
       }
     },
@@ -848,7 +970,19 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       (CtUnit, s2, c2)
     },
     EForIn(name, index_name, iterable, body) => {
-      let (it, s1, c1) = check_expr(iterable, env, defs, s, c, errors, tytab)
+      // `for await x in s` reaches the checker as `for x in __await_iter(s)`
+      // (the parser's marker; the dict-passing desugar strips it for codegen).
+      // The marker is not a real function, so check the inner iterable directly.
+      let real_iterable = match iterable {
+        ECall(callee, args, _) => match callee {
+          EIdent(nm, _) => if nm == "__await_iter" && Array::length(args) == 1 {
+            Array::get(args, 0)
+          } else iterable,
+          _ => iterable
+        },
+        _ => iterable
+      }
+      let (it, s1, c1) = check_expr(real_iterable, env, defs, s, c, errors, tytab)
       // `for x in arr` iterates an Array[T]; `for await x in stream` iterates a
       // Stream[T] (eager Array-backed model, docs/spec §M2c-3) — both yield T.
       let et = match subst_apply(s1, it) {

@@ -1,0 +1,114 @@
+// Method-bearing trait with a TYPE PARAMETER (#636): `Iterator[T]` is now
+// expressible (the element type `T` constrains `next`'s signature; the uniform
+// representation erases it), and a `[I: Iterator]` generic dispatches `I::next`
+// through the witness dictionary (PR-3 machinery). A functional iterator
+// `next(Self) -> Option[(T, Self)]` threads its state and is driven to
+// completion by a generic helper.
+//
+// `for x in it { ... }` over a struct iterator desugars to the next-driven
+// driver loop. Deferred: `for await`, the map / filter / fold combinators, and
+// the `Iterable` trait (see docs/method-bearing-traits-plan.md).
+
+//# Types
+
+trait Iter[T] {
+  next(Self) -> Option[(T, Self)]
+}
+
+// An Iterable produces an iterator from a collection; `for x in <iterable>`
+// calls `iter()` then drives `next` on the result.
+trait Iterable[T] {
+  iter(Self) -> Range
+}
+
+struct Range { lo: Int; hi: Int }
+
+struct Span { from: Int; to: Int }
+
+//# Functions
+
+impl Iter for Range {
+  next(self) -> Option[(Int, Range)] {
+    if self.lo < self.hi {
+      Some((self.lo, Range::{ lo: self.lo + 1, hi: self.hi }))
+    } else {
+      None
+    }
+  }
+}
+
+impl Iterable for Span {
+  iter(self) -> Range { Range::{ lo: self.from, hi: self.to } }
+}
+
+// Generic driver over any `Iter`: `I::next` dispatches to the concrete impl via
+// the threaded witness dictionary.
+let iter_sum = [I: Iter](it: I) -> Int {
+  let mut acc = 0
+  let mut cur = it
+  let mut go = true
+  while go {
+    match I::next(cur) {
+      Some(pair) => {
+        let (v, rest) = pair
+        acc = acc + v
+        cur = rest
+      },
+      None => {
+        go = false
+      }
+    }
+  }
+  acc
+}
+
+let iter_count = [I: Iter](it: I) -> Int {
+  let mut n = 0
+  let mut cur = it
+  let mut go = true
+  while go {
+    match I::next(cur) {
+      Some(pair) => {
+        let (_, rest) = pair
+        n = n + 1
+        cur = rest
+      },
+      None => {
+        go = false
+      }
+    }
+  }
+  n
+}
+
+//# Tests
+
+test "Iterator[T] trait dispatch drives a functional iterator" {
+  assert_eq(iter_sum(Range::{ lo: 1, hi: 5 }), 10)
+  assert_eq(iter_sum(Range::{ lo: 0, hi: 0 }), 0)
+  assert_eq(iter_count(Range::{ lo: 3, hi: 9 }), 6)
+}
+
+test "for x in <iterator> desugars to a next-driven loop" {
+  let mut total = 0
+  for x in Range::{ lo: 1, hi: 5 } {
+    total = total + x
+  }
+  assert_eq(total, 10)
+
+  // a let-bound iterator works too (var-type tracking)
+  let r = Range::{ lo: 2, hi: 6 }
+  let mut t2 = 0
+  for y in r {
+    t2 = t2 + y
+  }
+  assert_eq(t2, 14)
+}
+
+test "for x in <Iterable> calls iter() then drives next" {
+  let mut total = 0
+  for x in Span::{ from: 1, to: 5 } {
+    total = total + x
+  }
+  assert_eq(total, 10)
+}

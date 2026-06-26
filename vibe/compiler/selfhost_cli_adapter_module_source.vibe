@@ -57,9 +57,9 @@ export enum Stmt {
   SLetMut(String, Option[TypeExpr], Expr);
   SEnum(Bool, String, Array[String], Array[(String, Array[TypeExpr])]);
   SSuberror(Bool, String, Array[(String, Array[TypeExpr])]);
-  SStruct(Bool, String, Array[(String, TypeExpr)]);
+  SStruct(Bool, String, Array[(String, TypeExpr)], Array[String]);
   STypeAlias(Bool, String, Array[String], TypeExpr);
-  STrait(Bool, String, Array[String]);
+  STrait(Bool, String, Array[String], Array[(String, Array[TypeExpr], TypeExpr)]);
   SImpl(Array[String], Array[(String, Array[String])], String, String);
   SExternLet(String, TypeExpr);
   SImport(String, Array[(String, Option[String])]);
@@ -540,9 +540,9 @@ let is_type_or_structural: (Stmt) -> Bool = (stmt) -> {
     SEnum(_, _, _, _) => true,
     SSuberror(_, _, _) => true,
     SEffectDef(_, _, _, _) => true,
-    SStruct(_, _, _) => true,
+    SStruct(_, _, _, _) => true,
     STypeAlias(_, _, _, _) => true,
-    STrait(_, _, _) => true,
+    STrait(_, _, _, _) => true,
     SImpl(_, _, _, _) => true,
     SExternLet(_, _) => true,
     SImport(_, _) => true,
@@ -775,7 +775,7 @@ export enum TypeDef {
 export enum TypeEnv {
   EnvEmpty;
   EnvBind(String, Type, TypeEnv);
-  EnvTraitDef(String, Array[String], Bool, TypeEnv);
+  EnvTraitDef(String, Array[String], Bool, Array[(String, Array[TypeExpr], TypeExpr)], TypeEnv);
   EnvTraitImpl(String, Type, TypeEnv);
   EnvTraitImplGen(String, Array[String], Array[(String, Array[String])], Type, TypeEnv);
   EnvFlat(Array[(String, Type)]);
@@ -815,7 +815,7 @@ export let env_cache: (TypeEnv) -> TypeEnv = (env) -> {
           ArrayBuilder::push(types, ty)
           cur = rest
         },
-        EnvTraitDef(_, _, _, rest) => {
+        EnvTraitDef(_, _, _, _, rest) => {
           cur = rest
         },
         EnvTraitImpl(_, _, rest) => {
@@ -905,7 +905,7 @@ export let env_lookup: (TypeEnv, String) -> Option[Type] = (env, name) -> {
       } else {
         cur = rest
       },
-      EnvTraitDef(_, _, _, rest) => {
+      EnvTraitDef(_, _, _, _, rest) => {
         cur = rest
       },
       EnvTraitImpl(_, _, rest) => {
@@ -1001,7 +1001,7 @@ export let rec trait_supers: (TypeEnv, String) -> Array[String] = (env, name) ->
   match env {
     EnvEmpty => empty,
     EnvBind(_, _, rest) => trait_supers(rest, name),
-    EnvTraitDef(tname, supers, _, rest) => if tname == name {
+    EnvTraitDef(tname, supers, _, _, rest) => if tname == name {
       supers
     } else trait_supers(rest, name),
     EnvTraitImpl(_, _, rest) => trait_supers(rest, name),
@@ -1009,6 +1009,104 @@ export let rec trait_supers: (TypeEnv, String) -> Array[String] = (env, name) ->
     EnvFlat(_) => empty,
     EnvCached(_, rest) => trait_supers(rest, name)
   }
+}
+export let rec trait_method_sig: (TypeEnv, String, String) -> Option[(Array[TypeExpr], TypeExpr)] = (env, trait_name, method_name) -> {
+  match env {
+    EnvEmpty => None,
+    EnvBind(_, _, rest) => trait_method_sig(rest, trait_name, method_name),
+    EnvTraitDef(tname, _, _, methods, rest) => if tname == trait_name {
+      let mlen = Array::length(methods)
+      let mut i = 0
+      let mut found = None
+      while i < mlen {
+        let (mname, params, ret) = Array::get(methods, i)
+        if mname == method_name {
+          found = Some((params, ret))
+          i = mlen
+        } else {
+          i = i + 1
+        }
+      }
+      match found {
+        Some(sig) => Some(sig),
+        None => trait_method_sig(rest, trait_name, method_name)
+      }
+    } else trait_method_sig(rest, trait_name, method_name),
+    EnvTraitImpl(_, _, rest) => trait_method_sig(rest, trait_name, method_name),
+    EnvTraitImplGen(_, _, _, _, rest) => trait_method_sig(rest, trait_name, method_name),
+    EnvFlat(_) => None,
+    EnvCached(_, rest) => trait_method_sig(rest, trait_name, method_name)
+  }
+}
+export let rec trait_method_sig_deep: (TypeEnv, String, String) -> Option[(Array[TypeExpr], TypeExpr)] = (env, trait_name, method_name) -> {
+  match trait_method_sig(env, trait_name, method_name) {
+    Some(sig) => Some(sig),
+    None => {
+      let supers = trait_supers(env, trait_name)
+      let mut i = 0
+      let mut result = None
+      while i < Array::length(supers) {
+        let pending = match result {
+          None => true,
+          _ => false
+        }
+        if pending {
+          match trait_method_sig_deep(env, Array::get(supers, i), method_name) {
+            Some(sig) => {
+              result = Some(sig)
+            },
+            None => ()
+          }
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      result
+    }
+  }
+}
+export let subst_bounds_for: (Subst, Int) -> Array[String] = (s, id) -> {
+  let out = ArrayBuilder::new()
+  let mut cur = s
+  let mut done = false
+  while !done {
+    match cur {
+      SubstEmpty => {
+        done = true
+      },
+      SubstBind(_, _, rest) => {
+        cur = rest
+      },
+      SubstBound(bid, bounds, rest) => {
+        if bid == id {
+          let mut i = 0
+          while i < Array::length(bounds) {
+            ArrayBuilder::push(out, Array::get(bounds, i))
+            i = i + 1
+          }
+        } else {
+          ()
+        }
+        cur = rest
+      },
+      SubstCached(_, bounds_cache, rest) => {
+        let key = __to_string(id)
+        if Map::has_key(bounds_cache, key) {
+          let bounds = Map::get(bounds_cache, key)
+          let mut i = 0
+          while i < Array::length(bounds) {
+            ArrayBuilder::push(out, Array::get(bounds, i))
+            i = i + 1
+          }
+        } else {
+          ()
+        }
+        cur = rest
+      }
+    }
+  }
+  ArrayBuilder::freeze(out)
 }
 let rec array_has_int: (Array[Int], Int, Int) -> Bool = (arr, val, i) -> {
   if i >= Array::length(arr) {
@@ -1109,7 +1207,7 @@ export let rec trait_defined: (TypeEnv, String) -> Bool = (env, name) -> {
   match env {
     EnvEmpty => false,
     EnvBind(_, _, rest) => trait_defined(rest, name),
-    EnvTraitDef(tname, _, _, rest) => if tname == name {
+    EnvTraitDef(tname, _, _, _, rest) => if tname == name {
       true
     } else trait_defined(rest, name),
     EnvTraitImpl(_, _, rest) => trait_defined(rest, name),
@@ -1422,7 +1520,7 @@ export let env_flat_bindings: (TypeEnv) -> Array[(String, Type)] = (env) -> {
             Array::push(out, (name, ty))
             cur = rest
           },
-          EnvTraitDef(_, _, _, rest) => {
+          EnvTraitDef(_, _, _, _, rest) => {
             cur = rest
           },
           EnvTraitImpl(_, _, rest) => {
@@ -1877,7 +1975,7 @@ let rec type_implements_check_env: (TypeEnv, String, Type) -> Bool = (e, trait_n
   match e {
     EnvEmpty => false,
     EnvBind(_, _, rest) => type_implements_check_env(rest, trait_name, resolved),
-    EnvTraitDef(_, _, _, rest) => type_implements_check_env(rest, trait_name, resolved),
+    EnvTraitDef(_, _, _, _, rest) => type_implements_check_env(rest, trait_name, resolved),
     EnvTraitImpl(tname, target, rest) => if tname == trait_name {
       if types_equal(target, resolved) {
         true
@@ -1889,7 +1987,7 @@ let rec type_implements_check_env: (TypeEnv, String, Type) -> Bool = (e, trait_n
     EnvCached(_, rest) => type_implements_check_env(rest, trait_name, resolved)
   }
 }
-let collect_subst_bounds_pairs: (Subst) -> Array[(Int, Array[String])] = (s) -> {
+export let collect_subst_bounds_pairs: (Subst) -> Array[(Int, Array[String])] = (s) -> {
   let out = Array::slice([
     (0, Array::slice([
       ""
@@ -1944,7 +2042,7 @@ let rec type_implements_check_super: (TypeEnv, TypeEnv, String, Type) -> Bool = 
   match e2 {
     EnvEmpty => false,
     EnvBind(_, _, rest) => type_implements_check_super(rest, full_env, trait_name, resolved),
-    EnvTraitDef(_, _, _, rest) => type_implements_check_super(rest, full_env, trait_name, resolved),
+    EnvTraitDef(_, _, _, _, rest) => type_implements_check_super(rest, full_env, trait_name, resolved),
     EnvTraitImpl(tname, target, rest) => if types_equal(target, resolved) {
       if trait_is_subtrait(full_env, tname, trait_name) {
         true
@@ -1978,10 +2076,16 @@ export {
 export {
   Type, Subst, unify, TypeDef, TypeEnv, env_bind, env_cache, fresh_var, occurs_in, env_lookup, generalize, instantiate, subst_apply, types_equal, env_bind_all, find_typedef, subst_lookup, trait_supers, collect_tvars, trait_defined, type_to_string, env_lookup_flat, resolve_builtin, subst_add_bound, types_compatible, env_flat_bindings, impls_overlap_for, trait_is_subtrait, type_implements_trait
 }
+export {
+  Pat, Expr, Stmt, TypeExpr
+}
 let one_super: (String) -> Array[String] = (name) -> {
   [
     name
   ]
+}
+let no_trait_methods: () -> Array[(String, Array[TypeExpr], TypeExpr)] = () -> {
+  ArrayBuilder::freeze(ArrayBuilder::new())
 }
 let no_type_args: () -> Array[Type] = () -> {
   Array::slice([
@@ -2002,12 +2106,13 @@ export let register_builtin_traits: (TypeEnv) -> TypeEnv = (env) -> {
   let u32_type = CtNamed("u32", no_type_args())
   let u64_type = CtNamed("u64", no_type_args())
   let i16_type = CtNamed("i16", no_type_args())
-  let e1 = EnvTraitDef("Eq", no_supers, false, env)
-  let e2 = EnvTraitDef("Ord", eq_supers, false, e1)
-  let e3 = EnvTraitDef("Add", no_supers, false, e2)
-  let e4 = EnvTraitDef("Sub", no_supers, false, e3)
-  let e5 = EnvTraitDef("Mul", no_supers, false, e4)
-  let e6 = EnvTraitDef("Div", no_supers, false, e5)
+  let nm = no_trait_methods()
+  let e1 = EnvTraitDef("Eq", no_supers, false, nm, env)
+  let e2 = EnvTraitDef("Ord", eq_supers, false, nm, e1)
+  let e3 = EnvTraitDef("Add", no_supers, false, nm, e2)
+  let e4 = EnvTraitDef("Sub", no_supers, false, nm, e3)
+  let e5 = EnvTraitDef("Mul", no_supers, false, nm, e4)
+  let e6 = EnvTraitDef("Div", no_supers, false, nm, e5)
   let e7 = EnvTraitImpl("Eq", CtInt, e6)
   let e8 = EnvTraitImpl("Eq", CtDouble, e7)
   let e9 = EnvTraitImpl("Eq", CtString, e8)
@@ -4115,6 +4220,101 @@ let prepend_expr: (Expr, Array[Expr]) -> Array[Expr] = (first, rest) -> {
   }
   out
 }
+let rec subst_self_in_type: (Type, Type) -> Type = (ty, self_ty) -> {
+  match ty {
+    CtNamed(n, args) => if n == "Self" {
+      self_ty
+    } else {
+      let ra = for a in args {
+        subst_self_in_type(a, self_ty)
+      }
+      CtNamed(n, ra)
+    },
+    CtArray(e) => CtArray(subst_self_in_type(e, self_ty)),
+    CtOption(e) => CtOption(subst_self_in_type(e, self_ty)),
+    CtTuple(elems) => CtTuple(for e in elems {
+      subst_self_in_type(e, self_ty)
+    }),
+    CtFn(ps, ret, eff) => CtFn(for p in ps {
+      subst_self_in_type(p, self_ty)
+    }, subst_self_in_type(ret, self_ty), eff),
+    _ => ty
+  }
+}
+let rec relax_unknown_named: (Type, Array[TypeDef]) -> Type = (ty, defs) -> {
+  match ty {
+    CtNamed(n, args) => {
+      let known = match find_typedef(defs, n) {
+        Some(_) => true,
+        None => match resolve_builtin(n) {
+          Some(_) => true,
+          None => false
+        }
+      }
+      if known {
+        CtNamed(n, for a in args {
+          relax_unknown_named(a, defs)
+        })
+      } else {
+        CtUnknown
+      }
+    },
+    CtArray(e) => CtArray(relax_unknown_named(e, defs)),
+    CtOption(e) => CtOption(relax_unknown_named(e, defs)),
+    CtTuple(es) => CtTuple(for e in es {
+      relax_unknown_named(e, defs)
+    }),
+    CtFn(ps, r, eff) => CtFn(for p in ps {
+      relax_unknown_named(p, defs)
+    }, relax_unknown_named(r, defs), eff),
+    _ => ty
+  }
+}
+let resolve_trait_method_ident: (String, TypeEnv, Array[TypeDef], Subst) -> Option[Type] = (name, env, defs, s) -> {
+  let idx = String::index_of(name, "::")
+  if idx < 0 {
+    None
+  } else {
+    let head = String::substring(name, 0, idx)
+    let method = String::substring(name, idx + 2, String::length(name))
+    match env_lookup(env, head) {
+      Some(head_ty) => match head_ty {
+        CtVar(vid) => {
+          let bounds = subst_bounds_for(s, vid)
+          let self_ty = CtVar(vid)
+          let mut result = None
+          let mut bi = 0
+          while bi < Array::length(bounds) {
+            let pending = match result {
+              None => true,
+              _ => false
+            }
+            if pending {
+              let trait_name = Array::get(bounds, bi)
+              match trait_method_sig_deep(env, trait_name, method) {
+                Some(sig) => {
+                  let (params_te, ret_te) = sig
+                  let resolved_params = for pte in params_te {
+                    relax_unknown_named(subst_self_in_type(resolve_type_expr(pte, defs), self_ty), defs)
+                  }
+                  let resolved_ret = relax_unknown_named(subst_self_in_type(resolve_type_expr(ret_te, defs), self_ty), defs)
+                  result = Some(CtFn(resolved_params, resolved_ret, None))
+                },
+                None => ()
+              }
+            } else {
+              ()
+            }
+            bi = bi + 1
+          }
+          result
+        },
+        _ => None
+      },
+      None => None
+    }
+  }
+}
 let expr_ident_name_or_empty: (Expr) -> String = (expr) -> {
   match expr {
     EIdent(name, _) => name,
@@ -4437,9 +4637,19 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
           }
           (t, s, c)
         },
-        None => {
-          Array::push(errors, String::concat(String::concat("unknown name: ", name), off_marker_len(ident_off, String::length(name))))
-          (CtUnknown, s, c)
+        None => match resolve_trait_method_ident(name, env, defs, s) {
+          Some(mty) => {
+            if ident_off >= 0 {
+              Array::push(tytab, (ident_off, mty))
+            } else {
+              ()
+            }
+            (mty, s, c)
+          },
+          None => {
+            Array::push(errors, String::concat(String::concat("unknown name: ", name), off_marker_len(ident_off, String::length(name))))
+            (CtUnknown, s, c)
+          }
         }
       }
     },
@@ -4853,7 +5063,16 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       (CtUnit, s2, c2)
     },
     EForIn(name, index_name, iterable, body) => {
-      let (it, s1, c1) = check_expr(iterable, env, defs, s, c, errors, tytab)
+      let real_iterable = match iterable {
+        ECall(callee, args, _) => match callee {
+          EIdent(nm, _) => if nm == "__await_iter" && Array::length(args) == 1 {
+            Array::get(args, 0)
+          } else iterable,
+          _ => iterable
+        },
+        _ => iterable
+      }
+      let (it, s1, c1) = check_expr(real_iterable, env, defs, s, c, errors, tytab)
       let et = match subst_apply(s1, it) {
         CtArray(elem) => elem,
         CtNamed("Stream", args) => if Array::length(args) > 0 {
@@ -5153,11 +5372,24 @@ let bind_value_or_annotation_return: (TypeEnv, String, Expr, Option[TypeExpr], A
     None => bind_annotation_return(env, name, ann, defs)
   }
 }
+let struct_derives_has: (Array[String], String) -> Bool = (derives, name) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(derives) {
+    if Array::get(derives, i) == name {
+      found = true
+      i = Array::length(derives)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
 let stmt_is_type_decl: (Stmt) -> Bool = (stmt) -> {
   match stmt {
     SEnum(_, _, _, _) => true,
     SSuberror(_, _, _) => true,
-    SStruct(_, _, _) => true,
+    SStruct(_, _, _, _) => true,
     STypeAlias(_, _, _, _) => true,
     _ => false
   }
@@ -5371,7 +5603,7 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
         }
         (env1, s, c + param_len)
       },
-      SStruct(_, name, field_defs) => {
+      SStruct(_, name, field_defs, derives) => {
         let resolved_fields = Array::slice([
           ("", CtUnit)
         ], 0, 0)
@@ -5393,7 +5625,22 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
           fj = fj + 1
         }
         let env1 = env_bind(env, name, CtFn(field_types, CtStruct(name), None))
-        (bind_fn_return(env1, name, CtStruct(name)), s, c)
+        let env2 = if struct_derives_has(derives, "Ord") {
+          env_bind(env1, String::concat(name, "::compare"), CtFn([
+            CtStruct(name),
+            CtStruct(name)
+          ], CtInt, None))
+        } else {
+          env1
+        }
+        let env3 = if struct_derives_has(derives, "Show") {
+          env_bind(env2, String::concat(name, "::to_string"), CtFn([
+            CtStruct(name)
+          ], CtString, None))
+        } else {
+          env2
+        }
+        (bind_fn_return(env3, name, CtStruct(name)), s, c)
       },
       STypeAlias(_, name, params, te) => {
         let t = resolve_type_expr(te, defs)
@@ -5427,9 +5674,9 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
       ,
       SAliasDecl(_, _) => (env, s, c)
       ,
-      STrait(_, name, supers) => {
+      STrait(_, name, supers, methods) => {
         let is_open = false
-        (EnvTraitDef(name, supers, is_open, env), s, c)
+        (EnvTraitDef(name, supers, is_open, methods, env), s, c)
       },
       SImpl(_, _, trait_name, type_name) => {
         let target = match resolve_builtin(type_name) {
@@ -5449,6 +5696,31 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
   }
   (cur_env, cur_s, cur_c)
 }
+let check_program_bounds: (TypeEnv, Subst, Array[String]) -> Unit = (env, s, errors) -> {
+  let pairs = collect_subst_bounds_pairs(s)
+  let n = Array::length(pairs)
+  let mut i = 0
+  while i < n {
+    let (vid, bounds) = Array::get(pairs, i)
+    let resolved = subst_apply(s, CtVar(vid))
+    match resolved {
+      CtVar(_) => (),
+      CtUnknown => (),
+      _ => {
+        let bn = Array::length(bounds)
+        let mut bi = 0
+        while bi < bn {
+          let b = Array::get(bounds, bi)
+          if b != "" && not(type_implements_trait(env, s, resolved, b)) {
+            Array::push(errors, String::concat("no impl `", String::concat(b, String::concat("` for `", String::concat(type_to_string(resolved), "`")))))
+          }
+          bi = bi + 1
+        }
+      }
+    }
+    i = i + 1
+  }
+}
 export let check_program: (Array[Stmt]) -> TypeEnv with { Error } = (stmts) -> {
   let empty_defs = Array::slice([
     TDAlias("_dummy", Array::slice([
@@ -5466,7 +5738,8 @@ export let check_program: (Array[Stmt]) -> TypeEnv with { Error } = (stmts) -> {
   let tytab = Array::slice([
     (0, CtUnit)
   ], 0, 0)
-  let (env, _, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
+  let (env, final_s, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
+  check_program_bounds(env, final_s, frozen_errors)
   if Array::length(frozen_errors) > 0 {
     throw(Array::get(frozen_errors, 0))
   }
@@ -6551,6 +6824,1048 @@ export let emit_heap_grow_after_heap_set: (Bytes, CompileCtx) -> Unit = (buf, ct
     emit_call(buf, ctx.heap_grow_check_func_idx)
   } else {
     ()
+  }
+}
+let empty_expr_array: () -> Array[Expr] = () -> {
+  Array::slice([
+    EUnit
+  ], 0, 0)
+}
+let empty_str_array: () -> Array[String] = () -> {
+  Array::slice([
+    ""
+  ], 0, 0)
+}
+let empty_type_exprs: () -> Array[TypeExpr] = () -> {
+  Array::slice([
+    TyUnit
+  ], 0, 0)
+}
+let method_names_of_sigs: (Array[(String, Array[TypeExpr], TypeExpr)]) -> Array[String] = (methods) -> {
+  let out = empty_str_array()
+  let mut i = 0
+  while i < Array::length(methods) {
+    let (mname, _, _) = Array::get(methods, i)
+    Array::push(out, mname)
+    i = i + 1
+  }
+  out
+}
+let str_array_contains: (Array[String], String) -> Bool = (arr, val) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arr) {
+    if Array::get(arr, i) == val {
+      found = true
+      i = Array::length(arr)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+let split_qualified: (String) -> Option[(String, String)] = (name) -> {
+  let idx = String::index_of(name, "::")
+  if idx < 0 {
+    None
+  } else {
+    let head = String::substring(name, 0, idx)
+    let member = String::substring(name, idx + 2, String::length(name))
+    Some((head, member))
+  }
+}
+let dict_struct_name: (String) -> String = (trait_name) -> {
+  String::concat(trait_name, "Dict")
+}
+let dict_param_name: (String, String) -> String = (trait_name, tparam) -> {
+  String::concat("__dict_", String::concat(trait_name, String::concat("_", tparam)))
+}
+let collect_method_traits: (Array[Stmt]) -> Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])] = (stmts) -> {
+  let out = Array::slice([
+    ("", Array::slice([
+      ("", empty_type_exprs(), TyUnit)
+    ], 0, 0))
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STrait(_, tname, _, methods) => if Array::length(methods) > 0 {
+        Array::push(out, (tname, methods))
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+let collect_trait_supers: (Array[Stmt]) -> Array[(String, Array[String])] = (stmts) -> {
+  let out = Array::slice([
+    ("", empty_str_array())
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STrait(_, tname, supers, _) => Array::push(out, (tname, supers)),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+let lookup_supers: (Array[(String, Array[String])], String) -> Array[String] = (supers_map, name) -> {
+  let mut i = 0
+  let mut result = empty_str_array()
+  while i < Array::length(supers_map) {
+    let (tname, supers) = Array::get(supers_map, i)
+    if tname == name {
+      result = supers
+      i = Array::length(supers_map)
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+let rec flatten_trait_sigs_into: (String, Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(String, Array[String])], Array[String], Array[(String, Array[TypeExpr], TypeExpr)]) -> Unit = (tname, traits_raw, supers_map, acc_names, out) -> {
+  let supers = lookup_supers(supers_map, tname)
+  let mut s = 0
+  while s < Array::length(supers) {
+    flatten_trait_sigs_into(Array::get(supers, s), traits_raw, supers_map, acc_names, out)
+    s = s + 1
+  }
+  match lookup_trait_sigs(traits_raw, tname) {
+    Some(sigs) => {
+      let mut i = 0
+      while i < Array::length(sigs) {
+        let (mname, params, ret) = Array::get(sigs, i)
+        if str_array_contains(acc_names, mname) {
+          ()
+        } else {
+          Array::push(acc_names, mname)
+          Array::push(out, (mname, params, ret))
+        }
+        i = i + 1
+      }
+    },
+    None => ()
+  }
+}
+let flatten_traits: (Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(String, Array[String])]) -> Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])] = (traits_raw, supers_map) -> {
+  let out = Array::slice([
+    ("", Array::slice([
+      ("", empty_type_exprs(), TyUnit)
+    ], 0, 0))
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(traits_raw) {
+    let (tname, _) = Array::get(traits_raw, i)
+    let acc_names = empty_str_array()
+    let flat = Array::slice([
+      ("", empty_type_exprs(), TyUnit)
+    ], 0, 0)
+    flatten_trait_sigs_into(tname, traits_raw, supers_map, acc_names, flat)
+    Array::push(out, (tname, flat))
+    i = i + 1
+  }
+  out
+}
+let lookup_trait_sigs: (Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], String) -> Option[Array[(String, Array[TypeExpr], TypeExpr)]] = (traits, name) -> {
+  let mut i = 0
+  let mut result = None
+  while i < Array::length(traits) {
+    let (tname, sigs) = Array::get(traits, i)
+    if tname == name {
+      result = Some(sigs)
+      i = Array::length(traits)
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+let collect_struct_field_sets: (Array[Stmt]) -> Array[(String, Array[String])] = (stmts) -> {
+  let out = Array::slice([
+    ("", empty_str_array())
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(_, sname, fields, _) => {
+        let names = empty_str_array()
+        let mut j = 0
+        while j < Array::length(fields) {
+          let (fname, _) = Array::get(fields, j)
+          Array::push(names, fname)
+          j = j + 1
+        }
+        Array::push(out, (sname, names))
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+let make_dict_struct_stmt: (String, Array[(String, Array[TypeExpr], TypeExpr)]) -> Stmt = (trait_name, sigs) -> {
+  let fields = Array::slice([
+    ("", TyUnit)
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(sigs) {
+    let (mname, params, ret) = Array::get(sigs, i)
+    Array::push(fields, (mname, TyFn(params, ret, None)))
+    i = i + 1
+  }
+  SStruct(false, dict_struct_name(trait_name), fields, empty_str_array())
+}
+let field_sets_match: (Array[String], Array[String]) -> Bool = (a, b) -> {
+  if Array::length(a) != Array::length(b) {
+    false
+  } else {
+    let mut i = 0
+    let mut ok = true
+    while i < Array::length(a) {
+      if str_array_contains(b, Array::get(a, i)) {
+        i = i + 1
+      } else {
+        ok = false
+        i = Array::length(a)
+      }
+    }
+    ok
+  }
+}
+let lookup_var_type: (Array[(String, String)], String) -> Option[String] = (var_types, name) -> {
+  let mut i = 0
+  let mut result = None
+  while i < Array::length(var_types) {
+    let (vn, vt) = Array::get(var_types, i)
+    if vn == name {
+      result = Some(vt)
+      i = Array::length(var_types)
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+let infer_arg_type_name: (Expr, Array[(String, Array[String])], Array[(String, String)], Array[(String, String)]) -> Option[String] = (arg, struct_sets, var_types, fn_returns) -> {
+  match arg {
+    EInt(_) => Some("Int"),
+    EBool(_) => Some("Bool"),
+    EString(_) => Some("String"),
+    EFloat(_) => Some("Double"),
+    EIdent(name, _) => lookup_var_type(var_types, name),
+    ECall(callee, _, _) => match callee {
+      EIdent(fname, _) => fn_return_type(fn_returns, fname),
+      _ => None
+    },
+    ERecord(fields) => {
+      let names = empty_str_array()
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (fname, _) = Array::get(fields, i)
+        Array::push(names, fname)
+        i = i + 1
+      }
+      let mut j = 0
+      let mut result = None
+      while j < Array::length(struct_sets) {
+        let (sname, sfields) = Array::get(struct_sets, j)
+        if field_sets_match(names, sfields) {
+          result = Some(sname)
+          j = Array::length(struct_sets)
+        } else {
+          j = j + 1
+        }
+      }
+      result
+    },
+    _ => None
+  }
+}
+let empty_threaded: () -> Array[(String, String, Int)] = () -> {
+  Array::slice([
+    ("", "", 0)
+  ], 0, 0)
+}
+let empty_dict_binds: () -> Array[(String, String, String, Array[String])] = () -> {
+  Array::slice([
+    ("", "", "", empty_str_array())
+  ], 0, 0)
+}
+let already_threaded: (Array[(String, Option[TypeExpr])]) -> Bool = (params) -> {
+  if Array::length(params) == 0 {
+    false
+  } else {
+    let (pname, _) = Array::get(params, 0)
+    String::starts_with(pname, "__dict_")
+  }
+}
+let find_recv_index: (Array[(String, Option[TypeExpr])], String) -> Int = (params, tp) -> {
+  let mut i = 0
+  let mut idx = -1
+  while i < Array::length(params) {
+    let (_, ann) = Array::get(params, i)
+    match ann {
+      Some(TyName(n)) => if n == tp {
+        idx = i
+        i = Array::length(params)
+      } else {
+        i = i + 1
+      },
+      _ => {
+        i = i + 1
+      }
+    }
+  }
+  idx
+}
+let build_gens: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Array[(String, Array[(String, String, Int)])] = (stmts, traits) -> {
+  let out = Array::slice([
+    ("", empty_threaded())
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, fname, _, body) => match body {
+        EFn(_, bounds, params, _, _, _) => if already_threaded(params) {
+          ()
+        } else {
+          let threaded = empty_threaded()
+          let mut bi = 0
+          while bi < Array::length(bounds) {
+            let (tp, trait_list) = Array::get(bounds, bi)
+            let mut ti = 0
+            while ti < Array::length(trait_list) {
+              let tr = Array::get(trait_list, ti)
+              match lookup_trait_sigs(traits, tr) {
+                Some(_) => {
+                  let ridx = find_recv_index(params, tp)
+                  if ridx >= 0 {
+                    Array::push(threaded, (tp, tr, ridx))
+                  } else {
+                    ()
+                  }
+                },
+                None => ()
+              }
+              ti = ti + 1
+            }
+            bi = bi + 1
+          }
+          if Array::length(threaded) > 0 {
+            Array::push(out, (fname, threaded))
+          } else {
+            ()
+          }
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+let lookup_gen: (Array[(String, Array[(String, String, Int)])], String) -> Option[Array[(String, String, Int)]] = (gens, name) -> {
+  let mut i = 0
+  let mut result = None
+  while i < Array::length(gens) {
+    let (gname, threaded) = Array::get(gens, i)
+    if gname == name {
+      result = Some(threaded)
+      i = Array::length(gens)
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+let find_dict_for_method: (Array[(String, String, String, Array[String])], String, String) -> Option[String] = (dict_binds, head, member) -> {
+  let mut i = 0
+  let mut result = None
+  while i < Array::length(dict_binds) {
+    let (tp, _, dict_pname, methods) = Array::get(dict_binds, i)
+    if tp == head && str_array_contains(methods, member) {
+      result = Some(dict_pname)
+      i = Array::length(dict_binds)
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+let find_dict_for_trait: (Array[(String, String, String, Array[String])], String, String) -> Option[String] = (dict_binds, tparam, trait_name) -> {
+  let mut i = 0
+  let mut result = None
+  while i < Array::length(dict_binds) {
+    let (tp, tr, dict_pname, _) = Array::get(dict_binds, i)
+    if tp == tparam && tr == trait_name {
+      result = Some(dict_pname)
+      i = Array::length(dict_binds)
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+let build_concrete_dict: (String, String, Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Option[Expr] = (cname, trait_name, traits) -> {
+  match lookup_trait_sigs(traits, trait_name) {
+    Some(sigs) => {
+      let mnames = method_names_of_sigs(sigs)
+      let recfields = Array::slice([
+        ("", EUnit)
+      ], 0, 0)
+      let mut mi = 0
+      while mi < Array::length(mnames) {
+        let m = Array::get(mnames, mi)
+        Array::push(recfields, (m, EIdent(String::concat(cname, String::concat("::", m)), -1)))
+        mi = mi + 1
+      }
+      Some(ERecord(recfields))
+    },
+    None => None
+  }
+}
+let synth_dicts: (Array[(String, String, Int)], Array[Expr], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(String, Array[String])], Array[(String, String)], Array[(String, String, String, Array[String])], Array[(String, String)]) -> Option[Array[Expr]] = (threaded, orig_args, traits, struct_sets, var_types, dict_binds, fn_returns) -> {
+  let dicts = empty_expr_array()
+  let mut ok = true
+  let mut bi = 0
+  while bi < Array::length(threaded) {
+    let (_, trait_name, recv_idx) = Array::get(threaded, bi)
+    if ok && recv_idx >= 0 && recv_idx < Array::length(orig_args) {
+      match infer_arg_type_name(Array::get(orig_args, recv_idx), struct_sets, var_types, fn_returns) {
+        Some(nm) => match find_dict_for_trait(dict_binds, nm, trait_name) {
+          Some(dict_pname) => Array::push(dicts, EIdent(dict_pname, -1)),
+          None => match build_concrete_dict(nm, trait_name, traits) {
+            Some(dict) => Array::push(dicts, dict),
+            None => {
+              ok = false
+            }
+          }
+        },
+        None => {
+          ok = false
+        }
+      }
+    } else {
+      ok = false
+    }
+    bi = bi + 1
+  }
+  if ok {
+    Some(dicts)
+  } else {
+    None
+  }
+}
+let concat_expr_arrays: (Array[Expr], Array[Expr]) -> Array[Expr] = (a, b) -> {
+  let out = empty_expr_array()
+  let mut i = 0
+  while i < Array::length(a) {
+    Array::push(out, Array::get(a, i))
+    i = i + 1
+  }
+  let mut j = 0
+  while j < Array::length(b) {
+    Array::push(out, Array::get(b, j))
+    j = j + 1
+  }
+  out
+}
+let seed_var_types: (Array[(String, Option[TypeExpr])], Array[String], Array[(String, String)]) -> Array[(String, String)] = (params, tparams, base) -> {
+  let _ = tparams
+  let out = Array::slice([
+    ("", "")
+  ], 0, 0)
+  let mut b = 0
+  while b < Array::length(base) {
+    Array::push(out, Array::get(base, b))
+    b = b + 1
+  }
+  let mut i = 0
+  while i < Array::length(params) {
+    let (pname, ann) = Array::get(params, i)
+    match ann {
+      Some(TyName(tn)) => Array::push(out, (pname, tn)),
+      Some(TyApp(tn, _)) => Array::push(out, (pname, tn)),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+let collect_fn_returns: (Array[Stmt]) -> Array[(String, String)] = (stmts) -> {
+  let out = Array::slice([
+    ("", "")
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, fname, _, body) => match body {
+        EFn(_, _, _, ret, _, _) => {
+          let rn = match ret {
+            Some(te) => match te {
+              TyName(n) => n,
+              TyApp(n, _) => n,
+              _ => ""
+            },
+            None => ""
+          }
+          Array::push(out, (fname, rn))
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+let fn_exists: (Array[(String, String)], String) -> Bool = (fn_returns, fname) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(fn_returns) {
+    let (n, _) = Array::get(fn_returns, i)
+    if n == fname {
+      found = true
+      i = Array::length(fn_returns)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+let fn_return_type: (Array[(String, String)], String) -> Option[String] = (fn_returns, fname) -> {
+  let mut i = 0
+  let mut result = None
+  while i < Array::length(fn_returns) {
+    let (n, rt) = Array::get(fn_returns, i)
+    if n == fname {
+      result = if String::length(rt) == 0 {
+        None
+      } else Some(rt)
+      i = Array::length(fn_returns)
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+let build_iter_for_with: (String, Expr, Expr, Expr) -> Expr = (name, nextcall, iter, body) -> {
+  let some_arm = (PCtor("Some", [
+    PTuple([
+      PBind(name),
+      PBind("__iter_rest")
+    ])
+  ]), EAssign("__iter_cur", EIdent("__iter_rest", -1), body))
+  let none_arm = (PCtor("None", Array::slice([
+    PWild
+  ], 0, 0)), EAssign("__iter_go", EBool(false), EUnit))
+  let loop_body = EMatch(nextcall, [
+    some_arm,
+    none_arm
+  ])
+  ELetMut("__iter_cur", iter, ELetMut("__iter_go", EBool(true), EWhile(EIdent("__iter_go", -1), loop_body)))
+}
+let next_call_for: (String) -> Expr = (ctype) -> {
+  ECall(EIdent(String::concat(ctype, "::next"), -1), [
+    EIdent("__iter_cur", -1)
+  ], -1)
+}
+let build_iter_for: (String, String, Expr, Expr) -> Expr = (name, ctype, iter, body) -> {
+  build_iter_for_with(name, next_call_for(ctype), iter, body)
+}
+let build_await_iter_for: (String, String, Expr, Expr) -> Expr = (name, ctype, iter, body) -> {
+  let awaited = ECall(EIdent("await", -1), [
+    next_call_for(ctype)
+  ], -1)
+  build_iter_for_with(name, awaited, iter, body)
+}
+let build_pull_for_in: (String, Option[String], Expr, Expr) -> Expr = (value_name, index_name, iterable, body) -> {
+  let some_arm = match index_name {
+    Some(ix) => ESeq(body, EAssign(ix, EBinOp("+", EIdent(ix, -1), EInt(1)), EUnit)),
+    None => ESeq(body, EUnit)
+  }
+  let loop_body = EMatch(ECall(EIdent("__pull_next", -1), Array::slice([
+    EUnit
+  ], 0, 0), -1), [
+    (PCtor("Some", [
+      PBind(value_name)
+    ]), some_arm),
+    (PCtor("None", Array::slice([
+      PWild
+    ], 0, 0)), EAssign("__pull_continue", EBool(false), EUnit))
+  ])
+  let core_loop = ELetMut("__pull_continue", EBool(true), EWhile(EIdent("__pull_continue", -1), loop_body))
+  let with_index = match index_name {
+    Some(ix) => ELetMut(ix, EInt(0), core_loop),
+    None => core_loop
+  }
+  ELet("__pull_next", iterable, with_index)
+}
+let for_await_inner: (Expr) -> Option[Expr] = (iter) -> {
+  match iter {
+    ECall(callee, args, _) => match callee {
+      EIdent(nm, _) => if nm == "__await_iter" && Array::length(args) == 1 {
+        Some(Array::get(args, 0))
+      } else {
+        None
+      },
+      _ => None
+    },
+    _ => None
+  }
+}
+let fn_return_is_future: (Array[(String, String)], String) -> Bool = (fn_returns, fname) -> {
+  match fn_return_type(fn_returns, fname) {
+    Some(head) => head == "Future",
+    None => false
+  }
+}
+let classify_for_await_loop: (String, Option[String], Expr, Expr, Expr, Array[(String, Array[String])], Array[(String, String)], Array[(String, String)]) -> Expr = (name, idx, inner, rinner, rbody, struct_sets, var_types, fn_returns) -> {
+  match infer_arg_type_name(inner, struct_sets, var_types, fn_returns) {
+    Some(tn) => if fn_exists(fn_returns, String::concat(tn, "::next")) {
+      if fn_return_is_future(fn_returns, String::concat(tn, "::next")) {
+        build_await_iter_for(name, tn, rinner, rbody)
+      } else {
+        build_iter_for(name, tn, rinner, rbody)
+      }
+    } else {
+      build_pull_for_in(name, idx, rinner, rbody)
+    },
+    None => build_pull_for_in(name, idx, rinner, rbody)
+  }
+}
+let classify_sync_for_loop: (String, Option[String], Expr, Expr, Expr, Array[(String, Array[String])], Array[(String, String)], Array[(String, String)]) -> Expr = (name, idx, iter, riter, rbody, struct_sets, var_types, fn_returns) -> {
+  match infer_arg_type_name(iter, struct_sets, var_types, fn_returns) {
+    Some(tn) => if fn_exists(fn_returns, String::concat(tn, "::next")) {
+      build_iter_for(name, tn, riter, rbody)
+    } else {
+      match fn_return_type(fn_returns, String::concat(tn, "::iter")) {
+        Some(itertype) => build_iter_for(name, itertype, ECall(EIdent(String::concat(tn, "::iter"), -1), [
+          riter
+        ], -1), rbody),
+        None => EForIn(name, idx, riter, rbody)
+      }
+    },
+    None => EForIn(name, idx, riter, rbody)
+  }
+}
+let extend_var_types: (Array[(String, String)], String, Option[String]) -> Array[(String, String)] = (var_types, name, inferred) -> {
+  match inferred {
+    Some(tname) => {
+      let out = Array::slice([
+        ("", "")
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(var_types) {
+        Array::push(out, Array::get(var_types, i))
+        i = i + 1
+      }
+      Array::push(out, (name, tname))
+      out
+    },
+    None => var_types
+  }
+}
+let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(String, Array[String])], Array[(String, String, String, Array[String])], Array[(String, String)], Array[(String, String)]) -> Expr = (expr, gens, traits, struct_sets, dict_binds, var_types, fn_returns) -> {
+  match expr {
+    EIdent(name, off) => match split_qualified(name) {
+      Some(parts) => {
+        let (head, member) = parts
+        match find_dict_for_method(dict_binds, head, member) {
+          Some(dict_pname) => EDot(EIdent(dict_pname, -1), member, -1),
+          None => expr
+        }
+      },
+      None => expr
+    },
+    ECall(callee, args, off) => {
+      let rwargs = for a in args {
+        rewrite_expr(a, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+      }
+      match callee {
+        EIdent(name, coff) => {
+          let as_method = match split_qualified(name) {
+            Some(parts) => {
+              let (head, member) = parts
+              find_dict_for_method(dict_binds, head, member)
+            },
+            None => None
+          }
+          match as_method {
+            Some(dict_pname) => ECall(EDot(EIdent(dict_pname, -1), member_of(name), -1), rwargs, off),
+            None => match lookup_gen(gens, name) {
+              Some(threaded) => match synth_dicts(threaded, args, traits, struct_sets, var_types, dict_binds, fn_returns) {
+                Some(dicts) => ECall(EIdent(name, coff), concat_expr_arrays(dicts, rwargs), off),
+                None => ECall(EIdent(name, coff), rwargs, off)
+              },
+              None => ECall(EIdent(name, coff), rwargs, off)
+            }
+          }
+        },
+        EDot(obj, m, doff) => ECall(EDot(rewrite_expr(obj, gens, traits, struct_sets, dict_binds, var_types, fn_returns), m, doff), rwargs, off),
+        _ => ECall(rewrite_expr(callee, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rwargs, off)
+      }
+    },
+    EInt(_) => expr,
+    EFloat(_) => expr,
+    EString(_) => expr,
+    EBool(_) => expr,
+    EUnit => expr,
+    ESpread(_) => expr,
+    EStringInterp(_) => expr,
+    ETuple(elems) => ETuple(for e in elems {
+      rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+    }),
+    EArray(elems) => EArray(for e in elems {
+      rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+    }),
+    ERecord(fields) => {
+      let out = Array::slice([
+        ("", EUnit)
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (fname, fval) = Array::get(fields, i)
+        Array::push(out, (fname, rewrite_expr(fval, gens, traits, struct_sets, dict_binds, var_types, fn_returns)))
+        i = i + 1
+      }
+      ERecord(out)
+    },
+    EMap(fields) => {
+      let out = Array::slice([
+        ("", EUnit)
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (k, v) = Array::get(fields, i)
+        Array::push(out, (k, rewrite_expr(v, gens, traits, struct_sets, dict_binds, var_types, fn_returns)))
+        i = i + 1
+      }
+      EMap(out)
+    },
+    EIf(c, t, e) => EIf(rewrite_expr(c, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(t, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    ELet(name, val, body) => {
+      let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+      let body_vars = extend_var_types(var_types, name, infer_arg_type_name(val, struct_sets, var_types, fn_returns))
+      ELet(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns))
+    },
+    ELetRec(name, val, body) => ELetRec(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    ELetMut(name, val, body) => {
+      let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+      let body_vars = extend_var_types(var_types, name, infer_arg_type_name(val, struct_sets, var_types, fn_returns))
+      ELetMut(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns))
+    },
+    EAssign(name, val, cont) => EAssign(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(cont, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    EAssignOp(name, op, val, cont) => EAssignOp(name, op, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(cont, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    ESeq(a, b) => ESeq(rewrite_expr(a, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(b, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    EMatch(scrut, arms) => {
+      let out = Array::slice([
+        (PWild, EUnit)
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, b) = Array::get(arms, i)
+        Array::push(out, (p, rewrite_expr(b, gens, traits, struct_sets, dict_binds, var_types, fn_returns)))
+        i = i + 1
+      }
+      EMatch(rewrite_expr(scrut, gens, traits, struct_sets, dict_binds, var_types, fn_returns), out)
+    },
+    EHandle(scrut, arms) => {
+      let out = Array::slice([
+        (PWild, EUnit)
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, b) = Array::get(arms, i)
+        Array::push(out, (p, rewrite_expr(b, gens, traits, struct_sets, dict_binds, var_types, fn_returns)))
+        i = i + 1
+      }
+      EHandle(rewrite_expr(scrut, gens, traits, struct_sets, dict_binds, var_types, fn_returns), out)
+    },
+    EWhile(c, b) => EWhile(rewrite_expr(c, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(b, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    ELoop(params, body) => ELoop(for param in params {
+      let (name, init) = param
+      (name, rewrite_expr(init, gens, traits, struct_sets, dict_binds, var_types, fn_returns))
+    }, rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    EForIn(name, idx, iter, body) => {
+      let rbody = rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+      match for_await_inner(iter) {
+        Some(inner) => {
+          let rinner = rewrite_expr(inner, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+          classify_for_await_loop(name, idx, inner, rinner, rbody, struct_sets, var_types, fn_returns)
+        },
+        None => {
+          let riter = rewrite_expr(iter, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+          if Array::length(traits) == 0 {
+            EForIn(name, idx, riter, rbody)
+          } else {
+            classify_sync_for_loop(name, idx, iter, riter, rbody, struct_sets, var_types, fn_returns)
+          }
+        }
+      }
+    },
+    EBinOp(op, l, r) => EBinOp(op, rewrite_expr(l, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(r, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    EUnaryOp(op, e) => EUnaryOp(op, rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    EFn(tp, bs, ps, ret, eff, body) => EFn(tp, bs, ps, ret, eff, rewrite_expr(body, gens, traits, struct_sets, dict_binds, seed_var_types(ps, tp, var_types), fn_returns)),
+    EDot(obj, field, off) => EDot(rewrite_expr(obj, gens, traits, struct_sets, dict_binds, var_types, fn_returns), field, off),
+    ELabeledArg(label, name, body) => ELabeledArg(label, name, rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    EThrow(e) => EThrow(rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    EReturn(e) => EReturn(rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    EBreak(opt) => match opt {
+      Some(e) => EBreak(Some(rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns))),
+      None => expr
+    },
+    EContinue(exprs) => EContinue(for e in exprs {
+      rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+    })
+  }
+}
+let member_of: (String) -> String = (name) -> {
+  match split_qualified(name) {
+    Some(parts) => {
+      let (_, member) = parts
+      member
+    },
+    None => name
+  }
+}
+let dict_binds_of: (Array[(String, String, Int)], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Array[(String, String, String, Array[String])] = (threaded, traits) -> {
+  let out = empty_dict_binds()
+  let mut i = 0
+  while i < Array::length(threaded) {
+    let (tp, trait_name, _) = Array::get(threaded, i)
+    let methods = match lookup_trait_sigs(traits, trait_name) {
+      Some(sigs) => method_names_of_sigs(sigs),
+      None => empty_str_array()
+    }
+    Array::push(out, (tp, trait_name, dict_param_name(trait_name, tp), methods))
+    i = i + 1
+  }
+  out
+}
+let thread_dict_params: (Array[(String, String, Int)], Array[(String, Option[TypeExpr])]) -> Array[(String, Option[TypeExpr])] = (threaded, params) -> {
+  let result = Array::slice([
+    ("", None)
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(threaded) {
+    let (tp, trait_name, _) = Array::get(threaded, i)
+    let dty = TyApp(dict_struct_name(trait_name), [
+      TyName(tp)
+    ])
+    Array::push(result, (dict_param_name(trait_name, tp), Some(dty)))
+    i = i + 1
+  }
+  let mut j = 0
+  while j < Array::length(params) {
+    Array::push(result, Array::get(params, j))
+    j = j + 1
+  }
+  result
+}
+let rewrite_stmt: (Stmt, Array[(String, Array[(String, String, Int)])], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(String, Array[String])], Array[(String, String)]) -> Stmt = (stmt, gens, traits, struct_sets, fn_returns) -> {
+  let no_binds = empty_dict_binds()
+  let no_vars = Array::slice([
+    ("", "")
+  ], 0, 0)
+  match stmt {
+    SLet(exp, isrec, fname, ann, body) => match lookup_gen(gens, fname) {
+      Some(threaded) => match body {
+        EFn(tparams, bounds, params, ret, eff, fbody) => {
+          let binds = dict_binds_of(threaded, traits)
+          let new_params = thread_dict_params(threaded, params)
+          let seeded = seed_var_types(params, tparams, no_vars)
+          let new_body = rewrite_expr(fbody, gens, traits, struct_sets, binds, seeded, fn_returns)
+          SLet(exp, isrec, fname, ann, EFn(tparams, bounds, new_params, ret, eff, new_body))
+        },
+        _ => stmt
+      },
+      None => SLet(exp, isrec, fname, ann, rewrite_expr(body, gens, traits, struct_sets, no_binds, no_vars, fn_returns))
+    },
+    SLetMut(name, ty, e) => SLetMut(name, ty, rewrite_expr(e, gens, traits, struct_sets, no_binds, no_vars, fn_returns)),
+    STest(name, body) => STest(name, rewrite_expr(body, gens, traits, struct_sets, no_binds, no_vars, fn_returns)),
+    SBench(name, body) => SBench(name, rewrite_expr(body, gens, traits, struct_sets, no_binds, no_vars, fn_returns)),
+    SExpr(e) => SExpr(rewrite_expr(e, gens, traits, struct_sets, no_binds, no_vars, fn_returns)),
+    SModule(exp, name, body) => SModule(exp, name, for s in body {
+      rewrite_stmt(s, gens, traits, struct_sets, fn_returns)
+    }),
+    _ => stmt
+  }
+}
+let qualified_name: (String, String) -> String = (tname, method) -> {
+  String::concat(tname, String::concat("::", method))
+}
+let top_level_fn_exists: (Array[Stmt], String) -> Bool = (stmts, fname) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, _) => if name == fname {
+        found = true
+        i = Array::length(stmts)
+      } else {
+        i = i + 1
+      },
+      _ => {
+        i = i + 1
+      }
+    }
+  }
+  found
+}
+let field_show_expr: (String, TypeExpr) -> Expr = (fname, fty) -> {
+  let access = EDot(EIdent("self", -1), fname, -1)
+  match fty {
+    TyName("String") => access,
+    _ => ECall(EIdent("__to_string", -1), [
+      access
+    ], -1)
+  }
+}
+let concat2: (Expr, Expr) -> Expr = (a, b) -> {
+  ECall(EIdent("String::concat", -1), [
+    a,
+    b
+  ], -1)
+}
+let gen_show_fn: (String, Array[(String, TypeExpr)]) -> Stmt = (tname, fields) -> {
+  let segs = empty_expr_array()
+  Array::push(segs, EString(String::concat(tname, " { ")))
+  let mut i = 0
+  while i < Array::length(fields) {
+    let (fname, fty) = Array::get(fields, i)
+    let sep = if i == 0 {
+      ""
+    } else ", "
+    Array::push(segs, EString(String::concat(sep, String::concat(fname, ": "))))
+    Array::push(segs, field_show_expr(fname, fty))
+    i = i + 1
+  }
+  Array::push(segs, EString(" }"))
+  let mut body = Array::get(segs, Array::length(segs) - 1)
+  let mut j = Array::length(segs) - 2
+  while j >= 0 {
+    body = concat2(Array::get(segs, j), body)
+    j = j - 1
+  }
+  let params = Array::slice([
+    ("self", Some(TyName(tname)))
+  ], 0, 1)
+  let no_tp = Array::slice([
+    ""
+  ], 0, 0)
+  let no_tb = Array::slice([
+    ("", no_tp)
+  ], 0, 0)
+  SLet(false, false, qualified_name(tname, "to_string"), None, EFn(no_tp, no_tb, params, Some(TyName("String")), None, body))
+}
+let gen_compare_fn: (String, Array[(String, TypeExpr)]) -> Stmt = (tname, fields) -> {
+  let neg_one = 0 - 1
+  let mut body = EInt(0)
+  let mut i = Array::length(fields) - 1
+  while i >= 0 {
+    let (fname, _) = Array::get(fields, i)
+    let af = EDot(EIdent("a", -1), fname, -1)
+    let bf = EDot(EIdent("b", -1), fname, -1)
+    body = EIf(EBinOp("<", af, bf), EInt(neg_one), EIf(EBinOp(">", af, bf), EInt(1), body))
+    i = i - 1
+  }
+  let params = Array::slice([
+    ("a", Some(TyName(tname))),
+    ("b", Some(TyName(tname)))
+  ], 0, 2)
+  let no_tp = Array::slice([
+    ""
+  ], 0, 0)
+  let no_tb = Array::slice([
+    ("", no_tp)
+  ], 0, 0)
+  SLet(false, false, qualified_name(tname, "compare"), None, EFn(no_tp, no_tb, params, Some(TyName("Int")), None, body))
+}
+export let desugar_derives: (Array[Stmt]) -> Unit = (stmts) -> {
+  let gen = empty_stmt_list()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(_, name, fields, derives) => {
+        if str_array_contains(derives, "Show") && !top_level_fn_exists(stmts, qualified_name(name, "to_string")) {
+          Array::push(gen, gen_show_fn(name, fields))
+        } else {
+          ()
+        }
+        if str_array_contains(derives, "Ord") && !top_level_fn_exists(stmts, qualified_name(name, "compare")) {
+          Array::push(gen, gen_compare_fn(name, fields))
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  let mut g = 0
+  while g < Array::length(gen) {
+    Array::push(stmts, Array::get(gen, g))
+    g = g + 1
+  }
+}
+let empty_stmt_list: () -> Array[Stmt] = () -> {
+  Array::slice([
+    SExport([
+      ""
+    ])
+  ], 0, 0)
+}
+let struct_decl_exists: (Array[Stmt], String) -> Bool = (stmts, name) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(_, sname, _, _) => if sname == name {
+        found = true
+        i = Array::length(stmts)
+      } else {
+        i = i + 1
+      },
+      _ => {
+        i = i + 1
+      }
+    }
+  }
+  found
+}
+export let desugar_trait_dicts: (Array[Stmt]) -> Unit = (stmts) -> {
+  desugar_derives(stmts)
+  let traits_raw = collect_method_traits(stmts)
+  let supers_map = collect_trait_supers(stmts)
+  let traits = flatten_traits(traits_raw, supers_map)
+  let struct_sets = collect_struct_field_sets(stmts)
+  let fn_returns = collect_fn_returns(stmts)
+  let gens = build_gens(stmts, traits)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    Array::set(stmts, i, rewrite_stmt(Array::get(stmts, i), gens, traits, struct_sets, fn_returns))
+    i = i + 1
+  }
+  if Array::length(traits_raw) == 0 {
+    ()
+  } else {
+    let mut ti = 0
+    while ti < Array::length(traits) {
+      let (trait_name, sigs) = Array::get(traits, ti)
+      if struct_decl_exists(stmts, dict_struct_name(trait_name)) {
+        ()
+      } else {
+        Array::push(stmts, make_dict_struct_stmt(trait_name, sigs))
+      }
+      ti = ti + 1
+    }
   }
 }
 let op_prefix = 252
@@ -16562,6 +17877,7 @@ export let wasi_memory_min_pages_for_heap: (Int) -> Int = (heap_start) -> {
   }
 }
 export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String, String)], Array[(String, String, Int, Int)], Bool, Bool, Bool, Bool, Bool, DbgProv) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, linked_imports, library_mode, enable_rc, coverage, debug_trace, debug_break, prov) -> {
+  desugar_trait_dicts(stmts)
   let fn_names_list = lc_fresh_string_array()
   let fn_param_counts = lc_fresh_int_array()
   let fn_needs_env_list = lc_fresh_bool_array()
@@ -16685,7 +18001,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
         }
         0
       },
-      SStruct(_, sname, sfields) => {
+      SStruct(_, sname, sfields, _) => {
         type_index = type_index + 1
         Array::push(ctor_names_list, sname)
         Array::push(ctor_tags_list, type_index<<16)
@@ -16702,7 +18018,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   let mut si = 0
   while si < Array::length(stmts) {
     match Array::get(stmts, si) {
-      SStruct(_, sname, sfields) => {
+      SStruct(_, sname, sfields, _) => {
         Array::push(struct_names, sname)
         let fnames = lc_fresh_string_array()
         let mut sfi = 0
@@ -19818,34 +21134,41 @@ let empty_exprs: () -> Array[Expr] = () -> {
     EUnit
   ], 0, 0)
 }
-export let skip_derive: (Array[Token], Int) -> Int with { Error } = (tokens, pos) -> {
+export let parse_derive_names: (Array[Token], Int) -> (Array[String], Int) with { Error } = (tokens, pos) -> {
+  let names = Array::slice([
+    ""
+  ], 0, 0)
   match peek(tokens, pos) {
     TDerive => match peek(tokens, pos + 1) {
       TLParen => {
-        match peek(tokens, pos + 2) {
-          TIdent(name) => if name != "Eq" {
-            throw("unknown derive: \{name}")
-          },
-          _ => throw("expected derive identifier")
-        }
         let mut dp = pos + 2
         let mut dd = true
         while dd {
           match peek(tokens, dp) {
             TRParen => {
               dd = false
-            },
-            _ => {
               dp = dp + 1
-            }
+            },
+            TComma => {
+              dp = dp + 1
+            },
+            TIdent(name) => {
+              Array::push(names, name)
+              dp = dp + 1
+            },
+            _ => throw("expected derive identifier")
           }
         }
-        dp + 1
+        (names, dp)
       },
-      _ => pos
+      _ => (names, pos)
     },
-    _ => pos
+    _ => (names, pos)
   }
+}
+export let skip_derive: (Array[Token], Int) -> Int with { Error } = (tokens, pos) -> {
+  let (_, next) = parse_derive_names(tokens, pos)
+  next
 }
 let empty_fields: () -> Array[(String, TypeExpr)] = () -> {
   Array::slice([
@@ -20015,7 +21338,7 @@ let empty_type_exprs: () -> Array[TypeExpr] = () -> {
     TyUnit
   ], 0, 0)
 }
-let skip_braced_body: (Array[Token], Int) -> Int = (tokens, pos) -> {
+export let skip_braced_body: (Array[Token], Int) -> Int = (tokens, pos) -> {
   match peek(tokens, pos) {
     TLBrace => {
       let mut bp = pos + 1
@@ -20040,41 +21363,86 @@ let skip_braced_body: (Array[Token], Int) -> Int = (tokens, pos) -> {
     _ => pos
   }
 }
+let parse_trait_methods: (Array[Token], Int) -> (Array[(String, Array[TypeExpr], TypeExpr)], Int) with { Error } = (tokens, pos) -> {
+  match peek(tokens, pos) {
+    TLBrace => {
+      let sigs_b = ArrayBuilder::new()
+      let mut p = pos + 1
+      while true {
+        match peek(tokens, p) {
+          TRBrace => {
+            p = p + 1
+            break
+          },
+          TIdent(method_name) => {
+            let (params, after_method_params) = match peek(tokens, p + 1) {
+              TLParen => {
+                let (params_ty, after_paren) = parse_type_impl(tokens, p + 1, 1)
+                let params = match params_ty {
+                  TyUnit => empty_type_exprs(),
+                  TyTuple(elems) => elems,
+                  _ => [
+                    params_ty
+                  ]
+                }
+                (params, after_paren)
+              },
+              _ => (empty_type_exprs(), p + 1)
+            }
+            let arrow_pos = expect_tk(tokens, after_method_params, "->")
+            let (ret_type, after_ret) = parse_type_impl(tokens, arrow_pos, 0)
+            ArrayBuilder::push(sigs_b, (method_name, params, ret_type))
+            p = match peek(tokens, after_ret) {
+              TSemicolon => after_ret + 1,
+              _ => after_ret
+            }
+          },
+          _ => throw("expected trait method signature or '}'")
+        }
+      }
+      (ArrayBuilder::freeze(sigs_b), p)
+    },
+    _ => (ArrayBuilder::freeze(ArrayBuilder::new()), pos)
+  }
+}
 let parse_trait_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } = (tokens, pos, exported) -> {
   let empty_strings = Array::slice([
     "_"
   ], 0, 0)
   match peek(tokens, pos) {
-    TIdent(name) => match peek(tokens, pos + 1) {
-      TColon => {
-        let supers = empty_strings
-        let mut p = pos + 2
-        let mut done = false
-        while !done {
-          match peek(tokens, p) {
-            TIdent(sname) => match peek(tokens, p + 1) {
-              TPlus => {
-                Array::push(supers, sname)
-                p = p + 2
+    TIdent(name) => {
+      let after_name = skip_bracketed_args(tokens, pos + 1)
+      match peek(tokens, after_name) {
+        TColon => {
+          let supers = empty_strings
+          let mut p = after_name + 1
+          let mut done = false
+          while !done {
+            match peek(tokens, p) {
+              TIdent(sname) => match peek(tokens, p + 1) {
+                TPlus => {
+                  Array::push(supers, sname)
+                  p = p + 2
+                },
+                _ => {
+                  Array::push(supers, sname)
+                  p = p + 1
+                  done = true
+                }
               },
               _ => {
-                Array::push(supers, sname)
-                p = p + 1
                 done = true
               }
-            },
-            _ => {
-              done = true
             }
           }
+          let np = p
+          let (methods, body_end) = parse_trait_methods(tokens, np)
+          (STrait(exported, name, supers, methods), body_end)
+        },
+        _ => {
+          let (methods, body_end) = parse_trait_methods(tokens, after_name)
+          (STrait(exported, name, empty_strings, methods), body_end)
         }
-        let np = p
-        let body_end = skip_braced_body(tokens, np)
-        (STrait(exported, name, supers), body_end)
-      },
-      _ => {
-        let body_end = skip_braced_body(tokens, pos + 1)
-        (STrait(exported, name, empty_strings), body_end)
       }
     },
     _ => throw("expected trait name")
@@ -20680,8 +22048,7 @@ let parse_impl_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (tokens
       match peek(tokens, fp) {
         TIdent(type_name) => {
           let after_targs = skip_bracketed_args(tokens, fp + 1)
-          let body_end = skip_braced_body(tokens, after_targs)
-          (SImpl(type_params, type_bounds, trait_name, type_name), body_end)
+          (SImpl(type_params, type_bounds, trait_name, type_name), after_targs)
         },
         _ => throw("expected type name after 'for'")
       }
@@ -20822,20 +22189,20 @@ let parse_struct_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } =
       let after_name = skip_bracketed_args(tokens, pos + 1)
       let br = expect_tk(tokens, after_name, "{")
       let (fields, end) = parse_struct_fields(tokens, br);
-      let final_pos = skip_derive(tokens, end)
-      (SStruct(exported, name, fields), final_pos)
+      let (derives, final_pos) = parse_derive_names(tokens, end)
+      (SStruct(exported, name, fields, derives), final_pos)
     },
     _ => throw("expected struct name")
   }
 }
 export {
-  _no_tb, _no_tp, collect_effect_names, collect_import_path, empty_arms, empty_exprs, empty_fields, empty_import_items, empty_params, empty_pats, empty_type_exprs, expect_tk, is_expr_end_token, is_lambda_start, is_non_pipe_infix, is_tk, mode_block, mode_for_in, mode_handle, mode_if, mode_match, mode_while, parse_binding_name, parse_effect_stmt, parse_enum_stmt, parse_impl_stmt_dispatch, parse_import_item, parse_param_list, parse_pattern, parse_struct_field, parse_struct_stmt, parse_suberror_stmt, parse_trait_stmt, parse_type, parse_type_alias_stmt, parse_type_impl, peek, skip_derive, skip_semi, tk_name
+  _no_tb, _no_tp, collect_effect_names, collect_import_path, empty_arms, empty_exprs, empty_fields, empty_import_items, empty_params, empty_pats, empty_type_exprs, expect_tk, is_expr_end_token, is_lambda_start, is_non_pipe_infix, is_tk, mode_block, mode_for_in, mode_handle, mode_if, mode_match, mode_while, parse_binding_name, parse_effect_stmt, parse_enum_stmt, parse_impl_stmt_dispatch, parse_import_item, parse_param_list, parse_pattern, parse_struct_field, parse_struct_stmt, parse_suberror_stmt, parse_trait_stmt, parse_type, parse_type_alias_stmt, parse_type_impl, parse_derive_names, peek, skip_derive, skip_semi, tk_name
 }
 export {
-  peek, is_tk, _no_tb, _no_tp, mode_if, tk_name, expect_tk, skip_semi, skip_derive, empty_arms, empty_pats, mode_block, mode_match, mode_while, parse_type, empty_exprs, mode_for_in, mode_handle, empty_fields, empty_params, parse_pattern, is_lambda_start, parse_enum_stmt, parse_type_impl, empty_type_exprs, parse_param_list, parse_trait_stmt, is_expr_end_token, is_non_pipe_infix, parse_effect_stmt, parse_import_item, parse_struct_stmt, empty_import_items, parse_binding_name, parse_struct_field, collect_import_path, parse_suberror_stmt, collect_effect_names, parse_type_alias_stmt, parse_impl_stmt_dispatch
+  peek, is_tk, _no_tb, _no_tp, mode_if, tk_name, expect_tk, skip_semi, skip_derive, parse_derive_names, empty_arms, empty_pats, mode_block, mode_match, mode_while, parse_type, empty_exprs, mode_for_in, mode_handle, empty_fields, empty_params, parse_pattern, is_lambda_start, parse_enum_stmt, parse_type_impl, empty_type_exprs, parse_param_list, parse_trait_stmt, is_expr_end_token, is_non_pipe_infix, parse_effect_stmt, parse_import_item, parse_struct_stmt, empty_import_items, parse_binding_name, parse_struct_field, collect_import_path, parse_suberror_stmt, collect_effect_names, parse_type_alias_stmt, parse_impl_stmt_dispatch
 }
 export {
-  peek, is_tk, _no_tb, _no_tp, mode_if, tk_name, expect_tk, skip_semi, empty_arms, empty_pats, mode_block, mode_match, mode_while, parse_type, empty_exprs, mode_for_in, mode_handle, skip_derive, empty_fields, empty_params, parse_pattern, is_lambda_start, parse_enum_stmt, parse_type_impl, empty_type_exprs, parse_param_list, parse_trait_stmt, is_expr_end_token, is_non_pipe_infix, parse_effect_stmt, parse_import_item, parse_struct_stmt, empty_import_items, parse_binding_name, parse_struct_field, collect_import_path, parse_suberror_stmt, collect_effect_names, parse_type_alias_stmt, parse_impl_stmt_dispatch
+  peek, is_tk, _no_tb, _no_tp, mode_if, tk_name, expect_tk, skip_semi, empty_arms, empty_pats, mode_block, mode_match, mode_while, parse_type, empty_exprs, mode_for_in, mode_handle, skip_derive, parse_derive_names, empty_fields, empty_params, parse_pattern, is_lambda_start, parse_enum_stmt, parse_type_impl, empty_type_exprs, parse_param_list, parse_trait_stmt, is_expr_end_token, is_non_pipe_infix, parse_effect_stmt, parse_import_item, parse_struct_stmt, empty_import_items, parse_binding_name, parse_struct_field, collect_import_path, parse_suberror_stmt, collect_effect_names, parse_type_alias_stmt, parse_impl_stmt_dispatch
 }
 let rec desugar_loop_body: (Expr, Array[String]) -> Expr = (expr, param_names) -> {
   match expr {
@@ -22302,24 +23669,6 @@ let parse_impl_block: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -
   }
   (fold_block_steps(ArrayBuilder::freeze(steps)), end_pos)
 }
-let build_pull_for_in: (String, Option[String], Expr, Expr, Int) -> Expr = (value_name, index_name, iterable, body, uid) -> {
-  let next_var = "__pull_next_\{uid}"
-  let cont_var = "__pull_continue_\{uid}"
-  let some_arm = match index_name {
-    Some(ix) => ESeq(body, EAssign(ix, EBinOp("+", EIdent(ix, -1), EInt(1)), EUnit)),
-    None => ESeq(body, EUnit)
-  }
-  let loop_body = EMatch(ECall(EIdent(next_var, -1), [], -1), [
-    (PCtor("Some", [PBind(value_name)]), some_arm),
-    (PCtor("None", []), EAssign(cont_var, EBool(false), EUnit))
-  ])
-  let core_loop = ELetMut(cont_var, EBool(true), EWhile(EIdent(cont_var, -1), loop_body))
-  let with_index = match index_name {
-    Some(ix) => ELetMut(ix, EInt(0), core_loop),
-    None => core_loop
-  }
-  ELet(next_var, iterable, with_index)
-}
 export let parse_impl_dispatch: (Array[Token], Array[Int], Int, Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, pos, mode, parse_recur) -> {
   if mode == 20 {
     parse_impl_block(tokens, starts, pos, parse_recur)
@@ -22426,7 +23775,9 @@ export let parse_impl_dispatch: (Array[Token], Array[Int], Int, Int, (Array[Toke
                 let bb = expect_tk(tokens, after_iter, "{")
                 let (body, end) = parse_recur(tokens, bb, 20)
                 let loop_expr = if is_await {
-                  build_pull_for_in(second_name, Some(first_name), iterable, body, start)
+                  EForIn(second_name, Some(first_name), ECall(EIdent("__await_iter", -1), [
+                    iterable
+                  ], -1), body)
                 } else {
                   EForIn(second_name, Some(first_name), iterable, body)
                 }
@@ -22444,7 +23795,9 @@ export let parse_impl_dispatch: (Array[Token], Array[Int], Int, Int, (Array[Toke
               let bb = expect_tk(tokens, after_iter, "{")
               let (body, end) = parse_recur(tokens, bb, 20)
               let loop_expr = if is_await {
-                build_pull_for_in(first_name, None, iterable, body, start)
+                EForIn(first_name, None, ECall(EIdent("__await_iter", -1), [
+                  iterable
+                ], -1), body)
               } else {
                 EForIn(first_name, None, iterable, body)
               }
@@ -22471,6 +23824,9 @@ export let parse_impl: (Array[Token], Array[Int], Int, Int) -> (Expr, Int) with 
     }
   }
   parse_recur(tokens, pos, mode)
+}
+export let parse_expr: (Array[Token], Int) -> (Expr, Int) with { Error } = (tokens, pos) -> {
+  parse_impl(tokens, [], pos, 0)
 }
 let parse_type_param_bound_names: (Array[Token], Int) -> (Array[String], Int) with { Error } = (tokens, pos) -> {
   let b = ArrayBuilder::new()
@@ -22927,8 +24283,8 @@ let parse_toplevel_struct_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { 
       }
       let br = expect_tk(tokens, after_name, "{")
       let (fields, end) = parse_toplevel_struct_fields(tokens, br);
-      let final_pos = skip_derive(tokens, end)
-      (SStruct(exported, name, fields), final_pos)
+      let (derives, final_pos) = parse_derive_names(tokens, end)
+      (SStruct(exported, name, fields, derives), final_pos)
     },
     _ => throw("expected struct name")
   }
@@ -23087,6 +24443,40 @@ export let rec parse_stmt: (Array[Token], Array[Int], Int) -> (Stmt, Int) with {
     }
   }
 }
+let parse_impl_methods: (Array[Token], Int, Stmt) -> (Array[Stmt], Int) with { Error } = (tokens, pos, simpl) -> {
+  let out = ArrayBuilder::new()
+  ArrayBuilder::push(out, simpl)
+  match peek(tokens, pos) {
+    TLBrace => {
+      let type_name = match simpl {
+        SImpl(_, _, _, tn) => tn,
+        _ => ""
+      }
+      let mut p = pos + 1
+      let mut done = false
+      while !done {
+        match peek(tokens, p) {
+          TRBrace => {
+            p = p + 1
+            done = true
+          },
+          TIdent(mname) => {
+            let (efn, p2) = parse_expr(tokens, p + 1)
+            let qname = String::concat(type_name, String::concat("::", mname))
+            ArrayBuilder::push(out, SLet(false, true, qname, None, efn))
+            p = match peek(tokens, p2) {
+              TSemicolon => p2 + 1,
+              _ => p2
+            }
+          },
+          _ => throw("expected impl method name or '}'")
+        }
+      }
+      (ArrayBuilder::freeze(out), p)
+    },
+    _ => (ArrayBuilder::freeze(out), pos)
+  }
+}
 export let parse_program: (Array[Token]) -> Array[Stmt] with { Error } = (tokens) -> {
   let b = ArrayBuilder::new()
   let mut pos = 0
@@ -23100,8 +24490,13 @@ export let parse_program: (Array[Token]) -> Array[Stmt] with { Error } = (tokens
         pos = pos + 1
       },
       TImpl => {
-        let (stmt, next) = parse_impl_stmt_dispatch(tokens, pos + 1)
-        ArrayBuilder::push(b, stmt)
+        let (simpl, hp) = parse_impl_stmt_dispatch(tokens, pos + 1)
+        let (impl_stmts, next) = parse_impl_methods(tokens, hp, simpl)
+        let mut ii = 0
+        while ii < Array::length(impl_stmts) {
+          ArrayBuilder::push(b, Array::get(impl_stmts, ii))
+          ii = ii + 1
+        }
         pos = next
       },
       _ => {
@@ -23127,10 +24522,18 @@ export let parse_program_located: (Array[Token], Array[Int], String) -> Array[St
       },
       _ => {
         let start_pos = pos
-        let (stmt, next) = handle {
+        let (stmts, next) = handle {
           match peek(tokens, pos) {
-            TImpl => parse_impl_stmt_dispatch(tokens, pos + 1),
-            _ => parse_stmt(tokens, starts, pos)
+            TImpl => {
+              let (simpl, hp) = parse_impl_stmt_dispatch(tokens, pos + 1)
+              parse_impl_methods(tokens, hp, simpl)
+            },
+            _ => {
+              let (stmt, n) = parse_stmt(tokens, starts, pos)
+              ([
+                stmt
+              ], n)
+            }
           }
         } with Error {
           Throw(msg) => {
@@ -23144,7 +24547,11 @@ export let parse_program_located: (Array[Token], Array[Int], String) -> Array[St
             throw(String::concat(loc, msg))
           }
         }
-        ArrayBuilder::push(b, stmt)
+        let mut ii = 0
+        while ii < Array::length(stmts) {
+          ArrayBuilder::push(b, Array::get(stmts, ii))
+          ii = ii + 1
+        }
         pos = next
       }
     }
@@ -23189,11 +24596,19 @@ export let parse_program_recovering: (Array[Token], Array[Int], String) -> (Arra
       _ => {
         let start_pos = pos
         let res = handle {
-          let (stmt, next) = match peek(tokens, pos) {
-            TImpl => parse_impl_stmt_dispatch(tokens, pos + 1),
-            _ => parse_stmt(tokens, starts, pos)
+          let (stmts, next) = match peek(tokens, pos) {
+            TImpl => {
+              let (simpl, hp) = parse_impl_stmt_dispatch(tokens, pos + 1)
+              parse_impl_methods(tokens, hp, simpl)
+            },
+            _ => {
+              let (stmt, n) = parse_stmt(tokens, starts, pos)
+              ([
+                stmt
+              ], n)
+            }
           }
-          Some((stmt, next))
+          Some((stmts, next))
         } with Error {
           Throw(msg) => {
             let off = if start_pos < Array::length(starts) {
@@ -23208,8 +24623,12 @@ export let parse_program_recovering: (Array[Token], Array[Int], String) -> (Arra
           }
         }
         match res {
-          Some((stmt, next)) => {
-            ArrayBuilder::push(b, stmt)
+          Some((stmts, next)) => {
+            let mut ii = 0
+            while ii < Array::length(stmts) {
+              ArrayBuilder::push(b, Array::get(stmts, ii))
+              ii = ii + 1
+            }
             pos = next
           },
           None => {
@@ -23251,8 +24670,9 @@ export let parse_program_spans: (Array[Token], Array[Int], Array[Int]) -> (Array
       },
       TImpl => {
         let st = Array::get(starts, pos)
-        let (stmt, next) = parse_impl_stmt_dispatch(tokens, pos + 1)
-        ArrayBuilder::push(b, stmt)
+        let (simpl, hp) = parse_impl_stmt_dispatch(tokens, pos + 1)
+        let next = skip_braced_body(tokens, hp)
+        ArrayBuilder::push(b, simpl)
         ArrayBuilder::push(span_start, st)
         ArrayBuilder::push(span_end, Array::get(ends, next - 1))
         pos = next
@@ -23383,6 +24803,7 @@ export let expand_interp_stmts: (Array[Stmt]) -> Unit with { Error } = (stmts) -
     }
     i = i + 1
   }
+  desugar_trait_dicts(stmts)
 }
 export let strip_generic_type_params: (Array[Stmt]) -> Unit = (stmts) -> {
   let empty_tp = Array::slice([
@@ -24228,20 +25649,39 @@ export let rec print_stmt: (Stmt) -> String = (s) -> {
         else String::concat(p, String::concat("suberror ", String::concat(name, String::concat(" { ", String::concat(print_ctor_list(ctors), " }")))))
       } else String::concat(p, String::concat("suberror ", String::concat(name, String::concat(" { ", String::concat(print_ctor_list(ctors), " }")))))
     },
-    SStruct(exported, name, fields) => {
+    SStruct(exported, name, fields, derives) => {
       let parts = for field in fields {
         let (fn1, ty) = field
         String::concat(fn1, String::concat(": ", print_type_expr(ty)))
       }
-      String::concat(prefix(exported), String::concat("struct ", String::concat(name, String::concat(" { ", String::concat(join(parts, "; "), " }")))))
+      let base = String::concat(prefix(exported), String::concat("struct ", String::concat(name, String::concat(" { ", String::concat(join(parts, "; "), " }")))))
+      if Array::length(derives) == 0 {
+        base
+      } else {
+        String::concat(base, String::concat(" derive(", String::concat(join(derives, ", "), ")")))
+      }
     },
     STypeAlias(exported, name, _, ty) => String::concat(prefix(exported), String::concat("type ", String::concat(name, String::concat(" = ", print_type_expr(ty))))),
-    STrait(exported, name, supers) => {
+    STrait(exported, name, supers, methods) => {
       let base = String::concat(prefix(exported), String::concat("trait ", name))
-      if Array::length(supers) == 0 {
+      let head = if Array::length(supers) == 0 {
         base
       }
       else String::concat(base, String::concat(": ", join(supers, " + ")))
+      if Array::length(methods) == 0 {
+        head
+      } else {
+        let method_parts = for m in methods {
+          let (method_name, params, ret) = m
+          let params_str = if Array::length(params) > 0 {
+            String::concat("(", String::concat(join(for pt in params {
+              print_type_expr(pt)
+            }, ", "), ")"))
+          } else ""
+          String::concat("  ", String::concat(method_name, String::concat(params_str, String::concat(" -> ", print_type_expr(ret)))))
+        }
+        String::concat(head, String::concat(" {\n", String::concat(join(method_parts, ";\n"), "\n}")))
+      }
     },
     SImpl(tparams, _, trait_name, type_name) => {
       let head = if Array::length(tparams) == 0 {
@@ -24896,12 +26336,38 @@ let collect_exported_value_names: (Array[Stmt]) -> Array[String] = (stmts) -> {
   }
   names
 }
-let collect_private_value_renames: (String, Array[Stmt], Array[String], Array[String]) -> Array[(String, String)] = (path, stmts, namespace_suffix_box, exported) -> {
-  let renames = empty_aliases()
+let collect_exported_type_names: (Array[Stmt]) -> Array[String] = (stmts) -> {
+  let names = empty_strings()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SLet(false, _, name, _, _) => if !string_array_contains(exported, name) {
+      SStruct(true, name, _, _) => Array::push(names, name),
+      SEnum(true, name, _, _) => Array::push(names, name),
+      STrait(true, name, _, _) => Array::push(names, name),
+      STypeAlias(true, name, _, _) => Array::push(names, name),
+      SSuberror(true, name, _) => Array::push(names, name),
+      _ => ()
+    }
+    i = i + 1
+  }
+  names
+}
+let qualified_method_of_exported_type: (String, Array[String]) -> Bool = (name, exported_types) -> {
+  let idx = String::index_of(name, "::")
+  if idx < 0 {
+    false
+  } else {
+    let head = String::substring(name, 0, idx)
+    string_array_contains(exported_types, head)
+  }
+}
+let collect_private_value_renames: (String, Array[Stmt], Array[String], Array[String]) -> Array[(String, String)] = (path, stmts, namespace_suffix_box, exported) -> {
+  let renames = empty_aliases()
+  let exported_types = collect_exported_type_names(stmts)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(false, _, name, _, _) => if !string_array_contains(exported, name) && !qualified_method_of_exported_type(name, exported_types) {
         Array::push(renames, (name, namespace_private_name_lazy(path, name, namespace_suffix_box)))
       },
       SLetMut(name, _, _) => if !string_array_contains(exported, name) {
@@ -25132,7 +26598,7 @@ let collect_private_type_renames: (String, Array[Stmt], Array[String], Array[Str
       SEnum(false, name, _, _) => if !string_array_contains(exported, name) {
         Array::push(renames, (name, namespace_private_name_lazy(path, name, namespace_suffix_box)))
       },
-      SStruct(false, name, _) => if !string_array_contains(exported, name) {
+      SStruct(false, name, _, _) => if !string_array_contains(exported, name) {
         Array::push(renames, (name, namespace_private_name_lazy(path, name, namespace_suffix_box)))
       },
       STypeAlias(false, name, _, _) => if !string_array_contains(exported, name) {
@@ -25238,7 +26704,7 @@ export let rec namespace_private_value_stmts: (String, Array[Stmt]) -> Array[Stm
           })
         })
       },
-      SStruct(exported, name, fields) => {
+      SStruct(exported, name, fields, derives) => {
         let next_name = if exported {
           name
         } else {
@@ -25250,7 +26716,7 @@ export let rec namespace_private_value_stmts: (String, Array[Stmt]) -> Array[Stm
         SStruct(exported, next_name, for field in fields {
           let (field_name, field_ty) = field
           (field_name, rewrite_private_type_expr(field_ty, type_renames))
-        })
+        }, derives)
       },
       STypeAlias(exported, name, params, target) => {
         let next_name = if exported {
@@ -29649,7 +31115,7 @@ let collect_stmt_type_refs_into: (Stmt, Array[String]) -> Int = (stmt, out) -> {
     SLetMut(_, ty, _) => collect_opt_type_into(ty, out),
     SExternLet(_, ty) => collect_type_names_into(ty, out),
     STypeAlias(_, _, _, rhs) => collect_type_names_into(rhs, out),
-    SStruct(_, _, fields) => {
+    SStruct(_, _, fields, _) => {
       let mut i = 0
       while i < Array::length(fields) {
         let (_, fty) = Array::get(fields, i)
@@ -29707,9 +31173,9 @@ let stmt_section: (Stmt) -> Int = (stmt) -> {
     SAliasDecl(_, _) => 0,
     SEnum(_, _, _, _) => 1,
     SSuberror(_, _, _) => 1,
-    SStruct(_, _, _) => 1,
+    SStruct(_, _, _, _) => 1,
     STypeAlias(_, _, _, _) => 1,
-    STrait(_, _, _) => 1,
+    STrait(_, _, _, _) => 1,
     SImpl(_, _, _, _) => 1,
     SEffectDef(_, _, _, _) => 1,
     SExternLet(_, _) => 1,
@@ -30808,9 +32274,9 @@ let rec sym_walk_stmt: (Array[(String, Int, Int, Int)], String, Stmt, Array[Int]
     SLetMut(name, _, _) => sym_emit(out, source, name, 13, floor, hi),
     SEnum(_, name, _, _) => sym_emit(out, source, name, 10, floor, hi),
     SSuberror(_, name, _) => sym_emit(out, source, name, 10, floor, hi),
-    SStruct(_, name, _) => sym_emit(out, source, name, 23, floor, hi),
+    SStruct(_, name, _, _) => sym_emit(out, source, name, 23, floor, hi),
     STypeAlias(_, name, _, _) => sym_emit(out, source, name, 26, floor, hi),
-    STrait(_, name, _) => sym_emit(out, source, name, 11, floor, hi),
+    STrait(_, name, _, _) => sym_emit(out, source, name, 11, floor, hi),
     SEffectDef(_, name, _, _) => sym_emit(out, source, name, 24, floor, hi),
     SModule(_, name, body) => {
       sym_emit(out, source, name, 2, floor, hi)
