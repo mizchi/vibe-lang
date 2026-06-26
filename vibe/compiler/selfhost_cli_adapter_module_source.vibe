@@ -5478,7 +5478,7 @@ export let effect_error_to_string: (EffectError) -> String = (err) -> {
   match err {
     EEThrowOutsideEffect(msg) => String::concat("throw outside effectful context: ", msg),
     EEEffectfulCallOutsideEffect(name) => String::concat("effectful call outside effectful context: ", name),
-    EEPerformUndeclaredEffect(op, eff) => String::concat("perform of undeclared effect `", String::concat(eff, String::concat("` (", String::concat(op, "); add it to the function's `with { ... }` or wrap in a `handle`"))))
+    EEPerformUndeclaredEffect(op, eff) => String::concat("use of undeclared effect `", String::concat(eff, String::concat("` (", String::concat(op, "); add it to the function's `with { ... }` or wrap in a `handle`"))))
   }
 }
 let effect_opt_is_async: (Option[String]) -> Bool = (eff) -> {
@@ -5738,6 +5738,26 @@ let effect_name_of_op: (String) -> String = (op_name) -> {
     op_name
   }
 }
+let builtin_call_effect: (String) -> Option[String] = (name) -> {
+  if String::index_of(name, "::") < 0 {
+    None
+  } else {
+    let normalized = canonical_builtin_name(name)
+    match lookup_builtin(normalized) {
+      Some(ty) => match ty {
+        CtFn(_, _, Some(eff)) => if eff == "Error" {
+          None
+        } else if eff == "Async" {
+          None
+        } else {
+          Some(eff)
+        },
+        _ => None
+      },
+      None => None
+    }
+  }
+}
 export let rec check_perform_effects_expr: (Expr, Array[String], Bool) -> Array[EffectError] = (expr, declared, in_handle) -> {
   let errors = Array::slice([
     EEThrowOutsideEffect("")
@@ -5757,6 +5777,13 @@ export let rec check_perform_effects_expr: (Expr, Array[String], Bool) -> Array[
               _ => ()
             },
             _ => ()
+          }
+        } else {
+          match builtin_call_effect(name) {
+            Some(eff) => if !in_handle && !decl_authorizes_effect(declared, eff) {
+              Array::push(errors, EEPerformUndeclaredEffect(name, eff))
+            },
+            None => ()
           }
         }
         ,

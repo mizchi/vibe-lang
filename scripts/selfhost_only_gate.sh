@@ -1008,23 +1008,31 @@ fi
 rm -rf "$nldir"
 echo "[selfhost-only-gate] nested literal sub-pattern discrimination ok"
 
-# 26. perform-discipline enforcement (#626 criterion 1): `perform EffName::Op`
-#     is a type error unless the enclosing function declares `EffName` in
-#     `with { ... }` (or the perform is inside a `handle`). The declared variant
-#     must compile; the undeclared variant must be REJECTED.
-echo "[selfhost-only-gate] 26/26 perform-discipline enforcement"
+# 26. effect-call discipline (#626 criteria 1 & 3-builtin-slice): both
+#     `perform EffName::Op` and a call to an effectful BUILTIN (`Fs::read_file`,
+#     ...) are type errors unless the enclosing function declares that effect in
+#     `with { ... }` (or it is inside a `handle`). Declared variants must
+#     compile; undeclared variants must be REJECTED. (`Error`/`Async` are out of
+#     this slice; pure builtins like `Array::length` are never flagged.)
+echo "[selfhost-only-gate] 26/26 effect-call discipline (perform + builtin)"
 pfdir="_build/_gate_perform"
 rm -rf "$pfdir"; mkdir -p "$pfdir"
 cat > "$pfdir/good.vibe" <<'EOF'
 let emit: () -> Unit with { Stdout } = () -> {
   perform Stdout::WriteStream("hi")
 }
+let load: (String) -> String with { Fs } = (p) -> {
+  Fs::read_file(p)
+}
+let pure_use: (Array[Int]) -> Int = (xs) -> {
+  Array::length(xs)
+}
 export let _start: () -> Int = () -> {
   emit()
-  42
+  pure_use([1, 2, 3]) + 39
 }
 EOF
-cat > "$pfdir/bad.vibe" <<'EOF'
+cat > "$pfdir/bad_perform.vibe" <<'EOF'
 let emit: () -> Unit = () -> {
   perform Stdout::WriteStream("hi")
 }
@@ -1033,19 +1041,33 @@ export let _start: () -> Int = () -> {
   42
 }
 EOF
+cat > "$pfdir/bad_builtin.vibe" <<'EOF'
+let load: (String) -> String = (p) -> {
+  Fs::read_file(p)
+}
+export let _start: () -> Int = () -> {
+  42
+}
+EOF
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$pfdir/good.vibe" "$pfdir/good.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$pfdir/good.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: declared perform did not compile (#626 over-rejects)" >&2; exit 1
+  echo "[selfhost-only-gate] FAIL: declared effect calls did not compile (#626 over-rejects)" >&2; exit 1
 fi
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$pfdir/bad.vibe" "$pfdir/bad.wasm" _start >/dev/null 2>&1 || true
-if [ -s "$pfdir/bad.wasm" ]; then
+  "$pfdir/bad_perform.vibe" "$pfdir/bad_perform.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$pfdir/bad_perform.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: undeclared perform compiled (#626 criterion 1 regressed)" >&2; exit 1
 fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$pfdir/bad_builtin.vibe" "$pfdir/bad_builtin.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$pfdir/bad_builtin.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: undeclared effectful builtin call compiled (#626 builtin slice regressed)" >&2; exit 1
+fi
 rm -rf "$pfdir"
-echo "[selfhost-only-gate] perform-discipline enforcement ok"
+echo "[selfhost-only-gate] effect-call discipline ok"
 
 echo "[selfhost-only-gate] ok"

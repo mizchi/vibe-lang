@@ -393,7 +393,7 @@ export let effect_error_to_string: (EffectError) -> String = (err) -> {
   match err {
     EEThrowOutsideEffect(msg) => String::concat("throw outside effectful context: ", msg),
     EEEffectfulCallOutsideEffect(name) => String::concat("effectful call outside effectful context: ", name),
-    EEPerformUndeclaredEffect(op, eff) => String::concat("perform of undeclared effect `", String::concat(eff, String::concat("` (", String::concat(op, "); add it to the function's `with { ... }` or wrap in a `handle`"))))
+    EEPerformUndeclaredEffect(op, eff) => String::concat("use of undeclared effect `", String::concat(eff, String::concat("` (", String::concat(op, "); add it to the function's `with { ... }` or wrap in a `handle`"))))
   }
 }
 
@@ -710,6 +710,38 @@ let effect_name_of_op: (String) -> String = (op_name) -> {
   }
 }
 
+// #626 criterion 3 (call-site propagation, builtin slice): calling an effectful
+// BUILTIN (e.g. `Fs::read_file`, `Env::args_len`) requires the enclosing
+// function to declare that effect, exactly like `perform`. Returns the required
+// effect, or None for pure builtins / non-builtins. `Error` (the 441-site throw
+// discipline) and `Async` (composition-allowed; handled by the async pass) are
+// deliberately excluded from this slice.
+let builtin_call_effect: (String) -> Option[String] = (name) -> {
+  // Fast path: every effectful builtin in this slice is a QUALIFIED name
+  // (`Fs::read_file`, `Env::args_len`, `Stdin::...`, `Stdout::...`, ...), so a
+  // callee with no `::` can never be one. Skipping `lookup_builtin` for the
+  // (vastly more common) unqualified calls keeps the pass cheap enough to run
+  // over the whole compiler source within the seed's heap during self-build.
+  if String::index_of(name, "::") < 0 {
+    None
+  } else {
+    let normalized = canonical_builtin_name(name)
+    match lookup_builtin(normalized) {
+      Some(ty) => match ty {
+        CtFn(_, _, Some(eff)) => if eff == "Error" {
+          None
+        } else if eff == "Async" {
+          None
+        } else {
+          Some(eff)
+        },
+        _ => None
+      },
+      None => None
+    }
+  }
+}
+
 export let rec check_perform_effects_expr: (Expr, Array[String], Bool) -> Array[EffectError] = (expr, declared, in_handle) -> {
   let errors = Array::slice([
     EEThrowOutsideEffect("")
@@ -729,6 +761,13 @@ export let rec check_perform_effects_expr: (Expr, Array[String], Bool) -> Array[
               _ => ()
             },
             _ => ()
+          }
+        } else {
+          match builtin_call_effect(name) {
+            Some(eff) => if !in_handle && !decl_authorizes_effect(declared, eff) {
+              Array::push(errors, EEPerformUndeclaredEffect(name, eff))
+            },
+            None => ()
           }
         }
         ,
