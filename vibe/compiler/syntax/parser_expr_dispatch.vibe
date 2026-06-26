@@ -1,7 +1,7 @@
 //# Imports
 
 import .. / core {
-  Expr, Pat
+  Expr, Pat, TypeExpr
 }
 
 import ./parser_base.vibe {
@@ -17,6 +17,28 @@ import ./token.vibe {
 }
 
 //# Functions
+
+// Wrap `val` so that `((__asc: ty) -> __asc)(val)` forces `val` to have type
+// `ty` (enforced by the call-argument check) while evaluating to `val` itself.
+// Used to type-check a local `let x: T = e`, whose annotation `ELet` cannot
+// store. Uses only EFn/ECall, so every downstream pass handles it unchanged.
+let ascribe_wrap: (Expr, TypeExpr) -> Expr = (val, ty) -> {
+  let tparams = Array::slice([
+    ""
+  ], 0, 0)
+  let tbounds = Array::slice([
+    ("", Array::slice([
+      ""
+    ], 0, 0))
+  ], 0, 0)
+  let params = [
+    ("__asc", Some(ty))
+  ]
+  let lam = EFn(tparams, tbounds, params, None, None, EIdent("__asc", 0 - 1))
+  ECall(lam, [
+    val
+  ], 0 - 1)
+}
 
 enum BlockStep {
   StepSeq(Expr);
@@ -451,19 +473,28 @@ let parse_impl_block: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -
                   }
                 },
                 _ => {
-                  let eq_pos = match after_name {
+                  let (ann_type, eq_pos) = match after_name {
                     TColon => {
-                      let (_, tp) = parse_type_impl(tokens, next + 2, 0)
-                      tp
+                      let (the_type, tp) = parse_type_impl(tokens, next + 2, 0)
+                      (Some(the_type), tp)
                     },
-                    _ => next + 1
+                    _ => (None, next + 1)
                   }
                   let eq = expect_tk(tokens, eq_pos, "=")
                   let (val, next_pos) = parse_block_value_only(tokens, eq, parse_recur)
                   if next_pos <= eq {
                     throw("internal parser error: block let parser did not advance")
                   } else {
-                    ArrayBuilder::push(steps, StepLet(name, val))
+                    // A local `let x: T = e` carries no type field on `ELet`, so
+                    // enforce `e : T` by wrapping the value in an identity
+                    // application `((__asc: T) -> __asc)(e)` whose argument check
+                    // (unify_call_args) rejects a mismatch — no new AST node, and
+                    // codegen sees only ordinary EFn/ECall.
+                    let val2 = match ann_type {
+                      Some(the_type) => ascribe_wrap(val, the_type),
+                      None => val
+                    }
+                    ArrayBuilder::push(steps, StepLet(name, val2))
                     p = next_pos
                   }
                 }

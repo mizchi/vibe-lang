@@ -24583,6 +24583,23 @@ export let parse_infix: (Array[Token], Array[Int], Int, Int, Int, (Array[Token],
     _ => (expr, en)
   }
 }
+let ascribe_wrap: (Expr, TypeExpr) -> Expr = (val, ty) -> {
+  let tparams = Array::slice([
+    ""
+  ], 0, 0)
+  let tbounds = Array::slice([
+    ("", Array::slice([
+      ""
+    ], 0, 0))
+  ], 0, 0)
+  let params = [
+    ("__asc", Some(ty))
+  ]
+  let lam = EFn(tparams, tbounds, params, None, None, EIdent("__asc", 0 - 1))
+  ECall(lam, [
+    val
+  ], 0 - 1)
+}
 enum BlockStep {
   StepSeq(Expr);
   StepValue(Expr);
@@ -24898,19 +24915,23 @@ let parse_impl_block: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -
                   }
                 },
                 _ => {
-                  let eq_pos = match after_name {
+                  let (ann_type, eq_pos) = match after_name {
                     TColon => {
-                      let (_, tp) = parse_type_impl(tokens, next + 2, 0)
-                      tp
+                      let (the_type, tp) = parse_type_impl(tokens, next + 2, 0)
+                      (Some(the_type), tp)
                     },
-                    _ => next + 1
+                    _ => (None, next + 1)
                   }
                   let eq = expect_tk(tokens, eq_pos, "=")
                   let (val, next_pos) = parse_block_value_only(tokens, eq, parse_recur)
                   if next_pos <= eq {
                     throw("internal parser error: block let parser did not advance")
                   } else {
-                    ArrayBuilder::push(steps, StepLet(name, val))
+                    let val2 = match ann_type {
+                      Some(the_type) => ascribe_wrap(val, the_type),
+                      None => val
+                    }
+                    ArrayBuilder::push(steps, StepLet(name, val2))
                     p = next_pos
                   }
                 }
