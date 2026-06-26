@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use wasmtime::{
-    bail, format_err, Caller, Config, Engine, ExternRef, ExternType, Linker, Module, ResourceLimiter,
+    bail, format_err, Caller, Config, Engine, ExternRef, ExternType, Instance, Linker, Module, ResourceLimiter,
     Result, Rooted, Store, StoreLimits, StoreLimitsBuilder, Strategy, TypedFunc, Val, ValType,
 };
 
@@ -724,9 +724,108 @@ fn bench(args: Vec<String>) -> Result<i32> {
     let mut linker = Linker::new(&engine);
     register_imports(&mut linker)?;
     let instance = linker.instantiate(&mut store, &module)?;
-    let start: TypedFunc<(), ()> = instance.get_typed_func(&mut store, "_start")?;
 
-    let run_once = |store: &mut Store<HostState>, phase: &str| -> Result<()> {
+    // Per-block benchmarking: a `__no_entry__` build (`vibe bench`) exports one
+    // `__bench_<name>` function per `bench "name" { }` block (codegen emits each
+    // as a 0-arg-by-env, i64-returning user function). When present, time each
+    // block in isolation so a file with several benches reports a row each. When
+    // absent (a wasm from an older compiler, or a `test {}`-only file), fall back
+    // to timing `_start`, which runs every test/bench body together (file level).
+    let bench_names: Vec<String> = module
+        .exports()
+        .filter_map(|e| e.name().strip_prefix("__bench_").map(|n| (e.name().to_string(), n)))
+        .map(|(full, _)| full)
+        .collect();
+
+    // Bench a single callable. `invoke` runs one iteration (clearing captured
+    // stdout first); we warm it, then time `iters` calls and read the bump-heap
+    // delta across the batch for bytes/op (tier 1 reused).
+    fn bench_one(
+        store: &mut Store<HostState>,
+        instance: &Instance,
+        block_label: &str,
+        warmup: u64,
+        iters: u64,
+        mut invoke: impl FnMut(&mut Store<HostState>, &str) -> Result<()>,
+    ) -> Result<()> {
+        for _ in 0..warmup {
+            invoke(store, "warmup")?;
+        }
+        let heap_before = read_heap_ptr(instance, store);
+        let mut samples: Vec<u128> = Vec::with_capacity(iters as usize);
+        for _ in 0..iters {
+            let t0 = Instant::now();
+            invoke(store, "measurement")?;
+            samples.push(t0.elapsed().as_nanos());
+        }
+        let heap_after = read_heap_ptr(instance, store);
+
+        samples.sort_unstable();
+        let n = samples.len();
+        let sum: u128 = samples.iter().sum();
+        let mean = sum / n as u128;
+        let min = samples[0];
+        let p50 = samples[(n / 2).min(n - 1)];
+        let p95 = samples[(n * 95 / 100).min(n - 1)];
+        let ops_per_sec = if mean > 0 { 1_000_000_000f64 / mean as f64 } else { 0.0 };
+        let bytes_per_op = match (heap_before, heap_after) {
+            (Some(b), Some(a)) => Some(a.saturating_sub(b) / iters),
+            _ => None,
+        };
+
+        // Machine-readable line (tools/CI parse this) + a human summary, both stdout.
+        println!(
+            "vibe::bench label={block_label} iters={iters} ns_min={min} ns_p50={p50} ns_p95={p95} ns_mean={mean} ops_per_sec={ops_per_sec:.0} bytes_per_op={}",
+            bytes_per_op.map(|b| b.to_string()).unwrap_or_else(|| "na".into()),
+        );
+        println!(
+            "bench {block_label}: {iters} iters — {}/op (min {}, p50 {}, p95 {}), {} ops/s, {}",
+            fmt_ns(mean),
+            fmt_ns(min),
+            fmt_ns(p50),
+            fmt_ns(p95),
+            fmt_ops(ops_per_sec),
+            bytes_per_op
+                .map(|b| format!("{}/op", human_bytes(b)))
+                .unwrap_or_else(|| "mem n/a".into()),
+        );
+        Ok(())
+    }
+
+    if !bench_names.is_empty() {
+        // Per-block: each `__bench_<name>` is `(i64 env) -> i64`; we pass env=0 and
+        // drop the result, mirroring how `_start` invokes test/bench bodies.
+        for full in &bench_names {
+            let name = full.strip_prefix("__bench_").unwrap_or(full);
+            let block_label = format!("{label}::{name}");
+            let func: TypedFunc<i64, i64> = instance.get_typed_func(&mut store, full)?;
+            bench_one(
+                &mut store,
+                &instance,
+                &block_label,
+                warmup,
+                iters,
+                |store, phase| {
+                    store.data_mut().captured_stdout.clear();
+                    match func.call(&mut *store, 0) {
+                        Ok(_) => Ok(()),
+                        Err(e) => match e.downcast_ref::<ExitTrap>() {
+                            Some(ExitTrap(0)) => Ok(()),
+                            Some(ExitTrap(code)) => {
+                                bail!("bench `{block_label}`: exit({code}) during {phase}")
+                            }
+                            None => bail!("bench `{block_label}`: trap during {phase}: {e}"),
+                        },
+                    }
+                },
+            )?;
+        }
+        return Ok(0);
+    }
+
+    // Fallback (no per-block exports): time the whole `_start`.
+    let start: TypedFunc<(), ()> = instance.get_typed_func(&mut store, "_start")?;
+    bench_one(&mut store, &instance, &label, warmup, iters, |store, phase| {
         store.data_mut().captured_stdout.clear();
         match start.call(&mut *store, ()) {
             Ok(()) => Ok(()),
@@ -737,51 +836,7 @@ fn bench(args: Vec<String>) -> Result<i32> {
                 None => bail!("bench `{label}`: trap during {phase}: {e}"),
             },
         }
-    };
-
-    // Warmup also pays one-time lazy init so it doesn't skew the first sample.
-    for _ in 0..warmup {
-        run_once(&mut store, "warmup")?;
-    }
-
-    let heap_before = read_heap_ptr(&instance, &mut store);
-    let mut samples: Vec<u128> = Vec::with_capacity(iters as usize);
-    for _ in 0..iters {
-        let t0 = Instant::now();
-        run_once(&mut store, "measurement")?;
-        samples.push(t0.elapsed().as_nanos());
-    }
-    let heap_after = read_heap_ptr(&instance, &mut store);
-
-    samples.sort_unstable();
-    let n = samples.len();
-    let sum: u128 = samples.iter().sum();
-    let mean = sum / n as u128;
-    let min = samples[0];
-    let p50 = samples[(n / 2).min(n - 1)];
-    let p95 = samples[(n * 95 / 100).min(n - 1)];
-    let ops_per_sec = if mean > 0 { 1_000_000_000f64 / mean as f64 } else { 0.0 };
-    let bytes_per_op = match (heap_before, heap_after) {
-        (Some(b), Some(a)) => Some(a.saturating_sub(b) / iters),
-        _ => None,
-    };
-
-    // Machine-readable line (tools/CI parse this) + a human summary, both stdout.
-    println!(
-        "vibe::bench label={label} iters={iters} ns_min={min} ns_p50={p50} ns_p95={p95} ns_mean={mean} ops_per_sec={ops_per_sec:.0} bytes_per_op={}",
-        bytes_per_op.map(|b| b.to_string()).unwrap_or_else(|| "na".into()),
-    );
-    println!(
-        "bench {label}: {iters} iters — {}/op (min {}, p50 {}, p95 {}), {} ops/s, {}",
-        fmt_ns(mean),
-        fmt_ns(min),
-        fmt_ns(p50),
-        fmt_ns(p95),
-        fmt_ops(ops_per_sec),
-        bytes_per_op
-            .map(|b| format!("{}/op", human_bytes(b)))
-            .unwrap_or_else(|| "mem n/a".into()),
-    );
+    })?;
     Ok(0)
 }
 

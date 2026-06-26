@@ -107,10 +107,26 @@ bench simple_bench.vibe: 1000 iters — 49 ns/op (min 47 ns, p50 49 ns, p95 51 n
 `vibe bench <file> [--iters N] [--warmup N]`。`vibe::bench …` は機械可読（CI/比較が parse）。
 env: `VIBE_BENCH_ITERS` / `VIBE_BENCH_WARMUP` / `VIBE_BENCH_LABEL`。test: `scripts/test_vibe_bench.sh`。
 
-**現状の粒度と限界**: `__bench_*` は未 export なので **ファイル単位**（その file の bench/test body の和）
-で測る。`*_bench.vibe` に bench を 1 つ置く運用なら実質ピンポイント。次段で精度を上げるなら:
+**粒度: bench ブロック個別（実装済み）**: codegen が各 `bench "name" { }` を `__bench_<name>` 関数として
+export する（`__no_entry__` ビルド時のみ。通常ビルド・コンパイラ自己コンパイルは byte-identical）。
+runner（`--bench`）は export を列挙して **ブロックごとに warm 計測**し、`label=<file>::<name>` で
+1 行ずつ報告する。`__bench_*` が無い wasm（旧コンパイラ生成 / `test {}` のみのファイル）は
+`_start` 全体（ファイル単位）にフォールバックする。
 
-- `__bench_<name>` を export → runner が **bench ブロック個別**に計時（codegen 変更が要る）
+```
+$ vibe bench multi_bench.vibe
+vibe::bench label=multi_bench.vibe::light iters=1000 ns_min=… … bytes_per_op=0
+bench multi_bench.vibe::light: 1000 iters — … ns/op …
+vibe::bench label=multi_bench.vibe::heavy iters=1000 ns_min=… … bytes_per_op=0
+bench multi_bench.vibe::heavy: 1000 iters — … ns/op …
+```
+
+実装: codegen は `vibe/compiler/codegen/wasi/linked_compile.vibe`（export セクションで `test_fn_names` の
+`__bench_*` を `all_export_names` に追加）、計時は runner（`bench()` が module export を走査して
+ブロック単位 / フォールバックを選ぶ）。test: `scripts/test_vibe_bench.sh`（per-block 3 assertions）。
+
+さらに精度を上げるなら:
+
 - µs 級でなく ns 級を狙うなら内側 batch（K 回回して割る）で per-call overhead を相殺
 - 2 backend（linear / gc）の別レポート
 - 回帰検出: `(label, backend, source-hash)` で baseline 比較、% 退行を flag → CI ゲート
