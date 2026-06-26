@@ -46,7 +46,13 @@ export enum Subst {
   SubstEmpty;
   SubstBind(Int, Type, Subst);
   SubstBound(Int, Array[String], Subst);
-  SubstCached(Map[String, Type], Map[String, Array[String]], Subst)
+  SubstCached(Map[String, Type], Map[String, Array[String]], Subst);
+  // #626 criterion 4: an effect-variable binding `var := effect-label-string`
+  // ("" meaning the pure/empty row). Effect variables are no longer a wildcard
+  // that is compatible with everything — `unify` records their binding here and
+  // `subst_apply` resolves CtFn effects through it, so `e` actually unifies to
+  // its first binding and a later conflicting use is a type error.
+  SubstEffBind(String, String, Subst)
 }
 
 //# Functions
@@ -272,6 +278,10 @@ export let subst_lookup: (Subst, Int) -> Option[Type] = (s, id) -> {
       } else {
         cur = rest
       }
+      ,
+      SubstEffBind(_, _, rest) => {
+        cur = rest
+      }
     }
   }
   out
@@ -441,6 +451,9 @@ export let subst_bounds_for: (Subst, Int) -> Array[String] = (s, id) -> {
           ()
         }
         cur = rest
+      },
+      SubstEffBind(_, _, rest) => {
+        cur = rest
       }
     }
   }
@@ -473,6 +486,83 @@ let int_array_has: (Array[Int], Int) -> Bool = (arr, v) -> {
     }
   }
   sfound
+}
+
+let is_effect_var_name: (String) -> Bool = (name) -> {
+  let len = String::length(name)
+  if len == 1 {
+    // a source-level effect variable: a single lowercase letter (`with { e }`)
+    String::char_code_at(name, 0) >= 97 && String::char_code_at(name, 0) <= 122
+  } else if len >= 2 {
+    // a FRESH effect variable minted by `instantiate` (`$N`): no real effect
+    // name starts with `$`, so this marker is unambiguous.
+    String::char_code_at(name, 0) == 36
+  } else {
+    false
+  }
+}
+
+// Resolve an effect variable name through the effect-binding chain (transitively
+// following var->var links). Returns the bound effect-label string ("" = pure)
+// or None if the variable is unbound.
+let rec subst_eff_lookup: (Subst, String) -> Option[String] = (s, name) -> {
+  let mut cur = s
+  let mut out = None
+  let mut done = false
+  while !done {
+    match cur {
+      SubstEmpty => {
+        done = true
+      },
+      SubstBind(_, _, rest) => {
+        cur = rest
+      },
+      SubstBound(_, _, rest) => {
+        cur = rest
+      },
+      SubstCached(_, _, rest) => {
+        cur = rest
+      },
+      SubstEffBind(v, val, rest) => if v == name {
+        out = Some(val)
+        done = true
+      } else {
+        cur = rest
+      }
+    }
+  }
+  match out {
+    Some(val) => if is_effect_var_name(val) {
+      match subst_eff_lookup(s, val) {
+        Some(v2) => Some(v2),
+        None => Some(val)
+      }
+    } else {
+      Some(val)
+    },
+    None => None
+  }
+}
+
+// Resolve a CtFn effect annotation through the effect-binding chain: a bound
+// effect variable becomes its binding (an empty binding "" collapses to the
+// pure row `None`); anything else is returned unchanged.
+let resolve_effect_opt: (Subst, Option[String]) -> Option[String] = (s, eff) -> {
+  match eff {
+    None => None,
+    Some(name) => if is_effect_var_name(name) {
+      match subst_eff_lookup(s, name) {
+        Some(val) => if String::length(val) == 0 {
+          None
+        } else {
+          Some(val)
+        },
+        None => eff
+      }
+    } else {
+      eff
+    }
+  }
 }
 
 export let rec subst_apply: (Subst, Type) -> Type = (s, ty) -> {
@@ -530,7 +620,7 @@ export let rec subst_apply: (Subst, Type) -> Type = (s, ty) -> {
         }
         out
       }
-      CtFn(apply_params(params), subst_apply(s, ret), effect_name)
+      CtFn(apply_params(params), subst_apply(s, ret), resolve_effect_opt(s, effect_name))
     },
     CtArray(elem) => CtArray(subst_apply(s, elem)),
     CtOption(elem) => CtOption(subst_apply(s, elem)),
@@ -758,6 +848,110 @@ let rec int_int_lookup_or: (Array[(Int, Int)], Int, Int, Int) -> Int = (pairs, k
   }
 }
 
+// #626 criterion 4: collect the distinct effect-VARIABLE names appearing in a
+// type scheme body (lone `with { e }` annotations), so `instantiate` can mint a
+// fresh variable per use site and effect polymorphism survives unification.
+let rec collect_effect_vars_walk: (Type, Array[String]) -> Int = (t, out) -> {
+  match t {
+    CtFn(params, ret, eff) => {
+      match eff {
+        Some(name) => if is_effect_var_name(name) {
+          let mut seen = false
+          let mut k = 0
+          while k < Array::length(out) {
+            if Array::get(out, k) == name {
+              seen = true
+            }
+            k = k + 1
+          }
+          if !seen {
+            Array::push(out, name)
+          }
+        },
+        None => ()
+      }
+      for p in params {
+        let _ = collect_effect_vars_walk(p, out)
+      }
+      collect_effect_vars_walk(ret, out)
+    },
+    CtArray(elem) => collect_effect_vars_walk(elem, out),
+    CtOption(elem) => collect_effect_vars_walk(elem, out),
+    CtTuple(elems) => {
+      for e in elems {
+        let _ = collect_effect_vars_walk(e, out)
+      }
+      0
+    },
+    CtNamed(_, args) => {
+      for a in args {
+        let _ = collect_effect_vars_walk(a, out)
+      }
+      0
+    },
+    CtForAll(_, _, body) => collect_effect_vars_walk(body, out),
+    _ => 0
+  }
+}
+
+let rename_eff_name: (String, Array[(String, String)]) -> String = (name, pairs) -> {
+  let mut i = 0
+  let mut out = name
+  while i < Array::length(pairs) {
+    let (k, v) = Array::get(pairs, i)
+    if k == name {
+      out = v
+    }
+    i = i + 1
+  }
+  out
+}
+
+let rec rename_effect_vars: (Type, Array[(String, String)]) -> Type = (t, pairs) -> {
+  match t {
+    CtFn(params, ret, eff) => {
+      let new_params = Array::slice([
+        CtUnknown
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(params) {
+        Array::push(new_params, rename_effect_vars(Array::get(params, i), pairs))
+        i = i + 1
+      }
+      let new_eff = match eff {
+        Some(name) => Some(rename_eff_name(name, pairs)),
+        None => None
+      }
+      CtFn(new_params, rename_effect_vars(ret, pairs), new_eff)
+    },
+    CtArray(elem) => CtArray(rename_effect_vars(elem, pairs)),
+    CtOption(elem) => CtOption(rename_effect_vars(elem, pairs)),
+    CtTuple(elems) => {
+      let out = Array::slice([
+        CtUnknown
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(elems) {
+        Array::push(out, rename_effect_vars(Array::get(elems, i), pairs))
+        i = i + 1
+      }
+      CtTuple(out)
+    },
+    CtNamed(name, args) => {
+      let out = Array::slice([
+        CtUnknown
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(out, rename_effect_vars(Array::get(args, i), pairs))
+        i = i + 1
+      }
+      CtNamed(name, out)
+    },
+    _ => t
+  }
+}
+
 export let instantiate: (Type, Int) -> (Type, Int, Array[(Int, Array[String])]) = (ty, c) -> {
   match ty {
     CtForAll(bound_vars, var_bounds, body) => {
@@ -788,7 +982,33 @@ export let instantiate: (Type, Int) -> (Type, Int, Array[(Int, Array[String])]) 
         let new_id = int_int_lookup_or(id_map2, old_id, old_id, 0)
         Array::push(new_bounds, (new_id, bounds))
       };
-      (subst_apply(inst_s, body), c1, new_bounds)
+      let inst_body = subst_apply(inst_s, body)
+      // #626 criterion 4: freshen the scheme's effect variables so each use site
+      // gets its own variable. Without this, binding `e` at one call site would
+      // leak to every other call (effect polymorphism would collapse to the
+      // first concrete effect). Fresh names are `$<counter>` (never a real
+      // effect name), threaded through the same counter as type variables.
+      let eff_vars = Array::slice([
+        ""
+      ], 0, 0)
+      let _ = collect_effect_vars_walk(inst_body, eff_vars)
+      let eff_pairs = Array::slice([
+        ("", "")
+      ], 0, 0)
+      let mut ev_i = 0
+      let mut ev_c = c1
+      while ev_i < Array::length(eff_vars) {
+        let ev = Array::get(eff_vars, ev_i)
+        Array::push(eff_pairs, (ev, String::concat("$", __to_string(ev_c))))
+        ev_c = ev_c + 1
+        ev_i = ev_i + 1
+      }
+      let final_body = if Array::length(eff_pairs) == 0 {
+        inst_body
+      } else {
+        rename_effect_vars(inst_body, eff_pairs)
+      }
+      (final_body, ev_c, new_bounds)
     },
     _ => (ty, c, empty_var_bounds())
   }
@@ -939,12 +1159,6 @@ let option_string_equal: (Option[String], Option[String]) -> Bool = (left, right
   }
 }
 
-let is_effect_var_name: (String) -> Bool = (name) -> {
-  String::length(name) == 1 &&
-  String::char_code_at(name, 0) >= 97 &&
-  String::char_code_at(name, 0) <= 122
-}
-
 // #626 criterion 3: an effect annotation `with { A, B }` is an unordered SET,
 // but `collect_effect_names` joins it source-order into one string ("A, B"),
 // so `{ A, B }` and `{ B, A }` serialize to different strings. Split the
@@ -1019,18 +1233,65 @@ let effect_names_compatible: (Option[String], Option[String]) -> Bool = (left, r
   if option_string_equal(left, right) {
     true
   } else if effect_opt_is_var(left) {
-    // A lone effect variable is still treated as a wildcard (row-tail
-    // unification — #626 criterion 4 — is future work; this only keeps the
-    // existing permissiveness, it does not widen it).
-    true
+    // #626 criterion 4: an effect variable is NO LONGER a wildcard. It equals
+    // only itself (handled by `option_string_equal` above); a variable vs a
+    // different effect is reported NOT-equal here so that `unify`'s structural
+    // `types_equal` fast path falls through to the `CtFn` arm, where
+    // `unify_effects` records the actual binding (and detects a later conflict).
+    false
   } else if effect_opt_is_var(right) {
-    true
+    false
   } else {
-    // Neither side is a lone effect variable: decide on the unordered label
-    // set, so `{ A, B }` and `{ B, A }` (and `{ A, A }` vs `{ A }`) are
-    // compatible. `None` (pure) vs `Some(concrete)` differ in set size and stay
-    // incompatible, exactly as before.
+    // Neither side is an effect variable: decide on the unordered label set, so
+    // `{ A, B }` and `{ B, A }` (and `{ A, A }` vs `{ A }`) are compatible
+    // (criterion 3). `None` (pure) vs `Some(concrete)` differ in set size and
+    // stay incompatible.
     effect_label_sets_equal(left, right)
+  }
+}
+
+// Unify two effect annotations, binding an effect VARIABLE to the other side
+// (#626 criterion 4 — no longer an unconditional wildcard). Returns the extended
+// substitution, or None on a genuine effect-set conflict.
+let unify_effects: (Option[String], Option[String], Subst) -> Option[Subst] = (ea, eb, s) -> {
+  let ra = resolve_effect_opt(s, ea)
+  let rb = resolve_effect_opt(s, eb)
+  let a_is_var = match ra {
+    Some(n) => is_effect_var_name(n),
+    None => false
+  }
+  let b_is_var = match rb {
+    Some(n) => is_effect_var_name(n),
+    None => false
+  }
+  if a_is_var {
+    match ra {
+      Some(av) => if Some(av) == rb {
+        Some(s)
+      } else {
+        let bval = match rb {
+          Some(bv) => bv,
+          None => ""
+        }
+        Some(SubstEffBind(av, bval, s))
+      },
+      None => Some(s)
+    }
+  } else if b_is_var {
+    match rb {
+      Some(bv) => {
+        let aval = match ra {
+          Some(av) => av,
+          None => ""
+        }
+        Some(SubstEffBind(bv, aval, s))
+      },
+      None => Some(s)
+    }
+  } else if effect_names_compatible(ra, rb) {
+    Some(s)
+  } else {
+    None
   }
 }
 
@@ -1279,9 +1540,6 @@ export let rec unify: (Type, Type, Subst) -> Option[Subst] = (a, b, s) -> {
                   CtFn(pb, rb, beffect) => if Array::length(pa) != Array::length(pb) {
                     None
                   }
-                  else if !effect_names_compatible(aeffect, beffect) {
-                    None
-                  }
                   else {
                     let ul_len = Array::length(pa)
                     let mut ul_i = 0
@@ -1305,8 +1563,15 @@ export let rec unify: (Type, Type, Subst) -> Option[Subst] = (a, b, s) -> {
                         }
                       }
                     }
+                    // #626 criterion 4: unify params, then the return type, then
+                    // the EFFECT row — binding an effect variable to the other
+                    // side (or failing on a genuine effect conflict) instead of
+                    // the old unconditional-wildcard accept.
                     match ul_result {
-                      Some(s2) => unify(ra, rb, s2),
+                      Some(s2) => match unify(ra, rb, s2) {
+                        Some(s3) => unify_effects(aeffect, beffect, s3),
+                        None => None
+                      },
                       None => None
                     }
                   },
@@ -1484,6 +1749,9 @@ export let collect_subst_bounds_pairs: (Subst) -> Array[(Int, Array[String])] = 
         cur = rest
       },
       SubstCached(_, _, rest) => {
+        cur = rest
+      },
+      SubstEffBind(_, _, rest) => {
         cur = rest
       }
     }

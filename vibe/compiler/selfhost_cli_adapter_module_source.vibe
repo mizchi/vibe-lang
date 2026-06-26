@@ -785,7 +785,8 @@ export enum Subst {
   SubstEmpty;
   SubstBind(Int, Type, Subst);
   SubstBound(Int, Array[String], Subst);
-  SubstCached(Map[String, Type], Map[String, Array[String]], Subst)
+  SubstCached(Map[String, Type], Map[String, Array[String]], Subst);
+  SubstEffBind(String, String, Subst)
 }
 export let env_bind: (TypeEnv, String, Type) -> TypeEnv = (env, name, ty) -> {
   match env {
@@ -990,6 +991,10 @@ export let subst_lookup: (Subst, Int) -> Option[Type] = (s, id) -> {
       } else {
         cur = rest
       }
+      ,
+      SubstEffBind(_, _, rest) => {
+        cur = rest
+      }
     }
   }
   out
@@ -1133,6 +1138,9 @@ export let subst_bounds_for: (Subst, Int) -> Array[String] = (s, id) -> {
           ()
         }
         cur = rest
+      },
+      SubstEffBind(_, _, rest) => {
+        cur = rest
       }
     }
   }
@@ -1163,6 +1171,71 @@ let int_array_has: (Array[Int], Int) -> Bool = (arr, v) -> {
     }
   }
   sfound
+}
+let is_effect_var_name: (String) -> Bool = (name) -> {
+  let len = String::length(name)
+  if len == 1 {
+    String::char_code_at(name, 0) >= 97 && String::char_code_at(name, 0) <= 122
+  } else if len >= 2 {
+    String::char_code_at(name, 0) == 36
+  } else {
+    false
+  }
+}
+let rec subst_eff_lookup: (Subst, String) -> Option[String] = (s, name) -> {
+  let mut cur = s
+  let mut out = None
+  let mut done = false
+  while !done {
+    match cur {
+      SubstEmpty => {
+        done = true
+      },
+      SubstBind(_, _, rest) => {
+        cur = rest
+      },
+      SubstBound(_, _, rest) => {
+        cur = rest
+      },
+      SubstCached(_, _, rest) => {
+        cur = rest
+      },
+      SubstEffBind(v, val, rest) => if v == name {
+        out = Some(val)
+        done = true
+      } else {
+        cur = rest
+      }
+    }
+  }
+  match out {
+    Some(val) => if is_effect_var_name(val) {
+      match subst_eff_lookup(s, val) {
+        Some(v2) => Some(v2),
+        None => Some(val)
+      }
+    } else {
+      Some(val)
+    },
+    None => None
+  }
+}
+let resolve_effect_opt: (Subst, Option[String]) -> Option[String] = (s, eff) -> {
+  match eff {
+    None => None,
+    Some(name) => if is_effect_var_name(name) {
+      match subst_eff_lookup(s, name) {
+        Some(val) => if String::length(val) == 0 {
+          None
+        } else {
+          Some(val)
+        },
+        None => eff
+      }
+    } else {
+      eff
+    }
+  }
 }
 export let rec subst_apply: (Subst, Type) -> Type = (s, ty) -> {
   match ty {
@@ -1219,7 +1292,7 @@ export let rec subst_apply: (Subst, Type) -> Type = (s, ty) -> {
         }
         out
       }
-      CtFn(apply_params(params), subst_apply(s, ret), effect_name)
+      CtFn(apply_params(params), subst_apply(s, ret), resolve_effect_opt(s, effect_name))
     },
     CtArray(elem) => CtArray(subst_apply(s, elem)),
     CtOption(elem) => CtOption(subst_apply(s, elem)),
@@ -1432,6 +1505,104 @@ let rec int_int_lookup_or: (Array[(Int, Int)], Int, Int, Int) -> Int = (pairs, k
     }
   }
 }
+let rec collect_effect_vars_walk: (Type, Array[String]) -> Int = (t, out) -> {
+  match t {
+    CtFn(params, ret, eff) => {
+      match eff {
+        Some(name) => if is_effect_var_name(name) {
+          let mut seen = false
+          let mut k = 0
+          while k < Array::length(out) {
+            if Array::get(out, k) == name {
+              seen = true
+            }
+            k = k + 1
+          }
+          if !seen {
+            Array::push(out, name)
+          }
+        },
+        None => ()
+      }
+      for p in params {
+        let _ = collect_effect_vars_walk(p, out)
+      }
+      collect_effect_vars_walk(ret, out)
+    },
+    CtArray(elem) => collect_effect_vars_walk(elem, out),
+    CtOption(elem) => collect_effect_vars_walk(elem, out),
+    CtTuple(elems) => {
+      for e in elems {
+        let _ = collect_effect_vars_walk(e, out)
+      }
+      0
+    },
+    CtNamed(_, args) => {
+      for a in args {
+        let _ = collect_effect_vars_walk(a, out)
+      }
+      0
+    },
+    CtForAll(_, _, body) => collect_effect_vars_walk(body, out),
+    _ => 0
+  }
+}
+let rename_eff_name: (String, Array[(String, String)]) -> String = (name, pairs) -> {
+  let mut i = 0
+  let mut out = name
+  while i < Array::length(pairs) {
+    let (k, v) = Array::get(pairs, i)
+    if k == name {
+      out = v
+    }
+    i = i + 1
+  }
+  out
+}
+let rec rename_effect_vars: (Type, Array[(String, String)]) -> Type = (t, pairs) -> {
+  match t {
+    CtFn(params, ret, eff) => {
+      let new_params = Array::slice([
+        CtUnknown
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(params) {
+        Array::push(new_params, rename_effect_vars(Array::get(params, i), pairs))
+        i = i + 1
+      }
+      let new_eff = match eff {
+        Some(name) => Some(rename_eff_name(name, pairs)),
+        None => None
+      }
+      CtFn(new_params, rename_effect_vars(ret, pairs), new_eff)
+    },
+    CtArray(elem) => CtArray(rename_effect_vars(elem, pairs)),
+    CtOption(elem) => CtOption(rename_effect_vars(elem, pairs)),
+    CtTuple(elems) => {
+      let out = Array::slice([
+        CtUnknown
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(elems) {
+        Array::push(out, rename_effect_vars(Array::get(elems, i), pairs))
+        i = i + 1
+      }
+      CtTuple(out)
+    },
+    CtNamed(name, args) => {
+      let out = Array::slice([
+        CtUnknown
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(out, rename_effect_vars(Array::get(args, i), pairs))
+        i = i + 1
+      }
+      CtNamed(name, out)
+    },
+    _ => t
+  }
+}
 export let instantiate: (Type, Int) -> (Type, Int, Array[(Int, Array[String])]) = (ty, c) -> {
   match ty {
     CtForAll(bound_vars, var_bounds, body) => {
@@ -1462,7 +1633,28 @@ export let instantiate: (Type, Int) -> (Type, Int, Array[(Int, Array[String])]) 
         let new_id = int_int_lookup_or(id_map2, old_id, old_id, 0)
         Array::push(new_bounds, (new_id, bounds))
       };
-      (subst_apply(inst_s, body), c1, new_bounds)
+      let inst_body = subst_apply(inst_s, body)
+      let eff_vars = Array::slice([
+        ""
+      ], 0, 0)
+      let _ = collect_effect_vars_walk(inst_body, eff_vars)
+      let eff_pairs = Array::slice([
+        ("", "")
+      ], 0, 0)
+      let mut ev_i = 0
+      let mut ev_c = c1
+      while ev_i < Array::length(eff_vars) {
+        let ev = Array::get(eff_vars, ev_i)
+        Array::push(eff_pairs, (ev, String::concat("$", __to_string(ev_c))))
+        ev_c = ev_c + 1
+        ev_i = ev_i + 1
+      }
+      let final_body = if Array::length(eff_pairs) == 0 {
+        inst_body
+      } else {
+        rename_effect_vars(inst_body, eff_pairs)
+      }
+      (final_body, ev_c, new_bounds)
     },
     _ => (ty, c, empty_var_bounds())
   }
@@ -1605,11 +1797,6 @@ let option_string_equal: (Option[String], Option[String]) -> Bool = (left, right
     }
   }
 }
-let is_effect_var_name: (String) -> Bool = (name) -> {
-  String::length(name) == 1 &&
-  String::char_code_at(name, 0) >= 97 &&
-  String::char_code_at(name, 0) <= 122
-}
 let effect_label_list: (Option[String]) -> Array[String] = (eff) -> {
   let out = Array::slice([
     ""
@@ -1676,11 +1863,52 @@ let effect_names_compatible: (Option[String], Option[String]) -> Bool = (left, r
   if option_string_equal(left, right) {
     true
   } else if effect_opt_is_var(left) {
-    true
+    false
   } else if effect_opt_is_var(right) {
-    true
+    false
   } else {
     effect_label_sets_equal(left, right)
+  }
+}
+let unify_effects: (Option[String], Option[String], Subst) -> Option[Subst] = (ea, eb, s) -> {
+  let ra = resolve_effect_opt(s, ea)
+  let rb = resolve_effect_opt(s, eb)
+  let a_is_var = match ra {
+    Some(n) => is_effect_var_name(n),
+    None => false
+  }
+  let b_is_var = match rb {
+    Some(n) => is_effect_var_name(n),
+    None => false
+  }
+  if a_is_var {
+    match ra {
+      Some(av) => if Some(av) == rb {
+        Some(s)
+      } else {
+        let bval = match rb {
+          Some(bv) => bv,
+          None => ""
+        }
+        Some(SubstEffBind(av, bval, s))
+      },
+      None => Some(s)
+    }
+  } else if b_is_var {
+    match rb {
+      Some(bv) => {
+        let aval = match ra {
+          Some(av) => av,
+          None => ""
+        }
+        Some(SubstEffBind(bv, aval, s))
+      },
+      None => Some(s)
+    }
+  } else if effect_names_compatible(ra, rb) {
+    Some(s)
+  } else {
+    None
   }
 }
 export let rec types_equal: (Type, Type) -> Bool = (a, b) -> {
@@ -1923,9 +2151,6 @@ export let rec unify: (Type, Type, Subst) -> Option[Subst] = (a, b, s) -> {
                   CtFn(pb, rb, beffect) => if Array::length(pa) != Array::length(pb) {
                     None
                   }
-                  else if !effect_names_compatible(aeffect, beffect) {
-                    None
-                  }
                   else {
                     let ul_len = Array::length(pa)
                     let mut ul_i = 0
@@ -1950,7 +2175,10 @@ export let rec unify: (Type, Type, Subst) -> Option[Subst] = (a, b, s) -> {
                       }
                     }
                     match ul_result {
-                      Some(s2) => unify(ra, rb, s2),
+                      Some(s2) => match unify(ra, rb, s2) {
+                        Some(s3) => unify_effects(aeffect, beffect, s3),
+                        None => None
+                      },
                       None => None
                     }
                   },
@@ -2093,6 +2321,9 @@ export let collect_subst_bounds_pairs: (Subst) -> Array[(Int, Array[String])] = 
         cur = rest
       },
       SubstCached(_, _, rest) => {
+        cur = rest
+      },
+      SubstEffBind(_, _, rest) => {
         cur = rest
       }
     }
