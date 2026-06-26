@@ -264,6 +264,15 @@ function parsePauseLine(line) {
   return null;
 }
 
+// Flatten the per-source breakpoint map into the deduped union of function names
+// passed to `vibe run --break`. Because setBreakpoints REPLACES a source's entry
+// (the client always sends that source's full list, including an empty list to
+// clear), the union always reflects the UI's current state — a removed or moved
+// breakpoint drops out instead of lingering.
+function breakpointUnion(bySource) {
+  return Array.from(new Set([].concat(...Object.values(bySource || {}))));
+}
+
 // ===========================================================================
 // DAP server (only runs when invoked as a program, not when require()d).
 // ===========================================================================
@@ -304,7 +313,11 @@ function main() {
     program: null, // resolved program path
     vibeBin: VIBE_ENV_BIN, // launcher path
     sourceText: "", // program source (for line->function mapping)
-    breakFns: [], // function names to break on
+    // DAP setBreakpoints is a FULL REPLACEMENT per source, so track each source's
+    // current breakpoints separately and derive breakFns as their union; a source
+    // re-sent with fewer (or zero) breakpoints then drops the removed ones.
+    breakpointsBySource: {}, // source path -> [function name, ...]
+    breakFns: [], // union of breakpointsBySource values (what `--break` gets)
     proc: null, // spawned runner ChildProcess
     // The most recent recorded pause:
     frames: [], // [{name, file, line}] (top frame first)
@@ -514,8 +527,13 @@ function main() {
       case "setBreakpoints": {
         const reqBps = (args.breakpoints || []).map((b) => b.line);
         const fns = breakpointFunctionsForLines(state.sourceText, reqBps);
-        // Accumulate (union) across multiple setBreakpoints calls for the file.
-        for (const f of fns) if (!state.breakFns.includes(f)) state.breakFns.push(f);
+        // setBreakpoints fully replaces this source's breakpoints (the client
+        // re-sends the complete list, incl. an empty list to clear). Store this
+        // source's set and recompute breakFns as the union across all sources, so
+        // a removed or moved breakpoint no longer lingers into `vibe run --break`.
+        const srcKey = (args.source && (args.source.path || args.source.name)) || state.program || "";
+        state.breakpointsBySource[srcKey] = Array.from(new Set(fns));
+        state.breakFns = breakpointUnion(state.breakpointsBySource);
         // Verify each requested breakpoint, resolving it to its function's start
         // line when it falls inside a known function span.
         const funcs = enclosingFunctions(state.sourceText);
@@ -701,6 +719,7 @@ function main() {
 module.exports = {
   enclosingFunctions,
   breakpointFunctionsForLines,
+  breakpointUnion,
   parseFrame,
   parseArgs,
   parsePauseLine,

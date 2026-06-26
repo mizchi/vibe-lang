@@ -22,9 +22,11 @@ let client;
 
 // Resolve the dap_server.js path. In the repo layout it lives at
 // <repo>/js/vibe/dap_server.js; the extension lives at
-// <repo>/integrations/vscode-vibe/. When the extension is packaged standalone
-// the script may instead be bundled alongside it, so also try a couple of
-// local fallbacks before giving up.
+// <repo>/integrations/vscode-vibe/. When packaged as a VSIX, `vsce package`
+// only includes files under the extension dir, so the `vscode:prepublish`
+// step (scripts/bundle-dap.js) copies it to <extensionPath>/dap_server.js —
+// the second/third fallbacks below find that bundled copy in the installed
+// context, while the first finds the canonical source during repo-dev.
 function resolveDapServer(context) {
   const candidates = [
     path.join(context.extensionPath, "..", "..", "js", "vibe", "dap_server.js"),

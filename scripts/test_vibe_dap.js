@@ -91,6 +91,27 @@ eq(
   "out-of-range line maps to no function",
 );
 
+// breakpointUnion: setBreakpoints REPLACES a source's entry, so the union over
+// all sources reflects the client's current state (no accumulation of removed BPs).
+eq(
+  dap.breakpointUnion({ "a.vibe": ["helper"], "b.vibe": ["main"] }),
+  ["helper", "main"],
+  "union spans multiple sources",
+);
+eq(
+  dap.breakpointUnion({ "a.vibe": ["helper", "worker"], "b.vibe": ["worker"] }),
+  ["helper", "worker"],
+  "union de-dups a function present in two sources",
+);
+// Removing a breakpoint (re-send the source with fewer fns) drops it from the union.
+{
+  const bySource = { "a.vibe": ["helper", "worker"] };
+  bySource["a.vibe"] = ["helper"]; // setBreakpoints replaced a.vibe's list
+  eq(dap.breakpointUnion(bySource), ["helper"], "replacing a source drops the removed function");
+  bySource["a.vibe"] = []; // cleared
+  eq(dap.breakpointUnion(bySource), [], "clearing a source's breakpoints empties the union");
+}
+
 // A single-line function form (no separate body line) still spans correctly.
 const oneLine = "export let f = (a: Int) -> Int { a + 1 }\nlet g = () -> Int { 0 }";
 eq(dap.enclosingFunctions(oneLine), [
