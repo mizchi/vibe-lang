@@ -20,7 +20,7 @@ guest＋host を合わせた総ヒープ使用量を表す。
 |---|---|---|---|
 | **1** | 総ヒープ / ピーク（`__heap_ptr` 差分）| ゼロ | ✅ **実装済み**: `vibe run --mem` |
 | **2** | `memory.grow` イベント（成長タイムライン）| ホストのみ | ✅ **実装済み**: `--mem` の一部 |
-| 3 | アロケーション時系列サンプリング | `dbg_line` / epoch 流用 | 設計済み |
+| **3** | アロケーション時系列サンプリング | ホストのみ（epoch）| ✅ **実装済み**: `--mem-sample` |
 | 4 | サイト別 alloc 属性（massif/heaptrack 相当）| opt-in ビルド（`vibe::alloc_site`）| 設計済み |
 
 ## Tier 1: `vibe run --mem`（実装済み）
@@ -68,6 +68,25 @@ vibe:   growth 4.0 MiB -> 6.0 MiB across 32 event(s), 2.07 ms … 2.50 ms
 （`__heap_ptr` を `dbg_line`/epoch でサンプリング）。
 上の例は bump allocator が **1 ページ（64 KiB）ずつ** grow していることも示している
 （syscall を減らすなら成長チャンクを大きくする余地）。
+
+## Tier 3: 時系列サンプリング（実装済み）
+
+`vibe run --mem-sample[=MS]`（既定 1ms 間隔）。runner は wasmtime の **epoch interruption** を
+使い、バックグラウンドスレッドが MS ごとに engine epoch を increment、ゲストのチェックポイント
+（関数入口・ループ back-edge）で epoch-deadline コールバックが発火して `__heap_ptr` を読む。
+これで **初期メモリ（4 MiB）内**でも heap の推移が見える（tier 2 の grow イベントが拾えない領域）。
+ホスト側のみ・計装なし。epoch checks のコストは `--mem-sample` 時のみ（通常 / `vibe bench` は無影響）。
+
+```
+$ vibe run --mem-sample long.vibe
+vibe::memsample t_us=1235 heap=2459624
+vibe::memsample t_us=2314 heap=4571336
+…
+vibe: heap samples — 12 over 1.21 ms … 13.36 ms, 2.4 MiB -> 19.2 MiB (peak 19.2 MiB)
+```
+
+各 `vibe::memsample` 行は機械可読（`t_us`=経過、`heap`=`__heap_ptr` bytes）。サンプル数は
+実行時間と間隔に依存（プログラムが 1 間隔より速いと 0 サンプル）。
 
 ## `vibe bench`（実装済み）
 
