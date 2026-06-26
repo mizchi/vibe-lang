@@ -326,6 +326,49 @@ export let rec trait_method_sig: (TypeEnv, String, String) -> Option[(Array[Type
   }
 }
 
+// The declared name at the head of a (possibly generic) named type, for
+// matching against a trait impl's target. Impl targets are stored with their
+// type arguments erased to `CtUnknown` (see the `SImpl` handler), so element
+// types must be matched by head name, not by `types_equal`.
+let trait_target_head_name: (Type) -> String = (ty) -> {
+  match ty {
+    CtNamed(n, _) => n,
+    CtStruct(n) => n,
+    CtEnum(n) => n,
+    _ => ""
+  }
+}
+
+let rec type_name_iterator_impl_scan: (TypeEnv, TypeEnv, String) -> Bool = (scan, full, type_name) -> {
+  match scan {
+    EnvEmpty => false,
+    EnvBind(_, _, rest) => type_name_iterator_impl_scan(rest, full, type_name),
+    EnvTraitDef(_, _, _, _, rest) => type_name_iterator_impl_scan(rest, full, type_name),
+    EnvTraitImpl(tname, target, rest) => {
+      let hit = trait_target_head_name(target) == type_name && (match trait_method_sig(full, tname, "next") {
+        Some(_) => true,
+        None => false
+      })
+      if hit {
+        true
+      } else type_name_iterator_impl_scan(rest, full, type_name)
+    },
+    EnvTraitImplGen(_, _, _, _, rest) => type_name_iterator_impl_scan(rest, full, type_name),
+    EnvFlat(_) => false,
+    EnvCached(_, rest) => type_name_iterator_impl_scan(rest, full, type_name)
+  }
+}
+
+// True iff a type named `type_name` has an `impl Tr for type_name` where the
+// trait `Tr` declares a `next` method — i.e. the type is iterator-shaped
+// (`Iterator[T] { next(Self) -> Option[(T, Self)] }`). The checker's `for x in
+// it` element-type inference uses this to recognise struct-trait iterators
+// (`LazyIter`, async streams, …) and bind the loop variable to the iterator's
+// element type instead of `CtUnknown`.
+export let type_name_has_iterator_impl: (TypeEnv, String) -> Bool = (env, type_name) -> {
+  type_name_iterator_impl_scan(env, env, type_name)
+}
+
 // Like `trait_method_sig` but follows supertraits transitively, so a method
 // inherited from a supertrait (`trait B: A` calling an `A` method on `[T: B]`)
 // resolves. Trait hierarchies are acyclic, so the recursion terminates.

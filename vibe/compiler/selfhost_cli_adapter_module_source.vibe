@@ -1038,6 +1038,36 @@ export let rec trait_method_sig: (TypeEnv, String, String) -> Option[(Array[Type
     EnvCached(_, rest) => trait_method_sig(rest, trait_name, method_name)
   }
 }
+let trait_target_head_name: (Type) -> String = (ty) -> {
+  match ty {
+    CtNamed(n, _) => n,
+    CtStruct(n) => n,
+    CtEnum(n) => n,
+    _ => ""
+  }
+}
+let rec type_name_iterator_impl_scan: (TypeEnv, TypeEnv, String) -> Bool = (scan, full, type_name) -> {
+  match scan {
+    EnvEmpty => false,
+    EnvBind(_, _, rest) => type_name_iterator_impl_scan(rest, full, type_name),
+    EnvTraitDef(_, _, _, _, rest) => type_name_iterator_impl_scan(rest, full, type_name),
+    EnvTraitImpl(tname, target, rest) => {
+      let hit = trait_target_head_name(target) == type_name && (match trait_method_sig(full, tname, "next") {
+        Some(_) => true,
+        None => false
+      })
+      if hit {
+        true
+      } else type_name_iterator_impl_scan(rest, full, type_name)
+    },
+    EnvTraitImplGen(_, _, _, _, rest) => type_name_iterator_impl_scan(rest, full, type_name),
+    EnvFlat(_) => false,
+    EnvCached(_, rest) => type_name_iterator_impl_scan(rest, full, type_name)
+  }
+}
+export let type_name_has_iterator_impl: (TypeEnv, String) -> Bool = (env, type_name) -> {
+  type_name_iterator_impl_scan(env, env, type_name)
+}
 export let rec trait_method_sig_deep: (TypeEnv, String, String) -> Option[(Array[TypeExpr], TypeExpr)] = (env, trait_name, method_name) -> {
   match trait_method_sig(env, trait_name, method_name) {
     Some(sig) => Some(sig),
@@ -5073,19 +5103,25 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         _ => iterable
       }
       let (it, s1, c1) = check_expr(real_iterable, env, defs, s, c, errors, tytab)
-      let et = match subst_apply(s1, it) {
-        CtArray(elem) => elem,
-        CtNamed("Stream", args) => if Array::length(args) > 0 {
-          Array::get(args, 0)
-        } else CtUnknown,
-        _ => CtUnknown
+      let it_resolved = subst_apply(s1, it)
+      let (et, c1b) = match it_resolved {
+        CtArray(elem) => (elem, c1),
+        CtNamed(nm, args) => if Array::length(args) > 0 {
+          (Array::get(args, 0), c1)
+        } else if nm == "Stream" || type_name_has_iterator_impl(env, nm) {
+          fresh_var(c1)
+        } else (CtUnknown, c1),
+        CtStruct(nm) => if type_name_has_iterator_impl(env, nm) {
+          fresh_var(c1)
+        } else (CtUnknown, c1),
+        _ => (CtUnknown, c1)
       }
       let env2 = env_bind(env, name, et)
       let env3 = match index_name {
         Some(index_name) => env_bind(env2, index_name, CtInt),
         None => env2
       }
-      let (bt, s2, c2) = check_expr(body, env3, defs, s1, c1, errors, tytab)
+      let (bt, s2, c2) = check_expr(body, env3, defs, s1, c1b, errors, tytab)
       (CtArray(bt), s2, c2)
     },
     EDot(obj, field, dot_off) => {

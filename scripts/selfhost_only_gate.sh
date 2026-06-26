@@ -725,4 +725,82 @@ fi
 rm -rf "$fadir"
 echo "[selfhost-only-gate] for-await unification regression ok"
 
+# 20. cross-import trait-iterator ELEMENT-TYPE inference: `for x in <C[T]>` binds
+#     `x` to the iterator's element type `T`, recovered from the iterable's type
+#     `C[T]` (the `next(Self) -> Option[(T, Self)]` convention puts the element
+#     first) — even though the `impl Iterator for C` lives in the imported module
+#     and is NOT in this file's import env. Two assertions:
+#       (a) POSITIVE: a `LazyIter[Int]` loop body uses `x` directly in element
+#           arithmetic (`total + x`) and runs to the right sum.
+#       (b) NEGATIVE: a `LazyIter[String]` loop with an `Int` accumulator
+#           (`total + x`, total : Int, x : String) MUST be rejected by the
+#           checker — proving the element is typed `String`, not `CtUnknown`
+#           (which silently accepted any use and dropped element-type safety).
+echo "[selfhost-only-gate] 20/20 cross-import trait-iterator element-type regression"
+eidir="_build/_gate_import_iter_elem"
+rm -rf "$eidir"; mkdir -p "$eidir"
+cat > "$eidir/li.vibe" <<'EOF'
+export trait Iterator[T] { next(Self) -> Option[(T, Self)] }
+export struct LazyIter[T] { pull: (Int) -> Option[(T, Int)]; state: Int }
+impl Iterator for LazyIter {
+  next(self) -> Option[(T, LazyIter)] {
+    match (self.pull)(self.state) {
+      Some(p) => { let (v, ns) = p; Some((v, LazyIter::{ pull: self.pull, state: ns })) },
+      None => None
+    }
+  }
+}
+export let lazy_iter_arr = [T](xs: Array[T]) -> LazyIter[T] {
+  LazyIter::{ pull: (i) -> Option[(T, Int)] {
+    if i < Array::length(xs) { Some((Array::get(xs, i), i + 1)) } else { None }
+  }, state: 0 }
+}
+EOF
+# (a) positive: direct element arithmetic compiles + runs (10+20+30+40 = 100).
+cat > "$eidir/pos.vibe" <<'EOF'
+import ./li.vibe { lazy_iter_arr }
+let sum_direct = (src: LazyIter[Int]) -> Int {
+  let mut total = 0
+  for x in src { total = total + x }
+  total
+}
+export let _start: () -> Int = () -> { sum_direct(lazy_iter_arr([10, 20, 30, 40])) }
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$eidir/pos.vibe" "$eidir/pos.wasm" _start >/dev/null 2>&1
+if [ ! -s "$eidir/pos.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: element-type positive program did not compile" >&2
+  cat "$eidir/pos.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+ei_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$eidir/pos.wasm" 2>/dev/null | tr -dc '0-9-')"
+if [ "$ei_out" != "100" ]; then
+  echo "[selfhost-only-gate] FAIL: element-type positive mismatch (got '$ei_out', want 100)" >&2
+  exit 1
+fi
+# (b) negative: Int accumulator + String element must be a type error.
+cat > "$eidir/neg.vibe" <<'EOF'
+import ./li.vibe { lazy_iter_arr }
+let bad = (src: LazyIter[String]) -> Int {
+  let mut total = 0
+  for x in src { total = total + x }
+  total
+}
+export let _start: () -> Int = () -> { bad(lazy_iter_arr(["a", "b"])) }
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$eidir/neg.vibe" "$eidir/neg.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$eidir/neg.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: element-type negative program compiled (element typed CtUnknown, not String -> element-type safety regressed)" >&2
+  exit 1
+fi
+if ! grep -q "type mismatch in '+'" "$eidir/neg.wasm.diag" 2>/dev/null; then
+  echo "[selfhost-only-gate] FAIL: element-type negative rejected for the wrong reason" >&2
+  cat "$eidir/neg.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+rm -rf "$eidir"
+echo "[selfhost-only-gate] cross-import trait-iterator element-type regression ok"
+
 echo "[selfhost-only-gate] ok"
