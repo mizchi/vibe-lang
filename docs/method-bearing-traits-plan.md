@@ -234,20 +234,48 @@ resolve.
    the commit bisectable — `checker_stmt.vibe` currently ignores the methods field.
    A `trait Measurable { measure(Self)->Int; scale(Self,Int)->Self }` program
    compiles, runs, and round-trips through normalize against the rebuilt stage2.
-2. **Checker resolution of `T::method`.** In `check_expr` `EIdent`/`ECall`, when the
-   qualified head is a bounded type param `T` (bound recorded via `subst_add_bound`,
-   PR-2 machinery) and the trait declares `method`, type it as the method signature
-   with `Self := T`. Mark the enclosing function as requiring a `Trait`-witness for
-   `T` (a new per-function obligation list).
-3. **Witness threading (lower/desugar).** For each `[T: Trait]` obligation, prepend a
-   hidden parameter `__dict_Trait_T : TraitDict[T]` (a struct of the trait's method
-   closures — `struct`s holding closures already work, spike G-1) and rewrite
-   `T::method(args)` → `(__dict_Trait_T.method)(args)`. This is the pervasive part:
-   every bounded generic's signature and body changes.
-4. **Witness materialization at call sites.** Where a `[T: Trait]` generic is called
-   with concrete `C`, synthesize the dict literal `TraitDict::{ method: C::method, ... }`
-   from the registered `impl Trait for C` (the `C::method` free functions from PR-1)
-   and pass it. Generic-over-generic calls forward the caller's dict instead.
+2. **Checker resolution of `T::method`.** — **LANDED (component 2, this branch).**
+   `EnvTraitDef` now stores method signatures; `checker.vibe`'s `EIdent`
+   "unknown name" fallback resolves a qualified `head::method` when `head` is a
+   bounded type variable whose bounds include a trait declaring `method`, typing
+   it with `Self := head` (`resolve_trait_method_ident` + `subst_self_in_type`,
+   helpers `trait_method_sig` / `subst_bounds_for` in `core/types.vibe`). The
+   syntactic lowering below means no checker obligation list is needed.
+3. **Witness threading + 4. materialization.** — **LANDED (components 3+4,
+   this branch; `vibe/compiler/desugar_trait_dict.vibe`).** A pre-check pass
+   `desugar_trait_dicts` synthesizes a witness struct `TraitDict { m: (Self)->R; ... }`
+   per method-bearing trait, prepends a hidden `__dict_Trait_T: TraitDict[T]`
+   parameter to each `[T: Trait]` generic, rewrites `T::method(args)` →
+   `(__dict_Trait_T.method)(args)`, and at each concrete call site synthesizes
+   `TraitDict::{ method: C::method, ... }` from the receiver's inferred concrete
+   type `C`. The witness threading is purely syntactic (driven by the `EFn`
+   bounds), so it needs no checker-recorded obligation list. The pass is INERT
+   unless a method-bearing trait is declared (so the selfbuild is untouched) and
+   idempotent (it runs once per pipeline; the single-file path desugars before
+   generic-stripping, the FS-compile path at the codegen convergence point
+   `compile_wasi_module_linked_impl`).
+
+   Receiver-type inference for call-site dict synthesis is best-effort/syntactic
+   (`infer_arg_type_name`): primitive literals, struct literals (matched to a
+   `struct` decl by field-name set since the parser discards the `Name::` prefix),
+   and locals/params whose concrete type is tracked in a small per-function
+   `var_types` environment. A receiver whose type is not syntactically
+   determinable leaves the call unrewritten — a loud arity error, never a
+   miscompile.
+
+   Verified end-to-end against the rebuilt stage2 (single-file `_start` and
+   FS-compile test blocks): `[T: Measurable](x: T) { T::measure(x) }` and
+   `{ T::measure(T::scale(x, 2)) }` dispatch correctly for both an `Int` impl
+   and a `Point` struct impl, with both literal and let-bound receivers.
+   Fixture: `fixtures/trait_method_dict_passing_test.vibe`.
+
+   Still deferred (next slices): multiple bounds per parameter beyond the
+   single-trait lookup, supertrait method inheritance (nested dicts), generic
+   impls (`impl [T: Eq] Eq for Array[T]` — dicts of dicts), generic→generic
+   witness forwarding (a bounded generic calling another with the same `T`),
+   `Type::method` as a first-class HOF value, and the wasm-gc backend mirror.
+   Activation needs no seed bump (the compiler source uses no trait-method
+   syntax); `scripts/selfhost_only_gate.sh` stays green.
 
 ### Scope for the first working slice
 Single bound, single type param, non-supertrait, non-generic-impl, concrete call

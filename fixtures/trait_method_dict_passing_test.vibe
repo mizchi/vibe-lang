@@ -1,0 +1,52 @@
+// Method-bearing traits — automatic dictionary passing (#641 PR-3).
+//
+// Mirrors the hand-written substrate guard (G-3 in
+// fixtures/trait_dict_passing_substrate_test.vibe) but uses real trait-method
+// SYNTAX: `T::method(x)` inside a `[T: Trait]` generic resolves and dispatches
+// to the concrete impl via a compiler-synthesized witness dictionary. The
+// pre-check pass `desugar_trait_dicts` threads the dict parameter and
+// materializes it at concrete call sites.
+
+//# Types
+
+trait Measurable {
+  measure(Self) -> Int;
+  scale(Self, Int) -> Self
+}
+
+struct Point { x: Int; y: Int }
+
+//# Functions
+
+impl Measurable for Int {
+  measure(self) -> Int { self }
+  scale(self, k) -> Int { self * k }
+}
+
+impl Measurable for Point {
+  measure(self) -> Int { self.x + self.y }
+  scale(self, k) -> Point { Point::{ x: self.x * k, y: self.y * k } }
+}
+
+// `T::measure` / `T::scale` resolve against the `[T: Measurable]` bound and
+// dispatch through the threaded witness dictionary.
+let measure_one = [T: Measurable](x: T) -> Int {
+  T::measure(x)
+}
+
+let twice = [T: Measurable](x: T) -> Int {
+  T::measure(T::scale(x, 2))
+}
+
+//# Tests
+
+test "T::method dispatch on a primitive impl" {
+  assert_eq(measure_one(42), 42)
+  assert_eq(twice(21), 42)
+}
+
+test "T::method dispatch on a struct impl, multi-method" {
+  let p = Point::{ x: 40, y: 2 }
+  assert_eq(measure_one(p), 42)
+  assert_eq(twice(p), 84)
+}
