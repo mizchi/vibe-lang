@@ -514,9 +514,15 @@ let iter_sum = [I: Iter](it: I) -> Int {
   }
   acc
 }
-export let _start: () -> Int = () -> { iter_sum(Range::{ lo: 1, hi: 5 }) }
+export let _start: () -> Int = () -> {
+  // `for x in <iterator>` desugars to a next-driven loop (10);
+  // iter_sum dispatches I::next through the witness dict (10).
+  let mut acc = 0
+  for x in Range::{ lo: 1, hi: 5 } { acc = acc + x }
+  acc + iter_sum(Range::{ lo: 1, hi: 5 })
+}
 EOF
-# Expected: 1 + 2 + 3 + 4 = 10
+# Expected: (1+2+3+4) + (1+2+3+4) = 20
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$itdir/iter.vibe" "$itdir/iter.wasm" _start >/dev/null 2>&1
@@ -526,8 +532,8 @@ if [ ! -s "$itdir/iter.wasm" ]; then
 fi
 it_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$itdir/iter.wasm" 2>/dev/null | tr -dc '0-9-')"
-if [ "$it_out" != "10" ]; then
-  echo "[selfhost-only-gate] FAIL: Iterator dispatch mismatch (got '$it_out', want 10 -> #636 regressed)" >&2
+if [ "$it_out" != "20" ]; then
+  echo "[selfhost-only-gate] FAIL: Iterator dispatch mismatch (got '$it_out', want 20 -> #636 regressed)" >&2
   exit 1
 fi
 rm -rf "$itdir"

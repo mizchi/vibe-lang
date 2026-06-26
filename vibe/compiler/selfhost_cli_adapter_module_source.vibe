@@ -7284,6 +7284,39 @@ let seed_var_types: (Array[(String, Option[TypeExpr])], Array[String], Array[(St
   }
   out
 }
+let is_known_struct: (Array[(String, Array[String])], String) -> Bool = (struct_sets, name) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(struct_sets) {
+    let (sname, _) = Array::get(struct_sets, i)
+    if sname == name {
+      found = true
+      i = Array::length(struct_sets)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+let build_iter_for: (String, String, Expr, Expr) -> Expr = (name, ctype, iter, body) -> {
+  let nextcall = ECall(EIdent(String::concat(ctype, "::next"), -1), [
+    EIdent("__iter_cur", -1)
+  ], -1)
+  let some_arm = (PCtor("Some", [
+    PTuple([
+      PBind(name),
+      PBind("__iter_rest")
+    ])
+  ]), EAssign("__iter_cur", EIdent("__iter_rest", -1), body))
+  let none_arm = (PCtor("None", Array::slice([
+    PWild
+  ], 0, 0)), EAssign("__iter_go", EBool(false), EUnit))
+  let loop_body = EMatch(nextcall, [
+    some_arm,
+    none_arm
+  ])
+  ELetMut("__iter_cur", iter, ELetMut("__iter_go", EBool(true), EWhile(EIdent("__iter_go", -1), loop_body)))
+}
 let extend_var_types: (Array[(String, String)], String, Option[String]) -> Array[(String, String)] = (var_types, name, inferred) -> {
   match inferred {
     Some(tname) => {
@@ -7422,7 +7455,18 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
       let (name, init) = param
       (name, rewrite_expr(init, gens, traits, struct_sets, dict_binds, var_types))
     }, rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types)),
-    EForIn(name, idx, iter, body) => EForIn(name, idx, rewrite_expr(iter, gens, traits, struct_sets, dict_binds, var_types), rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types)),
+    EForIn(name, idx, iter, body) => {
+      let riter = rewrite_expr(iter, gens, traits, struct_sets, dict_binds, var_types)
+      let rbody = rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types)
+      match infer_arg_type_name(iter, struct_sets, var_types) {
+        Some(tn) => if is_known_struct(struct_sets, tn) {
+          build_iter_for(name, tn, riter, rbody)
+        } else {
+          EForIn(name, idx, riter, rbody)
+        },
+        None => EForIn(name, idx, riter, rbody)
+      }
+    },
     EBinOp(op, l, r) => EBinOp(op, rewrite_expr(l, gens, traits, struct_sets, dict_binds, var_types), rewrite_expr(r, gens, traits, struct_sets, dict_binds, var_types)),
     EUnaryOp(op, e) => EUnaryOp(op, rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types)),
     EFn(tp, bs, ps, ret, eff, body) => EFn(tp, bs, ps, ret, eff, rewrite_expr(body, gens, traits, struct_sets, dict_binds, seed_var_types(ps, tp, var_types))),

@@ -334,16 +334,25 @@ lands.
   (`relax_unknown_named` in checker.vibe) so it unifies at the call site (the
   uniform representation erases it). A functional iterator
   `next(Self) -> Option[(T, Self)]` threads its state and is driven to completion
-  by a generic helper (gate step 16, `iter_sum(Range) = 10`; fixture
-  `fixtures/trait_iterator_test.vibe`). Closures-in-struct-fields (the other
-  lazy_iter blocker) were already proven (spike G-1) and are exactly the dict
-  encoding. **Deferred (the larger remaining #636 piece):** `for x in it { ... }`
-  / `for await` syntax desugar to the `next`-driven driver loop (type-directed —
-  must distinguish array-`for` from iterator-`for`), the `map`/`filter`/`fold`
-  combinators, the `Iterable` trait, and reimplementing `lazy_iter_*` on the
-  trait. Storing the trait's type params in `STrait` (instead of erasing at
-  parse) would let the element type be a fresh unification var rather than
-  `CtUnknown`, recovering full element-type safety.
+  by a generic helper. **`for x in it { ... }` over a struct iterator now
+  desugars to the next-driven driver loop** (`build_iter_for` in the desugar
+  pass): `for` whose iterable infers to a struct type with a `next` method is
+  rewritten to `let mut __iter_cur = it; while ... match C::next(__iter_cur) {
+  Some((x, rest)) => { __iter_cur = rest; body }, None => stop }`; array-`for`
+  (iterable infers to None / a primitive) is left untouched for the existing
+  array codegen, and nested iterator-`for`s shadow the `__iter_*` names
+  correctly. Verified on both pipelines (gate step 16: a `for` loop + a generic
+  `iter_sum` dispatch sum to 20; fixture `fixtures/trait_iterator_test.vibe`
+  covers struct-literal and let-bound iterables). Closures-in-struct-fields (the
+  other lazy_iter blocker) are exactly the dict encoding (spike G-1).
+  **Deferred:** `for await`, the `map`/`filter`/`fold` combinators, the
+  `Iterable` trait, generic-context `for x in <type-param iterator>`, and
+  reimplementing `lazy_iter_*` on the trait. `for` requires the functional
+  `next(Self) -> Option[(T, Self)]` convention (immutable structs thread state);
+  the stateful `next(Self) -> Option[T]` form needs mut fields. Storing the
+  trait's type params in `STrait` (instead of erasing at parse) would let the
+  element type be a fresh unification var rather than `CtUnknown`, recovering
+  full element-type safety.
 
 ## Risks / open items
 
