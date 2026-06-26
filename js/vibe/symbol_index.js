@@ -95,15 +95,36 @@ function matchBrace(mask, open) {
 
 // Top-level (and one level of `module { ... }`-nested) declarations.
 // Recognizes: let / struct / enum / trait / module / type, with optional
-// `export` and (for let) `mut`. For a let bound to a lambda we record Function,
-// else Variable, and capture the body span (`{ ... }`) for call attribution.
+// `export` and (for let) a `mut` or `rec` modifier (`let rec f = ...` is the
+// common recursive-function form — without consuming it the name would parse as
+// "rec"). For a let bound to a lambda we record Function, else Variable, and
+// capture the body span (`{ ... }`) for call attribution.
 // NOTE: this matches at ANY brace depth; the caller filters to depth 0 (top
 // level) and depth 1 inside a `module` body, so locals inside function bodies
 // (`let x = ...` in a lambda) are not mistaken for workspace symbols.
 const DECL_RE =
-  /(^|\n)[ \t]*(export[ \t]+)?(let|struct|enum|trait|module|type)[ \t]+(mut[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)/g;
+  /(^|\n)[ \t]*(export[ \t]+)?(let|struct|enum|trait|module|type)[ \t]+(?:(?:mut|rec)[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)/g;
 
-function declKind(keyword, mask, nameEnd) {
+// The first top-level `=` at/after `from` that binds a `let` (skipping any inside
+// (), [], {} — e.g. a `(...) -> T with { E }` signature — and the compound
+// operators ==, =>, <=, >=, !=, :=). Returns its index, or -1 if none before the
+// next top-level declaration. This separates a let's TYPE annotation from its
+// VALUE, so the body brace is searched in the value, not in a `with { E }` set.
+function findBindingEq(mask, from) {
+  let depth = 0;
+  for (let i = from; i < mask.length; i++) {
+    const c = mask[i];
+    if (c === "(" || c === "[" || c === "{") depth++;
+    else if (c === ")" || c === "]" || c === "}") { if (depth === 0) return -1; depth--; }
+    else if (depth === 0) {
+      if (c === "\n" && /^[ \t]*(export[ \t]+)?(let|struct|enum|trait|module|type)[ \t]/.test(mask.slice(i + 1, i + 48))) return -1;
+      if (c === "=" && mask[i + 1] !== "=" && mask[i + 1] !== ">" && mask[i - 1] !== "<" && mask[i - 1] !== ">" && mask[i - 1] !== "!" && mask[i - 1] !== ":" && mask[i - 1] !== "=") return i;
+    }
+  }
+  return -1;
+}
+
+function declKind(keyword, mask, eqPos) {
   switch (keyword) {
     case "struct": return KIND.Struct;
     case "enum": return KIND.Enum;
@@ -111,13 +132,13 @@ function declKind(keyword, mask, nameEnd) {
     case "module": return KIND.Module;
     case "type": return KIND.Class;
     case "let": {
-      // Function iff the RHS is a lambda: `= ( ... ) ->` (optionally a leading
-      // `[T]` type-param list). Scan forward from the name over `=` to a `(`.
-      let i = nameEnd;
+      // Function iff the VALUE (after the binding `=`) is a lambda `( ... ) ->`,
+      // optionally with a leading `[T]` type-param list. eqPos isolates the value
+      // from the type annotation, so a `(...) -> T with { E } = ...` signature
+      // doesn't fool the scan.
+      if (eqPos < 0) return KIND.Variable;
+      let i = eqPos + 1;
       const n = mask.length;
-      while (i < n && mask[i] !== "=" && mask[i] !== "\n") i++;
-      if (mask[i] !== "=") return KIND.Variable;
-      i++;
       while (i < n && /\s/.test(mask[i])) i++;
       if (mask[i] === "[") { let d = 0; while (i < n) { if (mask[i] === "[") d++; else if (mask[i] === "]") { d--; if (!d) { i++; break; } } i++; } while (i < n && /\s/.test(mask[i])) i++; }
       return mask[i] === "(" ? KIND.Function : KIND.Variable;
@@ -138,20 +159,21 @@ function extractFile(text) {
     const lead = m[1] ? m[1].length : 0;
     const declStart = m.index + lead;
     const keyword = m[3];
-    const name = m[5];
+    const name = m[4];
     const nameStart = m.index + m[0].length - name.length;
     const nameEnd = nameStart + name.length;
-    const kind = declKind(keyword, mask, nameEnd);
-    // Body span: the first `{` on/after the name, brace-matched. struct/enum/
-    // trait/module aggregates and lambda function bodies all use `{ ... }`. A
-    // value let (`let x = 5`) has no body brace before the next decl/EOF.
-    const braceAt = mask.indexOf("{", nameEnd);
+    // For a let, find the binding `=` so the body brace is searched in the VALUE,
+    // not in a type-annotation `... with { E }` set. Other decls have no `=`.
+    const eqPos = keyword === "let" ? findBindingEq(mask, nameEnd) : -1;
+    const kind = declKind(keyword, mask, eqPos);
+    // Body span: the first `{` on/after the value (let) or the name (aggregate),
+    // brace-matched. A value let (`let x = 5`) has no body brace before the next
+    // decl/EOF; the crossesDecl guard prevents claiming a LATER decl's brace.
+    const bodyFrom = keyword === "let" ? (eqPos >= 0 ? eqPos + 1 : nameEnd) : nameEnd;
+    const braceAt = mask.indexOf("{", bodyFrom);
     let bodyStart = -1, bodyEnd = nameEnd;
     if (braceAt >= 0) {
-      // For a value let with no lambda, the next `{` may belong to a LATER decl;
-      // only claim it as a body when nothing structural separates them. We accept
-      // it if no newline-starting decl keyword appears between nameEnd and braceAt.
-      const between = mask.slice(nameEnd, braceAt);
+      const between = mask.slice(bodyFrom, braceAt);
       if (kind === KIND.Function || keyword !== "let" || !/\n[ \t]*(export[ \t]+)?(let|struct|enum|trait|module|type)[ \t]/.test(between)) {
         bodyStart = braceAt;
         bodyEnd = matchBrace(mask, braceAt);
@@ -216,12 +238,11 @@ function extractFile(text) {
     const qualifier = cm[2] ? cm[1] : null;
     const callee = cm[2] || cm[1];
     if (NON_CALL.has(callee) || (!qualifier && NON_CALL.has(cm[1]))) continue;
-    // The token must not itself be a declaration name (e.g. `let f = (` — the
-    // `(` there is the lambda param list, not a call of `f`). Skip if the char
-    // run immediately before is `= ` following a decl — cheap heuristic: if the
-    // identifier start is a decl nameStart, skip.
     const off = cm.index;
-    calls.push({ caller: enclosing(off), callee, qualifier, off });
+    // Span of the called name token (qualifier::callee), excluding trailing
+    // spaces and the `(`, for precise call-site ranges in call hierarchy.
+    const end = off + (qualifier ? qualifier.length + 2 + callee.length : callee.length);
+    calls.push({ caller: enclosing(off), callee, qualifier, off, end });
   }
 
   return { symbols, imports, calls };
@@ -283,26 +304,34 @@ class SymbolIndex {
   }
 
   // callHierarchy: outgoing calls FROM `name` (callees it invokes in its body).
+  // Each entry carries the call SITES — { path, off, end } of each invocation
+  // inside `name`'s body — so the LSP can report fromRanges at the call
+  // expressions (per spec), not at the callee's definition.
   outgoingCalls(name) {
-    const seen = new Map(); // callee -> count
-    for (const f of this.files.values()) {
+    const seen = new Map(); // callee -> { callee, count, sites: [...] }
+    for (const [path, f] of this.files) {
       for (const c of f.calls) {
-        if (c.caller === name) seen.set(c.callee, (seen.get(c.callee) || 0) + 1);
+        if (c.caller !== name) continue;
+        const e = seen.get(c.callee) || { callee: c.callee, count: 0, sites: [] };
+        e.count++; e.sites.push({ path, off: c.off, end: c.end });
+        seen.set(c.callee, e);
       }
     }
-    return [...seen.entries()].map(([callee, count]) => ({ callee, count, defined: this.definitions(callee).length > 0 }))
+    return [...seen.values()].map((e) => Object.assign(e, { defined: this.definitions(e.callee).length > 0 }))
       .sort((a, b) => b.count - a.count || (a.callee < b.callee ? -1 : 1));
   }
 
-  // callHierarchy: incoming calls TO `name` (callers that invoke it).
+  // callHierarchy: incoming calls TO `name` (callers that invoke it). Each entry
+  // carries the call SITES inside the caller's body for accurate fromRanges.
   incomingCalls(name) {
-    const seen = new Map(); // caller -> {count, path}
+    const seen = new Map(); // caller -> {caller, count, path, sites}
     for (const [path, f] of this.files) {
       for (const c of f.calls) {
         if (c.callee === name && c.caller) {
           const key = c.caller;
-          const e = seen.get(key) || { caller: c.caller, count: 0, path };
-          e.count++; seen.set(key, e);
+          const e = seen.get(key) || { caller: c.caller, count: 0, path, sites: [] };
+          e.count++; e.sites.push({ path, off: c.off, end: c.end });
+          seen.set(key, e);
         }
       }
     }

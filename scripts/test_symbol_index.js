@@ -49,6 +49,36 @@ function eq(a, b, name) { ok(JSON.stringify(a) === JSON.stringify(b), name, `${J
   ok(!ex.calls.some((c) => c.caller === null && c.callee === "twice"), "no spurious top-level call of twice");
 }
 
+// --- `let rec` / `let mut` modifiers: the NAME, not the modifier ------------
+{
+  const ex = extractFile("export let rec walk = (n: Int) -> Int { walk(n) }\nlet mut counter = 0\nlet rec a = () -> Int { b() }\nlet b = () -> Int { 0 }\n");
+  const names = ex.symbols.map((s) => s.name).sort();
+  eq(names, ["a", "b", "counter", "walk"], "`let rec`/`let mut` capture the real name, not 'rec'/'mut'");
+  ok(!ex.symbols.some((s) => s.name === "rec" || s.name === "mut"), "no fake 'rec'/'mut' symbol");
+  ok(ex.symbols.find((s) => s.name === "walk").kind === KIND.Function, "let rec fn is Function kind");
+  ok(ex.calls.some((c) => c.caller === "walk" && c.callee === "walk"), "recursive call attributed to the rec fn");
+}
+
+// --- effect-annotated signatures: body is the lambda, not `with { E }` -------
+{
+  const ex = extractFile(
+    "export let run: (String) -> Unit with { Process } = (cmd) -> {\n  exec(cmd)\n  log(cmd)\n}\nlet exec = (c: String) -> Unit with { Process } => 0\n");
+  const run = ex.symbols.find((s) => s.name === "run");
+  ok(run && run.kind === KIND.Function, "effectful let is a Function");
+  const runCalls = ex.calls.filter((c) => c.caller === "run").map((c) => c.callee).sort();
+  ok(runCalls.includes("exec") && runCalls.includes("log"), "calls in the real lambda body attribute to the fn (not lost to the effect set)", JSON.stringify(runCalls));
+  ok(!ex.calls.some((c) => c.caller === null && (c.callee === "exec" || c.callee === "log")), "effectful-fn body calls are not orphaned to caller:null");
+}
+
+// --- call sites carry precise offsets ---------------------------------------
+{
+  const src = "let a = () -> Int { foo(1) }\nlet foo = (x: Int) -> Int { x }\n";
+  const ex = extractFile(src);
+  const call = ex.calls.find((c) => c.callee === "foo" && c.caller === "a");
+  ok(call && typeof call.off === "number" && call.end === call.off + 3, "call records off..end spanning the callee token");
+  ok(src.slice(call.off, call.end) === "foo", "call off..end slices to the callee name", src.slice(call.off, call.end));
+}
+
 // --- module-nested symbols --------------------------------------------------
 {
   const src = "module M {\n  let inner = (x: Int) -> Int { x }\n}\nlet outer = () -> Int { 0 }\n";
@@ -88,10 +118,14 @@ function eq(a, b, name) { ok(JSON.stringify(a) === JSON.stringify(b), name, `${J
   ok(tw[0] && tw[0].name === "twice" && tw[0].path === "/util.vibe", "fuzzy query ranks exact name first with its path");
 
   // incoming calls to twice: combo (util) and run (main) — cross file
-  eq(idx.incomingCalls("twice").map((c) => c.caller).sort(), ["combo", "run"], "incomingCalls(twice) spans files");
+  const inc = idx.incomingCalls("twice");
+  eq(inc.map((c) => c.caller).sort(), ["combo", "run"], "incomingCalls(twice) spans files");
+  ok(inc.every((c) => c.sites.length >= 1 && c.sites[0].path && typeof c.sites[0].off === "number"), "incoming entries carry call-site offsets");
   // outgoing from combo: inc, twice
-  eq(idx.outgoingCalls("combo").map((c) => c.callee).sort(), ["inc", "twice"], "outgoingCalls(combo)");
-  ok(idx.outgoingCalls("combo").every((c) => c.defined), "outgoing callees resolve to workspace symbols");
+  const og = idx.outgoingCalls("combo");
+  eq(og.map((c) => c.callee).sort(), ["inc", "twice"], "outgoingCalls(combo)");
+  ok(og.every((c) => c.defined), "outgoing callees resolve to workspace symbols");
+  ok(og.every((c) => c.sites.length >= 1 && c.sites[0].path === "/util.vibe"), "outgoing call-sites are in the caller's file");
 
   // remove a file drops its symbols and edges
   idx.remove("/main.vibe");

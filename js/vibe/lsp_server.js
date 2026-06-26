@@ -137,6 +137,12 @@ function callHierarchyItem(name) {
   return { name, kind: symbol.kind, uri: pathToUri(p), range, selectionRange, data: { name } };
 }
 
+// Convert index call-sites ({ path, off, end }) to LSP Ranges at the call
+// expressions — the `fromRanges` for incoming/outgoing call hierarchy.
+function callSiteRanges(sites) {
+  return (sites || []).map((s) => rangeFromOffsets(s.path, s.off, s.end));
+}
+
 function handle(msg) {
   switch (msg.method) {
     case "initialize": {
@@ -190,7 +196,8 @@ function handle(msg) {
       const out = [];
       for (const c of wsIndex.incomingCalls(name)) {
         const from = callHierarchyItem(c.caller);
-        if (from) out.push({ from, fromRanges: [from.selectionRange] });
+        // fromRanges: where the call to `name` appears inside the caller's body.
+        if (from) out.push({ from, fromRanges: callSiteRanges(c.sites) });
       }
       reply(msg.id, out);
       break;
@@ -203,7 +210,8 @@ function handle(msg) {
       for (const c of wsIndex.outgoingCalls(name)) {
         if (!c.defined) continue; // only edges to workspace-defined symbols
         const to = callHierarchyItem(c.callee);
-        if (to) out.push({ to, fromRanges: [to.selectionRange] });
+        // fromRanges: where `name` invokes the callee, inside `name`'s body.
+        if (to) out.push({ to, fromRanges: callSiteRanges(c.sites) });
       }
       reply(msg.id, out);
       break;

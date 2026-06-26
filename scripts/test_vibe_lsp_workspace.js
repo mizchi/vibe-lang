@@ -82,6 +82,11 @@ const eqset = (a, b) => JSON.stringify([...a].sort()) === JSON.stringify([...b].
   if (prep && prep[0]) {
     const inc = await send("callHierarchy/incomingCalls", { item: prep[0] });
     ok("incomingCalls(twice) = {combo, run} (cross-file)", eqset(inc.map((c) => c.from.name), ["combo", "run"]), JSON.stringify(inc.map((c) => c.from.name)));
+    // fromRanges must point at the call site inside the caller (run), not at the
+    // callee's definition. In main.vibe `twice(a)` is on the same line as the cursor.
+    const runCall = inc.find((c) => c.from.name === "run");
+    const fr = runCall && runCall.fromRanges && runCall.fromRanges[0];
+    ok("incoming fromRanges point at the call site in the caller", fr && fr.start.line === li, `fromRange=${JSON.stringify(fr)} callLine=${li}`);
   }
   // outgoing of combo (build item via prepare on its def in util.vibe)
   const utilPath = path.join(ws, "util.vibe");
