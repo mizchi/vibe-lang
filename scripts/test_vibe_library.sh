@@ -79,9 +79,17 @@ for t in "${ALLOW[@]}"; do
     continue
   fi
   # `vibe test` prints `ok:   <file>` on success; a compile/assert failure prints
-  # `FAIL …`. Capture the last line and require an `ok:`.
-  last="$(run_guarded "$VIBE" test "$t" 2>&1 | tail -1 || true)"
-  if printf '%s' "$last" | grep -q "^ok:"; then
+  # `FAIL …`. Capture the last line and require an `ok:`. Retry up to 3 times: a
+  # few large modules (e.g. wasm_parser_test) intermittently fail to compile under
+  # the selfhost CLI on resource-constrained runners (observed on macos-latest and
+  # once locally) — a transient flake clears on retry, while a real regression
+  # fails all attempts. The goal of this gate is catching regressions, not flakes.
+  last=""; ok_flag=0
+  for _attempt in 1 2 3; do
+    last="$(run_guarded "$VIBE" test "$t" 2>&1 | tail -1 || true)"
+    if printf '%s' "$last" | grep -q "^ok:"; then ok_flag=1; break; fi
+  done
+  if [ "$ok_flag" = 1 ]; then
     echo "ok: $t"
     pass=$((pass + 1))
   else
