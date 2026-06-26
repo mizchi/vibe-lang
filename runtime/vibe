@@ -33,6 +33,9 @@
 #   vibe symbols <file.vibe>              print declaration outline (NAME KIND START END per line)
 #   vibe diagnostics <file.vibe>          print all syntax/type diagnostics
 #   vibe test    <file_test.vibe>...      compile + run test {} blocks
+#   vibe bench   <file.vibe> [--iters N] [--warmup N]
+#                                         run bench {} blocks; report ns/op
+#                                         (min/p50/p95/mean), ops/sec, bytes/op
 #   vibe new     <dir>                    scaffold a starter project
 #   vibe add     <name> <url> [dir]       add a dependency to vibe.deps + fetch
 #   vibe fetch   [--frozen] [dir]        vendor git/URL deps from vibe.deps + lock
@@ -538,6 +541,31 @@ case "$cmd" in
       rm -f "$out"
     done
     exit "$failed"
+    ;;
+  bench)
+    # `vibe bench <file.vibe> [--iters N] [--warmup N]` — compile the file's
+    # `bench {}` blocks (via the `__no_entry__` test entry) then run the warm
+    # instance N times, reporting ns/op (min/p50/p95/mean), ops/sec, and bytes/op
+    # (bump-heap delta / iters). The harness lives in the runner (`--bench`).
+    iters=""; warmup=""; bsrc=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --iters) iters="$2"; shift 2 ;;
+        --iters=*) iters="${1#--iters=}"; shift ;;
+        --warmup) warmup="$2"; shift 2 ;;
+        --warmup=*) warmup="${1#--warmup=}"; shift ;;
+        *) bsrc="$1"; shift ;;
+      esac
+    done
+    [ -n "$bsrc" ] || die "usage: vibe bench <file.vibe> [--iters N] [--warmup N]"
+    [ -f "$bsrc" ] || die "not found: $bsrc"
+    out="$(mktemp -t vibe-bench-XXXXXX.wasm)"
+    trap 'rm -f "$out"' EXIT
+    compile_to "$bsrc" "$out" "__no_entry__" || die "compilation failed: $bsrc"
+    bench_env="VIBE_BENCH_LABEL=$(basename "$bsrc")"
+    [ -n "$iters" ] && bench_env="$bench_env VIBE_BENCH_ITERS=$iters"
+    [ -n "$warmup" ] && bench_env="$bench_env VIBE_BENCH_WARMUP=$warmup"
+    env $bench_env "$RUNNER" --bench "$out"
     ;;
   new)
     # vibe new <dir>  — scaffold a starter project (main.vibe + empty vibe.deps)
