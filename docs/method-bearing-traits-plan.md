@@ -1,6 +1,25 @@
 # Method-bearing traits — implementation plan (#641)
 
-Status: design + spike complete (2026-06-25). Implementation not started.
+Status: Phase 1 landed (2026-06-26). Concrete-receiver dispatch works in the
+bumped seed/CI toolchain; PR-2 (bound enforcement + dictionary passing) next.
+
+## Build gotcha (read before iterating on the selfhost compiler)
+
+`scripts/selfhost_generations.sh build` and `generate_selfhost_bundle.sh` copy the
+**committed** `vibe/compiler/selfhost_cli_adapter_module_source.vibe` by default
+(`build_adapter_module_source`, gated on `VIBE_SELFHOST_REGEN_MODULE_SOURCE`).
+Editing compiler source files therefore has **no effect** on a build until the
+flat module source is regenerated. Always build/regenerate with:
+
+```bash
+VIBE_SELFHOST_REGEN_MODULE_SOURCE=1 bash scripts/selfhost_generations.sh build
+VIBE_SELFHOST_REGEN_MODULE_SOURCE=1 \
+  VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_OUT=vibe/compiler/selfhost_cli_adapter_module_source.vibe \
+  bash scripts/generate_selfhost_bundle.sh   # to refresh the committed copy
+```
+
+`scripts/selfhost_only_gate.sh` regenerates and checks sync, so it catches a
+stale committed module source — but a plain `build` will silently use the old one.
 
 vibe traits are currently **marker-only**: a `trait` declaration carries a name +
 supertraits but no method signatures, and `impl` bodies are parsed and discarded.
@@ -76,7 +95,17 @@ auto-synthesize and thread the witness), not a language/runtime unknown.
 
 ## Phase split
 
-### Phase 1 — method signatures + dispatch
+### Phase 1 — method signatures + dispatch — LANDED (2026-06-26)
+
+Shipped a smaller slice than originally drafted: **no AST change**. `impl` methods
+are expanded at parse time into `let Type::method = (params) -> ret { body }`
+qualified free functions (`parse_impl_methods` in `syntax/parser.vibe`); the trait
+declaration stays a marker. Concrete-receiver calls resolve by name, so no checker
+or codegen change was needed. The seed was bumped so the toolchain understands the
+syntax. Deferred to PR-2/PR-3: bound enforcement, dictionary passing, and passing a
+qualified method (`Point::measure`) as a first-class HOF value.
+
+Original full design (for reference / superseded parts):
 1. AST: extend `STrait` with a method-signature list (model on `SEffectDef`) and
    `SImpl` with `(method_name, EFn-body)` pairs. Update all match sites.
 2. Parser: parse the trait `{ sig; ... }` block and impl `{ method(...) -> ret { body } }`
