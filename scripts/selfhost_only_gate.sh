@@ -1157,7 +1157,7 @@ echo "[selfhost-only-gate] argument type checking ok"
 #     REJECTED; their well-typed counterparts must compile. (Iterative
 #     check_expr spine — check_seq_spine — gives the stack headroom for these
 #     extra checks during self-compile.)
-echo "[selfhost-only-gate] 29/29 assignment / binding / if-branch type checking"
+echo "[selfhost-only-gate] 29/29 assignment / binding / if-branch / struct-field type checking"
 tdir="_build/_gate_typecheck"
 rm -rf "$tdir"; mkdir -p "$tdir"
 cat > "$tdir/ok.vibe" <<'EOF'
@@ -1182,13 +1182,20 @@ EOF
 cat > "$tdir/bad_if.vibe" <<'EOF'
 export let _start: () -> Int = () -> { if true { 1 } else { "x" } }
 EOF
+cat > "$tdir/bad_struct.vibe" <<'EOF'
+struct P { x: Int }
+export let _start: () -> Int = () -> {
+  let p = P::{ x: "oops" }
+  0
+}
+EOF
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$tdir/ok.vibe" "$tdir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$tdir/ok.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: well-typed binding/assign/if did not compile (over-rejects)" >&2; exit 1
 fi
-for bad in bad_let bad_assign bad_if; do
+for bad in bad_let bad_assign bad_if bad_struct; do
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$tdir/$bad.vibe" "$tdir/$bad.wasm" _start >/dev/null 2>&1 || true
@@ -1197,6 +1204,6 @@ for bad in bad_let bad_assign bad_if; do
   fi
 done
 rm -rf "$tdir"
-echo "[selfhost-only-gate] assignment / binding / if-branch type checking ok"
+echo "[selfhost-only-gate] assignment / binding / if-branch / struct-field type checking ok"
 
 echo "[selfhost-only-gate] ok"

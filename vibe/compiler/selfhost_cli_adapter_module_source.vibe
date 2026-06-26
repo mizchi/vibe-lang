@@ -4779,6 +4779,77 @@ export let check_assignable: (Type, Type, Subst, Array[String], String, Int) -> 
     }
   }
 }
+let struct_field_names_match: (Array[(String, Type)], Array[(String, Type)]) -> Bool = (declared, actual) -> {
+  if Array::length(declared) != Array::length(actual) {
+    false
+  } else {
+    let mut i = 0
+    let mut ok = true
+    while i < Array::length(declared) {
+      let (dn, _) = Array::get(declared, i)
+      let mut found = false
+      let mut j = 0
+      while j < Array::length(actual) {
+        let (an, _) = Array::get(actual, j)
+        if an == dn {
+          found = true
+        }
+        j = j + 1
+      }
+      if !found {
+        ok = false
+      }
+      i = i + 1
+    }
+    ok
+  }
+}
+let lookup_actual_field_ty: (Array[(String, Type)], String) -> Option[Type] = (actual, name) -> {
+  let mut i = 0
+  let mut out = None
+  while i < Array::length(actual) {
+    let (an, at) = Array::get(actual, i)
+    if an == name {
+      out = Some(at)
+    }
+    i = i + 1
+  }
+  out
+}
+let check_record_fields: (Array[TypeDef], Array[(String, Type)], Subst, Array[String]) -> Subst = (defs, actual, s, errors) -> {
+  let mut matchct = 0
+  let mut matched_fields = Array::slice([
+    ("", CtUnknown)
+  ], 0, 0)
+  let mut di = 0
+  while di < Array::length(defs) {
+    match Array::get(defs, di) {
+      TDStruct(_, dfields) => if struct_field_names_match(dfields, actual) {
+        matchct = matchct + 1
+        matched_fields = dfields
+      },
+      _ => ()
+    }
+    di = di + 1
+  }
+  if matchct == 1 {
+    let mut out = s
+    let mut i = 0
+    while i < Array::length(matched_fields) {
+      let (fname, declared_ty) = Array::get(matched_fields, i)
+      match lookup_actual_field_ty(actual, fname) {
+        Some(actual_ty) => {
+          out = check_assignable(declared_ty, subst_apply(out, actual_ty), out, errors, String::concat("struct field type mismatch for ", fname), 0 - 1)
+        },
+        None => ()
+      }
+      i = i + 1
+    }
+    out
+  } else {
+    s
+  }
+}
 let unify_call_args: (Array[Type], Array[Type], Subst, Array[String], String, Int) -> Subst = (param_tys, arg_tys, s, errors, label, off) -> {
   let mut out = s
   let mut ui = 0
@@ -5732,15 +5803,20 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       let flen = Array::length(fields)
       let mut s1 = s
       let mut c1 = c
+      let field_tys = Array::slice([
+        ("", CtUnknown)
+      ], 0, 0)
       let mut fi = 0
       while fi < flen {
-        let (_, fval) = Array::get(fields, fi)
-        let (_, ns, nc) = check_expr(fval, env, defs, s1, c1, errors, tytab)
+        let (fname, fval) = Array::get(fields, fi)
+        let (ft, ns, nc) = check_expr(fval, env, defs, s1, c1, errors, tytab)
+        Array::push(field_tys, (fname, ft))
         s1 = ns
         c1 = nc
         fi = fi + 1
       }
-      (CtUnknown, s1, c1)
+      let s2 = check_record_fields(defs, field_tys, s1, errors)
+      (CtUnknown, s2, c1)
     },
     ETuple(items) => {
       let ilen = Array::length(items)
