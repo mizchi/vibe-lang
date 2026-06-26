@@ -615,4 +615,59 @@ fi
 rm -rf "$lcdir"
 echo "[selfhost-only-gate] lazy iterator combinators regression ok"
 
+# 18. cross-import trait-iterator regression (#636): the iterator type + its
+#     `impl ::next` + a `for x in <iter>` driver live in an IMPORTED module
+#     (the prelude shape — lazy_iter.vibe is always imported). A qualified impl
+#     method `LazyIter::next` is a non-exported `let`, so the import namespacer
+#     used to path-suffix it (`LazyIter::next$path`), orphaning it from the
+#     `LazyIter` type and making the `for` desugar's `Type::next` lookup miss —
+#     the loop silently fell back to array iteration and trapped. Qualified
+#     `Type::method` names must follow the *type's* namespacing, not get an
+#     independent value suffix. Guards import_alias_rewrite + the generic-struct
+#     `for`-iterator desugar across the import boundary.
+echo "[selfhost-only-gate] 18/18 cross-import trait-iterator regression"
+xidir="_build/_gate_import_iter"
+rm -rf "$xidir"; mkdir -p "$xidir"
+cat > "$xidir/li.vibe" <<'EOF'
+export trait Iterator[T] { next(Self) -> Option[(T, Self)] }
+export struct LazyIter[T] { pull: (Int) -> Option[(T, Int)]; state: Int }
+impl Iterator for LazyIter {
+  next(self) -> Option[(T, LazyIter)] {
+    match (self.pull)(self.state) {
+      Some(p) => { let (v, ns) = p; Some((v, LazyIter::{ pull: self.pull, state: ns })) },
+      None => None
+    }
+  }
+}
+export let lazy_iter_arr = [T](xs: Array[T]) -> LazyIter[T] {
+  LazyIter::{ pull: (i) -> Option[(T, Int)] {
+    if i < Array::length(xs) { Some((Array::get(xs, i), i + 1)) } else { None }
+  }, state: 0 }
+}
+export let lazy_iter_count = [T](src: LazyIter[T]) -> Int {
+  let mut n = 0
+  for x in src { n = n + 1 }
+  n
+}
+EOF
+cat > "$xidir/main.vibe" <<'EOF'
+import ./li.vibe { lazy_iter_arr, lazy_iter_count }
+export let _start: () -> Int = () -> { lazy_iter_count(lazy_iter_arr([10, 20, 30, 40, 50])) }
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$xidir/main.vibe" "$xidir/main.wasm" _start >/dev/null 2>&1
+if [ ! -s "$xidir/main.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: cross-import trait-iterator program did not compile" >&2
+  exit 1
+fi
+xi_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$xidir/main.wasm" 2>/dev/null | tr -dc '0-9-')"
+if [ "$xi_out" != "5" ]; then
+  echo "[selfhost-only-gate] FAIL: cross-import trait-iterator mismatch (got '$xi_out', want 5 -> import method namespacing regressed)" >&2
+  exit 1
+fi
+rm -rf "$xidir"
+echo "[selfhost-only-gate] cross-import trait-iterator regression ok"
+
 echo "[selfhost-only-gate] ok"

@@ -369,6 +369,31 @@ lands.
   trait's type params in `STrait` (instead of erasing at parse) would let the
   element type be a fresh unification var rather than `CtUnknown`, recovering
   full element-type safety.
+  **`prelude/lazy_iter.vibe` migration — LANDED (#636).** The prelude is now the
+  trait-based `LazyIter[T]` (a struct holding a `pull` closure + `state`, with
+  `impl Iterator for LazyIter`); `lazy_iter_arr` / `map` / `filter` are lazy and
+  `collect` / `fold` / `count` are eager consumers driven by the `for` desugar.
+  Exported combinator signatures are unchanged, so `prelude/lazy_iter_test.vibe`
+  (which uses the `|>` pipeline) passes verbatim. Two compiler fixes made the
+  imported-prelude shape work:
+  1. **Generic-struct `for`-iterator (`desugar_trait_dict.vibe`).** `seed_var_types`
+     now records the head name of a `TyApp` param annotation (`src: LazyIter[T]`),
+     not just a bare `TyName`, so `for x in src` over a generic iterator type
+     classifies (infer → `LazyIter`, dispatch `LazyIter::next`).
+  2. **Qualified method names across imports (`import_alias_rewrite.vibe`).** A
+     qualified impl method `let LazyIter::next = ..` is a non-exported `let`, so
+     the import namespacer used to path-suffix it (`LazyIter::next$path`),
+     orphaning it from the (exported) `LazyIter` type — the `for` desugar's
+     `Type::next` lookup then missed and the loop silently fell back to array
+     iteration and trapped. Now a qualified `Head::member` whose `Head` is an
+     **exported** type is left un-suffixed (it is public API, referenced by the
+     type's name); methods on a *private* type keep the old whole-name renaming
+     (the type itself is renamed and its call sites are rewritten through the
+     same value map, so they stay consistent — verified no regression). Gate
+     step 18 (`cross-import trait-iterator`) guards this: the iterator type +
+     `impl ::next` + a `for`-driver live in an imported module, mirroring the
+     prelude. **Still deferred:** unifying `for await` with the struct-trait
+     iterator (needs an async `next` / AsyncIterator effect integration).
 
 ## Risks / open items
 

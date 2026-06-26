@@ -7278,6 +7278,7 @@ let seed_var_types: (Array[(String, Option[TypeExpr])], Array[String], Array[(St
     let (pname, ann) = Array::get(params, i)
     match ann {
       Some(TyName(tn)) => Array::push(out, (pname, tn)),
+      Some(TyApp(tn, _)) => Array::push(out, (pname, tn)),
       _ => ()
     }
     i = i + 1
@@ -26233,12 +26234,38 @@ let collect_exported_value_names: (Array[Stmt]) -> Array[String] = (stmts) -> {
   }
   names
 }
-let collect_private_value_renames: (String, Array[Stmt], Array[String], Array[String]) -> Array[(String, String)] = (path, stmts, namespace_suffix_box, exported) -> {
-  let renames = empty_aliases()
+let collect_exported_type_names: (Array[Stmt]) -> Array[String] = (stmts) -> {
+  let names = empty_strings()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SLet(false, _, name, _, _) => if !string_array_contains(exported, name) {
+      SStruct(true, name, _, _) => Array::push(names, name),
+      SEnum(true, name, _, _) => Array::push(names, name),
+      STrait(true, name, _, _) => Array::push(names, name),
+      STypeAlias(true, name, _, _) => Array::push(names, name),
+      SSuberror(true, name, _) => Array::push(names, name),
+      _ => ()
+    }
+    i = i + 1
+  }
+  names
+}
+let qualified_method_of_exported_type: (String, Array[String]) -> Bool = (name, exported_types) -> {
+  let idx = String::index_of(name, "::")
+  if idx < 0 {
+    false
+  } else {
+    let head = String::substring(name, 0, idx)
+    string_array_contains(exported_types, head)
+  }
+}
+let collect_private_value_renames: (String, Array[Stmt], Array[String], Array[String]) -> Array[(String, String)] = (path, stmts, namespace_suffix_box, exported) -> {
+  let renames = empty_aliases()
+  let exported_types = collect_exported_type_names(stmts)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(false, _, name, _, _) => if !string_array_contains(exported, name) && !qualified_method_of_exported_type(name, exported_types) {
         Array::push(renames, (name, namespace_private_name_lazy(path, name, namespace_suffix_box)))
       },
       SLetMut(name, _, _) => if !string_array_contains(exported, name) {

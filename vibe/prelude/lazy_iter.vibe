@@ -1,102 +1,120 @@
-// ADR-0044 Phase 1 (lazy variant): a single-pass iterator built on top of
-// closures returning `Option[T]`. Sits alongside the existing index-based
-// `Iterator::*` family in `iterator.vibe` — that one is eager (each combinator
-// allocates `Array[B]`); this one is lazy and chains without intermediate
-// arrays until the terminal `lazy_iter_collect` / `lazy_iter_fold` /
-// `lazy_iter_count` runs the source through.
+// ADR-0044: a single-pass lazy iterator, now expressed on the method-bearing
+// `Iterator` trait (#636). A `LazyIter` is a struct holding a `pull` closure
+// (`state -> Option[(element, next_state)]`, closures-in-struct-fields per spike
+// G-1) plus its current state; `impl Iterator for LazyIter` makes it a
+// first-class iterator, so `for x in it` and the combinators all chain without
+// intermediate `Array[B]` until a terminal `lazy_iter_collect` / `_fold` /
+// `_count` drains the source.
 //
-// The idiomatic shape `trait Iterator[T] { next(Self) -> Option[T] }` from
-// the ADR is not yet expressible (vibe traits are marker-only and codegen
-// does not yet support storing closures in struct fields), so the iterator
-// is represented as the bare function type `() -> Option[T]`. When the
-// language gains method-bearing traits this module can be re-skinned.
+// This replaces the previous `() -> Option[T]` function-iterator representation
+// (the language now has method-bearing traits and closures in struct fields).
+// The exported combinator signatures are unchanged, so callers using the
+// `|>` pipeline are source-compatible.
+
+//# Types
+
+export trait Iterator[T] {
+  next(Self) -> Option[(T, Self)]
+}
+
+// `pull(state) -> Option[(element, next_state)]`; the state is erased to Int
+// (the uniform tagged representation makes the encoding general over element
+// and state types).
+export struct LazyIter[T] {
+  pull: (Int) -> Option[(T, Int)];
+  state: Int
+}
 
 //# Functions
 
-// Build a lazy iterator over an Array. Each call advances an internal cursor
-// captured in the returned closure; once the cursor reaches the end the
-// closure returns `None` indefinitely.
-export let lazy_iter_arr = [T](xs: Array[T]) -> () -> Option[T] {
-  let mut i = 0
-  let len = Array::length(xs)
-  () -> Option[T] {
-    if i < len {
-      let x = Array::get(xs, i)
-      i = i + 1
-      Some(x)
-    } else { None }
-  }
-}
-
-// Lazy `map`: composes a transform onto the iterator without consuming it.
-// Order: source advances once per consumer pull; each pulled element passes
-// through `f` before being yielded. Element-type may change (`T -> U`).
-export let lazy_iter_map = [T, U](src: () -> Option[T], f: (x: T) -> U) -> () -> Option[U] {
-  () -> Option[U] {
-    match src() {
-      Some(x) => Some(f(x)),
+impl Iterator for LazyIter {
+  next(self) -> Option[(T, LazyIter)] {
+    match (self.pull)(self.state) {
+      Some(p) => {
+        let (v, ns) = p
+        Some((v, LazyIter::{ pull: self.pull, state: ns }))
+      },
       None => None
     }
   }
 }
 
-// Lazy `filter`: drops elements for which `pred` returns false. The
-// underlying source can advance multiple times per consumer pull, so the
-// inner loop walks until either a kept element is found or the source
-// is exhausted.
-export let lazy_iter_filter = [T](src: () -> Option[T], pred: (x: T) -> Bool) -> () -> Option[T] {
-  () -> Option[T] {
+// Build a lazy iterator over an Array, threading the cursor as the state.
+export let lazy_iter_arr = [T](xs: Array[T]) -> LazyIter[T] {
+  LazyIter::{ pull: (i) -> Option[(T, Int)] {
+    if i < Array::length(xs) {
+      Some((Array::get(xs, i), i + 1))
+    } else {
+      None
+    }
+  }, state: 0 }
+}
+
+// Lazy `map`: composes a transform onto the iterator without consuming it.
+// Element-type may change (`T -> U`).
+export let lazy_iter_map = [T, U](src: LazyIter[T], f: (x: T) -> U) -> LazyIter[U] {
+  LazyIter::{ pull: (st) -> Option[(U, Int)] {
+    match (src.pull)(st) {
+      Some(p) => {
+        let (v, ns) = p
+        Some((f(v), ns))
+      },
+      None => None
+    }
+  }, state: src.state }
+}
+
+// Lazy `filter`: drops elements for which `pred` returns false. The source can
+// advance several times per consumer pull, so the inner loop walks until a kept
+// element is found or the source is exhausted.
+export let lazy_iter_filter = [T](src: LazyIter[T], pred: (x: T) -> Bool) -> LazyIter[T] {
+  LazyIter::{ pull: (st) -> Option[(T, Int)] {
+    let mut cur = st
     let mut result = None
-    let mut done = false
-    while !done {
-      match src() {
-        Some(x) => if pred(x) {
-          result = Some(x)
-          done = true
-        } else { },
-        None => { done = true }
+    let mut go = true
+    while go {
+      match (src.pull)(cur) {
+        Some(p) => {
+          let (v, ns) = p
+          if pred(v) {
+            result = Some((v, ns))
+            go = false
+          } else {
+            cur = ns
+          }
+        },
+        None => {
+          go = false
+        }
       }
     }
     result
-  }
+  }, state: src.state }
 }
 
-// Eager terminator: drains the iterator into an Array.
-export let lazy_iter_collect = [T](src: () -> Option[T]) -> Array[T] {
+// Eager terminator: drains the iterator into an Array, driven by `for`.
+export let lazy_iter_collect = [T](src: LazyIter[T]) -> Array[T] {
   let b = ArrayBuilder::new()
-  let mut done = false
-  while !done {
-    match src() {
-      Some(x) => { ArrayBuilder::push(b, x) },
-      None => { done = true }
-    }
+  for x in src {
+    ArrayBuilder::push(b, x)
   }
   ArrayBuilder::freeze(b)
 }
 
-// Eager terminator: classic left-fold. `init` is the accumulator seed, `f`
-// folds each yielded value onto it, the final accumulator is returned.
-export let lazy_iter_fold = [T, U](src: () -> Option[T], init: U, f: (acc: U, x: T) -> U) -> U {
+// Eager terminator: classic left-fold.
+export let lazy_iter_fold = [T, U](src: LazyIter[T], init: U, f: (acc: U, x: T) -> U) -> U {
   let mut acc = init
-  let mut done = false
-  while !done {
-    match src() {
-      Some(x) => { acc = f(acc, x) },
-      None => { done = true }
-    }
+  for x in src {
+    acc = f(acc, x)
   }
   acc
 }
 
 // Eager terminator: counts how many elements the iterator yields.
-export let lazy_iter_count = [T](src: () -> Option[T]) -> Int {
+export let lazy_iter_count = [T](src: LazyIter[T]) -> Int {
   let mut n = 0
-  let mut done = false
-  while !done {
-    match src() {
-      Some(_) => { n = n + 1 },
-      None => { done = true }
-    }
+  for x in src {
+    n = n + 1
   }
   n
 }
