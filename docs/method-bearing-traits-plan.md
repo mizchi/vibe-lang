@@ -269,13 +269,40 @@ resolve.
    and a `Point` struct impl, with both literal and let-bound receivers.
    Fixture: `fixtures/trait_method_dict_passing_test.vibe`.
 
-   Still deferred (next slices): multiple bounds per parameter beyond the
-   single-trait lookup, supertrait method inheritance (nested dicts), generic
-   impls (`impl [T: Eq] Eq for Array[T]` — dicts of dicts), generic→generic
-   witness forwarding (a bounded generic calling another with the same `T`),
-   `Type::method` as a first-class HOF value, and the wasm-gc backend mirror.
+   **generic→generic witness forwarding — LANDED.** When a bounded generic
+   calls another bounded generic with its own type parameter `T` as the
+   receiver, the caller forwards its own `__dict_Trait_T` parameter instead of
+   synthesizing a new dict (`synth_dicts` + `find_dict_for_trait`; parameters
+   typed as a type variable are tracked in `var_types`).
+
+   **supertrait method inheritance — LANDED (single chain).** A method-bearing
+   `trait B: A` flattens A's methods into `BDict` (`flatten_traits`), so
+   `[T: B]` dispatches both B's and A's methods through one witness. Two pieces
+   were needed: (1) the checker resolves inherited methods via
+   `trait_method_sig_deep` (walks supertraits) — required on the FS-compile path
+   where `check_program` runs on the un-desugared `T::a_method`; (2) flattened
+   methods are ordered **supertraits-first** so an inherited method keeps the
+   SAME field index in every dict that contains it (`MeasurableDict{measure:0}`
+   and `SizedDict{measure:0,…}`). The latter matters because codegen resolves
+   `dict.field` by a global first-match field-name search
+   (`compile_expr_tail4.vibe`), not by the object's static type, so a shared
+   field name must sit at a consistent index. Gate step 14 covers an `Int` and
+   `Point` impl, forwarding, and a `Sized: Measurable` chain (sum = 340).
+
+   Still deferred (next slices): multiple bounds per parameter / multiple
+   supertraits (the supertraits-first index invariant only holds for a single
+   chain; a diamond can place a shared method at different indices), generic
+   impls (`impl [T: Eq] Eq for Array[T]` — dicts of dicts), `Type::method` as a
+   first-class HOF value, and the wasm-gc backend mirror. A type-directed field
+   access in codegen would remove the index-consistency constraint entirely.
    Activation needs no seed bump (the compiler source uses no trait-method
    syntax); `scripts/selfhost_only_gate.sh` stays green.
+
+   Note: a pre-existing source-cache bug (`build_persistent_sources_cache_text`,
+   cf. #630–#634) traps on certain file byte-sizes via the FS-compile persistent
+   cache, independent of traits — `fixtures/trait_method_dict_passing_test.vibe`
+   can hit it, so the authoritative regression is the gate's temp-dir `_start`
+   program, not the fixture.
 
 ### Scope for the first working slice
 Single bound, single type param, non-supertrait, non-generic-impl, concrete call

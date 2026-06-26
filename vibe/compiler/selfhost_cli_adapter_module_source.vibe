@@ -1038,6 +1038,34 @@ export let rec trait_method_sig: (TypeEnv, String, String) -> Option[(Array[Type
     EnvCached(_, rest) => trait_method_sig(rest, trait_name, method_name)
   }
 }
+export let rec trait_method_sig_deep: (TypeEnv, String, String) -> Option[(Array[TypeExpr], TypeExpr)] = (env, trait_name, method_name) -> {
+  match trait_method_sig(env, trait_name, method_name) {
+    Some(sig) => Some(sig),
+    None => {
+      let supers = trait_supers(env, trait_name)
+      let mut i = 0
+      let mut result = None
+      while i < Array::length(supers) {
+        let pending = match result {
+          None => true,
+          _ => false
+        }
+        if pending {
+          match trait_method_sig_deep(env, Array::get(supers, i), method_name) {
+            Some(sig) => {
+              result = Some(sig)
+            },
+            None => ()
+          }
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      result
+    }
+  }
+}
 export let subst_bounds_for: (Subst, Int) -> Array[String] = (s, id) -> {
   let out = ArrayBuilder::new()
   let mut cur = s
@@ -4234,7 +4262,7 @@ let resolve_trait_method_ident: (String, TypeEnv, Array[TypeDef], Subst) -> Opti
             }
             if pending {
               let trait_name = Array::get(bounds, bi)
-              match trait_method_sig(env, trait_name, method) {
+              match trait_method_sig_deep(env, trait_name, method) {
                 Some(sig) => {
                   let (params_te, ret_te) = sig
                   let resolved_params = for pte in params_te {
@@ -6806,6 +6834,77 @@ let collect_method_traits: (Array[Stmt]) -> Array[(String, Array[(String, Array[
   }
   out
 }
+let collect_trait_supers: (Array[Stmt]) -> Array[(String, Array[String])] = (stmts) -> {
+  let out = Array::slice([
+    ("", empty_str_array())
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STrait(_, tname, supers, _) => Array::push(out, (tname, supers)),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+let lookup_supers: (Array[(String, Array[String])], String) -> Array[String] = (supers_map, name) -> {
+  let mut i = 0
+  let mut result = empty_str_array()
+  while i < Array::length(supers_map) {
+    let (tname, supers) = Array::get(supers_map, i)
+    if tname == name {
+      result = supers
+      i = Array::length(supers_map)
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+let rec flatten_trait_sigs_into: (String, Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(String, Array[String])], Array[String], Array[(String, Array[TypeExpr], TypeExpr)]) -> Unit = (tname, traits_raw, supers_map, acc_names, out) -> {
+  let supers = lookup_supers(supers_map, tname)
+  let mut s = 0
+  while s < Array::length(supers) {
+    flatten_trait_sigs_into(Array::get(supers, s), traits_raw, supers_map, acc_names, out)
+    s = s + 1
+  }
+  match lookup_trait_sigs(traits_raw, tname) {
+    Some(sigs) => {
+      let mut i = 0
+      while i < Array::length(sigs) {
+        let (mname, params, ret) = Array::get(sigs, i)
+        if str_array_contains(acc_names, mname) {
+          ()
+        } else {
+          Array::push(acc_names, mname)
+          Array::push(out, (mname, params, ret))
+        }
+        i = i + 1
+      }
+    },
+    None => ()
+  }
+}
+let flatten_traits: (Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(String, Array[String])]) -> Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])] = (traits_raw, supers_map) -> {
+  let out = Array::slice([
+    ("", Array::slice([
+      ("", empty_type_exprs(), TyUnit)
+    ], 0, 0))
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(traits_raw) {
+    let (tname, _) = Array::get(traits_raw, i)
+    let acc_names = empty_str_array()
+    let flat = Array::slice([
+      ("", empty_type_exprs(), TyUnit)
+    ], 0, 0)
+    flatten_trait_sigs_into(tname, traits_raw, supers_map, acc_names, flat)
+    Array::push(out, (tname, flat))
+    i = i + 1
+  }
+  out
+}
 let lookup_trait_sigs: (Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], String) -> Option[Array[(String, Array[TypeExpr], TypeExpr)]] = (traits, name) -> {
   let mut i = 0
   let mut result = None
@@ -7029,7 +7128,39 @@ let find_dict_for_method: (Array[(String, String, String, Array[String])], Strin
   }
   result
 }
-let synth_dicts: (Array[(String, String, Int)], Array[Expr], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(String, Array[String])], Array[(String, String)]) -> Option[Array[Expr]] = (threaded, orig_args, traits, struct_sets, var_types) -> {
+let find_dict_for_trait: (Array[(String, String, String, Array[String])], String, String) -> Option[String] = (dict_binds, tparam, trait_name) -> {
+  let mut i = 0
+  let mut result = None
+  while i < Array::length(dict_binds) {
+    let (tp, tr, dict_pname, _) = Array::get(dict_binds, i)
+    if tp == tparam && tr == trait_name {
+      result = Some(dict_pname)
+      i = Array::length(dict_binds)
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+let build_concrete_dict: (String, String, Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Option[Expr] = (cname, trait_name, traits) -> {
+  match lookup_trait_sigs(traits, trait_name) {
+    Some(sigs) => {
+      let mnames = method_names_of_sigs(sigs)
+      let recfields = Array::slice([
+        ("", EUnit)
+      ], 0, 0)
+      let mut mi = 0
+      while mi < Array::length(mnames) {
+        let m = Array::get(mnames, mi)
+        Array::push(recfields, (m, EIdent(String::concat(cname, String::concat("::", m)), -1)))
+        mi = mi + 1
+      }
+      Some(ERecord(recfields))
+    },
+    None => None
+  }
+}
+let synth_dicts: (Array[(String, String, Int)], Array[Expr], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(String, Array[String])], Array[(String, String)], Array[(String, String, String, Array[String])]) -> Option[Array[Expr]] = (threaded, orig_args, traits, struct_sets, var_types, dict_binds) -> {
   let dicts = empty_expr_array()
   let mut ok = true
   let mut bi = 0
@@ -7037,22 +7168,13 @@ let synth_dicts: (Array[(String, String, Int)], Array[Expr], Array[(String, Arra
     let (_, trait_name, recv_idx) = Array::get(threaded, bi)
     if ok && recv_idx >= 0 && recv_idx < Array::length(orig_args) {
       match infer_arg_type_name(Array::get(orig_args, recv_idx), struct_sets, var_types) {
-        Some(cname) => match lookup_trait_sigs(traits, trait_name) {
-          Some(sigs) => {
-            let mnames = method_names_of_sigs(sigs)
-            let recfields = Array::slice([
-              ("", EUnit)
-            ], 0, 0)
-            let mut mi = 0
-            while mi < Array::length(mnames) {
-              let m = Array::get(mnames, mi)
-              Array::push(recfields, (m, EIdent(String::concat(cname, String::concat("::", m)), -1)))
-              mi = mi + 1
+        Some(nm) => match find_dict_for_trait(dict_binds, nm, trait_name) {
+          Some(dict_pname) => Array::push(dicts, EIdent(dict_pname, -1)),
+          None => match build_concrete_dict(nm, trait_name, traits) {
+            Some(dict) => Array::push(dicts, dict),
+            None => {
+              ok = false
             }
-            Array::push(dicts, ERecord(recfields))
-          },
-          None => {
-            ok = false
           }
         },
         None => {
@@ -7085,6 +7207,7 @@ let concat_expr_arrays: (Array[Expr], Array[Expr]) -> Array[Expr] = (a, b) -> {
   out
 }
 let seed_var_types: (Array[(String, Option[TypeExpr])], Array[String], Array[(String, String)]) -> Array[(String, String)] = (params, tparams, base) -> {
+  let _ = tparams
   let out = Array::slice([
     ("", "")
   ], 0, 0)
@@ -7097,11 +7220,7 @@ let seed_var_types: (Array[(String, Option[TypeExpr])], Array[String], Array[(St
   while i < Array::length(params) {
     let (pname, ann) = Array::get(params, i)
     match ann {
-      Some(TyName(tn)) => if str_array_contains(tparams, tn) {
-        ()
-      } else {
-        Array::push(out, (pname, tn))
-      },
+      Some(TyName(tn)) => Array::push(out, (pname, tn)),
       _ => ()
     }
     i = i + 1
@@ -7153,7 +7272,7 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
           match as_method {
             Some(dict_pname) => ECall(EDot(EIdent(dict_pname, -1), member_of(name), -1), rwargs, off),
             None => match lookup_gen(gens, name) {
-              Some(threaded) => match synth_dicts(threaded, args, traits, struct_sets, var_types) {
+              Some(threaded) => match synth_dicts(threaded, args, traits, struct_sets, var_types, dict_binds) {
                 Some(dicts) => ECall(EIdent(name, coff), concat_expr_arrays(dicts, rwargs), off),
                 None => ECall(EIdent(name, coff), rwargs, off)
               },
@@ -7354,10 +7473,12 @@ let struct_decl_exists: (Array[Stmt], String) -> Bool = (stmts, name) -> {
   found
 }
 export let desugar_trait_dicts: (Array[Stmt]) -> Unit = (stmts) -> {
-  let traits = collect_method_traits(stmts)
-  if Array::length(traits) == 0 {
+  let traits_raw = collect_method_traits(stmts)
+  if Array::length(traits_raw) == 0 {
     ()
   } else {
+    let supers_map = collect_trait_supers(stmts)
+    let traits = flatten_traits(traits_raw, supers_map)
     let struct_sets = collect_struct_field_sets(stmts)
     let gens = build_gens(stmts, traits)
     let mut i = 0

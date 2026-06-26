@@ -326,6 +326,38 @@ export let rec trait_method_sig: (TypeEnv, String, String) -> Option[(Array[Type
   }
 }
 
+// Like `trait_method_sig` but follows supertraits transitively, so a method
+// inherited from a supertrait (`trait B: A` calling an `A` method on `[T: B]`)
+// resolves. Trait hierarchies are acyclic, so the recursion terminates.
+export let rec trait_method_sig_deep: (TypeEnv, String, String) -> Option[(Array[TypeExpr], TypeExpr)] = (env, trait_name, method_name) -> {
+  match trait_method_sig(env, trait_name, method_name) {
+    Some(sig) => Some(sig),
+    None => {
+      let supers = trait_supers(env, trait_name)
+      let mut i = 0
+      let mut result = None
+      while i < Array::length(supers) {
+        let pending = match result {
+          None => true,
+          _ => false
+        }
+        if pending {
+          match trait_method_sig_deep(env, Array::get(supers, i), method_name) {
+            Some(sig) => {
+              result = Some(sig)
+            },
+            None => ()
+          }
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      result
+    }
+  }
+}
+
 // Collect the trait bounds recorded for a specific type variable id in the
 // current substitution (`subst_add_bound` entries). Used to resolve a
 // `T::method` call where `T` is a bounded generic parameter.
