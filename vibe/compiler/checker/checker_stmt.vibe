@@ -114,11 +114,25 @@ let bind_value_or_annotation_return: (TypeEnv, String, Expr, Option[TypeExpr], A
   }
 }
 
+let struct_derives_has: (Array[String], String) -> Bool = (derives, name) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(derives) {
+    if Array::get(derives, i) == name {
+      found = true
+      i = Array::length(derives)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
 let stmt_is_type_decl: (Stmt) -> Bool = (stmt) -> {
   match stmt {
     SEnum(_, _, _, _) => true,
     SSuberror(_, _, _) => true,
-    SStruct(_, _, _) => true,
+    SStruct(_, _, _, _) => true,
     STypeAlias(_, _, _, _) => true,
     _ => false
   }
@@ -357,7 +371,7 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
         }
         (env1, s, c + param_len)
       },
-      SStruct(_, name, field_defs) => {
+      SStruct(_, name, field_defs, derives) => {
         let resolved_fields = Array::slice([
           ("", CtUnit)
         ], 0, 0)
@@ -379,7 +393,26 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
           fj = fj + 1
         }
         let env1 = env_bind(env, name, CtFn(field_types, CtStruct(name), None))
-        (bind_fn_return(env1, name, CtStruct(name)), s, c)
+        // #638: pre-bind the signatures of the structural functions that the
+        // derive desugar will generate, so `Type::compare` / `Type::to_string`
+        // resolve at check time (the FS-compile path checks before the
+        // codegen-time desugar runs).
+        let env2 = if struct_derives_has(derives, "Ord") {
+          env_bind(env1, String::concat(name, "::compare"), CtFn([
+            CtStruct(name),
+            CtStruct(name)
+          ], CtInt, None))
+        } else {
+          env1
+        }
+        let env3 = if struct_derives_has(derives, "Show") {
+          env_bind(env2, String::concat(name, "::to_string"), CtFn([
+            CtStruct(name)
+          ], CtString, None))
+        } else {
+          env2
+        }
+        (bind_fn_return(env3, name, CtStruct(name)), s, c)
       },
       STypeAlias(_, name, params, te) => {
         let t = resolve_type_expr(te, defs)

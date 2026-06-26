@@ -57,7 +57,7 @@ export enum Stmt {
   SLetMut(String, Option[TypeExpr], Expr);
   SEnum(Bool, String, Array[String], Array[(String, Array[TypeExpr])]);
   SSuberror(Bool, String, Array[(String, Array[TypeExpr])]);
-  SStruct(Bool, String, Array[(String, TypeExpr)]);
+  SStruct(Bool, String, Array[(String, TypeExpr)], Array[String]);
   STypeAlias(Bool, String, Array[String], TypeExpr);
   STrait(Bool, String, Array[String], Array[(String, Array[TypeExpr], TypeExpr)]);
   SImpl(Array[String], Array[(String, Array[String])], String, String);
@@ -540,7 +540,7 @@ let is_type_or_structural: (Stmt) -> Bool = (stmt) -> {
     SEnum(_, _, _, _) => true,
     SSuberror(_, _, _) => true,
     SEffectDef(_, _, _, _) => true,
-    SStruct(_, _, _) => true,
+    SStruct(_, _, _, _) => true,
     STypeAlias(_, _, _, _) => true,
     STrait(_, _, _, _) => true,
     SImpl(_, _, _, _) => true,
@@ -5334,11 +5334,24 @@ let bind_value_or_annotation_return: (TypeEnv, String, Expr, Option[TypeExpr], A
     None => bind_annotation_return(env, name, ann, defs)
   }
 }
+let struct_derives_has: (Array[String], String) -> Bool = (derives, name) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(derives) {
+    if Array::get(derives, i) == name {
+      found = true
+      i = Array::length(derives)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
 let stmt_is_type_decl: (Stmt) -> Bool = (stmt) -> {
   match stmt {
     SEnum(_, _, _, _) => true,
     SSuberror(_, _, _) => true,
-    SStruct(_, _, _) => true,
+    SStruct(_, _, _, _) => true,
     STypeAlias(_, _, _, _) => true,
     _ => false
   }
@@ -5552,7 +5565,7 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
         }
         (env1, s, c + param_len)
       },
-      SStruct(_, name, field_defs) => {
+      SStruct(_, name, field_defs, derives) => {
         let resolved_fields = Array::slice([
           ("", CtUnit)
         ], 0, 0)
@@ -5574,7 +5587,22 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
           fj = fj + 1
         }
         let env1 = env_bind(env, name, CtFn(field_types, CtStruct(name), None))
-        (bind_fn_return(env1, name, CtStruct(name)), s, c)
+        let env2 = if struct_derives_has(derives, "Ord") {
+          env_bind(env1, String::concat(name, "::compare"), CtFn([
+            CtStruct(name),
+            CtStruct(name)
+          ], CtInt, None))
+        } else {
+          env1
+        }
+        let env3 = if struct_derives_has(derives, "Show") {
+          env_bind(env2, String::concat(name, "::to_string"), CtFn([
+            CtStruct(name)
+          ], CtString, None))
+        } else {
+          env2
+        }
+        (bind_fn_return(env3, name, CtStruct(name)), s, c)
       },
       STypeAlias(_, name, params, te) => {
         let t = resolve_type_expr(te, defs)
@@ -6926,7 +6954,7 @@ let collect_struct_field_sets: (Array[Stmt]) -> Array[(String, Array[String])] =
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SStruct(_, sname, fields) => {
+      SStruct(_, sname, fields, _) => {
         let names = empty_str_array()
         let mut j = 0
         while j < Array::length(fields) {
@@ -6952,7 +6980,7 @@ let make_dict_struct_stmt: (String, Array[(String, Array[TypeExpr], TypeExpr)]) 
     Array::push(fields, (mname, TyFn(params, ret, None)))
     i = i + 1
   }
-  SStruct(false, dict_struct_name(trait_name), fields)
+  SStruct(false, dict_struct_name(trait_name), fields, empty_str_array())
 }
 let field_sets_match: (Array[String], Array[String]) -> Bool = (a, b) -> {
   if Array::length(a) != Array::length(b) {
@@ -7454,12 +7482,136 @@ let rewrite_stmt: (Stmt, Array[(String, Array[(String, String, Int)])], Array[(S
     _ => stmt
   }
 }
+let qualified_name: (String, String) -> String = (tname, method) -> {
+  String::concat(tname, String::concat("::", method))
+}
+let top_level_fn_exists: (Array[Stmt], String) -> Bool = (stmts, fname) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, _) => if name == fname {
+        found = true
+        i = Array::length(stmts)
+      } else {
+        i = i + 1
+      },
+      _ => {
+        i = i + 1
+      }
+    }
+  }
+  found
+}
+let field_show_expr: (String, TypeExpr) -> Expr = (fname, fty) -> {
+  let access = EDot(EIdent("self", -1), fname, -1)
+  match fty {
+    TyName("String") => access,
+    _ => ECall(EIdent("__to_string", -1), [
+      access
+    ], -1)
+  }
+}
+let concat2: (Expr, Expr) -> Expr = (a, b) -> {
+  ECall(EIdent("String::concat", -1), [
+    a,
+    b
+  ], -1)
+}
+let gen_show_fn: (String, Array[(String, TypeExpr)]) -> Stmt = (tname, fields) -> {
+  let segs = empty_expr_array()
+  Array::push(segs, EString(String::concat(tname, " { ")))
+  let mut i = 0
+  while i < Array::length(fields) {
+    let (fname, fty) = Array::get(fields, i)
+    let sep = if i == 0 {
+      ""
+    } else ", "
+    Array::push(segs, EString(String::concat(sep, String::concat(fname, ": "))))
+    Array::push(segs, field_show_expr(fname, fty))
+    i = i + 1
+  }
+  Array::push(segs, EString(" }"))
+  let mut body = Array::get(segs, Array::length(segs) - 1)
+  let mut j = Array::length(segs) - 2
+  while j >= 0 {
+    body = concat2(Array::get(segs, j), body)
+    j = j - 1
+  }
+  let params = Array::slice([
+    ("self", Some(TyName(tname)))
+  ], 0, 1)
+  let no_tp = Array::slice([
+    ""
+  ], 0, 0)
+  let no_tb = Array::slice([
+    ("", no_tp)
+  ], 0, 0)
+  SLet(false, false, qualified_name(tname, "to_string"), None, EFn(no_tp, no_tb, params, Some(TyName("String")), None, body))
+}
+let gen_compare_fn: (String, Array[(String, TypeExpr)]) -> Stmt = (tname, fields) -> {
+  let neg_one = 0 - 1
+  let mut body = EInt(0)
+  let mut i = Array::length(fields) - 1
+  while i >= 0 {
+    let (fname, _) = Array::get(fields, i)
+    let af = EDot(EIdent("a", -1), fname, -1)
+    let bf = EDot(EIdent("b", -1), fname, -1)
+    body = EIf(EBinOp("<", af, bf), EInt(neg_one), EIf(EBinOp(">", af, bf), EInt(1), body))
+    i = i - 1
+  }
+  let params = Array::slice([
+    ("a", Some(TyName(tname))),
+    ("b", Some(TyName(tname)))
+  ], 0, 2)
+  let no_tp = Array::slice([
+    ""
+  ], 0, 0)
+  let no_tb = Array::slice([
+    ("", no_tp)
+  ], 0, 0)
+  SLet(false, false, qualified_name(tname, "compare"), None, EFn(no_tp, no_tb, params, Some(TyName("Int")), None, body))
+}
+export let desugar_derives: (Array[Stmt]) -> Unit = (stmts) -> {
+  let gen = empty_stmt_list()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(_, name, fields, derives) => {
+        if str_array_contains(derives, "Show") && !top_level_fn_exists(stmts, qualified_name(name, "to_string")) {
+          Array::push(gen, gen_show_fn(name, fields))
+        } else {
+          ()
+        }
+        if str_array_contains(derives, "Ord") && !top_level_fn_exists(stmts, qualified_name(name, "compare")) {
+          Array::push(gen, gen_compare_fn(name, fields))
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  let mut g = 0
+  while g < Array::length(gen) {
+    Array::push(stmts, Array::get(gen, g))
+    g = g + 1
+  }
+}
+let empty_stmt_list: () -> Array[Stmt] = () -> {
+  Array::slice([
+    SExport([
+      ""
+    ])
+  ], 0, 0)
+}
 let struct_decl_exists: (Array[Stmt], String) -> Bool = (stmts, name) -> {
   let mut i = 0
   let mut found = false
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SStruct(_, sname, _) => if sname == name {
+      SStruct(_, sname, _, _) => if sname == name {
         found = true
         i = Array::length(stmts)
       } else {
@@ -7473,6 +7625,7 @@ let struct_decl_exists: (Array[Stmt], String) -> Bool = (stmts, name) -> {
   found
 }
 export let desugar_trait_dicts: (Array[Stmt]) -> Unit = (stmts) -> {
+  desugar_derives(stmts)
   let traits_raw = collect_method_traits(stmts)
   if Array::length(traits_raw) == 0 {
     ()
@@ -17631,7 +17784,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
         }
         0
       },
-      SStruct(_, sname, sfields) => {
+      SStruct(_, sname, sfields, _) => {
         type_index = type_index + 1
         Array::push(ctor_names_list, sname)
         Array::push(ctor_tags_list, type_index<<16)
@@ -17648,7 +17801,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   let mut si = 0
   while si < Array::length(stmts) {
     match Array::get(stmts, si) {
-      SStruct(_, sname, sfields) => {
+      SStruct(_, sname, sfields, _) => {
         Array::push(struct_names, sname)
         let fnames = lc_fresh_string_array()
         let mut sfi = 0
@@ -20743,34 +20896,41 @@ let empty_exprs: () -> Array[Expr] = () -> {
     EUnit
   ], 0, 0)
 }
-export let skip_derive: (Array[Token], Int) -> Int with { Error } = (tokens, pos) -> {
+export let parse_derive_names: (Array[Token], Int) -> (Array[String], Int) with { Error } = (tokens, pos) -> {
+  let names = Array::slice([
+    ""
+  ], 0, 0)
   match peek(tokens, pos) {
     TDerive => match peek(tokens, pos + 1) {
       TLParen => {
-        match peek(tokens, pos + 2) {
-          TIdent(name) => if name != "Eq" {
-            throw("unknown derive: \{name}")
-          },
-          _ => throw("expected derive identifier")
-        }
         let mut dp = pos + 2
         let mut dd = true
         while dd {
           match peek(tokens, dp) {
             TRParen => {
               dd = false
-            },
-            _ => {
               dp = dp + 1
-            }
+            },
+            TComma => {
+              dp = dp + 1
+            },
+            TIdent(name) => {
+              Array::push(names, name)
+              dp = dp + 1
+            },
+            _ => throw("expected derive identifier")
           }
         }
-        dp + 1
+        (names, dp)
       },
-      _ => pos
+      _ => (names, pos)
     },
-    _ => pos
+    _ => (names, pos)
   }
+}
+export let skip_derive: (Array[Token], Int) -> Int with { Error } = (tokens, pos) -> {
+  let (_, next) = parse_derive_names(tokens, pos)
+  next
 }
 let empty_fields: () -> Array[(String, TypeExpr)] = () -> {
   Array::slice([
@@ -21788,20 +21948,20 @@ let parse_struct_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } =
       let after_name = skip_bracketed_args(tokens, pos + 1)
       let br = expect_tk(tokens, after_name, "{")
       let (fields, end) = parse_struct_fields(tokens, br);
-      let final_pos = skip_derive(tokens, end)
-      (SStruct(exported, name, fields), final_pos)
+      let (derives, final_pos) = parse_derive_names(tokens, end)
+      (SStruct(exported, name, fields, derives), final_pos)
     },
     _ => throw("expected struct name")
   }
 }
 export {
-  _no_tb, _no_tp, collect_effect_names, collect_import_path, empty_arms, empty_exprs, empty_fields, empty_import_items, empty_params, empty_pats, empty_type_exprs, expect_tk, is_expr_end_token, is_lambda_start, is_non_pipe_infix, is_tk, mode_block, mode_for_in, mode_handle, mode_if, mode_match, mode_while, parse_binding_name, parse_effect_stmt, parse_enum_stmt, parse_impl_stmt_dispatch, parse_import_item, parse_param_list, parse_pattern, parse_struct_field, parse_struct_stmt, parse_suberror_stmt, parse_trait_stmt, parse_type, parse_type_alias_stmt, parse_type_impl, peek, skip_derive, skip_semi, tk_name
+  _no_tb, _no_tp, collect_effect_names, collect_import_path, empty_arms, empty_exprs, empty_fields, empty_import_items, empty_params, empty_pats, empty_type_exprs, expect_tk, is_expr_end_token, is_lambda_start, is_non_pipe_infix, is_tk, mode_block, mode_for_in, mode_handle, mode_if, mode_match, mode_while, parse_binding_name, parse_effect_stmt, parse_enum_stmt, parse_impl_stmt_dispatch, parse_import_item, parse_param_list, parse_pattern, parse_struct_field, parse_struct_stmt, parse_suberror_stmt, parse_trait_stmt, parse_type, parse_type_alias_stmt, parse_type_impl, parse_derive_names, peek, skip_derive, skip_semi, tk_name
 }
 export {
-  peek, is_tk, _no_tb, _no_tp, mode_if, tk_name, expect_tk, skip_semi, skip_derive, empty_arms, empty_pats, mode_block, mode_match, mode_while, parse_type, empty_exprs, mode_for_in, mode_handle, empty_fields, empty_params, parse_pattern, is_lambda_start, parse_enum_stmt, parse_type_impl, empty_type_exprs, parse_param_list, parse_trait_stmt, is_expr_end_token, is_non_pipe_infix, parse_effect_stmt, parse_import_item, parse_struct_stmt, empty_import_items, parse_binding_name, parse_struct_field, collect_import_path, parse_suberror_stmt, collect_effect_names, parse_type_alias_stmt, parse_impl_stmt_dispatch
+  peek, is_tk, _no_tb, _no_tp, mode_if, tk_name, expect_tk, skip_semi, skip_derive, parse_derive_names, empty_arms, empty_pats, mode_block, mode_match, mode_while, parse_type, empty_exprs, mode_for_in, mode_handle, empty_fields, empty_params, parse_pattern, is_lambda_start, parse_enum_stmt, parse_type_impl, empty_type_exprs, parse_param_list, parse_trait_stmt, is_expr_end_token, is_non_pipe_infix, parse_effect_stmt, parse_import_item, parse_struct_stmt, empty_import_items, parse_binding_name, parse_struct_field, collect_import_path, parse_suberror_stmt, collect_effect_names, parse_type_alias_stmt, parse_impl_stmt_dispatch
 }
 export {
-  peek, is_tk, _no_tb, _no_tp, mode_if, tk_name, expect_tk, skip_semi, empty_arms, empty_pats, mode_block, mode_match, mode_while, parse_type, empty_exprs, mode_for_in, mode_handle, skip_derive, empty_fields, empty_params, parse_pattern, is_lambda_start, parse_enum_stmt, parse_type_impl, empty_type_exprs, parse_param_list, parse_trait_stmt, is_expr_end_token, is_non_pipe_infix, parse_effect_stmt, parse_import_item, parse_struct_stmt, empty_import_items, parse_binding_name, parse_struct_field, collect_import_path, parse_suberror_stmt, collect_effect_names, parse_type_alias_stmt, parse_impl_stmt_dispatch
+  peek, is_tk, _no_tb, _no_tp, mode_if, tk_name, expect_tk, skip_semi, empty_arms, empty_pats, mode_block, mode_match, mode_while, parse_type, empty_exprs, mode_for_in, mode_handle, skip_derive, parse_derive_names, empty_fields, empty_params, parse_pattern, is_lambda_start, parse_enum_stmt, parse_type_impl, empty_type_exprs, parse_param_list, parse_trait_stmt, is_expr_end_token, is_non_pipe_infix, parse_effect_stmt, parse_import_item, parse_struct_stmt, empty_import_items, parse_binding_name, parse_struct_field, collect_import_path, parse_suberror_stmt, collect_effect_names, parse_type_alias_stmt, parse_impl_stmt_dispatch
 }
 let rec desugar_loop_body: (Expr, Array[String]) -> Expr = (expr, param_names) -> {
   match expr {
@@ -23896,8 +24056,8 @@ let parse_toplevel_struct_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { 
       }
       let br = expect_tk(tokens, after_name, "{")
       let (fields, end) = parse_toplevel_struct_fields(tokens, br);
-      let final_pos = skip_derive(tokens, end)
-      (SStruct(exported, name, fields), final_pos)
+      let (derives, final_pos) = parse_derive_names(tokens, end)
+      (SStruct(exported, name, fields, derives), final_pos)
     },
     _ => throw("expected struct name")
   }
@@ -25262,12 +25422,17 @@ export let rec print_stmt: (Stmt) -> String = (s) -> {
         else String::concat(p, String::concat("suberror ", String::concat(name, String::concat(" { ", String::concat(print_ctor_list(ctors), " }")))))
       } else String::concat(p, String::concat("suberror ", String::concat(name, String::concat(" { ", String::concat(print_ctor_list(ctors), " }")))))
     },
-    SStruct(exported, name, fields) => {
+    SStruct(exported, name, fields, derives) => {
       let parts = for field in fields {
         let (fn1, ty) = field
         String::concat(fn1, String::concat(": ", print_type_expr(ty)))
       }
-      String::concat(prefix(exported), String::concat("struct ", String::concat(name, String::concat(" { ", String::concat(join(parts, "; "), " }")))))
+      let base = String::concat(prefix(exported), String::concat("struct ", String::concat(name, String::concat(" { ", String::concat(join(parts, "; "), " }")))))
+      if Array::length(derives) == 0 {
+        base
+      } else {
+        String::concat(base, String::concat(" derive(", String::concat(join(derives, ", "), ")")))
+      }
     },
     STypeAlias(exported, name, _, ty) => String::concat(prefix(exported), String::concat("type ", String::concat(name, String::concat(" = ", print_type_expr(ty))))),
     STrait(exported, name, supers, methods) => {
@@ -26180,7 +26345,7 @@ let collect_private_type_renames: (String, Array[Stmt], Array[String], Array[Str
       SEnum(false, name, _, _) => if !string_array_contains(exported, name) {
         Array::push(renames, (name, namespace_private_name_lazy(path, name, namespace_suffix_box)))
       },
-      SStruct(false, name, _) => if !string_array_contains(exported, name) {
+      SStruct(false, name, _, _) => if !string_array_contains(exported, name) {
         Array::push(renames, (name, namespace_private_name_lazy(path, name, namespace_suffix_box)))
       },
       STypeAlias(false, name, _, _) => if !string_array_contains(exported, name) {
@@ -26286,7 +26451,7 @@ export let rec namespace_private_value_stmts: (String, Array[Stmt]) -> Array[Stm
           })
         })
       },
-      SStruct(exported, name, fields) => {
+      SStruct(exported, name, fields, derives) => {
         let next_name = if exported {
           name
         } else {
@@ -26298,7 +26463,7 @@ export let rec namespace_private_value_stmts: (String, Array[Stmt]) -> Array[Stm
         SStruct(exported, next_name, for field in fields {
           let (field_name, field_ty) = field
           (field_name, rewrite_private_type_expr(field_ty, type_renames))
-        })
+        }, derives)
       },
       STypeAlias(exported, name, params, target) => {
         let next_name = if exported {
@@ -30697,7 +30862,7 @@ let collect_stmt_type_refs_into: (Stmt, Array[String]) -> Int = (stmt, out) -> {
     SLetMut(_, ty, _) => collect_opt_type_into(ty, out),
     SExternLet(_, ty) => collect_type_names_into(ty, out),
     STypeAlias(_, _, _, rhs) => collect_type_names_into(rhs, out),
-    SStruct(_, _, fields) => {
+    SStruct(_, _, fields, _) => {
       let mut i = 0
       while i < Array::length(fields) {
         let (_, fty) = Array::get(fields, i)
@@ -30755,7 +30920,7 @@ let stmt_section: (Stmt) -> Int = (stmt) -> {
     SAliasDecl(_, _) => 0,
     SEnum(_, _, _, _) => 1,
     SSuberror(_, _, _) => 1,
-    SStruct(_, _, _) => 1,
+    SStruct(_, _, _, _) => 1,
     STypeAlias(_, _, _, _) => 1,
     STrait(_, _, _, _) => 1,
     SImpl(_, _, _, _) => 1,
@@ -31856,7 +32021,7 @@ let rec sym_walk_stmt: (Array[(String, Int, Int, Int)], String, Stmt, Array[Int]
     SLetMut(name, _, _) => sym_emit(out, source, name, 13, floor, hi),
     SEnum(_, name, _, _) => sym_emit(out, source, name, 10, floor, hi),
     SSuberror(_, name, _) => sym_emit(out, source, name, 10, floor, hi),
-    SStruct(_, name, _) => sym_emit(out, source, name, 23, floor, hi),
+    SStruct(_, name, _, _) => sym_emit(out, source, name, 23, floor, hi),
     STypeAlias(_, name, _, _) => sym_emit(out, source, name, 26, floor, hi),
     STrait(_, name, _, _) => sym_emit(out, source, name, 11, floor, hi),
     SEffectDef(_, name, _, _) => sym_emit(out, source, name, 24, floor, hi),

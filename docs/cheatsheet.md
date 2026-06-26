@@ -228,9 +228,12 @@ type Pair = (Int, Int)                   // alias
 enum Color { Red; Green; Blue } derive(Eq)
 enum Shape { Circle(Int); Rect(Int, Int) }
 
-struct Point { x: Int; y: Int } derive(Eq)
+struct Point { x: Int; y: Int } derive(Eq, Ord, Show)
 let p = Point::{ x: 1, y: 2 }
 p.x                                       // field access
+// struct derive(Ord) -> Point::compare(a, b) : Int   (-1 / 0 / 1, lexicographic)
+// struct derive(Show) -> Point::to_string(p) : String ("Point { x: 1, y: 2 }")
+// (Eq is a no-op marker; Hash / Default and enum derive are not yet generated)
 
 trait Eq
 trait Ord: Eq                              // supertrait

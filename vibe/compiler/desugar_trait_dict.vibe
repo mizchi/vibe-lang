@@ -234,7 +234,7 @@ let collect_struct_field_sets: (Array[Stmt]) -> Array[(String, Array[String])] =
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SStruct(_, sname, fields) => {
+      SStruct(_, sname, fields, _) => {
         let names = empty_str_array()
         let mut j = 0
         while j < Array::length(fields) {
@@ -264,7 +264,7 @@ let make_dict_struct_stmt: (String, Array[(String, Array[TypeExpr], TypeExpr)]) 
     Array::push(fields, (mname, TyFn(params, ret, None)))
     i = i + 1
   }
-  SStruct(false, dict_struct_name(trait_name), fields)
+  SStruct(false, dict_struct_name(trait_name), fields, empty_str_array())
 }
 
 // Two field-name sets describe the same struct shape when they have equal
@@ -835,12 +835,158 @@ let rewrite_stmt: (Stmt, Array[(String, Array[(String, String, Int)])], Array[(S
   }
 }
 
+// ---- derive(...) structural function generation (#638) ----
+//
+// For a `struct P { x; y } derive(Show, Ord)` this generates the structural
+// free functions `P::to_string` and `P::compare` (concrete `Type::method`,
+// resolved by the PR-1 dispatch path). `Eq` stays a no-op marker (structural
+// `==` is a runtime builtin). Hash / Default and enums are deferred slices.
+
+let qualified_name: (String, String) -> String = (tname, method) -> {
+  String::concat(tname, String::concat("::", method))
+}
+
+let top_level_fn_exists: (Array[Stmt], String) -> Bool = (stmts, fname) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, _) => if name == fname {
+        found = true
+        i = Array::length(stmts)
+      } else {
+        i = i + 1
+      },
+      _ => {
+        i = i + 1
+      }
+    }
+  }
+  found
+}
+
+// Show a single field value as a String expression, by its declared type:
+// String fields are used verbatim, everything else goes through `__to_string`.
+let field_show_expr: (String, TypeExpr) -> Expr = (fname, fty) -> {
+  let access = EDot(EIdent("self", -1), fname, -1)
+  match fty {
+    TyName("String") => access,
+    _ => ECall(EIdent("__to_string", -1), [
+      access
+    ], -1)
+  }
+}
+
+let concat2: (Expr, Expr) -> Expr = (a, b) -> {
+  ECall(EIdent("String::concat", -1), [
+    a,
+    b
+  ], -1)
+}
+
+// `let P::to_string = (self: P) -> String { "P { x: " ++ show(x) ++ ", ... }" }`
+let gen_show_fn: (String, Array[(String, TypeExpr)]) -> Stmt = (tname, fields) -> {
+  let segs = empty_expr_array()
+  Array::push(segs, EString(String::concat(tname, " { ")))
+  let mut i = 0
+  while i < Array::length(fields) {
+    let (fname, fty) = Array::get(fields, i)
+    let sep = if i == 0 {
+      ""
+    } else ", "
+    Array::push(segs, EString(String::concat(sep, String::concat(fname, ": "))))
+    Array::push(segs, field_show_expr(fname, fty))
+    i = i + 1
+  }
+  Array::push(segs, EString(" }"))
+  // fold right: concat(seg0, concat(seg1, ... segN))
+  let mut body = Array::get(segs, Array::length(segs) - 1)
+  let mut j = Array::length(segs) - 2
+  while j >= 0 {
+    body = concat2(Array::get(segs, j), body)
+    j = j - 1
+  }
+  let params = Array::slice([
+    ("self", Some(TyName(tname)))
+  ], 0, 1)
+  let no_tp = Array::slice([
+    ""
+  ], 0, 0)
+  let no_tb = Array::slice([
+    ("", no_tp)
+  ], 0, 0)
+  SLet(false, false, qualified_name(tname, "to_string"), None, EFn(no_tp, no_tb, params, Some(TyName("String")), None, body))
+}
+
+// `let P::compare = (a: P, b: P) -> Int { lexicographic over fields -> -1/0/1 }`
+let gen_compare_fn: (String, Array[(String, TypeExpr)]) -> Stmt = (tname, fields) -> {
+  let neg_one = 0 - 1
+  let mut body = EInt(0)
+  let mut i = Array::length(fields) - 1
+  while i >= 0 {
+    let (fname, _) = Array::get(fields, i)
+    let af = EDot(EIdent("a", -1), fname, -1)
+    let bf = EDot(EIdent("b", -1), fname, -1)
+    body = EIf(EBinOp("<", af, bf), EInt(neg_one), EIf(EBinOp(">", af, bf), EInt(1), body))
+    i = i - 1
+  }
+  let params = Array::slice([
+    ("a", Some(TyName(tname))),
+    ("b", Some(TyName(tname)))
+  ], 0, 2)
+  let no_tp = Array::slice([
+    ""
+  ], 0, 0)
+  let no_tb = Array::slice([
+    ("", no_tp)
+  ], 0, 0)
+  SLet(false, false, qualified_name(tname, "compare"), None, EFn(no_tp, no_tb, params, Some(TyName("Int")), None, body))
+}
+
+// In-place: for each struct with `derive(Show/Ord)`, append the structural
+// function if not already present (idempotent across the double-run pipeline).
+export let desugar_derives: (Array[Stmt]) -> Unit = (stmts) -> {
+  let gen = empty_stmt_list()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(_, name, fields, derives) => {
+        if str_array_contains(derives, "Show") && !top_level_fn_exists(stmts, qualified_name(name, "to_string")) {
+          Array::push(gen, gen_show_fn(name, fields))
+        } else {
+          ()
+        }
+        if str_array_contains(derives, "Ord") && !top_level_fn_exists(stmts, qualified_name(name, "compare")) {
+          Array::push(gen, gen_compare_fn(name, fields))
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  let mut g = 0
+  while g < Array::length(gen) {
+    Array::push(stmts, Array::get(gen, g))
+    g = g + 1
+  }
+}
+
+let empty_stmt_list: () -> Array[Stmt] = () -> {
+  Array::slice([
+    SExport([
+      ""
+    ])
+  ], 0, 0)
+}
+
 let struct_decl_exists: (Array[Stmt], String) -> Bool = (stmts, name) -> {
   let mut i = 0
   let mut found = false
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SStruct(_, sname, _) => if sname == name {
+      SStruct(_, sname, _, _) => if sname == name {
         found = true
         i = Array::length(stmts)
       } else {
@@ -860,6 +1006,9 @@ let struct_decl_exists: (Array[Stmt], String) -> Bool = (stmts, name) -> {
 // the same stmts after) finds the bounds already stripped (so no function is
 // re-threaded) and skips dict structs that already exist.
 export let desugar_trait_dicts: (Array[Stmt]) -> Unit = (stmts) -> {
+  // derive(...) structural function generation (#638) — independent of traits,
+  // idempotent, so it runs unconditionally here at the shared pre-check points.
+  desugar_derives(stmts)
   let traits_raw = collect_method_traits(stmts)
   if Array::length(traits_raw) == 0 {
     ()

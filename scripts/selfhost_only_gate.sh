@@ -449,4 +449,37 @@ fi
 rm -rf "$mbtdir"
 echo "[selfhost-only-gate] method-bearing-trait dict-passing regression ok"
 
+# 15. derive(...) structural generation regression (#638): `derive(Ord)` and
+#     `derive(Show)` on a struct must generate working `Type::compare` (-1/0/1
+#     lexicographic over fields) and `Type::to_string` free functions. Also
+#     covers multiple-derive and `Eq` accepted as a no-op marker.
+echo "[selfhost-only-gate] 15/15 derive(Ord/Show) structural-generation regression"
+drvdir="_build/_gate_derive"
+rm -rf "$drvdir"; mkdir -p "$drvdir"
+cat > "$drvdir/drv.vibe" <<'EOF'
+struct P { x: Int; y: Int } derive(Eq, Ord, Show)
+export let _start: () -> Int = () -> {
+  P::compare(P::{ x: 1, y: 1 }, P::{ x: 1, y: 2 })
+  + P::compare(P::{ x: 2, y: 0 }, P::{ x: 1, y: 9 })
+  + P::compare(P::{ x: 5, y: 5 }, P::{ x: 5, y: 5 })
+  + String::length(P::to_string(P::{ x: 7, y: 9 }))
+}
+EOF
+# Expected: -1 + 1 + 0 + len("P { x: 7, y: 9 }")=16 -> 16
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$drvdir/drv.vibe" "$drvdir/drv.wasm" _start >/dev/null 2>&1
+if [ ! -s "$drvdir/drv.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: derive program did not compile" >&2
+  cat "$drvdir/drv.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+drv_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$drvdir/drv.wasm" 2>/dev/null | tr -dc '0-9-')"
+if [ "$drv_out" != "16" ]; then
+  echo "[selfhost-only-gate] FAIL: derive mismatch (got '$drv_out', want 16 -> #638 regressed)" >&2
+  exit 1
+fi
+rm -rf "$drvdir"
+echo "[selfhost-only-gate] derive(Ord/Show) structural-generation regression ok"
+
 echo "[selfhost-only-gate] ok"

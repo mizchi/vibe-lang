@@ -178,34 +178,46 @@ let mode_for_in = 25
 
 let mode_handle = 24
 
-export let skip_derive: (Array[Token], Int) -> Int with { Error } = (tokens, pos) -> {
+// Parse a `derive(A, B, ...)` clause into the list of derived trait names plus
+// the position after the clause. Any identifier is accepted (the set of
+// structurally-derivable traits is validated later); a missing clause yields an
+// empty list. Supports multiple comma-separated names (#638).
+export let parse_derive_names: (Array[Token], Int) -> (Array[String], Int) with { Error } = (tokens, pos) -> {
+  let names = Array::slice([
+    ""
+  ], 0, 0)
   match peek(tokens, pos) {
     TDerive => match peek(tokens, pos + 1) {
       TLParen => {
-        match peek(tokens, pos + 2) {
-          TIdent(name) => if name != "Eq" {
-            throw("unknown derive: \{name}")
-          },
-          _ => throw("expected derive identifier")
-        }
         let mut dp = pos + 2
         let mut dd = true
         while dd {
           match peek(tokens, dp) {
             TRParen => {
               dd = false
-            },
-            _ => {
               dp = dp + 1
-            }
+            },
+            TComma => {
+              dp = dp + 1
+            },
+            TIdent(name) => {
+              Array::push(names, name)
+              dp = dp + 1
+            },
+            _ => throw("expected derive identifier")
           }
         }
-        dp + 1
+        (names, dp)
       },
-      _ => pos
+      _ => (names, pos)
     },
-    _ => pos
+    _ => (names, pos)
   }
+}
+
+export let skip_derive: (Array[Token], Int) -> Int with { Error } = (tokens, pos) -> {
+  let (_, next) = parse_derive_names(tokens, pos)
+  next
 }
 
 let empty_fields: () -> Array[(String, TypeExpr)] = () -> {
@@ -1267,8 +1279,8 @@ let parse_struct_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } =
       let after_name = skip_bracketed_args(tokens, pos + 1)
       let br = expect_tk(tokens, after_name, "{")
       let (fields, end) = parse_struct_fields(tokens, br);
-      let final_pos = skip_derive(tokens, end)
-      (SStruct(exported, name, fields), final_pos)
+      let (derives, final_pos) = parse_derive_names(tokens, end)
+      (SStruct(exported, name, fields, derives), final_pos)
     },
     _ => throw("expected struct name")
   }
@@ -1277,13 +1289,13 @@ let parse_struct_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } =
 //# Misc
 
 export {
-  _no_tb, _no_tp, collect_effect_names, collect_import_path, empty_arms, empty_exprs, empty_fields, empty_import_items, empty_params, empty_pats, empty_type_exprs, expect_tk, is_expr_end_token, is_lambda_start, is_non_pipe_infix, is_tk, mode_block, mode_for_in, mode_handle, mode_if, mode_match, mode_while, parse_binding_name, parse_effect_stmt, parse_enum_stmt, parse_impl_stmt_dispatch, parse_import_item, parse_param_list, parse_pattern, parse_struct_field, parse_struct_stmt, parse_suberror_stmt, parse_trait_stmt, parse_type, parse_type_alias_stmt, parse_type_impl, peek, skip_derive, skip_semi, tk_name
+  _no_tb, _no_tp, collect_effect_names, collect_import_path, empty_arms, empty_exprs, empty_fields, empty_import_items, empty_params, empty_pats, empty_type_exprs, expect_tk, is_expr_end_token, is_lambda_start, is_non_pipe_infix, is_tk, mode_block, mode_for_in, mode_handle, mode_if, mode_match, mode_while, parse_binding_name, parse_effect_stmt, parse_enum_stmt, parse_impl_stmt_dispatch, parse_import_item, parse_param_list, parse_pattern, parse_struct_field, parse_struct_stmt, parse_suberror_stmt, parse_trait_stmt, parse_type, parse_type_alias_stmt, parse_type_impl, parse_derive_names, peek, skip_derive, skip_semi, tk_name
 }
 
 export {
-  peek, is_tk, _no_tb, _no_tp, mode_if, tk_name, expect_tk, skip_semi, skip_derive, empty_arms, empty_pats, mode_block, mode_match, mode_while, parse_type, empty_exprs, mode_for_in, mode_handle, empty_fields, empty_params, parse_pattern, is_lambda_start, parse_enum_stmt, parse_type_impl, empty_type_exprs, parse_param_list, parse_trait_stmt, is_expr_end_token, is_non_pipe_infix, parse_effect_stmt, parse_import_item, parse_struct_stmt, empty_import_items, parse_binding_name, parse_struct_field, collect_import_path, parse_suberror_stmt, collect_effect_names, parse_type_alias_stmt, parse_impl_stmt_dispatch
+  peek, is_tk, _no_tb, _no_tp, mode_if, tk_name, expect_tk, skip_semi, skip_derive, parse_derive_names, empty_arms, empty_pats, mode_block, mode_match, mode_while, parse_type, empty_exprs, mode_for_in, mode_handle, empty_fields, empty_params, parse_pattern, is_lambda_start, parse_enum_stmt, parse_type_impl, empty_type_exprs, parse_param_list, parse_trait_stmt, is_expr_end_token, is_non_pipe_infix, parse_effect_stmt, parse_import_item, parse_struct_stmt, empty_import_items, parse_binding_name, parse_struct_field, collect_import_path, parse_suberror_stmt, collect_effect_names, parse_type_alias_stmt, parse_impl_stmt_dispatch
 }
 
 export {
-  peek, is_tk, _no_tb, _no_tp, mode_if, tk_name, expect_tk, skip_semi, empty_arms, empty_pats, mode_block, mode_match, mode_while, parse_type, empty_exprs, mode_for_in, mode_handle, skip_derive, empty_fields, empty_params, parse_pattern, is_lambda_start, parse_enum_stmt, parse_type_impl, empty_type_exprs, parse_param_list, parse_trait_stmt, is_expr_end_token, is_non_pipe_infix, parse_effect_stmt, parse_import_item, parse_struct_stmt, empty_import_items, parse_binding_name, parse_struct_field, collect_import_path, parse_suberror_stmt, collect_effect_names, parse_type_alias_stmt, parse_impl_stmt_dispatch
+  peek, is_tk, _no_tb, _no_tp, mode_if, tk_name, expect_tk, skip_semi, empty_arms, empty_pats, mode_block, mode_match, mode_while, parse_type, empty_exprs, mode_for_in, mode_handle, skip_derive, parse_derive_names, empty_fields, empty_params, parse_pattern, is_lambda_start, parse_enum_stmt, parse_type_impl, empty_type_exprs, parse_param_list, parse_trait_stmt, is_expr_end_token, is_non_pipe_infix, parse_effect_stmt, parse_import_item, parse_struct_stmt, empty_import_items, parse_binding_name, parse_struct_field, collect_import_path, parse_suberror_stmt, collect_effect_names, parse_type_alias_stmt, parse_impl_stmt_dispatch
 }
