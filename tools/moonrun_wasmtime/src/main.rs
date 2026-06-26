@@ -446,6 +446,14 @@ fn run(args: Vec<String>) -> Result<i32> {
 
     let instance = linker.instantiate(&mut store, &module)?;
     let start: TypedFunc<(), ()> = instance.get_typed_func(&mut store, "_start")?;
+    // Memory profiling (tier 1): `__heap_ptr` is the bump-allocator high-water
+    // mark. Read it right after instantiation (the static-data base, before any
+    // program allocation) and again after the run; the delta is everything the
+    // program — and host-produced strings — allocated. No instrumentation, ~zero
+    // overhead. Gated by VIBE_MEM=1 (set by `vibe run --mem`).
+    let mem_profile = std::env::var("VIBE_MEM").as_deref() == Ok("1");
+    let heap_base = if mem_profile { read_heap_ptr(&instance, &mut store) } else { None };
+
     let result = start.call(&mut store, ());
 
     // Flush buffered prints if execution didn't end with a newline.
@@ -465,6 +473,16 @@ fn run(args: Vec<String>) -> Result<i32> {
     // success OR trap, mirroring the coverage-bitmap read model.
     if std::env::var("VIBE_TRACE_OUT").as_deref() == Ok("1") {
         dump_trace(wasm_path, &instance, &mut store);
+    }
+
+    // Emit the memory report after the run (success OR trap), mirroring the trace
+    // dump model, so a program that traps still reports what it allocated.
+    if mem_profile {
+        let heap_peak = read_heap_ptr(&instance, &mut store);
+        let committed = instance
+            .get_memory(&mut store, "memory")
+            .map(|m| m.data_size(&store) as u64);
+        report_memory(heap_base, heap_peak, committed);
     }
 
     match result {
@@ -945,6 +963,53 @@ fn vibe_ensure_parent_dir(path: &str) {
         if !dir.as_os_str().is_empty() {
             let _ = fs::create_dir_all(dir);
         }
+    }
+}
+
+// Read the `__heap_ptr` bump-allocator pointer (an i32/i64 mut global) as bytes,
+// or None when the module doesn't export it. Used by the `--mem` memory report.
+fn read_heap_ptr(instance: &wasmtime::Instance, store: &mut Store<HostState>) -> Option<u64> {
+    let g = instance.get_global(&mut *store, "__heap_ptr")?;
+    match g.get(&mut *store) {
+        Val::I32(v) => Some(v as u32 as u64),
+        Val::I64(v) => Some(v as u64),
+        _ => None,
+    }
+}
+
+// Human-readable byte size (binary units).
+fn human_bytes(n: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut v = n as f64;
+    let mut i = 0;
+    while v >= 1024.0 && i < UNITS.len() - 1 {
+        v /= 1024.0;
+        i += 1;
+    }
+    if i == 0 {
+        format!("{n} B")
+    } else {
+        format!("{v:.1} {}", UNITS[i])
+    }
+}
+
+// Print the `--mem` report to stderr: a machine-readable line + a human line.
+// `allocated` = peak − base (everything the run bump-allocated; the linear
+// backend never frees, so peak == total). `committed` = wasm memory pages.
+fn report_memory(base: Option<u64>, peak: Option<u64>, committed: Option<u64>) {
+    match (base, peak) {
+        (Some(b), Some(p)) => {
+            let allocated = p.saturating_sub(b);
+            let c = committed.unwrap_or(0);
+            eprintln!("vibe::mem heap_base={b} heap_peak={p} allocated={allocated} committed={c}");
+            eprintln!(
+                "vibe: memory — allocated {} ({allocated} B), peak heap {}, committed {}",
+                human_bytes(allocated),
+                human_bytes(p),
+                human_bytes(c),
+            );
+        }
+        _ => eprintln!("vibe: memory — unavailable (module exports no `__heap_ptr` global)"),
     }
 }
 

@@ -23,6 +23,8 @@
 #                                           o/finish= finish current frame
 #                                           c/empty = continue
 #                                           q/quit  = abort the run
+#   vibe run --mem <file.vibe> [entry]    run + report bump-heap usage (peak /
+#                                         total allocated) to stderr after exit
 #   vibe compile <file.vibe> -o <out>     compile to a .wasm
 #   vibe build   <file.vibe> -o <out>     alias of compile
 #   vibe check   <file.vibe>              parse + typecheck (no output kept)
@@ -305,6 +307,7 @@ case "$cmd" in
     # annotated with its source location via the funcmap, like trap frames).
     trace=0
     brk=0
+    mem=0
     break_spec=""
     args=()
     while [ "$#" -gt 0 ]; do
@@ -312,11 +315,12 @@ case "$cmd" in
         --trace) trace=1; shift ;;
         --break) brk=1; break_spec="$2"; shift 2 ;;
         --break=*) brk=1; break_spec="${1#--break=}"; shift ;;
+        --mem) mem=1; shift ;;
         *) args+=("$1"); shift ;;
       esac
     done
     set -- "${args[@]}"
-    [ "$#" -ge 1 ] || die "usage: vibe run [--trace] [--break <fn>[,<fn>...]] <file.vibe> [entry]"
+    [ "$#" -ge 1 ] || die "usage: vibe run [--trace] [--break <fn>[,<fn>...]] [--mem] <file.vibe> [entry]"
     [ "$brk" = "1" ] && [ -z "$break_spec" ] && die "usage: vibe run --break <fn>[,<fn>...] <file.vibe> [entry]"
     src="$1"; entry="${2:-main}"
     [ -f "$src" ] || die "not found: $src"
@@ -341,6 +345,10 @@ case "$cmd" in
     # prefix (bash would treat it as a command).
     break_env=""
     [ "$brk" = "1" ] && break_env="VIBE_BREAK=$break_spec"
+    # `--mem`: report bump-allocator heap usage (peak/total) after the run. The
+    # runner reads `__heap_ptr` before/after `_start` and prints the delta.
+    mem_env=""
+    [ "$mem" = "1" ] && mem_env="VIBE_MEM=1"
     # span-arc step5: line-granularity breakpoints. A `--break <file>:<line>` (or
     # bare `<line>`) spec passes through VIBE_BREAK unchanged; the runner resolves
     # the entering function's source line via the `.funcmap` sidecar (name<TAB>
@@ -373,7 +381,7 @@ case "$cmd" in
     rerr_fifo="$(mktemp -u -t vibe-run-err-XXXXXX)"; mkfifo "$rerr_fifo"
     annotate_run_stream "$out.funcmap" "$(basename "$src")" < "$rerr_fifo" >&2 &
     annot_pid=$!
-    env $trace_env $break_env $funcmap_env $breakfile_env "$RUNNER" "$out" 2>"$rerr_fifo" || status=$?
+    env $trace_env $break_env $mem_env $funcmap_env $breakfile_env "$RUNNER" "$out" 2>"$rerr_fifo" || status=$?
     wait "$annot_pid" 2>/dev/null || true
     rm -f "$rerr_fifo"
     exit "$status"
