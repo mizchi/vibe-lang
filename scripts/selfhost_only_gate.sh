@@ -933,4 +933,32 @@ fi
 rm -rf "$gjdir"
 echo "[selfhost-only-gate] generic trait impl (Increment B, dict-of-dict) ok"
 
+# 24. async-lifted component EXECUTION on wasmtime (docs/spec/wasi-p3-async.md
+#     §3.1). The async-lift codegen (`comp_emit_component_wasm_async*` — task.return
+#     canon + async functype + async lift) is byte-tested on node, but the emitted
+#     component had no moon-free EXECUTION check (the only runner was the retired
+#     host `vibe.exe`). `fixtures/async_lift_run42.component.wasm` is a committed
+#     async component (its `run()` returns 42) emitted by the selfhost codegen;
+#     here wasmtime runs it with the async-stackful flags and we assert 42 — so
+#     the async runtime path is proven to EXECUTE on wasmtime 45 (no wasmtime 46
+#     needed). SKIPs cleanly when wasmtime / the async flags are unavailable.
+#     Regenerate the fixture with: scripts/emit_async_lift_fixture.sh
+echo "[selfhost-only-gate] 24/24 async-lifted component execution (wasmtime)"
+WT_BIN="$(command -v wasmtime || "$ROOT_DIR/scripts/wasmtime_bin.sh" 2>/dev/null || true)"
+ac_fixture="$ROOT_DIR/fixtures/async_lift_run42.component.wasm"
+if [ -z "${WT_BIN:-}" ] || ! "$WT_BIN" --version >/dev/null 2>&1; then
+  echo "[selfhost-only-gate] SKIP: wasmtime not available"
+elif ! "$WT_BIN" -W help 2>&1 | grep -q "component-model-async-stackful"; then
+  echo "[selfhost-only-gate] SKIP: wasmtime lacks component-model-async-stackful"
+elif [ ! -s "$ac_fixture" ]; then
+  echo "[selfhost-only-gate] SKIP: async-lift fixture missing (run scripts/emit_async_lift_fixture.sh)"
+else
+  ac_out="$(VIBE_WASMTIME_WASM_FLAGS="component-model-async=y concurrency-support=y component-model-async-stackful=y" \
+    bash scripts/wasmtime_run.sh --invoke 'run()' "$ac_fixture" 2>/dev/null | tr -dc '0-9-' || true)"
+  if [ "$ac_out" != "42" ]; then
+    echo "[selfhost-only-gate] FAIL: async component did not execute to 42 (got '$ac_out')" >&2; exit 1
+  fi
+  echo "[selfhost-only-gate] async-lifted component execution (wasmtime $("$WT_BIN" --version | awk '{print $2}')) -> 42 ok"
+fi
+
 echo "[selfhost-only-gate] ok"
