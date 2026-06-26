@@ -136,6 +136,14 @@ struct HostState {
     capture_stdout: bool,
     captured_stdout: Vec<u8>,
     start_instant: Instant,
+    // Profiling tier 3 (heap sampling over time). When `__heap_ptr` sampling is
+    // on, the epoch-deadline callback reads this global on each epoch tick and
+    // appends (elapsed_ns, heap_ptr_bytes) — a fine-grained allocation curve that
+    // sees activity WITHIN the module's initial memory (where no memory.grow, and
+    // hence no tier-2 event, fires). `sample_start` anchors elapsed times.
+    sample_global: Option<wasmtime::Global>,
+    sample_start: Instant,
+    samples: Vec<(u128, u64)>,
     // debugger breakpoints (DAP P1): set of function names to pause at (from
     // VIBE_BREAK), and whether to auto-continue without reading stdin (not a
     // TTY, or VIBE_BREAK_AUTO=1). Empty set => the `vibe::dbg_break` hook is a
@@ -249,6 +257,9 @@ impl HostState {
             capture_stdout: false,
             captured_stdout: Vec::new(),
             start_instant: Instant::now(),
+            sample_global: None,
+            sample_start: Instant::now(),
+            samples: Vec::new(),
             break_set: Arc::new(break_set),
             break_auto,
             line_break_set: Arc::new(line_break_set),
@@ -437,7 +448,28 @@ fn run(args: Vec<String>) -> Result<i32> {
         .chain(args.iter().skip(1).cloned())
         .collect();
 
-    let cfg = engine_config();
+    // Profiling tier 3: sample `__heap_ptr` every VIBE_MEM_SAMPLE_MS ms via epoch
+    // interruption. Only enable epoch checks (a small per-checkpoint cost in the
+    // guest) when sampling is requested, so normal/bench runs are unaffected.
+    let sample_ms: Option<u64> = std::env::var("VIBE_MEM_SAMPLE_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|n| *n > 0);
+    // A precompiled `.cwasm` was serialized with the plain engine config; flipping
+    // on epoch_interruption here would make deserialization fail (the config must
+    // match), and the AOT image has no epoch checkpoints to sample at anyway.
+    // Disable sampling for `.cwasm` (the `vibe run` path always passes a fresh
+    // `.wasm`, so this only guards direct `moonrun_wt <module.cwasm>` use).
+    let sample_ms = if sample_ms.is_some() && wasm_path.ends_with(".cwasm") {
+        eprintln!("vibe: --mem-sample needs a fresh .wasm (a precompiled .cwasm has no epoch checkpoints); sampling disabled");
+        None
+    } else {
+        sample_ms
+    };
+    let mut cfg = engine_config();
+    if sample_ms.is_some() {
+        cfg.epoch_interruption(true);
+    }
     let engine = Engine::new(&cfg)?;
     let module = load_module(&engine, wasm_path)?;
 
@@ -504,7 +536,60 @@ fn run(args: Vec<String>) -> Result<i32> {
         m.events.clear();
     }
 
+    // tier 3 sampler: arm the epoch-deadline callback to record (elapsed, heap)
+    // on each tick, and spawn a thread that bumps the engine epoch every `ms`.
+    let stop_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut sampler_thread = None;
+    if let Some(ms) = sample_ms {
+        if let Some(g) = instance.get_global(&mut store, "__heap_ptr") {
+            {
+                let d = store.data_mut();
+                d.sample_global = Some(g);
+                d.sample_start = Instant::now();
+                d.samples.clear();
+            }
+            store.set_epoch_deadline(1);
+            store.epoch_deadline_callback(|mut ctx| {
+                let gopt = ctx.data().sample_global;
+                if let Some(g) = gopt {
+                    let v = match g.get(&mut ctx) {
+                        Val::I32(x) => x as u32 as u64,
+                        Val::I64(x) => x as u64,
+                        _ => 0,
+                    };
+                    let t = ctx.data().sample_start.elapsed().as_nanos();
+                    ctx.data_mut().samples.push((t, v));
+                }
+                Ok(wasmtime::UpdateDeadline::Continue(1))
+            });
+            let eng = engine.clone();
+            let stop = stop_flag.clone();
+            let interval = std::time::Duration::from_millis(ms);
+            // Sleep in small chunks (<=10ms) so the stop flag is observed promptly:
+            // a coarse `--mem-sample=1000` must not stall shutdown for a full
+            // second at join. Increment the epoch once per full `interval`.
+            let chunk = interval.min(std::time::Duration::from_millis(10));
+            sampler_thread = Some(std::thread::spawn(move || {
+                let mut since_tick = std::time::Duration::ZERO;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    std::thread::sleep(chunk);
+                    since_tick += chunk;
+                    if since_tick >= interval {
+                        eng.increment_epoch();
+                        since_tick = std::time::Duration::ZERO;
+                    }
+                }
+            }));
+        }
+    }
+
     let result = start.call(&mut store, ());
+
+    // Stop the sampler thread before reading samples.
+    stop_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+    if let Some(h) = sampler_thread {
+        let _ = h.join();
+    }
 
     // Flush buffered prints if execution didn't end with a newline.
     {
@@ -534,6 +619,12 @@ fn run(args: Vec<String>) -> Result<i32> {
             .map(|m| m.data_size(&store) as u64);
         let events = std::mem::take(&mut store.data_mut().mem.events);
         report_memory(heap_base, heap_peak, committed, &events);
+    }
+
+    // tier 3 heap-sampling timeline.
+    if sample_ms.is_some() {
+        let samples = std::mem::take(&mut store.data_mut().samples);
+        report_samples(&samples);
     }
 
     match result {
@@ -1220,6 +1311,27 @@ fn report_memory(
             }
         }
         _ => eprintln!("vibe: memory — unavailable (module exports no `__heap_ptr` global)"),
+    }
+}
+
+// Print the tier-3 heap-sampling timeline: one machine-readable line per sample
+// (elapsed since run start + heap-pointer bytes) plus a human summary. Empty when
+// the program ran faster than one sample interval.
+fn report_samples(samples: &[(u128, u64)]) {
+    for (elapsed_ns, heap) in samples {
+        eprintln!("vibe::memsample t_us={} heap={heap}", elapsed_ns / 1_000);
+    }
+    match (samples.first(), samples.last()) {
+        (Some((t0, h0)), Some((t1, h1))) => eprintln!(
+            "vibe: heap samples — {} over {} … {}, {} -> {} (peak {})",
+            samples.len(),
+            fmt_ns(*t0),
+            fmt_ns(*t1),
+            human_bytes(*h0),
+            human_bytes(*h1),
+            human_bytes(samples.iter().map(|(_, h)| *h).max().unwrap_or(0)),
+        ),
+        _ => eprintln!("vibe: heap samples — 0 (program ran faster than one sample interval)"),
     }
 }
 

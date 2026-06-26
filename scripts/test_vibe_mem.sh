@@ -107,5 +107,39 @@ printf '%s\n' "$grow_err" | grep -qE "vibe::memgrow t_us=[0-9]+ from=[0-9]+ to=[
   && ok "growth timeline emits machine-readable memgrow lines" \
   || bad "missing memgrow line (got: $(printf '%s\n' "$grow_err" | grep memgrow | head -1))"
 
+# 7. heap sampling (tier 3): --mem-sample produces a heap-over-time curve. Sample
+#    capture is timing-based (epoch-driven), so use a long compute loop that spans
+#    many 1 ms intervals on any machine, retry a few times to absorb scheduler
+#    jitter, and guard `grep -c` (it exits non-zero on 0 matches, which would trip
+#    `set -e`).
+cat > "$proj/long.vibe" <<'EOF'
+let main = () -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < 60000000 { acc = acc + (i & 7); i = i + 1 }
+  acc
+}
+EOF
+sample_err=""; scount=0
+for _attempt in 1 2 3; do
+  sample_err="$("$VIBE" run --mem-sample "$proj/long.vibe" 2>&1 >/dev/null)"
+  scount="$(printf '%s\n' "$sample_err" | grep -cE 'vibe::memsample t_us=[0-9]+ heap=[0-9]+' || true)"
+  [ "${scount:-0}" -ge 1 ] && break
+done
+printf '%s\n' "$sample_err" | grep -qE "vibe: heap samples — " \
+  && ok "--mem-sample emits a heap-sampling summary" \
+  || bad "--mem-sample missing summary (got: $(printf '%s\n' "$sample_err" | tail -1))"
+if [ "${scount:-0}" -ge 1 ]; then
+  ok "--mem-sample records >=1 heap sample over time ($scount samples)"
+else
+  bad "--mem-sample recorded 0 samples across retries (expected >=1 for a long run)"
+fi
+# plain run must not emit samples.
+if "$VIBE" run "$proj/long.vibe" 2>&1 | grep -q "vibe::memsample"; then
+  bad "plain run leaked heap samples"
+else
+  ok "plain run emits no heap samples"
+fi
+
 echo "[test_vibe_mem] $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1
