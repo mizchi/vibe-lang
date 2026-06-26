@@ -28,11 +28,21 @@
 > CI wasmtime 修正 / 仕様 freeze / span-arc step2–5 / docs は branch
 > `claude/kind-fermat-lxtjov` に在り（main は authoritative selfhost-gate green、
 > cli-install は wasmtime CLI 未導入で一時 red — branch の修正で解消）。
-> テーマ3 debugger は P0-P4 + 3-D + 関数行 breakpoint 完了。span-arc は
+> テーマ3 debugger は P0-P4 + 3-D + 行 breakpoint 完了。span-arc は
 > step1（診断 offset）/ step2（ECall+EDot offset）/ step3（typed hover）/
-> step4（call/field hover）着地、step5 は関数宣言行 breakpoint まで。
-> 残（リリース運用）: 1.0 タグ / version bump / main land。
-> 残（post-GA）: 任意式 watch、関数内任意行 step、LSP span JSON / 診断 range AST。
+> step4（call/field hover + `vibe symbols` + 厳密診断 range）着地、
+> step5 は**関数内任意行 breakpoint + 行 step（multi-file 対応）**まで着地。
+> PR #643 で branch `claude/kind-fermat-lxtjov` を main へ land。
+>
+> **進捗メモ（2026-06-26、PR #643 マージ時点）— tracked issues**:
+> 実装側の roadmap は出し切り。残りは GitHub issue で追跡する。
+> - 残（リリース運用）: 1.0 GA タグ / version bump → **#647**
+> - 残（post-GA, debugger）: `vibe.linemap` 命令オフセット粒度化 + 裸リテラル文の
+>   break 対応 → **#644**
+> - 残（post-GA, LSP）: field-access 診断 end offset を compiler 由来に（EDot field
+>   offset）→ **#645**
+> - 残（test-infra）: hosted CI runner の compiler error-path（vibe-eh-ci）→ **#646**
+> - 残（post-GA, 任意式 watch）: debugger の arbitrary expression evaluation（未着手）
 >
 > **CI 根本原因メモ（vibe-eh-ci, RESOLVED）**: fresh compiler build は standalone
 > `wasmtime` CLI を要するが CI 未導入 → seed fallback で diagnostics/type-at が機能せず。
