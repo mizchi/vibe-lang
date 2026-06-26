@@ -72,9 +72,18 @@ const pending = new Map(); // uri -> timeout (debounce)
 // symbol and callHierarchy. Avoids a `vibe` subprocess per file (~0.5s) for
 // these workspace-wide ops; a cold scan is sub-second, edits re-index in ms.
 const { SymbolIndex } = require("./symbol_index.js");
+const { GraphQuery } = require("./graph_query.js");
 const wsIndex = new SymbolIndex();
 let wsRoot = null; // absolute workspace root path (from initialize)
 let wsScanned = false;
+let wsGraph = null; // cached GraphQuery; invalidated whenever the index changes
+
+// Lazily (re)build the project graph query over the current index.
+function graphQuery() {
+  ensureWorkspaceScanned();
+  if (!wsGraph) wsGraph = new GraphQuery(wsIndex, { root: wsRoot || "" });
+  return wsGraph;
+}
 
 function pathToUri(p) {
   return "file://" + p.split("/").map((seg, i) => (i === 0 ? seg : encodeURIComponent(seg))).join("/");
@@ -216,6 +225,30 @@ function handle(msg) {
       reply(msg.id, out);
       break;
     }
+    case "vibe/graph": {
+      // Custom request: project dependency / call graph queries for macro
+      // visualization. Returns a uniform { nodes, edges, ... } (or analysis)
+      // payload. params: { query, level, node|from|to, transitive, depth, by }.
+      const p = msg.params || {};
+      const gq = graphQuery();
+      const level = p.level || (p.query === "callGraph" ? "symbol" : "module");
+      let res;
+      switch (p.query) {
+        case "dependencies": res = gq.dependencies(p.node, { level, transitive: !!p.transitive }); break;
+        case "dependents": res = gq.dependents(p.node, { level, transitive: !!p.transitive }); break;
+        case "callees": res = gq.callees(p.node, { transitive: !!p.transitive }); break;
+        case "callers": res = gq.callers(p.node, { transitive: !!p.transitive }); break;
+        case "neighborhood": res = gq.neighborhood(p.node, { level, depth: p.depth || 1 }); break;
+        case "cycles": res = { view: "cycles", level, cycles: gq.cycles(level) }; break;
+        case "hotspots": res = { view: "hotspots", level, by: p.by || "fan-in", hotspots: gq.hotspots({ level, by: p.by || "fan-in", limit: p.limit || 20 }) }; break;
+        case "path": res = { view: "path", from: p.from, to: p.to, path: gq.path(p.from, p.to, { level }) }; break;
+        case "stats": res = gq.stats(); break;
+        case "callGraph": res = gq.callGraph(); break;
+        default: res = gq.dependencyGraph(level); // full dependency graph
+      }
+      reply(msg.id, res);
+      break;
+    }
     case "textDocument/rename": {
       const uri = msg.params.textDocument.uri;
       const doc = docs.get(uri);
@@ -340,7 +373,7 @@ function handle(msg) {
     case "textDocument/didOpen": {
       const { uri, text } = msg.params.textDocument;
       docs.set(uri, { text, version: msg.params.textDocument.version });
-      if (wsScanned) wsIndex.update(uriToPath(uri), text); // keep index fresh
+      if (wsScanned) { if (wsIndex.update(uriToPath(uri), text)) wsGraph = null; } // keep index fresh; drop graph cache on change
       scheduleCheck(uri);
       break;
     }
@@ -351,7 +384,7 @@ function handle(msg) {
         // full sync: last change holds the whole document
         const text = changes[changes.length - 1].text;
         docs.set(uri, { text, version: msg.params.textDocument.version });
-        if (wsScanned) wsIndex.update(uriToPath(uri), text); // incremental re-index
+        if (wsScanned) { if (wsIndex.update(uriToPath(uri), text)) wsGraph = null; } // incremental re-index; invalidate graph cache
       }
       scheduleCheck(uri);
       break;

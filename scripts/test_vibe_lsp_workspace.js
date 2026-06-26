@@ -102,6 +102,12 @@ const eqset = (a, b) => JSON.stringify([...a].sort()) === JSON.stringify([...b].
     ok("outgoingCalls(combo) = {inc, twice}", eqset(outg.map((c) => c.to.name), ["inc", "twice"]), JSON.stringify(outg.map((c) => c.to.name)));
   }
 
+  // vibe/graph custom request: dependency graph + a query perspective.
+  const dg = await send("vibe/graph", { query: "dependencyGraph", level: "module" });
+  ok("vibe/graph returns a module dependency graph", dg && Array.isArray(dg.nodes) && Array.isArray(dg.edges), JSON.stringify(dg && Object.keys(dg)));
+  const hot = await send("vibe/graph", { query: "hotspots", level: "file", by: "fan-in" });
+  ok("vibe/graph hotspots query works", hot && Array.isArray(hot.hotspots), JSON.stringify(hot && Object.keys(hot)));
+
   await send("shutdown", {});
   await send("exit", {}, true);
   setTimeout(() => {

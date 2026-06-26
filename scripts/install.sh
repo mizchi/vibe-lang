@@ -94,6 +94,11 @@ if [ -f "$ROOT_DIR/js/vibe/lsp_server.js" ]; then
     install -m 0644 "$ROOT_DIR/js/vibe/symbol_index.js" "$VIBE_HOME/lib/symbol_index.js"
     say "lsp symbol index -> $VIBE_HOME/lib/symbol_index.js"
   fi
+  # Project graph query layer (vibe/graph custom request + dependency graph).
+  if [ -f "$ROOT_DIR/js/vibe/graph_query.js" ]; then
+    install -m 0644 "$ROOT_DIR/js/vibe/graph_query.js" "$VIBE_HOME/lib/graph_query.js"
+    say "lsp graph query -> $VIBE_HOME/lib/graph_query.js"
+  fi
 fi
 
 if [ "$DO_LINK" = "1" ]; then
