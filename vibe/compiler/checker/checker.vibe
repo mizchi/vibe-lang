@@ -970,7 +970,19 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       (CtUnit, s2, c2)
     },
     EForIn(name, index_name, iterable, body) => {
-      let (it, s1, c1) = check_expr(iterable, env, defs, s, c, errors, tytab)
+      // `for await x in s` reaches the checker as `for x in __await_iter(s)`
+      // (the parser's marker; the dict-passing desugar strips it for codegen).
+      // The marker is not a real function, so check the inner iterable directly.
+      let real_iterable = match iterable {
+        ECall(callee, args, _) => match callee {
+          EIdent(nm, _) => if nm == "__await_iter" && Array::length(args) == 1 {
+            Array::get(args, 0)
+          } else iterable,
+          _ => iterable
+        },
+        _ => iterable
+      }
+      let (it, s1, c1) = check_expr(real_iterable, env, defs, s, c, errors, tytab)
       // `for x in arr` iterates an Array[T]; `for await x in stream` iterates a
       // Stream[T] (eager Array-backed model, docs/spec §M2c-3) — both yield T.
       let et = match subst_apply(s1, it) {

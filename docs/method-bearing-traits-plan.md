@@ -392,8 +392,30 @@ lands.
      same value map, so they stay consistent — verified no regression). Gate
      step 18 (`cross-import trait-iterator`) guards this: the iterator type +
      `impl ::next` + a `for`-driver live in an imported module, mirroring the
-     prelude. **Still deferred:** unifying `for await` with the struct-trait
-     iterator (needs an async `next` / AsyncIterator effect integration).
+     prelude.
+  **`for await` unification — LANDED (#636).** `for await x in s` now shares one
+  type-directed desugar with sync `for` instead of a parse-time special case. The
+  parser wraps the iterable in a `__await_iter` marker (the checker unwraps it so
+  it never sees a non-function; the dict-passing desugar strips it), and the
+  desugar — which has the type information the parser lacks — picks the loop:
+  - a struct `C` whose `C::next` returns `Future[Option[(T, Self)]]` (an
+    `AsyncIterator` / `Stream[T]`, per docs/spec/wasi-p3-async.md §2.4) drives an
+    `await`-wrapped next loop. `await` is the M1a builtin and unwraps the ready
+    future synchronously on the linear backend, so this runs today;
+  - a struct `C` with a sync `C::next -> Option[(T, Self)]` drives the plain
+    iterator loop (same as sync `for`); and
+  - anything else (a pull closure `() -> Option[T]` such as `stdin_stream`, or a
+    call with an unknown return type) drives the pre-existing pull-to-`None`
+    loop, so the WASI byte-stream path is unchanged.
+  The desugar (`desugar_trait_dict.vibe`) now also runs even when no
+  method-bearing trait is declared (a `for await` predates the trait machinery),
+  with the sync-`for` iterator classification gated on a trait being present so
+  trait-free `for` loops are untouched. `collect_fn_returns` records `TyApp`
+  return heads too, so a call-valued iterable (`for await x in mkstream(..)`) and
+  an async-vs-sync `next` are distinguishable. Gate step 19 (`for-await
+  unification`): one program drives an async iterator (`60`) and a pull closure
+  (`10`) through `for await`, summing to `70`. Parity sweep vs the seed shows no
+  regression (the WASI `stdin_stream` for-await path is byte-identical).
 
 ## Risks / open items
 

@@ -568,33 +568,12 @@ let parse_impl_block: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -
   (fold_block_steps(ArrayBuilder::freeze(steps)), end_pos)
 }
 
-// `for await x in s { body }` desugar (selfhost pull model, docs/spec
-// §M2c-3). The `await` marker selects the async-iterator (pull) loop: the
-// iterable `s` is a pull closure `() -> Option[T]` whose state lives in the
-// host (e.g. `stdin_stream(4)`), so the loop calls `s()` once per step and
-// stops at `None`. This mirrors the proven terminal-consumer shape in
-// vibe/io/byte_stream.vibe (`while not(done) { match next() { Some => ..,
-// None => done = true } }`) using only nodes codegen already handles, so no
-// type information is needed at codegen time. `uid` (the source token index)
-// keeps the generated binding names unique across nested loops.
-let build_pull_for_in: (String, Option[String], Expr, Expr, Int) -> Expr = (value_name, index_name, iterable, body, uid) -> {
-  let next_var = "__pull_next_\{uid}"
-  let cont_var = "__pull_continue_\{uid}"
-  let some_arm = match index_name {
-    Some(ix) => ESeq(body, EAssign(ix, EBinOp("+", EIdent(ix, -1), EInt(1)), EUnit)),
-    None => ESeq(body, EUnit)
-  }
-  let loop_body = EMatch(ECall(EIdent(next_var, -1), [], -1), [
-    (PCtor("Some", [PBind(value_name)]), some_arm),
-    (PCtor("None", []), EAssign(cont_var, EBool(false), EUnit))
-  ])
-  let core_loop = ELetMut(cont_var, EBool(true), EWhile(EIdent(cont_var, -1), loop_body))
-  let with_index = match index_name {
-    Some(ix) => ELetMut(ix, EInt(0), core_loop),
-    None => core_loop
-  }
-  ELet(next_var, iterable, with_index)
-}
+// `for await x in s { body }` is parsed to `EForIn(x, _, __await_iter(s), body)`
+// — the iterable wrapped in a `__await_iter` marker call. The marker carries the
+// `await` intent past the parser (which has no type information) to the
+// dict-passing desugar (`desugar_trait_dict.vibe`), which picks the iterator vs
+// pull-closure loop by `s`'s type and strips the marker. The checker unwraps the
+// marker so it never sees `__await_iter` as a real function (docs/spec §M2c-3).
 
 export let parse_impl_dispatch: (Array[Token], Array[Int], Int, Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, pos, mode, parse_recur) -> {
   if mode == 20 {
@@ -685,13 +664,13 @@ export let parse_impl_dispatch: (Array[Token], Array[Int], Int, Int, (Array[Toke
   } else if mode == 25 {
     // `for await x in stream { ... }`: `await` is not a keyword (it is the
     // builtin call `await(...)`), so detect the async-iterator marker as an
-    // `await` identifier immediately followed by the binding name. When the
-    // marker is present, the iterable is a pull closure `() -> Option[T]` and
-    // the loop is desugared into a pull-to-`None` loop (see build_pull_for_in,
-    // docs/spec §M2c-3). Without the marker, `for x in arr` iterates an eager
-    // Array[T] via EForIn. A loop variable literally named `await`
-    // (`for await in e`) is still parsed as a binding because `await` is then
-    // followed by `in`, so `is_await` stays false.
+    // `await` identifier immediately followed by the binding name. When present,
+    // the iterable is wrapped in a `__await_iter(..)` marker so the desugar can
+    // pick the iterator vs pull-closure loop by type (docs/spec §M2c-3). Without
+    // the marker, `for x in arr` iterates an eager Array[T] via EForIn. A loop
+    // variable literally named `await` (`for await in e`) is still parsed as a
+    // binding because `await` is then followed by `in`, so `is_await` stays
+    // false.
     let mut start = pos
     let mut is_await = false
     match peek(tokens, pos) {
@@ -713,7 +692,9 @@ export let parse_impl_dispatch: (Array[Token], Array[Int], Int, Int, (Array[Toke
                 let bb = expect_tk(tokens, after_iter, "{")
                 let (body, end) = parse_recur(tokens, bb, 20)
                 let loop_expr = if is_await {
-                  build_pull_for_in(second_name, Some(first_name), iterable, body, start)
+                  EForIn(second_name, Some(first_name), ECall(EIdent("__await_iter", -1), [
+                    iterable
+                  ], -1), body)
                 } else {
                   EForIn(second_name, Some(first_name), iterable, body)
                 }
@@ -731,7 +712,9 @@ export let parse_impl_dispatch: (Array[Token], Array[Int], Int, Int, (Array[Toke
               let bb = expect_tk(tokens, after_iter, "{")
               let (body, end) = parse_recur(tokens, bb, 20)
               let loop_expr = if is_await {
-                build_pull_for_in(first_name, None, iterable, body, start)
+                EForIn(first_name, None, ECall(EIdent("__await_iter", -1), [
+                  iterable
+                ], -1), body)
               } else {
                 EForIn(first_name, None, iterable, body)
               }

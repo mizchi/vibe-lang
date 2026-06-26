@@ -670,4 +670,59 @@ fi
 rm -rf "$xidir"
 echo "[selfhost-only-gate] cross-import trait-iterator regression ok"
 
+# 19. `for await` unification regression (#636): `for await x in s` shares one
+#     type-directed desugar with sync `for`. The parser wraps the iterable in a
+#     `__await_iter` marker (the checker unwraps it; the desugar strips it) so
+#     the desugar — which has type info the parser lacks — picks the loop shape:
+#       - a struct `C` with `C::next -> Future[Option[..]]` (an AsyncIterator /
+#         `Stream[T]`) drives an `await`-wrapped next loop (`await` unwraps the
+#         ready future on the synchronous backend), and
+#       - any other iterable (a pull closure `() -> Option[T]`, the pre-existing
+#         M2c-3 model) drives the pull-to-`None` loop.
+#     Guards the parser marker + checker unwrap + always-run desugar pass.
+echo "[selfhost-only-gate] 19/19 for-await unification regression"
+fadir="_build/_gate_forawait"
+rm -rf "$fadir"; mkdir -p "$fadir"
+cat > "$fadir/fa.vibe" <<'EOF'
+trait AsyncIterator[T] { next(Self) -> Future[Option[(T, Self)]] }
+struct AStream { pull: (Int) -> Option[(Int, Int)]; state: Int }
+impl AsyncIterator for AStream {
+  next(self) -> Future[Option[(Int, AStream)]] {
+    Future::ready(match (self.pull)(self.state) {
+      Some(p) => { let (v, ns) = p; Some((v, AStream::{ pull: self.pull, state: ns })) },
+      None => None
+    })
+  }
+}
+let mkstream = (xs: Array[Int]) -> AStream {
+  AStream::{ pull: (i) -> Option[(Int, Int)] { if i < Array::length(xs) { Some((Array::get(xs, i), i + 1)) } else { None } }, state: 0 }
+}
+let counter_stream = () -> (() -> Option[Int]) {
+  let mut n = 0
+  () -> Option[Int] { if n < 4 { n = n + 1; Some(n) } else { None } }
+}
+export let _start: () -> Int with { Async } = () -> {
+  let mut t = 0
+  for await x in mkstream([10, 20, 30]) { t = t + x }
+  for await y in counter_stream() { t = t + y }
+  t
+}
+EOF
+# Expected: async iterator 10+20+30 = 60, pull closure 1+2+3+4 = 10 -> 70.
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$fadir/fa.vibe" "$fadir/fa.wasm" _start >/dev/null 2>&1
+if [ ! -s "$fadir/fa.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: for-await program did not compile" >&2
+  cat "$fadir/fa.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+fa_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$fadir/fa.wasm" 2>/dev/null | tr -dc '0-9-')"
+if [ "$fa_out" != "70" ]; then
+  echo "[selfhost-only-gate] FAIL: for-await unification mismatch (got '$fa_out', want 70 -> #636 regressed)" >&2
+  exit 1
+fi
+rm -rf "$fadir"
+echo "[selfhost-only-gate] for-await unification regression ok"
+
 echo "[selfhost-only-gate] ok"

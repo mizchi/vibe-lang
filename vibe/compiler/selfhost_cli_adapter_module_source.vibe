@@ -5063,7 +5063,16 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       (CtUnit, s2, c2)
     },
     EForIn(name, index_name, iterable, body) => {
-      let (it, s1, c1) = check_expr(iterable, env, defs, s, c, errors, tytab)
+      let real_iterable = match iterable {
+        ECall(callee, args, _) => match callee {
+          EIdent(nm, _) => if nm == "__await_iter" && Array::length(args) == 1 {
+            Array::get(args, 0)
+          } else iterable,
+          _ => iterable
+        },
+        _ => iterable
+      }
+      let (it, s1, c1) = check_expr(real_iterable, env, defs, s, c, errors, tytab)
       let et = match subst_apply(s1, it) {
         CtArray(elem) => elem,
         CtNamed("Stream", args) => if Array::length(args) > 0 {
@@ -7042,13 +7051,17 @@ let lookup_var_type: (Array[(String, String)], String) -> Option[String] = (var_
   }
   result
 }
-let infer_arg_type_name: (Expr, Array[(String, Array[String])], Array[(String, String)]) -> Option[String] = (arg, struct_sets, var_types) -> {
+let infer_arg_type_name: (Expr, Array[(String, Array[String])], Array[(String, String)], Array[(String, String)]) -> Option[String] = (arg, struct_sets, var_types, fn_returns) -> {
   match arg {
     EInt(_) => Some("Int"),
     EBool(_) => Some("Bool"),
     EString(_) => Some("String"),
     EFloat(_) => Some("Double"),
     EIdent(name, _) => lookup_var_type(var_types, name),
+    ECall(callee, _, _) => match callee {
+      EIdent(fname, _) => fn_return_type(fn_returns, fname),
+      _ => None
+    },
     ERecord(fields) => {
       let names = empty_str_array()
       let mut i = 0
@@ -7217,14 +7230,14 @@ let build_concrete_dict: (String, String, Array[(String, Array[(String, Array[Ty
     None => None
   }
 }
-let synth_dicts: (Array[(String, String, Int)], Array[Expr], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(String, Array[String])], Array[(String, String)], Array[(String, String, String, Array[String])]) -> Option[Array[Expr]] = (threaded, orig_args, traits, struct_sets, var_types, dict_binds) -> {
+let synth_dicts: (Array[(String, String, Int)], Array[Expr], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(String, Array[String])], Array[(String, String)], Array[(String, String, String, Array[String])], Array[(String, String)]) -> Option[Array[Expr]] = (threaded, orig_args, traits, struct_sets, var_types, dict_binds, fn_returns) -> {
   let dicts = empty_expr_array()
   let mut ok = true
   let mut bi = 0
   while bi < Array::length(threaded) {
     let (_, trait_name, recv_idx) = Array::get(threaded, bi)
     if ok && recv_idx >= 0 && recv_idx < Array::length(orig_args) {
-      match infer_arg_type_name(Array::get(orig_args, recv_idx), struct_sets, var_types) {
+      match infer_arg_type_name(Array::get(orig_args, recv_idx), struct_sets, var_types, fn_returns) {
         Some(nm) => match find_dict_for_trait(dict_binds, nm, trait_name) {
           Some(dict_pname) => Array::push(dicts, EIdent(dict_pname, -1)),
           None => match build_concrete_dict(nm, trait_name, traits) {
@@ -7297,6 +7310,7 @@ let collect_fn_returns: (Array[Stmt]) -> Array[(String, String)] = (stmts) -> {
           let rn = match ret {
             Some(te) => match te {
               TyName(n) => n,
+              TyApp(n, _) => n,
               _ => ""
             },
             None => ""
@@ -7341,10 +7355,7 @@ let fn_return_type: (Array[(String, String)], String) -> Option[String] = (fn_re
   }
   result
 }
-let build_iter_for: (String, String, Expr, Expr) -> Expr = (name, ctype, iter, body) -> {
-  let nextcall = ECall(EIdent(String::concat(ctype, "::next"), -1), [
-    EIdent("__iter_cur", -1)
-  ], -1)
+let build_iter_for_with: (String, Expr, Expr, Expr) -> Expr = (name, nextcall, iter, body) -> {
   let some_arm = (PCtor("Some", [
     PTuple([
       PBind(name),
@@ -7359,6 +7370,90 @@ let build_iter_for: (String, String, Expr, Expr) -> Expr = (name, ctype, iter, b
     none_arm
   ])
   ELetMut("__iter_cur", iter, ELetMut("__iter_go", EBool(true), EWhile(EIdent("__iter_go", -1), loop_body)))
+}
+let next_call_for: (String) -> Expr = (ctype) -> {
+  ECall(EIdent(String::concat(ctype, "::next"), -1), [
+    EIdent("__iter_cur", -1)
+  ], -1)
+}
+let build_iter_for: (String, String, Expr, Expr) -> Expr = (name, ctype, iter, body) -> {
+  build_iter_for_with(name, next_call_for(ctype), iter, body)
+}
+let build_await_iter_for: (String, String, Expr, Expr) -> Expr = (name, ctype, iter, body) -> {
+  let awaited = ECall(EIdent("await", -1), [
+    next_call_for(ctype)
+  ], -1)
+  build_iter_for_with(name, awaited, iter, body)
+}
+let build_pull_for_in: (String, Option[String], Expr, Expr) -> Expr = (value_name, index_name, iterable, body) -> {
+  let some_arm = match index_name {
+    Some(ix) => ESeq(body, EAssign(ix, EBinOp("+", EIdent(ix, -1), EInt(1)), EUnit)),
+    None => ESeq(body, EUnit)
+  }
+  let loop_body = EMatch(ECall(EIdent("__pull_next", -1), Array::slice([
+    EUnit
+  ], 0, 0), -1), [
+    (PCtor("Some", [
+      PBind(value_name)
+    ]), some_arm),
+    (PCtor("None", Array::slice([
+      PWild
+    ], 0, 0)), EAssign("__pull_continue", EBool(false), EUnit))
+  ])
+  let core_loop = ELetMut("__pull_continue", EBool(true), EWhile(EIdent("__pull_continue", -1), loop_body))
+  let with_index = match index_name {
+    Some(ix) => ELetMut(ix, EInt(0), core_loop),
+    None => core_loop
+  }
+  ELet("__pull_next", iterable, with_index)
+}
+let for_await_inner: (Expr) -> Option[Expr] = (iter) -> {
+  match iter {
+    ECall(callee, args, _) => match callee {
+      EIdent(nm, _) => if nm == "__await_iter" && Array::length(args) == 1 {
+        Some(Array::get(args, 0))
+      } else {
+        None
+      },
+      _ => None
+    },
+    _ => None
+  }
+}
+let fn_return_is_future: (Array[(String, String)], String) -> Bool = (fn_returns, fname) -> {
+  match fn_return_type(fn_returns, fname) {
+    Some(head) => head == "Future",
+    None => false
+  }
+}
+let classify_for_await_loop: (String, Option[String], Expr, Expr, Expr, Array[(String, Array[String])], Array[(String, String)], Array[(String, String)]) -> Expr = (name, idx, inner, rinner, rbody, struct_sets, var_types, fn_returns) -> {
+  match infer_arg_type_name(inner, struct_sets, var_types, fn_returns) {
+    Some(tn) => if fn_exists(fn_returns, String::concat(tn, "::next")) {
+      if fn_return_is_future(fn_returns, String::concat(tn, "::next")) {
+        build_await_iter_for(name, tn, rinner, rbody)
+      } else {
+        build_iter_for(name, tn, rinner, rbody)
+      }
+    } else {
+      build_pull_for_in(name, idx, rinner, rbody)
+    },
+    None => build_pull_for_in(name, idx, rinner, rbody)
+  }
+}
+let classify_sync_for_loop: (String, Option[String], Expr, Expr, Expr, Array[(String, Array[String])], Array[(String, String)], Array[(String, String)]) -> Expr = (name, idx, iter, riter, rbody, struct_sets, var_types, fn_returns) -> {
+  match infer_arg_type_name(iter, struct_sets, var_types, fn_returns) {
+    Some(tn) => if fn_exists(fn_returns, String::concat(tn, "::next")) {
+      build_iter_for(name, tn, riter, rbody)
+    } else {
+      match fn_return_type(fn_returns, String::concat(tn, "::iter")) {
+        Some(itertype) => build_iter_for(name, itertype, ECall(EIdent(String::concat(tn, "::iter"), -1), [
+          riter
+        ], -1), rbody),
+        None => EForIn(name, idx, riter, rbody)
+      }
+    },
+    None => EForIn(name, idx, riter, rbody)
+  }
 }
 let extend_var_types: (Array[(String, String)], String, Option[String]) -> Array[(String, String)] = (var_types, name, inferred) -> {
   match inferred {
@@ -7405,7 +7500,7 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
           match as_method {
             Some(dict_pname) => ECall(EDot(EIdent(dict_pname, -1), member_of(name), -1), rwargs, off),
             None => match lookup_gen(gens, name) {
-              Some(threaded) => match synth_dicts(threaded, args, traits, struct_sets, var_types, dict_binds) {
+              Some(threaded) => match synth_dicts(threaded, args, traits, struct_sets, var_types, dict_binds, fn_returns) {
                 Some(dicts) => ECall(EIdent(name, coff), concat_expr_arrays(dicts, rwargs), off),
                 None => ECall(EIdent(name, coff), rwargs, off)
               },
@@ -7457,13 +7552,13 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
     EIf(c, t, e) => EIf(rewrite_expr(c, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(t, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     ELet(name, val, body) => {
       let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
-      let body_vars = extend_var_types(var_types, name, infer_arg_type_name(val, struct_sets, var_types))
+      let body_vars = extend_var_types(var_types, name, infer_arg_type_name(val, struct_sets, var_types, fn_returns))
       ELet(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns))
     },
     ELetRec(name, val, body) => ELetRec(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     ELetMut(name, val, body) => {
       let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
-      let body_vars = extend_var_types(var_types, name, infer_arg_type_name(val, struct_sets, var_types))
+      let body_vars = extend_var_types(var_types, name, infer_arg_type_name(val, struct_sets, var_types, fn_returns))
       ELetMut(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns))
     },
     EAssign(name, val, cont) => EAssign(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(cont, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
@@ -7499,20 +7594,20 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
       (name, rewrite_expr(init, gens, traits, struct_sets, dict_binds, var_types, fn_returns))
     }, rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     EForIn(name, idx, iter, body) => {
-      let riter = rewrite_expr(iter, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
       let rbody = rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
-      match infer_arg_type_name(iter, struct_sets, var_types) {
-        Some(tn) => if fn_exists(fn_returns, String::concat(tn, "::next")) {
-          build_iter_for(name, tn, riter, rbody)
-        } else {
-          match fn_return_type(fn_returns, String::concat(tn, "::iter")) {
-            Some(itertype) => build_iter_for(name, itertype, ECall(EIdent(String::concat(tn, "::iter"), -1), [
-              riter
-            ], -1), rbody),
-            None => EForIn(name, idx, riter, rbody)
-          }
+      match for_await_inner(iter) {
+        Some(inner) => {
+          let rinner = rewrite_expr(inner, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+          classify_for_await_loop(name, idx, inner, rinner, rbody, struct_sets, var_types, fn_returns)
         },
-        None => EForIn(name, idx, riter, rbody)
+        None => {
+          let riter = rewrite_expr(iter, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+          if Array::length(traits) == 0 {
+            EForIn(name, idx, riter, rbody)
+          } else {
+            classify_sync_for_loop(name, idx, iter, riter, rbody, struct_sets, var_types, fn_returns)
+          }
+        }
       }
     },
     EBinOp(op, l, r) => EBinOp(op, rewrite_expr(l, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(r, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
@@ -7748,19 +7843,19 @@ let struct_decl_exists: (Array[Stmt], String) -> Bool = (stmts, name) -> {
 export let desugar_trait_dicts: (Array[Stmt]) -> Unit = (stmts) -> {
   desugar_derives(stmts)
   let traits_raw = collect_method_traits(stmts)
+  let supers_map = collect_trait_supers(stmts)
+  let traits = flatten_traits(traits_raw, supers_map)
+  let struct_sets = collect_struct_field_sets(stmts)
+  let fn_returns = collect_fn_returns(stmts)
+  let gens = build_gens(stmts, traits)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    Array::set(stmts, i, rewrite_stmt(Array::get(stmts, i), gens, traits, struct_sets, fn_returns))
+    i = i + 1
+  }
   if Array::length(traits_raw) == 0 {
     ()
   } else {
-    let supers_map = collect_trait_supers(stmts)
-    let traits = flatten_traits(traits_raw, supers_map)
-    let struct_sets = collect_struct_field_sets(stmts)
-    let fn_returns = collect_fn_returns(stmts)
-    let gens = build_gens(stmts, traits)
-    let mut i = 0
-    while i < Array::length(stmts) {
-      Array::set(stmts, i, rewrite_stmt(Array::get(stmts, i), gens, traits, struct_sets, fn_returns))
-      i = i + 1
-    }
     let mut ti = 0
     while ti < Array::length(traits) {
       let (trait_name, sigs) = Array::get(traits, ti)
@@ -23553,24 +23648,6 @@ let parse_impl_block: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -
   }
   (fold_block_steps(ArrayBuilder::freeze(steps)), end_pos)
 }
-let build_pull_for_in: (String, Option[String], Expr, Expr, Int) -> Expr = (value_name, index_name, iterable, body, uid) -> {
-  let next_var = "__pull_next_\{uid}"
-  let cont_var = "__pull_continue_\{uid}"
-  let some_arm = match index_name {
-    Some(ix) => ESeq(body, EAssign(ix, EBinOp("+", EIdent(ix, -1), EInt(1)), EUnit)),
-    None => ESeq(body, EUnit)
-  }
-  let loop_body = EMatch(ECall(EIdent(next_var, -1), [], -1), [
-    (PCtor("Some", [PBind(value_name)]), some_arm),
-    (PCtor("None", []), EAssign(cont_var, EBool(false), EUnit))
-  ])
-  let core_loop = ELetMut(cont_var, EBool(true), EWhile(EIdent(cont_var, -1), loop_body))
-  let with_index = match index_name {
-    Some(ix) => ELetMut(ix, EInt(0), core_loop),
-    None => core_loop
-  }
-  ELet(next_var, iterable, with_index)
-}
 export let parse_impl_dispatch: (Array[Token], Array[Int], Int, Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, pos, mode, parse_recur) -> {
   if mode == 20 {
     parse_impl_block(tokens, starts, pos, parse_recur)
@@ -23677,7 +23754,9 @@ export let parse_impl_dispatch: (Array[Token], Array[Int], Int, Int, (Array[Toke
                 let bb = expect_tk(tokens, after_iter, "{")
                 let (body, end) = parse_recur(tokens, bb, 20)
                 let loop_expr = if is_await {
-                  build_pull_for_in(second_name, Some(first_name), iterable, body, start)
+                  EForIn(second_name, Some(first_name), ECall(EIdent("__await_iter", -1), [
+                    iterable
+                  ], -1), body)
                 } else {
                   EForIn(second_name, Some(first_name), iterable, body)
                 }
@@ -23695,7 +23774,9 @@ export let parse_impl_dispatch: (Array[Token], Array[Int], Int, Int, (Array[Toke
               let bb = expect_tk(tokens, after_iter, "{")
               let (body, end) = parse_recur(tokens, bb, 20)
               let loop_expr = if is_await {
-                build_pull_for_in(first_name, None, iterable, body, start)
+                EForIn(first_name, None, ECall(EIdent("__await_iter", -1), [
+                  iterable
+                ], -1), body)
               } else {
                 EForIn(first_name, None, iterable, body)
               }
