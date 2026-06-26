@@ -5471,12 +5471,14 @@ export {
 }
 export enum EffectError {
   EEThrowOutsideEffect(String);
-  EEEffectfulCallOutsideEffect(String)
+  EEEffectfulCallOutsideEffect(String);
+  EEPerformUndeclaredEffect(String, String)
 }
 export let effect_error_to_string: (EffectError) -> String = (err) -> {
   match err {
     EEThrowOutsideEffect(msg) => String::concat("throw outside effectful context: ", msg),
-    EEEffectfulCallOutsideEffect(name) => String::concat("effectful call outside effectful context: ", name)
+    EEEffectfulCallOutsideEffect(name) => String::concat("effectful call outside effectful context: ", name),
+    EEPerformUndeclaredEffect(op, eff) => String::concat("perform of undeclared effect `", String::concat(eff, String::concat("` (", String::concat(op, "); add it to the function's `with { ... }` or wrap in a `handle`"))))
   }
 }
 let effect_opt_is_async: (Option[String]) -> Bool = (eff) -> {
@@ -5677,6 +5679,273 @@ export let check_async_effects_stmts: (Array[Stmt], TypeEnv) -> Array[EffectErro
   let mut i = 0
   while i < Array::length(stmts) {
     append_eff_errs(errors, check_async_effects_stmt(Array::get(stmts, i), env))
+    i = i + 1
+  }
+  errors
+}
+let effect_decl_labels: (Option[String]) -> Array[String] = (eff) -> {
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  match eff {
+    None => out,
+    Some(s) => {
+      let raw = String::split(s, ",")
+      let mut i = 0
+      while i < Array::length(raw) {
+        let label = String::trim(Array::get(raw, i))
+        if String::length(label) > 0 {
+          let mut seen = false
+          let mut j = 0
+          while j < Array::length(out) {
+            if Array::get(out, j) == label {
+              seen = true
+            }
+            j = j + 1
+          }
+          if !seen {
+            Array::push(out, label)
+          }
+        }
+        i = i + 1
+      }
+      out
+    }
+  }
+}
+let label_is_effect_var: (String) -> Bool = (name) -> {
+  String::length(name) == 1 && String::char_code_at(name, 0) >= 97 && String::char_code_at(name, 0) <= 122
+}
+let decl_authorizes_effect: (Array[String], String) -> Bool = (labels, eff_name) -> {
+  let mut i = 0
+  let mut ok = false
+  while i < Array::length(labels) {
+    let l = Array::get(labels, i)
+    if l == eff_name {
+      ok = true
+    } else if label_is_effect_var(l) {
+      ok = true
+    }
+    i = i + 1
+  }
+  ok
+}
+let effect_name_of_op: (String) -> String = (op_name) -> {
+  let idx = String::index_of(op_name, "::")
+  if idx > 0 {
+    op_name[0:idx]
+  } else {
+    op_name
+  }
+}
+export let rec check_perform_effects_expr: (Expr, Array[String], Bool) -> Array[EffectError] = (expr, declared, in_handle) -> {
+  let errors = Array::slice([
+    EEThrowOutsideEffect("")
+  ], 0, 0)
+  match expr {
+    ECall(callee, args, _) => {
+      match callee {
+        EIdent(name, _) => if name == "perform" && Array::length(args) == 1 {
+          match Array::get(args, 0) {
+            ECall(op_callee, _, _) => match op_callee {
+              EIdent(op_name, _) => {
+                let eff = effect_name_of_op(op_name)
+                if !in_handle && !decl_authorizes_effect(declared, eff) {
+                  Array::push(errors, EEPerformUndeclaredEffect(op_name, eff))
+                }
+              },
+              _ => ()
+            },
+            _ => ()
+          }
+        }
+        ,
+        _ => ()
+      }
+      append_eff_errs(errors, check_perform_effects_expr(callee, declared, in_handle))
+      let mut ai = 0
+      while ai < Array::length(args) {
+        append_eff_errs(errors, check_perform_effects_expr(Array::get(args, ai), declared, in_handle))
+        ai = ai + 1
+      }
+      errors
+    },
+    EFn(_, _, _, _, effect, body) => {
+      append_eff_errs(errors, check_perform_effects_expr(body, effect_decl_labels(effect), false))
+      errors
+    },
+    EHandle(body, arms) => {
+      append_eff_errs(errors, check_perform_effects_expr(body, declared, true))
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (_, arm_body) = Array::get(arms, ai)
+        append_eff_errs(errors, check_perform_effects_expr(arm_body, declared, in_handle))
+        ai = ai + 1
+      }
+      errors
+    },
+    ELet(_, val, body) => {
+      append_eff_errs(errors, check_perform_effects_expr(val, declared, in_handle))
+      append_eff_errs(errors, check_perform_effects_expr(body, declared, in_handle))
+      errors
+    },
+    ELetRec(_, val, body) => {
+      append_eff_errs(errors, check_perform_effects_expr(val, declared, in_handle))
+      append_eff_errs(errors, check_perform_effects_expr(body, declared, in_handle))
+      errors
+    },
+    ELetMut(_, val, body) => {
+      append_eff_errs(errors, check_perform_effects_expr(val, declared, in_handle))
+      append_eff_errs(errors, check_perform_effects_expr(body, declared, in_handle))
+      errors
+    },
+    ESeq(a, b) => {
+      append_eff_errs(errors, check_perform_effects_expr(a, declared, in_handle))
+      append_eff_errs(errors, check_perform_effects_expr(b, declared, in_handle))
+      errors
+    },
+    EIf(cond, then_e, else_e) => {
+      append_eff_errs(errors, check_perform_effects_expr(cond, declared, in_handle))
+      append_eff_errs(errors, check_perform_effects_expr(then_e, declared, in_handle))
+      append_eff_errs(errors, check_perform_effects_expr(else_e, declared, in_handle))
+      errors
+    },
+    EMatch(scrutinee, arms) => {
+      append_eff_errs(errors, check_perform_effects_expr(scrutinee, declared, in_handle))
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (_, arm_body) = Array::get(arms, ai)
+        append_eff_errs(errors, check_perform_effects_expr(arm_body, declared, in_handle))
+        ai = ai + 1
+      }
+      errors
+    },
+    EWhile(cond, body) => {
+      append_eff_errs(errors, check_perform_effects_expr(cond, declared, in_handle))
+      append_eff_errs(errors, check_perform_effects_expr(body, declared, in_handle))
+      errors
+    },
+    ELoop(params, body) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (_, init) = Array::get(params, i)
+        append_eff_errs(errors, check_perform_effects_expr(init, declared, in_handle))
+        i = i + 1
+      }
+      append_eff_errs(errors, check_perform_effects_expr(body, declared, in_handle))
+      errors
+    },
+    EForIn(_, _, iter, body) => {
+      append_eff_errs(errors, check_perform_effects_expr(iter, declared, in_handle))
+      append_eff_errs(errors, check_perform_effects_expr(body, declared, in_handle))
+      errors
+    },
+    EBinOp(_, left, right) => {
+      append_eff_errs(errors, check_perform_effects_expr(left, declared, in_handle))
+      append_eff_errs(errors, check_perform_effects_expr(right, declared, in_handle))
+      errors
+    },
+    EReturn(e) => check_perform_effects_expr(e, declared, in_handle),
+    EUnaryOp(_, operand) => check_perform_effects_expr(operand, declared, in_handle),
+    EThrow(e) => check_perform_effects_expr(e, declared, in_handle),
+    EAssign(_, val, cont) => {
+      append_eff_errs(errors, check_perform_effects_expr(val, declared, in_handle))
+      append_eff_errs(errors, check_perform_effects_expr(cont, declared, in_handle))
+      errors
+    },
+    EAssignOp(_, _, val, cont) => {
+      append_eff_errs(errors, check_perform_effects_expr(val, declared, in_handle))
+      append_eff_errs(errors, check_perform_effects_expr(cont, declared, in_handle))
+      errors
+    },
+    EDot(obj, _, _) => check_perform_effects_expr(obj, declared, in_handle),
+    ETuple(elems) => {
+      let mut ei = 0
+      while ei < Array::length(elems) {
+        append_eff_errs(errors, check_perform_effects_expr(Array::get(elems, ei), declared, in_handle))
+        ei = ei + 1
+      }
+      errors
+    },
+    EArray(elems) => {
+      let mut ei = 0
+      while ei < Array::length(elems) {
+        append_eff_errs(errors, check_perform_effects_expr(Array::get(elems, ei), declared, in_handle))
+        ei = ei + 1
+      }
+      errors
+    },
+    ERecord(fields) => {
+      let mut fi = 0
+      while fi < Array::length(fields) {
+        let (_, fval) = Array::get(fields, fi)
+        append_eff_errs(errors, check_perform_effects_expr(fval, declared, in_handle))
+        fi = fi + 1
+      }
+      errors
+    },
+    _ => errors
+  }
+}
+let sig_type_effect_labels: (Option[TypeExpr]) -> Array[String] = (topt) -> {
+  match topt {
+    Some(TyFn(_, _, eff)) => effect_decl_labels(eff),
+    _ => effect_decl_labels(None)
+  }
+}
+let labels_union: (Array[String], Array[String]) -> Array[String] = (a, b) -> {
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(a) {
+    Array::push(out, Array::get(a, i))
+    i = i + 1
+  }
+  let mut j = 0
+  while j < Array::length(b) {
+    let l = Array::get(b, j)
+    let mut seen = false
+    let mut k = 0
+    while k < Array::length(out) {
+      if Array::get(out, k) == l {
+        seen = true
+      }
+      k = k + 1
+    }
+    if !seen {
+      Array::push(out, l)
+    }
+    j = j + 1
+  }
+  out
+}
+let check_perform_effects_binding: (Option[TypeExpr], Expr) -> Array[EffectError] = (ty, body) -> {
+  let sig_labels = sig_type_effect_labels(ty)
+  match body {
+    EFn(_, _, _, _, eff, fbody) => check_perform_effects_expr(fbody, labels_union(sig_labels, effect_decl_labels(eff)), false),
+    _ => check_perform_effects_expr(body, sig_labels, false)
+  }
+}
+export let check_perform_effects_stmt: (Stmt) -> Array[EffectError] = (stmt) -> {
+  match stmt {
+    SLet(_, _, _, ty, body) => check_perform_effects_binding(ty, body),
+    SLetMut(_, ty, body) => check_perform_effects_binding(ty, body),
+    STest(_, body) => check_perform_effects_expr(body, effect_decl_labels(None), false),
+    SBench(_, body) => check_perform_effects_expr(body, effect_decl_labels(None), false),
+    SExpr(e) => check_perform_effects_expr(e, effect_decl_labels(None), false),
+    _ => Array::slice([
+      EEThrowOutsideEffect("")
+    ], 0, 0)
+  }
+}
+export let check_perform_effects_stmts: (Array[Stmt]) -> Array[EffectError] = (stmts) -> {
+  let errors = Array::slice([
+    EEThrowOutsideEffect("")
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    append_eff_errs(errors, check_perform_effects_stmt(Array::get(stmts, i)))
     i = i + 1
   }
   errors
@@ -6127,6 +6396,14 @@ let collect_async_effect_errors: (Array[Stmt], TypeEnv, Array[String]) -> Unit =
     while i < Array::length(eff_errs) {
       Array::push(frozen_errors, effect_error_to_string(Array::get(eff_errs, i)))
       i = i + 1
+    }
+    if Array::length(frozen_errors) == 0 {
+      let perform_errs = check_perform_effects_stmts(stmts)
+      let mut j = 0
+      while j < Array::length(perform_errs) {
+        Array::push(frozen_errors, effect_error_to_string(Array::get(perform_errs, j)))
+        j = j + 1
+      }
     }
   }
 }
@@ -28817,7 +29094,7 @@ export let try_collect_manifest_source_groups_fs: (String) -> Option[(String, Ar
     None => None
   }
 }
-let resolve_path_fs: (String, String) -> String = (base_dir, raw_path) -> {
+let resolve_path_fs: (String, String) -> String with { Fs } = (base_dir, raw_path) -> {
   let candidates = resolve_import_path_candidates(base_dir, raw_path)
   let mut i = 0
   let mut found = ""

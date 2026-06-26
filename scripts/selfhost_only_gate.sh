@@ -1008,4 +1008,44 @@ fi
 rm -rf "$nldir"
 echo "[selfhost-only-gate] nested literal sub-pattern discrimination ok"
 
+# 26. perform-discipline enforcement (#626 criterion 1): `perform EffName::Op`
+#     is a type error unless the enclosing function declares `EffName` in
+#     `with { ... }` (or the perform is inside a `handle`). The declared variant
+#     must compile; the undeclared variant must be REJECTED.
+echo "[selfhost-only-gate] 26/26 perform-discipline enforcement"
+pfdir="_build/_gate_perform"
+rm -rf "$pfdir"; mkdir -p "$pfdir"
+cat > "$pfdir/good.vibe" <<'EOF'
+let emit: () -> Unit with { Stdout } = () -> {
+  perform Stdout::WriteStream("hi")
+}
+export let _start: () -> Int = () -> {
+  emit()
+  42
+}
+EOF
+cat > "$pfdir/bad.vibe" <<'EOF'
+let emit: () -> Unit = () -> {
+  perform Stdout::WriteStream("hi")
+}
+export let _start: () -> Int = () -> {
+  emit()
+  42
+}
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$pfdir/good.vibe" "$pfdir/good.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$pfdir/good.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: declared perform did not compile (#626 over-rejects)" >&2; exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$pfdir/bad.vibe" "$pfdir/bad.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$pfdir/bad.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: undeclared perform compiled (#626 criterion 1 regressed)" >&2; exit 1
+fi
+rm -rf "$pfdir"
+echo "[selfhost-only-gate] perform-discipline enforcement ok"
+
 echo "[selfhost-only-gate] ok"
