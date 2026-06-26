@@ -67,9 +67,84 @@ function notify(method, params) {
 const docs = new Map(); // uri -> { text, version }
 const pending = new Map(); // uri -> timeout (debounce)
 
+// ---- workspace symbol / call-hierarchy index ---------------------------
+// In-process incremental index (js/vibe/symbol_index.js) backing workspace/
+// symbol and callHierarchy. Avoids a `vibe` subprocess per file (~0.5s) for
+// these workspace-wide ops; a cold scan is sub-second, edits re-index in ms.
+const { SymbolIndex } = require("./symbol_index.js");
+const wsIndex = new SymbolIndex();
+let wsRoot = null; // absolute workspace root path (from initialize)
+let wsScanned = false;
+
+function pathToUri(p) {
+  return "file://" + p.split("/").map((seg, i) => (i === 0 ? seg : encodeURIComponent(seg))).join("/");
+}
+
+// Walk wsRoot once for *.vibe and index them; cheap and lazy (first workspace/
+// symbol or callHierarchy request triggers it). Open documents override on-disk
+// content via their in-memory text on each edit.
+function ensureWorkspaceScanned() {
+  if (wsScanned || !wsRoot) return;
+  wsScanned = true;
+  const stack = [wsRoot];
+  while (stack.length) {
+    const dir = stack.pop();
+    let ents;
+    try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+    for (const e of ents) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) { if (e.name !== "node_modules" && e.name !== ".git" && e.name !== "target") stack.push(p); }
+      else if (e.isFile() && p.endsWith(".vibe")) {
+        try { wsIndex.update(p, fs.readFileSync(p, "utf8")); } catch {}
+      }
+    }
+  }
+  // Open docs reflect unsaved edits — layer them on top.
+  for (const [uri, doc] of docs) {
+    try { wsIndex.update(uriToPath(uri), doc.text); } catch {}
+  }
+}
+
+// Cache of file text for offset->position conversion of index results (closed
+// files aren't in `docs`). Keyed by path; invalidated by mtime.
+const fileTextCache = new Map(); // path -> { mtimeMs, text }
+function fileText(p) {
+  const doc = docs.get(pathToUri(p));
+  if (doc) return doc.text;
+  try {
+    const st = fs.statSync(p);
+    const c = fileTextCache.get(p);
+    if (c && c.mtimeMs === st.mtimeMs) return c.text;
+    const text = fs.readFileSync(p, "utf8");
+    fileTextCache.set(p, { mtimeMs: st.mtimeMs, text });
+    return text;
+  } catch { return null; }
+}
+
+// Build an LSP Range from a file path + [startOff, endOff] char offsets.
+function rangeFromOffsets(p, startOff, endOff) {
+  const text = fileText(p) || "";
+  return { start: offsetToPosition(text, startOff), end: offsetToPosition(text, endOff) };
+}
+
+// A CallHierarchyItem for a symbol name, located at its workspace definition.
+function callHierarchyItem(name) {
+  const defs = wsIndex.definitions(name);
+  if (!defs.length) return null;
+  const { path: p, symbol } = defs[0];
+  const range = rangeFromOffsets(p, symbol.bodyStart >= 0 ? symbol.declStart : symbol.nameStart, symbol.bodyEnd);
+  const selectionRange = rangeFromOffsets(p, symbol.nameStart, symbol.nameEnd);
+  return { name, kind: symbol.kind, uri: pathToUri(p), range, selectionRange, data: { name } };
+}
+
 function handle(msg) {
   switch (msg.method) {
-    case "initialize":
+    case "initialize": {
+      // Capture the workspace root for the symbol/call-hierarchy index.
+      const p = msg.params || {};
+      if (p.workspaceFolders && p.workspaceFolders[0]) wsRoot = uriToPath(p.workspaceFolders[0].uri);
+      else if (p.rootUri) wsRoot = uriToPath(p.rootUri);
+      else if (p.rootPath) wsRoot = p.rootPath;
       reply(msg.id, {
         capabilities: {
           textDocumentSync: 1, // full
@@ -81,10 +156,58 @@ function handle(msg) {
           documentHighlightProvider: true,
           completionProvider: { triggerCharacters: ["."] },
           signatureHelpProvider: { triggerCharacters: ["(", ","] },
+          workspaceSymbolProvider: true,
+          callHierarchyProvider: true,
         },
         serverInfo: { name: "vibe-lsp", version: "0.1.0" },
       });
       break;
+    }
+    case "workspace/symbol": {
+      ensureWorkspaceScanned();
+      const query = (msg.params && msg.params.query) || "";
+      const results = wsIndex.workspaceSymbols(query, 200).map((s) => ({
+        name: s.name,
+        kind: s.kind,
+        location: { uri: pathToUri(s.path), range: rangeFromOffsets(s.path, s.nameStart, s.nameEnd) },
+      }));
+      reply(msg.id, results);
+      break;
+    }
+    case "textDocument/prepareCallHierarchy": {
+      ensureWorkspaceScanned();
+      const doc = docs.get(msg.params.textDocument.uri);
+      if (!doc) { reply(msg.id, null); break; }
+      const word = wordAt(doc.text, msg.params.position);
+      const item = word ? callHierarchyItem(word) : null;
+      reply(msg.id, item ? [item] : null);
+      break;
+    }
+    case "callHierarchy/incomingCalls": {
+      ensureWorkspaceScanned();
+      const name = msg.params.item && msg.params.item.data && msg.params.item.data.name;
+      if (!name) { reply(msg.id, []); break; }
+      const out = [];
+      for (const c of wsIndex.incomingCalls(name)) {
+        const from = callHierarchyItem(c.caller);
+        if (from) out.push({ from, fromRanges: [from.selectionRange] });
+      }
+      reply(msg.id, out);
+      break;
+    }
+    case "callHierarchy/outgoingCalls": {
+      ensureWorkspaceScanned();
+      const name = msg.params.item && msg.params.item.data && msg.params.item.data.name;
+      if (!name) { reply(msg.id, []); break; }
+      const out = [];
+      for (const c of wsIndex.outgoingCalls(name)) {
+        if (!c.defined) continue; // only edges to workspace-defined symbols
+        const to = callHierarchyItem(c.callee);
+        if (to) out.push({ to, fromRanges: [to.selectionRange] });
+      }
+      reply(msg.id, out);
+      break;
+    }
     case "textDocument/rename": {
       const uri = msg.params.textDocument.uri;
       const doc = docs.get(uri);
@@ -209,6 +332,7 @@ function handle(msg) {
     case "textDocument/didOpen": {
       const { uri, text } = msg.params.textDocument;
       docs.set(uri, { text, version: msg.params.textDocument.version });
+      if (wsScanned) wsIndex.update(uriToPath(uri), text); // keep index fresh
       scheduleCheck(uri);
       break;
     }
@@ -217,7 +341,9 @@ function handle(msg) {
       const changes = msg.params.contentChanges;
       if (changes && changes.length) {
         // full sync: last change holds the whole document
-        docs.set(uri, { text: changes[changes.length - 1].text, version: msg.params.textDocument.version });
+        const text = changes[changes.length - 1].text;
+        docs.set(uri, { text, version: msg.params.textDocument.version });
+        if (wsScanned) wsIndex.update(uriToPath(uri), text); // incremental re-index
       }
       scheduleCheck(uri);
       break;
