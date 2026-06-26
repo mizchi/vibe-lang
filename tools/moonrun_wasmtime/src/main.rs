@@ -1060,6 +1060,17 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
             vibe_dbg_break(caller)
         },
     )?;
+    // Interior-line breakpoint (span-arc step5): the break-mode codegen emits
+    // `call vibe::dbg_line (i32 line)` at each statement boundary. Pauses on a
+    // line-break-set match or step. Always registered (harmless no-op when the
+    // module doesn't import it, or when no line breakpoints / step are active).
+    linker.func_wrap(
+        "vibe",
+        "dbg_line",
+        |caller: Caller<'_, HostState>, line: i32| -> Result<()> {
+            vibe_dbg_line(caller, line)
+        },
+    )?;
     Ok(())
 }
 
@@ -1234,6 +1245,14 @@ fn vibe_dbg_break(mut caller: Caller<'_, HostState>) -> Result<()> {
         }
         let _ = h.flush();
     }
+    dbg_apply_command(&mut caller, depth)
+}
+
+// Shared pause epilogue for both the function-entry (`vibe::dbg_break`) and
+// line-granularity (`vibe::dbg_line`) hooks: honour VIBE_BREAK_AUTO, else read
+// ONE debugger command from stdin and set the step mode accordingly. `depth` is
+// the current call depth, recorded as pause_depth for StepOver/StepOut.
+fn dbg_apply_command(caller: &mut Caller<'_, HostState>, depth: usize) -> Result<()> {
     let auto = caller.data().break_auto;
     if auto {
         // VIBE_BREAK_AUTO: continue without reading stdin (preserves existing
@@ -1276,6 +1295,60 @@ fn vibe_dbg_break(mut caller: Caller<'_, HostState>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+// Interior-line breakpoint hook (span-arc step5). The break-mode codegen emits
+// `call vibe::dbg_line (i32 line)` at each statement boundary, passing the 1-based
+// source line of that statement. We pause when `line` is in the line-break-set
+// (file matched against break_file when the spec carries one) or when a step mode
+// says so, reusing the same pause/step epilogue as the function-entry hook. A
+// no-op when nothing can pause (empty line set + Continue) so non-break runs and
+// unmatched lines pay only an early return.
+fn vibe_dbg_line(mut caller: Caller<'_, HostState>, line: i32) -> Result<()> {
+    let line_break_set = Arc::clone(&caller.data().line_break_set);
+    let step_mode = caller.data().step_mode;
+    if line_break_set.is_empty() && step_mode == StepMode::Continue {
+        return Ok(());
+    }
+    let cur: u32 = if line < 0 { return Ok(()) } else { line as u32 };
+    let break_file = caller.data().break_file.clone();
+    let is_line_hit = line_break_set.iter().any(|(file, l)| {
+        *l == cur
+            && match file {
+                Some(f) => break_file.as_deref() == Some(f.as_str()),
+                None => true,
+            }
+    });
+    let frames = dbg_break_frames(&caller);
+    let depth = frames.len();
+    let step_pause = match step_mode {
+        StepMode::Continue => false,
+        StepMode::StepInto => true,
+        StepMode::StepOver => depth <= caller.data().pause_depth,
+        StepMode::StepOut => depth < caller.data().pause_depth,
+    };
+    if !is_line_hit && !step_pause {
+        return Ok(());
+    }
+    {
+        let stderr = std::io::stderr();
+        let mut h = stderr.lock();
+        let file = break_file.as_deref().unwrap_or("");
+        // An explicit line hit keeps `breakpoint hit:` (tests/DAP grep for it); a
+        // pure step pause is `stopped at:`. Both carry `<file>:<line>` so the
+        // annotator/DAP can read the paused line.
+        let label = if is_line_hit { "breakpoint hit" } else { "stopped at" };
+        if file.is_empty() {
+            let _ = writeln!(h, "{label}: {cur}");
+        } else {
+            let _ = writeln!(h, "{label}: {file}:{cur}");
+        }
+        for f in &frames {
+            let _ = writeln!(h, "  at {f}");
+        }
+        let _ = h.flush();
+    }
+    dbg_apply_command(&mut caller, depth)
 }
 
 fn register_imports(linker: &mut Linker<HostState>) -> Result<()> {
