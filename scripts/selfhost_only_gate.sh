@@ -1151,4 +1151,52 @@ fi
 rm -rf "$adir"
 echo "[selfhost-only-gate] argument type checking ok"
 
+# 29. assignment / typed-binding / if-branch type checking: more positions the
+#     checker used to leave unchecked. A typed `let x: Int = "s"`, an assignment
+#     `y = "s"` (for `let mut y = 1`), and `if c { 1 } else { "x" }` must all be
+#     REJECTED; their well-typed counterparts must compile. (Iterative
+#     check_expr spine — check_seq_spine — gives the stack headroom for these
+#     extra checks during self-compile.)
+echo "[selfhost-only-gate] 29/29 assignment / binding / if-branch type checking"
+tdir="_build/_gate_typecheck"
+rm -rf "$tdir"; mkdir -p "$tdir"
+cat > "$tdir/ok.vibe" <<'EOF'
+export let x: Int = 5
+export let _start: () -> Int = () -> {
+  let mut y = 1
+  y = 7
+  y + (if true { 1 } else { 2 }) + x
+}
+EOF
+cat > "$tdir/bad_let.vibe" <<'EOF'
+export let x: Int = "hello"
+export let _start: () -> Int = () -> { x }
+EOF
+cat > "$tdir/bad_assign.vibe" <<'EOF'
+export let _start: () -> Int = () -> {
+  let mut y = 1
+  y = "str"
+  y
+}
+EOF
+cat > "$tdir/bad_if.vibe" <<'EOF'
+export let _start: () -> Int = () -> { if true { 1 } else { "x" } }
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$tdir/ok.vibe" "$tdir/ok.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$tdir/ok.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: well-typed binding/assign/if did not compile (over-rejects)" >&2; exit 1
+fi
+for bad in bad_let bad_assign bad_if; do
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$tdir/$bad.vibe" "$tdir/$bad.wasm" _start >/dev/null 2>&1 || true
+  if [ -s "$tdir/$bad.wasm" ]; then
+    echo "[selfhost-only-gate] FAIL: ill-typed $bad compiled (type-check regressed)" >&2; exit 1
+  fi
+done
+rm -rf "$tdir"
+echo "[selfhost-only-gate] assignment / binding / if-branch type checking ok"
+
 echo "[selfhost-only-gate] ok"

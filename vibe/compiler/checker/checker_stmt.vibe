@@ -17,7 +17,7 @@ import .. / core / types.vibe {
 }
 
 import ./checker.vibe {
-  check_expr, fn_return_env_name
+  check_assignable, check_expr, fn_return_env_name
 }
 
 import ./checker_resolve.vibe {
@@ -214,10 +214,16 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
     let stmt = Array::get(stmts, idx)
     let (new_env, s1, c1) = match stmt {
       SLet(_, is_rec, name, ann, val) => {
-        let (vt, ns, nc) = if is_rec {
+        let (vt, ns0, nc) = if is_rec {
           check_expr(val, env_bind(env, name, CtUnknown), defs, s, c, errors, tytab)
         } else {
           check_expr(val, env, defs, s, c, errors, tytab)
+        }
+        // The value must be assignable to a declared annotation (previously
+        // unchecked — `let x: Int = "s"` was accepted).
+        let ns = match ann {
+          Some(te) => check_assignable(resolve_type_expr(te, defs), subst_apply(ns0, vt), ns0, errors, String::concat("binding type mismatch for ", name), 0 - 1),
+          None => ns0
         }
         let t = match ann {
           Some(te) => resolve_type_expr(te, defs),
@@ -227,7 +233,11 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
         (bind_value_or_annotation_return(env1, name, val, ann, defs), ns, nc)
       },
       SLetMut(name, ann, val) => {
-        let (vt, ns, nc) = check_expr(val, env, defs, s, c, errors, tytab)
+        let (vt, ns0, nc) = check_expr(val, env, defs, s, c, errors, tytab)
+        let ns = match ann {
+          Some(te) => check_assignable(resolve_type_expr(te, defs), subst_apply(ns0, vt), ns0, errors, String::concat("binding type mismatch for ", name), 0 - 1),
+          None => ns0
+        }
         let t = match ann {
           Some(te) => resolve_type_expr(te, defs),
           None => vt

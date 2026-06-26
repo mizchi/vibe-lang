@@ -244,7 +244,7 @@ let rec strip_effects: (Type) -> Type = (ty) -> {
 // effects erased, and tolerate the difference if the structure matches — effect
 // inference on function values is imprecise, so effect-only differences must not
 // be reported here. Returns the (possibly extended) substitution.
-let check_assignable: (Type, Type, Subst, Array[String], String, Int) -> Subst = (expected, actual, s, errors, what, off) -> {
+export let check_assignable: (Type, Type, Subst, Array[String], String, Int) -> Subst = (expected, actual, s, errors, what, off) -> {
   match unify(expected, actual, s) {
     Some(su) => su,
     None => {
@@ -579,6 +579,65 @@ let tab_call_ty: (Array[(Int, Type)], Int, Type) -> Type = (tytab, call_off, ty)
   ty
 }
 
+// Iteratively check a sequence/let SPINE (`ESeq` and `ELet`/`ELetMut`/`ELetRec`
+// chains) instead of recursing into each `body`, so a long function body — a
+// deep right-nested `let` chain — does not exhaust the wasm call stack during
+// self-compile. `ce` is `check_expr` itself (threaded as a value to avoid a
+// forward reference). Semantics are identical to the recursive arms: each `let`
+// binds its (generalized, or raw for `mut`) value type into the env seen by the
+// rest of the spine, and the final non-spine expression's result is returned.
+let check_seq_spine: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> (Type, Subst, Int) = (expr, env, defs, s, c, errors, tytab, ce) -> {
+  let mut cur = expr
+  let mut cenv = env
+  let mut s1 = s
+  let mut c1 = c
+  let mut done = false
+  let mut result = (CtUnit, s, c)
+  while !done {
+    match cur {
+      ESeq(left, right) => {
+        let (_, ns, nc) = ce(left, cenv, defs, s1, c1, errors, tytab)
+        s1 = ns
+        c1 = nc
+        cur = right
+      },
+      ELet(name, val, body) => {
+        let (vt, ns, nc) = ce(val, cenv, defs, s1, c1, errors, tytab)
+        let gen = generalize(ns, vt)
+        cenv = env_bind(cenv, name, gen)
+        s1 = ns
+        c1 = nc
+        cur = body
+      },
+      ELetMut(name, val, body) => {
+        let (vt, ns, nc) = ce(val, cenv, defs, s1, c1, errors, tytab)
+        cenv = env_bind(cenv, name, vt)
+        s1 = ns
+        c1 = nc
+        cur = body
+      },
+      ELetRec(name, val, body) => {
+        let (tv, c1b) = fresh_var(c1)
+        let (vt, ns, nc) = ce(val, env_bind(cenv, name, tv), defs, s1, c1b, errors, tytab)
+        let s2 = match unify(tv, vt, ns) {
+          Some(su) => su,
+          None => ns
+        }
+        let gen = generalize(s2, tv)
+        cenv = env_bind(cenv, name, gen)
+        s1 = s2
+        c1 = nc
+        cur = body
+      },
+      _ => {
+        result = ce(cur, cenv, defs, s1, c1, errors, tytab)
+        done = true
+      }
+    }
+  }
+  result
+}
+
 export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int) = (expr, env, defs, s, c, errors, tytab) -> {
   match expr {
     EInt(_) => (CtInt, s, c),
@@ -634,48 +693,10 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         }
       }
     },
-    ESeq(left, right) => {
-      let mut s1 = s
-      let mut c1 = c
-      let (_, ns0, nc0) = check_expr(left, env, defs, s1, c1, errors, tytab)
-      s1 = ns0
-      c1 = nc0
-      let mut cur = right
-      let mut done = false
-      while !done {
-        match cur {
-          ESeq(next_left, next_right) => {
-            let (_, ns, nc) = check_expr(next_left, env, defs, s1, c1, errors, tytab)
-            s1 = ns
-            c1 = nc
-            cur = next_right
-          },
-          _ => {
-            done = true
-          }
-        }
-      }
-      check_expr(cur, env, defs, s1, c1, errors, tytab)
-    },
-    ELet(name, val, body) => {
-      let (vt, s1, c1) = check_expr(val, env, defs, s, c, errors, tytab)
-      let gen = generalize(s1, vt)
-      check_expr(body, env_bind(env, name, gen), defs, s1, c1, errors, tytab)
-    },
-    ELetRec(name, val, body) => {
-      let (tv, c1) = fresh_var(c)
-      let (vt, s1, c2) = check_expr(val, env_bind(env, name, tv), defs, s, c1, errors, tytab)
-      let s2 = match unify(tv, vt, s1) {
-        Some(su) => su,
-        None => s1
-      }
-      let gen = generalize(s2, tv)
-      check_expr(body, env_bind(env, name, gen), defs, s2, c2, errors, tytab)
-    },
-    ELetMut(name, val, body) => {
-      let (vt, s1, c1) = check_expr(val, env, defs, s, c, errors, tytab)
-      check_expr(body, env_bind(env, name, vt), defs, s1, c1, errors, tytab)
-    },
+    ESeq(_, _) => check_seq_spine(expr, env, defs, s, c, errors, tytab, check_expr),
+    ELet(_, _, _) => check_seq_spine(expr, env, defs, s, c, errors, tytab, check_expr),
+    ELetRec(_, _, _) => check_seq_spine(expr, env, defs, s, c, errors, tytab, check_expr),
+    ELetMut(_, _, _) => check_seq_spine(expr, env, defs, s, c, errors, tytab, check_expr),
     EIf(cond, then_e, else_e) => {
       let (ct, s1, c1) = check_expr(cond, env, defs, s, c, errors, tytab)
       let resolved_ct = subst_apply(s1, ct)
@@ -686,8 +707,21 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         _ => Array::push(errors, "if condition must be Bool")
       }
       let (tt, s2, c2) = check_expr(then_e, env, defs, s1, c1, errors, tytab)
-      let (_, s3, c3) = check_expr(else_e, env, defs, s2, c2, errors, tytab)
-      (tt, s3, c3)
+      let (et, s3, c3) = check_expr(else_e, env, defs, s2, c2, errors, tytab)
+      // The two branches must agree when both yield a real value (previously
+      // unchecked — `if c { 1 } else { "x" }` was accepted). A `CtUnit` branch
+      // is tolerated: `if c { stmt }` desugars to an `else ()` whose value is
+      // discarded, and a statement-position `if` need not have matching arms.
+      let rtt = subst_apply(s3, tt)
+      let ret = subst_apply(s3, et)
+      let s3b = match rtt {
+        CtUnit => s3,
+        _ => match ret {
+          CtUnit => s3,
+          _ => check_assignable(rtt, ret, s3, errors, "if branches have incompatible types", 0 - 1)
+        }
+      }
+      (tt, s3b, c3)
     },
     ECall(callee, args, call_off) => match callee {
       // `perform EffName::Op(opargs)` parses as ECall(EIdent("perform"),
@@ -987,9 +1021,15 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         }
       } else (CtUnknown, s1, c1)
     },
-    EAssign(_, val, body) => {
-      let (_, s1, c1) = check_expr(val, env, defs, s, c, errors, tytab)
-      check_expr(body, env, defs, s1, c1, errors, tytab)
+    EAssign(name, val, body) => {
+      let (vt, s1, c1) = check_expr(val, env, defs, s, c, errors, tytab)
+      // The assigned value must be assignable to the variable's type
+      // (previously unchecked — `y = "s"` for `let mut y = 1` was accepted).
+      let s1b = match env_lookup(env, name) {
+        Some(var_ty) => check_assignable(var_ty, subst_apply(s1, vt), s1, errors, String::concat("assignment type mismatch for ", name), 0 - 1),
+        None => s1
+      }
+      check_expr(body, env, defs, s1b, c1, errors, tytab)
     },
     EAssignOp(_, _, val, body) => {
       let (_, s1, c1) = check_expr(val, env, defs, s, c, errors, tytab)
