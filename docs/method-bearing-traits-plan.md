@@ -200,6 +200,65 @@ Tests / gate:
   (authoritative seed→stage1→stage2→stage3 fixpoint + normalize round-trip). Regenerate
   the flat bundle (`scripts/generate_selfhost_bundle.sh`) after AST changes.
 
+## PR-3 implementation plan — dictionary passing (the big one)
+
+Goal: make `T::method(x)` work inside a `[T: Trait]` generic, dispatching to the
+right impl at the concrete call site. PR-1 made `impl` methods into `Type::method`
+free functions and PR-2 enforces bounds; PR-3 lets a *type-variable* method call
+resolve.
+
+### Confirmed constraints (investigated 2026-06-26)
+- `T::show` inside `[T: Show]` currently fails `unknown name: T::show` — a type
+  variable has no resolvable qualified method.
+- The main pipeline is type-erased: `compile_source_wasi_only`
+  (`entry/source_compile/wasi_only/preprocess_compile.vibe:93`) runs
+  parse → `expand_interp_stmts` → `check_program` → `strip_generic_type_params`
+  (`preprocess_strip.vibe:9`) → codegen. **`monoify.vibe` is NOT in this path**, and
+  type params are stripped, so generic bodies are shared at one uniform-i64 ABI.
+  ⇒ **monomorphization is not viable; dictionary passing is the only fit** (matches
+  the plan's measured decision).
+- Traits are **marker-only** (`STrait` has no method signatures) — PR-1 deferred
+  this. The checker therefore has no trait→method-signature link to type `T::method`.
+- The target encoding is proven: `fixtures/trait_dict_passing_substrate_test.vibe`
+  (spike G-3) shows a hand-written `MeasurableDict[T]` witness threaded through a
+  generic function + HOF runs correctly. PR-3 = generate that automatically.
+
+### Four components (each non-trivial; do in order, each its own commit + gate)
+1. **Trait method signatures in the AST** (the deferred PR-1 change). Extend `STrait`
+   to carry `Array[(String, Array[TypeExpr], TypeExpr)]` (model on `SEffectDef`),
+   parse the trait `{ sig; ... }` block (clone `parse_effect_stmt`), print it
+   (`syntax/printer.vibe`), and add the 5th field to every `STrait` match site
+   (~10 files, mostly `_` wildcards — see `grep -rn STrait`). Store the signatures in
+   `EnvTraitDef` (`core/types.vibe:32`) and populate at `checker_stmt.vibe:418`.
+2. **Checker resolution of `T::method`.** In `check_expr` `EIdent`/`ECall`, when the
+   qualified head is a bounded type param `T` (bound recorded via `subst_add_bound`,
+   PR-2 machinery) and the trait declares `method`, type it as the method signature
+   with `Self := T`. Mark the enclosing function as requiring a `Trait`-witness for
+   `T` (a new per-function obligation list).
+3. **Witness threading (lower/desugar).** For each `[T: Trait]` obligation, prepend a
+   hidden parameter `__dict_Trait_T : TraitDict[T]` (a struct of the trait's method
+   closures — `struct`s holding closures already work, spike G-1) and rewrite
+   `T::method(args)` → `(__dict_Trait_T.method)(args)`. This is the pervasive part:
+   every bounded generic's signature and body changes.
+4. **Witness materialization at call sites.** Where a `[T: Trait]` generic is called
+   with concrete `C`, synthesize the dict literal `TraitDict::{ method: C::method, ... }`
+   from the registered `impl Trait for C` (the `C::method` free functions from PR-1)
+   and pass it. Generic-over-generic calls forward the caller's dict instead.
+
+### Scope for the first working slice
+Single bound, single type param, non-supertrait, non-generic-impl, concrete call
+sites only. Defer: multiple bounds, supertrait method inheritance (needs
+`trait_is_subtrait` + nested dicts), generic impls (dicts that need dicts), and
+passing `Type::method` as a first-class HOF value.
+
+### Bootstrap + validation
+Components 1–4 are all source changes the current (PR-2) seed can build (they don't
+make the *compiler source* use trait methods), so no bump until activation. Each
+component must keep `selfhost_only_gate.sh` green; build with
+`VIBE_SELFHOST_REGEN_MODULE_SOURCE=1` (see the build gotcha above). Add a `vibe test`
+fixture mirroring G-3 but with `T::method` (not a hand-written dict) once component 4
+lands.
+
 ## Risks / open items
 
 - Checker dictionary-materialization ordering between `desugar.vibe`, `lower.vibe`,
