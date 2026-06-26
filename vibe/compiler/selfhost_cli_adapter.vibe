@@ -20,6 +20,14 @@ import ./runtime / type_at.vibe {
   type_at_source
 }
 
+import ./runtime / binding_at.vibe {
+  binding_occurrences
+}
+
+import ./runtime / symbol_spans.vibe {
+  symbol_spans
+}
+
 import ./runtime / typecheck_fs.vibe {
   collect_all_diagnostics
 }
@@ -37,6 +45,55 @@ let join_lines: (Array[String]) -> String = (items) -> {
     let mut i = 1
     while i < n {
       acc = String::concat(acc, String::concat("\n", Array::get(items, i)))
+      i = i + 1
+    }
+    acc
+  }
+}
+
+// Render `vibe symbols` records as one `NAME KIND START END` line per declared
+// symbol (space-separated; KIND/START/END are ints), joined by "\n". Records
+// with an empty name (unrecoverable offset placeholder) are skipped.
+// String::concat + __to_string only (never `+`/interpolation -> NUL miscodegen).
+// Empty -> "".
+let join_symbol_spans: (Array[(String, Int, Int, Int)]) -> String = (syms) -> {
+  let n = Array::length(syms)
+  let mut acc = ""
+  let mut first = true
+  let mut i = 0
+  while i < n {
+    let (name, kind, s, e) = Array::get(syms, i)
+    if String::length(name) == 0 {
+      ()
+    } else {
+      let line = String::concat(name, String::concat(" ", String::concat(__to_string(kind), String::concat(" ", String::concat(__to_string(s), String::concat(" ", __to_string(e)))))))
+      if first {
+        acc = line
+        first = false
+      } else {
+        acc = String::concat(acc, String::concat("\n", line))
+      }
+    }
+    i = i + 1
+  }
+  acc
+}
+
+// Render `vibe binding-at` occurrences as one `START END` line per span (two
+// space-separated ints), joined by "\n". String::concat + __to_string only
+// (never `+`/interpolation, which miscodegen NUL in selfhost). Empty -> "".
+let join_binding_occurrences: (Array[(Int, Int)]) -> String = (occ) -> {
+  let n = Array::length(occ)
+  if n == 0 {
+    ""
+  } else {
+    let (s0, e0) = Array::get(occ, 0)
+    let mut acc = String::concat(__to_string(s0), String::concat(" ", __to_string(e0)))
+    let mut i = 1
+    while i < n {
+      let (s, e) = Array::get(occ, i)
+      let line = String::concat(__to_string(s), String::concat(" ", __to_string(e)))
+      acc = String::concat(acc, String::concat("\n", line))
       i = i + 1
     }
     acc
@@ -201,6 +258,29 @@ export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
     let col = parse_int_or(Env::get("VIBE_TYPE_COL"), 1)
     let ty = type_at_source(src, line, col)
     Fs::write_bytes(output_path, adapter_string_to_bytes(ty))
+    return 0
+  }
+  // `vibe binding-at`: AST-accurate binding occurrences (scope-precision rename /
+  // references groundwork). VIBE_TYPE_LINE/COL are 1-based. Writes one `START END`
+  // line per source span of the identifier under the cursor, or empty when there
+  // is no identifier there (see binding_at.vibe LIMITATION: name-based, no
+  // shadowing analysis yet).
+  if Env::get("VIBE_BINDING_AT") == "1" {
+    let src = Fs::read_file(input_path)
+    let line = parse_int_or(Env::get("VIBE_TYPE_LINE"), 1)
+    let col = parse_int_or(Env::get("VIBE_TYPE_COL"), 1)
+    let occ = binding_occurrences(src, line, col)
+    Fs::write_bytes(output_path, adapter_string_to_bytes(join_binding_occurrences(occ)))
+    return 0
+  }
+  // `vibe symbols`: AST-accurate declaration outline. Writes one
+  // `NAME KIND START END` line per declared symbol (KIND = LSP SymbolKind int,
+  // START/END = char offsets of the name), or empty when the file declares none.
+  // Powers document-outline / go-to-definition without a text-regex scan.
+  if Env::get("VIBE_SYMBOLS") == "1" {
+    let src = Fs::read_file(input_path)
+    let syms = symbol_spans(src)
+    Fs::write_bytes(output_path, adapter_string_to_bytes(join_symbol_spans(syms)))
     return 0
   }
   // `vibe diagnostics`: collect ALL syntax errors (recovering parser) or the

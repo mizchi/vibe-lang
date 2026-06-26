@@ -30,12 +30,30 @@ expect_contains() { # <desc> <needle> <file.vibe content...>
   fi
 }
 
+expect_matches() { # <desc> <ere> <file.vibe content>
+  local desc="$1" ere="$2"; shift 2
+  local f="$WORK/case.vibe"
+  printf '%b' "$1" > "$f"
+  local out; out="$("$VIBE" check "$f" 2>&1 || true)"
+  if printf '%s' "$out" | grep -qE "$ere"; then
+    echo "ok: $desc"; pass=$((pass + 1))
+  else
+    echo "FAIL: $desc (want /$ere/ in: $out)" >&2; fail=$((fail + 1))
+  fi
+}
+
 # parse error on line 2 -> line:col located
 expect_contains "parse error located on line 2" "line 2:" \
   'export let a = 1\nexport let bad = = 5\n'
 
 # unknown name -> located with the exact column of the symbol
 expect_contains "unknown-name type error located" "line 1:" \
+  'export let main = () -> Int { zzz }\n'
+
+# unknown name -> EXACT range form `line N:colM-K:` (the checker now emits the
+# token end offset; `zzz` is 3 chars wide). Backward-compatible `line N:` still
+# leads, but the `-K` end column must be present for a known-length symbol.
+expect_matches "unknown-name carries an exact range (colM-K)" "line 1:[0-9]+-[0-9]+:" \
   'export let main = () -> Int { zzz }\n'
 
 # arity mismatch -> located
@@ -48,6 +66,23 @@ expect_contains "arity mismatch located" "function arity mismatch" \
 # threaded through the [@off=N] marker, NOT the first text occurrence (line 1).
 expect_contains "arity mismatch located at call site (line 4)" "line 4:" \
   'let helper = (a: Int, b: Int) -> Int { a + b }\nexport let l2 = 0\nexport let l3 = 0\nexport let main = () -> Int { helper(1) }\n'
+
+# method-style call (EDot callee) arity mismatch -> located at the CALL site
+# (span-arc step2: the ECall source offset feeds the EDot-callee arity
+# diagnostic, which previously emitted off_marker(-1) and could not be located
+# precisely). `s.length(99)` calls the 1-arg String::length with 2 args on
+# line 6, so the located diagnostic must point at line 6.
+expect_contains "method-call arity located at call site (line 6)" "line 6:" \
+  'export let l1 = 0\nexport let l2 = 0\nexport let l3 = 0\nexport let main = () -> Int {\n  let s = "hi"\n  s.length(99)\n}\n'
+
+# field access on an unknown struct field (EDot) -> located at the ACCESS site
+# (span-arc step2: the EDot source offset, threaded from the base-expression
+# start via callee_offset, feeds the checker's unknown-field diagnostic through
+# the [@off=N] marker; before this it emitted off_marker(-1) and could not be
+# located). `p.z` accesses a non-existent field on Point at line 3, so the
+# located diagnostic must point at line 3.
+expect_contains "unknown-field access located at access site (line 3)" "line 3:" \
+  'struct Point { x: Int, y: Int }\nexport let get = (p: Point) -> Int {\n  p.z\n}\nexport let main = () -> Int { 0 }\n'
 
 # the internal [@off=N] offset marker must never leak into user-facing output.
 expect_missing() { # <desc> <needle-that-must-be-absent> <file.vibe content>
@@ -65,6 +100,8 @@ expect_missing "no [@off= marker leak (arity)" "[@off=" \
   'let helper = (a: Int, b: Int) -> Int { a + b }\nexport let l2 = 0\nexport let main = () -> Int { helper(1) }\n'
 expect_missing "no [@off= marker leak (unknown name)" "[@off=" \
   'export let a = 1\nexport let main = () -> Int { zzz }\n'
+expect_missing "no [@off= marker leak (unknown field)" "[@off=" \
+  'struct Point { x: Int, y: Int }\nexport let get = (p: Point) -> Int {\n  p.z\n}\nexport let main = () -> Int { 0 }\n'
 
 # a good program -> check passes (no error)
 printf 'export let main = () -> Int { 40 + 2 }\n' > "$WORK/ok.vibe"

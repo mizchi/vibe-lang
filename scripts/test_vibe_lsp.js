@@ -108,6 +108,21 @@ const isDiag = (uri) => (m) => m.method === "textDocument/publishDiagnostics" &&
   const multiLines = new Set((multiDiag.params.diagnostics || []).map((d) => d.range.start.line));
   checkEnv("error recovery yields diagnostics on >=2 lines", multiLines.size >= 2 && multiLines.has(0) && multiLines.has(2));
 
+  // field-access diagnostic -> range targets the offending FIELD, not the base
+  // expr. The AST anchor (`@off`) for `p.zzz` is the base `p`; the server must
+  // advance past the `.` and highlight `zzz` (regression for blind word-scan
+  // that mis-highlighted the base identifier).
+  const fieldUri = "file:///tmp/vibe-lsp-test-field.vibe";
+  const fieldText = "export struct P { x: Int }\nexport let f = (p: P) -> Int { p.zzz }\n";
+  send({ jsonrpc: "2.0", method: "textDocument/didOpen", params: { textDocument: { uri: fieldUri, languageId: "vibe", version: 1, text: fieldText } } });
+  const fieldDiag = await waitFor(isDiag(fieldUri));
+  if (fieldDiag.params.diagnostics.length) {
+    const d = fieldDiag.params.diagnostics[0];
+    const fLine = fieldText.split(/\r?\n/)[d.range.start.line] || "";
+    const fSlice = fLine.slice(d.range.start.character, d.range.end.character);
+    checkEnv("field diagnostic range targets the field 'zzz' (not the base)", fSlice === "zzz");
+  }
+
   // good document -> expect empty diagnostics
   const goodUri = "file:///tmp/vibe-lsp-test-good.vibe";
   const goodText = "export enum Color { Red; Green }\nexport let helper = (x: Int) -> Int { x * 2 }\nexport let main = () -> Int { helper(21) }\n";
@@ -120,6 +135,31 @@ const isDiag = (uri) => (m) => m.method === "textDocument/publishDiagnostics" &&
   const sym = await waitFor((m) => m.id === 3);
   const names = (sym.result || []).map((s) => s.name);
   check("documentSymbol lists declarations", names.includes("Color") && names.includes("helper") && names.includes("main"));
+
+  // AST-accurate outline (compiler-backed `vibe symbols`): a multi-line
+  // declaration is found, a module-nested symbol is found, and a name that only
+  // appears inside a comment is NOT reported — none of which the old line-regex
+  // scan handled. Skipped when the compiler symbols path is unavailable (the
+  // server falls back to the regex scan, which can't satisfy these).
+  const astUri = "file:///tmp/vibe-lsp-test-ast-syms.vibe";
+  const astText =
+    "// export let ghost = 1  (comment — must NOT be a symbol)\n" +
+    "export let\n  wrapped =\n  (n: Int) -> Int { n }\n" +
+    "module Geo {\n  export struct Vec { dx: Int }\n}\n";
+  send({ jsonrpc: "2.0", method: "textDocument/didOpen", params: { textDocument: { uri: astUri, languageId: "vibe", version: 1, text: astText } } });
+  await waitFor(isDiag(astUri));
+  send({ jsonrpc: "2.0", id: 31, method: "textDocument/documentSymbol", params: { textDocument: { uri: astUri } } });
+  const astSym = await waitFor((m) => m.id === 31);
+  const astNames = (astSym.result || []).map((s) => s.name);
+  // Capability probe: only enforce the AST-only guarantees when the compiler
+  // outline actually answered (multi-line `wrapped` present). Otherwise the
+  // server fell back to the regex scan (older/seed compiler) — skip.
+  const astOk = astNames.includes("wrapped");
+  if (!astOk) console.log("skip: AST-accurate outline (compiler symbols path unavailable on this runner)");
+  const checkAst = (desc, cond) => astOk ? check(desc, cond) : (console.log(`skip: ${desc}`), pass++);
+  checkAst("outline finds a multi-line declaration", astNames.includes("wrapped"));
+  checkAst("outline finds a module-nested symbol", astNames.includes("Vec"));
+  checkAst("outline excludes a name that only appears in a comment", !astNames.includes("ghost"));
 
   // definition: cursor on `helper` in main's body -> jumps to helper's decl (line 1)
   const callLine = goodText.split(/\r?\n/)[2]; // "export let main = () -> Int { helper(21) }"

@@ -287,7 +287,7 @@ let is_heap_value: (Expr, Map[String, Bool], HeapInferCtx) -> Bool = (e, env, hc
     true
   } else {
     match e {
-      ECall(callee, args) =>
+      ECall(callee, args, _) =>
       match callee {
         EIdent(c, _) =>
         if Map::has_key(env, c) {
@@ -328,7 +328,7 @@ let rec analyze_calls: (String, Expr, Map[String, Bool], Array[Array[Bool]], Arr
       }
       0
     },
-    ECall(callee, args) => {
+    ECall(callee, args, _) => {
       let is_self = match callee {
         EIdent(cn, _) => cn == name,
         _ => false
@@ -353,7 +353,7 @@ let rec analyze_calls: (String, Expr, Map[String, Bool], Array[Array[Bool]], Arr
       }
       0
     },
-    EDot(obj, _) => analyze_calls(name, obj, env, calls, esc, hctx),
+    EDot(obj, _, _) => analyze_calls(name, obj, env, calls, esc, hctx),
     ELet(n, v, b) => {
       analyze_calls(name, v, env, calls, esc, hctx)
       analyze_calls(name, b, Map::set(env, n, is_heap_value(v, env, hctx)), calls, esc, hctx)
@@ -710,18 +710,18 @@ let rec elaborate_rw: (Expr, HeapInferCtx) -> Expr = (e, hctx) -> {
     EForIn(n, ix, it, b) => EForIn(n, ix, elaborate_rw(it, hctx), elaborate_rw(b, hctx)),
     EFn(tps, bounds, params, ret, eff, fb) =>
     EFn(tps, bounds, params, ret, eff, elaborate_rw(fb, hctx)),
-    ECall(callee, args) => {
+    ECall(callee, args, off) => {
       let new_args = Array::slice(args, 0, 0)
       let mut i = 0
       while i < Array::length(args) {
         Array::push(new_args, elaborate_rw(Array::get(args, i), hctx))
         i = i + 1
       }
-      ECall(elaborate_rw(callee, hctx), new_args)
+      ECall(elaborate_rw(callee, hctx), new_args, off)
     },
     EBinOp(op, l, r) => EBinOp(op, elaborate_rw(l, hctx), elaborate_rw(r, hctx)),
     EUnaryOp(op, o) => EUnaryOp(op, elaborate_rw(o, hctx)),
-    EDot(o, f) => EDot(elaborate_rw(o, hctx), f),
+    EDot(o, f, off) => EDot(elaborate_rw(o, hctx), f, off),
     ETuple(xs) => {
       let ys = Array::slice(xs, 0, 0)
       let mut i = 0
@@ -831,7 +831,7 @@ export let rec pc_emit: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, exp
     EUnit => 0,
     EStringInterp(_) => 0,
     EIdent(x, _) => pe_use(ctx, scope, x),
-    ECall(callee, args) => {
+    ECall(callee, args, _) => {
       let is_index = match callee {
         EIdent(f, _) => is_borrow_arg0_call(f),
         _ => false
@@ -855,7 +855,7 @@ export let rec pc_emit: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, exp
       }
       0
     },
-    EDot(obj, _field) => match obj {
+    EDot(obj, _field, _) => match obj {
       EIdent(_, _) => 0,
       _ => pc_emit(ctx, scope, obj)
     }
@@ -1097,7 +1097,7 @@ export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, ex
     EUnit => 0,
     EStringInterp(_) => 0,
     EIdent(x, _) => pc_count_use(ctx, scope, x),
-    ECall(callee, args) => {
+    ECall(callee, args, _) => {
       match callee {
         EIdent(f, _) => if is_borrow_arg0_call(f) {
           0
@@ -1126,7 +1126,7 @@ export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, ex
       }
       0
     },
-    EDot(obj, _field) => match obj {
+    EDot(obj, _field, _) => match obj {
       EIdent(x, _) => pc_count_borrow(ctx, scope, x),
       _ => pc_count(ctx, scope, obj)
     }
@@ -1444,7 +1444,7 @@ export let elaborate_heap_params: (Array[Stmt]) -> Array[Stmt] = (stmts) -> {
 
 let rec expr_projects_or_matches: (String, Expr) -> Bool = (name, e) -> {
   match e {
-    EDot(obj, _) =>
+    EDot(obj, _, _) =>
     match obj {
       EIdent(n, _) => n == name,
       _ => expr_projects_or_matches(name, obj)
@@ -1505,7 +1505,7 @@ let rec expr_projects_or_matches: (String, Expr) -> Bool = (name, e) -> {
     expr_projects_or_matches(name, c) || expr_projects_or_matches(name, b),
     EForIn(_, _, iter, body) =>
     expr_projects_or_matches(name, iter) || expr_projects_or_matches(name, body),
-    ECall(callee, args) => {
+    ECall(callee, args, _) => {
       let mut i = 0
       let mut found = expr_projects_or_matches(name, callee)
       while i < Array::length(args) {

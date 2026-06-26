@@ -118,7 +118,7 @@ let parse_block_after_expr: (Array[Token], Int, Expr, (Array[Token], Int, Int) -
         let (rest, end) = parse_recur(tokens, a, 20)
         (EAssign(name, val, rest), end)
       },
-      EDot(obj, field) => {
+      EDot(obj, field, _) => {
         let val_pair = parse_recur(tokens, pos + 1, 0)
         let val = val_pair.0
         let val_next = val_pair.1
@@ -128,7 +128,7 @@ let parse_block_after_expr: (Array[Token], Int, Expr, (Array[Token], Int, Int) -
         Array::push(set_args, obj)
         Array::push(set_args, EString(field))
         Array::push(set_args, val)
-        (ESeq(ECall(EIdent("__set_field", -1), set_args), rest), end)
+        (ESeq(ECall(EIdent("__set_field", -1), set_args, -1), rest), end)
       },
       _ => throw("invalid assignment target")
     },
@@ -222,7 +222,7 @@ let apply_struct_destr: (Pat, Expr, Expr) -> Expr = (pat, val, rest) -> {
         let (fname, fpat) = Array::get(fields, di)
         match fpat {
           PBind(bname) => {
-            desugar = ELet(bname, EDot(EIdent(val_name, -1), fname), desugar)
+            desugar = ELet(bname, EDot(EIdent(val_name, -1), fname, -1), desugar)
           },
           _ => ()
         }
@@ -247,7 +247,7 @@ let apply_record_destr: (Pat, Expr, Expr) -> Expr = (pat, val, rest) -> {
             desugar = ELet(bname, ECall(EIdent("__rec_field", -1), [
               EIdent(val_name, -1),
               EInt(di)
-            ]), desugar)
+            ], -1), desugar)
           },
           PTuple(sub_pats) => {
             let sub_name = String::concat("__rec_sub_", __to_string(di))
@@ -255,7 +255,7 @@ let apply_record_destr: (Pat, Expr, Expr) -> Expr = (pat, val, rest) -> {
             while si >= 0 {
               match Array::get(sub_pats, si) {
                 PBind(sname) => {
-                  desugar = ELet(sname, EDot(EIdent(sub_name, -1), __to_string(si)), desugar)
+                  desugar = ELet(sname, EDot(EIdent(sub_name, -1), __to_string(si), -1), desugar)
                 },
                 _ => ()
               }
@@ -264,7 +264,7 @@ let apply_record_destr: (Pat, Expr, Expr) -> Expr = (pat, val, rest) -> {
             desugar = ELet(sub_name, ECall(EIdent("__rec_field", -1), [
               EIdent(val_name, -1),
               EInt(di)
-            ]), desugar)
+            ], -1), desugar)
           },
           _ => ()
         }
@@ -301,7 +301,7 @@ let apply_block_step: (BlockStep, Expr) -> Expr = (step, rest) -> {
         PBind("__bind_err")
       ]), ECall(EIdent("Err", -1), [
         EIdent("__bind_err", -1)
-      ]))
+      ], -1))
     ])
   }
 }
@@ -505,13 +505,13 @@ let parse_impl_block: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -
                 ArrayBuilder::push(steps, StepAssign(name, val))
                 p = next_pos
               },
-              EDot(obj, field) => {
+              EDot(obj, field, _) => {
                 let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur)
                 let set_args = empty_exprs()
                 Array::push(set_args, obj)
                 Array::push(set_args, EString(field))
                 Array::push(set_args, val)
-                ArrayBuilder::push(steps, StepSeq(ECall(EIdent("__set_field", -1), set_args)))
+                ArrayBuilder::push(steps, StepSeq(ECall(EIdent("__set_field", -1), set_args, -1)))
                 p = next_pos
               },
               _ => throw("invalid assignment target")
@@ -584,7 +584,7 @@ let build_pull_for_in: (String, Option[String], Expr, Expr, Int) -> Expr = (valu
     Some(ix) => ESeq(body, EAssign(ix, EBinOp("+", EIdent(ix, -1), EInt(1)), EUnit)),
     None => ESeq(body, EUnit)
   }
-  let loop_body = EMatch(ECall(EIdent(next_var, -1), []), [
+  let loop_body = EMatch(ECall(EIdent(next_var, -1), [], -1), [
     (PCtor("Some", [PBind(value_name)]), some_arm),
     (PCtor("None", []), EAssign(cont_var, EBool(false), EUnit))
   ])

@@ -20,7 +20,36 @@
 
 ## 実装進捗 (2026-06-25 セッション)
 
-完了・検証済み（selfhost-only gate green、`scripts/test_vibe_cli_install.sh` 12/12）:
+> **マイルストーン**: M1（配布確定）+ M2（開発体験 MVP）+ M3（開発体験フル）+
+> M4（GA）content gate 達成 → 実装側 **GA-ready**（[GA readiness](report/1-0-ga-readiness.md)）。
+> ADR 決定事項を全確定（install/module/LSP host/仕様 freeze =
+> [spec/1.0-freeze.md](spec/1.0-freeze.md)）。PR #642 を main に merge 済み。
+> 以降の DAP P3 step/P4 named-local / `vibe binding-at` / rename 配線 /
+> CI wasmtime 修正 / 仕様 freeze / span-arc step2–5 / docs は branch
+> `claude/kind-fermat-lxtjov` に在り（main は authoritative selfhost-gate green、
+> cli-install は wasmtime CLI 未導入で一時 red — branch の修正で解消）。
+> テーマ3 debugger は P0-P4 + 3-D + 行 breakpoint 完了。span-arc は
+> step1（診断 offset）/ step2（ECall+EDot offset）/ step3（typed hover）/
+> step4（call/field hover + `vibe symbols` + 厳密診断 range）着地、
+> step5 は**関数内任意行 breakpoint + 行 step（multi-file 対応）**まで着地。
+> PR #643 で branch `claude/kind-fermat-lxtjov` を main へ land。
+>
+> **進捗メモ（2026-06-26、PR #643 マージ時点）— tracked issues**:
+> 実装側の roadmap は出し切り。残りは GitHub issue で追跡する。
+> - 残（リリース運用）: 1.0 GA タグ / version bump → **#647**
+> - 残（post-GA, debugger）: `vibe.linemap` 命令オフセット粒度化 + 裸リテラル文の
+>   break 対応 → **#644**
+> - 残（post-GA, LSP）: field-access 診断 end offset を compiler 由来に（EDot field
+>   offset）→ **#645**
+> - 残（test-infra）: hosted CI runner の compiler error-path（vibe-eh-ci）→ **#646**
+> - 残（post-GA, 任意式 watch）: debugger の arbitrary expression evaluation（未着手）
+>
+> **CI 根本原因メモ（vibe-eh-ci, RESOLVED）**: fresh compiler build は standalone
+> `wasmtime` CLI を要するが CI 未導入 → seed fallback で diagnostics/type-at が機能せず。
+> wasm-EH のバグではない。`cli-install.yml` に wasmtime 導入 step を追加して解消。
+> 詳細 `docs/known-issues.md`。
+
+完了・検証済み（selfhost-only gate green、`scripts/test_vibe_cli_install.sh` 34/34）:
 
 - **テーマ1 (install) ほぼ完了** — `moonrun_wt` に selfhost CLI 用 raw-ABI host
   import を実装、`vibe` launcher（run/compile/build/check/test/fetch/version/
@@ -96,9 +125,25 @@
    指すようになった（pipeline を end-to-end で実証）。selfhost gate green、
    located 診断 7/7（call-site 精度の回帰 + marker leak guard 含む）。
    worktree agent → cherry-pick 統合。
-2. **ECall / EDot へ offset 付与** — EIdent と同じ構造 refactor（variant に Int
-   field 追加 → 全 construct/match site 更新 → bundle 再生成）。call-site の
-   go-to-definition / hover の土台。arity/field 診断の正確化もここで効く。
+2. ✅ **ECall へ offset 付与（着地）** — `ECall(Expr, Array[Expr])` →
+   `ECall(Expr, Array[Expr], Int)`（EIdent と同じ構造 refactor: variant に Int
+   field 追加 → 全 construct/match site 更新 → bundle 再生成）。parser は callee
+   start offset を `callee_offset(expr)` で thread、AST 保存パス（desugar /
+   normalize / perceus / import_alias_rewrite / expand_interp / eval_loader）は
+   offset を pass-through、synthetic site（index/slice/len sugar、interp、spread
+   等）は `-1`。**consumer 配線**: checker の arity 診断が ECall offset を
+   `off_marker(call_off)` 経由で消費し、arity mismatch が**呼び出し位置**を指す
+   （`s.length(99)` が定義行でなく `line 6:3` を報告）。selfhost gate green
+   （stage2==stage3 fixpoint、bootstrap bump 不要）、`test_located_diagnostics.sh`
+   8/8。
+   - ✅ **EDot offset（着地）** — `EDot(Expr, String)` → `EDot(Expr, String, Int)`。
+     parser は base 式の start offset を `callee_offset` で thread、AST 保存パスは
+     pass-through、synthetic（record-pattern projection / CST lowering）は `-1`。
+     **consumer 配線**: checker の standalone EDot arm が、base が既知 struct で
+     field が無い場合に `unknown field '<f>' on struct <S>` を `off_marker(dot_off)`
+     付きで報告（`find_field` を `CtUnknown` 返却から `Option[Type]` へ変更し
+     「missing field」を区別）。`p.z` が `line 3:3` を指す。gate green、
+     `test_located_diagnostics.sh` 10/10。**step 2 完了**（ECall + EDot）。
 3. **型付き hover** —
    - ✅ **3a env-visible MVP（着地）** — `vibe type-at` + `type_at_source`
      （位置の EIdent → `check_program` → `env_lookup` + `type_to_string`）を実装し
@@ -112,10 +157,73 @@
      hover で型が出る**（`test_vibe_type_at.sh` 5/5: param `n`→Int, local `g`→Int）。
      selfhost gate green。残: 束縛**定義**位置（EIdent でない）と式ノードの型は
      未記録（use サイトは解決）。scope 精度の高い補完・rename もこの上に乗せられる。
-4. **span 露出 CLI / LSP 連携（一部着地）** — `vibe type-at` で offset→型を露出済み。
-   残: シンボル span の JSON 露出、診断 range の AST 化（現状は line:col prefix 経由）。
-5. **codegen source-line map（`vibe.func_map`）** — 命令 offset→ソース行の custom
-   section。DAP P1-P4（breakpoint/variables/step）の前提。name section は実装済み。
+4. **span 露出 CLI / LSP 連携（大部分着地）** — `vibe type-at` で offset→型を露出済み。
+   - ✅ **call-site / field-access hover（着地）** — step 2 の ECall/EDot offset を
+     LSP 側の consumer として配線。checker の per-node 型テーブル（3b）を ECall arm
+     （call の**結果型**を `tab_call_ty` で direct/method/general/no-name 各 callee
+     path にタグ、`call_off >= 0` のみ）と EDot arm（field 型を `(dot_off, field_ty)`、
+     `dot_off >= 0`）へ拡張。`vibe type-at` がカーソル位置の**呼び出し**・
+     **フィールドアクセス**でも型を返す（`is_pos(5)`→`Bool`、`p.x`→`Int`）。
+     `test_vibe_type_at.sh` 7/7、selfhost gate green（fixpoint 維持）。
+     **seed 制約メモ**: 巨大 `match callee {...}` を `let`/block/arg で一段ネスト
+     すると seed parser が trap するため、結果型タグは match を tail position の
+     flat なまま内側 result 式に付与する方式に留めた。
+   - ✅ **診断 range の精度化（field access、JS LSP 層）** — checker の `@off`
+     アンカーは EDot では**ベース式**（`p.x` の `p`）を指すため、LSP の素朴な
+     word-scan は field error で base 識別子を誤ハイライトしていた。`locate()` を
+     「メッセージが名指しするトークンをアンカー以降（field error は `.` の後）で
+     ハイライト」する方式へ変更し、`unknown field 'x'` の squiggle が field を
+     正確に指すよう修正（compiler 不変 = fixpoint 影響なし）。`test_vibe_lsp.js`
+     に field-range 回帰を追加。
+   - ✅ **シンボル span の JSON 露出（着地）** — 新 CLI `vibe symbols <file>` が
+     parse 済み AST を歩き、宣言ごとに `NAME KIND START END`（KIND = LSP
+     SymbolKind、START/END = 名前の char offset）を出力。新 compiler module
+     `runtime/symbol_spans.vibe`（`parse_program_spans` の文単位 span 内で
+     名前を whole-word 復元）+ adapter 配線 + launcher subcommand。LSP の
+     document-outline / go-to-definition を行 regex から AST 正確版へ置換
+     （multi-line 宣言・module ネスト対応、string/comment 誤マッチなし、
+     function/value/struct/enum/trait/alias/effect の kind 区別）。regex は
+     fallback として保持。`test_vibe_symbols.sh` 6/6 + `test_vibe_lsp.js`
+     20/20（AST-outline 3 件追加）、selfhost gate green（stage2==stage3
+     fixpoint 維持、13 regression）。
+   - ✅ **診断の完全 AST range 化（着地）** — checker が名前付きトークンの
+     **end offset** を `[@off=N:M]` で発行（`off_marker_len(off, len)`、unknown
+     name / arity mismatch の 4 サイト）。`locate_type_error` が `N:M` を
+     decode し prefix を `line L:colC-E:`（同一行のみ range、後方互換: `line
+     N:` が先頭）へ拡張。LSP `locate()` が end column を消費して厳密 range を
+     返す（word-scan が `.` で切ってしまう qualified name `Mod.foo` も正確）。
+     field error は base アンカーのため start-only 維持（JS named-token が
+     担当）。`test_located_diagnostics.sh` 11/11（range 形式 + marker 非リーク
+     回帰）、`test_vibe_lsp.js` 20/20、selfhost gate green（fixpoint a899368、
+     13 regression）。
+   残（post-GA）: field error の end も compiler 由来にする（EDot への field
+   offset 追加が前提）— 現状 JS named-token で実用上は解決済み。
+5. ✅ **行ベース breakpoint（関数行 + 関数内任意行、着地）** —
+   `vibe run --break <file>:<line>`（bare `<line>` も可）。
+   - **関数宣言行**（既着地）: runner が `VIBE_BREAK` を関数名集合と行集合に分割、
+     `.funcmap` sidecar（`VIBE_FUNCMAP`）と entry basename（`VIBE_BREAK_FILE`）から
+     entering 関数の宣言行を解決し行一致で pause。
+   - ✅ **関数内任意行 + 行 step（multi-file 含め着地）** — break-mode codegen が
+     各文境界（ELet/ELetMut/ESeq）で `call vibe::dbg_line(<file_id>, <line>)` を
+     発行し、runner の `vibe_dbg_line` hook がその (file, line) を line-break-set と
+     照合 / step 判定で pause。行は codegen 側で算出: 文の値部分式の leftmost
+     offset（`first_offset`、EIdent/ECall/EDot の char-offset）を、その関数の
+     **自ファイル**の newline-index（`offset_to_line`）で 1-based 行へ変換。
+     **multi-file**: merge は各文の出所ファイルを `DbgProv`（file 一覧 + 各ファイルの
+     newline 表 + 文→file_id）として記録（append の length delta で alignment）。
+     codegen は per-function に file_id + その file の newline 表を `CompileCtx`
+     （`dbg_line_idx`/`dbg_line_nl`/`dbg_line_file_id`）へ載せ、`vibe.dbgfiles`
+     custom section（basename 一覧）を発行。runner は file_id→basename を解決し
+     `--break <file>:<line>` の file と照合するので、`helper.vibe:3`（import 先）と
+     `main.vibe:3`（entry）を正しく区別する。
+     **完全 gate**: `debug_break && DbgProv に file あり` のときだけ発行するため
+     既定 codegen は byte-identical（fixpoint d21309a 維持）。FS-compile path を
+     `parse_program_located` 化して offset を供給（codegen は offset を読まないので
+     既定出力は不変）。値が裸リテラルの文（`let a = 1`）は offset を持たず個別
+     break 不可。`test_vibe_break_interior.sh` 8/8（単一/multi-file の行 hit・
+     行 step・file 区別・既定不変・非マッチ）、既存 break/break_line/step/dap 全
+     green、selfhost gate green。
+   **残（post-GA）**: `vibe.linemap` 命令オフセット粒度化（現状は文境界粒度）。
 
 - **codegen の関数 index↔name 対応** — ✅ wasm name section（土台B / debugger P0）
   は実装済み（`func_offset + i` で user 関数を正確に命名）。
@@ -126,10 +234,10 @@
 
 | マイルストーン | 内容 | 主テーマ | 状態 |
 | --- | --- | --- | --- |
-| **M1: 配布確定** | install + module の配布方法を凍結し、外部の人が「入れて使える」 | (1)(2) | ほぼ達成（install 配布物確定 + module fetch/lock/verify。残: semver 制約） |
+| **M1: 配布確定** | install + module の配布方法を凍結し、外部の人が「入れて使える」 | (1)(2) | ✅ 達成（install 配布物確定 + module fetch/lock/transitive/semver/frozen/verify） |
 | **M2: 開発体験 MVP** | LSP MVP（診断/シンボル/hover）+ debugger P0（source-mapped trace） | (3)(4) | ✅ 達成（型付き hover、parser error recovery で全診断、trap→source-line） |
-| **M3: 開発体験フル** | LSP 補完/リファクタ + DAP step 実行 | (3)(4) | 一部（補完/rename/references 済、text-scan ベース）。残: DAP step 実行（P1-P4）、scope 精度 refactor |
-| **M4: GA (1.0)** | 上記を統合し、言語仕様 freeze + docs 完備で一般公開 | 全部 | — |
+| **M3: 開発体験フル** | LSP 補完/リファクタ + DAP step 実行 | (3)(4) | ✅ 達成（DAP P1-P4 = breakpoint/名前付き変数検査/step 実行 + 3-D VS Code debug adapter、rename/references は scope 精度の `vibe binding-at` で AST 精度化）。テーマ3 debugger は P0-P4 + 3-D 完了 |
+| **M4: GA (1.0)** | 上記を統合し、言語仕様 freeze + docs 完備で一般公開 | 全部 | ✅ content gate 達成（仕様 freeze = [spec/1.0-freeze.md](spec/1.0-freeze.md)、docs = install/module/editor+debug、span-arc step1–4 + step5 関数行 breakpoint、[GA readiness](report/1-0-ga-readiness.md)）。残: 1.0 タグ / version bump / main land（リリース運用判断）、post-GA = 任意行 debug・LSP span JSON |
 
 ### 横断的な前提（どのテーマにも効く 2 つの土台）
 
@@ -386,10 +494,25 @@ VS Code（DAP クライアント）から breakpoint を張り、停止・変数
       6/6: `main`/`helper×2` を行付きでトレース、plain run 非回帰、cli-install 34/0、
       gate green）。残: 関数入口での**停止**（runner pause loop + breakpoint 集合）と
       DAP プロトコル化（次段）。
-- [ ] **3-P2 変数検査**（M3）— locals/args のメタデータ出力 + tagged 値の decode。
-- [ ] **3-P3 step 実行**（M3）— next / stepIn / stepOut。
-- [ ] **3-P4 watch 式**（M4）— 停止フレームでの式評価。
-- [ ] **3-D editor 統合** — `integrations/vscode-vibe` に debug adapter を配線。
+- [x] **3-P2 変数検査（引数）着地**（M3）— break モードの codegen が各ユーザー
+      関数入口で i64 パラメータを予約メモリ（`dbgargs` 領域）に spill し、`vibe.dbgargs`
+      custom section にアドレス + tag mode を記録。runner が breakpoint hit 時に読み出し
+      tagged 値を decode して `args: [...]` 表示（`vibe run --break`）。
+      検証済み（`scripts/test_vibe_break_args.sh`）。残: 全 locals + local-name map
+      （任意の名前付きローカルの検査）は将来拡張。
+- [x] **3-P3 step 実行 着地**（M3）— 停止フレームで `s`(step into)/`n`(step over)/
+      `o`(finish)/`c`(continue)/`q`(quit) を stdin で受け、runner の pause loop が
+      backtrace のコール深さで step を判定（関数粒度）。`stopped at: <fn>` 表示。
+      検証済み（`scripts/test_vibe_step.sh` 14/14）。残: 行粒度 step（per-statement
+      span が前提）。
+- [x] **3-P4 名前付きローカル検査 着地**（M4）— codegen が `vibe.dbgnames`
+      custom section（関数ごとに param 名を `\t` 区切りで記録、最大16）を埋め、
+      runner が `vibe.dbgargs` の値と突き合わせて停止フレームの引数を
+      `name=value` 形式（例 `args: [x=20]`）で表示。count 不一致時は positional に
+      fallback。DAP `variables` も名前付きで返す。検証済み
+      （`scripts/test_vibe_break_args.sh` 6/6、`scripts/test_vibe_dap.js` 25/25）。
+      残: 任意の式評価（watch）。
+- [x] **3-D editor 統合（着地）** — `js/vibe/dap_server.js`（stdio DAP server: 行→関数 breakpoint、step s/n/o/c、stack/args を `vibe run --break` から翻訳）+ `integrations/vscode-vibe`（debuggers contribution + adapter factory）。launcher は `--break`/`--trace` の stderr を FIFO で live stream（対話/DAP 用）。`scripts/test_vibe_dap.js` 25/25（純関数）。E2E は VS Code 必要。
 
 > **DAP P1-P4 の実装設計（2026-06-25 調査）** — これは LSP サーバ構築に匹敵する
 > 多コンポーネントの大型機能で、専用の focused 作業が必要:
@@ -475,7 +598,15 @@ install/​debugger と runtime 前提を一本化する。`vibe lsp` を selfho
 - [ ] **4-2 selfhost への index 移植**（M2–M3）— `src/frontend/symbol_index.mbt`
       相当を `vibe/compiler/` 側に持ち、host 依存を外す。
 - [~] **4-3 definition / hover / completion / references / rename**（M3）—
-      definition / completion / references / rename をテキスト走査ベースで実装済み。
+      definition / completion はテキスト走査ベース。**references / rename は AST 精度化**:
+      `vibe binding-at <file> <line> <col>`（selfhost の `binding_occurrences`: 位置の
+      識別子の binding を特定し、その occurrence の char-span を返す）を LSP rename/
+      references が消費し、文字列/コメント/部分語の誤マッチを排除（テキスト走査に
+      fallback）。検証済み（`scripts/test_vibe_binding_at.sh`、`test_vibe_lsp.js` 16/16）。
+      **scope/shadowing 精度も着地**: `binding_occurrences` が scope-stack walk で
+      カーソル識別子を最近接の binding（let/param/for/match binder）に解決し、その
+      binding の occurrence のみ返す（f の `x` と g の `x` を区別、トップレベルは
+      file-wide）。`test_vibe_binding_at.sh` 7/7。
       **hover は型付きに昇格**: `vibe type-at <file> <line> <col>`（selfhost の
       `type_at_source`: 位置の EIdent を実オフセットで特定 → `check_program` →
       `env_lookup` + `type_to_string`）で推論型を返し、LSP hover が表示する
@@ -526,10 +657,11 @@ install/​debugger と runtime 前提を一本化する。`vibe lsp` を selfho
    `js/vibe/lsp.js` の transport 抽象はブラウザ/embedding 用途の補助に留める
    （テーマ 4）。
 
-未決（要 ADR）:
-
-4. **言語仕様 freeze の範囲**（M4）— どこまでを 1.0 で凍結し SemVer 保証するか。
+4. ✅ **言語仕様 freeze の範囲**（M4, ADR-0057）— 1.0 で SemVer 2.0.0 保証する
+   stable surface（言語コア / prelude / CLI / フォーマット）と、対象外の
+   unstable surface（async / component model / capability / SIMD / span-arc /
+   incremental / wasm-gc gap）を [spec/1.0-freeze.md](spec/1.0-freeze.md) に確定。
 
 > runtime 前提は install・LSP・debugger すべて「独自 wasmtime runner +
 > selfhost wasm」に一本化された。node は補助（`js/vibe/`、ブラウザ playground）
-> に限定する。残る ADR は仕様 freeze（4）のみ。
+> に限定する。ADR 決定事項はすべて確定（install/module/LSP host/仕様 freeze）。

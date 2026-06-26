@@ -92,7 +92,10 @@ function handle(msg) {
       if (!doc || !newName) { reply(msg.id, null); break; }
       const word = wordAt(doc.text, msg.params.position);
       if (!word) { reply(msg.id, null); break; }
-      const edits = findReferences(doc.text, word).map((range) => ({ range, newText: newName }));
+      // Prefer AST-accurate occurrences (vibe binding-at); fall back to the
+      // whole-word text scan when unavailable.
+      const ranges = bindingOccurrences(uri, msg.params.position) || findReferences(doc.text, word);
+      const edits = ranges.map((range) => ({ range, newText: newName }));
       reply(msg.id, { changes: { [uri]: edits } });
       break;
     }
@@ -101,7 +104,9 @@ function handle(msg) {
       const doc = docs.get(uri);
       if (!doc) { reply(msg.id, []); break; }
       const word = wordAt(doc.text, msg.params.position);
-      reply(msg.id, word ? findReferences(doc.text, word).map((range) => ({ uri, range })) : []);
+      if (!word) { reply(msg.id, []); break; }
+      const refs = bindingOccurrences(uri, msg.params.position) || findReferences(doc.text, word);
+      reply(msg.id, refs.map((range) => ({ uri, range })));
       break;
     }
     case "textDocument/documentHighlight": {
@@ -122,7 +127,14 @@ function handle(msg) {
     case "textDocument/documentSymbol": {
       const uri = msg.params.textDocument.uri;
       const doc = docs.get(uri);
-      reply(msg.id, doc ? documentSymbols(doc.text) : []);
+      if (!doc) { reply(msg.id, []); break; }
+      // Prefer the compiler's AST-accurate outline (handles multi-line decls,
+      // module-nested symbols, no string/comment false matches); fall back to
+      // the line-regex scan when the compiler can't answer.
+      const syms = compilerSymbols(uri);
+      reply(msg.id, syms
+        ? syms.map((s) => ({ name: s.name, kind: s.kind, range: s.selectionRange, selectionRange: s.selectionRange }))
+        : documentSymbols(doc.text));
       break;
     }
     case "textDocument/definition": {
@@ -130,7 +142,13 @@ function handle(msg) {
       const doc = docs.get(uri);
       if (!doc) { reply(msg.id, null); break; }
       const word = wordAt(doc.text, msg.params.position);
-      const decl = word ? findDeclaration(doc.text, word) : null;
+      if (!word) { reply(msg.id, null); break; }
+      // Prefer the compiler's AST-accurate declaration span; fall back to the
+      // line-regex scan when unavailable.
+      const syms = compilerSymbols(uri);
+      const sym = syms && syms.find((s) => s.name === word);
+      if (sym) { reply(msg.id, { uri, range: sym.selectionRange }); break; }
+      const decl = findDeclaration(doc.text, word);
       reply(msg.id, decl ? { uri, range: decl.selectionRange } : null);
       break;
     }
@@ -249,13 +267,50 @@ function uriToPath(uri) {
 // likely offending token. Falls back to the first non-empty line.
 function locate(text, message) {
   const lines = text.split(/\r?\n/);
-  // Exact location: the compiler now prefixes parse diagnostics with
-  // `line N:col M:` (source-span foundation). Prefer it when present.
+  // Pull a quoted or "unknown name: X" / "... 'op' ..." symbol out of the msg.
+  // (The leading quote in "unknown field 'x'" is consumed before the name so
+  // the field name — not the quote — is captured.)
+  let needle = null;
+  let m;
+  if ((m = /unknown name:\s*([A-Za-z_][A-Za-z0-9_]*)/.exec(message))) needle = m[1];
+  else if ((m = /unbound (?:variable|name)\s*[:]?\s*([A-Za-z_][A-Za-z0-9_]*)/i.exec(message))) needle = m[1];
+  else if ((m = /unknown (?:field|ctor|type|name)\s*[:]?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)/i.exec(message))) needle = m[1];
+  else if ((m = /['"]([^'"]+)['"]/.exec(message))) needle = m[1];
+
+  // Exact location: the compiler prefixes diagnostics with `line N:col M:` or,
+  // when it knows the offending token's length, `line N:col M-K:` (an exact
+  // source range). Prefer it when present.
   let lc;
-  if ((lc = /\bline\s+(\d+):(\d+):/.exec(message))) {
+  if ((lc = /\bline\s+(\d+):(\d+)(?:-(\d+))?:/.exec(message))) {
     const li = Math.max(0, parseInt(lc[1], 10) - 1);
     const co = Math.max(0, parseInt(lc[2], 10) - 1);
     const lineText = lines[li] || "";
+    // Exact range from the compiler (`col M-K`): highlight [M, K) verbatim —
+    // this is authoritative even for qualified names (`Mod.foo`) that a
+    // word-scan would truncate at the dot.
+    if (lc[3]) {
+      const endCh = Math.max(co + 1, parseInt(lc[3], 10) - 1);
+      return { start: { line: li, character: co }, end: { line: li, character: endCh } };
+    }
+    // The AST anchor (co) is the offending *expression's* start, which for a
+    // field access `p.x` is the base `p` — not the field. When the message
+    // names the offending token, highlight that token at/after the anchor
+    // (for field errors, after the `.`) so the squiggle lands on the field
+    // rather than blind-scanning the base identifier.
+    if (needle) {
+      let from = co;
+      if (/unknown field/i.test(message)) {
+        const dot = lineText.indexOf(".", co);
+        if (dot >= 0) from = dot + 1;
+      }
+      const at = lineText.indexOf(needle, from);
+      if (at >= 0) {
+        return {
+          start: { line: li, character: at },
+          end: { line: li, character: at + needle.length },
+        };
+      }
+    }
     // Tighten the end to the identifier under the column when there is one
     // (the message carries no token length); else highlight to end of line.
     let end = co;
@@ -266,13 +321,6 @@ function locate(text, message) {
       end: { line: li, character: end },
     };
   }
-  // Pull a quoted or "unknown name: X" / "... 'op' ..." symbol out of the msg.
-  let needle = null;
-  let m;
-  if ((m = /unknown name:\s*([A-Za-z_][A-Za-z0-9_]*)/.exec(message))) needle = m[1];
-  else if ((m = /unbound (?:variable|name)\s*[:]?\s*([A-Za-z_][A-Za-z0-9_]*)/i.exec(message))) needle = m[1];
-  else if ((m = /unknown (?:field|ctor|type|name)\s*[:]?\s*([A-Za-z_][A-Za-z0-9_]*)/i.exec(message))) needle = m[1];
-  else if ((m = /['"]([^'"]+)['"]/.exec(message))) needle = m[1];
 
   if (needle) {
     for (let i = 0; i < lines.length; i++) {
@@ -313,6 +361,81 @@ function typeAt(uri, position) {
     return (res.stdout || "").trim();
   } catch {
     return "";
+  } finally {
+    try { fs.unlinkSync(tmp); } catch {}
+    try { fs.unlinkSync(`${tmp}.diag`); } catch {}
+  }
+}
+
+// Convert a 0-based char offset into an LSP {line, character} position.
+function offsetToPosition(text, off) {
+  let line = 0, lineStart = 0;
+  const n = Math.min(off, text.length);
+  for (let i = 0; i < n; i++) if (text[i] === "\n") { line++; lineStart = i + 1; }
+  return { line, character: off - lineStart };
+}
+
+// AST-accurate occurrences of the binding under `position`, via `vibe
+// binding-at` (one "START END" char-span per line). Returns LSP ranges, or null
+// when unavailable (older compiler / non-identifier position) so callers can
+// fall back to the whole-word text scan. Unlike the text scan, this never
+// matches inside strings/comments or partial words.
+function bindingOccurrences(uri, position) {
+  const doc = docs.get(uri);
+  if (!doc) return null;
+  const filePath = uriToPath(uri);
+  const dir = fs.existsSync(path.dirname(filePath)) ? path.dirname(filePath) : os.tmpdir();
+  const tmp = path.join(dir, `.vibe-lsp-ba-${process.pid}-${Math.abs(hash(uri))}.vibe`);
+  try {
+    fs.writeFileSync(tmp, doc.text, "utf8");
+    const res = spawnSync(VIBE_BIN, ["binding-at", tmp, String(position.line + 1), String(position.character + 1)], { encoding: "utf8" });
+    const ranges = [];
+    for (const l of (res.stdout || "").split(/\r?\n/)) {
+      const m = /^\s*(\d+)\s+(\d+)\s*$/.exec(l);
+      if (m) ranges.push({ start: offsetToPosition(doc.text, +m[1]), end: offsetToPosition(doc.text, +m[2]) });
+    }
+    return ranges.length ? ranges : null;
+  } catch {
+    return null;
+  } finally {
+    try { fs.unlinkSync(tmp); } catch {}
+    try { fs.unlinkSync(`${tmp}.diag`); } catch {}
+  }
+}
+
+// AST-accurate declaration outline via `vibe symbols` (one "NAME KIND START END"
+// per line; KIND = LSP SymbolKind, START/END = char offsets of the name).
+// Returns an array of { name, kind, selectionRange } (selectionRange spans the
+// name), or null when unavailable (older compiler / no symbols) so callers can
+// fall back to the line-regex scan. Unlike the regex, this handles multi-line
+// declarations, module-nested symbols, and never false-matches names that only
+// appear inside strings or comments.
+function compilerSymbols(uri) {
+  const doc = docs.get(uri);
+  if (!doc) return null;
+  const filePath = uriToPath(uri);
+  const dir = fs.existsSync(path.dirname(filePath)) ? path.dirname(filePath) : os.tmpdir();
+  const tmp = path.join(dir, `.vibe-lsp-sym-${process.pid}-${Math.abs(hash(uri))}.vibe`);
+  try {
+    fs.writeFileSync(tmp, doc.text, "utf8");
+    const res = spawnSync(VIBE_BIN, ["symbols", tmp], { encoding: "utf8" });
+    const out = [];
+    for (const l of (res.stdout || "").split(/\r?\n/)) {
+      const m = /^(\S+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$/.exec(l);
+      if (m) {
+        out.push({
+          name: m[1],
+          kind: +m[2],
+          selectionRange: {
+            start: offsetToPosition(doc.text, +m[3]),
+            end: offsetToPosition(doc.text, +m[4]),
+          },
+        });
+      }
+    }
+    return out.length ? out : null;
+  } catch {
+    return null;
   } finally {
     try { fs.unlinkSync(tmp); } catch {}
     try { fs.unlinkSync(`${tmp}.diag`); } catch {}

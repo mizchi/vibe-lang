@@ -113,12 +113,18 @@ reproducible builds:
 This is an MVP of [docs/release-roadmap.md](release-roadmap.md) テーマ2 — seamless
 `import "<url>"` syntax and transitive resolution are tracked there.
 
-## Editor support (LSP, MVP)
+## Editor support (LSP)
 
 `vibe lsp` starts a stdio LSP server that drives the selfhost compiler. It
-provides: live diagnostics (located parse + common type errors), document
-outline, go-to-definition, hover, completion, find-references, and rename.
+provides: live diagnostics (all top-level parse errors via error recovery +
+located type error), document outline, go-to-definition, **typed hover**
+(inferred type of the identifier, including locals/params), completion,
+signature help, and **scope-accurate find-references / rename**.
 Point your editor's LSP client at `vibe lsp` for the `vibe` language.
+
+> Full feature list, the underlying query primitives (`vibe type-at` /
+> `binding-at` / `diagnostics`), and the interactive debugger are documented in
+> [editor-and-debugging.md](editor-and-debugging.md).
 
 **VS Code**: install `integrations/vscode-vibe` (it launches `vibe lsp`).
 
@@ -143,9 +149,11 @@ language-servers = ["vibe-lsp"]
 ```
 
 Diagnostics carry an exact line:col for parse errors and common type errors
-(unknown name / arity / field / ctor); other locations are approximate until
-the selfhost frontend tracks full source spans (typed hover and scope-accurate
-rename also await that). See [docs/release-roadmap.md](release-roadmap.md) テーマ4.
+(unknown name / arity / field / ctor), and identifier-use positions resolve to
+their inferred type via the per-node type table (typed hover). Rename /
+references are AST-accurate (scope-aware binding occurrences). Remaining
+precision work (call-site / expression-node spans) is tracked as span-arc in
+[docs/release-roadmap.md](release-roadmap.md) テーマ4.
 
 ## Updating the compiler independently of the runner
 

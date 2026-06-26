@@ -401,6 +401,22 @@ let offset_line_col_prefix: (String, Int) -> String = (source, off) -> {
   String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
 }
 
+// Build a `line L:colC-E: ` RANGE prefix from a (start, end) char-offset span.
+// When start and end fall on the same source line this carries the exact end
+// column so the LSP can highlight the precise token (incl. qualified names);
+// when end is on a later line (or not greater than start) it degrades to the
+// point prefix. Backward compatible: `line L:` still leads, so existing
+// `grep -F "line N:"` assertions keep matching. String::concat only.
+let offset_line_col_range_prefix: (String, Int, Int) -> String = (source, start, endo) -> {
+  let (l1, c1) = offset_to_line_col(source, start)
+  let (l2, c2) = offset_to_line_col(source, endo)
+  if l1 == l2 && endo > start {
+    String::concat("line ", String::concat(__to_string(l1), String::concat(":", String::concat(__to_string(c1), String::concat("-", String::concat(__to_string(c2), ": "))))))
+  } else {
+    offset_line_col_prefix(source, start)
+  }
+}
+
 // Parse a non-negative decimal integer from msg[start..end). Returns -1 if the
 // span is empty or contains a non-digit (callers then fall through to the text
 // heuristic).
@@ -439,18 +455,35 @@ let locate_type_error: (String, String) -> String = (source, msg) -> {
   if mi < 0 {
     locate_type_error_heuristic(source, msg)
   } else {
-    let num_start = mi + String::length(marker)
-    let rel_end = String::index_of(String::substring(msg, num_start, String::length(msg)), "]")
+    let inner_start = mi + String::length(marker)
+    let rel_end = String::index_of(String::substring(msg, inner_start, String::length(msg)), "]")
     if rel_end < 0 {
       // Malformed marker (no closing `]`): strip from the marker onward.
       locate_type_error_heuristic(source, String::substring(msg, 0, mi))
     } else {
-      let num_end = num_start + rel_end
-      let n = parse_offset_digits(msg, num_start, num_end)
+      let close = inner_start + rel_end
+      // inner is `N` (start only) or `N:M` (start:end). Split on `:`.
+      let inner = String::substring(msg, inner_start, close)
+      let colon = String::index_of(inner, ":")
+      let n = if colon < 0 {
+        parse_offset_digits(inner, 0, String::length(inner))
+      } else {
+        parse_offset_digits(inner, 0, colon)
+      }
+      let m = if colon < 0 {
+        -1
+      } else {
+        parse_offset_digits(inner, colon + 1, String::length(inner))
+      }
       // Strip the full ` [@off=...]` segment (marker .. closing `]` inclusive).
-      let stripped = String::concat(String::substring(msg, 0, mi), String::substring(msg, num_end + 1, String::length(msg)))
-      if n >= 0 && n < String::length(source) {
-        String::concat(offset_line_col_prefix(source, n), stripped)
+      let stripped = String::concat(String::substring(msg, 0, mi), String::substring(msg, close + 1, String::length(msg)))
+      let slen = String::length(source)
+      if n >= 0 && n < slen {
+        if m > n && m <= slen {
+          String::concat(offset_line_col_range_prefix(source, n, m), stripped)
+        } else {
+          String::concat(offset_line_col_prefix(source, n), stripped)
+        }
       } else {
         locate_type_error_heuristic(source, stripped)
       }

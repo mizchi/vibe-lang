@@ -180,7 +180,48 @@ export struct CompileCtx {
   effect_op_keys: Array[String];
   effect_op_arities: Array[Int];
   // #cov branch coverage state (linear backend). cov_disabled() when off.
-  cov: CovState
+  cov: CovState;
+  // Interior-line breakpoints (span-arc step5): wasm function index of the
+  // `vibe::dbg_line` host import, or -1 when off (default / non-break /
+  // multi-file). When >= 0, the ELet/ELetMut/ESeq handlers emit
+  // `i32.const <line>` + `call dbg_line_idx` at each statement boundary so the
+  // runner can pause at interior source lines. Default -1: codegen unchanged.
+  dbg_line_idx: Int;
+  // Interior-line breakpoints: sorted newline char-offsets of THIS function's
+  // source file, used to map a statement's char-offset to a 1-based line. Empty
+  // when off.
+  dbg_line_nl: Array[Int];
+  // Interior-line breakpoints (multi-file): the file id of THIS function's source
+  // file (index into `vibe.dbgfiles`), emitted alongside the line so the runner
+  // matches `--break <file>:<line>` against the right file. 0 when off.
+  dbg_line_file_id: Int
+}
+
+// Interior-line breakpoints (span-arc step5, multi-file): per-file provenance the
+// break codegen needs to emit `vibe::dbg_line(<file_id>, <line>)` and a
+// `vibe.dbgfiles` section. `files[k]` is the basename of source file id k;
+// `file_nls[k]` its newline char-offsets; `stmt_file_id[s]` the file id of merged
+// top-level statement s. Empty (via empty_dbg_prov) on non-break builds.
+export struct DbgProv {
+  files: Array[String];
+  file_nls: Array[Array[Int]];
+  stmt_file_id: Array[Int]
+}
+
+export let empty_dbg_prov: () -> DbgProv = () -> {
+  DbgProv::{
+    files: Array::slice([
+      ""
+    ], 0, 0),
+    file_nls: Array::slice([
+      Array::slice([
+        0
+      ], 0, 0)
+    ], 0, 0),
+    stmt_file_id: Array::slice([
+      0
+    ], 0, 0)
+  }
 }
 
 export struct CompileCtxGc {
@@ -229,7 +270,7 @@ export let expr_tag: (Expr) -> Int = (expr) -> {
     EBinOp(_, _, _) => 5,
     EUnaryOp(_, _) => 6,
     EIf(_, _, _) => 7,
-    ECall(_, _) => 8,
+    ECall(_, _, _) => 8,
     ELet(_, _, _) => 9,
     ELetRec(_, _, _) => 10,
     ELetMut(_, _, _) => 11,
@@ -423,7 +464,7 @@ export let get_elet_val: (Expr) -> Expr with { Error } = (expr) -> {
 
 export let is_ctor_call: (Expr, CtorTable) -> Bool = (value, ct) -> {
   match value {
-    ECall(callee, _) => match callee {
+    ECall(callee, _, _) => match callee {
       EIdent(nm, _) => lookup_ctor(ct.names, nm, 0) >= 0,
       _ => false
     },

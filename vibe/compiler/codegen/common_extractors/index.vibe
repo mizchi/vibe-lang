@@ -13,6 +13,70 @@ let op_prefix = 252
 
 //# Functions
 
+// Interior-line breakpoints (span-arc step5): return the first available source
+// char-offset for `e`, walking into the most-representative child until an
+// offset-carrying node is found, or -1 if none. EIdent/ECall/EDot carry real
+// char-offsets; for ECall/EDot prefer the node's own offset, else recurse into
+// the callee/base. A statement's offset is thus derived from its VALUE
+// subexpression. Flat single match, tail-recursive into one child per arm.
+export let rec first_offset: (Expr) -> Int = (e) -> {
+  match e {
+    EIdent(_, off) => off,
+    ECall(callee, _, off) => if off >= 0 { off } else { first_offset(callee) },
+    EDot(base, _, off) => if off >= 0 { off } else { first_offset(base) },
+    EBinOp(_, lhs, _) => first_offset(lhs),
+    EUnaryOp(_, inner) => first_offset(inner),
+    ELet(_, val, _) => first_offset(val),
+    ELetRec(_, val, _) => first_offset(val),
+    ELetMut(_, val, _) => first_offset(val),
+    EAssign(_, val, _) => first_offset(val),
+    EAssignOp(_, _, val, _) => first_offset(val),
+    ESeq(first, _) => first_offset(first),
+    EIf(cond, _, _) => first_offset(cond),
+    EMatch(scrut, _) => first_offset(scrut),
+    EThrow(inner) => first_offset(inner),
+    EReturn(inner) => first_offset(inner),
+    _ => -1
+  }
+}
+
+// Interior-line breakpoints: convert a 0-based source char-offset to a 1-based
+// line number using a sorted array of newline char-offsets: line = 1 + (count of
+// newline offsets strictly less than `off`). Linear scan (programs are small).
+export let offset_to_line: (Array[Int], Int) -> Int = (nl, off) -> {
+  let n = Array::length(nl)
+  let mut i = 0
+  let mut count = 0
+  while i < n {
+    if Array::get(nl, i) < off {
+      count = count + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  count + 1
+}
+
+// Interior-line breakpoints: build a sorted array of the char-offsets of each
+// '\n' in `src`. Empty when `src` is empty.
+export let build_newline_offsets: (String) -> Array[Int] = (src) -> {
+  let arr = Array::slice([
+    0
+  ], 0, 0)
+  let n = String::length(src)
+  let mut i = 0
+  while i < n {
+    if String::char_code_at(src, i) == 10 {
+      Array::push(arr, i)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  arr
+}
+
 export let get_ebinop_lhs: (Expr) -> Expr with { Error } = (expr) -> {
   match expr {
     EBinOp(_, lhs, _) => lhs,
@@ -29,7 +93,7 @@ export let get_ebinop_rhs: (Expr) -> Expr with { Error } = (expr) -> {
 
 export let get_ecall_args: (Expr) -> Array[Expr] with { Error } = (expr) -> {
   match expr {
-    ECall(_, args) => args,
+    ECall(_, args, _) => args,
     _ => throw("not ECall")
   }
 }
@@ -302,7 +366,7 @@ export let get_eassignop_op: (Expr) -> String with { Error } = (expr) -> {
 
 export let get_ecall_callee: (Expr) -> Expr with { Error } = (expr) -> {
   match expr {
-    ECall(callee, _) => callee,
+    ECall(callee, _, _) => callee,
     _ => throw("not ECall")
   }
 }

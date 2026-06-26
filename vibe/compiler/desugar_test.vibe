@@ -12,7 +12,7 @@ import ./desugar.vibe {
 
 let is_edot: (Expr) -> Bool = (e) -> {
   match e {
-    EDot(_, _) => true,
+    EDot(_, _, _) => true,
     _ => false
   }
 }
@@ -40,7 +40,7 @@ let is_slet: (Stmt) -> Bool = (s) -> {
 
 let edot_obj: (Expr) -> Expr = (e) -> {
   match e {
-    EDot(o, _) => o,
+    EDot(o, _, _) => o,
     _ => EUnit
   }
 }
@@ -54,7 +54,7 @@ let eint_val: (Expr) -> Int = (e) -> {
 
 let is_ecall: (Expr) -> Bool = (e) -> {
   match e {
-    ECall(_, _) => true,
+    ECall(_, _, _) => true,
     _ => false
   }
 }
@@ -110,7 +110,7 @@ let slet_body: (Stmt) -> Expr = (s) -> {
 
 let ecall_args: (Expr) -> Array[Expr] = (e) -> {
   match e {
-    ECall(_, a) => a,
+    ECall(_, a, _) => a,
     _ => Array::slice([
       EUnit
     ], 0, 0)
@@ -119,7 +119,7 @@ let ecall_args: (Expr) -> Array[Expr] = (e) -> {
 
 let edot_field: (Expr) -> String = (e) -> {
   match e {
-    EDot(_, f) => f,
+    EDot(_, f, _) => f,
     _ => ""
   }
 }
@@ -142,7 +142,7 @@ let earray_elems: (Expr) -> Array[Expr] = (e) -> {
 
 let ecall_callee: (Expr) -> Expr = (e) -> {
   match e {
-    ECall(c, _) => c,
+    ECall(c, _, _) => c,
     _ => EUnit
   }
 }
@@ -184,7 +184,7 @@ test "pipe simple: x |> f => f(x)" {
 test "pipe with args: x |> f(y) => f(x, y)" {
   let result = desugar_expr(EBinOp("|>", EInt(1), ECall(EIdent("f", -1), [
     EInt(2)
-  ])))
+  ], -1)))
   assert(is_ecall(result))
   assert(eident_name(ecall_callee(result)) == "f")
   assert(eq(Array::length(ecall_args(result)), 2))
@@ -193,9 +193,9 @@ test "pipe with args: x |> f(y) => f(x, y)" {
 }
 
 test "method call: obj.method() preserved as ECall(EDot(...))" {
-  let result = desugar_expr(ECall(EDot(EIdent("x", -1), "len"), Array::slice([
+  let result = desugar_expr(ECall(EDot(EIdent("x", -1), "len", -1), Array::slice([
     EUnit
-  ], 0, 0)))
+  ], 0, 0), -1))
   assert(is_ecall(result))
   let callee = ecall_callee(result)
   assert(is_edot(callee))
@@ -204,9 +204,9 @@ test "method call: obj.method() preserved as ECall(EDot(...))" {
 }
 
 test "method call with args: obj.push(1) preserved" {
-  let result = desugar_expr(ECall(EDot(EIdent("x", -1), "push"), [
+  let result = desugar_expr(ECall(EDot(EIdent("x", -1), "push", -1), [
     EInt(1)
-  ]))
+  ], -1))
   assert(is_ecall(result))
   let callee = ecall_callee(result)
   assert(is_edot(callee))
@@ -222,7 +222,7 @@ test "non-pipe binop passes through" {
 }
 
 test "EDot without call passes through" {
-  let result = desugar_expr(EDot(EIdent("x", -1), "y"))
+  let result = desugar_expr(EDot(EIdent("x", -1), "y", -1))
   assert(is_edot(result))
   assert(edot_field(result) == "y")
   assert(eident_name(edot_obj(result)) == "x")
@@ -266,9 +266,9 @@ test "chained pipe: x |> f |> g => g(f(x))" {
 }
 
 test "pipe into method call: 1 |> obj.method() preserved EDot" {
-  let result = desugar_expr(EBinOp("|>", EInt(1), ECall(EDot(EIdent("obj", -1), "method"), Array::slice([
+  let result = desugar_expr(EBinOp("|>", EInt(1), ECall(EDot(EIdent("obj", -1), "method", -1), Array::slice([
     EUnit
-  ], 0, 0))))
+  ], 0, 0), -1)))
   // pipe prepends 1 to args of ECall(EDot(obj, method), [])
   assert(is_ecall(result))
   let callee = ecall_callee(result)
@@ -279,11 +279,11 @@ test "pipe into method call: 1 |> obj.method() preserved EDot" {
 }
 
 test "chained method: x.a().b() preserved as nested EDot" {
-  let result = desugar_expr(ECall(EDot(ECall(EDot(EIdent("x", -1), "a"), Array::slice([
+  let result = desugar_expr(ECall(EDot(ECall(EDot(EIdent("x", -1), "a", -1), Array::slice([
     EUnit
-  ], 0, 0)), "b"), Array::slice([
+  ], 0, 0), -1), "b", -1), Array::slice([
     EUnit
-  ], 0, 0)))
+  ], 0, 0), -1))
   assert(is_ecall(result))
   let callee = ecall_callee(result)
   assert(is_edot(callee))
@@ -297,9 +297,9 @@ test "chained method: x.a().b() preserved as nested EDot" {
 }
 
 test "pipe into obj.push(): 1 |> obj.push() preserved EDot" {
-  let result = desugar_expr(EBinOp("|>", EInt(1), ECall(EDot(EIdent("obj", -1), "push"), Array::slice([
+  let result = desugar_expr(EBinOp("|>", EInt(1), ECall(EDot(EIdent("obj", -1), "push", -1), Array::slice([
     EUnit
-  ], 0, 0))))
+  ], 0, 0), -1)))
   assert(is_ecall(result))
   let callee = ecall_callee(result)
   assert(is_edot(callee))

@@ -43,6 +43,23 @@ let off_marker: (Int) -> String = (off) -> {
   }
 }
 
+// Like off_marker but also encodes the offending token's END offset as
+// `[@off=N:M]` (M = off + len), so the located-diagnostics layer can emit an
+// EXACT source range (line:colC-E) instead of the LSP guessing the token end
+// with a word-scan — which mis-handles qualified names like `Mod.foo` (the scan
+// stops at the dot). Falls back to the start-only marker when len <= 0. Use this
+// where `off` is the START of a known-length named token (the symbol whose
+// length matches the source span); keep plain off_marker where the offset is an
+// anchor rather than the token start (e.g. a field error whose offset is the
+// base expr). String::concat only (NUL-miscodegen hazard for `+`/interpolation).
+let off_marker_len: (Int, Int) -> String = (off, len) -> {
+  if off >= 0 && len > 0 {
+    String::concat(" [@off=", String::concat(__to_string(off), String::concat(":", String::concat(__to_string(off + len), "]"))))
+  } else {
+    off_marker(off)
+  }
+}
+
 let prepend_expr: (Expr, Array[Expr]) -> Array[Expr] = (first, rest) -> {
   let out = Array::slice([
     EUnit
@@ -354,6 +371,22 @@ let rec resolve_tparams_in: (Type, TypeEnv) -> Type = (ty, env) -> {
   }
 }
 
+// Record a call-site node's (raw, pre-final-subst) result type `ty` keyed by
+// its real source char offset `call_off`, for typed-hover (vibe type-at) on
+// `foo(x)` / `obj.method(x)`, then return `ty` unchanged so it can be dropped
+// into the call-result tuple in place. Synthetic calls (call_off < 0) skip the
+// push. Used at the ECall result sites (NOT by wrapping the giant ECall match,
+// which the bootstrap seed parser cannot reparse when that match is nested one
+// level deeper — only the interior result types are tagged).
+let tab_call_ty: (Array[(Int, Type)], Int, Type) -> Type = (tytab, call_off, ty) -> {
+  if call_off >= 0 {
+    Array::push(tytab, (call_off, ty))
+  } else {
+    ()
+  }
+  ty
+}
+
 export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int) = (expr, env, defs, s, c, errors, tytab) -> {
   match expr {
     EInt(_) => (CtInt, s, c),
@@ -394,7 +427,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
           (t, s, c)
         },
         None => {
-          Array::push(errors, String::concat(String::concat("unknown name: ", name), off_marker(ident_off)))
+          Array::push(errors, String::concat(String::concat("unknown name: ", name), off_marker_len(ident_off, String::length(name))))
           (CtUnknown, s, c)
         }
       }
@@ -454,7 +487,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       let (_, s3, c3) = check_expr(else_e, env, defs, s2, c2, errors, tytab)
       (tt, s3, c3)
     },
-    ECall(callee, args) => match callee {
+    ECall(callee, args, call_off) => match callee {
       // `perform EffName::Op(opargs)` parses as ECall(EIdent("perform"),
       // [ECall(EIdent("EffName::Op"), opargs)]). The op name may be a builtin
       // effect (Stdin/Stdout/...) not registered in the checker env, so check
@@ -464,7 +497,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       EIdent(name, callee_off) => if name == "perform" {
         if Array::length(args) == 1 {
           match Array::get(args, 0) {
-            ECall(_, opargs) => {
+            ECall(_, opargs, _) => {
               let oalen = Array::length(opargs)
               let mut s1 = s
               let mut c1 = c
@@ -503,9 +536,9 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       } else if name == "Some" {
         if Array::length(args) == 1 {
           let (at, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
-          (CtOption(subst_apply(s1, at)), s1, c1)
+          (tab_call_ty(tytab, call_off, CtOption(subst_apply(s1, at))), s1, c1)
         } else {
-          (CtOption(CtUnknown), s, c)
+          (tab_call_ty(tytab, call_off, CtOption(CtUnknown)), s, c)
         }
       } else {
         match direct_call_return(env, name) {
@@ -520,7 +553,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
               c2 = nc
               ai = ai + 1
             }
-            (subst_apply(s2, ret_ty), s2, c2)
+            (tab_call_ty(tytab, call_off, subst_apply(s2, ret_ty)), s2, c2)
           },
           None => {
             let (ct, s1, c1) = check_expr(EIdent(name, -1), env, defs, s, c, errors, tytab)
@@ -551,19 +584,19 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
                 let plen2 = Array::length(param_tys)
                 let alen3 = Array::length(arg_tys)
                 if alen3 != plen2 {
-                  Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(name, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))), off_marker(callee_off)))
+                  Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(name, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))), off_marker_len(callee_off, String::length(name))))
                 }
                 let s3 = unify_call_args(call_param_tys, arg_tys, s2)
                 let call_ret = Array::get(ret_box, 0)
-                (subst_apply(s3, call_ret), s3, c2)
+                (tab_call_ty(tytab, call_off, subst_apply(s3, call_ret)), s3, c2)
               },
-              CtStruct(sname) => (CtStruct(sname), s2, c2),
-              _ => (CtUnknown, s2, c2)
+              CtStruct(sname) => (tab_call_ty(tytab, call_off, CtStruct(sname)), s2, c2),
+              _ => (tab_call_ty(tytab, call_off, CtUnknown), s2, c2)
             }
           }
         }
       },
-      EDot(obj, method) => {
+      EDot(obj, method, _) => {
         let (obj_ty, s1, c1) = check_expr(obj, env, defs, s, c, errors, tytab)
         let resolved = subst_apply(s1, obj_ty)
         let type_prefix = type_name_prefix(resolved)
@@ -609,7 +642,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
             let plen = Array::length(param_tys)
             let alen2 = Array::length(arg_tys)
             if alen2 != plen {
-              Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(qualified, String::concat(": expected ", String::concat(__to_string(plen), String::concat(" args, got ", __to_string(alen2)))))), off_marker(-1)))
+              Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(qualified, String::concat(": expected ", String::concat(__to_string(plen), String::concat(" args, got ", __to_string(alen2)))))), off_marker_len(call_off, String::length(qualified))))
             }
             let s4 = unify_call_args(call_param_tys, arg_tys, s3)
             let call_ret = Array::get(ret_box, 0)
@@ -617,11 +650,11 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
               Some(t) => t,
               None => call_ret
             }
-            (subst_apply(s4, selected_ret), s4, c3)
+            (tab_call_ty(tytab, call_off, subst_apply(s4, selected_ret)), s4, c3)
           },
           _ => match direct_ret {
-            Some(t) => (t, s3, c3),
-            None => (CtUnknown, s3, c3)
+            Some(t) => (tab_call_ty(tytab, call_off, t), s3, c3),
+            None => (tab_call_ty(tytab, call_off, CtUnknown), s3, c3)
           }
         }
       },
@@ -640,7 +673,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
                 c2 = nc
                 ai = ai + 1
               }
-              (subst_apply(s2, ret_ty), s2, c2)
+              (tab_call_ty(tytab, call_off, subst_apply(s2, ret_ty)), s2, c2)
             },
             None => {
               let (ct, s1, c1) = check_expr(callee, env, defs, s, c, errors, tytab)
@@ -671,14 +704,14 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
                 let plen2 = Array::length(param_tys)
                 let alen3 = Array::length(arg_tys)
                 if alen3 != plen2 {
-                  Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(callee_name0, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))), off_marker(-1)))
+                  Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(callee_name0, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))), off_marker_len(call_off, String::length(callee_name0))))
                 }
                 let s3 = unify_call_args(call_param_tys, arg_tys, s2)
                 let call_ret = Array::get(ret_box, 0)
-                (subst_apply(s3, call_ret), s3, c2)
+                (tab_call_ty(tytab, call_off, subst_apply(s3, call_ret)), s3, c2)
               },
-              CtStruct(sname) => (CtStruct(sname), s2, c2),
-              _ => (CtUnknown, s2, c2)
+              CtStruct(sname) => (tab_call_ty(tytab, call_off, CtStruct(sname)), s2, c2),
+              _ => (tab_call_ty(tytab, call_off, CtUnknown), s2, c2)
             }
             }
           }
@@ -711,14 +744,14 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
                 let plen2 = Array::length(param_tys)
                 let alen3 = Array::length(arg_tys)
                 if alen3 != plen2 {
-                  Array::push(errors, String::concat("function arity mismatch for <expr>: expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))
+                  Array::push(errors, String::concat(String::concat("function arity mismatch for <expr>: expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))), off_marker(call_off)))
                 }
                 let s3 = unify_call_args(call_param_tys, arg_tys, s2)
                 let call_ret = Array::get(ret_box, 0)
-                (subst_apply(s3, call_ret), s3, c2)
+                (tab_call_ty(tytab, call_off, subst_apply(s3, call_ret)), s3, c2)
               },
-              CtStruct(sname) => (CtStruct(sname), s2, c2),
-              _ => (CtUnknown, s2, c2)
+              CtStruct(sname) => (tab_call_ty(tytab, call_off, CtStruct(sname)), s2, c2),
+              _ => (tab_call_ty(tytab, call_off, CtUnknown), s2, c2)
             }
         }
       }
@@ -833,30 +866,44 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       let (bt, s2, c2) = check_expr(body, env3, defs, s1, c1, errors, tytab)
       (CtArray(bt), s2, c2)
     },
-    EDot(obj, field) => {
+    EDot(obj, field, dot_off) => {
       let (obj_ty, s1, c1) = check_expr(obj, env, defs, s, c, errors, tytab)
       let resolved = subst_apply(s1, obj_ty)
       let field_ty = match resolved {
         CtStruct(sname) => match find_typedef(defs, sname) {
           Some(td) => match td {
             TDStruct(_, fields) => {
-              let rec find_field: (Int) -> Type = (i) -> {
+              let rec find_field: (Int) -> Option[Type] = (i) -> {
                 if i >= Array::length(fields) {
-                  CtUnknown
+                  None
                 } else {
                   let (fname, ftype) = Array::get(fields, i)
                   if fname == field {
-                    ftype
+                    Some(ftype)
                   } else find_field(i + 1)
                 }
               }
-              find_field(0)
+              match find_field(0) {
+                Some(ft) => ft,
+                None => {
+                  Array::push(errors, String::concat(String::concat("unknown field '", String::concat(field, String::concat("' on struct ", sname))), off_marker(dot_off)))
+                  CtUnknown
+                }
+              }
             },
             _ => CtUnknown
           },
           None => CtUnknown
         },
         _ => CtUnknown
+      }
+      // Record this field-access node's (raw, pre-final-subst) projection type
+      // keyed by its real source offset, for typed-hover on `obj.field`.
+      // Synthetic accesses (dot_off < 0) are skipped.
+      if dot_off >= 0 {
+        Array::push(tytab, (dot_off, field_ty))
+      } else {
+        ()
       }
       (field_ty, s1, c1)
     },

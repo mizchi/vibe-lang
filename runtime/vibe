@@ -16,11 +16,19 @@
 #                                         (each entry annotated with file:line)
 #   vibe run --break <fn>[,<fn>...] <file.vibe> [entry]
 #                                         pause at each named function's entry,
-#                                         print the call stack, then continue
+#                                         print the call stack, then continue.
+#                                         At a pause type a step command (stdin):
+#                                           s/step  = step into next function
+#                                           n/next  = step over (same/shallower)
+#                                           o/finish= finish current frame
+#                                           c/empty = continue
+#                                           q/quit  = abort the run
 #   vibe compile <file.vibe> -o <out>     compile to a .wasm
 #   vibe build   <file.vibe> -o <out>     alias of compile
 #   vibe check   <file.vibe>              parse + typecheck (no output kept)
 #   vibe type-at <file.vibe> <line> <col> print the inferred type at a position
+#   vibe binding-at <file.vibe> <line> <col> print binding occurrence spans (START END per line)
+#   vibe symbols <file.vibe>              print declaration outline (NAME KIND START END per line)
 #   vibe diagnostics <file.vibe>          print all syntax/type diagnostics
 #   vibe test    <file_test.vibe>...      compile + run test {} blocks
 #   vibe new     <dir>                    scaffold a starter project
@@ -261,78 +269,76 @@ case "$cmd" in
     # ` (<basename>:<line>)`, e.g. `<unknown>!boom (prog.vibe:1)`. stdout and the
     # exit status pass through unchanged; with no funcmap/no match stderr is
     # untouched. (See scripts/test_vibe_trace.sh.)
-    rerr="$(mktemp -t vibe-run-err-XXXXXX)"
-    # `set -e` must not abort on a trapping/non-zero program: capture its status
-    # and re-emit it ourselves below.
     status=0
     trace_env=""
     [ "$trace" = "1" ] && trace_env="VIBE_TRACE_OUT=1"
     # `--break`: pass the breakpoint spec via VIBE_BREAK and keep stdin attached
-    # so interactive pausing works (the runner auto-continues when stdin is not a
-    # TTY or VIBE_BREAK_AUTO=1). The expansion-produced assignment must go through
-    # `env`, not as a bare `$var` prefix (bash would treat it as a command).
+    # so the runner can read step commands (s/n/o/c/q) at each pause.
+    # VIBE_BREAK_AUTO=1 makes the runner auto-continue without reading stdin. The
+    # expansion-produced assignment must go through `env`, not a bare `$var`
+    # prefix (bash would treat it as a command).
     break_env=""
     [ "$brk" = "1" ] && break_env="VIBE_BREAK=$break_spec"
-    env $trace_env $break_env "$RUNNER" "$out" 2>"$rerr" || status=$?
-    if [ -s "$out.funcmap" ] && [ -s "$rerr" ]; then
-      VIBE_FUNCMAP="$out.funcmap" VIBE_SRCBASE="$(basename "$src")" \
-        awk '
-          BEGIN {
-            fm = ENVIRON["VIBE_FUNCMAP"]; base = ENVIRON["VIBE_SRCBASE"]
-            while ((getline line < fm) > 0) {
-              t = index(line, "\t")
-              if (t > 0) {
-                nm = substr(line, 1, t - 1)
-                ln = substr(line, t + 1)
-                sub(/[ \t\r\n]+$/, "", ln)
-                if (nm != "") fmline[nm] = ln
-              }
-            }
-            close(fm)
-          }
-          {
-            # A trace line names a user function after "trace: " (--trace dump):
-            #   trace: helper
-            if (substr($0, 1, 7) == "trace: ") {
-              tname = substr($0, 8)
-              sub(/[ \t\r\n].*$/, "", tname)
-              if (tname in fmline) {
-                printf "%s (%s:%s)\n", $0, base, fmline[tname]
-                next
-              }
-              print $0
-              next
-            }
-            # A breakpoint stack frame names a user function after "  at "
-            # (--break dump), e.g. "  at helper":
-            if (substr($0, 1, 5) == "  at ") {
-              bname = substr($0, 6)
-              sub(/[ \t\r\n].*$/, "", bname)
-              if (bname in fmline) {
-                printf "%s (%s:%s)\n", $0, base, fmline[bname]
-                next
-              }
-              print $0
-              next
-            }
-            # A trap frame names a user function after "!" (wasmtime/name section):
-            #   <addr> - <unknown>!boom
-            b = index($0, "!")
-            if (b > 0) {
-              name = substr($0, b + 1)
-              sub(/[ \t\r\n].*$/, "", name)
-              if (name in fmline) {
-                printf "%s (%s:%s)\n", $0, base, fmline[name]
-                next
-              }
-            }
-            print $0
-          }
-        ' "$rerr" >&2
-    else
-      cat "$rerr" >&2
+    # span-arc step5: line-granularity breakpoints. A `--break <file>:<line>` (or
+    # bare `<line>`) spec passes through VIBE_BREAK unchanged; the runner resolves
+    # the entering function's source line via the `.funcmap` sidecar (name<TAB>
+    # declLine) we already generate for trap annotation. Hand the runner the
+    # funcmap path + the entry file's basename so it can confirm the spec's file.
+    # Function-name `--break <fn>` specs are unaffected (no line match attempted).
+    funcmap_env=""
+    breakfile_env=""
+    if [ "$brk" = "1" ] && [ -s "$out.funcmap" ]; then
+      funcmap_env="VIBE_FUNCMAP=$out.funcmap"
+      breakfile_env="VIBE_BREAK_FILE=$(basename "$src")"
     fi
-    rm -f "$rerr"
+    # Stream the runner's stderr through the funcmap annotator LIVE via a FIFO,
+    # so an interactive `--break` pause (and the VS Code DAP adapter) sees
+    # "breakpoint hit:" / frames the moment they happen — not buffered until the
+    # runner exits, which would deadlock interactive stepping (the runner pauses
+    # waiting for stdin while its prompt sits unflushed). stdin stays attached so
+    # step commands drive the runner; the annotator runs in the background
+    # reading the FIFO and `fflush()`es each line; we wait on it to drain.
+    rerr_fifo="$(mktemp -u -t vibe-run-err-XXXXXX)"; mkfifo "$rerr_fifo"
+    if [ -s "$out.funcmap" ]; then
+      awk -v fm="$out.funcmap" -v base="$(basename "$src")" '
+        BEGIN {
+          while ((getline line < fm) > 0) {
+            t = index(line, "\t")
+            if (t > 0) {
+              nm = substr(line, 1, t - 1)
+              ln = substr(line, t + 1)
+              sub(/[ \t\r\n]+$/, "", ln)
+              if (nm != "") fmline[nm] = ln
+            }
+          }
+          close(fm)
+        }
+        {
+          if (substr($0, 1, 7) == "trace: ") {
+            tname = substr($0, 8); sub(/[ \t\r\n].*$/, "", tname)
+            if (tname in fmline) { printf "%s (%s:%s)\n", $0, base, fmline[tname]; fflush(); next }
+            print $0; fflush(); next
+          }
+          if (substr($0, 1, 5) == "  at ") {
+            bname = substr($0, 6); sub(/[ \t\r\n].*$/, "", bname)
+            if (bname in fmline) { printf "%s (%s:%s)\n", $0, base, fmline[bname]; fflush(); next }
+            print $0; fflush(); next
+          }
+          b = index($0, "!")
+          if (b > 0) {
+            name = substr($0, b + 1); sub(/[ \t\r\n].*$/, "", name)
+            if (name in fmline) { printf "%s (%s:%s)\n", $0, base, fmline[name]; fflush(); next }
+          }
+          print $0; fflush()
+        }
+      ' < "$rerr_fifo" >&2 &
+    else
+      cat < "$rerr_fifo" >&2 &
+    fi
+    annot_pid=$!
+    env $trace_env $break_env $funcmap_env $breakfile_env "$RUNNER" "$out" 2>"$rerr_fifo" || status=$?
+    wait "$annot_pid" 2>/dev/null || true
+    rm -f "$rerr_fifo"
     exit "$status"
     ;;
   compile|build)
@@ -385,6 +391,59 @@ case "$cmd" in
     env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE \
         -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
       VIBE_TYPE_AT=1 VIBE_TYPE_LINE="$ta_line" VIBE_TYPE_COL="$ta_col" \
+      VIBE_SELFHOST_IMPORT_ABI=raw \
+      "$RUNNER" "$cli" "$src" "$out" >/dev/null 2>&1 || true
+    if [ -s "$out" ]; then cat "$out"; fi
+    ;;
+  binding-at)
+    # vibe binding-at <file.vibe> <line> <col>
+    # Print the source spans of every occurrence of the identifier binding under
+    # a 1-based (line, col), one `START END` (two char offsets) per line. AST-
+    # accurate (no string/comment/substring false matches). Empty output means
+    # there is no identifier there. Groundwork for scope-precision rename /
+    # references (name-based MVP, no shadowing analysis yet).
+    [ "$#" -ge 3 ] || die "usage: vibe binding-at <file.vibe> <line> <col>"
+    src="$1"; ba_line="$2"; ba_col="$3"
+    [ -f "$src" ] || die "not found: $src"
+    # Use the portable .wasm (not the AOT .cwasm): the recovering parser path
+    # trapped under the precompiled image on some hosts, and these LSP queries are
+    # latency-amortized, so prefer correctness.
+    cli="$CLI_WASM"; [ -f "$cli" ] || cli="$(pick_cli)"
+    out="$(mktemp -t vibe-bindat-XXXXXX)"
+    trap 'rm -f "$out"' EXIT
+    # Clear any inherited compile-mode envs so this query can't be diverted to the
+    # compile path (which would emit wasm bytes instead of the occurrence list).
+    # Don't `die` on a non-zero exit — emit whatever (possibly empty) result was
+    # written so the LSP degrades gracefully instead of the whole query failing.
+    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT \
+        -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
+      VIBE_BINDING_AT=1 VIBE_TYPE_LINE="$ba_line" VIBE_TYPE_COL="$ba_col" \
+      VIBE_SELFHOST_IMPORT_ABI=raw \
+      "$RUNNER" "$cli" "$src" "$out" >/dev/null 2>&1 || true
+    if [ -s "$out" ]; then cat "$out"; fi
+    ;;
+  symbols)
+    # vibe symbols <file.vibe>
+    # Print the declaration outline, one `NAME KIND START END` per line (KIND =
+    # LSP SymbolKind int, START/END = char offsets of the name). AST-accurate
+    # (no line-regex scan): handles multi-line decls and module-nested symbols.
+    # Empty output means the file declares no top-level symbols. Powers LSP
+    # document-outline / go-to-definition.
+    [ "$#" -ge 1 ] || die "usage: vibe symbols <file.vibe>"
+    src="$1"
+    [ -f "$src" ] || die "not found: $src"
+    # Use the portable .wasm (not the AOT .cwasm): the recovering-parser path
+    # trapped under the precompiled image on some hosts, and these LSP queries
+    # are latency-amortized, so prefer correctness.
+    cli="$CLI_WASM"; [ -f "$cli" ] || cli="$(pick_cli)"
+    out="$(mktemp -t vibe-symbols-XXXXXX)"
+    trap 'rm -f "$out"' EXIT
+    # Clear any inherited compile-mode envs so this query can't be diverted to the
+    # compile path (which would emit wasm bytes instead of the symbol list).
+    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT \
+        -u VIBE_BINDING_AT -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK \
+        -u VIBE_EMIT_MODULE_SOURCE \
+      VIBE_SYMBOLS=1 \
       VIBE_SELFHOST_IMPORT_ABI=raw \
       "$RUNNER" "$cli" "$src" "$out" >/dev/null 2>&1 || true
     if [ -s "$out" ]; then cat "$out"; fi
@@ -652,7 +711,7 @@ case "$cmd" in
     esac
     ;;
   help|--help|-h)
-    sed -n '13,33p' "$LAUNCHER" | sed 's/^# \{0,1\}//'
+    sed -n '13,34p' "$LAUNCHER" | sed 's/^# \{0,1\}//'
     ;;
   *)
     die "unknown command: $cmd (try 'vibe help')"

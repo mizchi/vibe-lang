@@ -46,6 +46,15 @@ import ./deps/mathlib.vibe { add }
 `1.x`, …) against the remote's tags. See
 [docs/module-system.md](docs/module-system.md#配布とパッケージ管理-giturl-分散).
 
+### Editor & debugging
+
+`vibe lsp` is a stdio Language Server (diagnostics, typed hover, symbols,
+go-to-definition, scope-accurate references/rename, completion, signature
+help). The launcher also has a function-granularity interactive debugger
+(`vibe run --break <fn>` / `--trace`, with stepping and named-argument
+inspection) and a VS Code DAP adapter. See
+[docs/editor-and-debugging.md](docs/editor-and-debugging.md).
+
 ## Features
 
 ### Language

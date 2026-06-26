@@ -80,5 +80,43 @@ else
   echo "FAIL: type-at on local use 'g' (2:3) should contain Int, got '$ty_local'" >&2; fail=$((fail + 1))
 fi
 
+# CALL-SITE hover (span-arc step4): the per-node type table now records the
+# RESULT type of a call keyed by the call's source offset (the callee start).
+# `is_pos` returns Bool while its argument is Int, so hovering the CALL `is_pos(5)`
+# must resolve to the RESULT type Bool (not the Int argument, not the function
+# type). File:
+#   export let is_pos = (n: Int) -> Bool { n > 0 }
+#   export let main = () -> Bool { is_pos(5) }
+# `export let main = () -> Bool { ` is 31 chars, so the call `is_pos(5)` starts
+# at line 2 col 32; the recorded result type there must be Bool.
+k="$WORK/call.vibe"
+printf 'export let is_pos = (n: Int) -> Bool { n > 0 }\nexport let main = () -> Bool { is_pos(5) }\n' > "$k"
+
+ty_call="$("$VIBE" type-at "$k" 2 32 2>/dev/null || true)"
+if printf '%s' "$ty_call" | grep -qF "Bool"; then
+  echo "ok: type-at on call site 'is_pos(5)' (2:32) resolves to result Bool -> '$ty_call'"; pass=$((pass + 1))
+else
+  echo "FAIL: type-at on call site 'is_pos(5)' (2:32) should resolve to Bool, got '$ty_call'" >&2; fail=$((fail + 1))
+fi
+
+# FIELD-ACCESS hover (span-arc step4): the per-node type table now records a
+# field projection's type keyed by the EDot source offset (the base-expr start).
+# `p.x` projects field `x: Int` of a struct-typed parameter `p`, so hovering the
+# access must resolve to the FIELD type Int (the EDot record runs after the base
+# EIdent record at the same offset, so it wins). File:
+#   export struct P { x: Int }
+#   export let getx = (p: P) -> Int { p.x }
+# `export let getx = (p: P) -> Int { ` is 34 chars, so `p.x` base `p` is at
+# line 2 col 35.
+m="$WORK/field.vibe"
+printf 'export struct P { x: Int }\nexport let getx = (p: P) -> Int { p.x }\n' > "$m"
+
+ty_field="$("$VIBE" type-at "$m" 2 35 2>/dev/null || true)"
+if printf '%s' "$ty_field" | grep -qF "Int"; then
+  echo "ok: type-at on field access 'p.x' (2:35) resolves to field Int -> '$ty_field'"; pass=$((pass + 1))
+else
+  echo "FAIL: type-at on field access 'p.x' (2:35) should resolve to Int, got '$ty_field'" >&2; fail=$((fail + 1))
+fi
+
 echo "[vibe-type-at] $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1
