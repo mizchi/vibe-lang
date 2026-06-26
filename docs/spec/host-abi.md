@@ -88,6 +88,13 @@
 
 この 4 点が「契約」。これを満たすホストは moonrun_wt と等価に生成物を実行できる。
 
+## CI enforcement
+
+この契約は `scripts/test_host_abi.js`（cli-install ワークフロー）が **スナップショットとして固定**する:
+pure 生成物の import が `wasi_snapshot_preview1::fd_write` のみであること、exceptions タグを
+export すること、Fs エフェクトが `vibe::fs_*` に落ちること（`wasi:*` / `__moonbit_*` でないこと）を
+ビルドして検証する。ホストに要求する面が変わるとここで落ちる。
+
 ## 付録: 契約の再現手順
 
 ```bash
