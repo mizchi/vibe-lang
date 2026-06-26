@@ -81,5 +81,31 @@ fi
 printf '%s\n' "$alloc_err" | grep -qE "vibe: memory — allocated .* peak heap .* committed " \
   && ok "--mem: human-readable summary present" || bad "--mem: missing human summary (got: $alloc_err)"
 
+# 6. growth timeline (tier 2): small program stays within the 4 MiB initial
+#    memory -> 0 grow events; a >4 MiB allocator -> grow events + memgrow lines.
+printf '%s\n' "$alloc_err" | grep -qE "grow_events=0\b" \
+  && ok "small program: 0 growth events (stays within initial memory)" \
+  || bad "small program: expected grow_events=0 (got: $(printf '%s' "$alloc_err" | grep -oE 'grow_events=[0-9]+'))"
+
+cat > "$proj/grow.vibe" <<'EOF'
+let build = (n: Int) -> Int {
+  let mut s = ""
+  let mut i = 0
+  while i < n { s = String::concat(s, "x"); i = i + 1 }
+  String::length(s)
+}
+let main = () -> Int { build(3500) }
+EOF
+grow_err="$("$VIBE" run --mem "$proj/grow.vibe" 2>&1 >/dev/null)"
+gcount="$(printf '%s\n' "$grow_err" | grep -oE 'grow_events=[0-9]+' | head -1 | cut -d= -f2)"
+if [ -n "$gcount" ] && [ "$gcount" -gt 0 ]; then
+  ok ">4 MiB program records growth events (grow_events=$gcount)"
+else
+  bad ">4 MiB program expected grow_events>0 (got: $gcount)"
+fi
+printf '%s\n' "$grow_err" | grep -qE "vibe::memgrow t_us=[0-9]+ from=[0-9]+ to=[0-9]+ pages=\+[0-9]+" \
+  && ok "growth timeline emits machine-readable memgrow lines" \
+  || bad "missing memgrow line (got: $(printf '%s\n' "$grow_err" | grep memgrow | head -1))"
+
 echo "[test_vibe_mem] $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1
