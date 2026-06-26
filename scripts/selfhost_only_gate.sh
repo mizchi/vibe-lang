@@ -544,4 +544,75 @@ fi
 rm -rf "$itdir"
 echo "[selfhost-only-gate] trait-type-parameter / Iterator regression ok"
 
+# 17. lazy iterator combinators regression (#636): a lazy `Stream` (a struct
+#     holding a `pull` closure) with `impl Iter for Stream` supports lazy
+#     `map`/`filter` and eager `fold`/`sum`/`count` consumers (driven by the
+#     `for` desugar) — the trait-based replacement for prelude/lazy_iter.vibe's
+#     `() -> Option[T]` function iterator. All library code, no compiler support
+#     beyond the trait machinery.
+echo "[selfhost-only-gate] 17/17 lazy iterator combinators regression"
+lcdir="_build/_gate_lazyiter"
+rm -rf "$lcdir"; mkdir -p "$lcdir"
+cat > "$lcdir/lc.vibe" <<'EOF'
+trait Iter[T] { next(Self) -> Option[(T, Self)] }
+struct Stream { pull: (Int) -> Option[(Int, Int)]; state: Int }
+impl Iter for Stream {
+  next(self) -> Option[(Int, Stream)] {
+    match (self.pull)(self.state) {
+      Some(p) => { let (v, ns) = p; Some((v, Stream::{ pull: self.pull, state: ns })) },
+      None => None
+    }
+  }
+}
+let range = (lo: Int, hi: Int) -> Stream {
+  Stream::{ pull: (s) -> { if s < hi { Some((s, s + 1)) } else { None } }, state: lo }
+}
+let smap = (s: Stream, f: (Int) -> Int) -> Stream {
+  Stream::{ pull: (st) -> { match (s.pull)(st) { Some(p) => { let (v, ns) = p; Some((f(v), ns)) }, None => None } }, state: s.state }
+}
+let sfilter = (s: Stream, pred: (Int) -> Bool) -> Stream {
+  Stream::{ pull: (st) -> {
+    let mut cur = st
+    let mut result = None
+    let mut go = true
+    while go {
+      match (s.pull)(cur) {
+        Some(p) => { let (v, ns) = p; if pred(v) { result = Some((v, ns)); go = false } else { cur = ns } },
+        None => { go = false }
+      }
+    }
+    result
+  }, state: s.state }
+}
+let sfold = (s: Stream, init: Int, f: (Int, Int) -> Int) -> Int {
+  let mut acc = init
+  for x in s { acc = f(acc, x) }
+  acc
+}
+let ssum = (s: Stream) -> Int { sfold(s, 0, (a, b) -> { a + b }) }
+let scount = (s: Stream) -> Int { sfold(s, 0, (a, _) -> { a + 1 }) }
+let is_even = (x: Int) -> Bool { x - (x / 2) * 2 == 0 }
+export let _start: () -> Int = () -> {
+  ssum(smap(range(1, 5), (x) -> { x * 2 }))   // 2+4+6+8 = 20
+  + ssum(sfilter(range(1, 10), is_even))       // 2+4+6+8 = 20
+  + scount(range(0, 7))                        // 7
+}
+EOF
+# Expected: 20 + 20 + 7 = 47
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$lcdir/lc.vibe" "$lcdir/lc.wasm" _start >/dev/null 2>&1
+if [ ! -s "$lcdir/lc.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: lazy combinators program did not compile" >&2
+  cat "$lcdir/lc.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+lc_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$lcdir/lc.wasm" 2>/dev/null | tr -dc '0-9-')"
+if [ "$lc_out" != "47" ]; then
+  echo "[selfhost-only-gate] FAIL: lazy combinators mismatch (got '$lc_out', want 47 -> #636 regressed)" >&2
+  exit 1
+fi
+rm -rf "$lcdir"
+echo "[selfhost-only-gate] lazy iterator combinators regression ok"
+
 echo "[selfhost-only-gate] ok"

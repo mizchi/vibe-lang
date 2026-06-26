@@ -350,9 +350,20 @@ lands.
   fixture `fixtures/trait_iterator_test.vibe` covers struct-literal, let-bound,
   and Iterable iterables). Closures-in-struct-fields (the other lazy_iter
   blocker) are exactly the dict encoding (spike G-1).
-  **Deferred:** `for await`, the `map`/`filter`/`fold` combinators,
-  generic-context `for x in <type-param iterator>`, and reimplementing
-  `lazy_iter_*` on the trait. `for` requires the functional
+  **Lazy combinators on the trait — LANDED (as library code).** A lazy `Stream`
+  (a struct holding a `pull` closure plus its state) with `impl Iter for Stream`
+  is a first-class iterator; `map`/`filter` are lazy (they wrap the source's
+  pull) and `fold`/`sum`/`count` are eager consumers driven by the `for`
+  desugar. No compiler support beyond the trait machinery — this is the
+  trait-based replacement for `prelude/lazy_iter.vibe`'s `() -> Option[T]`
+  function iterator. Gate step 17 + fixture
+  `fixtures/lazy_iter_combinators_test.vibe` (chained `map |> filter |> fold`).
+  `for await x in <pull closure>` still works (the existing `() -> Option[T]`
+  model). **Deferred:** migrating the actual `prelude/lazy_iter.vibe` to the
+  trait (needs the seed bump that activates trait-method syntax, since the
+  prelude is seed-compiled); unifying `for await` with the struct-trait iterator
+  (needs an async `next` / AsyncIterator — effect integration); and
+  generic-context `for x in <type-param iterator>`. `for` requires the functional
   `next(Self) -> Option[(T, Self)]` convention (immutable structs thread state);
   the stateful `next(Self) -> Option[T]` form needs mut fields. Storing the
   trait's type params in `STrait` (instead of erasing at parse) would let the
