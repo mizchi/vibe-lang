@@ -514,6 +514,135 @@ fn run(args: Vec<String>) -> Result<i32> {
     }
 }
 
+// Format a nanosecond duration with an adaptive unit.
+fn fmt_ns(ns: u128) -> String {
+    if ns < 1_000 {
+        format!("{ns} ns")
+    } else if ns < 1_000_000 {
+        format!("{:.2} µs", ns as f64 / 1_000.0)
+    } else if ns < 1_000_000_000 {
+        format!("{:.2} ms", ns as f64 / 1_000_000.0)
+    } else {
+        format!("{:.2} s", ns as f64 / 1_000_000_000.0)
+    }
+}
+
+// Format an ops/second figure with a k/M suffix.
+fn fmt_ops(ops: f64) -> String {
+    if ops >= 1_000_000.0 {
+        format!("{:.1}M", ops / 1_000_000.0)
+    } else if ops >= 1_000.0 {
+        format!("{:.0}k", ops / 1_000.0)
+    } else {
+        format!("{ops:.0}")
+    }
+}
+
+// Benchmark mode. Instantiate ONCE, then call `_start` (which the test entry
+// builds to run the file's `bench {}`/`test {}` bodies) repeatedly on the WARM
+// instance, timing each call and reading `__heap_ptr` before/after the batch for
+// bytes/op. Reuses the re-runnable entry, so NO codegen change is needed; the
+// granularity is the whole file's bench blocks. Reports ns/op (min/p50/p95/mean),
+// ops/sec, and bytes/op (bump-heap delta / iters — the linear backend never frees
+// so this is the average allocation per iteration).
+//
+//   moonrun_wt --bench <wasm|cwasm>
+// Env: VIBE_BENCH_ITERS (default 1000), VIBE_BENCH_WARMUP (default 50),
+//      VIBE_BENCH_LABEL (report label; default the wasm path).
+fn bench(args: Vec<String>) -> Result<i32> {
+    if args.is_empty() {
+        bail!("--bench: missing <wasm|cwasm> argument");
+    }
+    let wasm_path = &args[0];
+    let iters: u64 = std::env::var("VIBE_BENCH_ITERS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(1000);
+    let warmup: u64 = std::env::var("VIBE_BENCH_WARMUP")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(50);
+    let label = std::env::var("VIBE_BENCH_LABEL").unwrap_or_else(|_| wasm_path.clone());
+
+    let cfg = engine_config();
+    let engine = Engine::new(&cfg)?;
+    let module = load_module(&engine, wasm_path)?;
+    let memory_mb: usize = std::env::var("MOONRUN_WT_MEMORY_MB")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8192);
+    let limits = StoreLimitsBuilder::new()
+        .memory_size(memory_mb * 1024 * 1024)
+        .build();
+    let mut state = HostState::new(vec!["moonrun_wt".to_string()], limits);
+    state.capture_stdout = true; // suppress per-iteration program output
+    let mut store = Store::new(&engine, state);
+    store.limiter(|s| &mut s.limits);
+    let mut linker = Linker::new(&engine);
+    register_imports(&mut linker)?;
+    let instance = linker.instantiate(&mut store, &module)?;
+    let start: TypedFunc<(), ()> = instance.get_typed_func(&mut store, "_start")?;
+
+    let run_once = |store: &mut Store<HostState>, phase: &str| -> Result<()> {
+        store.data_mut().captured_stdout.clear();
+        match start.call(&mut *store, ()) {
+            Ok(()) => Ok(()),
+            // A clean `proc_exit(0)` is fine; any other trap aborts the bench.
+            Err(e) => match e.downcast_ref::<ExitTrap>() {
+                Some(ExitTrap(0)) => Ok(()),
+                Some(ExitTrap(code)) => bail!("bench `{label}`: exit({code}) during {phase}"),
+                None => bail!("bench `{label}`: trap during {phase}: {e}"),
+            },
+        }
+    };
+
+    // Warmup also pays one-time lazy init so it doesn't skew the first sample.
+    for _ in 0..warmup {
+        run_once(&mut store, "warmup")?;
+    }
+
+    let heap_before = read_heap_ptr(&instance, &mut store);
+    let mut samples: Vec<u128> = Vec::with_capacity(iters as usize);
+    for _ in 0..iters {
+        let t0 = Instant::now();
+        run_once(&mut store, "measurement")?;
+        samples.push(t0.elapsed().as_nanos());
+    }
+    let heap_after = read_heap_ptr(&instance, &mut store);
+
+    samples.sort_unstable();
+    let n = samples.len();
+    let sum: u128 = samples.iter().sum();
+    let mean = sum / n as u128;
+    let min = samples[0];
+    let p50 = samples[(n / 2).min(n - 1)];
+    let p95 = samples[(n * 95 / 100).min(n - 1)];
+    let ops_per_sec = if mean > 0 { 1_000_000_000f64 / mean as f64 } else { 0.0 };
+    let bytes_per_op = match (heap_before, heap_after) {
+        (Some(b), Some(a)) => Some(a.saturating_sub(b) / iters),
+        _ => None,
+    };
+
+    // Machine-readable line (tools/CI parse this) + a human summary, both stdout.
+    println!(
+        "vibe::bench label={label} iters={iters} ns_min={min} ns_p50={p50} ns_p95={p95} ns_mean={mean} ops_per_sec={ops_per_sec:.0} bytes_per_op={}",
+        bytes_per_op.map(|b| b.to_string()).unwrap_or_else(|| "na".into()),
+    );
+    println!(
+        "bench {label}: {iters} iters — {}/op (min {}, p50 {}, p95 {}), {} ops/s, {}",
+        fmt_ns(mean),
+        fmt_ns(min),
+        fmt_ns(p50),
+        fmt_ns(p95),
+        fmt_ops(ops_per_sec),
+        bytes_per_op
+            .map(|b| format!("{}/op", human_bytes(b)))
+            .unwrap_or_else(|| "mem n/a".into()),
+    );
+    Ok(0)
+}
+
 // Long-running daemon: instantiate the wasm module ONCE and reuse the
 // store/instance across many requests. moonbit module-level state
 // (top-level let-bindings, e.g. `default_typecheck_session` which holds
@@ -2114,6 +2243,16 @@ fn main() {
             Ok(code) => std::process::exit(code),
             Err(e) => {
                 eprintln!("moonrun_wt: daemon failed: {e:?}");
+                std::process::exit(1);
+            }
+        }
+    }
+    if args.first().map(|s| s.as_str()) == Some("--bench") {
+        let bench_args: Vec<String> = args.iter().skip(1).cloned().collect();
+        match bench(bench_args) {
+            Ok(code) => std::process::exit(code),
+            Err(e) => {
+                eprintln!("moonrun_wt: {e}");
                 std::process::exit(1);
             }
         }

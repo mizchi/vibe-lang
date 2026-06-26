@@ -44,15 +44,32 @@ pure / 純計算プログラムは `allocated=0`。`committed` は wasm memory �
 実装: runner は `VIBE_MEM=1`（`--mem` が設定）のとき `__heap_ptr`（`read_heap_ptr`）と
 `memory` サイズを読んで `report_memory` で出力（trap しても出る）。test: `scripts/test_vibe_mem.sh`。
 
-## ベンチマーカー設計（次段）
+## `vibe bench`（実装済み）
 
-`bench "name" { }` 構文と `vibe::profile-now-us`（µs clock）は既にある。harness を足す:
+`bench "name" { }` 構文と `vibe::profile-now-us` はあったが計測ハーネスが無かった。`vibe bench`
+を追加した。実装は runner 側（`moonrun_wt --bench`）で、**codegen 変更なし**:
 
-- warmup → 反復自動スケール（合計 T µs まで / 安定まで）、µs 解像度対策に内側 batch（K 回回して割る）
-- 統計: min / median / mean / stddev / p95 / ops·sec、外れ値トリム
-- **メモリ併記**: 各 bench で `__heap_ptr` 差分（bytes/op）を時間と並べる（tier 1 を再利用）
-- 2 backend（linear / gc）を別レポート
-- 回帰検出: `(name, backend, source-hash)` で baseline 比較、% 退行を flag → CI ゲート
+- 再実行可能な test entry（`__no_entry__` が `bench{}`/`test{}` body を走らせる `_start`）を、
+  **同一の warm インスタンス上で N 回呼ぶ**。warmup → 計測。
+- 各呼び出しを `Instant` で計時し、`__heap_ptr` をバッチ前後で読んで **bytes/op**（tier 1 を再利用）。
+- 統計: **min / p50 / p95 / mean / ops·sec** ＋ **bytes/op**。
+
+```
+$ vibe bench examples/simple_bench.vibe
+vibe::bench label=simple_bench.vibe iters=1000 ns_min=47 ns_p50=49 ns_p95=51 ns_mean=49 ops_per_sec=20408163 bytes_per_op=0
+bench simple_bench.vibe: 1000 iters — 49 ns/op (min 47 ns, p50 49 ns, p95 51 ns), 20.4M ops/s, 0 B/op
+```
+
+`vibe bench <file> [--iters N] [--warmup N]`。`vibe::bench …` は機械可読（CI/比較が parse）。
+env: `VIBE_BENCH_ITERS` / `VIBE_BENCH_WARMUP` / `VIBE_BENCH_LABEL`。test: `scripts/test_vibe_bench.sh`。
+
+**現状の粒度と限界**: `__bench_*` は未 export なので **ファイル単位**（その file の bench/test body の和）
+で測る。`*_bench.vibe` に bench を 1 つ置く運用なら実質ピンポイント。次段で精度を上げるなら:
+
+- `__bench_<name>` を export → runner が **bench ブロック個別**に計時（codegen 変更が要る）
+- µs 級でなく ns 級を狙うなら内側 batch（K 回回して割る）で per-call overhead を相殺
+- 2 backend（linear / gc）の別レポート
+- 回帰検出: `(label, backend, source-hash)` で baseline 比較、% 退行を flag → CI ゲート
 
 ## 注意点
 
