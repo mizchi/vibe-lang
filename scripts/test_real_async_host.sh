@@ -48,6 +48,16 @@ if [ -s "$STAGE2" ]; then
     echo "[real-async-host] SKIP: sleep host build failed"; exit 0; }
   if "$host_dir/target/debug/vibe-sleep-host" "$vdir/sleep.wasm"; then
     echo "[real-async-host] vibe sleep program: real suspend/resume -> 42 ok"
+    # Concurrency proof: two guest instances run via futures::join!; real async
+    # interleaves (both suspend before either resumes).
+    ( cd "$host_dir" && cargo build --bin vibe-concurrency-host >/dev/null 2>&1 ) || true
+    if [ -x "$host_dir/target/debug/vibe-concurrency-host" ]; then
+      if "$host_dir/target/debug/vibe-concurrency-host" "$vdir/sleep.wasm"; then
+        echo "[real-async-host] concurrency: two vibe tasks interleave -> REAL concurrency ok"
+      else
+        echo "[real-async-host] FAIL: vibe tasks did not interleave (not real concurrency)" >&2; exit 1
+      fi
+    fi
   else
     echo "[real-async-host] FAIL: vibe sleep program did not suspend/resume to 42" >&2; exit 1
   fi
