@@ -238,13 +238,34 @@ let rec strip_effects: (Type) -> Type = (ty) -> {
   }
 }
 
+// Unify `expected` with `actual`, REPORTING only a genuine STRUCTURAL mismatch
+// (the checker historically swallowed these, accepting ill-typed programs).
+// `unify` already accepts `CtUnknown`/`CtVar` freely; on failure we retry with
+// effects erased, and tolerate the difference if the structure matches — effect
+// inference on function values is imprecise, so effect-only differences must not
+// be reported here. Returns the (possibly extended) substitution.
+let check_assignable: (Type, Type, Subst, Array[String], String, Int) -> Subst = (expected, actual, s, errors, what, off) -> {
+  match unify(expected, actual, s) {
+    Some(su) => su,
+    None => {
+      let structural = match unify(strip_effects(expected), strip_effects(actual), s) {
+        Some(_) => true,
+        None => false
+      }
+      if structural {
+        s
+      } else {
+        Array::push(errors, String::concat(what, String::concat(": expected ", String::concat(type_to_string(subst_apply(s, expected)), String::concat(", got ", String::concat(type_to_string(subst_apply(s, actual)), off_marker(off)))))))
+        s
+      }
+    }
+  }
+}
+
 // Unify each argument against its parameter, REPORTING a type mismatch instead
-// of silently swallowing it. The checker used to drop unification failures here
-// (`None => out`), so an ill-typed call like `f("x")` for `f: (Int) -> Int` was
-// accepted — a soundness hole. `unify` already accepts `CtUnknown`/`CtVar`
-// freely, so only a genuine concrete STRUCTURAL mismatch is flagged; effect-only
-// differences (imprecise effect inference) and `__to_string` (the polymorphic
-// interpolation stringifier) are tolerated.
+// of silently swallowing it. `__to_string` (the polymorphic interpolation
+// stringifier: `"\{x}"` -> `__to_string(x)` wraps values of any type, but the
+// polyfill annotates it `(Int) -> String`) is exempt.
 let unify_call_args: (Array[Type], Array[Type], Subst, Array[String], String, Int) -> Subst = (param_tys, arg_tys, s, errors, label, off) -> {
   let mut out = s
   let mut ui = 0
@@ -252,20 +273,13 @@ let unify_call_args: (Array[Type], Array[Type], Subst, Array[String], String, In
   while ui < ul {
     let pty = Array::get(param_tys, ui)
     let aty = Array::get(arg_tys, ui)
-    out = match unify(pty, aty, out) {
-      Some(su) => su,
-      None => {
-        let structural = match unify(strip_effects(pty), strip_effects(aty), out) {
-          Some(_) => true,
-          None => false
-        }
-        if structural || label == "__to_string" {
-          out
-        } else {
-          Array::push(errors, String::concat("argument type mismatch for ", String::concat(label, String::concat(": expected ", String::concat(type_to_string(subst_apply(out, pty)), String::concat(", got ", String::concat(type_to_string(subst_apply(out, aty)), off_marker(off))))))))
-          out
-        }
+    out = if label == "__to_string" {
+      match unify(pty, aty, out) {
+        Some(su) => su,
+        None => out
       }
+    } else {
+      check_assignable(pty, aty, out, errors, String::concat("argument type mismatch for ", label), off)
     }
     ui = ui + 1
   }

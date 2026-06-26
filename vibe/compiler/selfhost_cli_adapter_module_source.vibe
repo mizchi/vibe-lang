@@ -4762,6 +4762,23 @@ let rec strip_effects: (Type) -> Type = (ty) -> {
     _ => ty
   }
 }
+let check_assignable: (Type, Type, Subst, Array[String], String, Int) -> Subst = (expected, actual, s, errors, what, off) -> {
+  match unify(expected, actual, s) {
+    Some(su) => su,
+    None => {
+      let structural = match unify(strip_effects(expected), strip_effects(actual), s) {
+        Some(_) => true,
+        None => false
+      }
+      if structural {
+        s
+      } else {
+        Array::push(errors, String::concat(what, String::concat(": expected ", String::concat(type_to_string(subst_apply(s, expected)), String::concat(", got ", String::concat(type_to_string(subst_apply(s, actual)), off_marker(off)))))))
+        s
+      }
+    }
+  }
+}
 let unify_call_args: (Array[Type], Array[Type], Subst, Array[String], String, Int) -> Subst = (param_tys, arg_tys, s, errors, label, off) -> {
   let mut out = s
   let mut ui = 0
@@ -4769,20 +4786,13 @@ let unify_call_args: (Array[Type], Array[Type], Subst, Array[String], String, In
   while ui < ul {
     let pty = Array::get(param_tys, ui)
     let aty = Array::get(arg_tys, ui)
-    out = match unify(pty, aty, out) {
-      Some(su) => su,
-      None => {
-        let structural = match unify(strip_effects(pty), strip_effects(aty), out) {
-          Some(_) => true,
-          None => false
-        }
-        if structural || label == "__to_string" {
-          out
-        } else {
-          Array::push(errors, String::concat("argument type mismatch for ", String::concat(label, String::concat(": expected ", String::concat(type_to_string(subst_apply(out, pty)), String::concat(", got ", String::concat(type_to_string(subst_apply(out, aty)), off_marker(off))))))))
-          out
-        }
+    out = if label == "__to_string" {
+      match unify(pty, aty, out) {
+        Some(su) => su,
+        None => out
       }
+    } else {
+      check_assignable(pty, aty, out, errors, String::concat("argument type mismatch for ", label), off)
     }
     ui = ui + 1
   }
