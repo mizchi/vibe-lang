@@ -1,0 +1,154 @@
+//# Imports
+
+// `vibe symbols` — AST-accurate top-level (and module-nested) declaration spans:
+// the foundation for scope-precision document outline / go-to-definition
+// (テーマ4 LSP). Given a source string, return one record per declared symbol:
+//   (name, kind, start, end)
+// where `kind` is an LSP SymbolKind number and [start, end) is the source span
+// of the declaration NAME (char offsets).
+//
+// Why this beats the LSP server's previous line-regex scan: declarations are
+// taken from the real parsed AST, so multi-line declarations, declarations not
+// starting at column 0, and names that merely look like keywords inside strings
+// or comments are handled correctly — only actual declaration nodes count. The
+// name's source offset is recovered by a whole-word scan SCOPED to that
+// statement's parse span (from parse_program_spans), so a name that also appears
+// elsewhere in the statement body cannot be mis-located.
+//
+// FALLBACK (honest): a name whose offset cannot be recovered within its span is
+// simply omitted (never a crash). Resolution never throws: any failure is
+// swallowed and yields an empty list, so the LSP degrades to its regex scan.
+//
+// All strings are built with String::concat only (never `+`, never "\{x}"
+// interpolation): both mis-codegen to NUL in selfhost.
+
+import ../core {
+  Stmt, Expr
+}
+
+import ../syntax {
+  lex_with_offsets, parse_program_spans
+}
+
+//# Functions
+
+// True when `source[off]` is NOT an identifier char (or off out of range) — a
+// word boundary. Used to match a declaration name as a whole word.
+let sym_is_boundary_at: (String, Int) -> Bool = (source, off) -> {
+  if off < 0 || off >= String::length(source) {
+    true
+  } else {
+    let c = String::char_code_at(source, off)
+    let is_id = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+    !is_id
+  }
+}
+
+// A fresh single-cell mutable Int array holding `v` (a poor-man's mutable box),
+// built via slice+push so the cell is a heap array supporting Array::set.
+let sym_box_int: (Int) -> Array[Int] = (v) -> {
+  let arr = Array::slice([0], 0, 0)
+  Array::push(arr, v)
+  arr
+}
+
+let sym_empty_items: () -> Array[(String, Int, Int, Int)] = () -> {
+  Array::slice([
+    ("", 0, 0, 0)
+  ], 0, 0)
+}
+
+// Find the first whole-word occurrence of `name` in `source[from..hi)` and, when
+// found, push `(name, kind, off, off+len)` and advance `floor` past it (so a
+// later sibling declaration in the same window keeps scanning forward). No-op
+// when the name cannot be located in the window.
+let sym_emit: (Array[(String, Int, Int, Int)], String, String, Int, Array[Int], Int) -> Unit = (out, source, name, kind, floor, hi) -> {
+  let nlen = String::length(name)
+  if nlen == 0 {
+    ()
+  } else {
+    let limit = if hi > String::length(source) { String::length(source) } else { hi }
+    let mut i = Array::get(floor, 0)
+    if i < 0 {
+      i = 0
+    } else {
+      ()
+    }
+    let mut found = false
+    while !found && i + nlen <= limit {
+      if String::substring(source, i, i + nlen) == name && sym_is_boundary_at(source, i - 1) && sym_is_boundary_at(source, i + nlen) {
+        Array::push(out, (name, kind, i, i + nlen))
+        Array::set(floor, 0, i + nlen)
+        found = true
+      } else {
+        i = i + 1
+      }
+    }
+  }
+}
+
+// LSP SymbolKind for a top-level value binding: Function (12) when its body is a
+// lambda, else Variable (13).
+let sym_let_kind: (Expr) -> Int = (body) -> {
+  match body {
+    EFn(_, _, _, _, _, _) => 12,
+    _ => 13
+  }
+}
+
+// Emit the symbol for one statement within the window [floor, hi). SModule emits
+// the module name (kind 2 = Module) then recurses into its body, threading the
+// SAME advancing floor so nested declarations are located in source order.
+let rec sym_walk_stmt: (Array[(String, Int, Int, Int)], String, Stmt, Array[Int], Int) -> Unit = (out, source, stmt, floor, hi) -> {
+  match stmt {
+    SLet(_, _, name, _, body) => sym_emit(out, source, name, sym_let_kind(body), floor, hi),
+    SLetMut(name, _, _) => sym_emit(out, source, name, 13, floor, hi),
+    SEnum(_, name, _, _) => sym_emit(out, source, name, 10, floor, hi),
+    SSuberror(_, name, _) => sym_emit(out, source, name, 10, floor, hi),
+    SStruct(_, name, _) => sym_emit(out, source, name, 23, floor, hi),
+    STypeAlias(_, name, _, _) => sym_emit(out, source, name, 26, floor, hi),
+    STrait(_, name, _) => sym_emit(out, source, name, 11, floor, hi),
+    SEffectDef(_, name, _, _) => sym_emit(out, source, name, 24, floor, hi),
+    SModule(_, name, body) => {
+      sym_emit(out, source, name, 2, floor, hi)
+      let mut j = 0
+      while j < Array::length(body) {
+        sym_walk_stmt(out, source, Array::get(body, j), floor, hi)
+        j = j + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+// Collect declaration symbols. Steps:
+//   1. lex + parse with per-statement spans (parse_program_spans).
+//   2. for each top-level statement, scan its own [start, end) span for the
+//      declaration name and emit (name, kind, start, end); SModule recurses.
+// AST-accurate (see file header). Any failure is swallowed -> empty list.
+let symbol_spans_impl: (String) -> Array[(String, Int, Int, Int)] with { Error } = (source) -> {
+  {
+    let (tokens, starts, ends) = lex_with_offsets(source)
+    let (span_stmts, span_start, span_end) = parse_program_spans(tokens, starts, ends)
+    let out = sym_empty_items()
+    let mut i = 0
+    while i < Array::length(span_stmts) {
+      let lo = if i < Array::length(span_start) { Array::get(span_start, i) } else { 0 }
+      let hi = if i < Array::length(span_end) { Array::get(span_end, i) } else { String::length(source) }
+      let floor = sym_box_int(lo)
+      sym_walk_stmt(out, source, Array::get(span_stmts, i), floor, hi)
+      i = i + 1
+    }
+    out
+  }
+}
+
+export let symbol_spans: (String) -> Array[(String, Int, Int, Int)] = (source) -> {
+  handle {
+    symbol_spans_impl(source)
+  } with Error {
+    Throw(_) => Array::slice([
+      ("", 0, 0, 0)
+    ], 0, 0)
+  }
+}

@@ -30464,6 +30464,101 @@ export let binding_occurrences: (String, Int, Int) -> Array[(Int, Int)] = (sourc
     ], 0, 0)
   }
 }
+let sym_is_boundary_at: (String, Int) -> Bool = (source, off) -> {
+  if off < 0 || off >= String::length(source) {
+    true
+  } else {
+    let c = String::char_code_at(source, off)
+    let is_id = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+    !is_id
+  }
+}
+let sym_box_int: (Int) -> Array[Int] = (v) -> {
+  let arr = Array::slice([0], 0, 0)
+  Array::push(arr, v)
+  arr
+}
+let sym_empty_items: () -> Array[(String, Int, Int, Int)] = () -> {
+  Array::slice([
+    ("", 0, 0, 0)
+  ], 0, 0)
+}
+let sym_emit: (Array[(String, Int, Int, Int)], String, String, Int, Array[Int], Int) -> Unit = (out, source, name, kind, floor, hi) -> {
+  let nlen = String::length(name)
+  if nlen == 0 {
+    ()
+  } else {
+    let limit = if hi > String::length(source) { String::length(source) } else { hi }
+    let mut i = Array::get(floor, 0)
+    if i < 0 {
+      i = 0
+    } else {
+      ()
+    }
+    let mut found = false
+    while !found && i + nlen <= limit {
+      if String::substring(source, i, i + nlen) == name && sym_is_boundary_at(source, i - 1) && sym_is_boundary_at(source, i + nlen) {
+        Array::push(out, (name, kind, i, i + nlen))
+        Array::set(floor, 0, i + nlen)
+        found = true
+      } else {
+        i = i + 1
+      }
+    }
+  }
+}
+let sym_let_kind: (Expr) -> Int = (body) -> {
+  match body {
+    EFn(_, _, _, _, _, _) => 12,
+    _ => 13
+  }
+}
+let rec sym_walk_stmt: (Array[(String, Int, Int, Int)], String, Stmt, Array[Int], Int) -> Unit = (out, source, stmt, floor, hi) -> {
+  match stmt {
+    SLet(_, _, name, _, body) => sym_emit(out, source, name, sym_let_kind(body), floor, hi),
+    SLetMut(name, _, _) => sym_emit(out, source, name, 13, floor, hi),
+    SEnum(_, name, _, _) => sym_emit(out, source, name, 10, floor, hi),
+    SSuberror(_, name, _) => sym_emit(out, source, name, 10, floor, hi),
+    SStruct(_, name, _) => sym_emit(out, source, name, 23, floor, hi),
+    STypeAlias(_, name, _, _) => sym_emit(out, source, name, 26, floor, hi),
+    STrait(_, name, _) => sym_emit(out, source, name, 11, floor, hi),
+    SEffectDef(_, name, _, _) => sym_emit(out, source, name, 24, floor, hi),
+    SModule(_, name, body) => {
+      sym_emit(out, source, name, 2, floor, hi)
+      let mut j = 0
+      while j < Array::length(body) {
+        sym_walk_stmt(out, source, Array::get(body, j), floor, hi)
+        j = j + 1
+      }
+    },
+    _ => ()
+  }
+}
+let symbol_spans_impl: (String) -> Array[(String, Int, Int, Int)] with { Error } = (source) -> {
+  {
+    let (tokens, starts, ends) = lex_with_offsets(source)
+    let (span_stmts, span_start, span_end) = parse_program_spans(tokens, starts, ends)
+    let out = sym_empty_items()
+    let mut i = 0
+    while i < Array::length(span_stmts) {
+      let lo = if i < Array::length(span_start) { Array::get(span_start, i) } else { 0 }
+      let hi = if i < Array::length(span_end) { Array::get(span_end, i) } else { String::length(source) }
+      let floor = sym_box_int(lo)
+      sym_walk_stmt(out, source, Array::get(span_stmts, i), floor, hi)
+      i = i + 1
+    }
+    out
+  }
+}
+export let symbol_spans: (String) -> Array[(String, Int, Int, Int)] = (source) -> {
+  handle {
+    symbol_spans_impl(source)
+  } with Error {
+    Throw(_) => Array::slice([
+      ("", 0, 0, 0)
+    ], 0, 0)
+  }
+}
 let join_lines: (Array[String]) -> String = (items) -> {
   let n = Array::length(items)
   if n == 0 {
@@ -30477,6 +30572,28 @@ let join_lines: (Array[String]) -> String = (items) -> {
     }
     acc
   }
+}
+let join_symbol_spans: (Array[(String, Int, Int, Int)]) -> String = (syms) -> {
+  let n = Array::length(syms)
+  let mut acc = ""
+  let mut first = true
+  let mut i = 0
+  while i < n {
+    let (name, kind, s, e) = Array::get(syms, i)
+    if String::length(name) == 0 {
+      ()
+    } else {
+      let line = String::concat(name, String::concat(" ", String::concat(__to_string(kind), String::concat(" ", String::concat(__to_string(s), String::concat(" ", __to_string(e)))))))
+      if first {
+        acc = line
+        first = false
+      } else {
+        acc = String::concat(acc, String::concat("\n", line))
+      }
+    }
+    i = i + 1
+  }
+  acc
 }
 let join_binding_occurrences: (Array[(Int, Int)]) -> String = (occ) -> {
   let n = Array::length(occ)
@@ -30613,6 +30730,12 @@ export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
     let col = parse_int_or(Env::get("VIBE_TYPE_COL"), 1)
     let occ = binding_occurrences(src, line, col)
     Fs::write_bytes(output_path, adapter_string_to_bytes(join_binding_occurrences(occ)))
+    return 0
+  }
+  if Env::get("VIBE_SYMBOLS") == "1" {
+    let src = Fs::read_file(input_path)
+    let syms = symbol_spans(src)
+    Fs::write_bytes(output_path, adapter_string_to_bytes(join_symbol_spans(syms)))
     return 0
   }
   if Env::get("VIBE_DIAGNOSTICS") == "1" {

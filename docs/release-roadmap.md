@@ -165,8 +165,19 @@
      ハイライト」する方式へ変更し、`unknown field 'x'` の squiggle が field を
      正確に指すよう修正（compiler 不変 = fixpoint 影響なし）。`test_vibe_lsp.js`
      に field-range 回帰を追加。
-   残（post-GA）: シンボル span の JSON 露出、checker が end offset を発行する
-   完全な AST range 化（現状は line:col アンカー + メッセージ named-token 復元）。
+   - ✅ **シンボル span の JSON 露出（着地）** — 新 CLI `vibe symbols <file>` が
+     parse 済み AST を歩き、宣言ごとに `NAME KIND START END`（KIND = LSP
+     SymbolKind、START/END = 名前の char offset）を出力。新 compiler module
+     `runtime/symbol_spans.vibe`（`parse_program_spans` の文単位 span 内で
+     名前を whole-word 復元）+ adapter 配線 + launcher subcommand。LSP の
+     document-outline / go-to-definition を行 regex から AST 正確版へ置換
+     （multi-line 宣言・module ネスト対応、string/comment 誤マッチなし、
+     function/value/struct/enum/trait/alias/effect の kind 区別）。regex は
+     fallback として保持。`test_vibe_symbols.sh` 6/6 + `test_vibe_lsp.js`
+     20/20（AST-outline 3 件追加）、selfhost gate green（stage2==stage3
+     fixpoint 維持、13 regression）。
+   残（post-GA）: checker が end offset を発行する完全な診断 AST range 化
+   （現状は line:col アンカー + メッセージ named-token 復元）。
 5. 🟡 **行ベース breakpoint（一部着地）** — `vibe run --break <file>:<line>`
    （bare `<line>` も可）が、その行に宣言された関数で停止する。runner 側のみで
    実装（codegen 不変 → 既定 codegen は byte-identical、stage2==stage3 fixpoint は

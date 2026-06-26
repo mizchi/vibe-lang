@@ -27,8 +27,8 @@ the `vibe lsp` command. It provides:
 | --- | --- |
 | **Diagnostics** | Parser error-recovery surfaces *all* top-level syntax errors at once (not just the first), plus the located type error for a clean parse. |
 | **Hover** | Typed hover — shows the inferred type of the identifier under the cursor, including locals and parameters (per-node type table). |
-| **Document symbols** | Top-level functions, types, traits. |
-| **Go to definition** | For module/import/top-level names. |
+| **Document symbols** | AST-accurate outline (`vibe symbols`) — functions, values, structs, enums, traits, type aliases, effects, and module-nested declarations, with correct `SymbolKind`s. Handles multi-line declarations; ignores names in strings/comments. |
+| **Go to definition** | AST-accurate declaration span (`vibe symbols`), with a line-regex fallback for older compilers. |
 | **References / Rename** | AST-accurate via scope-aware binding occurrences (no string/comment false matches; distinguishes shadowed bindings). |
 | **Completion** | Identifier and member completion. |
 | **Signature help** | Parameter info at call sites. |
@@ -46,6 +46,7 @@ directly (useful for scripting or wiring a different editor):
 ```bash
 vibe type-at <file.vibe> <line> <col>     # inferred type of the identifier at 1-based (line,col)
 vibe binding-at <file.vibe> <line> <col>  # source spans (START END char offsets) of every occurrence of that binding
+vibe symbols <file.vibe>                  # declaration outline (NAME KIND START END per line)
 vibe diagnostics <file.vibe>              # all diagnostics, one per line; empty output = clean
 ```
 
@@ -53,6 +54,12 @@ vibe diagnostics <file.vibe>              # all diagnostics, one per line; empty
   identifier at that position.
 - `binding-at` powers rename/references. Each line is a `START END` pair of
   char offsets for one occurrence of the binding under the cursor.
+- `symbols` powers the document outline and go-to-definition. Each line is
+  `NAME KIND START END`, where `KIND` is an LSP `SymbolKind` integer and
+  `START END` are char offsets of the declaration name. Because it walks the
+  parsed AST (not a line regex) it handles multi-line declarations and
+  module-nested symbols and never reports a name that only appears in a string
+  or comment.
 - `diagnostics` always exits 0 (it is a *report*, not a pass/fail), so a clean
   file simply yields no output.
 

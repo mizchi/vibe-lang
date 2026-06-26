@@ -127,7 +127,14 @@ function handle(msg) {
     case "textDocument/documentSymbol": {
       const uri = msg.params.textDocument.uri;
       const doc = docs.get(uri);
-      reply(msg.id, doc ? documentSymbols(doc.text) : []);
+      if (!doc) { reply(msg.id, []); break; }
+      // Prefer the compiler's AST-accurate outline (handles multi-line decls,
+      // module-nested symbols, no string/comment false matches); fall back to
+      // the line-regex scan when the compiler can't answer.
+      const syms = compilerSymbols(uri);
+      reply(msg.id, syms
+        ? syms.map((s) => ({ name: s.name, kind: s.kind, range: s.selectionRange, selectionRange: s.selectionRange }))
+        : documentSymbols(doc.text));
       break;
     }
     case "textDocument/definition": {
@@ -135,7 +142,13 @@ function handle(msg) {
       const doc = docs.get(uri);
       if (!doc) { reply(msg.id, null); break; }
       const word = wordAt(doc.text, msg.params.position);
-      const decl = word ? findDeclaration(doc.text, word) : null;
+      if (!word) { reply(msg.id, null); break; }
+      // Prefer the compiler's AST-accurate declaration span; fall back to the
+      // line-regex scan when unavailable.
+      const syms = compilerSymbols(uri);
+      const sym = syms && syms.find((s) => s.name === word);
+      if (sym) { reply(msg.id, { uri, range: sym.selectionRange }); break; }
+      const decl = findDeclaration(doc.text, word);
       reply(msg.id, decl ? { uri, range: decl.selectionRange } : null);
       break;
     }
@@ -374,6 +387,45 @@ function bindingOccurrences(uri, position) {
       if (m) ranges.push({ start: offsetToPosition(doc.text, +m[1]), end: offsetToPosition(doc.text, +m[2]) });
     }
     return ranges.length ? ranges : null;
+  } catch {
+    return null;
+  } finally {
+    try { fs.unlinkSync(tmp); } catch {}
+    try { fs.unlinkSync(`${tmp}.diag`); } catch {}
+  }
+}
+
+// AST-accurate declaration outline via `vibe symbols` (one "NAME KIND START END"
+// per line; KIND = LSP SymbolKind, START/END = char offsets of the name).
+// Returns an array of { name, kind, selectionRange } (selectionRange spans the
+// name), or null when unavailable (older compiler / no symbols) so callers can
+// fall back to the line-regex scan. Unlike the regex, this handles multi-line
+// declarations, module-nested symbols, and never false-matches names that only
+// appear inside strings or comments.
+function compilerSymbols(uri) {
+  const doc = docs.get(uri);
+  if (!doc) return null;
+  const filePath = uriToPath(uri);
+  const dir = fs.existsSync(path.dirname(filePath)) ? path.dirname(filePath) : os.tmpdir();
+  const tmp = path.join(dir, `.vibe-lsp-sym-${process.pid}-${Math.abs(hash(uri))}.vibe`);
+  try {
+    fs.writeFileSync(tmp, doc.text, "utf8");
+    const res = spawnSync(VIBE_BIN, ["symbols", tmp], { encoding: "utf8" });
+    const out = [];
+    for (const l of (res.stdout || "").split(/\r?\n/)) {
+      const m = /^(\S+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$/.exec(l);
+      if (m) {
+        out.push({
+          name: m[1],
+          kind: +m[2],
+          selectionRange: {
+            start: offsetToPosition(doc.text, +m[3]),
+            end: offsetToPosition(doc.text, +m[4]),
+          },
+        });
+      }
+    }
+    return out.length ? out : null;
   } catch {
     return null;
   } finally {

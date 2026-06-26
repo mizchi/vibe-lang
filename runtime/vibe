@@ -28,6 +28,7 @@
 #   vibe check   <file.vibe>              parse + typecheck (no output kept)
 #   vibe type-at <file.vibe> <line> <col> print the inferred type at a position
 #   vibe binding-at <file.vibe> <line> <col> print binding occurrence spans (START END per line)
+#   vibe symbols <file.vibe>              print declaration outline (NAME KIND START END per line)
 #   vibe diagnostics <file.vibe>          print all syntax/type diagnostics
 #   vibe test    <file_test.vibe>...      compile + run test {} blocks
 #   vibe new     <dir>                    scaffold a starter project
@@ -417,6 +418,32 @@ case "$cmd" in
     env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT \
         -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
       VIBE_BINDING_AT=1 VIBE_TYPE_LINE="$ba_line" VIBE_TYPE_COL="$ba_col" \
+      VIBE_SELFHOST_IMPORT_ABI=raw \
+      "$RUNNER" "$cli" "$src" "$out" >/dev/null 2>&1 || true
+    if [ -s "$out" ]; then cat "$out"; fi
+    ;;
+  symbols)
+    # vibe symbols <file.vibe>
+    # Print the declaration outline, one `NAME KIND START END` per line (KIND =
+    # LSP SymbolKind int, START/END = char offsets of the name). AST-accurate
+    # (no line-regex scan): handles multi-line decls and module-nested symbols.
+    # Empty output means the file declares no top-level symbols. Powers LSP
+    # document-outline / go-to-definition.
+    [ "$#" -ge 1 ] || die "usage: vibe symbols <file.vibe>"
+    src="$1"
+    [ -f "$src" ] || die "not found: $src"
+    # Use the portable .wasm (not the AOT .cwasm): the recovering-parser path
+    # trapped under the precompiled image on some hosts, and these LSP queries
+    # are latency-amortized, so prefer correctness.
+    cli="$CLI_WASM"; [ -f "$cli" ] || cli="$(pick_cli)"
+    out="$(mktemp -t vibe-symbols-XXXXXX)"
+    trap 'rm -f "$out"' EXIT
+    # Clear any inherited compile-mode envs so this query can't be diverted to the
+    # compile path (which would emit wasm bytes instead of the symbol list).
+    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT \
+        -u VIBE_BINDING_AT -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK \
+        -u VIBE_EMIT_MODULE_SOURCE \
+      VIBE_SYMBOLS=1 \
       VIBE_SELFHOST_IMPORT_ABI=raw \
       "$RUNNER" "$cli" "$src" "$out" >/dev/null 2>&1 || true
     if [ -s "$out" ]; then cat "$out"; fi
