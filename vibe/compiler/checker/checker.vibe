@@ -192,14 +192,80 @@ let expr_ident_name_or_empty: (Expr) -> String = (expr) -> {
   }
 }
 
-let unify_call_args: (Array[Type], Array[Type], Subst) -> Subst = (param_tys, arg_tys, s) -> {
+// Erase every effect annotation in a type (recursively), so an argument can be
+// checked for STRUCTURAL compatibility independent of effects. Effects on
+// function VALUES are inferred imprecisely (a `with { Error }` callback often
+// arrives typed with no effect), so an effect-only difference must not be
+// reported as a type error — only the structural shape is enforced here.
+let rec strip_effects: (Type) -> Type = (ty) -> {
+  match ty {
+    CtFn(params, ret, _) => {
+      let out = Array::slice([
+        CtUnknown
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(params) {
+        Array::push(out, strip_effects(Array::get(params, i)))
+        i = i + 1
+      }
+      CtFn(out, strip_effects(ret), None)
+    },
+    CtArray(elem) => CtArray(strip_effects(elem)),
+    CtOption(elem) => CtOption(strip_effects(elem)),
+    CtTuple(elems) => {
+      let out = Array::slice([
+        CtUnknown
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(elems) {
+        Array::push(out, strip_effects(Array::get(elems, i)))
+        i = i + 1
+      }
+      CtTuple(out)
+    },
+    CtNamed(name, args) => {
+      let out = Array::slice([
+        CtUnknown
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(out, strip_effects(Array::get(args, i)))
+        i = i + 1
+      }
+      CtNamed(name, out)
+    },
+    _ => ty
+  }
+}
+
+// Unify each argument against its parameter, REPORTING a type mismatch instead
+// of silently swallowing it. The checker used to drop unification failures here
+// (`None => out`), so an ill-typed call like `f("x")` for `f: (Int) -> Int` was
+// accepted — a soundness hole. `unify` already accepts `CtUnknown`/`CtVar`
+// freely, so only a genuine concrete STRUCTURAL mismatch is flagged; effect-only
+// differences (imprecise effect inference) and `__to_string` (the polymorphic
+// interpolation stringifier) are tolerated.
+let unify_call_args: (Array[Type], Array[Type], Subst, Array[String], String, Int) -> Subst = (param_tys, arg_tys, s, errors, label, off) -> {
   let mut out = s
   let mut ui = 0
   let ul = min_int(Array::length(arg_tys), Array::length(param_tys))
   while ui < ul {
-    out = match unify(Array::get(param_tys, ui), Array::get(arg_tys, ui), out) {
+    let pty = Array::get(param_tys, ui)
+    let aty = Array::get(arg_tys, ui)
+    out = match unify(pty, aty, out) {
       Some(su) => su,
-      None => out
+      None => {
+        let structural = match unify(strip_effects(pty), strip_effects(aty), out) {
+          Some(_) => true,
+          None => false
+        }
+        if structural || label == "__to_string" {
+          out
+        } else {
+          Array::push(errors, String::concat("argument type mismatch for ", String::concat(label, String::concat(": expected ", String::concat(type_to_string(subst_apply(out, pty)), String::concat(", got ", String::concat(type_to_string(subst_apply(out, aty)), off_marker(off))))))))
+          out
+        }
+      }
     }
     ui = ui + 1
   }
@@ -708,7 +774,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
                 if alen3 != plen2 {
                   Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(name, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))), off_marker_len(callee_off, String::length(name))))
                 }
-                let s3 = unify_call_args(call_param_tys, arg_tys, s2)
+                let s3 = unify_call_args(call_param_tys, arg_tys, s2, errors, name, callee_off)
                 let call_ret = Array::get(ret_box, 0)
                 (tab_call_ty(tytab, call_off, subst_apply(s3, call_ret)), s3, c2)
               },
@@ -766,7 +832,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
             if alen2 != plen {
               Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(qualified, String::concat(": expected ", String::concat(__to_string(plen), String::concat(" args, got ", __to_string(alen2)))))), off_marker_len(call_off, String::length(qualified))))
             }
-            let s4 = unify_call_args(call_param_tys, arg_tys, s3)
+            let s4 = unify_call_args(call_param_tys, arg_tys, s3, errors, qualified, call_off)
             let call_ret = Array::get(ret_box, 0)
             let selected_ret = match direct_ret {
               Some(t) => t,
@@ -828,7 +894,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
                 if alen3 != plen2 {
                   Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(callee_name0, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))), off_marker_len(call_off, String::length(callee_name0))))
                 }
-                let s3 = unify_call_args(call_param_tys, arg_tys, s2)
+                let s3 = unify_call_args(call_param_tys, arg_tys, s2, errors, callee_name0, call_off)
                 let call_ret = Array::get(ret_box, 0)
                 (tab_call_ty(tytab, call_off, subst_apply(s3, call_ret)), s3, c2)
               },
@@ -868,7 +934,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
                 if alen3 != plen2 {
                   Array::push(errors, String::concat(String::concat("function arity mismatch for <expr>: expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))), off_marker(call_off)))
                 }
-                let s3 = unify_call_args(call_param_tys, arg_tys, s2)
+                let s3 = unify_call_args(call_param_tys, arg_tys, s2, errors, "<expr>", call_off)
                 let call_ret = Array::get(ret_box, 0)
                 (tab_call_ty(tytab, call_off, subst_apply(s3, call_ret)), s3, c2)
               },

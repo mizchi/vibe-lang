@@ -1118,4 +1118,37 @@ fi
 rm -rf "$hdir"
 echo "[selfhost-only-gate] handle effect discharge ok"
 
+# 28. argument type checking: the checker used to SWALLOW argument unification
+#     failures (`unify_call_args` did `None => out`), so an ill-typed call like
+#     `f("x")` for `f: (Int) -> Int` was silently accepted. It now reports a
+#     STRUCTURAL argument mismatch (effect-only differences and the polymorphic
+#     `__to_string` interpolation stringifier are still tolerated, since effect
+#     inference on function values is imprecise). The mismatch must be REJECTED;
+#     a correct call must still compile.
+echo "[selfhost-only-gate] 28/28 argument type checking"
+adir="_build/_gate_argcheck"
+rm -rf "$adir"; mkdir -p "$adir"
+cat > "$adir/wrong.vibe" <<'EOF'
+let f: (Int) -> Int = (x) -> { x + 1 }
+export let _start: () -> Int = () -> { f("hello") }
+EOF
+cat > "$adir/right.vibe" <<'EOF'
+let f: (Int) -> Int = (x) -> { x + 1 }
+export let _start: () -> Int = () -> { f(41) + 1 }
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$adir/right.vibe" "$adir/right.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$adir/right.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: a correctly-typed call did not compile (arg-check over-rejects)" >&2; exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$adir/wrong.vibe" "$adir/wrong.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$adir/wrong.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: an ill-typed argument (Int <- String) compiled (arg-check regressed)" >&2; exit 1
+fi
+rm -rf "$adir"
+echo "[selfhost-only-gate] argument type checking ok"
+
 echo "[selfhost-only-gate] ok"
