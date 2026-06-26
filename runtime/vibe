@@ -240,24 +240,34 @@ compile_to() {
 # stepping — see the FIFO comment in the `run` case). Reads stdin, writes the
 # annotated stream to stdout, appending ` (<base>:<line>)` to every trace/frame
 # line that names a funcmap function. A bash `read` loop is line-buffered by
-# construction, so a paused runner's frames flush immediately. Pure bash (no awk)
-# and bash-3.2 safe (indexed arrays + linear scan; the funcmap has one entry per
-# top-level function, so the scan is cheap relative to debug-output volume).
+# construction, so a paused runner's frames flush immediately.
+#
+# Per-frame lookup MUST be O(1): the DAP server (js/vibe/dap_server.js) resets a
+# 30ms idle-flush timer on each frame line and emits `stopped` once no further
+# frame arrives within that window. A funcmap can hold thousands of entries (the
+# generated selfhost adapter), so an O(n) scan per frame could open a >30ms gap
+# between frames, truncating the stack the client sees. We therefore mirror the
+# original awk's associative-array lookup using bash variable indirection (one
+# `_fmln_<name>` variable per entry), which is O(1) and works on bash 3.2 (macOS)
+# where associative arrays do not exist. Names are validated to a safe identifier
+# shape before they touch `eval`/indirection (funcmap names are top-level vibe
+# functions, i.e. `[A-Za-z_][A-Za-z0-9_]*`).
 #   $1 = funcmap path ("" / missing => pass input through unannotated)
 #   $2 = entry source basename (the (<base>:<line>) suffix)
 annotate_run_stream() {
   local fm="$1" base="$2"
-  local _nm _ln line rest name i hit tab
+  local _nm _ln line rest name varname hit tab
   tab="$(printf '\t')"
-  # Load the funcmap (one "name<TAB>declLine" per line) into two parallel indexed
-  # arrays (indexed arrays exist in bash 3.2; associative arrays do not).
-  local -a _names=() _lines=()
+  # Load the funcmap (one "name<TAB>declLine" per line) into per-name variables
+  # `_fmln_<name>` for O(1) indirect lookup. Runs in the backgrounded subshell
+  # that calls this function, so these never leak into the launcher's scope.
   if [ -n "$fm" ] && [ -s "$fm" ]; then
     while IFS="$tab" read -r _nm _ln || [ -n "$_nm" ]; do
       _ln="${_ln%%[[:space:]]*}"          # keep only the leading line number
-      [ -n "$_nm" ] || continue
-      _names+=("$_nm")
-      _lines+=("$_ln")
+      case "$_nm" in [A-Za-z_]*) ;; *) continue ;; esac
+      case "$_nm" in *[!A-Za-z0-9_]*) continue ;; esac
+      case "$_ln" in ""|*[!0-9]*) continue ;; esac
+      eval "_fmln_${_nm}=${_ln}"
     done < "$fm"
   fi
   while IFS= read -r line || [ -n "$line" ]; do
@@ -268,12 +278,16 @@ annotate_run_stream() {
       *)          printf '%s\n' "$line"; continue ;;
     esac
     hit=""
-    # Guard the scan with a length check: under `set -u`, expanding
-    # "${!arr[@]}" on an EMPTY array aborts on bash 3.2 (macOS).
-    if [ "${#_names[@]}" -gt 0 ]; then
-      for i in "${!_names[@]}"; do
-        if [ "${_names[$i]}" = "$name" ]; then hit="${_lines[$i]}"; break; fi
-      done
+    # Only plain identifiers can be funcmap keys; anything else (e.g. `Env::get`)
+    # is never in the map, so skip the lookup. `${!varname+x}` is set-u safe even
+    # when the target is unset (the `+` test never dereferences an unset name).
+    case "$name" in
+      [A-Za-z_]*) case "$name" in *[!A-Za-z0-9_]*) name="" ;; esac ;;
+      *) name="" ;;
+    esac
+    if [ -n "$name" ]; then
+      varname="_fmln_${name}"
+      if [ -n "${!varname+x}" ]; then hit="${!varname}"; fi
     fi
     if [ -n "$hit" ]; then
       printf '%s (%s:%s)\n' "$line" "$base" "$hit"
