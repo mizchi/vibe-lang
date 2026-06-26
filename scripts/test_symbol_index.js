@@ -79,6 +79,35 @@ function eq(a, b, name) { ok(JSON.stringify(a) === JSON.stringify(b), name, `${J
   ok(src.slice(call.off, call.end) === "foo", "call off..end slices to the callee name", src.slice(call.off, call.end));
 }
 
+// --- dependency forms: import {}, export {} re-export, @alias --------------
+{
+  const ex = extractFile("import ./a.vibe { x }\nexport ./b.vibe { y }\nimport ../json @json\nexport let keep = () -> Int { 0 }\n");
+  const paths = ex.imports.map((i) => i.path).sort();
+  eq(paths, ["../json", "./a.vibe", "./b.vibe"], "captures import {}, export-{} re-export, and @alias deps");
+  ok(ex.imports.find((i) => i.path === "./a.vibe").names.includes("x"), "named import carries names");
+  ok(ex.imports.find((i) => i.path === "../json").names.length === 0, "alias import has no names");
+  ok(!ex.imports.some((i) => i.path === "keep"), "`export let` decl is NOT a dependency");
+  ok(ex.symbols.some((s) => s.name === "keep"), "`export let` is still a symbol");
+}
+
+// --- enclosing-sweep call attribution under nesting -------------------------
+{
+  // outer fn contains an inner module-nested fn; calls must attribute to the
+  // innermost enclosing symbol, and disjoint siblings must not bleed.
+  const src = [
+    "let a = () -> Int { p() }",       // a -> p
+    "module M {",
+    "  let b = () -> Int { q() }",     // b -> q  (module-nested)
+    "}",
+    "let c = () -> Int { r() }",       // c -> r  (sibling after module)
+  ].join("\n");
+  const ex = extractFile(src);
+  const at = (callee) => (ex.calls.find((x) => x.callee === callee) || {}).caller;
+  eq(at("p"), "a", "call p attributed to a");
+  eq(at("q"), "b", "call q attributed to module-nested b (innermost)");
+  eq(at("r"), "c", "call r attributed to c (no sibling bleed after module close)");
+}
+
 // --- module-nested symbols --------------------------------------------------
 {
   const src = "module M {\n  let inner = (x: Int) -> Int { x }\n}\nlet outer = () -> Int { 0 }\n";

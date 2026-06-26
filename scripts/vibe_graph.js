@@ -112,8 +112,11 @@ function main() {
   const json = JSON.stringify(result, null, o.out ? 0 : 2);
   if (o.out) {
     fs.writeFileSync(o.out, json);
+    // The --stats result IS the stats object (files/ms at top level); every other
+    // result carries them under result.stats. Read from whichever applies.
+    const st = o.query === "stats" ? result : result.stats;
     const counts = result.nodes ? `${result.nodes.length} nodes, ${result.edges.length} edges` : (result.cycles ? `${result.cycles.length} cycles` : "ok");
-    process.stderr.write(`vibe graph (${result.view || o.query}) -> ${o.out}: ${counts}, ${result.stats.files} files in ${result.stats.ms} ms\n`);
+    process.stderr.write(`vibe graph (${result.view || o.query}) -> ${o.out}: ${counts}, ${st.files} files in ${st.ms} ms\n`);
   } else {
     process.stdout.write(json + "\n");
   }

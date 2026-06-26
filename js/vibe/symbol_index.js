@@ -53,28 +53,30 @@ function hashText(s) {
 // offsets/newlines are preserved. Scanning the mask for declarations and calls
 // then never false-matches words in comments/strings. vibe has no block comments.
 function codeMask(text) {
+  // Char-CODE comparisons (47 '/', 34 '"', 92 '\\', 10 '\n') avoid allocating a
+  // one-char string per byte (text[i]), which dominated this O(n) scan in the
+  // profile. allocUnsafe is safe: every byte is written before the toString.
   const n = text.length;
-  const out = Buffer.alloc(n);
+  const out = Buffer.allocUnsafe(n);
   let i = 0;
   let state = 0; // 0 = code, 1 = line comment, 2 = string
   while (i < n) {
     const c = text.charCodeAt(i);
-    const ch = text[i];
     if (state === 0) {
-      if (ch === "/" && text[i + 1] === "/") {
+      if (c === 47 && text.charCodeAt(i + 1) === 47) {
         out[i] = 32; out[i + 1] = 32; i += 2; state = 1; continue;
       }
-      if (ch === '"') { out[i] = 32; i++; state = 2; continue; }
+      if (c === 34) { out[i] = 32; i++; state = 2; continue; }
       out[i] = c < 128 ? c : 32;
       i++;
     } else if (state === 1) {
-      if (ch === "\n") { out[i] = 10; i++; state = 0; continue; }
+      if (c === 10) { out[i] = 10; i++; state = 0; continue; }
       out[i] = 32; i++;
     } else {
       // inside string
-      if (ch === "\\") { out[i] = 32; if (i + 1 < n) out[i + 1] = 32; i += 2; continue; }
-      if (ch === '"') { out[i] = 32; i++; state = 0; continue; }
-      out[i] = ch === "\n" ? 10 : 32;
+      if (c === 92) { out[i] = 32; if (i + 1 < n) out[i + 1] = 32; i += 2; continue; }
+      if (c === 34) { out[i] = 32; i++; state = 0; continue; }
+      out[i] = c === 10 ? 10 : 32;
       i++;
     }
   }
@@ -84,13 +86,13 @@ function codeMask(text) {
 // Match-brace from the open-brace at `open` to its closing `}` in `mask` (already
 // comment/string-free). Returns the index of the matching `}` or text length.
 function matchBrace(mask, open) {
-  let depth = 0;
-  for (let i = open; i < mask.length; i++) {
-    const c = mask[i];
-    if (c === "{") depth++;
-    else if (c === "}") { depth--; if (depth === 0) return i; }
+  const n = mask.length;
+  for (let i = open, depth = 0; i < n; i++) {
+    const c = mask.charCodeAt(i); // 123 '{', 125 '}'
+    if (c === 123) depth++;
+    else if (c === 125) { if (--depth === 0) return i; }
   }
-  return mask.length;
+  return n;
 }
 
 // Top-level (and one level of `module { ... }`-nested) declarations.
@@ -185,11 +187,12 @@ function extractFile(text) {
   // --- brace depth at each candidate's declStart (single pass) ---
   {
     let ci = 0, depth = 0;
-    for (let i = 0; i < mask.length && ci < cands.length; i++) {
+    const n = mask.length;
+    for (let i = 0; i < n && ci < cands.length; i++) {
       while (ci < cands.length && cands[ci].declStart === i) { cands[ci].depth = depth; ci++; }
-      const c = mask[i];
-      if (c === "{") depth++;
-      else if (c === "}") depth--;
+      const c = mask.charCodeAt(i); // 123 '{', 125 '}'
+      if (c === 123) depth++;
+      else if (c === 125) depth--;
     }
   }
 
@@ -207,28 +210,36 @@ function extractFile(text) {
   }
 
   const imports = [];
-  // --- imports: `import <path> { A, B, ... }` (path may be ./x.vibe or ../m) ---
-  const IMP_RE = /(^|\n)[ \t]*(export[ \t]+)?import[ \t]+([^\n{]+?)[ \t]*\{([^}]*)\}/g;
+  // --- dependency-bearing forms (all create an edge to a relative path):
+  //       import <path> { A, B }      (named import)
+  //       export <path> { A, B }      (re-export — index modules; ~heavy use)
+  //       import <path> @alias        (whole-module alias import)
+  //     The path starts with `.` (relative), which distinguishes a re-export
+  //     `export ./x { }` from a declaration `export let x = ...`. Paths may carry
+  //     spaces (`.. / core`), stripped here. ---
+  const DEP_RE = /(^|\n)[ \t]*(import|export)[ \t]+(\.[^\n{@]*?)[ \t]*(?:\{([^}]*)\}|@[A-Za-z_][A-Za-z0-9_]*|(?=[\r\n]|$))/g;
   let im;
-  while ((im = IMP_RE.exec(mask)) !== null) {
+  while ((im = DEP_RE.exec(mask)) !== null) {
     const rawPath = im[3].replace(/\s+/g, "");
-    const names = im[4].split(",").map((s) => s.trim()).filter(Boolean);
+    if (!rawPath) continue;
+    const names = im[4] ? im[4].split(",").map((s) => s.trim()).filter(Boolean) : [];
     imports.push({ path: rawPath, names, start: im.index + (im[1] ? im[1].length : 0) });
   }
 
   // --- call edges: identifier (optionally Qual::method) immediately before `(`,
   //     attributed to the innermost enclosing symbol body. ---
-  // Sort symbols with a body by start for a quick enclosing lookup.
+  // Enclosing lookup via a single offset-ordered SWEEP (calls are produced in
+  // increasing offset by the regex): keep a stack of open bodies; the innermost
+  // is the top. O(bodies + calls) total — replaces an O(bodies × calls) scan that
+  // dominated extractFile on the large generated files (11M+ iterations).
   const bodied = symbols.filter((s) => s.bodyStart >= 0).sort((a, b) => a.bodyStart - b.bodyStart);
-  const enclosing = (off) => {
-    // innermost body covering off
-    let best = null;
-    for (const s of bodied) {
-      if (s.bodyStart <= off && off <= s.bodyEnd) {
-        if (!best || s.bodyStart > best.bodyStart) best = s;
-      }
-    }
-    return best ? best.name : null;
+  let bi = 0;
+  const open = [];
+  const enclosingSweep = (off) => {
+    while (bi < bodied.length && bodied[bi].bodyStart <= off) open.push(bodied[bi++]);
+    while (open.length && open[open.length - 1].bodyEnd < off) open.pop();
+    const top = open.length ? open[open.length - 1] : null;
+    return top && top.bodyStart <= off && off <= top.bodyEnd ? top.name : null;
   };
 
   const calls = [];
@@ -242,7 +253,7 @@ function extractFile(text) {
     // Span of the called name token (qualifier::callee), excluding trailing
     // spaces and the `(`, for precise call-site ranges in call hierarchy.
     const end = off + (qualifier ? qualifier.length + 2 + callee.length : callee.length);
-    calls.push({ caller: enclosing(off), callee, qualifier, off, end });
+    calls.push({ caller: enclosingSweep(off), callee, qualifier, off, end });
   }
 
   return { symbols, imports, calls };
