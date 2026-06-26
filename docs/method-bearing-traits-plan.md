@@ -341,13 +341,18 @@ lands.
   Some((x, rest)) => { __iter_cur = rest; body }, None => stop }`; array-`for`
   (iterable infers to None / a primitive) is left untouched for the existing
   array codegen, and nested iterator-`for`s shadow the `__iter_*` names
-  correctly. Verified on both pipelines (gate step 16: a `for` loop + a generic
-  `iter_sum` dispatch sum to 20; fixture `fixtures/trait_iterator_test.vibe`
-  covers struct-literal and let-bound iterables). Closures-in-struct-fields (the
-  other lazy_iter blocker) are exactly the dict encoding (spike G-1).
-  **Deferred:** `for await`, the `map`/`filter`/`fold` combinators, the
-  `Iterable` trait, generic-context `for x in <type-param iterator>`, and
-  reimplementing `lazy_iter_*` on the trait. `for` requires the functional
+  correctly. **The `Iterable` trait is also supported:** `for x in e` where
+  `e`'s type has no `next` but has an `iter` method
+  (`Iterable[T] { iter(Self) -> Iterator }`) is rewritten to drive `R::next` on
+  `e.iter()` (R = the iter method's return type, from a `fn_returns` registry of
+  top-level function return types). Verified on both pipelines (gate step 16: an
+  iterator `for`, an Iterable `for`, and a generic `iter_sum` dispatch sum to 30;
+  fixture `fixtures/trait_iterator_test.vibe` covers struct-literal, let-bound,
+  and Iterable iterables). Closures-in-struct-fields (the other lazy_iter
+  blocker) are exactly the dict encoding (spike G-1).
+  **Deferred:** `for await`, the `map`/`filter`/`fold` combinators,
+  generic-context `for x in <type-param iterator>`, and reimplementing
+  `lazy_iter_*` on the trait. `for` requires the functional
   `next(Self) -> Option[(T, Self)]` convention (immutable structs thread state);
   the stateful `next(Self) -> Option[T]` form needs mut fields. Storing the
   trait's type params in `STrait` (instead of erasing at parse) would let the

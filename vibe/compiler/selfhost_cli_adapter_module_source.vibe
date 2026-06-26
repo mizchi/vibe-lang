@@ -7284,19 +7284,61 @@ let seed_var_types: (Array[(String, Option[TypeExpr])], Array[String], Array[(St
   }
   out
 }
-let is_known_struct: (Array[(String, Array[String])], String) -> Bool = (struct_sets, name) -> {
+let collect_fn_returns: (Array[Stmt]) -> Array[(String, String)] = (stmts) -> {
+  let out = Array::slice([
+    ("", "")
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, fname, _, body) => match body {
+        EFn(_, _, _, ret, _, _) => {
+          let rn = match ret {
+            Some(te) => match te {
+              TyName(n) => n,
+              _ => ""
+            },
+            None => ""
+          }
+          Array::push(out, (fname, rn))
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+let fn_exists: (Array[(String, String)], String) -> Bool = (fn_returns, fname) -> {
   let mut i = 0
   let mut found = false
-  while i < Array::length(struct_sets) {
-    let (sname, _) = Array::get(struct_sets, i)
-    if sname == name {
+  while i < Array::length(fn_returns) {
+    let (n, _) = Array::get(fn_returns, i)
+    if n == fname {
       found = true
-      i = Array::length(struct_sets)
+      i = Array::length(fn_returns)
     } else {
       i = i + 1
     }
   }
   found
+}
+let fn_return_type: (Array[(String, String)], String) -> Option[String] = (fn_returns, fname) -> {
+  let mut i = 0
+  let mut result = None
+  while i < Array::length(fn_returns) {
+    let (n, rt) = Array::get(fn_returns, i)
+    if n == fname {
+      result = if String::length(rt) == 0 {
+        None
+      } else Some(rt)
+      i = Array::length(fn_returns)
+    } else {
+      i = i + 1
+    }
+  }
+  result
 }
 let build_iter_for: (String, String, Expr, Expr) -> Expr = (name, ctype, iter, body) -> {
   let nextcall = ECall(EIdent(String::concat(ctype, "::next"), -1), [
@@ -7334,7 +7376,7 @@ let extend_var_types: (Array[(String, String)], String, Option[String]) -> Array
     None => var_types
   }
 }
-let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(String, Array[String])], Array[(String, String, String, Array[String])], Array[(String, String)]) -> Expr = (expr, gens, traits, struct_sets, dict_binds, var_types) -> {
+let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(String, Array[String])], Array[(String, String, String, Array[String])], Array[(String, String)], Array[(String, String)]) -> Expr = (expr, gens, traits, struct_sets, dict_binds, var_types, fn_returns) -> {
   match expr {
     EIdent(name, off) => match split_qualified(name) {
       Some(parts) => {
@@ -7348,7 +7390,7 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
     },
     ECall(callee, args, off) => {
       let rwargs = for a in args {
-        rewrite_expr(a, gens, traits, struct_sets, dict_binds, var_types)
+        rewrite_expr(a, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
       }
       match callee {
         EIdent(name, coff) => {
@@ -7370,8 +7412,8 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
             }
           }
         },
-        EDot(obj, m, doff) => ECall(EDot(rewrite_expr(obj, gens, traits, struct_sets, dict_binds, var_types), m, doff), rwargs, off),
-        _ => ECall(rewrite_expr(callee, gens, traits, struct_sets, dict_binds, var_types), rwargs, off)
+        EDot(obj, m, doff) => ECall(EDot(rewrite_expr(obj, gens, traits, struct_sets, dict_binds, var_types, fn_returns), m, doff), rwargs, off),
+        _ => ECall(rewrite_expr(callee, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rwargs, off)
       }
     },
     EInt(_) => expr,
@@ -7382,10 +7424,10 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
     ESpread(_) => expr,
     EStringInterp(_) => expr,
     ETuple(elems) => ETuple(for e in elems {
-      rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types)
+      rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
     }),
     EArray(elems) => EArray(for e in elems {
-      rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types)
+      rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
     }),
     ERecord(fields) => {
       let out = Array::slice([
@@ -7394,7 +7436,7 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
       let mut i = 0
       while i < Array::length(fields) {
         let (fname, fval) = Array::get(fields, i)
-        Array::push(out, (fname, rewrite_expr(fval, gens, traits, struct_sets, dict_binds, var_types)))
+        Array::push(out, (fname, rewrite_expr(fval, gens, traits, struct_sets, dict_binds, var_types, fn_returns)))
         i = i + 1
       }
       ERecord(out)
@@ -7406,26 +7448,26 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
       let mut i = 0
       while i < Array::length(fields) {
         let (k, v) = Array::get(fields, i)
-        Array::push(out, (k, rewrite_expr(v, gens, traits, struct_sets, dict_binds, var_types)))
+        Array::push(out, (k, rewrite_expr(v, gens, traits, struct_sets, dict_binds, var_types, fn_returns)))
         i = i + 1
       }
       EMap(out)
     },
-    EIf(c, t, e) => EIf(rewrite_expr(c, gens, traits, struct_sets, dict_binds, var_types), rewrite_expr(t, gens, traits, struct_sets, dict_binds, var_types), rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types)),
+    EIf(c, t, e) => EIf(rewrite_expr(c, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(t, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     ELet(name, val, body) => {
-      let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types)
+      let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
       let body_vars = extend_var_types(var_types, name, infer_arg_type_name(val, struct_sets, var_types))
-      ELet(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars))
+      ELet(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns))
     },
-    ELetRec(name, val, body) => ELetRec(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types), rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types)),
+    ELetRec(name, val, body) => ELetRec(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     ELetMut(name, val, body) => {
-      let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types)
+      let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
       let body_vars = extend_var_types(var_types, name, infer_arg_type_name(val, struct_sets, var_types))
-      ELetMut(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars))
+      ELetMut(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns))
     },
-    EAssign(name, val, cont) => EAssign(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types), rewrite_expr(cont, gens, traits, struct_sets, dict_binds, var_types)),
-    EAssignOp(name, op, val, cont) => EAssignOp(name, op, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types), rewrite_expr(cont, gens, traits, struct_sets, dict_binds, var_types)),
-    ESeq(a, b) => ESeq(rewrite_expr(a, gens, traits, struct_sets, dict_binds, var_types), rewrite_expr(b, gens, traits, struct_sets, dict_binds, var_types)),
+    EAssign(name, val, cont) => EAssign(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(cont, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    EAssignOp(name, op, val, cont) => EAssignOp(name, op, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(cont, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    ESeq(a, b) => ESeq(rewrite_expr(a, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(b, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     EMatch(scrut, arms) => {
       let out = Array::slice([
         (PWild, EUnit)
@@ -7433,10 +7475,10 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
       let mut i = 0
       while i < Array::length(arms) {
         let (p, b) = Array::get(arms, i)
-        Array::push(out, (p, rewrite_expr(b, gens, traits, struct_sets, dict_binds, var_types)))
+        Array::push(out, (p, rewrite_expr(b, gens, traits, struct_sets, dict_binds, var_types, fn_returns)))
         i = i + 1
       }
-      EMatch(rewrite_expr(scrut, gens, traits, struct_sets, dict_binds, var_types), out)
+      EMatch(rewrite_expr(scrut, gens, traits, struct_sets, dict_binds, var_types, fn_returns), out)
     },
     EHandle(scrut, arms) => {
       let out = Array::slice([
@@ -7445,41 +7487,46 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
       let mut i = 0
       while i < Array::length(arms) {
         let (p, b) = Array::get(arms, i)
-        Array::push(out, (p, rewrite_expr(b, gens, traits, struct_sets, dict_binds, var_types)))
+        Array::push(out, (p, rewrite_expr(b, gens, traits, struct_sets, dict_binds, var_types, fn_returns)))
         i = i + 1
       }
-      EHandle(rewrite_expr(scrut, gens, traits, struct_sets, dict_binds, var_types), out)
+      EHandle(rewrite_expr(scrut, gens, traits, struct_sets, dict_binds, var_types, fn_returns), out)
     },
-    EWhile(c, b) => EWhile(rewrite_expr(c, gens, traits, struct_sets, dict_binds, var_types), rewrite_expr(b, gens, traits, struct_sets, dict_binds, var_types)),
+    EWhile(c, b) => EWhile(rewrite_expr(c, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(b, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     ELoop(params, body) => ELoop(for param in params {
       let (name, init) = param
-      (name, rewrite_expr(init, gens, traits, struct_sets, dict_binds, var_types))
-    }, rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types)),
+      (name, rewrite_expr(init, gens, traits, struct_sets, dict_binds, var_types, fn_returns))
+    }, rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     EForIn(name, idx, iter, body) => {
-      let riter = rewrite_expr(iter, gens, traits, struct_sets, dict_binds, var_types)
-      let rbody = rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types)
+      let riter = rewrite_expr(iter, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+      let rbody = rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
       match infer_arg_type_name(iter, struct_sets, var_types) {
-        Some(tn) => if is_known_struct(struct_sets, tn) {
+        Some(tn) => if fn_exists(fn_returns, String::concat(tn, "::next")) {
           build_iter_for(name, tn, riter, rbody)
         } else {
-          EForIn(name, idx, riter, rbody)
+          match fn_return_type(fn_returns, String::concat(tn, "::iter")) {
+            Some(itertype) => build_iter_for(name, itertype, ECall(EIdent(String::concat(tn, "::iter"), -1), [
+              riter
+            ], -1), rbody),
+            None => EForIn(name, idx, riter, rbody)
+          }
         },
         None => EForIn(name, idx, riter, rbody)
       }
     },
-    EBinOp(op, l, r) => EBinOp(op, rewrite_expr(l, gens, traits, struct_sets, dict_binds, var_types), rewrite_expr(r, gens, traits, struct_sets, dict_binds, var_types)),
-    EUnaryOp(op, e) => EUnaryOp(op, rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types)),
-    EFn(tp, bs, ps, ret, eff, body) => EFn(tp, bs, ps, ret, eff, rewrite_expr(body, gens, traits, struct_sets, dict_binds, seed_var_types(ps, tp, var_types))),
-    EDot(obj, field, off) => EDot(rewrite_expr(obj, gens, traits, struct_sets, dict_binds, var_types), field, off),
-    ELabeledArg(label, name, body) => ELabeledArg(label, name, rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types)),
-    EThrow(e) => EThrow(rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types)),
-    EReturn(e) => EReturn(rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types)),
+    EBinOp(op, l, r) => EBinOp(op, rewrite_expr(l, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(r, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    EUnaryOp(op, e) => EUnaryOp(op, rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    EFn(tp, bs, ps, ret, eff, body) => EFn(tp, bs, ps, ret, eff, rewrite_expr(body, gens, traits, struct_sets, dict_binds, seed_var_types(ps, tp, var_types), fn_returns)),
+    EDot(obj, field, off) => EDot(rewrite_expr(obj, gens, traits, struct_sets, dict_binds, var_types, fn_returns), field, off),
+    ELabeledArg(label, name, body) => ELabeledArg(label, name, rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    EThrow(e) => EThrow(rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    EReturn(e) => EReturn(rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     EBreak(opt) => match opt {
-      Some(e) => EBreak(Some(rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types))),
+      Some(e) => EBreak(Some(rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns))),
       None => expr
     },
     EContinue(exprs) => EContinue(for e in exprs {
-      rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types)
+      rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
     })
   }
 }
@@ -7526,7 +7573,7 @@ let thread_dict_params: (Array[(String, String, Int)], Array[(String, Option[Typ
   }
   result
 }
-let rewrite_stmt: (Stmt, Array[(String, Array[(String, String, Int)])], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(String, Array[String])]) -> Stmt = (stmt, gens, traits, struct_sets) -> {
+let rewrite_stmt: (Stmt, Array[(String, Array[(String, String, Int)])], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(String, Array[String])], Array[(String, String)]) -> Stmt = (stmt, gens, traits, struct_sets, fn_returns) -> {
   let no_binds = empty_dict_binds()
   let no_vars = Array::slice([
     ("", "")
@@ -7538,19 +7585,19 @@ let rewrite_stmt: (Stmt, Array[(String, Array[(String, String, Int)])], Array[(S
           let binds = dict_binds_of(threaded, traits)
           let new_params = thread_dict_params(threaded, params)
           let seeded = seed_var_types(params, tparams, no_vars)
-          let new_body = rewrite_expr(fbody, gens, traits, struct_sets, binds, seeded)
+          let new_body = rewrite_expr(fbody, gens, traits, struct_sets, binds, seeded, fn_returns)
           SLet(exp, isrec, fname, ann, EFn(tparams, bounds, new_params, ret, eff, new_body))
         },
         _ => stmt
       },
-      None => SLet(exp, isrec, fname, ann, rewrite_expr(body, gens, traits, struct_sets, no_binds, no_vars))
+      None => SLet(exp, isrec, fname, ann, rewrite_expr(body, gens, traits, struct_sets, no_binds, no_vars, fn_returns))
     },
-    SLetMut(name, ty, e) => SLetMut(name, ty, rewrite_expr(e, gens, traits, struct_sets, no_binds, no_vars)),
-    STest(name, body) => STest(name, rewrite_expr(body, gens, traits, struct_sets, no_binds, no_vars)),
-    SBench(name, body) => SBench(name, rewrite_expr(body, gens, traits, struct_sets, no_binds, no_vars)),
-    SExpr(e) => SExpr(rewrite_expr(e, gens, traits, struct_sets, no_binds, no_vars)),
+    SLetMut(name, ty, e) => SLetMut(name, ty, rewrite_expr(e, gens, traits, struct_sets, no_binds, no_vars, fn_returns)),
+    STest(name, body) => STest(name, rewrite_expr(body, gens, traits, struct_sets, no_binds, no_vars, fn_returns)),
+    SBench(name, body) => SBench(name, rewrite_expr(body, gens, traits, struct_sets, no_binds, no_vars, fn_returns)),
+    SExpr(e) => SExpr(rewrite_expr(e, gens, traits, struct_sets, no_binds, no_vars, fn_returns)),
     SModule(exp, name, body) => SModule(exp, name, for s in body {
-      rewrite_stmt(s, gens, traits, struct_sets)
+      rewrite_stmt(s, gens, traits, struct_sets, fn_returns)
     }),
     _ => stmt
   }
@@ -7706,10 +7753,11 @@ export let desugar_trait_dicts: (Array[Stmt]) -> Unit = (stmts) -> {
     let supers_map = collect_trait_supers(stmts)
     let traits = flatten_traits(traits_raw, supers_map)
     let struct_sets = collect_struct_field_sets(stmts)
+    let fn_returns = collect_fn_returns(stmts)
     let gens = build_gens(stmts, traits)
     let mut i = 0
     while i < Array::length(stmts) {
-      Array::set(stmts, i, rewrite_stmt(Array::get(stmts, i), gens, traits, struct_sets))
+      Array::set(stmts, i, rewrite_stmt(Array::get(stmts, i), gens, traits, struct_sets, fn_returns))
       i = i + 1
     }
     let mut ti = 0
