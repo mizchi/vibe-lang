@@ -87,6 +87,13 @@ say "launcher -> $VIBE_HOME/bin/vibe"
 if [ -f "$ROOT_DIR/js/vibe/lsp_server.js" ]; then
   install -m 0644 "$ROOT_DIR/js/vibe/lsp_server.js" "$VIBE_HOME/lib/lsp_server.js"
   say "lsp server -> $VIBE_HOME/lib/lsp_server.js"
+  # The LSP server requires the workspace symbol/call-hierarchy index alongside
+  # it (workspace/symbol + callHierarchy). Install it next to lsp_server.js so
+  # `require("./symbol_index.js")` resolves in the installed layout.
+  if [ -f "$ROOT_DIR/js/vibe/symbol_index.js" ]; then
+    install -m 0644 "$ROOT_DIR/js/vibe/symbol_index.js" "$VIBE_HOME/lib/symbol_index.js"
+    say "lsp symbol index -> $VIBE_HOME/lib/symbol_index.js"
+  fi
 fi
 
 if [ "$DO_LINK" = "1" ]; then
