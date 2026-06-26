@@ -35,6 +35,103 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
   let mut ai = 0
   let mut max_nl = nl1
   let names_len_at_match = Array::length(local_names)
+  // #613 follow-up: discriminate literal sub-patterns at EVERY nesting level,
+  // not just the top constructor-argument level. `load_field` is a thunk that
+  // pushes the (tagged) value at this position; for each literal anywhere in the
+  // sub-pattern tree we AND-in a field-vs-literal test. Without recursing,
+  // `N(W(false), n)` matched `N(W(true), _)` (nested ctor only tag-tested) and
+  // `T((false, n))` matched `T((true, _))` (tuple sub-patterns not tested at
+  // all) — silent wrong results. An accumulator i32 always exists on the stack
+  // before this runs (the enclosing ctor tag test), so every test ANDs (113).
+  let rec emit_sub_tests: (Pat, () -> Unit) -> Unit = (sp, load_field) -> {
+    if is_pint(sp) {
+      load_field()
+      emit_i64_const(buf, get_pint_value(sp))
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shl(buf)
+      }
+      emit_i64_eq(buf)
+      bytebuf_push(buf, 113)
+    } else if is_pbool(sp) {
+      load_field()
+      emit_i64_const(buf, if get_pbool_value(sp) {
+        1
+      } else {
+        0
+      })
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shl(buf)
+      }
+      emit_i64_eq(buf)
+      bytebuf_push(buf, 113)
+    } else if is_pstring(sp) {
+      let __sv = get_pstring_value(sp)
+      let __si = str_table_lookup(ctx.str_table.strs, __sv)
+      if __si >= 0 {
+        let (__seq_fi, _, _) = resolve_func(ctx.func_table, "eq")
+        load_field()
+        emit_str_ref(buf, Array::get(ctx.str_table.offsets, __si), Array::get(ctx.str_table.lengths, __si))
+        emit_call(buf, __seq_fi)
+        emit_i32_wrap_i64(buf)
+        bytebuf_push(buf, 113)
+      }
+    } else if is_pctor(sp) {
+      let __ncname = get_pctor_name(sp)
+      let __nci = lookup_ctor(ctx.ctor_table.names, __ncname, 0)
+      let __ntag = if __nci >= 0 {
+        Array::get(ctx.ctor_table.tags, __nci)
+      } else {
+        -1
+      }
+      load_field()
+      emit_i64_const(buf, -2)
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i32_load(buf, 2, 0)
+      emit_i32_const(buf, __ntag)
+      emit_i32_eq(buf)
+      bytebuf_push(buf, 113)
+      let __nargs = get_pctor_args(sp)
+      let mut __nk = 0
+      while __nk < Array::length(__nargs) {
+        let __nkk = __nk
+        let __nload: () -> Unit = () -> {
+          load_field()
+          emit_i64_const(buf, -2)
+          emit_i64_and(buf)
+          emit_i32_wrap_i64(buf)
+          emit_i64_load(buf, 3, 8 + __nkk * 8)
+        }
+        emit_sub_tests(Array::get(__nargs, __nkk), __nload)
+        __nk = __nk + 1
+      }
+    } else if is_ptuple(sp) {
+      let __tpats = get_ptuple_pats(sp)
+      let mut __tk = 0
+      while __tk < Array::length(__tpats) {
+        let __tkk = __tk
+        let __tload: () -> Unit = () -> {
+          load_field()
+          if ctx.enable_rc {
+            emit_i64_const(buf, -2)
+            emit_i64_and(buf)
+          }
+          emit_i32_wrap_i64(buf)
+          emit_i64_load(buf, 3, if ctx.enable_rc {
+            8 + __tkk * 8
+          } else {
+            __tkk * 8
+          })
+        }
+        emit_sub_tests(Array::get(__tpats, __tkk), __tload)
+        __tk = __tk + 1
+      }
+    } else {
+      ()
+    }
+  }
   while ai < num_cond_arms {
     Array::truncate(local_names, names_len_at_match)
     let (__cond_p, __arm_body) = Array::get(__match_arms, ai)
@@ -76,91 +173,26 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
           emit_i32_load(buf, 2, 0)
           emit_i32_const(buf, expected_tag)
           emit_i32_eq(buf)
-          // #603: the tag test alone is not enough — a literal sub-pattern must
-          // also be checked, else `I("x")` matches `I("y")` (and `I(1)` matches
-          // `I(2)`). AND-in a test for each PInt/PString constructor argument.
-          // Binding/wildcard/nested sub-patterns add no test here (unchanged).
+          // #603/#608/#613: the tag test alone is not enough — literal
+          // sub-patterns must be checked at EVERY nesting level, else
+          // `I(1)`/`I("x")` match `I(2)`/`I("y")`, nested `N(W(false),_)` matches
+          // `N(W(true),_)`, and tuple `T((false,_))` matches `T((true,_))`. AND-in
+          // a recursive field-vs-literal test per constructor argument. Bindings
+          // and wildcards add no test. This bug silently broke
+          // `match stmt { SEnum(false, ...) => ... }` in the compiler's own
+          // namespace pass, mis-namespacing exported enums.
           let __cargs_cond = get_pctor_args(__cond_p)
           let mut __ck = 0
           while __ck < Array::length(__cargs_cond) {
-            let __sp = Array::get(__cargs_cond, __ck)
-            if is_pint(__sp) {
+            let __ckk = __ck
+            let __cload: () -> Unit = () -> {
               emit_local_get(buf, scrut_local)
               emit_i64_const(buf, -2)
               emit_i64_and(buf)
               emit_i32_wrap_i64(buf)
-              emit_i64_load(buf, 3, 8 + __ck * 8)
-              emit_i64_const(buf, get_pint_value(__sp))
-              if ctx.enable_rc {
-                emit_i64_const(buf, 1)
-                emit_i64_shl(buf)
-              }
-              emit_i64_eq(buf)
-              bytebuf_push(buf, 113)
-            } else if is_pbool(__sp) {
-              // #613: a boolean literal constructor sub-pattern must also be
-              // checked, else `C(false, x)` matches `C(true, _)` (the literal was
-              // treated as a wildcard). Bools are stored as tagged ints (false=0,
-              // true=1), so AND-in the same field-vs-literal test as PInt. This
-              // bug silently broke `match stmt { SEnum(false, ...) => ... }` in the
-              // compiler's own namespace pass, mis-namespacing exported enums.
-              emit_local_get(buf, scrut_local)
-              emit_i64_const(buf, -2)
-              emit_i64_and(buf)
-              emit_i32_wrap_i64(buf)
-              emit_i64_load(buf, 3, 8 + __ck * 8)
-              emit_i64_const(buf, if get_pbool_value(__sp) {
-                1
-              } else {
-                0
-              })
-              if ctx.enable_rc {
-                emit_i64_const(buf, 1)
-                emit_i64_shl(buf)
-              }
-              emit_i64_eq(buf)
-              bytebuf_push(buf, 113)
-            } else if is_pstring(__sp) {
-              let __sv = get_pstring_value(__sp)
-              let __si = str_table_lookup(ctx.str_table.strs, __sv)
-              if __si >= 0 {
-                let (__seq_fi, _, _) = resolve_func(ctx.func_table, "eq")
-                emit_local_get(buf, scrut_local)
-                emit_i64_const(buf, -2)
-                emit_i64_and(buf)
-                emit_i32_wrap_i64(buf)
-                emit_i64_load(buf, 3, 8 + __ck * 8)
-                emit_str_ref(buf, Array::get(ctx.str_table.offsets, __si), Array::get(ctx.str_table.lengths, __si))
-                emit_call(buf, __seq_fi)
-                emit_i32_wrap_i64(buf)
-                bytebuf_push(buf, 113)
-              }
-            } else if is_pctor(__sp) {
-              // #608: a nested constructor sub-pattern (`None`, `Some(_)`,
-              // `Ctor(..)`) must discriminate on the nested tag too, else two
-              // arms sharing the outer tag (`SL(_, None, _)` vs `SL(_, Some(_),
-              // _)`) both match the first. Load field __ck (itself a tagged ctor
-              // pointer), clear its tag, read its tag word, and AND-in the test.
-              let __ncname = get_pctor_name(__sp)
-              let __nci = lookup_ctor(ctx.ctor_table.names, __ncname, 0)
-              let __ntag = if __nci >= 0 {
-                Array::get(ctx.ctor_table.tags, __nci)
-              } else {
-                -1
-              }
-              emit_local_get(buf, scrut_local)
-              emit_i64_const(buf, -2)
-              emit_i64_and(buf)
-              emit_i32_wrap_i64(buf)
-              emit_i64_load(buf, 3, 8 + __ck * 8)
-              emit_i64_const(buf, -2)
-              emit_i64_and(buf)
-              emit_i32_wrap_i64(buf)
-              emit_i32_load(buf, 2, 0)
-              emit_i32_const(buf, __ntag)
-              emit_i32_eq(buf)
-              bytebuf_push(buf, 113)
+              emit_i64_load(buf, 3, 8 + __ckk * 8)
             }
+            emit_sub_tests(Array::get(__cargs_cond, __ckk), __cload)
             __ck = __ck + 1
           }
           emit_if_i64(buf)

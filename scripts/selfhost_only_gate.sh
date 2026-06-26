@@ -961,4 +961,51 @@ else
   echo "[selfhost-only-gate] async-lifted component execution (wasmtime $("$WT_BIN" --version | awk '{print $2}')) -> 42 ok"
 fi
 
+# 25. nested literal sub-pattern discrimination (#613 follow-up): a boolean (or
+#     any) literal nested INSIDE a constructor argument that is itself a
+#     constructor (`N(W(false), n)`) or a tuple (`T((false, n))`) must be
+#     discriminated — the prior codegen only tag-tested nested ctors and did not
+#     test tuple sub-patterns at all, silently routing `W(true)`/`(true, _)` to
+#     the `false` arm (wrong result, not a trap). compile_match now emits the
+#     literal test recursively at every nesting level.
+echo "[selfhost-only-gate] 25/25 nested literal sub-pattern discrimination"
+nldir="_build/_gate_nestedlit"
+rm -rf "$nldir"; mkdir -p "$nldir"
+cat > "$nldir/nestedlit.vibe" <<'EOF'
+enum W { W(Bool) }
+enum N { N(W, Int) }
+enum T { T((Bool, Int)) }
+let cn: (N) -> Int = (e) -> {
+  match e {
+    N(W(false), n) => n,
+    N(W(true), n) => n + 1000
+  }
+}
+let ct: (T) -> Int = (e) -> {
+  match e {
+    T((false, n)) => n,
+    T((true, n)) => n + 1000
+  }
+}
+export let _start: () -> Int = () -> {
+  cn(N(W(true), 7)) + cn(N(W(false), 3)) + ct(T((true, 5))) + ct(T((false, 1)))
+}
+EOF
+# Expected: 1007 + 3 + 1005 + 1 = 2016. A regressed compiler ignores the nested
+# `true`/`false` literal and returns 7+3+5+1 = 16.
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$nldir/nestedlit.vibe" "$nldir/nestedlit.wasm" _start >/dev/null 2>&1
+if [ ! -s "$nldir/nestedlit.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: nested literal sub-pattern program did not compile" >&2; exit 1
+fi
+nestedlit_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$nldir/nestedlit.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$nestedlit_out" != "2016" ]; then
+  echo "[selfhost-only-gate] FAIL: nested literal sub-pattern mismatch (got '$nestedlit_out', want 2016 -> #613 regressed)" >&2
+  exit 1
+fi
+rm -rf "$nldir"
+echo "[selfhost-only-gate] nested literal sub-pattern discrimination ok"
+
 echo "[selfhost-only-gate] ok"
