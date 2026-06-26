@@ -19994,7 +19994,7 @@ let empty_type_exprs: () -> Array[TypeExpr] = () -> {
     TyUnit
   ], 0, 0)
 }
-let skip_braced_body: (Array[Token], Int) -> Int = (tokens, pos) -> {
+export let skip_braced_body: (Array[Token], Int) -> Int = (tokens, pos) -> {
   match peek(tokens, pos) {
     TLBrace => {
       let mut bp = pos + 1
@@ -20659,8 +20659,7 @@ let parse_impl_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (tokens
       match peek(tokens, fp) {
         TIdent(type_name) => {
           let after_targs = skip_bracketed_args(tokens, fp + 1)
-          let body_end = skip_braced_body(tokens, after_targs)
-          (SImpl(type_params, type_bounds, trait_name, type_name), body_end)
+          (SImpl(type_params, type_bounds, trait_name, type_name), after_targs)
         },
         _ => throw("expected type name after 'for'")
       }
@@ -22451,6 +22450,9 @@ export let parse_impl: (Array[Token], Array[Int], Int, Int) -> (Expr, Int) with 
   }
   parse_recur(tokens, pos, mode)
 }
+export let parse_expr: (Array[Token], Int) -> (Expr, Int) with { Error } = (tokens, pos) -> {
+  parse_impl(tokens, [], pos, 0)
+}
 let parse_type_param_bound_names: (Array[Token], Int) -> (Array[String], Int) with { Error } = (tokens, pos) -> {
   let b = ArrayBuilder::new()
   let mut p = pos
@@ -23066,6 +23068,40 @@ export let rec parse_stmt: (Array[Token], Array[Int], Int) -> (Stmt, Int) with {
     }
   }
 }
+let parse_impl_methods: (Array[Token], Int, Stmt) -> (Array[Stmt], Int) with { Error } = (tokens, pos, simpl) -> {
+  let out = ArrayBuilder::new()
+  ArrayBuilder::push(out, simpl)
+  match peek(tokens, pos) {
+    TLBrace => {
+      let type_name = match simpl {
+        SImpl(_, _, _, tn) => tn,
+        _ => ""
+      }
+      let mut p = pos + 1
+      let mut done = false
+      while !done {
+        match peek(tokens, p) {
+          TRBrace => {
+            p = p + 1
+            done = true
+          },
+          TIdent(mname) => {
+            let (efn, p2) = parse_expr(tokens, p + 1)
+            let qname = String::concat(type_name, String::concat("::", mname))
+            ArrayBuilder::push(out, SLet(false, true, qname, None, efn))
+            p = match peek(tokens, p2) {
+              TSemicolon => p2 + 1,
+              _ => p2
+            }
+          },
+          _ => throw("expected impl method name or '}'")
+        }
+      }
+      (ArrayBuilder::freeze(out), p)
+    },
+    _ => (ArrayBuilder::freeze(out), pos)
+  }
+}
 export let parse_program: (Array[Token]) -> Array[Stmt] with { Error } = (tokens) -> {
   let b = ArrayBuilder::new()
   let mut pos = 0
@@ -23079,8 +23115,13 @@ export let parse_program: (Array[Token]) -> Array[Stmt] with { Error } = (tokens
         pos = pos + 1
       },
       TImpl => {
-        let (stmt, next) = parse_impl_stmt_dispatch(tokens, pos + 1)
-        ArrayBuilder::push(b, stmt)
+        let (simpl, hp) = parse_impl_stmt_dispatch(tokens, pos + 1)
+        let (impl_stmts, next) = parse_impl_methods(tokens, hp, simpl)
+        let mut ii = 0
+        while ii < Array::length(impl_stmts) {
+          ArrayBuilder::push(b, Array::get(impl_stmts, ii))
+          ii = ii + 1
+        }
         pos = next
       },
       _ => {
@@ -23106,10 +23147,18 @@ export let parse_program_located: (Array[Token], Array[Int], String) -> Array[St
       },
       _ => {
         let start_pos = pos
-        let (stmt, next) = handle {
+        let (stmts, next) = handle {
           match peek(tokens, pos) {
-            TImpl => parse_impl_stmt_dispatch(tokens, pos + 1),
-            _ => parse_stmt(tokens, starts, pos)
+            TImpl => {
+              let (simpl, hp) = parse_impl_stmt_dispatch(tokens, pos + 1)
+              parse_impl_methods(tokens, hp, simpl)
+            },
+            _ => {
+              let (stmt, n) = parse_stmt(tokens, starts, pos)
+              ([
+                stmt
+              ], n)
+            }
           }
         } with Error {
           Throw(msg) => {
@@ -23123,7 +23172,11 @@ export let parse_program_located: (Array[Token], Array[Int], String) -> Array[St
             throw(String::concat(loc, msg))
           }
         }
-        ArrayBuilder::push(b, stmt)
+        let mut ii = 0
+        while ii < Array::length(stmts) {
+          ArrayBuilder::push(b, Array::get(stmts, ii))
+          ii = ii + 1
+        }
         pos = next
       }
     }
@@ -23168,11 +23221,19 @@ export let parse_program_recovering: (Array[Token], Array[Int], String) -> (Arra
       _ => {
         let start_pos = pos
         let res = handle {
-          let (stmt, next) = match peek(tokens, pos) {
-            TImpl => parse_impl_stmt_dispatch(tokens, pos + 1),
-            _ => parse_stmt(tokens, starts, pos)
+          let (stmts, next) = match peek(tokens, pos) {
+            TImpl => {
+              let (simpl, hp) = parse_impl_stmt_dispatch(tokens, pos + 1)
+              parse_impl_methods(tokens, hp, simpl)
+            },
+            _ => {
+              let (stmt, n) = parse_stmt(tokens, starts, pos)
+              ([
+                stmt
+              ], n)
+            }
           }
-          Some((stmt, next))
+          Some((stmts, next))
         } with Error {
           Throw(msg) => {
             let off = if start_pos < Array::length(starts) {
@@ -23187,8 +23248,12 @@ export let parse_program_recovering: (Array[Token], Array[Int], String) -> (Arra
           }
         }
         match res {
-          Some((stmt, next)) => {
-            ArrayBuilder::push(b, stmt)
+          Some((stmts, next)) => {
+            let mut ii = 0
+            while ii < Array::length(stmts) {
+              ArrayBuilder::push(b, Array::get(stmts, ii))
+              ii = ii + 1
+            }
             pos = next
           },
           None => {
@@ -23230,8 +23295,9 @@ export let parse_program_spans: (Array[Token], Array[Int], Array[Int]) -> (Array
       },
       TImpl => {
         let st = Array::get(starts, pos)
-        let (stmt, next) = parse_impl_stmt_dispatch(tokens, pos + 1)
-        ArrayBuilder::push(b, stmt)
+        let (simpl, hp) = parse_impl_stmt_dispatch(tokens, pos + 1)
+        let next = skip_braced_body(tokens, hp)
+        ArrayBuilder::push(b, simpl)
         ArrayBuilder::push(span_start, st)
         ArrayBuilder::push(span_end, Array::get(ends, next - 1))
         pos = next
