@@ -108,6 +108,21 @@ const isDiag = (uri) => (m) => m.method === "textDocument/publishDiagnostics" &&
   const multiLines = new Set((multiDiag.params.diagnostics || []).map((d) => d.range.start.line));
   checkEnv("error recovery yields diagnostics on >=2 lines", multiLines.size >= 2 && multiLines.has(0) && multiLines.has(2));
 
+  // field-access diagnostic -> range targets the offending FIELD, not the base
+  // expr. The AST anchor (`@off`) for `p.zzz` is the base `p`; the server must
+  // advance past the `.` and highlight `zzz` (regression for blind word-scan
+  // that mis-highlighted the base identifier).
+  const fieldUri = "file:///tmp/vibe-lsp-test-field.vibe";
+  const fieldText = "export struct P { x: Int }\nexport let f = (p: P) -> Int { p.zzz }\n";
+  send({ jsonrpc: "2.0", method: "textDocument/didOpen", params: { textDocument: { uri: fieldUri, languageId: "vibe", version: 1, text: fieldText } } });
+  const fieldDiag = await waitFor(isDiag(fieldUri));
+  if (fieldDiag.params.diagnostics.length) {
+    const d = fieldDiag.params.diagnostics[0];
+    const fLine = fieldText.split(/\r?\n/)[d.range.start.line] || "";
+    const fSlice = fLine.slice(d.range.start.character, d.range.end.character);
+    checkEnv("field diagnostic range targets the field 'zzz' (not the base)", fSlice === "zzz");
+  }
+
   // good document -> expect empty diagnostics
   const goodUri = "file:///tmp/vibe-lsp-test-good.vibe";
   const goodText = "export enum Color { Red; Green }\nexport let helper = (x: Int) -> Int { x * 2 }\nexport let main = () -> Int { helper(21) }\n";

@@ -158,7 +158,15 @@
      **seed 制約メモ**: 巨大 `match callee {...}` を `let`/block/arg で一段ネスト
      すると seed parser が trap するため、結果型タグは match を tail position の
      flat なまま内側 result 式に付与する方式に留めた。
-   残: シンボル span の JSON 露出、診断 range の AST 化（現状は line:col prefix 経由）。
+   - ✅ **診断 range の精度化（field access、JS LSP 層）** — checker の `@off`
+     アンカーは EDot では**ベース式**（`p.x` の `p`）を指すため、LSP の素朴な
+     word-scan は field error で base 識別子を誤ハイライトしていた。`locate()` を
+     「メッセージが名指しするトークンをアンカー以降（field error は `.` の後）で
+     ハイライト」する方式へ変更し、`unknown field 'x'` の squiggle が field を
+     正確に指すよう修正（compiler 不変 = fixpoint 影響なし）。`test_vibe_lsp.js`
+     に field-range 回帰を追加。
+   残（post-GA）: シンボル span の JSON 露出、checker が end offset を発行する
+   完全な AST range 化（現状は line:col アンカー + メッセージ named-token 復元）。
 5. 🟡 **行ベース breakpoint（一部着地）** — `vibe run --break <file>:<line>`
    （bare `<line>` も可）が、その行に宣言された関数で停止する。runner 側のみで
    実装（codegen 不変 → 既定 codegen は byte-identical、stage2==stage3 fixpoint は

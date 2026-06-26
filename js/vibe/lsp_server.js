@@ -254,6 +254,16 @@ function uriToPath(uri) {
 // likely offending token. Falls back to the first non-empty line.
 function locate(text, message) {
   const lines = text.split(/\r?\n/);
+  // Pull a quoted or "unknown name: X" / "... 'op' ..." symbol out of the msg.
+  // (The leading quote in "unknown field 'x'" is consumed before the name so
+  // the field name — not the quote — is captured.)
+  let needle = null;
+  let m;
+  if ((m = /unknown name:\s*([A-Za-z_][A-Za-z0-9_]*)/.exec(message))) needle = m[1];
+  else if ((m = /unbound (?:variable|name)\s*[:]?\s*([A-Za-z_][A-Za-z0-9_]*)/i.exec(message))) needle = m[1];
+  else if ((m = /unknown (?:field|ctor|type|name)\s*[:]?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)/i.exec(message))) needle = m[1];
+  else if ((m = /['"]([^'"]+)['"]/.exec(message))) needle = m[1];
+
   // Exact location: the compiler now prefixes parse diagnostics with
   // `line N:col M:` (source-span foundation). Prefer it when present.
   let lc;
@@ -261,6 +271,25 @@ function locate(text, message) {
     const li = Math.max(0, parseInt(lc[1], 10) - 1);
     const co = Math.max(0, parseInt(lc[2], 10) - 1);
     const lineText = lines[li] || "";
+    // The AST anchor (co) is the offending *expression's* start, which for a
+    // field access `p.x` is the base `p` — not the field. When the message
+    // names the offending token, highlight that token at/after the anchor
+    // (for field errors, after the `.`) so the squiggle lands on the field
+    // rather than blind-scanning the base identifier.
+    if (needle) {
+      let from = co;
+      if (/unknown field/i.test(message)) {
+        const dot = lineText.indexOf(".", co);
+        if (dot >= 0) from = dot + 1;
+      }
+      const at = lineText.indexOf(needle, from);
+      if (at >= 0) {
+        return {
+          start: { line: li, character: at },
+          end: { line: li, character: at + needle.length },
+        };
+      }
+    }
     // Tighten the end to the identifier under the column when there is one
     // (the message carries no token length); else highlight to end of line.
     let end = co;
@@ -271,13 +300,6 @@ function locate(text, message) {
       end: { line: li, character: end },
     };
   }
-  // Pull a quoted or "unknown name: X" / "... 'op' ..." symbol out of the msg.
-  let needle = null;
-  let m;
-  if ((m = /unknown name:\s*([A-Za-z_][A-Za-z0-9_]*)/.exec(message))) needle = m[1];
-  else if ((m = /unbound (?:variable|name)\s*[:]?\s*([A-Za-z_][A-Za-z0-9_]*)/i.exec(message))) needle = m[1];
-  else if ((m = /unknown (?:field|ctor|type|name)\s*[:]?\s*([A-Za-z_][A-Za-z0-9_]*)/i.exec(message))) needle = m[1];
-  else if ((m = /['"]([^'"]+)['"]/.exec(message))) needle = m[1];
 
   if (needle) {
     for (let i = 0; i < lines.length; i++) {
