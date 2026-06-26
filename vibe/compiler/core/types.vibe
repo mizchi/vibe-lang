@@ -1463,9 +1463,97 @@ let rec type_implements_check_super: (TypeEnv, TypeEnv, String, Type) -> Bool = 
   }
 }
 
+// Constructor/head name of a type, for matching a generic impl's erased target
+// against a concrete type (`Array[Int]` and the impl target `Array` both have
+// head "Array"). Returns "" for types with no nominal constructor (tuples,
+// primitives, vars) so they never match a generic impl.
+let type_constructor_name: (Type) -> String = (ty) -> {
+  match ty {
+    CtArray(_) => "Array",
+    CtOption(_) => "Option",
+    CtNamed(n, _) => n,
+    CtStruct(n) => n,
+    CtEnum(n) => n,
+    _ => ""
+  }
+}
+
+// True iff `trait_name` declares at least one method (a method-bearing trait).
+// Marker traits (Eq/Ord/Add/…, declared `trait Eq` with no body) and undeclared
+// bound names (e.g. `Iterable`) return false. This is the soundness gate for
+// generic-impl resolution: a method-bearing trait dispatches through the threaded
+// witness dictionary (so a generic impl runs the correct per-type method),
+// whereas a marker trait "dispatches" via a builtin operator (`==`, `<`) that
+// does NOT structurally handle a container — so matching a marker-trait generic
+// impl would let `==` be used on e.g. `Option[Int]` where it silently misbehaves.
+let rec trait_is_method_bearing: (TypeEnv, String) -> Bool = (env, trait_name) -> {
+  match env {
+    EnvEmpty => false,
+    EnvBind(_, _, rest) => trait_is_method_bearing(rest, trait_name),
+    EnvTraitDef(tname, _, _, methods, rest) => if tname == trait_name {
+      Array::length(methods) > 0
+    } else trait_is_method_bearing(rest, trait_name),
+    EnvTraitImpl(_, _, rest) => trait_is_method_bearing(rest, trait_name),
+    EnvTraitImplGen(_, _, _, _, rest) => trait_is_method_bearing(rest, trait_name),
+    EnvFlat(_) => false,
+    EnvCached(_, rest) => trait_is_method_bearing(rest, trait_name)
+  }
+}
+
+// True iff a type-parameter bound list carries no real trait bound (only the
+// empty / `""` sentinel entries). Increment A of generic-impl support matches
+// only UNbounded generic impls (`impl [T] Trait for C`) — a bounded one
+// (`impl [T: Bound] …`) needs a dictionary-of-dictionaries (the impl body
+// dispatches `T`'s methods on the elements), which is deferred.
+let generic_impl_bounds_empty: (Array[(String, Array[String])]) -> Bool = (bounds) -> {
+  let mut i = 0
+  let mut ok = true
+  while i < Array::length(bounds) {
+    let (_, bs) = Array::get(bounds, i)
+    let mut j = 0
+    while j < Array::length(bs) {
+      if Array::get(bs, j) != "" {
+        ok = false
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  ok
+}
+
+// Does an UNbounded, method-bearing generic impl `impl [T] Trait for C` in the
+// env cover the concrete `resolved` type (matched by constructor name)? The
+// witness dictionary is then just `{ method: C::method }` — no nested
+// dictionary — which the dict-passing desugar already synthesizes. (#5 Increment
+// A. Bounded generic impls are intentionally left unmatched, see
+// `generic_impl_bounds_empty`.)
+let rec generic_impl_satisfies: (TypeEnv, TypeEnv, String, Type) -> Bool = (scan, full, trait_name, resolved) -> {
+  match scan {
+    EnvEmpty => false,
+    EnvBind(_, _, rest) => generic_impl_satisfies(rest, full, trait_name, resolved),
+    EnvTraitDef(_, _, _, _, rest) => generic_impl_satisfies(rest, full, trait_name, resolved),
+    EnvTraitImpl(_, _, rest) => generic_impl_satisfies(rest, full, trait_name, resolved),
+    EnvTraitImplGen(itrait, _tparams, bounds, target, rest) => {
+      let head = type_constructor_name(resolved)
+      let hit = itrait == trait_name && head != "" && type_constructor_name(target) == head && generic_impl_bounds_empty(bounds) && trait_is_method_bearing(full, trait_name)
+      if hit {
+        true
+      } else generic_impl_satisfies(rest, full, trait_name, resolved)
+    },
+    EnvFlat(_) => false,
+    EnvCached(_, rest) => generic_impl_satisfies(rest, full, trait_name, resolved)
+  }
+}
+
 export let rec type_implements_trait: (TypeEnv, Subst, Type, String) -> Bool = (env, s, ty, trait_name) -> {
   let resolved = subst_apply(s, ty)
   if type_implements_check_env(env, trait_name, resolved) {
+    true
+  }
+  else if generic_impl_satisfies(env, env, trait_name, resolved) {
     true
   }
   else {

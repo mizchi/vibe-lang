@@ -2084,9 +2084,70 @@ let rec type_implements_check_super: (TypeEnv, TypeEnv, String, Type) -> Bool = 
     EnvCached(_, rest) => type_implements_check_super(rest, full_env, trait_name, resolved)
   }
 }
+let type_constructor_name: (Type) -> String = (ty) -> {
+  match ty {
+    CtArray(_) => "Array",
+    CtOption(_) => "Option",
+    CtNamed(n, _) => n,
+    CtStruct(n) => n,
+    CtEnum(n) => n,
+    _ => ""
+  }
+}
+let rec trait_is_method_bearing: (TypeEnv, String) -> Bool = (env, trait_name) -> {
+  match env {
+    EnvEmpty => false,
+    EnvBind(_, _, rest) => trait_is_method_bearing(rest, trait_name),
+    EnvTraitDef(tname, _, _, methods, rest) => if tname == trait_name {
+      Array::length(methods) > 0
+    } else trait_is_method_bearing(rest, trait_name),
+    EnvTraitImpl(_, _, rest) => trait_is_method_bearing(rest, trait_name),
+    EnvTraitImplGen(_, _, _, _, rest) => trait_is_method_bearing(rest, trait_name),
+    EnvFlat(_) => false,
+    EnvCached(_, rest) => trait_is_method_bearing(rest, trait_name)
+  }
+}
+let generic_impl_bounds_empty: (Array[(String, Array[String])]) -> Bool = (bounds) -> {
+  let mut i = 0
+  let mut ok = true
+  while i < Array::length(bounds) {
+    let (_, bs) = Array::get(bounds, i)
+    let mut j = 0
+    while j < Array::length(bs) {
+      if Array::get(bs, j) != "" {
+        ok = false
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  ok
+}
+let rec generic_impl_satisfies: (TypeEnv, TypeEnv, String, Type) -> Bool = (scan, full, trait_name, resolved) -> {
+  match scan {
+    EnvEmpty => false,
+    EnvBind(_, _, rest) => generic_impl_satisfies(rest, full, trait_name, resolved),
+    EnvTraitDef(_, _, _, _, rest) => generic_impl_satisfies(rest, full, trait_name, resolved),
+    EnvTraitImpl(_, _, rest) => generic_impl_satisfies(rest, full, trait_name, resolved),
+    EnvTraitImplGen(itrait, _tparams, bounds, target, rest) => {
+      let head = type_constructor_name(resolved)
+      let hit = itrait == trait_name && head != "" && type_constructor_name(target) == head && generic_impl_bounds_empty(bounds) && trait_is_method_bearing(full, trait_name)
+      if hit {
+        true
+      } else generic_impl_satisfies(rest, full, trait_name, resolved)
+    },
+    EnvFlat(_) => false,
+    EnvCached(_, rest) => generic_impl_satisfies(rest, full, trait_name, resolved)
+  }
+}
 export let rec type_implements_trait: (TypeEnv, Subst, Type, String) -> Bool = (env, s, ty, trait_name) -> {
   let resolved = subst_apply(s, ty)
   if type_implements_check_env(env, trait_name, resolved) {
+    true
+  }
+  else if generic_impl_satisfies(env, env, trait_name, resolved) {
     true
   }
   else {
@@ -5714,14 +5775,19 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
         let is_open = false
         (EnvTraitDef(name, supers, is_open, methods, env), s, c)
       },
-      SImpl(_, _, trait_name, type_name) => {
+      SImpl(tparams, tbounds, trait_name, type_name) => {
         let target = match resolve_builtin(type_name) {
           Some(t) => t,
           None => CtNamed(type_name, Array::slice([
             CtUnknown
           ], 0, 0))
         }
-        (EnvTraitImpl(trait_name, target, env), s, c)
+        let new_env = if Array::length(tparams) > 0 {
+          EnvTraitImplGen(trait_name, tparams, tbounds, target, env)
+        } else {
+          EnvTraitImpl(trait_name, target, env)
+        }
+        (new_env, s, c)
       },
       _ => (env, s, c)
     }
@@ -7093,6 +7159,7 @@ let infer_arg_type_name: (Expr, Array[(String, Array[String])], Array[(String, S
     EBool(_) => Some("Bool"),
     EString(_) => Some("String"),
     EFloat(_) => Some("Double"),
+    EArray(_) => Some("Array"),
     EIdent(name, _) => lookup_var_type(var_types, name),
     ECall(callee, _, _) => match callee {
       EIdent(fname, _) => fn_return_type(fn_returns, fname),

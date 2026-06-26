@@ -829,4 +829,54 @@ for suite in vibe/prelude/lazy_iter_test.vibe vibe/prelude/async_iter_test.vibe;
 done
 echo "[selfhost-only-gate] prelude iterator combinator suites ok"
 
+# 22. generic trait impls — Increment A (#5): an UNbounded, method-bearing
+#     `impl [T] Trait for C` makes `C[K]` satisfy a `[U: Trait]` bound for any K,
+#     and the witness dict (`{ method: C::method }`) dispatches through the
+#     existing dict-passing desugar — so a generic function called with an array
+#     runs the array impl. Two assertions:
+#       (a) POSITIVE: `impl [T] Len2 for Array` + `[U: Len2] total(x)` runs.
+#       (b) SOUNDNESS: a marker-trait generic impl (`impl [T: Eq] Eq for
+#           Option[T]`, Eq has no methods) must STILL be rejected — matching it
+#           would let `==` (which is not structural on Option) silently misbehave.
+echo "[selfhost-only-gate] 22/22 generic trait impl (Increment A)"
+gidir="_build/_gate_generic_impl"
+rm -rf "$gidir"; mkdir -p "$gidir"
+cat > "$gidir/pos.vibe" <<'EOF'
+trait Len2[T] { len2(Self) -> Int }
+struct Box[T] { v: T }
+impl Len2 for Box { len2(self) -> Int { 1 } }
+impl [T] Len2 for Array { len2(self) -> Int { Array::length(self) } }
+let total = [U: Len2](x: U) -> Int { U::len2(x) }
+export let _start: () -> Int = () -> { total([10, 20, 30, 40]) + total(Box::{ v: 99 }) }
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$gidir/pos.vibe" "$gidir/pos.wasm" _start >/dev/null 2>&1
+if [ ! -s "$gidir/pos.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: generic-impl positive program did not compile" >&2
+  cat "$gidir/pos.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+gi_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$gidir/pos.wasm" 2>/dev/null | tr -dc '0-9-')"
+if [ "$gi_out" != "5" ]; then
+  echo "[selfhost-only-gate] FAIL: generic-impl positive mismatch (got '$gi_out', want 5)" >&2
+  exit 1
+fi
+# Soundness: a marker-trait generic impl must NOT satisfy the bound.
+cat > "$gidir/neg.vibe" <<'EOF'
+trait Marky[T]
+impl [T] Marky for Array
+let needs = [U: Marky](x: U) -> Int { 1 }
+export let _start: () -> Int = () -> { needs([1, 2, 3]) }
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$gidir/neg.vibe" "$gidir/neg.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$gidir/neg.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: marker-trait generic impl was accepted (unsound — should be rejected)" >&2
+  exit 1
+fi
+rm -rf "$gidir"
+echo "[selfhost-only-gate] generic trait impl (Increment A) ok"
+
 echo "[selfhost-only-gate] ok"

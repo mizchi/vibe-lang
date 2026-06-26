@@ -452,14 +452,24 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
         let is_open = false
         (EnvTraitDef(name, supers, is_open, methods, env), s, c)
       },
-      SImpl(_, _, trait_name, type_name) => {
+      SImpl(tparams, tbounds, trait_name, type_name) => {
         let target = match resolve_builtin(type_name) {
           Some(t) => t,
           None => CtNamed(type_name, Array::slice([
             CtUnknown
           ], 0, 0))
         }
-        (EnvTraitImpl(trait_name, target, env), s, c)
+        // A generic impl `impl [T] Trait for C` (type parameters present) is
+        // registered as `EnvTraitImplGen` so trait resolution can match the
+        // family `C[..]` against a concrete `C[K]` by constructor (the target's
+        // type args are erased). A plain `impl Trait for C` stays a nominal
+        // `EnvTraitImpl`. (#5 generic impls, Increment A.)
+        let new_env = if Array::length(tparams) > 0 {
+          EnvTraitImplGen(trait_name, tparams, tbounds, target, env)
+        } else {
+          EnvTraitImpl(trait_name, target, env)
+        }
+        (new_env, s, c)
       },
       _ => (env, s, c)
     }
