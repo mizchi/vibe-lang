@@ -524,12 +524,14 @@ let lx_char: (LX) -> LTok = (lx) -> {
 
 // Lex a #| multiline string starting at the already-detected '#'.
 let lx_multiline_string: (LX) -> LTok = (lx) -> {
-  let mut buf = ""
+  // O(N) build via StringBuilder; the per-char `line` and per-line `buf` builds
+  // via String::concat were each O(N²) over their length (issue #366).
+  let buf = StringBuilder::new()
   let mut first_line = true
   let mut running = true
   while running {
     lx.pos = lx.pos + 1
-    let mut line = ""
+    let line = StringBuilder::new()
     let mut inner = true
     while inner {
       let c = lx_peek(lx)
@@ -537,14 +539,14 @@ let lx_multiline_string: (LX) -> LTok = (lx) -> {
         inner = false
       } else {
         lx.pos = lx.pos + 1
-        line = String::concat(line, String::from_char_code(c))
+        StringBuilder::push(line, String::from_char_code(c))
       }
     }
     if !first_line {
-      buf = String::concat(buf, "\n")
+      StringBuilder::push(buf, "\n")
     }
     first_line = false
-    buf = String::concat(buf, line)
+    StringBuilder::push(buf, StringBuilder::freeze(line))
     if lx_peek(lx) == '\n' {
       lx.pos = lx.pos + 1
       let saved = lx.pos
@@ -573,7 +575,7 @@ let lx_multiline_string: (LX) -> LTok = (lx) -> {
       running = false
     }
   }
-  LTok::{ kind: k_string, text: buf }
+  LTok::{ kind: k_string, text: StringBuilder::freeze(buf) }
 }
 
 let lx_next: (LX) -> LTok = (lx) -> {
