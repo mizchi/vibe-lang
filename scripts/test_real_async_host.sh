@@ -61,6 +61,19 @@ if [ -s "$STAGE2" ]; then
   else
     echo "[real-async-host] FAIL: vibe sleep program did not suspend/resume to 42" >&2; exit 1
   fi
+  # Value-returning async import: `Stdin::read_char()` reads async DATA.
+  rm -f _build/vibe_selfhost_type_env_v2_*.tsv 2>/dev/null || true
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" \
+    examples/wasm/read_async.vibe "$vdir/read.wasm" run >/dev/null 2>&1 || true
+  ( cd "$host_dir" && cargo build --bin vibe-recv-host >/dev/null 2>&1 ) || true
+  if [ -s "$vdir/read.wasm" ] && [ -x "$host_dir/target/debug/vibe-recv-host" ]; then
+    if "$host_dir/target/debug/vibe-recv-host" "$vdir/read.wasm"; then
+      echo "[real-async-host] vibe async data read (Stdin::read_char) -> 42 ok"
+    else
+      echo "[real-async-host] FAIL: async data read did not deliver 42" >&2; exit 1
+    fi
+  fi
   rm -rf "$vdir"
 else
   echo "[real-async-host] SKIP vibe end-to-end: no stage2 (run scripts/selfhost_generations.sh build)"
