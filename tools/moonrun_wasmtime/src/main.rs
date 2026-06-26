@@ -455,6 +455,17 @@ fn run(args: Vec<String>) -> Result<i32> {
         .ok()
         .and_then(|s| s.parse().ok())
         .filter(|n| *n > 0);
+    // A precompiled `.cwasm` was serialized with the plain engine config; flipping
+    // on epoch_interruption here would make deserialization fail (the config must
+    // match), and the AOT image has no epoch checkpoints to sample at anyway.
+    // Disable sampling for `.cwasm` (the `vibe run` path always passes a fresh
+    // `.wasm`, so this only guards direct `moonrun_wt <module.cwasm>` use).
+    let sample_ms = if sample_ms.is_some() && wasm_path.ends_with(".cwasm") {
+        eprintln!("vibe: --mem-sample needs a fresh .wasm (a precompiled .cwasm has no epoch checkpoints); sampling disabled");
+        None
+    } else {
+        sample_ms
+    };
     let mut cfg = engine_config();
     if sample_ms.is_some() {
         cfg.epoch_interruption(true);
@@ -554,10 +565,19 @@ fn run(args: Vec<String>) -> Result<i32> {
             let eng = engine.clone();
             let stop = stop_flag.clone();
             let interval = std::time::Duration::from_millis(ms);
+            // Sleep in small chunks (<=10ms) so the stop flag is observed promptly:
+            // a coarse `--mem-sample=1000` must not stall shutdown for a full
+            // second at join. Increment the epoch once per full `interval`.
+            let chunk = interval.min(std::time::Duration::from_millis(10));
             sampler_thread = Some(std::thread::spawn(move || {
+                let mut since_tick = std::time::Duration::ZERO;
                 while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                    std::thread::sleep(interval);
-                    eng.increment_epoch();
+                    std::thread::sleep(chunk);
+                    since_tick += chunk;
+                    if since_tick >= interval {
+                        eng.increment_epoch();
+                        since_tick = std::time::Duration::ZERO;
+                    }
                 }
             }));
         }
