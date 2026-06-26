@@ -4241,6 +4241,35 @@ let rec subst_self_in_type: (Type, Type) -> Type = (ty, self_ty) -> {
     _ => ty
   }
 }
+let rec relax_unknown_named: (Type, Array[TypeDef]) -> Type = (ty, defs) -> {
+  match ty {
+    CtNamed(n, args) => {
+      let known = match find_typedef(defs, n) {
+        Some(_) => true,
+        None => match resolve_builtin(n) {
+          Some(_) => true,
+          None => false
+        }
+      }
+      if known {
+        CtNamed(n, for a in args {
+          relax_unknown_named(a, defs)
+        })
+      } else {
+        CtUnknown
+      }
+    },
+    CtArray(e) => CtArray(relax_unknown_named(e, defs)),
+    CtOption(e) => CtOption(relax_unknown_named(e, defs)),
+    CtTuple(es) => CtTuple(for e in es {
+      relax_unknown_named(e, defs)
+    }),
+    CtFn(ps, r, eff) => CtFn(for p in ps {
+      relax_unknown_named(p, defs)
+    }, relax_unknown_named(r, defs), eff),
+    _ => ty
+  }
+}
 let resolve_trait_method_ident: (String, TypeEnv, Array[TypeDef], Subst) -> Option[Type] = (name, env, defs, s) -> {
   let idx = String::index_of(name, "::")
   if idx < 0 {
@@ -4266,9 +4295,9 @@ let resolve_trait_method_ident: (String, TypeEnv, Array[TypeDef], Subst) -> Opti
                 Some(sig) => {
                   let (params_te, ret_te) = sig
                   let resolved_params = for pte in params_te {
-                    subst_self_in_type(resolve_type_expr(pte, defs), self_ty)
+                    relax_unknown_named(subst_self_in_type(resolve_type_expr(pte, defs), self_ty), defs)
                   }
-                  let resolved_ret = subst_self_in_type(resolve_type_expr(ret_te, defs), self_ty)
+                  let resolved_ret = relax_unknown_named(subst_self_in_type(resolve_type_expr(ret_te, defs), self_ty), defs)
                   result = Some(CtFn(resolved_params, resolved_ret, None))
                 },
                 None => ()
@@ -21172,36 +21201,39 @@ let parse_trait_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } = 
     "_"
   ], 0, 0)
   match peek(tokens, pos) {
-    TIdent(name) => match peek(tokens, pos + 1) {
-      TColon => {
-        let supers = empty_strings
-        let mut p = pos + 2
-        let mut done = false
-        while !done {
-          match peek(tokens, p) {
-            TIdent(sname) => match peek(tokens, p + 1) {
-              TPlus => {
-                Array::push(supers, sname)
-                p = p + 2
+    TIdent(name) => {
+      let after_name = skip_bracketed_args(tokens, pos + 1)
+      match peek(tokens, after_name) {
+        TColon => {
+          let supers = empty_strings
+          let mut p = after_name + 1
+          let mut done = false
+          while !done {
+            match peek(tokens, p) {
+              TIdent(sname) => match peek(tokens, p + 1) {
+                TPlus => {
+                  Array::push(supers, sname)
+                  p = p + 2
+                },
+                _ => {
+                  Array::push(supers, sname)
+                  p = p + 1
+                  done = true
+                }
               },
               _ => {
-                Array::push(supers, sname)
-                p = p + 1
                 done = true
               }
-            },
-            _ => {
-              done = true
             }
           }
+          let np = p
+          let (methods, body_end) = parse_trait_methods(tokens, np)
+          (STrait(exported, name, supers, methods), body_end)
+        },
+        _ => {
+          let (methods, body_end) = parse_trait_methods(tokens, after_name)
+          (STrait(exported, name, empty_strings, methods), body_end)
         }
-        let np = p
-        let (methods, body_end) = parse_trait_methods(tokens, np)
-        (STrait(exported, name, supers, methods), body_end)
-      },
-      _ => {
-        let (methods, body_end) = parse_trait_methods(tokens, pos + 1)
-        (STrait(exported, name, empty_strings, methods), body_end)
       }
     },
     _ => throw("expected trait name")

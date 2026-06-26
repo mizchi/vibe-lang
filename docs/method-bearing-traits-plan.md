@@ -318,6 +318,33 @@ component must keep `selfhost_only_gate.sh` green; build with
 fixture mirroring G-3 but with `T::method` (not a hand-written dict) once component 4
 lands.
 
+## Downstream features unblocked (this branch)
+
+- **#638 derive(Ord/Show) for structs — LANDED.** `derive(...)` parses any name
+  (multiple allowed); `SStruct` carries the derive list; `desugar_derives`
+  generates structural `Type::compare` (-1/0/1 lexicographic) and
+  `Type::to_string` free functions; the checker pre-binds their signatures for
+  the FS-compile path. `Eq` stays a no-op marker. Gate step 15. Deferred: enums,
+  Hash, Default.
+- **#636 Iterator — FOUNDATION LANDED.** Method-bearing traits with a type
+  parameter are now expressible and dispatchable: `trait Iterator[T] {
+  next(Self) -> Option[T] }` parses (the `[T]` header is consumed and erased),
+  and a `[I: Iterator]` generic dispatches `I::next` through the witness dict.
+  The element type `T` is relaxed to `CtUnknown` at resolution
+  (`relax_unknown_named` in checker.vibe) so it unifies at the call site (the
+  uniform representation erases it). A functional iterator
+  `next(Self) -> Option[(T, Self)]` threads its state and is driven to completion
+  by a generic helper (gate step 16, `iter_sum(Range) = 10`; fixture
+  `fixtures/trait_iterator_test.vibe`). Closures-in-struct-fields (the other
+  lazy_iter blocker) were already proven (spike G-1) and are exactly the dict
+  encoding. **Deferred (the larger remaining #636 piece):** `for x in it { ... }`
+  / `for await` syntax desugar to the `next`-driven driver loop (type-directed —
+  must distinguish array-`for` from iterator-`for`), the `map`/`filter`/`fold`
+  combinators, the `Iterable` trait, and reimplementing `lazy_iter_*` on the
+  trait. Storing the trait's type params in `STrait` (instead of erasing at
+  parse) would let the element type be a fresh unification var rather than
+  `CtUnknown`, recovering full element-type safety.
+
 ## Risks / open items
 
 - Checker dictionary-materialization ordering between `desugar.vibe`, `lower.vibe`,

@@ -482,4 +482,55 @@ fi
 rm -rf "$drvdir"
 echo "[selfhost-only-gate] derive(Ord/Show) structural-generation regression ok"
 
+# 16. trait type parameters / Iterator regression (#636): a method-bearing trait
+#     with a type parameter (`Iterator[T] { next(Self) -> Option[T] }`) must be
+#     declarable, and a `[I: Iterator]` generic must dispatch `I::next` through
+#     the witness dictionary — driving a stateful, functional iterator
+#     (`next(Self) -> Option[(T, Self)]`) to completion.
+echo "[selfhost-only-gate] 16/16 trait-type-parameter / Iterator regression"
+itdir="_build/_gate_iter"
+rm -rf "$itdir"; mkdir -p "$itdir"
+cat > "$itdir/iter.vibe" <<'EOF'
+trait Iter[T] { next(Self) -> Option[(T, Self)] }
+struct Range { lo: Int; hi: Int }
+impl Iter for Range {
+  next(self) -> Option[(Int, Range)] {
+    if self.lo < self.hi {
+      Some((self.lo, Range::{ lo: self.lo + 1, hi: self.hi }))
+    } else {
+      None
+    }
+  }
+}
+let iter_sum = [I: Iter](it: I) -> Int {
+  let mut acc = 0
+  let mut cur = it
+  let mut go = true
+  while go {
+    match I::next(cur) {
+      Some(pair) => { let (v, rest) = pair; acc = acc + v; cur = rest },
+      None => { go = false }
+    }
+  }
+  acc
+}
+export let _start: () -> Int = () -> { iter_sum(Range::{ lo: 1, hi: 5 }) }
+EOF
+# Expected: 1 + 2 + 3 + 4 = 10
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$itdir/iter.vibe" "$itdir/iter.wasm" _start >/dev/null 2>&1
+if [ ! -s "$itdir/iter.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: Iterator trait program did not compile" >&2
+  cat "$itdir/iter.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+it_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$itdir/iter.wasm" 2>/dev/null | tr -dc '0-9-')"
+if [ "$it_out" != "10" ]; then
+  echo "[selfhost-only-gate] FAIL: Iterator dispatch mismatch (got '$it_out', want 10 -> #636 regressed)" >&2
+  exit 1
+fi
+rm -rf "$itdir"
+echo "[selfhost-only-gate] trait-type-parameter / Iterator regression ok"
+
 echo "[selfhost-only-gate] ok"
