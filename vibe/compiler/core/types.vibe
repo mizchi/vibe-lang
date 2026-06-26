@@ -945,24 +945,92 @@ let is_effect_var_name: (String) -> Bool = (name) -> {
   String::char_code_at(name, 0) <= 122
 }
 
+// #626 criterion 3: an effect annotation `with { A, B }` is an unordered SET,
+// but `collect_effect_names` joins it source-order into one string ("A, B"),
+// so `{ A, B }` and `{ B, A }` serialize to different strings. Split the
+// comma-separated annotation back into its labels (trimmed, deduplicated) so
+// equality can be decided on the set, not the raw ordered string.
+let effect_label_list: (Option[String]) -> Array[String] = (eff) -> {
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  match eff {
+    None => out,
+    Some(s) => {
+      let raw = String::split(s, ",")
+      let mut i = 0
+      while i < Array::length(raw) {
+        let label = String::trim(Array::get(raw, i))
+        if String::length(label) > 0 {
+          let mut seen = false
+          let mut j = 0
+          while j < Array::length(out) {
+            if Array::get(out, j) == label {
+              seen = true
+            }
+            j = j + 1
+          }
+          if !seen {
+            Array::push(out, label)
+          }
+        }
+        i = i + 1
+      }
+      out
+    }
+  }
+}
+
+let effect_label_sets_equal: (Option[String], Option[String]) -> Bool = (left, right) -> {
+  let ls = effect_label_list(left)
+  let rs = effect_label_list(right)
+  if Array::length(ls) != Array::length(rs) {
+    false
+  } else {
+    let mut i = 0
+    let mut ok = true
+    while i < Array::length(ls) {
+      let label = Array::get(ls, i)
+      let mut found = false
+      let mut j = 0
+      while j < Array::length(rs) {
+        if Array::get(rs, j) == label {
+          found = true
+        }
+        j = j + 1
+      }
+      if !found {
+        ok = false
+      }
+      i = i + 1
+    }
+    ok
+  }
+}
+
+let effect_opt_is_var: (Option[String]) -> Bool = (eff) -> {
+  match eff {
+    Some(name) => is_effect_var_name(name),
+    None => false
+  }
+}
+
 let effect_names_compatible: (Option[String], Option[String]) -> Bool = (left, right) -> {
   if option_string_equal(left, right) {
     true
+  } else if effect_opt_is_var(left) {
+    // A lone effect variable is still treated as a wildcard (row-tail
+    // unification — #626 criterion 4 — is future work; this only keeps the
+    // existing permissiveness, it does not widen it).
+    true
+  } else if effect_opt_is_var(right) {
+    true
   } else {
-    match left {
-      Some(left_name) => if is_effect_var_name(left_name) {
-        true
-      } else {
-        match right {
-          Some(right_name) => is_effect_var_name(right_name),
-          None => false
-        }
-      },
-      None => match right {
-        Some(right_name) => is_effect_var_name(right_name),
-        None => false
-      }
-    }
+    // Neither side is a lone effect variable: decide on the unordered label
+    // set, so `{ A, B }` and `{ B, A }` (and `{ A, A }` vs `{ A }`) are
+    // compatible. `None` (pure) vs `Some(concrete)` differ in set size and stay
+    // incompatible, exactly as before.
+    effect_label_sets_equal(left, right)
   }
 }
 
