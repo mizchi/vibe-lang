@@ -879,4 +879,58 @@ fi
 rm -rf "$gidir"
 echo "[selfhost-only-gate] generic trait impl (Increment A) ok"
 
+# 23. generic trait impls — Increment B (#5): a BOUNDED generic impl
+#     `impl [T: Bound] Trait for C` whose body dispatches `T`'s methods on the
+#     elements. The witness for `C[K]` is a nested dictionary-of-dictionaries:
+#     `{ method: (w) -> C::method(<K's Bound dict>, w) }`. Assertions:
+#       (a) `impl [T: Show2] Show2 for Array` summing `T::show2` over elements
+#           runs for `Array[Box]` (→60) and nests for `Array[Array[Box]]` (→6).
+#       (b) SOUNDNESS: an element type with no impl must NOT silently dispatch —
+#           the witness refuses to build, so the program fails to produce a
+#           runnable module (never returns a wrong number).
+echo "[selfhost-only-gate] 23/23 generic trait impl (Increment B, dict-of-dict)"
+gjdir="_build/_gate_generic_impl_b"
+rm -rf "$gjdir"; mkdir -p "$gjdir"
+gj_prelude='trait Show2[T] { show2(Self) -> Int }
+struct Box[T] { v: T }
+impl Show2 for Box { show2(self) -> Int { self.v } }
+impl [T: Show2] Show2 for Array { show2(self) -> Int {
+  let mut s = 0
+  for x in self { s = s + T::show2(x) }
+  s
+} }
+let use_it = [U: Show2](x: U) -> Int { U::show2(x) }'
+{ printf '%s\n' "$gj_prelude"
+  printf 'export let _start: () -> Int = () -> { use_it([Box::{ v: 10 }, Box::{ v: 20 }, Box::{ v: 30 }]) + use_it([[Box::{ v: 1 }, Box::{ v: 2 }], [Box::{ v: 3 }]]) }\n'
+} > "$gjdir/pos.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$gjdir/pos.vibe" "$gjdir/pos.wasm" _start >/dev/null 2>&1
+if [ ! -s "$gjdir/pos.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: dict-of-dict positive program did not compile" >&2
+  cat "$gjdir/pos.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+gj_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$gjdir/pos.wasm" 2>/dev/null | tr -dc '0-9-')"
+if [ "$gj_out" != "66" ]; then
+  echo "[selfhost-only-gate] FAIL: dict-of-dict mismatch (got '$gj_out', want 66 = 60 + 6)" >&2
+  exit 1
+fi
+# Soundness: an element type with no Show2 impl must not silently dispatch.
+{ printf '%s\n' "$gj_prelude"
+  printf 'struct Qux[T] { w: T }\n'
+  printf 'export let _start: () -> Int = () -> { use_it([Qux::{ w: 5 }]) }\n'
+} > "$gjdir/neg.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$gjdir/neg.vibe" "$gjdir/neg.wasm" _start >/dev/null 2>&1 || true
+neg_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$gjdir/neg.wasm" 2>/dev/null | tr -dc '0-9-' || true)"
+if [ "$neg_out" = "5" ]; then
+  echo "[selfhost-only-gate] FAIL: element without an impl silently dispatched (miscompile — returned 5)" >&2
+  exit 1
+fi
+rm -rf "$gjdir"
+echo "[selfhost-only-gate] generic trait impl (Increment B, dict-of-dict) ok"
+
 echo "[selfhost-only-gate] ok"
