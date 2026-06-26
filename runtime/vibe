@@ -25,6 +25,8 @@
 #                                           q/quit  = abort the run
 #   vibe run --mem <file.vibe> [entry]    run + report bump-heap usage (peak /
 #                                         total allocated) to stderr after exit
+#   vibe run --alloc-site[=N] <file.vibe> [entry]  run + report per-line alloc
+#                                         attribution (top N sites) to stderr
 #   vibe compile <file.vibe> -o <out>     compile to a .wasm
 #   vibe build   <file.vibe> -o <out>     alias of compile
 #   vibe check   <file.vibe>              parse + typecheck (no output kept)
@@ -312,6 +314,8 @@ case "$cmd" in
     brk=0
     mem=0
     mem_sample=""
+    allocsite=0
+    allocsite_top=""
     break_spec=""
     args=()
     while [ "$#" -gt 0 ]; do
@@ -322,17 +326,24 @@ case "$cmd" in
         --mem) mem=1; shift ;;
         --mem-sample) mem_sample=1; shift ;;
         --mem-sample=*) mem_sample="${1#--mem-sample=}"; shift ;;
+        --alloc-site) allocsite=1; shift ;;
+        --alloc-site=*) allocsite=1; allocsite_top="${1#--alloc-site=}"; shift ;;
         *) args+=("$1"); shift ;;
       esac
     done
     set -- "${args[@]}"
-    [ "$#" -ge 1 ] || die "usage: vibe run [--trace] [--break <fn>[,<fn>...]] [--mem] <file.vibe> [entry]"
+    [ "$#" -ge 1 ] || die "usage: vibe run [--trace] [--break <fn>[,<fn>...]] [--mem] [--alloc-site[=N]] <file.vibe> [entry]"
     [ "$brk" = "1" ] && [ -z "$break_spec" ] && die "usage: vibe run --break <fn>[,<fn>...] <file.vibe> [entry]"
     src="$1"; entry="${2:-main}"
     [ -f "$src" ] || die "not found: $src"
     out="$(mktemp -t vibe-run-XXXXXX.wasm)"
     trap 'rm -f "$out" "$out.funcmap"' EXIT
-    compile_to "$src" "$out" "$entry" "$trace" "$brk" || die "compilation failed: $src"
+    # `--alloc-site` reuses the break-mode codegen (statement-boundary `dbg_line`
+    # hooks) WITHOUT any breakpoints — the runner attributes heap growth per line.
+    # So compile with break instrumentation if either `--break` or `--alloc-site`.
+    compile_brk="$brk"
+    [ "$allocsite" = "1" ] && compile_brk=1
+    compile_to "$src" "$out" "$entry" "$trace" "$compile_brk" || die "compilation failed: $src"
     # debugger テーマ3 / M2: runtime traps point at the SOURCE LINE. The wasm
     # "name" custom section already makes trap backtrace frames name the user
     # function (e.g. `<unknown>!boom`). The FS compile also wrote a `<out>.funcmap`
@@ -357,15 +368,24 @@ case "$cmd" in
     [ "$mem" = "1" ] && mem_env="VIBE_MEM=1"
     # `--mem-sample[=MS]`: tier-3 heap sampling every MS ms (default 1).
     [ -n "$mem_sample" ] && mem_env="$mem_env VIBE_MEM_SAMPLE_MS=$mem_sample"
+    # `--alloc-site[=N]`: tier-4 per-line allocation attribution. The runner reads
+    # `__heap_ptr` at each `dbg_line` and credits the bump delta to the prior line;
+    # N caps how many top sites are reported (default 20). No VIBE_BREAK is set, so
+    # the break-instrumented build runs straight through without pausing.
+    alloc_env=""
+    [ "$allocsite" = "1" ] && alloc_env="VIBE_ALLOC_SITE=1"
+    [ -n "$allocsite_top" ] && alloc_env="$alloc_env VIBE_ALLOC_SITE_TOP=$allocsite_top"
     # span-arc step5: line-granularity breakpoints. A `--break <file>:<line>` (or
     # bare `<line>`) spec passes through VIBE_BREAK unchanged; the runner resolves
     # the entering function's source line via the `.funcmap` sidecar (name<TAB>
     # declLine) we already generate for trap annotation. Hand the runner the
     # funcmap path + the entry file's basename so it can confirm the spec's file.
     # Function-name `--break <fn>` specs are unaffected (no line match attempted).
+    # `--alloc-site` also needs the funcmap to resolve each attributed function to
+    # its declaration line in the report.
     funcmap_env=""
     breakfile_env=""
-    if [ "$brk" = "1" ] && [ -s "$out.funcmap" ]; then
+    if { [ "$brk" = "1" ] || [ "$allocsite" = "1" ]; } && [ -s "$out.funcmap" ]; then
       funcmap_env="VIBE_FUNCMAP=$out.funcmap"
       breakfile_env="VIBE_BREAK_FILE=$(basename "$src")"
     fi
@@ -389,7 +409,7 @@ case "$cmd" in
     rerr_fifo="$(mktemp -u -t vibe-run-err-XXXXXX)"; mkfifo "$rerr_fifo"
     annotate_run_stream "$out.funcmap" "$(basename "$src")" < "$rerr_fifo" >&2 &
     annot_pid=$!
-    env $trace_env $break_env $mem_env $funcmap_env $breakfile_env "$RUNNER" "$out" 2>"$rerr_fifo" || status=$?
+    env $trace_env $break_env $mem_env $alloc_env $funcmap_env $breakfile_env "$RUNNER" "$out" 2>"$rerr_fifo" || status=$?
     wait "$annot_pid" 2>/dev/null || true
     rm -f "$rerr_fifo"
     exit "$status"

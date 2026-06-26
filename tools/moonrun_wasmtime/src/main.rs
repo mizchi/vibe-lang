@@ -21,8 +21,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use wasmtime::{
-    bail, format_err, Caller, Config, Engine, ExternRef, ExternType, Instance, Linker, Module, ResourceLimiter,
-    Result, Rooted, Store, StoreLimits, StoreLimitsBuilder, Strategy, TypedFunc, Val, ValType,
+    bail, format_err, Caller, Config, Engine, ExternRef, ExternType, Instance, Linker, Module,
+    ResourceLimiter, Result, Rooted, Store, StoreLimits, StoreLimitsBuilder, Strategy, TypedFunc,
+    Val, ValType,
 };
 
 const FFI_END_OF_STRING_ARRAY: &str = "ffi_end_of_/string_array";
@@ -95,7 +96,12 @@ struct MemLimiter {
 
 impl MemLimiter {
     fn new(inner: StoreLimits) -> Self {
-        MemLimiter { inner, record: false, start: Instant::now(), events: Vec::new() }
+        MemLimiter {
+            inner,
+            record: false,
+            start: Instant::now(),
+            events: Vec::new(),
+        }
     }
 }
 
@@ -108,7 +114,11 @@ impl ResourceLimiter for MemLimiter {
     ) -> Result<bool> {
         let allowed = self.inner.memory_growing(current, desired, maximum)?;
         if self.record && allowed && desired > current {
-            self.events.push((self.start.elapsed().as_nanos(), current as u64, desired as u64));
+            self.events.push((
+                self.start.elapsed().as_nanos(),
+                current as u64,
+                desired as u64,
+            ));
         }
         Ok(allowed)
     }
@@ -195,6 +205,20 @@ struct HostState {
     // entering frame's depth.
     step_mode: StepMode,
     pause_depth: usize,
+    // Profiling tier 4 (per-function allocation attribution). When alloc_site is on
+    // (VIBE_ALLOC_SITE=1, set by `vibe run --alloc-site`), the `vibe::dbg_break`
+    // hook — emitted at EVERY user-function entry by the break-mode codegen, so no
+    // new instrumentation — reads `__heap_ptr` on each entry and credits the bump
+    // delta SINCE the previous entry to the function that was running (the most
+    // recently entered one). That yields leaf-style attribution: the innermost
+    // active function gets the bytes it allocated, like massif/heaptrack by-frame.
+    // dbg_break fires reliably regardless of let-vs-mut, so coverage is complete.
+    // Reuses the break build, so the default self-compile path stays byte-identical
+    // (fixpoint holds). funcmap resolves a function name to its declaration line.
+    alloc_site: bool,
+    alloc_prev_fn: Option<String>,
+    alloc_prev_heap: u64,
+    alloc_sites: std::collections::HashMap<String, u64>,
 }
 
 // DAP P3 step modes. Continue: only pause at explicit break_set hits. StepInto:
@@ -240,13 +264,16 @@ impl HostState {
             .and_then(|p| std::fs::read_to_string(p).ok())
             .map(|text| parse_funcmap(&text))
             .unwrap_or_default();
-        let break_file = std::env::var("VIBE_BREAK_FILE").ok().filter(|s| !s.is_empty());
+        let break_file = std::env::var("VIBE_BREAK_FILE")
+            .ok()
+            .filter(|s| !s.is_empty());
         // break_auto: auto-continue at every pause WITHOUT reading stdin. Only
         // VIBE_BREAK_AUTO=1 enables this. Note: we intentionally do NOT treat a
         // non-TTY stdin as auto — DAP P3 stepping reads debugger commands from
         // piped/scripted stdin, and on real EOF the read path falls back to
         // continue-and-don't-block (so a pipe with no data still completes).
         let break_auto = std::env::var("VIBE_BREAK_AUTO").as_deref() == Ok("1");
+        let alloc_site = std::env::var("VIBE_ALLOC_SITE").as_deref() == Ok("1");
         Self {
             last_error: None,
             args: Arc::new(args),
@@ -272,6 +299,10 @@ impl HostState {
             dbgfiles: Arc::new(Vec::new()),
             step_mode: StepMode::Continue,
             pause_depth: 0,
+            alloc_site,
+            alloc_prev_fn: None,
+            alloc_prev_heap: 0,
+            alloc_sites: std::collections::HashMap::new(),
         }
     }
 
@@ -526,7 +557,11 @@ fn run(args: Vec<String>) -> Result<i32> {
     // program — and host-produced strings — allocated. No instrumentation, ~zero
     // overhead. Gated by VIBE_MEM=1 (set by `vibe run --mem`).
     let mem_profile = std::env::var("VIBE_MEM").as_deref() == Ok("1");
-    let heap_base = if mem_profile { read_heap_ptr(&instance, &mut store) } else { None };
+    let heap_base = if mem_profile {
+        read_heap_ptr(&instance, &mut store)
+    } else {
+        None
+    };
     if mem_profile {
         // Start recording memory.grow events (tier 2 timeline) relative to the
         // run, from this point — before `_start`, after instantiation.
@@ -625,6 +660,30 @@ fn run(args: Vec<String>) -> Result<i32> {
     if sample_ms.is_some() {
         let samples = std::mem::take(&mut store.data_mut().samples);
         report_samples(&samples);
+    }
+
+    // tier 4 per-function allocation attribution. Credit the last-running
+    // function's tail growth (heap delta from its entry to the post-run high-water
+    // mark) before reporting, so allocations after the final function entry aren't
+    // lost. funcmap resolves names to declaration lines.
+    if store.data().alloc_site {
+        if let Some(prev_fn) = store.data_mut().alloc_prev_fn.take() {
+            if let Some(end) = read_heap_ptr(&instance, &mut store) {
+                let prev_heap = store.data().alloc_prev_heap;
+                let delta = end.saturating_sub(prev_heap);
+                if delta > 0 {
+                    *store.data_mut().alloc_sites.entry(prev_fn).or_insert(0) += delta;
+                }
+            }
+        }
+        let limit: usize = std::env::var("VIBE_ALLOC_SITE_TOP")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .filter(|n| *n > 0)
+            .unwrap_or(20);
+        let sites = std::mem::take(&mut store.data_mut().alloc_sites);
+        let funcmap = Arc::clone(&store.data().funcmap);
+        report_alloc_sites(&sites, &funcmap, limit);
     }
 
     match result {
@@ -733,7 +792,11 @@ fn bench(args: Vec<String>) -> Result<i32> {
     // to timing `_start`, which runs every test/bench body together (file level).
     let bench_names: Vec<String> = module
         .exports()
-        .filter_map(|e| e.name().strip_prefix("__bench_").map(|n| (e.name().to_string(), n)))
+        .filter_map(|e| {
+            e.name()
+                .strip_prefix("__bench_")
+                .map(|n| (e.name().to_string(), n))
+        })
         .map(|(full, _)| full)
         .collect();
 
@@ -767,7 +830,11 @@ fn bench(args: Vec<String>) -> Result<i32> {
         let min = samples[0];
         let p50 = samples[(n / 2).min(n - 1)];
         let p95 = samples[(n * 95 / 100).min(n - 1)];
-        let ops_per_sec = if mean > 0 { 1_000_000_000f64 / mean as f64 } else { 0.0 };
+        let ops_per_sec = if mean > 0 {
+            1_000_000_000f64 / mean as f64
+        } else {
+            0.0
+        };
         let bytes_per_op = match (heap_before, heap_after) {
             (Some(b), Some(a)) => Some(a.saturating_sub(b) / iters),
             _ => None,
@@ -825,18 +892,25 @@ fn bench(args: Vec<String>) -> Result<i32> {
 
     // Fallback (no per-block exports): time the whole `_start`.
     let start: TypedFunc<(), ()> = instance.get_typed_func(&mut store, "_start")?;
-    bench_one(&mut store, &instance, &label, warmup, iters, |store, phase| {
-        store.data_mut().captured_stdout.clear();
-        match start.call(&mut *store, ()) {
-            Ok(()) => Ok(()),
-            // A clean `proc_exit(0)` is fine; any other trap aborts the bench.
-            Err(e) => match e.downcast_ref::<ExitTrap>() {
-                Some(ExitTrap(0)) => Ok(()),
-                Some(ExitTrap(code)) => bail!("bench `{label}`: exit({code}) during {phase}"),
-                None => bail!("bench `{label}`: trap during {phase}: {e}"),
-            },
-        }
-    })?;
+    bench_one(
+        &mut store,
+        &instance,
+        &label,
+        warmup,
+        iters,
+        |store, phase| {
+            store.data_mut().captured_stdout.clear();
+            match start.call(&mut *store, ()) {
+                Ok(()) => Ok(()),
+                // A clean `proc_exit(0)` is fine; any other trap aborts the bench.
+                Err(e) => match e.downcast_ref::<ExitTrap>() {
+                    Some(ExitTrap(0)) => Ok(()),
+                    Some(ExitTrap(code)) => bail!("bench `{label}`: exit({code}) during {phase}"),
+                    None => bail!("bench `{label}`: trap during {phase}: {e}"),
+                },
+            }
+        },
+    )?;
     Ok(0)
 }
 
@@ -1390,6 +1464,40 @@ fn report_samples(samples: &[(u128, u64)]) {
     }
 }
 
+// Profiling tier 4: per-function allocation attribution. `sites` maps a function
+// name to the bytes credited to it; `funcmap` resolves a name to its 1-based
+// declaration line (empty => `line=?`). Emit one machine-readable `vibe::allocsite`
+// line per function (top `limit` by bytes) plus a human summary, all to stderr
+// (stdout stays the program's).
+fn report_alloc_sites(
+    sites: &std::collections::HashMap<String, u64>,
+    funcmap: &std::collections::HashMap<String, u32>,
+    limit: usize,
+) {
+    let total: u64 = sites.values().sum();
+    let mut rows: Vec<(&String, u64)> = sites.iter().map(|(k, v)| (k, *v)).collect();
+    // Sort by bytes desc, then by name for a stable order on ties.
+    rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    let shown = rows.len().min(limit);
+    for (name, bytes) in rows.iter().take(shown) {
+        let line = funcmap
+            .get(*name)
+            .map(|l| l.to_string())
+            .unwrap_or_else(|| "?".to_string());
+        eprintln!("vibe::allocsite fn={name} line={line} bytes={bytes}");
+    }
+    if rows.is_empty() {
+        eprintln!("vibe: alloc sites — none (no allocations attributed; needs a --break-instrumented build)");
+    } else {
+        eprintln!(
+            "vibe: alloc sites — {} function(s), {} attributed total, top {} shown",
+            rows.len(),
+            human_bytes(total),
+            shown,
+        );
+    }
+}
+
 // fnv-ish stat token mixing size + mtime; mirrors the JS host so cwasm/cache
 // keys agree across runners. Only needs to change when the file changes.
 fn vibe_stat_token(path: &str) -> i64 {
@@ -1402,8 +1510,7 @@ fn vibe_stat_token(path: &str) -> i64 {
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_nanos() as u64)
                 .unwrap_or(0);
-            let lower =
-                size.wrapping_mul(0x9e37_79b1_85eb_ca87) ^ mtime_ns ^ 0x243f_6a88_85a3_08d3;
+            let lower = size.wrapping_mul(0x9e37_79b1_85eb_ca87) ^ mtime_ns ^ 0x243f_6a88_85a3_08d3;
             let upper = (mtime_ns << 1) ^ (size << 17) ^ 0x1319_8a2e_0370_7344;
             ((lower ^ upper) & ((1u64 << 61) - 1)) as i64
         }
@@ -1497,7 +1604,8 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
             let path = vibe_read_packed_str(&mut caller, path)?;
             let data = vibe_read_packed_bytes(&mut caller, bytes)?;
             vibe_ensure_parent_dir(&path);
-            fs::write(&path, &data).map_err(|e| format_err!("vibe fs_write_bytes '{path}': {e}"))?;
+            fs::write(&path, &data)
+                .map_err(|e| format_err!("vibe fs_write_bytes '{path}': {e}"))?;
             Ok(())
         },
     )?;
@@ -1510,9 +1618,7 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
     linker.func_wrap(
         "vibe",
         "dbg_break",
-        |caller: Caller<'_, HostState>| -> Result<()> {
-            vibe_dbg_break(caller)
-        },
+        |caller: Caller<'_, HostState>| -> Result<()> { vibe_dbg_break(caller) },
     )?;
     // Interior-line breakpoint (span-arc step5): the break-mode codegen emits
     // `call vibe::dbg_line (i32 line)` at each statement boundary. Pauses on a
@@ -1607,7 +1713,40 @@ fn dbg_read_args(caller: &mut Caller<'_, HostState>, entering: &str) -> Option<S
     Some(format!("[{}]", parts.join(", ")))
 }
 
+// Read the guest's exported `__heap_ptr` bump pointer from a hook Caller, or None
+// if the module doesn't export it. Used by tier-4 alloc-site accounting.
+fn caller_heap_ptr(caller: &mut Caller<'_, HostState>) -> Option<u64> {
+    let g = caller
+        .get_export("__heap_ptr")
+        .and_then(|e| e.into_global())?;
+    Some(match g.get(&mut *caller) {
+        Val::I32(v) => v as u32 as u64,
+        Val::I64(v) => v as u64,
+        _ => 0,
+    })
+}
+
 fn vibe_dbg_break(mut caller: Caller<'_, HostState>) -> Result<()> {
+    // Profiling tier 4: credit the heap bump SINCE the previous function entry to
+    // the function that was running (the most recently entered one), then make
+    // THIS entry's function the new "previous". Runs on every entry, independent
+    // of breakpoints/stepping — so a `vibe run --alloc-site` with no VIBE_BREAK
+    // still records a full per-function allocation profile.
+    if caller.data().alloc_site {
+        if let Some(cur) = caller_heap_ptr(&mut caller) {
+            // Innermost named frame = the function whose body called dbg_break.
+            let entering = dbg_break_frames(&caller).into_iter().next();
+            let data = caller.data_mut();
+            if let Some(prev) = data.alloc_prev_fn.take() {
+                let delta = cur.saturating_sub(data.alloc_prev_heap);
+                if delta > 0 {
+                    *data.alloc_sites.entry(prev).or_insert(0) += delta;
+                }
+            }
+            data.alloc_prev_fn = entering;
+            data.alloc_prev_heap = cur;
+        }
+    }
     let break_set = Arc::clone(&caller.data().break_set);
     let line_break_set = Arc::clone(&caller.data().line_break_set);
     let step_mode = caller.data().step_mode;
@@ -1799,7 +1938,11 @@ fn vibe_dbg_line(mut caller: Caller<'_, HostState>, file_id: i32, line: i32) -> 
         // An explicit line hit keeps `breakpoint hit:` (tests/DAP grep for it); a
         // pure step pause is `stopped at:`. Both carry `<file>:<line>` so the
         // annotator/DAP can read the paused line.
-        let label = if is_line_hit { "breakpoint hit" } else { "stopped at" };
+        let label = if is_line_hit {
+            "breakpoint hit"
+        } else {
+            "stopped at"
+        };
         if file.is_empty() {
             let _ = writeln!(h, "{label}: {cur}");
         } else {
@@ -2394,11 +2537,7 @@ fn parse_dbgnames(section: &[u8]) -> std::collections::HashMap<String, Vec<Strin
 // user-index order). After the program finishes, memory[counter_addr] holds the
 // number of recorded entries; each entry is a user-function index stored as i32
 // at log_base + i*4. Prints one `trace: <name>` line per entry to stderr.
-fn dump_trace(
-    wasm_path: &str,
-    instance: &wasmtime::Instance,
-    store: &mut Store<HostState>,
-) {
+fn dump_trace(wasm_path: &str, instance: &wasmtime::Instance, store: &mut Store<HostState>) {
     let wasm = match std::fs::read(wasm_path) {
         Ok(b) => b,
         Err(_) => return,
@@ -2438,7 +2577,10 @@ fn dump_trace(
         None => return,
     };
     let mut counter_buf = [0u8; 4];
-    if memory.read(&*store, counter_addr, &mut counter_buf).is_err() {
+    if memory
+        .read(&*store, counter_addr, &mut counter_buf)
+        .is_err()
+    {
         return;
     }
     let count = u32::from_le_bytes(counter_buf) as usize;

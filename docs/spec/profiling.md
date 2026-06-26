@@ -21,7 +21,7 @@ guest＋host を合わせた総ヒープ使用量を表す。
 | **1** | 総ヒープ / ピーク（`__heap_ptr` 差分）| ゼロ | ✅ **実装済み**: `vibe run --mem` |
 | **2** | `memory.grow` イベント（成長タイムライン）| ホストのみ | ✅ **実装済み**: `--mem` の一部 |
 | **3** | アロケーション時系列サンプリング | ホストのみ（epoch）| ✅ **実装済み**: `--mem-sample` |
-| 4 | サイト別 alloc 属性（massif/heaptrack 相当）| opt-in ビルド（`vibe::alloc_site`）| 設計済み |
+| **4** | 関数別 alloc 属性（massif/heaptrack 相当）| break ビルド再利用（`dbg_break`）| ✅ **実装済み**: `--alloc-site` |
 
 ## Tier 1: `vibe run --mem`（実装済み）
 
@@ -87,6 +87,34 @@ vibe: heap samples — 12 over 1.21 ms … 13.36 ms, 2.4 MiB -> 19.2 MiB (peak 1
 
 各 `vibe::memsample` 行は機械可読（`t_us`=経過、`heap`=`__heap_ptr` bytes）。サンプル数は
 実行時間と間隔に依存（プログラムが 1 間隔より速いと 0 サンプル）。
+
+## Tier 4: 関数別 alloc 属性（実装済み）
+
+`vibe run --alloc-site[=N]`。**massif/heaptrack 相当の by-frame アロケーションプロファイル**を、
+**新しい計装なしで** break ビルドを再利用して得る。break codegen は全ユーザー関数の入口に
+`vibe::dbg_break` を出すので（DAP の breakpoint/step 用）、runner はその hook で毎入口に
+`__heap_ptr` を読み、**前回の入口からの bump 差分を「直近に入った関数」へ加算**する。
+これで*リーフ属性*（最内の実行中関数がそのバイト数を得る）になる。`dbg_break` は
+let/mut に関係なく必ず発火するのでカバレッジは完全（pure な mut ループも捕捉する）。
+break ビルド再利用なので、デフォルトの自己コンパイル経路は byte-identical（fixpoint 維持）。
+
+```
+$ vibe run --alloc-site sites.vibe        # heavy()/light() を呼ぶプログラム
+1250
+vibe::allocsite fn=heavy line=1 bytes=181200
+vibe::allocsite fn=light line=7 bytes=1456
+vibe: alloc sites — 2 function(s), 178.4 KiB attributed total, top 2 shown
+```
+
+各 `vibe::allocsite` 行は機械可読（`fn`=関数名、`line`=宣言行 [funcmap 解決、無いと `?`]、
+`bytes`=加算されたヒープ増分）。stderr に出し、stdout はプログラム出力のまま。`=N` または
+`VIBE_ALLOC_SITE_TOP` で報告する上位件数を制限（既定 20）。`VIBE_ALLOC_SITE=1` で runner が
+有効化、launcher が `--break` と同じ計装でコンパイルしつつ `VIBE_BREAK` は設定しない（pause なし）。
+
+**粒度と限界**: 属性は**関数単位**（行単位ではない）。リーフ属性なので、確保した文そのものでなく
+最内の実行中関数にバイトが付く。`__heap_ptr` 差分ベースなので arena（解放なし）の*確保*量であり
+live-set ではない（メモリモデル参照）。dbg_break の backtrace capture を毎入口で行うため
+`--alloc-site` 実行は通常より遅い（プロファイル実行のみのコスト）。test: `scripts/test_vibe_alloc_site.sh`。
 
 ## `vibe bench`（実装済み）
 
