@@ -30,12 +30,30 @@ expect_contains() { # <desc> <needle> <file.vibe content...>
   fi
 }
 
+expect_matches() { # <desc> <ere> <file.vibe content>
+  local desc="$1" ere="$2"; shift 2
+  local f="$WORK/case.vibe"
+  printf '%b' "$1" > "$f"
+  local out; out="$("$VIBE" check "$f" 2>&1 || true)"
+  if printf '%s' "$out" | grep -qE "$ere"; then
+    echo "ok: $desc"; pass=$((pass + 1))
+  else
+    echo "FAIL: $desc (want /$ere/ in: $out)" >&2; fail=$((fail + 1))
+  fi
+}
+
 # parse error on line 2 -> line:col located
 expect_contains "parse error located on line 2" "line 2:" \
   'export let a = 1\nexport let bad = = 5\n'
 
 # unknown name -> located with the exact column of the symbol
 expect_contains "unknown-name type error located" "line 1:" \
+  'export let main = () -> Int { zzz }\n'
+
+# unknown name -> EXACT range form `line N:colM-K:` (the checker now emits the
+# token end offset; `zzz` is 3 chars wide). Backward-compatible `line N:` still
+# leads, but the `-K` end column must be present for a known-length symbol.
+expect_matches "unknown-name carries an exact range (colM-K)" "line 1:[0-9]+-[0-9]+:" \
   'export let main = () -> Int { zzz }\n'
 
 # arity mismatch -> located

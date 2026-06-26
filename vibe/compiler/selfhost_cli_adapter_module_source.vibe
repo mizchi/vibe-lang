@@ -4096,6 +4096,13 @@ let off_marker: (Int) -> String = (off) -> {
     ""
   }
 }
+let off_marker_len: (Int, Int) -> String = (off, len) -> {
+  if off >= 0 && len > 0 {
+    String::concat(" [@off=", String::concat(__to_string(off), String::concat(":", String::concat(__to_string(off + len), "]"))))
+  } else {
+    off_marker(off)
+  }
+}
 let prepend_expr: (Expr, Array[Expr]) -> Array[Expr] = (first, rest) -> {
   let out = Array::slice([
     EUnit
@@ -4431,7 +4438,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
           (t, s, c)
         },
         None => {
-          Array::push(errors, String::concat(String::concat("unknown name: ", name), off_marker(ident_off)))
+          Array::push(errors, String::concat(String::concat("unknown name: ", name), off_marker_len(ident_off, String::length(name))))
           (CtUnknown, s, c)
         }
       }
@@ -4582,7 +4589,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
                 let plen2 = Array::length(param_tys)
                 let alen3 = Array::length(arg_tys)
                 if alen3 != plen2 {
-                  Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(name, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))), off_marker(callee_off)))
+                  Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(name, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))), off_marker_len(callee_off, String::length(name))))
                 }
                 let s3 = unify_call_args(call_param_tys, arg_tys, s2)
                 let call_ret = Array::get(ret_box, 0)
@@ -4640,7 +4647,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
             let plen = Array::length(param_tys)
             let alen2 = Array::length(arg_tys)
             if alen2 != plen {
-              Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(qualified, String::concat(": expected ", String::concat(__to_string(plen), String::concat(" args, got ", __to_string(alen2)))))), off_marker(call_off)))
+              Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(qualified, String::concat(": expected ", String::concat(__to_string(plen), String::concat(" args, got ", __to_string(alen2)))))), off_marker_len(call_off, String::length(qualified))))
             }
             let s4 = unify_call_args(call_param_tys, arg_tys, s3)
             let call_ret = Array::get(ret_box, 0)
@@ -4702,7 +4709,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
                 let plen2 = Array::length(param_tys)
                 let alen3 = Array::length(arg_tys)
                 if alen3 != plen2 {
-                  Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(callee_name0, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))), off_marker(call_off)))
+                  Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(callee_name0, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))), off_marker_len(call_off, String::length(callee_name0))))
                 }
                 let s3 = unify_call_args(call_param_tys, arg_tys, s2)
                 let call_ret = Array::get(ret_box, 0)
@@ -28232,6 +28239,15 @@ let offset_line_col_prefix: (String, Int) -> String = (source, off) -> {
   let (line, col) = offset_to_line_col(source, off)
   String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
 }
+let offset_line_col_range_prefix: (String, Int, Int) -> String = (source, start, endo) -> {
+  let (l1, c1) = offset_to_line_col(source, start)
+  let (l2, c2) = offset_to_line_col(source, endo)
+  if l1 == l2 && endo > start {
+    String::concat("line ", String::concat(__to_string(l1), String::concat(":", String::concat(__to_string(c1), String::concat("-", String::concat(__to_string(c2), ": "))))))
+  } else {
+    offset_line_col_prefix(source, start)
+  }
+}
 let parse_offset_digits: (String, Int, Int) -> Int = (msg, start, end) -> {
   if end <= start {
     -1
@@ -28261,16 +28277,32 @@ let locate_type_error: (String, String) -> String = (source, msg) -> {
   if mi < 0 {
     locate_type_error_heuristic(source, msg)
   } else {
-    let num_start = mi + String::length(marker)
-    let rel_end = String::index_of(String::substring(msg, num_start, String::length(msg)), "]")
+    let inner_start = mi + String::length(marker)
+    let rel_end = String::index_of(String::substring(msg, inner_start, String::length(msg)), "]")
     if rel_end < 0 {
       locate_type_error_heuristic(source, String::substring(msg, 0, mi))
     } else {
-      let num_end = num_start + rel_end
-      let n = parse_offset_digits(msg, num_start, num_end)
-      let stripped = String::concat(String::substring(msg, 0, mi), String::substring(msg, num_end + 1, String::length(msg)))
-      if n >= 0 && n < String::length(source) {
-        String::concat(offset_line_col_prefix(source, n), stripped)
+      let close = inner_start + rel_end
+      let inner = String::substring(msg, inner_start, close)
+      let colon = String::index_of(inner, ":")
+      let n = if colon < 0 {
+        parse_offset_digits(inner, 0, String::length(inner))
+      } else {
+        parse_offset_digits(inner, 0, colon)
+      }
+      let m = if colon < 0 {
+        -1
+      } else {
+        parse_offset_digits(inner, colon + 1, String::length(inner))
+      }
+      let stripped = String::concat(String::substring(msg, 0, mi), String::substring(msg, close + 1, String::length(msg)))
+      let slen = String::length(source)
+      if n >= 0 && n < slen {
+        if m > n && m <= slen {
+          String::concat(offset_line_col_range_prefix(source, n, m), stripped)
+        } else {
+          String::concat(offset_line_col_prefix(source, n), stripped)
+        }
       } else {
         locate_type_error_heuristic(source, stripped)
       }

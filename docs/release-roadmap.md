@@ -176,8 +176,18 @@
      fallback として保持。`test_vibe_symbols.sh` 6/6 + `test_vibe_lsp.js`
      20/20（AST-outline 3 件追加）、selfhost gate green（stage2==stage3
      fixpoint 維持、13 regression）。
-   残（post-GA）: checker が end offset を発行する完全な診断 AST range 化
-   （現状は line:col アンカー + メッセージ named-token 復元）。
+   - ✅ **診断の完全 AST range 化（着地）** — checker が名前付きトークンの
+     **end offset** を `[@off=N:M]` で発行（`off_marker_len(off, len)`、unknown
+     name / arity mismatch の 4 サイト）。`locate_type_error` が `N:M` を
+     decode し prefix を `line L:colC-E:`（同一行のみ range、後方互換: `line
+     N:` が先頭）へ拡張。LSP `locate()` が end column を消費して厳密 range を
+     返す（word-scan が `.` で切ってしまう qualified name `Mod.foo` も正確）。
+     field error は base アンカーのため start-only 維持（JS named-token が
+     担当）。`test_located_diagnostics.sh` 11/11（range 形式 + marker 非リーク
+     回帰）、`test_vibe_lsp.js` 20/20、selfhost gate green（fixpoint a899368、
+     13 regression）。
+   残（post-GA）: field error の end も compiler 由来にする（EDot への field
+   offset 追加が前提）— 現状 JS named-token で実用上は解決済み。
 5. 🟡 **行ベース breakpoint（一部着地）** — `vibe run --break <file>:<line>`
    （bare `<line>` も可）が、その行に宣言された関数で停止する。runner 側のみで
    実装（codegen 不変 → 既定 codegen は byte-identical、stage2==stage3 fixpoint は

@@ -277,13 +277,21 @@ function locate(text, message) {
   else if ((m = /unknown (?:field|ctor|type|name)\s*[:]?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)/i.exec(message))) needle = m[1];
   else if ((m = /['"]([^'"]+)['"]/.exec(message))) needle = m[1];
 
-  // Exact location: the compiler now prefixes parse diagnostics with
-  // `line N:col M:` (source-span foundation). Prefer it when present.
+  // Exact location: the compiler prefixes diagnostics with `line N:col M:` or,
+  // when it knows the offending token's length, `line N:col M-K:` (an exact
+  // source range). Prefer it when present.
   let lc;
-  if ((lc = /\bline\s+(\d+):(\d+):/.exec(message))) {
+  if ((lc = /\bline\s+(\d+):(\d+)(?:-(\d+))?:/.exec(message))) {
     const li = Math.max(0, parseInt(lc[1], 10) - 1);
     const co = Math.max(0, parseInt(lc[2], 10) - 1);
     const lineText = lines[li] || "";
+    // Exact range from the compiler (`col M-K`): highlight [M, K) verbatim —
+    // this is authoritative even for qualified names (`Mod.foo`) that a
+    // word-scan would truncate at the dot.
+    if (lc[3]) {
+      const endCh = Math.max(co + 1, parseInt(lc[3], 10) - 1);
+      return { start: { line: li, character: co }, end: { line: li, character: endCh } };
+    }
     // The AST anchor (co) is the offending *expression's* start, which for a
     // field access `p.x` is the base `p` — not the field. When the message
     // names the offending token, highlight that token at/after the anchor

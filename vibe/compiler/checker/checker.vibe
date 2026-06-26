@@ -43,6 +43,23 @@ let off_marker: (Int) -> String = (off) -> {
   }
 }
 
+// Like off_marker but also encodes the offending token's END offset as
+// `[@off=N:M]` (M = off + len), so the located-diagnostics layer can emit an
+// EXACT source range (line:colC-E) instead of the LSP guessing the token end
+// with a word-scan — which mis-handles qualified names like `Mod.foo` (the scan
+// stops at the dot). Falls back to the start-only marker when len <= 0. Use this
+// where `off` is the START of a known-length named token (the symbol whose
+// length matches the source span); keep plain off_marker where the offset is an
+// anchor rather than the token start (e.g. a field error whose offset is the
+// base expr). String::concat only (NUL-miscodegen hazard for `+`/interpolation).
+let off_marker_len: (Int, Int) -> String = (off, len) -> {
+  if off >= 0 && len > 0 {
+    String::concat(" [@off=", String::concat(__to_string(off), String::concat(":", String::concat(__to_string(off + len), "]"))))
+  } else {
+    off_marker(off)
+  }
+}
+
 let prepend_expr: (Expr, Array[Expr]) -> Array[Expr] = (first, rest) -> {
   let out = Array::slice([
     EUnit
@@ -410,7 +427,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
           (t, s, c)
         },
         None => {
-          Array::push(errors, String::concat(String::concat("unknown name: ", name), off_marker(ident_off)))
+          Array::push(errors, String::concat(String::concat("unknown name: ", name), off_marker_len(ident_off, String::length(name))))
           (CtUnknown, s, c)
         }
       }
@@ -567,7 +584,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
                 let plen2 = Array::length(param_tys)
                 let alen3 = Array::length(arg_tys)
                 if alen3 != plen2 {
-                  Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(name, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))), off_marker(callee_off)))
+                  Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(name, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))), off_marker_len(callee_off, String::length(name))))
                 }
                 let s3 = unify_call_args(call_param_tys, arg_tys, s2)
                 let call_ret = Array::get(ret_box, 0)
@@ -625,7 +642,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
             let plen = Array::length(param_tys)
             let alen2 = Array::length(arg_tys)
             if alen2 != plen {
-              Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(qualified, String::concat(": expected ", String::concat(__to_string(plen), String::concat(" args, got ", __to_string(alen2)))))), off_marker(call_off)))
+              Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(qualified, String::concat(": expected ", String::concat(__to_string(plen), String::concat(" args, got ", __to_string(alen2)))))), off_marker_len(call_off, String::length(qualified))))
             }
             let s4 = unify_call_args(call_param_tys, arg_tys, s3)
             let call_ret = Array::get(ret_box, 0)
@@ -687,7 +704,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
                 let plen2 = Array::length(param_tys)
                 let alen3 = Array::length(arg_tys)
                 if alen3 != plen2 {
-                  Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(callee_name0, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))), off_marker(call_off)))
+                  Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(callee_name0, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))), off_marker_len(call_off, String::length(callee_name0))))
                 }
                 let s3 = unify_call_args(call_param_tys, arg_tys, s2)
                 let call_ret = Array::get(ret_box, 0)
