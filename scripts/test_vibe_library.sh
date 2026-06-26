@@ -57,6 +57,20 @@ bash scripts/install.sh --cli-wasm "$cli" >/dev/null 2>&1
 VIBE="$VIBE_BIN_DIR/vibe"
 [ -x "$VIBE" ] || { echo "FAIL: launcher not installed" >&2; exit 1; }
 
+# Per-test wall-clock guard. macOS has no GNU `timeout` (and ships bash 3.2,
+# where an empty-array expansion under `set -u` is itself an error), so dispatch
+# through a function: use `timeout`/`gtimeout` when present, else run directly
+# (the job-level timeout still bounds a true hang).
+run_guarded() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 150 "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout 150 "$@"
+  else
+    "$@"
+  fi
+}
+
 pass=0; fail=0
 for t in "${ALLOW[@]}"; do
   if [ ! -f "$t" ]; then
@@ -66,7 +80,7 @@ for t in "${ALLOW[@]}"; do
   fi
   # `vibe test` prints `ok:   <file>` on success; a compile/assert failure prints
   # `FAIL …`. Capture the last line and require an `ok:`.
-  last="$(timeout 150 "$VIBE" test "$t" 2>&1 | tail -1 || true)"
+  last="$(run_guarded "$VIBE" test "$t" 2>&1 | tail -1 || true)"
   if printf '%s' "$last" | grep -q "^ok:"; then
     echo "ok: $t"
     pass=$((pass + 1))
