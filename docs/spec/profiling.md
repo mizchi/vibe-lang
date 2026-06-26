@@ -92,10 +92,12 @@ vibe: heap samples — 12 over 1.21 ms … 13.36 ms, 2.4 MiB -> 19.2 MiB (peak 1
 
 `vibe run --alloc-site[=N]`。**massif/heaptrack 相当の by-frame アロケーションプロファイル**を、
 **新しい計装なしで** break ビルドを再利用して得る。break codegen は全ユーザー関数の入口に
-`vibe::dbg_break` を出すので（DAP の breakpoint/step 用）、runner はその hook で毎入口に
-`__heap_ptr` を読み、**前回の入口からの bump 差分を「直近に入った関数」へ加算**する。
-これで*リーフ属性*（最内の実行中関数がそのバイト数を得る）になる。`dbg_break` は
-let/mut に関係なく必ず発火するのでカバレッジは完全（pure な mut ループも捕捉する）。
+`vibe::dbg_break`、各文境界に `vibe::dbg_line` を出すので（DAP の breakpoint/step 用）、runner は
+その両 hook を**サンプル点**として使い、各点で `__heap_ptr` を読んで **前回サンプルからの bump 差分を
+「その時点で実行中だった最内関数（backtrace の frame[0]）」へ加算**する。文境界でも毎回 backtrace を
+読み直すので、ヘルパーが return した後にその呼び出し元が次の文で確保した分は**呼び出し元**に付く
+（入口のみのサンプルだと return した callee に誤って付く問題を緩和）。`dbg_break` は let/mut に
+関係なく必ず発火するので関数単位のカバレッジは完全（pure な mut ループの関数も捕捉する）。
 break ビルド再利用なので、デフォルトの自己コンパイル経路は byte-identical（fixpoint 維持）。
 
 ```
@@ -111,10 +113,20 @@ vibe: alloc sites — 2 function(s), 178.4 KiB attributed total, top 2 shown
 `VIBE_ALLOC_SITE_TOP` で報告する上位件数を制限（既定 20）。`VIBE_ALLOC_SITE=1` で runner が
 有効化、launcher が `--break` と同じ計装でコンパイルしつつ `VIBE_BREAK` は設定しない（pause なし）。
 
-**粒度と限界**: 属性は**関数単位**（行単位ではない）。リーフ属性なので、確保した文そのものでなく
-最内の実行中関数にバイトが付く。`__heap_ptr` 差分ベースなので arena（解放なし）の*確保*量であり
-live-set ではない（メモリモデル参照）。dbg_break の backtrace capture を毎入口で行うため
-`--alloc-site` 実行は通常より遅い（プロファイル実行のみのコスト）。test: `scripts/test_vibe_alloc_site.sh`。
+**粒度と限界**: 属性は**関数単位**（行単位ではない）のリーフ属性で、サンプル点（関数入口＋文境界）
+**間**の差分を1関数に丸めるため近似である。`__heap_ptr` 差分ベースなので arena（解放なし）の*確保*量で
+あり live-set ではない（メモリモデル参照）。毎サンプルで backtrace を取るので `--alloc-site` 実行は
+通常より遅い（プロファイル実行のみのコスト）。
+
+**残る誤属性**: 呼び出し元が helper を呼んだ後、**文境界の無い区間**（`mut` 代入のみの while ループ等。
+`mut` let / 代入は `dbg_line` を出さない）で確保すると、その間サンプルが取れず、tail 加算が直近の
+sample 点の関数（= 戻ってきた callee）にまとめて付く。例:
+`let x = helper(); let mut t=""; while … { t = concat(t, …) }` では大きな確保が helper に誤計上される。
+正確な per-allocation 属性には**確保サイト計装（codegen で各確保点に hook）か return hook** が要る
+— これは設計当初から tier 4 の opt-in 計装ビルド（`vibe::alloc_site`）として想定した重い変更で、
+本実装（runner のみ・codegen 非変更）の範囲外。現状はリーフが文境界で確保する一般形
+（builder が concat して返す等）で正しく、上記パターンで粗くなる近似プロファイラとして使う。
+test: `scripts/test_vibe_alloc_site.sh`。
 
 ## `vibe bench`（実装済み）
 

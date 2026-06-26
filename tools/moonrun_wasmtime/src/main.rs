@@ -1726,27 +1726,41 @@ fn caller_heap_ptr(caller: &mut Caller<'_, HostState>) -> Option<u64> {
     })
 }
 
-fn vibe_dbg_break(mut caller: Caller<'_, HostState>) -> Result<()> {
-    // Profiling tier 4: credit the heap bump SINCE the previous function entry to
-    // the function that was running (the most recently entered one), then make
-    // THIS entry's function the new "previous". Runs on every entry, independent
-    // of breakpoints/stepping — so a `vibe run --alloc-site` with no VIBE_BREAK
-    // still records a full per-function allocation profile.
-    if caller.data().alloc_site {
-        if let Some(cur) = caller_heap_ptr(&mut caller) {
-            // Innermost named frame = the function whose body called dbg_break.
-            let entering = dbg_break_frames(&caller).into_iter().next();
-            let data = caller.data_mut();
-            if let Some(prev) = data.alloc_prev_fn.take() {
-                let delta = cur.saturating_sub(data.alloc_prev_heap);
-                if delta > 0 {
-                    *data.alloc_sites.entry(prev).or_insert(0) += delta;
-                }
-            }
-            data.alloc_prev_fn = entering;
-            data.alloc_prev_heap = cur;
+// Profiling tier 4: one allocation-attribution sample. Credit the heap bump SINCE
+// the last sample to the function that was running THEN (`alloc_prev_fn`), then
+// record the function running NOW (innermost user frame) as the new "previous".
+// Called from BOTH `dbg_break` (function entry) and `dbg_line` (statement
+// boundary), so the running function is re-read at every instrumented point — not
+// only at entries. That matters for caller/callee accuracy: after a helper
+// returns, the caller's next statement re-takes a sample with the caller on top,
+// so allocation it does post-call is charged to the CALLER, not left dangling on
+// the returned helper (which entry-only sampling would mis-attribute). Residual
+// error is bounded to the gap between instrumentation points (e.g. a run of `mut`
+// assignments, which emit no dbg_line, inside one function). No-op unless
+// alloc_site is on, so non-profiling runs pay nothing.
+fn alloc_account(caller: &mut Caller<'_, HostState>) {
+    if !caller.data().alloc_site {
+        return;
+    }
+    let cur = match caller_heap_ptr(caller) {
+        Some(c) => c,
+        None => return,
+    };
+    // Innermost named frame = the user function whose body is executing now.
+    let running = dbg_break_frames(caller).into_iter().next();
+    let data = caller.data_mut();
+    if let Some(prev) = data.alloc_prev_fn.take() {
+        let delta = cur.saturating_sub(data.alloc_prev_heap);
+        if delta > 0 {
+            *data.alloc_sites.entry(prev).or_insert(0) += delta;
         }
     }
+    data.alloc_prev_fn = running;
+    data.alloc_prev_heap = cur;
+}
+
+fn vibe_dbg_break(mut caller: Caller<'_, HostState>) -> Result<()> {
+    alloc_account(&mut caller);
     let break_set = Arc::clone(&caller.data().break_set);
     let line_break_set = Arc::clone(&caller.data().line_break_set);
     let step_mode = caller.data().step_mode;
@@ -1898,6 +1912,9 @@ fn dbg_apply_command(caller: &mut Caller<'_, HostState>, depth: usize) -> Result
 // no-op when nothing can pause (empty line set + Continue) so non-break runs and
 // unmatched lines pay only an early return.
 fn vibe_dbg_line(mut caller: Caller<'_, HostState>, file_id: i32, line: i32) -> Result<()> {
+    // tier 4: take an allocation sample at this statement boundary too (see
+    // alloc_account) so post-call allocation in a caller is charged to the caller.
+    alloc_account(&mut caller);
     let line_break_set = Arc::clone(&caller.data().line_break_set);
     let step_mode = caller.data().step_mode;
     if line_break_set.is_empty() && step_mode == StepMode::Continue {
