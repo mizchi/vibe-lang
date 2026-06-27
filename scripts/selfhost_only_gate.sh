@@ -1302,4 +1302,38 @@ done
 rm -rf "$cdir"
 echo "[selfhost-only-gate] match-arm / array / non-fn-call / unary-not / for-iterable type checking ok"
 
+# 32. mutability discipline: reassigning a plain (immutable) `let` is rejected;
+#     a `let mut` binding, an accumulator updated in a loop, and a closure-local
+#     `let mut` must still compile.
+echo "[selfhost-only-gate] 32/32 mutability discipline (immutable let reassignment)"
+mudir="_build/_gate_mutability"
+rm -rf "$mudir"; mkdir -p "$mudir"
+cat > "$mudir/ok.vibe" <<'EOF'
+export let _start: () -> Int = () -> {
+  let mut x = 1
+  x = 2
+  let mut s = 0
+  for i in [1, 2, 3] { s = s + i }
+  x + s
+}
+EOF
+cat > "$mudir/bad.vibe" <<'EOF'
+export let _start: () -> Int = () -> { let x = 1; x = 2; x }
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$mudir/ok.vibe" "$mudir/ok.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$mudir/ok.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: well-typed mut/accumulator did not compile (over-rejects)" >&2
+  cat "$mudir/ok.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$mudir/bad.vibe" "$mudir/bad.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$mudir/bad.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: immutable-let reassignment compiled (mutability check regressed)" >&2; exit 1
+fi
+rm -rf "$mudir"
+echo "[selfhost-only-gate] mutability discipline ok"
+
 echo "[selfhost-only-gate] ok"

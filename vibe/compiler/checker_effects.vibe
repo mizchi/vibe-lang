@@ -21,7 +21,8 @@ import ./types.vibe {
 export enum EffectError {
   EEThrowOutsideEffect(String);
   EEEffectfulCallOutsideEffect(String);
-  EEPerformUndeclaredEffect(String, String)
+  EEPerformUndeclaredEffect(String, String);
+  EEAssignImmutable(String)
 }
 
 //# Functions
@@ -393,7 +394,8 @@ export let effect_error_to_string: (EffectError) -> String = (err) -> {
   match err {
     EEThrowOutsideEffect(msg) => String::concat("throw outside effectful context: ", msg),
     EEEffectfulCallOutsideEffect(name) => String::concat("effectful call outside effectful context: ", name),
-    EEPerformUndeclaredEffect(op, eff) => String::concat("use of undeclared effect `", String::concat(eff, String::concat("` (", String::concat(op, "); add it to the function's `with { ... }` or wrap in a `handle`"))))
+    EEPerformUndeclaredEffect(op, eff) => String::concat("use of undeclared effect `", String::concat(eff, String::concat("` (", String::concat(op, "); add it to the function's `with { ... }` or wrap in a `handle`")))),
+    EEAssignImmutable(name) => String::concat("cannot assign to immutable binding `", String::concat(name, "` (declare it with `let mut`)"))
   }
 }
 
@@ -1011,6 +1013,275 @@ export let check_perform_effects_stmts: (Array[Stmt]) -> Array[EffectError] = (s
   let mut i = 0
   while i < Array::length(stmts) {
     append_eff_errs(errors, check_perform_effects_stmt(Array::get(stmts, i)))
+    i = i + 1
+  }
+  errors
+}
+
+//# Mutability discipline: reassignment requires a `let mut` binding.
+//
+// `let x = ...` is immutable (docs/cheatsheet.md); only `let mut x` may be
+// reassigned. The checker previously accepted `let x = 1; x = 2`. This pass
+// walks expressions carrying the SET of names that are reassignable in scope
+// and reports an `x = e` / `x op= e` whose target is not in that set.
+//
+// The set only ever GROWS down a scope (never shrinks), so the pass can only
+// produce false NEGATIVES, never false positives: every form that introduces a
+// reassignable or freshly-rebindable name — `let mut`, function parameters,
+// loop accumulators, `for` variables, and pattern binds — is added, so the
+// only thing flagged is reassignment of a plain immutable `let`. Nested
+// functions INHERIT the outer set (a closure may mutate a captured `let mut`).
+
+let mut_has: (Array[String], String) -> Bool = (xs, n) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(xs) {
+    if Array::get(xs, i) == n {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+let mut_with: (Array[String], String) -> Array[String] = (base, name) -> {
+  let out = Array::slice(base, 0, Array::length(base))
+  Array::push(out, name)
+  out
+}
+
+let rec collect_pat_binds_into: (Pat, Array[String]) -> Unit = (pat, acc) -> {
+  match pat {
+    PBind(name) => Array::push(acc, name),
+    PCtor(_, subs) => {
+      let mut i = 0
+      while i < Array::length(subs) {
+        collect_pat_binds_into(Array::get(subs, i), acc)
+        i = i + 1
+      }
+    },
+    PTuple(subs) => {
+      let mut i = 0
+      while i < Array::length(subs) {
+        collect_pat_binds_into(Array::get(subs, i), acc)
+        i = i + 1
+      }
+    },
+    POr(l, r) => {
+      collect_pat_binds_into(l, acc)
+      collect_pat_binds_into(r, acc)
+    },
+    PStruct(_, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        collect_pat_binds_into(fp, acc)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+let mut_with_pat: (Array[String], Pat) -> Array[String] = (base, pat) -> {
+  let out = Array::slice(base, 0, Array::length(base))
+  collect_pat_binds_into(pat, out)
+  out
+}
+
+let mut_with_params: (Array[String], Array[(String, Option[TypeExpr])]) -> Array[String] = (base, params) -> {
+  let out = Array::slice(base, 0, Array::length(base))
+  let mut i = 0
+  while i < Array::length(params) {
+    let (pname, _) = Array::get(params, i)
+    Array::push(out, pname)
+    i = i + 1
+  }
+  out
+}
+
+export let rec check_mutability_expr: (Expr, Array[String]) -> Array[EffectError] = (expr, mutable) -> {
+  let errors = Array::slice([
+    EEThrowOutsideEffect("")
+  ], 0, 0)
+  match expr {
+    ECall(callee, args, _) => {
+      append_eff_errs(errors, check_mutability_expr(callee, mutable))
+      let mut ai = 0
+      while ai < Array::length(args) {
+        append_eff_errs(errors, check_mutability_expr(Array::get(args, ai), mutable))
+        ai = ai + 1
+      }
+      errors
+    },
+    EFn(_, _, params, _, _, body) => {
+      append_eff_errs(errors, check_mutability_expr(body, mut_with_params(mutable, params)))
+      errors
+    },
+    EHandle(body, arms) => {
+      append_eff_errs(errors, check_mutability_expr(body, mutable))
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (pat, arm_body) = Array::get(arms, ai)
+        append_eff_errs(errors, check_mutability_expr(arm_body, mut_with_pat(mutable, pat)))
+        ai = ai + 1
+      }
+      errors
+    },
+    ELet(_, val, body) => {
+      append_eff_errs(errors, check_mutability_expr(val, mutable))
+      append_eff_errs(errors, check_mutability_expr(body, mutable))
+      errors
+    },
+    ELetRec(_, val, body) => {
+      append_eff_errs(errors, check_mutability_expr(val, mutable))
+      append_eff_errs(errors, check_mutability_expr(body, mutable))
+      errors
+    },
+    ELetMut(name, val, body) => {
+      append_eff_errs(errors, check_mutability_expr(val, mutable))
+      append_eff_errs(errors, check_mutability_expr(body, mut_with(mutable, name)))
+      errors
+    },
+    ESeq(a, b) => {
+      append_eff_errs(errors, check_mutability_expr(a, mutable))
+      append_eff_errs(errors, check_mutability_expr(b, mutable))
+      errors
+    },
+    EIf(cond, then_e, else_e) => {
+      append_eff_errs(errors, check_mutability_expr(cond, mutable))
+      append_eff_errs(errors, check_mutability_expr(then_e, mutable))
+      append_eff_errs(errors, check_mutability_expr(else_e, mutable))
+      errors
+    },
+    EMatch(scrutinee, arms) => {
+      append_eff_errs(errors, check_mutability_expr(scrutinee, mutable))
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (pat, arm_body) = Array::get(arms, ai)
+        append_eff_errs(errors, check_mutability_expr(arm_body, mut_with_pat(mutable, pat)))
+        ai = ai + 1
+      }
+      errors
+    },
+    EWhile(cond, body) => {
+      append_eff_errs(errors, check_mutability_expr(cond, mutable))
+      append_eff_errs(errors, check_mutability_expr(body, mutable))
+      errors
+    },
+    ELoop(params, body) => {
+      let loopmut = Array::slice(mutable, 0, Array::length(mutable))
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pname, init) = Array::get(params, i)
+        append_eff_errs(errors, check_mutability_expr(init, mutable))
+        Array::push(loopmut, pname)
+        i = i + 1
+      }
+      append_eff_errs(errors, check_mutability_expr(body, loopmut))
+      errors
+    },
+    EForIn(name, index_name, iter, body) => {
+      append_eff_errs(errors, check_mutability_expr(iter, mutable))
+      let base = mut_with(mutable, name)
+      let formut = match index_name {
+        Some(idx) => mut_with(base, idx),
+        None => base
+      }
+      append_eff_errs(errors, check_mutability_expr(body, formut))
+      errors
+    },
+    EBinOp(_, left, right) => {
+      append_eff_errs(errors, check_mutability_expr(left, mutable))
+      append_eff_errs(errors, check_mutability_expr(right, mutable))
+      errors
+    },
+    EReturn(e) => check_mutability_expr(e, mutable),
+    EUnaryOp(_, operand) => check_mutability_expr(operand, mutable),
+    EThrow(e) => check_mutability_expr(e, mutable),
+    EAssign(name, val, cont) => {
+      if !mut_has(mutable, name) {
+        Array::push(errors, EEAssignImmutable(name))
+      } else {
+        ()
+      }
+      append_eff_errs(errors, check_mutability_expr(val, mutable))
+      append_eff_errs(errors, check_mutability_expr(cont, mutable))
+      errors
+    },
+    EAssignOp(name, _, val, cont) => {
+      if !mut_has(mutable, name) {
+        Array::push(errors, EEAssignImmutable(name))
+      } else {
+        ()
+      }
+      append_eff_errs(errors, check_mutability_expr(val, mutable))
+      append_eff_errs(errors, check_mutability_expr(cont, mutable))
+      errors
+    },
+    EDot(obj, _, _) => check_mutability_expr(obj, mutable),
+    ETuple(elems) => {
+      let mut ei = 0
+      while ei < Array::length(elems) {
+        append_eff_errs(errors, check_mutability_expr(Array::get(elems, ei), mutable))
+        ei = ei + 1
+      }
+      errors
+    },
+    EArray(elems) => {
+      let mut ei = 0
+      while ei < Array::length(elems) {
+        append_eff_errs(errors, check_mutability_expr(Array::get(elems, ei), mutable))
+        ei = ei + 1
+      }
+      errors
+    },
+    ERecord(fields) => {
+      let mut fi = 0
+      while fi < Array::length(fields) {
+        let (_, fval) = Array::get(fields, fi)
+        append_eff_errs(errors, check_mutability_expr(fval, mutable))
+        fi = fi + 1
+      }
+      errors
+    },
+    _ => errors
+  }
+}
+
+let check_mutability_binding: (Expr) -> Array[EffectError] = (body) -> {
+  match body {
+    EFn(_, _, params, _, _, fbody) => check_mutability_expr(fbody, mut_with_params(Array::slice([
+      ""
+    ], 0, 0), params)),
+    _ => check_mutability_expr(body, Array::slice([
+      ""
+    ], 0, 0))
+  }
+}
+
+export let check_mutability_stmts: (Array[Stmt]) -> Array[EffectError] = (stmts) -> {
+  let errors = Array::slice([
+    EEThrowOutsideEffect("")
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, body) => append_eff_errs(errors, check_mutability_binding(body)),
+      SLetMut(_, _, body) => append_eff_errs(errors, check_mutability_binding(body)),
+      STest(_, body) => append_eff_errs(errors, check_mutability_expr(body, Array::slice([
+        ""
+      ], 0, 0))),
+      SBench(_, body) => append_eff_errs(errors, check_mutability_expr(body, Array::slice([
+        ""
+      ], 0, 0))),
+      SExpr(e) => append_eff_errs(errors, check_mutability_expr(e, Array::slice([
+        ""
+      ], 0, 0))),
+      _ => ()
+    }
     i = i + 1
   }
   errors
