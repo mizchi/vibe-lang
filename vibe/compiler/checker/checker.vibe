@@ -1346,6 +1346,19 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
           _ => CtUnknown
         }
         (tab_call_ty(tytab, call_off, result), s2, c2)
+      } else if name == "Array::slice" && Array::length(args) == 3 {
+        // `Array::slice(a, lo, hi)` returns an array of the SAME element type,
+        // typed CtUnknown by the builtin table (`let s: String =
+        // Array::get(Array::slice(ints, 0, 1), 0)` slipped through). Refine to
+        // `CtArray(elem)` from a concrete receiver.
+        let (obj_ty, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+        let (_, s2, c2) = check_expr(Array::get(args, 1), env, defs, s1, c1, errors, tytab)
+        let (_, s3, c3) = check_expr(Array::get(args, 2), env, defs, s2, c2, errors, tytab)
+        let result = match subst_apply(s3, obj_ty) {
+          CtArray(elem) => CtArray(elem),
+          _ => CtUnknown
+        }
+        (tab_call_ty(tytab, call_off, result), s3, c3)
       } else if name == "Array::fold" && Array::length(args) == 3 {
         // `Array::fold(a, init, f)` returns the accumulator type — i.e. `init`'s
         // type — but was typed CtUnknown, so `let s: String = Array::fold(ints,
