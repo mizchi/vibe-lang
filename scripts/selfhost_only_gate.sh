@@ -1212,4 +1212,43 @@ done
 rm -rf "$tdir"
 echo "[selfhost-only-gate] assignment / binding / if-branch / struct-field / local-let type checking ok"
 
+# 30. `mut`-field write escape analysis (#418): assigning `obj.field = x` (which
+#     desugars to `__set_field(obj, "field", x)`) is only legal when `field` was
+#     declared `mut` in its struct. A write to a non-`mut` field must be
+#     REJECTED; a write to a `mut` field (and a same-typed value) must compile.
+echo "[selfhost-only-gate] 30/30 mut-field write escape analysis"
+mdir="_build/_gate_mutfield"
+rm -rf "$mdir"; mkdir -p "$mdir"
+cat > "$mdir/ok_mut.vibe" <<'EOF'
+struct Cell { mut n: Int }
+export let _start: () -> Int = () -> {
+  let c = Cell::{ n: 0 }
+  c.n = 5
+  c.n
+}
+EOF
+cat > "$mdir/bad_nonmut.vibe" <<'EOF'
+struct Frozen { x: Int }
+export let _start: () -> Int = () -> {
+  let p = Frozen::{ x: 1 }
+  p.x = 9
+  p.x
+}
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$mdir/ok_mut.vibe" "$mdir/ok_mut.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$mdir/ok_mut.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: mut-field write did not compile (over-rejects)" >&2
+  cat "$mdir/ok_mut.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$mdir/bad_nonmut.vibe" "$mdir/bad_nonmut.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$mdir/bad_nonmut.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: non-mut field write compiled (mut escape check regressed)" >&2; exit 1
+fi
+rm -rf "$mdir"
+echo "[selfhost-only-gate] mut-field write escape analysis ok"
+
 echo "[selfhost-only-gate] ok"

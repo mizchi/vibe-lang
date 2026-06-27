@@ -144,37 +144,52 @@ let parse_import_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (toke
   }
 }
 
-let rec parse_toplevel_struct_fields_rest: (Array[Token], Int, ArrayBuilder[(String, TypeExpr)]) -> (Array[(String, TypeExpr)], Int) with { Error } = (tokens, pos, b) -> {
+let tl_push_mut_name: (ArrayBuilder[String], (String, TypeExpr), Bool) -> Unit = (mb, field, is_mut) -> {
+  if is_mut {
+    let (fname, _) = field
+    ArrayBuilder::push(mb, fname)
+  } else {
+    ()
+  }
+}
+
+let rec parse_toplevel_struct_fields_rest: (Array[Token], Int, ArrayBuilder[(String, TypeExpr)], ArrayBuilder[String]) -> (Array[(String, TypeExpr)], Array[String], Int) with { Error } = (tokens, pos, b, mb) -> {
   match peek(tokens, pos) {
     TSemicolon => match peek(tokens, pos + 1) {
-      TRBrace => (ArrayBuilder::freeze(b), pos + 2),
+      TRBrace => (ArrayBuilder::freeze(b), ArrayBuilder::freeze(mb), pos + 2),
       _ => {
-        let (field, next) = parse_struct_field(tokens, pos + 1)
+        let (field, is_mut, next) = parse_struct_field(tokens, pos + 1)
         ArrayBuilder::push(b, field)
-        parse_toplevel_struct_fields_rest(tokens, next, b)
+        tl_push_mut_name(mb, field, is_mut)
+        parse_toplevel_struct_fields_rest(tokens, next, b, mb)
       }
     },
     TComma => match peek(tokens, pos + 1) {
-      TRBrace => (ArrayBuilder::freeze(b), pos + 2),
+      TRBrace => (ArrayBuilder::freeze(b), ArrayBuilder::freeze(mb), pos + 2),
       _ => {
-        let (field, next) = parse_struct_field(tokens, pos + 1)
+        let (field, is_mut, next) = parse_struct_field(tokens, pos + 1)
         ArrayBuilder::push(b, field)
-        parse_toplevel_struct_fields_rest(tokens, next, b)
+        tl_push_mut_name(mb, field, is_mut)
+        parse_toplevel_struct_fields_rest(tokens, next, b, mb)
       }
     },
-    TRBrace => (ArrayBuilder::freeze(b), pos + 1),
+    TRBrace => (ArrayBuilder::freeze(b), ArrayBuilder::freeze(mb), pos + 1),
     _ => throw("expected ';', ',' or '}' in struct")
   }
 }
 
-let parse_toplevel_struct_fields: (Array[Token], Int) -> (Array[(String, TypeExpr)], Int) with { Error } = (tokens, pos) -> {
+let parse_toplevel_struct_fields: (Array[Token], Int) -> (Array[(String, TypeExpr)], Array[String], Int) with { Error } = (tokens, pos) -> {
   match peek(tokens, pos) {
-    TRBrace => (empty_fields(), pos + 1),
+    TRBrace => (empty_fields(), Array::slice([
+      ""
+    ], 0, 0), pos + 1),
     _ => {
-      let (first, next) = parse_struct_field(tokens, pos)
+      let (first, is_mut, next) = parse_struct_field(tokens, pos)
       let b = ArrayBuilder::new()
+      let mb = ArrayBuilder::new()
       ArrayBuilder::push(b, first)
-      parse_toplevel_struct_fields_rest(tokens, next, b)
+      tl_push_mut_name(mb, first, is_mut)
+      parse_toplevel_struct_fields_rest(tokens, next, b, mb)
     }
   }
 }
@@ -209,9 +224,9 @@ let parse_toplevel_struct_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { 
         _ => pos + 1
       }
       let br = expect_tk(tokens, after_name, "{")
-      let (fields, end) = parse_toplevel_struct_fields(tokens, br);
+      let (fields, mut_names, end) = parse_toplevel_struct_fields(tokens, br);
       let (derives, final_pos) = parse_derive_names(tokens, end)
-      (SStruct(exported, name, fields, derives), final_pos)
+      (SStruct(exported, name, fields, derives, mut_names), final_pos)
     },
     _ => throw("expected struct name")
   }

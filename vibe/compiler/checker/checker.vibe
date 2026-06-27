@@ -238,6 +238,61 @@ let rec strip_effects: (Type) -> Type = (ty) -> {
   }
 }
 
+// True when a type is fully ground (mentions no type parameter / type
+// variable). An unresolved type name resolves to `CtNamed(_, _)` (see
+// resolve_type_expr), which for a struct field or function parameter means a
+// generic parameter like `T`; `CtVar`/`CtForAll` are likewise non-ground. Used
+// both to restrict record struct-identity recovery to MONOMORPHIC structs (a
+// bare `CtStruct(LazyIter)` would erase the element type that `for x in it`
+// relies on) and to gate structural-mismatch reporting to concrete types.
+let rec type_is_ground: (Type) -> Bool = (t) -> {
+  match t {
+    CtNamed(_, _) => false,
+    CtVar(_) => false,
+    CtForAll(_, _, _) => false,
+    CtTuple(items) => {
+      let mut ok = true
+      let mut i = 0
+      while i < Array::length(items) {
+        if !type_is_ground(Array::get(items, i)) {
+          ok = false
+        }
+        i = i + 1
+      }
+      ok
+    },
+    CtArray(e) => type_is_ground(e),
+    CtOption(e) => type_is_ground(e),
+    CtFn(ps, r, _) => {
+      let mut ok = type_is_ground(r)
+      let mut i = 0
+      while i < Array::length(ps) {
+        if !type_is_ground(Array::get(ps, i)) {
+          ok = false
+        }
+        i = i + 1
+      }
+      ok
+    },
+    _ => true
+  }
+}
+
+// True when every declared field type of a struct is ground (the struct is not
+// generic). `S::{ ... }` for such a struct can safely be typed `CtStruct(S)`.
+let struct_fields_ground: (Array[(String, Type)]) -> Bool = (dfields) -> {
+  let mut ok = true
+  let mut i = 0
+  while i < Array::length(dfields) {
+    let (_, ft) = Array::get(dfields, i)
+    if !type_is_ground(ft) {
+      ok = false
+    }
+    i = i + 1
+  }
+  ok
+}
+
 // Unify `expected` with `actual`, REPORTING only a genuine STRUCTURAL mismatch
 // (the checker historically swallowed these, accepting ill-typed programs).
 // `unify` already accepts `CtUnknown`/`CtVar` freely; on failure we retry with
@@ -252,7 +307,17 @@ export let check_assignable: (Type, Type, Subst, Array[String], String, Int) -> 
         Some(_) => true,
         None => false
       }
-      if structural {
+      // Only report when BOTH sides are fully ground (mention no type parameter
+      // / type variable). The selfhost checker does not instantiate a generic
+      // struct field's or function parameter's type params — they surface as
+      // rigid `CtNamed(T, _)` — so a unify failure against a concrete
+      // instantiation there is NOT a real mismatch (e.g. a `pull: (Int) ->
+      // Option[(T, Int)]` field vs a concrete closure). Reporting only on
+      // ground/ground keeps the genuine concrete-type mismatches (Int vs
+      // String, struct field of the wrong concrete type) while not
+      // over-rejecting polymorphic code.
+      let both_ground = type_is_ground(subst_apply(s, expected)) && type_is_ground(subst_apply(s, actual))
+      if structural || !both_ground {
         s
       } else {
         Array::push(errors, String::concat(what, String::concat(": expected ", String::concat(type_to_string(subst_apply(s, expected)), String::concat(", got ", String::concat(type_to_string(subst_apply(s, actual)), off_marker(off)))))))
@@ -316,7 +381,7 @@ let check_record_fields: (Array[TypeDef], Array[(String, Type)], Subst, Array[St
   let mut di = 0
   while di < Array::length(defs) {
     match Array::get(defs, di) {
-      TDStruct(_, dfields) => if struct_field_names_match(dfields, actual) {
+      TDStruct(_, dfields, _) => if struct_field_names_match(dfields, actual) {
         matchct = matchct + 1
         matched_fields = dfields
       },
@@ -340,6 +405,36 @@ let check_record_fields: (Array[TypeDef], Array[(String, Type)], Subst, Array[St
     out
   } else {
     s
+  }
+}
+
+// Resolve the (uniquely) matching struct name for a record literal's field-name
+// set. Returns None when 0 or >1 structs share that field set (ambiguous), or
+// when the matching struct is GENERIC (non-ground fields) — so a record's
+// struct identity is only recovered for an unambiguous MONOMORPHIC struct. Used
+// to give a bare `S::{ ... }` literal the type `CtStruct(S)` instead of
+// CtUnknown, which in turn lets `mut`-field write checking see the struct
+// without disturbing generic-struct inference.
+let resolve_record_struct_name: (Array[TypeDef], Array[(String, Type)]) -> Option[String] = (defs, actual) -> {
+  let mut matchct = 0
+  let mut out = None
+  let mut ground = false
+  let mut di = 0
+  while di < Array::length(defs) {
+    match Array::get(defs, di) {
+      TDStruct(sname, dfields, _) => if struct_field_names_match(dfields, actual) {
+        matchct = matchct + 1
+        out = Some(sname)
+        ground = struct_fields_ground(dfields)
+      },
+      _ => ()
+    }
+    di = di + 1
+  }
+  if matchct == 1 && ground {
+    out
+  } else {
+    None
   }
 }
 
@@ -719,6 +814,50 @@ let check_seq_spine: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], 
   result
 }
 
+// #418: enforce that `obj.field = x` (which desugars to
+// `__set_field(obj, "field", x)`) only targets a `mut`-declared struct field.
+// Runs as a pure side-effect over a *throwaway* errors/tytab so it never
+// perturbs the main type/subst flow — it only type-checks `obj` to learn its
+// struct name, looks up that struct's `mut` field set, and pushes a single
+// diagnostic to the real `errors` when the written field is not `mut`.
+let field_write_mut_check: (String, Array[Expr], TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Unit = (name, args, env, defs, s, c, errors, tytab, ce) -> {
+  if name == "__set_field" && Array::length(args) == 3 {
+    match Array::get(args, 1) {
+      EString(field) => {
+        let throwaway = Array::slice([""], 0, 0)
+        let throwtab = Array::slice([(0, CtUnit)], 0, 0)
+        let (obj_ty, _, _) = ce(Array::get(args, 0), env, defs, s, c, throwaway, throwtab)
+        match subst_apply(s, obj_ty) {
+          CtStruct(sname) => match find_typedef(defs, sname) {
+            Some(TDStruct(_, _, mut_names)) => {
+              let mut found = false
+              let mut i = 0
+              while i < Array::length(mut_names) {
+                if Array::get(mut_names, i) == field {
+                  found = true
+                } else {
+                  ()
+                }
+                i = i + 1
+              }
+              if found {
+                ()
+              } else {
+                Array::push(errors, String::concat("cannot assign to non-`mut` field `", String::concat(field, String::concat("` of struct ", sname))))
+              }
+            },
+            _ => ()
+          },
+          _ => ()
+        }
+      },
+      _ => ()
+    }
+  } else {
+    ()
+  }
+}
+
 export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int) = (expr, env, defs, s, c, errors, tytab) -> {
   match expr {
     EInt(_) => (CtInt, s, c),
@@ -811,7 +950,9 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       // only the op ARGUMENTS (not the op callee) and yield a fresh result type.
       // `resume(v)` likewise yields the continuation result (a fresh var;
       // handler arms are otherwise unchecked).
-      EIdent(name, callee_off) => if name == "perform" {
+      EIdent(name, callee_off) => {
+        field_write_mut_check(name, args, env, defs, s, c, errors, tytab, check_expr)
+        if name == "perform" {
         if Array::length(args) == 1 {
           match Array::get(args, 0) {
             ECall(_, opargs, _) => {
@@ -911,6 +1052,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
               _ => (tab_call_ty(tytab, call_off, CtUnknown), s2, c2)
             }
           }
+        }
         }
       },
       EDot(obj, method, _) => {
@@ -1228,7 +1370,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       let field_ty = match resolved {
         CtStruct(sname) => match find_typedef(defs, sname) {
           Some(td) => match td {
-            TDStruct(_, fields) => {
+            TDStruct(_, fields, _) => {
               let rec find_field: (Int) -> Option[Type] = (i) -> {
                 if i >= Array::length(fields) {
                   None
@@ -1387,7 +1529,13 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       }
       // Check the field values against the matching struct's declared types.
       let s2 = check_record_fields(defs, field_tys, s1, errors)
-      (CtUnknown, s2, c1)
+      // Recover the struct identity (when unambiguous) so downstream uses — in
+      // particular `mut`-field write checking — see a concrete `CtStruct`.
+      let rec_ty = match resolve_record_struct_name(defs, field_tys) {
+        Some(sname) => CtStruct(sname),
+        None => CtUnknown
+      }
+      (rec_ty, s2, c1)
     },
     ETuple(items) => {
       let ilen = Array::length(items)
