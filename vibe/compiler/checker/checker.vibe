@@ -727,6 +727,28 @@ let builtin_arg_head_rest: (String, Int) -> Int = (name, i) -> {
   }
 }
 
+// Check a higher-order builtin's callback parameter against the type it will be
+// fed. `recv_ty` / `fn_ty` are already subst-applied; when the receiver is a
+// concrete `CtArray(elem)` and the callback is a `CtFn` with a parameter at
+// `pidx`, require `elem` to be assignable to that parameter type. Ground-gated
+// via check_assignable, so an unannotated callback param (a fresh CtVar that
+// the body never pins to a concrete type) stays tolerant — only an explicit
+// wrong annotation (or a body that pins the param to a mismatching concrete
+// type) is rejected. `expected_ty` is the param (the slot), `elem` the value.
+let check_hof_param_vs_elem: (Type, Type, Int, Subst, Array[String], String) -> Subst = (recv_ty, fn_ty, pidx, s, errors, msg) -> {
+  match recv_ty {
+    CtArray(elem) => match fn_ty {
+      CtFn(ptys, _, _) => if Array::length(ptys) > pidx {
+        check_assignable(subst_apply(s, Array::get(ptys, pidx)), subst_apply(s, elem), s, errors, msg, 0 - 1)
+      } else {
+        s
+      },
+      _ => s
+    },
+    _ => s
+  }
+}
+
 let is_logic_binop: (String) -> Bool = (op) -> {
   op == "&&"
   || op == "||"
@@ -1439,23 +1461,40 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         // `Array::fold(a, init, f)` returns the accumulator type — i.e. `init`'s
         // type — but was typed CtUnknown, so `let s: String = Array::fold(ints,
         // 0, add)` slipped through. Refine the result to the init value's type.
-        let (_, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+        // Also check the callback `(acc, x)` params: `acc` against `init`'s type
+        // and `x` against the array element type (`Array::fold([1,2], 0, (acc:
+        // String, x) -> ...)` slipped through). Ground-gated.
+        let (recv_ty, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
         let (init_ty, s2, c2) = check_expr(Array::get(args, 1), env, defs, s1, c1, errors, tytab)
-        let (_, s3, c3) = check_expr(Array::get(args, 2), env, defs, s2, c2, errors, tytab)
-        (tab_call_ty(tytab, call_off, subst_apply(s3, init_ty)), s3, c3)
+        let (fn_ty, s3, c3) = check_expr(Array::get(args, 2), env, defs, s2, c2, errors, tytab)
+        let s4 = match subst_apply(s3, fn_ty) {
+          CtFn(ptys, _, _) => if Array::length(ptys) >= 1 {
+            check_assignable(subst_apply(s3, Array::get(ptys, 0)), subst_apply(s3, init_ty), s3, errors, "Array::fold accumulator type mismatch", 0 - 1)
+          } else {
+            s3
+          },
+          _ => s3
+        }
+        let s5 = check_hof_param_vs_elem(subst_apply(s4, recv_ty), subst_apply(s4, fn_ty), 1, s4, errors, "Array::fold element parameter type mismatch")
+        (tab_call_ty(tytab, call_off, subst_apply(s5, init_ty)), s5, c3)
       } else if name == "Array::map" && Array::length(args) == 2 {
         // `Array::map(a, f)` returns `Array[R]` where R is f's return type —
         // typed CtUnknown by the builtin table, so the mapped element type was
         // lost (`let s: String = Array::get(Array::map(ints, inc), 0)`). Refine
         // the result element to the mapping function's concrete return type; a
-        // non-function / var f stays CtUnknown.
-        let (_, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+        // non-function / var f stays CtUnknown. Also check the callback's first
+        // parameter type against the array element type — `Array::map([1,2],
+        // (s: String) -> ...)` applied a `(String)->_` over `Array[Int]` and
+        // slipped through. Ground-gated, so an unannotated `(x) -> ...` param
+        // (CtVar) stays tolerant.
+        let (recv_ty, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
         let (fn_ty, s2, c2) = check_expr(Array::get(args, 1), env, defs, s1, c1, errors, tytab)
-        let result = match subst_apply(s2, fn_ty) {
+        let s3 = check_hof_param_vs_elem(subst_apply(s2, recv_ty), subst_apply(s2, fn_ty), 0, s2, errors, "Array::map function parameter type mismatch")
+        let result = match subst_apply(s3, fn_ty) {
           CtFn(_, ret, _) => CtArray(ret),
           _ => CtUnknown
         }
-        (tab_call_ty(tytab, call_off, result), s2, c2)
+        (tab_call_ty(tytab, call_off, result), s3, c2)
       } else {
         match direct_call_return(env, name) {
           Some(ret_ty) => {

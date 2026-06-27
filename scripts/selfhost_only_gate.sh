@@ -1599,6 +1599,12 @@ EOF
 cat > "$idir/bad_arrfold.vibe" <<'EOF'
 export let _start: () -> Int = () -> { let a = [1, 2]; let s: String = Array::fold(a, 0, (acc, x) -> { acc + x }); 0 }
 EOF
+cat > "$idir/bad_mapparam.vibe" <<'EOF'
+export let _start: () -> Int = () -> { let b = Array::map([1, 2], (s: String) -> { s }); 0 }
+EOF
+cat > "$idir/bad_foldparam.vibe" <<'EOF'
+export let _start: () -> Int = () -> { let r = Array::fold([1, 2], 0, (acc: String, x) -> { acc }); 0 }
+EOF
 cat > "$idir/bad_arrslice.vibe" <<'EOF'
 export let _start: () -> Int = () -> { let a = [1, 2, 3]; let b = Array::slice(a, 0, 2); let s: String = Array::get(b, 0); 0 }
 EOF
@@ -1621,7 +1627,7 @@ if [ ! -s "$idir/ok.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: well-typed index/tuple did not compile (over-rejects)" >&2
   cat "$idir/ok.wasm.diag" 2>/dev/null >&2; exit 1
 fi
-for bad in bad_index bad_tuple bad_idxtype bad_idxelem bad_stridx bad_arrget bad_arrpush bad_arrset bad_arrmap bad_arrfold bad_arrslice bad_arrconcat bad_arrconcatmix bad_arrpushallmix bad_arrrev; do
+for bad in bad_index bad_tuple bad_idxtype bad_idxelem bad_stridx bad_arrget bad_arrpush bad_arrset bad_arrmap bad_arrfold bad_mapparam bad_foldparam bad_arrslice bad_arrconcat bad_arrconcatmix bad_arrpushallmix bad_arrrev; do
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$idir/$bad.vibe" "$idir/$bad.wasm" _start >/dev/null 2>&1 || true
