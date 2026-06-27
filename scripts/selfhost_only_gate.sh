@@ -1514,4 +1514,43 @@ done
 rm -rf "$ldir"
 echo "[selfhost-only-gate] literal-pattern type checking ok"
 
+# 37. unary `-` on a non-number and `break`/`continue` outside a loop must be
+#     rejected; numeric negation and in-loop break/continue must compile.
+echo "[selfhost-only-gate] 37/37 unary-minus / break-outside-loop checking"
+bdir="_build/_gate_breakneg"
+rm -rf "$bdir"; mkdir -p "$bdir"
+cat > "$bdir/ok.vibe" <<'EOF'
+export let _start: () -> Int = () -> {
+  let mut i = 0
+  let mut s = 0
+  while i < 10 { if i == 5 { break }; i = i + 1 }
+  for x in [1, 2, 3] { if x == 2 { continue }; s = s + x }
+  let neg = -i
+  neg + s
+}
+EOF
+cat > "$bdir/bad_neg.vibe" <<'EOF'
+export let _start: () -> Int = () -> { let x = -"hi"; 0 }
+EOF
+cat > "$bdir/bad_break.vibe" <<'EOF'
+export let _start: () -> Int = () -> { break; 0 }
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$bdir/ok.vibe" "$bdir/ok.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$bdir/ok.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: well-typed negation/break/continue did not compile (over-rejects)" >&2
+  cat "$bdir/ok.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+for bad in bad_neg bad_break; do
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$bdir/$bad.vibe" "$bdir/$bad.wasm" _start >/dev/null 2>&1 || true
+  if [ -s "$bdir/$bad.wasm" ]; then
+    echo "[selfhost-only-gate] FAIL: ill-formed $bad compiled (unary-minus/break check regressed)" >&2; exit 1
+  fi
+done
+rm -rf "$bdir"
+echo "[selfhost-only-gate] unary-minus / break-outside-loop checking ok"
+
 echo "[selfhost-only-gate] ok"
