@@ -1056,7 +1056,7 @@ let load: (String) -> String with { Fs } = (p) -> {
 let pure_use: (Array[Int]) -> Int = (xs) -> {
   Array::length(xs)
 }
-export let _start: () -> Int = () -> {
+export let _start: () -> Int with { Stdout } = () -> {
   emit()
   pure_use([1, 2, 3]) + 39
 }
@@ -1078,6 +1078,33 @@ export let _start: () -> Int = () -> {
   42
 }
 EOF
+# Transitive (#626): a function calling an Fs-declaring helper must itself
+# declare Fs (or handle it). `mid` leaks Fs from `leaf` without declaring it.
+cat > "$pfdir/bad_transitive.vibe" <<'EOF'
+let leaf: (String) -> String with { Fs } = (p) -> {
+  Fs::read_file(p)
+}
+let mid: (String) -> String = (p) -> {
+  leaf(p)
+}
+export let _start: () -> Int with { Fs } = () -> {
+  let _ = mid("x")
+  42
+}
+EOF
+# The same chain with `mid` correctly declaring Fs must compile.
+cat > "$pfdir/good_transitive.vibe" <<'EOF'
+let leaf: (String) -> String with { Fs } = (p) -> {
+  Fs::read_file(p)
+}
+let mid: (String) -> String with { Fs } = (p) -> {
+  leaf(p)
+}
+export let _start: () -> Int with { Fs } = () -> {
+  let _ = mid("x")
+  42
+}
+EOF
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$pfdir/good.vibe" "$pfdir/good.wasm" _start >/dev/null 2>&1 || true
@@ -1095,6 +1122,18 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
   "$pfdir/bad_builtin.vibe" "$pfdir/bad_builtin.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$pfdir/bad_builtin.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: undeclared effectful builtin call compiled (#626 builtin slice regressed)" >&2; exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$pfdir/bad_transitive.vibe" "$pfdir/bad_transitive.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$pfdir/bad_transitive.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: undeclared transitive effect call compiled (#626 transitive enforcement regressed)" >&2; exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$pfdir/good_transitive.vibe" "$pfdir/good_transitive.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$pfdir/good_transitive.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: correctly-declared transitive effect chain did not compile (#626 over-rejects)" >&2; exit 1
 fi
 rm -rf "$pfdir"
 echo "[selfhost-only-gate] effect-call discipline ok"
