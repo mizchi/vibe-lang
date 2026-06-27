@@ -1845,7 +1845,29 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
           },
           None => CtUnknown
         },
-        _ => CtUnknown
+        // Field access on a concrete NON-struct value (`o.x` where `o :
+        // Option[P]`, or a scalar / function) is a type error — only structs
+        // (and tuple `.N`) have fields. Type vars / unknown / named scrutinees
+        // are tolerated; CtString/CtBytes/CtArray are NOT flagged because `.m`
+        // on them parses as a method call elsewhere, not a value-position EDot.
+        other => {
+          let not_struct = match other {
+            CtInt => true,
+            CtDouble => true,
+            CtBool => true,
+            CtChar => true,
+            CtUnit => true,
+            CtOption(_) => true,
+            CtFn(_, _, _) => true,
+            _ => false
+          }
+          if not_struct {
+            Array::push(errors, String::concat(String::concat("field access `.", String::concat(field, "` on a non-struct value")), off_marker(dot_off)))
+          } else {
+            ()
+          }
+          CtUnknown
+        }
       }
       // Record this field-access node's (raw, pre-final-subst) projection type
       // keyed by its real source offset, for typed-hover on `obj.field`.
