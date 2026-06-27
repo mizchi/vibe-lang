@@ -1297,16 +1297,19 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         }
       } else if name == "__index" && Array::length(args) == 2 {
         // `obj[i]` (`__index(obj, i)`) is typed polymorphically by the builtin
-        // table, losing the array element type — `let s: String = a[0]` over an
+        // table, losing the result type — `let s: String = a[0]` over an
         // `Array[Int]` slipped through. When the receiver resolves to
-        // `CtArray(elem)`, refine the result to `elem` so downstream checks see
-        // the real element type. Other receivers (String/Bytes/var) keep the
-        // conservative CtUnknown. (index_target_check above still validates the
-        // receiver/subscript shapes on a throwaway channel.)
+        // `CtArray(elem)`, refine the result to `elem`; String/Bytes indexing
+        // yields the char/byte code (`Int`) so `let s: String = "abc"[0]`
+        // (which returns 97) must be rejected. Var / unknown / named receivers
+        // keep the conservative CtUnknown. (index_target_check above still
+        // validates the receiver/subscript shapes on a throwaway channel.)
         let (obj_ty, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
         let (_, s2, c2) = check_expr(Array::get(args, 1), env, defs, s1, c1, errors, tytab)
         let result = match subst_apply(s2, obj_ty) {
           CtArray(elem) => elem,
+          CtString => CtInt,
+          CtBytes => CtInt,
           _ => CtUnknown
         }
         (tab_call_ty(tytab, call_off, result), s2, c2)
