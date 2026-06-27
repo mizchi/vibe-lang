@@ -4819,6 +4819,37 @@ let rec type_is_ground: (Type) -> Bool = (t) -> {
     _ => true
   }
 }
+let rec type_no_named: (Type) -> Bool = (t) -> {
+  match t {
+    CtNamed(_, _) => false,
+    CtForAll(_, _, _) => false,
+    CtTuple(items) => {
+      let mut ok = true
+      let mut i = 0
+      while i < Array::length(items) {
+        if !type_no_named(Array::get(items, i)) {
+          ok = false
+        }
+        i = i + 1
+      }
+      ok
+    },
+    CtArray(e) => type_no_named(e),
+    CtOption(e) => type_no_named(e),
+    CtFn(ps, r, _) => {
+      let mut ok = type_no_named(r)
+      let mut i = 0
+      while i < Array::length(ps) {
+        if !type_no_named(Array::get(ps, i)) {
+          ok = false
+        }
+        i = i + 1
+      }
+      ok
+    },
+    _ => true
+  }
+}
 let struct_fields_ground: (Array[(String, Type)]) -> Bool = (dfields) -> {
   let mut ok = true
   let mut i = 0
@@ -4839,8 +4870,8 @@ export let check_assignable: (Type, Type, Subst, Array[String], String, Int) -> 
         Some(_) => true,
         None => false
       }
-      let both_ground = type_is_ground(subst_apply(s, expected)) && type_is_ground(subst_apply(s, actual))
-      if structural || !both_ground {
+      let reportable = type_is_ground(subst_apply(s, expected)) && type_no_named(subst_apply(s, actual))
+      if structural || !reportable {
         s
       } else {
         Array::push(errors, String::concat(what, String::concat(": expected ", String::concat(type_to_string(subst_apply(s, expected)), String::concat(", got ", String::concat(type_to_string(subst_apply(s, actual)), off_marker(off)))))))

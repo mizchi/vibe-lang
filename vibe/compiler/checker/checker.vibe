@@ -278,6 +278,44 @@ let rec type_is_ground: (Type) -> Bool = (t) -> {
   }
 }
 
+// True when a type mentions no RIGID type parameter (`CtNamed` / `CtForAll`) but
+// MAY contain inference variables (`CtVar`). Used to recognise an `actual` type
+// whose only flexibility is unification variables: if such a type fails to unify
+// against a fully GROUND expected type, no instantiation of its variables can
+// make it match, so the mismatch is real (unlike an un-instantiated generic
+// param `CtNamed(T)`, which the checker simply has not substituted yet).
+let rec type_no_named: (Type) -> Bool = (t) -> {
+  match t {
+    CtNamed(_, _) => false,
+    CtForAll(_, _, _) => false,
+    CtTuple(items) => {
+      let mut ok = true
+      let mut i = 0
+      while i < Array::length(items) {
+        if !type_no_named(Array::get(items, i)) {
+          ok = false
+        }
+        i = i + 1
+      }
+      ok
+    },
+    CtArray(e) => type_no_named(e),
+    CtOption(e) => type_no_named(e),
+    CtFn(ps, r, _) => {
+      let mut ok = type_no_named(r)
+      let mut i = 0
+      while i < Array::length(ps) {
+        if !type_no_named(Array::get(ps, i)) {
+          ok = false
+        }
+        i = i + 1
+      }
+      ok
+    },
+    _ => true
+  }
+}
+
 // True when every declared field type of a struct is ground (the struct is not
 // generic). `S::{ ... }` for such a struct can safely be typed `CtStruct(S)`.
 let struct_fields_ground: (Array[(String, Type)]) -> Bool = (dfields) -> {
@@ -316,8 +354,15 @@ export let check_assignable: (Type, Type, Subst, Array[String], String, Int) -> 
       // ground/ground keeps the genuine concrete-type mismatches (Int vs
       // String, struct field of the wrong concrete type) while not
       // over-rejecting polymorphic code.
-      let both_ground = type_is_ground(subst_apply(s, expected)) && type_is_ground(subst_apply(s, actual))
-      if structural || !both_ground {
+      // Report when the EXPECTED type is fully ground and the ACTUAL type
+      // mentions no rigid type parameter (inference variables are fine). A
+      // unify failure under those conditions is genuine: no instantiation of
+      // the actual's variables can satisfy the concrete expected type (this is
+      // what catches `let g: (Int) -> String = (n) -> { n }`). A non-ground
+      // expected, or an actual carrying an un-instantiated generic `CtNamed`,
+      // is still tolerated to avoid over-rejecting polymorphic code.
+      let reportable = type_is_ground(subst_apply(s, expected)) && type_no_named(subst_apply(s, actual))
+      if structural || !reportable {
         s
       } else {
         Array::push(errors, String::concat(what, String::concat(": expected ", String::concat(type_to_string(subst_apply(s, expected)), String::concat(", got ", String::concat(type_to_string(subst_apply(s, actual)), off_marker(off)))))))
