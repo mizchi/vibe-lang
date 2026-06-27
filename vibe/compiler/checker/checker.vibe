@@ -829,7 +829,7 @@ let field_write_mut_check: (String, Array[Expr], TypeEnv, Array[TypeDef], Subst,
         let (obj_ty, _, _) = ce(Array::get(args, 0), env, defs, s, c, throwaway, throwtab)
         match subst_apply(s, obj_ty) {
           CtStruct(sname) => match find_typedef(defs, sname) {
-            Some(TDStruct(_, _, mut_names)) => {
+            Some(TDStruct(_, dfields, mut_names)) => {
               let mut found = false
               let mut i = 0
               while i < Array::length(mut_names) {
@@ -844,6 +844,29 @@ let field_write_mut_check: (String, Array[Expr], TypeEnv, Array[TypeDef], Subst,
                 ()
               } else {
                 Array::push(errors, String::concat("cannot assign to non-`mut` field `", String::concat(field, String::concat("` of struct ", sname))))
+              }
+              // The written value must match the field's declared type
+              // (`p.x = "s"` for `x: Int` was accepted). Ground-gated via
+              // check_assignable so a generic field type is not over-rejected.
+              let mut fty = CtUnknown
+              let mut has_field = false
+              let mut fi = 0
+              while fi < Array::length(dfields) {
+                let (fn2, ft) = Array::get(dfields, fi)
+                if fn2 == field {
+                  fty = ft
+                  has_field = true
+                } else {
+                  ()
+                }
+                fi = fi + 1
+              }
+              if has_field {
+                let (val_ty, _, _) = ce(Array::get(args, 2), env, defs, s, c, throwaway, throwtab)
+                let _ = check_assignable(subst_apply(s, fty), subst_apply(s, val_ty), s, errors, String::concat("type mismatch writing field `", String::concat(field, "`")), 0 - 1)
+                ()
+              } else {
+                ()
               }
             },
             _ => ()

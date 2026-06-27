@@ -1235,6 +1235,14 @@ export let _start: () -> Int = () -> {
   p.x
 }
 EOF
+cat > "$mdir/bad_valty.vibe" <<'EOF'
+struct Cell2 { mut n: Int }
+export let _start: () -> Int = () -> {
+  let c = Cell2::{ n: 0 }
+  c.n = "str"
+  c.n
+}
+EOF
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$mdir/ok_mut.vibe" "$mdir/ok_mut.wasm" _start >/dev/null 2>&1 || true
@@ -1242,12 +1250,14 @@ if [ ! -s "$mdir/ok_mut.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: mut-field write did not compile (over-rejects)" >&2
   cat "$mdir/ok_mut.wasm.diag" 2>/dev/null >&2; exit 1
 fi
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$mdir/bad_nonmut.vibe" "$mdir/bad_nonmut.wasm" _start >/dev/null 2>&1 || true
-if [ -s "$mdir/bad_nonmut.wasm" ]; then
-  echo "[selfhost-only-gate] FAIL: non-mut field write compiled (mut escape check regressed)" >&2; exit 1
-fi
+for bad in bad_nonmut bad_valty; do
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$mdir/$bad.vibe" "$mdir/$bad.wasm" _start >/dev/null 2>&1 || true
+  if [ -s "$mdir/$bad.wasm" ]; then
+    echo "[selfhost-only-gate] FAIL: $bad field write compiled (mut/value-type check regressed)" >&2; exit 1
+  fi
+done
 rm -rf "$mdir"
 echo "[selfhost-only-gate] mut-field write escape analysis ok"
 
