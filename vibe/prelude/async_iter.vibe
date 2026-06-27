@@ -1,0 +1,246 @@
+// The async sibling of `lazy_iter.vibe` (spec docs/spec/wasi-p3-async.md §2.4):
+// a pull-based async iterator expressed on the method-bearing `AsyncIterator`
+// trait, whose `next` yields a `Future[Option[(T, Self)]]` (vs the sync
+// `Iterator`'s plain `Option`). `for await x in s` drives it (`s.next()` is
+// `await`ed each step, #636 unified the `for`/`for await` desugar), and the
+// terminal consumers (`fold` / `collect` / `count` / `find` / `any` / `all`)
+// carry the `Async` effect.
+//
+// On today's synchronous backend `await` / `Future::ready` are the identity
+// (ready-future fast path), so the same code runs eagerly now and lights up
+// unchanged when the real async runtime (M1b-3c, wasmtime 46) lands — the only
+// difference between this and `lazy_iter` is the `{ Async }` effect row, exactly
+// the spec's "Iterator の async 兄弟" intent.
+//
+// Naming: the struct is `AsyncIter`, NOT `Stream` — `Stream[T]` is the builtin
+// eager-Array async type (`CtNamed("Stream")`, codegen-special), and a prelude
+// struct of that name would collide with it.
+
+//# Types
+
+export trait AsyncIterator[T] {
+  next(Self) -> Future[Option[(T, Self)]]
+}
+
+// `pull(state) -> Option[(element, next_state)]`; like `LazyIter` the state is
+// erased to `Int` (uniform tagged representation). The pull itself is
+// synchronous here — the async surface is `next` wrapping the pull result in a
+// ready `Future` — so the lazy combinators below stay pure and re-iterable,
+// just like their `lazy_iter` counterparts.
+export struct AsyncIter[T] {
+  pull: (Int) -> Option[(T, Int)];
+  state: Int
+}
+
+//# Functions
+
+impl AsyncIterator for AsyncIter {
+  next(self) -> Future[Option[(T, AsyncIter)]] {
+    Future::ready(match (self.pull)(self.state) {
+      Some(p) => {
+        let (v, ns) = p
+        Some((v, AsyncIter::{ pull: self.pull, state: ns }))
+      },
+      None => None
+    })
+  }
+}
+
+// Build an async iterator over an Array, threading the cursor as the state.
+export let async_iter_arr = [T](xs: Array[T]) -> AsyncIter[T] {
+  AsyncIter::{ pull: (i) -> Option[(T, Int)] {
+    if i < Array::length(xs) {
+      Some((Array::get(xs, i), i + 1))
+    } else {
+      None
+    }
+  }, state: 0 }
+}
+
+// The empty async iterator (yields `None` immediately). The element type is
+// inferred from the use site (e.g. an annotated binding or a downstream
+// combinator).
+export let async_iter_empty = [T]() -> AsyncIter[T] {
+  AsyncIter::{ pull: (_i) -> Option[(T, Int)] {
+    None
+  }, state: 0 }
+}
+
+// The single-element async iterator.
+export let async_iter_once = [T](x: T) -> AsyncIter[T] {
+  AsyncIter::{ pull: (i) -> Option[(T, Int)] {
+    if i < 1 {
+      Some((x, 1))
+    } else {
+      None
+    }
+  }, state: 0 }
+}
+
+// Lazy `map`: composes a transform onto the iterator (pure / re-iterable; the
+// element type may change `T -> U`).
+export let async_iter_map = [T, U](src: AsyncIter[T], f: (x: T) -> U) -> AsyncIter[U] {
+  AsyncIter::{ pull: (st) -> Option[(U, Int)] {
+    match (src.pull)(st) {
+      Some(p) => {
+        let (v, ns) = p
+        Some((f(v), ns))
+      },
+      None => None
+    }
+  }, state: src.state }
+}
+
+// Lazy `filter`: drops elements for which `pred` is false (pure / re-iterable).
+export let async_iter_filter = [T](src: AsyncIter[T], pred: (x: T) -> Bool) -> AsyncIter[T] {
+  AsyncIter::{ pull: (st) -> Option[(T, Int)] {
+    let mut cur = st
+    let mut result = None
+    let mut go = true
+    while go {
+      match (src.pull)(cur) {
+        Some(p) => {
+          let (v, ns) = p
+          if pred(v) {
+            result = Some((v, ns))
+            go = false
+          } else {
+            cur = ns
+          }
+        },
+        None => {
+          go = false
+        }
+      }
+    }
+    result
+  }, state: src.state }
+}
+
+// Lazy `take`: yields at most the first `n` elements. SINGLE-PASS: the running
+// count lives in a heap cell captured by the `pull` closure (see
+// `lazy_iter_take` for why a value-typed `let mut` capture would not survive the
+// closure copy in `next`).
+export let async_iter_take = [T](src: AsyncIter[T], n: Int) -> AsyncIter[T] {
+  let remaining = [n]
+  AsyncIter::{ pull: (st) -> Option[(T, Int)] {
+    if Array::get(remaining, 0) <= 0 {
+      None
+    } else {
+      match (src.pull)(st) {
+        Some(p) => {
+          let (v, ns) = p
+          Array::set(remaining, 0, Array::get(remaining, 0) - 1)
+          Some((v, ns))
+        },
+        None => None
+      }
+    }
+  }, state: src.state }
+}
+
+// Lazy `take_while`: yields elements while `pred` holds, stopping at the first
+// failure (pure / re-iterable — threads only the source state).
+export let async_iter_take_while = [T](src: AsyncIter[T], pred: (x: T) -> Bool) -> AsyncIter[T] {
+  AsyncIter::{ pull: (st) -> Option[(T, Int)] {
+    match (src.pull)(st) {
+      Some(p) => {
+        let (v, ns) = p
+        if pred(v) {
+          Some((v, ns))
+        } else {
+          None
+        }
+      },
+      None => None
+    }
+  }, state: src.state }
+}
+
+// Async terminal: drains the iterator into an Array, driven by `for await`.
+export let async_iter_collect = [T](src: AsyncIter[T]) -> Array[T] with { Async } {
+  let b = ArrayBuilder::new()
+  for await x in src {
+    ArrayBuilder::push(b, x)
+  }
+  ArrayBuilder::freeze(b)
+}
+
+// Async terminal: classic left-fold, awaiting each element.
+export let async_iter_fold = [T, U](src: AsyncIter[T], init: U, f: (acc: U, x: T) -> U) -> U with { Async } {
+  let mut acc = init
+  for await x in src {
+    acc = f(acc, x)
+  }
+  acc
+}
+
+// Async terminal: counts how many elements the iterator yields.
+export let async_iter_count = [T](src: AsyncIter[T]) -> Int with { Async } {
+  let mut n = 0
+  for await x in src {
+    n = n + 1
+  }
+  n
+}
+
+// Async terminal: the first element satisfying `pred`, or `None`. Drives
+// `await(AsyncIter::next(..))` directly so it short-circuits on the first match
+// rather than draining the whole stream.
+export let async_iter_find = [T](src: AsyncIter[T], pred: (x: T) -> Bool) -> Option[T] with { Async } {
+  let mut cur = src
+  let mut result = None
+  let mut go = true
+  while go {
+    match await(AsyncIter::next(cur)) {
+      Some(p) => {
+        let (v, rest) = p
+        if pred(v) {
+          result = Some(v)
+          go = false
+        } else {
+          cur = rest
+        }
+      },
+      None => {
+        go = false
+      }
+    }
+  }
+  result
+}
+
+// Async terminal: `true` if any element satisfies `pred` (short-circuits).
+export let async_iter_any = [T](src: AsyncIter[T], pred: (x: T) -> Bool) -> Bool with { Async } {
+  match async_iter_find(src, pred) {
+    Some(_) => true,
+    None => false
+  }
+}
+
+// Async terminal: `true` if every element satisfies `pred` (short-circuits on
+// the first counter-example, vacuously `true` for an empty stream). Driven
+// directly rather than via a negated `find` predicate (a closure capturing a
+// closure parameter mis-lowers on the linear backend — see `lazy_iter_all`).
+export let async_iter_all = [T](src: AsyncIter[T], pred: (x: T) -> Bool) -> Bool with { Async } {
+  let mut cur = src
+  let mut ok = true
+  let mut go = true
+  while go {
+    match await(AsyncIter::next(cur)) {
+      Some(p) => {
+        let (v, rest) = p
+        if pred(v) {
+          cur = rest
+        } else {
+          ok = false
+          go = false
+        }
+      },
+      None => {
+        go = false
+      }
+    }
+  }
+  ok
+}

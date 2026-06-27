@@ -41,13 +41,45 @@ let find_ctor_in_defs: (Array[TypeDef], String) -> Option[(String, Array[Type])]
   go_defs(0)
 }
 
-export let rec check_pattern: (Pat, Type, TypeEnv, Array[TypeDef]) -> TypeEnv = (pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[TypeDef]) -> TypeEnv {
+export let rec check_pattern: (Pat, Type, TypeEnv, Array[TypeDef], Array[String]) -> TypeEnv = (pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[TypeDef], errors: Array[String]) -> TypeEnv {
   match pat {
     PWild => env,
     PBind(name) => env_bind(env, name, scrutinee_ty),
-    PInt(_) => env,
-    PString(_) => env,
-    PBool(_) => env,
+    // A literal pattern can only match a scrutinee of its own type. When the
+    // scrutinee resolves to a concrete type that is NOT that literal's type
+    // (`match 5 { "x" => .. }`, or a nested `Some(true)` over `Option[Int]`),
+    // it is a type error. Type variables / unknown / named (generic) scrutinees
+    // are tolerated.
+    PInt(_) => {
+      match scrutinee_ty {
+        CtInt => (),
+        CtVar(_) => (),
+        CtUnknown => (),
+        CtNamed(_, _) => (),
+        _ => Array::push(errors, "integer literal pattern cannot match a non-Int scrutinee")
+      }
+      env
+    },
+    PString(_) => {
+      match scrutinee_ty {
+        CtString => (),
+        CtVar(_) => (),
+        CtUnknown => (),
+        CtNamed(_, _) => (),
+        _ => Array::push(errors, "string literal pattern cannot match a non-String scrutinee")
+      }
+      env
+    },
+    PBool(_) => {
+      match scrutinee_ty {
+        CtBool => (),
+        CtVar(_) => (),
+        CtUnknown => (),
+        CtNamed(_, _) => (),
+        _ => Array::push(errors, "boolean literal pattern cannot match a non-Bool scrutinee")
+      }
+      env
+    },
     PCtor(name, sub_pats) => {
       let builtin_payload = match scrutinee_ty {
         CtOption(elem) => if name == "Some" {
@@ -92,6 +124,39 @@ export let rec check_pattern: (Pat, Type, TypeEnv, Array[TypeDef]) -> TypeEnv = 
           }
           let splen = Array::length(sub_pats)
           let ptlen = Array::length(payload_types)
+          // A constructor pattern can only match a value whose type is the
+          // corresponding enum (or builtin Option). A concrete NON-enum type —
+          // a scalar (`match 5 { Red => .. }`), a function (`match N { N(a) =>
+          // .. }` where the bare ctor `N` is the `(Int) -> E` partial
+          // application), an Array or a Tuple — can never be that enum.
+          // Type vars / unknown / named / enum / option scrutinees are tolerated.
+          let non_enum_scrutinee = match scrutinee_ty {
+            CtInt => true,
+            CtDouble => true,
+            CtBool => true,
+            CtString => true,
+            CtChar => true,
+            CtUnit => true,
+            CtBytes => true,
+            CtFn(_, _, _) => true,
+            CtArray(_) => true,
+            CtTuple(_) => true,
+            _ => false
+          }
+          if non_enum_scrutinee {
+            Array::push(errors, String::concat("constructor pattern `", String::concat(name, String::concat("` (of ", String::concat(enum_name, ") cannot match this scrutinee type")))))
+          } else {
+            ()
+          }
+          // The pattern must bind exactly the variant's payload arity —
+          // `Pair(a)` for `Pair(Int, Int)` binds a garbage/oob 2nd field, and
+          // binding MORE than exists is likewise wrong. Skip the builtin
+          // `Option` (its `None` carries a synthetic 1-element payload).
+          if enum_name != "Option" && splen != ptlen {
+            Array::push(errors, String::concat("constructor pattern `", String::concat(name, String::concat("` expects ", String::concat(__to_string(ptlen), String::concat(" field(s) but binds ", __to_string(splen)))))))
+          } else {
+            ()
+          }
           let rec bind_subs: (Int, TypeEnv) -> TypeEnv = (i, acc_env) -> {
             if i >= splen {
               acc_env
@@ -101,7 +166,7 @@ export let rec check_pattern: (Pat, Type, TypeEnv, Array[TypeDef]) -> TypeEnv = 
               } else {
                 CtUnknown
               }
-              let next_env = check_pattern(Array::get(sub_pats, i), sub_ty, acc_env, defs)
+              let next_env = check_pattern(Array::get(sub_pats, i), sub_ty, acc_env, defs, errors)
               bind_subs(i + 1, next_env)
             }
           }
@@ -113,7 +178,7 @@ export let rec check_pattern: (Pat, Type, TypeEnv, Array[TypeDef]) -> TypeEnv = 
             if i >= splen {
               acc_env
             } else {
-              let next_env = check_pattern(Array::get(sub_pats, i), CtUnknown, acc_env, defs)
+              let next_env = check_pattern(Array::get(sub_pats, i), CtUnknown, acc_env, defs, errors)
               bind_unknown(i + 1, next_env)
             }
           }
@@ -126,6 +191,15 @@ export let rec check_pattern: (Pat, Type, TypeEnv, Array[TypeDef]) -> TypeEnv = 
       match scrutinee_ty {
         CtTuple(elem_tys) => {
           let elen = Array::length(elem_tys)
+          // A tuple pattern must bind exactly the scrutinee tuple's arity —
+          // `let (a, b, c) = (1, 2)` was accepted and would read past the
+          // tuple (binding `c` to garbage). Tuples have a fixed, fully known
+          // arity, so this is always a real error.
+          if plen != elen {
+            Array::push(errors, String::concat("tuple pattern binds ", String::concat(__to_string(plen), String::concat(" elements but the value is a ", String::concat(__to_string(elen), "-tuple")))))
+          } else {
+            ()
+          }
           let rec bind_tuple: (Int, TypeEnv) -> TypeEnv = (i, acc_env) -> {
             if i >= plen {
               acc_env
@@ -135,18 +209,44 @@ export let rec check_pattern: (Pat, Type, TypeEnv, Array[TypeDef]) -> TypeEnv = 
               } else {
                 CtUnknown
               }
-              let next_env = check_pattern(Array::get(pats, i), et, acc_env, defs)
+              let next_env = check_pattern(Array::get(pats, i), et, acc_env, defs, errors)
               bind_tuple(i + 1, next_env)
             }
           }
           bind_tuple(0, env)
         },
         _ => {
+          // A tuple pattern can only match a tuple value. `let (a, b) = 5`
+          // (desugared to `match 5 { (a, b) => .. }`) was accepted and bound
+          // `a`/`b` to garbage. When the scrutinee resolves to a concrete
+          // NON-tuple type (a scalar, array, option, fn, struct, enum), this is
+          // a real error. Type vars / unknown / named (generic) scrutinees stay
+          // tolerated.
+          let concrete_non_tuple = match scrutinee_ty {
+            CtInt => true,
+            CtDouble => true,
+            CtBool => true,
+            CtString => true,
+            CtChar => true,
+            CtUnit => true,
+            CtBytes => true,
+            CtArray(_) => true,
+            CtOption(_) => true,
+            CtFn(_, _, _) => true,
+            CtStruct(_) => true,
+            CtEnum(_) => true,
+            _ => false
+          }
+          if concrete_non_tuple {
+            Array::push(errors, String::concat("tuple pattern binds ", String::concat(__to_string(plen), " elements but the value is not a tuple")))
+          } else {
+            ()
+          }
           let rec bind_unk: (Int, TypeEnv) -> TypeEnv = (i, acc_env) -> {
             if i >= plen {
               acc_env
             } else {
-              let next_env = check_pattern(Array::get(pats, i), CtUnknown, acc_env, defs)
+              let next_env = check_pattern(Array::get(pats, i), CtUnknown, acc_env, defs, errors)
               bind_unk(i + 1, next_env)
             }
           }
@@ -154,7 +254,7 @@ export let rec check_pattern: (Pat, Type, TypeEnv, Array[TypeDef]) -> TypeEnv = 
         }
       }
     },
-    POr(left, _right) => check_pattern(left, scrutinee_ty, env, defs),
+    POr(left, _right) => check_pattern(left, scrutinee_ty, env, defs, errors),
     PStruct(_, fields) => {
       let flen = Array::length(fields)
       let rec bind_fields: (Int, TypeEnv) -> TypeEnv = (i, acc_env) -> {
@@ -162,7 +262,7 @@ export let rec check_pattern: (Pat, Type, TypeEnv, Array[TypeDef]) -> TypeEnv = 
           acc_env
         } else {
           let (_, fpat) = Array::get(fields, i)
-          let next_env = check_pattern(fpat, CtUnknown, acc_env, defs)
+          let next_env = check_pattern(fpat, CtUnknown, acc_env, defs, errors)
           bind_fields(i + 1, next_env)
         }
       }

@@ -34,6 +34,90 @@ import ./compile_match.vibe {
 
 //# Functions
 
+// #665: bind a multi-operation handler arm's payload from a temp local holding
+// the thrown value (instead of the operand stack), so each arm in the dispatch
+// chain rebinds the same payload per its own pattern. Mirrors the single-arm
+// binding but loads from `raw_l`.
+let t6_bind_from_raw: (Bytes, Pat, Int, CompileCtx, Array[String]) -> Unit with { Error } = (buf, arm_pat, raw_l, ctx, local_names) -> {
+  if is_pctor(arm_pat) {
+    let cargs = get_pctor_args(arm_pat)
+    let decl_arity = effect_op_declared_arity(ctx.effect_op_keys, ctx.effect_op_arities, get_pctor_name(arm_pat))
+    if decl_arity > 1 {
+      let ncargs = Array::length(cargs)
+      let mut ci = 0
+      while ci < decl_arity {
+        if ci < ncargs {
+          let cp = Array::get(cargs, ci)
+          if is_pbind(cp) {
+            let pname = get_pbind_name(cp)
+            let fl = Array::length(local_names)
+            emit_local_get(buf, raw_l)
+            if ctx.enable_rc {
+              emit_i64_const(buf, -2)
+              emit_i64_and(buf)
+            } else {
+              ()
+            }
+            emit_i32_wrap_i64(buf)
+            emit_i64_load(buf, 3, if ctx.enable_rc {
+              8 + ci * 8
+            } else {
+              ci * 8
+            })
+            emit_local_set(buf, fl)
+            Array::push(local_names, pname)
+            if ctx.enable_rc {
+              t6_emit_rc_dup_guarded(buf, fl)
+            } else {
+              ()
+            }
+          } else if is_pwild(cp) {
+            ()
+          } else {
+            throw("handle: only simple bindings or '_' are supported in multi-argument effect op patterns (see #548)")
+          }
+        } else {
+          ()
+        }
+        ci = ci + 1
+      }
+      if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
+        emit_local_get(buf, raw_l)
+        emit_call(buf, ctx.rc_drop_func_idx)
+      } else {
+        ()
+      }
+    } else if Array::length(cargs) > 0 && is_pbind(Array::get(cargs, 0)) {
+      let pname = get_pbind_name(Array::get(cargs, 0))
+      let bl = Array::length(local_names)
+      emit_local_get(buf, raw_l)
+      emit_local_set(buf, bl)
+      Array::push(local_names, pname)
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+}
+
+// #665: count the operations declared by `eff_name` in the global op-key table.
+let t6_effect_op_count: (Array[String], String) -> Int = (op_keys, eff_name) -> {
+  let mut c = 0
+  let mut i = 0
+  while i < Array::length(op_keys) {
+    let k = Array::get(op_keys, i)
+    let sep = String::index_of(k, "::")
+    if sep > 0 && k[0:sep] == eff_name {
+      c = c + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  c
+}
+
 let t6_emit_rc_dup_guarded: (Bytes, Int) -> Unit = (buf, local_idx) -> {
   emit_local_get(buf, local_idx)
   emit_i64_const(buf, 1)
@@ -69,6 +153,26 @@ export let compile_expr_tail6: (Bytes, Expr, Array[(Pat, Expr)], Array[String], 
   if Array::length(arms) > 0 {
     let (catch_pat, fallback_expr) = Array::get(arms, 0)
     let is_error = is_pctor(catch_pat) && get_pctor_name(catch_pat) == "Error::Throw"
+    // #665: a handler over a MULTI-operation effect must dispatch the performed
+    // operation (g_op_index) to the matching arm. Single-operation effects and
+    // `Error` keep the original single-arm path unchanged.
+    let handled_eff = if is_pctor(catch_pat) {
+      let op_full = get_pctor_name(catch_pat)
+      let sep = String::index_of(op_full, "::")
+      if sep > 0 {
+        op_full[0:sep]
+      } else {
+        ""
+      }
+    } else {
+      ""
+    }
+    let needs_op_dispatch = !is_error && String::length(handled_eff) > 0 && t6_effect_op_count(ctx.effect_op_keys, handled_eff) > 1
+    let g_op_idx_global = if ctx.enable_rc {
+      6
+    } else {
+      5
+    }
     let catch_tag = if is_error {
       2
     } else if is_pctor(catch_pat) {
@@ -121,7 +225,11 @@ export let compile_expr_tail6: (Bytes, Expr, Array[(Pat, Expr)], Array[String], 
     emit_end(buf)
     emit_br(buf, 2)
     emit_end(buf)
-    if is_pctor(catch_pat) {
+    let raw_l = Array::length(local_names)
+    if needs_op_dispatch {
+      emit_local_set(buf, raw_l)
+      Array::push(local_names, "__eff_raw")
+    } else if is_pctor(catch_pat) {
       let cargs = get_pctor_args(catch_pat)
       let decl_arity = effect_op_declared_arity(ctx.effect_op_keys, ctx.effect_op_arities, get_pctor_name(catch_pat))
       if decl_arity > 1 {
@@ -204,7 +312,43 @@ export let compile_expr_tail6: (Bytes, Expr, Array[(Pat, Expr)], Array[String], 
     bytebuf_push(buf, 0)
     bytebuf_push(buf, 1)
     bytebuf_push(buf, 0)
-    let nl2 = compile_expr(buf, fallback_expr, local_names, Array::length(local_names), ctx, ld)
+    let nl2 = if needs_op_dispatch {
+      // #665: dispatch the unwinding operation (g_op_index) to the matching arm.
+      // No truncation of local_names between arms (avoids reusing wasm-local
+      // indices that a sibling/earlier handler's arm bodies leave live).
+      let mut max_nl = Array::length(local_names)
+      let mut di = 0
+      while di < Array::length(arms) {
+        let (apat, abody) = Array::get(arms, di)
+        let aop = if is_pctor(apat) {
+          effect_op_index(ctx.effect_op_keys, get_pctor_name(apat))
+        } else {
+          0 - 1
+        }
+        emit_global_get(buf, g_op_idx_global)
+        emit_i64_const(buf, aop)
+        emit_i64_eq(buf)
+        emit_if_i64(buf)
+        t6_bind_from_raw(buf, apat, raw_l, ctx, local_names)
+        let anl = compile_expr(buf, abody, local_names, Array::length(local_names), ctx, ld)
+        if anl > max_nl {
+          max_nl = anl
+        } else {
+          ()
+        }
+        emit_else(buf)
+        di = di + 1
+      }
+      bytebuf_push(buf, 0)
+      let mut ce = 0
+      while ce < Array::length(arms) {
+        emit_end(buf)
+        ce = ce + 1
+      }
+      max_nl
+    } else {
+      compile_expr(buf, fallback_expr, local_names, Array::length(local_names), ctx, ld)
+    }
     emit_end(buf)
     emit_br(buf, 2)
     emit_end(buf)

@@ -1,7 +1,15 @@
 //# Imports
 
 import ./lazy_iter.vibe {
-  lazy_iter_arr, lazy_iter_collect, lazy_iter_count, lazy_iter_filter, lazy_iter_fold, lazy_iter_map
+  lazy_iter_all, lazy_iter_any, lazy_iter_arr, lazy_iter_collect, lazy_iter_count, lazy_iter_drop, lazy_iter_enumerate, lazy_iter_filter, lazy_iter_find, lazy_iter_flat_map, lazy_iter_fold, lazy_iter_map, lazy_iter_take, lazy_iter_take_while, lazy_iter_zip
+}
+
+let li_sum = (xs: Array[Int]) -> Int {
+  let mut s = 0
+  for v in xs {
+    s = s + v
+  }
+  s
 }
 
 //# Misc
@@ -59,4 +67,119 @@ test "lazy_iter: empty source yields empty Array via collect" {
   let arr : Array[Int] = []
   let out = lazy_iter_arr(arr) |> lazy_iter_collect
   assert(Array::length(out) == 0)
+}
+
+// Trait-iterator element-type inference: `for x in <LazyIter[Int]>` binds `x`
+// to the iterator's element type (`Int`), recovered from the iterable's type
+// `LazyIter[Int]` even though the `impl Iterator for LazyIter` lives in the
+// imported `lazy_iter.vibe`. So the loop body can use `x` directly in element
+// arithmetic (`acc + x`) instead of routing it through a closure to dodge the
+// previous `CtUnknown` element type.
+let lazy_iter_sum_direct = (src: LazyIter[Int]) -> Int {
+  let mut total = 0
+  for x in src {
+    total = total + x
+  }
+  total
+}
+
+test "lazy_iter: for-in over imported LazyIter binds the element type" {
+  assert(lazy_iter_sum_direct(lazy_iter_arr([1, 2, 3, 4, 5])) == 15)
+}
+
+test "lazy_iter: take yields at most n elements" {
+  assert(li_sum(lazy_iter_arr([10, 20, 30, 40]) |> lazy_iter_take(2) |> lazy_iter_collect) == 30)
+  // take more than available is clamped to what the source yields
+  assert(li_sum(lazy_iter_arr([1, 2]) |> lazy_iter_take(9) |> lazy_iter_collect) == 3)
+  // take(0) yields nothing
+  assert((lazy_iter_arr([1, 2, 3]) |> lazy_iter_take(0) |> lazy_iter_count) == 0)
+}
+
+test "lazy_iter: drop skips the first n elements" {
+  assert(li_sum(lazy_iter_arr([10, 20, 30, 40]) |> lazy_iter_drop(2) |> lazy_iter_collect) == 70)
+  // drop more than available yields empty
+  assert((lazy_iter_arr([1, 2]) |> lazy_iter_drop(9) |> lazy_iter_count) == 0)
+}
+
+test "lazy_iter: take and drop compose" {
+  // 1..6 drop 1 -> 2..6, take 3 -> [2,3,4] sum 9
+  let total = lazy_iter_arr([1, 2, 3, 4, 5, 6])
+    |> lazy_iter_drop(1)
+    |> lazy_iter_take(3)
+    |> lazy_iter_fold(0, (acc: Int, x: Int) -> Int { acc + x })
+  assert(total == 9)
+}
+
+test "lazy_iter: take_while yields up to the first failing element" {
+  assert(li_sum(lazy_iter_arr([1, 2, 3, 4, 1]) |> lazy_iter_take_while((x: Int) -> Bool { x < 4 }) |> lazy_iter_collect) == 6)
+  // false on the first element yields nothing
+  assert((lazy_iter_arr([5, 1, 2]) |> lazy_iter_take_while((x: Int) -> Bool { x < 4 }) |> lazy_iter_count) == 0)
+}
+
+test "lazy_iter: enumerate pairs elements with their index" {
+  let pairs = lazy_iter_arr([5, 6, 7]) |> lazy_iter_enumerate |> lazy_iter_collect
+  assert(Array::length(pairs) == 3)
+  let mut isum = 0
+  let mut vsum = 0
+  for pair in pairs {
+    let (i, v) = pair
+    isum = isum + i
+    vsum = vsum + v
+  }
+  assert(isum == 3)
+  assert(vsum == 18)
+}
+
+test "lazy_iter: zip pairs positionally and stops at the shorter source" {
+  let pairs = lazy_iter_zip(lazy_iter_arr([1, 2, 3]), lazy_iter_arr([10, 20])) |> lazy_iter_collect
+  assert(Array::length(pairs) == 2)
+  let mut asum = 0
+  let mut bsum = 0
+  for pair in pairs {
+    let (a, b) = pair
+    asum = asum + a
+    bsum = bsum + b
+  }
+  assert(asum == 3)
+  assert(bsum == 30)
+}
+
+test "lazy_iter: flat_map concatenates per-element arrays" {
+  // each x -> [x, x*10] : [1,10,2,20,3,30] sum 66
+  assert(li_sum(lazy_iter_arr([1, 2, 3]) |> lazy_iter_flat_map((x: Int) -> Array[Int] { [x, x * 10] }) |> lazy_iter_collect) == 66)
+  // empty sub-arrays are skipped
+  assert(li_sum(lazy_iter_arr([1, 2, 3, 4]) |> lazy_iter_flat_map((x: Int) -> Array[Int] { if x % 2 == 0 { [x] } else { [] } }) |> lazy_iter_collect) == 6)
+}
+
+test "lazy_iter: find returns the first match and short-circuits" {
+  match lazy_iter_arr([1, 3, 5, 4, 7]) |> lazy_iter_find((x: Int) -> Bool { x % 2 == 0 }) {
+    Some(v) => assert(v == 4),
+    None => assert(false)
+  }
+  match lazy_iter_arr([1, 3, 5]) |> lazy_iter_find((x: Int) -> Bool { x % 2 == 0 }) {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+}
+
+test "lazy_iter: any and all" {
+  assert(lazy_iter_arr([1, 2, 3]) |> lazy_iter_any((x: Int) -> Bool { x == 2 }))
+  assert(not(lazy_iter_arr([1, 2, 3]) |> lazy_iter_any((x: Int) -> Bool { x == 9 })))
+  assert(lazy_iter_arr([2, 3, 4]) |> lazy_iter_all((x: Int) -> Bool { x > 1 }))
+  assert(not(lazy_iter_arr([1, 2, 3]) |> lazy_iter_all((x: Int) -> Bool { x > 1 })))
+  // `all` is vacuously true on an empty source
+  let empty : Array[Int] = []
+  assert(lazy_iter_arr(empty) |> lazy_iter_all((x: Int) -> Bool { x > 1 }))
+}
+
+test "lazy_iter: terminal and lazy combinators chain end to end" {
+  // 1..10: keep evens -> [2,4,6,8,10], map *3 -> [6,12,18,24,30], drop 1 ->
+  // [12,18,24,30], take 2 -> [12,18], sum 30.
+  let total = lazy_iter_arr([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+    |> lazy_iter_filter((x: Int) -> Bool { x % 2 == 0 })
+    |> lazy_iter_map((x: Int) -> Int { x * 3 })
+    |> lazy_iter_drop(1)
+    |> lazy_iter_take(2)
+    |> lazy_iter_fold(0, (acc: Int, x: Int) -> Int { acc + x })
+  assert(total == 30)
 }

@@ -253,3 +253,78 @@ test "generalize with bounds" {
     _ => assert(false)
   }
 }
+
+// #626 criterion 4: effect variables actually unify to their binding, instead
+// of being an unconditional wildcard.
+
+test "unify binds an effect variable to a concrete effect" {
+  let fa = CtFn([
+    CtInt
+  ], CtInt, Some("e"))
+  let fb = CtFn([
+    CtInt
+  ], CtInt, Some("Stdout"))
+  // First: `e` unifies with Stdout -> succeeds, recording e := Stdout.
+  match unify(fa, fb, SubstEmpty) {
+    Some(s) => {
+      // Second: with e now bound to Stdout, unifying the same `e`-typed fn with
+      // a Stdin variant must FAIL (a wildcard would wrongly accept it).
+      let fc = CtFn([
+        CtInt
+      ], CtInt, Some("Stdin"))
+      match unify(fa, fc, s) {
+        Some(_) => assert(false),
+        None => assert(true)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "unify resolves a bound effect variable in subst_apply" {
+  let fa = CtFn([
+    CtInt
+  ], CtInt, Some("e"))
+  let fb = CtFn([
+    CtInt
+  ], CtInt, Some("Fs"))
+  match unify(fa, fb, SubstEmpty) {
+    Some(s) => {
+      // subst_apply must rewrite the `e` annotation to its binding (Fs).
+      match subst_apply(s, fa) {
+        CtFn(_, _, eff) => match eff {
+          Some(name) => assert(name == "Fs"),
+          None => assert(false)
+        },
+        _ => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "unify of two conflicting concrete effects fails" {
+  let fa = CtFn([
+    CtInt
+  ], CtInt, Some("Fs"))
+  let fb = CtFn([
+    CtInt
+  ], CtInt, Some("Stdout"))
+  match unify(fa, fb, SubstEmpty) {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+}
+
+test "unify of reordered effect sets succeeds" {
+  let fa = CtFn([
+    CtInt
+  ], CtInt, Some("Stdout, Stdin"))
+  let fb = CtFn([
+    CtInt
+  ], CtInt, Some("Stdin, Stdout"))
+  match unify(fa, fb, SubstEmpty) {
+    Some(_) => assert(true),
+    None => assert(false)
+  }
+}
