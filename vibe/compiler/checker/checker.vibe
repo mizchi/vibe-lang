@@ -1310,6 +1310,31 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
           _ => CtUnknown
         }
         (tab_call_ty(tytab, call_off, result), s2, c2)
+      } else if name == "Array::push" && Array::length(args) == 2 {
+        // `Array::push(a, v)` requires `v` to match `a`'s element type — pushing
+        // a String into an `Array[Int]` was accepted (direct_call_return only
+        // checks arg-0 head). Check the value against a concrete element type;
+        // generic / var element types stay tolerant (check_assignable is ground-
+        // gated).
+        let (obj_ty, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+        let (val_ty, s2, c2) = check_expr(Array::get(args, 1), env, defs, s1, c1, errors, tytab)
+        let s3 = match subst_apply(s2, obj_ty) {
+          CtArray(elem) => check_assignable(subst_apply(s2, elem), subst_apply(s2, val_ty), s2, errors, "Array::push value type mismatch", 0 - 1),
+          _ => s2
+        }
+        (tab_call_ty(tytab, call_off, CtUnit), s3, c2)
+      } else if name == "Array::get" && Array::length(args) == 2 {
+        // `Array::get(a, i)` returns the element type, but `direct_call_return`
+        // types it CtUnknown — `let s: String = Array::get(intArr, 0)` slipped
+        // through. Refine the result to the element type from a concrete
+        // `CtArray(elem)` receiver (var / generic receivers stay CtUnknown).
+        let (obj_ty, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+        let (_, s2, c2) = check_expr(Array::get(args, 1), env, defs, s1, c1, errors, tytab)
+        let result = match subst_apply(s2, obj_ty) {
+          CtArray(elem) => elem,
+          _ => CtUnknown
+        }
+        (tab_call_ty(tytab, call_off, result), s2, c2)
       } else {
         match direct_call_return(env, name) {
           Some(ret_ty) => {
