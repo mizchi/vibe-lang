@@ -350,8 +350,11 @@ let raw_ident_body: (String) -> String = (text) -> {
 let lx_string: (LX) -> LTok = (lx) -> {
   let start = lx.pos
   lx.pos = lx.pos + 1
-  let mut buf = ""
-  let mut raw = ""
+  // O(N) build via StringBuilder; the previous `buf/raw = String::concat(...)`
+  // per char was O(L²) over the literal length (issue #366). Both are written
+  // only in this loop and read once at the final LTok below.
+  let buf = StringBuilder::new()
+  let raw = StringBuilder::new()
   let mut has_interp = false
   let mut bad_escape = false
   let mut going = true
@@ -366,8 +369,8 @@ let lx_string: (LX) -> LTok = (lx) -> {
         has_interp = true
         let open_char = n
         let close_char = if open_char == '(' { ')' } else { '}' }
-        raw = String::concat(raw, "\\")
-        raw = String::concat(raw, String::from_char_code(open_char))
+        StringBuilder::push(raw, "\\")
+        StringBuilder::push(raw, String::from_char_code(open_char))
         lx.pos = lx.pos + 1
         let mut depth = 1
         let mut inner = true
@@ -378,17 +381,17 @@ let lx_string: (LX) -> LTok = (lx) -> {
           } else if ic == open_char {
             lx.pos = lx.pos + 1
             depth = depth + 1
-            raw = String::concat(raw, String::from_char_code(ic))
+            StringBuilder::push(raw, String::from_char_code(ic))
           } else if ic == close_char {
             lx.pos = lx.pos + 1
             depth = depth - 1
-            raw = String::concat(raw, String::from_char_code(ic))
+            StringBuilder::push(raw, String::from_char_code(ic))
             if depth == 0 {
               inner = false
             }
           } else {
             lx.pos = lx.pos + 1
-            raw = String::concat(raw, String::from_char_code(ic))
+            StringBuilder::push(raw, String::from_char_code(ic))
           }
         }
       } else {
@@ -398,45 +401,45 @@ let lx_string: (LX) -> LTok = (lx) -> {
         } else {
           lx.pos = lx.pos + 1
           if e == '"' {
-            buf = String::concat(buf, "\"")
-            raw = String::concat(raw, "\\\"")
+            StringBuilder::push(buf, "\"")
+            StringBuilder::push(raw, "\\\"")
           } else if e == '\\' {
-            buf = String::concat(buf, "\\")
-            raw = String::concat(raw, "\\\\")
+            StringBuilder::push(buf, "\\")
+            StringBuilder::push(raw, "\\\\")
           } else if e == 'n' {
-            buf = String::concat(buf, "\n")
-            raw = String::concat(raw, "\\n")
+            StringBuilder::push(buf, "\n")
+            StringBuilder::push(raw, "\\n")
           } else if e == 't' {
-            buf = String::concat(buf, "\t")
-            raw = String::concat(raw, "\\t")
+            StringBuilder::push(buf, "\t")
+            StringBuilder::push(raw, "\\t")
           } else if e == 'r' {
-            buf = String::concat(buf, "\r")
-            raw = String::concat(raw, "\\r")
+            StringBuilder::push(buf, "\r")
+            StringBuilder::push(raw, "\\r")
           } else {
             bad_escape = true
-            buf = String::concat(buf, String::from_char_code(e))
-            raw = String::concat(raw, String::concat("\\", String::from_char_code(e)))
+            StringBuilder::push(buf, String::from_char_code(e))
+            StringBuilder::push(raw, String::concat("\\", String::from_char_code(e)))
           }
         }
       }
     } else {
       lx.pos = lx.pos + 1
-      buf = String::concat(buf, String::from_char_code(c))
-      raw = String::concat(raw, String::from_char_code(c))
+      StringBuilder::push(buf, String::from_char_code(c))
+      StringBuilder::push(raw, String::from_char_code(c))
     }
   }
   if lx_peek(lx) == '"' {
     lx.pos = lx.pos + 1
     if bad_escape {
-      LTok::{ kind: k_error, text: buf }
+      LTok::{ kind: k_error, text: StringBuilder::freeze(buf) }
     } else if has_interp {
-      LTok::{ kind: k_string_interp, text: raw }
+      LTok::{ kind: k_string_interp, text: StringBuilder::freeze(raw) }
     } else {
-      LTok::{ kind: k_string, text: buf }
+      LTok::{ kind: k_string, text: StringBuilder::freeze(buf) }
     }
   } else {
     let _ = start
-    LTok::{ kind: k_error, text: buf }
+    LTok::{ kind: k_error, text: StringBuilder::freeze(buf) }
   }
 }
 
@@ -444,7 +447,9 @@ let lx_string: (LX) -> LTok = (lx) -> {
 let lx_raw_string: (LX) -> LTok = (lx) -> {
   lx.pos = lx.pos + 1
   lx.pos = lx.pos + 1
-  let mut buf = ""
+  // O(N) build via StringBuilder; the previous `buf = String::concat(buf, c)`
+  // per char was O(N²) over the raw-string length (issue #366).
+  let buf = StringBuilder::new()
   let mut going = true
   while going {
     let c = lx_peek(lx)
@@ -452,14 +457,14 @@ let lx_raw_string: (LX) -> LTok = (lx) -> {
       going = false
     } else {
       lx.pos = lx.pos + 1
-      buf = String::concat(buf, String::from_char_code(c))
+      StringBuilder::push(buf, String::from_char_code(c))
     }
   }
   if lx_peek(lx) == '"' {
     lx.pos = lx.pos + 1
-    LTok::{ kind: k_string, text: buf }
+    LTok::{ kind: k_string, text: StringBuilder::freeze(buf) }
   } else {
-    LTok::{ kind: k_error, text: buf }
+    LTok::{ kind: k_error, text: StringBuilder::freeze(buf) }
   }
 }
 
@@ -519,12 +524,14 @@ let lx_char: (LX) -> LTok = (lx) -> {
 
 // Lex a #| multiline string starting at the already-detected '#'.
 let lx_multiline_string: (LX) -> LTok = (lx) -> {
-  let mut buf = ""
+  // O(N) build via StringBuilder; the per-char `line` and per-line `buf` builds
+  // via String::concat were each O(N²) over their length (issue #366).
+  let buf = StringBuilder::new()
   let mut first_line = true
   let mut running = true
   while running {
     lx.pos = lx.pos + 1
-    let mut line = ""
+    let line = StringBuilder::new()
     let mut inner = true
     while inner {
       let c = lx_peek(lx)
@@ -532,14 +539,14 @@ let lx_multiline_string: (LX) -> LTok = (lx) -> {
         inner = false
       } else {
         lx.pos = lx.pos + 1
-        line = String::concat(line, String::from_char_code(c))
+        StringBuilder::push(line, String::from_char_code(c))
       }
     }
     if !first_line {
-      buf = String::concat(buf, "\n")
+      StringBuilder::push(buf, "\n")
     }
     first_line = false
-    buf = String::concat(buf, line)
+    StringBuilder::push(buf, StringBuilder::freeze(line))
     if lx_peek(lx) == '\n' {
       lx.pos = lx.pos + 1
       let saved = lx.pos
@@ -568,7 +575,7 @@ let lx_multiline_string: (LX) -> LTok = (lx) -> {
       running = false
     }
   }
-  LTok::{ kind: k_string, text: buf }
+  LTok::{ kind: k_string, text: StringBuilder::freeze(buf) }
 }
 
 let lx_next: (LX) -> LTok = (lx) -> {
@@ -1006,14 +1013,18 @@ let write_escaped_char: (Int, Bool) -> String = (c, for_char) -> {
 }
 
 let quote_string_literal: (String) -> String = (text) -> {
-  let mut out = "\""
+  // O(N) build via StringBuilder; per-char String::concat was O(L²) over the
+  // string-literal length, paid when re-emitting every literal (issue #366).
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "\"")
   let n = String::length(text)
   let mut i = 0
   while i < n {
-    out = String::concat(out, write_escaped_char(String::char_code_at(text, i), false))
+    StringBuilder::push(out, write_escaped_char(String::char_code_at(text, i), false))
     i = i + 1
   }
-  String::concat(out, "\"")
+  StringBuilder::push(out, "\"")
+  StringBuilder::freeze(out)
 }
 
 let quote_char_literal: (String) -> String = (text) -> {

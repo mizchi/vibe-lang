@@ -54,13 +54,14 @@ let read_uleb128 = (buf: Bytes, offset: Int) -> (Int, Int) {
 
 export let read_name = (bytes: Bytes, offset: Int) -> (String, Int) {
   let (name_len, pos) = read_uleb128(bytes, offset)
-  let mut s = ""
+  // O(N) build via StringBuilder; per-char String::concat was O(L²) (issue #366).
+  let s = StringBuilder::new()
   let mut i = 0
   while i < name_len {
-    s = String::concat(s, String::from_char_code(bytes[pos + i]))
+    StringBuilder::push(s, String::from_char_code(bytes[pos + i]))
     i = i + 1
   }
-  (s, pos + name_len)
+  (StringBuilder::freeze(s), pos + name_len)
 }
 
 export let parse_start = (bytes: Bytes, offset: Int, size: Int) -> Int {
@@ -373,18 +374,18 @@ export let valtype_name = (vt: Int) -> String {
 }
 
 let valtypes_str = (types: Array[Int]) -> String {
-  let mut s = ""
+  let s = StringBuilder::new()
   let mut i = 0
   while i < Array::length(types) {
     if i > 0 {
-      s = String::concat(s, " ")
+      StringBuilder::push(s, " ")
     } else {
       ()
     }
-    s = String::concat(s, valtype_name(Array::get(types, i)))
+    StringBuilder::push(s, valtype_name(Array::get(types, i)))
     i = i + 1
   }
-  s
+  StringBuilder::freeze(s)
 }
 
 let int_to_string = (n: Int) -> String {
@@ -1122,21 +1123,24 @@ export let module_summary = (bytes: Bytes) -> String {
     "invalid WASM binary"
   }
   else {
-    let mut out = String::concat("wasm version ", int_to_string(read_version(bytes)))
-    out = String::concat(out, String::concat(", size ", String::concat(int_to_string(Bytes::length(bytes)), " bytes\n")))
+    // O(N) build via StringBuilder; the `StringBuilder::push(out, ...)` dump
+    // loops over types/imports/funcs were O(N²) over the module size (issue #366).
+    let out = StringBuilder::new()
+    StringBuilder::push(out, String::concat("wasm version ", int_to_string(read_version(bytes))))
+    StringBuilder::push(out, String::concat(", size ", String::concat(int_to_string(Bytes::length(bytes)), " bytes\n")))
     let types = module_types(bytes)
-    out = String::concat(out, String::concat("types: ", String::concat(int_to_string(Array::length(types)), "\n")))
+    StringBuilder::push(out, String::concat("types: ", String::concat(int_to_string(Array::length(types)), "\n")))
     let mut ti = 0
     while ti < Array::length(types) {
       let (params, results) = Array::get(types, ti)
-      out = String::concat(out, String::concat("  [", String::concat(int_to_string(ti), "] (")))
-      out = String::concat(out, String::concat(valtypes_str(params), ") -> ("))
-      out = String::concat(out, String::concat(valtypes_str(results), ")\n"))
+      StringBuilder::push(out, String::concat("  [", String::concat(int_to_string(ti), "] (")))
+      StringBuilder::push(out, String::concat(valtypes_str(params), ") -> ("))
+      StringBuilder::push(out, String::concat(valtypes_str(results), ")\n"))
       ti = ti + 1
     }
     let imports = module_imports(bytes)
     if Array::length(imports) > 0 {
-      out = String::concat(out, String::concat("imports: ", String::concat(int_to_string(Array::length(imports)), "\n")))
+      StringBuilder::push(out, String::concat("imports: ", String::concat(int_to_string(Array::length(imports)), "\n")))
       let mut ii = 0
       while ii < Array::length(imports) {
         let (m, f, k, idx) = Array::get(imports, ii)
@@ -1149,32 +1153,32 @@ export let module_summary = (bytes: Bytes) -> String {
         } else {
           "global"
         }
-        out = String::concat(out, String::concat("  ", String::concat(m, String::concat(".", String::concat(f, String::concat(" : ", String::concat(kind_str, "\n")))))))
+        StringBuilder::push(out, String::concat("  ", String::concat(m, String::concat(".", String::concat(f, String::concat(" : ", String::concat(kind_str, "\n")))))))
         ii = ii + 1
       }
     } else {
       ()
     }
     let funcs = module_functions(bytes)
-    out = String::concat(out, String::concat("functions: ", String::concat(int_to_string(Array::length(funcs)), "\n")))
+    StringBuilder::push(out, String::concat("functions: ", String::concat(int_to_string(Array::length(funcs)), "\n")))
     let tables = module_tables(bytes)
     if Array::length(tables) > 0 {
-      out = String::concat(out, String::concat("tables: ", String::concat(int_to_string(Array::length(tables)), "\n")))
+      StringBuilder::push(out, String::concat("tables: ", String::concat(int_to_string(Array::length(tables)), "\n")))
     } else {
       ()
     }
     let mems = module_memories(bytes)
     if Array::length(mems) > 0 {
-      out = String::concat(out, String::concat("memories: ", String::concat(int_to_string(Array::length(mems)), "\n")))
+      StringBuilder::push(out, String::concat("memories: ", String::concat(int_to_string(Array::length(mems)), "\n")))
       let mut mi = 0
       while mi < Array::length(mems) {
         let (min_p, max_p) = Array::get(mems, mi)
-        out = String::concat(out, String::concat("  min=", String::concat(int_to_string(min_p), if max_p >= 0 {
+        StringBuilder::push(out, String::concat("  min=", String::concat(int_to_string(min_p), if max_p >= 0 {
           String::concat(" max=", int_to_string(max_p))
         } else {
           ""
         })))
-        out = String::concat(out, "\n")
+        StringBuilder::push(out, "\n")
         mi = mi + 1
       }
     } else {
@@ -1182,23 +1186,23 @@ export let module_summary = (bytes: Bytes) -> String {
     }
     let globals = module_globals(bytes)
     if Array::length(globals) > 0 {
-      out = String::concat(out, String::concat("globals: ", String::concat(int_to_string(Array::length(globals)), "\n")))
+      StringBuilder::push(out, String::concat("globals: ", String::concat(int_to_string(Array::length(globals)), "\n")))
       let mut gi = 0
       while gi < Array::length(globals) {
         let (vt, mut_f, _, init_val) = Array::get(globals, gi)
-        out = String::concat(out, String::concat("  ", String::concat(valtype_name(vt), if mut_f == 1 {
+        StringBuilder::push(out, String::concat("  ", String::concat(valtype_name(vt), if mut_f == 1 {
           " mut"
         } else {
           ""
         })))
-        out = String::concat(out, String::concat(" = ", String::concat(int_to_string(init_val), "\n")))
+        StringBuilder::push(out, String::concat(" = ", String::concat(int_to_string(init_val), "\n")))
         gi = gi + 1
       }
     } else {
       ()
     }
     let exports = module_exports(bytes)
-    out = String::concat(out, String::concat("exports: ", String::concat(int_to_string(Array::length(exports)), "\n")))
+    StringBuilder::push(out, String::concat("exports: ", String::concat(int_to_string(Array::length(exports)), "\n")))
     let mut ei = 0
     while ei < Array::length(exports) {
       let (name, kind, idx) = Array::get(exports, ei)
@@ -1211,29 +1215,29 @@ export let module_summary = (bytes: Bytes) -> String {
       } else {
         "global"
       }
-      out = String::concat(out, String::concat("  ", String::concat(name, String::concat(" : ", String::concat(kind_str, String::concat(" ", String::concat(int_to_string(idx), "\n")))))))
+      StringBuilder::push(out, String::concat("  ", String::concat(name, String::concat(" : ", String::concat(kind_str, String::concat(" ", String::concat(int_to_string(idx), "\n")))))))
       ei = ei + 1
     }
     let start_idx = module_start(bytes)
     if start_idx >= 0 {
-      out = String::concat(out, String::concat("start: func ", String::concat(int_to_string(start_idx), "\n")))
+      StringBuilder::push(out, String::concat("start: func ", String::concat(int_to_string(start_idx), "\n")))
     } else {
       ()
     }
     let elems = module_elements(bytes)
     if Array::length(elems) > 0 {
-      out = String::concat(out, String::concat("elements: ", String::concat(int_to_string(Array::length(elems)), " segments\n")))
+      StringBuilder::push(out, String::concat("elements: ", String::concat(int_to_string(Array::length(elems)), " segments\n")))
     } else {
       ()
     }
     let code = module_code(bytes)
     if Array::length(code) > 0 {
-      out = String::concat(out, String::concat("code: ", String::concat(int_to_string(Array::length(code)), " bodies\n")))
+      StringBuilder::push(out, String::concat("code: ", String::concat(int_to_string(Array::length(code)), " bodies\n")))
       let mut ci = 0
       while ci < Array::length(code) {
         let (_, bsz, locals) = Array::get(code, ci)
         let nloc = count_locals(locals)
-        out = String::concat(out, String::concat("  [", String::concat(int_to_string(ci), String::concat("] size=", String::concat(int_to_string(bsz), String::concat(" locals=", String::concat(int_to_string(nloc), "\n")))))))
+        StringBuilder::push(out, String::concat("  [", String::concat(int_to_string(ci), String::concat("] size=", String::concat(int_to_string(bsz), String::concat(" locals=", String::concat(int_to_string(nloc), "\n")))))))
         ci = ci + 1
       }
     } else {
@@ -1241,7 +1245,7 @@ export let module_summary = (bytes: Bytes) -> String {
     }
     let data = module_data(bytes)
     if Array::length(data) > 0 {
-      out = String::concat(out, String::concat("data: ", String::concat(int_to_string(Array::length(data)), " segments\n")))
+      StringBuilder::push(out, String::concat("data: ", String::concat(int_to_string(Array::length(data)), " segments\n")))
       let mut di = 0
       while di < Array::length(data) {
         let (mode, _, _, _, _, dlen) = Array::get(data, di)
@@ -1252,7 +1256,7 @@ export let module_summary = (bytes: Bytes) -> String {
         } else {
           "active"
         }
-        out = String::concat(out, String::concat("  ", String::concat(mode_str, String::concat(" size=", String::concat(int_to_string(dlen), "\n")))))
+        StringBuilder::push(out, String::concat("  ", String::concat(mode_str, String::concat(" size=", String::concat(int_to_string(dlen), "\n")))))
         di = di + 1
       }
     } else {
@@ -1260,16 +1264,16 @@ export let module_summary = (bytes: Bytes) -> String {
     }
     let customs = module_custom_sections(bytes)
     if Array::length(customs) > 0 {
-      out = String::concat(out, String::concat("custom sections: ", String::concat(int_to_string(Array::length(customs)), "\n")))
+      StringBuilder::push(out, String::concat("custom sections: ", String::concat(int_to_string(Array::length(customs)), "\n")))
       let mut ci = 0
       while ci < Array::length(customs) {
         let (name, _, psz) = Array::get(customs, ci)
-        out = String::concat(out, String::concat("  \"", String::concat(name, String::concat("\" size=", String::concat(int_to_string(psz), "\n")))))
+        StringBuilder::push(out, String::concat("  \"", String::concat(name, String::concat("\" size=", String::concat(int_to_string(psz), "\n")))))
         ci = ci + 1
       }
     } else {
       ()
     }
-    out
+    StringBuilder::freeze(out)
   }
 }
