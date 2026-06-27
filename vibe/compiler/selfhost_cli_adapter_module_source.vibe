@@ -5469,7 +5469,26 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
                 (tab_call_ty(tytab, call_off, subst_apply(s3, call_ret)), s3, c2)
               },
               CtStruct(sname) => (tab_call_ty(tytab, call_off, CtStruct(sname)), s2, c2),
-              _ => (tab_call_ty(tytab, call_off, CtUnknown), s2, c2)
+              other => {
+                let not_callable = match other {
+                  CtInt => true,
+                  CtDouble => true,
+                  CtBool => true,
+                  CtString => true,
+                  CtChar => true,
+                  CtUnit => true,
+                  CtBytes => true,
+                  CtTuple(_) => true,
+                  CtArray(_) => true,
+                  _ => false
+                }
+                if not_callable {
+                  Array::push(errors, String::concat(String::concat("calling a non-function value: ", name), off_marker_len(callee_off, String::length(name))))
+                } else {
+                  ()
+                }
+                (tab_call_ty(tytab, call_off, CtUnknown), s2, c2)
+              }
             }
           }
         }
@@ -5691,11 +5710,21 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
           let (pat, body) = Array::get(arms, ai)
           let arm_env = check_pattern(pat, scr_ty, env, defs)
           let (arm_ty, ns, nc) = check_expr(body, arm_env, defs, si, ci, errors, tytab)
-          if ai == 0 {
-            result_ty = arm_ty
-          }
           si = ns
           ci = nc
+          if ai == 0 {
+            result_ty = arm_ty
+          } else {
+            let r1 = subst_apply(si, result_ty)
+            let r2 = subst_apply(si, arm_ty)
+            si = match r1 {
+              CtUnit => si,
+              _ => match r2 {
+                CtUnit => si,
+                _ => check_assignable(r1, r2, si, errors, "match arms have incompatible types", 0 - 1)
+              }
+            }
+          }
           ai = ai + 1
         }
         (result_ty, si, ci)
@@ -5954,11 +5983,13 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       let mut ai = 0
       while ai < ilen {
         let (it, ns, nc) = check_expr(Array::get(items, ai), env, defs, s1, c1, errors, tytab)
-        if ai == 0 {
-          elem_ty = it
-        }
         s1 = ns
         c1 = nc
+        if ai == 0 {
+          elem_ty = it
+        } else {
+          s1 = check_assignable(subst_apply(s1, elem_ty), subst_apply(s1, it), s1, errors, "array elements have incompatible types", 0 - 1)
+        }
         ai = ai + 1
       }
       (CtArray(elem_ty), s1, c1)
