@@ -5234,6 +5234,15 @@ let check_hof_param_vs_elem: (Type, Type, Int, Subst, Array[String], String) -> 
     _ => s
   }
 }
+let check_two_array_elems: (Type, Type, Subst, Array[String], String) -> Subst = (a_app, b_app, s, errors, msg) -> {
+  match a_app {
+    CtArray(ea) => match b_app {
+      CtArray(eb) => check_assignable(subst_apply(s, ea), subst_apply(s, eb), s, errors, msg, 0 - 1),
+      _ => s
+    },
+    _ => s
+  }
+}
 let is_logic_binop: (String) -> Bool = (op) -> {
   op == "&&"
   || op == "||"
@@ -5693,18 +5702,11 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       let (et, s3, c3) = check_expr(else_e, env, defs, s2, c2, errors, tytab)
       let rtt = subst_apply(s3, tt)
       let ret = subst_apply(s3, et)
-      let s3b = match rtt {
-        CtUnit => s3,
+      let (s3b, if_ty) = match rtt {
+        CtUnit => (s3, CtUnit),
         _ => match ret {
-          CtUnit => s3,
-          _ => check_assignable(rtt, ret, s3, errors, "if branches have incompatible types", 0 - 1)
-        }
-      }
-      let if_ty = match rtt {
-        CtUnit => CtUnit,
-        _ => match ret {
-          CtUnit => CtUnit,
-          _ => tt
+          CtUnit => (s3, CtUnit),
+          _ => (check_assignable(rtt, ret, s3, errors, "if branches have incompatible types", 0 - 1), tt)
         }
       }
       (if_ty, s3b, c3)
@@ -5790,13 +5792,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       } else if name == "Array::push_all" && Array::length(args) == 2 {
         let (a_ty, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
         let (b_ty, s2, c2) = check_expr(Array::get(args, 1), env, defs, s1, c1, errors, tytab)
-        let s3 = match subst_apply(s2, a_ty) {
-          CtArray(ea) => match subst_apply(s2, b_ty) {
-            CtArray(eb) => check_assignable(subst_apply(s2, ea), subst_apply(s2, eb), s2, errors, "Array::push_all element type mismatch", 0 - 1),
-            _ => s2
-          },
-          _ => s2
-        }
+        let s3 = check_two_array_elems(subst_apply(s2, a_ty), subst_apply(s2, b_ty), s2, errors, "Array::push_all element type mismatch")
         (tab_call_ty(tytab, call_off, CtUnit), s3, c2)
       } else if name == "Array::get" && Array::length(args) == 2 {
         let (obj_ty, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
@@ -5816,16 +5812,12 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       } else if name == "Array::concat" && Array::length(args) == 2 {
         let (a_ty, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
         let (b_ty, s2, c2) = check_expr(Array::get(args, 1), env, defs, s1, c1, errors, tytab)
-        let s3 = match subst_apply(s2, a_ty) {
-          CtArray(ea) => match subst_apply(s2, b_ty) {
-            CtArray(eb) => check_assignable(subst_apply(s2, ea), subst_apply(s2, eb), s2, errors, "Array::concat element type mismatch", 0 - 1),
-            _ => s2
-          },
-          _ => s2
-        }
-        let result = match subst_apply(s3, a_ty) {
+        let a_app = subst_apply(s2, a_ty)
+        let b_app = subst_apply(s2, b_ty)
+        let s3 = check_two_array_elems(a_app, b_app, s2, errors, "Array::concat element type mismatch")
+        let result = match a_app {
           CtArray(elem) => CtArray(elem),
-          _ => match subst_apply(s3, b_ty) {
+          _ => match b_app {
             CtArray(elem) => CtArray(elem),
             _ => CtUnknown
           }

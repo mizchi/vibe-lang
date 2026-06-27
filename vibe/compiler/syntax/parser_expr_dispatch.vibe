@@ -54,43 +54,6 @@ enum BlockStep {
   StepBind(String, Expr)
 }
 
-let rec parse_match_rest: (Array[Token], Array[Int], Int, Expr, ArrayBuilder[(Pat, Expr)], (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, pos, scrutinee, b, parse_recur) -> {
-  match peek(tokens, pos) {
-    TComma => match peek(tokens, pos + 1) {
-      TRBrace => (EMatch(scrutinee, ArrayBuilder::freeze(b)), pos + 2),
-      _ => {
-        let (pa, paa) = parse_pattern(tokens, pos + 1)
-        let a2 = match peek(tokens, paa) {
-          TIf => {
-            // #666: match-arm guards (`pat if cond =>`) were parsed and SILENTLY
-            // DISCARDED — `match 5 { n if n > 100 => 999, _ => 0 }` returned 999
-            // (the guard ignored, the arm wrongly taken). Reject until guards are
-            // represented in EMatch arms and dispatched in codegen.
-            throw("match-arm guards (`pattern if condition =>`) are not yet supported (see #666); the guard was previously ignored, silently matching the arm")
-          },
-          _ => expect_tk(tokens, paa, "=>")
-        }
-        let (ea, en) = parse_recur(tokens, a2, 0)
-        ArrayBuilder::push(b, (pa, ea))
-        parse_match_rest(tokens, starts, en, scrutinee, b, parse_recur)
-      }
-    },
-    TRBrace => (EMatch(scrutinee, ArrayBuilder::freeze(b)), pos + 1),
-    _ => {
-      let (pa, paa) = parse_pattern(tokens, pos)
-      let a2 = match peek(tokens, paa) {
-        TIf => {
-          throw("match-arm guards (`pattern if condition =>`) are not yet supported (see #666); the guard was previously ignored, silently matching the arm")
-        },
-        _ => expect_tk(tokens, paa, "=>")
-      }
-      let (ea, en) = parse_recur(tokens, a2, 0)
-      ArrayBuilder::push(b, (pa, ea))
-      parse_match_rest(tokens, starts, en, scrutinee, b, parse_recur)
-    }
-  }
-}
-
 // #666: desugar match-arm guards into existing constructs. `arms` is the
 // collected arm list as (pattern, guard-or-EBool(true)-sentinel, body). A
 // guarded arm `pat if g => body` becomes `pat => if g { body } else { match
