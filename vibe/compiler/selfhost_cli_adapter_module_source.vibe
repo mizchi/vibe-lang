@@ -8952,6 +8952,20 @@ export let effect_op_declared_arity: (Array[String], Array[Int], String) -> Int 
   }
   result
 }
+export let effect_op_index: (Array[String], String) -> Int = (keys, full) -> {
+  let n = Array::length(keys)
+  let mut result = 0 - 1
+  let mut i = 0
+  while i < n {
+    if Array::get(keys, i) == full {
+      result = i
+      i = n
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
 export let emit_heap_grow_after_heap_set: (Bytes, CompileCtx) -> Unit = (buf, ctx) -> {
   if ctx.heap_grow_check_func_idx >= 0 {
     emit_call(buf, ctx.heap_grow_check_func_idx)
@@ -16971,6 +16985,13 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_i32_add(buf)
       emit_i64_load(buf, 3, 16)
       emit_else(buf)
+      let g_op_idx_global = if ctx.enable_rc {
+        6
+      } else {
+        5
+      }
+      emit_i64_const(buf, effect_op_index(ctx.effect_op_keys, op_head))
+      emit_global_set(buf, g_op_idx_global)
       let op_canon = canonical_builtin_name(op_head)
       let __ft_len = Array::length(ctx.func_table.names)
       let mut op_is_builtin = false
@@ -18454,6 +18475,83 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
     nl
   }
 }
+let t6_bind_from_raw: (Bytes, Pat, Int, CompileCtx, Array[String]) -> Unit with { Error } = (buf, arm_pat, raw_l, ctx, local_names) -> {
+  if is_pctor(arm_pat) {
+    let cargs = get_pctor_args(arm_pat)
+    let decl_arity = effect_op_declared_arity(ctx.effect_op_keys, ctx.effect_op_arities, get_pctor_name(arm_pat))
+    if decl_arity > 1 {
+      let ncargs = Array::length(cargs)
+      let mut ci = 0
+      while ci < decl_arity {
+        if ci < ncargs {
+          let cp = Array::get(cargs, ci)
+          if is_pbind(cp) {
+            let pname = get_pbind_name(cp)
+            let fl = Array::length(local_names)
+            emit_local_get(buf, raw_l)
+            if ctx.enable_rc {
+              emit_i64_const(buf, -2)
+              emit_i64_and(buf)
+            } else {
+              ()
+            }
+            emit_i32_wrap_i64(buf)
+            emit_i64_load(buf, 3, if ctx.enable_rc {
+              8 + ci * 8
+            } else {
+              ci * 8
+            })
+            emit_local_set(buf, fl)
+            Array::push(local_names, pname)
+            if ctx.enable_rc {
+              t6_emit_rc_dup_guarded(buf, fl)
+            } else {
+              ()
+            }
+          } else if is_pwild(cp) {
+            ()
+          } else {
+            throw("handle: only simple bindings or '_' are supported in multi-argument effect op patterns (see #548)")
+          }
+        } else {
+          ()
+        }
+        ci = ci + 1
+      }
+      if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
+        emit_local_get(buf, raw_l)
+        emit_call(buf, ctx.rc_drop_func_idx)
+      } else {
+        ()
+      }
+    } else if Array::length(cargs) > 0 && is_pbind(Array::get(cargs, 0)) {
+      let pname = get_pbind_name(Array::get(cargs, 0))
+      let bl = Array::length(local_names)
+      emit_local_get(buf, raw_l)
+      emit_local_set(buf, bl)
+      Array::push(local_names, pname)
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+}
+let t6_effect_op_count: (Array[String], String) -> Int = (op_keys, eff_name) -> {
+  let mut c = 0
+  let mut i = 0
+  while i < Array::length(op_keys) {
+    let k = Array::get(op_keys, i)
+    let sep = String::index_of(k, "::")
+    if sep > 0 && k[0:sep] == eff_name {
+      c = c + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  c
+}
 let t6_emit_rc_dup_guarded: (Bytes, Int) -> Unit = (buf, local_idx) -> {
   emit_local_get(buf, local_idx)
   emit_i64_const(buf, 1)
@@ -18487,36 +18585,24 @@ let t6_emit_rc_dup_guarded: (Bytes, Int) -> Unit = (buf, local_idx) -> {
 export let compile_expr_tail6: (Bytes, Expr, Array[(Pat, Expr)], Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, body, arms, local_names, next_local, ctx, ld, compile_expr) -> {
   if Array::length(arms) > 0 {
     let (catch_pat, fallback_expr) = Array::get(arms, 0)
-    if is_pctor(catch_pat) {
-      let __op_full = get_pctor_name(catch_pat)
-      let __sep = String::index_of(__op_full, "::")
-      if __sep > 0 {
-        let __eff_name = __op_full[0:__sep]
-        let __op_keys = ctx.effect_op_keys
-        let mut __op_count = 0
-        let mut __ki = 0
-        while __ki < Array::length(__op_keys) {
-          let __k = Array::get(__op_keys, __ki)
-          let __kc = String::index_of(__k, "::")
-          if __kc > 0 && __k[0:__kc] == __eff_name {
-            __op_count = __op_count + 1
-          } else {
-            ()
-          }
-          __ki = __ki + 1
-        }
-        if __op_count > 1 {
-          throw(String::concat("handle: effect `", String::concat(__eff_name, "` declares multiple operations; multi-operation handler dispatch is not yet supported (every operation would run the first arm) - see #665")))
-        } else {
-          ()
-        }
+    let is_error = is_pctor(catch_pat) && get_pctor_name(catch_pat) == "Error::Throw"
+    let handled_eff = if is_pctor(catch_pat) {
+      let op_full = get_pctor_name(catch_pat)
+      let sep = String::index_of(op_full, "::")
+      if sep > 0 {
+        op_full[0:sep]
       } else {
-        ()
+        ""
       }
     } else {
-      ()
+      ""
     }
-    let is_error = is_pctor(catch_pat) && get_pctor_name(catch_pat) == "Error::Throw"
+    let needs_op_dispatch = !is_error && String::length(handled_eff) > 0 && t6_effect_op_count(ctx.effect_op_keys, handled_eff) > 1
+    let g_op_idx_global = if ctx.enable_rc {
+      6
+    } else {
+      5
+    }
     let catch_tag = if is_error {
       2
     } else if is_pctor(catch_pat) {
@@ -18567,7 +18653,11 @@ export let compile_expr_tail6: (Bytes, Expr, Array[(Pat, Expr)], Array[String], 
     emit_end(buf)
     emit_br(buf, 2)
     emit_end(buf)
-    if is_pctor(catch_pat) {
+    let raw_l = Array::length(local_names)
+    if needs_op_dispatch {
+      emit_local_set(buf, raw_l)
+      Array::push(local_names, "__eff_raw")
+    } else if is_pctor(catch_pat) {
       let cargs = get_pctor_args(catch_pat)
       let decl_arity = effect_op_declared_arity(ctx.effect_op_keys, ctx.effect_op_arities, get_pctor_name(catch_pat))
       if decl_arity > 1 {
@@ -18650,7 +18740,40 @@ export let compile_expr_tail6: (Bytes, Expr, Array[(Pat, Expr)], Array[String], 
     bytebuf_push(buf, 0)
     bytebuf_push(buf, 1)
     bytebuf_push(buf, 0)
-    let nl2 = compile_expr(buf, fallback_expr, local_names, Array::length(local_names), ctx, ld)
+    let nl2 = if needs_op_dispatch {
+      let mut max_nl = Array::length(local_names)
+      let mut di = 0
+      while di < Array::length(arms) {
+        let (apat, abody) = Array::get(arms, di)
+        let aop = if is_pctor(apat) {
+          effect_op_index(ctx.effect_op_keys, get_pctor_name(apat))
+        } else {
+          0 - 1
+        }
+        emit_global_get(buf, g_op_idx_global)
+        emit_i64_const(buf, aop)
+        emit_i64_eq(buf)
+        emit_if_i64(buf)
+        t6_bind_from_raw(buf, apat, raw_l, ctx, local_names)
+        let anl = compile_expr(buf, abody, local_names, Array::length(local_names), ctx, ld)
+        if anl > max_nl {
+          max_nl = anl
+        } else {
+          ()
+        }
+        emit_else(buf)
+        di = di + 1
+      }
+      bytebuf_push(buf, 0)
+      let mut ce = 0
+      while ce < Array::length(arms) {
+        emit_end(buf)
+        ce = ce + 1
+      }
+      max_nl
+    } else {
+      compile_expr(buf, fallback_expr, local_names, Array::length(local_names), ctx, ld)
+    }
     emit_end(buf)
     emit_br(buf, 2)
     emit_end(buf)
@@ -22390,9 +22513,9 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   bytebuf_push_section(out, 13, tag_content)
   let global_content = bytebuf_new()
   if enable_rc {
-    bytebuf_push_vec_header(global_content, 6)
+    bytebuf_push_vec_header(global_content, 7)
   } else {
-    bytebuf_push_vec_header(global_content, 5)
+    bytebuf_push_vec_header(global_content, 6)
   }
   bytebuf_push(global_content, 127)
   bytebuf_push(global_content, 1)
@@ -22419,6 +22542,10 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   bytebuf_push(global_content, 127)
   bytebuf_push(global_content, 1)
   emit_i32_const(global_content, heap_start)
+  emit_end(global_content)
+  bytebuf_push(global_content, 126)
+  bytebuf_push(global_content, 1)
+  emit_i64_const(global_content, 0)
   emit_end(global_content)
   bytebuf_push_section(out, 6, global_content)
   let start_func_idx = func_offset + num_user_funcs
