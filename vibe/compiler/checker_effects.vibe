@@ -810,197 +810,170 @@ let collect_handle_effects: (Array[(Pat, Expr)]) -> Array[String] = (arms) -> {
   out
 }
 
-// Iteratively walk an `ESeq`/`let` SPINE instead of recursing into each tail, so
-// a long function body (a deep right-nested `ESeq`/`ELet` chain) does not
-// exhaust the wasm call stack while the perform pass runs over the whole
-// compiler. Mirrors the type checker's `check_seq_spine`. `ce` is
-// `check_perform_effects_expr` threaded as a value to avoid a forward
-// reference; the `declared`/`in_handle` context is constant down a spine, so
-// each side-branch and the final non-spine expression are checked under the
-// same context — identical to the recursive arms.
-let check_perform_spine: (Expr, Array[String], Bool, (Expr, Array[String], Bool) -> Array[EffectError]) -> Array[EffectError] = (start, declared, in_handle, ce) -> {
+// Walk an expression's effect discipline with an EXPLICIT WORK STACK instead of
+// recursion, so the pass never exhausts the wasm call stack however deeply the
+// compiler's own source nests (long `let`/`seq` spines AND nested
+// if/match/call forms). Each stack item carries its (expr, declared, in_handle)
+// context: `EFn` resets `declared` to its own effect row, `EHandle` augments it
+// with the discharged effects (criterion 2). Order of traversal differs from a
+// recursive pre-order walk, but the SET of effect errors found is identical, so
+// the accept/reject decision is unchanged.
+export let check_perform_effects_expr: (Expr, Array[String], Bool) -> Array[EffectError] = (root, root_declared, root_in_handle) -> {
   let errors = Array::slice([
     EEThrowOutsideEffect("")
   ], 0, 0)
-  let mut cur = start
-  let mut done = false
-  while !done {
-    match cur {
-      ESeq(a, b) => {
-        append_eff_errs(errors, ce(a, declared, in_handle))
-        cur = b
+  let stack = Array::slice([
+    (root, root_declared, root_in_handle)
+  ], 0, 1)
+  while Array::length(stack) > 0 {
+    let n = Array::length(stack)
+    let (expr, declared, in_handle) = Array::get(stack, n - 1)
+    Array::truncate(stack, n - 1)
+    match expr {
+      ECall(callee, args, _) => {
+        match callee {
+          EIdent(name, _) => if name == "perform" && Array::length(args) == 1 {
+            match Array::get(args, 0) {
+              ECall(op_callee, _, _) => match op_callee {
+                EIdent(op_name, _) => {
+                  let eff = effect_name_of_op(op_name)
+                  if !in_handle && !decl_authorizes_effect(declared, eff) {
+                    Array::push(errors, EEPerformUndeclaredEffect(op_name, eff))
+                  } else {
+                    ()
+                  }
+                },
+                _ => ()
+              },
+              _ => ()
+            }
+          } else {
+            match builtin_call_effect(name) {
+              Some(eff) => if !in_handle && !decl_authorizes_effect(declared, eff) {
+                Array::push(errors, EEPerformUndeclaredEffect(name, eff))
+              } else {
+                ()
+              },
+              None => ()
+            }
+          },
+          _ => ()
+        }
+        Array::push(stack, (callee, declared, in_handle))
+        let mut ai = 0
+        while ai < Array::length(args) {
+          Array::push(stack, (Array::get(args, ai), declared, in_handle))
+          ai = ai + 1
+        }
+      },
+      EFn(_, _, _, _, effect, body) => {
+        Array::push(stack, (body, effect_decl_labels(effect), false))
+      },
+      EHandle(body, arms) => {
+        let discharged = collect_handle_effects(arms)
+        let body_declared = labels_union(declared, discharged)
+        let body_in_handle = if Array::length(discharged) == 0 {
+          true
+        } else {
+          in_handle
+        }
+        Array::push(stack, (body, body_declared, body_in_handle))
+        let mut ai = 0
+        while ai < Array::length(arms) {
+          let (_, arm_body) = Array::get(arms, ai)
+          Array::push(stack, (arm_body, declared, in_handle))
+          ai = ai + 1
+        }
       },
       ELet(_, val, body) => {
-        append_eff_errs(errors, ce(val, declared, in_handle))
-        cur = body
+        Array::push(stack, (val, declared, in_handle))
+        Array::push(stack, (body, declared, in_handle))
       },
       ELetRec(_, val, body) => {
-        append_eff_errs(errors, ce(val, declared, in_handle))
-        cur = body
+        Array::push(stack, (val, declared, in_handle))
+        Array::push(stack, (body, declared, in_handle))
       },
       ELetMut(_, val, body) => {
-        append_eff_errs(errors, ce(val, declared, in_handle))
-        cur = body
+        Array::push(stack, (val, declared, in_handle))
+        Array::push(stack, (body, declared, in_handle))
       },
-      _ => {
-        append_eff_errs(errors, ce(cur, declared, in_handle))
-        done = true
-      }
+      ESeq(a, b) => {
+        Array::push(stack, (a, declared, in_handle))
+        Array::push(stack, (b, declared, in_handle))
+      },
+      EIf(cond, then_e, else_e) => {
+        Array::push(stack, (cond, declared, in_handle))
+        Array::push(stack, (then_e, declared, in_handle))
+        Array::push(stack, (else_e, declared, in_handle))
+      },
+      EMatch(scrutinee, arms) => {
+        Array::push(stack, (scrutinee, declared, in_handle))
+        let mut ai = 0
+        while ai < Array::length(arms) {
+          let (_, arm_body) = Array::get(arms, ai)
+          Array::push(stack, (arm_body, declared, in_handle))
+          ai = ai + 1
+        }
+      },
+      EWhile(cond, body) => {
+        Array::push(stack, (cond, declared, in_handle))
+        Array::push(stack, (body, declared, in_handle))
+      },
+      ELoop(params, body) => {
+        let mut i = 0
+        while i < Array::length(params) {
+          let (_, init) = Array::get(params, i)
+          Array::push(stack, (init, declared, in_handle))
+          i = i + 1
+        }
+        Array::push(stack, (body, declared, in_handle))
+      },
+      EForIn(_, _, iter, body) => {
+        Array::push(stack, (iter, declared, in_handle))
+        Array::push(stack, (body, declared, in_handle))
+      },
+      EBinOp(_, left, right) => {
+        Array::push(stack, (left, declared, in_handle))
+        Array::push(stack, (right, declared, in_handle))
+      },
+      EReturn(e) => Array::push(stack, (e, declared, in_handle)),
+      EUnaryOp(_, operand) => Array::push(stack, (operand, declared, in_handle)),
+      EThrow(e) => Array::push(stack, (e, declared, in_handle)),
+      EAssign(_, val, cont) => {
+        Array::push(stack, (val, declared, in_handle))
+        Array::push(stack, (cont, declared, in_handle))
+      },
+      EAssignOp(_, _, val, cont) => {
+        Array::push(stack, (val, declared, in_handle))
+        Array::push(stack, (cont, declared, in_handle))
+      },
+      EDot(obj, _, _) => Array::push(stack, (obj, declared, in_handle)),
+      ETuple(elems) => {
+        let mut ei = 0
+        while ei < Array::length(elems) {
+          Array::push(stack, (Array::get(elems, ei), declared, in_handle))
+          ei = ei + 1
+        }
+      },
+      EArray(elems) => {
+        let mut ei = 0
+        while ei < Array::length(elems) {
+          Array::push(stack, (Array::get(elems, ei), declared, in_handle))
+          ei = ei + 1
+        }
+      },
+      ERecord(fields) => {
+        let mut fi = 0
+        while fi < Array::length(fields) {
+          let (_, fval) = Array::get(fields, fi)
+          Array::push(stack, (fval, declared, in_handle))
+          fi = fi + 1
+        }
+      },
+      _ => ()
     }
   }
   errors
-}
-
-export let rec check_perform_effects_expr: (Expr, Array[String], Bool) -> Array[EffectError] = (expr, declared, in_handle) -> {
-  let errors = Array::slice([
-    EEThrowOutsideEffect("")
-  ], 0, 0)
-  match expr {
-    ECall(callee, args, _) => {
-      match callee {
-        EIdent(name, _) => if name == "perform" && Array::length(args) == 1 {
-          match Array::get(args, 0) {
-            ECall(op_callee, _, _) => match op_callee {
-              EIdent(op_name, _) => {
-                let eff = effect_name_of_op(op_name)
-                if !in_handle && !decl_authorizes_effect(declared, eff) {
-                  Array::push(errors, EEPerformUndeclaredEffect(op_name, eff))
-                }
-              },
-              _ => ()
-            },
-            _ => ()
-          }
-        } else {
-          match builtin_call_effect(name) {
-            Some(eff) => if !in_handle && !decl_authorizes_effect(declared, eff) {
-              Array::push(errors, EEPerformUndeclaredEffect(name, eff))
-            },
-            None => ()
-          }
-        }
-        ,
-        _ => ()
-      }
-      append_eff_errs(errors, check_perform_effects_expr(callee, declared, in_handle))
-      let mut ai = 0
-      while ai < Array::length(args) {
-        append_eff_errs(errors, check_perform_effects_expr(Array::get(args, ai), declared, in_handle))
-        ai = ai + 1
-      }
-      errors
-    },
-    EFn(_, _, _, _, effect, body) => {
-      append_eff_errs(errors, check_perform_effects_expr(body, effect_decl_labels(effect), false))
-      errors
-    },
-    EHandle(body, arms) => {
-      // The body runs with the handled effects ADDED to the declared set
-      // (criterion 2 row subtraction, viewed from the perform side). If no
-      // discharged effect could be determined, fall back to the conservative
-      // "inside a handle → allow" so we never reject a valid program.
-      let discharged = collect_handle_effects(arms)
-      let body_declared = labels_union(declared, discharged)
-      let body_in_handle = if Array::length(discharged) == 0 {
-        true
-      } else {
-        in_handle
-      }
-      append_eff_errs(errors, check_perform_effects_expr(body, body_declared, body_in_handle))
-      let mut ai = 0
-      while ai < Array::length(arms) {
-        let (_, arm_body) = Array::get(arms, ai)
-        append_eff_errs(errors, check_perform_effects_expr(arm_body, declared, in_handle))
-        ai = ai + 1
-      }
-      errors
-    },
-    ELet(_, _, _) => check_perform_spine(expr, declared, in_handle, check_perform_effects_expr),
-    ELetRec(_, _, _) => check_perform_spine(expr, declared, in_handle, check_perform_effects_expr),
-    ELetMut(_, _, _) => check_perform_spine(expr, declared, in_handle, check_perform_effects_expr),
-    ESeq(_, _) => check_perform_spine(expr, declared, in_handle, check_perform_effects_expr),
-    EIf(cond, then_e, else_e) => {
-      append_eff_errs(errors, check_perform_effects_expr(cond, declared, in_handle))
-      append_eff_errs(errors, check_perform_effects_expr(then_e, declared, in_handle))
-      append_eff_errs(errors, check_perform_effects_expr(else_e, declared, in_handle))
-      errors
-    },
-    EMatch(scrutinee, arms) => {
-      append_eff_errs(errors, check_perform_effects_expr(scrutinee, declared, in_handle))
-      let mut ai = 0
-      while ai < Array::length(arms) {
-        let (_, arm_body) = Array::get(arms, ai)
-        append_eff_errs(errors, check_perform_effects_expr(arm_body, declared, in_handle))
-        ai = ai + 1
-      }
-      errors
-    },
-    EWhile(cond, body) => {
-      append_eff_errs(errors, check_perform_effects_expr(cond, declared, in_handle))
-      append_eff_errs(errors, check_perform_effects_expr(body, declared, in_handle))
-      errors
-    },
-    ELoop(params, body) => {
-      let mut i = 0
-      while i < Array::length(params) {
-        let (_, init) = Array::get(params, i)
-        append_eff_errs(errors, check_perform_effects_expr(init, declared, in_handle))
-        i = i + 1
-      }
-      append_eff_errs(errors, check_perform_effects_expr(body, declared, in_handle))
-      errors
-    },
-    EForIn(_, _, iter, body) => {
-      append_eff_errs(errors, check_perform_effects_expr(iter, declared, in_handle))
-      append_eff_errs(errors, check_perform_effects_expr(body, declared, in_handle))
-      errors
-    },
-    EBinOp(_, left, right) => {
-      append_eff_errs(errors, check_perform_effects_expr(left, declared, in_handle))
-      append_eff_errs(errors, check_perform_effects_expr(right, declared, in_handle))
-      errors
-    },
-    EReturn(e) => check_perform_effects_expr(e, declared, in_handle),
-    EUnaryOp(_, operand) => check_perform_effects_expr(operand, declared, in_handle),
-    EThrow(e) => check_perform_effects_expr(e, declared, in_handle),
-    EAssign(_, val, cont) => {
-      append_eff_errs(errors, check_perform_effects_expr(val, declared, in_handle))
-      append_eff_errs(errors, check_perform_effects_expr(cont, declared, in_handle))
-      errors
-    },
-    EAssignOp(_, _, val, cont) => {
-      append_eff_errs(errors, check_perform_effects_expr(val, declared, in_handle))
-      append_eff_errs(errors, check_perform_effects_expr(cont, declared, in_handle))
-      errors
-    },
-    EDot(obj, _, _) => check_perform_effects_expr(obj, declared, in_handle),
-    ETuple(elems) => {
-      let mut ei = 0
-      while ei < Array::length(elems) {
-        append_eff_errs(errors, check_perform_effects_expr(Array::get(elems, ei), declared, in_handle))
-        ei = ei + 1
-      }
-      errors
-    },
-    EArray(elems) => {
-      let mut ei = 0
-      while ei < Array::length(elems) {
-        append_eff_errs(errors, check_perform_effects_expr(Array::get(elems, ei), declared, in_handle))
-        ei = ei + 1
-      }
-      errors
-    },
-    ERecord(fields) => {
-      let mut fi = 0
-      while fi < Array::length(fields) {
-        let (_, fval) = Array::get(fields, fi)
-        append_eff_errs(errors, check_perform_effects_expr(fval, declared, in_handle))
-        fi = fi + 1
-      }
-      errors
-    },
-    _ => errors
-  }
 }
 
 let sig_type_effect_labels: (Option[TypeExpr]) -> Array[String] = (topt) -> {
