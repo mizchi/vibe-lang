@@ -316,6 +316,31 @@ let rec type_no_named: (Type) -> Bool = (t) -> {
   }
 }
 
+// A small tag for a type's TOP-LEVEL constructor, or 0 for a type whose head is
+// not concrete (a type variable / unresolved named param / unknown / forall).
+// Two types with DIFFERENT non-zero heads can never be made equal by any
+// instantiation of their inner type parameters (an `Int` is never an `Array[T]`
+// for any `T`), so such a unify failure is a real mismatch even when the inner
+// parts are generic — which the whole-type groundness gate misses.
+let head_kind: (Type) -> Int = (t) -> {
+  match t {
+    CtInt => 1,
+    CtDouble => 2,
+    CtBool => 3,
+    CtString => 4,
+    CtChar => 5,
+    CtUnit => 6,
+    CtBytes => 7,
+    CtTuple(_) => 8,
+    CtArray(_) => 9,
+    CtOption(_) => 10,
+    CtStruct(_) => 11,
+    CtEnum(_) => 12,
+    CtFn(_, _, _) => 13,
+    _ => 0
+  }
+}
+
 // True when every declared field type of a struct is ground (the struct is not
 // generic). `S::{ ... }` for such a struct can safely be typed `CtStruct(S)`.
 let struct_fields_ground: (Array[(String, Type)]) -> Bool = (dfields) -> {
@@ -362,7 +387,15 @@ export let check_assignable: (Type, Type, Subst, Array[String], String, Int) -> 
       // expected, or an actual carrying an un-instantiated generic `CtNamed`,
       // is still tolerated to avoid over-rejecting polymorphic code.
       let reportable = type_is_ground(subst_apply(s, expected)) && type_no_named(subst_apply(s, actual))
-      if structural || !reportable {
+      // Also report when the two types have DIFFERENT concrete top-level
+      // constructors (e.g. `Array[T]` vs `Int` from `Array::length(5)`): no
+      // instantiation of inner type parameters can reconcile them, so it is a
+      // real mismatch even though the expected type is non-ground. A
+      // var/named/unknown head (kind 0) on either side stays tolerated.
+      let eh = head_kind(subst_apply(s, expected))
+      let ah = head_kind(subst_apply(s, actual))
+      let head_differ = eh != 0 && ah != 0 && eh != ah
+      if structural || !(reportable || head_differ) {
         s
       } else {
         Array::push(errors, String::concat(what, String::concat(": expected ", String::concat(type_to_string(subst_apply(s, expected)), String::concat(", got ", String::concat(type_to_string(subst_apply(s, actual)), off_marker(off)))))))

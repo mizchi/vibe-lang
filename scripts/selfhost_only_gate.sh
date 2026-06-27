@@ -1212,13 +1212,17 @@ cat > "$tdir/bad_return.vibe" <<'EOF'
 export let f: () -> Int = () -> { return "x" }
 export let _start: () -> Int = () -> { f() }
 EOF
+cat > "$tdir/bad_genhead.vibe" <<'EOF'
+let f = [T](a: Array[T]) -> Int { 0 }
+export let _start: () -> Int = () -> { f(5) }
+EOF
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$tdir/ok.vibe" "$tdir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$tdir/ok.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: well-typed binding/assign/if did not compile (over-rejects)" >&2; exit 1
 fi
-for bad in bad_let bad_assign bad_if bad_struct bad_locallet bad_missingfield bad_fnannot bad_return; do
+for bad in bad_let bad_assign bad_if bad_struct bad_locallet bad_missingfield bad_fnannot bad_return bad_genhead; do
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$tdir/$bad.vibe" "$tdir/$bad.wasm" _start >/dev/null 2>&1 || true
