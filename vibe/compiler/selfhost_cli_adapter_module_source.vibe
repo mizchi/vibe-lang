@@ -5493,7 +5493,8 @@ let index_target_check: (String, Array[Expr], TypeEnv, Array[TypeDef], Subst, In
     let throwaway = Array::slice([""], 0, 0)
     let throwtab = Array::slice([(0, CtUnit)], 0, 0)
     let (obj_ty, _, _) = ce(Array::get(args, 0), env, defs, s, c, throwaway, throwtab)
-    let not_indexable = match subst_apply(s, obj_ty) {
+    let resolved_obj = subst_apply(s, obj_ty)
+    let not_indexable = match resolved_obj {
       CtInt => true,
       CtDouble => true,
       CtBool => true,
@@ -5504,7 +5505,28 @@ let index_target_check: (String, Array[Expr], TypeEnv, Array[TypeDef], Subst, In
     if not_indexable {
       Array::push(errors, "cannot index a non-indexable value (expected Array, String, or Bytes)")
     } else {
-      ()
+      let indexable = match resolved_obj {
+        CtArray(_) => true,
+        CtString => true,
+        CtBytes => true,
+        _ => false
+      }
+      if indexable {
+        let throwaway2 = Array::slice([""], 0, 0)
+        let throwtab2 = Array::slice([(0, CtUnit)], 0, 0)
+        let (idx_ty, _, _) = ce(Array::get(args, 1), env, defs, s, c, throwaway2, throwtab2)
+        let bad_index = match subst_apply(s, idx_ty) {
+          CtInt => false,
+          _ => type_is_ground(subst_apply(s, idx_ty))
+        }
+        if bad_index {
+          Array::push(errors, "index must be an Int")
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
     }
   } else {
     ()
