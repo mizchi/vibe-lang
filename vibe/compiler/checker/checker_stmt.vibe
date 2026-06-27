@@ -266,6 +266,31 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
               e
             },
             _ => {
+              // A tuple pattern can only destructure a tuple value. `let (a, b) =
+              // 5` was accepted and bound `a`/`b` to garbage. When the value
+              // resolves to a concrete NON-tuple type (a scalar, array, option,
+              // fn, struct, enum), this is a real error. Type vars / unknown /
+              // named (generic) values stay tolerated.
+              let concrete_non_tuple = match subst_apply(ns, vt) {
+                CtInt => true,
+                CtDouble => true,
+                CtBool => true,
+                CtString => true,
+                CtChar => true,
+                CtUnit => true,
+                CtBytes => true,
+                CtArray(_) => true,
+                CtOption(_) => true,
+                CtFn(_, _, _) => true,
+                CtStruct(_) => true,
+                CtEnum(_) => true,
+                _ => false
+              }
+              if concrete_non_tuple {
+                Array::push(errors, "tuple pattern cannot destructure a non-tuple value")
+              } else {
+                ()
+              }
               let mut e = env
               let mut pi = 0
               while pi < Array::length(pats) {

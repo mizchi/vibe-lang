@@ -1574,4 +1574,33 @@ done
 rm -rf "$bdir"
 echo "[selfhost-only-gate] unary-minus / break-outside-loop checking ok"
 
+# 38. tuple-pattern destructuring soundness: `let (a, b) = v` may only
+#     destructure a tuple value; binding a tuple pattern over a concrete
+#     non-tuple (`let (a, b) = 5`) must be rejected, while a genuine tuple
+#     destructure must still compile.
+echo "[selfhost-only-gate] 38/38 tuple-pattern destructuring type checking"
+tdir="_build/_gate_tupledestr"
+rm -rf "$tdir"; mkdir -p "$tdir"
+cat > "$tdir/ok.vibe" <<'EOF'
+export let _start: () -> Int = () -> { let (a, b) = (1, 2); a + b }
+EOF
+cat > "$tdir/bad_nontuple.vibe" <<'EOF'
+export let _start: () -> Int = () -> { let (a, b) = 5; a + b }
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$tdir/ok.vibe" "$tdir/ok.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$tdir/ok.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: well-typed tuple destructure did not compile (over-rejects)" >&2
+  cat "$tdir/ok.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$tdir/bad_nontuple.vibe" "$tdir/bad_nontuple.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$tdir/bad_nontuple.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: ill-typed tuple destructure compiled (tuple-pattern check regressed)" >&2; exit 1
+fi
+rm -rf "$tdir"
+echo "[selfhost-only-gate] tuple-pattern destructuring type checking ok"
+
 echo "[selfhost-only-gate] ok"
