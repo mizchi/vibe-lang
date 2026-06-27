@@ -1845,7 +1845,17 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         c1 = nc
         pi = pi + 1
       }
-      let (bt, s2, c2) = check_expr(body, fn_env, defs, s1, c1, errors, tytab)
+      // Bind the function's annotated return type under a sentinel so an
+      // explicit `return e` inside the body can be checked against it (the body
+      // value is checked below, but `return` short-circuits and was otherwise
+      // unchecked — `() -> Int { return "x" }` was accepted). Nested functions
+      // rebind the sentinel, so `return` always targets the nearest enclosing
+      // function's type.
+      let body_env = match ret_ty {
+        Some(rte) => env_bind(fn_env, "__return__", resolve_tparams_in(resolve_type_expr(rte, defs), fn_env)),
+        None => fn_env
+      }
+      let (bt, s2, c2) = check_expr(body, body_env, defs, s1, c1, errors, tytab)
       let (final_ret, s3) = match ret_ty {
         Some(te) => {
           let resolved = resolve_type_expr(te, defs)
@@ -1962,7 +1972,17 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       (CtArray(elem_ty), s1, c1)
     },
     EReturn(e) => {
-      let (_, s1, c1) = check_expr(e, env, defs, s, c, errors, tytab)
+      let (et, s1, c1) = check_expr(e, env, defs, s, c, errors, tytab)
+      // Check the returned value against the enclosing function's annotated
+      // return type (bound as `__return__` by the EFn arm). Ground-gated via
+      // check_assignable, so a generic return type is not over-rejected.
+      match env_lookup(env, "__return__") {
+        Some(rt) => {
+          let _ = check_assignable(subst_apply(s1, rt), subst_apply(s1, et), s1, errors, "return type mismatch", 0 - 1)
+          ()
+        },
+        None => ()
+      }
       (CtUnknown, s1, c1)
     },
     _ => (CtUnknown, s, c)
