@@ -1001,13 +1001,21 @@ let cb: (Bool, Int) -> Int = (flag, v) -> {
   }
 }
 export let _start: () -> Int = () -> {
+  // Or-pattern discrimination: a string / tuple branch of `a | b` previously
+  // fell through to an always-true test, so a non-matching scrutinee silently
+  // took the first arm (`"z"` matched `"a" | "b"`, `(9, 0)` matched
+  // `(1, _) | (2, _)`). Both must route to the catch-all here.
+  let s = "z"
+  let sor = match s { "a" | "b" => 100, _ => 7 }
+  let t = (9, 0)
+  let tor = match t { (1, _) | (2, _) => 100, (_, _) => 11 }
   cn(N(W(true), 7)) + cn(N(W(false), 3)) + ct(T((true, 5))) + ct(T((false, 1)))
-    + cb(true, 9) + cb(false, 2)
+    + cb(true, 9) + cb(false, 2) + sor + tor
 }
 EOF
-# Expected: 1007 + 3 + 1005 + 1 + 1009 + 2 = 3027. A regressed compiler ignores
-# the nested/bare-tuple `true`/`false` literal and returns 7+3+5+1+9+2 = 27 (or
-# fails to compile the bare-tuple binding).
+# Expected: 1007 + 3 + 1005 + 1 + 1009 + 2 + 7 + 11 = 3045. A regressed compiler
+# ignores the nested/bare-tuple/or `true`/`false`/literal tests and returns
+# 7+3+5+1+9+2+100+100 = 227 (or fails to compile the bare-tuple binding).
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$nldir/nestedlit.vibe" "$nldir/nestedlit.wasm" _start >/dev/null 2>&1
@@ -1016,8 +1024,8 @@ if [ ! -s "$nldir/nestedlit.wasm" ]; then
 fi
 nestedlit_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$nldir/nestedlit.wasm" 2>/dev/null | tr -dc '0-9')"
-if [ "$nestedlit_out" != "3027" ]; then
-  echo "[selfhost-only-gate] FAIL: nested literal sub-pattern mismatch (got '$nestedlit_out', want 3027 -> #613 regressed)" >&2
+if [ "$nestedlit_out" != "3045" ]; then
+  echo "[selfhost-only-gate] FAIL: nested literal sub-pattern mismatch (got '$nestedlit_out', want 3045 -> #613 regressed)" >&2
   exit 1
 fi
 rm -rf "$nldir"

@@ -370,6 +370,57 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
                     }
                   }
                 },
+                PBool(b) => {
+                  // An or-branch boolean literal (`true | ..`) previously fell
+                  // through to `_ => const 1` (always-true), so `"a"|"b"` /
+                  // `(1,_)|(2,_)` / bool ors silently matched everything.
+                  emit_local_get(buf, scrut_local)
+                  emit_i64_const(buf, if b {
+                    if ctx.enable_rc { 2 } else { 1 }
+                  } else {
+                    0
+                  })
+                  emit_i64_eq(buf)
+                },
+                PString(sv) => {
+                  let __si = str_table_lookup(ctx.str_table.strs, sv)
+                  if __si >= 0 {
+                    let (__eqfi, _, _) = resolve_func(ctx.func_table, "eq")
+                    emit_local_get(buf, scrut_local)
+                    emit_str_ref(buf, Array::get(ctx.str_table.offsets, __si), Array::get(ctx.str_table.lengths, __si))
+                    emit_call(buf, __eqfi)
+                    emit_i32_wrap_i64(buf)
+                  } else {
+                    emit_i32_const(buf, 1)
+                  }
+                },
+                PTuple(tpats) => {
+                  // A tuple or-branch (`(1, _) | (2, _)`): no tag to test, so
+                  // start from `true` and AND-in a field-vs-literal test for
+                  // every literal element (binds/wildcards add none).
+                  emit_i32_const(buf, 1)
+                  let mut __ok = 0
+                  while __ok < Array::length(tpats) {
+                    let __okk = __ok
+                    let __oload: () -> Unit = () -> {
+                      emit_local_get(buf, scrut_local)
+                      if ctx.enable_rc {
+                        emit_i64_const(buf, -2)
+                        emit_i64_and(buf)
+                      } else {
+                        ()
+                      }
+                      emit_i32_wrap_i64(buf)
+                      emit_i64_load(buf, 3, if ctx.enable_rc {
+                        8 + __okk * 8
+                      } else {
+                        __okk * 8
+                      })
+                    }
+                    emit_sub_tests(Array::get(tpats, __okk), __oload)
+                    __ok = __ok + 1
+                  }
+                },
                 _ => emit_i32_const(buf, 1)
               }
             }
