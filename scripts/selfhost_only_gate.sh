@@ -1251,12 +1251,12 @@ fi
 rm -rf "$mdir"
 echo "[selfhost-only-gate] mut-field write escape analysis ok"
 
-# 31. match-arm / array-element consistency + non-function call (type soundness):
-#     value-yielding `match` arms must agree, array literal elements must share a
-#     type, and calling a non-function value must be rejected. Each was
-#     previously accepted silently. A `CtUnit` arm (statement-position match)
-#     and well-typed homogeneous cases must still compile.
-echo "[selfhost-only-gate] 31/31 match-arm / array-element / non-function-call type checking"
+# 31. value-soundness probes (each was previously accepted silently): value-
+#     yielding `match` arms must agree; array literal elements must share a type;
+#     calling a non-function value, `!` on a non-Bool, and `for x in <scalar>`
+#     must all be rejected. A `CtUnit` arm (statement-position match) and the
+#     well-typed positives must still compile.
+echo "[selfhost-only-gate] 31/31 match-arm / array / non-fn-call / unary-not / for-iterable type checking"
 cdir="_build/_gate_consistency"
 rm -rf "$cdir"; mkdir -p "$cdir"
 cat > "$cdir/ok.vibe" <<'EOF'
@@ -1275,6 +1275,12 @@ EOF
 cat > "$cdir/bad_call.vibe" <<'EOF'
 export let _start: () -> Int = () -> { let x = 5; x(3) }
 EOF
+cat > "$cdir/bad_not.vibe" <<'EOF'
+export let _start: () -> Bool = () -> { !5 }
+EOF
+cat > "$cdir/bad_forint.vibe" <<'EOF'
+export let _start: () -> Int = () -> { for x in 5 { let _ = x; () }; 0 }
+EOF
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$cdir/ok.vibe" "$cdir/ok.wasm" _start >/dev/null 2>&1 || true
@@ -1282,7 +1288,7 @@ if [ ! -s "$cdir/ok.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: well-typed match/array did not compile (over-rejects)" >&2
   cat "$cdir/ok.wasm.diag" 2>/dev/null >&2; exit 1
 fi
-for bad in bad_match bad_array bad_call; do
+for bad in bad_match bad_array bad_call bad_not bad_forint; do
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$cdir/$bad.vibe" "$cdir/$bad.wasm" _start >/dev/null 2>&1 || true
@@ -1291,6 +1297,6 @@ for bad in bad_match bad_array bad_call; do
   fi
 done
 rm -rf "$cdir"
-echo "[selfhost-only-gate] match-arm / array-element / non-function-call type checking ok"
+echo "[selfhost-only-gate] match-arm / array / non-fn-call / unary-not / for-iterable type checking ok"
 
 echo "[selfhost-only-gate] ok"
