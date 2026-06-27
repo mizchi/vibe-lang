@@ -1281,6 +1281,9 @@ EOF
 cat > "$cdir/bad_forint.vibe" <<'EOF'
 export let _start: () -> Int = () -> { for x in 5 { let _ = x; () }; 0 }
 EOF
+cat > "$cdir/bad_tuparity.vibe" <<'EOF'
+export let _start: () -> Int = () -> { let t = (1, 2); let (a, b, c) = t; a }
+EOF
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$cdir/ok.vibe" "$cdir/ok.wasm" _start >/dev/null 2>&1 || true
@@ -1288,7 +1291,7 @@ if [ ! -s "$cdir/ok.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: well-typed match/array did not compile (over-rejects)" >&2
   cat "$cdir/ok.wasm.diag" 2>/dev/null >&2; exit 1
 fi
-for bad in bad_match bad_array bad_call bad_not bad_forint; do
+for bad in bad_match bad_array bad_call bad_not bad_forint bad_tuparity; do
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$cdir/$bad.vibe" "$cdir/$bad.wasm" _start >/dev/null 2>&1 || true

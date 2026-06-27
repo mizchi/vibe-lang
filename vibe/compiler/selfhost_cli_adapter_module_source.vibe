@@ -4463,7 +4463,7 @@ let find_ctor_in_defs: (Array[TypeDef], String) -> Option[(String, Array[Type])]
   }
   go_defs(0)
 }
-export let rec check_pattern: (Pat, Type, TypeEnv, Array[TypeDef]) -> TypeEnv = (pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[TypeDef]) -> TypeEnv {
+export let rec check_pattern: (Pat, Type, TypeEnv, Array[TypeDef], Array[String]) -> TypeEnv = (pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[TypeDef], errors: Array[String]) -> TypeEnv {
   match pat {
     PWild => env,
     PBind(name) => env_bind(env, name, scrutinee_ty),
@@ -4519,7 +4519,7 @@ export let rec check_pattern: (Pat, Type, TypeEnv, Array[TypeDef]) -> TypeEnv = 
               } else {
                 CtUnknown
               }
-              let next_env = check_pattern(Array::get(sub_pats, i), sub_ty, acc_env, defs)
+              let next_env = check_pattern(Array::get(sub_pats, i), sub_ty, acc_env, defs, errors)
               bind_subs(i + 1, next_env)
             }
           }
@@ -4531,7 +4531,7 @@ export let rec check_pattern: (Pat, Type, TypeEnv, Array[TypeDef]) -> TypeEnv = 
             if i >= splen {
               acc_env
             } else {
-              let next_env = check_pattern(Array::get(sub_pats, i), CtUnknown, acc_env, defs)
+              let next_env = check_pattern(Array::get(sub_pats, i), CtUnknown, acc_env, defs, errors)
               bind_unknown(i + 1, next_env)
             }
           }
@@ -4544,6 +4544,11 @@ export let rec check_pattern: (Pat, Type, TypeEnv, Array[TypeDef]) -> TypeEnv = 
       match scrutinee_ty {
         CtTuple(elem_tys) => {
           let elen = Array::length(elem_tys)
+          if plen != elen {
+            Array::push(errors, String::concat("tuple pattern binds ", String::concat(__to_string(plen), String::concat(" elements but the value is a ", String::concat(__to_string(elen), "-tuple")))))
+          } else {
+            ()
+          }
           let rec bind_tuple: (Int, TypeEnv) -> TypeEnv = (i, acc_env) -> {
             if i >= plen {
               acc_env
@@ -4553,7 +4558,7 @@ export let rec check_pattern: (Pat, Type, TypeEnv, Array[TypeDef]) -> TypeEnv = 
               } else {
                 CtUnknown
               }
-              let next_env = check_pattern(Array::get(pats, i), et, acc_env, defs)
+              let next_env = check_pattern(Array::get(pats, i), et, acc_env, defs, errors)
               bind_tuple(i + 1, next_env)
             }
           }
@@ -4564,7 +4569,7 @@ export let rec check_pattern: (Pat, Type, TypeEnv, Array[TypeDef]) -> TypeEnv = 
             if i >= plen {
               acc_env
             } else {
-              let next_env = check_pattern(Array::get(pats, i), CtUnknown, acc_env, defs)
+              let next_env = check_pattern(Array::get(pats, i), CtUnknown, acc_env, defs, errors)
               bind_unk(i + 1, next_env)
             }
           }
@@ -4572,7 +4577,7 @@ export let rec check_pattern: (Pat, Type, TypeEnv, Array[TypeDef]) -> TypeEnv = 
         }
       }
     },
-    POr(left, _right) => check_pattern(left, scrutinee_ty, env, defs),
+    POr(left, _right) => check_pattern(left, scrutinee_ty, env, defs, errors),
     PStruct(_, fields) => {
       let flen = Array::length(fields)
       let rec bind_fields: (Int, TypeEnv) -> TypeEnv = (i, acc_env) -> {
@@ -4580,7 +4585,7 @@ export let rec check_pattern: (Pat, Type, TypeEnv, Array[TypeDef]) -> TypeEnv = 
           acc_env
         } else {
           let (_, fpat) = Array::get(fields, i)
-          let next_env = check_pattern(fpat, CtUnknown, acc_env, defs)
+          let next_env = check_pattern(fpat, CtUnknown, acc_env, defs, errors)
           bind_fields(i + 1, next_env)
         }
       }
@@ -5714,26 +5719,35 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       }
       else {
         let mut result_ty = CtUnknown
+        let mut check_arms = false
         let mut si = s1
         let mut ci = c1
         let mut ai = 0
         while ai < alen {
           let (pat, body) = Array::get(arms, ai)
-          let arm_env = check_pattern(pat, scr_ty, env, defs)
+          let arm_env = check_pattern(pat, scr_ty, env, defs, errors)
           let (arm_ty, ns, nc) = check_expr(body, arm_env, defs, si, ci, errors, tytab)
           si = ns
           ci = nc
           if ai == 0 {
             result_ty = arm_ty
+            check_arms = match subst_apply(si, arm_ty) {
+              CtInt => true,
+              CtDouble => true,
+              CtBool => true,
+              CtString => true,
+              CtChar => true,
+              _ => false
+            }
           } else {
-            let r1 = subst_apply(si, result_ty)
-            let r2 = subst_apply(si, arm_ty)
-            si = match r1 {
-              CtUnit => si,
-              _ => match r2 {
+            if check_arms {
+              let r2 = subst_apply(si, arm_ty)
+              si = match r2 {
                 CtUnit => si,
-                _ => check_assignable(r1, r2, si, errors, "match arms have incompatible types", 0 - 1)
+                _ => check_assignable(result_ty, r2, si, errors, "match arms have incompatible types", 0 - 1)
               }
+            } else {
+              ()
             }
           }
           ai = ai + 1
@@ -6006,6 +6020,7 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       let mut s1 = s
       let mut c1 = c
       let mut elem_ty = CtUnknown
+      let mut check_elems = false
       let mut ai = 0
       while ai < ilen {
         let (it, ns, nc) = check_expr(Array::get(items, ai), env, defs, s1, c1, errors, tytab)
@@ -6013,8 +6028,20 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         c1 = nc
         if ai == 0 {
           elem_ty = it
+          check_elems = match subst_apply(s1, it) {
+            CtInt => true,
+            CtDouble => true,
+            CtBool => true,
+            CtString => true,
+            CtChar => true,
+            _ => false
+          }
         } else {
-          s1 = check_assignable(subst_apply(s1, elem_ty), subst_apply(s1, it), s1, errors, "array elements have incompatible types", 0 - 1)
+          if check_elems {
+            s1 = check_assignable(elem_ty, subst_apply(s1, it), s1, errors, "array elements have incompatible types", 0 - 1)
+          } else {
+            ()
+          }
         }
         ai = ai + 1
       }

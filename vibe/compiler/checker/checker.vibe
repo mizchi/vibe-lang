@@ -1302,30 +1302,44 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       }
       else {
         let mut result_ty = CtUnknown
+        // Whether to cross-check arm types. Enabled only when the first arm's
+        // type resolves to a SIMPLE scalar (Int/Double/Bool/String/Char) — that
+        // covers the real bug (`match x { 0 => 1, _ => "s" }`) while skipping
+        // the per-arm `subst_apply` for matches whose arms yield large tuple /
+        // struct / function types (e.g. the compiler's own `(Type, Subst, Int)`
+        // returning matches), which would otherwise balloon the self-compile
+        // heap. CtUnknown/CtVar/aggregate first arms are left unchecked.
+        let mut check_arms = false
         let mut si = s1
         let mut ci = c1
         let mut ai = 0
         while ai < alen {
           let (pat, body) = Array::get(arms, ai)
-          let arm_env = check_pattern(pat, scr_ty, env, defs)
+          let arm_env = check_pattern(pat, scr_ty, env, defs, errors)
           let (arm_ty, ns, nc) = check_expr(body, arm_env, defs, si, ci, errors, tytab)
           si = ns
           ci = nc
           if ai == 0 {
             result_ty = arm_ty
+            check_arms = match subst_apply(si, arm_ty) {
+              CtInt => true,
+              CtDouble => true,
+              CtBool => true,
+              CtString => true,
+              CtChar => true,
+              _ => false
+            }
           } else {
-            // All value-yielding arms must agree (previously unchecked —
-            // `match x { 0 => 1, _ => "s" }` was accepted). Tolerate a `CtUnit`
-            // arm (statement-position match) and rely on check_assignable's
-            // ground/ground gate so polymorphic arms are not over-rejected.
-            let r1 = subst_apply(si, result_ty)
-            let r2 = subst_apply(si, arm_ty)
-            si = match r1 {
-              CtUnit => si,
-              _ => match r2 {
+            if check_arms {
+              // Tolerate a `CtUnit` arm (statement-position match); rely on
+              // check_assignable's ground/ground gate otherwise.
+              let r2 = subst_apply(si, arm_ty)
+              si = match r2 {
                 CtUnit => si,
-                _ => check_assignable(r1, r2, si, errors, "match arms have incompatible types", 0 - 1)
+                _ => check_assignable(result_ty, r2, si, errors, "match arms have incompatible types", 0 - 1)
               }
+            } else {
+              ()
             }
           }
           ai = ai + 1
@@ -1628,6 +1642,11 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
       let mut s1 = s
       let mut c1 = c
       let mut elem_ty = CtUnknown
+      // Cross-check elements only when the first element is a simple scalar —
+      // see EMatch: this catches `[1, "x", 3]` while skipping the per-element
+      // `subst_apply` for arrays of large struct/tuple values that pressure the
+      // self-compile heap.
+      let mut check_elems = false
       let mut ai = 0
       while ai < ilen {
         let (it, ns, nc) = check_expr(Array::get(items, ai), env, defs, s1, c1, errors, tytab)
@@ -1635,11 +1654,20 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         c1 = nc
         if ai == 0 {
           elem_ty = it
+          check_elems = match subst_apply(s1, it) {
+            CtInt => true,
+            CtDouble => true,
+            CtBool => true,
+            CtString => true,
+            CtChar => true,
+            _ => false
+          }
         } else {
-          // Array elements must share a type (previously unchecked —
-          // `[1, "x", 3]` was accepted). Ground/ground-gated so element types
-          // that are still type variables are not over-rejected.
-          s1 = check_assignable(subst_apply(s1, elem_ty), subst_apply(s1, it), s1, errors, "array elements have incompatible types", 0 - 1)
+          if check_elems {
+            s1 = check_assignable(elem_ty, subst_apply(s1, it), s1, errors, "array elements have incompatible types", 0 - 1)
+          } else {
+            ()
+          }
         }
         ai = ai + 1
       }
