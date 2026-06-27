@@ -1471,4 +1471,43 @@ fi
 rm -rf "$xdir"
 echo "[selfhost-only-gate] match exhaustiveness ok"
 
+# 36. literal-pattern type checking: an integer/string/boolean literal pattern
+#     can only match a scrutinee of its own type — `match 5 { "x" => .. }` and a
+#     nested `Some(true)` over `Option[Int]` must be rejected; matching literals
+#     of the right type (incl. nested) must compile.
+echo "[selfhost-only-gate] 36/36 literal-pattern type checking"
+ldir="_build/_gate_litpat"
+rm -rf "$ldir"; mkdir -p "$ldir"
+cat > "$ldir/ok.vibe" <<'EOF'
+export let _start: () -> Int = () -> {
+  let a = match 5 { 0 => 1, 5 => 2, _ => 0 }
+  let o: Option[Int] = Some(1)
+  let b = match o { Some(3) => 1, Some(_) => 9, None => 0 }
+  a + b
+}
+EOF
+cat > "$ldir/bad_lit.vibe" <<'EOF'
+export let _start: () -> Int = () -> { match 5 { "x" => 1, _ => 0 } }
+EOF
+cat > "$ldir/bad_nested.vibe" <<'EOF'
+export let _start: () -> Int = () -> { let o: Option[Int] = Some(1); match o { Some(true) => 1, _ => 0 } }
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$ldir/ok.vibe" "$ldir/ok.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$ldir/ok.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: well-typed literal patterns did not compile (over-rejects)" >&2
+  cat "$ldir/ok.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+for bad in bad_lit bad_nested; do
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$ldir/$bad.vibe" "$ldir/$bad.wasm" _start >/dev/null 2>&1 || true
+  if [ -s "$ldir/$bad.wasm" ]; then
+    echo "[selfhost-only-gate] FAIL: ill-typed literal pattern $bad compiled (check regressed)" >&2; exit 1
+  fi
+done
+rm -rf "$ldir"
+echo "[selfhost-only-gate] literal-pattern type checking ok"
+
 echo "[selfhost-only-gate] ok"
