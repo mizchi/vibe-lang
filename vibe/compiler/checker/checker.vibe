@@ -692,10 +692,36 @@ let direct_call_return: (TypeEnv, String) -> Option[Type] = (env, name) -> {
 let builtin_first_arg_head: (String) -> Int = (name) -> {
   if name == "Array::length" || name == "Array::get" || name == "Array::set" || name == "Array::push" || name == "Array::push_all" || name == "Array::slice" || name == "Array::concat" || name == "Array::reverse" || name == "Array::truncate" || name == "Array::foreach" || name == "Array::contains" || name == "Array::any" || name == "Array::all" || name == "Array::find" || name == "Array::filter" {
     9
-  } else if name == "String::length" || name == "String::substring" || name == "String::trim" || name == "String::to_lower" || name == "String::to_upper" || name == "String::index_of" || name == "String::last_index_of" || name == "String::char_code_at" || name == "String::contains" || name == "String::starts_with" || name == "String::ends_with" || name == "String::split" {
+  } else if name == "String::length" || name == "String::substring" || name == "String::trim" || name == "String::to_lower" || name == "String::to_upper" || name == "String::index_of" || name == "String::last_index_of" || name == "String::char_code_at" || name == "String::contains" || name == "String::starts_with" || name == "String::ends_with" || name == "String::split" || name == "String::concat" {
     4
   } else if name == "Bytes::length" || name == "Bytes::get" || name == "Bytes::set" || name == "Bytes::slice" || name == "Bytes::to_array" || name == "Bytes::push" || name == "Bytes::append" || name == "Bytes::blit" || name == "Bytes::fill" {
     7
+  } else {
+    0
+  }
+}
+
+// Expected head-kind for argument position `i` (i >= 1) of fixed-signature
+// builtins, mirroring `builtin_first_arg_head` for the non-receiver args.
+// `direct_call_return` types these polymorphically, so passing e.g. an Int as
+// the second arg of `String::concat`, or a String as the index of
+// `String::substring`, slipped through. 0 = tolerate (no certain head). Only
+// monomorphic, non-callback positions are listed (so HOF args like Array::map's
+// function stay untouched — those need real signature inference, not a head).
+let builtin_arg_head_rest: (String, Int) -> Int = (name, i) -> {
+  // String head = 4, Int head = 1, Bytes head = 7 (see head_kind).
+  if name == "String::concat" {
+    if i == 1 { 4 } else { 0 }
+  } else if name == "String::index_of" || name == "String::last_index_of" || name == "String::contains" || name == "String::starts_with" || name == "String::ends_with" || name == "String::split" {
+    if i == 1 { 4 } else { 0 }
+  } else if name == "String::substring" {
+    if i == 1 || i == 2 { 1 } else { 0 }
+  } else if name == "String::char_code_at" {
+    if i == 1 { 1 } else { 0 }
+  } else if name == "Bytes::get" {
+    if i == 1 { 1 } else { 0 }
+  } else if name == "Bytes::set" || name == "Bytes::slice" {
+    if i == 1 || i == 2 { 1 } else { 0 }
   } else {
     0
   }
@@ -1448,6 +1474,20 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
                 let got_head = head_kind(subst_apply(s2, at))
                 if got_head != 0 && got_head != want_head {
                   Array::push(errors, String::concat(String::concat("argument type mismatch for ", String::concat(name, ": receiver type ")), String::concat(type_to_string(subst_apply(s2, at)), off_marker_len(callee_off, String::length(name)))))
+                } else {
+                  ()
+                }
+              } else if ai >= 1 {
+                // Non-receiver argument head check for fixed-signature builtins
+                // (`String::concat("a", 1)`, `String::substring(s, "x", 2)`).
+                let want_rest = builtin_arg_head_rest(name, ai)
+                if want_rest != 0 {
+                  let got_head = head_kind(subst_apply(s2, at))
+                  if got_head != 0 && got_head != want_rest {
+                    Array::push(errors, String::concat(String::concat("argument type mismatch for ", String::concat(name, String::concat(" (arg ", String::concat(__to_string(ai), "): ")))), String::concat(type_to_string(subst_apply(s2, at)), off_marker_len(callee_off, String::length(name)))))
+                  } else {
+                    ()
+                  }
                 } else {
                   ()
                 }
