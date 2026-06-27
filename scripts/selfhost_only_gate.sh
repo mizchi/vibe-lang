@@ -975,6 +975,7 @@ cat > "$nldir/nestedlit.vibe" <<'EOF'
 enum W { W(Bool) }
 enum N { N(W, Int) }
 enum T { T((Bool, Int)) }
+enum I { I(Int) }
 let cn: (N) -> Int = (e) -> {
   match e {
     N(W(false), n) => n,
@@ -989,10 +990,10 @@ let ct: (T) -> Int = (e) -> {
 }
 // Bare top-level tuple pattern with a literal element: previously the cond was
 // unconditionally true (matched any tuple) AND the binding of `n` was dropped
-// (codegen trap). `cb` exercises both over a local tuple — discrimination must
+// (codegen trap). `cb` exercises both over a local tuple; discrimination must
 // route by the bool. (Written with a local `let` tuple rather than a tuple
 // function parameter, since `((Bool, Int)) -> Int` annotations are mis-parsed
-// as two-parameter — a separate type-annotation bug.)
+// as two-parameter, a separate type-annotation bug.)
 let cb: (Bool, Int) -> Int = (flag, v) -> {
   let e = (flag, v)
   match e {
@@ -1009,13 +1010,18 @@ export let _start: () -> Int = () -> {
   let sor = match s { "a" | "b" => 100, _ => 7 }
   let t = (9, 0)
   let tor = match t { (1, _) | (2, _) => 100, (_, _) => 11 }
+  // Or-pattern nested inside a constructor arg / tuple element (`W(1 | 2)`,
+  // `(1 | 2, _)`): emit_sub_tests previously had no POr case, so the literal
+  // test was skipped and any value matched. `W(9)` / `(9, _)` must miss here.
+  let nor = match I(9) { I(1 | 2) => 100, I(_) => 13 }
+  let ntor = match (9, 0) { (1 | 2, _) => 100, (_, _) => 17 }
   cn(N(W(true), 7)) + cn(N(W(false), 3)) + ct(T((true, 5))) + ct(T((false, 1)))
-    + cb(true, 9) + cb(false, 2) + sor + tor
+    + cb(true, 9) + cb(false, 2) + sor + tor + nor + ntor
 }
 EOF
-# Expected: 1007 + 3 + 1005 + 1 + 1009 + 2 + 7 + 11 = 3045. A regressed compiler
-# ignores the nested/bare-tuple/or `true`/`false`/literal tests and returns
-# 7+3+5+1+9+2+100+100 = 227 (or fails to compile the bare-tuple binding).
+# Expected: 1007+3+1005+1+1009+2 + 7+11 + 13+17 = 3075. A regressed compiler
+# ignores the nested/bare-tuple/or literal tests and returns a smaller sum (or
+# fails to compile the bare-tuple binding).
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$nldir/nestedlit.vibe" "$nldir/nestedlit.wasm" _start >/dev/null 2>&1
@@ -1024,8 +1030,8 @@ if [ ! -s "$nldir/nestedlit.wasm" ]; then
 fi
 nestedlit_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$nldir/nestedlit.wasm" 2>/dev/null | tr -dc '0-9')"
-if [ "$nestedlit_out" != "3045" ]; then
-  echo "[selfhost-only-gate] FAIL: nested literal sub-pattern mismatch (got '$nestedlit_out', want 3045 -> #613 regressed)" >&2
+if [ "$nestedlit_out" != "3075" ]; then
+  echo "[selfhost-only-gate] FAIL: nested literal sub-pattern mismatch (got '$nestedlit_out', want 3075 -> #613 regressed)" >&2
   exit 1
 fi
 rm -rf "$nldir"
