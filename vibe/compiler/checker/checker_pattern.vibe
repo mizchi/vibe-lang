@@ -124,11 +124,13 @@ export let rec check_pattern: (Pat, Type, TypeEnv, Array[TypeDef], Array[String]
           }
           let splen = Array::length(sub_pats)
           let ptlen = Array::length(payload_types)
-          // A constructor pattern that matches a value of a concrete SCALAR
-          // type (`match 5 { Red => .. }`) is a type error — the scrutinee can
-          // never be that enum. Type vars / unknown / named / enum / option
-          // scrutinees are tolerated.
-          let scalar_scrutinee = match scrutinee_ty {
+          // A constructor pattern can only match a value whose type is the
+          // corresponding enum (or builtin Option). A concrete NON-enum type —
+          // a scalar (`match 5 { Red => .. }`), a function (`match N { N(a) =>
+          // .. }` where the bare ctor `N` is the `(Int) -> E` partial
+          // application), an Array or a Tuple — can never be that enum.
+          // Type vars / unknown / named / enum / option scrutinees are tolerated.
+          let non_enum_scrutinee = match scrutinee_ty {
             CtInt => true,
             CtDouble => true,
             CtBool => true,
@@ -136,10 +138,13 @@ export let rec check_pattern: (Pat, Type, TypeEnv, Array[TypeDef], Array[String]
             CtChar => true,
             CtUnit => true,
             CtBytes => true,
+            CtFn(_, _, _) => true,
+            CtArray(_) => true,
+            CtTuple(_) => true,
             _ => false
           }
-          if scalar_scrutinee {
-            Array::push(errors, String::concat("constructor pattern `", String::concat(name, String::concat("` (of ", String::concat(enum_name, ") cannot match a scalar scrutinee")))))
+          if non_enum_scrutinee {
+            Array::push(errors, String::concat("constructor pattern `", String::concat(name, String::concat("` (of ", String::concat(enum_name, ") cannot match this scrutinee type")))))
           } else {
             ()
           }
