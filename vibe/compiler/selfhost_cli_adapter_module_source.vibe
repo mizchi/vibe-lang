@@ -5243,6 +5243,25 @@ let check_two_array_elems: (Type, Type, Subst, Array[String], String) -> Subst =
     _ => s
   }
 }
+let struct_field_type: (Array[TypeDef], String, String) -> Option[Type] = (defs, sname, field) -> {
+  match find_typedef(defs, sname) {
+    Some(td) => match td {
+      TDStruct(_, fields, _) => {
+        let rec go: (Int) -> Option[Type] = (i) -> {
+          if i >= Array::length(fields) {
+            None
+          } else {
+            let (fname, ftype) = Array::get(fields, i)
+            if fname == field { Some(ftype) } else { go(i + 1) }
+          }
+        }
+        go(0)
+      },
+      _ => None
+    },
+    None => None
+  }
+}
 let is_logic_binop: (String) -> Bool = (op) -> {
   op == "&&"
   || op == "||"
@@ -6012,9 +6031,25 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
             }
             (tab_call_ty(tytab, call_off, subst_apply(s4, selected_ret)), s4, c3)
           },
-          _ => match direct_ret {
-            Some(t) => (tab_call_ty(tytab, call_off, t), s3, c3),
-            None => (tab_call_ty(tytab, call_off, CtUnknown), s3, c3)
+          _ => {
+            let field_fn = match subst_apply(s3, obj_ty) {
+              CtStruct(sname) => struct_field_type(defs, sname, method),
+              _ => None
+            }
+            match field_fn {
+              Some(CtFn(fpts, fret, _)) => {
+                let explicit = Array::slice(arg_tys, 1, Array::length(arg_tys))
+                if Array::length(fpts) != Array::length(explicit) {
+                  Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(qualified, String::concat(": expected ", String::concat(__to_string(Array::length(fpts)), String::concat(" args, got ", __to_string(Array::length(explicit))))))), off_marker_len(call_off, String::length(qualified))))
+                }
+                let s4 = unify_call_args(fpts, explicit, s3, errors, qualified, call_off)
+                (tab_call_ty(tytab, call_off, subst_apply(s4, fret)), s4, c3)
+              },
+              _ => match direct_ret {
+                Some(t) => (tab_call_ty(tytab, call_off, t), s3, c3),
+                None => (tab_call_ty(tytab, call_off, CtUnknown), s3, c3)
+              }
+            }
           }
         }
       },

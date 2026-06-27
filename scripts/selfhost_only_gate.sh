@@ -1256,6 +1256,17 @@ cat > "$adir/right.vibe" <<'EOF'
 let f: (Int) -> Int = (x) -> { x + 1 }
 export let _start: () -> Int = () -> { f(41) + 1 }
 EOF
+# Field-stored-function call `b.f(args)`: when no method `T::f` exists but the
+# struct field `f` holds a function, the args must be checked against the
+# field's parameter types (this `b.f("s")` was previously unchecked).
+cat > "$adir/ffwrong.vibe" <<'EOF'
+struct B { f: (Int) -> Int }
+export let _start: () -> Int = () -> { let b = B::{ f: (x) -> { x + 1 } }; (b.f)("s") }
+EOF
+cat > "$adir/ffright.vibe" <<'EOF'
+struct B { f: (Int) -> Int }
+export let _start: () -> Int = () -> { let b = B::{ f: (x) -> { x + 1 } }; (b.f)(3) }
+EOF
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$adir/right.vibe" "$adir/right.wasm" _start >/dev/null 2>&1 || true
@@ -1264,9 +1275,21 @@ if [ ! -s "$adir/right.wasm" ]; then
 fi
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$adir/ffright.vibe" "$adir/ffright.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$adir/ffright.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: a correct field-stored-function call did not compile (over-rejects)" >&2; exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$adir/wrong.vibe" "$adir/wrong.wasm" _start >/dev/null 2>&1 || true
 if [ -s "$adir/wrong.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: an ill-typed argument (Int <- String) compiled (arg-check regressed)" >&2; exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$adir/ffwrong.vibe" "$adir/ffwrong.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$adir/ffwrong.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: ill-typed field-stored-function call (Int <- String) compiled" >&2; exit 1
 fi
 rm -rf "$adir"
 echo "[selfhost-only-gate] argument type checking ok"
