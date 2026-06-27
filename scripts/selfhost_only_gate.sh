@@ -1393,4 +1393,41 @@ done
 rm -rf "$pdir"
 echo "[selfhost-only-gate] constructor-pattern arity / scrutinee type checking ok"
 
+# 34. indexing / tuple-projection soundness: `obj[i]` on a non-indexable scalar
+#     and `t.N` past a tuple's arity must be rejected; indexing an Array/String
+#     and an in-range tuple projection must still compile.
+echo "[selfhost-only-gate] 34/34 indexing / tuple-projection type checking"
+idir="_build/_gate_index"
+rm -rf "$idir"; mkdir -p "$idir"
+cat > "$idir/ok.vibe" <<'EOF'
+export let _start: () -> Int = () -> {
+  let a = [10, 20, 30]
+  let t = (1, 2)
+  a[1] + t.0 + t.1
+}
+EOF
+cat > "$idir/bad_index.vibe" <<'EOF'
+export let _start: () -> Int = () -> { let n = 5; n[0] }
+EOF
+cat > "$idir/bad_tuple.vibe" <<'EOF'
+export let _start: () -> Int = () -> { let t = (1, 2); t.5 }
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$idir/ok.vibe" "$idir/ok.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$idir/ok.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: well-typed index/tuple did not compile (over-rejects)" >&2
+  cat "$idir/ok.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+for bad in bad_index bad_tuple; do
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$idir/$bad.vibe" "$idir/$bad.wasm" _start >/dev/null 2>&1 || true
+  if [ -s "$idir/$bad.wasm" ]; then
+    echo "[selfhost-only-gate] FAIL: ill-typed $bad compiled (index/tuple check regressed)" >&2; exit 1
+  fi
+done
+rm -rf "$idir"
+echo "[selfhost-only-gate] indexing / tuple-projection type checking ok"
+
 echo "[selfhost-only-gate] ok"
