@@ -1847,4 +1847,59 @@ fi
 rm -rf "$tdir"
 echo "[selfhost-only-gate] tuple-pattern destructuring type checking ok"
 
+# 39. multi-feature end-to-end smoke: real programs that combine several language
+#     features must compile through the fresh stage2 AND run to a known value —
+#     a codegen/runtime regression net broader than the single-feature checks
+#     above. `eff` deliberately exercises this session's work together: multi-
+#     operation effect dispatch (#665), a match guard inside a handler arm
+#     (#666), and the effect-call discipline (#626) in one program.
+echo "[selfhost-only-gate] 39/39 multi-feature end-to-end smoke"
+sdir="_build/_gate_smoke"
+rm -rf "$sdir"; mkdir -p "$sdir"
+cat > "$sdir/clos.vibe" <<'EOF'
+let rec fold: (Array[Int], Int, (Int, Int) -> Int) -> Int = (a, acc, f) -> {
+  if Array::length(a) == 0 { acc }
+  else { let h = Array::get(a, 0); fold(Array::slice(a, 1, Array::length(a)), f(acc, h), f) }
+}
+export let _start: () -> Int = () -> { let add = (x: Int, y: Int) -> { x + y }; fold([1, 2, 3, 4], 0, add) }
+EOF
+cat > "$sdir/eff.vibe" <<'EOF'
+effect Calc { Add(Int) -> Int; Mul(Int) -> Int }
+export let _start: () -> Int = () -> {
+  handle {
+    let a = perform Calc::Add(5)
+    let b = perform Calc::Mul(3)
+    a + b
+  } with Calc {
+    Add(n) => resume(match n { x if x > 3 => x * 10, _ => x });
+    Mul(n) => resume(n + 100)
+  }
+}
+EOF
+cat > "$sdir/gen.vibe" <<'EOF'
+enum Tree { Leaf(Int); Node(Tree, Tree) }
+let rec sum: (Tree) -> Int = (t) -> { match t { Leaf(n) => n, Node(l, r) => sum(l) + sum(r) } }
+export let _start: () -> Int = () -> { sum(Node(Node(Leaf(1), Leaf(2)), Leaf(3))) }
+EOF
+smoke_check() {
+  local nm="$1" want="$2"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$sdir/$nm.vibe" "$sdir/$nm.wasm" _start >/dev/null 2>&1 || true
+  if [ ! -s "$sdir/$nm.wasm" ]; then
+    echo "[selfhost-only-gate] FAIL: smoke '$nm' did not compile (codegen regression)" >&2
+    cat "$sdir/$nm.wasm.diag" 2>/dev/null >&2; exit 1
+  fi
+  local got
+  got="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$sdir/$nm.wasm" 2>/dev/null | tr -dc '0-9-')"
+  if [ "$got" != "$want" ]; then
+    echo "[selfhost-only-gate] FAIL: smoke '$nm' ran to '$got' (expected $want)" >&2; exit 1
+  fi
+}
+smoke_check clos 10
+smoke_check eff 153
+smoke_check gen 6
+rm -rf "$sdir"
+echo "[selfhost-only-gate] multi-feature end-to-end smoke ok (10/153/6)"
+
 echo "[selfhost-only-gate] ok"
