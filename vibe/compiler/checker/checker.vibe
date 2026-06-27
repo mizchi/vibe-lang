@@ -978,6 +978,31 @@ let index_target_check: (String, Array[Expr], TypeEnv, Array[TypeDef], Subst, In
   }
 }
 
+// An arm pattern is a CATCH-ALL (makes a match exhaustive regardless of which
+// constructors precede it) when it is a wildcard or a bare binding. `POr` is a
+// catch-all if either side is.
+let rec pat_is_catchall: (Pat) -> Bool = (pat) -> {
+  match pat {
+    PWild => true,
+    PBind(_) => true,
+    POr(l, r) => pat_is_catchall(l) || pat_is_catchall(r),
+    _ => false
+  }
+}
+
+// Collect the constructor names a pattern matches at the TOP level (for enum
+// exhaustiveness). `POr` contributes from both sides; other patterns none.
+let rec collect_ctor_names_into: (Pat, Array[String]) -> Unit = (pat, acc) -> {
+  match pat {
+    PCtor(name, _) => Array::push(acc, name),
+    POr(l, r) => {
+      collect_ctor_names_into(l, acc)
+      collect_ctor_names_into(r, acc)
+    },
+    _ => ()
+  }
+}
+
 // Parse a tuple projection field (`t.0`, `t.5`) — the field is the all-digit
 // index string. Returns None for a non-numeric field (a real `.method`/.field)
 // so only genuine tuple projections are bounds-checked.
@@ -1492,6 +1517,63 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
             }
           }
           ai = ai + 1
+        }
+        // Exhaustiveness: when the scrutinee is a concrete user enum, the arms
+        // must either include a catch-all (`_` / bind) or cover EVERY variant —
+        // otherwise an unhandled variant traps at runtime. Conservative: only a
+        // concrete enum whose definition is known is checked; anything else
+        // (builtin Option/bool, type vars, non-enum) is left alone.
+        let enum_name_opt = match subst_apply(si, scr_ty) {
+          CtEnum(en) => Some(en),
+          CtNamed(en, _) => Some(en),
+          _ => None
+        }
+        match enum_name_opt {
+          Some(en) => match find_typedef(defs, en) {
+            Some(TDEnum(_, _, variants)) => {
+              let mut has_catchall = false
+              let covered = Array::slice([
+                ""
+              ], 0, 0)
+              let mut ax = 0
+              while ax < Array::length(arms) {
+                let (apat, _) = Array::get(arms, ax)
+                if pat_is_catchall(apat) {
+                  has_catchall = true
+                } else {
+                  ()
+                }
+                collect_ctor_names_into(apat, covered)
+                ax = ax + 1
+              }
+              if has_catchall {
+                ()
+              } else {
+                let mut vi = 0
+                while vi < Array::length(variants) {
+                  let (vname, _) = Array::get(variants, vi)
+                  let mut found = false
+                  let mut ci2 = 0
+                  while ci2 < Array::length(covered) {
+                    if Array::get(covered, ci2) == vname {
+                      found = true
+                    } else {
+                      ()
+                    }
+                    ci2 = ci2 + 1
+                  }
+                  if found {
+                    ()
+                  } else {
+                    Array::push(errors, String::concat("non-exhaustive match: variant `", String::concat(vname, String::concat("` of enum ", String::concat(en, " is not handled (add it or a `_` arm)")))))
+                  }
+                  vi = vi + 1
+                }
+              }
+            },
+            _ => ()
+          },
+          None => ()
         }
         (result_ty, si, ci)
       }

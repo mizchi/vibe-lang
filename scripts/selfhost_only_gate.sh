@@ -1430,4 +1430,39 @@ done
 rm -rf "$idir"
 echo "[selfhost-only-gate] indexing / tuple-projection type checking ok"
 
+# 35. match exhaustiveness: a match on a concrete user enum must cover every
+#     variant or carry a catch-all; a non-exhaustive match must be rejected.
+#     Wildcard, full-coverage, and or-pattern coverage must still compile.
+echo "[selfhost-only-gate] 35/35 match exhaustiveness (enum variant coverage)"
+xdir="_build/_gate_exhaust"
+rm -rf "$xdir"; mkdir -p "$xdir"
+cat > "$xdir/ok.vibe" <<'EOF'
+enum Color { Red; Green; Blue }
+export let _start: () -> Int = () -> {
+  let a = match Red { Red => 1, Green => 2, Blue => 3 }
+  let b = match Green { Red => 1, _ => 0 }
+  let c = match Blue { Red | Green => 1, Blue => 3 }
+  a + b + c
+}
+EOF
+cat > "$xdir/bad.vibe" <<'EOF'
+enum Color { Red; Green; Blue }
+export let _start: () -> Int = () -> { match Red { Red => 1 } }
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$xdir/ok.vibe" "$xdir/ok.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$xdir/ok.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: exhaustive matches did not compile (over-rejects)" >&2
+  cat "$xdir/ok.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$xdir/bad.vibe" "$xdir/bad.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$xdir/bad.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: non-exhaustive match compiled (exhaustiveness check regressed)" >&2; exit 1
+fi
+rm -rf "$xdir"
+echo "[selfhost-only-gate] match exhaustiveness ok"
+
 echo "[selfhost-only-gate] ok"
