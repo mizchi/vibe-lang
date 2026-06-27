@@ -1323,6 +1323,17 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
           _ => s2
         }
         (tab_call_ty(tytab, call_off, CtUnit), s3, c2)
+      } else if name == "Array::set" && Array::length(args) == 3 {
+        // `Array::set(a, i, v)` requires `v` to match `a`'s element type (the 3rd
+        // arg was unchecked). Same ground-gated discipline as Array::push.
+        let (obj_ty, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+        let (_, s2, c2) = check_expr(Array::get(args, 1), env, defs, s1, c1, errors, tytab)
+        let (val_ty, s3, c3) = check_expr(Array::get(args, 2), env, defs, s2, c2, errors, tytab)
+        let s4 = match subst_apply(s3, obj_ty) {
+          CtArray(elem) => check_assignable(subst_apply(s3, elem), subst_apply(s3, val_ty), s3, errors, "Array::set value type mismatch", 0 - 1),
+          _ => s3
+        }
+        (tab_call_ty(tytab, call_off, CtUnit), s4, c3)
       } else if name == "Array::get" && Array::length(args) == 2 {
         // `Array::get(a, i)` returns the element type, but `direct_call_return`
         // types it CtUnknown — `let s: String = Array::get(intArr, 0)` slipped
