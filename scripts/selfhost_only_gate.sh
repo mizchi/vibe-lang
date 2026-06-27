@@ -1353,4 +1353,44 @@ fi
 rm -rf "$mudir"
 echo "[selfhost-only-gate] mutability discipline ok"
 
+# 33. pattern-soundness: a constructor pattern must bind its variant's exact
+#     payload arity, and cannot match a scalar scrutinee. Binding the right
+#     arity, a nullary variant, and the builtin Option ctors must still compile.
+echo "[selfhost-only-gate] 33/33 constructor-pattern arity / scrutinee type checking"
+pdir="_build/_gate_patsound"
+rm -rf "$pdir"; mkdir -p "$pdir"
+cat > "$pdir/ok.vibe" <<'EOF'
+enum E { Pair(Int, Int) }
+export let _start: () -> Int = () -> {
+  let m = match Pair(1, 2) { Pair(a, b) => a + b }
+  let o = match Some(5) { Some(v) => v, None => 0 }
+  m + o
+}
+EOF
+cat > "$pdir/bad_arity.vibe" <<'EOF'
+enum E { Pair(Int, Int) }
+export let _start: () -> Int = () -> { match Pair(1, 2) { Pair(a) => a, _ => 0 } }
+EOF
+cat > "$pdir/bad_scalar.vibe" <<'EOF'
+enum Color { Red; Green }
+export let _start: () -> Int = () -> { match 5 { Red => 1, _ => 0 } }
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$pdir/ok.vibe" "$pdir/ok.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$pdir/ok.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: well-typed ctor patterns did not compile (over-rejects)" >&2
+  cat "$pdir/ok.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+for bad in bad_arity bad_scalar; do
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$pdir/$bad.vibe" "$pdir/$bad.wasm" _start >/dev/null 2>&1 || true
+  if [ -s "$pdir/$bad.wasm" ]; then
+    echo "[selfhost-only-gate] FAIL: ill-typed pattern $bad compiled (pattern check regressed)" >&2; exit 1
+  fi
+done
+rm -rf "$pdir"
+echo "[selfhost-only-gate] constructor-pattern arity / scrutinee type checking ok"
+
 echo "[selfhost-only-gate] ok"
