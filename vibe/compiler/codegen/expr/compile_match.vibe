@@ -22,6 +22,82 @@ import .. / wasm_emit {
 
 //# Functions
 
+// #613 follow-up: bind every `PBind` reachable under a container pattern
+// (tuple or constructor) at ANY nesting depth, skipping literal / wildcard
+// sub-patterns. `base_local` holds the (possibly tagged) pointer to the
+// container whose fields hold the sub-pattern values. `is_ctor_layout`
+// selects the field layout: a constructor stores its tag at offset 0 and
+// fields at `8 + i*8` with the pointer always tag-cleared; a tuple stores
+// fields at `8 + i*8` (RC, tagged) or `i*8` (non-RC, untagged). Used for
+// conditional match arms whose top pattern is a bare tuple with literal
+// siblings (`(false, n) => ..`), where the binding pass previously emitted
+// nothing and any use of `n` trapped codegen with "undefined variable".
+let rec bind_match_pat: (Bytes, Int, Pat, Bool, Array[String], CompileCtx) -> Unit = (buf, base_local, container_pat, is_ctor_layout, local_names, ctx) -> {
+  let elems = if is_ctor_layout {
+    get_pctor_args(container_pat)
+  } else {
+    get_ptuple_pats(container_pat)
+  }
+  let mut i = 0
+  while i < Array::length(elems) {
+    let ep = Array::get(elems, i)
+    let off = if is_ctor_layout {
+      8 + i * 8
+    } else if ctx.enable_rc {
+      8 + i * 8
+    } else {
+      i * 8
+    }
+    let clear_tag = is_ctor_layout || ctx.enable_rc
+    if is_pbind(ep) {
+      let nm = get_pbind_name(ep)
+      let fl = Array::length(local_names)
+      emit_local_get(buf, base_local)
+      if clear_tag {
+        emit_i64_const(buf, -2)
+        emit_i64_and(buf)
+      } else {
+        ()
+      }
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, off)
+      emit_local_set(buf, fl)
+      Array::push(local_names, nm)
+    } else if is_ptuple(ep) {
+      let sl = Array::length(local_names)
+      emit_local_get(buf, base_local)
+      if clear_tag {
+        emit_i64_const(buf, -2)
+        emit_i64_and(buf)
+      } else {
+        ()
+      }
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, off)
+      emit_local_set(buf, sl)
+      Array::push(local_names, "__bind_sub")
+      bind_match_pat(buf, sl, ep, false, local_names, ctx)
+    } else if is_pctor(ep) {
+      let sl = Array::length(local_names)
+      emit_local_get(buf, base_local)
+      if clear_tag {
+        emit_i64_const(buf, -2)
+        emit_i64_and(buf)
+      } else {
+        ()
+      }
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, off)
+      emit_local_set(buf, sl)
+      Array::push(local_names, "__bind_sub")
+      bind_match_pat(buf, sl, ep, true, local_names, ctx)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
 export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, expr, local_names, next_local, ctx, ld, ce) -> {
   let __match_scrutinee = get_match_scrutinee(expr)
   let __match_arms = get_match_arms(expr)
@@ -210,6 +286,39 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
               emit_if_i64(buf)
             }
             0
+          } else if is_ptuple(__cond_p) {
+            // A bare tuple cond pattern (`(false, n) => ..`) has no tag to test;
+            // previously it fell through to `emit_or_check`'s `_ => const 1`,
+            // making the arm UNCONDITIONALLY match — `(false, n)` matched
+            // `(true, 5)` (silent wrong result, the #613 unsoundness for bare
+            // tuples). Start from a `true` accumulator and AND-in a recursive
+            // field-vs-literal test for every literal element (binds/wildcards
+            // add no test, so an all-bind tuple stays always-true).
+            emit_i32_const(buf, 1)
+            let __tpats_cond = get_ptuple_pats(__cond_p)
+            let mut __tck = 0
+            while __tck < Array::length(__tpats_cond) {
+              let __tckk = __tck
+              let __tcload: () -> Unit = () -> {
+                emit_local_get(buf, scrut_local)
+                if ctx.enable_rc {
+                  emit_i64_const(buf, -2)
+                  emit_i64_and(buf)
+                } else {
+                  ()
+                }
+                emit_i32_wrap_i64(buf)
+                emit_i64_load(buf, 3, if ctx.enable_rc {
+                  8 + __tckk * 8
+                } else {
+                  __tckk * 8
+                })
+              }
+              emit_sub_tests(Array::get(__tpats_cond, __tckk), __tcload)
+              __tck = __tck + 1
+            }
+            emit_if_i64(buf)
+            0
           } else {
             let rec emit_or_check: (Pat) -> Unit = (pat) -> {
               match pat {
@@ -355,6 +464,17 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
         }
         cbi = cbi + 1
       }
+      ce(buf, __arm_body, local_names, Array::length(local_names), ctx, ld_arm)
+    } else if is_ptuple(__cond_p) {
+      // A bare tuple arm pattern with literal siblings (`(false, n) => ..`):
+      // discrimination already tested the literals above, but the binding pass
+      // emitted nothing here, so `n` was undefined. Load the scrutinee tuple
+      // pointer and bind every reachable PBind (skipping literals/wildcards).
+      let tup_ptr = Array::length(local_names)
+      emit_local_get(buf, scrut_local)
+      emit_local_set(buf, tup_ptr)
+      Array::push(local_names, "__cond_tup")
+      bind_match_pat(buf, tup_ptr, __cond_p, false, local_names, ctx)
       ce(buf, __arm_body, local_names, Array::length(local_names), ctx, ld_arm)
     } else {
       ce(buf, __arm_body, local_names, nl1, ctx, ld_arm)
