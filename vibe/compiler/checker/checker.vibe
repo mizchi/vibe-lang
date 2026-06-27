@@ -1283,7 +1283,21 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
           _ => check_assignable(rtt, ret, s3, errors, "if branches have incompatible types", 0 - 1)
         }
       }
-      (tt, s3b, c3)
+      // Result type: when one branch yields Unit (an else-less `if`, whose
+      // missing else is `()`, or an explicit `() ` branch), the expression can
+      // yield Unit at runtime, so as a VALUE it is Unit — binding `let x: Int =
+      // if c { 1 }` must be rejected (it returns Unit when c is false). In
+      // statement position the value is discarded so Unit is harmless. Only when
+      // BOTH branches yield a real (non-Unit) value is the result that value's
+      // type.
+      let if_ty = match rtt {
+        CtUnit => CtUnit,
+        _ => match ret {
+          CtUnit => CtUnit,
+          _ => tt
+        }
+      }
+      (if_ty, s3b, c3)
     },
     ECall(callee, args, call_off) => match callee {
       // `perform EffName::Op(opargs)` parses as ECall(EIdent("perform"),
