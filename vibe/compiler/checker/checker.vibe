@@ -683,6 +683,24 @@ let direct_call_return: (TypeEnv, String) -> Option[Type] = (env, name) -> {
   }
 }
 
+// Expected TOP-LEVEL head-kind (see `head_kind`) of a builtin's FIRST argument,
+// for the container/string builtins whose receiver head is unambiguous. 0 means
+// "unchecked". Used to catch `Array::length(5)` / `String::length(5)` etc. on
+// the direct-call fast path WITHOUT a per-call `lookup_builtin` (the #626
+// seed-heap OOM constraint). Only entries whose first-arg head is certain are
+// listed; anything else returns 0 (tolerated).
+let builtin_first_arg_head: (String) -> Int = (name) -> {
+  if name == "Array::length" || name == "Array::get" || name == "Array::set" || name == "Array::push" || name == "Array::push_all" || name == "Array::slice" || name == "Array::concat" || name == "Array::reverse" || name == "Array::truncate" || name == "Array::foreach" || name == "Array::contains" || name == "Array::any" || name == "Array::all" || name == "Array::find" || name == "Array::filter" {
+    9
+  } else if name == "String::length" || name == "String::substring" || name == "String::trim" || name == "String::to_lower" || name == "String::to_upper" || name == "String::index_of" || name == "String::last_index_of" || name == "String::char_code_at" || name == "String::contains" || name == "String::starts_with" || name == "String::ends_with" || name == "String::split" {
+    4
+  } else if name == "Bytes::length" || name == "Bytes::get" || name == "Bytes::set" || name == "Bytes::slice" || name == "Bytes::to_array" || name == "Bytes::push" || name == "Bytes::append" || name == "Bytes::blit" || name == "Bytes::fill" {
+    7
+  } else {
+    0
+  }
+}
+
 let is_logic_binop: (String) -> Bool = (op) -> {
   op == "&&"
   || op == "||"
@@ -1254,11 +1272,26 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
         match direct_call_return(env, name) {
           Some(ret_ty) => {
             let alen = Array::length(args)
+            let want_head = builtin_first_arg_head(name)
             let mut ai = 0
             let mut s2 = s
             let mut c2 = c
             while ai < alen {
-              let (_, ns, nc) = check_expr(Array::get(args, ai), env, defs, s2, c2, errors, tytab)
+              let (at, ns, nc) = check_expr(Array::get(args, ai), env, defs, s2, c2, errors, tytab)
+              // First-argument head check for container/string builtins: the
+              // receiver's top-level constructor must match (`Array::length(5)`
+              // passes an Int where an Array is required). A non-concrete head
+              // (var / generic / unknown) is tolerated.
+              if ai == 0 && want_head != 0 {
+                let got_head = head_kind(subst_apply(s2, at))
+                if got_head != 0 && got_head != want_head {
+                  Array::push(errors, String::concat(String::concat("argument type mismatch for ", String::concat(name, ": receiver type ")), String::concat(type_to_string(subst_apply(s2, at)), off_marker_len(callee_off, String::length(name)))))
+                } else {
+                  ()
+                }
+              } else {
+                ()
+              }
               s2 = ns
               c2 = nc
               ai = ai + 1
