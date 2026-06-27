@@ -1578,9 +1578,6 @@ EOF
 cat > "$idir/bad_arrset.vibe" <<'EOF'
 export let _start: () -> Int = () -> { let a = [1, 2]; Array::set(a, 0, "x"); 0 }
 EOF
-cat > "$idir/bad_guard.vibe" <<'EOF'
-export let _start: () -> Int = () -> { match 5 { n if n > 100 => 999, _ => 0 } }
-EOF
 cat > "$idir/bad_arrmap.vibe" <<'EOF'
 export let _start: () -> Int = () -> { let a = [1, 2]; let b = Array::map(a, (x) -> { x + 1 }); let s: String = Array::get(b, 0); 0 }
 EOF
@@ -1603,7 +1600,7 @@ if [ ! -s "$idir/ok.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: well-typed index/tuple did not compile (over-rejects)" >&2
   cat "$idir/ok.wasm.diag" 2>/dev/null >&2; exit 1
 fi
-for bad in bad_index bad_tuple bad_idxtype bad_idxelem bad_arrget bad_arrpush bad_arrset bad_guard bad_arrmap bad_arrfold bad_arrslice bad_arrconcat bad_arrrev; do
+for bad in bad_index bad_tuple bad_idxtype bad_idxelem bad_arrget bad_arrpush bad_arrset bad_arrmap bad_arrfold bad_arrslice bad_arrconcat bad_arrrev; do
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$idir/$bad.vibe" "$idir/$bad.wasm" _start >/dev/null 2>&1 || true
@@ -1613,6 +1610,41 @@ for bad in bad_index bad_tuple bad_idxtype bad_idxelem bad_arrget bad_arrpush ba
 done
 rm -rf "$idir"
 echo "[selfhost-only-gate] indexing / tuple-projection type checking ok"
+
+# 34b. match-arm guards (#666): `pat if cond => body` must DISPATCH on the guard.
+#     Guards were previously parsed and silently DISCARDED — the arm was taken
+#     unconditionally (`match 5 { n if n > 100 => 999, _ => 0 }` wrongly => 999).
+#     Now desugared at parse time into nested EIf/EMatch over a bound scrutinee,
+#     so a failed guard falls through to later arms, and pattern bindings (with
+#     re-binding in the fall-through arm) stay in scope for the guard. Verify
+#     the runtime answer, not just that it compiles.
+echo "[selfhost-only-gate] 34b/35 match-arm guard dispatch (#666)"
+gdir="_build/_gate_guard"
+rm -rf "$gdir"; mkdir -p "$gdir"
+cat > "$gdir/guard.vibe" <<'EOF'
+export let _start: () -> Int = () -> {
+  let miss = match 5 { n if n > 100 => 999, _ => 7 }
+  let hit = match 5 { n if n > 3 => 11, _ => 0 }
+  let fall = match 5 { n if n > 100 => 1, n if n > 4 => 2, _ => 3 }
+  let o = Some(2)
+  let bind = match o { Some(x) if x > 5 => x, Some(y) => y + 100, _ => 0 }
+  miss + hit + fall + bind
+}
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$gdir/guard.vibe" "$gdir/guard.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$gdir/guard.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: guarded match did not compile" >&2
+  cat "$gdir/guard.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+gres="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$gdir/guard.wasm" 2>/dev/null | tr -dc '0-9-')"
+rm -rf "$gdir"
+# 7 (guard misses -> wildcard) + 11 (guard hits) + 2 (second guard) + 102 (bind fall-through) = 122
+if [ "$gres" != "122" ]; then
+  echo "[selfhost-only-gate] FAIL: guarded match returned '$gres' (expected 122 — guard dispatch wrong)" >&2; exit 1
+fi
+echo "[selfhost-only-gate] match-arm guard dispatch ok (122)"
 
 # 35. match exhaustiveness: a match on a concrete user enum must cover every
 #     variant or carry a catch-all; a non-exhaustive match must be rejected.
