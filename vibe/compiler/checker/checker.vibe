@@ -1346,6 +1346,27 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
           _ => CtUnknown
         }
         (tab_call_ty(tytab, call_off, result), s2, c2)
+      } else if name == "Array::reverse" && Array::length(args) == 1 {
+        // Returns an array of the same element type (was CtUnknown).
+        let (obj_ty, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+        let result = match subst_apply(s1, obj_ty) {
+          CtArray(elem) => CtArray(elem),
+          _ => CtUnknown
+        }
+        (tab_call_ty(tytab, call_off, result), s1, c1)
+      } else if name == "Array::concat" && Array::length(args) == 2 {
+        // Returns an array of the receivers' element type (was CtUnknown). Refine
+        // from the first concrete `CtArray(elem)` operand.
+        let (a_ty, s1, c1) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+        let (b_ty, s2, c2) = check_expr(Array::get(args, 1), env, defs, s1, c1, errors, tytab)
+        let result = match subst_apply(s2, a_ty) {
+          CtArray(elem) => CtArray(elem),
+          _ => match subst_apply(s2, b_ty) {
+            CtArray(elem) => CtArray(elem),
+            _ => CtUnknown
+          }
+        }
+        (tab_call_ty(tytab, call_off, result), s2, c2)
       } else if name == "Array::slice" && Array::length(args) == 3 {
         // `Array::slice(a, lo, hi)` returns an array of the SAME element type,
         // typed CtUnknown by the builtin table (`let s: String =
