@@ -68,6 +68,42 @@ let t6_emit_rc_dup_guarded: (Bytes, Int) -> Unit = (buf, local_idx) -> {
 export let compile_expr_tail6: (Bytes, Expr, Array[(Pat, Expr)], Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, body, arms, local_names, next_local, ctx, ld, compile_expr) -> {
   if Array::length(arms) > 0 {
     let (catch_pat, fallback_expr) = Array::get(arms, 0)
+    // Soundness guard (#665): the perform/handler ABI tags by EFFECT, not
+    // operation, so a handler over an effect with multiple operations silently
+    // dispatches EVERY performed operation to `arms[0]` (`perform Calc::Mul(3)`
+    // ran the `Add` arm). Until op-index dispatch lands (#665), reject such a
+    // handler with a clear error rather than miscompiling. Effects with a single
+    // operation (e.g. `Error { Throw }`) dispatch correctly and are unaffected;
+    // a built-in effect absent from `effect_op_keys` counts 0 and is allowed.
+    if is_pctor(catch_pat) {
+      let __op_full = get_pctor_name(catch_pat)
+      let __sep = String::index_of(__op_full, "::")
+      if __sep > 0 {
+        let __eff_name = __op_full[0:__sep]
+        let __op_keys = ctx.effect_op_keys
+        let mut __op_count = 0
+        let mut __ki = 0
+        while __ki < Array::length(__op_keys) {
+          let __k = Array::get(__op_keys, __ki)
+          let __kc = String::index_of(__k, "::")
+          if __kc > 0 && __k[0:__kc] == __eff_name {
+            __op_count = __op_count + 1
+          } else {
+            ()
+          }
+          __ki = __ki + 1
+        }
+        if __op_count > 1 {
+          throw(String::concat("handle: effect `", String::concat(__eff_name, "` declares multiple operations; multi-operation handler dispatch is not yet supported (every operation would run the first arm) - see #665")))
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
     let is_error = is_pctor(catch_pat) && get_pctor_name(catch_pat) == "Error::Throw"
     let catch_tag = if is_error {
       2

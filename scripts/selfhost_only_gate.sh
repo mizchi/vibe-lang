@@ -1183,6 +1183,42 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
 if [ -s "$hdir/leak.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: a different undeclared effect leaked through a handle (#626 criterion 2 regressed)" >&2; exit 1
 fi
+# Soundness guard (#665): the handler ABI tags by effect, not operation, so a
+# handler over a multi-operation effect would silently run arms[0] for every
+# operation. Until op-index dispatch lands, such a handler must be REJECTED
+# (loud) rather than silently miscompiled; a single-operation handler compiles.
+cat > "$hdir/multiop.vibe" <<'EOF'
+effect Calc {
+  Add(Int) -> Int
+  Mul(Int) -> Int
+}
+export let _start: () -> Int = () -> {
+  handle { perform Calc::Mul(3) } with Calc {
+    Add(n) => resume(n + 100);
+    Mul(n) => resume(n * 1000)
+  }
+}
+EOF
+cat > "$hdir/singleop.vibe" <<'EOF'
+effect Logger { Log(String) -> Unit }
+export let _start: () -> Int = () -> {
+  handle { perform Logger::Log("hi"); 42 } with Logger {
+    Log(s) => resume(())
+  }
+}
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$hdir/multiop.vibe" "$hdir/multiop.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$hdir/multiop.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: multi-operation effect handler compiled (would silently misdispatch, see #665)" >&2; exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$hdir/singleop.vibe" "$hdir/singleop.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$hdir/singleop.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: single-operation effect handler did not compile (multi-op guard over-rejects)" >&2; exit 1
+fi
 rm -rf "$hdir"
 echo "[selfhost-only-gate] handle effect discharge ok"
 
