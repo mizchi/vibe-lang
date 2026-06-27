@@ -810,6 +810,47 @@ let collect_handle_effects: (Array[(Pat, Expr)]) -> Array[String] = (arms) -> {
   out
 }
 
+// Iteratively walk an `ESeq`/`let` SPINE instead of recursing into each tail, so
+// a long function body (a deep right-nested `ESeq`/`ELet` chain) does not
+// exhaust the wasm call stack while the perform pass runs over the whole
+// compiler. Mirrors the type checker's `check_seq_spine`. `ce` is
+// `check_perform_effects_expr` threaded as a value to avoid a forward
+// reference; the `declared`/`in_handle` context is constant down a spine, so
+// each side-branch and the final non-spine expression are checked under the
+// same context — identical to the recursive arms.
+let check_perform_spine: (Expr, Array[String], Bool, (Expr, Array[String], Bool) -> Array[EffectError]) -> Array[EffectError] = (start, declared, in_handle, ce) -> {
+  let errors = Array::slice([
+    EEThrowOutsideEffect("")
+  ], 0, 0)
+  let mut cur = start
+  let mut done = false
+  while !done {
+    match cur {
+      ESeq(a, b) => {
+        append_eff_errs(errors, ce(a, declared, in_handle))
+        cur = b
+      },
+      ELet(_, val, body) => {
+        append_eff_errs(errors, ce(val, declared, in_handle))
+        cur = body
+      },
+      ELetRec(_, val, body) => {
+        append_eff_errs(errors, ce(val, declared, in_handle))
+        cur = body
+      },
+      ELetMut(_, val, body) => {
+        append_eff_errs(errors, ce(val, declared, in_handle))
+        cur = body
+      },
+      _ => {
+        append_eff_errs(errors, ce(cur, declared, in_handle))
+        done = true
+      }
+    }
+  }
+  errors
+}
+
 export let rec check_perform_effects_expr: (Expr, Array[String], Bool) -> Array[EffectError] = (expr, declared, in_handle) -> {
   let errors = Array::slice([
     EEThrowOutsideEffect("")
@@ -874,26 +915,10 @@ export let rec check_perform_effects_expr: (Expr, Array[String], Bool) -> Array[
       }
       errors
     },
-    ELet(_, val, body) => {
-      append_eff_errs(errors, check_perform_effects_expr(val, declared, in_handle))
-      append_eff_errs(errors, check_perform_effects_expr(body, declared, in_handle))
-      errors
-    },
-    ELetRec(_, val, body) => {
-      append_eff_errs(errors, check_perform_effects_expr(val, declared, in_handle))
-      append_eff_errs(errors, check_perform_effects_expr(body, declared, in_handle))
-      errors
-    },
-    ELetMut(_, val, body) => {
-      append_eff_errs(errors, check_perform_effects_expr(val, declared, in_handle))
-      append_eff_errs(errors, check_perform_effects_expr(body, declared, in_handle))
-      errors
-    },
-    ESeq(a, b) => {
-      append_eff_errs(errors, check_perform_effects_expr(a, declared, in_handle))
-      append_eff_errs(errors, check_perform_effects_expr(b, declared, in_handle))
-      errors
-    },
+    ELet(_, _, _) => check_perform_spine(expr, declared, in_handle, check_perform_effects_expr),
+    ELetRec(_, _, _) => check_perform_spine(expr, declared, in_handle, check_perform_effects_expr),
+    ELetMut(_, _, _) => check_perform_spine(expr, declared, in_handle, check_perform_effects_expr),
+    ESeq(_, _) => check_perform_spine(expr, declared, in_handle, check_perform_effects_expr),
     EIf(cond, then_e, else_e) => {
       append_eff_errs(errors, check_perform_effects_expr(cond, declared, in_handle))
       append_eff_errs(errors, check_perform_effects_expr(then_e, declared, in_handle))
