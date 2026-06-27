@@ -1593,6 +1593,9 @@ EOF
 cat > "$idir/bad_arrconcat.vibe" <<'EOF'
 export let _start: () -> Int = () -> { let c = Array::concat([1, 2], [3, 4]); let s: String = Array::get(c, 0); 0 }
 EOF
+cat > "$idir/bad_arrconcatmix.vibe" <<'EOF'
+export let _start: () -> Int = () -> { let c = Array::concat([1, 2], ["x"]); 0 }
+EOF
 cat > "$idir/bad_arrrev.vibe" <<'EOF'
 export let _start: () -> Int = () -> { let b = Array::reverse([1, 2]); let s: String = Array::get(b, 0); 0 }
 EOF
@@ -1603,7 +1606,7 @@ if [ ! -s "$idir/ok.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: well-typed index/tuple did not compile (over-rejects)" >&2
   cat "$idir/ok.wasm.diag" 2>/dev/null >&2; exit 1
 fi
-for bad in bad_index bad_tuple bad_idxtype bad_idxelem bad_stridx bad_arrget bad_arrpush bad_arrset bad_arrmap bad_arrfold bad_arrslice bad_arrconcat bad_arrrev; do
+for bad in bad_index bad_tuple bad_idxtype bad_idxelem bad_stridx bad_arrget bad_arrpush bad_arrset bad_arrmap bad_arrfold bad_arrslice bad_arrconcat bad_arrconcatmix bad_arrrev; do
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$idir/$bad.vibe" "$idir/$bad.wasm" _start >/dev/null 2>&1 || true
