@@ -1195,13 +1195,20 @@ export let _start: () -> Int = () -> {
   0
 }
 EOF
+cat > "$tdir/bad_missingfield.vibe" <<'EOF'
+struct Pt { x: Int; y: Int }
+export let _start: () -> Int = () -> {
+  let p = Pt::{ x: 1 }
+  p.x
+}
+EOF
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$tdir/ok.vibe" "$tdir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$tdir/ok.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: well-typed binding/assign/if did not compile (over-rejects)" >&2; exit 1
 fi
-for bad in bad_let bad_assign bad_if bad_struct bad_locallet; do
+for bad in bad_let bad_assign bad_if bad_struct bad_locallet bad_missingfield; do
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$tdir/$bad.vibe" "$tdir/$bad.wasm" _start >/dev/null 2>&1 || true

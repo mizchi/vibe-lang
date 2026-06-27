@@ -369,6 +369,40 @@ let lookup_actual_field_ty: (Array[(String, Type)], String) -> Option[Type] = (a
   out
 }
 
+// True when `dfields` (a struct's declared fields) is a STRICT superset of the
+// record literal's `actual` fields: every provided field name appears in the
+// struct, and the struct declares strictly more fields. Used to flag a record
+// that omits required fields.
+let struct_is_strict_superset: (Array[(String, Type)], Array[(String, Type)]) -> Bool = (dfields, actual) -> {
+  if Array::length(dfields) <= Array::length(actual) {
+    false
+  } else {
+    let mut i = 0
+    let mut all_in = true
+    while i < Array::length(actual) {
+      let (an, _) = Array::get(actual, i)
+      let mut found = false
+      let mut j = 0
+      while j < Array::length(dfields) {
+        let (dn, _) = Array::get(dfields, j)
+        if dn == an {
+          found = true
+        } else {
+          ()
+        }
+        j = j + 1
+      }
+      if !found {
+        all_in = false
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    all_in
+  }
+}
+
 // Check a record literal's field VALUES against the declared field types of the
 // (uniquely) matching struct definition — previously unchecked, so
 // `S::{ x: "oops" }` for `struct S { x: Int }` was accepted. Conservative: if 0
@@ -404,7 +438,42 @@ let check_record_fields: (Array[TypeDef], Array[(String, Type)], Subst, Array[St
     }
     out
   } else {
-    s
+    // No struct has EXACTLY this field set. If exactly one struct is a strict
+    // SUPERSET (contains every provided field and at least one more), the record
+    // is that struct with fields MISSING — a real soundness hole, since the
+    // omitted fields would be left uninitialized. Reported only when the
+    // superset is unique (otherwise the intended struct is ambiguous → skip).
+    let mut supct = 0
+    let mut sup_name = ""
+    let mut sup_fields = Array::slice([
+      ("", CtUnknown)
+    ], 0, 0)
+    let mut dj = 0
+    while dj < Array::length(defs) {
+      match Array::get(defs, dj) {
+        TDStruct(sname, dfields, _) => if struct_is_strict_superset(dfields, actual) {
+          supct = supct + 1
+          sup_name = sname
+          sup_fields = dfields
+        },
+        _ => ()
+      }
+      dj = dj + 1
+    }
+    if supct == 1 {
+      let mut fi = 0
+      while fi < Array::length(sup_fields) {
+        let (dn, _) = Array::get(sup_fields, fi)
+        match lookup_actual_field_ty(actual, dn) {
+          Some(_) => (),
+          None => Array::push(errors, String::concat("missing field `", String::concat(dn, String::concat("` in construction of struct ", sup_name))))
+        }
+        fi = fi + 1
+      }
+      s
+    } else {
+      s
+    }
   }
 }
 

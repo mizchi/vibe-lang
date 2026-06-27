@@ -4866,6 +4866,35 @@ let lookup_actual_field_ty: (Array[(String, Type)], String) -> Option[Type] = (a
   }
   out
 }
+let struct_is_strict_superset: (Array[(String, Type)], Array[(String, Type)]) -> Bool = (dfields, actual) -> {
+  if Array::length(dfields) <= Array::length(actual) {
+    false
+  } else {
+    let mut i = 0
+    let mut all_in = true
+    while i < Array::length(actual) {
+      let (an, _) = Array::get(actual, i)
+      let mut found = false
+      let mut j = 0
+      while j < Array::length(dfields) {
+        let (dn, _) = Array::get(dfields, j)
+        if dn == an {
+          found = true
+        } else {
+          ()
+        }
+        j = j + 1
+      }
+      if !found {
+        all_in = false
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    all_in
+  }
+}
 let check_record_fields: (Array[TypeDef], Array[(String, Type)], Subst, Array[String]) -> Subst = (defs, actual, s, errors) -> {
   let mut matchct = 0
   let mut matched_fields = Array::slice([
@@ -4897,7 +4926,37 @@ let check_record_fields: (Array[TypeDef], Array[(String, Type)], Subst, Array[St
     }
     out
   } else {
-    s
+    let mut supct = 0
+    let mut sup_name = ""
+    let mut sup_fields = Array::slice([
+      ("", CtUnknown)
+    ], 0, 0)
+    let mut dj = 0
+    while dj < Array::length(defs) {
+      match Array::get(defs, dj) {
+        TDStruct(sname, dfields, _) => if struct_is_strict_superset(dfields, actual) {
+          supct = supct + 1
+          sup_name = sname
+          sup_fields = dfields
+        },
+        _ => ()
+      }
+      dj = dj + 1
+    }
+    if supct == 1 {
+      let mut fi = 0
+      while fi < Array::length(sup_fields) {
+        let (dn, _) = Array::get(sup_fields, fi)
+        match lookup_actual_field_ty(actual, dn) {
+          Some(_) => (),
+          None => Array::push(errors, String::concat("missing field `", String::concat(dn, String::concat("` in construction of struct ", sup_name))))
+        }
+        fi = fi + 1
+      }
+      s
+    } else {
+      s
+    }
   }
 }
 let resolve_record_struct_name: (Array[TypeDef], Array[(String, Type)]) -> Option[String] = (defs, actual) -> {
