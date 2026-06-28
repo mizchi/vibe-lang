@@ -1986,6 +1986,23 @@ EOF
 # to typecheck (`expected (Bool,Int)->Int, got (?t0)->Int`). Covers 0/1/2-param,
 # a function-typed param (HOF), the tuple param, and tuple-param-plus-scalar.
 # (parser_base.vibe parse_type_impl arity-preserving paren group.)
+# interp: string interpolation `\{expr}` / `\(expr)` parses an arbitrary
+# EXPRESSION (arithmetic, call, field access, multiple holes), not just a bare
+# identifier — previously the embedded source was treated as an identifier name
+# (`undefined variable: 1+1`). (parser_expr_primary.vibe build_interp_expr.)
+cat > "$sdir/interp.vibe" <<'EOF'
+struct P { x: Int }
+let inc: (Int) -> Int = (n) -> { n + 1 }
+export let _start: () -> Int = () -> {
+  let a = 2
+  let p = P::{ x: 7 }
+  let v1 = if "\{a + 3}" == "5" { 1 } else { 0 }
+  let v2 = if "\{inc(a)}" == "3" { 20 } else { 0 }
+  let v3 = if "\{p.x}" == "7" { 300 } else { 0 }
+  let v4 = if "\{a}-\(p.x)" == "2-7" { 4000 } else { 0 }
+  v1 + v2 + v3 + v4
+}
+EOF
 cat > "$sdir/tann.vibe" <<'EOF'
 let two: (Int, Int) -> Int = (a, b) -> { a + b }
 let one: (Int) -> Int = (x) -> { x + 1 }
@@ -2022,7 +2039,8 @@ smoke_check eveq 3021
 smoke_check qctor 11111
 smoke_check rec 4321
 smoke_check tann 148
+smoke_check interp 4321
 rm -rf "$sdir"
-echo "[selfhost-only-gate] multi-feature end-to-end smoke ok (10/153/6/111/11111/321/3021/11111/4321/148)"
+echo "[selfhost-only-gate] multi-feature end-to-end smoke ok (10/153/6/111/11111/321/3021/11111/4321/148/4321)"
 
 echo "[selfhost-only-gate] ok"
