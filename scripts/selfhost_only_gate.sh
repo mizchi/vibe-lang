@@ -1894,6 +1894,18 @@ export let _start: () -> Int = () -> {
   v + v2 + v3 + v4
 }
 EOF
+cat > "$sdir/eeq.vibe" <<'EOF'
+enum Sh { Circle(Int); Rect(Int, Int); Pt }
+export let _start: () -> Int = () -> {
+  let c = Circle(5)
+  let v1 = if c == Circle(5) { 1 } else { 0 }
+  let v2 = if Circle(5) != Circle(9) { 10 } else { 0 }
+  let v3 = if Rect(3, 4) == Rect(3, 4) { 100 } else { 0 }
+  let v4 = if Pt == Pt { 1000 } else { 0 }
+  let v5 = if Circle(5) != Pt { 10000 } else { 0 }
+  v1 + v2 + v3 + v4 + v5
+}
+EOF
 smoke_check() {
   local nm="$1" want="$2"
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
@@ -1913,7 +1925,8 @@ smoke_check clos 10
 smoke_check eff 153
 smoke_check gen 6
 smoke_check teq 111
+smoke_check eeq 11111
 rm -rf "$sdir"
-echo "[selfhost-only-gate] multi-feature end-to-end smoke ok (10/153/6/111)"
+echo "[selfhost-only-gate] multi-feature end-to-end smoke ok (10/153/6/111/11111)"
 
 echo "[selfhost-only-gate] ok"

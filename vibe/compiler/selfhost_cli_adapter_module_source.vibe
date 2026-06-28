@@ -20062,6 +20062,69 @@ let emit_tuple_struct_eq: (Bytes, Expr, Expr, Array[String], Int, CompileCtx, In
   }
   nl2
 }
+let emit_ctor_struct_eq: (Bytes, Expr, Expr, Int, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, lhs, rhs, fc, local_names, next_local, ctx, ld, compile_expr_fn) -> {
+  let aptr = next_local
+  Array::push(local_names, "__ceqa")
+  let bptr = next_local + 1
+  Array::push(local_names, "__ceqb")
+  let nl1 = compile_expr_fn(buf, lhs, local_names, next_local + 2, ctx, ld)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_local_set(buf, aptr)
+  let nl2 = compile_expr_fn(buf, rhs, local_names, nl1, ctx, ld)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_local_set(buf, bptr)
+  emit_local_get(buf, aptr)
+  emit_i32_wrap_i64(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_local_get(buf, bptr)
+  emit_i32_wrap_i64(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_eq(buf)
+  emit_if_i64(buf)
+  let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
+  emit_i64_const(buf, 1)
+  let mut i = 0
+  while i < fc {
+    emit_local_get(buf, aptr)
+    emit_i32_wrap_i64(buf)
+    emit_i64_load(buf, 3, 8 + i * 8)
+    emit_local_get(buf, bptr)
+    emit_i32_wrap_i64(buf)
+    emit_i64_load(buf, 3, 8 + i * 8)
+    emit_call(buf, eq_fidx)
+    emit_i64_and(buf)
+    i = i + 1
+  }
+  emit_else(buf)
+  emit_i64_const(buf, 0)
+  emit_end(buf)
+  nl2
+}
+let emit_eq_value: (Bytes, Expr, Expr, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, lhs, rhs, local_names, next_local, ctx, ld, ce) -> {
+  if (is_etuple(lhs) || is_etuple(rhs)) && !ctx.enable_rc {
+    emit_tuple_struct_eq(buf, lhs, rhs, local_names, next_local, ctx, ld, ce)
+  } else if (is_ctor_call(lhs, ctx.ctor_table) || is_nullary_ctor_ident(lhs, ctx.ctor_table) || is_ctor_call(rhs, ctx.ctor_table) || is_nullary_ctor_ident(rhs, ctx.ctor_table)) && !ctx.enable_rc {
+    let clit = if is_ctor_call(lhs, ctx.ctor_table) || is_nullary_ctor_ident(lhs, ctx.ctor_table) {
+      lhs
+    } else {
+      rhs
+    }
+    let cfc = if is_ctor_call(clit, ctx.ctor_table) {
+      Array::length(get_ecall_args(clit))
+    } else {
+      0
+    }
+    emit_ctor_struct_eq(buf, lhs, rhs, cfc, local_names, next_local, ctx, ld, ce)
+  } else {
+    let nl1 = ce(buf, lhs, local_names, next_local, ctx, ld)
+    let nl2 = ce(buf, rhs, local_names, nl1, ctx, ld)
+    let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
+    emit_call(buf, eq_fidx)
+    nl2
+  }
+}
 export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error } = (buf, expr, local_names, next_local, ctx, ld) -> {
   let __tag = expr_tag(expr)
   if __tag == 0 {
@@ -20248,38 +20311,21 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
     let lhs = get_ebinop_lhs(expr)
     let rhs = get_ebinop_rhs(expr)
     if op == "==" {
-      if (is_etuple(lhs) || is_etuple(rhs)) && !ctx.enable_rc {
-        emit_tuple_struct_eq(buf, lhs, rhs, local_names, next_local, ctx, ld, compile_expr)
-      } else {
-        let nl1 = compile_expr(buf, lhs, local_names, next_local, ctx, ld)
-        let nl2 = compile_expr(buf, rhs, local_names, nl1, ctx, ld)
-        let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
-        emit_call(buf, eq_fidx)
-        if ctx.enable_rc {
-          emit_i64_const(buf, 1)
-          emit_i64_shl(buf)
-        }
-        nl2
+      let nle = emit_eq_value(buf, lhs, rhs, local_names, next_local, ctx, ld, compile_expr)
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shl(buf)
       }
+      nle
     } else if op == "!=" {
-      if (is_etuple(lhs) || is_etuple(rhs)) && !ctx.enable_rc {
-        let nlt = emit_tuple_struct_eq(buf, lhs, rhs, local_names, next_local, ctx, ld, compile_expr)
-        emit_i64_eqz(buf)
-        emit_i64_extend_i32_s(buf)
-        nlt
-      } else {
-        let nl1 = compile_expr(buf, lhs, local_names, next_local, ctx, ld)
-        let nl2 = compile_expr(buf, rhs, local_names, nl1, ctx, ld)
-        let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
-        emit_call(buf, eq_fidx)
-        emit_i64_eqz(buf)
-        emit_i64_extend_i32_s(buf)
-        if ctx.enable_rc {
-          emit_i64_const(buf, 1)
-          emit_i64_shl(buf)
-        }
-        nl2
+      let nle = emit_eq_value(buf, lhs, rhs, local_names, next_local, ctx, ld, compile_expr)
+      emit_i64_eqz(buf)
+      emit_i64_extend_i32_s(buf)
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shl(buf)
       }
+      nle
     } else if expr_is_floatish(lhs, local_names, ctx) || expr_is_floatish(rhs, local_names, ctx) {
       let nl1 = compile_expr(buf, lhs, local_names, next_local, ctx, ld)
       if ctx.enable_rc {
@@ -20411,17 +20457,11 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
         let clhs = get_ebinop_lhs(cond)
         let crhs = get_ebinop_rhs(cond)
         if cop == "==" {
-          let cnl1 = compile_expr(buf, clhs, local_names, next_local, ctx, ld)
-          let cnl2 = compile_expr(buf, crhs, local_names, cnl1, ctx, ld)
-          let (eq_fi, _, _) = resolve_func(ctx.func_table, "eq")
-          emit_call(buf, eq_fi)
+          let cnl2 = emit_eq_value(buf, clhs, crhs, local_names, next_local, ctx, ld, compile_expr)
           emit_i32_wrap_i64(buf)
           cnl2
         } else if cop == "!=" {
-          let cnl1 = compile_expr(buf, clhs, local_names, next_local, ctx, ld)
-          let cnl2 = compile_expr(buf, crhs, local_names, cnl1, ctx, ld)
-          let (eq_fi, _, _) = resolve_func(ctx.func_table, "eq")
-          emit_call(buf, eq_fi)
+          let cnl2 = emit_eq_value(buf, clhs, crhs, local_names, next_local, ctx, ld, compile_expr)
           emit_i32_wrap_i64(buf)
           emit_i32_eqz(buf)
           cnl2
@@ -20484,18 +20524,12 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
             let ilhs = get_ebinop_lhs(uoperand)
             let irhs = get_ebinop_rhs(uoperand)
             if iop == "==" {
-              let inl1 = compile_expr(buf, ilhs, local_names, next_local, ctx, ld)
-              let inl2 = compile_expr(buf, irhs, local_names, inl1, ctx, ld)
-              let (eq_fi2, _, _) = resolve_func(ctx.func_table, "eq")
-              emit_call(buf, eq_fi2)
+              let inl2 = emit_eq_value(buf, ilhs, irhs, local_names, next_local, ctx, ld, compile_expr)
               emit_i32_wrap_i64(buf)
               emit_i32_eqz(buf)
               inl2
             } else if iop == "!=" {
-              let inl1 = compile_expr(buf, ilhs, local_names, next_local, ctx, ld)
-              let inl2 = compile_expr(buf, irhs, local_names, inl1, ctx, ld)
-              let (eq_fi2, _, _) = resolve_func(ctx.func_table, "eq")
-              emit_call(buf, eq_fi2)
+              let inl2 = emit_eq_value(buf, ilhs, irhs, local_names, next_local, ctx, ld, compile_expr)
               emit_i32_wrap_i64(buf)
               emit_i32_eqz(buf)
               emit_i32_eqz(buf)
