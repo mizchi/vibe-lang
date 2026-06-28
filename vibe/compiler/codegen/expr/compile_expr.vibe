@@ -44,6 +44,92 @@ import ./compile_match.vibe {
 // Evaluates each operand to a pointer in a temp local, then ANDs an element-wise
 // generic `eq` over all elements. Produces a raw i64 0/1. `compile_expr_fn` is
 // the main expression compiler, threaded to avoid a forward reference.
+// #672: look up the tracked tuple arity for a local SLOT (the index recorded at
+// its `let`). Scans from the end so a shadowing rebind's arity wins. -1 = none.
+let agg_tuple_arity_of_slot: (CompileCtx, Int) -> Int = (ctx, slot) -> {
+  let n = Array::length(ctx.agg_tuple_slots)
+  let mut i = n - 1
+  let mut found = 0 - 1
+  while i >= 0 {
+    if found < 0 && Array::get(ctx.agg_tuple_slots, i) == slot {
+      found = Array::get(ctx.agg_tuple_arities, i)
+    } else {
+      ()
+    }
+    i = i - 1
+  }
+  found
+}
+
+// The tracked tuple arity of an `EIdent` operand (resolve name -> local slot ->
+// arity), or -1 if the operand is not an identifier / not a tracked tuple.
+let eident_tuple_arity: (CompileCtx, Array[String], Expr) -> Int = (ctx, local_names, e) -> {
+  if is_eident(e) {
+    let name = get_eident_name(e)
+    let ln = Array::length(local_names)
+    let mut i = ln - 1
+    let mut slot = 0 - 1
+    while i >= 0 {
+      if slot < 0 && Array::get(local_names, i) == name {
+        slot = i
+      } else {
+        ()
+      }
+      i = i - 1
+    }
+    if slot >= 0 {
+      agg_tuple_arity_of_slot(ctx, slot)
+    } else {
+      0 - 1
+    }
+  } else {
+    0 - 1
+  }
+}
+
+// Arity to use for `lhs == rhs` where neither operand is a tuple LITERAL: if
+// EITHER operand is a tracked tuple variable, the type checker guarantees both
+// sides are that same tuple type, so the arity drives an element-wise compare.
+let both_var_tuple_arity: (CompileCtx, Array[String], Expr, Expr) -> Int = (ctx, local_names, lhs, rhs) -> {
+  let la = eident_tuple_arity(ctx, local_names, lhs)
+  if la >= 0 {
+    la
+  } else {
+    eident_tuple_arity(ctx, local_names, rhs)
+  }
+}
+
+// Element-wise structural equality for two tuple VALUES of known arity `num`
+// (non-rc layout: element i is the i64 at ptr+i*8). Same shape as
+// emit_tuple_struct_eq but driven by an explicit arity instead of a literal
+// operand, so `a == b` (both tuple variables) compares structurally. Per-element
+// uses the generic `eq` (flat correct; nested tuples fall back — #672).
+let emit_tuple_eq_arity: (Bytes, Expr, Expr, Int, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, lhs, rhs, num, local_names, next_local, ctx, ld, compile_expr_fn) -> {
+  let aptr = next_local
+  Array::push(local_names, "__teqa")
+  let bptr = next_local + 1
+  Array::push(local_names, "__teqb")
+  let nl1 = compile_expr_fn(buf, lhs, local_names, next_local + 2, ctx, ld)
+  emit_local_set(buf, aptr)
+  let nl2 = compile_expr_fn(buf, rhs, local_names, nl1, ctx, ld)
+  emit_local_set(buf, bptr)
+  let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
+  emit_i64_const(buf, 1)
+  let mut i = 0
+  while i < num {
+    emit_local_get(buf, aptr)
+    emit_i32_wrap_i64(buf)
+    emit_i64_load(buf, 3, i * 8)
+    emit_local_get(buf, bptr)
+    emit_i32_wrap_i64(buf)
+    emit_i64_load(buf, 3, i * 8)
+    emit_call(buf, eq_fidx)
+    emit_i64_and(buf)
+    i = i + 1
+  }
+  nl2
+}
+
 let emit_tuple_struct_eq: (Bytes, Expr, Expr, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, lhs, rhs, local_names, next_local, ctx, ld, compile_expr_fn) -> {
   let lit = if is_etuple(lhs) {
     lhs
@@ -157,11 +243,22 @@ let emit_eq_value: (Bytes, Expr, Expr, Array[String], Int, CompileCtx, Int, (Byt
     emit_i64_extend_i32_s(buf)
     nl2
   } else {
-    let nl1 = ce(buf, lhs, local_names, next_local, ctx, ld)
-    let nl2 = ce(buf, rhs, local_names, nl1, ctx, ld)
-    let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
-    emit_call(buf, eq_fidx)
-    nl2
+    // #672: `a == b` where neither operand is a literal. If a tracked tuple
+    // variable is involved, compare element-wise; otherwise the generic `eq`.
+    let tar = if ctx.enable_rc {
+      0 - 1
+    } else {
+      both_var_tuple_arity(ctx, local_names, lhs, rhs)
+    }
+    if tar >= 0 {
+      emit_tuple_eq_arity(buf, lhs, rhs, tar, local_names, next_local, ctx, ld, ce)
+    } else {
+      let nl1 = ce(buf, lhs, local_names, next_local, ctx, ld)
+      let nl2 = ce(buf, rhs, local_names, nl1, ctx, ld)
+      let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
+      emit_call(buf, eq_fidx)
+      nl2
+    }
   }
 }
 

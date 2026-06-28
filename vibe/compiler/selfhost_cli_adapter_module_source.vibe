@@ -9086,7 +9086,9 @@ export struct CompileCtx {
   cov: CovState;
   dbg_line_idx: Int;
   dbg_line_nl: Array[Int];
-  dbg_line_file_id: Int
+  dbg_line_file_id: Int;
+  agg_tuple_slots: Array[Int];
+  agg_tuple_arities: Array[Int]
 }
 export struct DbgProv {
   files: Array[String];
@@ -16613,7 +16615,13 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
     cov: ctx.cov,
     dbg_line_idx: ctx.dbg_line_idx,
     dbg_line_nl: ctx.dbg_line_nl,
-    dbg_line_file_id: ctx.dbg_line_file_id
+    dbg_line_file_id: ctx.dbg_line_file_id,
+    agg_tuple_slots: Array::slice([
+      0
+    ], 0, 0),
+    agg_tuple_arities: Array::slice([
+      0
+    ], 0, 0)
   }
   if ctx.enable_rc {
     let mut dpi = 0
@@ -20624,6 +20632,12 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     } else if slot_is_floatish(ctx, local_idx) {
       Array::push(ctx.float_local_slots, local_idx * 2)
     }
+    if !ctx.enable_rc && is_etuple(value) {
+      Array::push(ctx.agg_tuple_slots, local_idx)
+      Array::push(ctx.agg_tuple_arities, Array::length(get_etuple_elems(value)))
+    } else {
+      ()
+    }
     let mut rc_kind = 0
     if ctx.enable_rc {
       if val_is_float {
@@ -20906,6 +20920,76 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     compile_expr_tail2(buf, expr, local_names, next_local, ctx, ld, compile_expr)
   }
 }
+let agg_tuple_arity_of_slot: (CompileCtx, Int) -> Int = (ctx, slot) -> {
+  let n = Array::length(ctx.agg_tuple_slots)
+  let mut i = n - 1
+  let mut found = 0 - 1
+  while i >= 0 {
+    if found < 0 && Array::get(ctx.agg_tuple_slots, i) == slot {
+      found = Array::get(ctx.agg_tuple_arities, i)
+    } else {
+      ()
+    }
+    i = i - 1
+  }
+  found
+}
+let eident_tuple_arity: (CompileCtx, Array[String], Expr) -> Int = (ctx, local_names, e) -> {
+  if is_eident(e) {
+    let name = get_eident_name(e)
+    let ln = Array::length(local_names)
+    let mut i = ln - 1
+    let mut slot = 0 - 1
+    while i >= 0 {
+      if slot < 0 && Array::get(local_names, i) == name {
+        slot = i
+      } else {
+        ()
+      }
+      i = i - 1
+    }
+    if slot >= 0 {
+      agg_tuple_arity_of_slot(ctx, slot)
+    } else {
+      0 - 1
+    }
+  } else {
+    0 - 1
+  }
+}
+let both_var_tuple_arity: (CompileCtx, Array[String], Expr, Expr) -> Int = (ctx, local_names, lhs, rhs) -> {
+  let la = eident_tuple_arity(ctx, local_names, lhs)
+  if la >= 0 {
+    la
+  } else {
+    eident_tuple_arity(ctx, local_names, rhs)
+  }
+}
+let emit_tuple_eq_arity: (Bytes, Expr, Expr, Int, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, lhs, rhs, num, local_names, next_local, ctx, ld, compile_expr_fn) -> {
+  let aptr = next_local
+  Array::push(local_names, "__teqa")
+  let bptr = next_local + 1
+  Array::push(local_names, "__teqb")
+  let nl1 = compile_expr_fn(buf, lhs, local_names, next_local + 2, ctx, ld)
+  emit_local_set(buf, aptr)
+  let nl2 = compile_expr_fn(buf, rhs, local_names, nl1, ctx, ld)
+  emit_local_set(buf, bptr)
+  let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
+  emit_i64_const(buf, 1)
+  let mut i = 0
+  while i < num {
+    emit_local_get(buf, aptr)
+    emit_i32_wrap_i64(buf)
+    emit_i64_load(buf, 3, i * 8)
+    emit_local_get(buf, bptr)
+    emit_i32_wrap_i64(buf)
+    emit_i64_load(buf, 3, i * 8)
+    emit_call(buf, eq_fidx)
+    emit_i64_and(buf)
+    i = i + 1
+  }
+  nl2
+}
 let emit_tuple_struct_eq: (Bytes, Expr, Expr, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, lhs, rhs, local_names, next_local, ctx, ld, compile_expr_fn) -> {
   let lit = if is_etuple(lhs) {
     lhs
@@ -20999,11 +21083,20 @@ let emit_eq_value: (Bytes, Expr, Expr, Array[String], Int, CompileCtx, Int, (Byt
     emit_i64_extend_i32_s(buf)
     nl2
   } else {
-    let nl1 = ce(buf, lhs, local_names, next_local, ctx, ld)
-    let nl2 = ce(buf, rhs, local_names, nl1, ctx, ld)
-    let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
-    emit_call(buf, eq_fidx)
-    nl2
+    let tar = if ctx.enable_rc {
+      0 - 1
+    } else {
+      both_var_tuple_arity(ctx, local_names, lhs, rhs)
+    }
+    if tar >= 0 {
+      emit_tuple_eq_arity(buf, lhs, rhs, tar, local_names, next_local, ctx, ld, ce)
+    } else {
+      let nl1 = ce(buf, lhs, local_names, next_local, ctx, ld)
+      let nl2 = ce(buf, rhs, local_names, nl1, ctx, ld)
+      let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
+      emit_call(buf, eq_fidx)
+      nl2
+    }
   }
 }
 export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error } = (buf, expr, local_names, next_local, ctx, ld) -> {
@@ -22929,7 +23022,9 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       cov: cov_state,
       dbg_line_idx: dbg_line_import_idx,
       dbg_line_nl: dbg_nls,
-      dbg_line_file_id: dbg_fid
+      dbg_line_file_id: dbg_fid,
+      agg_tuple_slots: lc_fresh_int_array(),
+      agg_tuple_arities: lc_fresh_int_array()
     }
     if is_efn(__bi_expr) {
       let __bi_params = get_efn_params(__bi_expr)
@@ -30960,7 +31055,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "1c64971f8cfa5895"
+  "25c9f5acb36b4332"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647
