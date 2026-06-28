@@ -326,6 +326,30 @@ let lookup_var_type: (Array[(String, String)], String) -> Option[String] = (var_
 // pick the trait impl at a concrete call site. Consults `var_types` (locals
 // bound to inferable values and parameters with concrete annotations). Returns
 // None when the type is not determinable (the call is then left unrewritten).
+// Resolve a (possibly qualified) constructor name to its enum/return type.
+// Bare `Green` -> `Color` via fn_returns; qualified `Color::Green` first tries
+// the whole name (no match) then the member `Green` confirming its enum equals
+// the head — so `let a = Color::Green` seeds `a -> Color` for `==` dispatch.
+let ctor_enum_of_name: (Array[(String, String)], String) -> Option[String] = (fn_returns, name) -> {
+  match fn_return_type(fn_returns, name) {
+    Some(t) => Some(t),
+    None => match split_qualified(name) {
+      Some(parts) => {
+        let (head, member) = parts
+        match fn_return_type(fn_returns, member) {
+          Some(en) => if en == head {
+            Some(en)
+          } else {
+            None
+          },
+          None => None
+        }
+      },
+      None => None
+    }
+  }
+}
+
 let infer_arg_type_name: (Expr, Array[(String, Array[String])], Array[(String, String)], Array[(String, String)]) -> Option[String] = (arg, struct_sets, var_types, fn_returns) -> {
   match arg {
     EInt(_) => Some("Int"),
@@ -335,17 +359,17 @@ let infer_arg_type_name: (Expr, Array[(String, Array[String])], Array[(String, S
     // An array literal dispatches to an `impl [T] Trait for Array` witness
     // (#5 generic impls): its constructor is "Array" regardless of element type.
     EArray(_) => Some("Array"),
-    // A variable's recorded type, else a nullary constructor's enum name
-    // (`Green` -> `Color`, via the ctor->enum entries in fn_returns) so that a
-    // `let a = Green` binding resolves for the `==` dispatch.
+    // A variable's recorded type, else a (possibly qualified) nullary
+    // constructor's enum name (`Green`/`Color::Green` -> `Color`) so that a
+    // `let a = Green` / `let a = Color::Green` binding resolves for `==`.
     EIdent(name, _) => match lookup_var_type(var_types, name) {
       Some(t) => Some(t),
-      None => fn_return_type(fn_returns, name)
+      None => ctor_enum_of_name(fn_returns, name)
     },
-    // A call-valued iterable (`for x in lazy_iter_arr([..])`): its type is the
-    // head of the called function's return type (the `fn_returns` registry).
+    // A call-valued iterable (`for x in lazy_iter_arr([..])`) or data ctor
+    // (`Sh::Circle(5)`): its type is the head of the callee's return type.
     ECall(callee, _, _) => match callee {
-      EIdent(fname, _) => fn_return_type(fn_returns, fname),
+      EIdent(fname, _) => ctor_enum_of_name(fn_returns, fname),
       _ => None
     },
     ERecord(fields) => {
@@ -1011,6 +1035,27 @@ let extend_var_types: (Array[(String, String)], String, Option[String]) -> Array
   }
 }
 
+// #672: a qualified constructor `Enum::Variant` -> the unqualified variant
+// `Variant`, when `member` is a constructor of enum `head` (variants are bound
+// unqualified, and codegen's ctor table is keyed unqualified). `head` MUST be a
+// known user enum/struct (`struct_sets` includes enum names) — this is the gate
+// that keeps builtin qualified calls like `String::join` / `Array::map` alone
+// even when a same-named function (`join`/`map`) happens to return that type.
+let qual_ctor_member: (String, String, Array[(String, Array[String])], Array[(String, String)]) -> Option[String] = (head, member, struct_sets, fn_returns) -> {
+  if struct_set_has(struct_sets, head) {
+    match fn_return_type(fn_returns, member) {
+      Some(en) => if en == head {
+        Some(member)
+      } else {
+        None
+      },
+      None => None
+    }
+  } else {
+    None
+  }
+}
+
 // The core rewriter. `dict_binds` is non-empty only inside a transformed
 // generic's body (so `T::method` resolves to a dict field); call-site dict
 // threading applies everywhere a transformed generic is called. `var_types`
@@ -1023,7 +1068,10 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
         let (head, member) = parts
         match find_dict_for_method(dict_binds, head, member) {
           Some(dict_pname) => EDot(EIdent(dict_pname, -1), member, -1),
-          None => expr
+          None => match qual_ctor_member(head, member, struct_sets, fn_returns) {
+            Some(m) => EIdent(m, off),
+            None => expr
+          }
         }
       },
       None => expr
@@ -1033,7 +1081,19 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
         rewrite_expr(a, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
       }
       match callee {
-        EIdent(name, coff) => {
+        EIdent(name0, coff) => {
+          // #672: unqualify a qualified constructor call `Enum::Variant(..)` ->
+          // `Variant(..)` so codegen's (unqualified) ctor table recognizes it.
+          let name = match split_qualified(name0) {
+            Some(parts0) => {
+              let (h0, m0) = parts0
+              match qual_ctor_member(h0, m0, struct_sets, fn_returns) {
+                Some(mm) => mm,
+                None => name0
+              }
+            },
+            None => name0
+          }
           // `T::method(args)` inside a transformed body -> `(dict.method)(args)`.
           let as_method = match split_qualified(name) {
             Some(parts) => {
@@ -1375,25 +1435,52 @@ let gen_show_fn: (String, Array[(String, TypeExpr)]) -> Stmt = (tname, fields) -
   SLet(false, false, qualified_name(tname, "to_string"), None, EFn(no_tp, no_tb, params, Some(TyName("String")), None, body))
 }
 
-// One field's equality expression: `a.f == b.f`. The `==` is itself rewritten
-// by the dispatch pass below, so a struct-typed field whose operands resolve to
-// a struct type recurses into that type's `equals` automatically; primitive
-// fields stay a scalar `==`. (Field-access operands `a.f`/`b.f` only dispatch
-// when their type is resolvable — flat structs are exact; nested-struct fields
-// fall back to scalar `==`, tracked in #672.)
-let field_eq_expr: (String, TypeExpr) -> Expr = (fname, fty) -> {
-  EBinOp("==", EDot(EIdent("a", -1), fname, -1), EDot(EIdent("b", -1), fname, -1))
+// A type name that the runtime compares as a flat scalar (no structural
+// `equals` needed). Everything else named is a user struct/enum and recurses
+// through its generated `T::equals`.
+let is_scalar_type_name: (String) -> Bool = (n) -> {
+  n == "Int" || n == "Double" || n == "Bool" || n == "String" || n == "Char" || n == "Unit" || n == "Bytes"
+}
+
+// Equality of two operands whose declared type is `fty`. A field whose type is
+// a CONCRETE declared struct/enum (`known_types`) recurses through a DIRECT
+// `T::equals(lhs, rhs)` call — the type is known from the declaration, so this
+// closes recursion and nested aggregates WITHOUT relying on operand type
+// inference (enum payload binders / nested field accesses are otherwise
+// untyped). Scalars, type PARAMETERS (`Box[T]`'s `T` — not a declared type, has
+// no `equals`), and structural shapes (tuples/arrays/options) keep `==`, which
+// codegen handles structurally for literals and the dispatch pass rewrites
+// where operands are resolvable. (#672 recursion close.)
+let eq_for_typed: (TypeExpr, Expr, Expr, Array[String]) -> Expr = (fty, lhs, rhs, known_types) -> {
+  match fty {
+    TyName(n) => if !is_scalar_type_name(n) && str_array_contains(known_types, n) {
+      ECall(EIdent(qualified_name(n, "equals"), -1), Array::slice([
+        lhs,
+        rhs
+      ], 0, 2), -1)
+    } else {
+      EBinOp("==", lhs, rhs)
+    },
+    _ => EBinOp("==", lhs, rhs)
+  }
+}
+
+// One field's equality expression: `a.f == b.f` for scalar/param fields, or a
+// direct `FieldType::equals(a.f, b.f)` for aggregate (declared struct/enum)
+// fields so nested/recursive structs compare structurally. (#672 recursion.)
+let field_eq_expr: (String, TypeExpr, Array[String]) -> Expr = (fname, fty, known_types) -> {
+  eq_for_typed(fty, EDot(EIdent("a", -1), fname, -1), EDot(EIdent("b", -1), fname, -1), known_types)
 }
 
 // `let P::equals = (a: P, b: P) -> Bool { a.x == b.x && a.y == b.y && ... }`
 // Mirrors gen_compare_fn. Primitive fields compare with `==`; aggregate fields
 // recurse through the field type's generated `equals`. An empty struct is `true`.
-let gen_eq_fn: (String, Array[(String, TypeExpr)]) -> Stmt = (tname, fields) -> {
+let gen_eq_fn: (String, Array[(String, TypeExpr)], Array[String]) -> Stmt = (tname, fields, known_types) -> {
   let mut body = EBool(true)
   let mut i = Array::length(fields) - 1
   while i >= 0 {
     let (fname, fty) = Array::get(fields, i)
-    body = EBinOp("&&", field_eq_expr(fname, fty), body)
+    body = EBinOp("&&", field_eq_expr(fname, fty, known_types), body)
     i = i - 1
   }
   let params = Array::slice([
@@ -1449,7 +1536,7 @@ let rec idx_str: (Int) -> String = (n) -> {
 //      V2          => match b { V2 => true, _ => false }, ... } }`
 // Tag mismatch falls to the inner `_ => false`; payload `==` is itself
 // dispatched, so aggregate payloads recurse into their own `equals`.
-let gen_enum_eq_fn: (String, Array[(String, Array[TypeExpr])]) -> Stmt = (ename, variants) -> {
+let gen_enum_eq_fn: (String, Array[(String, Array[TypeExpr])], Array[String]) -> Stmt = (ename, variants, known_types) -> {
   let outer_arms = Array::slice([
     (PWild, EUnit)
   ], 0, 0)
@@ -1472,7 +1559,7 @@ let gen_enum_eq_fn: (String, Array[(String, Array[TypeExpr])]) -> Stmt = (ename,
     let mut body = EBool(true)
     let mut bi = nf - 1
     while bi >= 0 {
-      let cmp = EBinOp("==", EIdent(String::concat("__a", idx_str(bi)), -1), EIdent(String::concat("__b", idx_str(bi)), -1))
+      let cmp = eq_for_typed(Array::get(ftypes, bi), EIdent(String::concat("__a", idx_str(bi)), -1), EIdent(String::concat("__b", idx_str(bi)), -1), known_types)
       body = EBinOp("&&", cmp, body)
       bi = bi - 1
     }
@@ -1524,8 +1611,27 @@ let gen_compare_fn: (String, Array[(String, TypeExpr)]) -> Stmt = (tname, fields
 
 // In-place: for each struct with `derive(Show/Ord)`, append the structural
 // function if not already present (idempotent across the double-run pipeline).
+// The set of concrete struct/enum names declared in the program — the gate for
+// emitting DIRECT `T::equals` calls in generated comparators (a field/arg whose
+// type name is NOT here, e.g. a type parameter `T` of `Box[T]`, falls back to
+// scalar `==`, since there is no `T::equals` to call).
+let collect_decl_type_names: (Array[Stmt]) -> Array[String] = (stmts) -> {
+  let out = empty_str_array()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(_, name, _, _, _) => Array::push(out, name),
+      SEnum(_, ename, _, _) => Array::push(out, ename),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 export let desugar_derives: (Array[Stmt]) -> Unit = (stmts) -> {
   let gen = empty_stmt_list()
+  let known_types = collect_decl_type_names(stmts)
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
@@ -1545,7 +1651,7 @@ export let desugar_derives: (Array[Stmt]) -> Unit = (stmts) -> {
         // sensible default for any struct, and a struct never relied on the old
         // pointer-identity `==` (which was silently always-false).
         if !top_level_fn_exists(stmts, qualified_name(name, "equals")) {
-          Array::push(gen, gen_eq_fn(name, fields))
+          Array::push(gen, gen_eq_fn(name, fields, known_types))
         } else {
           ()
         }
@@ -1554,7 +1660,7 @@ export let desugar_derives: (Array[Stmt]) -> Unit = (stmts) -> {
         // Generate `E::equals` for every enum (same rationale as structs), so
         // the `==` dispatch resolves enum operands too.
         if !top_level_fn_exists(stmts, qualified_name(ename, "equals")) {
-          Array::push(gen, gen_enum_eq_fn(ename, variants))
+          Array::push(gen, gen_enum_eq_fn(ename, variants, known_types))
         } else {
           ()
         }

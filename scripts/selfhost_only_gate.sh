@@ -1938,6 +1938,130 @@ export let _start: () -> Int = () -> {
   v1 + v2 + v3 + v4
 }
 EOF
+# qctor: qualified constructor references `Enum::Variant` (`Color::Green`,
+# `Sh::Circle(5)`) resolve at check time and dispatch `==` structurally, both as
+# direct literals and through qualified-ctor-bound variables. (#672 qualified
+# ctors: checker resolve_qualified_ctor_ident + desugar unqualify + infer.)
+cat > "$sdir/qctor.vibe" <<'EOF'
+enum Color { Red; Green; Blue }
+enum Sh { Circle(Int); Rect(Int, Int); Pt }
+export let _start: () -> Int = () -> {
+  let a = Color::Green
+  let b: Color = Green
+  let v1 = if a == b { 1 } else { 0 }
+  let c = Sh::Circle(5)
+  let d: Sh = Circle(5)
+  let v2 = if c == d { 10 } else { 0 }
+  let v3 = if Color::Red == Color::Red { 100 } else { 0 }
+  let v4 = if Sh::Circle(5) == Sh::Circle(5) { 1000 } else { 0 }
+  let v5 = if Sh::Circle(5) != Sh::Rect(1, 2) { 10000 } else { 0 }
+  v1 + v2 + v3 + v4 + v5
+}
+EOF
+# rec: recursive enum (`Tree`) and nested struct (`Outer { Inner }`) compare
+# structurally — the generated comparators emit DIRECT `T::equals` calls for
+# aggregate field/variant-arg types, so recursion closes without relying on
+# operand type inference. (#672 recursion close: eq_for_typed.)
+cat > "$sdir/rec.vibe" <<'EOF'
+enum Tree { Leaf(Int); Node(Tree, Tree) } derive(Eq)
+struct Inner { v: Int } derive(Eq)
+struct Outer { a: Inner; b: Int } derive(Eq)
+export let _start: () -> Int = () -> {
+  let t1 = Node(Leaf(1), Leaf(2))
+  let t2 = Node(Leaf(1), Leaf(2))
+  let t3 = Node(Leaf(1), Leaf(3))
+  let x = Outer::{ a: Inner::{ v: 1 }, b: 2 }
+  let y = Outer::{ a: Inner::{ v: 1 }, b: 2 }
+  let z = Outer::{ a: Inner::{ v: 9 }, b: 2 }
+  let v1 = if t1 == t2 { 1 } else { 0 }
+  let v2 = if t1 != t3 { 20 } else { 0 }
+  let v3 = if x == y { 300 } else { 0 }
+  let v4 = if x != z { 4000 } else { 0 }
+  v1 + v2 + v3 + v4
+}
+EOF
+# tann: function-type annotation arity. A parenthesized tuple parameter
+# `((A, B)) -> R` is ONE tuple param, distinct from `(A, B) -> R`'s two params —
+# previously both flattened to a two-param list and the tuple-param form failed
+# to typecheck (`expected (Bool,Int)->Int, got (?t0)->Int`). Covers 0/1/2-param,
+# a function-typed param (HOF), the tuple param, and tuple-param-plus-scalar.
+# (parser_base.vibe parse_type_impl arity-preserving paren group.)
+# tostr: `__to_string` of large integers (via interpolation) stringifies the
+# DECIMAL value instead of misreading the i64 as a string handle. #664 root
+# cause: a value whose high 32 bits fall below memory_size was treated as a
+# string pointer, so its low 32 bits became a bogus length — a multi-gigabyte
+# one crashed the persistent-sources-cache `String::concat` ("memory access out
+# of bounds"), a `0` low word produced an empty string. The `64 <= ptr` and
+# `ptr + len <= memory_size` bounds keep genuine strings on the identity path
+# while routing large integers to decimal stringify.
+# (compile_call.vibe __to_string heuristic.)
+cat > "$sdir/tostr.vibe" <<'EOF'
+export let _start: () -> Int = () -> {
+  let v1 = if "\{4294967296}" == "4294967296" { 1 } else { 0 }
+  let v2 = if "\{8294967296}" == "8294967296" { 20 } else { 0 }
+  let v3 = if "\{1000000000000000000}" == "1000000000000000000" { 300 } else { 0 }
+  let v4 = if "\{42}" == "42" { 4000 } else { 0 }
+  v1 + v2 + v3 + v4
+}
+EOF
+# pstruct: struct field patterns in `match` (`S::{ x, y }`) bind fields by NAME
+# (offset from the struct field-name table, so pattern field order is
+# independent of declaration order) — previously fields were never bound
+# (`undefined variable: x`). Covers full / reordered / partial field binds.
+# (compile_match.vibe bind_struct_pat + is_catchall_pat PStruct.)
+cat > "$sdir/pstruct.vibe" <<'EOF'
+struct P { x: Int; y: Int }
+struct N { a: Int; b: Int; c: Int }
+export let _start: () -> Int = () -> {
+  let p = P::{ x: 3, y: 5 }
+  let n = N::{ a: 2, b: 4, c: 6 }
+  let v1 = match p { P::{ x, y } => x * 10 + y }
+  let v2 = match p { P::{ y, x } => x * 10 + y }
+  let v3 = match n { N::{ a, c } => a + c }
+  v1 + v2 + v3
+}
+EOF
+# pneg: negative integer literal patterns `-5` (bare, in a constructor arg, and
+# in a tuple element) — previously `unexpected in pattern: -`.
+# (parser_base.vibe parse_pattern TMinus arm.)
+cat > "$sdir/pneg.vibe" <<'EOF'
+enum E { N(Int) }
+export let _start: () -> Int = () -> {
+  let v1 = match (0 - 5) { -5 => 1, _ => 0 }
+  let v2 = match 5 { -5 => 0, _ => 20 }
+  let v3 = match N(0 - 3) { N(-3) => 300, N(_) => 0 }
+  let v4 = match (0 - 1, 2) { (-1, 2) => 4000, _ => 0 }
+  v1 + v2 + v3 + v4
+}
+EOF
+# interp: string interpolation `\{expr}` / `\(expr)` parses an arbitrary
+# EXPRESSION (arithmetic, call, field access, multiple holes), not just a bare
+# identifier — previously the embedded source was treated as an identifier name
+# (`undefined variable: 1+1`). (parser_expr_primary.vibe build_interp_expr.)
+cat > "$sdir/interp.vibe" <<'EOF'
+struct P { x: Int }
+let inc: (Int) -> Int = (n) -> { n + 1 }
+export let _start: () -> Int = () -> {
+  let a = 2
+  let p = P::{ x: 7 }
+  let v1 = if "\{a + 3}" == "5" { 1 } else { 0 }
+  let v2 = if "\{inc(a)}" == "3" { 20 } else { 0 }
+  let v3 = if "\{p.x}" == "7" { 300 } else { 0 }
+  let v4 = if "\{a}-\(p.x)" == "2-7" { 4000 } else { 0 }
+  v1 + v2 + v3 + v4
+}
+EOF
+cat > "$sdir/tann.vibe" <<'EOF'
+let two: (Int, Int) -> Int = (a, b) -> { a + b }
+let one: (Int) -> Int = (x) -> { x + 1 }
+let zero: () -> Int = () -> { 5 }
+let hof: ((Int) -> Int, Int) -> Int = (f, x) -> { f(x) }
+let tup1: ((Int, Int)) -> Int = (p) -> { let (a, b) = p; a + b }
+let mix: ((Int, Int), Int) -> Int = (p, c) -> { let (a, b) = p; a + b + c }
+export let _start: () -> Int = () -> {
+  two(3, 4) + one(9) + zero() + hof((n) -> { n * 2 }, 10) + tup1((1, 2)) + mix((1, 2), 100)
+}
+EOF
 smoke_check() {
   local nm="$1" want="$2"
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
@@ -1960,7 +2084,14 @@ smoke_check teq 111
 smoke_check eeq 11111
 smoke_check seq 321
 smoke_check eveq 3021
+smoke_check qctor 11111
+smoke_check rec 4321
+smoke_check tann 148
+smoke_check interp 4321
+smoke_check pneg 4321
+smoke_check pstruct 78
+smoke_check tostr 4321
 rm -rf "$sdir"
-echo "[selfhost-only-gate] multi-feature end-to-end smoke ok (10/153/6/111/11111/321/3021)"
+echo "[selfhost-only-gate] multi-feature end-to-end smoke ok (10/153/6/111/11111/321/3021/11111/4321/148/4321/4321/78/4321)"
 
 echo "[selfhost-only-gate] ok"

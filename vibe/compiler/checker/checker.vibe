@@ -185,6 +185,43 @@ let resolve_trait_method_ident: (String, TypeEnv, Array[TypeDef], Subst) -> Opti
   }
 }
 
+// Resolve a qualified constructor reference `Enum::Variant` (e.g. `Color::Red`,
+// `Sh::Circle`) to the bare variant's constructor type. The bare variant name
+// is already bound in `env` by the SEnum case; we only confirm `head` names a
+// known enum that actually owns `member` (so unrelated `T::method` names fall
+// through to the `unknown name` path). Returns the polymorphic env type as-is;
+// callers instantiate it exactly like a bare ident. (#672 qualified ctors.)
+let resolve_qualified_ctor_ident: (String, TypeEnv, Array[TypeDef]) -> Option[Type] = (name, env, defs) -> {
+  let idx = String::index_of(name, "::")
+  if idx < 0 {
+    None
+  } else {
+    let head = String::substring(name, 0, idx)
+    let member = String::substring(name, idx + 2, String::length(name))
+    match find_typedef(defs, head) {
+      Some(TDEnum(_, _, variants)) => {
+        let mut found = false
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (vname, _) = Array::get(variants, vi)
+          if vname == member {
+            found = true
+          } else {
+            ()
+          }
+          vi = vi + 1
+        }
+        if found {
+          env_lookup(env, member)
+        } else {
+          None
+        }
+      },
+      _ => None
+    }
+  }
+}
+
 let expr_ident_name_or_empty: (Expr) -> String = (expr) -> {
   match expr {
     EIdent(name, _) => name,
@@ -1285,9 +1322,32 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
             }
             (mty, s, c)
           },
-          None => {
-            Array::push(errors, String::concat(String::concat("unknown name: ", name), off_marker_len(ident_off, String::length(name))))
-            (CtUnknown, s, c)
+          None => match resolve_qualified_ctor_ident(name, env, defs) {
+            Some(ct) => {
+              let (ti, c1, new_bounds) = instantiate(ct, c)
+              let nblen = Array::length(new_bounds)
+              let mut s1 = s
+              let mut bi = 0
+              while bi < nblen {
+                let (vid, bounds) = Array::get(new_bounds, bi)
+                if Array::length(bounds) != 0 {
+                  s1 = subst_add_bound(s1, vid, bounds)
+                } else {
+                  ()
+                }
+                bi = bi + 1
+              }
+              if ident_off >= 0 {
+                Array::push(tytab, (ident_off, ti))
+              } else {
+                ()
+              }
+              (ti, s1, c1)
+            },
+            None => {
+              Array::push(errors, String::concat(String::concat("unknown name: ", name), off_marker_len(ident_off, String::length(name))))
+              (CtUnknown, s, c)
+            }
           }
         }
       }
