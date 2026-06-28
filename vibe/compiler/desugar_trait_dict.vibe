@@ -287,6 +287,22 @@ let field_sets_match: (Array[String], Array[String]) -> Bool = (a, b) -> {
   }
 }
 
+// Is `name` a known struct (a key in struct_sets)? Gates the #672 `==` dispatch.
+let struct_set_has: (Array[(String, Array[String])], String) -> Bool = (struct_sets, name) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(struct_sets) {
+    let (sname, _) = Array::get(struct_sets, i)
+    if sname == name {
+      found = true
+      i = Array::length(struct_sets)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
 let lookup_var_type: (Array[(String, String)], String) -> Option[String] = (var_types, name) -> {
   let mut i = 0
   let mut result = None
@@ -1125,7 +1141,41 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
         }
       }
     },
-    EBinOp(op, l, r) => EBinOp(op, rewrite_expr(l, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(r, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    EBinOp(op, l, r) => {
+      let rl = rewrite_expr(l, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+      let rr = rewrite_expr(r, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+      // #672: dispatch `a == b` / `a != b` on a struct type to the generated
+      // structural `T::equals`. The operand's type is resolved best-effort via
+      // `infer_arg_type_name` (var_types for variables, field-set match for
+      // struct literals); a struct type whose `equals` we generated is rewritten
+      // to a call. Non-struct / unresolved operands keep the scalar binop.
+      if op == "==" || op == "!=" {
+        let ty = match infer_arg_type_name(l, struct_sets, var_types, fn_returns) {
+          Some(t) => Some(t),
+          None => infer_arg_type_name(r, struct_sets, var_types, fn_returns)
+        }
+        match ty {
+          Some(t) => if struct_set_has(struct_sets, t) {
+            let call = ECall(EIdent(String::concat(t, "::equals"), -1), [
+              rl,
+              rr
+            ], -1)
+            if op == "==" {
+              call
+            } else {
+              ECall(EIdent("not", -1), [
+                call
+              ], -1)
+            }
+          } else {
+            EBinOp(op, rl, rr)
+          },
+          None => EBinOp(op, rl, rr)
+        }
+      } else {
+        EBinOp(op, rl, rr)
+      }
+    },
     EUnaryOp(op, e) => EUnaryOp(op, rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     EFn(tp, bs, ps, ret, eff, body) => EFn(tp, bs, ps, ret, eff, rewrite_expr(body, gens, traits, struct_sets, dict_binds, seed_var_types(ps, tp, var_types), fn_returns)),
     EDot(obj, field, off) => EDot(rewrite_expr(obj, gens, traits, struct_sets, dict_binds, var_types, fn_returns), field, off),
@@ -1304,24 +1354,14 @@ let gen_show_fn: (String, Array[(String, TypeExpr)]) -> Stmt = (tname, fields) -
   SLet(false, false, qualified_name(tname, "to_string"), None, EFn(no_tp, no_tb, params, Some(TyName("String")), None, body))
 }
 
-// One field's equality expression: `a.f == b.f` for primitive fields, or a
-// recursive `T::equals(a.f, b.f)` when the field is another aggregate type that
-// has a generated structural comparator (so nested derive(Eq) types recurse).
+// One field's equality expression: `a.f == b.f`. The `==` is itself rewritten
+// by the dispatch pass below, so a struct-typed field whose operands resolve to
+// a struct type recurses into that type's `equals` automatically; primitive
+// fields stay a scalar `==`. (Field-access operands `a.f`/`b.f` only dispatch
+// when their type is resolvable — flat structs are exact; nested-struct fields
+// fall back to scalar `==`, tracked in #672.)
 let field_eq_expr: (String, TypeExpr) -> Expr = (fname, fty) -> {
-  let af = EDot(EIdent("a", -1), fname, -1)
-  let bf = EDot(EIdent("b", -1), fname, -1)
-  match fty {
-    TyName("Int") => EBinOp("==", af, bf),
-    TyName("Double") => EBinOp("==", af, bf),
-    TyName("Bool") => EBinOp("==", af, bf),
-    TyName("String") => EBinOp("==", af, bf),
-    TyName("Char") => EBinOp("==", af, bf),
-    TyName(t) => ECall(EIdent(qualified_name(t, "equals"), -1), [
-      af,
-      bf
-    ], -1),
-    _ => EBinOp("==", af, bf)
-  }
+  EBinOp("==", EDot(EIdent("a", -1), fname, -1), EDot(EIdent("b", -1), fname, -1))
 }
 
 // `let P::equals = (a: P, b: P) -> Bool { a.x == b.x && a.y == b.y && ... }`
@@ -1391,7 +1431,11 @@ export let desugar_derives: (Array[Stmt]) -> Unit = (stmts) -> {
         } else {
           ()
         }
-        if str_array_contains(derives, "Eq") && !top_level_fn_exists(stmts, qualified_name(name, "equals")) {
+        // Generate `T::equals` for every struct (not just derive(Eq)) so the
+        // `==` dispatch below always resolves; structural equality is the
+        // sensible default for any struct, and a struct never relied on the old
+        // pointer-identity `==` (which was silently always-false).
+        if !top_level_fn_exists(stmts, qualified_name(name, "equals")) {
           Array::push(gen, gen_eq_fn(name, fields))
         } else {
           ()

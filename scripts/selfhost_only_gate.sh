@@ -1906,6 +1906,22 @@ export let _start: () -> Int = () -> {
   v1 + v2 + v3 + v4 + v5
 }
 EOF
+cat > "$sdir/seq.vibe" <<'EOF'
+struct V { x: Int; y: Int } derive(Eq)
+struct N { name: String; value: Int } derive(Eq)
+export let _start: () -> Int = () -> {
+  let a = V::{ x: 1, y: 2 }
+  let b = V::{ x: 1, y: 2 }
+  let c = V::{ x: 3, y: 4 }
+  let na = N::{ name: "foo", value: 1 }
+  let nb = N::{ name: "foo", value: 1 }
+  let v1 = if a == b { 1 } else { 0 }
+  let v2 = if a != c { 20 } else { 0 }
+  let v3 = if na == nb { 300 } else { 0 }
+  let v4 = if a == c { 5000 } else { 0 }
+  v1 + v2 + v3 + v4
+}
+EOF
 smoke_check() {
   local nm="$1" want="$2"
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
@@ -1926,7 +1942,8 @@ smoke_check eff 153
 smoke_check gen 6
 smoke_check teq 111
 smoke_check eeq 11111
+smoke_check seq 321
 rm -rf "$sdir"
-echo "[selfhost-only-gate] multi-feature end-to-end smoke ok (10/153/6/111/11111)"
+echo "[selfhost-only-gate] multi-feature end-to-end smoke ok (10/153/6/111/11111/321)"
 
 echo "[selfhost-only-gate] ok"
