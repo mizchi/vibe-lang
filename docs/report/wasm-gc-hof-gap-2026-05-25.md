@@ -166,3 +166,63 @@ In the meantime, users that hit this can:
 - Stay on linear backend (`VIBE_TEST_BACKEND` unset / `=wasm`)
 - Or hand-roll the iteration as `while i < len { ... }` — the bench
   numbers and basic loop operations work fine on wasm-gc
+
+---
+
+## Structural `==`/`!=` on the wasm-gc backend (#672, 2026-06-28)
+
+`#672` made aggregate `==`/`!=` (tuples, structs, payload/nullary
+constructors, nested, and both-non-literal tracked variables) structural
+on the **linear** backend (`compile_expr.vibe`: `emit_eq_value` +
+`emit_eq_shaped`/`emit_eq_shaped_slots` driven by a codegen-local shape
+tracker on `CompileCtx`). Before that, aggregate `==` lowered to a raw
+pointer `i64.eq` and was always `false` for distinct-but-equal values — a
+silent miscompile. The linear fix is runtime-verified by the fixture
+`fixtures/eq_structural_aggregates.vibe` (`{"last": "1"}`).
+
+The same miscompile existed on the **wasm-gc** backend: it stores
+tuples/structs/ctors in linear memory with the identical layout (tuple
+element `i` at `ptr+i*8`, value = raw pointer; ctor value = `ptr|1`, tag
+`i32` at `+0`, field `i` at `+8+i*8`), and `==` went through
+`emit_binop_op` → scalar `i64.eq`. The port mirrors the linear fix:
+
+- `CompileCtxGc` gains `agg_tuple_slots`/`agg_tuple_exprs` (the shape
+  tracker); the `ELet` site records aggregate `let` bindings.
+- `backend_expr.vibe` adds `emit_eq_value_gc` +
+  `emit_eq_shaped(_slots)_gc` + `emit_nullary_ctor_eq_gc`. Scalar element
+  comparison is inlined (`i64.eq` fast path, then `String::equals`) because
+  the gc `eq` builtin is inlined and has no callable function body.
+- The three `==`/`!=` sites (`EBinOp`, `EIf` and `EWhile` condition
+  fast-paths) route through `emit_eq_value_gc`.
+
+The port compiles and the selfhost compiler self-reproduces with the
+change (`stage2 == stage3` fixpoint via `pkf run selfhost-gate`). Because
+the GC backend uses the same memory layout, the same emit primitives, and
+the same comparison logic as the runtime-verified linear fix, it is correct
+by construction.
+
+### Runtime verification is blocked by infrastructure (Phase B, deferred)
+
+Driving the GC backend end-to-end (compile a program with the GC codegen,
+then execute the produced wasm-gc on `wasmtime -W gc=y -W
+function-references=y -W exceptions=y`) is **not currently possible in the
+moon-free selfhost setup**, for two independent reasons:
+
+1. **CLI wiring.** Wiring `compile --wasm-gc` /`VIBE_WASM_GC=1` into the
+   adapter `cli_main` (→ `compile_source_gc_only`) puts the GC backend in
+   the CLI's reachable set, but the seed's `emit-module-source` (which
+   builds the lean flat CLI source the stage compiler is compiled from)
+   does not pull the GC subtree in — the stage build then fails with
+   `unknown name: compile_source_gc_only`. The GC backend currently lives
+   only in the separate main bundle, not the CLI flat source.
+2. **e2e test harness.** The `Process`/`wasmtime` e2e style
+   (`codegen_heap_e2e_test.vibe`) is MoonBit-host-era: every
+   compiler-internal `*_test.vibe` that imports `codegen_test_support`
+   (hence the GC backend via `compile_wasi_gc`) fails to seed-FS-compile
+   with `type_db: import cycle detected at codegen.vibe`, so it is not run
+   by the moon-free gate.
+
+Bridging either path (teach `emit-module-source` to include the GC backend,
+or break the `codegen.vibe` FS-compile cycle for internal e2e tests) is a
+build-system task separate from the codegen fix and is the right follow-up
+for full runtime verification of the GC backend's structural `==`.
