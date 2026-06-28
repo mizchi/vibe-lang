@@ -98,6 +98,27 @@ let slot_is_floatish: (CompileCtx, Int) -> Bool = (ctx, slot) -> {
   result
 }
 
+// #678: is the local in `slot` known to hold an Int? Mirrors slot_is_floatish:
+// ctx.int_local_slots logs `slot*2 + (1 if the binding's value was definitely
+// integral else 0)` as `let`s compile, most-recent-binding-wins. Lets a bare
+// integer variable take the direct-i64 `==` / decimal `__to_string` path instead
+// of the string-pointer heuristic that misreads large ints (see expr_is_intish).
+let slot_is_intish: (CompileCtx, Int) -> Bool = (ctx, slot) -> {
+  let arr = ctx.int_local_slots
+  let mut j = Array::length(arr) - 1
+  let mut result = false
+  while j >= 0 {
+    let entry = Array::get(arr, j)
+    if entry / 2 == slot {
+      result = (entry % 2) == 1
+      j = -1
+    } else {
+      j = j - 1
+    }
+  }
+  result
+}
+
 // Blocker-3 (ADR-0055): does `e` statically evaluate to an f64 bit pattern?
 // Syntactic over-approximation (the AST is untyped): float literals, float
 // arithmetic / comparison over floatish operands, float-producing conversions,
@@ -149,6 +170,56 @@ export let rec expr_is_floatish: (Expr, Array[String], CompileCtx) -> Bool with 
     } else {
       false
     }
+  } else {
+    false
+  }
+}
+
+// #678: is `e` unambiguously an integer/bool scalar — never a string or float?
+// Such an operand makes `==`/`!=` a direct i64.eq instead of the polymorphic
+// `eq` builtin, whose string fall-back misreads a large integer as a string
+// fat-pointer `(ptr<<32)|len` (two unequal ints with a zero low word compare
+// EQUAL). Literals, bitwise/comparison/logical operators, and non-float
+// arithmetic are integral by shape; a bare identifier is integral when its slot
+// was bound to a definitely-integral value (tracked in ctx.int_local_slots as
+// `let`s compile — the dual of expr_is_floatish). Unknown idents/calls stay
+// false and fall back to the bounds-guarded `eq`.
+export let expr_is_intish: (Expr, Array[String], CompileCtx) -> Bool with { Error } = (e, local_names, ctx) -> {
+  let tag = expr_tag(e)
+  if tag == 0 {
+    true
+  } else if tag == 1 {
+    true
+  } else if tag == 4 {
+    let nm = get_eident_name(e)
+    let len = Array::length(local_names)
+    let mut i = len - 1
+    let mut slot = -1
+    while i >= 0 {
+      if Array::get(local_names, i) == nm {
+        slot = i
+        i = -1
+      } else {
+        i = i - 1
+      }
+    }
+    if slot >= 0 {
+      slot_is_intish(ctx, slot)
+    } else {
+      false
+    }
+  } else if tag == 5 {
+    let op = get_ebinop_op(e)
+    if op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || op == "%" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "==" || op == "!=" || op == "&&" || op == "||" {
+      true
+    } else if op == "+" || op == "-" || op == "*" || op == "/" {
+      !expr_is_floatish(e, local_names, ctx)
+    } else {
+      false
+    }
+  } else if tag == 6 {
+    let op = get_eunaryop_op(e)
+    op == "!"
   } else {
     false
   }
@@ -297,6 +368,13 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
       Array::push(ctx.float_local_slots, local_idx * 2 + 1)
     } else if slot_is_floatish(ctx, local_idx) {
       Array::push(ctx.float_local_slots, local_idx * 2)
+    }
+    // #678: log whether this binding holds a definitely-integral value, so a
+    // later bare-ident `==` / `__to_string` on it bypasses the string heuristic.
+    if expr_is_intish(value, local_names, ctx) {
+      Array::push(ctx.int_local_slots, local_idx * 2 + 1)
+    } else if slot_is_intish(ctx, local_idx) {
+      Array::push(ctx.int_local_slots, local_idx * 2)
     }
     let mut rc_kind = 0
     if ctx.enable_rc {
@@ -448,6 +526,13 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
       Array::push(ctx.float_local_slots, local_idx * 2 + 1)
     } else if slot_is_floatish(ctx, local_idx) {
       Array::push(ctx.float_local_slots, local_idx * 2)
+    }
+    // #678: track integral mutable bindings too (an Int local stays Int across
+    // reassignments), so bare-ident `==` on it uses the direct i64 path.
+    if expr_is_intish(value, local_names, ctx) {
+      Array::push(ctx.int_local_slots, local_idx * 2 + 1)
+    } else if slot_is_intish(ctx, local_idx) {
+      Array::push(ctx.int_local_slots, local_idx * 2)
     }
     if is_mut_captured_in(body, name) {
       Array::push(ctx.ref_cell_names, name)

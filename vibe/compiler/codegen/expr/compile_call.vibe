@@ -34,6 +34,57 @@ import ./compile_match.vibe {
 
 //# Functions
 
+// #664/#678: is `e` statically a known integer — an Int literal, or a local
+// bound to an integral value (ctx.int_local_slots, populated by the `let`
+// handlers)? Such a value must NOT be run through `__to_string`'s string-pointer
+// heuristic, which misreads a large int as an empty string. Self-contained
+// (no import of expr_is_intish — compile_expr_tail already imports this module,
+// so the reverse import would cycle); covers the common literal / bound-local
+// cases, which is enough for interpolation `\{n}`.
+let ts_known_int: (Expr, Array[String], CompileCtx) -> Bool = (e, local_names, ctx) -> {
+  let tag = expr_tag(e)
+  if tag == 0 {
+    true
+  } else if tag == 5 {
+    // Bitwise / shift / mod are unambiguously integral (never float or string),
+    // so `"\{1 << 40}"` takes the integer path. Arithmetic (+ - * /) is left to
+    // the heuristic since it could be float without a type check here.
+    let op = get_ebinop_op(e)
+    op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || op == "%"
+  } else if tag == 4 {
+    let nm = get_eident_name(e)
+    let mut i = Array::length(local_names) - 1
+    let mut slot = -1
+    while i >= 0 {
+      if Array::get(local_names, i) == nm {
+        slot = i
+        i = -1
+      } else {
+        i = i - 1
+      }
+    }
+    if slot >= 0 {
+      let arr = ctx.int_local_slots
+      let mut j = Array::length(arr) - 1
+      let mut result = false
+      while j >= 0 {
+        let entry = Array::get(arr, j)
+        if entry / 2 == slot {
+          result = (entry % 2) == 1
+          j = -1
+        } else {
+          j = j - 1
+        }
+      }
+      result
+    } else {
+      false
+    }
+  } else {
+    false
+  }
+}
+
 export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, callee, args, local_names, next_local, ctx, ld, ce) -> {
   if is_eident(callee) {
     let fname0 = canonical_builtin_name(get_eident_name(callee))
@@ -585,7 +636,9 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
     }
     else if fname == "__to_string" {
-      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      let ts_arg0 = Array::get(args, 0)
+      let ts_arg_is_int = ts_known_int(ts_arg0, local_names, ctx)
+      let mut nl = ce(buf, ts_arg0, local_names, next_local, ctx, ld)
       let val_l = nl
       let neg_l = nl + 1
       let cur_l = nl + 2
@@ -600,6 +653,14 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       Array::push(local_names, "__ts_len")
       emit_local_set(buf, val_l)
       emit_block_i64(buf)
+      if ts_arg_is_int {
+        // #678: the argument is statically a known Int (literal or int-bound
+        // local) — never run it through the string-pointer heuristic (a large
+        // int like `1 << 40` has a zero low word and an in-bounds high word, so
+        // it would be misread as an empty string). Force the integer path with
+        // a false (i32) condition — the heuristic below also yields an i32 bool.
+        emit_i32_const(buf, 0)
+      } else {
       emit_local_get(buf, val_l)
       emit_i64_const(buf, 32)
       bytebuf_push(buf, 136)
@@ -648,6 +709,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_i64_mul(buf)
       emit_i64_le_s(buf)
       bytebuf_push(buf, 113)
+      }
       emit_if_void(buf)
       emit_local_get(buf, val_l)
       emit_br(buf, 1)
