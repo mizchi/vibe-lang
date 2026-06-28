@@ -1938,6 +1938,48 @@ export let _start: () -> Int = () -> {
   v1 + v2 + v3 + v4
 }
 EOF
+# qctor: qualified constructor references `Enum::Variant` (`Color::Green`,
+# `Sh::Circle(5)`) resolve at check time and dispatch `==` structurally, both as
+# direct literals and through qualified-ctor-bound variables. (#672 qualified
+# ctors: checker resolve_qualified_ctor_ident + desugar unqualify + infer.)
+cat > "$sdir/qctor.vibe" <<'EOF'
+enum Color { Red; Green; Blue }
+enum Sh { Circle(Int); Rect(Int, Int); Pt }
+export let _start: () -> Int = () -> {
+  let a = Color::Green
+  let b: Color = Green
+  let v1 = if a == b { 1 } else { 0 }
+  let c = Sh::Circle(5)
+  let d: Sh = Circle(5)
+  let v2 = if c == d { 10 } else { 0 }
+  let v3 = if Color::Red == Color::Red { 100 } else { 0 }
+  let v4 = if Sh::Circle(5) == Sh::Circle(5) { 1000 } else { 0 }
+  let v5 = if Sh::Circle(5) != Sh::Rect(1, 2) { 10000 } else { 0 }
+  v1 + v2 + v3 + v4 + v5
+}
+EOF
+# rec: recursive enum (`Tree`) and nested struct (`Outer { Inner }`) compare
+# structurally — the generated comparators emit DIRECT `T::equals` calls for
+# aggregate field/variant-arg types, so recursion closes without relying on
+# operand type inference. (#672 recursion close: eq_for_typed.)
+cat > "$sdir/rec.vibe" <<'EOF'
+enum Tree { Leaf(Int); Node(Tree, Tree) } derive(Eq)
+struct Inner { v: Int } derive(Eq)
+struct Outer { a: Inner; b: Int } derive(Eq)
+export let _start: () -> Int = () -> {
+  let t1 = Node(Leaf(1), Leaf(2))
+  let t2 = Node(Leaf(1), Leaf(2))
+  let t3 = Node(Leaf(1), Leaf(3))
+  let x = Outer::{ a: Inner::{ v: 1 }, b: 2 }
+  let y = Outer::{ a: Inner::{ v: 1 }, b: 2 }
+  let z = Outer::{ a: Inner::{ v: 9 }, b: 2 }
+  let v1 = if t1 == t2 { 1 } else { 0 }
+  let v2 = if t1 != t3 { 20 } else { 0 }
+  let v3 = if x == y { 300 } else { 0 }
+  let v4 = if x != z { 4000 } else { 0 }
+  v1 + v2 + v3 + v4
+}
+EOF
 smoke_check() {
   local nm="$1" want="$2"
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
@@ -1960,7 +2002,9 @@ smoke_check teq 111
 smoke_check eeq 11111
 smoke_check seq 321
 smoke_check eveq 3021
+smoke_check qctor 11111
+smoke_check rec 4321
 rm -rf "$sdir"
-echo "[selfhost-only-gate] multi-feature end-to-end smoke ok (10/153/6/111/11111/321/3021)"
+echo "[selfhost-only-gate] multi-feature end-to-end smoke ok (10/153/6/111/11111/321/3021/11111/4321)"
 
 echo "[selfhost-only-gate] ok"
