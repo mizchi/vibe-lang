@@ -54,6 +54,20 @@ canonical syntax を使う。
 - 互換形式: `perform(Ask(41))` — legacy compatibility only
 - canonical: `perform Ask::Ask(41)` — effect と operation を直接指定
 
+#### 継続呼び出し規約の一本化 (#627)
+
+ハンドラ節の継続呼び出しは **`resume(v)` を唯一の正典**とする (ADR-0050)。
+one-shot / lexical-scope 限定で、tail-resumptive 検出 (Step 4) の対象もこの
+`resume` 形式に限る。`fixtures/effect_higher_order_basic.vibe` /
+`fixtures/effect_row_poly.vibe` がこの正典形。
+
+一部の fixture (`fixtures/effect_cps_mut_adr021.vibe`) に見られる **明示継続形**
+`Emit(v, k) => v + k(0)` — arm が継続 `k` を第2引数として受け取り直接呼ぶ形 —
+は **multi-shot / non-tail-resumptive を表現できる強い構文**であり、Phase 3
+(multi-shot, WasmFX stack-switching 待ち) まで隔離する。現行の one-shot surface
+には含めない。fixture として残すのは将来形の参照用であり、tail-resumptive 検出
+や型レベルの effect 差し引き (#626) の対象規約は `resume` のみ。
+
 ---
 
 ## Phase 0: 設計の制約と方針
@@ -83,6 +97,32 @@ get() -> { let v = state; resume(v) }         // OK (これも tail-resumptive)
 
 ADR-0050 の stable contract は one-shot handler 全体を対象とするが、
 実装は tail-resumptive から段階導入する。
+
+### 領域つき書き込み capability モデル (ADR-0059 / #629)
+
+可変性は「領域 (region) でパラメータ化した書き込みエフェクト」`Write[r]` の
+一機構で統一説明する（採否判断は ADR-0059）。脱糖規則:
+
+```
+// 局所 mut は「新しい領域 r0 を導入し、Write[r0] を束縛点で即設置・即 discharge」
+// する糖衣とみなす。Write[r0] はブロック内で完全に消化されるため、
+// 関数の公開エフェクト行には現れない（= 局所 mut は capability 不要に見える）。
+let mut x = e0; <body>
+  ≡  handle {
+       // x への書き込みは perform Write[r0]::set(x, v) として解釈
+       <body>
+     } with Write[r0] { set(cell, v) => /* in-place 更新 */ resume(()) }
+```
+
+- **局所性 = 領域の閉包**: ADR-0017 の「escape 不可」は「region `r0` が束縛点を
+  scope-out すると無効」という region 規律で正当化される。
+- **跨スコープ書き込み**: 外側 mut を書き換える関数は領域権限を公開行
+  `... with { Write[router] }` に宣言し、その mut を所有しハンドラを設置した側
+  だけが grant する。権限を持たない関数は行に `Write[r]` が無く型レベルで書込不能。
+- **#418 escape ↔ region 対応**: ADR-0052 `mut` field を持つ struct への参照が
+  関数戻り値 / クロージャ捕捉 / async・spawn 越しに保持される escape 検査は、
+  「領域 `r` が所有スコープを脱出していないこと」の検査として再定式化する。
+- 実装は後続（前提 #626 の effect 変数単一化は ADR-0012 で着地済み）。
 
 ---
 

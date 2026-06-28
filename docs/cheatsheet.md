@@ -369,6 +369,24 @@ handle { greet("world") } with Logger {
 }
 ```
 
+#### Continuation convention (`resume` is canonical)
+
+`resume(v)` is the **one and only** way a handler arm resumes the suspended
+computation, per ADR-0050: it is **one-shot** (resume at most once per arm) and
+**lexically scoped** to the enclosing `handle`. Arms are exhaustive and matched
+top-to-bottom (first match wins); multiple effects are composed with nested
+`handle`s. This is the tail-resumptive form the codegen inlines at zero cost
+(cheatsheet "mutation style" table; `fixtures/effect_higher_order_basic.vibe`,
+`fixtures/effect_row_poly.vibe`).
+
+An alternative form appears in a few fixtures where the handler arm takes the
+continuation as an **explicit second parameter** — `Emit(v, k) => v + k(0)`
+(`fixtures/effect_cps_mut_adr021.vibe`). This explicit-`k` shape can express
+**multi-shot / non-tail** resumption and is therefore reserved for the future
+multi-shot phase (`docs/mut-effect-plan.md` Phase 3, gated on WasmFX
+stack-switching). It is **not** part of the supported one-shot surface today;
+prefer `resume(v)` for all tail-resumptive handlers.
+
 ### Effect polymorphism
 
 ```vibe
