@@ -22,6 +22,39 @@ import .. / wasm_emit {
 
 //# Functions
 
+// Push `memory.size * 65536` (linear memory size in BYTES) as an i64.
+let emit_mem_size_bytes: (Bytes) -> Unit = (b) -> {
+  bytebuf_push(b, 63)
+  bytebuf_push(b, 0)
+  emit_i64_extend_i32_u(b)
+  emit_i64_const(b, 65536)
+  emit_i64_mul(b)
+}
+
+// Push an i32 bool: does `v` (the i64 in local `slot`) look like a real string
+// fat-pointer `(ptr << 32) | len`? A genuine string has `ptr >= 64` (no string
+// lives below `data_base = 64`; scratch is `[0,47]`) and `ptr + len <=
+// memory_size`. This is the #664 heuristic, applied to BOTH `==` operands.
+let emit_looks_like_string: (Bytes, Int) -> Unit = (b, slot) -> {
+  // ptr >= 64
+  emit_local_get(b, slot)
+  emit_i64_const(b, 32)
+  emit_i64_shr_s(b)
+  emit_i64_const(b, 64)
+  emit_i64_ge_s(b)
+  // ptr + len <= memory_size
+  emit_local_get(b, slot)
+  emit_i64_const(b, 32)
+  emit_i64_shr_s(b)
+  emit_local_get(b, slot)
+  emit_i64_const(b, 4294967295)
+  emit_i64_and(b)
+  emit_i64_add(b)
+  emit_mem_size_bytes(b)
+  emit_i64_le_s(b)
+  bytebuf_push(b, 113)
+}
+
 export let gen_eq_body: (Int) -> Bytes = (str_eq_idx) -> {
   let b = bytebuf_new()
   emit_local_get(b, 0)
@@ -30,9 +63,23 @@ export let gen_eq_body: (Int) -> Bytes = (str_eq_idx) -> {
   emit_if_i64(b)
   emit_i64_const(b, 1)
   emit_else(b)
+  // The operands are bit-different. Falling back to `str_eq` here is only valid
+  // when both are genuine string fat-pointers; a raw integer (e.g. a 61-bit
+  // value) whose bits resemble `(ptr << 32) | len` would otherwise be misread —
+  // a low word of 0 makes two unequal ints compare EQUAL, and a large low word
+  // makes `str_eq`'s byte loop read out of bounds (the #664 class of bug, here
+  // surfacing for `==`/`!=` on Int >= 2^32). Gate the fallback on both operands
+  // looking like real strings; otherwise the values are simply not equal.
+  emit_looks_like_string(b, 0)
+  emit_looks_like_string(b, 1)
+  bytebuf_push(b, 113)
+  emit_if_i64(b)
   emit_local_get(b, 0)
   emit_local_get(b, 1)
   emit_call(b, str_eq_idx)
+  emit_else(b)
+  emit_i64_const(b, 0)
+  emit_end(b)
   emit_end(b)
   b
 }

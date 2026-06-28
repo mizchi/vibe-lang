@@ -124,6 +124,37 @@ let emit_ctor_struct_eq: (Bytes, Expr, Expr, Int, Array[String], Int, CompileCtx
   nl2
 }
 
+// True when `e` is unambiguously an integer/bool scalar — never a string or a
+// float. Such an operand makes `==`/`!=` a direct i64.eq instead of the
+// polymorphic `eq` builtin, whose string fall-back misreads a large integer as
+// a string fat-pointer `(ptr<<32)|len` (two unequal ints with a zero low word
+// then compare EQUAL, and a large low word reads out of bounds). Bitwise /
+// comparison / logical operators are always integral; arithmetic is integral
+// only when not float-typed. Bare idents/calls stay unclassified (false) and
+// fall back to the bounds-guarded `eq`.
+let expr_is_intish: (Expr, Array[String], CompileCtx) -> Bool with { Error } = (e, local_names, ctx) -> {
+  let tag = expr_tag(e)
+  if tag == 0 {
+    true
+  } else if tag == 1 {
+    true
+  } else if tag == 5 {
+    let op = get_ebinop_op(e)
+    if op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || op == "%" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "==" || op == "!=" || op == "&&" || op == "||" {
+      true
+    } else if op == "+" || op == "-" || op == "*" || op == "/" {
+      !expr_is_floatish(e, local_names, ctx)
+    } else {
+      false
+    }
+  } else if tag == 6 {
+    let op = get_eunaryop_op(e)
+    op == "!"
+  } else {
+    false
+  }
+}
+
 // #672: emit the equality test for `lhs == rhs`, leaving a raw i64 0/1 on the
 // stack (1 = equal). Routes through the structural comparators when an operand
 // is a tuple / ctor literal (non-rc), else the generic runtime `eq`. Every `==`
@@ -146,6 +177,16 @@ let emit_eq_value: (Bytes, Expr, Expr, Array[String], Int, CompileCtx, Int, (Byt
       0
     }
     emit_ctor_struct_eq(buf, lhs, rhs, cfc, local_names, next_local, ctx, ld, ce)
+  } else if expr_is_intish(lhs, local_names, ctx) || expr_is_intish(rhs, local_names, ctx) {
+    // A definitely-integer comparison: a direct i64.eq is both faster and
+    // CORRECT for the full value range, sidestepping the `eq` builtin's
+    // string-pointer fall-back. The type checker guarantees the other operand
+    // is the same scalar type, so one intish side is enough.
+    let nl1 = ce(buf, lhs, local_names, next_local, ctx, ld)
+    let nl2 = ce(buf, rhs, local_names, nl1, ctx, ld)
+    emit_i64_eq(buf)
+    emit_i64_extend_i32_s(buf)
+    nl2
   } else {
     let nl1 = ce(buf, lhs, local_names, next_local, ctx, ld)
     let nl2 = ce(buf, rhs, local_names, nl1, ctx, ld)

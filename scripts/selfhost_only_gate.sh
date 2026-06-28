@@ -2004,6 +2004,23 @@ export let _start: () -> Int = () -> {
   v1 + v2 + v3 + v4
 }
 EOF
+# ieq: integer `==` is sound for values >= 2^32 and large integer literals
+# compile without truncation/trap. Root cause: the generic `eq` fell back to
+# `str_eq` for bit-different operands, which reads an Int as a string fat-pointer
+# `(ptr<<32)|len` — two unequal ints with a zero low word compared EQUAL, and a
+# large low word made `str_eq`'s byte loop read OOB. The latter also surfaced as
+# a compile trap for literals >= 2^39 (leb128's loop terminates on `v == 0`).
+# Guards the `str_eq` fallback on both operands looking like real strings.
+# (bodies_core_a1a1_eq.vibe emit_looks_like_string.)
+cat > "$sdir/ieq.vibe" <<'EOF'
+export let _start: () -> Int = () -> {
+  let v1 = if (1 << 32) == 0 { 0 } else { 1 }
+  let v2 = if (1 << 40) == (1 << 41) { 0 } else { 20 }
+  let v3 = if (1 << 50) == (1 << 50) { 300 } else { 0 }
+  let v4 = if 2305843009213693951 > 1000000000 { 4000 } else { 0 }
+  v1 + v2 + v3 + v4
+}
+EOF
 # pstruct: struct field patterns in `match` (`S::{ x, y }`) bind fields by NAME
 # (offset from the struct field-name table, so pattern field order is
 # independent of declaration order) — previously fields were never bound
@@ -2091,7 +2108,8 @@ smoke_check interp 4321
 smoke_check pneg 4321
 smoke_check pstruct 78
 smoke_check tostr 4321
+smoke_check ieq 4321
 rm -rf "$sdir"
-echo "[selfhost-only-gate] multi-feature end-to-end smoke ok (10/153/6/111/11111/321/3021/11111/4321/148/4321/4321/78/4321)"
+echo "[selfhost-only-gate] multi-feature end-to-end smoke ok (10/153/6/111/11111/321/3021/11111/4321/148/4321/4321/78/4321/4321)"
 
 echo "[selfhost-only-gate] ok"

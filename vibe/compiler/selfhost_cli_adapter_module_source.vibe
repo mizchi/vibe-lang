@@ -13218,6 +13218,30 @@ export let build_perceus_plan_with_params: (Array[(String, Option[TypeExpr])], E
   }
   ctx.actions
 }
+let emit_mem_size_bytes: (Bytes) -> Unit = (b) -> {
+  bytebuf_push(b, 63)
+  bytebuf_push(b, 0)
+  emit_i64_extend_i32_u(b)
+  emit_i64_const(b, 65536)
+  emit_i64_mul(b)
+}
+let emit_looks_like_string: (Bytes, Int) -> Unit = (b, slot) -> {
+  emit_local_get(b, slot)
+  emit_i64_const(b, 32)
+  emit_i64_shr_s(b)
+  emit_i64_const(b, 64)
+  emit_i64_ge_s(b)
+  emit_local_get(b, slot)
+  emit_i64_const(b, 32)
+  emit_i64_shr_s(b)
+  emit_local_get(b, slot)
+  emit_i64_const(b, 4294967295)
+  emit_i64_and(b)
+  emit_i64_add(b)
+  emit_mem_size_bytes(b)
+  emit_i64_le_s(b)
+  bytebuf_push(b, 113)
+}
 export let gen_eq_body: (Int) -> Bytes = (str_eq_idx) -> {
   let b = bytebuf_new()
   emit_local_get(b, 0)
@@ -13226,9 +13250,16 @@ export let gen_eq_body: (Int) -> Bytes = (str_eq_idx) -> {
   emit_if_i64(b)
   emit_i64_const(b, 1)
   emit_else(b)
+  emit_looks_like_string(b, 0)
+  emit_looks_like_string(b, 1)
+  bytebuf_push(b, 113)
+  emit_if_i64(b)
   emit_local_get(b, 0)
   emit_local_get(b, 1)
   emit_call(b, str_eq_idx)
+  emit_else(b)
+  emit_i64_const(b, 0)
+  emit_end(b)
   emit_end(b)
   b
 }
@@ -20520,6 +20551,28 @@ let emit_ctor_struct_eq: (Bytes, Expr, Expr, Int, Array[String], Int, CompileCtx
   emit_end(buf)
   nl2
 }
+let expr_is_intish: (Expr, Array[String], CompileCtx) -> Bool with { Error } = (e, local_names, ctx) -> {
+  let tag = expr_tag(e)
+  if tag == 0 {
+    true
+  } else if tag == 1 {
+    true
+  } else if tag == 5 {
+    let op = get_ebinop_op(e)
+    if op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || op == "%" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "==" || op == "!=" || op == "&&" || op == "||" {
+      true
+    } else if op == "+" || op == "-" || op == "*" || op == "/" {
+      !expr_is_floatish(e, local_names, ctx)
+    } else {
+      false
+    }
+  } else if tag == 6 {
+    let op = get_eunaryop_op(e)
+    op == "!"
+  } else {
+    false
+  }
+}
 let emit_eq_value: (Bytes, Expr, Expr, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, lhs, rhs, local_names, next_local, ctx, ld, ce) -> {
   if (is_etuple(lhs) || is_etuple(rhs)) && !ctx.enable_rc {
     emit_tuple_struct_eq(buf, lhs, rhs, local_names, next_local, ctx, ld, ce)
@@ -20535,6 +20588,12 @@ let emit_eq_value: (Bytes, Expr, Expr, Array[String], Int, CompileCtx, Int, (Byt
       0
     }
     emit_ctor_struct_eq(buf, lhs, rhs, cfc, local_names, next_local, ctx, ld, ce)
+  } else if expr_is_intish(lhs, local_names, ctx) || expr_is_intish(rhs, local_names, ctx) {
+    let nl1 = ce(buf, lhs, local_names, next_local, ctx, ld)
+    let nl2 = ce(buf, rhs, local_names, nl1, ctx, ld)
+    emit_i64_eq(buf)
+    emit_i64_extend_i32_s(buf)
+    nl2
   } else {
     let nl1 = ce(buf, lhs, local_names, next_local, ctx, ld)
     let nl2 = ce(buf, rhs, local_names, nl1, ctx, ld)
