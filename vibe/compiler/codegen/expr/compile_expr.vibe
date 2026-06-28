@@ -38,6 +38,44 @@ import ./compile_match.vibe {
 
 //# Functions
 
+// #672: emit structural equality for two tuples (non-rc layout: element i at
+// ptr+i*8, value = raw pointer). The arity comes from whichever operand is a
+// tuple literal (the checker guarantees same-arity tuples on both sides).
+// Evaluates each operand to a pointer in a temp local, then ANDs an element-wise
+// generic `eq` over all elements. Produces a raw i64 0/1. `compile_expr_fn` is
+// the main expression compiler, threaded to avoid a forward reference.
+let emit_tuple_struct_eq: (Bytes, Expr, Expr, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, lhs, rhs, local_names, next_local, ctx, ld, compile_expr_fn) -> {
+  let lit = if is_etuple(lhs) {
+    lhs
+  } else {
+    rhs
+  }
+  let num = Array::length(get_etuple_elems(lit))
+  let aptr = next_local
+  Array::push(local_names, "__eqa")
+  let bptr = next_local + 1
+  Array::push(local_names, "__eqb")
+  let nl1 = compile_expr_fn(buf, lhs, local_names, next_local + 2, ctx, ld)
+  emit_local_set(buf, aptr)
+  let nl2 = compile_expr_fn(buf, rhs, local_names, nl1, ctx, ld)
+  emit_local_set(buf, bptr)
+  let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
+  emit_i64_const(buf, 1)
+  let mut i = 0
+  while i < num {
+    emit_local_get(buf, aptr)
+    emit_i32_wrap_i64(buf)
+    emit_i64_load(buf, 3, i * 8)
+    emit_local_get(buf, bptr)
+    emit_i32_wrap_i64(buf)
+    emit_i64_load(buf, 3, i * 8)
+    emit_call(buf, eq_fidx)
+    emit_i64_and(buf)
+    i = i + 1
+  }
+  nl2
+}
+
 export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error } = (buf, expr, local_names, next_local, ctx, ld) -> {
   let __tag = expr_tag(expr)
   if __tag == 0 {
@@ -224,27 +262,49 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
     let lhs = get_ebinop_lhs(expr)
     let rhs = get_ebinop_rhs(expr)
     if op == "==" {
-      let nl1 = compile_expr(buf, lhs, local_names, next_local, ctx, ld)
-      let nl2 = compile_expr(buf, rhs, local_names, nl1, ctx, ld)
-      let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
-      emit_call(buf, eq_fidx)
-      if ctx.enable_rc {
-        emit_i64_const(buf, 1)
-        emit_i64_shl(buf)
+      if (is_etuple(lhs) || is_etuple(rhs)) && !ctx.enable_rc {
+        // Structural tuple equality (#672): the generic `eq` runtime only handles
+        // primitive/pointer-identity + string fallback, so two distinct tuple
+        // allocations compared as scalars are never equal (`(1,"b")==(1,"b")` was
+        // false). With a tuple literal on one side the arity is statically known
+        // (the checker guarantees both sides are same-arity tuples), so emit an
+        // element-wise `eq` over the non-rc layout (element i at ptr+i*8) and AND
+        // the results. Each element is compared with the generic `eq`, so flat
+        // tuples of Int/String/Bool elements are correct; nested-aggregate
+        // elements still fall back to `eq` (tracked in #672). rc mode keeps the
+        // generic path (its tagged/header layout is handled separately).
+        emit_tuple_struct_eq(buf, lhs, rhs, local_names, next_local, ctx, ld, compile_expr)
+      } else {
+        let nl1 = compile_expr(buf, lhs, local_names, next_local, ctx, ld)
+        let nl2 = compile_expr(buf, rhs, local_names, nl1, ctx, ld)
+        let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
+        emit_call(buf, eq_fidx)
+        if ctx.enable_rc {
+          emit_i64_const(buf, 1)
+          emit_i64_shl(buf)
+        }
+        nl2
       }
-      nl2
     } else if op == "!=" {
-      let nl1 = compile_expr(buf, lhs, local_names, next_local, ctx, ld)
-      let nl2 = compile_expr(buf, rhs, local_names, nl1, ctx, ld)
-      let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
-      emit_call(buf, eq_fidx)
-      emit_i64_eqz(buf)
-      emit_i64_extend_i32_s(buf)
-      if ctx.enable_rc {
-        emit_i64_const(buf, 1)
-        emit_i64_shl(buf)
+      if (is_etuple(lhs) || is_etuple(rhs)) && !ctx.enable_rc {
+        // `!=` dual of the structural tuple `==` above.
+        let nlt = emit_tuple_struct_eq(buf, lhs, rhs, local_names, next_local, ctx, ld, compile_expr)
+        emit_i64_eqz(buf)
+        emit_i64_extend_i32_s(buf)
+        nlt
+      } else {
+        let nl1 = compile_expr(buf, lhs, local_names, next_local, ctx, ld)
+        let nl2 = compile_expr(buf, rhs, local_names, nl1, ctx, ld)
+        let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
+        emit_call(buf, eq_fidx)
+        emit_i64_eqz(buf)
+        emit_i64_extend_i32_s(buf)
+        if ctx.enable_rc {
+          emit_i64_const(buf, 1)
+          emit_i64_shl(buf)
+        }
+        nl2
       }
-      nl2
     } else if expr_is_floatish(lhs, local_names, ctx) || expr_is_floatish(rhs, local_names, ctx) {
       let nl1 = compile_expr(buf, lhs, local_names, next_local, ctx, ld)
       if ctx.enable_rc {
