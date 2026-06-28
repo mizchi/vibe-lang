@@ -1986,6 +1986,19 @@ EOF
 # to typecheck (`expected (Bool,Int)->Int, got (?t0)->Int`). Covers 0/1/2-param,
 # a function-typed param (HOF), the tuple param, and tuple-param-plus-scalar.
 # (parser_base.vibe parse_type_impl arity-preserving paren group.)
+# pneg: negative integer literal patterns `-5` (bare, in a constructor arg, and
+# in a tuple element) — previously `unexpected in pattern: -`.
+# (parser_base.vibe parse_pattern TMinus arm.)
+cat > "$sdir/pneg.vibe" <<'EOF'
+enum E { N(Int) }
+export let _start: () -> Int = () -> {
+  let v1 = match (0 - 5) { -5 => 1, _ => 0 }
+  let v2 = match 5 { -5 => 0, _ => 20 }
+  let v3 = match N(0 - 3) { N(-3) => 300, N(_) => 0 }
+  let v4 = match (0 - 1, 2) { (-1, 2) => 4000, _ => 0 }
+  v1 + v2 + v3 + v4
+}
+EOF
 # interp: string interpolation `\{expr}` / `\(expr)` parses an arbitrary
 # EXPRESSION (arithmetic, call, field access, multiple holes), not just a bare
 # identifier — previously the embedded source was treated as an identifier name
@@ -2040,7 +2053,8 @@ smoke_check qctor 11111
 smoke_check rec 4321
 smoke_check tann 148
 smoke_check interp 4321
+smoke_check pneg 4321
 rm -rf "$sdir"
-echo "[selfhost-only-gate] multi-feature end-to-end smoke ok (10/153/6/111/11111/321/3021/11111/4321/148/4321)"
+echo "[selfhost-only-gate] multi-feature end-to-end smoke ok (10/153/6/111/11111/321/3021/11111/4321/148/4321/4321)"
 
 echo "[selfhost-only-gate] ok"
