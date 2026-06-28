@@ -41,6 +41,15 @@ if s2 != s3:
 print(f"[selfhost-only-gate] fixpoint ok: stage2==stage3 ({s2[:12]})")
 PY
 
+# 3b. RC bootstrap gate (#556). The stage build above IS the whole compiler
+# compiled as one unit under the canonical RC (Perceus, ADR-0055) backend — the
+# scenario where #556's `analyze_calls` deep recursion blew the wasm stack. Assert
+# it explicitly (reusing the build just produced), so the RC-bootstrap check is
+# named and guards the iterative `analyze_calls` fix (#681). The pre-cutover
+# RC-vs-default parity gate is obsolete (#594 removed the non-RC backend).
+VIBE_SELFHOST_RC_BOOTSTRAP_REUSE_GEN="${latest_gen}generation.json" \
+  bash scripts/test_selfhost_rc_bootstrap.sh
+
 # 4. multi-file compile regression (#594): the selfhost compiler must resolve
 #    imports from the filesystem. collect_import_path once built import paths via
 #    string interpolation, which a selfhost codegen bug rendered as garbage (only
