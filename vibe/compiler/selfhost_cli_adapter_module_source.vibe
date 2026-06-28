@@ -7919,7 +7919,15 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
         } else {
           env2
         }
-        (bind_fn_return(env3, name, CtStruct(name)), s, c)
+        let env4 = if struct_derives_has(derives, "Eq") {
+          env_bind(env3, String::concat(name, "::equals"), CtFn([
+            CtStruct(name),
+            CtStruct(name)
+          ], CtBool, None))
+        } else {
+          env3
+        }
+        (bind_fn_return(env4, name, CtStruct(name)), s, c)
       },
       STypeAlias(_, name, params, te) => {
         let t = resolve_type_expr(te, defs)
@@ -10195,6 +10203,42 @@ let gen_show_fn: (String, Array[(String, TypeExpr)]) -> Stmt = (tname, fields) -
   ], 0, 0)
   SLet(false, false, qualified_name(tname, "to_string"), None, EFn(no_tp, no_tb, params, Some(TyName("String")), None, body))
 }
+let field_eq_expr: (String, TypeExpr) -> Expr = (fname, fty) -> {
+  let af = EDot(EIdent("a", -1), fname, -1)
+  let bf = EDot(EIdent("b", -1), fname, -1)
+  match fty {
+    TyName("Int") => EBinOp("==", af, bf),
+    TyName("Double") => EBinOp("==", af, bf),
+    TyName("Bool") => EBinOp("==", af, bf),
+    TyName("String") => EBinOp("==", af, bf),
+    TyName("Char") => EBinOp("==", af, bf),
+    TyName(t) => ECall(EIdent(qualified_name(t, "equals"), -1), [
+      af,
+      bf
+    ], -1),
+    _ => EBinOp("==", af, bf)
+  }
+}
+let gen_eq_fn: (String, Array[(String, TypeExpr)]) -> Stmt = (tname, fields) -> {
+  let mut body = EBool(true)
+  let mut i = Array::length(fields) - 1
+  while i >= 0 {
+    let (fname, fty) = Array::get(fields, i)
+    body = EBinOp("&&", field_eq_expr(fname, fty), body)
+    i = i - 1
+  }
+  let params = Array::slice([
+    ("a", Some(TyName(tname))),
+    ("b", Some(TyName(tname)))
+  ], 0, 2)
+  let no_tp = Array::slice([
+    ""
+  ], 0, 0)
+  let no_tb = Array::slice([
+    ("", no_tp)
+  ], 0, 0)
+  SLet(false, false, qualified_name(tname, "equals"), None, EFn(no_tp, no_tb, params, Some(TyName("Bool")), None, body))
+}
 let gen_compare_fn: (String, Array[(String, TypeExpr)]) -> Stmt = (tname, fields) -> {
   let neg_one = 0 - 1
   let mut body = EInt(0)
@@ -10231,6 +10275,11 @@ export let desugar_derives: (Array[Stmt]) -> Unit = (stmts) -> {
         }
         if str_array_contains(derives, "Ord") && !top_level_fn_exists(stmts, qualified_name(name, "compare")) {
           Array::push(gen, gen_compare_fn(name, fields))
+        } else {
+          ()
+        }
+        if str_array_contains(derives, "Eq") && !top_level_fn_exists(stmts, qualified_name(name, "equals")) {
+          Array::push(gen, gen_eq_fn(name, fields))
         } else {
           ()
         }

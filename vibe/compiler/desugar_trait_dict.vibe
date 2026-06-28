@@ -1304,6 +1304,50 @@ let gen_show_fn: (String, Array[(String, TypeExpr)]) -> Stmt = (tname, fields) -
   SLet(false, false, qualified_name(tname, "to_string"), None, EFn(no_tp, no_tb, params, Some(TyName("String")), None, body))
 }
 
+// One field's equality expression: `a.f == b.f` for primitive fields, or a
+// recursive `T::equals(a.f, b.f)` when the field is another aggregate type that
+// has a generated structural comparator (so nested derive(Eq) types recurse).
+let field_eq_expr: (String, TypeExpr) -> Expr = (fname, fty) -> {
+  let af = EDot(EIdent("a", -1), fname, -1)
+  let bf = EDot(EIdent("b", -1), fname, -1)
+  match fty {
+    TyName("Int") => EBinOp("==", af, bf),
+    TyName("Double") => EBinOp("==", af, bf),
+    TyName("Bool") => EBinOp("==", af, bf),
+    TyName("String") => EBinOp("==", af, bf),
+    TyName("Char") => EBinOp("==", af, bf),
+    TyName(t) => ECall(EIdent(qualified_name(t, "equals"), -1), [
+      af,
+      bf
+    ], -1),
+    _ => EBinOp("==", af, bf)
+  }
+}
+
+// `let P::equals = (a: P, b: P) -> Bool { a.x == b.x && a.y == b.y && ... }`
+// Mirrors gen_compare_fn. Primitive fields compare with `==`; aggregate fields
+// recurse through the field type's generated `equals`. An empty struct is `true`.
+let gen_eq_fn: (String, Array[(String, TypeExpr)]) -> Stmt = (tname, fields) -> {
+  let mut body = EBool(true)
+  let mut i = Array::length(fields) - 1
+  while i >= 0 {
+    let (fname, fty) = Array::get(fields, i)
+    body = EBinOp("&&", field_eq_expr(fname, fty), body)
+    i = i - 1
+  }
+  let params = Array::slice([
+    ("a", Some(TyName(tname))),
+    ("b", Some(TyName(tname)))
+  ], 0, 2)
+  let no_tp = Array::slice([
+    ""
+  ], 0, 0)
+  let no_tb = Array::slice([
+    ("", no_tp)
+  ], 0, 0)
+  SLet(false, false, qualified_name(tname, "equals"), None, EFn(no_tp, no_tb, params, Some(TyName("Bool")), None, body))
+}
+
 // `let P::compare = (a: P, b: P) -> Int { lexicographic over fields -> -1/0/1 }`
 let gen_compare_fn: (String, Array[(String, TypeExpr)]) -> Stmt = (tname, fields) -> {
   let neg_one = 0 - 1
@@ -1344,6 +1388,11 @@ export let desugar_derives: (Array[Stmt]) -> Unit = (stmts) -> {
         }
         if str_array_contains(derives, "Ord") && !top_level_fn_exists(stmts, qualified_name(name, "compare")) {
           Array::push(gen, gen_compare_fn(name, fields))
+        } else {
+          ()
+        }
+        if str_array_contains(derives, "Eq") && !top_level_fn_exists(stmts, qualified_name(name, "equals")) {
+          Array::push(gen, gen_eq_fn(name, fields))
         } else {
           ()
         }
