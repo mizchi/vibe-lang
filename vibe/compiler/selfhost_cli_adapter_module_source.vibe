@@ -7880,7 +7880,11 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
           }
           ci2 = ci2 + 1
         }
-        (env1, s, c + param_len)
+        let env_eq = env_bind(env1, String::concat(name, "::equals"), CtFn([
+          ctor_result_type,
+          ctor_result_type
+        ], CtBool, None))
+        (env_eq, s, c + param_len)
       },
       SStruct(_, name, field_defs, derives, mut_fields) => {
         let resolved_fields = Array::slice([
@@ -9332,6 +9336,7 @@ let collect_struct_field_sets: (Array[Stmt]) -> Array[(String, Array[String])] =
         }
         Array::push(out, (sname, names))
       },
+      SEnum(_, ename, _, _) => Array::push(out, (ename, empty_str_array())),
       _ => ()
     }
     i = i + 1
@@ -9402,7 +9407,10 @@ let infer_arg_type_name: (Expr, Array[(String, Array[String])], Array[(String, S
     EString(_) => Some("String"),
     EFloat(_) => Some("Double"),
     EArray(_) => Some("Array"),
-    EIdent(name, _) => lookup_var_type(var_types, name),
+    EIdent(name, _) => match lookup_var_type(var_types, name) {
+      Some(t) => Some(t),
+      None => fn_return_type(fn_returns, name)
+    },
     ECall(callee, _, _) => match callee {
       EIdent(fname, _) => fn_return_type(fn_returns, fname),
       _ => None
@@ -9766,6 +9774,14 @@ let collect_fn_returns: (Array[Stmt]) -> Array[(String, String)] = (stmts) -> {
           Array::push(out, (fname, rn))
         },
         _ => ()
+      },
+      SEnum(_, ename, _, variants) => {
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (vname, _) = Array::get(variants, vi)
+          Array::push(out, (vname, ename))
+          vi = vi + 1
+        }
       },
       _ => ()
     }
@@ -10265,6 +10281,83 @@ let gen_eq_fn: (String, Array[(String, TypeExpr)]) -> Stmt = (tname, fields) -> 
   ], 0, 0)
   SLet(false, false, qualified_name(tname, "equals"), None, EFn(no_tp, no_tb, params, Some(TyName("Bool")), None, body))
 }
+let digit_str: (Int) -> String = (d) -> {
+  if d == 0 {
+    "0"
+  } else if d == 1 {
+    "1"
+  } else if d == 2 {
+    "2"
+  } else if d == 3 {
+    "3"
+  } else if d == 4 {
+    "4"
+  } else if d == 5 {
+    "5"
+  } else if d == 6 {
+    "6"
+  } else if d == 7 {
+    "7"
+  } else if d == 8 {
+    "8"
+  } else {
+    "9"
+  }
+}
+let rec idx_str: (Int) -> String = (n) -> {
+  if n < 10 {
+    digit_str(n)
+  } else {
+    String::concat(idx_str(n / 10), digit_str(n % 10))
+  }
+}
+let gen_enum_eq_fn: (String, Array[(String, Array[TypeExpr])]) -> Stmt = (ename, variants) -> {
+  let outer_arms = Array::slice([
+    (PWild, EUnit)
+  ], 0, 0)
+  let mut vi = 0
+  while vi < Array::length(variants) {
+    let (vname, ftypes) = Array::get(variants, vi)
+    let nf = Array::length(ftypes)
+    let abinds = Array::slice([
+      PWild
+    ], 0, 0)
+    let bbinds = Array::slice([
+      PWild
+    ], 0, 0)
+    let mut fi = 0
+    while fi < nf {
+      Array::push(abinds, PBind(String::concat("__a", idx_str(fi))))
+      Array::push(bbinds, PBind(String::concat("__b", idx_str(fi))))
+      fi = fi + 1
+    }
+    let mut body = EBool(true)
+    let mut bi = nf - 1
+    while bi >= 0 {
+      let cmp = EBinOp("==", EIdent(String::concat("__a", idx_str(bi)), -1), EIdent(String::concat("__b", idx_str(bi)), -1))
+      body = EBinOp("&&", cmp, body)
+      bi = bi - 1
+    }
+    let inner_arms = Array::slice([
+      (PCtor(vname, bbinds), body),
+      (PWild, EBool(false))
+    ], 0, 2)
+    let inner = EMatch(EIdent("b", -1), inner_arms)
+    Array::push(outer_arms, (PCtor(vname, abinds), inner))
+    vi = vi + 1
+  }
+  let params = Array::slice([
+    ("a", Some(TyName(ename))),
+    ("b", Some(TyName(ename)))
+  ], 0, 2)
+  let no_tp = Array::slice([
+    ""
+  ], 0, 0)
+  let no_tb = Array::slice([
+    ("", no_tp)
+  ], 0, 0)
+  SLet(false, false, qualified_name(ename, "equals"), None, EFn(no_tp, no_tb, params, Some(TyName("Bool")), None, EMatch(EIdent("a", -1), outer_arms)))
+}
 let gen_compare_fn: (String, Array[(String, TypeExpr)]) -> Stmt = (tname, fields) -> {
   let neg_one = 0 - 1
   let mut body = EInt(0)
@@ -10306,6 +10399,13 @@ export let desugar_derives: (Array[Stmt]) -> Unit = (stmts) -> {
         }
         if !top_level_fn_exists(stmts, qualified_name(name, "equals")) {
           Array::push(gen, gen_eq_fn(name, fields))
+        } else {
+          ()
+        }
+      },
+      SEnum(_, ename, _, variants) => {
+        if !top_level_fn_exists(stmts, qualified_name(ename, "equals")) {
+          Array::push(gen, gen_enum_eq_fn(ename, variants))
         } else {
           ()
         }
