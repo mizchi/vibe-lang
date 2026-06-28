@@ -5,14 +5,14 @@ import ./ast.vibe {
 }
 
 import ./checker_effects.vibe {
-  EffectError, check_perform_effects_expr, check_perform_effects_stmt
+  EffectError, check_perform_effects_expr, check_perform_effects_stmt, effect_error_to_string
 }
 
 //# Functions
 
 let is_perform_err: (EffectError) -> Bool = (e) -> {
   match e {
-    EEPerformUndeclaredEffect(_, _) => true,
+    EEPerformUndeclaredEffect(_, _, _) => true,
     _ => false
   }
 }
@@ -176,4 +176,26 @@ test "handle with an unqualified arm stays conservative" {
   ])
   let errors = check_perform_effects_expr(handle_expr, no_labels(), false)
   assert(eq(Array::length(errors), 0))
+}
+
+// #639: the rendered diagnostic carries the expected-vs-actual effect-row diff
+// and a concrete `with { ... }` fix-it.
+
+test "undeclared perform renders a fix-it with the missing effect (pure context)" {
+  let errors = check_perform_effects_expr(perform_op("Fs::ReadFile", EString("/p")), no_labels(), false)
+  assert(Array::length(errors) > 0)
+  let msg = effect_error_to_string(Array::get(errors, 0))
+  assert(String::contains(msg, "effect requirements not satisfied"))
+  assert(String::contains(msg, "missing:  { Fs }"))
+  assert(String::contains(msg, "with { Fs }"))
+}
+
+test "undeclared perform fix-it merges into the existing declared row" {
+  let errors = check_perform_effects_expr(perform_op("Fs::ReadFile", EString("/p")), [
+    "Env"
+  ], false)
+  assert(Array::length(errors) > 0)
+  let msg = effect_error_to_string(Array::get(errors, 0))
+  assert(String::contains(msg, "declared: { Env }"))
+  assert(String::contains(msg, "with { Env, Fs }"))
 }

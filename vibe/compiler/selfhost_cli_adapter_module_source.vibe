@@ -6742,14 +6742,42 @@ export {
 export enum EffectError {
   EEThrowOutsideEffect(String);
   EEEffectfulCallOutsideEffect(String);
-  EEPerformUndeclaredEffect(String, String);
+  EEPerformUndeclaredEffect(String, String, String);
   EEAssignImmutable(String)
+}
+let render_undeclared_effect: (String, String, String) -> String = (offender, eff, declared) -> {
+  let declared_show = if String::length(declared) == 0 {
+    "{} (pure)"
+  } else {
+    String::concat("{ ", String::concat(declared, " }"))
+  }
+  let suggested = if String::length(declared) == 0 {
+    eff
+  } else {
+    String::concat(declared, String::concat(", ", eff))
+  }
+  let mut out = "effect requirements not satisfied: `"
+  out = String::concat(out, offender)
+  out = String::concat(out, "` performs effect `")
+  out = String::concat(out, eff)
+  out = String::concat(out, "`\n  declared: ")
+  out = String::concat(out, declared_show)
+  out = String::concat(out, "\n  missing:  { ")
+  out = String::concat(out, eff)
+  out = String::concat(out, " }\n  help: add `")
+  out = String::concat(out, eff)
+  out = String::concat(out, "` to this function's effect row  ->  with { ")
+  out = String::concat(out, suggested)
+  out = String::concat(out, " }\n  or wrap the call in `handle { ... } with ")
+  out = String::concat(out, eff)
+  out = String::concat(out, " { ... }`")
+  out
 }
 export let effect_error_to_string: (EffectError) -> String = (err) -> {
   match err {
     EEThrowOutsideEffect(msg) => String::concat("throw outside effectful context: ", msg),
     EEEffectfulCallOutsideEffect(name) => String::concat("effectful call outside effectful context: ", name),
-    EEPerformUndeclaredEffect(op, eff) => String::concat("use of undeclared effect `", String::concat(eff, String::concat("` (", String::concat(op, "); add it to the function's `with { ... }` or wrap in a `handle`")))),
+    EEPerformUndeclaredEffect(op, eff, declared) => render_undeclared_effect(op, eff, declared),
     EEAssignImmutable(name) => String::concat("cannot assign to immutable binding `", String::concat(name, "` (declare it with `let mut`)"))
   }
 }
@@ -7030,6 +7058,24 @@ let builtin_call_effect: (String) -> Option[String] = (name) -> {
     }
   }
 }
+let join_effect_labels: (Array[String]) -> String = (labels) -> {
+  let mut out = ""
+  let mut i = 0
+  while i < Array::length(labels) {
+    let l = Array::get(labels, i)
+    if String::length(l) > 0 {
+      if String::length(out) == 0 {
+        out = l
+      } else {
+        out = String::concat(out, String::concat(", ", l))
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
 let labels_union: (Array[String], Array[String]) -> Array[String] = (a, b) -> {
   let out = Array::slice([
     ""
@@ -7132,7 +7178,7 @@ export let check_perform_effects_expr_tx: (Expr, Array[String], Bool, Array[Stri
                   EIdent(op_name, _) => {
                     let eff = effect_name_of_op(op_name)
                     if !in_handle && !decl_authorizes_effect(declared, eff) {
-                      Array::push(errors, EEPerformUndeclaredEffect(op_name, eff))
+                      Array::push(errors, EEPerformUndeclaredEffect(op_name, eff, join_effect_labels(declared)))
                     } else {
                       ()
                     }
@@ -7144,7 +7190,7 @@ export let check_perform_effects_expr_tx: (Expr, Array[String], Bool, Array[Stri
             } else {
               match builtin_call_effect(name) {
                 Some(eff) => if !in_handle && !decl_authorizes_effect(declared, eff) {
-                  Array::push(errors, EEPerformUndeclaredEffect(name, eff))
+                  Array::push(errors, EEPerformUndeclaredEffect(name, eff, join_effect_labels(declared)))
                 } else {
                   ()
                 },
@@ -7157,7 +7203,7 @@ export let check_perform_effects_expr_tx: (Expr, Array[String], Bool, Array[Stri
                 while ti < Array::length(callee_effs) {
                   let teff = Array::get(callee_effs, ti)
                   if String::length(teff) > 0 && teff != "Error" && teff != "Async" && !label_is_effect_var(teff) && !in_handle && !decl_authorizes_effect(declared, teff) {
-                    Array::push(errors, EEPerformUndeclaredEffect(name, teff))
+                    Array::push(errors, EEPerformUndeclaredEffect(name, teff, join_effect_labels(declared)))
                   } else {
                     ()
                   }
@@ -30599,7 +30645,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "46092c37a5649092"
+  "484a3bf00f1305fa"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647
