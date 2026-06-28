@@ -331,20 +331,18 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     } else if slot_is_floatish(ctx, local_idx) {
       Array::push(ctx.float_local_slots, local_idx * 2)
     }
-    // #672: record an aggregate `let x = ...` binding's slot + shape code (non-RC)
-    // so a later `x == y` (neither operand a literal) can structurally compare.
-    // Encoding in agg_tuple_arities: tuple arity N (>= 0); a payload constructor
-    // value (`Some(1)`, a struct) as `-(fieldCount + 2)` (<= -2). Nullary ctors
-    // (`Red`) are left untracked — they are scalar-represented and the generic
-    // `eq` already compares them correctly.
+    // #672: record an aggregate `let x = <tuple/payload-ctor literal>` binding's
+    // slot + the literal VALUE (the shape), so a later `x == y` (neither operand
+    // a literal) can drive the recursive structural compare (incl. nested).
+    // Nullary ctors (`Red`) are left untracked — they are scalar-represented and
+    // the generic `eq` already compares them correctly.
     if !ctx.enable_rc && is_etuple(value) {
       Array::push(ctx.agg_tuple_slots, local_idx)
-      Array::push(ctx.agg_tuple_arities, Array::length(get_etuple_elems(value)))
+      Array::push(ctx.agg_tuple_exprs, value)
     } else if !ctx.enable_rc && is_ctor_call(value, ctx.ctor_table) {
-      let cfc = Array::length(get_ecall_args(value))
-      if cfc > 0 {
+      if Array::length(get_ecall_args(value)) > 0 {
         Array::push(ctx.agg_tuple_slots, local_idx)
-        Array::push(ctx.agg_tuple_arities, 0 - (cfc + 2))
+        Array::push(ctx.agg_tuple_exprs, value)
       } else {
         ()
       }

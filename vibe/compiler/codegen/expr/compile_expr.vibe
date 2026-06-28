@@ -44,15 +44,16 @@ import ./compile_match.vibe {
 // Evaluates each operand to a pointer in a temp local, then ANDs an element-wise
 // generic `eq` over all elements. Produces a raw i64 0/1. `compile_expr_fn` is
 // the main expression compiler, threaded to avoid a forward reference.
-// #672: look up the tracked tuple arity for a local SLOT (the index recorded at
-// its `let`). Scans from the end so a shadowing rebind's arity wins. -1 = none.
-let agg_tuple_arity_of_slot: (CompileCtx, Int) -> Int = (ctx, slot) -> {
+// #672: look up the tracker INDEX for a local SLOT (scans from the end so a
+// shadowing rebind wins). -1 = not tracked; the shape literal is then
+// `ctx.agg_tuple_exprs[index]`.
+let agg_tuple_index_of_slot: (CompileCtx, Int) -> Int = (ctx, slot) -> {
   let n = Array::length(ctx.agg_tuple_slots)
   let mut i = n - 1
   let mut found = 0 - 1
   while i >= 0 {
     if found < 0 && Array::get(ctx.agg_tuple_slots, i) == slot {
-      found = Array::get(ctx.agg_tuple_arities, i)
+      found = i
     } else {
       ()
     }
@@ -61,9 +62,8 @@ let agg_tuple_arity_of_slot: (CompileCtx, Int) -> Int = (ctx, slot) -> {
   found
 }
 
-// The tracked tuple arity of an `EIdent` operand (resolve name -> local slot ->
-// arity), or -1 if the operand is not an identifier / not a tracked tuple.
-let eident_tuple_arity: (CompileCtx, Array[String], Expr) -> Int = (ctx, local_names, e) -> {
+// The tracker index of an `EIdent` operand (name -> local slot -> index), or -1.
+let eident_tuple_index: (CompileCtx, Array[String], Expr) -> Int = (ctx, local_names, e) -> {
   if is_eident(e) {
     let name = get_eident_name(e)
     let ln = Array::length(local_names)
@@ -78,7 +78,7 @@ let eident_tuple_arity: (CompileCtx, Array[String], Expr) -> Int = (ctx, local_n
       i = i - 1
     }
     if slot >= 0 {
-      agg_tuple_arity_of_slot(ctx, slot)
+      agg_tuple_index_of_slot(ctx, slot)
     } else {
       0 - 1
     }
@@ -87,48 +87,142 @@ let eident_tuple_arity: (CompileCtx, Array[String], Expr) -> Int = (ctx, local_n
   }
 }
 
-// Shape code for `lhs == rhs` where neither operand is a literal: if EITHER
-// operand is a tracked aggregate variable, the type checker guarantees both sides
-// share that type, so its code drives the structural compare. Returns -1 (not
-// tracked), a tuple arity (>= 0), or a payload-ctor code `-(fieldCount + 2)`.
-let both_var_agg_code: (CompileCtx, Array[String], Expr, Expr) -> Int = (ctx, local_names, lhs, rhs) -> {
-  let la = eident_tuple_arity(ctx, local_names, lhs)
+// Tracker index of a tracked aggregate operand in `lhs == rhs` (either side), or
+// -1. The type checker guarantees both sides share the type, so one is enough.
+let both_var_agg_index: (CompileCtx, Array[String], Expr, Expr) -> Int = (ctx, local_names, lhs, rhs) -> {
+  let la = eident_tuple_index(ctx, local_names, lhs)
   if la != 0 - 1 {
     la
   } else {
-    eident_tuple_arity(ctx, local_names, rhs)
+    eident_tuple_index(ctx, local_names, rhs)
   }
 }
 
-// Element-wise structural equality for two tuple VALUES of known arity `num`
-// (non-rc layout: element i is the i64 at ptr+i*8). Same shape as
-// emit_tuple_struct_eq but driven by an explicit arity instead of a literal
-// operand, so `a == b` (both tuple variables) compares structurally. Per-element
-// uses the generic `eq` (flat correct; nested tuples fall back — #672).
-let emit_tuple_eq_arity: (Bytes, Expr, Expr, Int, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, lhs, rhs, num, local_names, next_local, ctx, ld, compile_expr_fn) -> {
-  let aptr = next_local
-  Array::push(local_names, "__teqa")
-  let bptr = next_local + 1
-  Array::push(local_names, "__teqb")
-  let nl1 = compile_expr_fn(buf, lhs, local_names, next_local + 2, ctx, ld)
-  emit_local_set(buf, aptr)
-  let nl2 = compile_expr_fn(buf, rhs, local_names, nl1, ctx, ld)
-  emit_local_set(buf, bptr)
+// #672: recursive structural equality driven by a SHAPE expression (a tuple or
+// constructor literal). The two values being compared are in the local slots
+// `asl` / `bsl` (pointers for aggregates). Leaves a single i64 0/1 on the stack;
+// returns the high-water next_local. For each element: if the shape says the
+// element is itself an aggregate, load both element values into fresh locals and
+// RECURSE (so nested tuples/structs/ctors compare structurally); otherwise a
+// generic `eq`. This fixes nested aggregate `==` (broken even for literals).
+let rec emit_eq_shaped_slots: (Bytes, Expr, Int, Int, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, shape, asl, bsl, local_names, nl0, ctx, ld, ce) -> {
   let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
-  emit_i64_const(buf, 1)
-  let mut i = 0
-  while i < num {
-    emit_local_get(buf, aptr)
-    emit_i32_wrap_i64(buf)
-    emit_i64_load(buf, 3, i * 8)
-    emit_local_get(buf, bptr)
-    emit_i32_wrap_i64(buf)
-    emit_i64_load(buf, 3, i * 8)
-    emit_call(buf, eq_fidx)
+  if is_etuple(shape) {
+    let elems = get_etuple_elems(shape)
+    let num = Array::length(elems)
+    emit_i64_const(buf, 1)
+    let mut nl = nl0
+    let mut i = 0
+    while i < num {
+      let el = Array::get(elems, i)
+      if is_etuple(el) || is_ctor_call(el, ctx.ctor_table) {
+        let na = nl
+        Array::push(local_names, "__rsa")
+        let nb = nl + 1
+        Array::push(local_names, "__rsb")
+        emit_local_get(buf, asl)
+        emit_i32_wrap_i64(buf)
+        emit_i64_load(buf, 3, i * 8)
+        emit_local_set(buf, na)
+        emit_local_get(buf, bsl)
+        emit_i32_wrap_i64(buf)
+        emit_i64_load(buf, 3, i * 8)
+        emit_local_set(buf, nb)
+        nl = emit_eq_shaped_slots(buf, el, na, nb, local_names, nl + 2, ctx, ld, ce)
+        emit_i64_and(buf)
+      } else {
+        emit_local_get(buf, asl)
+        emit_i32_wrap_i64(buf)
+        emit_i64_load(buf, 3, i * 8)
+        emit_local_get(buf, bsl)
+        emit_i32_wrap_i64(buf)
+        emit_i64_load(buf, 3, i * 8)
+        emit_call(buf, eq_fidx)
+        emit_i64_and(buf)
+      }
+      i = i + 1
+    }
+    nl
+  } else if is_ctor_call(shape, ctx.ctor_table) {
+    let args = get_ecall_args(shape)
+    let fc = Array::length(args)
+    let ap = nl0
+    Array::push(local_names, "__rca")
+    let bp = nl0 + 1
+    Array::push(local_names, "__rcb")
+    emit_local_get(buf, asl)
+    emit_i64_const(buf, 0 - 2)
     emit_i64_and(buf)
-    i = i + 1
+    emit_local_set(buf, ap)
+    emit_local_get(buf, bsl)
+    emit_i64_const(buf, 0 - 2)
+    emit_i64_and(buf)
+    emit_local_set(buf, bp)
+    emit_local_get(buf, ap)
+    emit_i32_wrap_i64(buf)
+    emit_i32_load(buf, 2, 0)
+    emit_local_get(buf, bp)
+    emit_i32_wrap_i64(buf)
+    emit_i32_load(buf, 2, 0)
+    emit_i32_eq(buf)
+    emit_if_i64(buf)
+    emit_i64_const(buf, 1)
+    let mut nl = nl0 + 2
+    let mut i = 0
+    while i < fc {
+      let el = Array::get(args, i)
+      if is_etuple(el) || is_ctor_call(el, ctx.ctor_table) {
+        let na = nl
+        Array::push(local_names, "__rfa")
+        let nb = nl + 1
+        Array::push(local_names, "__rfb")
+        emit_local_get(buf, ap)
+        emit_i32_wrap_i64(buf)
+        emit_i64_load(buf, 3, 8 + i * 8)
+        emit_local_set(buf, na)
+        emit_local_get(buf, bp)
+        emit_i32_wrap_i64(buf)
+        emit_i64_load(buf, 3, 8 + i * 8)
+        emit_local_set(buf, nb)
+        nl = emit_eq_shaped_slots(buf, el, na, nb, local_names, nl + 2, ctx, ld, ce)
+        emit_i64_and(buf)
+      } else {
+        emit_local_get(buf, ap)
+        emit_i32_wrap_i64(buf)
+        emit_i64_load(buf, 3, 8 + i * 8)
+        emit_local_get(buf, bp)
+        emit_i32_wrap_i64(buf)
+        emit_i64_load(buf, 3, 8 + i * 8)
+        emit_call(buf, eq_fidx)
+        emit_i64_and(buf)
+      }
+      i = i + 1
+    }
+    emit_else(buf)
+    emit_i64_const(buf, 0)
+    emit_end(buf)
+    nl
+  } else {
+    emit_local_get(buf, asl)
+    emit_local_get(buf, bsl)
+    emit_call(buf, eq_fidx)
+    nl0
   }
-  nl2
+}
+
+// Top-level wrapper: evaluate `lhs`/`rhs` into pointer locals, then structurally
+// compare them per `shape` (a tuple/ctor literal). Used by both the literal `==`
+// path and the both-non-literal path (shape from the tracked binding).
+let emit_eq_shaped: (Bytes, Expr, Expr, Expr, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, shape, lhs, rhs, local_names, next_local, ctx, ld, ce) -> {
+  let aptr = next_local
+  Array::push(local_names, "__seqa")
+  let bptr = next_local + 1
+  Array::push(local_names, "__seqb")
+  let nl1 = ce(buf, lhs, local_names, next_local + 2, ctx, ld)
+  emit_local_set(buf, aptr)
+  let nl2 = ce(buf, rhs, local_names, nl1, ctx, ld)
+  emit_local_set(buf, bptr)
+  emit_eq_shaped_slots(buf, shape, aptr, bptr, local_names, nl2, ctx, ld, ce)
 }
 
 let emit_tuple_struct_eq: (Bytes, Expr, Expr, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, lhs, rhs, local_names, next_local, ctx, ld, compile_expr_fn) -> {
@@ -220,19 +314,27 @@ let emit_ctor_struct_eq: (Bytes, Expr, Expr, Int, Array[String], Int, CompileCtx
 // `i32_wrap`/`i32_eqz`/rc-shift — is unchanged).
 let emit_eq_value: (Bytes, Expr, Expr, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, lhs, rhs, local_names, next_local, ctx, ld, ce) -> {
   if (is_etuple(lhs) || is_etuple(rhs)) && !ctx.enable_rc {
-    emit_tuple_struct_eq(buf, lhs, rhs, local_names, next_local, ctx, ld, ce)
+    // #672: a tuple literal drives the recursive structural compare (nested
+    // tuple/ctor elements recurse instead of falling back to pointer `eq`).
+    let tlit = if is_etuple(lhs) {
+      lhs
+    } else {
+      rhs
+    }
+    emit_eq_shaped(buf, tlit, lhs, rhs, local_names, next_local, ctx, ld, ce)
   } else if (is_ctor_call(lhs, ctx.ctor_table) || is_nullary_ctor_ident(lhs, ctx.ctor_table) || is_ctor_call(rhs, ctx.ctor_table) || is_nullary_ctor_ident(rhs, ctx.ctor_table)) && !ctx.enable_rc {
     let clit = if is_ctor_call(lhs, ctx.ctor_table) || is_nullary_ctor_ident(lhs, ctx.ctor_table) {
       lhs
     } else {
       rhs
     }
-    let cfc = if is_ctor_call(clit, ctx.ctor_table) {
-      Array::length(get_ecall_args(clit))
+    if is_ctor_call(clit, ctx.ctor_table) {
+      // payload constructor literal => recursive structural compare.
+      emit_eq_shaped(buf, clit, lhs, rhs, local_names, next_local, ctx, ld, ce)
     } else {
-      0
+      // nullary constructor (scalar-tagged): tag-only compare, as before.
+      emit_ctor_struct_eq(buf, lhs, rhs, 0, local_names, next_local, ctx, ld, ce)
     }
-    emit_ctor_struct_eq(buf, lhs, rhs, cfc, local_names, next_local, ctx, ld, ce)
   } else if expr_is_intish(lhs, local_names, ctx) || expr_is_intish(rhs, local_names, ctx) {
     // A definitely-integer comparison: a direct i64.eq is both faster and
     // CORRECT for the full value range, sidestepping the `eq` builtin's
@@ -245,18 +347,15 @@ let emit_eq_value: (Bytes, Expr, Expr, Array[String], Int, CompileCtx, Int, (Byt
     nl2
   } else {
     // #672: `a == b` where neither operand is a literal. If a tracked aggregate
-    // variable is involved, compare structurally; otherwise the generic `eq`.
-    let code = if ctx.enable_rc {
+    // variable is involved, drive the recursive structural compare from its
+    // recorded shape literal (handles nested); otherwise the generic `eq`.
+    let idx = if ctx.enable_rc {
       0 - 1
     } else {
-      both_var_agg_code(ctx, local_names, lhs, rhs)
+      both_var_agg_index(ctx, local_names, lhs, rhs)
     }
-    if code >= 0 {
-      // tuple of arity `code`
-      emit_tuple_eq_arity(buf, lhs, rhs, code, local_names, next_local, ctx, ld, ce)
-    } else if code <= 0 - 2 {
-      // payload constructor / struct with `-(code) - 2` fields
-      emit_ctor_struct_eq(buf, lhs, rhs, (0 - code) - 2, local_names, next_local, ctx, ld, ce)
+    if idx >= 0 {
+      emit_eq_shaped(buf, Array::get(ctx.agg_tuple_exprs, idx), lhs, rhs, local_names, next_local, ctx, ld, ce)
     } else {
       let nl1 = ce(buf, lhs, local_names, next_local, ctx, ld)
       let nl2 = ce(buf, rhs, local_names, nl1, ctx, ld)
