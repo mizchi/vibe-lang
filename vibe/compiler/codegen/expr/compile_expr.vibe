@@ -25,7 +25,7 @@ import ./compile_call.vibe {
 }
 
 import ./compile_expr_tail.vibe {
-  compile_expr_tail, expr_is_floatish
+  compile_expr_tail, expr_is_floatish, expr_is_intish
 }
 
 import ./compile_lambda.vibe {
@@ -146,6 +146,16 @@ let emit_eq_value: (Bytes, Expr, Expr, Array[String], Int, CompileCtx, Int, (Byt
       0
     }
     emit_ctor_struct_eq(buf, lhs, rhs, cfc, local_names, next_local, ctx, ld, ce)
+  } else if expr_is_intish(lhs, local_names, ctx) || expr_is_intish(rhs, local_names, ctx) {
+    // A definitely-integer comparison: a direct i64.eq is both faster and
+    // CORRECT for the full value range, sidestepping the `eq` builtin's
+    // string-pointer fall-back. The type checker guarantees the other operand
+    // is the same scalar type, so one intish side is enough.
+    let nl1 = ce(buf, lhs, local_names, next_local, ctx, ld)
+    let nl2 = ce(buf, rhs, local_names, nl1, ctx, ld)
+    emit_i64_eq(buf)
+    emit_i64_extend_i32_s(buf)
+    nl2
   } else {
     let nl1 = ce(buf, lhs, local_names, next_local, ctx, ld)
     let nl2 = ce(buf, rhs, local_names, nl1, ctx, ld)

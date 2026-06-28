@@ -154,6 +154,39 @@ export let rec expr_is_floatish: (Expr, Array[String], CompileCtx) -> Bool with 
   }
 }
 
+// #678: is `e` unambiguously an integer/bool scalar — never a string or float?
+// Such an operand makes `==`/`!=` a direct i64.eq instead of the polymorphic
+// `eq` builtin, whose string fall-back misreads a large integer as a string
+// fat-pointer `(ptr<<32)|len` (two unequal ints with a zero low word compare
+// EQUAL). Classified by SHAPE only: literals, bitwise/comparison/logical
+// operators, and non-float arithmetic. Bare identifiers are intentionally NOT
+// classified — a per-slot "is int" log is unsound because slots are reused
+// across scopes (match-arm / for-loop / lambda binders) without updating it, so
+// a reused slot holding a string would be misread. Unclassified operands fall
+// back to the bounds-guarded `eq` (the remaining #678 residual).
+export let expr_is_intish: (Expr, Array[String], CompileCtx) -> Bool with { Error } = (e, local_names, ctx) -> {
+  let tag = expr_tag(e)
+  if tag == 0 {
+    true
+  } else if tag == 1 {
+    true
+  } else if tag == 5 {
+    let op = get_ebinop_op(e)
+    if op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || op == "%" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "==" || op == "!=" || op == "&&" || op == "||" {
+      true
+    } else if op == "+" || op == "-" || op == "*" || op == "/" {
+      !expr_is_floatish(e, local_names, ctx)
+    } else {
+      false
+    }
+  } else if tag == 6 {
+    let op = get_eunaryop_op(e)
+    op == "!"
+  } else {
+    false
+  }
+}
+
 let emit_rc_dup_guarded: (Bytes, Int) -> Unit = (buf, local_idx) -> {
   emit_local_get(buf, local_idx)
   emit_i64_const(buf, 1)

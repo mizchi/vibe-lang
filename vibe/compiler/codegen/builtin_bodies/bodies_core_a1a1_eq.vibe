@@ -22,6 +22,37 @@ import .. / wasm_emit {
 
 //# Functions
 
+// Push `memory.size * 65536` (linear memory size in BYTES) as an i64.
+let emit_mem_size_bytes: (Bytes) -> Unit = (b) -> {
+  bytebuf_push(b, 63)
+  bytebuf_push(b, 0)
+  emit_i64_extend_i32_u(b)
+  emit_i64_const(b, 65536)
+  emit_i64_mul(b)
+}
+
+// Push an i32 bool: could `v` (the i64 in local `slot`) be safely byte-compared
+// as a string fat-pointer `(ptr << 32) | len` WITHOUT reading out of bounds —
+// i.e. `ptr + len <= memory_size`, where ptr is the UNSIGNED high word (a value
+// whose high bit is set yields a huge ptr that exceeds memory_size, so it is
+// rejected rather than wrapping to a low in-bounds address). This is the OOB
+// guard from #664; it deliberately does NOT require `ptr >= 64`, because a
+// genuine empty string can have a low pointer (e.g. a 0-length name read from a
+// custom section) and must still compare equal — requiring `ptr >= 64` regressed
+// such comparisons to "not equal". The residual it gives up on (two distinct
+// integers with equal low words comparing equal) is the accepted #678 hole.
+let emit_looks_like_string: (Bytes, Int) -> Unit = (b, slot) -> {
+  emit_local_get(b, slot)
+  emit_i64_const(b, 32)
+  bytebuf_push(b, 136)
+  emit_local_get(b, slot)
+  emit_i64_const(b, 4294967295)
+  emit_i64_and(b)
+  emit_i64_add(b)
+  emit_mem_size_bytes(b)
+  emit_i64_le_s(b)
+}
+
 export let gen_eq_body: (Int) -> Bytes = (str_eq_idx) -> {
   let b = bytebuf_new()
   emit_local_get(b, 0)
@@ -30,9 +61,23 @@ export let gen_eq_body: (Int) -> Bytes = (str_eq_idx) -> {
   emit_if_i64(b)
   emit_i64_const(b, 1)
   emit_else(b)
+  // The operands are bit-different. Falling back to `str_eq` here is only valid
+  // when both are genuine string fat-pointers; a raw integer (e.g. a 61-bit
+  // value) whose bits resemble `(ptr << 32) | len` would otherwise be misread —
+  // a low word of 0 makes two unequal ints compare EQUAL, and a large low word
+  // makes `str_eq`'s byte loop read out of bounds (the #664 class of bug, here
+  // surfacing for `==`/`!=` on Int >= 2^32). Gate the fallback on both operands
+  // looking like real strings; otherwise the values are simply not equal.
+  emit_looks_like_string(b, 0)
+  emit_looks_like_string(b, 1)
+  bytebuf_push(b, 113)
+  emit_if_i64(b)
   emit_local_get(b, 0)
   emit_local_get(b, 1)
   emit_call(b, str_eq_idx)
+  emit_else(b)
+  emit_i64_const(b, 0)
+  emit_end(b)
   emit_end(b)
   b
 }

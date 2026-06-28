@@ -4791,6 +4791,36 @@ let resolve_trait_method_ident: (String, TypeEnv, Array[TypeDef], Subst) -> Opti
     }
   }
 }
+let resolve_qualified_ctor_ident: (String, TypeEnv, Array[TypeDef]) -> Option[Type] = (name, env, defs) -> {
+  let idx = String::index_of(name, "::")
+  if idx < 0 {
+    None
+  } else {
+    let head = String::substring(name, 0, idx)
+    let member = String::substring(name, idx + 2, String::length(name))
+    match find_typedef(defs, head) {
+      Some(TDEnum(_, _, variants)) => {
+        let mut found = false
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (vname, _) = Array::get(variants, vi)
+          if vname == member {
+            found = true
+          } else {
+            ()
+          }
+          vi = vi + 1
+        }
+        if found {
+          env_lookup(env, member)
+        } else {
+          None
+        }
+      },
+      _ => None
+    }
+  }
+}
 let expr_ident_name_or_empty: (Expr) -> String = (expr) -> {
   match expr {
     EIdent(name, _) => name,
@@ -5697,9 +5727,32 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
             }
             (mty, s, c)
           },
-          None => {
-            Array::push(errors, String::concat(String::concat("unknown name: ", name), off_marker_len(ident_off, String::length(name))))
-            (CtUnknown, s, c)
+          None => match resolve_qualified_ctor_ident(name, env, defs) {
+            Some(ct) => {
+              let (ti, c1, new_bounds) = instantiate(ct, c)
+              let nblen = Array::length(new_bounds)
+              let mut s1 = s
+              let mut bi = 0
+              while bi < nblen {
+                let (vid, bounds) = Array::get(new_bounds, bi)
+                if Array::length(bounds) != 0 {
+                  s1 = subst_add_bound(s1, vid, bounds)
+                } else {
+                  ()
+                }
+                bi = bi + 1
+              }
+              if ident_off >= 0 {
+                Array::push(tytab, (ident_off, ti))
+              } else {
+                ()
+              }
+              (ti, s1, c1)
+            },
+            None => {
+              Array::push(errors, String::concat(String::concat("unknown name: ", name), off_marker_len(ident_off, String::length(name))))
+              (CtUnknown, s, c)
+            }
           }
         }
       }
@@ -9400,6 +9453,25 @@ let lookup_var_type: (Array[(String, String)], String) -> Option[String] = (var_
   }
   result
 }
+let ctor_enum_of_name: (Array[(String, String)], String) -> Option[String] = (fn_returns, name) -> {
+  match fn_return_type(fn_returns, name) {
+    Some(t) => Some(t),
+    None => match split_qualified(name) {
+      Some(parts) => {
+        let (head, member) = parts
+        match fn_return_type(fn_returns, member) {
+          Some(en) => if en == head {
+            Some(en)
+          } else {
+            None
+          },
+          None => None
+        }
+      },
+      None => None
+    }
+  }
+}
 let infer_arg_type_name: (Expr, Array[(String, Array[String])], Array[(String, String)], Array[(String, String)]) -> Option[String] = (arg, struct_sets, var_types, fn_returns) -> {
   match arg {
     EInt(_) => Some("Int"),
@@ -9409,10 +9481,10 @@ let infer_arg_type_name: (Expr, Array[(String, Array[String])], Array[(String, S
     EArray(_) => Some("Array"),
     EIdent(name, _) => match lookup_var_type(var_types, name) {
       Some(t) => Some(t),
-      None => fn_return_type(fn_returns, name)
+      None => ctor_enum_of_name(fn_returns, name)
     },
     ECall(callee, _, _) => match callee {
-      EIdent(fname, _) => fn_return_type(fn_returns, fname),
+      EIdent(fname, _) => ctor_enum_of_name(fn_returns, fname),
       _ => None
     },
     ERecord(fields) => {
@@ -9936,6 +10008,20 @@ let extend_var_types: (Array[(String, String)], String, Option[String]) -> Array
     None => var_types
   }
 }
+let qual_ctor_member: (String, String, Array[(String, Array[String])], Array[(String, String)]) -> Option[String] = (head, member, struct_sets, fn_returns) -> {
+  if struct_set_has(struct_sets, head) {
+    match fn_return_type(fn_returns, member) {
+      Some(en) => if en == head {
+        Some(member)
+      } else {
+        None
+      },
+      None => None
+    }
+  } else {
+    None
+  }
+}
 let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(String, Array[String])], Array[(String, String, String, Array[String])], Array[(String, String)], Array[(String, String)]) -> Expr = (expr, gens, traits, struct_sets, dict_binds, var_types, fn_returns) -> {
   match expr {
     EIdent(name, off) => match split_qualified(name) {
@@ -9943,7 +10029,10 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
         let (head, member) = parts
         match find_dict_for_method(dict_binds, head, member) {
           Some(dict_pname) => EDot(EIdent(dict_pname, -1), member, -1),
-          None => expr
+          None => match qual_ctor_member(head, member, struct_sets, fn_returns) {
+            Some(m) => EIdent(m, off),
+            None => expr
+          }
         }
       },
       None => expr
@@ -9953,7 +10042,17 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
         rewrite_expr(a, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
       }
       match callee {
-        EIdent(name, coff) => {
+        EIdent(name0, coff) => {
+          let name = match split_qualified(name0) {
+            Some(parts0) => {
+              let (h0, m0) = parts0
+              match qual_ctor_member(h0, m0, struct_sets, fn_returns) {
+                Some(mm) => mm,
+                None => name0
+              }
+            },
+            None => name0
+          }
           let as_method = match split_qualified(name) {
             Some(parts) => {
               let (head, member) = parts
@@ -10258,15 +10357,31 @@ let gen_show_fn: (String, Array[(String, TypeExpr)]) -> Stmt = (tname, fields) -
   ], 0, 0)
   SLet(false, false, qualified_name(tname, "to_string"), None, EFn(no_tp, no_tb, params, Some(TyName("String")), None, body))
 }
-let field_eq_expr: (String, TypeExpr) -> Expr = (fname, fty) -> {
-  EBinOp("==", EDot(EIdent("a", -1), fname, -1), EDot(EIdent("b", -1), fname, -1))
+let is_scalar_type_name: (String) -> Bool = (n) -> {
+  n == "Int" || n == "Double" || n == "Bool" || n == "String" || n == "Char" || n == "Unit" || n == "Bytes"
 }
-let gen_eq_fn: (String, Array[(String, TypeExpr)]) -> Stmt = (tname, fields) -> {
+let eq_for_typed: (TypeExpr, Expr, Expr, Array[String]) -> Expr = (fty, lhs, rhs, known_types) -> {
+  match fty {
+    TyName(n) => if !is_scalar_type_name(n) && str_array_contains(known_types, n) {
+      ECall(EIdent(qualified_name(n, "equals"), -1), Array::slice([
+        lhs,
+        rhs
+      ], 0, 2), -1)
+    } else {
+      EBinOp("==", lhs, rhs)
+    },
+    _ => EBinOp("==", lhs, rhs)
+  }
+}
+let field_eq_expr: (String, TypeExpr, Array[String]) -> Expr = (fname, fty, known_types) -> {
+  eq_for_typed(fty, EDot(EIdent("a", -1), fname, -1), EDot(EIdent("b", -1), fname, -1), known_types)
+}
+let gen_eq_fn: (String, Array[(String, TypeExpr)], Array[String]) -> Stmt = (tname, fields, known_types) -> {
   let mut body = EBool(true)
   let mut i = Array::length(fields) - 1
   while i >= 0 {
     let (fname, fty) = Array::get(fields, i)
-    body = EBinOp("&&", field_eq_expr(fname, fty), body)
+    body = EBinOp("&&", field_eq_expr(fname, fty, known_types), body)
     i = i - 1
   }
   let params = Array::slice([
@@ -10311,7 +10426,7 @@ let rec idx_str: (Int) -> String = (n) -> {
     String::concat(idx_str(n / 10), digit_str(n % 10))
   }
 }
-let gen_enum_eq_fn: (String, Array[(String, Array[TypeExpr])]) -> Stmt = (ename, variants) -> {
+let gen_enum_eq_fn: (String, Array[(String, Array[TypeExpr])], Array[String]) -> Stmt = (ename, variants, known_types) -> {
   let outer_arms = Array::slice([
     (PWild, EUnit)
   ], 0, 0)
@@ -10334,7 +10449,7 @@ let gen_enum_eq_fn: (String, Array[(String, Array[TypeExpr])]) -> Stmt = (ename,
     let mut body = EBool(true)
     let mut bi = nf - 1
     while bi >= 0 {
-      let cmp = EBinOp("==", EIdent(String::concat("__a", idx_str(bi)), -1), EIdent(String::concat("__b", idx_str(bi)), -1))
+      let cmp = eq_for_typed(Array::get(ftypes, bi), EIdent(String::concat("__a", idx_str(bi)), -1), EIdent(String::concat("__b", idx_str(bi)), -1), known_types)
       body = EBinOp("&&", cmp, body)
       bi = bi - 1
     }
@@ -10381,8 +10496,22 @@ let gen_compare_fn: (String, Array[(String, TypeExpr)]) -> Stmt = (tname, fields
   ], 0, 0)
   SLet(false, false, qualified_name(tname, "compare"), None, EFn(no_tp, no_tb, params, Some(TyName("Int")), None, body))
 }
+let collect_decl_type_names: (Array[Stmt]) -> Array[String] = (stmts) -> {
+  let out = empty_str_array()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(_, name, _, _, _) => Array::push(out, name),
+      SEnum(_, ename, _, _) => Array::push(out, ename),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
 export let desugar_derives: (Array[Stmt]) -> Unit = (stmts) -> {
   let gen = empty_stmt_list()
+  let known_types = collect_decl_type_names(stmts)
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
@@ -10398,14 +10527,14 @@ export let desugar_derives: (Array[Stmt]) -> Unit = (stmts) -> {
           ()
         }
         if !top_level_fn_exists(stmts, qualified_name(name, "equals")) {
-          Array::push(gen, gen_eq_fn(name, fields))
+          Array::push(gen, gen_eq_fn(name, fields, known_types))
         } else {
           ()
         }
       },
       SEnum(_, ename, _, variants) => {
         if !top_level_fn_exists(stmts, qualified_name(ename, "equals")) {
-          Array::push(gen, gen_enum_eq_fn(ename, variants))
+          Array::push(gen, gen_enum_eq_fn(ename, variants, known_types))
         } else {
           ()
         }
@@ -10692,6 +10821,18 @@ export let rec is_catchall_pat: (Pat) -> Bool = (p) -> {
       let mut all_catch = true
       while i < Array::length(pats) {
         if !is_catchall_pat(Array::get(pats, i)) {
+          all_catch = false
+        }
+        i = i + 1
+      }
+      all_catch
+    },
+    PStruct(_, fields) => {
+      let mut i = 0
+      let mut all_catch = true
+      while i < Array::length(fields) {
+        let (_, sp) = Array::get(fields, i)
+        if !is_catchall_pat(sp) {
           all_catch = false
         }
         i = i + 1
@@ -13077,6 +13218,24 @@ export let build_perceus_plan_with_params: (Array[(String, Option[TypeExpr])], E
   }
   ctx.actions
 }
+let emit_mem_size_bytes: (Bytes) -> Unit = (b) -> {
+  bytebuf_push(b, 63)
+  bytebuf_push(b, 0)
+  emit_i64_extend_i32_u(b)
+  emit_i64_const(b, 65536)
+  emit_i64_mul(b)
+}
+let emit_looks_like_string: (Bytes, Int) -> Unit = (b, slot) -> {
+  emit_local_get(b, slot)
+  emit_i64_const(b, 32)
+  bytebuf_push(b, 136)
+  emit_local_get(b, slot)
+  emit_i64_const(b, 4294967295)
+  emit_i64_and(b)
+  emit_i64_add(b)
+  emit_mem_size_bytes(b)
+  emit_i64_le_s(b)
+}
 export let gen_eq_body: (Int) -> Bytes = (str_eq_idx) -> {
   let b = bytebuf_new()
   emit_local_get(b, 0)
@@ -13085,9 +13244,16 @@ export let gen_eq_body: (Int) -> Bytes = (str_eq_idx) -> {
   emit_if_i64(b)
   emit_i64_const(b, 1)
   emit_else(b)
+  emit_looks_like_string(b, 0)
+  emit_looks_like_string(b, 1)
+  bytebuf_push(b, 113)
+  emit_if_i64(b)
   emit_local_get(b, 0)
   emit_local_get(b, 1)
   emit_call(b, str_eq_idx)
+  emit_else(b)
+  emit_i64_const(b, 0)
+  emit_end(b)
   emit_end(b)
   b
 }
@@ -16346,6 +16512,116 @@ let rec bind_match_pat: (Bytes, Int, Pat, Bool, Array[String], CompileCtx) -> Un
     i = i + 1
   }
 }
+let find_struct_index: (CompileCtx, String) -> Int = (ctx, sname) -> {
+  let names = ctx.ctor_table.struct_names
+  let mut si = 0
+  let mut sidx = -1
+  while si < Array::length(names) {
+    if Array::get(names, si) == sname {
+      sidx = si
+      si = Array::length(names)
+    } else {
+      si = si + 1
+    }
+  }
+  sidx
+}
+let field_index_in: (Array[String], String) -> Int = (fnames, field) -> {
+  let mut fi = 0
+  let mut found = -1
+  while fi < Array::length(fnames) {
+    if Array::get(fnames, fi) == field {
+      found = fi
+      fi = Array::length(fnames)
+    } else {
+      fi = fi + 1
+    }
+  }
+  found
+}
+let struct_field_index: (CompileCtx, String, String) -> Int with { Error } = (ctx, sname, field) -> {
+  let sidx = find_struct_index(ctx, sname)
+  if sidx >= 0 {
+    let found = field_index_in(Array::get(ctx.ctor_table.struct_field_names, sidx), field)
+    if found < 0 {
+      throw(String::concat(String::concat(String::concat("unknown field `", field), "` in struct "), sname))
+    } else {
+      found
+    }
+  } else {
+    let names = ctx.ctor_table.struct_names
+    let mut gsi = 0
+    let mut gfound = -1
+    while gsi < Array::length(names) {
+      let f = field_index_in(Array::get(ctx.ctor_table.struct_field_names, gsi), field)
+      if f >= 0 {
+        gfound = f
+        gsi = Array::length(names)
+      } else {
+        gsi = gsi + 1
+      }
+    }
+    if gfound < 0 {
+      throw(String::concat("unknown struct field in pattern: ", field))
+    } else {
+      gfound
+    }
+  }
+}
+let rec bind_struct_pat: (Bytes, Int, String, Array[(String, Pat)], Array[String], CompileCtx) -> Unit with { Error } = (buf, base_local, sname, fields, local_names, ctx) -> {
+  let mut i = 0
+  while i < Array::length(fields) {
+    let (fname, subpat) = Array::get(fields, i)
+    let off = 8 + struct_field_index(ctx, sname, fname) * 8
+    if is_pbind(subpat) {
+      let nm = get_pbind_name(subpat)
+      let fl = Array::length(local_names)
+      emit_local_get(buf, base_local)
+      emit_i64_const(buf, -2)
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, off)
+      emit_local_set(buf, fl)
+      Array::push(local_names, nm)
+    } else if is_ptuple(subpat) {
+      let sl = Array::length(local_names)
+      emit_local_get(buf, base_local)
+      emit_i64_const(buf, -2)
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, off)
+      emit_local_set(buf, sl)
+      Array::push(local_names, "__bind_sub")
+      bind_match_pat(buf, sl, subpat, false, local_names, ctx)
+    } else if is_pctor(subpat) {
+      let sl = Array::length(local_names)
+      emit_local_get(buf, base_local)
+      emit_i64_const(buf, -2)
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, off)
+      emit_local_set(buf, sl)
+      Array::push(local_names, "__bind_sub")
+      bind_match_pat(buf, sl, subpat, true, local_names, ctx)
+    } else {
+      match subpat {
+        PStruct(__sname, sfields) => {
+          let sl = Array::length(local_names)
+          emit_local_get(buf, base_local)
+          emit_i64_const(buf, -2)
+          emit_i64_and(buf)
+          emit_i32_wrap_i64(buf)
+          emit_i64_load(buf, 3, off)
+          emit_local_set(buf, sl)
+          Array::push(local_names, "__bind_sub")
+          bind_struct_pat(buf, sl, __sname, sfields, local_names, ctx)
+        },
+        _ => ()
+      }
+    }
+    i = i + 1
+  }
+}
 export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, expr, local_names, next_local, ctx, ld, ce) -> {
   let __match_scrutinee = get_match_scrutinee(expr)
   let __match_arms = get_match_arms(expr)
@@ -16869,7 +17145,17 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
           }
           ce(buf, __catch_body, local_names, Array::length(local_names), ctx, ld_catch)
         } else {
-          ce(buf, __catch_body, local_names, Array::length(local_names), ctx, ld_catch)
+          match __catch_p {
+            PStruct(__sname, __sfields) => {
+              let __sp_ptr = Array::length(local_names)
+              emit_local_get(buf, scrut_local)
+              emit_local_set(buf, __sp_ptr)
+              Array::push(local_names, "__struct_ptr")
+              bind_struct_pat(buf, __sp_ptr, __sname, __sfields, local_names, ctx)
+              ce(buf, __catch_body, local_names, Array::length(local_names), ctx, ld_catch)
+            },
+            _ => ce(buf, __catch_body, local_names, Array::length(local_names), ctx, ld_catch)
+          }
         }
       }
     }
@@ -16889,6 +17175,17 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
     Array::push(local_names, "")
   }
   max_nl
+}
+let ts_known_int: (Expr, Array[String], CompileCtx) -> Bool = (e, local_names, ctx) -> {
+  let tag = expr_tag(e)
+  if tag == 0 {
+    true
+  } else if tag == 5 {
+    let op = get_ebinop_op(e)
+    op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || op == "%"
+  } else {
+    false
+  }
 }
 export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, callee, args, local_names, next_local, ctx, ld, ce) -> {
   if is_eident(callee) {
@@ -17384,7 +17681,9 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
     }
     else if fname == "__to_string" {
-      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      let ts_arg0 = Array::get(args, 0)
+      let ts_arg_is_int = ts_known_int(ts_arg0, local_names, ctx)
+      let mut nl = ce(buf, ts_arg0, local_names, next_local, ctx, ld)
       let val_l = nl
       let neg_l = nl + 1
       let cur_l = nl + 2
@@ -17399,12 +17698,15 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       Array::push(local_names, "__ts_len")
       emit_local_set(buf, val_l)
       emit_block_i64(buf)
+      if ts_arg_is_int {
+        emit_i32_const(buf, 0)
+      } else {
       emit_local_get(buf, val_l)
       emit_i64_const(buf, 32)
       bytebuf_push(buf, 136)
       emit_local_tee(buf, abs_l)
-      emit_i64_const(buf, 0)
-      emit_i64_gt_s(buf)
+      emit_i64_const(buf, 64)
+      emit_i64_ge_s(buf)
       emit_local_get(buf, abs_l)
       bytebuf_push(buf, 63)
       bytebuf_push(buf, 0)
@@ -17413,6 +17715,19 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_i64_mul(buf)
       emit_i64_lt_s(buf)
       bytebuf_push(buf, 113)
+      emit_local_get(buf, abs_l)
+      emit_local_get(buf, val_l)
+      emit_i64_const(buf, 4294967295)
+      emit_i64_and(buf)
+      emit_i64_add(buf)
+      bytebuf_push(buf, 63)
+      bytebuf_push(buf, 0)
+      emit_i64_extend_i32_u(buf)
+      emit_i64_const(buf, 65536)
+      emit_i64_mul(buf)
+      emit_i64_le_s(buf)
+      bytebuf_push(buf, 113)
+      }
       emit_if_void(buf)
       emit_local_get(buf, val_l)
       emit_br(buf, 1)
@@ -19787,6 +20102,28 @@ export let rec expr_is_floatish: (Expr, Array[String], CompileCtx) -> Bool with 
     false
   }
 }
+export let expr_is_intish: (Expr, Array[String], CompileCtx) -> Bool with { Error } = (e, local_names, ctx) -> {
+  let tag = expr_tag(e)
+  if tag == 0 {
+    true
+  } else if tag == 1 {
+    true
+  } else if tag == 5 {
+    let op = get_ebinop_op(e)
+    if op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || op == "%" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "==" || op == "!=" || op == "&&" || op == "||" {
+      true
+    } else if op == "+" || op == "-" || op == "*" || op == "/" {
+      !expr_is_floatish(e, local_names, ctx)
+    } else {
+      false
+    }
+  } else if tag == 6 {
+    let op = get_eunaryop_op(e)
+    op == "!"
+  } else {
+    false
+  }
+}
 let emit_rc_dup_guarded: (Bytes, Int) -> Unit = (buf, local_idx) -> {
   emit_local_get(buf, local_idx)
   emit_i64_const(buf, 1)
@@ -20292,6 +20629,12 @@ let emit_eq_value: (Bytes, Expr, Expr, Array[String], Int, CompileCtx, Int, (Byt
       0
     }
     emit_ctor_struct_eq(buf, lhs, rhs, cfc, local_names, next_local, ctx, ld, ce)
+  } else if expr_is_intish(lhs, local_names, ctx) || expr_is_intish(rhs, local_names, ctx) {
+    let nl1 = ce(buf, lhs, local_names, next_local, ctx, ld)
+    let nl2 = ce(buf, rhs, local_names, nl1, ctx, ld)
+    emit_i64_eq(buf)
+    emit_i64_extend_i32_s(buf)
+    nl2
   } else {
     let nl1 = ce(buf, lhs, local_names, next_local, ctx, ld)
     let nl2 = ce(buf, rhs, local_names, nl1, ctx, ld)
@@ -24274,6 +24617,11 @@ let rec parse_pattern: (Array[Token], Int) -> (Pat, Int) with { Error } = (token
   }
   let (pat, next) = match peek(tokens, pos) {
     TInt(n) => (PInt(n), pos + 1),
+    TMinus => match peek(tokens, pos + 1) {
+      TInt(n) => (PInt(0 - n), pos + 2),
+      TFloat(_) => (PWild, pos + 2),
+      _ => throw("expected number literal after '-' in pattern")
+    },
     TFloat(_) => (PWild, pos + 1),
     TString(s) => (PString(s), pos + 1),
     TIdent(name) => {
@@ -24692,29 +25040,95 @@ let rec parse_type_impl: (Array[Token], Int, Int) -> (TypeExpr, Int) with { Erro
       _ => (ArrayBuilder::freeze(b), pos)
     }
   }
-  if mode == 0 {
-    let (atom_ty, atom_next) = parse_type_impl(tokens, pos, 1)
-    match peek(tokens, atom_next) {
-      TThinArrow => {
-        let (ret, rn) = parse_type_impl(tokens, atom_next + 1, 0)
-        let params = match atom_ty {
-          TyUnit => empty_type_exprs(),
-          TyTuple(elems) => elems,
-          _ => [
-            atom_ty
-          ]
-        }
-        let effect_pair = match peek(tokens, rn) {
-          TWith => {
-            let with_pos = expect_tk(tokens, rn + 1, "{")
-            let effect_name_pair = collect_effect_names(tokens, with_pos, "")
-            (Some(effect_name_pair.0), effect_name_pair.1)
-          },
-          _ => (None, rn)
-        }
-        (TyFn(params, ret, effect_pair.0), effect_pair.1)
+  let parse_effect_suffix: (Array[Token], Int) -> (Option[String], Int) with { Error } = (tokens, rn) -> {
+    match peek(tokens, rn) {
+      TWith => {
+        let with_pos = expect_tk(tokens, rn + 1, "{")
+        let effect_name_pair = collect_effect_names(tokens, with_pos, "")
+        (Some(effect_name_pair.0), effect_name_pair.1)
       },
-      _ => (atom_ty, atom_next)
+      _ => (None, rn)
+    }
+  }
+  if mode == 0 {
+    match peek(tokens, pos) {
+      TLParen => match peek(tokens, pos + 1) {
+        TRParen => {
+          let after = pos + 2
+          match peek(tokens, after) {
+            TThinArrow => {
+              let (ret, rn) = parse_type_impl(tokens, after + 1, 0)
+              let eff = parse_effect_suffix(tokens, rn)
+              (TyFn(empty_type_exprs(), ret, eff.0), eff.1)
+            },
+            _ => (TyUnit, after)
+          }
+        },
+        _ => {
+          let ty_start = match peek(tokens, pos + 1) {
+            TIdent(_) => match peek(tokens, pos + 2) {
+              TColon => pos + 3,
+              TTilde => match peek(tokens, pos + 3) {
+                TColon => pos + 4,
+                _ => pos + 1
+              },
+              TQuestion => match peek(tokens, pos + 3) {
+                TColon => pos + 4,
+                _ => pos + 1
+              },
+              _ => pos + 1
+            },
+            _ => pos + 1
+          }
+          let (first, n1) = parse_type_impl(tokens, ty_start, 0)
+          let (elems, after) = match peek(tokens, n1) {
+            TRParen => ([
+              first
+            ], n1 + 1),
+            TComma => {
+              let b = ArrayBuilder::new()
+              ArrayBuilder::push(b, first)
+              let (rest, end) = type_list_rest(tokens, n1, b)
+              let en = expect_tk(tokens, end, ")");
+              (rest, en)
+            },
+            _ => throw("expected ')' or ',' in type")
+          }
+          match peek(tokens, after) {
+            TThinArrow => {
+              let (ret, rn) = parse_type_impl(tokens, after + 1, 0)
+              let eff = parse_effect_suffix(tokens, rn)
+              (TyFn(elems, ret, eff.0), eff.1)
+            },
+            _ => {
+              let atom = if Array::length(elems) == 1 {
+                Array::get(elems, 0)
+              } else {
+                TyTuple(elems)
+              }
+              match peek(tokens, after) {
+                TQuestion => (TyApp("Option", [
+                  atom
+                ]), after + 1),
+                _ => (atom, after)
+              }
+            }
+          }
+        }
+      },
+      _ => {
+        let (atom_ty, atom_next) = parse_type_impl(tokens, pos, 1)
+        match peek(tokens, atom_next) {
+          TThinArrow => {
+            let (ret, rn) = parse_type_impl(tokens, atom_next + 1, 0)
+            let eff = parse_effect_suffix(tokens, rn)
+            (TyFn([
+              atom_ty
+            ], ret, eff.0), eff.1)
+          },
+          _ => (atom_ty, atom_next)
+        }
+      }
     }
   } else {
     let (base_ty, base_next) = match peek(tokens, pos) {
@@ -25287,6 +25701,47 @@ export {
 export {
   peek, is_tk, _no_tb, _no_tp, mode_if, tk_name, expect_tk, skip_semi, empty_arms, empty_pats, mode_block, mode_match, mode_while, parse_type, empty_exprs, mode_for_in, mode_handle, skip_derive, parse_derive_names, empty_fields, empty_params, parse_pattern, is_lambda_start, parse_enum_stmt, parse_type_impl, empty_type_exprs, parse_param_list, parse_trait_stmt, is_expr_end_token, is_non_pipe_infix, parse_effect_stmt, parse_import_item, parse_struct_stmt, empty_import_items, parse_binding_name, parse_struct_field, collect_import_path, parse_suberror_stmt, collect_effect_names, parse_type_alias_stmt, parse_impl_stmt_dispatch
 }
+let build_interp_expr: (Array[String], (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> Expr with { Error } = (parts, parse_recur) -> {
+  let concat_expr: (Expr, Expr) -> Expr = (a, b) -> {
+    ECall(EIdent("String::concat", -1), [
+      a,
+      b
+    ], -1)
+  }
+  let plen = Array::length(parts)
+  let mut result = EString("")
+  let mut has_val = false
+  let mut i = 0
+  while i < plen {
+    let part = Array::get(parts, i)
+    if i % 2 == 0 {
+      if String::length(part) > 0 {
+        let piece = EString(part)
+        result = if has_val {
+          concat_expr(result, piece)
+        } else {
+          piece
+        }
+        has_val = true
+      } else {
+        ()
+      }
+    } else {
+      let (pe, _) = parse_recur(lex(part), 0, 0)
+      let piece = ECall(EIdent("__to_string", -1), [
+        pe
+      ], -1)
+      result = if has_val {
+        concat_expr(result, piece)
+      } else {
+        piece
+      }
+      has_val = true
+    }
+    i = i + 1
+  }
+  result
+}
 let rec desugar_loop_body: (Expr, Array[String]) -> Expr = (expr, param_names) -> {
   match expr {
     EBreak(opt) => match opt {
@@ -25822,7 +26277,7 @@ export let parse_primary: (Array[Token], Array[Int], Int, (Array[Token], Int, In
     TInt(n) => (EInt(n), pos + 1),
     TFloat(n) => (EFloat(n), pos + 1),
     TString(s) => (EString(s), pos + 1),
-    TStringInterp(parts) => (EStringInterp(parts), pos + 1),
+    TStringInterp(parts) => (build_interp_expr(parts, parse_recur), pos + 1),
     TIdent(name) => parse_ident_primary(tokens, starts, pos, name, parse_recur),
     TLParen => parse_paren_primary(tokens, starts, pos, parse_recur),
     TLBracket => parse_bracket_primary(tokens, starts, pos, parse_recur),

@@ -98,6 +98,136 @@ let rec bind_match_pat: (Bytes, Int, Pat, Bool, Array[String], CompileCtx) -> Un
   }
 }
 
+// The index of `field` WITHIN the struct named `sname`. A struct value lays its
+// fields out exactly like a constructor — tag/header at 0, field i at `8 + i*8`,
+// pointer tag-cleared — so the offset is `8 + index*8`, identical to what
+// `obj.field` reads. The matched struct name MUST drive the lookup: two structs
+// can share a field name at different positions (`A { x; y }` vs `B { y; x }`),
+// so a name-agnostic "first struct that declares the field" scan binds the wrong
+// offset. Only when `sname` is not in the table do we fall back to that scan.
+let find_struct_index: (CompileCtx, String) -> Int = (ctx, sname) -> {
+  let names = ctx.ctor_table.struct_names
+  let mut si = 0
+  let mut sidx = -1
+  while si < Array::length(names) {
+    if Array::get(names, si) == sname {
+      sidx = si
+      si = Array::length(names)
+    } else {
+      si = si + 1
+    }
+  }
+  sidx
+}
+
+let field_index_in: (Array[String], String) -> Int = (fnames, field) -> {
+  let mut fi = 0
+  let mut found = -1
+  while fi < Array::length(fnames) {
+    if Array::get(fnames, fi) == field {
+      found = fi
+      fi = Array::length(fnames)
+    } else {
+      fi = fi + 1
+    }
+  }
+  found
+}
+
+let struct_field_index: (CompileCtx, String, String) -> Int with { Error } = (ctx, sname, field) -> {
+  let sidx = find_struct_index(ctx, sname)
+  if sidx >= 0 {
+    let found = field_index_in(Array::get(ctx.ctor_table.struct_field_names, sidx), field)
+    if found < 0 {
+      throw(String::concat(String::concat(String::concat("unknown field `", field), "` in struct "), sname))
+    } else {
+      found
+    }
+  } else {
+    // `sname` not found in the struct table: fall back to the legacy global
+    // first-match scan so unqualified / synthetic names still resolve.
+    let names = ctx.ctor_table.struct_names
+    let mut gsi = 0
+    let mut gfound = -1
+    while gsi < Array::length(names) {
+      let f = field_index_in(Array::get(ctx.ctor_table.struct_field_names, gsi), field)
+      if f >= 0 {
+        gfound = f
+        gsi = Array::length(names)
+      } else {
+        gsi = gsi + 1
+      }
+    }
+    if gfound < 0 {
+      throw(String::concat("unknown struct field in pattern: ", field))
+    } else {
+      gfound
+    }
+  }
+}
+
+// Bind every variable in a struct pattern `S::{ f1: p1, f2: p2, ... }` whose
+// value is the (tagged) struct pointer in `base_local`. Each field is loaded by
+// NAME (offset `8 + struct_field_index*8`), then its sub-pattern is bound:
+// a `PBind` becomes a local; a tuple/constructor sub-pattern recurses through
+// the positional `bind_match_pat`; a nested struct recurses here. Literal /
+// wildcard sub-patterns bind nothing (a struct pattern with a literal field is
+// refutable and is not routed here — see `is_catchall_pat`).
+let rec bind_struct_pat: (Bytes, Int, String, Array[(String, Pat)], Array[String], CompileCtx) -> Unit with { Error } = (buf, base_local, sname, fields, local_names, ctx) -> {
+  let mut i = 0
+  while i < Array::length(fields) {
+    let (fname, subpat) = Array::get(fields, i)
+    let off = 8 + struct_field_index(ctx, sname, fname) * 8
+    if is_pbind(subpat) {
+      let nm = get_pbind_name(subpat)
+      let fl = Array::length(local_names)
+      emit_local_get(buf, base_local)
+      emit_i64_const(buf, -2)
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, off)
+      emit_local_set(buf, fl)
+      Array::push(local_names, nm)
+    } else if is_ptuple(subpat) {
+      let sl = Array::length(local_names)
+      emit_local_get(buf, base_local)
+      emit_i64_const(buf, -2)
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, off)
+      emit_local_set(buf, sl)
+      Array::push(local_names, "__bind_sub")
+      bind_match_pat(buf, sl, subpat, false, local_names, ctx)
+    } else if is_pctor(subpat) {
+      let sl = Array::length(local_names)
+      emit_local_get(buf, base_local)
+      emit_i64_const(buf, -2)
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, off)
+      emit_local_set(buf, sl)
+      Array::push(local_names, "__bind_sub")
+      bind_match_pat(buf, sl, subpat, true, local_names, ctx)
+    } else {
+      match subpat {
+        PStruct(__sname, sfields) => {
+          let sl = Array::length(local_names)
+          emit_local_get(buf, base_local)
+          emit_i64_const(buf, -2)
+          emit_i64_and(buf)
+          emit_i32_wrap_i64(buf)
+          emit_i64_load(buf, 3, off)
+          emit_local_set(buf, sl)
+          Array::push(local_names, "__bind_sub")
+          bind_struct_pat(buf, sl, __sname, sfields, local_names, ctx)
+        },
+        _ => ()
+      }
+    }
+    i = i + 1
+  }
+}
+
 export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, expr, local_names, next_local, ctx, ld, ce) -> {
   let __match_scrutinee = get_match_scrutinee(expr)
   let __match_arms = get_match_arms(expr)
@@ -670,7 +800,19 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
           }
           ce(buf, __catch_body, local_names, Array::length(local_names), ctx, ld_catch)
         } else {
-          ce(buf, __catch_body, local_names, Array::length(local_names), ctx, ld_catch)
+          match __catch_p {
+            PStruct(__sname, __sfields) => {
+              // An irrefutable struct pattern `S::{ x, y }` as the catch-all arm:
+              // bind every field by name from the scrutinee struct pointer.
+              let __sp_ptr = Array::length(local_names)
+              emit_local_get(buf, scrut_local)
+              emit_local_set(buf, __sp_ptr)
+              Array::push(local_names, "__struct_ptr")
+              bind_struct_pat(buf, __sp_ptr, __sname, __sfields, local_names, ctx)
+              ce(buf, __catch_body, local_names, Array::length(local_names), ctx, ld_catch)
+            },
+            _ => ce(buf, __catch_body, local_names, Array::length(local_names), ctx, ld_catch)
+          }
         }
       }
     }

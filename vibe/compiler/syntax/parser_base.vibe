@@ -257,6 +257,14 @@ let rec parse_pattern: (Array[Token], Int) -> (Pat, Int) with { Error } = (token
   }
   let (pat, next) = match peek(tokens, pos) {
     TInt(n) => (PInt(n), pos + 1),
+    // A negative integer literal pattern `-5` (lexed as TMinus, TInt). A
+    // negative float falls through to the wildcard like a positive float (exact
+    // float matching is not supported).
+    TMinus => match peek(tokens, pos + 1) {
+      TInt(n) => (PInt(0 - n), pos + 2),
+      TFloat(_) => (PWild, pos + 2),
+      _ => throw("expected number literal after '-' in pattern")
+    },
     TFloat(_) => (PWild, pos + 1),
     TString(s) => (PString(s), pos + 1),
     TIdent(name) => {
@@ -691,29 +699,107 @@ let rec parse_type_impl: (Array[Token], Int, Int) -> (TypeExpr, Int) with { Erro
       _ => (ArrayBuilder::freeze(b), pos)
     }
   }
-  if mode == 0 {
-    let (atom_ty, atom_next) = parse_type_impl(tokens, pos, 1)
-    match peek(tokens, atom_next) {
-      TThinArrow => {
-        let (ret, rn) = parse_type_impl(tokens, atom_next + 1, 0)
-        let params = match atom_ty {
-          TyUnit => empty_type_exprs(),
-          TyTuple(elems) => elems,
-          _ => [
-            atom_ty
-          ]
-        }
-        let effect_pair = match peek(tokens, rn) {
-          TWith => {
-            let with_pos = expect_tk(tokens, rn + 1, "{")
-            let effect_name_pair = collect_effect_names(tokens, with_pos, "")
-            (Some(effect_name_pair.0), effect_name_pair.1)
-          },
-          _ => (None, rn)
-        }
-        (TyFn(params, ret, effect_pair.0), effect_pair.1)
+  // The optional `with { E1, E2 }` effect row after a function type's return.
+  let parse_effect_suffix: (Array[Token], Int) -> (Option[String], Int) with { Error } = (tokens, rn) -> {
+    match peek(tokens, rn) {
+      TWith => {
+        let with_pos = expect_tk(tokens, rn + 1, "{")
+        let effect_name_pair = collect_effect_names(tokens, with_pos, "")
+        (Some(effect_name_pair.0), effect_name_pair.1)
       },
-      _ => (atom_ty, atom_next)
+      _ => (None, rn)
+    }
+  }
+  if mode == 0 {
+    // Leading-paren handling parses the group's TOP-LEVEL elements with arity
+    // preserved, so a function parameter list is read by element count rather
+    // than by reinterpreting a (already-unwrapped) tuple atom. This keeps
+    // `(A, B) -> R` (two params) distinct from `((A, B)) -> R` (one tuple
+    // param): the latter's outer group has a single element `(A, B)`. (#664-adjacent
+    // type-annotation fix: previously both flattened to a two-param list.)
+    match peek(tokens, pos) {
+      TLParen => match peek(tokens, pos + 1) {
+        TRParen => {
+          // `()` — empty group: a zero-param function `() -> R`, else Unit.
+          let after = pos + 2
+          match peek(tokens, after) {
+            TThinArrow => {
+              let (ret, rn) = parse_type_impl(tokens, after + 1, 0)
+              let eff = parse_effect_suffix(tokens, rn)
+              (TyFn(empty_type_exprs(), ret, eff.0), eff.1)
+            },
+            _ => (TyUnit, after)
+          }
+        },
+        _ => {
+          // A first element may be a labeled param (`x: T` / `x~: T` / `x?: T`);
+          // skip the label so the element's TYPE is what gets recorded.
+          let ty_start = match peek(tokens, pos + 1) {
+            TIdent(_) => match peek(tokens, pos + 2) {
+              TColon => pos + 3,
+              TTilde => match peek(tokens, pos + 3) {
+                TColon => pos + 4,
+                _ => pos + 1
+              },
+              TQuestion => match peek(tokens, pos + 3) {
+                TColon => pos + 4,
+                _ => pos + 1
+              },
+              _ => pos + 1
+            },
+            _ => pos + 1
+          }
+          let (first, n1) = parse_type_impl(tokens, ty_start, 0)
+          let (elems, after) = match peek(tokens, n1) {
+            TRParen => ([
+              first
+            ], n1 + 1),
+            TComma => {
+              let b = ArrayBuilder::new()
+              ArrayBuilder::push(b, first)
+              let (rest, end) = type_list_rest(tokens, n1, b)
+              let en = expect_tk(tokens, end, ")");
+              (rest, en)
+            },
+            _ => throw("expected ')' or ',' in type")
+          }
+          match peek(tokens, after) {
+            TThinArrow => {
+              let (ret, rn) = parse_type_impl(tokens, after + 1, 0)
+              let eff = parse_effect_suffix(tokens, rn)
+              (TyFn(elems, ret, eff.0), eff.1)
+            },
+            _ => {
+              // Not a function: a single element is a parenthesized type (the
+              // parens are just grouping); two or more elements are a tuple.
+              let atom = if Array::length(elems) == 1 {
+                Array::get(elems, 0)
+              } else {
+                TyTuple(elems)
+              }
+              match peek(tokens, after) {
+                TQuestion => (TyApp("Option", [
+                  atom
+                ]), after + 1),
+                _ => (atom, after)
+              }
+            }
+          }
+        }
+      },
+      _ => {
+        let (atom_ty, atom_next) = parse_type_impl(tokens, pos, 1)
+        match peek(tokens, atom_next) {
+          TThinArrow => {
+            let (ret, rn) = parse_type_impl(tokens, atom_next + 1, 0)
+            let eff = parse_effect_suffix(tokens, rn)
+            (TyFn([
+              atom_ty
+            ], ret, eff.0), eff.1)
+          },
+          _ => (atom_ty, atom_next)
+        }
+      }
     }
   } else {
     let (base_ty, base_next) = match peek(tokens, pos) {
