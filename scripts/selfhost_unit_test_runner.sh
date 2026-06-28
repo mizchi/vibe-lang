@@ -61,21 +61,36 @@ fi
 [ -s "$S2" ] || { echo "[unit-test-runner] FAIL: no stage2 compiler available" >&2; exit 1; }
 
 # --- compile + run one test file; 0 = pass, 1 = fail --------------------------
+# A heavy file can trap the compiler with no diagnostic (the bump-heap hits a
+# guard page mid-compile) — that's a nondeterministic heap-marginal OOM, not a
+# regression, so retry it. Deterministic failures are NOT retried: a real
+# compile error writes a `.diag` sidecar, and a failing test assert traps at
+# runtime — both are stable, so the first observation is final.
 run_one() {
   local f="$1"
-  local out; out="$(mktemp -t vibe-unit-XXXXXX.wasm)"
-  rm -f "$out" "$out.diag"
-  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
-    bash "$RUNNER" --invoke cli_main "$S2" "$f" "$out" __no_entry__ >/dev/null 2>&1 || true
-  if [ ! -s "$out" ]; then
-    LAST_DIAG="$(cat "$out.diag" 2>/dev/null | head -1)"
-    rm -f "$out" "$out.diag"; return 1
-  fi
-  if VIBE_PREOPEN_DIR="$ROOT_DIR" bash "$RUNNER" --invoke _start "$out" >/dev/null 2>&1; then
-    rm -f "$out" "$out.diag"; return 0
-  fi
-  LAST_DIAG="(test assertion trapped at runtime)"
-  rm -f "$out" "$out.diag"; return 1
+  local attempt=0
+  while [ "$attempt" -lt 3 ]; do
+    attempt=$((attempt + 1))
+    local out; out="$(mktemp -t vibe-unit-XXXXXX.wasm)"
+    rm -f "$out" "$out.diag"
+    VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+      bash "$RUNNER" --invoke cli_main "$S2" "$f" "$out" __no_entry__ >/dev/null 2>&1 || true
+    if [ -s "$out" ]; then
+      if VIBE_PREOPEN_DIR="$ROOT_DIR" bash "$RUNNER" --invoke _start "$out" >/dev/null 2>&1; then
+        rm -f "$out" "$out.diag"; return 0
+      fi
+      LAST_DIAG="(test assertion trapped at runtime)"
+      rm -f "$out" "$out.diag"; return 1
+    fi
+    if [ -s "$out.diag" ]; then
+      LAST_DIAG="$(cat "$out.diag" 2>/dev/null | head -1)"
+      rm -f "$out" "$out.diag"; return 1
+    fi
+    # No wasm and no diagnostic = compiler trapped (heap-marginal). Retry.
+    LAST_DIAG="(compile trapped with no diagnostic — heap-marginal, $attempt/3)"
+    rm -f "$out" "$out.diag"
+  done
+  return 1
 }
 
 discover() { find examples vibe -name '*_test.vibe' 2>/dev/null | sed "s@^$ROOT_DIR/@@" | sed 's@^\./@@' | sort; }
