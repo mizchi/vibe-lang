@@ -20635,6 +20635,14 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     if !ctx.enable_rc && is_etuple(value) {
       Array::push(ctx.agg_tuple_slots, local_idx)
       Array::push(ctx.agg_tuple_arities, Array::length(get_etuple_elems(value)))
+    } else if !ctx.enable_rc && is_ctor_call(value, ctx.ctor_table) {
+      let cfc = Array::length(get_ecall_args(value))
+      if cfc > 0 {
+        Array::push(ctx.agg_tuple_slots, local_idx)
+        Array::push(ctx.agg_tuple_arities, 0 - (cfc + 2))
+      } else {
+        ()
+      }
     } else {
       ()
     }
@@ -20957,9 +20965,9 @@ let eident_tuple_arity: (CompileCtx, Array[String], Expr) -> Int = (ctx, local_n
     0 - 1
   }
 }
-let both_var_tuple_arity: (CompileCtx, Array[String], Expr, Expr) -> Int = (ctx, local_names, lhs, rhs) -> {
+let both_var_agg_code: (CompileCtx, Array[String], Expr, Expr) -> Int = (ctx, local_names, lhs, rhs) -> {
   let la = eident_tuple_arity(ctx, local_names, lhs)
-  if la >= 0 {
+  if la != 0 - 1 {
     la
   } else {
     eident_tuple_arity(ctx, local_names, rhs)
@@ -21083,13 +21091,15 @@ let emit_eq_value: (Bytes, Expr, Expr, Array[String], Int, CompileCtx, Int, (Byt
     emit_i64_extend_i32_s(buf)
     nl2
   } else {
-    let tar = if ctx.enable_rc {
+    let code = if ctx.enable_rc {
       0 - 1
     } else {
-      both_var_tuple_arity(ctx, local_names, lhs, rhs)
+      both_var_agg_code(ctx, local_names, lhs, rhs)
     }
-    if tar >= 0 {
-      emit_tuple_eq_arity(buf, lhs, rhs, tar, local_names, next_local, ctx, ld, ce)
+    if code >= 0 {
+      emit_tuple_eq_arity(buf, lhs, rhs, code, local_names, next_local, ctx, ld, ce)
+    } else if code <= 0 - 2 {
+      emit_ctor_struct_eq(buf, lhs, rhs, (0 - code) - 2, local_names, next_local, ctx, ld, ce)
     } else {
       let nl1 = ce(buf, lhs, local_names, next_local, ctx, ld)
       let nl2 = ce(buf, rhs, local_names, nl1, ctx, ld)
@@ -31055,7 +31065,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "25c9f5acb36b4332"
+  "c1f13f131c396305"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647

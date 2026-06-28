@@ -87,12 +87,13 @@ let eident_tuple_arity: (CompileCtx, Array[String], Expr) -> Int = (ctx, local_n
   }
 }
 
-// Arity to use for `lhs == rhs` where neither operand is a tuple LITERAL: if
-// EITHER operand is a tracked tuple variable, the type checker guarantees both
-// sides are that same tuple type, so the arity drives an element-wise compare.
-let both_var_tuple_arity: (CompileCtx, Array[String], Expr, Expr) -> Int = (ctx, local_names, lhs, rhs) -> {
+// Shape code for `lhs == rhs` where neither operand is a literal: if EITHER
+// operand is a tracked aggregate variable, the type checker guarantees both sides
+// share that type, so its code drives the structural compare. Returns -1 (not
+// tracked), a tuple arity (>= 0), or a payload-ctor code `-(fieldCount + 2)`.
+let both_var_agg_code: (CompileCtx, Array[String], Expr, Expr) -> Int = (ctx, local_names, lhs, rhs) -> {
   let la = eident_tuple_arity(ctx, local_names, lhs)
-  if la >= 0 {
+  if la != 0 - 1 {
     la
   } else {
     eident_tuple_arity(ctx, local_names, rhs)
@@ -243,15 +244,19 @@ let emit_eq_value: (Bytes, Expr, Expr, Array[String], Int, CompileCtx, Int, (Byt
     emit_i64_extend_i32_s(buf)
     nl2
   } else {
-    // #672: `a == b` where neither operand is a literal. If a tracked tuple
-    // variable is involved, compare element-wise; otherwise the generic `eq`.
-    let tar = if ctx.enable_rc {
+    // #672: `a == b` where neither operand is a literal. If a tracked aggregate
+    // variable is involved, compare structurally; otherwise the generic `eq`.
+    let code = if ctx.enable_rc {
       0 - 1
     } else {
-      both_var_tuple_arity(ctx, local_names, lhs, rhs)
+      both_var_agg_code(ctx, local_names, lhs, rhs)
     }
-    if tar >= 0 {
-      emit_tuple_eq_arity(buf, lhs, rhs, tar, local_names, next_local, ctx, ld, ce)
+    if code >= 0 {
+      // tuple of arity `code`
+      emit_tuple_eq_arity(buf, lhs, rhs, code, local_names, next_local, ctx, ld, ce)
+    } else if code <= 0 - 2 {
+      // payload constructor / struct with `-(code) - 2` fields
+      emit_ctor_struct_eq(buf, lhs, rhs, (0 - code) - 2, local_names, next_local, ctx, ld, ce)
     } else {
       let nl1 = ce(buf, lhs, local_names, next_local, ctx, ld)
       let nl2 = ce(buf, rhs, local_names, nl1, ctx, ld)
