@@ -1,3 +1,9 @@
+//# Imports
+
+import ./selfhost_codegen_fingerprint.vibe {
+  selfhost_codegen_fingerprint
+}
+
 //# Functions
 
 let bytes_to_hex_digit: (Int) -> String = (n) -> {
@@ -83,8 +89,23 @@ export let compact_string_fingerprint: (String) -> String = (source) -> {
   String::concat(__to_string(len), String::concat(":", String::concat(__to_string(h1), String::concat(":", __to_string(h2)))))
 }
 
+// Cache key version tag. TWO independent reasons to bump it (#630):
+//  - cache FORMAT change (how `.hex` / `.tsv` entries are serialized): bump `vNN`.
+//  - CODEGEN / wasm-ABI change (the SAME source now compiles to DIFFERENT wasm):
+//    bump `cgNN`. The artifact cache is keyed by the source fingerprint only, so
+//    without a codegen segment a codegen change returns a STALE compiled wasm for
+//    unchanged source. Bump `cg` on any change to emitted wasm / runtime ABI.
+//    The `cg` segment is `selfhost_codegen_fingerprint()` — a build-time hash of
+//    all compiler source files (selfhost_sources_manifest.tsv), regenerated with
+//    the bundle. So any codegen-source change automatically changes the key and
+//    invalidates stale artifacts; no manual bump needed (#630). `vNN` is still a
+//    manual knob for pure cache-FORMAT changes that don't change the source hash.
+let persistent_cache_version_tag: () -> String = () -> {
+  String::concat("v10|cg-", selfhost_codegen_fingerprint())
+}
+
 let stable_cache_path: (String, String, String) -> String = (prefix, seed, suffix) -> {
-  let raw = compact_string_fingerprint(String::concat("persistent-cache-v10|", seed))
+  let raw = compact_string_fingerprint(String::concat("persistent-cache-", String::concat(persistent_cache_version_tag(), String::concat("|", seed))))
   // O(N) build via StringBuilder; the previous `token = String::concat(token, ...)`
   // per char was O(N²) over the fingerprint length (issue #366).
   let token_sb = StringBuilder::new()
