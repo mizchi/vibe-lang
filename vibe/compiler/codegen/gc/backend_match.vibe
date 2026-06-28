@@ -59,30 +59,61 @@ import ./backend_builtins_string_extra.vibe {
 // declares the field wins). A struct lays its fields out like a constructor —
 // field i at `8 + i*8`, pointer tag-cleared — so the offset is `8 + index*8`,
 // identical to what `obj.field` reads.
-let struct_field_index_gc: (CompileCtxGc, String) -> Int with { Error } = (ctx, field) -> {
-  let mut si = 0
+let field_index_in_gc: (Array[String], String) -> Int = (fnames, field) -> {
+  let mut fi = 0
   let mut found = -1
-  while si < Array::length(ctx.ctor_table.struct_names) {
-    let fnames = Array::get(ctx.ctor_table.struct_field_names, si)
-    let mut fi = 0
-    while fi < Array::length(fnames) {
-      if Array::get(fnames, fi) == field {
-        found = fi
-        fi = Array::length(fnames)
-      } else {
-        fi = fi + 1
-      }
+  while fi < Array::length(fnames) {
+    if Array::get(fnames, fi) == field {
+      found = fi
+      fi = Array::length(fnames)
+    } else {
+      fi = fi + 1
     }
-    if found >= 0 {
-      si = Array::length(ctx.ctor_table.struct_names)
+  }
+  found
+}
+
+// The index of `field` WITHIN the struct named `sname`. The matched struct name
+// MUST drive the lookup: two structs can share a field name at different
+// positions (`A { x; y }` vs `B { y; x }`), so a name-agnostic scan binds the
+// wrong offset. Falls back to a global first-match scan only when `sname` is
+// absent from the table.
+let struct_field_index_gc: (CompileCtxGc, String, String) -> Int with { Error } = (ctx, sname, field) -> {
+  let names = ctx.ctor_table.struct_names
+  let mut si = 0
+  let mut sidx = -1
+  while si < Array::length(names) {
+    if Array::get(names, si) == sname {
+      sidx = si
+      si = Array::length(names)
     } else {
       si = si + 1
     }
   }
-  if found < 0 {
-    throw(String::concat("unknown struct field in pattern: ", field))
+  if sidx >= 0 {
+    let found = field_index_in_gc(Array::get(ctx.ctor_table.struct_field_names, sidx), field)
+    if found < 0 {
+      throw(String::concat(String::concat(String::concat("unknown field `", field), "` in struct "), sname))
+    } else {
+      found
+    }
   } else {
-    found
+    let mut gsi = 0
+    let mut gfound = -1
+    while gsi < Array::length(names) {
+      let f = field_index_in_gc(Array::get(ctx.ctor_table.struct_field_names, gsi), field)
+      if f >= 0 {
+        gfound = f
+        gsi = Array::length(names)
+      } else {
+        gsi = gsi + 1
+      }
+    }
+    if gfound < 0 {
+      throw(String::concat("unknown struct field in pattern: ", field))
+    } else {
+      gfound
+    }
   }
 }
 
@@ -294,7 +325,7 @@ let compile_match_gc: (Bytes, Expr, Array[(Pat, Expr)], Array[String], Int, Comp
         }
         ce(buf, cbody, local_names, Array::length(local_names), ld_catch)
       },
-      PStruct(_, sfields) => {
+      PStruct(__sname, sfields) => {
         // An irrefutable struct pattern `S::{ x, y }` as the catch-all arm: bind
         // every field by NAME from the scrutinee struct pointer (offset from the
         // field-name table, so pattern order is independent of declaration).
@@ -307,7 +338,7 @@ let compile_match_gc: (Bytes, Expr, Array[(Pat, Expr)], Array[String], Int, Comp
           let (fname, subpat) = Array::get(sfields, sfi)
           match subpat {
             PBind(pname) => {
-              let off = 8 + struct_field_index_gc(ctx, fname) * 8
+              let off = 8 + struct_field_index_gc(ctx, __sname, fname) * 8
               let fl = Array::length(local_names)
               emit_local_get(buf, sp_ptr)
               emit_i64_const(buf, -2)
