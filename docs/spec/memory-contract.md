@@ -6,6 +6,15 @@ target; when wasm-gc is not available, the linear backend uses Perceus
 RC as its first (default) reclamation strategy**, replacing the current
 "bump allocator, never free" default.
 
+> **Selfhost note (2026-06-28):** the MoonBit host (`src/`) was retired in
+> #594 (selfhost-only). The `src/*.mbt` paths cited below are historical;
+> the live equivalents are under `vibe/compiler/` — in particular the
+> Perceus RC analysis is now **ported to selfhost** at
+> `vibe/compiler/perceus/index.vibe` (RC test `vibe/compiler/perceus_rc_test.vibe`,
+> runnable RC bootstrap gate wired live via #556). Section D below — which
+> previously stated the selfhost compiler has *no* Perceus/RC — is updated
+> accordingly.
+
 ## Backend contract table
 
 | | linear (today) | linear + Perceus RC | wasm-gc |
@@ -110,11 +119,15 @@ RC as its first (default) reclamation strategy**, replacing the current
 
 ### D. Selfhost
 
-- The selfhost compiler (`vibe/compiler/`) has **no** Perceus/RC. Its
-  linear backend is a pure bump allocator that never frees. Making
-  Perceus the selfhost default requires porting ~4100 LOC
-  (`perceus_poc.mbt` + `wasm_codegen_rc.mbt`) to vibe, following
-  src-first → parity gate → selfhost per CLAUDE.md.
+- **Perceus RC is now ported to the selfhost compiler** (`vibe/compiler/`):
+  the analysis lives at `vibe/compiler/perceus/index.vibe`, with an
+  RC-mode linear compile path (`compile_source_wasi_only_rc` /
+  `compile_wasi_module_rc`, opt-in via `VIBE_RC=1`) and a runnable RC
+  bootstrap gate wired into the live gate (#556). The default selfhost
+  linear backend is still a pure bump allocator that never frees; RC is
+  opt-in, mirroring the (retired) host. Remaining selfhost-side work is the
+  same correctness/verification/productization items in A–C above, now
+  tracked against `vibe/` rather than the retired `src/` tree.
 
 ### E. Semantics alignment with wasm-gc
 
