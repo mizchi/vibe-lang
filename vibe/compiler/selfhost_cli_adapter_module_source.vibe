@@ -43,7 +43,6 @@ export enum Expr {
   EFn(Array[String], Array[(String, Array[String])], Array[(String, Option[TypeExpr])], Option[TypeExpr], Option[String], Expr);
   EDot(Expr, String, Int);
   ELabeledArg(String, String, Expr);
-  EThrow(Expr);
   EReturn(Expr);
   EBreak(Option[Expr]);
   EContinue(Array[Expr]);
@@ -336,7 +335,6 @@ let rec collect_refs_into: (Expr, Array[String], Array[String]) -> Int = (expr, 
     EUnit => 0,
     EBreak(_) => 0,
     EContinue(_) => 0,
-    EThrow(e) => collect_refs_into(e, bound, out),
     EReturn(e) => collect_refs_into(e, bound, out),
     EUnaryOp(_, e) => collect_refs_into(e, bound, out),
     ETuple(items) => {
@@ -6907,7 +6905,6 @@ export let rec check_async_effects_expr: (Expr, TypeEnv, Bool) -> Array[EffectEr
     },
     EReturn(e) => check_async_effects_expr(e, env, in_async),
     EUnaryOp(_, operand) => check_async_effects_expr(operand, env, in_async),
-    EThrow(e) => check_async_effects_expr(e, env, in_async),
     EAssign(_, val, cont) => {
       append_eff_errs(errors, check_async_effects_expr(val, env, in_async))
       append_eff_errs(errors, check_async_effects_expr(cont, env, in_async))
@@ -7177,7 +7174,7 @@ export let check_perform_effects_expr_tx: (Expr, Array[String], Bool, Array[Stri
                 ECall(op_callee, _, _) => match op_callee {
                   EIdent(op_name, _) => {
                     let eff = effect_name_of_op(op_name)
-                    if !in_handle && !decl_authorizes_effect(declared, eff) {
+                    if eff != "Error" && !in_handle && !decl_authorizes_effect(declared, eff) {
                       Array::push(errors, EEPerformUndeclaredEffect(op_name, eff, join_effect_labels(declared)))
                     } else {
                       ()
@@ -7294,7 +7291,6 @@ export let check_perform_effects_expr_tx: (Expr, Array[String], Bool, Array[Stri
       },
       EReturn(e) => Array::push(stack, (e, declared, in_handle)),
       EUnaryOp(_, operand) => Array::push(stack, (operand, declared, in_handle)),
-      EThrow(e) => Array::push(stack, (e, declared, in_handle)),
       EAssign(_, val, cont) => {
         Array::push(stack, (val, declared, in_handle))
         Array::push(stack, (cont, declared, in_handle))
@@ -7553,7 +7549,6 @@ export let rec check_mutability_expr: (Expr, Array[String]) -> Array[EffectError
     },
     EReturn(e) => check_mutability_expr(e, mutable),
     EUnaryOp(_, operand) => check_mutability_expr(operand, mutable),
-    EThrow(e) => check_mutability_expr(e, mutable),
     EAssign(name, val, cont) => {
       if !mut_has(mutable, name) {
         Array::push(errors, EEAssignImmutable(name))
@@ -8856,7 +8851,6 @@ export let expr_tag: (Expr) -> Int = (expr) -> {
     EBreak(_) => 20,
     EContinue(_) => 21,
     EUnit => 22,
-    EThrow(_) => 23,
     EFn(_, _, _, _, _, _) => 24,
     ELoop(_, _) => 25,
     EReturn(_) => 26,
@@ -10253,7 +10247,6 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
     EFn(tp, bs, ps, ret, eff, body) => EFn(tp, bs, ps, ret, eff, rewrite_expr(body, gens, traits, struct_sets, dict_binds, seed_var_types(ps, tp, var_types), fn_returns)),
     EDot(obj, field, off) => EDot(rewrite_expr(obj, gens, traits, struct_sets, dict_binds, var_types, fn_returns), field, off),
     ELabeledArg(label, name, body) => ELabeledArg(label, name, rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
-    EThrow(e) => EThrow(rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     EReturn(e) => EReturn(rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     EBreak(opt) => match opt {
       Some(e) => EBreak(Some(rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns))),
@@ -10665,7 +10658,6 @@ export let rec first_offset: (Expr) -> Int = (e) -> {
     ESeq(first, _) => first_offset(first),
     EIf(cond, _, _) => first_offset(cond),
     EMatch(scrut, _) => first_offset(scrut),
-    EThrow(inner) => first_offset(inner),
     EReturn(inner) => first_offset(inner),
     _ => -1
   }
@@ -10814,12 +10806,6 @@ export let get_ereturn_expr: (Expr) -> Expr with { Error } = (expr) -> {
   match expr {
     EReturn(e) => e,
     _ => throw("not EReturn")
-  }
-}
-export let get_ethrow_expr: (Expr) -> Expr with { Error } = (expr) -> {
-  match expr {
-    EThrow(e) => e,
-    _ => throw("not EThrow")
   }
 }
 export let get_eunaryop_op: (Expr) -> String with { Error } = (expr) -> {
@@ -11216,7 +11202,6 @@ export let rec collect_strings_expr: (Expr, Array[String]) -> Int = (expr, out) 
       0
     },
     EFn(_, _, _, _, _, body) => collect_strings_expr(body, out),
-    EThrow(msg) => collect_strings_expr(msg, out),
     EReturn(msg) => collect_strings_expr(msg, out),
     EStringInterp(parts) => {
       let mut si_p = 0
@@ -11497,7 +11482,6 @@ export let rec collect_free_vars_expr: (Expr, Array[String], Array[String], Arra
     },
     EBreak(_) => 0,
     EContinue(_) => 0,
-    EThrow(msg) => collect_free_vars_expr(msg, bound, fn_names, out),
     EReturn(msg) => collect_free_vars_expr(msg, bound, fn_names, out),
     EHandle(body, arms) => {
       collect_free_vars_expr(body, bound, fn_names, out)
@@ -11669,7 +11653,6 @@ export let rec is_mut_captured_in: (Expr, String) -> Bool = (expr, name) -> {
     },
     EBreak(_) => false,
     EContinue(_) => false,
-    EThrow(msg) => is_mut_captured_in(msg, name),
     EReturn(msg) => is_mut_captured_in(msg, name),
     _ => false
   }
@@ -12124,7 +12107,6 @@ let rec analyze_calls: (String, Expr, Map[String, Bool], Array[Array[Bool]], Arr
       0
     },
     ELabeledArg(_, _, x) => analyze_calls(name, x, env, calls, esc, hctx),
-    EThrow(x) => analyze_calls(name, x, env, calls, esc, hctx),
     EReturn(x) => analyze_calls(name, x, env, calls, esc, hctx),
     ESpread(x) => analyze_calls(name, x, env, calls, esc, hctx),
     EBreak(o) =>
@@ -12415,7 +12397,6 @@ let rec elaborate_rw: (Expr, HeapInferCtx) -> Expr = (e, hctx) -> {
       EMap(new_fs)
     },
     ELabeledArg(l, k, x) => ELabeledArg(l, k, elaborate_rw(x, hctx)),
-    EThrow(x) => EThrow(elaborate_rw(x, hctx)),
     EReturn(x) => EReturn(elaborate_rw(x, hctx)),
     ESpread(x) => ESpread(elaborate_rw(x, hctx)),
     EBreak(o) =>
@@ -12585,7 +12566,6 @@ export let rec pc_emit: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, exp
       pc_emit(ctx, scope, body)
     },
     EReturn(e) => pc_emit(ctx, scope, e),
-    EThrow(e) => pc_emit(ctx, scope, e),
     ESpread(e) => pc_emit(ctx, scope, e),
     ELabeledArg(_l, _n, e) => pc_emit(ctx, scope, e),
     EBreak(opt) => match opt {
@@ -12848,7 +12828,6 @@ export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, ex
       pc_count(ctx, scope, body)
     },
     EReturn(e) => pc_count(ctx, scope, e),
-    EThrow(e) => pc_count(ctx, scope, e),
     ESpread(e) => pc_count(ctx, scope, e),
     ELabeledArg(_l, _n, e) => pc_count(ctx, scope, e),
     EBreak(opt) => match opt {
@@ -13197,7 +13176,6 @@ let rec expr_projects_or_matches: (String, Expr) -> Bool = (name, e) -> {
       found
     },
     ELabeledArg(_, _, inner) => expr_projects_or_matches(name, inner),
-    EThrow(inner) => expr_projects_or_matches(name, inner),
     EReturn(inner) => expr_projects_or_matches(name, inner),
     ESpread(inner) => expr_projects_or_matches(name, inner),
     EBreak(opt) =>
@@ -17660,6 +17638,29 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       } else {
         ""
       }
+      let op_eff_prefix = {
+        let sep = String::index_of(op_head, "::")
+        if sep > 0 {
+          op_head[0:sep]
+        } else {
+          op_head
+        }
+      }
+      if op_eff_prefix == "Error" {
+        if expr_tag(op_expr) == 8 {
+          let op_args_e = get_ecall_args(op_expr)
+          if Array::length(op_args_e) > 0 {
+            nl = ce(buf, Array::get(op_args_e, 0), local_names, nl, ctx, ld)
+          } else {
+            emit_i64_const(buf, 0)
+          }
+        } else {
+          emit_i64_const(buf, 0)
+        }
+        bytebuf_push(buf, 8)
+        bytebuf_push(buf, 2)
+        nl
+      } else {
       let eff_tag = effect_name_to_tag(ctx.effect_names, op_head)
       let eff_off = (eff_tag - 3) * 131072
       emit_global_get(buf, g_rbuf)
@@ -17728,6 +17729,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       bytebuf_push(buf, eff_tag)
       emit_end(buf)
       nl
+      }
     }
     else if !prefer_bound_call && fname == "path" {
       ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
@@ -19824,12 +19826,6 @@ export let compile_expr_tail3: (Bytes, Expr, Array[String], Int, CompileCtx, Int
   } else if __tag == 22 {
     emit_i64_const(buf, 0)
     next_local
-  } else if __tag == 23 {
-    let msg_expr = get_ethrow_expr(expr)
-    let nl = compile_expr(buf, msg_expr, local_names, next_local, ctx, ld)
-    bytebuf_push(buf, 8)
-    bytebuf_push(buf, 2)
-    nl
   } else if __tag == 24 {
     compile_lambda(buf, get_efn_params(expr), get_efn_body(expr), local_names, next_local, ctx, ld, compile_expr)
   } else if __tag == 26 {
@@ -25840,7 +25836,6 @@ let rec desugar_loop_body: (Expr, Array[String]) -> Expr = (expr, param_names) -
     EBinOp(op, l, r) => EBinOp(op, desugar_loop_body(l, param_names), desugar_loop_body(r, param_names)),
     ECall(_, _, _) => expr,
     ELetRec(n, v, b) => ELetRec(n, desugar_loop_body(v, param_names), desugar_loop_body(b, param_names)),
-    EThrow(e) => EThrow(desugar_loop_body(e, param_names)),
     EUnaryOp(op, e) => EUnaryOp(op, desugar_loop_body(e, param_names)),
     EDot(obj, field, off) => EDot(desugar_loop_body(obj, param_names), field, off),
     EAssignOp(n, op, v, c) => EAssignOp(n, op, desugar_loop_body(v, param_names), desugar_loop_body(c, param_names)),
@@ -25917,7 +25912,11 @@ let parse_throw_primary: (Array[Token], Array[Int], Int, (Array[Token], Int, Int
   let open_pos = expect_tk(tokens, pos + 1, "(")
   let (expr, next_pos) = parse_recur(tokens, open_pos, 0)
   let close_pos = expect_tk(tokens, next_pos, ")")
-  (EThrow(expr), close_pos)
+  (ECall(EIdent("perform", -1), [
+    ECall(EIdent("Error::Throw", -1), [
+      expr
+    ], -1)
+  ], -1), close_pos)
 }
 let parse_return_primary: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, pos, parse_recur) -> {
   match peek(tokens, pos + 1) {
@@ -29192,7 +29191,14 @@ export let rec print_expr: (Expr) -> String = (e) -> {
     },
     ECall(callee, args, _) => match callee {
       EIdent("perform", _) => if Array::length(args) == 1 {
-        String::concat("perform ", print_expr(Array::get(args, 0)))
+        match Array::get(args, 0) {
+          ECall(EIdent("Error::Throw", _), throw_args, _) => if Array::length(throw_args) == 1 {
+            String::concat("throw(", String::concat(print_expr(Array::get(throw_args, 0)), ")"))
+          } else {
+            String::concat("perform ", print_expr(Array::get(args, 0)))
+          },
+          _ => String::concat("perform ", print_expr(Array::get(args, 0)))
+        }
       } else {
         String::concat(print_expr(callee), String::concat("(", String::concat(join(map_to_strings(args, print_expr), ", "), ")")))
       },
@@ -29222,7 +29228,6 @@ export let rec print_expr: (Expr) -> String = (e) -> {
       String::concat(tp_str, String::concat("(", String::concat(join(parts, ", "), ret_str)))
     },
     EDot(expr, field, _) => String::concat(print_expr(expr), String::concat(".", field)),
-    EThrow(e) => String::concat("throw(", String::concat(print_expr(e), ")")),
     EReturn(e) => String::concat("return ", print_expr(e)),
     EBreak(opt) => match opt {
       None => "break",
@@ -29768,7 +29773,6 @@ export let rec rewrite_import_alias_expr: (Expr, Array[(String, String)]) -> Exp
     ),
     EDot(obj, field, off) => EDot(rewrite_import_alias_expr(obj, aliases), field, off),
     ELabeledArg(label, name, body) => ELabeledArg(label, name, rewrite_import_alias_expr(body, aliases)),
-    EThrow(value) => EThrow(rewrite_import_alias_expr(value, aliases)),
     EReturn(value) => EReturn(rewrite_import_alias_expr(value, aliases)),
     EBreak(value) => match value {
       Some(value) => EBreak(Some(rewrite_import_alias_expr(value, aliases))),
@@ -30253,7 +30257,6 @@ let rec rewrite_private_type_ctor_expr: (Expr, Array[(String, String)], Array[(S
     ),
     EDot(obj, field, off) => EDot(rewrite_private_type_ctor_expr(obj, type_renames, ctor_renames), field, off),
     ELabeledArg(label, name, body) => ELabeledArg(label, name, rewrite_private_type_ctor_expr(body, type_renames, ctor_renames)),
-    EThrow(value) => EThrow(rewrite_private_type_ctor_expr(value, type_renames, ctor_renames)),
     EReturn(value) => EReturn(rewrite_private_type_ctor_expr(value, type_renames, ctor_renames)),
     EBreak(value) => match value {
       Some(value) => EBreak(Some(rewrite_private_type_ctor_expr(value, type_renames, ctor_renames))),
@@ -30645,7 +30648,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "484a3bf00f1305fa"
+  "a3336f27bfa06f78"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647
@@ -35050,7 +35053,6 @@ let rec fold_expr: (Expr) -> Expr = (expr) -> {
     EFn(tp, bounds, params, ret, eff, body) => EFn(tp, bounds, params, ret, eff, fold_expr(body)),
     EDot(e, field, off) => EDot(fold_expr(e), field, off),
     ELabeledArg(label, modifier, v) => ELabeledArg(label, modifier, fold_expr(v)),
-    EThrow(e) => EThrow(fold_expr(e)),
     EReturn(e) => EReturn(fold_expr(e)),
     EBreak(opt) => match opt {
       Some(v) => EBreak(Some(fold_expr(v))),
@@ -35270,7 +35272,6 @@ let rec collect_expr: (Expr, Array[IdentHit]) -> Unit = (expr, acc) -> {
     EFn(_, _, _, _, _, body) => collect_expr(body, acc),
     EDot(e, _, _) => collect_expr(e, acc),
     ELabeledArg(_, _, v) => collect_expr(v, acc),
-    EThrow(e) => collect_expr(e, acc),
     EReturn(e) => collect_expr(e, acc),
     EBreak(opt) => match opt {
       Some(v) => collect_expr(v, acc),
@@ -35738,7 +35739,6 @@ let rec bind_walk_expr: (BindState, Expr) -> Unit = (st, expr) -> {
     },
     EDot(e, _, _) => bind_walk_expr(st, e),
     ELabeledArg(_, _, v) => bind_walk_expr(st, v),
-    EThrow(e) => bind_walk_expr(st, e),
     EReturn(e) => bind_walk_expr(st, e),
     EBreak(opt) => match opt {
       Some(v) => bind_walk_expr(st, v),

@@ -314,7 +314,16 @@ export let rec print_expr: (Expr) -> String = (e) -> {
     },
     ECall(callee, args, _) => match callee {
       EIdent("perform", _) => if Array::length(args) == 1 {
-        String::concat("perform ", print_expr(Array::get(args, 0)))
+        // #640: re-sugar `perform Error::Throw(x)` back to `throw(x)` so the
+        // surface notation is preserved (throw is sugar for the Error effect).
+        match Array::get(args, 0) {
+          ECall(EIdent("Error::Throw", _), throw_args, _) => if Array::length(throw_args) == 1 {
+            String::concat("throw(", String::concat(print_expr(Array::get(throw_args, 0)), ")"))
+          } else {
+            String::concat("perform ", print_expr(Array::get(args, 0)))
+          },
+          _ => String::concat("perform ", print_expr(Array::get(args, 0)))
+        }
       } else {
         String::concat(print_expr(callee), String::concat("(", String::concat(join(map_to_strings(args, print_expr), ", "), ")")))
       },
@@ -344,7 +353,6 @@ export let rec print_expr: (Expr) -> String = (e) -> {
       String::concat(tp_str, String::concat("(", String::concat(join(parts, ", "), ret_str)))
     },
     EDot(expr, field, _) => String::concat(print_expr(expr), String::concat(".", field)),
-    EThrow(e) => String::concat("throw(", String::concat(print_expr(e), ")")),
     EReturn(e) => String::concat("return ", print_expr(e)),
     EBreak(opt) => match opt {
       None => "break",

@@ -17,7 +17,7 @@ import .. / common_base {
 }
 
 import .. / common_extractors {
-  array_contains_str, emit_assignop_op, emit_memory_copy, find_catchall_idx, get_earray_elems, get_eassign_body, get_eassign_name, get_eassign_val, get_eassignop_body, get_eassignop_name, get_eassignop_op, get_eassignop_val, get_ebinop_lhs, get_ebinop_rhs, get_ebool_value, get_ecall_args, get_ecall_callee, get_efloat_value, get_efn_params, get_eforin_body, get_eforin_iter, get_eforin_name, get_eident_name, get_eint_value, get_eletmut_body, get_eletmut_name, get_eletmut_val, get_eletrec_body, get_eletrec_name, get_eletrec_val, get_eseq_first, get_eseq_second, get_estring_value, get_ethrow_expr, get_etuple_elems, get_eunaryop_expr, get_eunaryop_op, get_ewhile_body, get_ewhile_cond, get_match_arms, get_match_scrutinee, get_pbind_name, get_pbool_value, get_pctor_args, get_pctor_name, get_pint_value, get_pstring_value, get_ptuple_pats, get_slet_export, str_table_lookup
+  array_contains_str, emit_assignop_op, emit_memory_copy, find_catchall_idx, get_earray_elems, get_eassign_body, get_eassign_name, get_eassign_val, get_eassignop_body, get_eassignop_name, get_eassignop_op, get_eassignop_val, get_ebinop_lhs, get_ebinop_rhs, get_ebool_value, get_ecall_args, get_ecall_callee, get_efloat_value, get_efn_params, get_eforin_body, get_eforin_iter, get_eforin_name, get_eident_name, get_eint_value, get_eletmut_body, get_eletmut_name, get_eletmut_val, get_eletrec_body, get_eletrec_name, get_eletrec_val, get_eseq_first, get_eseq_second, get_estring_value, get_etuple_elems, get_eunaryop_expr, get_eunaryop_op, get_ewhile_body, get_ewhile_cond, get_match_arms, get_match_scrutinee, get_pbind_name, get_pbool_value, get_pctor_args, get_pctor_name, get_pint_value, get_pstring_value, get_ptuple_pats, get_slet_export, str_table_lookup
 }
 
 import .. / wasm_emit {
@@ -521,6 +521,35 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       } else {
         ""
       }
+      // #640: `Error` is the non-resumed (abort) effect. `throw(x)` desugars to
+      // `perform Error::Throw(x)`, and it lowers to the same fast tag-2 unwind
+      // the retired `EThrow` node used — compile the payload, then `throw`
+      // (opcode 8) with the reserved Error tag 2 — skipping the resumable-effect
+      // region/replay machinery (the continuation is never resumed). This keeps
+      // the abort path's wasm output identical to the old throw lowering.
+      let op_eff_prefix = {
+        let sep = String::index_of(op_head, "::")
+        if sep > 0 {
+          op_head[0:sep]
+        } else {
+          op_head
+        }
+      }
+      if op_eff_prefix == "Error" {
+        if expr_tag(op_expr) == 8 {
+          let op_args_e = get_ecall_args(op_expr)
+          if Array::length(op_args_e) > 0 {
+            nl = ce(buf, Array::get(op_args_e, 0), local_names, nl, ctx, ld)
+          } else {
+            emit_i64_const(buf, 0)
+          }
+        } else {
+          emit_i64_const(buf, 0)
+        }
+        bytebuf_push(buf, 8)
+        bytebuf_push(buf, 2)
+        nl
+      } else {
       let eff_tag = effect_name_to_tag(ctx.effect_names, op_head)
       // #553: per-effect region stride; MUST match eff_reserve in
       // linked_compile.vibe and compile_expr_tail6.vibe.
@@ -595,6 +624,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       bytebuf_push(buf, eff_tag)
       emit_end(buf)
       nl
+      }
     }
     else if !prefer_bound_call && fname == "path" {
       ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)

@@ -55,6 +55,44 @@ import ./backend_builtins_string_extra.vibe {
 //# Functions
 
 let compile_call_gc: (Bytes, Expr, Array[Expr], Array[String], Int, CompileCtxGc, Int, (Bytes, Expr, Array[String], Int, Int) -> Int with { Error }) -> Int with { Error } = (buf, callee, args, local_names, next_local, ctx, ld, ce) -> {
+  // #640: `throw(x)` desugars to `perform Error::Throw(x)`. The GC backend has
+  // no resumable-effect handlers (EHandle just runs its body), so it models the
+  // Error abort the same degenerate way the retired EThrow node did: evaluate
+  // the payload, drop it, push 0.
+  match callee {
+    EIdent(pf_name, _) => if pf_name == "perform" && Array::length(args) == 1 {
+      match Array::get(args, 0) {
+        ECall(pf_op, pf_op_args, _) => match pf_op {
+          EIdent(pf_op_nm, _) => {
+            let pf_sep = String::index_of(pf_op_nm, "::")
+            let pf_eff = if pf_sep > 0 {
+              pf_op_nm[0:pf_sep]
+            } else {
+              pf_op_nm
+            }
+            if pf_eff == "Error" {
+              let pf_nl = if Array::length(pf_op_args) > 0 {
+                ce(buf, Array::get(pf_op_args, 0), local_names, next_local, ld)
+              } else {
+                emit_i64_const(buf, 0)
+                next_local
+              }
+              emit_drop(buf)
+              bytebuf_push(buf, 0)
+              return pf_nl
+            } else {
+              ()
+            }
+          },
+          _ => ()
+        },
+        _ => ()
+      }
+    } else {
+      ()
+    },
+    _ => ()
+  }
   match callee {
     EIdent(fname, _) => {
       let ctor_lookup_idx = lookup_ctor(ctx.ctor_table.names, fname, 0)

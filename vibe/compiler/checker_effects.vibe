@@ -57,12 +57,6 @@ export let rec check_effects_expr: (Expr, TypeEnv, Bool) -> Array[EffectError] =
     EEThrowOutsideEffect("")
   ], 0, 0)
   match expr {
-    EThrow(_) => {
-      if !in_effect {
-        Array::push(errors, EEThrowOutsideEffect("throw"))
-      }
-      errors
-    },
     EHandle(body, arms) => {
       let body_errs = check_effects_expr(body, env, true)
       let mut i = 0
@@ -598,7 +592,6 @@ export let rec check_async_effects_expr: (Expr, TypeEnv, Bool) -> Array[EffectEr
     },
     EReturn(e) => check_async_effects_expr(e, env, in_async),
     EUnaryOp(_, operand) => check_async_effects_expr(operand, env, in_async),
-    EThrow(e) => check_async_effects_expr(e, env, in_async),
     EAssign(_, val, cont) => {
       append_eff_errs(errors, check_async_effects_expr(val, env, in_async))
       append_eff_errs(errors, check_async_effects_expr(cont, env, in_async))
@@ -949,7 +942,11 @@ export let check_perform_effects_expr_tx: (Expr, Array[String], Bool, Array[Stri
                 ECall(op_callee, _, _) => match op_callee {
                   EIdent(op_name, _) => {
                     let eff = effect_name_of_op(op_name)
-                    if !in_handle && !decl_authorizes_effect(declared, eff) {
+                    // #640: `Error` (the abort effect that `throw` desugars to)
+                    // is exempt from the perform-discipline check, matching the
+                    // ADR-0012 decision that `Error` is not transitively enforced
+                    // (it would amount to checked-exceptions across ~4000 sites).
+                    if eff != "Error" && !in_handle && !decl_authorizes_effect(declared, eff) {
                       Array::push(errors, EEPerformUndeclaredEffect(op_name, eff, join_effect_labels(declared)))
                     } else {
                       ()
@@ -1074,7 +1071,6 @@ export let check_perform_effects_expr_tx: (Expr, Array[String], Bool, Array[Stri
       },
       EReturn(e) => Array::push(stack, (e, declared, in_handle)),
       EUnaryOp(_, operand) => Array::push(stack, (operand, declared, in_handle)),
-      EThrow(e) => Array::push(stack, (e, declared, in_handle)),
       EAssign(_, val, cont) => {
         Array::push(stack, (val, declared, in_handle))
         Array::push(stack, (cont, declared, in_handle))
@@ -1384,7 +1380,6 @@ export let rec check_mutability_expr: (Expr, Array[String]) -> Array[EffectError
     },
     EReturn(e) => check_mutability_expr(e, mutable),
     EUnaryOp(_, operand) => check_mutability_expr(operand, mutable),
-    EThrow(e) => check_mutability_expr(e, mutable),
     EAssign(name, val, cont) => {
       if !mut_has(mutable, name) {
         Array::push(errors, EEAssignImmutable(name))
