@@ -54,6 +54,38 @@ import ./backend_builtins_string_extra.vibe {
 
 //# Functions
 
+// The storage index of struct field `field`, mirroring the field-access lookup
+// in backend_expr (search the struct-field-name matrix; first struct that
+// declares the field wins). A struct lays its fields out like a constructor —
+// field i at `8 + i*8`, pointer tag-cleared — so the offset is `8 + index*8`,
+// identical to what `obj.field` reads.
+let struct_field_index_gc: (CompileCtxGc, String) -> Int with { Error } = (ctx, field) -> {
+  let mut si = 0
+  let mut found = -1
+  while si < Array::length(ctx.ctor_table.struct_names) {
+    let fnames = Array::get(ctx.ctor_table.struct_field_names, si)
+    let mut fi = 0
+    while fi < Array::length(fnames) {
+      if Array::get(fnames, fi) == field {
+        found = fi
+        fi = Array::length(fnames)
+      } else {
+        fi = fi + 1
+      }
+    }
+    if found >= 0 {
+      si = Array::length(ctx.ctor_table.struct_names)
+    } else {
+      si = si + 1
+    }
+  }
+  if found < 0 {
+    throw(String::concat("unknown struct field in pattern: ", field))
+  } else {
+    found
+  }
+}
+
 let compile_match_gc: (Bytes, Expr, Array[(Pat, Expr)], Array[String], Int, CompileCtxGc, Int, (Bytes, Expr, Array[String], Int, Int) -> Int with { Error }) -> Int with { Error } = (buf, scrutinee, arms, local_names, next_local, ctx, ld, ce) -> {
   let scrut_local = next_local
   Array::push(local_names, "__match_scrut")
@@ -259,6 +291,37 @@ let compile_match_gc: (Bytes, Expr, Array[(Pat, Expr)], Array[String], Int, Comp
             _ => throw("unsupported pattern in tuple destructure")
           }
           pi2 = pi2 + 1
+        }
+        ce(buf, cbody, local_names, Array::length(local_names), ld_catch)
+      },
+      PStruct(_, sfields) => {
+        // An irrefutable struct pattern `S::{ x, y }` as the catch-all arm: bind
+        // every field by NAME from the scrutinee struct pointer (offset from the
+        // field-name table, so pattern order is independent of declaration).
+        let sp_ptr = Array::length(local_names)
+        emit_local_get(buf, scrut_local)
+        emit_local_set(buf, sp_ptr)
+        Array::push(local_names, "__struct_ptr")
+        let mut sfi = 0
+        while sfi < Array::length(sfields) {
+          let (fname, subpat) = Array::get(sfields, sfi)
+          match subpat {
+            PBind(pname) => {
+              let off = 8 + struct_field_index_gc(ctx, fname) * 8
+              let fl = Array::length(local_names)
+              emit_local_get(buf, sp_ptr)
+              emit_i64_const(buf, -2)
+              emit_i64_and(buf)
+              emit_i32_wrap_i64(buf)
+              emit_i64_load(buf, 3, off)
+              emit_local_set(buf, fl)
+              Array::push(local_names, pname)
+              0
+            },
+            PWild => 0,
+            _ => 0
+          }
+          sfi = sfi + 1
         }
         ce(buf, cbody, local_names, Array::length(local_names), ld_catch)
       },
