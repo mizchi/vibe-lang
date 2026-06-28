@@ -1980,6 +1980,23 @@ export let _start: () -> Int = () -> {
   v1 + v2 + v3 + v4
 }
 EOF
+# tann: function-type annotation arity. A parenthesized tuple parameter
+# `((A, B)) -> R` is ONE tuple param, distinct from `(A, B) -> R`'s two params —
+# previously both flattened to a two-param list and the tuple-param form failed
+# to typecheck (`expected (Bool,Int)->Int, got (?t0)->Int`). Covers 0/1/2-param,
+# a function-typed param (HOF), the tuple param, and tuple-param-plus-scalar.
+# (parser_base.vibe parse_type_impl arity-preserving paren group.)
+cat > "$sdir/tann.vibe" <<'EOF'
+let two: (Int, Int) -> Int = (a, b) -> { a + b }
+let one: (Int) -> Int = (x) -> { x + 1 }
+let zero: () -> Int = () -> { 5 }
+let hof: ((Int) -> Int, Int) -> Int = (f, x) -> { f(x) }
+let tup1: ((Int, Int)) -> Int = (p) -> { let (a, b) = p; a + b }
+let mix: ((Int, Int), Int) -> Int = (p, c) -> { let (a, b) = p; a + b + c }
+export let _start: () -> Int = () -> {
+  two(3, 4) + one(9) + zero() + hof((n) -> { n * 2 }, 10) + tup1((1, 2)) + mix((1, 2), 100)
+}
+EOF
 smoke_check() {
   local nm="$1" want="$2"
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
@@ -2004,7 +2021,8 @@ smoke_check seq 321
 smoke_check eveq 3021
 smoke_check qctor 11111
 smoke_check rec 4321
+smoke_check tann 148
 rm -rf "$sdir"
-echo "[selfhost-only-gate] multi-feature end-to-end smoke ok (10/153/6/111/11111/321/3021/11111/4321)"
+echo "[selfhost-only-gate] multi-feature end-to-end smoke ok (10/153/6/111/11111/321/3021/11111/4321/148)"
 
 echo "[selfhost-only-gate] ok"
