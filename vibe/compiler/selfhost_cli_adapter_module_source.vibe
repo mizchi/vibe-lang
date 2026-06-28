@@ -10827,6 +10827,18 @@ export let rec is_catchall_pat: (Pat) -> Bool = (p) -> {
       }
       all_catch
     },
+    PStruct(_, fields) => {
+      let mut i = 0
+      let mut all_catch = true
+      while i < Array::length(fields) {
+        let (_, sp) = Array::get(fields, i)
+        if !is_catchall_pat(sp) {
+          all_catch = false
+        }
+        i = i + 1
+      }
+      all_catch
+    },
     _ => false
   }
 }
@@ -16475,6 +16487,86 @@ let rec bind_match_pat: (Bytes, Int, Pat, Bool, Array[String], CompileCtx) -> Un
     i = i + 1
   }
 }
+let struct_field_index: (CompileCtx, String) -> Int with { Error } = (ctx, field) -> {
+  let mut si = 0
+  let mut found = -1
+  while si < Array::length(ctx.ctor_table.struct_names) {
+    let fnames = Array::get(ctx.ctor_table.struct_field_names, si)
+    let mut fi = 0
+    while fi < Array::length(fnames) {
+      if Array::get(fnames, fi) == field {
+        found = fi
+        fi = Array::length(fnames)
+      } else {
+        fi = fi + 1
+      }
+    }
+    if found >= 0 {
+      si = Array::length(ctx.ctor_table.struct_names)
+    } else {
+      si = si + 1
+    }
+  }
+  if found < 0 {
+    throw(String::concat("unknown struct field in pattern: ", field))
+  } else {
+    found
+  }
+}
+let rec bind_struct_pat: (Bytes, Int, Array[(String, Pat)], Array[String], CompileCtx) -> Unit with { Error } = (buf, base_local, fields, local_names, ctx) -> {
+  let mut i = 0
+  while i < Array::length(fields) {
+    let (fname, subpat) = Array::get(fields, i)
+    let off = 8 + struct_field_index(ctx, fname) * 8
+    if is_pbind(subpat) {
+      let nm = get_pbind_name(subpat)
+      let fl = Array::length(local_names)
+      emit_local_get(buf, base_local)
+      emit_i64_const(buf, -2)
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, off)
+      emit_local_set(buf, fl)
+      Array::push(local_names, nm)
+    } else if is_ptuple(subpat) {
+      let sl = Array::length(local_names)
+      emit_local_get(buf, base_local)
+      emit_i64_const(buf, -2)
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, off)
+      emit_local_set(buf, sl)
+      Array::push(local_names, "__bind_sub")
+      bind_match_pat(buf, sl, subpat, false, local_names, ctx)
+    } else if is_pctor(subpat) {
+      let sl = Array::length(local_names)
+      emit_local_get(buf, base_local)
+      emit_i64_const(buf, -2)
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, off)
+      emit_local_set(buf, sl)
+      Array::push(local_names, "__bind_sub")
+      bind_match_pat(buf, sl, subpat, true, local_names, ctx)
+    } else {
+      match subpat {
+        PStruct(_, sfields) => {
+          let sl = Array::length(local_names)
+          emit_local_get(buf, base_local)
+          emit_i64_const(buf, -2)
+          emit_i64_and(buf)
+          emit_i32_wrap_i64(buf)
+          emit_i64_load(buf, 3, off)
+          emit_local_set(buf, sl)
+          Array::push(local_names, "__bind_sub")
+          bind_struct_pat(buf, sl, sfields, local_names, ctx)
+        },
+        _ => ()
+      }
+    }
+    i = i + 1
+  }
+}
 export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, expr, local_names, next_local, ctx, ld, ce) -> {
   let __match_scrutinee = get_match_scrutinee(expr)
   let __match_arms = get_match_arms(expr)
@@ -16998,7 +17090,17 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
           }
           ce(buf, __catch_body, local_names, Array::length(local_names), ctx, ld_catch)
         } else {
-          ce(buf, __catch_body, local_names, Array::length(local_names), ctx, ld_catch)
+          match __catch_p {
+            PStruct(_, __sfields) => {
+              let __sp_ptr = Array::length(local_names)
+              emit_local_get(buf, scrut_local)
+              emit_local_set(buf, __sp_ptr)
+              Array::push(local_names, "__struct_ptr")
+              bind_struct_pat(buf, __sp_ptr, __sfields, local_names, ctx)
+              ce(buf, __catch_body, local_names, Array::length(local_names), ctx, ld_catch)
+            },
+            _ => ce(buf, __catch_body, local_names, Array::length(local_names), ctx, ld_catch)
+          }
         }
       }
     }

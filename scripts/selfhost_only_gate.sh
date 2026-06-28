@@ -1986,6 +1986,23 @@ EOF
 # to typecheck (`expected (Bool,Int)->Int, got (?t0)->Int`). Covers 0/1/2-param,
 # a function-typed param (HOF), the tuple param, and tuple-param-plus-scalar.
 # (parser_base.vibe parse_type_impl arity-preserving paren group.)
+# pstruct: struct field patterns in `match` (`S::{ x, y }`) bind fields by NAME
+# (offset from the struct field-name table, so pattern field order is
+# independent of declaration order) — previously fields were never bound
+# (`undefined variable: x`). Covers full / reordered / partial field binds.
+# (compile_match.vibe bind_struct_pat + is_catchall_pat PStruct.)
+cat > "$sdir/pstruct.vibe" <<'EOF'
+struct P { x: Int; y: Int }
+struct N { a: Int; b: Int; c: Int }
+export let _start: () -> Int = () -> {
+  let p = P::{ x: 3, y: 5 }
+  let n = N::{ a: 2, b: 4, c: 6 }
+  let v1 = match p { P::{ x, y } => x * 10 + y }
+  let v2 = match p { P::{ y, x } => x * 10 + y }
+  let v3 = match n { N::{ a, c } => a + c }
+  v1 + v2 + v3
+}
+EOF
 # pneg: negative integer literal patterns `-5` (bare, in a constructor arg, and
 # in a tuple element) — previously `unexpected in pattern: -`.
 # (parser_base.vibe parse_pattern TMinus arm.)
@@ -2054,7 +2071,8 @@ smoke_check rec 4321
 smoke_check tann 148
 smoke_check interp 4321
 smoke_check pneg 4321
+smoke_check pstruct 78
 rm -rf "$sdir"
-echo "[selfhost-only-gate] multi-feature end-to-end smoke ok (10/153/6/111/11111/321/3021/11111/4321/148/4321/4321)"
+echo "[selfhost-only-gate] multi-feature end-to-end smoke ok (10/153/6/111/11111/321/3021/11111/4321/148/4321/4321/78)"
 
 echo "[selfhost-only-gate] ok"
