@@ -285,6 +285,105 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_drop(buf)
       nl
     }
+    else if !prefer_bound_call && fname == "FixedArray::make" {
+      // #531: FixedArray::make(n, init) — allocate an n-element array filled
+      // with `init`. FixedArray shares the linear Array representation, so the
+      // result is used interchangeably with Array (FixedArray::get/set/length
+      // are registered as aliases of the Array builtins). Synthesizes
+      // array_new + a fill loop, mirroring the Stream::filter loop below.
+      let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
+      let (arr_push_fi, _, _) = resolve_func(ctx.func_table, "Array::push")
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      let n_l = nl
+      let init_l = nl + 1
+      let arr_l = nl + 2
+      let i_l = nl + 3
+      Array::push(local_names, "__fam_n")
+      Array::push(local_names, "__fam_init")
+      Array::push(local_names, "__fam_arr")
+      Array::push(local_names, "__fam_i")
+      emit_local_set(buf, init_l)
+      emit_local_set(buf, n_l)
+      emit_call(buf, arr_new_fi)
+      emit_local_set(buf, arr_l)
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, i_l)
+      emit_block_void(buf)
+      emit_loop_void(buf)
+      emit_local_get(buf, i_l)
+      emit_local_get(buf, n_l)
+      emit_i64_ge_s(buf)
+      emit_br_if(buf, 1)
+      emit_local_get(buf, arr_l)
+      emit_local_get(buf, init_l)
+      emit_call(buf, arr_push_fi)
+      emit_local_get(buf, i_l)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_local_set(buf, i_l)
+      emit_br(buf, 0)
+      emit_end(buf)
+      emit_end(buf)
+      emit_local_get(buf, arr_l)
+      nl + 4
+    }
+    else if !prefer_bound_call && fname == "FixedArray::blit" {
+      // #531: FixedArray::blit(dst, dst_off, src, src_off, len) — copy `len`
+      // elements src[src_off+i] -> dst[dst_off+i]. Synthesized from the Array
+      // get/set builtins (shared representation). Returns Unit.
+      let (arr_get_fi, _, _) = resolve_func(ctx.func_table, "Array::get")
+      let (arr_set_fi, _, _) = resolve_func(ctx.func_table, "Array::set")
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
+      nl = ce(buf, Array::get(args, 3), local_names, nl, ctx, ld)
+      nl = ce(buf, Array::get(args, 4), local_names, nl, ctx, ld)
+      let dst_l = nl
+      let doff_l = nl + 1
+      let src_l = nl + 2
+      let soff_l = nl + 3
+      let len_l = nl + 4
+      let i_l = nl + 5
+      Array::push(local_names, "__fab_dst")
+      Array::push(local_names, "__fab_doff")
+      Array::push(local_names, "__fab_src")
+      Array::push(local_names, "__fab_soff")
+      Array::push(local_names, "__fab_len")
+      Array::push(local_names, "__fab_i")
+      emit_local_set(buf, len_l)
+      emit_local_set(buf, soff_l)
+      emit_local_set(buf, src_l)
+      emit_local_set(buf, doff_l)
+      emit_local_set(buf, dst_l)
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, i_l)
+      emit_block_void(buf)
+      emit_loop_void(buf)
+      emit_local_get(buf, i_l)
+      emit_local_get(buf, len_l)
+      emit_i64_ge_s(buf)
+      emit_br_if(buf, 1)
+      emit_local_get(buf, dst_l)
+      emit_local_get(buf, doff_l)
+      emit_local_get(buf, i_l)
+      emit_i64_add(buf)
+      emit_local_get(buf, src_l)
+      emit_local_get(buf, soff_l)
+      emit_local_get(buf, i_l)
+      emit_i64_add(buf)
+      emit_call(buf, arr_get_fi)
+      emit_call(buf, arr_set_fi)
+      emit_local_get(buf, i_l)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_local_set(buf, i_l)
+      emit_br(buf, 0)
+      emit_end(buf)
+      emit_end(buf)
+      emit_i64_const(buf, 0)
+      nl + 6
+    }
     else if !prefer_bound_call && fname == "Stream::empty" {
       // Empty stream = empty backing array.
       let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
