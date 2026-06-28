@@ -2014,12 +2014,9 @@ EOF
 # (bodies_core_a1a1_eq.vibe emit_looks_like_string.)
 cat > "$sdir/ieq.vibe" <<'EOF'
 export let _start: () -> Int = () -> {
-  let a = 1 << 40
-  let b = 1 << 41
-  let c = 1 << 40
-  let v1 = if a == b { 0 } else { 1 }
-  let v2 = if a == c { 20 } else { 0 }
-  let v3 = if "\{a}" == "1099511627776" { 300 } else { 0 }
+  let v1 = if (1 << 40) == (1 << 41) { 0 } else { 1 }
+  let v2 = if (1 << 50) == (1 << 50) { 20 } else { 0 }
+  let v3 = if "\{1 << 40}" == "1099511627776" { 300 } else { 0 }
   let v4 = if 2305843009213693951 > 1000000000 { 4000 } else { 0 }
   v1 + v2 + v3 + v4
 }

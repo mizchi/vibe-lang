@@ -34,52 +34,19 @@ import ./compile_match.vibe {
 
 //# Functions
 
-// #664/#678: is `e` statically a known integer — an Int literal, or a local
-// bound to an integral value (ctx.int_local_slots, populated by the `let`
-// handlers)? Such a value must NOT be run through `__to_string`'s string-pointer
-// heuristic, which misreads a large int as an empty string. Self-contained
-// (no import of expr_is_intish — compile_expr_tail already imports this module,
-// so the reverse import would cycle); covers the common literal / bound-local
-// cases, which is enough for interpolation `\{n}`.
+// #664/#678: is `e` statically — BY SHAPE — a known integer that must NOT be run
+// through `__to_string`'s string-pointer heuristic (which misreads a large int
+// as an empty string)? An Int literal, or a bitwise/shift/mod expression (those
+// operators are never float or string). Bare idents are deliberately excluded:
+// a per-slot "is int" log is unsound because slots are reused across scopes
+// without updating it. Covers `"\{1 << 40}"` and integer-literal interpolation.
 let ts_known_int: (Expr, Array[String], CompileCtx) -> Bool = (e, local_names, ctx) -> {
   let tag = expr_tag(e)
   if tag == 0 {
     true
   } else if tag == 5 {
-    // Bitwise / shift / mod are unambiguously integral (never float or string),
-    // so `"\{1 << 40}"` takes the integer path. Arithmetic (+ - * /) is left to
-    // the heuristic since it could be float without a type check here.
     let op = get_ebinop_op(e)
     op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || op == "%"
-  } else if tag == 4 {
-    let nm = get_eident_name(e)
-    let mut i = Array::length(local_names) - 1
-    let mut slot = -1
-    while i >= 0 {
-      if Array::get(local_names, i) == nm {
-        slot = i
-        i = -1
-      } else {
-        i = i - 1
-      }
-    }
-    if slot >= 0 {
-      let arr = ctx.int_local_slots
-      let mut j = Array::length(arr) - 1
-      let mut result = false
-      while j >= 0 {
-        let entry = Array::get(arr, j)
-        if entry / 2 == slot {
-          result = (entry % 2) == 1
-          j = -1
-        } else {
-          j = j - 1
-        }
-      }
-      result
-    } else {
-      false
-    }
   } else {
     false
   }

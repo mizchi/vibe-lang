@@ -31,28 +31,26 @@ let emit_mem_size_bytes: (Bytes) -> Unit = (b) -> {
   emit_i64_mul(b)
 }
 
-// Push an i32 bool: does `v` (the i64 in local `slot`) look like a real string
-// fat-pointer `(ptr << 32) | len`? A genuine string has `ptr >= 64` (no string
-// lives below `data_base = 64`; scratch is `[0,47]`) and `ptr + len <=
-// memory_size`. This is the #664 heuristic, applied to BOTH `==` operands.
+// Push an i32 bool: could `v` (the i64 in local `slot`) be safely byte-compared
+// as a string fat-pointer `(ptr << 32) | len` WITHOUT reading out of bounds —
+// i.e. `ptr + len <= memory_size`, where ptr is the UNSIGNED high word (a value
+// whose high bit is set yields a huge ptr that exceeds memory_size, so it is
+// rejected rather than wrapping to a low in-bounds address). This is the OOB
+// guard from #664; it deliberately does NOT require `ptr >= 64`, because a
+// genuine empty string can have a low pointer (e.g. a 0-length name read from a
+// custom section) and must still compare equal — requiring `ptr >= 64` regressed
+// such comparisons to "not equal". The residual it gives up on (two distinct
+// integers with equal low words comparing equal) is the accepted #678 hole.
 let emit_looks_like_string: (Bytes, Int) -> Unit = (b, slot) -> {
-  // ptr >= 64
   emit_local_get(b, slot)
   emit_i64_const(b, 32)
-  emit_i64_shr_s(b)
-  emit_i64_const(b, 64)
-  emit_i64_ge_s(b)
-  // ptr + len <= memory_size
-  emit_local_get(b, slot)
-  emit_i64_const(b, 32)
-  emit_i64_shr_s(b)
+  bytebuf_push(b, 136)
   emit_local_get(b, slot)
   emit_i64_const(b, 4294967295)
   emit_i64_and(b)
   emit_i64_add(b)
   emit_mem_size_bytes(b)
   emit_i64_le_s(b)
-  bytebuf_push(b, 113)
 }
 
 export let gen_eq_body: (Int) -> Bytes = (str_eq_idx) -> {
