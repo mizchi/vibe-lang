@@ -83,8 +83,20 @@ export let compact_string_fingerprint: (String) -> String = (source) -> {
   String::concat(__to_string(len), String::concat(":", String::concat(__to_string(h1), String::concat(":", __to_string(h2)))))
 }
 
+// Cache key version tag. TWO independent reasons to bump it (#630):
+//  - cache FORMAT change (how `.hex` / `.tsv` entries are serialized): bump `vNN`.
+//  - CODEGEN / wasm-ABI change (the SAME source now compiles to DIFFERENT wasm):
+//    bump `cgNN`. The artifact cache is keyed by the source fingerprint only, so
+//    without a codegen segment a codegen change returns a STALE compiled wasm for
+//    unchanged source. Bump `cg` on any change to emitted wasm / runtime ABI.
+//    (#630 follow-up: derive `cg` automatically from a build-time source hash so
+//    this can never be forgotten; until then it is a manual, documented bump.)
+let persistent_cache_version_tag: () -> String = () -> {
+  "v10|cg1"
+}
+
 let stable_cache_path: (String, String, String) -> String = (prefix, seed, suffix) -> {
-  let raw = compact_string_fingerprint(String::concat("persistent-cache-v10|", seed))
+  let raw = compact_string_fingerprint(String::concat("persistent-cache-", String::concat(persistent_cache_version_tag(), String::concat("|", seed))))
   // O(N) build via StringBuilder; the previous `token = String::concat(token, ...)`
   // per char was O(N²) over the fingerprint length (issue #366).
   let token_sb = StringBuilder::new()
