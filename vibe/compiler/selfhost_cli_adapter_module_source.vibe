@@ -6741,6 +6741,7 @@ export enum EffectError {
   EEThrowOutsideEffect(String);
   EEEffectfulCallOutsideEffect(String);
   EEPerformUndeclaredEffect(String, String, String);
+  EEHandleNotExhaustive(String, String);
   EEAssignImmutable(String)
 }
 let render_undeclared_effect: (String, String, String) -> String = (offender, eff, declared) -> {
@@ -6771,11 +6772,23 @@ let render_undeclared_effect: (String, String, String) -> String = (offender, ef
   out = String::concat(out, " { ... }`")
   out
 }
+let render_handle_not_exhaustive: (String, String) -> String = (eff, op) -> {
+  let qualified = String::concat(eff, String::concat("::", op))
+  let mut out = "non-exhaustive handler for effect `"
+  out = String::concat(out, eff)
+  out = String::concat(out, "`: missing operation `")
+  out = String::concat(out, qualified)
+  out = String::concat(out, "` — add an arm `")
+  out = String::concat(out, qualified)
+  out = String::concat(out, "(...) => ...` or a catch-all arm")
+  out
+}
 export let effect_error_to_string: (EffectError) -> String = (err) -> {
   match err {
     EEThrowOutsideEffect(msg) => String::concat("throw outside effectful context: ", msg),
     EEEffectfulCallOutsideEffect(name) => String::concat("effectful call outside effectful context: ", name),
     EEPerformUndeclaredEffect(op, eff, declared) => render_undeclared_effect(op, eff, declared),
+    EEHandleNotExhaustive(eff, op) => render_handle_not_exhaustive(eff, op),
     EEAssignImmutable(name) => String::concat("cannot assign to immutable binding `", String::concat(name, "` (declare it with `let mut`)"))
   }
 }
@@ -7385,6 +7398,297 @@ export let check_perform_effects_stmts: (Array[Stmt]) -> Array[EffectError] = (s
     i = i + 1
   }
   errors
+}
+let op_suffix_of_pctor: (String) -> String = (name) -> {
+  let idx = String::index_of(name, "::")
+  if idx > 0 {
+    name[(idx + 2):String::length(name)]
+  } else {
+    ""
+  }
+}
+let handle_has_catchall: (Array[(Pat, Expr)]) -> Bool = (arms) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arms) {
+    let (pat, _) = Array::get(arms, i)
+    match pat {
+      PCtor(nm, _) => if String::index_of(nm, "::") > 0 {
+        ()
+      } else {
+        found = true
+      },
+      _ => {
+        found = true
+      }
+    }
+    i = i + 1
+  }
+  found
+}
+let handle_covered_ops: (Array[(Pat, Expr)], String) -> Array[String] = (arms, eff) -> {
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (pat, _) = Array::get(arms, i)
+    match pat {
+      PCtor(nm, _) => {
+        let idx = String::index_of(nm, "::")
+        if idx > 0 && nm[0:idx] == eff {
+          Array::push(out, op_suffix_of_pctor(nm))
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+let eff_strs_has: (Array[String], String) -> Bool = (xs, s) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(xs) {
+    if Array::get(xs, i) == s {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+let lookup_effect_ops: (Array[String], Array[Array[String]], String) -> Option[Array[String]] = (names, lists, eff) -> {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(names) {
+    match found {
+      None => if Array::get(names, i) == eff {
+        found = Some(Array::get(lists, i))
+      } else {
+        ()
+      },
+      Some(_) => ()
+    }
+    i = i + 1
+  }
+  found
+}
+let check_one_handle_exhaustiveness: (Array[(Pat, Expr)], Array[String], Array[Array[String]], Array[EffectError]) -> Unit = (arms, eff_op_names, eff_op_lists, errors) -> {
+  let effs = collect_handle_effects(arms)
+  if Array::length(effs) == 1 {
+    let heff = Array::get(effs, 0)
+    match lookup_effect_ops(eff_op_names, eff_op_lists, heff) {
+      Some(decl_ops) => if handle_has_catchall(arms) {
+        ()
+      } else {
+        let covered = handle_covered_ops(arms, heff)
+        let mut oi = 0
+        while oi < Array::length(decl_ops) {
+          let op = Array::get(decl_ops, oi)
+          if String::length(op) > 0 && !eff_strs_has(covered, op) {
+            Array::push(errors, EEHandleNotExhaustive(heff, op))
+          } else {
+            ()
+          }
+          oi = oi + 1
+        }
+      },
+      None => ()
+    }
+  } else {
+    ()
+  }
+}
+let check_handle_exhaustiveness_expr: (Expr, Array[String], Array[Array[String]], Array[EffectError]) -> Unit = (root, eff_op_names, eff_op_lists, errors) -> {
+  let stack = Array::slice([
+    root
+  ], 0, 1)
+  while Array::length(stack) > 0 {
+    let n = Array::length(stack)
+    let expr = Array::get(stack, n - 1)
+    Array::truncate(stack, n - 1)
+    match expr {
+      EHandle(body, arms) => {
+        check_one_handle_exhaustiveness(arms, eff_op_names, eff_op_lists, errors)
+        Array::push(stack, body)
+        let mut ai = 0
+        while ai < Array::length(arms) {
+          let (_, ab) = Array::get(arms, ai)
+          Array::push(stack, ab)
+          ai = ai + 1
+        }
+      },
+      EMatch(scrutinee, arms) => {
+        Array::push(stack, scrutinee)
+        let mut ai = 0
+        while ai < Array::length(arms) {
+          let (_, ab) = Array::get(arms, ai)
+          Array::push(stack, ab)
+          ai = ai + 1
+        }
+      },
+      ECall(callee, args, _) => {
+        Array::push(stack, callee)
+        let mut ai = 0
+        while ai < Array::length(args) {
+          Array::push(stack, Array::get(args, ai))
+          ai = ai + 1
+        }
+      },
+      EFn(_, _, _, _, _, body) => Array::push(stack, body),
+      ELet(_, v, b) => {
+        Array::push(stack, v)
+        Array::push(stack, b)
+      },
+      ELetRec(_, v, b) => {
+        Array::push(stack, v)
+        Array::push(stack, b)
+      },
+      ELetMut(_, v, b) => {
+        Array::push(stack, v)
+        Array::push(stack, b)
+      },
+      EAssign(_, v, c) => {
+        Array::push(stack, v)
+        Array::push(stack, c)
+      },
+      EAssignOp(_, _, v, c) => {
+        Array::push(stack, v)
+        Array::push(stack, c)
+      },
+      ESeq(a, b) => {
+        Array::push(stack, a)
+        Array::push(stack, b)
+      },
+      EIf(c, t, e) => {
+        Array::push(stack, c)
+        Array::push(stack, t)
+        Array::push(stack, e)
+      },
+      EWhile(c, b) => {
+        Array::push(stack, c)
+        Array::push(stack, b)
+      },
+      ELoop(params, b) => {
+        let mut i = 0
+        while i < Array::length(params) {
+          let (_, init) = Array::get(params, i)
+          Array::push(stack, init)
+          i = i + 1
+        }
+        Array::push(stack, b)
+      },
+      EForIn(_, _, it, b) => {
+        Array::push(stack, it)
+        Array::push(stack, b)
+      },
+      EBinOp(_, l, r) => {
+        Array::push(stack, l)
+        Array::push(stack, r)
+      },
+      EUnaryOp(_, o) => Array::push(stack, o),
+      EDot(o, _, _) => Array::push(stack, o),
+      ELabeledArg(_, _, b) => Array::push(stack, b),
+      EReturn(e) => Array::push(stack, e),
+      ESpread(e) => Array::push(stack, e),
+      EBreak(opt) => match opt {
+        Some(e) => Array::push(stack, e),
+        None => ()
+      },
+      EContinue(args) => {
+        let mut ai = 0
+        while ai < Array::length(args) {
+          Array::push(stack, Array::get(args, ai))
+          ai = ai + 1
+        }
+      },
+      ETuple(elems) => {
+        let mut ei = 0
+        while ei < Array::length(elems) {
+          Array::push(stack, Array::get(elems, ei))
+          ei = ei + 1
+        }
+      },
+      EArray(elems) => {
+        let mut ei = 0
+        while ei < Array::length(elems) {
+          Array::push(stack, Array::get(elems, ei))
+          ei = ei + 1
+        }
+      },
+      ERecord(fields) => {
+        let mut fi = 0
+        while fi < Array::length(fields) {
+          let (_, fv) = Array::get(fields, fi)
+          Array::push(stack, fv)
+          fi = fi + 1
+        }
+      },
+      EMap(fields) => {
+        let mut fi = 0
+        while fi < Array::length(fields) {
+          let (_, fv) = Array::get(fields, fi)
+          Array::push(stack, fv)
+          fi = fi + 1
+        }
+      },
+      _ => ()
+    }
+  }
+}
+export let check_handle_exhaustiveness_stmts: (Array[Stmt]) -> Array[EffectError] = (stmts) -> {
+  let eff_op_names = Array::slice([
+    ""
+  ], 0, 0)
+  let eff_op_lists = Array::slice([
+    Array::slice([
+      ""
+    ], 0, 0)
+  ], 0, 0)
+  let mut m = 0
+  while m < Array::length(stmts) {
+    match Array::get(stmts, m) {
+      SEffectDef(_, ename, _, ops) => {
+        Array::push(eff_op_names, ename)
+        let op_names = Array::slice([
+          ""
+        ], 0, 0)
+        let mut k = 0
+        while k < Array::length(ops) {
+          let (opn, _, _) = Array::get(ops, k)
+          Array::push(op_names, opn)
+          k = k + 1
+        }
+        Array::push(eff_op_lists, op_names)
+      },
+      _ => ()
+    }
+    m = m + 1
+  }
+  let errors = Array::slice([
+    EEThrowOutsideEffect("")
+  ], 0, 0)
+  if Array::length(eff_op_names) == 0 {
+    errors
+  } else {
+    let mut i = 0
+    while i < Array::length(stmts) {
+      match Array::get(stmts, i) {
+        SLet(_, _, _, _, body) => check_handle_exhaustiveness_expr(body, eff_op_names, eff_op_lists, errors),
+        SLetMut(_, _, body) => check_handle_exhaustiveness_expr(body, eff_op_names, eff_op_lists, errors),
+        STest(_, body) => check_handle_exhaustiveness_expr(body, eff_op_names, eff_op_lists, errors),
+        SBench(_, body) => check_handle_exhaustiveness_expr(body, eff_op_names, eff_op_lists, errors),
+        SExpr(e) => check_handle_exhaustiveness_expr(e, eff_op_names, eff_op_lists, errors),
+        _ => ()
+      }
+      i = i + 1
+    }
+    errors
+  }
 }
 let mut_has: (Array[String], String) -> Bool = (xs, n) -> {
   let mut i = 0
@@ -8121,6 +8425,14 @@ let collect_async_effect_errors: (Array[Stmt], TypeEnv, Array[String]) -> Unit =
       while j < Array::length(perform_errs) {
         Array::push(frozen_errors, effect_error_to_string(Array::get(perform_errs, j)))
         j = j + 1
+      }
+    }
+    if Array::length(frozen_errors) == 0 {
+      let handle_errs = check_handle_exhaustiveness_stmts(stmts)
+      let mut h = 0
+      while h < Array::length(handle_errs) {
+        Array::push(frozen_errors, effect_error_to_string(Array::get(handle_errs, h)))
+        h = h + 1
       }
     }
     if Array::length(frozen_errors) == 0 {
@@ -30648,7 +30960,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "a3336f27bfa06f78"
+  "1c64971f8cfa5895"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647
