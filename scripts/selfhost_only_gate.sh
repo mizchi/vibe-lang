@@ -2281,4 +2281,28 @@ smoke_check ieq 4321
 rm -rf "$sdir"
 echo "[selfhost-only-gate] multi-feature end-to-end smoke ok (10/153/6/111/11111/321/3021/11111/4321/148/4321/4321/78/4321/4321)"
 
+# 40. V128 SIMD intrinsics (#536): the first-class V128 type + 12 wasm-SIMD
+#     intrinsics (v128_load/store/splat/eq/le_u/ge_u/and/or/not/bitmask/
+#     any_true/all_true) must type-check, lower to valid v128 instructions, and
+#     run correctly on the default non-RC linear backend. fixtures/
+#     v128_intrinsics_test.vibe asserts lane-wise results via i8x16.bitmask; a
+#     failing assert traps (`unreachable`), so a clean `_start` exit == pass.
+echo "[selfhost-only-gate] 40/40 V128 SIMD intrinsics compile+run"
+vdir="_build/_gate_v128"
+rm -rf "$vdir"; mkdir -p "$vdir"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/v128_intrinsics_test.vibe" "$vdir/v128.wasm" __no_entry__ >/dev/null 2>&1
+if [ ! -s "$vdir/v128.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: v128 intrinsics test did not compile" >&2
+  cat "$vdir/v128.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke _start "$vdir/v128.wasm" >/dev/null 2>&1; then
+  echo "[selfhost-only-gate] FAIL: v128 intrinsics test trapped (assert failed)" >&2; exit 1
+fi
+rm -rf "$vdir"
+echo "[selfhost-only-gate] V128 SIMD intrinsics ok"
+
 echo "[selfhost-only-gate] ok"
