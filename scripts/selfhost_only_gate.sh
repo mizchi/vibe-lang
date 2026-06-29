@@ -2021,13 +2021,26 @@ EOF
 # a compile trap for literals >= 2^39 (leb128's loop terminates on `v == 0`).
 # Guards the `str_eq` fallback on both operands looking like real strings.
 # (bodies_core_a1a1_eq.vibe emit_looks_like_string.)
+#
+# #678: v1/v2 use BARE integer VARIABLES (`let a = 1<<40; a == b`) — the residual
+# the shape-only path could not classify. A bare ident now takes the direct
+# i64.eq when its slot is int-tracked (compile_expr_tail expr_is_intish +
+# int_local_slots, pruned at branch/arm boundaries). v5 is the regression guard:
+# a bare String variable must still compare by CONTENT (a heap-built "abc" at a
+# different offset than the interned literal), proving the int-tracking never
+# misclassifies a string slot as int.
 cat > "$sdir/ieq.vibe" <<'EOF'
 export let _start: () -> Int = () -> {
-  let v1 = if (1 << 40) == (1 << 41) { 0 } else { 1 }
-  let v2 = if (1 << 50) == (1 << 50) { 20 } else { 0 }
+  let a = 1 << 40
+  let b = 1 << 41
+  let v1 = if a == b { 0 } else { 1 }
+  let c = 1 << 50
+  let v2 = if c == c { 20 } else { 0 }
   let v3 = if "\{1 << 40}" == "1099511627776" { 300 } else { 0 }
   let v4 = if 2305843009213693951 > 1000000000 { 4000 } else { 0 }
-  v1 + v2 + v3 + v4
+  let s = String::concat("ab", "c")
+  let v5 = if s == "abc" { 0 } else { 9000 }
+  v1 + v2 + v3 + v4 + v5
 }
 EOF
 # pstruct: struct field patterns in `match` (`S::{ x, y }`) bind fields by NAME
