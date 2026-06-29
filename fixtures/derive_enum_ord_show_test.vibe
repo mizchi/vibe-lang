@@ -1,0 +1,44 @@
+// Structural derive (#638) on an ENUM: `derive(Ord)` generates `E::compare`
+// (lexicographic: variant order first, then payload, returning -1 / 0 / 1) and
+// `derive(Show)` generates `E::to_string` (`Name` for a nullary variant,
+// `Name(p0, p1)` for a payload variant, shown structurally). Multiple derives
+// listed together work; `Eq` stays a structural marker.
+
+//# Types
+
+enum Shape {
+  Circle(Int);
+  Rect(Int, Int);
+  Dot
+} derive(Eq, Ord, Show)
+
+//# Tests
+
+test "derive(Ord) on enum: variant order dominates payload" {
+  // Circle(_) < Rect(_, _) < Dot by declaration order.
+  assert_eq(Shape::compare(Circle(99), Rect(0, 0)), 0 - 1)
+  assert_eq(Shape::compare(Rect(0, 0), Circle(99)), 1)
+  assert_eq(Shape::compare(Dot, Circle(0)), 1)
+  assert_eq(Shape::compare(Circle(0), Dot), 0 - 1)
+}
+
+test "derive(Ord) on enum: same variant compares payload lexicographically" {
+  assert_eq(Shape::compare(Circle(1), Circle(2)), 0 - 1)
+  assert_eq(Shape::compare(Circle(5), Circle(5)), 0)
+  assert_eq(Shape::compare(Rect(1, 9), Rect(1, 2)), 1)
+  assert_eq(Shape::compare(Rect(1, 2), Rect(1, 2)), 0)
+  assert_eq(Shape::compare(Dot, Dot), 0)
+}
+
+test "derive(Show) on enum: structural to_string" {
+  assert(Shape::to_string(Circle(7)) == "Circle(7)")
+  assert(Shape::to_string(Rect(3, 4)) == "Rect(3, 4)")
+  assert(Shape::to_string(Dot) == "Dot")
+}
+
+test "derive(Eq) on enum still works structurally" {
+  assert(Circle(1) == Circle(1))
+  assert(Rect(1, 2) == Rect(1, 2))
+  assert(not(Circle(1) == Circle(2)))
+  assert(not(Circle(1) == Dot))
+}
