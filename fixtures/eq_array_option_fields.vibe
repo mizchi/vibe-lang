@@ -1,0 +1,108 @@
+// #695: derive(Eq) structural `==` must compare Array / Option / Result / tuple
+// fields (and bare array literals) STRUCTURALLY, not by pointer identity. The
+// runtime `eq` builtin is type-blind, so equality is type-directed at the AST
+// level: per-field `eq_for_typed` + monomorphic `__arr_equals__<key>` helpers.
+
+//# Types
+
+struct Inner { n: Int } derive(Eq)
+
+struct Bag {
+  items: Array[Int];
+  maybe: Option[Int];
+  xs: Array[Inner];
+  pair: (Int, Bool)
+} derive(Eq)
+
+//# Tests
+
+test "bare array literal: equal compares true" {
+  assert([1, 2] == [1, 2])
+}
+
+test "bare array literal: differing compares false" {
+  assert(not([1, 2] == [1, 3]))
+  assert([1, 2] != [1, 3])
+}
+
+test "bare empty array literal: equal compares true" {
+  assert([] == [])
+}
+
+test "nested bare array literal: equal compares true" {
+  assert([[1, 2], [3]] == [[1, 2], [3]])
+  assert(not([[1, 2], [3]] == [[1, 2], [4]]))
+}
+
+test "struct Array[Int] field: empty equal" {
+  assert(Bag::{ items: [], maybe: None, xs: [], pair: (0, false) } == Bag::{ items: [], maybe: None, xs: [], pair: (0, false) })
+}
+
+test "struct Array[Int] field: non-empty equal" {
+  let a = Bag::{ items: [1, 2, 3], maybe: Some(5), xs: [], pair: (1, true) }
+  let b = Bag::{ items: [1, 2, 3], maybe: Some(5), xs: [], pair: (1, true) }
+  assert(a == b)
+}
+
+test "struct Array[Int] field: differing length false" {
+  let a = Bag::{ items: [1, 2], maybe: None, xs: [], pair: (0, false) }
+  let b = Bag::{ items: [1, 2, 3], maybe: None, xs: [], pair: (0, false) }
+  assert(not(a == b))
+}
+
+test "struct Array[Int] field: differing element false" {
+  let a = Bag::{ items: [1, 2, 3], maybe: None, xs: [], pair: (0, false) }
+  let b = Bag::{ items: [1, 9, 3], maybe: None, xs: [], pair: (0, false) }
+  assert(not(a == b))
+}
+
+test "Option[Int] None == None via variables" {
+  let a: Option[Int] = None
+  let b: Option[Int] = None
+  assert(a == b)
+}
+
+test "Option[Int] struct field: None equal" {
+  let a = Bag::{ items: [], maybe: None, xs: [], pair: (0, false) }
+  let b = Bag::{ items: [], maybe: None, xs: [], pair: (0, false) }
+  assert(a == b)
+}
+
+test "Option[Int] struct field: Some equal, differing false" {
+  let a = Bag::{ items: [], maybe: Some(5), xs: [], pair: (0, false) }
+  let b = Bag::{ items: [], maybe: Some(5), xs: [], pair: (0, false) }
+  let c = Bag::{ items: [], maybe: Some(6), xs: [], pair: (0, false) }
+  assert(a == b)
+  assert(not(a == c))
+}
+
+test "syntactic ctor literals still work" {
+  assert(Some(5) == Some(5))
+  assert(not(Some(5) == Some(6)))
+}
+
+test "Array of aggregate struct elements: equal" {
+  let a = Bag::{ items: [], maybe: None, xs: [Inner::{ n: 1 }, Inner::{ n: 2 }], pair: (0, false) }
+  let b = Bag::{ items: [], maybe: None, xs: [Inner::{ n: 1 }, Inner::{ n: 2 }], pair: (0, false) }
+  assert(a == b)
+}
+
+test "Array of aggregate struct elements: differing false" {
+  let a = Bag::{ items: [], maybe: None, xs: [Inner::{ n: 1 }], pair: (0, false) }
+  let b = Bag::{ items: [], maybe: None, xs: [Inner::{ n: 9 }], pair: (0, false) }
+  assert(not(a == b))
+}
+
+test "tuple struct field: equal and differing" {
+  let a = Bag::{ items: [], maybe: None, xs: [], pair: (1, true) }
+  let b = Bag::{ items: [], maybe: None, xs: [], pair: (1, true) }
+  let c = Bag::{ items: [], maybe: None, xs: [], pair: (1, false) }
+  assert(a == b)
+  assert(not(a == c))
+}
+
+test "whole-struct equality across all field kinds" {
+  let a = Bag::{ items: [1, 2], maybe: Some(7), xs: [Inner::{ n: 3 }], pair: (4, true) }
+  let b = Bag::{ items: [1, 2], maybe: Some(7), xs: [Inner::{ n: 3 }], pair: (4, true) }
+  assert(a == b)
+}

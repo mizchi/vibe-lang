@@ -8104,12 +8104,29 @@ let infer_arg_type_name: (Expr, Array[(String, Array[String])], Array[(String, S
     EString(_) => Some("String"),
     EFloat(_) => Some("Double"),
     EArray(_) => Some("Array"),
-    EIdent(name, _) => match lookup_var_type(var_types, name) {
-      Some(t) => Some(t),
-      None => ctor_enum_of_name(fn_returns, name)
+    EIdent(name, _) => if name == "None" {
+      Some("Option")
+    } else {
+      match lookup_var_type(var_types, name) {
+        Some(t) => Some(t),
+        None => ctor_enum_of_name(fn_returns, name)
+      }
     },
     ECall(callee, _, _) => match callee {
+      EIdent("Some", _) => Some("Option"),
+      EIdent("Ok", _) => Some("Result"),
+      EIdent("Err", _) => Some("Result"),
       EIdent(fname, _) => ctor_enum_of_name(fn_returns, fname),
+      EFn(_, _, params, _, _, _) => if Array::length(params) == 1 {
+        let (_, ann) = Array::get(params, 0)
+        match ann {
+          Some(TyName(n)) => Some(n),
+          Some(TyApp(n, _)) => Some(n),
+          _ => None
+        }
+      } else {
+        None
+      },
       _ => None
     },
     ERecord(fields) => {
@@ -9070,13 +9087,32 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
       let rl = rewrite_expr(l, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
       let rr = rewrite_expr(r, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
       if op == "==" || op == "!=" {
-        let ty = match infer_arg_type_name(l, struct_sets, var_types, fn_returns) {
+        let empty_l = is_empty_array_lit(l)
+        let empty_r = is_empty_array_lit(r)
+        let arr_elem = match infer_earray_elem_type(l) {
           Some(t) => Some(t),
-          None => infer_arg_type_name(r, struct_sets, var_types, fn_returns)
+          None => infer_earray_elem_type(r)
         }
-        match ty {
-          Some(t) => if struct_set_has(struct_sets, t) {
-            let call = ECall(EIdent(String::concat(t, "::equals"), -1), [
+        if empty_l || empty_r {
+          let other = if empty_l {
+            rr
+          } else {
+            rl
+          }
+          let lencmp = EBinOp("==", ECall(EIdent("Array::length", -1), [
+            other
+          ], -1), EInt(0))
+          if op == "==" {
+            lencmp
+          } else {
+            ECall(EIdent("not", -1), [
+              lencmp
+            ], -1)
+          }
+        } else {
+        match arr_elem {
+          Some(elem) => {
+            let call = ECall(EIdent(arr_equals_name(elem), -1), [
               rl,
               rr
             ], -1)
@@ -9087,10 +9123,50 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
                 call
               ], -1)
             }
-          } else {
-            EBinOp(op, rl, rr)
           },
-          None => EBinOp(op, rl, rr)
+          None => {
+            let ty = match infer_arg_type_name(l, struct_sets, var_types, fn_returns) {
+              Some(t) => Some(t),
+              None => infer_arg_type_name(r, struct_sets, var_types, fn_returns)
+            }
+            match ty {
+              Some(t) => if struct_set_has(struct_sets, t) {
+                let call = ECall(EIdent(String::concat(t, "::equals"), -1), [
+                  rl,
+                  rr
+                ], -1)
+                if op == "==" {
+                  call
+                } else {
+                  ECall(EIdent("not", -1), [
+                    call
+                  ], -1)
+                }
+              } else if t == "Option" {
+                let eqm = opt_eq_match(rl, rr)
+                if op == "==" {
+                  eqm
+                } else {
+                  ECall(EIdent("not", -1), [
+                    eqm
+                  ], -1)
+                }
+              } else if t == "Result" {
+                let eqm = result_eq_match(rl, rr)
+                if op == "==" {
+                  eqm
+                } else {
+                  ECall(EIdent("not", -1), [
+                    eqm
+                  ], -1)
+                }
+              } else {
+                EBinOp(op, rl, rr)
+              },
+              None => EBinOp(op, rl, rr)
+            }
+          }
+        }
         }
       } else {
         EBinOp(op, rl, rr)
@@ -9253,7 +9329,79 @@ let gen_show_fn: (String, Array[(String, TypeExpr)]) -> Stmt = (tname, fields) -
 let is_scalar_type_name: (String) -> Bool = (n) -> {
   n == "Int" || n == "Double" || n == "Bool" || n == "String" || n == "Char" || n == "Unit" || n == "Bytes"
 }
-let eq_for_typed: (TypeExpr, Expr, Expr, Array[String]) -> Expr = (fty, lhs, rhs, known_types) -> {
+let rec type_key: (TypeExpr) -> String = (ty) -> {
+  match ty {
+    TyName(n) => n,
+    TyApp(n, args) => {
+      let mut s = n
+      let mut i = 0
+      while i < Array::length(args) {
+        s = String::concat(s, String::concat("_", type_key(Array::get(args, i))))
+        i = i + 1
+      }
+      s
+    },
+    TyTuple(ts) => {
+      let mut s = "Tup"
+      let mut i = 0
+      while i < Array::length(ts) {
+        s = String::concat(s, String::concat("_", type_key(Array::get(ts, i))))
+        i = i + 1
+      }
+      s
+    },
+    TyUnit => "Unit",
+    _ => "Any"
+  }
+}
+let arr_equals_name: (TypeExpr) -> String = (t) -> {
+  String::concat("__arr_equals__", type_key(t))
+}
+let opt_eq_match: (Expr, Expr) -> Expr = (lhs, rhs) -> {
+  let some_inner = EMatch(rhs, Array::slice([
+    (PCtor("Some", Array::slice([
+      PBind("__oeq_r")
+    ], 0, 1)), EBinOp("==", EIdent("__oeq_l", -1), EIdent("__oeq_r", -1))),
+    (PWild, EBool(false))
+  ], 0, 2))
+  let none_inner = EMatch(rhs, Array::slice([
+    (PCtor("None", Array::slice([
+      PWild
+    ], 0, 0)), EBool(true)),
+    (PWild, EBool(false))
+  ], 0, 2))
+  EMatch(lhs, Array::slice([
+    (PCtor("Some", Array::slice([
+      PBind("__oeq_l")
+    ], 0, 1)), some_inner),
+    (PCtor("None", Array::slice([
+      PWild
+    ], 0, 0)), none_inner)
+  ], 0, 2))
+}
+let result_eq_match: (Expr, Expr) -> Expr = (lhs, rhs) -> {
+  let ok_inner = EMatch(rhs, Array::slice([
+    (PCtor("Ok", Array::slice([
+      PBind("__req_r")
+    ], 0, 1)), EBinOp("==", EIdent("__req_l", -1), EIdent("__req_r", -1))),
+    (PWild, EBool(false))
+  ], 0, 2))
+  let err_inner = EMatch(rhs, Array::slice([
+    (PCtor("Err", Array::slice([
+      PBind("__req_r")
+    ], 0, 1)), EBinOp("==", EIdent("__req_l", -1), EIdent("__req_r", -1))),
+    (PWild, EBool(false))
+  ], 0, 2))
+  EMatch(lhs, Array::slice([
+    (PCtor("Ok", Array::slice([
+      PBind("__req_l")
+    ], 0, 1)), ok_inner),
+    (PCtor("Err", Array::slice([
+      PBind("__req_l")
+    ], 0, 1)), err_inner)
+  ], 0, 2))
+}
+let rec eq_for_typed: (TypeExpr, Expr, Expr, Array[String]) -> Expr = (fty, lhs, rhs, known_types) -> {
   match fty {
     TyName(n) => if !is_scalar_type_name(n) && str_array_contains(known_types, n) {
       ECall(EIdent(qualified_name(n, "equals"), -1), Array::slice([
@@ -9263,8 +9411,148 @@ let eq_for_typed: (TypeExpr, Expr, Expr, Array[String]) -> Expr = (fty, lhs, rhs
     } else {
       EBinOp("==", lhs, rhs)
     },
+    TyApp("Option", args) => if Array::length(args) == 1 {
+      let t = Array::get(args, 0)
+      let inner_eq = eq_for_typed(t, EIdent("__oeq_l", -1), EIdent("__oeq_r", -1), known_types)
+      let some_inner = EMatch(rhs, Array::slice([
+        (PCtor("Some", Array::slice([
+          PBind("__oeq_r")
+        ], 0, 1)), inner_eq),
+        (PWild, EBool(false))
+      ], 0, 2))
+      let none_inner = EMatch(rhs, Array::slice([
+        (PCtor("None", Array::slice([
+          PWild
+        ], 0, 0)), EBool(true)),
+        (PWild, EBool(false))
+      ], 0, 2))
+      EMatch(lhs, Array::slice([
+        (PCtor("Some", Array::slice([
+          PBind("__oeq_l")
+        ], 0, 1)), some_inner),
+        (PCtor("None", Array::slice([
+          PWild
+        ], 0, 0)), none_inner)
+      ], 0, 2))
+    } else {
+      EBinOp("==", lhs, rhs)
+    },
+    TyApp("Result", args) => if Array::length(args) == 2 {
+      let t = Array::get(args, 0)
+      let e = Array::get(args, 1)
+      let ok_eq = eq_for_typed(t, EIdent("__req_l", -1), EIdent("__req_r", -1), known_types)
+      let err_eq = eq_for_typed(e, EIdent("__req_l", -1), EIdent("__req_r", -1), known_types)
+      let ok_inner = EMatch(rhs, Array::slice([
+        (PCtor("Ok", Array::slice([
+          PBind("__req_r")
+        ], 0, 1)), ok_eq),
+        (PWild, EBool(false))
+      ], 0, 2))
+      let err_inner = EMatch(rhs, Array::slice([
+        (PCtor("Err", Array::slice([
+          PBind("__req_r")
+        ], 0, 1)), err_eq),
+        (PWild, EBool(false))
+      ], 0, 2))
+      EMatch(lhs, Array::slice([
+        (PCtor("Ok", Array::slice([
+          PBind("__req_l")
+        ], 0, 1)), ok_inner),
+        (PCtor("Err", Array::slice([
+          PBind("__req_l")
+        ], 0, 1)), err_inner)
+      ], 0, 2))
+    } else {
+      EBinOp("==", lhs, rhs)
+    },
+    TyTuple(ts) => {
+      let n = Array::length(ts)
+      let lpats = Array::slice([
+        PWild
+      ], 0, 0)
+      let rpats = Array::slice([
+        PWild
+      ], 0, 0)
+      let mut i = 0
+      while i < n {
+        Array::push(lpats, PBind(String::concat("__teq_l", idx_str(i))))
+        Array::push(rpats, PBind(String::concat("__teq_r", idx_str(i))))
+        i = i + 1
+      }
+      let mut conj = EBool(true)
+      let mut j = n - 1
+      while j >= 0 {
+        let cmp = eq_for_typed(Array::get(ts, j), EIdent(String::concat("__teq_l", idx_str(j)), -1), EIdent(String::concat("__teq_r", idx_str(j)), -1), known_types)
+        conj = EBinOp("&&", cmp, conj)
+        j = j - 1
+      }
+      let inner = EMatch(rhs, Array::slice([
+        (PTuple(rpats), conj)
+      ], 0, 1))
+      EMatch(lhs, Array::slice([
+        (PTuple(lpats), inner)
+      ], 0, 1))
+    },
+    TyApp("Array", args) => if Array::length(args) == 1 {
+      ECall(EIdent(arr_equals_name(Array::get(args, 0)), -1), Array::slice([
+        lhs,
+        rhs
+      ], 0, 2), -1)
+    } else {
+      EBinOp("==", lhs, rhs)
+    },
+    TyApp(n, _) => if str_array_contains(known_types, n) {
+      ECall(EIdent(qualified_name(n, "equals"), -1), Array::slice([
+        lhs,
+        rhs
+      ], 0, 2), -1)
+    } else {
+      EBinOp("==", lhs, rhs)
+    },
     _ => EBinOp("==", lhs, rhs)
   }
+}
+let gen_arr_equals_fn: (TypeExpr, Array[String]) -> Stmt = (elem_ty, known_types) -> {
+  let len_a = ECall(EIdent("Array::length", -1), Array::slice([
+    EIdent("a", -1)
+  ], 0, 1), -1)
+  let len_b = ECall(EIdent("Array::length", -1), Array::slice([
+    EIdent("b", -1)
+  ], 0, 1), -1)
+  let elem_a = ECall(EIdent("Array::get", -1), Array::slice([
+    EIdent("a", -1),
+    EIdent("__ae_i", -1)
+  ], 0, 2), -1)
+  let elem_b = ECall(EIdent("Array::get", -1), Array::slice([
+    EIdent("b", -1),
+    EIdent("__ae_i", -1)
+  ], 0, 2), -1)
+  let elem_eq = eq_for_typed(elem_ty, elem_a, elem_b, known_types)
+  let not_eq = ECall(EIdent("not", -1), Array::slice([
+    elem_eq
+  ], 0, 1), -1)
+  let set_false = EIf(not_eq, EAssign("__ae_ok", EBool(false), EUnit), EUnit)
+  let incr = EAssign("__ae_i", EBinOp("+", EIdent("__ae_i", -1), EInt(1)), EUnit)
+  let loop_body = ESeq(set_false, incr)
+  let while_loop = EWhile(EBinOp("<", EIdent("__ae_i", -1), ECall(EIdent("Array::length", -1), Array::slice([
+    EIdent("a", -1)
+  ], 0, 1), -1)), loop_body)
+  let body_eq = ELetMut("__ae_i", EInt(0), ELetMut("__ae_ok", EBool(true), ESeq(while_loop, EIdent("__ae_ok", -1))))
+  let body = EIf(EBinOp("!=", len_a, len_b), EBool(false), body_eq)
+  let arr_ty = TyApp("Array", Array::slice([
+    elem_ty
+  ], 0, 1))
+  let params = Array::slice([
+    ("a", Some(arr_ty)),
+    ("b", Some(arr_ty))
+  ], 0, 2)
+  let no_tp = Array::slice([
+    ""
+  ], 0, 0)
+  let no_tb = Array::slice([
+    ("", no_tp)
+  ], 0, 0)
+  SLet(false, false, arr_equals_name(elem_ty), None, EFn(no_tp, no_tb, params, Some(TyName("Bool")), None, body))
 }
 let field_eq_expr: (String, TypeExpr, Array[String]) -> Expr = (fname, fty, known_types) -> {
   eq_for_typed(fty, EDot(EIdent("a", -1), fname, -1), EDot(EIdent("b", -1), fname, -1), known_types)
@@ -9602,6 +9890,205 @@ let gen_enum_default_fn: (String, Array[(String, Array[TypeExpr])], Array[String
   ], 0, 0)
   SLet(false, false, qualified_name(ename, "default"), None, EFn(no_tp, no_tb, no_params, Some(TyName(ename)), None, body))
 }
+let rec collect_array_elem_types: (TypeExpr, Array[TypeExpr], Array[String]) -> Unit = (ty, acc, acc_keys) -> {
+  match ty {
+    TyApp("Array", args) => if Array::length(args) == 1 {
+      let e = Array::get(args, 0)
+      let k = type_key(e)
+      if !str_array_contains(acc_keys, k) {
+        Array::push(acc, e)
+        Array::push(acc_keys, k)
+      } else {
+        ()
+      }
+      collect_array_elem_types(e, acc, acc_keys)
+    } else {
+      ()
+    },
+    TyApp(_, args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_array_elem_types(Array::get(args, i), acc, acc_keys)
+        i = i + 1
+      }
+    },
+    TyTuple(ts) => {
+      let mut i = 0
+      while i < Array::length(ts) {
+        collect_array_elem_types(Array::get(ts, i), acc, acc_keys)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+let is_empty_array_lit: (Expr) -> Bool = (e) -> {
+  match e {
+    EArray(elems) => Array::length(elems) == 0,
+    _ => false
+  }
+}
+let rec infer_earray_elem_type: (Expr) -> Option[TypeExpr] = (arr) -> {
+  match arr {
+    EArray(elems) => if Array::length(elems) == 0 {
+      None
+    } else {
+      match Array::get(elems, 0) {
+        EInt(_) => Some(TyName("Int")),
+        EBool(_) => Some(TyName("Bool")),
+        EString(_) => Some(TyName("String")),
+        EFloat(_) => Some(TyName("Double")),
+        EArray(_) => match infer_earray_elem_type(Array::get(elems, 0)) {
+          Some(inner) => Some(TyApp("Array", Array::slice([
+            inner
+          ], 0, 1))),
+          None => None
+        },
+        _ => None
+      }
+    },
+    _ => None
+  }
+}
+let rec collect_bare_array_eq_keys: (Expr, Array[TypeExpr], Array[String]) -> Unit = (e, acc, acc_keys) -> {
+  match e {
+    EBinOp(op, l, r) => {
+      if op == "==" || op == "!=" {
+        let et = match infer_earray_elem_type(l) {
+          Some(t) => Some(t),
+          None => infer_earray_elem_type(r)
+        }
+        match et {
+          Some(t) => {
+            let k = type_key(t)
+            if !str_array_contains(acc_keys, k) {
+              Array::push(acc, t)
+              Array::push(acc_keys, k)
+            } else {
+              ()
+            }
+            collect_array_elem_types(t, acc, acc_keys)
+          },
+          None => ()
+        }
+      } else {
+        ()
+      }
+      collect_bare_array_eq_keys(l, acc, acc_keys)
+      collect_bare_array_eq_keys(r, acc, acc_keys)
+    },
+    EInt(_) => (),
+    EFloat(_) => (),
+    EString(_) => (),
+    EBool(_) => (),
+    EIdent(_, _) => (),
+    EUnit => (),
+    ETuple(es) => collect_bare_array_eq_keys_list(es, acc, acc_keys),
+    EArray(es) => collect_bare_array_eq_keys_list(es, acc, acc_keys),
+    ERecord(fs) => {
+      let mut i = 0
+      while i < Array::length(fs) {
+        let (_, fe) = Array::get(fs, i)
+        collect_bare_array_eq_keys(fe, acc, acc_keys)
+        i = i + 1
+      }
+    },
+    EMap(fs) => {
+      let mut i = 0
+      while i < Array::length(fs) {
+        let (_, fe) = Array::get(fs, i)
+        collect_bare_array_eq_keys(fe, acc, acc_keys)
+        i = i + 1
+      }
+    },
+    EIf(c, t, el) => {
+      collect_bare_array_eq_keys(c, acc, acc_keys)
+      collect_bare_array_eq_keys(t, acc, acc_keys)
+      collect_bare_array_eq_keys(el, acc, acc_keys)
+    },
+    ELet(_, v, b) => {
+      collect_bare_array_eq_keys(v, acc, acc_keys)
+      collect_bare_array_eq_keys(b, acc, acc_keys)
+    },
+    ELetRec(_, v, b) => {
+      collect_bare_array_eq_keys(v, acc, acc_keys)
+      collect_bare_array_eq_keys(b, acc, acc_keys)
+    },
+    ELetMut(_, v, b) => {
+      collect_bare_array_eq_keys(v, acc, acc_keys)
+      collect_bare_array_eq_keys(b, acc, acc_keys)
+    },
+    EAssign(_, v, c) => {
+      collect_bare_array_eq_keys(v, acc, acc_keys)
+      collect_bare_array_eq_keys(c, acc, acc_keys)
+    },
+    EAssignOp(_, _, v, c) => {
+      collect_bare_array_eq_keys(v, acc, acc_keys)
+      collect_bare_array_eq_keys(c, acc, acc_keys)
+    },
+    ESeq(a, b) => {
+      collect_bare_array_eq_keys(a, acc, acc_keys)
+      collect_bare_array_eq_keys(b, acc, acc_keys)
+    },
+    EMatch(s, arms) => {
+      collect_bare_array_eq_keys(s, acc, acc_keys)
+      collect_bare_array_eq_keys_arms(arms, acc, acc_keys)
+    },
+    EHandle(s, arms) => {
+      collect_bare_array_eq_keys(s, acc, acc_keys)
+      collect_bare_array_eq_keys_arms(arms, acc, acc_keys)
+    },
+    EWhile(c, b) => {
+      collect_bare_array_eq_keys(c, acc, acc_keys)
+      collect_bare_array_eq_keys(b, acc, acc_keys)
+    },
+    ELoop(params, b) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (_, init) = Array::get(params, i)
+        collect_bare_array_eq_keys(init, acc, acc_keys)
+        i = i + 1
+      }
+      collect_bare_array_eq_keys(b, acc, acc_keys)
+    },
+    EForIn(_, _, it, b) => {
+      collect_bare_array_eq_keys(it, acc, acc_keys)
+      collect_bare_array_eq_keys(b, acc, acc_keys)
+    },
+    ECall(callee, args, _) => {
+      collect_bare_array_eq_keys(callee, acc, acc_keys)
+      collect_bare_array_eq_keys_list(args, acc, acc_keys)
+    },
+    EUnaryOp(_, x) => collect_bare_array_eq_keys(x, acc, acc_keys),
+    EFn(_, _, _, _, _, b) => collect_bare_array_eq_keys(b, acc, acc_keys),
+    EDot(o, _, _) => collect_bare_array_eq_keys(o, acc, acc_keys),
+    ELabeledArg(_, _, b) => collect_bare_array_eq_keys(b, acc, acc_keys),
+    EThrow(x) => collect_bare_array_eq_keys(x, acc, acc_keys),
+    EReturn(x) => collect_bare_array_eq_keys(x, acc, acc_keys),
+    EBreak(opt) => match opt {
+      Some(x) => collect_bare_array_eq_keys(x, acc, acc_keys),
+      None => ()
+    },
+    EContinue(es) => collect_bare_array_eq_keys_list(es, acc, acc_keys),
+    ESpread(x) => collect_bare_array_eq_keys(x, acc, acc_keys),
+    _ => ()
+  }
+}
+let collect_bare_array_eq_keys_list: (Array[Expr], Array[TypeExpr], Array[String]) -> Unit = (es, acc, acc_keys) -> {
+  let mut i = 0
+  while i < Array::length(es) {
+    collect_bare_array_eq_keys(Array::get(es, i), acc, acc_keys)
+    i = i + 1
+  }
+}
+let collect_bare_array_eq_keys_arms: (Array[(Pat, Expr)], Array[TypeExpr], Array[String]) -> Unit = (arms, acc, acc_keys) -> {
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (_, b) = Array::get(arms, i)
+    collect_bare_array_eq_keys(b, acc, acc_keys)
+    i = i + 1
+  }
+}
 let collect_decl_type_names: (Array[Stmt]) -> Array[String] = (stmts) -> {
   let out = empty_str_array()
   let mut i = 0
@@ -9668,6 +10155,55 @@ export let desugar_derives: (Array[Stmt]) -> Unit = (stmts) -> {
       _ => ()
     }
     i = i + 1
+  }
+  let elem_types = empty_type_exprs()
+  let elem_keys = empty_str_array()
+  let mut si = 0
+  while si < Array::length(stmts) {
+    match Array::get(stmts, si) {
+      SStruct(_, _, fields, _, _) => {
+        let mut fi = 0
+        while fi < Array::length(fields) {
+          let (_, fty) = Array::get(fields, fi)
+          collect_array_elem_types(fty, elem_types, elem_keys)
+          fi = fi + 1
+        }
+      },
+      SEnum(_, _, _, variants, _) => {
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (_, ftypes) = Array::get(variants, vi)
+          let mut ti = 0
+          while ti < Array::length(ftypes) {
+            collect_array_elem_types(Array::get(ftypes, ti), elem_types, elem_keys)
+            ti = ti + 1
+          }
+          vi = vi + 1
+        }
+      },
+      SLet(_, _, _, _, e) => collect_bare_array_eq_keys(e, elem_types, elem_keys),
+      SLetMut(_, _, e) => collect_bare_array_eq_keys(e, elem_types, elem_keys),
+      SExpr(e) => collect_bare_array_eq_keys(e, elem_types, elem_keys),
+      STest(_, e) => collect_bare_array_eq_keys(e, elem_types, elem_keys),
+      SBench(_, e) => collect_bare_array_eq_keys(e, elem_types, elem_keys),
+      _ => ()
+    }
+    si = si + 1
+  }
+  let mut wi = 0
+  while wi < Array::length(elem_types) {
+    collect_array_elem_types(Array::get(elem_types, wi), elem_types, elem_keys)
+    wi = wi + 1
+  }
+  let mut ei = 0
+  while ei < Array::length(elem_types) {
+    let et = Array::get(elem_types, ei)
+    if !top_level_fn_exists(stmts, arr_equals_name(et)) {
+      Array::push(gen, gen_arr_equals_fn(et, known_types))
+    } else {
+      ()
+    }
+    ei = ei + 1
   }
   let mut g = 0
   while g < Array::length(gen) {
@@ -31561,7 +32097,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "38088d9801565886"
+  "52639e8f466b0e5d"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647
