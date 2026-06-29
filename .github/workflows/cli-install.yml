@@ -1,12 +1,24 @@
 name: cli-install
 
 # Build the wasmtime runner and smoke-test the `vibe` install slice
-# (docs/release-roadmap.md テーマ1) on each supported OS. Keeps the
-# runner ↔ compiler-wasm ↔ launcher contract from regressing.
+# (docs/release-roadmap.md テーマ1). Keeps the runner ↔ compiler-wasm ↔ launcher
+# contract from regressing.
+#
+# OS policy (#issue: macOS only at release-important times):
+#   * ubuntu-latest runs on every PR / main push.
+#   * macos-latest runs ONLY on a manual `workflow_dispatch` run or a release
+#     tag push (`v*`) — the `pick-os` job computes the matrix. Day-to-day PRs do
+#     NOT pay the macOS minutes; release validation re-runs both OSes.
+#
+# Parallelism: the ~22 smoke steps are split into independent `group` matrix
+# jobs (install / debug / profile / lsp / library / js) that run concurrently,
+# instead of one long sequential job. Each job rebuilds the runner (cargo cache)
+# so the groups are self-contained.
 
 on:
   push:
     branches: [main]
+    tags: ["v*"]
     paths:
       - "tools/moonrun_wasmtime/**"
       - "runtime/vibe"
@@ -42,9 +54,6 @@ on:
       - "scripts/bench_regression.mjs"
       - "bench/regression/**"
       - "bootstrap/selfhost/seed/**"
-      # Library `vibe test` (scripts/test_vibe_library.sh) builds a fresh CLI and
-      # runs the allow-list, so it must re-run when the library modules OR the
-      # selfhost compiler/CLI that compiles them change.
       - "vibe/wasm/**"
       - "vibe/x/**"
       - "vibe/prelude/**"
@@ -86,9 +95,6 @@ on:
       - "scripts/test_host_abi.js"
       - "scripts/bench_regression.mjs"
       - "bench/regression/**"
-      # Library `vibe test` (scripts/test_vibe_library.sh) builds a fresh CLI and
-      # runs the allow-list, so it must re-run when the library modules OR the
-      # selfhost compiler/CLI that compiles them change.
       - "vibe/wasm/**"
       - "vibe/x/**"
       - "vibe/prelude/**"
@@ -102,12 +108,32 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  install-smoke:
+  # Compute the OS matrix: ubuntu always; macOS only for manual dispatch or a
+  # release tag (`refs/tags/v*`). Keeps day-to-day PRs ubuntu-only.
+  pick-os:
+    runs-on: ubuntu-latest
+    outputs:
+      os: ${{ steps.set.outputs.os }}
+    steps:
+      - id: set
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            echo 'os=["ubuntu-latest","macos-latest"]' >> "$GITHUB_OUTPUT"
+            echo "macOS included (event=${{ github.event_name }} ref=${{ github.ref }})"
+          else
+            echo 'os=["ubuntu-latest"]' >> "$GITHUB_OUTPUT"
+            echo "ubuntu only (event=${{ github.event_name }} ref=${{ github.ref }})"
+          fi
+
+  smoke:
+    needs: pick-os
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: ${{ fromJSON(needs.pick-os.outputs.os) }}
+        group: [install, debug, profile, lsp, library, js]
     runs-on: ${{ matrix.os }}
+    name: smoke (${{ matrix.os }} / ${{ matrix.group }})
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -133,90 +159,66 @@ jobs:
 
       # The fresh-compiler build (build_cli_wasm.sh -> selfhost_generations.sh)
       # runs the seed via the standalone `wasmtime` CLI (scripts/wasmtime_bin.sh).
-      # Without it, install.sh silently falls back to the feature-less committed
-      # seed, so vibe diagnostics/type-at/etc. don't work and the later tests
-      # fail. Install a pinned wasmtime so every fresh build matches local dev.
+      # Install a pinned wasmtime so every fresh build matches local dev.
       - name: Set up wasmtime CLI
         run: |
           curl https://wasmtime.dev/install.sh -sSf | bash -s -- --version v45.0.2
           echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
           "$HOME/.wasmtime/bin/wasmtime" --version
 
-      - name: Install (seed compiler) + smoke test
-        run: bash scripts/test_vibe_cli_install.sh
-
-      - name: LSP server smoke test (fresh compiler for diagnostics)
+      - name: Run ${{ matrix.group }} smoke tests
         run: |
-          export VIBE_HOME="$RUNNER_TEMP/vibe-home"
-          export VIBE_BIN_DIR="$RUNNER_TEMP/vibe-bin"
-          # Default install builds a fresh compiler wasm (with diagnostics) the
-          # LSP server relies on for messages.
-          bash scripts/install.sh >/dev/null
-          VIBE_BIN="$VIBE_BIN_DIR/vibe" node scripts/test_vibe_lsp.js
-          # Host ABI contract snapshot (docs/spec/host-abi.md): reuse this install.
-          VIBE_BIN="$VIBE_BIN_DIR/vibe" node scripts/test_host_abi.js
-          # Bench regression gate (deterministic bytes/op): reuse this install.
-          VIBE_BIN="$VIBE_BIN_DIR/vibe" node scripts/bench_regression.mjs
-
-      - name: Name section (debugger P0) regression test
-        run: bash scripts/test_name_section.sh
-
-      - name: Located diagnostics regression test
-        run: bash scripts/test_located_diagnostics.sh
-
-      - name: Typed hover (vibe type-at) regression test
-        run: bash scripts/test_vibe_type_at.sh
-
-      - name: Trap source-line annotation regression test
-        run: bash scripts/test_vibe_trace.sh
-
-      - name: Parser error-recovery diagnostics regression test
-        run: bash scripts/test_vibe_diagnostics.sh
-
-      - name: Function-call trace (vibe run --trace) regression test
-        run: bash scripts/test_vibe_trace_calls.sh
-
-      - name: Live breakpoint (vibe run --break) regression test
-        run: bash scripts/test_vibe_break.sh
-
-      - name: Breakpoint argument inspection (vibe run --break) regression test
-        run: bash scripts/test_vibe_break_args.sh
-
-      - name: Line breakpoint (vibe run --break file:line) regression test
-        run: bash scripts/test_vibe_break_line.sh
-
-      - name: Interior-line breakpoint (vibe run --break mid-function) regression test
-        run: bash scripts/test_vibe_break_interior.sh
-
-      - name: Step execution (vibe run --break s/n/o/c) regression test
-        run: bash scripts/test_vibe_step.sh
-
-      - name: Memory profiling (vibe run --mem) regression test
-        run: bash scripts/test_vibe_mem.sh
-
-      - name: Benchmark harness (vibe bench) regression test
-        run: bash scripts/test_vibe_bench.sh
-
-      - name: Alloc-site attribution (vibe run --alloc-site) regression test
-        run: bash scripts/test_vibe_alloc_site.sh
-
-      - name: Library modules (vibe test, selfhost-compilable subset) regression test
-        run: bash scripts/test_vibe_library.sh
-
-      - name: Binding occurrences (vibe binding-at) regression test
-        run: bash scripts/test_vibe_binding_at.sh
-
-      - name: Declaration outline (vibe symbols) regression test
-        run: bash scripts/test_vibe_symbols.sh
-
-      - name: DAP adapter pure-logic unit test
-        run: node scripts/test_vibe_dap.js
-
-      - name: Workspace symbol / call-graph index unit test
-        run: node scripts/test_symbol_index.js
-
-      - name: Project graph query (dependency graph) unit test
-        run: node scripts/test_graph_query.js
-
-      - name: LSP workspace/symbol + callHierarchy + graph e2e test
-        run: node scripts/test_vibe_lsp_workspace.js
+          set -euo pipefail
+          case "${{ matrix.group }}" in
+            install)
+              # install slice + LSP/host-abi/bench (need a fresh compiler) + name
+              # section + located diagnostics.
+              bash scripts/test_vibe_cli_install.sh
+              export VIBE_HOME="$RUNNER_TEMP/vibe-home"
+              export VIBE_BIN_DIR="$RUNNER_TEMP/vibe-bin"
+              bash scripts/install.sh >/dev/null
+              VIBE_BIN="$VIBE_BIN_DIR/vibe" node scripts/test_vibe_lsp.js
+              VIBE_BIN="$VIBE_BIN_DIR/vibe" node scripts/test_host_abi.js
+              VIBE_BIN="$VIBE_BIN_DIR/vibe" node scripts/bench_regression.mjs
+              bash scripts/test_name_section.sh
+              bash scripts/test_located_diagnostics.sh
+              ;;
+            debug)
+              # trace + breakpoint + step family.
+              bash scripts/test_vibe_trace.sh
+              bash scripts/test_vibe_trace_calls.sh
+              bash scripts/test_vibe_break.sh
+              bash scripts/test_vibe_break_args.sh
+              bash scripts/test_vibe_break_line.sh
+              bash scripts/test_vibe_break_interior.sh
+              bash scripts/test_vibe_step.sh
+              ;;
+            profile)
+              # mem / bench / alloc-site (each builds a fresh CLI).
+              bash scripts/test_vibe_mem.sh
+              bash scripts/test_vibe_bench.sh
+              bash scripts/test_vibe_alloc_site.sh
+              ;;
+            lsp)
+              # type-at / diagnostics / binding-at / symbols.
+              bash scripts/test_vibe_type_at.sh
+              bash scripts/test_vibe_diagnostics.sh
+              bash scripts/test_vibe_binding_at.sh
+              bash scripts/test_vibe_symbols.sh
+              ;;
+            library)
+              # library `vibe test` allow-list (builds a fresh CLI).
+              bash scripts/test_vibe_library.sh
+              ;;
+            js)
+              # pure-logic / e2e JS unit tests.
+              node scripts/test_vibe_dap.js
+              node scripts/test_symbol_index.js
+              node scripts/test_graph_query.js
+              node scripts/test_vibe_lsp_workspace.js
+              ;;
+            *)
+              echo "unknown group: ${{ matrix.group }}" >&2
+              exit 1
+              ;;
+          esac
