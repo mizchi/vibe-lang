@@ -9254,6 +9254,75 @@ let gen_enum_compare_fn: (String, Array[(String, Array[TypeExpr])], Array[String
   ], 0, 0)
   SLet(false, false, qualified_name(ename, "compare"), None, EFn(no_tp, no_tb, params, Some(TyName("Int")), None, EMatch(EIdent("a", -1), outer_arms)))
 }
+let default_for_type: (TypeExpr, Array[String]) -> Expr = (fty, known_types) -> {
+  match fty {
+    TyName("Int") => EInt(0),
+    TyName("Double") => EFloat(0.0),
+    TyName("Float") => EFloat(0.0),
+    TyName("Bool") => EBool(false),
+    TyName("String") => EString(""),
+    TyName("Unit") => EUnit,
+    TyName(n) => if str_array_contains(known_types, n) {
+      ECall(EIdent(qualified_name(n, "default"), -1), empty_expr_array(), -1)
+    } else {
+      EUnit
+    },
+    TyApp("Option", _) => EIdent("None", -1),
+    TyApp("Array", _) => EArray(empty_expr_array()),
+    TyApp(n, _) => if str_array_contains(known_types, n) {
+      ECall(EIdent(qualified_name(n, "default"), -1), empty_expr_array(), -1)
+    } else {
+      EUnit
+    },
+    TyUnit => EUnit,
+    _ => EUnit
+  }
+}
+let gen_default_fn: (String, Array[(String, TypeExpr)], Array[String]) -> Stmt = (tname, fields, known_types) -> {
+  let rec_fields = Array::slice([
+    ("", EUnit)
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(fields) {
+    let (fname, fty) = Array::get(fields, i)
+    Array::push(rec_fields, (fname, default_for_type(fty, known_types)))
+    i = i + 1
+  }
+  let no_params = Array::slice([
+    ("", None)
+  ], 0, 0)
+  let no_tp = Array::slice([
+    ""
+  ], 0, 0)
+  let no_tb = Array::slice([
+    ("", no_tp)
+  ], 0, 0)
+  SLet(false, false, qualified_name(tname, "default"), None, EFn(no_tp, no_tb, no_params, Some(TyName(tname)), None, ERecord(rec_fields)))
+}
+let gen_enum_default_fn: (String, Array[(String, Array[TypeExpr])], Array[String]) -> Stmt = (ename, variants, known_types) -> {
+  let (vname, ftypes) = Array::get(variants, 0)
+  let body = if Array::length(ftypes) == 0 {
+    EIdent(vname, -1)
+  } else {
+    let args = empty_expr_array()
+    let mut i = 0
+    while i < Array::length(ftypes) {
+      Array::push(args, default_for_type(Array::get(ftypes, i), known_types))
+      i = i + 1
+    }
+    ECall(EIdent(vname, -1), args, -1)
+  }
+  let no_params = Array::slice([
+    ("", None)
+  ], 0, 0)
+  let no_tp = Array::slice([
+    ""
+  ], 0, 0)
+  let no_tb = Array::slice([
+    ("", no_tp)
+  ], 0, 0)
+  SLet(false, false, qualified_name(ename, "default"), None, EFn(no_tp, no_tb, no_params, Some(TyName(ename)), None, body))
+}
 let collect_decl_type_names: (Array[Stmt]) -> Array[String] = (stmts) -> {
   let out = empty_str_array()
   let mut i = 0
@@ -9284,6 +9353,11 @@ export let desugar_derives: (Array[Stmt]) -> Unit = (stmts) -> {
         } else {
           ()
         }
+        if str_array_contains(derives, "Default") && !top_level_fn_exists(stmts, qualified_name(name, "default")) {
+          Array::push(gen, gen_default_fn(name, fields, known_types))
+        } else {
+          ()
+        }
         if !top_level_fn_exists(stmts, qualified_name(name, "equals")) {
           Array::push(gen, gen_eq_fn(name, fields, known_types))
         } else {
@@ -9298,6 +9372,11 @@ export let desugar_derives: (Array[Stmt]) -> Unit = (stmts) -> {
         }
         if str_array_contains(derives, "Ord") && !top_level_fn_exists(stmts, qualified_name(ename, "compare")) {
           Array::push(gen, gen_enum_compare_fn(ename, variants, known_types))
+        } else {
+          ()
+        }
+        if str_array_contains(derives, "Default") && !top_level_fn_exists(stmts, qualified_name(ename, "default")) {
+          Array::push(gen, gen_enum_default_fn(ename, variants, known_types))
         } else {
           ()
         }
@@ -9783,7 +9862,14 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
           CtStruct(name),
           CtStruct(name)
         ], CtBool, None))
-        (bind_fn_return(env4, name, CtStruct(name)), s, c)
+        let env5 = if struct_derives_has(derives, "Default") {
+          env_bind(env4, String::concat(name, "::default"), CtFn(Array::slice([
+            CtUnit
+          ], 0, 0), CtStruct(name), None))
+        } else {
+          env4
+        }
+        (bind_fn_return(env5, name, CtStruct(name)), s, c)
       },
       STypeAlias(_, name, params, te) => {
         let t = resolve_type_expr(te, defs)
@@ -31172,7 +31258,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "bec603c4b0c549f2"
+  "28056bedc609f943"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647

@@ -542,7 +542,8 @@ echo "[selfhost-only-gate] derive(Ord/Show) structural-generation regression ok"
 echo "[selfhost-only-gate] 15b/15 extended derive (enum Ord/Show, Default, Hash)"
 for fx in \
   fixtures/derive_ord_show_test.vibe \
-  fixtures/derive_enum_ord_show_test.vibe; do
+  fixtures/derive_enum_ord_show_test.vibe \
+  fixtures/derive_default_test.vibe; do
   fxout="_build/_gate_derive_ext_$(basename "${fx%.vibe}").wasm"
   rm -f "$fxout" "$fxout.diag"
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \

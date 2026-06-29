@@ -2015,6 +2015,90 @@ let gen_enum_compare_fn: (String, Array[(String, Array[TypeExpr])], Array[String
   SLet(false, false, qualified_name(ename, "compare"), None, EFn(no_tp, no_tb, params, Some(TyName("Int")), None, EMatch(EIdent("a", -1), outer_arms)))
 }
 
+// The default value expression for a declared field type. Per-type rules:
+//   Int -> 0, Double/Float -> 0.0, Bool -> false, String -> "", Unit -> (),
+//   Option[_] -> None, Array[_] -> empty array, and a declared struct/enum
+//   (in `known_types`) -> `T::default()`. A type with no sensible default (a
+//   bare type parameter, a function/tuple type, an unknown name) falls back to
+//   `()` — codegen will then flag the literal against the field's real type, so
+//   the limitation surfaces as a type error rather than silently wrong data.
+let default_for_type: (TypeExpr, Array[String]) -> Expr = (fty, known_types) -> {
+  match fty {
+    TyName("Int") => EInt(0),
+    TyName("Double") => EFloat(0.0),
+    TyName("Float") => EFloat(0.0),
+    TyName("Bool") => EBool(false),
+    TyName("String") => EString(""),
+    TyName("Unit") => EUnit,
+    TyName(n) => if str_array_contains(known_types, n) {
+      ECall(EIdent(qualified_name(n, "default"), -1), empty_expr_array(), -1)
+    } else {
+      EUnit
+    },
+    TyApp("Option", _) => EIdent("None", -1),
+    TyApp("Array", _) => EArray(empty_expr_array()),
+    TyApp(n, _) => if str_array_contains(known_types, n) {
+      ECall(EIdent(qualified_name(n, "default"), -1), empty_expr_array(), -1)
+    } else {
+      EUnit
+    },
+    TyUnit => EUnit,
+    _ => EUnit
+  }
+}
+
+// `let P::default = () -> P { P::{ f1: <default>, ... } }` — a struct literal
+// (ERecord; the struct type is recovered from the field set) with each field at
+// its type's default.
+let gen_default_fn: (String, Array[(String, TypeExpr)], Array[String]) -> Stmt = (tname, fields, known_types) -> {
+  let rec_fields = Array::slice([
+    ("", EUnit)
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(fields) {
+    let (fname, fty) = Array::get(fields, i)
+    Array::push(rec_fields, (fname, default_for_type(fty, known_types)))
+    i = i + 1
+  }
+  let no_params = Array::slice([
+    ("", None)
+  ], 0, 0)
+  let no_tp = Array::slice([
+    ""
+  ], 0, 0)
+  let no_tb = Array::slice([
+    ("", no_tp)
+  ], 0, 0)
+  SLet(false, false, qualified_name(tname, "default"), None, EFn(no_tp, no_tb, no_params, Some(TyName(tname)), None, ERecord(rec_fields)))
+}
+
+// `let E::default = () -> E { V0(<default>, ...) }` — the FIRST variant, with
+// each payload slot at its type's default (nullary -> bare constructor name).
+let gen_enum_default_fn: (String, Array[(String, Array[TypeExpr])], Array[String]) -> Stmt = (ename, variants, known_types) -> {
+  let (vname, ftypes) = Array::get(variants, 0)
+  let body = if Array::length(ftypes) == 0 {
+    EIdent(vname, -1)
+  } else {
+    let args = empty_expr_array()
+    let mut i = 0
+    while i < Array::length(ftypes) {
+      Array::push(args, default_for_type(Array::get(ftypes, i), known_types))
+      i = i + 1
+    }
+    ECall(EIdent(vname, -1), args, -1)
+  }
+  let no_params = Array::slice([
+    ("", None)
+  ], 0, 0)
+  let no_tp = Array::slice([
+    ""
+  ], 0, 0)
+  let no_tb = Array::slice([
+    ("", no_tp)
+  ], 0, 0)
+  SLet(false, false, qualified_name(ename, "default"), None, EFn(no_tp, no_tb, no_params, Some(TyName(ename)), None, body))
+}
+
 // In-place: for each struct with `derive(Show/Ord)`, append the structural
 // function if not already present (idempotent across the double-run pipeline).
 // The set of concrete struct/enum names declared in the program — the gate for
@@ -2052,6 +2136,11 @@ export let desugar_derives: (Array[Stmt]) -> Unit = (stmts) -> {
         } else {
           ()
         }
+        if str_array_contains(derives, "Default") && !top_level_fn_exists(stmts, qualified_name(name, "default")) {
+          Array::push(gen, gen_default_fn(name, fields, known_types))
+        } else {
+          ()
+        }
         // Generate `T::equals` for every struct (not just derive(Eq)) so the
         // `==` dispatch below always resolves; structural equality is the
         // sensible default for any struct, and a struct never relied on the old
@@ -2070,6 +2159,11 @@ export let desugar_derives: (Array[Stmt]) -> Unit = (stmts) -> {
         }
         if str_array_contains(derives, "Ord") && !top_level_fn_exists(stmts, qualified_name(ename, "compare")) {
           Array::push(gen, gen_enum_compare_fn(ename, variants, known_types))
+        } else {
+          ()
+        }
+        if str_array_contains(derives, "Default") && !top_level_fn_exists(stmts, qualified_name(ename, "default")) {
+          Array::push(gen, gen_enum_default_fn(ename, variants, known_types))
         } else {
           ()
         }
