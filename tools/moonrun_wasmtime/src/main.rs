@@ -1358,6 +1358,51 @@ fn vibe_alloc_packed_str(caller: &mut Caller<'_, HostState>, s: &str) -> Result<
     Ok(((aligned as i64) << 32) | (size as i64))
 }
 
+// Bump-allocate `data` as a raw Bytes value `{ -cap@0, len@4, data_ptr@8 }` with
+// the bytes inline at +12, returning the (untagged) struct pointer — the inverse
+// of vibe_read_packed_bytes. Capacity is stored negated (the guest reads
+// `avail = 0 - cap`). #632 fs_read_bytes.
+fn vibe_alloc_packed_bytes(caller: &mut Caller<'_, HostState>, data: &[u8]) -> Result<i64> {
+    let mem = vibe_memory(caller)?;
+    let heap = caller
+        .get_export("__heap_ptr")
+        .and_then(|e| e.into_global())
+        .ok_or_else(|| format_err!("vibe host import: missing `__heap_ptr` global"))?;
+    let (cur, is_i64) = match heap.get(&mut *caller) {
+        Val::I32(v) => (v as u32 as u64, false),
+        Val::I64(v) => (v as u64, true),
+        other => bail!("vibe host import: __heap_ptr unexpected type: {other:?}"),
+    };
+    let align = 8u64;
+    let aligned = (cur + (align - 1)) & !(align - 1);
+    let len = data.len() as u64;
+    let next = (aligned + 12 + len + (align - 1)) & !(align - 1);
+    let cur_size = mem.data_size(&*caller) as u64;
+    if next > cur_size {
+        let pages = (next - cur_size).div_ceil(65536);
+        mem.grow(&mut *caller, pages)
+            .map_err(|e| format_err!("vibe host import: memory.grow({pages}): {e}"))?;
+    }
+    let base = aligned as usize;
+    let neg_cap = 0u32.wrapping_sub(len as u32);
+    mem.write(&mut *caller, base, &neg_cap.to_le_bytes())
+        .map_err(|e| format_err!("vibe host import: bytes cap write @{base}: {e}"))?;
+    mem.write(&mut *caller, base + 4, &(len as u32).to_le_bytes())
+        .map_err(|e| format_err!("vibe host import: bytes len write: {e}"))?;
+    mem.write(&mut *caller, base + 8, &((aligned + 12) as u32).to_le_bytes())
+        .map_err(|e| format_err!("vibe host import: bytes ptr write: {e}"))?;
+    mem.write(&mut *caller, base + 12, data)
+        .map_err(|e| format_err!("vibe host import: bytes data write: {e}"))?;
+    let set = if is_i64 {
+        Val::I64(next as i64)
+    } else {
+        Val::I32(next as i32)
+    };
+    heap.set(&mut *caller, set)
+        .map_err(|e| format_err!("vibe host import: set __heap_ptr: {e}"))?;
+    Ok(aligned as i64)
+}
+
 fn vibe_ensure_parent_dir(path: &str) {
     if let Some(dir) = std::path::Path::new(path).parent() {
         if !dir.as_os_str().is_empty() {
@@ -1607,6 +1652,18 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
             fs::write(&path, &data)
                 .map_err(|e| format_err!("vibe fs_write_bytes '{path}': {e}"))?;
             Ok(())
+        },
+    )?;
+    // #632: fs_read_bytes — binary-exact file read into a guest Bytes value (the
+    // inverse of fs_write_bytes; unlike fs_read_file it does not lossily utf8).
+    linker.func_wrap(
+        "vibe",
+        "fs_read_bytes",
+        |mut caller: Caller<'_, HostState>, path: i64| -> Result<i64> {
+            let path = vibe_read_packed_str(&mut caller, path)?;
+            let data =
+                fs::read(&path).map_err(|e| format_err!("vibe fs_read_bytes '{path}': {e}"))?;
+            vibe_alloc_packed_bytes(&mut caller, &data)
         },
     )?;
     // debugger breakpoint (DAP P1): the break-mode codegen emits a bare

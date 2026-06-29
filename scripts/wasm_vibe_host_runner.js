@@ -536,6 +536,46 @@ function encodeHostString(instance, value) {
   return hostUsesRawAbi() ? encodeSelfhostString(instance, value) : encodeTaggedString(instance, value);
 }
 
+// Construct a guest Bytes value from a host Uint8Array/Buffer (the inverse of
+// decodeHostBytes). Raw ABI (selfhost / #632 Fs::read_bytes): the layout the
+// linear backend's gen_bytes_new + bytes_push produce — header
+// [+0: -capacity][+4: len][+8: data_ptr] with the bytes inline at +12, returned
+// as an UNTAGGED pointer. Untagged means the RC `&1` guard skips it (Bytes are
+// not rc-managed in this representation, same as gen_bytes_new), so no refcount
+// word is needed. Capacity is stored negated (bytes_push reads `avail = 0 - cap`).
+function encodeHostBytesRaw(instance, buf) {
+  const len = buf.length;
+  const aligned = (12 + len + 7) & ~7;
+  const ptr = allocHostBuffer(instance, aligned, 8);
+  const mem = new Uint8Array(instance.exports.memory.buffer);
+  writeU32LE(mem, ptr, toU32(-len)); // capacity = len, stored negated
+  writeU32LE(mem, ptr + 4, len); // length
+  writeU32LE(mem, ptr + 8, ptr + 12); // data_ptr -> inline data
+  mem.set(buf, ptr + 12);
+  return BigInt(ptr);
+}
+
+// Tagged ABI: an OBJ_BYTES heap object [type=13][len][cap][data_ptr] with the
+// data in a separate buffer, returned with TAG_OBJ (matches decodeTaggedBytes).
+function encodeHostBytesTagged(instance, buf) {
+  const len = buf.length;
+  const dataPtr = allocHostBuffer(instance, Math.max((len + 7) & ~7, 8), 8);
+  const hdrPtr = allocHostBuffer(instance, 16, 8);
+  const mem = new Uint8Array(instance.exports.memory.buffer);
+  mem.set(buf, dataPtr);
+  writeU32LE(mem, hdrPtr, OBJ_BYTES);
+  writeU32LE(mem, hdrPtr + 4, len);
+  writeU32LE(mem, hdrPtr + 8, len);
+  writeU32LE(mem, hdrPtr + 12, dataPtr);
+  return BigInt(hdrPtr) | TAG_OBJ;
+}
+
+function encodeHostBytes(instance, buf) {
+  return hostUsesRawAbi()
+    ? encodeHostBytesRaw(instance, buf)
+    : encodeHostBytesTagged(instance, buf);
+}
+
 // Decode a tagged Bytes value from WASM memory into a Uint8Array.
 // Supported layouts:
 // - legacy Array[Int]-backed bytes: [type=5][length][tagged elems...]
@@ -1629,6 +1669,22 @@ async function main() {
           throw new Error(`fs_read_file failed for '${filePath}': ${e.message}`);
         }
       },
+      // #632: read a file as raw bytes into a guest Bytes value. The exact
+      // inverse of fs_write_bytes — unlike fs_read_file (utf8) it preserves
+      // arbitrary binary, so the persistent artifact cache can store/load wasm
+      // raw instead of hex (halving disk + dropping encode/decode).
+      fs_read_bytes(pathTagged) {
+        const filePath = decodeStringArg(instanceRef, pathTagged);
+        try {
+          const buf = fs.readFileSync(filePath);
+          if (process.env.VIBE_DEBUG_FS === "1") {
+            console.error(`[fs-read-bytes] ${filePath} bytes=${buf.length}`);
+          }
+          return encodeHostBytes(instanceRef, buf);
+        } catch (e) {
+          throw new Error(`fs_read_bytes failed for '${filePath}': ${e.message}`);
+        }
+      },
       fs_exists(pathTagged) {
         const filePath = decodeStringArg(instanceRef, pathTagged);
         if (persistentArtifactCacheDisabled(filePath)) {
@@ -1928,6 +1984,9 @@ async function main() {
     },
     WriteBytes(pathTagged, bytesTagged) {
       return vibeModule.fs_write_bytes(pathTagged, bytesTagged);
+    },
+    ReadBytes(pathTagged) {
+      return vibeModule.fs_read_bytes(pathTagged);
     },
     Exists(pathTagged) {
       return vibeModule.fs_exists(pathTagged);
