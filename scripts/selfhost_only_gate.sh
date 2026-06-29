@@ -534,6 +534,52 @@ fi
 rm -rf "$drvdir"
 echo "[selfhost-only-gate] derive(Ord/Show) structural-generation regression ok"
 
+# 15b. extended derive(...) regression (#638): enum `derive(Ord/Show)`, struct +
+#      enum `derive(Default)`, and `derive(Hash)` (Map-key usability). Each real
+#      fixture is a `test "..."`-block suite; compile it through the fresh stage2
+#      and run `_start` — every `assert` traps on failure, so a clean run == all
+#      blocks passed. Covers multiple-derive (`derive(Eq, Ord, Show, Hash)`) too.
+echo "[selfhost-only-gate] 15b/15 extended derive (enum Ord/Show, Default, Hash)"
+for fx in \
+  fixtures/derive_ord_show_test.vibe \
+  fixtures/derive_enum_ord_show_test.vibe \
+  fixtures/derive_default_test.vibe \
+  fixtures/derive_hash_test.vibe; do
+  fxout="_build/_gate_derive_ext_$(basename "${fx%.vibe}").wasm"
+  rm -f "$fxout" "$fxout.diag"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$fx" "$fxout" _start >/dev/null 2>&1
+  if [ ! -s "$fxout" ]; then
+    echo "[selfhost-only-gate] FAIL: $fx did not compile" >&2
+    cat "$fxout.diag" 2>/dev/null >&2; exit 1
+  fi
+  if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+      --invoke _start "$fxout" >/dev/null 2>&1; then
+    echo "[selfhost-only-gate] FAIL: $fx has a failing test (assert trapped)" >&2
+    exit 1
+  fi
+  rm -f "$fxout" "$fxout.diag" "$fxout.funcmap"
+done
+# Unknown-derive negative check: `derive(Foo)` for an unknown trait must error
+# (`unknown trait: Foo`, no wasm emitted), keeping genuinely-unknown derive names
+# rejected while Eq/Ord/Show/Hash/Default are accepted.
+undir="_build/_gate_derive_unknown"
+rm -rf "$undir"; mkdir -p "$undir"
+cat > "$undir/u.vibe" <<'EOF'
+struct P { x: Int } derive(Foo)
+export let _start: () -> Int = () -> { P::{ x: 1 }.x }
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$undir/u.vibe" "$undir/u.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$undir/u.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: derive(Foo) unknown trait was accepted (should error)" >&2
+  exit 1
+fi
+rm -rf "$undir"
+echo "[selfhost-only-gate] extended derive (enum Ord/Show, Default, Hash) ok"
+
 # 16. trait type parameters / Iterator regression (#636): a method-bearing trait
 #     with a type parameter (`Iterator[T] { next(Self) -> Option[T] }`) must be
 #     declarable, and a `[I: Iterator]` generic must dispatch `I::next` through

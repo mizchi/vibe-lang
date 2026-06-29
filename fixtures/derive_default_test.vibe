@@ -1,0 +1,71 @@
+// `derive(Default)` (#638): generates `Type::default() -> Type`, a field-wise
+// (struct) / first-variant (enum) default. Per-type defaults: Int -> 0,
+// Double -> 0.0, Bool -> false, String -> "", Option[_] -> None,
+// Array[_] -> empty, and a nested derive(Default) struct/enum -> Nested::default().
+
+//# Types
+
+struct Inner { n: Int; tag: String } derive(Eq, Default)
+
+struct Config {
+  count: Int;
+  ratio: Double;
+  enabled: Bool;
+  label: String;
+  maybe: Option[Int];
+  items: Array[Int];
+  inner: Inner
+} derive(Eq, Default)
+
+enum Mode {
+  Auto(Int);
+  Manual;
+  Off
+} derive(Eq, Default)
+
+//# Tests
+
+test "derive(Default) on a struct: per-field defaults" {
+  let c = Config::default()
+  assert_eq(c.count, 0)
+  assert(c.ratio == 0.0)
+  assert(not(c.enabled))
+  assert(c.label == "")
+  assert(Array::length(c.items) == 0)
+  match c.maybe {
+    None => assert(true),
+    Some(_) => assert(false)
+  }
+}
+
+test "derive(Default): nested struct default" {
+  let c = Config::default()
+  assert_eq(c.inner.n, 0)
+  assert(c.inner.tag == "")
+  assert(Inner::default() == Inner::{ n: 0, tag: "" })
+}
+
+test "derive(Default): every field matches a hand-built default field-wise" {
+  let c = Config::default()
+  // Field-wise comparison (a whole-struct `==` between a `default()` call result
+  // and a literal goes through the `==` dispatch, whose operand-type inference
+  // does not yet resolve a `T::default()` call's return type — see the limitation
+  // note in the report; per-field checks exercise the generated defaults directly).
+  assert_eq(c.count, 0)
+  assert(c.ratio == 0.0)
+  assert_eq(c.enabled, false)
+  assert(c.label == "")
+  assert(Array::length(c.items) == 0)
+  assert(c.inner == Inner::{ n: 0, tag: "" })
+  match c.maybe {
+    None => assert(true),
+    Some(_) => assert(false)
+  }
+}
+
+test "derive(Default) on an enum: first variant with defaulted payload" {
+  // First variant is Auto(Int), so default is Auto(0).
+  assert(Mode::default() == Auto(0))
+  assert(not(Mode::default() == Manual))
+  assert(not(Mode::default() == Off))
+}

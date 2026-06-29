@@ -136,9 +136,30 @@ let struct_derives_has: (Array[String], String) -> Bool = (derives, name) -> {
   found
 }
 
+// The derivable traits the structural `derive(...)` desugar understands. Any
+// other name in a `derive(...)` clause is rejected with `unknown trait: <name>`
+// (#638) so a typo / unsupported trait fails the compile instead of silently
+// generating nothing.
+let derive_name_is_known: (String) -> Bool = (name) -> {
+  name == "Eq" || name == "Ord" || name == "Show" || name == "Hash" || name == "Default"
+}
+
+let validate_derives: (Array[String], Array[String]) -> Unit = (derives, errors) -> {
+  let mut i = 0
+  while i < Array::length(derives) {
+    let name = Array::get(derives, i)
+    if name != "" && !derive_name_is_known(name) {
+      Array::push(errors, String::concat("unknown trait: ", name))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
 let stmt_is_type_decl: (Stmt) -> Bool = (stmt) -> {
   match stmt {
-    SEnum(_, _, _, _) => true,
+    SEnum(_, _, _, _, _) => true,
     SSuberror(_, _, _) => true,
     SStruct(_, _, _, _, _) => true,
     STypeAlias(_, _, _, _) => true,
@@ -329,7 +350,8 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
         }
         (new_env, ns, nc)
       },
-      SEnum(_, name, params, variants) => {
+      SEnum(_, name, params, variants, enum_derives) => {
+        validate_derives(enum_derives, errors)
         let param_len = Array::length(params)
         let param_var_ids = Array::slice([
           0
@@ -418,9 +440,35 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
           ctor_result_type,
           ctor_result_type
         ], CtBool, None))
-        (env_eq, s, c + param_len)
+        // #638: pre-bind the signatures the enum-derive desugar will generate, so
+        // `E::compare` / `E::to_string` / `E::default` resolve at check time (the
+        // FS-compile path checks before the codegen-time desugar runs).
+        let env_ord = if struct_derives_has(enum_derives, "Ord") {
+          env_bind(env_eq, String::concat(name, "::compare"), CtFn([
+            ctor_result_type,
+            ctor_result_type
+          ], CtInt, None))
+        } else {
+          env_eq
+        }
+        let env_show = if struct_derives_has(enum_derives, "Show") || struct_derives_has(enum_derives, "Hash") {
+          env_bind(env_ord, String::concat(name, "::to_string"), CtFn([
+            ctor_result_type
+          ], CtString, None))
+        } else {
+          env_ord
+        }
+        let env_default = if struct_derives_has(enum_derives, "Default") {
+          env_bind(env_show, String::concat(name, "::default"), CtFn(Array::slice([
+            CtUnit
+          ], 0, 0), ctor_result_type, None))
+        } else {
+          env_show
+        }
+        (env_default, s, c + param_len)
       },
       SStruct(_, name, field_defs, derives, mut_fields) => {
+        validate_derives(derives, errors)
         let resolved_fields = Array::slice([
           ("", CtUnit)
         ], 0, 0)
@@ -454,7 +502,7 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
         } else {
           env1
         }
-        let env3 = if struct_derives_has(derives, "Show") {
+        let env3 = if struct_derives_has(derives, "Show") || struct_derives_has(derives, "Hash") {
           env_bind(env2, String::concat(name, "::to_string"), CtFn([
             CtStruct(name)
           ], CtString, None))
@@ -467,7 +515,16 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
           CtStruct(name),
           CtStruct(name)
         ], CtBool, None))
-        (bind_fn_return(env4, name, CtStruct(name)), s, c)
+        // #638: `derive(Default)` generates `T::default() -> T` (a zero-arg fn,
+        // so the CtFn parameter list is empty).
+        let env5 = if struct_derives_has(derives, "Default") {
+          env_bind(env4, String::concat(name, "::default"), CtFn(Array::slice([
+            CtUnit
+          ], 0, 0), CtStruct(name), None))
+        } else {
+          env4
+        }
+        (bind_fn_return(env5, name, CtStruct(name)), s, c)
       },
       STypeAlias(_, name, params, te) => {
         let t = resolve_type_expr(te, defs)

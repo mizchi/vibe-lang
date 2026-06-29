@@ -486,7 +486,7 @@ let collect_struct_field_sets: (Array[Stmt]) -> Array[(String, Array[String])] =
       // #672: also record enum names (with an EMPTY field set, so the ERecord
       // field-set match never confuses an enum with a struct literal) so the
       // `==` dispatch's `struct_set_has` gate accepts enum operands too.
-      SEnum(_, ename, _, _) => Array::push(out, (ename, empty_str_array())),
+      SEnum(_, ename, _, _, _) => Array::push(out, (ename, empty_str_array())),
       _ => ()
     }
     i = i + 1
@@ -1055,7 +1055,7 @@ let collect_fn_returns: (Array[Stmt]) -> Array[(String, String)] = (stmts) -> {
       // #672: map each enum variant constructor to its enum name, so a
       // `let t = Node(...)` binding resolves `t`'s type for the `==` dispatch
       // (infer_arg_type_name reads ctor calls through fn_returns).
-      SEnum(_, ename, _, variants) => {
+      SEnum(_, ename, _, variants, _) => {
         let mut vi = 0
         while vi < Array::length(variants) {
           let (vname, _) = Array::get(variants, vi)
@@ -1848,6 +1848,257 @@ let gen_compare_fn: (String, Array[(String, TypeExpr)]) -> Stmt = (tname, fields
   SLet(false, false, qualified_name(tname, "compare"), None, EFn(no_tp, no_tb, params, Some(TyName("Int")), None, body))
 }
 
+// Show an arbitrary value expression by its declared type. String values are
+// used verbatim; everything else (scalars and aggregates alike) goes through
+// `__to_string`, which produces a structural string for derived types.
+let show_expr_typed: (Expr, TypeExpr) -> Expr = (val, fty) -> {
+  match fty {
+    TyName("String") => val,
+    _ => ECall(EIdent("__to_string", -1), [
+      val
+    ], -1)
+  }
+}
+
+// `let E::to_string = (self: E) -> String {
+//    match self { V0(_a0, _a1) => "V0(" ++ show(_a0) ++ ", " ++ show(_a1) ++ ")",
+//                 V1 => "V1", ... } }`
+// A nullary variant shows as its bare name; a payload variant shows as
+// `Name(p0, p1, ...)` with each payload shown structurally.
+let gen_enum_show_fn: (String, Array[(String, Array[TypeExpr])]) -> Stmt = (ename, variants) -> {
+  let arms = Array::slice([
+    (PWild, EUnit)
+  ], 0, 0)
+  let mut vi = 0
+  while vi < Array::length(variants) {
+    let (vname, ftypes) = Array::get(variants, vi)
+    let nf = Array::length(ftypes)
+    let binds = Array::slice([
+      PWild
+    ], 0, 0)
+    let mut fi = 0
+    while fi < nf {
+      Array::push(binds, PBind(String::concat("__s", idx_str(fi))))
+      fi = fi + 1
+    }
+    let body = if nf == 0 {
+      EString(vname)
+    } else {
+      let segs = empty_expr_array()
+      Array::push(segs, EString(String::concat(vname, "(")))
+      let mut si = 0
+      while si < nf {
+        let sep = if si == 0 {
+          ""
+        } else ", "
+        if sep != "" {
+          Array::push(segs, EString(sep))
+        } else {
+          ()
+        }
+        Array::push(segs, show_expr_typed(EIdent(String::concat("__s", idx_str(si)), -1), Array::get(ftypes, si)))
+        si = si + 1
+      }
+      Array::push(segs, EString(")"))
+      let mut acc = Array::get(segs, Array::length(segs) - 1)
+      let mut j = Array::length(segs) - 2
+      while j >= 0 {
+        acc = concat2(Array::get(segs, j), acc)
+        j = j - 1
+      }
+      acc
+    }
+    Array::push(arms, (PCtor(vname, binds), body))
+    vi = vi + 1
+  }
+  let params = Array::slice([
+    ("self", Some(TyName(ename)))
+  ], 0, 1)
+  let no_tp = Array::slice([
+    ""
+  ], 0, 0)
+  let no_tb = Array::slice([
+    ("", no_tp)
+  ], 0, 0)
+  SLet(false, false, qualified_name(ename, "to_string"), None, EFn(no_tp, no_tb, params, Some(TyName("String")), None, EMatch(EIdent("self", -1), arms)))
+}
+
+// Compare two operands of declared type `fty`, returning -1/0/1. Aggregate
+// (declared struct/enum) operands recurse through `T::compare`; scalars and type
+// parameters use the runtime structural `<` / `>` (codegen handles them).
+let compare_for_typed: (TypeExpr, Expr, Expr, Array[String]) -> Expr = (fty, lhs, rhs, known_types) -> {
+  let neg_one = 0 - 1
+  match fty {
+    TyName(n) => if !is_scalar_type_name(n) && str_array_contains(known_types, n) {
+      ECall(EIdent(qualified_name(n, "compare"), -1), Array::slice([
+        lhs,
+        rhs
+      ], 0, 2), -1)
+    } else {
+      EIf(EBinOp("<", lhs, rhs), EInt(neg_one), EIf(EBinOp(">", lhs, rhs), EInt(1), EInt(0)))
+    },
+    _ => EIf(EBinOp("<", lhs, rhs), EInt(neg_one), EIf(EBinOp(">", lhs, rhs), EInt(1), EInt(0)))
+  }
+}
+
+// `let E::compare = (a: E, b: E) -> Int { ... }`
+// Lexicographic: first by variant order (a's tag index vs b's tag index), then
+// (same variant) by payload, recursively. The variant index of `a` is computed
+// by matching `a`; for each `a` variant the inner match on `b` either compares
+// payloads (same variant) or returns the sign of (a_index - b_index).
+let gen_enum_compare_fn: (String, Array[(String, Array[TypeExpr])], Array[String]) -> Stmt = (ename, variants, known_types) -> {
+  let neg_one = 0 - 1
+  let outer_arms = Array::slice([
+    (PWild, EUnit)
+  ], 0, 0)
+  let mut ai = 0
+  while ai < Array::length(variants) {
+    let (avname, aftypes) = Array::get(variants, ai)
+    let anf = Array::length(aftypes)
+    let abinds = Array::slice([
+      PWild
+    ], 0, 0)
+    let mut afi = 0
+    while afi < anf {
+      Array::push(abinds, PBind(String::concat("__a", idx_str(afi))))
+      afi = afi + 1
+    }
+    // inner match over b: for the same variant compare payloads; otherwise the
+    // sign comes from the variant order (a before b -> -1, after -> 1).
+    let inner_arms = Array::slice([
+      (PWild, EUnit)
+    ], 0, 0)
+    let mut bi = 0
+    while bi < Array::length(variants) {
+      let (bvname, bftypes) = Array::get(variants, bi)
+      let bnf = Array::length(bftypes)
+      let bbinds = Array::slice([
+        PWild
+      ], 0, 0)
+      let mut bfi = 0
+      while bfi < bnf {
+        Array::push(bbinds, PBind(String::concat("__b", idx_str(bfi))))
+        bfi = bfi + 1
+      }
+      let arm_body = if ai == bi {
+        // same variant: lexicographic over payloads, 0 if no payload.
+        let mut body = EInt(0)
+        let mut pi = anf - 1
+        while pi >= 0 {
+          let cmp = compare_for_typed(Array::get(aftypes, pi), EIdent(String::concat("__a", idx_str(pi)), -1), EIdent(String::concat("__b", idx_str(pi)), -1), known_types)
+          let prev = body
+          body = EIf(EBinOp("<", cmp, EInt(0)), EInt(neg_one), EIf(EBinOp(">", cmp, EInt(0)), EInt(1), prev))
+          pi = pi - 1
+        }
+        body
+      } else if ai < bi {
+        EInt(neg_one)
+      } else {
+        EInt(1)
+      }
+      Array::push(inner_arms, (PCtor(bvname, bbinds), arm_body))
+      bi = bi + 1
+    }
+    Array::push(outer_arms, (PCtor(avname, abinds), EMatch(EIdent("b", -1), inner_arms)))
+    ai = ai + 1
+  }
+  let params = Array::slice([
+    ("a", Some(TyName(ename))),
+    ("b", Some(TyName(ename)))
+  ], 0, 2)
+  let no_tp = Array::slice([
+    ""
+  ], 0, 0)
+  let no_tb = Array::slice([
+    ("", no_tp)
+  ], 0, 0)
+  SLet(false, false, qualified_name(ename, "compare"), None, EFn(no_tp, no_tb, params, Some(TyName("Int")), None, EMatch(EIdent("a", -1), outer_arms)))
+}
+
+// The default value expression for a declared field type. Per-type rules:
+//   Int -> 0, Double/Float -> 0.0, Bool -> false, String -> "", Unit -> (),
+//   Option[_] -> None, Array[_] -> empty array, and a declared struct/enum
+//   (in `known_types`) -> `T::default()`. A type with no sensible default (a
+//   bare type parameter, a function/tuple type, an unknown name) falls back to
+//   `()` — codegen will then flag the literal against the field's real type, so
+//   the limitation surfaces as a type error rather than silently wrong data.
+let default_for_type: (TypeExpr, Array[String]) -> Expr = (fty, known_types) -> {
+  match fty {
+    TyName("Int") => EInt(0),
+    TyName("Double") => EFloat(0.0),
+    TyName("Float") => EFloat(0.0),
+    TyName("Bool") => EBool(false),
+    TyName("String") => EString(""),
+    TyName("Unit") => EUnit,
+    TyName(n) => if str_array_contains(known_types, n) {
+      ECall(EIdent(qualified_name(n, "default"), -1), empty_expr_array(), -1)
+    } else {
+      EUnit
+    },
+    TyApp("Option", _) => EIdent("None", -1),
+    TyApp("Array", _) => EArray(empty_expr_array()),
+    TyApp(n, _) => if str_array_contains(known_types, n) {
+      ECall(EIdent(qualified_name(n, "default"), -1), empty_expr_array(), -1)
+    } else {
+      EUnit
+    },
+    TyUnit => EUnit,
+    _ => EUnit
+  }
+}
+
+// `let P::default = () -> P { P::{ f1: <default>, ... } }` — a struct literal
+// (ERecord; the struct type is recovered from the field set) with each field at
+// its type's default.
+let gen_default_fn: (String, Array[(String, TypeExpr)], Array[String]) -> Stmt = (tname, fields, known_types) -> {
+  let rec_fields = Array::slice([
+    ("", EUnit)
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(fields) {
+    let (fname, fty) = Array::get(fields, i)
+    Array::push(rec_fields, (fname, default_for_type(fty, known_types)))
+    i = i + 1
+  }
+  let no_params = Array::slice([
+    ("", None)
+  ], 0, 0)
+  let no_tp = Array::slice([
+    ""
+  ], 0, 0)
+  let no_tb = Array::slice([
+    ("", no_tp)
+  ], 0, 0)
+  SLet(false, false, qualified_name(tname, "default"), None, EFn(no_tp, no_tb, no_params, Some(TyName(tname)), None, ERecord(rec_fields)))
+}
+
+// `let E::default = () -> E { V0(<default>, ...) }` — the FIRST variant, with
+// each payload slot at its type's default (nullary -> bare constructor name).
+let gen_enum_default_fn: (String, Array[(String, Array[TypeExpr])], Array[String]) -> Stmt = (ename, variants, known_types) -> {
+  let (vname, ftypes) = Array::get(variants, 0)
+  let body = if Array::length(ftypes) == 0 {
+    EIdent(vname, -1)
+  } else {
+    let args = empty_expr_array()
+    let mut i = 0
+    while i < Array::length(ftypes) {
+      Array::push(args, default_for_type(Array::get(ftypes, i), known_types))
+      i = i + 1
+    }
+    ECall(EIdent(vname, -1), args, -1)
+  }
+  let no_params = Array::slice([
+    ("", None)
+  ], 0, 0)
+  let no_tp = Array::slice([
+    ""
+  ], 0, 0)
+  let no_tb = Array::slice([
+    ("", no_tp)
+  ], 0, 0)
+  SLet(false, false, qualified_name(ename, "default"), None, EFn(no_tp, no_tb, no_params, Some(TyName(ename)), None, body))
+}
+
 // In-place: for each struct with `derive(Show/Ord)`, append the structural
 // function if not already present (idempotent across the double-run pipeline).
 // The set of concrete struct/enum names declared in the program — the gate for
@@ -1860,7 +2111,7 @@ let collect_decl_type_names: (Array[Stmt]) -> Array[String] = (stmts) -> {
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SStruct(_, name, _, _, _) => Array::push(out, name),
-      SEnum(_, ename, _, _) => Array::push(out, ename),
+      SEnum(_, ename, _, _, _) => Array::push(out, ename),
       _ => ()
     }
     i = i + 1
@@ -1875,13 +2126,21 @@ export let desugar_derives: (Array[Stmt]) -> Unit = (stmts) -> {
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SStruct(_, name, fields, derives, _) => {
-        if str_array_contains(derives, "Show") && !top_level_fn_exists(stmts, qualified_name(name, "to_string")) {
+        // `derive(Hash)` also needs the structural `to_string`: a Hash type's
+        // stable Map-key string is its structural representation (#638), so
+        // generate `to_string` for Show OR Hash.
+        if (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) && !top_level_fn_exists(stmts, qualified_name(name, "to_string")) {
           Array::push(gen, gen_show_fn(name, fields))
         } else {
           ()
         }
         if str_array_contains(derives, "Ord") && !top_level_fn_exists(stmts, qualified_name(name, "compare")) {
           Array::push(gen, gen_compare_fn(name, fields))
+        } else {
+          ()
+        }
+        if str_array_contains(derives, "Default") && !top_level_fn_exists(stmts, qualified_name(name, "default")) {
+          Array::push(gen, gen_default_fn(name, fields, known_types))
         } else {
           ()
         }
@@ -1895,7 +2154,22 @@ export let desugar_derives: (Array[Stmt]) -> Unit = (stmts) -> {
           ()
         }
       },
-      SEnum(_, ename, _, variants) => {
+      SEnum(_, ename, _, variants, derives) => {
+        if (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) && !top_level_fn_exists(stmts, qualified_name(ename, "to_string")) {
+          Array::push(gen, gen_enum_show_fn(ename, variants))
+        } else {
+          ()
+        }
+        if str_array_contains(derives, "Ord") && !top_level_fn_exists(stmts, qualified_name(ename, "compare")) {
+          Array::push(gen, gen_enum_compare_fn(ename, variants, known_types))
+        } else {
+          ()
+        }
+        if str_array_contains(derives, "Default") && !top_level_fn_exists(stmts, qualified_name(ename, "default")) {
+          Array::push(gen, gen_enum_default_fn(ename, variants, known_types))
+        } else {
+          ()
+        }
         // Generate `E::equals` for every enum (same rationale as structs), so
         // the `==` dispatch resolves enum operands too.
         if !top_level_fn_exists(stmts, qualified_name(ename, "equals")) {

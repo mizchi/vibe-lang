@@ -1,0 +1,48 @@
+// `derive(Hash)` (#638): a derived type is usable as a Map key. The selfhost
+// Map is String-keyed; a Hash type's stable key is its STRUCTURAL string
+// (`Type::to_string`, which derive(Hash) generates — identical content for two
+// distinct values with equal fields). Multiple derives together work:
+// `derive(Eq, Ord, Show, Hash)`.
+//
+// Limitation (documented): the `[K: Hash]` `get_by` / `has_by` / `map_key_to_string`
+// helpers in vibe/collection/map.vibe convert a key with the low-level
+// `__to_string` builtin, which is a pointer/int heuristic and is NOT structural
+// on a heap struct/enum — so those helpers do not give a stable key for a derived
+// aggregate. The structural `Type::to_string` (used here) is the working path.
+
+//# Types
+
+struct Coord {
+  x: Int;
+  y: Int
+} derive(Eq, Ord, Show, Hash)
+
+//# Tests
+
+test "derive(Hash): structural to_string is stable across distinct instances" {
+  // Two separately-built structs with equal fields produce the SAME key string,
+  // which is exactly what makes the type usable as a Map key.
+  let k1 = Coord::to_string(Coord::{ x: 3, y: 7 })
+  let k2 = Coord::to_string(Coord::{ x: 3, y: 7 })
+  assert(k1 == k2)
+  assert(k1 == "Coord { x: 3, y: 7 }")
+  assert(not(Coord::to_string(Coord::{ x: 3, y: 7 }) == Coord::to_string(Coord::{ x: 4, y: 7 })))
+}
+
+test "derive(Hash): derived type used as a Map key" {
+  let m0: Map[String, Int] = map { }
+  let m1 = Map::set(m0, Coord::to_string(Coord::{ x: 1, y: 2 }), 42)
+  let m2 = Map::set(m1, Coord::to_string(Coord::{ x: 5, y: 6 }), 99)
+  // Lookup with a freshly-built key that is structurally equal hits the entry.
+  assert(Map::has_key(m2, Coord::to_string(Coord::{ x: 1, y: 2 })))
+  assert_eq(Map::get(m2, Coord::to_string(Coord::{ x: 1, y: 2 })), 42)
+  assert_eq(Map::get(m2, Coord::to_string(Coord::{ x: 5, y: 6 })), 99)
+  // A key that was never inserted misses.
+  assert(not(Map::has_key(m2, Coord::to_string(Coord::{ x: 9, y: 9 }))))
+}
+
+test "multiple derives together: Eq, Ord, Show, Hash all present" {
+  assert(Coord::{ x: 1, y: 1 } == Coord::{ x: 1, y: 1 })
+  assert_eq(Coord::compare(Coord::{ x: 1, y: 1 }, Coord::{ x: 1, y: 2 }), 0 - 1)
+  assert(Coord::to_string(Coord::{ x: 8, y: 9 }) == "Coord { x: 8, y: 9 }")
+}
