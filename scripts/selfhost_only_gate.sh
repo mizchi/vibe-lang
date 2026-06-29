@@ -458,6 +458,49 @@ fi
 rm -rf "$mbtdir"
 echo "[selfhost-only-gate] method-bearing-trait dict-passing regression ok"
 
+# 14b. rank-1 method-level generics on trait methods (#684): a trait method may
+#      declare its OWN bounded type parameter `m: [X: Show](Self, X) -> R`. The
+#      binder lives on the TRAIT method only; the impl does NOT repeat it. At a
+#      qualified call `C::m(recv, arg)` the `Show` witness for `X = type(arg)`
+#      must be resolved/threaded so the body's `X::show(arg)` dispatches to the
+#      concrete impl. Covers an Int and a String argument (witness per type).
+echo "[selfhost-only-gate] 14b/14 rank-1 trait-method generics regression (#684)"
+mgdir="_build/_gate_methodgen"
+rm -rf "$mgdir"; mkdir -p "$mgdir"
+cat > "$mgdir/mg.vibe" <<'EOF'
+trait Show { show(Self) -> String }
+trait Logger { write_object: [X: Show](Self, X) -> String }
+struct SB { prefix: String }
+impl Show for Int { show(self) -> String { __to_string(self) } }
+impl Show for String { show(self) -> String { self } }
+impl Logger for SB {
+  write_object(self, x) -> String { String::concat(self.prefix, X::show(x)) }
+}
+export let _start: () -> Int = () -> {
+  let sb = SB::{ prefix: "n=" }
+  let a = SB::write_object(sb, 42)
+  let sb2 = SB::{ prefix: "s=" }
+  let b = SB::write_object(sb2, "hi")
+  if a == "n=42" && b == "s=hi" { 84 } else { 0 }
+}
+EOF
+# Expected: 84 (both Int and String witnesses resolved -> correct shown strings)
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$mgdir/mg.vibe" "$mgdir/mg.wasm" _start >/dev/null 2>&1
+if [ ! -s "$mgdir/mg.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: rank-1 trait-method generic program did not compile" >&2
+  cat "$mgdir/mg.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+mg_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$mgdir/mg.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$mg_out" != "84" ]; then
+  echo "[selfhost-only-gate] FAIL: rank-1 trait-method generic mismatch (got '$mg_out', want 84 -> #684 regressed)" >&2
+  exit 1
+fi
+rm -rf "$mgdir"
+echo "[selfhost-only-gate] rank-1 trait-method generics regression ok"
+
 # 15. derive(...) structural generation regression (#638): `derive(Ord)` and
 #     `derive(Show)` on a struct must generate working `Type::compare` (-1/0/1
 #     lexicographic over fields) and `Type::to_string` free functions. Also

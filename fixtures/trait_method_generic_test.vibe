@@ -1,0 +1,51 @@
+// Rank-1 method-level generic type parameters on trait methods (#684).
+//
+// A trait method declares its OWN type parameter with a bound:
+//   trait Logger { write_object: [X: Show](Self, X) -> String }
+// The `[X: Show]` binder lives on the TRAIT method only; the impl does NOT
+// repeat it. At a qualified call site `StringBuilder::write_object(sb, 42)` the
+// `Show` witness for `X = Int` is resolved and threaded by the desugar
+// (`inject_method_generics` re-attaches the binder; the existing dict-passing
+// machinery synthesizes the witness), so the method can call `X::show(x)`.
+
+//# Types
+
+trait Show {
+  show(Self) -> String
+}
+
+trait Logger {
+  write_object: [X: Show](Self, X) -> String
+}
+
+struct StringBuilder { prefix: String }
+
+//# Functions
+
+impl Show for Int {
+  show(self) -> String { __to_string(self) }
+}
+
+impl Show for String {
+  show(self) -> String { self }
+}
+
+// The impl does NOT repeat `[X: Show]`. The desugar re-attaches it and the
+// `Show` witness is threaded so `X::show(x)` dispatches to the concrete impl.
+impl Logger for StringBuilder {
+  write_object(self, x) -> String {
+    String::concat(self.prefix, X::show(x))
+  }
+}
+
+//# Tests
+
+test "method generic resolves the Show witness for Int" {
+  let sb = StringBuilder::{ prefix: "n=" }
+  assert(StringBuilder::write_object(sb, 42) == "n=42")
+}
+
+test "method generic resolves the Show witness for String" {
+  let sb = StringBuilder::{ prefix: "s=" }
+  assert(StringBuilder::write_object(sb, "hi") == "s=hi")
+}

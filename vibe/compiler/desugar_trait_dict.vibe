@@ -117,6 +117,245 @@ let collect_method_traits: (Array[Stmt]) -> Array[(String, Array[(String, Array[
   out
 }
 
+// ---- rank-1 method generics (#684) ----
+//
+// A trait method may declare its own type parameters, `m: [X: Show](Self, X) ->
+// R`. The binder lives on the TRAIT method only (STrait's 5th field); the impl
+// `impl Tr for C { m = (self, x) -> {..} }` does NOT repeat it and parses to a
+// top-level `SLet(_, _, "C::m", _, EFn([], [], [(self,None),(x,None)], ..))`.
+// `inject_method_generics` re-attaches the trait method's `[X: Show]` binder to
+// the impl's free function and annotates the unannotated params with the trait
+// method's declared param types. After injection `build_gens` sees `x: X`,
+// registers `C::m` as a Show-bounded generic, and the existing dict-passing
+// machinery threads/synthesizes the `Show` witness at qualified call sites.
+
+let empty_method_gens: () -> Array[(String, Array[String], Array[(String, Array[String])])] = () -> {
+  Array::slice([
+    ("", empty_str_array(), Array::slice([
+      ("", empty_str_array())
+    ], 0, 0))
+  ], 0, 0)
+}
+
+// Collect every trait's per-method generic binders (name -> [(method,
+// type_params, bounds)]) from STrait's 5th field. Only traits that declare a
+// non-empty binder on at least one method are kept, so this stays inert.
+let collect_trait_method_gens: (Array[Stmt]) -> Array[(String, Array[(String, Array[String], Array[(String, Array[String])])])] = (stmts) -> {
+  let out = Array::slice([
+    ("", empty_method_gens())
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STrait(_, tname, _, _, method_gens) => {
+        let mut any = false
+        let mut j = 0
+        while j < Array::length(method_gens) {
+          let (_, tps, _) = Array::get(method_gens, j)
+          if Array::length(tps) > 0 {
+            any = true
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+        if any {
+          Array::push(out, (tname, method_gens))
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+// Look up a method's `(type_params, bounds)` in a trait's method-gen table.
+// Returns None when the method has no binder (empty type_params).
+let lookup_method_gen: (Array[(String, Array[(String, Array[String], Array[(String, Array[String])])])], String, String) -> Option[(Array[String], Array[(String, Array[String])])] = (table, trait_name, method) -> {
+  let mut i = 0
+  let mut result = None
+  while i < Array::length(table) {
+    let (tn, gens) = Array::get(table, i)
+    if tn == trait_name {
+      let mut j = 0
+      while j < Array::length(gens) {
+        let (mname, tps, bounds) = Array::get(gens, j)
+        if mname == method && Array::length(tps) > 0 {
+          result = Some((tps, bounds))
+          j = Array::length(gens)
+        } else {
+          j = j + 1
+        }
+      }
+      i = Array::length(table)
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+
+// Map each impl's target type to the trait it implements
+// (`impl Tr for C` -> (C, Tr)). A type may implement several traits; the first
+// matching trait that declares the method is used at lookup time.
+let collect_impl_trait_map: (Array[Stmt]) -> Array[(String, String)] = (stmts) -> {
+  let out = Array::slice([
+    ("", "")
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImpl(_, _, trait_name, type_name) => Array::push(out, (type_name, trait_name)),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+// The declared parameter types of method `m` in trait `trait_name` (its 3-tuple
+// signature). Used to annotate the impl method's unannotated params so the
+// per-method type parameter `X` appears as `x: X`.
+let lookup_trait_method_param_types: (Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], String, String) -> Option[Array[TypeExpr]] = (traits, trait_name, method) -> {
+  match lookup_trait_sigs(traits, trait_name) {
+    Some(sigs) => {
+      let mut j = 0
+      let mut result = None
+      while j < Array::length(sigs) {
+        let (mname, ptypes, _) = Array::get(sigs, j)
+        if mname == method {
+          result = Some(ptypes)
+          j = Array::length(sigs)
+        } else {
+          j = j + 1
+        }
+      }
+      result
+    },
+    None => None
+  }
+}
+
+// Find the trait, among those `type_name` implements, that declares a
+// method-level binder for `method`. Returns its (type_params, bounds, param
+// types) so the impl method can be re-typed.
+let find_method_generic_for_impl: (Array[(String, String)], Array[(String, Array[(String, Array[String], Array[(String, Array[String])])])], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], String, String) -> Option[(Array[String], Array[(String, Array[String])], Array[TypeExpr])] = (impl_map, gen_table, traits, type_name, method) -> {
+  let mut i = 0
+  let mut result = None
+  while i < Array::length(impl_map) {
+    let (tn, trait_name) = Array::get(impl_map, i)
+    if tn == type_name {
+      match lookup_method_gen(gen_table, trait_name, method) {
+        Some(g) => {
+          let (tps, bounds) = g
+          match lookup_trait_method_param_types(traits, trait_name, method) {
+            Some(ptypes) => {
+              result = Some((tps, bounds, ptypes))
+              i = Array::length(impl_map)
+            },
+            None => {
+              i = i + 1
+            }
+          }
+        },
+        None => {
+          i = i + 1
+        }
+      }
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+
+// Annotate each parameter whose annotation is None with the trait method's
+// declared param type (when one exists at that index). Already-annotated params
+// keep their annotation.
+let annotate_params_from_sig: (Array[(String, Option[TypeExpr])], Array[TypeExpr]) -> Array[(String, Option[TypeExpr])] = (params, ptypes) -> {
+  let out = Array::slice([
+    ("", None)
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(params) {
+    let (pname, ann) = Array::get(params, i)
+    let new_ann = match ann {
+      Some(_) => ann,
+      None => if i < Array::length(ptypes) {
+        Some(Array::get(ptypes, i))
+      } else {
+        None
+      }
+    }
+    Array::push(out, (pname, new_ann))
+    i = i + 1
+  }
+  out
+}
+
+// In-place: for each impl method `C::m` whose trait declares a method-level
+// `[X: Bound]` binder, re-attach the binder to the EFn and annotate its params
+// with the trait method's declared types. Idempotent: an EFn that already
+// carries type_params was injected on a prior run and is skipped.
+let inject_method_generics: (Array[Stmt], Array[(String, String)], Array[(String, Array[(String, Array[String], Array[(String, Array[String])])])], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Unit = (stmts, impl_map, gen_table, traits) -> {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exp, isrec, qname, ann, body) => match body {
+        EFn(tparams, bounds, params, ret, eff, fbody) => if Array::length(tparams) == 0 {
+          match split_qualified(qname) {
+            Some(parts) => {
+              let (cname, method) = parts
+              match find_method_generic_for_impl(impl_map, gen_table, traits, cname, method) {
+                Some(g) => {
+                  let (mtparams, mtbounds, ptypes) = g
+                  let new_params = annotate_params_from_sig(params, ptypes)
+                  let new_efn = EFn(mtparams, mtbounds, new_params, ret, eff, fbody)
+                  Array::set(stmts, i, SLet(exp, isrec, qname, ann, new_efn))
+                },
+                None => ()
+              }
+            },
+            None => ()
+          }
+        } else {
+          ()
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+// Re-attach trait-method `[X: Bound]` binders to impl free functions, given a
+// (possibly flattened) method-trait table for param-type lookup. Inert and
+// idempotent. Shared by `desugar_trait_dicts` (pre-codegen) and `check_program`
+// (so the FS-compile path, which type-checks before the desugar runs, also sees
+// the binder and can resolve `X::method`).
+let inject_trait_method_generics_with: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Unit = (stmts, traits) -> {
+  let method_gen_table = collect_trait_method_gens(stmts)
+  if Array::length(method_gen_table) > 0 {
+    let impl_map = collect_impl_trait_map(stmts)
+    inject_method_generics(stmts, impl_map, method_gen_table, traits)
+  } else {
+    ()
+  }
+}
+
+// Self-contained entry for callers that have not flattened the trait table
+// (the checker). Builds its own (flattened) method-trait table from `stmts`.
+export let inject_trait_method_generics: (Array[Stmt]) -> Unit = (stmts) -> {
+  let traits_raw = collect_method_traits(stmts)
+  let supers_map = collect_trait_supers(stmts)
+  let traits = flatten_traits(traits_raw, supers_map)
+  inject_trait_method_generics_with(stmts, traits)
+}
+
 // Collect each trait's declared supertraits (`trait B: A + ...`), for all
 // traits (method-bearing or not), so a method-bearing trait can inherit its
 // supertraits' methods.
@@ -1721,6 +1960,14 @@ export let desugar_trait_dicts: (Array[Stmt]) -> Unit = (stmts) -> {
   let traits_raw = collect_method_traits(stmts)
   let supers_map = collect_trait_supers(stmts)
   let traits = flatten_traits(traits_raw, supers_map)
+  // Rank-1 method generics (#684): re-attach each trait method's `[X: Bound]`
+  // binder to its impl free functions (and annotate their params) BEFORE
+  // build_gens, so `C::m` is registered as a bounded generic and the existing
+  // dict-passing threads the witness at qualified call sites. Inert (and
+  // idempotent) when no trait declares a method-level binder. Also run from
+  // `check_program` so the FS-compile path (which type-checks before this pass)
+  // sees the `X` binding and can resolve `X::method` in the impl body.
+  inject_trait_method_generics_with(stmts, traits)
   let struct_sets = collect_struct_field_sets(stmts)
   let fn_returns = collect_fn_returns(stmts)
   let gimpl_types = collect_generic_impl_types(stmts)

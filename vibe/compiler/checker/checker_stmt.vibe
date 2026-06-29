@@ -24,6 +24,10 @@ import ./checker_resolve.vibe {
   resolve_type_expr, subst_type_params
 }
 
+import .. / desugar_trait_dict.vibe {
+  inject_trait_method_generics
+}
+
 //# Functions
 
 let rec import_cache_lookup: (Array[(String, Type)], String, Int) -> Option[Type] = (cache, name, i) -> {
@@ -594,6 +598,11 @@ let collect_async_effect_errors: (Array[Stmt], TypeEnv, Array[String]) -> Unit =
 }
 
 export let check_program: (Array[Stmt]) -> TypeEnv with { Error } = (stmts) -> {
+  // Rank-1 method generics (#684): re-attach trait-method `[X: Bound]` binders
+  // to impl free functions before checking, so `X::method` in an impl body
+  // resolves on every path (the FS-compile path type-checks before the codegen
+  // desugar runs). In-place + idempotent + inert without a method-level binder.
+  inject_trait_method_generics(stmts)
   let empty_defs = Array::slice([
     TDAlias("_dummy", Array::slice([
       ""
@@ -655,6 +664,7 @@ export let check_program_with_env: (Array[Stmt], TypeEnv) -> TypeEnv with { Erro
   match initial_env {
     EnvEmpty => check_program(stmts),
     _ => {
+      inject_trait_method_generics(stmts)
       let empty_defs = Array::slice([
         TDAlias("_dummy", Array::slice([
       ""
