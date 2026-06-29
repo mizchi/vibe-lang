@@ -2333,4 +2333,27 @@ fi
 rm -rf "$vdir"
 echo "[selfhost-only-gate] V128 SIMD intrinsics ok"
 
+# 40b. Fused SIMD whitespace skip (#536 Phase 3): simd_skip_ws(Bytes,Int,Int)
+#      runs a single inline v128 scan loop (16 bytes/iteration, v128 kept on the
+#      operand stack with NO per-op heap boxing) plus a scalar tail. The fixture
+#      asserts the result equals the scalar first-non-whitespace index across the
+#      tail-only, single-chunk bitmask/ctz, multi-chunk, and non-zero-start paths.
+echo "[selfhost-only-gate] 40b/40 fused SIMD whitespace skip (simd_skip_ws)"
+swdir="_build/_gate_simd_skip_ws"
+rm -rf "$swdir"; mkdir -p "$swdir"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/simd_skip_ws_test.vibe" "$swdir/sw.wasm" __no_entry__ >/dev/null 2>&1
+if [ ! -s "$swdir/sw.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: simd_skip_ws test did not compile" >&2
+  cat "$swdir/sw.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke _start "$swdir/sw.wasm" >/dev/null 2>&1; then
+  echo "[selfhost-only-gate] FAIL: simd_skip_ws test trapped (assert failed)" >&2; exit 1
+fi
+rm -rf "$swdir"
+echo "[selfhost-only-gate] fused SIMD whitespace skip ok"
+
 echo "[selfhost-only-gate] ok"

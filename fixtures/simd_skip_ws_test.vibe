@@ -1,0 +1,78 @@
+// #536 Phase 3: fused SIMD whitespace skip (simd_skip_ws).
+// simd_skip_ws(src: Bytes, pos: Int, len: Int) -> Int returns the first index
+// >= pos that is NOT ASCII whitespace (' '=32, '\t'=9, '\n'=10, '\r'=13), or
+// len if all remaining bytes are whitespace. Codegen is a single inline v128
+// scan loop (16 bytes/iteration, v128 kept on the operand stack, no per-op
+// heap boxing) plus a scalar tail. These cases exercise the tail-only path,
+// the single-chunk bitmask/ctz path, chunk boundaries, and multi-chunk runs.
+
+//# Types
+
+let push_n: (Bytes, Int, Int) -> Unit = (b, byte, n) -> {
+  let mut i = 0
+  while i < n {
+    Bytes::push(b, byte)
+    i = i + 1
+  }
+}
+
+// `ws` leading whitespace bytes (cycling space/tab/nl/cr) then `content`
+// non-whitespace bytes ('x' = 120).
+let mk: (Int, Int) -> Bytes = (ws, content) -> {
+  let b = Bytes::new()
+  let mut i = 0
+  while i < ws {
+    let r = i % 4
+    let c = if r == 0 {
+      32
+    } else if r == 1 {
+      9
+    } else if r == 2 {
+      10
+    } else {
+      13
+    }
+    Bytes::push(b, c)
+    i = i + 1
+  }
+  push_n(b, 120, content)
+  b
+}
+
+//# Tests
+
+test "tail-only: short input under 16 bytes" {
+  // 3 ws + 'x', len 4 -> first non-ws at 3 (pos+16 > len, scalar tail only).
+  assert_eq(simd_skip_ws(mk(3, 1), 0, 4), 3)
+  // no leading ws -> 0.
+  assert_eq(simd_skip_ws(mk(0, 5), 0, 5), 0)
+  // all whitespace, len 6 -> 6.
+  assert_eq(simd_skip_ws(mk(6, 0), 0, 6), 6)
+}
+
+test "single 16-byte chunk: bitmask + ctz" {
+  // 10 ws then 6 content, len 16 -> lowest non-ws lane is 10 (ctz path).
+  assert_eq(simd_skip_ws(mk(10, 6), 0, 16), 10)
+  // 16 ws + 'x', len 17 -> chunk all ws, tail finds 'x' at 16.
+  assert_eq(simd_skip_ws(mk(16, 1), 0, 17), 16)
+  // content exactly at chunk boundary, len 17 -> 16.
+  assert_eq(simd_skip_ws(mk(16, 1), 0, 17), 16)
+}
+
+test "multi-chunk whitespace runs" {
+  // 32 ws + 'x', len 33 -> two full SIMD chunks consumed, tail finds 32.
+  assert_eq(simd_skip_ws(mk(32, 1), 0, 33), 32)
+  // 21 ws + 'x', len 22 -> chunk0 all ws (pos=16), tail finds 21.
+  assert_eq(simd_skip_ws(mk(21, 1), 0, 22), 21)
+  // 18 ws + 'x', len 19 -> chunk0 ws, tail finds 18.
+  assert_eq(simd_skip_ws(mk(18, 1), 0, 19), 18)
+  // all whitespace across two chunks, len 40 -> 40.
+  assert_eq(simd_skip_ws(mk(40, 0), 0, 40), 40)
+}
+
+test "non-zero start position" {
+  // start at pos 5 inside "10 ws + content": bytes 5..9 ws, 10 content -> 10.
+  assert_eq(simd_skip_ws(mk(10, 8), 5, 18), 10)
+  // start already on content -> returns start.
+  assert_eq(simd_skip_ws(mk(4, 8), 4, 12), 4)
+}

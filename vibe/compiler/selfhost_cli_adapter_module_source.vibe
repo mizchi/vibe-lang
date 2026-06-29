@@ -3861,6 +3861,8 @@ let lookup_simd_mem: (String) -> Option[Type] = (name) -> {
     Some(CtFn(simd_two_params(CtBytes, CtInt), simd_v128_ty(), None))
   } else if name == "v128_store" {
     Some(CtFn(simd_three_params(CtBytes, CtInt, simd_v128_ty()), CtUnit, None))
+  } else if name == "simd_skip_ws" {
+    Some(CtFn(simd_three_params(CtBytes, CtInt, CtInt), CtInt, None))
   } else {
     None
   }
@@ -11686,6 +11688,7 @@ let simd_v128_and = 78
 let simd_v128_not = 77
 let simd_i8x16_all_true = 99
 let simd_i8x16_bitmask = 100
+let simd_v128_const = 12
 export let emit_v128_load: (Bytes, Int, Int) -> Unit = (buf, align, offset) -> {
   bytebuf_push(buf, simd_prefix)
   leb128_encode_u32(buf, simd_v128_load)
@@ -11741,6 +11744,15 @@ export let emit_v128_or: (Bytes) -> Unit = (buf) -> {
 export let emit_v128_not: (Bytes) -> Unit = (buf) -> {
   bytebuf_push(buf, simd_prefix)
   leb128_encode_u32(buf, simd_v128_not)
+}
+export let emit_v128_const_splat_byte: (Bytes, Int) -> Unit = (buf, byte_val) -> {
+  bytebuf_push(buf, simd_prefix)
+  leb128_encode_u32(buf, simd_v128_const)
+  let mut i = 0
+  while i < 16 {
+    bytebuf_push(buf, byte_val & 255)
+    i = i + 1
+  }
 }
 let emit_i64_load: (Bytes, Int, Int) -> Unit = (buf, align, offset) -> {
   bytebuf_push(buf, 41)
@@ -19317,6 +19329,156 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_i64_lt_s(buf)
       emit_i64_extend_i32_s(buf)
       nl
+    }
+    else if !prefer_bound_call && fname == "simd_skip_ws" {
+      if ctx.enable_rc {
+        throw("simd_skip_ws: unsupported on rc backend")
+      }
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
+      let base_l = nl
+      let pos_l = nl + 1
+      let len_l = nl + 2
+      let res_l = nl + 3
+      let mask_l = nl + 4
+      let addr_l = nl + 5
+      let b_l = nl + 6
+      Array::push(local_names, "__sw_base")
+      Array::push(local_names, "__sw_pos")
+      Array::push(local_names, "__sw_len")
+      Array::push(local_names, "__sw_res")
+      Array::push(local_names, "__sw_mask")
+      Array::push(local_names, "__sw_addr")
+      Array::push(local_names, "__sw_b")
+      emit_local_set(buf, len_l)
+      emit_local_set(buf, pos_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_load(buf, 2, 8)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, base_l)
+      emit_local_get(buf, len_l)
+      emit_local_set(buf, res_l)
+      emit_block_void(buf)
+      emit_block_void(buf)
+      emit_loop_void(buf)
+      emit_local_get(buf, pos_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_add(buf)
+      emit_local_get(buf, len_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_gt_u(buf)
+      emit_if_void(buf)
+      emit_br(buf, 2)
+      emit_end(buf)
+      emit_local_get(buf, base_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, pos_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_add(buf)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, addr_l)
+      emit_local_get(buf, addr_l)
+      emit_i32_wrap_i64(buf)
+      emit_v128_load(buf, 0, 0)
+      emit_v128_const_splat_byte(buf, 32)
+      emit_i8x16_eq(buf)
+      emit_local_get(buf, addr_l)
+      emit_i32_wrap_i64(buf)
+      emit_v128_load(buf, 0, 0)
+      emit_v128_const_splat_byte(buf, 9)
+      emit_i8x16_eq(buf)
+      emit_v128_or(buf)
+      emit_local_get(buf, addr_l)
+      emit_i32_wrap_i64(buf)
+      emit_v128_load(buf, 0, 0)
+      emit_v128_const_splat_byte(buf, 10)
+      emit_i8x16_eq(buf)
+      emit_v128_or(buf)
+      emit_local_get(buf, addr_l)
+      emit_i32_wrap_i64(buf)
+      emit_v128_load(buf, 0, 0)
+      emit_v128_const_splat_byte(buf, 13)
+      emit_i8x16_eq(buf)
+      emit_v128_or(buf)
+      emit_v128_not(buf)
+      emit_i8x16_bitmask(buf)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, mask_l)
+      emit_local_get(buf, mask_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_eqz(buf)
+      emit_if_void(buf)
+      emit_local_get(buf, pos_l)
+      emit_i64_const(buf, 16)
+      emit_i64_add(buf)
+      emit_local_set(buf, pos_l)
+      emit_br(buf, 1)
+      emit_end(buf)
+      emit_local_get(buf, pos_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, mask_l)
+      emit_i32_wrap_i64(buf)
+      bytebuf_push(buf, 104)
+      emit_i32_add(buf)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, res_l)
+      emit_br(buf, 2)
+      emit_end(buf)
+      emit_end(buf)
+      emit_loop_void(buf)
+      emit_local_get(buf, pos_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, len_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_ge_u(buf)
+      emit_if_void(buf)
+      emit_local_get(buf, pos_l)
+      emit_local_set(buf, res_l)
+      emit_br(buf, 2)
+      emit_end(buf)
+      emit_local_get(buf, base_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, pos_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_add(buf)
+      emit_i32_load8_u(buf, 0, 0)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, b_l)
+      emit_local_get(buf, b_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 32)
+      emit_i32_ne(buf)
+      emit_local_get(buf, b_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 9)
+      emit_i32_ne(buf)
+      bytebuf_push(buf, 113)
+      emit_local_get(buf, b_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 10)
+      emit_i32_ne(buf)
+      bytebuf_push(buf, 113)
+      emit_local_get(buf, b_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 13)
+      emit_i32_ne(buf)
+      bytebuf_push(buf, 113)
+      emit_if_void(buf)
+      emit_local_get(buf, pos_l)
+      emit_local_set(buf, res_l)
+      emit_br(buf, 2)
+      emit_end(buf)
+      emit_local_get(buf, pos_l)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_local_set(buf, pos_l)
+      emit_br(buf, 0)
+      emit_end(buf)
+      emit_end(buf)
+      emit_local_get(buf, res_l)
+      nl + 7
     }
     else if !prefer_bound_call && fname == "v128_load" {
       if ctx.enable_rc {
@@ -32677,7 +32839,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "4a4169280852c997"
+  "90f824f32abba10c"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647

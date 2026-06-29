@@ -105,15 +105,46 @@ let bytes_equal_simd = (a: Bytes, off_a: Int, b: Bytes, off_b: Int, len: Int) ->
 |---|---|---|---|
 | Phase 1 | Layer 2 mid-level パターンを vibe で実装 | `vibe/compiler/codegen/wasm_emit/simd_patterns.vibe` | ✅ done |
 | Phase 2 | V128 type を checker/codegen に追加、Layer 1 builtin 実装 | `vibe/compiler/core/types.vibe` (`CtNamed("V128", [])`)、`vibe/compiler/checker/builtins_simd.vibe` (intrinsic 署名)、`vibe/compiler/codegen/expr/compile_call.vibe` (16-byte box lowering)、`vibe/compiler/codegen/wasm_emit/simd.vibe` (0xFD emit) | ✅ done (#536/#696) |
-| Phase 3 | Layer 3 lexer 特化関数を selfhost lexer に統合 | `vibe/compiler/syntax/lexer.vibe` | ⏳ 残: lexer hot path への intrinsic 配線 + bench 検証 |
+| Phase 3 | fused SIMD scan builtin (`simd_skip_ws`) | `compile_call.vibe` (codegen) / `builtins_simd.vibe` (checker) | ✅ builtin done; lexer 統合は**見送り**(下記) |
 
 > Phase 2 (V128 first-class 型 + Layer 1 intrinsic の production 化) は #696 で着地。
 > `V128` は memory-boxed (16-byte heap block, ポインタ値 `|1` tag) として表現し、
 > `v128_*` intrinsic を `compile_call.vibe` で 0xFD prefix 命令に inline lowering する。
 > opcode regression は `scripts/selfhost_only_gate.sh` step 40 (V128 intrinsics) で pin
 > (`v128.or` の opcode 80 取り違えバグ修正含む)。**wasm-gc backend は v128 非対応**
-> (`backend_call.vibe` が unsupported error を throw) なので Layer 3 を lexer に入れる際は
-> linear backend 限定で導入し、`VIBE_TEST_BACKEND=gc` 経路を壊さないこと。
+> (`backend_call.vibe` が unsupported error を throw)。
+
+### Phase 3: fused unboxed builtin + lexer 統合の判断 (#536)
+
+**問題: per-op boxed v128 は hot path に向かない。** Layer 1 intrinsic (`v128_load` 等)
+は各 op が結果を 16-byte heap box に bump-alloc する (never-free)。lexer の
+whitespace skip ループにそのまま組むと 16 バイト走査ごとに ~14 回 heap alloc し、
+self-build (数 MB) で GB 級の heap 成長 + scalar より遅い。
+
+**解決: fused unboxed builtin `simd_skip_ws(Bytes, Int, Int) -> Int`** を追加
+(codegen inline、`compile_call.vibe`)。16 バイト単位の v128 scan を**単一の wasm
+ループ**として emit し、v128 値を operand stack に載せたまま処理する (heap box ゼロ)。
+末尾はスカラ fallback。最初の非空白 index、全空白なら len を返す。`selfhost_only_gate.sh`
+step 40b で correctness を pin。
+
+**lexer 統合は見送り (データ判断)。** selfhost compiler source (447 files, 2.97MB) の
+空白ラン長分布を実測すると:
+
+| 指標 | 値 |
+|---|---|
+| 空白ラン総数 | 352,183 |
+| 長さ ≥16 バイトのラン | 1,363 (**0.39%**) |
+| ≥16 バイトランに含まれる空白バイト | 26,114 / 707,349 (**3.69%**) |
+| 長さ 1 バイトのラン | 272,786 (**77%**) |
+
+ソースの空白ランは 99.6% が 16 バイト未満 → 16 バイト粒度の SIMD path はほぼ発火せず
+scalar tail に落ちる。lexer に組んでも改善せず、共通ケース (短いラン) に setup
+overhead を足すだけ。さらに lexer は `String` + comment (`//`) + `saw_newline`
+追跡で動く (`skip_ws_with_newline`) ため Bytes ベースの `simd_skip_ws` は素直に差せない。
+よって **lexer 統合と seed bump は行わない**。`simd_skip_ws` は「unboxed SIMD codegen の
+実証 + 長い空白/データブロック走査向けの building block」として残す。
+将来 SIMD が効くのは 16 バイト超が頻出する対象 (identifier scan ではなく、巨大な
+data/whitespace block) であり、その時はこの fused パターンを踏襲する。
 
 ## Tail Handling
 
