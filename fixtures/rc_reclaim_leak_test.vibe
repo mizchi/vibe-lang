@@ -1,0 +1,28 @@
+// #699/#700/#701 RC reclamation leak guard.
+//
+// A hot loop that allocates, every iteration, BOTH a tuple AND a captured
+// `let mut` cell + the closure that captures it — all three of which must be
+// reclaimed under the Perceus RC codegen (VIBE_RC=1). With reclamation the
+// bump pointer (__heap_ptr) is reused each iteration, so total heap allocated
+// stays bounded (a small constant). Without it — a regression in tuple RC
+// reclamation (#700), captured-mut cell/closure reclamation (#699), or VIBE_RC
+// being silently ignored in FS-compile mode (#701) — heap_used would scale with
+// the iteration count.
+//
+// The gate (scripts/selfhost_only_gate.sh step 40d) compiles this under
+// VIBE_RC=1 + VIBE_FS_COMPILE=1 (the `vibe run` path), measures __heap_ptr via
+// scripts/measure_selfhost_heap.mjs, and asserts heap_used stays below a small
+// bound. At N=20000 a leak would be ~1 MB; reclamation keeps it under ~100 B.
+let main = () -> Int {
+  let mut total = 0
+  let mut i = 0
+  while i < 20000 {
+    let t = (i, i + 1)
+    let mut c = 0
+    let bump = () -> { c = c + 1 }
+    bump()
+    total = total + t.0 + t.1 + c
+    i = i + 1
+  }
+  total
+}

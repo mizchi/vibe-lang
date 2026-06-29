@@ -2417,4 +2417,39 @@ fi
 rm -rf "$rcdir"
 echo "[selfhost-only-gate] region capture ok"
 
+# 40d. RC reclamation leak guard (#699/#700/#701): a hot loop allocating a tuple
+#      + a captured `let mut` cell + the closure that captures it, every
+#      iteration, must be fully reclaimed under VIBE_RC. Compile via the
+#      FS-compile path WITH VIBE_RC=1 (the `vibe run` path — also exercises #701,
+#      which wired RC into FS mode) and measure __heap_ptr: reclamation keeps
+#      heap_used a small constant (~72 B at N=20000), whereas a regression in
+#      tuple RC reclaim (#700), captured-mut cell/closure reclaim (#699), or
+#      VIBE_RC being silently ignored in FS mode (#701) makes it ~800 KB. #700
+#      slipped precisely because no gate asserted a bounded heap.
+echo "[selfhost-only-gate] 40d/40 RC reclamation leak guard (tuple+cell+closure)"
+lkdir="_build/_gate_rc_leak"
+rm -rf "$lkdir"; mkdir -p "$lkdir"
+VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/rc_reclaim_leak_test.vibe" "$lkdir/rc.wasm" main >/dev/null 2>&1
+if [ ! -s "$lkdir/rc.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: rc_reclaim_leak fixture did not compile under VIBE_RC" >&2
+  cat "$lkdir/rc.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+lk_json="$(node scripts/measure_selfhost_heap.mjs "$lkdir/rc.wasm" main 2>/dev/null)"
+lk_used="$(printf '%s' "$lk_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+lk_result="$(printf '%s' "$lk_json" | sed -n 's/.*"result":\([0-9]*\).*/\1/p')"
+if [ -z "$lk_used" ]; then
+  echo "[selfhost-only-gate] FAIL: could not measure rc_reclaim_leak heap ($lk_json)" >&2; exit 1
+fi
+if [ "$lk_result" != "400020000" ]; then
+  echo "[selfhost-only-gate] FAIL: rc_reclaim_leak wrong result $lk_result (want 400020000)" >&2; exit 1
+fi
+if [ "$lk_used" -ge 2000 ]; then
+  echo "[selfhost-only-gate] FAIL: rc_reclaim_leak heap_used=$lk_used >= 2000 (RC reclamation regressed; ~800000 == full leak)" >&2; exit 1
+fi
+rm -rf "$lkdir"
+echo "[selfhost-only-gate] RC reclamation leak guard ok (heap_used=$lk_used B at N=20000)"
+
 echo "[selfhost-only-gate] ok"
