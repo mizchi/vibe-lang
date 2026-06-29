@@ -543,6 +543,47 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     }
     if mut_needs_ref_cell(body, name) {
       Array::push(ctx.ref_cell_names, name)
+      if ctx.enable_rc && ctx.rc_alloc_func_idx >= 0 && ctx.rc_drop_func_idx >= 0 && expr_is_intish(value, local_names, ctx) {
+        // #699 RC-managed ref cell: a captured `let mut` is heap-boxed for
+        // by-reference sharing; under RC make that box an RC object so it is
+        // reclaimed instead of leaking. Layout [alloc_size@0][rc_count@4 +
+        // class8@7][payload@8]; the cell local holds vptr=block+8 (even) so the
+        // read/write/assign-op sites are byte-identical to the raw-box path. The
+        // capturing closure dups it (compile_lambda.vibe) and drops it via the
+        // class-7 owned-capture recursion (gen_rc_drop_body); the defining scope
+        // drops it inline below. Restricted to intish (scalar) values so the
+        // payload is never a heap object that the body could return (no
+        // use-after-free): class-8 payload-drop then stays a no-op.
+        emit_i64_const(buf, 16)
+        emit_call(buf, ctx.rc_alloc_func_idx)
+        emit_local_set(buf, local_idx)
+        emit_local_get(buf, local_idx)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 16)
+        emit_i32_store(buf, 2, 0)
+        emit_local_get(buf, local_idx)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 1)
+        emit_i32_store(buf, 2, 4)
+        emit_local_get(buf, local_idx)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 8)
+        emit_i32_store8(buf, 0, 7)
+        emit_local_get(buf, local_idx)
+        emit_i64_const(buf, 8)
+        emit_i64_add(buf)
+        emit_local_set(buf, local_idx)
+        emit_local_get(buf, local_idx)
+        emit_i32_wrap_i64(buf)
+        let nl = compile_expr(buf, value, local_names, next_local + 1, ctx, ld)
+        emit_i64_store(buf, 3, 0)
+        let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
+        emit_local_get(buf, local_idx)
+        emit_i64_const(buf, 1)
+        emit_i64_or(buf)
+        emit_call(buf, ctx.rc_drop_func_idx)
+        nl2
+      } else {
       emit_global_get(buf, 0)
       emit_i64_extend_i32_u(buf)
       emit_local_tee(buf, local_idx)
@@ -557,6 +598,7 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
       emit_i64_store(buf, 3, 0)
       let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
       nl2
+      }
     } else {
       if ctx.enable_rc && (is_etuple(value) || is_earray(value) || is_erecord(value) || is_ctor_call(value, ctx.ctor_table) || is_nullary_ctor_ident(value, ctx.ctor_table) || expr_is_floatish(value, local_names, ctx)) {
         Array::push(ctx.heap_binding_names, name)

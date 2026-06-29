@@ -106,6 +106,13 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
     emit_local_get(lam_buf, env_param_idx)
     emit_i32_wrap_i64(lam_buf)
     emit_i64_load(lam_buf, 3, 8 + ci3 * 8)
+    // #699: a captured RC ref cell is stored odd-tagged in the env (so the
+    // closure's class-7 drop classifies and frees it). The inner body uses the
+    // cell as an even vptr (load/store at +0), so untag on load back.
+    if ctx.enable_rc && array_contains_str(ctx.ref_cell_names, cap_name) {
+      emit_i64_const(lam_buf, -2)
+      emit_i64_and(lam_buf)
+    }
     emit_local_set(lam_buf, cap_local)
     Array::push(lam_locals, cap_name)
     if array_contains_str(ctx.ref_cell_names, cap_name) {
@@ -352,10 +359,36 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
         }
       }
       if __cap_resolve >= 0 {
-        emit_local_get(buf, ptr_local)
-        emit_i32_wrap_i64(buf)
-        emit_local_get(buf, __cap_resolve)
-        emit_i64_store(buf, 3, cap_off + csi * 8)
+        if ctx.enable_rc && array_contains_str(ctx.ref_cell_names, cap_name) {
+          // #699: own the captured RC ref cell. Store it odd-tagged so the
+          // closure's class-7 drop (gen_rc_drop_body) recognises it as an owned
+          // heap value, and bump its refcount (unguarded — a ref cell is always
+          // heap) so the shared cell survives until BOTH the defining scope and
+          // this closure have dropped it.
+          emit_local_get(buf, ptr_local)
+          emit_i32_wrap_i64(buf)
+          emit_local_get(buf, __cap_resolve)
+          emit_i64_const(buf, 1)
+          emit_i64_or(buf)
+          emit_i64_store(buf, 3, cap_off + csi * 8)
+          emit_local_get(buf, __cap_resolve)
+          emit_i32_wrap_i64(buf)
+          emit_i32_const(buf, 4)
+          emit_i32_sub(buf)
+          emit_local_get(buf, __cap_resolve)
+          emit_i32_wrap_i64(buf)
+          emit_i32_const(buf, 4)
+          emit_i32_sub(buf)
+          emit_i32_load(buf, 2, 0)
+          emit_i32_const(buf, 1)
+          emit_i32_add(buf)
+          emit_i32_store(buf, 2, 0)
+        } else {
+          emit_local_get(buf, ptr_local)
+          emit_i32_wrap_i64(buf)
+          emit_local_get(buf, __cap_resolve)
+          emit_i64_store(buf, 3, cap_off + csi * 8)
+        }
       } else {
         emit_local_get(buf, ptr_local)
         emit_i32_wrap_i64(buf)
