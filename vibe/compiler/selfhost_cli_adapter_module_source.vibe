@@ -59,7 +59,7 @@ export enum Stmt {
   SSuberror(Bool, String, Array[(String, Array[TypeExpr])]);
   SStruct(Bool, String, Array[(String, TypeExpr)], Array[String], Array[String]);
   STypeAlias(Bool, String, Array[String], TypeExpr);
-  STrait(Bool, String, Array[String], Array[(String, Array[TypeExpr], TypeExpr)]);
+  STrait(Bool, String, Array[String], Array[(String, Array[TypeExpr], TypeExpr)], Array[(String, Array[String], Array[(String, Array[String])])]);
   SImpl(Array[String], Array[(String, Array[String])], String, String);
   SExternLet(String, TypeExpr);
   SImport(String, Array[(String, Option[String])]);
@@ -542,7 +542,7 @@ let is_type_or_structural: (Stmt) -> Bool = (stmt) -> {
     SEffectDef(_, _, _, _) => true,
     SStruct(_, _, _, _, _) => true,
     STypeAlias(_, _, _, _) => true,
-    STrait(_, _, _, _) => true,
+    STrait(_, _, _, _, _) => true,
     SImpl(_, _, _, _) => true,
     SExternLet(_, _) => true,
     SImport(_, _) => true,
@@ -8061,7 +8061,7 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
       ,
       SAliasDecl(_, _) => (env, s, c)
       ,
-      STrait(_, name, supers, methods) => {
+      STrait(_, name, supers, methods, _) => {
         let is_open = false
         (EnvTraitDef(name, supers, is_open, methods, env), s, c)
       },
@@ -9341,7 +9341,7 @@ let collect_method_traits: (Array[Stmt]) -> Array[(String, Array[(String, Array[
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      STrait(_, tname, _, methods) => if Array::length(methods) > 0 {
+      STrait(_, tname, _, methods, _) => if Array::length(methods) > 0 {
         Array::push(out, (tname, methods))
       } else {
         ()
@@ -9359,7 +9359,7 @@ let collect_trait_supers: (Array[Stmt]) -> Array[(String, Array[String])] = (stm
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      STrait(_, tname, supers, _) => Array::push(out, (tname, supers)),
+      STrait(_, tname, supers, _, _) => Array::push(out, (tname, supers)),
       _ => ()
     }
     i = i + 1
@@ -24928,10 +24928,71 @@ export let skip_braced_body: (Array[Token], Int) -> Int = (tokens, pos) -> {
     _ => pos
   }
 }
-let parse_trait_methods: (Array[Token], Int) -> (Array[(String, Array[TypeExpr], TypeExpr)], Int) with { Error } = (tokens, pos) -> {
+let parse_method_tp_bound_names: (Array[Token], Int) -> (Array[String], Int) with { Error } = (tokens, pos) -> {
+  let b = ArrayBuilder::new()
+  let mut p = pos
+  let mut done = false
+  while !done {
+    match peek(tokens, p) {
+      TIdent(name) => {
+        ArrayBuilder::push(b, name)
+        p = p + 1
+        match peek(tokens, p) {
+          TPlus => {
+            p = p + 1
+          },
+          _ => {
+            done = true
+          }
+        }
+      },
+      _ => throw("expected trait bound name")
+    }
+  }
+  (ArrayBuilder::freeze(b), p)
+}
+let parse_method_type_params: (Array[Token], Int) -> (Array[String], Array[(String, Array[String])], Int) with { Error } = (tokens, pos) -> {
+  let names = ArrayBuilder::new()
+  let bounds = ArrayBuilder::new()
+  let mut p = pos
+  while true {
+    match peek(tokens, p) {
+      TRBracket => {
+        p = p + 1
+        break
+      },
+      TIdent(name) => {
+        ArrayBuilder::push(names, name)
+        p = p + 1
+        match peek(tokens, p) {
+          TColon => {
+            let (bound_names, next) = parse_method_tp_bound_names(tokens, p + 1)
+            ArrayBuilder::push(bounds, (name, bound_names))
+            p = next
+          },
+          _ => ()
+        }
+        match peek(tokens, p) {
+          TComma => {
+            p = p + 1
+          },
+          TRBracket => {
+            p = p + 1
+            break
+          },
+          _ => throw("expected ',' or ']' in method type params")
+        }
+      },
+      _ => throw("expected type parameter name or ']'")
+    }
+  }
+  (ArrayBuilder::freeze(names), ArrayBuilder::freeze(bounds), p)
+}
+let parse_trait_methods: (Array[Token], Int) -> (Array[(String, Array[TypeExpr], TypeExpr)], Array[(String, Array[String], Array[(String, Array[String])])], Int) with { Error } = (tokens, pos) -> {
   match peek(tokens, pos) {
     TLBrace => {
       let sigs_b = ArrayBuilder::new()
+      let gens_b = ArrayBuilder::new()
       let mut p = pos + 1
       while true {
         match peek(tokens, p) {
@@ -24940,9 +25001,13 @@ let parse_trait_methods: (Array[Token], Int) -> (Array[(String, Array[TypeExpr],
             break
           },
           TIdent(method_name) => {
-            let (params, after_method_params) = match peek(tokens, p + 1) {
+            let (mtparams, mtbounds, after_binder) = match peek(tokens, p + 1) {
+              TLBracket => parse_method_type_params(tokens, p + 2),
+              _ => (_no_tp(), _no_tb(), p + 1)
+            }
+            let (params, after_method_params) = match peek(tokens, after_binder) {
               TLParen => {
-                let (params_ty, after_paren) = parse_type_impl(tokens, p + 1, 1)
+                let (params_ty, after_paren) = parse_type_impl(tokens, after_binder, 1)
                 let params = match params_ty {
                   TyUnit => empty_type_exprs(),
                   TyTuple(elems) => elems,
@@ -24952,11 +25017,12 @@ let parse_trait_methods: (Array[Token], Int) -> (Array[(String, Array[TypeExpr],
                 }
                 (params, after_paren)
               },
-              _ => (empty_type_exprs(), p + 1)
+              _ => (empty_type_exprs(), after_binder)
             }
             let arrow_pos = expect_tk(tokens, after_method_params, "->")
             let (ret_type, after_ret) = parse_type_impl(tokens, arrow_pos, 0)
             ArrayBuilder::push(sigs_b, (method_name, params, ret_type))
+            ArrayBuilder::push(gens_b, (method_name, mtparams, mtbounds))
             p = match peek(tokens, after_ret) {
               TSemicolon => after_ret + 1,
               _ => after_ret
@@ -24965,9 +25031,9 @@ let parse_trait_methods: (Array[Token], Int) -> (Array[(String, Array[TypeExpr],
           _ => throw("expected trait method signature or '}'")
         }
       }
-      (ArrayBuilder::freeze(sigs_b), p)
+      (ArrayBuilder::freeze(sigs_b), ArrayBuilder::freeze(gens_b), p)
     },
-    _ => (ArrayBuilder::freeze(ArrayBuilder::new()), pos)
+    _ => (ArrayBuilder::freeze(ArrayBuilder::new()), ArrayBuilder::freeze(ArrayBuilder::new()), pos)
   }
 }
 let parse_trait_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } = (tokens, pos, exported) -> {
@@ -25001,12 +25067,12 @@ let parse_trait_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } = 
             }
           }
           let np = p
-          let (methods, body_end) = parse_trait_methods(tokens, np)
-          (STrait(exported, name, supers, methods), body_end)
+          let (methods, method_gens, body_end) = parse_trait_methods(tokens, np)
+          (STrait(exported, name, supers, methods, method_gens), body_end)
         },
         _ => {
-          let (methods, body_end) = parse_trait_methods(tokens, after_name)
-          (STrait(exported, name, empty_strings, methods), body_end)
+          let (methods, method_gens, body_end) = parse_trait_methods(tokens, after_name)
+          (STrait(exported, name, empty_strings, methods, method_gens), body_end)
         }
       }
     },
@@ -29435,7 +29501,7 @@ export let rec print_stmt: (Stmt) -> String = (s) -> {
       }
     },
     STypeAlias(exported, name, _, ty) => String::concat(prefix(exported), String::concat("type ", String::concat(name, String::concat(" = ", print_type_expr(ty))))),
-    STrait(exported, name, supers, methods) => {
+    STrait(exported, name, supers, methods, _) => {
       let base = String::concat(prefix(exported), String::concat("trait ", name))
       let head = if Array::length(supers) == 0 {
         base
@@ -30116,7 +30182,7 @@ let collect_exported_type_names: (Array[Stmt]) -> Array[String] = (stmts) -> {
     match Array::get(stmts, i) {
       SStruct(true, name, _, _, _) => Array::push(names, name),
       SEnum(true, name, _, _) => Array::push(names, name),
-      STrait(true, name, _, _) => Array::push(names, name),
+      STrait(true, name, _, _, _) => Array::push(names, name),
       STypeAlias(true, name, _, _) => Array::push(names, name),
       SSuberror(true, name, _) => Array::push(names, name),
       _ => ()
@@ -30738,7 +30804,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "13c9e73afaff631b"
+  "6b6406f951a95271"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647
@@ -34984,7 +35050,7 @@ let stmt_section: (Stmt) -> Int = (stmt) -> {
     SSuberror(_, _, _) => 1,
     SStruct(_, _, _, _, _) => 1,
     STypeAlias(_, _, _, _) => 1,
-    STrait(_, _, _, _) => 1,
+    STrait(_, _, _, _, _) => 1,
     SImpl(_, _, _, _) => 1,
     SEffectDef(_, _, _, _) => 1,
     SExternLet(_, _) => 1,
@@ -36085,7 +36151,7 @@ let rec sym_walk_stmt: (Array[(String, Int, Int, Int)], String, Stmt, Array[Int]
     SSuberror(_, name, _) => sym_emit(out, source, name, 10, floor, hi),
     SStruct(_, name, _, _, _) => sym_emit(out, source, name, 23, floor, hi),
     STypeAlias(_, name, _, _) => sym_emit(out, source, name, 26, floor, hi),
-    STrait(_, name, _, _) => sym_emit(out, source, name, 11, floor, hi),
+    STrait(_, name, _, _, _) => sym_emit(out, source, name, 11, floor, hi),
     SEffectDef(_, name, _, _) => sym_emit(out, source, name, 24, floor, hi),
     SModule(_, name, body) => {
       sym_emit(out, source, name, 2, floor, hi)

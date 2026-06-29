@@ -426,10 +426,80 @@ export let skip_braced_body: (Array[Token], Int) -> Int = (tokens, pos) -> {
   }
 }
 
-let parse_trait_methods: (Array[Token], Int) -> (Array[(String, Array[TypeExpr], TypeExpr)], Int) with { Error } = (tokens, pos) -> {
+// Parse `Bound + Bound2 + ...` (one type parameter's bound trait names) in a
+// method-level `[X: Bound]` binder. Local equivalent of parser_expr's
+// `parse_type_param_bound_names` (not visible from parser_base).
+let parse_method_tp_bound_names: (Array[Token], Int) -> (Array[String], Int) with { Error } = (tokens, pos) -> {
+  let b = ArrayBuilder::new()
+  let mut p = pos
+  let mut done = false
+  while !done {
+    match peek(tokens, p) {
+      TIdent(name) => {
+        ArrayBuilder::push(b, name)
+        p = p + 1
+        match peek(tokens, p) {
+          TPlus => {
+            p = p + 1
+          },
+          _ => {
+            done = true
+          }
+        }
+      },
+      _ => throw("expected trait bound name")
+    }
+  }
+  (ArrayBuilder::freeze(b), p)
+}
+
+// Parse a method-level `[X: Bound, Y, ...]` binder (the first param name token
+// is at `pos`, the `[` already consumed). Local equivalent of parser_expr's
+// `parse_let_type_params`. Returns (type-param names, per-param bounds, next
+// position after `]`).
+let parse_method_type_params: (Array[Token], Int) -> (Array[String], Array[(String, Array[String])], Int) with { Error } = (tokens, pos) -> {
+  let names = ArrayBuilder::new()
+  let bounds = ArrayBuilder::new()
+  let mut p = pos
+  while true {
+    match peek(tokens, p) {
+      TRBracket => {
+        p = p + 1
+        break
+      },
+      TIdent(name) => {
+        ArrayBuilder::push(names, name)
+        p = p + 1
+        match peek(tokens, p) {
+          TColon => {
+            let (bound_names, next) = parse_method_tp_bound_names(tokens, p + 1)
+            ArrayBuilder::push(bounds, (name, bound_names))
+            p = next
+          },
+          _ => ()
+        }
+        match peek(tokens, p) {
+          TComma => {
+            p = p + 1
+          },
+          TRBracket => {
+            p = p + 1
+            break
+          },
+          _ => throw("expected ',' or ']' in method type params")
+        }
+      },
+      _ => throw("expected type parameter name or ']'")
+    }
+  }
+  (ArrayBuilder::freeze(names), ArrayBuilder::freeze(bounds), p)
+}
+
+let parse_trait_methods: (Array[Token], Int) -> (Array[(String, Array[TypeExpr], TypeExpr)], Array[(String, Array[String], Array[(String, Array[String])])], Int) with { Error } = (tokens, pos) -> {
   match peek(tokens, pos) {
     TLBrace => {
       let sigs_b = ArrayBuilder::new()
+      let gens_b = ArrayBuilder::new()
       let mut p = pos + 1
       while true {
         match peek(tokens, p) {
@@ -438,9 +508,16 @@ let parse_trait_methods: (Array[Token], Int) -> (Array[(String, Array[TypeExpr],
             break
           },
           TIdent(method_name) => {
-            let (params, after_method_params) = match peek(tokens, p + 1) {
+            // Optional method-level generic binder `[X: Bound]`, declared on the
+            // trait method only (rank-1 method generics, #684). The impl never
+            // repeats it; the desugar reattaches it to the impl's free function.
+            let (mtparams, mtbounds, after_binder) = match peek(tokens, p + 1) {
+              TLBracket => parse_method_type_params(tokens, p + 2),
+              _ => (_no_tp(), _no_tb(), p + 1)
+            }
+            let (params, after_method_params) = match peek(tokens, after_binder) {
               TLParen => {
-                let (params_ty, after_paren) = parse_type_impl(tokens, p + 1, 1)
+                let (params_ty, after_paren) = parse_type_impl(tokens, after_binder, 1)
                 let params = match params_ty {
                   TyUnit => empty_type_exprs(),
                   TyTuple(elems) => elems,
@@ -450,11 +527,12 @@ let parse_trait_methods: (Array[Token], Int) -> (Array[(String, Array[TypeExpr],
                 }
                 (params, after_paren)
               },
-              _ => (empty_type_exprs(), p + 1)
+              _ => (empty_type_exprs(), after_binder)
             }
             let arrow_pos = expect_tk(tokens, after_method_params, "->")
             let (ret_type, after_ret) = parse_type_impl(tokens, arrow_pos, 0)
             ArrayBuilder::push(sigs_b, (method_name, params, ret_type))
+            ArrayBuilder::push(gens_b, (method_name, mtparams, mtbounds))
             p = match peek(tokens, after_ret) {
               TSemicolon => after_ret + 1,
               _ => after_ret
@@ -463,9 +541,9 @@ let parse_trait_methods: (Array[Token], Int) -> (Array[(String, Array[TypeExpr],
           _ => throw("expected trait method signature or '}'")
         }
       }
-      (ArrayBuilder::freeze(sigs_b), p)
+      (ArrayBuilder::freeze(sigs_b), ArrayBuilder::freeze(gens_b), p)
     },
-    _ => (ArrayBuilder::freeze(ArrayBuilder::new()), pos)
+    _ => (ArrayBuilder::freeze(ArrayBuilder::new()), ArrayBuilder::freeze(ArrayBuilder::new()), pos)
   }
 }
 
@@ -503,12 +581,12 @@ let parse_trait_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } = 
             }
           }
           let np = p
-          let (methods, body_end) = parse_trait_methods(tokens, np)
-          (STrait(exported, name, supers, methods), body_end)
+          let (methods, method_gens, body_end) = parse_trait_methods(tokens, np)
+          (STrait(exported, name, supers, methods, method_gens), body_end)
         },
         _ => {
-          let (methods, body_end) = parse_trait_methods(tokens, after_name)
-          (STrait(exported, name, empty_strings, methods), body_end)
+          let (methods, method_gens, body_end) = parse_trait_methods(tokens, after_name)
+          (STrait(exported, name, empty_strings, methods, method_gens), body_end)
         }
       }
     },
