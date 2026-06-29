@@ -687,6 +687,68 @@ export let rec is_mut_captured_in: (Expr, String) -> Bool = (expr, name) -> {
     EContinue(_) => false,
     EThrow(msg) => is_mut_captured_in(msg, name),
     EReturn(msg) => is_mut_captured_in(msg, name),
+    // #629 step 2: forms that carry sub-expressions which may hold a capturing
+    // closure. Previously these fell through to `_ => false`, so a mut captured
+    // by a closure INSIDE a struct/record literal, handler, loop, projection,
+    // labeled argument, map literal, or spread was not detected — the cell was
+    // left a stack-local and the closure captured it by value (snapshot),
+    // silently losing the shared mutation. Recursing here is always sound
+    // (over-detection only boxes more).
+    ERecord(fields) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fields) {
+        let (_, fval) = Array::get(fields, i)
+        if is_mut_captured_in(fval, name) {
+          found = true
+        }
+        i = i + 1
+      }
+      found
+    },
+    EMap(entries) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(entries) {
+        let (_, mval) = Array::get(entries, i)
+        if is_mut_captured_in(mval, name) {
+          found = true
+        }
+        i = i + 1
+      }
+      found
+    },
+    EHandle(body, arms) => if is_mut_captured_in(body, name) {
+      true
+    } else {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(arms) {
+        let (_, arm_expr) = Array::get(arms, i)
+        if is_mut_captured_in(arm_expr, name) {
+          found = true
+        }
+        i = i + 1
+      }
+      found
+    },
+    ELoop(params, body) => if is_mut_captured_in(body, name) {
+      true
+    } else {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(params) {
+        let (_, init) = Array::get(params, i)
+        if is_mut_captured_in(init, name) {
+          found = true
+        }
+        i = i + 1
+      }
+      found
+    },
+    EDot(obj, _, _) => is_mut_captured_in(obj, name),
+    ELabeledArg(_, _, inner) => is_mut_captured_in(inner, name),
+    ESpread(inner) => is_mut_captured_in(inner, name),
     _ => false
   }
 }

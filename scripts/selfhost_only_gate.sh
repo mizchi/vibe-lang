@@ -2356,4 +2356,27 @@ fi
 rm -rf "$swdir"
 echo "[selfhost-only-gate] fused SIMD whitespace skip ok"
 
+# 40c. Region capture (#629 step 2): a `let mut` captured by a closure inside a
+#      struct/record literal, projection, handler, loop, labeled arg, map literal
+#      or spread must still be heap-boxed (by-reference capture), not snapshotted.
+#      The fixture asserts the read closure sees the writer's mutations and the
+#      outer cell is updated; it traps under the pre-fix by-value snapshot bug.
+echo "[selfhost-only-gate] 40c/40 region capture (mut captured inside struct literal etc.)"
+rcdir="_build/_gate_region_capture"
+rm -rf "$rcdir"; mkdir -p "$rcdir"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/region_capture_test.vibe" "$rcdir/rc.wasm" __no_entry__ >/dev/null 2>&1
+if [ ! -s "$rcdir/rc.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: region_capture test did not compile" >&2
+  cat "$rcdir/rc.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke _start "$rcdir/rc.wasm" >/dev/null 2>&1; then
+  echo "[selfhost-only-gate] FAIL: region_capture test trapped (assert failed)" >&2; exit 1
+fi
+rm -rf "$rcdir"
+echo "[selfhost-only-gate] region capture ok"
+
 echo "[selfhost-only-gate] ok"
