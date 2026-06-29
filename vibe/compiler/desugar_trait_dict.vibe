@@ -2025,18 +2025,6 @@ let top_level_fn_exists: (Array[Stmt], String) -> Bool = (stmts, fname) -> {
   found
 }
 
-// Show a single field value as a String expression, by its declared type:
-// String fields are used verbatim, everything else goes through `__to_string`.
-let field_show_expr: (String, TypeExpr) -> Expr = (fname, fty) -> {
-  let access = EDot(EIdent("self", -1), fname, -1)
-  match fty {
-    TyName("String") => access,
-    _ => ECall(EIdent("__to_string", -1), [
-      access
-    ], -1)
-  }
-}
-
 let concat2: (Expr, Expr) -> Expr = (a, b) -> {
   ECall(EIdent("String::concat", -1), [
     a,
@@ -2044,8 +2032,209 @@ let concat2: (Expr, Expr) -> Expr = (a, b) -> {
   ], -1)
 }
 
+// A stable, fn-name-safe key for a TypeExpr, used to name the monomorphic array
+// to-string helper `__arr_to_string__<key>` so distinct element types get
+// distinct helpers. `Int` -> "Int", `Array[Int]` -> "Array_Int",
+// `Option[Int]` -> "Option_Int", `(Int,Bool)` -> "Tup_Int_Bool", else "Any".
+// (#694: mirrors #672/#695-era helper-naming so Layer-2 recursion into
+// `Array[t]` fields produces a structural — not pointer-heuristic — string.)
+let rec ts_type_key: (TypeExpr) -> String = (ty) -> {
+  match ty {
+    TyName(n) => n,
+    TyApp(n, args) => {
+      let mut s = n
+      let mut i = 0
+      while i < Array::length(args) {
+        s = String::concat(s, String::concat("_", ts_type_key(Array::get(args, i))))
+        i = i + 1
+      }
+      s
+    },
+    TyTuple(ts) => {
+      let mut s = "Tup"
+      let mut i = 0
+      while i < Array::length(ts) {
+        s = String::concat(s, String::concat("_", ts_type_key(Array::get(ts, i))))
+        i = i + 1
+      }
+      s
+    },
+    TyUnit => "Unit",
+    _ => "Any"
+  }
+}
+
+// The generated monomorphic array-to-string helper name for element type `t`.
+let arr_to_string_name: (TypeExpr) -> String = (t) -> {
+  String::concat("__arr_to_string__", ts_type_key(t))
+}
+
+// Produce a String expression for a value `val` whose declared type is `fty`.
+// Fully type-directed and recursive (#694 Layer 2):
+//   - `String` -> verbatim
+//   - scalar `TyName` -> `__to_string(val)`
+//   - declared struct/enum `TyName(n)` (`known_types`) -> `n::to_string(val)`
+//   - `Option[t]` -> `match val { Some(x) => "Some(" ++ show(x) ++ ")", None => "None" }`
+//   - `Result[t,e]` -> `Ok(..)` / `Err(..)` structural match
+//   - tuple `(t0,..,tn)` -> `"(" ++ show(t0) ++ ", " ++ .. ++ ")"`
+//   - `Array[t]` -> a call to the monomorphic `__arr_to_string__<key>` helper
+//   - declared generic `TyApp(n, _)` (e.g. `Box[T]`) -> `n::to_string(val)`
+//   - anything else -> `__to_string(val)` (status-quo pointer/scalar heuristic)
+// The structural `Type::to_string` (and the derived `Type::hash_key` that
+// delegates to it) is therefore stable for two distinct-but-equal aggregates,
+// no matter how deeply nested.
+let rec show_for_typed: (TypeExpr, Expr, Array[String]) -> Expr = (fty, val, known_types) -> {
+  match fty {
+    TyName("String") => val,
+    TyName(n) => if !is_scalar_type_name(n) && str_array_contains(known_types, n) {
+      ECall(EIdent(qualified_name(n, "to_string"), -1), Array::slice([
+        val
+      ], 0, 1), -1)
+    } else {
+      ECall(EIdent("__to_string", -1), Array::slice([
+        val
+      ], 0, 1), -1)
+    },
+    TyApp("Option", args) => if Array::length(args) == 1 {
+      let t = Array::get(args, 0)
+      let inner = show_for_typed(t, EIdent("__os_v", -1), known_types)
+      let some_body = concat2(EString("Some("), concat2(inner, EString(")")))
+      EMatch(val, Array::slice([
+        (PCtor("Some", Array::slice([
+          PBind("__os_v")
+        ], 0, 1)), some_body),
+        (PCtor("None", Array::slice([
+          PWild
+        ], 0, 0)), EString("None"))
+      ], 0, 2))
+    } else {
+      ECall(EIdent("__to_string", -1), Array::slice([
+        val
+      ], 0, 1), -1)
+    },
+    TyApp("Result", args) => if Array::length(args) == 2 {
+      let t = Array::get(args, 0)
+      let e = Array::get(args, 1)
+      let ok_inner = show_for_typed(t, EIdent("__rs_v", -1), known_types)
+      let err_inner = show_for_typed(e, EIdent("__rs_v", -1), known_types)
+      let ok_body = concat2(EString("Ok("), concat2(ok_inner, EString(")")))
+      let err_body = concat2(EString("Err("), concat2(err_inner, EString(")")))
+      EMatch(val, Array::slice([
+        (PCtor("Ok", Array::slice([
+          PBind("__rs_v")
+        ], 0, 1)), ok_body),
+        (PCtor("Err", Array::slice([
+          PBind("__rs_v")
+        ], 0, 1)), err_body)
+      ], 0, 2))
+    } else {
+      ECall(EIdent("__to_string", -1), Array::slice([
+        val
+      ], 0, 1), -1)
+    },
+    TyTuple(ts) => {
+      let n = Array::length(ts)
+      let pats = Array::slice([
+        PWild
+      ], 0, 0)
+      let mut i = 0
+      while i < n {
+        Array::push(pats, PBind(String::concat("__ts_t", idx_str(i))))
+        i = i + 1
+      }
+      let segs = empty_expr_array()
+      Array::push(segs, EString("("))
+      let mut k = 0
+      while k < n {
+        if k > 0 {
+          Array::push(segs, EString(", "))
+        } else {
+          ()
+        }
+        Array::push(segs, show_for_typed(Array::get(ts, k), EIdent(String::concat("__ts_t", idx_str(k)), -1), known_types))
+        k = k + 1
+      }
+      Array::push(segs, EString(")"))
+      let mut acc = Array::get(segs, Array::length(segs) - 1)
+      let mut j = Array::length(segs) - 2
+      while j >= 0 {
+        acc = concat2(Array::get(segs, j), acc)
+        j = j - 1
+      }
+      EMatch(val, Array::slice([
+        (PTuple(pats), acc)
+      ], 0, 1))
+    },
+    TyApp("Array", args) => if Array::length(args) == 1 {
+      ECall(EIdent(arr_to_string_name(Array::get(args, 0)), -1), Array::slice([
+        val
+      ], 0, 1), -1)
+    } else {
+      ECall(EIdent("__to_string", -1), Array::slice([
+        val
+      ], 0, 1), -1)
+    },
+    TyApp(n, _) => if str_array_contains(known_types, n) {
+      ECall(EIdent(qualified_name(n, "to_string"), -1), Array::slice([
+        val
+      ], 0, 1), -1)
+    } else {
+      ECall(EIdent("__to_string", -1), Array::slice([
+        val
+      ], 0, 1), -1)
+    },
+    _ => ECall(EIdent("__to_string", -1), Array::slice([
+      val
+    ], 0, 1), -1)
+  }
+}
+
+// Show a single struct field value as a String expression, by its declared type
+// (#694: type-directed and recursive — aggregate fields recurse structurally
+// instead of falling into the `__to_string` pointer heuristic).
+let field_show_expr: (String, TypeExpr, Array[String]) -> Expr = (fname, fty, known_types) -> {
+  show_for_typed(fty, EDot(EIdent("self", -1), fname, -1), known_types)
+}
+
+// `let __arr_to_string__<key> = (a: Array[t]) -> String {
+//    "[" ++ join(show(a[0]), ", ", show(a[1]), ...) ++ "]" }` — a monomorphic,
+// fully-recursive array to-string. Element rendering goes through
+// `show_for_typed`, so `Array[Foo]` / `Array[Array[Int]]` recurse structurally
+// instead of pointer-stringifying aggregate elements. (#694 Layer 2.)
+let gen_arr_to_string_fn: (TypeExpr, Array[String]) -> Stmt = (elem_ty, known_types) -> {
+  let elem_get = ECall(EIdent("Array::get", -1), Array::slice([
+    EIdent("a", -1),
+    EIdent("__as_i", -1)
+  ], 0, 2), -1)
+  let elem_show = show_for_typed(elem_ty, elem_get, known_types)
+  // `__as_acc = __as_acc ++ (if i == 0 { "" } else { ", " }) ++ show(a[i])`
+  let sep = EIf(EBinOp("==", EIdent("__as_i", -1), EInt(0)), EString(""), EString(", "))
+  let append = concat2(concat2(EIdent("__as_acc", -1), sep), elem_show)
+  let set_acc = EAssign("__as_acc", append, EUnit)
+  let incr = EAssign("__as_i", EBinOp("+", EIdent("__as_i", -1), EInt(1)), EUnit)
+  let loop_body = ESeq(set_acc, incr)
+  let while_loop = EWhile(EBinOp("<", EIdent("__as_i", -1), ECall(EIdent("Array::length", -1), Array::slice([
+    EIdent("a", -1)
+  ], 0, 1), -1)), loop_body)
+  let closed = concat2(EIdent("__as_acc", -1), EString("]"))
+  let body = ELetMut("__as_i", EInt(0), ELetMut("__as_acc", EString("["), ESeq(while_loop, closed)))
+  let arr_ty = TyApp("Array", Array::slice([
+    elem_ty
+  ], 0, 1))
+  let params = Array::slice([
+    ("a", Some(arr_ty))
+  ], 0, 1)
+  let no_tp = Array::slice([
+    ""
+  ], 0, 0)
+  let no_tb = Array::slice([
+    ("", no_tp)
+  ], 0, 0)
+  SLet(false, false, arr_to_string_name(elem_ty), None, EFn(no_tp, no_tb, params, Some(TyName("String")), None, body))
+}
+
 // `let P::to_string = (self: P) -> String { "P { x: " ++ show(x) ++ ", ... }" }`
-let gen_show_fn: (String, Array[(String, TypeExpr)]) -> Stmt = (tname, fields) -> {
+let gen_show_fn: (String, Array[(String, TypeExpr)], Array[String]) -> Stmt = (tname, fields, known_types) -> {
   let segs = empty_expr_array()
   Array::push(segs, EString(String::concat(tname, " { ")))
   let mut i = 0
@@ -2055,7 +2244,7 @@ let gen_show_fn: (String, Array[(String, TypeExpr)]) -> Stmt = (tname, fields) -
       ""
     } else ", "
     Array::push(segs, EString(String::concat(sep, String::concat(fname, ": "))))
-    Array::push(segs, field_show_expr(fname, fty))
+    Array::push(segs, field_show_expr(fname, fty, known_types))
     i = i + 1
   }
   Array::push(segs, EString(" }"))
@@ -2486,16 +2675,12 @@ let gen_compare_fn: (String, Array[(String, TypeExpr)]) -> Stmt = (tname, fields
   SLet(false, false, qualified_name(tname, "compare"), None, EFn(no_tp, no_tb, params, Some(TyName("Int")), None, body))
 }
 
-// Show an arbitrary value expression by its declared type. String values are
-// used verbatim; everything else (scalars and aggregates alike) goes through
-// `__to_string`, which produces a structural string for derived types.
-let show_expr_typed: (Expr, TypeExpr) -> Expr = (val, fty) -> {
-  match fty {
-    TyName("String") => val,
-    _ => ECall(EIdent("__to_string", -1), [
-      val
-    ], -1)
-  }
+// Show an arbitrary value expression by its declared type (#694: type-directed
+// and recursive via `show_for_typed`, so aggregate enum payloads — nested
+// struct/enum, Option, Result, tuple, Array — render structurally instead of
+// through the `__to_string` pointer heuristic).
+let show_expr_typed: (Expr, TypeExpr, Array[String]) -> Expr = (val, fty, known_types) -> {
+  show_for_typed(fty, val, known_types)
 }
 
 // `let E::to_string = (self: E) -> String {
@@ -2503,7 +2688,7 @@ let show_expr_typed: (Expr, TypeExpr) -> Expr = (val, fty) -> {
 //                 V1 => "V1", ... } }`
 // A nullary variant shows as its bare name; a payload variant shows as
 // `Name(p0, p1, ...)` with each payload shown structurally.
-let gen_enum_show_fn: (String, Array[(String, Array[TypeExpr])]) -> Stmt = (ename, variants) -> {
+let gen_enum_show_fn: (String, Array[(String, Array[TypeExpr])], Array[String]) -> Stmt = (ename, variants, known_types) -> {
   let arms = Array::slice([
     (PWild, EUnit)
   ], 0, 0)
@@ -2534,7 +2719,7 @@ let gen_enum_show_fn: (String, Array[(String, Array[TypeExpr])]) -> Stmt = (enam
         } else {
           ()
         }
-        Array::push(segs, show_expr_typed(EIdent(String::concat("__s", idx_str(si)), -1), Array::get(ftypes, si)))
+        Array::push(segs, show_expr_typed(EIdent(String::concat("__s", idx_str(si)), -1), Array::get(ftypes, si), known_types))
         si = si + 1
       }
       Array::push(segs, EString(")"))
@@ -2559,6 +2744,50 @@ let gen_enum_show_fn: (String, Array[(String, Array[TypeExpr])]) -> Stmt = (enam
     ("", no_tp)
   ], 0, 0)
   SLet(false, false, qualified_name(ename, "to_string"), None, EFn(no_tp, no_tb, params, Some(TyName("String")), None, EMatch(EIdent("self", -1), arms)))
+}
+
+// `let T::hash_key = (self: T) -> String { T::to_string(self) }` (#694 Layer 1).
+// `derive(Hash)` makes a type usable as a Map key via the method-bearing `Hash`
+// trait (`hash_key(Self) -> String`): `map_key_to_string = [K: Hash](key) ->
+// K::hash_key(key)` threads the witness (#684), and at a concrete call site
+// `get_by(m, T::{..})` the synthesized `HashDict::{ hash_key: T::hash_key }`
+// resolves here. The key is the structural `to_string` (now fully recursive via
+// `show_for_typed`), so two distinct-but-field-equal values hash to one entry.
+let gen_hash_key_fn: (String) -> Stmt = (tname) -> {
+  let body = ECall(EIdent(qualified_name(tname, "to_string"), -1), Array::slice([
+    EIdent("self", -1)
+  ], 0, 1), -1)
+  let params = Array::slice([
+    ("self", Some(TyName(tname)))
+  ], 0, 1)
+  let no_tp = Array::slice([
+    ""
+  ], 0, 0)
+  let no_tb = Array::slice([
+    ("", no_tp)
+  ], 0, 0)
+  SLet(false, false, qualified_name(tname, "hash_key"), None, EFn(no_tp, no_tb, params, Some(TyName("String")), None, body))
+}
+
+// Append any `Array[e]` element types referenced by a TypeExpr to `acc`
+// (dedup by type-key), so a Show/Hash-deriving type with an `Array[t]` field or
+// payload gets a generated `__arr_to_string__<key>` helper. (#694 Layer 2.)
+let collect_show_array_elems: (TypeExpr, Array[TypeExpr], Array[String]) -> Unit = (ty, acc, keys) -> {
+  match ty {
+    TyApp("Array", args) => if Array::length(args) == 1 {
+      let et = Array::get(args, 0)
+      let k = ts_type_key(et)
+      if str_array_contains(keys, k) {
+        ()
+      } else {
+        Array::push(keys, k)
+        Array::push(acc, et)
+      }
+    } else {
+      ()
+    },
+    _ => ()
+  }
 }
 
 // Compare two operands of declared type `fty`, returning -1/0/1. Aggregate
@@ -2979,6 +3208,11 @@ let collect_decl_type_names: (Array[Stmt]) -> Array[String] = (stmts) -> {
 export let desugar_derives: (Array[Stmt]) -> Unit = (stmts) -> {
   let gen = empty_stmt_list()
   let known_types = collect_decl_type_names(stmts)
+  // #694 Layer 2: collect `Array[e]` element types referenced by Show/Hash-
+  // deriving types' fields/payloads, so each gets a `__arr_to_string__<key>`
+  // helper. A worklist closes nesting (`Array[Array[Int]]` -> `Array[Int]`).
+  let arr_elems = empty_type_exprs()
+  let arr_keys = empty_str_array()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
@@ -2987,7 +3221,25 @@ export let desugar_derives: (Array[Stmt]) -> Unit = (stmts) -> {
         // stable Map-key string is its structural representation (#638), so
         // generate `to_string` for Show OR Hash.
         if (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) && !top_level_fn_exists(stmts, qualified_name(name, "to_string")) {
-          Array::push(gen, gen_show_fn(name, fields))
+          Array::push(gen, gen_show_fn(name, fields, known_types))
+        } else {
+          ()
+        }
+        // #694 Layer 1: `derive(Hash)` -> structural `T::hash_key` (delegates to
+        // the recursive `to_string`), so the method-bearing `Hash` witness at a
+        // `get_by(m, T::{..})` call site resolves to a stable structural key.
+        if str_array_contains(derives, "Hash") && !top_level_fn_exists(stmts, qualified_name(name, "hash_key")) {
+          Array::push(gen, gen_hash_key_fn(name))
+        } else {
+          ()
+        }
+        if str_array_contains(derives, "Show") || str_array_contains(derives, "Hash") {
+          let mut fi = 0
+          while fi < Array::length(fields) {
+            let (_, fty) = Array::get(fields, fi)
+            collect_show_array_elems(fty, arr_elems, arr_keys)
+            fi = fi + 1
+          }
         } else {
           ()
         }
@@ -3013,7 +3265,26 @@ export let desugar_derives: (Array[Stmt]) -> Unit = (stmts) -> {
       },
       SEnum(_, ename, _, variants, derives) => {
         if (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) && !top_level_fn_exists(stmts, qualified_name(ename, "to_string")) {
-          Array::push(gen, gen_enum_show_fn(ename, variants))
+          Array::push(gen, gen_enum_show_fn(ename, variants, known_types))
+        } else {
+          ()
+        }
+        if str_array_contains(derives, "Hash") && !top_level_fn_exists(stmts, qualified_name(ename, "hash_key")) {
+          Array::push(gen, gen_hash_key_fn(ename))
+        } else {
+          ()
+        }
+        if str_array_contains(derives, "Show") || str_array_contains(derives, "Hash") {
+          let mut vi = 0
+          while vi < Array::length(variants) {
+            let (_, ftypes) = Array::get(variants, vi)
+            let mut ti = 0
+            while ti < Array::length(ftypes) {
+              collect_show_array_elems(Array::get(ftypes, ti), arr_elems, arr_keys)
+              ti = ti + 1
+            }
+            vi = vi + 1
+          }
         } else {
           ()
         }
@@ -3039,12 +3310,12 @@ export let desugar_derives: (Array[Stmt]) -> Unit = (stmts) -> {
     }
     i = i + 1
   }
-  // Collect every `Array[e]` element type referenced by struct fields / enum
-  // payloads (transitively) plus those surfaced by bare-array `==` sites in user
-  // code, then emit one monomorphic `__arr_equals__<key>` helper per distinct
-  // key. The worklist closes nesting: scanning element type `e` may surface a
-  // further `Array[u]` whose helper is also required. Idempotent: guarded by
-  // `top_level_fn_exists` so re-running the pass is inert. (#695.)
+  // #695: collect every `Array[e]` element type referenced by struct fields /
+  // enum payloads (transitively) plus those surfaced by bare-array `==` sites in
+  // user code, then emit one monomorphic `__arr_equals__<key>` helper per
+  // distinct key. The worklist closes nesting: scanning element type `e` may
+  // surface a further `Array[u]` whose helper is also required. Idempotent:
+  // guarded by `top_level_fn_exists` so re-running the pass is inert.
   let elem_types = empty_type_exprs()
   let elem_keys = empty_str_array()
   let mut si = 0
@@ -3095,6 +3366,24 @@ export let desugar_derives: (Array[Stmt]) -> Unit = (stmts) -> {
       ()
     }
     ei = ei + 1
+  }
+  // #694: emit `__arr_to_string__<key>` helpers for Array element types
+  // referenced by Show/Hash-deriving fields/payloads (`arr_elems` populated in
+  // the struct/enum arms above). Independent of the #695 `__arr_equals__` set.
+  let mut wi2 = 0
+  while wi2 < Array::length(arr_elems) {
+    collect_show_array_elems(Array::get(arr_elems, wi2), arr_elems, arr_keys)
+    wi2 = wi2 + 1
+  }
+  let mut ei2 = 0
+  while ei2 < Array::length(arr_elems) {
+    let et2 = Array::get(arr_elems, ei2)
+    if !top_level_fn_exists(stmts, arr_to_string_name(et2)) {
+      Array::push(gen, gen_arr_to_string_fn(et2, known_types))
+    } else {
+      ()
+    }
+    ei2 = ei2 + 1
   }
   let mut g = 0
   while g < Array::length(gen) {

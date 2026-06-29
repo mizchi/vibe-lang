@@ -638,6 +638,34 @@ fi
 rm -rf "$mixdir"
 echo "[selfhost-only-gate] railway let*/? Option generalization ok"
 
+# 15d. derive(Hash) transparent Map keys (#694): a `derive(Hash)` struct is
+#      usable as a Map key through the method-bearing `Hash::hash_key` —
+#      `map_key_to_string = [K: Hash](key) -> K::hash_key(key)` threads the
+#      witness dict (#684) through the `[K: Hash]` `get_by`/`has_by`/`get_or_by`
+#      generic->generic chain, and the derived structural `T::hash_key` (a
+#      recursive `to_string`) is the key. INCLUDES a key with a nested aggregate
+#      field (nested struct + Option + Array) to prove Layer-2 recursion. The
+#      fixture is a `test "..."`-block suite; compile via the fresh stage2 and run
+#      `_start` (a failing `assert` traps, so a clean run == all blocks passed).
+echo "[selfhost-only-gate] 15d/15 derive(Hash) transparent Map keys (#694)"
+hkfx="fixtures/derive_hash_map_key_test.vibe"
+hkout="_build/_gate_derive_hash_map_key.wasm"
+rm -f "$hkout" "$hkout.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$hkfx" "$hkout" __no_entry__ >/dev/null 2>&1
+if [ ! -s "$hkout" ]; then
+  echo "[selfhost-only-gate] FAIL: $hkfx did not compile" >&2
+  cat "$hkout.diag" 2>/dev/null >&2; exit 1
+fi
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke _start "$hkout" >/dev/null 2>&1; then
+  echo "[selfhost-only-gate] FAIL: $hkfx has a failing test (assert trapped) -> #694 regressed" >&2
+  exit 1
+fi
+rm -f "$hkout" "$hkout.diag" "$hkout.funcmap"
+echo "[selfhost-only-gate] derive(Hash) transparent Map keys ok"
+
 # 16. trait type parameters / Iterator regression (#636): a method-bearing trait
 #     with a type parameter (`Iterator[T] { next(Self) -> Option[T] }`) must be
 #     declarable, and a `[I: Iterator]` generic must dispatch `I::next` through

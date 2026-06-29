@@ -1,0 +1,129 @@
+// `derive(Hash)` types as transparent Map keys (#694). The method-bearing `Hash`
+// trait (`hash_key(Self) -> String`) makes the `[K: Hash]` `get_by` / `has_by` /
+// `get_or_by` helpers dispatch the derived `T::hash_key` (a STRUCTURAL key)
+// instead of the type-erased `__to_string` pointer heuristic. So two
+// distinct-but-field-equal keys hit the same entry — INCLUDING keys with nested
+// aggregate fields (Layer-2 recursion: the structural `to_string` recurses into
+// nested struct / Option / Array fields rather than pointer-stringifying them
+// one level deep).
+//
+// The Hash trait + the `[K: Hash]` helpers below are the EXACT shapes from
+// vibe/collection/map.vibe (inlined so the fixture is self-contained — importing
+// that module also pulls in its `values` fn, which depends on a `Map::values`
+// builtin the selfhost checker does not yet model; that gap is unrelated to
+// #694). This exercises the identical desugar path: method-bearing Hash, witness
+// dict threading through `get_by` -> `map_key_to_string`, and the derived
+// structural `T::hash_key`.
+
+//# Types
+
+trait Hash {
+  hash_key(Self) -> String
+}
+
+impl Hash for Int {
+  hash_key(self) -> String { __to_string(self) }
+}
+
+impl Hash for String {
+  hash_key(self) -> String { self }
+}
+
+struct Coord {
+  x: Int;
+  y: Int
+} derive(Eq, Ord, Show, Hash)
+
+// A struct with a NESTED aggregate (nested derive(Hash) struct + Option + Array)
+// — proves Layer-2 recursion: the structural key descends into every level.
+struct Region {
+  origin: Coord;
+  label: Option[Int];
+  tags: Array[Int]
+} derive(Show, Hash)
+
+//# Functions
+
+let get = [V](m: Map[String, V], key: String) -> Option[V] {
+  if Map::has_key(m, key) {
+    Some(Map::get(m, key))
+  } else None
+}
+
+let get_or = [V](m: Map[String, V], key: String, default: V) -> V {
+  match get(m, key) {
+    Some(value) => value,
+    _ => default
+  }
+}
+
+let has_key = [V](m: Map[String, V], key: String) -> Bool {
+  Map::has_key(m, key)
+}
+
+let map_key_to_string = [K: Hash](key: K) -> String {
+  K::hash_key(key)
+}
+
+let get_by = [K: Hash, V](m: Map[String, V], key: K) -> Option[V] {
+  get(m, map_key_to_string(key))
+}
+
+let has_by = [K: Hash, V](m: Map[String, V], key: K) -> Bool {
+  has_key(m, map_key_to_string(key))
+}
+
+let get_or_by = [K: Hash, V](m: Map[String, V], key: K, default: V) -> V {
+  get_or(m, map_key_to_string(key), default)
+}
+
+//# Tests
+
+test "derive(Hash): flat struct as a transparent Map key via get_by/has_by/get_or_by" {
+  let m0: Map[String, Int] = map { }
+  let m1 = Map::set(m0, Coord::hash_key(Coord::{ x: 1, y: 2 }), 42)
+  let m2 = Map::set(m1, Coord::hash_key(Coord::{ x: 5, y: 6 }), 99)
+  // A freshly-built, structurally-equal key hits the entry through get_by/has_by.
+  assert(has_by(m2, Coord::{ x: 1, y: 2 }))
+  assert_eq(match get_by(m2, Coord::{ x: 1, y: 2 }) { Some(v) => v, None => 0 }, 42)
+  assert_eq(match get_by(m2, Coord::{ x: 5, y: 6 }) { Some(v) => v, None => 0 }, 99)
+  assert_eq(get_or_by(m2, Coord::{ x: 1, y: 2 }, 0), 42)
+  // A key that was never inserted misses.
+  assert(not(has_by(m2, Coord::{ x: 9, y: 9 })))
+  assert_eq(get_or_by(m2, Coord::{ x: 9, y: 9 }, 7), 7)
+}
+
+test "derive(Hash): NESTED-aggregate-key struct is transparent (Layer-2 recursion)" {
+  let m0: Map[String, Int] = map { }
+  let r1 = Region::{ origin: Coord::{ x: 1, y: 2 }, label: Some(3), tags: [10, 20] }
+  let m1 = Map::set(m0, Region::hash_key(r1), 1000)
+  // Rebuild a structurally-equal Region from scratch: distinct heap pointers at
+  // every level (nested Coord, the Option, the Array), yet the same key.
+  let r1b = Region::{ origin: Coord::{ x: 1, y: 2 }, label: Some(3), tags: [10, 20] }
+  assert(has_by(m1, r1b))
+  assert_eq(match get_by(m1, r1b) { Some(v) => v, None => 0 }, 1000)
+  assert_eq(get_or_by(m1, r1b, 0), 1000)
+  // A Region differing only in a DEEPLY-nested field misses (proves the key is
+  // not collapsed to a shallow pointer): change the nested Coord.
+  let r2 = Region::{ origin: Coord::{ x: 9, y: 9 }, label: Some(3), tags: [10, 20] }
+  assert(not(has_by(m1, r2)))
+  // Differ only in the Option payload.
+  let r3 = Region::{ origin: Coord::{ x: 1, y: 2 }, label: Some(4), tags: [10, 20] }
+  assert(not(has_by(m1, r3)))
+  // Differ only in an Array element.
+  let r4 = Region::{ origin: Coord::{ x: 1, y: 2 }, label: Some(3), tags: [10, 21] }
+  assert(not(has_by(m1, r4)))
+}
+
+test "derive(Hash): structural to_string recurses into nested aggregate fields" {
+  // The structural key string itself is fully structural (no raw pointers).
+  // (String comparison uses `assert(a == b)` — the content-aware `==` — rather
+  // than `assert_eq`, matching derive_hash_test.vibe's established pattern.)
+  let r = Region::{ origin: Coord::{ x: 1, y: 2 }, label: Some(3), tags: [10, 20] }
+  assert(Region::hash_key(r) == "Region { origin: Coord { x: 1, y: 2 }, label: Some(3), tags: [10, 20] }")
+  // Two distinct builds produce the same structural key.
+  let ra = Region::{ origin: Coord::{ x: 1, y: 2 }, label: None, tags: [] }
+  let rb = Region::{ origin: Coord::{ x: 1, y: 2 }, label: None, tags: [] }
+  assert(Region::hash_key(ra) == Region::hash_key(rb))
+  assert(Region::hash_key(ra) == "Region { origin: Coord { x: 1, y: 2 }, label: None, tags: [] }")
+}
