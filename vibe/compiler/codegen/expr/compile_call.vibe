@@ -21,7 +21,7 @@ import .. / common_extractors {
 }
 
 import .. / wasm_emit {
-  emit_block_i64, emit_block_void, emit_br, emit_br_if, emit_call, emit_call_indirect, emit_code_section, emit_code_section_with_locals, emit_data_section, emit_data_section_multi, emit_drop, emit_element_section_active, emit_else, emit_end, emit_export_section, emit_export_section_multi, emit_exports_full, emit_exports_with_memory, emit_f64_add, emit_f64_const_bits, emit_f64_convert_i64_s, emit_f64_div, emit_f64_eq, emit_f64_ge, emit_f64_gt, emit_f64_le, emit_f64_lt, emit_f64_mul, emit_f64_ne, emit_f64_neg, emit_f64_reinterpret_i64, emit_f64_sub, emit_func_type_raw, emit_function_section, emit_global_get, emit_global_section_i32_mut, emit_global_set, emit_header, emit_i32_add, emit_i32_const, emit_i32_load, emit_i32_load8_u, emit_i32_store, emit_i32_store8, emit_i32_wrap_i64, emit_i64_add, emit_i64_and, emit_i64_const, emit_i64_div_s, emit_i64_eq, emit_i64_eqz, emit_i64_extend_i32_s, emit_i64_ge_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_lt_s, emit_i64_mul, emit_i64_ne, emit_i64_or, emit_i64_reinterpret_f64, emit_i64_rem_s, emit_i64_shl, emit_i64_shr_s, emit_i64_sub, emit_i64_trunc_f64_s, emit_i64_xor, emit_if_i64, emit_if_void, emit_import_section_func, emit_local_get, emit_local_set, emit_local_tee, emit_loop_void, emit_memory_section, emit_name, emit_return, emit_table_section_funcref, emit_type_section, emit_type_section_multi, string_to_data, emit_v128_load, emit_v128_store, emit_i8x16_splat, emit_i8x16_eq, emit_i8x16_le_u, emit_i8x16_ge_u, emit_v128_and, emit_v128_or, emit_v128_not, emit_i8x16_bitmask, emit_v128_any_true, emit_i8x16_all_true
+  emit_block_i64, emit_block_void, emit_br, emit_br_if, emit_call, emit_call_indirect, emit_code_section, emit_code_section_with_locals, emit_data_section, emit_data_section_multi, emit_drop, emit_element_section_active, emit_else, emit_end, emit_export_section, emit_export_section_multi, emit_exports_full, emit_exports_with_memory, emit_f64_add, emit_f64_const_bits, emit_f64_convert_i64_s, emit_f64_div, emit_f64_eq, emit_f64_ge, emit_f64_gt, emit_f64_le, emit_f64_lt, emit_f64_mul, emit_f64_ne, emit_f64_neg, emit_f64_reinterpret_i64, emit_f64_sub, emit_func_type_raw, emit_function_section, emit_global_get, emit_global_section_i32_mut, emit_global_set, emit_header, emit_i32_add, emit_i32_const, emit_i32_load, emit_i32_load8_u, emit_i32_store, emit_i32_store8, emit_i32_wrap_i64, emit_i64_add, emit_i64_and, emit_i64_const, emit_i64_div_s, emit_i64_eq, emit_i64_eqz, emit_i64_extend_i32_s, emit_i64_ge_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_lt_s, emit_i64_mul, emit_i64_ne, emit_i64_or, emit_i64_reinterpret_f64, emit_i64_rem_s, emit_i64_shl, emit_i64_shr_s, emit_i64_sub, emit_i64_trunc_f64_s, emit_i64_xor, emit_if_i64, emit_if_void, emit_import_section_func, emit_local_get, emit_local_set, emit_local_tee, emit_loop_void, emit_memory_section, emit_name, emit_return, emit_table_section_funcref, emit_type_section, emit_type_section_multi, string_to_data, emit_v128_load, emit_v128_store, emit_i8x16_splat, emit_i8x16_eq, emit_i8x16_le_u, emit_i8x16_ge_u, emit_v128_and, emit_v128_or, emit_v128_not, emit_i8x16_bitmask, emit_v128_any_true, emit_i8x16_all_true, emit_v128_const_splat_byte
 }
 
 import ./compile_lambda.vibe {
@@ -500,6 +500,186 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_i64_lt_s(buf)
       emit_i64_extend_i32_s(buf)
       nl
+    }
+    else if !prefer_bound_call && fname == "simd_skip_ws" {
+      // #536 Phase 3: fused SIMD whitespace skip.
+      // simd_skip_ws(src: Bytes, pos: Int, len: Int) -> Int returns the first
+      // index >= pos that is NOT ASCII whitespace (' ' \t \n \r), or len if all
+      // remaining bytes are whitespace. Scans 16 bytes at a time with the v128
+      // chunk kept on the operand stack (NO heap boxing — the per-op boxed v128
+      // intrinsics would bump-allocate 16 bytes each and leak), plus a scalar
+      // tail. Bytes layout (gen_bytes_get_body): [alloc@0][len@4][payload_ptr@8].
+      if ctx.enable_rc {
+        throw("simd_skip_ws: unsupported on rc backend")
+      }
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
+      let base_l = nl
+      let pos_l = nl + 1
+      let len_l = nl + 2
+      let res_l = nl + 3
+      let mask_l = nl + 4
+      let addr_l = nl + 5
+      let b_l = nl + 6
+      Array::push(local_names, "__sw_base")
+      Array::push(local_names, "__sw_pos")
+      Array::push(local_names, "__sw_len")
+      Array::push(local_names, "__sw_res")
+      Array::push(local_names, "__sw_mask")
+      Array::push(local_names, "__sw_addr")
+      Array::push(local_names, "__sw_b")
+      // stack: srcval, posval, lenval
+      emit_local_set(buf, len_l)
+      emit_local_set(buf, pos_l)
+      // top = srcval; base = payload_ptr (i32 @ +8) extended to i64
+      emit_i32_wrap_i64(buf)
+      emit_i32_load(buf, 2, 8)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, base_l)
+      // res defaults to len (every path overwrites it; keep it defined)
+      emit_local_get(buf, len_l)
+      emit_local_set(buf, res_l)
+      emit_block_void(buf)
+      // $ret
+      emit_block_void(buf)
+      // $tail
+      emit_loop_void(buf)
+      // $scan: if (pos + 16 > len) br $tail
+      emit_local_get(buf, pos_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_add(buf)
+      emit_local_get(buf, len_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_gt_u(buf)
+      emit_if_void(buf)
+      emit_br(buf, 2)
+      emit_end(buf)
+      // addr = base + pos
+      emit_local_get(buf, base_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, pos_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_add(buf)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, addr_l)
+      // is_ws = (c==0x20) | (c==0x09) | (c==0x0A) | (c==0x0D), v128 on stack
+      emit_local_get(buf, addr_l)
+      emit_i32_wrap_i64(buf)
+      emit_v128_load(buf, 0, 0)
+      emit_v128_const_splat_byte(buf, 32)
+      emit_i8x16_eq(buf)
+      emit_local_get(buf, addr_l)
+      emit_i32_wrap_i64(buf)
+      emit_v128_load(buf, 0, 0)
+      emit_v128_const_splat_byte(buf, 9)
+      emit_i8x16_eq(buf)
+      emit_v128_or(buf)
+      emit_local_get(buf, addr_l)
+      emit_i32_wrap_i64(buf)
+      emit_v128_load(buf, 0, 0)
+      emit_v128_const_splat_byte(buf, 10)
+      emit_i8x16_eq(buf)
+      emit_v128_or(buf)
+      emit_local_get(buf, addr_l)
+      emit_i32_wrap_i64(buf)
+      emit_v128_load(buf, 0, 0)
+      emit_v128_const_splat_byte(buf, 13)
+      emit_i8x16_eq(buf)
+      emit_v128_or(buf)
+      // mask = bitmask(not(is_ws)): bit i set => lane i is NON-whitespace
+      emit_v128_not(buf)
+      emit_i8x16_bitmask(buf)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, mask_l)
+      // if (mask == 0) { pos += 16; br $scan }
+      emit_local_get(buf, mask_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_eqz(buf)
+      emit_if_void(buf)
+      emit_local_get(buf, pos_l)
+      emit_i64_const(buf, 16)
+      emit_i64_add(buf)
+      emit_local_set(buf, pos_l)
+      emit_br(buf, 1)
+      emit_end(buf)
+      // found: res = pos + ctz(mask); br $ret
+      emit_local_get(buf, pos_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, mask_l)
+      emit_i32_wrap_i64(buf)
+      bytebuf_push(buf, 104)
+      // i32.ctz
+      emit_i32_add(buf)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, res_l)
+      emit_br(buf, 2)
+      emit_end(buf)
+      // loop $scan
+      emit_end(buf)
+      // block $tail
+      // scalar tail: loop $tscan
+      emit_loop_void(buf)
+      // if (pos >= len) { res = pos; br $ret }
+      emit_local_get(buf, pos_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, len_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_ge_u(buf)
+      emit_if_void(buf)
+      emit_local_get(buf, pos_l)
+      emit_local_set(buf, res_l)
+      emit_br(buf, 2)
+      emit_end(buf)
+      // b = load8_u(base + pos)
+      emit_local_get(buf, base_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, pos_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_add(buf)
+      emit_i32_load8_u(buf, 0, 0)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, b_l)
+      // non_ws = (b!=32) & (b!=9) & (b!=10) & (b!=13)
+      emit_local_get(buf, b_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 32)
+      emit_i32_ne(buf)
+      emit_local_get(buf, b_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 9)
+      emit_i32_ne(buf)
+      bytebuf_push(buf, 113)
+      // i32.and
+      emit_local_get(buf, b_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 10)
+      emit_i32_ne(buf)
+      bytebuf_push(buf, 113)
+      emit_local_get(buf, b_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 13)
+      emit_i32_ne(buf)
+      bytebuf_push(buf, 113)
+      // if (non_ws) { res = pos; br $ret }
+      emit_if_void(buf)
+      emit_local_get(buf, pos_l)
+      emit_local_set(buf, res_l)
+      emit_br(buf, 2)
+      emit_end(buf)
+      // pos += 1; br $tscan
+      emit_local_get(buf, pos_l)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_local_set(buf, pos_l)
+      emit_br(buf, 0)
+      emit_end(buf)
+      // loop $tscan
+      emit_end(buf)
+      // block $ret
+      emit_local_get(buf, res_l)
+      nl + 7
     }
     else if !prefer_bound_call && fname == "v128_load" {
       // #536: v128_load(bytes, off) -> V128.

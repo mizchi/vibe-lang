@@ -84,6 +84,43 @@ get() -> { let v = state; resume(v) }         // OK (これも tail-resumptive)
 ADR-0050 の stable contract は one-shot handler 全体を対象とするが、
 実装は tail-resumptive から段階導入する。
 
+### 継続呼び出し規約: `resume` (canonical) vs 明示 `k` (#627)
+
+fixtures 上、ハンドラ arm の継続呼び出しに 2 つの表記が存在する。両者は
+**競合する別規約ではなく、同一の one-shot 継続の 2 つの書き方**であり、
+canonical は `resume` である (ADR-0050)。
+
+1. **暗黙 `resume(v)` — canonical。** `perform` 地点の継続を暗黙に指す。
+   実装は **replay-based handler**: `handle` body を再実行し、各 `perform` に
+   対し resume-memo slot から記憶済みの値を返す (`compile_call.vibe` の
+   `resume` magic + `linked_compile.vibe` の resume-memo 配列、ストライド
+   `131072`)。tail position で 1 回だけ呼ぶ tail-resumptive 形は inline 化で
+   ゼロコスト。これが仕様・docs・examples の既定形。
+
+   ```
+   Log(msg) => { stdout_write(msg); resume(()) }   // tail-resumptive
+   ```
+
+2. **明示 `Op(args..., k)` — 一般形 (defunctionalized)。** arm が
+   operation の宣言 arity より 1 つ多い末尾パラメータを束縛すると、それが
+   継続 `k` になる。`resume` が末尾でしか呼べない (tail-only) のに対し、
+   `k` は **non-tail position で結果を使える** (`v + k(0)` のように畳み込める)。
+   `fixtures/effect_cps_*.vibe` / `effect_defunc_*.vibe` / `effect_generic_writer.vibe`
+   がこの形を使う。これらは defunctionalized 継続として実装され、現状は
+   `resume` と同じく **one-shot** (継続を 1 回呼ぶ) に限る。
+
+   ```
+   Emit(v, k) => v + k(0)    // k を non-tail で 1 回呼ぶ — resume では書けない
+   ```
+
+**線引き (現状の規約):**
+- canonical な継続呼び出しは `resume`。新規コード・docs・examples は `resume` を使う。
+- 明示 `k` は「継続の結果を non-tail で使いたい」場合の一般形として残すが、
+  どちらも one-shot。**multi-shot (`k` を複数回呼ぶ) は未サポート** (Phase 3 将来検討)。
+  replay-based handler は unbounded perform でストライドを溢れさせるため、
+  真の first-class / multi-shot continuation はこの軸では扱わない。
+- tail-resumptive 検出 (Step 4) の対象は `resume` 末尾 1 回呼びパターン。
+
 ---
 
 ## Phase 1: Tail-Resumptive Effect Handler

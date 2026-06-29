@@ -69,9 +69,9 @@ inspection) and a VS Code DAP adapter. See
 | Target | Description |
 |--------|-------------|
 | Native CLI | Compiled execution via the host runtime (`run` / `test` / `shell`) |
-| WASM (linear) | Core WASM backend kept for fallback / compatibility |
+| WASM (linear) | **Production default**: `compile --wasm` / `--wasm-linear`, `build --release`, `test`, `bench` (tagged-i64, bump allocator) |
 | WASM + js-string | WASM with JS string builtins for embedding |
-| WASM GC | Main `--wasm` backend |
+| WASM GC | Long-term primary target. Backend exists (`vibe/compiler/codegen/gc/`) but is **not yet wired into the selfhost compile CLI** (`compile --wasm-gc` throws); reachable via `VIBE_TEST_BACKEND=gc` / `VIBE_BENCH_BACKEND=gc` for pure test/bench. See [docs/spec/memory-contract.md](docs/spec/memory-contract.md) |
 | Component Model | WASI/component packaging for composition |
 
 ### Builtin Functions
@@ -252,8 +252,9 @@ pkf run install
 - `_build/wasm/release/build/cmd/vibe_compile_wasi/vibe_compile_wasi.wasm`
 - run with `moon run --target wasm src/cmd/vibe_compile_wasi -- ...` (or `pkf run run-compiler-wasi-wasm -- ...`)
 - compiler filesystem access is routed through `src/io.FileSystemAdapter` abstraction
-- `vibe_compile_wasi` では `--wasm` が `wasm-gc` を選ぶ（MVP を使う場合は `--wasm-mvp`）
-- 現状 `wasm-gc` backend は実験段階のため、複雑な文法は `--wasm-mvp` を使う
+- `vibe_compile_wasi`（退役した MoonBit host）では `--wasm` が `wasm-gc` を選んでいた。
+  **selfhost CLI ではこれは成立しない**: `--wasm` = linear、`--wasm-gc` は未配線（throw）。
+  現行のバックエンド契約は [docs/spec/memory-contract.md](docs/spec/memory-contract.md) を参照
 
 Note: MoonBit `src/` の CLI は legacy bootstrap / fallback wrapper として扱う。
 compiler/checker/codegen と CLI の新しい挙動は `vibe/compiler/` / `vibe/cli/` 側で

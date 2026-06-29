@@ -416,6 +416,12 @@ handle { greet("world") } with Logger {
 }
 ```
 
+継続呼び出しは `resume(v)` が canonical (one-shot tail-resumptive, ADR-0050)。
+operation の宣言 arity より 1 つ多い末尾パラメータを束縛すると、それが継続 `k` に
+なり、`resume` では書けない non-tail position で結果を使える (`Emit(v, k) => v + k(0)`)。
+どちらも one-shot。規約の詳細は [mut-effect-plan.md](mut-effect-plan.md) の
+「継続呼び出し規約」(#627) を参照。
+
 ### Effect polymorphism
 
 ```vibe

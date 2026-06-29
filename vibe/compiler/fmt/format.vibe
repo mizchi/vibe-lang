@@ -1134,7 +1134,7 @@ let should_insert_struct_double_colon: (Int, String, Int, String, Int, Bool) -> 
   }
 }
 
-let needs_space: (Int, Int, Int, Bool, Bool) -> Bool = (prev_prev_kind, prev_kind, curr_kind, prev_prefix, prev_pipe) -> {
+let needs_space: (Int, Int, Int, Bool, Bool, Bool) -> Bool = (prev_prev_kind, prev_kind, curr_kind, prev_prefix, prev_pipe, path_active) -> {
   if prev_kind == k_none {
     false
   } else if prev_prefix {
@@ -1142,6 +1142,14 @@ let needs_space: (Int, Int, Int, Bool, Bool) -> Bool = (prev_prev_kind, prev_kin
   } else if prev_pipe && curr_kind == k_gt {
     false
   } else if prev_kind == k_let && curr_kind == k_star {
+    false
+  } else if path_active && prev_kind != k_import && prev_kind != k_export && prev_kind != k_from &&
+    (prev_kind == k_slash || curr_kind == k_slash ||
+     prev_kind == k_dot || curr_kind == k_dot ||
+     prev_kind == k_dotdot || curr_kind == k_dotdot) {
+    // import/export path separators (`./a/b/index.vibe`, `.. / ..`) are a single
+    // path token, not division/projection — no surrounding spaces (#628). The
+    // space right after the `import`/`export`/`from` keyword is kept (excluded).
     false
   } else if curr_kind == k_rparen || curr_kind == k_rbracket || curr_kind == k_rbrace ||
     curr_kind == k_comma || curr_kind == k_semicolon {
@@ -1235,6 +1243,9 @@ let format_tokens: (Array[LTok], Int) -> String = (toks, indent_size) -> {
   let mut prev_prefix = false
   let mut prev_pipe = false
   let mut prev_line_comment = false
+  // #628: true while inside an import/export path region (keyword .. `{`), so
+  // `/` and `.` separators are emitted without surrounding spaces.
+  let mut path_active = false
   let mut i = 0
   let n = Array::length(toks)
   while i < n {
@@ -1265,6 +1276,7 @@ let format_tokens: (Array[LTok], Int) -> String = (toks, indent_size) -> {
       prev_text = ""
       prev_prefix = false
       prev_pipe = false
+      path_active = false
       prev_line_comment = String::length(comment_text) >= 2 &&
         String::char_code_at(comment_text, 0) == '/' && String::char_code_at(comment_text, 1) == '/'
       i = i + 1
@@ -1337,6 +1349,7 @@ let format_tokens: (Array[LTok], Int) -> String = (toks, indent_size) -> {
         prev_text = ""
         prev_prefix = false
         prev_pipe = false
+        path_active = false
         line_has_content = false
       }
       let next_kind = next_non_trivia_kind(toks, i)
@@ -1361,7 +1374,7 @@ let format_tokens: (Array[LTok], Int) -> String = (toks, indent_size) -> {
         let effects_rbrace = kind == k_rbrace && Array::length(container_stack) > 0 &&
           Array::get(container_stack, Array::length(container_stack) - 1) == c_brace_effects
         if line_has_content && !insert_double_colon &&
-          (effects_rbrace || needs_space(prev_prev_kind, prev_kind, kind, prev_prefix, prev_pipe)) {
+          (effects_rbrace || needs_space(prev_prev_kind, prev_kind, kind, prev_prefix, prev_pipe, path_active)) {
           Array::push(out, " ")
         }
         if insert_double_colon {
@@ -1507,6 +1520,13 @@ let format_tokens: (Array[LTok], Int) -> String = (toks, indent_size) -> {
         prev_prefix = curr_prefix
         prev_pipe = curr_pipe
         prev_line_comment = false
+        // #628: enter path mode on import/export/from; leave it at the import
+        // list `{` (and any brace, harmless when already false).
+        if kind == k_import || kind == k_export || kind == k_from {
+          path_active = true
+        } else if kind == k_lbrace {
+          path_active = false
+        }
         i = i + 1
       }
     }

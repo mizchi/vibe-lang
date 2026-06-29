@@ -48,4 +48,30 @@ if ! bash "$ROOT_DIR/scripts/vibe_fmt.sh" --check "$WORK/formatted.vibe" >/dev/n
   echo "[vibe-fmt-smoke] FAIL: --check rejected a formatted file" >&2; exit 1
 fi
 
-echo "[vibe-fmt-smoke] ok (canonical + idempotent + --check)"
+# #628: import/export paths are a single token — no spaces around `/` or `.`,
+# regardless of input spacing. Old fmt tokenized `/` as an operator and emitted
+# `./a / b / index.vibe`.
+cat > "$WORK/paths.in.vibe" <<'EOF'
+import ./pkg/sub/index.vibe { a }
+import .. / .. / core.vibe { b }
+export ./lib/index.vibe { a, b }
+EOF
+cat > "$WORK/paths.expected.vibe" <<'EOF'
+import ./pkg/sub/index.vibe {
+  a
+}
+import ../../core.vibe {
+  b
+}
+export ./lib/index.vibe {
+  a, b
+}
+EOF
+bash "$ROOT_DIR/scripts/vibe_fmt.sh" --stdout "$WORK/paths.in.vibe" > "$WORK/paths.got.vibe" 2>/dev/null
+if ! cmp -s "$WORK/paths.expected.vibe" "$WORK/paths.got.vibe"; then
+  echo "[vibe-fmt-smoke] FAIL: import/export path spacing (#628)" >&2
+  diff "$WORK/paths.expected.vibe" "$WORK/paths.got.vibe" >&2 || true
+  exit 1
+fi
+
+echo "[vibe-fmt-smoke] ok (canonical + idempotent + --check + paths #628)"
