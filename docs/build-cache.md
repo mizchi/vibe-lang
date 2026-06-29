@@ -1,0 +1,65 @@
+# Build cache layering & GC policy
+
+This note covers the **incremental build cache** the selfhost compiler writes
+under `_build/vibe_*`, how its fingerprints relate to the ADR-0004
+content-address *identity* layer, and how to reclaim disk. It is the resolution
+record for #631 (cache GC) and #633 (hash-layer clarification).
+
+## Two distinct hash layers
+
+vibe uses content hashing for two unrelated purposes. They are intentionally
+**separate** and must not be conflated:
+
+| Layer | Purpose | Hash | Where |
+|-------|---------|------|-------|
+| **Identity** (ADR-0004) | Content-addressed modules — `HashRef` (runtime), `VersionRef`, `SymbolRef` (user-facing). A stable, collision-resistant name for a definition's content. | **SHA1** (cryptographic). `vibe/sha1/` implements it with known-answer vectors. | identity / distributed refs |
+| **Build cache** | A fast key for "have I already compiled exactly this input with exactly this compiler?" Only ever compared for equality within one machine's `_build`; a miss just recompiles. | **`compact_string_fingerprint`** — a non-cryptographic double-polynomial rolling hash `"len:h1:h2"` (h1/h2 31-bit, distinct large primes → ~62 effective bits). | `vibe/compiler/cache/persistent_cache.vibe` |
+
+**Why two hashes, not one.** The build cache is a pure performance optimization
+on the local `_build` tree: a forged collision can at worst return a stale
+artifact for *your own* next build, never corrupt a published identity. A
+non-cryptographic rolling hash is therefore the right tradeoff — cheap to
+compute over large merged sources, and collisions (simultaneous match of `len`,
+`h1`, and `h2`) are vanishingly unlikely for real inputs. The ADR-0004 identity
+layer is where cryptographic strength matters, and that uses SHA1. There is no
+plan to route build-cache keys through SHA1; the speed of the rolling hash is a
+feature, and the identity layer already owns the cryptographic guarantee.
+
+## Cache key: content + version (#630)
+
+The build-cache key is `persistent_cache_version_tag() | <content fingerprint>`,
+where the version tag is:
+
+```
+v10 | cg-<selfhost_codegen_fingerprint()>
+```
+
+- `v10` — a manual knob bumped only on a cache **format** change (how `.hex` /
+  `.tsv` entries are serialized).
+- `cg-<…>` — a build-time hash of every compiler source file
+  (`selfhost_sources_manifest.tsv`), regenerated with the bundle. Any change to
+  emitted wasm / runtime ABI changes the compiler source, hence this segment,
+  hence the key — so a codegen change automatically invalidates stale artifacts
+  with no manual bump (#630).
+
+## GC policy (#631)
+
+Cache entries are **content-addressed and append-only**: a store overwrites only
+the exact same key, and a source/codegen change produces a *new* key, leaving the
+prior file as an orphan. Nothing deletes orphans in place, so `_build/vibe_*`
+grows monotonically over a long editing session.
+
+This is deliberate — automatic mid-build GC would need a per-build reachable-set
+mark-sweep and risks evicting entries a concurrent build still wants. Instead,
+reclaiming is an **explicit, first-class command**:
+
+```bash
+pkf run cache-clean              # delete every _build/vibe_* cache entry
+bash scripts/cache_clean.sh -n   # dry-run: report what would be reclaimed
+```
+
+`scripts/cache_clean.sh` removes only `_build/vibe_*` files (the persistent cache);
+generation builds, fixtures, and everything else under `_build` are untouched. A
+full rebuild simply repopulates the cache. Because the key already version-tags
+on every codegen change, a clean is never *required* for correctness — only to
+reclaim disk.
