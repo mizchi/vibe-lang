@@ -42,6 +42,10 @@ import ../../../core/dce.vibe {
   dce_stmts
 }
 
+import ../../../checker_effects.vibe {
+  file_tests_cacheable
+}
+
 import ../../source_compile/wasi_only/path_utils.vibe {
   empty_stmt_array
 }
@@ -375,6 +379,46 @@ export let compile_file_fs_mode: (String, String, String) -> Bytes with { Error,
   } else {
     throw(String::concat("unsupported compile mode: ", mode))
   }
+}
+
+// #634 (ADR-0026): same as compile_file_fs_mode, but ALSO writes the pure-test
+// cache verdict to `meta_out` (when non-empty) before codegen — computed on the
+// MERGED stmts, so transitive imported-function effect rows are visible. "1" =
+// every test block is transitively effect-free → `vibe test` may cache/skip it.
+// Reached only on a successful compile (the program type-checks), so reading the
+// declared effect rows is sound. Env is read by the caller (the CLI adapter),
+// keeping this layer free of the Env effect.
+export let compile_file_fs_mode_testmeta: (String, String, String, String) -> Bytes with { Error, Fs } = (entry_path, entry_name, mode, meta_out) -> {
+  let source_groups = collect_source_groups_fs(entry_path)
+  let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
+  let _ = next_db
+  let merged_stmts = build_grouped_merged_stmts(source_groups)
+  // Compute the cacheability verdict BEFORE codegen (it only needs the stmts)
+  // but write it only AFTER codegen succeeds, so a failed compile leaves no
+  // stale sidecar.
+  let cacheable = if meta_out != "" {
+    file_tests_cacheable(merged_stmts)
+  } else {
+    false
+  }
+  let bytes = if mode == "mvp" {
+    let pruned_stmts = dce_stmts(merged_stmts, [entry_name])
+    compile_wasi_module_impl(pruned_stmts, entry_name)
+  } else if mode == "no-dce" {
+    compile_wasi_module(merged_stmts, entry_name)
+  } else {
+    throw(String::concat("unsupported compile mode: ", mode))
+  }
+  if meta_out != "" {
+    Fs::write_file(meta_out, if cacheable {
+      "1"
+    } else {
+      "0"
+    })
+  } else {
+    ()
+  }
+  bytes
 }
 
 // Coverage (#cov): FS-mode compile with function-level hit instrumentation.
