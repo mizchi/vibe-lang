@@ -45,6 +45,11 @@ from_char_code(65)
 - `module` import は `.xm` ソースのみ対応し、`foo::...` 形式 export を取り込む。
 - アクセス子は `::` を正規とする。
 - ディレクトリ import は `index.vibe` エンドポイントへ正規化される。
+- 再 export は `export ./mod.vibe { A, B }` のように **名前を明示列挙する**。
+  ワイルドカード再 export（`export ./mod.vibe { * }`）は **採用しない**（#628）。
+  TypeScript の `export *` のように「どの名前がどこから来たか」が追えなくなる
+  のを避け、明示的な公開境界（AI-friendly / コンテンツアドレスと整合）を保つため。
+  取り込んだ名前を `export { ... }` で再列挙する冗長は、この明示性の代償として許容する。
 
 ### 旧 import 記法の移行
 
