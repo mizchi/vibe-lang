@@ -580,6 +580,63 @@ fi
 rm -rf "$undir"
 echo "[selfhost-only-gate] extended derive (enum Ord/Show, Default, Hash) ok"
 
+# 15c. railway `let*` / `?` generalized to Option (#635): the parser emits a
+#      type-directed sentinel that the pre-check desugar lowers by the operand's
+#      head type — `Option` (Some/None) or `Result` (Ok/Err, the default). The
+#      fixtures are `test "..."`-block suites; compile each through the fresh
+#      stage2 and run `_start` (a failing `assert` traps, so a clean run == all
+#      blocks passed). Covers Option `let*`, Result `let*` unchanged, Option `?`
+#      early-return-None, Result `?` early-return-Err, and the mixed-type type
+#      error (a negative file that must NOT compile).
+echo "[selfhost-only-gate] 15c/15 railway let*/? Option generalization (#635)"
+for fx in \
+  fixtures/try_let_star_option_test.vibe \
+  fixtures/try_question_option_test.vibe; do
+  fxout="_build/_gate_railway_$(basename "${fx%.vibe}").wasm"
+  rm -f "$fxout" "$fxout.diag"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$fx" "$fxout" __no_entry__ >/dev/null 2>&1
+  if [ ! -s "$fxout" ]; then
+    echo "[selfhost-only-gate] FAIL: $fx did not compile" >&2
+    cat "$fxout.diag" 2>/dev/null >&2; exit 1
+  fi
+  if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+      --invoke _start "$fxout" >/dev/null 2>&1; then
+    echo "[selfhost-only-gate] FAIL: $fx has a failing test (assert trapped)" >&2
+    exit 1
+  fi
+  rm -f "$fxout" "$fxout.diag" "$fxout.funcmap"
+done
+# Mixed Result/Option in one `let*` chain must be a type error (NO implicit
+# conversion): a block returns one type, so a `Result` rest under an `Option`
+# `let*` (or vice-versa) fails the checker. The file must NOT compile.
+mixdir="_build/_gate_railway_mixed"
+rm -rf "$mixdir"; mkdir -p "$mixdir"
+cat > "$mixdir/m.vibe" <<'EOF'
+enum Result[T, E] { Ok(T); Err(E) }
+let opt = (n: Int) -> Option[Int] { if n > 0 { Some(n) } else { None } }
+let res = (n: Int) -> Result[Int, String] { if n > 0 { Ok(n) } else { Err("x") } }
+// `let* x = opt(..)` lowers the block to Option; returning a Result `rest`
+// (and an `Err` ctor as the None/short-circuit value) is a type clash.
+export let _start: () -> Int = () -> {
+  let r = (a: Int) -> Option[Int] {
+    let* x = opt(a)
+    res(x)
+  }
+  match r(1) { Some(v) => v, None => 0 }
+}
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$mixdir/m.vibe" "$mixdir/m.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$mixdir/m.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: mixed Result/Option let* chain compiled (should be a type error)" >&2
+  exit 1
+fi
+rm -rf "$mixdir"
+echo "[selfhost-only-gate] railway let*/? Option generalization ok"
+
 # 16. trait type parameters / Iterator regression (#636): a method-bearing trait
 #     with a type parameter (`Iterator[T] { next(Self) -> Option[T] }`) must be
 #     declarable, and a `[I: Iterator]` generic must dispatch `I::next` through

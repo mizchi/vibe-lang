@@ -4867,6 +4867,13 @@ let rec strip_effects: (Type) -> Type = (ty) -> {
     _ => ty
   }
 }
+let rec arm_body_diverges: (Expr) -> Bool = (body) -> {
+  match body {
+    EReturn(_) => true,
+    ESeq(_, rest) => arm_body_diverges(rest),
+    _ => false
+  }
+}
 let rec type_is_ground: (Type) -> Bool = (t) -> {
   match t {
     CtNamed(_, _) => false,
@@ -6298,9 +6305,13 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
           } else {
             if check_arms {
               let r2 = subst_apply(si, arm_ty)
-              si = match r2 {
-                CtUnit => si,
-                _ => check_assignable(result_ty, r2, si, errors, "match arms have incompatible types", 0 - 1)
+              si = if arm_body_diverges(body) {
+                si
+              } else {
+                match r2 {
+                  CtUnit => si,
+                  _ => check_assignable(result_ty, r2, si, errors, "match arms have incompatible types", 0 - 1)
+                }
               }
             } else {
               ()
@@ -8636,6 +8647,254 @@ let qual_ctor_member: (String, String, Array[(String, Array[String])], Array[(St
     None
   }
 }
+let try_sentinel: (Expr, Array[Expr]) -> Int = (callee, args) -> {
+  match callee {
+    EIdent(n, _) => if n == "__try_bind" {
+      if Array::length(args) == 2 {
+        match Array::get(args, 1) {
+          EFn(_, _, ps, _, _, _) => if Array::length(ps) == 1 {
+            0
+          } else {
+            2
+          },
+          _ => 2
+        }
+      } else {
+        2
+      }
+    } else if n == "__try_op" {
+      if Array::length(args) == 1 {
+        1
+      } else {
+        2
+      }
+    } else {
+      2
+    },
+    _ => 2
+  }
+}
+let lower_try_bind: (Expr, String, Expr, Option[String]) -> Expr = (val, name, rest, inferred) -> {
+  match inferred {
+    Some(tn) => if tn == "Option" {
+      EMatch(val, [
+        (PCtor("Some", [
+          PBind(name)
+        ]), rest),
+        (PCtor("None", Array::slice([
+          PWild
+        ], 0, 0)), EIdent("None", -1))
+      ])
+    } else {
+      EMatch(val, [
+        (PCtor("Ok", [
+          PBind(name)
+        ]), rest),
+        (PCtor("Err", [
+          PBind("__bind_err")
+        ]), ECall(EIdent("Err", -1), [
+          EIdent("__bind_err", -1)
+        ], -1))
+      ])
+    },
+    None => EMatch(val, [
+      (PCtor("Ok", [
+        PBind(name)
+      ]), rest),
+      (PCtor("Err", [
+        PBind("__bind_err")
+      ]), ECall(EIdent("Err", -1), [
+        EIdent("__bind_err", -1)
+      ], -1))
+    ])
+  }
+}
+let lower_try_op: (Expr, Option[String]) -> Expr = (val, inferred) -> {
+  match inferred {
+    Some(tn) => if tn == "Option" {
+      EMatch(val, [
+        (PCtor("Some", [
+          PBind("__try_v")
+        ]), EIdent("__try_v", -1)),
+        (PCtor("None", Array::slice([
+          PWild
+        ], 0, 0)), EReturn(EIdent("None", -1)))
+      ])
+    } else {
+      EMatch(val, [
+        (PCtor("Ok", [
+          PBind("__try_v")
+        ]), EIdent("__try_v", -1)),
+        (PCtor("Err", [
+          PBind("__try_e")
+        ]), EReturn(ECall(EIdent("Err", -1), [
+          EIdent("__try_e", -1)
+        ], -1)))
+      ])
+    },
+    None => EMatch(val, [
+      (PCtor("Ok", [
+        PBind("__try_v")
+      ]), EIdent("__try_v", -1)),
+      (PCtor("Err", [
+        PBind("__try_e")
+      ]), EReturn(ECall(EIdent("Err", -1), [
+        EIdent("__try_e", -1)
+      ], -1)))
+    ])
+  }
+}
+let rec railway_rw: (Expr, Array[(String, Array[String])], Array[(String, String)], Array[(String, String)]) -> Expr = (expr, struct_sets, var_types, fn_returns) -> {
+  match expr {
+    ECall(callee, args, off) => {
+      let k = try_sentinel(callee, args)
+      if k == 0 {
+        let val = Array::get(args, 0)
+        match Array::get(args, 1) {
+          EFn(_, _, ps, _, _, rest) => {
+            let (name, _) = Array::get(ps, 0)
+            let rwval = railway_rw(val, struct_sets, var_types, fn_returns)
+            let inferred = infer_arg_type_name(val, struct_sets, var_types, fn_returns)
+            let body_vars = extend_var_types(var_types, name, inferred)
+            let rwrest = railway_rw(rest, struct_sets, body_vars, fn_returns)
+            lower_try_bind(rwval, name, rwrest, inferred)
+          },
+          _ => EUnit
+        }
+      } else if k == 1 {
+        let val = Array::get(args, 0)
+        let rwval = railway_rw(val, struct_sets, var_types, fn_returns)
+        lower_try_op(rwval, infer_arg_type_name(val, struct_sets, var_types, fn_returns))
+      } else {
+        ECall(railway_rw(callee, struct_sets, var_types, fn_returns), for a in args {
+          railway_rw(a, struct_sets, var_types, fn_returns)
+        }, off)
+      }
+    },
+    EInt(_) => expr,
+    EFloat(_) => expr,
+    EString(_) => expr,
+    EBool(_) => expr,
+    EUnit => expr,
+    ESpread(e) => ESpread(railway_rw(e, struct_sets, var_types, fn_returns)),
+    EStringInterp(_) => expr,
+    EIdent(_, _) => expr,
+    ETuple(elems) => ETuple(for e in elems {
+      railway_rw(e, struct_sets, var_types, fn_returns)
+    }),
+    EArray(elems) => EArray(for e in elems {
+      railway_rw(e, struct_sets, var_types, fn_returns)
+    }),
+    ERecord(fields) => {
+      let out = Array::slice([
+        ("", EUnit)
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (fname, fval) = Array::get(fields, i)
+        Array::push(out, (fname, railway_rw(fval, struct_sets, var_types, fn_returns)))
+        i = i + 1
+      }
+      ERecord(out)
+    },
+    EMap(fields) => {
+      let out = Array::slice([
+        ("", EUnit)
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (k, v) = Array::get(fields, i)
+        Array::push(out, (k, railway_rw(v, struct_sets, var_types, fn_returns)))
+        i = i + 1
+      }
+      EMap(out)
+    },
+    EIf(c, t, e) => EIf(railway_rw(c, struct_sets, var_types, fn_returns), railway_rw(t, struct_sets, var_types, fn_returns), railway_rw(e, struct_sets, var_types, fn_returns)),
+    ELet(name, val, body) => {
+      let new_val = railway_rw(val, struct_sets, var_types, fn_returns)
+      let body_vars = extend_var_types(var_types, name, infer_arg_type_name(val, struct_sets, var_types, fn_returns))
+      ELet(name, new_val, railway_rw(body, struct_sets, body_vars, fn_returns))
+    },
+    ELetRec(name, val, body) => ELetRec(name, railway_rw(val, struct_sets, var_types, fn_returns), railway_rw(body, struct_sets, var_types, fn_returns)),
+    ELetMut(name, val, body) => {
+      let new_val = railway_rw(val, struct_sets, var_types, fn_returns)
+      let body_vars = extend_var_types(var_types, name, infer_arg_type_name(val, struct_sets, var_types, fn_returns))
+      ELetMut(name, new_val, railway_rw(body, struct_sets, body_vars, fn_returns))
+    },
+    EAssign(name, val, cont) => EAssign(name, railway_rw(val, struct_sets, var_types, fn_returns), railway_rw(cont, struct_sets, var_types, fn_returns)),
+    EAssignOp(name, op, val, cont) => EAssignOp(name, op, railway_rw(val, struct_sets, var_types, fn_returns), railway_rw(cont, struct_sets, var_types, fn_returns)),
+    ESeq(a, b) => ESeq(railway_rw(a, struct_sets, var_types, fn_returns), railway_rw(b, struct_sets, var_types, fn_returns)),
+    EMatch(scrut, arms) => {
+      let out = Array::slice([
+        (PWild, EUnit)
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, b) = Array::get(arms, i)
+        Array::push(out, (p, railway_rw(b, struct_sets, var_types, fn_returns)))
+        i = i + 1
+      }
+      EMatch(railway_rw(scrut, struct_sets, var_types, fn_returns), out)
+    },
+    EHandle(scrut, arms) => {
+      let out = Array::slice([
+        (PWild, EUnit)
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, b) = Array::get(arms, i)
+        Array::push(out, (p, railway_rw(b, struct_sets, var_types, fn_returns)))
+        i = i + 1
+      }
+      EHandle(railway_rw(scrut, struct_sets, var_types, fn_returns), out)
+    },
+    EWhile(c, b) => EWhile(railway_rw(c, struct_sets, var_types, fn_returns), railway_rw(b, struct_sets, var_types, fn_returns)),
+    ELoop(params, body) => ELoop(for param in params {
+      let (name, init) = param
+      (name, railway_rw(init, struct_sets, var_types, fn_returns))
+    }, railway_rw(body, struct_sets, var_types, fn_returns)),
+    EForIn(name, idx, iter, body) => EForIn(name, idx, railway_rw(iter, struct_sets, var_types, fn_returns), railway_rw(body, struct_sets, var_types, fn_returns)),
+    EBinOp(op, l, r) => EBinOp(op, railway_rw(l, struct_sets, var_types, fn_returns), railway_rw(r, struct_sets, var_types, fn_returns)),
+    EUnaryOp(op, e) => EUnaryOp(op, railway_rw(e, struct_sets, var_types, fn_returns)),
+    EFn(tp, bs, ps, ret, eff, body) => EFn(tp, bs, ps, ret, eff, railway_rw(body, struct_sets, seed_var_types(ps, tp, var_types), fn_returns)),
+    EDot(obj, field, off) => EDot(railway_rw(obj, struct_sets, var_types, fn_returns), field, off),
+    ELabeledArg(label, name, body) => ELabeledArg(label, name, railway_rw(body, struct_sets, var_types, fn_returns)),
+    EThrow(e) => EThrow(railway_rw(e, struct_sets, var_types, fn_returns)),
+    EReturn(e) => EReturn(railway_rw(e, struct_sets, var_types, fn_returns)),
+    EBreak(opt) => match opt {
+      Some(e) => EBreak(Some(railway_rw(e, struct_sets, var_types, fn_returns))),
+      None => expr
+    },
+    EContinue(exprs) => EContinue(for e in exprs {
+      railway_rw(e, struct_sets, var_types, fn_returns)
+    })
+  }
+}
+let rec railway_rw_stmt: (Stmt, Array[(String, Array[String])], Array[(String, String)]) -> Stmt = (s, struct_sets, fn_returns) -> {
+  let no_vars = Array::slice([
+    ("", "")
+  ], 0, 0)
+  match s {
+    SLet(exp, isrec, fname, ann, body) => SLet(exp, isrec, fname, ann, railway_rw(body, struct_sets, no_vars, fn_returns)),
+    SLetMut(name, ty, e) => SLetMut(name, ty, railway_rw(e, struct_sets, no_vars, fn_returns)),
+    STest(name, body) => STest(name, railway_rw(body, struct_sets, no_vars, fn_returns)),
+    SBench(name, body) => SBench(name, railway_rw(body, struct_sets, no_vars, fn_returns)),
+    SExpr(e) => SExpr(railway_rw(e, struct_sets, no_vars, fn_returns)),
+    SModule(exp, name, body) => SModule(exp, name, for inner in body {
+      railway_rw_stmt(inner, struct_sets, fn_returns)
+    }),
+    _ => s
+  }
+}
+export let desugar_railway_binds: (Array[Stmt]) -> Unit = (stmts) -> {
+  let struct_sets = collect_struct_field_sets(stmts)
+  let fn_returns = collect_fn_returns(stmts)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    Array::set(stmts, i, railway_rw_stmt(Array::get(stmts, i), struct_sets, fn_returns))
+    i = i + 1
+  }
+}
 let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(String, Array[String])], Array[(String, String, String, Array[String])], Array[(String, String)], Array[(String, String)]) -> Expr = (expr, gens, traits, struct_sets, dict_binds, var_types, fn_returns) -> {
   match expr {
     EIdent(name, off) => match split_qualified(name) {
@@ -8652,6 +8911,25 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
       None => expr
     },
     ECall(callee, args, off) => {
+      let try_kind = try_sentinel(callee, args)
+      if try_kind == 0 {
+        let val = Array::get(args, 0)
+        match Array::get(args, 1) {
+          EFn(_, _, ps, _, _, rest) => {
+            let (name, _) = Array::get(ps, 0)
+            let rwval = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+            let inferred = infer_arg_type_name(val, struct_sets, var_types, fn_returns)
+            let body_vars = extend_var_types(var_types, name, inferred)
+            let rwrest = rewrite_expr(rest, gens, traits, struct_sets, dict_binds, body_vars, fn_returns)
+            lower_try_bind(rwval, name, rwrest, inferred)
+          },
+          _ => EUnit
+        }
+      } else if try_kind == 1 {
+        let val = Array::get(args, 0)
+        let rwval = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+        lower_try_op(rwval, infer_arg_type_name(val, struct_sets, var_types, fn_returns))
+      } else {
       let rwargs = for a in args {
         rewrite_expr(a, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
       }
@@ -8687,6 +8965,7 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
         },
         EDot(obj, m, doff) => ECall(EDot(rewrite_expr(obj, gens, traits, struct_sets, dict_binds, var_types, fn_returns), m, doff), rwargs, off),
         _ => ECall(rewrite_expr(callee, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rwargs, off)
+      }
       }
     },
     EInt(_) => expr,
@@ -10000,6 +10279,7 @@ let collect_async_effect_errors: (Array[Stmt], TypeEnv, Array[String]) -> Unit =
 }
 export let check_program: (Array[Stmt]) -> TypeEnv with { Error } = (stmts) -> {
   inject_trait_method_generics(stmts)
+  desugar_railway_binds(stmts)
   let empty_defs = Array::slice([
     TDAlias("_dummy", Array::slice([
       ""
@@ -10053,6 +10333,7 @@ export let check_program_with_env: (Array[Stmt], TypeEnv) -> TypeEnv with { Erro
     EnvEmpty => check_program(stmts),
     _ => {
       inject_trait_method_generics(stmts)
+      desugar_railway_binds(stmts)
       let empty_defs = Array::slice([
         TDAlias("_dummy", Array::slice([
       ""
@@ -27373,6 +27654,9 @@ let rec parse_postfix: (Array[Token], Array[Int], Int, Expr, (Array[Token], Int,
       TInt(idx) => parse_postfix(tokens, starts, pos + 2, EDot(expr, __to_string(idx), callee_offset(expr)), parse_recur),
       _ => (expr, pos)
     },
+    TQuestion => parse_postfix(tokens, starts, pos + 1, ECall(EIdent("__try_op", -1), [
+      expr
+    ], -1), parse_recur),
     _ => (expr, pos)
   }
 }
@@ -27649,16 +27933,18 @@ let apply_block_step: (BlockStep, Expr) -> Expr = (step, rest) -> {
     ]),
     StepStructDestr(pat, val) => apply_struct_destr(pat, val, rest),
     StepRecordDestr(pat, val) => apply_record_destr(pat, val, rest),
-    StepBind(name, val) => EMatch(val, [
-      (PCtor("Ok", [
-        PBind(name)
-      ]), rest),
-      (PCtor("Err", [
-        PBind("__bind_err")
-      ]), ECall(EIdent("Err", -1), [
-        EIdent("__bind_err", -1)
-      ], -1))
-    ])
+    StepBind(name, val) => ECall(EIdent("__try_bind", -1), [
+      val,
+      EFn(Array::slice([
+        ""
+      ], 0, 0), Array::slice([
+        ("", Array::slice([
+          ""
+        ], 0, 0))
+      ], 0, 0), [
+        (name, None)
+      ], None, None, rest)
+    ], -1)
   }
 }
 let fold_block_steps: (Array[BlockStep]) -> Expr = (steps) -> {
@@ -31275,7 +31561,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "e735e49df52673a9"
+  "38088d9801565886"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647

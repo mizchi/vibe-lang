@@ -361,16 +361,18 @@ test "parse let* railway bind chain" {
   assert(ok == "ok")
 }
 
-test "let* desugars to a Result match" {
-  // `let* x = e <rest>` desugars to
-  //   match e { Ok(x) => <rest>, Err(__bind_err) => Err(__bind_err) }
+test "let* parses to the type-directed railway sentinel" {
+  // #635: `let* x = e <rest>` now parses to the type-directed sentinel
+  //   __try_bind(e, (x) -> <rest>)
+  // which the pre-check railway desugar lowers by `e`'s head type — Result by
+  // default (today's behavior), Option when `e: Option[_]`. The parser has no
+  // type info, so it emits the sentinel rather than committing to a match.
   let printed = handle {
     print_program(parse_program(lex("let run = () -> { let* x = foo() \n Ok(x) }")))
   } with Error {
     Throw(e) => String::concat("ERROR: ", e)
   }
-  assert(String::contains(printed, "match"))
+  assert(String::contains(printed, "__try_bind"))
+  // The continuation closure carries the bound name + the rest of the block.
   assert(String::contains(printed, "Ok"))
-  assert(String::contains(printed, "Err"))
-  assert(String::contains(printed, "__bind_err"))
 }

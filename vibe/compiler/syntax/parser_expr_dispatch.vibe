@@ -338,19 +338,26 @@ let apply_block_step: (BlockStep, Expr) -> Expr = (step, rest) -> {
     ]),
     StepStructDestr(pat, val) => apply_struct_destr(pat, val, rest),
     StepRecordDestr(pat, val) => apply_record_destr(pat, val, rest),
-    // `let* x = e` (railway bind): short-circuit on Err, continue on Ok.
-    // `let* x = e <rest>` desugars to
-    //   match e { Ok(x) => <rest>, Err(__bind_err) => Err(__bind_err) }
-    StepBind(name, val) => EMatch(val, [
-      (PCtor("Ok", [
-        PBind(name)
-      ]), rest),
-      (PCtor("Err", [
-        PBind("__bind_err")
-      ]), ECall(EIdent("Err", -1), [
-        EIdent("__bind_err", -1)
-      ], -1))
-    ])
+    // `let* x = e` (railway bind, #635): short-circuit on the failure case,
+    // continue on the success case. The parser has no type info, so it emits a
+    // type-directed sentinel `__try_bind(val, (x) -> rest)` that the pre-check
+    // desugar (`desugar_trait_dict.vibe::rewrite_expr`) lowers by `val`'s head
+    // type: `Option` -> `match val { Some(x) => rest, None => None }`, else
+    // (`Result` or undeterminable) the original Result match
+    //   `match val { Ok(x) => rest, Err(__bind_err) => Err(__bind_err) }`.
+    // The continuation closure carries `x` + `rest` so `rest`'s scope is exact.
+    StepBind(name, val) => ECall(EIdent("__try_bind", -1), [
+      val,
+      EFn(Array::slice([
+        ""
+      ], 0, 0), Array::slice([
+        ("", Array::slice([
+          ""
+        ], 0, 0))
+      ], 0, 0), [
+        (name, None)
+      ], None, None, rest)
+    ], -1)
   }
 }
 

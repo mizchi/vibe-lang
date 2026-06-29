@@ -449,6 +449,15 @@ let rec parse_postfix: (Array[Token], Array[Int], Int, Expr, (Array[Token], Int,
       TInt(idx) => parse_postfix(tokens, starts, pos + 2, EDot(expr, __to_string(idx), callee_offset(expr)), parse_recur),
       _ => (expr, pos)
     },
+    // `expr?` (railway try, #635): emit the type-directed sentinel
+    // `__try_op(expr)` that the pre-check desugar lowers by `expr`'s head type —
+    // Option -> yield inner on Some, early-`return None` on None; Result (the
+    // default) -> yield inner on Ok, early-`return Err(e)` on Err. The parser
+    // has no type info, so it defers the choice to the desugar. Continue postfix
+    // parsing so `f(x)?.field` chains.
+    TQuestion => parse_postfix(tokens, starts, pos + 1, ECall(EIdent("__try_op", -1), [
+      expr
+    ], -1), parse_recur),
     _ => (expr, pos)
   }
 }

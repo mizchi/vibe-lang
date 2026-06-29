@@ -298,20 +298,42 @@ let fetch_user: (String) -> Result[String, String] = (raw) -> {
 }
 ```
 
-### Railway bind (`let*`)
+### Railway bind (`let*`) — `Result` and `Option` (#635)
 
-`let* x = e` unwraps an `Ok` and binds `x`, or short-circuits the whole block
-with the `Err`. It desugars to `match e { Ok(x) => <rest>, Err(e) => Err(e) }`,
-so the enclosing function must return a `Result`. Handy when stages need
-names instead of point-free `and_then`:
+`let* x = e` unwraps the success case and binds `x`, or short-circuits the whole
+block with the failure case. The lowering is **type-directed by `e`'s type**:
+
+- `e: Result[T, E]` → `match e { Ok(x) => <rest>, Err(e) => Err(e) }`
+- `e: Option[T]`    → `match e { Some(x) => <rest>, None => None }`
+
+so the enclosing function must return the matching `Result`/`Option`. Handy when
+stages need names instead of point-free `and_then`:
 
 ```vibe
 let fetch_user: (String) -> Result[String, String] = (raw) -> {
-  let* id   = parse_id(raw)        // returns Err early on failure
+  let* id    = parse_id(raw)       // Err short-circuits the block
   let* valid = validate_id(id)
   load_user(valid)                 // last expr is the block's Result
 }
+
+let pair: (Int, Int) -> Option[Int] = (a, b) -> {
+  let* x = half(a)                 // None short-circuits the block
+  let* y = half(b)
+  Some(x + y)                      // last expr is the block's Option
+}
 ```
+
+**Adopted scope (#635, "option 1: built-in set extension"):** `let*`/`?` are
+generalized to the compiler's built-in short-circuit set — `Result` and
+`Option` — *only*. A user-extensible `Try`/`Bind` trait (option 2) is **deferred**
+(it depends on method-bearing traits). **No implicit conversion** between the two:
+a block returns one type, so mixing `Result` and `Option` in one `let*`/`?` chain
+is a type error (e.g. `return type mismatch: expected Option[Int], got
+Result[Int, String]`). Type direction is **best-effort syntactic inference** on
+the operand's head type (a function's declared return head, a local binding's
+inferred type, a constructor's enum); when **undeterminable, it defaults to
+`Result`** (the historical behavior) — so annotate the operand's source (e.g. a
+function return type) if a borderline `Option` case is misread as `Result`.
 
 ### Debugging a pipeline (`tap`)
 
@@ -338,10 +360,35 @@ let risky: (Int) -> Int with { Error } = (x) -> {
 
 // handle catches the effect
 let safe = handle { risky(0) } with Error { Throw(msg) => -1 }
-
-// ? operator (sugar for handle + rethrow)
-let result = risky(n)?
 ```
+
+### Railway try (`?`) — `Result` and `Option` (#635)
+
+`e?` unwraps the success case and yields the inner value, or **early-`return`s**
+the failure case from the enclosing function. Like `let*`, the lowering is
+**type-directed by `e`'s type**:
+
+- `e: Result[T, E]` → `match e { Ok(v) => v, Err(err) => return Err(err) }`
+- `e: Option[T]`    → `match e { Some(v) => v, None => return None }`
+
+```vibe
+let sum_checked: (Int, Int) -> Result[Int, String] = (a, b) -> {
+  let x = checked(a)?              // Err early-returns from sum_checked
+  let y = checked(b)?
+  Ok(x + y)
+}
+
+let sum_halves: (Int, Int) -> Option[Int] = (a, b) -> {
+  let x = half(a)?                 // None early-returns from sum_halves
+  let y = half(b)?
+  Some(x + y)
+}
+```
+
+Same adopted scope as `let*` above: built-in `Result`/`Option` only, no implicit
+conversion, best-effort type direction defaulting to `Result` when
+undeterminable. (The deferred `Try` trait — option 2 — would let user types opt
+in; it is not implemented.)
 
 ### suberror (typed errors)
 
