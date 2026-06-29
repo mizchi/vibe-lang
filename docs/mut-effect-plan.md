@@ -121,6 +121,43 @@ canonical は `resume` である (ADR-0050)。
   真の first-class / multi-shot continuation はこの軸では扱わない。
 - tail-resumptive 検出 (Step 4) の対象は `resume` 末尾 1 回呼びパターン。
 
+### 領域つき書き込み capability モデル (ADR-0060 / #629)
+
+可変性は「領域 (region) でパラメータ化した書き込みエフェクト」`Write[r]` の
+一機構で統一説明する（採否判断は ADR-0060）。脱糖規則:
+
+```
+// 局所 mut は「新しい領域 r0 を導入し、Write[r0] を束縛点で即設置・即 discharge」
+// する糖衣とみなす。Write[r0] はブロック内で完全に消化されるため、
+// 関数の公開エフェクト行には現れない（= 局所 mut は capability 不要に見える）。
+let mut x = e0; <body>
+  ≡  handle {
+       // x への書き込み x = v は perform Write[r0]::set(x, v) として解釈
+       <body>
+     } with Write[r0] { set(cell, v) => /* in-place 更新 */ resume(()) }
+```
+
+- **局所性 = 領域の閉包**: ADR-0017 の「escape 不可」は「region `r0` が束縛点を
+  scope-out すると無効」という region 規律で正当化される。`Write[r0]` ハンドラは
+  束縛点で即設置・即 discharge されるため、`r0` を参照する書き込み権限は
+  ブロックの外へ持ち出せない。
+- **跨スコープ書き込み**: 外側 mut を書き換える関数は領域権限を公開行
+  `... with { Write[router] }` に宣言し、その mut を所有しハンドラを設置した側
+  だけが grant する。権限を持たない関数は行に `Write[r]` が無く型レベルで書込不能。
+- **アンビエント状態**: host/global の真にアンビエントな状態は `#import` 付き
+  外部エフェクト（Phase 2）としてビルトインが grant する。これが issue の言う
+  「ビルトインとして与える権限」に対応。
+- **#418 escape ↔ region 対応**: ADR-0052 `mut` field を持つ struct への参照が
+  関数戻り値 / クロージャ捕捉 / async・spawn 越しに保持される escape 検査は、
+  「領域 `r` が所有スコープを脱出していないこと」の検査として再定式化する。
+  Effekt の second-class capability（値は first-class、capability は領域外へ
+  持ち出せない）が参照実装で、#418 の escape analysis をこの規律として
+  読み替えられる。
+- 実装は後続。前提 #626（effect 変数の真の単一化・effect row 正規化）は
+  解決済み (closed 2026-06-27) なので、領域 `r` を row 変数の一種として
+  単一化に載せる足場はある。本節は採用モデルと脱糖・escape 対応の記録で、
+  `Write[r]` lowering / region 推論の実装は別作業。
+
 ---
 
 ## Phase 1: Tail-Resumptive Effect Handler
