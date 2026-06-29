@@ -282,6 +282,20 @@ let rec strip_effects: (Type) -> Type = (ty) -> {
 // both to restrict record struct-identity recovery to MONOMORPHIC structs (a
 // bare `CtStruct(LazyIter)` would erase the element type that `for x in it`
 // relies on) and to gate structural-mismatch reporting to concrete types.
+// #635: does a match-arm body DIVERGE (early-`return`), yielding no value to the
+// match? The `?`-operator desugar lowers `val?` to
+//   match val { Some(v) => v, None => return None }
+// whose `None` arm is `return None` — it must not force the match's result type
+// (else `T` vs `Option[T]` clashes). A diverging arm is a bare `return`, or a
+// block (`ESeq`) whose final expr diverges.
+let rec arm_body_diverges: (Expr) -> Bool = (body) -> {
+  match body {
+    EReturn(_) => true,
+    ESeq(_, rest) => arm_body_diverges(rest),
+    _ => false
+  }
+}
+
 let rec type_is_ground: (Type) -> Bool = (t) -> {
   match t {
     CtNamed(_, _) => false,
@@ -1993,11 +2007,19 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
           } else {
             if check_arms {
               // Tolerate a `CtUnit` arm (statement-position match); rely on
-              // check_assignable's ground/ground gate otherwise.
+              // check_assignable's ground/ground gate otherwise. Also tolerate a
+              // DIVERGING arm whose body is an early `return` (#635): `val?`
+              // lowers to `match val { Some(v) => v, None => return None }` — the
+              // `return` arm yields no value to the match, so it must not force
+              // the match's result type (it would clash `T` vs `Option[T]`).
               let r2 = subst_apply(si, arm_ty)
-              si = match r2 {
-                CtUnit => si,
-                _ => check_assignable(result_ty, r2, si, errors, "match arms have incompatible types", 0 - 1)
+              si = if arm_body_diverges(body) {
+                si
+              } else {
+                match r2 {
+                  CtUnit => si,
+                  _ => check_assignable(result_ty, r2, si, errors, "match arms have incompatible types", 0 - 1)
+                }
               }
             } else {
               ()

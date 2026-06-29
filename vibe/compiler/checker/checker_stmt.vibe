@@ -25,7 +25,7 @@ import ./checker_resolve.vibe {
 }
 
 import .. / desugar_trait_dict.vibe {
-  inject_trait_method_generics
+  desugar_railway_binds, inject_trait_method_generics
 }
 
 //# Functions
@@ -660,6 +660,11 @@ export let check_program: (Array[Stmt]) -> TypeEnv with { Error } = (stmts) -> {
   // resolves on every path (the FS-compile path type-checks before the codegen
   // desugar runs). In-place + idempotent + inert without a method-level binder.
   inject_trait_method_generics(stmts)
+  // #635: lower `let*`/`?` railway sentinels (`__try_bind`/`__try_op`) by the
+  // operand's head type BEFORE checking, so the checker never sees the
+  // sentinels (the codegen-time desugar runs later, but the FS-compile path
+  // type-checks first). In-place, idempotent, inert without `let*`/`?`.
+  desugar_railway_binds(stmts)
   let empty_defs = Array::slice([
     TDAlias("_dummy", Array::slice([
       ""
@@ -722,6 +727,9 @@ export let check_program_with_env: (Array[Stmt], TypeEnv) -> TypeEnv with { Erro
     EnvEmpty => check_program(stmts),
     _ => {
       inject_trait_method_generics(stmts)
+      // #635: lower `let*`/`?` railway sentinels before checking (see
+      // check_program). This path checks each imported/entry file pre-codegen.
+      desugar_railway_binds(stmts)
       let empty_defs = Array::slice([
         TDAlias("_dummy", Array::slice([
       ""

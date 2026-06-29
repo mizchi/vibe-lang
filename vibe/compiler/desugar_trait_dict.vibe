@@ -1295,6 +1295,284 @@ let qual_ctor_member: (String, String, Array[(String, Array[String])], Array[(St
   }
 }
 
+// #635: classify a call as a railway-bind/op sentinel. Returns
+//   0 = `__try_bind(val, (name) -> rest)` (callee `__try_bind`, 2 args, arg1
+//       a 1-param closure),
+//   1 = `__try_op(val)` (callee `__try_op`, exactly 1 arg),
+//   2 = not a sentinel (ordinary call; e.g. a user fn that happens to share the
+//       name but with a different arity/shape).
+let try_sentinel: (Expr, Array[Expr]) -> Int = (callee, args) -> {
+  match callee {
+    EIdent(n, _) => if n == "__try_bind" {
+      if Array::length(args) == 2 {
+        match Array::get(args, 1) {
+          EFn(_, _, ps, _, _, _) => if Array::length(ps) == 1 {
+            0
+          } else {
+            2
+          },
+          _ => 2
+        }
+      } else {
+        2
+      }
+    } else if n == "__try_op" {
+      if Array::length(args) == 1 {
+        1
+      } else {
+        2
+      }
+    } else {
+      2
+    },
+    _ => 2
+  }
+}
+
+// #635: lower the `let* name = val <rest>` sentinel by `val`'s head type.
+// Option -> `match val { Some(name) => rest, None => None }`; else (Result, or
+// undeterminable -> default Result, today's behavior) the railway Result match
+// `match val { Ok(name) => rest, Err(__bind_err) => Err(__bind_err) }`.
+let lower_try_bind: (Expr, String, Expr, Option[String]) -> Expr = (val, name, rest, inferred) -> {
+  match inferred {
+    Some(tn) => if tn == "Option" {
+      EMatch(val, [
+        (PCtor("Some", [
+          PBind(name)
+        ]), rest),
+        (PCtor("None", Array::slice([
+          PWild
+        ], 0, 0)), EIdent("None", -1))
+      ])
+    } else {
+      EMatch(val, [
+        (PCtor("Ok", [
+          PBind(name)
+        ]), rest),
+        (PCtor("Err", [
+          PBind("__bind_err")
+        ]), ECall(EIdent("Err", -1), [
+          EIdent("__bind_err", -1)
+        ], -1))
+      ])
+    },
+    None => EMatch(val, [
+      (PCtor("Ok", [
+        PBind(name)
+      ]), rest),
+      (PCtor("Err", [
+        PBind("__bind_err")
+      ]), ECall(EIdent("Err", -1), [
+        EIdent("__bind_err", -1)
+      ], -1))
+    ])
+  }
+}
+
+// #635: lower the `val?` sentinel by `val`'s head type. Option -> yield the
+// inner value on `Some`, early-`return None` on `None`. Else (Result, or
+// undeterminable -> default Result) -> yield on `Ok`, early-`return Err(e)` on
+// `Err`. Uses `EReturn`, so the enclosing function short-circuits.
+let lower_try_op: (Expr, Option[String]) -> Expr = (val, inferred) -> {
+  match inferred {
+    Some(tn) => if tn == "Option" {
+      EMatch(val, [
+        (PCtor("Some", [
+          PBind("__try_v")
+        ]), EIdent("__try_v", -1)),
+        (PCtor("None", Array::slice([
+          PWild
+        ], 0, 0)), EReturn(EIdent("None", -1)))
+      ])
+    } else {
+      EMatch(val, [
+        (PCtor("Ok", [
+          PBind("__try_v")
+        ]), EIdent("__try_v", -1)),
+        (PCtor("Err", [
+          PBind("__try_e")
+        ]), EReturn(ECall(EIdent("Err", -1), [
+          EIdent("__try_e", -1)
+        ], -1)))
+      ])
+    },
+    None => EMatch(val, [
+      (PCtor("Ok", [
+        PBind("__try_v")
+      ]), EIdent("__try_v", -1)),
+      (PCtor("Err", [
+        PBind("__try_e")
+      ]), EReturn(ECall(EIdent("Err", -1), [
+        EIdent("__try_e", -1)
+      ], -1)))
+    ])
+  }
+}
+
+// #635: standalone railway-sentinel lowering. Walks an expr and rewrites only
+// the `__try_bind`/`__try_op` sentinels (everything else is recursed
+// structurally unchanged), type-directing each by `infer_arg_type_name`. Runs
+// from BOTH the checker (`check_program`, where the heavy dict-passing pass does
+// NOT run) and — idempotently — the codegen `desugar_trait_dicts`. It is inert
+// for programs that use no `let*`/`?` (no sentinels present). `var_types` tracks
+// locals so `let* x = some_opt` then `let* y = uses(x)` resolves x's type.
+let rec railway_rw: (Expr, Array[(String, Array[String])], Array[(String, String)], Array[(String, String)]) -> Expr = (expr, struct_sets, var_types, fn_returns) -> {
+  match expr {
+    ECall(callee, args, off) => {
+      let k = try_sentinel(callee, args)
+      if k == 0 {
+        let val = Array::get(args, 0)
+        match Array::get(args, 1) {
+          EFn(_, _, ps, _, _, rest) => {
+            let (name, _) = Array::get(ps, 0)
+            let rwval = railway_rw(val, struct_sets, var_types, fn_returns)
+            let inferred = infer_arg_type_name(val, struct_sets, var_types, fn_returns)
+            let body_vars = extend_var_types(var_types, name, inferred)
+            let rwrest = railway_rw(rest, struct_sets, body_vars, fn_returns)
+            lower_try_bind(rwval, name, rwrest, inferred)
+          },
+          _ => EUnit
+        }
+      } else if k == 1 {
+        let val = Array::get(args, 0)
+        let rwval = railway_rw(val, struct_sets, var_types, fn_returns)
+        lower_try_op(rwval, infer_arg_type_name(val, struct_sets, var_types, fn_returns))
+      } else {
+        ECall(railway_rw(callee, struct_sets, var_types, fn_returns), for a in args {
+          railway_rw(a, struct_sets, var_types, fn_returns)
+        }, off)
+      }
+    },
+    EInt(_) => expr,
+    EFloat(_) => expr,
+    EString(_) => expr,
+    EBool(_) => expr,
+    EUnit => expr,
+    ESpread(e) => ESpread(railway_rw(e, struct_sets, var_types, fn_returns)),
+    EStringInterp(_) => expr,
+    EIdent(_, _) => expr,
+    ETuple(elems) => ETuple(for e in elems {
+      railway_rw(e, struct_sets, var_types, fn_returns)
+    }),
+    EArray(elems) => EArray(for e in elems {
+      railway_rw(e, struct_sets, var_types, fn_returns)
+    }),
+    ERecord(fields) => {
+      let out = Array::slice([
+        ("", EUnit)
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (fname, fval) = Array::get(fields, i)
+        Array::push(out, (fname, railway_rw(fval, struct_sets, var_types, fn_returns)))
+        i = i + 1
+      }
+      ERecord(out)
+    },
+    EMap(fields) => {
+      let out = Array::slice([
+        ("", EUnit)
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (k, v) = Array::get(fields, i)
+        Array::push(out, (k, railway_rw(v, struct_sets, var_types, fn_returns)))
+        i = i + 1
+      }
+      EMap(out)
+    },
+    EIf(c, t, e) => EIf(railway_rw(c, struct_sets, var_types, fn_returns), railway_rw(t, struct_sets, var_types, fn_returns), railway_rw(e, struct_sets, var_types, fn_returns)),
+    ELet(name, val, body) => {
+      let new_val = railway_rw(val, struct_sets, var_types, fn_returns)
+      let body_vars = extend_var_types(var_types, name, infer_arg_type_name(val, struct_sets, var_types, fn_returns))
+      ELet(name, new_val, railway_rw(body, struct_sets, body_vars, fn_returns))
+    },
+    ELetRec(name, val, body) => ELetRec(name, railway_rw(val, struct_sets, var_types, fn_returns), railway_rw(body, struct_sets, var_types, fn_returns)),
+    ELetMut(name, val, body) => {
+      let new_val = railway_rw(val, struct_sets, var_types, fn_returns)
+      let body_vars = extend_var_types(var_types, name, infer_arg_type_name(val, struct_sets, var_types, fn_returns))
+      ELetMut(name, new_val, railway_rw(body, struct_sets, body_vars, fn_returns))
+    },
+    EAssign(name, val, cont) => EAssign(name, railway_rw(val, struct_sets, var_types, fn_returns), railway_rw(cont, struct_sets, var_types, fn_returns)),
+    EAssignOp(name, op, val, cont) => EAssignOp(name, op, railway_rw(val, struct_sets, var_types, fn_returns), railway_rw(cont, struct_sets, var_types, fn_returns)),
+    ESeq(a, b) => ESeq(railway_rw(a, struct_sets, var_types, fn_returns), railway_rw(b, struct_sets, var_types, fn_returns)),
+    EMatch(scrut, arms) => {
+      let out = Array::slice([
+        (PWild, EUnit)
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, b) = Array::get(arms, i)
+        Array::push(out, (p, railway_rw(b, struct_sets, var_types, fn_returns)))
+        i = i + 1
+      }
+      EMatch(railway_rw(scrut, struct_sets, var_types, fn_returns), out)
+    },
+    EHandle(scrut, arms) => {
+      let out = Array::slice([
+        (PWild, EUnit)
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, b) = Array::get(arms, i)
+        Array::push(out, (p, railway_rw(b, struct_sets, var_types, fn_returns)))
+        i = i + 1
+      }
+      EHandle(railway_rw(scrut, struct_sets, var_types, fn_returns), out)
+    },
+    EWhile(c, b) => EWhile(railway_rw(c, struct_sets, var_types, fn_returns), railway_rw(b, struct_sets, var_types, fn_returns)),
+    ELoop(params, body) => ELoop(for param in params {
+      let (name, init) = param
+      (name, railway_rw(init, struct_sets, var_types, fn_returns))
+    }, railway_rw(body, struct_sets, var_types, fn_returns)),
+    EForIn(name, idx, iter, body) => EForIn(name, idx, railway_rw(iter, struct_sets, var_types, fn_returns), railway_rw(body, struct_sets, var_types, fn_returns)),
+    EBinOp(op, l, r) => EBinOp(op, railway_rw(l, struct_sets, var_types, fn_returns), railway_rw(r, struct_sets, var_types, fn_returns)),
+    EUnaryOp(op, e) => EUnaryOp(op, railway_rw(e, struct_sets, var_types, fn_returns)),
+    EFn(tp, bs, ps, ret, eff, body) => EFn(tp, bs, ps, ret, eff, railway_rw(body, struct_sets, seed_var_types(ps, tp, var_types), fn_returns)),
+    EDot(obj, field, off) => EDot(railway_rw(obj, struct_sets, var_types, fn_returns), field, off),
+    ELabeledArg(label, name, body) => ELabeledArg(label, name, railway_rw(body, struct_sets, var_types, fn_returns)),
+    EThrow(e) => EThrow(railway_rw(e, struct_sets, var_types, fn_returns)),
+    EReturn(e) => EReturn(railway_rw(e, struct_sets, var_types, fn_returns)),
+    EBreak(opt) => match opt {
+      Some(e) => EBreak(Some(railway_rw(e, struct_sets, var_types, fn_returns))),
+      None => expr
+    },
+    EContinue(exprs) => EContinue(for e in exprs {
+      railway_rw(e, struct_sets, var_types, fn_returns)
+    })
+  }
+}
+
+// #635: lower the `let*`/`?` sentinels across a whole program. In-place,
+// idempotent (a second run finds no sentinels), and inert for programs that use
+// neither. Exported so the checker path can lower before type-checking.
+let rec railway_rw_stmt: (Stmt, Array[(String, Array[String])], Array[(String, String)]) -> Stmt = (s, struct_sets, fn_returns) -> {
+  let no_vars = Array::slice([
+    ("", "")
+  ], 0, 0)
+  match s {
+    SLet(exp, isrec, fname, ann, body) => SLet(exp, isrec, fname, ann, railway_rw(body, struct_sets, no_vars, fn_returns)),
+    SLetMut(name, ty, e) => SLetMut(name, ty, railway_rw(e, struct_sets, no_vars, fn_returns)),
+    STest(name, body) => STest(name, railway_rw(body, struct_sets, no_vars, fn_returns)),
+    SBench(name, body) => SBench(name, railway_rw(body, struct_sets, no_vars, fn_returns)),
+    SExpr(e) => SExpr(railway_rw(e, struct_sets, no_vars, fn_returns)),
+    SModule(exp, name, body) => SModule(exp, name, for inner in body {
+      railway_rw_stmt(inner, struct_sets, fn_returns)
+    }),
+    _ => s
+  }
+}
+
+export let desugar_railway_binds: (Array[Stmt]) -> Unit = (stmts) -> {
+  let struct_sets = collect_struct_field_sets(stmts)
+  let fn_returns = collect_fn_returns(stmts)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    Array::set(stmts, i, railway_rw_stmt(Array::get(stmts, i), struct_sets, fn_returns))
+    i = i + 1
+  }
+}
+
 // The core rewriter. `dict_binds` is non-empty only inside a transformed
 // generic's body (so `T::method` resolves to a dict field); call-site dict
 // threading applies everywhere a transformed generic is called. `var_types`
@@ -1316,6 +1594,33 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
       None => expr
     },
     ECall(callee, args, off) => {
+      // #635: type-directed lowering of the railway sentinels emitted by the
+      // parser. `__try_bind(val, (x) -> rest)` and `__try_op(val)` carry no type
+      // info from the parser; here `infer_arg_type_name(val)` picks Option vs
+      // Result (default Result when undeterminable — today's behavior). A user
+      // function literally named `__try_bind`/`__try_op` with the wrong shape
+      // (handled by `try_sentinel` returning None) takes the generic path.
+      let try_kind = try_sentinel(callee, args)
+      if try_kind == 0 {
+        // __try_bind(val, (name) -> rest)
+        let val = Array::get(args, 0)
+        match Array::get(args, 1) {
+          EFn(_, _, ps, _, _, rest) => {
+            let (name, _) = Array::get(ps, 0)
+            let rwval = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+            let inferred = infer_arg_type_name(val, struct_sets, var_types, fn_returns)
+            let body_vars = extend_var_types(var_types, name, inferred)
+            let rwrest = rewrite_expr(rest, gens, traits, struct_sets, dict_binds, body_vars, fn_returns)
+            lower_try_bind(rwval, name, rwrest, inferred)
+          },
+          _ => EUnit
+        }
+      } else if try_kind == 1 {
+        // __try_op(val)
+        let val = Array::get(args, 0)
+        let rwval = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+        lower_try_op(rwval, infer_arg_type_name(val, struct_sets, var_types, fn_returns))
+      } else {
       let rwargs = for a in args {
         rewrite_expr(a, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
       }
@@ -1354,6 +1659,7 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
         },
         EDot(obj, m, doff) => ECall(EDot(rewrite_expr(obj, gens, traits, struct_sets, dict_binds, var_types, fn_returns), m, doff), rwargs, off),
         _ => ECall(rewrite_expr(callee, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rwargs, off)
+      }
       }
     },
     EInt(_) => expr,
