@@ -101,11 +101,19 @@ let bytes_equal_simd = (a: Bytes, off_a: Int, b: Bytes, off_b: Int, len: Int) ->
 
 ## Implementation Plan
 
-| Phase | 内容 | 対象 |
-|---|---|---|
-| Phase 1 | Layer 2 mid-level パターンを vibe で実装 | `vibe/compiler/codegen/wasm_emit/simd_patterns.vibe` |
-| Phase 2 | V128 type を checker/codegen に追加、Layer 1 builtin 実装 | `src/checker/`, `src/codegen/`, selfhost |
-| Phase 3 | Layer 3 lexer 特化関数を selfhost lexer に統合 | `vibe/compiler/syntax/lexer.vibe` |
+| Phase | 内容 | 対象 | 状態 |
+|---|---|---|---|
+| Phase 1 | Layer 2 mid-level パターンを vibe で実装 | `vibe/compiler/codegen/wasm_emit/simd_patterns.vibe` | ✅ done |
+| Phase 2 | V128 type を checker/codegen に追加、Layer 1 builtin 実装 | `vibe/compiler/core/types.vibe` (`CtNamed("V128", [])`)、`vibe/compiler/checker/builtins_simd.vibe` (intrinsic 署名)、`vibe/compiler/codegen/expr/compile_call.vibe` (16-byte box lowering)、`vibe/compiler/codegen/wasm_emit/simd.vibe` (0xFD emit) | ✅ done (#536/#696) |
+| Phase 3 | Layer 3 lexer 特化関数を selfhost lexer に統合 | `vibe/compiler/syntax/lexer.vibe` | ⏳ 残: lexer hot path への intrinsic 配線 + bench 検証 |
+
+> Phase 2 (V128 first-class 型 + Layer 1 intrinsic の production 化) は #696 で着地。
+> `V128` は memory-boxed (16-byte heap block, ポインタ値 `|1` tag) として表現し、
+> `v128_*` intrinsic を `compile_call.vibe` で 0xFD prefix 命令に inline lowering する。
+> opcode regression は `scripts/selfhost_only_gate.sh` step 40 (V128 intrinsics) で pin
+> (`v128.or` の opcode 80 取り違えバグ修正含む)。**wasm-gc backend は v128 非対応**
+> (`backend_call.vibe` が unsupported error を throw) なので Layer 3 を lexer に入れる際は
+> linear backend 限定で導入し、`VIBE_TEST_BACKEND=gc` 経路を壊さないこと。
 
 ## Tail Handling
 

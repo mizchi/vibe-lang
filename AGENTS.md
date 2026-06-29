@@ -91,30 +91,39 @@ CI shard では:
 
 ## Code Navigation (IMPORTANT)
 
-**Always use `moon ide` and `moon doc` instead of grep/Read for code exploration.**
+> `moon ide` / `moon doc` は MoonBit host 退役 (#594) で使えなくなった。
+> selfhost では `vibe lsp` とその基盤になっている editor query primitives を使う
+> (#637, [docs/editor-and-debugging.md](docs/editor-and-debugging.md))。
 
-### `moon ide` - Semantic Code Navigation
+**コード探索は `vibe symbols` / `vibe type-at` / `vibe binding-at` を使う**
+(hover・rename・go-to-def と同じ AST 解析を CLI から直接叩ける)。
 
-```bash
-# Show symbol definition with source code
-moon ide peek-def fib
-moon ide peek-def Type::method
-
-# List symbols in a file
-moon ide outline src/lib.mbt
-
-# Rename symbol (refactoring)
-moon ide rename old_name new_name
-```
-
-### `moon doc` - Standard Library API Discovery
+### Editor query primitives — Semantic Code Navigation
 
 ```bash
-moon doc 'String'         # List String methods
-moon doc 'Array'          # List Array methods
-moon doc '@json'          # List symbols in package
-moon doc 'String::*rev*'  # Glob pattern search
+# 宣言アウトライン (NAME KIND START END / 行)。go-to-def / outline の基盤
+vibe symbols file.vibe
+
+# カーソル位置 (1-based line,col) の識別子の推論型。hover の基盤
+vibe type-at file.vibe <line> <col>
+
+# カーソル位置の binding の全出現箇所 (START END char offset / 行)。rename/refs の基盤
+vibe binding-at file.vibe <line> <col>
+
+# 全 diagnostics (parse error 全件 + 型エラー)。空出力 = clean
+vibe diagnostics file.vibe
 ```
+
+### `vibe lsp` - Language Server
+
+```bash
+vibe lsp        # stdin/stdout で LSP を話す。任意の LSP client を向ける
+```
+
+diagnostics / hover / document symbols / go-to-def / references / rename /
+completion / signature help を提供する。詳細は
+[docs/editor-and-debugging.md](docs/editor-and-debugging.md)。標準ライブラリ API
+の発見も `vibe symbols` で該当モジュールの `index.vibe` を見るのが速い。
 
 ## vibe 言語の Int 型制約
 
