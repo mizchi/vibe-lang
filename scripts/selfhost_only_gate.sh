@@ -1732,6 +1732,44 @@ fi
 rm -rf "$mudir"
 echo "[selfhost-only-gate] mutability discipline ok"
 
+# 32b. mutability discipline completeness (#629 step 3-2): an illegal reassignment
+#      of an immutable `let` must be flagged even when it sits inside a map literal
+#      (and likewise labeled arg / spread / break / continue — check_mutability_expr
+#      previously dropped these Expr forms to `_ => errors`, missing the violation).
+#      A `let mut` reassignment inside the same form must still compile (no over-reject).
+echo "[selfhost-only-gate] 32b/32 mutability discipline completeness (nested forms)"
+mu2dir="_build/_gate_mutability_nested"
+rm -rf "$mu2dir"; mkdir -p "$mu2dir"
+cat > "$mu2dir/ok.vibe" <<'EOF'
+export let _start: () -> Int = () -> {
+  let mut x = 1
+  let m = map { "a": { x = 2; x } }
+  m["a"]
+}
+EOF
+cat > "$mu2dir/bad.vibe" <<'EOF'
+export let _start: () -> Int = () -> {
+  let x = 1
+  let m = map { "a": { x = 2; x } }
+  m["a"]
+}
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$mu2dir/ok.vibe" "$mu2dir/ok.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$mu2dir/ok.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: legal mut reassignment inside map literal did not compile (over-rejects)" >&2
+  cat "$mu2dir/ok.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$mu2dir/bad.vibe" "$mu2dir/bad.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$mu2dir/bad.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: immutable-let reassignment inside map literal compiled (completeness regressed)" >&2; exit 1
+fi
+rm -rf "$mu2dir"
+echo "[selfhost-only-gate] mutability discipline completeness ok"
+
 # 33. pattern-soundness: a constructor pattern must bind its variant's exact
 #     payload arity, and cannot match a scalar scrutinee. Binding the right
 #     arity, a nullary variant, and the builtin Option ctors must still compile.
