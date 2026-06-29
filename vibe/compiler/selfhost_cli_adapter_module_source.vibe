@@ -9343,7 +9343,7 @@ export let desugar_derives: (Array[Stmt]) -> Unit = (stmts) -> {
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SStruct(_, name, fields, derives, _) => {
-        if str_array_contains(derives, "Show") && !top_level_fn_exists(stmts, qualified_name(name, "to_string")) {
+        if (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) && !top_level_fn_exists(stmts, qualified_name(name, "to_string")) {
           Array::push(gen, gen_show_fn(name, fields))
         } else {
           ()
@@ -9365,7 +9365,7 @@ export let desugar_derives: (Array[Stmt]) -> Unit = (stmts) -> {
         }
       },
       SEnum(_, ename, _, variants, derives) => {
-        if str_array_contains(derives, "Show") && !top_level_fn_exists(stmts, qualified_name(ename, "to_string")) {
+        if (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) && !top_level_fn_exists(stmts, qualified_name(ename, "to_string")) {
           Array::push(gen, gen_enum_show_fn(ename, variants))
         } else {
           ()
@@ -9549,6 +9549,21 @@ let struct_derives_has: (Array[String], String) -> Bool = (derives, name) -> {
   }
   found
 }
+let derive_name_is_known: (String) -> Bool = (name) -> {
+  name == "Eq" || name == "Ord" || name == "Show" || name == "Hash" || name == "Default"
+}
+let validate_derives: (Array[String], Array[String]) -> Unit = (derives, errors) -> {
+  let mut i = 0
+  while i < Array::length(derives) {
+    let name = Array::get(derives, i)
+    if name != "" && !derive_name_is_known(name) {
+      Array::push(errors, String::concat("unknown trait: ", name))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
 let stmt_is_type_decl: (Stmt) -> Bool = (stmt) -> {
   match stmt {
     SEnum(_, _, _, _, _) => true,
@@ -9711,6 +9726,7 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
         (new_env, ns, nc)
       },
       SEnum(_, name, params, variants, enum_derives) => {
+        validate_derives(enum_derives, errors)
         let param_len = Array::length(params)
         let param_var_ids = Array::slice([
           0
@@ -9805,7 +9821,7 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
         } else {
           env_eq
         }
-        let env_show = if struct_derives_has(enum_derives, "Show") {
+        let env_show = if struct_derives_has(enum_derives, "Show") || struct_derives_has(enum_derives, "Hash") {
           env_bind(env_ord, String::concat(name, "::to_string"), CtFn([
             ctor_result_type
           ], CtString, None))
@@ -9822,6 +9838,7 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
         (env_default, s, c + param_len)
       },
       SStruct(_, name, field_defs, derives, mut_fields) => {
+        validate_derives(derives, errors)
         let resolved_fields = Array::slice([
           ("", CtUnit)
         ], 0, 0)
@@ -9851,7 +9868,7 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
         } else {
           env1
         }
-        let env3 = if struct_derives_has(derives, "Show") {
+        let env3 = if struct_derives_has(derives, "Show") || struct_derives_has(derives, "Hash") {
           env_bind(env2, String::concat(name, "::to_string"), CtFn([
             CtStruct(name)
           ], CtString, None))
@@ -31258,7 +31275,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "28056bedc609f943"
+  "e735e49df52673a9"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647
