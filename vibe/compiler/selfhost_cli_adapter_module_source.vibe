@@ -1446,6 +1446,9 @@ export let resolve_builtin: (String) -> Option[Type] = (name) -> {
   else if name == "Bytes" {
     Some(CtBytes)
   }
+  else if name == "V128" {
+    Some(CtNamed("V128", empty_type_args()))
+  }
   else if name == "i64"
   || name == "u8"
   || name == "u16"
@@ -3827,6 +3830,88 @@ export let lookup_misc: (String) -> Option[Type] = (name) -> {
     }
   }
 }
+let simd_no_params: () -> Array[Type] = () -> {
+  Array::slice([
+    CtUnknown
+  ], 0, 0)
+}
+let simd_v128_ty: () -> Type = () -> {
+  CtNamed("V128", simd_no_params())
+}
+let simd_one_param: (Type) -> Array[Type] = (a) -> {
+  let arr = simd_no_params()
+  Array::push(arr, a)
+  arr
+}
+let simd_two_params: (Type, Type) -> Array[Type] = (a, b) -> {
+  let arr = simd_no_params()
+  Array::push(arr, a)
+  Array::push(arr, b)
+  arr
+}
+let simd_three_params: (Type, Type, Type) -> Array[Type] = (a, b, c) -> {
+  let arr = simd_no_params()
+  Array::push(arr, a)
+  Array::push(arr, b)
+  Array::push(arr, c)
+  arr
+}
+let lookup_simd_mem: (String) -> Option[Type] = (name) -> {
+  if name == "v128_load" {
+    Some(CtFn(simd_two_params(CtBytes, CtInt), simd_v128_ty(), None))
+  } else if name == "v128_store" {
+    Some(CtFn(simd_three_params(CtBytes, CtInt, simd_v128_ty()), CtUnit, None))
+  } else {
+    None
+  }
+}
+let lookup_simd_lane_a: (String) -> Option[Type] = (name) -> {
+  if name == "v128_splat_i8x16" {
+    Some(CtFn(simd_one_param(CtInt), simd_v128_ty(), None))
+  } else if name == "v128_eq_i8x16" {
+    Some(CtFn(simd_two_params(simd_v128_ty(), simd_v128_ty()), simd_v128_ty(), None))
+  } else if name == "v128_le_u_i8x16" {
+    Some(CtFn(simd_two_params(simd_v128_ty(), simd_v128_ty()), simd_v128_ty(), None))
+  } else if name == "v128_ge_u_i8x16" {
+    Some(CtFn(simd_two_params(simd_v128_ty(), simd_v128_ty()), simd_v128_ty(), None))
+  } else {
+    None
+  }
+}
+let lookup_simd_lane_b: (String) -> Option[Type] = (name) -> {
+  if name == "v128_and" {
+    Some(CtFn(simd_two_params(simd_v128_ty(), simd_v128_ty()), simd_v128_ty(), None))
+  } else if name == "v128_or" {
+    Some(CtFn(simd_two_params(simd_v128_ty(), simd_v128_ty()), simd_v128_ty(), None))
+  } else if name == "v128_not" {
+    Some(CtFn(simd_one_param(simd_v128_ty()), simd_v128_ty(), None))
+  } else {
+    None
+  }
+}
+let lookup_simd_reduce: (String) -> Option[Type] = (name) -> {
+  if name == "v128_bitmask_i8x16" {
+    Some(CtFn(simd_one_param(simd_v128_ty()), CtInt, None))
+  } else if name == "v128_any_true" {
+    Some(CtFn(simd_one_param(simd_v128_ty()), CtBool, None))
+  } else if name == "v128_all_true_i8x16" {
+    Some(CtFn(simd_one_param(simd_v128_ty()), CtBool, None))
+  } else {
+    None
+  }
+}
+export let lookup_simd: (String) -> Option[Type] = (name) -> {
+  match lookup_simd_mem(name) {
+    Some(t) => Some(t),
+    None => match lookup_simd_lane_a(name) {
+      Some(t) => Some(t),
+      None => match lookup_simd_lane_b(name) {
+        Some(t) => Some(t),
+        None => lookup_simd_reduce(name)
+      }
+    }
+  }
+}
 let net_no_params: () -> Array[Type] = () -> {
   Array::slice([
     CtUnknown
@@ -4311,6 +4396,8 @@ export let lookup_builtin: (String) -> Option[Type] = (name) -> {
               Some(t) => Some(t),
               None => match lookup_bytes(normalized) {
                 Some(t) => Some(t),
+                None => match lookup_simd(normalized) {
+                Some(t) => Some(t),
                 None => match lookup_map(normalized) {
                   Some(t) => Some(t),
                   None => match lookup_io(normalized) {
@@ -4326,6 +4413,7 @@ export let lookup_builtin: (String) -> Option[Type] = (name) -> {
                       }
                     }
                   }
+                }
                 }
               }
             }
@@ -8104,12 +8192,29 @@ let infer_arg_type_name: (Expr, Array[(String, Array[String])], Array[(String, S
     EString(_) => Some("String"),
     EFloat(_) => Some("Double"),
     EArray(_) => Some("Array"),
-    EIdent(name, _) => match lookup_var_type(var_types, name) {
-      Some(t) => Some(t),
-      None => ctor_enum_of_name(fn_returns, name)
+    EIdent(name, _) => if name == "None" {
+      Some("Option")
+    } else {
+      match lookup_var_type(var_types, name) {
+        Some(t) => Some(t),
+        None => ctor_enum_of_name(fn_returns, name)
+      }
     },
     ECall(callee, _, _) => match callee {
+      EIdent("Some", _) => Some("Option"),
+      EIdent("Ok", _) => Some("Result"),
+      EIdent("Err", _) => Some("Result"),
       EIdent(fname, _) => ctor_enum_of_name(fn_returns, fname),
+      EFn(_, _, params, _, _, _) => if Array::length(params) == 1 {
+        let (_, ann) = Array::get(params, 0)
+        match ann {
+          Some(TyName(n)) => Some(n),
+          Some(TyApp(n, _)) => Some(n),
+          _ => None
+        }
+      } else {
+        None
+      },
       _ => None
     },
     ERecord(fields) => {
@@ -9070,13 +9175,32 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
       let rl = rewrite_expr(l, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
       let rr = rewrite_expr(r, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
       if op == "==" || op == "!=" {
-        let ty = match infer_arg_type_name(l, struct_sets, var_types, fn_returns) {
+        let empty_l = is_empty_array_lit(l)
+        let empty_r = is_empty_array_lit(r)
+        let arr_elem = match infer_earray_elem_type(l) {
           Some(t) => Some(t),
-          None => infer_arg_type_name(r, struct_sets, var_types, fn_returns)
+          None => infer_earray_elem_type(r)
         }
-        match ty {
-          Some(t) => if struct_set_has(struct_sets, t) {
-            let call = ECall(EIdent(String::concat(t, "::equals"), -1), [
+        if empty_l || empty_r {
+          let other = if empty_l {
+            rr
+          } else {
+            rl
+          }
+          let lencmp = EBinOp("==", ECall(EIdent("Array::length", -1), [
+            other
+          ], -1), EInt(0))
+          if op == "==" {
+            lencmp
+          } else {
+            ECall(EIdent("not", -1), [
+              lencmp
+            ], -1)
+          }
+        } else {
+        match arr_elem {
+          Some(elem) => {
+            let call = ECall(EIdent(arr_equals_name(elem), -1), [
               rl,
               rr
             ], -1)
@@ -9087,10 +9211,50 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
                 call
               ], -1)
             }
-          } else {
-            EBinOp(op, rl, rr)
           },
-          None => EBinOp(op, rl, rr)
+          None => {
+            let ty = match infer_arg_type_name(l, struct_sets, var_types, fn_returns) {
+              Some(t) => Some(t),
+              None => infer_arg_type_name(r, struct_sets, var_types, fn_returns)
+            }
+            match ty {
+              Some(t) => if struct_set_has(struct_sets, t) {
+                let call = ECall(EIdent(String::concat(t, "::equals"), -1), [
+                  rl,
+                  rr
+                ], -1)
+                if op == "==" {
+                  call
+                } else {
+                  ECall(EIdent("not", -1), [
+                    call
+                  ], -1)
+                }
+              } else if t == "Option" {
+                let eqm = opt_eq_match(rl, rr)
+                if op == "==" {
+                  eqm
+                } else {
+                  ECall(EIdent("not", -1), [
+                    eqm
+                  ], -1)
+                }
+              } else if t == "Result" {
+                let eqm = result_eq_match(rl, rr)
+                if op == "==" {
+                  eqm
+                } else {
+                  ECall(EIdent("not", -1), [
+                    eqm
+                  ], -1)
+                }
+              } else {
+                EBinOp(op, rl, rr)
+              },
+              None => EBinOp(op, rl, rr)
+            }
+          }
+        }
         }
       } else {
         EBinOp(op, rl, rr)
@@ -9204,22 +9368,179 @@ let top_level_fn_exists: (Array[Stmt], String) -> Bool = (stmts, fname) -> {
   }
   found
 }
-let field_show_expr: (String, TypeExpr) -> Expr = (fname, fty) -> {
-  let access = EDot(EIdent("self", -1), fname, -1)
-  match fty {
-    TyName("String") => access,
-    _ => ECall(EIdent("__to_string", -1), [
-      access
-    ], -1)
-  }
-}
 let concat2: (Expr, Expr) -> Expr = (a, b) -> {
   ECall(EIdent("String::concat", -1), [
     a,
     b
   ], -1)
 }
-let gen_show_fn: (String, Array[(String, TypeExpr)]) -> Stmt = (tname, fields) -> {
+let rec ts_type_key: (TypeExpr) -> String = (ty) -> {
+  match ty {
+    TyName(n) => n,
+    TyApp(n, args) => {
+      let mut s = n
+      let mut i = 0
+      while i < Array::length(args) {
+        s = String::concat(s, String::concat("_", ts_type_key(Array::get(args, i))))
+        i = i + 1
+      }
+      s
+    },
+    TyTuple(ts) => {
+      let mut s = "Tup"
+      let mut i = 0
+      while i < Array::length(ts) {
+        s = String::concat(s, String::concat("_", ts_type_key(Array::get(ts, i))))
+        i = i + 1
+      }
+      s
+    },
+    TyUnit => "Unit",
+    _ => "Any"
+  }
+}
+let arr_to_string_name: (TypeExpr) -> String = (t) -> {
+  String::concat("__arr_to_string__", ts_type_key(t))
+}
+let rec show_for_typed: (TypeExpr, Expr, Array[String]) -> Expr = (fty, val, known_types) -> {
+  match fty {
+    TyName("String") => val,
+    TyName(n) => if !is_scalar_type_name(n) && str_array_contains(known_types, n) {
+      ECall(EIdent(qualified_name(n, "to_string"), -1), Array::slice([
+        val
+      ], 0, 1), -1)
+    } else {
+      ECall(EIdent("__to_string", -1), Array::slice([
+        val
+      ], 0, 1), -1)
+    },
+    TyApp("Option", args) => if Array::length(args) == 1 {
+      let t = Array::get(args, 0)
+      let inner = show_for_typed(t, EIdent("__os_v", -1), known_types)
+      let some_body = concat2(EString("Some("), concat2(inner, EString(")")))
+      EMatch(val, Array::slice([
+        (PCtor("Some", Array::slice([
+          PBind("__os_v")
+        ], 0, 1)), some_body),
+        (PCtor("None", Array::slice([
+          PWild
+        ], 0, 0)), EString("None"))
+      ], 0, 2))
+    } else {
+      ECall(EIdent("__to_string", -1), Array::slice([
+        val
+      ], 0, 1), -1)
+    },
+    TyApp("Result", args) => if Array::length(args) == 2 {
+      let t = Array::get(args, 0)
+      let e = Array::get(args, 1)
+      let ok_inner = show_for_typed(t, EIdent("__rs_v", -1), known_types)
+      let err_inner = show_for_typed(e, EIdent("__rs_v", -1), known_types)
+      let ok_body = concat2(EString("Ok("), concat2(ok_inner, EString(")")))
+      let err_body = concat2(EString("Err("), concat2(err_inner, EString(")")))
+      EMatch(val, Array::slice([
+        (PCtor("Ok", Array::slice([
+          PBind("__rs_v")
+        ], 0, 1)), ok_body),
+        (PCtor("Err", Array::slice([
+          PBind("__rs_v")
+        ], 0, 1)), err_body)
+      ], 0, 2))
+    } else {
+      ECall(EIdent("__to_string", -1), Array::slice([
+        val
+      ], 0, 1), -1)
+    },
+    TyTuple(ts) => {
+      let n = Array::length(ts)
+      let pats = Array::slice([
+        PWild
+      ], 0, 0)
+      let mut i = 0
+      while i < n {
+        Array::push(pats, PBind(String::concat("__ts_t", idx_str(i))))
+        i = i + 1
+      }
+      let segs = empty_expr_array()
+      Array::push(segs, EString("("))
+      let mut k = 0
+      while k < n {
+        if k > 0 {
+          Array::push(segs, EString(", "))
+        } else {
+          ()
+        }
+        Array::push(segs, show_for_typed(Array::get(ts, k), EIdent(String::concat("__ts_t", idx_str(k)), -1), known_types))
+        k = k + 1
+      }
+      Array::push(segs, EString(")"))
+      let mut acc = Array::get(segs, Array::length(segs) - 1)
+      let mut j = Array::length(segs) - 2
+      while j >= 0 {
+        acc = concat2(Array::get(segs, j), acc)
+        j = j - 1
+      }
+      EMatch(val, Array::slice([
+        (PTuple(pats), acc)
+      ], 0, 1))
+    },
+    TyApp("Array", args) => if Array::length(args) == 1 {
+      ECall(EIdent(arr_to_string_name(Array::get(args, 0)), -1), Array::slice([
+        val
+      ], 0, 1), -1)
+    } else {
+      ECall(EIdent("__to_string", -1), Array::slice([
+        val
+      ], 0, 1), -1)
+    },
+    TyApp(n, _) => if str_array_contains(known_types, n) {
+      ECall(EIdent(qualified_name(n, "to_string"), -1), Array::slice([
+        val
+      ], 0, 1), -1)
+    } else {
+      ECall(EIdent("__to_string", -1), Array::slice([
+        val
+      ], 0, 1), -1)
+    },
+    _ => ECall(EIdent("__to_string", -1), Array::slice([
+      val
+    ], 0, 1), -1)
+  }
+}
+let field_show_expr: (String, TypeExpr, Array[String]) -> Expr = (fname, fty, known_types) -> {
+  show_for_typed(fty, EDot(EIdent("self", -1), fname, -1), known_types)
+}
+let gen_arr_to_string_fn: (TypeExpr, Array[String]) -> Stmt = (elem_ty, known_types) -> {
+  let elem_get = ECall(EIdent("Array::get", -1), Array::slice([
+    EIdent("a", -1),
+    EIdent("__as_i", -1)
+  ], 0, 2), -1)
+  let elem_show = show_for_typed(elem_ty, elem_get, known_types)
+  let sep = EIf(EBinOp("==", EIdent("__as_i", -1), EInt(0)), EString(""), EString(", "))
+  let append = concat2(concat2(EIdent("__as_acc", -1), sep), elem_show)
+  let set_acc = EAssign("__as_acc", append, EUnit)
+  let incr = EAssign("__as_i", EBinOp("+", EIdent("__as_i", -1), EInt(1)), EUnit)
+  let loop_body = ESeq(set_acc, incr)
+  let while_loop = EWhile(EBinOp("<", EIdent("__as_i", -1), ECall(EIdent("Array::length", -1), Array::slice([
+    EIdent("a", -1)
+  ], 0, 1), -1)), loop_body)
+  let closed = concat2(EIdent("__as_acc", -1), EString("]"))
+  let body = ELetMut("__as_i", EInt(0), ELetMut("__as_acc", EString("["), ESeq(while_loop, closed)))
+  let arr_ty = TyApp("Array", Array::slice([
+    elem_ty
+  ], 0, 1))
+  let params = Array::slice([
+    ("a", Some(arr_ty))
+  ], 0, 1)
+  let no_tp = Array::slice([
+    ""
+  ], 0, 0)
+  let no_tb = Array::slice([
+    ("", no_tp)
+  ], 0, 0)
+  SLet(false, false, arr_to_string_name(elem_ty), None, EFn(no_tp, no_tb, params, Some(TyName("String")), None, body))
+}
+let gen_show_fn: (String, Array[(String, TypeExpr)], Array[String]) -> Stmt = (tname, fields, known_types) -> {
   let segs = empty_expr_array()
   Array::push(segs, EString(String::concat(tname, " { ")))
   let mut i = 0
@@ -9229,7 +9550,7 @@ let gen_show_fn: (String, Array[(String, TypeExpr)]) -> Stmt = (tname, fields) -
       ""
     } else ", "
     Array::push(segs, EString(String::concat(sep, String::concat(fname, ": "))))
-    Array::push(segs, field_show_expr(fname, fty))
+    Array::push(segs, field_show_expr(fname, fty, known_types))
     i = i + 1
   }
   Array::push(segs, EString(" }"))
@@ -9253,7 +9574,79 @@ let gen_show_fn: (String, Array[(String, TypeExpr)]) -> Stmt = (tname, fields) -
 let is_scalar_type_name: (String) -> Bool = (n) -> {
   n == "Int" || n == "Double" || n == "Bool" || n == "String" || n == "Char" || n == "Unit" || n == "Bytes"
 }
-let eq_for_typed: (TypeExpr, Expr, Expr, Array[String]) -> Expr = (fty, lhs, rhs, known_types) -> {
+let rec type_key: (TypeExpr) -> String = (ty) -> {
+  match ty {
+    TyName(n) => n,
+    TyApp(n, args) => {
+      let mut s = n
+      let mut i = 0
+      while i < Array::length(args) {
+        s = String::concat(s, String::concat("_", type_key(Array::get(args, i))))
+        i = i + 1
+      }
+      s
+    },
+    TyTuple(ts) => {
+      let mut s = "Tup"
+      let mut i = 0
+      while i < Array::length(ts) {
+        s = String::concat(s, String::concat("_", type_key(Array::get(ts, i))))
+        i = i + 1
+      }
+      s
+    },
+    TyUnit => "Unit",
+    _ => "Any"
+  }
+}
+let arr_equals_name: (TypeExpr) -> String = (t) -> {
+  String::concat("__arr_equals__", type_key(t))
+}
+let opt_eq_match: (Expr, Expr) -> Expr = (lhs, rhs) -> {
+  let some_inner = EMatch(rhs, Array::slice([
+    (PCtor("Some", Array::slice([
+      PBind("__oeq_r")
+    ], 0, 1)), EBinOp("==", EIdent("__oeq_l", -1), EIdent("__oeq_r", -1))),
+    (PWild, EBool(false))
+  ], 0, 2))
+  let none_inner = EMatch(rhs, Array::slice([
+    (PCtor("None", Array::slice([
+      PWild
+    ], 0, 0)), EBool(true)),
+    (PWild, EBool(false))
+  ], 0, 2))
+  EMatch(lhs, Array::slice([
+    (PCtor("Some", Array::slice([
+      PBind("__oeq_l")
+    ], 0, 1)), some_inner),
+    (PCtor("None", Array::slice([
+      PWild
+    ], 0, 0)), none_inner)
+  ], 0, 2))
+}
+let result_eq_match: (Expr, Expr) -> Expr = (lhs, rhs) -> {
+  let ok_inner = EMatch(rhs, Array::slice([
+    (PCtor("Ok", Array::slice([
+      PBind("__req_r")
+    ], 0, 1)), EBinOp("==", EIdent("__req_l", -1), EIdent("__req_r", -1))),
+    (PWild, EBool(false))
+  ], 0, 2))
+  let err_inner = EMatch(rhs, Array::slice([
+    (PCtor("Err", Array::slice([
+      PBind("__req_r")
+    ], 0, 1)), EBinOp("==", EIdent("__req_l", -1), EIdent("__req_r", -1))),
+    (PWild, EBool(false))
+  ], 0, 2))
+  EMatch(lhs, Array::slice([
+    (PCtor("Ok", Array::slice([
+      PBind("__req_l")
+    ], 0, 1)), ok_inner),
+    (PCtor("Err", Array::slice([
+      PBind("__req_l")
+    ], 0, 1)), err_inner)
+  ], 0, 2))
+}
+let rec eq_for_typed: (TypeExpr, Expr, Expr, Array[String]) -> Expr = (fty, lhs, rhs, known_types) -> {
   match fty {
     TyName(n) => if !is_scalar_type_name(n) && str_array_contains(known_types, n) {
       ECall(EIdent(qualified_name(n, "equals"), -1), Array::slice([
@@ -9263,8 +9656,148 @@ let eq_for_typed: (TypeExpr, Expr, Expr, Array[String]) -> Expr = (fty, lhs, rhs
     } else {
       EBinOp("==", lhs, rhs)
     },
+    TyApp("Option", args) => if Array::length(args) == 1 {
+      let t = Array::get(args, 0)
+      let inner_eq = eq_for_typed(t, EIdent("__oeq_l", -1), EIdent("__oeq_r", -1), known_types)
+      let some_inner = EMatch(rhs, Array::slice([
+        (PCtor("Some", Array::slice([
+          PBind("__oeq_r")
+        ], 0, 1)), inner_eq),
+        (PWild, EBool(false))
+      ], 0, 2))
+      let none_inner = EMatch(rhs, Array::slice([
+        (PCtor("None", Array::slice([
+          PWild
+        ], 0, 0)), EBool(true)),
+        (PWild, EBool(false))
+      ], 0, 2))
+      EMatch(lhs, Array::slice([
+        (PCtor("Some", Array::slice([
+          PBind("__oeq_l")
+        ], 0, 1)), some_inner),
+        (PCtor("None", Array::slice([
+          PWild
+        ], 0, 0)), none_inner)
+      ], 0, 2))
+    } else {
+      EBinOp("==", lhs, rhs)
+    },
+    TyApp("Result", args) => if Array::length(args) == 2 {
+      let t = Array::get(args, 0)
+      let e = Array::get(args, 1)
+      let ok_eq = eq_for_typed(t, EIdent("__req_l", -1), EIdent("__req_r", -1), known_types)
+      let err_eq = eq_for_typed(e, EIdent("__req_l", -1), EIdent("__req_r", -1), known_types)
+      let ok_inner = EMatch(rhs, Array::slice([
+        (PCtor("Ok", Array::slice([
+          PBind("__req_r")
+        ], 0, 1)), ok_eq),
+        (PWild, EBool(false))
+      ], 0, 2))
+      let err_inner = EMatch(rhs, Array::slice([
+        (PCtor("Err", Array::slice([
+          PBind("__req_r")
+        ], 0, 1)), err_eq),
+        (PWild, EBool(false))
+      ], 0, 2))
+      EMatch(lhs, Array::slice([
+        (PCtor("Ok", Array::slice([
+          PBind("__req_l")
+        ], 0, 1)), ok_inner),
+        (PCtor("Err", Array::slice([
+          PBind("__req_l")
+        ], 0, 1)), err_inner)
+      ], 0, 2))
+    } else {
+      EBinOp("==", lhs, rhs)
+    },
+    TyTuple(ts) => {
+      let n = Array::length(ts)
+      let lpats = Array::slice([
+        PWild
+      ], 0, 0)
+      let rpats = Array::slice([
+        PWild
+      ], 0, 0)
+      let mut i = 0
+      while i < n {
+        Array::push(lpats, PBind(String::concat("__teq_l", idx_str(i))))
+        Array::push(rpats, PBind(String::concat("__teq_r", idx_str(i))))
+        i = i + 1
+      }
+      let mut conj = EBool(true)
+      let mut j = n - 1
+      while j >= 0 {
+        let cmp = eq_for_typed(Array::get(ts, j), EIdent(String::concat("__teq_l", idx_str(j)), -1), EIdent(String::concat("__teq_r", idx_str(j)), -1), known_types)
+        conj = EBinOp("&&", cmp, conj)
+        j = j - 1
+      }
+      let inner = EMatch(rhs, Array::slice([
+        (PTuple(rpats), conj)
+      ], 0, 1))
+      EMatch(lhs, Array::slice([
+        (PTuple(lpats), inner)
+      ], 0, 1))
+    },
+    TyApp("Array", args) => if Array::length(args) == 1 {
+      ECall(EIdent(arr_equals_name(Array::get(args, 0)), -1), Array::slice([
+        lhs,
+        rhs
+      ], 0, 2), -1)
+    } else {
+      EBinOp("==", lhs, rhs)
+    },
+    TyApp(n, _) => if str_array_contains(known_types, n) {
+      ECall(EIdent(qualified_name(n, "equals"), -1), Array::slice([
+        lhs,
+        rhs
+      ], 0, 2), -1)
+    } else {
+      EBinOp("==", lhs, rhs)
+    },
     _ => EBinOp("==", lhs, rhs)
   }
+}
+let gen_arr_equals_fn: (TypeExpr, Array[String]) -> Stmt = (elem_ty, known_types) -> {
+  let len_a = ECall(EIdent("Array::length", -1), Array::slice([
+    EIdent("a", -1)
+  ], 0, 1), -1)
+  let len_b = ECall(EIdent("Array::length", -1), Array::slice([
+    EIdent("b", -1)
+  ], 0, 1), -1)
+  let elem_a = ECall(EIdent("Array::get", -1), Array::slice([
+    EIdent("a", -1),
+    EIdent("__ae_i", -1)
+  ], 0, 2), -1)
+  let elem_b = ECall(EIdent("Array::get", -1), Array::slice([
+    EIdent("b", -1),
+    EIdent("__ae_i", -1)
+  ], 0, 2), -1)
+  let elem_eq = eq_for_typed(elem_ty, elem_a, elem_b, known_types)
+  let not_eq = ECall(EIdent("not", -1), Array::slice([
+    elem_eq
+  ], 0, 1), -1)
+  let set_false = EIf(not_eq, EAssign("__ae_ok", EBool(false), EUnit), EUnit)
+  let incr = EAssign("__ae_i", EBinOp("+", EIdent("__ae_i", -1), EInt(1)), EUnit)
+  let loop_body = ESeq(set_false, incr)
+  let while_loop = EWhile(EBinOp("<", EIdent("__ae_i", -1), ECall(EIdent("Array::length", -1), Array::slice([
+    EIdent("a", -1)
+  ], 0, 1), -1)), loop_body)
+  let body_eq = ELetMut("__ae_i", EInt(0), ELetMut("__ae_ok", EBool(true), ESeq(while_loop, EIdent("__ae_ok", -1))))
+  let body = EIf(EBinOp("!=", len_a, len_b), EBool(false), body_eq)
+  let arr_ty = TyApp("Array", Array::slice([
+    elem_ty
+  ], 0, 1))
+  let params = Array::slice([
+    ("a", Some(arr_ty)),
+    ("b", Some(arr_ty))
+  ], 0, 2)
+  let no_tp = Array::slice([
+    ""
+  ], 0, 0)
+  let no_tb = Array::slice([
+    ("", no_tp)
+  ], 0, 0)
+  SLet(false, false, arr_equals_name(elem_ty), None, EFn(no_tp, no_tb, params, Some(TyName("Bool")), None, body))
 }
 let field_eq_expr: (String, TypeExpr, Array[String]) -> Expr = (fname, fty, known_types) -> {
   eq_for_typed(fty, EDot(EIdent("a", -1), fname, -1), EDot(EIdent("b", -1), fname, -1), known_types)
@@ -9389,15 +9922,10 @@ let gen_compare_fn: (String, Array[(String, TypeExpr)]) -> Stmt = (tname, fields
   ], 0, 0)
   SLet(false, false, qualified_name(tname, "compare"), None, EFn(no_tp, no_tb, params, Some(TyName("Int")), None, body))
 }
-let show_expr_typed: (Expr, TypeExpr) -> Expr = (val, fty) -> {
-  match fty {
-    TyName("String") => val,
-    _ => ECall(EIdent("__to_string", -1), [
-      val
-    ], -1)
-  }
+let show_expr_typed: (Expr, TypeExpr, Array[String]) -> Expr = (val, fty, known_types) -> {
+  show_for_typed(fty, val, known_types)
 }
-let gen_enum_show_fn: (String, Array[(String, Array[TypeExpr])]) -> Stmt = (ename, variants) -> {
+let gen_enum_show_fn: (String, Array[(String, Array[TypeExpr])], Array[String]) -> Stmt = (ename, variants, known_types) -> {
   let arms = Array::slice([
     (PWild, EUnit)
   ], 0, 0)
@@ -9428,7 +9956,7 @@ let gen_enum_show_fn: (String, Array[(String, Array[TypeExpr])]) -> Stmt = (enam
         } else {
           ()
         }
-        Array::push(segs, show_expr_typed(EIdent(String::concat("__s", idx_str(si)), -1), Array::get(ftypes, si)))
+        Array::push(segs, show_expr_typed(EIdent(String::concat("__s", idx_str(si)), -1), Array::get(ftypes, si), known_types))
         si = si + 1
       }
       Array::push(segs, EString(")"))
@@ -9453,6 +9981,38 @@ let gen_enum_show_fn: (String, Array[(String, Array[TypeExpr])]) -> Stmt = (enam
     ("", no_tp)
   ], 0, 0)
   SLet(false, false, qualified_name(ename, "to_string"), None, EFn(no_tp, no_tb, params, Some(TyName("String")), None, EMatch(EIdent("self", -1), arms)))
+}
+let gen_hash_key_fn: (String) -> Stmt = (tname) -> {
+  let body = ECall(EIdent(qualified_name(tname, "to_string"), -1), Array::slice([
+    EIdent("self", -1)
+  ], 0, 1), -1)
+  let params = Array::slice([
+    ("self", Some(TyName(tname)))
+  ], 0, 1)
+  let no_tp = Array::slice([
+    ""
+  ], 0, 0)
+  let no_tb = Array::slice([
+    ("", no_tp)
+  ], 0, 0)
+  SLet(false, false, qualified_name(tname, "hash_key"), None, EFn(no_tp, no_tb, params, Some(TyName("String")), None, body))
+}
+let collect_show_array_elems: (TypeExpr, Array[TypeExpr], Array[String]) -> Unit = (ty, acc, keys) -> {
+  match ty {
+    TyApp("Array", args) => if Array::length(args) == 1 {
+      let et = Array::get(args, 0)
+      let k = ts_type_key(et)
+      if str_array_contains(keys, k) {
+        ()
+      } else {
+        Array::push(keys, k)
+        Array::push(acc, et)
+      }
+    } else {
+      ()
+    },
+    _ => ()
+  }
 }
 let compare_for_typed: (TypeExpr, Expr, Expr, Array[String]) -> Expr = (fty, lhs, rhs, known_types) -> {
   let neg_one = 0 - 1
@@ -9602,6 +10162,205 @@ let gen_enum_default_fn: (String, Array[(String, Array[TypeExpr])], Array[String
   ], 0, 0)
   SLet(false, false, qualified_name(ename, "default"), None, EFn(no_tp, no_tb, no_params, Some(TyName(ename)), None, body))
 }
+let rec collect_array_elem_types: (TypeExpr, Array[TypeExpr], Array[String]) -> Unit = (ty, acc, acc_keys) -> {
+  match ty {
+    TyApp("Array", args) => if Array::length(args) == 1 {
+      let e = Array::get(args, 0)
+      let k = type_key(e)
+      if !str_array_contains(acc_keys, k) {
+        Array::push(acc, e)
+        Array::push(acc_keys, k)
+      } else {
+        ()
+      }
+      collect_array_elem_types(e, acc, acc_keys)
+    } else {
+      ()
+    },
+    TyApp(_, args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_array_elem_types(Array::get(args, i), acc, acc_keys)
+        i = i + 1
+      }
+    },
+    TyTuple(ts) => {
+      let mut i = 0
+      while i < Array::length(ts) {
+        collect_array_elem_types(Array::get(ts, i), acc, acc_keys)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+let is_empty_array_lit: (Expr) -> Bool = (e) -> {
+  match e {
+    EArray(elems) => Array::length(elems) == 0,
+    _ => false
+  }
+}
+let rec infer_earray_elem_type: (Expr) -> Option[TypeExpr] = (arr) -> {
+  match arr {
+    EArray(elems) => if Array::length(elems) == 0 {
+      None
+    } else {
+      match Array::get(elems, 0) {
+        EInt(_) => Some(TyName("Int")),
+        EBool(_) => Some(TyName("Bool")),
+        EString(_) => Some(TyName("String")),
+        EFloat(_) => Some(TyName("Double")),
+        EArray(_) => match infer_earray_elem_type(Array::get(elems, 0)) {
+          Some(inner) => Some(TyApp("Array", Array::slice([
+            inner
+          ], 0, 1))),
+          None => None
+        },
+        _ => None
+      }
+    },
+    _ => None
+  }
+}
+let rec collect_bare_array_eq_keys: (Expr, Array[TypeExpr], Array[String]) -> Unit = (e, acc, acc_keys) -> {
+  match e {
+    EBinOp(op, l, r) => {
+      if op == "==" || op == "!=" {
+        let et = match infer_earray_elem_type(l) {
+          Some(t) => Some(t),
+          None => infer_earray_elem_type(r)
+        }
+        match et {
+          Some(t) => {
+            let k = type_key(t)
+            if !str_array_contains(acc_keys, k) {
+              Array::push(acc, t)
+              Array::push(acc_keys, k)
+            } else {
+              ()
+            }
+            collect_array_elem_types(t, acc, acc_keys)
+          },
+          None => ()
+        }
+      } else {
+        ()
+      }
+      collect_bare_array_eq_keys(l, acc, acc_keys)
+      collect_bare_array_eq_keys(r, acc, acc_keys)
+    },
+    EInt(_) => (),
+    EFloat(_) => (),
+    EString(_) => (),
+    EBool(_) => (),
+    EIdent(_, _) => (),
+    EUnit => (),
+    ETuple(es) => collect_bare_array_eq_keys_list(es, acc, acc_keys),
+    EArray(es) => collect_bare_array_eq_keys_list(es, acc, acc_keys),
+    ERecord(fs) => {
+      let mut i = 0
+      while i < Array::length(fs) {
+        let (_, fe) = Array::get(fs, i)
+        collect_bare_array_eq_keys(fe, acc, acc_keys)
+        i = i + 1
+      }
+    },
+    EMap(fs) => {
+      let mut i = 0
+      while i < Array::length(fs) {
+        let (_, fe) = Array::get(fs, i)
+        collect_bare_array_eq_keys(fe, acc, acc_keys)
+        i = i + 1
+      }
+    },
+    EIf(c, t, el) => {
+      collect_bare_array_eq_keys(c, acc, acc_keys)
+      collect_bare_array_eq_keys(t, acc, acc_keys)
+      collect_bare_array_eq_keys(el, acc, acc_keys)
+    },
+    ELet(_, v, b) => {
+      collect_bare_array_eq_keys(v, acc, acc_keys)
+      collect_bare_array_eq_keys(b, acc, acc_keys)
+    },
+    ELetRec(_, v, b) => {
+      collect_bare_array_eq_keys(v, acc, acc_keys)
+      collect_bare_array_eq_keys(b, acc, acc_keys)
+    },
+    ELetMut(_, v, b) => {
+      collect_bare_array_eq_keys(v, acc, acc_keys)
+      collect_bare_array_eq_keys(b, acc, acc_keys)
+    },
+    EAssign(_, v, c) => {
+      collect_bare_array_eq_keys(v, acc, acc_keys)
+      collect_bare_array_eq_keys(c, acc, acc_keys)
+    },
+    EAssignOp(_, _, v, c) => {
+      collect_bare_array_eq_keys(v, acc, acc_keys)
+      collect_bare_array_eq_keys(c, acc, acc_keys)
+    },
+    ESeq(a, b) => {
+      collect_bare_array_eq_keys(a, acc, acc_keys)
+      collect_bare_array_eq_keys(b, acc, acc_keys)
+    },
+    EMatch(s, arms) => {
+      collect_bare_array_eq_keys(s, acc, acc_keys)
+      collect_bare_array_eq_keys_arms(arms, acc, acc_keys)
+    },
+    EHandle(s, arms) => {
+      collect_bare_array_eq_keys(s, acc, acc_keys)
+      collect_bare_array_eq_keys_arms(arms, acc, acc_keys)
+    },
+    EWhile(c, b) => {
+      collect_bare_array_eq_keys(c, acc, acc_keys)
+      collect_bare_array_eq_keys(b, acc, acc_keys)
+    },
+    ELoop(params, b) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (_, init) = Array::get(params, i)
+        collect_bare_array_eq_keys(init, acc, acc_keys)
+        i = i + 1
+      }
+      collect_bare_array_eq_keys(b, acc, acc_keys)
+    },
+    EForIn(_, _, it, b) => {
+      collect_bare_array_eq_keys(it, acc, acc_keys)
+      collect_bare_array_eq_keys(b, acc, acc_keys)
+    },
+    ECall(callee, args, _) => {
+      collect_bare_array_eq_keys(callee, acc, acc_keys)
+      collect_bare_array_eq_keys_list(args, acc, acc_keys)
+    },
+    EUnaryOp(_, x) => collect_bare_array_eq_keys(x, acc, acc_keys),
+    EFn(_, _, _, _, _, b) => collect_bare_array_eq_keys(b, acc, acc_keys),
+    EDot(o, _, _) => collect_bare_array_eq_keys(o, acc, acc_keys),
+    ELabeledArg(_, _, b) => collect_bare_array_eq_keys(b, acc, acc_keys),
+    EThrow(x) => collect_bare_array_eq_keys(x, acc, acc_keys),
+    EReturn(x) => collect_bare_array_eq_keys(x, acc, acc_keys),
+    EBreak(opt) => match opt {
+      Some(x) => collect_bare_array_eq_keys(x, acc, acc_keys),
+      None => ()
+    },
+    EContinue(es) => collect_bare_array_eq_keys_list(es, acc, acc_keys),
+    ESpread(x) => collect_bare_array_eq_keys(x, acc, acc_keys),
+    _ => ()
+  }
+}
+let collect_bare_array_eq_keys_list: (Array[Expr], Array[TypeExpr], Array[String]) -> Unit = (es, acc, acc_keys) -> {
+  let mut i = 0
+  while i < Array::length(es) {
+    collect_bare_array_eq_keys(Array::get(es, i), acc, acc_keys)
+    i = i + 1
+  }
+}
+let collect_bare_array_eq_keys_arms: (Array[(Pat, Expr)], Array[TypeExpr], Array[String]) -> Unit = (arms, acc, acc_keys) -> {
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (_, b) = Array::get(arms, i)
+    collect_bare_array_eq_keys(b, acc, acc_keys)
+    i = i + 1
+  }
+}
 let collect_decl_type_names: (Array[Stmt]) -> Array[String] = (stmts) -> {
   let out = empty_str_array()
   let mut i = 0
@@ -9618,12 +10377,29 @@ let collect_decl_type_names: (Array[Stmt]) -> Array[String] = (stmts) -> {
 export let desugar_derives: (Array[Stmt]) -> Unit = (stmts) -> {
   let gen = empty_stmt_list()
   let known_types = collect_decl_type_names(stmts)
+  let arr_elems = empty_type_exprs()
+  let arr_keys = empty_str_array()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SStruct(_, name, fields, derives, _) => {
         if (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) && !top_level_fn_exists(stmts, qualified_name(name, "to_string")) {
-          Array::push(gen, gen_show_fn(name, fields))
+          Array::push(gen, gen_show_fn(name, fields, known_types))
+        } else {
+          ()
+        }
+        if str_array_contains(derives, "Hash") && !top_level_fn_exists(stmts, qualified_name(name, "hash_key")) {
+          Array::push(gen, gen_hash_key_fn(name))
+        } else {
+          ()
+        }
+        if str_array_contains(derives, "Show") || str_array_contains(derives, "Hash") {
+          let mut fi = 0
+          while fi < Array::length(fields) {
+            let (_, fty) = Array::get(fields, fi)
+            collect_show_array_elems(fty, arr_elems, arr_keys)
+            fi = fi + 1
+          }
         } else {
           ()
         }
@@ -9645,7 +10421,26 @@ export let desugar_derives: (Array[Stmt]) -> Unit = (stmts) -> {
       },
       SEnum(_, ename, _, variants, derives) => {
         if (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) && !top_level_fn_exists(stmts, qualified_name(ename, "to_string")) {
-          Array::push(gen, gen_enum_show_fn(ename, variants))
+          Array::push(gen, gen_enum_show_fn(ename, variants, known_types))
+        } else {
+          ()
+        }
+        if str_array_contains(derives, "Hash") && !top_level_fn_exists(stmts, qualified_name(ename, "hash_key")) {
+          Array::push(gen, gen_hash_key_fn(ename))
+        } else {
+          ()
+        }
+        if str_array_contains(derives, "Show") || str_array_contains(derives, "Hash") {
+          let mut vi = 0
+          while vi < Array::length(variants) {
+            let (_, ftypes) = Array::get(variants, vi)
+            let mut ti = 0
+            while ti < Array::length(ftypes) {
+              collect_show_array_elems(Array::get(ftypes, ti), arr_elems, arr_keys)
+              ti = ti + 1
+            }
+            vi = vi + 1
+          }
         } else {
           ()
         }
@@ -9668,6 +10463,70 @@ export let desugar_derives: (Array[Stmt]) -> Unit = (stmts) -> {
       _ => ()
     }
     i = i + 1
+  }
+  let elem_types = empty_type_exprs()
+  let elem_keys = empty_str_array()
+  let mut si = 0
+  while si < Array::length(stmts) {
+    match Array::get(stmts, si) {
+      SStruct(_, _, fields, _, _) => {
+        let mut fi = 0
+        while fi < Array::length(fields) {
+          let (_, fty) = Array::get(fields, fi)
+          collect_array_elem_types(fty, elem_types, elem_keys)
+          fi = fi + 1
+        }
+      },
+      SEnum(_, _, _, variants, _) => {
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (_, ftypes) = Array::get(variants, vi)
+          let mut ti = 0
+          while ti < Array::length(ftypes) {
+            collect_array_elem_types(Array::get(ftypes, ti), elem_types, elem_keys)
+            ti = ti + 1
+          }
+          vi = vi + 1
+        }
+      },
+      SLet(_, _, _, _, e) => collect_bare_array_eq_keys(e, elem_types, elem_keys),
+      SLetMut(_, _, e) => collect_bare_array_eq_keys(e, elem_types, elem_keys),
+      SExpr(e) => collect_bare_array_eq_keys(e, elem_types, elem_keys),
+      STest(_, e) => collect_bare_array_eq_keys(e, elem_types, elem_keys),
+      SBench(_, e) => collect_bare_array_eq_keys(e, elem_types, elem_keys),
+      _ => ()
+    }
+    si = si + 1
+  }
+  let mut wi = 0
+  while wi < Array::length(elem_types) {
+    collect_array_elem_types(Array::get(elem_types, wi), elem_types, elem_keys)
+    wi = wi + 1
+  }
+  let mut ei = 0
+  while ei < Array::length(elem_types) {
+    let et = Array::get(elem_types, ei)
+    if !top_level_fn_exists(stmts, arr_equals_name(et)) {
+      Array::push(gen, gen_arr_equals_fn(et, known_types))
+    } else {
+      ()
+    }
+    ei = ei + 1
+  }
+  let mut wi2 = 0
+  while wi2 < Array::length(arr_elems) {
+    collect_show_array_elems(Array::get(arr_elems, wi2), arr_elems, arr_keys)
+    wi2 = wi2 + 1
+  }
+  let mut ei2 = 0
+  while ei2 < Array::length(arr_elems) {
+    let et2 = Array::get(arr_elems, ei2)
+    if !top_level_fn_exists(stmts, arr_to_string_name(et2)) {
+      Array::push(gen, gen_arr_to_string_fn(et2, known_types))
+    } else {
+      ()
+    }
+    ei2 = ei2 + 1
   }
   let mut g = 0
   while g < Array::length(gen) {
@@ -10107,12 +10966,20 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
         } else {
           env_ord
         }
+        let env_hash = if struct_derives_has(enum_derives, "Hash") {
+          let env_h = EnvTraitImpl("Hash", ctor_result_type, env_show)
+          env_bind(env_h, String::concat(name, "::hash_key"), CtFn([
+            ctor_result_type
+          ], CtString, None))
+        } else {
+          env_show
+        }
         let env_default = if struct_derives_has(enum_derives, "Default") {
-          env_bind(env_show, String::concat(name, "::default"), CtFn(Array::slice([
+          env_bind(env_hash, String::concat(name, "::default"), CtFn(Array::slice([
             CtUnit
           ], 0, 0), ctor_result_type, None))
         } else {
-          env_show
+          env_hash
         }
         (env_default, s, c + param_len)
       },
@@ -10158,12 +11025,20 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
           CtStruct(name),
           CtStruct(name)
         ], CtBool, None))
+        let env_hash = if struct_derives_has(derives, "Hash") {
+          let env_h = EnvTraitImpl("Hash", CtStruct(name), env4)
+          env_bind(env_h, String::concat(name, "::hash_key"), CtFn([
+            CtStruct(name)
+          ], CtString, None))
+        } else {
+          env4
+        }
         let env5 = if struct_derives_has(derives, "Default") {
-          env_bind(env4, String::concat(name, "::default"), CtFn(Array::slice([
+          env_bind(env_hash, String::concat(name, "::default"), CtFn(Array::slice([
             CtUnit
           ], 0, 0), CtStruct(name), None))
         } else {
-          env4
+          env_hash
         }
         (bind_fn_return(env5, name, CtStruct(name)), s, c)
       },
@@ -10800,15 +11675,26 @@ export let emit_data_section_multi: (Bytes, Array[Int], Array[Bytes]) -> Unit = 
 }
 let simd_prefix = 253
 let simd_v128_load = 0
+let simd_v128_store = 11
 let simd_i8x16_splat = 15
 let simd_i8x16_eq = 35
 let simd_i8x16_le_u = 42
+let simd_i8x16_ge_u = 44
 let simd_i8x16_sub = 113
+let simd_v128_any_true = 83
+let simd_v128_and = 78
 let simd_v128_not = 77
+let simd_i8x16_all_true = 99
 let simd_i8x16_bitmask = 100
 export let emit_v128_load: (Bytes, Int, Int) -> Unit = (buf, align, offset) -> {
   bytebuf_push(buf, simd_prefix)
   leb128_encode_u32(buf, simd_v128_load)
+  leb128_encode_u32(buf, align)
+  leb128_encode_u32(buf, offset)
+}
+export let emit_v128_store: (Bytes, Int, Int) -> Unit = (buf, align, offset) -> {
+  bytebuf_push(buf, simd_prefix)
+  leb128_encode_u32(buf, simd_v128_store)
   leb128_encode_u32(buf, align)
   leb128_encode_u32(buf, offset)
 }
@@ -10824,17 +11710,33 @@ export let emit_i8x16_le_u: (Bytes) -> Unit = (buf) -> {
   bytebuf_push(buf, simd_prefix)
   leb128_encode_u32(buf, simd_i8x16_le_u)
 }
+export let emit_i8x16_ge_u: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, simd_prefix)
+  leb128_encode_u32(buf, simd_i8x16_ge_u)
+}
 export let emit_i8x16_sub: (Bytes) -> Unit = (buf) -> {
   bytebuf_push(buf, simd_prefix)
   leb128_encode_u32(buf, simd_i8x16_sub)
+}
+export let emit_v128_any_true: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, simd_prefix)
+  leb128_encode_u32(buf, simd_v128_any_true)
+}
+export let emit_i8x16_all_true: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, simd_prefix)
+  leb128_encode_u32(buf, simd_i8x16_all_true)
 }
 export let emit_i8x16_bitmask: (Bytes) -> Unit = (buf) -> {
   bytebuf_push(buf, simd_prefix)
   leb128_encode_u32(buf, simd_i8x16_bitmask)
 }
+export let emit_v128_and: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, simd_prefix)
+  leb128_encode_u32(buf, simd_v128_and)
+}
 export let emit_v128_or: (Bytes) -> Unit = (buf) -> {
   bytebuf_push(buf, simd_prefix)
-  leb128_encode_u32(buf, 79)
+  leb128_encode_u32(buf, 80)
 }
 export let emit_v128_not: (Bytes) -> Unit = (buf) -> {
   bytebuf_push(buf, simd_prefix)
@@ -18413,6 +19315,220 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       emit_i64_lt_s(buf)
+      emit_i64_extend_i32_s(buf)
+      nl
+    }
+    else if !prefer_bound_call && fname == "v128_load" {
+      if ctx.enable_rc {
+        throw("v128 intrinsics: v128_load unsupported on rc backend")
+      }
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      let off_l = nl
+      let addr_l = nl + 1
+      let box_l = nl + 2
+      Array::push(local_names, "__v128_off")
+      Array::push(local_names, "__v128_addr")
+      Array::push(local_names, "__v128_box")
+      emit_local_set(buf, off_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_load(buf, 2, 8)
+      emit_local_get(buf, off_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_add(buf)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, addr_l)
+      emit_global_get(buf, 0)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, box_l)
+      emit_global_get(buf, 0)
+      emit_i32_const(buf, 16)
+      emit_i32_add(buf)
+      emit_global_set(buf, 0)
+      emit_heap_grow_after_heap_set(buf, ctx)
+      emit_local_get(buf, box_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, addr_l)
+      emit_i32_wrap_i64(buf)
+      emit_v128_load(buf, 0, 0)
+      emit_v128_store(buf, 0, 0)
+      emit_local_get(buf, box_l)
+      emit_i64_const(buf, 1)
+      emit_i64_or(buf)
+      nl + 3
+    }
+    else if !prefer_bound_call && fname == "v128_store" {
+      if ctx.enable_rc {
+        throw("v128 intrinsics: v128_store unsupported on rc backend")
+      }
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
+      let v_l = nl
+      let off_l = nl + 1
+      let addr_l = nl + 2
+      Array::push(local_names, "__v128_v")
+      Array::push(local_names, "__v128_soff")
+      Array::push(local_names, "__v128_saddr")
+      emit_local_set(buf, v_l)
+      emit_local_set(buf, off_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_load(buf, 2, 8)
+      emit_local_get(buf, off_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_add(buf)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, addr_l)
+      emit_local_get(buf, addr_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, v_l)
+      emit_i64_const(buf, -2)
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_v128_load(buf, 0, 0)
+      emit_v128_store(buf, 0, 0)
+      emit_i64_const(buf, 0)
+      nl + 3
+    }
+    else if !prefer_bound_call && fname == "v128_splat_i8x16" {
+      if ctx.enable_rc {
+        throw("v128 intrinsics: v128_splat_i8x16 unsupported on rc backend")
+      }
+      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      let box_l = nl
+      let byte_l = nl + 1
+      Array::push(local_names, "__v128_box")
+      Array::push(local_names, "__v128_byte")
+      emit_local_set(buf, byte_l)
+      emit_global_get(buf, 0)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, box_l)
+      emit_global_get(buf, 0)
+      emit_i32_const(buf, 16)
+      emit_i32_add(buf)
+      emit_global_set(buf, 0)
+      emit_heap_grow_after_heap_set(buf, ctx)
+      emit_local_get(buf, box_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, byte_l)
+      emit_i32_wrap_i64(buf)
+      emit_i8x16_splat(buf)
+      emit_v128_store(buf, 0, 0)
+      emit_local_get(buf, box_l)
+      emit_i64_const(buf, 1)
+      emit_i64_or(buf)
+      nl + 2
+    }
+    else if !prefer_bound_call && (fname == "v128_eq_i8x16" || fname == "v128_le_u_i8x16" || fname == "v128_ge_u_i8x16" || fname == "v128_and" || fname == "v128_or") {
+      if ctx.enable_rc {
+        throw("v128 intrinsics: binary op unsupported on rc backend")
+      }
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      let b_l = nl
+      let a_l = nl + 1
+      let box_l = nl + 2
+      Array::push(local_names, "__v128_b")
+      Array::push(local_names, "__v128_a")
+      Array::push(local_names, "__v128_box")
+      emit_local_set(buf, b_l)
+      emit_local_set(buf, a_l)
+      emit_global_get(buf, 0)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, box_l)
+      emit_global_get(buf, 0)
+      emit_i32_const(buf, 16)
+      emit_i32_add(buf)
+      emit_global_set(buf, 0)
+      emit_heap_grow_after_heap_set(buf, ctx)
+      emit_local_get(buf, box_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, a_l)
+      emit_i64_const(buf, -2)
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_v128_load(buf, 0, 0)
+      emit_local_get(buf, b_l)
+      emit_i64_const(buf, -2)
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_v128_load(buf, 0, 0)
+      if fname == "v128_eq_i8x16" {
+        emit_i8x16_eq(buf)
+      } else if fname == "v128_le_u_i8x16" {
+        emit_i8x16_le_u(buf)
+      } else if fname == "v128_ge_u_i8x16" {
+        emit_i8x16_ge_u(buf)
+      } else if fname == "v128_and" {
+        emit_v128_and(buf)
+      } else {
+        emit_v128_or(buf)
+      }
+      emit_v128_store(buf, 0, 0)
+      emit_local_get(buf, box_l)
+      emit_i64_const(buf, 1)
+      emit_i64_or(buf)
+      nl + 3
+    }
+    else if !prefer_bound_call && fname == "v128_not" {
+      if ctx.enable_rc {
+        throw("v128 intrinsics: v128_not unsupported on rc backend")
+      }
+      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      let v_l = nl
+      let box_l = nl + 1
+      Array::push(local_names, "__v128_v")
+      Array::push(local_names, "__v128_box")
+      emit_local_set(buf, v_l)
+      emit_global_get(buf, 0)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, box_l)
+      emit_global_get(buf, 0)
+      emit_i32_const(buf, 16)
+      emit_i32_add(buf)
+      emit_global_set(buf, 0)
+      emit_heap_grow_after_heap_set(buf, ctx)
+      emit_local_get(buf, box_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, v_l)
+      emit_i64_const(buf, -2)
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_v128_load(buf, 0, 0)
+      emit_v128_not(buf)
+      emit_v128_store(buf, 0, 0)
+      emit_local_get(buf, box_l)
+      emit_i64_const(buf, 1)
+      emit_i64_or(buf)
+      nl + 2
+    }
+    else if !prefer_bound_call && fname == "v128_bitmask_i8x16" {
+      if ctx.enable_rc {
+        throw("v128 intrinsics: v128_bitmask_i8x16 unsupported on rc backend")
+      }
+      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      emit_i64_const(buf, -2)
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_v128_load(buf, 0, 0)
+      emit_i8x16_bitmask(buf)
+      emit_i64_extend_i32_u(buf)
+      nl
+    }
+    else if !prefer_bound_call && (fname == "v128_any_true" || fname == "v128_all_true_i8x16") {
+      if ctx.enable_rc {
+        throw("v128 intrinsics: bool reduction unsupported on rc backend")
+      }
+      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      emit_i64_const(buf, -2)
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_v128_load(buf, 0, 0)
+      if fname == "v128_any_true" {
+        emit_v128_any_true(buf)
+      } else {
+        emit_i8x16_all_true(buf)
+      }
       emit_i64_extend_i32_s(buf)
       nl
     }
@@ -31561,7 +32677,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "38088d9801565886"
+  "4a4169280852c997"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647

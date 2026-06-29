@@ -544,7 +544,8 @@ for fx in \
   fixtures/derive_ord_show_test.vibe \
   fixtures/derive_enum_ord_show_test.vibe \
   fixtures/derive_default_test.vibe \
-  fixtures/derive_hash_test.vibe; do
+  fixtures/derive_hash_test.vibe \
+  fixtures/eq_array_option_fields.vibe; do
   fxout="_build/_gate_derive_ext_$(basename "${fx%.vibe}").wasm"
   rm -f "$fxout" "$fxout.diag"
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
@@ -636,6 +637,34 @@ if [ -s "$mixdir/m.wasm" ]; then
 fi
 rm -rf "$mixdir"
 echo "[selfhost-only-gate] railway let*/? Option generalization ok"
+
+# 15d. derive(Hash) transparent Map keys (#694): a `derive(Hash)` struct is
+#      usable as a Map key through the method-bearing `Hash::hash_key` —
+#      `map_key_to_string = [K: Hash](key) -> K::hash_key(key)` threads the
+#      witness dict (#684) through the `[K: Hash]` `get_by`/`has_by`/`get_or_by`
+#      generic->generic chain, and the derived structural `T::hash_key` (a
+#      recursive `to_string`) is the key. INCLUDES a key with a nested aggregate
+#      field (nested struct + Option + Array) to prove Layer-2 recursion. The
+#      fixture is a `test "..."`-block suite; compile via the fresh stage2 and run
+#      `_start` (a failing `assert` traps, so a clean run == all blocks passed).
+echo "[selfhost-only-gate] 15d/15 derive(Hash) transparent Map keys (#694)"
+hkfx="fixtures/derive_hash_map_key_test.vibe"
+hkout="_build/_gate_derive_hash_map_key.wasm"
+rm -f "$hkout" "$hkout.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$hkfx" "$hkout" __no_entry__ >/dev/null 2>&1
+if [ ! -s "$hkout" ]; then
+  echo "[selfhost-only-gate] FAIL: $hkfx did not compile" >&2
+  cat "$hkout.diag" 2>/dev/null >&2; exit 1
+fi
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke _start "$hkout" >/dev/null 2>&1; then
+  echo "[selfhost-only-gate] FAIL: $hkfx has a failing test (assert trapped) -> #694 regressed" >&2
+  exit 1
+fi
+rm -f "$hkout" "$hkout.diag" "$hkout.funcmap"
+echo "[selfhost-only-gate] derive(Hash) transparent Map keys ok"
 
 # 16. trait type parameters / Iterator regression (#636): a method-bearing trait
 #     with a type parameter (`Iterator[T] { next(Self) -> Option[T] }`) must be
@@ -2279,5 +2308,29 @@ smoke_check tostr 4321
 smoke_check ieq 4321
 rm -rf "$sdir"
 echo "[selfhost-only-gate] multi-feature end-to-end smoke ok (10/153/6/111/11111/321/3021/11111/4321/148/4321/4321/78/4321/4321)"
+
+# 40. V128 SIMD intrinsics (#536): the first-class V128 type + 12 wasm-SIMD
+#     intrinsics (v128_load/store/splat/eq/le_u/ge_u/and/or/not/bitmask/
+#     any_true/all_true) must type-check, lower to valid v128 instructions, and
+#     run correctly on the default non-RC linear backend. fixtures/
+#     v128_intrinsics_test.vibe asserts lane-wise results via i8x16.bitmask; a
+#     failing assert traps (`unreachable`), so a clean `_start` exit == pass.
+echo "[selfhost-only-gate] 40/40 V128 SIMD intrinsics compile+run"
+vdir="_build/_gate_v128"
+rm -rf "$vdir"; mkdir -p "$vdir"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/v128_intrinsics_test.vibe" "$vdir/v128.wasm" __no_entry__ >/dev/null 2>&1
+if [ ! -s "$vdir/v128.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: v128 intrinsics test did not compile" >&2
+  cat "$vdir/v128.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke _start "$vdir/v128.wasm" >/dev/null 2>&1; then
+  echo "[selfhost-only-gate] FAIL: v128 intrinsics test trapped (assert failed)" >&2; exit 1
+fi
+rm -rf "$vdir"
+echo "[selfhost-only-gate] V128 SIMD intrinsics ok"
 
 echo "[selfhost-only-gate] ok"
