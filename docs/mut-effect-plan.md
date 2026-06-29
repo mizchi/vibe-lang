@@ -158,6 +158,45 @@ let mut x = e0; <body>
   単一化に載せる足場はある。本節は採用モデルと脱糖・escape 対応の記録で、
   `Write[r]` lowering / region 推論の実装は別作業。
 
+#### 実測セマンティクスとの整合 (2026-06-29, 実装着手前の必読)
+
+ADR-0060 の脱糖モデルを実装する前に、selfhost compiler 実機で `let mut` の
+現行ランタイム挙動を確認したところ、**モデルの前提（局所 mut は束縛ブロックに
+閉じ region を脱出しない）と矛盾する**ことが判明した。確認した 3 点:
+
+| プローブ | 結果 | 含意 |
+|---|---|---|
+| クロージャが外側 `let mut` を捕捉して書き換え、2 回呼ぶ | `x == 2` | 捕捉は **by-reference（live）**。snapshot ではない |
+| `let mut` を捕捉するクロージャを関数から **return** し、後で呼ぶ | 1, 2 と連番を保持 | 捕捉セルは **heap-box され束縛ブロックを escape しても健全に動く** |
+| 2 つのクロージャが同じ `let mut` を捕捉（一方 write・一方 read） | write が read 側に見える (`15`) | **1 セルを共有**する shared mutable reference |
+
+つまり vibe の `let mut` は既に **ML `ref` / JS closure 相当の「共有・indefinite
+extent な可変セル」** であり、捕捉されると region は束縛ブロックではなく
+**捕捉クロージャの寿命まで延びる**。ADR-0017 の「escape 不可」は実装上
+**未強制かつこの挙動と矛盾**している。
+
+設計への反映:
+
+- **lexical escape の一律禁止は採らない。** Koka/Effekt の second-class
+  capability は capability の領域外持ち出しを型で止めるが、それをそのまま
+  vibe に適用すると上記の動作中の機能（escape するカウンタ・共有セル）を
+  **退行させる**。よって「region は束縛ブロックで必ず閉じる」という強い不変条件は
+  **非 escape の mut にのみ成立**する設計に修正する。
+- **捕捉された mut の region は捕捉クロージャの寿命に従う。** `Write[r0]` の
+  「即 discharge」は mut が escape しない場合の最適化（スタック/ローカル割付）で
+  あり、escape する場合は region `r0` が捕捉クロージャと同じ寿命へ延長される
+  （= heap-box 経路）。region 推論はこの 2 経路を区別して落とす。
+- **#418 escape 検査の意味づけ更新**: 「mut が所有スコープを脱出しないことの
+  検査」ではなく、「**脱出する mut/`mut` field のセルが heap-box 経路に乗り
+  寿命が捕捉側に延びることの保証**」（=安全な escape の許可）として再定式化する。
+  禁止検査ではなく lowering 戦略の選択（stack-local vs heap-boxed）に対応する。
+- したがって、現時点で「escape 禁止を強制する checker 変更」を入れるのは
+  **退行**であり行わない。`Write[r]` の surface だけを足すのは effect row が
+  既にラベル汎用なため**意味がほぼ無い**。実装の山は region 推論
+  （escape 解析で stack-local / heap-boxed を判定し region 寿命を決める）と
+  effect row 表現の region 対応化であり、これは表現リファクタ（unify/subst/
+  codegen 全域）を伴う複数ステップ作業として段階導入する。
+
 ---
 
 ## Phase 1: Tail-Resumptive Effect Handler
