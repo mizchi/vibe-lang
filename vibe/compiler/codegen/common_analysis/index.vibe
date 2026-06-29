@@ -690,3 +690,19 @@ export let rec is_mut_captured_in: (Expr, String) -> Bool = (expr, name) -> {
     _ => false
   }
 }
+
+// Region-lifetime decision for a `let mut name` cell (#629 region inference).
+// Returns true when the cell must be heap-boxed because its region lifetime can
+// extend beyond the binding block (a capturing closure may escape); false keeps
+// it a plain stack-local (region = lexical block). Both backends gate boxing on
+// this single predicate (linear compile_expr_tail / wasm-gc backend_expr).
+//
+// Step 1 baseline: a mut captured by ANY nested closure is conservatively
+// treated as escaping — identical to the prior `is_mut_captured_in` gate, so
+// behavior is unchanged. Later steps refine this into a real escape analysis
+// (a capture whose closure provably cannot escape its binding scope stays
+// stack-local). The predicate stays conservative: when escape cannot be ruled
+// out it returns true (box), which is always sound.
+export let mut_needs_ref_cell: (Expr, String) -> Bool = (body, name) -> {
+  is_mut_captured_in(body, name)
+}
