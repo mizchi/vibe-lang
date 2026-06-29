@@ -59,7 +59,7 @@ export enum Stmt {
   SSuberror(Bool, String, Array[(String, Array[TypeExpr])]);
   SStruct(Bool, String, Array[(String, TypeExpr)], Array[String], Array[String]);
   STypeAlias(Bool, String, Array[String], TypeExpr);
-  STrait(Bool, String, Array[String], Array[(String, Array[TypeExpr], TypeExpr)]);
+  STrait(Bool, String, Array[String], Array[(String, Array[TypeExpr], TypeExpr)], Array[(String, Array[String], Array[(String, Array[String])])]);
   SImpl(Array[String], Array[(String, Array[String])], String, String);
   SExternLet(String, TypeExpr);
   SImport(String, Array[(String, Option[String])]);
@@ -542,7 +542,7 @@ let is_type_or_structural: (Stmt) -> Bool = (stmt) -> {
     SEffectDef(_, _, _, _) => true,
     SStruct(_, _, _, _, _) => true,
     STypeAlias(_, _, _, _) => true,
-    STrait(_, _, _, _) => true,
+    STrait(_, _, _, _, _) => true,
     SImpl(_, _, _, _) => true,
     SExternLet(_, _) => true,
     SImport(_, _) => true,
@@ -7638,1646 +7638,6 @@ export let check_mutability_stmts: (Array[Stmt]) -> Array[EffectError] = (stmts)
   }
   errors
 }
-let rec import_cache_lookup: (Array[(String, Type)], String, Int) -> Option[Type] = (cache, name, i) -> {
-  if i >= Array::length(cache) {
-    None
-  }
-  else {
-    let (cached_name, cached_ty) = Array::get(cache, i)
-    if cached_name == name {
-      Some(cached_ty)
-    }
-    else import_cache_lookup(cache, name, i + 1)
-  }
-}
-let bind_stmt_imports: (TypeEnv, Array[(String, Option[String])]) -> TypeEnv = (env, names) -> {
-  let env_bindings = env_flat_bindings(env)
-  let import_cache = Array::slice([
-    ("", CtUnknown)
-  ], 0, 0)
-  let nlen = Array::length(names)
-  let mut i = 0
-  let mut acc = env
-  while i < nlen {
-    let (name, alias) = Array::get(names, i)
-    let bound_name = match alias {
-      Some(a) => a,
-      None => name
-    }
-    let ty = match import_cache_lookup(import_cache, name, 0) {
-      Some(t) => t,
-      None => {
-        let resolved = match env_lookup_flat(env_bindings, name) {
-          Some(t) => t,
-          None => CtUnknown
-        }
-        Array::push(import_cache, (name, resolved))
-        resolved
-      }
-    }
-    let acc_with_name = env_bind(acc, bound_name, ty)
-    acc = match env_lookup_flat(env_bindings, fn_return_env_name(name)) {
-      Some(ret_ty) => env_bind(acc_with_name, fn_return_env_name(bound_name), ret_ty),
-      None => acc_with_name
-    }
-    i = i + 1
-  }
-  acc
-}
-let annotation_return_type: (Option[TypeExpr], Array[TypeDef]) -> Option[Type] = (ann, defs) -> {
-  match ann {
-    Some(te) => match te {
-      TyFn(params, ret, _) => {
-        let ret_box = Array::slice([
-          ret
-        ], 0, 1)
-        let _ = Array::length(params)
-        Some(resolve_type_expr(Array::get(ret_box, 0), defs))
-      },
-      _ => None
-    },
-    None => None
-  }
-}
-let fn_expr_return_type: (Expr, Array[TypeDef]) -> Option[Type] = (expr, defs) -> {
-  match expr {
-    EFn(_, _, _, ret_ty, _, _) => match ret_ty {
-      Some(te) => Some(resolve_type_expr(te, defs)),
-      None => None
-    },
-    _ => None
-  }
-}
-let bind_fn_return: (TypeEnv, String, Type) -> TypeEnv = (env, name, ret_ty) -> {
-  env_bind(env, fn_return_env_name(name), ret_ty)
-}
-let bind_annotation_return: (TypeEnv, String, Option[TypeExpr], Array[TypeDef]) -> TypeEnv = (env, name, ann, defs) -> {
-  match annotation_return_type(ann, defs) {
-    Some(ret_ty) => bind_fn_return(env, name, ret_ty),
-    None => env
-  }
-}
-let bind_value_or_annotation_return: (TypeEnv, String, Expr, Option[TypeExpr], Array[TypeDef]) -> TypeEnv = (env, name, val, ann, defs) -> {
-  match fn_expr_return_type(val, defs) {
-    Some(ret_ty) => bind_fn_return(env, name, ret_ty),
-    None => bind_annotation_return(env, name, ann, defs)
-  }
-}
-let struct_derives_has: (Array[String], String) -> Bool = (derives, name) -> {
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(derives) {
-    if Array::get(derives, i) == name {
-      found = true
-      i = Array::length(derives)
-    } else {
-      i = i + 1
-    }
-  }
-  found
-}
-let stmt_is_type_decl: (Stmt) -> Bool = (stmt) -> {
-  match stmt {
-    SEnum(_, _, _, _) => true,
-    SSuberror(_, _, _) => true,
-    SStruct(_, _, _, _, _) => true,
-    STypeAlias(_, _, _, _) => true,
-    _ => false
-  }
-}
-let reorder_type_decls_first: (Array[Stmt], Int) -> Array[Stmt] = (stmts, start) -> {
-  let out = Array::slice(stmts, 0, start)
-  let n = Array::length(stmts)
-  let mut i = start
-  while i < n {
-    let st = Array::get(stmts, i)
-    if stmt_is_type_decl(st) {
-      Array::push(out, st)
-    }
-    i = i + 1
-  }
-  let mut j = start
-  while j < n {
-    let st = Array::get(stmts, j)
-    if !stmt_is_type_decl(st) {
-      Array::push(out, st)
-    }
-    j = j + 1
-  }
-  out
-}
-export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (TypeEnv, Subst, Int) = (raw_stmts, i, env, defs, s, c, errors, tytab) -> {
-  let stmts = reorder_type_decls_first(raw_stmts, i)
-  let mut idx = i
-  let mut cur_env = env
-  let mut cur_s = s
-  let mut cur_c = c
-  let mut hoist_i = idx
-  while hoist_i < Array::length(stmts) {
-    match Array::get(stmts, hoist_i) {
-      SLet(_, _, hname, hann, _) => {
-        let ht = match hann {
-          Some(hte) => resolve_type_expr(hte, defs),
-          None => CtUnknown
-        }
-        cur_env = env_bind(cur_env, hname, ht)
-      },
-      _ => ()
-    }
-    hoist_i = hoist_i + 1
-  }
-  while idx < Array::length(stmts) {
-    let env = cur_env
-    let s = cur_s
-    let c = cur_c
-    let stmt = Array::get(stmts, idx)
-    let (new_env, s1, c1) = match stmt {
-      SLet(_, is_rec, name, ann, val) => {
-        let (vt, ns0, nc) = if is_rec {
-          check_expr(val, env_bind(env, name, CtUnknown), defs, s, c, errors, tytab)
-        } else {
-          check_expr(val, env, defs, s, c, errors, tytab)
-        }
-        let ns = match ann {
-          Some(te) => check_assignable(resolve_type_expr(te, defs), subst_apply(ns0, vt), ns0, errors, String::concat("binding type mismatch for ", name), 0 - 1),
-          None => ns0
-        }
-        let t = match ann {
-          Some(te) => resolve_type_expr(te, defs),
-          None => generalize(ns, vt)
-        }
-        let env1 = env_bind(env, name, t)
-        (bind_value_or_annotation_return(env1, name, val, ann, defs), ns, nc)
-      },
-      SLetMut(name, ann, val) => {
-        let (vt, ns0, nc) = check_expr(val, env, defs, s, c, errors, tytab)
-        let ns = match ann {
-          Some(te) => check_assignable(resolve_type_expr(te, defs), subst_apply(ns0, vt), ns0, errors, String::concat("binding type mismatch for ", name), 0 - 1),
-          None => ns0
-        }
-        let t = match ann {
-          Some(te) => resolve_type_expr(te, defs),
-          None => vt
-        }
-        let env1 = env_bind(env, name, t)
-        (bind_value_or_annotation_return(env1, name, val, ann, defs), ns, nc)
-      },
-      SLetPat(pat, val) => {
-        let (vt, ns, nc) = check_expr(val, env, defs, s, c, errors, tytab)
-        let new_env = match pat {
-          PTuple(pats) => match vt {
-            CtTuple(types) => {
-              let mut e = env
-              let mut pi = 0
-              while pi < Array::length(pats) {
-                match Array::get(pats, pi) {
-                  PBind(name) => if pi < Array::length(types) {
-                    e = env_bind(e, name, Array::get(types, pi))
-                  } else {
-                    e = env_bind(e, name, CtUnknown)
-                  },
-                  _ => ()
-                }
-                pi = pi + 1
-              }
-              e
-            },
-            _ => {
-              let concrete_non_tuple = match subst_apply(ns, vt) {
-                CtInt => true,
-                CtDouble => true,
-                CtBool => true,
-                CtString => true,
-                CtChar => true,
-                CtUnit => true,
-                CtBytes => true,
-                CtArray(_) => true,
-                CtOption(_) => true,
-                CtFn(_, _, _) => true,
-                CtStruct(_) => true,
-                CtEnum(_) => true,
-                _ => false
-              }
-              if concrete_non_tuple {
-                Array::push(errors, "tuple pattern cannot destructure a non-tuple value")
-              } else {
-                ()
-              }
-              let mut e = env
-              let mut pi = 0
-              while pi < Array::length(pats) {
-                match Array::get(pats, pi) {
-                  PBind(name) => {
-                    e = env_bind(e, name, CtUnknown)
-                  },
-                  _ => ()
-                }
-                pi = pi + 1
-              }
-              e
-            }
-          },
-          PBind(name) => env_bind(env, name, vt),
-          PStruct(_, fields) => {
-            let mut e = env
-            let mut fi = 0
-            while fi < Array::length(fields) {
-              let (_, fpat) = Array::get(fields, fi)
-              match fpat {
-                PBind(name) => {
-                  e = env_bind(e, name, CtUnknown)
-                },
-                _ => ()
-              }
-              fi = fi + 1
-            }
-            e
-          },
-          _ => env
-        }
-        (new_env, ns, nc)
-      },
-      SEnum(_, name, params, variants) => {
-        let param_len = Array::length(params)
-        let param_var_ids = Array::slice([
-          0
-        ], 0, 0)
-        let param_var_types = Array::slice([
-          CtUnknown
-        ], 0, 0)
-        let mut pi = 0
-        while pi < param_len {
-          let vid = c + pi
-          Array::push(param_var_ids, vid)
-          Array::push(param_var_types, CtVar(vid))
-          pi = pi + 1
-        }
-        let ctor_result_type = if param_len == 0 {
-          CtEnum(name)
-        } else {
-          CtNamed(name, param_var_types)
-        }
-        let ctor_bounds = Array::slice([
-          (0, Array::slice([
-            ""
-          ], 0, 0))
-        ], 0, 0)
-        let resolved_variants = Array::slice([
-          ("", Array::slice([
-            CtUnknown
-          ], 0, 0))
-        ], 0, 0)
-        let mut vi = 0
-        while vi < Array::length(variants) {
-          let (vname, vtypes) = Array::get(variants, vi)
-          let resolved_vtypes = Array::slice([
-            CtUnknown
-          ], 0, 0)
-          let mut ti = 0
-          while ti < Array::length(vtypes) {
-            let vt = subst_type_params(resolve_type_expr(Array::get(vtypes, ti), defs), params, param_var_types)
-            Array::push(resolved_vtypes, vt)
-            ti = ti + 1
-          }
-          Array::push(resolved_variants, (vname, resolved_vtypes))
-          vi = vi + 1
-        }
-        Array::push(defs, TDEnum(name, params, resolved_variants))
-        let mut env1 = env_bind(env, name, CtEnum(name))
-        let mut ci2 = 0
-        while ci2 < Array::length(variants) {
-          let (vname, vtypes) = Array::get(variants, ci2)
-          let ctor_ty = if Array::length(vtypes) == 0 {
-            ctor_result_type
-          } else {
-            let resolved_args = Array::slice([
-              CtUnknown
-            ], 0, 0)
-            let mut ai = 0
-            while ai < Array::length(vtypes) {
-              let arg_ty = subst_type_params(resolve_type_expr(Array::get(vtypes, ai), defs), params, param_var_types)
-              Array::push(resolved_args, arg_ty)
-              ai = ai + 1
-            }
-            CtFn(resolved_args, ctor_result_type, None)
-          }
-          let exported_ctor_ty = if param_len == 0 {
-            ctor_ty
-          } else {
-            CtForAll(param_var_ids, ctor_bounds, ctor_ty)
-          }
-          env1 = env_bind(env1, vname, exported_ctor_ty)
-          match ctor_ty {
-            CtFn(_, ret, _) => {
-              let exported_ret_ty = if param_len == 0 {
-                ret
-              } else {
-                CtForAll(param_var_ids, ctor_bounds, ret)
-              }
-              env1 = bind_fn_return(env1, vname, exported_ret_ty)
-            },
-            _ => ()
-          }
-          ci2 = ci2 + 1
-        }
-        let env_eq = env_bind(env1, String::concat(name, "::equals"), CtFn([
-          ctor_result_type,
-          ctor_result_type
-        ], CtBool, None))
-        (env_eq, s, c + param_len)
-      },
-      SStruct(_, name, field_defs, derives, mut_fields) => {
-        let resolved_fields = Array::slice([
-          ("", CtUnit)
-        ], 0, 0)
-        let mut fi = 0
-        while fi < Array::length(field_defs) {
-          let (fname, ftype_expr) = Array::get(field_defs, fi)
-          let ftype = resolve_type_expr(ftype_expr, defs)
-          Array::push(resolved_fields, (fname, ftype))
-          fi = fi + 1
-        }
-        Array::push(defs, TDStruct(name, resolved_fields, mut_fields))
-        let field_types = Array::slice([
-          CtUnknown
-        ], 0, 0)
-        let mut fj = 0
-        while fj < Array::length(resolved_fields) {
-          let (_, fty) = Array::get(resolved_fields, fj)
-          Array::push(field_types, fty)
-          fj = fj + 1
-        }
-        let env1 = env_bind(env, name, CtFn(field_types, CtStruct(name), None))
-        let env2 = if struct_derives_has(derives, "Ord") {
-          env_bind(env1, String::concat(name, "::compare"), CtFn([
-            CtStruct(name),
-            CtStruct(name)
-          ], CtInt, None))
-        } else {
-          env1
-        }
-        let env3 = if struct_derives_has(derives, "Show") {
-          env_bind(env2, String::concat(name, "::to_string"), CtFn([
-            CtStruct(name)
-          ], CtString, None))
-        } else {
-          env2
-        }
-        let env4 = env_bind(env3, String::concat(name, "::equals"), CtFn([
-          CtStruct(name),
-          CtStruct(name)
-        ], CtBool, None))
-        (bind_fn_return(env4, name, CtStruct(name)), s, c)
-      },
-      STypeAlias(_, name, params, te) => {
-        let t = resolve_type_expr(te, defs)
-        Array::push(defs, TDAlias(name, params, t))
-        (env_bind(env, name, t), s, c)
-      },
-      SExternLet(name, te) => {
-        let t = resolve_type_expr(te, defs)
-        let env1 = env_bind(env, name, t)
-        (bind_annotation_return(env1, name, Some(te), defs), s, c)
-      },
-      STest(_, body) => {
-        let (_, ns, nc) = check_expr(body, env, defs, s, c, errors, tytab)
-        (env, ns, nc)
-      },
-      SBench(_, body) => {
-        let (_, ns, nc) = check_expr(body, env, defs, s, c, errors, tytab)
-        (env, ns, nc)
-      },
-      SExpr(expr) => {
-        let (_, ns, nc) = check_expr(expr, env, defs, s, c, errors, tytab)
-        (env, ns, nc)
-      },
-      SModule(_, _, body) => {
-        let _ = check_stmts(body, 0, env, defs, s, c, errors, tytab)
-        (env, s, c)
-      },
-      SImport(_, names) => (bind_stmt_imports(env, names), s, c)
-      ,
-      SReExport(_, names) => (bind_stmt_imports(env, names), s, c)
-      ,
-      SAliasDecl(_, _) => (env, s, c)
-      ,
-      STrait(_, name, supers, methods) => {
-        let is_open = false
-        (EnvTraitDef(name, supers, is_open, methods, env), s, c)
-      },
-      SImpl(tparams, tbounds, trait_name, type_name) => {
-        let target = match resolve_builtin(type_name) {
-          Some(t) => t,
-          None => CtNamed(type_name, Array::slice([
-            CtUnknown
-          ], 0, 0))
-        }
-        let new_env = if Array::length(tparams) > 0 {
-          EnvTraitImplGen(trait_name, tparams, tbounds, target, env)
-        } else {
-          EnvTraitImpl(trait_name, target, env)
-        }
-        (new_env, s, c)
-      },
-      _ => (env, s, c)
-    }
-    cur_env = new_env
-    cur_s = s1
-    cur_c = c1
-    idx = idx + 1
-  }
-  (cur_env, cur_s, cur_c)
-}
-let check_program_bounds: (TypeEnv, Subst, Array[String]) -> Unit = (env, s, errors) -> {
-  let pairs = collect_subst_bounds_pairs(s)
-  let n = Array::length(pairs)
-  let mut i = 0
-  while i < n {
-    let (vid, bounds) = Array::get(pairs, i)
-    let resolved = subst_apply(s, CtVar(vid))
-    match resolved {
-      CtVar(_) => (),
-      CtUnknown => (),
-      _ => {
-        let bn = Array::length(bounds)
-        let mut bi = 0
-        while bi < bn {
-          let b = Array::get(bounds, bi)
-          if b != "" && not(type_implements_trait(env, s, resolved, b)) {
-            Array::push(errors, String::concat("no impl `", String::concat(b, String::concat("` for `", String::concat(type_to_string(resolved), "`")))))
-          }
-          bi = bi + 1
-        }
-      }
-    }
-    i = i + 1
-  }
-}
-let collect_async_effect_errors: (Array[Stmt], TypeEnv, Array[String]) -> Unit = (stmts, env, frozen_errors) -> {
-  if Array::length(frozen_errors) == 0 {
-    let eff_errs = check_async_effects_stmts(stmts, env)
-    let mut i = 0
-    while i < Array::length(eff_errs) {
-      Array::push(frozen_errors, effect_error_to_string(Array::get(eff_errs, i)))
-      i = i + 1
-    }
-    if Array::length(frozen_errors) == 0 {
-      let perform_errs = check_perform_effects_stmts(stmts)
-      let mut j = 0
-      while j < Array::length(perform_errs) {
-        Array::push(frozen_errors, effect_error_to_string(Array::get(perform_errs, j)))
-        j = j + 1
-      }
-    }
-    if Array::length(frozen_errors) == 0 {
-      let mut_errs = check_mutability_stmts(stmts)
-      let mut k = 0
-      while k < Array::length(mut_errs) {
-        Array::push(frozen_errors, effect_error_to_string(Array::get(mut_errs, k)))
-        k = k + 1
-      }
-    }
-  }
-}
-export let check_program: (Array[Stmt]) -> TypeEnv with { Error } = (stmts) -> {
-  let empty_defs = Array::slice([
-    TDAlias("_dummy", Array::slice([
-      ""
-    ], 0, 0), CtUnit)
-  ], 0, 0)
-  let seeded_raw_env = if trait_defined(EnvEmpty, "Eq") {
-    EnvEmpty
-  } else {
-    register_builtin_traits(EnvEmpty)
-  }
-  let seeded_env = env_cache(seeded_raw_env)
-  let errors = ArrayBuilder::new()
-  let frozen_errors = ArrayBuilder::freeze(errors)
-  let tytab = Array::slice([
-    (0, CtUnit)
-  ], 0, 0)
-  let (env, final_s, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
-  check_program_bounds(env, final_s, frozen_errors)
-  collect_async_effect_errors(stmts, env, frozen_errors)
-  if Array::length(frozen_errors) > 0 {
-    throw(Array::get(frozen_errors, 0))
-  }
-  env
-}
-export let check_program_type_table: (Array[Stmt]) -> (Array[(Int, Type)], Subst) with { Error } = (stmts) -> {
-  let empty_defs = Array::slice([
-    TDAlias("_dummy", Array::slice([
-      ""
-    ], 0, 0), CtUnit)
-  ], 0, 0)
-  let seeded_raw_env = if trait_defined(EnvEmpty, "Eq") {
-    EnvEmpty
-  } else {
-    register_builtin_traits(EnvEmpty)
-  }
-  let seeded_env = env_cache(seeded_raw_env)
-  let errors = ArrayBuilder::new()
-  let frozen_errors = ArrayBuilder::freeze(errors)
-  let tytab = Array::slice([
-    (0, CtUnit)
-  ], 0, 0)
-  handle {
-    let (_, final_s, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
-    (tytab, final_s)
-  } with Error {
-    Throw(_) => (tytab, SubstEmpty)
-  }
-}
-export let check_program_with_env: (Array[Stmt], TypeEnv) -> TypeEnv with { Error } = (stmts, initial_env) -> {
-  match initial_env {
-    EnvEmpty => check_program(stmts),
-    _ => {
-      let empty_defs = Array::slice([
-        TDAlias("_dummy", Array::slice([
-      ""
-    ], 0, 0), CtUnit)
-      ], 0, 0)
-      let cached_env = env_cache(initial_env)
-      let seeded_raw_env = if trait_defined(cached_env, "Eq") {
-        cached_env
-      } else {
-        register_builtin_traits(cached_env)
-      }
-      let seeded_env = env_cache(seeded_raw_env)
-      let errors = ArrayBuilder::new()
-      let frozen_errors = ArrayBuilder::freeze(errors)
-      let tytab = Array::slice([
-        (0, CtUnit)
-      ], 0, 0)
-      let (env, _, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
-      collect_async_effect_errors(stmts, env, frozen_errors)
-      if Array::length(frozen_errors) > 0 {
-        throw(Array::get(frozen_errors, 0))
-      }
-      env
-    }
-  }
-}
-export let emit_end: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, 11)
-}
-export let emit_i32_const: (Bytes, Int) -> Unit = (buf, value) -> {
-  bytebuf_push_opcode_s64(buf, 65, value)
-}
-export let emit_code_section: (Bytes, Array[Bytes]) -> Unit = (out, bodies) -> {
-  let content = bytebuf_new()
-  bytebuf_push_vec_header(content, Array::length(bodies))
-  let mut i = 0
-  while i < Array::length(bodies) {
-    let body = Array::get(bodies, i)
-    let func_buf = bytebuf_new()
-    leb128_encode_u32(func_buf, 0)
-    bytebuf_push_buf(func_buf, body)
-    bytebuf_push(func_buf, 11)
-    leb128_encode_u32(content, bytebuf_length(func_buf))
-    bytebuf_push_buf(content, func_buf)
-    i = i + 1
-  }
-  bytebuf_push_section(out, 10, content)
-}
-export let emit_memory_section: (Bytes, Int) -> Unit = (out, min_pages) -> {
-  let content = bytebuf_new()
-  bytebuf_push_vec_header(content, 1)
-  bytebuf_push(content, 0)
-  leb128_encode_u32(content, min_pages)
-  bytebuf_push_section(out, 5, content)
-}
-export let emit_header: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push3(buf, 0, 97, 115)
-  bytebuf_push3(buf, 109, 1, 0)
-  bytebuf_push(buf, 0)
-  bytebuf_push(buf, 0)
-}
-export {
-  emit_header, emit_func_type, emit_type_section, emit_type_section_multi
-}
-export let emit_name: (Bytes, String) -> Unit = (buf, name) -> {
-  bytebuf_push_string(buf, name)
-}
-export let emit_function_section: (Bytes, Array[Int]) -> Unit = (out, type_indices) -> {
-  let content = bytebuf_new()
-  bytebuf_push_vec_header(content, Array::length(type_indices))
-  let mut i = 0
-  while i < Array::length(type_indices) {
-    leb128_encode_u32(content, Array::get(type_indices, i))
-    i = i + 1
-  }
-  bytebuf_push_section(out, 3, content)
-}
-export let emit_export_section_multi: (Bytes, Array[String], Array[Int]) -> Unit = (out, names, func_indices) -> {
-  let count = Array::length(names)
-  let content = bytebuf_new()
-  bytebuf_push_vec_header(content, count)
-  let mut i = 0
-  while i < count {
-    emit_name(content, Array::get(names, i))
-    bytebuf_push(content, 0)
-    leb128_encode_u32(content, Array::get(func_indices, i))
-    i = i + 1
-  }
-  bytebuf_push_section(out, 7, content)
-}
-export let emit_export_section: (Bytes, String, Int) -> Unit = (out, name, func_idx) -> {
-  emit_export_section_multi(out, [
-    name
-  ], [
-    func_idx
-  ])
-}
-export {
-  emit_name, emit_header, emit_func_type, emit_type_section, emit_export_section, emit_function_section, emit_type_section_multi, emit_export_section_multi
-}
-export {
-  emit_end, emit_name, emit_header, emit_func_type, emit_i32_const, emit_code_section, emit_type_section, emit_export_section, emit_memory_section, emit_function_section, emit_type_section_multi, emit_export_section_multi, emit_code_section_with_locals
-}
-let type_func = 96
-let op_global_get = 35
-let op_global_set = 36
-let op_i32_add = 106
-let op_i32_sub = 107
-let op_i32_shr_u = 118
-let op_i32_gt_u = 75
-let op_memory_size = 63
-let op_memory_grow = 64
-let op_drop = 26
-let op_if = 4
-let bt_void = 64
-export let emit_global_get: (Bytes, Int) -> Unit = (buf, idx) -> {
-  bytebuf_push_opcode_u32(buf, op_global_get, idx)
-}
-export let emit_heap_memory_grow_check: (Bytes) -> Unit = (buf) -> {
-  emit_global_get(buf, 0)
-  emit_i32_const(buf, 65536)
-  bytebuf_push(buf, op_i32_add)
-  emit_i32_const(buf, 16)
-  bytebuf_push(buf, op_i32_shr_u)
-  bytebuf_push2(buf, op_memory_size, 0)
-  bytebuf_push(buf, op_i32_gt_u)
-  bytebuf_push2(buf, op_if, bt_void)
-  emit_global_get(buf, 0)
-  emit_i32_const(buf, 65536)
-  bytebuf_push(buf, op_i32_add)
-  emit_i32_const(buf, 16)
-  bytebuf_push(buf, op_i32_shr_u)
-  bytebuf_push2(buf, op_memory_size, 0)
-  bytebuf_push(buf, op_i32_sub)
-  bytebuf_push2(buf, op_memory_grow, 0)
-  bytebuf_push(buf, op_drop)
-  emit_end(buf)
-}
-export let emit_global_set: (Bytes, Int) -> Unit = (buf, idx) -> {
-  bytebuf_push_opcode_u32(buf, op_global_set, idx)
-}
-export let emit_func_type_raw: (Bytes, Array[Int], Array[Int]) -> Unit = (buf, param_types, result_types) -> {
-  bytebuf_push(buf, type_func)
-  leb128_encode_u32(buf, Array::length(param_types))
-  let mut i = 0
-  while i < Array::length(param_types) {
-    bytebuf_push(buf, Array::get(param_types, i))
-    i = i + 1
-  }
-  leb128_encode_u32(buf, Array::length(result_types))
-  let mut j = 0
-  while j < Array::length(result_types) {
-    bytebuf_push(buf, Array::get(result_types, j))
-    j = j + 1
-  }
-}
-export let emit_function_name_section: (Bytes, Array[String], Int) -> Unit = (out, names, base_index) -> {
-  let count = Array::length(names)
-  if count == 0 {
-    ()
-  } else {
-    let content = bytebuf_new()
-    bytebuf_push_string(content, "name")
-    let namemap = bytebuf_new()
-    leb128_encode_u32(namemap, count)
-    let mut i = 0
-    while i < count {
-      leb128_encode_u32(namemap, base_index + i)
-      bytebuf_push_string(namemap, Array::get(names, i))
-      i = i + 1
-    }
-    bytebuf_push_section(content, 1, namemap)
-    bytebuf_push_section(out, 0, content)
-  }
-}
-let emit_ascii_payload: (Bytes, String) -> Unit = (buf, text) -> {
-  let len = String::length(text)
-  let mut i = 0
-  while i < len {
-    bytebuf_push(buf, String::char_code_at(text, i))
-    i = i + 1
-  }
-}
-export let emit_vibe_abi_custom_section: (Bytes, String) -> Unit = (out, host_import_abi) -> {
-  let content = bytebuf_new()
-  bytebuf_push_string(content, "vibe.abi")
-  emit_ascii_payload(content, "version=1\n")
-  emit_ascii_payload(content, String::concat("host_import_abi=", host_import_abi))
-  emit_ascii_payload(content, "\n")
-  bytebuf_push_section(out, 0, content)
-}
-export {
-  emit_end, emit_name, emit_header, emit_func_type, emit_i32_const, emit_global_get, emit_global_set, emit_heap_memory_grow_check, emit_code_section, emit_data_section, emit_exports_full, emit_type_section, emit_export_memory, emit_func_type_raw, emit_export_section, emit_memory_section, emit_function_section, emit_type_section_multi, emit_exports_with_memory, emit_import_section_func, emit_export_section_multi, emit_global_section_i32_mut, emit_code_section_with_locals, emit_vibe_abi_custom_section, emit_function_name_section
-}
-let op_br = 12
-let op_if = 4
-let bt_i64 = 126
-let bt_void = 64
-export let emit_br: (Bytes, Int) -> Unit = (buf, label) -> {
-  bytebuf_push_opcode_u32(buf, op_br, label)
-}
-let op_call = 16
-let op_drop = 26
-let op_else = 5
-let op_loop = 3
-let op_block = 2
-let op_br_if = 13
-export let emit_call: (Bytes, Int) -> Unit = (buf, func_idx) -> {
-  bytebuf_push_opcode_u32(buf, op_call, func_idx)
-}
-export let emit_drop: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_drop)
-}
-export let emit_else: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_else)
-}
-let op_f64_ge = 102
-let op_f64_gt = 100
-let op_f64_le = 101
-let op_f64_lt = 99
-let op_i64_eq = 81
-let op_i64_ne = 82
-let op_i64_or = 132
-let op_return = 15
-let sec_table = 4
-export let emit_br_if: (Bytes, Int) -> Unit = (buf, label) -> {
-  bytebuf_push_opcode_u32(buf, op_br_if, label)
-}
-let op_f64_add = 160
-let op_f64_div = 163
-let op_f64_mul = 162
-let op_f64_neg = 154
-let op_f64_sub = 161
-let op_i32_add = 106
-let op_i64_add = 124
-let op_i64_and = 131
-let op_i64_eqz = 80
-let op_i64_mul = 126
-let op_i64_shl = 134
-let op_i64_sub = 125
-let op_i64_xor = 133
-export let emit_f64_ge: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_f64_ge)
-}
-export let emit_f64_gt: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_f64_gt)
-}
-export let emit_f64_le: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_f64_le)
-}
-export let emit_f64_lt: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_f64_lt)
-}
-export let emit_i64_eq: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_i64_eq)
-}
-export let emit_i64_ne: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_i64_ne)
-}
-export let emit_i64_or: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_i64_or)
-}
-export let emit_if_i64: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push2(buf, op_if, bt_i64)
-}
-export let emit_return: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_return)
-}
-let op_i32_load = 40
-let op_i64_ge_s = 89
-let op_i64_gt_s = 85
-let op_i64_le_s = 87
-let op_i64_lt_s = 83
-let sec_element = 9
-export let emit_f64_add: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_f64_add)
-}
-export let emit_f64_div: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_f64_div)
-}
-export let emit_f64_mul: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_f64_mul)
-}
-export let emit_f64_neg: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_f64_neg)
-}
-export let emit_f64_sub: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_f64_sub)
-}
-export let emit_i32_add: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_i32_add)
-}
-export let emit_i64_add: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_i64_add)
-}
-export let emit_i64_and: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_i64_and)
-}
-export let emit_i64_eqz: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_i64_eqz)
-}
-export let emit_i64_mul: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_i64_mul)
-}
-export let emit_i64_shl: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_i64_shl)
-}
-export let emit_i64_sub: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_i64_sub)
-}
-export let emit_i64_xor: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_i64_xor)
-}
-export let emit_if_void: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push2(buf, op_if, bt_void)
-}
-let op_i32_store = 54
-let op_i64_const = 66
-let op_i64_div_s = 127
-let op_i64_rem_s = 129
-let op_i64_shr_s = 135
-let op_local_get = 32
-let op_local_set = 33
-let op_local_tee = 34
-let type_funcref = 112
-export let emit_i32_load: (Bytes, Int, Int) -> Unit = (buf, align, offset) -> {
-  bytebuf_push_opcode_u32_u32(buf, op_i32_load, align, offset)
-}
-export let emit_i64_ge_s: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_i64_ge_s)
-}
-export let emit_i64_gt_s: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_i64_gt_s)
-}
-export let emit_i64_le_s: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_i64_le_s)
-}
-export let emit_i64_lt_s: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_i64_lt_s)
-}
-let op_i32_store8 = 58
-export let emit_block_i64: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push2(buf, op_block, bt_i64)
-}
-export let emit_i32_store: (Bytes, Int, Int) -> Unit = (buf, align, offset) -> {
-  bytebuf_push_opcode_u32_u32(buf, op_i32_store, align, offset)
-}
-export let emit_i64_store: (Bytes, Int, Int) -> Unit = (buf, align, offset) -> {
-  bytebuf_push_opcode_u32_u32(buf, 55, align, offset)
-}
-export let emit_i64_const: (Bytes, Int) -> Unit = (buf, value) -> {
-  bytebuf_push_opcode_s64(buf, op_i64_const, value)
-}
-export let emit_i64_div_s: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_i64_div_s)
-}
-export let emit_i64_rem_s: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_i64_rem_s)
-}
-export let emit_i64_shr_s: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_i64_shr_s)
-}
-export let emit_local_get: (Bytes, Int) -> Unit = (buf, idx) -> {
-  bytebuf_push_opcode_u32(buf, op_local_get, idx)
-}
-export let emit_local_set: (Bytes, Int) -> Unit = (buf, idx) -> {
-  bytebuf_push_opcode_u32(buf, op_local_set, idx)
-}
-export let emit_local_tee: (Bytes, Int) -> Unit = (buf, idx) -> {
-  bytebuf_push_opcode_u32(buf, op_local_tee, idx)
-}
-export let emit_loop_void: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push2(buf, op_loop, bt_void)
-}
-let op_i32_load8_u = 45
-export let emit_block_void: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push2(buf, op_block, bt_void)
-}
-export let emit_i32_store8: (Bytes, Int, Int) -> Unit = (buf, align, offset) -> {
-  bytebuf_push_opcode_u32_u32(buf, op_i32_store8, align, offset)
-}
-let op_i32_wrap_i64 = 167
-export let emit_i32_load8_u: (Bytes, Int, Int) -> Unit = (buf, align, offset) -> {
-  bytebuf_push_opcode_u32_u32(buf, op_i32_load8_u, align, offset)
-}
-let op_call_indirect = 17
-export let emit_i32_wrap_i64: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_i32_wrap_i64)
-}
-export let emit_call_indirect: (Bytes, Int) -> Unit = (buf, type_idx) -> {
-  bytebuf_push_opcode_u32(buf, op_call_indirect, type_idx)
-  bytebuf_push(buf, 0)
-}
-let op_i64_trunc_f64_s = 176
-export let emit_f64_const_lohi: (Bytes, Int, Int) -> Unit = (buf, lo, hi) -> {
-  bytebuf_push9(buf, 68, lo&255, (lo>>8)&255, (lo>>16)&255, (lo>>24)&255, hi&255, (hi>>8)&255, (hi>>16)&255, (hi>>24)&255)
-}
-let op_i64_extend_i32_s = 172
-export let emit_i64_trunc_f64_s: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_i64_trunc_f64_s)
-}
-let op_f64_convert_i64_s = 185
-export let emit_i64_extend_i32_s: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_i64_extend_i32_s)
-}
-export let emit_f64_convert_i64_s: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_f64_convert_i64_s)
-}
-let op_f64_reinterpret_i64 = 191
-let op_i64_reinterpret_f64 = 189
-export let emit_f64_reinterpret_i64: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_f64_reinterpret_i64)
-}
-export let emit_i64_reinterpret_f64: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_i64_reinterpret_f64)
-}
-export let emit_table_section_funcref: (Bytes, Int) -> Unit = (out, num_entries) -> {
-  let content = bytebuf_new()
-  bytebuf_push_vec_header(content, 1)
-  bytebuf_push2(content, type_funcref, 0)
-  leb128_encode_u32(content, num_entries)
-  bytebuf_push_section(out, sec_table, content)
-}
-export let emit_element_section_active: (Bytes, Array[Int]) -> Unit = (out, func_indices) -> {
-  let content = bytebuf_new()
-  bytebuf_push_vec_header(content, 1)
-  bytebuf_push(content, 0)
-  emit_i32_const(content, 0)
-  emit_end(content)
-  leb128_encode_u32(content, Array::length(func_indices))
-  let mut i = 0
-  while i < Array::length(func_indices) {
-    leb128_encode_u32(content, Array::get(func_indices, i))
-    i = i + 1
-  }
-  bytebuf_push_section(out, sec_element, content)
-}
-let builders_sec_data = 11
-export let string_to_data: (String) -> Bytes = (s) -> {
-  let buf = bytebuf_new()
-  let len = String::length(s)
-  let mut i = 0
-  while i < len {
-    bytebuf_push(buf, String::char_code_at(s, i))
-    i = i + 1
-  }
-  buf
-}
-export let emit_data_section_multi: (Bytes, Array[Int], Array[Bytes]) -> Unit = (out, offsets, datas) -> {
-  let count = Array::length(offsets)
-  let content = bytebuf_new()
-  bytebuf_push_vec_header(content, count)
-  let mut i = 0
-  while i < count {
-    bytebuf_push(content, 0)
-    emit_i32_const(content, Array::get(offsets, i))
-    emit_end(content)
-    let data = Array::get(datas, i)
-    leb128_encode_u32(content, Bytes::length(data))
-    bytebuf_push_buf(content, data)
-    i = i + 1
-  }
-  bytebuf_push_section(out, builders_sec_data, content)
-}
-let simd_prefix = 253
-let simd_v128_load = 0
-let simd_i8x16_splat = 15
-let simd_i8x16_eq = 35
-let simd_i8x16_le_u = 42
-let simd_i8x16_sub = 113
-let simd_v128_not = 77
-let simd_i8x16_bitmask = 100
-export let emit_v128_load: (Bytes, Int, Int) -> Unit = (buf, align, offset) -> {
-  bytebuf_push(buf, simd_prefix)
-  leb128_encode_u32(buf, simd_v128_load)
-  leb128_encode_u32(buf, align)
-  leb128_encode_u32(buf, offset)
-}
-export let emit_i8x16_splat: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, simd_prefix)
-  leb128_encode_u32(buf, simd_i8x16_splat)
-}
-export let emit_i8x16_eq: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, simd_prefix)
-  leb128_encode_u32(buf, simd_i8x16_eq)
-}
-export let emit_i8x16_le_u: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, simd_prefix)
-  leb128_encode_u32(buf, simd_i8x16_le_u)
-}
-export let emit_i8x16_sub: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, simd_prefix)
-  leb128_encode_u32(buf, simd_i8x16_sub)
-}
-export let emit_i8x16_bitmask: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, simd_prefix)
-  leb128_encode_u32(buf, simd_i8x16_bitmask)
-}
-export let emit_v128_or: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, simd_prefix)
-  leb128_encode_u32(buf, 79)
-}
-export let emit_v128_not: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, simd_prefix)
-  leb128_encode_u32(buf, simd_v128_not)
-}
-let emit_i64_load: (Bytes, Int, Int) -> Unit = (buf, align, offset) -> {
-  bytebuf_push(buf, 41)
-  leb128_encode_u32(buf, align)
-  leb128_encode_u32(buf, offset)
-}
-export struct FuncTable {
-  names: Array[String];
-  indices: Array[Int];
-  params: Array[Int];
-  returns: Array[Int];
-  needs_env: Array[Bool]
-}
-export struct StrTable {
-  strs: Array[String];
-  offsets: Array[Int];
-  lengths: Array[Int]
-}
-export struct LambdaTable {
-  bodies: Array[Bytes];
-  param_counts: Array[Int];
-  captures: Array[Array[String]];
-  meta_i32: Array[Int];
-  meta_i64: Array[Int]
-}
-export struct CtorTable {
-  names: Array[String];
-  tags: Array[Int];
-  field_counts: Array[Int];
-  type_names: Array[String];
-  struct_names: Array[String];
-  struct_field_names: Array[Array[String]]
-}
-export struct CovState {
-  enabled: Bool;
-  base: Int;
-  cap: Int;
-  next: Array[Int];
-  cur_fn: Array[Int];
-  owners: Array[Int]
-}
-export let cov_emit_branch: (Bytes, CovState) -> Unit = (buf, cov) -> {
-  if cov.enabled {
-    let id = Array::get(cov.next, 0)
-    if id < cov.cap {
-      Array::set(cov.next, 0, id + 1)
-      Array::push(cov.owners, Array::get(cov.cur_fn, 0))
-      emit_i32_const(buf, cov.base + id)
-      emit_i32_const(buf, 1)
-      emit_i32_store8(buf, 0, 0)
-    } else {
-      ()
-    }
-  } else {
-    ()
-  }
-}
-export struct CompileCtx {
-  func_table: FuncTable;
-  str_table: StrTable;
-  lambda_table: LambdaTable;
-  num_user_funcs: Int;
-  func_offset: Int;
-  ref_cell_names: Array[String];
-  ctor_table: CtorTable;
-  thunk_names: Array[String];
-  const_int_names: Array[String];
-  const_int_values: Array[Int];
-  enable_rc: Bool;
-  rc_drop_names: Array[String];
-  rc_alias_dup_names: Array[String];
-  heap_binding_names: Array[String];
-  rc_drop_func_idx: Int;
-  rc_alloc_func_idx: Int;
-  heap_grow_check_func_idx: Int;
-  rc_dup_names: Array[String];
-  float_local_slots: Array[Int];
-  int_local_slots: Array[Int];
-  effect_names: Array[String];
-  effect_op_keys: Array[String];
-  effect_op_arities: Array[Int];
-  cov: CovState;
-  dbg_line_idx: Int;
-  dbg_line_nl: Array[Int];
-  dbg_line_file_id: Int
-}
-export struct DbgProv {
-  files: Array[String];
-  file_nls: Array[Array[Int]];
-  stmt_file_id: Array[Int]
-}
-export let empty_dbg_prov: () -> DbgProv = () -> {
-  DbgProv::{
-    files: Array::slice([
-      ""
-    ], 0, 0),
-    file_nls: Array::slice([
-      Array::slice([
-        0
-      ], 0, 0)
-    ], 0, 0),
-    stmt_file_id: Array::slice([
-      0
-    ], 0, 0)
-  }
-}
-export struct CompileCtxGc {
-  func_table: FuncTable;
-  str_table: StrTable;
-  lambda_table: LambdaTable;
-  num_user_funcs: Int;
-  func_offset: Int;
-  ref_cell_names: Array[String];
-  ref_local_indices: Array[Int];
-  refcell_type_idx: Int;
-  closure_type_base: Int;
-  ctor_table: CtorTable
-}
-export let int_log_reset_above: (CompileCtx, Int) -> Unit = (ctx, floor) -> {
-  let arr = ctx.int_local_slots
-  let n = Array::length(arr)
-  let mut w = 0
-  let mut i = 0
-  while i < n {
-    let e = Array::get(arr, i)
-    if e / 2 < floor {
-      Array::set(arr, w, e)
-      w = w + 1
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  Array::truncate(arr, w)
-}
-export let is_efn: (Expr) -> Bool = (expr) -> {
-  match expr {
-    EFn(_, _, _, _, _, _) => true,
-    _ => false
-  }
-}
-export let is_pint: (Pat) -> Bool = (p) -> {
-  match p {
-    PInt(_) => true,
-    _ => false
-  }
-}
-export let is_slet: (Stmt) -> Bool = (stmt) -> {
-  match stmt {
-    SLet(_, _, _, _, _) => true,
-    _ => false
-  }
-}
-export let expr_tag: (Expr) -> Int = (expr) -> {
-  match expr {
-    EInt(_) => 0,
-    EBool(_) => 1,
-    EFloat(_) => 2,
-    EString(_) => 3,
-    EIdent(_, _) => 4,
-    EBinOp(_, _, _) => 5,
-    EUnaryOp(_, _) => 6,
-    EIf(_, _, _) => 7,
-    ECall(_, _, _) => 8,
-    ELet(_, _, _) => 9,
-    ELetRec(_, _, _) => 10,
-    ELetMut(_, _, _) => 11,
-    EAssign(_, _, _) => 12,
-    EAssignOp(_, _, _, _) => 13,
-    ESeq(_, _) => 14,
-    ETuple(_) => 15,
-    EMatch(_, _) => 16,
-    EArray(_) => 17,
-    EForIn(_, _, _, _) => 18,
-    EWhile(_, _) => 19,
-    EBreak(_) => 20,
-    EContinue(_) => 21,
-    EUnit => 22,
-    EThrow(_) => 23,
-    EFn(_, _, _, _, _, _) => 24,
-    ELoop(_, _) => 25,
-    EReturn(_) => 26,
-    _ => -1
-  }
-}
-export let is_pbind: (Pat) -> Bool = (p) -> {
-  match p {
-    PBind(_) => true,
-    _ => false
-  }
-}
-export let is_pbool: (Pat) -> Bool = (p) -> {
-  match p {
-    PBool(_) => true,
-    _ => false
-  }
-}
-export let is_pctor: (Pat) -> Bool = (p) -> {
-  match p {
-    PCtor(_, _) => true,
-    _ => false
-  }
-}
-export let is_pwild: (Pat) -> Bool = (p) -> {
-  match p {
-    PWild => true,
-    _ => false
-  }
-}
-export let is_earray: (Expr) -> Bool = (expr) -> {
-  match expr {
-    EArray(_) => true,
-    _ => false
-  }
-}
-export let is_eident: (Expr) -> Bool = (expr) -> {
-  match expr {
-    EIdent(_, _) => true,
-    _ => false
-  }
-}
-export let is_etuple: (Expr) -> Bool = (expr) -> {
-  match expr {
-    ETuple(_) => true,
-    _ => false
-  }
-}
-export let is_ptuple: (Pat) -> Bool = (p) -> {
-  match p {
-    PTuple(_) => true,
-    _ => false
-  }
-}
-let op_i32_eq = 70
-let op_i32_ne = 71
-export let is_erecord: (Expr) -> Bool = (expr) -> {
-  match expr {
-    ERecord(_) => true,
-    _ => false
-  }
-}
-export let is_pstring: (Pat) -> Bool = (p) -> {
-  match p {
-    PString(_) => true,
-    _ => false
-  }
-}
-let op_i32_eqz = 69
-let op_i32_mul = 108
-let op_i32_sub = 107
-export let emit_i32_eq: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_i32_eq)
-}
-export let emit_i32_ne: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_i32_ne)
-}
-export let rec lookup_ctor: (Array[String], String, Int) -> Int = (ctor_names, name, i) -> {
-  if i >= Array::length(ctor_names) {
-    -1
-  }
-  else if Array::get(ctor_names, i) == name {
-    i
-  }
-  else lookup_ctor(ctor_names, name, i + 1)
-}
-let op_i32_ge_u = 79
-let op_i32_gt_u = 75
-let op_i64_load = 41
-export let emit_i32_eqz: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_i32_eqz)
-}
-export let emit_i32_mul: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_i32_mul)
-}
-export let emit_i32_sub: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_i32_sub)
-}
-export let emit_str_ref: (Bytes, Int, Int) -> Unit = (buf, offset, length) -> {
-  emit_i64_const(buf, offset)
-  emit_i64_const(buf, 32)
-  emit_i64_shl(buf)
-  emit_i64_const(buf, length)
-  emit_i64_or(buf)
-}
-export let get_efn_body: (Expr) -> Expr with { Error } = (expr) -> {
-  match expr {
-    EFn(_, _, _, _, _, body) => body,
-    _ => throw("not EFn")
-  }
-}
-export let get_eif_cond: (Expr) -> Expr with { Error } = (expr) -> {
-  match expr {
-    EIf(c, _, _) => c,
-    _ => throw("not EIf")
-  }
-}
-export let get_eif_else: (Expr) -> Expr with { Error } = (expr) -> {
-  match expr {
-    EIf(_, _, e) => e,
-    _ => throw("not EIf")
-  }
-}
-export let get_eif_then: (Expr) -> Expr with { Error } = (expr) -> {
-  match expr {
-    EIf(_, t, _) => t,
-    _ => throw("not EIf")
-  }
-}
-export let get_elet_val: (Expr) -> Expr with { Error } = (expr) -> {
-  match expr {
-    ELet(_, val, _) => val,
-    _ => throw("not ELet")
-  }
-}
-export let is_ctor_call: (Expr, CtorTable) -> Bool = (value, ct) -> {
-  match value {
-    ECall(callee, _, _) => match callee {
-      EIdent(nm, _) => lookup_ctor(ct.names, nm, 0) >= 0,
-      _ => false
-    },
-    _ => false
-  }
-}
-let op_i64_store = 55
-export let resolve_func: (FuncTable, String) -> (Int, Int, Int) with { Error } = (ft, name) -> {
-  let len = Array::length(ft.names)
-  let mut i = 0
-  let mut found = -1
-  while i < len {
-    if Array::get(ft.names, i) == name {
-      found = i
-      i = len
-    } else {
-      i = i + 1
-    }
-  }
-  if found < 0 {
-    throw(String::concat("undefined function: ", name))
-  };
-  (Array::get(ft.indices, found), Array::get(ft.params, found), Array::get(ft.returns, found))
-}
-export let emit_binop_op: (Bytes, String) -> Unit with { Error } = (buf, op) -> {
-  if op == "+" {
-    emit_i64_add(buf)
-  }
-  else if op == "-" {
-    emit_i64_sub(buf)
-  }
-  else if op == "*" {
-    emit_i64_mul(buf)
-  }
-  else if op == "/" {
-    emit_i64_div_s(buf)
-  }
-  else if op == "%" {
-    emit_i64_rem_s(buf)
-  }
-  else if op == "&" {
-    emit_i64_and(buf)
-  }
-  else if op == "|" {
-    emit_i64_or(buf)
-  }
-  else if op == "^" {
-    emit_i64_xor(buf)
-  }
-  else if op == "<<" {
-    emit_i64_shl(buf)
-  }
-  else if op == ">>" {
-    emit_i64_shr_s(buf)
-  }
-  else if op == "==" {
-    emit_i64_eq(buf); emit_i64_extend_i32_s(buf)
-  }
-  else if op == "!=" {
-    emit_i64_ne(buf); emit_i64_extend_i32_s(buf)
-  }
-  else if op == "<" {
-    emit_i64_lt_s(buf); emit_i64_extend_i32_s(buf)
-  }
-  else if op == ">" {
-    emit_i64_gt_s(buf); emit_i64_extend_i32_s(buf)
-  }
-  else if op == "<=" {
-    emit_i64_le_s(buf); emit_i64_extend_i32_s(buf)
-  }
-  else if op == ">=" {
-    emit_i64_ge_s(buf); emit_i64_extend_i32_s(buf)
-  }
-  else if op == "&&" {
-    emit_i64_and(buf)
-  }
-  else if op == "||" {
-    emit_i64_or(buf)
-  }
-  else {
-    throw(String::concat("unsupported binop: ", op))
-  }
-}
-export let emit_i32_ge_u: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_i32_ge_u)
-}
-export let emit_i32_gt_u: (Bytes) -> Unit = (buf) -> {
-  bytebuf_push(buf, op_i32_gt_u)
-}
-export let emit_i64_load: (Bytes, Int, Int) -> Unit = (buf, align, offset) -> {
-  bytebuf_push(buf, op_i64_load)
-  leb128_encode_u32(buf, align)
-  leb128_encode_u32(buf, offset)
-}
-export let get_ebinop_op: (Expr) -> String with { Error } = (expr) -> {
-  match expr {
-    EBinOp(op, _, _) => op,
-    _ => throw("not EBinOp")
-  }
-}
-export let get_elet_body: (Expr) -> Expr with { Error } = (expr) -> {
-  match expr {
-    ELet(_, _, body) => body,
-    _ => throw("not ELet")
-  }
-}
-export let get_elet_name: (Expr) -> String with { Error } = (expr) -> {
-  match expr {
-    ELet(name, _, _) => name,
-    _ => throw("not ELet")
-  }
-}
-export let get_slet_expr: (Stmt) -> Expr with { Error } = (stmt) -> {
-  match stmt {
-    SLet(_, _, _, _, expr) => expr,
-    _ => throw("not SLet")
-  }
-}
-export let get_slet_name: (Stmt) -> String with { Error } = (stmt) -> {
-  match stmt {
-    SLet(_, _, name, _, _) => name,
-    _ => throw("not SLet")
-  }
-}
-export let get_slet_type: (Stmt) -> Option[TypeExpr] = (stmt) -> {
-  match stmt {
-    SLet(_, _, _, ty, _) => ty,
-    _ => None
-  }
-}
-export let resolve_local: (Array[String], String, String) -> Int with { Error } = (names, name, tag) -> {
-  let mut i = Array::length(names) - 1
-  let mut result = -1
-  while i >= 0 {
-    if Array::get(names, i) == name {
-      result = i
-      i = -1
-    } else {
-      i = i - 1
-    }
-  }
-  if result < 0 {
-    throw(String::concat(String::concat("undefined variable (local): ", name), String::concat(" @", tag)))
-  }
-  result
-}
-export let emit_i64_store: (Bytes, Int, Int) -> Unit = (buf, align, offset) -> {
-  bytebuf_push(buf, op_i64_store)
-  leb128_encode_u32(buf, align)
-  leb128_encode_u32(buf, offset)
-}
-export let emit_box_float: (Bytes, CompileCtx, Int, Int) -> Unit = (buf, ctx, bits_local, box_local) -> {
-  emit_local_set(buf, bits_local)
-  emit_i64_const(buf, 16)
-  emit_call(buf, ctx.rc_alloc_func_idx)
-  emit_local_set(buf, box_local)
-  emit_local_get(buf, box_local)
-  emit_i32_wrap_i64(buf)
-  emit_i32_const(buf, 16)
-  emit_i32_store(buf, 2, 0)
-  emit_local_get(buf, box_local)
-  emit_i32_wrap_i64(buf)
-  emit_i32_const(buf, 1)
-  emit_i32_store(buf, 2, 4)
-  emit_local_get(buf, box_local)
-  emit_i32_wrap_i64(buf)
-  emit_local_get(buf, bits_local)
-  emit_i64_store(buf, 3, 8)
-  emit_local_get(buf, box_local)
-  emit_i64_const(buf, 8)
-  emit_i64_add(buf)
-  emit_i64_const(buf, 1)
-  emit_i64_or(buf)
-}
-export let emit_unbox_float: (Bytes) -> Unit = (buf) -> {
-  emit_i64_const(buf, -2)
-  emit_i64_and(buf)
-  emit_i32_wrap_i64(buf)
-  emit_i64_load(buf, 3, 0)
-}
-export let fn_type_param_types: (Option[TypeExpr]) -> Option[Array[TypeExpr]] = (ty) -> {
-  match ty {
-    Some(t) =>
-    match t {
-      TyFn(args, _, _) => Some(args),
-      _ => None
-    },
-    None => None
-  }
-}
-export let is_nullary_ctor_ident: (Expr, CtorTable) -> Bool = (value, ct) -> {
-  match value {
-    EIdent(nm, _) => lookup_ctor(ct.names, nm, 0) >= 0,
-    _ => false
-  }
-}
-export let name_has_effect_prefix: (String, String) -> Bool = (full, eff) -> {
-  let el = String::length(eff)
-  let fl = String::length(full)
-  if fl < el + 2 {
-    false
-  } else {
-    let mut ok = true
-    let mut j = 0
-    while j < el {
-      if String::char_code_at(full, j) != String::char_code_at(eff, j) {
-        ok = false
-        j = el
-      } else {
-        j = j + 1
-      }
-    }
-    ok && String::char_code_at(full, el) == 58 && String::char_code_at(full, el + 1) == 58
-  }
-}
-export let effect_name_to_tag: (Array[String], String) -> Int = (effect_names, full) -> {
-  let n = Array::length(effect_names)
-  let mut result = 3 + n
-  let mut i = 0
-  while i < n {
-    if name_has_effect_prefix(full, Array::get(effect_names, i)) {
-      result = 3 + i
-      i = n
-    } else {
-      i = i + 1
-    }
-  }
-  result
-}
-export let effect_op_declared_arity: (Array[String], Array[Int], String) -> Int = (keys, arities, full) -> {
-  let n = Array::length(keys)
-  let mut result = -1
-  let mut i = 0
-  while i < n {
-    if Array::get(keys, i) == full {
-      result = Array::get(arities, i)
-      i = n
-    } else {
-      i = i + 1
-    }
-  }
-  result
-}
-export let effect_op_index: (Array[String], String) -> Int = (keys, full) -> {
-  let n = Array::length(keys)
-  let mut result = 0 - 1
-  let mut i = 0
-  while i < n {
-    if Array::get(keys, i) == full {
-      result = i
-      i = n
-    } else {
-      i = i + 1
-    }
-  }
-  result
-}
-export let emit_heap_grow_after_heap_set: (Bytes, CompileCtx) -> Unit = (buf, ctx) -> {
-  if ctx.heap_grow_check_func_idx >= 0 {
-    emit_call(buf, ctx.heap_grow_check_func_idx)
-  } else {
-    ()
-  }
-}
 let empty_expr_array: () -> Array[Expr] = () -> {
   Array::slice([
     EUnit
@@ -9341,7 +7701,7 @@ let collect_method_traits: (Array[Stmt]) -> Array[(String, Array[(String, Array[
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      STrait(_, tname, _, methods) => if Array::length(methods) > 0 {
+      STrait(_, tname, _, methods, _) => if Array::length(methods) > 0 {
         Array::push(out, (tname, methods))
       } else {
         ()
@@ -9352,6 +7712,195 @@ let collect_method_traits: (Array[Stmt]) -> Array[(String, Array[(String, Array[
   }
   out
 }
+let empty_method_gens: () -> Array[(String, Array[String], Array[(String, Array[String])])] = () -> {
+  Array::slice([
+    ("", empty_str_array(), Array::slice([
+      ("", empty_str_array())
+    ], 0, 0))
+  ], 0, 0)
+}
+let collect_trait_method_gens: (Array[Stmt]) -> Array[(String, Array[(String, Array[String], Array[(String, Array[String])])])] = (stmts) -> {
+  let out = Array::slice([
+    ("", empty_method_gens())
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STrait(_, tname, _, _, method_gens) => {
+        let mut any = false
+        let mut j = 0
+        while j < Array::length(method_gens) {
+          let (_, tps, _) = Array::get(method_gens, j)
+          if Array::length(tps) > 0 {
+            any = true
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+        if any {
+          Array::push(out, (tname, method_gens))
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+let lookup_method_gen: (Array[(String, Array[(String, Array[String], Array[(String, Array[String])])])], String, String) -> Option[(Array[String], Array[(String, Array[String])])] = (table, trait_name, method) -> {
+  let mut i = 0
+  let mut result = None
+  while i < Array::length(table) {
+    let (tn, gens) = Array::get(table, i)
+    if tn == trait_name {
+      let mut j = 0
+      while j < Array::length(gens) {
+        let (mname, tps, bounds) = Array::get(gens, j)
+        if mname == method && Array::length(tps) > 0 {
+          result = Some((tps, bounds))
+          j = Array::length(gens)
+        } else {
+          j = j + 1
+        }
+      }
+      i = Array::length(table)
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+let collect_impl_trait_map: (Array[Stmt]) -> Array[(String, String)] = (stmts) -> {
+  let out = Array::slice([
+    ("", "")
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImpl(_, _, trait_name, type_name) => Array::push(out, (type_name, trait_name)),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+let lookup_trait_method_param_types: (Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], String, String) -> Option[Array[TypeExpr]] = (traits, trait_name, method) -> {
+  match lookup_trait_sigs(traits, trait_name) {
+    Some(sigs) => {
+      let mut j = 0
+      let mut result = None
+      while j < Array::length(sigs) {
+        let (mname, ptypes, _) = Array::get(sigs, j)
+        if mname == method {
+          result = Some(ptypes)
+          j = Array::length(sigs)
+        } else {
+          j = j + 1
+        }
+      }
+      result
+    },
+    None => None
+  }
+}
+let find_method_generic_for_impl: (Array[(String, String)], Array[(String, Array[(String, Array[String], Array[(String, Array[String])])])], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], String, String) -> Option[(Array[String], Array[(String, Array[String])], Array[TypeExpr])] = (impl_map, gen_table, traits, type_name, method) -> {
+  let mut i = 0
+  let mut result = None
+  while i < Array::length(impl_map) {
+    let (tn, trait_name) = Array::get(impl_map, i)
+    if tn == type_name {
+      match lookup_method_gen(gen_table, trait_name, method) {
+        Some(g) => {
+          let (tps, bounds) = g
+          match lookup_trait_method_param_types(traits, trait_name, method) {
+            Some(ptypes) => {
+              result = Some((tps, bounds, ptypes))
+              i = Array::length(impl_map)
+            },
+            None => {
+              i = i + 1
+            }
+          }
+        },
+        None => {
+          i = i + 1
+        }
+      }
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+let annotate_params_from_sig: (Array[(String, Option[TypeExpr])], Array[TypeExpr]) -> Array[(String, Option[TypeExpr])] = (params, ptypes) -> {
+  let out = Array::slice([
+    ("", None)
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(params) {
+    let (pname, ann) = Array::get(params, i)
+    let new_ann = match ann {
+      Some(_) => ann,
+      None => if i < Array::length(ptypes) {
+        Some(Array::get(ptypes, i))
+      } else {
+        None
+      }
+    }
+    Array::push(out, (pname, new_ann))
+    i = i + 1
+  }
+  out
+}
+let inject_method_generics: (Array[Stmt], Array[(String, String)], Array[(String, Array[(String, Array[String], Array[(String, Array[String])])])], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Unit = (stmts, impl_map, gen_table, traits) -> {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exp, isrec, qname, ann, body) => match body {
+        EFn(tparams, bounds, params, ret, eff, fbody) => if Array::length(tparams) == 0 {
+          match split_qualified(qname) {
+            Some(parts) => {
+              let (cname, method) = parts
+              match find_method_generic_for_impl(impl_map, gen_table, traits, cname, method) {
+                Some(g) => {
+                  let (mtparams, mtbounds, ptypes) = g
+                  let new_params = annotate_params_from_sig(params, ptypes)
+                  let new_efn = EFn(mtparams, mtbounds, new_params, ret, eff, fbody)
+                  Array::set(stmts, i, SLet(exp, isrec, qname, ann, new_efn))
+                },
+                None => ()
+              }
+            },
+            None => ()
+          }
+        } else {
+          ()
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+let inject_trait_method_generics_with: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Unit = (stmts, traits) -> {
+  let method_gen_table = collect_trait_method_gens(stmts)
+  if Array::length(method_gen_table) > 0 {
+    let impl_map = collect_impl_trait_map(stmts)
+    inject_method_generics(stmts, impl_map, method_gen_table, traits)
+  } else {
+    ()
+  }
+}
+export let inject_trait_method_generics: (Array[Stmt]) -> Unit = (stmts) -> {
+  let traits_raw = collect_method_traits(stmts)
+  let supers_map = collect_trait_supers(stmts)
+  let traits = flatten_traits(traits_raw, supers_map)
+  inject_trait_method_generics_with(stmts, traits)
+}
 let collect_trait_supers: (Array[Stmt]) -> Array[(String, Array[String])] = (stmts) -> {
   let out = Array::slice([
     ("", empty_str_array())
@@ -9359,7 +7908,7 @@ let collect_trait_supers: (Array[Stmt]) -> Array[(String, Array[String])] = (stm
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      STrait(_, tname, supers, _) => Array::push(out, (tname, supers)),
+      STrait(_, tname, supers, _, _) => Array::push(out, (tname, supers)),
       _ => ()
     }
     i = i + 1
@@ -10644,6 +9193,7 @@ export let desugar_trait_dicts: (Array[Stmt]) -> Unit = (stmts) -> {
   let traits_raw = collect_method_traits(stmts)
   let supers_map = collect_trait_supers(stmts)
   let traits = flatten_traits(traits_raw, supers_map)
+  inject_trait_method_generics_with(stmts, traits)
   let struct_sets = collect_struct_field_sets(stmts)
   let fn_returns = collect_fn_returns(stmts)
   let gimpl_types = collect_generic_impl_types(stmts)
@@ -10666,6 +9216,1648 @@ export let desugar_trait_dicts: (Array[Stmt]) -> Unit = (stmts) -> {
       }
       ti = ti + 1
     }
+  }
+}
+let rec import_cache_lookup: (Array[(String, Type)], String, Int) -> Option[Type] = (cache, name, i) -> {
+  if i >= Array::length(cache) {
+    None
+  }
+  else {
+    let (cached_name, cached_ty) = Array::get(cache, i)
+    if cached_name == name {
+      Some(cached_ty)
+    }
+    else import_cache_lookup(cache, name, i + 1)
+  }
+}
+let bind_stmt_imports: (TypeEnv, Array[(String, Option[String])]) -> TypeEnv = (env, names) -> {
+  let env_bindings = env_flat_bindings(env)
+  let import_cache = Array::slice([
+    ("", CtUnknown)
+  ], 0, 0)
+  let nlen = Array::length(names)
+  let mut i = 0
+  let mut acc = env
+  while i < nlen {
+    let (name, alias) = Array::get(names, i)
+    let bound_name = match alias {
+      Some(a) => a,
+      None => name
+    }
+    let ty = match import_cache_lookup(import_cache, name, 0) {
+      Some(t) => t,
+      None => {
+        let resolved = match env_lookup_flat(env_bindings, name) {
+          Some(t) => t,
+          None => CtUnknown
+        }
+        Array::push(import_cache, (name, resolved))
+        resolved
+      }
+    }
+    let acc_with_name = env_bind(acc, bound_name, ty)
+    acc = match env_lookup_flat(env_bindings, fn_return_env_name(name)) {
+      Some(ret_ty) => env_bind(acc_with_name, fn_return_env_name(bound_name), ret_ty),
+      None => acc_with_name
+    }
+    i = i + 1
+  }
+  acc
+}
+let annotation_return_type: (Option[TypeExpr], Array[TypeDef]) -> Option[Type] = (ann, defs) -> {
+  match ann {
+    Some(te) => match te {
+      TyFn(params, ret, _) => {
+        let ret_box = Array::slice([
+          ret
+        ], 0, 1)
+        let _ = Array::length(params)
+        Some(resolve_type_expr(Array::get(ret_box, 0), defs))
+      },
+      _ => None
+    },
+    None => None
+  }
+}
+let fn_expr_return_type: (Expr, Array[TypeDef]) -> Option[Type] = (expr, defs) -> {
+  match expr {
+    EFn(_, _, _, ret_ty, _, _) => match ret_ty {
+      Some(te) => Some(resolve_type_expr(te, defs)),
+      None => None
+    },
+    _ => None
+  }
+}
+let bind_fn_return: (TypeEnv, String, Type) -> TypeEnv = (env, name, ret_ty) -> {
+  env_bind(env, fn_return_env_name(name), ret_ty)
+}
+let bind_annotation_return: (TypeEnv, String, Option[TypeExpr], Array[TypeDef]) -> TypeEnv = (env, name, ann, defs) -> {
+  match annotation_return_type(ann, defs) {
+    Some(ret_ty) => bind_fn_return(env, name, ret_ty),
+    None => env
+  }
+}
+let bind_value_or_annotation_return: (TypeEnv, String, Expr, Option[TypeExpr], Array[TypeDef]) -> TypeEnv = (env, name, val, ann, defs) -> {
+  match fn_expr_return_type(val, defs) {
+    Some(ret_ty) => bind_fn_return(env, name, ret_ty),
+    None => bind_annotation_return(env, name, ann, defs)
+  }
+}
+let struct_derives_has: (Array[String], String) -> Bool = (derives, name) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(derives) {
+    if Array::get(derives, i) == name {
+      found = true
+      i = Array::length(derives)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+let stmt_is_type_decl: (Stmt) -> Bool = (stmt) -> {
+  match stmt {
+    SEnum(_, _, _, _) => true,
+    SSuberror(_, _, _) => true,
+    SStruct(_, _, _, _, _) => true,
+    STypeAlias(_, _, _, _) => true,
+    _ => false
+  }
+}
+let reorder_type_decls_first: (Array[Stmt], Int) -> Array[Stmt] = (stmts, start) -> {
+  let out = Array::slice(stmts, 0, start)
+  let n = Array::length(stmts)
+  let mut i = start
+  while i < n {
+    let st = Array::get(stmts, i)
+    if stmt_is_type_decl(st) {
+      Array::push(out, st)
+    }
+    i = i + 1
+  }
+  let mut j = start
+  while j < n {
+    let st = Array::get(stmts, j)
+    if !stmt_is_type_decl(st) {
+      Array::push(out, st)
+    }
+    j = j + 1
+  }
+  out
+}
+export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (TypeEnv, Subst, Int) = (raw_stmts, i, env, defs, s, c, errors, tytab) -> {
+  let stmts = reorder_type_decls_first(raw_stmts, i)
+  let mut idx = i
+  let mut cur_env = env
+  let mut cur_s = s
+  let mut cur_c = c
+  let mut hoist_i = idx
+  while hoist_i < Array::length(stmts) {
+    match Array::get(stmts, hoist_i) {
+      SLet(_, _, hname, hann, _) => {
+        let ht = match hann {
+          Some(hte) => resolve_type_expr(hte, defs),
+          None => CtUnknown
+        }
+        cur_env = env_bind(cur_env, hname, ht)
+      },
+      _ => ()
+    }
+    hoist_i = hoist_i + 1
+  }
+  while idx < Array::length(stmts) {
+    let env = cur_env
+    let s = cur_s
+    let c = cur_c
+    let stmt = Array::get(stmts, idx)
+    let (new_env, s1, c1) = match stmt {
+      SLet(_, is_rec, name, ann, val) => {
+        let (vt, ns0, nc) = if is_rec {
+          check_expr(val, env_bind(env, name, CtUnknown), defs, s, c, errors, tytab)
+        } else {
+          check_expr(val, env, defs, s, c, errors, tytab)
+        }
+        let ns = match ann {
+          Some(te) => check_assignable(resolve_type_expr(te, defs), subst_apply(ns0, vt), ns0, errors, String::concat("binding type mismatch for ", name), 0 - 1),
+          None => ns0
+        }
+        let t = match ann {
+          Some(te) => resolve_type_expr(te, defs),
+          None => generalize(ns, vt)
+        }
+        let env1 = env_bind(env, name, t)
+        (bind_value_or_annotation_return(env1, name, val, ann, defs), ns, nc)
+      },
+      SLetMut(name, ann, val) => {
+        let (vt, ns0, nc) = check_expr(val, env, defs, s, c, errors, tytab)
+        let ns = match ann {
+          Some(te) => check_assignable(resolve_type_expr(te, defs), subst_apply(ns0, vt), ns0, errors, String::concat("binding type mismatch for ", name), 0 - 1),
+          None => ns0
+        }
+        let t = match ann {
+          Some(te) => resolve_type_expr(te, defs),
+          None => vt
+        }
+        let env1 = env_bind(env, name, t)
+        (bind_value_or_annotation_return(env1, name, val, ann, defs), ns, nc)
+      },
+      SLetPat(pat, val) => {
+        let (vt, ns, nc) = check_expr(val, env, defs, s, c, errors, tytab)
+        let new_env = match pat {
+          PTuple(pats) => match vt {
+            CtTuple(types) => {
+              let mut e = env
+              let mut pi = 0
+              while pi < Array::length(pats) {
+                match Array::get(pats, pi) {
+                  PBind(name) => if pi < Array::length(types) {
+                    e = env_bind(e, name, Array::get(types, pi))
+                  } else {
+                    e = env_bind(e, name, CtUnknown)
+                  },
+                  _ => ()
+                }
+                pi = pi + 1
+              }
+              e
+            },
+            _ => {
+              let concrete_non_tuple = match subst_apply(ns, vt) {
+                CtInt => true,
+                CtDouble => true,
+                CtBool => true,
+                CtString => true,
+                CtChar => true,
+                CtUnit => true,
+                CtBytes => true,
+                CtArray(_) => true,
+                CtOption(_) => true,
+                CtFn(_, _, _) => true,
+                CtStruct(_) => true,
+                CtEnum(_) => true,
+                _ => false
+              }
+              if concrete_non_tuple {
+                Array::push(errors, "tuple pattern cannot destructure a non-tuple value")
+              } else {
+                ()
+              }
+              let mut e = env
+              let mut pi = 0
+              while pi < Array::length(pats) {
+                match Array::get(pats, pi) {
+                  PBind(name) => {
+                    e = env_bind(e, name, CtUnknown)
+                  },
+                  _ => ()
+                }
+                pi = pi + 1
+              }
+              e
+            }
+          },
+          PBind(name) => env_bind(env, name, vt),
+          PStruct(_, fields) => {
+            let mut e = env
+            let mut fi = 0
+            while fi < Array::length(fields) {
+              let (_, fpat) = Array::get(fields, fi)
+              match fpat {
+                PBind(name) => {
+                  e = env_bind(e, name, CtUnknown)
+                },
+                _ => ()
+              }
+              fi = fi + 1
+            }
+            e
+          },
+          _ => env
+        }
+        (new_env, ns, nc)
+      },
+      SEnum(_, name, params, variants) => {
+        let param_len = Array::length(params)
+        let param_var_ids = Array::slice([
+          0
+        ], 0, 0)
+        let param_var_types = Array::slice([
+          CtUnknown
+        ], 0, 0)
+        let mut pi = 0
+        while pi < param_len {
+          let vid = c + pi
+          Array::push(param_var_ids, vid)
+          Array::push(param_var_types, CtVar(vid))
+          pi = pi + 1
+        }
+        let ctor_result_type = if param_len == 0 {
+          CtEnum(name)
+        } else {
+          CtNamed(name, param_var_types)
+        }
+        let ctor_bounds = Array::slice([
+          (0, Array::slice([
+            ""
+          ], 0, 0))
+        ], 0, 0)
+        let resolved_variants = Array::slice([
+          ("", Array::slice([
+            CtUnknown
+          ], 0, 0))
+        ], 0, 0)
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (vname, vtypes) = Array::get(variants, vi)
+          let resolved_vtypes = Array::slice([
+            CtUnknown
+          ], 0, 0)
+          let mut ti = 0
+          while ti < Array::length(vtypes) {
+            let vt = subst_type_params(resolve_type_expr(Array::get(vtypes, ti), defs), params, param_var_types)
+            Array::push(resolved_vtypes, vt)
+            ti = ti + 1
+          }
+          Array::push(resolved_variants, (vname, resolved_vtypes))
+          vi = vi + 1
+        }
+        Array::push(defs, TDEnum(name, params, resolved_variants))
+        let mut env1 = env_bind(env, name, CtEnum(name))
+        let mut ci2 = 0
+        while ci2 < Array::length(variants) {
+          let (vname, vtypes) = Array::get(variants, ci2)
+          let ctor_ty = if Array::length(vtypes) == 0 {
+            ctor_result_type
+          } else {
+            let resolved_args = Array::slice([
+              CtUnknown
+            ], 0, 0)
+            let mut ai = 0
+            while ai < Array::length(vtypes) {
+              let arg_ty = subst_type_params(resolve_type_expr(Array::get(vtypes, ai), defs), params, param_var_types)
+              Array::push(resolved_args, arg_ty)
+              ai = ai + 1
+            }
+            CtFn(resolved_args, ctor_result_type, None)
+          }
+          let exported_ctor_ty = if param_len == 0 {
+            ctor_ty
+          } else {
+            CtForAll(param_var_ids, ctor_bounds, ctor_ty)
+          }
+          env1 = env_bind(env1, vname, exported_ctor_ty)
+          match ctor_ty {
+            CtFn(_, ret, _) => {
+              let exported_ret_ty = if param_len == 0 {
+                ret
+              } else {
+                CtForAll(param_var_ids, ctor_bounds, ret)
+              }
+              env1 = bind_fn_return(env1, vname, exported_ret_ty)
+            },
+            _ => ()
+          }
+          ci2 = ci2 + 1
+        }
+        let env_eq = env_bind(env1, String::concat(name, "::equals"), CtFn([
+          ctor_result_type,
+          ctor_result_type
+        ], CtBool, None))
+        (env_eq, s, c + param_len)
+      },
+      SStruct(_, name, field_defs, derives, mut_fields) => {
+        let resolved_fields = Array::slice([
+          ("", CtUnit)
+        ], 0, 0)
+        let mut fi = 0
+        while fi < Array::length(field_defs) {
+          let (fname, ftype_expr) = Array::get(field_defs, fi)
+          let ftype = resolve_type_expr(ftype_expr, defs)
+          Array::push(resolved_fields, (fname, ftype))
+          fi = fi + 1
+        }
+        Array::push(defs, TDStruct(name, resolved_fields, mut_fields))
+        let field_types = Array::slice([
+          CtUnknown
+        ], 0, 0)
+        let mut fj = 0
+        while fj < Array::length(resolved_fields) {
+          let (_, fty) = Array::get(resolved_fields, fj)
+          Array::push(field_types, fty)
+          fj = fj + 1
+        }
+        let env1 = env_bind(env, name, CtFn(field_types, CtStruct(name), None))
+        let env2 = if struct_derives_has(derives, "Ord") {
+          env_bind(env1, String::concat(name, "::compare"), CtFn([
+            CtStruct(name),
+            CtStruct(name)
+          ], CtInt, None))
+        } else {
+          env1
+        }
+        let env3 = if struct_derives_has(derives, "Show") {
+          env_bind(env2, String::concat(name, "::to_string"), CtFn([
+            CtStruct(name)
+          ], CtString, None))
+        } else {
+          env2
+        }
+        let env4 = env_bind(env3, String::concat(name, "::equals"), CtFn([
+          CtStruct(name),
+          CtStruct(name)
+        ], CtBool, None))
+        (bind_fn_return(env4, name, CtStruct(name)), s, c)
+      },
+      STypeAlias(_, name, params, te) => {
+        let t = resolve_type_expr(te, defs)
+        Array::push(defs, TDAlias(name, params, t))
+        (env_bind(env, name, t), s, c)
+      },
+      SExternLet(name, te) => {
+        let t = resolve_type_expr(te, defs)
+        let env1 = env_bind(env, name, t)
+        (bind_annotation_return(env1, name, Some(te), defs), s, c)
+      },
+      STest(_, body) => {
+        let (_, ns, nc) = check_expr(body, env, defs, s, c, errors, tytab)
+        (env, ns, nc)
+      },
+      SBench(_, body) => {
+        let (_, ns, nc) = check_expr(body, env, defs, s, c, errors, tytab)
+        (env, ns, nc)
+      },
+      SExpr(expr) => {
+        let (_, ns, nc) = check_expr(expr, env, defs, s, c, errors, tytab)
+        (env, ns, nc)
+      },
+      SModule(_, _, body) => {
+        let _ = check_stmts(body, 0, env, defs, s, c, errors, tytab)
+        (env, s, c)
+      },
+      SImport(_, names) => (bind_stmt_imports(env, names), s, c)
+      ,
+      SReExport(_, names) => (bind_stmt_imports(env, names), s, c)
+      ,
+      SAliasDecl(_, _) => (env, s, c)
+      ,
+      STrait(_, name, supers, methods, _) => {
+        let is_open = false
+        (EnvTraitDef(name, supers, is_open, methods, env), s, c)
+      },
+      SImpl(tparams, tbounds, trait_name, type_name) => {
+        let target = match resolve_builtin(type_name) {
+          Some(t) => t,
+          None => CtNamed(type_name, Array::slice([
+            CtUnknown
+          ], 0, 0))
+        }
+        let new_env = if Array::length(tparams) > 0 {
+          EnvTraitImplGen(trait_name, tparams, tbounds, target, env)
+        } else {
+          EnvTraitImpl(trait_name, target, env)
+        }
+        (new_env, s, c)
+      },
+      _ => (env, s, c)
+    }
+    cur_env = new_env
+    cur_s = s1
+    cur_c = c1
+    idx = idx + 1
+  }
+  (cur_env, cur_s, cur_c)
+}
+let check_program_bounds: (TypeEnv, Subst, Array[String]) -> Unit = (env, s, errors) -> {
+  let pairs = collect_subst_bounds_pairs(s)
+  let n = Array::length(pairs)
+  let mut i = 0
+  while i < n {
+    let (vid, bounds) = Array::get(pairs, i)
+    let resolved = subst_apply(s, CtVar(vid))
+    match resolved {
+      CtVar(_) => (),
+      CtUnknown => (),
+      _ => {
+        let bn = Array::length(bounds)
+        let mut bi = 0
+        while bi < bn {
+          let b = Array::get(bounds, bi)
+          if b != "" && not(type_implements_trait(env, s, resolved, b)) {
+            Array::push(errors, String::concat("no impl `", String::concat(b, String::concat("` for `", String::concat(type_to_string(resolved), "`")))))
+          }
+          bi = bi + 1
+        }
+      }
+    }
+    i = i + 1
+  }
+}
+let collect_async_effect_errors: (Array[Stmt], TypeEnv, Array[String]) -> Unit = (stmts, env, frozen_errors) -> {
+  if Array::length(frozen_errors) == 0 {
+    let eff_errs = check_async_effects_stmts(stmts, env)
+    let mut i = 0
+    while i < Array::length(eff_errs) {
+      Array::push(frozen_errors, effect_error_to_string(Array::get(eff_errs, i)))
+      i = i + 1
+    }
+    if Array::length(frozen_errors) == 0 {
+      let perform_errs = check_perform_effects_stmts(stmts)
+      let mut j = 0
+      while j < Array::length(perform_errs) {
+        Array::push(frozen_errors, effect_error_to_string(Array::get(perform_errs, j)))
+        j = j + 1
+      }
+    }
+    if Array::length(frozen_errors) == 0 {
+      let mut_errs = check_mutability_stmts(stmts)
+      let mut k = 0
+      while k < Array::length(mut_errs) {
+        Array::push(frozen_errors, effect_error_to_string(Array::get(mut_errs, k)))
+        k = k + 1
+      }
+    }
+  }
+}
+export let check_program: (Array[Stmt]) -> TypeEnv with { Error } = (stmts) -> {
+  inject_trait_method_generics(stmts)
+  let empty_defs = Array::slice([
+    TDAlias("_dummy", Array::slice([
+      ""
+    ], 0, 0), CtUnit)
+  ], 0, 0)
+  let seeded_raw_env = if trait_defined(EnvEmpty, "Eq") {
+    EnvEmpty
+  } else {
+    register_builtin_traits(EnvEmpty)
+  }
+  let seeded_env = env_cache(seeded_raw_env)
+  let errors = ArrayBuilder::new()
+  let frozen_errors = ArrayBuilder::freeze(errors)
+  let tytab = Array::slice([
+    (0, CtUnit)
+  ], 0, 0)
+  let (env, final_s, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
+  check_program_bounds(env, final_s, frozen_errors)
+  collect_async_effect_errors(stmts, env, frozen_errors)
+  if Array::length(frozen_errors) > 0 {
+    throw(Array::get(frozen_errors, 0))
+  }
+  env
+}
+export let check_program_type_table: (Array[Stmt]) -> (Array[(Int, Type)], Subst) with { Error } = (stmts) -> {
+  let empty_defs = Array::slice([
+    TDAlias("_dummy", Array::slice([
+      ""
+    ], 0, 0), CtUnit)
+  ], 0, 0)
+  let seeded_raw_env = if trait_defined(EnvEmpty, "Eq") {
+    EnvEmpty
+  } else {
+    register_builtin_traits(EnvEmpty)
+  }
+  let seeded_env = env_cache(seeded_raw_env)
+  let errors = ArrayBuilder::new()
+  let frozen_errors = ArrayBuilder::freeze(errors)
+  let tytab = Array::slice([
+    (0, CtUnit)
+  ], 0, 0)
+  handle {
+    let (_, final_s, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
+    (tytab, final_s)
+  } with Error {
+    Throw(_) => (tytab, SubstEmpty)
+  }
+}
+export let check_program_with_env: (Array[Stmt], TypeEnv) -> TypeEnv with { Error } = (stmts, initial_env) -> {
+  match initial_env {
+    EnvEmpty => check_program(stmts),
+    _ => {
+      inject_trait_method_generics(stmts)
+      let empty_defs = Array::slice([
+        TDAlias("_dummy", Array::slice([
+      ""
+    ], 0, 0), CtUnit)
+      ], 0, 0)
+      let cached_env = env_cache(initial_env)
+      let seeded_raw_env = if trait_defined(cached_env, "Eq") {
+        cached_env
+      } else {
+        register_builtin_traits(cached_env)
+      }
+      let seeded_env = env_cache(seeded_raw_env)
+      let errors = ArrayBuilder::new()
+      let frozen_errors = ArrayBuilder::freeze(errors)
+      let tytab = Array::slice([
+        (0, CtUnit)
+      ], 0, 0)
+      let (env, _, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
+      collect_async_effect_errors(stmts, env, frozen_errors)
+      if Array::length(frozen_errors) > 0 {
+        throw(Array::get(frozen_errors, 0))
+      }
+      env
+    }
+  }
+}
+export let emit_end: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, 11)
+}
+export let emit_i32_const: (Bytes, Int) -> Unit = (buf, value) -> {
+  bytebuf_push_opcode_s64(buf, 65, value)
+}
+export let emit_code_section: (Bytes, Array[Bytes]) -> Unit = (out, bodies) -> {
+  let content = bytebuf_new()
+  bytebuf_push_vec_header(content, Array::length(bodies))
+  let mut i = 0
+  while i < Array::length(bodies) {
+    let body = Array::get(bodies, i)
+    let func_buf = bytebuf_new()
+    leb128_encode_u32(func_buf, 0)
+    bytebuf_push_buf(func_buf, body)
+    bytebuf_push(func_buf, 11)
+    leb128_encode_u32(content, bytebuf_length(func_buf))
+    bytebuf_push_buf(content, func_buf)
+    i = i + 1
+  }
+  bytebuf_push_section(out, 10, content)
+}
+export let emit_memory_section: (Bytes, Int) -> Unit = (out, min_pages) -> {
+  let content = bytebuf_new()
+  bytebuf_push_vec_header(content, 1)
+  bytebuf_push(content, 0)
+  leb128_encode_u32(content, min_pages)
+  bytebuf_push_section(out, 5, content)
+}
+export let emit_header: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push3(buf, 0, 97, 115)
+  bytebuf_push3(buf, 109, 1, 0)
+  bytebuf_push(buf, 0)
+  bytebuf_push(buf, 0)
+}
+export {
+  emit_header, emit_func_type, emit_type_section, emit_type_section_multi
+}
+export let emit_name: (Bytes, String) -> Unit = (buf, name) -> {
+  bytebuf_push_string(buf, name)
+}
+export let emit_function_section: (Bytes, Array[Int]) -> Unit = (out, type_indices) -> {
+  let content = bytebuf_new()
+  bytebuf_push_vec_header(content, Array::length(type_indices))
+  let mut i = 0
+  while i < Array::length(type_indices) {
+    leb128_encode_u32(content, Array::get(type_indices, i))
+    i = i + 1
+  }
+  bytebuf_push_section(out, 3, content)
+}
+export let emit_export_section_multi: (Bytes, Array[String], Array[Int]) -> Unit = (out, names, func_indices) -> {
+  let count = Array::length(names)
+  let content = bytebuf_new()
+  bytebuf_push_vec_header(content, count)
+  let mut i = 0
+  while i < count {
+    emit_name(content, Array::get(names, i))
+    bytebuf_push(content, 0)
+    leb128_encode_u32(content, Array::get(func_indices, i))
+    i = i + 1
+  }
+  bytebuf_push_section(out, 7, content)
+}
+export let emit_export_section: (Bytes, String, Int) -> Unit = (out, name, func_idx) -> {
+  emit_export_section_multi(out, [
+    name
+  ], [
+    func_idx
+  ])
+}
+export {
+  emit_name, emit_header, emit_func_type, emit_type_section, emit_export_section, emit_function_section, emit_type_section_multi, emit_export_section_multi
+}
+export {
+  emit_end, emit_name, emit_header, emit_func_type, emit_i32_const, emit_code_section, emit_type_section, emit_export_section, emit_memory_section, emit_function_section, emit_type_section_multi, emit_export_section_multi, emit_code_section_with_locals
+}
+let type_func = 96
+let op_global_get = 35
+let op_global_set = 36
+let op_i32_add = 106
+let op_i32_sub = 107
+let op_i32_shr_u = 118
+let op_i32_gt_u = 75
+let op_memory_size = 63
+let op_memory_grow = 64
+let op_drop = 26
+let op_if = 4
+let bt_void = 64
+export let emit_global_get: (Bytes, Int) -> Unit = (buf, idx) -> {
+  bytebuf_push_opcode_u32(buf, op_global_get, idx)
+}
+export let emit_heap_memory_grow_check: (Bytes) -> Unit = (buf) -> {
+  emit_global_get(buf, 0)
+  emit_i32_const(buf, 65536)
+  bytebuf_push(buf, op_i32_add)
+  emit_i32_const(buf, 16)
+  bytebuf_push(buf, op_i32_shr_u)
+  bytebuf_push2(buf, op_memory_size, 0)
+  bytebuf_push(buf, op_i32_gt_u)
+  bytebuf_push2(buf, op_if, bt_void)
+  emit_global_get(buf, 0)
+  emit_i32_const(buf, 65536)
+  bytebuf_push(buf, op_i32_add)
+  emit_i32_const(buf, 16)
+  bytebuf_push(buf, op_i32_shr_u)
+  bytebuf_push2(buf, op_memory_size, 0)
+  bytebuf_push(buf, op_i32_sub)
+  bytebuf_push2(buf, op_memory_grow, 0)
+  bytebuf_push(buf, op_drop)
+  emit_end(buf)
+}
+export let emit_global_set: (Bytes, Int) -> Unit = (buf, idx) -> {
+  bytebuf_push_opcode_u32(buf, op_global_set, idx)
+}
+export let emit_func_type_raw: (Bytes, Array[Int], Array[Int]) -> Unit = (buf, param_types, result_types) -> {
+  bytebuf_push(buf, type_func)
+  leb128_encode_u32(buf, Array::length(param_types))
+  let mut i = 0
+  while i < Array::length(param_types) {
+    bytebuf_push(buf, Array::get(param_types, i))
+    i = i + 1
+  }
+  leb128_encode_u32(buf, Array::length(result_types))
+  let mut j = 0
+  while j < Array::length(result_types) {
+    bytebuf_push(buf, Array::get(result_types, j))
+    j = j + 1
+  }
+}
+export let emit_function_name_section: (Bytes, Array[String], Int) -> Unit = (out, names, base_index) -> {
+  let count = Array::length(names)
+  if count == 0 {
+    ()
+  } else {
+    let content = bytebuf_new()
+    bytebuf_push_string(content, "name")
+    let namemap = bytebuf_new()
+    leb128_encode_u32(namemap, count)
+    let mut i = 0
+    while i < count {
+      leb128_encode_u32(namemap, base_index + i)
+      bytebuf_push_string(namemap, Array::get(names, i))
+      i = i + 1
+    }
+    bytebuf_push_section(content, 1, namemap)
+    bytebuf_push_section(out, 0, content)
+  }
+}
+let emit_ascii_payload: (Bytes, String) -> Unit = (buf, text) -> {
+  let len = String::length(text)
+  let mut i = 0
+  while i < len {
+    bytebuf_push(buf, String::char_code_at(text, i))
+    i = i + 1
+  }
+}
+export let emit_vibe_abi_custom_section: (Bytes, String) -> Unit = (out, host_import_abi) -> {
+  let content = bytebuf_new()
+  bytebuf_push_string(content, "vibe.abi")
+  emit_ascii_payload(content, "version=1\n")
+  emit_ascii_payload(content, String::concat("host_import_abi=", host_import_abi))
+  emit_ascii_payload(content, "\n")
+  bytebuf_push_section(out, 0, content)
+}
+export {
+  emit_end, emit_name, emit_header, emit_func_type, emit_i32_const, emit_global_get, emit_global_set, emit_heap_memory_grow_check, emit_code_section, emit_data_section, emit_exports_full, emit_type_section, emit_export_memory, emit_func_type_raw, emit_export_section, emit_memory_section, emit_function_section, emit_type_section_multi, emit_exports_with_memory, emit_import_section_func, emit_export_section_multi, emit_global_section_i32_mut, emit_code_section_with_locals, emit_vibe_abi_custom_section, emit_function_name_section
+}
+let op_br = 12
+let op_if = 4
+let bt_i64 = 126
+let bt_void = 64
+export let emit_br: (Bytes, Int) -> Unit = (buf, label) -> {
+  bytebuf_push_opcode_u32(buf, op_br, label)
+}
+let op_call = 16
+let op_drop = 26
+let op_else = 5
+let op_loop = 3
+let op_block = 2
+let op_br_if = 13
+export let emit_call: (Bytes, Int) -> Unit = (buf, func_idx) -> {
+  bytebuf_push_opcode_u32(buf, op_call, func_idx)
+}
+export let emit_drop: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_drop)
+}
+export let emit_else: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_else)
+}
+let op_f64_ge = 102
+let op_f64_gt = 100
+let op_f64_le = 101
+let op_f64_lt = 99
+let op_i64_eq = 81
+let op_i64_ne = 82
+let op_i64_or = 132
+let op_return = 15
+let sec_table = 4
+export let emit_br_if: (Bytes, Int) -> Unit = (buf, label) -> {
+  bytebuf_push_opcode_u32(buf, op_br_if, label)
+}
+let op_f64_add = 160
+let op_f64_div = 163
+let op_f64_mul = 162
+let op_f64_neg = 154
+let op_f64_sub = 161
+let op_i32_add = 106
+let op_i64_add = 124
+let op_i64_and = 131
+let op_i64_eqz = 80
+let op_i64_mul = 126
+let op_i64_shl = 134
+let op_i64_sub = 125
+let op_i64_xor = 133
+export let emit_f64_ge: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_f64_ge)
+}
+export let emit_f64_gt: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_f64_gt)
+}
+export let emit_f64_le: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_f64_le)
+}
+export let emit_f64_lt: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_f64_lt)
+}
+export let emit_i64_eq: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i64_eq)
+}
+export let emit_i64_ne: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i64_ne)
+}
+export let emit_i64_or: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i64_or)
+}
+export let emit_if_i64: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push2(buf, op_if, bt_i64)
+}
+export let emit_return: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_return)
+}
+let op_i32_load = 40
+let op_i64_ge_s = 89
+let op_i64_gt_s = 85
+let op_i64_le_s = 87
+let op_i64_lt_s = 83
+let sec_element = 9
+export let emit_f64_add: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_f64_add)
+}
+export let emit_f64_div: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_f64_div)
+}
+export let emit_f64_mul: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_f64_mul)
+}
+export let emit_f64_neg: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_f64_neg)
+}
+export let emit_f64_sub: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_f64_sub)
+}
+export let emit_i32_add: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i32_add)
+}
+export let emit_i64_add: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i64_add)
+}
+export let emit_i64_and: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i64_and)
+}
+export let emit_i64_eqz: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i64_eqz)
+}
+export let emit_i64_mul: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i64_mul)
+}
+export let emit_i64_shl: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i64_shl)
+}
+export let emit_i64_sub: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i64_sub)
+}
+export let emit_i64_xor: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i64_xor)
+}
+export let emit_if_void: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push2(buf, op_if, bt_void)
+}
+let op_i32_store = 54
+let op_i64_const = 66
+let op_i64_div_s = 127
+let op_i64_rem_s = 129
+let op_i64_shr_s = 135
+let op_local_get = 32
+let op_local_set = 33
+let op_local_tee = 34
+let type_funcref = 112
+export let emit_i32_load: (Bytes, Int, Int) -> Unit = (buf, align, offset) -> {
+  bytebuf_push_opcode_u32_u32(buf, op_i32_load, align, offset)
+}
+export let emit_i64_ge_s: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i64_ge_s)
+}
+export let emit_i64_gt_s: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i64_gt_s)
+}
+export let emit_i64_le_s: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i64_le_s)
+}
+export let emit_i64_lt_s: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i64_lt_s)
+}
+let op_i32_store8 = 58
+export let emit_block_i64: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push2(buf, op_block, bt_i64)
+}
+export let emit_i32_store: (Bytes, Int, Int) -> Unit = (buf, align, offset) -> {
+  bytebuf_push_opcode_u32_u32(buf, op_i32_store, align, offset)
+}
+export let emit_i64_store: (Bytes, Int, Int) -> Unit = (buf, align, offset) -> {
+  bytebuf_push_opcode_u32_u32(buf, 55, align, offset)
+}
+export let emit_i64_const: (Bytes, Int) -> Unit = (buf, value) -> {
+  bytebuf_push_opcode_s64(buf, op_i64_const, value)
+}
+export let emit_i64_div_s: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i64_div_s)
+}
+export let emit_i64_rem_s: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i64_rem_s)
+}
+export let emit_i64_shr_s: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i64_shr_s)
+}
+export let emit_local_get: (Bytes, Int) -> Unit = (buf, idx) -> {
+  bytebuf_push_opcode_u32(buf, op_local_get, idx)
+}
+export let emit_local_set: (Bytes, Int) -> Unit = (buf, idx) -> {
+  bytebuf_push_opcode_u32(buf, op_local_set, idx)
+}
+export let emit_local_tee: (Bytes, Int) -> Unit = (buf, idx) -> {
+  bytebuf_push_opcode_u32(buf, op_local_tee, idx)
+}
+export let emit_loop_void: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push2(buf, op_loop, bt_void)
+}
+let op_i32_load8_u = 45
+export let emit_block_void: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push2(buf, op_block, bt_void)
+}
+export let emit_i32_store8: (Bytes, Int, Int) -> Unit = (buf, align, offset) -> {
+  bytebuf_push_opcode_u32_u32(buf, op_i32_store8, align, offset)
+}
+let op_i32_wrap_i64 = 167
+export let emit_i32_load8_u: (Bytes, Int, Int) -> Unit = (buf, align, offset) -> {
+  bytebuf_push_opcode_u32_u32(buf, op_i32_load8_u, align, offset)
+}
+let op_call_indirect = 17
+export let emit_i32_wrap_i64: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i32_wrap_i64)
+}
+export let emit_call_indirect: (Bytes, Int) -> Unit = (buf, type_idx) -> {
+  bytebuf_push_opcode_u32(buf, op_call_indirect, type_idx)
+  bytebuf_push(buf, 0)
+}
+let op_i64_trunc_f64_s = 176
+export let emit_f64_const_lohi: (Bytes, Int, Int) -> Unit = (buf, lo, hi) -> {
+  bytebuf_push9(buf, 68, lo&255, (lo>>8)&255, (lo>>16)&255, (lo>>24)&255, hi&255, (hi>>8)&255, (hi>>16)&255, (hi>>24)&255)
+}
+let op_i64_extend_i32_s = 172
+export let emit_i64_trunc_f64_s: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i64_trunc_f64_s)
+}
+let op_f64_convert_i64_s = 185
+export let emit_i64_extend_i32_s: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i64_extend_i32_s)
+}
+export let emit_f64_convert_i64_s: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_f64_convert_i64_s)
+}
+let op_f64_reinterpret_i64 = 191
+let op_i64_reinterpret_f64 = 189
+export let emit_f64_reinterpret_i64: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_f64_reinterpret_i64)
+}
+export let emit_i64_reinterpret_f64: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i64_reinterpret_f64)
+}
+export let emit_table_section_funcref: (Bytes, Int) -> Unit = (out, num_entries) -> {
+  let content = bytebuf_new()
+  bytebuf_push_vec_header(content, 1)
+  bytebuf_push2(content, type_funcref, 0)
+  leb128_encode_u32(content, num_entries)
+  bytebuf_push_section(out, sec_table, content)
+}
+export let emit_element_section_active: (Bytes, Array[Int]) -> Unit = (out, func_indices) -> {
+  let content = bytebuf_new()
+  bytebuf_push_vec_header(content, 1)
+  bytebuf_push(content, 0)
+  emit_i32_const(content, 0)
+  emit_end(content)
+  leb128_encode_u32(content, Array::length(func_indices))
+  let mut i = 0
+  while i < Array::length(func_indices) {
+    leb128_encode_u32(content, Array::get(func_indices, i))
+    i = i + 1
+  }
+  bytebuf_push_section(out, sec_element, content)
+}
+let builders_sec_data = 11
+export let string_to_data: (String) -> Bytes = (s) -> {
+  let buf = bytebuf_new()
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    bytebuf_push(buf, String::char_code_at(s, i))
+    i = i + 1
+  }
+  buf
+}
+export let emit_data_section_multi: (Bytes, Array[Int], Array[Bytes]) -> Unit = (out, offsets, datas) -> {
+  let count = Array::length(offsets)
+  let content = bytebuf_new()
+  bytebuf_push_vec_header(content, count)
+  let mut i = 0
+  while i < count {
+    bytebuf_push(content, 0)
+    emit_i32_const(content, Array::get(offsets, i))
+    emit_end(content)
+    let data = Array::get(datas, i)
+    leb128_encode_u32(content, Bytes::length(data))
+    bytebuf_push_buf(content, data)
+    i = i + 1
+  }
+  bytebuf_push_section(out, builders_sec_data, content)
+}
+let simd_prefix = 253
+let simd_v128_load = 0
+let simd_i8x16_splat = 15
+let simd_i8x16_eq = 35
+let simd_i8x16_le_u = 42
+let simd_i8x16_sub = 113
+let simd_v128_not = 77
+let simd_i8x16_bitmask = 100
+export let emit_v128_load: (Bytes, Int, Int) -> Unit = (buf, align, offset) -> {
+  bytebuf_push(buf, simd_prefix)
+  leb128_encode_u32(buf, simd_v128_load)
+  leb128_encode_u32(buf, align)
+  leb128_encode_u32(buf, offset)
+}
+export let emit_i8x16_splat: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, simd_prefix)
+  leb128_encode_u32(buf, simd_i8x16_splat)
+}
+export let emit_i8x16_eq: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, simd_prefix)
+  leb128_encode_u32(buf, simd_i8x16_eq)
+}
+export let emit_i8x16_le_u: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, simd_prefix)
+  leb128_encode_u32(buf, simd_i8x16_le_u)
+}
+export let emit_i8x16_sub: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, simd_prefix)
+  leb128_encode_u32(buf, simd_i8x16_sub)
+}
+export let emit_i8x16_bitmask: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, simd_prefix)
+  leb128_encode_u32(buf, simd_i8x16_bitmask)
+}
+export let emit_v128_or: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, simd_prefix)
+  leb128_encode_u32(buf, 79)
+}
+export let emit_v128_not: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, simd_prefix)
+  leb128_encode_u32(buf, simd_v128_not)
+}
+let emit_i64_load: (Bytes, Int, Int) -> Unit = (buf, align, offset) -> {
+  bytebuf_push(buf, 41)
+  leb128_encode_u32(buf, align)
+  leb128_encode_u32(buf, offset)
+}
+export struct FuncTable {
+  names: Array[String];
+  indices: Array[Int];
+  params: Array[Int];
+  returns: Array[Int];
+  needs_env: Array[Bool]
+}
+export struct StrTable {
+  strs: Array[String];
+  offsets: Array[Int];
+  lengths: Array[Int]
+}
+export struct LambdaTable {
+  bodies: Array[Bytes];
+  param_counts: Array[Int];
+  captures: Array[Array[String]];
+  meta_i32: Array[Int];
+  meta_i64: Array[Int]
+}
+export struct CtorTable {
+  names: Array[String];
+  tags: Array[Int];
+  field_counts: Array[Int];
+  type_names: Array[String];
+  struct_names: Array[String];
+  struct_field_names: Array[Array[String]]
+}
+export struct CovState {
+  enabled: Bool;
+  base: Int;
+  cap: Int;
+  next: Array[Int];
+  cur_fn: Array[Int];
+  owners: Array[Int]
+}
+export let cov_emit_branch: (Bytes, CovState) -> Unit = (buf, cov) -> {
+  if cov.enabled {
+    let id = Array::get(cov.next, 0)
+    if id < cov.cap {
+      Array::set(cov.next, 0, id + 1)
+      Array::push(cov.owners, Array::get(cov.cur_fn, 0))
+      emit_i32_const(buf, cov.base + id)
+      emit_i32_const(buf, 1)
+      emit_i32_store8(buf, 0, 0)
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+}
+export struct CompileCtx {
+  func_table: FuncTable;
+  str_table: StrTable;
+  lambda_table: LambdaTable;
+  num_user_funcs: Int;
+  func_offset: Int;
+  ref_cell_names: Array[String];
+  ctor_table: CtorTable;
+  thunk_names: Array[String];
+  const_int_names: Array[String];
+  const_int_values: Array[Int];
+  enable_rc: Bool;
+  rc_drop_names: Array[String];
+  rc_alias_dup_names: Array[String];
+  heap_binding_names: Array[String];
+  rc_drop_func_idx: Int;
+  rc_alloc_func_idx: Int;
+  heap_grow_check_func_idx: Int;
+  rc_dup_names: Array[String];
+  float_local_slots: Array[Int];
+  int_local_slots: Array[Int];
+  effect_names: Array[String];
+  effect_op_keys: Array[String];
+  effect_op_arities: Array[Int];
+  cov: CovState;
+  dbg_line_idx: Int;
+  dbg_line_nl: Array[Int];
+  dbg_line_file_id: Int
+}
+export struct DbgProv {
+  files: Array[String];
+  file_nls: Array[Array[Int]];
+  stmt_file_id: Array[Int]
+}
+export let empty_dbg_prov: () -> DbgProv = () -> {
+  DbgProv::{
+    files: Array::slice([
+      ""
+    ], 0, 0),
+    file_nls: Array::slice([
+      Array::slice([
+        0
+      ], 0, 0)
+    ], 0, 0),
+    stmt_file_id: Array::slice([
+      0
+    ], 0, 0)
+  }
+}
+export struct CompileCtxGc {
+  func_table: FuncTable;
+  str_table: StrTable;
+  lambda_table: LambdaTable;
+  num_user_funcs: Int;
+  func_offset: Int;
+  ref_cell_names: Array[String];
+  ref_local_indices: Array[Int];
+  refcell_type_idx: Int;
+  closure_type_base: Int;
+  ctor_table: CtorTable
+}
+export let int_log_reset_above: (CompileCtx, Int) -> Unit = (ctx, floor) -> {
+  let arr = ctx.int_local_slots
+  let n = Array::length(arr)
+  let mut w = 0
+  let mut i = 0
+  while i < n {
+    let e = Array::get(arr, i)
+    if e / 2 < floor {
+      Array::set(arr, w, e)
+      w = w + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  Array::truncate(arr, w)
+}
+export let is_efn: (Expr) -> Bool = (expr) -> {
+  match expr {
+    EFn(_, _, _, _, _, _) => true,
+    _ => false
+  }
+}
+export let is_pint: (Pat) -> Bool = (p) -> {
+  match p {
+    PInt(_) => true,
+    _ => false
+  }
+}
+export let is_slet: (Stmt) -> Bool = (stmt) -> {
+  match stmt {
+    SLet(_, _, _, _, _) => true,
+    _ => false
+  }
+}
+export let expr_tag: (Expr) -> Int = (expr) -> {
+  match expr {
+    EInt(_) => 0,
+    EBool(_) => 1,
+    EFloat(_) => 2,
+    EString(_) => 3,
+    EIdent(_, _) => 4,
+    EBinOp(_, _, _) => 5,
+    EUnaryOp(_, _) => 6,
+    EIf(_, _, _) => 7,
+    ECall(_, _, _) => 8,
+    ELet(_, _, _) => 9,
+    ELetRec(_, _, _) => 10,
+    ELetMut(_, _, _) => 11,
+    EAssign(_, _, _) => 12,
+    EAssignOp(_, _, _, _) => 13,
+    ESeq(_, _) => 14,
+    ETuple(_) => 15,
+    EMatch(_, _) => 16,
+    EArray(_) => 17,
+    EForIn(_, _, _, _) => 18,
+    EWhile(_, _) => 19,
+    EBreak(_) => 20,
+    EContinue(_) => 21,
+    EUnit => 22,
+    EThrow(_) => 23,
+    EFn(_, _, _, _, _, _) => 24,
+    ELoop(_, _) => 25,
+    EReturn(_) => 26,
+    _ => -1
+  }
+}
+export let is_pbind: (Pat) -> Bool = (p) -> {
+  match p {
+    PBind(_) => true,
+    _ => false
+  }
+}
+export let is_pbool: (Pat) -> Bool = (p) -> {
+  match p {
+    PBool(_) => true,
+    _ => false
+  }
+}
+export let is_pctor: (Pat) -> Bool = (p) -> {
+  match p {
+    PCtor(_, _) => true,
+    _ => false
+  }
+}
+export let is_pwild: (Pat) -> Bool = (p) -> {
+  match p {
+    PWild => true,
+    _ => false
+  }
+}
+export let is_earray: (Expr) -> Bool = (expr) -> {
+  match expr {
+    EArray(_) => true,
+    _ => false
+  }
+}
+export let is_eident: (Expr) -> Bool = (expr) -> {
+  match expr {
+    EIdent(_, _) => true,
+    _ => false
+  }
+}
+export let is_etuple: (Expr) -> Bool = (expr) -> {
+  match expr {
+    ETuple(_) => true,
+    _ => false
+  }
+}
+export let is_ptuple: (Pat) -> Bool = (p) -> {
+  match p {
+    PTuple(_) => true,
+    _ => false
+  }
+}
+let op_i32_eq = 70
+let op_i32_ne = 71
+export let is_erecord: (Expr) -> Bool = (expr) -> {
+  match expr {
+    ERecord(_) => true,
+    _ => false
+  }
+}
+export let is_pstring: (Pat) -> Bool = (p) -> {
+  match p {
+    PString(_) => true,
+    _ => false
+  }
+}
+let op_i32_eqz = 69
+let op_i32_mul = 108
+let op_i32_sub = 107
+export let emit_i32_eq: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i32_eq)
+}
+export let emit_i32_ne: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i32_ne)
+}
+export let rec lookup_ctor: (Array[String], String, Int) -> Int = (ctor_names, name, i) -> {
+  if i >= Array::length(ctor_names) {
+    -1
+  }
+  else if Array::get(ctor_names, i) == name {
+    i
+  }
+  else lookup_ctor(ctor_names, name, i + 1)
+}
+let op_i32_ge_u = 79
+let op_i32_gt_u = 75
+let op_i64_load = 41
+export let emit_i32_eqz: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i32_eqz)
+}
+export let emit_i32_mul: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i32_mul)
+}
+export let emit_i32_sub: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i32_sub)
+}
+export let emit_str_ref: (Bytes, Int, Int) -> Unit = (buf, offset, length) -> {
+  emit_i64_const(buf, offset)
+  emit_i64_const(buf, 32)
+  emit_i64_shl(buf)
+  emit_i64_const(buf, length)
+  emit_i64_or(buf)
+}
+export let get_efn_body: (Expr) -> Expr with { Error } = (expr) -> {
+  match expr {
+    EFn(_, _, _, _, _, body) => body,
+    _ => throw("not EFn")
+  }
+}
+export let get_eif_cond: (Expr) -> Expr with { Error } = (expr) -> {
+  match expr {
+    EIf(c, _, _) => c,
+    _ => throw("not EIf")
+  }
+}
+export let get_eif_else: (Expr) -> Expr with { Error } = (expr) -> {
+  match expr {
+    EIf(_, _, e) => e,
+    _ => throw("not EIf")
+  }
+}
+export let get_eif_then: (Expr) -> Expr with { Error } = (expr) -> {
+  match expr {
+    EIf(_, t, _) => t,
+    _ => throw("not EIf")
+  }
+}
+export let get_elet_val: (Expr) -> Expr with { Error } = (expr) -> {
+  match expr {
+    ELet(_, val, _) => val,
+    _ => throw("not ELet")
+  }
+}
+export let is_ctor_call: (Expr, CtorTable) -> Bool = (value, ct) -> {
+  match value {
+    ECall(callee, _, _) => match callee {
+      EIdent(nm, _) => lookup_ctor(ct.names, nm, 0) >= 0,
+      _ => false
+    },
+    _ => false
+  }
+}
+let op_i64_store = 55
+export let resolve_func: (FuncTable, String) -> (Int, Int, Int) with { Error } = (ft, name) -> {
+  let len = Array::length(ft.names)
+  let mut i = 0
+  let mut found = -1
+  while i < len {
+    if Array::get(ft.names, i) == name {
+      found = i
+      i = len
+    } else {
+      i = i + 1
+    }
+  }
+  if found < 0 {
+    throw(String::concat("undefined function: ", name))
+  };
+  (Array::get(ft.indices, found), Array::get(ft.params, found), Array::get(ft.returns, found))
+}
+export let emit_binop_op: (Bytes, String) -> Unit with { Error } = (buf, op) -> {
+  if op == "+" {
+    emit_i64_add(buf)
+  }
+  else if op == "-" {
+    emit_i64_sub(buf)
+  }
+  else if op == "*" {
+    emit_i64_mul(buf)
+  }
+  else if op == "/" {
+    emit_i64_div_s(buf)
+  }
+  else if op == "%" {
+    emit_i64_rem_s(buf)
+  }
+  else if op == "&" {
+    emit_i64_and(buf)
+  }
+  else if op == "|" {
+    emit_i64_or(buf)
+  }
+  else if op == "^" {
+    emit_i64_xor(buf)
+  }
+  else if op == "<<" {
+    emit_i64_shl(buf)
+  }
+  else if op == ">>" {
+    emit_i64_shr_s(buf)
+  }
+  else if op == "==" {
+    emit_i64_eq(buf); emit_i64_extend_i32_s(buf)
+  }
+  else if op == "!=" {
+    emit_i64_ne(buf); emit_i64_extend_i32_s(buf)
+  }
+  else if op == "<" {
+    emit_i64_lt_s(buf); emit_i64_extend_i32_s(buf)
+  }
+  else if op == ">" {
+    emit_i64_gt_s(buf); emit_i64_extend_i32_s(buf)
+  }
+  else if op == "<=" {
+    emit_i64_le_s(buf); emit_i64_extend_i32_s(buf)
+  }
+  else if op == ">=" {
+    emit_i64_ge_s(buf); emit_i64_extend_i32_s(buf)
+  }
+  else if op == "&&" {
+    emit_i64_and(buf)
+  }
+  else if op == "||" {
+    emit_i64_or(buf)
+  }
+  else {
+    throw(String::concat("unsupported binop: ", op))
+  }
+}
+export let emit_i32_ge_u: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i32_ge_u)
+}
+export let emit_i32_gt_u: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_i32_gt_u)
+}
+export let emit_i64_load: (Bytes, Int, Int) -> Unit = (buf, align, offset) -> {
+  bytebuf_push(buf, op_i64_load)
+  leb128_encode_u32(buf, align)
+  leb128_encode_u32(buf, offset)
+}
+export let get_ebinop_op: (Expr) -> String with { Error } = (expr) -> {
+  match expr {
+    EBinOp(op, _, _) => op,
+    _ => throw("not EBinOp")
+  }
+}
+export let get_elet_body: (Expr) -> Expr with { Error } = (expr) -> {
+  match expr {
+    ELet(_, _, body) => body,
+    _ => throw("not ELet")
+  }
+}
+export let get_elet_name: (Expr) -> String with { Error } = (expr) -> {
+  match expr {
+    ELet(name, _, _) => name,
+    _ => throw("not ELet")
+  }
+}
+export let get_slet_expr: (Stmt) -> Expr with { Error } = (stmt) -> {
+  match stmt {
+    SLet(_, _, _, _, expr) => expr,
+    _ => throw("not SLet")
+  }
+}
+export let get_slet_name: (Stmt) -> String with { Error } = (stmt) -> {
+  match stmt {
+    SLet(_, _, name, _, _) => name,
+    _ => throw("not SLet")
+  }
+}
+export let get_slet_type: (Stmt) -> Option[TypeExpr] = (stmt) -> {
+  match stmt {
+    SLet(_, _, _, ty, _) => ty,
+    _ => None
+  }
+}
+export let resolve_local: (Array[String], String, String) -> Int with { Error } = (names, name, tag) -> {
+  let mut i = Array::length(names) - 1
+  let mut result = -1
+  while i >= 0 {
+    if Array::get(names, i) == name {
+      result = i
+      i = -1
+    } else {
+      i = i - 1
+    }
+  }
+  if result < 0 {
+    throw(String::concat(String::concat("undefined variable (local): ", name), String::concat(" @", tag)))
+  }
+  result
+}
+export let emit_i64_store: (Bytes, Int, Int) -> Unit = (buf, align, offset) -> {
+  bytebuf_push(buf, op_i64_store)
+  leb128_encode_u32(buf, align)
+  leb128_encode_u32(buf, offset)
+}
+export let emit_box_float: (Bytes, CompileCtx, Int, Int) -> Unit = (buf, ctx, bits_local, box_local) -> {
+  emit_local_set(buf, bits_local)
+  emit_i64_const(buf, 16)
+  emit_call(buf, ctx.rc_alloc_func_idx)
+  emit_local_set(buf, box_local)
+  emit_local_get(buf, box_local)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 16)
+  emit_i32_store(buf, 2, 0)
+  emit_local_get(buf, box_local)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 1)
+  emit_i32_store(buf, 2, 4)
+  emit_local_get(buf, box_local)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf, bits_local)
+  emit_i64_store(buf, 3, 8)
+  emit_local_get(buf, box_local)
+  emit_i64_const(buf, 8)
+  emit_i64_add(buf)
+  emit_i64_const(buf, 1)
+  emit_i64_or(buf)
+}
+export let emit_unbox_float: (Bytes) -> Unit = (buf) -> {
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i64_load(buf, 3, 0)
+}
+export let fn_type_param_types: (Option[TypeExpr]) -> Option[Array[TypeExpr]] = (ty) -> {
+  match ty {
+    Some(t) =>
+    match t {
+      TyFn(args, _, _) => Some(args),
+      _ => None
+    },
+    None => None
+  }
+}
+export let is_nullary_ctor_ident: (Expr, CtorTable) -> Bool = (value, ct) -> {
+  match value {
+    EIdent(nm, _) => lookup_ctor(ct.names, nm, 0) >= 0,
+    _ => false
+  }
+}
+export let name_has_effect_prefix: (String, String) -> Bool = (full, eff) -> {
+  let el = String::length(eff)
+  let fl = String::length(full)
+  if fl < el + 2 {
+    false
+  } else {
+    let mut ok = true
+    let mut j = 0
+    while j < el {
+      if String::char_code_at(full, j) != String::char_code_at(eff, j) {
+        ok = false
+        j = el
+      } else {
+        j = j + 1
+      }
+    }
+    ok && String::char_code_at(full, el) == 58 && String::char_code_at(full, el + 1) == 58
+  }
+}
+export let effect_name_to_tag: (Array[String], String) -> Int = (effect_names, full) -> {
+  let n = Array::length(effect_names)
+  let mut result = 3 + n
+  let mut i = 0
+  while i < n {
+    if name_has_effect_prefix(full, Array::get(effect_names, i)) {
+      result = 3 + i
+      i = n
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+export let effect_op_declared_arity: (Array[String], Array[Int], String) -> Int = (keys, arities, full) -> {
+  let n = Array::length(keys)
+  let mut result = -1
+  let mut i = 0
+  while i < n {
+    if Array::get(keys, i) == full {
+      result = Array::get(arities, i)
+      i = n
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+export let effect_op_index: (Array[String], String) -> Int = (keys, full) -> {
+  let n = Array::length(keys)
+  let mut result = 0 - 1
+  let mut i = 0
+  while i < n {
+    if Array::get(keys, i) == full {
+      result = i
+      i = n
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+export let emit_heap_grow_after_heap_set: (Bytes, CompileCtx) -> Unit = (buf, ctx) -> {
+  if ctx.heap_grow_check_func_idx >= 0 {
+    emit_call(buf, ctx.heap_grow_check_func_idx)
+  } else {
+    ()
   }
 }
 let op_prefix = 252
@@ -24928,10 +25120,71 @@ export let skip_braced_body: (Array[Token], Int) -> Int = (tokens, pos) -> {
     _ => pos
   }
 }
-let parse_trait_methods: (Array[Token], Int) -> (Array[(String, Array[TypeExpr], TypeExpr)], Int) with { Error } = (tokens, pos) -> {
+let parse_method_tp_bound_names: (Array[Token], Int) -> (Array[String], Int) with { Error } = (tokens, pos) -> {
+  let b = ArrayBuilder::new()
+  let mut p = pos
+  let mut done = false
+  while !done {
+    match peek(tokens, p) {
+      TIdent(name) => {
+        ArrayBuilder::push(b, name)
+        p = p + 1
+        match peek(tokens, p) {
+          TPlus => {
+            p = p + 1
+          },
+          _ => {
+            done = true
+          }
+        }
+      },
+      _ => throw("expected trait bound name")
+    }
+  }
+  (ArrayBuilder::freeze(b), p)
+}
+let parse_method_type_params: (Array[Token], Int) -> (Array[String], Array[(String, Array[String])], Int) with { Error } = (tokens, pos) -> {
+  let names = ArrayBuilder::new()
+  let bounds = ArrayBuilder::new()
+  let mut p = pos
+  while true {
+    match peek(tokens, p) {
+      TRBracket => {
+        p = p + 1
+        break
+      },
+      TIdent(name) => {
+        ArrayBuilder::push(names, name)
+        p = p + 1
+        match peek(tokens, p) {
+          TColon => {
+            let (bound_names, next) = parse_method_tp_bound_names(tokens, p + 1)
+            ArrayBuilder::push(bounds, (name, bound_names))
+            p = next
+          },
+          _ => ()
+        }
+        match peek(tokens, p) {
+          TComma => {
+            p = p + 1
+          },
+          TRBracket => {
+            p = p + 1
+            break
+          },
+          _ => throw("expected ',' or ']' in method type params")
+        }
+      },
+      _ => throw("expected type parameter name or ']'")
+    }
+  }
+  (ArrayBuilder::freeze(names), ArrayBuilder::freeze(bounds), p)
+}
+let parse_trait_methods: (Array[Token], Int) -> (Array[(String, Array[TypeExpr], TypeExpr)], Array[(String, Array[String], Array[(String, Array[String])])], Int) with { Error } = (tokens, pos) -> {
   match peek(tokens, pos) {
     TLBrace => {
       let sigs_b = ArrayBuilder::new()
+      let gens_b = ArrayBuilder::new()
       let mut p = pos + 1
       while true {
         match peek(tokens, p) {
@@ -24940,9 +25193,17 @@ let parse_trait_methods: (Array[Token], Int) -> (Array[(String, Array[TypeExpr],
             break
           },
           TIdent(method_name) => {
-            let (params, after_method_params) = match peek(tokens, p + 1) {
+            let after_colon = match peek(tokens, p + 1) {
+              TColon => p + 2,
+              _ => p + 1
+            }
+            let (mtparams, mtbounds, after_binder) = match peek(tokens, after_colon) {
+              TLBracket => parse_method_type_params(tokens, after_colon + 1),
+              _ => (_no_tp(), _no_tb(), after_colon)
+            }
+            let (params, after_method_params) = match peek(tokens, after_binder) {
               TLParen => {
-                let (params_ty, after_paren) = parse_type_impl(tokens, p + 1, 1)
+                let (params_ty, after_paren) = parse_type_impl(tokens, after_binder, 1)
                 let params = match params_ty {
                   TyUnit => empty_type_exprs(),
                   TyTuple(elems) => elems,
@@ -24952,11 +25213,12 @@ let parse_trait_methods: (Array[Token], Int) -> (Array[(String, Array[TypeExpr],
                 }
                 (params, after_paren)
               },
-              _ => (empty_type_exprs(), p + 1)
+              _ => (empty_type_exprs(), after_binder)
             }
             let arrow_pos = expect_tk(tokens, after_method_params, "->")
             let (ret_type, after_ret) = parse_type_impl(tokens, arrow_pos, 0)
             ArrayBuilder::push(sigs_b, (method_name, params, ret_type))
+            ArrayBuilder::push(gens_b, (method_name, mtparams, mtbounds))
             p = match peek(tokens, after_ret) {
               TSemicolon => after_ret + 1,
               _ => after_ret
@@ -24965,9 +25227,9 @@ let parse_trait_methods: (Array[Token], Int) -> (Array[(String, Array[TypeExpr],
           _ => throw("expected trait method signature or '}'")
         }
       }
-      (ArrayBuilder::freeze(sigs_b), p)
+      (ArrayBuilder::freeze(sigs_b), ArrayBuilder::freeze(gens_b), p)
     },
-    _ => (ArrayBuilder::freeze(ArrayBuilder::new()), pos)
+    _ => (ArrayBuilder::freeze(ArrayBuilder::new()), ArrayBuilder::freeze(ArrayBuilder::new()), pos)
   }
 }
 let parse_trait_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } = (tokens, pos, exported) -> {
@@ -25001,12 +25263,12 @@ let parse_trait_stmt: (Array[Token], Int, Bool) -> (Stmt, Int) with { Error } = 
             }
           }
           let np = p
-          let (methods, body_end) = parse_trait_methods(tokens, np)
-          (STrait(exported, name, supers, methods), body_end)
+          let (methods, method_gens, body_end) = parse_trait_methods(tokens, np)
+          (STrait(exported, name, supers, methods, method_gens), body_end)
         },
         _ => {
-          let (methods, body_end) = parse_trait_methods(tokens, after_name)
-          (STrait(exported, name, empty_strings, methods), body_end)
+          let (methods, method_gens, body_end) = parse_trait_methods(tokens, after_name)
+          (STrait(exported, name, empty_strings, methods, method_gens), body_end)
         }
       }
     },
@@ -29435,7 +29697,7 @@ export let rec print_stmt: (Stmt) -> String = (s) -> {
       }
     },
     STypeAlias(exported, name, _, ty) => String::concat(prefix(exported), String::concat("type ", String::concat(name, String::concat(" = ", print_type_expr(ty))))),
-    STrait(exported, name, supers, methods) => {
+    STrait(exported, name, supers, methods, _) => {
       let base = String::concat(prefix(exported), String::concat("trait ", name))
       let head = if Array::length(supers) == 0 {
         base
@@ -30116,7 +30378,7 @@ let collect_exported_type_names: (Array[Stmt]) -> Array[String] = (stmts) -> {
     match Array::get(stmts, i) {
       SStruct(true, name, _, _, _) => Array::push(names, name),
       SEnum(true, name, _, _) => Array::push(names, name),
-      STrait(true, name, _, _) => Array::push(names, name),
+      STrait(true, name, _, _, _) => Array::push(names, name),
       STypeAlias(true, name, _, _) => Array::push(names, name),
       SSuberror(true, name, _) => Array::push(names, name),
       _ => ()
@@ -30738,7 +31000,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "13c9e73afaff631b"
+  "5bad11f82b21181d"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647
@@ -34984,7 +35246,7 @@ let stmt_section: (Stmt) -> Int = (stmt) -> {
     SSuberror(_, _, _) => 1,
     SStruct(_, _, _, _, _) => 1,
     STypeAlias(_, _, _, _) => 1,
-    STrait(_, _, _, _) => 1,
+    STrait(_, _, _, _, _) => 1,
     SImpl(_, _, _, _) => 1,
     SEffectDef(_, _, _, _) => 1,
     SExternLet(_, _) => 1,
@@ -36085,7 +36347,7 @@ let rec sym_walk_stmt: (Array[(String, Int, Int, Int)], String, Stmt, Array[Int]
     SSuberror(_, name, _) => sym_emit(out, source, name, 10, floor, hi),
     SStruct(_, name, _, _, _) => sym_emit(out, source, name, 23, floor, hi),
     STypeAlias(_, name, _, _) => sym_emit(out, source, name, 26, floor, hi),
-    STrait(_, name, _, _) => sym_emit(out, source, name, 11, floor, hi),
+    STrait(_, name, _, _, _) => sym_emit(out, source, name, 11, floor, hi),
     SEffectDef(_, name, _, _) => sym_emit(out, source, name, 24, floor, hi),
     SModule(_, name, body) => {
       sym_emit(out, source, name, 2, floor, hi)
