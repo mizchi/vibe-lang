@@ -4,6 +4,10 @@ import .. / checker_trait.vibe {
   register_builtin_traits
 }
 
+import .. / checker_effects.vibe {
+  check_async_effects_stmts, check_mutability_stmts, check_perform_effects_stmts, effect_error_to_string
+}
+
 import .. / core / ast.vibe {
   Expr, Stmt, TypeExpr
 }
@@ -13,7 +17,7 @@ import .. / core / types.vibe {
 }
 
 import ./checker.vibe {
-  check_expr, fn_return_env_name
+  check_assignable, check_expr, fn_return_env_name
 }
 
 import ./checker_resolve.vibe {
@@ -132,7 +136,7 @@ let stmt_is_type_decl: (Stmt) -> Bool = (stmt) -> {
   match stmt {
     SEnum(_, _, _, _) => true,
     SSuberror(_, _, _) => true,
-    SStruct(_, _, _, _) => true,
+    SStruct(_, _, _, _, _) => true,
     STypeAlias(_, _, _, _) => true,
     _ => false
   }
@@ -210,10 +214,16 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
     let stmt = Array::get(stmts, idx)
     let (new_env, s1, c1) = match stmt {
       SLet(_, is_rec, name, ann, val) => {
-        let (vt, ns, nc) = if is_rec {
+        let (vt, ns0, nc) = if is_rec {
           check_expr(val, env_bind(env, name, CtUnknown), defs, s, c, errors, tytab)
         } else {
           check_expr(val, env, defs, s, c, errors, tytab)
+        }
+        // The value must be assignable to a declared annotation (previously
+        // unchecked — `let x: Int = "s"` was accepted).
+        let ns = match ann {
+          Some(te) => check_assignable(resolve_type_expr(te, defs), subst_apply(ns0, vt), ns0, errors, String::concat("binding type mismatch for ", name), 0 - 1),
+          None => ns0
         }
         let t = match ann {
           Some(te) => resolve_type_expr(te, defs),
@@ -223,7 +233,11 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
         (bind_value_or_annotation_return(env1, name, val, ann, defs), ns, nc)
       },
       SLetMut(name, ann, val) => {
-        let (vt, ns, nc) = check_expr(val, env, defs, s, c, errors, tytab)
+        let (vt, ns0, nc) = check_expr(val, env, defs, s, c, errors, tytab)
+        let ns = match ann {
+          Some(te) => check_assignable(resolve_type_expr(te, defs), subst_apply(ns0, vt), ns0, errors, String::concat("binding type mismatch for ", name), 0 - 1),
+          None => ns0
+        }
         let t = match ann {
           Some(te) => resolve_type_expr(te, defs),
           None => vt
@@ -252,6 +266,31 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
               e
             },
             _ => {
+              // A tuple pattern can only destructure a tuple value. `let (a, b) =
+              // 5` was accepted and bound `a`/`b` to garbage. When the value
+              // resolves to a concrete NON-tuple type (a scalar, array, option,
+              // fn, struct, enum), this is a real error. Type vars / unknown /
+              // named (generic) values stay tolerated.
+              let concrete_non_tuple = match subst_apply(ns, vt) {
+                CtInt => true,
+                CtDouble => true,
+                CtBool => true,
+                CtString => true,
+                CtChar => true,
+                CtUnit => true,
+                CtBytes => true,
+                CtArray(_) => true,
+                CtOption(_) => true,
+                CtFn(_, _, _) => true,
+                CtStruct(_) => true,
+                CtEnum(_) => true,
+                _ => false
+              }
+              if concrete_non_tuple {
+                Array::push(errors, "tuple pattern cannot destructure a non-tuple value")
+              } else {
+                ()
+              }
               let mut e = env
               let mut pi = 0
               while pi < Array::length(pats) {
@@ -369,9 +408,15 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
           }
           ci2 = ci2 + 1
         }
-        (env1, s, c + param_len)
+        // #672: pre-bind the generated structural `E::equals` (every enum gets
+        // one) so `==` dispatch call sites resolve at check time.
+        let env_eq = env_bind(env1, String::concat(name, "::equals"), CtFn([
+          ctor_result_type,
+          ctor_result_type
+        ], CtBool, None))
+        (env_eq, s, c + param_len)
       },
-      SStruct(_, name, field_defs, derives) => {
+      SStruct(_, name, field_defs, derives, mut_fields) => {
         let resolved_fields = Array::slice([
           ("", CtUnit)
         ], 0, 0)
@@ -382,7 +427,7 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
           Array::push(resolved_fields, (fname, ftype))
           fi = fi + 1
         }
-        Array::push(defs, TDStruct(name, resolved_fields))
+        Array::push(defs, TDStruct(name, resolved_fields, mut_fields))
         let field_types = Array::slice([
           CtUnknown
         ], 0, 0)
@@ -412,7 +457,13 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
         } else {
           env2
         }
-        (bind_fn_return(env3, name, CtStruct(name)), s, c)
+        // #672: every struct gets a generated structural `T::equals` (the `==`
+        // dispatch relies on it), so pre-bind its signature unconditionally.
+        let env4 = env_bind(env3, String::concat(name, "::equals"), CtFn([
+          CtStruct(name),
+          CtStruct(name)
+        ], CtBool, None))
+        (bind_fn_return(env4, name, CtStruct(name)), s, c)
       },
       STypeAlias(_, name, params, te) => {
         let t = resolve_type_expr(te, defs)
@@ -452,14 +503,24 @@ export let rec check_stmts: (Array[Stmt], Int, TypeEnv, Array[TypeDef], Subst, I
         let is_open = false
         (EnvTraitDef(name, supers, is_open, methods, env), s, c)
       },
-      SImpl(_, _, trait_name, type_name) => {
+      SImpl(tparams, tbounds, trait_name, type_name) => {
         let target = match resolve_builtin(type_name) {
           Some(t) => t,
           None => CtNamed(type_name, Array::slice([
             CtUnknown
           ], 0, 0))
         }
-        (EnvTraitImpl(trait_name, target, env), s, c)
+        // A generic impl `impl [T] Trait for C` (type parameters present) is
+        // registered as `EnvTraitImplGen` so trait resolution can match the
+        // family `C[..]` against a concrete `C[K]` by constructor (the target's
+        // type args are erased). A plain `impl Trait for C` stays a nominal
+        // `EnvTraitImpl`. (#5 generic impls, Increment A.)
+        let new_env = if Array::length(tparams) > 0 {
+          EnvTraitImplGen(trait_name, tparams, tbounds, target, env)
+        } else {
+          EnvTraitImpl(trait_name, target, env)
+        }
+        (new_env, s, c)
       },
       _ => (env, s, c)
     }
@@ -502,6 +563,36 @@ let check_program_bounds: (TypeEnv, Subst, Array[String]) -> Unit = (env, s, err
   }
 }
 
+// Append `Async`-escape diagnostics (an async primitive used outside an
+// `{Async}` context) to the type-error list, but only when type checking is
+// otherwise clean so we surface the real error first.
+let collect_async_effect_errors: (Array[Stmt], TypeEnv, Array[String]) -> Unit = (stmts, env, frozen_errors) -> {
+  if Array::length(frozen_errors) == 0 {
+    let eff_errs = check_async_effects_stmts(stmts, env)
+    let mut i = 0
+    while i < Array::length(eff_errs) {
+      Array::push(frozen_errors, effect_error_to_string(Array::get(eff_errs, i)))
+      i = i + 1
+    }
+    if Array::length(frozen_errors) == 0 {
+      let perform_errs = check_perform_effects_stmts(stmts)
+      let mut j = 0
+      while j < Array::length(perform_errs) {
+        Array::push(frozen_errors, effect_error_to_string(Array::get(perform_errs, j)))
+        j = j + 1
+      }
+    }
+    if Array::length(frozen_errors) == 0 {
+      let mut_errs = check_mutability_stmts(stmts)
+      let mut k = 0
+      while k < Array::length(mut_errs) {
+        Array::push(frozen_errors, effect_error_to_string(Array::get(mut_errs, k)))
+        k = k + 1
+      }
+    }
+  }
+}
+
 export let check_program: (Array[Stmt]) -> TypeEnv with { Error } = (stmts) -> {
   let empty_defs = Array::slice([
     TDAlias("_dummy", Array::slice([
@@ -521,6 +612,7 @@ export let check_program: (Array[Stmt]) -> TypeEnv with { Error } = (stmts) -> {
   ], 0, 0)
   let (env, final_s, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
   check_program_bounds(env, final_s, frozen_errors)
+  collect_async_effect_errors(stmts, env, frozen_errors)
   if Array::length(frozen_errors) > 0 {
     throw(Array::get(frozen_errors, 0))
   }
@@ -581,6 +673,7 @@ export let check_program_with_env: (Array[Stmt], TypeEnv) -> TypeEnv with { Erro
         (0, CtUnit)
       ], 0, 0)
       let (env, _, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
+      collect_async_effect_errors(stmts, env, frozen_errors)
       if Array::length(frozen_errors) > 0 {
         throw(Array::get(frozen_errors, 0))
       }

@@ -1,0 +1,126 @@
+//# Imports
+
+import ./ast.vibe {
+  Expr, Stmt, TypeExpr
+}
+
+import ./checker_effects.vibe {
+  EffectError, check_async_effects_expr, check_async_effects_stmt
+}
+
+import ./types.vibe {
+  Type, TypeEnv, env_bind
+}
+
+//# Functions
+
+let is_call_err: (EffectError) -> Bool = (e) -> {
+  match e {
+    EEEffectfulCallOutsideEffect(_) => true,
+    _ => false
+  }
+}
+
+let async_fn: (Option[String], Expr) -> Expr = (effect, body) -> {
+  EFn(Array::slice([
+    ""
+  ], 0, 0), Array::slice([
+    ("", Array::slice([
+      ""
+    ], 0, 0))
+  ], 0, 0), Array::slice([
+    ("x", None)
+  ], 0, 0), None, effect, body)
+}
+
+let await_call: (Expr) -> Expr = (arg) -> {
+  ECall(EIdent("await", -1), [
+    arg
+  ], -1)
+}
+
+//# Misc
+
+// The `Async`-scoped enforcement wired into `check_program`: async PRIMITIVES
+// (`await`/`sleep`/...) must appear inside an `{Async}` context; composing async
+// helpers does not.
+
+test "await outside Async context reports error" {
+  let errors = check_async_effects_expr(await_call(EIdent("f", -1)), EnvEmpty, false)
+  assert(Array::length(errors) > 0)
+  assert(is_call_err(Array::get(errors, 0)))
+}
+
+test "await inside Async context is OK" {
+  let errors = check_async_effects_expr(await_call(EIdent("f", -1)), EnvEmpty, true)
+  assert(eq(Array::length(errors), 0))
+}
+
+test "sleep outside Async context reports error" {
+  let call = ECall(EIdent("sleep", -1), [
+    EInt(10)
+  ], -1)
+  let errors = check_async_effects_expr(call, EnvEmpty, false)
+  assert(Array::length(errors) > 0)
+}
+
+test "await inside EFn with Async annotation is OK" {
+  let fn_expr = async_fn(Some("Async"), await_call(EIdent("f", -1)))
+  let errors = check_async_effects_expr(fn_expr, EnvEmpty, false)
+  assert(eq(Array::length(errors), 0))
+}
+
+test "await inside EFn without Async annotation reports error" {
+  let fn_expr = async_fn(None, await_call(EIdent("f", -1)))
+  let errors = check_async_effects_expr(fn_expr, EnvEmpty, false)
+  assert(Array::length(errors) > 0)
+}
+
+test "await inside EFn with non-Async effect still reports error" {
+  let fn_expr = async_fn(Some("Error"), await_call(EIdent("f", -1)))
+  let errors = check_async_effects_expr(fn_expr, EnvEmpty, false)
+  assert(Array::length(errors) > 0)
+}
+
+test "calling an Async user function from sync context is allowed" {
+  // Composition: a `with { Async }` helper bound in env is NOT a primitive, so
+  // calling it outside an Async context is fine (its own await is checked in
+  // its body). Only builtin async primitives require an Async context.
+  let env = env_bind(EnvEmpty, "my_async", CtFn([
+    CtInt
+  ], CtInt, Some("Async")))
+  let call = ECall(EIdent("my_async", -1), [
+    EInt(1)
+  ], -1)
+  let errors = check_async_effects_expr(call, env, false)
+  assert(eq(Array::length(errors), 0))
+}
+
+test "SLet with Async signature makes body an Async context" {
+  // `let f: (Int) -> Int with { Async } = (x) -> { await(x) }`
+  let fn_body = async_fn(None, await_call(EIdent("x", -1)))
+  let sig = TyFn([
+    TyName("Int")
+  ], TyName("Int"), Some("Async"))
+  let stmt = SLet(false, false, "f", Some(sig), fn_body)
+  let errors = check_async_effects_stmt(stmt, EnvEmpty)
+  assert(eq(Array::length(errors), 0))
+}
+
+test "SLet without Async signature flags await in body" {
+  let fn_body = async_fn(None, await_call(EIdent("x", -1)))
+  let sig = TyFn([
+    TyName("Int")
+  ], TyName("Int"), None)
+  let stmt = SLet(false, false, "f", Some(sig), fn_body)
+  let errors = check_async_effects_stmt(stmt, EnvEmpty)
+  assert(Array::length(errors) > 0)
+}
+
+test "pure non-async call outside Async context is OK" {
+  let call = ECall(EIdent("println", -1), [
+    EString("hi")
+  ], -1)
+  let errors = check_async_effects_expr(call, EnvEmpty, false)
+  assert(eq(Array::length(errors), 0))
+}

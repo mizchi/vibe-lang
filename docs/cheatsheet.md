@@ -322,7 +322,7 @@ stage without breaking the `|>` chain. Railway variants `tap_ok` / `tap_err` /
 
 ```vibe
 x
-|> tap((v) -> stdout_write("step: \{Int::to_string(v)}\n"))
+|> tap((v) -> stdout_write("step: \{v}\n"))
 |> next_stage
 
 result |> tap_ok((v) -> stdout_write("ok\n")) |> tap_err((e) -> stdout_write("err\n"))

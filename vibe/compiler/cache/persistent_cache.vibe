@@ -1,69 +1,10 @@
+//# Imports
+
+import ./selfhost_codegen_fingerprint.vibe {
+  selfhost_codegen_fingerprint
+}
+
 //# Functions
-
-let bytes_to_hex_digit: (Int) -> String = (n) -> {
-  if n < 10 {
-    __to_string(n)
-  } else if n == 10 {
-    "a"
-  } else if n == 11 {
-    "b"
-  } else if n == 12 {
-    "c"
-  } else if n == 13 {
-    "d"
-  } else if n == 14 {
-    "e"
-  } else {
-    "f"
-  }
-}
-
-let bytes_to_hex: (Bytes) -> String = (bytes) -> {
-  // Use StringBuilder to keep this O(N): the previous
-  // `out = String::concat(out, ...)` per nibble was O(N^2) (each
-  // concat copies the entire prefix accumulated so far).
-  let len = Bytes::length(bytes)
-  let sb = StringBuilder::new()
-  let mut i = 0
-  while i < len {
-    let byte = Bytes::get(bytes, i)
-    let hi = byte / 16
-    let lo = byte % 16
-    StringBuilder::push(sb, bytes_to_hex_digit(hi))
-    StringBuilder::push(sb, bytes_to_hex_digit(lo))
-    i = i + 1
-  }
-  StringBuilder::freeze(sb)
-}
-
-let nibble_from_hex_char: (Int) -> Int with { Error } = (c) -> {
-  if c >= 48 && c <= 57 {
-    c - 48
-  } else if c >= 97 && c <= 102 {
-    c - 87
-  } else if c >= 65 && c <= 70 {
-    c - 55
-  } else {
-    throw("invalid hex digit")
-  }
-}
-
-let hex_to_bytes: (String) -> Bytes with { Error } = (hex) -> {
-  let len = String::length(hex)
-  if len % 2 != 0 {
-    throw("invalid hex length")
-  } else {
-    let out = Bytes::new()
-    let mut i = 0
-    while i < len {
-      let hi = nibble_from_hex_char(String::char_code_at(hex, i))
-      let lo = nibble_from_hex_char(String::char_code_at(hex, i + 1))
-      Bytes::push(out, hi * 16 + lo)
-      i = i + 2
-    }
-    out
-  }
-}
 
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647
@@ -83,8 +24,27 @@ export let compact_string_fingerprint: (String) -> String = (source) -> {
   String::concat(__to_string(len), String::concat(":", String::concat(__to_string(h1), String::concat(":", __to_string(h2)))))
 }
 
+// Cache key version tag. TWO independent reasons to bump it (#630):
+//  - cache FORMAT change (how `.hex` / `.tsv` entries are serialized): bump `vNN`.
+//  - CODEGEN / wasm-ABI change (the SAME source now compiles to DIFFERENT wasm):
+//    bump `cgNN`. The artifact cache is keyed by the source fingerprint only, so
+//    without a codegen segment a codegen change returns a STALE compiled wasm for
+//    unchanged source. Bump `cg` on any change to emitted wasm / runtime ABI.
+//    The `cg` segment is `selfhost_codegen_fingerprint()` — a build-time hash of
+//    all compiler source files (selfhost_sources_manifest.tsv), regenerated with
+//    the bundle. So any codegen-source change automatically changes the key and
+//    invalidates stale artifacts; no manual bump needed (#630). `vNN` is still a
+//    manual knob for pure cache-FORMAT changes that don't change the source hash.
+let persistent_cache_version_tag: () -> String = () -> {
+  // v11 (#632): artifact cache switched from hex text (`.hex`) to raw binary
+  // (`.bin`, via Fs::write_bytes / Fs::read_bytes) — a cache FORMAT change, so
+  // the manual `vNN` knob is bumped. Old `.hex` entries are now unreferenced
+  // (different key + suffix) and reclaimable via `pkf run cache-clean` (#631).
+  String::concat("v11|cg-", selfhost_codegen_fingerprint())
+}
+
 let stable_cache_path: (String, String, String) -> String = (prefix, seed, suffix) -> {
-  let raw = compact_string_fingerprint(String::concat("persistent-cache-v10|", seed))
+  let raw = compact_string_fingerprint(String::concat("persistent-cache-", String::concat(persistent_cache_version_tag(), String::concat("|", seed))))
   // O(N) build via StringBuilder; the previous `token = String::concat(token, ...)`
   // per char was O(N²) over the fingerprint length (issue #366).
   let token_sb = StringBuilder::new()
@@ -116,12 +76,16 @@ let build_sources_fingerprint: (Array[(String, String)]) -> String = (sources) -
 }
 
 export let persistent_artifact_cache_path: (String, String, String) -> String = (kind, entry_name, fingerprint) -> {
-  stable_cache_path("selfhost_artifact", String::concat(kind, String::concat("|", String::concat(entry_name, String::concat("|", fingerprint)))), ".hex")
+  stable_cache_path("selfhost_artifact", String::concat(kind, String::concat("|", String::concat(entry_name, String::concat("|", fingerprint)))), ".bin")
 }
 
 export let store_persistent_artifact: (String, String, String, Bytes) -> Unit with { Error, Fs } = (kind, entry_name, fingerprint, bytes) -> {
   let path = persistent_artifact_cache_path(kind, entry_name, fingerprint)
-  Fs::write_file(path, bytes_to_hex(bytes))
+  // #632: store the compiled wasm RAW. Previously hex-encoded text (`.hex`),
+  // doubling disk and paying encode/decode each store/load; the artifact is a
+  // wasm binary (magic begins 0x00), so raw needs a byte-exact reader —
+  // Fs::read_bytes (load below), the inverse of this Fs::write_bytes.
+  Fs::write_bytes(path, bytes)
 }
 
 export let persistent_dep_list_cache_path: (String, String) -> String = (path, source_fingerprint) -> {
@@ -163,7 +127,10 @@ export let load_persistent_artifact: (String, String, String) -> Option[Bytes] w
   if !(Fs::exists(path)) {
     None
   } else {
-    Some(hex_to_bytes(normalize_persistent_cache_text(Fs::read_file(path))))
+    // #632: read the raw wasm back byte-exact. No hex decode and no leading-NUL
+    // normalize (that was a workaround for the utf8 read_file text path; raw
+    // Fs::read_bytes returns the file bytes verbatim, incl. the 0x00 wasm magic).
+    Some(Fs::read_bytes(path))
   }
 }
 

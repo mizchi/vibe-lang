@@ -234,7 +234,7 @@ let collect_struct_field_sets: (Array[Stmt]) -> Array[(String, Array[String])] =
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SStruct(_, sname, fields, _) => {
+      SStruct(_, sname, fields, _, _) => {
         let names = empty_str_array()
         let mut j = 0
         while j < Array::length(fields) {
@@ -244,6 +244,10 @@ let collect_struct_field_sets: (Array[Stmt]) -> Array[(String, Array[String])] =
         }
         Array::push(out, (sname, names))
       },
+      // #672: also record enum names (with an EMPTY field set, so the ERecord
+      // field-set match never confuses an enum with a struct literal) so the
+      // `==` dispatch's `struct_set_has` gate accepts enum operands too.
+      SEnum(_, ename, _, _) => Array::push(out, (ename, empty_str_array())),
       _ => ()
     }
     i = i + 1
@@ -264,7 +268,7 @@ let make_dict_struct_stmt: (String, Array[(String, Array[TypeExpr], TypeExpr)]) 
     Array::push(fields, (mname, TyFn(params, ret, None)))
     i = i + 1
   }
-  SStruct(false, dict_struct_name(trait_name), fields, empty_str_array())
+  SStruct(false, dict_struct_name(trait_name), fields, empty_str_array(), empty_str_array())
 }
 
 // Two field-name sets describe the same struct shape when they have equal
@@ -287,6 +291,22 @@ let field_sets_match: (Array[String], Array[String]) -> Bool = (a, b) -> {
   }
 }
 
+// Is `name` a known struct (a key in struct_sets)? Gates the #672 `==` dispatch.
+let struct_set_has: (Array[(String, Array[String])], String) -> Bool = (struct_sets, name) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(struct_sets) {
+    let (sname, _) = Array::get(struct_sets, i)
+    if sname == name {
+      found = true
+      i = Array::length(struct_sets)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
 let lookup_var_type: (Array[(String, String)], String) -> Option[String] = (var_types, name) -> {
   let mut i = 0
   let mut result = None
@@ -306,17 +326,50 @@ let lookup_var_type: (Array[(String, String)], String) -> Option[String] = (var_
 // pick the trait impl at a concrete call site. Consults `var_types` (locals
 // bound to inferable values and parameters with concrete annotations). Returns
 // None when the type is not determinable (the call is then left unrewritten).
+// Resolve a (possibly qualified) constructor name to its enum/return type.
+// Bare `Green` -> `Color` via fn_returns; qualified `Color::Green` first tries
+// the whole name (no match) then the member `Green` confirming its enum equals
+// the head — so `let a = Color::Green` seeds `a -> Color` for `==` dispatch.
+let ctor_enum_of_name: (Array[(String, String)], String) -> Option[String] = (fn_returns, name) -> {
+  match fn_return_type(fn_returns, name) {
+    Some(t) => Some(t),
+    None => match split_qualified(name) {
+      Some(parts) => {
+        let (head, member) = parts
+        match fn_return_type(fn_returns, member) {
+          Some(en) => if en == head {
+            Some(en)
+          } else {
+            None
+          },
+          None => None
+        }
+      },
+      None => None
+    }
+  }
+}
+
 let infer_arg_type_name: (Expr, Array[(String, Array[String])], Array[(String, String)], Array[(String, String)]) -> Option[String] = (arg, struct_sets, var_types, fn_returns) -> {
   match arg {
     EInt(_) => Some("Int"),
     EBool(_) => Some("Bool"),
     EString(_) => Some("String"),
     EFloat(_) => Some("Double"),
-    EIdent(name, _) => lookup_var_type(var_types, name),
-    // A call-valued iterable (`for x in lazy_iter_arr([..])`): its type is the
-    // head of the called function's return type (the `fn_returns` registry).
+    // An array literal dispatches to an `impl [T] Trait for Array` witness
+    // (#5 generic impls): its constructor is "Array" regardless of element type.
+    EArray(_) => Some("Array"),
+    // A variable's recorded type, else a (possibly qualified) nullary
+    // constructor's enum name (`Green`/`Color::Green` -> `Color`) so that a
+    // `let a = Green` / `let a = Color::Green` binding resolves for `==`.
+    EIdent(name, _) => match lookup_var_type(var_types, name) {
+      Some(t) => Some(t),
+      None => ctor_enum_of_name(fn_returns, name)
+    },
+    // A call-valued iterable (`for x in lazy_iter_arr([..])`) or data ctor
+    // (`Sh::Circle(5)`): its type is the head of the callee's return type.
     ECall(callee, _, _) => match callee {
-      EIdent(fname, _) => fn_return_type(fn_returns, fname),
+      EIdent(fname, _) => ctor_enum_of_name(fn_returns, fname),
       _ => None
     },
     ERecord(fields) => {
@@ -395,7 +448,57 @@ let find_recv_index: (Array[(String, Option[TypeExpr])], String) -> Int = (param
 // each is a (function name, threaded-bounds) pair. A bound is threaded only
 // when its trait is method-bearing and the type parameter appears directly as
 // a parameter type.
-let build_gens: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Array[(String, Array[(String, String, Int)])] = (stmts, traits) -> {
+// The type-constructor head of a qualified name (`Array::show2` -> "Array"),
+// or "" if unqualified.
+let qualified_head: (String) -> String = (name) -> {
+  match split_qualified(name) {
+    Some(parts) => {
+      let (head, _) = parts
+      head
+    },
+    None => ""
+  }
+}
+
+// Type names of bounded generic impls (`impl [T: Bound] Trait for C`). Their
+// methods (`C::m`) carry the bound `T` even though it appears nested in the
+// receiver (`self: C[T]`), so they must be threaded a witness dict (the normal
+// "type param is a direct parameter" rule misses them).
+let collect_generic_impl_types: (Array[Stmt]) -> Array[String] = (stmts) -> {
+  let out = empty_str_array()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImpl(tparams, tbounds, _, type_name) => if Array::length(tparams) > 0 {
+        let mut has_bound = false
+        let mut bi = 0
+        while bi < Array::length(tbounds) {
+          let (_, bs) = Array::get(tbounds, bi)
+          let mut bj = 0
+          while bj < Array::length(bs) {
+            if Array::get(bs, bj) != "" {
+              has_bound = true
+            } else {
+              ()
+            }
+            bj = bj + 1
+          }
+          bi = bi + 1
+        }
+        if has_bound {
+          Array::push(out, type_name)
+        } else {
+          ()
+        }
+      } else (),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+let build_gens: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[String]) -> Array[(String, Array[(String, String, Int)])] = (stmts, traits, gimpl_types) -> {
   let out = Array::slice([
     ("", empty_threaded())
   ], 0, 0)
@@ -418,6 +521,11 @@ let build_gens: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], Typ
                   let ridx = find_recv_index(params, tp)
                   if ridx >= 0 {
                     Array::push(threaded, (tp, tr, ridx))
+                  } else if str_array_contains(gimpl_types, qualified_head(fname)) {
+                    // bounded generic-impl method: T is nested in `self: C[T]`,
+                    // so there is no inferable receiver argument — the witness
+                    // dict is supplied when C's witness is built. Thread with -1.
+                    Array::push(threaded, (tp, tr, 0 - 1))
                   } else {
                     ()
                   }
@@ -493,10 +601,32 @@ let find_dict_for_trait: (Array[(String, String, String, Array[String])], String
   result
 }
 
+// The first element of an array-literal receiver (for a bounded generic impl
+// `impl [T: Bound] Trait for Array`, the element determines T's witness).
+let first_array_elem: (Expr) -> Option[Expr] = (e) -> {
+  match e {
+    EArray(elems) => if Array::length(elems) > 0 {
+      Some(Array::get(elems, 0))
+    } else None,
+    _ => None
+  }
+}
+
 // Build the witness `ERecord` for a concrete type `cname` implementing
-// `trait_name` (the impl's `C::method` free functions). Codegen resolves it to
-// the dict struct structurally by field names.
-let build_concrete_dict: (String, String, Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Option[Expr] = (cname, trait_name, traits) -> {
+// `trait_name`. Codegen resolves it to the dict struct structurally by field
+// names.
+//
+// For a plain impl each method field is the free function `C::method`. For a
+// BOUNDED generic impl (`impl [T: Bound] Trait for C`) the method
+// `C::method` was threaded to take its own `Bound` dictionary for the element
+// type, so the field is instead a closure that supplies that nested dictionary:
+//   { method: (__w) -> C::method(<element Bound dict>, __w) }
+// The element dict is built recursively from the array literal's first element
+// (`arg_expr`) — a dictionary-of-dictionaries (#5 Increment B). If the element
+// type / dict cannot be determined the whole witness fails to build (returns
+// None), so the call is left unrewritten (a loud arity error, never a silent
+// miscompile).
+let rec build_concrete_dict: (String, String, Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(String, Array[(String, String, Int)])], Array[(String, Array[String])], Array[(String, String)], Array[(String, String)], Expr) -> Option[Expr] = (cname, trait_name, traits, gens, struct_sets, var_types, fn_returns, arg_expr) -> {
   match lookup_trait_sigs(traits, trait_name) {
     Some(sigs) => {
       let mnames = method_names_of_sigs(sigs)
@@ -504,12 +634,67 @@ let build_concrete_dict: (String, String, Array[(String, Array[(String, Array[Ty
         ("", EUnit)
       ], 0, 0)
       let mut mi = 0
+      let mut failed = false
       while mi < Array::length(mnames) {
         let m = Array::get(mnames, mi)
-        Array::push(recfields, (m, EIdent(String::concat(cname, String::concat("::", m)), -1)))
+        let qm = String::concat(cname, String::concat("::", m))
+        if not(fn_exists(fn_returns, qm)) {
+          // No `cname::m` free function exists — `cname` does not actually
+          // implement `trait_name`. Refuse to fabricate a witness (which would
+          // otherwise silently dispatch to a same-shaped function), so the call
+          // is left unrewritten and fails loudly instead of miscompiling.
+          failed = true
+        } else {
+        match lookup_gen(gens, qm) {
+          Some(threaded) => {
+            // `qm` is a bounded generic-impl method: supply its element dict(s).
+            match first_array_elem(arg_expr) {
+              Some(elem) => match infer_arg_type_name(elem, struct_sets, var_types, fn_returns) {
+                Some(en) => {
+                  let callargs = empty_expr_array()
+                  let mut bi = 0
+                  let mut subok = true
+                  while bi < Array::length(threaded) {
+                    let (_, btrait, _) = Array::get(threaded, bi)
+                    match build_concrete_dict(en, btrait, traits, gens, struct_sets, var_types, fn_returns, elem) {
+                      Some(sd) => Array::push(callargs, sd),
+                      None => {
+                        subok = false
+                      }
+                    }
+                    bi = bi + 1
+                  }
+                  if subok {
+                    Array::push(callargs, EIdent("__w", -1))
+                    let closure = EFn(empty_str_array(), Array::slice([
+                      ("", empty_str_array())
+                    ], 0, 0), Array::slice([
+                      ("__w", None)
+                    ], 0, 1), None, None, ECall(EIdent(qm, -1), callargs, -1))
+                    Array::push(recfields, (m, closure))
+                  } else {
+                    failed = true
+                  }
+                },
+                None => {
+                  failed = true
+                }
+              },
+              None => {
+                failed = true
+              }
+            }
+          },
+          None => Array::push(recfields, (m, EIdent(qm, -1)))
+        }
+        }
         mi = mi + 1
       }
-      Some(ERecord(recfields))
+      if failed {
+        None
+      } else {
+        Some(ERecord(recfields))
+      }
     },
     None => None
   }
@@ -521,17 +706,18 @@ let build_concrete_dict: (String, String, Array[(String, Array[(String, Array[Ty
 // receiver type is syntactically known) or by forwarding the caller's own dict
 // parameter (the receiver is a type parameter bound by the same trait in the
 // enclosing generic — the generic->generic case).
-let synth_dicts: (Array[(String, String, Int)], Array[Expr], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(String, Array[String])], Array[(String, String)], Array[(String, String, String, Array[String])], Array[(String, String)]) -> Option[Array[Expr]] = (threaded, orig_args, traits, struct_sets, var_types, dict_binds, fn_returns) -> {
+let synth_dicts: (Array[(String, String, Int)], Array[Expr], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(String, Array[String])], Array[(String, String)], Array[(String, String, String, Array[String])], Array[(String, String)], Array[(String, Array[(String, String, Int)])]) -> Option[Array[Expr]] = (threaded, orig_args, traits, struct_sets, var_types, dict_binds, fn_returns, gens) -> {
   let dicts = empty_expr_array()
   let mut ok = true
   let mut bi = 0
   while bi < Array::length(threaded) {
     let (_, trait_name, recv_idx) = Array::get(threaded, bi)
     if ok && recv_idx >= 0 && recv_idx < Array::length(orig_args) {
-      match infer_arg_type_name(Array::get(orig_args, recv_idx), struct_sets, var_types, fn_returns) {
+      let recv_arg = Array::get(orig_args, recv_idx)
+      match infer_arg_type_name(recv_arg, struct_sets, var_types, fn_returns) {
         Some(nm) => match find_dict_for_trait(dict_binds, nm, trait_name) {
           Some(dict_pname) => Array::push(dicts, EIdent(dict_pname, -1)),
-          None => match build_concrete_dict(nm, trait_name, traits) {
+          None => match build_concrete_dict(nm, trait_name, traits, gens, struct_sets, var_types, fn_returns, recv_arg) {
             Some(dict) => Array::push(dicts, dict),
             None => {
               ok = false
@@ -626,6 +812,17 @@ let collect_fn_returns: (Array[Stmt]) -> Array[(String, String)] = (stmts) -> {
           Array::push(out, (fname, rn))
         },
         _ => ()
+      },
+      // #672: map each enum variant constructor to its enum name, so a
+      // `let t = Node(...)` binding resolves `t`'s type for the `==` dispatch
+      // (infer_arg_type_name reads ctor calls through fn_returns).
+      SEnum(_, ename, _, variants) => {
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (vname, _) = Array::get(variants, vi)
+          Array::push(out, (vname, ename))
+          vi = vi + 1
+        }
       },
       _ => ()
     }
@@ -838,6 +1035,27 @@ let extend_var_types: (Array[(String, String)], String, Option[String]) -> Array
   }
 }
 
+// #672: a qualified constructor `Enum::Variant` -> the unqualified variant
+// `Variant`, when `member` is a constructor of enum `head` (variants are bound
+// unqualified, and codegen's ctor table is keyed unqualified). `head` MUST be a
+// known user enum/struct (`struct_sets` includes enum names) — this is the gate
+// that keeps builtin qualified calls like `String::join` / `Array::map` alone
+// even when a same-named function (`join`/`map`) happens to return that type.
+let qual_ctor_member: (String, String, Array[(String, Array[String])], Array[(String, String)]) -> Option[String] = (head, member, struct_sets, fn_returns) -> {
+  if struct_set_has(struct_sets, head) {
+    match fn_return_type(fn_returns, member) {
+      Some(en) => if en == head {
+        Some(member)
+      } else {
+        None
+      },
+      None => None
+    }
+  } else {
+    None
+  }
+}
+
 // The core rewriter. `dict_binds` is non-empty only inside a transformed
 // generic's body (so `T::method` resolves to a dict field); call-site dict
 // threading applies everywhere a transformed generic is called. `var_types`
@@ -850,7 +1068,10 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
         let (head, member) = parts
         match find_dict_for_method(dict_binds, head, member) {
           Some(dict_pname) => EDot(EIdent(dict_pname, -1), member, -1),
-          None => expr
+          None => match qual_ctor_member(head, member, struct_sets, fn_returns) {
+            Some(m) => EIdent(m, off),
+            None => expr
+          }
         }
       },
       None => expr
@@ -860,7 +1081,19 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
         rewrite_expr(a, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
       }
       match callee {
-        EIdent(name, coff) => {
+        EIdent(name0, coff) => {
+          // #672: unqualify a qualified constructor call `Enum::Variant(..)` ->
+          // `Variant(..)` so codegen's (unqualified) ctor table recognizes it.
+          let name = match split_qualified(name0) {
+            Some(parts0) => {
+              let (h0, m0) = parts0
+              match qual_ctor_member(h0, m0, struct_sets, fn_returns) {
+                Some(mm) => mm,
+                None => name0
+              }
+            },
+            None => name0
+          }
           // `T::method(args)` inside a transformed body -> `(dict.method)(args)`.
           let as_method = match split_qualified(name) {
             Some(parts) => {
@@ -872,7 +1105,7 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
           match as_method {
             Some(dict_pname) => ECall(EDot(EIdent(dict_pname, -1), member_of(name), -1), rwargs, off),
             None => match lookup_gen(gens, name) {
-              Some(threaded) => match synth_dicts(threaded, args, traits, struct_sets, var_types, dict_binds, fn_returns) {
+              Some(threaded) => match synth_dicts(threaded, args, traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
                 Some(dicts) => ECall(EIdent(name, coff), concat_expr_arrays(dicts, rwargs), off),
                 None => ECall(EIdent(name, coff), rwargs, off)
               },
@@ -989,7 +1222,41 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
         }
       }
     },
-    EBinOp(op, l, r) => EBinOp(op, rewrite_expr(l, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(r, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    EBinOp(op, l, r) => {
+      let rl = rewrite_expr(l, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+      let rr = rewrite_expr(r, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+      // #672: dispatch `a == b` / `a != b` on a struct type to the generated
+      // structural `T::equals`. The operand's type is resolved best-effort via
+      // `infer_arg_type_name` (var_types for variables, field-set match for
+      // struct literals); a struct type whose `equals` we generated is rewritten
+      // to a call. Non-struct / unresolved operands keep the scalar binop.
+      if op == "==" || op == "!=" {
+        let ty = match infer_arg_type_name(l, struct_sets, var_types, fn_returns) {
+          Some(t) => Some(t),
+          None => infer_arg_type_name(r, struct_sets, var_types, fn_returns)
+        }
+        match ty {
+          Some(t) => if struct_set_has(struct_sets, t) {
+            let call = ECall(EIdent(String::concat(t, "::equals"), -1), [
+              rl,
+              rr
+            ], -1)
+            if op == "==" {
+              call
+            } else {
+              ECall(EIdent("not", -1), [
+                call
+              ], -1)
+            }
+          } else {
+            EBinOp(op, rl, rr)
+          },
+          None => EBinOp(op, rl, rr)
+        }
+      } else {
+        EBinOp(op, rl, rr)
+      }
+    },
     EUnaryOp(op, e) => EUnaryOp(op, rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     EFn(tp, bs, ps, ret, eff, body) => EFn(tp, bs, ps, ret, eff, rewrite_expr(body, gens, traits, struct_sets, dict_binds, seed_var_types(ps, tp, var_types), fn_returns)),
     EDot(obj, field, off) => EDot(rewrite_expr(obj, gens, traits, struct_sets, dict_binds, var_types, fn_returns), field, off),
@@ -1168,6 +1435,155 @@ let gen_show_fn: (String, Array[(String, TypeExpr)]) -> Stmt = (tname, fields) -
   SLet(false, false, qualified_name(tname, "to_string"), None, EFn(no_tp, no_tb, params, Some(TyName("String")), None, body))
 }
 
+// A type name that the runtime compares as a flat scalar (no structural
+// `equals` needed). Everything else named is a user struct/enum and recurses
+// through its generated `T::equals`.
+let is_scalar_type_name: (String) -> Bool = (n) -> {
+  n == "Int" || n == "Double" || n == "Bool" || n == "String" || n == "Char" || n == "Unit" || n == "Bytes"
+}
+
+// Equality of two operands whose declared type is `fty`. A field whose type is
+// a CONCRETE declared struct/enum (`known_types`) recurses through a DIRECT
+// `T::equals(lhs, rhs)` call — the type is known from the declaration, so this
+// closes recursion and nested aggregates WITHOUT relying on operand type
+// inference (enum payload binders / nested field accesses are otherwise
+// untyped). Scalars, type PARAMETERS (`Box[T]`'s `T` — not a declared type, has
+// no `equals`), and structural shapes (tuples/arrays/options) keep `==`, which
+// codegen handles structurally for literals and the dispatch pass rewrites
+// where operands are resolvable. (#672 recursion close.)
+let eq_for_typed: (TypeExpr, Expr, Expr, Array[String]) -> Expr = (fty, lhs, rhs, known_types) -> {
+  match fty {
+    TyName(n) => if !is_scalar_type_name(n) && str_array_contains(known_types, n) {
+      ECall(EIdent(qualified_name(n, "equals"), -1), Array::slice([
+        lhs,
+        rhs
+      ], 0, 2), -1)
+    } else {
+      EBinOp("==", lhs, rhs)
+    },
+    _ => EBinOp("==", lhs, rhs)
+  }
+}
+
+// One field's equality expression: `a.f == b.f` for scalar/param fields, or a
+// direct `FieldType::equals(a.f, b.f)` for aggregate (declared struct/enum)
+// fields so nested/recursive structs compare structurally. (#672 recursion.)
+let field_eq_expr: (String, TypeExpr, Array[String]) -> Expr = (fname, fty, known_types) -> {
+  eq_for_typed(fty, EDot(EIdent("a", -1), fname, -1), EDot(EIdent("b", -1), fname, -1), known_types)
+}
+
+// `let P::equals = (a: P, b: P) -> Bool { a.x == b.x && a.y == b.y && ... }`
+// Mirrors gen_compare_fn. Primitive fields compare with `==`; aggregate fields
+// recurse through the field type's generated `equals`. An empty struct is `true`.
+let gen_eq_fn: (String, Array[(String, TypeExpr)], Array[String]) -> Stmt = (tname, fields, known_types) -> {
+  let mut body = EBool(true)
+  let mut i = Array::length(fields) - 1
+  while i >= 0 {
+    let (fname, fty) = Array::get(fields, i)
+    body = EBinOp("&&", field_eq_expr(fname, fty, known_types), body)
+    i = i - 1
+  }
+  let params = Array::slice([
+    ("a", Some(TyName(tname))),
+    ("b", Some(TyName(tname)))
+  ], 0, 2)
+  let no_tp = Array::slice([
+    ""
+  ], 0, 0)
+  let no_tb = Array::slice([
+    ("", no_tp)
+  ], 0, 0)
+  SLet(false, false, qualified_name(tname, "equals"), None, EFn(no_tp, no_tb, params, Some(TyName("Bool")), None, body))
+}
+
+// Small non-negative Int -> decimal String (Int::to_string is not in scope in
+// this module). Used only to make unique enum-field binder names.
+let digit_str: (Int) -> String = (d) -> {
+  if d == 0 {
+    "0"
+  } else if d == 1 {
+    "1"
+  } else if d == 2 {
+    "2"
+  } else if d == 3 {
+    "3"
+  } else if d == 4 {
+    "4"
+  } else if d == 5 {
+    "5"
+  } else if d == 6 {
+    "6"
+  } else if d == 7 {
+    "7"
+  } else if d == 8 {
+    "8"
+  } else {
+    "9"
+  }
+}
+
+let rec idx_str: (Int) -> String = (n) -> {
+  if n < 10 {
+    digit_str(n)
+  } else {
+    String::concat(idx_str(n / 10), digit_str(n % 10))
+  }
+}
+
+// `let E::equals = (a: E, b: E) -> Bool {
+//    match a {
+//      V1(_a0, _a1) => match b { V1(_b0, _b1) => _a0 == _b0 && _a1 == _b1, _ => false },
+//      V2          => match b { V2 => true, _ => false }, ... } }`
+// Tag mismatch falls to the inner `_ => false`; payload `==` is itself
+// dispatched, so aggregate payloads recurse into their own `equals`.
+let gen_enum_eq_fn: (String, Array[(String, Array[TypeExpr])], Array[String]) -> Stmt = (ename, variants, known_types) -> {
+  let outer_arms = Array::slice([
+    (PWild, EUnit)
+  ], 0, 0)
+  let mut vi = 0
+  while vi < Array::length(variants) {
+    let (vname, ftypes) = Array::get(variants, vi)
+    let nf = Array::length(ftypes)
+    let abinds = Array::slice([
+      PWild
+    ], 0, 0)
+    let bbinds = Array::slice([
+      PWild
+    ], 0, 0)
+    let mut fi = 0
+    while fi < nf {
+      Array::push(abinds, PBind(String::concat("__a", idx_str(fi))))
+      Array::push(bbinds, PBind(String::concat("__b", idx_str(fi))))
+      fi = fi + 1
+    }
+    let mut body = EBool(true)
+    let mut bi = nf - 1
+    while bi >= 0 {
+      let cmp = eq_for_typed(Array::get(ftypes, bi), EIdent(String::concat("__a", idx_str(bi)), -1), EIdent(String::concat("__b", idx_str(bi)), -1), known_types)
+      body = EBinOp("&&", cmp, body)
+      bi = bi - 1
+    }
+    let inner_arms = Array::slice([
+      (PCtor(vname, bbinds), body),
+      (PWild, EBool(false))
+    ], 0, 2)
+    let inner = EMatch(EIdent("b", -1), inner_arms)
+    Array::push(outer_arms, (PCtor(vname, abinds), inner))
+    vi = vi + 1
+  }
+  let params = Array::slice([
+    ("a", Some(TyName(ename))),
+    ("b", Some(TyName(ename)))
+  ], 0, 2)
+  let no_tp = Array::slice([
+    ""
+  ], 0, 0)
+  let no_tb = Array::slice([
+    ("", no_tp)
+  ], 0, 0)
+  SLet(false, false, qualified_name(ename, "equals"), None, EFn(no_tp, no_tb, params, Some(TyName("Bool")), None, EMatch(EIdent("a", -1), outer_arms)))
+}
+
 // `let P::compare = (a: P, b: P) -> Int { lexicographic over fields -> -1/0/1 }`
 let gen_compare_fn: (String, Array[(String, TypeExpr)]) -> Stmt = (tname, fields) -> {
   let neg_one = 0 - 1
@@ -1195,12 +1611,31 @@ let gen_compare_fn: (String, Array[(String, TypeExpr)]) -> Stmt = (tname, fields
 
 // In-place: for each struct with `derive(Show/Ord)`, append the structural
 // function if not already present (idempotent across the double-run pipeline).
-export let desugar_derives: (Array[Stmt]) -> Unit = (stmts) -> {
-  let gen = empty_stmt_list()
+// The set of concrete struct/enum names declared in the program — the gate for
+// emitting DIRECT `T::equals` calls in generated comparators (a field/arg whose
+// type name is NOT here, e.g. a type parameter `T` of `Box[T]`, falls back to
+// scalar `==`, since there is no `T::equals` to call).
+let collect_decl_type_names: (Array[Stmt]) -> Array[String] = (stmts) -> {
+  let out = empty_str_array()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SStruct(_, name, fields, derives) => {
+      SStruct(_, name, _, _, _) => Array::push(out, name),
+      SEnum(_, ename, _, _) => Array::push(out, ename),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+export let desugar_derives: (Array[Stmt]) -> Unit = (stmts) -> {
+  let gen = empty_stmt_list()
+  let known_types = collect_decl_type_names(stmts)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(_, name, fields, derives, _) => {
         if str_array_contains(derives, "Show") && !top_level_fn_exists(stmts, qualified_name(name, "to_string")) {
           Array::push(gen, gen_show_fn(name, fields))
         } else {
@@ -1208,6 +1643,24 @@ export let desugar_derives: (Array[Stmt]) -> Unit = (stmts) -> {
         }
         if str_array_contains(derives, "Ord") && !top_level_fn_exists(stmts, qualified_name(name, "compare")) {
           Array::push(gen, gen_compare_fn(name, fields))
+        } else {
+          ()
+        }
+        // Generate `T::equals` for every struct (not just derive(Eq)) so the
+        // `==` dispatch below always resolves; structural equality is the
+        // sensible default for any struct, and a struct never relied on the old
+        // pointer-identity `==` (which was silently always-false).
+        if !top_level_fn_exists(stmts, qualified_name(name, "equals")) {
+          Array::push(gen, gen_eq_fn(name, fields, known_types))
+        } else {
+          ()
+        }
+      },
+      SEnum(_, ename, _, variants) => {
+        // Generate `E::equals` for every enum (same rationale as structs), so
+        // the `==` dispatch resolves enum operands too.
+        if !top_level_fn_exists(stmts, qualified_name(ename, "equals")) {
+          Array::push(gen, gen_enum_eq_fn(ename, variants, known_types))
         } else {
           ()
         }
@@ -1236,7 +1689,7 @@ let struct_decl_exists: (Array[Stmt], String) -> Bool = (stmts, name) -> {
   let mut found = false
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SStruct(_, sname, _, _) => if sname == name {
+      SStruct(_, sname, _, _, _) => if sname == name {
         found = true
         i = Array::length(stmts)
       } else {
@@ -1270,7 +1723,8 @@ export let desugar_trait_dicts: (Array[Stmt]) -> Unit = (stmts) -> {
   let traits = flatten_traits(traits_raw, supers_map)
   let struct_sets = collect_struct_field_sets(stmts)
   let fn_returns = collect_fn_returns(stmts)
-  let gens = build_gens(stmts, traits)
+  let gimpl_types = collect_generic_impl_types(stmts)
+  let gens = build_gens(stmts, traits, gimpl_types)
   let mut i = 0
   while i < Array::length(stmts) {
     Array::set(stmts, i, rewrite_stmt(Array::get(stmts, i), gens, traits, struct_sets, fn_returns))

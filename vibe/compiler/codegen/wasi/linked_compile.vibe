@@ -241,7 +241,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
         }
         0
       },
-      SStruct(_, sname, sfields, _) => {
+      SStruct(_, sname, sfields, _, _) => {
         type_index = type_index + 1
         Array::push(ctor_names_list, sname)
         Array::push(ctor_tags_list, type_index<<16)
@@ -258,7 +258,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   let mut si = 0
   while si < Array::length(stmts) {
     match Array::get(stmts, si) {
-      SStruct(_, sname, sfields, _) => {
+      SStruct(_, sname, sfields, _, _) => {
         Array::push(struct_names, sname)
         let fnames = lc_fresh_string_array()
         let mut sfi = 0
@@ -499,7 +499,23 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   let need_fs_stat_token_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::stat_token")
   let need_fs_write_file_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::write_file")
   let need_fs_write_bytes_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::write_bytes")
+  // #632: `Fs::read_bytes(path) -> Bytes` — the binary-exact read counterpart of
+  // Fs::write_bytes, a `vibe.fs_read_bytes (i64) -> i64` host import (type 3,
+  // same shape as fs_read_file). Gated on use so non-users reserve no import
+  // (fixpoint-safe). Lets the persistent artifact cache store/load wasm raw.
+  let need_fs_read_bytes_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::read_bytes")
   let need_profiler_now_us_builtin = stmts_use_builtin(stmts, fn_names_list, "Profiler::now_us")
+  // `sleep(ms)` (Async): a `vibe.sleep (i64) -> ()` host import. The host
+  // implements it as an async function so the guest fiber genuinely
+  // suspends/resumes (docs/spec/wasi-p3-async.md §2.3, examples/async_host).
+  // Gated on use, so programs without `sleep` reserve no import (fixpoint-safe).
+  let need_sleep_builtin = stmts_use_builtin(stmts, fn_names_list, "sleep")
+  // `Stdin::read_char() -> Int`: a value-returning `vibe.stdin_read_char () ->
+  // i64` host import. Implemented async by the host (it can suspend the guest
+  // until a char is available), so this is the data-consuming analog of `sleep`
+  // — the shape of a host async source (HTTP body byte, stdin char). Gated on
+  // use (fixpoint-safe).
+  let need_stdin_read_char_builtin = stmts_use_builtin(stmts, fn_names_list, "Stdin::read_char")
   let mut next_import_idx = 1
   let env_get_import_idx = if need_env_get_builtin {
     let idx = next_import_idx
@@ -557,7 +573,30 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   } else {
     -1
   }
+  // #632: reserved immediately after fs_write_bytes; the import emission below
+  // must stay in this same order so the index matches the descriptor.
+  let fs_read_bytes_import_idx = if need_fs_read_bytes_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
   let profiler_now_us_import_idx = if need_profiler_now_us_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let sleep_import_idx = if need_sleep_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let stdin_read_char_import_idx = if need_stdin_read_char_builtin {
     let idx = next_import_idx
     next_import_idx = next_import_idx + 1
     idx
@@ -694,8 +733,30 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   } else {
     fs_write_bytes_stub_idx
   }
+  // #632: no dedicated stub — when read_bytes is unused the builtin index just
+  // needs SOME valid never-called slot, so reuse the fs_read_file stub (a
+  // `(i64)->i64` placeholder). The real call site only exists when the import is
+  // reserved.
+  let fs_read_bytes_idx = if fs_read_bytes_import_idx >= 0 {
+    fs_read_bytes_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
   let profiler_now_us_idx = if profiler_now_us_import_idx >= 0 {
     profiler_now_us_import_idx
+  } else {
+    env_args_len_idx
+  }
+  // `sleep` call target: the import when reserved, else a never-called stub
+  // (the builtin is only emitted as a call when the program uses `sleep`, which
+  // is exactly when the import is reserved).
+  let sleep_idx = if sleep_import_idx >= 0 {
+    sleep_import_idx
+  } else {
+    env_args_len_idx
+  }
+  let stdin_read_char_idx = if stdin_read_char_import_idx >= 0 {
+    stdin_read_char_import_idx
   } else {
     env_args_len_idx
   }
@@ -755,6 +816,11 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   Array::push(builtin_needs_env_list, false)
   Array::push(builtin_indices_list, fs_write_bytes_idx)
   Array::push(builtin_returns_list, 0)
+  Array::push(builtin_names_list, "Fs::read_bytes")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, fs_read_bytes_idx)
+  Array::push(builtin_returns_list, 1)
   Array::push(builtin_names_list, "Profiler::now_us")
   Array::push(builtin_param_counts, 0)
   Array::push(builtin_needs_env_list, false)
@@ -764,6 +830,20 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   Array::push(builtin_param_counts, 0)
   Array::push(builtin_needs_env_list, false)
   Array::push(builtin_indices_list, profiler_now_us_idx)
+  Array::push(builtin_returns_list, 1)
+  // `sleep(ms) -> Unit`: 1 i64 arg, void return (like `Fs::write_file`); the
+  // host import suspends the guest (real async).
+  Array::push(builtin_names_list, "sleep")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, sleep_idx)
+  Array::push(builtin_returns_list, 0)
+  // `Stdin::read_char() -> Int`: 0 args, i64 return (like `Profiler::now_us`);
+  // the host import returns a char asynchronously (real async data read).
+  Array::push(builtin_names_list, "Stdin::read_char")
+  Array::push(builtin_param_counts, 0)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, stdin_read_char_idx)
   Array::push(builtin_returns_list, 1)
   Array::push(builtin_names_list, "simd_skip_ws")
   Array::push(builtin_param_counts, 3)
@@ -1486,6 +1566,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       heap_grow_check_func_idx: heap_grow_check_idx,
       rc_dup_names: rc_dups,
       float_local_slots: lc_fresh_int_array(),
+      int_local_slots: lc_fresh_int_array(),
       effect_names: effect_names_list,
       effect_op_keys: effect_op_keys_list,
       effect_op_arities: effect_op_arities_list,
@@ -2126,11 +2207,39 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     bytebuf_push(import_content, 0)
     leb128_encode_u32(import_content, 6)
   }
+  // #632: fs_read_bytes — emitted right after fs_write_bytes to match its
+  // reserved index. Type 3 is `(i64) -> i64` (same as fs_read_file).
+  if fs_read_bytes_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_read_bytes")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  }
   if profiler_now_us_import_idx >= 0 {
     emit_name(import_content, "vibe")
     emit_name(import_content, "profile-now-us")
     bytebuf_push(import_content, 0)
     leb128_encode_u32(import_content, 5)
+  }
+  // `vibe.sleep (i64) -> ()` — reserved index after profiler, matching the
+  // allocation order above. Type 1 is `(i64) -> ()`.
+  if sleep_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "sleep")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 1)
+  } else {
+    ()
+  }
+  // `vibe.stdin_read_char () -> i64` — after sleep, matching allocation order.
+  // Type 5 is `() -> i64` (same as profile-now-us).
+  if stdin_read_char_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "stdin_read_char")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 5)
+  } else {
+    ()
   }
   if dbg_break_import_idx >= 0 {
     emit_name(import_content, "vibe")
@@ -2251,9 +2360,9 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   bytebuf_push_section(out, 13, tag_content)
   let global_content = bytebuf_new()
   if enable_rc {
-    bytebuf_push_vec_header(global_content, 6)
+    bytebuf_push_vec_header(global_content, 7)
   } else {
-    bytebuf_push_vec_header(global_content, 5)
+    bytebuf_push_vec_header(global_content, 6)
   }
   bytebuf_push(global_content, 127)
   bytebuf_push(global_content, 1)
@@ -2280,6 +2389,12 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   bytebuf_push(global_content, 127)
   bytebuf_push(global_content, 1)
   emit_i32_const(global_content, heap_start)
+  emit_end(global_content)
+  // #665: g_op_index (i64, mut) — operation index of the perform unwinding to a
+  // handler, for multi-operation dispatch. Appended last; index = rc ? 6 : 5.
+  bytebuf_push(global_content, 126)
+  bytebuf_push(global_content, 1)
+  emit_i64_const(global_content, 0)
   emit_end(global_content)
   bytebuf_push_section(out, 6, global_content)
   let start_func_idx = func_offset + num_user_funcs

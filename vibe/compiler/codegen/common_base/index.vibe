@@ -164,6 +164,19 @@ export struct CompileCtx {
   // approximation (the AST is untyped): float function params / lambda-captured
   // floats are not tracked.
   float_local_slots: Array[Int];
+  // #678: append-only log of `slot*2 + flag` entries, the integer dual of
+  // float_local_slots. flag 1 marks a `let`/`let mut` slot whose value is
+  // statically integral (Int/Bool); flag 0 a non-int rebind overriding a
+  // previously-int slot. Most-recent entry per slot wins, so a bare integer
+  // variable in `==`/`!=` takes the direct `i64.eq` path instead of the
+  // polymorphic `eq` whose string fall-back misreads a large int as a string
+  // fat-pointer (two unequal ints with a zero low word compare EQUAL). UNLIKE
+  // the float log this one IS pruned: `int_log_reset_above` drops entries for
+  // slots a branch/arm is about to reuse, so a slot rebound by a NON-`let`
+  // binder (match-arm / for-in / catch-all pattern var) — which never logs an
+  // entry — is never read as a stale int. Without that pruning a reused slot
+  // holding a string would be misclassified and string `==` would break.
+  int_local_slots: Array[Int];
   // #545 nesting: declared effect names (excluding `Error`), in tag-assignment
   // order. Effect `effect_names[i]` is routed through wasm exception tag `3 + i`
   // with its own resume frontier; `perform` and `handle` both derive the tag
@@ -238,6 +251,36 @@ export struct CompileCtxGc {
 }
 
 //# Functions
+
+// #678: prune the integer-slot log so it carries NO entry for any slot index
+// >= `floor`. Called right after `local_names` is truncated to `floor` at a
+// branch / match-arm / for-in boundary, where those high slots are about to be
+// reused by the sibling scope. A `let`/`let mut` reusing a slot re-logs its own
+// int-ness, but a NON-`let` binder (match-arm / catch-all / for-in pattern var)
+// logs nothing — so without this prune its slot would still read the previous
+// sibling's stale `int=1` and a string bound there would wrongly take the
+// `i64.eq` path. Compacts the array IN PLACE (entries are unordered, so a plain
+// truncate-by-count will not do): keep entries for slots < floor, then truncate.
+// No temporary allocation — this runs at every branch / arm boundary while
+// compiling, and a fresh array per call piles up on the bump/RC heap during one
+// big function and can trip a heap-marginal compile.
+export let int_log_reset_above: (CompileCtx, Int) -> Unit = (ctx, floor) -> {
+  let arr = ctx.int_local_slots
+  let n = Array::length(arr)
+  let mut w = 0
+  let mut i = 0
+  while i < n {
+    let e = Array::get(arr, i)
+    if e / 2 < floor {
+      Array::set(arr, w, e)
+      w = w + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  Array::truncate(arr, w)
+}
 
 export let is_efn: (Expr) -> Bool = (expr) -> {
   match expr {
@@ -755,6 +798,23 @@ export let effect_op_declared_arity: (Array[String], Array[Int], String) -> Int 
   while i < n {
     if Array::get(keys, i) == full {
       result = Array::get(arities, i)
+      i = n
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+
+// #665: index of a qualified op key (`Eff::Op`) in the global effect_op_keys
+// table — the operation discriminant for multi-operation handler dispatch.
+export let effect_op_index: (Array[String], String) -> Int = (keys, full) -> {
+  let n = Array::length(keys)
+  let mut result = 0 - 1
+  let mut i = 0
+  while i < n {
+    if Array::get(keys, i) == full {
+      result = i
       i = n
     } else {
       i = i + 1

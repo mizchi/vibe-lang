@@ -1,7 +1,7 @@
 //# Imports
 
 import .. / core {
-  Expr, Pat
+  Expr, Pat, TypeExpr
 }
 
 import ./parser_base.vibe {
@@ -18,6 +18,28 @@ import ./token.vibe {
 
 //# Functions
 
+// Wrap `val` so that `((__asc: ty) -> __asc)(val)` forces `val` to have type
+// `ty` (enforced by the call-argument check) while evaluating to `val` itself.
+// Used to type-check a local `let x: T = e`, whose annotation `ELet` cannot
+// store. Uses only EFn/ECall, so every downstream pass handles it unchanged.
+let ascribe_wrap: (Expr, TypeExpr) -> Expr = (val, ty) -> {
+  let tparams = Array::slice([
+    ""
+  ], 0, 0)
+  let tbounds = Array::slice([
+    ("", Array::slice([
+      ""
+    ], 0, 0))
+  ], 0, 0)
+  let params = [
+    ("__asc", Some(ty))
+  ]
+  let lam = EFn(tparams, tbounds, params, None, None, EIdent("__asc", 0 - 1))
+  ECall(lam, [
+    val
+  ], 0 - 1)
+}
+
 enum BlockStep {
   StepSeq(Expr);
   StepValue(Expr);
@@ -32,38 +54,64 @@ enum BlockStep {
   StepBind(String, Expr)
 }
 
-let rec parse_match_rest: (Array[Token], Array[Int], Int, Expr, ArrayBuilder[(Pat, Expr)], (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> (Expr, Int) with { Error } = (tokens, starts, pos, scrutinee, b, parse_recur) -> {
-  match peek(tokens, pos) {
-    TComma => match peek(tokens, pos + 1) {
-      TRBrace => (EMatch(scrutinee, ArrayBuilder::freeze(b)), pos + 2),
-      _ => {
-        let (pa, paa) = parse_pattern(tokens, pos + 1)
-        let a2 = match peek(tokens, paa) {
-          TIf => {
-            let (_, ga) = parse_recur(tokens, paa + 1, 0)
-            expect_tk(tokens, ga, "=>")
-          },
-          _ => expect_tk(tokens, paa, "=>")
-        }
-        let (ea, en) = parse_recur(tokens, a2, 0)
-        ArrayBuilder::push(b, (pa, ea))
-        parse_match_rest(tokens, starts, en, scrutinee, b, parse_recur)
-      }
-    },
-    TRBrace => (EMatch(scrutinee, ArrayBuilder::freeze(b)), pos + 1),
-    _ => {
-      let (pa, paa) = parse_pattern(tokens, pos)
-      let a2 = match peek(tokens, paa) {
-        TIf => {
-          let (_, ga) = parse_recur(tokens, paa + 1, 0)
-          expect_tk(tokens, ga, "=>")
-        },
-        _ => expect_tk(tokens, paa, "=>")
-      }
-      let (ea, en) = parse_recur(tokens, a2, 0)
-      ArrayBuilder::push(b, (pa, ea))
-      parse_match_rest(tokens, starts, en, scrutinee, b, parse_recur)
+// #666: desugar match-arm guards into existing constructs. `arms` is the
+// collected arm list as (pattern, guard-or-EBool(true)-sentinel, body). A
+// guarded arm `pat if g => body` becomes `pat => if g { body } else { match
+// scrut { remaining } }` so a FAILED guard falls through to later arms; the
+// remaining arms are also appended (for the pattern-doesn't-match case). The
+// guard's Bool-check and codegen come for free via `EIf`. `scrut` must be a
+// re-evaluable reference (the caller binds the scrutinee to a temp), so the
+// nested match never re-runs a side-effecting scrutinee.
+let rec desugar_guarded: (Array[(Pat, Expr, Expr)], Int, Expr) -> Array[(Pat, Expr)] = (arms, i, scrut) -> {
+  if i >= Array::length(arms) {
+    empty_arms()
+  } else {
+    let (pat, guard, body) = Array::get(arms, i)
+    let rest = desugar_guarded(arms, i + 1, scrut)
+    let no_guard = match guard {
+      EBool(bv) => bv,
+      _ => false
     }
+    let arm_body = if no_guard {
+      body
+    } else {
+      EIf(guard, body, EMatch(scrut, rest))
+    }
+    let out = ArrayBuilder::new()
+    ArrayBuilder::push(out, (pat, arm_body))
+    let mut j = 0
+    while j < Array::length(rest) {
+      ArrayBuilder::push(out, Array::get(rest, j))
+      j = j + 1
+    }
+    ArrayBuilder::freeze(out)
+  }
+}
+
+// #666: parse all match arms into `b` as (pattern, guard|EBool(true), body),
+// setting hg[0] when any arm carries a guard. Arms are comma-separated, ending
+// at `}` (optionally with a trailing comma).
+let rec collect_match_arms: (Array[Token], Array[Int], Int, ArrayBuilder[(Pat, Expr, Expr)], Array[Bool], (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> Int with { Error } = (tokens, starts, pos, b, hg, parse_recur) -> {
+  let (pat, pa) = parse_pattern(tokens, pos)
+  let (guard, after_g) = match peek(tokens, pa) {
+    TIf => {
+      Array::set(hg, 0, true)
+      parse_recur(tokens, pa + 1, 0)
+    },
+    _ => (EBool(true), pa)
+  }
+  let arrow = expect_tk(tokens, after_g, "=>")
+  let (body, bn) = parse_recur(tokens, arrow, 0)
+  ArrayBuilder::push(b, (pat, guard, body))
+  match peek(tokens, bn) {
+    TComma => match peek(tokens, bn + 1) {
+      TRBrace => bn + 2,
+      _ => collect_match_arms(tokens, starts, bn + 1, b, hg, parse_recur)
+    },
+    TRBrace => bn + 1,
+    // Comma-less arm separation: mirror the old parse_match_rest fall-through,
+    // which parsed the next arm's pattern without consuming a separator.
+    _ => collect_match_arms(tokens, starts, bn, b, hg, parse_recur)
   }
 }
 
@@ -451,19 +499,28 @@ let parse_impl_block: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -
                   }
                 },
                 _ => {
-                  let eq_pos = match after_name {
+                  let (ann_type, eq_pos) = match after_name {
                     TColon => {
-                      let (_, tp) = parse_type_impl(tokens, next + 2, 0)
-                      tp
+                      let (the_type, tp) = parse_type_impl(tokens, next + 2, 0)
+                      (Some(the_type), tp)
                     },
-                    _ => next + 1
+                    _ => (None, next + 1)
                   }
                   let eq = expect_tk(tokens, eq_pos, "=")
                   let (val, next_pos) = parse_block_value_only(tokens, eq, parse_recur)
                   if next_pos <= eq {
                     throw("internal parser error: block let parser did not advance")
                   } else {
-                    ArrayBuilder::push(steps, StepLet(name, val))
+                    // A local `let x: T = e` carries no type field on `ELet`, so
+                    // enforce `e : T` by wrapping the value in an identity
+                    // application `((__asc: T) -> __asc)(e)` whose argument check
+                    // (unify_call_args) rejects a mismatch — no new AST node, and
+                    // codegen sees only ordinary EFn/ECall.
+                    let val2 = match ann_type {
+                      Some(the_type) => ascribe_wrap(val, the_type),
+                      None => val
+                    }
+                    ArrayBuilder::push(steps, StepLet(name, val2))
                     p = next_pos
                   }
                 }
@@ -624,18 +681,28 @@ export let parse_impl_dispatch: (Array[Token], Array[Int], Int, Int, (Array[Toke
     match peek(tokens, br) {
       TRBrace => (EMatch(scrutinee, empty_arms()), br + 1),
       _ => {
-        let b = ArrayBuilder::new()
-        let (fp, fa) = parse_pattern(tokens, br)
-        let aa = match peek(tokens, fa) {
-          TIf => {
-            let (_, ga) = parse_recur(tokens, fa + 1, 0)
-            expect_tk(tokens, ga, "=>")
-          },
-          _ => expect_tk(tokens, fa, "=>")
+        // #666: collect arms as (pattern, guard|EBool(true), body). If any arm
+        // carries a guard, bind the scrutinee to a temp `__mg` (so a failed
+        // guard can re-match it without re-evaluating a side-effecting
+        // scrutinee) and desugar guards into nested EIf/EMatch. Otherwise emit
+        // a plain EMatch.
+        let ab = ArrayBuilder::new()
+        let hg = [false]
+        let endpos = collect_match_arms(tokens, starts, br, ab, hg, parse_recur)
+        let arms3 = ArrayBuilder::freeze(ab)
+        if Array::get(hg, 0) {
+          let final_arms = desugar_guarded(arms3, 0, EIdent("__mg", 0 - 1))
+          (ELet("__mg", scrutinee, EMatch(EIdent("__mg", 0 - 1), final_arms)), endpos)
+        } else {
+          let plain = ArrayBuilder::new()
+          let mut k = 0
+          while k < Array::length(arms3) {
+            let (p, _, bd) = Array::get(arms3, k)
+            ArrayBuilder::push(plain, (p, bd))
+            k = k + 1
+          }
+          (EMatch(scrutinee, ArrayBuilder::freeze(plain)), endpos)
         }
-        let (fe, fn1) = parse_recur(tokens, aa, 0)
-        ArrayBuilder::push(b, (fp, fe))
-        parse_match_rest(tokens, starts, fn1, scrutinee, b, parse_recur)
       }
     }
   } else if mode == 23 {

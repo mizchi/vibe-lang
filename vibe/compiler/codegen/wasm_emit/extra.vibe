@@ -53,8 +53,16 @@ export let emit_global_get: (Bytes, Int) -> Unit = (buf, idx) -> {
 }
 
 export let emit_heap_memory_grow_check: (Bytes) -> Unit = (buf) -> {
+  // Grow memory to `(heap_ptr + 65536) >> 16` pages — i.e. ALWAYS at least one
+  // page past `heap_ptr`. The previous `+ 65535` rounded to `ceil(heap_ptr /
+  // 65536)`, which holds only `[0, heap_ptr)`; when `heap_ptr` lands exactly on
+  // a page boundary that leaves `memory_size == heap_ptr`, and an access at
+  // `heap_ptr` (the next slot the bump allocator hands out) traps with
+  // "memory access out of bounds". The `+ 65536` reserves a guard page so
+  // `heap_ptr` itself is always addressable. Monotonic: never grows LESS than
+  // before, so it cannot under-allocate.
   emit_global_get(buf, 0)
-  emit_i32_const(buf, 65535)
+  emit_i32_const(buf, 65536)
   bytebuf_push(buf, op_i32_add)
   emit_i32_const(buf, 16)
   bytebuf_push(buf, op_i32_shr_u)
@@ -62,7 +70,7 @@ export let emit_heap_memory_grow_check: (Bytes) -> Unit = (buf) -> {
   bytebuf_push(buf, op_i32_gt_u)
   bytebuf_push2(buf, op_if, bt_void)
   emit_global_get(buf, 0)
-  emit_i32_const(buf, 65535)
+  emit_i32_const(buf, 65536)
   bytebuf_push(buf, op_i32_add)
   emit_i32_const(buf, 16)
   bytebuf_push(buf, op_i32_shr_u)

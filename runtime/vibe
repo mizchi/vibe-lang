@@ -67,6 +67,15 @@ RUNNER="${VIBE_RUNNER:-$VIBE_HOME/bin/moonrun_wt}"
 CLI_WASM="${VIBE_CLI_WASM:-$VIBE_HOME/lib/vibe-cli.wasm}"
 CLI_CWASM="${VIBE_CLI_CWASM:-$VIBE_HOME/lib/vibe-cli.cwasm}"
 
+# Portable single-file sha256 (macOS ships `shasum`, not `sha256sum`).
+_sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | cut -d' ' -f1
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
 die() { echo "vibe: $*" >&2; exit 1; }
 
 # --- semver constraint resolution for git deps -------------------------------
@@ -548,22 +557,65 @@ case "$cmd" in
     if [ -s "$out" ]; then cat "$out"; fi
     ;;
   test)
-    [ "$#" -ge 1 ] || die "usage: vibe test <file_test.vibe> [more_test.vibe...]"
+    # `vibe test [--no-cache] <file_test.vibe>...`
+    #
+    # Pure-test result cache (#634, ADR-0026): a file whose `test {}` blocks are
+    # all transitively effect-free is a deterministic function of its source +
+    # deps + compiler, so a prior PASS can be reused instead of re-running. The
+    # compiler writes a `<out>.testmeta` verdict ("1" = cacheable) via
+    # VIBE_TESTMETA_OUT; the key is sha256 of the compiled wasm (deterministic
+    # compilation already folds source+deps+compiler into those bytes). Only PASS
+    # is cached — a fail always re-runs. `--no-cache` bypasses the cache entirely.
+    no_cache=0
+    files=""
+    for a in "$@"; do
+      case "$a" in
+        --no-cache) no_cache=1 ;;
+        *) files="$files $a" ;;
+      esac
+    done
+    # shellcheck disable=SC2086
+    set -- $files
+    [ "$#" -ge 1 ] || die "usage: vibe test [--no-cache] <file_test.vibe> [more_test.vibe...]"
+    tcache="${VIBE_TEST_CACHE:-$VIBE_HOME/cache/test}"
     failed=0
     for src in "$@"; do
       [ -f "$src" ] || die "not found: $src"
       out="$(mktemp -t vibe-test-XXXXXX.wasm)"
+      meta="$out.testmeta"
+      rm -f "$meta"
       # `__no_entry__` makes the compiler emit a `_start` that runs every
-      # `test {}` block in the file; a failing assert traps the module.
+      # `test {}` block in the file; a failing assert traps the module. Ask the
+      # compiler for the cache verdict in the same pass (unless --no-cache).
+      if [ "$no_cache" = "0" ]; then
+        export VIBE_TESTMETA_OUT="$meta"
+      else
+        unset VIBE_TESTMETA_OUT
+      fi
       if ! compile_to "$src" "$out" "__no_entry__"; then
-        echo "FAIL (compile): $src"; failed=1; rm -f "$out"; continue
+        unset VIBE_TESTMETA_OUT
+        echo "FAIL (compile): $src"; failed=1; rm -f "$out" "$meta"; continue
+      fi
+      unset VIBE_TESTMETA_OUT
+      cacheable=0
+      [ -s "$meta" ] && [ "$(cat "$meta" 2>/dev/null)" = "1" ] && cacheable=1
+      key=""
+      if [ "$no_cache" = "0" ] && [ "$cacheable" = "1" ]; then
+        key="$(_sha256_file "$out")"
+        if [ -n "$key" ] && [ -f "$tcache/$key.pass" ]; then
+          echo "ok (cached): $src"
+          rm -f "$out" "$meta"; continue
+        fi
       fi
       if "$RUNNER" "$out"; then
         echo "ok:   $src"
+        if [ -n "$key" ]; then
+          mkdir -p "$tcache" && : > "$tcache/$key.pass"
+        fi
       else
         echo "FAIL: $src"; failed=1
       fi
-      rm -f "$out"
+      rm -f "$out" "$meta"
     done
     exit "$failed"
     ;;

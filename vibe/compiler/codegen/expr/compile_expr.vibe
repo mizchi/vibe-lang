@@ -9,7 +9,7 @@ import .. / common_analysis {
 }
 
 import .. / common_base {
-  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, cov_emit_branch, emit_binop_op, emit_box_float, emit_heap_grow_after_heap_set, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, emit_unbox_float, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
+  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, cov_emit_branch, emit_binop_op, emit_box_float, emit_heap_grow_after_heap_set, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, emit_unbox_float, expr_tag, int_log_reset_above, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_ctor_call, is_efn, is_eident, is_etuple, is_nullary_ctor_ident, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
 }
 
 import .. / common_extractors {
@@ -25,7 +25,7 @@ import ./compile_call.vibe {
 }
 
 import ./compile_expr_tail.vibe {
-  compile_expr_tail, expr_is_floatish
+  compile_expr_tail, expr_is_floatish, expr_is_intish
 }
 
 import ./compile_lambda.vibe {
@@ -37,6 +37,133 @@ import ./compile_match.vibe {
 }
 
 //# Functions
+
+// #672: emit structural equality for two tuples (non-rc layout: element i at
+// ptr+i*8, value = raw pointer). The arity comes from whichever operand is a
+// tuple literal (the checker guarantees same-arity tuples on both sides).
+// Evaluates each operand to a pointer in a temp local, then ANDs an element-wise
+// generic `eq` over all elements. Produces a raw i64 0/1. `compile_expr_fn` is
+// the main expression compiler, threaded to avoid a forward reference.
+let emit_tuple_struct_eq: (Bytes, Expr, Expr, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, lhs, rhs, local_names, next_local, ctx, ld, compile_expr_fn) -> {
+  let lit = if is_etuple(lhs) {
+    lhs
+  } else {
+    rhs
+  }
+  let num = Array::length(get_etuple_elems(lit))
+  let aptr = next_local
+  Array::push(local_names, "__eqa")
+  let bptr = next_local + 1
+  Array::push(local_names, "__eqb")
+  let nl1 = compile_expr_fn(buf, lhs, local_names, next_local + 2, ctx, ld)
+  emit_local_set(buf, aptr)
+  let nl2 = compile_expr_fn(buf, rhs, local_names, nl1, ctx, ld)
+  emit_local_set(buf, bptr)
+  let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
+  emit_i64_const(buf, 1)
+  let mut i = 0
+  while i < num {
+    emit_local_get(buf, aptr)
+    emit_i32_wrap_i64(buf)
+    emit_i64_load(buf, 3, i * 8)
+    emit_local_get(buf, bptr)
+    emit_i32_wrap_i64(buf)
+    emit_i64_load(buf, 3, i * 8)
+    emit_call(buf, eq_fidx)
+    emit_i64_and(buf)
+    i = i + 1
+  }
+  nl2
+}
+
+// #672: structural equality for two enum constructor values (non-rc layout:
+// value = ptr|1, tag i32 at ptr+0, field i at ptr+8+i*8). One operand is a ctor
+// literal so the field count `fc` is statically known. Compares the runtime
+// tags first (different variants => not equal, e.g. `Circle(5) != Point`), then
+// — when tags match — ANDs an element-wise generic `eq` over the `fc` fields.
+// Flat ctors (Int/String/Bool fields) are correct; nested-ctor fields fall back
+// to `eq` (so recursive types stay non-structural — tracked in #672).
+let emit_ctor_struct_eq: (Bytes, Expr, Expr, Int, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, lhs, rhs, fc, local_names, next_local, ctx, ld, compile_expr_fn) -> {
+  let aptr = next_local
+  Array::push(local_names, "__ceqa")
+  let bptr = next_local + 1
+  Array::push(local_names, "__ceqb")
+  let nl1 = compile_expr_fn(buf, lhs, local_names, next_local + 2, ctx, ld)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_local_set(buf, aptr)
+  let nl2 = compile_expr_fn(buf, rhs, local_names, nl1, ctx, ld)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_local_set(buf, bptr)
+  emit_local_get(buf, aptr)
+  emit_i32_wrap_i64(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_local_get(buf, bptr)
+  emit_i32_wrap_i64(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_eq(buf)
+  emit_if_i64(buf)
+  let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
+  emit_i64_const(buf, 1)
+  let mut i = 0
+  while i < fc {
+    emit_local_get(buf, aptr)
+    emit_i32_wrap_i64(buf)
+    emit_i64_load(buf, 3, 8 + i * 8)
+    emit_local_get(buf, bptr)
+    emit_i32_wrap_i64(buf)
+    emit_i64_load(buf, 3, 8 + i * 8)
+    emit_call(buf, eq_fidx)
+    emit_i64_and(buf)
+    i = i + 1
+  }
+  emit_else(buf)
+  emit_i64_const(buf, 0)
+  emit_end(buf)
+  nl2
+}
+
+// #672: emit the equality test for `lhs == rhs`, leaving a raw i64 0/1 on the
+// stack (1 = equal). Routes through the structural comparators when an operand
+// is a tuple / ctor literal (non-rc), else the generic runtime `eq`. Every `==`
+// / `!=` codegen site — the general expression form AND the if / `!`-if / while
+// condition fast-paths — calls this, so structural equality is consistent
+// across all of them (the post-processing each site applies to the 0/1 result —
+// `i32_wrap`/`i32_eqz`/rc-shift — is unchanged).
+let emit_eq_value: (Bytes, Expr, Expr, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, lhs, rhs, local_names, next_local, ctx, ld, ce) -> {
+  if (is_etuple(lhs) || is_etuple(rhs)) && !ctx.enable_rc {
+    emit_tuple_struct_eq(buf, lhs, rhs, local_names, next_local, ctx, ld, ce)
+  } else if (is_ctor_call(lhs, ctx.ctor_table) || is_nullary_ctor_ident(lhs, ctx.ctor_table) || is_ctor_call(rhs, ctx.ctor_table) || is_nullary_ctor_ident(rhs, ctx.ctor_table)) && !ctx.enable_rc {
+    let clit = if is_ctor_call(lhs, ctx.ctor_table) || is_nullary_ctor_ident(lhs, ctx.ctor_table) {
+      lhs
+    } else {
+      rhs
+    }
+    let cfc = if is_ctor_call(clit, ctx.ctor_table) {
+      Array::length(get_ecall_args(clit))
+    } else {
+      0
+    }
+    emit_ctor_struct_eq(buf, lhs, rhs, cfc, local_names, next_local, ctx, ld, ce)
+  } else if expr_is_intish(lhs, local_names, ctx) || expr_is_intish(rhs, local_names, ctx) {
+    // A definitely-integer comparison: a direct i64.eq is both faster and
+    // CORRECT for the full value range, sidestepping the `eq` builtin's
+    // string-pointer fall-back. The type checker guarantees the other operand
+    // is the same scalar type, so one intish side is enough.
+    let nl1 = ce(buf, lhs, local_names, next_local, ctx, ld)
+    let nl2 = ce(buf, rhs, local_names, nl1, ctx, ld)
+    emit_i64_eq(buf)
+    emit_i64_extend_i32_s(buf)
+    nl2
+  } else {
+    let nl1 = ce(buf, lhs, local_names, next_local, ctx, ld)
+    let nl2 = ce(buf, rhs, local_names, nl1, ctx, ld)
+    let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
+    emit_call(buf, eq_fidx)
+    nl2
+  }
+}
 
 export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error } = (buf, expr, local_names, next_local, ctx, ld) -> {
   let __tag = expr_tag(expr)
@@ -224,27 +351,21 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
     let lhs = get_ebinop_lhs(expr)
     let rhs = get_ebinop_rhs(expr)
     if op == "==" {
-      let nl1 = compile_expr(buf, lhs, local_names, next_local, ctx, ld)
-      let nl2 = compile_expr(buf, rhs, local_names, nl1, ctx, ld)
-      let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
-      emit_call(buf, eq_fidx)
+      let nle = emit_eq_value(buf, lhs, rhs, local_names, next_local, ctx, ld, compile_expr)
       if ctx.enable_rc {
         emit_i64_const(buf, 1)
         emit_i64_shl(buf)
       }
-      nl2
+      nle
     } else if op == "!=" {
-      let nl1 = compile_expr(buf, lhs, local_names, next_local, ctx, ld)
-      let nl2 = compile_expr(buf, rhs, local_names, nl1, ctx, ld)
-      let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
-      emit_call(buf, eq_fidx)
+      let nle = emit_eq_value(buf, lhs, rhs, local_names, next_local, ctx, ld, compile_expr)
       emit_i64_eqz(buf)
       emit_i64_extend_i32_s(buf)
       if ctx.enable_rc {
         emit_i64_const(buf, 1)
         emit_i64_shl(buf)
       }
-      nl2
+      nle
     } else if expr_is_floatish(lhs, local_names, ctx) || expr_is_floatish(rhs, local_names, ctx) {
       let nl1 = compile_expr(buf, lhs, local_names, next_local, ctx, ld)
       if ctx.enable_rc {
@@ -376,17 +497,11 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
         let clhs = get_ebinop_lhs(cond)
         let crhs = get_ebinop_rhs(cond)
         if cop == "==" {
-          let cnl1 = compile_expr(buf, clhs, local_names, next_local, ctx, ld)
-          let cnl2 = compile_expr(buf, crhs, local_names, cnl1, ctx, ld)
-          let (eq_fi, _, _) = resolve_func(ctx.func_table, "eq")
-          emit_call(buf, eq_fi)
+          let cnl2 = emit_eq_value(buf, clhs, crhs, local_names, next_local, ctx, ld, compile_expr)
           emit_i32_wrap_i64(buf)
           cnl2
         } else if cop == "!=" {
-          let cnl1 = compile_expr(buf, clhs, local_names, next_local, ctx, ld)
-          let cnl2 = compile_expr(buf, crhs, local_names, cnl1, ctx, ld)
-          let (eq_fi, _, _) = resolve_func(ctx.func_table, "eq")
-          emit_call(buf, eq_fi)
+          let cnl2 = emit_eq_value(buf, clhs, crhs, local_names, next_local, ctx, ld, compile_expr)
           emit_i32_wrap_i64(buf)
           emit_i32_eqz(buf)
           cnl2
@@ -449,18 +564,12 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
             let ilhs = get_ebinop_lhs(uoperand)
             let irhs = get_ebinop_rhs(uoperand)
             if iop == "==" {
-              let inl1 = compile_expr(buf, ilhs, local_names, next_local, ctx, ld)
-              let inl2 = compile_expr(buf, irhs, local_names, inl1, ctx, ld)
-              let (eq_fi2, _, _) = resolve_func(ctx.func_table, "eq")
-              emit_call(buf, eq_fi2)
+              let inl2 = emit_eq_value(buf, ilhs, irhs, local_names, next_local, ctx, ld, compile_expr)
               emit_i32_wrap_i64(buf)
               emit_i32_eqz(buf)
               inl2
             } else if iop == "!=" {
-              let inl1 = compile_expr(buf, ilhs, local_names, next_local, ctx, ld)
-              let inl2 = compile_expr(buf, irhs, local_names, inl1, ctx, ld)
-              let (eq_fi2, _, _) = resolve_func(ctx.func_table, "eq")
-              emit_call(buf, eq_fi2)
+              let inl2 = emit_eq_value(buf, ilhs, irhs, local_names, next_local, ctx, ld, compile_expr)
               emit_i32_wrap_i64(buf)
               emit_i32_eqz(buf)
               emit_i32_eqz(buf)
@@ -534,6 +643,10 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
     let nl2 = compile_expr(buf, then_e, local_names, nl1, ctx, ld_inner)
     emit_else(buf)
     Array::truncate(local_names, names_len_before)
+    // #678: the then-branch may have logged integral slots >= names_len_before
+    // that the else-branch is about to reuse; drop them so a non-`let` rebind
+    // there is not misread as int.
+    int_log_reset_above(ctx, names_len_before)
     // #cov branch: the else-branch was taken.
     cov_emit_branch(buf, ctx.cov)
     let nl3 = compile_expr(buf, else_e, local_names, nl1, ctx, ld_inner)

@@ -318,8 +318,19 @@ let arg_class: (Expr, Map[String, Bool], HeapInferCtx) -> Bool = (arg, env, hctx
   }
 }
 
-let rec analyze_calls: (String, Expr, Map[String, Bool], Array[Array[Bool]], Array[Bool], HeapInferCtx) -> Int = (name, e, env, calls, esc, hctx) -> {
-  match e {
+let rec analyze_calls: (String, Expr, Map[String, Bool], Array[Array[Bool]], Array[Bool], HeapInferCtx) -> Int = (name, e_in, env_in, calls, esc, hctx) -> {
+  // #556: iterate the let / seq / assign "spine" instead of recursing on its
+  // tail, so a deeply-nested (flattened) expression — e.g. the whole compiler
+  // compiled as a single unit under RC — no longer exhausts the wasm stack in
+  // this pass. The shallow side of each spine node is still analyzed
+  // recursively; the visit order and env threading are identical to the former
+  // pure recursion (fixpoint-verified), so the RC analysis result is unchanged.
+  let mut e = e_in
+  let mut env = env_in
+  let mut looping = true
+  while looping {
+    looping = false
+    match e {
     EIdent(n, _) => {
       if n == name {
         Array::set(esc, 0, true)
@@ -356,34 +367,36 @@ let rec analyze_calls: (String, Expr, Map[String, Bool], Array[Array[Bool]], Arr
     EDot(obj, _, _) => analyze_calls(name, obj, env, calls, esc, hctx),
     ELet(n, v, b) => {
       analyze_calls(name, v, env, calls, esc, hctx)
-      analyze_calls(name, b, Map::set(env, n, is_heap_value(v, env, hctx)), calls, esc, hctx)
-      0
+      env = Map::set(env, n, is_heap_value(v, env, hctx))
+      e = b
+      looping = true
     },
     ELetRec(n, v, b) => {
-      let env2 = Map::set(env, n, false)
-      analyze_calls(name, v, env2, calls, esc, hctx)
-      analyze_calls(name, b, env2, calls, esc, hctx)
-      0
+      env = Map::set(env, n, false)
+      analyze_calls(name, v, env, calls, esc, hctx)
+      e = b
+      looping = true
     },
     ELetMut(n, v, b) => {
       analyze_calls(name, v, env, calls, esc, hctx)
-      analyze_calls(name, b, Map::set(env, n, false), calls, esc, hctx)
-      0
+      env = Map::set(env, n, false)
+      e = b
+      looping = true
     },
     EAssign(_, v, c) => {
       analyze_calls(name, v, env, calls, esc, hctx)
-      analyze_calls(name, c, env, calls, esc, hctx)
-      0
+      e = c
+      looping = true
     },
     EAssignOp(_, _, v, c) => {
       analyze_calls(name, v, env, calls, esc, hctx)
-      analyze_calls(name, c, env, calls, esc, hctx)
-      0
+      e = c
+      looping = true
     },
     ESeq(a, b) => {
       analyze_calls(name, a, env, calls, esc, hctx)
-      analyze_calls(name, b, env, calls, esc, hctx)
-      0
+      e = b
+      looping = true
     },
     EIf(c, t, el) => {
       analyze_calls(name, c, env, calls, esc, hctx)
@@ -513,6 +526,8 @@ let rec analyze_calls: (String, Expr, Map[String, Bool], Array[Array[Bool]], Arr
     EStringInterp(_) => 0,
     EUnit => 0
   }
+  }
+  0
 }
 
 // An alias-attributed dup: `let a = t` where `t` is multiply-used and owned.

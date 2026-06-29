@@ -28,7 +28,7 @@ export enum Type {
 
 export enum TypeDef {
   TDEnum(String, Array[String], Array[(String, Array[Type])]);
-  TDStruct(String, Array[(String, Type)]);
+  TDStruct(String, Array[(String, Type)], Array[String]);
   TDAlias(String, Array[String], Type)
 }
 
@@ -46,7 +46,13 @@ export enum Subst {
   SubstEmpty;
   SubstBind(Int, Type, Subst);
   SubstBound(Int, Array[String], Subst);
-  SubstCached(Map[String, Type], Map[String, Array[String]], Subst)
+  SubstCached(Map[String, Type], Map[String, Array[String]], Subst);
+  // #626 criterion 4: an effect-variable binding `var := effect-label-string`
+  // ("" meaning the pure/empty row). Effect variables are no longer a wildcard
+  // that is compatible with everything — `unify` records their binding here and
+  // `subst_apply` resolves CtFn effects through it, so `e` actually unifies to
+  // its first binding and a later conflicting use is a type error.
+  SubstEffBind(String, String, Subst)
 }
 
 //# Functions
@@ -232,7 +238,7 @@ export let find_typedef: (Array[TypeDef], String) -> Option[TypeDef] = (defs, na
       let d = Array::get(defs, i)
       let dname = match d {
         TDEnum(n, _, _) => n,
-        TDStruct(n, _) => n,
+        TDStruct(n, _, _) => n,
         TDAlias(n, _, _) => n
       }
       if dname == name {
@@ -270,6 +276,10 @@ export let subst_lookup: (Subst, Int) -> Option[Type] = (s, id) -> {
         out = Some(Map::get(cache, key))
         done = true
       } else {
+        cur = rest
+      }
+      ,
+      SubstEffBind(_, _, rest) => {
         cur = rest
       }
     }
@@ -324,6 +334,49 @@ export let rec trait_method_sig: (TypeEnv, String, String) -> Option[(Array[Type
     EnvFlat(_) => None,
     EnvCached(_, rest) => trait_method_sig(rest, trait_name, method_name)
   }
+}
+
+// The declared name at the head of a (possibly generic) named type, for
+// matching against a trait impl's target. Impl targets are stored with their
+// type arguments erased to `CtUnknown` (see the `SImpl` handler), so element
+// types must be matched by head name, not by `types_equal`.
+let trait_target_head_name: (Type) -> String = (ty) -> {
+  match ty {
+    CtNamed(n, _) => n,
+    CtStruct(n) => n,
+    CtEnum(n) => n,
+    _ => ""
+  }
+}
+
+let rec type_name_iterator_impl_scan: (TypeEnv, TypeEnv, String) -> Bool = (scan, full, type_name) -> {
+  match scan {
+    EnvEmpty => false,
+    EnvBind(_, _, rest) => type_name_iterator_impl_scan(rest, full, type_name),
+    EnvTraitDef(_, _, _, _, rest) => type_name_iterator_impl_scan(rest, full, type_name),
+    EnvTraitImpl(tname, target, rest) => {
+      let hit = trait_target_head_name(target) == type_name && (match trait_method_sig(full, tname, "next") {
+        Some(_) => true,
+        None => false
+      })
+      if hit {
+        true
+      } else type_name_iterator_impl_scan(rest, full, type_name)
+    },
+    EnvTraitImplGen(_, _, _, _, rest) => type_name_iterator_impl_scan(rest, full, type_name),
+    EnvFlat(_) => false,
+    EnvCached(_, rest) => type_name_iterator_impl_scan(rest, full, type_name)
+  }
+}
+
+// True iff a type named `type_name` has an `impl Tr for type_name` where the
+// trait `Tr` declares a `next` method — i.e. the type is iterator-shaped
+// (`Iterator[T] { next(Self) -> Option[(T, Self)] }`). The checker's `for x in
+// it` element-type inference uses this to recognise struct-trait iterators
+// (`LazyIter`, async streams, …) and bind the loop variable to the iterator's
+// element type instead of `CtUnknown`.
+export let type_name_has_iterator_impl: (TypeEnv, String) -> Bool = (env, type_name) -> {
+  type_name_iterator_impl_scan(env, env, type_name)
 }
 
 // Like `trait_method_sig` but follows supertraits transitively, so a method
@@ -398,6 +451,9 @@ export let subst_bounds_for: (Subst, Int) -> Array[String] = (s, id) -> {
           ()
         }
         cur = rest
+      },
+      SubstEffBind(_, _, rest) => {
+        cur = rest
       }
     }
   }
@@ -430,6 +486,83 @@ let int_array_has: (Array[Int], Int) -> Bool = (arr, v) -> {
     }
   }
   sfound
+}
+
+let is_effect_var_name: (String) -> Bool = (name) -> {
+  let len = String::length(name)
+  if len == 1 {
+    // a source-level effect variable: a single lowercase letter (`with { e }`)
+    String::char_code_at(name, 0) >= 97 && String::char_code_at(name, 0) <= 122
+  } else if len >= 2 {
+    // a FRESH effect variable minted by `instantiate` (`$N`): no real effect
+    // name starts with `$`, so this marker is unambiguous.
+    String::char_code_at(name, 0) == 36
+  } else {
+    false
+  }
+}
+
+// Resolve an effect variable name through the effect-binding chain (transitively
+// following var->var links). Returns the bound effect-label string ("" = pure)
+// or None if the variable is unbound.
+let rec subst_eff_lookup: (Subst, String) -> Option[String] = (s, name) -> {
+  let mut cur = s
+  let mut out = None
+  let mut done = false
+  while !done {
+    match cur {
+      SubstEmpty => {
+        done = true
+      },
+      SubstBind(_, _, rest) => {
+        cur = rest
+      },
+      SubstBound(_, _, rest) => {
+        cur = rest
+      },
+      SubstCached(_, _, rest) => {
+        cur = rest
+      },
+      SubstEffBind(v, val, rest) => if v == name {
+        out = Some(val)
+        done = true
+      } else {
+        cur = rest
+      }
+    }
+  }
+  match out {
+    Some(val) => if is_effect_var_name(val) {
+      match subst_eff_lookup(s, val) {
+        Some(v2) => Some(v2),
+        None => Some(val)
+      }
+    } else {
+      Some(val)
+    },
+    None => None
+  }
+}
+
+// Resolve a CtFn effect annotation through the effect-binding chain: a bound
+// effect variable becomes its binding (an empty binding "" collapses to the
+// pure row `None`); anything else is returned unchanged.
+let resolve_effect_opt: (Subst, Option[String]) -> Option[String] = (s, eff) -> {
+  match eff {
+    None => None,
+    Some(name) => if is_effect_var_name(name) {
+      match subst_eff_lookup(s, name) {
+        Some(val) => if String::length(val) == 0 {
+          None
+        } else {
+          Some(val)
+        },
+        None => eff
+      }
+    } else {
+      eff
+    }
+  }
 }
 
 export let rec subst_apply: (Subst, Type) -> Type = (s, ty) -> {
@@ -487,7 +620,7 @@ export let rec subst_apply: (Subst, Type) -> Type = (s, ty) -> {
         }
         out
       }
-      CtFn(apply_params(params), subst_apply(s, ret), effect_name)
+      CtFn(apply_params(params), subst_apply(s, ret), resolve_effect_opt(s, effect_name))
     },
     CtArray(elem) => CtArray(subst_apply(s, elem)),
     CtOption(elem) => CtOption(subst_apply(s, elem)),
@@ -715,6 +848,110 @@ let rec int_int_lookup_or: (Array[(Int, Int)], Int, Int, Int) -> Int = (pairs, k
   }
 }
 
+// #626 criterion 4: collect the distinct effect-VARIABLE names appearing in a
+// type scheme body (lone `with { e }` annotations), so `instantiate` can mint a
+// fresh variable per use site and effect polymorphism survives unification.
+let rec collect_effect_vars_walk: (Type, Array[String]) -> Int = (t, out) -> {
+  match t {
+    CtFn(params, ret, eff) => {
+      match eff {
+        Some(name) => if is_effect_var_name(name) {
+          let mut seen = false
+          let mut k = 0
+          while k < Array::length(out) {
+            if Array::get(out, k) == name {
+              seen = true
+            }
+            k = k + 1
+          }
+          if !seen {
+            Array::push(out, name)
+          }
+        },
+        None => ()
+      }
+      for p in params {
+        let _ = collect_effect_vars_walk(p, out)
+      }
+      collect_effect_vars_walk(ret, out)
+    },
+    CtArray(elem) => collect_effect_vars_walk(elem, out),
+    CtOption(elem) => collect_effect_vars_walk(elem, out),
+    CtTuple(elems) => {
+      for e in elems {
+        let _ = collect_effect_vars_walk(e, out)
+      }
+      0
+    },
+    CtNamed(_, args) => {
+      for a in args {
+        let _ = collect_effect_vars_walk(a, out)
+      }
+      0
+    },
+    CtForAll(_, _, body) => collect_effect_vars_walk(body, out),
+    _ => 0
+  }
+}
+
+let rename_eff_name: (String, Array[(String, String)]) -> String = (name, pairs) -> {
+  let mut i = 0
+  let mut out = name
+  while i < Array::length(pairs) {
+    let (k, v) = Array::get(pairs, i)
+    if k == name {
+      out = v
+    }
+    i = i + 1
+  }
+  out
+}
+
+let rec rename_effect_vars: (Type, Array[(String, String)]) -> Type = (t, pairs) -> {
+  match t {
+    CtFn(params, ret, eff) => {
+      let new_params = Array::slice([
+        CtUnknown
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(params) {
+        Array::push(new_params, rename_effect_vars(Array::get(params, i), pairs))
+        i = i + 1
+      }
+      let new_eff = match eff {
+        Some(name) => Some(rename_eff_name(name, pairs)),
+        None => None
+      }
+      CtFn(new_params, rename_effect_vars(ret, pairs), new_eff)
+    },
+    CtArray(elem) => CtArray(rename_effect_vars(elem, pairs)),
+    CtOption(elem) => CtOption(rename_effect_vars(elem, pairs)),
+    CtTuple(elems) => {
+      let out = Array::slice([
+        CtUnknown
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(elems) {
+        Array::push(out, rename_effect_vars(Array::get(elems, i), pairs))
+        i = i + 1
+      }
+      CtTuple(out)
+    },
+    CtNamed(name, args) => {
+      let out = Array::slice([
+        CtUnknown
+      ], 0, 0)
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(out, rename_effect_vars(Array::get(args, i), pairs))
+        i = i + 1
+      }
+      CtNamed(name, out)
+    },
+    _ => t
+  }
+}
+
 export let instantiate: (Type, Int) -> (Type, Int, Array[(Int, Array[String])]) = (ty, c) -> {
   match ty {
     CtForAll(bound_vars, var_bounds, body) => {
@@ -745,7 +982,33 @@ export let instantiate: (Type, Int) -> (Type, Int, Array[(Int, Array[String])]) 
         let new_id = int_int_lookup_or(id_map2, old_id, old_id, 0)
         Array::push(new_bounds, (new_id, bounds))
       };
-      (subst_apply(inst_s, body), c1, new_bounds)
+      let inst_body = subst_apply(inst_s, body)
+      // #626 criterion 4: freshen the scheme's effect variables so each use site
+      // gets its own variable. Without this, binding `e` at one call site would
+      // leak to every other call (effect polymorphism would collapse to the
+      // first concrete effect). Fresh names are `$<counter>` (never a real
+      // effect name), threaded through the same counter as type variables.
+      let eff_vars = Array::slice([
+        ""
+      ], 0, 0)
+      let _ = collect_effect_vars_walk(inst_body, eff_vars)
+      let eff_pairs = Array::slice([
+        ("", "")
+      ], 0, 0)
+      let mut ev_i = 0
+      let mut ev_c = c1
+      while ev_i < Array::length(eff_vars) {
+        let ev = Array::get(eff_vars, ev_i)
+        Array::push(eff_pairs, (ev, String::concat("$", __to_string(ev_c))))
+        ev_c = ev_c + 1
+        ev_i = ev_i + 1
+      }
+      let final_body = if Array::length(eff_pairs) == 0 {
+        inst_body
+      } else {
+        rename_effect_vars(inst_body, eff_pairs)
+      }
+      (final_body, ev_c, new_bounds)
     },
     _ => (ty, c, empty_var_bounds())
   }
@@ -896,30 +1159,139 @@ let option_string_equal: (Option[String], Option[String]) -> Bool = (left, right
   }
 }
 
-let is_effect_var_name: (String) -> Bool = (name) -> {
-  String::length(name) == 1 &&
-  String::char_code_at(name, 0) >= 97 &&
-  String::char_code_at(name, 0) <= 122
+// #626 criterion 3: an effect annotation `with { A, B }` is an unordered SET,
+// but `collect_effect_names` joins it source-order into one string ("A, B"),
+// so `{ A, B }` and `{ B, A }` serialize to different strings. Split the
+// comma-separated annotation back into its labels (trimmed, deduplicated) so
+// equality can be decided on the set, not the raw ordered string.
+let effect_label_list: (Option[String]) -> Array[String] = (eff) -> {
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  match eff {
+    None => out,
+    Some(s) => {
+      let raw = String::split(s, ",")
+      let mut i = 0
+      while i < Array::length(raw) {
+        let label = String::trim(Array::get(raw, i))
+        if String::length(label) > 0 {
+          let mut seen = false
+          let mut j = 0
+          while j < Array::length(out) {
+            if Array::get(out, j) == label {
+              seen = true
+            }
+            j = j + 1
+          }
+          if !seen {
+            Array::push(out, label)
+          }
+        }
+        i = i + 1
+      }
+      out
+    }
+  }
+}
+
+let effect_label_sets_equal: (Option[String], Option[String]) -> Bool = (left, right) -> {
+  let ls = effect_label_list(left)
+  let rs = effect_label_list(right)
+  if Array::length(ls) != Array::length(rs) {
+    false
+  } else {
+    let mut i = 0
+    let mut ok = true
+    while i < Array::length(ls) {
+      let label = Array::get(ls, i)
+      let mut found = false
+      let mut j = 0
+      while j < Array::length(rs) {
+        if Array::get(rs, j) == label {
+          found = true
+        }
+        j = j + 1
+      }
+      if !found {
+        ok = false
+      }
+      i = i + 1
+    }
+    ok
+  }
+}
+
+let effect_opt_is_var: (Option[String]) -> Bool = (eff) -> {
+  match eff {
+    Some(name) => is_effect_var_name(name),
+    None => false
+  }
 }
 
 let effect_names_compatible: (Option[String], Option[String]) -> Bool = (left, right) -> {
   if option_string_equal(left, right) {
     true
+  } else if effect_opt_is_var(left) {
+    // #626 criterion 4: an effect variable is NO LONGER a wildcard. It equals
+    // only itself (handled by `option_string_equal` above); a variable vs a
+    // different effect is reported NOT-equal here so that `unify`'s structural
+    // `types_equal` fast path falls through to the `CtFn` arm, where
+    // `unify_effects` records the actual binding (and detects a later conflict).
+    false
+  } else if effect_opt_is_var(right) {
+    false
   } else {
-    match left {
-      Some(left_name) => if is_effect_var_name(left_name) {
-        true
+    // Neither side is an effect variable: decide on the unordered label set, so
+    // `{ A, B }` and `{ B, A }` (and `{ A, A }` vs `{ A }`) are compatible
+    // (criterion 3). `None` (pure) vs `Some(concrete)` differ in set size and
+    // stay incompatible.
+    effect_label_sets_equal(left, right)
+  }
+}
+
+// Unify two effect annotations, binding an effect VARIABLE to the other side
+// (#626 criterion 4 — no longer an unconditional wildcard). Returns the extended
+// substitution, or None on a genuine effect-set conflict.
+let unify_effects: (Option[String], Option[String], Subst) -> Option[Subst] = (ea, eb, s) -> {
+  let ra = resolve_effect_opt(s, ea)
+  let rb = resolve_effect_opt(s, eb)
+  let a_is_var = match ra {
+    Some(n) => is_effect_var_name(n),
+    None => false
+  }
+  let b_is_var = match rb {
+    Some(n) => is_effect_var_name(n),
+    None => false
+  }
+  if a_is_var {
+    match ra {
+      Some(av) => if Some(av) == rb {
+        Some(s)
       } else {
-        match right {
-          Some(right_name) => is_effect_var_name(right_name),
-          None => false
+        let bval = match rb {
+          Some(bv) => bv,
+          None => ""
         }
+        Some(SubstEffBind(av, bval, s))
       },
-      None => match right {
-        Some(right_name) => is_effect_var_name(right_name),
-        None => false
-      }
+      None => Some(s)
     }
+  } else if b_is_var {
+    match rb {
+      Some(bv) => {
+        let aval = match ra {
+          Some(av) => av,
+          None => ""
+        }
+        Some(SubstEffBind(bv, aval, s))
+      },
+      None => Some(s)
+    }
+  } else if effect_names_compatible(ra, rb) {
+    Some(s)
+  } else {
+    None
   }
 }
 
@@ -1168,9 +1540,6 @@ export let rec unify: (Type, Type, Subst) -> Option[Subst] = (a, b, s) -> {
                   CtFn(pb, rb, beffect) => if Array::length(pa) != Array::length(pb) {
                     None
                   }
-                  else if !effect_names_compatible(aeffect, beffect) {
-                    None
-                  }
                   else {
                     let ul_len = Array::length(pa)
                     let mut ul_i = 0
@@ -1194,8 +1563,15 @@ export let rec unify: (Type, Type, Subst) -> Option[Subst] = (a, b, s) -> {
                         }
                       }
                     }
+                    // #626 criterion 4: unify params, then the return type, then
+                    // the EFFECT row — binding an effect variable to the other
+                    // side (or failing on a genuine effect conflict) instead of
+                    // the old unconditional-wildcard accept.
                     match ul_result {
-                      Some(s2) => unify(ra, rb, s2),
+                      Some(s2) => match unify(ra, rb, s2) {
+                        Some(s3) => unify_effects(aeffect, beffect, s3),
+                        None => None
+                      },
                       None => None
                     }
                   },
@@ -1374,6 +1750,9 @@ export let collect_subst_bounds_pairs: (Subst) -> Array[(Int, Array[String])] = 
       },
       SubstCached(_, _, rest) => {
         cur = rest
+      },
+      SubstEffBind(_, _, rest) => {
+        cur = rest
       }
     }
   }
@@ -1420,9 +1799,138 @@ let rec type_implements_check_super: (TypeEnv, TypeEnv, String, Type) -> Bool = 
   }
 }
 
+// Constructor/head name of a type, for matching a generic impl's erased target
+// against a concrete type (`Array[Int]` and the impl target `Array` both have
+// head "Array"). Returns "" for types with no nominal constructor (tuples,
+// primitives, vars) so they never match a generic impl.
+let type_constructor_name: (Type) -> String = (ty) -> {
+  match ty {
+    CtArray(_) => "Array",
+    CtOption(_) => "Option",
+    CtNamed(n, _) => n,
+    CtStruct(n) => n,
+    CtEnum(n) => n,
+    _ => ""
+  }
+}
+
+// True iff `trait_name` declares at least one method (a method-bearing trait).
+// Marker traits (Eq/Ord/Add/…, declared `trait Eq` with no body) and undeclared
+// bound names (e.g. `Iterable`) return false. This is the soundness gate for
+// generic-impl resolution: a method-bearing trait dispatches through the threaded
+// witness dictionary (so a generic impl runs the correct per-type method),
+// whereas a marker trait "dispatches" via a builtin operator (`==`, `<`) that
+// does NOT structurally handle a container — so matching a marker-trait generic
+// impl would let `==` be used on e.g. `Option[Int]` where it silently misbehaves.
+let rec trait_is_method_bearing: (TypeEnv, String) -> Bool = (env, trait_name) -> {
+  match env {
+    EnvEmpty => false,
+    EnvBind(_, _, rest) => trait_is_method_bearing(rest, trait_name),
+    EnvTraitDef(tname, _, _, methods, rest) => if tname == trait_name {
+      Array::length(methods) > 0
+    } else trait_is_method_bearing(rest, trait_name),
+    EnvTraitImpl(_, _, rest) => trait_is_method_bearing(rest, trait_name),
+    EnvTraitImplGen(_, _, _, _, rest) => trait_is_method_bearing(rest, trait_name),
+    EnvFlat(_) => false,
+    EnvCached(_, rest) => trait_is_method_bearing(rest, trait_name)
+  }
+}
+
+// True iff a type-parameter bound list carries no real trait bound (only the
+// empty / `""` sentinel entries). Increment A of generic-impl support matches
+// the per-parameter trait bounds of a generic impl. Increment A (`impl [T]
+// Trait for C`) has empty bounds; Increment B (`impl [T: Bound] Trait for
+// C[T]`) carries them and is satisfied only when every type argument of the
+// concrete type satisfies them — a dictionary-of-dictionaries: `C[K]: Trait`
+// iff `K: Bound`.
+
+// Type arguments of a (possibly generic) type, for checking a generic impl's
+// per-parameter bounds against the concrete element types.
+let type_args_of: (Type) -> Array[Type] = (ty) -> {
+  match ty {
+    CtArray(e) => Array::slice([
+      e
+    ], 0, 1),
+    CtOption(e) => Array::slice([
+      e
+    ], 0, 1),
+    CtNamed(_, args) => args,
+    _ => Array::slice([
+      CtUnit
+    ], 0, 0)
+  }
+}
+
+// Does an in-env method-bearing generic impl `impl [T(: Bound)?] Trait for C`
+// cover the concrete `resolved` type? Matched by constructor name (the impl
+// target's args are erased); for a bounded impl, EVERY type argument of
+// `resolved` must satisfy EVERY bound (recursively via `type_implements_trait`),
+// which is the dictionary-of-dictionaries condition. The dict-passing desugar
+// synthesizes a `{ method: C::method }` witness (unbounded) or a nested closure
+// witness supplying the element dict (bounded). (#5 generic impls.)
+let rec generic_impl_satisfies: (TypeEnv, TypeEnv, Subst, String, Type) -> Bool = (scan, full, s, trait_name, resolved) -> {
+  match scan {
+    EnvEmpty => false,
+    EnvBind(_, _, rest) => generic_impl_satisfies(rest, full, s, trait_name, resolved),
+    EnvTraitDef(_, _, _, _, rest) => generic_impl_satisfies(rest, full, s, trait_name, resolved),
+    EnvTraitImpl(_, _, rest) => generic_impl_satisfies(rest, full, s, trait_name, resolved),
+    EnvTraitImplGen(itrait, _tparams, bounds, target, rest) => {
+      let head = type_constructor_name(resolved)
+      let shape_ok = itrait == trait_name && head != "" && type_constructor_name(target) == head && trait_is_method_bearing(full, trait_name)
+      if shape_ok && generic_bounds_hold(full, s, bounds, type_args_of(resolved)) {
+        true
+      } else generic_impl_satisfies(rest, full, s, trait_name, resolved)
+    },
+    EnvFlat(_) => false,
+    EnvCached(_, rest) => generic_impl_satisfies(rest, full, s, trait_name, resolved)
+  }
+}
+
+// Every non-empty per-parameter bound is satisfied by every concrete type
+// argument. Empty bound lists (Increment A) hold trivially.
+let rec generic_bounds_hold: (TypeEnv, Subst, Array[(String, Array[String])], Array[Type]) -> Bool = (full, s, bounds, args) -> {
+  let mut bi = 0
+  let mut ok = true
+  while bi < Array::length(bounds) {
+    let (_, btraits) = Array::get(bounds, bi)
+    let mut ti = 0
+    while ti < Array::length(btraits) {
+      let bt = Array::get(btraits, ti)
+      if bt != "" {
+        let mut ai = 0
+        while ai < Array::length(args) {
+          // A still-unknown element type (e.g. a struct literal, which the
+          // checker types as `CtUnknown`) defers its bound to the dict-passing
+          // desugar — which infers the element type syntactically and either
+          // threads the nested witness or fails loudly. This mirrors how a
+          // `CtUnknown` receiver skips the top-level bound check, so accepting
+          // it here is no less sound.
+          match subst_apply(s, Array::get(args, ai)) {
+            CtUnknown => (),
+            _ => if not(type_implements_trait(full, s, Array::get(args, ai), bt)) {
+              ok = false
+            } else {
+              ()
+            }
+          }
+          ai = ai + 1
+        }
+      } else {
+        ()
+      }
+      ti = ti + 1
+    }
+    bi = bi + 1
+  }
+  ok
+}
+
 export let rec type_implements_trait: (TypeEnv, Subst, Type, String) -> Bool = (env, s, ty, trait_name) -> {
   let resolved = subst_apply(s, ty)
   if type_implements_check_env(env, trait_name, resolved) {
+    true
+  }
+  else if generic_impl_satisfies(env, env, s, trait_name, resolved) {
     true
   }
   else {
