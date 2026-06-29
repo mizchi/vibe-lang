@@ -1,8 +1,37 @@
 # ADR-0026: 純粋テストキャッシュと QuickCheck
 
 - Date: 2026-03-12
-- Status: proposed
+- Status: accepted (純粋テストキャッシュ部分を #634 で実装; QuickCheck `qc` 構文・per-test 粒度・fail キャッシュは将来)
 - Related: ADR-0003 (エフェクトシステム), ADR-0004 (コンテンツアドレスモジュール), ADR-0021 (Effect Handler)
+
+## 実装メモ (#634, 2026-06-29)
+
+純粋テストキャッシュを **file 単位**で実装した（`vibe test` は元々ファイル単位で
+全 `test {}` を 1 つの `_start` にまとめて実行するため）。
+
+- **cacheable 判定** `file_tests_cacheable` (`vibe/compiler/checker_effects.vibe`):
+  既存の推移的エフェクト検査 `check_perform_effects_expr_tx` を**空の declared
+  row** で再利用する。test body が `handle` で discharge しない外部エフェクト
+  (Fs/Http/Env/custom/`perform`) に到達したらエラーが返る → 1 つでもあれば不可。
+  `Error`(assert/throw)・`Async`・effect-var・local `let mut`・pure 呼び出しは
+  cacheable のまま。固定シード Rng を `handle` で完全 discharge したものも
+  cacheable（本 ADR §3 の意図どおり）。推移性は call-graph effect map
+  (`fn_names`/`fn_effs`) に乗る。
+- **キー**: コンパイル済み wasm の sha256。決定的コンパイル（selfhost fixpoint
+  が保証）が source + deps + compiler version を wasm bytes に畳み込むので、これ
+  単体で「同一入力・同一コンパイラか」を表す（本 ADR の `cache_key` を簡約）。
+- **sidecar**: compiler は `VIBE_TESTMETA_OUT` が指す `<out>.testmeta` に verdict
+  ("1"/"0") を書く (`compile_file_fs_mode_testmeta`)。merge 済み stmts に相乗り
+  するので追加 parse なし。env を読まない通常コンパイル経路は byte 同一のまま。
+- **skip 層**: `runtime/vibe` の `test`。`$VIBE_HOME/cache/test/<wasm-sha>.pass`
+  があれば実行をスキップ。**PASS のみ**記録（fail は常に再実行 = EC 安全側）。
+  `--no-cache` で全件再実行。
+- **既知の穴** (EC-7 と同様に容認・文書化): test body に**直書きした
+  `sh`/`sh_lines`** は未検出（unqualified なので builtin effect lookup の
+  qualified-name fast-path が skip する）。ユーザ関数経由の `sh` はその関数が
+  `with { Process }` を宣言し fn_effs に乗るため検出される。
+- **未実装**: 組み込み `qc` 構文、per-test 粒度（test wasm の subset 実行が必要）、
+  fail 結果のキャッシュ。
 
 ## Context
 
