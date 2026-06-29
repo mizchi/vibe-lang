@@ -1,7 +1,16 @@
 # Selfhost RC cutover readiness (ADR-0055 #493)
 
-Status: **READY (2026-06)** on the realistic corpus below — the one blocker found
-by the assessment (nullary enum ctors outside RC reclaim) has been fixed. Measures
+Status: **NOT READY (re-assessed 2026-06-29, #701 follow-up).** The original
+6-program corpus passed (READY, table below), but a wider probe — now a real
+committed script, `scripts/rc_cutover_readiness.sh` — finds blockers the narrow
+corpus missed (see "Broader-corpus assessment"). Reclamation itself is sound
+(tuple / record / captured-mut cell+closure / nested closures: bounded heap with
+result parity); the blockers are RC **codegen** gaps (`not EFn` thrown on common
+shapes — `let x = if/match` yielding an enum/struct, and closures passed to
+higher-order fns) plus an enum-drop **runtime trap at scale**. Both are
+pre-existing: they also fail on the long-standing source-compile RC path, in
+`get_efn_body`/HOF-call code paths that this session's #699 (cell/closure RC) and
+#701 (FS-mode RC routing) do not touch. Measures
 whether the selfhost Perceus RC path is ready to become the selfhost linear
 default (cutover, #493 C/F). The reclaim
 suite (`scripts/verify_selfhost_rc.sh`) and heap-e2e gate exercise RC features in
@@ -23,11 +32,45 @@ per-iteration heap growth of each.
 | opt     | `Option`-like enum (`Som`/`Non`) in an `if` | yes | OK | 20 | **0** |
 | mixed   | struct `{ enum; tuple }` + match | yes | OK | 56 | **0** |
 
-**Verdict: READY.** RC compiles every realistic combination, results are identical
-to the default backend (correctness holds on mixed-feature code), and heap is
-bounded (0 B/iter) for **all 6** — including a compiler-shaped enum AST evaluator,
-deeply-nested capturing closures, and an `Option`-like enum. The probe prints
-`READY`.
+**Verdict (narrow corpus): READY.** RC compiled every program in this original
+6-program corpus with result parity and 0 B/iter. But this corpus was too narrow —
+see below. (The script that produced this table was not committed at the time, so
+the exact programs are not reproducible; the table is kept for history.)
+
+## Broader-corpus assessment (`scripts/rc_cutover_readiness.sh`, 2026-06-29)
+
+The probe is now a committed, runnable script with a wider 8-program corpus
+(`bash scripts/rc_cutover_readiness.sh`, N1=1000 N2=11000, via the FS-compile
+path that `vibe run` uses). Result:
+
+| program | mixes | rc compiles | parity | rc heap N1/N2 | bounded |
+|---------|-------|:-----------:|:------:|--------------:|:-------:|
+| tuple             | tuple per iter | yes | OK | 32 / 32 | yes |
+| record_tuples     | struct of tuples | yes | OK | 96 / 96 | yes |
+| captured_mut_cell | `let mut` captured by a closure (#699) | yes | OK | 40 / 40 | yes |
+| nested_closures   | closure capturing a closure + mut | yes | OK | 64 / 64 | yes |
+| enum_ast          | enum AST + recursive match, dropped each iter | yes | **RUN-FAIL** | (trap) | — |
+| option_enum       | `let o = if … { Som } else { Non }` | **NO** | — | — | — |
+| mixed             | `let b = if … { Box } else { Box }` (struct{enum;tuple}) | **NO** | — | — | — |
+| hof               | closure passed to a higher-order fn | **NO** | — | — | — |
+
+**Verdict: NOT READY.** Four programs fail:
+
+- **`not EFn` RC-compile error** (option_enum, mixed, hof): binding a conditional
+  that yields an enum/struct (`let x = if/match { Ctor … } else { … }`) or passing
+  a closure to a higher-order function throws `not EFn` from
+  `get_efn_body`/`get_efn_params` on the RC codegen path. Minimal repro:
+  `enum Opt { Som(Int); Non }  let main = () -> Int { let o = if 1 == 1 { Som(5) } else { Non }; match o { Som(v) => v, Non => 0 } }`.
+- **enum-drop runtime trap at scale** (enum_ast): an enum AST built and dropped
+  each loop iteration compiles and runs at N=1 but traps under RC at N=1000
+  (the default backend runs fine), i.e. a fault in enum block reclamation at
+  scale.
+
+These are pre-existing RC codegen/runtime gaps (reproduce on the source-compile
+RC path, in code paths independent of #699/#701). The four reclamation-only
+programs (tuple/record/cell/closures) are bounded with parity, confirming the
+#699/#701 reclamation work is sound; the blockers are orthogonal and must be
+fixed before cutover. Tracking: see the cutover-blockers issue.
 
 ## The fix that landed: nullary enum constructors are now RC blocks
 
