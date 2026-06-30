@@ -433,9 +433,19 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
         rc_kind = 2
         Array::push(ctx.heap_binding_names, name)
         emit_rc_dup_guarded(buf, local_idx)
-      } else if is_efn(value) && efn_is_capturing(value, ctx) {
-        rc_kind = 2
-        Array::push(ctx.heap_binding_names, name)
+      } else if is_efn(value) {
+        // NOTE: must be a nested `if`, not `is_efn(value) && efn_is_capturing(...)`:
+        // `&&` evaluates both operands, so the `&&` form ran efn_is_capturing
+        // (which calls get_efn_params) on EVERY non-heap `let` value that reached
+        // this arm — e.g. `let o = 5` — throwing "not EFn" and breaking RC compile
+        // of any function with a scalar/`if`/`match`-valued `let` (#702 blocker A).
+        // Guarding with is_efn first keeps efn_is_capturing to genuine closures.
+        if efn_is_capturing(value, ctx) {
+          rc_kind = 2
+          Array::push(ctx.heap_binding_names, name)
+        } else {
+          ()
+        }
       } else {
         ()
       }
