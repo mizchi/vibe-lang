@@ -16,6 +16,8 @@
 // bound. At N=20000 a leak would be hundreds of KB; reclamation keeps it tiny.
 enum Tree { Leaf(Int); Node(Tree, Tree) }
 
+struct Box { items: Array[Int] }
+
 let sumt = (t: Tree) -> Int {
   match t {
     Leaf(v) => v,
@@ -32,7 +34,14 @@ let main = () -> Int {
     let bump = () -> { c = c + 1 }
     bump()
     let tr = Node(Leaf(i), Leaf(i + 1))
-    total = total + t.0 + t.1 + c + sumt(tr)
+    // #704 projection-ownership reclamation guard: `Array::get(b.items, _)`
+    // passes a heap field projection as the BORROWED arg0 of a builtin, which
+    // must NOT be rc_dup'd at the call site (the builtin never drops it) — else
+    // one reference leaks per iteration and heap scales with N. The struct `b`
+    // and its array reclaim each iteration only when that dup is suppressed.
+    let b = Box::{ items: [i, i + 1, i + 2] }
+    let first = Array::get(b.items, 0)
+    total = total + t.0 + t.1 + c + sumt(tr) + first
     i = i + 1
   }
   total

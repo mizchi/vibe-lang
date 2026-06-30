@@ -19192,6 +19192,9 @@ let cc_is_projection: (Expr) -> Bool = (e) -> {
     _ => false
   }
 }
+let cc_is_borrow_arg0_call: (String) -> Bool = (f) -> {
+  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "ArrayBuilder::push" || f == "MapBuilder::set" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::set"
+}
 let ts_known_int: (Expr, Array[String], CompileCtx) -> Bool = (e, local_names, ctx) -> {
   let tag = expr_tag(e)
   if tag == 0 {
@@ -19314,11 +19317,17 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
         let mut nl_c = next_local + 1
         let mut fi_c = 0
         while fi_c < Array::length(actual_args) {
-          nl_c = ce(buf, Array::get(actual_args, fi_c), local_names, nl_c, ctx, ld)
+          let carg_c = Array::get(actual_args, fi_c)
+          nl_c = ce(buf, carg_c, local_names, nl_c, ctx, ld)
           let val_local = nl_c
           Array::push(local_names, "__ctor_val")
           emit_local_set(buf, val_local)
           nl_c = nl_c + 1
+          if ctx.enable_rc && cc_is_projection(carg_c) {
+            cc_emit_rc_dup_guarded(buf, val_local)
+          } else {
+            ()
+          }
           emit_local_get(buf, ptr_local)
           emit_i32_wrap_i64(buf)
           emit_local_get(buf, val_local)
@@ -21474,7 +21483,8 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
         while ci < Array::length(args) {
           let carg = Array::get(args, ci)
           nl = ce(buf, carg, local_names, nl, ctx, ld)
-          if ctx.enable_rc && cc_is_projection(carg) {
+          let borrows_this = ci == 0 && cc_is_borrow_arg0_call(fname)
+          if ctx.enable_rc && cc_is_projection(carg) && !borrows_this {
             Array::push(local_names, "__argdup")
             emit_local_tee(buf, nl)
             cc_emit_rc_dup_guarded(buf, nl)
@@ -33252,7 +33262,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "dec65b8ab652ea13"
+  "8fd0048b46c9f351"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647

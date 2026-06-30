@@ -82,6 +82,14 @@ let cc_is_projection: (Expr) -> Bool = (e) -> {
   }
 }
 
+// Builtins whose arg0 is BORROWED (read in place, not consumed/dropped). Kept in
+// sync with `is_borrow_arg0_call` in perceus/index.vibe — a projection passed as
+// arg0 to one of these must NOT be rc_dup'd at the call site (the callee never
+// drops it, so the dup would leak; #704). Other argument positions are owning.
+let cc_is_borrow_arg0_call: (String) -> Bool = (f) -> {
+  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "ArrayBuilder::push" || f == "MapBuilder::set" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::set"
+}
+
 // #664/#678: is `e` statically — BY SHAPE — a known integer that must NOT be run
 // through `__to_string`'s string-pointer heuristic (which misreads a large int
 // as an empty string)? An Int literal, or a bitwise/shift/mod expression (those
@@ -215,11 +223,22 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
         let mut nl_c = next_local + 1
         let mut fi_c = 0
         while fi_c < Array::length(actual_args) {
-          nl_c = ce(buf, Array::get(actual_args, fi_c), local_names, nl_c, ctx, ld)
+          let carg_c = Array::get(actual_args, fi_c)
+          nl_c = ce(buf, carg_c, local_names, nl_c, ctx, ld)
           let val_local = nl_c
           Array::push(local_names, "__ctor_val")
           emit_local_set(buf, val_local)
           nl_c = nl_c + 1
+          // A heap field projection `a.f` stored into a constructor is a borrow;
+          // the constructed value OWNS its fields (drop class 1 recurses), so
+          // retain it or the source's drop double-frees it (e.g. `Some(b.items)`
+          // returned while `b` is dropped). Mirrors the ERecord field-store dup
+          // (#704). Perceus emits no action for bare projections.
+          if ctx.enable_rc && cc_is_projection(carg_c) {
+            cc_emit_rc_dup_guarded(buf, val_local)
+          } else {
+            ()
+          }
           emit_local_get(buf, ptr_local)
           emit_i32_wrap_i64(buf)
           emit_local_get(buf, val_local)
@@ -2512,7 +2531,13 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
         while ci < Array::length(args) {
           let carg = Array::get(args, ci)
           nl = ce(buf, carg, local_names, nl, ctx, ld)
-          if ctx.enable_rc && cc_is_projection(carg) {
+          // Retain a heap projection passed to an OWNING parameter (the callee
+          // drops its params). Skip arg0 of a borrow-arg0 builtin (Array::get /
+          // length / push / set, etc.): it does NOT drop that argument, so a dup
+          // there would never be matched and would leak one reference per call
+          // (#704). Mirrors `is_borrow_arg0_call` in perceus/index.vibe.
+          let borrows_this = ci == 0 && cc_is_borrow_arg0_call(fname)
+          if ctx.enable_rc && cc_is_projection(carg) && !borrows_this {
             Array::push(local_names, "__argdup")
             emit_local_tee(buf, nl)
             cc_emit_rc_dup_guarded(buf, nl)

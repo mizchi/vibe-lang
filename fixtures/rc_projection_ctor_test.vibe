@@ -1,0 +1,40 @@
+// #704 regression guard: a heap field projection stored into a CONSTRUCTOR.
+//
+// `Some(b.items)` reads the heap `Array[Int]` field of `b` (a borrow) and stores
+// it into the `Some` payload. The constructed value owns its fields (its drop
+// class recurses), so under RC the projection must be retained — otherwise
+// dropping `b` at the end of `wrap` frees the array while the returned `Some`
+// still references it, and the next allocation reuses the freed block, trapping
+// (`memory access out of bounds`) once the free list is corrupted. The default
+// (non-RC) backend has no such ownership, so this also pins RC == default here.
+
+//# Types
+
+struct Box { items: Array[Int] }
+
+//# Functions
+
+// `b` is a parameter dropped at function exit; the returned Some must keep the
+// projected array alive.
+let wrap = (b: Box) -> Option[Array[Int]] {
+  Some(b.items)
+}
+
+//# Tests
+
+test "constructor argument retains a heap field projection across a drop" {
+  let mut i = 0
+  let mut acc = 0
+  while i < 200 {
+    let b = Box::{ items: [i, i + 1, i + 2] }
+    match wrap(b) {
+      Some(xs) => {
+        acc = acc + Array::get(xs, 0) + Array::get(xs, 2)
+      },
+      None => assert(false)
+    }
+    i = i + 1
+  }
+  // sum over i in 0..199 of (i + (i+2)) = sum(2i+2) = 2*sum(i) + 2*200
+  assert(acc == 2 * (199 * 200 / 2) + 400)
+}
