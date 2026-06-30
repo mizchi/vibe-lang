@@ -1095,6 +1095,19 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_local_get(buf, val_l)
       emit_br(buf, 1)
       emit_end(buf)
+      // Under RC a scalar Int is tagged `n << 1` (low bit 0 marks a non-heap
+      // value; see `Int::to_double` / `Double::to_int` which shift to/from this
+      // form). Arithmetic stays in tagged space and compares correctly, but the
+      // digit loop below renders the RAW i64 — so without untagging it prints
+      // `2n` (e.g. 42 -> "84"). Recover the logical value with an arithmetic
+      // (sign-preserving) shift right by 1. Strings already returned above via
+      // the `br`, so this only touches the integer path.
+      if ctx.enable_rc {
+        emit_local_get(buf, val_l)
+        emit_i64_const(buf, 1)
+        emit_i64_shr_s(buf)
+        emit_local_set(buf, val_l)
+      }
       emit_i64_const(buf, 46)
       emit_local_set(buf, cur_l)
       emit_local_get(buf, val_l)
