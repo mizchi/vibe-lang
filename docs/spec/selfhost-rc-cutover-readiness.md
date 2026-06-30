@@ -1,13 +1,15 @@
 # Selfhost RC cutover readiness (ADR-0055 #493)
 
-Status: **READY (re-assessed 2026-06-29, #702 complete).** The broader 8-program
-probe (`scripts/rc_cutover_readiness.sh`) now passes in full — every program
-compiles under RC with result parity and bounded heap. Getting there fixed three
-pre-existing RC gaps the original narrow corpus missed (#702): a `not EFn`
-RC-compile error on `let x = if/match {...}` and on closures passed to
-higher-order fns; capturing closures passed as arguments leaking; and a recursive
--enum match-destructuring double-free that trapped at scale. See "Broader-corpus
-assessment". Measures
+Status: **NOT READY for cutover (real-corpus re-assessment, 2026-06-29).** The
+synthetic 8-program probe (`scripts/rc_cutover_readiness.sh`) is fully green, and
+the #702 fixes (below) were real. But running the **existing fixture test
+corpus** under RC vs the default backend tells a different story: of the
+default-passing tests sampled, **only ~41% also pass under RC** — the rest trap
+or fault. The probe, even at 8 programs, is still far too narrow; the real corpus
+exercises derive macros, traits/dict dispatch, iterators, and structural
+equality, all of which have pre-existing RC bugs (see "Real test-corpus
+assessment"). **Do not flip the default until the real corpus reaches parity.**
+Measures
 whether the selfhost Perceus RC path is ready to become the selfhost linear
 default (cutover, #493 C/F). The reclaim
 suite (`scripts/verify_selfhost_rc.sh`) and heap-e2e gate exercise RC features in
@@ -72,6 +74,41 @@ Known minor follow-up: a matched heap field bound but **unused** now leaks (dup
 with no consuming drop) — safe over-keep, rare (use `_`). The leak-guard gate
 (`selfhost_only_gate.sh` step 40d) exercises tuple+cell+closure+recursive-enum
 and asserts bounded heap, locking these in against regression.
+
+## Real test-corpus assessment (2026-06-29) — the actual cutover gate
+
+The 8-program probe being green is necessary but **nowhere near sufficient**.
+Compiling the existing fixture `*_test.vibe` corpus under RC (FS-compile path,
+entry `__no_entry__`) vs the default backend and running each (`_start`) —
+counting only tests that pass under default — gives the real readiness signal:
+
+> **RC pass rate ≈ 41%** of default-passing tests (sampled). The rest trap or
+> fault under RC.
+
+The failures cluster into pre-existing RC feature gaps (all reproduce on a build
+from before the #702 work, so they are not #702 regressions — #702 strictly
+improved the synthetic probe without changing the default path):
+
+- **derive macros** — `derive(Default/Eq/Ord/Show/Hash)`: `derive_default_test`
+  (assert fails → wrong derived value under RC), `derive_ord_show_test`,
+  `derive_enum_ord_show_test`, `derive_hash_test`, `derive_hash_map_key_test`.
+- **traits / dict dispatch** — `trait_dict_passing_substrate_test`,
+  `trait_method_generic_test`, `trait_iterator_test`.
+- **iterators** — `lazy_iter_combinators_test`, `trait_iterator_test`.
+- **structural equality** — `eq_array_option_fields` (array/option field eq;
+  memory fault).
+
+Trap kinds are mixed: some are **assertion failures** (RC produces a wrong value,
+e.g. derived Default) and some are **memory faults** in `__rc_drop`/`__rc_alloc`
+(use-after-free / free-list corruption). So there are multiple distinct
+remaining RC bugs across derive/trait/iterator/eq machinery.
+
+**Conclusion: the cutover (#493 C/F default flip) must wait.** The mechanical
+flip is trivial and the whole-compiler-under-RC *compile* parity holds, but RC
+*runtime* correctness on real-world feature code is ~41%. Flipping now would ship
+a default backend that miscompiles or crashes the majority of real programs. The
+remaining cutover work is to drive that 41% to 100% — see the broad-corpus
+RC-traps tracking issue — re-running this corpus assessment as the gate.
 
 ## The fix that landed: nullary enum constructors are now RC blocks
 
