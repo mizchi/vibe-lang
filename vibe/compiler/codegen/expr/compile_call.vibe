@@ -34,6 +34,54 @@ import ./compile_match.vibe {
 
 //# Functions
 
+// Guarded rc_dup of the heap value in `local_idx` (no-op for scalars/strings).
+// Mirrors emit_rc_dup_guarded in compile_expr_tail.vibe.
+let cc_emit_rc_dup_guarded: (Bytes, Int) -> Unit = (buf, local_idx) -> {
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, 1)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_if_void(buf)
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, 32)
+  emit_i64_shr_s(buf)
+  emit_i64_eqz(buf)
+  emit_if_void(buf)
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 1)
+  emit_i32_add(buf)
+  emit_i32_store(buf, 2, 0)
+  emit_end(buf)
+  emit_end(buf)
+}
+
+// A field projection `a.f` (EDot) passed as an argument to an owning user
+// function (which drops its parameters) is a borrow of the source aggregate.
+// Without a retain the callee's param-drop frees it while the source still
+// references it — a double-free that corrupts the free list (e.g. derived
+// `T::equals` passing `a.items` to the consuming `__arr_equals__` helper, #704).
+// Perceus emits no action for bare projections, so this guarded dup is the only
+// owner-increment. Scalars are no-ops; this is NOT applied to borrow-arg0
+// builtins (Array::get/length etc.), which do not drop their argument.
+let cc_is_projection: (Expr) -> Bool = (e) -> {
+  match e {
+    EDot(_, _, _) => true,
+    _ => false
+  }
+}
+
 // #664/#678: is `e` statically — BY SHAPE — a known integer that must NOT be run
 // through `__to_string`'s string-pointer heuristic (which misreads a large int
 // as an empty string)? An Int literal, or a bitwise/shift/mod expression (those
@@ -2462,7 +2510,16 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
         let mut nl = next_local
         let mut ci = 0
         while ci < Array::length(args) {
-          nl = ce(buf, Array::get(args, ci), local_names, nl, ctx, ld)
+          let carg = Array::get(args, ci)
+          nl = ce(buf, carg, local_names, nl, ctx, ld)
+          if ctx.enable_rc && cc_is_projection(carg) {
+            Array::push(local_names, "__argdup")
+            emit_local_tee(buf, nl)
+            cc_emit_rc_dup_guarded(buf, nl)
+            nl = nl + 1
+          } else {
+            ()
+          }
           ci = ci + 1
         }
         if needs_env {
