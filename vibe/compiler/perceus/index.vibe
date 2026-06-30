@@ -978,8 +978,25 @@ export let rec pc_emit: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, exp
       pc_emit(ctx, scope, cond)
       let snap = copy_ints(ctx.remaining)
       pc_emit(ctx, scope, then_e)
+      let then_rem = copy_ints(ctx.remaining)
       restore_prefix(ctx.remaining, snap)
       pc_emit(ctx, scope, else_e)
+      // #705: leave the MIN remaining over both branches. A binding consumed in
+      // one branch (e.g. a param threaded into a ctor in the `then`) but not the
+      // other was previously left at the `else` branch's (higher) remaining, so
+      // the scope-end drop fired on a value the taken branch already moved out —
+      // a double free. Min means a binding consumed on ANY path is not
+      // re-dropped (the non-consuming path leaks one ref, which is safe) instead
+      // of the consuming path double-freeing (crash). Prefix-only (outer ids).
+      let mut i = 0
+      while i < Array::length(snap) {
+        if Array::get(then_rem, i) < Array::get(ctx.remaining, i) {
+          Array::set(ctx.remaining, i, Array::get(then_rem, i))
+        } else {
+          ()
+        }
+        i = i + 1
+      }
       0
     },
     EWhile(cond, body) => {
@@ -1049,6 +1066,11 @@ export let rec pc_emit: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, exp
         _ => pc_emit(ctx, scope, scrut)
       }
       let snap = copy_ints(ctx.remaining)
+      // #705: track the MIN remaining over all arms (see EIf). An arm that
+      // consumes an outer binding (e.g. a param re-stored into a ctor) leaves it
+      // at a lower remaining; leaving the LAST arm's (higher) value made the
+      // scope-end drop double-free that binding on the arm that consumed it.
+      let minrem = copy_ints(snap)
       let mut a = 0
       while a < Array::length(arms) {
         let arm = Array::get(arms, a)
@@ -1073,13 +1095,24 @@ export let rec pc_emit: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, exp
           pe_scope_end(ctx, Array::get(pids, j), Array::get(pnames, j))
           j = j + 1
         }
+        let mut mi = 0
+        while mi < Array::length(snap) {
+          if Array::get(ctx.remaining, mi) < Array::get(minrem, mi) {
+            Array::set(minrem, mi, Array::get(ctx.remaining, mi))
+          } else {
+            ()
+          }
+          mi = mi + 1
+        }
         a = a + 1
       }
+      restore_prefix(ctx.remaining, minrem)
       0
     },
     EHandle(hbody, arms) => {
       let snap = copy_ints(ctx.remaining)
       pc_emit(ctx, scope, hbody)
+      let minrem = copy_ints(ctx.remaining)
       let mut a = 0
       while a < Array::length(arms) {
         let arm = Array::get(arms, a)
@@ -1104,8 +1137,18 @@ export let rec pc_emit: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, exp
           pe_scope_end(ctx, Array::get(pids, j), Array::get(pnames, j))
           j = j + 1
         }
+        let mut mi = 0
+        while mi < Array::length(snap) {
+          if Array::get(ctx.remaining, mi) < Array::get(minrem, mi) {
+            Array::set(minrem, mi, Array::get(ctx.remaining, mi))
+          } else {
+            ()
+          }
+          mi = mi + 1
+        }
         a = a + 1
       }
+      restore_prefix(ctx.remaining, minrem)
       0
     },
     _ => 0
