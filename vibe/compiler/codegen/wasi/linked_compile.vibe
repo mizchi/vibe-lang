@@ -8,6 +8,10 @@ import .. / .. / desugar_trait_dict.vibe {
   desugar_trait_dicts
 }
 
+import .. / .. / normalize {
+  lift_match_scrutinees
+}
+
 import .. / .. / perceus {
   PerceusAction, build_perceus_plan, build_perceus_plan_with_params, elaborate_heap_params, pa_is_alias_dup, pa_is_drop, pa_is_dup, param_is_heap_in_body
 }
@@ -1346,7 +1350,15 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   let mut bi = 0
   while bi < num_user_funcs {
     let __bi_stmt = Array::get(stmts, Array::get(fn_stmt_indices, bi))
-    let __bi_expr = get_slet_expr(__bi_stmt)
+    // #703 follow-up: under RC, lift temporary match scrutinees into lets so the
+    // Perceus pass (which drops named bindings) reclaims them. Applied here, the
+    // SAME transformed body feeds both build_perceus_plan (below) and the body
+    // compilation, keeping the plan and codegen consistent. Non-RC is unchanged.
+    let __bi_expr = if enable_rc {
+      lift_match_scrutinees(get_slet_expr(__bi_stmt))
+    } else {
+      get_slet_expr(__bi_stmt)
+    }
     let body_buf = bytebuf_new()
     // #cov: mark this user function as executed (store 1 at cov_base + bi).
     // Stack-neutral and local-free, so prepending it to the body is safe.
