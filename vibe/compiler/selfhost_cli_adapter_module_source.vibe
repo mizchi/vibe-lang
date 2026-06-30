@@ -11450,10 +11450,12 @@ export let emit_drop: (Bytes) -> Unit = (buf) -> {
 export let emit_else: (Bytes) -> Unit = (buf) -> {
   bytebuf_push(buf, op_else)
 }
+let op_f64_eq = 97
 let op_f64_ge = 102
 let op_f64_gt = 100
 let op_f64_le = 101
 let op_f64_lt = 99
+let op_f64_ne = 98
 let op_i64_eq = 81
 let op_i64_ne = 82
 let op_i64_or = 132
@@ -11475,6 +11477,9 @@ let op_i64_mul = 126
 let op_i64_shl = 134
 let op_i64_sub = 125
 let op_i64_xor = 133
+export let emit_f64_eq: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_f64_eq)
+}
 export let emit_f64_ge: (Bytes) -> Unit = (buf) -> {
   bytebuf_push(buf, op_f64_ge)
 }
@@ -11486,6 +11491,9 @@ export let emit_f64_le: (Bytes) -> Unit = (buf) -> {
 }
 export let emit_f64_lt: (Bytes) -> Unit = (buf) -> {
   bytebuf_push(buf, op_f64_lt)
+}
+export let emit_f64_ne: (Bytes) -> Unit = (buf) -> {
+  bytebuf_push(buf, op_f64_ne)
 }
 export let emit_i64_eq: (Bytes) -> Unit = (buf) -> {
   bytebuf_push(buf, op_i64_eq)
@@ -23230,14 +23238,14 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
     let op = get_ebinop_op(expr)
     let lhs = get_ebinop_lhs(expr)
     let rhs = get_ebinop_rhs(expr)
-    if op == "==" {
+    if op == "==" && !(ctx.enable_rc && (expr_is_floatish(lhs, local_names, ctx) || expr_is_floatish(rhs, local_names, ctx))) {
       let nle = emit_eq_value(buf, lhs, rhs, local_names, next_local, ctx, ld, compile_expr)
       if ctx.enable_rc {
         emit_i64_const(buf, 1)
         emit_i64_shl(buf)
       }
       nle
-    } else if op == "!=" {
+    } else if op == "!=" && !(ctx.enable_rc && (expr_is_floatish(lhs, local_names, ctx) || expr_is_floatish(rhs, local_names, ctx))) {
       let nle = emit_eq_value(buf, lhs, rhs, local_names, next_local, ctx, ld, compile_expr)
       emit_i64_eqz(buf)
       emit_i64_extend_i32_s(buf)
@@ -23277,7 +23285,11 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
           nl2
         }
       } else {
-        if op == "<" {
+        if op == "==" {
+          emit_f64_eq(buf)
+        } else if op == "!=" {
+          emit_f64_ne(buf)
+        } else if op == "<" {
           emit_f64_lt(buf)
         } else if op == ">" {
           emit_f64_gt(buf)
@@ -23376,21 +23388,37 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
       if cop == "==" || cop == "!=" || cop == "<" || cop == ">" || cop == "<=" || cop == ">=" {
         let clhs = get_ebinop_lhs(cond)
         let crhs = get_ebinop_rhs(cond)
-        if cop == "==" {
+        if cop == "==" && !(ctx.enable_rc && (expr_is_floatish(clhs, local_names, ctx) || expr_is_floatish(crhs, local_names, ctx))) {
           let cnl2 = emit_eq_value(buf, clhs, crhs, local_names, next_local, ctx, ld, compile_expr)
           emit_i32_wrap_i64(buf)
           cnl2
-        } else if cop == "!=" {
+        } else if cop == "!=" && !(ctx.enable_rc && (expr_is_floatish(clhs, local_names, ctx) || expr_is_floatish(crhs, local_names, ctx))) {
           let cnl2 = emit_eq_value(buf, clhs, crhs, local_names, next_local, ctx, ld, compile_expr)
           emit_i32_wrap_i64(buf)
           emit_i32_eqz(buf)
           cnl2
         } else if expr_is_floatish(clhs, local_names, ctx) || expr_is_floatish(crhs, local_names, ctx) {
           let cnl1 = compile_expr(buf, clhs, local_names, next_local, ctx, ld)
+          if ctx.enable_rc {
+            emit_unbox_float(buf)
+          } else {
+            ()
+          }
           emit_f64_reinterpret_i64(buf)
           let cnl2 = compile_expr(buf, crhs, local_names, cnl1, ctx, ld)
+          if ctx.enable_rc {
+            emit_unbox_float(buf)
+          } else {
+            ()
+          }
           emit_f64_reinterpret_i64(buf)
-          if cop == "<" {
+          if cop == "==" {
+            emit_f64_eq(buf)
+          }
+          else if cop == "!=" {
+            emit_f64_ne(buf)
+          }
+          else if cop == "<" {
             emit_f64_lt(buf)
           }
           else if cop == ">" {
@@ -23443,12 +23471,12 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
           if iop == "==" || iop == "!=" || iop == "<" || iop == ">" || iop == "<=" || iop == ">=" {
             let ilhs = get_ebinop_lhs(uoperand)
             let irhs = get_ebinop_rhs(uoperand)
-            if iop == "==" {
+            if iop == "==" && !(ctx.enable_rc && (expr_is_floatish(ilhs, local_names, ctx) || expr_is_floatish(irhs, local_names, ctx))) {
               let inl2 = emit_eq_value(buf, ilhs, irhs, local_names, next_local, ctx, ld, compile_expr)
               emit_i32_wrap_i64(buf)
               emit_i32_eqz(buf)
               inl2
-            } else if iop == "!=" {
+            } else if iop == "!=" && !(ctx.enable_rc && (expr_is_floatish(ilhs, local_names, ctx) || expr_is_floatish(irhs, local_names, ctx))) {
               let inl2 = emit_eq_value(buf, ilhs, irhs, local_names, next_local, ctx, ld, compile_expr)
               emit_i32_wrap_i64(buf)
               emit_i32_eqz(buf)
@@ -23456,10 +23484,26 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
               inl2
             } else if expr_is_floatish(ilhs, local_names, ctx) || expr_is_floatish(irhs, local_names, ctx) {
               let inl1 = compile_expr(buf, ilhs, local_names, next_local, ctx, ld)
+              if ctx.enable_rc {
+                emit_unbox_float(buf)
+              } else {
+                ()
+              }
               emit_f64_reinterpret_i64(buf)
               let inl2 = compile_expr(buf, irhs, local_names, inl1, ctx, ld)
+              if ctx.enable_rc {
+                emit_unbox_float(buf)
+              } else {
+                ()
+              }
               emit_f64_reinterpret_i64(buf)
-              if iop == "<" {
+              if iop == "==" {
+                emit_f64_eq(buf)
+              }
+              else if iop == "!=" {
+                emit_f64_ne(buf)
+              }
+              else if iop == "<" {
                 emit_f64_lt(buf)
               }
               else if iop == ">" {
@@ -33095,7 +33139,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "6f7cad3ffe4a2cdb"
+  "63e2327484271cc5"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647

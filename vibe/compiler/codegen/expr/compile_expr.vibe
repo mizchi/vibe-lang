@@ -350,14 +350,20 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
     let op = get_ebinop_op(expr)
     let lhs = get_ebinop_lhs(expr)
     let rhs = get_ebinop_rhs(expr)
-    if op == "==" {
+    if op == "==" && !(ctx.enable_rc && (expr_is_floatish(lhs, local_names, ctx) || expr_is_floatish(rhs, local_names, ctx))) {
+      // #704: float `==`/`!=` under RC must NOT go through emit_eq_value — under
+      // RC a float is a BOXED heap value, so the generic eq compares box
+      // pointers (always unequal for two distinct boxes), making `0.0 == 0.0`
+      // false. Divert floatish RC `==`/`!=` to the float branch below, which
+      // unboxes and compares values with f64_eq/f64_ne. (Non-RC keeps the raw
+      // i64-bits compare here, so the default path is byte-identical.)
       let nle = emit_eq_value(buf, lhs, rhs, local_names, next_local, ctx, ld, compile_expr)
       if ctx.enable_rc {
         emit_i64_const(buf, 1)
         emit_i64_shl(buf)
       }
       nle
-    } else if op == "!=" {
+    } else if op == "!=" && !(ctx.enable_rc && (expr_is_floatish(lhs, local_names, ctx) || expr_is_floatish(rhs, local_names, ctx))) {
       let nle = emit_eq_value(buf, lhs, rhs, local_names, next_local, ctx, ld, compile_expr)
       emit_i64_eqz(buf)
       emit_i64_extend_i32_s(buf)
@@ -397,7 +403,11 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
           nl2
         }
       } else {
-        if op == "<" {
+        if op == "==" {
+          emit_f64_eq(buf)
+        } else if op == "!=" {
+          emit_f64_ne(buf)
+        } else if op == "<" {
           emit_f64_lt(buf)
         } else if op == ">" {
           emit_f64_gt(buf)
@@ -496,21 +506,40 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
       if cop == "==" || cop == "!=" || cop == "<" || cop == ">" || cop == "<=" || cop == ">=" {
         let clhs = get_ebinop_lhs(cond)
         let crhs = get_ebinop_rhs(cond)
-        if cop == "==" {
+        if cop == "==" && !(ctx.enable_rc && (expr_is_floatish(clhs, local_names, ctx) || expr_is_floatish(crhs, local_names, ctx))) {
           let cnl2 = emit_eq_value(buf, clhs, crhs, local_names, next_local, ctx, ld, compile_expr)
           emit_i32_wrap_i64(buf)
           cnl2
-        } else if cop == "!=" {
+        } else if cop == "!=" && !(ctx.enable_rc && (expr_is_floatish(clhs, local_names, ctx) || expr_is_floatish(crhs, local_names, ctx))) {
           let cnl2 = emit_eq_value(buf, clhs, crhs, local_names, next_local, ctx, ld, compile_expr)
           emit_i32_wrap_i64(buf)
           emit_i32_eqz(buf)
           cnl2
         } else if expr_is_floatish(clhs, local_names, ctx) || expr_is_floatish(crhs, local_names, ctx) {
+          // #704: unbox boxed floats under RC before reinterpreting as f64, and
+          // handle ==/!= here (f64_eq/f64_ne) so float equality in an if/while
+          // condition compares values, not box pointers.
           let cnl1 = compile_expr(buf, clhs, local_names, next_local, ctx, ld)
+          if ctx.enable_rc {
+            emit_unbox_float(buf)
+          } else {
+            ()
+          }
           emit_f64_reinterpret_i64(buf)
           let cnl2 = compile_expr(buf, crhs, local_names, cnl1, ctx, ld)
+          if ctx.enable_rc {
+            emit_unbox_float(buf)
+          } else {
+            ()
+          }
           emit_f64_reinterpret_i64(buf)
-          if cop == "<" {
+          if cop == "==" {
+            emit_f64_eq(buf)
+          }
+          else if cop == "!=" {
+            emit_f64_ne(buf)
+          }
+          else if cop == "<" {
             emit_f64_lt(buf)
           }
           else if cop == ">" {
@@ -563,23 +592,41 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
           if iop == "==" || iop == "!=" || iop == "<" || iop == ">" || iop == "<=" || iop == ">=" {
             let ilhs = get_ebinop_lhs(uoperand)
             let irhs = get_ebinop_rhs(uoperand)
-            if iop == "==" {
+            if iop == "==" && !(ctx.enable_rc && (expr_is_floatish(ilhs, local_names, ctx) || expr_is_floatish(irhs, local_names, ctx))) {
               let inl2 = emit_eq_value(buf, ilhs, irhs, local_names, next_local, ctx, ld, compile_expr)
               emit_i32_wrap_i64(buf)
               emit_i32_eqz(buf)
               inl2
-            } else if iop == "!=" {
+            } else if iop == "!=" && !(ctx.enable_rc && (expr_is_floatish(ilhs, local_names, ctx) || expr_is_floatish(irhs, local_names, ctx))) {
               let inl2 = emit_eq_value(buf, ilhs, irhs, local_names, next_local, ctx, ld, compile_expr)
               emit_i32_wrap_i64(buf)
               emit_i32_eqz(buf)
               emit_i32_eqz(buf)
               inl2
             } else if expr_is_floatish(ilhs, local_names, ctx) || expr_is_floatish(irhs, local_names, ctx) {
+              // #704: unbox boxed floats under RC; handle ==/!= via f64_eq/f64_ne.
+              // This arm is `!(ilhs iop irhs)`, so the trailing eqz negates.
               let inl1 = compile_expr(buf, ilhs, local_names, next_local, ctx, ld)
+              if ctx.enable_rc {
+                emit_unbox_float(buf)
+              } else {
+                ()
+              }
               emit_f64_reinterpret_i64(buf)
               let inl2 = compile_expr(buf, irhs, local_names, inl1, ctx, ld)
+              if ctx.enable_rc {
+                emit_unbox_float(buf)
+              } else {
+                ()
+              }
               emit_f64_reinterpret_i64(buf)
-              if iop == "<" {
+              if iop == "==" {
+                emit_f64_eq(buf)
+              }
+              else if iop == "!=" {
+                emit_f64_ne(buf)
+              }
+              else if iop == "<" {
                 emit_f64_lt(buf)
               }
               else if iop == ">" {
