@@ -9,7 +9,7 @@ import .. / .. / perceus {
 }
 
 import .. / common_analysis {
-  collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, is_mut_captured_in, scope_tail_proj_root
+  collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, is_mut_captured_in, md_consume_count, scope_tail_proj_root
 }
 
 import .. / common_base {
@@ -87,6 +87,29 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
     Array::push(lam_locals, cap_name)
     if array_contains_str(ctx.ref_cell_names, cap_name) {
       Array::push(lam_ref_cells, cap_name)
+    } else {
+      ()
+    }
+    // #705: a captured non-refcell heap var is a BORROWED view of the defining
+    // scope's binding — the env store (below) does NOT bump its rc, and the
+    // body's perceus plan never tracks a free var, so any owning consume inside
+    // the closure decrements a refcount the closure does not own. Left unbalanced
+    // that frees the defining scope's value early (double free / heap cycle when
+    // a recursive closure consumes a captured list each iteration — e.g. a set
+    // op's `contains(b, head)` over a borrowed `b`). Dup the capture once per
+    // owning consume here in the prologue: it runs per invocation, so a recursive
+    // closure consuming the capture each call stays balanced (defining scope
+    // still drops it exactly once). Ref-cell captures (#699) own their cell via
+    // the env store and are reclaimed by the closure's class-7 drop; skip them.
+    if ctx.enable_rc && !array_contains_str(ctx.ref_cell_names, cap_name) {
+      let cap_consumes = md_consume_count(fn_body, cap_name)
+      let mut cdup = 0
+      while cdup < cap_consumes {
+        emit_rc_dup_guarded(lam_buf, cap_local)
+        cdup = cdup + 1
+      }
+    } else {
+      ()
     }
     lam_nl = lam_nl + 1
     ci3 = ci3 + 1

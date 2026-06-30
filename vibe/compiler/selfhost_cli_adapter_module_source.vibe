@@ -20502,6 +20502,148 @@ export let rec is_mut_captured_in: (Expr, String) -> Bool = (expr, name) -> {
 export let mut_needs_ref_cell: (Expr, String) -> Bool = (body, name) -> {
   is_mut_captured_in(body, name)
 }
+export let md_is_borrow_arg0_call: (String) -> Bool = (f) -> {
+  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "ArrayBuilder::push" || f == "MapBuilder::set" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::set"
+}
+let md_max: (Int, Int) -> Int = (a, b) -> {
+  if a > b { a } else { b }
+}
+export let rec md_consume_count: (Expr, String) -> Int = (e, name) -> {
+  match e {
+    EInt(_) => 0,
+    EFloat(_) => 0,
+    EString(_) => 0,
+    EBool(_) => 0,
+    EUnit => 0,
+    EStringInterp(_) => 0,
+    EIdent(n, _) => if n == name { 1 } else { 0 },
+    ETuple(items) => {
+      let mut acc = 0
+      let mut i = 0
+      while i < Array::length(items) {
+        acc = acc + md_consume_count(Array::get(items, i), name)
+        i = i + 1
+      }
+      acc
+    },
+    EArray(items) => {
+      let mut acc = 0
+      let mut i = 0
+      while i < Array::length(items) {
+        acc = acc + md_consume_count(Array::get(items, i), name)
+        i = i + 1
+      }
+      acc
+    },
+    ERecord(fields) => {
+      let mut acc = 0
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, v) = Array::get(fields, i)
+        acc = acc + md_consume_count(v, name)
+        i = i + 1
+      }
+      acc
+    },
+    EMap(fields) => {
+      let mut acc = 0
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, v) = Array::get(fields, i)
+        acc = acc + md_consume_count(v, name)
+        i = i + 1
+      }
+      acc
+    },
+    EIf(c, t, el) =>
+    md_consume_count(c, name) + md_max(md_consume_count(t, name), md_consume_count(el, name)),
+    ELet(_, v, b) => md_consume_count(v, name) + md_consume_count(b, name),
+    ELetRec(_, v, b) => md_consume_count(v, name) + md_consume_count(b, name),
+    ELetMut(_, v, b) => md_consume_count(v, name) + md_consume_count(b, name),
+    EAssign(_, v, b) => md_consume_count(v, name) + md_consume_count(b, name),
+    EAssignOp(_, _, v, b) => md_consume_count(v, name) + md_consume_count(b, name),
+    ESeq(a, b) => md_consume_count(a, name) + md_consume_count(b, name),
+    EMatch(s, arms) => {
+      let mut mx = 0
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, v) = Array::get(arms, i)
+        mx = md_max(mx, md_consume_count(v, name))
+        i = i + 1
+      }
+      md_consume_count(s, name) + mx
+    },
+    EHandle(s, arms) => {
+      let mut mx = 0
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, v) = Array::get(arms, i)
+        mx = md_max(mx, md_consume_count(v, name))
+        i = i + 1
+      }
+      md_consume_count(s, name) + mx
+    },
+    EWhile(c, b) => md_consume_count(c, name) + md_consume_count(b, name),
+    ELoop(params, b) => {
+      let mut acc = md_consume_count(b, name)
+      let mut i = 0
+      while i < Array::length(params) {
+        let (_, v) = Array::get(params, i)
+        acc = acc + md_consume_count(v, name)
+        i = i + 1
+      }
+      acc
+    },
+    EForIn(_, _, it, b) => md_consume_count(it, name) + md_consume_count(b, name),
+    ECall(callee, args, _) => {
+      let borrow0 = match callee {
+        EIdent(f, _) => md_is_borrow_arg0_call(f),
+        _ => false
+      }
+      let start = if borrow0 && Array::length(args) >= 1 {
+        1
+      } else {
+        0
+      }
+      let head = if start == 1 {
+        match Array::get(args, 0) {
+          EIdent(_, _) => 0,
+          _ => md_consume_count(Array::get(args, 0), name)
+        }
+      } else {
+        0
+      }
+      let mut acc = md_consume_count(callee, name) + head
+      let mut ri = start
+      while ri < Array::length(args) {
+        acc = acc + md_consume_count(Array::get(args, ri), name)
+        ri = ri + 1
+      }
+      acc
+    },
+    EBinOp(_, l, r) => md_consume_count(l, name) + md_consume_count(r, name),
+    EUnaryOp(_, x) => md_consume_count(x, name),
+    EFn(_, _, _, _, _, body) => md_consume_count(body, name),
+    EDot(x, _, _) => md_consume_count(x, name),
+    ELabeledArg(_, _, v) => md_consume_count(v, name),
+    EThrow(x) => md_consume_count(x, name),
+    EReturn(x) => md_consume_count(x, name),
+    EBreak(opt) => match opt {
+      Some(v) => md_consume_count(v, name),
+      None => 0
+    },
+    EContinue(args) => {
+      let mut acc = 0
+      let mut i = 0
+      while i < Array::length(args) {
+        acc = acc + md_consume_count(Array::get(args, i), name)
+        i = i + 1
+      }
+      acc
+    },
+    ESpread(x) => md_consume_count(x, name)
+  }
+}
 export enum PerceusActionKind {
   PaDup;
   PaDrop;
@@ -25102,6 +25244,18 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
     Array::push(lam_locals, cap_name)
     if array_contains_str(ctx.ref_cell_names, cap_name) {
       Array::push(lam_ref_cells, cap_name)
+    } else {
+      ()
+    }
+    if ctx.enable_rc && !array_contains_str(ctx.ref_cell_names, cap_name) {
+      let cap_consumes = md_consume_count(fn_body, cap_name)
+      let mut cdup = 0
+      while cdup < cap_consumes {
+        emit_rc_dup_guarded(lam_buf, cap_local)
+        cdup = cdup + 1
+      }
+    } else {
+      ()
     }
     lam_nl = lam_nl + 1
     ci3 = ci3 + 1
@@ -25391,142 +25545,11 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
     nl2
   }
 }
-let md_is_borrow_arg0_call: (String) -> Bool = (f) -> {
-  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "ArrayBuilder::push" || f == "MapBuilder::set" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::set"
-}
-let rec md_consumes: (Expr, String) -> Bool = (e, name) -> {
-  match e {
-    EInt(_) => false,
-    EFloat(_) => false,
-    EString(_) => false,
-    EBool(_) => false,
-    EUnit => false,
-    EStringInterp(_) => false,
-    EIdent(n, _) => n == name,
-    ETuple(items) => {
-      let mut found = false
-      let mut i = 0
-      while i < Array::length(items) {
-        if md_consumes(Array::get(items, i), name) { found = true } else { () }
-        i = i + 1
-      }
-      found
-    },
-    EArray(items) => {
-      let mut found = false
-      let mut i = 0
-      while i < Array::length(items) {
-        if md_consumes(Array::get(items, i), name) { found = true } else { () }
-        i = i + 1
-      }
-      found
-    },
-    ERecord(fields) => {
-      let mut found = false
-      let mut i = 0
-      while i < Array::length(fields) {
-        let (_, v) = Array::get(fields, i)
-        if md_consumes(v, name) { found = true } else { () }
-        i = i + 1
-      }
-      found
-    },
-    EMap(fields) => {
-      let mut found = false
-      let mut i = 0
-      while i < Array::length(fields) {
-        let (_, v) = Array::get(fields, i)
-        if md_consumes(v, name) { found = true } else { () }
-        i = i + 1
-      }
-      found
-    },
-    EIf(c, t, el) => md_consumes(c, name) || md_consumes(t, name) || md_consumes(el, name),
-    ELet(_, v, b) => md_consumes(v, name) || md_consumes(b, name),
-    ELetRec(_, v, b) => md_consumes(v, name) || md_consumes(b, name),
-    ELetMut(_, v, b) => md_consumes(v, name) || md_consumes(b, name),
-    EAssign(_, v, b) => md_consumes(v, name) || md_consumes(b, name),
-    EAssignOp(_, _, v, b) => md_consumes(v, name) || md_consumes(b, name),
-    ESeq(a, b) => md_consumes(a, name) || md_consumes(b, name),
-    EMatch(s, arms) => {
-      let mut found = md_consumes(s, name)
-      let mut i = 0
-      while i < Array::length(arms) {
-        let (_, v) = Array::get(arms, i)
-        if md_consumes(v, name) { found = true } else { () }
-        i = i + 1
-      }
-      found
-    },
-    EHandle(s, arms) => {
-      let mut found = md_consumes(s, name)
-      let mut i = 0
-      while i < Array::length(arms) {
-        let (_, v) = Array::get(arms, i)
-        if md_consumes(v, name) { found = true } else { () }
-        i = i + 1
-      }
-      found
-    },
-    EWhile(c, b) => md_consumes(c, name) || md_consumes(b, name),
-    ELoop(params, b) => {
-      let mut found = md_consumes(b, name)
-      let mut i = 0
-      while i < Array::length(params) {
-        let (_, v) = Array::get(params, i)
-        if md_consumes(v, name) { found = true } else { () }
-        i = i + 1
-      }
-      found
-    },
-    EForIn(_, _, it, b) => md_consumes(it, name) || md_consumes(b, name),
-    ECall(callee, args, _) => {
-      let borrow0 = match callee {
-        EIdent(f, _) => md_is_borrow_arg0_call(f),
-        _ => false
-      }
-      let start = if borrow0 && Array::length(args) >= 1 {
-        1
-      } else {
-        0
-      }
-      let head = if start == 1 {
-        match Array::get(args, 0) {
-          EIdent(_, _) => false,
-          _ => md_consumes(Array::get(args, 0), name)
-        }
-      } else {
-        false
-      }
-      let mut found = md_consumes(callee, name) || head
-      let mut ri = start
-      while ri < Array::length(args) {
-        if md_consumes(Array::get(args, ri), name) { found = true } else { () }
-        ri = ri + 1
-      }
-      found
-    },
-    EBinOp(_, l, r) => md_consumes(l, name) || md_consumes(r, name),
-    EUnaryOp(_, x) => md_consumes(x, name),
-    EFn(_, _, _, _, _, body) => md_consumes(body, name),
-    EDot(x, _, _) => md_consumes(x, name),
-    ELabeledArg(_, _, v) => md_consumes(v, name),
-    EThrow(x) => md_consumes(x, name),
-    EReturn(x) => md_consumes(x, name),
-    EBreak(opt) => match opt {
-      Some(v) => md_consumes(v, name),
-      None => false
-    },
-    EContinue(args) => {
-      let mut found = false
-      let mut i = 0
-      while i < Array::length(args) {
-        if md_consumes(Array::get(args, i), name) { found = true } else { () }
-        i = i + 1
-      }
-      found
-    },
-    ESpread(x) => md_consumes(x, name)
+let emit_rc_dup_guarded_n: (Bytes, Int, Int) -> Unit = (buf, local_idx, n) -> {
+  let mut k = 0
+  while k < n {
+    emit_rc_dup_guarded(buf, local_idx)
+    k = k + 1
   }
 }
 let rec bind_match_pat: (Bytes, Int, Pat, Bool, Array[String], CompileCtx) -> Unit = (buf, base_local, container_pat, is_ctor_layout, local_names, ctx) -> {
@@ -26046,8 +26069,8 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
           emit_i32_wrap_i64(buf)
           emit_i64_load(buf, 3, 8 + cbi * 8)
           emit_local_set(buf, fl)
-          if ctx.enable_rc && md_consumes(__arm_body, pname) {
-            emit_rc_dup_guarded(buf, fl)
+          if ctx.enable_rc {
+            emit_rc_dup_guarded_n(buf, fl, md_consume_count(__arm_body, pname))
           } else {
             ()
           }
@@ -26076,8 +26099,8 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
               emit_i32_wrap_i64(buf)
               emit_i64_load(buf, 3, if ctx.enable_rc { 8 + ti * 8 } else { ti * 8 })
               emit_local_set(buf, tfl)
-              if ctx.enable_rc && md_consumes(__arm_body, tpname) {
-                emit_rc_dup_guarded(buf, tfl)
+              if ctx.enable_rc {
+                emit_rc_dup_guarded_n(buf, tfl, md_consume_count(__arm_body, tpname))
               } else {
                 ()
               }
@@ -26107,8 +26130,8 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
               emit_i32_wrap_i64(buf)
               emit_i64_load(buf, 3, 8 + __nj * 8)
               emit_local_set(buf, __nfl)
-              if ctx.enable_rc && md_consumes(__arm_body, __npname) {
-                emit_rc_dup_guarded(buf, __nfl)
+              if ctx.enable_rc {
+                emit_rc_dup_guarded_n(buf, __nfl, md_consume_count(__arm_body, __npname))
               } else {
                 ()
               }
@@ -33854,7 +33877,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "2e1d0398ff29b5a1"
+  "47d9de17718adf61"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647
