@@ -32,6 +32,37 @@ import .. / wasm_emit {
 // conditional match arms whose top pattern is a bare tuple with literal
 // siblings (`(false, n) => ..`), where the binding pass previously emitted
 // nothing and any use of `n` trapped codegen with "undefined variable".
+let md_emit_rc_dup_guarded: (Bytes, Int) -> Unit = (buf, local_idx) -> {
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, 1)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_if_void(buf)
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, 32)
+  emit_i64_shr_s(buf)
+  emit_i64_eqz(buf)
+  emit_if_void(buf)
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 1)
+  emit_i32_add(buf)
+  emit_i32_store(buf, 2, 0)
+  emit_end(buf)
+  emit_end(buf)
+}
+
 let rec bind_match_pat: (Bytes, Int, Pat, Bool, Array[String], CompileCtx) -> Unit = (buf, base_local, container_pat, is_ctor_layout, local_names, ctx) -> {
   let elems = if is_ctor_layout {
     get_pctor_args(container_pat)
@@ -611,6 +642,16 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
           emit_i32_wrap_i64(buf)
           emit_i64_load(buf, 3, 8 + cbi * 8)
           emit_local_set(buf, fl)
+          // #702 Blocker B: a matched ctor field is a borrowed view sharing the
+          // scrutinee's refcount. Dup it so consuming the binding (e.g. passing
+          // it to a fn that drops it) and the scrutinee's own recursive drop
+          // don't free the same block twice (double-free -> trap). Scalar fields
+          // are even, so __rc_drop's odd-check makes the dup a no-op for them.
+          if ctx.enable_rc {
+            md_emit_rc_dup_guarded(buf, fl)
+          } else {
+            ()
+          }
           Array::push(local_names, pname)
         } else if is_ptuple(__sub_p) {
           let tpats = get_ptuple_pats(__sub_p)
@@ -636,6 +677,11 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
               emit_i32_wrap_i64(buf)
               emit_i64_load(buf, 3, if ctx.enable_rc { 8 + ti * 8 } else { ti * 8 })
               emit_local_set(buf, tfl)
+              if ctx.enable_rc {
+                md_emit_rc_dup_guarded(buf, tfl)
+              } else {
+                ()
+              }
               Array::push(local_names, tpname)
             }
             ti = ti + 1
@@ -667,6 +713,11 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
               emit_i32_wrap_i64(buf)
               emit_i64_load(buf, 3, 8 + __nj * 8)
               emit_local_set(buf, __nfl)
+              if ctx.enable_rc {
+                md_emit_rc_dup_guarded(buf, __nfl)
+              } else {
+                ()
+              }
               Array::push(local_names, __npname)
             }
             __nj = __nj + 1

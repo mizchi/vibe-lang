@@ -18359,6 +18359,36 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
     nl2
   }
 }
+let md_emit_rc_dup_guarded: (Bytes, Int) -> Unit = (buf, local_idx) -> {
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, 1)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_if_void(buf)
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, 32)
+  emit_i64_shr_s(buf)
+  emit_i64_eqz(buf)
+  emit_if_void(buf)
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 1)
+  emit_i32_add(buf)
+  emit_i32_store(buf, 2, 0)
+  emit_end(buf)
+  emit_end(buf)
+}
 let rec bind_match_pat: (Bytes, Int, Pat, Bool, Array[String], CompileCtx) -> Unit = (buf, base_local, container_pat, is_ctor_layout, local_names, ctx) -> {
   let elems = if is_ctor_layout {
     get_pctor_args(container_pat)
@@ -18876,6 +18906,11 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
           emit_i32_wrap_i64(buf)
           emit_i64_load(buf, 3, 8 + cbi * 8)
           emit_local_set(buf, fl)
+          if ctx.enable_rc {
+            md_emit_rc_dup_guarded(buf, fl)
+          } else {
+            ()
+          }
           Array::push(local_names, pname)
         } else if is_ptuple(__sub_p) {
           let tpats = get_ptuple_pats(__sub_p)
@@ -18901,6 +18936,11 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
               emit_i32_wrap_i64(buf)
               emit_i64_load(buf, 3, if ctx.enable_rc { 8 + ti * 8 } else { ti * 8 })
               emit_local_set(buf, tfl)
+              if ctx.enable_rc {
+                md_emit_rc_dup_guarded(buf, tfl)
+              } else {
+                ()
+              }
               Array::push(local_names, tpname)
             }
             ti = ti + 1
@@ -18927,6 +18967,11 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
               emit_i32_wrap_i64(buf)
               emit_i64_load(buf, 3, 8 + __nj * 8)
               emit_local_set(buf, __nfl)
+              if ctx.enable_rc {
+                md_emit_rc_dup_guarded(buf, __nfl)
+              } else {
+                ()
+              }
               Array::push(local_names, __npname)
             }
             __nj = __nj + 1
@@ -33050,7 +33095,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "0944e28a5886d3cc"
+  "6f7cad3ffe4a2cdb"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647
