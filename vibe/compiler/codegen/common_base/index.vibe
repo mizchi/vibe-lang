@@ -207,7 +207,17 @@ export struct CompileCtx {
   // Interior-line breakpoints (multi-file): the file id of THIS function's source
   // file (index into `vibe.dbgfiles`), emitted alongside the line so the runner
   // matches `--break <file>:<line>` against the right file. 0 when off.
-  dbg_line_file_id: Int
+  dbg_line_file_id: Int;
+  // #706 (RC): names live-in to the innermost enclosing `while` loop. A loop body
+  // re-executes, so passing such an owned heap value to a consuming call frees it
+  // on iteration 1 and dangles on the next (use-after-free). compile_call emits a
+  // guarded rc_dup for a bare-ident owning arg whose name is in this set, so each
+  // iteration's consume is balanced and the loop-carried reference survives. The
+  // EWhile codegen sets this to the live-in locals around the body and restores
+  // it after (a shared mutable array; bindings declared inside the body are never
+  // added). Empty outside any loop; rc_dup is a no-op under bump, so the
+  // bump-built selfhost compiler is unaffected.
+  loop_borrowed_names: Array[String]
 }
 
 // Interior-line breakpoints (span-arc step5, multi-file): per-file provenance the

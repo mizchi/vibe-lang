@@ -11874,7 +11874,8 @@ export struct CompileCtx {
   cov: CovState;
   dbg_line_idx: Int;
   dbg_line_nl: Array[Int];
-  dbg_line_file_id: Int
+  dbg_line_file_id: Int;
+  loop_borrowed_names: Array[String]
 }
 export struct DbgProv {
   files: Array[String];
@@ -25425,7 +25426,10 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
     cov: ctx.cov,
     dbg_line_idx: ctx.dbg_line_idx,
     dbg_line_nl: ctx.dbg_line_nl,
-    dbg_line_file_id: ctx.dbg_line_file_id
+    dbg_line_file_id: ctx.dbg_line_file_id,
+    loop_borrowed_names: Array::slice([
+      ""
+    ], 0, 0)
   }
   if ctx.enable_rc {
     let mut dpi = 0
@@ -26421,6 +26425,13 @@ let rec cc_arg_is_scalarish: (Expr) -> Bool with { Error } = (e) -> {
     uop == "!" || (uop == "-" && cc_arg_is_scalarish(get_eunaryop_expr(e)))
   } else {
     false
+  }
+}
+let cc_is_loop_borrowed_ident: (Expr, CompileCtx) -> Bool = (e, ctx) -> {
+  match e {
+    EIdent(name, _) =>
+    array_contains_str(ctx.loop_borrowed_names, name) && !array_contains_str(ctx.ref_cell_names, name),
+    _ => false
   }
 }
 let cc_is_borrow_arg0_call: (String) -> Bool = (f) -> {
@@ -28727,7 +28738,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
           let carg = Array::get(args, ci)
           nl = ce(buf, carg, local_names, nl, ctx, ld)
           let borrows_this = ci == 0 && cc_is_borrow_arg0_call(fname)
-          if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg)) && !borrows_this {
+          if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg) || cc_is_loop_borrowed_ident(carg, ctx)) && !borrows_this {
             Array::push(local_names, "__argdup")
             emit_local_tee(buf, nl)
             emit_rc_dup_guarded(buf, nl)
@@ -29336,6 +29347,16 @@ export let compile_expr_tail3: (Bytes, Expr, Array[String], Int, CompileCtx, Int
   if __tag == 19 {
     let cond = get_ewhile_cond(expr)
     let body = get_ewhile_body(expr)
+    let lb_base = Array::length(ctx.loop_borrowed_names)
+    if ctx.enable_rc {
+      let mut lbi = 0
+      while lbi < Array::length(local_names) {
+        Array::push(ctx.loop_borrowed_names, Array::get(local_names, lbi))
+        lbi = lbi + 1
+      }
+    } else {
+      ()
+    }
     emit_block_void(buf)
     emit_loop_void(buf)
     let w_cond_tag = expr_tag(cond)
@@ -29375,6 +29396,7 @@ export let compile_expr_tail3: (Bytes, Expr, Array[String], Int, CompileCtx, Int
     emit_br(buf, 0)
     emit_end(buf)
     emit_end(buf)
+    Array::truncate(ctx.loop_borrowed_names, lb_base)
     emit_i64_const(buf, 0)
     nl2
   } else if __tag == 20 {
@@ -32272,7 +32294,8 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       cov: cov_state,
       dbg_line_idx: dbg_line_import_idx,
       dbg_line_nl: dbg_nls,
-      dbg_line_file_id: dbg_fid
+      dbg_line_file_id: dbg_fid,
+      loop_borrowed_names: lc_fresh_string_array()
     }
     if is_efn(__bi_expr) {
       let __bi_params = get_efn_params(__bi_expr)
@@ -33998,7 +34021,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "2c957b7ec715bc3a"
+  "569682d706781bb7"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647

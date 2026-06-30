@@ -93,6 +93,20 @@ let rec cc_arg_is_scalarish: (Expr) -> Bool with { Error } = (e) -> {
   }
 }
 
+// #706: is `e` a bare reference to a value live-in to an enclosing loop (and not
+// a `mut` ref-cell, whose reassignment already manages its own drop)? Passing
+// such a value to a consuming (owning) parameter inside the loop frees it on the
+// first iteration; dup'ing at the call site keeps the loop-carried reference
+// alive across the back-edge. rc_dup is a no-op on scalars, so a scalar loop var
+// caught here costs only a wasted (guarded) dup, not a correctness problem.
+let cc_is_loop_borrowed_ident: (Expr, CompileCtx) -> Bool = (e, ctx) -> {
+  match e {
+    EIdent(name, _) =>
+    array_contains_str(ctx.loop_borrowed_names, name) && !array_contains_str(ctx.ref_cell_names, name),
+    _ => false
+  }
+}
+
 // Builtins whose arg0 is BORROWED (read in place, not consumed/dropped). Kept in
 // sync with `is_borrow_arg0_call` in perceus/index.vibe — a projection passed as
 // arg0 to one of these must NOT be rc_dup'd at the call site (the callee never
@@ -2571,7 +2585,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
           // there would never be matched and would leak one reference per call
           // (#704). Mirrors `is_borrow_arg0_call` in perceus/index.vibe.
           let borrows_this = ci == 0 && cc_is_borrow_arg0_call(fname)
-          if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg)) && !borrows_this {
+          if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg) || cc_is_loop_borrowed_ident(carg, ctx)) && !borrows_this {
             Array::push(local_names, "__argdup")
             emit_local_tee(buf, nl)
             emit_rc_dup_guarded(buf, nl)
