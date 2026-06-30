@@ -25421,6 +25421,144 @@ let md_emit_rc_dup_guarded: (Bytes, Int) -> Unit = (buf, local_idx) -> {
   emit_end(buf)
   emit_end(buf)
 }
+let md_is_borrow_arg0_call: (String) -> Bool = (f) -> {
+  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "ArrayBuilder::push" || f == "MapBuilder::set" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::set"
+}
+let rec md_consumes: (Expr, String) -> Bool = (e, name) -> {
+  match e {
+    EInt(_) => false,
+    EFloat(_) => false,
+    EString(_) => false,
+    EBool(_) => false,
+    EUnit => false,
+    EStringInterp(_) => false,
+    EIdent(n, _) => n == name,
+    ETuple(items) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(items) {
+        if md_consumes(Array::get(items, i), name) { found = true } else { () }
+        i = i + 1
+      }
+      found
+    },
+    EArray(items) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(items) {
+        if md_consumes(Array::get(items, i), name) { found = true } else { () }
+        i = i + 1
+      }
+      found
+    },
+    ERecord(fields) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, v) = Array::get(fields, i)
+        if md_consumes(v, name) { found = true } else { () }
+        i = i + 1
+      }
+      found
+    },
+    EMap(fields) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, v) = Array::get(fields, i)
+        if md_consumes(v, name) { found = true } else { () }
+        i = i + 1
+      }
+      found
+    },
+    EIf(c, t, el) => md_consumes(c, name) || md_consumes(t, name) || md_consumes(el, name),
+    ELet(_, v, b) => md_consumes(v, name) || md_consumes(b, name),
+    ELetRec(_, v, b) => md_consumes(v, name) || md_consumes(b, name),
+    ELetMut(_, v, b) => md_consumes(v, name) || md_consumes(b, name),
+    EAssign(_, v, b) => md_consumes(v, name) || md_consumes(b, name),
+    EAssignOp(_, _, v, b) => md_consumes(v, name) || md_consumes(b, name),
+    ESeq(a, b) => md_consumes(a, name) || md_consumes(b, name),
+    EMatch(s, arms) => {
+      let mut found = md_consumes(s, name)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, v) = Array::get(arms, i)
+        if md_consumes(v, name) { found = true } else { () }
+        i = i + 1
+      }
+      found
+    },
+    EHandle(s, arms) => {
+      let mut found = md_consumes(s, name)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, v) = Array::get(arms, i)
+        if md_consumes(v, name) { found = true } else { () }
+        i = i + 1
+      }
+      found
+    },
+    EWhile(c, b) => md_consumes(c, name) || md_consumes(b, name),
+    ELoop(params, b) => {
+      let mut found = md_consumes(b, name)
+      let mut i = 0
+      while i < Array::length(params) {
+        let (_, v) = Array::get(params, i)
+        if md_consumes(v, name) { found = true } else { () }
+        i = i + 1
+      }
+      found
+    },
+    EForIn(_, _, it, b) => md_consumes(it, name) || md_consumes(b, name),
+    ECall(callee, args, _) => {
+      let borrow0 = match callee {
+        EIdent(f, _) => md_is_borrow_arg0_call(f),
+        _ => false
+      }
+      let start = if borrow0 && Array::length(args) >= 1 {
+        1
+      } else {
+        0
+      }
+      let head = if start == 1 {
+        match Array::get(args, 0) {
+          EIdent(_, _) => false,
+          _ => md_consumes(Array::get(args, 0), name)
+        }
+      } else {
+        false
+      }
+      let mut found = md_consumes(callee, name) || head
+      let mut ri = start
+      while ri < Array::length(args) {
+        if md_consumes(Array::get(args, ri), name) { found = true } else { () }
+        ri = ri + 1
+      }
+      found
+    },
+    EBinOp(_, l, r) => md_consumes(l, name) || md_consumes(r, name),
+    EUnaryOp(_, x) => md_consumes(x, name),
+    EFn(_, _, _, _, _, body) => md_consumes(body, name),
+    EDot(x, _, _) => md_consumes(x, name),
+    ELabeledArg(_, _, v) => md_consumes(v, name),
+    EThrow(x) => md_consumes(x, name),
+    EReturn(x) => md_consumes(x, name),
+    EBreak(opt) => match opt {
+      Some(v) => md_consumes(v, name),
+      None => false
+    },
+    EContinue(args) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(args) {
+        if md_consumes(Array::get(args, i), name) { found = true } else { () }
+        i = i + 1
+      }
+      found
+    },
+    ESpread(x) => md_consumes(x, name)
+  }
+}
 let rec bind_match_pat: (Bytes, Int, Pat, Bool, Array[String], CompileCtx) -> Unit = (buf, base_local, container_pat, is_ctor_layout, local_names, ctx) -> {
   let elems = if is_ctor_layout {
     get_pctor_args(container_pat)
@@ -25926,13 +26064,6 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
     }
     let arm_nl = if is_pctor(__cond_p) {
       let cargs_bind = get_pctor_args(__cond_p)
-      let md_fv_e1 = Array::slice([
-        ""
-      ], 0, 0)
-      let md_fv_e2 = Array::slice([
-        ""
-      ], 0, 0)
-      let arm_fvs = collect_free_vars(__arm_body, md_fv_e1, md_fv_e2)
       let mut cbi = 0
       while cbi < Array::length(cargs_bind) {
         let __sub_p = Array::get(cargs_bind, cbi)
@@ -25945,7 +26076,7 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
           emit_i32_wrap_i64(buf)
           emit_i64_load(buf, 3, 8 + cbi * 8)
           emit_local_set(buf, fl)
-          if ctx.enable_rc && array_contains_str(arm_fvs, pname) {
+          if ctx.enable_rc && md_consumes(__arm_body, pname) {
             md_emit_rc_dup_guarded(buf, fl)
           } else {
             ()
@@ -25975,7 +26106,7 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
               emit_i32_wrap_i64(buf)
               emit_i64_load(buf, 3, if ctx.enable_rc { 8 + ti * 8 } else { ti * 8 })
               emit_local_set(buf, tfl)
-              if ctx.enable_rc && array_contains_str(arm_fvs, tpname) {
+              if ctx.enable_rc && md_consumes(__arm_body, tpname) {
                 md_emit_rc_dup_guarded(buf, tfl)
               } else {
                 ()
@@ -26006,7 +26137,7 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
               emit_i32_wrap_i64(buf)
               emit_i64_load(buf, 3, 8 + __nj * 8)
               emit_local_set(buf, __nfl)
-              if ctx.enable_rc && array_contains_str(arm_fvs, __npname) {
+              if ctx.enable_rc && md_consumes(__arm_body, __npname) {
                 md_emit_rc_dup_guarded(buf, __nfl)
               } else {
                 ()
@@ -33903,7 +34034,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "6a698684bbf06b6c"
+  "c27572de8b43bccd"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647
