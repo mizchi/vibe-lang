@@ -618,15 +618,24 @@ export let type_expr_is_heap: (Option[TypeExpr]) -> Bool = (ot) -> {
   match ot {
     None => false,
     Some(t) =>
-    if type_contains_fn(t) {
-      false
-    } else {
-      match t {
-        TyTuple(_) => true,
-        TyApp(_, _) => true,
-        TyName(n) => type_name_is_heap(n),
-        TyFn(_, _, _) => false,
-        TyUnit => false
+    match t {
+      // #702: a bare function-typed binding/param is a closure — heap when it
+      // captures (an odd RC block), a scalar constant when it doesn't. Treating
+      // it as heap lets the owning function drop it (__rc_drop's odd-check makes
+      // the non-capturing constant a no-op), reclaiming capturing closures passed
+      // as arguments to higher-order fns instead of leaking them.
+      TyFn(_, _, _) => true,
+      _ =>
+      if type_contains_fn(t) {
+        false
+      } else {
+        match t {
+          TyTuple(_) => true,
+          TyApp(_, _) => true,
+          TyName(n) => type_name_is_heap(n),
+          TyFn(_, _, _) => false,
+          TyUnit => false
+        }
       }
     }
   }
