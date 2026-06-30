@@ -172,10 +172,11 @@ let profile_memory_mark: (Bool) -> Unit with { Env } = (enabled) -> {
 }
 
 let compile_source_for_rc_flag: (String, String, String) -> Bytes with { Error } = (source, entry_name, rc_flag) -> {
-  // ADR-0055 #493 cutover toggle: VIBE_RC=1 selects the Perceus RC codegen
-  // (memory-reclaiming linear backend); the default stays the legacy bump path.
-  // RC-as-default is DEFERRED (#705) until library-code parity is genuinely 100%.
-  if rc_flag == "1" {
+  // ADR-0055 #493 cutover: the Perceus RC codegen (memory-reclaiming linear
+  // backend) is the DEFAULT; set VIBE_RC=0 to opt back into the legacy bump
+  // path. The compiler self-build, bootstrap, and bump-baseline gates pin
+  // VIBE_RC=0 (see scripts/*.sh) so they stay byte-identical on bump.
+  if rc_flag != "0" {
     compile_source_wasi_only_rc(source, entry_name)
   } else {
     compile_source_wasi_only(source, entry_name)
@@ -226,10 +227,10 @@ export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
       // execution-trace instrumentation; running the produced wasm fills the
       // in-memory trace log that the runner dumps via VIBE_TRACE_OUT.
       // The special compile MODES (coverage / debugger break / trace) are
-      // checked first; they are mutually exclusive instrumentation builds. The
-      // normal compile then routes to the Perceus RC backend only when VIBE_RC=1
-      // (#701 FS-mode honoring); the DEFAULT stays the legacy bump path.
-      // RC-as-default is DEFERRED (#705) until library-code parity is 100%.
+      // checked first; they are mutually exclusive instrumentation builds and
+      // are unaffected by the RC cutover. The normal compile then defaults to
+      // the Perceus RC backend (#493 cutover, #705 parity) unless VIBE_RC=0
+      // selects the legacy bump path (which carries the #634 testmeta variant).
       let bytes = if Env::get("VIBE_COVERAGE") == "1" {
         compile_file_fs_mode_coverage(input_path, entry_name)
       } else if Env::get("VIBE_DEBUG_BREAK") == "1" {
@@ -239,12 +240,12 @@ export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
         compile_file_fs_mode_break(input_path, entry_name)
       } else if Env::get("VIBE_DEBUG") == "1" {
         compile_file_fs_mode_trace(input_path, entry_name)
-      } else if Env::get("VIBE_RC") == "1" {
-        // #701: honor VIBE_RC in FS-compile mode (import-resolving / `vibe run`)
-        // via the Perceus RC codegen, instead of silently using the bump path.
+      } else if Env::get("VIBE_RC") != "0" {
+        // ADR-0055 #493 cutover DEFAULT: RC reclaims memory each iteration; the
+        // legacy bump path leaks until exit. Opt back into bump with VIBE_RC=0.
         compile_file_fs_mode_rc(input_path, entry_name)
       } else {
-        // Default legacy bump path. #634 (ADR-0026): only when `vibe test`
+        // Legacy bump path (VIBE_RC=0). #634 (ADR-0026): only when `vibe test`
         // requests the pure-test cache verdict (VIBE_TESTMETA_OUT set) do we
         // route through the variant that ALSO emits the `.testmeta` sidecar
         // (riding the merged stmts this compile already builds — no extra
