@@ -11,7 +11,6 @@
 #
 # Output (_build/coverage/selfhost-corpus/): acc.json (running union), fails.txt.
 set -euo pipefail
-: "${VIBE_RC:=0}"; export VIBE_RC  # cutover: pin the compiler self-build / gate baseline to bump (RC only when explicitly VIBE_RC=1)
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"

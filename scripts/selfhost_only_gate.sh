@@ -8,7 +8,6 @@
 #      -> stage3) with stage2 == stage3 (fixpoint) and each stage validates a
 #      compiled sample (compile -> run smoke).
 set -euo pipefail
-: "${VIBE_RC:=0}"; export VIBE_RC  # cutover: pin the compiler self-build / gate baseline to bump (RC only when explicitly VIBE_RC=1)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
