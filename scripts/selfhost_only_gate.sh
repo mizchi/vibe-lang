@@ -2445,8 +2445,8 @@ lk_result="$(printf '%s' "$lk_json" | sed -n 's/.*"result":\([0-9]*\).*/\1/p')"
 if [ -z "$lk_used" ]; then
   echo "[selfhost-only-gate] FAIL: could not measure rc_reclaim_leak heap ($lk_json)" >&2; exit 1
 fi
-if [ "$lk_result" != "1000010000" ]; then
-  echo "[selfhost-only-gate] FAIL: rc_reclaim_leak wrong result $lk_result (want 1000010000)" >&2; exit 1
+if [ "$lk_result" != "1000150000" ]; then
+  echo "[selfhost-only-gate] FAIL: rc_reclaim_leak wrong result $lk_result (want 1000150000)" >&2; exit 1
 fi
 if [ "$lk_used" -ge 2000 ]; then
   echo "[selfhost-only-gate] FAIL: rc_reclaim_leak heap_used=$lk_used >= 2000 (RC reclamation regressed; ~800000 == full leak)" >&2; exit 1

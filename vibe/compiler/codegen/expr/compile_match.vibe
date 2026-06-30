@@ -630,6 +630,20 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
     }
     let arm_nl = if is_pctor(__cond_p) {
       let cargs_bind = get_pctor_args(__cond_p)
+      // #703: the #702 dup of a matched heap field is only balanced when the
+      // field is consumed in the arm body. A field that is never REFERENCED in
+      // the body is never consumed, so the scrutinee's recursive drop already
+      // reclaims it — dup'ing it there leaks one reference. Skip the dup for
+      // unreferenced bindings (computed once per arm; descends into nested
+      // closures via collect_free_vars). Referenced-but-borrow-only bindings
+      // stay conservatively dup'd (a smaller, safe over-keep).
+      let md_fv_e1 = Array::slice([
+        ""
+      ], 0, 0)
+      let md_fv_e2 = Array::slice([
+        ""
+      ], 0, 0)
+      let arm_fvs = collect_free_vars(__arm_body, md_fv_e1, md_fv_e2)
       let mut cbi = 0
       while cbi < Array::length(cargs_bind) {
         let __sub_p = Array::get(cargs_bind, cbi)
@@ -647,7 +661,7 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
           // it to a fn that drops it) and the scrutinee's own recursive drop
           // don't free the same block twice (double-free -> trap). Scalar fields
           // are even, so __rc_drop's odd-check makes the dup a no-op for them.
-          if ctx.enable_rc {
+          if ctx.enable_rc && array_contains_str(arm_fvs, pname) {
             md_emit_rc_dup_guarded(buf, fl)
           } else {
             ()
@@ -677,7 +691,7 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
               emit_i32_wrap_i64(buf)
               emit_i64_load(buf, 3, if ctx.enable_rc { 8 + ti * 8 } else { ti * 8 })
               emit_local_set(buf, tfl)
-              if ctx.enable_rc {
+              if ctx.enable_rc && array_contains_str(arm_fvs, tpname) {
                 md_emit_rc_dup_guarded(buf, tfl)
               } else {
                 ()
@@ -713,7 +727,7 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
               emit_i32_wrap_i64(buf)
               emit_i64_load(buf, 3, 8 + __nj * 8)
               emit_local_set(buf, __nfl)
-              if ctx.enable_rc {
+              if ctx.enable_rc && array_contains_str(arm_fvs, __npname) {
                 md_emit_rc_dup_guarded(buf, __nfl)
               } else {
                 ()

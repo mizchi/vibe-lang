@@ -25,6 +25,16 @@ let sumt = (t: Tree) -> Int {
   }
 }
 
+// #703 guard: binds the matched heap children `l`/`r` but never references them.
+// Their #702 dup would be unbalanced (no consuming drop), so an unreferenced
+// binding must be left un-dup'd and reclaimed by the scrutinee's recursive drop.
+let ignore_children = (t: Tree) -> Int {
+  match t {
+    Leaf(_) => 0,
+    Node(l, r) => 7
+  }
+}
+
 let main = () -> Int {
   let mut total = 0
   let mut i = 0
@@ -41,7 +51,10 @@ let main = () -> Int {
     // and its array reclaim each iteration only when that dup is suppressed.
     let b = Box::{ items: [i, i + 1, i + 2] }
     let first = Array::get(b.items, 0)
-    total = total + t.0 + t.1 + c + sumt(tr) + first
+    // #703 unused-matched-field guard (drives `ignore_children`, which binds but
+    // never references the heap children — see its definition above).
+    let ignored = ignore_children(Node(Leaf(i), Leaf(i + 1)))
+    total = total + t.0 + t.1 + c + sumt(tr) + first + ignored
     i = i + 1
   }
   total
