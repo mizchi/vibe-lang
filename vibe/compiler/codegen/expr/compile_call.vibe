@@ -2622,7 +2622,18 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
         emit_closure_resolve(buf, fn_val_local, slot_local, env_local)
         let mut ci = 0
         while ci < num_args {
-          nl = ce(buf, Array::get(args, ci), local_names, nl, ctx, ld)
+          let carg = Array::get(args, ci)
+          nl = ce(buf, carg, local_names, nl, ctx, ld)
+          // #706: a closure consumes its args; dup a loop-borrowed owning arg so
+          // it survives the back-edge (mirrors the direct-call path above).
+          if ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx) {
+            Array::push(local_names, "__argdup")
+            emit_local_tee(buf, nl)
+            emit_rc_dup_guarded(buf, nl)
+            nl = nl + 1
+          } else {
+            ()
+          }
           ci = ci + 1
         }
         emit_closure_call_tail(buf, env_local, slot_local, 9, num_args)
@@ -2643,7 +2654,17 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
     emit_closure_resolve(buf, fn_val_local, slot_local, env_local)
     let mut ci = 0
     while ci < num_args {
-      nl = ce(buf, Array::get(args, ci), local_names, nl, ctx, ld)
+      let carg = Array::get(args, ci)
+      nl = ce(buf, carg, local_names, nl, ctx, ld)
+      // #706: dup a loop-borrowed owning arg passed to a closure call.
+      if ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx) {
+        Array::push(local_names, "__argdup")
+        emit_local_tee(buf, nl)
+        emit_rc_dup_guarded(buf, nl)
+        nl = nl + 1
+      } else {
+        ()
+      }
       ci = ci + 1
     }
     emit_closure_call_tail(buf, env_local, slot_local, 9, num_args)
