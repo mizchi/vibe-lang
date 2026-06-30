@@ -68,12 +68,37 @@ let cc_is_borrow_ret_call: (Expr) -> Bool = (e) -> {
   }
 }
 
+// Is `e` provably a scalar (Int/Bool) by structure alone — an int/bool literal,
+// a bitwise/shift/comparison/logical binop, or a logical `!`? Conservative: no
+// ident-slot/type lookup and no arith ops (+,-,*,/ can be Float). Used to route
+// an explicit `eq(a, b)` to a direct i64.eq when an operand is provably scalar,
+// matching how the `==` binop dispatches intish operands (emit_eq_value). Without
+// this, `eq(int, int)` falls through to the generic bound `eq` whose
+// `looks_like_string`/str_eq fallback reads OOB on ints resembling fat-pointers
+// (#678 residual) — e.g. leb128's `eq(val, 0)` trapped under RC (#705).
+let rec cc_arg_is_scalarish: (Expr) -> Bool with { Error } = (e) -> {
+  let t = expr_tag(e)
+  if t == 0 || t == 1 {
+    true
+  } else if t == 5 {
+    let op = get_ebinop_op(e)
+    op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || op == "%" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "==" || op == "!=" || op == "&&" || op == "||"
+  } else if t == 6 {
+    let uop = get_eunaryop_op(e)
+    // `!x` is Bool; `-x` is scalar iff its operand is (so a negative int literal
+    // like `-1`, which parses as unary minus of `1`, is detected as scalar).
+    uop == "!" || (uop == "-" && cc_arg_is_scalarish(get_eunaryop_expr(e)))
+  } else {
+    false
+  }
+}
+
 // Builtins whose arg0 is BORROWED (read in place, not consumed/dropped). Kept in
 // sync with `is_borrow_arg0_call` in perceus/index.vibe — a projection passed as
 // arg0 to one of these must NOT be rc_dup'd at the call site (the callee never
 // drops it, so the dup would leak; #704). Other argument positions are owning.
 let cc_is_borrow_arg0_call: (String) -> Bool = (f) -> {
-  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "ArrayBuilder::push" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::set"
+  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "ArrayBuilder::push" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::set" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length"
 }
 
 // #664/#678: is `e` statically — BY SHAPE — a known integer that must NOT be run
@@ -275,7 +300,13 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
         nl_c
       }
     }
-    else if !prefer_bound_call && fname == "eq" {
+    else if fname == "eq" && Array::length(args) == 2 && (!prefer_bound_call || cc_arg_is_scalarish(Array::get(args, 0)) || cc_arg_is_scalarish(Array::get(args, 1))) {
+      // Direct i64.eq for `eq(a, b)` when it is the builtin and at least one
+      // operand is provably scalar. This sidesteps the bound `eq`'s string
+      // fallback, which reads OOB on Int values resembling fat-pointers (#705):
+      // `==` already dispatches intish operands this way via emit_eq_value, and
+      // `eq` must match. A genuinely string/heap `eq` (no scalar operand) still
+      // falls through to the bound call below.
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       emit_i64_eq(buf)
