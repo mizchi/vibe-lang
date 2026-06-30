@@ -912,7 +912,17 @@ export let rec md_consume_count: (Expr, String) -> Int = (e, name) -> {
       } else {
         0
       }
-      let mut acc = md_consume_count(callee, name) + head
+      // A bare-ident CALLEE is invoked, not consumed — calling a function or a
+      // captured closure (incl. a recursive closure's own self-reference) does
+      // not drop it. Counting `f(..)` as a consume of `f` over-dups the captured
+      // closure once per call (#705: a nested self-recursive closure's self-
+      // capture corrupted under RC). Only a non-ident callee can consume `name`
+      // in a sub-expression.
+      let callee_c = match callee {
+        EIdent(_, _) => 0,
+        _ => md_consume_count(callee, name)
+      }
+      let mut acc = callee_c + head
       let mut ri = start
       while ri < Array::length(args) {
         acc = acc + md_consume_count(Array::get(args, ri), name)
