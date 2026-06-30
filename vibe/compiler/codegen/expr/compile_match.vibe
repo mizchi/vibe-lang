@@ -777,6 +777,16 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
             emit_i32_wrap_i64(buf)
             emit_i64_load(buf, 3, 8 + cbi2 * 8)
             emit_local_set(buf, fl2)
+            // #705: the catch-all arm binds fields like the cond arms but did
+            // NOT dup a CONSUMED field — a borrowed-view field moved into an
+            // owning position (e.g. `let (k, v) = Array::get(..); f(v)`) is then
+            // freed by both the consume and the scrutinee/owner's recursive drop
+            // (double free). Mirror the cond-arm #702/#705 dup.
+            if ctx.enable_rc {
+              emit_rc_dup_guarded_n(buf, fl2, md_consume_count(__catch_body, pname))
+            } else {
+              ()
+            }
             Array::push(local_names, pname)
           }
           cbi2 = cbi2 + 1
@@ -803,6 +813,11 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
               emit_i32_wrap_i64(buf)
               emit_i64_load(buf, 3, if ctx.enable_rc { 8 + pi2 * 8 } else { pi2 * 8 })
               emit_local_set(buf, field_l)
+              if ctx.enable_rc {
+                emit_rc_dup_guarded_n(buf, field_l, md_consume_count(__catch_body, pname))
+              } else {
+                ()
+              }
               Array::push(local_names, pname)
               0
             } else if is_ptuple(__tp) {
@@ -831,6 +846,11 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
                   emit_i32_wrap_i64(buf)
                   emit_i64_load(buf, 3, if ctx.enable_rc { 8 + si3 * 8 } else { si3 * 8 })
                   emit_local_set(buf, sfl)
+                  if ctx.enable_rc {
+                    emit_rc_dup_guarded_n(buf, sfl, md_consume_count(__catch_body, spname))
+                  } else {
+                    ()
+                  }
                   Array::push(local_names, spname)
                 }
                 si3 = si3 + 1
