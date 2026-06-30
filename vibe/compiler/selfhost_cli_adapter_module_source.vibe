@@ -26344,6 +26344,16 @@ let cc_is_projection: (Expr) -> Bool = (e) -> {
     _ => false
   }
 }
+let cc_is_borrow_ret_call: (Expr) -> Bool = (e) -> {
+  match e {
+    ECall(callee, _, _) =>
+    match callee {
+      EIdent(f, _) => f == "Array::get" || f == "Map::get" || f == "__index",
+      _ => false
+    },
+    _ => false
+  }
+}
 let cc_is_borrow_arg0_call: (String) -> Bool = (f) -> {
   f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "ArrayBuilder::push" || f == "MapBuilder::set" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::set"
 }
@@ -26475,7 +26485,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
           Array::push(local_names, "__ctor_val")
           emit_local_set(buf, val_local)
           nl_c = nl_c + 1
-          if ctx.enable_rc && cc_is_projection(carg_c) {
+          if ctx.enable_rc && (cc_is_projection(carg_c) || cc_is_borrow_ret_call(carg_c)) {
             emit_rc_dup_guarded(buf, val_local)
           } else {
             ()
@@ -28636,7 +28646,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
           let carg = Array::get(args, ci)
           nl = ce(buf, carg, local_names, nl, ctx, ld)
           let borrows_this = ci == 0 && cc_is_borrow_arg0_call(fname)
-          if ctx.enable_rc && cc_is_projection(carg) && !borrows_this {
+          if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg)) && !borrows_this {
             Array::push(local_names, "__argdup")
             emit_local_tee(buf, nl)
             emit_rc_dup_guarded(buf, nl)
@@ -33917,7 +33927,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "57474e0d0e8bb9be"
+  "6164a2fe4aa8c65e"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647

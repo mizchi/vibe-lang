@@ -49,6 +49,25 @@ let cc_is_projection: (Expr) -> Bool = (e) -> {
   }
 }
 
+// #705: a borrow-RETURNING builtin call (`Array::get` / `Map::get` / `__index`)
+// yields a borrowed view of a heap element — its refcount is NOT bumped, like a
+// projection `a.f`. When that result is consumed in an OWNING position (a ctor
+// field, or an owning call arg of a fn that drops its params), it must be
+// rc_dup'd or the container's recursive drop and the consume double-free the
+// same element (e.g. `chk(Array::get(ps, i))` recursing over a heap array, or
+// `validate(s, Map::get(obj, key))`). Scalars are even so the guarded dup is a
+// runtime no-op for `Array[Int]` etc.
+let cc_is_borrow_ret_call: (Expr) -> Bool = (e) -> {
+  match e {
+    ECall(callee, _, _) =>
+    match callee {
+      EIdent(f, _) => f == "Array::get" || f == "Map::get" || f == "__index",
+      _ => false
+    },
+    _ => false
+  }
+}
+
 // Builtins whose arg0 is BORROWED (read in place, not consumed/dropped). Kept in
 // sync with `is_borrow_arg0_call` in perceus/index.vibe — a projection passed as
 // arg0 to one of these must NOT be rc_dup'd at the call site (the callee never
@@ -201,7 +220,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
           // retain it or the source's drop double-frees it (e.g. `Some(b.items)`
           // returned while `b` is dropped). Mirrors the ERecord field-store dup
           // (#704). Perceus emits no action for bare projections.
-          if ctx.enable_rc && cc_is_projection(carg_c) {
+          if ctx.enable_rc && (cc_is_projection(carg_c) || cc_is_borrow_ret_call(carg_c)) {
             emit_rc_dup_guarded(buf, val_local)
           } else {
             ()
@@ -2504,7 +2523,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
           // there would never be matched and would leak one reference per call
           // (#704). Mirrors `is_borrow_arg0_call` in perceus/index.vibe.
           let borrows_this = ci == 0 && cc_is_borrow_arg0_call(fname)
-          if ctx.enable_rc && cc_is_projection(carg) && !borrows_this {
+          if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg)) && !borrows_this {
             Array::push(local_names, "__argdup")
             emit_local_tee(buf, nl)
             emit_rc_dup_guarded(buf, nl)
