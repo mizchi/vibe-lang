@@ -1,16 +1,13 @@
 # Selfhost RC cutover readiness (ADR-0055 #493)
 
-Status: **NOT READY (re-assessed 2026-06-29, #701 follow-up).** The original
-6-program corpus passed (READY, table below), but a wider probe — now a real
-committed script, `scripts/rc_cutover_readiness.sh` — finds blockers the narrow
-corpus missed (see "Broader-corpus assessment"). Reclamation itself is sound
-(tuple / record / captured-mut cell+closure / nested closures: bounded heap with
-result parity); the blockers are RC **codegen** gaps (`not EFn` thrown on common
-shapes — `let x = if/match` yielding an enum/struct, and closures passed to
-higher-order fns) plus an enum-drop **runtime trap at scale**. Both are
-pre-existing: they also fail on the long-standing source-compile RC path, in
-`get_efn_body`/HOF-call code paths that this session's #699 (cell/closure RC) and
-#701 (FS-mode RC routing) do not touch. Measures
+Status: **READY (re-assessed 2026-06-29, #702 complete).** The broader 8-program
+probe (`scripts/rc_cutover_readiness.sh`) now passes in full — every program
+compiles under RC with result parity and bounded heap. Getting there fixed three
+pre-existing RC gaps the original narrow corpus missed (#702): a `not EFn`
+RC-compile error on `let x = if/match {...}` and on closures passed to
+higher-order fns; capturing closures passed as arguments leaking; and a recursive
+-enum match-destructuring double-free that trapped at scale. See "Broader-corpus
+assessment". Measures
 whether the selfhost Perceus RC path is ready to become the selfhost linear
 default (cutover, #493 C/F). The reclaim
 suite (`scripts/verify_selfhost_rc.sh`) and heap-e2e gate exercise RC features in
@@ -49,28 +46,32 @@ path that `vibe run` uses). Result:
 | record_tuples     | struct of tuples | yes | OK | 96 / 96 | yes |
 | captured_mut_cell | `let mut` captured by a closure (#699) | yes | OK | 40 / 40 | yes |
 | nested_closures   | closure capturing a closure + mut | yes | OK | 64 / 64 | yes |
-| enum_ast          | enum AST + recursive match, dropped each iter | yes | **RUN-FAIL** | (trap) | — |
-| option_enum       | `let o = if … { Som } else { Non }` | **NO** | — | — | — |
-| mixed             | `let b = if … { Box } else { Box }` (struct{enum;tuple}) | **NO** | — | — | — |
-| hof               | closure passed to a higher-order fn | **NO** | — | — | — |
+| enum_ast          | enum AST + recursive match, dropped each iter | yes | OK | 136 / 136 | yes |
+| option_enum       | `let o = if … { Som } else { Non }` | yes | OK | 40 / 40 | yes |
+| mixed             | `let b = if … { Box } else { Box }` (struct{enum;tuple}) | yes | OK | 120 / 120 | yes |
+| hof               | closure passed to a higher-order fn | yes | OK | 24 / 24 | yes |
 
-**Verdict: NOT READY.** Four programs fail:
+**Verdict: READY.** All 8 programs compile under RC, results match the default
+backend, and RC heap is bounded (constant across N1/N2). Getting here closed
+three pre-existing RC gaps the narrow corpus missed (#702), each of which also
+reproduced on the source-compile RC path (independent of #699/#701):
 
-- **`not EFn` RC-compile error** (option_enum, mixed, hof): binding a conditional
-  that yields an enum/struct (`let x = if/match { Ctor … } else { … }`) or passing
-  a closure to a higher-order function throws `not EFn` from
-  `get_efn_body`/`get_efn_params` on the RC codegen path. Minimal repro:
-  `enum Opt { Som(Int); Non }  let main = () -> Int { let o = if 1 == 1 { Som(5) } else { Non }; match o { Som(v) => v, Non => 0 } }`.
-- **enum-drop runtime trap at scale** (enum_ast): an enum AST built and dropped
-  each loop iteration compiles and runs at N=1 but traps under RC at N=1000
-  (the default backend runs fine), i.e. a fault in enum block reclamation at
-  scale.
+- **`not EFn` RC-compile error** (was: option_enum, mixed, hof) — the RC ELet
+  classification ran `efn_is_capturing` (→ `get_efn_params`) on every non-heap
+  `let` value because `&&` evaluates both operands; `let x = 5` / `let x = if…`
+  threw. Fixed by guarding with a nested `is_efn` check (`6632ff2`).
+- **capturing closure passed to a HOF leaked** (was: hof) — function-typed params
+  were classified non-heap so the callee never dropped them. Fixed by treating a
+  bare function type as heap (`22ecfa8`).
+- **recursive-enum match double-free trap at scale** (was: enum_ast) — a matched
+  ctor field shared the scrutinee's refcount, so consuming the field and the
+  scrutinee's recursive drop freed the same block twice. Fixed by dup-ing matched
+  fields on extraction (`c085e66`).
 
-These are pre-existing RC codegen/runtime gaps (reproduce on the source-compile
-RC path, in code paths independent of #699/#701). The four reclamation-only
-programs (tuple/record/cell/closures) are bounded with parity, confirming the
-#699/#701 reclamation work is sound; the blockers are orthogonal and must be
-fixed before cutover. Tracking: see the cutover-blockers issue.
+Known minor follow-up: a matched heap field bound but **unused** now leaks (dup
+with no consuming drop) — safe over-keep, rare (use `_`). The leak-guard gate
+(`selfhost_only_gate.sh` step 40d) exercises tuple+cell+closure+recursive-enum
+and asserts bounded heap, locking these in against regression.
 
 ## The fix that landed: nullary enum constructors are now RC blocks
 
