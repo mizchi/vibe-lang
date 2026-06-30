@@ -20503,7 +20503,7 @@ export let mut_needs_ref_cell: (Expr, String) -> Bool = (body, name) -> {
   is_mut_captured_in(body, name)
 }
 export let md_is_borrow_arg0_call: (String) -> Bool = (f) -> {
-  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "ArrayBuilder::push" || f == "MapBuilder::set" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::set"
+  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "ArrayBuilder::push" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::set"
 }
 let md_max: (Int, Int) -> Int = (a, b) -> {
   if a > b { a } else { b }
@@ -21428,7 +21428,7 @@ let rec elaborate_rw: (Expr, HeapInferCtx) -> Expr = (e, hctx) -> {
   }
 }
 let is_borrow_arg0_call: (String) -> Bool = (f) -> {
-  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "ArrayBuilder::push" || f == "MapBuilder::set" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::set"
+  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "ArrayBuilder::push" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::set"
 }
 export let rec pc_emit: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, expr) -> {
   match expr {
@@ -24015,11 +24015,17 @@ export let gen_str_concat_body: () -> Bytes = () -> {
   emit_i64_or(b)
   b
 }
-export let gen_string_join_body: (Int, Int, Int) -> Bytes = (arr_len_idx, arr_get_idx, str_concat_idx) -> {
+export let gen_string_join_body: (Bool, Int, Int, Int) -> Bytes = (enable_rc, arr_len_idx, arr_get_idx, str_concat_idx) -> {
   let _ = str_concat_idx
   let b = bytebuf_new()
   emit_local_get(b, 0)
   emit_call(b, arr_len_idx)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  } else {
+    ()
+  }
   emit_i32_wrap_i64(b)
   emit_local_set(b, 2)
   emit_local_get(b, 2)
@@ -24050,6 +24056,12 @@ export let gen_string_join_body: (Int, Int, Int) -> Bytes = (arr_len_idx, arr_ge
   emit_local_get(b, 0)
   emit_local_get(b, 3)
   emit_i64_extend_i32_u(b)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  } else {
+    ()
+  }
   emit_call(b, arr_get_idx)
   emit_local_set(b, 11)
   emit_local_get(b, 4)
@@ -24110,6 +24122,12 @@ export let gen_string_join_body: (Int, Int, Int) -> Bytes = (arr_len_idx, arr_ge
   emit_local_get(b, 0)
   emit_local_get(b, 3)
   emit_i64_extend_i32_u(b)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  } else {
+    ()
+  }
   emit_call(b, arr_get_idx)
   emit_local_set(b, 11)
   emit_local_get(b, 11)
@@ -24414,7 +24432,7 @@ export let gen_str_substring_body: (Bool) -> Bytes = (enable_rc) -> {
   emit_i64_or(b)
   b
 }
-export let gen_string_contains_body: (Int) -> Bytes = (string_index_of_idx) -> {
+export let gen_string_contains_body: (Bool, Int) -> Bytes = (enable_rc, string_index_of_idx) -> {
   let b = bytebuf_new()
   emit_local_get(b, 0)
   emit_local_get(b, 1)
@@ -24422,6 +24440,10 @@ export let gen_string_contains_body: (Int) -> Bytes = (string_index_of_idx) -> {
   emit_i64_const(b, 0)
   emit_i64_ge_s(b)
   emit_i64_extend_i32_u(b)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
   b
 }
 export let gen_string_index_of_body: (Bool, Int, Int, Int) -> Bytes = (enable_rc, str_len_idx, str_substring_idx, str_eq_idx) -> {
@@ -24690,6 +24712,10 @@ export let gen_string_ends_with_body: (Bool, Int, Int, Int) -> Bytes = (enable_r
   emit_local_get(b, 1)
   emit_call(b, str_eq_idx)
   emit_end(b)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
   b
 }
 let static_arr_get_body_bytes = Bytes::from_array([
@@ -24784,7 +24810,7 @@ let static_identity_body_bytes = Bytes::from_array([
 export let static_identity_body: () -> Bytes = () -> {
   static_identity_body_bytes
 }
-export let gen_str_from_char_code_body: () -> Bytes = () -> {
+export let gen_str_from_char_code_body: (Bool) -> Bytes = (enable_rc) -> {
   let b = bytebuf_new()
   emit_global_get(b, 0)
   emit_local_tee(b, 1)
@@ -24798,6 +24824,12 @@ export let gen_str_from_char_code_body: () -> Bytes = () -> {
   emit_heap_memory_grow_check(b)
   emit_local_get(b, 1)
   emit_local_get(b, 0)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  } else {
+    ()
+  }
   emit_i32_wrap_i64(b)
   emit_i32_store8(b, 0, 0)
   emit_local_get(b, 1)
@@ -24846,6 +24878,10 @@ export let gen_string_starts_with_body: (Bool, Int, Int, Int) -> Bytes = (enable
   emit_local_get(b, 1)
   emit_call(b, str_eq_idx)
   emit_end(b)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
   b
 }
 let static_print_i64_body_bytes = Bytes::from_array([
@@ -26374,7 +26410,7 @@ let cc_is_borrow_ret_call: (Expr) -> Bool = (e) -> {
   }
 }
 let cc_is_borrow_arg0_call: (String) -> Bool = (f) -> {
-  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "ArrayBuilder::push" || f == "MapBuilder::set" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::set"
+  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "ArrayBuilder::push" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::set"
 }
 let ts_known_int: (Expr, Array[String], CompileCtx) -> Bool = (e, local_names, ctx) -> {
   let tag = expr_tag(e)
@@ -31877,7 +31913,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   }
   Array::push(meta_i32, 1)
   Array::push(meta_i64, 0)
-  Array::push(bodies, gen_str_from_char_code_body())
+  Array::push(bodies, gen_str_from_char_code_body(enable_rc))
   Array::push(meta_i32, 1)
   Array::push(meta_i64, 0)
   if enable_rc {
@@ -31909,7 +31945,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   }
   Array::push(meta_i32, 0)
   Array::push(meta_i64, 0)
-  Array::push(bodies, gen_string_join_body(arr_len_idx, arr_get_idx, str_concat_idx))
+  Array::push(bodies, gen_string_join_body(enable_rc, arr_len_idx, arr_get_idx, str_concat_idx))
   Array::push(meta_i32, 9)
   Array::push(meta_i64, 1)
   Array::push(bodies, static_fs_stub_body())
@@ -31948,7 +31984,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   Array::push(bodies, gen_string_index_of_body(enable_rc, str_len_idx, str_substring_idx, str_eq_idx))
   Array::push(meta_i32, 3)
   Array::push(meta_i64, 1)
-  Array::push(bodies, gen_string_contains_body(string_index_of_idx))
+  Array::push(bodies, gen_string_contains_body(enable_rc, string_index_of_idx))
   Array::push(meta_i32, 0)
   Array::push(meta_i64, 0)
   Array::push(bodies, gen_string_starts_with_body(enable_rc, str_len_idx, str_substring_idx, str_eq_idx))
@@ -33958,7 +33994,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "d7436516f80120d9"
+  "874d3eb5cfb86655"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647

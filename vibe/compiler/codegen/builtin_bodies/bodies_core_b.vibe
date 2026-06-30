@@ -274,12 +274,21 @@ export let gen_str_concat_body: () -> Bytes = () -> {
 // meta_i32=9 / meta_i64=1 in linked_compile in sync. arr_len/arr_get use the
 // untagged convention (matching the prior body); ptr/len are extracted exactly
 // as gen_str_concat_body does.
-export let gen_string_join_body: (Int, Int, Int) -> Bytes = (arr_len_idx, arr_get_idx, str_concat_idx) -> {
+export let gen_string_join_body: (Bool, Int, Int, Int) -> Bytes = (enable_rc, arr_len_idx, arr_get_idx, str_concat_idx) -> {
   let _ = str_concat_idx
   let b = bytebuf_new()
-  // n = arr_len(arr)
+  // n = arr_len(arr). Under RC `arr_len` returns the length TAGGED (len<<1) and
+  // `arr_get` expects the index TAGGED (#705) — this body otherwise uses the raw
+  // untagged convention, so untag the count here and tag each index below, or
+  // the loop runs 2*len times (OOB) and reads element i/2.
   emit_local_get(b, 0)
   emit_call(b, arr_len_idx)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  } else {
+    ()
+  }
   emit_i32_wrap_i64(b)
   emit_local_set(b, 2)
   // empty array -> empty string (0)
@@ -313,6 +322,12 @@ export let gen_string_join_body: (Int, Int, Int) -> Bytes = (arr_len_idx, arr_ge
   emit_local_get(b, 0)
   emit_local_get(b, 3)
   emit_i64_extend_i32_u(b)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  } else {
+    ()
+  }
   emit_call(b, arr_get_idx)
   emit_local_set(b, 11)
   emit_local_get(b, 4)
@@ -378,6 +393,12 @@ export let gen_string_join_body: (Int, Int, Int) -> Bytes = (arr_len_idx, arr_ge
   emit_local_get(b, 0)
   emit_local_get(b, 3)
   emit_i64_extend_i32_u(b)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  } else {
+    ()
+  }
   emit_call(b, arr_get_idx)
   emit_local_set(b, 11)
   emit_local_get(b, 11)
@@ -729,14 +750,21 @@ export let gen_fs_exists_stub_body: () -> Bytes = () -> {
   b
 }
 
-export let gen_string_contains_body: (Int) -> Bytes = (string_index_of_idx) -> {
+export let gen_string_contains_body: (Bool, Int) -> Bytes = (enable_rc, string_index_of_idx) -> {
   let b = bytebuf_new()
   emit_local_get(b, 0)
   emit_local_get(b, 1)
   emit_call(b, string_index_of_idx)
+  // index_of returns a tagged index (-2 for "not found") under RC; `>= 0` still
+  // holds since the tag preserves sign. Tag the resulting Bool into the value
+  // world (true=2/false=0).
   emit_i64_const(b, 0)
   emit_i64_ge_s(b)
   emit_i64_extend_i32_u(b)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
   b
 }
 
@@ -1017,6 +1045,13 @@ export let gen_string_ends_with_body: (Bool, Int, Int, Int) -> Bytes = (enable_r
   emit_local_get(b, 1)
   emit_call(b, str_eq_idx)
   emit_end(b)
+  // ADR-0055: starts_with/ends_with return a value-world Bool. str_eq returns raw
+  // 0/1 and the needle-too-long branch returns raw 0, so tag the unified if
+  // result (true=2) so callers comparing `== true` or storing it see the tag.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
   b
 }
 
@@ -1294,7 +1329,7 @@ export let gen_fs_stat_token_stub_body: () -> Bytes = () -> {
   b
 }
 
-export let gen_str_from_char_code_body: () -> Bytes = () -> {
+export let gen_str_from_char_code_body: (Bool) -> Bytes = (enable_rc) -> {
   let b = bytebuf_new()
   emit_global_get(b, 0)
   emit_local_tee(b, 1)
@@ -1308,6 +1343,15 @@ export let gen_str_from_char_code_body: () -> Bytes = () -> {
   emit_heap_memory_grow_check(b)
   emit_local_get(b, 1)
   emit_local_get(b, 0)
+  // ADR-0055 #705: the char code arrives as a tagged Int (code<<1, see
+  // gen_str_char_code_at_body); untag before storing the byte, or every byte is
+  // doubled (e.g. decode_string produced 'h'<<1='\xd0'… so `== "hello"` failed).
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  } else {
+    ()
+  }
   emit_i32_wrap_i64(b)
   emit_i32_store8(b, 0, 0)
   emit_local_get(b, 1)
@@ -1357,6 +1401,13 @@ export let gen_string_starts_with_body: (Bool, Int, Int, Int) -> Bytes = (enable
   emit_local_get(b, 1)
   emit_call(b, str_eq_idx)
   emit_end(b)
+  // ADR-0055: starts_with/ends_with return a value-world Bool. str_eq returns raw
+  // 0/1 and the needle-too-long branch returns raw 0, so tag the unified if
+  // result (true=2) so callers comparing `== true` or storing it see the tag.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
   b
 }
 
