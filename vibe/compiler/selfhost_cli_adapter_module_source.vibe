@@ -21858,6 +21858,42 @@ export let compile_expr_tail5: (Bytes, Expr, Array[String], Int, CompileCtx, Int
     _ => throw("unsupported expression in codegen: unknown")
   }
 }
+let t4_emit_rc_dup_guarded: (Bytes, Int) -> Unit = (buf, local_idx) -> {
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, 1)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_if_void(buf)
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, 32)
+  emit_i64_shr_s(buf)
+  emit_i64_eqz(buf)
+  emit_if_void(buf)
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 1)
+  emit_i32_add(buf)
+  emit_i32_store(buf, 2, 0)
+  emit_end(buf)
+  emit_end(buf)
+}
+let expr_is_projection: (Expr) -> Bool = (e) -> {
+  match e {
+    EDot(_, _, _) => true,
+    _ => false
+  }
+}
 export let compile_expr_tail4: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, expr, local_names, next_local, ctx, ld, compile_expr) -> {
   match expr {
     EDot(obj, field, _) => {
@@ -21954,6 +21990,11 @@ export let compile_expr_tail4: (Bytes, Expr, Array[String], Int, CompileCtx, Int
           Array::push(local_names, "__rec_val")
           emit_local_set(buf, val_local)
           nl_r = nl_r + 1
+          if ctx.enable_rc && expr_is_projection(fexpr) {
+            t4_emit_rc_dup_guarded(buf, val_local)
+          } else {
+            ()
+          }
           emit_local_get(buf, ptr_local)
           emit_i32_wrap_i64(buf)
           emit_local_get(buf, val_local)
@@ -33166,7 +33207,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "60e3fae1d12abc32"
+  "788173f2c599e1d4"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647
