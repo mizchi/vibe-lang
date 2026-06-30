@@ -9,7 +9,7 @@ import .. / common_analysis {
 }
 
 import .. / common_base {
-  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_heap_grow_after_heap_set, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
+  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_rc_dup_guarded, emit_binop_op, emit_heap_grow_after_heap_set, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
 }
 
 import .. / common_extractors {
@@ -37,40 +37,6 @@ import ./compile_match.vibe {
 }
 
 //# Functions
-
-// Guarded rc_dup of the heap value in `local_idx` (no-op for scalars/strings):
-// if the value is odd (heap) with a zero high word, increment its rc_count at
-// block-4. Mirrors emit_rc_dup_guarded in compile_expr_tail.vibe.
-let t4_emit_rc_dup_guarded: (Bytes, Int) -> Unit = (buf, local_idx) -> {
-  emit_local_get(buf, local_idx)
-  emit_i64_const(buf, 1)
-  emit_i64_and(buf)
-  emit_i32_wrap_i64(buf)
-  emit_if_void(buf)
-  emit_local_get(buf, local_idx)
-  emit_i64_const(buf, 32)
-  emit_i64_shr_s(buf)
-  emit_i64_eqz(buf)
-  emit_if_void(buf)
-  emit_local_get(buf, local_idx)
-  emit_i64_const(buf, -2)
-  emit_i64_and(buf)
-  emit_i32_wrap_i64(buf)
-  emit_i32_const(buf, 4)
-  emit_i32_sub(buf)
-  emit_local_get(buf, local_idx)
-  emit_i64_const(buf, -2)
-  emit_i64_and(buf)
-  emit_i32_wrap_i64(buf)
-  emit_i32_const(buf, 4)
-  emit_i32_sub(buf)
-  emit_i32_load(buf, 2, 0)
-  emit_i32_const(buf, 1)
-  emit_i32_add(buf)
-  emit_i32_store(buf, 2, 0)
-  emit_end(buf)
-  emit_end(buf)
-}
 
 // A field projection `a.f` (EDot) read as a record-field value is a BORROW of
 // the source aggregate. The constructed record OWNS its fields (its drop class
@@ -195,7 +161,7 @@ export let compile_expr_tail4: (Bytes, Expr, Array[String], Int, CompileCtx, Int
           emit_local_set(buf, val_local)
           nl_r = nl_r + 1
           if ctx.enable_rc && expr_is_projection(fexpr) {
-            t4_emit_rc_dup_guarded(buf, val_local)
+            emit_rc_dup_guarded(buf, val_local)
           } else {
             ()
           }

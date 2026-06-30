@@ -13,7 +13,7 @@ import .. / common_analysis {
 }
 
 import .. / common_base {
-  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, effect_name_to_tag, effect_op_index, emit_binop_op, emit_box_float, emit_heap_grow_after_heap_set, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_gt_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_index_one, emit_str_ref, emit_unbox_float, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
+  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_rc_dup_guarded, effect_name_to_tag, effect_op_index, emit_binop_op, emit_box_float, emit_heap_grow_after_heap_set, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_gt_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_index_one, emit_str_ref, emit_unbox_float, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
 }
 
 import .. / common_extractors {
@@ -33,39 +33,6 @@ import ./compile_match.vibe {
 }
 
 //# Functions
-
-// Guarded rc_dup of the heap value in `local_idx` (no-op for scalars/strings).
-// Mirrors emit_rc_dup_guarded in compile_expr_tail.vibe.
-let cc_emit_rc_dup_guarded: (Bytes, Int) -> Unit = (buf, local_idx) -> {
-  emit_local_get(buf, local_idx)
-  emit_i64_const(buf, 1)
-  emit_i64_and(buf)
-  emit_i32_wrap_i64(buf)
-  emit_if_void(buf)
-  emit_local_get(buf, local_idx)
-  emit_i64_const(buf, 32)
-  emit_i64_shr_s(buf)
-  emit_i64_eqz(buf)
-  emit_if_void(buf)
-  emit_local_get(buf, local_idx)
-  emit_i64_const(buf, -2)
-  emit_i64_and(buf)
-  emit_i32_wrap_i64(buf)
-  emit_i32_const(buf, 4)
-  emit_i32_sub(buf)
-  emit_local_get(buf, local_idx)
-  emit_i64_const(buf, -2)
-  emit_i64_and(buf)
-  emit_i32_wrap_i64(buf)
-  emit_i32_const(buf, 4)
-  emit_i32_sub(buf)
-  emit_i32_load(buf, 2, 0)
-  emit_i32_const(buf, 1)
-  emit_i32_add(buf)
-  emit_i32_store(buf, 2, 0)
-  emit_end(buf)
-  emit_end(buf)
-}
 
 // A field projection `a.f` (EDot) passed as an argument to an owning user
 // function (which drops its parameters) is a borrow of the source aggregate.
@@ -235,7 +202,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
           // returned while `b` is dropped). Mirrors the ERecord field-store dup
           // (#704). Perceus emits no action for bare projections.
           if ctx.enable_rc && cc_is_projection(carg_c) {
-            cc_emit_rc_dup_guarded(buf, val_local)
+            emit_rc_dup_guarded(buf, val_local)
           } else {
             ()
           }
@@ -2540,7 +2507,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
           if ctx.enable_rc && cc_is_projection(carg) && !borrows_this {
             Array::push(local_names, "__argdup")
             emit_local_tee(buf, nl)
-            cc_emit_rc_dup_guarded(buf, nl)
+            emit_rc_dup_guarded(buf, nl)
             nl = nl + 1
           } else {
             ()

@@ -5,7 +5,7 @@ import .. / .. / core {
 }
 
 import .. / wasm_emit {
-  emit_call, emit_call_indirect, emit_else, emit_end, emit_i32_const, emit_i32_load, emit_i32_store, emit_i32_store8, emit_i32_wrap_i64, emit_i64_add, emit_i64_and, emit_i64_const, emit_i64_div_s, emit_i64_eq, emit_i64_eqz, emit_i64_extend_i32_s, emit_i64_ge_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_load, emit_i64_lt_s, emit_i64_mul, emit_i64_ne, emit_i64_or, emit_i64_rem_s, emit_i64_shl, emit_i64_shr_s, emit_i64_store, emit_i64_sub, emit_i64_xor, emit_if_void, emit_local_get, emit_local_set
+  emit_call, emit_call_indirect, emit_else, emit_end, emit_i32_add, emit_i32_const, emit_i32_load, emit_i32_store, emit_i32_store8, emit_i32_sub, emit_i32_wrap_i64, emit_i64_add, emit_i64_and, emit_i64_const, emit_i64_div_s, emit_i64_eq, emit_i64_eqz, emit_i64_extend_i32_s, emit_i64_ge_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_load, emit_i64_lt_s, emit_i64_mul, emit_i64_ne, emit_i64_or, emit_i64_rem_s, emit_i64_shl, emit_i64_shr_s, emit_i64_store, emit_i64_sub, emit_i64_xor, emit_if_void, emit_local_get, emit_local_set
 }
 
 //# Types
@@ -751,6 +751,43 @@ export let emit_index_one: (Bytes, CompileCtx) -> Unit = (buf, ctx) -> {
   } else {
     emit_i64_const(buf, 1)
   }
+}
+
+// Guarded rc_dup of the heap value in `local_idx` (no-op for scalars/strings):
+// if it is odd (a heap pointer) with a zero high word (not a string fat
+// pointer), increment its rc_count at block-4. The single canonical copy — the
+// codegen files (compile_expr_tail / _tail4 / _tail6 / compile_match /
+// compile_lambda / compile_call / linked_compile) call this instead of keeping
+// per-file duplicates.
+export let emit_rc_dup_guarded: (Bytes, Int) -> Unit = (buf, local_idx) -> {
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, 1)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_if_void(buf)
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, 32)
+  emit_i64_shr_s(buf)
+  emit_i64_eqz(buf)
+  emit_if_void(buf)
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 1)
+  emit_i32_add(buf)
+  emit_i32_store(buf, 2, 0)
+  emit_end(buf)
+  emit_end(buf)
 }
 
 export let fn_type_param_types: (Option[TypeExpr]) -> Option[Array[TypeExpr]] = (ty) -> {
