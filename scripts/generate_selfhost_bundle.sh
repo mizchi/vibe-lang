@@ -2,6 +2,7 @@
 # Generate selfhost_sources_bundle.vibe — all compiler source files as string constants.
 # This allows the selfhost WASM to compile itself without filesystem access.
 set -euo pipefail
+: "${VIBE_RC:=0}"; export VIBE_RC  # cutover: pin the compiler self-build / gate baseline to bump (RC only when explicitly VIBE_RC=1)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT_PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"

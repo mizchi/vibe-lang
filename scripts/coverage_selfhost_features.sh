@@ -9,6 +9,7 @@
 # compile_match/compile_lambda/emit_assignop_op) clusters the bulk corpus leaves
 # dark. Reuses the corpus's instrumented compiler; no full corpus re-run needed.
 set -uo pipefail
+: "${VIBE_RC:=0}"; export VIBE_RC  # cutover: pin the compiler self-build / gate baseline to bump (RC only when explicitly VIBE_RC=1)
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; cd "$ROOT"
 OUT="_build/coverage/selfhost-corpus"
 COMP="$OUT/compiler_cov.wasm"
