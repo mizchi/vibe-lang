@@ -856,7 +856,17 @@ export let rec md_consume_count: (Expr, String) -> Int = (e, name) -> {
         mx = md_max(mx, md_consume_count(v, name))
         i = i + 1
       }
-      md_consume_count(s, name) + mx
+      // A bare `match name { .. }` BORROWS the scrutinee (its fields become
+      // borrowed views reclaimed by the owner's recursive drop); it does not
+      // consume `name`. Counting it as a consume would over-dup a re-matched
+      // borrowed tail (e.g. deeply-nested `match restN`), leaking/corrupting
+      // the chain. A non-ident scrutinee may still consume `name` in a
+      // sub-expression, so recurse there.
+      let scr = match s {
+        EIdent(_, _) => 0,
+        _ => md_consume_count(s, name)
+      }
+      scr + mx
     },
     EHandle(s, arms) => {
       let mut mx = 0
@@ -866,7 +876,11 @@ export let rec md_consume_count: (Expr, String) -> Int = (e, name) -> {
         mx = md_max(mx, md_consume_count(v, name))
         i = i + 1
       }
-      md_consume_count(s, name) + mx
+      let scr = match s {
+        EIdent(_, _) => 0,
+        _ => md_consume_count(s, name)
+      }
+      scr + mx
     },
     EWhile(c, b) => md_consume_count(c, name) + md_consume_count(b, name),
     ELoop(params, b) => {
