@@ -280,12 +280,29 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       emit_i64_eq(buf)
       emit_i64_extend_i32_s(buf)
+      // ADR-0055: under RC a Bool is a TAGGED scalar (true = 1<<1). The raw
+      // i64.eq result is 0/1 (untagged); tag it so `eq(..) == true`/`if`/derived
+      // comparisons see the same representation as a bool literal (#705 — without
+      // this, `eq(a,b) == true` compared untagged 1 against tagged 2 and failed).
+      // The bump backend leaves bools untagged, so only shift under RC.
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shl(buf)
+      } else {
+        ()
+      }
       nl
     }
     else if !prefer_bound_call && fname == "not" {
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       emit_i64_eqz(buf)
       emit_i64_extend_i32_s(buf)
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shl(buf)
+      } else {
+        ()
+      }
       nl
     }
     else if !prefer_bound_call && fname == "await" {
