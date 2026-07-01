@@ -229,7 +229,18 @@ export struct CompileCtx {
   // this log and emits that many EXTRA rc_drop calls, exactly compensating
   // without touching the plan's borrow/consume decisions anywhere else (so it
   // cannot perturb a path the plan and codegen already agree on).
-  loop_consumed_names: Array[String]
+  loop_consumed_names: Array[String];
+  // #707: names of user-defined `let`s whose body provably tail-reaches only
+  // `Array::get`/`Map::get`/`__index` (transitively, through if/match/wrapper
+  // calls to other names already in this list) — computed once per compile via
+  // `compute_borrow_returning_names` over the merged program. compile_call's
+  // `cc_is_borrow_ret_call` treats a call to one of these exactly like a direct
+  // `Array::get`/`Map::get`/`__index` call: its result is a borrowed view of a
+  // heap element (no refcount bump), so passing it into an OWNING position
+  // (ctor field / consuming call arg) needs the same guarded rc_dup or the
+  // element is double-freed when its container is later dropped (e.g. a
+  // `peek(tokens, pos)` wrapper around `Array::get`). Empty outside RC.
+  borrow_ret_names: Array[String]
 }
 
 // Interior-line breakpoints (span-arc step5, multi-file): per-file provenance the

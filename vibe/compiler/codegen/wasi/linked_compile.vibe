@@ -13,7 +13,7 @@ import .. / .. / normalize {
 }
 
 import .. / .. / perceus {
-  PerceusAction, build_perceus_plan, build_perceus_plan_with_params, elaborate_heap_params, pa_is_alias_dup, pa_is_drop, pa_is_dup, param_is_heap_in_body
+  PerceusAction, build_perceus_plan, build_perceus_plan_with_params, compute_borrow_returning_names, elaborate_heap_params, pa_is_alias_dup, pa_is_drop, pa_is_dup, param_is_heap_in_body
 }
 
 import .. / builtin_bodies {
@@ -92,6 +92,14 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   // type params are stripped (just below). No-op unless a method-bearing trait
   // is declared, and idempotent if an earlier pipeline stage already desugared.
   desugar_trait_dicts(stmts)
+  // #707: functions whose entire body is transitively a tail-call to a
+  // borrow-returning builtin (Array::get/Map::get/__index) -- e.g. a thin
+  // `peek(toks, pos) -> Array::get(toks, pos)` wrapper. Computed once over the
+  // whole merged program and threaded into every function's Perceus plan so a
+  // `let v = peek(...)` binding (including the match-scrutinee-lift's
+  // `let __m_scrut = peek(...)`, see normalize/index.vibe) is recognized the
+  // same as a direct `let v = Array::get(...)` one.
+  let lc_borrow_ret_names = compute_borrow_returning_names(stmts)
   let fn_names_list = lc_fresh_string_array()
   let fn_param_counts = lc_fresh_int_array()
   let fn_needs_env_list = lc_fresh_bool_array()
@@ -1473,7 +1481,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       } else {
         __bi_expr
       }
-      let plan = build_perceus_plan_with_params(lc_norm_params, fbody)
+      let plan = build_perceus_plan_with_params(lc_norm_params, fbody, lc_borrow_ret_names)
       let mut lhpi = 0
       while lhpi < Array::length(lc_norm_params) {
         let (lhpn, lhpt) = Array::get(lc_norm_params, lhpi)
@@ -1557,7 +1565,8 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       dbg_line_nl: dbg_nls,
       dbg_line_file_id: dbg_fid,
       loop_borrowed_names: lc_fresh_string_array(),
-      loop_consumed_names: lc_fresh_string_array()
+      loop_consumed_names: lc_fresh_string_array(),
+      borrow_ret_names: lc_borrow_ret_names
     }
     if is_efn(__bi_expr) {
       let __bi_params = get_efn_params(__bi_expr)

@@ -11876,7 +11876,8 @@ export struct CompileCtx {
   dbg_line_nl: Array[Int];
   dbg_line_file_id: Int;
   loop_borrowed_names: Array[String];
-  loop_consumed_names: Array[String]
+  loop_consumed_names: Array[String];
+  borrow_ret_names: Array[String]
 }
 export struct DbgProv {
   files: Array[String];
@@ -20861,13 +20862,126 @@ let fn_param_names: (Array[(String, Option[TypeExpr])]) -> Array[String] = (para
 let is_v128_box_call: (String) -> Bool = (fname) -> {
   fname == "v128_load" || fname == "v128_splat_i8x16" || fname == "v128_eq_i8x16" || fname == "v128_le_u_i8x16" || fname == "v128_ge_u_i8x16" || fname == "v128_and" || fname == "v128_or" || fname == "v128_not"
 }
-let is_scalar_expr: (Expr) -> Bool = (e) -> {
+let array_contains_str_pctx: (Array[String], String) -> Bool = (arr, s) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arr) {
+    if Array::get(arr, i) == s {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+let borrow_ret_marker = "BR:"
+let is_borrow_ret_fname: (PCtx, String) -> Bool = (ctx, fname) -> {
+  fname == "Array::get" || fname == "Map::get" || fname == "__index" || array_contains_str_pctx(ctx.pctx_names, String::concat(borrow_ret_marker, fname))
+}
+let tail_is_borrow_ret_safe: (Array[String], Expr) -> Bool = (known, e0) -> {
+  let worklist = [e0]
+  let mut all_safe = true
+  let mut i = 0
+  while i < Array::length(worklist) {
+    match Array::get(worklist, i) {
+      ELet(_, _, b) => Array::push(worklist, b),
+      ELetMut(_, _, b) => Array::push(worklist, b),
+      ELetRec(_, _, b) => Array::push(worklist, b),
+      ESeq(_, b) => Array::push(worklist, b),
+      EAssign(_, _, b) => Array::push(worklist, b),
+      EAssignOp(_, _, _, b) => Array::push(worklist, b),
+      EIf(_, t, el) => {
+        Array::push(worklist, t)
+        Array::push(worklist, el)
+      },
+      EMatch(_, arms) => {
+        let mut ai = 0
+        while ai < Array::length(arms) {
+          let (_p, ae) = Array::get(arms, ai)
+          Array::push(worklist, ae)
+          ai = ai + 1
+        }
+      },
+      ECall(callee_e, _, _) =>
+      match callee_e {
+        EIdent(callee, _) =>
+        if !array_contains_str_pctx(known, callee) {
+          all_safe = false
+        } else {
+          ()
+        },
+        _ => {
+          all_safe = false
+        }
+      },
+      EIdent(_, _) => (),
+      _ => {
+        all_safe = false
+      }
+    }
+    i = i + 1
+  }
+  all_safe
+}
+let rec strip_wrappers_for_borrow_ret: (Expr) -> Expr = (e) -> {
+  match e {
+    ELet(_, _, b) => strip_wrappers_for_borrow_ret(b),
+    ELetMut(_, _, b) => strip_wrappers_for_borrow_ret(b),
+    ELetRec(_, _, b) => strip_wrappers_for_borrow_ret(b),
+    ESeq(_, b) => strip_wrappers_for_borrow_ret(b),
+    EAssign(_, _, b) => strip_wrappers_for_borrow_ret(b),
+    EAssignOp(_, _, _, b) => strip_wrappers_for_borrow_ret(b),
+    _ => e
+  }
+}
+export let compute_borrow_returning_names: (Array[Stmt]) -> Array[String] = (stmts) -> {
+  let known: Array[String] = [
+    "Array::get", "Map::get", "__index"
+  ]
+  let mut changed = true
+  while changed {
+    changed = false
+    let mut i = 0
+    while i < Array::length(stmts) {
+      match Array::get(stmts, i) {
+        SLet(_, _, name, _, value) =>
+        if !array_contains_str_pctx(known, name) {
+          match value {
+            EFn(_, _, _, _, _, body) => {
+              let top = strip_wrappers_for_borrow_ret(body)
+              let eligible_shape = match top {
+                ECall(_, _, _) => true,
+                EIf(_, _, _) => true,
+                EMatch(_, _) => true,
+                _ => false
+              }
+              if eligible_shape && tail_is_borrow_ret_safe(known, top) {
+                Array::push(known, name)
+                changed = true
+              } else {
+                ()
+              }
+            },
+            _ => ()
+          }
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      i = i + 1
+    }
+  }
+  known
+}
+let is_scalar_expr: (PCtx, Expr) -> Bool = (ctx, e) -> {
   match e {
     EInt(_) => true,
     EBool(_) => true,
     EFloat(_) => true,
     EUnit => true,
-    ECall(EIdent(fname, _), _, _) => is_v128_box_call(fname),
+    ECall(EIdent(fname, _), _, _) => is_v128_box_call(fname) || is_borrow_ret_fname(ctx, fname),
     _ => false
   }
 }
@@ -21778,12 +21892,12 @@ export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, ex
     ,
     ELet(name, value, body) => {
       pc_count(ctx, scope, value)
-      let id = pc_declare(ctx, name, is_scalar_expr(value))
+      let id = pc_declare(ctx, name, is_scalar_expr(ctx, value))
       pc_count(ctx, Map::set(scope, name, id), body)
     },
     ELetMut(name, value, body) => {
       pc_count(ctx, scope, value)
-      let id = pc_declare(ctx, name, is_scalar_expr(value))
+      let id = pc_declare(ctx, name, is_scalar_expr(ctx, value))
       pc_count(ctx, Map::set(scope, name, id), body)
     },
     ELetRec(name, value, body) => {
@@ -21803,7 +21917,7 @@ export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, ex
     ESeq(a, b) => {
       pc_count(ctx, scope, a)
       let nm = next_seq_name(ctx)
-      let _id = pc_declare(ctx, nm, is_scalar_expr(a))
+      let _id = pc_declare(ctx, nm, is_scalar_expr(ctx, a))
       pc_count(ctx, scope, b)
     },
     EBinOp(_op, l, r) => {
@@ -21909,7 +22023,7 @@ export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, ex
       while i < Array::length(params) {
         let p = Array::get(params, i)
         pc_count(ctx, scope, p.1)
-        let pid = pc_declare(ctx, p.0, is_scalar_expr(p.1))
+        let pid = pc_declare(ctx, p.0, is_scalar_expr(ctx, p.1))
         s = Map::set(s, p.0, pid)
         i = i + 1
       }
@@ -22273,8 +22387,13 @@ export let param_is_heap_in_body: (String, Option[TypeExpr], Expr) -> Bool = (na
     }
   }
 }
-export let build_perceus_plan_with_params: (Array[(String, Option[TypeExpr])], Expr) -> Array[PerceusAction] = (params, body) -> {
+export let build_perceus_plan_with_params: (Array[(String, Option[TypeExpr])], Expr, Array[String]) -> Array[PerceusAction] = (params, body, borrow_ret_names) -> {
   let ctx = pctx_new()
+  let mut bri = 0
+  while bri < Array::length(borrow_ret_names) {
+    Array::push(ctx.pctx_names, String::concat(borrow_ret_marker, Array::get(borrow_ret_names, bri)))
+    bri = bri + 1
+  }
   let mut scope: Map[String, Int] = map {
   }
   let mut pi = 0
@@ -25390,7 +25509,7 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
     ""
   ], 0, 0)
   if ctx.enable_rc {
-    let lam_plan = build_perceus_plan_with_params(norm_params, fn_body)
+    let lam_plan = build_perceus_plan_with_params(norm_params, fn_body, ctx.borrow_ret_names)
     let mut ldi = 0
     while ldi < Array::length(lam_plan) {
       let lpa = Array::get(lam_plan, ldi)
@@ -25450,7 +25569,8 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
     ], 0, 0),
     loop_consumed_names: Array::slice([
       ""
-    ], 0, 0)
+    ], 0, 0),
+    borrow_ret_names: ctx.borrow_ret_names
   }
   if ctx.enable_rc {
     let mut dpi = 0
@@ -26424,11 +26544,11 @@ let cc_is_projection: (Expr) -> Bool = (e) -> {
     _ => false
   }
 }
-let cc_is_borrow_ret_call: (Expr) -> Bool = (e) -> {
+let cc_is_borrow_ret_call: (Expr, CompileCtx) -> Bool = (e, ctx) -> {
   match e {
     ECall(callee, _, _) =>
     match callee {
-      EIdent(f, _) => f == "Array::get" || f == "Map::get" || f == "__index",
+      EIdent(f, _) => f == "Array::get" || f == "Map::get" || f == "__index" || array_contains_str(ctx.borrow_ret_names, f),
       _ => false
     },
     _ => false
@@ -26586,7 +26706,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
           Array::push(local_names, "__ctor_val")
           emit_local_set(buf, val_local)
           nl_c = nl_c + 1
-          if ctx.enable_rc && (cc_is_projection(carg_c) || cc_is_borrow_ret_call(carg_c)) {
+          if ctx.enable_rc && (cc_is_projection(carg_c) || cc_is_borrow_ret_call(carg_c, ctx)) {
             emit_rc_dup_guarded(buf, val_local)
           } else {
             ()
@@ -28766,7 +28886,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
           nl = ce(buf, carg, local_names, nl, ctx, ld)
           let borrows_this = ci == 0 && cc_is_borrow_arg0_call(fname)
           let is_loop_borrow1 = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx) && !borrows_this
-          if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg) || is_loop_borrow1) && !borrows_this {
+          if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow1) && !borrows_this {
             if is_loop_borrow1 {
               Array::push(ctx.loop_consumed_names, get_eident_name(carg))
             } else {
@@ -30991,6 +31111,7 @@ export let wasi_memory_min_pages_for_heap: (Int) -> Int = (heap_start) -> {
 }
 export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String, String)], Array[(String, String, Int, Int)], Bool, Bool, Bool, Bool, Bool, DbgProv) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, linked_imports, library_mode, enable_rc, coverage, debug_trace, debug_break, prov) -> {
   desugar_trait_dicts(stmts)
+  let lc_borrow_ret_names = compute_borrow_returning_names(stmts)
   let fn_names_list = lc_fresh_string_array()
   let fn_param_counts = lc_fresh_int_array()
   let fn_needs_env_list = lc_fresh_bool_array()
@@ -32267,7 +32388,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       } else {
         __bi_expr
       }
-      let plan = build_perceus_plan_with_params(lc_norm_params, fbody)
+      let plan = build_perceus_plan_with_params(lc_norm_params, fbody, lc_borrow_ret_names)
       let mut lhpi = 0
       while lhpi < Array::length(lc_norm_params) {
         let (lhpn, lhpt) = Array::get(lc_norm_params, lhpi)
@@ -32349,7 +32470,8 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       dbg_line_nl: dbg_nls,
       dbg_line_file_id: dbg_fid,
       loop_borrowed_names: lc_fresh_string_array(),
-      loop_consumed_names: lc_fresh_string_array()
+      loop_consumed_names: lc_fresh_string_array(),
+      borrow_ret_names: lc_borrow_ret_names
     }
     if is_efn(__bi_expr) {
       let __bi_params = get_efn_params(__bi_expr)
@@ -34099,7 +34221,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "0f7af50caab9d0bf"
+  "229dff012bfae1a6"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647
