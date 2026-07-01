@@ -42,12 +42,23 @@ if s2 != s3:
 print(f"[selfhost-only-gate] fixpoint ok: stage2==stage3 ({s2[:12]})")
 PY
 
-# 3b. RC bootstrap gate (#556). The stage build above IS the whole compiler
-# compiled as one unit under the canonical RC (Perceus, ADR-0055) backend — the
-# scenario where #556's `analyze_calls` deep recursion blew the wasm stack. Assert
-# it explicitly (reusing the build just produced), so the RC-bootstrap check is
-# named and guards the iterative `analyze_calls` fix (#681). The pre-cutover
-# RC-vs-default parity gate is obsolete (#594 removed the non-RC backend).
+# 3b. RC bootstrap gate (#556) -- CAVEAT (found #705 bump-removal spike): this
+# reuses the manifest from the bump-pinned build above (VIBE_RC=0, line ~11),
+# so it does NOT perform a fresh seed-compiles-stage1-under-RC build; it only
+# re-checks that manifest's stage2==stage3 sha (already asserted just above).
+# It still guards the #556 `analyze_calls` iterative fix (#681) for whatever
+# backend actually built that manifest, but it is NOT currently evidence that
+# the whole compiler self-hosts correctly under RC end-to-end. A real (fresh,
+# unreused) `VIBE_RC=1 bash scripts/selfhost_generations.sh build --stage3`
+# currently FAILS at seed->stage1 ("not EFn", stale seed) -- and a stage1
+# (built from current, post-#702-fix source) *can* compile a fresh flat source
+# under RC, but the resulting compiler then segfaults (`memory access out of
+# bounds` in parse_let_stmt/parse_program) parsing even a trivial one-line
+# program. This is a distinct, deeper bug from the per-feature RC codegen
+# issues fixed this session (v128 #705, coverage/trace/break #705): it means
+# the compiler's OWN internal RC-managed state is unsound in some pattern its
+# own source uses (parser internals), not yet isolated. Do not remove the
+# bump backend or the VIBE_RC=0 pin above until this is root-caused and fixed.
 VIBE_SELFHOST_RC_BOOTSTRAP_REUSE_GEN="${latest_gen}generation.json" \
   bash scripts/test_selfhost_rc_bootstrap.sh
 
