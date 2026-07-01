@@ -1556,7 +1556,8 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       dbg_line_idx: dbg_line_import_idx,
       dbg_line_nl: dbg_nls,
       dbg_line_file_id: dbg_fid,
-      loop_borrowed_names: lc_fresh_string_array()
+      loop_borrowed_names: lc_fresh_string_array(),
+      loop_consumed_names: lc_fresh_string_array()
     }
     if is_efn(__bi_expr) {
       let __bi_params = get_efn_params(__bi_expr)
@@ -1608,11 +1609,31 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       let mut tail_nl = final_nl
       if enable_rc && rc_drop_idx >= 0 {
         let tail_root = scope_tail_proj_root(body)
+        // #706 leak follow-up: a loop-borrowed param's protective rc_dup (see
+        // compile_call.vibe's cc_is_loop_borrowed_ident sites) is matched by the
+        // callee's OWN internal drop each iteration — it never touches this
+        // function's own slot-held reference. The Perceus plan still counts that
+        // textual occurrence as "one real consume" (so `remaining` hits 0 and no
+        // PaDrop is emitted), leaking the binding's own reference once per such
+        // occurrence. Count each param's occurrences in loop_consumed_names and
+        // emit that many EXTRA rc_drop calls here — purely additive to the
+        // existing rc_drops accounting, so it cannot perturb any decision the
+        // plan and codegen already agree on elsewhere.
         let mut need_dup = false
         let mut tci = 0
         while tci < Array::length(lc_norm_params) {
           let (tcn, _tct) = Array::get(lc_norm_params, tci)
-          if array_contains_str(lc_heap_params, tcn) && array_contains_str(rc_drops, tcn) && tcn == tail_root {
+          let mut tcn_loop_extra = 0
+          let mut tcle = 0
+          while tcle < Array::length(compile_ctx.loop_consumed_names) {
+            if Array::get(compile_ctx.loop_consumed_names, tcle) == tcn {
+              tcn_loop_extra = tcn_loop_extra + 1
+            } else {
+              ()
+            }
+            tcle = tcle + 1
+          }
+          if array_contains_str(lc_heap_params, tcn) && (array_contains_str(rc_drops, tcn) || tcn_loop_extra > 0) && tcn == tail_root {
             need_dup = true
           } else {
             ()
@@ -1630,9 +1651,23 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
         let mut tdj = 0
         while tdj < Array::length(lc_norm_params) {
           let (tdn, _tdt) = Array::get(lc_norm_params, tdj)
-          if array_contains_str(lc_heap_params, tdn) && array_contains_str(rc_drops, tdn) {
-            emit_local_get(body_buf, tdj)
-            emit_call(body_buf, rc_drop_idx)
+          if array_contains_str(lc_heap_params, tdn) {
+            if array_contains_str(rc_drops, tdn) {
+              emit_local_get(body_buf, tdj)
+              emit_call(body_buf, rc_drop_idx)
+            } else {
+              ()
+            }
+            let mut tdle = 0
+            while tdle < Array::length(compile_ctx.loop_consumed_names) {
+              if Array::get(compile_ctx.loop_consumed_names, tdle) == tdn {
+                emit_local_get(body_buf, tdj)
+                emit_call(body_buf, rc_drop_idx)
+              } else {
+                ()
+              }
+              tdle = tdle + 1
+            }
           } else {
             ()
           }

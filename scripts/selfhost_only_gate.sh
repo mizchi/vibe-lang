@@ -2418,18 +2418,22 @@ fi
 rm -rf "$rcdir"
 echo "[selfhost-only-gate] region capture ok"
 
-# 40d. RC reclamation leak guard (#699/#700/#701/#702): a hot loop allocating a
-#      tuple + a captured `let mut` cell + the closure that captures it + a
-#      recursive enum tree consumed by a recursive fn, every iteration, must be
-#      fully reclaimed under VIBE_RC. Compile via the FS-compile path WITH
-#      VIBE_RC=1 (the `vibe run` path — also exercises #701, which wired RC into
-#      FS mode) and measure __heap_ptr: reclamation keeps heap_used a small
-#      constant (~152 B at N=20000), whereas a regression in tuple RC reclaim
-#      (#700), captured-mut cell/closure reclaim (#699), VIBE_RC silently ignored
-#      in FS mode (#701), or the recursive-enum match double-free that trapped at
-#      scale (#702 Blocker B) makes it scale with N (or trap). #700 slipped
-#      precisely because no gate asserted a bounded heap.
-echo "[selfhost-only-gate] 40d/40 RC reclamation leak guard (tuple+cell+closure+enum)"
+# 40d. RC reclamation leak guard (#699/#700/#701/#702/#706): a hot loop
+#      allocating a tuple + a captured `let mut` cell + the closure that
+#      captures it + a recursive enum tree consumed by a recursive fn + a heap
+#      param consumed by a normal call INSIDE a while loop (#706's
+#      parse_module_sections shape), every iteration, must be fully reclaimed
+#      under VIBE_RC. Compile via the FS-compile path WITH VIBE_RC=1 (the
+#      `vibe run` path — also exercises #701, which wired RC into FS mode) and
+#      measure __heap_ptr: reclamation keeps heap_used a small constant (~424 B
+#      at N=20000), whereas a regression in tuple RC reclaim (#700),
+#      captured-mut cell/closure reclaim (#699), VIBE_RC silently ignored in FS
+#      mode (#701), the recursive-enum match double-free that trapped at scale
+#      (#702 Blocker B), or the loop-consumed heap param's own reference never
+#      being dropped (#706 — leaked ~84 B per call before its fix) makes it
+#      scale with N (or trap). #700 slipped precisely because no gate asserted
+#      a bounded heap.
+echo "[selfhost-only-gate] 40d/40 RC reclamation leak guard (tuple+cell+closure+enum+loop-consume)"
 lkdir="_build/_gate_rc_leak"
 rm -rf "$lkdir"; mkdir -p "$lkdir"
 VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
@@ -2446,8 +2450,8 @@ lk_result="$(printf '%s' "$lk_json" | sed -n 's/.*"result":\([0-9]*\).*/\1/p')"
 if [ -z "$lk_used" ]; then
   echo "[selfhost-only-gate] FAIL: could not measure rc_reclaim_leak heap ($lk_json)" >&2; exit 1
 fi
-if [ "$lk_result" != "1400190000" ]; then
-  echo "[selfhost-only-gate] FAIL: rc_reclaim_leak wrong result $lk_result (want 1400190000)" >&2; exit 1
+if [ "$lk_result" != "3200280000" ]; then
+  echo "[selfhost-only-gate] FAIL: rc_reclaim_leak wrong result $lk_result (want 3200280000)" >&2; exit 1
 fi
 if [ "$lk_used" -ge 2000 ]; then
   echo "[selfhost-only-gate] FAIL: rc_reclaim_leak heap_used=$lk_used >= 2000 (RC reclamation regressed; ~800000 == full leak)" >&2; exit 1

@@ -217,7 +217,19 @@ export struct CompileCtx {
   // it after (a shared mutable array; bindings declared inside the body are never
   // added). Empty outside any loop; rc_dup is a no-op under bump, so the
   // bump-built selfhost compiler is unaffected.
-  loop_borrowed_names: Array[String]
+  loop_borrowed_names: Array[String];
+  // #706 leak follow-up: append-only per-function log — one entry per loop-
+  // borrowed identifier name each time compile_call emits the protective
+  // rc_dup (see loop_borrowed_names above). That dup+the callee's own internal
+  // drop cancel out across the loop, so the textual occurrence the Perceus plan
+  // treated as "one real consume" of the binding actually consumes NOTHING from
+  // it — the plan's `remaining` count is therefore one too low per occurrence,
+  // and it omits the function-exit drop the binding still needs. The function
+  // epilogue (linked_compile.vibe) counts each function param's occurrences in
+  // this log and emits that many EXTRA rc_drop calls, exactly compensating
+  // without touching the plan's borrow/consume decisions anywhere else (so it
+  // cannot perturb a path the plan and codegen already agree on).
+  loop_consumed_names: Array[String]
 }
 
 // Interior-line breakpoints (span-arc step5, multi-file): per-file provenance the

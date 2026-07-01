@@ -1,4 +1,4 @@
-// #699/#700/#701/#702 RC reclamation leak guard.
+// #699/#700/#701/#702/#706 RC reclamation leak guard.
 //
 // A hot loop that allocates, every iteration, a tuple + a captured `let mut`
 // cell + the closure that captures it + a recursive enum tree consumed by a
@@ -7,8 +7,13 @@
 // each iteration, so total heap allocated stays a small constant. Without it,
 // heap_used scales with the iteration count — covering regressions in tuple RC
 // reclaim (#700), captured-mut cell/closure reclaim (#699), VIBE_RC being
-// silently ignored in FS-compile mode (#701), and the recursive-enum
-// match-destructuring double-free that trapped at scale (#702 Blocker B).
+// silently ignored in FS-compile mode (#701), the recursive-enum
+// match-destructuring double-free that trapped at scale (#702 Blocker B), and
+// a heap param consumed by a normal (owning) call INSIDE a while loop — whose
+// protective per-iteration dup (#706 core fix) leaves the param's OWN
+// reference unspent unless the function epilogue also compensates for it
+// (#706 leak follow-up; each call to `consume_in_loop` below leaked one array
+// before that fix, scaling heap_used with N).
 //
 // The gate (scripts/selfhost_only_gate.sh step 40d) compiles this under
 // VIBE_RC=1 + VIBE_FS_COMPILE=1 (the `vibe run` path), measures __heap_ptr via
@@ -33,6 +38,27 @@ let ignore_children = (t: Tree) -> Int {
     Leaf(_) => 0,
     Node(l, r) => 7
   }
+}
+
+// #706 leak guard: `sumarr` normally (non-borrow-arg0) consumes its param `a`.
+// `consume_in_loop` calls it inside a `while` loop, so `a` is a heap param
+// consumed at an owning call-arg position inside a loop — the exact #706
+// shape (parse_module_sections' `token_type(tokens, i)`). Each call to
+// `consume_in_loop` must fully reclaim its own `a` (an array literal built at
+// the call site, unreachable afterward) — a per-call leak here scales
+// heap_used with N just like the earlier tuple/enum/closure guards above.
+let sumarr = (a: Array[Int]) -> Int {
+  Array::get(a, 0) + Array::get(a, 1) + Array::get(a, 2)
+}
+
+let consume_in_loop = (a: Array[Int]) -> Int {
+  let mut k = 0
+  let mut s = 0
+  while k < 3 {
+    s = s + sumarr(a)
+    k = k + 1
+  }
+  s
 }
 
 let main = () -> Int {
@@ -68,7 +94,11 @@ let main = () -> Int {
       Some(xs) => Array::length(xs),
       None => 0
     }
-    total = total + t.0 + t.1 + c + sumt(tr) + first + ignored + inlined + blen
+    // #706 leak guard (see consume_in_loop above): a fresh array literal
+    // consumed 3x inside consume_in_loop's own while loop, unreachable after
+    // this call returns.
+    let looped = consume_in_loop([i, i + 1, i + 2])
+    total = total + t.0 + t.1 + c + sumt(tr) + first + ignored + inlined + blen + looped
     i = i + 1
   }
   total

@@ -11875,7 +11875,8 @@ export struct CompileCtx {
   dbg_line_idx: Int;
   dbg_line_nl: Array[Int];
   dbg_line_file_id: Int;
-  loop_borrowed_names: Array[String]
+  loop_borrowed_names: Array[String];
+  loop_consumed_names: Array[String]
 }
 export struct DbgProv {
   files: Array[String];
@@ -25442,6 +25443,9 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
     dbg_line_file_id: ctx.dbg_line_file_id,
     loop_borrowed_names: Array::slice([
       ""
+    ], 0, 0),
+    loop_consumed_names: Array::slice([
+      ""
     ], 0, 0)
   }
   if ctx.enable_rc {
@@ -28751,7 +28755,13 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
           let carg = Array::get(args, ci)
           nl = ce(buf, carg, local_names, nl, ctx, ld)
           let borrows_this = ci == 0 && cc_is_borrow_arg0_call(fname)
-          if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg) || cc_is_loop_borrowed_ident(carg, ctx)) && !borrows_this {
+          let is_loop_borrow1 = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx) && !borrows_this
+          if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg) || is_loop_borrow1) && !borrows_this {
+            if is_loop_borrow1 {
+              Array::push(ctx.loop_consumed_names, get_eident_name(carg))
+            } else {
+              ()
+            }
             Array::push(local_names, "__argdup")
             emit_local_tee(buf, nl)
             emit_rc_dup_guarded(buf, nl)
@@ -28791,6 +28801,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
           let carg = Array::get(args, ci)
           nl = ce(buf, carg, local_names, nl, ctx, ld)
           if ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx) {
+            Array::push(ctx.loop_consumed_names, get_eident_name(carg))
             Array::push(local_names, "__argdup")
             emit_local_tee(buf, nl)
             emit_rc_dup_guarded(buf, nl)
@@ -28821,6 +28832,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       let carg = Array::get(args, ci)
       nl = ce(buf, carg, local_names, nl, ctx, ld)
       if ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx) {
+        Array::push(ctx.loop_consumed_names, get_eident_name(carg))
         Array::push(local_names, "__argdup")
         emit_local_tee(buf, nl)
         emit_rc_dup_guarded(buf, nl)
@@ -32326,7 +32338,8 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       dbg_line_idx: dbg_line_import_idx,
       dbg_line_nl: dbg_nls,
       dbg_line_file_id: dbg_fid,
-      loop_borrowed_names: lc_fresh_string_array()
+      loop_borrowed_names: lc_fresh_string_array(),
+      loop_consumed_names: lc_fresh_string_array()
     }
     if is_efn(__bi_expr) {
       let __bi_params = get_efn_params(__bi_expr)
@@ -32382,7 +32395,17 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
         let mut tci = 0
         while tci < Array::length(lc_norm_params) {
           let (tcn, _tct) = Array::get(lc_norm_params, tci)
-          if array_contains_str(lc_heap_params, tcn) && array_contains_str(rc_drops, tcn) && tcn == tail_root {
+          let mut tcn_loop_extra = 0
+          let mut tcle = 0
+          while tcle < Array::length(compile_ctx.loop_consumed_names) {
+            if Array::get(compile_ctx.loop_consumed_names, tcle) == tcn {
+              tcn_loop_extra = tcn_loop_extra + 1
+            } else {
+              ()
+            }
+            tcle = tcle + 1
+          }
+          if array_contains_str(lc_heap_params, tcn) && (array_contains_str(rc_drops, tcn) || tcn_loop_extra > 0) && tcn == tail_root {
             need_dup = true
           } else {
             ()
@@ -32400,9 +32423,23 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
         let mut tdj = 0
         while tdj < Array::length(lc_norm_params) {
           let (tdn, _tdt) = Array::get(lc_norm_params, tdj)
-          if array_contains_str(lc_heap_params, tdn) && array_contains_str(rc_drops, tdn) {
-            emit_local_get(body_buf, tdj)
-            emit_call(body_buf, rc_drop_idx)
+          if array_contains_str(lc_heap_params, tdn) {
+            if array_contains_str(rc_drops, tdn) {
+              emit_local_get(body_buf, tdj)
+              emit_call(body_buf, rc_drop_idx)
+            } else {
+              ()
+            }
+            let mut tdle = 0
+            while tdle < Array::length(compile_ctx.loop_consumed_names) {
+              if Array::get(compile_ctx.loop_consumed_names, tdle) == tdn {
+                emit_local_get(body_buf, tdj)
+                emit_call(body_buf, rc_drop_idx)
+              } else {
+                ()
+              }
+              tdle = tdle + 1
+            }
           } else {
             ()
           }
@@ -34052,7 +34089,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "49224d42c29b6ce5"
+  "f628aeb80f07f429"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647
