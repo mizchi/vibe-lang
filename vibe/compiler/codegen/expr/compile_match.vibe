@@ -5,11 +5,11 @@ import .. / .. / core {
 }
 
 import .. / common_analysis {
-  collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, is_mut_captured_in
+  collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, is_mut_captured_in, md_consume_count
 }
 
 import .. / common_base {
-  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, cov_emit_branch, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, int_log_reset_above, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
+  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_rc_dup_guarded, cov_emit_branch, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, int_log_reset_above, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
 }
 
 import .. / common_extractors {
@@ -32,6 +32,17 @@ import .. / wasm_emit {
 // conditional match arms whose top pattern is a bare tuple with literal
 // siblings (`(false, n) => ..`), where the binding pass previously emitted
 // nothing and any use of `n` trapped codegen with "undefined variable".
+
+// Emit `n` guarded rc_dups of `local_idx` (one per owning consume of a matched
+// field; see md_consume_count). n<=0 emits nothing.
+let emit_rc_dup_guarded_n: (Bytes, Int, Int) -> Unit = (buf, local_idx, n) -> {
+  let mut k = 0
+  while k < n {
+    emit_rc_dup_guarded(buf, local_idx)
+    k = k + 1
+  }
+}
+
 let rec bind_match_pat: (Bytes, Int, Pat, Bool, Array[String], CompileCtx) -> Unit = (buf, base_local, container_pat, is_ctor_layout, local_names, ctx) -> {
   let elems = if is_ctor_layout {
     get_pctor_args(container_pat)
@@ -599,6 +610,16 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
     }
     let arm_nl = if is_pctor(__cond_p) {
       let cargs_bind = get_pctor_args(__cond_p)
+      // #703/#705: the #702 dup of a matched heap field must give the binding
+      // ONE owned reference per owning consume in the arm body. A field that is
+      // unused, or used only in borrow positions (e.g. only as the borrowed arg0
+      // of Array::get/length), is reclaimed by the scrutinee's recursive drop —
+      // dup'ing it there leaks one reference per match (count 0, no dup). A field
+      // consumed in N>1 owning positions (e.g. a set op's `contains(b, head)`
+      // condition AND `Cons(head, acc)` branch) needs N dups, else it is freed
+      // more times than dup'd -> double free (#705). md_consume_count returns
+      // that upper-bound count along the longest path (conservative: >= actual,
+      // so a genuine consume can never be mis-skipped into a double-free).
       let mut cbi = 0
       while cbi < Array::length(cargs_bind) {
         let __sub_p = Array::get(cargs_bind, cbi)
@@ -611,6 +632,16 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
           emit_i32_wrap_i64(buf)
           emit_i64_load(buf, 3, 8 + cbi * 8)
           emit_local_set(buf, fl)
+          // #702 Blocker B: a matched ctor field is a borrowed view sharing the
+          // scrutinee's refcount. Dup it so consuming the binding (e.g. passing
+          // it to a fn that drops it) and the scrutinee's own recursive drop
+          // don't free the same block twice (double-free -> trap). Scalar fields
+          // are even, so __rc_drop's odd-check makes the dup a no-op for them.
+          if ctx.enable_rc {
+            emit_rc_dup_guarded_n(buf, fl, md_consume_count(__arm_body, pname))
+          } else {
+            ()
+          }
           Array::push(local_names, pname)
         } else if is_ptuple(__sub_p) {
           let tpats = get_ptuple_pats(__sub_p)
@@ -636,6 +667,11 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
               emit_i32_wrap_i64(buf)
               emit_i64_load(buf, 3, if ctx.enable_rc { 8 + ti * 8 } else { ti * 8 })
               emit_local_set(buf, tfl)
+              if ctx.enable_rc {
+                emit_rc_dup_guarded_n(buf, tfl, md_consume_count(__arm_body, tpname))
+              } else {
+                ()
+              }
               Array::push(local_names, tpname)
             }
             ti = ti + 1
@@ -667,6 +703,11 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
               emit_i32_wrap_i64(buf)
               emit_i64_load(buf, 3, 8 + __nj * 8)
               emit_local_set(buf, __nfl)
+              if ctx.enable_rc {
+                emit_rc_dup_guarded_n(buf, __nfl, md_consume_count(__arm_body, __npname))
+              } else {
+                ()
+              }
               Array::push(local_names, __npname)
             }
             __nj = __nj + 1
@@ -736,6 +777,16 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
             emit_i32_wrap_i64(buf)
             emit_i64_load(buf, 3, 8 + cbi2 * 8)
             emit_local_set(buf, fl2)
+            // #705: the catch-all arm binds fields like the cond arms but did
+            // NOT dup a CONSUMED field — a borrowed-view field moved into an
+            // owning position (e.g. `let (k, v) = Array::get(..); f(v)`) is then
+            // freed by both the consume and the scrutinee/owner's recursive drop
+            // (double free). Mirror the cond-arm #702/#705 dup.
+            if ctx.enable_rc {
+              emit_rc_dup_guarded_n(buf, fl2, md_consume_count(__catch_body, pname))
+            } else {
+              ()
+            }
             Array::push(local_names, pname)
           }
           cbi2 = cbi2 + 1
@@ -762,6 +813,11 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
               emit_i32_wrap_i64(buf)
               emit_i64_load(buf, 3, if ctx.enable_rc { 8 + pi2 * 8 } else { pi2 * 8 })
               emit_local_set(buf, field_l)
+              if ctx.enable_rc {
+                emit_rc_dup_guarded_n(buf, field_l, md_consume_count(__catch_body, pname))
+              } else {
+                ()
+              }
               Array::push(local_names, pname)
               0
             } else if is_ptuple(__tp) {
@@ -790,6 +846,11 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
                   emit_i32_wrap_i64(buf)
                   emit_i64_load(buf, 3, if ctx.enable_rc { 8 + si3 * 8 } else { si3 * 8 })
                   emit_local_set(buf, sfl)
+                  if ctx.enable_rc {
+                    emit_rc_dup_guarded_n(buf, sfl, md_consume_count(__catch_body, spname))
+                  } else {
+                    ()
+                  }
                   Array::push(local_names, spname)
                 }
                 si3 = si3 + 1

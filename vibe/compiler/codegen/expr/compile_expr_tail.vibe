@@ -5,11 +5,11 @@ import .. / .. / core {
 }
 
 import .. / common_analysis {
-  collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, is_mut_captured_in, proj_root_ident, scope_tail_proj_root
+  collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, mut_needs_ref_cell, proj_root_ident, scope_tail_proj_root
 }
 
 import .. / common_base {
-  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_heap_grow_after_heap_set, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_ctor_call, is_earray, is_efn, is_eident, is_erecord, is_etuple, is_nullary_ctor_ident, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
+  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_rc_dup_guarded, emit_binop_op, emit_heap_grow_after_heap_set, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_ctor_call, is_earray, is_efn, is_eident, is_erecord, is_etuple, is_nullary_ctor_ident, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
 }
 
 import .. / common_extractors {
@@ -229,36 +229,6 @@ export let expr_is_intish: (Expr, Array[String], CompileCtx) -> Bool with { Erro
   }
 }
 
-let emit_rc_dup_guarded: (Bytes, Int) -> Unit = (buf, local_idx) -> {
-  emit_local_get(buf, local_idx)
-  emit_i64_const(buf, 1)
-  emit_i64_and(buf)
-  emit_i32_wrap_i64(buf)
-  emit_if_void(buf)
-  emit_local_get(buf, local_idx)
-  emit_i64_const(buf, 32)
-  emit_i64_shr_s(buf)
-  emit_i64_eqz(buf)
-  emit_if_void(buf)
-  emit_local_get(buf, local_idx)
-  emit_i64_const(buf, -2)
-  emit_i64_and(buf)
-  emit_i32_wrap_i64(buf)
-  emit_i32_const(buf, 4)
-  emit_i32_sub(buf)
-  emit_local_get(buf, local_idx)
-  emit_i64_const(buf, -2)
-  emit_i64_and(buf)
-  emit_i32_wrap_i64(buf)
-  emit_i32_const(buf, 4)
-  emit_i32_sub(buf)
-  emit_i32_load(buf, 2, 0)
-  emit_i32_const(buf, 1)
-  emit_i32_add(buf)
-  emit_i32_store(buf, 2, 0)
-  emit_end(buf)
-  emit_end(buf)
-}
 
 let assign_value_mentions: (Expr, String) -> Bool = (value, name) -> {
   let empty1 = Array::slice([
@@ -383,6 +353,10 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
       Array::push(ctx.int_local_slots, local_idx * 2)
     }
     let mut rc_kind = 0
+    // #708 follow-up: set when this let's value is a borrow-returning call
+    // (`let a = Array::get(...)`) -- see the ELet/expr_tag==8 branch below for
+    // why a bare later reference to `name` needs loop_borrowed_names tracking.
+    let mut is_borrow_ret_ext = false
     if ctx.enable_rc {
       if val_is_float {
         rc_kind = 2
@@ -417,25 +391,80 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
         }
       } else if expr_tag(value) == 8 {
         let callee = get_ecall_callee(value)
+        // #708: this hand-rolled check duplicated (incompletely) the borrow-return
+        // classification compile_call.vibe:64 already gets right. It only
+        // recognized the 3 hardcoded builtins, missing user-defined functions
+        // registered in ctx.borrow_ret_names (e.g. a `peek` wrapper whose body is
+        // `if ... { Array::get(...) } else default`, see #707's
+        // compute_borrow_returning_names). lift_match_scrutinees (normalize)
+        // rewrites every non-trivial match scrutinee into a `let __m_scrut = <call>`
+        // before this file ever sees it, so a match on a borrow-returning wrapper
+        // call landed here too. Missing the ctx.borrow_ret_names check made this
+        // ELet wrongly flag __m_scrut as an owned heap binding (rc_kind=2,
+        // heap_binding_names), and because __m_scrut is a NON-unique synthetic name
+        // shared by every lifted match in the enclosing function, a later drop
+        // scheduled for a *different* lift site's __m_scrut fired here too --
+        // double-decrementing the refcount shared with the live array element the
+        // borrow-returning call actually pointed into (single-slot corruption).
         let is_borrow_ret = if is_eident(callee) {
           let cn = get_eident_name(callee)
-          cn == "Array::get" || cn == "__index" || cn == "Map::get"
+          cn == "Array::get" || cn == "__index" || cn == "Map::get" || cn == "__rec_field" || array_contains_str(ctx.borrow_ret_names, cn)
         } else {
           false
         }
-        if is_borrow_ret {
+        // #710: a call whose CALLEE's declared return type is provably scalar
+        // (Int/Bool/Unit, e.g. `build_import_plan(...) -> Int`) owns no heap
+        // reference either -- same as a borrow-returning call, just for a
+        // different reason (nothing to retain a view INTO; there's no heap
+        // object at all). Skipping heap_binding_names here is required, not
+        // just an optimization: see CompileCtx.scalar_ret_names' doc comment
+        // for the memory-OOB crash a misclassified scalar alias causes.
+        let is_scalar_ret = if is_eident(callee) {
+          array_contains_str(ctx.scalar_ret_names, get_eident_name(callee))
+        } else {
+          false
+        }
+        if is_borrow_ret || is_scalar_ret {
           ()
         } else {
           rc_kind = 2
           Array::push(ctx.heap_binding_names, name)
         }
+        // #708 follow-up: a borrow-returning let (`let a = Array::get(xs, i)`)
+        // is deliberately left untracked above (rc_kind stays 0 -- it owns
+        // nothing to drop). But a LATER bare-ident reference to `a` passed
+        // into an owning parameter (`f(a)`) still needs the SAME retain a
+        // direct `f(Array::get(xs, i))` call already gets via
+        // cc_is_borrow_ret_call (compile_call.vibe) -- that check only
+        // inspects the ARGUMENT EXPRESSION'S OWN shape (is it a call?), so it
+        // never fires for a bare EIdent, even though the name's value is
+        // exactly as borrowed. Piggyback on the existing loop_borrowed_names
+        // mechanism (cc_is_loop_borrowed_ident), scoped tightly to this let's
+        // own body via push-before/truncate-after so it never leaks past this
+        // binding's scope: reproduced as `let a = Array::get(plan, i); ...
+        // f(a) && a.field == y ...` inside a `while` loop corrupting the heap
+        // (only outside a loop, or with a non-borrow-bound `a`, it was fine --
+        // Perceus's own multi-use dup accounting for a loop-repeated binding
+        // apparently only budgets for the loop-carried case this mechanism
+        // already exists for).
+        is_borrow_ret_ext = is_borrow_ret
       } else if is_edot(value) {
         rc_kind = 2
         Array::push(ctx.heap_binding_names, name)
         emit_rc_dup_guarded(buf, local_idx)
-      } else if is_efn(value) && efn_is_capturing(value, ctx) {
-        rc_kind = 2
-        Array::push(ctx.heap_binding_names, name)
+      } else if is_efn(value) {
+        // NOTE: must be a nested `if`, not `is_efn(value) && efn_is_capturing(...)`:
+        // `&&` evaluates both operands, so the `&&` form ran efn_is_capturing
+        // (which calls get_efn_params) on EVERY non-heap `let` value that reached
+        // this arm — e.g. `let o = 5` — throwing "not EFn" and breaking RC compile
+        // of any function with a scalar/`if`/`match`-valued `let` (#702 blocker A).
+        // Guarding with is_efn first keeps efn_is_capturing to genuine closures.
+        if efn_is_capturing(value, ctx) {
+          rc_kind = 2
+          Array::push(ctx.heap_binding_names, name)
+        } else {
+          ()
+        }
       } else {
         ()
       }
@@ -455,7 +484,24 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     } else {
       ()
     }
+    // #708 follow-up: scope `name` into loop_borrowed_names for exactly the
+    // extent of `body`'s compilation (push before, truncate after), so a bare
+    // later reference to a borrow-bound name gets the same retain-before-
+    // owning-call treatment a loop-carried parameter already gets. Safe to do
+    // even outside a loop (loop_borrowed_names is otherwise empty there, and
+    // this push/truncate pair never leaks past this let's own body).
+    let lb_mark = Array::length(ctx.loop_borrowed_names)
+    if ctx.enable_rc && is_borrow_ret_ext {
+      Array::push(ctx.loop_borrowed_names, name)
+    } else {
+      ()
+    }
     let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
+    if ctx.enable_rc && is_borrow_ret_ext {
+      Array::truncate(ctx.loop_borrowed_names, lb_mark)
+    } else {
+      ()
+    }
     if ctx.enable_rc && rc_kind > 0 && array_contains_str(ctx.rc_drop_names, name) {
       if ctx.rc_drop_func_idx >= 0 && scope_tail_proj_root(body) == name {
         emit_local_set(buf, nl2)
@@ -541,8 +587,49 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     } else if slot_is_intish(ctx, local_idx) {
       Array::push(ctx.int_local_slots, local_idx * 2)
     }
-    if is_mut_captured_in(body, name) {
+    if mut_needs_ref_cell(body, name) {
       Array::push(ctx.ref_cell_names, name)
+      if ctx.enable_rc && ctx.rc_alloc_func_idx >= 0 && ctx.rc_drop_func_idx >= 0 && expr_is_intish(value, local_names, ctx) {
+        // #699 RC-managed ref cell: a captured `let mut` is heap-boxed for
+        // by-reference sharing; under RC make that box an RC object so it is
+        // reclaimed instead of leaking. Layout [alloc_size@0][rc_count@4 +
+        // class8@7][payload@8]; the cell local holds vptr=block+8 (even) so the
+        // read/write/assign-op sites are byte-identical to the raw-box path. The
+        // capturing closure dups it (compile_lambda.vibe) and drops it via the
+        // class-7 owned-capture recursion (gen_rc_drop_body); the defining scope
+        // drops it inline below. Restricted to intish (scalar) values so the
+        // payload is never a heap object that the body could return (no
+        // use-after-free): class-8 payload-drop then stays a no-op.
+        emit_i64_const(buf, 16)
+        emit_call(buf, ctx.rc_alloc_func_idx)
+        emit_local_set(buf, local_idx)
+        emit_local_get(buf, local_idx)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 16)
+        emit_i32_store(buf, 2, 0)
+        emit_local_get(buf, local_idx)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 1)
+        emit_i32_store(buf, 2, 4)
+        emit_local_get(buf, local_idx)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 8)
+        emit_i32_store8(buf, 0, 7)
+        emit_local_get(buf, local_idx)
+        emit_i64_const(buf, 8)
+        emit_i64_add(buf)
+        emit_local_set(buf, local_idx)
+        emit_local_get(buf, local_idx)
+        emit_i32_wrap_i64(buf)
+        let nl = compile_expr(buf, value, local_names, next_local + 1, ctx, ld)
+        emit_i64_store(buf, 3, 0)
+        let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
+        emit_local_get(buf, local_idx)
+        emit_i64_const(buf, 1)
+        emit_i64_or(buf)
+        emit_call(buf, ctx.rc_drop_func_idx)
+        nl2
+      } else {
       emit_global_get(buf, 0)
       emit_i64_extend_i32_u(buf)
       emit_local_tee(buf, local_idx)
@@ -557,6 +644,7 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
       emit_i64_store(buf, 3, 0)
       let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
       nl2
+      }
     } else {
       if ctx.enable_rc && (is_etuple(value) || is_earray(value) || is_erecord(value) || is_ctor_call(value, ctx.ctor_table) || is_nullary_ctor_ident(value, ctx.ctor_table) || expr_is_floatish(value, local_names, ctx)) {
         Array::push(ctx.heap_binding_names, name)

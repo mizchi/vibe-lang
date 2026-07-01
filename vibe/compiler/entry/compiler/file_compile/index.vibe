@@ -19,7 +19,7 @@ import ../../../syntax/import_alias_rewrite.vibe {
 }
 
 import ../../../codegen/index.vibe {
-  compile_module, compile_wasi_module, compile_wasi_module_coverage, compile_wasi_module_trace, compile_wasi_module_break
+  compile_module, compile_wasi_module, compile_wasi_module_rc, compile_wasi_module_coverage, compile_wasi_module_trace, compile_wasi_module_break
 }
 
 import ../../../codegen/common_base/index.vibe {
@@ -379,6 +379,18 @@ export let compile_file_fs_mode: (String, String, String) -> Bytes with { Error,
   } else {
     throw(String::concat("unsupported compile mode: ", mode))
   }
+}
+
+// #701 RC variant: same load/merge as compile_file_fs_mode "no-dce" but routes
+// through the Perceus RC codegen (compile_wasi_module_rc_impl, enable_rc) so an
+// import-resolving / `vibe run` program actually honors VIBE_RC. Without this
+// the FS-compile path silently used the bump allocator regardless of VIBE_RC.
+export let compile_file_fs_mode_rc: (String, String) -> Bytes with { Error, Fs } = (entry_path, entry_name) -> {
+  let source_groups = collect_source_groups_fs(entry_path)
+  let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
+  let _ = next_db
+  let merged_stmts = build_grouped_merged_stmts(source_groups)
+  compile_wasi_module_rc(merged_stmts, entry_name)
 }
 
 // #634 (ADR-0026): same as compile_file_fs_mode, but ALSO writes the pure-test

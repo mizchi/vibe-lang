@@ -43,27 +43,31 @@ export let compile_expr_tail3: (Bytes, Expr, Array[String], Int, CompileCtx, Int
   if __tag == 19 {
     let cond = get_ewhile_cond(expr)
     let body = get_ewhile_body(expr)
+    // #706: the locals live at the loop header are loop-borrowed — a consume of
+    // one inside the cond/body re-executes each iteration and must dup so the
+    // value survives the back-edge. Record them (RC only); restore after. Names
+    // declared inside the body are appended past lb_base and removed by truncate.
+    let lb_base = Array::length(ctx.loop_borrowed_names)
+    if ctx.enable_rc {
+      let mut lbi = 0
+      while lbi < Array::length(local_names) {
+        Array::push(ctx.loop_borrowed_names, Array::get(local_names, lbi))
+        lbi = lbi + 1
+      }
+    } else {
+      ()
+    }
     emit_block_void(buf)
     emit_loop_void(buf)
     let w_cond_tag = expr_tag(cond)
     let nl1 = if w_cond_tag == 5 {
       let wcop = get_ebinop_op(cond)
-      if wcop == "==" || wcop == "!=" || wcop == "<" || wcop == ">" || wcop == "<=" || wcop == ">=" {
+      if wcop == "<" || wcop == ">" || wcop == "<=" || wcop == ">=" {
         let wlhs = get_ebinop_lhs(cond)
         let wrhs = get_ebinop_rhs(cond)
         let wnl1 = compile_expr(buf, wlhs, local_names, next_local, ctx, ld + 1)
         let wnl2 = compile_expr(buf, wrhs, local_names, wnl1, ctx, ld + 1)
-        if wcop == "==" {
-          let (eq_fi3, _, _) = resolve_func(ctx.func_table, "eq")
-          emit_call(buf, eq_fi3)
-          emit_i32_wrap_i64(buf)
-          emit_i32_eqz(buf)
-        } else if wcop == "!=" {
-          let (eq_fi3, _, _) = resolve_func(ctx.func_table, "eq")
-          emit_call(buf, eq_fi3)
-          emit_i32_wrap_i64(buf)
-        }
-        else if wcop == "<" {
+        if wcop == "<" {
           emit_i64_lt_s(buf); emit_i32_eqz(buf)
         }
         else if wcop == ">" {
@@ -92,6 +96,7 @@ export let compile_expr_tail3: (Bytes, Expr, Array[String], Int, CompileCtx, Int
     emit_br(buf, 0)
     emit_end(buf)
     emit_end(buf)
+    Array::truncate(ctx.loop_borrowed_names, lb_base)
     emit_i64_const(buf, 0)
     nl2
   } else if __tag == 20 {

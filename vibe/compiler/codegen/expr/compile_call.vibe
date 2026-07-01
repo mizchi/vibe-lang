@@ -13,7 +13,7 @@ import .. / common_analysis {
 }
 
 import .. / common_base {
-  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, effect_name_to_tag, effect_op_index, emit_binop_op, emit_box_float, emit_heap_grow_after_heap_set, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_gt_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, emit_unbox_float, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
+  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_rc_dup_guarded, effect_name_to_tag, effect_op_index, emit_binop_op, emit_box_float, emit_heap_grow_after_heap_set, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_gt_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_index_one, emit_str_ref, emit_unbox_float, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
 }
 
 import .. / common_extractors {
@@ -33,6 +33,87 @@ import ./compile_match.vibe {
 }
 
 //# Functions
+
+// A field projection `a.f` (EDot) passed as an argument to an owning user
+// function (which drops its parameters) is a borrow of the source aggregate.
+// Without a retain the callee's param-drop frees it while the source still
+// references it — a double-free that corrupts the free list (e.g. derived
+// `T::equals` passing `a.items` to the consuming `__arr_equals__` helper, #704).
+// Perceus emits no action for bare projections, so this guarded dup is the only
+// owner-increment. Scalars are no-ops; this is NOT applied to borrow-arg0
+// builtins (Array::get/length etc.), which do not drop their argument.
+let cc_is_projection: (Expr) -> Bool = (e) -> {
+  match e {
+    EDot(_, _, _) => true,
+    _ => false
+  }
+}
+
+// #705: a borrow-RETURNING builtin call (`Array::get` / `Map::get` / `__index`)
+// yields a borrowed view of a heap element — its refcount is NOT bumped, like a
+// projection `a.f`. When that result is consumed in an OWNING position (a ctor
+// field, or an owning call arg of a fn that drops its params), it must be
+// rc_dup'd or the container's recursive drop and the consume double-free the
+// same element (e.g. `chk(Array::get(ps, i))` recursing over a heap array, or
+// `validate(s, Map::get(obj, key))`). Scalars are even so the guarded dup is a
+// runtime no-op for `Array[Int]` etc.
+export let cc_is_borrow_ret_call: (Expr, CompileCtx) -> Bool = (e, ctx) -> {
+  match e {
+    ECall(callee, _, _) =>
+    match callee {
+      EIdent(f, _) => f == "Array::get" || f == "Map::get" || f == "__index" || f == "__rec_field" || array_contains_str(ctx.borrow_ret_names, f),
+      _ => false
+    },
+    _ => false
+  }
+}
+
+// Is `e` provably a scalar (Int/Bool) by structure alone — an int/bool literal,
+// a bitwise/shift/comparison/logical binop, or a logical `!`? Conservative: no
+// ident-slot/type lookup and no arith ops (+,-,*,/ can be Float). Used to route
+// an explicit `eq(a, b)` to a direct i64.eq when an operand is provably scalar,
+// matching how the `==` binop dispatches intish operands (emit_eq_value). Without
+// this, `eq(int, int)` falls through to the generic bound `eq` whose
+// `looks_like_string`/str_eq fallback reads OOB on ints resembling fat-pointers
+// (#678 residual) — e.g. leb128's `eq(val, 0)` trapped under RC (#705).
+let rec cc_arg_is_scalarish: (Expr) -> Bool with { Error } = (e) -> {
+  let t = expr_tag(e)
+  if t == 0 || t == 1 {
+    true
+  } else if t == 5 {
+    let op = get_ebinop_op(e)
+    op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || op == "%" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "==" || op == "!=" || op == "&&" || op == "||"
+  } else if t == 6 {
+    let uop = get_eunaryop_op(e)
+    // `!x` is Bool; `-x` is scalar iff its operand is (so a negative int literal
+    // like `-1`, which parses as unary minus of `1`, is detected as scalar).
+    uop == "!" || (uop == "-" && cc_arg_is_scalarish(get_eunaryop_expr(e)))
+  } else {
+    false
+  }
+}
+
+// #706: is `e` a bare reference to a value live-in to an enclosing loop (and not
+// a `mut` ref-cell, whose reassignment already manages its own drop)? Passing
+// such a value to a consuming (owning) parameter inside the loop frees it on the
+// first iteration; dup'ing at the call site keeps the loop-carried reference
+// alive across the back-edge. rc_dup is a no-op on scalars, so a scalar loop var
+// caught here costs only a wasted (guarded) dup, not a correctness problem.
+let cc_is_loop_borrowed_ident: (Expr, CompileCtx) -> Bool = (e, ctx) -> {
+  match e {
+    EIdent(name, _) =>
+    array_contains_str(ctx.loop_borrowed_names, name) && !array_contains_str(ctx.ref_cell_names, name),
+    _ => false
+  }
+}
+
+// Builtins whose arg0 is BORROWED (read in place, not consumed/dropped). Kept in
+// sync with `is_borrow_arg0_call` in perceus/index.vibe — a projection passed as
+// arg0 to one of these must NOT be rc_dup'd at the call site (the callee never
+// drops it, so the dup would leak; #704). Other argument positions are owning.
+let cc_is_borrow_arg0_call: (String) -> Bool = (f) -> {
+  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "ArrayBuilder::push" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::set" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "__rec_field"
+}
 
 // #664/#678: is `e` statically — BY SHAPE — a known integer that must NOT be run
 // through `__to_string`'s string-pointer heuristic (which misreads a large int
@@ -167,11 +248,22 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
         let mut nl_c = next_local + 1
         let mut fi_c = 0
         while fi_c < Array::length(actual_args) {
-          nl_c = ce(buf, Array::get(actual_args, fi_c), local_names, nl_c, ctx, ld)
+          let carg_c = Array::get(actual_args, fi_c)
+          nl_c = ce(buf, carg_c, local_names, nl_c, ctx, ld)
           let val_local = nl_c
           Array::push(local_names, "__ctor_val")
           emit_local_set(buf, val_local)
           nl_c = nl_c + 1
+          // A heap field projection `a.f` stored into a constructor is a borrow;
+          // the constructed value OWNS its fields (drop class 1 recurses), so
+          // retain it or the source's drop double-frees it (e.g. `Some(b.items)`
+          // returned while `b` is dropped). Mirrors the ERecord field-store dup
+          // (#704). Perceus emits no action for bare projections.
+          if ctx.enable_rc && (cc_is_projection(carg_c) || cc_is_borrow_ret_call(carg_c, ctx)) {
+            emit_rc_dup_guarded(buf, val_local)
+          } else {
+            ()
+          }
           emit_local_get(buf, ptr_local)
           emit_i32_wrap_i64(buf)
           emit_local_get(buf, val_local)
@@ -222,17 +314,45 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
         nl_c
       }
     }
-    else if !prefer_bound_call && fname == "eq" {
+    else if fname == "eq" && Array::length(args) == 2 && (!prefer_bound_call || cc_arg_is_scalarish(Array::get(args, 0)) || cc_arg_is_scalarish(Array::get(args, 1))) {
+      // Direct i64.eq for `eq(a, b)` when it is the builtin and at least one
+      // operand is provably scalar. This sidesteps the bound `eq`'s string
+      // fallback, which reads OOB on Int values resembling fat-pointers (#705):
+      // `==` already dispatches intish operands this way via emit_eq_value, and
+      // `eq` must match. A genuinely string/heap `eq` (no scalar operand) still
+      // falls through to the bound call below.
+      //
+      // #710/#711: keeping the scalarish disjunct (not just !prefer_bound_call)
+      // is required -- prefer_bound_call is a global cross-file name match, not
+      // scoped to the calling file (see #711), so dropping it regressed
+      // leb128_test.vibe. Root fix tracked in #711.
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       emit_i64_eq(buf)
       emit_i64_extend_i32_s(buf)
+      // ADR-0055: under RC a Bool is a TAGGED scalar (true = 1<<1). The raw
+      // i64.eq result is 0/1 (untagged); tag it so `eq(..) == true`/`if`/derived
+      // comparisons see the same representation as a bool literal (#705 — without
+      // this, `eq(a,b) == true` compared untagged 1 against tagged 2 and failed).
+      // The bump backend leaves bools untagged, so only shift under RC.
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shl(buf)
+      } else {
+        ()
+      }
       nl
     }
     else if !prefer_bound_call && fname == "not" {
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       emit_i64_eqz(buf)
       emit_i64_extend_i32_s(buf)
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shl(buf)
+      } else {
+        ()
+      }
       nl
     }
     else if !prefer_bound_call && fname == "await" {
@@ -364,7 +484,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_call(buf, arr_push_fi)
       emit_end(buf)
       emit_local_get(buf, i_l)
-      emit_i64_const(buf, 1)
+      emit_index_one(buf, ctx)
       emit_i64_add(buf)
       emit_local_set(buf, i_l)
       emit_br(buf, 0)
@@ -492,6 +612,17 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       emit_i64_mul(buf)
+      // Under RC, Int values are tagged `(n << 1)`. Multiplying two tagged
+      // operands raw gives `(a*b) << 2` (an extra factor of 2 vs. the `<< 1`
+      // every other Int carries) -- shift right once to correct back, exactly
+      // like the `*` EBinOp path does (compile_expr.vibe `op == "*"`) that
+      // this builtin fast path duplicates but had not mirrored.
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shr_s(buf)
+      } else {
+        ()
+      }
       nl
     }
     else if !prefer_bound_call && fname == "lt" {
@@ -499,6 +630,15 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       emit_i64_lt_s(buf)
       emit_i64_extend_i32_s(buf)
+      // Under RC, Bool values are also tagged `(0|1) << 1` (mirrors the `<`
+      // EBinOp path's retag) -- untagged here means callers see 0 (== false
+      // tagged) but a true result reads as 1 instead of the expected 2.
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shl(buf)
+      } else {
+        ()
+      }
       nl
     }
     else if !prefer_bound_call && fname == "simd_skip_ws" {
@@ -509,9 +649,6 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       // chunk kept on the operand stack (NO heap boxing — the per-op boxed v128
       // intrinsics would bump-allocate 16 bytes each and leak), plus a scalar
       // tail. Bytes layout (gen_bytes_get_body): [alloc@0][len@4][payload_ptr@8].
-      if ctx.enable_rc {
-        throw("simd_skip_ws: unsupported on rc backend")
-      }
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
@@ -685,9 +822,6 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       // #536: v128_load(bytes, off) -> V128.
       // Bytes layout (see gen_bytes_get_body): [alloc@0][len@4][payload_ptr@8].
       // addr = load_i32(bytesptr+8) + off; v128.load align=0; box the result.
-      if ctx.enable_rc {
-        throw("v128 intrinsics: v128_load unsupported on rc backend")
-      }
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       let off_l = nl
@@ -701,6 +835,16 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_i32_wrap_i64(buf)
       emit_i32_load(buf, 2, 8)
       emit_local_get(buf, off_l)
+      // #705: under RC an Int is tagged (n << 1, see eq/not above); the bump
+      // backend leaves it raw. off is used as a raw byte offset below, so
+      // untag it under RC first (without this, splat/load/store off-by-one-bit
+      // silently mistreat the offset/byte value -- e.g. off=1 reads as 2).
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shr_s(buf)
+      } else {
+        ()
+      }
       emit_i32_wrap_i64(buf)
       emit_i32_add(buf)
       emit_i64_extend_i32_u(buf)
@@ -729,9 +873,6 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
     }
     else if !prefer_bound_call && fname == "v128_store" {
       // v128_store(bytes, off, v) -> Unit. addr as in v128_load; store v's box.
-      if ctx.enable_rc {
-        throw("v128 intrinsics: v128_store unsupported on rc backend")
-      }
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
@@ -747,6 +888,13 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_i32_wrap_i64(buf)
       emit_i32_load(buf, 2, 8)
       emit_local_get(buf, off_l)
+      // #705: untag off under RC (see v128_load above).
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shr_s(buf)
+      } else {
+        ()
+      }
       emit_i32_wrap_i64(buf)
       emit_i32_add(buf)
       emit_i64_extend_i32_u(buf)
@@ -766,9 +914,6 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
     }
     else if !prefer_bound_call && fname == "v128_splat_i8x16" {
       // v128_splat_i8x16(n) -> V128. low byte of n broadcast to 16 lanes.
-      if ctx.enable_rc {
-        throw("v128 intrinsics: v128_splat_i8x16 unsupported on rc backend")
-      }
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       let box_l = nl
       let byte_l = nl + 1
@@ -787,6 +932,15 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_local_get(buf, box_l)
       emit_i32_wrap_i64(buf)
       emit_local_get(buf, byte_l)
+      // #705: untag n under RC (see v128_load above) -- otherwise the low byte
+      // fed to i8x16.splat is n's tag bit, not n itself (e.g. splat(0xFF)
+      // would broadcast 0xFE).
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shr_s(buf)
+      } else {
+        ()
+      }
       emit_i32_wrap_i64(buf)
       emit_i8x16_splat(buf)
       emit_v128_store(buf, 0, 0)
@@ -798,9 +952,6 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
     else if !prefer_bound_call && (fname == "v128_eq_i8x16" || fname == "v128_le_u_i8x16" || fname == "v128_ge_u_i8x16" || fname == "v128_and" || fname == "v128_or") {
       // Binary (V128, V128) -> V128. Load both operands from their boxes, emit
       // the op, box the result.
-      if ctx.enable_rc {
-        throw("v128 intrinsics: binary op unsupported on rc backend")
-      }
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       let b_l = nl
@@ -852,9 +1003,6 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
     }
     else if !prefer_bound_call && fname == "v128_not" {
       // v128_not(v) -> V128.
-      if ctx.enable_rc {
-        throw("v128 intrinsics: v128_not unsupported on rc backend")
-      }
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       let v_l = nl
       let box_l = nl + 1
@@ -885,9 +1033,6 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
     }
     else if !prefer_bound_call && fname == "v128_bitmask_i8x16" {
       // v128_bitmask_i8x16(v) -> Int. i8x16.bitmask -> i32; zero-extend to i64.
-      if ctx.enable_rc {
-        throw("v128 intrinsics: v128_bitmask_i8x16 unsupported on rc backend")
-      }
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       emit_i64_const(buf, -2)
       emit_i64_and(buf)
@@ -895,13 +1040,18 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_v128_load(buf, 0, 0)
       emit_i8x16_bitmask(buf)
       emit_i64_extend_i32_u(buf)
+      // #705: under RC an Int is a tagged scalar (n << 1, see eq/not above);
+      // the bump backend leaves it raw, so only shift under RC.
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shl(buf)
+      } else {
+        ()
+      }
       nl
     }
     else if !prefer_bound_call && (fname == "v128_any_true" || fname == "v128_all_true_i8x16") {
       // (V128) -> Bool. emit op (-> i32 bool), sign-extend to the i64 Bool value.
-      if ctx.enable_rc {
-        throw("v128 intrinsics: bool reduction unsupported on rc backend")
-      }
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       emit_i64_const(buf, -2)
       emit_i64_and(buf)
@@ -913,6 +1063,14 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
         emit_i8x16_all_true(buf)
       }
       emit_i64_extend_i32_s(buf)
+      // #705: under RC a Bool is tagged (true = 1<<1, see eq/not above); the
+      // bump backend leaves it raw 0/1, so only shift under RC.
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shl(buf)
+      } else {
+        ()
+      }
       nl
     }
     else if !prefer_bound_call && fname == "perform" {
@@ -1095,6 +1253,19 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_local_get(buf, val_l)
       emit_br(buf, 1)
       emit_end(buf)
+      // Under RC a scalar Int is tagged `n << 1` (low bit 0 marks a non-heap
+      // value; see `Int::to_double` / `Double::to_int` which shift to/from this
+      // form). Arithmetic stays in tagged space and compares correctly, but the
+      // digit loop below renders the RAW i64 — so without untagging it prints
+      // `2n` (e.g. 42 -> "84"). Recover the logical value with an arithmetic
+      // (sign-preserving) shift right by 1. Strings already returned above via
+      // the `br`, so this only touches the integer path.
+      if ctx.enable_rc {
+        emit_local_get(buf, val_l)
+        emit_i64_const(buf, 1)
+        emit_i64_shr_s(buf)
+        emit_local_set(buf, val_l)
+      }
       emit_i64_const(buf, 46)
       emit_local_set(buf, cur_l)
       emit_local_get(buf, val_l)
@@ -1456,7 +1627,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_local_get(buf, elem_l)
       emit_call(buf, arr_push_fi)
       emit_local_get(buf, i_l)
-      emit_i64_const(buf, 1)
+      emit_index_one(buf, ctx)
       emit_i64_add(buf)
       emit_local_set(buf, i_l)
       emit_br(buf, 0)
@@ -1507,7 +1678,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_closure_call_tail(buf, env_l, slot_l, 9, 2)
       emit_local_set(buf, acc_l)
       emit_local_get(buf, i_l)
-      emit_i64_const(buf, 1)
+      emit_index_one(buf, ctx)
       emit_i64_add(buf)
       emit_local_set(buf, i_l)
       emit_br(buf, 0)
@@ -1537,7 +1708,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_call(buf, arr_len_fi)
       emit_local_set(buf, len_l)
       emit_local_get(buf, len_l)
-      emit_i64_const(buf, 1)
+      emit_index_one(buf, ctx)
       emit_i64_sub(buf)
       emit_local_set(buf, i_l)
       emit_block_void(buf)
@@ -1552,7 +1723,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_call(buf, arr_get_fi)
       emit_call(buf, arr_push_fi)
       emit_local_get(buf, i_l)
-      emit_i64_const(buf, 1)
+      emit_index_one(buf, ctx)
       emit_i64_sub(buf)
       emit_local_set(buf, i_l)
       emit_br(buf, 0)
@@ -1757,7 +1928,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_br(buf, 2)
       emit_end(buf)
       emit_local_get(buf, i_l)
-      emit_i64_const(buf, 1)
+      emit_index_one(buf, ctx)
       emit_i64_add(buf)
       emit_local_set(buf, i_l)
       emit_br(buf, 0)
@@ -1814,7 +1985,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_br(buf, 2)
       emit_end(buf)
       emit_local_get(buf, i_l)
-      emit_i64_const(buf, 1)
+      emit_index_one(buf, ctx)
       emit_i64_add(buf)
       emit_local_set(buf, i_l)
       emit_br(buf, 0)
@@ -1873,7 +2044,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_br(buf, 2)
       emit_end(buf)
       emit_local_get(buf, i_l)
-      emit_i64_const(buf, 1)
+      emit_index_one(buf, ctx)
       emit_i64_add(buf)
       emit_local_set(buf, i_l)
       emit_br(buf, 0)
@@ -2449,7 +2620,34 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
         let mut nl = next_local
         let mut ci = 0
         while ci < Array::length(args) {
-          nl = ce(buf, Array::get(args, ci), local_names, nl, ctx, ld)
+          let carg = Array::get(args, ci)
+          nl = ce(buf, carg, local_names, nl, ctx, ld)
+          // Retain a heap projection passed to an OWNING parameter (the callee
+          // drops its params). Skip arg0 of a borrow-arg0 builtin (Array::get /
+          // length / push / set, etc.): it does NOT drop that argument, so a dup
+          // there would never be matched and would leak one reference per call
+          // (#704). Mirrors `is_borrow_arg0_call` in perceus/index.vibe.
+          let borrows_this = ci == 0 && cc_is_borrow_arg0_call(fname)
+          let is_loop_borrow1 = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx) && !borrows_this
+          if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow1) && !borrows_this {
+            // #706 leak follow-up: this dup's matching consume is INSIDE the loop
+            // (the callee drops its own copy each iteration) and never touches
+            // the binding's own slot-held reference, so the function epilogue
+            // must emit one extra compensating drop for it. Log only the
+            // loop-borrow trigger — the projection/borrow-ret-call cases already
+            // have correct accounting via the existing rc_drops mechanism.
+            if is_loop_borrow1 {
+              Array::push(ctx.loop_consumed_names, get_eident_name(carg))
+            } else {
+              ()
+            }
+            Array::push(local_names, "__argdup")
+            emit_local_tee(buf, nl)
+            emit_rc_dup_guarded(buf, nl)
+            nl = nl + 1
+          } else {
+            ()
+          }
           ci = ci + 1
         }
         if needs_env {
@@ -2479,7 +2677,32 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
         emit_closure_resolve(buf, fn_val_local, slot_local, env_local)
         let mut ci = 0
         while ci < num_args {
-          nl = ce(buf, Array::get(args, ci), local_names, nl, ctx, ld)
+          let carg = Array::get(args, ci)
+          nl = ce(buf, carg, local_names, nl, ctx, ld)
+          // #706: a closure consumes its args; dup a loop-borrowed owning arg so
+          // it survives the back-edge (mirrors the direct-call path above).
+          // #708: also retain a projection / borrow-returning-call arg here, same
+          // as the direct-call path (line ~2607) already does -- a closure param
+          // is dropped by the callee's own exit epilogue exactly like a direct
+          // call's owning param, so a bare borrowed view passed through (e.g. the
+          // recursive-descent parser's `parse_recur(tokens, ...)` family calling
+          // through a `let rec`-captured closure value) was double-freed the same
+          // way #704/#706's direct-call cases were, just one call-shape over.
+          let is_loop_borrow2 = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx)
+          if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow2) {
+            // #706 leak follow-up: log so the epilogue compensates (see above).
+            if is_loop_borrow2 {
+              Array::push(ctx.loop_consumed_names, get_eident_name(carg))
+            } else {
+              ()
+            }
+            Array::push(local_names, "__argdup")
+            emit_local_tee(buf, nl)
+            emit_rc_dup_guarded(buf, nl)
+            nl = nl + 1
+          } else {
+            ()
+          }
           ci = ci + 1
         }
         emit_closure_call_tail(buf, env_local, slot_local, 9, num_args)
@@ -2500,7 +2723,26 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
     emit_closure_resolve(buf, fn_val_local, slot_local, env_local)
     let mut ci = 0
     while ci < num_args {
-      nl = ce(buf, Array::get(args, ci), local_names, nl, ctx, ld)
+      let carg = Array::get(args, ci)
+      nl = ce(buf, carg, local_names, nl, ctx, ld)
+      // #706: dup a loop-borrowed owning arg passed to a closure call.
+      // #708: also retain a projection / borrow-returning-call arg (see the
+      // matching comment on the other closure-call path above).
+      let is_loop_borrow3 = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx)
+      if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow3) {
+        // #706 leak follow-up: log so the epilogue compensates (see above).
+        if is_loop_borrow3 {
+          Array::push(ctx.loop_consumed_names, get_eident_name(carg))
+        } else {
+          ()
+        }
+        Array::push(local_names, "__argdup")
+        emit_local_tee(buf, nl)
+        emit_rc_dup_guarded(buf, nl)
+        nl = nl + 1
+      } else {
+        ()
+      }
       ci = ci + 1
     }
     emit_closure_call_tail(buf, env_local, slot_local, 9, num_args)

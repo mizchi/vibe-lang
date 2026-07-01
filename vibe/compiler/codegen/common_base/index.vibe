@@ -5,7 +5,7 @@ import .. / .. / core {
 }
 
 import .. / wasm_emit {
-  emit_call, emit_call_indirect, emit_else, emit_end, emit_i32_const, emit_i32_load, emit_i32_store, emit_i32_store8, emit_i32_wrap_i64, emit_i64_add, emit_i64_and, emit_i64_const, emit_i64_div_s, emit_i64_eq, emit_i64_eqz, emit_i64_extend_i32_s, emit_i64_ge_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_load, emit_i64_lt_s, emit_i64_mul, emit_i64_ne, emit_i64_or, emit_i64_rem_s, emit_i64_shl, emit_i64_shr_s, emit_i64_store, emit_i64_sub, emit_i64_xor, emit_if_void, emit_local_get, emit_local_set
+  emit_call, emit_call_indirect, emit_else, emit_end, emit_i32_add, emit_i32_const, emit_i32_load, emit_i32_store, emit_i32_store8, emit_i32_sub, emit_i32_wrap_i64, emit_i64_add, emit_i64_and, emit_i64_const, emit_i64_div_s, emit_i64_eq, emit_i64_eqz, emit_i64_extend_i32_s, emit_i64_ge_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_load, emit_i64_lt_s, emit_i64_mul, emit_i64_ne, emit_i64_or, emit_i64_rem_s, emit_i64_shl, emit_i64_shr_s, emit_i64_store, emit_i64_sub, emit_i64_xor, emit_if_void, emit_local_get, emit_local_set
 }
 
 //# Types
@@ -207,7 +207,53 @@ export struct CompileCtx {
   // Interior-line breakpoints (multi-file): the file id of THIS function's source
   // file (index into `vibe.dbgfiles`), emitted alongside the line so the runner
   // matches `--break <file>:<line>` against the right file. 0 when off.
-  dbg_line_file_id: Int
+  dbg_line_file_id: Int;
+  // #706 (RC): names live-in to the innermost enclosing `while` loop. A loop body
+  // re-executes, so passing such an owned heap value to a consuming call frees it
+  // on iteration 1 and dangles on the next (use-after-free). compile_call emits a
+  // guarded rc_dup for a bare-ident owning arg whose name is in this set, so each
+  // iteration's consume is balanced and the loop-carried reference survives. The
+  // EWhile codegen sets this to the live-in locals around the body and restores
+  // it after (a shared mutable array; bindings declared inside the body are never
+  // added). Empty outside any loop; rc_dup is a no-op under bump, so the
+  // bump-built selfhost compiler is unaffected.
+  loop_borrowed_names: Array[String];
+  // #706 leak follow-up: append-only per-function log — one entry per loop-
+  // borrowed identifier name each time compile_call emits the protective
+  // rc_dup (see loop_borrowed_names above). That dup+the callee's own internal
+  // drop cancel out across the loop, so the textual occurrence the Perceus plan
+  // treated as "one real consume" of the binding actually consumes NOTHING from
+  // it — the plan's `remaining` count is therefore one too low per occurrence,
+  // and it omits the function-exit drop the binding still needs. The function
+  // epilogue (linked_compile.vibe) counts each function param's occurrences in
+  // this log and emits that many EXTRA rc_drop calls, exactly compensating
+  // without touching the plan's borrow/consume decisions anywhere else (so it
+  // cannot perturb a path the plan and codegen already agree on).
+  loop_consumed_names: Array[String];
+  // #707: names of user-defined `let`s whose body provably tail-reaches only
+  // `Array::get`/`Map::get`/`__index` (transitively, through if/match/wrapper
+  // calls to other names already in this list) — computed once per compile via
+  // `compute_borrow_returning_names` over the merged program. compile_call's
+  // `cc_is_borrow_ret_call` treats a call to one of these exactly like a direct
+  // `Array::get`/`Map::get`/`__index` call: its result is a borrowed view of a
+  // heap element (no refcount bump), so passing it into an OWNING position
+  // (ctor field / consuming call arg) needs the same guarded rc_dup or the
+  // element is double-freed when its container is later dropped (e.g. a
+  // `peek(tokens, pos)` wrapper around `Array::get`). Empty outside RC.
+  borrow_ret_names: Array[String];
+  // #710: names of top-level functions whose DECLARED return type (from
+  // their `let f: (...) -> R = ...` signature) is provably scalar (Int/Bool/
+  // Unit) — computed once via `compute_scalar_returning_names` over the
+  // merged program. The ELet ECall branch (compile_expr_tail.vibe) consults
+  // this to skip `heap_binding_names` for `let n = f(...)` when `f` is one of
+  // these: without it, ANY non-borrow-ret call result defaults to heap, so a
+  // binding that is really a plain Int (e.g. `build_import_plan(...) -> Int`)
+  // gets treated as a tagged pointer. If that binding is later aliased more
+  // than once, the Perceus plan schedules a PaAliasDup for it, and
+  // `emit_rc_dup_local` untags-and-derefs the "pointer" — for a small int
+  // like 0 that reads/writes near address -4, a `memory access out of
+  // bounds` trap, not a leak. Empty outside RC.
+  scalar_ret_names: Array[String]
 }
 
 // Interior-line breakpoints (span-arc step5, multi-file): per-file provenance the
@@ -736,6 +782,58 @@ export let emit_unbox_float: (Bytes) -> Unit = (buf) -> {
   emit_i64_and(buf)
   emit_i32_wrap_i64(buf)
   emit_i64_load(buf, 3, 0)
+}
+
+// Push the i64 increment that advances an array INDEX counter by ONE LOGICAL
+// element. Under RC a scalar Int is tagged `n << 1`, and the inline array loops
+// compare their counter against `Array::length` (which returns a tagged length)
+// and feed it to `Array::get` (which untags the index). So the counter must
+// live in tagged space too — stepping by raw 2 (= logical 1). Without RC the
+// counter is a raw index and steps by 1. Using a raw 1 under RC makes the loop
+// run twice per element (each read/processed twice; #704).
+export let emit_index_one: (Bytes, CompileCtx) -> Unit = (buf, ctx) -> {
+  if ctx.enable_rc {
+    emit_i64_const(buf, 2)
+  } else {
+    emit_i64_const(buf, 1)
+  }
+}
+
+// Guarded rc_dup of the heap value in `local_idx` (no-op for scalars/strings):
+// if it is odd (a heap pointer) with a zero high word (not a string fat
+// pointer), increment its rc_count at block-4. The single canonical copy — the
+// codegen files (compile_expr_tail / _tail4 / _tail6 / compile_match /
+// compile_lambda / compile_call / linked_compile) call this instead of keeping
+// per-file duplicates.
+export let emit_rc_dup_guarded: (Bytes, Int) -> Unit = (buf, local_idx) -> {
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, 1)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_if_void(buf)
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, 32)
+  emit_i64_shr_s(buf)
+  emit_i64_eqz(buf)
+  emit_if_void(buf)
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 1)
+  emit_i32_add(buf)
+  emit_i32_store(buf, 2, 0)
+  emit_end(buf)
+  emit_end(buf)
 }
 
 export let fn_type_param_types: (Option[TypeExpr]) -> Option[Array[TypeExpr]] = (ty) -> {

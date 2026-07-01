@@ -1,7 +1,15 @@
 # Selfhost RC cutover readiness (ADR-0055 #493)
 
-Status: **READY (2026-06)** on the realistic corpus below — the one blocker found
-by the assessment (nullary enum ctors outside RC reclaim) has been fixed. Measures
+Status: **NOT READY for cutover (real-corpus re-assessment, 2026-06-29).** The
+synthetic 8-program probe (`scripts/rc_cutover_readiness.sh`) is fully green, and
+the #702 fixes (below) were real. But running the **existing fixture test
+corpus** under RC vs the default backend tells a different story: of the
+default-passing tests sampled, **only ~41% also pass under RC** — the rest trap
+or fault. The probe, even at 8 programs, is still far too narrow; the real corpus
+exercises derive macros, traits/dict dispatch, iterators, and structural
+equality, all of which have pre-existing RC bugs (see "Real test-corpus
+assessment"). **Do not flip the default until the real corpus reaches parity.**
+Measures
 whether the selfhost Perceus RC path is ready to become the selfhost linear
 default (cutover, #493 C/F). The reclaim
 suite (`scripts/verify_selfhost_rc.sh`) and heap-e2e gate exercise RC features in
@@ -23,11 +31,84 @@ per-iteration heap growth of each.
 | opt     | `Option`-like enum (`Som`/`Non`) in an `if` | yes | OK | 20 | **0** |
 | mixed   | struct `{ enum; tuple }` + match | yes | OK | 56 | **0** |
 
-**Verdict: READY.** RC compiles every realistic combination, results are identical
-to the default backend (correctness holds on mixed-feature code), and heap is
-bounded (0 B/iter) for **all 6** — including a compiler-shaped enum AST evaluator,
-deeply-nested capturing closures, and an `Option`-like enum. The probe prints
-`READY`.
+**Verdict (narrow corpus): READY.** RC compiled every program in this original
+6-program corpus with result parity and 0 B/iter. But this corpus was too narrow —
+see below. (The script that produced this table was not committed at the time, so
+the exact programs are not reproducible; the table is kept for history.)
+
+## Broader-corpus assessment (`scripts/rc_cutover_readiness.sh`, 2026-06-29)
+
+The probe is now a committed, runnable script with a wider 8-program corpus
+(`bash scripts/rc_cutover_readiness.sh`, N1=1000 N2=11000, via the FS-compile
+path that `vibe run` uses). Result:
+
+| program | mixes | rc compiles | parity | rc heap N1/N2 | bounded |
+|---------|-------|:-----------:|:------:|--------------:|:-------:|
+| tuple             | tuple per iter | yes | OK | 32 / 32 | yes |
+| record_tuples     | struct of tuples | yes | OK | 96 / 96 | yes |
+| captured_mut_cell | `let mut` captured by a closure (#699) | yes | OK | 40 / 40 | yes |
+| nested_closures   | closure capturing a closure + mut | yes | OK | 64 / 64 | yes |
+| enum_ast          | enum AST + recursive match, dropped each iter | yes | OK | 136 / 136 | yes |
+| option_enum       | `let o = if … { Som } else { Non }` | yes | OK | 40 / 40 | yes |
+| mixed             | `let b = if … { Box } else { Box }` (struct{enum;tuple}) | yes | OK | 120 / 120 | yes |
+| hof               | closure passed to a higher-order fn | yes | OK | 24 / 24 | yes |
+
+**Verdict: READY.** All 8 programs compile under RC, results match the default
+backend, and RC heap is bounded (constant across N1/N2). Getting here closed
+three pre-existing RC gaps the narrow corpus missed (#702), each of which also
+reproduced on the source-compile RC path (independent of #699/#701):
+
+- **`not EFn` RC-compile error** (was: option_enum, mixed, hof) — the RC ELet
+  classification ran `efn_is_capturing` (→ `get_efn_params`) on every non-heap
+  `let` value because `&&` evaluates both operands; `let x = 5` / `let x = if…`
+  threw. Fixed by guarding with a nested `is_efn` check (`6632ff2`).
+- **capturing closure passed to a HOF leaked** (was: hof) — function-typed params
+  were classified non-heap so the callee never dropped them. Fixed by treating a
+  bare function type as heap (`22ecfa8`).
+- **recursive-enum match double-free trap at scale** (was: enum_ast) — a matched
+  ctor field shared the scrutinee's refcount, so consuming the field and the
+  scrutinee's recursive drop freed the same block twice. Fixed by dup-ing matched
+  fields on extraction (`c085e66`).
+
+Known minor follow-up: a matched heap field bound but **unused** now leaks (dup
+with no consuming drop) — safe over-keep, rare (use `_`). The leak-guard gate
+(`selfhost_only_gate.sh` step 40d) exercises tuple+cell+closure+recursive-enum
+and asserts bounded heap, locking these in against regression.
+
+## Real test-corpus assessment (2026-06-29) — the actual cutover gate
+
+The 8-program probe being green is necessary but **nowhere near sufficient**.
+Compiling the existing fixture `*_test.vibe` corpus under RC (FS-compile path,
+entry `__no_entry__`) vs the default backend and running each (`_start`) —
+counting only tests that pass under default — gives the real readiness signal:
+
+> **RC pass rate ≈ 41%** of default-passing tests (sampled). The rest trap or
+> fault under RC.
+
+The failures cluster into pre-existing RC feature gaps (all reproduce on a build
+from before the #702 work, so they are not #702 regressions — #702 strictly
+improved the synthetic probe without changing the default path):
+
+- **derive macros** — `derive(Default/Eq/Ord/Show/Hash)`: `derive_default_test`
+  (assert fails → wrong derived value under RC), `derive_ord_show_test`,
+  `derive_enum_ord_show_test`, `derive_hash_test`, `derive_hash_map_key_test`.
+- **traits / dict dispatch** — `trait_dict_passing_substrate_test`,
+  `trait_method_generic_test`, `trait_iterator_test`.
+- **iterators** — `lazy_iter_combinators_test`, `trait_iterator_test`.
+- **structural equality** — `eq_array_option_fields` (array/option field eq;
+  memory fault).
+
+Trap kinds are mixed: some are **assertion failures** (RC produces a wrong value,
+e.g. derived Default) and some are **memory faults** in `__rc_drop`/`__rc_alloc`
+(use-after-free / free-list corruption). So there are multiple distinct
+remaining RC bugs across derive/trait/iterator/eq machinery.
+
+**Conclusion: the cutover (#493 C/F default flip) must wait.** The mechanical
+flip is trivial and the whole-compiler-under-RC *compile* parity holds, but RC
+*runtime* correctness on real-world feature code is ~41%. Flipping now would ship
+a default backend that miscompiles or crashes the majority of real programs. The
+remaining cutover work is to drive that 41% to 100% — see the broad-corpus
+RC-traps tracking issue — re-running this corpus assessment as the gate.
 
 ## The fix that landed: nullary enum constructors are now RC blocks
 

@@ -687,6 +687,269 @@ export let rec is_mut_captured_in: (Expr, String) -> Bool = (expr, name) -> {
     EContinue(_) => false,
     EThrow(msg) => is_mut_captured_in(msg, name),
     EReturn(msg) => is_mut_captured_in(msg, name),
+    // #629 step 2: forms that carry sub-expressions which may hold a capturing
+    // closure. Previously these fell through to `_ => false`, so a mut captured
+    // by a closure INSIDE a struct/record literal, handler, loop, projection,
+    // labeled argument, map literal, or spread was not detected — the cell was
+    // left a stack-local and the closure captured it by value (snapshot),
+    // silently losing the shared mutation. Recursing here is always sound
+    // (over-detection only boxes more).
+    ERecord(fields) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fields) {
+        let (_, fval) = Array::get(fields, i)
+        if is_mut_captured_in(fval, name) {
+          found = true
+        }
+        i = i + 1
+      }
+      found
+    },
+    EMap(entries) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(entries) {
+        let (_, mval) = Array::get(entries, i)
+        if is_mut_captured_in(mval, name) {
+          found = true
+        }
+        i = i + 1
+      }
+      found
+    },
+    EHandle(body, arms) => if is_mut_captured_in(body, name) {
+      true
+    } else {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(arms) {
+        let (_, arm_expr) = Array::get(arms, i)
+        if is_mut_captured_in(arm_expr, name) {
+          found = true
+        }
+        i = i + 1
+      }
+      found
+    },
+    ELoop(params, body) => if is_mut_captured_in(body, name) {
+      true
+    } else {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(params) {
+        let (_, init) = Array::get(params, i)
+        if is_mut_captured_in(init, name) {
+          found = true
+        }
+        i = i + 1
+      }
+      found
+    },
+    EDot(obj, _, _) => is_mut_captured_in(obj, name),
+    ELabeledArg(_, _, inner) => is_mut_captured_in(inner, name),
+    ESpread(inner) => is_mut_captured_in(inner, name),
     _ => false
+  }
+}
+
+// Region-lifetime decision for a `let mut name` cell (#629 region inference).
+// Returns true when the cell must be heap-boxed because its region lifetime can
+// extend beyond the binding block (a capturing closure may escape); false keeps
+// it a plain stack-local (region = lexical block). Both backends gate boxing on
+// this single predicate (linear compile_expr_tail / wasm-gc backend_expr).
+//
+// Step 1 baseline: a mut captured by ANY nested closure is conservatively
+// treated as escaping — identical to the prior `is_mut_captured_in` gate, so
+// behavior is unchanged. Later steps refine this into a real escape analysis
+// (a capture whose closure provably cannot escape its binding scope stays
+// stack-local). The predicate stays conservative: when escape cannot be ruled
+// out it returns true (box), which is always sound.
+export let mut_needs_ref_cell: (Expr, String) -> Bool = (body, name) -> {
+  is_mut_captured_in(body, name)
+}
+
+// Builtins whose arg0 is BORROWED (read in place, not consumed/dropped). Kept
+// in sync with is_borrow_arg0_call in perceus/index.vibe.
+export let md_is_borrow_arg0_call: (String) -> Bool = (f) -> {
+  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "ArrayBuilder::push" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::set" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "__rec_field"
+}
+
+let md_max: (Int, Int) -> Int = (a, b) -> {
+  if a > b { a } else { b }
+}
+
+// How many times is `name` consumed (owning position) along the LONGEST control
+// path of `e`? Used to balance the rc of a value that is referenced but NOT
+// owned at its definition site — a matched ctor field (a borrowed view sharing
+// the scrutinee's refcount; compile_match) or a captured free variable (a
+// borrowed view of the defining scope's binding; compile_lambda). Each owning
+// consume of such a value decrements a refcount it does not own, so the value
+// must be dup'd once PER consume or it is freed more times than dup'd -> double
+// free. Sequential children SUM; alternative children (if-branches, match/handle
+// arms) take the MAX, so the count is an upper bound on the consumes of any
+// executed path (>= actual everywhere -> never under-dup -> no double free;
+// tight on straight-line code -> no over-dup leak). MUST enumerate every Expr
+// variant (modeled on fold_expr): skipping recursion into a child could miss a
+// real consume and wrongly suppress the dup. A bare `EIdent(name)` passed as
+// arg0 of a borrow-arg0 builtin does not consume (it is read in place).
+export let rec md_consume_count: (Expr, String) -> Int = (e, name) -> {
+  match e {
+    EInt(_) => 0,
+    EFloat(_) => 0,
+    EString(_) => 0,
+    EBool(_) => 0,
+    EUnit => 0,
+    EStringInterp(_) => 0,
+    EIdent(n, _) => if n == name { 1 } else { 0 },
+    ETuple(items) => {
+      let mut acc = 0
+      let mut i = 0
+      while i < Array::length(items) {
+        acc = acc + md_consume_count(Array::get(items, i), name)
+        i = i + 1
+      }
+      acc
+    },
+    EArray(items) => {
+      let mut acc = 0
+      let mut i = 0
+      while i < Array::length(items) {
+        acc = acc + md_consume_count(Array::get(items, i), name)
+        i = i + 1
+      }
+      acc
+    },
+    ERecord(fields) => {
+      let mut acc = 0
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, v) = Array::get(fields, i)
+        acc = acc + md_consume_count(v, name)
+        i = i + 1
+      }
+      acc
+    },
+    EMap(fields) => {
+      let mut acc = 0
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, v) = Array::get(fields, i)
+        acc = acc + md_consume_count(v, name)
+        i = i + 1
+      }
+      acc
+    },
+    EIf(c, t, el) =>
+    md_consume_count(c, name) + md_max(md_consume_count(t, name), md_consume_count(el, name)),
+    ELet(_, v, b) => md_consume_count(v, name) + md_consume_count(b, name),
+    ELetRec(_, v, b) => md_consume_count(v, name) + md_consume_count(b, name),
+    ELetMut(_, v, b) => md_consume_count(v, name) + md_consume_count(b, name),
+    EAssign(_, v, b) => md_consume_count(v, name) + md_consume_count(b, name),
+    EAssignOp(_, _, v, b) => md_consume_count(v, name) + md_consume_count(b, name),
+    ESeq(a, b) => md_consume_count(a, name) + md_consume_count(b, name),
+    EMatch(s, arms) => {
+      let mut mx = 0
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, v) = Array::get(arms, i)
+        mx = md_max(mx, md_consume_count(v, name))
+        i = i + 1
+      }
+      // A bare `match name { .. }` BORROWS the scrutinee (its fields become
+      // borrowed views reclaimed by the owner's recursive drop); it does not
+      // consume `name`. Counting it as a consume would over-dup a re-matched
+      // borrowed tail (e.g. deeply-nested `match restN`), leaking/corrupting
+      // the chain. A non-ident scrutinee may still consume `name` in a
+      // sub-expression, so recurse there.
+      let scr = match s {
+        EIdent(_, _) => 0,
+        _ => md_consume_count(s, name)
+      }
+      scr + mx
+    },
+    EHandle(s, arms) => {
+      let mut mx = 0
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, v) = Array::get(arms, i)
+        mx = md_max(mx, md_consume_count(v, name))
+        i = i + 1
+      }
+      let scr = match s {
+        EIdent(_, _) => 0,
+        _ => md_consume_count(s, name)
+      }
+      scr + mx
+    },
+    EWhile(c, b) => md_consume_count(c, name) + md_consume_count(b, name),
+    ELoop(params, b) => {
+      let mut acc = md_consume_count(b, name)
+      let mut i = 0
+      while i < Array::length(params) {
+        let (_, v) = Array::get(params, i)
+        acc = acc + md_consume_count(v, name)
+        i = i + 1
+      }
+      acc
+    },
+    EForIn(_, _, it, b) => md_consume_count(it, name) + md_consume_count(b, name),
+    ECall(callee, args, _) => {
+      let borrow0 = match callee {
+        EIdent(f, _) => md_is_borrow_arg0_call(f),
+        _ => false
+      }
+      let start = if borrow0 && Array::length(args) >= 1 {
+        1
+      } else {
+        0
+      }
+      let head = if start == 1 {
+        match Array::get(args, 0) {
+          EIdent(_, _) => 0,
+          _ => md_consume_count(Array::get(args, 0), name)
+        }
+      } else {
+        0
+      }
+      // A bare-ident CALLEE is invoked, not consumed — calling a function or a
+      // captured closure (incl. a recursive closure's own self-reference) does
+      // not drop it. Counting `f(..)` as a consume of `f` over-dups the captured
+      // closure once per call (#705: a nested self-recursive closure's self-
+      // capture corrupted under RC). Only a non-ident callee can consume `name`
+      // in a sub-expression.
+      let callee_c = match callee {
+        EIdent(_, _) => 0,
+        _ => md_consume_count(callee, name)
+      }
+      let mut acc = callee_c + head
+      let mut ri = start
+      while ri < Array::length(args) {
+        acc = acc + md_consume_count(Array::get(args, ri), name)
+        ri = ri + 1
+      }
+      acc
+    },
+    EBinOp(_, l, r) => md_consume_count(l, name) + md_consume_count(r, name),
+    EUnaryOp(_, x) => md_consume_count(x, name),
+    EFn(_, _, _, _, _, body) => md_consume_count(body, name),
+    EDot(x, _, _) => md_consume_count(x, name),
+    ELabeledArg(_, _, v) => md_consume_count(v, name),
+    EThrow(x) => md_consume_count(x, name),
+    EReturn(x) => md_consume_count(x, name),
+    EBreak(opt) => match opt {
+      Some(v) => md_consume_count(v, name),
+      None => 0
+    },
+    EContinue(args) => {
+      let mut acc = 0
+      let mut i = 0
+      while i < Array::length(args) {
+        acc = acc + md_consume_count(Array::get(args, i), name)
+        i = i + 1
+      }
+      acc
+    },
+    ESpread(x) => md_consume_count(x, name)
   }
 }

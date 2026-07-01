@@ -1,0 +1,59 @@
+// #629 region inference, step 2: a `let mut` captured by a closure must be
+// heap-boxed so the closure shares the live cell (by-reference capture), no
+// matter WHICH expression form the capturing closure sits inside. The codegen
+// boxing decision is `mut_needs_ref_cell` -> `is_mut_captured_in`; before step 2
+// that capture scan fell through to `false` for struct/record literals (ERecord),
+// handlers, loops, projections (EDot), labeled args, map literals and spreads,
+// so a mut captured inside one of those was left a stack-local and the closure
+// captured it by value (snapshot) — silently losing the shared mutation.
+//
+// These tests assert the CORRECT by-reference behavior (read sees writes, the
+// outer cell is updated, two closures share one cell). They trap on the old
+// buggy snapshot behavior, so they pin the fix.
+
+//# Types
+
+struct Counter {
+  bump: () -> Unit;
+  read: () -> Int
+}
+
+//# Tests
+
+test "mut captured by closures inside a struct literal (ERecord)" {
+  let mut x = 0
+  let c = Counter::{
+    bump: () -> { x = x + 1 },
+    read: () -> { x }
+  }
+  c.bump()
+  c.bump()
+  // by-reference: the read closure sees the bump closure's writes.
+  assert_eq(c.read(), 2)
+  // and the outer binding observes them too (shared cell, not a snapshot).
+  assert_eq(x, 2)
+}
+
+test "two struct-literal closures share one captured cell" {
+  let mut y = 10
+  let c = Counter::{
+    bump: () -> { y = y + 5 },
+    read: () -> { y }
+  }
+  assert_eq(c.read(), 10)
+  c.bump()
+  assert_eq(c.read(), 15)
+  assert_eq(y, 15)
+}
+
+test "capture inside the object of a projection (EDot)" {
+  let mut z = 0
+  // The struct literal (with capturing closures) is the object of `.read`,
+  // exercising the EDot recursion into its object sub-expression.
+  let r = Counter::{
+    bump: () -> { z = z + 2 },
+    read: () -> { z }
+  }
+  r.bump()
+  assert_eq(r.read(), 2)
+}

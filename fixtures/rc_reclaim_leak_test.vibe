@@ -1,0 +1,105 @@
+// #699/#700/#701/#702/#706 RC reclamation leak guard.
+//
+// A hot loop that allocates, every iteration, a tuple + a captured `let mut`
+// cell + the closure that captures it + a recursive enum tree consumed by a
+// recursive function — all of which must be reclaimed under the Perceus RC
+// codegen (VIBE_RC=1). With reclamation the bump pointer (__heap_ptr) is reused
+// each iteration, so total heap allocated stays a small constant. Without it,
+// heap_used scales with the iteration count — covering regressions in tuple RC
+// reclaim (#700), captured-mut cell/closure reclaim (#699), VIBE_RC being
+// silently ignored in FS-compile mode (#701), the recursive-enum
+// match-destructuring double-free that trapped at scale (#702 Blocker B), and
+// a heap param consumed by a normal (owning) call INSIDE a while loop — whose
+// protective per-iteration dup (#706 core fix) leaves the param's OWN
+// reference unspent unless the function epilogue also compensates for it
+// (#706 leak follow-up; each call to `consume_in_loop` below leaked one array
+// before that fix, scaling heap_used with N).
+//
+// The gate (scripts/selfhost_only_gate.sh step 40d) compiles this under
+// VIBE_RC=1 + VIBE_FS_COMPILE=1 (the `vibe run` path), measures __heap_ptr via
+// scripts/measure_selfhost_heap.mjs, and asserts heap_used stays below a small
+// bound. At N=20000 a leak would be hundreds of KB; reclamation keeps it tiny.
+enum Tree { Leaf(Int); Node(Tree, Tree) }
+
+struct Box { items: Array[Int] }
+
+let sumt = (t: Tree) -> Int {
+  match t {
+    Leaf(v) => v,
+    Node(l, r) => sumt(l) + sumt(r)
+  }
+}
+
+// #703 guard: binds the matched heap children `l`/`r` but never references them.
+// Their #702 dup would be unbalanced (no consuming drop), so an unreferenced
+// binding must be left un-dup'd and reclaimed by the scrutinee's recursive drop.
+let ignore_children = (t: Tree) -> Int {
+  match t {
+    Leaf(_) => 0,
+    Node(l, r) => 7
+  }
+}
+
+// #706 leak guard: `sumarr` normally (non-borrow-arg0) consumes its param `a`.
+// `consume_in_loop` calls it inside a `while` loop, so `a` is a heap param
+// consumed at an owning call-arg position inside a loop — the exact #706
+// shape (parse_module_sections' `token_type(tokens, i)`). Each call to
+// `consume_in_loop` must fully reclaim its own `a` (an array literal built at
+// the call site, unreachable afterward) — a per-call leak here scales
+// heap_used with N just like the earlier tuple/enum/closure guards above.
+let sumarr = (a: Array[Int]) -> Int {
+  Array::get(a, 0) + Array::get(a, 1) + Array::get(a, 2)
+}
+
+let consume_in_loop = (a: Array[Int]) -> Int {
+  let mut k = 0
+  let mut s = 0
+  while k < 3 {
+    s = s + sumarr(a)
+    k = k + 1
+  }
+  s
+}
+
+let main = () -> Int {
+  let mut total = 0
+  let mut i = 0
+  while i < 20000 {
+    let t = (i, i + 1)
+    let mut c = 0
+    let bump = () -> { c = c + 1 }
+    bump()
+    let tr = Node(Leaf(i), Leaf(i + 1))
+    // #704 projection-ownership reclamation guard: `Array::get(b.items, _)`
+    // passes a heap field projection as the BORROWED arg0 of a builtin, which
+    // must NOT be rc_dup'd at the call site (the builtin never drops it) — else
+    // one reference leaks per iteration and heap scales with N. The struct `b`
+    // and its array reclaim each iteration only when that dup is suppressed.
+    let b = Box::{ items: [i, i + 1, i + 2] }
+    let first = Array::get(b.items, 0)
+    // #703 unused-matched-field guard (drives `ignore_children`, which binds but
+    // never references the heap children — see its definition above).
+    let ignored = ignore_children(Node(Leaf(i), Leaf(i + 1)))
+    // #703 follow-up: inline temporary match scrutinee. The matched-on `Node`
+    // value is constructed in scrutinee position with no binding to drop it; the
+    // RC scrutinee-lift must reclaim it each iteration (else heap scales with N).
+    let inlined = match Node(Leaf(i), Leaf(i + 1)) {
+      Leaf(_) => 0,
+      Node(l, r) => sumt(l) + sumt(r)
+    }
+    // #703-2 borrow-only matched-field guard: `xs` is bound and referenced, but
+    // only as the borrowed arg0 of `Array::length` — never consumed. Its #702
+    // dup must be suppressed (md_consumes) or the array leaks each iteration.
+    let blen = match Some([i, i + 1]) {
+      Some(xs) => Array::length(xs),
+      None => 0
+    }
+    // #706 leak guard (see consume_in_loop above): a fresh array literal
+    // consumed 3x inside consume_in_loop's own while loop, unreachable after
+    // this call returns.
+    let looped = consume_in_loop([i, i + 1, i + 2])
+    total = total + t.0 + t.1 + c + sumt(tr) + first + ignored + inlined + blen + looped
+    i = i + 1
+  }
+  total
+}

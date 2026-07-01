@@ -8,6 +8,7 @@
 #      -> stage3) with stage2 == stage3 (fixpoint) and each stage validates a
 #      compiled sample (compile -> run smoke).
 set -euo pipefail
+: "${VIBE_RC:=0}"; export VIBE_RC  # cutover: pin the compiler self-build / gate baseline to bump (RC only when explicitly VIBE_RC=1)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
@@ -41,12 +42,23 @@ if s2 != s3:
 print(f"[selfhost-only-gate] fixpoint ok: stage2==stage3 ({s2[:12]})")
 PY
 
-# 3b. RC bootstrap gate (#556). The stage build above IS the whole compiler
-# compiled as one unit under the canonical RC (Perceus, ADR-0055) backend — the
-# scenario where #556's `analyze_calls` deep recursion blew the wasm stack. Assert
-# it explicitly (reusing the build just produced), so the RC-bootstrap check is
-# named and guards the iterative `analyze_calls` fix (#681). The pre-cutover
-# RC-vs-default parity gate is obsolete (#594 removed the non-RC backend).
+# 3b. RC bootstrap gate (#556) -- CAVEAT (found #705 bump-removal spike): this
+# reuses the manifest from the bump-pinned build above (VIBE_RC=0, line ~11),
+# so it does NOT perform a fresh seed-compiles-stage1-under-RC build; it only
+# re-checks that manifest's stage2==stage3 sha (already asserted just above).
+# It still guards the #556 `analyze_calls` iterative fix (#681) for whatever
+# backend actually built that manifest, but it is NOT currently evidence that
+# the whole compiler self-hosts correctly under RC end-to-end. A real (fresh,
+# unreused) `VIBE_RC=1 bash scripts/selfhost_generations.sh build --stage3`
+# currently FAILS at seed->stage1 ("not EFn", stale seed) -- and a stage1
+# (built from current, post-#702-fix source) *can* compile a fresh flat source
+# under RC, but the resulting compiler then segfaults (`memory access out of
+# bounds` in parse_let_stmt/parse_program) parsing even a trivial one-line
+# program. This is a distinct, deeper bug from the per-feature RC codegen
+# issues fixed this session (v128 #705, coverage/trace/break #705): it means
+# the compiler's OWN internal RC-managed state is unsound in some pattern its
+# own source uses (parser internals), not yet isolated. Do not remove the
+# bump backend or the VIBE_RC=0 pin above until this is root-caused and fixed.
 VIBE_SELFHOST_RC_BOOTSTRAP_REUSE_GEN="${latest_gen}generation.json" \
   bash scripts/test_selfhost_rc_bootstrap.sh
 
@@ -1732,6 +1744,44 @@ fi
 rm -rf "$mudir"
 echo "[selfhost-only-gate] mutability discipline ok"
 
+# 32b. mutability discipline completeness (#629 step 3-2): an illegal reassignment
+#      of an immutable `let` must be flagged even when it sits inside a map literal
+#      (and likewise labeled arg / spread / break / continue — check_mutability_expr
+#      previously dropped these Expr forms to `_ => errors`, missing the violation).
+#      A `let mut` reassignment inside the same form must still compile (no over-reject).
+echo "[selfhost-only-gate] 32b/32 mutability discipline completeness (nested forms)"
+mu2dir="_build/_gate_mutability_nested"
+rm -rf "$mu2dir"; mkdir -p "$mu2dir"
+cat > "$mu2dir/ok.vibe" <<'EOF'
+export let _start: () -> Int = () -> {
+  let mut x = 1
+  let m = map { "a": { x = 2; x } }
+  m["a"]
+}
+EOF
+cat > "$mu2dir/bad.vibe" <<'EOF'
+export let _start: () -> Int = () -> {
+  let x = 1
+  let m = map { "a": { x = 2; x } }
+  m["a"]
+}
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$mu2dir/ok.vibe" "$mu2dir/ok.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$mu2dir/ok.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: legal mut reassignment inside map literal did not compile (over-rejects)" >&2
+  cat "$mu2dir/ok.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$mu2dir/bad.vibe" "$mu2dir/bad.wasm" _start >/dev/null 2>&1 || true
+if [ -s "$mu2dir/bad.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: immutable-let reassignment inside map literal compiled (completeness regressed)" >&2; exit 1
+fi
+rm -rf "$mu2dir"
+echo "[selfhost-only-gate] mutability discipline completeness ok"
+
 # 33. pattern-soundness: a constructor pattern must bind its variant's exact
 #     payload arity, and cannot match a scalar scrutinee. Binding the right
 #     arity, a nullary variant, and the builtin Option ctors must still compile.
@@ -2355,5 +2405,96 @@ if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
 fi
 rm -rf "$swdir"
 echo "[selfhost-only-gate] fused SIMD whitespace skip ok"
+
+# 40c. Region capture (#629 step 2): a `let mut` captured by a closure inside a
+#      struct/record literal, projection, handler, loop, labeled arg, map literal
+#      or spread must still be heap-boxed (by-reference capture), not snapshotted.
+#      The fixture asserts the read closure sees the writer's mutations and the
+#      outer cell is updated; it traps under the pre-fix by-value snapshot bug.
+echo "[selfhost-only-gate] 40c/40 region capture (mut captured inside struct literal etc.)"
+rcdir="_build/_gate_region_capture"
+rm -rf "$rcdir"; mkdir -p "$rcdir"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/region_capture_test.vibe" "$rcdir/rc.wasm" __no_entry__ >/dev/null 2>&1
+if [ ! -s "$rcdir/rc.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: region_capture test did not compile" >&2
+  cat "$rcdir/rc.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke _start "$rcdir/rc.wasm" >/dev/null 2>&1; then
+  echo "[selfhost-only-gate] FAIL: region_capture test trapped (assert failed)" >&2; exit 1
+fi
+rm -rf "$rcdir"
+echo "[selfhost-only-gate] region capture ok"
+
+# 40d. RC reclamation leak guard (#699/#700/#701/#702/#706): a hot loop
+#      allocating a tuple + a captured `let mut` cell + the closure that
+#      captures it + a recursive enum tree consumed by a recursive fn + a heap
+#      param consumed by a normal call INSIDE a while loop (#706's
+#      parse_module_sections shape), every iteration, must be fully reclaimed
+#      under VIBE_RC. Compile via the FS-compile path WITH VIBE_RC=1 (the
+#      `vibe run` path — also exercises #701, which wired RC into FS mode) and
+#      measure __heap_ptr: reclamation keeps heap_used a small constant (~424 B
+#      at N=20000), whereas a regression in tuple RC reclaim (#700),
+#      captured-mut cell/closure reclaim (#699), VIBE_RC silently ignored in FS
+#      mode (#701), the recursive-enum match double-free that trapped at scale
+#      (#702 Blocker B), or the loop-consumed heap param's own reference never
+#      being dropped (#706 — leaked ~84 B per call before its fix) makes it
+#      scale with N (or trap). #700 slipped precisely because no gate asserted
+#      a bounded heap.
+echo "[selfhost-only-gate] 40d/40 RC reclamation leak guard (tuple+cell+closure+enum+loop-consume)"
+lkdir="_build/_gate_rc_leak"
+rm -rf "$lkdir"; mkdir -p "$lkdir"
+VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/rc_reclaim_leak_test.vibe" "$lkdir/rc.wasm" main >/dev/null 2>&1
+if [ ! -s "$lkdir/rc.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: rc_reclaim_leak fixture did not compile under VIBE_RC" >&2
+  cat "$lkdir/rc.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+lk_json="$(node scripts/measure_selfhost_heap.mjs "$lkdir/rc.wasm" main 2>/dev/null)"
+lk_used="$(printf '%s' "$lk_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+lk_result="$(printf '%s' "$lk_json" | sed -n 's/.*"result":\([0-9]*\).*/\1/p')"
+if [ -z "$lk_used" ]; then
+  echo "[selfhost-only-gate] FAIL: could not measure rc_reclaim_leak heap ($lk_json)" >&2; exit 1
+fi
+if [ "$lk_result" != "3200280000" ]; then
+  echo "[selfhost-only-gate] FAIL: rc_reclaim_leak wrong result $lk_result (want 3200280000)" >&2; exit 1
+fi
+if [ "$lk_used" -ge 2000 ]; then
+  echo "[selfhost-only-gate] FAIL: rc_reclaim_leak heap_used=$lk_used >= 2000 (RC reclamation regressed; ~800000 == full leak)" >&2; exit 1
+fi
+rm -rf "$lkdir"
+echo "[selfhost-only-gate] RC reclamation leak guard ok (heap_used=$lk_used B at N=20000)"
+
+# 40e. V128 SIMD intrinsics under RC (#705 follow-up): step 40 only exercised
+#      the bump backend. v128 boxes are tagged pointers with NO rc header, so
+#      naively letting them flow through RC's dup/drop guards would misread
+#      their payload bytes as a refcount and corrupt them; Perceus now treats
+#      v128-producing let-bindings as scalar (never dup/drop'd), matching their
+#      forward-only, never-freed lifetime under bump too. Also covers a distinct
+#      RC-only bug where v128_load/store's byte offset and v128_splat_i8x16's
+#      byte value were used raw instead of untagged (RC tags Int as n<<1),
+#      silently computing the wrong SIMD lane bytes.
+echo "[selfhost-only-gate] 40e/40 V128 SIMD intrinsics compile+run under RC"
+v2dir="_build/_gate_v128_rc"
+rm -rf "$v2dir"; mkdir -p "$v2dir"
+VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/v128_intrinsics_test.vibe" "$v2dir/v128rc.wasm" __no_entry__ >/dev/null 2>&1
+if [ ! -s "$v2dir/v128rc.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: v128 intrinsics test did not compile under RC" >&2
+  cat "$v2dir/v128rc.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke _start "$v2dir/v128rc.wasm" >/dev/null 2>&1; then
+  echo "[selfhost-only-gate] FAIL: v128 intrinsics test trapped under RC (assert failed)" >&2; exit 1
+fi
+rm -rf "$v2dir"
+echo "[selfhost-only-gate] V128 SIMD intrinsics under RC ok"
 
 echo "[selfhost-only-gate] ok"

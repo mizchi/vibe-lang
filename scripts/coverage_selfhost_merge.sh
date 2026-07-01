@@ -16,6 +16,7 @@
 #   <workload>.json          per-workload raw report
 #   merged.json              union report {fn, branch, per_fn, top_gaps, workloads}
 set -euo pipefail
+: "${VIBE_RC:=0}"; export VIBE_RC  # cutover: pin the compiler self-build / gate baseline to bump (RC only when explicitly VIBE_RC=1)
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"

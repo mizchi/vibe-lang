@@ -1,0 +1,56 @@
+// #705 minimal repro: under VIBE_RC=1 a 2-field ctor (`Opt`) that is built via
+// a NESTED enum match-rewrap (`prepend_token`, applied to the result of another
+// `prepend_token`) is freed prematurely, so deep-matching it later reads a freed
+// node and the discrimination falls through to `unreachable`.
+//
+// Reductions that PIN it (each toggles pass/trap; all under VIBE_RC=1):
+//   - single `prepend_token` (onto a literal tail): PASS
+//   - two nested `prepend_token` calls: TRAP   (this file)
+//   - both tokens 1-field (Flag/Bar): PASS
+//   - the deeper-matched token is 2-field (Opt/Foo): TRAP
+//   - `prepend` that conses directly (no `match result` rewrap): PASS
+//   - walk/length or 1-level match of the same list: PASS (build is intact)
+//   - only the >=2-level match that DISCRIMINATES the 2-field node traps
+// So: matching a 2-field ctor built through nested enum-rewrap frees it early.
+//
+// Passes under the DEFAULT (bump) backend — RC is opt-in (#705 deferred the
+// cutover). This fixture exists to track the RC-path bug; do NOT delete the
+// legacy bump path until it (and the other #705 traps) are fixed.
+
+enum ArgToken {
+  Flag(String);
+  Opt(String, String)
+}
+
+enum ArgList {
+  ArgNil;
+  ArgCons(ArgToken, ArgList)
+}
+
+enum ParseResult {
+  ParseOk(ArgList);
+  ParseErr(String)
+}
+
+let prepend_token = (token: ArgToken, result: ParseResult) -> ParseResult {
+  match result {
+    ParseOk(rest) => ParseOk(ArgCons(token, rest)),
+    ParseErr(msg) => ParseErr(msg)
+  }
+}
+
+test "nested enum-rewrap multifield ctor deep match" {
+  match prepend_token(Flag("p"), prepend_token(Opt("o", "out"), ParseOk(ArgNil))) {
+    ParseOk(items) => match items {
+      ArgCons(Flag(_), r1) => match r1 {
+        ArgCons(Opt(k2, v2), _) => {
+          assert(k2 == "o")
+          assert(v2 == "out")
+        },
+        _ => assert(false)
+      },
+      _ => assert(false)
+    },
+    ParseErr(_) => assert(false)
+  }
+}

@@ -1,0 +1,63 @@
+// #706 follow-up regression: a heap value passed to a normal (owning,
+// non-borrow-arg0) call is that call's ONLY textual owning occurrence in the
+// caller, so the Perceus plan used to treat it as "the final, free consume" —
+// ownership transfers to the callee with no retained reference in the caller.
+// If the caller then BORROWS the same binding afterward (e.g. Array::get),
+// that borrow reads through a reference the callee may already have dropped —
+// a silent use-after-free (no trap; just wrong/stale data), since borrows are
+// invisible to the plan's dup/drop accounting.
+//
+// This was masked at HEAD by dumb luck: nothing reallocated the freed cell
+// before the stale read, so the "wrong" program happened to read back intact
+// bytes. It became visible (as wat_exports/parse_module_sections silently
+// returning an empty string) once an unrelated leak fix elsewhere in the RC
+// pipeline changed allocation timing enough that the freed cell got reused
+// before the stale borrow read it.
+//
+// Fix: `pctx_apply_borrow_retention` (perceus/index.vibe) bumps a binding's
+// counted uses by one whenever it has any borrow occurrence, so its "final"
+// owning occurrence gets a dup (retaining a reference) instead of a free
+// transfer, and the existing scope-end drop mechanism reclaims that retained
+// reference once the caller is done borrowing it.
+//
+// Passes on bump (RC ops are no-ops there) and under RC (borrow-after-move is
+// now retained) alike.
+
+let sink = (a: Array[Int]) -> Int {
+  Array::length(a)
+}
+
+let f = (arr: Array[Int]) -> Int {
+  let n = sink(arr)
+  Array::get(arr, 0)
+}
+
+test "borrow after the only owning (move) occurrence stays valid" {
+  assert(f([
+    42,
+    99
+  ]) == 42)
+}
+
+// A more elaborate shape: a heap value passed to a normal owning call, then
+// read via multiple borrows scattered across straight-line code afterward
+// (not just one immediately-following borrow).
+let sink2 = (a: Array[Int]) -> Int {
+  Array::length(a)
+}
+
+let g = (arr: Array[Int]) -> Int {
+  let n = sink2(arr)
+  let a0 = Array::get(arr, 0)
+  let a1 = Array::get(arr, 1)
+  let a2 = Array::get(arr, 2)
+  a0 + a1 + a2
+}
+
+test "multiple borrows after the only owning occurrence" {
+  assert(g([
+    10,
+    20,
+    30
+  ]) == 60)
+}

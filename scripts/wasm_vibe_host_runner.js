@@ -2123,7 +2123,18 @@ async function main() {
           instance.exports.__heap_ptr instanceof WebAssembly.Global
             ? instance.exports.__heap_ptr.value
             : 0;
-        instance.exports._start();
+        try {
+          instance.exports._start();
+        } catch (startErr) {
+          if (process.env.VIBE_DEBUG708_MEMDUMP) {
+            const mem708 = new Uint8Array(instance.exports.memory.buffer);
+            const hp708g = instance.exports.__heap_ptr;
+            const hp708 = hp708g instanceof WebAssembly.Global ? Number(hp708g.value) : mem708.length;
+            require("fs").writeFileSync(process.env.VIBE_DEBUG708_MEMDUMP, Buffer.from(mem708.slice(0, Math.min(hp708 + 4096, mem708.length))));
+            console.error(`[crash708] dumped ${Math.min(hp708 + 4096, mem708.length)} bytes to ${process.env.VIBE_DEBUG708_MEMDUMP}, heap_ptr=${hp708}`);
+          }
+          throw startErr;
+        }
         didInitStart = true;
         const fsRootDescriptor = instance.exports.__fs_root_descriptor;
         if (fsRootDescriptor instanceof WebAssembly.Global) {
@@ -2209,6 +2220,10 @@ async function main() {
       console.error(`[crash debug] mem[0..32]: ${Array.from(mem.slice(0, 32)).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
       if (typeof hp === "number" && hp >= 8 && hp < mem.length - 32) {
         console.error(`[crash debug] mem[heap-8..heap+24]: ${Array.from(mem.slice(hp - 8, hp + 24)).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
+      }
+      if (process.env.VIBE_DEBUG708_MEMDUMP) {
+        require("fs").writeFileSync(process.env.VIBE_DEBUG708_MEMDUMP, Buffer.from(mem.slice(0, typeof hp === "number" ? hp + 4096 : mem.length)));
+        console.error(`[crash debug] full memory dumped to ${process.env.VIBE_DEBUG708_MEMDUMP} (${typeof hp === "number" ? hp + 4096 : mem.length} bytes)`);
       }
       throw err;
     }

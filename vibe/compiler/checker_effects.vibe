@@ -1429,6 +1429,35 @@ export let rec check_mutability_expr: (Expr, Array[String]) -> Array[EffectError
       }
       errors
     },
+    // #629 step 3-2: forms previously dropped to `_ => errors`, so an illegal
+    // reassignment (`x = e` where x is an immutable `let`) sitting inside a map
+    // literal, labeled argument, spread, break value, or continue argument went
+    // unflagged. Recurse with the SAME mutable set (these forms introduce no new
+    // bindings), keeping the pass sound: still no false positives, just fewer
+    // false negatives.
+    EMap(entries) => {
+      let mut mi = 0
+      while mi < Array::length(entries) {
+        let (_, mval) = Array::get(entries, mi)
+        append_eff_errs(errors, check_mutability_expr(mval, mutable))
+        mi = mi + 1
+      }
+      errors
+    },
+    ELabeledArg(_, _, inner) => check_mutability_expr(inner, mutable),
+    ESpread(inner) => check_mutability_expr(inner, mutable),
+    EBreak(opt) => match opt {
+      Some(e) => check_mutability_expr(e, mutable),
+      None => errors
+    },
+    EContinue(cargs) => {
+      let mut ci = 0
+      while ci < Array::length(cargs) {
+        append_eff_errs(errors, check_mutability_expr(Array::get(cargs, ci), mutable))
+        ci = ci + 1
+      }
+      errors
+    },
     _ => errors
   }
 }

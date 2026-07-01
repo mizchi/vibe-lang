@@ -19,6 +19,10 @@ import ../core/ast.vibe {
   Stmt, TypeExpr, Expr
 }
 
+import ../core/polyfill.vibe {
+  __to_string
+}
+
 import ../core/dce.vibe {
   dce_stmts
 }
@@ -565,6 +569,116 @@ let rec fold_expr: (Expr) -> Expr = (expr) -> {
       (k, fold_expr(v))
     }),
     ESpread(e) => ESpread(fold_expr(e))
+  }
+}
+
+// #703 follow-up: lift a temporary (non-variable) match scrutinee into a `let`
+// so the Perceus RC pass — which attributes drops to NAMED bindings — gives it
+// a scope-end drop. `match <e> { arms }` -> `let __m_scrut_N = <e> in match
+// __m_scrut_N { arms }` when `<e>` is not already an identifier. Without a
+// binding the fresh owned heap value the scrutinee produces (`match foo() {
+// .. }`, `match Some(x) { .. }`) is never dropped and leaks under RC.
+//
+// #708: the lift name MUST be unique per lift site (the `_N` suffix, from a
+// counter cell threaded through every recursive call). A single non-unique
+// name shared by every lift in a function is not just an RC-drop-scheduling
+// hazard (the original #708 fix) — when two lifts NEST (a match whose
+// scrutinee is itself a non-identifier match, e.g. `let (a,b) = match
+// <call> { .. }`, which the parser also desugars through a match-over-a-
+// match), the OUTER lift's own body-compile resolves the identifier by
+// searching local slots most-recent-first. Since the INNER lift (compiled
+// while evaluating the outer lift's OWN value) pushes the identical name
+// *after* the outer one, that search finds the inner (already out-of-scope)
+// binding instead of the outer one it meant to reference — reading whatever
+// unrelated heap object the inner scrutinee held (e.g. a `Token`) as if it
+// were the outer's freshly-built tuple, and misinterpreting its raw memory
+// as tuple fields. This produced garbage values (not a crash) for a `let
+// (a,b,c,d) = match <call> {..}` pattern local's fields — confirmed via a
+// minimal repro and fixed by this uniqueness change (see #708 follow-up
+// investigation notes). Modeled on fold_expr's complete walk; only the
+// EMatch case differs. EHandle is left as-is (effect handlers are not the
+// same ownership shape). Pure rewrite (aside from the counter cell) —
+// applied to each function body before build_perceus_plan so the plan and
+// codegen agree; running it on the non-RC backend would be harmless but it is
+// gated at the call site to keep that backend byte-identical.
+let fresh_m_scrut_name: (Array[Int]) -> String = (counter) -> {
+  let n = Array::get(counter, 0)
+  Array::set(counter, 0, n + 1)
+  String::concat("__m_scrut_", __to_string(n))
+}
+
+export let rec lift_match_scrutinees: (Expr, Array[Int]) -> Expr = (expr, counter) -> {
+  match expr {
+    EInt(_) => expr,
+    EFloat(_) => expr,
+    EString(_) => expr,
+    EBool(_) => expr,
+    EIdent(_, _) => expr,
+    EUnit => expr,
+    EStringInterp(_) => expr,
+    ETuple(items) => ETuple(for it in items {
+      lift_match_scrutinees(it, counter)
+    }),
+    EArray(items) => EArray(for it in items {
+      lift_match_scrutinees(it, counter)
+    }),
+    ERecord(fields) => ERecord(for f in fields {
+      let (n, v) = f
+      (n, lift_match_scrutinees(v, counter))
+    }),
+    EIf(c, t, e) => EIf(lift_match_scrutinees(c, counter), lift_match_scrutinees(t, counter), lift_match_scrutinees(e, counter)),
+    ELet(n, v, b) => ELet(n, lift_match_scrutinees(v, counter), lift_match_scrutinees(b, counter)),
+    ELetRec(n, v, b) => ELetRec(n, lift_match_scrutinees(v, counter), lift_match_scrutinees(b, counter)),
+    ELetMut(n, v, b) => ELetMut(n, lift_match_scrutinees(v, counter), lift_match_scrutinees(b, counter)),
+    EAssign(n, v, b) => EAssign(n, lift_match_scrutinees(v, counter), lift_match_scrutinees(b, counter)),
+    EAssignOp(op, n, v, b) => EAssignOp(op, n, lift_match_scrutinees(v, counter), lift_match_scrutinees(b, counter)),
+    ESeq(a, b) => ESeq(lift_match_scrutinees(a, counter), lift_match_scrutinees(b, counter)),
+    EMatch(s, arms) => {
+      let lifted_arms = for a in arms {
+        let (p, e) = a
+        (p, lift_match_scrutinees(e, counter))
+      }
+      let ls = lift_match_scrutinees(s, counter)
+      match ls {
+        EIdent(_, _) => EMatch(ls, lifted_arms),
+        _ => {
+          let fresh = fresh_m_scrut_name(counter)
+          ELet(fresh, ls, EMatch(EIdent(fresh, -1), lifted_arms))
+        }
+      }
+    },
+    EHandle(s, arms) => EHandle(lift_match_scrutinees(s, counter), for a in arms {
+      let (p, e) = a
+      (p, lift_match_scrutinees(e, counter))
+    }),
+    EWhile(c, b) => EWhile(lift_match_scrutinees(c, counter), lift_match_scrutinees(b, counter)),
+    ELoop(params, b) => ELoop(for pr in params {
+      let (n, init) = pr
+      (n, lift_match_scrutinees(init, counter))
+    }, lift_match_scrutinees(b, counter)),
+    EForIn(n, idx, it, b) => EForIn(n, idx, lift_match_scrutinees(it, counter), lift_match_scrutinees(b, counter)),
+    ECall(callee, args, off) => ECall(lift_match_scrutinees(callee, counter), for a in args {
+      lift_match_scrutinees(a, counter)
+    }, off),
+    EBinOp(op, l, r) => EBinOp(op, lift_match_scrutinees(l, counter), lift_match_scrutinees(r, counter)),
+    EUnaryOp(op, e) => EUnaryOp(op, lift_match_scrutinees(e, counter)),
+    EFn(tp, bounds, params, ret, eff, body) => EFn(tp, bounds, params, ret, eff, lift_match_scrutinees(body, counter)),
+    EDot(e, field, off) => EDot(lift_match_scrutinees(e, counter), field, off),
+    ELabeledArg(label, modifier, v) => ELabeledArg(label, modifier, lift_match_scrutinees(v, counter)),
+    EThrow(e) => EThrow(lift_match_scrutinees(e, counter)),
+    EReturn(e) => EReturn(lift_match_scrutinees(e, counter)),
+    EBreak(opt) => match opt {
+      Some(v) => EBreak(Some(lift_match_scrutinees(v, counter))),
+      None => EBreak(None)
+    },
+    EContinue(args) => EContinue(for a in args {
+      lift_match_scrutinees(a, counter)
+    }),
+    EMap(fields) => EMap(for f in fields {
+      let (k, v) = f
+      (k, lift_match_scrutinees(v, counter))
+    }),
+    ESpread(e) => ESpread(lift_match_scrutinees(e, counter))
   }
 }
 
