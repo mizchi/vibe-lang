@@ -2656,9 +2656,21 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
           nl = ce(buf, carg, local_names, nl, ctx, ld)
           // #706: a closure consumes its args; dup a loop-borrowed owning arg so
           // it survives the back-edge (mirrors the direct-call path above).
-          if ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx) {
+          // #708: also retain a projection / borrow-returning-call arg here, same
+          // as the direct-call path (line ~2607) already does -- a closure param
+          // is dropped by the callee's own exit epilogue exactly like a direct
+          // call's owning param, so a bare borrowed view passed through (e.g. the
+          // recursive-descent parser's `parse_recur(tokens, ...)` family calling
+          // through a `let rec`-captured closure value) was double-freed the same
+          // way #704/#706's direct-call cases were, just one call-shape over.
+          let is_loop_borrow2 = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx)
+          if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow2) {
             // #706 leak follow-up: log so the epilogue compensates (see above).
-            Array::push(ctx.loop_consumed_names, get_eident_name(carg))
+            if is_loop_borrow2 {
+              Array::push(ctx.loop_consumed_names, get_eident_name(carg))
+            } else {
+              ()
+            }
             Array::push(local_names, "__argdup")
             emit_local_tee(buf, nl)
             emit_rc_dup_guarded(buf, nl)
@@ -2689,9 +2701,16 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       let carg = Array::get(args, ci)
       nl = ce(buf, carg, local_names, nl, ctx, ld)
       // #706: dup a loop-borrowed owning arg passed to a closure call.
-      if ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx) {
+      // #708: also retain a projection / borrow-returning-call arg (see the
+      // matching comment on the other closure-call path above).
+      let is_loop_borrow3 = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx)
+      if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow3) {
         // #706 leak follow-up: log so the epilogue compensates (see above).
-        Array::push(ctx.loop_consumed_names, get_eident_name(carg))
+        if is_loop_borrow3 {
+          Array::push(ctx.loop_consumed_names, get_eident_name(carg))
+        } else {
+          ()
+        }
         Array::push(local_names, "__argdup")
         emit_local_tee(buf, nl)
         emit_rc_dup_guarded(buf, nl)
