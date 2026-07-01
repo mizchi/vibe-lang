@@ -34221,7 +34221,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "229dff012bfae1a6"
+  "43f5d5fe19632b92"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647
@@ -34435,6 +34435,9 @@ let resolve_path_fs: (String, String) -> String with { Fs } = (base_dir, raw_pat
     found
   }
 }
+let is_special_bundle_path: (String) -> Bool = (path) -> {
+  String::ends_with(path, "selfhost_sources_bundle.vibe") || String::ends_with(path, "selfhost_cli_adapter_bundle.vibe") || String::ends_with(path, "selfbuild_runtime_entry_bundle.vibe")
+}
 let special_bundle_header: (String) -> Option[(Array[String], Array[String])] = (path) -> {
   if String::ends_with(path, "selfhost_sources_bundle.vibe") {
     Some((Array::slice([
@@ -34484,17 +34487,27 @@ export let load_or_parse_module_header_fs_impl: (String, String, Int) -> (Array[
     let parsed = parse_persistent_module_header_text(normalize_persistent_cache_text(Fs::read_file(cache_path)))
     (parsed.0, parsed.1, parse_count)
   } else {
-    let header_result = match special_bundle_header(path) {
-      Some((deps, exports)) => (deps, exports, parse_count),
-      None => {
-        let (tokens, starts, _ends) = lex_with_offsets(source)
-        let stmts = handle {
-          parse_program_located(tokens, starts, source)
-        } with Error {
-          Throw(msg) => throw(String::concat(path, String::concat(": ", msg)))
-        }
-        (collect_import_deps_from_stmts(stmts, dir_of_path(path)), collect_exports(stmts), parse_count + 1)
+    let header_result = if is_special_bundle_path(path) {
+      match special_bundle_header(path) {
+        Some(pair) => {
+          let deps = pair.0
+          let exports = pair.1
+          (deps, exports, parse_count)
+        },
+        None => (Array::slice([
+          ""
+        ], 0, 0), Array::slice([
+          ""
+        ], 0, 0), parse_count)
       }
+    } else {
+      let (tokens, starts, _ends) = lex_with_offsets(source)
+      let stmts = handle {
+        parse_program_located(tokens, starts, source)
+      } with Error {
+        Throw(msg) => throw(String::concat(path, String::concat(": ", msg)))
+      }
+      (collect_import_deps_from_stmts(stmts, dir_of_path(path)), collect_exports(stmts), parse_count + 1)
     }
     let deps = header_result.0
     let exports = header_result.1
