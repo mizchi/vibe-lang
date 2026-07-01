@@ -387,9 +387,24 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
         }
       } else if expr_tag(value) == 8 {
         let callee = get_ecall_callee(value)
+        // #708: this hand-rolled check duplicated (incompletely) the borrow-return
+        // classification compile_call.vibe:64 already gets right. It only
+        // recognized the 3 hardcoded builtins, missing user-defined functions
+        // registered in ctx.borrow_ret_names (e.g. a `peek` wrapper whose body is
+        // `if ... { Array::get(...) } else default`, see #707's
+        // compute_borrow_returning_names). lift_match_scrutinees (normalize)
+        // rewrites every non-trivial match scrutinee into a `let __m_scrut = <call>`
+        // before this file ever sees it, so a match on a borrow-returning wrapper
+        // call landed here too. Missing the ctx.borrow_ret_names check made this
+        // ELet wrongly flag __m_scrut as an owned heap binding (rc_kind=2,
+        // heap_binding_names), and because __m_scrut is a NON-unique synthetic name
+        // shared by every lifted match in the enclosing function, a later drop
+        // scheduled for a *different* lift site's __m_scrut fired here too --
+        // double-decrementing the refcount shared with the live array element the
+        // borrow-returning call actually pointed into (single-slot corruption).
         let is_borrow_ret = if is_eident(callee) {
           let cn = get_eident_name(callee)
-          cn == "Array::get" || cn == "__index" || cn == "Map::get"
+          cn == "Array::get" || cn == "__index" || cn == "Map::get" || array_contains_str(ctx.borrow_ret_names, cn)
         } else {
           false
         }
