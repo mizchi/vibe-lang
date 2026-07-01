@@ -56,19 +56,43 @@ let emit_tuple_struct_eq: (Bytes, Expr, Expr, Array[String], Int, CompileCtx, In
   let bptr = next_local + 1
   Array::push(local_names, "__eqb")
   let nl1 = compile_expr_fn(buf, lhs, local_names, next_local + 2, ctx, ld)
+  // RC tuples are tagged (`value = (block_start+8)|1`) and carry an 8-byte
+  // header (type_id/length) before the fields, unlike the bare `i*8`-packed
+  // non-RC layout — untag and skip the header so field reads land on the
+  // actual elements instead of the header words (previously read as if they
+  // were fields 0/1, making equal-valued tuples at different addresses
+  // compare unequal; this is also why the RC path was disabled entirely
+  // before this fix).
+  if ctx.enable_rc {
+    emit_i64_const(buf, -2)
+    emit_i64_and(buf)
+  } else {
+    ()
+  }
   emit_local_set(buf, aptr)
   let nl2 = compile_expr_fn(buf, rhs, local_names, nl1, ctx, ld)
+  if ctx.enable_rc {
+    emit_i64_const(buf, -2)
+    emit_i64_and(buf)
+  } else {
+    ()
+  }
   emit_local_set(buf, bptr)
+  let field_off = if ctx.enable_rc {
+    8
+  } else {
+    0
+  }
   let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
   emit_i64_const(buf, 1)
   let mut i = 0
   while i < num {
     emit_local_get(buf, aptr)
     emit_i32_wrap_i64(buf)
-    emit_i64_load(buf, 3, i * 8)
+    emit_i64_load(buf, 3, field_off + i * 8)
     emit_local_get(buf, bptr)
     emit_i32_wrap_i64(buf)
-    emit_i64_load(buf, 3, i * 8)
+    emit_i64_load(buf, 3, field_off + i * 8)
     emit_call(buf, eq_fidx)
     emit_i64_and(buf)
     i = i + 1
@@ -132,9 +156,9 @@ let emit_ctor_struct_eq: (Bytes, Expr, Expr, Int, Array[String], Int, CompileCtx
 // across all of them (the post-processing each site applies to the 0/1 result —
 // `i32_wrap`/`i32_eqz`/rc-shift — is unchanged).
 let emit_eq_value: (Bytes, Expr, Expr, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, lhs, rhs, local_names, next_local, ctx, ld, ce) -> {
-  if (is_etuple(lhs) || is_etuple(rhs)) && !ctx.enable_rc {
+  if is_etuple(lhs) || is_etuple(rhs) {
     emit_tuple_struct_eq(buf, lhs, rhs, local_names, next_local, ctx, ld, ce)
-  } else if (is_ctor_call(lhs, ctx.ctor_table) || is_nullary_ctor_ident(lhs, ctx.ctor_table) || is_ctor_call(rhs, ctx.ctor_table) || is_nullary_ctor_ident(rhs, ctx.ctor_table)) && !ctx.enable_rc {
+  } else if is_ctor_call(lhs, ctx.ctor_table) || is_nullary_ctor_ident(lhs, ctx.ctor_table) || is_ctor_call(rhs, ctx.ctor_table) || is_nullary_ctor_ident(rhs, ctx.ctor_table) {
     let clit = if is_ctor_call(lhs, ctx.ctor_table) || is_nullary_ctor_ident(lhs, ctx.ctor_table) {
       lhs
     } else {

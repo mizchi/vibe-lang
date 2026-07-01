@@ -11877,7 +11877,8 @@ export struct CompileCtx {
   dbg_line_file_id: Int;
   loop_borrowed_names: Array[String];
   loop_consumed_names: Array[String];
-  borrow_ret_names: Array[String]
+  borrow_ret_names: Array[String];
+  scalar_ret_names: Array[String]
 }
 export struct DbgProv {
   files: Array[String];
@@ -20983,6 +20984,42 @@ export let compute_borrow_returning_names: (Array[Stmt]) -> Array[String] = (stm
   }
   known
 }
+let fn_sig_return_type: (Option[TypeExpr]) -> Option[TypeExpr] = (ty) -> {
+  match ty {
+    Some(t) =>
+    match t {
+      TyFn(_, ret, _) => Some(ret),
+      _ => None
+    },
+    None => None
+  }
+}
+export let compute_scalar_returning_names: (Array[Stmt]) -> Array[String] = (stmts) -> {
+  let out: Array[String] = [
+  ]
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, ty, value) =>
+      match value {
+        EFn(_, _, _, _, _, _) =>
+        match fn_sig_return_type(ty) {
+          Some(ret) =>
+          if !type_expr_is_heap(Some(ret)) {
+            Array::push(out, name)
+          } else {
+            ()
+          },
+          None => ()
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
 let is_scalar_expr: (PCtx, Expr) -> Bool = (ctx, e) -> {
   match e {
     EInt(_) => true,
@@ -25578,7 +25615,8 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
     loop_consumed_names: Array::slice([
       ""
     ], 0, 0),
-    borrow_ret_names: ctx.borrow_ret_names
+    borrow_ret_names: ctx.borrow_ret_names,
+    scalar_ret_names: ctx.scalar_ret_names
   }
   if ctx.enable_rc {
     let mut dpi = 0
@@ -26552,7 +26590,7 @@ let cc_is_projection: (Expr) -> Bool = (e) -> {
     _ => false
   }
 }
-let cc_is_borrow_ret_call: (Expr, CompileCtx) -> Bool = (e, ctx) -> {
+export let cc_is_borrow_ret_call: (Expr, CompileCtx) -> Bool = (e, ctx) -> {
   match e {
     ECall(callee, _, _) =>
     match callee {
@@ -27004,6 +27042,12 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       emit_i64_mul(buf)
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shr_s(buf)
+      } else {
+        ()
+      }
       nl
     }
     else if !prefer_bound_call && fname == "lt" {
@@ -27011,6 +27055,12 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       emit_i64_lt_s(buf)
       emit_i64_extend_i32_s(buf)
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shl(buf)
+      } else {
+        ()
+      }
       nl
     }
     else if !prefer_bound_call && fname == "simd_skip_ws" {
@@ -29430,7 +29480,7 @@ export let compile_expr_tail4: (Bytes, Expr, Array[String], Int, CompileCtx, Int
           Array::push(local_names, "__rec_val")
           emit_local_set(buf, val_local)
           nl_r = nl_r + 1
-          if ctx.enable_rc && expr_is_projection(fexpr) {
+          if ctx.enable_rc && (expr_is_projection(fexpr) || cc_is_borrow_ret_call(fexpr, ctx)) {
             emit_rc_dup_guarded(buf, val_local)
           } else {
             ()
@@ -30110,6 +30160,7 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
       Array::push(ctx.int_local_slots, local_idx * 2)
     }
     let mut rc_kind = 0
+    let mut is_borrow_ret_ext = false
     if ctx.enable_rc {
       if val_is_float {
         rc_kind = 2
@@ -30150,12 +30201,18 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
         } else {
           false
         }
-        if is_borrow_ret {
+        let is_scalar_ret = if is_eident(callee) {
+          array_contains_str(ctx.scalar_ret_names, get_eident_name(callee))
+        } else {
+          false
+        }
+        if is_borrow_ret || is_scalar_ret {
           ()
         } else {
           rc_kind = 2
           Array::push(ctx.heap_binding_names, name)
         }
+        is_borrow_ret_ext = is_borrow_ret
       } else if is_edot(value) {
         rc_kind = 2
         Array::push(ctx.heap_binding_names, name)
@@ -30186,7 +30243,18 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     } else {
       ()
     }
+    let lb_mark = Array::length(ctx.loop_borrowed_names)
+    if ctx.enable_rc && is_borrow_ret_ext {
+      Array::push(ctx.loop_borrowed_names, name)
+    } else {
+      ()
+    }
     let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
+    if ctx.enable_rc && is_borrow_ret_ext {
+      Array::truncate(ctx.loop_borrowed_names, lb_mark)
+    } else {
+      ()
+    }
     if ctx.enable_rc && rc_kind > 0 && array_contains_str(ctx.rc_drop_names, name) {
       if ctx.rc_drop_func_idx >= 0 && scope_tail_proj_root(body) == name {
         emit_local_set(buf, nl2)
@@ -30444,19 +30512,36 @@ let emit_tuple_struct_eq: (Bytes, Expr, Expr, Array[String], Int, CompileCtx, In
   let bptr = next_local + 1
   Array::push(local_names, "__eqb")
   let nl1 = compile_expr_fn(buf, lhs, local_names, next_local + 2, ctx, ld)
+  if ctx.enable_rc {
+    emit_i64_const(buf, -2)
+    emit_i64_and(buf)
+  } else {
+    ()
+  }
   emit_local_set(buf, aptr)
   let nl2 = compile_expr_fn(buf, rhs, local_names, nl1, ctx, ld)
+  if ctx.enable_rc {
+    emit_i64_const(buf, -2)
+    emit_i64_and(buf)
+  } else {
+    ()
+  }
   emit_local_set(buf, bptr)
+  let field_off = if ctx.enable_rc {
+    8
+  } else {
+    0
+  }
   let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
   emit_i64_const(buf, 1)
   let mut i = 0
   while i < num {
     emit_local_get(buf, aptr)
     emit_i32_wrap_i64(buf)
-    emit_i64_load(buf, 3, i * 8)
+    emit_i64_load(buf, 3, field_off + i * 8)
     emit_local_get(buf, bptr)
     emit_i32_wrap_i64(buf)
-    emit_i64_load(buf, 3, i * 8)
+    emit_i64_load(buf, 3, field_off + i * 8)
     emit_call(buf, eq_fidx)
     emit_i64_and(buf)
     i = i + 1
@@ -30504,9 +30589,9 @@ let emit_ctor_struct_eq: (Bytes, Expr, Expr, Int, Array[String], Int, CompileCtx
   nl2
 }
 let emit_eq_value: (Bytes, Expr, Expr, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, lhs, rhs, local_names, next_local, ctx, ld, ce) -> {
-  if (is_etuple(lhs) || is_etuple(rhs)) && !ctx.enable_rc {
+  if is_etuple(lhs) || is_etuple(rhs) {
     emit_tuple_struct_eq(buf, lhs, rhs, local_names, next_local, ctx, ld, ce)
-  } else if (is_ctor_call(lhs, ctx.ctor_table) || is_nullary_ctor_ident(lhs, ctx.ctor_table) || is_ctor_call(rhs, ctx.ctor_table) || is_nullary_ctor_ident(rhs, ctx.ctor_table)) && !ctx.enable_rc {
+  } else if is_ctor_call(lhs, ctx.ctor_table) || is_nullary_ctor_ident(lhs, ctx.ctor_table) || is_ctor_call(rhs, ctx.ctor_table) || is_nullary_ctor_ident(rhs, ctx.ctor_table) {
     let clit = if is_ctor_call(lhs, ctx.ctor_table) || is_nullary_ctor_ident(lhs, ctx.ctor_table) {
       lhs
     } else {
@@ -31130,6 +31215,7 @@ export let wasi_memory_min_pages_for_heap: (Int) -> Int = (heap_start) -> {
 export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String, String)], Array[(String, String, Int, Int)], Bool, Bool, Bool, Bool, Bool, DbgProv) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, linked_imports, library_mode, enable_rc, coverage, debug_trace, debug_break, prov) -> {
   desugar_trait_dicts(stmts)
   let lc_borrow_ret_names = compute_borrow_returning_names(stmts)
+  let lc_scalar_ret_names = compute_scalar_returning_names(stmts)
   let fn_names_list = lc_fresh_string_array()
   let fn_param_counts = lc_fresh_int_array()
   let fn_needs_env_list = lc_fresh_bool_array()
@@ -32490,7 +32576,8 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       dbg_line_file_id: dbg_fid,
       loop_borrowed_names: lc_fresh_string_array(),
       loop_consumed_names: lc_fresh_string_array(),
-      borrow_ret_names: lc_borrow_ret_names
+      borrow_ret_names: lc_borrow_ret_names,
+      scalar_ret_names: lc_scalar_ret_names
     }
     if is_efn(__bi_expr) {
       let __bi_params = get_efn_params(__bi_expr)
@@ -34240,7 +34327,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "a6f5d631470d9cc0"
+  "0c0d300032f3fd3f"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647

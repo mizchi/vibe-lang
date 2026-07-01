@@ -353,6 +353,10 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
       Array::push(ctx.int_local_slots, local_idx * 2)
     }
     let mut rc_kind = 0
+    // #708 follow-up: set when this let's value is a borrow-returning call
+    // (`let a = Array::get(...)`) -- see the ELet/expr_tag==8 branch below for
+    // why a bare later reference to `name` needs loop_borrowed_names tracking.
+    let mut is_borrow_ret_ext = false
     if ctx.enable_rc {
       if val_is_float {
         rc_kind = 2
@@ -408,12 +412,42 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
         } else {
           false
         }
-        if is_borrow_ret {
+        // #710: a call whose CALLEE's declared return type is provably scalar
+        // (Int/Bool/Unit, e.g. `build_import_plan(...) -> Int`) owns no heap
+        // reference either -- same as a borrow-returning call, just for a
+        // different reason (nothing to retain a view INTO; there's no heap
+        // object at all). Skipping heap_binding_names here is required, not
+        // just an optimization: see CompileCtx.scalar_ret_names' doc comment
+        // for the memory-OOB crash a misclassified scalar alias causes.
+        let is_scalar_ret = if is_eident(callee) {
+          array_contains_str(ctx.scalar_ret_names, get_eident_name(callee))
+        } else {
+          false
+        }
+        if is_borrow_ret || is_scalar_ret {
           ()
         } else {
           rc_kind = 2
           Array::push(ctx.heap_binding_names, name)
         }
+        // #708 follow-up: a borrow-returning let (`let a = Array::get(xs, i)`)
+        // is deliberately left untracked above (rc_kind stays 0 -- it owns
+        // nothing to drop). But a LATER bare-ident reference to `a` passed
+        // into an owning parameter (`f(a)`) still needs the SAME retain a
+        // direct `f(Array::get(xs, i))` call already gets via
+        // cc_is_borrow_ret_call (compile_call.vibe) -- that check only
+        // inspects the ARGUMENT EXPRESSION'S OWN shape (is it a call?), so it
+        // never fires for a bare EIdent, even though the name's value is
+        // exactly as borrowed. Piggyback on the existing loop_borrowed_names
+        // mechanism (cc_is_loop_borrowed_ident), scoped tightly to this let's
+        // own body via push-before/truncate-after so it never leaks past this
+        // binding's scope: reproduced as `let a = Array::get(plan, i); ...
+        // f(a) && a.field == y ...` inside a `while` loop corrupting the heap
+        // (only outside a loop, or with a non-borrow-bound `a`, it was fine --
+        // Perceus's own multi-use dup accounting for a loop-repeated binding
+        // apparently only budgets for the loop-carried case this mechanism
+        // already exists for).
+        is_borrow_ret_ext = is_borrow_ret
       } else if is_edot(value) {
         rc_kind = 2
         Array::push(ctx.heap_binding_names, name)
@@ -450,7 +484,24 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     } else {
       ()
     }
+    // #708 follow-up: scope `name` into loop_borrowed_names for exactly the
+    // extent of `body`'s compilation (push before, truncate after), so a bare
+    // later reference to a borrow-bound name gets the same retain-before-
+    // owning-call treatment a loop-carried parameter already gets. Safe to do
+    // even outside a loop (loop_borrowed_names is otherwise empty there, and
+    // this push/truncate pair never leaks past this let's own body).
+    let lb_mark = Array::length(ctx.loop_borrowed_names)
+    if ctx.enable_rc && is_borrow_ret_ext {
+      Array::push(ctx.loop_borrowed_names, name)
+    } else {
+      ()
+    }
     let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
+    if ctx.enable_rc && is_borrow_ret_ext {
+      Array::truncate(ctx.loop_borrowed_names, lb_mark)
+    } else {
+      ()
+    }
     if ctx.enable_rc && rc_kind > 0 && array_contains_str(ctx.rc_drop_names, name) {
       if ctx.rc_drop_func_idx >= 0 && scope_tail_proj_root(body) == name {
         emit_local_set(buf, nl2)

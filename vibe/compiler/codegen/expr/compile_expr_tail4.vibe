@@ -21,7 +21,7 @@ import .. / wasm_emit {
 }
 
 import ./compile_call.vibe {
-  compile_call
+  cc_is_borrow_ret_call, compile_call
 }
 
 import ./compile_expr_tail5.vibe {
@@ -160,7 +160,14 @@ export let compile_expr_tail4: (Bytes, Expr, Array[String], Int, CompileCtx, Int
           Array::push(local_names, "__rec_val")
           emit_local_set(buf, val_local)
           nl_r = nl_r + 1
-          if ctx.enable_rc && expr_is_projection(fexpr) {
+          // #708 follow-up (Codex review): a record field sourced from a
+          // borrow-returning call (Array::get/Map::get/__rec_field/a user
+          // wrapper) is exactly as much a borrow as a bare projection `a.f`
+          // (see the comment above) -- without this retain, dropping the
+          // source container after storing its element into an owning
+          // record double-frees the element once the record is later
+          // dropped too.
+          if ctx.enable_rc && (expr_is_projection(fexpr) || cc_is_borrow_ret_call(fexpr, ctx)) {
             emit_rc_dup_guarded(buf, val_local)
           } else {
             ()

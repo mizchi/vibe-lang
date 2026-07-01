@@ -437,6 +437,66 @@ export let compute_borrow_returning_names: (Array[Stmt]) -> Array[String] = (stm
   known
 }
 
+// A top-level function's declared return type, from its `let f: (T1,...) ->
+// R = ...` signature -- `None` when untyped (no signature to consult).
+let fn_sig_return_type: (Option[TypeExpr]) -> Option[TypeExpr] = (ty) -> {
+  match ty {
+    Some(t) =>
+    match t {
+      TyFn(_, ret, _) => Some(ret),
+      _ => None
+    },
+    None => None
+  }
+}
+
+// #710 out-param crash: `let n = f(...)` for a user function `f` whose body
+// is not one of the 3 hardcoded borrow-returning builtins falls through to
+// `heap_binding_names`'s default -- "any non-borrow-ret call result is heap"
+// (compile_expr_tail.vibe's ELet ECall branch; see that struct field's own
+// doc comment, which already promises "we never touch a non-heap (e.g.
+// Int-returning call) binding"). When `f` actually returns a scalar (Int/
+// Bool/Unit) -- e.g. `build_import_plan(...) -> Int` -- the binding is a
+// plain integer, not a tagged heap pointer. If that binding is later
+// ALIASED more than once (`let a = n; let b = n`), the Perceus plan schedules
+// a PaAliasDup for the 2nd+ alias, and compile_expr_tail.vibe's `is_eident`
+// branch calls `emit_rc_dup_local` on it: untag (AND -2) then read/write 4
+// bytes before the "pointer". For a small scalar like 0 that computes a
+// near-null address -- `RuntimeError: memory access out of bounds`, not a
+// leak (component_codegen_test.vibe's "component async: sync lift" hit this
+// via `import_func_count` aliased into run_core_func_idx/run_type_idx/
+// run_func_idx). Names collected here let the ELet ECall branch skip
+// `heap_binding_names` for a call whose declared return type is provably
+// scalar, matching the exemption the field's own doc comment already
+// describes. Untyped functions are conservatively left out (stay in the
+// existing heap over-approximation) since there is no signature to consult.
+export let compute_scalar_returning_names: (Array[Stmt]) -> Array[String] = (stmts) -> {
+  let out: Array[String] = [
+  ]
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, ty, value) =>
+      match value {
+        EFn(_, _, _, _, _, _) =>
+        match fn_sig_return_type(ty) {
+          Some(ret) =>
+          if !type_expr_is_heap(Some(ret)) {
+            Array::push(out, name)
+          } else {
+            ()
+          },
+          None => ()
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 let is_scalar_expr: (PCtx, Expr) -> Bool = (ctx, e) -> {
   match e {
     EInt(_) => true,

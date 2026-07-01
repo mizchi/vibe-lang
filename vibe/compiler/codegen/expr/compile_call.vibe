@@ -57,7 +57,7 @@ let cc_is_projection: (Expr) -> Bool = (e) -> {
 // same element (e.g. `chk(Array::get(ps, i))` recursing over a heap array, or
 // `validate(s, Map::get(obj, key))`). Scalars are even so the guarded dup is a
 // runtime no-op for `Array[Int]` etc.
-let cc_is_borrow_ret_call: (Expr, CompileCtx) -> Bool = (e, ctx) -> {
+export let cc_is_borrow_ret_call: (Expr, CompileCtx) -> Bool = (e, ctx) -> {
   match e {
     ECall(callee, _, _) =>
     match callee {
@@ -607,6 +607,17 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       emit_i64_mul(buf)
+      // Under RC, Int values are tagged `(n << 1)`. Multiplying two tagged
+      // operands raw gives `(a*b) << 2` (an extra factor of 2 vs. the `<< 1`
+      // every other Int carries) -- shift right once to correct back, exactly
+      // like the `*` EBinOp path does (compile_expr.vibe `op == "*"`) that
+      // this builtin fast path duplicates but had not mirrored.
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shr_s(buf)
+      } else {
+        ()
+      }
       nl
     }
     else if !prefer_bound_call && fname == "lt" {
@@ -614,6 +625,15 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       emit_i64_lt_s(buf)
       emit_i64_extend_i32_s(buf)
+      // Under RC, Bool values are also tagged `(0|1) << 1` (mirrors the `<`
+      // EBinOp path's retag) -- untagged here means callers see 0 (== false
+      // tagged) but a true result reads as 1 instead of the expected 2.
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shl(buf)
+      } else {
+        ()
+      }
       nl
     }
     else if !prefer_bound_call && fname == "simd_skip_ws" {

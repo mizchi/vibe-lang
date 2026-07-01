@@ -240,7 +240,20 @@ export struct CompileCtx {
   // (ctor field / consuming call arg) needs the same guarded rc_dup or the
   // element is double-freed when its container is later dropped (e.g. a
   // `peek(tokens, pos)` wrapper around `Array::get`). Empty outside RC.
-  borrow_ret_names: Array[String]
+  borrow_ret_names: Array[String];
+  // #710: names of top-level functions whose DECLARED return type (from
+  // their `let f: (...) -> R = ...` signature) is provably scalar (Int/Bool/
+  // Unit) — computed once via `compute_scalar_returning_names` over the
+  // merged program. The ELet ECall branch (compile_expr_tail.vibe) consults
+  // this to skip `heap_binding_names` for `let n = f(...)` when `f` is one of
+  // these: without it, ANY non-borrow-ret call result defaults to heap, so a
+  // binding that is really a plain Int (e.g. `build_import_plan(...) -> Int`)
+  // gets treated as a tagged pointer. If that binding is later aliased more
+  // than once, the Perceus plan schedules a PaAliasDup for it, and
+  // `emit_rc_dup_local` untags-and-derefs the "pointer" — for a small int
+  // like 0 that reads/writes near address -4, a `memory access out of
+  // bounds` trap, not a leak. Empty outside RC.
+  scalar_ret_names: Array[String]
 }
 
 // Interior-line breakpoints (span-arc step5, multi-file): per-file provenance the
