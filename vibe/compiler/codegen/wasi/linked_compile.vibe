@@ -9,7 +9,7 @@ import .. / .. / desugar_trait_dict.vibe {
 }
 
 import .. / .. / normalize {
-  lift_match_scrutinees
+  lift_match_scrutinees, uniquify_shadowed_bindings
 }
 
 import .. / .. / perceus {
@@ -1330,6 +1330,10 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   // #708: one counter cell shared across every function's lift pass, so each
   // lift site gets a distinct `__m_scrut_N` name (see lift_match_scrutinees).
   let m_scrut_counter = [0]
+  // #712: one counter cell shared across every function's uniquify pass, so
+  // every renamed shadow gets a distinct `__shadow_N_<name>` (see
+  // uniquify_shadowed_bindings).
+  let uq_shadow_counter = [0]
   let mut bi = 0
   while bi < num_user_funcs {
     let __bi_stmt = Array::get(stmts, Array::get(fn_stmt_indices, bi))
@@ -1337,8 +1341,16 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     // Perceus pass (which drops named bindings) reclaims them. Applied here, the
     // SAME transformed body feeds both build_perceus_plan (below) and the body
     // compilation, keeping the plan and codegen consistent. Non-RC is unchanged.
+    //
+    // #712: before lifting scrutinees, alpha-rename any binding that shadows an
+    // enclosing one (within this same function) to a fresh unique name, so RC
+    // codegen's name-keyed bookkeeping (heap_binding_names, rc_drop_names,
+    // rc_alias_dup_names, rc_dup_names, loop_borrowed_names, and the Perceus
+    // plan itself) can never confuse two distinct bindings that happen to share
+    // a name. See uniquify_shadowed_bindings's doc comment (normalize/index.vibe).
     let __bi_expr = if enable_rc {
-      lift_match_scrutinees(get_slet_expr(__bi_stmt), m_scrut_counter)
+      lift_match_scrutinees(uniquify_shadowed_bindings(get_slet_expr(__bi_stmt), map {
+      }, uq_shadow_counter), m_scrut_counter)
     } else {
       get_slet_expr(__bi_stmt)
     }

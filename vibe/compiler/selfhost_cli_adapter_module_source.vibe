@@ -19256,6 +19256,201 @@ let rec fold_expr: (Expr) -> Expr = (expr) -> {
     ESpread(e) => ESpread(fold_expr(e))
   }
 }
+let fresh_shadow_name: (Array[Int], String) -> String = (counter, name) -> {
+  let n = Array::get(counter, 0)
+  Array::set(counter, 0, n + 1)
+  String::concat(String::concat("__shadow_", __to_string(n)), String::concat("_", name))
+}
+let uq_lookup: (Map[String, String], String) -> String = (env, name) -> {
+  if Map::has_key(env, name) {
+    Map::get(env, name)
+  } else {
+    name
+  }
+}
+let uq_bind_name: (String, Map[String, String], Array[Int]) -> (String, Map[String, String]) = (name, env, counter) -> {
+  if Map::has_key(env, name) {
+    let fresh = fresh_shadow_name(counter, name)
+    (fresh, Map::set(env, name, fresh))
+  } else {
+    (name, Map::set(env, name, name))
+  }
+}
+let rec uq_pat_names: (Pat, Array[String]) -> Unit = (pat, out) -> {
+  match pat {
+    PBind(name) => Array::push(out, name),
+    PCtor(_, args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        uq_pat_names(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    PTuple(pats) => {
+      let mut i = 0
+      while i < Array::length(pats) {
+        uq_pat_names(Array::get(pats, i), out)
+        i = i + 1
+      }
+    },
+    POr(l, _r) => uq_pat_names(l, out),
+    PStruct(_, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        uq_pat_names(fp, out)
+        i = i + 1
+      }
+    },
+    PInt(_) => (),
+    PString(_) => (),
+    PBool(_) => (),
+    PWild => ()
+  }
+}
+let rec uq_pat_rewrite: (Pat, Map[String, String]) -> Pat = (pat, env) -> {
+  match pat {
+    PBind(name) => PBind(uq_lookup(env, name)),
+    PCtor(name, args) => PCtor(name, for a in args {
+      uq_pat_rewrite(a, env)
+    }),
+    PTuple(pats) => PTuple(for a in pats {
+      uq_pat_rewrite(a, env)
+    }),
+    POr(l, r) => POr(uq_pat_rewrite(l, env), uq_pat_rewrite(r, env)),
+    PStruct(name, fields) => PStruct(name, for f in fields {
+      let (fname, fp) = f
+      (fname, uq_pat_rewrite(fp, env))
+    }),
+    _ => pat
+  }
+}
+let uq_bind_pat: (Pat, Map[String, String], Array[Int]) -> (Pat, Map[String, String]) = (pat, env, counter) -> {
+  let names: Array[String] = [
+  ]
+  uq_pat_names(pat, names)
+  let mut env2 = env
+  let mut i = 0
+  while i < Array::length(names) {
+    let (_, env3) = uq_bind_name(Array::get(names, i), env2, counter)
+    env2 = env3
+    i = i + 1
+  }
+  (uq_pat_rewrite(pat, env2), env2)
+}
+export let rec uniquify_shadowed_bindings: (Expr, Map[String, String], Array[Int]) -> Expr = (expr, env, counter) -> {
+  match expr {
+    EInt(_) => expr,
+    EFloat(_) => expr,
+    EString(_) => expr,
+    EBool(_) => expr,
+    EIdent(name, off) => EIdent(uq_lookup(env, name), off),
+    EUnit => expr,
+    EStringInterp(_) => expr,
+    ETuple(items) => ETuple(for it in items {
+      uniquify_shadowed_bindings(it, env, counter)
+    }),
+    EArray(items) => EArray(for it in items {
+      uniquify_shadowed_bindings(it, env, counter)
+    }),
+    ERecord(fields) => ERecord(for f in fields {
+      let (n, v) = f
+      (n, uniquify_shadowed_bindings(v, env, counter))
+    }),
+    EIf(c, t, e) => EIf(uniquify_shadowed_bindings(c, env, counter), uniquify_shadowed_bindings(t, env, counter), uniquify_shadowed_bindings(e, env, counter)),
+    ELet(n, v, b) => {
+      let v2 = uniquify_shadowed_bindings(v, env, counter)
+      let (n2, env2) = uq_bind_name(n, env, counter)
+      ELet(n2, v2, uniquify_shadowed_bindings(b, env2, counter))
+    },
+    ELetRec(n, v, b) => {
+      let (n2, env2) = uq_bind_name(n, env, counter)
+      let v2 = uniquify_shadowed_bindings(v, env2, counter)
+      ELetRec(n2, v2, uniquify_shadowed_bindings(b, env2, counter))
+    },
+    ELetMut(n, v, b) => {
+      let v2 = uniquify_shadowed_bindings(v, env, counter)
+      let (n2, env2) = uq_bind_name(n, env, counter)
+      ELetMut(n2, v2, uniquify_shadowed_bindings(b, env2, counter))
+    },
+    EAssign(n, v, b) => EAssign(uq_lookup(env, n), uniquify_shadowed_bindings(v, env, counter), uniquify_shadowed_bindings(b, env, counter)),
+    EAssignOp(op, n, v, b) => EAssignOp(op, uq_lookup(env, n), uniquify_shadowed_bindings(v, env, counter), uniquify_shadowed_bindings(b, env, counter)),
+    ESeq(a, b) => ESeq(uniquify_shadowed_bindings(a, env, counter), uniquify_shadowed_bindings(b, env, counter)),
+    EMatch(s, arms) => EMatch(uniquify_shadowed_bindings(s, env, counter), for a in arms {
+      let (p, e) = a
+      let (p2, env2) = uq_bind_pat(p, env, counter)
+      (p2, uniquify_shadowed_bindings(e, env2, counter))
+    }),
+    EHandle(s, arms) => EHandle(uniquify_shadowed_bindings(s, env, counter), for a in arms {
+      let (p, e) = a
+      let (p2, env2) = uq_bind_pat(p, env, counter)
+      (p2, uniquify_shadowed_bindings(e, env2, counter))
+    }),
+    EWhile(c, b) => EWhile(uniquify_shadowed_bindings(c, env, counter), uniquify_shadowed_bindings(b, env, counter)),
+    ELoop(params, b) => {
+      let mut env2 = env
+      let zipped: Array[(String, Expr)] = [
+      ]
+      let mut pi = 0
+      while pi < Array::length(params) {
+        let (pn, init) = Array::get(params, pi)
+        let init2 = uniquify_shadowed_bindings(init, env, counter)
+        let (pn2, envN) = uq_bind_name(pn, env2, counter)
+        env2 = envN
+        Array::push(zipped, (pn2, init2))
+        pi = pi + 1
+      }
+      ELoop(zipped, uniquify_shadowed_bindings(b, env2, counter))
+    },
+    EForIn(n, idx, it, b) => {
+      let it2 = uniquify_shadowed_bindings(it, env, counter)
+      let (n2, env2) = uq_bind_name(n, env, counter)
+      let (idx2, env3) = match idx {
+        Some(iname) => {
+          let (iname2, envI) = uq_bind_name(iname, env2, counter)
+          (Some(iname2), envI)
+        },
+        None => (None, env2)
+      }
+      EForIn(n2, idx2, it2, uniquify_shadowed_bindings(b, env3, counter))
+    },
+    ECall(callee, args, off) => ECall(uniquify_shadowed_bindings(callee, env, counter), for a in args {
+      uniquify_shadowed_bindings(a, env, counter)
+    }, off),
+    EBinOp(op, l, r) => EBinOp(op, uniquify_shadowed_bindings(l, env, counter), uniquify_shadowed_bindings(r, env, counter)),
+    EUnaryOp(op, e) => EUnaryOp(op, uniquify_shadowed_bindings(e, env, counter)),
+    EFn(tp, bounds, params, ret, eff, body) => {
+      let mut env2 = env
+      let params2: Array[(String, Option[TypeExpr])] = [
+      ]
+      let mut fi = 0
+      while fi < Array::length(params) {
+        let (pn, pty) = Array::get(params, fi)
+        let (pn2, envN) = uq_bind_name(pn, env2, counter)
+        env2 = envN
+        Array::push(params2, (pn2, pty))
+        fi = fi + 1
+      }
+      EFn(tp, bounds, params2, ret, eff, uniquify_shadowed_bindings(body, env2, counter))
+    },
+    EDot(e, field, off) => EDot(uniquify_shadowed_bindings(e, env, counter), field, off),
+    ELabeledArg(label, modifier, v) => ELabeledArg(label, modifier, uniquify_shadowed_bindings(v, env, counter)),
+    EThrow(e) => EThrow(uniquify_shadowed_bindings(e, env, counter)),
+    EReturn(e) => EReturn(uniquify_shadowed_bindings(e, env, counter)),
+    EBreak(opt) => match opt {
+      Some(v) => EBreak(Some(uniquify_shadowed_bindings(v, env, counter))),
+      None => EBreak(None)
+    },
+    EContinue(args) => EContinue(for a in args {
+      uniquify_shadowed_bindings(a, env, counter)
+    }),
+    EMap(fields) => EMap(for f in fields {
+      let (k, v) = f
+      (k, uniquify_shadowed_bindings(v, env, counter))
+    }),
+    ESpread(e) => ESpread(uniquify_shadowed_bindings(e, env, counter))
+  }
+}
 let fresh_m_scrut_name: (Array[Int]) -> String = (counter) -> {
   let n = Array::get(counter, 0)
   Array::set(counter, 0, n + 1)
@@ -32387,11 +32582,13 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   Array::push(meta_i32, 1)
   Array::push(meta_i64, 3)
   let m_scrut_counter = [0]
+  let uq_shadow_counter = [0]
   let mut bi = 0
   while bi < num_user_funcs {
     let __bi_stmt = Array::get(stmts, Array::get(fn_stmt_indices, bi))
     let __bi_expr = if enable_rc {
-      lift_match_scrutinees(get_slet_expr(__bi_stmt), m_scrut_counter)
+      lift_match_scrutinees(uniquify_shadowed_bindings(get_slet_expr(__bi_stmt), map {
+      }, uq_shadow_counter), m_scrut_counter)
     } else {
       get_slet_expr(__bi_stmt)
     }
@@ -34352,7 +34549,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "a5d94f68ce89a819"
+  "a445ae150bda6285"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647

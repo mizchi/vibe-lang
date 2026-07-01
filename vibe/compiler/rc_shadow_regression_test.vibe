@@ -1,0 +1,36 @@
+//# Misc
+
+// #712: a `let` inside a `while` loop shadowing an outer, loop-borrowed
+// binding of the same name used to be misattributed to the outer binding by
+// RC codegen's name-keyed bookkeeping (cc_is_loop_borrowed_ident et al.),
+// causing wrong results and/or a heap-corrupting premature drop under RC.
+// Fixed by uniquify_shadowed_bindings (normalize/index.vibe), which
+// alpha-renames shadowing bindings before the Perceus plan is built. Confirmed
+// this reproduces the bug on the pre-fix compiler (wrong answer, then a
+// memory-access-out-of-bounds trap on a later call) and is fixed after.
+let consume_len: (Array[Int]) -> Int = (a) -> {
+  Array::length(a)
+}
+
+let make_arr: (Int) -> Array[Int] = (n) -> {
+  let arr: Array[Int] = [
+  ]
+  let mut i = 0
+  while i < n {
+    Array::push(arr, i)
+    i = i + 1
+  }
+  arr
+}
+
+test "RC: let inside a while loop shadowing an outer loop-borrowed binding" {
+  let x = make_arr(3)
+  let mut i = 0
+  let mut total = 0
+  while i < 4 {
+    let x = make_arr(2)
+    total = total + consume_len(x)
+    i = i + 1
+  }
+  assert(eq(total + consume_len(x), 11))
+}
