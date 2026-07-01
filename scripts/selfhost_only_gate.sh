@@ -2459,4 +2459,31 @@ fi
 rm -rf "$lkdir"
 echo "[selfhost-only-gate] RC reclamation leak guard ok (heap_used=$lk_used B at N=20000)"
 
+# 40e. V128 SIMD intrinsics under RC (#705 follow-up): step 40 only exercised
+#      the bump backend. v128 boxes are tagged pointers with NO rc header, so
+#      naively letting them flow through RC's dup/drop guards would misread
+#      their payload bytes as a refcount and corrupt them; Perceus now treats
+#      v128-producing let-bindings as scalar (never dup/drop'd), matching their
+#      forward-only, never-freed lifetime under bump too. Also covers a distinct
+#      RC-only bug where v128_load/store's byte offset and v128_splat_i8x16's
+#      byte value were used raw instead of untagged (RC tags Int as n<<1),
+#      silently computing the wrong SIMD lane bytes.
+echo "[selfhost-only-gate] 40e/40 V128 SIMD intrinsics compile+run under RC"
+v2dir="_build/_gate_v128_rc"
+rm -rf "$v2dir"; mkdir -p "$v2dir"
+VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/v128_intrinsics_test.vibe" "$v2dir/v128rc.wasm" __no_entry__ >/dev/null 2>&1
+if [ ! -s "$v2dir/v128rc.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: v128 intrinsics test did not compile under RC" >&2
+  cat "$v2dir/v128rc.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke _start "$v2dir/v128rc.wasm" >/dev/null 2>&1; then
+  echo "[selfhost-only-gate] FAIL: v128 intrinsics test trapped under RC (assert failed)" >&2; exit 1
+fi
+rm -rf "$v2dir"
+echo "[selfhost-only-gate] V128 SIMD intrinsics under RC ok"
+
 echo "[selfhost-only-gate] ok"

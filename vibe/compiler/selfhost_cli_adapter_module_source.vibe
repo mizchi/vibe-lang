@@ -20858,12 +20858,16 @@ let fn_param_names: (Array[(String, Option[TypeExpr])]) -> Array[String] = (para
   }
   out
 }
+let is_v128_box_call: (String) -> Bool = (fname) -> {
+  fname == "v128_load" || fname == "v128_splat_i8x16" || fname == "v128_eq_i8x16" || fname == "v128_le_u_i8x16" || fname == "v128_ge_u_i8x16" || fname == "v128_and" || fname == "v128_or" || fname == "v128_not"
+}
 let is_scalar_expr: (Expr) -> Bool = (e) -> {
   match e {
     EInt(_) => true,
     EBool(_) => true,
     EFloat(_) => true,
     EUnit => true,
+    ECall(EIdent(fname, _), _, _) => is_v128_box_call(fname),
     _ => false
   }
 }
@@ -21204,7 +21208,7 @@ let type_name_is_heap: (String) -> Bool = (n) -> {
     let c0 = String::char_code_at(n, 0)
     if c0 < 'A' || c0 > 'Z' {
       false
-    } else if n == "Int" || n == "Bool" || n == "Double" || n == "Float" || n == "String" || n == "Bytes" || n == "Char" || n == "Unit" {
+    } else if n == "Int" || n == "Bool" || n == "Double" || n == "Float" || n == "String" || n == "Bytes" || n == "Char" || n == "Unit" || n == "V128" {
       false
     } else {
       true
@@ -26882,9 +26886,6 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       nl
     }
     else if !prefer_bound_call && fname == "simd_skip_ws" {
-      if ctx.enable_rc {
-        throw("simd_skip_ws: unsupported on rc backend")
-      }
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
@@ -27032,9 +27033,6 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       nl + 7
     }
     else if !prefer_bound_call && fname == "v128_load" {
-      if ctx.enable_rc {
-        throw("v128 intrinsics: v128_load unsupported on rc backend")
-      }
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       let off_l = nl
@@ -27047,6 +27045,12 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_i32_wrap_i64(buf)
       emit_i32_load(buf, 2, 8)
       emit_local_get(buf, off_l)
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shr_s(buf)
+      } else {
+        ()
+      }
       emit_i32_wrap_i64(buf)
       emit_i32_add(buf)
       emit_i64_extend_i32_u(buf)
@@ -27071,9 +27075,6 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       nl + 3
     }
     else if !prefer_bound_call && fname == "v128_store" {
-      if ctx.enable_rc {
-        throw("v128 intrinsics: v128_store unsupported on rc backend")
-      }
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
@@ -27088,6 +27089,12 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_i32_wrap_i64(buf)
       emit_i32_load(buf, 2, 8)
       emit_local_get(buf, off_l)
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shr_s(buf)
+      } else {
+        ()
+      }
       emit_i32_wrap_i64(buf)
       emit_i32_add(buf)
       emit_i64_extend_i32_u(buf)
@@ -27104,9 +27111,6 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       nl + 3
     }
     else if !prefer_bound_call && fname == "v128_splat_i8x16" {
-      if ctx.enable_rc {
-        throw("v128 intrinsics: v128_splat_i8x16 unsupported on rc backend")
-      }
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       let box_l = nl
       let byte_l = nl + 1
@@ -27124,6 +27128,12 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_local_get(buf, box_l)
       emit_i32_wrap_i64(buf)
       emit_local_get(buf, byte_l)
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shr_s(buf)
+      } else {
+        ()
+      }
       emit_i32_wrap_i64(buf)
       emit_i8x16_splat(buf)
       emit_v128_store(buf, 0, 0)
@@ -27133,9 +27143,6 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       nl + 2
     }
     else if !prefer_bound_call && (fname == "v128_eq_i8x16" || fname == "v128_le_u_i8x16" || fname == "v128_ge_u_i8x16" || fname == "v128_and" || fname == "v128_or") {
-      if ctx.enable_rc {
-        throw("v128 intrinsics: binary op unsupported on rc backend")
-      }
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       let b_l = nl
@@ -27184,9 +27191,6 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       nl + 3
     }
     else if !prefer_bound_call && fname == "v128_not" {
-      if ctx.enable_rc {
-        throw("v128 intrinsics: v128_not unsupported on rc backend")
-      }
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       let v_l = nl
       let box_l = nl + 1
@@ -27216,9 +27220,6 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       nl + 2
     }
     else if !prefer_bound_call && fname == "v128_bitmask_i8x16" {
-      if ctx.enable_rc {
-        throw("v128 intrinsics: v128_bitmask_i8x16 unsupported on rc backend")
-      }
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       emit_i64_const(buf, -2)
       emit_i64_and(buf)
@@ -27226,12 +27227,15 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_v128_load(buf, 0, 0)
       emit_i8x16_bitmask(buf)
       emit_i64_extend_i32_u(buf)
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shl(buf)
+      } else {
+        ()
+      }
       nl
     }
     else if !prefer_bound_call && (fname == "v128_any_true" || fname == "v128_all_true_i8x16") {
-      if ctx.enable_rc {
-        throw("v128 intrinsics: bool reduction unsupported on rc backend")
-      }
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       emit_i64_const(buf, -2)
       emit_i64_and(buf)
@@ -27243,6 +27247,12 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
         emit_i8x16_all_true(buf)
       }
       emit_i64_extend_i32_s(buf)
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shl(buf)
+      } else {
+        ()
+      }
       nl
     }
     else if !prefer_bound_call && fname == "perform" {
@@ -34089,7 +34099,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "f628aeb80f07f429"
+  "f19083e43742a6dc"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647
