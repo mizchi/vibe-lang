@@ -1450,12 +1450,55 @@ export let rec pc_count: (PCtx, Map[String, Int], Expr) -> Int = (ctx, scope, ex
   }
 }
 
+// #706 follow-up (borrow-after-move): a binding with any BORROW occurrence
+// (ctx.borrows[id] > 0 — computed branch-aware, max-across-if/match-arms,
+// alongside ctx.uses above) must stay alive through that borrow, regardless of
+// whether the borrow comes BEFORE or AFTER the binding's owning (consuming)
+// occurrences. `pc_emit`/`pe_use` only track OWNING occurrences (ctx.uses) when
+// deciding dup vs. free-transfer — borrows are invisible to that decision. If a
+// binding's textually LAST owning occurrence is treated as "the final, free
+// consume" (no dup; ownership transfers to the callee) and a borrow occurs
+// AFTER that point, the borrow reads through a reference the callee may already
+// have dropped — a silent use-after-free. This was masked in practice by other
+// RC leaks (loop-consume before #706's core fix; the loop-consume LEAK before
+// its own follow-up fix) that happened to keep the value alive by accident; see
+// #706 for the wat_exports/parse_module_sections repro that exposed it once
+// those leaks were tightened.
+//
+// Fix: bump the binding's counted `uses` by exactly one whenever it has ANY
+// borrow occurrence. This is a pure post-processing step over the FINAL,
+// branch-merge-complete `uses`/`borrows` arrays (called after `pc_count`
+// finishes, before the emission pass begins), so it does not interact with the
+// max-across-branches counting logic itself — it only adjusts the total input
+// the REST of the system (pe_declare's `remaining` init, pc_emit's sequential
+// dup decisions, pe_scope_end's drop decision) already handles correctly for "K
+// owning occurrences": with K bumped to K+1, the occurrence that used to be a
+// free-transfer gets a dup like any other, and the binding's normal scope-end
+// drop (already emitted whenever `remaining` ends > 0 — e.g. the existing
+// borrow-only / K=0 baseline) picks up the now-nonzero leftover. No new
+// PerceusAction kind, no change to pc_emit or the codegen dup/drop realization.
+// For a binding with ZERO owning occurrences (pure borrow — the already-correct
+// baseline), this is a no-op: pe_declare already treats uses==0 like uses==1.
+let pctx_apply_borrow_retention: (PCtx) -> Int = (ctx) -> {
+  let mut bid = 0
+  while bid < ctx.next_id {
+    if Array::get(ctx.borrows, bid) > 0 {
+      Array::set(ctx.uses, bid, Array::get(ctx.uses, bid) + 1)
+    } else {
+      ()
+    }
+    bid = bid + 1
+  }
+  0
+}
+
 // Build the dup/drop plan for a function body expression.
 export let build_perceus_plan: (Expr) -> Array[PerceusAction] = (body) -> {
   let ctx = pctx_new()
   let empty: Map[String, Int] = map {
   }
   pc_count(ctx, empty, body)
+  pctx_apply_borrow_retention(ctx)
   ctx.next_id = 0
   ctx.seq_id = 0
   pc_emit(ctx, empty, body)
@@ -1721,6 +1764,7 @@ export let build_perceus_plan_with_params: (Array[(String, Option[TypeExpr])], E
     pi = pi + 1
   }
   pc_count(ctx, scope, body)
+  pctx_apply_borrow_retention(ctx)
   ctx.next_id = 0
   ctx.seq_id = 0
   let mut scope2: Map[String, Int] = map {
