@@ -27,6 +27,12 @@ if [ "$#" -ge 1 ]; then FILES=("$@"); else FILES=(fixtures/*_test.vibe); fi
 verdict() {
   local rc="$1" src="$2" out="$3" e=""
   [ "$rc" = 1 ] && e="VIBE_RC=1"
+  # $out is a fixed per-run path reused across every fixture in the caller's
+  # loop -- remove any stale wasm from a prior fixture first, or a compile
+  # failure here (which may leave $out untouched) would fall through to `-s
+  # "$out"` still finding the PREVIOUS fixture's wasm and running/reporting
+  # that instead of catching the compile regression as `cfail`.
+  rm -f "$out"
   env $e VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
     bash "$RUNNER" --invoke cli_main "$CLI" "$src" "$out" __no_entry__ >/dev/null 2>&1
   [ -s "$out" ] || { echo cfail; return; }

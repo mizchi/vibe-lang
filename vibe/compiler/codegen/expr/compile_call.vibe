@@ -321,6 +321,26 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       // `==` already dispatches intish operands this way via emit_eq_value, and
       // `eq` must match. A genuinely string/heap `eq` (no scalar operand) still
       // falls through to the bound call below.
+      //
+      // #710 Codex review: `prefer_bound_call` alone is NOT a safe substitute
+      // for the `cc_arg_is_scalarish` disjunct here, unlike every other builtin
+      // in this file. `fn_idx_in_list` (this function's `prefer_bound_call`
+      // input) matches against `ctx.func_table.names` -- the GLOBAL flat name
+      // list for the whole MERGED program, not names actually in scope/imported
+      // by the current file. Any linked file defining a top-level (or derived-
+      // Eq-dictionary) function literally named `eq` makes `prefer_bound_call`
+      // true for EVERY `eq(...)` call in EVERY file once merged, including
+      // ordinary scalar ones like leb128.vibe's `eq(byte&0x80, 0)`, which has no
+      // local/user `eq` in its own lexical scope at all. Dropping the
+      // scalarish disjunct (as a first pass at this fix did) sent those calls
+      // through the generic bound-call path and reintroduced #705's OOB trap
+      // (caught by vibe/leb128/leb128_test.vibe regressing on rebuild). A
+      // correct fix needs `fn_idx_in_list` scoped to names actually visible/
+      // imported in the CALLING file, not a global cross-file namespace match
+      // -- deferred as a follow-up; the narrow Codex-flagged case (a truly
+      // local `let eq = ... in eq(scalar, scalar)` shadow) is a real but rare
+      // false-positive on top of a rarer-still already-broken global-namespace
+      // bug, not worth risking this fix's own regression to close it now.
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       emit_i64_eq(buf)
