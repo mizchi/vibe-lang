@@ -484,6 +484,36 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     } else {
       ()
     }
+    // #712: this `let` may SHADOW an outer loop-borrowed identifier of the same
+    // name (e.g. `while ... { let x = ...; f(x) }` rebinding `x` inside a loop
+    // whose header already loop-borrowed an outer `x`, #706). cc_is_loop_borrowed_ident
+    // (compile_call.vibe) matches by NAME ONLY, so without this an owning call on
+    // the INNER `x` would be mistaken for a reference to the OUTER loop-carried
+    // one -- a spurious rc_dup now, and (via loop_consumed_names) a spurious extra
+    // epilogue rc_drop for a parameter this `let` never touches. Mask every
+    // existing occurrence of `name` out of loop_borrowed_names for exactly the
+    // scope of `body`, then restore the same count after; membership is all
+    // `array_contains_str` ever tests, so compacting out of order is safe.
+    let mut lb_shadow_removed = 0
+    if ctx.enable_rc {
+      let lb_arr = ctx.loop_borrowed_names
+      let lb_n = Array::length(lb_arr)
+      let mut lb_w = 0
+      let mut lb_i = 0
+      while lb_i < lb_n {
+        let e = Array::get(lb_arr, lb_i)
+        if e == name {
+          lb_shadow_removed = lb_shadow_removed + 1
+        } else {
+          Array::set(lb_arr, lb_w, e)
+          lb_w = lb_w + 1
+        }
+        lb_i = lb_i + 1
+      }
+      Array::truncate(lb_arr, lb_w)
+    } else {
+      ()
+    }
     // #708 follow-up: scope `name` into loop_borrowed_names for exactly the
     // extent of `body`'s compilation (push before, truncate after), so a bare
     // later reference to a borrow-bound name gets the same retain-before-
@@ -501,6 +531,13 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
       Array::truncate(ctx.loop_borrowed_names, lb_mark)
     } else {
       ()
+    }
+    // #712: restore the shadow-masked occurrences now that `body` (the only
+    // scope where `name` shadows the outer loop-borrowed binding) is compiled.
+    let mut lb_restore_i = 0
+    while lb_restore_i < lb_shadow_removed {
+      Array::push(ctx.loop_borrowed_names, name)
+      lb_restore_i = lb_restore_i + 1
     }
     if ctx.enable_rc && rc_kind > 0 && array_contains_str(ctx.rc_drop_names, name) {
       if ctx.rc_drop_func_idx >= 0 && scope_tail_proj_root(body) == name {

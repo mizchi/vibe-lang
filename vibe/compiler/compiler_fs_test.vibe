@@ -98,6 +98,27 @@ test "collect_linked_compile_inputs: captures linked dep metadata for debug/self
   assert(dep_path == helper_path)
 }
 
+// #711: `lib.vibe` exports an `eq` the entry file never imports/references.
+// Before the fix, `collect_linked_dep_artifacts` registered EVERY exported
+// top-level function of a directly-imported file into `linked_imports` --
+// not just the ones actually imported -- so this unrelated `eq` would land in
+// `linked_imports` (and from there `ctx.func_table.names`) and make
+// `prefer_bound_call` (compile_call.vibe) misfire for any unrelated bare
+// `eq(...)` call in this entry file, even though it neither defines nor
+// imports `eq`. Only the actually-imported `add` should be linked.
+test "collect_linked_compile_inputs: does not register a dep's unimported export" {
+  let base_dir = "/tmp/vibe_compiler_linked_inputs_unimported"
+  let helper_path = String::concat(base_dir, "/lib.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(helper_path, string_to_bytes("export let add: (Int, Int) -> Int = (a, b) -> { a + b }\nexport let eq: (Int, Int) -> Bool = (a, b) -> { a == b }\n"))
+  Fs::write_bytes(main_path, string_to_bytes("import ./lib.vibe { add }\nlet _start: () -> Int = () -> { add(1, 2) }\n"))
+  let (_, _, linked_imports, _) = collect_linked_compile_inputs(main_path)
+  assert(Array::length(linked_imports) == 1)
+  let (_, func_name, _, _) = Array::get(linked_imports, 0)
+  assert(func_name == "add")
+}
+
 test "compile_file_wasi_only: simple file produces valid WASM" {
   let base_dir = "/tmp/vibe_compiler_wasi_only"
   let main_path = String::concat(base_dir, "/main.vibe")
