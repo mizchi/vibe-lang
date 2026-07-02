@@ -43,7 +43,7 @@ let emit_rc_dup_guarded_n: (Bytes, Int, Int) -> Unit = (buf, local_idx, n) -> {
   }
 }
 
-let rec bind_match_pat: (Bytes, Int, Pat, Bool, Array[String], CompileCtx) -> Unit = (buf, base_local, container_pat, is_ctor_layout, local_names, ctx) -> {
+let rec bind_match_pat: (Bytes, Int, Pat, Bool, Array[String], CompileCtx, Expr) -> Unit = (buf, base_local, container_pat, is_ctor_layout, local_names, ctx, body) -> {
   let elems = if is_ctor_layout {
     get_pctor_args(container_pat)
   } else {
@@ -73,6 +73,17 @@ let rec bind_match_pat: (Bytes, Int, Pat, Bool, Array[String], CompileCtx) -> Un
       emit_i32_wrap_i64(buf)
       emit_i64_load(buf, 3, off)
       emit_local_set(buf, fl)
+      // #715 follow-up: this helper previously bound the field without ever
+      // dup'ing it, regardless of how many owning uses `nm` has in `body` — a
+      // matched field is a borrowed view sharing the container's refcount
+      // (see #702/#705 at the inline call sites in `compile_match`), so an
+      // owning consume plus the container's own recursive drop double-frees
+      // the same block. Mirror the inline sites' guarded per-consume dup.
+      if ctx.enable_rc {
+        emit_rc_dup_guarded_n(buf, fl, md_consume_count(body, nm))
+      } else {
+        ()
+      }
       Array::push(local_names, nm)
     } else if is_ptuple(ep) {
       let sl = Array::length(local_names)
@@ -87,7 +98,7 @@ let rec bind_match_pat: (Bytes, Int, Pat, Bool, Array[String], CompileCtx) -> Un
       emit_i64_load(buf, 3, off)
       emit_local_set(buf, sl)
       Array::push(local_names, "__bind_sub")
-      bind_match_pat(buf, sl, ep, false, local_names, ctx)
+      bind_match_pat(buf, sl, ep, false, local_names, ctx, body)
     } else if is_pctor(ep) {
       let sl = Array::length(local_names)
       emit_local_get(buf, base_local)
@@ -101,7 +112,7 @@ let rec bind_match_pat: (Bytes, Int, Pat, Bool, Array[String], CompileCtx) -> Un
       emit_i64_load(buf, 3, off)
       emit_local_set(buf, sl)
       Array::push(local_names, "__bind_sub")
-      bind_match_pat(buf, sl, ep, true, local_names, ctx)
+      bind_match_pat(buf, sl, ep, true, local_names, ctx, body)
     } else {
       ()
     }
@@ -184,7 +195,7 @@ let struct_field_index: (CompileCtx, String, String) -> Int with { Error } = (ct
 // the positional `bind_match_pat`; a nested struct recurses here. Literal /
 // wildcard sub-patterns bind nothing (a struct pattern with a literal field is
 // refutable and is not routed here — see `is_catchall_pat`).
-let rec bind_struct_pat: (Bytes, Int, String, Array[(String, Pat)], Array[String], CompileCtx) -> Unit with { Error } = (buf, base_local, sname, fields, local_names, ctx) -> {
+let rec bind_struct_pat: (Bytes, Int, String, Array[(String, Pat)], Array[String], CompileCtx, Expr) -> Unit with { Error } = (buf, base_local, sname, fields, local_names, ctx, body) -> {
   let mut i = 0
   while i < Array::length(fields) {
     let (fname, subpat) = Array::get(fields, i)
@@ -198,6 +209,13 @@ let rec bind_struct_pat: (Bytes, Int, String, Array[(String, Pat)], Array[String
       emit_i32_wrap_i64(buf)
       emit_i64_load(buf, 3, off)
       emit_local_set(buf, fl)
+      // #715 follow-up: same missing-dup gap as `bind_match_pat` above, for an
+      // irrefutable struct-pattern field.
+      if ctx.enable_rc {
+        emit_rc_dup_guarded_n(buf, fl, md_consume_count(body, nm))
+      } else {
+        ()
+      }
       Array::push(local_names, nm)
     } else if is_ptuple(subpat) {
       let sl = Array::length(local_names)
@@ -208,7 +226,7 @@ let rec bind_struct_pat: (Bytes, Int, String, Array[(String, Pat)], Array[String
       emit_i64_load(buf, 3, off)
       emit_local_set(buf, sl)
       Array::push(local_names, "__bind_sub")
-      bind_match_pat(buf, sl, subpat, false, local_names, ctx)
+      bind_match_pat(buf, sl, subpat, false, local_names, ctx, body)
     } else if is_pctor(subpat) {
       let sl = Array::length(local_names)
       emit_local_get(buf, base_local)
@@ -218,7 +236,7 @@ let rec bind_struct_pat: (Bytes, Int, String, Array[(String, Pat)], Array[String
       emit_i64_load(buf, 3, off)
       emit_local_set(buf, sl)
       Array::push(local_names, "__bind_sub")
-      bind_match_pat(buf, sl, subpat, true, local_names, ctx)
+      bind_match_pat(buf, sl, subpat, true, local_names, ctx, body)
     } else {
       match subpat {
         PStruct(__sname, sfields) => {
@@ -230,7 +248,7 @@ let rec bind_struct_pat: (Bytes, Int, String, Array[(String, Pat)], Array[String
           emit_i64_load(buf, 3, off)
           emit_local_set(buf, sl)
           Array::push(local_names, "__bind_sub")
-          bind_struct_pat(buf, sl, __sname, sfields, local_names, ctx)
+          bind_struct_pat(buf, sl, __sname, sfields, local_names, ctx, body)
         },
         _ => ()
       }
@@ -725,7 +743,7 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
       emit_local_get(buf, scrut_local)
       emit_local_set(buf, tup_ptr)
       Array::push(local_names, "__cond_tup")
-      bind_match_pat(buf, tup_ptr, __cond_p, false, local_names, ctx)
+      bind_match_pat(buf, tup_ptr, __cond_p, false, local_names, ctx, __arm_body)
       ce(buf, __arm_body, local_names, Array::length(local_names), ctx, ld_arm)
     } else {
       ce(buf, __arm_body, local_names, nl1, ctx, ld_arm)
@@ -875,7 +893,7 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
               emit_local_get(buf, scrut_local)
               emit_local_set(buf, __sp_ptr)
               Array::push(local_names, "__struct_ptr")
-              bind_struct_pat(buf, __sp_ptr, __sname, __sfields, local_names, ctx)
+              bind_struct_pat(buf, __sp_ptr, __sname, __sfields, local_names, ctx, __catch_body)
               ce(buf, __catch_body, local_names, Array::length(local_names), ctx, ld_catch)
             },
             _ => ce(buf, __catch_body, local_names, Array::length(local_names), ctx, ld_catch)
