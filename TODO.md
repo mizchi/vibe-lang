@@ -4,7 +4,61 @@ Spec-locked decisions are tracked in `docs/spec/decisions.md`.
 Completed items are archived in `docs/DONE.md`.
 タスクの一次管理は GitHub Issues (`gh issue` / MCP)。本ファイルはロードマップ概要。
 
-## 次の一手 (2026-06-09 時点)
+## 次の一手 (2026-07-02 時点)
+
+現況スナップショット。**selfhost-only 移行は完了**（#594、`src/` MoonBit host 退役、
+tag `moonbit-host-final-2026-06-23`）。**RC self-hosting は green**: #707→#708→#709→#715
+系譜の free-list 破壊は #715 の 6 修正で全て解消し、RC 自己コンパイルされた
+コンパイラが任意のプログラムを正しくコンパイル・実行できる（selfhost gate の
+rc-bootstrap fixpoint + shape corpus で常時検証）。
+
+### 現状サマリ
+
+- **selfhost-only gate green** (`pkf run release-check` → `scripts/selfhost_only_gate.sh`、40+ steps)。
+- **RC self-hosting fixpoint green**: whole-compiler-as-one-unit RC build、stage2==stage3、
+  RC reclamation leak guard (heap_used=424B at N=20000)、V128 under RC。
+- **#715 closed (2026-07-02)**: ETuple/EArray/ERecord/ctor の borrowed-element retention、
+  sibling same-name binding の uniquify、`let mut` の Perceus dup budget
+  （宣言時 + 再代入時）、EForIn loop-borrow parity。
+- **再発防止機構 landed**: `VIBE_RC=shadow`（shadow-liveness trap、gate 40f が
+  #715 shape corpus を常時実行）+ `#cfg(flag)` 条件コンパイル（gate 40g）。
+  debugging 手順は #715 スレッドと docs/cheatsheet.md 参照。
+
+### 🔴 アクティブ
+
+- [ ] **#705 残タスク**: seed→stage2 bootstrap の `VIBE_RC=0` pin を外して RC を
+  唯一の linear backend にするか（ブロッカーだった #715 は解消。運用判断待ち）。
+- [ ] **#716** merge layer の import 可視性（未 import export 名の誤解決 /
+  同名 export 衝突）— 言語レベルの設計課題、専用検証サイクル必要。
+- [ ] **#415** codegen builtin registry 化（linear↔wasm-gc parity、Phase B）。
+- [ ] **#418 / #629 (ADR-0060)** mut の region capability 統一 — 設計は ADR-0060、
+  実装は effect row 基盤に依存。
+
+### 🟡 機能 / 品質
+
+- [ ] **#535** post-cutover branch coverage gate 復帰
+- [ ] **#538** WASM-GC selfbuild P4 残 3 cases + P5 size optimization
+- [ ] **#537** WASI P3: effect → WIT mapping + `vibe serve`
+- [ ] **#683** wasm-gc backend の実行検証ハーネス
+- [ ] **#639/#640** effect 診断の fix-it / Error の algebraic effect 化
+- [ ] **#644/#645/#646** post-GA debugger/diagnostics 残タスク
+
+### 🔵 リファクタ / 長期
+
+- [ ] **#534** `vibe/types/` / `vibe/parser/` 分離
+- [ ] **#533** linked artifact の contains 線形走査解消
+- [ ] **#488** shared-everything-threads 実験基盤
+- [ ] **#647** 1.0 GA タグ / version bump（リリース運用判断）
+- [ ] `#cfg` をコンパイラ自身のソースで使えるようにする seed bump
+  （docs/selfhost-bootstrap.md 手順、現状は user code 専用）
+
+---
+
+## 次の一手 (2026-06-09 時点) — historical
+
+> 注: 以下は selfhost cutover 進行中 (2026-06-09) の整理。cutover と `src/` 退役は
+> 完了済み (#594)。#402 (cutover tracking) / #584 (seed 復旧) も解決済み。
+> 最新は上の「2026-07-02 時点」を参照。
 
 現況スナップショット。selfhost cutover は「移行開始可」。以後は
 wasmtime runner 層と compiler wasm artifact 層を分け、compiler/checker/codegen
