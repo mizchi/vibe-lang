@@ -821,6 +821,35 @@ export let rc_shadow_reserve: () -> Int = () -> {
   536870912
 }
 
+// #720: the rc field is the LOW 24 BITS of the rc word (the class id lives in
+// the high byte of the same word at vptr-1). A raw `store(load(addr)+1)` at
+// rc == 0xFFFFFF carries into the class byte and wraps rc to 0 -- a couple of
+// rc ops later the block frees itself with millions of references still
+// outstanding. Hot shared structures (func/ctor tables, analysis accumulator
+// arrays) cross 2^24 refs only on large compiles (the entry-dup budgets leak
+// by design), which made the corruption look layout- and size-dependent.
+// Saturate instead: once rc hits 0xFFFFFF the block is immortal (never
+// incremented, never decremented, never freed -- see gen_rc_drop_body's
+// matching skip). `push_addr` emits the i32 address of the rc word; it is
+// invoked up to three times, so it must be a pure push.
+export let emit_rc_word_inc_saturating: (Bytes, () -> Unit) -> Unit = (buf, push_addr) -> {
+  push_addr()
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 16777215)
+  // i32.and (0x71) -- no emit_i32_and helper exists
+  bytebuf_push(buf, 113)
+  emit_i32_const(buf, 16777215)
+  emit_i32_ne(buf)
+  emit_if_void(buf)
+  push_addr()
+  push_addr()
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 1)
+  emit_i32_add(buf)
+  emit_i32_store(buf, 2, 0)
+  emit_end(buf)
+}
+
 export let emit_rc_dup_guarded: (Bytes, Int, Bool) -> Unit = (buf, local_idx, rc_shadow) -> {
   emit_local_get(buf, local_idx)
   emit_i64_const(buf, 1)
@@ -849,22 +878,14 @@ export let emit_rc_dup_guarded: (Bytes, Int, Bool) -> Unit = (buf, local_idx, rc
   } else {
     ()
   }
-  emit_local_get(buf, local_idx)
-  emit_i64_const(buf, -2)
-  emit_i64_and(buf)
-  emit_i32_wrap_i64(buf)
-  emit_i32_const(buf, 4)
-  emit_i32_sub(buf)
-  emit_local_get(buf, local_idx)
-  emit_i64_const(buf, -2)
-  emit_i64_and(buf)
-  emit_i32_wrap_i64(buf)
-  emit_i32_const(buf, 4)
-  emit_i32_sub(buf)
-  emit_i32_load(buf, 2, 0)
-  emit_i32_const(buf, 1)
-  emit_i32_add(buf)
-  emit_i32_store(buf, 2, 0)
+  emit_rc_word_inc_saturating(buf, () -> {
+    emit_local_get(buf, local_idx)
+    emit_i64_const(buf, -2)
+    emit_i64_and(buf)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, 4)
+    emit_i32_sub(buf)
+  })
   emit_end(buf)
   emit_end(buf)
 }
