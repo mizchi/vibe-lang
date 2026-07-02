@@ -2541,4 +2541,29 @@ fi
 rm -rf "$cfdir"
 echo "[selfhost-only-gate] #cfg conditional compilation ok (dev=102 release=2)"
 
+# 40h. wasm-gc backend smoke: the VIBE_BACKEND=gc lane (selfhost port of the
+#      gc backend, wired through the adapter) must compile and run the
+#      supported-subset fixture identically to the linear backend. Guards the
+#      gc/linear builtin-body name split (gc_gen_*) and the annotated-local-
+#      lambda distribution on the gc path. See fixtures/gc_backend_smoke_test.vibe
+#      for the covered subset and the known gc-lane gaps.
+echo "[selfhost-only-gate] 40h/40 wasm-gc backend smoke"
+gcdir="_build/_gate_gc"
+rm -rf "$gcdir"; mkdir -p "$gcdir"
+VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/gc_backend_smoke_test.vibe" "$gcdir/smoke.wasm" main >/dev/null 2>&1
+if [ ! -s "$gcdir/smoke.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: gc backend smoke did not compile under VIBE_BACKEND=gc" >&2
+  cat "$gcdir/smoke.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+gc_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcdir/smoke.wasm" 2>&1 | tail -1)"
+if [ "$gc_out" != "206" ]; then
+  echo "[selfhost-only-gate] FAIL: gc backend smoke got '$gc_out' (want 206)" >&2
+  exit 1
+fi
+rm -rf "$gcdir"
+echo "[selfhost-only-gate] wasm-gc backend smoke ok (206)"
+
 echo "[selfhost-only-gate] ok"
