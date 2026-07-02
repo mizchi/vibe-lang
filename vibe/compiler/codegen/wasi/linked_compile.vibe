@@ -171,6 +171,22 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       let expr = get_slet_expr(stmt)
       let is_export = get_slet_export(stmt)
       let user_idx = Array::length(fn_names_list)
+      // #715: `expr_tag(expr)` hoisted out of the `else` branch below and
+      // computed here, unconditionally -- so it (like `is_efn(expr)` above)
+      // contributes to `expr`'s always-consumed prefix instead of only being
+      // paid for on the `else` path. This alone still leaves the `else`
+      // branch's own nested if asymmetric (`get_eint_value`=1 use vs the
+      // thunk fallback's 0), so the thunk fallback below also aliases `expr`
+      // once (`let __sf_thunk_expr = expr`) to match. With both asymmetries
+      // resolved, `then` and `else` each consume `expr` the same number of
+      // times, so pc_emit's EIf MIN-merge (#705) lands on the SAME remaining
+      // count regardless of which branch a given statement actually takes --
+      // previously the merge could permanently assume more consumption than
+      // a commonly-taken branch (int-constant or thunk statements, which are
+      // NOT rare like a false `is_efn` check on a real function body) really
+      // performed, skipping the loop-body scope-end drop and leaking `expr`
+      // (a heap Expr node) on every such statement.
+      let __sf_etag = expr_tag(expr)
       if is_efn(expr) {
         let params = get_efn_params(expr)
         Array::push(fn_names_list, name)
@@ -178,10 +194,11 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
         Array::push(fn_needs_env_list, true)
         Array::push(fn_stmt_indices, i)
       } else {
-        if (expr_tag(expr) == 0) && !is_export {
+        if (__sf_etag == 0) && !is_export {
           Array::push(const_int_names_list, name)
           Array::push(const_int_values_list, get_eint_value(expr))
         } else {
+          let __sf_thunk_expr = expr
           Array::push(fn_names_list, name)
           Array::push(fn_param_counts, 0)
           Array::push(fn_needs_env_list, true)
