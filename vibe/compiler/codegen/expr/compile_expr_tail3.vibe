@@ -48,10 +48,19 @@ export let compile_expr_tail3: (Bytes, Expr, Array[String], Int, CompileCtx, Int
     // value survives the back-edge. Record them (RC only); restore after. Names
     // declared inside the body are appended past lb_base and removed by truncate.
     let lb_base = Array::length(ctx.loop_borrowed_names)
+    // #714: a `let` declared inside the loop body pushes onto `local_names`
+    // (the name -> slot lookup resolve_local scans in reverse) but nothing
+    // ever truncated it back after the body compiled, so that name kept
+    // shadowing an outer same-named binding for the REST of the enclosing
+    // function -- a bare-ident reference after the loop resolved to the
+    // loop-local slot's last-written value instead of the outer binding.
+    // Backend-independent (reproduces under bump too, not RC-specific).
+    let ln_base = Array::length(local_names)
     if ctx.enable_rc {
       let mut lbi = 0
       while lbi < Array::length(local_names) {
         Array::push(ctx.loop_borrowed_names, Array::get(local_names, lbi))
+        Array::push(ctx.loop_borrowed_slots, lbi)
         lbi = lbi + 1
       }
     } else {
@@ -97,6 +106,15 @@ export let compile_expr_tail3: (Bytes, Expr, Array[String], Int, CompileCtx, Int
     emit_end(buf)
     emit_end(buf)
     Array::truncate(ctx.loop_borrowed_names, lb_base)
+    Array::truncate(ctx.loop_borrowed_slots, lb_base)
+    // #714: mirror the for-in / compile_match pattern -- truncate the names
+    // the body pushed, then pad back with placeholders up to nl2 (the actual
+    // wasm local slot high-water mark) so Array::length(local_names) still
+    // matches the real slot count for anything downstream that relies on it.
+    Array::truncate(local_names, ln_base)
+    while Array::length(local_names) < nl2 {
+      Array::push(local_names, "")
+    }
     emit_i64_const(buf, 0)
     nl2
   } else if __tag == 20 {

@@ -93,16 +93,65 @@ let rec cc_arg_is_scalarish: (Expr) -> Bool with { Error } = (e) -> {
   }
 }
 
-// #706: is `e` a bare reference to a value live-in to an enclosing loop (and not
-// a `mut` ref-cell, whose reassignment already manages its own drop)? Passing
-// such a value to a consuming (owning) parameter inside the loop frees it on the
-// first iteration; dup'ing at the call site keeps the loop-carried reference
-// alive across the back-edge. rc_dup is a no-op on scalars, so a scalar loop var
-// caught here costs only a wasted (guarded) dup, not a correctness problem.
-let cc_is_loop_borrowed_ident: (Expr, CompileCtx) -> Bool = (e, ctx) -> {
+// #712: the CURRENT (most recently bound) local slot for `name`, i.e. what a
+// bare `EIdent(name)` reference resolves to right now -- mirrors
+// resolve_local's reverse scan (later declarations shadow earlier ones with
+// the same name) but never throws, returning -1 if `name` is not bound at
+// all (e.g. a global/builtin identifier with no local slot).
+let cc_current_slot_for: (Array[String], String) -> Int = (local_names, name) -> {
+  let mut i = Array::length(local_names) - 1
+  let mut result = -1
+  while i >= 0 && result < 0 {
+    if Array::get(local_names, i) == name {
+      result = i
+    } else {
+      i = i - 1
+    }
+  }
+  result
+}
+
+// #706/#712: is `e` a bare reference to a value live-in to an enclosing loop
+// (and not a `mut` ref-cell, whose reassignment already manages its own
+// drop)? Passing such a value to a consuming (owning) parameter inside the
+// loop frees it on the first iteration; dup'ing at the call site keeps the
+// loop-carried reference alive across the back-edge. rc_dup is a no-op on
+// scalars, so a scalar loop var caught here costs only a wasted (guarded)
+// dup, not a correctness problem.
+//
+// #712: matching `ctx.loop_borrowed_names` by NAME alone misidentifies an
+// inner `let name = ...` that shadows an outer loop-borrowed `name` as the
+// outer binding -- the shadowing reference then gets treated as loop-
+// borrowed too, and the function epilogue (linked_compile.vibe) later emits
+// an extra rc_drop for the OUTER param based on that misattributed
+// `loop_consumed_names` entry, prematurely dropping a reference that's still
+// live. Cross-checking `ctx.loop_borrowed_slots` (the local slot captured
+// alongside each name when it was registered) against `name`'s CURRENT slot
+// (cc_current_slot_for, which shadows the same way resolve_local does)
+// excludes any reference whose current binding is not the one that was
+// actually loop-borrowed.
+let cc_is_loop_borrowed_ident: (Expr, Array[String], CompileCtx) -> Bool = (e, local_names, ctx) -> {
   match e {
     EIdent(name, _) =>
-    array_contains_str(ctx.loop_borrowed_names, name) && !array_contains_str(ctx.ref_cell_names, name),
+    if array_contains_str(ctx.ref_cell_names, name) {
+      false
+    } else {
+      let cur_slot = cc_current_slot_for(local_names, name)
+      if cur_slot < 0 {
+        false
+      } else {
+        let mut i = 0
+        let mut found = false
+        while i < Array::length(ctx.loop_borrowed_names) && !found {
+          if Array::get(ctx.loop_borrowed_names, i) == name && Array::get(ctx.loop_borrowed_slots, i) == cur_slot {
+            found = true
+          } else {
+            i = i + 1
+          }
+        }
+        found
+      }
+    },
     _ => false
   }
 }
@@ -596,19 +645,25 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       ], -1)))))
       ce(buf, synth, local_names, next_local, ctx, ld)
     }
-    else if !prefer_bound_call && fname == "add" {
+    else if fname == "add" && Array::length(args) == 2 && (!prefer_bound_call || cc_arg_is_scalarish(Array::get(args, 0)) || cc_arg_is_scalarish(Array::get(args, 1))) {
+      // #711: same scalarish escape hatch as `eq` below -- prefer_bound_call is
+      // a global cross-file name match (not scoped to this file's imports), so
+      // an unrelated file's top-level `add` falsely shadows this builtin for
+      // every file once merged. A provably-scalar operand still takes the raw
+      // i64 op regardless, narrowing the false-positive's practical impact to
+      // non-scalar (accidental-collision-only) calls.
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       emit_i64_add(buf)
       nl
     }
-    else if !prefer_bound_call && fname == "sub" {
+    else if fname == "sub" && Array::length(args) == 2 && (!prefer_bound_call || cc_arg_is_scalarish(Array::get(args, 0)) || cc_arg_is_scalarish(Array::get(args, 1))) {
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       emit_i64_sub(buf)
       nl
     }
-    else if !prefer_bound_call && fname == "mul" {
+    else if fname == "mul" && Array::length(args) == 2 && (!prefer_bound_call || cc_arg_is_scalarish(Array::get(args, 0)) || cc_arg_is_scalarish(Array::get(args, 1))) {
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       emit_i64_mul(buf)
@@ -625,7 +680,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       }
       nl
     }
-    else if !prefer_bound_call && fname == "lt" {
+    else if fname == "lt" && Array::length(args) == 2 && (!prefer_bound_call || cc_arg_is_scalarish(Array::get(args, 0)) || cc_arg_is_scalarish(Array::get(args, 1))) {
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       emit_i64_lt_s(buf)
@@ -2628,7 +2683,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
           // there would never be matched and would leak one reference per call
           // (#704). Mirrors `is_borrow_arg0_call` in perceus/index.vibe.
           let borrows_this = ci == 0 && cc_is_borrow_arg0_call(fname)
-          let is_loop_borrow1 = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx) && !borrows_this
+          let is_loop_borrow1 = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, local_names, ctx) && !borrows_this
           if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow1) && !borrows_this {
             // #706 leak follow-up: this dup's matching consume is INSIDE the loop
             // (the callee drops its own copy each iteration) and never touches
@@ -2688,7 +2743,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
           // recursive-descent parser's `parse_recur(tokens, ...)` family calling
           // through a `let rec`-captured closure value) was double-freed the same
           // way #704/#706's direct-call cases were, just one call-shape over.
-          let is_loop_borrow2 = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx)
+          let is_loop_borrow2 = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, local_names, ctx)
           if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow2) {
             // #706 leak follow-up: log so the epilogue compensates (see above).
             if is_loop_borrow2 {
@@ -2728,7 +2783,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       // #706: dup a loop-borrowed owning arg passed to a closure call.
       // #708: also retain a projection / borrow-returning-call arg (see the
       // matching comment on the other closure-call path above).
-      let is_loop_borrow3 = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx)
+      let is_loop_borrow3 = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, local_names, ctx)
       if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow3) {
         // #706 leak follow-up: log so the epilogue compensates (see above).
         if is_loop_borrow3 {

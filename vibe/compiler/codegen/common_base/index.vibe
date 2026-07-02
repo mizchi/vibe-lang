@@ -218,6 +218,18 @@ export struct CompileCtx {
   // added). Empty outside any loop; rc_dup is a no-op under bump, so the
   // bump-built selfhost compiler is unaffected.
   loop_borrowed_names: Array[String];
+  // #712: local slot index captured alongside each `loop_borrowed_names` entry
+  // at the moment it was pushed (parallel array, same indices). A bare-ident
+  // reference is only treated as loop-borrowed if its CURRENT slot (the most
+  // recent binding for that name, per resolve_local's shadowing semantics)
+  // matches the slot recorded here — not just the name. Without this, an
+  // inner `let x = ...` inside the loop body that shadows an outer loop-
+  // borrowed `x` is misidentified as the outer binding by name alone: the
+  // shadowing reference gets a spurious protective dup, and worse, is logged
+  // into loop_consumed_names (see below), causing the function epilogue to
+  // emit an extra rc_drop for the OUTER param that was never actually
+  // consumed that many times — a premature/over-drop of a live reference.
+  loop_borrowed_slots: Array[Int];
   // #706 leak follow-up: append-only per-function log — one entry per loop-
   // borrowed identifier name each time compile_call emits the protective
   // rc_dup (see loop_borrowed_names above). That dup+the callee's own internal

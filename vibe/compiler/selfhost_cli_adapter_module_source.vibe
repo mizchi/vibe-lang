@@ -11876,6 +11876,7 @@ export struct CompileCtx {
   dbg_line_nl: Array[Int];
   dbg_line_file_id: Int;
   loop_borrowed_names: Array[String];
+  loop_borrowed_slots: Array[Int];
   loop_consumed_names: Array[String];
   borrow_ret_names: Array[String];
   scalar_ret_names: Array[String]
@@ -25612,6 +25613,9 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
     loop_borrowed_names: Array::slice([
       ""
     ], 0, 0),
+    loop_borrowed_slots: Array::slice([
+      0
+    ], 0, 0),
     loop_consumed_names: Array::slice([
       ""
     ], 0, 0),
@@ -26614,10 +26618,40 @@ let rec cc_arg_is_scalarish: (Expr) -> Bool with { Error } = (e) -> {
     false
   }
 }
-let cc_is_loop_borrowed_ident: (Expr, CompileCtx) -> Bool = (e, ctx) -> {
+let cc_current_slot_for: (Array[String], String) -> Int = (local_names, name) -> {
+  let mut i = Array::length(local_names) - 1
+  let mut result = -1
+  while i >= 0 && result < 0 {
+    if Array::get(local_names, i) == name {
+      result = i
+    } else {
+      i = i - 1
+    }
+  }
+  result
+}
+let cc_is_loop_borrowed_ident: (Expr, Array[String], CompileCtx) -> Bool = (e, local_names, ctx) -> {
   match e {
     EIdent(name, _) =>
-    array_contains_str(ctx.loop_borrowed_names, name) && !array_contains_str(ctx.ref_cell_names, name),
+    if array_contains_str(ctx.ref_cell_names, name) {
+      false
+    } else {
+      let cur_slot = cc_current_slot_for(local_names, name)
+      if cur_slot < 0 {
+        false
+      } else {
+        let mut i = 0
+        let mut found = false
+        while i < Array::length(ctx.loop_borrowed_names) && !found {
+          if Array::get(ctx.loop_borrowed_names, i) == name && Array::get(ctx.loop_borrowed_slots, i) == cur_slot {
+            found = true
+          } else {
+            i = i + 1
+          }
+        }
+        found
+      }
+    },
     _ => false
   }
 }
@@ -27026,19 +27060,19 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       ], -1)))))
       ce(buf, synth, local_names, next_local, ctx, ld)
     }
-    else if !prefer_bound_call && fname == "add" {
+    else if fname == "add" && Array::length(args) == 2 && (!prefer_bound_call || cc_arg_is_scalarish(Array::get(args, 0)) || cc_arg_is_scalarish(Array::get(args, 1))) {
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       emit_i64_add(buf)
       nl
     }
-    else if !prefer_bound_call && fname == "sub" {
+    else if fname == "sub" && Array::length(args) == 2 && (!prefer_bound_call || cc_arg_is_scalarish(Array::get(args, 0)) || cc_arg_is_scalarish(Array::get(args, 1))) {
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       emit_i64_sub(buf)
       nl
     }
-    else if !prefer_bound_call && fname == "mul" {
+    else if fname == "mul" && Array::length(args) == 2 && (!prefer_bound_call || cc_arg_is_scalarish(Array::get(args, 0)) || cc_arg_is_scalarish(Array::get(args, 1))) {
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       emit_i64_mul(buf)
@@ -27050,7 +27084,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       }
       nl
     }
-    else if !prefer_bound_call && fname == "lt" {
+    else if fname == "lt" && Array::length(args) == 2 && (!prefer_bound_call || cc_arg_is_scalarish(Array::get(args, 0)) || cc_arg_is_scalarish(Array::get(args, 1))) {
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       emit_i64_lt_s(buf)
@@ -28943,7 +28977,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
           let carg = Array::get(args, ci)
           nl = ce(buf, carg, local_names, nl, ctx, ld)
           let borrows_this = ci == 0 && cc_is_borrow_arg0_call(fname)
-          let is_loop_borrow1 = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx) && !borrows_this
+          let is_loop_borrow1 = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, local_names, ctx) && !borrows_this
           if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow1) && !borrows_this {
             if is_loop_borrow1 {
               Array::push(ctx.loop_consumed_names, get_eident_name(carg))
@@ -28988,7 +29022,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
         while ci < num_args {
           let carg = Array::get(args, ci)
           nl = ce(buf, carg, local_names, nl, ctx, ld)
-          let is_loop_borrow2 = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx)
+          let is_loop_borrow2 = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, local_names, ctx)
           if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow2) {
             if is_loop_borrow2 {
               Array::push(ctx.loop_consumed_names, get_eident_name(carg))
@@ -29024,7 +29058,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
     while ci < num_args {
       let carg = Array::get(args, ci)
       nl = ce(buf, carg, local_names, nl, ctx, ld)
-      let is_loop_borrow3 = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx)
+      let is_loop_borrow3 = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, local_names, ctx)
       if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow3) {
         if is_loop_borrow3 {
           Array::push(ctx.loop_consumed_names, get_eident_name(carg))
@@ -29589,10 +29623,12 @@ export let compile_expr_tail3: (Bytes, Expr, Array[String], Int, CompileCtx, Int
     let cond = get_ewhile_cond(expr)
     let body = get_ewhile_body(expr)
     let lb_base = Array::length(ctx.loop_borrowed_names)
+    let ln_base = Array::length(local_names)
     if ctx.enable_rc {
       let mut lbi = 0
       while lbi < Array::length(local_names) {
         Array::push(ctx.loop_borrowed_names, Array::get(local_names, lbi))
+        Array::push(ctx.loop_borrowed_slots, lbi)
         lbi = lbi + 1
       }
     } else {
@@ -29638,6 +29674,11 @@ export let compile_expr_tail3: (Bytes, Expr, Array[String], Int, CompileCtx, Int
     emit_end(buf)
     emit_end(buf)
     Array::truncate(ctx.loop_borrowed_names, lb_base)
+    Array::truncate(ctx.loop_borrowed_slots, lb_base)
+    Array::truncate(local_names, ln_base)
+    while Array::length(local_names) < nl2 {
+      Array::push(local_names, "")
+    }
     emit_i64_const(buf, 0)
     nl2
   } else if __tag == 20 {
@@ -30246,12 +30287,14 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     let lb_mark = Array::length(ctx.loop_borrowed_names)
     if ctx.enable_rc && is_borrow_ret_ext {
       Array::push(ctx.loop_borrowed_names, name)
+      Array::push(ctx.loop_borrowed_slots, local_idx)
     } else {
       ()
     }
     let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
     if ctx.enable_rc && is_borrow_ret_ext {
       Array::truncate(ctx.loop_borrowed_names, lb_mark)
+      Array::truncate(ctx.loop_borrowed_slots, lb_mark)
     } else {
       ()
     }
@@ -32575,6 +32618,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       dbg_line_nl: dbg_nls,
       dbg_line_file_id: dbg_fid,
       loop_borrowed_names: lc_fresh_string_array(),
+      loop_borrowed_slots: lc_fresh_int_array(),
       loop_consumed_names: lc_fresh_string_array(),
       borrow_ret_names: lc_borrow_ret_names,
       scalar_ret_names: lc_scalar_ret_names
@@ -34327,7 +34371,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "d8d1c4029ae22584"
+  "3b272c770ef9bb61"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647
