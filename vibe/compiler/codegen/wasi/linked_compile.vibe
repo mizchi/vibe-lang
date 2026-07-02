@@ -1402,49 +1402,29 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     } else {
       ()
     }
-    // debugger breakpoint (DAP P1): in break mode, call the host hook
-    // `vibe::dbg_break` at this user function's entry. The hook inspects the
-    // wasm backtrace to name the entering function and pauses when it is in the
-    // breakpoint set. Stack-neutral (() -> ()), so prepending is safe.
-    if debug_break {
-      // DAP P2: spill this function's i64 parameters into the dbgargs region so
-      // the host hook can read and print them. All user-function wasm params are
-      // i64 (vibe value ABI); locals 0..nparams-1 hold the params at entry.
-      let dbg_nparams = if is_efn(__bi_expr) {
-        Array::length(get_efn_params(__bi_expr))
-      } else {
-        0
-      }
-      let dbg_n = if dbg_nparams > dbgargs_cap {
-        dbgargs_cap
-      } else {
-        dbg_nparams
-      }
-      let mut dbg_pi = 0
-      while dbg_pi < dbg_n {
-        emit_i32_const(body_buf, dbgargs_base + dbg_pi * 8)
-        emit_local_get(body_buf, dbg_pi)
-        emit_i64_store(body_buf, 3, 0)
-        dbg_pi = dbg_pi + 1
-      }
-      emit_i32_const(body_buf, dbgargs_count_addr)
-      emit_i32_const(body_buf, dbg_n)
-      emit_i32_store(body_buf, 2, 0)
-      emit_call(body_buf, dbg_break_import_idx)
-    } else {
-      ()
-    }
-    let local_names = lc_fresh_string_array()
-    let fn_name_dbg = Array::get(fn_names_list, bi)
-    let rc_drops = Array::slice([
-      ""
-    ], 0, 0)
-    let rc_alias_dups = Array::slice([
-      ""
-    ], 0, 0)
-    let rc_dups = Array::slice([
-      ""
-    ], 0, 0)
+    // #715: computed here, BEFORE the `debug_break` block below, and reused by
+    // it via `Array::length(lc_norm_params)` instead of a second independent
+    // `is_efn(__bi_expr)`/`get_efn_params(__bi_expr)` call. Both accessors
+    // unconditionally rc_drop their argument, so each call is a real "use" of
+    // `__bi_expr` for Perceus's purposes; having it called from BOTH branches
+    // of the (usually-false) `if debug_break` AND unconditionally right after
+    // made the `if debug_break {...} else {...}` construct's `then` branch
+    // statically "consume" 2 extra units of `__bi_expr`'s remaining-use budget
+    // that, in the overwhelmingly common `debug_break == false` case, never
+    // actually execute. perceus/index.vibe's `pc_emit` EIf handling takes the
+    // MIN of the two branches' resulting `remaining` and carries it forward
+    // (see the #705 comment there) to avoid double-freeing a value fully
+    // consumed on the taken branch -- but that also means the *lower* (more-
+    // consuming) branch's count wins even when it is the branch that is
+    // essentially never taken, permanently starving the dup budget needed by
+    // `__bi_expr`'s later, always-executed uses below (`lc_norm_params` itself
+    // was one of them) and eventually causing a use of an already-freed
+    // pointer (#715's free-list corruption during RC self-hosting). Hoisting
+    // this computation out from under `debug_break` removes the only
+    // asymmetric-branch use of `__bi_expr` in this function (the other
+    // `is_efn(__bi_expr)`-gated branches all have `is_efn(__bi_expr)` true on
+    // effectively every real program, so their MIN-selected branch already
+    // matches the branch actually taken).
     let lc_norm_params = if is_efn(__bi_expr) {
       let ps = get_efn_params(__bi_expr)
       let sig_args_raw = fn_type_param_types(get_slet_type(__bi_stmt))
@@ -1491,6 +1471,45 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
         ("", None)
       ], 0, 0)
     }
+    // debugger breakpoint (DAP P1): in break mode, call the host hook
+    // `vibe::dbg_break` at this user function's entry. The hook inspects the
+    // wasm backtrace to name the entering function and pauses when it is in the
+    // breakpoint set. Stack-neutral (() -> ()), so prepending is safe.
+    if debug_break {
+      // DAP P2: spill this function's i64 parameters into the dbgargs region so
+      // the host hook can read and print them. All user-function wasm params are
+      // i64 (vibe value ABI); locals 0..nparams-1 hold the params at entry.
+      let dbg_nparams = Array::length(lc_norm_params)
+      let dbg_n = if dbg_nparams > dbgargs_cap {
+        dbgargs_cap
+      } else {
+        dbg_nparams
+      }
+      let mut dbg_pi = 0
+      while dbg_pi < dbg_n {
+        emit_i32_const(body_buf, dbgargs_base + dbg_pi * 8)
+        emit_local_get(body_buf, dbg_pi)
+        emit_i64_store(body_buf, 3, 0)
+        dbg_pi = dbg_pi + 1
+      }
+      emit_i32_const(body_buf, dbgargs_count_addr)
+      emit_i32_const(body_buf, dbg_n)
+      emit_i32_store(body_buf, 2, 0)
+      emit_call(body_buf, dbg_break_import_idx)
+    } else {
+      ()
+    }
+    let local_names = lc_fresh_string_array()
+    let fn_name_dbg = Array::get(fn_names_list, bi)
+    let rc_drops = Array::slice([
+      ""
+    ], 0, 0)
+    let rc_alias_dups = Array::slice([
+      ""
+    ], 0, 0)
+    let rc_dups = Array::slice([
+      ""
+    ], 0, 0)
     let lc_heap_params = lc_fresh_string_array()
     if enable_rc {
       let fbody = if is_efn(__bi_expr) {
