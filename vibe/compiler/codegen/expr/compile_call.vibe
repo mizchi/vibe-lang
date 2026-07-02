@@ -363,7 +363,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
         nl_c
       }
     }
-    else if fname == "eq" && Array::length(args) == 2 && (!prefer_bound_call || cc_arg_is_scalarish(Array::get(args, 0)) || cc_arg_is_scalarish(Array::get(args, 1))) {
+    else if fname == "eq" && Array::length(args) == 2 && local_idx_hint < 0 && (!prefer_bound_call || cc_arg_is_scalarish(Array::get(args, 0)) || cc_arg_is_scalarish(Array::get(args, 1))) {
       // Direct i64.eq for `eq(a, b)` when it is the builtin and at least one
       // operand is provably scalar. This sidesteps the bound `eq`'s string
       // fallback, which reads OOB on Int values resembling fat-pointers (#705):
@@ -375,6 +375,11 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       // is required -- prefer_bound_call is a global cross-file name match, not
       // scoped to the calling file (see #711), so dropping it regressed
       // leb128_test.vibe. Root fix tracked in #711.
+      // #711: `local_idx_hint < 0` yields to a LEXICALLY-bound local of the
+      // same name unconditionally (a local `let eq = ...; eq(1, 2)` must call
+      // the local, scalarish args or not) -- locals are precise in-scope
+      // matches, unlike the global cross-file table. Applied to add/sub/mul/lt
+      // below for the same reason.
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       emit_i64_eq(buf)
@@ -645,7 +650,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       ], -1)))))
       ce(buf, synth, local_names, next_local, ctx, ld)
     }
-    else if fname == "add" && Array::length(args) == 2 && (!prefer_bound_call || cc_arg_is_scalarish(Array::get(args, 0)) || cc_arg_is_scalarish(Array::get(args, 1))) {
+    else if fname == "add" && Array::length(args) == 2 && local_idx_hint < 0 && (!prefer_bound_call || cc_arg_is_scalarish(Array::get(args, 0)) || cc_arg_is_scalarish(Array::get(args, 1))) {
       // #711: same scalarish escape hatch as `eq` below -- prefer_bound_call is
       // a global cross-file name match (not scoped to this file's imports), so
       // an unrelated file's top-level `add` falsely shadows this builtin for
@@ -657,13 +662,13 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_i64_add(buf)
       nl
     }
-    else if fname == "sub" && Array::length(args) == 2 && (!prefer_bound_call || cc_arg_is_scalarish(Array::get(args, 0)) || cc_arg_is_scalarish(Array::get(args, 1))) {
+    else if fname == "sub" && Array::length(args) == 2 && local_idx_hint < 0 && (!prefer_bound_call || cc_arg_is_scalarish(Array::get(args, 0)) || cc_arg_is_scalarish(Array::get(args, 1))) {
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       emit_i64_sub(buf)
       nl
     }
-    else if fname == "mul" && Array::length(args) == 2 && (!prefer_bound_call || cc_arg_is_scalarish(Array::get(args, 0)) || cc_arg_is_scalarish(Array::get(args, 1))) {
+    else if fname == "mul" && Array::length(args) == 2 && local_idx_hint < 0 && (!prefer_bound_call || cc_arg_is_scalarish(Array::get(args, 0)) || cc_arg_is_scalarish(Array::get(args, 1))) {
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       emit_i64_mul(buf)
@@ -680,7 +685,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       }
       nl
     }
-    else if fname == "lt" && Array::length(args) == 2 && (!prefer_bound_call || cc_arg_is_scalarish(Array::get(args, 0)) || cc_arg_is_scalarish(Array::get(args, 1))) {
+    else if fname == "lt" && Array::length(args) == 2 && local_idx_hint < 0 && (!prefer_bound_call || cc_arg_is_scalarish(Array::get(args, 0)) || cc_arg_is_scalarish(Array::get(args, 1))) {
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       emit_i64_lt_s(buf)
@@ -2828,7 +2833,13 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       nl
     }
     else {
-      if fn_idx_in_list >= 0 {
+      // #711: a LEXICALLY-bound local (param / let / lambda) of the same name
+      // takes precedence over the global function table -- `let eq = ...;
+      // eq(1, 2)` must call the local closure, not the table entry (the table
+      // is a merged-program-wide flat namespace, so builtins and every file's
+      // exported functions live there; locals are the only precise in-scope
+      // signal available at this layer).
+      if fn_idx_in_list >= 0 && local_idx_hint < 0 {
         let fidx = Array::get(ctx.func_table.indices, fn_idx_in_list)
         let has_ret = Array::get(ctx.func_table.returns, fn_idx_in_list)
         let needs_env = Array::get(ctx.func_table.needs_env, fn_idx_in_list)
