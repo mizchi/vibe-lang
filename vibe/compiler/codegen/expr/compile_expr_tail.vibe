@@ -431,9 +431,28 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
         // pointer -- for a small count like an array length, that reads/writes
         // near a tiny address, a `memory access out of bounds` trap (not a
         // leak). Recognize the same well-known scalar-returning builtins here.
+        //
+        // #709/#717 follow-up: the bare, unqualified names in that list
+        // ("add"/"sub"/"mul"/"lt"/"eq"/"not") are also legal USER-DEFINED
+        // top-level function names, and vibe lets a user definition shadow
+        // the scalar-arithmetic intrinsic of the same name -- compile_call.vibe
+        // already accounts for this at the CALL site (`prefer_bound_call`,
+        // gating the inline-intrinsic dispatch on the name NOT resolving to a
+        // registered function/local), but this classification never checked
+        // it, so `let s = add(x, y)` for a user `add: (MySet, String) ->
+        // MySet` was misread as the scalar intrinsic and never registered in
+        // heap_binding_names -- silently skipping the rc_dup this binding
+        // needed for its second owning use, leaving a live reference
+        // unbacked and eventually decrementing a free-list node past zero
+        // (set.vibe's own `add`/`contains`/`remove` hit exactly this; #717's
+        // minimal repro). A registered top-level function of that exact name
+        // means it's the user's, not the intrinsic -- defer to
+        // ctx.scalar_ret_names (which correctly reads that function's own
+        // signature) instead of guessing from the bare name.
         let is_builtin_scalar_ret = if is_eident(callee) {
           let cn = get_eident_name(callee)
-          cn == "Array::length" || cn == "Bytes::length" || cn == "String::length" || cn == "Map::has_key" || cn == "Array::contains" || cn == "eq" || cn == "not" || cn == "add" || cn == "sub" || cn == "mul" || cn == "lt"
+          let is_user_shadowed = array_contains_str(ctx.func_table.names, cn)
+          !is_user_shadowed && (cn == "Array::length" || cn == "Bytes::length" || cn == "String::length" || cn == "Map::has_key" || cn == "Array::contains" || cn == "eq" || cn == "not" || cn == "add" || cn == "sub" || cn == "mul" || cn == "lt")
         } else {
           false
         }
