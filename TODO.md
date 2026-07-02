@@ -27,7 +27,11 @@ rc-bootstrap fixpoint + shape corpus で常時検証）。
 ### 🔴 アクティブ
 
 - [ ] **#705 残タスク**: seed→stage2 bootstrap の `VIBE_RC=0` pin を外して RC を
-  唯一の linear backend にするか（ブロッカーだった #715 は解消。運用判断待ち）。
+  唯一の linear backend にするか。ベンチ済み (s1→s2: bump 10.2s vs RC 11.8s,
+  +15% wall / +47% RSS / 2.3× binary — 性能上は許容圏)。調査で見つかった
+  2 つの RC codegen バグ (ネストパターン非 short-circuit / ローカル let 注釈の
+  未分配) は修正済み。残る blocker は **#720** (loop_consumed epilogue 補償 ×
+  multi-arm match の over-drop) — 解消後に再ベンチして判断。
 - [ ] **#716** merge layer の import 可視性（未 import export 名の誤解決 /
   同名 export 衝突）— 言語レベルの設計課題、専用検証サイクル必要。
 - [ ] **#415** codegen builtin registry 化（linear↔wasm-gc parity、Phase B）。
