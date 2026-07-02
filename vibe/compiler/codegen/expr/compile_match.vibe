@@ -35,10 +35,10 @@ import .. / wasm_emit {
 
 // Emit `n` guarded rc_dups of `local_idx` (one per owning consume of a matched
 // field; see md_consume_count). n<=0 emits nothing.
-let emit_rc_dup_guarded_n: (Bytes, Int, Int) -> Unit = (buf, local_idx, n) -> {
+let emit_rc_dup_guarded_n: (Bytes, Int, Int, Bool) -> Unit = (buf, local_idx, n, rc_shadow) -> {
   let mut k = 0
   while k < n {
-    emit_rc_dup_guarded(buf, local_idx)
+    emit_rc_dup_guarded(buf, local_idx, rc_shadow)
     k = k + 1
   }
 }
@@ -80,7 +80,7 @@ let rec bind_match_pat: (Bytes, Int, Pat, Bool, Array[String], CompileCtx, Expr)
       // owning consume plus the container's own recursive drop double-frees
       // the same block. Mirror the inline sites' guarded per-consume dup.
       if ctx.enable_rc {
-        emit_rc_dup_guarded_n(buf, fl, md_consume_count(body, nm))
+        emit_rc_dup_guarded_n(buf, fl, md_consume_count(body, nm), ctx.rc_shadow)
       } else {
         ()
       }
@@ -212,7 +212,7 @@ let rec bind_struct_pat: (Bytes, Int, String, Array[(String, Pat)], Array[String
       // #715 follow-up: same missing-dup gap as `bind_match_pat` above, for an
       // irrefutable struct-pattern field.
       if ctx.enable_rc {
-        emit_rc_dup_guarded_n(buf, fl, md_consume_count(body, nm))
+        emit_rc_dup_guarded_n(buf, fl, md_consume_count(body, nm), ctx.rc_shadow)
       } else {
         ()
       }
@@ -656,7 +656,7 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
           // don't free the same block twice (double-free -> trap). Scalar fields
           // are even, so __rc_drop's odd-check makes the dup a no-op for them.
           if ctx.enable_rc {
-            emit_rc_dup_guarded_n(buf, fl, md_consume_count(__arm_body, pname))
+            emit_rc_dup_guarded_n(buf, fl, md_consume_count(__arm_body, pname), ctx.rc_shadow)
           } else {
             ()
           }
@@ -686,7 +686,7 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
               emit_i64_load(buf, 3, if ctx.enable_rc { 8 + ti * 8 } else { ti * 8 })
               emit_local_set(buf, tfl)
               if ctx.enable_rc {
-                emit_rc_dup_guarded_n(buf, tfl, md_consume_count(__arm_body, tpname))
+                emit_rc_dup_guarded_n(buf, tfl, md_consume_count(__arm_body, tpname), ctx.rc_shadow)
               } else {
                 ()
               }
@@ -722,7 +722,7 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
               emit_i64_load(buf, 3, 8 + __nj * 8)
               emit_local_set(buf, __nfl)
               if ctx.enable_rc {
-                emit_rc_dup_guarded_n(buf, __nfl, md_consume_count(__arm_body, __npname))
+                emit_rc_dup_guarded_n(buf, __nfl, md_consume_count(__arm_body, __npname), ctx.rc_shadow)
               } else {
                 ()
               }
@@ -801,7 +801,7 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
             // freed by both the consume and the scrutinee/owner's recursive drop
             // (double free). Mirror the cond-arm #702/#705 dup.
             if ctx.enable_rc {
-              emit_rc_dup_guarded_n(buf, fl2, md_consume_count(__catch_body, pname))
+              emit_rc_dup_guarded_n(buf, fl2, md_consume_count(__catch_body, pname), ctx.rc_shadow)
             } else {
               ()
             }
@@ -832,7 +832,7 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
               emit_i64_load(buf, 3, if ctx.enable_rc { 8 + pi2 * 8 } else { pi2 * 8 })
               emit_local_set(buf, field_l)
               if ctx.enable_rc {
-                emit_rc_dup_guarded_n(buf, field_l, md_consume_count(__catch_body, pname))
+                emit_rc_dup_guarded_n(buf, field_l, md_consume_count(__catch_body, pname), ctx.rc_shadow)
               } else {
                 ()
               }
@@ -865,7 +865,7 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
                   emit_i64_load(buf, 3, if ctx.enable_rc { 8 + si3 * 8 } else { si3 * 8 })
                   emit_local_set(buf, sfl)
                   if ctx.enable_rc {
-                    emit_rc_dup_guarded_n(buf, sfl, md_consume_count(__catch_body, spname))
+                    emit_rc_dup_guarded_n(buf, sfl, md_consume_count(__catch_body, spname), ctx.rc_shadow)
                   } else {
                     ()
                   }

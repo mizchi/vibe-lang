@@ -2497,4 +2497,53 @@ fi
 rm -rf "$v2dir"
 echo "[selfhost-only-gate] V128 SIMD intrinsics under RC ok"
 
+# 40f. RC shadow-liveness regression guard (#715 recurrence prevention).
+#      Compiles the #715 shape corpus (every minimal shape that once produced
+#      a use-after-free / double-free in the Perceus RC backend) with
+#      VIBE_RC=shadow -- codegen that marks freed blocks in a shadow byte
+#      table and executes `unreachable` on the FIRST dup-of-freed or
+#      drop-of-freed -- and runs it. A regression in the RC dup/drop
+#      accounting traps HERE, deterministically, at the faulting operation,
+#      instead of corrupting the free list and crashing later at an
+#      unrelated, binary-layout-dependent location ("moving target").
+echo "[selfhost-only-gate] 40f/40 RC shadow-liveness regression guard (#715 shapes)"
+shdir="_build/_gate_rc_shadow"
+rm -rf "$shdir"; mkdir -p "$shdir"
+VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/rc_shadow_regression_test.vibe" "$shdir/shadow.wasm" main >/dev/null 2>&1
+if [ ! -s "$shdir/shadow.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: rc_shadow_regression fixture did not compile under VIBE_RC=shadow" >&2
+  cat "$shdir/shadow.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+sh_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$shdir/shadow.wasm" 2>&1 | tail -1)"
+if [ "$sh_out" != "82489" ]; then
+  echo "[selfhost-only-gate] FAIL: rc_shadow_regression got '$sh_out' (want 82489). A trap here means an RC dup/drop accounting regression touched a freed block -- see fixtures/rc_shadow_regression_test.vibe for which shapes are covered and issue #715 for the debugging methodology." >&2
+  exit 1
+fi
+rm -rf "$shdir"
+echo "[selfhost-only-gate] RC shadow-liveness regression guard ok (82489)"
+
+# 40g. #cfg conditional-compilation guard: the flag-off build must strip the
+#      guarded statements entirely (compiles, dev symbols absent -> different
+#      program), flag-on builds must select the matching statements.
+echo "[selfhost-only-gate] 40g/40 #cfg conditional compilation"
+cfdir="_build/_gate_cfg"
+rm -rf "$cfdir"; mkdir -p "$cfdir"
+VIBE_CFG=dev VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/cfg_flag_test.vibe" "$cfdir/dev.wasm" main >/dev/null 2>&1
+cf_dev="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$cfdir/dev.wasm" 2>&1 | tail -1)"
+VIBE_CFG=release VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/cfg_flag_test.vibe" "$cfdir/rel.wasm" main >/dev/null 2>&1
+cf_rel="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$cfdir/rel.wasm" 2>&1 | tail -1)"
+if [ "$cf_dev" != "102" ] || [ "$cf_rel" != "2" ]; then
+  echo "[selfhost-only-gate] FAIL: #cfg selection wrong (dev='$cf_dev' want 102, release='$cf_rel' want 2)" >&2
+  exit 1
+fi
+rm -rf "$cfdir"
+echo "[selfhost-only-gate] #cfg conditional compilation ok (dev=102 release=2)"
+
 echo "[selfhost-only-gate] ok"

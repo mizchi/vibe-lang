@@ -11859,6 +11859,7 @@ export struct CompileCtx {
   const_int_names: Array[String];
   const_int_values: Array[Int];
   enable_rc: Bool;
+  rc_shadow: Bool;
   rc_drop_names: Array[String];
   rc_alias_dup_names: Array[String];
   heap_binding_names: Array[String];
@@ -12298,7 +12299,13 @@ export let emit_index_one: (Bytes, CompileCtx) -> Unit = (buf, ctx) -> {
     emit_i64_const(buf, 1)
   }
 }
-export let emit_rc_dup_guarded: (Bytes, Int) -> Unit = (buf, local_idx) -> {
+export let rc_shadow_base: () -> Int = () -> {
+  20000000
+}
+export let rc_shadow_reserve: () -> Int = () -> {
+  25000000
+}
+export let emit_rc_dup_guarded: (Bytes, Int, Bool) -> Unit = (buf, local_idx, rc_shadow) -> {
   emit_local_get(buf, local_idx)
   emit_i64_const(buf, 1)
   emit_i64_and(buf)
@@ -12309,6 +12316,20 @@ export let emit_rc_dup_guarded: (Bytes, Int) -> Unit = (buf, local_idx) -> {
   emit_i64_shr_s(buf)
   emit_i64_eqz(buf)
   emit_if_void(buf)
+  if rc_shadow {
+    emit_local_get(buf, local_idx)
+    emit_i64_const(buf, -2)
+    emit_i64_and(buf)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, rc_shadow_base())
+    emit_i32_add(buf)
+    emit_i32_load8_u(buf, 0, 0)
+    emit_if_void(buf)
+    bytebuf_push(buf, 0)
+    emit_end(buf)
+  } else {
+    ()
+  }
   emit_local_get(buf, local_idx)
   emit_i64_const(buf, -2)
   emit_i64_and(buf)
@@ -17061,7 +17082,66 @@ let parse_impl_methods: (Array[Token], Int, Stmt) -> (Array[Stmt], Int) with { E
     _ => (ArrayBuilder::freeze(out), pos)
   }
 }
+let parse_cfg_directive: (Array[Token], Int) -> (String, String, Int) with { Error } = (tokens, pos) -> {
+  match peek(tokens, pos) {
+    TIdent(dname) => {
+      if dname == "cfg" || dname == "cfg_enable" {
+        match peek(tokens, pos + 1) {
+          TLParen => match peek(tokens, pos + 2) {
+            TIdent(flag) => match peek(tokens, pos + 3) {
+              TRParen => (dname, flag, pos + 4),
+              _ => throw("expected ')' after #cfg flag name")
+            },
+            _ => throw("expected flag name in #cfg(...)")
+          },
+          _ => throw("expected '(' after #cfg")
+        }
+      } else {
+        throw(String::concat("unknown # directive: ", dname))
+      }
+    },
+    _ => throw("expected directive name after '#'")
+  }
+}
+let cfg_scan_enabled: (Array[Token]) -> Array[String] with { Error } = (tokens) -> {
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  let n = Array::length(tokens)
+  while i < n {
+    match Array::get(tokens, i) {
+      THash => {
+        let (dname, flag, next) = parse_cfg_directive(tokens, i + 1)
+        if dname == "cfg_enable" {
+          Array::push(out, flag)
+        } else {
+          ()
+        }
+        i = next
+      },
+      _ => {
+        i = i + 1
+      }
+    }
+  }
+  out
+}
+let cfg_flag_active: (Array[String], String) -> Bool = (active, flag) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(active) {
+    if Array::get(active, i) == flag {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
 export let parse_program: (Array[Token]) -> Array[Stmt] with { Error } = (tokens) -> {
+  let cfg_active = cfg_scan_enabled(tokens)
   let b = ArrayBuilder::new()
   let mut pos = 0
   let mut done = false
@@ -17072,6 +17152,24 @@ export let parse_program: (Array[Token]) -> Array[Stmt] with { Error } = (tokens
       },
       TSemicolon => {
         pos = pos + 1
+      },
+      THash => {
+        let (dname, flag, dnext) = parse_cfg_directive(tokens, pos + 1)
+        if dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
+          pos = dnext
+        } else {
+          match peek(tokens, dnext) {
+            TImpl => {
+              let (simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens, dnext + 1)
+              let (_dropped, dn) = parse_impl_methods(tokens, hp_d, simpl_d)
+              pos = dn
+            },
+            _ => {
+              let (_dropped, dn) = parse_stmt(tokens, [], dnext)
+              pos = dn
+            }
+          }
+        }
       },
       TImpl => {
         let (simpl, hp) = parse_impl_stmt_dispatch(tokens, pos + 1)
@@ -17093,6 +17191,7 @@ export let parse_program: (Array[Token]) -> Array[Stmt] with { Error } = (tokens
   ArrayBuilder::freeze(b)
 }
 export let parse_program_located: (Array[Token], Array[Int], String) -> Array[Stmt] with { Error } = (tokens, starts, source) -> {
+  let cfg_active = cfg_scan_enabled(tokens)
   let b = ArrayBuilder::new()
   let mut pos = 0
   let mut done = false
@@ -17103,6 +17202,24 @@ export let parse_program_located: (Array[Token], Array[Int], String) -> Array[St
       },
       TSemicolon => {
         pos = pos + 1
+      },
+      THash => {
+        let (dname, flag, dnext) = parse_cfg_directive(tokens, pos + 1)
+        if dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
+          pos = dnext
+        } else {
+          match peek(tokens, dnext) {
+            TImpl => {
+              let (simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens, dnext + 1)
+              let (_dropped, dn) = parse_impl_methods(tokens, hp_d, simpl_d)
+              pos = dn
+            },
+            _ => {
+              let (_dropped, dn) = parse_stmt(tokens, starts, dnext)
+              pos = dn
+            }
+          }
+        }
       },
       _ => {
         let start_pos = pos
@@ -17164,6 +17281,13 @@ let is_recovery_point: (Token) -> Bool = (t) -> {
   }
 }
 export let parse_program_recovering: (Array[Token], Array[Int], String) -> (Array[Stmt], Array[String]) with { Error } = (tokens, starts, source) -> {
+  let cfg_active = handle {
+    cfg_scan_enabled(tokens)
+  } with Error {
+    Throw(_) => Array::slice([
+      ""
+    ], 0, 0)
+  }
   let b = ArrayBuilder::new()
   let diags = ArrayBuilder::new()
   let n = Array::length(tokens)
@@ -17176,6 +17300,37 @@ export let parse_program_recovering: (Array[Token], Array[Int], String) -> (Arra
       },
       TSemicolon => {
         pos = pos + 1
+      },
+      THash => {
+        let cfg_res = handle {
+          let (dname, flag, dnext) = parse_cfg_directive(tokens, pos + 1)
+          if dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
+            dnext
+          } else {
+            match peek(tokens, dnext) {
+              TImpl => {
+                let (simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens, dnext + 1)
+                let (_dropped, dn) = parse_impl_methods(tokens, hp_d, simpl_d)
+                dn
+              },
+              _ => {
+                let (_dropped, dn) = parse_stmt(tokens, starts, dnext)
+                dn
+              }
+            }
+          }
+        } with Error {
+          Throw(_) => 0 - 1
+        }
+        if cfg_res >= 0 {
+          pos = cfg_res
+        } else {
+          let mut rp = pos + 1
+          while rp < n && !is_recovery_point(Array::get(tokens, rp)) {
+            rp = rp + 1
+          }
+          pos = rp
+        }
       },
       _ => {
         let start_pos = pos
@@ -17251,6 +17406,9 @@ export let parse_program_spans: (Array[Token], Array[Int], Array[Int]) -> (Array
       },
       TSemicolon => {
         pos = pos + 1
+      },
+      THash => {
+        throw("#cfg directives are not supported in module-source emission")
       },
       TImpl => {
         let st = Array::get(starts, pos)
@@ -19635,7 +19793,16 @@ export let normalize_stmts: (Array[Stmt]) -> Array[Stmt] = (stmts) -> {
   hoist_lambda_lets(annotate_literal_lets(fold_stmts(drop_unused_type_aliases(promoted))))
 }
 export let normalize_source: (String) -> String with { Error } = (src) -> {
-  let stmts = parse_program(lex(src))
+  let toks_cfg = lex(src)
+  let mut ci = 0
+  while ci < Array::length(toks_cfg) {
+    match Array::get(toks_cfg, ci) {
+      THash => throw("cannot normalize a source containing #cfg directives"),
+      _ => ()
+    }
+    ci = ci + 1
+  }
+  let stmts = parse_program(toks_cfg)
   let kept = normalize_stmts(stmts)
   let sections = empty_strs()
   let mut s = 0
@@ -22853,7 +23020,7 @@ export let gen_arr_set_body: (Bool) -> Bytes = (enable_rc) -> {
   emit_i64_store(b, 3, 0)
   b
 }
-export let gen_rc_drop_body: (Int) -> Bytes = (self_idx) -> {
+export let gen_rc_drop_body: (Int, Bool) -> Bytes = (self_idx, rc_shadow) -> {
   let b = bytebuf_new()
   emit_local_get(b, 0)
   emit_i64_const(b, 1)
@@ -22875,6 +23042,17 @@ export let gen_rc_drop_body: (Int) -> Bytes = (self_idx) -> {
   emit_i64_and(b)
   emit_i32_wrap_i64(b)
   emit_local_set(b, 1)
+  if rc_shadow {
+    emit_local_get(b, 1)
+    emit_i32_const(b, rc_shadow_base())
+    emit_i32_add(b)
+    emit_i32_load8_u(b, 0, 0)
+    emit_if_void(b)
+    bytebuf_push(b, 0)
+    emit_end(b)
+  } else {
+    ()
+  }
   emit_local_get(b, 1)
   emit_i32_const(b, 4)
   emit_i32_sub(b)
@@ -22973,6 +23151,15 @@ export let gen_rc_drop_body: (Int) -> Bytes = (self_idx) -> {
   emit_i32_add(b)
   emit_i32_ne(b)
   emit_if_void(b)
+  if rc_shadow {
+    emit_local_get(b, 5)
+    emit_i32_const(b, rc_shadow_base())
+    emit_i32_add(b)
+    emit_i32_const(b, 1)
+    emit_i32_store8(b, 0, 0)
+  } else {
+    ()
+  }
   emit_local_get(b, 5)
   emit_i32_const(b, 4)
   emit_i32_sub(b)
@@ -23082,6 +23269,15 @@ export let gen_rc_drop_body: (Int) -> Bytes = (self_idx) -> {
   emit_end(b)
   emit_end(b)
   emit_end(b)
+  if rc_shadow {
+    emit_local_get(b, 1)
+    emit_i32_const(b, rc_shadow_base())
+    emit_i32_add(b)
+    emit_i32_const(b, 1)
+    emit_i32_store8(b, 0, 0)
+  } else {
+    ()
+  }
   emit_local_get(b, 1)
   emit_i32_const(b, 4)
   emit_i32_sub(b)
@@ -23091,7 +23287,7 @@ export let gen_rc_drop_body: (Int) -> Bytes = (self_idx) -> {
   emit_global_set(b, 2)
   b
 }
-export let gen_rc_alloc_body: () -> Bytes = () -> {
+export let gen_rc_alloc_body: (Bool) -> Bytes = (rc_shadow) -> {
   let b = bytebuf_new()
   emit_local_get(b, 0)
   emit_i32_wrap_i64(b)
@@ -23130,6 +23326,15 @@ export let gen_rc_alloc_body: () -> Bytes = () -> {
   emit_i32_load(b, 2, 0)
   emit_i32_store(b, 2, 0)
   emit_end(b)
+  if rc_shadow {
+    emit_local_get(b, 1)
+    emit_i32_const(b, rc_shadow_base())
+    emit_i32_add(b)
+    emit_i32_const(b, 0)
+    emit_i32_store8(b, 0, 0)
+  } else {
+    ()
+  }
   emit_local_get(b, 1)
   emit_i32_const(b, 8)
   emit_i32_sub(b)
@@ -23171,7 +23376,7 @@ export let gen_str_len_body: (Bool) -> Bytes = (enable_rc) -> {
 export {
   gen_eq_body, gen_str_eq_body, gen_arr_get_body, gen_arr_len_body, gen_arr_new_body, gen_arr_set_body, gen_rc_drop_body, gen_rc_alloc_body, gen_str_len_body
 }
-export let gen_arr_push_body: (Bool, Int) -> Bytes = (enable_rc, rc_alloc_idx) -> {
+export let gen_arr_push_body: (Bool, Int, Bool) -> Bytes = (enable_rc, rc_alloc_idx, rc_shadow) -> {
   let b = bytebuf_new()
   emit_local_get(b, 0)
   if enable_rc {
@@ -23228,6 +23433,15 @@ export let gen_arr_push_body: (Bool, Int) -> Bytes = (enable_rc, rc_alloc_idx) -
     emit_i32_add(b)
     emit_i32_ne(b)
     emit_if_void(b)
+    if rc_shadow {
+      emit_local_get(b, 5)
+      emit_i32_const(b, rc_shadow_base())
+      emit_i32_add(b)
+      emit_i32_const(b, 1)
+      emit_i32_store8(b, 0, 0)
+    } else {
+      ()
+    }
     emit_local_get(b, 5)
     emit_i32_const(b, 4)
     emit_i32_sub(b)
@@ -23290,7 +23504,7 @@ export let gen_arr_push_body: (Bool, Int) -> Bytes = (enable_rc, rc_alloc_idx) -
 export {
   gen_eq_body, gen_str_eq_body, gen_arr_get_body, gen_arr_len_body, gen_arr_new_body, gen_arr_set_body, gen_rc_drop_body, gen_rc_alloc_body, gen_str_len_body, gen_arr_push_body
 }
-export let gen_arr_slice_body: (Bool, Int) -> Bytes = (enable_rc, rc_alloc_idx) -> {
+export let gen_arr_slice_body: (Bool, Int, Bool) -> Bytes = (enable_rc, rc_alloc_idx, rc_shadow) -> {
   let b = bytebuf_new()
   if enable_rc {
     emit_local_get(b, 0)
@@ -23388,6 +23602,20 @@ export let gen_arr_slice_body: (Bool, Int) -> Bytes = (enable_rc, rc_alloc_idx) 
     emit_i64_shr_s(b)
     emit_i64_eqz(b)
     emit_if_void(b)
+    if rc_shadow {
+      emit_local_get(b, 10)
+      emit_i64_const(b, -2)
+      emit_i64_and(b)
+      emit_i32_wrap_i64(b)
+      emit_i32_const(b, rc_shadow_base())
+      emit_i32_add(b)
+      emit_i32_load8_u(b, 0, 0)
+      emit_if_void(b)
+      bytebuf_push(b, 0)
+      emit_end(b)
+    } else {
+      ()
+    }
     emit_local_get(b, 10)
     emit_i64_const(b, -2)
     emit_i64_and(b)
@@ -23930,7 +24158,7 @@ export let gen_bytes_slice_body: (Bool, Int, Int, Int) -> Bytes = (enable_rc, by
   emit_local_get(b, 5)
   b
 }
-export let gen_arr_push_all_body: (Bool, Int) -> Bytes = (enable_rc, rc_alloc_idx) -> {
+export let gen_arr_push_all_body: (Bool, Int, Bool) -> Bytes = (enable_rc, rc_alloc_idx, rc_shadow) -> {
   let b = bytebuf_new()
   if enable_rc {
     emit_local_get(b, 0)
@@ -24000,6 +24228,15 @@ export let gen_arr_push_all_body: (Bool, Int) -> Bytes = (enable_rc, rc_alloc_id
     emit_i32_add(b)
     emit_i32_ne(b)
     emit_if_void(b)
+    if rc_shadow {
+      emit_local_get(b, 6)
+      emit_i32_const(b, rc_shadow_base())
+      emit_i32_add(b)
+      emit_i32_const(b, 1)
+      emit_i32_store8(b, 0, 0)
+    } else {
+      ()
+    }
     emit_local_get(b, 6)
     emit_i32_const(b, 4)
     emit_i32_sub(b)
@@ -24061,6 +24298,20 @@ export let gen_arr_push_all_body: (Bool, Int) -> Bytes = (enable_rc, rc_alloc_id
     emit_i64_shr_s(b)
     emit_i64_eqz(b)
     emit_if_void(b)
+    if rc_shadow {
+      emit_local_get(b, 12)
+      emit_i64_const(b, -2)
+      emit_i64_and(b)
+      emit_i32_wrap_i64(b)
+      emit_i32_const(b, rc_shadow_base())
+      emit_i32_add(b)
+      emit_i32_load8_u(b, 0, 0)
+      emit_if_void(b)
+      bytebuf_push(b, 0)
+      emit_end(b)
+    } else {
+      ()
+    }
     emit_local_get(b, 12)
     emit_i64_const(b, -2)
     emit_i64_and(b)
@@ -25732,7 +25983,7 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
       let cap_consumes = md_consume_count(fn_body, cap_name)
       let mut cdup = 0
       while cdup < cap_consumes {
-        emit_rc_dup_guarded(lam_buf, cap_local)
+        emit_rc_dup_guarded(lam_buf, cap_local, ctx.rc_shadow)
         cdup = cdup + 1
       }
     } else {
@@ -25807,6 +26058,7 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
     const_int_names: ctx.const_int_names,
     const_int_values: ctx.const_int_values,
     enable_rc: ctx.enable_rc,
+    rc_shadow: ctx.rc_shadow,
     rc_drop_names: lam_drops,
     rc_alias_dup_names: lam_alias_dups,
     heap_binding_names: lam_heap_params,
@@ -25853,7 +26105,7 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
         }
         let mut de = 0
         while de < dcount {
-          emit_rc_dup_guarded(lam_buf, dpi)
+          emit_rc_dup_guarded(lam_buf, dpi, ctx.rc_shadow)
           de = de + 1
         }
       } else {
@@ -25882,7 +26134,7 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
     let rtemp = final_lam_nl
     if need_dup {
       emit_local_set(lam_buf, rtemp)
-      emit_rc_dup_guarded(lam_buf, rtemp)
+      emit_rc_dup_guarded(lam_buf, rtemp, ctx.rc_shadow)
       tail_lam_nl = final_lam_nl + 1
     } else {
       ()
@@ -26034,10 +26286,10 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
     nl2
   }
 }
-let emit_rc_dup_guarded_n: (Bytes, Int, Int) -> Unit = (buf, local_idx, n) -> {
+let emit_rc_dup_guarded_n: (Bytes, Int, Int, Bool) -> Unit = (buf, local_idx, n, rc_shadow) -> {
   let mut k = 0
   while k < n {
-    emit_rc_dup_guarded(buf, local_idx)
+    emit_rc_dup_guarded(buf, local_idx, rc_shadow)
     k = k + 1
   }
 }
@@ -26072,7 +26324,7 @@ let rec bind_match_pat: (Bytes, Int, Pat, Bool, Array[String], CompileCtx, Expr)
       emit_i64_load(buf, 3, off)
       emit_local_set(buf, fl)
       if ctx.enable_rc {
-        emit_rc_dup_guarded_n(buf, fl, md_consume_count(body, nm))
+        emit_rc_dup_guarded_n(buf, fl, md_consume_count(body, nm), ctx.rc_shadow)
       } else {
         ()
       }
@@ -26182,7 +26434,7 @@ let rec bind_struct_pat: (Bytes, Int, String, Array[(String, Pat)], Array[String
       emit_i64_load(buf, 3, off)
       emit_local_set(buf, fl)
       if ctx.enable_rc {
-        emit_rc_dup_guarded_n(buf, fl, md_consume_count(body, nm))
+        emit_rc_dup_guarded_n(buf, fl, md_consume_count(body, nm), ctx.rc_shadow)
       } else {
         ()
       }
@@ -26569,7 +26821,7 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
           emit_i64_load(buf, 3, 8 + cbi * 8)
           emit_local_set(buf, fl)
           if ctx.enable_rc {
-            emit_rc_dup_guarded_n(buf, fl, md_consume_count(__arm_body, pname))
+            emit_rc_dup_guarded_n(buf, fl, md_consume_count(__arm_body, pname), ctx.rc_shadow)
           } else {
             ()
           }
@@ -26599,7 +26851,7 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
               emit_i64_load(buf, 3, if ctx.enable_rc { 8 + ti * 8 } else { ti * 8 })
               emit_local_set(buf, tfl)
               if ctx.enable_rc {
-                emit_rc_dup_guarded_n(buf, tfl, md_consume_count(__arm_body, tpname))
+                emit_rc_dup_guarded_n(buf, tfl, md_consume_count(__arm_body, tpname), ctx.rc_shadow)
               } else {
                 ()
               }
@@ -26630,7 +26882,7 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
               emit_i64_load(buf, 3, 8 + __nj * 8)
               emit_local_set(buf, __nfl)
               if ctx.enable_rc {
-                emit_rc_dup_guarded_n(buf, __nfl, md_consume_count(__arm_body, __npname))
+                emit_rc_dup_guarded_n(buf, __nfl, md_consume_count(__arm_body, __npname), ctx.rc_shadow)
               } else {
                 ()
               }
@@ -26697,7 +26949,7 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
             emit_i64_load(buf, 3, 8 + cbi2 * 8)
             emit_local_set(buf, fl2)
             if ctx.enable_rc {
-              emit_rc_dup_guarded_n(buf, fl2, md_consume_count(__catch_body, pname))
+              emit_rc_dup_guarded_n(buf, fl2, md_consume_count(__catch_body, pname), ctx.rc_shadow)
             } else {
               ()
             }
@@ -26728,7 +26980,7 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
               emit_i64_load(buf, 3, if ctx.enable_rc { 8 + pi2 * 8 } else { pi2 * 8 })
               emit_local_set(buf, field_l)
               if ctx.enable_rc {
-                emit_rc_dup_guarded_n(buf, field_l, md_consume_count(__catch_body, pname))
+                emit_rc_dup_guarded_n(buf, field_l, md_consume_count(__catch_body, pname), ctx.rc_shadow)
               } else {
                 ()
               }
@@ -26761,7 +27013,7 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
                   emit_i64_load(buf, 3, if ctx.enable_rc { 8 + si3 * 8 } else { si3 * 8 })
                   emit_local_set(buf, sfl)
                   if ctx.enable_rc {
-                    emit_rc_dup_guarded_n(buf, sfl, md_consume_count(__catch_body, spname))
+                    emit_rc_dup_guarded_n(buf, sfl, md_consume_count(__catch_body, spname), ctx.rc_shadow)
                   } else {
                     ()
                   }
@@ -26981,7 +27233,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
           emit_local_set(buf, val_local)
           nl_c = nl_c + 1
           if ctx.enable_rc && (cc_is_projection(carg_c) || cc_is_borrow_ret_call(carg_c, ctx) || cc_is_loop_borrowed_ident(carg_c, ctx)) {
-            emit_rc_dup_guarded(buf, val_local)
+            emit_rc_dup_guarded(buf, val_local, ctx.rc_shadow)
           } else {
             ()
           }
@@ -29180,7 +29432,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
             }
             Array::push(local_names, "__argdup")
             emit_local_tee(buf, nl)
-            emit_rc_dup_guarded(buf, nl)
+            emit_rc_dup_guarded(buf, nl, ctx.rc_shadow)
             nl = nl + 1
           } else {
             ()
@@ -29225,7 +29477,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
             }
             Array::push(local_names, "__argdup")
             emit_local_tee(buf, nl)
-            emit_rc_dup_guarded(buf, nl)
+            emit_rc_dup_guarded(buf, nl, ctx.rc_shadow)
             nl = nl + 1
           } else {
             ()
@@ -29261,7 +29513,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
         }
         Array::push(local_names, "__argdup")
         emit_local_tee(buf, nl)
-        emit_rc_dup_guarded(buf, nl)
+        emit_rc_dup_guarded(buf, nl, ctx.rc_shadow)
         nl = nl + 1
       } else {
         ()
@@ -29301,7 +29553,7 @@ let t6_bind_from_raw: (Bytes, Pat, Int, CompileCtx, Array[String]) -> Unit with 
             emit_local_set(buf, fl)
             Array::push(local_names, pname)
             if ctx.enable_rc {
-              emit_rc_dup_guarded(buf, fl)
+              emit_rc_dup_guarded(buf, fl, ctx.rc_shadow)
             } else {
               ()
             }
@@ -29455,7 +29707,7 @@ export let compile_expr_tail6: (Bytes, Expr, Array[(Pat, Expr)], Array[String], 
               emit_local_set(buf, fl)
               Array::push(local_names, pname)
               if ctx.enable_rc {
-                emit_rc_dup_guarded(buf, fl)
+                emit_rc_dup_guarded(buf, fl, ctx.rc_shadow)
               } else {
                 ()
               }
@@ -29709,7 +29961,7 @@ export let compile_expr_tail4: (Bytes, Expr, Array[String], Int, CompileCtx, Int
           emit_local_set(buf, val_local)
           nl_r = nl_r + 1
           if ctx.enable_rc && (expr_is_projection(fexpr) || cc_is_borrow_ret_call(fexpr, ctx) || cc_is_loop_borrowed_ident(fexpr, ctx)) {
-            emit_rc_dup_guarded(buf, val_local)
+            emit_rc_dup_guarded(buf, val_local, ctx.rc_shadow)
           } else {
             ()
           }
@@ -29942,7 +30194,7 @@ export let compile_expr_tail2: (Bytes, Expr, Array[String], Int, CompileCtx, Int
           _ => false
         }
         if ctx.enable_rc && (__tup_is_proj || cc_is_borrow_ret_call(__tup_elem, ctx) || cc_is_loop_borrowed_ident(__tup_elem, ctx)) {
-          emit_rc_dup_guarded(buf, __tup_val_local)
+          emit_rc_dup_guarded(buf, __tup_val_local, ctx.rc_shadow)
         } else {
           ()
         }
@@ -30037,7 +30289,7 @@ export let compile_expr_tail2: (Bytes, Expr, Array[String], Int, CompileCtx, Int
           _ => false
         }
         if __arr_is_proj || cc_is_borrow_ret_call(__arr_elem, ctx) || cc_is_loop_borrowed_ident(__arr_elem, ctx) {
-          emit_rc_dup_guarded(buf, __arr_val_local)
+          emit_rc_dup_guarded(buf, __arr_val_local, ctx.rc_shadow)
         } else {
           ()
         }
@@ -30448,7 +30700,7 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
           rc_kind = 2
           Array::push(ctx.heap_binding_names, name)
           if array_contains_str(ctx.rc_alias_dup_names, name) {
-            emit_rc_dup_guarded(buf, local_idx)
+            emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow)
           } else {
             ()
           }
@@ -30486,7 +30738,7 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
       } else if is_edot(value) {
         rc_kind = 2
         Array::push(ctx.heap_binding_names, name)
-        emit_rc_dup_guarded(buf, local_idx)
+        emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow)
       } else if is_efn(value) {
         if efn_is_capturing(value, ctx) {
           rc_kind = 2
@@ -30519,7 +30771,7 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
       let mut dbi = 0
       while dbi < Array::length(ctx.rc_dup_names) {
         if Array::get(ctx.rc_dup_names, dbi) == name {
-          emit_rc_dup_guarded(buf, local_idx)
+          emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow)
         } else {
           ()
         }
@@ -30568,7 +30820,7 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     if ctx.enable_rc && rc_kind > 0 && array_contains_str(ctx.rc_drop_names, name) {
       if ctx.rc_drop_func_idx >= 0 && scope_tail_proj_root(body) == name {
         emit_local_set(buf, nl2)
-        emit_rc_dup_guarded(buf, nl2)
+        emit_rc_dup_guarded(buf, nl2, ctx.rc_shadow)
         emit_local_get(buf, local_idx)
         emit_call(buf, ctx.rc_drop_func_idx)
         emit_local_get(buf, nl2)
@@ -30707,7 +30959,7 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
         let mut mdbi = 0
         while mdbi < Array::length(ctx.rc_dup_names) {
           if Array::get(ctx.rc_dup_names, mdbi) == name {
-            emit_rc_dup_guarded(buf, local_idx)
+            emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow)
           } else {
             ()
           }
@@ -30720,7 +30972,7 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
       if ctx.enable_rc && array_contains_str(ctx.heap_binding_names, name) && array_contains_str(ctx.rc_drop_names, name) && ctx.rc_drop_func_idx >= 0 {
         if scope_tail_proj_root(body) == name {
           emit_local_set(buf, nl2)
-          emit_rc_dup_guarded(buf, nl2)
+          emit_rc_dup_guarded(buf, nl2, ctx.rc_shadow)
           emit_local_get(buf, local_idx)
           emit_call(buf, ctx.rc_drop_func_idx)
           emit_local_get(buf, nl2)
@@ -30761,7 +31013,7 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
           if (is_eident(elem) && get_eident_name(elem) == name) || (is_edot(elem) && proj_root_ident(elem) == name) {
             let _ = compile_expr(buf, elem, local_names, base, ctx, ld)
             emit_local_set(buf, scratch)
-            emit_rc_dup_guarded(buf, scratch)
+            emit_rc_dup_guarded(buf, scratch, ctx.rc_shadow)
           } else {
             ()
           }
@@ -30782,7 +31034,7 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
         let nl = compile_expr(buf, value, local_names, next_local, ctx, ld)
         emit_local_set(buf, idx)
         if is_heap_mut && !is_self && is_edot(value) {
-          emit_rc_dup_guarded(buf, idx)
+          emit_rc_dup_guarded(buf, idx, ctx.rc_shadow)
         } else {
           ()
         }
@@ -30790,7 +31042,7 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
           let mut adbi = 0
           while adbi < Array::length(ctx.rc_dup_names) {
             if Array::get(ctx.rc_dup_names, adbi) == name {
-              emit_rc_dup_guarded(buf, idx)
+              emit_rc_dup_guarded(buf, idx, ctx.rc_shadow)
             } else {
               ()
             }
@@ -31548,7 +31800,7 @@ export let wasi_memory_min_pages_for_heap: (Int) -> Int = (heap_start) -> {
     default_wasi_memory_min_pages
   }
 }
-export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String, String)], Array[(String, String, Int, Int)], Bool, Bool, Bool, Bool, Bool, DbgProv) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, linked_imports, library_mode, enable_rc, coverage, debug_trace, debug_break, prov) -> {
+export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String, String)], Array[(String, String, Int, Int)], Bool, Bool, Bool, Bool, Bool, Bool, DbgProv) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, linked_imports, library_mode, enable_rc, coverage, debug_trace, debug_break, rc_shadow, prov) -> {
   desugar_trait_dicts(stmts)
   let lc_borrow_ret_names = compute_borrow_returning_names(stmts)
   let lc_scalar_ret_names = compute_scalar_returning_names(stmts)
@@ -32519,7 +32771,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     Array::push(bodies, gen_arr_get_body(true))
     Array::push(meta_i32, 1)
     Array::push(meta_i64, 0)
-    Array::push(bodies, gen_arr_push_body(true, rc_alloc_idx))
+    Array::push(bodies, gen_arr_push_body(true, rc_alloc_idx, rc_shadow))
     Array::push(meta_i32, 6)
     Array::push(meta_i64, 0)
     Array::push(bodies, gen_arr_set_body(true))
@@ -32535,7 +32787,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     Array::push(bodies, static_arr_get_body())
     Array::push(meta_i32, 1)
     Array::push(meta_i64, 0)
-    Array::push(bodies, gen_arr_push_body(false, rc_alloc_idx))
+    Array::push(bodies, gen_arr_push_body(false, rc_alloc_idx, rc_shadow))
     Array::push(meta_i32, 6)
     Array::push(meta_i64, 0)
     Array::push(bodies, static_arr_set_body())
@@ -32569,11 +32821,11 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   Array::push(meta_i32, 0)
   Array::push(meta_i64, 0)
   if enable_rc {
-    Array::push(bodies, gen_arr_slice_body(true, rc_alloc_idx))
+    Array::push(bodies, gen_arr_slice_body(true, rc_alloc_idx, rc_shadow))
     Array::push(meta_i32, 7)
     Array::push(meta_i64, 1)
   } else {
-    Array::push(bodies, gen_arr_slice_body(false, rc_alloc_idx))
+    Array::push(bodies, gen_arr_slice_body(false, rc_alloc_idx, rc_shadow))
     Array::push(meta_i32, 6)
     Array::push(meta_i64, 0)
   }
@@ -32615,11 +32867,11 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   Array::push(meta_i32, 3)
   Array::push(meta_i64, 1)
   if enable_rc {
-    Array::push(bodies, gen_arr_push_all_body(true, rc_alloc_idx))
+    Array::push(bodies, gen_arr_push_all_body(true, rc_alloc_idx, rc_shadow))
     Array::push(meta_i32, 10)
     Array::push(meta_i64, 1)
   } else {
-    Array::push(bodies, gen_arr_push_all_body(false, rc_alloc_idx))
+    Array::push(bodies, gen_arr_push_all_body(false, rc_alloc_idx, rc_shadow))
     Array::push(meta_i32, 9)
     Array::push(meta_i64, 0)
   }
@@ -32678,10 +32930,10 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   Array::push(meta_i32, 2)
   Array::push(meta_i64, 1)
   if enable_rc {
-    Array::push(bodies, gen_rc_drop_body(rc_drop_idx))
+    Array::push(bodies, gen_rc_drop_body(rc_drop_idx, rc_shadow))
     Array::push(meta_i32, 5)
     Array::push(meta_i64, 1)
-    Array::push(bodies, gen_rc_alloc_body())
+    Array::push(bodies, gen_rc_alloc_body(rc_shadow))
     Array::push(meta_i32, 4)
     Array::push(meta_i64, 0)
   } else {
@@ -32890,6 +33142,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       const_int_names: const_int_names_list,
       const_int_values: const_int_values_list,
       enable_rc: enable_rc,
+      rc_shadow: rc_shadow,
       rc_drop_names: rc_drops,
       rc_alias_dup_names: rc_alias_dups,
       heap_binding_names: lc_heap_params,
@@ -32946,7 +33199,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
             }
             let mut ede = 0
             while ede < edc {
-              emit_rc_dup_guarded(body_buf, edi)
+              emit_rc_dup_guarded(body_buf, edi, rc_shadow)
               ede = ede + 1
             }
           } else {
@@ -32985,7 +33238,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
         let rtemp = final_nl
         if need_dup {
           emit_local_set(body_buf, rtemp)
-          emit_rc_dup_guarded(body_buf, rtemp)
+          emit_rc_dup_guarded(body_buf, rtemp, rc_shadow)
           tail_nl = final_nl + 1
         } else {
           ()
@@ -33646,7 +33899,11 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   if total_table_entries > 0 {
     emit_table_section_funcref(out, total_table_entries)
   }
-  emit_memory_section(out, wasi_memory_min_pages_for_heap(heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve + dbgargs_reserve))
+  emit_memory_section(out, wasi_memory_min_pages_for_heap(heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve + dbgargs_reserve + (if rc_shadow {
+    rc_shadow_reserve()
+  } else {
+    0
+  })))
   let tag_content = bytebuf_new()
   let num_tags = Array::length(effect_names_list) + 4
   bytebuf_push_vec_header(tag_content, num_tags)
@@ -33834,27 +34091,35 @@ export let compile_wasi_module_rc_impl: (Array[Stmt], String) -> Bytes with { Er
     ("", "")
   ], 0, 0), Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, true, false, false, false, empty_dbg_prov())
+  ], 0, 0), false, true, false, false, false, false, empty_dbg_prov())
+}
+export let compile_wasi_module_rc_shadow_impl: (Array[Stmt], String) -> Bytes with { Error } = (stmts_in, entry_name) -> {
+  let stmts = elaborate_heap_params(stmts_in)
+  compile_wasi_module_linked_impl(stmts, entry_name, Array::slice([
+    ("", "")
+  ], 0, 0), Array::slice([
+    ("", "", 0, 0)
+  ], 0, 0), false, true, false, false, false, true, empty_dbg_prov())
 }
 export let compile_wasi_module_with_sources_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
   compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, false, false, false, false, empty_dbg_prov())
+  ], 0, 0), false, false, false, false, false, false, empty_dbg_prov())
 }
 export let compile_wasi_module_with_sources_coverage_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
   compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, true, true, false, false, empty_dbg_prov())
+  ], 0, 0), false, true, true, false, false, false, empty_dbg_prov())
 }
 export let compile_wasi_module_with_sources_trace_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
   compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, true, false, true, false, empty_dbg_prov())
+  ], 0, 0), false, true, false, true, false, false, empty_dbg_prov())
 }
 export let compile_wasi_module_with_sources_break_impl: (Array[Stmt], String, Array[(String, String)], DbgProv) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, prov) -> {
   compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, true, false, false, true, prov)
+  ], 0, 0), false, true, false, false, true, false, prov)
 }
 export {
   compile_wasi_module_linked_impl,
@@ -34425,8 +34690,17 @@ export let compile_source_wasi_only_rc: (String, String) -> Bytes with { Error }
   strip_generic_type_params(stmts)
   maybe_wrap_async_component(compile_wasi_module_rc_impl(stmts, entry_name), wrap_async)
 }
+export let compile_source_wasi_only_rc_shadow: (String, String) -> Bytes with { Error } = (source, entry_name) -> {
+  let tokens = lex(source)
+  let stmts = parse_program(tokens)
+  expand_interp_stmts(stmts)
+  let _ = check_program(stmts)
+  let wrap_async = (entry_name == "run") && entry_declares_async_int(stmts, entry_name)
+  strip_generic_type_params(stmts)
+  maybe_wrap_async_component(compile_wasi_module_rc_shadow_impl(stmts, entry_name), wrap_async)
+}
 export {
-  expand_interp_stmts, compile_source_wasi_only, compile_source_wasi_only_coverage, compile_source_wasi_only_rc, strip_generic_type_params
+  expand_interp_stmts, compile_source_wasi_only, compile_source_wasi_only_coverage, compile_source_wasi_only_rc, compile_source_wasi_only_rc_shadow, strip_generic_type_params
 }
 export let build_module_source_from_source: (String, String) -> String with { Error } = (source, entry_name) -> {
   let lexed = lex_with_offsets(source)
@@ -34659,7 +34933,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "5b2cc7fa80ccfaad"
+  "2de7b6824d604a92"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647
@@ -39618,8 +39892,29 @@ let profile_memory_mark: (Bool) -> Unit with { Env } = (enabled) -> {
     ()
   }
 }
+let apply_cfg_env: (String, String) -> String = (source, cfg_csv) -> {
+  if cfg_csv == "" {
+    source
+  } else {
+    let parts = String::split(cfg_csv, ",")
+    let mut out = source
+    let mut i = 0
+    while i < Array::length(parts) {
+      let flag = String::trim(Array::get(parts, i))
+      if String::length(flag) > 0 {
+        out = String::concat(out, String::concat("\n#cfg_enable(", String::concat(flag, ")")))
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    out
+  }
+}
 let compile_source_for_rc_flag: (String, String, String) -> Bytes with { Error } = (source, entry_name, rc_flag) -> {
-  if rc_flag != "0" {
+  if rc_flag == "shadow" {
+    compile_source_wasi_only_rc_shadow(source, entry_name)
+  } else if rc_flag != "0" {
     compile_source_wasi_only_rc(source, entry_name)
   } else {
     compile_source_wasi_only(source, entry_name)
@@ -39712,10 +40007,11 @@ export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
   } else {
     handle {
       let rc_flag = Env::get("VIBE_RC")
+      let source_cfg = apply_cfg_env(source, Env::get("VIBE_CFG"))
       let bytes = if Env::get("VIBE_COVERAGE") == "1" {
-        compile_source_wasi_only_coverage(source, entry_name)
+        compile_source_wasi_only_coverage(source_cfg, entry_name)
       } else {
-        compile_source_for_rc_flag(source, entry_name, rc_flag)
+        compile_source_for_rc_flag(source_cfg, entry_name, rc_flag)
       }
       profile_memory_mark(mark_memory)
       Fs::write_bytes(output_path, bytes)

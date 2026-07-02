@@ -25,6 +25,7 @@ import .. / common_analysis {
 }
 
 import .. / common_base {
+  rc_shadow_reserve,
   CompileCtx, CovState, CtorTable, DbgProv, FuncTable, LambdaTable, StrTable, emit_rc_dup_guarded, empty_dbg_prov, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, fn_type_param_types, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, get_slet_type, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
 }
 
@@ -86,7 +87,7 @@ export let wasi_memory_min_pages_for_heap: (Int) -> Int = (heap_start) -> {
   }
 }
 
-export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String, String)], Array[(String, String, Int, Int)], Bool, Bool, Bool, Bool, Bool, DbgProv) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, linked_imports, library_mode, enable_rc, coverage, debug_trace, debug_break, prov) -> {
+export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String, String)], Array[(String, String, Int, Int)], Bool, Bool, Bool, Bool, Bool, Bool, DbgProv) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, linked_imports, library_mode, enable_rc, coverage, debug_trace, debug_break, rc_shadow, prov) -> {
   // Method-bearing-trait dictionary passing (#641 PR-3). Universal codegen
   // convergence point — runs here on the fully merged program before generic
   // type params are stripped (just below). No-op unless a method-bearing trait
@@ -1164,7 +1165,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     Array::push(bodies, gen_arr_get_body(true))
     Array::push(meta_i32, 1)
     Array::push(meta_i64, 0)
-    Array::push(bodies, gen_arr_push_body(true, rc_alloc_idx))
+    Array::push(bodies, gen_arr_push_body(true, rc_alloc_idx, rc_shadow))
     Array::push(meta_i32, 6)
     Array::push(meta_i64, 0)
     Array::push(bodies, gen_arr_set_body(true))
@@ -1180,7 +1181,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     Array::push(bodies, static_arr_get_body())
     Array::push(meta_i32, 1)
     Array::push(meta_i64, 0)
-    Array::push(bodies, gen_arr_push_body(false, rc_alloc_idx))
+    Array::push(bodies, gen_arr_push_body(false, rc_alloc_idx, rc_shadow))
     Array::push(meta_i32, 6)
     Array::push(meta_i64, 0)
     Array::push(bodies, static_arr_set_body())
@@ -1214,11 +1215,11 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   Array::push(meta_i32, 0)
   Array::push(meta_i64, 0)
   if enable_rc {
-    Array::push(bodies, gen_arr_slice_body(true, rc_alloc_idx))
+    Array::push(bodies, gen_arr_slice_body(true, rc_alloc_idx, rc_shadow))
     Array::push(meta_i32, 7)
     Array::push(meta_i64, 1)
   } else {
-    Array::push(bodies, gen_arr_slice_body(false, rc_alloc_idx))
+    Array::push(bodies, gen_arr_slice_body(false, rc_alloc_idx, rc_shadow))
     Array::push(meta_i32, 6)
     Array::push(meta_i64, 0)
   }
@@ -1260,11 +1261,11 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   Array::push(meta_i32, 3)
   Array::push(meta_i64, 1)
   if enable_rc {
-    Array::push(bodies, gen_arr_push_all_body(true, rc_alloc_idx))
+    Array::push(bodies, gen_arr_push_all_body(true, rc_alloc_idx, rc_shadow))
     Array::push(meta_i32, 10)
     Array::push(meta_i64, 1)
   } else {
-    Array::push(bodies, gen_arr_push_all_body(false, rc_alloc_idx))
+    Array::push(bodies, gen_arr_push_all_body(false, rc_alloc_idx, rc_shadow))
     Array::push(meta_i32, 9)
     Array::push(meta_i64, 0)
   }
@@ -1323,10 +1324,10 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   Array::push(meta_i32, 2)
   Array::push(meta_i64, 1)
   if enable_rc {
-    Array::push(bodies, gen_rc_drop_body(rc_drop_idx))
+    Array::push(bodies, gen_rc_drop_body(rc_drop_idx, rc_shadow))
     Array::push(meta_i32, 5)
     Array::push(meta_i64, 1)
-    Array::push(bodies, gen_rc_alloc_body())
+    Array::push(bodies, gen_rc_alloc_body(rc_shadow))
     Array::push(meta_i32, 4)
     Array::push(meta_i64, 0)
   } else {
@@ -1626,6 +1627,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       const_int_names: const_int_names_list,
       const_int_values: const_int_values_list,
       enable_rc: enable_rc,
+      rc_shadow: rc_shadow,
       rc_drop_names: rc_drops,
       rc_alias_dup_names: rc_alias_dups,
       heap_binding_names: lc_heap_params,
@@ -1686,7 +1688,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
             }
             let mut ede = 0
             while ede < edc {
-              emit_rc_dup_guarded(body_buf, edi)
+              emit_rc_dup_guarded(body_buf, edi, rc_shadow)
               ede = ede + 1
             }
           } else {
@@ -1735,7 +1737,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
         let rtemp = final_nl
         if need_dup {
           emit_local_set(body_buf, rtemp)
-          emit_rc_dup_guarded(body_buf, rtemp)
+          emit_rc_dup_guarded(body_buf, rtemp, rc_shadow)
           tail_nl = final_nl + 1
         } else {
           ()
@@ -2472,7 +2474,11 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   if total_table_entries > 0 {
     emit_table_section_funcref(out, total_table_entries)
   }
-  emit_memory_section(out, wasi_memory_min_pages_for_heap(heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve + dbgargs_reserve))
+  emit_memory_section(out, wasi_memory_min_pages_for_heap(heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve + dbgargs_reserve + (if rc_shadow {
+    rc_shadow_reserve()
+  } else {
+    0
+  })))
   let tag_content = bytebuf_new()
   let num_tags = Array::length(effect_names_list) + 4
   bytebuf_push_vec_header(tag_content, num_tags)
@@ -2671,13 +2677,23 @@ export let compile_wasi_module_rc_impl: (Array[Stmt], String) -> Bytes with { Er
     ("", "")
   ], 0, 0), Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, true, false, false, false, empty_dbg_prov())
+  ], 0, 0), false, true, false, false, false, false, empty_dbg_prov())
+}
+
+// #715 recurrence guard: RC + shadow-liveness instrumentation (VIBE_RC=shadow).
+export let compile_wasi_module_rc_shadow_impl: (Array[Stmt], String) -> Bytes with { Error } = (stmts_in, entry_name) -> {
+  let stmts = elaborate_heap_params(stmts_in)
+  compile_wasi_module_linked_impl(stmts, entry_name, Array::slice([
+    ("", "")
+  ], 0, 0), Array::slice([
+    ("", "", 0, 0)
+  ], 0, 0), false, true, false, false, false, true, empty_dbg_prov())
 }
 
 export let compile_wasi_module_with_sources_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
   compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, false, false, false, false, empty_dbg_prov())
+  ], 0, 0), false, false, false, false, false, false, empty_dbg_prov())
 }
 
 // Coverage build (#cov): compile with function-level hit instrumentation +
@@ -2686,7 +2702,7 @@ export let compile_wasi_module_with_sources_impl: (Array[Stmt], String, Array[(S
 export let compile_wasi_module_with_sources_coverage_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
   compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, true, true, false, false, empty_dbg_prov())
+  ], 0, 0), false, true, true, false, false, false, empty_dbg_prov())
 }
 
 // Trace build (debugger / DAP P1 groundwork): compile with function-call
@@ -2695,7 +2711,7 @@ export let compile_wasi_module_with_sources_coverage_impl: (Array[Stmt], String,
 export let compile_wasi_module_with_sources_trace_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
   compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, true, false, true, false, empty_dbg_prov())
+  ], 0, 0), false, true, false, true, false, false, empty_dbg_prov())
 }
 
 // Break build (debugger / DAP P1): compile with `vibe::dbg_break` host-hook
@@ -2704,5 +2720,5 @@ export let compile_wasi_module_with_sources_trace_impl: (Array[Stmt], String, Ar
 export let compile_wasi_module_with_sources_break_impl: (Array[Stmt], String, Array[(String, String)], DbgProv) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, prov) -> {
   compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, true, false, false, true, prov)
+  ], 0, 0), false, true, false, false, true, false, prov)
 }

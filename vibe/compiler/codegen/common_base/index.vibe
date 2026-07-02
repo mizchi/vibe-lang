@@ -116,6 +116,11 @@ export struct CompileCtx {
   // not usable: a getter capturing it is `missing closure env` in the native
   // CLI codegen, and a cross-module `let` reference is `unknown name`).
   enable_rc: Bool;
+  // #715 recurrence guard (VIBE_RC=shadow): emit shadow-liveness traps -- a
+  // byte per heap address marks freed blocks; the FIRST dup-of-freed or
+  // drop-of-freed executes `unreachable` instead of silently corrupting the
+  // free list. Debug-only; false (byte-identical output) on normal builds.
+  rc_shadow: Bool;
   // RC: names of `let` bindings whose value the Perceus analysis says to drop
   // at scope end (computed per function from build_perceus_plan). compile_expr
   // emits an rc_drop for a tuple binding whose name appears here.
@@ -805,7 +810,18 @@ export let emit_index_one: (Bytes, CompileCtx) -> Unit = (buf, ctx) -> {
 // codegen files (compile_expr_tail / _tail4 / _tail6 / compile_match /
 // compile_lambda / compile_call / linked_compile) call this instead of keeping
 // per-file duplicates.
-export let emit_rc_dup_guarded: (Bytes, Int) -> Unit = (buf, local_idx) -> {
+// #715 recurrence guard: base address of the shadow-liveness byte table
+// (1 byte per heap address at base+vptr) and the reservation pad that keeps
+// it inside linear memory. Only referenced when compiling with rc_shadow.
+export let rc_shadow_base: () -> Int = () -> {
+  20000000
+}
+
+export let rc_shadow_reserve: () -> Int = () -> {
+  25000000
+}
+
+export let emit_rc_dup_guarded: (Bytes, Int, Bool) -> Unit = (buf, local_idx, rc_shadow) -> {
   emit_local_get(buf, local_idx)
   emit_i64_const(buf, 1)
   emit_i64_and(buf)
@@ -816,6 +832,23 @@ export let emit_rc_dup_guarded: (Bytes, Int) -> Unit = (buf, local_idx) -> {
   emit_i64_shr_s(buf)
   emit_i64_eqz(buf)
   emit_if_void(buf)
+  // #715 recurrence guard (VIBE_RC=shadow): trap via `unreachable` if the
+  // shadow byte at RC_SHADOW_BASE+vptr says this block was already freed --
+  // a dup-of-freed would otherwise increment the free-list NEXT link.
+  if rc_shadow {
+    emit_local_get(buf, local_idx)
+    emit_i64_const(buf, -2)
+    emit_i64_and(buf)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, rc_shadow_base())
+    emit_i32_add(buf)
+    emit_i32_load8_u(buf, 0, 0)
+    emit_if_void(buf)
+    bytebuf_push(buf, 0)
+    emit_end(buf)
+  } else {
+    ()
+  }
   emit_local_get(buf, local_idx)
   emit_i64_const(buf, -2)
   emit_i64_and(buf)

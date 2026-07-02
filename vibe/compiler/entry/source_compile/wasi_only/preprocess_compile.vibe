@@ -5,7 +5,7 @@ import .. / .. / .. / checker / checker_stmt.vibe {
 }
 
 import .. / .. / .. / codegen / wasi {
-  compile_wasi_module_impl, compile_wasi_module_coverage_impl, compile_wasi_module_rc_impl
+  compile_wasi_module_impl, compile_wasi_module_coverage_impl, compile_wasi_module_rc_impl, compile_wasi_module_rc_shadow_impl
 }
 
 import .. / .. / .. / syntax / lexer.vibe {
@@ -126,4 +126,20 @@ export let compile_source_wasi_only_rc: (String, String) -> Bytes with { Error }
   let wrap_async = (entry_name == "run") && entry_declares_async_int(stmts, entry_name)
   strip_generic_type_params(stmts)
   maybe_wrap_async_component(compile_wasi_module_rc_impl(stmts, entry_name), wrap_async)
+}
+
+// #715 recurrence guard: same RC pipeline, but the produced module carries
+// shadow-liveness instrumentation -- a byte per heap address marking freed
+// blocks, with an `unreachable` trap on the FIRST dup-of-freed or
+// drop-of-freed operation. Turns "moving target" free-list corruption into a
+// deterministic trap at the faulting operation. Debug-only (VIBE_RC=shadow):
+// adds a memory-reservation pad and per-dup/drop checks, so never the default.
+export let compile_source_wasi_only_rc_shadow: (String, String) -> Bytes with { Error } = (source, entry_name) -> {
+  let tokens = lex(source)
+  let stmts = parse_program(tokens)
+  expand_interp_stmts(stmts)
+  let _ = check_program(stmts)
+  let wrap_async = (entry_name == "run") && entry_declares_async_int(stmts, entry_name)
+  strip_generic_type_params(stmts)
+  maybe_wrap_async_component(compile_wasi_module_rc_shadow_impl(stmts, entry_name), wrap_async)
 }
