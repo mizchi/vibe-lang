@@ -556,7 +556,30 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
         rc_kind = 2
         Array::push(ctx.heap_binding_names, name)
       } else {
-        ()
+        // #715 follow-up: `expr_tag` only enumerates a subset of `Expr`
+        // constructors and returns -1 for the rest (EHandle, ELabeledArg,
+        // EMap, ESpread, EStringInterp, EBreak, EContinue, EReturn, EThrow,
+        // EWhile, EForIn, ELoop, ...) -- none of which are covered by the
+        // is_etuple/is_earray/.../is_efn checks above either, so ANY of them
+        // as a let's value silently fell through to no RC treatment, same
+        // bug class as the EIf/EMatch/ELet/ESeq cases already fixed. Rather
+        // than keep enumerating one crash at a time, default the true
+        // catch-all to heap too EXCEPT a bare identifier (`let a = b`, an
+        // ALIAS handled by its own dedicated PaAliasDup mechanism elsewhere
+        // -- see the is_eident-guarded rc_alias_dup_names handling later in
+        // this function; forcing rc_kind here would double-manage it) and
+        // literals (EInt/EBool/EFloat/EString/EUnit -- provably scalar, no
+        // guarded-no-op overhead worth paying on every such binding). Over-
+        // including a genuinely scalar value here is safe: the guarded
+        // rc_dup/rc_drop already no-op on non-heap-tagged values (the same
+        // property every other case in this chain already relies on).
+        let __sf_tag = expr_tag(value)
+        if is_eident(value) || __sf_tag == 0 || __sf_tag == 1 || __sf_tag == 2 || __sf_tag == 3 || __sf_tag == 22 {
+          ()
+        } else {
+          rc_kind = 2
+          Array::push(ctx.heap_binding_names, name)
+        }
       }
     } else {
       ()
