@@ -460,16 +460,27 @@ let fn_sig_return_type: (Option[TypeExpr]) -> Option[TypeExpr] = (ty) -> {
 // plain integer, not a tagged heap pointer. If that binding is later
 // ALIASED more than once (`let a = n; let b = n`), the Perceus plan schedules
 // a PaAliasDup for the 2nd+ alias, and compile_expr_tail.vibe's `is_eident`
-// branch calls `emit_rc_dup_local` on it: untag (AND -2) then read/write 4
-// bytes before the "pointer". For a small scalar like 0 that computes a
-// near-null address -- `RuntimeError: memory access out of bounds`, not a
-// leak (component_codegen_test.vibe's "component async: sync lift" hit this
-// via `import_func_count` aliased into run_core_func_idx/run_type_idx/
-// run_func_idx). Names collected here let the ELet ECall branch skip
-// `heap_binding_names` for a call whose declared return type is provably
-// scalar, matching the exemption the field's own doc comment already
+// branch used to call the unguarded `emit_rc_dup_local` on it: untag (AND -2)
+// then read/write 4 bytes before the "pointer". For a small scalar like 0
+// that computes a near-null address -- `RuntimeError: memory access out of
+// bounds`, not a leak (component_codegen_test.vibe's "component async: sync
+// lift" hit this via `import_func_count` aliased into run_core_func_idx/
+// run_type_idx/run_func_idx). That call site now uses the runtime-tag-checked
+// `emit_rc_dup_guarded` instead (a misclassified scalar is a silent no-op
+// there rather than a wild write) -- this was the one remaining unguarded RC
+// increment anywhere in codegen, so it is now fixed on general principle even
+// though it was empirically NOT the cause of the *other* still-open #709
+// self-hosting crash (a free-list node with corrupted size/next fields,
+// surfacing later inside `fn_type_param_types`'s `__rc_alloc`; confirmed via a
+// differential rebuild that the crash persists byte-for-byte unchanged with
+// this fix in place). Names collected here still matter for perf/precision
+// (avoiding unnecessary heap_binding_names churn) and let the ELet ECall
+// branch skip `heap_binding_names` for a call whose declared return type is
+// provably scalar, matching the exemption the field's own doc comment already
 // describes. Untyped functions are conservatively left out (stay in the
-// existing heap over-approximation) since there is no signature to consult.
+// existing heap over-approximation) since there is no signature to consult --
+// no longer a correctness cliff-edge now that the alias-dup site is guarded,
+// only a missed optimization.
 export let compute_scalar_returning_names: (Array[Stmt]) -> Array[String] = (stmts) -> {
   let out: Array[String] = [
   ]

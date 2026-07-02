@@ -265,19 +265,6 @@ let emit_rc_value_ptr_i32: (Bytes, Int, Bool) -> Unit = (buf, local_idx, tagged)
   emit_i32_wrap_i64(buf)
 }
 
-let emit_rc_dup_local: (Bytes, Int, Bool) -> Unit = (buf, local_idx, tagged) -> {
-  emit_rc_value_ptr_i32(buf, local_idx, tagged)
-  emit_i32_const(buf, 4)
-  emit_i32_sub(buf)
-  emit_rc_value_ptr_i32(buf, local_idx, tagged)
-  emit_i32_const(buf, 4)
-  emit_i32_sub(buf)
-  emit_i32_load(buf, 2, 0)
-  emit_i32_const(buf, 1)
-  emit_i32_add(buf)
-  emit_i32_store(buf, 2, 0)
-}
-
 let emit_rc_drop_local: (Bytes, Int, Bool) -> Unit = (buf, local_idx, tagged) -> {
   emit_rc_value_ptr_i32(buf, local_idx, tagged)
   emit_i32_const(buf, 4)
@@ -382,7 +369,19 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
           rc_kind = 2
           Array::push(ctx.heap_binding_names, name)
           if array_contains_str(ctx.rc_alias_dup_names, name) {
-            emit_rc_dup_local(buf, local_idx, true)
+            // #709 follow-up: `src` landing in heap_binding_names is a
+            // classification heuristic (ECall scalar-return coverage is a
+            // finite whitelist + signature-based inference; see
+            // perceus/index.vibe's compute_scalar_returning_names doc), not a
+            // proof. A misclassified scalar aliased a 2nd+ time reaches here;
+            // the old unguarded emit_rc_dup_local blindly treated its numeric
+            // value as a heap pointer minus 4 and read/wrote that address,
+            // corrupting arbitrary low memory instead of crashing immediately
+            // -- exactly the "free-list corruption with no local cause" shape
+            // seen in #709's second, hard-to-localize crash. Every other dup
+            // call site already uses the runtime-tag-checked guarded version;
+            // this was the one remaining unguarded increment.
+            emit_rc_dup_guarded(buf, local_idx)
           } else {
             ()
           }
@@ -419,8 +418,46 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
         // object at all). Skipping heap_binding_names here is required, not
         // just an optimization: see CompileCtx.scalar_ret_names' doc comment
         // for the memory-OOB crash a misclassified scalar alias causes.
+        //
+        // #709: ctx.scalar_ret_names only covers USER-DEFINED functions (via
+        // compute_scalar_returning_names, which walks declared `-> T`
+        // signatures). A BUILTIN with a provably scalar return type --
+        // `Array::length`/`Bytes::length`/`String::length`/`Map::has_key`, the
+        // scalar comparison/arithmetic builtins (`eq`/`not`/`add`/`sub`/`mul`/
+        // `lt`) -- fell through the same gap: neither borrow-ret nor
+        // scalar-ret, so `let n = Array::length(arr)` got heap_binding_names'd
+        // despite `n` being a plain tagged Int. A later guarded rc_dup/drop on
+        // `n` then untags-and-derefs a small integer as if it were a heap
+        // pointer -- for a small count like an array length, that reads/writes
+        // near a tiny address, a `memory access out of bounds` trap (not a
+        // leak). Recognize the same well-known scalar-returning builtins here.
+        //
+        // #709/#717 follow-up: the bare, unqualified names in that list
+        // ("add"/"sub"/"mul"/"lt"/"eq"/"not") are also legal USER-DEFINED
+        // top-level function names, and vibe lets a user definition shadow
+        // the scalar-arithmetic intrinsic of the same name -- compile_call.vibe
+        // already accounts for this at the CALL site (`prefer_bound_call`,
+        // gating the inline-intrinsic dispatch on the name NOT resolving to a
+        // registered function/local), but this classification never checked
+        // it, so `let s = add(x, y)` for a user `add: (MySet, String) ->
+        // MySet` was misread as the scalar intrinsic and never registered in
+        // heap_binding_names -- silently skipping the rc_dup this binding
+        // needed for its second owning use, leaving a live reference
+        // unbacked and eventually decrementing a free-list node past zero
+        // (set.vibe's own `add`/`contains`/`remove` hit exactly this; #717's
+        // minimal repro). A registered top-level function of that exact name
+        // means it's the user's, not the intrinsic -- defer to
+        // ctx.scalar_ret_names (which correctly reads that function's own
+        // signature) instead of guessing from the bare name.
+        let is_builtin_scalar_ret = if is_eident(callee) {
+          let cn = get_eident_name(callee)
+          let is_user_shadowed = array_contains_str(ctx.func_table.names, cn)
+          !is_user_shadowed && (cn == "Array::length" || cn == "Bytes::length" || cn == "String::length" || cn == "Map::has_key" || cn == "Array::contains" || cn == "eq" || cn == "not" || cn == "add" || cn == "sub" || cn == "mul" || cn == "lt")
+        } else {
+          false
+        }
         let is_scalar_ret = if is_eident(callee) {
-          array_contains_str(ctx.scalar_ret_names, get_eident_name(callee))
+          array_contains_str(ctx.scalar_ret_names, get_eident_name(callee)) || is_builtin_scalar_ret
         } else {
           false
         }
@@ -484,6 +521,36 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     } else {
       ()
     }
+    // #712: this `let` may SHADOW an outer loop-borrowed identifier of the same
+    // name (e.g. `while ... { let x = ...; f(x) }` rebinding `x` inside a loop
+    // whose header already loop-borrowed an outer `x`, #706). cc_is_loop_borrowed_ident
+    // (compile_call.vibe) matches by NAME ONLY, so without this an owning call on
+    // the INNER `x` would be mistaken for a reference to the OUTER loop-carried
+    // one -- a spurious rc_dup now, and (via loop_consumed_names) a spurious extra
+    // epilogue rc_drop for a parameter this `let` never touches. Mask every
+    // existing occurrence of `name` out of loop_borrowed_names for exactly the
+    // scope of `body`, then restore the same count after; membership is all
+    // `array_contains_str` ever tests, so compacting out of order is safe.
+    let mut lb_shadow_removed = 0
+    if ctx.enable_rc {
+      let lb_arr = ctx.loop_borrowed_names
+      let lb_n = Array::length(lb_arr)
+      let mut lb_w = 0
+      let mut lb_i = 0
+      while lb_i < lb_n {
+        let e = Array::get(lb_arr, lb_i)
+        if e == name {
+          lb_shadow_removed = lb_shadow_removed + 1
+        } else {
+          Array::set(lb_arr, lb_w, e)
+          lb_w = lb_w + 1
+        }
+        lb_i = lb_i + 1
+      }
+      Array::truncate(lb_arr, lb_w)
+    } else {
+      ()
+    }
     // #708 follow-up: scope `name` into loop_borrowed_names for exactly the
     // extent of `body`'s compilation (push before, truncate after), so a bare
     // later reference to a borrow-bound name gets the same retain-before-
@@ -501,6 +568,13 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
       Array::truncate(ctx.loop_borrowed_names, lb_mark)
     } else {
       ()
+    }
+    // #712: restore the shadow-masked occurrences now that `body` (the only
+    // scope where `name` shadows the outer loop-borrowed binding) is compiled.
+    let mut lb_restore_i = 0
+    while lb_restore_i < lb_shadow_removed {
+      Array::push(ctx.loop_borrowed_names, name)
+      lb_restore_i = lb_restore_i + 1
     }
     if ctx.enable_rc && rc_kind > 0 && array_contains_str(ctx.rc_drop_names, name) {
       if ctx.rc_drop_func_idx >= 0 && scope_tail_proj_root(body) == name {

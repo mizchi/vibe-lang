@@ -17,7 +17,7 @@ import .. / .. / .. / core / ast.vibe {
 }
 
 import .. / .. / .. / module_graph_path.vibe {
-  contains_path, dir_of_path, path_to_module_name, resolve_import_path
+  contains_name, dir_of_path, path_to_module_name, resolve_import_path
 }
 
 import .. / .. / .. / syntax / lexer.vibe {
@@ -62,39 +62,92 @@ let append_stmt_array: (Array[Stmt], Array[Stmt]) -> Unit = (dst, src) -> {
   }
 }
 
-// Dedup is via `contains_path` (linear, see module_graph_path.vibe). The
+// Dedup is via a linear scan (`dep_path_names_for` below). The
 // dedup MUST preserve first-occurrence order: `dep_paths` order flows
 // into `linked_imports` and then into wasm import-section indices, so a
 // sort/reorder here would change the emitted binary. D (a single entry's
 // unique imports) is small, so the O(D^2) scan is bounded (#533, #366).
-let collect_direct_dep_paths: (Array[Stmt], String) -> Array[String] = (entry_stmts, entry_dir) -> {
+//
+// #711: also returns, per unique dep path (same order/index as `dep_paths`),
+// the union of names the entry file actually imports/re-exports from that
+// path (`dep_wanted_names[i]`). Without this, `collect_linked_dep_artifacts`
+// registered EVERY exported top-level function of a linked file into
+// `linked_imports` -- not just the ones this entry file references -- so an
+// unrelated same-named function anywhere in the dependency graph (`eq`,
+// `add`, `not`, ...) polluted the flat `func_table.names` this entry's
+// codegen scans, making `prefer_bound_call` a global-namespace check instead
+// of a caller-scoped one (false-positive shadowing, e.g. leb128's bare
+// scalar `eq` mistakenly routed to a bound-call fallback).
+let collect_direct_dep_paths: (Array[Stmt], String) -> (Array[String], Array[Array[String]]) = (entry_stmts, entry_dir) -> {
   let dep_paths = Array::slice([
     ""
   ], 0, 0)
+  let dep_wanted_names = Array::slice([
+    Array::slice([
+      ""
+    ], 0, 0)
+  ], 0, 0)
+  let dep_path_names_for: (String) -> Array[String] = (resolved) -> {
+    let mut fi = 0
+    let mut idx = -1
+    while fi < Array::length(dep_paths) {
+      if Array::get(dep_paths, fi) == resolved {
+        idx = fi
+        fi = Array::length(dep_paths)
+      } else {
+        fi = fi + 1
+      }
+    }
+    if idx < 0 {
+      let fresh = Array::slice([
+        ""
+      ], 0, 0)
+      Array::push(dep_paths, resolved)
+      Array::push(dep_wanted_names, fresh)
+      fresh
+    } else {
+      Array::get(dep_wanted_names, idx)
+    }
+  }
   let mut ei = 0
   while ei < Array::length(entry_stmts) {
     match Array::get(entry_stmts, ei) {
       SImport(raw_path, items) => if Array::length(items) > 0 {
         let resolved = resolve_import_path(entry_dir, raw_path)
-        if !contains_path(dep_paths, resolved) {
-          Array::push(dep_paths, resolved)
+        let names = dep_path_names_for(resolved)
+        let mut ii = 0
+        while ii < Array::length(items) {
+          let (iname, _) = Array::get(items, ii)
+          Array::push(names, iname)
+          ii = ii + 1
         }
       }
       ,
-      SReExport(raw_path, _) => {
+      SReExport(raw_path, items) => {
         let resolved = resolve_import_path(entry_dir, raw_path)
-        if !contains_path(dep_paths, resolved) {
-          Array::push(dep_paths, resolved)
+        let names = dep_path_names_for(resolved)
+        let mut ii = 0
+        while ii < Array::length(items) {
+          let (iname, _) = Array::get(items, ii)
+          Array::push(names, iname)
+          ii = ii + 1
         }
       },
       _ => ()
     }
     ei = ei + 1
   }
-  dep_paths
+  (dep_paths, dep_wanted_names)
 }
 
-let collect_linked_dep_artifacts: (Array[String]) -> (Array[Stmt], Array[(String, String, Int, Int)], Array[(String, String)]) with { Error, Fs } = (dep_paths) -> {
+// #711: `wanted_names[i]` (parallel to `dep_paths[i]`) restricts which of
+// `dep_paths[i]`'s own exported top-level names get registered into
+// `linked_imports` -- only the names the ENTRY file actually imports/
+// re-exports from that path, not every export the file happens to have.
+// A `SReExport` found INSIDE a dep file (that file itself re-exporting a
+// third file) is filtered the same way before recursing, so a transitive
+// re-export chain cannot re-introduce an unwanted name either.
+let collect_linked_dep_artifacts: (Array[String], Array[Array[String]]) -> (Array[Stmt], Array[(String, String, Int, Int)], Array[(String, String)]) with { Error, Fs } = (dep_paths, wanted_names) -> {
   let linked_imports = Array::slice([
     ("", "", 0, 0)
   ], 0, 0)
@@ -110,21 +163,46 @@ let collect_linked_dep_artifacts: (Array[String]) -> (Array[Stmt], Array[(String
     let dep_stmts = read_program(dep_path)
     let module_name = path_to_module_name(dep_path)
     let dep_dir = dir_of_path(dep_path)
+    let wanted = Array::get(wanted_names, di)
     let mut has_linked = false
     let mut dsi = 0
     while dsi < Array::length(dep_stmts) {
       match Array::get(dep_stmts, dsi) {
         SLet(true, _, name, _, expr) => {
           let param_count = efn_param_count(expr)
-          if param_count >= 0 {
+          if param_count >= 0 && contains_name(wanted, name) {
             Array::push(linked_imports, (module_name, name, param_count, 1))
             has_linked = true
           }
         },
         SReExport(raw_path, items) => {
-          let resolved = resolve_import_path(dep_dir, raw_path)
-          resolve_reexport_chain(resolved, items, module_name, linked_imports, resolved_type_stmts, 0)
-          has_linked = true
+          let filtered = Array::slice([
+            ("", None)
+          ], 0, 0)
+          let mut fi2 = 0
+          while fi2 < Array::length(items) {
+            let (iname, irename) = Array::get(items, fi2)
+            // #711 regression (Codex review on #718): `wanted` holds the
+            // names the ENTRY imports, i.e. the PUBLIC alias this dep_path
+            // exposes (`export ./inner.vibe { foo as bar }` makes `bar` the
+            // public name) -- not `iname`, which is the name as declared in
+            // the re-exported file. Filtering on `iname` alone silently drops
+            // every aliased re-export before `resolve_reexport_chain` gets a
+            // chance to translate it via `irename`.
+            let public_name = match irename {
+              Some(alias) => alias,
+              None => iname
+            }
+            if contains_name(wanted, public_name) {
+              Array::push(filtered, (iname, irename))
+            }
+            fi2 = fi2 + 1
+          }
+          if Array::length(filtered) > 0 {
+            let resolved = resolve_import_path(dep_dir, raw_path)
+            resolve_reexport_chain(resolved, filtered, module_name, linked_imports, resolved_type_stmts, 0)
+            has_linked = true
+          }
         },
         SEnum(true, _, _, _, _) => Array::push(resolved_type_stmts, Array::get(dep_stmts, dsi))
         ,
@@ -142,8 +220,8 @@ let collect_linked_dep_artifacts: (Array[String]) -> (Array[Stmt], Array[(String
 
 export let collect_linked_compile_inputs: (String) -> (Array[Stmt], Array[Stmt], Array[(String, String, Int, Int)], Array[(String, String)]) with { Error, Fs } = (entry_path) -> {
   let entry_stmts = read_program(entry_path)
-  let dep_paths = collect_direct_dep_paths(entry_stmts, dir_of_path(entry_path))
-  let (resolved_type_stmts, linked_imports, linked_dep_specs) = collect_linked_dep_artifacts(dep_paths)
+  let (dep_paths, dep_wanted_names) = collect_direct_dep_paths(entry_stmts, dir_of_path(entry_path))
+  let (resolved_type_stmts, linked_imports, linked_dep_specs) = collect_linked_dep_artifacts(dep_paths, dep_wanted_names)
   (entry_stmts, resolved_type_stmts, linked_imports, linked_dep_specs)
 }
 
