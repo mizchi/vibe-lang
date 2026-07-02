@@ -119,6 +119,27 @@ test "collect_linked_compile_inputs: does not register a dep's unimported export
   assert(func_name == "add")
 }
 
+// #718 review (Codex): `lib.vibe` re-exports `inner.vibe`'s `foo` under the
+// public alias `bar`. The entry imports `bar` (the public name), so `wanted`
+// contains "bar" while the re-export's own declared name is "foo" -- the
+// filter must match the PUBLIC alias, not the pre-rename declared name, or
+// this dep gets silently dropped from `linked_imports`.
+test "collect_linked_compile_inputs: resolves an aliased re-export the entry imports by its public name" {
+  let base_dir = "/tmp/vibe_compiler_linked_inputs_reexport_alias"
+  let inner_path = String::concat(base_dir, "/inner.vibe")
+  let lib_path = String::concat(base_dir, "/lib.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(inner_path, string_to_bytes("export let foo: (Int, Int) -> Int = (a, b) -> { a + b }\n"))
+  Fs::write_bytes(lib_path, string_to_bytes("export ./inner.vibe { foo as bar }\n"))
+  Fs::write_bytes(main_path, string_to_bytes("import ./lib.vibe { bar }\nlet _start: () -> Int = () -> { bar(1, 2) }\n"))
+  let (_, _, linked_imports, _) = collect_linked_compile_inputs(main_path)
+  assert(Array::length(linked_imports) == 1)
+  let (module_name, func_name, _, _) = Array::get(linked_imports, 0)
+  assert(module_name == "lib")
+  assert(func_name == "bar")
+}
+
 test "compile_file_wasi_only: simple file produces valid WASM" {
   let base_dir = "/tmp/vibe_compiler_wasi_only"
   let main_path = String::concat(base_dir, "/main.vibe")
