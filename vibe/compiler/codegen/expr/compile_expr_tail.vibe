@@ -517,6 +517,28 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
         } else {
           ()
         }
+      } else if expr_tag(value) == 7 {
+        // #715: `let x = if cond { a } else { b }` fell all the way through
+        // this shape-based classification chain (tuple/array/record/ctor
+        // call/EDot/EFn all explicitly handled above) to the silent default
+        // `else { () }`, leaving rc_kind at 0. Since rc_kind gates the ENTIRE
+        // dup-emission loop just below (`if ctx.enable_rc && rc_kind > 0`),
+        // an if/else-valued let NEVER got any of its planned dups emitted at
+        // its declaration site, no matter how many `PaDup` actions the
+        // Perceus plan (perceus/index.vibe) computed for its name -- the
+        // plan and the actual generated code silently disagreed. A binding
+        // used more than once (e.g. `let __bi_expr = if enable_rc {...} else
+        // {...}`, then passed to several accessor calls later) would have 1
+        // reference but N planned consumers, each dropping it via their own
+        // internal parameter cleanup: the first consumer's drop is real, the
+        // second is a same-address double-free (#715's exact signature).
+        // Treat it the same as EDot/ctor-call above: conservatively heap
+        // (the guarded rc_dup/rc_drop already no-op on a genuinely scalar
+        // value, so over-including here is safe, matching the existing
+        // "leak/no-op at worst, never corrupt" design used throughout this
+        // file -- see the is_borrow_ret/is_scalar_ret comments above).
+        rc_kind = 2
+        Array::push(ctx.heap_binding_names, name)
       } else {
         ()
       }
