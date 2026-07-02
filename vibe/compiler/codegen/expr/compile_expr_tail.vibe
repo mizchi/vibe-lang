@@ -265,19 +265,6 @@ let emit_rc_value_ptr_i32: (Bytes, Int, Bool) -> Unit = (buf, local_idx, tagged)
   emit_i32_wrap_i64(buf)
 }
 
-let emit_rc_dup_local: (Bytes, Int, Bool) -> Unit = (buf, local_idx, tagged) -> {
-  emit_rc_value_ptr_i32(buf, local_idx, tagged)
-  emit_i32_const(buf, 4)
-  emit_i32_sub(buf)
-  emit_rc_value_ptr_i32(buf, local_idx, tagged)
-  emit_i32_const(buf, 4)
-  emit_i32_sub(buf)
-  emit_i32_load(buf, 2, 0)
-  emit_i32_const(buf, 1)
-  emit_i32_add(buf)
-  emit_i32_store(buf, 2, 0)
-}
-
 let emit_rc_drop_local: (Bytes, Int, Bool) -> Unit = (buf, local_idx, tagged) -> {
   emit_rc_value_ptr_i32(buf, local_idx, tagged)
   emit_i32_const(buf, 4)
@@ -382,7 +369,19 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
           rc_kind = 2
           Array::push(ctx.heap_binding_names, name)
           if array_contains_str(ctx.rc_alias_dup_names, name) {
-            emit_rc_dup_local(buf, local_idx, true)
+            // #709 follow-up: `src` landing in heap_binding_names is a
+            // classification heuristic (ECall scalar-return coverage is a
+            // finite whitelist + signature-based inference; see
+            // perceus/index.vibe's compute_scalar_returning_names doc), not a
+            // proof. A misclassified scalar aliased a 2nd+ time reaches here;
+            // the old unguarded emit_rc_dup_local blindly treated its numeric
+            // value as a heap pointer minus 4 and read/wrote that address,
+            // corrupting arbitrary low memory instead of crashing immediately
+            // -- exactly the "free-list corruption with no local cause" shape
+            // seen in #709's second, hard-to-localize crash. Every other dup
+            // call site already uses the runtime-tag-checked guarded version;
+            // this was the one remaining unguarded increment.
+            emit_rc_dup_guarded(buf, local_idx)
           } else {
             ()
           }
