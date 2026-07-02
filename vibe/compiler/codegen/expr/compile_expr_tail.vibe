@@ -803,6 +803,33 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
       }
       let nl = compile_expr(buf, value, local_names, next_local + 1, ctx, ld)
       emit_local_set(buf, local_idx)
+      // #715: the ELet path (tag 9) emits every dup the Perceus plan budgeted
+      // for a binding (ctx.rc_dup_names) at its declaration site -- this
+      // ELetMut path never did, while the matching scope-end drop below DID
+      // fire. A `let mut found = None; while .. { match found { .. } }; found`
+      // accumulator (checker_effects.vibe's lookup_fn_effs) gets a planned
+      // dup from the #706 borrow-retention bump (the bare `match found`
+      // borrow) plus a planned scope-end drop; with the dup silently skipped,
+      // the tail-returned Option's only reference was consumed by the return
+      // AND by the drop -- the caller's lifted `__m_scrut_N` scrutinee then
+      // recursively re-dropped the freed block (byte-exact double-free
+      // confirmed by the drop-site-stamped shadow diagnostic: first free at
+      // this branch's scope-end drop, second inside
+      // check_perform_effects_expr_tx). The guarded dup no-ops on scalars, so
+      // over-emission for a scalar-planned name is harmless.
+      if ctx.enable_rc {
+        let mut mdbi = 0
+        while mdbi < Array::length(ctx.rc_dup_names) {
+          if Array::get(ctx.rc_dup_names, mdbi) == name {
+            emit_rc_dup_guarded(buf, local_idx)
+          } else {
+            ()
+          }
+          mdbi = mdbi + 1
+        }
+      } else {
+        ()
+      }
       let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
       if ctx.enable_rc && array_contains_str(ctx.heap_binding_names, name) && array_contains_str(ctx.rc_drop_names, name) && ctx.rc_drop_func_idx >= 0 {
         if scope_tail_proj_root(body) == name {
@@ -870,6 +897,33 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
         emit_local_set(buf, idx)
         if is_heap_mut && !is_self && is_edot(value) {
           emit_rc_dup_guarded(buf, idx)
+        } else {
+          ()
+        }
+        // #715: the Perceus plan's dup budget for a `let mut` binding
+        // (ctx.rc_dup_names occurrences) is applied ONCE, to the INITIAL value
+        // at the declaration site -- but the scope-end drop and every
+        // remaining owning use consume the binding's CURRENT value. After a
+        // reassignment, the freshly stored value carries only its own single
+        // reference; without re-applying the budget here, the tail use plus
+        // the scope-end drop over-consume it by exactly the planned dup count
+        // (checker_effects.vibe's lookup_fn_effs: `let mut found = None;
+        // ... found = Some(..) ...; found` -- the returned Some was freed by
+        // the binding's scope-end drop while the caller still held it; the
+        // #706 borrow-retention bump from the bare `match found` is what put
+        // the +1 in the budget). Worst case this over-retains (a leak) when
+        // part of the budget was already spent before the reassign -- the
+        // codebase-wide "leak/no-op at worst, never corrupt" trade.
+        if ctx.enable_rc && is_heap_mut && !is_self {
+          let mut adbi = 0
+          while adbi < Array::length(ctx.rc_dup_names) {
+            if Array::get(ctx.rc_dup_names, adbi) == name {
+              emit_rc_dup_guarded(buf, idx)
+            } else {
+              ()
+            }
+            adbi = adbi + 1
+          }
         } else {
           ()
         }
