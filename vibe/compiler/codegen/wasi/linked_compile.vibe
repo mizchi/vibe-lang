@@ -2184,7 +2184,22 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
           dn_pi = dn_pi + 1
         }
       } else {
-        ()
+        // #715: `dn_expr` is a fresh per-iteration owned binding (like
+        // `__bi_expr` in the main codegen loop above), and -- unlike
+        // `__bi_expr` -- `is_efn(dn_expr)` is NOT overwhelmingly true here:
+        // `fn_stmt_indices` legitimately mixes real functions with non-
+        // function "thunk" entries (constant initializers), so this `else`
+        // is a common, not rare, runtime path. An empty `else { () }` uses
+        // `dn_expr` zero times while `then` uses it once (via
+        // `get_efn_params`), so `pc_emit`'s EIf MIN-merge (#705) permanently
+        // carries the `then`-consumed (lower) remaining forward even on the
+        // iterations that really take this branch -- the loop-body scope-end
+        // drop for `dn_expr` is then skipped based on that borrowed count,
+        // leaking `dn_expr` on every thunk entry. Call `is_efn` again here,
+        // discarding the result, purely to consume `dn_expr` exactly once --
+        // matching `then`'s single consuming use so both branches leave the
+        // same remaining count and the plan's assumption holds either way.
+        is_efn(dn_expr)
       }
       bytebuf_push(dn_content, 10)
       dnfi = dnfi + 1
