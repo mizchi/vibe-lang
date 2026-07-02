@@ -1442,9 +1442,22 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     // `is_efn(__bi_expr)`-gated branches all have `is_efn(__bi_expr)` true on
     // effectively every real program, so their MIN-selected branch already
     // matches the branch actually taken).
+    // #715: `get_slet_type(__bi_stmt)` hoisted out of the `is_efn(__bi_expr)`
+    // `then` branch and computed here, unconditionally -- previously it was
+    // the ONLY use of `__bi_stmt` inside this specific `if`'s `then` branch
+    // (the `else` branch, `Array::slice([("",None)],0,0)`, never touches
+    // `__bi_stmt`), and `__bi_expr` is NOT an EFn for every `bi` iteration:
+    // `fn_names_list`/`fn_stmt_indices` also carry thunk entries (see the
+    // classification loop above), so the `else` path here is a real, common
+    // occurrence, not a rare edge case. Same leak mechanism as the
+    // `lc_norm_params`/`__bi_body`/`dn_expr`/classification-loop fixes above
+    // -- `pc_emit`'s EIf MIN-merge (#705) otherwise permanently assumes the
+    // `then`-branch's higher `__bi_stmt` consumption even on thunk (`else`)
+    // iterations, leaking `__bi_stmt` (a heap Stmt node) on each one.
+    let __sf_slet_type = get_slet_type(__bi_stmt)
     let lc_norm_params = if is_efn(__bi_expr) {
       let ps = get_efn_params(__bi_expr)
-      let sig_args_raw = fn_type_param_types(get_slet_type(__bi_stmt))
+      let sig_args_raw = fn_type_param_types(__sf_slet_type)
       let single_tuple_param = match sig_args_raw {
         Some(a) => Array::length(ps) == 1 && Array::length(a) > 1,
         None => false
@@ -1484,6 +1497,10 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       }
       np
     } else {
+      // #715: alias `__sf_slet_type` once here too, matching `then`'s single
+      // use (via `fn_type_param_types`) now that it is hoisted above -- see
+      // that binding's doc comment.
+      let __sf_lnp_ty = __sf_slet_type
       Array::slice([
         ("", None)
       ], 0, 0)
