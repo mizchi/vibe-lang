@@ -451,7 +451,22 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
         // signature) instead of guessing from the bare name.
         let is_builtin_scalar_ret = if is_eident(callee) {
           let cn = get_eident_name(callee)
-          let is_user_shadowed = array_contains_str(ctx.func_table.names, cn)
+          // #719 review (Codex): `ctx.func_table.names` also contains the
+          // compiler's OWN always-registered builtin entries -- unlike
+          // "add"/"sub"/"mul"/"lt"/"not"/"Map::has_key"/"Array::contains"
+          // (pure inline intrinsics with no backing function unless a user
+          // defines one), "Array::length"/"Bytes::length"/"String::length"/
+          // "eq" are unconditionally pushed into fn_names_list/func_table for
+          // EVERY compile (see linked_compile.vibe's builtin_names_list), and
+          // a top-level `let` can never define a name containing `::` anyway.
+          // Treating their mere presence in func_table.names as "shadowed"
+          // made `is_user_shadowed` true unconditionally for these four,
+          // silently reverting #709's original fix (Array::length/eq calls
+          // misclassified as heap again). Only the names that can actually
+          // be absent (and thus meaningfully shadowed by a user definition)
+          // need the guard.
+          let is_always_registered = cn == "Array::length" || cn == "Bytes::length" || cn == "String::length" || cn == "eq"
+          let is_user_shadowed = !is_always_registered && array_contains_str(ctx.func_table.names, cn)
           !is_user_shadowed && (cn == "Array::length" || cn == "Bytes::length" || cn == "String::length" || cn == "Map::has_key" || cn == "Array::contains" || cn == "eq" || cn == "not" || cn == "add" || cn == "sub" || cn == "mul" || cn == "lt")
         } else {
           false
