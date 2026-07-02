@@ -1511,17 +1511,28 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       ""
     ], 0, 0)
     let lc_heap_params = lc_fresh_string_array()
+    // #715: computed once, unconditionally (regardless of `enable_rc`), and
+    // reused below both for the Perceus plan and for the actual codegen call
+    // to `compile_expr` -- instead of a separate `get_efn_body(__bi_expr)`
+    // call under `enable_rc` (as `fbody`) AND another one further down (as
+    // `body`, inside the `is_efn(__bi_expr)` block). Each independent
+    // `get_efn_body(__bi_expr)`/`get_efn_params(__bi_expr)` call is a real
+    // additional owning "use" of `__bi_expr` for Perceus's purposes (neither
+    // is registered in `is_borrow_arg0_call`), inflating the dup budget
+    // `__bi_expr` statically needs. See the `lc_norm_params` doc comment
+    // above (the same redundant-call pattern, already fixed once for
+    // `get_efn_params`) for the full double-free mechanism this avoids.
+    let __bi_body = if is_efn(__bi_expr) {
+      get_efn_body(__bi_expr)
+    } else {
+      __bi_expr
+    }
     if enable_rc {
-      let fbody = if is_efn(__bi_expr) {
-        get_efn_body(__bi_expr)
-      } else {
-        __bi_expr
-      }
-      let plan = build_perceus_plan_with_params(lc_norm_params, fbody, lc_borrow_ret_names)
+      let plan = build_perceus_plan_with_params(lc_norm_params, __bi_body, lc_borrow_ret_names)
       let mut lhpi = 0
       while lhpi < Array::length(lc_norm_params) {
         let (lhpn, lhpt) = Array::get(lc_norm_params, lhpi)
-        if param_is_heap_in_body(lhpn, lhpt, fbody) {
+        if param_is_heap_in_body(lhpn, lhpt, __bi_body) {
           Array::push(lc_heap_params, lhpn)
         } else {
           ()
@@ -1606,23 +1617,19 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       scalar_ret_names: lc_scalar_ret_names
     }
     if is_efn(__bi_expr) {
-      let __bi_params = get_efn_params(__bi_expr)
-      let body = get_efn_body(__bi_expr)
+      // #715: `lc_norm_params` (built above from `get_efn_params(__bi_expr)`)
+      // already carries each parameter's `~`/`?`-stripped name in `.0` --
+      // reuse it instead of a second `get_efn_params(__bi_expr)` call plus a
+      // duplicate stripping pass (see the `__bi_body` doc comment above).
+      let body = __bi_body
       let mut pi = 0
-      while pi < Array::length(__bi_params) {
-        let (pname_raw, _) = Array::get(__bi_params, pi)
-        let pnl2 = String::length(pname_raw)
-        let pname = if pnl2 > 0 {
-          let plc2 = String::char_code_at(pname_raw, pnl2 - 1)
-          if plc2 == '~' || plc2 == '?' {
-            pname_raw[0: pnl2 - 1]
-          } else pname_raw
-        } else pname_raw
+      while pi < Array::length(lc_norm_params) {
+        let (pname, _) = Array::get(lc_norm_params, pi)
         Array::push(local_names, pname)
         pi = pi + 1
       }
       Array::push(local_names, "__env")
-      let param_count = Array::length(__bi_params) + 1
+      let param_count = Array::length(lc_norm_params) + 1
       if enable_rc {
         let mut edi = 0
         while edi < Array::length(lc_norm_params) {
