@@ -516,6 +516,29 @@ input
   |> Array::map(_, parse_int)
 ```
 
+## Conditional Compilation (`#cfg`)
+
+```vibe
+#cfg(dev)
+let debug_dump = (x) -> { ... }   // exists ONLY when the `dev` flag is active
+
+#cfg(dev)
+let main = () -> Int { debug_dump(run()) }
+
+#cfg(release)
+let main = () -> Int { run() }
+```
+
+- Activate flags at compile time: `VIBE_CFG=dev vibe build app.vibe` (comma-separated for multiple).
+- A `#cfg(flag)` statement whose flag is inactive is parsed (syntax must stay valid, like Rust's `cfg`) and **dropped before checking/codegen** — zero bytes in the output binary.
+- Top-level statements only (`let` / `enum` / `struct` / `impl` / ...).
+- `vibe fmt` / normalize refuses `#cfg` sources (formatting would delete disabled code).
+- Not usable inside the compiler's own source until the seed compiler understands it (see docs/selfhost-bootstrap.md).
+
+## RC Debug Mode (`VIBE_RC=shadow`)
+
+`VIBE_RC=shadow vibe build app.vibe` compiles on the Perceus RC path with **shadow-liveness instrumentation**: every freed heap block is marked in a shadow byte table, and the FIRST `rc_dup`/`rc_drop` touching a freed block executes `unreachable` — a deterministic trap at the faulting operation, instead of free-list corruption that crashes later at an unrelated location ("moving target", see issue #715). Debug-only: adds a memory pad + per-dup/drop checks. Normal builds (`VIBE_RC=1`/unset) are byte-identical to before this feature.
+
 ## File Conventions
 
 | File | Purpose |

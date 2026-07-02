@@ -1,7 +1,7 @@
 //# Imports
 
 import ./entry / source_compile / wasi_only / preprocess.vibe {
-  compile_source_wasi_only, compile_source_wasi_only_coverage, compile_source_wasi_only_rc
+  compile_source_wasi_only, compile_source_wasi_only_coverage, compile_source_wasi_only_rc, compile_source_wasi_only_rc_shadow
 }
 
 import ./runtime / module_source.vibe {
@@ -171,12 +171,40 @@ let profile_memory_mark: (Bool) -> Unit with { Env } = (enabled) -> {
   }
 }
 
+// #cfg activation: VIBE_CFG=flag1,flag2 appends `#cfg_enable(flag)` directive
+// lines to the source (appending at the END keeps every original byte offset,
+// so diagnostics/spans are unaffected). parse_program pre-scans for these and
+// keeps the matching `#cfg(flag)` statements; with VIBE_CFG unset, every
+// #cfg-guarded statement is parsed-and-dropped -- zero bytes in the output.
+let apply_cfg_env: (String, String) -> String = (source, cfg_csv) -> {
+  if cfg_csv == "" {
+    source
+  } else {
+    let parts = String::split(cfg_csv, ",")
+    let mut out = source
+    let mut i = 0
+    while i < Array::length(parts) {
+      let flag = String::trim(Array::get(parts, i))
+      if String::length(flag) > 0 {
+        out = String::concat(out, String::concat("\n#cfg_enable(", String::concat(flag, ")")))
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    out
+  }
+}
+
 let compile_source_for_rc_flag: (String, String, String) -> Bytes with { Error } = (source, entry_name, rc_flag) -> {
   // ADR-0055 #493 cutover: the Perceus RC codegen (memory-reclaiming linear
   // backend) is the DEFAULT; set VIBE_RC=0 to opt back into the legacy bump
   // path. The compiler self-build, bootstrap, and bump-baseline gates pin
   // VIBE_RC=0 (see scripts/*.sh) so they stay byte-identical on bump.
-  if rc_flag != "0" {
+  if rc_flag == "shadow" {
+    // #715 recurrence guard: RC codegen + shadow-liveness traps (debug builds).
+    compile_source_wasi_only_rc_shadow(source, entry_name)
+  } else if rc_flag != "0" {
     compile_source_wasi_only_rc(source, entry_name)
   } else {
     compile_source_wasi_only(source, entry_name)
@@ -342,12 +370,14 @@ export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
     // the selfbuild/bootstrap/e2e gates exercise the whole compiler under RC.
     handle {
       let rc_flag = Env::get("VIBE_RC")
+      // #cfg: activate compile-time flags from VIBE_CFG (see apply_cfg_env).
+      let source_cfg = apply_cfg_env(source, Env::get("VIBE_CFG"))
       // #cov: function-level coverage build (same source pipeline, instrumented
       // codegen). Running the produced wasm records which compiler functions ran.
       let bytes = if Env::get("VIBE_COVERAGE") == "1" {
-        compile_source_wasi_only_coverage(source, entry_name)
+        compile_source_wasi_only_coverage(source_cfg, entry_name)
       } else {
-        compile_source_for_rc_flag(source, entry_name, rc_flag)
+        compile_source_for_rc_flag(source_cfg, entry_name, rc_flag)
       }
       profile_memory_mark(mark_memory)
       Fs::write_bytes(output_path, bytes)

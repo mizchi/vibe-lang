@@ -28,7 +28,7 @@ import ../core/dce.vibe {
 }
 
 import ../syntax/index.vibe {
-  lex, parse_program, print_stmt
+  Token, lex, parse_program, print_stmt
 }
 
 import ../syntax/import_alias_rewrite.vibe {
@@ -1059,7 +1059,19 @@ export let normalize_stmts: (Array[Stmt]) -> Array[Stmt] = (stmts) -> {
 }
 
 export let normalize_source: (String) -> String with { Error } = (src) -> {
-  let stmts = parse_program(lex(src))
+  // #cfg guard: parse_program DROPS inactive #cfg statements, so formatting
+  // a #cfg-bearing source would silently delete the disabled code from the
+  // re-printed output. Refuse instead.
+  let toks_cfg = lex(src)
+  let mut ci = 0
+  while ci < Array::length(toks_cfg) {
+    match Array::get(toks_cfg, ci) {
+      THash => throw("cannot normalize a source containing #cfg directives"),
+      _ => ()
+    }
+    ci = ci + 1
+  }
+  let stmts = parse_program(toks_cfg)
   let kept = normalize_stmts(stmts)
   let sections = empty_strs()
   let mut s = 0
