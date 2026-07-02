@@ -40,6 +40,52 @@ let ascribe_wrap: (Expr, TypeExpr) -> Expr = (val, ty) -> {
   ], 0 - 1)
 }
 
+// #705: a local `let f: (A) -> R = (x) -> ..` must behave like the top-level
+// form (parse_let_stmt / apply_generic_let_annotation): distribute the TyFn
+// annotation onto the lambda's unannotated params / ret / effect. Hiding the
+// lambda behind ascribe_wrap's `((__asc: T) -> __asc)(lam)` instead means the
+// Perceus param heap-inference (fill_lambda_params / param_is_heap_in_body)
+// never sees an annotation for the lambda's params, plans a heap param as
+// scalar, and under-provisions its rc dups -- the callee-owns drops inside the
+// body then free a still-live argument (use-after-free under VIBE_RC=1).
+// Returns None when the annotation is not a TyFn, the value is not a lambda,
+// or the arity does not match; callers fall back to ascribe_wrap (plain let)
+// or the bare value (let rec, which previously discarded the annotation).
+let distribute_local_fn_ann: (TypeExpr, Expr) -> Option[Expr] = (ann_ty, val) -> {
+  match ann_ty {
+    TyFn(param_types, ret_ty, effect_name) => match val {
+      EFn(tp, tb, params, ret_opt, effect_opt, body) => {
+        if Array::length(params) != Array::length(param_types) {
+          None
+        } else {
+          let out = ArrayBuilder::new()
+          let mut i = 0
+          while i < Array::length(params) {
+            let (pname, pann) = Array::get(params, i)
+            let next_ann = match pann {
+              Some(_) => pann,
+              None => Some(Array::get(param_types, i))
+            }
+            ArrayBuilder::push(out, (pname, next_ann))
+            i = i + 1
+          }
+          let next_ret = match ret_opt {
+            Some(_) => ret_opt,
+            None => Some(ret_ty)
+          }
+          let next_eff = match effect_opt {
+            Some(_) => effect_opt,
+            None => effect_name
+          }
+          Some(EFn(tp, tb, ArrayBuilder::freeze(out), next_ret, next_eff, body))
+        }
+      },
+      _ => None
+    },
+    _ => None
+  }
+}
+
 enum BlockStep {
   StepSeq(Expr);
   StepValue(Expr);
@@ -409,19 +455,30 @@ let parse_impl_block: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -
         match peek(tokens, next) {
           TRec => match peek(tokens, next + 1) {
             TIdent(name) => {
-              let eq_pos_r = match peek(tokens, next + 2) {
+              let (rec_ann, eq_pos_r) = match peek(tokens, next + 2) {
                 TColon => {
-                  let (_, tp) = parse_type_impl(tokens, next + 3, 0)
-                  tp
+                  let (rty, tp) = parse_type_impl(tokens, next + 3, 0)
+                  (Some(rty), tp)
                 },
-                _ => next + 2
+                _ => (None, next + 2)
               }
               let eq = expect_tk(tokens, eq_pos_r, "=")
               let (val, next_pos) = parse_block_value_only(tokens, eq, parse_recur)
               if next_pos <= eq {
                 throw("internal parser error: block let-rec parser did not advance")
               } else {
-                ArrayBuilder::push(steps, StepLetRec(name, val))
+                // #705: same TyFn-annotation distribution as the plain local
+                // let below. The annotation used to be parsed and discarded
+                // here; keep that as the fallback (no ascribe_wrap -- a
+                // wrapped value would break letrec's direct-lambda shape).
+                let val2 = match rec_ann {
+                  Some(the_type) => match distribute_local_fn_ann(the_type, val) {
+                    Some(distributed) => distributed,
+                    None => val
+                  },
+                  None => val
+                }
+                ArrayBuilder::push(steps, StepLetRec(name, val2))
                 p = next_pos
               }
             },
@@ -522,9 +579,15 @@ let parse_impl_block: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -
                     // enforce `e : T` by wrapping the value in an identity
                     // application `((__asc: T) -> __asc)(e)` whose argument check
                     // (unify_call_args) rejects a mismatch — no new AST node, and
-                    // codegen sees only ordinary EFn/ECall.
+                    // codegen sees only ordinary EFn/ECall. Exception (#705): a
+                    // TyFn annotation on a lambda value is distributed onto the
+                    // lambda itself instead (see distribute_local_fn_ann) so the
+                    // Perceus param heap-inference sees the param types.
                     let val2 = match ann_type {
-                      Some(the_type) => ascribe_wrap(val, the_type),
+                      Some(the_type) => match distribute_local_fn_ann(the_type, val) {
+                        Some(distributed) => distributed,
+                        None => ascribe_wrap(val, the_type)
+                      },
                       None => val
                     }
                     ArrayBuilder::push(steps, StepLet(name, val2))

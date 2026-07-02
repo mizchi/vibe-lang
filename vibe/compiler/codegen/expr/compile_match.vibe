@@ -337,19 +337,53 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
           emit_i32_const(buf, __ntag)
           emit_i32_eq(buf)
           let __nargs = get_pctor_args(sp)
-          let mut __nk = 0
-          while __nk < Array::length(__nargs) {
-            let __nkk = __nk
-            let __nload: () -> Unit = () -> {
-              load_field()
-              emit_i64_const(buf, -2)
-              emit_i64_and(buf)
-              emit_i32_wrap_i64(buf)
-              emit_i64_load(buf, 3, 8 + __nkk * 8)
+          // #705: payload sub-tests must NOT run when the tag test above
+          // failed. The value may be a different constructor (or a scalar)
+          // whose slot at `8 + k*8` is not a valid value of this ctor's field
+          // type; a nested tag test would dereference that garbage — a
+          // data-dependent OOB that crashed the RC-built compiler's
+          // check_expr / seed_var_types on `Some(TDEnum(..))`-style patterns.
+          // Guard the sub-tests behind the tag test with `if (result i32)`
+          // so the AND short-circuits. Binds/wildcards add no test.
+          let mut __nany = false
+          let mut __nj = 0
+          while __nj < Array::length(__nargs) {
+            let __np = Array::get(__nargs, __nj)
+            if is_pbind(__np) || is_pwild(__np) {
+              ()
+            } else {
+              __nany = true
             }
-            emit_pat_test(Array::get(__nargs, __nkk), __nload)
-            bytebuf_push(buf, 113)
-            __nk = __nk + 1
+            __nj = __nj + 1
+          }
+          if __nany {
+            bytebuf_push(buf, 4)
+            bytebuf_push(buf, 127)
+            emit_i32_const(buf, 1)
+            let mut __nk = 0
+            while __nk < Array::length(__nargs) {
+              let __nkk = __nk
+              let __np2 = Array::get(__nargs, __nkk)
+              if is_pbind(__np2) || is_pwild(__np2) {
+                ()
+              } else {
+                let __nload: () -> Unit = () -> {
+                  load_field()
+                  emit_i64_const(buf, -2)
+                  emit_i64_and(buf)
+                  emit_i32_wrap_i64(buf)
+                  emit_i64_load(buf, 3, 8 + __nkk * 8)
+                }
+                emit_pat_test(__np2, __nload)
+                bytebuf_push(buf, 113)
+              }
+              __nk = __nk + 1
+            }
+            emit_else(buf)
+            emit_i32_const(buf, 0)
+            emit_end(buf)
+          } else {
+            ()
           }
         } else if is_ptuple(sp) {
           emit_i32_const(buf, 1)
@@ -446,18 +480,42 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
           // `match stmt { SEnum(false, ...) => ... }` in the compiler's own
           // namespace pass, mis-namespacing exported enums.
           let __cargs_cond = get_pctor_args(__cond_p)
-          let mut __ck = 0
-          while __ck < Array::length(__cargs_cond) {
-            let __ckk = __ck
-            let __cload: () -> Unit = () -> {
-              emit_local_get(buf, scrut_local)
-              emit_i64_const(buf, -2)
-              emit_i64_and(buf)
-              emit_i32_wrap_i64(buf)
-              emit_i64_load(buf, 3, 8 + __ckk * 8)
+          // #705: same short-circuit guard as `emit_pat_test` — payload
+          // sub-tests only run when the arm's tag test matched, else a nested
+          // tag test dereferences a slot that is not a valid tagged value.
+          let mut __cany = false
+          let mut __cj = 0
+          while __cj < Array::length(__cargs_cond) {
+            let __cp = Array::get(__cargs_cond, __cj)
+            if is_pbind(__cp) || is_pwild(__cp) {
+              ()
+            } else {
+              __cany = true
             }
-            emit_sub_tests(Array::get(__cargs_cond, __ckk), __cload)
-            __ck = __ck + 1
+            __cj = __cj + 1
+          }
+          if __cany {
+            bytebuf_push(buf, 4)
+            bytebuf_push(buf, 127)
+            emit_i32_const(buf, 1)
+            let mut __ck = 0
+            while __ck < Array::length(__cargs_cond) {
+              let __ckk = __ck
+              let __cload: () -> Unit = () -> {
+                emit_local_get(buf, scrut_local)
+                emit_i64_const(buf, -2)
+                emit_i64_and(buf)
+                emit_i32_wrap_i64(buf)
+                emit_i64_load(buf, 3, 8 + __ckk * 8)
+              }
+              emit_sub_tests(Array::get(__cargs_cond, __ckk), __cload)
+              __ck = __ck + 1
+            }
+            emit_else(buf)
+            emit_i32_const(buf, 0)
+            emit_end(buf)
+          } else {
+            ()
           }
           emit_if_i64(buf)
           0

@@ -941,6 +941,22 @@ export let gen_arr_push_all_body: (Bool, Int, Bool) -> Bytes = (enable_rc, rc_al
     emit_i32_add(b)
     emit_i32_ne(b)
     emit_if_void(b)
+    // #715 recurrence guard (VIBE_RC=shadow): double-free check for the
+    // grown buffer -- a second free-list push of the same buffer makes two
+    // later allocations return overlapping memory (type confusion), which
+    // plain marking cannot catch. Works under quarantine too (marks are
+    // permanent).
+    if rc_shadow {
+      emit_local_get(b, 6)
+      emit_i32_const(b, rc_shadow_base())
+      emit_i32_add(b)
+      emit_i32_load8_u(b, 0, 0)
+      emit_if_void(b)
+      bytebuf_push(b, 0)
+      emit_end(b)
+    } else {
+      ()
+    }
     // #715 recurrence guard (VIBE_RC=shadow): mark the old grown buffer freed.
     if rc_shadow {
       emit_local_get(b, 6)

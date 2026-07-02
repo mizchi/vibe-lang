@@ -12300,10 +12300,10 @@ export let emit_index_one: (Bytes, CompileCtx) -> Unit = (buf, ctx) -> {
   }
 }
 export let rc_shadow_base: () -> Int = () -> {
-  20000000
+  268435456
 }
 export let rc_shadow_reserve: () -> Int = () -> {
-  25000000
+  536870912
 }
 export let emit_rc_dup_guarded: (Bytes, Int, Bool) -> Unit = (buf, local_idx, rc_shadow) -> {
   emit_local_get(buf, local_idx)
@@ -15784,6 +15784,40 @@ let ascribe_wrap: (Expr, TypeExpr) -> Expr = (val, ty) -> {
     val
   ], 0 - 1)
 }
+let distribute_local_fn_ann: (TypeExpr, Expr) -> Option[Expr] = (ann_ty, val) -> {
+  match ann_ty {
+    TyFn(param_types, ret_ty, effect_name) => match val {
+      EFn(tp, tb, params, ret_opt, effect_opt, body) => {
+        if Array::length(params) != Array::length(param_types) {
+          None
+        } else {
+          let out = ArrayBuilder::new()
+          let mut i = 0
+          while i < Array::length(params) {
+            let (pname, pann) = Array::get(params, i)
+            let next_ann = match pann {
+              Some(_) => pann,
+              None => Some(Array::get(param_types, i))
+            }
+            ArrayBuilder::push(out, (pname, next_ann))
+            i = i + 1
+          }
+          let next_ret = match ret_opt {
+            Some(_) => ret_opt,
+            None => Some(ret_ty)
+          }
+          let next_eff = match effect_opt {
+            Some(_) => effect_opt,
+            None => effect_name
+          }
+          Some(EFn(tp, tb, ArrayBuilder::freeze(out), next_ret, next_eff, body))
+        }
+      },
+      _ => None
+    },
+    _ => None
+  }
+}
 enum BlockStep {
   StepSeq(Expr);
   StepValue(Expr);
@@ -16016,19 +16050,26 @@ let parse_impl_block: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -
         match peek(tokens, next) {
           TRec => match peek(tokens, next + 1) {
             TIdent(name) => {
-              let eq_pos_r = match peek(tokens, next + 2) {
+              let (rec_ann, eq_pos_r) = match peek(tokens, next + 2) {
                 TColon => {
-                  let (_, tp) = parse_type_impl(tokens, next + 3, 0)
-                  tp
+                  let (rty, tp) = parse_type_impl(tokens, next + 3, 0)
+                  (Some(rty), tp)
                 },
-                _ => next + 2
+                _ => (None, next + 2)
               }
               let eq = expect_tk(tokens, eq_pos_r, "=")
               let (val, next_pos) = parse_block_value_only(tokens, eq, parse_recur)
               if next_pos <= eq {
                 throw("internal parser error: block let-rec parser did not advance")
               } else {
-                ArrayBuilder::push(steps, StepLetRec(name, val))
+                let val2 = match rec_ann {
+                  Some(the_type) => match distribute_local_fn_ann(the_type, val) {
+                    Some(distributed) => distributed,
+                    None => val
+                  },
+                  None => val
+                }
+                ArrayBuilder::push(steps, StepLetRec(name, val2))
                 p = next_pos
               }
             },
@@ -16126,7 +16167,10 @@ let parse_impl_block: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -
                     throw("internal parser error: block let parser did not advance")
                   } else {
                     let val2 = match ann_type {
-                      Some(the_type) => ascribe_wrap(val, the_type),
+                      Some(the_type) => match distribute_local_fn_ann(the_type, val) {
+                        Some(distributed) => distributed,
+                        None => ascribe_wrap(val, the_type)
+                      },
                       None => val
                     }
                     ArrayBuilder::push(steps, StepLet(name, val2))
@@ -23155,6 +23199,17 @@ export let gen_rc_drop_body: (Int, Bool) -> Bytes = (self_idx, rc_shadow) -> {
     emit_local_get(b, 5)
     emit_i32_const(b, rc_shadow_base())
     emit_i32_add(b)
+    emit_i32_load8_u(b, 0, 0)
+    emit_if_void(b)
+    bytebuf_push(b, 0)
+    emit_end(b)
+  } else {
+    ()
+  }
+  if rc_shadow {
+    emit_local_get(b, 5)
+    emit_i32_const(b, rc_shadow_base())
+    emit_i32_add(b)
     emit_i32_const(b, 1)
     emit_i32_store8(b, 0, 0)
   } else {
@@ -23433,6 +23488,17 @@ export let gen_arr_push_body: (Bool, Int, Bool) -> Bytes = (enable_rc, rc_alloc_
     emit_i32_add(b)
     emit_i32_ne(b)
     emit_if_void(b)
+    if rc_shadow {
+      emit_local_get(b, 5)
+      emit_i32_const(b, rc_shadow_base())
+      emit_i32_add(b)
+      emit_i32_load8_u(b, 0, 0)
+      emit_if_void(b)
+      bytebuf_push(b, 0)
+      emit_end(b)
+    } else {
+      ()
+    }
     if rc_shadow {
       emit_local_get(b, 5)
       emit_i32_const(b, rc_shadow_base())
@@ -24228,6 +24294,17 @@ export let gen_arr_push_all_body: (Bool, Int, Bool) -> Bytes = (enable_rc, rc_al
     emit_i32_add(b)
     emit_i32_ne(b)
     emit_if_void(b)
+    if rc_shadow {
+      emit_local_get(b, 6)
+      emit_i32_const(b, rc_shadow_base())
+      emit_i32_add(b)
+      emit_i32_load8_u(b, 0, 0)
+      emit_if_void(b)
+      bytebuf_push(b, 0)
+      emit_end(b)
+    } else {
+      ()
+    }
     if rc_shadow {
       emit_local_get(b, 6)
       emit_i32_const(b, rc_shadow_base())
@@ -26547,19 +26624,45 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
           emit_i32_const(buf, __ntag)
           emit_i32_eq(buf)
           let __nargs = get_pctor_args(sp)
-          let mut __nk = 0
-          while __nk < Array::length(__nargs) {
-            let __nkk = __nk
-            let __nload: () -> Unit = () -> {
-              load_field()
-              emit_i64_const(buf, -2)
-              emit_i64_and(buf)
-              emit_i32_wrap_i64(buf)
-              emit_i64_load(buf, 3, 8 + __nkk * 8)
+          let mut __nany = false
+          let mut __nj = 0
+          while __nj < Array::length(__nargs) {
+            let __np = Array::get(__nargs, __nj)
+            if is_pbind(__np) || is_pwild(__np) {
+              ()
+            } else {
+              __nany = true
             }
-            emit_pat_test(Array::get(__nargs, __nkk), __nload)
-            bytebuf_push(buf, 113)
-            __nk = __nk + 1
+            __nj = __nj + 1
+          }
+          if __nany {
+            bytebuf_push(buf, 4)
+            bytebuf_push(buf, 127)
+            emit_i32_const(buf, 1)
+            let mut __nk = 0
+            while __nk < Array::length(__nargs) {
+              let __nkk = __nk
+              let __np2 = Array::get(__nargs, __nkk)
+              if is_pbind(__np2) || is_pwild(__np2) {
+                ()
+              } else {
+                let __nload: () -> Unit = () -> {
+                  load_field()
+                  emit_i64_const(buf, -2)
+                  emit_i64_and(buf)
+                  emit_i32_wrap_i64(buf)
+                  emit_i64_load(buf, 3, 8 + __nkk * 8)
+                }
+                emit_pat_test(__np2, __nload)
+                bytebuf_push(buf, 113)
+              }
+              __nk = __nk + 1
+            }
+            emit_else(buf)
+            emit_i32_const(buf, 0)
+            emit_end(buf)
+          } else {
+            ()
           }
         } else if is_ptuple(sp) {
           emit_i32_const(buf, 1)
@@ -26640,18 +26743,39 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
           emit_i32_const(buf, expected_tag)
           emit_i32_eq(buf)
           let __cargs_cond = get_pctor_args(__cond_p)
-          let mut __ck = 0
-          while __ck < Array::length(__cargs_cond) {
-            let __ckk = __ck
-            let __cload: () -> Unit = () -> {
-              emit_local_get(buf, scrut_local)
-              emit_i64_const(buf, -2)
-              emit_i64_and(buf)
-              emit_i32_wrap_i64(buf)
-              emit_i64_load(buf, 3, 8 + __ckk * 8)
+          let mut __cany = false
+          let mut __cj = 0
+          while __cj < Array::length(__cargs_cond) {
+            let __cp = Array::get(__cargs_cond, __cj)
+            if is_pbind(__cp) || is_pwild(__cp) {
+              ()
+            } else {
+              __cany = true
             }
-            emit_sub_tests(Array::get(__cargs_cond, __ckk), __cload)
-            __ck = __ck + 1
+            __cj = __cj + 1
+          }
+          if __cany {
+            bytebuf_push(buf, 4)
+            bytebuf_push(buf, 127)
+            emit_i32_const(buf, 1)
+            let mut __ck = 0
+            while __ck < Array::length(__cargs_cond) {
+              let __ckk = __ck
+              let __cload: () -> Unit = () -> {
+                emit_local_get(buf, scrut_local)
+                emit_i64_const(buf, -2)
+                emit_i64_and(buf)
+                emit_i32_wrap_i64(buf)
+                emit_i64_load(buf, 3, 8 + __ckk * 8)
+              }
+              emit_sub_tests(Array::get(__cargs_cond, __ckk), __cload)
+              __ck = __ck + 1
+            }
+            emit_else(buf)
+            emit_i32_const(buf, 0)
+            emit_end(buf)
+          } else {
+            ()
           }
           emit_if_i64(buf)
           0
@@ -34933,7 +35057,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "2de7b6824d604a92"
+  "2dc219d2dc6683ee"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647
