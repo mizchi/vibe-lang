@@ -21,7 +21,7 @@ import .. / wasm_emit {
 }
 
 import ./compile_call.vibe {
-  cc_is_borrow_ret_call, compile_call
+  cc_is_borrow_ret_call, cc_is_loop_borrowed_ident, compile_call
 }
 
 import ./compile_expr_tail3.vibe {
@@ -101,11 +101,23 @@ export let compile_expr_tail2: (Bytes, Expr, Array[String], Int, CompileCtx, Int
         // without this retain, dropping the source after storing its
         // element into this owning tuple leaves the tuple holding a
         // dangling reference once the source is freed.
+        //
+        // The same applies to a BARE IDENT element whose binding is itself
+        // borrow-bound (`let pt2 = f(resolved, env)` where `f` returns its
+        // own argument -- the #708 is_borrow_ret_ext piggyback marks such a
+        // name loop-borrowed for the let's body) or live-in to an enclosing
+        // loop (#706): compile_call already dups these at call-argument
+        // positions via cc_is_loop_borrowed_ident, but a tuple literal
+        // stored the bare borrowed ref undup'd, so the true owner's
+        // scope-end drop freed the block the escaping tuple still pointed
+        // at (checker.vibe's `(pt2, s1, c1)` in check_expr's EFn param loop
+        // -- the `enum Shape { Circle }` / `(Int) -> Int` one-line repros'
+        // confirmed UAF site).
         let __tup_is_proj = match __tup_elem {
           EDot(_, _, _) => true,
           _ => false
         }
-        if ctx.enable_rc && (__tup_is_proj || cc_is_borrow_ret_call(__tup_elem, ctx)) {
+        if ctx.enable_rc && (__tup_is_proj || cc_is_borrow_ret_call(__tup_elem, ctx) || cc_is_loop_borrowed_ident(__tup_elem, ctx)) {
           emit_rc_dup_guarded(buf, __tup_val_local)
         } else {
           ()
@@ -209,9 +221,30 @@ export let compile_expr_tail2: (Bytes, Expr, Array[String], Int, CompileCtx, Int
       // store elements at block_start + 20 + i*8
       let mut ai = 0
       while ai < n_elems {
+        let __arr_elem = Array::get(elems, ai)
+        nl = compile_expr(buf, __arr_elem, local_names, nl, ctx, ld)
+        let __arr_val_local = nl
+        Array::push(local_names, "__arr_val")
+        emit_local_set(buf, __arr_val_local)
+        nl = nl + 1
+        // #715: an array-literal element sourced from a projection, a
+        // borrow-returning call, or a borrow-bound/loop-borrowed bare ident
+        // is a BORROWED view of its source; the array OWNS its elements
+        // (drop class 5 recurses), so retain it or the source's drop frees
+        // the block this array still points at. Same gap/fix as the ETuple
+        // case above (see its comment).
+        let __arr_is_proj = match __arr_elem {
+          EDot(_, _, _) => true,
+          _ => false
+        }
+        if __arr_is_proj || cc_is_borrow_ret_call(__arr_elem, ctx) || cc_is_loop_borrowed_ident(__arr_elem, ctx) {
+          emit_rc_dup_guarded(buf, __arr_val_local)
+        } else {
+          ()
+        }
         emit_local_get(buf, ptr_local)
         emit_i32_wrap_i64(buf)
-        nl = compile_expr(buf, Array::get(elems, ai), local_names, nl, ctx, ld)
+        emit_local_get(buf, __arr_val_local)
         emit_i64_store(buf, 3, 20 + ai * 8)
         ai = ai + 1
       }
