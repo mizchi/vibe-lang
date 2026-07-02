@@ -9,7 +9,7 @@ import .. / common_analysis {
 }
 
 import .. / common_base {
-  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_heap_grow_after_heap_set, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
+  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_heap_grow_after_heap_set, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_rc_dup_guarded, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
 }
 
 import .. / common_extractors {
@@ -21,7 +21,7 @@ import .. / wasm_emit {
 }
 
 import ./compile_call.vibe {
-  compile_call
+  cc_is_borrow_ret_call, compile_call
 }
 
 import ./compile_expr_tail3.vibe {
@@ -88,9 +88,31 @@ export let compile_expr_tail2: (Bytes, Expr, Array[String], Int, CompileCtx, Int
       emit_i32_store(buf, 2, 12)
       let mut tri = 0
       while tri < num_elems {
+        let __tup_elem = Array::get(__tuple_elems, tri)
+        nl = compile_expr(buf, __tup_elem, local_names, nl, ctx, ld)
+        let __tup_val_local = nl
+        Array::push(local_names, "__tup_val")
+        emit_local_set(buf, __tup_val_local)
+        nl = nl + 1
+        // #715: a tuple element sourced from a field projection (`a.f`) or a
+        // borrow-returning call (Array::get/Map::get/__rec_field/a user
+        // wrapper) is a BORROWED view of its source, exactly like the same
+        // case already handled for ERecord fields above (#704/#708) --
+        // without this retain, dropping the source after storing its
+        // element into this owning tuple leaves the tuple holding a
+        // dangling reference once the source is freed.
+        let __tup_is_proj = match __tup_elem {
+          EDot(_, _, _) => true,
+          _ => false
+        }
+        if ctx.enable_rc && (__tup_is_proj || cc_is_borrow_ret_call(__tup_elem, ctx)) {
+          emit_rc_dup_guarded(buf, __tup_val_local)
+        } else {
+          ()
+        }
         emit_local_get(buf, ptr_local)
         emit_i32_wrap_i64(buf)
-        nl = compile_expr(buf, Array::get(__tuple_elems, tri), local_names, nl, ctx, ld)
+        emit_local_get(buf, __tup_val_local)
         emit_i64_store(buf, 3, 16 + tri * 8)
         tri = tri + 1
       }
