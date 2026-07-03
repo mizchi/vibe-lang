@@ -418,15 +418,11 @@ import ./lib.vibe { func1 as renamed }
 import ./lib.vibe { type MyType, trait Show }
 ```
 
-### module
+### module (removed)
 
-```vibe
-module MyModule {
-  let x = 5
-}
-
-// Access: MyModule::x
-```
+`module Name { ... }` blocks are **removed** (#728, ADR-0063). Use file
+boundaries + import/export. `Type::method` / `Effect::Op` qualified access
+is an independent mechanism and remains.
 
 ## Test and Bench
 
@@ -447,7 +443,7 @@ bench "name" {
 `let`, `rec`, `fn` (statement head only), `mut`, `if`, `else`, `match`, `do`, `while`, `loop`, `for`, `in`,
 `break`, `continue`, `yield`, `throw`, `perform`, `resume`, `handle`,
 `test`, `bench`, `enum`, `struct`, `trait`, `impl`, `type`, `import`,
-`export`, `internal`, `extern`, `module`, `as`, `true`, `false`, `suberror`,
+`export`, `internal`, `extern`, `as`, `true`, `false`, `suberror`,
 `derive`
 
 `record` and `map` are context-sensitive literal heads. `map` is not a reserved

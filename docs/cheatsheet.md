@@ -463,11 +463,9 @@ import ./lib.vibe { func1, func2 }
 import ./lib.vibe { func1 as renamed }
 import ./lib.vibe { type MyType, trait Show }
 
-// module block
-module Math {
-  export let abs: (Int) -> Int = (x) -> { if x < 0 { 0 - x } else { x } }
-}
-Math::abs(-5)
+// module blocks (`module Math { ... }`) are REMOVED (#728, ADR-0063):
+// use file boundaries + import/export. `Type::method` / `Effect::Op`
+// qualified access is an independent mechanism and remains.
 ```
 
 Package refs: `@json`, `@lib/path` (hyphen/slash are part of name after `@`).

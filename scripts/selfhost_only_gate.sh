@@ -114,24 +114,43 @@ rm -rf "$tdir"
 echo "[selfhost-only-gate] test-block regression ok"
 
 # 6. normalize regression (#594): `vibe normalize` (VIBE_NORMALIZE=1) canonicalizes
-#    a source file — module flatten + DCE from exported roots + section layout —
-#    via the in-compiler engine. Guards that a future seed keeps it working and
-#    idempotent. The flat selfbuild source strips imports/modules, so the
-#    fixpoint above does not exercise the normalize entry; assert it directly.
+#    a source file — DCE from exported roots + section layout — via the
+#    in-compiler engine. Guards that a future seed keeps it working and
+#    idempotent. The flat selfbuild source strips imports, so the fixpoint
+#    above does not exercise the normalize entry; assert it directly.
+#    (Module blocks were removed in #728; flatten coverage retired with them.)
 echo "[selfhost-only-gate] 6/6 normalize compile+run regression"
 ndir="_build/_gate_normalize"
 rm -rf "$ndir"; mkdir -p "$ndir"
-printf 'export module m {\n  let dead: () -> Int = () -> { 0 }\n  let helper: () -> Int = () -> { 1 }\n  export let run: () -> Int = () -> { helper() }\n}\n' > "$ndir/in.vibe"
+printf 'let dead: () -> Int = () -> { 0 }\nlet helper: () -> Int = () -> { 1 }\nexport let run: () -> Int = () -> { helper() }\n' > "$ndir/in.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ndir/in.vibe" "$ndir/out.vibe" >/dev/null 2>&1
 if [ ! -s "$ndir/out.vibe" ]; then
   echo "[selfhost-only-gate] FAIL: normalize produced no output" >&2; exit 1
 fi
-# `dead` must be eliminated; `m::helper` (reached from the exported `m::run`) kept.
-if grep -q "dead" "$ndir/out.vibe" || ! grep -q "m::helper" "$ndir/out.vibe"; then
-  echo "[selfhost-only-gate] FAIL: normalize DCE/flatten incorrect" >&2
+# `dead` must be eliminated; `helper` (reached from the exported `run`) kept.
+if grep -q "dead" "$ndir/out.vibe" || ! grep -q "helper" "$ndir/out.vibe"; then
+  echo "[selfhost-only-gate] FAIL: normalize DCE incorrect" >&2
   cat "$ndir/out.vibe" >&2; exit 1
+fi
+# Removed/guarded syntax must be refused by the CURRENT stage2 (the committed
+# seed lags until the next bump, so these checks live here, not in the
+# seed-driven normalize smoke): module blocks are removed (#728); fn
+# statements re-print as let-form until the printer lands (#727).
+printf 'module m {\n  export let run: () -> Int = () -> { 1 }\n}\n' > "$ndir/reject_module.vibe"
+if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$ndir/reject_module.vibe" "$ndir/reject_module.out.vibe" >/dev/null 2>&1 \
+  && [ -s "$ndir/reject_module.out.vibe" ]; then
+  echo "[selfhost-only-gate] FAIL: module-block source was not rejected (#728)" >&2; exit 1
+fi
+printf 'fn run() -> Int { 1 }\nexport { run }\n' > "$ndir/reject_fn.vibe"
+if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$ndir/reject_fn.vibe" "$ndir/reject_fn.out.vibe" >/dev/null 2>&1 \
+  && [ -s "$ndir/reject_fn.out.vibe" ]; then
+  echo "[selfhost-only-gate] FAIL: fn-bearing source was not rejected by normalize (#727)" >&2; exit 1
 fi
 # Idempotency: normalize(normalize(x)) == normalize(x).
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
@@ -140,10 +159,10 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
 if ! cmp -s "$ndir/out.vibe" "$ndir/out2.vibe"; then
   echo "[selfhost-only-gate] FAIL: normalize not idempotent" >&2; exit 1
 fi
-# Flattened output must still typecheck: intra-module refs are qualified
-# (`m::run` calls `m::helper`), so compiling a copy with an entry must succeed.
+# Normalized output must still typecheck: compiling a copy with an entry
+# must succeed.
 cp "$ndir/out.vibe" "$ndir/compile.vibe"
-printf '\nexport let _start: () -> Int = () -> { m::run() }\n' >> "$ndir/compile.vibe"
+printf '\nexport let _start: () -> Int = () -> { run() }\n' >> "$ndir/compile.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ndir/compile.vibe" "$ndir/out.wasm" _start >/dev/null 2>&1

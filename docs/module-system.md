@@ -4,6 +4,11 @@
 > [module-system-v2.md](module-system-v2.md)。契約ファイル `index.vibei` /
 > index 境界規則 / content-addressed `require` / `fn` 構文 / `module {}`
 > ブロック廃止。本ドキュメントは実装フェーズの進行に合わせて置き換えられる。
+>
+> **実装済み (2026-07-03)**: `fn` 構文 (#727, Phase A)。`module Name {}`
+> ブロックと `export module` は **削除済み** (#728, Phase B) — 以下の
+> 「モジュール定義」「モジュール import」節は歴史的記述。`Type::method` の
+> qualified access と file import/export は不変。
 
 ## 目的
 - ユーザー向けには `::` で統一された名前空間アクセスを提供する。

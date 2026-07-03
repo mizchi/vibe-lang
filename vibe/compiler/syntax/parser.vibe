@@ -291,47 +291,16 @@ let parse_extern_let_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (
   (SExternLet(name, ty), end)
 }
 
-let rec parse_module_body_with: ((Array[Token], Int) -> (Stmt, Int) with { Error }, Array[Token], Int, ArrayBuilder[Stmt]) -> (Array[Stmt], Int) with { Error } = (parse_stmt_fn, tokens, pos, b) -> {
-  match peek(tokens, pos) {
-    TRBrace => (ArrayBuilder::freeze(b), pos + 1),
-    _ => {
-      let (stmt, next) = parse_stmt_fn(tokens, pos)
-      ArrayBuilder::push(b, stmt)
-      parse_module_body_with(parse_stmt_fn, tokens, next, b)
-    }
-  }
-}
-
 export let rec parse_stmt: (Array[Token], Array[Int], Int) -> (Stmt, Int) with { Error } = (tokens, starts, pos) -> {
-  let parse_stmt_closure: (Array[Token], Int) -> (Stmt, Int) with { Error } = (t, p) -> {
-    parse_stmt(t, starts, p)
-  }
   let head = peek(tokens, pos)
   match head {
     TLet => parse_let_stmt(tokens, starts, pos + 1, false),
     TExport => match peek(tokens, pos + 1) {
-      TModule => match peek(tokens, pos + 2) {
-        TIdent(name) => {
-          let br = expect_tk(tokens, pos + 3, "{")
-          {
-            let (stmts, end) = parse_module_body_with(parse_stmt_closure, tokens, br, ArrayBuilder::new());
-            (SModule(true, name, stmts), end)
-          }
-        },
-        _ => throw("expected module name")
-      },
+      // ADR-0063 Phase B (#728): module blocks are removed.
+      TModule => throw("'module' blocks are removed (#728); use file boundaries + import/export"),
       _ => parse_export_stmt(tokens, starts, pos + 1)
     },
-    TModule => match peek(tokens, pos + 1) {
-      TIdent(name) => {
-        let br = expect_tk(tokens, pos + 2, "{")
-        {
-          let (stmts, end) = parse_module_body_with(parse_stmt_closure, tokens, br, ArrayBuilder::new());
-          (SModule(false, name, stmts), end)
-        }
-      },
-      _ => throw("expected module name")
-    },
+    TModule => throw("'module' blocks are removed (#728); use file boundaries + import/export"),
     TEnum => parse_enum_stmt(tokens, pos + 1, false),
     TSuberror => parse_suberror_stmt(tokens, pos + 1, false),
     TStruct => parse_toplevel_struct_stmt(tokens, pos + 1, false),
