@@ -37,7 +37,7 @@ test "where clause in a declaration is skipped (#729)" {
 
 test "conformant implementation passes (#729)" {
   let (decls, _) = parse_contract_program(lex("fn add(x: Int, y: Int) -> Int\nfn scale(k~: Int, v~: Int) -> Int\nfn pick[T](x: T, y: T) -> T"))
-  let impls = parse_program(lex("fn add(a: Int, b: Int) -> Int { a + b }\nexport let scale: (k~: Int, v~: Int) -> Int = (k~, v~) -> { k * v }\nfn pick[T](l: T, r: T) -> T { l }\nlet private_helper: (Int) -> Int = (x) -> { x }"))
+  let impls = parse_program(lex("export fn add(a: Int, b: Int) -> Int { a + b }\nexport let scale: (k~: Int, v~: Int) -> Int = (k~, v~) -> { k * v }\nexport fn pick[T](l: T, r: T) -> T { l }\nlet private_helper: (Int) -> Int = (x) -> { x }"))
   // fn-form, annotated-let-form (labeled + exported-and-declared), and a
   // generic all conform; the un-exported private helper is ignored.
   let errors = check_contract(decls, impls)
@@ -46,17 +46,25 @@ test "conformant implementation passes (#729)" {
 
 test "missing and mismatching implementations are reported (#729)" {
   let (decls, _) = parse_contract_program(lex("fn add(x: Int, y: Int) -> Int\nfn gone(x: Int) -> Int\nfn eff(x: Int) -> Int with { Fs }"))
-  let impls = parse_program(lex("fn add(a: Int, b: String) -> Int { a }\nfn eff(x: Int) -> Int { x }"))
+  let impls = parse_program(lex("export fn add(a: Int, b: String) -> Int { a }\nexport fn eff(x: Int) -> Int { x }"))
   let errors = check_contract(decls, impls)
   assert_eq(Array::length(errors), 3)
 }
 
 test "undeclared export is reported (#729)" {
   let (decls, _) = parse_contract_program(lex("fn run(x: Int) -> Int"))
-  let impls = parse_program(lex("fn run(x: Int) -> Int { x }\nexport let leak: (Int) -> Int = (x) -> { x }"))
+  let impls = parse_program(lex("export fn run(x: Int) -> Int { x }\nexport let leak: (Int) -> Int = (x) -> { x }"))
   let errors = check_contract(decls, impls)
   assert_eq(Array::length(errors), 1)
   assert(String::contains(errors[0], "leak"))
+}
+
+test "declared but unexported implementation is reported (#729)" {
+  let (decls, _) = parse_contract_program(lex("fn run(x: Int) -> Int"))
+  let impls = parse_program(lex("fn run(x: Int) -> Int { x }"))
+  let errors = check_contract(decls, impls)
+  assert_eq(Array::length(errors), 1)
+  assert(String::contains(errors[0], "not exported"))
 }
 
 test "contract declaration with a body is rejected (#729)" {

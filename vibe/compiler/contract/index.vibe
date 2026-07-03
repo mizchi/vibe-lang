@@ -197,6 +197,15 @@ export let check_contract: (Array[(String, String)], Array[Stmt]) -> Array[Strin
           },
           None => Array::push(errors, "implementation of '\{dname}' lacks the full annotations required by the contract")
         }
+        // Transitional (until #732 removes the export keyword from impl
+        // files): the facade re-export the contract desugars to can only
+        // reach EXPORTED defs, so a declared def must be exported.
+        let (_, _, fexported0) = Array::get(defs, fi)
+        if fexported0 {
+          ()
+        } else {
+          Array::push(errors, "contract declaration '\{dname}' is implemented but not exported by its implementation file")
+        }
       } else ()
       fi = fi + 1
     }
@@ -229,6 +238,87 @@ export let check_contract: (Array[(String, String)], Array[Stmt]) -> Array[Strin
     ei = ei + 1
   }
   errors
+}
+
+// The raw paths of a contract's implementation-file imports
+// (`import ./impl.vibe {}` lines). Any other non-declaration statement is
+// rejected — the v1 contract grammar is: fn declarations + implementation
+// imports. (Type defs, opaque type, and subpath re-exports come with the
+// later #729 stages.)
+export let contract_impl_import_raw_paths: (Array[Stmt]) -> Array[String] with { Error } = (stmts) -> {
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImport(raw_path, _) => Array::push(out, raw_path),
+      _ => throw("unsupported statement in a .vibei contract: only fn declarations and implementation-file imports are allowed (#729)")
+    }
+    i = i + 1
+  }
+  out
+}
+
+// Desugar a conformance-checked contract to facade source text: one
+// `export <raw> { names }` re-export line per implementation file, each
+// declared name allocated to its first definer. The facade is plain vibe
+// source, so everything downstream of the loader (type db, merge plan,
+// codegen) needs no .vibei awareness — it rides the #716 re-export
+// machinery unchanged.
+export let contract_facade_source: (Array[(String, String)], Array[(String, Array[Stmt])]) -> String with { Error } = (decls, impl_units) -> {
+  let lines = Array::slice([
+    ""
+  ], 0, 0)
+  let allocated = Array::slice([
+    ""
+  ], 0, 0)
+  let mut ui = 0
+  while ui < Array::length(impl_units) {
+    let (raw, unit_stmts) = Array::get(impl_units, ui)
+    let defs = collect_impl_fn_defs(unit_stmts)
+    let names = Array::slice([
+      ""
+    ], 0, 0)
+    let mut di = 0
+    while di < Array::length(decls) {
+      let (dname, _) = Array::get(decls, di)
+      let mut taken = false
+      let mut ai = 0
+      while ai < Array::length(allocated) {
+        if Array::get(allocated, ai) == dname {
+          taken = true
+        } else ()
+        ai = ai + 1
+      }
+      if taken {
+        ()
+      } else {
+        let mut defined_here = false
+        let mut fi = 0
+        while fi < Array::length(defs) {
+          let (fname, _, _) = Array::get(defs, fi)
+          if fname == dname {
+            defined_here = true
+          } else ()
+          fi = fi + 1
+        }
+        if defined_here {
+          Array::push(names, dname)
+          Array::push(allocated, dname)
+        } else ()
+      }
+      di = di + 1
+    }
+    if Array::length(names) > 0 {
+      Array::push(lines, "export \{raw} { \{String::join(names, ", ")} }")
+    } else ()
+    ui = ui + 1
+  }
+  if Array::length(allocated) != Array::length(decls) {
+    throw("contract facade: some declarations have no implementation file (run check_contract first)")
+  } else ()
+  String::concat(String::join(lines, "\n"), "\n")
 }
 
 export {

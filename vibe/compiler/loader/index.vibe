@@ -33,6 +33,10 @@ import ./header_cache.vibe {
   load_or_parse_module_header_fs_impl
 }
 
+import ../contract/index.vibe {
+  check_contract, contract_facade_source, contract_impl_import_raw_paths, parse_contract_program
+}
+
 import ./manifest_sources.vibe {
   build_grouped_sources_from_manifest_rows,
   load_manifest_full_sources,
@@ -1055,13 +1059,66 @@ export let rec check_module: (String, String, Array[(String, String)], Array[Str
 // previous linear `contains_path` scan was O(edges × modules). The set is
 // membership-only — `sources` keeps its own dependency-first order from
 // the recursion, which is what callers consume.
+// #729 (ADR-0063 Phase C-2): ingest an index.vibei contract. The contract is
+// conformance-checked against its declared implementation files and desugared
+// to plain facade source (re-export lines), so everything downstream of the
+// loader — type db, merge plan, codegen — sees ordinary vibe source and needs
+// no .vibei awareness. Implementation files are DECLARED by the contract
+// (`import ./impl.vibe {}`) rather than discovered: the Fs effect has no
+// directory listing yet (auto-discovery arrives with Fs::ReadDir, #730).
+let desugar_contract_source_fs: (String, String) -> String with { Error, Fs } = (path, source) -> {
+  let dir = dir_of_path(path)
+  let sibling_index = String::concat(dir, "/index.vibe")
+  if Fs::exists(sibling_index) {
+    throw("both index.vibe and index.vibei exist in \{dir} (#729): a boundary has exactly one index")
+  } else ()
+  let (decls, extra) = parse_contract_program(lex(source))
+  let impl_raws = contract_impl_import_raw_paths(extra)
+  let impl_units = Array::slice([
+    ("", Array::slice([
+      SExport(Array::slice([
+        ""
+      ], 0, 0))
+    ], 0, 0))
+  ], 0, 0)
+  let union_stmts = Array::slice([
+    SExport(Array::slice([
+      ""
+    ], 0, 0))
+  ], 0, 0)
+  let mut ri = 0
+  while ri < Array::length(impl_raws) {
+    let raw = Array::get(impl_raws, ri)
+    let resolved = resolve_import_path(dir, raw)
+    let impl_text = Fs::read_file(resolved)
+    let impl_stmts = parse_program(lex(impl_text))
+    Array::push(impl_units, (raw, impl_stmts))
+    let mut si = 0
+    while si < Array::length(impl_stmts) {
+      Array::push(union_stmts, Array::get(impl_stmts, si))
+      si = si + 1
+    }
+    ri = ri + 1
+  }
+  let errors = check_contract(decls, union_stmts)
+  if Array::length(errors) > 0 {
+    throw("\{path}: contract violation: \{String::join(errors, "; ")}")
+  } else ()
+  contract_facade_source(decls, impl_units)
+}
+
 let rec collect_sources_rec: (String, Array[(String, String)], Array[Array[String]]) -> Unit with { Error, Fs } = (path, sources, visited) -> {
   if path_set_contains(visited, path) {
     ()
   }
   else {
     path_set_add(visited, path)
-    let source = Fs::read_file(path)
+    let raw_source = Fs::read_file(path)
+    let source = if String::ends_with(path, ".vibei") {
+      desugar_contract_source_fs(path, raw_source)
+    } else {
+      raw_source
+    }
     let (deps, _, _) = load_or_parse_module_header_fs(path, source, 0)
     // First, recurse into dependencies (imports and re-exports)
     let mut i = 0

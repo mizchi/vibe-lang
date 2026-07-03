@@ -14235,6 +14235,7 @@ let rec collect_import_path: (Array[Token], Int, String) -> (String, Int) with {
     TIdent(name) => collect_import_path(tokens, pos + 1, String::concat(acc, name)),
     TMinus => collect_import_path(tokens, pos + 1, String::concat(acc, "-")),
     TModule => collect_import_path(tokens, pos + 1, String::concat(acc, "module")),
+    TImpl => collect_import_path(tokens, pos + 1, String::concat(acc, "impl")),
     TType => collect_import_path(tokens, pos + 1, String::concat(acc, "type")),
     TMatch => collect_import_path(tokens, pos + 1, String::concat(acc, "match")),
     TTest => collect_import_path(tokens, pos + 1, String::concat(acc, "test")),
@@ -18454,6 +18455,7 @@ export let resolve_import_path_candidates: (String, String) -> Array[String] = (
   } else {
     [
       String::concat(normalized, ".vibe"),
+      String::concat(normalized, "/index.vibei"),
       String::concat(normalized, "/index.vibe")
     ]
   }
@@ -42389,7 +42391,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "215ec6aca5133702"
+  "afe4a7ec5d72a094"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647
@@ -42560,6 +42562,258 @@ export let load_or_parse_module_header_fs_impl: (String, String, Int) -> (Array[
     Fs::write_file(cache_path, persistent_module_header_text(deps, exports))
     (deps, exports, next_parse_count)
   }
+}
+let fn_sig_text: (Array[String], Array[(String, Array[String])], Array[(String, Option[TypeExpr])], TypeExpr, Option[String]) -> Option[String] = (tps, tbs, params, ret_ty, eff_opt) -> {
+  let mut missing = false
+  let parts = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(params) {
+    let (pname, pty_opt) = Array::get(params, i)
+    match pty_opt {
+      Some(pty) => {
+        let tystr = print_type_expr(pty)
+        let entry = if String::ends_with(pname, "~") {
+          "\{pname}: \{tystr}"
+        } else tystr
+        Array::push(parts, entry)
+      },
+      None => { missing = true }
+    }
+    i = i + 1
+  }
+  if missing {
+    None
+  } else {
+    let gen = if Array::length(tps) == 0 {
+      ""
+    } else {
+      let entries = Array::slice([
+        ""
+      ], 0, 0)
+      let mut gi = 0
+      while gi < Array::length(tps) {
+        let tp = Array::get(tps, gi)
+        let mut bound = ""
+        let mut bi = 0
+        while bi < Array::length(tbs) {
+          let (bname, bnds) = Array::get(tbs, bi)
+          if bname == tp && Array::length(bnds) > 0 {
+            bound = String::join(bnds, " + ")
+          } else ()
+          bi = bi + 1
+        }
+        let entry = if String::length(bound) == 0 {
+          tp
+        } else "\{tp}: \{bound}"
+        Array::push(entries, entry)
+        gi = gi + 1
+      }
+      "[\{String::join(entries, ", ")}]"
+    }
+    let eff = match eff_opt {
+      Some(e) => " with { \{e} }",
+      None => ""
+    }
+    Some("\{gen}(\{String::join(parts, ", ")}) -> \{print_type_expr(ret_ty)}\{eff}")
+  }
+}
+export let parse_contract_program: (Array[Token]) -> (Array[(String, String)], Array[Stmt]) with { Error } = (tokens) -> {
+  let decls = Array::slice([
+    ("", "")
+  ], 0, 0)
+  let stmts = Array::slice([
+    SExport(Array::slice([
+      ""
+    ], 0, 0))
+  ], 0, 0)
+  let mut pos = 0
+  let mut done = false
+  while !done {
+    match peek(tokens, pos) {
+      TEof => { done = true },
+      TIdent(head) => if head == "fn" {
+        let (dhead, dsig, next) = parse_fn_signature(tokens, pos + 1)
+        let (name, tps, tbs) = dhead
+        let (params, ret_ty, eff_opt) = dsig
+        match peek(tokens, next) {
+          TLBrace => throw("contract fn declaration '\{name}' must not have a body (#729)"),
+          _ => ()
+        }
+        match fn_sig_text(tps, tbs, params, ret_ty, eff_opt) {
+          Some(sig) => Array::push(decls, (name, sig)),
+          None => throw("contract fn declaration '\{name}' requires full annotations")
+        }
+        pos = next
+      } else {
+        let (stmt, next) = parse_stmt(tokens, [], pos)
+        Array::push(stmts, stmt)
+        pos = next
+      },
+      _ => {
+        let (stmt, next) = parse_stmt(tokens, [], pos)
+        Array::push(stmts, stmt)
+        pos = next
+      }
+    }
+  }
+  (decls, stmts)
+}
+export let collect_impl_fn_defs: (Array[Stmt]) -> Array[(String, Option[String], Bool)] = (stmts) -> {
+  let out = Array::slice([
+    ("", Some(""), false)
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exported, _, name, _, val) => match val {
+        EFn(tps, tbs, params, ret_opt, eff_opt, _) => {
+          let sig = match ret_opt {
+            Some(ret_ty) => fn_sig_text(tps, tbs, params, ret_ty, eff_opt),
+            None => None
+          }
+          Array::push(out, (name, sig, exported))
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+export let check_contract: (Array[(String, String)], Array[Stmt]) -> Array[String] = (decls, impl_stmts) -> {
+  let errors = Array::slice([
+    ""
+  ], 0, 0)
+  let defs = collect_impl_fn_defs(impl_stmts)
+  let mut di = 0
+  while di < Array::length(decls) {
+    let (dname, dsig) = Array::get(decls, di)
+    let mut found = false
+    let mut fi = 0
+    while fi < Array::length(defs) {
+      let (fname, fsig_opt, _fexported) = Array::get(defs, fi)
+      if fname == dname {
+        found = true
+        match fsig_opt {
+          Some(fsig) => if fsig == dsig {
+            ()
+          } else {
+            Array::push(errors, "signature mismatch for '\{dname}': contract \{dsig} but implementation \{fsig}")
+          },
+          None => Array::push(errors, "implementation of '\{dname}' lacks the full annotations required by the contract")
+        }
+        let (_, _, fexported0) = Array::get(defs, fi)
+        if fexported0 {
+          ()
+        } else {
+          Array::push(errors, "contract declaration '\{dname}' is implemented but not exported by its implementation file")
+        }
+      } else ()
+      fi = fi + 1
+    }
+    if found {
+      ()
+    } else {
+      Array::push(errors, "contract declaration '\{dname}' has no implementation")
+    }
+    di = di + 1
+  }
+  let mut ei = 0
+  while ei < Array::length(defs) {
+    let (fname, _fsig_opt, fexported) = Array::get(defs, ei)
+    if fexported {
+      let mut declared = false
+      let mut ci = 0
+      while ci < Array::length(decls) {
+        let (dname, _dsig) = Array::get(decls, ci)
+        if dname == fname {
+          declared = true
+        } else ()
+        ci = ci + 1
+      }
+      if declared {
+        ()
+      } else {
+        Array::push(errors, "exported '\{fname}' is not declared in the contract")
+      }
+    } else ()
+    ei = ei + 1
+  }
+  errors
+}
+export let contract_impl_import_raw_paths: (Array[Stmt]) -> Array[String] with { Error } = (stmts) -> {
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImport(raw_path, _) => Array::push(out, raw_path),
+      _ => throw("unsupported statement in a .vibei contract: only fn declarations and implementation-file imports are allowed (#729)")
+    }
+    i = i + 1
+  }
+  out
+}
+export let contract_facade_source: (Array[(String, String)], Array[(String, Array[Stmt])]) -> String with { Error } = (decls, impl_units) -> {
+  let lines = Array::slice([
+    ""
+  ], 0, 0)
+  let allocated = Array::slice([
+    ""
+  ], 0, 0)
+  let mut ui = 0
+  while ui < Array::length(impl_units) {
+    let (raw, unit_stmts) = Array::get(impl_units, ui)
+    let defs = collect_impl_fn_defs(unit_stmts)
+    let names = Array::slice([
+      ""
+    ], 0, 0)
+    let mut di = 0
+    while di < Array::length(decls) {
+      let (dname, _) = Array::get(decls, di)
+      let mut taken = false
+      let mut ai = 0
+      while ai < Array::length(allocated) {
+        if Array::get(allocated, ai) == dname {
+          taken = true
+        } else ()
+        ai = ai + 1
+      }
+      if taken {
+        ()
+      } else {
+        let mut defined_here = false
+        let mut fi = 0
+        while fi < Array::length(defs) {
+          let (fname, _, _) = Array::get(defs, fi)
+          if fname == dname {
+            defined_here = true
+          } else ()
+          fi = fi + 1
+        }
+        if defined_here {
+          Array::push(names, dname)
+          Array::push(allocated, dname)
+        } else ()
+      }
+      di = di + 1
+    }
+    if Array::length(names) > 0 {
+      Array::push(lines, "export \{raw} { \{String::join(names, ", ")} }")
+    } else ()
+    ui = ui + 1
+  }
+  if Array::length(allocated) != Array::length(decls) {
+    throw("contract facade: some declarations have no implementation file (run check_contract first)")
+  } else ()
+  String::concat(String::join(lines, "\n"), "\n")
+}
+export {
+  parse_contract_program, collect_impl_fn_defs, check_contract
 }
 import . / header_cache.vibe {
   load_or_parse_module_header_fs_impl
@@ -44099,13 +44353,58 @@ let special_manifest_source_groups: (String) -> Option[(String, Array[(String, A
   let _ = entry_path
   None
 }
+let desugar_contract_source_fs: (String, String) -> String with { Error, Fs } = (path, source) -> {
+  let dir = dir_of_path(path)
+  let sibling_index = String::concat(dir, "/index.vibe")
+  if Fs::exists(sibling_index) {
+    throw("both index.vibe and index.vibei exist in \{dir} (#729): a boundary has exactly one index")
+  } else ()
+  let (decls, extra) = parse_contract_program(lex(source))
+  let impl_raws = contract_impl_import_raw_paths(extra)
+  let impl_units = Array::slice([
+    ("", Array::slice([
+      SExport(Array::slice([
+        ""
+      ], 0, 0))
+    ], 0, 0))
+  ], 0, 0)
+  let union_stmts = Array::slice([
+    SExport(Array::slice([
+      ""
+    ], 0, 0))
+  ], 0, 0)
+  let mut ri = 0
+  while ri < Array::length(impl_raws) {
+    let raw = Array::get(impl_raws, ri)
+    let resolved = resolve_import_path(dir, raw)
+    let impl_text = Fs::read_file(resolved)
+    let impl_stmts = parse_program(lex(impl_text))
+    Array::push(impl_units, (raw, impl_stmts))
+    let mut si = 0
+    while si < Array::length(impl_stmts) {
+      Array::push(union_stmts, Array::get(impl_stmts, si))
+      si = si + 1
+    }
+    ri = ri + 1
+  }
+  let errors = check_contract(decls, union_stmts)
+  if Array::length(errors) > 0 {
+    throw("\{path}: contract violation: \{String::join(errors, "; ")}")
+  } else ()
+  contract_facade_source(decls, impl_units)
+}
 let rec collect_sources_rec: (String, Array[(String, String)], Array[Array[String]]) -> Unit with { Error, Fs } = (path, sources, visited) -> {
   if path_set_contains(visited, path) {
     ()
   }
   else {
     path_set_add(visited, path)
-    let source = Fs::read_file(path)
+    let raw_source = Fs::read_file(path)
+    let source = if String::ends_with(path, ".vibei") {
+      desugar_contract_source_fs(path, raw_source)
+    } else {
+      raw_source
+    }
     let (deps, _, _) = load_or_parse_module_header_fs(path, source, 0)
     let mut i = 0
     while i < Array::length(deps) {
