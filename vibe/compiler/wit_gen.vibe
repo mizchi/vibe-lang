@@ -1,0 +1,492 @@
+//# Imports
+
+import ./core {
+  Expr, Stmt, TypeExpr
+}
+
+//# WIT text generation (#537)
+//
+// Maps a vibe program's EFFECT SURFACE to a WIT world:
+//
+//   - Each *exported* top-level function with a full type annotation becomes a
+//     world `export <kebab-name>: func(...)`.
+//   - The union of the effects named in those exported signatures' `with { E }`
+//     rows becomes the world's imports. An effect declared in the program via
+//     `effect E { Op(Args) -> Ret; ... }` is emitted as an inline interface
+//     import: `import <kebab-E>: interface { <kebab-op>: func(...) -> ...; }`.
+//   - `Error` never surfaces (it is vibe-internal control flow: an escaping
+//     throw is a component trap, not a capability).
+//   - Effect names WITHOUT a matching `effect` declaration (host capabilities
+//     such as Fs / Env / Async) get a comment marker: they are provided by the
+//     vibe runtime's host imports and have no WIT mapping yet.
+//
+// Type mapping (vibe -> WIT): Int -> s64, Double -> f64, Bool -> bool,
+// String -> string, Char -> char, Unit -> (no result), Bytes -> list<u8>,
+// Array[T] -> list<T>, Option[T] -> option<T>, Result[T, E] -> result<T, E>,
+// Map[K, V] -> list<tuple<K, V>>, tuples -> tuple<...>. Anything else
+// (named user types, function types) is rejected with a clear error — the
+// golden output never silently mis-declares a boundary type.
+//
+// The full contract lives in docs/effect-wit-mapping.md; the generated text is
+// pinned by fixtures/wit_gen_http.golden.wit (gate step) and round-trips
+// through vibe/wasm/wit_parser (wit_gen_test.vibe).
+
+// Lowercase a single ASCII char code, else identity.
+let wit_lower_char: (Int) -> Int = (c) -> {
+  if c >= 65 && c <= 90 {
+    c + 32
+  } else {
+    c
+  }
+}
+
+// vibe identifier (CamelCase / snake_case) -> WIT kebab-case word list.
+// `HttpReq` -> `http-req`, `now_us` -> `now-us`, `Fs` -> `fs`. Consecutive
+// uppercase letters split per letter (`URL` -> `u-r-l`) — vibe convention is
+// strict CamelCase, so this stays predictable.
+export let wit_kebab_ident: (String) -> String = (name) -> {
+  let sb = StringBuilder::new()
+  let len = String::length(name)
+  let mut i = 0
+  let mut prev_dash = true
+  while i < len {
+    let c = String::char_code_at(name, i)
+    if c == 95 {
+      if !prev_dash {
+        StringBuilder::push(sb, "-")
+      }
+      prev_dash = true
+    } else if c >= 65 && c <= 90 {
+      if !prev_dash {
+        StringBuilder::push(sb, "-")
+      }
+      StringBuilder::push(sb, String::from_char_code(wit_lower_char(c)))
+      prev_dash = false
+    } else {
+      StringBuilder::push(sb, String::from_char_code(c))
+      prev_dash = false
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(sb)
+}
+
+let wit_is_unit_type: (TypeExpr) -> Bool = (ty) -> {
+  match ty {
+    TyUnit => true,
+    TyName(name) => name == "Unit",
+    _ => false
+  }
+}
+
+// vibe TypeExpr -> WIT type text. Throws on types with no WIT mapping.
+export let rec wit_type_text: (TypeExpr) -> String with { Error } = (ty) -> {
+  match ty {
+    TyName(name) => {
+      if name == "Int" {
+        "s64"
+      } else if name == "Double" {
+        "f64"
+      } else if name == "Bool" {
+        "bool"
+      } else if name == "String" {
+        "string"
+      } else if name == "Char" {
+        "char"
+      } else if name == "Bytes" {
+        "list<u8>"
+      } else {
+        throw("wit: no WIT mapping for type '\{name}' (supported: Int, Double, Bool, String, Char, Bytes, Unit, Array, Option, Result, Map, tuples)")
+      }
+    },
+    TyApp(head, args) => {
+      if head == "Array" && Array::length(args) == 1 {
+        "list<\{wit_type_text(Array::get(args, 0))}>"
+      } else if head == "Option" && Array::length(args) == 1 {
+        "option<\{wit_type_text(Array::get(args, 0))}>"
+      } else if head == "Result" && Array::length(args) == 2 {
+        "result<\{wit_type_text(Array::get(args, 0))}, \{wit_type_text(Array::get(args, 1))}>"
+      } else if head == "Map" && Array::length(args) == 2 {
+        "list<tuple<\{wit_type_text(Array::get(args, 0))}, \{wit_type_text(Array::get(args, 1))}>>"
+      } else {
+        throw("wit: no WIT mapping for type '\{head}[..]'")
+      }
+    },
+    TyTuple(items) => {
+      let sb = StringBuilder::new()
+      StringBuilder::push(sb, "tuple<")
+      let mut i = 0
+      while i < Array::length(items) {
+        if i > 0 {
+          StringBuilder::push(sb, ", ")
+        }
+        StringBuilder::push(sb, wit_type_text(Array::get(items, i)))
+        i = i + 1
+      }
+      StringBuilder::push(sb, ">")
+      StringBuilder::freeze(sb)
+    },
+    TyFn(_, _, _) => throw("wit: function types cannot cross the WIT boundary"),
+    TyUnit => throw("wit: Unit is only valid as a return type")
+  }
+}
+
+// `func(name: ty, ...) -> ret` text for a signature. Unit return omits `->`.
+let wit_func_text: (Array[String], Array[TypeExpr], TypeExpr) -> String with { Error } = (param_names, param_types, ret) -> {
+  let sb = StringBuilder::new()
+  StringBuilder::push(sb, "func(")
+  let mut i = 0
+  while i < Array::length(param_types) {
+    if i > 0 {
+      StringBuilder::push(sb, ", ")
+    }
+    let pname = if i < Array::length(param_names) {
+      wit_kebab_ident(Array::get(param_names, i))
+    } else {
+      "arg\{i}"
+    }
+    StringBuilder::push(sb, pname)
+    StringBuilder::push(sb, ": ")
+    StringBuilder::push(sb, wit_type_text(Array::get(param_types, i)))
+    i = i + 1
+  }
+  StringBuilder::push(sb, ")")
+  if !wit_is_unit_type(ret) {
+    StringBuilder::push(sb, " -> ")
+    StringBuilder::push(sb, wit_type_text(ret))
+  }
+  StringBuilder::freeze(sb)
+}
+
+// Split a parsed effect row ("A, B") into names. The parser joins the
+// `with { A, B }` list with ", " (parser_base.vibe collect_effect_names).
+let wit_split_effect_row: (String) -> Array[String] = (row) -> {
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  let len = String::length(row)
+  let mut piece = ""
+  let mut i = 0
+  while i < len {
+    let c = String::char_code_at(row, i)
+    if c == 44 {
+      if String::length(piece) > 0 {
+        Array::push(out, piece)
+      }
+      piece = ""
+    } else if c == 32 {
+      ()
+    } else {
+      piece = String::concat(piece, String::from_char_code(c))
+    }
+    i = i + 1
+  }
+  if String::length(piece) > 0 {
+    Array::push(out, piece)
+  }
+  out
+}
+
+let wit_array_contains: (Array[String], String) -> Bool = (items, needle) -> {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(items) {
+    if Array::get(items, i) == needle {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
+// One exported function surface as a tuple:
+//   (name, param_names, param_types, ret, effects)
+// A plain tuple, not a struct: struct values crossing function boundaries
+// miscompile in the flat-bundle lane today (#537 follow-up filed), while
+// tuples are battle-tested everywhere in the compiler.
+
+// Extract the boundary signature of `SLet(true, _, name, ann, body)`.
+// Priority: TyFn annotation (param names from the EFn body when available),
+// else fully-annotated EFn params/ret. Non-function exports and unannotated
+// functions return None (they have no declarable WIT surface).
+let wit_export_of_slet: (String, Option[TypeExpr], Expr) -> Option[(String, Array[String], Array[TypeExpr], TypeExpr, Array[String])] = (name, ann, body) -> {
+  let efn_param_names = Array::slice([
+    ""
+  ], 0, 0)
+  let efn_param_types = Array::slice([
+    TyUnit
+  ], 0, 0)
+  let mut efn_params_ok = true
+  let mut efn_ret = None
+  let mut efn_eff = None
+  match body {
+    EFn(_, _, params, ret_opt, eff_opt, _) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pname, pty_opt) = Array::get(params, i)
+        Array::push(efn_param_names, pname)
+        match pty_opt {
+          Some(pty) => Array::push(efn_param_types, pty),
+          None => {
+            efn_params_ok = false
+          }
+        }
+        i = i + 1
+      }
+      efn_ret = ret_opt
+      efn_eff = eff_opt
+    },
+    _ => {
+      efn_params_ok = false
+    }
+  }
+  let mut ann_fn = None
+  match ann {
+    Some(ty) => match ty {
+      TyFn(ptys, rty, eff) => {
+        ann_fn = Some((ptys, rty, eff))
+      },
+      _ => ()
+    },
+    None => ()
+  }
+  match ann_fn {
+    Some(fn_parts) => {
+      let (ptys, rty, eff) = fn_parts
+      let effects = match eff {
+        Some(row) => wit_split_effect_row(row),
+        None => Array::slice([
+          ""
+        ], 0, 0)
+      }
+      Some((name, efn_param_names, ptys, rty, effects))
+    },
+    None => {
+      if efn_params_ok {
+        match efn_ret {
+          Some(rty) => {
+            let effects = match efn_eff {
+              Some(row) => wit_split_effect_row(row),
+              None => Array::slice([
+                ""
+              ], 0, 0)
+            }
+            Some((name, efn_param_names, Array::slice(efn_param_types, 0, Array::length(efn_param_types)), rty, effects))
+          },
+          None => None
+        }
+      } else {
+        None
+      }
+    }
+  }
+}
+
+//# vibe serve handler contract (#537)
+
+// The wasi-http P3 full-adapter handler contract
+// (scripts/build_wasi_http_p3_full_adapter.sh):
+//   export let handler = (method: String, url: String, headers: String, body: String) -> String
+// returning "STATUS\n<Header: value lines>\n\n<body>".
+export let serve_handler_param_names: () -> Array[String] = () -> {
+  [
+    "method",
+    "url",
+    "headers",
+    "body"
+  ]
+}
+
+let wit_type_is_string: (TypeExpr) -> Bool = (ty) -> {
+  match ty {
+    TyName(name) => name == "String",
+    _ => false
+  }
+}
+
+// Validate the entry file's `handler` export against the serve contract,
+// with a teaching error when it does not fit.
+export let validate_serve_handler: (Array[Stmt]) -> Unit with { Error } = (entry_stmts) -> {
+  let contract = "serve: expected `export let handler = (method: String, url: String, headers: String, body: String) -> String`"
+  match wit_boundary_signature(entry_stmts, "handler") {
+    None => throw(String::concat(contract, " (no exported `handler` with a full type annotation found)")),
+    Some(sig) => {
+      let (_sname, _spnames, sig_param_types, sig_ret, sig_effects) = sig
+      if Array::length(sig_param_types) != 4 {
+        throw(String::concat(contract, " (found \{Array::length(sig_param_types)} params)"))
+      }
+      let mut pi = 0
+      while pi < Array::length(sig_param_types) {
+        if !wit_type_is_string(Array::get(sig_param_types, pi)) {
+          throw(String::concat(contract, " (param \{pi} is not String)"))
+        }
+        pi = pi + 1
+      }
+      if !wit_type_is_string(sig_ret) {
+        throw(String::concat(contract, " (return type is not String)"))
+      }
+      let mut ei = 0
+      while ei < Array::length(sig_effects) {
+        let ename = Array::get(sig_effects, ei)
+        if ename != "Error" {
+          throw("serve: handler requires capability effect '\{ename}'; a serve handler must be a pure function of its request params (discharge the effect with `handle` inside the file)")
+        }
+        ei = ei + 1
+      }
+    }
+  }
+}
+
+// Boundary signature of one exported top-level function, by name. Used by
+// `vibe serve` to validate the handler contract before componentizing.
+export let wit_boundary_signature: (Array[Stmt], String) -> Option[(String, Array[String], Array[TypeExpr], TypeExpr, Array[String])] = (stmts, name) -> {
+  let mut found = None
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exported, _, sname, ann, body) => {
+        if exported && sname == name {
+          found = wit_export_of_slet(sname, ann, body)
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+// Collect `effect` declarations (recursing into module blocks) as parallel
+// name/ops arrays.
+let rec wit_collect_effect_defs: (Array[Stmt], Array[String], Array[Array[(String, Array[TypeExpr], TypeExpr)]]) -> Unit = (stmts, out_names, out_ops) -> {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SEffectDef(_, name, _, ops) => {
+        if !wit_array_contains(out_names, name) {
+          Array::push(out_names, name)
+          Array::push(out_ops, ops)
+        }
+      },
+      SModule(_, _, inner) => wit_collect_effect_defs(inner, out_names, out_ops),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+// Generate the WIT world text for a program.
+//   export_stmts: statements scanned for *exported* function surfaces
+//                 (normally the entry file's own statements).
+//   effect_stmts: statements scanned for `effect` declarations (may be the
+//                 same array, or entry + resolved import type decls).
+//   world_name:   raw name; kebab-cased into the world header.
+export let wit_from_program: (Array[Stmt], Array[Stmt], String) -> String with { Error } = (export_stmts, effect_stmts, world_name) -> {
+  let eff_names = Array::slice([
+    ""
+  ], 0, 0)
+  let eff_ops = Array::slice([
+    Array::slice([
+      ("", Array::slice([
+        TyUnit
+      ], 0, 0), TyUnit)
+    ], 0, 0)
+  ], 0, 0)
+  wit_collect_effect_defs(effect_stmts, eff_names, eff_ops)
+  wit_collect_effect_defs(export_stmts, eff_names, eff_ops)
+  let exports = Array::slice([
+    ("", Array::slice([
+      ""
+    ], 0, 0), Array::slice([
+      TyUnit
+    ], 0, 0), TyUnit, Array::slice([
+      ""
+    ], 0, 0))
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(export_stmts) {
+    match Array::get(export_stmts, i) {
+      SLet(exported, _, name, ann, body) => {
+        if exported {
+          match wit_export_of_slet(name, ann, body) {
+            Some(ex) => Array::push(exports, ex),
+            None => ()
+          }
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  // Imports: effects referenced by exported signatures, in first-use order.
+  let used_effects = Array::slice([
+    ""
+  ], 0, 0)
+  let mut xi = 0
+  while xi < Array::length(exports) {
+    let (_xn, _xp, _xt, _xr, ex_effects) = Array::get(exports, xi)
+    let mut ei = 0
+    while ei < Array::length(ex_effects) {
+      let ename = Array::get(ex_effects, ei)
+      if ename != "Error" && !wit_array_contains(used_effects, ename) {
+        Array::push(used_effects, ename)
+      }
+      ei = ei + 1
+    }
+    xi = xi + 1
+  }
+  let sb = StringBuilder::new()
+  StringBuilder::push(sb, "package vibe:app;\n\nworld ")
+  StringBuilder::push(sb, wit_kebab_ident(world_name))
+  StringBuilder::push(sb, " {\n")
+  let mut ui = 0
+  while ui < Array::length(used_effects) {
+    let ename = Array::get(used_effects, ui)
+    let mut def_idx = 0 - 1
+    let mut di = 0
+    while di < Array::length(eff_names) {
+      if Array::get(eff_names, di) == ename {
+        def_idx = di
+      }
+      di = di + 1
+    }
+    if def_idx >= 0 {
+      StringBuilder::push(sb, "  import ")
+      StringBuilder::push(sb, wit_kebab_ident(ename))
+      StringBuilder::push(sb, ": interface {\n")
+      let ops = Array::get(eff_ops, def_idx)
+      let mut oi = 0
+      while oi < Array::length(ops) {
+        let (op_name, op_args, op_ret) = Array::get(ops, oi)
+        StringBuilder::push(sb, "    ")
+        StringBuilder::push(sb, wit_kebab_ident(op_name))
+        StringBuilder::push(sb, ": ")
+        StringBuilder::push(sb, wit_func_text(Array::slice([
+          ""
+        ], 0, 0), op_args, op_ret))
+        StringBuilder::push(sb, ";\n")
+        oi = oi + 1
+      }
+      StringBuilder::push(sb, "  }\n")
+    } else {
+      // Host capability effect (Fs / Env / Async / ...): provided by the vibe
+      // runtime's host imports; no declared operations to surface.
+      StringBuilder::push(sb, "  // host capability effect '")
+      StringBuilder::push(sb, ename)
+      StringBuilder::push(sb, "' (provided by the vibe runtime; no WIT mapping yet)\n")
+    }
+    ui = ui + 1
+  }
+  let mut xo = 0
+  while xo < Array::length(exports) {
+    let (ex_name, ex_param_names, ex_param_types, ex_ret, _ex_effects) = Array::get(exports, xo)
+    StringBuilder::push(sb, "  export ")
+    StringBuilder::push(sb, wit_kebab_ident(ex_name))
+    StringBuilder::push(sb, ": ")
+    StringBuilder::push(sb, wit_func_text(ex_param_names, ex_param_types, ex_ret))
+    StringBuilder::push(sb, ";\n")
+    xo = xo + 1
+  }
+  StringBuilder::push(sb, "}\n")
+  StringBuilder::freeze(sb)
+}

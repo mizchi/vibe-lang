@@ -1,0 +1,36 @@
+// #537 effect->WIT golden fixture (gate step: selfhost_only_gate.sh).
+// Exercises every branch of the WIT world mapping:
+//   - `route` carries `with { HttpReq, Error }`: the declared HttpReq effect
+//     becomes an inline interface import (Error never surfaces).
+//   - `stats` carries `with { Fs }`: an undeclared host-capability effect
+//     renders as a comment marker.
+//   - `handler` is the wasi-http P3 serve contract (4 String params ->
+//     String) with inline EFn annotations (no separate TyFn annotation).
+//   - `stats` also covers Int/Bool params and an Array[Int] (list<s64>) return.
+// Expected output: fixtures/wit_gen_http.golden.wit (byte-exact).
+
+effect HttpReq {
+  Method -> String;
+  Url -> String;
+  Header(String) -> String
+}
+
+export let route: (String) -> String with { HttpReq, Error } = (prefix) -> {
+  let m = perform HttpReq::Method
+  let u = perform HttpReq::Url
+  "\{prefix}:\{m} \{u}"
+}
+
+export let handler = (method: String, url: String, headers: String, body: String) -> String {
+  handle {
+    route("r")
+  } with HttpReq {
+    Method => resume(method);
+    Url => resume(url);
+    Header(_) => resume(headers)
+  }
+}
+
+export let stats: (Int, Bool) -> Array[Int] with { Fs } = (n, flag) -> {
+  [n]
+}

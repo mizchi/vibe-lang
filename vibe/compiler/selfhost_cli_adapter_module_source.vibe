@@ -34742,12 +34742,94 @@ export {
 export {
   emit_br, emit_end, emit_call, emit_drop, emit_else, emit_name, emit_br_if, emit_f64_eq, emit_f64_ge, emit_f64_gt, emit_f64_le, emit_f64_lt, emit_f64_ne, emit_header, emit_i64_eq, emit_i64_ne, emit_i64_or, emit_if_i64, emit_return, emit_f64_add, emit_f64_div, emit_f64_mul, emit_f64_neg, emit_f64_sub, emit_i32_add, emit_i64_add, emit_i64_and, emit_i64_eqz, emit_i64_mul, emit_i64_shl, emit_i64_sub, emit_i64_xor, emit_if_void, emit_call_ref, emit_i32_load, emit_i64_ge_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_lt_s, emit_ref_func, emit_ref_null, emit_block_i64, emit_func_type, emit_i32_const, emit_i32_store, emit_i64_const, emit_i64_div_s, emit_i64_rem_s, emit_i64_shr_s, emit_local_get, emit_local_set, emit_local_tee, emit_loop_void, string_to_data, emit_block_void, emit_global_get, emit_global_set, emit_i32_store8, emit_struct_get, emit_struct_new, emit_struct_set, build_add_module, emit_i32_load8_u, build_call_module, emit_code_section, emit_data_section, emit_exports_full, emit_i32_wrap_i64, emit_type_section, build_hello_module, emit_call_indirect, emit_export_memory, emit_func_type_raw, emit_export_section, emit_f64_const_bits, emit_memory_section, emit_i64_trunc_f64_s, emit_struct_type_raw, emit_function_section, emit_i64_extend_i32_s, build_factorial_module, build_fibonacci_module, emit_f64_convert_i64_s, build_arithmetic_module, emit_data_section_multi, emit_type_section_multi, emit_exports_with_memory, emit_f64_reinterpret_i64, emit_i64_reinterpret_f64, emit_import_section_func, build_print_string_module, emit_export_section_multi, emit_table_section_funcref, emit_element_section_active, emit_global_section_i32_mut, emit_code_section_with_locals, emit_vibe_abi_custom_section
 }
+let read_uleb: (Bytes, Int) -> (Int, Int) = (bytes, start) -> {
+  let mut value = 0
+  let mut shift = 0
+  let mut i = start
+  let len = Bytes::length(bytes)
+  let mut done = false
+  while (i < len) && (done == false) {
+    let b = Bytes::get(bytes, i)
+    value = value|((b&127)<<shift)
+    i = i + 1
+    if (b&128) == 0 {
+      done = true
+    } else {
+      shift = shift + 7
+    }
+  }
+  (value, i)
+}
 let section_type = 7
+let core_sort_mem = 2
+let new_int_array: () -> Array[Int] = () -> {
+  Array::slice([
+    0
+  ], 0, 0)
+}
 let section_alias = 6
 let section_canon = 8
 let core_sort_func = 0
+let read_name_info: (Bytes, Int) -> (Int, Int) = (bytes, start) -> {
+  read_uleb(bytes, start)
+}
+let skip_name: (Bytes, Int) -> Int = (bytes, start) -> {
+  let (name_len, after_len) = read_name_info(bytes, start)
+  after_len + name_len
+}
 let section_export = 11
 let section_module = 1
+let parse_type_sigs: (Bytes, Int, Int, Array[Array[Int]]) -> Unit = (bytes, sec_start, sec_end, out_sigs) -> {
+  let mut j = sec_start
+  let (type_count, next_j) = read_uleb(bytes, j)
+  j = next_j
+  let mut t = 0
+  while t < type_count {
+    if j >= sec_end {
+      t = type_count
+    }
+    else {
+      let form = Bytes::get(bytes, j)
+      j = j + 1
+      if form != 96 {
+        t = type_count
+      }
+      else {
+        let sig = new_int_array()
+        let (param_count, next_j2) = read_uleb(bytes, j)
+        j = next_j2
+        Array::push(sig, param_count)
+        let mut p = 0
+        while p < param_count {
+          if j >= sec_end {
+            p = param_count
+          }
+          else {
+            Array::push(sig, Bytes::get(bytes, j))
+            j = j + 1
+            p = p + 1
+          }
+        }
+        let (result_count, next_j3) = read_uleb(bytes, j)
+        j = next_j3
+        Array::push(sig, result_count)
+        let mut rv = 0
+        while rv < result_count {
+          if j >= sec_end {
+            rv = result_count
+          }
+          else {
+            Array::push(sig, Bytes::get(bytes, j))
+            j = j + 1
+            rv = rv + 1
+          }
+        }
+        Array::push(out_sigs, sig)
+        t = t + 1
+      }
+    }
+  }
+}
 let comp_extern_func = 1
 let comp_valtype_f32 = 118
 let comp_valtype_f64 = 117
@@ -34756,6 +34838,44 @@ let comp_valtype_s64 = 120
 let emit_raw_content: (Bytes, Bytes) -> Unit = (buf, content) -> {
   leb128_encode_u32(buf, Bytes::length(content))
   bytebuf_push_buf(buf, content)
+}
+let read_name_string: (Bytes, Int) -> String = (bytes, start) -> {
+  let (name_len, after_len) = read_name_info(bytes, start)
+  let buf = StringBuilder::new()
+  let mut i = 0
+  while i < name_len {
+    StringBuilder::push(buf, String::from_char_code(Bytes::get(bytes, after_len + i)))
+    i = i + 1
+  }
+  StringBuilder::freeze(buf)
+}
+let skip_wasm_limits: (Bytes, Int, Int) -> Int = (bytes, start, end_pos) -> {
+  let mut i = start
+  if i >= end_pos {
+    end_pos
+  }
+  else {
+    let flags = Bytes::get(bytes, i)
+    i = i + 1
+    let (min_limit, next_i1) = read_uleb(bytes, i)
+    let _ = min_limit
+    i = next_i1
+    if (flags&1) != 0 {
+      let (max_limit, next_i2) = read_uleb(bytes, i)
+      let _ = max_limit
+      i = next_i2
+    }
+    if (flags&4) != 0 {
+      let (page_size, next_i3) = read_uleb(bytes, i)
+      let _ = page_size
+      i = next_i3
+    }
+    if i > end_pos {
+      end_pos
+    } else {
+      i
+    }
+  }
 }
 let component_magic_0 = 0
 let component_magic_1 = 97
@@ -34782,10 +34902,27 @@ let emit_alias_section: (Bytes, Int, Array[String], Array[Int]) -> Unit = (buf, 
     emit_raw_content(buf, content)
   }
 }
+let comp_valtype_string = 115
 let component_version_0 = 13
 let component_version_1 = 0
 let component_version_2 = 1
 let component_version_3 = 0
+let emit_canon_lift_func: (Bytes, Int, Int, Int, Int, Int) -> Unit = (content, core_func_idx, type_idx, need_string, memory_idx, realloc_idx) -> {
+  bytebuf_push(content, 0)
+  bytebuf_push(content, 0)
+  leb128_encode_u32(content, core_func_idx)
+  if need_string != 0 {
+    leb128_encode_u32(content, 3)
+    bytebuf_push(content, 0)
+    bytebuf_push(content, 3)
+    leb128_encode_u32(content, memory_idx)
+    bytebuf_push(content, 4)
+    leb128_encode_u32(content, realloc_idx)
+  } else {
+    leb128_encode_u32(content, 0)
+  }
+  leb128_encode_u32(content, type_idx)
+}
 let emit_component_header: (Bytes) -> Unit = (buf) -> {
   bytebuf_push(buf, component_magic_0)
   bytebuf_push(buf, component_magic_1)
@@ -34797,6 +34934,235 @@ let emit_component_header: (Bytes) -> Unit = (buf) -> {
   bytebuf_push(buf, component_version_3)
 }
 let section_core_instance = 2
+let skip_core_import_desc: (Bytes, Int, Int, Int) -> Int = (bytes, start, kind, end_pos) -> {
+  let mut i = start
+  if kind == 1 {
+    if i < end_pos {
+      i = i + 1
+    }
+    i = skip_wasm_limits(bytes, i, end_pos)
+  } else {
+    if kind == 2 {
+      i = skip_wasm_limits(bytes, i, end_pos)
+    } else {
+      if kind == 3 {
+        if (i + 2) <= end_pos {
+          i = i + 2
+        } else {
+          i = end_pos
+        }
+      } else {
+        if kind == 4 {
+          if i < end_pos {
+            i = i + 1
+          }
+          let (type_idx, next_i) = read_uleb(bytes, i)
+          let _ = type_idx
+          i = next_i
+        } else {
+          i = end_pos
+        }
+      }
+    }
+  }
+  if i > end_pos {
+    end_pos
+  } else {
+    i
+  }
+}
+let parse_core_exports: (Bytes, Array[String], Array[Int], Array[Array[Int]]) -> Int = (core_wasm, out_names, out_func_indices, out_type_sigs) -> {
+  let len = Bytes::length(core_wasm)
+  if len < 8 {
+    0
+  }
+  else {
+    let type_sigs = Array::slice([
+      [
+        0
+      ]
+    ], 0, 0)
+    let func_type_indices = new_int_array()
+    let mut import_func_count = 0
+    let mut i = 8
+    let mut export_count = 0
+    while i < len {
+      let sec_id = Bytes::get(core_wasm, i)
+      i = i + 1
+      let (sec_size, next_i) = read_uleb(core_wasm, i)
+      i = next_i
+      let sec_end = i + sec_size
+      if sec_end > len {
+        i = len
+      }
+      else {
+        if sec_id == 1 {
+          parse_type_sigs(core_wasm, i, sec_end, type_sigs)
+        } else {
+          if sec_id == 2 {
+            let mut j = i
+            let (imp_count, next_j) = read_uleb(core_wasm, j)
+            j = next_j
+            let mut imp = 0
+            while imp < imp_count {
+              if j >= sec_end {
+                imp = imp_count
+              }
+              else {
+                j = skip_name(core_wasm, j)
+                j = skip_name(core_wasm, j)
+                if j >= sec_end {
+                  imp = imp_count
+                }
+                else {
+                  let kind = Bytes::get(core_wasm, j)
+                  j = j + 1
+                  if kind == 0 {
+                    let (type_idx, next_j2) = read_uleb(core_wasm, j)
+                    let _ = type_idx
+                    j = next_j2
+                    import_func_count = import_func_count + 1
+                  } else {
+                    j = skip_core_import_desc(core_wasm, j, kind, sec_end)
+                  }
+                  imp = imp + 1
+                }
+              }
+            }
+          } else {
+            if sec_id == 3 {
+              let mut j = i
+              let (func_count, next_j) = read_uleb(core_wasm, j)
+              j = next_j
+              let mut f = 0
+              while f < func_count {
+                if j >= sec_end {
+                  f = func_count
+                }
+                else {
+                  let (type_idx, next_j2) = read_uleb(core_wasm, j)
+                  Array::push(func_type_indices, type_idx)
+                  j = next_j2
+                  f = f + 1
+                }
+              }
+            } else {
+              if sec_id == 7 {
+                let mut j = i
+                let (exp_count, next_j) = read_uleb(core_wasm, j)
+                j = next_j
+                let mut e = 0
+                while e < exp_count {
+                  if j >= sec_end {
+                    e = exp_count
+                  }
+                  else {
+                    let name = read_name_string(core_wasm, j)
+                    j = skip_name(core_wasm, j)
+                    if j >= sec_end {
+                      e = exp_count
+                    }
+                    else {
+                      let kind = Bytes::get(core_wasm, j)
+                      j = j + 1
+                      let (index, next_j2) = read_uleb(core_wasm, j)
+                      j = next_j2
+                      if kind == 0 {
+                        let type_idx = if index < import_func_count {
+                          0 - 1
+                        }
+                        else {
+                          let local_idx = index - import_func_count
+                          if local_idx < Array::length(func_type_indices) {
+                            Array::get(func_type_indices, local_idx)
+                          } else {
+                            0 - 1
+                          }
+                        }
+                        if (type_idx >= 0) && (type_idx < Array::length(type_sigs)) {
+                          Array::push(out_names, name)
+                          Array::push(out_func_indices, index)
+                          Array::push(out_type_sigs, Array::get(type_sigs, type_idx))
+                          export_count = export_count + 1
+                        }
+                      }
+                      e = e + 1
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        i = sec_end
+      }
+    }
+    export_count
+  }
+}
+let parse_core_imports: (Bytes, Array[String], Array[String], Array[Int], Array[Array[Int]]) -> Int = (core_wasm, out_module_names, out_func_names, out_type_indices, out_type_sigs) -> {
+  let len = Bytes::length(core_wasm)
+  if len < 8 {
+    0
+  }
+  else {
+    let mut i = 8
+    let mut import_count = 0
+    while i < len {
+      let sec_id = Bytes::get(core_wasm, i)
+      i = i + 1
+      let (sec_size, next_i) = read_uleb(core_wasm, i)
+      i = next_i
+      let sec_end = i + sec_size
+      if sec_end > len {
+        i = len
+      }
+      else {
+        if sec_id == 1 {
+          parse_type_sigs(core_wasm, i, sec_end, out_type_sigs)
+        } else {
+          if sec_id == 2 {
+            let mut j = i
+            let (imp_count, next_j) = read_uleb(core_wasm, j)
+            j = next_j
+            let mut imp = 0
+            while imp < imp_count {
+              if j >= sec_end {
+                imp = imp_count
+              }
+              else {
+                let mod_name = read_name_string(core_wasm, j)
+                j = skip_name(core_wasm, j)
+                let fn_name = read_name_string(core_wasm, j)
+                j = skip_name(core_wasm, j)
+                if j >= sec_end {
+                  imp = imp_count
+                }
+                else {
+                  let kind = Bytes::get(core_wasm, j)
+                  j = j + 1
+                  if kind == 0 {
+                    let (type_idx, next_j2) = read_uleb(core_wasm, j)
+                    j = next_j2
+                    Array::push(out_module_names, mod_name)
+                    Array::push(out_func_names, fn_name)
+                    Array::push(out_type_indices, type_idx)
+                    import_count = import_count + 1
+                  } else {
+                    j = skip_core_import_desc(core_wasm, j, kind, sec_end)
+                  }
+                  imp = imp + 1
+                }
+              }
+            }
+          }
+        }
+        i = sec_end
+      }
+    }
+    import_count
+  }
+}
 let comp_inst_arg_instance = 18
 let emit_core_module_section: (Bytes, Bytes) -> Unit = (buf, core_wasm) -> {
   bytebuf_push(buf, section_module)
@@ -34818,6 +35184,47 @@ let comp_underscores_to_dashes: (String) -> String = (name) -> {
     i = i + 1
   }
   out
+}
+let normalize_comp_param_name: (String) -> String = (name) -> {
+  comp_underscores_to_dashes(name)
+}
+let emit_comp_func_type: (Bytes, Array[Int], Array[String], Array[Int], Int) -> Unit = (content, param_types, param_names, result_types, is_async) -> {
+  if is_async != 0 {
+    bytebuf_push(content, 67)
+  } else {
+    bytebuf_push(content, 64)
+  }
+  leb128_encode_u32(content, Array::length(param_types))
+  let mut i = 0
+  while i < Array::length(param_types) {
+    let name = if i < Array::length(param_names) {
+      normalize_comp_param_name(Array::get(param_names, i))
+    }
+    else {
+      "p\{i}"
+    }
+    emit_name(content, name)
+    bytebuf_push(content, Array::get(param_types, i))
+    i = i + 1
+  }
+  if Array::length(result_types) == 0 {
+    bytebuf_push(content, 1)
+    leb128_encode_u32(content, 0)
+  } else {
+    if Array::length(result_types) == 1 {
+      bytebuf_push(content, 0)
+      bytebuf_push(content, Array::get(result_types, 0))
+    } else {
+      bytebuf_push(content, 1)
+      leb128_encode_u32(content, Array::length(result_types))
+      let mut r = 0
+      while r < Array::length(result_types) {
+        emit_name(content, "r\{r}")
+        bytebuf_push(content, Array::get(result_types, r))
+        r = r + 1
+      }
+    }
+  }
 }
 let normalize_comp_export_name: (String) -> String = (name) -> {
   comp_underscores_to_dashes(name)
@@ -35068,6 +35475,326 @@ export let comp_emit_component_wasm_async_trampolined_p1: (Bytes, String, Int) -
     core_sort_func
   ])
   emit_canon_lift_async_section(buf, 2, 0)
+  emit_comp_export_section(buf, export_name, 0)
+  bytebuf_to_bytes(buf)
+}
+let core_sort_global = 3
+let emit_core_instance_from_exports_sorted: (Bytes, Array[String], Array[Int], Array[Int]) -> Unit = (buf, names, sorts, indices) -> {
+  bytebuf_push(buf, section_core_instance)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 1)
+  leb128_encode_u32(content, Array::length(names))
+  let mut i = 0
+  while i < Array::length(names) {
+    emit_name(content, Array::get(names, i))
+    bytebuf_push(content, Array::get(sorts, i))
+    leb128_encode_u32(content, Array::get(indices, i))
+    i = i + 1
+  }
+  emit_raw_content(buf, content)
+}
+export let comp_generate_string_trampoline_packed: (Int) -> Bytes = (string_param_count) -> {
+  let buf = bytebuf_new()
+  emit_header(buf)
+  let type_sec = bytebuf_new()
+  bytebuf_push_vec_header(type_sec, 3)
+  bytebuf_push(type_sec, 96)
+  leb128_encode_u32(type_sec, string_param_count + 1)
+  let mut ti = 0
+  while ti < (string_param_count + 1) {
+    bytebuf_push(type_sec, 126)
+    ti = ti + 1
+  }
+  bytebuf_push(type_sec, 1)
+  bytebuf_push(type_sec, 126)
+  bytebuf_push(type_sec, 96)
+  leb128_encode_u32(type_sec, string_param_count * 2)
+  let mut ci = 0
+  while ci < (string_param_count * 2) {
+    bytebuf_push(type_sec, 127)
+    ci = ci + 1
+  }
+  bytebuf_push(type_sec, 1)
+  bytebuf_push(type_sec, 127)
+  bytebuf_push(type_sec, 96)
+  leb128_encode_u32(type_sec, 4)
+  bytebuf_push(type_sec, 127)
+  bytebuf_push(type_sec, 127)
+  bytebuf_push(type_sec, 127)
+  bytebuf_push(type_sec, 127)
+  bytebuf_push(type_sec, 1)
+  bytebuf_push(type_sec, 127)
+  bytebuf_push_section(buf, 1, type_sec)
+  let import_sec = bytebuf_new()
+  leb128_encode_u32(import_sec, 3)
+  emit_name(import_sec, "env")
+  emit_name(import_sec, "target_func")
+  bytebuf_push(import_sec, 0)
+  leb128_encode_u32(import_sec, 0)
+  emit_name(import_sec, "env")
+  emit_name(import_sec, "__heap_ptr")
+  bytebuf_push(import_sec, 3)
+  bytebuf_push(import_sec, 127)
+  bytebuf_push(import_sec, 1)
+  emit_name(import_sec, "env")
+  emit_name(import_sec, "memory")
+  bytebuf_push(import_sec, 2)
+  bytebuf_push(import_sec, 0)
+  leb128_encode_u32(import_sec, 0)
+  bytebuf_push_section(buf, 2, import_sec)
+  let func_sec = bytebuf_new()
+  leb128_encode_u32(func_sec, 2)
+  leb128_encode_u32(func_sec, 1)
+  leb128_encode_u32(func_sec, 2)
+  bytebuf_push_section(buf, 3, func_sec)
+  let export_sec = bytebuf_new()
+  leb128_encode_u32(export_sec, 2)
+  emit_name(export_sec, "canon_func")
+  bytebuf_push(export_sec, 0)
+  leb128_encode_u32(export_sec, 1)
+  emit_name(export_sec, "cabi_realloc")
+  bytebuf_push(export_sec, 0)
+  leb128_encode_u32(export_sec, 2)
+  bytebuf_push_section(buf, 7, export_sec)
+  let code_sec = bytebuf_new()
+  leb128_encode_u32(code_sec, 2)
+  let canon_body = bytebuf_new()
+  leb128_encode_u32(canon_body, 2)
+  leb128_encode_u32(canon_body, 1)
+  bytebuf_push(canon_body, 126)
+  leb128_encode_u32(canon_body, 1)
+  bytebuf_push(canon_body, 127)
+  let result_local = string_param_count * 2
+  let retptr_local = result_local + 1
+  let mut si = 0
+  while si < string_param_count {
+    emit_local_get(canon_body, si * 2)
+    bytebuf_push(canon_body, 173)
+    emit_i64_const(canon_body, 32)
+    bytebuf_push(canon_body, 134)
+    emit_local_get(canon_body, (si * 2) + 1)
+    bytebuf_push(canon_body, 173)
+    bytebuf_push(canon_body, 132)
+    si = si + 1
+  }
+  emit_i64_const(canon_body, 0)
+  bytebuf_push(canon_body, 16)
+  leb128_encode_u32(canon_body, 0)
+  emit_local_set(canon_body, result_local)
+  emit_i32_const(canon_body, 0)
+  emit_i32_const(canon_body, 0)
+  emit_i32_const(canon_body, 4)
+  emit_i32_const(canon_body, 8)
+  bytebuf_push(canon_body, 16)
+  leb128_encode_u32(canon_body, 2)
+  emit_local_set(canon_body, retptr_local)
+  emit_local_get(canon_body, retptr_local)
+  emit_local_get(canon_body, result_local)
+  emit_i64_const(canon_body, 32)
+  bytebuf_push(canon_body, 136)
+  bytebuf_push(canon_body, 167)
+  emit_i32_store(canon_body, 2, 0)
+  emit_local_get(canon_body, retptr_local)
+  emit_local_get(canon_body, result_local)
+  bytebuf_push(canon_body, 167)
+  emit_i32_store(canon_body, 2, 4)
+  emit_local_get(canon_body, retptr_local)
+  bytebuf_push(canon_body, 11)
+  leb128_encode_u32(code_sec, Bytes::length(canon_body))
+  bytebuf_push_buf(code_sec, canon_body)
+  let realloc_body = bytebuf_new()
+  leb128_encode_u32(realloc_body, 1)
+  leb128_encode_u32(realloc_body, 1)
+  bytebuf_push(realloc_body, 127)
+  bytebuf_push(realloc_body, 35)
+  leb128_encode_u32(realloc_body, 0)
+  emit_local_get(realloc_body, 2)
+  emit_i32_add(realloc_body)
+  emit_i32_const(realloc_body, 1)
+  bytebuf_push(realloc_body, 107)
+  emit_i32_const(realloc_body, 0)
+  emit_local_get(realloc_body, 2)
+  bytebuf_push(realloc_body, 107)
+  bytebuf_push(realloc_body, 113)
+  emit_local_set(realloc_body, 4)
+  emit_local_get(realloc_body, 4)
+  emit_local_get(realloc_body, 3)
+  emit_i32_add(realloc_body)
+  bytebuf_push(realloc_body, 36)
+  leb128_encode_u32(realloc_body, 0)
+  bytebuf_push(realloc_body, 35)
+  leb128_encode_u32(realloc_body, 0)
+  bytebuf_push(realloc_body, 63)
+  bytebuf_push(realloc_body, 0)
+  emit_i32_const(realloc_body, 16)
+  bytebuf_push(realloc_body, 116)
+  bytebuf_push(realloc_body, 75)
+  bytebuf_push(realloc_body, 4)
+  bytebuf_push(realloc_body, 64)
+  bytebuf_push(realloc_body, 35)
+  leb128_encode_u32(realloc_body, 0)
+  emit_i32_const(realloc_body, 65535)
+  emit_i32_add(realloc_body)
+  emit_i32_const(realloc_body, 16)
+  bytebuf_push(realloc_body, 118)
+  bytebuf_push(realloc_body, 63)
+  bytebuf_push(realloc_body, 0)
+  bytebuf_push(realloc_body, 107)
+  bytebuf_push(realloc_body, 64)
+  bytebuf_push(realloc_body, 0)
+  bytebuf_push(realloc_body, 26)
+  bytebuf_push(realloc_body, 11)
+  emit_local_get(realloc_body, 4)
+  bytebuf_push(realloc_body, 11)
+  leb128_encode_u32(code_sec, Bytes::length(realloc_body))
+  bytebuf_push_buf(code_sec, realloc_body)
+  bytebuf_push_section(buf, 10, code_sec)
+  bytebuf_to_bytes(buf)
+}
+export let comp_emit_component_wasm_string_handler: (Bytes, String, String, Array[String]) -> Bytes with { Error } = (core_wasm, target_func_name, export_name, param_names) -> {
+  let string_param_count = Array::length(param_names)
+  let export_names = Array::slice([
+    ""
+  ], 0, 0)
+  let export_func_indices = new_int_array()
+  let export_type_sigs = Array::slice([
+    [
+      0
+    ]
+  ], 0, 0)
+  let _ = parse_core_exports(core_wasm, export_names, export_func_indices, export_type_sigs)
+  let mut target_sig_ok = false
+  let mut target_found = false
+  let mut ei = 0
+  while ei < Array::length(export_names) {
+    if Array::get(export_names, ei) == target_func_name {
+      target_found = true
+      let sig = Array::get(export_type_sigs, ei)
+      let core_param_count = string_param_count + 1
+      if Array::length(sig) == (core_param_count + 3) {
+        let mut ok = Array::get(sig, 0) == core_param_count
+        let mut pi = 0
+        while pi < core_param_count {
+          if Array::get(sig, 1 + pi) != 126 {
+            ok = false
+          }
+          pi = pi + 1
+        }
+        if Array::get(sig, 1 + core_param_count) != 1 {
+          ok = false
+        }
+        if Array::get(sig, 2 + core_param_count) != 126 {
+          ok = false
+        }
+        target_sig_ok = ok
+      }
+      ei = Array::length(export_names)
+    } else {
+      ei = ei + 1
+    }
+  }
+  if !target_found {
+    throw("component: core module does not export '\{target_func_name}'")
+  }
+  if !target_sig_ok {
+    throw("component: '\{target_func_name}' must take \{string_param_count} String params and return String")
+  }
+  let imp_modules = Array::slice([
+    ""
+  ], 0, 0)
+  let imp_names = Array::slice([
+    ""
+  ], 0, 0)
+  let imp_type_indices = new_int_array()
+  let imp_type_sigs = Array::slice([
+    [
+      0
+    ]
+  ], 0, 0)
+  let import_count = parse_core_imports(core_wasm, imp_modules, imp_names, imp_type_indices, imp_type_sigs)
+  let mut ii = 0
+  while ii < import_count {
+    let im = Array::get(imp_modules, ii)
+    let ifn = Array::get(imp_names, ii)
+    if im == "wasi_snapshot_preview1" && ifn == "fd_write" {
+      ()
+    } else {
+      throw("component: handler uses host import '\{im}.\{ifn}' (a serve handler must be pure; only stdout via fd_write is stubbed)")
+    }
+    ii = ii + 1
+  }
+  let buf = bytebuf_new()
+  emit_component_header(buf)
+  emit_core_module_section(buf, core_wasm)
+  emit_core_module_section(buf, comp_generate_string_trampoline_packed(string_param_count))
+  emit_core_module_section(buf, comp_generate_wasi_fd_write_stub())
+  emit_core_instance_instantiate_section(buf, 2, Array::slice([
+    ""
+  ], 0, 0))
+  emit_core_instance_instantiate_args(buf, 0, [
+    "wasi_snapshot_preview1"
+  ], [
+    0
+  ])
+  emit_alias_section(buf, 1, [
+    target_func_name
+  ], [
+    core_sort_func
+  ])
+  emit_alias_section(buf, 1, [
+    "memory"
+  ], [
+    core_sort_mem
+  ])
+  emit_alias_section(buf, 1, [
+    "__heap_ptr"
+  ], [
+    core_sort_global
+  ])
+  emit_core_instance_from_exports_sorted(buf, [
+    "target_func",
+    "__heap_ptr",
+    "memory"
+  ], [
+    core_sort_func,
+    core_sort_global,
+    core_sort_mem
+  ], [
+    0,
+    0,
+    0
+  ])
+  emit_core_instance_instantiate_args(buf, 1, [
+    "env"
+  ], [
+    2
+  ])
+  emit_alias_section(buf, 3, [
+    "canon_func",
+    "cabi_realloc"
+  ], [
+    core_sort_func,
+    core_sort_func
+  ])
+  bytebuf_push(buf, section_type)
+  let type_content = bytebuf_new()
+  leb128_encode_u32(type_content, 1)
+  let comp_param_types = new_int_array()
+  let mut pt = 0
+  while pt < string_param_count {
+    Array::push(comp_param_types, comp_valtype_string)
+    pt = pt + 1
+  }
+  emit_comp_func_type(type_content, comp_param_types, param_names, [
+    comp_valtype_string
+  ], 0)
+  emit_raw_content(buf, type_content)
+  bytebuf_push(buf, section_canon)
+  let canon_content = bytebuf_new()
+  leb128_encode_u32(canon_content, 1)
+  emit_canon_lift_func(canon_content, 1, 0, 1, 0, 2)
+  emit_raw_content(buf, canon_content)
   emit_comp_export_section(buf, export_name, 0)
   bytebuf_to_bytes(buf)
 }
@@ -38491,7 +39218,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "9706cb6f901dd9f8"
+  "0d6250ad2fbaffb2"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647
@@ -43337,6 +44064,430 @@ export let symbol_spans: (String) -> Array[(String, Int, Int, Int)] = (source) -
     ], 0, 0)
   }
 }
+let wit_lower_char: (Int) -> Int = (c) -> {
+  if c >= 65 && c <= 90 {
+    c + 32
+  } else {
+    c
+  }
+}
+export let wit_kebab_ident: (String) -> String = (name) -> {
+  let sb = StringBuilder::new()
+  let len = String::length(name)
+  let mut i = 0
+  let mut prev_dash = true
+  while i < len {
+    let c = String::char_code_at(name, i)
+    if c == 95 {
+      if !prev_dash {
+        StringBuilder::push(sb, "-")
+      }
+      prev_dash = true
+    } else if c >= 65 && c <= 90 {
+      if !prev_dash {
+        StringBuilder::push(sb, "-")
+      }
+      StringBuilder::push(sb, String::from_char_code(wit_lower_char(c)))
+      prev_dash = false
+    } else {
+      StringBuilder::push(sb, String::from_char_code(c))
+      prev_dash = false
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(sb)
+}
+let wit_is_unit_type: (TypeExpr) -> Bool = (ty) -> {
+  match ty {
+    TyUnit => true,
+    TyName(name) => name == "Unit",
+    _ => false
+  }
+}
+export let rec wit_type_text: (TypeExpr) -> String with { Error } = (ty) -> {
+  match ty {
+    TyName(name) => {
+      if name == "Int" {
+        "s64"
+      } else if name == "Double" {
+        "f64"
+      } else if name == "Bool" {
+        "bool"
+      } else if name == "String" {
+        "string"
+      } else if name == "Char" {
+        "char"
+      } else if name == "Bytes" {
+        "list<u8>"
+      } else {
+        throw("wit: no WIT mapping for type '\{name}' (supported: Int, Double, Bool, String, Char, Bytes, Unit, Array, Option, Result, Map, tuples)")
+      }
+    },
+    TyApp(head, args) => {
+      if head == "Array" && Array::length(args) == 1 {
+        "list<\{wit_type_text(Array::get(args, 0))}>"
+      } else if head == "Option" && Array::length(args) == 1 {
+        "option<\{wit_type_text(Array::get(args, 0))}>"
+      } else if head == "Result" && Array::length(args) == 2 {
+        "result<\{wit_type_text(Array::get(args, 0))}, \{wit_type_text(Array::get(args, 1))}>"
+      } else if head == "Map" && Array::length(args) == 2 {
+        "list<tuple<\{wit_type_text(Array::get(args, 0))}, \{wit_type_text(Array::get(args, 1))}>>"
+      } else {
+        throw("wit: no WIT mapping for type '\{head}[..]'")
+      }
+    },
+    TyTuple(items) => {
+      let sb = StringBuilder::new()
+      StringBuilder::push(sb, "tuple<")
+      let mut i = 0
+      while i < Array::length(items) {
+        if i > 0 {
+          StringBuilder::push(sb, ", ")
+        }
+        StringBuilder::push(sb, wit_type_text(Array::get(items, i)))
+        i = i + 1
+      }
+      StringBuilder::push(sb, ">")
+      StringBuilder::freeze(sb)
+    },
+    TyFn(_, _, _) => throw("wit: function types cannot cross the WIT boundary"),
+    TyUnit => throw("wit: Unit is only valid as a return type")
+  }
+}
+let wit_func_text: (Array[String], Array[TypeExpr], TypeExpr) -> String with { Error } = (param_names, param_types, ret) -> {
+  let sb = StringBuilder::new()
+  StringBuilder::push(sb, "func(")
+  let mut i = 0
+  while i < Array::length(param_types) {
+    if i > 0 {
+      StringBuilder::push(sb, ", ")
+    }
+    let pname = if i < Array::length(param_names) {
+      wit_kebab_ident(Array::get(param_names, i))
+    } else {
+      "arg\{i}"
+    }
+    StringBuilder::push(sb, pname)
+    StringBuilder::push(sb, ": ")
+    StringBuilder::push(sb, wit_type_text(Array::get(param_types, i)))
+    i = i + 1
+  }
+  StringBuilder::push(sb, ")")
+  if !wit_is_unit_type(ret) {
+    StringBuilder::push(sb, " -> ")
+    StringBuilder::push(sb, wit_type_text(ret))
+  }
+  StringBuilder::freeze(sb)
+}
+let wit_split_effect_row: (String) -> Array[String] = (row) -> {
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  let len = String::length(row)
+  let mut piece = ""
+  let mut i = 0
+  while i < len {
+    let c = String::char_code_at(row, i)
+    if c == 44 {
+      if String::length(piece) > 0 {
+        Array::push(out, piece)
+      }
+      piece = ""
+    } else if c == 32 {
+      ()
+    } else {
+      piece = String::concat(piece, String::from_char_code(c))
+    }
+    i = i + 1
+  }
+  if String::length(piece) > 0 {
+    Array::push(out, piece)
+  }
+  out
+}
+let wit_array_contains: (Array[String], String) -> Bool = (items, needle) -> {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(items) {
+    if Array::get(items, i) == needle {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+let wit_export_of_slet: (String, Option[TypeExpr], Expr) -> Option[(String, Array[String], Array[TypeExpr], TypeExpr, Array[String])] = (name, ann, body) -> {
+  let efn_param_names = Array::slice([
+    ""
+  ], 0, 0)
+  let efn_param_types = Array::slice([
+    TyUnit
+  ], 0, 0)
+  let mut efn_params_ok = true
+  let mut efn_ret = None
+  let mut efn_eff = None
+  match body {
+    EFn(_, _, params, ret_opt, eff_opt, _) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pname, pty_opt) = Array::get(params, i)
+        Array::push(efn_param_names, pname)
+        match pty_opt {
+          Some(pty) => Array::push(efn_param_types, pty),
+          None => {
+            efn_params_ok = false
+          }
+        }
+        i = i + 1
+      }
+      efn_ret = ret_opt
+      efn_eff = eff_opt
+    },
+    _ => {
+      efn_params_ok = false
+    }
+  }
+  let mut ann_fn = None
+  match ann {
+    Some(ty) => match ty {
+      TyFn(ptys, rty, eff) => {
+        ann_fn = Some((ptys, rty, eff))
+      },
+      _ => ()
+    },
+    None => ()
+  }
+  match ann_fn {
+    Some(fn_parts) => {
+      let (ptys, rty, eff) = fn_parts
+      let effects = match eff {
+        Some(row) => wit_split_effect_row(row),
+        None => Array::slice([
+          ""
+        ], 0, 0)
+      }
+      Some((name, efn_param_names, ptys, rty, effects))
+    },
+    None => {
+      if efn_params_ok {
+        match efn_ret {
+          Some(rty) => {
+            let effects = match efn_eff {
+              Some(row) => wit_split_effect_row(row),
+              None => Array::slice([
+                ""
+              ], 0, 0)
+            }
+            Some((name, efn_param_names, Array::slice(efn_param_types, 0, Array::length(efn_param_types)), rty, effects))
+          },
+          None => None
+        }
+      } else {
+        None
+      }
+    }
+  }
+}
+export let serve_handler_param_names: () -> Array[String] = () -> {
+  [
+    "method",
+    "url",
+    "headers",
+    "body"
+  ]
+}
+let wit_type_is_string: (TypeExpr) -> Bool = (ty) -> {
+  match ty {
+    TyName(name) => name == "String",
+    _ => false
+  }
+}
+export let validate_serve_handler: (Array[Stmt]) -> Unit with { Error } = (entry_stmts) -> {
+  let contract = "serve: expected `export let handler = (method: String, url: String, headers: String, body: String) -> String`"
+  match wit_boundary_signature(entry_stmts, "handler") {
+    None => throw(String::concat(contract, " (no exported `handler` with a full type annotation found)")),
+    Some(sig) => {
+      let (_sname, _spnames, sig_param_types, sig_ret, sig_effects) = sig
+      if Array::length(sig_param_types) != 4 {
+        throw(String::concat(contract, " (found \{Array::length(sig_param_types)} params)"))
+      }
+      let mut pi = 0
+      while pi < Array::length(sig_param_types) {
+        if !wit_type_is_string(Array::get(sig_param_types, pi)) {
+          throw(String::concat(contract, " (param \{pi} is not String)"))
+        }
+        pi = pi + 1
+      }
+      if !wit_type_is_string(sig_ret) {
+        throw(String::concat(contract, " (return type is not String)"))
+      }
+      let mut ei = 0
+      while ei < Array::length(sig_effects) {
+        let ename = Array::get(sig_effects, ei)
+        if ename != "Error" {
+          throw("serve: handler requires capability effect '\{ename}'; a serve handler must be a pure function of its request params (discharge the effect with `handle` inside the file)")
+        }
+        ei = ei + 1
+      }
+    }
+  }
+}
+export let wit_boundary_signature: (Array[Stmt], String) -> Option[(String, Array[String], Array[TypeExpr], TypeExpr, Array[String])] = (stmts, name) -> {
+  let mut found = None
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exported, _, sname, ann, body) => {
+        if exported && sname == name {
+          found = wit_export_of_slet(sname, ann, body)
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+let rec wit_collect_effect_defs: (Array[Stmt], Array[String], Array[Array[(String, Array[TypeExpr], TypeExpr)]]) -> Unit = (stmts, out_names, out_ops) -> {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SEffectDef(_, name, _, ops) => {
+        if !wit_array_contains(out_names, name) {
+          Array::push(out_names, name)
+          Array::push(out_ops, ops)
+        }
+      },
+      SModule(_, _, inner) => wit_collect_effect_defs(inner, out_names, out_ops),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+export let wit_from_program: (Array[Stmt], Array[Stmt], String) -> String with { Error } = (export_stmts, effect_stmts, world_name) -> {
+  let eff_names = Array::slice([
+    ""
+  ], 0, 0)
+  let eff_ops = Array::slice([
+    Array::slice([
+      ("", Array::slice([
+        TyUnit
+      ], 0, 0), TyUnit)
+    ], 0, 0)
+  ], 0, 0)
+  wit_collect_effect_defs(effect_stmts, eff_names, eff_ops)
+  wit_collect_effect_defs(export_stmts, eff_names, eff_ops)
+  let exports = Array::slice([
+    ("", Array::slice([
+      ""
+    ], 0, 0), Array::slice([
+      TyUnit
+    ], 0, 0), TyUnit, Array::slice([
+      ""
+    ], 0, 0))
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(export_stmts) {
+    match Array::get(export_stmts, i) {
+      SLet(exported, _, name, ann, body) => {
+        if exported {
+          match wit_export_of_slet(name, ann, body) {
+            Some(ex) => Array::push(exports, ex),
+            None => ()
+          }
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  let used_effects = Array::slice([
+    ""
+  ], 0, 0)
+  let mut xi = 0
+  while xi < Array::length(exports) {
+    let (_xn, _xp, _xt, _xr, ex_effects) = Array::get(exports, xi)
+    let mut ei = 0
+    while ei < Array::length(ex_effects) {
+      let ename = Array::get(ex_effects, ei)
+      if ename != "Error" && !wit_array_contains(used_effects, ename) {
+        Array::push(used_effects, ename)
+      }
+      ei = ei + 1
+    }
+    xi = xi + 1
+  }
+  let sb = StringBuilder::new()
+  StringBuilder::push(sb, "package vibe:app;\n\nworld ")
+  StringBuilder::push(sb, wit_kebab_ident(world_name))
+  StringBuilder::push(sb, " {\n")
+  let mut ui = 0
+  while ui < Array::length(used_effects) {
+    let ename = Array::get(used_effects, ui)
+    let mut def_idx = 0 - 1
+    let mut di = 0
+    while di < Array::length(eff_names) {
+      if Array::get(eff_names, di) == ename {
+        def_idx = di
+      }
+      di = di + 1
+    }
+    if def_idx >= 0 {
+      StringBuilder::push(sb, "  import ")
+      StringBuilder::push(sb, wit_kebab_ident(ename))
+      StringBuilder::push(sb, ": interface {\n")
+      let ops = Array::get(eff_ops, def_idx)
+      let mut oi = 0
+      while oi < Array::length(ops) {
+        let (op_name, op_args, op_ret) = Array::get(ops, oi)
+        StringBuilder::push(sb, "    ")
+        StringBuilder::push(sb, wit_kebab_ident(op_name))
+        StringBuilder::push(sb, ": ")
+        StringBuilder::push(sb, wit_func_text(Array::slice([
+          ""
+        ], 0, 0), op_args, op_ret))
+        StringBuilder::push(sb, ";\n")
+        oi = oi + 1
+      }
+      StringBuilder::push(sb, "  }\n")
+    } else {
+      StringBuilder::push(sb, "  // host capability effect '")
+      StringBuilder::push(sb, ename)
+      StringBuilder::push(sb, "' (provided by the vibe runtime; no WIT mapping yet)\n")
+    }
+    ui = ui + 1
+  }
+  let mut xo = 0
+  while xo < Array::length(exports) {
+    let (ex_name, ex_param_names, ex_param_types, ex_ret, _ex_effects) = Array::get(exports, xo)
+    StringBuilder::push(sb, "  export ")
+    StringBuilder::push(sb, wit_kebab_ident(ex_name))
+    StringBuilder::push(sb, ": ")
+    StringBuilder::push(sb, wit_func_text(ex_param_names, ex_param_types, ex_ret))
+    StringBuilder::push(sb, ";\n")
+    xo = xo + 1
+  }
+  StringBuilder::push(sb, "}\n")
+  StringBuilder::freeze(sb)
+}
+let adapter_basename_no_vibe: (String) -> String = (path) -> {
+  let len = String::length(path)
+  let mut last_slash = 0 - 1
+  let mut i = 0
+  while i < len {
+    if String::char_code_at(path, i) == 47 {
+      last_slash = i
+    }
+    i = i + 1
+  }
+  let base = path[last_slash + 1: len]
+  let blen = String::length(base)
+  if blen >= 5 && base[blen - 5: blen] == ".vibe" {
+    base[0: blen - 5]
+  } else {
+    base
+  }
+}
 let join_lines: (Array[String]) -> String = (items) -> {
   let n = Array::length(items)
   if n == 0 {
@@ -43488,6 +44639,34 @@ let write_funcmap_sidecar: (String, String) -> Int with { Fs, Error } = (input_p
   Fs::write_bytes(String::concat(output_path, ".funcmap"), adapter_string_to_bytes(text))
   0
 }
+let adapter_emit_wit: (String, String) -> Int with { Fs, Env } = (input_path, output_path) -> {
+  handle {
+    let entry_stmts = parse_program(lex(Fs::read_file(input_path)))
+    let wit = wit_from_program(entry_stmts, entry_stmts, adapter_basename_no_vibe(input_path))
+    Fs::write_bytes(output_path, adapter_string_to_bytes(wit))
+    0
+  } with Error {
+    Throw(msg) => emit_compile_diag(output_path, msg)
+  }
+}
+let adapter_serve_component: (String, String) -> Int with { Fs, Env } = (input_path, output_path) -> {
+  handle {
+    let entry_stmts = parse_program(lex(Fs::read_file(input_path)))
+    validate_serve_handler(entry_stmts)
+    let core = compile_file_fs_mode(input_path, "__serve_component__", "no-dce")
+    let component = comp_emit_component_wasm_string_handler(core, "handler", "handler", serve_handler_param_names())
+    Fs::write_bytes(output_path, component)
+    let wit_out = Env::get("VIBE_SERVE_WIT_OUT")
+    if wit_out != "" {
+      Fs::write_bytes(wit_out, adapter_string_to_bytes(wit_from_program(entry_stmts, entry_stmts, adapter_basename_no_vibe(input_path))))
+    } else {
+      ()
+    }
+    0
+  } with Error {
+    Throw(msg) => emit_compile_diag(output_path, msg)
+  }
+}
 export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
   let input_path = own_host_string(read_arg_or_env(0, "VIBE_INPUT"))
   let output_path = own_host_string(read_arg_or_env(1, "VIBE_OUTPUT"))
@@ -43554,6 +44733,12 @@ export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
     let diags = collect_all_diagnostics(src)
     Fs::write_bytes(output_path, adapter_string_to_bytes(join_lines(diags)))
     return 0
+  }
+  if Env::get("VIBE_EMIT_WIT") == "1" {
+    return adapter_emit_wit(input_path, output_path)
+  }
+  if Env::get("VIBE_SERVE_COMPONENT") == "1" {
+    return adapter_serve_component(input_path, output_path)
   }
   let source = Fs::read_file(input_path)
   profile_memory_mark(mark_memory)

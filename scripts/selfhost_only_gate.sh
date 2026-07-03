@@ -2566,4 +2566,73 @@ fi
 rm -rf "$gcdir"
 echo "[selfhost-only-gate] wasm-gc backend smoke ok (90201)"
 
+# 40i. effect->WIT golden (#537): `vibe compile --wit` (adapter VIBE_EMIT_WIT=1)
+#      must render fixtures/wit_gen_http.vibe byte-exactly as the committed
+#      golden. Pins the WIT mapping contract (docs/effect-wit-mapping.md):
+#      declared effect -> inline interface import, host-capability effect ->
+#      comment marker, exported fns -> world exports, type mapping.
+echo "[selfhost-only-gate] 40i/40 effect->WIT golden (#537)"
+witdir="_build/_gate_wit"
+rm -rf "$witdir"; mkdir -p "$witdir"
+VIBE_EMIT_WIT=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/wit_gen_http.vibe" "$witdir/out.wit" main >/dev/null 2>&1
+if [ ! -s "$witdir/out.wit" ]; then
+  echo "[selfhost-only-gate] FAIL: VIBE_EMIT_WIT produced no output" >&2
+  cat "$witdir/out.wit.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! diff -u "fixtures/wit_gen_http.golden.wit" "$witdir/out.wit" >&2; then
+  echo "[selfhost-only-gate] FAIL: WIT output differs from fixtures/wit_gen_http.golden.wit. If the mapping contract changed intentionally, update the golden AND docs/effect-wit-mapping.md together." >&2
+  exit 1
+fi
+rm -rf "$witdir"
+echo "[selfhost-only-gate] effect->WIT golden ok"
+
+# 40j. `vibe serve` handler componentization (#537): the adapter's
+#      VIBE_SERVE_COMPONENT=1 step must turn the serve smoke handler into a
+#      valid component exporting
+#        handler: func(method, url, headers, body: string) -> string
+#      via the packed-string trampoline (component_codegen). Executed on
+#      wasmtime when available (the same auth check the full HTTP gate curls);
+#      otherwise only the emission is asserted.
+echo "[selfhost-only-gate] 40j/40 serve handler componentization (#537)"
+svdir="_build/_gate_serve"
+rm -rf "$svdir"; mkdir -p "$svdir"
+VIBE_SERVE_COMPONENT=1 VIBE_SERVE_WIT_OUT="$svdir/handler.wit" \
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/serve_handler_smoke.vibe" "$svdir/handler.component.wasm" main >/dev/null 2>&1
+if [ ! -s "$svdir/handler.component.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: VIBE_SERVE_COMPONENT produced no component" >&2
+  cat "$svdir/handler.component.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+sv_magic="$(od -An -t x1 -N 4 "$svdir/handler.component.wasm" | tr -d ' \n')"
+if [ "$sv_magic" != "0061736d" ]; then
+  echo "[selfhost-only-gate] FAIL: serve component is not wasm (magic=$sv_magic)" >&2
+  exit 1
+fi
+if [ ! -s "$svdir/handler.wit" ]; then
+  echo "[selfhost-only-gate] FAIL: VIBE_SERVE_WIT_OUT sidecar missing" >&2
+  exit 1
+fi
+SERVE_WASMTIME="$(bash scripts/wasmtime_bin.sh 2>/dev/null || command -v wasmtime || true)"
+if [ -n "$SERVE_WASMTIME" ] && "$SERVE_WASMTIME" --version >/dev/null 2>&1; then
+  sv_out="$("$SERVE_WASMTIME" run -W exceptions=y \
+    --invoke 'handler("GET", "/gate", "x-token: secret", "")' \
+    "$svdir/handler.component.wasm" 2>&1 | tail -1)"
+  case "$sv_out" in
+    *"ok:GET:/gate"*) ;;
+    *)
+      echo "[selfhost-only-gate] FAIL: serve component invoke got '$sv_out' (want 200 ok:GET:/gate). The packed-string trampoline (comp_emit_component_wasm_string_handler) no longer matches the linear-backend string ABI." >&2
+      exit 1
+      ;;
+  esac
+  echo "[selfhost-only-gate] serve handler componentization ok (invoked on wasmtime)"
+else
+  echo "[selfhost-only-gate] serve handler componentization ok (emission only; wasmtime unavailable)"
+fi
+rm -rf "$svdir"
+
 echo "[selfhost-only-gate] ok"

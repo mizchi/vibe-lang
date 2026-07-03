@@ -12,6 +12,7 @@ selfhost cutover; new command behavior should not be added there.
 |---------|----------|---------|
 | `build` | User | Produce a standalone `.wasm` binary from a `.vibe` file (debug or release) |
 | `compile` | User | Full-featured compilation with format selection (WASM, Component, WIT, IR, WAC) |
+| `serve` | User | Compile an HTTP handler + compose with the wasi-http P3 adapter + `wasmtime serve` (#537) |
 | `compile-lite` | Internal | Minimal compile path for strict performance benchmarking |
 | `precompile` | User (advanced) | Batch-compile a directory of `.vibe` modules to `.wasm` |
 | `compile-closure-payload` | Internal | Compile a materialized closure payload to WASM |
@@ -54,7 +55,8 @@ vibe compile --wasm-js-string <file.vibe>             # WASM with JS string buil
 vibe compile --wasm-gc <file.vibe>                    # WASM GC proposal
 vibe compile --component <file.vibe>                  # WASM Component Model
 vibe compile --component-string-lift <file.vibe>      # Component with string lifting
-vibe compile --wit <file.vibe>                        # Generate WIT interface
+vibe compile --wit <file.vibe>                        # Generate the WIT world for the file's
+                                                      #   effect surface (docs/effect-wit-mapping.md)
 vibe compile --wit-component <file.vibe>              # WIT + Component combined
 vibe compile --wac <file.vibe>                        # WAC composition
 vibe compile --compose-p3 --adapter a.wasm <file>     # P3 component composition
@@ -72,6 +74,38 @@ Output defaults to `dist/<basename>.<ext>`.
 
 - **Use `build`** for the common case: you want a `.wasm` file and don't need fine-grained control over the output format.
 - **Use `compile`** when you need a specific output format (Component Model, WIT, WAC, WASM-GC), coverage instrumentation, or other advanced options.
+
+### serve (#537)
+
+Serve a wasi-http P3 handler over HTTP: compile the handler to a component,
+compose it with the P3 HTTP adapter (`wac plug`), and launch `wasmtime serve`.
+
+```
+vibe serve <handler.vibe>                       # http://127.0.0.1:8080/
+vibe serve <handler.vibe> --port 9000
+vibe serve <handler.vibe> --addr 0.0.0.0:8080
+vibe serve <handler.vibe> --no-run              # emit component + WIT only
+vibe serve <handler.vibe> --adapter my.component.wasm
+```
+
+The handler contract (see [effect-wit-mapping.md](effect-wit-mapping.md)):
+
+```vibe
+export let handler = (method: String, url: String, headers: String, body: String) -> String
+```
+
+returning `"STATUS\n<Header: value lines>\n\n<body>"`. Internally the handler
+may use algebraic effects (`perform` / `handle`, e.g. `vibe/wasi/p3/`), as
+long as they are discharged inside the file.
+
+- Artifact generation lives in the compiler (`VIBE_SERVE_COMPONENT=1`); adapter
+  resolution, composition, and serving live in the launcher — the compiled
+  `<handler>.component.wasm` + `<handler>.wit` are reusable on their own.
+- Prerequisites for the serve step: `wac` (`cargo install wac-cli`) and
+  `wasmtime` (v45+). The P3 adapter component is built once by
+  `scripts/build_wasi_http_p3_full_adapter.sh` (cargo + wasm-tools) or passed
+  via `--adapter` / `VIBE_HTTP_ADAPTER`.
+- E2E gate: `scripts/test_wasi_http_p3_full_gate.sh`.
 
 ### precompile
 

@@ -610,14 +610,20 @@ tooling 不在時 skip）。
 - handler 戻り値の status untag は不要: vibe `Int`/`String` は default 経路で
   **raw**（untag 済み）で component 境界を渡る。
 
+**#537 で selfhost 経路化済み（2026-07）**: handler の componentize は selfhost
+compiler の `VIBE_SERVE_COMPONENT=1`（packed-string trampoline、
+`comp_emit_component_wasm_string_handler`、`(offset<<32)|len` の現行 string ABI
+に一致）に置き換え、compose は `wac plug`、起動は `runtime/vibe serve`。
+legacy `vibe.exe --compose-p3` 依存は解消（gate:
+`test_wasi_http_p3_full_gate.sh` selfhost 版）。effect→WIT surface は
+[../effect-wit-mapping.md](../effect-wit-mapping.md)。
+
 **未解決（architectural）**:
-- clean な `-> tuple<s64, string>` 返却は不可: host `--compose-p3` string-lift が
-  **single-value 返却のみ対応**で、vibe tuple が core で `(result i64 i64)` になり
-  trampoline の `(result i64)` と不一致（`target_func` type mismatch で serve
-  不能、実測）。そのため status+headers+body を単一文字列規約で符号化している。
-  本来の tuple/record 返却には string-lift 拡張 or selfhost compose が必要。
-- compose は host `--compose-p3`（`src/`、legacy）依存。selfhost compose 経路化、
-  trailers、client/proxy（outbound）経路は後続。
+- clean な `-> tuple<s64, string>` 返却は不可: string-lift trampoline が
+  **single-value 返却のみ対応**（vibe tuple は core で `(result i64 i64)`）。
+  そのため status+headers+body を単一文字列規約で符号化している。本来の
+  tuple/record 返却には trampoline の multi-value 拡張が必要。
+- trailers、client/proxy（outbound）経路は後続。
 
 ## 5. バージョン / WIT 整合（M0、本コミットで実施）
 

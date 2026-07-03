@@ -43,7 +43,7 @@ rc-bootstrap fixpoint + shape corpus で常時検証）。
 
 - [ ] **#535** post-cutover branch coverage gate 復帰
 - [ ] **#538** WASM-GC selfbuild P4 残 3 cases + P5 size optimization
-- [ ] **#537** WASI P3: effect → WIT mapping + `vibe serve`
+- [x] **#537** WASI P3: effect → WIT mapping + `vibe serve` — `vibe compile --wit` / `vibe serve` (launcher + adapter VIBE_EMIT_WIT / VIBE_SERVE_COMPONENT)、packed-string trampoline で selfhost componentize、wac plug + wasmtime serve。契約: docs/effect-wit-mapping.md、gate 40i/40j + test_wasi_http_p3_full_gate.sh
 - [ ] **#683** wasm-gc backend の実行検証ハーネス
 - [ ] **#639/#640** effect 診断の fix-it / Error の algebraic effect 化
 - [ ] **#644/#645/#646** post-GA debugger/diagnostics 残タスク
@@ -115,7 +115,7 @@ bootstrap / fallback として通常開発では触らない。
 - [ ] **CI branch coverage 70% gate** + normalize/DCE/loader テスト拡充 (§カバレッジ)
 - [ ] **SIMD codegen 本番化** — 0xFD prefix emit + `simd_skip_ws`/`simd_scan_alnum` builtin 化 (§vibe/wasm)
 - [ ] **#59 WASM-GC selfbuild ~350KB** — P4 残 3 ケース (simd_patterns / gc_only/index / selfhost_cli_gc_entry) + P5 DCE + wasm-opt
-- [ ] **WASI P3**: effect → WIT マッピング + `vibe serve`
+- [x] **WASI P3**: effect → WIT マッピング + `vibe serve` (#537, docs/effect-wit-mapping.md)
 - [ ] selfhost accumulator 残 2 sites (`linked_helpers.vibe` の `contains_name` 線形走査) — vibe runtime の Map が hash table 化するまで保留 (ROI ≪、§accumulator 撲滅)
 
 ### 🔵 リファクタ / 長期
@@ -151,7 +151,7 @@ bootstrap / fallback として通常開発では触らない。
 
 ### 🟡 機能追加
 
-- [ ] **WASI P3: effect → WIT マッピング + `vibe serve`**
+- [x] **WASI P3: effect → WIT マッピング + `vibe serve`** (#537)
 - [ ] **SIMD codegen 本番化** — selfhost codegen の 0xFD prefix emit + `simd_skip_ws` / `simd_scan_alnum` 組込
 - [ ] **#59 WASM-GC selfbuild ~350KB** — P4 compile E2E の残 3 ケース（simd_patterns / gc_only/index / selfhost_cli_gc_entry）+ P5 DCE + wasm-opt
 - [x] **pkfire / pkspec 全面導入** — `justfile` を完全削除し `pkfire/Taskfile.pkl` (238 tasks) が canonical。複雑な多行レシピは `scripts/pkfire/*.sh` に抽出。CI は `pkf run` 経由 + `~/.cache/pkfire` を `actions/cache` でキャッシュ。`pkspec/{VibeSpec,VibeTest}.pkl` で `pkspec check` 通る、PR 用 informational gate あり。次は (a) `pkf affected --since=origin/main 'test:*'` を CI の PR 高速化パスに組み込む (b) `pkspec exec` で `moon test` を pkspec 経由で回す
@@ -447,7 +447,7 @@ StringBuilder/ArrayBuilder) に置換する。
 - [x] throw(x) → Perform("Error", "Throw", [x]) desugar
 - [x] suberror の throw を Error effect 経由に統一
 - [x] Net → fine-grained capability effects (Http, Socket 個別化、Net は super-effect)
-- [ ] WASI P3: effect → WIT マッピング、vibe serve コマンド
+- [x] WASI P3: effect → WIT マッピング、vibe serve コマンド (#537)
 
 ## vibe/wasm ツールチェーン
 
