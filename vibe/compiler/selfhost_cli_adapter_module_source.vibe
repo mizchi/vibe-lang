@@ -42391,7 +42391,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "afe4a7ec5d72a094"
+  "bf09837806ea6fc6"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647
@@ -44393,6 +44393,27 @@ let desugar_contract_source_fs: (String, String) -> String with { Error, Fs } = 
   } else ()
   contract_facade_source(decls, impl_units)
 }
+let enforce_incoming_boundary_fs: (String, String) -> Unit with { Error, Fs } = (importer, target) -> {
+  let tlen = String::length(target)
+  let mut p = 0
+  while p < tlen {
+    if String::char_code_at(target, p) == '/' && p > 0 {
+      let dir = target[0:p]
+      let contract = String::concat(dir, "/index.vibei")
+      if target == contract {
+        ()
+      } else if Fs::exists(contract) {
+        let dir_prefix = String::concat(dir, "/")
+        if String::starts_with(importer, dir_prefix) {
+          ()
+        } else {
+          throw("cannot import \{target} from outside its package boundary \{dir} (#729); import \{dir} (its contract) instead")
+        }
+      } else ()
+    } else ()
+    p = p + 1
+  }
+}
 let rec collect_sources_rec: (String, Array[(String, String)], Array[Array[String]]) -> Unit with { Error, Fs } = (path, sources, visited) -> {
   if path_set_contains(visited, path) {
     ()
@@ -44408,7 +44429,9 @@ let rec collect_sources_rec: (String, Array[(String, String)], Array[Array[Strin
     let (deps, _, _) = load_or_parse_module_header_fs(path, source, 0)
     let mut i = 0
     while i < Array::length(deps) {
-      collect_sources_rec(Array::get(deps, i), sources, visited)
+      let dep = Array::get(deps, i)
+      enforce_incoming_boundary_fs(path, dep)
+      collect_sources_rec(dep, sources, visited)
       i = i + 1
     }
     Array::push(sources, (path, source))

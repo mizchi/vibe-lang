@@ -173,6 +173,37 @@ fi
 rm -rf "$ndir"
 echo "[selfhost-only-gate] normalize regression ok"
 
+# 6b. contract package regression (#729): an index.vibei contract package must
+#     resolve via a bare directory import (conformance-check + facade desugar,
+#     end to end through the current stage2), and its internals must NOT be
+#     importable from outside the boundary (incoming enforcement, Phase C-3).
+echo "[selfhost-only-gate] 6b contract package + boundary regression (#729)"
+cdir="_build/_gate_contract"
+rm -rf "$cdir"; mkdir -p "$cdir/pkg"
+printf 'import ./impl.vibe {}\nfn add(x: Int, y: Int) -> Int\n' > "$cdir/pkg/index.vibei"
+printf 'export fn add(x: Int, y: Int) -> Int { x + y }\n' > "$cdir/pkg/impl.vibe"
+printf 'import ./pkg { add }\nexport let _start: () -> Int = () -> { add(40, 2) }\n' > "$cdir/ok.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$cdir/ok.vibe" "$cdir/ok.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$cdir/ok.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: contract package import did not compile (#729)" >&2
+  cat "$cdir/ok.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+printf 'import ./pkg/impl.vibe { add }\nexport let _start: () -> Int = () -> { add(40, 2) }\n' > "$cdir/bad.vibe"
+if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$cdir/bad.vibe" "$cdir/bad.wasm" _start >/dev/null 2>&1 \
+  && [ -s "$cdir/bad.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: package-internal import crossed the boundary (#729)" >&2; exit 1
+fi
+if ! grep -q "package boundary" "$cdir/bad.wasm.diag" 2>/dev/null; then
+  echo "[selfhost-only-gate] FAIL: boundary rejection lacks the expected diagnostic (#729)" >&2
+  cat "$cdir/bad.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+rm -rf "$cdir"
+echo "[selfhost-only-gate] contract package + boundary regression ok"
+
 # 7. literal sub-pattern regression (#603): a literal (PInt/PString) argument of a
 #    constructor pattern must be tested, not just the tag — `I("x")` must not
 #    match `I("y")`, `I(1)` must not match `I(2)`. Guards the match-codegen fix.
