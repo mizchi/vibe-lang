@@ -37,7 +37,10 @@ rc-bootstrap fixpoint + shape corpus で常時検証）。
   同名 / builtin 名衝突）を merge 時に `name_exp_<path>` へ rename し、import
   している側の参照だけ書き換える（re-export facade 追従、entry の export 面と
   linked-library ABI は不変）。全 export の完全な可視性強制（未 import 名の
-  非 ambiguous な leak 解消）は seed bump 後の後続ステージ。副産物として
+  非 ambiguous な leak 解消）も seed bump `merge-visibility-716-2026-07-03`
+  を経て 2026-07-03 に landing 済み（非 entry の exported def は全 rename）。
+  残件: committed flat bundle は Python flattener 製で merge machinery を
+  通らず 45 dup def が残る → 別 issue。副産物として
   top-level 関数エイリアス (`export let eq = float_eq`) の呼び出しが不正 wasm を
   生むバグと、RC lane の float 型 param `==` がポインタ比較になるバグも修正
   （rc-corpus default-pass 22→27）。
