@@ -43,6 +43,22 @@ fi
 seed="$ROOT_DIR/bootstrap/selfhost/seed/selfhost_compiler.wasm"
 outdir="$ROOT_DIR/_build/vibe_test"
 mkdir -p "$outdir"
+
+# #683: VIBE_TEST_BACKEND=gc compiles each test file on the wasm-gc backend
+# (VIBE_BACKEND=gc, direct single-file compile — no FS import resolution) and
+# runs it under wasmtime with the gc feature flags instead of the node host
+# runner. Self-contained *_test.vibe files only; files with imports fail to
+# compile on this lane. Not combinable with --coverage (linear-only
+# instrumentation).
+backend="${VIBE_TEST_BACKEND:-linear}"
+if [ "$backend" = "gc" ] && [ "$coverage" = "1" ]; then
+  echo "vibe_test.sh: --coverage is linear-backend only (unset VIBE_TEST_BACKEND=gc)" >&2
+  exit 2
+fi
+# VIBE_TEST_CLI_WASM overrides the compiling CLI (default: the committed
+# seed). The gc lane's test-block lowering (#683) postdates older seeds, so
+# gc runs typically pass a freshly built stage2 here.
+cli_wasm="${VIBE_TEST_CLI_WASM:-$seed}"
 covdir="$outdir/coverage"
 if [ "$coverage" = "1" ]; then
   mkdir -p "$covdir"
@@ -86,9 +102,15 @@ for src in "${files[@]}"; do
   # Compile with a sentinel entry name that does not exist in the file, so the
   # compiler takes the no-entry path and emits a test-running `_start`.
   # VIBE_COVERAGE=$coverage selects the instrumented codegen when --coverage.
-  if ! VIBE_COVERAGE="$coverage" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  # VIBE_TEST_BACKEND=gc: single-file wasm-gc compile (no VIBE_FS_COMPILE).
+  if [ "$backend" = "gc" ]; then
+    compile_env=(VIBE_BACKEND=gc)
+  else
+    compile_env=(VIBE_FS_COMPILE=1)
+  fi
+  if ! env VIBE_COVERAGE="$coverage" VIBE_PREOPEN_DIR="$ROOT_DIR" "${compile_env[@]}" VIBE_SELFHOST_IMPORT_ABI=raw \
       bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" \
-      --invoke cli_main "$seed" "$src_rel" "$out_rel" "__vibe_test_no_entry__" \
+      --invoke cli_main "$cli_wasm" "$src_rel" "$out_rel" "__vibe_test_no_entry__" \
       >/dev/null 2>&1 || [ ! -s "$ROOT_DIR/$out_rel" ]; then
     echo "FAIL (compile) $src_rel"
     fail=$((fail + 1))
@@ -99,9 +121,20 @@ for src in "${files[@]}"; do
   if [ "$coverage" = "1" ]; then
     cov_out="$covdir/$flat.json"
   fi
-  if VIBE_COV_OUT="$cov_out" VIBE_PREOPEN_DIR="$ROOT_DIR" \
-      bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" \
-      --invoke _start "$out_rel" >/dev/null 2>&1; then
+  run_ok=0
+  if [ "$backend" = "gc" ]; then
+    if timeout 60 wasmtime run -W gc=y,function-references=y,exceptions=y \
+        --invoke _start "$ROOT_DIR/$out_rel" >/dev/null 2>&1; then
+      run_ok=1
+    fi
+  else
+    if VIBE_COV_OUT="$cov_out" VIBE_PREOPEN_DIR="$ROOT_DIR" \
+        bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" \
+        --invoke _start "$out_rel" >/dev/null 2>&1; then
+      run_ok=1
+    fi
+  fi
+  if [ "$run_ok" = "1" ]; then
     if [ "$coverage" = "1" ] && [ -s "$cov_out" ]; then
       # Accumulate + print this file's function/branch coverage.
       read -r f_hit f_total b_hit b_total < <(python3 - "$cov_out" <<'PY'

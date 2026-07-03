@@ -284,6 +284,27 @@ if [ -s "$BUNDLE_OUT" ]; then
   fi
 fi
 
+# --- 5. gc runtime test fixtures (#683) ---------------------------------------
+# Compile *_test.vibe fixtures on the wasm-gc backend (test-block lowering in
+# compile_source_gc_only) and run them under wasmtime — the runtime
+# verification harness #683 asked for. Structural ==/!= coverage lives in
+# fixtures/eq_structural_aggregates.vibe.
+echo
+echo "[gc-selfbuild] gc runtime test fixtures (#683):"
+gcfx_log="$OUT_DIR/gc_fixtures.log"
+if VIBE_TEST_CLI_WASM="$CLI_WASM" VIBE_TEST_BACKEND=gc \
+    bash "$ROOT_DIR/scripts/vibe_test.sh" \
+    fixtures/eq_structural_aggregates.vibe \
+    fixtures/map_builder_growth_test.vibe \
+    fixtures/struct_field_collision_test.vibe > "$gcfx_log" 2>&1; then
+  sed 's/^/[gc-selfbuild]   /' "$gcfx_log"
+  echo "[gc-selfbuild] gc runtime fixtures ok"
+else
+  sed 's/^/[gc-selfbuild]   /' "$gcfx_log"
+  echo "[gc-selfbuild] gc runtime fixtures FAILED"
+  fail=$((fail+1))
+fi
+
 echo
 echo "[gc-selfbuild] done ($pass/$((pass+fail)) probes)"
 # Informational tool: report, don't gate.

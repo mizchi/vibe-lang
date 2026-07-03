@@ -1,0 +1,101 @@
+// #672 / #683: structural ==/!= over aggregates, runtime-verified on BOTH
+// backends. Covers the shapes the landed #672 support handles: comparisons
+// where AT LEAST ONE side is a tuple / ctor literal (the structural
+// comparator needs a statically-known shape). Run on the wasm-gc lane via
+//   VIBE_TEST_CLI_WASM=<stage2> VIBE_TEST_BACKEND=gc \
+//     bash scripts/vibe_test.sh fixtures/eq_structural_aggregates.vibe
+// (the gc selfbuild gate does exactly this — scripts/test_gc_selfbuild.sh).
+//
+// KNOWN GAP (surfaced the moment this harness existed, consistent across
+// bump/RC/gc): `a == b` where BOTH sides are non-literal aggregate bindings
+// (`let a = (1, 2)  let b = (1, 2)  a == b`) falls through to the generic
+// runtime `eq`, which pointer-compares tuples (bump tuples carry no header
+// to walk) — so it returns false for equal values. Tracked as a follow-up
+// issue; do not add both-sides-bound cases here until that lands.
+
+struct PtEq {
+  px: Int;
+  py: String
+}
+
+enum ShapeEq {
+  SCircleEq(Int);
+  SRectEq(Int, Int);
+  SEmptyEq
+}
+
+let mk_pt: (Int, String) -> PtEq = (a, b) -> {
+  PtEq::{ px: a, py: b }
+}
+
+let mk_shape: (Int) -> ShapeEq = (n) -> {
+  if n == 0 {
+    SEmptyEq
+  } else if n == 1 {
+    SCircleEq(7)
+  } else {
+    SRectEq(3, 4)
+  }
+}
+
+test "tuple structural eq (literal one side)" {
+  let a = (1, "x", 2)
+  assert(a == (1, "x", 2))
+  assert(a != (1, "y", 2))
+  assert((1, "x", 2) == a)
+}
+
+// NOTE: whole-value comparison of NESTED aggregates (`a == ((1,2),("s",3))`)
+// is also part of the known gap above — the structural walk compares
+// nested elements through the generic runtime `eq` (pointer compare).
+// Compare the inner aggregates one level at a time instead.
+test "nested tuple structural eq via projections" {
+  let a = ((1, 2), ("s", 3))
+  assert(a.0 == (1, 2))
+  assert(a.1 == ("s", 3))
+  assert(a.0 != (1, 9))
+}
+
+test "struct value from a call vs record literal" {
+  let a = mk_pt(5, "p")
+  assert(a == PtEq::{ px: 5, py: "p" })
+  assert(a != PtEq::{ px: 5, py: "q" })
+}
+
+test "payload ctor structural eq" {
+  let a = mk_shape(2)
+  let b = SRectEq(3, 4)
+  let c = SRectEq(3, 5)
+  assert(a == b)
+  assert(a != c)
+}
+
+test "nullary ctor eq and cross-variant neq" {
+  assert(mk_shape(0) == SEmptyEq)
+  assert(mk_shape(1) != SEmptyEq)
+  assert(mk_shape(1) == SCircleEq(7))
+  assert(mk_shape(1) != SCircleEq(8))
+}
+
+test "option structural eq (scalar payload, literal one side)" {
+  let a = Some(41)
+  assert(a == Some(41))
+  assert(a != Some(42))
+  assert(a != None)
+  let s = Some("k")
+  assert(s == Some("k"))
+  assert(s != Some("j"))
+}
+
+test "eq result feeds control flow" {
+  let xs = [mk_shape(0), mk_shape(1), mk_shape(2)]
+  let mut hits = 0
+  for s in xs {
+    if s == SCircleEq(7) {
+      hits = hits + 1
+    } else {
+      0
+    }
+  }
+  assert_eq(hits, 1)
+}

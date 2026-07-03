@@ -40842,14 +40842,66 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
   }
   bytebuf_to_bytes(out)
 }
+let lower_test_blocks_gc: (Array[Stmt], String) -> String with { Error } = (stmts, entry_name) -> {
+  let empty_tp = Array::slice([
+    ""
+  ], 0, 0)
+  let empty_bounds = Array::slice([
+    ("", Array::slice([
+      ""
+    ], 0, 0))
+  ], 0, 0)
+  let empty_params = Array::slice([
+    ("", None)
+  ], 0, 0)
+  let test_fn_names = Array::slice([
+    ""
+  ], 0, 0)
+  let mut has_entry = false
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STest(tname, tbody) => {
+        let test_fn = String::concat("__test_", tname)
+        Array::push(test_fn_names, test_fn)
+        Array::set(stmts, i, SLet(false, false, test_fn, None, EFn(empty_tp, empty_bounds, empty_params, None, None, ESeq(tbody, EInt(0)))))
+      },
+      SBench(bname, bbody) => {
+        let bench_fn = String::concat("__bench_", bname)
+        Array::push(test_fn_names, bench_fn)
+        Array::set(stmts, i, SLet(false, false, bench_fn, None, EFn(empty_tp, empty_bounds, empty_params, None, None, ESeq(bbody, EInt(0)))))
+      },
+      SLet(_, _, name, _, _) => if name == entry_name {
+        has_entry = true
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  if has_entry || Array::length(test_fn_names) == 0 {
+    entry_name
+  } else {
+    let mut body = EInt(0)
+    let mut ti = Array::length(test_fn_names) - 1
+    while ti >= 0 {
+      body = ESeq(ECall(EIdent(Array::get(test_fn_names, ti), 0 - 1), Array::slice([
+        EUnit
+      ], 0, 0), 0 - 1), body)
+      ti = ti - 1
+    }
+    Array::push(stmts, SLet(true, false, "_start", None, EFn(empty_tp, empty_bounds, empty_params, None, None, body)))
+    "_start"
+  }
+}
 export let compile_source_gc_only: (String, String) -> Bytes with { Error } = (source, entry_name) -> {
   let tokens = lex(source)
   let stmts = parse_program(tokens)
   expand_interp_stmts(stmts)
+  let effective_entry = lower_test_blocks_gc(stmts, entry_name)
   let _ = check_program(stmts)
   strip_generic_type_params(stmts)
   desugar_trait_dicts(stmts)
-  compile_wasi_module_gc(stmts, entry_name)
+  compile_wasi_module_gc(stmts, effective_entry)
 }
 export let build_module_source_from_source: (String, String) -> String with { Error } = (source, entry_name) -> {
   let lexed = lex_with_offsets(source)
@@ -41082,7 +41134,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "41de67c582ce0162"
+  "1baecb81bcf5fd55"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647
