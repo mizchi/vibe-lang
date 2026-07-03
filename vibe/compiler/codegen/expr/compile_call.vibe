@@ -2395,9 +2395,14 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       next_local + 1
     }
     else if fname == "MapBuilder::set" {
-      // Append-only (linear lane semantics). Grows storage ×2 when full —
-      // see the layout note on MapBuilder::new. The old grown storage block
-      // is leaked (bump discipline; geometric growth bounds the waste).
+      // Update-or-append: an existing key's value is updated in place (the
+      // gc lane always did this; the linear lane used to blind-append, so a
+      // duplicate key left BOTH entries and Map::get's first-match returned
+      // the STALE value — a silent cross-backend semantics divergence).
+      // Grows storage x2 when a genuine append finds it full — see the layout
+      // note on MapBuilder::new. The old grown storage block is leaked
+      // (bump discipline; geometric growth bounds the waste).
+      let (mbs_eq_fi, _, _) = resolve_func(ctx.func_table, "eq")
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
@@ -2408,6 +2413,8 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       let cap_l = nl + 4
       let st_l = nl + 5
       let ns_l = nl + 6
+      let mi_l = nl + 7
+      let found_l = nl + 8
       Array::push(local_names, "__mbs_map")
       Array::push(local_names, "__mbs_key")
       Array::push(local_names, "__mbs_val")
@@ -2415,6 +2422,8 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       Array::push(local_names, "__mbs_cap")
       Array::push(local_names, "__mbs_st")
       Array::push(local_names, "__mbs_ns")
+      Array::push(local_names, "__mbs_i")
+      Array::push(local_names, "__mbs_found")
       emit_local_set(buf, mv_l)
       emit_local_set(buf, mk_l)
       emit_local_set(buf, mb_l)
@@ -2436,6 +2445,53 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_i32_wrap_i64(buf)
       emit_i64_load(buf, 3, 8)
       emit_local_set(buf, st_l)
+      // search for an existing key (entries: key@+0, value@+8)
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, mi_l)
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, found_l)
+      emit_block_void(buf)
+      emit_loop_void(buf)
+      emit_local_get(buf, mi_l)
+      emit_local_get(buf, mc_l)
+      emit_i64_ge_s(buf)
+      emit_br_if(buf, 1)
+      emit_local_get(buf, st_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, mi_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_i64_load(buf, 3, 0)
+      emit_local_get(buf, mk_l)
+      emit_call(buf, mbs_eq_fi)
+      emit_i32_wrap_i64(buf)
+      emit_if_void(buf)
+      emit_local_get(buf, st_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, mi_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_local_get(buf, mv_l)
+      emit_i64_store(buf, 3, 8)
+      emit_i64_const(buf, 1)
+      emit_local_set(buf, found_l)
+      emit_br(buf, 2)
+      emit_end(buf)
+      emit_local_get(buf, mi_l)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_local_set(buf, mi_l)
+      emit_br(buf, 0)
+      emit_end(buf)
+      emit_end(buf)
+      // not found: append (growing storage when full)
+      emit_local_get(buf, found_l)
+      emit_i64_eqz(buf)
+      emit_if_void(buf)
       // grow when count == cap: fresh storage of cap*2 entries, copy, swap
       emit_local_get(buf, mc_l)
       emit_local_get(buf, cap_l)
@@ -2501,8 +2557,9 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_i64_add(buf)
       emit_i32_wrap_i64(buf)
       emit_i32_store(buf, 2, 0)
+      emit_end(buf)
       emit_i64_const(buf, 0)
-      nl + 7
+      nl + 9
     }
     else if fname == "MapBuilder::freeze" {
       // Copy the handle's entries into a fresh plain Map block — freeze can
@@ -2555,6 +2612,39 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_memory_copy(buf)
       emit_local_get(buf, fm_l)
       nl + 3
+    }
+    else if ctx.enable_rc && (fname == "Env::args_len" || fname == "Env::args_get" || fname == "Fs::exists" || fname == "Fs::stat_token" || fname == "Profiler::now_us" || fname == "Profiler::NowUs" || fname == "Stdin::read_char") {
+      // #705: the raw-ABI host imports speak UNTAGGED integers, but RC values
+      // are tagged (n<<1). These builtins alias their import function
+      // directly, so the generic call path handed the import a TAGGED index
+      // (`Env::args_get(1)` fetched argv[2] — the RC-built compiler wrote its
+      // output to a file named after the ENTRY argument) and treated raw int
+      // results as tagged (halving `Fs::stat_token`/`args_len`). Untag the
+      // int param / tag the int result around the call. String params and
+      // results are packed (ptr<<32)|len in both modes and pass through.
+      // (`sleep`'s (i64)->() import still lacks this shim — it is shadowable
+      // by user code and returns nothing; tracked with #705.)
+      let (hi_idx, _, _) = resolve_func(ctx.func_table, fname)
+      let mut nl = next_local
+      if Array::length(args) > 0 {
+        nl = ce(buf, Array::get(args, 0), local_names, nl, ctx, ld)
+        if fname == "Env::args_get" {
+          emit_i64_const(buf, 1)
+          emit_i64_shr_s(buf)
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      emit_call(buf, hi_idx)
+      if fname == "Env::args_get" {
+        ()
+      } else {
+        emit_i64_const(buf, 1)
+        emit_i64_shl(buf)
+      }
+      nl
     }
     else if fname == "__rec_field" {
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)

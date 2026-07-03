@@ -29842,6 +29842,7 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       next_local + 1
     }
     else if fname == "MapBuilder::set" {
+      let (mbs_eq_fi, _, _) = resolve_func(ctx.func_table, "eq")
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
@@ -29852,6 +29853,8 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       let cap_l = nl + 4
       let st_l = nl + 5
       let ns_l = nl + 6
+      let mi_l = nl + 7
+      let found_l = nl + 8
       Array::push(local_names, "__mbs_map")
       Array::push(local_names, "__mbs_key")
       Array::push(local_names, "__mbs_val")
@@ -29859,6 +29862,8 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       Array::push(local_names, "__mbs_cap")
       Array::push(local_names, "__mbs_st")
       Array::push(local_names, "__mbs_ns")
+      Array::push(local_names, "__mbs_i")
+      Array::push(local_names, "__mbs_found")
       emit_local_set(buf, mv_l)
       emit_local_set(buf, mk_l)
       emit_local_set(buf, mb_l)
@@ -29880,6 +29885,51 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_i32_wrap_i64(buf)
       emit_i64_load(buf, 3, 8)
       emit_local_set(buf, st_l)
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, mi_l)
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, found_l)
+      emit_block_void(buf)
+      emit_loop_void(buf)
+      emit_local_get(buf, mi_l)
+      emit_local_get(buf, mc_l)
+      emit_i64_ge_s(buf)
+      emit_br_if(buf, 1)
+      emit_local_get(buf, st_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, mi_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_i64_load(buf, 3, 0)
+      emit_local_get(buf, mk_l)
+      emit_call(buf, mbs_eq_fi)
+      emit_i32_wrap_i64(buf)
+      emit_if_void(buf)
+      emit_local_get(buf, st_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, mi_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_local_get(buf, mv_l)
+      emit_i64_store(buf, 3, 8)
+      emit_i64_const(buf, 1)
+      emit_local_set(buf, found_l)
+      emit_br(buf, 2)
+      emit_end(buf)
+      emit_local_get(buf, mi_l)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_local_set(buf, mi_l)
+      emit_br(buf, 0)
+      emit_end(buf)
+      emit_end(buf)
+      emit_local_get(buf, found_l)
+      emit_i64_eqz(buf)
+      emit_if_void(buf)
       emit_local_get(buf, mc_l)
       emit_local_get(buf, cap_l)
       emit_i64_eq(buf)
@@ -29943,8 +29993,9 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_i64_add(buf)
       emit_i32_wrap_i64(buf)
       emit_i32_store(buf, 2, 0)
+      emit_end(buf)
       emit_i64_const(buf, 0)
-      nl + 7
+      nl + 9
     }
     else if fname == "MapBuilder::freeze" {
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
@@ -29995,6 +30046,29 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_memory_copy(buf)
       emit_local_get(buf, fm_l)
       nl + 3
+    }
+    else if ctx.enable_rc && (fname == "Env::args_len" || fname == "Env::args_get" || fname == "Fs::exists" || fname == "Fs::stat_token" || fname == "Profiler::now_us" || fname == "Profiler::NowUs" || fname == "Stdin::read_char") {
+      let (hi_idx, _, _) = resolve_func(ctx.func_table, fname)
+      let mut nl = next_local
+      if Array::length(args) > 0 {
+        nl = ce(buf, Array::get(args, 0), local_names, nl, ctx, ld)
+        if fname == "Env::args_get" {
+          emit_i64_const(buf, 1)
+          emit_i64_shr_s(buf)
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      emit_call(buf, hi_idx)
+      if fname == "Env::args_get" {
+        ()
+      } else {
+        emit_i64_const(buf, 1)
+        emit_i64_shl(buf)
+      }
+      nl
     }
     else if fname == "__rec_field" {
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
@@ -41653,7 +41727,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "f20809bcb057826c"
+  "59b0b4adbbc86fc0"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647
