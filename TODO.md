@@ -114,7 +114,7 @@ bootstrap / fallback として通常開発では触らない。
 
 - [ ] **CI branch coverage 70% gate** + normalize/DCE/loader テスト拡充 (§カバレッジ)
 - [ ] **SIMD codegen 本番化** — 0xFD prefix emit + `simd_skip_ws`/`simd_scan_alnum` builtin 化 (§vibe/wasm)
-- [ ] **#59 WASM-GC selfbuild ~350KB** — P4 compile E2E 達成 (966KB valid, #538)。残: P4.5 run E2E + P5 DCE + wasm-opt
+- [ ] **#59 WASM-GC selfbuild 小型配布形** — P4 compile E2E 達成 (966KB valid, #538)。残: P4.5 run E2E + P5 DCE + wasm-opt。サイズ目標は初回リリース後に現実的な値を再設定（旧 ~350KB 目標は撤回）
 - [x] **WASI P3**: effect → WIT マッピング + `vibe serve` (#537, docs/effect-wit-mapping.md)
 - [ ] selfhost accumulator 残 2 sites (`linked_helpers.vibe` の `contains_name` 線形走査) — vibe runtime の Map が hash table 化するまで保留 (ROI ≪、§accumulator 撲滅)
 
@@ -153,7 +153,7 @@ bootstrap / fallback として通常開発では触らない。
 
 - [x] **WASI P3: effect → WIT マッピング + `vibe serve`** (#537)
 - [ ] **SIMD codegen 本番化** — selfhost codegen の 0xFD prefix emit + `simd_skip_ws` / `simd_scan_alnum` 組込
-- [ ] **#59 WASM-GC selfbuild ~350KB** — P4 compile E2E 達成 (966KB valid, #538)。残: P4.5 run E2E + P5 DCE + wasm-opt
+- [ ] **#59 WASM-GC selfbuild 小型配布形** — P4 compile E2E 達成 (966KB valid, #538)。残: P4.5 run E2E + P5 DCE + wasm-opt。サイズ目標は初回リリース後に現実的な値を再設定（旧 ~350KB 目標は撤回）
 - [x] **pkfire / pkspec 全面導入** — `justfile` を完全削除し `pkfire/Taskfile.pkl` (238 tasks) が canonical。複雑な多行レシピは `scripts/pkfire/*.sh` に抽出。CI は `pkf run` 経由 + `~/.cache/pkfire` を `actions/cache` でキャッシュ。`pkspec/{VibeSpec,VibeTest}.pkl` で `pkspec check` 通る、PR 用 informational gate あり。次は (a) `pkf affected --since=origin/main 'test:*'` を CI の PR 高速化パスに組み込む (b) `pkspec exec` で `moon test` を pkspec 経由で回す
 
 ### 🔵 リファクタ / 長期
@@ -492,7 +492,7 @@ StringBuilder/ArrayBuilder) に置換する。
 
 - [ ] MoonBit host CLI を bootstrap 専用へ縮退
 - [ ] selfhost perf gap を cutover 水準まで詰める
-- [ ] GC backend セルフコンパイルで ~350KB 配布形 (#59)
+- [ ] GC backend セルフコンパイルで小型配布形 (#59) — サイズ目標は初回リリース後に現実的な値を再設定（旧 ~350KB は撤回）
   - [x] **P0: Enum/Variant codegen** — per-variant struct `[i32 tag, payload...]`, ref.test + ref.cast pattern match
   - [x] **P1: Bytes mutable ops** — struct `(len, cap, data)` wrapper, 12 ops (new/push/set/get/append/blit/fill/slice/concat/from_array/to_array/length)
   - [x] **P2: Record/Struct pattern** — Pat::Struct or-pattern with Pat::Record, Tuple binding
@@ -522,9 +522,10 @@ StringBuilder/ArrayBuilder) に置換する。
     perform → canonical builtin lowering / resolve 済み call の env 引数 (user-shadowed builtin 対応) /
     ref cell の linear-memory 化 (mut-capture closure) / Error handle の try_table + throw tag (#721 gating)
   - [ ] **P4.5: run E2E** — gc-compiled compiler はまだ自走しない (起動時 trap)。次の frontier。
-  - [ ] **P5: DCE + wasm-opt** — baseline 確保: raw 966KB (-62% vs linear)。~350KB へは
+  - [ ] **P5: DCE + wasm-opt** — baseline 確保: raw 966KB (-62% vs linear)。縮小手段は
     `core/dce.vibe` を gc path に適用 + `vibe/wasm/wasm_opt` post-pass
     (compiler への直接結合は +700KB & seed 不能 — docs/wasm-opt-dogfood.md)。
+    数値目標は置かない（初回リリース後に現実的な値を設定）。
     メモ: wasm_opt の FS-linked compile は linear lane の FixedArray::make 未解決で現状ブロック
 - [ ] `vibe/compiler` の論理分割
   - [x] `loader/index.vibe` の manifest traversal を shared helper に寄せ、source list/source groups の二重 BFS を削減する

@@ -5,8 +5,8 @@ set -uo pipefail
 #
 # The end goal is compiling the WHOLE compiler (the flat module-source bundle)
 # with the wasm-gc backend (VIBE_BACKEND=gc) to get a small distribution
-# artifact (~350KB after DCE + wasm-opt, #59/#538). This script measures how
-# far the gc lane gets today, in two parts:
+# artifact (#59/#538; a concrete size target will be set after the first
+# release). This script measures how far the gc lane gets today, in two parts:
 #
 #   1. FEATURE PROBES — small programs, one language feature each. Every probe
 #      is compiled AND (when it compiles) run on wasmtime with gc flags, and
