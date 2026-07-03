@@ -1,0 +1,37 @@
+// #725: the RC epilogue owed EXACTLY ONE compensating drop for a
+// loop-protected param consume (the per-iteration dup at the call site is
+// matched by the callee's own drop — net zero), but it emitted one drop PER
+// TEXTUAL SITE. A second consume site in a sibling match arm — even one that
+// never executes, like the `export {}` facade-idiom arm here when the input
+// has no `export {}` statements — over-released the CALLER's array and
+// poisoned the RC free list. `vibe test` compiles with the production
+// default (RC), so these assertions exercise the fixed epilogue; they used
+// to fail with corrupted plan contents (and, before #716's fixes, an OOB).
+
+import ../vibe/compiler/syntax/lexer.vibe {
+  lex
+}
+
+import ../vibe/compiler/syntax/parser.vibe {
+  parse_program
+}
+
+import ../vibe/compiler/syntax/import_alias_rewrite.vibe {
+  build_export_rename_plan, export_plan_rename_count, export_plan_renames_for
+}
+
+test "re-export plan survives RC compilation of its builder (#725)" {
+  let a_stmts = parse_program(lex("export let eq: (Float, Float) -> Bool = (x, y) -> { true }\nexport let uniq_a: () -> Int = () -> { 1 }"))
+  let b_stmts = parse_program(lex("export let eq = (a: Int, b: Int) -> Bool { a == b }"))
+  let f_stmts = parse_program(lex("export ./a.vibe { eq }"))
+  let e_stmts = parse_program(lex("import ./a.vibe { eq }\nimport ./f.vibe { eq as feq }\nlet r = eq(1.0, 2.0)"))
+  let plan = build_export_rename_plan(["/p/a.vibe", "/p/b.vibe", "/p/f.vibe", "/p/e.vibe"], [a_stmts, b_stmts, f_stmts, e_stmts], "/p/e.vibe")
+  // a.eq + b.eq (dup + builtin collision) + the facade closure entry.
+  assert_eq(export_plan_rename_count(plan), 3)
+  let ra = export_plan_renames_for(plan, "/p/a.vibe")
+  assert_eq(Array::length(ra), 1)
+  let (from_a, to_a) = ra[0]
+  assert(from_a == "eq")
+  assert(String::starts_with(to_a, "eq_exp_"))
+  assert(String::ends_with(to_a, "_p_a_vibe"))
+}

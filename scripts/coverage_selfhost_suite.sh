@@ -20,9 +20,15 @@
 #   VIBE_SELFHOST_SUITE_MIN_POINT_RATE  — minimum FUNCTION coverage (fn hit/total)
 #   VIBE_SELFHOST_SUITE_MIN_LINE_RATE   — minimum CASE PASS rate (entries green)
 #   VIBE_SELFHOST_SUITE_MIN_BRANCH_RATE — minimum BRANCH coverage (branch hit/total)
+#   VIBE_SELFHOST_SUITE_MIN_FN_HIT      — minimum ABSOLUTE covered functions
+#   VIBE_SELFHOST_SUITE_MIN_BRANCH_HIT  — minimum ABSOLUTE covered branches
 #
-# Baseline (2026-07-03, 89 allowlist entries, stage2 of the #716 branch):
-#   functions 1980/5196 (38.11%), branches 2832/29591 (9.57%), cases 88/89
+# The ABSOLUTE minimums are the primary ratchet: adding a test entry can only
+# raise them, while the RATE floors would punish it (a new entry grows the
+# denominator by its whole import closure). Rates are kept as loose floors.
+#
+# Baseline (2026-07-03, 92 allowlist entries, stage2 of the #716 branch):
+#   functions 2167/6104 (35.5%), branches 3473/38151 (9.1%), cases 91/92
 #   (the known TCP-sandbox failure). Defaults sit just below those actuals.
 #   The branch denominator counts every if/match branch of the transitively
 #   imported modules, hence the low absolute rate — the ratchet direction is
@@ -32,9 +38,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-MIN_POINT="${VIBE_SELFHOST_SUITE_MIN_POINT_RATE:-37}"
+MIN_POINT="${VIBE_SELFHOST_SUITE_MIN_POINT_RATE:-35}"
 MIN_LINE="${VIBE_SELFHOST_SUITE_MIN_LINE_RATE:-97}"
 MIN_BRANCH="${VIBE_SELFHOST_SUITE_MIN_BRANCH_RATE:-9}"
+MIN_FN_HIT="${VIBE_SELFHOST_SUITE_MIN_FN_HIT:-2100}"
+MIN_BRANCH_HIT="${VIBE_SELFHOST_SUITE_MIN_BRANCH_HIT:-3400}"
 
 ALLOWLIST="scripts/selfhost_unit_test_allowlist.txt"
 OUT_DIR="_build/coverage/selfhost-suite"
@@ -85,11 +93,12 @@ run_log="$OUT_DIR/vibe_test.log"
 VIBE_TEST_CLI_WASM="$ROOT/$cli" bash scripts/vibe_test.sh --coverage "${entries[@]}" \
   | tee "$run_log" || true
 
-python3 - "$run_log" "$COV_DIR" "$REPORT" "$MIN_POINT" "$MIN_LINE" "$MIN_BRANCH" <<'PY'
+python3 - "$run_log" "$COV_DIR" "$REPORT" "$MIN_POINT" "$MIN_LINE" "$MIN_BRANCH" "$MIN_FN_HIT" "$MIN_BRANCH_HIT" <<'PY'
 import json, os, re, sys
 
-run_log, cov_dir, report_path, min_point, min_line, min_branch = sys.argv[1:7]
+run_log, cov_dir, report_path, min_point, min_line, min_branch, min_fn_hit, min_branch_hit = sys.argv[1:9]
 min_point, min_line, min_branch = float(min_point), float(min_line), float(min_branch)
+min_fn_hit, min_branch_hit = int(min_fn_hit), int(min_branch_hit)
 
 cases = []
 for line in open(run_log, encoding="utf-8"):
@@ -161,6 +170,10 @@ if case_rate < min_line:
     failures.append(f"case pass rate {case_rate}% < min {min_line}% (LINE)")
 if br_rate < min_branch:
     failures.append(f"branch coverage {br_rate}% < min {min_branch}% (BRANCH)")
+if fn_hit < min_fn_hit:
+    failures.append(f"covered functions {fn_hit} < min {min_fn_hit} (FN_HIT ratchet)")
+if br_hit < min_branch_hit:
+    failures.append(f"covered branches {br_hit} < min {min_branch_hit} (BRANCH_HIT ratchet)")
 if failures:
     for f in failures:
         print(f"[coverage-suite] GATE FAIL: {f}")
