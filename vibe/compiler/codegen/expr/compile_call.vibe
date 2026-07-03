@@ -1343,15 +1343,13 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_local_get(buf, cur_l)
       emit_i64_sub(buf)
       emit_local_set(buf, len_l)
-      emit_local_get(buf, hp_l)
-      emit_i32_wrap_i64(buf)
-      emit_local_get(buf, cur_l)
-      emit_i64_const(buf, 1)
-      emit_i64_add(buf)
-      emit_i32_wrap_i64(buf)
-      emit_local_get(buf, len_l)
-      emit_i32_wrap_i64(buf)
-      emit_memory_copy(buf)
+      // Bump the heap pointer and run the grow check BEFORE the memory.copy
+      // into the fresh allocation. The copy used to come first, which traps
+      // with "memory access out of bounds" whenever the previous allocation
+      // left global 0 within `len` bytes of the current memory end (the grow
+      // check only guarantees the heap pointer itself is addressable, not a
+      // full page of headroom). Hit in practice by large multi-module FS
+      // compiles (#533 measurement: ~200-file cold-cache walk).
       emit_local_get(buf, hp_l)
       emit_i32_wrap_i64(buf)
       emit_local_get(buf, len_l)
@@ -1363,6 +1361,15 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_i32_add(buf)
       emit_global_set(buf, 0)
       emit_heap_grow_after_heap_set(buf, ctx)
+      emit_local_get(buf, hp_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, cur_l)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, len_l)
+      emit_i32_wrap_i64(buf)
+      emit_memory_copy(buf)
       emit_local_get(buf, hp_l)
       emit_i64_const(buf, 32)
       emit_i64_shl(buf)

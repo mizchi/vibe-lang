@@ -54,7 +54,10 @@ import ../module_graph_path.vibe {
   dir_of_path,
   resolve_import_path,
   resolve_import_path_candidates,
-  contains_path
+  contains_path,
+  path_set_add,
+  path_set_contains,
+  path_set_new
 }
 
 //# Path helpers
@@ -1047,12 +1050,17 @@ export let rec check_module: (String, String, Array[(String, String)], Array[Str
 
 //# FS-based source collection
 
-let rec collect_sources_rec: (String, Array[(String, String)], Array[String]) -> Unit with { Error, Fs } = (path, sources, visited) -> {
-  if contains_path(visited, path) {
+// `visited` is a `path_set` (#533): this recursion runs once per import
+// EDGE and the visited set grows to every module of the program, so the
+// previous linear `contains_path` scan was O(edges × modules). The set is
+// membership-only — `sources` keeps its own dependency-first order from
+// the recursion, which is what callers consume.
+let rec collect_sources_rec: (String, Array[(String, String)], Array[Array[String]]) -> Unit with { Error, Fs } = (path, sources, visited) -> {
+  if path_set_contains(visited, path) {
     ()
   }
   else {
-    Array::push(visited, path)
+    path_set_add(visited, path)
     let source = Fs::read_file(path)
     let (deps, _, _) = load_or_parse_module_header_fs(path, source, 0)
     // First, recurse into dependencies (imports and re-exports)
@@ -1093,7 +1101,7 @@ export let collect_all_sources_fs: (String) -> Array[(String, String)] with { Er
                 },
                 None => {
                   let sources = Array::slice([("", "")], 0, 0)
-                  let visited = Array::slice([""], 0, 0)
+                  let visited = path_set_new()
                   collect_sources_rec(entry_path, sources, visited)
                   store_persistent_sources_cache(entry_path, None, sources)
                   sources

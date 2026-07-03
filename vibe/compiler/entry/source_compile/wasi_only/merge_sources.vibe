@@ -13,7 +13,7 @@ import .. / .. / .. / core / ast.vibe {
 }
 
 import .. / .. / .. / module_graph_path.vibe {
-  contains_path, dir_of_path, resolve_import_path
+  dir_of_path, path_set_add, path_set_contains, path_set_new, resolve_import_path
 }
 
 import .. / .. / .. / syntax / lexer.vibe {
@@ -91,12 +91,17 @@ let append_fs_import_alias_collision_defs: (Array[Stmt], String, Array[Stmt]) ->
   }
 }
 
-let rec collect_merged_stmts_recursive_impl: (String, String, Array[Stmt], Array[String]) -> Unit with { Error, Fs } = (entry_path, path, merged, visited) -> {
-  if contains_path(visited, path) {
+// `visited` is a `path_set` (#533): this recursion runs once per import
+// EDGE, so a linear `contains_path` scan against a visited list that
+// grows to every module of the program was O(edges × modules). The set
+// is membership-only here — `merged` order comes from the recursion
+// itself, so no ordering constraint is lost.
+let rec collect_merged_stmts_recursive_impl: (String, String, Array[Stmt], Array[Array[String]]) -> Unit with { Error, Fs } = (entry_path, path, merged, visited) -> {
+  if path_set_contains(visited, path) {
     ()
   }
   else {
-    Array::push(visited, path)
+    path_set_add(visited, path)
     let source = perform Fs::ReadFile(path)
     let stmts = parse_program(lex(source))
     let base_dir = dir_of_path(path)
@@ -130,15 +135,13 @@ let rec collect_merged_stmts_recursive_impl: (String, String, Array[Stmt], Array
   }
 }
 
-let collect_merged_stmts_recursive: (String, Array[Stmt], Array[String]) -> Unit with { Error, Fs } = (path, merged, visited) -> {
+let collect_merged_stmts_recursive: (String, Array[Stmt], Array[Array[String]]) -> Unit with { Error, Fs } = (path, merged, visited) -> {
   collect_merged_stmts_recursive_impl(path, path, merged, visited)
 }
 
 export let compile_file_wasi_only: (String, String) -> Bytes with { Error, Fs } = (entry_path, entry_name) -> {
   let stmts = empty_stmt_array()
-  let visited = Array::slice([
-    ""
-  ], 0, 0)
+  let visited = path_set_new()
   collect_merged_stmts_recursive(entry_path, stmts, visited)
   expand_interp_stmts(stmts)
   // Type-check BEFORE stripping generic type params: a generic function like

@@ -51,7 +51,7 @@ rc-bootstrap fixpoint + shape corpus で常時検証）。
 ### 🔵 リファクタ / 長期
 
 - [ ] **#534** `vibe/types/` / `vibe/parser/` 分離
-- [ ] **#533** linked artifact の contains 線形走査解消
+- [x] **#533** linked artifact の contains 線形走査解消 — whole-graph の visited/scheduled set を bucketed `path_set` 化（merge 再帰 / FS collect / manifest worklist×3、collect フェーズ -41% @450 modules）。per-module の `contains_name`/`contains_path` は小 N のため意図的に線形のまま。副産物: inline `__to_string` の copy-before-grow OOB crash 修正（cold-cache 大規模 FS compile が deterministic に落ちていた）
 - [ ] **#488** shared-everything-threads 実験基盤
 - [ ] **#647** 1.0 GA タグ / version bump（リリース運用判断）
 - [ ] `#cfg` をコンパイラ自身のソースで使えるようにする seed bump

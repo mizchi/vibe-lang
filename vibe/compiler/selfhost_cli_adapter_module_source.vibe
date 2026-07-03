@@ -28562,15 +28562,6 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_local_set(buf, len_l)
       emit_local_get(buf, hp_l)
       emit_i32_wrap_i64(buf)
-      emit_local_get(buf, cur_l)
-      emit_i64_const(buf, 1)
-      emit_i64_add(buf)
-      emit_i32_wrap_i64(buf)
-      emit_local_get(buf, len_l)
-      emit_i32_wrap_i64(buf)
-      emit_memory_copy(buf)
-      emit_local_get(buf, hp_l)
-      emit_i32_wrap_i64(buf)
       emit_local_get(buf, len_l)
       emit_i32_wrap_i64(buf)
       emit_i32_const(buf, 7)
@@ -28580,6 +28571,15 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       emit_i32_add(buf)
       emit_global_set(buf, 0)
       emit_heap_grow_after_heap_set(buf, ctx)
+      emit_local_get(buf, hp_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, cur_l)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, len_l)
+      emit_i32_wrap_i64(buf)
+      emit_memory_copy(buf)
       emit_local_get(buf, hp_l)
       emit_i64_const(buf, 32)
       emit_i64_shl(buf)
@@ -36206,15 +36206,6 @@ export let gc_gen_to_string_body: () -> Bytes = () -> {
   emit_local_set(b, 5)
   emit_local_get(b, 4)
   emit_i32_wrap_i64(b)
-  emit_local_get(b, 2)
-  emit_i64_const(b, 1)
-  emit_i64_add(b)
-  emit_i32_wrap_i64(b)
-  emit_local_get(b, 5)
-  emit_i32_wrap_i64(b)
-  emit_memory_copy(b)
-  emit_local_get(b, 4)
-  emit_i32_wrap_i64(b)
   emit_local_get(b, 5)
   emit_i32_wrap_i64(b)
   emit_i32_const(b, 7)
@@ -36224,6 +36215,15 @@ export let gc_gen_to_string_body: () -> Bytes = () -> {
   emit_i32_add(b)
   emit_global_set(b, 0)
   emit_heap_memory_grow_check(b)
+  emit_local_get(b, 4)
+  emit_i32_wrap_i64(b)
+  emit_local_get(b, 2)
+  emit_i64_const(b, 1)
+  emit_i64_add(b)
+  emit_i32_wrap_i64(b)
+  emit_local_get(b, 5)
+  emit_i32_wrap_i64(b)
+  emit_memory_copy(b)
   emit_local_get(b, 4)
   emit_i64_const(b, 32)
   emit_i64_shl(b)
@@ -40636,7 +40636,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "7a8c71491062a565"
+  "7dff40cb2ad33cda"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647
@@ -40718,17 +40718,47 @@ export let dir_of_path: (String) -> String = (file_path) -> {
     file_path[0: idx]
   }
 }
-export let contains_path: (Array[String], String) -> Bool = (visited, path) -> {
+let path_set_bucket_count = 64
+let path_set_hash: (String) -> Int = (s) -> {
+  let len = String::length(s)
+  let mut h = 5381
+  let mut i = 0
+  while i < len {
+    h = ((h * 33) ^ String::char_code_at(s, i)) & 0x3FFFFFFF
+    i = i + 1
+  }
+  h
+}
+export let path_set_new: () -> Array[Array[String]] = () -> {
+  let buckets = Array::slice([
+    Array::slice([
+      ""
+    ], 0, 0)
+  ], 0, 0)
+  let mut i = 0
+  while i < path_set_bucket_count {
+    Array::push(buckets, Array::slice([
+      ""
+    ], 0, 0))
+    i = i + 1
+  }
+  buckets
+}
+export let path_set_contains: (Array[Array[String]], String) -> Bool = (set, path) -> {
+  let bucket = Array::get(set, path_set_hash(path) & (path_set_bucket_count - 1))
   let mut i = 0
   let mut found = false
-  while i < Array::length(visited) && !found {
-    if Array::get(visited, i) == path {
+  while i < Array::length(bucket) && !found {
+    if Array::get(bucket, i) == path {
       found = true
     } else {
       i = i + 1
     }
   }
   found
+}
+export let path_set_add: (Array[Array[String]], String) -> Unit = (set, path) -> {
+  Array::push(Array::get(set, path_set_hash(path) & (path_set_bucket_count - 1)), path)
 }
 export let normalize_path: (String) -> String = (path) -> {
   let is_absolute = String::length(path) > 0 && String::char_code_at(path, 0) == 47
@@ -41217,10 +41247,6 @@ export let build_manifest_path_index: (Array[String]) -> Map[String, Bool] = (pa
     MapBuilder::set(builder, Array::get(paths, i), true)
     i = i + 1
   }
-  MapBuilder::freeze(builder)
-}
-let empty_path_index: () -> Map[String, Bool] = () -> {
-  let builder = MapBuilder::new()
   MapBuilder::freeze(builder)
 }
 let build_manifest_path_index_from_rows: (String, Array[(String, String)]) -> Map[String, Bool] = (base_dir, rows) -> {
@@ -41726,9 +41752,9 @@ let manifest_header_deps_lookup: (Array[(String, String, String, String)], Strin
 let collect_needed_paths_from_manifest_headers: (String, Map[String, Bool], Array[(String, String, String, String)]) -> Array[String] with { Error, Fs } = (path, manifest_path_index, rows) -> {
   let visited = Array::slice([""], 0, 0)
   let worklist = Array::slice([""], 0, 0)
-  let mut scheduled_set = empty_path_index()
+  let scheduled = path_set_new()
   Array::push(worklist, path)
-  scheduled_set = Map::set(scheduled_set, path, true)
+  path_set_add(scheduled, path)
   let mut work_len = 1
   let mut work_i = 0
   loop {
@@ -41736,34 +41762,32 @@ let collect_needed_paths_from_manifest_headers: (String, Map[String, Bool], Arra
       break
     }
     let current = Array::get(worklist, work_i)
-    if !(contains_path(visited, current)) {
-      Array::push(visited, current)
-      let deps = match manifest_header_deps_lookup(rows, current) {
-        Some(found) => found,
-        None => {
-          let source = Fs::read_file(current)
-          if Map::has_key(manifest_path_index, current) {
-            collect_manifest_header_deps_from_source_with_context(
-              current,
-              source,
-              manifest_path_index
-            )
-          } else {
-            load_or_parse_module_header_deps_with_context(current, source)
-          }
+    Array::push(visited, current)
+    let deps = match manifest_header_deps_lookup(rows, current) {
+      Some(found) => found,
+      None => {
+        let source = Fs::read_file(current)
+        if Map::has_key(manifest_path_index, current) {
+          collect_manifest_header_deps_from_source_with_context(
+            current,
+            source,
+            manifest_path_index
+          )
+        } else {
+          load_or_parse_module_header_deps_with_context(current, source)
         }
       }
-      let mut dep_i = 0
-      while dep_i < Array::length(deps) {
-        let dep_path = Array::get(deps, dep_i)
-        if should_schedule_manifest_dep(dep_path, manifest_path_index) &&
-          !Map::has_key(scheduled_set, dep_path) {
-          Array::push(worklist, dep_path)
-          scheduled_set = Map::set(scheduled_set, dep_path, true)
-          work_len = work_len + 1
-        }
-        dep_i = dep_i + 1
+    }
+    let mut dep_i = 0
+    while dep_i < Array::length(deps) {
+      let dep_path = Array::get(deps, dep_i)
+      if should_schedule_manifest_dep(dep_path, manifest_path_index) &&
+        !(path_set_contains(scheduled, dep_path)) {
+        Array::push(worklist, dep_path)
+        path_set_add(scheduled, dep_path)
+        work_len = work_len + 1
       }
+      dep_i = dep_i + 1
     }
     work_i = work_i + 1
   }
@@ -41773,9 +41797,9 @@ let collect_needed_paths_and_manifest_headers: (String, Map[String, Bool]) -> (A
   let rows = empty_manifest_header_cache_rows()
   let visited = Array::slice([""], 0, 0)
   let worklist = Array::slice([""], 0, 0)
-  let mut scheduled_set = empty_path_index()
+  let scheduled = path_set_new()
   Array::push(worklist, path)
-  scheduled_set = Map::set(scheduled_set, path, true)
+  path_set_add(scheduled, path)
   let mut work_len = 1
   let mut work_i = 0
   loop {
@@ -41783,44 +41807,42 @@ let collect_needed_paths_and_manifest_headers: (String, Map[String, Bool]) -> (A
       break
     }
     let current = Array::get(worklist, work_i)
-    if !(contains_path(visited, current)) {
-      Array::push(visited, current)
-      let source = Fs::read_file(current)
-      let deps = match manifest_header_deps_lookup(rows, current) {
-        Some(found) => found,
-        None => {
-          let parsed_deps = if Map::has_key(manifest_path_index, current) {
-            collect_manifest_header_deps_from_source_with_context(
-              current,
-              source,
-              manifest_path_index
-            )
-          } else {
-            load_or_parse_module_header_deps_with_context(current, source)
-          }
-          Array::push(
-            rows,
-            (
-              current,
-              __to_string(Fs::stat_token(current)),
-              compact_string_fingerprint(source),
-              join_header_values(parsed_deps)
-            )
+    Array::push(visited, current)
+    let source = Fs::read_file(current)
+    let deps = match manifest_header_deps_lookup(rows, current) {
+      Some(found) => found,
+      None => {
+        let parsed_deps = if Map::has_key(manifest_path_index, current) {
+          collect_manifest_header_deps_from_source_with_context(
+            current,
+            source,
+            manifest_path_index
           )
-          parsed_deps
+        } else {
+          load_or_parse_module_header_deps_with_context(current, source)
         }
+        Array::push(
+          rows,
+          (
+            current,
+            __to_string(Fs::stat_token(current)),
+            compact_string_fingerprint(source),
+            join_header_values(parsed_deps)
+          )
+        )
+        parsed_deps
       }
-      let mut dep_i = 0
-      while dep_i < Array::length(deps) {
-        let dep_path = Array::get(deps, dep_i)
-        if should_schedule_manifest_dep(dep_path, manifest_path_index) &&
-          !Map::has_key(scheduled_set, dep_path) {
-          Array::push(worklist, dep_path)
-          scheduled_set = Map::set(scheduled_set, dep_path, true)
-          work_len = work_len + 1
-        }
-        dep_i = dep_i + 1
+    }
+    let mut dep_i = 0
+    while dep_i < Array::length(deps) {
+      let dep_path = Array::get(deps, dep_i)
+      if should_schedule_manifest_dep(dep_path, manifest_path_index) &&
+        !(path_set_contains(scheduled, dep_path)) {
+        Array::push(worklist, dep_path)
+        path_set_add(scheduled, dep_path)
+        work_len = work_len + 1
       }
+      dep_i = dep_i + 1
     }
     work_i = work_i + 1
   }
@@ -42477,12 +42499,12 @@ let special_manifest_source_groups: (String) -> Option[(String, Array[(String, A
   let _ = entry_path
   None
 }
-let rec collect_sources_rec: (String, Array[(String, String)], Array[String]) -> Unit with { Error, Fs } = (path, sources, visited) -> {
-  if contains_path(visited, path) {
+let rec collect_sources_rec: (String, Array[(String, String)], Array[Array[String]]) -> Unit with { Error, Fs } = (path, sources, visited) -> {
+  if path_set_contains(visited, path) {
     ()
   }
   else {
-    Array::push(visited, path)
+    path_set_add(visited, path)
     let source = Fs::read_file(path)
     let (deps, _, _) = load_or_parse_module_header_fs(path, source, 0)
     let mut i = 0
@@ -42518,7 +42540,7 @@ export let collect_all_sources_fs: (String) -> Array[(String, String)] with { Er
                 },
                 None => {
                   let sources = Array::slice([("", "")], 0, 0)
-                  let visited = Array::slice([""], 0, 0)
+                  let visited = path_set_new()
                   collect_sources_rec(entry_path, sources, visited)
                   store_persistent_sources_cache(entry_path, None, sources)
                   sources
