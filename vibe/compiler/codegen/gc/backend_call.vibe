@@ -73,6 +73,26 @@ let emit_call_resolved: (Bytes, CompileCtxGc, Int) -> Unit = (buf, ctx, fidx) ->
   emit_call(buf, fidx)
 }
 
+// #538 P4.5: resolve to the BUILTIN entry even when the compiled program
+// defines a top-level function of the same name (the compiler bundle has its
+// own `__to_string(Int)`). Builtins are appended AFTER user functions in the
+// func table, so the LAST match is the builtin. Interpolation's `__to_string`
+// must always hit the runtime string-vs-int dispatch body — routing it to the
+// program's decimal-only version rendered interpolated Strings as numbers.
+let gc_resolve_builtin_last: (FuncTable, String) -> Int = (ft, name) -> {
+  let mut i = Array::length(ft.names) - 1
+  let mut found = -1
+  while i >= 0 {
+    if found < 0 && Array::get(ft.names, i) == name {
+      found = Array::get(ft.indices, i)
+      i = -1
+    } else {
+      i = i - 1
+    }
+  }
+  found
+}
+
 let compile_call_gc: (Bytes, Expr, Array[Expr], Array[String], Int, CompileCtxGc, Int, (Bytes, Expr, Array[String], Int, Int) -> Int with { Error }) -> Int with { Error } = (buf, callee, args, local_names, next_local, ctx, ld, ce) -> {
   match callee {
     EIdent(fname, _) => {
@@ -484,10 +504,14 @@ let compile_call_gc: (Bytes, Expr, Array[Expr], Array[String], Int, CompileCtxGc
         nl
       }
       else if fname == "Array::truncate" {
+        // #538 P4.5: this was a drop-args no-op stub, so every direct
+        // `Array::truncate(arr, n)` silently kept the old length -- the
+        // checker's worklist loops (pop = truncate) never terminated when the
+        // gc-compiled compiler ran. Call the real generated body (idx 40).
+        let (at_idx, _, _) = resolve_func(ctx.func_table, "Array::truncate")
         let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
-        emit_drop(buf)
         nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
-        emit_drop(buf)
+        emit_call_resolved(buf, ctx, at_idx)
         emit_i64_const(buf, 0)
         nl
       }
@@ -636,7 +660,7 @@ let compile_call_gc: (Bytes, Expr, Array[Expr], Array[String], Int, CompileCtxGc
         nl
       }
       else if fname == "__to_string" {
-        let (ts_idx, _, _) = resolve_func(ctx.func_table, "__to_string")
+        let ts_idx = gc_resolve_builtin_last(ctx.func_table, "__to_string")
         let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
         emit_call_resolved(buf, ctx, ts_idx)
         nl
@@ -1091,7 +1115,7 @@ let compile_call_gc: (Bytes, Expr, Array[Expr], Array[String], Int, CompileCtxGc
       }
       else if fname == "print" || fname == "println" {
         // print(x) = print_str(__to_string(x)); println appends "\n".
-        let (ts_idx, _, _) = resolve_func(ctx.func_table, "__to_string")
+        let ts_idx = gc_resolve_builtin_last(ctx.func_table, "__to_string")
         let (ps_idx, _, _) = resolve_func(ctx.func_table, "print_str")
         let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
         emit_call_resolved(buf, ctx, ts_idx)

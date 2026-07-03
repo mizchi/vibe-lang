@@ -17,7 +17,7 @@ import .. / common_extractors {
 }
 
 import .. / wasm_emit {
-  emit_block_i64, emit_block_void, emit_br, emit_br_if, emit_call, emit_call_indirect, emit_code_section, emit_code_section_with_locals, emit_data_section, emit_data_section_multi, emit_drop, emit_element_section_active, emit_else, emit_end, emit_export_section, emit_export_section_multi, emit_exports_with_memory, emit_f64_add, emit_f64_const_bits, emit_f64_convert_i64_s, emit_f64_div, emit_f64_eq, emit_f64_ge, emit_f64_gt, emit_f64_le, emit_f64_lt, emit_f64_mul, emit_f64_ne, emit_f64_neg, emit_f64_reinterpret_i64, emit_f64_sub, emit_func_type_raw, emit_function_section, emit_global_get, emit_global_section_i32_mut, emit_global_set, emit_header, emit_i32_add, emit_i32_const, emit_i32_load, emit_i32_load8_u, emit_i32_store, emit_i32_store8, emit_i32_wrap_i64, emit_i64_add, emit_i64_and, emit_i64_const, emit_i64_div_s, emit_i64_eq, emit_i64_eqz, emit_i64_extend_i32_s, emit_i64_ge_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_lt_s, emit_i64_mul, emit_i64_ne, emit_i64_or, emit_i64_reinterpret_f64, emit_i64_rem_s, emit_i64_shl, emit_i64_shr_s, emit_i64_sub, emit_i64_trunc_f64_s, emit_i64_xor, emit_if_i64, emit_if_void, emit_import_section_func, emit_local_get, emit_local_set, emit_local_tee, emit_loop_void, emit_memory_section, emit_name, emit_return, emit_struct_get, emit_struct_new, emit_struct_set, emit_struct_type_raw, emit_table_section_funcref, emit_type_section, emit_type_section_multi, string_to_data
+  emit_heap_memory_grow_check, emit_block_i64, emit_block_void, emit_br, emit_br_if, emit_call, emit_call_indirect, emit_code_section, emit_code_section_with_locals, emit_data_section, emit_data_section_multi, emit_drop, emit_element_section_active, emit_else, emit_end, emit_export_section, emit_export_section_multi, emit_exports_with_memory, emit_f64_add, emit_f64_const_bits, emit_f64_convert_i64_s, emit_f64_div, emit_f64_eq, emit_f64_ge, emit_f64_gt, emit_f64_le, emit_f64_lt, emit_f64_mul, emit_f64_ne, emit_f64_neg, emit_f64_reinterpret_i64, emit_f64_sub, emit_func_type_raw, emit_function_section, emit_global_get, emit_global_section_i32_mut, emit_global_set, emit_header, emit_i32_add, emit_i32_const, emit_i32_load, emit_i32_load8_u, emit_i32_store, emit_i32_store8, emit_i32_wrap_i64, emit_i64_add, emit_i64_and, emit_i64_const, emit_i64_div_s, emit_i64_eq, emit_i64_eqz, emit_i64_extend_i32_s, emit_i64_ge_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_lt_s, emit_i64_mul, emit_i64_ne, emit_i64_or, emit_i64_reinterpret_f64, emit_i64_rem_s, emit_i64_shl, emit_i64_shr_s, emit_i64_sub, emit_i64_trunc_f64_s, emit_i64_xor, emit_if_i64, emit_if_void, emit_import_section_func, emit_local_get, emit_local_set, emit_local_tee, emit_loop_void, emit_memory_section, emit_name, emit_return, emit_struct_get, emit_struct_new, emit_struct_set, emit_struct_type_raw, emit_table_section_funcref, emit_type_section, emit_type_section_multi, string_to_data
 }
 
 //# Functions
@@ -25,6 +25,157 @@ import .. / wasm_emit {
 export let gc_gen_identity_body: () -> Bytes = () -> {
   let b = bytebuf_new()
   emit_local_get(b, 0)
+  b
+}
+
+// Push `memory.size * 65536` (linear memory size in BYTES) as an i64.
+let gc_emit_mem_size_bytes: (Bytes) -> Unit = (b) -> {
+  bytebuf_push(b, 63)
+  bytebuf_push(b, 0)
+  emit_i64_extend_i32_u(b)
+  emit_i64_const(b, 65536)
+  emit_i64_mul(b)
+}
+
+// #538 P4.5: runtime-dispatching `__to_string`, ported from the linear lane's
+// inline call-site handler (compile_call.vibe, #606/#664 heuristics). String
+// interpolation desugars EVERY `\{x}` to `__to_string(x)`; the gc lane used to
+// resolve that to the compiled program's own decimal-only `__to_string(Int)`,
+// so interpolating a String rendered its packed (ptr<<32)|len pointer as a
+// NUMBER — the parser's `"\{acc}, \{name}"` effect-row join produced rows like
+// "127642133069826, 127659312939013" when the gc-compiled compiler ran, and
+// every multi-label `with { A, B }` declaration stopped authorizing anything.
+// Layout facts: params (val:i64); locals 1=neg 2=cur 3=abs 4=hp 5=len (i64);
+// scratch digits build at bytes 46..1 (gc data_base is 64, so 0..63 is free).
+export let gc_gen_to_string_body: () -> Bytes = () -> {
+  let b = bytebuf_new()
+  emit_block_i64(b)
+  // Looks-like-string test: ptr = val >> 32 (unsigned) >= 64, ptr < memsize,
+  // ptr + len <= memsize  ->  identity (it IS a string).
+  emit_local_get(b, 0)
+  emit_i64_const(b, 32)
+  bytebuf_push(b, 136)
+  emit_local_tee(b, 3)
+  emit_i64_const(b, 64)
+  emit_i64_ge_s(b)
+  emit_local_get(b, 3)
+  gc_emit_mem_size_bytes(b)
+  emit_i64_lt_s(b)
+  bytebuf_push(b, 113)
+  emit_local_get(b, 3)
+  emit_local_get(b, 0)
+  emit_i64_const(b, 4294967295)
+  emit_i64_and(b)
+  emit_i64_add(b)
+  gc_emit_mem_size_bytes(b)
+  emit_i64_le_s(b)
+  bytebuf_push(b, 113)
+  emit_if_void(b)
+  emit_local_get(b, 0)
+  emit_br(b, 1)
+  emit_end(b)
+  // Integer path: render decimal digits right-to-left into scratch bytes
+  // 46..1, then copy to a fresh heap string.
+  emit_i64_const(b, 46)
+  emit_local_set(b, 2)
+  emit_local_get(b, 0)
+  emit_i64_const(b, 0)
+  emit_i64_lt_s(b)
+  emit_i64_extend_i32_s(b)
+  emit_local_set(b, 1)
+  emit_local_get(b, 0)
+  emit_i64_const(b, 0)
+  emit_i64_lt_s(b)
+  emit_if_i64(b)
+  emit_i64_const(b, 0)
+  emit_local_get(b, 0)
+  emit_i64_sub(b)
+  emit_else(b)
+  emit_local_get(b, 0)
+  emit_end(b)
+  emit_local_set(b, 3)
+  emit_local_get(b, 3)
+  emit_i64_eqz(b)
+  emit_if_void(b)
+  emit_local_get(b, 2)
+  emit_i32_wrap_i64(b)
+  emit_i32_const(b, 48)
+  emit_i32_store8(b, 0, 0)
+  emit_local_get(b, 2)
+  emit_i64_const(b, 1)
+  emit_i64_sub(b)
+  emit_local_set(b, 2)
+  emit_end(b)
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(b, 3)
+  emit_i64_eqz(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, 2)
+  emit_i32_wrap_i64(b)
+  emit_local_get(b, 3)
+  emit_i64_const(b, 10)
+  emit_i64_rem_s(b)
+  emit_i32_wrap_i64(b)
+  emit_i32_const(b, 48)
+  emit_i32_add(b)
+  emit_i32_store8(b, 0, 0)
+  emit_local_get(b, 2)
+  emit_i64_const(b, 1)
+  emit_i64_sub(b)
+  emit_local_set(b, 2)
+  emit_local_get(b, 3)
+  emit_i64_const(b, 10)
+  emit_i64_div_s(b)
+  emit_local_set(b, 3)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  emit_local_get(b, 1)
+  emit_i32_wrap_i64(b)
+  emit_if_void(b)
+  emit_local_get(b, 2)
+  emit_i32_wrap_i64(b)
+  emit_i32_const(b, 45)
+  emit_i32_store8(b, 0, 0)
+  emit_local_get(b, 2)
+  emit_i64_const(b, 1)
+  emit_i64_sub(b)
+  emit_local_set(b, 2)
+  emit_end(b)
+  emit_global_get(b, 0)
+  emit_i64_extend_i32_u(b)
+  emit_local_set(b, 4)
+  emit_i64_const(b, 46)
+  emit_local_get(b, 2)
+  emit_i64_sub(b)
+  emit_local_set(b, 5)
+  emit_local_get(b, 4)
+  emit_i32_wrap_i64(b)
+  emit_local_get(b, 2)
+  emit_i64_const(b, 1)
+  emit_i64_add(b)
+  emit_i32_wrap_i64(b)
+  emit_local_get(b, 5)
+  emit_i32_wrap_i64(b)
+  emit_memory_copy(b)
+  emit_local_get(b, 4)
+  emit_i32_wrap_i64(b)
+  emit_local_get(b, 5)
+  emit_i32_wrap_i64(b)
+  emit_i32_const(b, 7)
+  emit_i32_add(b)
+  emit_i32_const(b, -8)
+  bytebuf_push(b, 113)
+  emit_i32_add(b)
+  emit_global_set(b, 0)
+  emit_heap_memory_grow_check(b)
+  emit_local_get(b, 4)
+  emit_i64_const(b, 32)
+  emit_i64_shl(b)
+  emit_local_get(b, 5)
+  emit_i64_or(b)
+  emit_end(b)
   b
 }
 

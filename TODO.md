@@ -42,7 +42,7 @@ rc-bootstrap fixpoint + shape corpus で常時検証）。
 ### 🟡 機能 / 品質
 
 - [ ] **#535** post-cutover branch coverage gate 復帰
-- [ ] **#538** WASM-GC selfbuild — P4 compile E2E 達成 (10/10 probes + bundle 966KB valid)。残: P4.5 run E2E / P5 size
+- [ ] **#538** WASM-GC selfbuild — P4 compile E2E + **P4.5 run E2E + self-compile fixpoint 達成**（gc-compiled compiler がコンパイラ全体を byte 一致で再現）。残: P5 size
 - [x] **#537** WASI P3: effect → WIT mapping + `vibe serve` — `vibe compile --wit` / `vibe serve` (launcher + adapter VIBE_EMIT_WIT / VIBE_SERVE_COMPONENT)、packed-string trampoline で selfhost componentize、wac plug + wasmtime serve。契約: docs/effect-wit-mapping.md、gate 40i/40j + test_wasi_http_p3_full_gate.sh
 - [ ] **#683** wasm-gc backend の実行検証ハーネス
 - [ ] **#639/#640** effect 診断の fix-it / Error の algebraic effect 化
@@ -114,7 +114,7 @@ bootstrap / fallback として通常開発では触らない。
 
 - [ ] **CI branch coverage 70% gate** + normalize/DCE/loader テスト拡充 (§カバレッジ)
 - [ ] **SIMD codegen 本番化** — 0xFD prefix emit + `simd_skip_ws`/`simd_scan_alnum` builtin 化 (§vibe/wasm)
-- [ ] **#59 WASM-GC selfbuild 小型配布形** — P4 compile E2E 達成 (966KB valid, #538)。残: P4.5 run E2E + P5 DCE + wasm-opt。サイズ目標は初回リリース後に現実的な値を再設定（旧 ~350KB 目標は撤回）
+- [ ] **#59 WASM-GC selfbuild 小型配布形** — P4 compile E2E 達成 (966KB valid, #538)。P4.5 run E2E + self-compile fixpoint も達成。残: P5 DCE + wasm-opt。サイズ目標は初回リリース後に現実的な値を再設定（旧 ~350KB 目標は撤回）
 - [x] **WASI P3**: effect → WIT マッピング + `vibe serve` (#537, docs/effect-wit-mapping.md)
 - [ ] selfhost accumulator 残 2 sites (`linked_helpers.vibe` の `contains_name` 線形走査) — vibe runtime の Map が hash table 化するまで保留 (ROI ≪、§accumulator 撲滅)
 
@@ -153,7 +153,7 @@ bootstrap / fallback として通常開発では触らない。
 
 - [x] **WASI P3: effect → WIT マッピング + `vibe serve`** (#537)
 - [ ] **SIMD codegen 本番化** — selfhost codegen の 0xFD prefix emit + `simd_skip_ws` / `simd_scan_alnum` 組込
-- [ ] **#59 WASM-GC selfbuild 小型配布形** — P4 compile E2E 達成 (966KB valid, #538)。残: P4.5 run E2E + P5 DCE + wasm-opt。サイズ目標は初回リリース後に現実的な値を再設定（旧 ~350KB 目標は撤回）
+- [ ] **#59 WASM-GC selfbuild 小型配布形** — P4 compile E2E 達成 (966KB valid, #538)。P4.5 run E2E + self-compile fixpoint も達成。残: P5 DCE + wasm-opt。サイズ目標は初回リリース後に現実的な値を再設定（旧 ~350KB 目標は撤回）
 - [x] **pkfire / pkspec 全面導入** — `justfile` を完全削除し `pkfire/Taskfile.pkl` (238 tasks) が canonical。複雑な多行レシピは `scripts/pkfire/*.sh` に抽出。CI は `pkf run` 経由 + `~/.cache/pkfire` を `actions/cache` でキャッシュ。`pkspec/{VibeSpec,VibeTest}.pkl` で `pkspec check` 通る、PR 用 informational gate あり。次は (a) `pkf affected --since=origin/main 'test:*'` を CI の PR 高速化パスに組み込む (b) `pkspec exec` で `moon test` を pkspec 経由で回す
 
 ### 🔵 リファクタ / 長期
@@ -521,7 +521,15 @@ StringBuilder/ArrayBuilder) に置換する。
     tuple index `.0` / EMap・ELabeledArg / Fs・Env・Profiler host imports (group-gated, index shift hbo) /
     perform → canonical builtin lowering / resolve 済み call の env 引数 (user-shadowed builtin 対応) /
     ref cell の linear-memory 化 (mut-capture closure) / Error handle の try_table + throw tag (#721 gating)
-  - [ ] **P4.5: run E2E** — gc-compiled compiler はまだ自走しない (起動時 trap)。次の frontier。
+  - [x] **P4.5: run E2E + self-compile fixpoint** — **達成 (2026-07, #538)**: gc-compiled compiler が
+    実プログラムをコンパイルし (出力は linear コンパイラと byte 一致)、さらに**コンパイラ全体を
+    self-compile して linear 版と byte 一致の出力を再現** (~5s)。達成に入れた修正:
+    `==`/`!=` の eq builtin 経由化 + tuple/ctor 構造比較 (emit_gc_eq_value) / for-in 内包表記の
+    値収集 (旧実装は値を drop) / `__to_string` の実行時 string-vs-int dispatch (interp が全 `\{x}` を
+    ここに通す; user 定義 __to_string の shadow も解決) / Array::truncate no-op stub 除去 /
+    float 演算の f64 化 (shape-based floatish 追跡) / gc pipeline に trait-dict desugar +
+    interp 展開 + generic strip を接続 / entry・__heap_ptr export。
+    `pkf run test-gc-selfbuild` が probe / bundle / run E2E / self-compile fixpoint を常設計測。
   - [ ] **P5: DCE + wasm-opt** — baseline 確保: raw 966KB (-62% vs linear)。縮小手段は
     `core/dce.vibe` を gc path に適用 + `vibe/wasm/wasm_opt` post-pass
     (compiler への直接結合は +700KB & seed 不能 — docs/wasm-opt-dogfood.md)。

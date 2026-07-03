@@ -41,7 +41,7 @@ import ./backend_builtins_array_set.vibe {
 }
 
 import ./backend_builtins_numeric.vibe {
-  gc_gen_double_to_int_body, gc_gen_identity_body, gc_gen_int_to_double_body
+  gc_gen_double_to_int_body, gc_gen_identity_body, gc_gen_int_to_double_body, gc_gen_to_string_body
 }
 
 import ./backend_builtins_print.vibe {
@@ -335,6 +335,12 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
     ("Bytes::fill", 3, 28, 0),
     ("Double::to_i64_bits", 1, 16, 1),
     ("Double::from_i64_bits", 1, 16, 1),
+    // #538 P4.5: identity wraps the trait-dict desugar emits around float
+    // `==` operands (and int->float widening); all no-ops in the raw-bits
+    // i64 world, same as the linear lane's compile_call identity handling.
+    ("Double::to_float", 1, 16, 1),
+    ("Float::to_double", 1, 16, 1),
+    ("Int::to_float", 1, 12, 1),
     ("FixedArray::make", 2, 6, 1),
     ("FixedArray::length", 1, 6, 1),
     ("FixedArray::get", 2, 6, 1),
@@ -565,9 +571,11 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
   Array::push(user_ref_local_indices_all, Array::slice([
     0
   ], 0, 0))
-  Array::push(bodies, gc_gen_identity_body())
+  // Body 17 (__to_string): runtime string-vs-int dispatch, NOT identity —
+  // interpolation routes every `\{x}` here (see gc_gen_to_string_body).
+  Array::push(bodies, gc_gen_to_string_body())
   Array::push(meta_i32, 0)
-  Array::push(meta_i64, 0)
+  Array::push(meta_i64, 5)
   Array::push(user_ref_local_indices_all, Array::slice([
     0
   ], 0, 0))
@@ -766,7 +774,10 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
             gc_ctor_table: ct,
             gc_const_names: gc_const_names_l, gc_const_kinds: gc_const_kinds_l,
             gc_const_ivals: gc_const_ivals_l, gc_const_svals: gc_const_svals_l,
-            gc_global_names: gc_global_names_l
+            gc_global_names: gc_global_names_l,
+            gc_float_locals: Array::slice([
+              ""
+            ], 0, 0)
           }
           let final_nl = compile_expr_gc(body_buf, body, local_names, param_count, func_ctx, -1)
           Array::push(bodies, body_buf)
@@ -821,7 +832,10 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
       },
       gc_const_names: gc_const_names_l, gc_const_kinds: gc_const_kinds_l,
       gc_const_ivals: gc_const_ivals_l, gc_const_svals: gc_const_svals_l,
-      gc_global_names: gc_global_names_l
+      gc_global_names: gc_global_names_l,
+      gc_float_locals: Array::slice([
+        ""
+      ], 0, 0)
     }
     let init_locals = Array::slice([
       ""
@@ -1103,11 +1117,35 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
     bytebuf_push_section(out, 6, g_content)
   }
   let start_func_idx = func_offset + num_user_funcs
-  emit_exports_with_memory(out, [
-    "_start"
-  ], [
-    start_func_idx
-  ], "memory", 0)
+  // #538 P4.5: export the entry function and __heap_ptr alongside _start.
+  // The host runner's raw-ABI string allocation (args-get / env-get /
+  // fs_read_file results) heap-bumps through the exported __heap_ptr global;
+  // without it the runner falls back to an end-of-memory arena that the
+  // guest's own bump allocator grows into and clobbers mid-compile.
+  let export_content = bytebuf_new()
+  let export_entry_too = entry_name != "_start"
+  bytebuf_push_vec_header(export_content, if export_entry_too {
+    4
+  } else {
+    3
+  })
+  emit_name(export_content, "_start")
+  bytebuf_push(export_content, 0)
+  leb128_encode_u32(export_content, start_func_idx)
+  if export_entry_too {
+    emit_name(export_content, entry_name)
+    bytebuf_push(export_content, 0)
+    leb128_encode_u32(export_content, entry_func_idx)
+  } else {
+    ()
+  }
+  emit_name(export_content, "memory")
+  bytebuf_push(export_content, 2)
+  leb128_encode_u32(export_content, 0)
+  emit_name(export_content, "__heap_ptr")
+  bytebuf_push(export_content, 3)
+  leb128_encode_u32(export_content, 0)
+  bytebuf_push_section(out, 7, export_content)
   if total_table_entries > 0 {
     let table_func_indices = Array::slice([
       0

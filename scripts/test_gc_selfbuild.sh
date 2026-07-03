@@ -222,7 +222,6 @@ if [ -s "$BUNDLE_OUT" ]; then
   if command -v wasm-tools >/dev/null 2>&1; then
     if wasm-tools validate --features all "$BUNDLE_OUT" >/dev/null 2>&1; then
       echo "[gc-selfbuild] BUNDLE COMPILED + VALID: $(wc -c <"$BUNDLE_OUT") bytes (linear stage2 ~2.57MB; P4 compile E2E done)"
-      echo "[gc-selfbuild] next: run E2E (the gc-compiled compiler does not self-run yet) + P5 DCE/wasm-opt"
     else
       echo "[gc-selfbuild] BUNDLE EMITTED BUT INVALID: $(wasm-tools validate --features all "$BUNDLE_OUT" 2>&1 | head -2 | tail -1)"
     fi
@@ -231,6 +230,58 @@ if [ -s "$BUNDLE_OUT" ]; then
   fi
 else
   echo "[gc-selfbuild] frontier: $(cat "$BUNDLE_OUT.diag" 2>/dev/null || echo '(no diag)')"
+fi
+
+# --- 3. run E2E (P4.5) --------------------------------------------------------
+# Run the gc-compiled compiler itself (its _start reads argv via the "vibe"
+# host imports) on a small program and require its output wasm to be
+# byte-identical to what the SAME source compiler (linear lane, same VIBE_RC=0
+# flags) produces. This is the P4.5 milestone: the gc-lane artifact is a
+# working compiler, not just a valid module.
+if [ -s "$BUNDLE_OUT" ]; then
+  echo
+  echo "[gc-selfbuild] run E2E (gc-compiled compiler compiles a program):"
+  RUN_SRC="$OUT_DIR/run_e2e.vibe"
+  printf 'export let main = () -> Int { 40 + 2 }\n' >"$RUN_SRC"
+  RUN_OUT="$OUT_DIR/run_e2e.out.wasm"
+  RUN_REF="$OUT_DIR/run_e2e.ref.wasm"
+  rm -f "$RUN_OUT" "$RUN_OUT.diag" "$RUN_REF" "$RUN_REF.diag"
+  env VIBE_RC=0 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_SELFHOST_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$BUNDLE_OUT" \
+    "${RUN_SRC#"$ROOT_DIR"/}" "${RUN_OUT#"$ROOT_DIR"/}" main >/dev/null 2>&1
+  env VIBE_RC=0 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_SELFHOST_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$CLI_WASM" \
+    "${RUN_SRC#"$ROOT_DIR"/}" "${RUN_REF#"$ROOT_DIR"/}" main >/dev/null 2>&1
+  if [ -s "$RUN_OUT" ] && cmp -s "$RUN_OUT" "$RUN_REF"; then
+    echo "[gc-selfbuild] RUN E2E OK: gc-compiled compiler output is byte-identical to the linear compiler's (P4.5 done)"
+  else
+    echo "[gc-selfbuild] RUN E2E frontier: $(cat "$RUN_OUT.diag" 2>/dev/null || echo 'no output or mismatch vs linear reference')"
+  fi
+fi
+
+# --- 4. self-compile fixpoint -------------------------------------------------
+# The full circle: the gc-compiled compiler compiles the WHOLE compiler bundle
+# (linear backend, VIBE_RC=0) and must reproduce byte-for-byte what the linear
+# compiler produces from the same source. Compare against a reference built by
+# CLI_WASM with the same flags.
+if [ -s "$BUNDLE_OUT" ]; then
+  echo
+  echo "[gc-selfbuild] self-compile fixpoint (gc-compiled compiler compiles the compiler):"
+  SELF_OUT="$OUT_DIR/selfcompile.wasm"
+  SELF_REF="$OUT_DIR/selfcompile.ref.wasm"
+  rm -f "$SELF_OUT" "$SELF_OUT.diag" "$SELF_REF" "$SELF_REF.diag"
+  env VIBE_RC=0 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_SELFHOST_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$BUNDLE_OUT" \
+    "$BUNDLE_SRC" "${SELF_OUT#"$ROOT_DIR"/}" cli_main >/dev/null 2>&1
+  env VIBE_RC=0 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_SELFHOST_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$CLI_WASM" \
+    "$BUNDLE_SRC" "${SELF_REF#"$ROOT_DIR"/}" cli_main >/dev/null 2>&1
+  if [ -s "$SELF_OUT" ] && cmp -s "$SELF_OUT" "$SELF_REF"; then
+    echo "[gc-selfbuild] SELF-COMPILE FIXPOINT OK: byte-identical to the linear compiler's output ($(wc -c <"$SELF_OUT") bytes)"
+    echo "[gc-selfbuild] remaining: P5 size reduction (DCE + wasm-opt; target set after first release)"
+  else
+    echo "[gc-selfbuild] self-compile frontier: $(cat "$SELF_OUT.diag" 2>/dev/null || echo 'no output or mismatch vs linear reference')"
+  fi
 fi
 
 echo

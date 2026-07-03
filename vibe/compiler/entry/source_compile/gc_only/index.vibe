@@ -12,15 +12,39 @@ import ../../../checker/checker_stmt.vibe {
   check_program
 }
 
+import ../../../desugar_trait_dict.vibe {
+  desugar_trait_dicts
+}
+
+import ../wasi_only/preprocess_interp.vibe {
+  expand_interp_stmts
+}
+
+import ../wasi_only/preprocess_strip.vibe {
+  strip_generic_type_params
+}
+
 import ../../../codegen/gc/backend_body.vibe {
   compile_wasi_module_gc
 }
 
 //# Functions
 
+// #538 P4.5: the SAME source pipeline as compile_source_wasi_only — interp
+// expansion, check, trait-dict desugar, generic-param strip — in front of the
+// gc backend. The trait-dict desugar is what expands `a == b` on enum/struct
+// operands into the derived structural Eq walk (and Show's Int::to_string
+// etc.); without it the gc lane compared ctor POINTERS, so the gc-compiled
+// checker's Option/effect-row comparisons were silently wrong.
 export let compile_source_gc_only: (String, String) -> Bytes with { Error } = (source, entry_name) -> {
   let tokens = lex(source)
   let stmts = parse_program(tokens)
+  expand_interp_stmts(stmts)
   let _ = check_program(stmts)
+  // Same effective order as the linear lane: strip source-level generic
+  // params, then the trait-dict desugar (compile_wasi_module_linked_impl
+  // runs it as its first step).
+  strip_generic_type_params(stmts)
+  desugar_trait_dicts(stmts)
   compile_wasi_module_gc(stmts, entry_name)
 }
