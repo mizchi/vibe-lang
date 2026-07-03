@@ -44,6 +44,12 @@ rc-bootstrap fixpoint + shape corpus で常時検証）。
   top-level 関数エイリアス (`export let eq = float_eq`) の呼び出しが不正 wasm を
   生むバグと、RC lane の float 型 param `==` がポインタ比較になるバグも修正
   （rc-corpus default-pass 22→27）。
+- [ ] **Module System v2 (ADR-0063/0064, docs/module-system-v2.md)** —
+  契約ファースト・パッケージシステム。Phase A `fn` 構文 #727（着手済み）、
+  B `module {}` 削除 #728、C `.vibei` 契約照合 + index 境界 #729、
+  D content-addressed `require` #730、E `where` 契約 Phase 1 #731、
+  F/G publish 検証 + export 撤去 + compiler source 移行 #732。
+  残件 #726（Python flattener → merge machinery）は G の前提整備。
 - [ ] **#415** codegen builtin registry 化（linear↔wasm-gc parity、Phase B）。
 - [ ] **#418 / #629 (ADR-0060)** mut の region capability 統一 — 設計は ADR-0060、
   実装は effect row 基盤に依存。

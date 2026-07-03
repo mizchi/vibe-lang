@@ -13745,6 +13745,7 @@ let empty_pats: () -> Array[Pat] = () -> {
     PWild
   ], 0, 0)
 }
+let mode_block = 20
 let empty_ctors: () -> Array[(String, Array[TypeExpr])] = () -> {
   Array::slice([
     ("_", Array::slice([
@@ -17006,11 +17007,46 @@ let parse_let_stmt: (Array[Token], Array[Int], Int, Bool) -> (Stmt, Int) with { 
     _ => throw("expected name after 'let'")
   }
 }
-export {
-  collect_import_path, empty_fields, empty_import_items, expect_tk, is_tk, parse, parse_effect_stmt, parse_enum_stmt, parse_expr, parse_impl, parse_impl_stmt_dispatch, parse_import_item, parse_let_stmt, parse_ok, parse_struct_field, parse_suberror_stmt, parse_trait_stmt, parse_type, parse_type_alias_stmt, peek, tk_name
+let parse_fn_stmt: (Array[Token], Array[Int], Int, Bool) -> (Stmt, Int) with { Error } = (tokens, starts, pos, exported) -> {
+  let (name, name_next) = parse_binding_name(tokens, pos)
+  let (tps, tbs, after_gen) = parse_value_bracket_header(tokens, name_next)
+  let lp = expect_tk(tokens, after_gen, "(")
+  let (params, after_params) = parse_param_list(tokens, lp)
+  let mut pi = 0
+  while pi < Array::length(params) {
+    let param = Array::get(params, pi)
+    let pty = param.1
+    match pty {
+      Some(_) => (),
+      None => throw("fn parameter '\{param.0}' requires a type annotation")
+    }
+    pi = pi + 1
+  }
+  let arrow = expect_tk(tokens, after_params, "->")
+  let (ret_ty, ret_next) = parse_type_impl(tokens, arrow, 0)
+  let (eff_opt, eff_next) = match peek(tokens, ret_next) {
+    TWith => {
+      let wb = expect_tk(tokens, ret_next + 1, "{")
+      let (eff_names, en) = collect_effect_names(tokens, wb, "")
+      (Some(eff_names), en)
+    },
+    _ => (None, ret_next)
+  }
+  let where_next = match peek(tokens, eff_next) {
+    TIdent(w) => if w == "where" {
+      skip_braced_body(tokens, eff_next + 1)
+    } else eff_next,
+    _ => eff_next
+  }
+  let br = expect_tk(tokens, where_next, "{")
+  let (body, end) = parse_impl(tokens, starts, br, mode_block)
+  (SLet(exported, true, name, None, EFn(tps, tbs, params, Some(ret_ty), eff_opt, body)), end)
 }
 export {
-  peek, is_tk, parse, tk_name, parse_ok, expect_tk, parse_expr, parse_impl, parse_type, empty_fields, parse_let_stmt, parse_enum_stmt, parse_trait_stmt, parse_effect_stmt, parse_import_item, empty_import_items, parse_struct_field, collect_import_path, parse_suberror_stmt, parse_type_alias_stmt, parse_impl_stmt_dispatch
+  collect_import_path, empty_fields, empty_import_items, expect_tk, is_tk, parse, parse_effect_stmt, parse_enum_stmt, parse_expr, parse_fn_stmt, parse_impl, parse_impl_stmt_dispatch, parse_import_item, parse_let_stmt, parse_ok, parse_struct_field, parse_suberror_stmt, parse_trait_stmt, parse_type, parse_type_alias_stmt, peek, tk_name
+}
+export {
+  peek, is_tk, parse, tk_name, parse_ok, expect_tk, parse_expr, parse_impl, parse_type, empty_fields, parse_let_stmt, parse_fn_stmt, parse_enum_stmt, parse_trait_stmt, parse_effect_stmt, parse_import_item, empty_import_items, parse_struct_field, collect_import_path, parse_suberror_stmt, parse_type_alias_stmt, parse_impl_stmt_dispatch
 }
 let parser_mode_block = 20
 let empty_names: () -> Array[String] = () -> {
@@ -17213,6 +17249,8 @@ let parse_export_stmt: (Array[Token], Array[Int], Int) -> (Stmt, Int) with { Err
     TStruct => parse_toplevel_struct_stmt(tokens, pos + 1, true),
     TIdent(ident_name) => if ident_name == "effect" {
       parse_effect_stmt(tokens, pos + 1, true)
+    } else if ident_name == "fn" {
+      parse_fn_stmt(tokens, starts, pos + 1, true)
     } else {
       throw(String::concat("unexpected token in export: ", ident_name))
     },
@@ -17310,6 +17348,7 @@ export let rec parse_stmt: (Array[Token], Array[Int], Int) -> (Stmt, Int) with {
     TIdent(name) => match name {
       "effect" => parse_effect_stmt(tokens, pos + 1, false),
       "extern" => parse_extern_let_stmt(tokens, pos + 1),
+      "fn" => parse_fn_stmt(tokens, starts, pos + 1, false),
       "use" => throw("'use' syntax is removed; use 'import <module-ref> { ... }'"),
       _ => {
       let (e, next) = parse_impl(tokens, starts, pos, 0)
@@ -20764,6 +20803,11 @@ export let normalize_source: (String) -> String with { Error } = (src) -> {
   while ci < Array::length(toks_cfg) {
     match Array::get(toks_cfg, ci) {
       THash => throw("cannot normalize a source containing #cfg directives"),
+      TIdent(tn) => if tn == "fn" {
+        throw("cannot normalize a source containing fn statements yet (#727)")
+      } else {
+        ()
+      },
       _ => ()
     }
     ci = ci + 1
@@ -42370,7 +42414,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "b84d00c995edea2a"
+  "45913f9cfe160f04"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647

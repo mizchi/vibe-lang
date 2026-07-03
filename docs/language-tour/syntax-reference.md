@@ -58,7 +58,26 @@ let counter = {
 ### Functions
 
 ```vibe
-// Preferred: type annotation separated from body
+// Top-level named functions: `fn` (#727, ADR-0064). Pure sugar for the
+// `let rec` form; full annotations required; top-level only.
+fn add(x: Int, y: Int) -> Int { x + y }
+fn fact(n: Int) -> Int { if n < 2 { 1 } else { n * fact(n - 1) } }
+fn identity[T](x: T) -> T { x }
+fn risky() -> Int with { Error } { throw("fail") }
+fn labeled(x~: Int, y~: Int) -> Int { x + y }
+export fn doubled(x: Int) -> Int { x * 2 }
+
+// Optional contract clause: parses, no semantics yet (ADR-0064 Phase E, #731)
+fn clamp(x: Int, lo: Int, hi: Int) -> Int where {
+  requires: lo <= hi,
+  ensures: result >= lo,
+} {
+  if x < lo { lo } else if x > hi { hi } else x
+}
+```
+
+```vibe
+// let form: values, computed functions, higher-order returns
 let add: (Int, Int) -> Int = (x, y) -> { x + y }
 let inc: (Int) -> Int = (x) -> { x + 1 }
 
@@ -425,7 +444,7 @@ bench "name" {
 
 ## Keywords
 
-`let`, `rec`, `mut`, `if`, `else`, `match`, `do`, `while`, `loop`, `for`, `in`,
+`let`, `rec`, `fn` (statement head only), `mut`, `if`, `else`, `match`, `do`, `while`, `loop`, `for`, `in`,
 `break`, `continue`, `yield`, `throw`, `perform`, `resume`, `handle`,
 `test`, `bench`, `enum`, `struct`, `trait`, `impl`, `type`, `import`,
 `export`, `internal`, `extern`, `module`, `as`, `true`, `false`, `suberror`,

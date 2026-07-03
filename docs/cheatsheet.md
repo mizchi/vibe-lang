@@ -69,7 +69,26 @@ Anti-patterns:
 ## Functions
 
 ```vibe
-// Preferred: type annotation separated from body
+// Top-level named functions: `fn` (#727, ADR-0064). Full annotations
+// required (param types + return type); recursion needs no `rec`.
+fn add(x: Int, y: Int) -> Int { x + y }
+fn fact(n: Int) -> Int {
+  if n < 2 { 1 } else { n * fact(n - 1) }
+}
+fn identity[T](x: T) -> T { x }                // generic
+fn show[T: Eq + Ord](x: T) -> T { x }          // trait bounds
+fn hello() -> Unit with { Stdout } { stdout_write("hi\n") }
+export fn doubled(x: Int) -> Int { x * 2 }
+```
+
+`fn` is top-level only — pure parse-time sugar for the `let rec` form below,
+so checker/codegen semantics are identical. The optional
+`where { requires: .., ensures: .. }` contract clause parses but has no
+semantics yet (ADR-0064 Phase E, #731). `vibe fmt`/normalize currently
+refuse fn-bearing sources (printer support lands with the fmt migration).
+
+```vibe
+// let form: values, computed functions, higher-order returns
 let add: (Int, Int) -> Int = (x, y) -> { x + y }
 let inc: (Int) -> Int = (x) -> { x + 1 }
 let rec fact: (Int) -> Int = (n) -> {     // recursive
