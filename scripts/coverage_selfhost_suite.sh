@@ -27,9 +27,12 @@
 # raise them, while the RATE floors would punish it (a new entry grows the
 # denominator by its whole import closure). Rates are kept as loose floors.
 #
-# Baseline (2026-07-03, 92 allowlist entries, stage2 of the #716 branch):
-#   functions 2167/6104 (35.5%), branches 3473/38151 (9.1%), cases 91/92
-#   (the known TCP-sandbox failure). Defaults sit just below those actuals.
+# Baseline (2026-07-03, 93 allowlist entries, full-visibility #716 stage2):
+#   functions 2263/6491 (34.86%), branches 3814/41967 (9.09%), cases 92/93
+#   (the known TCP-sandbox failure). Defaults sit just below those actuals;
+#   the #716 full-rename grew the fn denominator (previously-conflated
+#   same-name exports now count as distinct functions) while ABSOLUTE hits
+#   rose 2167 -> 2263 / 3473 -> 3814 — the ratchet metrics moved up.
 #   The branch denominator counts every if/match branch of the transitively
 #   imported modules, hence the low absolute rate — the ratchet direction is
 #   what the gate protects.
@@ -38,11 +41,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-MIN_POINT="${VIBE_SELFHOST_SUITE_MIN_POINT_RATE:-35}"
+MIN_POINT="${VIBE_SELFHOST_SUITE_MIN_POINT_RATE:-34}"
 MIN_LINE="${VIBE_SELFHOST_SUITE_MIN_LINE_RATE:-97}"
 MIN_BRANCH="${VIBE_SELFHOST_SUITE_MIN_BRANCH_RATE:-9}"
-MIN_FN_HIT="${VIBE_SELFHOST_SUITE_MIN_FN_HIT:-2100}"
-MIN_BRANCH_HIT="${VIBE_SELFHOST_SUITE_MIN_BRANCH_HIT:-3400}"
+MIN_FN_HIT="${VIBE_SELFHOST_SUITE_MIN_FN_HIT:-2200}"
+MIN_BRANCH_HIT="${VIBE_SELFHOST_SUITE_MIN_BRANCH_HIT:-3750}"
 
 ALLOWLIST="scripts/selfhost_unit_test_allowlist.txt"
 OUT_DIR="_build/coverage/selfhost-suite"
