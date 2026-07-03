@@ -5,7 +5,7 @@ import .. / .. / core {
 }
 
 import .. / common_analysis {
-  collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, is_mut_captured_in
+  collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, is_mut_captured_in, stmts_contain_exceptions
 }
 
 import .. / common_base {
@@ -21,11 +21,11 @@ import .. / wasm_emit {
 }
 
 import .. / builtin_bodies {
-  gen_bytes_append_body, gen_bytes_blit_body, gen_bytes_concat_body, gen_bytes_fill_body, gen_bytes_from_array_body, gen_bytes_get_body, gen_bytes_new_body, gen_bytes_push_body, gen_bytes_set_body, gen_bytes_slice_body, gen_bytes_to_array_body
+  gen_bytes_append_body, gen_bytes_blit_body, gen_bytes_concat_body, gen_bytes_fill_body, gen_bytes_from_array_body, gen_bytes_get_body, gen_bytes_new_body, gen_bytes_push_body, gen_bytes_set_body, gen_bytes_slice_body, gen_bytes_to_array_body, gen_eq_body, gen_string_contains_body, gen_string_ends_with_body, gen_string_index_of_body, gen_string_join_body, gen_string_last_index_of_body, gen_string_split_body, gen_string_starts_with_body, gen_string_trim_body
 }
 
 import ./backend_builtins_array_alloc.vibe {
-  gc_gen_arr_len_body, gc_gen_arr_new_body
+  gc_gen_arr_concat_body, gc_gen_arr_len_body, gc_gen_arr_new_body, gc_gen_arr_push_all_body, gc_gen_arr_slice_body, gc_gen_arr_truncate_body
 }
 
 import ./backend_builtins_array_get.vibe {
@@ -59,6 +59,11 @@ import ./backend_builtins_string_extra.vibe {
 import ./backend_expr.vibe {
   compile_expr_gc
 }
+
+import .. / wasi / linked_helpers.vibe {
+  stmts_use_builtin
+}
+
 
 //# Functions
 
@@ -139,6 +144,65 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
     }
     ei2 = ei2 + 1
   }
+  // #538: module-level literal constants (Int / Bool / String). The user-func
+  // walk keeps only EFn lets; scalar lets like `let op_call = 16` previously
+  // vanished and every reference threw "undefined variable".
+  let gc_const_names_l = Array::slice([
+    ""
+  ], 0, 0)
+  let gc_const_kinds_l = Array::slice([
+    0
+  ], 0, 0)
+  let gc_const_ivals_l = Array::slice([
+    0
+  ], 0, 0)
+  let gc_const_svals_l = Array::slice([
+    ""
+  ], 0, 0)
+  let gc_global_names_l = Array::slice([
+    ""
+  ], 0, 0)
+  let gc_global_exprs_l = Array::slice([
+    EUnit
+  ], 0, 0)
+  let mut gci = 0
+  while gci < Array::length(stmts) {
+    match Array::get(stmts, gci) {
+      SLet(_, _, cname, _, cval) => match cval {
+        EInt(iv) => {
+          Array::push(gc_const_names_l, cname)
+          Array::push(gc_const_kinds_l, 0)
+          Array::push(gc_const_ivals_l, iv)
+          Array::push(gc_const_svals_l, "")
+        },
+        EBool(bv) => {
+          Array::push(gc_const_names_l, cname)
+          Array::push(gc_const_kinds_l, 0)
+          Array::push(gc_const_ivals_l, if bv {
+            1
+          } else {
+            0
+          })
+          Array::push(gc_const_svals_l, "")
+        },
+        EString(sv) => {
+          Array::push(gc_const_names_l, cname)
+          Array::push(gc_const_kinds_l, 1)
+          Array::push(gc_const_ivals_l, 0)
+          Array::push(gc_const_svals_l, sv)
+        },
+        EFn(_, _, _, _, _, _) => (),
+        _ => {
+          // Computed module-level value: a mutable i64 global initialized at
+          // the top of _start (B12 port).
+          Array::push(gc_global_names_l, cname)
+          Array::push(gc_global_exprs_l, cval)
+        }
+      },
+      _ => ()
+    }
+    gci = gci + 1
+  }
   let struct_names = Array::slice([
     ""
   ], 0, 0)
@@ -184,6 +248,14 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
     throw(String::concat("entry function not found: ", entry_name))
   }
   let str_strs = collect_strings_stmts(stmts)
+  // #538: StringBuilder::freeze joins with "" and println appends "\n"; both
+  // must exist in the string table even when the program has no such literal.
+  if !array_contains_str(str_strs, "") {
+    Array::push(str_strs, "")
+  }
+  if !array_contains_str(str_strs, "\n") {
+    Array::push(str_strs, "\n")
+  }
   let num_strings = Array::length(str_strs)
   let data_base = 64
   let str_offsets = Array::slice([
@@ -203,8 +275,19 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
     si = si + 1
   }
   let heap_start = ((str_pos + 7) / 8) * 8
-  let num_generated = 28
-  let func_offset = 1 + num_generated
+  let num_generated = 41
+  // #538: host imports (module "vibe", tagged-i64 ABI -- the same raw ABI the
+  // linear backend and the node host runner speak). Gated as a GROUP: pure
+  // modules stay import-free (runnable on bare wasmtime); a module touching
+  // any Env::/Fs:: builtin imports all nine at indices 1..9, shifting every
+  // generated-body index by 9 (hbo).
+  let use_host = stmts_use_builtin(stmts, fn_names_list, "Env::get") || stmts_use_builtin(stmts, fn_names_list, "Env::args_len") || stmts_use_builtin(stmts, fn_names_list, "Env::args_get") || stmts_use_builtin(stmts, fn_names_list, "Fs::read_file") || stmts_use_builtin(stmts, fn_names_list, "Fs::exists") || stmts_use_builtin(stmts, fn_names_list, "Fs::stat_token") || stmts_use_builtin(stmts, fn_names_list, "Fs::write_file") || stmts_use_builtin(stmts, fn_names_list, "Fs::write_bytes") || stmts_use_builtin(stmts, fn_names_list, "Fs::read_bytes") || stmts_use_builtin(stmts, fn_names_list, "Profiler::now_us")
+  let hbo = if use_host {
+    10
+  } else {
+    0
+  }
+  let func_offset = 1 + hbo + num_generated
   let builtin_defs = [
     ("print_int", 1, 1, 0),
     ("print_str", 1, 2, 0),
@@ -224,18 +307,20 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
     ("ArrayBuilder::new", 0, 6, 1),
     ("ArrayBuilder::push", 2, 9, 0),
     ("ArrayBuilder::freeze", 1, 16, 1),
-    ("Array::slice", 3, 6, 1),
-    ("Array::concat", 2, 6, 1),
-    ("Array::truncate", 2, 6, 0),
-    ("Array::push_all", 2, 6, 0),
-    ("eq", 2, 6, 1),
+    ("Array::slice", 3, 38, 1),
+    ("Array::concat", 2, 39, 1),
+    ("Array::truncate", 2, 40, 0),
+    ("Array::push_all", 2, 41, 0),
+    ("eq", 2, 29, 1),
     ("not", 1, 6, 1),
-    ("String::join", 2, 6, 1),
-    ("String::ends_with", 2, 6, 1),
-    ("String::last_index_of", 2, 6, 1),
-    ("String::starts_with", 2, 6, 1),
-    ("String::contains", 2, 6, 1),
-    ("String::index_of", 2, 6, 1),
+    ("String::join", 2, 35, 1),
+    ("String::ends_with", 2, 33, 1),
+    ("String::last_index_of", 2, 34, 1),
+    ("String::starts_with", 2, 32, 1),
+    ("String::contains", 2, 31, 1),
+    ("String::index_of", 2, 30, 1),
+    ("String::split", 2, 36, 1),
+    ("String::trim", 1, 37, 1),
     ("Bytes::new", 0, 18, 1),
     ("Bytes::length", 1, 7, 1),
     ("Bytes::get", 2, 19, 1),
@@ -295,9 +380,36 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
   let mut __bi2 = 0
   while __bi2 < Array::length(builtin_defs) {
     let (_, _, bwasm_idx, breturns) = Array::get(builtin_defs, __bi2)
-    Array::push(fn_indices_list, bwasm_idx)
+    Array::push(fn_indices_list, bwasm_idx + hbo)
     Array::push(fn_returns_list, breturns)
     __bi2 = __bi2 + 1
+  }
+  // #538: host-import builtins at absolute import indices 1..9.
+  if use_host {
+    let host_defs = [
+      ("Env::get", 1, 1, 1),
+      ("Env::args_len", 0, 2, 1),
+      ("Env::args_get", 1, 3, 1),
+      ("Fs::read_file", 1, 4, 1),
+      ("Fs::exists", 1, 5, 1),
+      ("Fs::stat_token", 1, 6, 1),
+      ("Fs::write_file", 2, 7, 0),
+      ("Fs::write_bytes", 2, 8, 0),
+      ("Fs::read_bytes", 1, 9, 1),
+      ("Profiler::now_us", 0, 10, 1)
+    ]
+    let mut __hd = 0
+    while __hd < Array::length(host_defs) {
+      let (hname, hparams, hidx, hret) = Array::get(host_defs, __hd)
+      Array::push(fn_names_list, hname)
+      Array::push(fn_param_counts, hparams)
+      Array::push(fn_needs_env_list, false)
+      Array::push(fn_indices_list, hidx)
+      Array::push(fn_returns_list, hret)
+      __hd = __hd + 1
+    }
+  } else {
+    ()
   }
   let ft_names = Array::slice([
     ""
@@ -483,45 +595,129 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
   Array::push(user_ref_local_indices_all, Array::slice([
     0
   ], 0, 0))
-  Array::push(bodies, gen_bytes_append_body(false, 7, 19, 21))
+  Array::push(bodies, gen_bytes_append_body(false, hbo + 7, hbo + 19, hbo + 21))
   Array::push(meta_i32, 2)
   Array::push(meta_i64, 0)
   Array::push(user_ref_local_indices_all, Array::slice([
     0
   ], 0, 0))
-  Array::push(bodies, gen_bytes_concat_body(18, 22))
+  Array::push(bodies, gen_bytes_concat_body(hbo + 18, hbo + 22))
   Array::push(meta_i32, 0)
   Array::push(meta_i64, 1)
   Array::push(user_ref_local_indices_all, Array::slice([
     0
   ], 0, 0))
-  Array::push(bodies, gen_bytes_slice_body(false, 18, 19, 21))
+  Array::push(bodies, gen_bytes_slice_body(false, hbo + 18, hbo + 19, hbo + 21))
   Array::push(meta_i32, 2)
   Array::push(meta_i64, 1)
   Array::push(user_ref_local_indices_all, Array::slice([
     0
   ], 0, 0))
-  Array::push(bodies, gen_bytes_from_array_body(false, 7, 8, 18, 21))
+  Array::push(bodies, gen_bytes_from_array_body(false, hbo + 7, hbo + 8, hbo + 18, hbo + 21))
   Array::push(meta_i32, 2)
   Array::push(meta_i64, 1)
   Array::push(user_ref_local_indices_all, Array::slice([
     0
   ], 0, 0))
-  Array::push(bodies, gen_bytes_to_array_body(false, 6, 9, 7, 19))
+  Array::push(bodies, gen_bytes_to_array_body(false, hbo + 6, hbo + 9, hbo + 7, hbo + 19))
   Array::push(meta_i32, 2)
   Array::push(meta_i64, 1)
   Array::push(user_ref_local_indices_all, Array::slice([
     0
   ], 0, 0))
-  Array::push(bodies, gen_bytes_blit_body(false, 19, 21))
+  Array::push(bodies, gen_bytes_blit_body(false, hbo + 19, hbo + 21))
   Array::push(meta_i32, 2)
   Array::push(meta_i64, 0)
   Array::push(user_ref_local_indices_all, Array::slice([
     0
   ], 0, 0))
-  Array::push(bodies, gen_bytes_fill_body(false, 21))
+  Array::push(bodies, gen_bytes_fill_body(false, hbo + 21))
   Array::push(meta_i32, 2)
   Array::push(meta_i64, 0)
+  Array::push(user_ref_local_indices_all, Array::slice([
+    0
+  ], 0, 0))
+  // #538: generic eq (i64 fast path + looks-like-string guarded content eq)
+  // -- Map::get/has_key/MapBuilder::set resolve "eq" from the func table, and
+  // before this existed the placeholder index called array_new, which returns
+  // a fresh non-zero pointer: every key comparison was TRUE (silent wrong Map
+  // results). The gc string repr is the same packed (offset<<32)|len as the
+  // linear backend, so the linear bodies are reused verbatim below.
+  Array::push(bodies, gen_eq_body(hbo + 4))
+  Array::push(meta_i32, 0)
+  Array::push(meta_i64, 0)
+  Array::push(user_ref_local_indices_all, Array::slice([
+    0
+  ], 0, 0))
+  Array::push(bodies, gen_string_index_of_body(false, hbo + 3, hbo + 15, hbo + 4))
+  Array::push(meta_i32, 3)
+  Array::push(meta_i64, 1)
+  Array::push(user_ref_local_indices_all, Array::slice([
+    0
+  ], 0, 0))
+  Array::push(bodies, gen_string_contains_body(false, hbo + 30))
+  Array::push(meta_i32, 0)
+  Array::push(meta_i64, 0)
+  Array::push(user_ref_local_indices_all, Array::slice([
+    0
+  ], 0, 0))
+  Array::push(bodies, gen_string_starts_with_body(false, hbo + 3, hbo + 15, hbo + 4))
+  Array::push(meta_i32, 2)
+  Array::push(meta_i64, 1)
+  Array::push(user_ref_local_indices_all, Array::slice([
+    0
+  ], 0, 0))
+  Array::push(bodies, gen_string_ends_with_body(false, hbo + 3, hbo + 15, hbo + 4))
+  Array::push(meta_i32, 2)
+  Array::push(meta_i64, 1)
+  Array::push(user_ref_local_indices_all, Array::slice([
+    0
+  ], 0, 0))
+  Array::push(bodies, gen_string_last_index_of_body(false, hbo + 3, hbo + 15, hbo + 4))
+  Array::push(meta_i32, 3)
+  Array::push(meta_i64, 1)
+  Array::push(user_ref_local_indices_all, Array::slice([
+    0
+  ], 0, 0))
+  Array::push(bodies, gen_string_join_body(false, hbo + 7, hbo + 8, hbo + 5))
+  Array::push(meta_i32, 9)
+  Array::push(meta_i64, 1)
+  Array::push(user_ref_local_indices_all, Array::slice([
+    0
+  ], 0, 0))
+  Array::push(bodies, gen_string_split_body(false, hbo + 6, hbo + 9, hbo + 3, hbo + 15, hbo + 30))
+  Array::push(meta_i32, 4)
+  Array::push(meta_i64, 1)
+  Array::push(user_ref_local_indices_all, Array::slice([
+    0
+  ], 0, 0))
+  Array::push(bodies, gen_string_trim_body(false, hbo + 3, hbo + 13, hbo + 15))
+  Array::push(meta_i32, 4)
+  Array::push(meta_i64, 0)
+  Array::push(user_ref_local_indices_all, Array::slice([
+    0
+  ], 0, 0))
+  Array::push(bodies, gc_gen_arr_slice_body(hbo + 6, hbo + 8, hbo + 9))
+  Array::push(meta_i32, 0)
+  Array::push(meta_i64, 2)
+  Array::push(user_ref_local_indices_all, Array::slice([
+    0
+  ], 0, 0))
+  Array::push(bodies, gc_gen_arr_concat_body(hbo + 6, hbo + 7, hbo + 8, hbo + 9))
+  Array::push(meta_i32, 0)
+  Array::push(meta_i64, 3)
+  Array::push(user_ref_local_indices_all, Array::slice([
+    0
+  ], 0, 0))
+  Array::push(bodies, gc_gen_arr_truncate_body())
+  Array::push(meta_i32, 0)
+  Array::push(meta_i64, 0)
+  Array::push(user_ref_local_indices_all, Array::slice([
+    0
+  ], 0, 0))
+  Array::push(bodies, gc_gen_arr_push_all_body(hbo + 7, hbo + 8, hbo + 9))
+  Array::push(meta_i32, 0)
+  Array::push(meta_i64, 2)
   Array::push(user_ref_local_indices_all, Array::slice([
     0
   ], 0, 0))
@@ -567,7 +763,10 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
             num_user_funcs: num_user_funcs, func_offset: func_offset,
             ref_cell_names: ref_cell_names_f, ref_local_indices: ref_local_indices_f,
             refcell_type_idx: refcell_type_idx, closure_type_base: closure_type_base,
-            gc_ctor_table: ct
+            gc_ctor_table: ct,
+            gc_const_names: gc_const_names_l, gc_const_kinds: gc_const_kinds_l,
+            gc_const_ivals: gc_const_ivals_l, gc_const_svals: gc_const_svals_l,
+            gc_global_names: gc_global_names_l
           }
           let final_nl = compile_expr_gc(body_buf, body, local_names, param_count, func_ctx, -1)
           Array::push(bodies, body_buf)
@@ -587,19 +786,67 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
     }
     bi = bi + 1
   }
-  let num_lambdas = Array::length(lt_w.bodies)
   let start_body = bytebuf_new()
   let entry_func_idx = entry_user_idx + func_offset
   let entry_params = Array::get(ft_params, entry_user_idx)
   if entry_params != 0 {
     throw("WASI entry function must take 0 parameters")
   }
+  // #538: initialize computed module-level globals (statement order) before
+  // the entry runs. Compiled with a fresh local frame; lambdas created here
+  // land in lt_w like any other (num_lambdas is computed AFTER this).
+  let mut start_extra_locals = 0
+  if Array::length(gc_global_names_l) > 0 {
+    let init_ref_cells = Array::slice([
+      ""
+    ], 0, 0)
+    let init_ref_idx = Array::slice([
+      0
+    ], 0, 0)
+    let init_ctx = CompileCtxGc::{
+      func_table: FuncTable::{
+        names: ft_names, indices: ft_indices, params: ft_params,
+        returns: ft_returns, needs_env: ft_needs_env
+      },
+      str_table: StrTable::{
+        strs: str_strs, offsets: str_offsets, lengths: str_lengths
+      },
+      lambda_table: lt_w,
+      num_user_funcs: num_user_funcs, func_offset: func_offset,
+      ref_cell_names: init_ref_cells, ref_local_indices: init_ref_idx,
+      refcell_type_idx: refcell_type_idx, closure_type_base: closure_type_base,
+      gc_ctor_table: CtorTable::{
+        names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list,
+        type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names
+      },
+      gc_const_names: gc_const_names_l, gc_const_kinds: gc_const_kinds_l,
+      gc_const_ivals: gc_const_ivals_l, gc_const_svals: gc_const_svals_l,
+      gc_global_names: gc_global_names_l
+    }
+    let init_locals = Array::slice([
+      ""
+    ], 0, 0)
+    let mut ginit = 0
+    while ginit < Array::length(gc_global_names_l) {
+      let gexpr = Array::get(gc_global_exprs_l, ginit)
+      let g_nl = compile_expr_gc(start_body, gexpr, init_locals, Array::length(init_locals), init_ctx, -1)
+      emit_global_set(start_body, 1 + ginit)
+      if g_nl > start_extra_locals {
+        start_extra_locals = g_nl
+      }
+      if Array::length(init_locals) > start_extra_locals {
+        start_extra_locals = Array::length(init_locals)
+      }
+      ginit = ginit + 1
+    }
+  }
   emit_i64_const(start_body, 0)
   emit_call(start_body, entry_func_idx)
-  emit_call(start_body, 1)
+  emit_call(start_body, 1 + hbo)
+  let num_lambdas = Array::length(lt_w.bodies)
   Array::push(bodies, start_body)
   Array::push(meta_i32, 0)
-  Array::push(meta_i64, 0)
+  Array::push(meta_i64, start_extra_locals)
   Array::push(user_ref_local_indices_all, Array::slice([
     0
   ], 0, 0))
@@ -724,7 +971,40 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
   let out = bytebuf_new()
   emit_header(out)
   bytebuf_push_section(out, 1, type_content)
-  emit_import_section_func(out, "wasi_snapshot_preview1", "fd_write", 0)
+  if use_host {
+    // fd_write + the nine "vibe" host imports (types: 3=(i64)->i64,
+    // 5=()->i64, 6=(i64,i64)->()) -- the linear backend's raw tagged ABI.
+    let imp_content = bytebuf_new()
+    bytebuf_push_vec_header(imp_content, 11)
+    emit_name(imp_content, "wasi_snapshot_preview1")
+    emit_name(imp_content, "fd_write")
+    bytebuf_push(imp_content, 0)
+    leb128_encode_u32(imp_content, 0)
+    let host_imports = [
+      ("env-get", 3),
+      ("args-len", 5),
+      ("args-get", 3),
+      ("fs_read_file", 3),
+      ("fs_exists", 3),
+      ("fs_stat_token", 3),
+      ("fs_write_file", 6),
+      ("fs_write_bytes", 6),
+      ("fs_read_bytes", 3),
+      ("profile-now-us", 5)
+    ]
+    let mut __hi = 0
+    while __hi < Array::length(host_imports) {
+      let (hin, hit) = Array::get(host_imports, __hi)
+      emit_name(imp_content, "vibe")
+      emit_name(imp_content, hin)
+      bytebuf_push(imp_content, 0)
+      leb128_encode_u32(imp_content, hit)
+      __hi = __hi + 1
+    }
+    bytebuf_push_section(out, 2, imp_content)
+  } else {
+    emit_import_section_func(out, "wasi_snapshot_preview1", "fd_write", 0)
+  }
   let func_type_indices = Array::slice([
     0
   ], 0, 0)
@@ -756,6 +1036,21 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
   Array::push(func_type_indices, 3)
   Array::push(func_type_indices, 9)
   Array::push(func_type_indices, 7)
+  // #538 generated additions: eq + 8 string ops (type 4 = (i64,i64)->i64,
+  // type 3 = (i64)->i64 for trim)
+  Array::push(func_type_indices, 4)
+  Array::push(func_type_indices, 4)
+  Array::push(func_type_indices, 4)
+  Array::push(func_type_indices, 4)
+  Array::push(func_type_indices, 4)
+  Array::push(func_type_indices, 4)
+  Array::push(func_type_indices, 4)
+  Array::push(func_type_indices, 4)
+  Array::push(func_type_indices, 3)
+  Array::push(func_type_indices, 8)
+  Array::push(func_type_indices, 4)
+  Array::push(func_type_indices, 6)
+  Array::push(func_type_indices, 6)
   let mut fti = 0
   while fti < num_user_funcs {
     let upc = Array::get(ft_params, fti)
@@ -775,7 +1070,38 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
     emit_table_section_funcref(out, total_table_entries)
   }
   emit_memory_section(out, 1)
-  emit_global_section_i32_mut(out, heap_start)
+  // #538: exception tag (id 13 section sits between memory and global).
+  // #721-style gating: throw-free modules stay tag-free and run on engines
+  // without the exceptions proposal.
+  if stmts_contain_exceptions(stmts) {
+    let tag_content = bytebuf_new()
+    leb128_encode_u32(tag_content, 1)
+    bytebuf_push(tag_content, 0)
+    leb128_encode_u32(tag_content, 1)
+    bytebuf_push_section(out, 13, tag_content)
+  } else {
+    ()
+  }
+  if Array::length(gc_global_names_l) == 0 {
+    emit_global_section_i32_mut(out, heap_start)
+  } else {
+    // global 0: i32 mut heap pointer; globals 1..N: i64 mut computed values.
+    let g_content = bytebuf_new()
+    bytebuf_push_vec_header(g_content, 1 + Array::length(gc_global_names_l))
+    bytebuf_push(g_content, 127)
+    bytebuf_push(g_content, 1)
+    emit_i32_const(g_content, heap_start)
+    emit_end(g_content)
+    let mut ggi = 0
+    while ggi < Array::length(gc_global_names_l) {
+      bytebuf_push(g_content, 126)
+      bytebuf_push(g_content, 1)
+      emit_i64_const(g_content, 0)
+      emit_end(g_content)
+      ggi = ggi + 1
+    }
+    bytebuf_push_section(out, 6, g_content)
+  }
   let start_func_idx = func_offset + num_user_funcs
   emit_exports_with_memory(out, [
     "_start"
@@ -847,12 +1173,9 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
           ri = ri + 1
         }
         leb128_encode_u32(func_buf, 1)
-        if is_ref {
-          bytebuf_push(func_buf, 100)
-          leb128_encode_u32(func_buf, refcell_type_idx)
-        } else {
-          bytebuf_push(func_buf, 126)
-        }
+        // #538: ref cells are linear-memory cells now; every local is i64.
+        let _ = is_ref
+        bytebuf_push(func_buf, 126)
         rli = rli + 1
       }
     }

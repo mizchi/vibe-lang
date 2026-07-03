@@ -57,3 +57,133 @@ export let gc_gen_arr_new_body: () -> Bytes = () -> {
   emit_i64_extend_i32_u(b)
   b
 }
+
+// #538: real function bodies for Array::slice/concat/truncate/push_all. They
+// previously carried the placeholder table index (= arr_new), so any lookup
+// through the func table (e.g. the __slice container dispatch) called a
+// 0-arg allocator with values still on the stack -- invalid wasm. Built on
+// arr_new/arr_get/arr_push calls so they stay layout-agnostic.
+
+// (arr, start, end) -> new array of arr[start..end)
+export let gc_gen_arr_slice_body: (Int, Int, Int) -> Bytes = (arr_new_idx, arr_get_idx, arr_push_idx) -> {
+  let b = bytebuf_new()
+  emit_call(b, arr_new_idx)
+  emit_local_set(b, 3)
+  emit_local_get(b, 1)
+  emit_local_set(b, 4)
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(b, 4)
+  emit_local_get(b, 2)
+  emit_i64_ge_s(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, 3)
+  emit_local_get(b, 0)
+  emit_local_get(b, 4)
+  emit_call(b, arr_get_idx)
+  emit_call(b, arr_push_idx)
+  emit_local_get(b, 4)
+  emit_i64_const(b, 1)
+  emit_i64_add(b)
+  emit_local_set(b, 4)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  emit_local_get(b, 3)
+  b
+}
+
+// (a, b) -> new array of a's elements then b's
+export let gc_gen_arr_concat_body: (Int, Int, Int, Int) -> Bytes = (arr_new_idx, arr_len_idx, arr_get_idx, arr_push_idx) -> {
+  let b = bytebuf_new()
+  emit_call(b, arr_new_idx)
+  emit_local_set(b, 2)
+  emit_i64_const(b, 0)
+  emit_local_set(b, 3)
+  emit_local_get(b, 0)
+  emit_call(b, arr_len_idx)
+  emit_local_set(b, 4)
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(b, 3)
+  emit_local_get(b, 4)
+  emit_i64_ge_s(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, 2)
+  emit_local_get(b, 0)
+  emit_local_get(b, 3)
+  emit_call(b, arr_get_idx)
+  emit_call(b, arr_push_idx)
+  emit_local_get(b, 3)
+  emit_i64_const(b, 1)
+  emit_i64_add(b)
+  emit_local_set(b, 3)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  emit_i64_const(b, 0)
+  emit_local_set(b, 3)
+  emit_local_get(b, 1)
+  emit_call(b, arr_len_idx)
+  emit_local_set(b, 4)
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(b, 3)
+  emit_local_get(b, 4)
+  emit_i64_ge_s(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, 2)
+  emit_local_get(b, 1)
+  emit_local_get(b, 3)
+  emit_call(b, arr_get_idx)
+  emit_call(b, arr_push_idx)
+  emit_local_get(b, 3)
+  emit_i64_const(b, 1)
+  emit_i64_add(b)
+  emit_local_set(b, 3)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  emit_local_get(b, 2)
+  b
+}
+
+// (arr, n): shrink in place (len@4 of the gc array header)
+export let gc_gen_arr_truncate_body: () -> Bytes = () -> {
+  let b = bytebuf_new()
+  emit_local_get(b, 0)
+  emit_i32_wrap_i64(b)
+  emit_local_get(b, 1)
+  emit_i32_wrap_i64(b)
+  emit_i32_store(b, 2, 4)
+  b
+}
+
+// (dst, src): append all of src to dst
+export let gc_gen_arr_push_all_body: (Int, Int, Int) -> Bytes = (arr_len_idx, arr_get_idx, arr_push_idx) -> {
+  let b = bytebuf_new()
+  emit_i64_const(b, 0)
+  emit_local_set(b, 2)
+  emit_local_get(b, 1)
+  emit_call(b, arr_len_idx)
+  emit_local_set(b, 3)
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(b, 2)
+  emit_local_get(b, 3)
+  emit_i64_ge_s(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, 0)
+  emit_local_get(b, 1)
+  emit_local_get(b, 2)
+  emit_call(b, arr_get_idx)
+  emit_call(b, arr_push_idx)
+  emit_local_get(b, 2)
+  emit_i64_const(b, 1)
+  emit_i64_add(b)
+  emit_local_set(b, 2)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  b
+}

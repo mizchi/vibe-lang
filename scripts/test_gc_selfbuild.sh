@@ -219,7 +219,16 @@ env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_SELFHOST_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$CLI_WASM" \
   "$BUNDLE_SRC" "${BUNDLE_OUT#"$ROOT_DIR"/}" cli_main >/dev/null 2>&1
 if [ -s "$BUNDLE_OUT" ]; then
-  echo "[gc-selfbuild] BUNDLE COMPILED: $(wc -c <"$BUNDLE_OUT") bytes (P4 done -- measure P5 with wasm_opt next)"
+  if command -v wasm-tools >/dev/null 2>&1; then
+    if wasm-tools validate --features all "$BUNDLE_OUT" >/dev/null 2>&1; then
+      echo "[gc-selfbuild] BUNDLE COMPILED + VALID: $(wc -c <"$BUNDLE_OUT") bytes (linear stage2 ~2.57MB; P4 compile E2E done)"
+      echo "[gc-selfbuild] next: run E2E (the gc-compiled compiler does not self-run yet) + P5 DCE/wasm-opt"
+    else
+      echo "[gc-selfbuild] BUNDLE EMITTED BUT INVALID: $(wasm-tools validate --features all "$BUNDLE_OUT" 2>&1 | head -2 | tail -1)"
+    fi
+  else
+    echo "[gc-selfbuild] BUNDLE COMPILED: $(wc -c <"$BUNDLE_OUT") bytes (wasm-tools unavailable; validity unchecked)"
+  fi
 else
   echo "[gc-selfbuild] frontier: $(cat "$BUNDLE_OUT.diag" 2>/dev/null || echo '(no diag)')"
 fi

@@ -42,7 +42,7 @@ rc-bootstrap fixpoint + shape corpus で常時検証）。
 ### 🟡 機能 / 品質
 
 - [ ] **#535** post-cutover branch coverage gate 復帰
-- [ ] **#538** WASM-GC selfbuild P4 残 3 cases + P5 size optimization
+- [ ] **#538** WASM-GC selfbuild — P4 compile E2E 達成 (10/10 probes + bundle 966KB valid)。残: P4.5 run E2E / P5 size
 - [x] **#537** WASI P3: effect → WIT mapping + `vibe serve` — `vibe compile --wit` / `vibe serve` (launcher + adapter VIBE_EMIT_WIT / VIBE_SERVE_COMPONENT)、packed-string trampoline で selfhost componentize、wac plug + wasmtime serve。契約: docs/effect-wit-mapping.md、gate 40i/40j + test_wasi_http_p3_full_gate.sh
 - [ ] **#683** wasm-gc backend の実行検証ハーネス
 - [ ] **#639/#640** effect 診断の fix-it / Error の algebraic effect 化
@@ -114,7 +114,7 @@ bootstrap / fallback として通常開発では触らない。
 
 - [ ] **CI branch coverage 70% gate** + normalize/DCE/loader テスト拡充 (§カバレッジ)
 - [ ] **SIMD codegen 本番化** — 0xFD prefix emit + `simd_skip_ws`/`simd_scan_alnum` builtin 化 (§vibe/wasm)
-- [ ] **#59 WASM-GC selfbuild ~350KB** — P4 残 3 ケース (simd_patterns / gc_only/index / selfhost_cli_gc_entry) + P5 DCE + wasm-opt
+- [ ] **#59 WASM-GC selfbuild ~350KB** — P4 compile E2E 達成 (966KB valid, #538)。残: P4.5 run E2E + P5 DCE + wasm-opt
 - [x] **WASI P3**: effect → WIT マッピング + `vibe serve` (#537, docs/effect-wit-mapping.md)
 - [ ] selfhost accumulator 残 2 sites (`linked_helpers.vibe` の `contains_name` 線形走査) — vibe runtime の Map が hash table 化するまで保留 (ROI ≪、§accumulator 撲滅)
 
@@ -153,7 +153,7 @@ bootstrap / fallback として通常開発では触らない。
 
 - [x] **WASI P3: effect → WIT マッピング + `vibe serve`** (#537)
 - [ ] **SIMD codegen 本番化** — selfhost codegen の 0xFD prefix emit + `simd_skip_ws` / `simd_scan_alnum` 組込
-- [ ] **#59 WASM-GC selfbuild ~350KB** — P4 compile E2E の残 3 ケース（simd_patterns / gc_only/index / selfhost_cli_gc_entry）+ P5 DCE + wasm-opt
+- [ ] **#59 WASM-GC selfbuild ~350KB** — P4 compile E2E 達成 (966KB valid, #538)。残: P4.5 run E2E + P5 DCE + wasm-opt
 - [x] **pkfire / pkspec 全面導入** — `justfile` を完全削除し `pkfire/Taskfile.pkl` (238 tasks) が canonical。複雑な多行レシピは `scripts/pkfire/*.sh` に抽出。CI は `pkf run` 経由 + `~/.cache/pkfire` を `actions/cache` でキャッシュ。`pkspec/{VibeSpec,VibeTest}.pkl` で `pkspec check` 通る、PR 用 informational gate あり。次は (a) `pkf affected --since=origin/main 'test:*'` を CI の PR 高速化パスに組み込む (b) `pkspec exec` で `moon test` を pkspec 経由で回す
 
 ### 🔵 リファクタ / 長期
@@ -511,22 +511,21 @@ StringBuilder/ArrayBuilder) に置換する。
   - [x] **B12: Module-level globals** — Int/Bool 定数は immutable global、Call/String/Array 等は mutable EqRef global + run body で global.set
   - [x] **B13: Polymorphic Option** — builtin Some/None enum 登録、polymorphic Some with EqRef boxing、nested Ctor pattern bind
   - [x] **B14: HOF parameters** — Type::Func パラメータの closure_call_types 登録、Named 型 alias の generic closure call fallback
-  - [ ] **P4: selfhost compile E2E** — #538 で再分類 (2026-07)。旧 260/263 と「残り 3 cases」は
-    退役 MoonBit host gc backend の集計で、selfhost port には対応しない。現状の frontier は
-    `pkf run test-gc-selfbuild` (scripts/test_gc_selfbuild.sh) が計測する:
-    - [x] user enum / ctor call / ctor pattern / Option / struct literal+field / Bytes 変換 —
-      `CompileCtxGc.gc_ctor_table` rename で解禁 (#538。旧「ctor table hardcodes Option」は誤診:
-      フィールド名 first-match 解決バグで table が読めていなかった。根本原因は #722 参照)
-    - [ ] 未実装 builtin の移植: String::split/join/contains/starts_with/ends_with/index_of/
-      last_index_of/trim, StringBuilder, FixedArray, print 系 (bundle の現 frontier = String::split)
-    - [ ] nested ctor pattern の payload bind ("undefined variable")
-    - [ ] `let mut` capture closure (ref-cell store が invalid wasm)
-    - [ ] Map builtin の誤結果 (gc=4 vs linear=42 — silent miscompile)
-    - [ ] effect throw/handle の gc lane 実行
-  - [ ] **P5: DCE + wasm-opt** — 未使用コード除去と最適化で ~350KB 目標。P4 (bundle が gc で
-    compile 可能) がブロッカー。設計は確定済み: `core/dce.vibe` を gc path に適用 +
-    `vibe/wasm/wasm_opt` (dce/minify_converge) を **post-pass** で適用
-    (compiler への直接結合は +700KB & seed 不能 — docs/wasm-opt-dogfood.md)
+  - [x] **P4: selfhost compile E2E** — **達成 (2026-07, #538)**: probe 10/10 pass +
+    **full bundle (コンパイラ全体) が gc backend でコンパイル成功・wasm-tools validate 通過
+    (966KB、linear stage2 2.57MB 比 -62%)**。`pkf run test-gc-selfbuild` が常設計測。
+    (旧 260/263 集計は退役 host のもので無効。) 達成に入れた修正:
+    gc_ctor_table rename (#722 root cause) / linear string-ops ボディ再利用 (9 ops + eq) /
+    StringBuilder・FixedArray・print/assert 系 call-site / Map eq placeholder 修正 + Map::set /
+    nested ctor pattern の再帰 test+bind (+tuple bind offset 修正) / module-level 定数+計算 global /
+    tuple index `.0` / EMap・ELabeledArg / Fs・Env・Profiler host imports (group-gated, index shift hbo) /
+    perform → canonical builtin lowering / resolve 済み call の env 引数 (user-shadowed builtin 対応) /
+    ref cell の linear-memory 化 (mut-capture closure) / Error handle の try_table + throw tag (#721 gating)
+  - [ ] **P4.5: run E2E** — gc-compiled compiler はまだ自走しない (起動時 trap)。次の frontier。
+  - [ ] **P5: DCE + wasm-opt** — baseline 確保: raw 966KB (-62% vs linear)。~350KB へは
+    `core/dce.vibe` を gc path に適用 + `vibe/wasm/wasm_opt` post-pass
+    (compiler への直接結合は +700KB & seed 不能 — docs/wasm-opt-dogfood.md)。
+    メモ: wasm_opt の FS-linked compile は linear lane の FixedArray::make 未解決で現状ブロック
 - [ ] `vibe/compiler` の論理分割
   - [x] `loader/index.vibe` の manifest traversal を shared helper に寄せ、source list/source groups の二重 BFS を削減する
 

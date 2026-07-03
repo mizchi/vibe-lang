@@ -7,11 +7,11 @@
 // CompileCtxGc.gc_ctor_table field rename (the ctor table was constructed
 // correctly but every read hit the wrong struct slot via the name-first-match
 // field resolution bug; see the field-collision issue / #722).
-// KNOWN GC-LANE GAPS (pre-existing, not covered here): NESTED ctor patterns
-// (payload binds inside a ctor sub-pattern: "undefined variable"), closures
-// capturing `let mut` (ref-cell store emits invalid wasm), and the
-// unimplemented-builtin set (String::split/join/contains/... StringBuilder,
-// FixedArray, print) -- see scripts/test_gc_selfbuild.sh for the live list.
+// batch2 below locks the #538 round-2 fixes: nested ctor patterns, closures
+// capturing `let mut` (linear ref cells), Map with real eq, the string-op
+// builtin set (linear body reuse), StringBuilder, and `handle`/`throw` via
+// wasm exception-handling try_table. Remaining frontier lives in
+// scripts/test_gc_selfbuild.sh (run E2E of the gc-compiled compiler, P5 size).
 
 let is_pos: (Int) -> Bool = (n) -> {
   n > 0
@@ -79,6 +79,66 @@ let enum_sum: () -> Int = () -> {
   area(Dot) + area(Circle(3)) + area(Rect(4, 5)) + unwrap_or(Some(52), 0) + unwrap_or(None, 6)
 }
 
+// #538 batch-2 coverage: everything unlocked by the Map-eq fix, the linear
+// string-op body reuse, recursive patterns, linear ref cells, and the
+// try_table Error handler. Locks each in the enforced gate (the probe suite
+// in scripts/test_gc_selfbuild.sh is informational only).
+enum Tree {
+  Leaf(Int);
+  Node(Tree, Tree)
+}
+
+let rec tree_sum: (Tree) -> Int = (t) -> {
+  match t {
+    Leaf(v) => v,
+    Node(Leaf(a), r) => a + tree_sum(r),
+    Node(l, r) => tree_sum(l) + tree_sum(r)
+  }
+}
+
+let risky: (Int) -> Int with { Error } = (x) -> {
+  if x == 0 {
+    throw("zero")
+  }
+  100 / x
+}
+
+let batch2: () -> Int = () -> {
+  // nested ctor pattern binds (6)
+  let nested = tree_sum(Node(Leaf(1), Node(Leaf(2), Leaf(3))))
+  // mut-capture closure via linear ref cell (12)
+  let mut acc = 0
+  let add = (n: Int) -> Unit {
+    acc = acc + n
+  }
+  add(5)
+  add(7)
+  // Map with real eq (42)
+  let mb = MapBuilder::new()
+  MapBuilder::set(mb, "a", 40)
+  MapBuilder::set(mb, "b", 2)
+  let m = MapBuilder::freeze(mb)
+  let map_v = Map::get(m, "a") + Map::get(m, "b")
+  // string ops + StringBuilder (5 + 5)
+  let s = "hello,world"
+  let sops = if String::contains(s, "world") {
+    String::index_of(s, ",")
+  } else {
+    0 - 1
+  }
+  let sb = StringBuilder::new()
+  StringBuilder::push(sb, "ab")
+  StringBuilder::push(sb, "cde")
+  let sblen = String::length(StringBuilder::freeze(sb))
+  // Error handle via try_table (42)
+  let handled = handle {
+    risky(0)
+  } with Error {
+    Throw(_) => 42
+  }
+  nested + acc + map_v + sops + sblen + handled
+}
+
 export let main = () -> Int {
   let check: (Int) -> Int = (sp) -> {
     let a = if is_pos(sp) {
@@ -99,5 +159,5 @@ export let main = () -> Int {
     acc = acc + pick(i, "a")
     i = i + 1
   }
-  acc + check(5) + check(0 - 3) + grow_sum(30000) + enum_sum()
+  acc + check(5) + check(0 - 3) + grow_sum(30000) + enum_sum() + batch2()
 }

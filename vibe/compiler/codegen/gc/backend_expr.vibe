@@ -13,7 +13,7 @@ import .. / common_base {
 }
 
 import .. / common_extractors {
-  array_contains_str, emit_assignop_op, emit_memory_copy, find_catchall_idx, str_table_lookup
+  array_contains_str, emit_assignop_op, emit_memory_copy, find_catchall_idx, str_table_lookup, expr_tag
 }
 
 import .. / wasm_emit {
@@ -108,8 +108,12 @@ let rec compile_expr_gc: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) ->
       let local_idx = try_local(len - 1)
       if local_idx >= 0 {
         if array_contains_str(ctx.ref_cell_names, name) {
+          // #538: ref cells are 8-byte linear-memory cells (NOT wasm-gc
+          // structs): a (ref $t) value cannot cross the i64 world -- storing
+          // a captured cell into a closure env emitted invalid wasm.
           emit_local_get(buf, local_idx)
-          emit_struct_get(buf, ctx.refcell_type_idx, 0)
+          emit_i32_wrap_i64(buf)
+          emit_i64_load(buf, 3, 0)
         } else {
           emit_local_get(buf, local_idx)
         }
@@ -144,6 +148,42 @@ let rec compile_expr_gc: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) ->
           emit_i64_or(buf)
           next_local + 1
         } else {
+          // #538: module-level literal constants (`let op_call = 16`).
+          let mut const_i = -1
+          let mut __gc = 0
+          while __gc < Array::length(ctx.gc_const_names) {
+            if Array::get(ctx.gc_const_names, __gc) == name {
+              const_i = __gc
+              __gc = Array::length(ctx.gc_const_names)
+            } else {
+              __gc = __gc + 1
+            }
+          }
+          if const_i >= 0 {
+            if Array::get(ctx.gc_const_kinds, const_i) == 1 {
+              let cs = Array::get(ctx.gc_const_svals, const_i)
+              let csi = str_table_lookup(ctx.str_table.strs, cs)
+              emit_str_ref(buf, Array::get(ctx.str_table.offsets, csi), Array::get(ctx.str_table.lengths, csi))
+            } else {
+              emit_i64_const(buf, Array::get(ctx.gc_const_ivals, const_i))
+            }
+            return next_local
+          }
+          // #538: computed module-level global (mutable i64, init in _start).
+          let mut glob_i = -1
+          let mut __gg = 0
+          while __gg < Array::length(ctx.gc_global_names) {
+            if Array::get(ctx.gc_global_names, __gg) == name {
+              glob_i = __gg
+              __gg = Array::length(ctx.gc_global_names)
+            } else {
+              __gg = __gg + 1
+            }
+          }
+          if glob_i >= 0 {
+            emit_global_get(buf, 1 + glob_i)
+            return next_local
+          }
           let fn_len = Array::length(ctx.func_table.names)
           let mut fni = -1
           let mut __fj = 0
@@ -303,9 +343,19 @@ let rec compile_expr_gc: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) ->
       Array::push(local_names, name)
       if mut_needs_ref_cell(body, name) {
         Array::push(ctx.ref_cell_names, name)
-        let nl = ce(buf, value, local_names, next_local + 1, ld)
-        emit_struct_new(buf, ctx.refcell_type_idx)
+        // Linear-memory cell: local = cell address (i64), value stored at +0.
+        emit_global_get(buf, 0)
+        emit_i64_extend_i32_u(buf)
         emit_local_set(buf, local_idx)
+        emit_global_get(buf, 0)
+        emit_i32_const(buf, 8)
+        emit_i32_add(buf)
+        emit_global_set(buf, 0)
+        emit_heap_memory_grow_check(buf)
+        emit_local_get(buf, local_idx)
+        emit_i32_wrap_i64(buf)
+        let nl = ce(buf, value, local_names, next_local + 1, ld)
+        emit_i64_store(buf, 3, 0)
         Array::push(ctx.ref_local_indices, local_idx)
         let nl2 = ce(buf, body, local_names, nl, ld)
         nl2
@@ -320,8 +370,9 @@ let rec compile_expr_gc: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) ->
       let idx = resolve_local(local_names, name, "gc_var")
       if array_contains_str(ctx.ref_cell_names, name) {
         emit_local_get(buf, idx)
+        emit_i32_wrap_i64(buf)
         let nl = ce(buf, value, local_names, next_local, ld)
-        emit_struct_set(buf, ctx.refcell_type_idx, 0)
+        emit_i64_store(buf, 3, 0)
         ce(buf, body, local_names, nl, ld)
       } else {
         let nl = ce(buf, value, local_names, next_local, ld)
@@ -333,11 +384,13 @@ let rec compile_expr_gc: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) ->
       let idx = resolve_local(local_names, name, "gc_var")
       if array_contains_str(ctx.ref_cell_names, name) {
         emit_local_get(buf, idx)
+        emit_i32_wrap_i64(buf)
         emit_local_get(buf, idx)
-        emit_struct_get(buf, ctx.refcell_type_idx, 0)
+        emit_i32_wrap_i64(buf)
+        emit_i64_load(buf, 3, 0)
         let nl = ce(buf, value, local_names, next_local, ld)
         emit_assignop_op(buf, op)
-        emit_struct_set(buf, ctx.refcell_type_idx, 0)
+        emit_i64_store(buf, 3, 0)
         ce(buf, body, local_names, nl, ld)
       } else {
         emit_local_get(buf, idx)
@@ -385,6 +438,11 @@ let rec compile_expr_gc: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) ->
       let (arr_new_idx, _, _) = resolve_func(ctx.func_table, "array_new")
       let (arr_push_idx, _, _) = resolve_func(ctx.func_table, "Array::push")
       let arr_local = next_local
+      if ctx.func_offset > 0 && arr_new_idx >= ctx.func_offset {
+        emit_i64_const(buf, 0)
+      } else {
+        ()
+      }
       emit_call(buf, arr_new_idx)
       emit_local_set(buf, arr_local)
       Array::push(local_names, "__arr_lit")
@@ -393,7 +451,12 @@ let rec compile_expr_gc: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) ->
       while ei < Array::length(elems) {
         emit_local_get(buf, arr_local)
         nl = ce(buf, Array::get(elems, ei), local_names, nl, ld)
-        emit_call(buf, arr_push_idx)
+        if ctx.func_offset > 0 && arr_push_idx >= ctx.func_offset {
+        emit_i64_const(buf, 0)
+      } else {
+        ()
+      }
+      emit_call(buf, arr_push_idx)
         ei = ei + 1
       }
       emit_local_get(buf, arr_local)
@@ -415,6 +478,11 @@ let rec compile_expr_gc: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) ->
       emit_loop_void(buf)
       emit_local_get(buf, i_local)
       emit_local_get(buf, arr_local)
+      if ctx.func_offset > 0 && arr_len_idx >= ctx.func_offset {
+        emit_i64_const(buf, 0)
+      } else {
+        ()
+      }
       emit_call(buf, arr_len_idx)
       emit_i64_ge_s(buf)
       emit_br_if(buf, 1)
@@ -432,6 +500,11 @@ let rec compile_expr_gc: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) ->
       }
       emit_local_get(buf, arr_local)
       emit_local_get(buf, i_local)
+      if ctx.func_offset > 0 && arr_get_idx >= ctx.func_offset {
+        emit_i64_const(buf, 0)
+      } else {
+        ()
+      }
       emit_call(buf, arr_get_idx)
       emit_local_set(buf, var_local)
       Array::push(local_names, var_name)
@@ -510,9 +583,12 @@ let rec compile_expr_gc: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) ->
       next_local
     },
     EThrow(msg_expr) => {
+      // #538: real wasm exception (tag 0, (i64) -> ()). The tag section is
+      // emitted whenever stmts_contain_exceptions holds (#721-style gating),
+      // which is guaranteed if this arm is ever reached.
       let nl = ce(buf, msg_expr, local_names, next_local, ld)
-      emit_drop(buf)
-      bytebuf_push(buf, 0)
+      bytebuf_push(buf, 8)
+      leb128_encode_u32(buf, 0)
       nl
     },
     EReturn(ret_expr) => {
@@ -523,6 +599,21 @@ let rec compile_expr_gc: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) ->
     EFn(_, _, params, _, _, fn_body) =>
     compile_lambda_gc(buf, params, fn_body, local_names, next_local, ctx, ld, compile_expr_gc),
     EDot(obj, field, _) => {
+      // #538: numeric field = tuple index (`t.0`). gc tuples are raw untagged
+      // pointers with elements at i*8 (no header) -- see ETuple above.
+      let fc0 = String::char_code_at(field, 0)
+      if fc0 >= 48 && fc0 <= 57 {
+        let mut tidx = 0
+        let mut tp = 0
+        while tp < String::length(field) {
+          tidx = tidx * 10 + (String::char_code_at(field, tp) - 48)
+          tp = tp + 1
+        }
+        let nl_t = ce(buf, obj, local_names, next_local, ld)
+        emit_i32_wrap_i64(buf)
+        emit_i64_load(buf, 3, tidx * 8)
+        return nl_t
+      }
       let rec find_struct_field_idx: (Int) -> Int = (si2) -> {
         if si2 >= Array::length(ctx.gc_ctor_table.struct_names) {
           -1
@@ -600,9 +691,137 @@ let rec compile_expr_gc: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) ->
       emit_i64_or(buf)
       nl_r
     },
-    EHandle(body, _) => ce(buf, body, local_names, next_local, ld),
+    EHandle(body, harms) => {
+      // #538: Error-effect handler via try_table (no resume/replay: algebraic
+      // user effects still need the linear backend's memo machinery).
+      //   block (result i64)            ;; B_outer: success value
+      //     block (result i64)          ;; B_catch: thrown payload
+      //       try_table (result i64) [catch tag0 -> label 0]
+      //         <body>
+      //       end
+      //       br 1                       ;; success
+      //     end
+      //     <bind Throw(msg); handler>   ;; payload -> handler value
+      //   end
+      if Array::length(harms) == 0 {
+        ce(buf, body, local_names, next_local, ld)
+      } else {
+        let (hpat, hexpr) = Array::get(harms, 0)
+        let mut hpat_ok = false
+        match hpat {
+          PCtor(hname, _) => {
+            if hname == "Error::Throw" || hname == "Throw" {
+              hpat_ok = true
+            }
+          },
+          _ => ()
+        }
+        if !hpat_ok {
+          throw("GC codegen: only `with Error { Throw(..) => .. }` handlers are supported (algebraic effect handlers need the linear backend)")
+        }
+        emit_block_i64(buf)
+        emit_block_i64(buf)
+        bytebuf_push(buf, 31)
+        bytebuf_push(buf, 126)
+        leb128_encode_u32(buf, 1)
+        bytebuf_push(buf, 0)
+        leb128_encode_u32(buf, 0)
+        leb128_encode_u32(buf, 0)
+        let body_ld = if ld >= 0 {
+          ld + 3
+        } else {
+          -1
+        }
+        let nl_b = ce(buf, body, local_names, next_local, body_ld)
+        emit_end(buf)
+        emit_br(buf, 1)
+        emit_end(buf)
+        // payload (i64) on stack: bind the Throw arg if the pattern names it.
+        let names_before_h = Array::length(local_names)
+        let mut nl_h = nl_b
+        match hpat {
+          PCtor(_, hargs) => {
+            if Array::length(hargs) > 0 {
+              match Array::get(hargs, 0) {
+                PBind(hbname) => {
+                  let hb_l = Array::length(local_names)
+                  emit_local_set(buf, hb_l)
+                  Array::push(local_names, hbname)
+                  if hb_l + 1 > nl_h {
+                    nl_h = hb_l + 1
+                  }
+                },
+                _ => emit_drop(buf)
+              }
+            } else {
+              emit_drop(buf)
+            }
+          },
+          _ => emit_drop(buf)
+        }
+        let harm_ld = if ld >= 0 {
+          ld + 1
+        } else {
+          -1
+        }
+        let nl_h2 = ce(buf, hexpr, local_names, Array::length(local_names), harm_ld)
+        emit_end(buf)
+        Array::truncate(local_names, names_before_h)
+        if nl_h2 > nl_h {
+          nl_h = nl_h2
+        }
+        nl_h
+      }
+    },
+    ELabeledArg(_, _, lval) => ce(buf, lval, local_names, next_local, ld),
+    EMap(mfields) => {
+      // #538: map literal -> the gc Map block layout used by MapBuilder/Map::*
+      // ([count@0][cap@4][key@8+i*16][val@16+i*16]); keys are string literals.
+      let mflen = Array::length(mfields)
+      let mcap = if mflen > 32 {
+        mflen
+      } else {
+        32
+      }
+      let malloc_size = 8 + mcap * 16
+      let mptr = next_local
+      Array::push(local_names, "__maplit_ptr")
+      emit_global_get(buf, 0)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, mptr)
+      emit_global_get(buf, 0)
+      emit_i32_const(buf, malloc_size)
+      emit_i32_add(buf)
+      emit_global_set(buf, 0)
+      emit_heap_memory_grow_check(buf)
+      emit_local_get(buf, mptr)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, mflen)
+      emit_i32_store(buf, 2, 0)
+      emit_local_get(buf, mptr)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, mcap)
+      emit_i32_store(buf, 2, 4)
+      let mut mnl = next_local + 1
+      let mut mi = 0
+      while mi < mflen {
+        let (mkey, mval) = Array::get(mfields, mi)
+        let mk_idx = str_table_lookup(ctx.str_table.strs, mkey)
+        emit_local_get(buf, mptr)
+        emit_i32_wrap_i64(buf)
+        emit_str_ref(buf, Array::get(ctx.str_table.offsets, mk_idx), Array::get(ctx.str_table.lengths, mk_idx))
+        emit_i64_store(buf, 3, 8 + mi * 16)
+        emit_local_get(buf, mptr)
+        emit_i32_wrap_i64(buf)
+        mnl = ce(buf, mval, local_names, mnl, ld)
+        emit_i64_store(buf, 3, 16 + mi * 16)
+        mi = mi + 1
+      }
+      emit_local_get(buf, mptr)
+      mnl
+    },
     EStringInterp(_) => throw("GC codegen: EStringInterp must be resolved before codegen (call resolve_interp_stmts first)"),
-    _ => throw("unsupported expression in gc codegen")
+    _ => throw(String::concat("unsupported expression in gc codegen: tag ", __to_string(expr_tag(expr))))
   }
 }
 
