@@ -9,7 +9,7 @@ import .. / common_analysis {
 }
 
 import .. / common_base {
-  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_rc_dup_guarded, emit_binop_op, emit_heap_grow_after_heap_set, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_ctor_call, is_earray, is_efn, is_eident, is_erecord, is_etuple, is_nullary_ctor_ident, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
+  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, agg_slot_lookup, find_local_slot, emit_rc_dup_guarded, emit_binop_op, emit_heap_grow_after_heap_set, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_ctor_call, is_earray, is_efn, is_eident, is_erecord, is_etuple, is_nullary_ctor_ident, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
 }
 
 import .. / common_extractors {
@@ -351,6 +351,50 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     } else if slot_is_intish(ctx, local_idx) {
       Array::push(ctx.int_local_slots, local_idx * 2)
     }
+    // #724: log this binding's AGGREGATE shape (tuple arity / ctor-record
+    // field count) so `a == b` with both sides bound takes the structural
+    // comparators. kind*64+n; 0 overrides a reused slot. See
+    // CompileCtx.agg_local_slots.
+    let agg_entry = if is_etuple(value) {
+      64 + Array::length(get_etuple_elems(value))
+    } else if is_ctor_call(value, ctx.ctor_table) {
+      let cargs = get_ecall_args(value)
+      // `S::{ ... }` sugar arrives as ECall(S, [ERecord]) — the runtime
+      // field count is the record's, not the call arity.
+      let fcnt = if Array::length(cargs) == 1 {
+        match Array::get(cargs, 0) {
+          ERecord(rfields) => Array::length(rfields),
+          _ => Array::length(cargs)
+        }
+      } else {
+        Array::length(cargs)
+      }
+      128 + fcnt
+    } else if is_nullary_ctor_ident(value, ctx.ctor_table) {
+      128
+    } else if is_erecord(value) {
+      // Records are [tag@0][len@4][fields@8+] since #722, walkable like ctors.
+      match value {
+        ERecord(rfields) => 128 + Array::length(rfields),
+        _ => 0
+      }
+    } else if is_eident(value) {
+      // Alias of a tracked binding: propagate its shape.
+      let src_slot = find_local_slot(local_names, get_eident_name(value))
+      if src_slot >= 0 {
+        let src_info = agg_slot_lookup(ctx.agg_local_slots, src_slot)
+        if src_info > 0 {
+          src_info
+        } else {
+          0
+        }
+      } else {
+        0
+      }
+    } else {
+      0
+    }
+    Array::push(ctx.agg_local_slots, local_idx * 256 + agg_entry)
     let mut rc_kind = 0
     // #708 follow-up: set when this let's value is a borrow-returning call
     // (`let a = Array::get(...)`) -- see the ELet/expr_tag==8 branch below for

@@ -11903,6 +11903,7 @@ export struct CompileCtx {
   rc_dup_names: Array[String];
   float_local_slots: Array[Int];
   int_local_slots: Array[Int];
+  agg_local_slots: Array[Int];
   effect_names: Array[String];
   effect_op_keys: Array[String];
   effect_op_arities: Array[Int];
@@ -11951,7 +11952,8 @@ export struct CompileCtxGc {
   gc_const_ivals: Array[Int];
   gc_const_svals: Array[String];
   gc_global_names: Array[String];
-  gc_float_locals: Array[String]
+  gc_float_locals: Array[String];
+  gc_agg_local_slots: Array[Int]
 }
 export let int_log_reset_above: (CompileCtx, Int) -> Unit = (ctx, floor) -> {
   let arr = ctx.int_local_slots
@@ -11969,6 +11971,66 @@ export let int_log_reset_above: (CompileCtx, Int) -> Unit = (ctx, floor) -> {
     i = i + 1
   }
   Array::truncate(arr, w)
+}
+export let agg_log_reset_above: (Array[Int], Int) -> Unit = (arr, floor) -> {
+  let n = Array::length(arr)
+  let mut w = 0
+  let mut i = 0
+  while i < n {
+    let e = Array::get(arr, i)
+    if e / 256 < floor {
+      Array::set(arr, w, e)
+      w = w + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  Array::truncate(arr, w)
+}
+export let agg_slot_lookup: (Array[Int], Int) -> Int = (arr, slot) -> {
+  let mut i = Array::length(arr) - 1
+  let mut out = 0 - 1
+  while i >= 0 {
+    let e = Array::get(arr, i)
+    if e / 256 == slot {
+      out = e % 256
+      i = 0 - 1
+    } else {
+      i = i - 1
+    }
+  }
+  if out == 0 {
+    0 - 1
+  } else {
+    out
+  }
+}
+export let find_local_slot: (Array[String], String) -> Int = (names, name) -> {
+  let mut i = Array::length(names) - 1
+  let mut result = 0 - 1
+  while i >= 0 {
+    if Array::get(names, i) == name {
+      result = i
+      i = 0 - 1
+    } else {
+      i = i - 1
+    }
+  }
+  result
+}
+export let agg_info_of_ident: (Array[Int], Expr, Array[String]) -> Int = (arr, e, local_names) -> {
+  match e {
+    EIdent(nm, _) => {
+      let slot = find_local_slot(local_names, nm)
+      if slot >= 0 {
+        agg_slot_lookup(arr, slot)
+      } else {
+        0 - 1
+      }
+    },
+    _ => 0 - 1
+  }
 }
 export let is_efn: (Expr) -> Bool = (expr) -> {
   match expr {
@@ -26543,6 +26605,9 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
     int_local_slots: Array::slice([
       0
     ], 0, 0),
+    agg_local_slots: Array::slice([
+      0
+    ], 0, 0),
     effect_names: ctx.effect_names,
     effect_op_keys: ctx.effect_op_keys,
     effect_op_arities: ctx.effect_op_arities,
@@ -27092,6 +27157,7 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
   while ai < num_cond_arms {
     Array::truncate(local_names, names_len_at_match)
     int_log_reset_above(ctx, names_len_at_match)
+    agg_log_reset_above(ctx.agg_local_slots, names_len_at_match)
     let (__cond_p, __arm_body) = Array::get(__match_arms, ai)
     let __cond_done = if is_pint(__cond_p) {
       emit_local_get(buf, scrut_local)
@@ -27424,6 +27490,7 @@ export let compile_match: (Bytes, Expr, Array[String], Int, CompileCtx, Int, (By
   }
   Array::truncate(local_names, names_len_at_match)
   int_log_reset_above(ctx, names_len_at_match)
+  agg_log_reset_above(ctx.agg_local_slots, names_len_at_match)
   let ld_catch = if ld >= 0 {
     ld + num_cond_arms
   } else {
@@ -31339,6 +31406,42 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     } else if slot_is_intish(ctx, local_idx) {
       Array::push(ctx.int_local_slots, local_idx * 2)
     }
+    let agg_entry = if is_etuple(value) {
+      64 + Array::length(get_etuple_elems(value))
+    } else if is_ctor_call(value, ctx.ctor_table) {
+      let cargs = get_ecall_args(value)
+      let fcnt = if Array::length(cargs) == 1 {
+        match Array::get(cargs, 0) {
+          ERecord(rfields) => Array::length(rfields),
+          _ => Array::length(cargs)
+        }
+      } else {
+        Array::length(cargs)
+      }
+      128 + fcnt
+    } else if is_nullary_ctor_ident(value, ctx.ctor_table) {
+      128
+    } else if is_erecord(value) {
+      match value {
+        ERecord(rfields) => 128 + Array::length(rfields),
+        _ => 0
+      }
+    } else if is_eident(value) {
+      let src_slot = find_local_slot(local_names, get_eident_name(value))
+      if src_slot >= 0 {
+        let src_info = agg_slot_lookup(ctx.agg_local_slots, src_slot)
+        if src_info > 0 {
+          src_info
+        } else {
+          0
+        }
+      } else {
+        0
+      }
+    } else {
+      0
+    }
+    Array::push(ctx.agg_local_slots, local_idx * 256 + agg_entry)
     let mut rc_kind = 0
     let mut is_borrow_ret_ext = false
     if ctx.enable_rc {
@@ -31754,13 +31857,7 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     compile_expr_tail2(buf, expr, local_names, next_local, ctx, ld, compile_expr)
   }
 }
-let emit_tuple_struct_eq: (Bytes, Expr, Expr, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, lhs, rhs, local_names, next_local, ctx, ld, compile_expr_fn) -> {
-  let lit = if is_etuple(lhs) {
-    lhs
-  } else {
-    rhs
-  }
-  let num = Array::length(get_etuple_elems(lit))
+let emit_tuple_struct_eq: (Bytes, Expr, Expr, Int, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, lhs, rhs, num, local_names, next_local, ctx, ld, compile_expr_fn) -> {
   let aptr = next_local
   Array::push(local_names, "__eqa")
   let bptr = next_local + 1
@@ -31843,8 +31940,22 @@ let emit_ctor_struct_eq: (Bytes, Expr, Expr, Int, Array[String], Int, CompileCtx
   nl2
 }
 let emit_eq_value: (Bytes, Expr, Expr, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, lhs, rhs, local_names, next_local, ctx, ld, ce) -> {
+  let lhs_agg = agg_info_of_ident(ctx.agg_local_slots, lhs, local_names)
+  let rhs_agg = agg_info_of_ident(ctx.agg_local_slots, rhs, local_names)
   if is_etuple(lhs) || is_etuple(rhs) {
-    emit_tuple_struct_eq(buf, lhs, rhs, local_names, next_local, ctx, ld, ce)
+    let lit = if is_etuple(lhs) {
+      lhs
+    } else {
+      rhs
+    }
+    emit_tuple_struct_eq(buf, lhs, rhs, Array::length(get_etuple_elems(lit)), local_names, next_local, ctx, ld, ce)
+  } else if lhs_agg / 64 == 1 || rhs_agg / 64 == 1 {
+    let tn = if lhs_agg / 64 == 1 {
+      lhs_agg % 64
+    } else {
+      rhs_agg % 64
+    }
+    emit_tuple_struct_eq(buf, lhs, rhs, tn, local_names, next_local, ctx, ld, ce)
   } else if is_ctor_call(lhs, ctx.ctor_table) || is_nullary_ctor_ident(lhs, ctx.ctor_table) || is_ctor_call(rhs, ctx.ctor_table) || is_nullary_ctor_ident(rhs, ctx.ctor_table) {
     let clit = if is_ctor_call(lhs, ctx.ctor_table) || is_nullary_ctor_ident(lhs, ctx.ctor_table) {
       lhs
@@ -31855,6 +31966,23 @@ let emit_eq_value: (Bytes, Expr, Expr, Array[String], Int, CompileCtx, Int, (Byt
       Array::length(get_ecall_args(clit))
     } else {
       0
+    }
+    emit_ctor_struct_eq(buf, lhs, rhs, cfc, local_names, next_local, ctx, ld, ce)
+  } else if lhs_agg / 64 == 2 || rhs_agg / 64 == 2 {
+    let lfc = if lhs_agg / 64 == 2 {
+      lhs_agg % 64
+    } else {
+      0
+    }
+    let rfc = if rhs_agg / 64 == 2 {
+      rhs_agg % 64
+    } else {
+      0
+    }
+    let cfc = if lfc > rfc {
+      lfc
+    } else {
+      rfc
     }
     emit_ctor_struct_eq(buf, lhs, rhs, cfc, local_names, next_local, ctx, ld, ce)
   } else if expr_is_intish(lhs, local_names, ctx) || expr_is_intish(rhs, local_names, ctx) {
@@ -32385,6 +32513,7 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
     emit_else(buf)
     Array::truncate(local_names, names_len_before)
     int_log_reset_above(ctx, names_len_before)
+    agg_log_reset_above(ctx.agg_local_slots, names_len_before)
     cov_emit_branch(buf, ctx.cov)
     let nl3 = compile_expr(buf, else_e, local_names, nl1, ctx, ld_inner)
     emit_end(buf)
@@ -33826,6 +33955,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       rc_dup_names: rc_dups,
       float_local_slots: lc_fresh_int_array(),
       int_local_slots: lc_fresh_int_array(),
+      agg_local_slots: lc_fresh_int_array(),
       effect_names: effect_names_list,
       effect_op_keys: effect_op_keys_list,
       effect_op_arities: effect_op_arities_list,
@@ -38265,6 +38395,9 @@ let make_lambda_ctx_gc: (CompileCtxGc, Array[String], Array[Int]) -> CompileCtxG
     gc_global_names: ctx.gc_global_names,
     gc_float_locals: Array::slice([
       ""
+    ], 0, 0),
+    gc_agg_local_slots: Array::slice([
+      0
     ], 0, 0)
   }
 }
@@ -38700,6 +38833,7 @@ let compile_match_gc: (Bytes, Expr, Array[(Pat, Expr)], Array[String], Int, Comp
     }
     emit_else(buf)
     Array::truncate(local_names, names_len_at_arm)
+    agg_log_reset_above(ctx.gc_agg_local_slots, names_len_at_arm)
     ai = ai + 1
   }
   let ld_catch = if ld >= 0 {
@@ -38765,14 +38899,7 @@ let gc_is_ctor_expr: (Expr, CompileCtxGc) -> Bool = (e, ctx) -> {
     _ => false
   }
 }
-let emit_gc_tuple_struct_eq: (Bytes, Expr, Expr, Array[String], Int, CompileCtxGc, Int, (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) -> Int with { Error }) -> Int with { Error } = (buf, lhs, rhs, local_names, next_local, ctx, ld, cefn) -> {
-  let num = match lhs {
-    ETuple(les) => Array::length(les),
-    _ => match rhs {
-      ETuple(res) => Array::length(res),
-      _ => 0
-    }
-  }
+let emit_gc_tuple_struct_eq: (Bytes, Expr, Expr, Int, Array[String], Int, CompileCtxGc, Int, (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) -> Int with { Error }) -> Int with { Error } = (buf, lhs, rhs, num, local_names, next_local, ctx, ld, cefn) -> {
   let aptr = next_local
   Array::push(local_names, "__gceqa")
   let bptr = next_local + 1
@@ -38846,8 +38973,24 @@ let emit_gc_eq_value: (Bytes, Expr, Expr, Array[String], Int, CompileCtxGc, Int,
     ETuple(_) => true,
     _ => false
   }
+  let lhs_agg = agg_info_of_ident(ctx.gc_agg_local_slots, lhs, local_names)
+  let rhs_agg = agg_info_of_ident(ctx.gc_agg_local_slots, rhs, local_names)
   if lhs_is_tuple || rhs_is_tuple {
-    emit_gc_tuple_struct_eq(buf, lhs, rhs, local_names, next_local, ctx, ld, cefn)
+    let num = match lhs {
+      ETuple(les) => Array::length(les),
+      _ => match rhs {
+        ETuple(res) => Array::length(res),
+        _ => 0
+      }
+    }
+    emit_gc_tuple_struct_eq(buf, lhs, rhs, num, local_names, next_local, ctx, ld, cefn)
+  } else if lhs_agg / 64 == 1 || rhs_agg / 64 == 1 {
+    let tn = if lhs_agg / 64 == 1 {
+      lhs_agg % 64
+    } else {
+      rhs_agg % 64
+    }
+    emit_gc_tuple_struct_eq(buf, lhs, rhs, tn, local_names, next_local, ctx, ld, cefn)
   } else if gc_is_ctor_expr(lhs, ctx) || gc_is_ctor_expr(rhs, ctx) {
     let clit = if gc_is_ctor_expr(lhs, ctx) {
       lhs
@@ -38857,6 +39000,23 @@ let emit_gc_eq_value: (Bytes, Expr, Expr, Array[String], Int, CompileCtxGc, Int,
     let cfc = match clit {
       ECall(_, cargs, _) => Array::length(cargs),
       _ => 0
+    }
+    emit_gc_ctor_struct_eq(buf, lhs, rhs, cfc, local_names, next_local, ctx, ld, cefn)
+  } else if lhs_agg / 64 == 2 || rhs_agg / 64 == 2 {
+    let lfc = if lhs_agg / 64 == 2 {
+      lhs_agg % 64
+    } else {
+      0
+    }
+    let rfc = if rhs_agg / 64 == 2 {
+      rhs_agg % 64
+    } else {
+      0
+    }
+    let cfc = if lfc > rfc {
+      lfc
+    } else {
+      rfc
     }
     emit_gc_ctor_struct_eq(buf, lhs, rhs, cfc, local_names, next_local, ctx, ld, cefn)
   } else if gc_expr_is_intish(lhs) || gc_expr_is_intish(rhs) {
@@ -39102,9 +39262,11 @@ let rec compile_expr_gc: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) ->
       let nl_then = ce(buf, then_e, local_names, nl1, ld_inner)
       emit_else(buf)
       Array::truncate(local_names, names_len_before)
+      agg_log_reset_above(ctx.gc_agg_local_slots, names_len_before)
       let nl_else = ce(buf, else_e, local_names, nl1, ld_inner)
       emit_end(buf)
       Array::truncate(local_names, names_len_before)
+      agg_log_reset_above(ctx.gc_agg_local_slots, names_len_before)
       let max_nl = if nl_then > nl_else {
         nl_then
       } else {
@@ -39124,6 +39286,44 @@ let rec compile_expr_gc: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) ->
       } else {
         ()
       }
+      let agg_entry = match value {
+        ETuple(tels) => 64 + Array::length(tels),
+        ERecord(rfields) => 128 + Array::length(rfields),
+        _ => if gc_is_ctor_expr(value, ctx) {
+          match value {
+            ECall(_, cargs, _) => {
+              let fcnt = if Array::length(cargs) == 1 {
+                match Array::get(cargs, 0) {
+                  ERecord(crf) => Array::length(crf),
+                  _ => Array::length(cargs)
+                }
+              } else {
+                Array::length(cargs)
+              }
+              128 + fcnt
+            },
+            _ => 128
+          }
+        } else {
+          match value {
+            EIdent(src_nm, _) => {
+              let src_slot = find_local_slot(local_names, src_nm)
+              if src_slot >= 0 {
+                let src_info = agg_slot_lookup(ctx.gc_agg_local_slots, src_slot)
+                if src_info > 0 {
+                  src_info
+                } else {
+                  0
+                }
+              } else {
+                0
+              }
+            },
+            _ => 0
+          }
+        }
+      }
+      Array::push(ctx.gc_agg_local_slots, local_idx * 256 + agg_entry)
       let nl = ce(buf, value, local_names, next_local + 1, ld)
       emit_local_set(buf, local_idx)
       ce(buf, body, local_names, nl, ld)
@@ -39369,6 +39569,7 @@ let rec compile_expr_gc: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) ->
       emit_local_get(buf, result_local)
       let final_nl = nl4 + 1
       Array::truncate(local_names, names_len_at_forin)
+      agg_log_reset_above(ctx.gc_agg_local_slots, names_len_at_forin)
       while Array::length(local_names) < final_nl {
         Array::push(local_names, "")
       }
@@ -39653,6 +39854,7 @@ let rec compile_expr_gc: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) ->
         let nl_h2 = ce(buf, hexpr, local_names, Array::length(local_names), harm_ld)
         emit_end(buf)
         Array::truncate(local_names, names_before_h)
+        agg_log_reset_above(ctx.gc_agg_local_slots, names_before_h)
         if nl_h2 > nl_h {
           nl_h = nl_h2
         }
@@ -40397,6 +40599,9 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
             gc_global_names: gc_global_names_l,
             gc_float_locals: Array::slice([
               ""
+            ], 0, 0),
+            gc_agg_local_slots: Array::slice([
+              0
             ], 0, 0)
           }
           let final_nl = compile_expr_gc(body_buf, body, local_names, param_count, func_ctx, -1)
@@ -40452,6 +40657,9 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
       gc_global_names: gc_global_names_l,
       gc_float_locals: Array::slice([
         ""
+      ], 0, 0),
+      gc_agg_local_slots: Array::slice([
+        0
       ], 0, 0)
     }
     let init_locals = Array::slice([
@@ -41134,7 +41342,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "1baecb81bcf5fd55"
+  "05235688448e0092"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647

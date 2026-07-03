@@ -182,6 +182,18 @@ export struct CompileCtx {
   // entry — is never read as a stale int. Without that pruning a reused slot
   // holding a string would be misclassified and string `==` would break.
   int_local_slots: Array[Int];
+  // #724: append-only log of `slot*256 + kind*64 + n` entries tracking
+  // let-bound AGGREGATE literals, so `a == b` with BOTH sides non-literal
+  // bindings can still take the structural comparators (the generic runtime
+  // `eq` pointer-compares tuples, which carry no runtime header to walk).
+  // kind 1 = tuple literal (n = arity), kind 2 = ctor / record literal
+  // (n = field count), kind 0 = non-aggregate rebind overriding a reused
+  // slot. Most-recent entry per slot wins; pruned at the same branch/arm
+  // boundaries as int_local_slots (agg_log_reset_above) so a slot reused by
+  // a non-`let` binder is never read as a stale aggregate. Bindings whose
+  // value shape is not statically known (params, call results, match binds)
+  // are NOT tracked and keep the generic-eq fallback.
+  agg_local_slots: Array[Int];
   // #545 nesting: declared effect names (excluding `Error`), in tag-assignment
   // order. Effect `effect_names[i]` is routed through wasm exception tag `3 + i`
   // with its own resume frontier; `perform` and `handle` both derive the tag
@@ -325,7 +337,11 @@ export struct CompileCtxGc {
   // ops — the unconditional i64 ops silently zeroed float-literal parsing
   // (lexer parse_frac_digits) when the gc-compiled compiler ran. Best-effort:
   // annotated Double params and tuple-destructured floats are NOT tracked.
-  gc_float_locals: Array[String]
+  gc_float_locals: Array[String];
+  // #724: gc twin of CompileCtx.agg_local_slots (same encoding + pruning
+  // discipline) so the gc lane's structural ==/!= also covers non-literal
+  // aggregate bindings. gc_-prefixed per the #722 field-collision convention.
+  gc_agg_local_slots: Array[Int]
 }
 
 //# Functions
@@ -358,6 +374,83 @@ export let int_log_reset_above: (CompileCtx, Int) -> Unit = (ctx, floor) -> {
     i = i + 1
   }
   Array::truncate(arr, w)
+}
+
+// #724: prune the aggregate-shape log (see CompileCtx.agg_local_slots) at the
+// same branch/arm boundaries as int_log_reset_above — a slot reused by a
+// non-`let` binder must not be read as a stale tuple/ctor, or the structural
+// comparator would walk a non-aggregate value.
+export let agg_log_reset_above: (Array[Int], Int) -> Unit = (arr, floor) -> {
+  let n = Array::length(arr)
+  let mut w = 0
+  let mut i = 0
+  while i < n {
+    let e = Array::get(arr, i)
+    if e / 256 < floor {
+      Array::set(arr, w, e)
+      w = w + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  Array::truncate(arr, w)
+}
+
+// #724: most-recent aggregate-shape entry for `slot` — `kind*64 + n`
+// (kind 1 = tuple/arity, 2 = ctor/field count), or -1 when untracked /
+// overridden by a non-aggregate rebind.
+export let agg_slot_lookup: (Array[Int], Int) -> Int = (arr, slot) -> {
+  let mut i = Array::length(arr) - 1
+  let mut out = 0 - 1
+  while i >= 0 {
+    let e = Array::get(arr, i)
+    if e / 256 == slot {
+      out = e % 256
+      i = 0 - 1
+    } else {
+      i = i - 1
+    }
+  }
+  if out == 0 {
+    0 - 1
+  } else {
+    out
+  }
+}
+
+// #724: non-throwing last-match local lookup (resolve_local throws on a
+// missing name, which is wrong for OPTIONAL classification — a bare ident
+// can name a global function or ctor instead of a local).
+export let find_local_slot: (Array[String], String) -> Int = (names, name) -> {
+  let mut i = Array::length(names) - 1
+  let mut result = 0 - 1
+  while i >= 0 {
+    if Array::get(names, i) == name {
+      result = i
+      i = 0 - 1
+    } else {
+      i = i - 1
+    }
+  }
+  result
+}
+
+// #724: aggregate-shape info for a bare-ident operand of `==`/`!=`:
+// resolves the ident's CURRENT slot and returns its latest log entry
+// (`kind*64 + n`), or -1 for non-idents / untracked slots.
+export let agg_info_of_ident: (Array[Int], Expr, Array[String]) -> Int = (arr, e, local_names) -> {
+  match e {
+    EIdent(nm, _) => {
+      let slot = find_local_slot(local_names, nm)
+      if slot >= 0 {
+        agg_slot_lookup(arr, slot)
+      } else {
+        0 - 1
+      }
+    },
+    _ => 0 - 1
+  }
 }
 
 export let is_efn: (Expr) -> Bool = (expr) -> {

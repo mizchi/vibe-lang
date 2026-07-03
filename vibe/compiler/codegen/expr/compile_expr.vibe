@@ -9,7 +9,7 @@ import .. / common_analysis {
 }
 
 import .. / common_base {
-  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, cov_emit_branch, emit_binop_op, emit_box_float, emit_heap_grow_after_heap_set, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, emit_unbox_float, expr_tag, int_log_reset_above, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_ctor_call, is_efn, is_eident, is_etuple, is_nullary_ctor_ident, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
+  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, agg_info_of_ident, agg_log_reset_above, cov_emit_branch, emit_binop_op, emit_box_float, emit_heap_grow_after_heap_set, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, emit_unbox_float, expr_tag, int_log_reset_above, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_ctor_call, is_efn, is_eident, is_etuple, is_nullary_ctor_ident, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
 }
 
 import .. / common_extractors {
@@ -44,13 +44,7 @@ import ./compile_match.vibe {
 // Evaluates each operand to a pointer in a temp local, then ANDs an element-wise
 // generic `eq` over all elements. Produces a raw i64 0/1. `compile_expr_fn` is
 // the main expression compiler, threaded to avoid a forward reference.
-let emit_tuple_struct_eq: (Bytes, Expr, Expr, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, lhs, rhs, local_names, next_local, ctx, ld, compile_expr_fn) -> {
-  let lit = if is_etuple(lhs) {
-    lhs
-  } else {
-    rhs
-  }
-  let num = Array::length(get_etuple_elems(lit))
+let emit_tuple_struct_eq: (Bytes, Expr, Expr, Int, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, lhs, rhs, num, local_names, next_local, ctx, ld, compile_expr_fn) -> {
   let aptr = next_local
   Array::push(local_names, "__eqa")
   let bptr = next_local + 1
@@ -156,8 +150,27 @@ let emit_ctor_struct_eq: (Bytes, Expr, Expr, Int, Array[String], Int, CompileCtx
 // across all of them (the post-processing each site applies to the 0/1 result —
 // `i32_wrap`/`i32_eqz`/rc-shift — is unchanged).
 let emit_eq_value: (Bytes, Expr, Expr, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, lhs, rhs, local_names, next_local, ctx, ld, ce) -> {
+  // #724: aggregate shape of a bare-ident operand whose `let` value was a
+  // tuple/ctor/record literal (kind*64+n, or -1) — extends the structural
+  // comparators below to both-sides-bound comparisons.
+  let lhs_agg = agg_info_of_ident(ctx.agg_local_slots, lhs, local_names)
+  let rhs_agg = agg_info_of_ident(ctx.agg_local_slots, rhs, local_names)
   if is_etuple(lhs) || is_etuple(rhs) {
-    emit_tuple_struct_eq(buf, lhs, rhs, local_names, next_local, ctx, ld, ce)
+    let lit = if is_etuple(lhs) {
+      lhs
+    } else {
+      rhs
+    }
+    emit_tuple_struct_eq(buf, lhs, rhs, Array::length(get_etuple_elems(lit)), local_names, next_local, ctx, ld, ce)
+  } else if lhs_agg / 64 == 1 || rhs_agg / 64 == 1 {
+    // Tracked tuple binding on at least one side; the checker guarantees the
+    // other side is the same tuple type, so its arity matches.
+    let tn = if lhs_agg / 64 == 1 {
+      lhs_agg % 64
+    } else {
+      rhs_agg % 64
+    }
+    emit_tuple_struct_eq(buf, lhs, rhs, tn, local_names, next_local, ctx, ld, ce)
   } else if is_ctor_call(lhs, ctx.ctor_table) || is_nullary_ctor_ident(lhs, ctx.ctor_table) || is_ctor_call(rhs, ctx.ctor_table) || is_nullary_ctor_ident(rhs, ctx.ctor_table) {
     let clit = if is_ctor_call(lhs, ctx.ctor_table) || is_nullary_ctor_ident(lhs, ctx.ctor_table) {
       lhs
@@ -168,6 +181,28 @@ let emit_eq_value: (Bytes, Expr, Expr, Array[String], Int, CompileCtx, Int, (Byt
       Array::length(get_ecall_args(clit))
     } else {
       0
+    }
+    emit_ctor_struct_eq(buf, lhs, rhs, cfc, local_names, next_local, ctx, ld, ce)
+  } else if lhs_agg / 64 == 2 || rhs_agg / 64 == 2 {
+    // Tracked ctor/record binding: values carry [tag@0][argc@4][fields@8+],
+    // so the tag-comparing structural walk applies. When BOTH sides are
+    // tracked as DIFFERENT variants the field counts can differ — walk the
+    // larger count; the tag comparison short-circuits unequal variants
+    // before any field read, and equal tags imply equal counts.
+    let lfc = if lhs_agg / 64 == 2 {
+      lhs_agg % 64
+    } else {
+      0
+    }
+    let rfc = if rhs_agg / 64 == 2 {
+      rhs_agg % 64
+    } else {
+      0
+    }
+    let cfc = if lfc > rfc {
+      lfc
+    } else {
+      rfc
     }
     emit_ctor_struct_eq(buf, lhs, rhs, cfc, local_names, next_local, ctx, ld, ce)
   } else if expr_is_intish(lhs, local_names, ctx) || expr_is_intish(rhs, local_names, ctx) {
@@ -718,6 +753,7 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
     // that the else-branch is about to reuse; drop them so a non-`let` rebind
     // there is not misread as int.
     int_log_reset_above(ctx, names_len_before)
+    agg_log_reset_above(ctx.agg_local_slots, names_len_before)
     // #cov branch: the else-branch was taken.
     cov_emit_branch(buf, ctx.cov)
     let nl3 = compile_expr(buf, else_e, local_names, nl1, ctx, ld_inner)

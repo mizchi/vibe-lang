@@ -6,12 +6,14 @@
 //     bash scripts/vibe_test.sh fixtures/eq_structural_aggregates.vibe
 // (the gc selfbuild gate does exactly this — scripts/test_gc_selfbuild.sh).
 //
-// KNOWN GAP (surfaced the moment this harness existed, consistent across
-// bump/RC/gc): `a == b` where BOTH sides are non-literal aggregate bindings
-// (`let a = (1, 2)  let b = (1, 2)  a == b`) falls through to the generic
-// runtime `eq`, which pointer-compares tuples (bump tuples carry no header
-// to walk) — so it returns false for equal values. Tracked as a follow-up
-// issue; do not add both-sides-bound cases here until that lands.
+// #724 (partial fix landed): `a == b` with both sides LET-BOUND aggregate
+// literals now compares structurally — the `let` logs the value's shape
+// (tuple arity / ctor field count) per slot, and `==` consults it (see
+// CompileCtx.agg_local_slots). REMAINING GAP: bindings whose shape codegen
+// cannot see — call results (`let a = mk_pt(..)`), params, match binds —
+// still fall back to the generic runtime `eq` (pointer compare for
+// aggregates), as do NESTED aggregate elements inside a structural walk.
+// Keep those shapes out of whole-value comparisons here.
 
 struct PtEq {
   px: Int;
@@ -43,6 +45,36 @@ test "tuple structural eq (literal one side)" {
   assert(a == (1, "x", 2))
   assert(a != (1, "y", 2))
   assert((1, "x", 2) == a)
+}
+
+test "tuple structural eq (both sides bound, #724)" {
+  let a = (1, "x", 2)
+  let b = (1, "x", 2)
+  let c = (1, "y", 2)
+  assert(a == b)
+  assert(a != c)
+  let alias = a
+  assert(alias == b)
+}
+
+test "ctor structural eq (both sides bound, #724)" {
+  let a = SRectEq(3, 4)
+  let b = SRectEq(3, 4)
+  let c = SRectEq(3, 5)
+  let e1 = SEmptyEq
+  let e2 = SEmptyEq
+  assert(a == b)
+  assert(a != c)
+  assert(a != e1)
+  assert(e1 == e2)
+}
+
+test "record structural eq (both sides bound, #724)" {
+  let a = PtEq::{ px: 5, py: "p" }
+  let b = PtEq::{ py: "p", px: 5 }
+  let c = PtEq::{ px: 5, py: "q" }
+  assert(a == b)
+  assert(a != c)
 }
 
 // NOTE: whole-value comparison of NESTED aggregates (`a == ((1,2),("s",3))`)

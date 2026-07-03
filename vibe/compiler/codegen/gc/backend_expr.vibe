@@ -9,7 +9,7 @@ import .. / common_analysis {
 }
 
 import .. / common_base {
-  CompileCtxGc, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, find_func_stmt, lookup_ctor, resolve_func, resolve_local, struct_field_candidates, struct_field_dispatch_cases, struct_index_by_field_set, struct_tag_by_index
+  CompileCtxGc, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, find_func_stmt, lookup_ctor, resolve_func, resolve_local, agg_info_of_ident, agg_log_reset_above, agg_slot_lookup, find_local_slot, struct_field_candidates, struct_field_dispatch_cases, struct_index_by_field_set, struct_tag_by_index
 }
 
 import .. / common_extractors {
@@ -119,14 +119,7 @@ let gc_is_ctor_expr: (Expr, CompileCtxGc) -> Bool = (e, ctx) -> {
 // Structural equality for two tuples (gc layout: raw even ptr, element i at
 // ptr+i*8, no header). Ported from the linear emit_tuple_struct_eq; leaves a
 // raw i64 0/1. `cefn` is compile_expr_gc, threaded to avoid a forward ref.
-let emit_gc_tuple_struct_eq: (Bytes, Expr, Expr, Array[String], Int, CompileCtxGc, Int, (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) -> Int with { Error }) -> Int with { Error } = (buf, lhs, rhs, local_names, next_local, ctx, ld, cefn) -> {
-  let num = match lhs {
-    ETuple(les) => Array::length(les),
-    _ => match rhs {
-      ETuple(res) => Array::length(res),
-      _ => 0
-    }
-  }
+let emit_gc_tuple_struct_eq: (Bytes, Expr, Expr, Int, Array[String], Int, CompileCtxGc, Int, (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) -> Int with { Error }) -> Int with { Error } = (buf, lhs, rhs, num, local_names, next_local, ctx, ld, cefn) -> {
   let aptr = next_local
   Array::push(local_names, "__gceqa")
   let bptr = next_local + 1
@@ -211,8 +204,26 @@ let emit_gc_eq_value: (Bytes, Expr, Expr, Array[String], Int, CompileCtxGc, Int,
     ETuple(_) => true,
     _ => false
   }
+  // #724: aggregate shape of a bare-ident operand tracked at its `let`
+  // (kind*64+n, or -1) — mirrors the linear backend's emit_eq_value.
+  let lhs_agg = agg_info_of_ident(ctx.gc_agg_local_slots, lhs, local_names)
+  let rhs_agg = agg_info_of_ident(ctx.gc_agg_local_slots, rhs, local_names)
   if lhs_is_tuple || rhs_is_tuple {
-    emit_gc_tuple_struct_eq(buf, lhs, rhs, local_names, next_local, ctx, ld, cefn)
+    let num = match lhs {
+      ETuple(les) => Array::length(les),
+      _ => match rhs {
+        ETuple(res) => Array::length(res),
+        _ => 0
+      }
+    }
+    emit_gc_tuple_struct_eq(buf, lhs, rhs, num, local_names, next_local, ctx, ld, cefn)
+  } else if lhs_agg / 64 == 1 || rhs_agg / 64 == 1 {
+    let tn = if lhs_agg / 64 == 1 {
+      lhs_agg % 64
+    } else {
+      rhs_agg % 64
+    }
+    emit_gc_tuple_struct_eq(buf, lhs, rhs, tn, local_names, next_local, ctx, ld, cefn)
   } else if gc_is_ctor_expr(lhs, ctx) || gc_is_ctor_expr(rhs, ctx) {
     let clit = if gc_is_ctor_expr(lhs, ctx) {
       lhs
@@ -222,6 +233,26 @@ let emit_gc_eq_value: (Bytes, Expr, Expr, Array[String], Int, CompileCtxGc, Int,
     let cfc = match clit {
       ECall(_, cargs, _) => Array::length(cargs),
       _ => 0
+    }
+    emit_gc_ctor_struct_eq(buf, lhs, rhs, cfc, local_names, next_local, ctx, ld, cefn)
+  } else if lhs_agg / 64 == 2 || rhs_agg / 64 == 2 {
+    // Tag comparison short-circuits unequal variants before any field read,
+    // so walking the larger tracked field count is safe (see the linear
+    // emit_eq_value for the argument).
+    let lfc = if lhs_agg / 64 == 2 {
+      lhs_agg % 64
+    } else {
+      0
+    }
+    let rfc = if rhs_agg / 64 == 2 {
+      rhs_agg % 64
+    } else {
+      0
+    }
+    let cfc = if lfc > rfc {
+      lfc
+    } else {
+      rfc
     }
     emit_gc_ctor_struct_eq(buf, lhs, rhs, cfc, local_names, next_local, ctx, ld, cefn)
   } else if gc_expr_is_intish(lhs) || gc_expr_is_intish(rhs) {
@@ -483,9 +514,11 @@ let rec compile_expr_gc: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) ->
       let nl_then = ce(buf, then_e, local_names, nl1, ld_inner)
       emit_else(buf)
       Array::truncate(local_names, names_len_before)
+      agg_log_reset_above(ctx.gc_agg_local_slots, names_len_before)
       let nl_else = ce(buf, else_e, local_names, nl1, ld_inner)
       emit_end(buf)
       Array::truncate(local_names, names_len_before)
+      agg_log_reset_above(ctx.gc_agg_local_slots, names_len_before)
       let max_nl = if nl_then > nl_else {
         nl_then
       } else {
@@ -505,6 +538,46 @@ let rec compile_expr_gc: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) ->
       } else {
         ()
       }
+      // #724: log this binding's aggregate shape for the structural `==`
+      // comparators — mirrors the linear ELet (compile_expr_tail.vibe).
+      let agg_entry = match value {
+        ETuple(tels) => 64 + Array::length(tels),
+        ERecord(rfields) => 128 + Array::length(rfields),
+        _ => if gc_is_ctor_expr(value, ctx) {
+          match value {
+            ECall(_, cargs, _) => {
+              let fcnt = if Array::length(cargs) == 1 {
+                match Array::get(cargs, 0) {
+                  ERecord(crf) => Array::length(crf),
+                  _ => Array::length(cargs)
+                }
+              } else {
+                Array::length(cargs)
+              }
+              128 + fcnt
+            },
+            _ => 128
+          }
+        } else {
+          match value {
+            EIdent(src_nm, _) => {
+              let src_slot = find_local_slot(local_names, src_nm)
+              if src_slot >= 0 {
+                let src_info = agg_slot_lookup(ctx.gc_agg_local_slots, src_slot)
+                if src_info > 0 {
+                  src_info
+                } else {
+                  0
+                }
+              } else {
+                0
+              }
+            },
+            _ => 0
+          }
+        }
+      }
+      Array::push(ctx.gc_agg_local_slots, local_idx * 256 + agg_entry)
       let nl = ce(buf, value, local_names, next_local + 1, ld)
       emit_local_set(buf, local_idx)
       ce(buf, body, local_names, nl, ld)
@@ -764,6 +837,7 @@ let rec compile_expr_gc: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) ->
       // later lookups) while preserving slot numbering — linear parity.
       let final_nl = nl4 + 1
       Array::truncate(local_names, names_len_at_forin)
+      agg_log_reset_above(ctx.gc_agg_local_slots, names_len_at_forin)
       while Array::length(local_names) < final_nl {
         Array::push(local_names, "")
       }
@@ -1079,6 +1153,7 @@ let rec compile_expr_gc: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) ->
         let nl_h2 = ce(buf, hexpr, local_names, Array::length(local_names), harm_ld)
         emit_end(buf)
         Array::truncate(local_names, names_before_h)
+        agg_log_reset_above(ctx.gc_agg_local_slots, names_before_h)
         if nl_h2 > nl_h {
           nl_h = nl_h2
         }
