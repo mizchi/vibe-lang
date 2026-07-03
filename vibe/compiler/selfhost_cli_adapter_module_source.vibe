@@ -11904,6 +11904,8 @@ export struct CompileCtx {
   float_local_slots: Array[Int];
   int_local_slots: Array[Int];
   agg_local_slots: Array[Int];
+  agg_ret_names: Array[String];
+  agg_ret_infos: Array[Int];
   effect_names: Array[String];
   effect_op_keys: Array[String];
   effect_op_arities: Array[Int];
@@ -11953,7 +11955,9 @@ export struct CompileCtxGc {
   gc_const_svals: Array[String];
   gc_global_names: Array[String];
   gc_float_locals: Array[String];
-  gc_agg_local_slots: Array[Int]
+  gc_agg_local_slots: Array[Int];
+  gc_agg_ret_names: Array[String];
+  gc_agg_ret_infos: Array[Int]
 }
 export let int_log_reset_above: (CompileCtx, Int) -> Unit = (ctx, floor) -> {
   let arr = ctx.int_local_slots
@@ -12005,6 +12009,91 @@ export let agg_slot_lookup: (Array[Int], Int) -> Int = (arr, slot) -> {
   } else {
     out
   }
+}
+export let agg_info_of_type_name: (CtorTable, String) -> Int = (ct, tname) -> {
+  let mut si = 0
+  let mut out = 0
+  while si < Array::length(ct.struct_names) {
+    if Array::get(ct.struct_names, si) == tname {
+      out = 128 + Array::length(Array::get(ct.struct_field_names, si))
+      si = Array::length(ct.struct_names)
+    } else {
+      si = si + 1
+    }
+  }
+  if out > 0 {
+    out
+  } else {
+    let mut ti = 0
+    let mut is_enum = false
+    while ti < Array::length(ct.type_names) {
+      if Array::get(ct.type_names, ti) == tname {
+        is_enum = true
+        ti = Array::length(ct.type_names)
+      } else {
+        ti = ti + 1
+      }
+    }
+    if is_enum {
+      128 + 63
+    } else {
+      0
+    }
+  }
+}
+export let agg_info_of_type_expr: (CtorTable, TypeExpr) -> Int = (ct, te) -> {
+  match te {
+    TyTuple(tels) => 64 + Array::length(tels),
+    TyName(tname) => agg_info_of_type_name(ct, tname),
+    TyApp(tname, _) => agg_info_of_type_name(ct, tname),
+    _ => 0
+  }
+}
+export let compute_agg_returning: (Array[Stmt], CtorTable, Array[String], Array[Int]) -> Unit = (stmts, ct, out_names, out_infos) -> {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, ann, value) => match value {
+        EFn(_, _, _, fn_ret, _, _) => {
+          let ret = match ann {
+            Some(at) => match at {
+              TyFn(_, r, _) => Some(r),
+              _ => fn_ret
+            },
+            None => fn_ret
+          }
+          match ret {
+            Some(rte) => {
+              let info = agg_info_of_type_expr(ct, rte)
+              if info > 0 {
+                Array::push(out_names, name)
+                Array::push(out_infos, info)
+              } else {
+                ()
+              }
+            },
+            None => ()
+          }
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+export let agg_ret_lookup: (Array[String], Array[Int], String) -> Int = (names, infos, fname) -> {
+  let mut i = 0
+  let mut out = 0 - 1
+  while i < Array::length(names) {
+    if Array::get(names, i) == fname {
+      out = Array::get(infos, i)
+      i = Array::length(names)
+    } else {
+      i = i + 1
+    }
+  }
+  out
 }
 export let find_local_slot: (Array[String], String) -> Int = (names, name) -> {
   let mut i = Array::length(names) - 1
@@ -26608,6 +26697,8 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
     agg_local_slots: Array::slice([
       0
     ], 0, 0),
+    agg_ret_names: ctx.agg_ret_names,
+    agg_ret_infos: ctx.agg_ret_infos,
     effect_names: ctx.effect_names,
     effect_op_keys: ctx.effect_op_keys,
     effect_op_arities: ctx.effect_op_arities,
@@ -31426,6 +31517,20 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
         ERecord(rfields) => 128 + Array::length(rfields),
         _ => 0
       }
+    } else if expr_tag(value) == 8 {
+      match get_ecall_callee(value) {
+        EIdent(cfn, _) => if find_local_slot(local_names, cfn) < 0 {
+          let rinfo = agg_ret_lookup(ctx.agg_ret_names, ctx.agg_ret_infos, cfn)
+          if rinfo > 0 {
+            rinfo
+          } else {
+            0
+          }
+        } else {
+          0
+        },
+        _ => 0
+      }
     } else if is_eident(value) {
       let src_slot = find_local_slot(local_names, get_eident_name(value))
       if src_slot >= 0 {
@@ -31921,23 +32026,79 @@ let emit_ctor_struct_eq: (Bytes, Expr, Expr, Int, Array[String], Int, CompileCtx
   emit_i32_eq(buf)
   emit_if_i64(buf)
   let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
-  emit_i64_const(buf, 1)
-  let mut i = 0
-  while i < fc {
+  if fc == 63 {
+    let res_l = nl2
+    let cnt_l = nl2 + 1
+    let ii_l = nl2 + 2
+    Array::push(local_names, "__ceq_res")
+    Array::push(local_names, "__ceq_cnt")
+    Array::push(local_names, "__ceq_i")
+    emit_i64_const(buf, 1)
+    emit_local_set(buf, res_l)
     emit_local_get(buf, aptr)
     emit_i32_wrap_i64(buf)
-    emit_i64_load(buf, 3, 8 + i * 8)
+    emit_i32_load(buf, 2, 4)
+    emit_i64_extend_i32_u(buf)
+    emit_local_set(buf, cnt_l)
+    emit_i64_const(buf, 0)
+    emit_local_set(buf, ii_l)
+    emit_block_void(buf)
+    emit_loop_void(buf)
+    emit_local_get(buf, ii_l)
+    emit_local_get(buf, cnt_l)
+    emit_i64_ge_s(buf)
+    emit_br_if(buf, 1)
+    emit_local_get(buf, res_l)
+    emit_local_get(buf, aptr)
+    emit_i32_wrap_i64(buf)
+    emit_local_get(buf, ii_l)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, 8)
+    emit_i32_mul(buf)
+    emit_i32_add(buf)
+    emit_i64_load(buf, 3, 8)
     emit_local_get(buf, bptr)
     emit_i32_wrap_i64(buf)
-    emit_i64_load(buf, 3, 8 + i * 8)
+    emit_local_get(buf, ii_l)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, 8)
+    emit_i32_mul(buf)
+    emit_i32_add(buf)
+    emit_i64_load(buf, 3, 8)
     emit_call(buf, eq_fidx)
     emit_i64_and(buf)
-    i = i + 1
+    emit_local_set(buf, res_l)
+    emit_local_get(buf, ii_l)
+    emit_i64_const(buf, 1)
+    emit_i64_add(buf)
+    emit_local_set(buf, ii_l)
+    emit_br(buf, 0)
+    emit_end(buf)
+    emit_end(buf)
+    emit_local_get(buf, res_l)
+    emit_else(buf)
+    emit_i64_const(buf, 0)
+    emit_end(buf)
+    nl2 + 3
+  } else {
+    emit_i64_const(buf, 1)
+    let mut i = 0
+    while i < fc {
+      emit_local_get(buf, aptr)
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, 8 + i * 8)
+      emit_local_get(buf, bptr)
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, 8 + i * 8)
+      emit_call(buf, eq_fidx)
+      emit_i64_and(buf)
+      i = i + 1
+    }
+    emit_else(buf)
+    emit_i64_const(buf, 0)
+    emit_end(buf)
+    nl2
   }
-  emit_else(buf)
-  emit_i64_const(buf, 0)
-  emit_end(buf)
-  nl2
 }
 let emit_eq_value: (Bytes, Expr, Expr, Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with { Error }) -> Int with { Error } = (buf, lhs, rhs, local_names, next_local, ctx, ld, ce) -> {
   let lhs_agg = agg_info_of_ident(ctx.agg_local_slots, lhs, local_names)
@@ -32757,6 +32918,11 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     }
     si = si + 1
   }
+  let lc_agg_ret_names = lc_fresh_string_array()
+  let lc_agg_ret_infos = lc_fresh_int_array()
+  compute_agg_returning(stmts, CtorTable::{
+    names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names
+  }, lc_agg_ret_names, lc_agg_ret_infos)
   let num_user_funcs = Array::length(fn_names_list)
   if num_user_funcs == 0 {
     throw("no functions found to compile")
@@ -33956,6 +34122,8 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       float_local_slots: lc_fresh_int_array(),
       int_local_slots: lc_fresh_int_array(),
       agg_local_slots: lc_fresh_int_array(),
+      agg_ret_names: lc_agg_ret_names,
+      agg_ret_infos: lc_agg_ret_infos,
       effect_names: effect_names_list,
       effect_op_keys: effect_op_keys_list,
       effect_op_arities: effect_op_arities_list,
@@ -33975,6 +34143,34 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
         let (pname, _) = Array::get(lc_norm_params, pi)
         Array::push(local_names, pname)
         pi = pi + 1
+      }
+      let sig_ptypes = fn_type_param_types(__sf_slet_type)
+      let mut psi = 0
+      while psi < Array::length(lc_norm_params) {
+        let pann = match sig_ptypes {
+          Some(pts) => if Array::length(pts) == Array::length(lc_norm_params) {
+            Some(Array::get(pts, psi))
+          } else {
+            let (_, pa) = Array::get(lc_norm_params, psi)
+            pa
+          },
+          None => {
+            let (_, pa) = Array::get(lc_norm_params, psi)
+            pa
+          }
+        }
+        match pann {
+          Some(pte) => {
+            let pinfo = agg_info_of_type_expr(compile_ctx.ctor_table, pte)
+            if pinfo > 0 {
+              Array::push(compile_ctx.agg_local_slots, psi * 256 + pinfo)
+            } else {
+              ()
+            }
+          },
+          None => ()
+        }
+        psi = psi + 1
       }
       Array::push(local_names, "__env")
       let param_count = Array::length(lc_norm_params) + 1
@@ -38398,7 +38594,9 @@ let make_lambda_ctx_gc: (CompileCtxGc, Array[String], Array[Int]) -> CompileCtxG
     ], 0, 0),
     gc_agg_local_slots: Array::slice([
       0
-    ], 0, 0)
+    ], 0, 0),
+    gc_agg_ret_names: ctx.gc_agg_ret_names,
+    gc_agg_ret_infos: ctx.gc_agg_ret_infos
   }
 }
 export {
@@ -38946,23 +39144,79 @@ let emit_gc_ctor_struct_eq: (Bytes, Expr, Expr, Int, Array[String], Int, Compile
   emit_i32_eq(buf)
   emit_if_i64(buf)
   let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
-  emit_i64_const(buf, 1)
-  let mut i = 0
-  while i < fc {
+  if fc == 63 {
+    let res_l = nl2
+    let cnt_l = nl2 + 1
+    let ii_l = nl2 + 2
+    Array::push(local_names, "__gcceq_res")
+    Array::push(local_names, "__gcceq_cnt")
+    Array::push(local_names, "__gcceq_i")
+    emit_i64_const(buf, 1)
+    emit_local_set(buf, res_l)
     emit_local_get(buf, aptr)
     emit_i32_wrap_i64(buf)
-    emit_i64_load(buf, 3, 8 + i * 8)
+    emit_i32_load(buf, 2, 4)
+    emit_i64_extend_i32_u(buf)
+    emit_local_set(buf, cnt_l)
+    emit_i64_const(buf, 0)
+    emit_local_set(buf, ii_l)
+    emit_block_void(buf)
+    emit_loop_void(buf)
+    emit_local_get(buf, ii_l)
+    emit_local_get(buf, cnt_l)
+    emit_i64_ge_s(buf)
+    emit_br_if(buf, 1)
+    emit_local_get(buf, res_l)
+    emit_local_get(buf, aptr)
+    emit_i32_wrap_i64(buf)
+    emit_local_get(buf, ii_l)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, 8)
+    emit_i32_mul(buf)
+    emit_i32_add(buf)
+    emit_i64_load(buf, 3, 8)
     emit_local_get(buf, bptr)
     emit_i32_wrap_i64(buf)
-    emit_i64_load(buf, 3, 8 + i * 8)
+    emit_local_get(buf, ii_l)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, 8)
+    emit_i32_mul(buf)
+    emit_i32_add(buf)
+    emit_i64_load(buf, 3, 8)
     emit_call(buf, eq_fidx)
     emit_i64_and(buf)
-    i = i + 1
+    emit_local_set(buf, res_l)
+    emit_local_get(buf, ii_l)
+    emit_i64_const(buf, 1)
+    emit_i64_add(buf)
+    emit_local_set(buf, ii_l)
+    emit_br(buf, 0)
+    emit_end(buf)
+    emit_end(buf)
+    emit_local_get(buf, res_l)
+    emit_else(buf)
+    emit_i64_const(buf, 0)
+    emit_end(buf)
+    nl2 + 3
+  } else {
+    emit_i64_const(buf, 1)
+    let mut i = 0
+    while i < fc {
+      emit_local_get(buf, aptr)
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, 8 + i * 8)
+      emit_local_get(buf, bptr)
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, 8 + i * 8)
+      emit_call(buf, eq_fidx)
+      emit_i64_and(buf)
+      i = i + 1
+    }
+    emit_else(buf)
+    emit_i64_const(buf, 0)
+    emit_end(buf)
+    nl2
   }
-  emit_else(buf)
-  emit_i64_const(buf, 0)
-  emit_end(buf)
-  nl2
 }
 let emit_gc_eq_value: (Bytes, Expr, Expr, Array[String], Int, CompileCtxGc, Int, (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) -> Int with { Error }) -> Int with { Error } = (buf, lhs, rhs, local_names, next_local, ctx, ld, cefn) -> {
   let lhs_is_tuple = match lhs {
@@ -39318,6 +39572,19 @@ let rec compile_expr_gc: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) ->
               } else {
                 0
               }
+            },
+            ECall(vcal, _, _) => match vcal {
+              EIdent(cfn, _) => if find_local_slot(local_names, cfn) < 0 {
+                let rinfo = agg_ret_lookup(ctx.gc_agg_ret_names, ctx.gc_agg_ret_infos, cfn)
+                if rinfo > 0 {
+                  rinfo
+                } else {
+                  0
+                }
+              } else {
+                0
+              },
+              _ => 0
             },
             _ => 0
           }
@@ -40253,6 +40520,15 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
   let ft_indices = Array::slice([
     0
   ], 0, 0)
+  let gc_agg_ret_names_l = Array::slice([
+    ""
+  ], 0, 0)
+  let gc_agg_ret_infos_l = Array::slice([
+    0
+  ], 0, 0)
+  compute_agg_returning(stmts, CtorTable::{
+    names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names
+  }, gc_agg_ret_names_l, gc_agg_ret_infos_l)
   let ft_params = Array::slice([
     0
   ], 0, 0)
@@ -40555,11 +40831,14 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
   while bi < num_user_funcs {
     let stmt = Array::get(user_func_stmts, bi)
     match stmt {
-      SLet(_, _, _, _, expr) => match expr {
+      SLet(_, _, _, gc_fn_ann, expr) => match expr {
         EFn(_, _, params, _, _, body) => {
           let body_buf = bytebuf_new()
           let local_names = Array::slice([
             ""
+          ], 0, 0)
+          let gc_agg_slots_f = Array::slice([
+            0
           ], 0, 0)
           let mut ppi = 0
           while ppi < Array::length(params) {
@@ -40569,6 +40848,36 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
           }
           Array::push(local_names, "__env")
           let param_count = Array::length(params) + 1
+          let gc_sig_ptypes = fn_type_param_types(gc_fn_ann)
+          let mut psi = 0
+          while psi < Array::length(params) {
+            let pann = match gc_sig_ptypes {
+              Some(pts) => if Array::length(pts) == Array::length(params) {
+                Some(Array::get(pts, psi))
+              } else {
+                let (_, pa) = Array::get(params, psi)
+                pa
+              },
+              None => {
+                let (_, pa) = Array::get(params, psi)
+                pa
+              }
+            }
+            match pann {
+              Some(pte) => {
+                let pinfo = agg_info_of_type_expr(CtorTable::{
+                  names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names
+                }, pte)
+                if pinfo > 0 {
+                  Array::push(gc_agg_slots_f, psi * 256 + pinfo)
+                } else {
+                  ()
+                }
+              },
+              None => ()
+            }
+            psi = psi + 1
+          }
           let ref_cell_names_f = Array::slice([
             ""
           ], 0, 0)
@@ -40600,9 +40909,9 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
             gc_float_locals: Array::slice([
               ""
             ], 0, 0),
-            gc_agg_local_slots: Array::slice([
-              0
-            ], 0, 0)
+            gc_agg_local_slots: gc_agg_slots_f,
+            gc_agg_ret_names: gc_agg_ret_names_l,
+            gc_agg_ret_infos: gc_agg_ret_infos_l
           }
           let final_nl = compile_expr_gc(body_buf, body, local_names, param_count, func_ctx, -1)
           Array::push(bodies, body_buf)
@@ -40660,7 +40969,9 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
       ], 0, 0),
       gc_agg_local_slots: Array::slice([
         0
-      ], 0, 0)
+      ], 0, 0),
+      gc_agg_ret_names: gc_agg_ret_names_l,
+      gc_agg_ret_infos: gc_agg_ret_infos_l
     }
     let init_locals = Array::slice([
       ""
@@ -41342,7 +41653,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "05235688448e0092"
+  "f20809bcb057826c"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647

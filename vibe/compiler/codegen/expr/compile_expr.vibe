@@ -123,23 +123,82 @@ let emit_ctor_struct_eq: (Bytes, Expr, Expr, Int, Array[String], Int, CompileCtx
   emit_i32_eq(buf)
   emit_if_i64(buf)
   let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
-  emit_i64_const(buf, 1)
-  let mut i = 0
-  while i < fc {
+  if fc == 63 {
+    // #724 round 2: DYNAMIC field count — fc 63 marks an enum-typed value
+    // whose variant (hence argc) is only known at runtime. Equal tags imply
+    // equal argc, so loop over argc@4 read from the value itself.
+    let res_l = nl2
+    let cnt_l = nl2 + 1
+    let ii_l = nl2 + 2
+    Array::push(local_names, "__ceq_res")
+    Array::push(local_names, "__ceq_cnt")
+    Array::push(local_names, "__ceq_i")
+    emit_i64_const(buf, 1)
+    emit_local_set(buf, res_l)
     emit_local_get(buf, aptr)
     emit_i32_wrap_i64(buf)
-    emit_i64_load(buf, 3, 8 + i * 8)
+    emit_i32_load(buf, 2, 4)
+    emit_i64_extend_i32_u(buf)
+    emit_local_set(buf, cnt_l)
+    emit_i64_const(buf, 0)
+    emit_local_set(buf, ii_l)
+    emit_block_void(buf)
+    emit_loop_void(buf)
+    emit_local_get(buf, ii_l)
+    emit_local_get(buf, cnt_l)
+    emit_i64_ge_s(buf)
+    emit_br_if(buf, 1)
+    emit_local_get(buf, res_l)
+    emit_local_get(buf, aptr)
+    emit_i32_wrap_i64(buf)
+    emit_local_get(buf, ii_l)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, 8)
+    emit_i32_mul(buf)
+    emit_i32_add(buf)
+    emit_i64_load(buf, 3, 8)
     emit_local_get(buf, bptr)
     emit_i32_wrap_i64(buf)
-    emit_i64_load(buf, 3, 8 + i * 8)
+    emit_local_get(buf, ii_l)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, 8)
+    emit_i32_mul(buf)
+    emit_i32_add(buf)
+    emit_i64_load(buf, 3, 8)
     emit_call(buf, eq_fidx)
     emit_i64_and(buf)
-    i = i + 1
+    emit_local_set(buf, res_l)
+    emit_local_get(buf, ii_l)
+    emit_i64_const(buf, 1)
+    emit_i64_add(buf)
+    emit_local_set(buf, ii_l)
+    emit_br(buf, 0)
+    emit_end(buf)
+    emit_end(buf)
+    emit_local_get(buf, res_l)
+    emit_else(buf)
+    emit_i64_const(buf, 0)
+    emit_end(buf)
+    nl2 + 3
+  } else {
+    emit_i64_const(buf, 1)
+    let mut i = 0
+    while i < fc {
+      emit_local_get(buf, aptr)
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, 8 + i * 8)
+      emit_local_get(buf, bptr)
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, 8 + i * 8)
+      emit_call(buf, eq_fidx)
+      emit_i64_and(buf)
+      i = i + 1
+    }
+    emit_else(buf)
+    emit_i64_const(buf, 0)
+    emit_end(buf)
+    nl2
   }
-  emit_else(buf)
-  emit_i64_const(buf, 0)
-  emit_end(buf)
-  nl2
 }
 
 // #672: emit the equality test for `lhs == rhs`, leaving a raw i64 0/1 on the

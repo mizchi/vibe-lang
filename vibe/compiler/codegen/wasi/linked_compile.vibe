@@ -26,7 +26,7 @@ import .. / common_analysis {
 
 import .. / common_base {
   rc_shadow_reserve,
-  CompileCtx, CovState, CtorTable, DbgProv, FuncTable, LambdaTable, StrTable, emit_rc_dup_guarded, empty_dbg_prov, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, fn_type_param_types, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, get_slet_type, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
+  CompileCtx, CovState, CtorTable, DbgProv, FuncTable, LambdaTable, StrTable, agg_info_of_type_expr, compute_agg_returning, emit_rc_dup_guarded, empty_dbg_prov, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, fn_type_param_types, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, get_slet_type, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
 }
 
 import .. / common_extractors {
@@ -276,6 +276,14 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     }
     si = si + 1
   }
+  // #724 round 2: (fn name -> declared aggregate return shape) table so
+  // `let a = f(..)` bindings participate in structural `==` (see
+  // compute_agg_returning in common_base).
+  let lc_agg_ret_names = lc_fresh_string_array()
+  let lc_agg_ret_infos = lc_fresh_int_array()
+  compute_agg_returning(stmts, CtorTable::{
+    names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names
+  }, lc_agg_ret_names, lc_agg_ret_infos)
   let num_user_funcs = Array::length(fn_names_list)
   if num_user_funcs == 0 {
     throw("no functions found to compile")
@@ -1646,6 +1654,8 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       float_local_slots: lc_fresh_int_array(),
       int_local_slots: lc_fresh_int_array(),
       agg_local_slots: lc_fresh_int_array(),
+      agg_ret_names: lc_agg_ret_names,
+      agg_ret_infos: lc_agg_ret_infos,
       effect_names: effect_names_list,
       effect_op_keys: effect_op_keys_list,
       effect_op_arities: effect_op_arities_list,
@@ -1669,6 +1679,39 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
         let (pname, _) = Array::get(lc_norm_params, pi)
         Array::push(local_names, pname)
         pi = pi + 1
+      }
+      // #724 round 2: seed the aggregate-shape log from ANNOTATED params
+      // (param slot i = local i), so `p == q` on tuple/struct/enum-typed
+      // params compares structurally.
+      let sig_ptypes = fn_type_param_types(__sf_slet_type)
+      let mut psi = 0
+      while psi < Array::length(lc_norm_params) {
+        // Prefer the SLet signature's param types (`let f: (P2) -> ..`);
+        // fall back to a per-param annotation (`(p: P2) -> ..`).
+        let pann = match sig_ptypes {
+          Some(pts) => if Array::length(pts) == Array::length(lc_norm_params) {
+            Some(Array::get(pts, psi))
+          } else {
+            let (_, pa) = Array::get(lc_norm_params, psi)
+            pa
+          },
+          None => {
+            let (_, pa) = Array::get(lc_norm_params, psi)
+            pa
+          }
+        }
+        match pann {
+          Some(pte) => {
+            let pinfo = agg_info_of_type_expr(compile_ctx.ctor_table, pte)
+            if pinfo > 0 {
+              Array::push(compile_ctx.agg_local_slots, psi * 256 + pinfo)
+            } else {
+              ()
+            }
+          },
+          None => ()
+        }
+        psi = psi + 1
       }
       Array::push(local_names, "__env")
       let param_count = Array::length(lc_norm_params) + 1

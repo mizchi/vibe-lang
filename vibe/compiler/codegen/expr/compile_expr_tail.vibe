@@ -9,7 +9,7 @@ import .. / common_analysis {
 }
 
 import .. / common_base {
-  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, agg_slot_lookup, find_local_slot, emit_rc_dup_guarded, emit_binop_op, emit_heap_grow_after_heap_set, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_ctor_call, is_earray, is_efn, is_eident, is_erecord, is_etuple, is_nullary_ctor_ident, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
+  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, agg_ret_lookup, agg_slot_lookup, find_local_slot, emit_rc_dup_guarded, emit_binop_op, emit_heap_grow_after_heap_set, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_ctor_call, is_earray, is_efn, is_eident, is_erecord, is_etuple, is_nullary_ctor_ident, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
 }
 
 import .. / common_extractors {
@@ -376,6 +376,23 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
       // Records are [tag@0][len@4][fields@8+] since #722, walkable like ctors.
       match value {
         ERecord(rfields) => 128 + Array::length(rfields),
+        _ => 0
+      }
+    } else if expr_tag(value) == 8 {
+      // #724 round 2: `let a = f(..)` — classify by f's DECLARED return type
+      // (agg_ret table). Only for a global fn name (a local shadowing `f`
+      // makes this a closure call of unknown type).
+      match get_ecall_callee(value) {
+        EIdent(cfn, _) => if find_local_slot(local_names, cfn) < 0 {
+          let rinfo = agg_ret_lookup(ctx.agg_ret_names, ctx.agg_ret_infos, cfn)
+          if rinfo > 0 {
+            rinfo
+          } else {
+            0
+          }
+        } else {
+          0
+        },
         _ => 0
       }
     } else if is_eident(value) {

@@ -6,14 +6,14 @@
 //     bash scripts/vibe_test.sh fixtures/eq_structural_aggregates.vibe
 // (the gc selfbuild gate does exactly this — scripts/test_gc_selfbuild.sh).
 //
-// #724 (partial fix landed): `a == b` with both sides LET-BOUND aggregate
-// literals now compares structurally — the `let` logs the value's shape
-// (tuple arity / ctor field count) per slot, and `==` consults it (see
-// CompileCtx.agg_local_slots). REMAINING GAP: bindings whose shape codegen
-// cannot see — call results (`let a = mk_pt(..)`), params, match binds —
-// still fall back to the generic runtime `eq` (pointer compare for
-// aggregates), as do NESTED aggregate elements inside a structural walk.
-// Keep those shapes out of whole-value comparisons here.
+// #724 (rounds 1+2 landed): `a == b` compares structurally when either
+// side's shape is statically known — let-bound aggregate literals (round
+// 1: per-slot shape log), `let a = f(..)` via f's DECLARED return type,
+// and signature/annotation-typed params (round 2: agg_ret table +
+// param seeding; enum-typed values use a runtime argc@4 walk since the
+// variant is dynamic). REMAINING GAP: match binds, unannotated shapes,
+// and NESTED aggregate elements inside a structural walk still fall back
+// to the generic runtime `eq` (pointer compare for aggregates).
 
 struct PtEq {
   px: Int;
@@ -28,6 +28,14 @@ enum ShapeEq {
 
 let mk_pt: (Int, String) -> PtEq = (a, b) -> {
   PtEq::{ px: a, py: b }
+}
+
+let pt_eq_param: (PtEq, PtEq) -> Int = (p, q) -> {
+  if p == q {
+    1
+  } else {
+    0
+  }
 }
 
 let mk_shape: (Int) -> ShapeEq = (n) -> {
@@ -117,6 +125,28 @@ test "option structural eq (scalar payload, literal one side)" {
   let s = Some("k")
   assert(s == Some("k"))
   assert(s != Some("j"))
+}
+
+test "call-result structural eq via declared return types (#724)" {
+  let a = mk_pt(5, "p")
+  let b = mk_pt(5, "p")
+  let c = mk_pt(6, "p")
+  assert(a == b)
+  assert(a != c)
+  let s1 = mk_shape(2)
+  let s2 = mk_shape(2)
+  let s3 = mk_shape(1)
+  let s4 = mk_shape(0)
+  let s5 = mk_shape(0)
+  assert(s1 == s2)
+  assert(s1 != s3)
+  assert(s4 == s5)
+  assert(s3 != s4)
+}
+
+test "param structural eq via signature types (#724)" {
+  assert_eq(pt_eq_param(mk_pt(9, "z"), mk_pt(9, "z")), 1)
+  assert_eq(pt_eq_param(mk_pt(9, "z"), mk_pt(9, "w")), 0)
 }
 
 test "eq result feeds control flow" {

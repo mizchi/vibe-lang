@@ -9,7 +9,7 @@ import .. / common_analysis {
 }
 
 import .. / common_base {
-  CompileCtxGc, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, lookup_ctor, resolve_func, resolve_local
+  CompileCtxGc, CtorTable, FuncTable, LambdaTable, StrTable, agg_info_of_type_expr, compute_agg_returning, fn_type_param_types, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, lookup_ctor, resolve_func, resolve_local
 }
 
 import .. / common_extractors {
@@ -423,6 +423,17 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
   let ft_indices = Array::slice([
     0
   ], 0, 0)
+  // #724 round 2: (fn name -> declared aggregate return shape) table for
+  // `let a = f(..)` structural `==` (see compute_agg_returning).
+  let gc_agg_ret_names_l = Array::slice([
+    ""
+  ], 0, 0)
+  let gc_agg_ret_infos_l = Array::slice([
+    0
+  ], 0, 0)
+  compute_agg_returning(stmts, CtorTable::{
+    names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names
+  }, gc_agg_ret_names_l, gc_agg_ret_infos_l)
   let ft_params = Array::slice([
     0
   ], 0, 0)
@@ -733,11 +744,14 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
   while bi < num_user_funcs {
     let stmt = Array::get(user_func_stmts, bi)
     match stmt {
-      SLet(_, _, _, _, expr) => match expr {
+      SLet(_, _, _, gc_fn_ann, expr) => match expr {
         EFn(_, _, params, _, _, body) => {
           let body_buf = bytebuf_new()
           let local_names = Array::slice([
             ""
+          ], 0, 0)
+          let gc_agg_slots_f = Array::slice([
+            0
           ], 0, 0)
           let mut ppi = 0
           while ppi < Array::length(params) {
@@ -747,6 +761,37 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
           }
           Array::push(local_names, "__env")
           let param_count = Array::length(params) + 1
+          // #724 round 2: seed the aggregate-shape log from annotated params.
+          let gc_sig_ptypes = fn_type_param_types(gc_fn_ann)
+          let mut psi = 0
+          while psi < Array::length(params) {
+            let pann = match gc_sig_ptypes {
+              Some(pts) => if Array::length(pts) == Array::length(params) {
+                Some(Array::get(pts, psi))
+              } else {
+                let (_, pa) = Array::get(params, psi)
+                pa
+              },
+              None => {
+                let (_, pa) = Array::get(params, psi)
+                pa
+              }
+            }
+            match pann {
+              Some(pte) => {
+                let pinfo = agg_info_of_type_expr(CtorTable::{
+                  names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names
+                }, pte)
+                if pinfo > 0 {
+                  Array::push(gc_agg_slots_f, psi * 256 + pinfo)
+                } else {
+                  ()
+                }
+              },
+              None => ()
+            }
+            psi = psi + 1
+          }
           let ref_cell_names_f = Array::slice([
             ""
           ], 0, 0)
@@ -778,9 +823,9 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
             gc_float_locals: Array::slice([
               ""
             ], 0, 0),
-            gc_agg_local_slots: Array::slice([
-              0
-            ], 0, 0)
+            gc_agg_local_slots: gc_agg_slots_f,
+            gc_agg_ret_names: gc_agg_ret_names_l,
+            gc_agg_ret_infos: gc_agg_ret_infos_l
           }
           let final_nl = compile_expr_gc(body_buf, body, local_names, param_count, func_ctx, -1)
           Array::push(bodies, body_buf)
@@ -841,7 +886,9 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
       ], 0, 0),
       gc_agg_local_slots: Array::slice([
         0
-      ], 0, 0)
+      ], 0, 0),
+      gc_agg_ret_names: gc_agg_ret_names_l,
+      gc_agg_ret_infos: gc_agg_ret_infos_l
     }
     let init_locals = Array::slice([
       ""
