@@ -1,0 +1,65 @@
+// #722: struct field resolution must be type-correct when the same field
+// name lives at DIFFERENT slots in different structs. Field access used to
+// resolve by name against the FIRST struct containing it (type-blind), so
+// `b.name` below read B's slot 1 (= y) and `m2.v = 22` stored through M2's
+// slot 1 (= b). Codegen now dispatches on the value's ctor tag when the
+// declaring structs disagree on the slot (see struct_field_candidates in
+// codegen/common_base).
+
+struct A {
+  x: Int;
+  name: String
+}
+
+struct B {
+  name: String;
+  y: Int
+}
+
+let mk_b: (Int) -> Option[B] = (n) -> {
+  if n > 0 {
+    Some(B::{ name: "route", y: n })
+  } else {
+    None
+  }
+}
+
+test "colliding field name reads the right slot across a call boundary" {
+  let a = A::{ x: 7, name: "seven" }
+  match mk_b(3) {
+    Some(b) => {
+      assert_eq(b.name, "route")
+      assert_eq(b.y, 3)
+      assert_eq(a.name, "seven")
+      assert_eq(a.x, 7)
+    },
+    None => assert(false)
+  }
+}
+
+test "literal field order different from declared order still lands per-name" {
+  let b = B::{ y: 2, name: "n" }
+  assert_eq(b.name, "n")
+  assert_eq(b.y, 2)
+}
+
+struct M1 {
+  a: Int;
+  mut v: Int
+}
+
+struct M2 {
+  mut v: Int;
+  b: Int
+}
+
+test "colliding mut field stores through the right slot" {
+  let m1 = M1::{ a: 5, v: 0 }
+  let m2 = M2::{ v: 0, b: 9 }
+  m1.v = 11
+  m2.v = 22
+  assert_eq(m1.v, 11)
+  assert_eq(m2.v, 22)
+  assert_eq(m1.a, 5)
+  assert_eq(m2.b, 9)
+}

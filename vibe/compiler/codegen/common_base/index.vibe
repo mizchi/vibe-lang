@@ -517,6 +517,125 @@ export let rec lookup_ctor: (Array[String], String, Int) -> Int = (ctor_names, n
   else lookup_ctor(ctor_names, name, i + 1)
 }
 
+// #722: candidates for a NAME-based struct field access. Returns
+// (ctor_tag, field_idx) for every struct whose field list contains `field`,
+// in struct-declaration order. Field resolution used to take the FIRST
+// struct containing the name (type-blind), so a same-named field living at
+// a DIFFERENT slot in a later struct silently read the wrong slot — which
+// program shapes hit this depended on the declaration set/order, i.e. the
+// flat-bundle vs FS-linked lane divergence observed in #722. Callers keep
+// the first candidate as the static fast path when every candidate agrees
+// on the slot, and otherwise dispatch at runtime on the value's ctor tag
+// (struct construction — both the `S::{...}` ctor path and the set-matched
+// bare-record path — stamps the struct's unique tag at value+0).
+export let struct_field_candidates: (CtorTable, String) -> Array[(Int, Int)] = (ct, field) -> {
+  let out = Array::slice([
+    (0, 0)
+  ], 0, 0)
+  let mut si = 0
+  while si < Array::length(ct.struct_names) {
+    let fnames = Array::get(ct.struct_field_names, si)
+    let mut fi = 0
+    while fi < Array::length(fnames) {
+      if Array::get(fnames, fi) == field {
+        let ci = lookup_ctor(ct.names, Array::get(ct.struct_names, si), 0)
+        let tag = if ci >= 0 {
+          Array::get(ct.tags, ci)
+        } else {
+          -1
+        }
+        Array::push(out, (tag, fi))
+        fi = Array::length(fnames)
+      } else {
+        fi = fi + 1
+      }
+    }
+    si = si + 1
+  }
+  out
+}
+
+// #722: the subset of `candidates` (beyond the first) whose slot index
+// DISAGREES with the first candidate's — exactly the cases the static
+// first-match resolution used to miscompile. Empty result = the static
+// fast path is sound; non-empty = the caller must emit a runtime tag
+// dispatch over these, with candidate 0 as the untagged/legacy fallback.
+export let struct_field_dispatch_cases: (Array[(Int, Int)]) -> Array[(Int, Int)] = (cands) -> {
+  let (_, idx0) = Array::get(cands, 0)
+  let out = Array::slice([
+    (0, 0)
+  ], 0, 0)
+  let mut i = 1
+  while i < Array::length(cands) {
+    let (tag_i, idx_i) = Array::get(cands, i)
+    if idx_i != idx0 && tag_i >= 0 {
+      Array::push(out, (tag_i, idx_i))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+// #722: resolve a bare record literal to a struct by exact field-name-set
+// match (the same rule the checker uses — `S::{...}` drops the name at
+// parse time in some construction paths, and hand-built ASTs build ERecord
+// directly). Returns the struct index or -1. Callers use it to lay the
+// record out in the struct's DECLARED field order and stamp the struct's
+// ctor tag, making bare records byte-compatible with `S::{...}` ctor-path
+// construction (which already reorders to declared order).
+export let struct_index_by_field_set: (CtorTable, Array[String]) -> Int = (ct, lit_names) -> {
+  let mut si = 0
+  let mut found = -1
+  while si < Array::length(ct.struct_names) {
+    let fnames = Array::get(ct.struct_field_names, si)
+    if Array::length(fnames) == Array::length(lit_names) {
+      let mut all = true
+      let mut fi = 0
+      while fi < Array::length(fnames) {
+        let dn = Array::get(fnames, fi)
+        let mut present = false
+        let mut li = 0
+        while li < Array::length(lit_names) {
+          if Array::get(lit_names, li) == dn {
+            present = true
+            li = Array::length(lit_names)
+          } else {
+            li = li + 1
+          }
+        }
+        if present {
+          fi = fi + 1
+        } else {
+          all = false
+          fi = Array::length(fnames)
+        }
+      }
+      if all {
+        found = si
+        si = Array::length(ct.struct_names)
+      } else {
+        si = si + 1
+      }
+    } else {
+      si = si + 1
+    }
+  }
+  found
+}
+
+// #722: ctor tag for struct index `si`, or 0 (the legacy anonymous-record
+// type id) when the struct is not in the ctor table.
+export let struct_tag_by_index: (CtorTable, Int) -> Int = (ct, si) -> {
+  let ci = lookup_ctor(ct.names, Array::get(ct.struct_names, si), 0)
+  if ci >= 0 {
+    Array::get(ct.tags, ci)
+  } else {
+    0
+  }
+}
+
 let op_i32_ge_u = 79
 
 let op_i32_gt_u = 75

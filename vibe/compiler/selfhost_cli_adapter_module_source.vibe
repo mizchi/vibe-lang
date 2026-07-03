@@ -12098,6 +12098,96 @@ export let rec lookup_ctor: (Array[String], String, Int) -> Int = (ctor_names, n
   }
   else lookup_ctor(ctor_names, name, i + 1)
 }
+export let struct_field_candidates: (CtorTable, String) -> Array[(Int, Int)] = (ct, field) -> {
+  let out = Array::slice([
+    (0, 0)
+  ], 0, 0)
+  let mut si = 0
+  while si < Array::length(ct.struct_names) {
+    let fnames = Array::get(ct.struct_field_names, si)
+    let mut fi = 0
+    while fi < Array::length(fnames) {
+      if Array::get(fnames, fi) == field {
+        let ci = lookup_ctor(ct.names, Array::get(ct.struct_names, si), 0)
+        let tag = if ci >= 0 {
+          Array::get(ct.tags, ci)
+        } else {
+          -1
+        }
+        Array::push(out, (tag, fi))
+        fi = Array::length(fnames)
+      } else {
+        fi = fi + 1
+      }
+    }
+    si = si + 1
+  }
+  out
+}
+export let struct_field_dispatch_cases: (Array[(Int, Int)]) -> Array[(Int, Int)] = (cands) -> {
+  let (_, idx0) = Array::get(cands, 0)
+  let out = Array::slice([
+    (0, 0)
+  ], 0, 0)
+  let mut i = 1
+  while i < Array::length(cands) {
+    let (tag_i, idx_i) = Array::get(cands, i)
+    if idx_i != idx0 && tag_i >= 0 {
+      Array::push(out, (tag_i, idx_i))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+export let struct_index_by_field_set: (CtorTable, Array[String]) -> Int = (ct, lit_names) -> {
+  let mut si = 0
+  let mut found = -1
+  while si < Array::length(ct.struct_names) {
+    let fnames = Array::get(ct.struct_field_names, si)
+    if Array::length(fnames) == Array::length(lit_names) {
+      let mut all = true
+      let mut fi = 0
+      while fi < Array::length(fnames) {
+        let dn = Array::get(fnames, fi)
+        let mut present = false
+        let mut li = 0
+        while li < Array::length(lit_names) {
+          if Array::get(lit_names, li) == dn {
+            present = true
+            li = Array::length(lit_names)
+          } else {
+            li = li + 1
+          }
+        }
+        if present {
+          fi = fi + 1
+        } else {
+          all = false
+          fi = Array::length(fnames)
+        }
+      }
+      if all {
+        found = si
+        si = Array::length(ct.struct_names)
+      } else {
+        si = si + 1
+      }
+    } else {
+      si = si + 1
+    }
+  }
+  found
+}
+export let struct_tag_by_index: (CtorTable, Int) -> Int = (ct, si) -> {
+  let ci = lookup_ctor(ct.names, Array::get(ct.struct_names, si), 0)
+  if ci >= 0 {
+    Array::get(ct.tags, ci)
+  } else {
+    0
+  }
+}
 let op_i32_ge_u = 79
 let op_i32_gt_u = 75
 let op_i64_load = 41
@@ -29768,53 +29858,80 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       let field = get_estring_value(Array::get(args, 1))
       let fc = String::char_code_at(field, 0)
       let is_numeric = fc >= 48 && fc <= 57
-      let field_idx = if is_numeric {
+      if is_numeric {
         let mut vi = 0
         let mut vp = 0
         while vp < String::length(field) {
           vi = vi * 10 + (String::char_code_at(field, vp) - 48)
           vp = vp + 1
         }
-        vi
+        let mut nl = next_local
+        nl = ce(buf, Array::get(args, 0), local_names, nl, ctx, ld)
+        emit_i64_const(buf, -2)
+        emit_i64_and(buf)
+        emit_i32_wrap_i64(buf)
+        nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
+        emit_i64_store(buf, 3, vi * 8)
+        emit_i64_const(buf, 0)
+        nl
       } else {
-        let mut si_search = 0
-        let mut found = -1
-        while si_search < Array::length(ctx.ctor_table.struct_names) {
-          let fnames = Array::get(ctx.ctor_table.struct_field_names, si_search)
-          let mut fi = 0
-          while fi < Array::length(fnames) {
-            if Array::get(fnames, fi) == field {
-              found = fi
-              fi = Array::length(fnames)
-            } else {
-              fi = fi + 1
-            }
-          }
-          if found >= 0 {
-            si_search = Array::length(ctx.ctor_table.struct_names)
-          } else {
-            si_search = si_search + 1
-          }
-        }
-        if found < 0 {
+        let cands = struct_field_candidates(ctx.ctor_table, field)
+        if Array::length(cands) == 0 {
           throw(String::concat("unknown struct field: ", field))
         }
-        found
+        let (_, idx0) = Array::get(cands, 0)
+        let dispatch = struct_field_dispatch_cases(cands)
+        if Array::length(dispatch) == 0 {
+          let mut nl = next_local
+          nl = ce(buf, Array::get(args, 0), local_names, nl, ctx, ld)
+          emit_i64_const(buf, -2)
+          emit_i64_and(buf)
+          emit_i32_wrap_i64(buf)
+          nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
+          emit_i64_store(buf, 3, 8 + idx0 * 8)
+          emit_i64_const(buf, 0)
+          nl
+        } else {
+          let mut nl = next_local
+          nl = ce(buf, Array::get(args, 0), local_names, nl, ctx, ld)
+          emit_i64_const(buf, -2)
+          emit_i64_and(buf)
+          let obj_l = nl
+          Array::push(local_names, "__setf_obj")
+          emit_local_set(buf, obj_l)
+          nl = ce(buf, Array::get(args, 2), local_names, nl + 1, ctx, ld)
+          let val_l = nl
+          Array::push(local_names, "__setf_val")
+          emit_local_set(buf, val_l)
+          let mut di = 0
+          while di < Array::length(dispatch) {
+            let (dtag, didx) = Array::get(dispatch, di)
+            emit_local_get(buf, obj_l)
+            emit_i32_wrap_i64(buf)
+            emit_i32_load(buf, 2, 0)
+            emit_i32_const(buf, dtag)
+            emit_i32_eq(buf)
+            emit_if_void(buf)
+            emit_local_get(buf, obj_l)
+            emit_i32_wrap_i64(buf)
+            emit_local_get(buf, val_l)
+            emit_i64_store(buf, 3, 8 + didx * 8)
+            emit_else(buf)
+            di = di + 1
+          }
+          emit_local_get(buf, obj_l)
+          emit_i32_wrap_i64(buf)
+          emit_local_get(buf, val_l)
+          emit_i64_store(buf, 3, 8 + idx0 * 8)
+          let mut de = 0
+          while de < Array::length(dispatch) {
+            emit_end(buf)
+            de = de + 1
+          }
+          emit_i64_const(buf, 0)
+          nl + 1
+        }
       }
-      let mut nl = next_local
-      nl = ce(buf, Array::get(args, 0), local_names, nl, ctx, ld)
-      emit_i64_const(buf, -2)
-      emit_i64_and(buf)
-      emit_i32_wrap_i64(buf)
-      nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
-      let store_off = if is_numeric {
-        field_idx * 8
-      } else {
-        8 + field_idx * 8
-      }
-      emit_i64_store(buf, 3, store_off)
-      emit_i64_const(buf, 0)
-      nl
     }
     else {
       if fn_idx_in_list >= 0 {
@@ -30272,62 +30389,112 @@ export let compile_expr_tail4: (Bytes, Expr, Array[String], Int, CompileCtx, Int
   match expr {
     EDot(obj, field, _) => {
       let fc = String::char_code_at(field, 0)
-      let mut field_idx = if fc >= 48 && fc <= 57 {
+      if fc >= 48 && fc <= 57 {
         let mut vi = 0
         let mut vp = 0
         while vp < String::length(field) {
           vi = vi * 10 + (String::char_code_at(field, vp) - 48)
           vp = vp + 1
         }
-        vi
-      } else {
-        let mut si_search = 0
-        let mut found = -1
-        while si_search < Array::length(ctx.ctor_table.struct_names) {
-          let fnames = Array::get(ctx.ctor_table.struct_field_names, si_search)
-          let mut fi = 0
-          while fi < Array::length(fnames) {
-            if Array::get(fnames, fi) == field {
-              found = fi
-              fi = Array::length(fnames)
-            } else {
-              fi = fi + 1
-            }
-          }
-          if found >= 0 {
-            si_search = Array::length(ctx.ctor_table.struct_names)
-          } else {
-            si_search = si_search + 1
-          }
-        }
-        if found < 0 {
-          throw(String::concat("unknown struct field: ", field))
-        }
-        found
-      }
-      let nl1 = compile_expr(buf, obj, local_names, next_local, ctx, ld)
-      if fc >= 48 && fc <= 57 {
+        let nl1 = compile_expr(buf, obj, local_names, next_local, ctx, ld)
         if ctx.enable_rc {
           emit_i64_const(buf, -2)
           emit_i64_and(buf)
         }
         emit_i32_wrap_i64(buf)
         let toff = if ctx.enable_rc {
-          8 + field_idx * 8
+          8 + vi * 8
         } else {
-          field_idx * 8
+          vi * 8
         }
         emit_i64_load(buf, 3, toff)
+        nl1
       } else {
+        let cands = struct_field_candidates(ctx.ctor_table, field)
+        if Array::length(cands) == 0 {
+          throw(String::concat("unknown struct field: ", field))
+        }
+        let (_, idx0) = Array::get(cands, 0)
+        let dispatch = struct_field_dispatch_cases(cands)
+        let nl1 = compile_expr(buf, obj, local_names, next_local, ctx, ld)
         emit_i64_const(buf, -2)
         emit_i64_and(buf)
-        emit_i32_wrap_i64(buf)
-        emit_i64_load(buf, 3, 8 + field_idx * 8)
+        if Array::length(dispatch) == 0 {
+          emit_i32_wrap_i64(buf)
+          emit_i64_load(buf, 3, 8 + idx0 * 8)
+          nl1
+        } else {
+          let obj_l = nl1
+          Array::push(local_names, "__dot_obj")
+          emit_local_set(buf, obj_l)
+          let mut di = 0
+          while di < Array::length(dispatch) {
+            let (dtag, didx) = Array::get(dispatch, di)
+            emit_local_get(buf, obj_l)
+            emit_i32_wrap_i64(buf)
+            emit_i32_load(buf, 2, 0)
+            emit_i32_const(buf, dtag)
+            emit_i32_eq(buf)
+            emit_if_i64(buf)
+            emit_local_get(buf, obj_l)
+            emit_i32_wrap_i64(buf)
+            emit_i64_load(buf, 3, 8 + didx * 8)
+            emit_else(buf)
+            di = di + 1
+          }
+          emit_local_get(buf, obj_l)
+          emit_i32_wrap_i64(buf)
+          emit_i64_load(buf, 3, 8 + idx0 * 8)
+          let mut de = 0
+          while de < Array::length(dispatch) {
+            emit_end(buf)
+            de = de + 1
+          }
+          nl1 + 1
+        }
       }
-      nl1
     },
     ERecord(fields) => {
       let flen = Array::length(fields)
+      let lit_names = Array::slice([
+        ""
+      ], 0, 0)
+      let mut lni = 0
+      while lni < flen {
+        let (lfn, _) = Array::get(fields, lni)
+        Array::push(lit_names, lfn)
+        lni = lni + 1
+      }
+      let rec_si = struct_index_by_field_set(ctx.ctor_table, lit_names)
+      let rec_tag = if rec_si >= 0 {
+        struct_tag_by_index(ctx.ctor_table, rec_si)
+      } else {
+        0
+      }
+      let rec_fields = if rec_si >= 0 {
+        let def_fnames = Array::get(ctx.ctor_table.struct_field_names, rec_si)
+        let ordered = Array::slice([
+          ("", EUnit)
+        ], 0, 0)
+        let mut oi = 0
+        while oi < Array::length(def_fnames) {
+          let target_name = Array::get(def_fnames, oi)
+          let mut ri2 = 0
+          while ri2 < flen {
+            let (rfn, rfv) = Array::get(fields, ri2)
+            if rfn == target_name {
+              Array::push(ordered, (rfn, rfv))
+              ri2 = flen
+            } else {
+              ri2 = ri2 + 1
+            }
+          }
+          oi = oi + 1
+        }
+        ordered
+      } else {
+        fields
+      }
       let ptr_local = next_local
       Array::push(local_names, "__rec_ptr")
       if ctx.enable_rc {
@@ -30349,7 +30516,7 @@ export let compile_expr_tail4: (Bytes, Expr, Array[String], Int, CompileCtx, Int
         emit_i32_store8(buf, 0, 7)
         emit_local_get(buf, ptr_local)
         emit_i32_wrap_i64(buf)
-        emit_i32_const(buf, 0)
+        emit_i32_const(buf, rec_tag)
         emit_i32_store(buf, 2, 8)
         emit_local_get(buf, ptr_local)
         emit_i32_wrap_i64(buf)
@@ -30358,7 +30525,7 @@ export let compile_expr_tail4: (Bytes, Expr, Array[String], Int, CompileCtx, Int
         let mut nl_r = next_local + 1
         let mut ri = 0
         while ri < flen {
-          let (_, fexpr) = Array::get(fields, ri)
+          let (_, fexpr) = Array::get(rec_fields, ri)
           nl_r = compile_expr(buf, fexpr, local_names, nl_r, ctx, ld)
           let val_local = nl_r
           Array::push(local_names, "__rec_val")
@@ -30393,7 +30560,7 @@ export let compile_expr_tail4: (Bytes, Expr, Array[String], Int, CompileCtx, Int
         emit_heap_grow_after_heap_set(buf, ctx)
         emit_local_get(buf, ptr_local)
         emit_i32_wrap_i64(buf)
-        emit_i32_const(buf, 0)
+        emit_i32_const(buf, rec_tag)
         emit_i32_store(buf, 2, 0)
         emit_local_get(buf, ptr_local)
         emit_i32_wrap_i64(buf)
@@ -30402,7 +30569,7 @@ export let compile_expr_tail4: (Bytes, Expr, Array[String], Int, CompileCtx, Int
         let mut nl_r = next_local + 1
         let mut ri = 0
         while ri < flen {
-          let (_, fexpr) = Array::get(fields, ri)
+          let (_, fexpr) = Array::get(rec_fields, ri)
           nl_r = compile_expr(buf, fexpr, local_names, nl_r, ctx, ld)
           let val_local = nl_r
           Array::push(local_names, "__rec_val")
@@ -36763,53 +36930,80 @@ let compile_call_gc: (Bytes, Expr, Array[Expr], Array[String], Int, CompileCtxGc
         let field = get_estring_value(Array::get(args, 1))
         let fc = String::char_code_at(field, 0)
         let is_numeric = fc >= 48 && fc <= 57
-        let field_idx = if is_numeric {
+        if is_numeric {
           let mut vi = 0
           let mut vp = 0
           while vp < String::length(field) {
             vi = vi * 10 + (String::char_code_at(field, vp) - 48)
             vp = vp + 1
           }
-          vi
+          let mut nl = next_local
+          nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
+          emit_i64_const(buf, -2)
+          emit_i64_and(buf)
+          emit_i32_wrap_i64(buf)
+          nl = ce(buf, Array::get(args, 2), local_names, nl, ld)
+          emit_i64_store(buf, 3, vi * 8)
+          emit_i64_const(buf, 1)
+          nl
         } else {
-          let mut si_search = 0
-          let mut found = -1
-          while si_search < Array::length(ctx.gc_ctor_table.struct_names) {
-            let fnames = Array::get(ctx.gc_ctor_table.struct_field_names, si_search)
-            let mut fi = 0
-            while fi < Array::length(fnames) {
-              if Array::get(fnames, fi) == field {
-                found = fi
-                fi = Array::length(fnames)
-              } else {
-                fi = fi + 1
-              }
-            }
-            if found >= 0 {
-              si_search = Array::length(ctx.gc_ctor_table.struct_names)
-            } else {
-              si_search = si_search + 1
-            }
-          }
-          if found < 0 {
+          let cands = struct_field_candidates(ctx.gc_ctor_table, field)
+          if Array::length(cands) == 0 {
             throw(String::concat("unknown struct field: ", field))
           }
-          found
+          let (_, idx0) = Array::get(cands, 0)
+          let dispatch = struct_field_dispatch_cases(cands)
+          if Array::length(dispatch) == 0 {
+            let mut nl = next_local
+            nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
+            emit_i64_const(buf, -2)
+            emit_i64_and(buf)
+            emit_i32_wrap_i64(buf)
+            nl = ce(buf, Array::get(args, 2), local_names, nl, ld)
+            emit_i64_store(buf, 3, 8 + idx0 * 8)
+            emit_i64_const(buf, 1)
+            nl
+          } else {
+            let mut nl = next_local
+            nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
+            emit_i64_const(buf, -2)
+            emit_i64_and(buf)
+            let obj_l = nl
+            Array::push(local_names, "__setf_obj")
+            emit_local_set(buf, obj_l)
+            nl = ce(buf, Array::get(args, 2), local_names, nl + 1, ld)
+            let val_l = nl
+            Array::push(local_names, "__setf_val")
+            emit_local_set(buf, val_l)
+            let mut di = 0
+            while di < Array::length(dispatch) {
+              let (dtag, didx) = Array::get(dispatch, di)
+              emit_local_get(buf, obj_l)
+              emit_i32_wrap_i64(buf)
+              emit_i32_load(buf, 2, 0)
+              emit_i32_const(buf, dtag)
+              emit_i32_eq(buf)
+              emit_if_void(buf)
+              emit_local_get(buf, obj_l)
+              emit_i32_wrap_i64(buf)
+              emit_local_get(buf, val_l)
+              emit_i64_store(buf, 3, 8 + didx * 8)
+              emit_else(buf)
+              di = di + 1
+            }
+            emit_local_get(buf, obj_l)
+            emit_i32_wrap_i64(buf)
+            emit_local_get(buf, val_l)
+            emit_i64_store(buf, 3, 8 + idx0 * 8)
+            let mut de = 0
+            while de < Array::length(dispatch) {
+              emit_end(buf)
+              de = de + 1
+            }
+            emit_i64_const(buf, 1)
+            nl + 1
+          }
         }
-        let mut nl = next_local
-        nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
-        emit_i64_const(buf, -2)
-        emit_i64_and(buf)
-        emit_i32_wrap_i64(buf)
-        nl = ce(buf, Array::get(args, 2), local_names, nl, ld)
-        let store_off = if is_numeric {
-          field_idx * 8
-        } else {
-          8 + field_idx * 8
-        }
-        emit_i64_store(buf, 3, store_off)
-        emit_i64_const(buf, 1)
-        nl
       }
       else if fname == "__len" {
         let (sl_idx, _, _) = resolve_func(ctx.func_table, "String::length")
@@ -39069,41 +39263,90 @@ let rec compile_expr_gc: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) ->
         emit_i64_load(buf, 3, tidx * 8)
         return nl_t
       }
-      let rec find_struct_field_idx: (Int) -> Int = (si2) -> {
-        if si2 >= Array::length(ctx.gc_ctor_table.struct_names) {
-          -1
-        }
-        else {
-          let fnames = Array::get(ctx.gc_ctor_table.struct_field_names, si2)
-          let rec find_f: (Int) -> Int = (fi) -> {
-            if fi >= Array::length(fnames) {
-              -1
-            }
-            else if Array::get(fnames, fi) == field {
-              fi
-            }
-            else find_f(fi + 1)
-          }
-          let idx = find_f(0)
-          if idx >= 0 {
-            idx
-          }
-          else find_struct_field_idx(si2 + 1)
-        }
-      }
-      let field_idx = find_struct_field_idx(0)
-      if field_idx < 0 {
+      let cands = struct_field_candidates(ctx.gc_ctor_table, field)
+      if Array::length(cands) == 0 {
         throw(String::concat("unknown struct field: ", field))
       }
+      let (_, idx0) = Array::get(cands, 0)
+      let dispatch = struct_field_dispatch_cases(cands)
       let nl1 = ce(buf, obj, local_names, next_local, ld)
       emit_i64_const(buf, -2)
       emit_i64_and(buf)
-      emit_i32_wrap_i64(buf)
-      emit_i64_load(buf, 3, 8 + field_idx * 8)
-      nl1
+      if Array::length(dispatch) == 0 {
+        emit_i32_wrap_i64(buf)
+        emit_i64_load(buf, 3, 8 + idx0 * 8)
+        nl1
+      } else {
+        let obj_l = nl1
+        Array::push(local_names, "__dot_obj")
+        emit_local_set(buf, obj_l)
+        let mut di = 0
+        while di < Array::length(dispatch) {
+          let (dtag, didx) = Array::get(dispatch, di)
+          emit_local_get(buf, obj_l)
+          emit_i32_wrap_i64(buf)
+          emit_i32_load(buf, 2, 0)
+          emit_i32_const(buf, dtag)
+          emit_i32_eq(buf)
+          emit_if_i64(buf)
+          emit_local_get(buf, obj_l)
+          emit_i32_wrap_i64(buf)
+          emit_i64_load(buf, 3, 8 + didx * 8)
+          emit_else(buf)
+          di = di + 1
+        }
+        emit_local_get(buf, obj_l)
+        emit_i32_wrap_i64(buf)
+        emit_i64_load(buf, 3, 8 + idx0 * 8)
+        let mut de = 0
+        while de < Array::length(dispatch) {
+          emit_end(buf)
+          de = de + 1
+        }
+        nl1 + 1
+      }
     },
     ERecord(fields) => {
       let flen = Array::length(fields)
+      let lit_names = Array::slice([
+        ""
+      ], 0, 0)
+      let mut lni = 0
+      while lni < flen {
+        let (lfn, _) = Array::get(fields, lni)
+        Array::push(lit_names, lfn)
+        lni = lni + 1
+      }
+      let rec_si = struct_index_by_field_set(ctx.gc_ctor_table, lit_names)
+      let rec_tag = if rec_si >= 0 {
+        struct_tag_by_index(ctx.gc_ctor_table, rec_si)
+      } else {
+        0
+      }
+      let rec_fields = if rec_si >= 0 {
+        let def_fnames = Array::get(ctx.gc_ctor_table.struct_field_names, rec_si)
+        let ordered = Array::slice([
+          ("", EUnit)
+        ], 0, 0)
+        let mut oi = 0
+        while oi < Array::length(def_fnames) {
+          let target_name = Array::get(def_fnames, oi)
+          let mut ri2 = 0
+          while ri2 < flen {
+            let (rfn, rfv) = Array::get(fields, ri2)
+            if rfn == target_name {
+              Array::push(ordered, (rfn, rfv))
+              ri2 = flen
+            } else {
+              ri2 = ri2 + 1
+            }
+          }
+          oi = oi + 1
+        }
+        ordered
+      } else {
+        fields
+      }
       let obj_size = 8 + flen * 8
       let ptr_local = next_local
       Array::push(local_names, "__rec_ptr")
@@ -39117,7 +39360,7 @@ let rec compile_expr_gc: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) ->
       emit_heap_memory_grow_check(buf)
       emit_local_get(buf, ptr_local)
       emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 0)
+      emit_i32_const(buf, rec_tag)
       emit_i32_store(buf, 2, 0)
       emit_local_get(buf, ptr_local)
       emit_i32_wrap_i64(buf)
@@ -39126,7 +39369,7 @@ let rec compile_expr_gc: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) ->
       let mut nl_r = next_local + 1
       let mut ri = 0
       while ri < flen {
-        let (_, fexpr) = Array::get(fields, ri)
+        let (_, fexpr) = Array::get(rec_fields, ri)
         nl_r = ce(buf, fexpr, local_names, nl_r, ld)
         let val_local = nl_r
         Array::push(local_names, "__rec_val")
@@ -40636,7 +40879,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "7dff40cb2ad33cda"
+  "48aa51403c6b7ed1"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647

@@ -9,7 +9,7 @@ import .. / common_analysis {
 }
 
 import .. / common_base {
-  CompileCtxGc, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, find_func_stmt, lookup_ctor, resolve_func, resolve_local
+  CompileCtxGc, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, find_func_stmt, lookup_ctor, resolve_func, resolve_local, struct_field_candidates, struct_field_dispatch_cases, struct_index_by_field_set, struct_tag_by_index
 }
 
 import .. / common_extractors {
@@ -869,41 +869,98 @@ let rec compile_expr_gc: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) ->
         emit_i64_load(buf, 3, tidx * 8)
         return nl_t
       }
-      let rec find_struct_field_idx: (Int) -> Int = (si2) -> {
-        if si2 >= Array::length(ctx.gc_ctor_table.struct_names) {
-          -1
-        }
-        else {
-          let fnames = Array::get(ctx.gc_ctor_table.struct_field_names, si2)
-          let rec find_f: (Int) -> Int = (fi) -> {
-            if fi >= Array::length(fnames) {
-              -1
-            }
-            else if Array::get(fnames, fi) == field {
-              fi
-            }
-            else find_f(fi + 1)
-          }
-          let idx = find_f(0)
-          if idx >= 0 {
-            idx
-          }
-          else find_struct_field_idx(si2 + 1)
-        }
-      }
-      let field_idx = find_struct_field_idx(0)
-      if field_idx < 0 {
+      // #722: same struct-tag dispatch as the linear EDot path
+      // (compile_expr_tail4.vibe) — static load when every declaring struct
+      // agrees on the slot, runtime dispatch on the value's ctor tag when
+      // they disagree, first candidate as the untagged/legacy fallback.
+      let cands = struct_field_candidates(ctx.gc_ctor_table, field)
+      if Array::length(cands) == 0 {
         throw(String::concat("unknown struct field: ", field))
       }
+      let (_, idx0) = Array::get(cands, 0)
+      let dispatch = struct_field_dispatch_cases(cands)
       let nl1 = ce(buf, obj, local_names, next_local, ld)
       emit_i64_const(buf, -2)
       emit_i64_and(buf)
-      emit_i32_wrap_i64(buf)
-      emit_i64_load(buf, 3, 8 + field_idx * 8)
-      nl1
+      if Array::length(dispatch) == 0 {
+        emit_i32_wrap_i64(buf)
+        emit_i64_load(buf, 3, 8 + idx0 * 8)
+        nl1
+      } else {
+        let obj_l = nl1
+        Array::push(local_names, "__dot_obj")
+        emit_local_set(buf, obj_l)
+        let mut di = 0
+        while di < Array::length(dispatch) {
+          let (dtag, didx) = Array::get(dispatch, di)
+          emit_local_get(buf, obj_l)
+          emit_i32_wrap_i64(buf)
+          emit_i32_load(buf, 2, 0)
+          emit_i32_const(buf, dtag)
+          emit_i32_eq(buf)
+          emit_if_i64(buf)
+          emit_local_get(buf, obj_l)
+          emit_i32_wrap_i64(buf)
+          emit_i64_load(buf, 3, 8 + didx * 8)
+          emit_else(buf)
+          di = di + 1
+        }
+        emit_local_get(buf, obj_l)
+        emit_i32_wrap_i64(buf)
+        emit_i64_load(buf, 3, 8 + idx0 * 8)
+        let mut de = 0
+        while de < Array::length(dispatch) {
+          emit_end(buf)
+          de = de + 1
+        }
+        nl1 + 1
+      }
     },
     ERecord(fields) => {
       let flen = Array::length(fields)
+      // #722: resolve to a struct by exact field-name set; on a match, lay
+      // out in DECLARED field order and stamp the struct's ctor tag at
+      // value+0 (mirrors the linear backend and the `S::{...}` ctor path) so
+      // the tag-dispatching field access above stays type-correct.
+      let lit_names = Array::slice([
+        ""
+      ], 0, 0)
+      let mut lni = 0
+      while lni < flen {
+        let (lfn, _) = Array::get(fields, lni)
+        Array::push(lit_names, lfn)
+        lni = lni + 1
+      }
+      let rec_si = struct_index_by_field_set(ctx.gc_ctor_table, lit_names)
+      let rec_tag = if rec_si >= 0 {
+        struct_tag_by_index(ctx.gc_ctor_table, rec_si)
+      } else {
+        0
+      }
+      let rec_fields = if rec_si >= 0 {
+        let def_fnames = Array::get(ctx.gc_ctor_table.struct_field_names, rec_si)
+        let ordered = Array::slice([
+          ("", EUnit)
+        ], 0, 0)
+        let mut oi = 0
+        while oi < Array::length(def_fnames) {
+          let target_name = Array::get(def_fnames, oi)
+          let mut ri2 = 0
+          while ri2 < flen {
+            let (rfn, rfv) = Array::get(fields, ri2)
+            if rfn == target_name {
+              Array::push(ordered, (rfn, rfv))
+              ri2 = flen
+            } else {
+              ri2 = ri2 + 1
+            }
+          }
+          oi = oi + 1
+        }
+        ordered
+      } else {
+        fields
+      }
       let obj_size = 8 + flen * 8
       let ptr_local = next_local
       Array::push(local_names, "__rec_ptr")
@@ -920,7 +977,7 @@ let rec compile_expr_gc: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) ->
       emit_heap_memory_grow_check(buf)
       emit_local_get(buf, ptr_local)
       emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 0)
+      emit_i32_const(buf, rec_tag)
       emit_i32_store(buf, 2, 0)
       emit_local_get(buf, ptr_local)
       emit_i32_wrap_i64(buf)
@@ -929,7 +986,7 @@ let rec compile_expr_gc: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) ->
       let mut nl_r = next_local + 1
       let mut ri = 0
       while ri < flen {
-        let (_, fexpr) = Array::get(fields, ri)
+        let (_, fexpr) = Array::get(rec_fields, ri)
         nl_r = ce(buf, fexpr, local_names, nl_r, ld)
         let val_local = nl_r
         Array::push(local_names, "__rec_val")

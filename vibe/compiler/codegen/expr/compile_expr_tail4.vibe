@@ -9,7 +9,7 @@ import .. / common_analysis {
 }
 
 import .. / common_base {
-  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_rc_dup_guarded, emit_binop_op, emit_heap_grow_after_heap_set, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
+  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_rc_dup_guarded, emit_binop_op, emit_heap_grow_after_heap_set, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local, struct_field_candidates, struct_field_dispatch_cases, struct_index_by_field_set, struct_tag_by_index
 }
 
 import .. / common_extractors {
@@ -56,41 +56,15 @@ export let compile_expr_tail4: (Bytes, Expr, Array[String], Int, CompileCtx, Int
   match expr {
     EDot(obj, field, _) => {
       let fc = String::char_code_at(field, 0)
-      let mut field_idx = if fc >= 48 && fc <= 57 {
+      if fc >= 48 && fc <= 57 {
+        // `t.N` tuple projection: purely positional.
         let mut vi = 0
         let mut vp = 0
         while vp < String::length(field) {
           vi = vi * 10 + (String::char_code_at(field, vp) - 48)
           vp = vp + 1
         }
-        vi
-      } else {
-        let mut si_search = 0
-        let mut found = -1
-        while si_search < Array::length(ctx.ctor_table.struct_names) {
-          let fnames = Array::get(ctx.ctor_table.struct_field_names, si_search)
-          let mut fi = 0
-          while fi < Array::length(fnames) {
-            if Array::get(fnames, fi) == field {
-              found = fi
-              fi = Array::length(fnames)
-            } else {
-              fi = fi + 1
-            }
-          }
-          if found >= 0 {
-            si_search = Array::length(ctx.ctor_table.struct_names)
-          } else {
-            si_search = si_search + 1
-          }
-        }
-        if found < 0 {
-          throw(String::concat("unknown struct field: ", field))
-        }
-        found
-      }
-      let nl1 = compile_expr(buf, obj, local_names, next_local, ctx, ld)
-      if fc >= 48 && fc <= 57 {
+        let nl1 = compile_expr(buf, obj, local_names, next_local, ctx, ld)
         // RC mode: the tuple value is an odd pointer (Stage 2); untag before use.
         if ctx.enable_rc {
           emit_i64_const(buf, -2)
@@ -99,21 +73,112 @@ export let compile_expr_tail4: (Bytes, Expr, Array[String], Int, CompileCtx, Int
         emit_i32_wrap_i64(buf)
         // RC mode: tuples carry an 8-byte header, so the payload starts at +8.
         let toff = if ctx.enable_rc {
-          8 + field_idx * 8
+          8 + vi * 8
         } else {
-          field_idx * 8
+          vi * 8
         }
         emit_i64_load(buf, 3, toff)
+        nl1
       } else {
+        // #722: name-based struct field access. The slot index depends on
+        // WHICH struct the value is — a same-named field can live at a
+        // different slot in another struct. When every declaring struct
+        // agrees on the slot, load it statically (the common case). When
+        // they disagree, dispatch at runtime on the value's ctor tag
+        // (value+0), falling back to the first-declared struct's slot for
+        // legacy untagged records.
+        let cands = struct_field_candidates(ctx.ctor_table, field)
+        if Array::length(cands) == 0 {
+          throw(String::concat("unknown struct field: ", field))
+        }
+        let (_, idx0) = Array::get(cands, 0)
+        let dispatch = struct_field_dispatch_cases(cands)
+        let nl1 = compile_expr(buf, obj, local_names, next_local, ctx, ld)
         emit_i64_const(buf, -2)
         emit_i64_and(buf)
-        emit_i32_wrap_i64(buf)
-        emit_i64_load(buf, 3, 8 + field_idx * 8)
+        if Array::length(dispatch) == 0 {
+          emit_i32_wrap_i64(buf)
+          emit_i64_load(buf, 3, 8 + idx0 * 8)
+          nl1
+        } else {
+          let obj_l = nl1
+          Array::push(local_names, "__dot_obj")
+          emit_local_set(buf, obj_l)
+          let mut di = 0
+          while di < Array::length(dispatch) {
+            let (dtag, didx) = Array::get(dispatch, di)
+            emit_local_get(buf, obj_l)
+            emit_i32_wrap_i64(buf)
+            emit_i32_load(buf, 2, 0)
+            emit_i32_const(buf, dtag)
+            emit_i32_eq(buf)
+            emit_if_i64(buf)
+            emit_local_get(buf, obj_l)
+            emit_i32_wrap_i64(buf)
+            emit_i64_load(buf, 3, 8 + didx * 8)
+            emit_else(buf)
+            di = di + 1
+          }
+          emit_local_get(buf, obj_l)
+          emit_i32_wrap_i64(buf)
+          emit_i64_load(buf, 3, 8 + idx0 * 8)
+          let mut de = 0
+          while de < Array::length(dispatch) {
+            emit_end(buf)
+            de = de + 1
+          }
+          nl1 + 1
+        }
       }
-      nl1
     },
     ERecord(fields) => {
       let flen = Array::length(fields)
+      // #722: resolve the record to a struct by exact field-name set and, on a
+      // match, lay it out in the struct's DECLARED field order with the
+      // struct's ctor tag stamped at value+0 — byte-compatible with the
+      // `S::{...}` ctor construction path (which already reorders). This is
+      // what makes the tag-dispatching field access above type-correct for
+      // bare-record construction (hand-built ASTs, name-dropped literals).
+      // Unmatched (anonymous) records keep the legacy literal order + tag 0.
+      let lit_names = Array::slice([
+        ""
+      ], 0, 0)
+      let mut lni = 0
+      while lni < flen {
+        let (lfn, _) = Array::get(fields, lni)
+        Array::push(lit_names, lfn)
+        lni = lni + 1
+      }
+      let rec_si = struct_index_by_field_set(ctx.ctor_table, lit_names)
+      let rec_tag = if rec_si >= 0 {
+        struct_tag_by_index(ctx.ctor_table, rec_si)
+      } else {
+        0
+      }
+      let rec_fields = if rec_si >= 0 {
+        let def_fnames = Array::get(ctx.ctor_table.struct_field_names, rec_si)
+        let ordered = Array::slice([
+          ("", EUnit)
+        ], 0, 0)
+        let mut oi = 0
+        while oi < Array::length(def_fnames) {
+          let target_name = Array::get(def_fnames, oi)
+          let mut ri2 = 0
+          while ri2 < flen {
+            let (rfn, rfv) = Array::get(fields, ri2)
+            if rfn == target_name {
+              Array::push(ordered, (rfn, rfv))
+              ri2 = flen
+            } else {
+              ri2 = ri2 + 1
+            }
+          }
+          oi = oi + 1
+        }
+        ordered
+      } else {
+        fields
+      }
       let ptr_local = next_local
       Array::push(local_names, "__rec_ptr")
       if ctx.enable_rc {
@@ -145,7 +210,7 @@ export let compile_expr_tail4: (Bytes, Expr, Array[String], Int, CompileCtx, Int
         emit_i32_store8(buf, 0, 7)
         emit_local_get(buf, ptr_local)
         emit_i32_wrap_i64(buf)
-        emit_i32_const(buf, 0)
+        emit_i32_const(buf, rec_tag)
         emit_i32_store(buf, 2, 8)
         emit_local_get(buf, ptr_local)
         emit_i32_wrap_i64(buf)
@@ -154,7 +219,7 @@ export let compile_expr_tail4: (Bytes, Expr, Array[String], Int, CompileCtx, Int
         let mut nl_r = next_local + 1
         let mut ri = 0
         while ri < flen {
-          let (_, fexpr) = Array::get(fields, ri)
+          let (_, fexpr) = Array::get(rec_fields, ri)
           nl_r = compile_expr(buf, fexpr, local_names, nl_r, ctx, ld)
           let val_local = nl_r
           Array::push(local_names, "__rec_val")
@@ -200,7 +265,7 @@ export let compile_expr_tail4: (Bytes, Expr, Array[String], Int, CompileCtx, Int
         emit_heap_grow_after_heap_set(buf, ctx)
         emit_local_get(buf, ptr_local)
         emit_i32_wrap_i64(buf)
-        emit_i32_const(buf, 0)
+        emit_i32_const(buf, rec_tag)
         emit_i32_store(buf, 2, 0)
         emit_local_get(buf, ptr_local)
         emit_i32_wrap_i64(buf)
@@ -209,7 +274,7 @@ export let compile_expr_tail4: (Bytes, Expr, Array[String], Int, CompileCtx, Int
         let mut nl_r = next_local + 1
         let mut ri = 0
         while ri < flen {
-          let (_, fexpr) = Array::get(fields, ri)
+          let (_, fexpr) = Array::get(rec_fields, ri)
           nl_r = compile_expr(buf, fexpr, local_names, nl_r, ctx, ld)
           let val_local = nl_r
           Array::push(local_names, "__rec_val")
