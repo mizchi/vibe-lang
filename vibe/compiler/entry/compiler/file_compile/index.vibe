@@ -9,10 +9,16 @@ import ../../../syntax/parser.vibe {
 }
 
 import ../../../syntax/import_alias_rewrite.vibe {
-  append_import_alias_rewritten_non_import_stmts_skipping,
+  ExportRenamePlan,
+  append_import_alias_rewritten_non_import_stmts_with_renames,
   append_non_import_stmts_without_alias_rewrite,
+  apply_export_renames_stmts,
+  build_export_rename_plan,
   collect_import_alias_collision_locals,
   collect_import_alias_collision_refs,
+  collect_import_value_renames,
+  export_plan_renames_for,
+  import_value_rename_locals,
   namespace_private_value_stmts,
   rewrite_imported_value_stmt_to_local,
   stmts_have_import_deep
@@ -131,6 +137,23 @@ let append_stmt_array: (Array[Stmt], Array[Stmt]) -> Unit = (dst, src) -> {
   }
 }
 
+let flatten_source_groups_local: (Array[(String, Array[(String, String)])]) -> Array[(String, String)] = (source_groups) -> {
+  let flat = Array::slice([
+    ("", "")
+  ], 0, 0)
+  let mut gi = 0
+  while gi < Array::length(source_groups) {
+    let (_, sources) = Array::get(source_groups, gi)
+    let mut si = 0
+    while si < Array::length(sources) {
+      Array::push(flat, Array::get(sources, si))
+      si = si + 1
+    }
+    gi = gi + 1
+  }
+  flat
+}
+
 let string_array_contains: (Array[String], String) -> Bool = (items, target) -> {
   let mut i = 0
   let mut found = false
@@ -173,7 +196,10 @@ let parse_program_for_path: (String, String) -> Array[Stmt] with { Error } = (pa
   }
 }
 
-let append_import_alias_collision_defs_from_sources: (Array[Stmt], String, Array[Stmt], Array[(String, String)]) -> Unit with { Error } = (merged, current_path, stmts, sources) -> {
+// #716: collision-def fallback (see merge_sources.vibe). `excluded_locals`
+// are the locals the export-rename plan already rewrites; the inline copy gets
+// the target file's export renames applied first.
+let append_import_alias_collision_defs_from_sources: (Array[Stmt], String, Array[Stmt], Array[(String, String)], ExportRenamePlan, Array[String]) -> Unit with { Error } = (merged, current_path, stmts, sources, plan, excluded_locals) -> {
   let refs = collect_import_alias_collision_refs(stmts)
   let emitted = Array::slice([
     ""
@@ -182,13 +208,16 @@ let append_import_alias_collision_defs_from_sources: (Array[Stmt], String, Array
   let mut i = 0
   while i < Array::length(refs) {
     let (raw_path, original, local) = Array::get(refs, i)
-    if !string_array_contains(emitted, local) {
+    if !string_array_contains(emitted, local) && !string_array_contains(excluded_locals, local) {
       let resolved = resolve_import_path(base_dir, raw_path)
       match lookup_source_by_path(sources, resolved) {
         Some(source) => {
           let source_stmts = namespace_private_value_stmts(
             resolved,
-            parse_program_for_path(resolved, source)
+            apply_export_renames_stmts(
+              parse_program_for_path(resolved, source),
+              export_plan_renames_for(plan, resolved)
+            )
           )
           let mut j = 0
           let mut done = false
@@ -211,30 +240,75 @@ let append_import_alias_collision_defs_from_sources: (Array[Stmt], String, Array
   }
 }
 
+// #716: parse every source once and build the export-rename plan for the whole
+// program (the merge output of one file depends on the export surfaces of ALL
+// files: ambiguous exported names are renamed at their defs and at importing
+// files' references).
+let parse_sources_for_merge: (Array[(String, String)]) -> (Array[String], Array[Array[Stmt]]) with { Error } = (sources) -> {
+  let file_paths = Array::slice([
+    ""
+  ], 0, 0)
+  let file_stmts = Array::slice([
+    empty_stmt_array()
+  ], 0, 0)
+  let mut si = 0
+  while si < Array::length(sources) {
+    let (path, source) = Array::get(sources, si)
+    Array::push(file_paths, path)
+    Array::push(file_stmts, parse_program_for_path(path, source))
+    si = si + 1
+  }
+  (file_paths, file_stmts)
+}
+
+// One file's contribution to the merged program. `stmts` are the file's parsed
+// statements, `is_entry_source` mirrors the pre-#716 per-group entry rule
+// (entry keeps its private names), and `plan`/`sources` drive the export-name
+// rewriting and the collision-def fallback.
+let append_merged_stmts_for_file: (Array[Stmt], String, Array[Stmt], Bool, ExportRenamePlan, Array[(String, String)]) -> Unit with { Error } = (merged, path, stmts, is_entry_source, plan, sources) -> {
+  let export_renamed = if is_entry_source {
+    stmts
+  } else {
+    apply_export_renames_stmts(stmts, export_plan_renames_for(plan, path))
+  }
+  let namespaced_stmts = if is_entry_source {
+    export_renamed
+  } else {
+    namespace_private_value_stmts(path, export_renamed)
+  }
+  if stmts_have_import_deep(stmts) {
+    let import_renames = collect_import_value_renames(plan, path, stmts)
+    let skipped_locals = collect_import_alias_collision_locals(stmts)
+    append_import_alias_collision_defs_from_sources(merged, path, stmts, sources, plan, import_value_rename_locals(import_renames))
+    append_import_alias_rewritten_non_import_stmts_with_renames(merged, namespaced_stmts, skipped_locals, import_renames)
+  } else {
+    append_non_import_stmts_without_alias_rewrite(merged, namespaced_stmts)
+  }
+}
+
 let build_merged_stmts_from_sources: (String, Array[(String, String)]) -> Array[Stmt] with { Error } = (entry_path, sources) -> {
   let merged = empty_stmt_array()
   let source_count = Array::length(sources)
+  let (file_paths, file_stmts) = parse_sources_for_merge(sources)
+  let plan_entry = if entry_path == "" {
+    if source_count > 0 {
+      Array::get(file_paths, source_count - 1)
+    } else {
+      ""
+    }
+  } else {
+    entry_path
+  }
+  let plan = build_export_rename_plan(file_paths, file_stmts, plan_entry)
   let mut si = 0
   while si < source_count {
-    let (path, source) = Array::get(sources, si)
-    let stmts = parse_program_for_path(path, source)
+    let path = Array::get(file_paths, si)
     let is_entry_source = if entry_path == "" {
       si == source_count - 1
     } else {
       path == entry_path
     }
-    let namespaced_stmts = if is_entry_source {
-      stmts
-    } else {
-      namespace_private_value_stmts(path, stmts)
-    }
-    if stmts_have_import_deep(stmts) {
-      let skipped_locals = collect_import_alias_collision_locals(stmts)
-      append_import_alias_collision_defs_from_sources(merged, path, stmts, sources)
-      append_import_alias_rewritten_non_import_stmts_skipping(merged, namespaced_stmts, skipped_locals)
-    } else {
-      append_non_import_stmts_without_alias_rewrite(merged, namespaced_stmts)
-    }
+    append_merged_stmts_for_file(merged, path, Array::get(file_stmts, si), is_entry_source, plan, sources)
     si = si + 1
   }
   merged
@@ -242,11 +316,29 @@ let build_merged_stmts_from_sources: (String, Array[(String, String)]) -> Array[
 
 let build_grouped_merged_stmts: (Array[(String, Array[(String, String)])]) -> Array[Stmt] with { Error } = (source_groups) -> {
   let merged = empty_stmt_array()
+  // #716: the plan spans ALL groups (imports cross group boundaries), so the
+  // flat source list is parsed once here and reused per group.
+  let flat_sources = flatten_source_groups_local(source_groups)
+  let (file_paths, file_stmts) = parse_sources_for_merge(flat_sources)
+  let plan_entry = if Array::length(file_paths) > 0 {
+    Array::get(file_paths, Array::length(file_paths) - 1)
+  } else {
+    ""
+  }
+  let plan = build_export_rename_plan(file_paths, file_stmts, plan_entry)
+  let mut flat_idx = 0
   let mut gi = 0
   while gi < Array::length(source_groups) {
     let (_, sources) = Array::get(source_groups, gi)
-    let group_stmts = build_merged_stmts_from_sources("", sources)
-    append_stmt_array(merged, group_stmts)
+    let source_count = Array::length(sources)
+    let mut si = 0
+    while si < source_count {
+      let path = Array::get(file_paths, flat_idx)
+      let stmts = Array::get(file_stmts, flat_idx)
+      append_merged_stmts_for_file(merged, path, stmts, si == source_count - 1, plan, flat_sources)
+      flat_idx = flat_idx + 1
+      si = si + 1
+    }
     gi = gi + 1
   }
   merged
@@ -313,6 +405,17 @@ let build_grouped_merged_stmts_prov: (Array[(String, Array[(String, String)])]) 
   let stmt_file_id = Array::slice([
     0
   ], 0, 0)
+  // #716: same whole-program plan as build_grouped_merged_stmts, so `merged`
+  // stays identical to the normal (non-break) merge.
+  let flat_sources = flatten_source_groups_local(source_groups)
+  let (file_paths, file_stmts) = parse_sources_for_merge(flat_sources)
+  let plan_entry = if Array::length(file_paths) > 0 {
+    Array::get(file_paths, Array::length(file_paths) - 1)
+  } else {
+    ""
+  }
+  let plan = build_export_rename_plan(file_paths, file_stmts, plan_entry)
+  let mut flat_idx = 0
   let mut gi = 0
   while gi < Array::length(source_groups) {
     let (_, sources) = Array::get(source_groups, gi)
@@ -324,26 +427,14 @@ let build_grouped_merged_stmts_prov: (Array[(String, Array[(String, String)])]) 
       Array::push(files, path_basename(path))
       Array::push(file_nls, file_newline_offsets(source))
       let before = Array::length(merged)
-      let stmts = parse_program_for_path(path, source)
-      let is_entry_source = si == source_count - 1
-      let namespaced_stmts = if is_entry_source {
-        stmts
-      } else {
-        namespace_private_value_stmts(path, stmts)
-      }
-      if stmts_have_import_deep(stmts) {
-        let skipped_locals = collect_import_alias_collision_locals(stmts)
-        append_import_alias_collision_defs_from_sources(merged, path, stmts, sources)
-        append_import_alias_rewritten_non_import_stmts_skipping(merged, namespaced_stmts, skipped_locals)
-      } else {
-        append_non_import_stmts_without_alias_rewrite(merged, namespaced_stmts)
-      }
+      append_merged_stmts_for_file(merged, path, Array::get(file_stmts, flat_idx), si == source_count - 1, plan, flat_sources)
       let after = Array::length(merged)
       let mut k = before
       while k < after {
         Array::push(stmt_file_id, file_id)
         k = k + 1
       }
+      flat_idx = flat_idx + 1
       si = si + 1
     }
     gi = gi + 1

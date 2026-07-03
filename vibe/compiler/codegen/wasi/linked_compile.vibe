@@ -12,6 +12,10 @@ import .. / .. / normalize {
   lift_match_scrutinees, uniquify_shadowed_bindings
 }
 
+import .. / .. / syntax / import_alias_rewrite.vibe {
+  rewrite_top_level_fn_alias_refs
+}
+
 import .. / .. / perceus {
   PerceusAction, build_perceus_plan, build_perceus_plan_with_params, compute_borrow_returning_names, compute_scalar_returning_names, elaborate_heap_params, pa_is_alias_dup, pa_is_drop, pa_is_dup, param_is_heap_in_body
 }
@@ -93,6 +97,10 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   // type params are stripped (just below). No-op unless a method-bearing trait
   // is declared, and idempotent if an earlier pipeline stage already desugared.
   desugar_trait_dicts(stmts)
+  // Top-level `let f = g` function aliases: retarget references to the final
+  // EFn def so calls do not route through the 0-param thunk registration
+  // below (invalid wasm for any call arity). See import_alias_rewrite.vibe.
+  rewrite_top_level_fn_alias_refs(stmts)
   // #707: functions whose entire body is transitively a tail-call to a
   // borrow-returning builtin (Array::get/Map::get/__index) -- e.g. a thin
   // `peek(toks, pos) -> Array::get(toks, pos)` wrapper. Computed once over the
@@ -1707,6 +1715,18 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
               Array::push(compile_ctx.agg_local_slots, psi * 256 + pinfo)
             } else {
               ()
+            }
+            // Float/Double-typed params feed expr_is_floatish the same way
+            // let-bound floats do; without this, `a == b` on annotated float
+            // params misses the f64 path and (under RC, where floats are
+            // boxed) compares heap pointers — `1.5 == 1.5` came out false.
+            match pte {
+              TyName(ptn) => if ptn == "Float" || ptn == "Double" {
+                Array::push(compile_ctx.float_local_slots, psi * 2 + 1)
+              } else {
+                ()
+              },
+              _ => ()
             }
           },
           None => ()

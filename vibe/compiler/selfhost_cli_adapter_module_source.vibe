@@ -18291,6 +18291,159 @@ export let rec print_stmt: (Stmt) -> String = (s) -> {
     }
   }
 }
+export let dir_of_path: (String) -> String = (file_path) -> {
+  let idx = String::last_index_of(file_path, "/")
+  if idx < 0 {
+    ""
+  } else if idx == 0 {
+    "/"
+  } else {
+    file_path[0: idx]
+  }
+}
+let path_set_bucket_count = 64
+let path_set_hash: (String) -> Int = (s) -> {
+  let len = String::length(s)
+  let mut h = 5381
+  let mut i = 0
+  while i < len {
+    h = ((h * 33) ^ String::char_code_at(s, i)) & 0x3FFFFFFF
+    i = i + 1
+  }
+  h
+}
+export let path_set_new: () -> Array[Array[String]] = () -> {
+  let buckets = Array::slice([
+    Array::slice([
+      ""
+    ], 0, 0)
+  ], 0, 0)
+  let mut i = 0
+  while i < path_set_bucket_count {
+    Array::push(buckets, Array::slice([
+      ""
+    ], 0, 0))
+    i = i + 1
+  }
+  buckets
+}
+export let path_set_contains: (Array[Array[String]], String) -> Bool = (set, path) -> {
+  let bucket = Array::get(set, path_set_hash(path) & (path_set_bucket_count - 1))
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(bucket) && !found {
+    if Array::get(bucket, i) == path {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+export let path_set_add: (Array[Array[String]], String) -> Unit = (set, path) -> {
+  Array::push(Array::get(set, path_set_hash(path) & (path_set_bucket_count - 1)), path)
+}
+export let normalize_path: (String) -> String = (path) -> {
+  let is_absolute = String::length(path) > 0 && String::char_code_at(path, 0) == 47
+  let mut parts = Array::slice([
+    ""
+  ], 0, 0)
+  let len = String::length(path)
+  let mut start = 0
+  let mut i = 0
+  while i <= len {
+    let at_sep = if i == len {
+      true
+    } else {
+      String::char_code_at(path, i) == 47
+    }
+    if at_sep {
+      let part = path[start: i]
+      let skip_part = if String::length(part) == 0 {
+        true
+      } else {
+        part == "."
+      }
+      if skip_part {
+        ()
+      } else if part == ".." {
+        if Array::length(parts) > 0 {
+          Array::truncate(parts, Array::length(parts) - 1)
+        }
+      } else {
+        Array::push(parts, part)
+      }
+      start = i + 1
+    }
+    i = i + 1
+  }
+  let buf = StringBuilder::new()
+  if is_absolute {
+    StringBuilder::push(buf, "/")
+  }
+  let mut pi = 0
+  while pi < Array::length(parts) {
+    if pi > 0 {
+      StringBuilder::push(buf, "/")
+    }
+    StringBuilder::push(buf, Array::get(parts, pi))
+    pi = pi + 1
+  }
+  StringBuilder::freeze(buf)
+}
+let join_relative_path: (String, String) -> String = (base_dir, raw_path) -> {
+  if base_dir == "" || base_dir == "/" {
+    String::concat(base_dir, raw_path)
+  } else {
+    String::concat(base_dir, String::concat("/", raw_path))
+  }
+}
+export let path_has_relative_prefix: (String, Int) -> Bool = (raw_path, len) -> {
+  if len >= 2 {
+    if raw_path[0: 2] == "./" {
+      true
+    } else if len >= 3 {
+      raw_path[0: 3] == "../"
+    } else {
+      false
+    }
+  } else {
+    false
+  }
+}
+export let resolve_import_path: (String, String) -> String = (base_dir, raw_path) -> {
+  let len = String::length(raw_path)
+  let joined = if path_has_relative_prefix(raw_path, len) {
+    join_relative_path(base_dir, raw_path)
+  } else {
+    raw_path
+  }
+  let normalized = normalize_path(joined)
+  if String::ends_with(normalized, ".vibe") {
+    normalized
+  } else {
+    String::concat(normalized, ".vibe")
+  }
+}
+export let resolve_import_path_candidates: (String, String) -> Array[String] = (base_dir, raw_path) -> {
+  let len = String::length(raw_path)
+  let joined = if path_has_relative_prefix(raw_path, len) {
+    join_relative_path(base_dir, raw_path)
+  } else {
+    raw_path
+  }
+  let normalized = normalize_path(joined)
+  if String::ends_with(normalized, ".vibe") {
+    [
+      normalized
+    ]
+  } else {
+    [
+      String::concat(normalized, ".vibe"),
+      String::concat(normalized, "/index.vibe")
+    ]
+  }
+}
 let empty_aliases: () -> Array[(String, String)] = () -> {
   Array::slice([
     ("", "")
@@ -18719,26 +18872,6 @@ export let append_non_import_stmts_without_alias_rewrite: (Array[Stmt], Array[St
       SReExport(_, _) => (),
       SAliasDecl(_, _) => (),
       _ => Array::push(merged, stmt)
-    }
-    i = i + 1
-  }
-}
-export let append_import_alias_rewritten_non_import_stmts_skipping: (Array[Stmt], Array[Stmt], Array[String]) -> Unit = (merged, stmts, skipped_locals) -> {
-  let aliases = alias_map_without_names(collect_import_aliases(stmts), skipped_locals)
-  let should_rewrite = Array::length(aliases) > 0
-  let mut i = 0
-  while i < Array::length(stmts) {
-    let stmt = Array::get(stmts, i)
-    match stmt {
-      SImport(_, _) => (),
-      SReExport(_, _) => (),
-      SAliasDecl(_, _) => (),
-      SModule(_, _, _) => Array::push(merged, rewrite_import_alias_stmt(stmt, aliases)),
-      _ => if should_rewrite {
-        Array::push(merged, rewrite_import_alias_stmt(stmt, aliases))
-      } else {
-        Array::push(merged, stmt)
-      }
     }
     i = i + 1
   }
@@ -19282,6 +19415,528 @@ export let rec namespace_private_value_stmts: (String, Array[Stmt]) -> Array[Stm
     for stmt in value_renamed {
       namespace_private_type_ctor_stmt_local(stmt, type_renames, ctor_renames)
     }
+  }
+}
+let bare_builtin_value_names: () -> Array[String] = () -> {
+  [
+    "add", "sub", "mul", "lt", "eq", "not", "print", "println", "assert",
+    "assert_eq", "assert_true", "map", "map_has", "array_new", "iter_get",
+    "iter_length", "iter_require", "path", "sh", "sh_lines", "sleep",
+    "string_char_at", "simd_skip_ws", "simd_scan_alnum", "simd_scan_alnum_str"
+  ]
+}
+export let namespace_exported_name: (String, String) -> String = (path, name) -> {
+  String::concat(name, String::concat("_exp_", sanitize_namespace_path(path)))
+}
+export let collect_export_def_value_names: (Array[Stmt]) -> Array[String] = (stmts) -> {
+  let extern_names = empty_strings()
+  let let_names = empty_strings()
+  let exported_lets = empty_strings()
+  let export_items = empty_strings()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exported, _, name, _, _) => {
+        Array::push(let_names, name)
+        if exported {
+          Array::push(exported_lets, name)
+        } else {
+          ()
+        }
+      },
+      SExternLet(name, _) => Array::push(extern_names, name),
+      SExport(items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          Array::push(export_items, Array::get(items, j))
+          j = j + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  let out = empty_strings()
+  let push_def_name: (String) -> Unit = (name) -> {
+    if String::index_of(name, "::") < 0 && !string_array_contains(extern_names, name) && !string_array_contains(out, name) {
+      Array::push(out, name)
+    } else {
+      ()
+    }
+  }
+  let mut k = 0
+  while k < Array::length(exported_lets) {
+    push_def_name(Array::get(exported_lets, k))
+    k = k + 1
+  }
+  let mut m = 0
+  while m < Array::length(export_items) {
+    let name = Array::get(export_items, m)
+    if string_array_contains(let_names, name) {
+      push_def_name(name)
+    } else {
+      ()
+    }
+    m = m + 1
+  }
+  out
+}
+export struct ExportRenamePlan {
+  plan_paths: Array[String];
+  rename_paths: Array[String];
+  rename_names: Array[String];
+  rename_mangled: Array[String]
+}
+let resolve_known_import_path: (Array[String], String, String) -> String = (known_paths, base_dir, raw_path) -> {
+  let candidates = resolve_import_path_candidates(base_dir, raw_path)
+  let mut chosen = Array::get(candidates, 0)
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(candidates) && !found {
+    if string_array_contains(known_paths, Array::get(candidates, i)) {
+      chosen = Array::get(candidates, i)
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  chosen
+}
+let plan_triple_lookup: (Array[String], Array[String], Array[String], String, String) -> Option[String] = (tpaths, tnames, tvalues, path, name) -> {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(tpaths) {
+    if Array::get(tpaths, i) == path && Array::get(tnames, i) == name {
+      found = Some(Array::get(tvalues, i))
+      i = Array::length(tpaths)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+let collect_reexport_edges_into: (String, Array[Stmt], Array[String], Array[String], Array[String], Array[String], Array[String]) -> Unit = (path, stmts, known_paths, edge_from, edge_pub, edge_tpath, edge_tname) -> {
+  let base_dir = dir_of_path(path)
+  let let_names = empty_strings()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, _) => Array::push(let_names, name),
+      SLetMut(name, _, _) => Array::push(let_names, name),
+      _ => ()
+    }
+    i = i + 1
+  }
+  let import_refs = collect_import_refs(stmts)
+  let mut si = 0
+  while si < Array::length(stmts) {
+    match Array::get(stmts, si) {
+      SReExport(raw_path, items) => {
+        let target = resolve_known_import_path(known_paths, base_dir, raw_path)
+        let mut j = 0
+        while j < Array::length(items) {
+          let (iname, alias_opt) = Array::get(items, j)
+          let public_name = match alias_opt {
+            Some(alias) => alias,
+            None => iname
+          }
+          Array::push(edge_from, path)
+          Array::push(edge_pub, public_name)
+          Array::push(edge_tpath, target)
+          Array::push(edge_tname, iname)
+          j = j + 1
+        }
+      },
+      SExport(items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          let name = Array::get(items, j)
+          if !string_array_contains(let_names, name) {
+            let mut ri = 0
+            let mut done = false
+            while ri < Array::length(import_refs) && !done {
+              let (raw_path, original, local) = Array::get(import_refs, ri)
+              if local == name {
+                Array::push(edge_from, path)
+                Array::push(edge_pub, name)
+                Array::push(edge_tpath, resolve_known_import_path(known_paths, base_dir, raw_path))
+                Array::push(edge_tname, original)
+                done = true
+              } else {
+                ri = ri + 1
+              }
+            }
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+      },
+      _ => ()
+    }
+    si = si + 1
+  }
+}
+export let build_export_rename_plan: (Array[String], Array[Array[Stmt]], String) -> ExportRenamePlan = (paths, stmts_list, entry_path) -> {
+  let file_count = Array::length(paths)
+  let def_names_list = Array::slice([
+    empty_strings()
+  ], 0, 0)
+  let mut fi = 0
+  while fi < file_count {
+    Array::push(def_names_list, collect_export_def_value_names(Array::get(stmts_list, fi)))
+    fi = fi + 1
+  }
+  let builtins = bare_builtin_value_names()
+  let is_dup_name: (String, Int) -> Bool = (name, owner_idx) -> {
+    let mut other = false
+    let mut i = 0
+    while i < file_count && !other {
+      if i != owner_idx && string_array_contains(Array::get(def_names_list, i), name) {
+        other = true
+      } else {
+        i = i + 1
+      }
+    }
+    other
+  }
+  let edge_from = empty_strings()
+  let edge_pub = empty_strings()
+  let edge_tpath = empty_strings()
+  let edge_tname = empty_strings()
+  let mut ei = 0
+  while ei < file_count {
+    collect_reexport_edges_into(Array::get(paths, ei), Array::get(stmts_list, ei), paths, edge_from, edge_pub, edge_tpath, edge_tname)
+    ei = ei + 1
+  }
+  let excluded_paths = empty_strings()
+  let excluded_names = empty_strings()
+  let file_idx_of: (String) -> Int = (path) -> {
+    let mut i = 0
+    let mut found = -1
+    while i < file_count {
+      if Array::get(paths, i) == path {
+        found = i
+        i = file_count
+      } else {
+        i = i + 1
+      }
+    }
+    found
+  }
+  let mut xi = 0
+  while xi < Array::length(edge_from) {
+    if Array::get(edge_from, xi) == entry_path {
+      let mut cur_path = Array::get(edge_tpath, xi)
+      let mut cur_name = Array::get(edge_tname, xi)
+      let mut depth = 0
+      while depth < 16 {
+        let idx = file_idx_of(cur_path)
+        let is_def = if idx < 0 {
+          false
+        } else {
+          string_array_contains(Array::get(def_names_list, idx), cur_name)
+        }
+        if is_def {
+          Array::push(excluded_paths, cur_path)
+          Array::push(excluded_names, cur_name)
+          depth = 16
+        } else {
+          match plan_triple_lookup(edge_from, edge_pub, edge_tpath, cur_path, cur_name) {
+            Some(next_path) => {
+              match plan_triple_lookup(edge_from, edge_pub, edge_tname, cur_path, cur_name) {
+                Some(next_name) => {
+                  cur_path = next_path
+                  cur_name = next_name
+                  depth = depth + 1
+                },
+                None => {
+                  depth = 16
+                }
+              }
+            },
+            None => {
+              depth = 16
+            }
+          }
+        }
+      }
+    } else {
+      ()
+    }
+    xi = xi + 1
+  }
+  let rename_paths = empty_strings()
+  let rename_names = empty_strings()
+  let rename_mangled = empty_strings()
+  let mut ri = 0
+  while ri < file_count {
+    let path = Array::get(paths, ri)
+    if path == entry_path {
+      ()
+    } else {
+      let def_names = Array::get(def_names_list, ri)
+      let mut ni = 0
+      while ni < Array::length(def_names) {
+        let name = Array::get(def_names, ni)
+        let ambiguous = string_array_contains(builtins, name) || is_dup_name(name, ri)
+        let excluded = match plan_triple_lookup(excluded_paths, excluded_names, excluded_names, path, name) {
+          Some(_) => true,
+          None => false
+        }
+        if ambiguous && !excluded {
+          Array::push(rename_paths, path)
+          Array::push(rename_names, name)
+          Array::push(rename_mangled, namespace_exported_name(path, name))
+        } else {
+          ()
+        }
+        ni = ni + 1
+      }
+    }
+    ri = ri + 1
+  }
+  let mut changed = true
+  while changed {
+    changed = false
+    let mut ci = 0
+    while ci < Array::length(edge_from) {
+      let from = Array::get(edge_from, ci)
+      let pub_name = Array::get(edge_pub, ci)
+      if from == entry_path {
+        ()
+      } else {
+        match plan_triple_lookup(rename_paths, rename_names, rename_mangled, Array::get(edge_tpath, ci), Array::get(edge_tname, ci)) {
+          Some(mangled) => {
+            match plan_triple_lookup(rename_paths, rename_names, rename_mangled, from, pub_name) {
+              Some(_) => (),
+              None => {
+                Array::push(rename_paths, from)
+                Array::push(rename_names, pub_name)
+                Array::push(rename_mangled, mangled)
+                changed = true
+              }
+            }
+          },
+          None => ()
+        }
+      }
+      ci = ci + 1
+    }
+  }
+  ExportRenamePlan::{
+    plan_paths: paths,
+    rename_paths: rename_paths,
+    rename_names: rename_names,
+    rename_mangled: rename_mangled
+  }
+}
+export let export_plan_renames_for: (ExportRenamePlan, String) -> Array[(String, String)] = (plan, path) -> {
+  let out = empty_aliases()
+  let rename_paths = plan.rename_paths
+  let rename_names = plan.rename_names
+  let rename_mangled = plan.rename_mangled
+  let mut i = 0
+  while i < Array::length(rename_paths) {
+    if Array::get(rename_paths, i) == path {
+      Array::push(out, (Array::get(rename_names, i), Array::get(rename_mangled, i)))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+export let collect_import_value_renames: (ExportRenamePlan, String, Array[Stmt]) -> Array[(String, String)] = (plan, path, stmts) -> {
+  let out = empty_aliases()
+  let locals_seen = empty_strings()
+  let rename_paths = plan.rename_paths
+  let rename_names = plan.rename_names
+  let rename_mangled = plan.rename_mangled
+  if Array::length(rename_paths) == 0 {
+    out
+  } else {
+    let base_dir = dir_of_path(path)
+    let mut i = 0
+    while i < Array::length(stmts) {
+      match Array::get(stmts, i) {
+        SImport(raw_path, items) => {
+          let target = resolve_known_import_path(plan.plan_paths, base_dir, raw_path)
+          let mut j = 0
+          while j < Array::length(items) {
+            let (original, alias_opt) = Array::get(items, j)
+            let local = match alias_opt {
+              Some(alias) => alias,
+              None => original
+            }
+            if String::index_of(original, "::") < 0 && !string_array_contains(locals_seen, local) {
+              match plan_triple_lookup(rename_paths, rename_names, rename_mangled, target, original) {
+                Some(mangled) => {
+                  Array::push(out, (local, mangled))
+                  Array::push(locals_seen, local)
+                },
+                None => ()
+              }
+            } else {
+              ()
+            }
+            j = j + 1
+          }
+        },
+        _ => ()
+      }
+      i = i + 1
+    }
+    out
+  }
+}
+export let import_value_rename_locals: (Array[(String, String)]) -> Array[String] = (renames) -> {
+  let out = empty_strings()
+  let mut i = 0
+  while i < Array::length(renames) {
+    let (local, _) = Array::get(renames, i)
+    Array::push(out, local)
+    i = i + 1
+  }
+  out
+}
+export let apply_export_renames_stmts: (Array[Stmt], Array[(String, String)]) -> Array[Stmt] = (stmts, renames) -> {
+  if Array::length(renames) == 0 {
+    stmts
+  } else {
+    for stmt in stmts {
+      match stmt {
+        SLet(exported, is_rec, name, ty, body) => {
+          let next_name = match lookup_alias(renames, name) {
+            Some(renamed) => renamed,
+            None => name
+          }
+          SLet(exported, is_rec, next_name, ty, rewrite_import_alias_expr(body, renames))
+        },
+        SLetMut(name, ty, body) => SLetMut(name, ty, rewrite_import_alias_expr(body, renames)),
+        SExport(items) => SExport(for item in items {
+          match lookup_alias(renames, item) {
+            Some(renamed) => renamed,
+            None => item
+          }
+        }),
+        STest(name, body) => STest(name, rewrite_import_alias_expr(body, renames)),
+        SBench(name, body) => SBench(name, rewrite_import_alias_expr(body, renames)),
+        SExpr(body) => SExpr(rewrite_import_alias_expr(body, renames)),
+        SLetPat(pat, body) => SLetPat(pat, rewrite_import_alias_expr(body, renames)),
+        _ => stmt
+      }
+    }
+  }
+}
+export let rewrite_top_level_fn_alias_refs: (Array[Stmt]) -> Unit = (stmts) -> {
+  let fn_names = empty_strings()
+  let alias_names = empty_strings()
+  let alias_targets = empty_strings()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, expr) => match expr {
+        EFn(_, _, _, _, _, _) => Array::push(fn_names, name),
+        EIdent(target, _) => {
+          Array::push(alias_names, name)
+          Array::push(alias_targets, target)
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  if Array::length(alias_names) == 0 {
+    ()
+  } else {
+    let renames = empty_aliases()
+    let mut ai = 0
+    while ai < Array::length(alias_names) {
+      let mut target = Array::get(alias_targets, ai)
+      let mut final_target = ""
+      let mut depth = 0
+      while depth < 16 {
+        if string_array_contains(fn_names, target) {
+          final_target = target
+          depth = 16
+        } else {
+          let mut hop = false
+          let mut aj = 0
+          while aj < Array::length(alias_names) && !hop {
+            if Array::get(alias_names, aj) == target {
+              target = Array::get(alias_targets, aj)
+              hop = true
+            } else {
+              aj = aj + 1
+            }
+          }
+          if hop {
+            depth = depth + 1
+          } else {
+            depth = 16
+          }
+        }
+      }
+      if final_target != "" && final_target != Array::get(alias_names, ai) {
+        Array::push(renames, (Array::get(alias_names, ai), final_target))
+      } else {
+        ()
+      }
+      ai = ai + 1
+    }
+    if Array::length(renames) == 0 {
+      ()
+    } else {
+      let mut si = 0
+      while si < Array::length(stmts) {
+        match Array::get(stmts, si) {
+          SLet(exported, is_rec, name, ty, body) => Array::set(stmts, si, SLet(exported, is_rec, name, ty, rewrite_import_alias_expr(body, renames))),
+          SLetMut(name, ty, body) => Array::set(stmts, si, SLetMut(name, ty, rewrite_import_alias_expr(body, renames))),
+          STest(name, body) => Array::set(stmts, si, STest(name, rewrite_import_alias_expr(body, renames))),
+          SBench(name, body) => Array::set(stmts, si, SBench(name, rewrite_import_alias_expr(body, renames))),
+          SExpr(body) => Array::set(stmts, si, SExpr(rewrite_import_alias_expr(body, renames))),
+          SLetPat(pat, body) => Array::set(stmts, si, SLetPat(pat, rewrite_import_alias_expr(body, renames))),
+          _ => ()
+        }
+        si = si + 1
+      }
+    }
+  }
+}
+export let append_import_alias_rewritten_non_import_stmts_with_renames: (Array[Stmt], Array[Stmt], Array[String], Array[(String, String)]) -> Unit = (merged, stmts, skipped_locals, extra_renames) -> {
+  let legacy = alias_map_without_names(
+    alias_map_without_names(collect_import_aliases(stmts), skipped_locals),
+    import_value_rename_locals(extra_renames)
+  )
+  let combined = empty_aliases()
+  let mut li = 0
+  while li < Array::length(legacy) {
+    Array::push(combined, Array::get(legacy, li))
+    li = li + 1
+  }
+  let mut xi = 0
+  while xi < Array::length(extra_renames) {
+    Array::push(combined, Array::get(extra_renames, xi))
+    xi = xi + 1
+  }
+  let should_rewrite = Array::length(combined) > 0
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
+    match stmt {
+      SImport(_, _) => (),
+      SReExport(_, _) => (),
+      SAliasDecl(_, _) => (),
+      SModule(_, _, _) => Array::push(merged, rewrite_import_alias_stmt(stmt, combined)),
+      _ => if should_rewrite {
+        Array::push(merged, rewrite_import_alias_stmt(stmt, combined))
+      } else {
+        Array::push(merged, stmt)
+      }
+    }
+    i = i + 1
   }
 }
 let empty_stmts: () -> Array[Stmt] = () -> {
@@ -32832,6 +33487,7 @@ export let wasi_memory_min_pages_for_heap: (Int) -> Int = (heap_start) -> {
 }
 export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String, String)], Array[(String, String, Int, Int)], Bool, Bool, Bool, Bool, Bool, Bool, DbgProv) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, linked_imports, library_mode, enable_rc, coverage, debug_trace, debug_break, rc_shadow, prov) -> {
   desugar_trait_dicts(stmts)
+  rewrite_top_level_fn_alias_refs(stmts)
   let lc_borrow_ret_names = compute_borrow_returning_names(stmts)
   let lc_scalar_ret_names = compute_scalar_returning_names(stmts)
   let fn_names_list = lc_fresh_string_array()
@@ -34240,6 +34896,14 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
               Array::push(compile_ctx.agg_local_slots, psi * 256 + pinfo)
             } else {
               ()
+            }
+            match pte {
+              TyName(ptn) => if ptn == "Float" || ptn == "Double" {
+                Array::push(compile_ctx.float_local_slots, psi * 2 + 1)
+              } else {
+                ()
+              },
+              _ => ()
             }
           },
           None => ()
@@ -40255,6 +40919,7 @@ export {
   compile_expr_gc
 }
 export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error } = (stmts, entry_name) -> {
+  rewrite_top_level_fn_alias_refs(stmts)
   let fn_names_list = Array::slice([
     ""
   ], 0, 0)
@@ -41727,7 +42392,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "59b0b4adbbc86fc0"
+  "4cb99eae485981d9"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647
@@ -41798,159 +42463,6 @@ export let persistent_manifest_header_cache_path: (String) -> String = (entry_pa
 }
 export let persistent_leaf_fingerprint_cache_path: (String, String) -> String = (path, source_fingerprint) -> {
   stable_cache_path("selfhost_leaf_fp_v2", String::concat(path, String::concat("|", source_fingerprint)), ".tsv")
-}
-export let dir_of_path: (String) -> String = (file_path) -> {
-  let idx = String::last_index_of(file_path, "/")
-  if idx < 0 {
-    ""
-  } else if idx == 0 {
-    "/"
-  } else {
-    file_path[0: idx]
-  }
-}
-let path_set_bucket_count = 64
-let path_set_hash: (String) -> Int = (s) -> {
-  let len = String::length(s)
-  let mut h = 5381
-  let mut i = 0
-  while i < len {
-    h = ((h * 33) ^ String::char_code_at(s, i)) & 0x3FFFFFFF
-    i = i + 1
-  }
-  h
-}
-export let path_set_new: () -> Array[Array[String]] = () -> {
-  let buckets = Array::slice([
-    Array::slice([
-      ""
-    ], 0, 0)
-  ], 0, 0)
-  let mut i = 0
-  while i < path_set_bucket_count {
-    Array::push(buckets, Array::slice([
-      ""
-    ], 0, 0))
-    i = i + 1
-  }
-  buckets
-}
-export let path_set_contains: (Array[Array[String]], String) -> Bool = (set, path) -> {
-  let bucket = Array::get(set, path_set_hash(path) & (path_set_bucket_count - 1))
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(bucket) && !found {
-    if Array::get(bucket, i) == path {
-      found = true
-    } else {
-      i = i + 1
-    }
-  }
-  found
-}
-export let path_set_add: (Array[Array[String]], String) -> Unit = (set, path) -> {
-  Array::push(Array::get(set, path_set_hash(path) & (path_set_bucket_count - 1)), path)
-}
-export let normalize_path: (String) -> String = (path) -> {
-  let is_absolute = String::length(path) > 0 && String::char_code_at(path, 0) == 47
-  let mut parts = Array::slice([
-    ""
-  ], 0, 0)
-  let len = String::length(path)
-  let mut start = 0
-  let mut i = 0
-  while i <= len {
-    let at_sep = if i == len {
-      true
-    } else {
-      String::char_code_at(path, i) == 47
-    }
-    if at_sep {
-      let part = path[start: i]
-      let skip_part = if String::length(part) == 0 {
-        true
-      } else {
-        part == "."
-      }
-      if skip_part {
-        ()
-      } else if part == ".." {
-        if Array::length(parts) > 0 {
-          Array::truncate(parts, Array::length(parts) - 1)
-        }
-      } else {
-        Array::push(parts, part)
-      }
-      start = i + 1
-    }
-    i = i + 1
-  }
-  let buf = StringBuilder::new()
-  if is_absolute {
-    StringBuilder::push(buf, "/")
-  }
-  let mut pi = 0
-  while pi < Array::length(parts) {
-    if pi > 0 {
-      StringBuilder::push(buf, "/")
-    }
-    StringBuilder::push(buf, Array::get(parts, pi))
-    pi = pi + 1
-  }
-  StringBuilder::freeze(buf)
-}
-let join_relative_path: (String, String) -> String = (base_dir, raw_path) -> {
-  if base_dir == "" || base_dir == "/" {
-    String::concat(base_dir, raw_path)
-  } else {
-    String::concat(base_dir, String::concat("/", raw_path))
-  }
-}
-export let path_has_relative_prefix: (String, Int) -> Bool = (raw_path, len) -> {
-  if len >= 2 {
-    if raw_path[0: 2] == "./" {
-      true
-    } else if len >= 3 {
-      raw_path[0: 3] == "../"
-    } else {
-      false
-    }
-  } else {
-    false
-  }
-}
-export let resolve_import_path: (String, String) -> String = (base_dir, raw_path) -> {
-  let len = String::length(raw_path)
-  let joined = if path_has_relative_prefix(raw_path, len) {
-    join_relative_path(base_dir, raw_path)
-  } else {
-    raw_path
-  }
-  let normalized = normalize_path(joined)
-  if String::ends_with(normalized, ".vibe") {
-    normalized
-  } else {
-    String::concat(normalized, ".vibe")
-  }
-}
-export let resolve_import_path_candidates: (String, String) -> Array[String] = (base_dir, raw_path) -> {
-  let len = String::length(raw_path)
-  let joined = if path_has_relative_prefix(raw_path, len) {
-    join_relative_path(base_dir, raw_path)
-  } else {
-    raw_path
-  }
-  let normalized = normalize_path(joined)
-  if String::ends_with(normalized, ".vibe") {
-    [
-      normalized
-    ]
-  } else {
-    [
-      String::concat(normalized, ".vibe"),
-      String::concat(normalized, "/index.vibe")
-    ]
-  }
 }
 let resolve_path_fs: (String, String) -> String with { Fs } = (base_dir, raw_path) -> {
   let candidates = resolve_import_path_candidates(base_dir, raw_path)
@@ -45425,7 +45937,7 @@ let lookup_source_by_path: (Array[(String, String)], String) -> Option[String] =
   }
   found
 }
-let append_import_alias_collision_defs_from_sources: (Array[Stmt], String, Array[Stmt], Array[(String, String)]) -> Unit with { Error } = (merged, current_path, stmts, sources) -> {
+let append_import_alias_collision_defs_from_sources: (Array[Stmt], String, Array[Stmt], Array[(String, String)], ExportRenamePlan, Array[String]) -> Unit with { Error } = (merged, current_path, stmts, sources, plan, excluded_locals) -> {
   let refs = collect_import_alias_collision_refs(stmts)
   let emitted = Array::slice([
     ""
@@ -45434,13 +45946,16 @@ let append_import_alias_collision_defs_from_sources: (Array[Stmt], String, Array
   let mut i = 0
   while i < Array::length(refs) {
     let (raw_path, original, local) = Array::get(refs, i)
-    if !contains_str(emitted, local) {
+    if !contains_str(emitted, local) && !contains_str(excluded_locals, local) {
       let resolved = resolve_import_path(base_dir, raw_path)
       match lookup_source_by_path(sources, resolved) {
         Some(source) => {
           let source_stmts = namespace_private_value_stmts(
             resolved,
-            parse_program_with_path(resolved, source)
+            apply_export_renames_stmts(
+              parse_program_with_path(resolved, source),
+              export_plan_renames_for(plan, resolved)
+            )
           )
           let mut j = 0
           let mut done = false
@@ -45480,12 +45995,21 @@ let seed_type_db_from_source_groups: (TypeDb, Array[(String, Array[(String, Stri
   }
   seeded
 }
-let append_stmt_array: (Array[Stmt], Array[Stmt]) -> Unit = (dst, src) -> {
-  let mut i = 0
-  while i < Array::length(src) {
-    Array::push(dst, Array::get(src, i))
-    i = i + 1
+let flatten_source_groups_local: (Array[(String, Array[(String, String)])]) -> Array[(String, String)] = (source_groups) -> {
+  let flat = Array::slice([
+    ("", "")
+  ], 0, 0)
+  let mut gi = 0
+  while gi < Array::length(source_groups) {
+    let (_, sources) = Array::get(source_groups, gi)
+    let mut si = 0
+    while si < Array::length(sources) {
+      Array::push(flat, Array::get(sources, si))
+      si = si + 1
+    }
+    gi = gi + 1
   }
+  flat
 }
 let string_array_contains: (Array[String], String) -> Bool = (items, target) -> {
   let mut i = 0
@@ -45521,7 +46045,7 @@ let parse_program_for_path: (String, String) -> Array[Stmt] with { Error } = (pa
     Throw(msg) => throw(String::concat(String::concat(path, ": "), msg))
   }
 }
-let append_import_alias_collision_defs_from_sources: (Array[Stmt], String, Array[Stmt], Array[(String, String)]) -> Unit with { Error } = (merged, current_path, stmts, sources) -> {
+let append_import_alias_collision_defs_from_sources: (Array[Stmt], String, Array[Stmt], Array[(String, String)], ExportRenamePlan, Array[String]) -> Unit with { Error } = (merged, current_path, stmts, sources, plan, excluded_locals) -> {
   let refs = collect_import_alias_collision_refs(stmts)
   let emitted = Array::slice([
     ""
@@ -45530,13 +46054,16 @@ let append_import_alias_collision_defs_from_sources: (Array[Stmt], String, Array
   let mut i = 0
   while i < Array::length(refs) {
     let (raw_path, original, local) = Array::get(refs, i)
-    if !string_array_contains(emitted, local) {
+    if !string_array_contains(emitted, local) && !string_array_contains(excluded_locals, local) {
       let resolved = resolve_import_path(base_dir, raw_path)
       match lookup_source_by_path(sources, resolved) {
         Some(source) => {
           let source_stmts = namespace_private_value_stmts(
             resolved,
-            parse_program_for_path(resolved, source)
+            apply_export_renames_stmts(
+              parse_program_for_path(resolved, source),
+              export_plan_renames_for(plan, resolved)
+            )
           )
           let mut j = 0
           let mut done = false
@@ -45558,41 +46085,65 @@ let append_import_alias_collision_defs_from_sources: (Array[Stmt], String, Array
     i = i + 1
   }
 }
-let build_merged_stmts_from_sources: (String, Array[(String, String)]) -> Array[Stmt] with { Error } = (entry_path, sources) -> {
-  let merged = empty_stmt_array()
-  let source_count = Array::length(sources)
+let parse_sources_for_merge: (Array[(String, String)]) -> (Array[String], Array[Array[Stmt]]) with { Error } = (sources) -> {
+  let file_paths = Array::slice([
+    ""
+  ], 0, 0)
+  let file_stmts = Array::slice([
+    empty_stmt_array()
+  ], 0, 0)
   let mut si = 0
-  while si < source_count {
+  while si < Array::length(sources) {
     let (path, source) = Array::get(sources, si)
-    let stmts = parse_program_for_path(path, source)
-    let is_entry_source = if entry_path == "" {
-      si == source_count - 1
-    } else {
-      path == entry_path
-    }
-    let namespaced_stmts = if is_entry_source {
-      stmts
-    } else {
-      namespace_private_value_stmts(path, stmts)
-    }
-    if stmts_have_import_deep(stmts) {
-      let skipped_locals = collect_import_alias_collision_locals(stmts)
-      append_import_alias_collision_defs_from_sources(merged, path, stmts, sources)
-      append_import_alias_rewritten_non_import_stmts_skipping(merged, namespaced_stmts, skipped_locals)
-    } else {
-      append_non_import_stmts_without_alias_rewrite(merged, namespaced_stmts)
-    }
+    Array::push(file_paths, path)
+    Array::push(file_stmts, parse_program_for_path(path, source))
     si = si + 1
   }
-  merged
+  (file_paths, file_stmts)
+}
+let append_merged_stmts_for_file: (Array[Stmt], String, Array[Stmt], Bool, ExportRenamePlan, Array[(String, String)]) -> Unit with { Error } = (merged, path, stmts, is_entry_source, plan, sources) -> {
+  let export_renamed = if is_entry_source {
+    stmts
+  } else {
+    apply_export_renames_stmts(stmts, export_plan_renames_for(plan, path))
+  }
+  let namespaced_stmts = if is_entry_source {
+    export_renamed
+  } else {
+    namespace_private_value_stmts(path, export_renamed)
+  }
+  if stmts_have_import_deep(stmts) {
+    let import_renames = collect_import_value_renames(plan, path, stmts)
+    let skipped_locals = collect_import_alias_collision_locals(stmts)
+    append_import_alias_collision_defs_from_sources(merged, path, stmts, sources, plan, import_value_rename_locals(import_renames))
+    append_import_alias_rewritten_non_import_stmts_with_renames(merged, namespaced_stmts, skipped_locals, import_renames)
+  } else {
+    append_non_import_stmts_without_alias_rewrite(merged, namespaced_stmts)
+  }
 }
 let build_grouped_merged_stmts: (Array[(String, Array[(String, String)])]) -> Array[Stmt] with { Error } = (source_groups) -> {
   let merged = empty_stmt_array()
+  let flat_sources = flatten_source_groups_local(source_groups)
+  let (file_paths, file_stmts) = parse_sources_for_merge(flat_sources)
+  let plan_entry = if Array::length(file_paths) > 0 {
+    Array::get(file_paths, Array::length(file_paths) - 1)
+  } else {
+    ""
+  }
+  let plan = build_export_rename_plan(file_paths, file_stmts, plan_entry)
+  let mut flat_idx = 0
   let mut gi = 0
   while gi < Array::length(source_groups) {
     let (_, sources) = Array::get(source_groups, gi)
-    let group_stmts = build_merged_stmts_from_sources("", sources)
-    append_stmt_array(merged, group_stmts)
+    let source_count = Array::length(sources)
+    let mut si = 0
+    while si < source_count {
+      let path = Array::get(file_paths, flat_idx)
+      let stmts = Array::get(file_stmts, flat_idx)
+      append_merged_stmts_for_file(merged, path, stmts, si == source_count - 1, plan, flat_sources)
+      flat_idx = flat_idx + 1
+      si = si + 1
+    }
     gi = gi + 1
   }
   merged
@@ -45640,6 +46191,15 @@ let build_grouped_merged_stmts_prov: (Array[(String, Array[(String, String)])]) 
   let stmt_file_id = Array::slice([
     0
   ], 0, 0)
+  let flat_sources = flatten_source_groups_local(source_groups)
+  let (file_paths, file_stmts) = parse_sources_for_merge(flat_sources)
+  let plan_entry = if Array::length(file_paths) > 0 {
+    Array::get(file_paths, Array::length(file_paths) - 1)
+  } else {
+    ""
+  }
+  let plan = build_export_rename_plan(file_paths, file_stmts, plan_entry)
+  let mut flat_idx = 0
   let mut gi = 0
   while gi < Array::length(source_groups) {
     let (_, sources) = Array::get(source_groups, gi)
@@ -45651,26 +46211,14 @@ let build_grouped_merged_stmts_prov: (Array[(String, Array[(String, String)])]) 
       Array::push(files, path_basename(path))
       Array::push(file_nls, file_newline_offsets(source))
       let before = Array::length(merged)
-      let stmts = parse_program_for_path(path, source)
-      let is_entry_source = si == source_count - 1
-      let namespaced_stmts = if is_entry_source {
-        stmts
-      } else {
-        namespace_private_value_stmts(path, stmts)
-      }
-      if stmts_have_import_deep(stmts) {
-        let skipped_locals = collect_import_alias_collision_locals(stmts)
-        append_import_alias_collision_defs_from_sources(merged, path, stmts, sources)
-        append_import_alias_rewritten_non_import_stmts_skipping(merged, namespaced_stmts, skipped_locals)
-      } else {
-        append_non_import_stmts_without_alias_rewrite(merged, namespaced_stmts)
-      }
+      append_merged_stmts_for_file(merged, path, Array::get(file_stmts, flat_idx), si == source_count - 1, plan, flat_sources)
       let after = Array::length(merged)
       let mut k = before
       while k < after {
         Array::push(stmt_file_id, file_id)
         k = k + 1
       }
+      flat_idx = flat_idx + 1
       si = si + 1
     }
     gi = gi + 1

@@ -25,10 +25,16 @@ import .. / .. / .. / syntax / parser.vibe {
 }
 
 import .. / .. / .. / syntax / import_alias_rewrite.vibe {
-  append_import_alias_rewritten_non_import_stmts_skipping,
+  ExportRenamePlan,
+  append_import_alias_rewritten_non_import_stmts_with_renames,
   append_non_import_stmts_without_alias_rewrite,
+  apply_export_renames_stmts,
+  build_export_rename_plan,
   collect_import_alias_collision_locals,
   collect_import_alias_collision_refs,
+  collect_import_value_renames,
+  export_plan_renames_for,
+  import_value_rename_locals,
   namespace_private_value_stmts,
   rewrite_imported_value_stmt_to_local,
   stmts_have_import_deep
@@ -57,7 +63,12 @@ let string_array_contains_local: (Array[String], String) -> Bool = (items, targe
   found
 }
 
-let append_fs_import_alias_collision_defs: (Array[Stmt], String, Array[Stmt]) -> Unit with { Error, Fs } = (merged, current_path, stmts) -> {
+// #716: collision-def fallback. `excluded_locals` are the import locals the
+// export-rename plan already rewrites — emitting an inline copy for those too
+// would double-bind the local. The copy gets the target file's export renames
+// applied first, so its body's references to renamed sibling exports stay
+// consistent with the merged program.
+let append_fs_import_alias_collision_defs: (Array[Stmt], String, Array[Stmt], ExportRenamePlan, Array[String]) -> Unit with { Error, Fs } = (merged, current_path, stmts, plan, excluded_locals) -> {
   let refs = collect_import_alias_collision_refs(stmts)
   let emitted = Array::slice([
     ""
@@ -66,12 +77,15 @@ let append_fs_import_alias_collision_defs: (Array[Stmt], String, Array[Stmt]) ->
   let mut i = 0
   while i < Array::length(refs) {
     let (raw_path, original, local) = Array::get(refs, i)
-    if !string_array_contains_local(emitted, local) {
+    if !string_array_contains_local(emitted, local) && !string_array_contains_local(excluded_locals, local) {
       let resolved = resolve_import_path(base_dir, raw_path)
       let source = perform Fs::ReadFile(resolved)
       let source_stmts = namespace_private_value_stmts(
         resolved,
-        parse_program(lex(source))
+        apply_export_renames_stmts(
+          parse_program(lex(source)),
+          export_plan_renames_for(plan, resolved)
+        )
       )
       let mut j = 0
       let mut done = false
@@ -94,9 +108,14 @@ let append_fs_import_alias_collision_defs: (Array[Stmt], String, Array[Stmt]) ->
 // `visited` is a `path_set` (#533): this recursion runs once per import
 // EDGE, so a linear `contains_path` scan against a visited list that
 // grows to every module of the program was O(edges × modules). The set
-// is membership-only here — `merged` order comes from the recursion
-// itself, so no ordering constraint is lost.
-let rec collect_merged_stmts_recursive_impl: (String, String, Array[Stmt], Array[Array[String]]) -> Unit with { Error, Fs } = (entry_path, path, merged, visited) -> {
+// is membership-only here — file order comes from the recursion itself
+// (dependencies first), so no ordering constraint is lost.
+//
+// #716: the recursion only PARSES and orders the files; appending happens in
+// a second pass once the whole program is known, because the export-rename
+// plan (ambiguous exported names + re-export facades) needs every file's
+// export surface before any file can be rewritten.
+let rec collect_parsed_sources_recursive: (String, Array[String], Array[Array[Stmt]], Array[Array[String]]) -> Unit with { Error, Fs } = (path, file_paths, file_stmts, visited) -> {
   if path_set_contains(visited, path) {
     ()
   }
@@ -110,33 +129,54 @@ let rec collect_merged_stmts_recursive_impl: (String, String, Array[Stmt], Array
       match Array::get(stmts, i) {
         SImport(raw_path, _) => {
           let resolved = resolve_import_path(base_dir, raw_path)
-          collect_merged_stmts_recursive_impl(entry_path, resolved, merged, visited)
+          collect_parsed_sources_recursive(resolved, file_paths, file_stmts, visited)
         },
         SReExport(raw_path, _) => {
           let resolved = resolve_import_path(base_dir, raw_path)
-          collect_merged_stmts_recursive_impl(entry_path, resolved, merged, visited)
+          collect_parsed_sources_recursive(resolved, file_paths, file_stmts, visited)
         },
         _ => ()
       }
       i = i + 1
     }
-    let namespaced_stmts = if path == entry_path {
-      stmts
-    } else {
-      namespace_private_value_stmts(path, stmts)
-    }
-    if stmts_have_import_deep(stmts) {
-      let skipped_locals = collect_import_alias_collision_locals(stmts)
-      append_fs_import_alias_collision_defs(merged, path, stmts)
-      append_import_alias_rewritten_non_import_stmts_skipping(merged, namespaced_stmts, skipped_locals)
-    } else {
-      append_non_import_stmts_without_alias_rewrite(merged, namespaced_stmts)
-    }
+    Array::push(file_paths, path)
+    Array::push(file_stmts, stmts)
   }
 }
 
-let collect_merged_stmts_recursive: (String, Array[Stmt], Array[Array[String]]) -> Unit with { Error, Fs } = (path, merged, visited) -> {
-  collect_merged_stmts_recursive_impl(path, path, merged, visited)
+let collect_merged_stmts_recursive: (String, Array[Stmt], Array[Array[String]]) -> Unit with { Error, Fs } = (entry_path, merged, visited) -> {
+  let file_paths = Array::slice([
+    ""
+  ], 0, 0)
+  let file_stmts = Array::slice([
+    empty_stmt_array()
+  ], 0, 0)
+  collect_parsed_sources_recursive(entry_path, file_paths, file_stmts, visited)
+  let plan = build_export_rename_plan(file_paths, file_stmts, entry_path)
+  let mut fi = 0
+  while fi < Array::length(file_paths) {
+    let path = Array::get(file_paths, fi)
+    let stmts = Array::get(file_stmts, fi)
+    let export_renamed = if path == entry_path {
+      stmts
+    } else {
+      apply_export_renames_stmts(stmts, export_plan_renames_for(plan, path))
+    }
+    let namespaced_stmts = if path == entry_path {
+      export_renamed
+    } else {
+      namespace_private_value_stmts(path, export_renamed)
+    }
+    if stmts_have_import_deep(stmts) {
+      let import_renames = collect_import_value_renames(plan, path, stmts)
+      let skipped_locals = collect_import_alias_collision_locals(stmts)
+      append_fs_import_alias_collision_defs(merged, path, stmts, plan, import_value_rename_locals(import_renames))
+      append_import_alias_rewritten_non_import_stmts_with_renames(merged, namespaced_stmts, skipped_locals, import_renames)
+    } else {
+      append_non_import_stmts_without_alias_rewrite(merged, namespaced_stmts)
+    }
+    fi = fi + 1
+  }
 }
 
 export let compile_file_wasi_only: (String, String) -> Bytes with { Error, Fs } = (entry_path, entry_name) -> {
