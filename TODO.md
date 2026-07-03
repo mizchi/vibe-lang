@@ -47,7 +47,11 @@ rc-bootstrap fixpoint + shape corpus で常時検証）。
 
 ### 🟡 機能 / 品質
 
-- [ ] **#535** post-cutover branch coverage gate 復帰
+- [x] **#535** post-cutover branch coverage gate 復帰 — `scripts/coverage_selfhost_suite.sh`
+  (allowlist を `vibe test --coverage` で回して fn/branch/case rate を集計、
+  `selfhost_suite.report.json` を出力し ratchet 閾値で gate)。CI の
+  selfhost-only-gate job に組み込み + report artifact。baseline: fn 38.11% /
+  branch 9.57% / case 98.88%(閾値 37/9/97、上げる方向にのみ動かす)
 - [ ] **#538** WASM-GC selfbuild — P4 compile E2E + **P4.5 run E2E + self-compile fixpoint 達成**（gc-compiled compiler がコンパイラ全体を byte 一致で再現）。残: P5 size
 - [x] **#537** WASI P3: effect → WIT mapping + `vibe serve` — `vibe compile --wit` / `vibe serve` (launcher + adapter VIBE_EMIT_WIT / VIBE_SERVE_COMPONENT)、packed-string trampoline で selfhost componentize、wac plug + wasmtime serve。契約: docs/effect-wit-mapping.md、gate 40i/40j + test_wasi_http_p3_full_gate.sh
 - [ ] **#683** wasm-gc backend の実行検証ハーネス

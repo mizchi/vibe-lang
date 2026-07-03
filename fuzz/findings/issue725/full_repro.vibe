@@ -1,0 +1,20 @@
+import ../../vibe/compiler/syntax/lexer.vibe { lex }
+import ../../vibe/compiler/syntax/parser.vibe { parse_program }
+import ../../vibe/compiler/syntax/import_alias_rewrite.vibe {
+  build_export_rename_plan, export_plan_rename_count, export_plan_renames_for
+}
+
+export let main: () -> Int with { Error } = () -> {
+  let a_stmts = parse_program(lex("export let eq: (Float, Float) -> Bool = (x, y) -> { true }\nexport let uniq_a: () -> Int = () -> { 1 }"))
+  let b_stmts = parse_program(lex("export let eq = (a: Int, b: Int) -> Bool { a == b }"))
+  let f_stmts = parse_program(lex("export ./a.vibe { eq }"))
+  let e_stmts = parse_program(lex("import ./a.vibe { eq }\nimport ./f.vibe { eq as feq }\nlet r = eq(1.0, 2.0)"))
+  let plan = build_export_rename_plan(["/p/a.vibe", "/p/b.vibe", "/p/f.vibe", "/p/e.vibe"], [a_stmts, b_stmts, f_stmts, e_stmts], "/p/e.vibe")
+  let n = export_plan_rename_count(plan)
+  let renames_a = export_plan_renames_for(plan, "/p/a.vibe")
+  let (from_a, to_a) = renames_a[0]
+  let c1 = if from_a == "eq" { 1 } else { 0 }
+  let c2 = if String::starts_with(to_a, "eq_exp_") { 10 } else { 0 }
+  let c3 = if String::ends_with(to_a, "_p_a_vibe") { 100 } else { 0 }
+  n * 1000 + c1 + c2 + c3
+}
