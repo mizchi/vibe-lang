@@ -11972,7 +11972,7 @@ export struct CompileCtxGc {
   ref_local_indices: Array[Int];
   refcell_type_idx: Int;
   closure_type_base: Int;
-  ctor_table: CtorTable
+  gc_ctor_table: CtorTable
 }
 export let int_log_reset_above: (CompileCtx, Int) -> Unit = (ctx, floor) -> {
   let arr = ctx.int_local_slots
@@ -36318,10 +36318,10 @@ export let gc_gen_str_from_char_code_body: () -> Bytes = () -> {
 let compile_call_gc: (Bytes, Expr, Array[Expr], Array[String], Int, CompileCtxGc, Int, (Bytes, Expr, Array[String], Int, Int) -> Int with { Error }) -> Int with { Error } = (buf, callee, args, local_names, next_local, ctx, ld, ce) -> {
   match callee {
     EIdent(fname, _) => {
-      let ctor_lookup_idx = lookup_ctor(ctx.ctor_table.names, fname, 0)
+      let ctor_lookup_idx = lookup_ctor(ctx.gc_ctor_table.names, fname, 0)
       if ctor_lookup_idx >= 0 {
-        let tag = Array::get(ctx.ctor_table.tags, ctor_lookup_idx)
-        let fc = Array::get(ctx.ctor_table.field_counts, ctor_lookup_idx)
+        let tag = Array::get(ctx.gc_ctor_table.tags, ctor_lookup_idx)
+        let fc = Array::get(ctx.gc_ctor_table.field_counts, ctor_lookup_idx)
         let obj_size = 8 + fc * 8
         let ptr_local = next_local
         Array::push(local_names, "__ctor_ptr")
@@ -36345,17 +36345,17 @@ let compile_call_gc: (Bytes, Expr, Array[Expr], Array[String], Int, CompileCtxGc
           match Array::get(args, 0) {
             ERecord(rec_fields) => {
               let rec find_sn: (Int) -> Int = (sni) -> {
-                if sni >= Array::length(ctx.ctor_table.struct_names) {
+                if sni >= Array::length(ctx.gc_ctor_table.struct_names) {
                   -1
                 }
-                else if Array::get(ctx.ctor_table.struct_names, sni) == fname {
+                else if Array::get(ctx.gc_ctor_table.struct_names, sni) == fname {
                   sni
                 }
                 else find_sn(sni + 1)
               }
               let sn_idx = find_sn(0)
               if sn_idx >= 0 {
-                let def_fnames = Array::get(ctx.ctor_table.struct_field_names, sn_idx)
+                let def_fnames = Array::get(ctx.gc_ctor_table.struct_field_names, sn_idx)
                 let ordered = Array::slice([
                   EUnit
                 ], 0, 0)
@@ -36526,8 +36526,8 @@ let compile_call_gc: (Bytes, Expr, Array[Expr], Array[String], Int, CompileCtxGc
         } else {
           let mut si_search = 0
           let mut found = -1
-          while si_search < Array::length(ctx.ctor_table.struct_names) {
-            let fnames = Array::get(ctx.ctor_table.struct_field_names, si_search)
+          while si_search < Array::length(ctx.gc_ctor_table.struct_names) {
+            let fnames = Array::get(ctx.gc_ctor_table.struct_field_names, si_search)
             let mut fi = 0
             while fi < Array::length(fnames) {
               if Array::get(fnames, fi) == field {
@@ -36538,7 +36538,7 @@ let compile_call_gc: (Bytes, Expr, Array[Expr], Array[String], Int, CompileCtxGc
               }
             }
             if found >= 0 {
-              si_search = Array::length(ctx.ctor_table.struct_names)
+              si_search = Array::length(ctx.gc_ctor_table.struct_names)
             } else {
               si_search = si_search + 1
             }
@@ -37136,6 +37136,10 @@ let compile_call_gc: (Bytes, Expr, Array[Expr], Array[String], Int, CompileCtxGc
           }
           nl
         } else {
+          let c0 = String::char_code_at(fname, 0)
+          if c0 >= 65 && c0 <= 90 {
+            throw("GC codegen: unknown constructor or function: \{fname}")
+          }
           let local_idx2 = resolve_local(local_names, fname, "gc_call")
           let num_args = Array::length(args)
           let fn_val_local = next_local
@@ -37188,7 +37192,7 @@ export let collect_lambda_captures_gc: (Array[(String, Option[TypeExpr])], Expr,
     ""
   ], 0, 0)
   let func_table = ctx.func_table
-  let ctor_table = ctx.ctor_table
+  let ctor_table = ctx.gc_ctor_table
   let mut pi = 0
   while pi < Array::length(params) {
     let (pname, _) = Array::get(params, pi)
@@ -37252,7 +37256,7 @@ let make_lambda_ctx_gc: (CompileCtxGc, Array[String], Array[Int]) -> CompileCtxG
     num_user_funcs: ctx.num_user_funcs, func_offset: ctx.func_offset,
     ref_cell_names: ref_cell_names, ref_local_indices: ref_local_indices,
     refcell_type_idx: ctx.refcell_type_idx, closure_type_base: ctx.closure_type_base,
-    ctor_table: ctx.ctor_table
+    gc_ctor_table: ctx.gc_ctor_table
   }
 }
 export {
@@ -37336,7 +37340,7 @@ let field_index_in_gc: (Array[String], String) -> Int = (fnames, field) -> {
   found
 }
 let struct_field_index_gc: (CompileCtxGc, String, String) -> Int with { Error } = (ctx, sname, field) -> {
-  let names = ctx.ctor_table.struct_names
+  let names = ctx.gc_ctor_table.struct_names
   let mut si = 0
   let mut sidx = -1
   while si < Array::length(names) {
@@ -37348,7 +37352,7 @@ let struct_field_index_gc: (CompileCtxGc, String, String) -> Int with { Error } 
     }
   }
   if sidx >= 0 {
-    let found = field_index_in_gc(Array::get(ctx.ctor_table.struct_field_names, sidx), field)
+    let found = field_index_in_gc(Array::get(ctx.gc_ctor_table.struct_field_names, sidx), field)
     if found < 0 {
       throw(String::concat(String::concat(String::concat("unknown field `", field), "` in struct "), sname))
     } else {
@@ -37358,7 +37362,7 @@ let struct_field_index_gc: (CompileCtxGc, String, String) -> Int with { Error } 
     let mut gsi = 0
     let mut gfound = -1
     while gsi < Array::length(names) {
-      let f = field_index_in_gc(Array::get(ctx.ctor_table.struct_field_names, gsi), field)
+      let f = field_index_in_gc(Array::get(ctx.gc_ctor_table.struct_field_names, gsi), field)
       if f >= 0 {
         gfound = f
         gsi = Array::length(names)
@@ -37405,9 +37409,9 @@ let compile_match_gc: (Bytes, Expr, Array[(Pat, Expr)], Array[String], Int, Comp
         0
       },
       PCtor(cname_cond, _) => {
-        let ctor_ci = lookup_ctor(ctx.ctor_table.names, cname_cond, 0)
+        let ctor_ci = lookup_ctor(ctx.gc_ctor_table.names, cname_cond, 0)
         let expected_tag = if ctor_ci >= 0 {
-          Array::get(ctx.ctor_table.tags, ctor_ci)
+          Array::get(ctx.gc_ctor_table.tags, ctor_ci)
         } else {
           -1
         }
@@ -37681,9 +37685,9 @@ let rec compile_expr_gc: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) ->
         }
         next_local
       } else {
-        let ctor_idx = lookup_ctor(ctx.ctor_table.names, name, 0)
+        let ctor_idx = lookup_ctor(ctx.gc_ctor_table.names, name, 0)
         if ctor_idx >= 0 {
-          let tag_c = Array::get(ctx.ctor_table.tags, ctor_idx)
+          let tag_c = Array::get(ctx.gc_ctor_table.tags, ctor_idx)
           let ptr_l = next_local
           Array::push(local_names, "__ctor_ptr")
           emit_global_get(buf, 0)
@@ -37838,7 +37842,7 @@ let rec compile_expr_gc: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) ->
             Array::push(param_names_bp, pn)
             bpi = bpi + 1
           }
-          let caps = collect_free_vars(fn_body, param_names_bp, Array::concat(ctx.func_table.names, ctx.ctor_table.names))
+          let caps = collect_free_vars(fn_body, param_names_bp, Array::concat(ctx.func_table.names, ctx.gc_ctor_table.names))
           let mut self_cap_idx = -1
           let mut bci = 0
           while bci < Array::length(caps) {
@@ -38084,11 +38088,11 @@ let rec compile_expr_gc: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) ->
     compile_lambda_gc(buf, params, fn_body, local_names, next_local, ctx, ld, compile_expr_gc),
     EDot(obj, field, _) => {
       let rec find_struct_field_idx: (Int) -> Int = (si2) -> {
-        if si2 >= Array::length(ctx.ctor_table.struct_names) {
+        if si2 >= Array::length(ctx.gc_ctor_table.struct_names) {
           -1
         }
         else {
-          let fnames = Array::get(ctx.ctor_table.struct_field_names, si2)
+          let fnames = Array::get(ctx.gc_ctor_table.struct_field_names, si2)
           let rec find_f: (Int) -> Int = (fi) -> {
             if fi >= Array::length(fnames) {
               -1
@@ -38670,7 +38674,7 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
             num_user_funcs: num_user_funcs, func_offset: func_offset,
             ref_cell_names: ref_cell_names_f, ref_local_indices: ref_local_indices_f,
             refcell_type_idx: refcell_type_idx, closure_type_base: closure_type_base,
-            ctor_table: ct
+            gc_ctor_table: ct
           }
           let final_nl = compile_expr_gc(body_buf, body, local_names, param_count, func_ctx, -1)
           Array::push(bodies, body_buf)
@@ -39218,7 +39222,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "0d6250ad2fbaffb2"
+  "423198ed5f67aa63"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647

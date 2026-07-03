@@ -57,10 +57,10 @@ import ./backend_builtins_string_extra.vibe {
 let compile_call_gc: (Bytes, Expr, Array[Expr], Array[String], Int, CompileCtxGc, Int, (Bytes, Expr, Array[String], Int, Int) -> Int with { Error }) -> Int with { Error } = (buf, callee, args, local_names, next_local, ctx, ld, ce) -> {
   match callee {
     EIdent(fname, _) => {
-      let ctor_lookup_idx = lookup_ctor(ctx.ctor_table.names, fname, 0)
+      let ctor_lookup_idx = lookup_ctor(ctx.gc_ctor_table.names, fname, 0)
       if ctor_lookup_idx >= 0 {
-        let tag = Array::get(ctx.ctor_table.tags, ctor_lookup_idx)
-        let fc = Array::get(ctx.ctor_table.field_counts, ctor_lookup_idx)
+        let tag = Array::get(ctx.gc_ctor_table.tags, ctor_lookup_idx)
+        let fc = Array::get(ctx.gc_ctor_table.field_counts, ctor_lookup_idx)
         let obj_size = 8 + fc * 8
         let ptr_local = next_local
         Array::push(local_names, "__ctor_ptr")
@@ -87,17 +87,17 @@ let compile_call_gc: (Bytes, Expr, Array[Expr], Array[String], Int, CompileCtxGc
           match Array::get(args, 0) {
             ERecord(rec_fields) => {
               let rec find_sn: (Int) -> Int = (sni) -> {
-                if sni >= Array::length(ctx.ctor_table.struct_names) {
+                if sni >= Array::length(ctx.gc_ctor_table.struct_names) {
                   -1
                 }
-                else if Array::get(ctx.ctor_table.struct_names, sni) == fname {
+                else if Array::get(ctx.gc_ctor_table.struct_names, sni) == fname {
                   sni
                 }
                 else find_sn(sni + 1)
               }
               let sn_idx = find_sn(0)
               if sn_idx >= 0 {
-                let def_fnames = Array::get(ctx.ctor_table.struct_field_names, sn_idx)
+                let def_fnames = Array::get(ctx.gc_ctor_table.struct_field_names, sn_idx)
                 let ordered = Array::slice([
                   EUnit
                 ], 0, 0)
@@ -268,8 +268,8 @@ let compile_call_gc: (Bytes, Expr, Array[Expr], Array[String], Int, CompileCtxGc
         } else {
           let mut si_search = 0
           let mut found = -1
-          while si_search < Array::length(ctx.ctor_table.struct_names) {
-            let fnames = Array::get(ctx.ctor_table.struct_field_names, si_search)
+          while si_search < Array::length(ctx.gc_ctor_table.struct_names) {
+            let fnames = Array::get(ctx.gc_ctor_table.struct_field_names, si_search)
             let mut fi = 0
             while fi < Array::length(fnames) {
               if Array::get(fnames, fi) == field {
@@ -280,7 +280,7 @@ let compile_call_gc: (Bytes, Expr, Array[Expr], Array[String], Int, CompileCtxGc
               }
             }
             if found >= 0 {
-              si_search = Array::length(ctx.ctor_table.struct_names)
+              si_search = Array::length(ctx.gc_ctor_table.struct_names)
             } else {
               si_search = si_search + 1
             }
@@ -902,6 +902,13 @@ let compile_call_gc: (Bytes, Expr, Array[Expr], Array[String], Int, CompileCtxGc
           }
           nl
         } else {
+          // An uppercase-initial callee that missed the ctor table is an
+          // unknown constructor, not a local closure -- fail with a clear
+          // message instead of resolve_local's "undefined variable".
+          let c0 = String::char_code_at(fname, 0)
+          if c0 >= 65 && c0 <= 90 {
+            throw("GC codegen: unknown constructor or function: \{fname}")
+          }
           let local_idx2 = resolve_local(local_names, fname, "gc_call")
           let num_args = Array::length(args)
           let fn_val_local = next_local

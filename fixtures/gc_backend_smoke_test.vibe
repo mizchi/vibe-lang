@@ -1,10 +1,17 @@
 // wasm-gc backend smoke fixture (gate 40h). Covers the currently supported
 // gc-lane subset: top-level annotated functions, an ANNOTATED LOCAL LAMBDA
 // (the #705 distribute_local_fn_ann shape -- must behave identically to the
-// linear backend), literal/string match arms, and while accumulation.
-// KNOWN GC-LANE GAPS (pre-existing, not covered here): user-defined enums
-// (ctor table is hardcoded to Option), constructor calls, nested patterns,
-// and closures capturing `let mut` (ref-cell store miscompiles).
+// linear backend), literal/string match arms, while accumulation, and (#538)
+// user-defined enums: constructor calls, ctor pattern match with payload
+// binds, and Option Some/None -- these were dead until the
+// CompileCtxGc.gc_ctor_table field rename (the ctor table was constructed
+// correctly but every read hit the wrong struct slot via the name-first-match
+// field resolution bug; see the field-collision issue / #722).
+// KNOWN GC-LANE GAPS (pre-existing, not covered here): NESTED ctor patterns
+// (payload binds inside a ctor sub-pattern: "undefined variable"), closures
+// capturing `let mut` (ref-cell store emits invalid wasm), and the
+// unimplemented-builtin set (String::split/join/contains/... StringBuilder,
+// FixedArray, print) -- see scripts/test_gc_selfbuild.sh for the live list.
 
 let is_pos: (Int) -> Bool = (n) -> {
   n > 0
@@ -45,6 +52,33 @@ let grow_sum: (Int) -> Int = (n) -> {
   acc
 }
 
+// #538: user enums on the gc lane -- ctor calls, payload binds, multi-variant
+// dispatch, and builtin Option. Locks the gc_ctor_table fix in place.
+enum Shape {
+  Dot;
+  Circle(Int);
+  Rect(Int, Int)
+}
+
+let area: (Shape) -> Int = (s) -> {
+  match s {
+    Dot => 1,
+    Circle(r) => 3 * r * r,
+    Rect(w, h) => w * h
+  }
+}
+
+let unwrap_or: (Option[Int], Int) -> Int = (o, d) -> {
+  match o {
+    Some(v) => v,
+    None => d
+  }
+}
+
+let enum_sum: () -> Int = () -> {
+  area(Dot) + area(Circle(3)) + area(Rect(4, 5)) + unwrap_or(Some(52), 0) + unwrap_or(None, 6)
+}
+
 export let main = () -> Int {
   let check: (Int) -> Int = (sp) -> {
     let a = if is_pos(sp) {
@@ -65,5 +99,5 @@ export let main = () -> Int {
     acc = acc + pick(i, "a")
     i = i + 1
   }
-  acc + check(5) + check(0 - 3) + grow_sum(30000)
+  acc + check(5) + check(0 - 3) + grow_sum(30000) + enum_sum()
 }

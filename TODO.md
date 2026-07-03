@@ -511,10 +511,22 @@ StringBuilder/ArrayBuilder) に置換する。
   - [x] **B12: Module-level globals** — Int/Bool 定数は immutable global、Call/String/Array 等は mutable EqRef global + run body で global.set
   - [x] **B13: Polymorphic Option** — builtin Some/None enum 登録、polymorphic Some with EqRef boxing、nested Ctor pattern bind
   - [x] **B14: HOF parameters** — Type::Func パラメータの closure_call_types 登録、Named 型 alias の generic closure call fallback
-  - [ ] **P4: selfhost compile E2E** — 260/263 (99%) compile OK
-    - 残り 3: simd_patterns (Bytes::emit_end), gc_only/index (循環参照), selfhost_cli_gc_entry (上流依存)
-    - 全て型チェッカー/bundler の上流問題
-  - [ ] **P5: DCE + wasm-opt** — 未使用コード除去と最適化で ~350KB 目標
+  - [ ] **P4: selfhost compile E2E** — #538 で再分類 (2026-07)。旧 260/263 と「残り 3 cases」は
+    退役 MoonBit host gc backend の集計で、selfhost port には対応しない。現状の frontier は
+    `pkf run test-gc-selfbuild` (scripts/test_gc_selfbuild.sh) が計測する:
+    - [x] user enum / ctor call / ctor pattern / Option / struct literal+field / Bytes 変換 —
+      `CompileCtxGc.gc_ctor_table` rename で解禁 (#538。旧「ctor table hardcodes Option」は誤診:
+      フィールド名 first-match 解決バグで table が読めていなかった。根本原因は #722 参照)
+    - [ ] 未実装 builtin の移植: String::split/join/contains/starts_with/ends_with/index_of/
+      last_index_of/trim, StringBuilder, FixedArray, print 系 (bundle の現 frontier = String::split)
+    - [ ] nested ctor pattern の payload bind ("undefined variable")
+    - [ ] `let mut` capture closure (ref-cell store が invalid wasm)
+    - [ ] Map builtin の誤結果 (gc=4 vs linear=42 — silent miscompile)
+    - [ ] effect throw/handle の gc lane 実行
+  - [ ] **P5: DCE + wasm-opt** — 未使用コード除去と最適化で ~350KB 目標。P4 (bundle が gc で
+    compile 可能) がブロッカー。設計は確定済み: `core/dce.vibe` を gc path に適用 +
+    `vibe/wasm/wasm_opt` (dce/minify_converge) を **post-pass** で適用
+    (compiler への直接結合は +700KB & seed 不能 — docs/wasm-opt-dogfood.md)
 - [ ] `vibe/compiler` の論理分割
   - [x] `loader/index.vibe` の manifest traversal を shared helper に寄せ、source list/source groups の二重 BFS を削減する
 
