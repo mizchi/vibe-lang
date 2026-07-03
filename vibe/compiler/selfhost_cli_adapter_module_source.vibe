@@ -20556,6 +20556,197 @@ export let rec collect_strings_expr: (Expr, Array[String]) -> Int = (expr, out) 
     _ => 0
   }
 }
+export let rec expr_contains_exceptions: (Expr) -> Bool = (expr) -> {
+  match expr {
+    EThrow(_) => true,
+    EHandle(_, _) => true,
+    EBinOp(_, lhs, rhs) => expr_contains_exceptions(lhs) || expr_contains_exceptions(rhs),
+    EUnaryOp(_, operand) => expr_contains_exceptions(operand),
+    EIf(cond, then_e, else_e) =>
+    expr_contains_exceptions(cond) || expr_contains_exceptions(then_e) || expr_contains_exceptions(else_e),
+    ECall(callee, args, _) => {
+      let mut found = match callee {
+        EIdent(cname, _) => cname == "resume",
+        _ => expr_contains_exceptions(callee)
+      }
+      let mut i = 0
+      while i < Array::length(args) {
+        if expr_contains_exceptions(Array::get(args, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    ELet(_, value, body) => expr_contains_exceptions(value) || expr_contains_exceptions(body),
+    ELetRec(_, value, body) => expr_contains_exceptions(value) || expr_contains_exceptions(body),
+    ELetMut(_, value, body) => expr_contains_exceptions(value) || expr_contains_exceptions(body),
+    EAssign(_, value, body) => expr_contains_exceptions(value) || expr_contains_exceptions(body),
+    EAssignOp(_, _, value, body) => expr_contains_exceptions(value) || expr_contains_exceptions(body),
+    ESeq(first, second) => expr_contains_exceptions(first) || expr_contains_exceptions(second),
+    EWhile(cond, body) => expr_contains_exceptions(cond) || expr_contains_exceptions(body),
+    EForIn(_, _, iter_e, body) => expr_contains_exceptions(iter_e) || expr_contains_exceptions(body),
+    ELoop(params, body) => {
+      let mut i = 0
+      let mut found = expr_contains_exceptions(body)
+      while i < Array::length(params) {
+        let (_, iv) = Array::get(params, i)
+        if expr_contains_exceptions(iv) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EMatch(scrut, arms) => {
+      let mut i = 0
+      let mut found = expr_contains_exceptions(scrut)
+      while i < Array::length(arms) {
+        let (_, arm_body) = Array::get(arms, i)
+        if expr_contains_exceptions(arm_body) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EFn(_, _, _, _, _, body) => expr_contains_exceptions(body),
+    ETuple(elems) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(elems) {
+        if expr_contains_exceptions(Array::get(elems, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EArray(elems) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(elems) {
+        if expr_contains_exceptions(Array::get(elems, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    ERecord(fields) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fields) {
+        let (_, fval) = Array::get(fields, i)
+        if expr_contains_exceptions(fval) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EMap(fields) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fields) {
+        let (_, fval) = Array::get(fields, i)
+        if expr_contains_exceptions(fval) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EDot(obj, _, _) => expr_contains_exceptions(obj),
+    ELabeledArg(_, _, inner) => expr_contains_exceptions(inner),
+    EReturn(inner) => expr_contains_exceptions(inner),
+    ESpread(inner) => expr_contains_exceptions(inner),
+    EBreak(opt) => match opt {
+      Some(inner) => expr_contains_exceptions(inner),
+      None => false
+    },
+    EContinue(args) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(args) {
+        if expr_contains_exceptions(Array::get(args, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EInt(_) => false,
+    EFloat(_) => false,
+    EString(_) => false,
+    EBool(_) => false,
+    EIdent(_, _) => false,
+    EStringInterp(_) => false,
+    EUnit => false
+  }
+}
+export let rec stmts_contain_exceptions: (Array[Stmt]) -> Bool = (stmts) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, expr) => if expr_contains_exceptions(expr) {
+        found = true
+      } else {
+        ()
+      },
+      SLetMut(_, _, expr) => if expr_contains_exceptions(expr) {
+        found = true
+      } else {
+        ()
+      },
+      SLetPat(_, expr) => if expr_contains_exceptions(expr) {
+        found = true
+      } else {
+        ()
+      },
+      SExpr(expr) => if expr_contains_exceptions(expr) {
+        found = true
+      } else {
+        ()
+      },
+      STest(_, expr) => if expr_contains_exceptions(expr) {
+        found = true
+      } else {
+        ()
+      },
+      SBench(_, expr) => if expr_contains_exceptions(expr) {
+        found = true
+      } else {
+        ()
+      },
+      SModule(_, _, inner) => if stmts_contain_exceptions(inner) {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
 export let collect_strings_stmts: (Array[Stmt]) -> Array[String] = (stmts) -> {
   let out = common_analysis_fresh_string_array()
   let mut i = 0
@@ -34150,16 +34341,21 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   } else {
     0
   })))
-  let tag_content = bytebuf_new()
-  let num_tags = Array::length(effect_names_list) + 4
-  bytebuf_push_vec_header(tag_content, num_tags)
-  let mut tag_emit_i = 0
-  while tag_emit_i < num_tags {
-    bytebuf_push(tag_content, 0)
-    leb128_encode_u32(tag_content, 1)
-    tag_emit_i = tag_emit_i + 1
+  let uses_exceptions = Array::length(effect_names_list) > 0 || stmts_contain_exceptions(stmts)
+  if uses_exceptions {
+    let tag_content = bytebuf_new()
+    let num_tags = Array::length(effect_names_list) + 4
+    bytebuf_push_vec_header(tag_content, num_tags)
+    let mut tag_emit_i = 0
+    while tag_emit_i < num_tags {
+      bytebuf_push(tag_content, 0)
+      leb128_encode_u32(tag_content, 1)
+      tag_emit_i = tag_emit_i + 1
+    }
+    bytebuf_push_section(out, 13, tag_content)
+  } else {
+    ()
   }
-  bytebuf_push_section(out, 13, tag_content)
   let global_content = bytebuf_new()
   if enable_rc {
     bytebuf_push_vec_header(global_content, 7)
@@ -34245,7 +34441,11 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   (if library_mode {
     0
   } else {
-    1 + 1
+    1 + (if uses_exceptions {
+      1
+    } else {
+      0
+    })
   })
   bytebuf_push_vec_header(export_content, export_count)
   let mut efi = 0
@@ -34262,9 +34462,13 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     emit_name(export_content, "__heap_ptr")
     bytebuf_push(export_content, 3)
     leb128_encode_u32(export_content, 0)
-    emit_name(export_content, "error")
-    bytebuf_push(export_content, 4)
-    leb128_encode_u32(export_content, 0)
+    if uses_exceptions {
+      emit_name(export_content, "error")
+      bytebuf_push(export_content, 4)
+      leb128_encode_u32(export_content, 0)
+    } else {
+      ()
+    }
   }
   bytebuf_push_section(out, 7, export_content)
   if total_table_entries > 0 {
@@ -38287,7 +38491,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "bab1fe10da04b460"
+  "9706cb6f901dd9f8"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647

@@ -21,7 +21,7 @@ import .. / builtin_bodies {
 }
 
 import .. / common_analysis {
-  collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, is_mut_captured_in, scope_tail_proj_root
+  collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, is_mut_captured_in, scope_tail_proj_root, stmts_contain_exceptions
 }
 
 import .. / common_base {
@@ -2479,16 +2479,26 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   } else {
     0
   })))
-  let tag_content = bytebuf_new()
-  let num_tags = Array::length(effect_names_list) + 4
-  bytebuf_push_vec_header(tag_content, num_tags)
-  let mut tag_emit_i = 0
-  while tag_emit_i < num_tags {
-    bytebuf_push(tag_content, 0)
-    leb128_encode_u32(tag_content, 1)
-    tag_emit_i = tag_emit_i + 1
+  // #721: emit the tag section only when something can reference a tag --
+  // EThrow (`throw 2`), EHandle (try_table over tags 0-3), or a declared
+  // effect (per-effect tags at index 4+). Pure-compute modules then carry no
+  // exceptions machinery at all, which keeps V8 off its slower exnref module
+  // path (~35% wall on call-heavy code; wasmtime is indifferent).
+  let uses_exceptions = Array::length(effect_names_list) > 0 || stmts_contain_exceptions(stmts)
+  if uses_exceptions {
+    let tag_content = bytebuf_new()
+    let num_tags = Array::length(effect_names_list) + 4
+    bytebuf_push_vec_header(tag_content, num_tags)
+    let mut tag_emit_i = 0
+    while tag_emit_i < num_tags {
+      bytebuf_push(tag_content, 0)
+      leb128_encode_u32(tag_content, 1)
+      tag_emit_i = tag_emit_i + 1
+    }
+    bytebuf_push_section(out, 13, tag_content)
+  } else {
+    ()
   }
-  bytebuf_push_section(out, 13, tag_content)
   let global_content = bytebuf_new()
   if enable_rc {
     bytebuf_push_vec_header(global_content, 7)
@@ -2577,11 +2587,16 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     bxi = bxi + 1
   }
   let export_content = bytebuf_new()
+  // #721: the "error" tag export exists only when the tag section does.
   let export_count = Array::length(all_export_names) + 1 +
   (if library_mode {
     0
   } else {
-    1 + 1
+    1 + (if uses_exceptions {
+      1
+    } else {
+      0
+    })
   })
   bytebuf_push_vec_header(export_content, export_count)
   let mut efi = 0
@@ -2598,9 +2613,13 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     emit_name(export_content, "__heap_ptr")
     bytebuf_push(export_content, 3)
     leb128_encode_u32(export_content, 0)
-    emit_name(export_content, "error")
-    bytebuf_push(export_content, 4)
-    leb128_encode_u32(export_content, 0)
+    if uses_exceptions {
+      emit_name(export_content, "error")
+      bytebuf_push(export_content, 4)
+      leb128_encode_u32(export_content, 0)
+    } else {
+      ()
+    }
   }
   bytebuf_push_section(out, 7, export_content)
   if total_table_entries > 0 {
