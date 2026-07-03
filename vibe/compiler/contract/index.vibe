@@ -1,0 +1,236 @@
+//# Imports
+
+import .. / core {
+  Expr, Stmt, TypeExpr
+}
+
+import ../syntax/token.vibe {
+  Token
+}
+
+import ../syntax/parser_base.vibe {
+  peek, tk_name
+}
+
+import ../syntax/parser_expr.vibe {
+  parse_fn_signature
+}
+
+import ../syntax/parser.vibe {
+  parse_stmt
+}
+
+import ../syntax/printer.vibe {
+  print_type_expr
+}
+
+//# Functions
+
+// ADR-0063 Phase C (#729): contract conformance engine for `.vibei` files.
+//
+// A contract file's top level declares the package's public API. This module
+// parses bodyless `fn` declarations (the contract grammar) and checks that a
+// package's implementation statements provide exactly the declared surface:
+// every declared fn exists with a matching signature (param types + labels,
+// generics, return type, effect row), and no exported def is undeclared.
+//
+// This increment is the pure engine + its grammar; wiring into import
+// resolution / the merge layer (directory imports resolving through
+// index.vibei, boundary rules) is the next #729 stage.
+
+// Canonical signature fingerprint: `[T: Eq](Int, x~: Int) -> Ret with { E }`.
+// Labeled params keep their name (the label is ABI); positional params are
+// types only. Built from the same shapes both the contract declaration and
+// the implementation's EFn carry, so string equality is signature equality.
+let fn_sig_text: (Array[String], Array[(String, Array[String])], Array[(String, Option[TypeExpr])], TypeExpr, Option[String]) -> Option[String] = (tps, tbs, params, ret_ty, eff_opt) -> {
+  let mut missing = false
+  let parts = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(params) {
+    let (pname, pty_opt) = Array::get(params, i)
+    match pty_opt {
+      Some(pty) => {
+        let tystr = print_type_expr(pty)
+        let entry = if String::ends_with(pname, "~") {
+          "\{pname}: \{tystr}"
+        } else tystr
+        Array::push(parts, entry)
+      },
+      None => { missing = true }
+    }
+    i = i + 1
+  }
+  if missing {
+    None
+  } else {
+    let gen = if Array::length(tps) == 0 {
+      ""
+    } else {
+      let entries = Array::slice([
+        ""
+      ], 0, 0)
+      let mut gi = 0
+      while gi < Array::length(tps) {
+        let tp = Array::get(tps, gi)
+        let mut bound = ""
+        let mut bi = 0
+        while bi < Array::length(tbs) {
+          let (bname, bnds) = Array::get(tbs, bi)
+          if bname == tp && Array::length(bnds) > 0 {
+            bound = String::join(bnds, " + ")
+          } else ()
+          bi = bi + 1
+        }
+        let entry = if String::length(bound) == 0 {
+          tp
+        } else "\{tp}: \{bound}"
+        Array::push(entries, entry)
+        gi = gi + 1
+      }
+      "[\{String::join(entries, ", ")}]"
+    }
+    let eff = match eff_opt {
+      Some(e) => " with { \{e} }",
+      None => ""
+    }
+    Some("\{gen}(\{String::join(parts, ", ")}) -> \{print_type_expr(ret_ty)}\{eff}")
+  }
+}
+
+// Parse a contract source's top level. Bare `fn` heads become declarations
+// (name, canonical signature); a declaration followed by `{` is an error —
+// contract files carry no bodies. Everything else (imports, type defs,
+// re-exports) parses as ordinary statements and is returned alongside.
+export let parse_contract_program: (Array[Token]) -> (Array[(String, String)], Array[Stmt]) with { Error } = (tokens) -> {
+  let decls = Array::slice([
+    ("", "")
+  ], 0, 0)
+  let stmts = Array::slice([
+    SExport(Array::slice([
+      ""
+    ], 0, 0))
+  ], 0, 0)
+  let mut pos = 0
+  let mut done = false
+  while !done {
+    match peek(tokens, pos) {
+      TEof => { done = true },
+      TIdent(head) => if head == "fn" {
+        let (dhead, dsig, next) = parse_fn_signature(tokens, pos + 1)
+        let (name, tps, tbs) = dhead
+        let (params, ret_ty, eff_opt) = dsig
+        match peek(tokens, next) {
+          TLBrace => throw("contract fn declaration '\{name}' must not have a body (#729)"),
+          _ => ()
+        }
+        match fn_sig_text(tps, tbs, params, ret_ty, eff_opt) {
+          Some(sig) => Array::push(decls, (name, sig)),
+          None => throw("contract fn declaration '\{name}' requires full annotations")
+        }
+        pos = next
+      } else {
+        let (stmt, next) = parse_stmt(tokens, [], pos)
+        Array::push(stmts, stmt)
+        pos = next
+      },
+      _ => {
+        let (stmt, next) = parse_stmt(tokens, [], pos)
+        Array::push(stmts, stmt)
+        pos = next
+      }
+    }
+  }
+  (decls, stmts)
+}
+
+// Collect (name, Some(sig) | None, exported) for every top-level let whose
+// value is a function. A None signature means the def lacks the full
+// annotations needed to compare against a contract (e.g. an unannotated
+// lambda) — reported as a conformance error if the name is declared.
+export let collect_impl_fn_defs: (Array[Stmt]) -> Array[(String, Option[String], Bool)] = (stmts) -> {
+  let out = Array::slice([
+    ("", Some(""), false)
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exported, _, name, _, val) => match val {
+        EFn(tps, tbs, params, ret_opt, eff_opt, _) => {
+          let sig = match ret_opt {
+            Some(ret_ty) => fn_sig_text(tps, tbs, params, ret_ty, eff_opt),
+            None => None
+          }
+          Array::push(out, (name, sig, exported))
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+// Check that `impl_stmts` provide exactly the contract surface. Returns a
+// list of human-readable conformance errors; empty = conformant.
+export let check_contract: (Array[(String, String)], Array[Stmt]) -> Array[String] = (decls, impl_stmts) -> {
+  let errors = Array::slice([
+    ""
+  ], 0, 0)
+  let defs = collect_impl_fn_defs(impl_stmts)
+  let mut di = 0
+  while di < Array::length(decls) {
+    let (dname, dsig) = Array::get(decls, di)
+    let mut found = false
+    let mut fi = 0
+    while fi < Array::length(defs) {
+      let (fname, fsig_opt, _fexported) = Array::get(defs, fi)
+      if fname == dname {
+        found = true
+        match fsig_opt {
+          Some(fsig) => if fsig == dsig {
+            ()
+          } else {
+            Array::push(errors, "signature mismatch for '\{dname}': contract \{dsig} but implementation \{fsig}")
+          },
+          None => Array::push(errors, "implementation of '\{dname}' lacks the full annotations required by the contract")
+        }
+      } else ()
+      fi = fi + 1
+    }
+    if found {
+      ()
+    } else {
+      Array::push(errors, "contract declaration '\{dname}' has no implementation")
+    }
+    di = di + 1
+  }
+  let mut ei = 0
+  while ei < Array::length(defs) {
+    let (fname, _fsig_opt, fexported) = Array::get(defs, ei)
+    if fexported {
+      let mut declared = false
+      let mut ci = 0
+      while ci < Array::length(decls) {
+        let (dname, _dsig) = Array::get(decls, ci)
+        if dname == fname {
+          declared = true
+        } else ()
+        ci = ci + 1
+      }
+      if declared {
+        ()
+      } else {
+        Array::push(errors, "exported '\{fname}' is not declared in the contract")
+      }
+    } else ()
+    ei = ei + 1
+  }
+  errors
+}
+
+export {
+  parse_contract_program, collect_impl_fn_defs, check_contract
+}

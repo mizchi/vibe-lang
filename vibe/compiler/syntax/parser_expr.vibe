@@ -363,7 +363,14 @@ let parse_let_stmt: (Array[Token], Array[Int], Int, Bool) -> (Stmt, Int) with { 
 // `where { ... }` contract clause is brace-balance skipped for now —
 // retention + assert semantics land with Phase E (#731); until then
 // fmt/normalize reject it (same guardrail pattern as #cfg, ADR-0061).
-let parse_fn_stmt: (Array[Token], Array[Int], Int, Bool) -> (Stmt, Int) with { Error } = (tokens, starts, pos, exported) -> {
+// Shared fn-signature head: `name[T: Eq](x: Int, y: Int) -> Ret with { E }
+// where { ... }` starting AFTER the `fn` keyword. Returns
+// ((name, tps, tbs), (params, ret_ty, eff_opt), next) with `next` positioned
+// after the (skipped) where clause — at the body `{` for a definition, or at
+// the following statement for a .vibei contract declaration (#729). The
+// `where` contract clause is brace-balance skipped for now — retention +
+// assert semantics land with Phase E (#731).
+export let parse_fn_signature: (Array[Token], Int) -> ((String, Array[String], Array[(String, Array[String])]), (Array[(String, Option[TypeExpr])], TypeExpr, Option[String]), Int) with { Error } = (tokens, pos) -> {
   let (name, name_next) = parse_binding_name(tokens, pos)
   let (tps, tbs, after_gen) = parse_value_bracket_header(tokens, name_next)
   let lp = expect_tk(tokens, after_gen, "(")
@@ -394,6 +401,13 @@ let parse_fn_stmt: (Array[Token], Array[Int], Int, Bool) -> (Stmt, Int) with { E
     } else eff_next,
     _ => eff_next
   }
+  ((name, tps, tbs), (params, ret_ty, eff_opt), where_next)
+}
+
+let parse_fn_stmt: (Array[Token], Array[Int], Int, Bool) -> (Stmt, Int) with { Error } = (tokens, starts, pos, exported) -> {
+  let (head, sig, where_next) = parse_fn_signature(tokens, pos)
+  let (name, tps, tbs) = head
+  let (params, ret_ty, eff_opt) = sig
   let br = expect_tk(tokens, where_next, "{")
   let (body, end) = parse_impl(tokens, starts, br, mode_block)
   (SLet(exported, true, name, None, EFn(tps, tbs, params, Some(ret_ty), eff_opt, body)), end)

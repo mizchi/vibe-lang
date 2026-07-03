@@ -1,0 +1,70 @@
+// #729 (ADR-0063 Phase C): the .vibei contract conformance engine.
+// Contracts declare bodyless `fn` signatures; implementations must provide
+// exactly that surface (matching param types + labels, generics, return
+// type, effect row; no undeclared exports). Wiring into import resolution
+// is the next #729 stage — this exercises the engine directly.
+
+import ../vibe/compiler/syntax/lexer.vibe {
+  lex
+}
+
+import ../vibe/compiler/syntax/parser.vibe {
+  parse_program
+}
+
+import ../vibe/compiler/contract/index.vibe {
+  parse_contract_program, check_contract
+}
+
+test "contract declarations parse and fingerprint (#729)" {
+  let (decls, rest) = parse_contract_program(lex("fn add(x: Int, y: Int) -> Int\nfn read(p: String) -> String with { Fs }\nimport ./dep.vibe { helper }"))
+  assert_eq(Array::length(decls), 2)
+  assert_eq(Array::length(rest), 1)
+  let (n0, s0) = decls[0]
+  assert(n0 == "add")
+  assert(s0 == "(Int, Int) -> Int")
+  let (n1, s1) = decls[1]
+  assert(n1 == "read")
+  assert(String::contains(s1, "with { Fs }"))
+}
+
+test "where clause in a declaration is skipped (#729)" {
+  let (decls, _) = parse_contract_program(lex("fn clamp(x: Int, lo: Int, hi: Int) -> Int where {\n  requires: lo <= hi,\n}"))
+  assert_eq(Array::length(decls), 1)
+  let (n0, _) = decls[0]
+  assert(n0 == "clamp")
+}
+
+test "conformant implementation passes (#729)" {
+  let (decls, _) = parse_contract_program(lex("fn add(x: Int, y: Int) -> Int\nfn scale(k~: Int, v~: Int) -> Int\nfn pick[T](x: T, y: T) -> T"))
+  let impls = parse_program(lex("fn add(a: Int, b: Int) -> Int { a + b }\nexport let scale: (k~: Int, v~: Int) -> Int = (k~, v~) -> { k * v }\nfn pick[T](l: T, r: T) -> T { l }\nlet private_helper: (Int) -> Int = (x) -> { x }"))
+  // fn-form, annotated-let-form (labeled + exported-and-declared), and a
+  // generic all conform; the un-exported private helper is ignored.
+  let errors = check_contract(decls, impls)
+  assert_eq(Array::length(errors), 0)
+}
+
+test "missing and mismatching implementations are reported (#729)" {
+  let (decls, _) = parse_contract_program(lex("fn add(x: Int, y: Int) -> Int\nfn gone(x: Int) -> Int\nfn eff(x: Int) -> Int with { Fs }"))
+  let impls = parse_program(lex("fn add(a: Int, b: String) -> Int { a }\nfn eff(x: Int) -> Int { x }"))
+  let errors = check_contract(decls, impls)
+  assert_eq(Array::length(errors), 3)
+}
+
+test "undeclared export is reported (#729)" {
+  let (decls, _) = parse_contract_program(lex("fn run(x: Int) -> Int"))
+  let impls = parse_program(lex("fn run(x: Int) -> Int { x }\nexport let leak: (Int) -> Int = (x) -> { x }"))
+  let errors = check_contract(decls, impls)
+  assert_eq(Array::length(errors), 1)
+  assert(String::contains(errors[0], "leak"))
+}
+
+test "contract declaration with a body is rejected (#729)" {
+  let failed = handle {
+    let _ = parse_contract_program(lex("fn bad(x: Int) -> Int { x }"))
+    false
+  } with Error {
+    Throw(_) => true
+  }
+  assert(failed)
+}
