@@ -18606,6 +18606,51 @@ export let parse_contract_program: (Array[Token]) -> (Array[(String, String)], A
   while !done {
     match peek(tokens, pos) {
       TEof => { done = true },
+      TType => {
+        let mut la = pos + 1
+        let tname = match peek(tokens, la) {
+          TIdent(tn) => tn,
+          _ => ""
+        }
+        let mut is_bodyless = false
+        if tname == "" {
+          ()
+        } else {
+          la = la + 1
+          let mut scan = la
+          match peek(tokens, scan) {
+            TLBracket => {
+              let mut depth = 1
+              scan = scan + 1
+              while depth > 0 {
+                match peek(tokens, scan) {
+                  TLBracket => { depth = depth + 1 },
+                  TRBracket => { depth = depth - 1 },
+                  TEof => { depth = 0 },
+                  _ => ()
+                }
+                scan = scan + 1
+              }
+            },
+            _ => ()
+          }
+          match peek(tokens, scan) {
+            TEq => (),
+            _ => {
+              is_bodyless = true
+              la = scan
+            }
+          }
+        }
+        if is_bodyless {
+          Array::push(opaques, tname)
+          pos = la
+        } else {
+          let (stmt, next) = parse_stmt(tokens, [], pos)
+          Array::push(stmts, stmt)
+          pos = next
+        }
+      },
       TIdent(head) => if head == "opaque" {
         match peek(tokens, pos + 1) {
           TType => match peek(tokens, pos + 2) {
@@ -18696,31 +18741,37 @@ export let check_contract: (Array[(String, String)], Array[String], Array[Stmt])
   let mut di = 0
   while di < Array::length(decls) {
     let (dname, dsig) = Array::get(decls, di)
-    let mut found = false
+    let mut satisfied = false
+    let mut seen_any = false
+    let mut best_msg = ""
     let mut fi = 0
     while fi < Array::length(defs) {
-      let (fname, fsig_opt, _fexported) = Array::get(defs, fi)
+      let (fname, fsig_opt, fexported) = Array::get(defs, fi)
       if fname == dname {
-        found = true
+        seen_any = true
         match fsig_opt {
           Some(fsig) => if fsig == dsig {
-            ()
+            if fexported {
+              satisfied = true
+            } else {
+              best_msg = "contract declaration '\{dname}' is implemented but not exported by its implementation file"
+            }
           } else {
-            Array::push(errors, "signature mismatch for '\{dname}': contract \{dsig} but implementation \{fsig}")
+            if best_msg == "" {
+              best_msg = "signature mismatch for '\{dname}': contract \{dsig} but implementation \{fsig}"
+            } else ()
           },
-          None => Array::push(errors, "implementation of '\{dname}' lacks the full annotations required by the contract")
-        }
-        let (_, _, fexported0) = Array::get(defs, fi)
-        if fexported0 {
-          ()
-        } else {
-          Array::push(errors, "contract declaration '\{dname}' is implemented but not exported by its implementation file")
+          None => if best_msg == "" {
+            best_msg = "implementation of '\{dname}' lacks the full annotations required by the contract"
+          } else ()
         }
       } else ()
       fi = fi + 1
     }
-    if found {
+    if satisfied {
       ()
+    } else if seen_any {
+      Array::push(errors, best_msg)
     } else {
       Array::push(errors, "contract declaration '\{dname}' has no implementation")
     }
@@ -18883,8 +18934,8 @@ export let contract_facade_source: (Array[(String, String)], Array[String], Arra
         let mut defined_here = false
         let mut fi = 0
         while fi < Array::length(defs) {
-          let (fname, _, _) = Array::get(defs, fi)
-          if fname == dname {
+          let (fname, _, fexp) = Array::get(defs, fi)
+          if fname == dname && fexp {
             defined_here = true
           } else ()
           fi = fi + 1
@@ -43338,7 +43389,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "d9b50eef3ed803cb"
+  "896341ebc6e7fbed"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647
@@ -44798,6 +44849,14 @@ let load_source_if_cached_file_spec_matches: (String, String, String) -> Option[
     }
   }
 }
+let ingest_source_text_fs: (String, String) -> String with { Error, Fs } = (path, raw) -> {
+  let (_, pin_blanked) = extract_require_pins(raw)
+  if String::ends_with(path, ".vibei") {
+    desugar_contract_source_fs(path, pin_blanked)
+  } else {
+    pin_blanked
+  }
+}
 let rec load_cached_sources_rec: (Array[(String, String, String)], Int, Array[(String, String)]) -> Option[Array[(String, String)]] with { Error, Fs } = (specs, index, out) -> {
   if index >= Array::length(specs) {
     Some(out)
@@ -44805,7 +44864,7 @@ let rec load_cached_sources_rec: (Array[(String, String, String)], Int, Array[(S
     let (path, stat_token_text, source_fingerprint) = Array::get(specs, index)
     match load_source_if_cached_file_spec_matches(path, stat_token_text, source_fingerprint) {
       Some(source) => {
-        Array::push(out, (path, source))
+        Array::push(out, (path, ingest_source_text_fs(path, source)))
         load_cached_sources_rec(specs, index + 1, out)
       },
       None => None
@@ -44819,7 +44878,7 @@ let rec load_cached_grouped_sources_rec: (Array[(String, String, String, String)
     let (group_name, path, stat_token_text, source_fingerprint) = Array::get(rows, index)
     match load_source_if_cached_file_spec_matches(path, stat_token_text, source_fingerprint) {
       Some(source) => {
-        push_grouped_source(out, group_name, path, source)
+        push_grouped_source(out, group_name, path, ingest_source_text_fs(path, source))
         load_cached_grouped_sources_rec(rows, index + 1, out)
       },
       None => None

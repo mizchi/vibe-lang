@@ -12,7 +12,7 @@ vibe uses content hashing for two unrelated purposes. They are intentionally
 
 | Layer | Purpose | Hash | Where |
 |-------|---------|------|-------|
-| **Identity** (ADR-0004) | Content-addressed modules — `HashRef` (runtime), `VersionRef`, `SymbolRef` (user-facing). A stable, collision-resistant name for a definition's content. | **SHA1** (cryptographic). `vibe/sha1/` implements it with known-answer vectors. | identity / distributed refs |
+| **Identity** (ADR-0004) | Content-addressed modules — `HashRef` (runtime), `VersionRef`, `SymbolRef` (user-facing). A stable, collision-resistant name for a definition's content. | **SHA1** (cryptographic). `lib/@vibe/core/sha1.vibe` (@vibe/core package) implements it with known-answer vectors. | identity / distributed refs |
 | **Build cache** | A fast key for "have I already compiled exactly this input with exactly this compiler?" Only ever compared for equality within one machine's `_build`; a miss just recompiles. | **`compact_string_fingerprint`** — a non-cryptographic double-polynomial rolling hash `"len:h1:h2"` (h1/h2 31-bit, distinct large primes → ~62 effective bits). | `vibe/compiler/cache/persistent_cache.vibe` |
 
 **Why two hashes, not one.** The build cache is a pure performance optimization

@@ -1,14 +1,18 @@
+//# @vibe/core/sha1 — SHA1 digest (hex). CANONICAL copy; the compiler keeps
+//# a vendored twin at vibe/compiler/cache/sha1.vibe until it can consume
+//# @vibe/core as a store package (kept in sync by gate 6e).
+
 //# Functions
 
 let k0: Int = 1518500249
 
 let k1: Int = 1859775393
 
-let k2: Int = __bit_or(__lshift(36635, 16), 48348)
+let k2: Int = ((36635 << 16) | 48348)
 
-let k3: Int = __bit_or(__lshift(51810, 16), 49622)
+let k3: Int = ((51810 << 16) | 49622)
 
-let ushr = (x: Int, n: Int) -> Int {
+fn ushr(x: Int, n: Int) -> Int {
   if n == 0 {
     x
   }
@@ -20,29 +24,29 @@ let ushr = (x: Int, n: Int) -> Int {
   }
 }
 
-let mask32: Int = __bit_or(__lshift(65535, 16), 65535)
+let mask32: Int = ((65535 << 16) | 65535)
 
-let rotl = (x: Int, n: Int) -> Int {
+fn rotl(x: Int, n: Int) -> Int {
   ((x<<n)|ushr(x, 32 - n))&mask32
 }
 
-let add32 = (a: Int, b: Int) -> Int {
+fn add32(a: Int, b: Int) -> Int {
   (a + b)&mask32
 }
 
 let h0_init: Int = 1732584193
 
-let h1_init: Int = __bit_or(__lshift(61389, 16), 43913)
+let h1_init: Int = ((61389 << 16) | 43913)
 
-let h2_init: Int = __bit_or(__lshift(39098, 16), 56574)
+let h2_init: Int = ((39098 << 16) | 56574)
 
 let h3_init: Int = 271733878
 
-let h4_init: Int = __bit_or(__lshift(50130, 16), 57840)
+let h4_init: Int = ((50130 << 16) | 57840)
 
 let hex_table: String = "0123456789abcdef"
 
-let read_word = (s: String, idx: Int) -> Int {
+fn read_word(s: String, idx: Int) -> Int {
   let offset = idx * 4
   let b0 = s|>String::char_code_at(offset)
   let b1 = s|>String::char_code_at(offset + 1)
@@ -57,7 +61,7 @@ let read_word = (s: String, idx: Int) -> Int {
 /// a `String` (which forced `acc|>String::concat(word_to_bytes(w))`
 /// on every iteration — O(N²) bytes copied per block on wasm-gc, see
 /// `docs/report/profile-wasm-gc-vs-linear-2026-05-26.md`).
-let read_word_bytes = (b: Bytes, idx: Int) -> Int {
+fn read_word_bytes(b: Bytes, idx: Int) -> Int {
   let offset = idx * 4
   let b0 = Bytes::get(b, offset)
   let b1 = Bytes::get(b, offset + 1)
@@ -71,7 +75,7 @@ let read_word_bytes = (b: Bytes, idx: Int) -> Int {
 /// 2× when full), so the full 80-word schedule build is O(N) total
 /// instead of the O(N²) tower the original `String::concat`-based
 /// version produced on wasm-gc.
-let push_word_bytes = (b: Bytes, w: Int) -> Unit {
+fn push_word_bytes(b: Bytes, w: Int) -> Unit {
   Bytes::push(b, ushr(w, 24)&255)
   Bytes::push(b, ushr(w, 16)&255)
   Bytes::push(b, ushr(w, 8)&255)
@@ -81,7 +85,7 @@ let push_word_bytes = (b: Bytes, w: Int) -> Unit {
 /// Pad the message to a multiple of 64 bytes per the SHA-1 spec.
 /// Builds via `StringBuilder` so the zero-fill loop doesn't re-copy
 /// the accumulator each iteration — O(N²) → O(N) on wasm-gc.
-let pad_message = (msg: String) -> String {
+fn pad_message(msg: String) -> String {
   let len = msg|>String::length()
   let bit_len = len * 8
   let sb = StringBuilder::new()
@@ -106,15 +110,15 @@ let pad_message = (msg: String) -> String {
   StringBuilder::freeze(sb)
 }
 
-let to_hex_char = (i: Int) -> String {
-  hex_table[i]
+fn to_hex_char(i: Int) -> String {
+  String::substring(hex_table, i, i + 1)
 }
 
-let byte_to_hex = (b: Int) -> String {
+fn byte_to_hex(b: Int) -> String {
   to_hex_char((b>>4)&15)|>String::concat(to_hex_char(b&15))
 }
 
-let word_to_hex = (w: Int) -> String {
+fn word_to_hex(w: Int) -> String {
   let sb = StringBuilder::new()
   StringBuilder::push(sb, byte_to_hex(ushr(w, 24)&255))
   StringBuilder::push(sb, byte_to_hex(ushr(w, 16)&255))
@@ -129,7 +133,7 @@ let word_to_hex = (w: Int) -> String {
 /// read access via `read_word_bytes` is O(1); each `push_word_bytes`
 /// is amortised O(1) — so the 80-iteration expand loop is O(N) instead
 /// of the original String-accumulator's O(N²).
-let build_schedule = (msg: String, block_start: Int) -> Bytes {
+fn build_schedule(msg: String, block_start: Int) -> Bytes {
   let arr = Bytes::new()
   let mut i = 0
   while i < 16 {
@@ -157,7 +161,7 @@ let build_schedule = (msg: String, block_start: Int) -> Bytes {
 /// 5-element `Bytes` buffer (20 bytes) via the same compact write
 /// path the schedule uses, dodging a second tower of `String::concat`
 /// calls.
-let rec process_rounds = (i: Int, a: Int, b: Int, c: Int, d: Int, e: Int, w: Bytes) -> Bytes {
+fn process_rounds(i: Int, a: Int, b: Int, c: Int, d: Int, e: Int, w: Bytes) -> Bytes {
   if i >= 80 {
     let out = Bytes::new()
     push_word_bytes(out, a)
@@ -193,7 +197,7 @@ let rec process_rounds = (i: Int, a: Int, b: Int, c: Int, d: Int, e: Int, w: Byt
   }
 }
 
-let rec process_blocks = (msg: String, block_idx: Int, num_blocks: Int, h0: Int, h1: Int, h2: Int, h3: Int, h4: Int) -> String {
+fn process_blocks(msg: String, block_idx: Int, num_blocks: Int, h0: Int, h1: Int, h2: Int, h3: Int, h4: Int) -> String {
   if block_idx >= num_blocks {
     // Final 40-char hex digest assembled through a single StringBuilder
     // freeze (5 word_to_hex pushes), not a tower of String::concat.
@@ -216,12 +220,8 @@ let rec process_blocks = (msg: String, block_idx: Int, num_blocks: Int, h0: Int,
   }
 }
 
-export let sha1 = (msg: String) -> String {
+export fn sha1(msg: String) -> String {
   let padded = pad_message(msg)
   let num_blocks = (padded|>String::length()) / 64
   process_blocks(padded, 0, num_blocks, h0_init, h1_init, h2_init, h3_init, h4_init)
-}
-
-export let String::sha1 = (s: String) -> String {
-  sha1(s)
 }

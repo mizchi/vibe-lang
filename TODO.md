@@ -58,6 +58,18 @@ rc-bootstrap fixpoint + shape corpus で常時検証）。
   D content-addressed `require` #730、E `where` 契約 Phase 1 #731、
   F/G publish 検証 + export 撤去 + compiler source 移行 #732。
   残件 #726（Python flattener → merge machinery）は G の前提整備。
+- [x] **@vibe/core パッケージ切り出し (2026-07-04)** — moonbitlang/core を参考に、
+  `vibe/collection/{list,set}` / `vibe/sha1` / `vibe/leb128` を
+  `lib/@vibe/core/`（ADR-0063 契約パッケージ、`index.vibei` 82 fn decl +
+  `type List[T]` / `type StringSet`）へ統合。`vibe/collection` は maps 専用
+  facade に縮小。compiler 内部の sha1 は vendored twin
+  (`vibe/compiler/cache/sha1.vibe`) を gate 6e で canonical と diff 同期。
+  store 配布は `scripts/vibe_core_install.sh`。副産物のエンジン強化:
+  契約照合の any-match 化（同名 private 兄弟の許容）、bodyless
+  `type Name[T]` = transparent re-export 宣言、persistent cache 再構築
+  lane の ingestion 統一（pin-blank + .vibei 脱糖が cache lane を
+  バイパスするバグ修正）。残: compiler 本体が @vibe/core を require で
+  消費する形への移行（#726/#730 系）、prelude の重複 helper 整理。
 - [ ] **#415** codegen builtin registry 化（linear↔wasm-gc parity、Phase B）。
 - [ ] **#418 / #629 (ADR-0060)** mut の region capability 統一 — 設計は ADR-0060、
   実装は effect row 基盤に依存。

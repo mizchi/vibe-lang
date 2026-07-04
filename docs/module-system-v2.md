@@ -270,3 +270,25 @@ seed がそれを理解するまでコンパイラ自身のソースで使えな
 | E | `where` 契約 Phase 1 (debug assert 脱糖) + fuzz oracle 接続 | A |
 | F | publish + semver 機械検証 (registry は local/git から開始) | D |
 | G | 実装ファイルからの `export` 撤去、compiler source の fn/契約移行 (seed bump を伴う) | C, D |
+
+## 13. 最初の実パッケージ: @vibe/core (2026-07-04)
+
+moonbitlang/core の構成を参考に、旧 `vibe/collection/{list,set}` /
+`vibe/sha1` / `vibe/leb128` を **`lib/@vibe/core/`** に統合した。
+このシステム自身のドッグフーディングであり、契約は
+`lib/@vibe/core/index.vibei`（82 fn 宣言 + `type List[T]` / `type StringSet`）。
+
+- **bodyless `type Name[T]` 宣言**: opaque と同じ機構で impl 側の型を
+  透過的に re-export する契約文法（この抽出で必要になり追加）。
+- **契約照合の any-match 化**: 同名の private 兄弟定義（list/set 間の
+  bare alias 衝突回避）があっても、いずれかの exported def が
+  シグネチャ一致すれば満たされる。
+- **compiler 内部との関係**: build cache の identity hash は
+  `vibe/compiler/cache/sha1.vibe`（vendored twin）を使い、canonical
+  (`lib/@vibe/core/sha1.vibe`) との同期は selfhost gate step 6e が
+  comment 行を除いた diff で強制する。compiler が @vibe/core を
+  `require` で消費する形は #726/#730 の flattener 刷新後に移行する。
+- store 配布: `scripts/vibe_core_install.sh`（`.vibe/store/@vibe/core/`
+  へ contract + impl をコピーし、VIBE_HASH でハッシュを表示）。
+- E2E: `fixtures/vibe_core_pkg_test.vibe` が契約 import 経由で
+  sha1 / leb128 / List / StringSet を横断使用する。

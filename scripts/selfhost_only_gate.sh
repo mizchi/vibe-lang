@@ -310,6 +310,17 @@ fi
 rm -rf "$edir"
 echo "[selfhost-only-gate] where-contract + publish gate regression ok"
 
+# 6e. @vibe/core <-> compiler vendored sha1 sync: the compiler keeps a twin
+#     of lib/@vibe/core/sha1.vibe (it cannot import outside vibe/compiler
+#     yet); the twins must not drift. Compare ignoring comments/blanks.
+echo "[selfhost-only-gate] 6e vendored sha1 sync (@vibe/core)"
+if ! diff <(grep -v '^\s*//' "lib/@vibe/core/sha1.vibe" | grep -v '^\s*$') <(grep -v '^\s*//' vibe/compiler/cache/sha1.vibe | grep -v '^\s*$') >/dev/null; then
+  echo "[selfhost-only-gate] FAIL: vibe/compiler/cache/sha1.vibe drifted from lib/@vibe/core/sha1.vibe" >&2
+  diff <(grep -v '^\s*//' "lib/@vibe/core/sha1.vibe" | grep -v '^\s*$') <(grep -v '^\s*//' vibe/compiler/cache/sha1.vibe | grep -v '^\s*$') >&2 || true
+  exit 1
+fi
+echo "[selfhost-only-gate] vendored sha1 sync ok"
+
 # 7. literal sub-pattern regression (#603): a literal (PInt/PString) argument of a
 #    constructor pattern must be tested, not just the tag — `I("x")` must not
 #    match `I("y")`, `I(1)` must not match `I(2)`. Guards the match-codegen fix.
