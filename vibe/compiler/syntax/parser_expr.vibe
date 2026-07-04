@@ -365,12 +365,14 @@ let parse_let_stmt: (Array[Token], Array[Int], Int, Bool) -> (Stmt, Int) with { 
 // fmt/normalize reject it (same guardrail pattern as #cfg, ADR-0061).
 // Shared fn-signature head: `name[T: Eq](x: Int, y: Int) -> Ret with { E }
 // where { ... }` starting AFTER the `fn` keyword. Returns
-// ((name, tps, tbs), (params, ret_ty, eff_opt), next) with `next` positioned
-// after the (skipped) where clause — at the body `{` for a definition, or at
-// the following statement for a .vibei contract declaration (#729). The
-// `where` contract clause is brace-balance skipped for now — retention +
-// assert semantics land with Phase E (#731).
-export let parse_fn_signature: (Array[Token], Int) -> ((String, Array[String], Array[(String, Array[String])]), (Array[(String, Option[TypeExpr])], TypeExpr, Option[String]), Int) with { Error } = (tokens, pos) -> {
+// ((name, tps, tbs), (params, ret_ty, eff_opt), (requires, ensures), next)
+// with `next` positioned after the where clause — at the body `{` for a
+// definition, or at the following statement for a .vibei contract
+// declaration (#729). The `where { requires: e, ensures: e }` contract
+// clause (#731, ADR-0064 §7) parses each condition as an ordinary Bool
+// expression; `ensures` conditions may reference the function result as
+// `result`. Multiple requires/ensures entries are allowed.
+export let parse_fn_signature: (Array[Token], Int) -> ((String, Array[String], Array[(String, Array[String])]), (Array[(String, Option[TypeExpr])], TypeExpr, Option[String]), (Array[Expr], Array[Expr]), Int) with { Error } = (tokens, pos) -> {
   let (name, name_next) = parse_binding_name(tokens, pos)
   let (tps, tbs, after_gen) = parse_value_bracket_header(tokens, name_next)
   let lp = expect_tk(tokens, after_gen, "(")
@@ -395,22 +397,83 @@ export let parse_fn_signature: (Array[Token], Int) -> ((String, Array[String], A
     },
     _ => (None, ret_next)
   }
+  let reqs = Array::slice([
+    EIdent("", 0 - 1)
+  ], 0, 0)
+  let enss = Array::slice([
+    EIdent("", 0 - 1)
+  ], 0, 0)
   let where_next = match peek(tokens, eff_next) {
     TIdent(w) => if w == "where" {
-      skip_braced_body(tokens, eff_next + 1)
+      let mut wp = expect_tk(tokens, eff_next + 1, "{")
+      let mut wdone = false
+      while !wdone {
+        match peek(tokens, wp) {
+          TRBrace => {
+            wp = wp + 1
+            wdone = true
+          },
+          TIdent(kind) => {
+            let cp = expect_tk(tokens, wp + 1, ":")
+            let (cond, cnext) = parse_impl(tokens, [], cp, 0)
+            if kind == "requires" {
+              Array::push(reqs, cond)
+            } else if kind == "ensures" {
+              Array::push(enss, cond)
+            } else {
+              throw("expected 'requires' or 'ensures' in where clause, got '\{kind}'")
+            }
+            wp = match peek(tokens, cnext) {
+              TComma => cnext + 1,
+              _ => cnext
+            }
+          },
+          _ => throw("expected 'requires', 'ensures', or '}' in where clause")
+        }
+      }
+      wp
     } else eff_next,
     _ => eff_next
   }
-  ((name, tps, tbs), (params, ret_ty, eff_opt), where_next)
+  ((name, tps, tbs), (params, ret_ty, eff_opt), (reqs, enss), where_next)
 }
 
 let parse_fn_stmt: (Array[Token], Array[Int], Int, Bool) -> (Stmt, Int) with { Error } = (tokens, starts, pos, exported) -> {
-  let (head, sig, where_next) = parse_fn_signature(tokens, pos)
+  let (head, sig, contracts, where_next) = parse_fn_signature(tokens, pos)
   let (name, tps, tbs) = head
   let (params, ret_ty, eff_opt) = sig
+  let (reqs, enss) = contracts
   let br = expect_tk(tokens, where_next, "{")
   let (body, end) = parse_impl(tokens, starts, br, mode_block)
-  (SLet(exported, true, name, None, EFn(tps, tbs, params, Some(ret_ty), eff_opt, body)), end)
+  // #731 (ADR-0064 §7 Phase 1): where-contract desugar. requires conditions
+  // assert at entry; ensures conditions bind the body's value as `result`
+  // and assert at exit. v1 semantics are Eiffel-style ALWAYS-ON runtime
+  // checks (a violating call traps); compile-time stripping for release
+  // builds is a later refinement. Known limits (documented): an early
+  // `return` inside the body bypasses ensures; `result` shadows any
+  // user binding of that name inside ensures conditions.
+  let body_with_ensures = if Array::length(enss) == 0 {
+    body
+  } else {
+    let mut exit_expr = EIdent("result", 0 - 1)
+    let mut ei = Array::length(enss)
+    while ei > 0 {
+      ei = ei - 1
+      exit_expr = ESeq(ECall(EIdent("assert", 0 - 1), [
+        Array::get(enss, ei)
+      ], 0 - 1), exit_expr)
+    }
+    ELet("result", body, exit_expr)
+  }
+  let mut guarded = body_with_ensures
+  let mut qi = Array::length(reqs)
+  while qi > 0 {
+    qi = qi - 1
+    guarded = ESeq(ECall(EIdent("assert", 0 - 1), [
+      Array::get(reqs, qi)
+    ], 0 - 1), guarded)
+  }
+  (SLet(exported, true, name, None, EFn(tps, tbs, params, Some(ret_ty), eff_opt, guarded)), end)
 }
 
 //# Misc

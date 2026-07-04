@@ -34,7 +34,7 @@ import ./header_cache.vibe {
 }
 
 import ../contract/index.vibe {
-  check_contract, classify_contract_stmts, contract_facade_source, contract_hash, extract_require_pins, package_hash_from_sources, parse_contract_program
+  check_contract, classify_contract_stmts, contract_facade_source, contract_hash, contract_surface_lines, extract_require_pins, package_hash_from_sources, parse_contract_program, verify_publish_bump
 }
 
 import ./manifest_sources.vibe {
@@ -1144,6 +1144,15 @@ export let contract_package_hashes_fs: (String) -> (String, String) with { Error
 // error (network fetch belongs to `vibe add`/`update`, never to fmt).
 // Pinned lines pass through untouched, so the rewrite is idempotent.
 export let fill_require_pins_fs: (String) -> String with { Error, Fs } = (source) -> {
+  fill_require_pins_fs_mode(source, false)
+}
+
+// repin=true rewrites EVERY require line to the store's current hash —
+// `vibe dedupe --apply` (#730 D-4): after updating a store package, one
+// pass re-points all pins in a file at the installed copies. With the
+// by-name store there is one installed version per package, so repinning
+// IS conflict resolution.
+export let fill_require_pins_fs_mode: (String, Bool) -> String with { Error, Fs } = (source, repin) -> {
   let sb = StringBuilder::new()
   let len = String::length(source)
   let mut pos = 0
@@ -1160,7 +1169,7 @@ export let fill_require_pins_fs: (String) -> String with { Error, Fs } = (source
       let (pins_one, _) = extract_require_pins(String::concat(trimmed, "\n"))
       if Array::length(pins_one) == 1 {
         let (pname, pver, ppin) = Array::get(pins_one, 0)
-        if ppin == "" {
+        if ppin == "" || repin {
           let store_index = String::concat(".vibe/store/", String::concat(pname, "/index.vibei"))
           if Fs::exists(store_index) {
             ()
@@ -1190,6 +1199,25 @@ export let fill_require_pins_fs: (String) -> String with { Error, Fs } = (source
     pos = nl + 1
   }
   StringBuilder::freeze(sb)
+}
+
+// #732 (Phase F): publish gate. Parse the previous and next contract
+// surfaces and verify the claimed version bump is exactly what the diff
+// requires (Elm-style machine-checked semver). Returns error strings;
+// empty = the release claim is honest.
+export let publish_check_fs: (String, String, String, String) -> Array[String] with { Error, Fs } = (prev_contract_path, next_contract_path, prev_version, next_version) -> {
+  let (_, prev_blanked) = extract_require_pins(Fs::read_file(prev_contract_path))
+  let (pd, po, pextra) = parse_contract_program(lex(prev_blanked))
+  let (_, ptypes) = classify_contract_stmts(pextra)
+  let (_, next_blanked) = extract_require_pins(Fs::read_file(next_contract_path))
+  let (nd, no, nextra) = parse_contract_program(lex(next_blanked))
+  let (_, ntypes) = classify_contract_stmts(nextra)
+  verify_publish_bump(
+    prev_version,
+    next_version,
+    contract_surface_lines(pd, po, ptypes),
+    contract_surface_lines(nd, no, ntypes)
+  )
 }
 
 // #730 (D-2): verify a store-resolved package against the importer's require

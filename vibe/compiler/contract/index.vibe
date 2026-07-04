@@ -142,7 +142,10 @@ export let parse_contract_program: (Array[Token]) -> (Array[(String, String)], A
           _ => throw("expected 'type' after 'opaque'")
         }
       } else if head == "fn" {
-        let (dhead, dsig, next) = parse_fn_signature(tokens, pos + 1)
+        // where clauses on declarations parse but are not yet part of the
+        // contract fingerprint (conformance/hash coverage comes with the
+        // SMT stage of #731).
+        let (dhead, dsig, _, next) = parse_fn_signature(tokens, pos + 1)
         let (name, tps, tbs) = dhead
         let (params, ret_ty, eff_opt) = dsig
         match peek(tokens, next) {
@@ -530,26 +533,7 @@ let sorted_strings: (Array[String]) -> Array[String] = (items) -> {
 }
 
 export let contract_hash: (Array[(String, String)], Array[String], Array[Stmt]) -> String = (fn_decls, opaque_names, type_defs) -> {
-  let lines = Array::slice([
-    ""
-  ], 0, 0)
-  let mut i = 0
-  while i < Array::length(fn_decls) {
-    let (dname, dsig) = Array::get(fn_decls, i)
-    Array::push(lines, "fn \{dname} \{dsig}")
-    i = i + 1
-  }
-  let mut oi = 0
-  while oi < Array::length(opaque_names) {
-    Array::push(lines, "opaque \{Array::get(opaque_names, oi)}")
-    oi = oi + 1
-  }
-  let mut ti = 0
-  while ti < Array::length(type_defs) {
-    Array::push(lines, "type \{print_stmt(Array::get(type_defs, ti))}")
-    ti = ti + 1
-  }
-  let canon = String::join(sorted_strings(lines), "\n")
+  let canon = String::join(sorted_strings(contract_surface_lines(fn_decls, opaque_names, type_defs)), "\n")
   "ct:sha1:\{sha1(String::concat("vibei:v1\n", canon))}"
 }
 
@@ -741,6 +725,145 @@ export let extract_require_pins: (String) -> (Array[(String, String, String)], S
     pos = nl + 1
   }
   (pins, StringBuilder::freeze(sb))
+}
+
+// ADR-0063 §8 (#732 Phase F): Elm-style machine-verified semver. The
+// version bump a release CLAIMS must match what its contract diff REQUIRES:
+//   patch — the API surface is unchanged (same fn decls, opaques, types)
+//   minor — additions only (every old declaration survives verbatim)
+//   major — anything else
+// "semver is trusted" becomes a checkable property instead of a hope.
+
+let str_in: (Array[String], String) -> Bool = (arr, target) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arr) && !found {
+    if Array::get(arr, i) == target {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+// Canonical per-declaration lines for a contract surface (shared by
+// contract_hash and the change classifier, so they can never disagree).
+export let contract_surface_lines: (Array[(String, String)], Array[String], Array[Stmt]) -> Array[String] = (fn_decls, opaque_names, type_defs) -> {
+  let lines = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(fn_decls) {
+    let (dname, dsig) = Array::get(fn_decls, i)
+    Array::push(lines, "fn \{dname} \{dsig}")
+    i = i + 1
+  }
+  let mut oi = 0
+  while oi < Array::length(opaque_names) {
+    Array::push(lines, "opaque \{Array::get(opaque_names, oi)}")
+    oi = oi + 1
+  }
+  let mut ti = 0
+  while ti < Array::length(type_defs) {
+    Array::push(lines, "type \{print_stmt(Array::get(type_defs, ti))}")
+    ti = ti + 1
+  }
+  lines
+}
+
+// "patch" | "minor" | "major" for old -> new surface lines.
+export let classify_contract_change: (Array[String], Array[String]) -> String = (old_lines, new_lines) -> {
+  let mut all_old_kept = true
+  let mut i = 0
+  while i < Array::length(old_lines) {
+    if str_in(new_lines, Array::get(old_lines, i)) {
+      ()
+    } else {
+      all_old_kept = false
+    }
+    i = i + 1
+  }
+  if !all_old_kept {
+    "major"
+  } else {
+    let mut any_new = false
+    let mut j = 0
+    while j < Array::length(new_lines) {
+      if str_in(old_lines, Array::get(new_lines, j)) {
+        ()
+      } else {
+        any_new = true
+      }
+      j = j + 1
+    }
+    if any_new {
+      "minor"
+    } else {
+      "patch"
+    }
+  }
+}
+
+let digits_to_int: (String) -> Int = (raw) -> {
+  let len = String::length(raw)
+  let mut result = 0
+  let mut i = 0
+  while i < len {
+    result = result * 10 + (String::char_code_at(raw, i) - 48)
+    i = i + 1
+  }
+  result
+}
+
+let semver_parts: (String) -> Option[(Int, Int, Int)] = (v) -> {
+  if is_strict_semver(v) && !String::starts_with(v, "^") {
+    let parts = String::split(v, ".")
+    Some((digits_to_int(Array::get(parts, 0)), digits_to_int(Array::get(parts, 1)), digits_to_int(Array::get(parts, 2))))
+  } else {
+    None
+  }
+}
+
+// The bump kind a version transition claims: Some("patch"/"minor"/"major"),
+// None when the transition is not a single well-formed forward bump.
+export let semver_bump_kind: (String, String) -> Option[String] = (prev, next) -> {
+  match semver_parts(prev) {
+    None => None,
+    Some(pp) => match semver_parts(next) {
+      None => None,
+      Some(np) => {
+        let (pa, pb, pc) = pp
+        let (na, nb, nc) = np
+        if na == pa + 1 && nb == 0 && nc == 0 {
+          Some("major")
+        } else if na == pa && nb == pb + 1 && nc == 0 {
+          Some("minor")
+        } else if na == pa && nb == pb && nc == pc + 1 {
+          Some("patch")
+        } else {
+          None
+        }
+      }
+    }
+  }
+}
+
+// The publish gate: claimed bump must be exactly what the diff requires.
+export let verify_publish_bump: (String, String, Array[String], Array[String]) -> Array[String] = (prev_version, next_version, old_lines, new_lines) -> {
+  let errors = Array::slice([
+    ""
+  ], 0, 0)
+  let required = classify_contract_change(old_lines, new_lines)
+  match semver_bump_kind(prev_version, next_version) {
+    None => Array::push(errors, "\{prev_version} -> \{next_version} is not a single forward semver bump"),
+    Some(claimed) => if claimed == required {
+      ()
+    } else {
+      Array::push(errors, "version \{prev_version} -> \{next_version} claims a \{claimed} bump but the contract change requires \{required}")
+    }
+  }
+  errors
 }
 
 export {

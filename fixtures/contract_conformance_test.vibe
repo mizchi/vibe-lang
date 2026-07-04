@@ -17,7 +17,7 @@ import ../vibe/compiler/core {
 }
 
 import ../vibe/compiler/contract/index.vibe {
-  parse_contract_program, check_contract, contract_hash, package_hash_from_sources, extract_require_pins, is_strict_semver, is_package_pin
+  parse_contract_program, check_contract, contract_hash, package_hash_from_sources, extract_require_pins, is_strict_semver, is_package_pin, contract_surface_lines, classify_contract_change, semver_bump_kind, verify_publish_bump
 }
 
 import ../vibe/compiler/cache/sha1.vibe {
@@ -184,6 +184,43 @@ test "malformed require lines are rejected (#730 D-2)" {
     false
   } with Error { Throw(_) => true }
   assert(bad2)
+}
+
+test "contract change classification (#732 Phase F)" {
+  let (d1, o1, _) = parse_contract_program(lex("fn a(x: Int) -> Int\nopaque type T"))
+  let l1 = contract_surface_lines(d1, o1, no_type_defs())
+  // identical -> patch
+  assert(classify_contract_change(l1, l1) == "patch")
+  // addition only -> minor
+  let (d2, o2, _) = parse_contract_program(lex("fn a(x: Int) -> Int\nfn b(x: Int) -> Int\nopaque type T"))
+  let l2 = contract_surface_lines(d2, o2, no_type_defs())
+  assert(classify_contract_change(l1, l2) == "minor")
+  // signature change -> major
+  let (d3, o3, _) = parse_contract_program(lex("fn a(x: String) -> Int\nopaque type T"))
+  let l3 = contract_surface_lines(d3, o3, no_type_defs())
+  assert(classify_contract_change(l1, l3) == "major")
+  // removal -> major
+  let (d4, o4, _) = parse_contract_program(lex("opaque type T"))
+  assert(classify_contract_change(l1, contract_surface_lines(d4, o4, no_type_defs())) == "major")
+}
+
+test "semver bump verification (#732 Phase F)" {
+  assert(semver_bump_kind("1.2.3", "1.2.4") is Some("patch"))
+  assert(semver_bump_kind("1.2.3", "1.3.0") is Some("minor"))
+  assert(semver_bump_kind("1.2.3", "2.0.0") is Some("major"))
+  assert(semver_bump_kind("1.2.3", "1.4.0") is None)
+  assert(semver_bump_kind("1.2.3", "1.2.3") is None)
+
+  let (d1, o1, _) = parse_contract_program(lex("fn a(x: Int) -> Int"))
+  let l1 = contract_surface_lines(d1, o1, no_type_defs())
+  let (d2, o2, _) = parse_contract_program(lex("fn a(x: Int) -> Int\nfn b(x: Int) -> Int"))
+  let l2 = contract_surface_lines(d2, o2, no_type_defs())
+  // honest minor bump for an addition
+  assert_eq(Array::length(verify_publish_bump("1.0.0", "1.1.0", l1, l2)), 0)
+  // dishonest patch claim for an addition
+  let errs = verify_publish_bump("1.0.0", "1.0.1", l1, l2)
+  assert_eq(Array::length(errs), 1)
+  assert(String::contains(errs[0], "requires minor"))
 }
 
 test "contract declaration with a body is rejected (#729)" {

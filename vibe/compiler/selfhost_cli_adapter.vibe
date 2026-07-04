@@ -13,7 +13,7 @@ import ./runtime / module_source.vibe {
 }
 
 import ./loader/index.vibe {
-  contract_package_hashes_fs, fill_require_pins_fs
+  contract_package_hashes_fs, fill_require_pins_fs_mode, publish_check_fs
 }
 
 import ./entry / compiler / file_compile {
@@ -349,8 +349,28 @@ export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
   // output path. Idempotent; pinned form is the canonical form.
   if Env::get("VIBE_FILL_PINS") == "1" {
     return handle {
-      let filled = fill_require_pins_fs(Fs::read_file(input_path))
+      let filled = fill_require_pins_fs_mode(Fs::read_file(input_path), Env::get("VIBE_REPIN") == "1")
       Fs::write_file(output_path, filled)
+      0
+    } with Error {
+      Throw(msg) => emit_compile_diag(output_path, msg)
+    }
+  } else ()
+  // #732 (Phase F): `vibe publish` semver gate. input = the NEXT contract;
+  // VIBE_PUBLISH_PREV / _PREV_VERSION / _VERSION describe the previous
+  // release. Writes "ok" on an honest bump; a dishonest claim is a diag.
+  if Env::get("VIBE_PUBLISH_CHECK") == "1" {
+    return handle {
+      let perrors = publish_check_fs(
+        Env::get("VIBE_PUBLISH_PREV"),
+        input_path,
+        Env::get("VIBE_PUBLISH_PREV_VERSION"),
+        Env::get("VIBE_PUBLISH_VERSION")
+      )
+      if Array::length(perrors) > 0 {
+        throw(String::join(perrors, "; "))
+      } else ()
+      Fs::write_file(output_path, "ok\n")
       0
     } with Error {
       Throw(msg) => emit_compile_diag(output_path, msg)

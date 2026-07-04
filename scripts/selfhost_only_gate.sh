@@ -274,6 +274,42 @@ fi
 rm -rf ".vibe/store/@gate" "$cdir2"
 echo "[selfhost-only-gate] content-addressed store regression ok"
 
+# 6d. where-contract + publish-gate regression (#731 / #732): a violated
+#     requires clause traps at runtime; the publish semver gate accepts an
+#     honest bump and rejects a dishonest one.
+echo "[selfhost-only-gate] 6d where-contract + publish gate regression (#731/#732)"
+edir="_build/_gate_ef"
+rm -rf "$edir"; mkdir -p "$edir"
+printf 'fn half_pos(x: Int) -> Int where { requires: x > 0 } { x / 2 }\nexport let _start: () -> Int = () -> { half_pos(0 - 4) }\n' > "$edir/viol.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edir/viol.vibe" "$edir/viol.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$edir/viol.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: where-contract program did not compile (#731)" >&2
+  cat "$edir/viol.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/viol.wasm" >/dev/null 2>&1; then
+  echo "[selfhost-only-gate] FAIL: violated requires clause did not trap (#731)" >&2; exit 1
+fi
+printf 'fn a(x: Int) -> Int\n' > "$edir/prev.vibei"
+printf 'fn a(x: Int) -> Int\nfn b(x: Int) -> Int\n' > "$edir/next.vibei"
+VIBE_PUBLISH_CHECK=1 VIBE_PUBLISH_PREV="$edir/prev.vibei" VIBE_PUBLISH_PREV_VERSION=1.0.0 VIBE_PUBLISH_VERSION=1.1.0 \
+  VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edir/next.vibei" "$edir/pub.out" __no_entry__ >/dev/null 2>&1 || true
+if ! grep -q "^ok" "$edir/pub.out" 2>/dev/null; then
+  echo "[selfhost-only-gate] FAIL: honest minor bump was rejected (#732)" >&2
+  cat "$edir/pub.out.diag" 2>/dev/null >&2; exit 1
+fi
+VIBE_PUBLISH_CHECK=1 VIBE_PUBLISH_PREV="$edir/prev.vibei" VIBE_PUBLISH_PREV_VERSION=1.0.0 VIBE_PUBLISH_VERSION=1.0.1 \
+  VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edir/next.vibei" "$edir/pub2.out" __no_entry__ >/dev/null 2>&1 || true
+if ! grep -q "requires minor" "$edir/pub2.out.diag" 2>/dev/null; then
+  echo "[selfhost-only-gate] FAIL: dishonest patch claim was not rejected (#732)" >&2
+  cat "$edir/pub2.out" "$edir/pub2.out.diag" 2>/dev/null >&2; exit 1
+fi
+rm -rf "$edir"
+echo "[selfhost-only-gate] where-contract + publish gate regression ok"
+
 # 7. literal sub-pattern regression (#603): a literal (PInt/PString) argument of a
 #    constructor pattern must be tested, not just the tag — `I("x")` must not
 #    match `I("y")`, `I(1)` must not match `I(2)`. Guards the match-codegen fix.

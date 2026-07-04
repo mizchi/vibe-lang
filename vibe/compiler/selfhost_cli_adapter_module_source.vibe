@@ -17015,7 +17015,7 @@ let parse_let_stmt: (Array[Token], Array[Int], Int, Bool) -> (Stmt, Int) with { 
     _ => throw("expected name after 'let'")
   }
 }
-export let parse_fn_signature: (Array[Token], Int) -> ((String, Array[String], Array[(String, Array[String])]), (Array[(String, Option[TypeExpr])], TypeExpr, Option[String]), Int) with { Error } = (tokens, pos) -> {
+export let parse_fn_signature: (Array[Token], Int) -> ((String, Array[String], Array[(String, Array[String])]), (Array[(String, Option[TypeExpr])], TypeExpr, Option[String]), (Array[Expr], Array[Expr]), Int) with { Error } = (tokens, pos) -> {
   let (name, name_next) = parse_binding_name(tokens, pos)
   let (tps, tbs, after_gen) = parse_value_bracket_header(tokens, name_next)
   let lp = expect_tk(tokens, after_gen, "(")
@@ -17040,21 +17040,75 @@ export let parse_fn_signature: (Array[Token], Int) -> ((String, Array[String], A
     },
     _ => (None, ret_next)
   }
+  let reqs = Array::slice([
+    EIdent("", 0 - 1)
+  ], 0, 0)
+  let enss = Array::slice([
+    EIdent("", 0 - 1)
+  ], 0, 0)
   let where_next = match peek(tokens, eff_next) {
     TIdent(w) => if w == "where" {
-      skip_braced_body(tokens, eff_next + 1)
+      let mut wp = expect_tk(tokens, eff_next + 1, "{")
+      let mut wdone = false
+      while !wdone {
+        match peek(tokens, wp) {
+          TRBrace => {
+            wp = wp + 1
+            wdone = true
+          },
+          TIdent(kind) => {
+            let cp = expect_tk(tokens, wp + 1, ":")
+            let (cond, cnext) = parse_impl(tokens, [], cp, 0)
+            if kind == "requires" {
+              Array::push(reqs, cond)
+            } else if kind == "ensures" {
+              Array::push(enss, cond)
+            } else {
+              throw("expected 'requires' or 'ensures' in where clause, got '\{kind}'")
+            }
+            wp = match peek(tokens, cnext) {
+              TComma => cnext + 1,
+              _ => cnext
+            }
+          },
+          _ => throw("expected 'requires', 'ensures', or '}' in where clause")
+        }
+      }
+      wp
     } else eff_next,
     _ => eff_next
   }
-  ((name, tps, tbs), (params, ret_ty, eff_opt), where_next)
+  ((name, tps, tbs), (params, ret_ty, eff_opt), (reqs, enss), where_next)
 }
 let parse_fn_stmt: (Array[Token], Array[Int], Int, Bool) -> (Stmt, Int) with { Error } = (tokens, starts, pos, exported) -> {
-  let (head, sig, where_next) = parse_fn_signature(tokens, pos)
+  let (head, sig, contracts, where_next) = parse_fn_signature(tokens, pos)
   let (name, tps, tbs) = head
   let (params, ret_ty, eff_opt) = sig
+  let (reqs, enss) = contracts
   let br = expect_tk(tokens, where_next, "{")
   let (body, end) = parse_impl(tokens, starts, br, mode_block)
-  (SLet(exported, true, name, None, EFn(tps, tbs, params, Some(ret_ty), eff_opt, body)), end)
+  let body_with_ensures = if Array::length(enss) == 0 {
+    body
+  } else {
+    let mut exit_expr = EIdent("result", 0 - 1)
+    let mut ei = Array::length(enss)
+    while ei > 0 {
+      ei = ei - 1
+      exit_expr = ESeq(ECall(EIdent("assert", 0 - 1), [
+        Array::get(enss, ei)
+      ], 0 - 1), exit_expr)
+    }
+    ELet("result", body, exit_expr)
+  }
+  let mut guarded = body_with_ensures
+  let mut qi = Array::length(reqs)
+  while qi > 0 {
+    qi = qi - 1
+    guarded = ESeq(ECall(EIdent("assert", 0 - 1), [
+      Array::get(reqs, qi)
+    ], 0 - 1), guarded)
+  }
+  (SLet(exported, true, name, None, EFn(tps, tbs, params, Some(ret_ty), eff_opt, guarded)), end)
 }
 export {
   collect_import_path, empty_fields, empty_import_items, expect_tk, is_tk, parse, parse_effect_stmt, parse_enum_stmt, parse_expr, parse_fn_stmt, parse_impl, parse_impl_stmt_dispatch, parse_import_item, parse_let_stmt, parse_ok, parse_struct_field, parse_suberror_stmt, parse_trait_stmt, parse_type, parse_type_alias_stmt, peek, tk_name
@@ -18568,7 +18622,7 @@ export let parse_contract_program: (Array[Token]) -> (Array[(String, String)], A
           _ => throw("expected 'type' after 'opaque'")
         }
       } else if head == "fn" {
-        let (dhead, dsig, next) = parse_fn_signature(tokens, pos + 1)
+        let (dhead, dsig, _, next) = parse_fn_signature(tokens, pos + 1)
         let (name, tps, tbs) = dhead
         let (params, ret_ty, eff_opt) = dsig
         match peek(tokens, next) {
@@ -18905,26 +18959,7 @@ let sorted_strings: (Array[String]) -> Array[String] = (items) -> {
   out
 }
 export let contract_hash: (Array[(String, String)], Array[String], Array[Stmt]) -> String = (fn_decls, opaque_names, type_defs) -> {
-  let lines = Array::slice([
-    ""
-  ], 0, 0)
-  let mut i = 0
-  while i < Array::length(fn_decls) {
-    let (dname, dsig) = Array::get(fn_decls, i)
-    Array::push(lines, "fn \{dname} \{dsig}")
-    i = i + 1
-  }
-  let mut oi = 0
-  while oi < Array::length(opaque_names) {
-    Array::push(lines, "opaque \{Array::get(opaque_names, oi)}")
-    oi = oi + 1
-  }
-  let mut ti = 0
-  while ti < Array::length(type_defs) {
-    Array::push(lines, "type \{print_stmt(Array::get(type_defs, ti))}")
-    ti = ti + 1
-  }
-  let canon = String::join(sorted_strings(lines), "\n")
+  let canon = String::join(sorted_strings(contract_surface_lines(fn_decls, opaque_names, type_defs)), "\n")
   "ct:sha1:\{sha1(String::concat("vibei:v1\n", canon))}"
 }
 export let package_hash_from_sources: (Array[(String, String)]) -> String = (sources) -> {
@@ -19093,6 +19128,125 @@ export let extract_require_pins: (String) -> (Array[(String, String, String)], S
     pos = nl + 1
   }
   (pins, StringBuilder::freeze(sb))
+}
+let str_in: (Array[String], String) -> Bool = (arr, target) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arr) && !found {
+    if Array::get(arr, i) == target {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+export let contract_surface_lines: (Array[(String, String)], Array[String], Array[Stmt]) -> Array[String] = (fn_decls, opaque_names, type_defs) -> {
+  let lines = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(fn_decls) {
+    let (dname, dsig) = Array::get(fn_decls, i)
+    Array::push(lines, "fn \{dname} \{dsig}")
+    i = i + 1
+  }
+  let mut oi = 0
+  while oi < Array::length(opaque_names) {
+    Array::push(lines, "opaque \{Array::get(opaque_names, oi)}")
+    oi = oi + 1
+  }
+  let mut ti = 0
+  while ti < Array::length(type_defs) {
+    Array::push(lines, "type \{print_stmt(Array::get(type_defs, ti))}")
+    ti = ti + 1
+  }
+  lines
+}
+export let classify_contract_change: (Array[String], Array[String]) -> String = (old_lines, new_lines) -> {
+  let mut all_old_kept = true
+  let mut i = 0
+  while i < Array::length(old_lines) {
+    if str_in(new_lines, Array::get(old_lines, i)) {
+      ()
+    } else {
+      all_old_kept = false
+    }
+    i = i + 1
+  }
+  if !all_old_kept {
+    "major"
+  } else {
+    let mut any_new = false
+    let mut j = 0
+    while j < Array::length(new_lines) {
+      if str_in(old_lines, Array::get(new_lines, j)) {
+        ()
+      } else {
+        any_new = true
+      }
+      j = j + 1
+    }
+    if any_new {
+      "minor"
+    } else {
+      "patch"
+    }
+  }
+}
+let digits_to_int: (String) -> Int = (raw) -> {
+  let len = String::length(raw)
+  let mut result = 0
+  let mut i = 0
+  while i < len {
+    result = result * 10 + (String::char_code_at(raw, i) - 48)
+    i = i + 1
+  }
+  result
+}
+let semver_parts: (String) -> Option[(Int, Int, Int)] = (v) -> {
+  if is_strict_semver(v) && !String::starts_with(v, "^") {
+    let parts = String::split(v, ".")
+    Some((digits_to_int(Array::get(parts, 0)), digits_to_int(Array::get(parts, 1)), digits_to_int(Array::get(parts, 2))))
+  } else {
+    None
+  }
+}
+export let semver_bump_kind: (String, String) -> Option[String] = (prev, next) -> {
+  match semver_parts(prev) {
+    None => None,
+    Some(pp) => match semver_parts(next) {
+      None => None,
+      Some(np) => {
+        let (pa, pb, pc) = pp
+        let (na, nb, nc) = np
+        if na == pa + 1 && nb == 0 && nc == 0 {
+          Some("major")
+        } else if na == pa && nb == pb + 1 && nc == 0 {
+          Some("minor")
+        } else if na == pa && nb == pb && nc == pc + 1 {
+          Some("patch")
+        } else {
+          None
+        }
+      }
+    }
+  }
+}
+export let verify_publish_bump: (String, String, Array[String], Array[String]) -> Array[String] = (prev_version, next_version, old_lines, new_lines) -> {
+  let errors = Array::slice([
+    ""
+  ], 0, 0)
+  let required = classify_contract_change(old_lines, new_lines)
+  match semver_bump_kind(prev_version, next_version) {
+    None => Array::push(errors, "\{prev_version} -> \{next_version} is not a single forward semver bump"),
+    Some(claimed) => if claimed == required {
+      ()
+    } else {
+      Array::push(errors, "version \{prev_version} -> \{next_version} claims a \{claimed} bump but the contract change requires \{required}")
+    }
+  }
+  errors
 }
 export {
   parse_contract_program, collect_impl_fn_defs, check_contract
@@ -43184,7 +43338,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "0b010f0696ba0c23"
+  "96c8e708dadcb76b"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647
@@ -44954,7 +45108,7 @@ export let contract_package_hashes_fs: (String) -> (String, String) with { Error
   }
   (package_hash_from_sources(sources), contract_hash(decls, opaques, type_defs))
 }
-export let fill_require_pins_fs: (String) -> String with { Error, Fs } = (source) -> {
+export let fill_require_pins_fs_mode: (String, Bool) -> String with { Error, Fs } = (source, repin) -> {
   let sb = StringBuilder::new()
   let len = String::length(source)
   let mut pos = 0
@@ -44971,7 +45125,7 @@ export let fill_require_pins_fs: (String) -> String with { Error, Fs } = (source
       let (pins_one, _) = extract_require_pins(String::concat(trimmed, "\n"))
       if Array::length(pins_one) == 1 {
         let (pname, pver, ppin) = Array::get(pins_one, 0)
-        if ppin == "" {
+        if ppin == "" || repin {
           let store_index = String::concat(".vibe/store/", String::concat(pname, "/index.vibei"))
           if Fs::exists(store_index) {
             ()
@@ -45001,6 +45155,20 @@ export let fill_require_pins_fs: (String) -> String with { Error, Fs } = (source
     pos = nl + 1
   }
   StringBuilder::freeze(sb)
+}
+export let publish_check_fs: (String, String, String, String) -> Array[String] with { Error, Fs } = (prev_contract_path, next_contract_path, prev_version, next_version) -> {
+  let (_, prev_blanked) = extract_require_pins(Fs::read_file(prev_contract_path))
+  let (pd, po, pextra) = parse_contract_program(lex(prev_blanked))
+  let (_, ptypes) = classify_contract_stmts(pextra)
+  let (_, next_blanked) = extract_require_pins(Fs::read_file(next_contract_path))
+  let (nd, no, nextra) = parse_contract_program(lex(next_blanked))
+  let (_, ntypes) = classify_contract_stmts(nextra)
+  verify_publish_bump(
+    prev_version,
+    next_version,
+    contract_surface_lines(pd, po, ptypes),
+    contract_surface_lines(nd, no, ntypes)
+  )
 }
 let verify_store_package_fs: (String, Array[(String, String, String)], String) -> Unit with { Error, Fs } = (importer, pins, store_index_path) -> {
   let prefix = ".vibe/store/"
@@ -48751,8 +48919,25 @@ export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
   } else ()
   if Env::get("VIBE_FILL_PINS") == "1" {
     return handle {
-      let filled = fill_require_pins_fs(Fs::read_file(input_path))
+      let filled = fill_require_pins_fs_mode(Fs::read_file(input_path), Env::get("VIBE_REPIN") == "1")
       Fs::write_file(output_path, filled)
+      0
+    } with Error {
+      Throw(msg) => emit_compile_diag(output_path, msg)
+    }
+  } else ()
+  if Env::get("VIBE_PUBLISH_CHECK") == "1" {
+    return handle {
+      let perrors = publish_check_fs(
+        Env::get("VIBE_PUBLISH_PREV"),
+        input_path,
+        Env::get("VIBE_PUBLISH_PREV_VERSION"),
+        Env::get("VIBE_PUBLISH_VERSION")
+      )
+      if Array::length(perrors) > 0 {
+        throw(String::join(perrors, "; "))
+      } else ()
+      Fs::write_file(output_path, "ok\n")
       0
     } with Error {
       Throw(msg) => emit_compile_diag(output_path, msg)
