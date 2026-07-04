@@ -44,7 +44,12 @@ rc-bootstrap fixpoint + shape corpus で常時検証）。
   top-level 関数エイリアス (`export let eq = float_eq`) の呼び出しが不正 wasm を
   生むバグと、RC lane の float 型 param `==` がポインタ比較になるバグも修正
   （rc-corpus default-pass 22→27）。
-- [ ] **Module System v2 (ADR-0063/0064, docs/module-system-v2.md)** —
+- [x] **Module System v2 (ADR-0063/0064, docs/module-system-v2.md)** —
+  **A–G 全フェーズの中核を実装済み (2026-07-04)**。E where 契約 =
+  常時 runtime assert(release strip は後続)、F publish semver 機械検証、
+  G seed bump `module-system-v2-2026-07-04` + compiler source の fn 移行
+  開始(cache/sha1.vibe、stage byte 同一)。後続: ネットワーク add/update、
+  Fs::ReadDir、型封印、全ツリー export 撤去の機械移行。旧記述:
   契約ファースト・パッケージシステム。**A `fn` 構文 #727 と B `module {}`
   削除 #728 は完了（2026-07-03）**。C #729 は C-1 照合エンジン / C-2
   index.vibei 解決+facade 脱糖 / C-3 入方向境界強制まで landing 済み
