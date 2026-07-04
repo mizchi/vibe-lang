@@ -1,0 +1,65 @@
+//# Imports
+
+import ./hex.vibe {
+  hex_decode, hex_encode
+}
+
+import ./sha1.vibe {
+  sha1
+}
+
+//# Misc
+
+test "hex_encode basics" {
+  assert(hex_encode("") == "")
+  assert(hex_encode("abc") == "616263")
+  assert(hex_encode(String::from_char_code(0)) == "00")
+  assert(hex_encode(String::from_char_code(255)) == "ff")
+}
+
+let decode_ok = (h: String) -> Option[String] {
+  handle {
+    Some(hex_decode(h))
+  } with Error {
+    Throw(_) => None
+  }
+}
+
+test "hex_decode round-trips encode" {
+  match decode_ok("616263") {
+    Some(s) => assert(s == "abc"),
+    None => assert(false)
+  }
+  match decode_ok(hex_encode("vibe/0")) {
+    Some(s) => assert(s == "vibe/0"),
+    None => assert(false)
+  }
+  match decode_ok("FF00") {
+    Some(s) => {
+      assert(String::char_code_at(s, 0) == 255)
+      assert(String::char_code_at(s, 1) == 0)
+    },
+    None => assert(false)
+  }
+}
+
+test "hex_decode rejects bad input" {
+  match decode_ok("abc") {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+  match decode_ok("zz") {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+}
+
+test "hex through the package boundary alongside sha1" {
+  // sha1 already returns lowercase hex; decoding then re-encoding its
+  // digest exercises hex + sha1 through the same contract surface.
+  let digest = sha1("abc")
+  match decode_ok(digest) {
+    Some(raw) => assert(hex_encode(raw) == digest),
+    None => assert(false)
+  }
+}
