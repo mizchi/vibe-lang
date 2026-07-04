@@ -1,8 +1,12 @@
 # vibe Module System v2 — 契約ファースト・パッケージシステム設計
 
-> Status: **proposed** (ADR-0063 / ADR-0064)。現行仕様は
-> [module-system.md](module-system.md) (v1)。本ドキュメントが v2 の source of
-> truth であり、実装フェーズごとに v1 の該当節を置き換えていく。
+> Status: **implemented (A–G core, 2026-07-04)** (ADR-0063 / ADR-0064)。
+> 全フェーズの中核が landing 済み: fn / module{} 削除 / .vibei 契約照合 +
+> facade + 境界強制 + opaque / content-addressed require + store + fmt pin
+> 挿入 + repin / where 契約の常時 runtime check / publish semver 機械検証 /
+> seed bump `module-system-v2-2026-07-04` + compiler source の fn 移行開始。
+> 後続: ネットワーク add/update、Fs::ReadDir(自動発見・global store)、
+> 型封印(opaque の強制)、release strip、全ツリー移行。
 >
 > 決定の経緯: 2026-07-03 の設計セッション。関連 ADR: 0004 (コンテンツアドレス
 > モジュール — 本設計はその具体化), 0005 (stdlib 階層), 0019 (canonical naming),
