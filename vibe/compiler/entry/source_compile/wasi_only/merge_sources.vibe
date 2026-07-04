@@ -52,6 +52,10 @@ import ./preprocess.vibe {
   expand_interp_stmts, strip_generic_type_params
 }
 
+import .. / .. / .. / loader / index.vibe {
+  ingest_source_text_fs
+}
+
 //# Functions
 
 let string_array_contains_local: (Array[String], String) -> Bool = (items, target) -> {
@@ -108,8 +112,9 @@ let append_fs_import_alias_collision_defs: (Array[Stmt], String, Array[Stmt], Ex
     let (raw_path, original, local) = Array::get(refs, i)
     if !string_array_contains_local(emitted, local) && !string_array_contains_local(excluded_locals, local) {
       let resolved = resolve_existing_import_path(base_dir, raw_path)
-      // Builtin read for the same reason as collect_parsed_sources_recursive.
-      let source = Fs::read_file(resolved)
+      // Builtin read for the same reason as collect_parsed_sources_recursive;
+      // ingest for the same reason too (#741).
+      let source = ingest_source_text_fs(resolved, Fs::read_file(resolved))
       let source_stmts = namespace_private_value_stmts(
         resolved,
         apply_export_renames_stmts(
@@ -157,7 +162,10 @@ let rec collect_parsed_sources_recursive: (String, Array[String], Array[Array[St
     // argument in an in-language handler (deep-continuation resume bug — the
     // #726 emit tool hit it; bundle-built binaries never did because their
     // performs compile to direct host calls).
-    let source = Fs::read_file(path)
+    // #741: ingestion (require-pin blanking + .vibei contract desugar) applies
+    // in THIS lane too, so a contract package in the graph resolves to its
+    // conformance-checked facade instead of a parse error on bodyless decls.
+    let source = ingest_source_text_fs(path, Fs::read_file(path))
     let stmts = parse_program(lex(source))
     let base_dir = dir_of_path(path)
     let mut i = 0
