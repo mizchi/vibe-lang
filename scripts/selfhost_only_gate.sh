@@ -310,16 +310,9 @@ fi
 rm -rf "$edir"
 echo "[selfhost-only-gate] where-contract + publish gate regression ok"
 
-# 6e. @vibe/core <-> compiler vendored sha1 sync: the compiler keeps a twin
-#     of lib/@vibe/core/sha1.vibe (it cannot import outside vibe/compiler
-#     yet); the twins must not drift. Compare ignoring comments/blanks.
-echo "[selfhost-only-gate] 6e vendored sha1 sync (@vibe/core)"
-if ! diff <(grep -v '^\s*//' "lib/@vibe/core/sha1.vibe" | grep -v '^\s*$') <(grep -v '^\s*//' vibe/compiler/cache/sha1.vibe | grep -v '^\s*$') >/dev/null; then
-  echo "[selfhost-only-gate] FAIL: vibe/compiler/cache/sha1.vibe drifted from lib/@vibe/core/sha1.vibe" >&2
-  diff <(grep -v '^\s*//' "lib/@vibe/core/sha1.vibe" | grep -v '^\s*$') <(grep -v '^\s*//' vibe/compiler/cache/sha1.vibe | grep -v '^\s*$') >&2 || true
-  exit 1
-fi
-echo "[selfhost-only-gate] vendored sha1 sync ok"
+# (6e retired by #741: the vendored vibe/compiler/cache/sha1.vibe twin was
+# deleted — the compiler consumes lib/@vibe/core through the contract import,
+# so there is nothing left to drift-check.)
 
 # 6f. @vibe/core store-install E2E: install the REAL in-repo package into
 #     .vibe/store via scripts/vibe_core_install.sh, then compile AND RUN a

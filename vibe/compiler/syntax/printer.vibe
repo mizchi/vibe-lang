@@ -28,6 +28,28 @@ let join: (Array[String], String) -> String = (arr, sep) -> {
   }
 }
 
+// #741: `r#loop`-style raw identifiers lex to a bare TIdent — the r# prefix
+// is not kept in the AST — so a binding named after a keyword must be
+// re-escaped on print or the emitted program fails to re-parse (the merge
+// flatten hit "expected identifier after 'let rec'" on @vibe/core set.vibe's
+// `let rec r#loop`). Mirror of the lexer's keyword table.
+let is_keyword_name: (String) -> Bool = (name) -> {
+  name == "fn" || name == "if" || name == "in" || name == "is" || name == "do" ||
+  name == "as" || name == "let" || name == "rec" || name == "mut" || name == "for" ||
+  name == "else" || name == "enum" || name == "true" || name == "type" || name == "test" ||
+  name == "with" || name == "loop" || name == "open" || name == "impl" || name == "false" ||
+  name == "match" || name == "trait" || name == "throw" || name == "while" || name == "break" ||
+  name == "bench" || name == "raise" || name == "yield" || name == "struct" || name == "export" ||
+  name == "return" || name == "handle" || name == "module" || name == "derive" || name == "import" ||
+  name == "declare" || name == "continue" || name == "suberror"
+}
+
+let print_name: (String) -> String = (name) -> {
+  if is_keyword_name(name) {
+    String::concat("r#", name)
+  } else name
+}
+
 let escape_string: (String) -> String = (s) -> {
   let len = String::length(s)
   let b = ArrayBuilder::new()
@@ -81,7 +103,7 @@ let escape_string: (String) -> String = (s) -> {
 export let rec print_pat: (Pat) -> String = (p) -> {
   match p {
     PWild => "_",
-    PBind(name) => name,
+    PBind(name) => print_name(name),
     PInt(n) => __to_string(n),
     PString(s) => String::concat("\"", String::concat(escape_string(s), "\"")),
     PBool(b) => if b {
@@ -272,7 +294,7 @@ export let rec print_expr: (Expr) -> String = (e) -> {
     EBool(b) => if b {
       "true"
     } else "false",
-    EIdent(name, _) => name,
+    EIdent(name, _) => print_name(name),
     EUnit => "()",
     ETuple(elems) => String::concat("(", String::concat(join(map_to_strings(elems, print_expr), ", "), ")")),
     EArray(elems) => String::concat("[", String::concat(join(map_to_strings(elems, print_expr), ", "), "]")),
@@ -287,11 +309,11 @@ export let rec print_expr: (Expr) -> String = (e) -> {
       EUnit => String::concat("if ", String::concat(print_expr(cond), String::concat(" { ", String::concat(print_expr(then_e), " }")))),
       _ => String::concat("if ", String::concat(print_expr(cond), String::concat(" { ", String::concat(print_expr(then_e), String::concat(" } else { ", String::concat(print_expr(else_e), " }"))))))
     },
-    ELet(name, val, body) => String::concat("{ let ", String::concat(name, String::concat(" = ", String::concat(print_expr(val), String::concat("; ", String::concat(print_expr(body), " }")))))),
-    ELetRec(name, val, body) => String::concat("{ let rec ", String::concat(name, String::concat(" = ", String::concat(print_expr(val), String::concat("; ", String::concat(print_expr(body), " }")))))),
-    ELetMut(name, val, body) => String::concat("{ let mut ", String::concat(name, String::concat(" = ", String::concat(print_expr(val), String::concat("; ", String::concat(print_expr(body), " }")))))),
-    EAssign(name, val, body) => String::concat("{ ", String::concat(name, String::concat(" = ", String::concat(print_expr(val), String::concat("; ", String::concat(print_expr(body), " }")))))),
-    EAssignOp(name, op, val, body) => String::concat("{ ", String::concat(name, String::concat(" ", String::concat(op, String::concat("= ", String::concat(print_expr(val), String::concat("; ", String::concat(print_expr(body), " }")))))))),
+    ELet(name, val, body) => String::concat("{ let ", String::concat(print_name(name), String::concat(" = ", String::concat(print_expr(val), String::concat("; ", String::concat(print_expr(body), " }")))))),
+    ELetRec(name, val, body) => String::concat("{ let rec ", String::concat(print_name(name), String::concat(" = ", String::concat(print_expr(val), String::concat("; ", String::concat(print_expr(body), " }")))))),
+    ELetMut(name, val, body) => String::concat("{ let mut ", String::concat(print_name(name), String::concat(" = ", String::concat(print_expr(val), String::concat("; ", String::concat(print_expr(body), " }")))))),
+    EAssign(name, val, body) => String::concat("{ ", String::concat(print_name(name), String::concat(" = ", String::concat(print_expr(val), String::concat("; ", String::concat(print_expr(body), " }")))))),
+    EAssignOp(name, op, val, body) => String::concat("{ ", String::concat(print_name(name), String::concat(" ", String::concat(op, String::concat("= ", String::concat(print_expr(val), String::concat("; ", String::concat(print_expr(body), " }")))))))),
     ESeq(a, b) => String::concat("{ ", String::concat(print_expr(a), String::concat("; ", String::concat(print_expr(b), " }")))),
     EMatch(scrutinee, arms) => {
       let parts = for arm in arms {
@@ -312,14 +334,14 @@ export let rec print_expr: (Expr) -> String = (e) -> {
     ELoop(params, body) => {
       let parts = for param in params {
         let (name, init) = param
-        String::concat(name, String::concat(" = ", print_expr(init)))
+        String::concat(print_name(name), String::concat(" = ", print_expr(init)))
       }
       String::concat("loop (", String::concat(join(parts, ", "), String::concat(") { ", String::concat(print_expr(body), " }"))))
     },
     EForIn(value_name, index_name, iterable, body) => {
       let binding = match index_name {
-        Some(index_name) => String::concat(index_name, String::concat(", ", value_name)),
-        None => value_name
+        Some(index_name) => String::concat(print_name(index_name), String::concat(", ", print_name(value_name))),
+        None => print_name(value_name)
       }
       String::concat("for ", String::concat(binding, String::concat(" in ", String::concat(print_expr(iterable), String::concat(" { ", String::concat(print_expr(body), " }"))))))
     },
@@ -343,8 +365,8 @@ export let rec print_expr: (Expr) -> String = (e) -> {
       let parts = for param in params {
         let (name, ty_opt) = param
         match ty_opt {
-          Some(ty) => String::concat(name, String::concat(": ", print_type_expr(ty))),
-          None => name
+          Some(ty) => String::concat(print_name(name), String::concat(": ", print_type_expr(ty))),
+          None => print_name(name)
         }
       }
       let ret_str = match ret_ty {
@@ -396,7 +418,7 @@ let print_annotated_let_value: (Option[TypeExpr], Expr) -> String = (ty_opt, val
         let tp_str = print_fn_type_params(type_params, bounds)
         let parts = for param in params {
           let (name, _) = param
-          name
+          print_name(name)
         }
         String::concat(
           tp_str,
@@ -439,14 +461,14 @@ export let rec print_stmt: (Stmt) -> String = (s) -> {
         Some(ty) => String::concat(": ", print_type_expr(ty)),
         None => ""
       }
-      String::concat(p, String::concat(r, String::concat(name, String::concat(t, String::concat(" = ", print_annotated_let_value(ty_opt, val))))))
+      String::concat(p, String::concat(r, String::concat(print_name(name), String::concat(t, String::concat(" = ", print_annotated_let_value(ty_opt, val))))))
     },
     SLetMut(name, ty_opt, val) => {
       let t = match ty_opt {
         Some(ty) => String::concat(": ", print_type_expr(ty)),
         None => ""
       }
-      String::concat("let mut ", String::concat(name, String::concat(t, String::concat(" = ", print_expr(val)))))
+      String::concat("let mut ", String::concat(print_name(name), String::concat(t, String::concat(" = ", print_expr(val)))))
     },
     SEnum(exported, name, params, ctors, derives) => {
       // #735: `[T]` type params and `derive(...)` were dropped, so a printed

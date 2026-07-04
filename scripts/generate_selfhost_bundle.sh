@@ -113,7 +113,7 @@ for _, rel in rows:
         with open(full, "r", encoding="utf-8") as f:
             source_by_rel[rel] = f.read()
 
-dep_pattern = re.compile(r'^\s*(?:import|export)\s+(\.[\w./\s-]+?)(?:\.vibe)?\s*\{', re.MULTILINE)
+dep_pattern = re.compile(r'^\s*(?:import|export)\s+(\.[\w./@\s-]+?)(?:\.vibe)?\s*\{', re.MULTILINE)
 
 def normalize_path(path: str) -> str:
     parts = []
@@ -121,8 +121,10 @@ def normalize_path(path: str) -> str:
         if seg == "" or seg == ".":
             continue
         if seg == "..":
-            if parts:
+            if parts and parts[-1] != "..":
                 parts.pop()
+            else:
+                parts.append("..")
             continue
         parts.append(seg)
     return "/".join(parts)
@@ -140,10 +142,12 @@ def resolve_path(base_rel: str, raw_path: str) -> str:
         candidate = normalize_path(path)
     if candidate in source_by_rel:
         return candidate
-    # Try index.vibe fallback for directory-style imports
-    idx_candidate = candidate.replace(".vibe", "/index.vibe")
-    if idx_candidate in source_by_rel:
-        return idx_candidate
+    # Directory-style imports fall back to index.vibei (contract package) / index.vibe
+    if candidate.endswith(".vibe"):
+        stem = candidate[: -len(".vibe")]
+        for idx_candidate in (stem + "/index.vibei", stem + "/index.vibe"):
+            if idx_candidate in source_by_rel:
+                return idx_candidate
     return candidate
 
 reachable = set()
@@ -251,7 +255,7 @@ for _, rel in rows:
         with open(full, "r", encoding="utf-8") as f:
             source_by_rel[rel] = f.read()
 
-dep_pattern = re.compile(r'^\s*(?:import|export)\s+(\.[\w./\s-]+?)(?:\.vibe)?\s*\{', re.MULTILINE)
+dep_pattern = re.compile(r'^\s*(?:import|export)\s+(\.[\w./@\s-]+?)(?:\.vibe)?\s*\{', re.MULTILINE)
 
 def normalize_path(path: str) -> str:
     parts = []
@@ -259,8 +263,10 @@ def normalize_path(path: str) -> str:
         if seg == "" or seg == ".":
             continue
         if seg == "..":
-            if parts:
+            if parts and parts[-1] != "..":
                 parts.pop()
+            else:
+                parts.append("..")
             continue
         parts.append(seg)
     return "/".join(parts)
@@ -278,9 +284,11 @@ def resolve_path(base_rel: str, raw_path: str) -> str:
         candidate = normalize_path(path)
     if candidate in source_by_rel:
         return candidate
-    idx_candidate = candidate.replace(".vibe", "/index.vibe")
-    if idx_candidate in source_by_rel:
-        return idx_candidate
+    if candidate.endswith(".vibe"):
+        stem = candidate[: -len(".vibe")]
+        for idx_candidate in (stem + "/index.vibei", stem + "/index.vibe"):
+            if idx_candidate in source_by_rel:
+                return idx_candidate
     return candidate
 
 index_by_rel = {}
@@ -579,7 +587,13 @@ write_adapter_bundle() {
   for idx in "${CLI_ADAPTER_INDEXES[@]}"; do
     f="${FILES[$idx]}"
     filepath="$COMPILER_DIR/$f"
-    relpath="vibe/compiler/$f"
+    # #741: manifest rows outside the compiler dir (../../lib/@vibe/core/...)
+    # are repo-rooted once the ../../ prefix (vibe/compiler -> repo root) drops.
+    if [[ "$f" == ../../* ]]; then
+      relpath="${f#../../}"
+    else
+      relpath="vibe/compiler/$f"
+    fi
     echo "let cli_adapter_source_$adapter_local_idx = () -> (String, String) {"
     echo "  (\"$relpath\","
     write_vibe_string_literal_from_file "$filepath"
@@ -770,7 +784,13 @@ write_runtime_entry_bundle
       echo "error: file not found: $filepath" >&2
       exit 1
     fi
-    relpath="vibe/compiler/$f"
+    # #741: manifest rows outside the compiler dir (../../lib/@vibe/core/...)
+    # are repo-rooted once the ../../ prefix (vibe/compiler -> repo root) drops.
+    if [[ "$f" == ../../* ]]; then
+      relpath="${f#../../}"
+    else
+      relpath="vibe/compiler/$f"
+    fi
     echo "let selfhost_source_$bundle_local_idx = () -> (String, String) {"
     echo "  (\"$relpath\","
     # Escape the source code for embedding in a vibe string literal
