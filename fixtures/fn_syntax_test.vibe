@@ -1,0 +1,51 @@
+// #727 (ADR-0064 Phase A): top-level `fn` sugar. Each form desugars to
+// `let rec name = (annotated params) -> ret { body }`, so recursion,
+// generics, labeled args, effect rows, and cross-file export all reuse the
+// existing SLet + EFn paths. The `where { ... }` clause is parsed and
+// skipped (assert semantics land with Phase E, #731).
+
+import ./fn_syntax_dep.vibe { scale }
+
+fn add(x: Int, y: Int) -> Int { x + y }
+
+fn fact(n: Int) -> Int {
+  if n < 2 { 1 } else { n * fact(n - 1) }
+}
+
+fn ident_gen[T](x: T) -> T { x }
+
+fn labeled(x~: Int, y~: Int) -> Int { x - y }
+
+fn risky(x: Int) -> Int with { Error } {
+  if x == 0 { throw("zero") }
+  100 / x
+}
+
+fn clamp(x: Int, lo: Int, hi: Int) -> Int where {
+  requires: lo <= hi,
+  ensures: result >= lo,
+} {
+  if x < lo { lo } else if x > hi { hi } else x
+}
+
+export fn doubled(x: Int) -> Int { x * 2 }
+
+test "fn sugar basics (#727)" {
+  assert_eq(add(1, 2), 3)
+  assert_eq(fact(5), 120)
+  assert_eq(ident_gen(42), 42)
+  assert_eq(labeled(x=10, y=3), 7)
+  assert_eq(doubled(21), 42)
+}
+
+test "fn effect row and where clause (#727)" {
+  let v = handle { risky(0) } with Error { Throw(_) => 0 - 1 }
+  assert_eq(v, 0 - 1)
+  assert_eq(risky(4), 25)
+  assert_eq(clamp(99, 0, 10), 10)
+  assert_eq(clamp(0 - 5, 0, 10), 0)
+}
+
+test "fn crosses file boundary via export (#727)" {
+  assert_eq(scale(14), 42)
+}

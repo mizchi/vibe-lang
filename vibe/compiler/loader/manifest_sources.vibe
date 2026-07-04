@@ -9,7 +9,8 @@ import .. / cache / persistent_cache.vibe {
 }
 
 import .. / module_graph_path.vibe {
-  contains_path, dir_of_path, resolve_import_path_candidates
+  contains_path, dir_of_path, path_set_add, path_set_contains, path_set_new,
+  resolve_import_path_candidates
 }
 
 import .. / syntax / lexer.vibe {
@@ -909,12 +910,21 @@ let manifest_header_deps_lookup: (Array[(String, String, String, String)], Strin
   found
 }
 
+// #533: schedule-time dedup via a mutable `path_set`. The previous
+// `Map[String, Bool]` scheduled-set copied the whole map on every
+// `Map::set` (O(N) per insert → O(N²) total) and linearly scanned it per
+// `Map::has_key`; the pop-time `contains_path(visited, current)` guard
+// was another O(edges × modules) scan that could never fire, because
+// every worklist push is gated on the scheduled set, making worklist
+// entries unique by construction. `visited` stays an insertion-ordered
+// array — it is the returned needed-paths list. (Same pattern in the two
+// sibling collectors below.)
 let collect_needed_paths_from_manifest_headers: (String, Map[String, Bool], Array[(String, String, String, String)]) -> Array[String] with { Error, Fs } = (path, manifest_path_index, rows) -> {
   let visited = Array::slice([""], 0, 0)
   let worklist = Array::slice([""], 0, 0)
-  let mut scheduled_set = empty_path_index()
+  let scheduled = path_set_new()
   Array::push(worklist, path)
-  scheduled_set = Map::set(scheduled_set, path, true)
+  path_set_add(scheduled, path)
   let mut work_len = 1
   let mut work_i = 0
   loop {
@@ -922,34 +932,32 @@ let collect_needed_paths_from_manifest_headers: (String, Map[String, Bool], Arra
       break
     }
     let current = Array::get(worklist, work_i)
-    if !(contains_path(visited, current)) {
-      Array::push(visited, current)
-      let deps = match manifest_header_deps_lookup(rows, current) {
-        Some(found) => found,
-        None => {
-          let source = Fs::read_file(current)
-          if Map::has_key(manifest_path_index, current) {
-            collect_manifest_header_deps_from_source_with_context(
-              current,
-              source,
-              manifest_path_index
-            )
-          } else {
-            load_or_parse_module_header_deps_with_context(current, source)
-          }
+    Array::push(visited, current)
+    let deps = match manifest_header_deps_lookup(rows, current) {
+      Some(found) => found,
+      None => {
+        let source = Fs::read_file(current)
+        if Map::has_key(manifest_path_index, current) {
+          collect_manifest_header_deps_from_source_with_context(
+            current,
+            source,
+            manifest_path_index
+          )
+        } else {
+          load_or_parse_module_header_deps_with_context(current, source)
         }
       }
-      let mut dep_i = 0
-      while dep_i < Array::length(deps) {
-        let dep_path = Array::get(deps, dep_i)
-        if should_schedule_manifest_dep(dep_path, manifest_path_index) &&
-          !Map::has_key(scheduled_set, dep_path) {
-          Array::push(worklist, dep_path)
-          scheduled_set = Map::set(scheduled_set, dep_path, true)
-          work_len = work_len + 1
-        }
-        dep_i = dep_i + 1
+    }
+    let mut dep_i = 0
+    while dep_i < Array::length(deps) {
+      let dep_path = Array::get(deps, dep_i)
+      if should_schedule_manifest_dep(dep_path, manifest_path_index) &&
+        !(path_set_contains(scheduled, dep_path)) {
+        Array::push(worklist, dep_path)
+        path_set_add(scheduled, dep_path)
+        work_len = work_len + 1
       }
+      dep_i = dep_i + 1
     }
     work_i = work_i + 1
   }
@@ -960,9 +968,9 @@ let collect_needed_paths_and_manifest_headers: (String, Map[String, Bool]) -> (A
   let rows = empty_manifest_header_cache_rows()
   let visited = Array::slice([""], 0, 0)
   let worklist = Array::slice([""], 0, 0)
-  let mut scheduled_set = empty_path_index()
+  let scheduled = path_set_new()
   Array::push(worklist, path)
-  scheduled_set = Map::set(scheduled_set, path, true)
+  path_set_add(scheduled, path)
   let mut work_len = 1
   let mut work_i = 0
   loop {
@@ -970,44 +978,42 @@ let collect_needed_paths_and_manifest_headers: (String, Map[String, Bool]) -> (A
       break
     }
     let current = Array::get(worklist, work_i)
-    if !(contains_path(visited, current)) {
-      Array::push(visited, current)
-      let source = Fs::read_file(current)
-      let deps = match manifest_header_deps_lookup(rows, current) {
-        Some(found) => found,
-        None => {
-          let parsed_deps = if Map::has_key(manifest_path_index, current) {
-            collect_manifest_header_deps_from_source_with_context(
-              current,
-              source,
-              manifest_path_index
-            )
-          } else {
-            load_or_parse_module_header_deps_with_context(current, source)
-          }
-          Array::push(
-            rows,
-            (
-              current,
-              __to_string(Fs::stat_token(current)),
-              compact_string_fingerprint(source),
-              join_header_values(parsed_deps)
-            )
+    Array::push(visited, current)
+    let source = Fs::read_file(current)
+    let deps = match manifest_header_deps_lookup(rows, current) {
+      Some(found) => found,
+      None => {
+        let parsed_deps = if Map::has_key(manifest_path_index, current) {
+          collect_manifest_header_deps_from_source_with_context(
+            current,
+            source,
+            manifest_path_index
           )
-          parsed_deps
+        } else {
+          load_or_parse_module_header_deps_with_context(current, source)
         }
+        Array::push(
+          rows,
+          (
+            current,
+            __to_string(Fs::stat_token(current)),
+            compact_string_fingerprint(source),
+            join_header_values(parsed_deps)
+          )
+        )
+        parsed_deps
       }
-      let mut dep_i = 0
-      while dep_i < Array::length(deps) {
-        let dep_path = Array::get(deps, dep_i)
-        if should_schedule_manifest_dep(dep_path, manifest_path_index) &&
-          !Map::has_key(scheduled_set, dep_path) {
-          Array::push(worklist, dep_path)
-          scheduled_set = Map::set(scheduled_set, dep_path, true)
-          work_len = work_len + 1
-        }
-        dep_i = dep_i + 1
+    }
+    let mut dep_i = 0
+    while dep_i < Array::length(deps) {
+      let dep_path = Array::get(deps, dep_i)
+      if should_schedule_manifest_dep(dep_path, manifest_path_index) &&
+        !(path_set_contains(scheduled, dep_path)) {
+        Array::push(worklist, dep_path)
+        path_set_add(scheduled, dep_path)
+        work_len = work_len + 1
       }
+      dep_i = dep_i + 1
     }
     work_i = work_i + 1
   }
@@ -1017,9 +1023,9 @@ let collect_needed_paths_and_manifest_headers: (String, Map[String, Bool]) -> (A
 let collect_needed_paths_from_manifest_scan: (String, Map[String, Bool]) -> Array[String] with { Error, Fs } = (path, manifest_path_index) -> {
   let visited = Array::slice([""], 0, 0)
   let worklist = Array::slice([""], 0, 0)
-  let mut scheduled_set = empty_path_index()
+  let scheduled = path_set_new()
   Array::push(worklist, path)
-  scheduled_set = Map::set(scheduled_set, path, true)
+  path_set_add(scheduled, path)
   let mut work_len = 1
   let mut work_i = 0
   loop {
@@ -1027,29 +1033,27 @@ let collect_needed_paths_from_manifest_scan: (String, Map[String, Bool]) -> Arra
       break
     }
     let current = Array::get(worklist, work_i)
-    if !(contains_path(visited, current)) {
-      Array::push(visited, current)
-      let source = Fs::read_file(current)
-      let deps = if Map::has_key(manifest_path_index, current) {
-        collect_manifest_header_deps_from_source_with_context(
-          current,
-          source,
-          manifest_path_index
-        )
-      } else {
-        load_or_parse_module_header_deps_with_context(current, source)
+    Array::push(visited, current)
+    let source = Fs::read_file(current)
+    let deps = if Map::has_key(manifest_path_index, current) {
+      collect_manifest_header_deps_from_source_with_context(
+        current,
+        source,
+        manifest_path_index
+      )
+    } else {
+      load_or_parse_module_header_deps_with_context(current, source)
+    }
+    let mut dep_i = 0
+    while dep_i < Array::length(deps) {
+      let dep_path = Array::get(deps, dep_i)
+      if should_schedule_manifest_dep(dep_path, manifest_path_index) &&
+        !(path_set_contains(scheduled, dep_path)) {
+        Array::push(worklist, dep_path)
+        path_set_add(scheduled, dep_path)
+        work_len = work_len + 1
       }
-      let mut dep_i = 0
-      while dep_i < Array::length(deps) {
-        let dep_path = Array::get(deps, dep_i)
-        if should_schedule_manifest_dep(dep_path, manifest_path_index) &&
-          !Map::has_key(scheduled_set, dep_path) {
-          Array::push(worklist, dep_path)
-          scheduled_set = Map::set(scheduled_set, dep_path, true)
-          work_len = work_len + 1
-        }
-        dep_i = dep_i + 1
-      }
+      dep_i = dep_i + 1
     }
     work_i = work_i + 1
   }

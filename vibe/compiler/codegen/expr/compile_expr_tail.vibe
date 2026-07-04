@@ -9,7 +9,7 @@ import .. / common_analysis {
 }
 
 import .. / common_base {
-  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_rc_dup_guarded, emit_binop_op, emit_heap_grow_after_heap_set, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_ctor_call, is_earray, is_efn, is_eident, is_erecord, is_etuple, is_nullary_ctor_ident, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
+  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, agg_ret_lookup, agg_slot_lookup, find_local_slot, emit_rc_dup_guarded, emit_binop_op, emit_heap_grow_after_heap_set, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_ctor_call, is_earray, is_efn, is_eident, is_erecord, is_etuple, is_nullary_ctor_ident, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
 }
 
 import .. / common_extractors {
@@ -266,6 +266,17 @@ let emit_rc_value_ptr_i32: (Bytes, Int, Bool) -> Unit = (buf, local_idx, tagged)
 }
 
 let emit_rc_drop_local: (Bytes, Int, Bool) -> Unit = (buf, local_idx, tagged) -> {
+  // #720: a saturated rc (low 24 bits == 0xFFFFFF) marks an immortal block
+  // (see emit_rc_word_inc_saturating) -- never decrement, never free.
+  emit_rc_value_ptr_i32(buf, local_idx, tagged)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 16777215)
+  bytebuf_push(buf, 113)
+  emit_i32_const(buf, 16777215)
+  emit_i32_ne(buf)
+  emit_if_void(buf)
   emit_rc_value_ptr_i32(buf, local_idx, tagged)
   emit_i32_const(buf, 4)
   emit_i32_sub(buf)
@@ -291,6 +302,7 @@ let emit_rc_drop_local: (Bytes, Int, Bool) -> Unit = (buf, local_idx, tagged) ->
   emit_i32_store(buf, 2, 0)
   emit_rc_value_ptr_i32(buf, local_idx, tagged)
   emit_global_set(buf, 2)
+  emit_end(buf)
   emit_end(buf)
 }
 
@@ -339,6 +351,67 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     } else if slot_is_intish(ctx, local_idx) {
       Array::push(ctx.int_local_slots, local_idx * 2)
     }
+    // #724: log this binding's AGGREGATE shape (tuple arity / ctor-record
+    // field count) so `a == b` with both sides bound takes the structural
+    // comparators. kind*64+n; 0 overrides a reused slot. See
+    // CompileCtx.agg_local_slots.
+    let agg_entry = if is_etuple(value) {
+      64 + Array::length(get_etuple_elems(value))
+    } else if is_ctor_call(value, ctx.ctor_table) {
+      let cargs = get_ecall_args(value)
+      // `S::{ ... }` sugar arrives as ECall(S, [ERecord]) — the runtime
+      // field count is the record's, not the call arity.
+      let fcnt = if Array::length(cargs) == 1 {
+        match Array::get(cargs, 0) {
+          ERecord(rfields) => Array::length(rfields),
+          _ => Array::length(cargs)
+        }
+      } else {
+        Array::length(cargs)
+      }
+      128 + fcnt
+    } else if is_nullary_ctor_ident(value, ctx.ctor_table) {
+      128
+    } else if is_erecord(value) {
+      // Records are [tag@0][len@4][fields@8+] since #722, walkable like ctors.
+      match value {
+        ERecord(rfields) => 128 + Array::length(rfields),
+        _ => 0
+      }
+    } else if expr_tag(value) == 8 {
+      // #724 round 2: `let a = f(..)` — classify by f's DECLARED return type
+      // (agg_ret table). Only for a global fn name (a local shadowing `f`
+      // makes this a closure call of unknown type).
+      match get_ecall_callee(value) {
+        EIdent(cfn, _) => if find_local_slot(local_names, cfn) < 0 {
+          let rinfo = agg_ret_lookup(ctx.agg_ret_names, ctx.agg_ret_infos, cfn)
+          if rinfo > 0 {
+            rinfo
+          } else {
+            0
+          }
+        } else {
+          0
+        },
+        _ => 0
+      }
+    } else if is_eident(value) {
+      // Alias of a tracked binding: propagate its shape.
+      let src_slot = find_local_slot(local_names, get_eident_name(value))
+      if src_slot >= 0 {
+        let src_info = agg_slot_lookup(ctx.agg_local_slots, src_slot)
+        if src_info > 0 {
+          src_info
+        } else {
+          0
+        }
+      } else {
+        0
+      }
+    } else {
+      0
+    }
+    Array::push(ctx.agg_local_slots, local_idx * 256 + agg_entry)
     let mut rc_kind = 0
     // #708 follow-up: set when this let's value is a borrow-returning call
     // (`let a = Array::get(...)`) -- see the ELet/expr_tag==8 branch below for
@@ -381,7 +454,7 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
             // seen in #709's second, hard-to-localize crash. Every other dup
             // call site already uses the runtime-tag-checked guarded version;
             // this was the one remaining unguarded increment.
-            emit_rc_dup_guarded(buf, local_idx)
+            emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow)
           } else {
             ()
           }
@@ -503,7 +576,7 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
       } else if is_edot(value) {
         rc_kind = 2
         Array::push(ctx.heap_binding_names, name)
-        emit_rc_dup_guarded(buf, local_idx)
+        emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow)
       } else if is_efn(value) {
         // NOTE: must be a nested `if`, not `is_efn(value) && efn_is_capturing(...)`:
         // `&&` evaluates both operands, so the `&&` form ran efn_is_capturing
@@ -517,8 +590,69 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
         } else {
           ()
         }
+      } else if expr_tag(value) == 7 {
+        // #715: `let x = if cond { a } else { b }` fell all the way through
+        // this shape-based classification chain (tuple/array/record/ctor
+        // call/EDot/EFn all explicitly handled above) to the silent default
+        // `else { () }`, leaving rc_kind at 0. Since rc_kind gates the ENTIRE
+        // dup-emission loop just below (`if ctx.enable_rc && rc_kind > 0`),
+        // an if/else-valued let NEVER got any of its planned dups emitted at
+        // its declaration site, no matter how many `PaDup` actions the
+        // Perceus plan (perceus/index.vibe) computed for its name -- the
+        // plan and the actual generated code silently disagreed. A binding
+        // used more than once (e.g. `let __bi_expr = if enable_rc {...} else
+        // {...}`, then passed to several accessor calls later) would have 1
+        // reference but N planned consumers, each dropping it via their own
+        // internal parameter cleanup: the first consumer's drop is real, the
+        // second is a same-address double-free (#715's exact signature).
+        // Treat it the same as EDot/ctor-call above: conservatively heap
+        // (the guarded rc_dup/rc_drop already no-op on a genuinely scalar
+        // value, so over-including here is safe, matching the existing
+        // "leak/no-op at worst, never corrupt" design used throughout this
+        // file -- see the is_borrow_ret/is_scalar_ret comments above).
+        rc_kind = 2
+        Array::push(ctx.heap_binding_names, name)
+      } else if expr_tag(value) == 16 {
+        // #715 follow-up: same gap as the EIf case just above, for
+        // `let x = match scrutinee { ... }` (EMatch, expr_tag 16) --
+        // extremely common in hand-written parser/checker code (e.g. `let
+        // tok = match peek(...) { ... }`), so a match-valued let used more
+        // than once hit the identical same-address double-free.
+        rc_kind = 2
+        Array::push(ctx.heap_binding_names, name)
+      } else if expr_tag(value) == 9 || expr_tag(value) == 14 {
+        // #715 follow-up: same gap again, for a block-expression-valued let
+        // -- `let x = { let tmp = f(); tmp }` (ELet, expr_tag 9) or
+        // `let x = { f(); g() }` (ESeq, expr_tag 14) as the RHS. Just as
+        // common in hand-written parser/codegen code as the EIf/EMatch cases
+        // above (a multi-statement block used as an expression).
+        rc_kind = 2
+        Array::push(ctx.heap_binding_names, name)
       } else {
-        ()
+        // #715 follow-up: `expr_tag` only enumerates a subset of `Expr`
+        // constructors and returns -1 for the rest (EHandle, ELabeledArg,
+        // EMap, ESpread, EStringInterp, EBreak, EContinue, EReturn, EThrow,
+        // EWhile, EForIn, ELoop, ...) -- none of which are covered by the
+        // is_etuple/is_earray/.../is_efn checks above either, so ANY of them
+        // as a let's value silently fell through to no RC treatment, same
+        // bug class as the EIf/EMatch/ELet/ESeq cases already fixed. Rather
+        // than keep enumerating one crash at a time, default the true
+        // catch-all to heap too EXCEPT a bare identifier (`let a = b`, an
+        // ALIAS handled by its own dedicated PaAliasDup mechanism elsewhere
+        // -- see the is_eident-guarded rc_alias_dup_names handling later in
+        // this function; forcing rc_kind here would double-manage it) and
+        // literals (EInt/EBool/EFloat/EString/EUnit -- provably scalar, no
+        // guarded-no-op overhead worth paying on every such binding). Over-
+        // including a genuinely scalar value here is safe: the guarded
+        // rc_dup/rc_drop already no-op on non-heap-tagged values (the same
+        // property every other case in this chain already relies on).
+        let __sf_tag = expr_tag(value)
+        if is_eident(value) || __sf_tag == 0 || __sf_tag == 1 || __sf_tag == 2 || __sf_tag == 3 || __sf_tag == 22 {
+          ()
+        } else {
+          rc_kind = 2
+          Array::push(ctx.heap_binding_names, name)
+        }
       }
     } else {
       ()
@@ -527,7 +661,7 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
       let mut dbi = 0
       while dbi < Array::length(ctx.rc_dup_names) {
         if Array::get(ctx.rc_dup_names, dbi) == name {
-          emit_rc_dup_guarded(buf, local_idx)
+          emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow)
         } else {
           ()
         }
@@ -594,7 +728,7 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     if ctx.enable_rc && rc_kind > 0 && array_contains_str(ctx.rc_drop_names, name) {
       if ctx.rc_drop_func_idx >= 0 && scope_tail_proj_root(body) == name {
         emit_local_set(buf, nl2)
-        emit_rc_dup_guarded(buf, nl2)
+        emit_rc_dup_guarded(buf, nl2, ctx.rc_shadow)
         emit_local_get(buf, local_idx)
         emit_call(buf, ctx.rc_drop_func_idx)
         emit_local_get(buf, nl2)
@@ -742,11 +876,38 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
       }
       let nl = compile_expr(buf, value, local_names, next_local + 1, ctx, ld)
       emit_local_set(buf, local_idx)
+      // #715: the ELet path (tag 9) emits every dup the Perceus plan budgeted
+      // for a binding (ctx.rc_dup_names) at its declaration site -- this
+      // ELetMut path never did, while the matching scope-end drop below DID
+      // fire. A `let mut found = None; while .. { match found { .. } }; found`
+      // accumulator (checker_effects.vibe's lookup_fn_effs) gets a planned
+      // dup from the #706 borrow-retention bump (the bare `match found`
+      // borrow) plus a planned scope-end drop; with the dup silently skipped,
+      // the tail-returned Option's only reference was consumed by the return
+      // AND by the drop -- the caller's lifted `__m_scrut_N` scrutinee then
+      // recursively re-dropped the freed block (byte-exact double-free
+      // confirmed by the drop-site-stamped shadow diagnostic: first free at
+      // this branch's scope-end drop, second inside
+      // check_perform_effects_expr_tx). The guarded dup no-ops on scalars, so
+      // over-emission for a scalar-planned name is harmless.
+      if ctx.enable_rc {
+        let mut mdbi = 0
+        while mdbi < Array::length(ctx.rc_dup_names) {
+          if Array::get(ctx.rc_dup_names, mdbi) == name {
+            emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow)
+          } else {
+            ()
+          }
+          mdbi = mdbi + 1
+        }
+      } else {
+        ()
+      }
       let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
       if ctx.enable_rc && array_contains_str(ctx.heap_binding_names, name) && array_contains_str(ctx.rc_drop_names, name) && ctx.rc_drop_func_idx >= 0 {
         if scope_tail_proj_root(body) == name {
           emit_local_set(buf, nl2)
-          emit_rc_dup_guarded(buf, nl2)
+          emit_rc_dup_guarded(buf, nl2, ctx.rc_shadow)
           emit_local_get(buf, local_idx)
           emit_call(buf, ctx.rc_drop_func_idx)
           emit_local_get(buf, nl2)
@@ -787,7 +948,7 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
           if (is_eident(elem) && get_eident_name(elem) == name) || (is_edot(elem) && proj_root_ident(elem) == name) {
             let _ = compile_expr(buf, elem, local_names, base, ctx, ld)
             emit_local_set(buf, scratch)
-            emit_rc_dup_guarded(buf, scratch)
+            emit_rc_dup_guarded(buf, scratch, ctx.rc_shadow)
           } else {
             ()
           }
@@ -808,7 +969,34 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
         let nl = compile_expr(buf, value, local_names, next_local, ctx, ld)
         emit_local_set(buf, idx)
         if is_heap_mut && !is_self && is_edot(value) {
-          emit_rc_dup_guarded(buf, idx)
+          emit_rc_dup_guarded(buf, idx, ctx.rc_shadow)
+        } else {
+          ()
+        }
+        // #715: the Perceus plan's dup budget for a `let mut` binding
+        // (ctx.rc_dup_names occurrences) is applied ONCE, to the INITIAL value
+        // at the declaration site -- but the scope-end drop and every
+        // remaining owning use consume the binding's CURRENT value. After a
+        // reassignment, the freshly stored value carries only its own single
+        // reference; without re-applying the budget here, the tail use plus
+        // the scope-end drop over-consume it by exactly the planned dup count
+        // (checker_effects.vibe's lookup_fn_effs: `let mut found = None;
+        // ... found = Some(..) ...; found` -- the returned Some was freed by
+        // the binding's scope-end drop while the caller still held it; the
+        // #706 borrow-retention bump from the bare `match found` is what put
+        // the +1 in the budget). Worst case this over-retains (a leak) when
+        // part of the budget was already spent before the reassign -- the
+        // codebase-wide "leak/no-op at worst, never corrupt" trade.
+        if ctx.enable_rc && is_heap_mut && !is_self {
+          let mut adbi = 0
+          while adbi < Array::length(ctx.rc_dup_names) {
+            if Array::get(ctx.rc_dup_names, adbi) == name {
+              emit_rc_dup_guarded(buf, idx, ctx.rc_shadow)
+            } else {
+              ()
+            }
+            adbi = adbi + 1
+          }
         } else {
           ()
         }

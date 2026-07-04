@@ -80,8 +80,11 @@ try {
     JSON.stringify(pure.imports));
   ok("pure: no vibe::* host imports (Tier 0 runs on any WASI p1 host)",
     !pure.imports.some((i) => i.startsWith("vibe::")));
-  ok("pure: requires exceptions proposal (exports an `error` tag)",
-    pure.exports.some((e) => e.name === "error" && e.kind === 4),
+  // #716/#733: exception machinery is emitted only when the program uses
+  // exceptions (throw/handle/effects), so a pure program carries NO `error`
+  // tag — Tier 0 now runs on hosts without the exceptions proposal.
+  ok("pure: no `error` tag (Tier 0 needs no exceptions proposal)",
+    !pure.exports.some((e) => e.name === "error" && e.kind === 4),
     JSON.stringify(pure.exports.map((e) => `${e.name}:${e.kind}`)));
   ok("pure: exports the WASI command entry `_start` + `memory`",
     pure.exports.some((e) => e.name === "_start") && pure.exports.some((e) => e.name === "memory"));

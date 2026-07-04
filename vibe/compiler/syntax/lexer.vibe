@@ -692,9 +692,19 @@ let lex_one_token: (String, Int, Int) -> (Token, Int) with { Error } = (source, 
   } else if c == '?' {
     (TQuestion, pos + 1)
   } else if c == '@' {
+    // Package refs: `@scope/name` — '/', '-', '_' are part of the name after
+    // '@' (#730; matches the documented `@lib/path` form). A trailing '/'
+    // is not consumed (so `@a/` is `@a` + '/').
     let mut end = pos + 1
-    while end < len && is_alnum(String::char_code_at(source, end)) {
-      end = end + 1
+    while end < len {
+      let ec = String::char_code_at(source, end)
+      if is_alnum(ec) || ec == '_' || ec == '-' {
+        end = end + 1
+      } else if ec == '/' && end + 1 < len && is_alnum(String::char_code_at(source, end + 1)) {
+        end = end + 1
+      } else {
+        break
+      }
     }
     if end > pos + 1 {
       (TIdent(String::substring(source, pos, end)), end)

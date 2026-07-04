@@ -1,0 +1,165 @@
+// #715 recurrence guard fixture. Every function below is a minimal shape that
+// at some point produced a use-after-free / double-free under the Perceus RC
+// backend (see issue #715's history). The gate compiles this with
+// VIBE_RC=shadow -- shadow-liveness instrumentation that traps (unreachable)
+// on the FIRST dup-of-freed or drop-of-freed -- and runs it. A regression in
+// any of these accountings traps deterministically instead of corrupting the
+// free list and crashing later at an unrelated, layout-dependent location.
+
+enum Ty { TInt; TFn(Array[Ty], Ty) }
+
+// Shape 1 (#715 / lookup_fn_effs): `let mut` accumulator borrowed by a bare
+// `match`, reassigned inside the loop, tail-returned. The ELetMut declaration
+// dup + the reassignment budget re-application both matter here.
+let lookup = (names, effs, name) -> {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(names) {
+    match found {
+      None => if Array::get(names, i) == name {
+        found = Some(Array::get(effs, i))
+      } else { () },
+      Some(_) => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+// Shape 2 (#715 / resolve_tparams_in): a borrow-returning function (catch-all
+// returns its own argument) whose result lands in a tuple that is then
+// destructured -- the tuple element retention for borrow-bound bare idents.
+let rec resolve_tp = (ty) -> {
+  match ty {
+    TFn(ps, ret) => {
+      let out = Array::slice([TInt], 0, 0)
+      let mut i = 0
+      while i < Array::length(ps) {
+        Array::push(out, resolve_tp(Array::get(ps, i)))
+        i = i + 1
+      }
+      TFn(out, resolve_tp(ret))
+    },
+    _ => ty
+  }
+}
+
+let use_ty = (t) -> match t { TFn(_, _) => 1, _ => 0 }
+
+let shape2 = (n) -> {
+  let resolved = TFn([TInt], TInt)
+  let pt2 = resolve_tp(resolved)
+  let tup = (pt2, n, n + 1)
+  let (pt, a, b) = tup
+  use_ty(pt) + use_ty(pt) + a + b
+}
+
+// Shape 3 (#715 / check_expr's four sibling `let resolved`): SIBLING scopes
+// re-binding the same name -- the name-keyed plan/codegen lists must not leak
+// one binding's planned drop into the other.
+let shape3 = (flag, n) -> {
+  if flag {
+    let resolved = TFn([TInt], TInt)
+    use_ty(resolved) + n
+  } else {
+    let resolved = TInt
+    use_ty(resolved) + n
+  }
+}
+
+// Shape 4 (#704/#708/#715): borrowed views (projection / Array::get results /
+// borrow-bound idents) stored into tuple, array, and ctor literals.
+let shape4 = (xs) -> {
+  let head = Array::get(xs, 0)
+  let pair = (head, Array::get(xs, 1))
+  let arr2 = [head, Array::get(xs, 1)]
+  let boxed = Some(head)
+  let (h2, t2) = pair
+  use_ty(h2) + use_ty(t2) + Array::length(arr2) + (match boxed { Some(x) => use_ty(x), None => 0 })
+}
+
+// Shape 5 (#706/#715 EForIn): for-in consuming outer bindings + the loop
+// variable (an Array::get borrow) passed to consuming calls per iteration.
+let shape5 = (xs) -> {
+  let mut total = 0
+  for x in xs {
+    total = total + use_ty(x)
+  }
+  total
+}
+
+// Shape 6 (#705 local-let annotation distribution): a LOCAL `let f: (T) -> R =
+// (x) -> ..` whose lambda param is consumed by two direct calls in sequential
+// `if`s. The TyFn annotation must be distributed onto the lambda's params
+// (parser distribute_local_fn_ann). Hiding the lambda behind the ascribe_wrap
+// `((__asc: T) -> __asc)(lam)` left the param invisible to Perceus's heap
+// inference: planned as scalar, ZERO dups, while the callee-owns callees each
+// dropped it -- freeing a live argument (double consume, use-after-free).
+enum Pat6 {
+  P6Bind(String);
+  P6Wild;
+  P6Int(Int)
+}
+
+let is_p6bind: (Pat6) -> Bool = (p) -> {
+  match p {
+    P6Bind(_) => true,
+    _ => false
+  }
+}
+
+let is_p6wild: (Pat6) -> Bool = (p) -> {
+  match p {
+    P6Wild => true,
+    _ => false
+  }
+}
+
+let shape6 = (k) -> {
+  let mut acc = 0
+  let check: (Pat6) -> Unit = (sp) -> {
+    if is_p6bind(sp) {
+      acc = acc + 1
+    } else {
+      ()
+    }
+    if is_p6wild(sp) {
+      acc = acc + 3
+    } else {
+      acc = acc + 2
+    }
+  }
+  check(P6Bind("x"))
+  check(P6Wild)
+  check(P6Int(k))
+  acc
+}
+
+let main = () -> Int {
+  let names = ["a", "b", "c"]
+  let effs = [[TInt], [TFn([TInt], TInt)], [TInt]]
+  let tys = [TInt, TFn([TInt], TInt), TInt]
+  let mut acc = 0
+  let mut k = 0
+  while k < 5000 {
+    match lookup(names, effs, "b") {
+      Some(arr) => { acc = acc + Array::length(arr) },
+      None => ()
+    }
+    // NOT-FOUND path: `found` stays None and is tail-returned + scope-dropped
+    // without ever being reassigned -- this is the path that needs the
+    // ELetMut DECLARATION dup (the found path above is provisioned by the
+    // reassignment budget re-application instead; both must hold).
+    match lookup(names, effs, "zzz") {
+      Some(_) => { acc = acc + 1000000 },
+      None => { acc = acc + 1 }
+    }
+    acc = acc + shape2(k % 7)
+    acc = acc + shape3(k % 2 == 0, k % 3)
+    acc = acc + shape4(tys)
+    acc = acc + shape5(tys)
+    acc = acc + shape6(k)
+    k = k + 1
+  }
+  acc
+}

@@ -69,7 +69,26 @@ Anti-patterns:
 ## Functions
 
 ```vibe
-// Preferred: type annotation separated from body
+// Top-level named functions: `fn` (#727, ADR-0064). Full annotations
+// required (param types + return type); recursion needs no `rec`.
+fn add(x: Int, y: Int) -> Int { x + y }
+fn fact(n: Int) -> Int {
+  if n < 2 { 1 } else { n * fact(n - 1) }
+}
+fn identity[T](x: T) -> T { x }                // generic
+fn show[T: Eq + Ord](x: T) -> T { x }          // trait bounds
+fn hello() -> Unit with { Stdout } { stdout_write("hi\n") }
+export fn doubled(x: Int) -> Int { x * 2 }
+```
+
+`fn` is top-level only — pure parse-time sugar for the `let rec` form below,
+so checker/codegen semantics are identical. The optional
+`where { requires: .., ensures: .. }` contract clause parses but has no
+semantics yet (ADR-0064 Phase E, #731). `vibe fmt`/normalize currently
+refuse fn-bearing sources (printer support lands with the fmt migration).
+
+```vibe
+// let form: values, computed functions, higher-order returns
 let add: (Int, Int) -> Int = (x, y) -> { x + y }
 let inc: (Int) -> Int = (x) -> { x + 1 }
 let rec fact: (Int) -> Int = (n) -> {     // recursive
@@ -444,11 +463,9 @@ import ./lib.vibe { func1, func2 }
 import ./lib.vibe { func1 as renamed }
 import ./lib.vibe { type MyType, trait Show }
 
-// module block
-module Math {
-  export let abs: (Int) -> Int = (x) -> { if x < 0 { 0 - x } else { x } }
-}
-Math::abs(-5)
+// module blocks (`module Math { ... }`) are REMOVED (#728, ADR-0063):
+// use file boundaries + import/export. `Type::method` / `Effect::Op`
+// qualified access is an independent mechanism and remains.
 ```
 
 Package refs: `@json`, `@lib/path` (hyphen/slash are part of name after `@`).
@@ -515,6 +532,29 @@ input
   |> String::split(",")
   |> Array::map(_, parse_int)
 ```
+
+## Conditional Compilation (`#cfg`)
+
+```vibe
+#cfg(dev)
+let debug_dump = (x) -> { ... }   // exists ONLY when the `dev` flag is active
+
+#cfg(dev)
+let main = () -> Int { debug_dump(run()) }
+
+#cfg(release)
+let main = () -> Int { run() }
+```
+
+- Activate flags at compile time: `VIBE_CFG=dev vibe build app.vibe` (comma-separated for multiple).
+- A `#cfg(flag)` statement whose flag is inactive is parsed (syntax must stay valid, like Rust's `cfg`) and **dropped before checking/codegen** — zero bytes in the output binary.
+- Top-level statements only (`let` / `enum` / `struct` / `impl` / ...).
+- `vibe fmt` / normalize refuses `#cfg` sources (formatting would delete disabled code).
+- Not usable inside the compiler's own source until the seed compiler understands it (see docs/selfhost-bootstrap.md).
+
+## RC Debug Mode (`VIBE_RC=shadow`)
+
+`VIBE_RC=shadow vibe build app.vibe` compiles on the Perceus RC path with **shadow-liveness instrumentation**: every freed heap block is marked in a shadow byte table, and the FIRST `rc_dup`/`rc_drop` touching a freed block executes `unreachable` — a deterministic trap at the faulting operation, instead of free-list corruption that crashes later at an unrelated location ("moving target", see issue #715). Debug-only: adds a memory pad + per-dup/drop checks. Normal builds (`VIBE_RC=1`/unset) are byte-identical to before this feature.
 
 ## File Conventions
 

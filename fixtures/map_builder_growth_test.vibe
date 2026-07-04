@@ -1,0 +1,71 @@
+// #723-family: MapBuilder / Map::set must grow past their old fixed
+// capacities (linear MapBuilder: 8 entries; gc MapBuilder / Map::set: 32).
+// The old append wrote past the fixed block with no check — silent heap
+// corruption that clobbered whatever the bump allocator placed next
+// (Json::parse of a >8-key object hit it). Found by fuzz-harness triage.
+
+let make_keys: (Int) -> Array[String] = (n) -> {
+  let seed = for i in [0] { "" }
+  let ks = Array::slice(seed, 0, 0)
+  let mut i = 0
+  while i < n {
+    Array::push(ks, String::concat("key", __to_string(i)))
+    i = i + 1
+  }
+  ks
+}
+
+let builder_sum: (Int) -> Int = (n) -> {
+  let ks = make_keys(n)
+  let b = MapBuilder::new()
+  let mut i = 0
+  while i < n {
+    MapBuilder::set(b, ks[i], (i + 1) * 10)
+    i = i + 1
+  }
+  let m = MapBuilder::freeze(b)
+  let mut sum = 0
+  let mut j = 0
+  while j < n {
+    sum = sum + Map::get(m, ks[j])
+    if !(Map::has_key(m, ks[j])) { sum = sum + 100000 } else { () }
+    j = j + 1
+  }
+  sum
+}
+
+test "MapBuilder grows past 8 entries" {
+  assert_eq(builder_sum(12), 780)
+}
+
+test "MapBuilder grows past 32 entries" {
+  assert_eq(builder_sum(40), 8200)
+}
+
+test "Map::set grows past 32 entries and updates in place" {
+  let ks = make_keys(40)
+  let mut m = MapBuilder::freeze(MapBuilder::new())
+  let mut i = 0
+  while i < 40 {
+    m = Map::set(m, ks[i], (i + 1) * 10)
+    i = i + 1
+  }
+  m = Map::set(m, ks[5], 999)
+  let mut sum = 0
+  let mut j = 0
+  while j < 40 {
+    sum = sum + Map::get(m, ks[j])
+    j = j + 1
+  }
+  assert_eq(sum, 9139)
+}
+
+test "MapBuilder::set updates an existing key in place (cross-backend semantics)" {
+  let b = MapBuilder::new()
+  MapBuilder::set(b, "k", 1)
+  MapBuilder::set(b, "k", 2)
+  MapBuilder::set(b, "j", 3)
+  let m = MapBuilder::freeze(b)
+  assert_eq(Map::get(m, "k"), 2)
+  assert_eq(Array::length(Map::keys(m)), 2)
+}

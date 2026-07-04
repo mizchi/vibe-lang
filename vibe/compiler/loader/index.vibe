@@ -33,6 +33,10 @@ import ./header_cache.vibe {
   load_or_parse_module_header_fs_impl
 }
 
+import ../contract/index.vibe {
+  check_contract, classify_contract_stmts, contract_facade_source, contract_hash, contract_surface_lines, extract_require_pins, package_hash_from_sources, parse_contract_program, verify_publish_bump
+}
+
 import ./manifest_sources.vibe {
   build_grouped_sources_from_manifest_rows,
   load_manifest_full_sources,
@@ -54,7 +58,10 @@ import ../module_graph_path.vibe {
   dir_of_path,
   resolve_import_path,
   resolve_import_path_candidates,
-  contains_path
+  contains_path,
+  path_set_add,
+  path_set_contains,
+  path_set_new
 }
 
 //# Path helpers
@@ -1047,18 +1054,273 @@ export let rec check_module: (String, String, Array[(String, String)], Array[Str
 
 //# FS-based source collection
 
-let rec collect_sources_rec: (String, Array[(String, String)], Array[String]) -> Unit with { Error, Fs } = (path, sources, visited) -> {
-  if contains_path(visited, path) {
+// `visited` is a `path_set` (#533): this recursion runs once per import
+// EDGE and the visited set grows to every module of the program, so the
+// previous linear `contains_path` scan was O(edges × modules). The set is
+// membership-only — `sources` keeps its own dependency-first order from
+// the recursion, which is what callers consume.
+// #729 (ADR-0063 Phase C-2): ingest an index.vibei contract. The contract is
+// conformance-checked against its declared implementation files and desugared
+// to plain facade source (re-export lines), so everything downstream of the
+// loader — type db, merge plan, codegen — sees ordinary vibe source and needs
+// no .vibei awareness. Implementation files are DECLARED by the contract
+// (`import ./impl.vibe {}`) rather than discovered: the Fs effect has no
+// directory listing yet (auto-discovery arrives with Fs::ReadDir, #730).
+let desugar_contract_source_fs: (String, String) -> String with { Error, Fs } = (path, source) -> {
+  let dir = dir_of_path(path)
+  let sibling_index = String::concat(dir, "/index.vibe")
+  if Fs::exists(sibling_index) {
+    throw("both index.vibe and index.vibei exist in \{dir} (#729): a boundary has exactly one index")
+  } else ()
+  let (decls, opaque_names, extra) = parse_contract_program(lex(source))
+  let (impl_raws, type_defs) = classify_contract_stmts(extra)
+  let impl_units = Array::slice([
+    ("", Array::slice([
+      SExport(Array::slice([
+        ""
+      ], 0, 0))
+    ], 0, 0))
+  ], 0, 0)
+  let union_stmts = Array::slice([
+    SExport(Array::slice([
+      ""
+    ], 0, 0))
+  ], 0, 0)
+  let mut ri = 0
+  while ri < Array::length(impl_raws) {
+    let raw = Array::get(impl_raws, ri)
+    let resolved = resolve_import_path(dir, raw)
+    let impl_text = Fs::read_file(resolved)
+    // impl files may carry their own require pin lines (extracted for real
+    // when the file itself is ingested) — blank them for the conformance
+    // parse here.
+    let (_, impl_blanked) = extract_require_pins(impl_text)
+    let impl_stmts = parse_program(lex(impl_blanked))
+    Array::push(impl_units, (raw, impl_stmts))
+    let mut si = 0
+    while si < Array::length(impl_stmts) {
+      Array::push(union_stmts, Array::get(impl_stmts, si))
+      si = si + 1
+    }
+    ri = ri + 1
+  }
+  let errors = check_contract(decls, opaque_names, union_stmts)
+  if Array::length(errors) > 0 {
+    throw("\{path}: contract violation: \{String::join(errors, "; ")}")
+  } else ()
+  contract_facade_source(decls, opaque_names, type_defs, impl_units)
+}
+
+// #730 (D-2): both content-addressing hashes of a contract package, from its
+// ORIGINAL on-disk texts (require lines included — they are part of the
+// hashed content, which is what makes a direct pin fix the transitive
+// closure). Paths in the package hash are package-relative ("index.vibei" +
+// each impl's raw import spelling), so the hash is location-independent —
+// the same function serves `vibe hash` on a working directory and store
+// verification of an installed copy.
+export let contract_package_hashes_fs: (String) -> (String, String) with { Error, Fs } = (path) -> {
+  let raw = Fs::read_file(path)
+  let (_, blanked) = extract_require_pins(raw)
+  let (decls, opaques, extra) = parse_contract_program(lex(blanked))
+  let (impl_raws, type_defs) = classify_contract_stmts(extra)
+  let dir = dir_of_path(path)
+  let sources = Array::slice([
+    ("", "")
+  ], 0, 0)
+  Array::push(sources, ("index.vibei", raw))
+  let mut ri = 0
+  while ri < Array::length(impl_raws) {
+    let iraw = Array::get(impl_raws, ri)
+    let itext = Fs::read_file(resolve_import_path(dir, iraw))
+    Array::push(sources, (iraw, itext))
+    ri = ri + 1
+  }
+  (package_hash_from_sources(sources), contract_hash(decls, opaques, type_defs))
+}
+
+// #730 (D-3): fill missing require pins OFFLINE from the workspace store.
+// `require @x/y 1.2.3` becomes `require @x/y 1.2.3 = #pkg:sha1:<hex>` when
+// .vibe/store/@x/y/ is installed; a package absent from the store is an
+// error (network fetch belongs to `vibe add`/`update`, never to fmt).
+// Pinned lines pass through untouched, so the rewrite is idempotent.
+export let fill_require_pins_fs: (String) -> String with { Error, Fs } = (source) -> {
+  fill_require_pins_fs_mode(source, false)
+}
+
+// repin=true rewrites EVERY require line to the store's current hash —
+// `vibe dedupe --apply` (#730 D-4): after updating a store package, one
+// pass re-points all pins in a file at the installed copies. With the
+// by-name store there is one installed version per package, so repinning
+// IS conflict resolution.
+export let fill_require_pins_fs_mode: (String, Bool) -> String with { Error, Fs } = (source, repin) -> {
+  let sb = StringBuilder::new()
+  let len = String::length(source)
+  let mut pos = 0
+  let mut scanning = true
+  while pos < len {
+    let mut nl = pos
+    while nl < len && String::char_code_at(source, nl) != 10 {
+      nl = nl + 1
+    }
+    let line = String::substring(source, pos, nl)
+    let trimmed = String::trim(line)
+    let mut emitted = false
+    if scanning && String::starts_with(trimmed, "require ") {
+      let (pins_one, _) = extract_require_pins(String::concat(trimmed, "\n"))
+      if Array::length(pins_one) == 1 {
+        let (pname, pver, ppin) = Array::get(pins_one, 0)
+        if ppin == "" || repin {
+          let store_index = String::concat(".vibe/store/", String::concat(pname, "/index.vibei"))
+          if Fs::exists(store_index) {
+            ()
+          } else {
+            throw("cannot pin \{pname} offline: not installed in the store (.vibe/store/\{pname}/)")
+          }
+          let (pkg_hash, _) = contract_package_hashes_fs(store_index)
+          StringBuilder::push(sb, "require \{pname} \{pver} = #\{pkg_hash}")
+          emitted = true
+        } else ()
+      } else ()
+    } else {
+      if String::length(trimmed) == 0 || String::starts_with(trimmed, "//") {
+        ()
+      } else {
+        scanning = false
+      }
+    }
+    if emitted {
+      ()
+    } else {
+      StringBuilder::push(sb, line)
+    }
+    if nl < len {
+      StringBuilder::push(sb, "\n")
+    } else ()
+    pos = nl + 1
+  }
+  StringBuilder::freeze(sb)
+}
+
+// #732 (Phase F): publish gate. Parse the previous and next contract
+// surfaces and verify the claimed version bump is exactly what the diff
+// requires (Elm-style machine-checked semver). Returns error strings;
+// empty = the release claim is honest.
+export let publish_check_fs: (String, String, String, String) -> Array[String] with { Error, Fs } = (prev_contract_path, next_contract_path, prev_version, next_version) -> {
+  let (_, prev_blanked) = extract_require_pins(Fs::read_file(prev_contract_path))
+  let (pd, po, pextra) = parse_contract_program(lex(prev_blanked))
+  let (_, ptypes) = classify_contract_stmts(pextra)
+  let (_, next_blanked) = extract_require_pins(Fs::read_file(next_contract_path))
+  let (nd, no, nextra) = parse_contract_program(lex(next_blanked))
+  let (_, ntypes) = classify_contract_stmts(nextra)
+  verify_publish_bump(
+    prev_version,
+    next_version,
+    contract_surface_lines(pd, po, ptypes),
+    contract_surface_lines(nd, no, ntypes)
+  )
+}
+
+// #730 (D-2): verify a store-resolved package against the importer's require
+// pin. The store is laid out BY NAME (.vibe/store/@scope/name/) and trusted
+// only through this hash check, so any mirror/copy mechanism is fine.
+let verify_store_package_fs: (String, Array[(String, String, String)], String) -> Unit with { Error, Fs } = (importer, pins, store_index_path) -> {
+  let prefix = ".vibe/store/"
+  let suffix = "/index.vibei"
+  let name = String::substring(
+    store_index_path,
+    String::length(prefix),
+    String::length(store_index_path) - String::length(suffix)
+  )
+  let mut pin_hash = ""
+  let mut pin_found = false
+  let mut pi = 0
+  while pi < Array::length(pins) {
+    let (pname, _, phash) = Array::get(pins, pi)
+    if pname == name {
+      pin_hash = phash
+      pin_found = true
+    } else ()
+    pi = pi + 1
+  }
+  if pin_found {
+    ()
+  } else {
+    throw("no require pin for \{name} in \{importer} (add: require \{name} <x.y.z> = #<pkg-hash>; compute with `vibe hash`)")
+  }
+  if pin_hash == "" {
+    throw("unpinned require for \{name} in \{importer}: run `vibe fmt` (VIBE_FILL_PINS=1) to insert the pin from the store")
+  } else ()
+  if Fs::exists(store_index_path) {
+    ()
+  } else {
+    throw("package \{name} is not installed in the store (.vibe/store/\{name}/)")
+  }
+  let (actual, _) = contract_package_hashes_fs(store_index_path)
+  if actual == pin_hash {
+    ()
+  } else {
+    throw("pin mismatch for \{name}: \{importer} requires #\{pin_hash} but the store copy is #\{actual}")
+  }
+}
+
+// #729 (Phase C-3): incoming boundary enforcement. A directory with an
+// index.vibei contract is a boundary: files outside it may import only the
+// contract itself, never package internals. Checked at every ancestor level
+// of the target, so nested contract packages are boundaries too. Directories
+// with a plain index.vibe keep the legacy permissive behavior until the
+// Phase G migration (#732) — the existing tree imports files inside such
+// directories directly. The escape rule (relative imports above the package
+// root) arrives with @scope resolution (#730).
+let enforce_incoming_boundary_fs: (String, String) -> Unit with { Error, Fs } = (importer, target) -> {
+  let tlen = String::length(target)
+  let mut p = 0
+  while p < tlen {
+    if String::char_code_at(target, p) == '/' && p > 0 {
+      let dir = target[0:p]
+      let contract = String::concat(dir, "/index.vibei")
+      if target == contract {
+        ()
+      } else if Fs::exists(contract) {
+        let dir_prefix = String::concat(dir, "/")
+        if String::starts_with(importer, dir_prefix) {
+          ()
+        } else {
+          throw("cannot import \{target} from outside its package boundary \{dir} (#729); import \{dir} (its contract) instead")
+        }
+      } else ()
+    } else ()
+    p = p + 1
+  }
+}
+
+let rec collect_sources_rec: (String, Array[(String, String)], Array[Array[String]]) -> Unit with { Error, Fs } = (path, sources, visited) -> {
+  if path_set_contains(visited, path) {
     ()
   }
   else {
-    Array::push(visited, path)
-    let source = Fs::read_file(path)
+    path_set_add(visited, path)
+    let raw_source = Fs::read_file(path)
+    // #730 (D-2): require pin lines are a leading directive, extracted and
+    // blanked (offset-preserving) before anything parses the source.
+    let (pins, pin_blanked) = extract_require_pins(raw_source)
+    let source = if String::ends_with(path, ".vibei") {
+      desugar_contract_source_fs(path, pin_blanked)
+    } else {
+      pin_blanked
+    }
     let (deps, _, _) = load_or_parse_module_header_fs(path, source, 0)
     // First, recurse into dependencies (imports and re-exports)
     let mut i = 0
     while i < Array::length(deps) {
-      collect_sources_rec(Array::get(deps, i), sources, visited)
+      let dep = Array::get(deps, i)
+      enforce_incoming_boundary_fs(path, dep)
+      // Only a store PACKAGE reference (its contract) is pin-verified;
+      // paths inside an already-verified store package (its impl files)
+      // are covered by that package's hash.
+      if String::starts_with(dep, ".vibe/store/") && String::ends_with(dep, "/index.vibei") {
+        verify_store_package_fs(path, pins, dep)
+      } else ()
+      collect_sources_rec(dep, sources, visited)
       i = i + 1
     }
     // Then add this module (dependencies come first)
@@ -1093,7 +1355,7 @@ export let collect_all_sources_fs: (String) -> Array[(String, String)] with { Er
                 },
                 None => {
                   let sources = Array::slice([("", "")], 0, 0)
-                  let visited = Array::slice([""], 0, 0)
+                  let visited = path_set_new()
                   collect_sources_rec(entry_path, sources, visited)
                   store_persistent_sources_cache(entry_path, None, sources)
                   sources

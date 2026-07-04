@@ -9,7 +9,7 @@ import .. / common_analysis {
 }
 
 import .. / common_base {
-  CompileCtxGc, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, find_func_stmt, lookup_ctor, resolve_func, resolve_local
+  CompileCtxGc, CtorTable, FuncTable, LambdaTable, StrTable, agg_log_reset_above, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, find_func_stmt, lookup_ctor, resolve_func, resolve_local
 }
 
 import .. / common_extractors {
@@ -21,35 +21,35 @@ import .. / wasm_emit {
 }
 
 import ./backend_builtins_array_alloc.vibe {
-  gen_arr_len_body, gen_arr_new_body
+  gc_gen_arr_len_body, gc_gen_arr_new_body
 }
 
 import ./backend_builtins_array_get.vibe {
-  gen_arr_get_body
+  gc_gen_arr_get_body
 }
 
 import ./backend_builtins_array_push.vibe {
-  gen_arr_push_body
+  gc_gen_arr_push_body
 }
 
 import ./backend_builtins_array_set.vibe {
-  gen_arr_set_body
+  gc_gen_arr_set_body
 }
 
 import ./backend_builtins_numeric.vibe {
-  gen_double_to_int_body, gen_identity_body, gen_int_to_double_body
+  gc_gen_double_to_int_body, gc_gen_identity_body, gc_gen_int_to_double_body
 }
 
 import ./backend_builtins_print.vibe {
-  gen_print_i64_body, gen_print_str_body
+  gc_gen_print_i64_body, gc_gen_print_str_body
 }
 
 import ./backend_builtins_string.vibe {
-  gen_str_concat_body, gen_str_eq_body, gen_str_len_body
+  gc_gen_str_concat_body, gc_gen_str_eq_body, gc_gen_str_len_body
 }
 
 import ./backend_builtins_string_extra.vibe {
-  gen_str_char_code_at_body, gen_str_from_char_code_body, gen_str_substring_body
+  gc_gen_str_char_code_at_body, gc_gen_str_from_char_code_body, gc_gen_str_substring_body
 }
 
 //# Functions
@@ -79,7 +79,7 @@ let field_index_in_gc: (Array[String], String) -> Int = (fnames, field) -> {
 // wrong offset. Falls back to a global first-match scan only when `sname` is
 // absent from the table.
 let struct_field_index_gc: (CompileCtxGc, String, String) -> Int with { Error } = (ctx, sname, field) -> {
-  let names = ctx.ctor_table.struct_names
+  let names = ctx.gc_ctor_table.struct_names
   let mut si = 0
   let mut sidx = -1
   while si < Array::length(names) {
@@ -91,7 +91,7 @@ let struct_field_index_gc: (CompileCtxGc, String, String) -> Int with { Error } 
     }
   }
   if sidx >= 0 {
-    let found = field_index_in_gc(Array::get(ctx.ctor_table.struct_field_names, sidx), field)
+    let found = field_index_in_gc(Array::get(ctx.gc_ctor_table.struct_field_names, sidx), field)
     if found < 0 {
       throw(String::concat(String::concat(String::concat("unknown field `", field), "` in struct "), sname))
     } else {
@@ -101,7 +101,7 @@ let struct_field_index_gc: (CompileCtxGc, String, String) -> Int with { Error } 
     let mut gsi = 0
     let mut gfound = -1
     while gsi < Array::length(names) {
-      let f = field_index_in_gc(Array::get(ctx.ctor_table.struct_field_names, gsi), field)
+      let f = field_index_in_gc(Array::get(ctx.gc_ctor_table.struct_field_names, gsi), field)
       if f >= 0 {
         gfound = f
         gsi = Array::length(names)
@@ -117,6 +117,320 @@ let struct_field_index_gc: (CompileCtxGc, String, String) -> Int with { Error } 
   }
 }
 
+
+// #538 recursive pattern support. The old cond-arm compiler tested only the
+// TOP-LEVEL tag and bound only top-level PBind args: a nested ctor pattern
+// (`Node(Leaf(a), r)`) neither narrowed the match (wrong arm taken) nor bound
+// its variables ("undefined variable: a"). The helpers below mirror the
+// linear backend's #705 short-circuit shape: a test leaves exactly one i32 on
+// the stack, nested payload tests run INSIDE `if (result i32)` blocks guarded
+// by the parent tag test, and binds recurse through fresh temp locals.
+
+// Does `pat` constrain the value at all (vs matching anything)?
+let rec gc_pat_needs_test: (Pat) -> Bool = (p) -> {
+  match p {
+    PBind(_) => false,
+    PWild => false,
+    PTuple(ps) => {
+      let mut any = false
+      let mut i = 0
+      while i < Array::length(ps) {
+        if gc_pat_needs_test(Array::get(ps, i)) {
+          any = true
+        }
+        i = i + 1
+      }
+      any
+    },
+    PStruct(_, fields) => {
+      let mut any = false
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, sub) = Array::get(fields, i)
+        if gc_pat_needs_test(sub) {
+          any = true
+        }
+        i = i + 1
+      }
+      any
+    },
+    _ => true
+  }
+}
+
+// Does `pat` bind any variables?
+let rec gc_pat_has_binds: (Pat) -> Bool = (p) -> {
+  match p {
+    PBind(_) => true,
+    PCtor(_, args) => {
+      let mut any = false
+      let mut i = 0
+      while i < Array::length(args) {
+        if gc_pat_has_binds(Array::get(args, i)) {
+          any = true
+        }
+        i = i + 1
+      }
+      any
+    },
+    PTuple(ps) => {
+      let mut any = false
+      let mut i = 0
+      while i < Array::length(ps) {
+        if gc_pat_has_binds(Array::get(ps, i)) {
+          any = true
+        }
+        i = i + 1
+      }
+      any
+    },
+    PStruct(_, fields) => {
+      let mut any = false
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, sub) = Array::get(fields, i)
+        if gc_pat_has_binds(sub) {
+          any = true
+        }
+        i = i + 1
+      }
+      any
+    },
+    POr(l, r) => gc_pat_has_binds(l) || gc_pat_has_binds(r),
+    _ => false
+  }
+}
+
+// Load ctor payload `idx` of the tagged ctor value in `vloc` into a fresh
+// local (ctor layout: value|1 -> [tag@0][argc@4][payload@8+i*8]).
+let gc_extract_ctor_payload: (Bytes, Array[String], Int, Int) -> Int = (buf, local_names, vloc, idx) -> {
+  let tl = Array::length(local_names)
+  emit_local_get(buf, vloc)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i64_load(buf, 3, 8 + idx * 8)
+  emit_local_set(buf, tl)
+  Array::push(local_names, "__pat_tmp")
+  tl
+}
+
+// Load tuple element `idx` of the untagged tuple pointer in `vloc` (tuple
+// layout: raw even pointer, elements at i*8, no header).
+let gc_extract_tuple_elem: (Bytes, Array[String], Int, Int) -> Int = (buf, local_names, vloc, idx) -> {
+  let tl = Array::length(local_names)
+  emit_local_get(buf, vloc)
+  emit_i32_wrap_i64(buf)
+  emit_i64_load(buf, 3, idx * 8)
+  emit_local_set(buf, tl)
+  Array::push(local_names, "__pat_tmp")
+  tl
+}
+
+// Emit the truth test for `pat` against the value in `vloc`: pushes exactly
+// one i32 (1 = matched). Sub-tests short-circuit behind the parent test via
+// `if (result i32)` (bytes 4, 127) so payload loads never run on a value of
+// the wrong shape.
+let rec emit_gc_pat_test: (Bytes, Array[String], Int, Pat, CompileCtxGc) -> Unit with { Error } = (buf, local_names, vloc, pat, ctx) -> {
+  match pat {
+    PInt(n) => {
+      emit_local_get(buf, vloc)
+      emit_i64_const(buf, n)
+      emit_i64_eq(buf)
+    },
+    PBool(bv) => {
+      emit_local_get(buf, vloc)
+      emit_i64_const(buf, if bv {
+        1
+      } else {
+        0
+      })
+      emit_i64_eq(buf)
+    },
+    PString(sval) => {
+      let str_idx = str_table_lookup(ctx.str_table.strs, sval)
+      if str_idx >= 0 {
+        let (streq_idx, _, _) = resolve_func(ctx.func_table, "String::equals")
+        emit_local_get(buf, vloc)
+        emit_str_ref(buf, Array::get(ctx.str_table.offsets, str_idx), Array::get(ctx.str_table.lengths, str_idx))
+        // A user-shadowed String::equals would need a trailing env; the
+        // builtin does not (idx < func_offset).
+        if ctx.func_offset > 0 && streq_idx >= ctx.func_offset {
+          emit_i64_const(buf, 0)
+        } else {
+          ()
+        }
+        emit_call(buf, streq_idx)
+        emit_i64_const(buf, 1)
+        emit_i64_eq(buf)
+      } else {
+        emit_i32_const(buf, 0)
+      }
+    },
+    PBind(_) => emit_i32_const(buf, 1),
+    PWild => emit_i32_const(buf, 1),
+    POr(l, r) => {
+      emit_gc_pat_test(buf, local_names, vloc, l, ctx)
+      bytebuf_push(buf, 4)
+      bytebuf_push(buf, 127)
+      emit_i32_const(buf, 1)
+      emit_else(buf)
+      emit_gc_pat_test(buf, local_names, vloc, r, ctx)
+      emit_end(buf)
+    },
+    PCtor(cname, cargs) => {
+      let ctor_ci = lookup_ctor(ctx.gc_ctor_table.names, cname, 0)
+      let expected_tag = if ctor_ci >= 0 {
+        Array::get(ctx.gc_ctor_table.tags, ctor_ci)
+      } else {
+        -1
+      }
+      emit_local_get(buf, vloc)
+      emit_i64_const(buf, -2)
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i32_load(buf, 2, 0)
+      emit_i32_const(buf, expected_tag)
+      emit_i32_eq(buf)
+      let mut any_sub = false
+      let mut ci = 0
+      while ci < Array::length(cargs) {
+        if gc_pat_needs_test(Array::get(cargs, ci)) {
+          any_sub = true
+        }
+        ci = ci + 1
+      }
+      if any_sub {
+        bytebuf_push(buf, 4)
+        bytebuf_push(buf, 127)
+        emit_i32_const(buf, 1)
+        let mut si = 0
+        while si < Array::length(cargs) {
+          let sub = Array::get(cargs, si)
+          if gc_pat_needs_test(sub) {
+            bytebuf_push(buf, 4)
+            bytebuf_push(buf, 127)
+            let tl = gc_extract_ctor_payload(buf, local_names, vloc, si)
+            emit_gc_pat_test(buf, local_names, tl, sub, ctx)
+            emit_else(buf)
+            emit_i32_const(buf, 0)
+            emit_end(buf)
+          } else {
+            ()
+          }
+          si = si + 1
+        }
+        emit_else(buf)
+        emit_i32_const(buf, 0)
+        emit_end(buf)
+      } else {
+        ()
+      }
+    },
+    PTuple(ps) => {
+      emit_i32_const(buf, 1)
+      let mut ti = 0
+      while ti < Array::length(ps) {
+        let sub = Array::get(ps, ti)
+        if gc_pat_needs_test(sub) {
+          bytebuf_push(buf, 4)
+          bytebuf_push(buf, 127)
+          let tl = gc_extract_tuple_elem(buf, local_names, vloc, ti)
+          emit_gc_pat_test(buf, local_names, tl, sub, ctx)
+          emit_else(buf)
+          emit_i32_const(buf, 0)
+          emit_end(buf)
+        } else {
+          ()
+        }
+        ti = ti + 1
+      }
+    },
+    PStruct(sname, fields) => {
+      emit_i32_const(buf, 1)
+      let mut fi = 0
+      while fi < Array::length(fields) {
+        let (fname, sub) = Array::get(fields, fi)
+        if gc_pat_needs_test(sub) {
+          bytebuf_push(buf, 4)
+          bytebuf_push(buf, 127)
+          let off_idx = struct_field_index_gc(ctx, sname, fname)
+          let tl = gc_extract_ctor_payload(buf, local_names, vloc, off_idx)
+          emit_gc_pat_test(buf, local_names, tl, sub, ctx)
+          emit_else(buf)
+          emit_i32_const(buf, 0)
+          emit_end(buf)
+        } else {
+          ()
+        }
+        fi = fi + 1
+      }
+    }
+  }
+}
+
+// Bind every variable under `pat` from the value in `vloc` (recursing through
+// payload extraction). Or-patterns that bind are rejected: the two sides may
+// bind from different shapes and this backend has no phi for that yet.
+let rec emit_gc_pat_binds: (Bytes, Array[String], Int, Pat, CompileCtxGc) -> Unit with { Error } = (buf, local_names, vloc, pat, ctx) -> {
+  match pat {
+    PBind(name) => {
+      let bl = Array::length(local_names)
+      emit_local_get(buf, vloc)
+      emit_local_set(buf, bl)
+      Array::push(local_names, name)
+    },
+    PCtor(_, cargs) => {
+      let mut i = 0
+      while i < Array::length(cargs) {
+        let sub = Array::get(cargs, i)
+        if gc_pat_has_binds(sub) {
+          let tl = gc_extract_ctor_payload(buf, local_names, vloc, i)
+          emit_gc_pat_binds(buf, local_names, tl, sub, ctx)
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+    },
+    PTuple(ps) => {
+      let mut i = 0
+      while i < Array::length(ps) {
+        let sub = Array::get(ps, i)
+        if gc_pat_has_binds(sub) {
+          let tl = gc_extract_tuple_elem(buf, local_names, vloc, i)
+          emit_gc_pat_binds(buf, local_names, tl, sub, ctx)
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+    },
+    PStruct(sname, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (fname, sub) = Array::get(fields, i)
+        if gc_pat_has_binds(sub) {
+          let off_idx = struct_field_index_gc(ctx, sname, fname)
+          let tl = gc_extract_ctor_payload(buf, local_names, vloc, off_idx)
+          emit_gc_pat_binds(buf, local_names, tl, sub, ctx)
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+    },
+    POr(l, r) => {
+      if gc_pat_has_binds(l) || gc_pat_has_binds(r) {
+        throw("GC codegen: or-pattern with variable binds is unsupported")
+      } else {
+        ()
+      }
+    },
+    _ => ()
+  }
+}
+
 let compile_match_gc: (Bytes, Expr, Array[(Pat, Expr)], Array[String], Int, CompileCtxGc, Int, (Bytes, Expr, Array[String], Int, Int) -> Int with { Error }) -> Int with { Error } = (buf, scrutinee, arms, local_names, next_local, ctx, ld, ce) -> {
   let scrut_local = next_local
   Array::push(local_names, "__match_scrut")
@@ -128,138 +442,28 @@ let compile_match_gc: (Bytes, Expr, Array[(Pat, Expr)], Array[String], Int, Comp
   let mut max_nl = nl1
   let mut ai = 0
   while ai < num_cond_arms {
-    let (p, _) = Array::get(arms, ai)
-    match p {
-      PInt(n) => {
-        emit_local_get(buf, scrut_local)
-        emit_i64_const(buf, n)
-        emit_i64_eq(buf)
-        emit_if_i64(buf)
-        0
-      },
-      PBool(bv) => {
-        emit_local_get(buf, scrut_local)
-        emit_i64_const(buf, if bv {
-          1
-        } else {
-          0
-        })
-        emit_i64_eq(buf)
-        emit_if_i64(buf)
-        0
-      },
-      PCtor(cname_cond, _) => {
-        let ctor_ci = lookup_ctor(ctx.ctor_table.names, cname_cond, 0)
-        let expected_tag = if ctor_ci >= 0 {
-          Array::get(ctx.ctor_table.tags, ctor_ci)
-        } else {
-          -1
-        }
-        emit_local_get(buf, scrut_local)
-        emit_i64_const(buf, -2)
-        emit_i64_and(buf)
-        emit_i32_wrap_i64(buf)
-        emit_i32_load(buf, 2, 0)
-        emit_i32_const(buf, expected_tag)
-        emit_i32_eq(buf)
-        emit_if_i64(buf)
-        0
-      },
-      PString(sval) => {
-        let str_idx = str_table_lookup(ctx.str_table.strs, sval)
-        if str_idx >= 0 {
-          emit_local_get(buf, scrut_local)
-          emit_str_ref(buf, Array::get(ctx.str_table.offsets, str_idx), Array::get(ctx.str_table.lengths, str_idx))
-          emit_call(buf, 4)
-          emit_i64_const(buf, 1)
-          emit_i64_eq(buf)
-          emit_if_i64(buf)
-        }
-        0
-      },
-      _ => 0
-    }
     let names_len_at_arm = Array::length(local_names)
-    let (p2, arm_body) = Array::get(arms, ai)
+    let (p, arm_body) = Array::get(arms, ai)
     let ld_arm = if ld >= 0 {
       ld + ai + 1
     } else {
       -1
     }
-    match p2 {
-      PCtor(_, cargs_bind) => {
-        let mut cbi = 0
-        while cbi < Array::length(cargs_bind) {
-          match Array::get(cargs_bind, cbi) {
-            PBind(pname) => {
-              let fl = Array::length(local_names)
-              emit_local_get(buf, scrut_local)
-              emit_i64_const(buf, -2)
-              emit_i64_and(buf)
-              emit_i32_wrap_i64(buf)
-              emit_i64_load(buf, 3, 8 + cbi * 8)
-              emit_local_set(buf, fl)
-              Array::push(local_names, pname)
-              0
-            },
-            PWild => 0,
-            _ => 0
-          }
-          cbi = cbi + 1
-        }
-        let arm_nl = ce(buf, arm_body, local_names, Array::length(local_names), ld_arm)
-        if arm_nl > max_nl {
-          max_nl = arm_nl
-        }
-        0
-      },
-      PTuple(tpats) => {
-        let mut tbi = 0
-        while tbi < Array::length(tpats) {
-          match Array::get(tpats, tbi) {
-            PBind(tname) => {
-              let tl = Array::length(local_names)
-              emit_local_get(buf, scrut_local)
-              emit_i64_const(buf, -2)
-              emit_i64_and(buf)
-              emit_i32_wrap_i64(buf)
-              emit_i64_load(buf, 3, 8 + tbi * 8)
-              emit_local_set(buf, tl)
-              Array::push(local_names, tname)
-              0
-            },
-            PWild => 0,
-            _ => 0
-          }
-          tbi = tbi + 1
-        }
-        let arm_nl = ce(buf, arm_body, local_names, Array::length(local_names), ld_arm)
-        if arm_nl > max_nl {
-          max_nl = arm_nl
-        }
-        0
-      },
-      PBind(bname_arm) => {
-        let bl = Array::length(local_names)
-        emit_local_get(buf, scrut_local)
-        emit_local_set(buf, bl)
-        Array::push(local_names, bname_arm)
-        let arm_nl = ce(buf, arm_body, local_names, Array::length(local_names), ld_arm)
-        if arm_nl > max_nl {
-          max_nl = arm_nl
-        }
-        0
-      },
-      _ => {
-        let arm_nl = ce(buf, arm_body, local_names, nl1, ld_arm)
-        if arm_nl > max_nl {
-          max_nl = arm_nl
-        }
-        0
-      }
+    // Recursive test (nested payload sub-tests narrow the arm correctly)...
+    emit_gc_pat_test(buf, local_names, scrut_local, p, ctx)
+    emit_if_i64(buf)
+    // ...then recursive binds (nested PBinds included).
+    emit_gc_pat_binds(buf, local_names, scrut_local, p, ctx)
+    let arm_nl = ce(buf, arm_body, local_names, Array::length(local_names), ld_arm)
+    if arm_nl > max_nl {
+      max_nl = arm_nl
+    }
+    if Array::length(local_names) > max_nl {
+      max_nl = Array::length(local_names)
     }
     emit_else(buf)
     Array::truncate(local_names, names_len_at_arm)
+    agg_log_reset_above(ctx.gc_agg_local_slots, names_len_at_arm)
     ai = ai + 1
   }
   let ld_catch = if ld >= 0 {
@@ -270,94 +474,11 @@ let compile_match_gc: (Bytes, Expr, Array[(Pat, Expr)], Array[String], Int, Comp
   let _names_len_at_catch = Array::length(local_names)
   if catchall_idx < num_arms {
     let (cp, cbody) = Array::get(arms, catchall_idx)
-    let catch_nl = match cp {
-      PBind(bname) => {
-        let bind_local = Array::length(local_names)
-        emit_local_get(buf, scrut_local)
-        emit_local_set(buf, bind_local)
-        Array::push(local_names, bname)
-        ce(buf, cbody, local_names, Array::length(local_names), ld_catch)
-      },
-      PCtor(_cname, cargs) => {
-        let mut cbi2 = 0
-        while cbi2 < Array::length(cargs) {
-          match Array::get(cargs, cbi2) {
-            PBind(pname) => {
-              let fl2 = Array::length(local_names)
-              emit_local_get(buf, scrut_local)
-              emit_i64_const(buf, -2)
-              emit_i64_and(buf)
-              emit_i32_wrap_i64(buf)
-              emit_i64_load(buf, 3, 8 + cbi2 * 8)
-              emit_local_set(buf, fl2)
-              Array::push(local_names, pname)
-              0
-            },
-            PWild => 0,
-            _ => 0
-          }
-          cbi2 = cbi2 + 1
-        }
-        ce(buf, cbody, local_names, Array::length(local_names), ld_catch)
-      },
-      PTuple(pats) => {
-        let ptr_local2 = Array::length(local_names)
-        emit_local_get(buf, scrut_local)
-        emit_local_set(buf, ptr_local2)
-        Array::push(local_names, "__tup_ptr2")
-        let mut pi2 = 0
-        while pi2 < Array::length(pats) {
-          let tp = Array::get(pats, pi2)
-          match tp {
-            PBind(pname) => {
-              let field_l = Array::length(local_names)
-              emit_local_get(buf, ptr_local2)
-              emit_i32_wrap_i64(buf)
-              emit_i64_load(buf, 3, pi2 * 8)
-              emit_local_set(buf, field_l)
-              Array::push(local_names, pname)
-              0
-            },
-            PWild => 0,
-            _ => throw("unsupported pattern in tuple destructure")
-          }
-          pi2 = pi2 + 1
-        }
-        ce(buf, cbody, local_names, Array::length(local_names), ld_catch)
-      },
-      PStruct(__sname, sfields) => {
-        // An irrefutable struct pattern `S::{ x, y }` as the catch-all arm: bind
-        // every field by NAME from the scrutinee struct pointer (offset from the
-        // field-name table, so pattern order is independent of declaration).
-        let sp_ptr = Array::length(local_names)
-        emit_local_get(buf, scrut_local)
-        emit_local_set(buf, sp_ptr)
-        Array::push(local_names, "__struct_ptr")
-        let mut sfi = 0
-        while sfi < Array::length(sfields) {
-          let (fname, subpat) = Array::get(sfields, sfi)
-          match subpat {
-            PBind(pname) => {
-              let off = 8 + struct_field_index_gc(ctx, __sname, fname) * 8
-              let fl = Array::length(local_names)
-              emit_local_get(buf, sp_ptr)
-              emit_i64_const(buf, -2)
-              emit_i64_and(buf)
-              emit_i32_wrap_i64(buf)
-              emit_i64_load(buf, 3, off)
-              emit_local_set(buf, fl)
-              Array::push(local_names, pname)
-              0
-            },
-            PWild => 0,
-            _ => 0
-          }
-          sfi = sfi + 1
-        }
-        ce(buf, cbody, local_names, Array::length(local_names), ld_catch)
-      },
-      _ => ce(buf, cbody, local_names, Array::length(local_names), ld_catch)
-    }
+    // Catch-all arm: recursive binds handle PBind / PCtor / PTuple / PStruct
+    // uniformly, including nested payload binds (and fix the old tuple-bind
+    // offset bug: tuples have no header, elements sit at i*8).
+    emit_gc_pat_binds(buf, local_names, scrut_local, cp, ctx)
+    let catch_nl = ce(buf, cbody, local_names, Array::length(local_names), ld_catch)
     if catch_nl > max_nl {
       max_nl = catch_nl
     }

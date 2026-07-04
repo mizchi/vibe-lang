@@ -9,7 +9,7 @@ import .. / common_analysis {
 }
 
 import .. / common_base {
-  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_gt_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
+  emit_rc_word_inc_saturating, rc_shadow_base, CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_gt_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
 }
 
 import .. / common_extractors {
@@ -28,7 +28,7 @@ export let gen_identity_body: () -> Bytes = () -> {
   b
 }
 
-export let gen_arr_slice_body: (Bool, Int) -> Bytes = (enable_rc, rc_alloc_idx) -> {
+export let gen_arr_slice_body: (Bool, Int, Bool) -> Bytes = (enable_rc, rc_alloc_idx, rc_shadow) -> {
   let b = bytebuf_new()
   if enable_rc {
     // ADR-0055 Stage 4: build the slice as a self-describing RC block, the same
@@ -152,23 +152,30 @@ export let gen_arr_slice_body: (Bool, Int) -> Bytes = (enable_rc, rc_alloc_idx) 
     emit_i64_shr_s(b)
     emit_i64_eqz(b)
     emit_if_void(b)
+    // #715 recurrence guard (VIBE_RC=shadow): trap on dup-of-freed element.
+    if rc_shadow {
+      emit_local_get(b, 10)
+      emit_i64_const(b, -2)
+      emit_i64_and(b)
+      emit_i32_wrap_i64(b)
+      emit_i32_const(b, rc_shadow_base())
+      emit_i32_add(b)
+      emit_i32_load8_u(b, 0, 0)
+      emit_if_void(b)
+      bytebuf_push(b, 0)
+      emit_end(b)
+    } else {
+      ()
+    }
     // rc_count++ at (elem & -2) - 4
-    emit_local_get(b, 10)
-    emit_i64_const(b, -2)
-    emit_i64_and(b)
-    emit_i32_wrap_i64(b)
-    emit_i32_const(b, 4)
-    emit_i32_sub(b)
-    emit_local_get(b, 10)
-    emit_i64_const(b, -2)
-    emit_i64_and(b)
-    emit_i32_wrap_i64(b)
-    emit_i32_const(b, 4)
-    emit_i32_sub(b)
-    emit_i32_load(b, 2, 0)
-    emit_i32_const(b, 1)
-    emit_i32_add(b)
-    emit_i32_store(b, 2, 0)
+    emit_rc_word_inc_saturating(b, () -> {
+      emit_local_get(b, 10)
+      emit_i64_const(b, -2)
+      emit_i64_and(b)
+      emit_i32_wrap_i64(b)
+      emit_i32_const(b, 4)
+      emit_i32_sub(b)
+    })
     emit_end(b)
     emit_end(b)
     // i++
@@ -845,7 +852,7 @@ export let gen_bytes_slice_body: (Bool, Int, Int, Int) -> Bytes = (enable_rc, by
   b
 }
 
-export let gen_arr_push_all_body: (Bool, Int) -> Bytes = (enable_rc, rc_alloc_idx) -> {
+export let gen_arr_push_all_body: (Bool, Int, Bool) -> Bytes = (enable_rc, rc_alloc_idx, rc_shadow) -> {
   let b = bytebuf_new()
   if enable_rc {
     // ADR-0055 Stage 4: in-place append that keeps `a` a valid RC array. Untag
@@ -926,6 +933,32 @@ export let gen_arr_push_all_body: (Bool, Int) -> Bytes = (enable_rc, rc_alloc_id
     emit_i32_add(b)
     emit_i32_ne(b)
     emit_if_void(b)
+    // #715 recurrence guard (VIBE_RC=shadow): double-free check for the
+    // grown buffer -- a second free-list push of the same buffer makes two
+    // later allocations return overlapping memory (type confusion), which
+    // plain marking cannot catch. Works under quarantine too (marks are
+    // permanent).
+    if rc_shadow {
+      emit_local_get(b, 6)
+      emit_i32_const(b, rc_shadow_base())
+      emit_i32_add(b)
+      emit_i32_load8_u(b, 0, 0)
+      emit_if_void(b)
+      bytebuf_push(b, 0)
+      emit_end(b)
+    } else {
+      ()
+    }
+    // #715 recurrence guard (VIBE_RC=shadow): mark the old grown buffer freed.
+    if rc_shadow {
+      emit_local_get(b, 6)
+      emit_i32_const(b, rc_shadow_base())
+      emit_i32_add(b)
+      emit_i32_const(b, 1)
+      emit_i32_store8(b, 0, 0)
+    } else {
+      ()
+    }
     emit_local_get(b, 6)
     emit_i32_const(b, 4)
     emit_i32_sub(b)
@@ -991,22 +1024,29 @@ export let gen_arr_push_all_body: (Bool, Int) -> Bytes = (enable_rc, rc_alloc_id
     emit_i64_shr_s(b)
     emit_i64_eqz(b)
     emit_if_void(b)
-    emit_local_get(b, 12)
-    emit_i64_const(b, -2)
-    emit_i64_and(b)
-    emit_i32_wrap_i64(b)
-    emit_i32_const(b, 4)
-    emit_i32_sub(b)
-    emit_local_get(b, 12)
-    emit_i64_const(b, -2)
-    emit_i64_and(b)
-    emit_i32_wrap_i64(b)
-    emit_i32_const(b, 4)
-    emit_i32_sub(b)
-    emit_i32_load(b, 2, 0)
-    emit_i32_const(b, 1)
-    emit_i32_add(b)
-    emit_i32_store(b, 2, 0)
+    // #715 recurrence guard (VIBE_RC=shadow): trap on dup-of-freed element.
+    if rc_shadow {
+      emit_local_get(b, 12)
+      emit_i64_const(b, -2)
+      emit_i64_and(b)
+      emit_i32_wrap_i64(b)
+      emit_i32_const(b, rc_shadow_base())
+      emit_i32_add(b)
+      emit_i32_load8_u(b, 0, 0)
+      emit_if_void(b)
+      bytebuf_push(b, 0)
+      emit_end(b)
+    } else {
+      ()
+    }
+    emit_rc_word_inc_saturating(b, () -> {
+      emit_local_get(b, 12)
+      emit_i64_const(b, -2)
+      emit_i64_and(b)
+      emit_i32_wrap_i64(b)
+      emit_i32_const(b, 4)
+      emit_i32_sub(b)
+    })
     emit_end(b)
     emit_end(b)
     emit_local_get(b, 11)

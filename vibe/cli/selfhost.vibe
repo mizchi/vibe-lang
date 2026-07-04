@@ -6,6 +6,18 @@ import ../compiler/selfhost_cli_support.vibe {
   write_linked_debug_build
 }
 
+import ../compiler/wit_gen.vibe {
+  serve_handler_param_names, validate_serve_handler, wit_from_program
+}
+
+import ../compiler/component_codegen.vibe {
+  comp_emit_component_wasm_string_handler
+}
+
+import ../compiler/syntax {
+  lex, parse_program
+}
+
 //# Effects
 
 effect Profiler {
@@ -90,6 +102,14 @@ let basename_without_vibe_suffix: (String) -> String = (path) -> {
 
 let default_compile_output_path: (String) -> String = (input_path) -> {
   String::concat("dist/", String::concat(basename_without_vibe_suffix(input_path), ".wasm"))
+}
+
+let default_wit_output_path: (String) -> String = (input_path) -> {
+  String::concat("dist/", String::concat(basename_without_vibe_suffix(input_path), ".wit"))
+}
+
+let default_serve_output_path: (String) -> String = (input_path) -> {
+  String::concat("dist/", String::concat(basename_without_vibe_suffix(input_path), ".component.wasm"))
 }
 
 let default_build_output_path: (String) -> String = (input_path) -> {
@@ -394,7 +414,12 @@ export let parse_compile_args: (Array[String]) -> (String, String, String, Strin
         throw("compile: coverage is not supported by selfhost cli yet")
         ()
       }
-      else if arg == "--component" || arg == "--component-string-lift" || arg == "--compose-p3" || arg == "--wac" || arg == "--wit" || arg == "--wit-component" {
+      else if arg == "--wit" {
+        // #537: emit the WIT world for the file's effect surface instead of wasm.
+        mode = "wit"
+        ()
+      }
+      else if arg == "--component" || arg == "--component-string-lift" || arg == "--compose-p3" || arg == "--wac" || arg == "--wit-component" {
         throw(String::concat("compile: unsupported selfhost output mode: ", arg))
         ()
       }
@@ -426,8 +451,15 @@ export let parse_compile_args: (Array[String]) -> (String, String, String, Strin
     }
     if input_path == "" {
       throw("compile: missing <file>")
+    } else if mode == "wit" {
+      let resolved_output = if output_path == "" {
+        default_wit_output_path(input_path)
+      } else {
+        output_path
+      }
+      (input_path, resolved_output, entry_name, mode)
     } else if !saw_wasm {
-      throw("compile: selfhost cli only supports --wasm/--wasm-linear")
+      throw("compile: selfhost cli only supports --wasm/--wasm-linear (or --wit)")
     } else {
       let resolved_output = if output_path == "" {
         default_compile_output_path(input_path)
@@ -441,7 +473,9 @@ export let parse_compile_args: (Array[String]) -> (String, String, String, Strin
 
 export let selfhost_cli_compile_args: (Array[String]) -> Int with { Error, Fs, Env } = (args) -> {
   let (input_path, output_path, entry_name, mode) = parse_compile_args(args)
-  if !input_file_exists(input_path) {
+  if mode == "wit" {
+    selfhost_cli_compile_wit(input_path, output_path)
+  } else if !input_file_exists(input_path) {
     1
   } else {
     let bytes = compile_release_file_mode_for_cli(input_path, entry_name, mode)
@@ -517,6 +551,105 @@ export let selfhost_cli_build_args: (Array[String]) -> Int with { Error, Fs, Env
   } else {
     let bytes = compile_release_file_mode_for_cli(input_path, entry_name, mode)
     Fs::write_bytes(output_path, bytes)
+    0
+  }
+}
+
+//# wit (#537)
+
+// WIT world text for a file's effect surface: the entry file's exported
+// functions become world exports; the effects named in their `with { E }`
+// rows become world imports. Contract: docs/effect-wit-mapping.md.
+// Entry-file-only surface scan (v1, same as the adapter's VIBE_EMIT_WIT):
+// exports and effect declarations are read from the entry file itself.
+let build_wit_for_file: (String) -> String with { Error, Fs } = (input_path) -> {
+  let entry_stmts = parse_program(lex(Fs::read_file(input_path)))
+  wit_from_program(entry_stmts, entry_stmts, basename_without_vibe_suffix(input_path))
+}
+
+let selfhost_cli_compile_wit: (String, String) -> Int with { Error, Fs } = (input_path, output_path) -> {
+  if !input_file_exists(input_path) {
+    1
+  } else {
+    Fs::write_file(output_path, build_wit_for_file(input_path))
+    0
+  }
+}
+
+//# serve (#537)
+
+// serve <file.vibe> [-o out.component.wasm] [--wit-out out.wit]
+//   -> (input, component_out, wit_out)
+//
+// Artifact generation ONLY: compiles the handler, wraps it into a component
+// exporting `handler: func(method, url, headers, body: string) -> string`,
+// and writes the WIT world next to it. Composing with the P3 HTTP adapter and
+// launching `wasmtime serve` is the wasmtime-runner layer's job
+// (scripts/vibe_serve.sh), so serving never mixes into compiler artifacts.
+export let parse_serve_args: (Array[String]) -> (String, String, String) with { Error } = (args) -> {
+  if Array::length(args) == 0 || Array::get(args, 0) != "serve" {
+    throw("serve: expected command")
+  } else {
+    let mut input_path = ""
+    let mut output_path = ""
+    let mut wit_output_path = ""
+    let mut i = 1
+    while i < Array::length(args) {
+      let arg = Array::get(args, i)
+      if arg == "-o" || arg == "--out" {
+        i = i + 1
+        output_path = read_next_arg_for(args, i, "serve", arg)
+        ()
+      }
+      else if arg == "--wit-out" {
+        i = i + 1
+        wit_output_path = read_next_arg_for(args, i, "serve", arg)
+        ()
+      }
+      else if String::length(arg) > 0 && String::char_code_at(arg, 0) == 45 {
+        throw(String::concat("serve: unsupported option: ", arg))
+        ()
+      }
+      else if input_path == "" {
+        input_path = arg
+        ()
+      }
+      else {
+        throw("serve: too many input files")
+      }
+      i = i + 1
+    }
+    if input_path == "" {
+      throw("serve: missing <handler.vibe>")
+    } else {
+      let resolved_output = if output_path == "" {
+        default_serve_output_path(input_path)
+      } else {
+        output_path
+      }
+      let resolved_wit = if wit_output_path == "" {
+        default_wit_output_path(input_path)
+      } else {
+        wit_output_path
+      }
+      (input_path, resolved_output, resolved_wit)
+    }
+  }
+}
+
+export let selfhost_cli_serve_args: (Array[String]) -> Int with { Error, Fs, Env } = (args) -> {
+  let (input_path, output_path, wit_output_path) = parse_serve_args(args)
+  if !input_file_exists(input_path) {
+    1
+  } else {
+    let entry_stmts = parse_program(lex(Fs::read_file(input_path)))
+    validate_serve_handler(entry_stmts)
+    // Dummy entry name: the component surface is `handler`, not a WASI command
+    // entry; no-dce keeps every export alive.
+    let core = compile_release_file_mode(input_path, "__serve_component__", "release")
+    let component = comp_emit_component_wasm_string_handler(core, "handler", "handler", serve_handler_param_names())
+    Fs::write_bytes(output_path, component)
+    Fs::write_file(wit_output_path, wit_from_program(entry_stmts, entry_stmts, basename_without_vibe_suffix(input_path)))
     0
   }
 }
@@ -720,6 +853,7 @@ export let selfhost_cli_dispatch_args: (Array[String]) -> Int with { Error, Fs, 
     "compile" => selfhost_cli_compile_args(args),
     "build" => selfhost_cli_build_args(args),
     "check" => selfhost_cli_check_args(args),
+    "serve" => selfhost_cli_serve_args(args),
     _ => low_level_cli_main()
   }
 }

@@ -28,7 +28,11 @@
 #   vibe run --alloc-site[=N] <file.vibe> [entry]  run + report per-line alloc
 #                                         attribution (top N sites) to stderr
 #   vibe compile <file.vibe> -o <out>     compile to a .wasm
+#   vibe compile --wit <file.vibe>        emit the WIT world for the file's
+#                                         effect surface (docs/effect-wit-mapping.md)
 #   vibe build   <file.vibe> -o <out>     alias of compile
+#   vibe serve   <handler.vibe> [--port N] compile + compose with the wasi-http
+#                                         P3 adapter + `wasmtime serve` (#537)
 #   vibe check   <file.vibe>              parse + typecheck (no output kept)
 #   vibe type-at <file.vibe> <line> <col> print the inferred type at a position
 #   vibe binding-at <file.vibe> <line> <col> print binding occurrence spans (START END per line)
@@ -424,20 +428,98 @@ case "$cmd" in
     exit "$status"
     ;;
   compile|build)
-    [ "$#" -ge 1 ] || die "usage: vibe $cmd <file.vibe> [-o <out.wasm>] [--entry <name>]"
-    src=""; out=""; entry="main"
+    [ "$#" -ge 1 ] || die "usage: vibe $cmd <file.vibe> [-o <out.wasm>] [--entry <name>] [--wit]"
+    src=""; out=""; entry="main"; wit=0
     while [ "$#" -gt 0 ]; do
       case "$1" in
         -o|--output) out="$2"; shift 2 ;;
         --entry) entry="$2"; shift 2 ;;
+        --wit) wit=1; shift ;;
         *) src="$1"; shift ;;
       esac
     done
     [ -n "$src" ] || die "no input file"
     [ -f "$src" ] || die "not found: $src"
+    if [ "$wit" = "1" ]; then
+      # #537: emit the WIT world for the file's effect surface (exported
+      # functions -> world exports, their `with { E }` rows -> world imports).
+      # Contract: docs/effect-wit-mapping.md.
+      [ -n "$out" ] || out="${src%.vibe}.wit"
+      cli="$(pick_cli)"
+      mkdir -p "$(dirname "$out")"
+      rm -f "$out" "$out.diag"
+      env VIBE_EMIT_WIT=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+        "$RUNNER" "$cli" "$src" "$out" main >/dev/null 2>&1 || true
+      if [ ! -s "$out" ]; then
+        [ -s "$out.diag" ] && echo "error: $(cat "$out.diag")" >&2
+        rm -f "$out" "$out.diag"
+        die "wit generation failed: $src"
+      fi
+      rm -f "$out.diag"
+      echo "wit $src -> $out"
+      exit 0
+    fi
     [ -n "$out" ] || out="${src%.vibe}.wasm"
     compile_to "$src" "$out" "$entry" || die "compilation failed: $src"
     echo "compiled $src -> $out"
+    ;;
+  serve)
+    # #537: serve a wasi-http P3 handler. The compiler (VIBE_SERVE_COMPONENT=1)
+    # produces ONLY the handler component (+ WIT sidecar); this runner layer
+    # owns adapter resolution, composition (wac), and `wasmtime serve`.
+    #
+    # Handler contract (scripts/build_wasi_http_p3_full_adapter.sh):
+    #   export let handler = (method: String, url: String, headers: String, body: String) -> String
+    # returning "STATUS\n<Header: value lines>\n\n<body>".
+    [ "$#" -ge 1 ] || die "usage: vibe serve <handler.vibe> [--addr host:port] [--port N] [-o out.component.wasm] [--adapter adapter.component.wasm] [--no-run]"
+    src=""; out=""; addr="127.0.0.1:8080"; adapter="${VIBE_HTTP_ADAPTER:-}"; no_run=0
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --addr) addr="$2"; shift 2 ;;
+        --port) addr="127.0.0.1:$2"; shift 2 ;;
+        -o|--output) out="$2"; shift 2 ;;
+        --adapter) adapter="$2"; shift 2 ;;
+        --no-run) no_run=1; shift ;;
+        *) src="$1"; shift ;;
+      esac
+    done
+    [ -n "$src" ] || die "no input file"
+    [ -f "$src" ] || die "not found: $src"
+    [ -n "$out" ] || out="${src%.vibe}.component.wasm"
+    # 1. handler component + WIT sidecar (compiler artifact step)
+    cli="$(pick_cli)"
+    mkdir -p "$(dirname "$out")"
+    rm -f "$out" "$out.diag"
+    env VIBE_SERVE_COMPONENT=1 VIBE_SERVE_WIT_OUT="${out%.component.wasm}.wit" \
+      VIBE_SELFHOST_IMPORT_ABI=raw \
+      "$RUNNER" "$cli" "$src" "$out" main >/dev/null 2>&1 || true
+    if [ ! -s "$out" ]; then
+      [ -s "$out.diag" ] && echo "error: $(cat "$out.diag")" >&2
+      rm -f "$out" "$out.diag"
+      die "serve: handler componentization failed: $src"
+    fi
+    rm -f "$out.diag"
+    echo "component $src -> $out"
+    [ "$no_run" = "1" ] && exit 0
+    # 2. P3 HTTP adapter (imports `handler`, exports wasi:http/handler@0.3)
+    if [ -z "$adapter" ]; then
+      for cand in "$VIBE_HOME/lib/vibe_http_p3_full_adapter.component.wasm" \
+                  "$PWD/_build/http_adapter/vibe_http_p3_full_adapter.component.wasm"; do
+        [ -f "$cand" ] && { adapter="$cand"; break; }
+      done
+    fi
+    [ -n "$adapter" ] && [ -f "$adapter" ] || die "serve: P3 HTTP adapter not found; build it with scripts/build_wasi_http_p3_full_adapter.sh (needs cargo + wasm-tools) or pass --adapter / set VIBE_HTTP_ADAPTER"
+    # 3. compose: plug the handler component's export into the adapter's import
+    command -v wac >/dev/null 2>&1 || die "serve: 'wac' not found (cargo install wac-cli)"
+    composed="${out%.component.wasm}.serve.wasm"
+    wac plug --plug "$out" "$adapter" -o "$composed" || die "serve: wac plug failed"
+    echo "composed -> $composed"
+    # 4. serve (wasmtime 45 P3 flags; docs/spec/wasi-p3-async.md §4.1)
+    command -v wasmtime >/dev/null 2>&1 || die "serve: 'wasmtime' not found (https://wasmtime.dev)"
+    echo "serving http://$addr/ (Ctrl-C to stop)"
+    exec wasmtime serve -Sp3 -Shttp -W exceptions=y -W concurrency-support=y \
+      -W component-model-async=y -W component-model-async-stackful=y \
+      --addr "$addr" "$composed"
     ;;
   check)
     [ "$#" -ge 1 ] || die "usage: vibe check <file.vibe> [entry]"

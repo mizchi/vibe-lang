@@ -12,6 +12,10 @@ import .. / .. / normalize {
   lift_match_scrutinees, uniquify_shadowed_bindings
 }
 
+import .. / .. / syntax / import_alias_rewrite.vibe {
+  rewrite_top_level_fn_alias_refs
+}
+
 import .. / .. / perceus {
   PerceusAction, build_perceus_plan, build_perceus_plan_with_params, compute_borrow_returning_names, compute_scalar_returning_names, elaborate_heap_params, pa_is_alias_dup, pa_is_drop, pa_is_dup, param_is_heap_in_body
 }
@@ -21,11 +25,12 @@ import .. / builtin_bodies {
 }
 
 import .. / common_analysis {
-  collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, is_mut_captured_in, scope_tail_proj_root
+  collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, is_mut_captured_in, scope_tail_proj_root, stmts_contain_exceptions
 }
 
 import .. / common_base {
-  CompileCtx, CovState, CtorTable, DbgProv, FuncTable, LambdaTable, StrTable, emit_rc_dup_guarded, empty_dbg_prov, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, fn_type_param_types, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, get_slet_type, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
+  rc_shadow_reserve,
+  CompileCtx, CovState, CtorTable, DbgProv, FuncTable, LambdaTable, StrTable, agg_info_of_type_expr, compute_agg_returning, emit_rc_dup_guarded, empty_dbg_prov, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, fn_type_param_types, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, get_slet_type, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
 }
 
 import .. / common_extractors {
@@ -86,12 +91,16 @@ export let wasi_memory_min_pages_for_heap: (Int) -> Int = (heap_start) -> {
   }
 }
 
-export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String, String)], Array[(String, String, Int, Int)], Bool, Bool, Bool, Bool, Bool, DbgProv) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, linked_imports, library_mode, enable_rc, coverage, debug_trace, debug_break, prov) -> {
+export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String, String)], Array[(String, String, Int, Int)], Bool, Bool, Bool, Bool, Bool, Bool, DbgProv) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, linked_imports, library_mode, enable_rc, coverage, debug_trace, debug_break, rc_shadow, prov) -> {
   // Method-bearing-trait dictionary passing (#641 PR-3). Universal codegen
   // convergence point — runs here on the fully merged program before generic
   // type params are stripped (just below). No-op unless a method-bearing trait
   // is declared, and idempotent if an earlier pipeline stage already desugared.
   desugar_trait_dicts(stmts)
+  // Top-level `let f = g` function aliases: retarget references to the final
+  // EFn def so calls do not route through the 0-param thunk registration
+  // below (invalid wasm for any call arity). See import_alias_rewrite.vibe.
+  rewrite_top_level_fn_alias_refs(stmts)
   // #707: functions whose entire body is transitively a tail-call to a
   // borrow-returning builtin (Array::get/Map::get/__index) -- e.g. a thin
   // `peek(toks, pos) -> Array::get(toks, pos)` wrapper. Computed once over the
@@ -171,6 +180,22 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       let expr = get_slet_expr(stmt)
       let is_export = get_slet_export(stmt)
       let user_idx = Array::length(fn_names_list)
+      // #715: `expr_tag(expr)` hoisted out of the `else` branch below and
+      // computed here, unconditionally -- so it (like `is_efn(expr)` above)
+      // contributes to `expr`'s always-consumed prefix instead of only being
+      // paid for on the `else` path. This alone still leaves the `else`
+      // branch's own nested if asymmetric (`get_eint_value`=1 use vs the
+      // thunk fallback's 0), so the thunk fallback below also aliases `expr`
+      // once (`let __sf_thunk_expr = expr`) to match. With both asymmetries
+      // resolved, `then` and `else` each consume `expr` the same number of
+      // times, so pc_emit's EIf MIN-merge (#705) lands on the SAME remaining
+      // count regardless of which branch a given statement actually takes --
+      // previously the merge could permanently assume more consumption than
+      // a commonly-taken branch (int-constant or thunk statements, which are
+      // NOT rare like a false `is_efn` check on a real function body) really
+      // performed, skipping the loop-body scope-end drop and leaking `expr`
+      // (a heap Expr node) on every such statement.
+      let __sf_etag = expr_tag(expr)
       if is_efn(expr) {
         let params = get_efn_params(expr)
         Array::push(fn_names_list, name)
@@ -178,10 +203,11 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
         Array::push(fn_needs_env_list, true)
         Array::push(fn_stmt_indices, i)
       } else {
-        if (expr_tag(expr) == 0) && !is_export {
+        if (__sf_etag == 0) && !is_export {
           Array::push(const_int_names_list, name)
           Array::push(const_int_values_list, get_eint_value(expr))
         } else {
+          let __sf_thunk_expr = expr
           Array::push(fn_names_list, name)
           Array::push(fn_param_counts, 0)
           Array::push(fn_needs_env_list, true)
@@ -258,6 +284,14 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     }
     si = si + 1
   }
+  // #724 round 2: (fn name -> declared aggregate return shape) table so
+  // `let a = f(..)` bindings participate in structural `==` (see
+  // compute_agg_returning in common_base).
+  let lc_agg_ret_names = lc_fresh_string_array()
+  let lc_agg_ret_infos = lc_fresh_int_array()
+  compute_agg_returning(stmts, CtorTable::{
+    names: ctor_names_list, tags: ctor_tags_list, field_counts: ctor_field_counts_list, type_names: ctor_type_names_list, struct_names: struct_names, struct_field_names: struct_field_names
+  }, lc_agg_ret_names, lc_agg_ret_infos)
   let num_user_funcs = Array::length(fn_names_list)
   if num_user_funcs == 0 {
     throw("no functions found to compile")
@@ -1147,7 +1181,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     Array::push(bodies, gen_arr_get_body(true))
     Array::push(meta_i32, 1)
     Array::push(meta_i64, 0)
-    Array::push(bodies, gen_arr_push_body(true, rc_alloc_idx))
+    Array::push(bodies, gen_arr_push_body(true, rc_alloc_idx, rc_shadow))
     Array::push(meta_i32, 6)
     Array::push(meta_i64, 0)
     Array::push(bodies, gen_arr_set_body(true))
@@ -1163,7 +1197,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     Array::push(bodies, static_arr_get_body())
     Array::push(meta_i32, 1)
     Array::push(meta_i64, 0)
-    Array::push(bodies, gen_arr_push_body(false, rc_alloc_idx))
+    Array::push(bodies, gen_arr_push_body(false, rc_alloc_idx, rc_shadow))
     Array::push(meta_i32, 6)
     Array::push(meta_i64, 0)
     Array::push(bodies, static_arr_set_body())
@@ -1197,11 +1231,11 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   Array::push(meta_i32, 0)
   Array::push(meta_i64, 0)
   if enable_rc {
-    Array::push(bodies, gen_arr_slice_body(true, rc_alloc_idx))
+    Array::push(bodies, gen_arr_slice_body(true, rc_alloc_idx, rc_shadow))
     Array::push(meta_i32, 7)
     Array::push(meta_i64, 1)
   } else {
-    Array::push(bodies, gen_arr_slice_body(false, rc_alloc_idx))
+    Array::push(bodies, gen_arr_slice_body(false, rc_alloc_idx, rc_shadow))
     Array::push(meta_i32, 6)
     Array::push(meta_i64, 0)
   }
@@ -1243,11 +1277,11 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   Array::push(meta_i32, 3)
   Array::push(meta_i64, 1)
   if enable_rc {
-    Array::push(bodies, gen_arr_push_all_body(true, rc_alloc_idx))
+    Array::push(bodies, gen_arr_push_all_body(true, rc_alloc_idx, rc_shadow))
     Array::push(meta_i32, 10)
     Array::push(meta_i64, 1)
   } else {
-    Array::push(bodies, gen_arr_push_all_body(false, rc_alloc_idx))
+    Array::push(bodies, gen_arr_push_all_body(false, rc_alloc_idx, rc_shadow))
     Array::push(meta_i32, 9)
     Array::push(meta_i64, 0)
   }
@@ -1306,10 +1340,10 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   Array::push(meta_i32, 2)
   Array::push(meta_i64, 1)
   if enable_rc {
-    Array::push(bodies, gen_rc_drop_body(rc_drop_idx))
+    Array::push(bodies, gen_rc_drop_body(rc_drop_idx, rc_shadow))
     Array::push(meta_i32, 5)
     Array::push(meta_i64, 1)
-    Array::push(bodies, gen_rc_alloc_body())
+    Array::push(bodies, gen_rc_alloc_body(rc_shadow))
     Array::push(meta_i32, 4)
     Array::push(meta_i64, 0)
   } else {
@@ -1349,8 +1383,13 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     // plan itself) can never confuse two distinct bindings that happen to share
     // a name. See uniquify_shadowed_bindings's doc comment (normalize/index.vibe).
     let __bi_expr = if enable_rc {
+      // #715: fresh per-function seen-set -- name uniqueness is only required
+      // within one function (Perceus plans and codegen bookkeeping are
+      // per-function), and per-function reset keeps first binders unrenamed.
+      let uq_seen: Array[String] = [
+      ]
       lift_match_scrutinees(uniquify_shadowed_bindings(get_slet_expr(__bi_stmt), map {
-      }, uq_shadow_counter), m_scrut_counter)
+      }, uq_shadow_counter, uq_seen), m_scrut_counter)
     } else {
       get_slet_expr(__bi_stmt)
     }
@@ -1425,9 +1464,22 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     // `is_efn(__bi_expr)`-gated branches all have `is_efn(__bi_expr)` true on
     // effectively every real program, so their MIN-selected branch already
     // matches the branch actually taken).
+    // #715: `get_slet_type(__bi_stmt)` hoisted out of the `is_efn(__bi_expr)`
+    // `then` branch and computed here, unconditionally -- previously it was
+    // the ONLY use of `__bi_stmt` inside this specific `if`'s `then` branch
+    // (the `else` branch, `Array::slice([("",None)],0,0)`, never touches
+    // `__bi_stmt`), and `__bi_expr` is NOT an EFn for every `bi` iteration:
+    // `fn_names_list`/`fn_stmt_indices` also carry thunk entries (see the
+    // classification loop above), so the `else` path here is a real, common
+    // occurrence, not a rare edge case. Same leak mechanism as the
+    // `lc_norm_params`/`__bi_body`/`dn_expr`/classification-loop fixes above
+    // -- `pc_emit`'s EIf MIN-merge (#705) otherwise permanently assumes the
+    // `then`-branch's higher `__bi_stmt` consumption even on thunk (`else`)
+    // iterations, leaking `__bi_stmt` (a heap Stmt node) on each one.
+    let __sf_slet_type = get_slet_type(__bi_stmt)
     let lc_norm_params = if is_efn(__bi_expr) {
       let ps = get_efn_params(__bi_expr)
-      let sig_args_raw = fn_type_param_types(get_slet_type(__bi_stmt))
+      let sig_args_raw = fn_type_param_types(__sf_slet_type)
       let single_tuple_param = match sig_args_raw {
         Some(a) => Array::length(ps) == 1 && Array::length(a) > 1,
         None => false
@@ -1467,6 +1519,10 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       }
       np
     } else {
+      // #715: alias `__sf_slet_type` once here too, matching `then`'s single
+      // use (via `fn_type_param_types`) now that it is hoisted above -- see
+      // that binding's doc comment.
+      let __sf_lnp_ty = __sf_slet_type
       Array::slice([
         ("", None)
       ], 0, 0)
@@ -1511,17 +1567,28 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       ""
     ], 0, 0)
     let lc_heap_params = lc_fresh_string_array()
+    // #715: computed once, unconditionally (regardless of `enable_rc`), and
+    // reused below both for the Perceus plan and for the actual codegen call
+    // to `compile_expr` -- instead of a separate `get_efn_body(__bi_expr)`
+    // call under `enable_rc` (as `fbody`) AND another one further down (as
+    // `body`, inside the `is_efn(__bi_expr)` block). Each independent
+    // `get_efn_body(__bi_expr)`/`get_efn_params(__bi_expr)` call is a real
+    // additional owning "use" of `__bi_expr` for Perceus's purposes (neither
+    // is registered in `is_borrow_arg0_call`), inflating the dup budget
+    // `__bi_expr` statically needs. See the `lc_norm_params` doc comment
+    // above (the same redundant-call pattern, already fixed once for
+    // `get_efn_params`) for the full double-free mechanism this avoids.
+    let __bi_body = if is_efn(__bi_expr) {
+      get_efn_body(__bi_expr)
+    } else {
+      __bi_expr
+    }
     if enable_rc {
-      let fbody = if is_efn(__bi_expr) {
-        get_efn_body(__bi_expr)
-      } else {
-        __bi_expr
-      }
-      let plan = build_perceus_plan_with_params(lc_norm_params, fbody, lc_borrow_ret_names)
+      let plan = build_perceus_plan_with_params(lc_norm_params, __bi_body, lc_borrow_ret_names)
       let mut lhpi = 0
       while lhpi < Array::length(lc_norm_params) {
         let (lhpn, lhpt) = Array::get(lc_norm_params, lhpi)
-        if param_is_heap_in_body(lhpn, lhpt, fbody) {
+        if param_is_heap_in_body(lhpn, lhpt, __bi_body) {
           Array::push(lc_heap_params, lhpn)
         } else {
           ()
@@ -1576,6 +1643,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       const_int_names: const_int_names_list,
       const_int_values: const_int_values_list,
       enable_rc: enable_rc,
+      rc_shadow: rc_shadow,
       rc_drop_names: rc_drops,
       rc_alias_dup_names: rc_alias_dups,
       heap_binding_names: lc_heap_params,
@@ -1593,6 +1661,9 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       rc_dup_names: rc_dups,
       float_local_slots: lc_fresh_int_array(),
       int_local_slots: lc_fresh_int_array(),
+      agg_local_slots: lc_fresh_int_array(),
+      agg_ret_names: lc_agg_ret_names,
+      agg_ret_infos: lc_agg_ret_infos,
       effect_names: effect_names_list,
       effect_op_keys: effect_op_keys_list,
       effect_op_arities: effect_op_arities_list,
@@ -1606,23 +1677,64 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       scalar_ret_names: lc_scalar_ret_names
     }
     if is_efn(__bi_expr) {
-      let __bi_params = get_efn_params(__bi_expr)
-      let body = get_efn_body(__bi_expr)
+      // #715: `lc_norm_params` (built above from `get_efn_params(__bi_expr)`)
+      // already carries each parameter's `~`/`?`-stripped name in `.0` --
+      // reuse it instead of a second `get_efn_params(__bi_expr)` call plus a
+      // duplicate stripping pass (see the `__bi_body` doc comment above).
+      let body = __bi_body
       let mut pi = 0
-      while pi < Array::length(__bi_params) {
-        let (pname_raw, _) = Array::get(__bi_params, pi)
-        let pnl2 = String::length(pname_raw)
-        let pname = if pnl2 > 0 {
-          let plc2 = String::char_code_at(pname_raw, pnl2 - 1)
-          if plc2 == '~' || plc2 == '?' {
-            pname_raw[0: pnl2 - 1]
-          } else pname_raw
-        } else pname_raw
+      while pi < Array::length(lc_norm_params) {
+        let (pname, _) = Array::get(lc_norm_params, pi)
         Array::push(local_names, pname)
         pi = pi + 1
       }
+      // #724 round 2: seed the aggregate-shape log from ANNOTATED params
+      // (param slot i = local i), so `p == q` on tuple/struct/enum-typed
+      // params compares structurally.
+      let sig_ptypes = fn_type_param_types(__sf_slet_type)
+      let mut psi = 0
+      while psi < Array::length(lc_norm_params) {
+        // Prefer the SLet signature's param types (`let f: (P2) -> ..`);
+        // fall back to a per-param annotation (`(p: P2) -> ..`).
+        let pann = match sig_ptypes {
+          Some(pts) => if Array::length(pts) == Array::length(lc_norm_params) {
+            Some(Array::get(pts, psi))
+          } else {
+            let (_, pa) = Array::get(lc_norm_params, psi)
+            pa
+          },
+          None => {
+            let (_, pa) = Array::get(lc_norm_params, psi)
+            pa
+          }
+        }
+        match pann {
+          Some(pte) => {
+            let pinfo = agg_info_of_type_expr(compile_ctx.ctor_table, pte)
+            if pinfo > 0 {
+              Array::push(compile_ctx.agg_local_slots, psi * 256 + pinfo)
+            } else {
+              ()
+            }
+            // Float/Double-typed params feed expr_is_floatish the same way
+            // let-bound floats do; without this, `a == b` on annotated float
+            // params misses the f64 path and (under RC, where floats are
+            // boxed) compares heap pointers — `1.5 == 1.5` came out false.
+            match pte {
+              TyName(ptn) => if ptn == "Float" || ptn == "Double" {
+                Array::push(compile_ctx.float_local_slots, psi * 2 + 1)
+              } else {
+                ()
+              },
+              _ => ()
+            }
+          },
+          None => ()
+        }
+        psi = psi + 1
+      }
       Array::push(local_names, "__env")
-      let param_count = Array::length(__bi_params) + 1
+      let param_count = Array::length(lc_norm_params) + 1
       if enable_rc {
         let mut edi = 0
         while edi < Array::length(lc_norm_params) {
@@ -1640,7 +1752,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
             }
             let mut ede = 0
             while ede < edc {
-              emit_rc_dup_guarded(body_buf, edi)
+              emit_rc_dup_guarded(body_buf, edi, rc_shadow)
               ede = ede + 1
             }
           } else {
@@ -1689,7 +1801,7 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
         let rtemp = final_nl
         if need_dup {
           emit_local_set(body_buf, rtemp)
-          emit_rc_dup_guarded(body_buf, rtemp)
+          emit_rc_dup_guarded(body_buf, rtemp, rc_shadow)
           tail_nl = final_nl + 1
         } else {
           ()
@@ -1698,21 +1810,33 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
         while tdj < Array::length(lc_norm_params) {
           let (tdn, _tdt) = Array::get(lc_norm_params, tdj)
           if array_contains_str(lc_heap_params, tdn) {
-            if array_contains_str(rc_drops, tdn) {
-              emit_local_get(body_buf, tdj)
-              emit_call(body_buf, rc_drop_idx)
-            } else {
-              ()
-            }
+            // #725: a loop-protected consume (per-iteration dup at the call
+            // site, #706 above) is NET-ZERO at runtime — the dup is matched by
+            // the callee's own drop each execution and never touches the
+            // param's single owned reference. So the epilogue owes EXACTLY ONE
+            // drop for that reference, regardless of how many textual
+            // loop-consumed SITES exist: a second site in a sibling match arm
+            // (even one that never executes — its protective dup is emitted
+            // but never runs) previously got its own per-occurrence drop,
+            // over-releasing the CALLER's value and poisoning the RC free
+            // list (fuzz/findings/issue725/). When a loop site exists it also
+            // absorbs the plan's PaDrop (the textual counts ate the budget the
+            // plan would otherwise drop), so emit one drop total either way.
+            let mut tdn_loop_count = 0
             let mut tdle = 0
             while tdle < Array::length(compile_ctx.loop_consumed_names) {
               if Array::get(compile_ctx.loop_consumed_names, tdle) == tdn {
-                emit_local_get(body_buf, tdj)
-                emit_call(body_buf, rc_drop_idx)
+                tdn_loop_count = tdn_loop_count + 1
               } else {
                 ()
               }
               tdle = tdle + 1
+            }
+            if array_contains_str(rc_drops, tdn) || tdn_loop_count > 0 {
+              emit_local_get(body_buf, tdj)
+              emit_call(body_buf, rc_drop_idx)
+            } else {
+              ()
             }
           } else {
             ()
@@ -2177,7 +2301,22 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
           dn_pi = dn_pi + 1
         }
       } else {
-        ()
+        // #715: `dn_expr` is a fresh per-iteration owned binding (like
+        // `__bi_expr` in the main codegen loop above), and -- unlike
+        // `__bi_expr` -- `is_efn(dn_expr)` is NOT overwhelmingly true here:
+        // `fn_stmt_indices` legitimately mixes real functions with non-
+        // function "thunk" entries (constant initializers), so this `else`
+        // is a common, not rare, runtime path. An empty `else { () }` uses
+        // `dn_expr` zero times while `then` uses it once (via
+        // `get_efn_params`), so `pc_emit`'s EIf MIN-merge (#705) permanently
+        // carries the `then`-consumed (lower) remaining forward even on the
+        // iterations that really take this branch -- the loop-body scope-end
+        // drop for `dn_expr` is then skipped based on that borrowed count,
+        // leaking `dn_expr` on every thunk entry. Call `is_efn` again here,
+        // discarding the result, purely to consume `dn_expr` exactly once --
+        // matching `then`'s single consuming use so both branches leave the
+        // same remaining count and the plan's assumption holds either way.
+        is_efn(dn_expr)
       }
       bytebuf_push(dn_content, 10)
       dnfi = dnfi + 1
@@ -2411,17 +2550,31 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   if total_table_entries > 0 {
     emit_table_section_funcref(out, total_table_entries)
   }
-  emit_memory_section(out, wasi_memory_min_pages_for_heap(heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve + dbgargs_reserve))
-  let tag_content = bytebuf_new()
-  let num_tags = Array::length(effect_names_list) + 4
-  bytebuf_push_vec_header(tag_content, num_tags)
-  let mut tag_emit_i = 0
-  while tag_emit_i < num_tags {
-    bytebuf_push(tag_content, 0)
-    leb128_encode_u32(tag_content, 1)
-    tag_emit_i = tag_emit_i + 1
+  emit_memory_section(out, wasi_memory_min_pages_for_heap(heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve + dbgargs_reserve + (if rc_shadow {
+    rc_shadow_reserve()
+  } else {
+    0
+  })))
+  // #721: emit the tag section only when something can reference a tag --
+  // EThrow (`throw 2`), EHandle (try_table over tags 0-3), or a declared
+  // effect (per-effect tags at index 4+). Pure-compute modules then carry no
+  // exceptions machinery at all, which keeps V8 off its slower exnref module
+  // path (~35% wall on call-heavy code; wasmtime is indifferent).
+  let uses_exceptions = Array::length(effect_names_list) > 0 || stmts_contain_exceptions(stmts)
+  if uses_exceptions {
+    let tag_content = bytebuf_new()
+    let num_tags = Array::length(effect_names_list) + 4
+    bytebuf_push_vec_header(tag_content, num_tags)
+    let mut tag_emit_i = 0
+    while tag_emit_i < num_tags {
+      bytebuf_push(tag_content, 0)
+      leb128_encode_u32(tag_content, 1)
+      tag_emit_i = tag_emit_i + 1
+    }
+    bytebuf_push_section(out, 13, tag_content)
+  } else {
+    ()
   }
-  bytebuf_push_section(out, 13, tag_content)
   let global_content = bytebuf_new()
   if enable_rc {
     bytebuf_push_vec_header(global_content, 7)
@@ -2510,11 +2663,16 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     bxi = bxi + 1
   }
   let export_content = bytebuf_new()
+  // #721: the "error" tag export exists only when the tag section does.
   let export_count = Array::length(all_export_names) + 1 +
   (if library_mode {
     0
   } else {
-    1 + 1
+    1 + (if uses_exceptions {
+      1
+    } else {
+      0
+    })
   })
   bytebuf_push_vec_header(export_content, export_count)
   let mut efi = 0
@@ -2531,9 +2689,13 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     emit_name(export_content, "__heap_ptr")
     bytebuf_push(export_content, 3)
     leb128_encode_u32(export_content, 0)
-    emit_name(export_content, "error")
-    bytebuf_push(export_content, 4)
-    leb128_encode_u32(export_content, 0)
+    if uses_exceptions {
+      emit_name(export_content, "error")
+      bytebuf_push(export_content, 4)
+      leb128_encode_u32(export_content, 0)
+    } else {
+      ()
+    }
   }
   bytebuf_push_section(out, 7, export_content)
   if total_table_entries > 0 {
@@ -2610,13 +2772,23 @@ export let compile_wasi_module_rc_impl: (Array[Stmt], String) -> Bytes with { Er
     ("", "")
   ], 0, 0), Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, true, false, false, false, empty_dbg_prov())
+  ], 0, 0), false, true, false, false, false, false, empty_dbg_prov())
+}
+
+// #715 recurrence guard: RC + shadow-liveness instrumentation (VIBE_RC=shadow).
+export let compile_wasi_module_rc_shadow_impl: (Array[Stmt], String) -> Bytes with { Error } = (stmts_in, entry_name) -> {
+  let stmts = elaborate_heap_params(stmts_in)
+  compile_wasi_module_linked_impl(stmts, entry_name, Array::slice([
+    ("", "")
+  ], 0, 0), Array::slice([
+    ("", "", 0, 0)
+  ], 0, 0), false, true, false, false, false, true, empty_dbg_prov())
 }
 
 export let compile_wasi_module_with_sources_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
   compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, false, false, false, false, empty_dbg_prov())
+  ], 0, 0), false, false, false, false, false, false, empty_dbg_prov())
 }
 
 // Coverage build (#cov): compile with function-level hit instrumentation +
@@ -2625,7 +2797,7 @@ export let compile_wasi_module_with_sources_impl: (Array[Stmt], String, Array[(S
 export let compile_wasi_module_with_sources_coverage_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
   compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, true, true, false, false, empty_dbg_prov())
+  ], 0, 0), false, true, true, false, false, false, empty_dbg_prov())
 }
 
 // Trace build (debugger / DAP P1 groundwork): compile with function-call
@@ -2634,7 +2806,7 @@ export let compile_wasi_module_with_sources_coverage_impl: (Array[Stmt], String,
 export let compile_wasi_module_with_sources_trace_impl: (Array[Stmt], String, Array[(String, String)]) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs) -> {
   compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, true, false, true, false, empty_dbg_prov())
+  ], 0, 0), false, true, false, true, false, false, empty_dbg_prov())
 }
 
 // Break build (debugger / DAP P1): compile with `vibe::dbg_break` host-hook
@@ -2643,5 +2815,5 @@ export let compile_wasi_module_with_sources_trace_impl: (Array[Stmt], String, Ar
 export let compile_wasi_module_with_sources_break_impl: (Array[Stmt], String, Array[(String, String)], DbgProv) -> Bytes with { Error } = (stmts, entry_name, selfhost_srcs, prov) -> {
   compile_wasi_module_linked_impl(stmts, entry_name, selfhost_srcs, Array::slice([
     ("", "", 0, 0)
-  ], 0, 0), false, true, false, false, true, prov)
+  ], 0, 0), false, true, false, false, true, false, prov)
 }

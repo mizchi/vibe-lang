@@ -1,59 +1,84 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# WASI 0.3 async HTTP full-handler gate (docs/spec/wasi-p3-async.md §4.1).
+# WASI 0.3 async HTTP full-handler gate (docs/spec/wasi-p3-async.md §4.1),
+# selfhost edition (#537 — the legacy `vibe.exe compile --compose-p3` host
+# path was retired with the MoonBit host).
 #
-# The most comprehensive HTTP gate: a vibe handler sees the full request
-# (method, url, request headers, request body) and returns a full response
-# (status + headers + body). Auth-by-request-header is the test:
-#   handler : (method, url, headers, body) -> "STATUS\n<resp headers>\n\n<body>"
-#   with `x-token: secret` -> 200 "ok"; without -> 401 "unauthorized".
+# Pipeline under test (the same one `runtime/vibe serve` drives):
+#   1. selfhost CLI (VIBE_SERVE_COMPONENT=1) componentizes the vibe handler:
+#      handler.vibe -> handler.component.wasm exporting
+#        handler: func(method, url, headers, body: string) -> string
+#      (packed-string trampoline, comp_emit_component_wasm_string_handler)
+#   2. build_wasi_http_p3_full_adapter.sh builds the Rust wasi-http P3 adapter
+#      component (imports that handler func, exports wasi:http/handler).
+#   3. `wac plug` plugs the handler component into the adapter.
+#   4. `wasmtime serve` serves it; curl asserts auth-by-request-header:
+#      with `x-token: secret` -> 200 "ok:GET:/"; without -> 401 "unauthorized".
 #
-# Subsumes the body / reqbody / status_body gates. Skips cleanly when cargo /
-# wasm-tools / wasmtime / curl are unavailable.
+# Skips cleanly when cargo / wasm-tools / wac / wasmtime / curl or a selfhost
+# compiler wasm are unavailable.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 OUT_DIR="$PROJECT_ROOT/_build/bench/wasi_http_p3_full"
 ADAPTER="$OUT_DIR/full_adapter.component.wasm"
-HANDLER_SRC="$OUT_DIR/handler.vibe"
+HANDLER_SRC="$PROJECT_ROOT/fixtures/serve_handler_smoke.vibe"
 COMPONENT="$OUT_DIR/handler.component.wasm"
+COMPOSED="$OUT_DIR/handler.serve.wasm"
 SERVE_LOG="$OUT_DIR/serve.log"
 ADDR="127.0.0.1:18984"
-HOST_VIBE_EXE="$PROJECT_ROOT/_build/native/release/build/cmd/vibe/vibe.exe"
-HOST_VIBE_EXE_DEBUG="$PROJECT_ROOT/_build/native/debug/build/cmd/vibe/vibe.exe"
 
 WASM_FLAGS=(-Sp3 -Shttp -W exceptions=y -W concurrency-support=y -W component-model-async=y -W component-model-async-stackful=y)
 
-for c in cargo wasm-tools curl; do
+for c in cargo wasm-tools wac curl; do
   command -v "$c" >/dev/null 2>&1 || { echo "[http-full-gate] SKIP: $c not found"; exit 0; }
 done
 WASMTIME_BIN="$("$PROJECT_ROOT/scripts/wasmtime_bin.sh" 2>/dev/null || command -v wasmtime || true)"
 if [ -z "${WASMTIME_BIN:-}" ] || ! "$WASMTIME_BIN" --version >/dev/null 2>&1; then
   echo "[http-full-gate] SKIP: wasmtime not found"; exit 0
 fi
-if [ -x "$HOST_VIBE_EXE" ]; then VIBE="$HOST_VIBE_EXE"
-elif [ -x "$HOST_VIBE_EXE_DEBUG" ]; then VIBE="$HOST_VIBE_EXE_DEBUG"
-else echo "[http-full-gate] SKIP: host vibe.exe not built"; exit 0; fi
+
+# Selfhost compiler wasm: explicit override, else the newest generation build.
+CLI_WASM="${VIBE_SERVE_CLI_WASM:-}"
+if [ -z "$CLI_WASM" ]; then
+  CLI_WASM="$(ls -t "$PROJECT_ROOT"/_build/selfhost/generations/*/stage2.wasm 2>/dev/null | head -1 || true)"
+fi
+if [ -z "$CLI_WASM" ] || [ ! -s "$CLI_WASM" ]; then
+  echo "[http-full-gate] SKIP: no selfhost compiler wasm (run scripts/selfhost_generations.sh build, or set VIBE_SERVE_CLI_WASM)"
+  exit 0
+fi
 
 mkdir -p "$OUT_DIR"
 echo "[http-full-gate] wasmtime: $($WASMTIME_BIN --version)"
+echo "[http-full-gate] selfhost cli: $CLI_WASM"
 
 echo "[http-full-gate] build full adapter"
 bash "$SCRIPT_DIR/build_wasi_http_p3_full_adapter.sh" "$ADAPTER" >/dev/null
 
-printf 'export let handler = (method: String, url: String, headers: String, body: String) -> String { if String::contains(headers, "x-token: secret") { "200\\ncontent-type: text/plain\\n\\nok" } else { "401\\nunauthorized" } }\n' > "$HANDLER_SRC"
-
-echo "[http-full-gate] compose"
-"$VIBE" compile --compose-p3 --adapter "$ADAPTER" "$HANDLER_SRC" -o "$COMPONENT" >/dev/null
+echo "[http-full-gate] componentize handler (selfhost VIBE_SERVE_COMPONENT)"
+rm -f "$COMPONENT" "$COMPONENT.diag"
+env VIBE_SERVE_COMPONENT=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main "$CLI_WASM" \
+  "${HANDLER_SRC#"$PROJECT_ROOT"/}" "${COMPONENT#"$PROJECT_ROOT"/}" main >/dev/null 2>&1 || true
+if [ ! -s "$COMPONENT" ]; then
+  echo "[http-full-gate] FAIL: handler componentization produced nothing" >&2
+  cat "$COMPONENT.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
 wasm-tools validate --features all "$COMPONENT" >/dev/null
+echo "[http-full-gate] handler component validates"
+
+echo "[http-full-gate] compose (wac plug)"
+wac plug --plug "$COMPONENT" "$ADAPTER" -o "$COMPOSED"
+wasm-tools validate --features all "$COMPOSED" >/dev/null
 echo "[http-full-gate] composed component validates"
 
 SERVE_PID=""
 cleanup() { [ -n "$SERVE_PID" ] && kill "$SERVE_PID" 2>/dev/null || true; }
 trap cleanup EXIT
 
-"$WASMTIME_BIN" serve "${WASM_FLAGS[@]}" --addr "$ADDR" "$COMPONENT" >"$SERVE_LOG" 2>&1 &
+"$WASMTIME_BIN" serve "${WASM_FLAGS[@]}" --addr "$ADDR" "$COMPOSED" >"$SERVE_LOG" 2>&1 &
 SERVE_PID=$!
 sleep 3
 
@@ -70,20 +95,20 @@ check() {
     *"$want_body"*) ;;
     *) echo "[http-full-gate] FAIL: $desc body did not contain '$want_body' (got: '$body')" >&2; exit 1 ;;
   esac
-  echo "[http-full-gate] $desc -> $code '$body' OK"
+  echo "[http-full-gate] $desc -> $code OK"
 }
 
-check "with x-token"    "200" "ok"          -H "x-token: secret"
+check "with x-token"    "200" "ok:GET:/"     -H "x-token: secret"
 check "without x-token" "401" "unauthorized"
 
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   {
-    echo "### WASI 0.3 Async HTTP Full-Handler Gate"
+    echo "### WASI 0.3 Async HTTP Full-Handler Gate (selfhost, #537)"
     echo
-    echo "- vibe \`handler : (method,url,headers,body) -> response\` read a request header (auth)"
-    echo "- x-token present -> 200 'ok'; absent -> 401 'unauthorized' (served via wasmtime)"
+    echo "- selfhost componentize -> wac plug -> wasmtime serve -> curl"
+    echo "- x-token present -> 200 'ok:GET:/'; absent -> 401 'unauthorized'"
     echo
   } >> "$GITHUB_STEP_SUMMARY" || true
 fi
 
-echo "[http-full-gate] PASS: vibe full async HTTP handler (request headers/body -> status/headers/body)"
+echo "[http-full-gate] PASS: vibe full async HTTP handler (selfhost serve pipeline)"

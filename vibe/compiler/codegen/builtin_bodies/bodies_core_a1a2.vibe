@@ -9,7 +9,7 @@ import .. / common_analysis {
 }
 
 import .. / common_base {
-  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_gt_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
+  rc_shadow_base, CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable, emit_binop_op, emit_i32_eq, emit_i32_eqz, emit_i32_ge_u, emit_i32_gt_u, emit_i32_mul, emit_i32_ne, emit_i32_sub, emit_i64_load, emit_i64_store, emit_str_ref, expr_tag, get_arm_body, get_arm_pat, get_ebinop_op, get_efn_body, get_eif_cond, get_eif_else, get_eif_then, get_elet_body, get_elet_name, get_elet_val, get_slet_expr, get_slet_name, is_efn, is_eident, is_etuple, is_pbind, is_pbool, is_pctor, is_pint, is_pstring, is_ptuple, is_pwild, is_slet, lookup_ctor, resolve_func, resolve_local
 }
 
 import .. / common_extractors {
@@ -177,7 +177,7 @@ export let gen_arr_set_body: (Bool) -> Bytes = (enable_rc) -> {
 //
 // Locals: 0 = i64 v (param); 1 vptr, 2 class, 3 cnt, 4 idx, 5 dptr (i32);
 // 6 = i64 field value.
-export let gen_rc_drop_body: (Int) -> Bytes = (self_idx) -> {
+export let gen_rc_drop_body: (Int, Bool) -> Bytes = (self_idx, rc_shadow) -> {
   let b = bytebuf_new()
   // not a heap pointer (even) → nothing to do
   emit_local_get(b, 0)
@@ -205,6 +205,35 @@ export let gen_rc_drop_body: (Int) -> Bytes = (self_idx) -> {
   emit_i64_and(b)
   emit_i32_wrap_i64(b)
   emit_local_set(b, 1)
+  // #715 recurrence guard (VIBE_RC=shadow): trap BEFORE the rc-- below if the
+  // shadow byte says this block is already freed. For a freed block, vptr-4
+  // is the free-list NEXT link, so a drop-of-freed would silently corrupt the
+  // list (decrement the link) and usually return without reaching zero --
+  // the entry check is the only reliable place to catch it.
+  if rc_shadow {
+    emit_local_get(b, 1)
+    emit_i32_const(b, rc_shadow_base())
+    emit_i32_add(b)
+    emit_i32_load8_u(b, 0, 0)
+    emit_if_void(b)
+    bytebuf_push(b, 0)
+    emit_end(b)
+  } else {
+    ()
+  }
+  // #720: a saturated rc (low 24 bits == 0xFFFFFF) marks an immortal block
+  // (see emit_rc_word_inc_saturating) -- never decrement, never free.
+  emit_local_get(b, 1)
+  emit_i32_const(b, 4)
+  emit_i32_sub(b)
+  emit_i32_load(b, 2, 0)
+  emit_i32_const(b, 16777215)
+  bytebuf_push(b, 113)
+  emit_i32_const(b, 16777215)
+  emit_i32_eq(b)
+  emit_if_void(b)
+  emit_return(b)
+  emit_end(b)
   // rc_count-- : store(vptr-4, load(vptr-4) - 1). The class byte is the high
   // byte of the same word; subtracting 1 from a non-zero rc never borrows into
   // it, so it is preserved.
@@ -316,6 +345,32 @@ export let gen_rc_drop_body: (Int) -> Bytes = (self_idx) -> {
   emit_i32_add(b)
   emit_i32_ne(b)
   emit_if_void(b)
+  // #715 recurrence guard (VIBE_RC=shadow): double-free check for the
+  // grown buffer -- a second free-list push of the same buffer makes two
+  // later allocations return overlapping memory (type confusion), which
+  // plain marking cannot catch. Works under quarantine too (marks are
+  // permanent).
+  if rc_shadow {
+    emit_local_get(b, 5)
+    emit_i32_const(b, rc_shadow_base())
+    emit_i32_add(b)
+    emit_i32_load8_u(b, 0, 0)
+    emit_if_void(b)
+    bytebuf_push(b, 0)
+    emit_end(b)
+  } else {
+    ()
+  }
+  // #715 recurrence guard (VIBE_RC=shadow): mark the grown buffer freed.
+  if rc_shadow {
+    emit_local_get(b, 5)
+    emit_i32_const(b, rc_shadow_base())
+    emit_i32_add(b)
+    emit_i32_const(b, 1)
+    emit_i32_store8(b, 0, 0)
+  } else {
+    ()
+  }
   emit_local_get(b, 5)
   emit_i32_const(b, 4)
   emit_i32_sub(b)
@@ -437,6 +492,18 @@ export let gen_rc_drop_body: (Int) -> Bytes = (self_idx) -> {
   emit_end(b)
   emit_end(b)
   emit_end(b)
+  // #715 recurrence guard (VIBE_RC=shadow): mark this block freed so a later
+  // dup-of-freed (emit_rc_dup_guarded) or drop-of-freed (entry check above)
+  // traps deterministically at the faulting operation.
+  if rc_shadow {
+    emit_local_get(b, 1)
+    emit_i32_const(b, rc_shadow_base())
+    emit_i32_add(b)
+    emit_i32_const(b, 1)
+    emit_i32_store8(b, 0, 0)
+  } else {
+    ()
+  }
   // free: push block onto the free-list head (global 2), reusing the rc slot
   // (vptr-4) as the next pointer — matching the inline allocator/drop.
   emit_local_get(b, 1)
@@ -461,7 +528,7 @@ export let gen_rc_drop_body: (Int) -> Bytes = (self_idx) -> {
 // back to a bump only when none exists. Exact-fit only (no splitting), so it is
 // drop-in compatible with the recursive rc_drop free path.
 // Locals: 0=size(i64 param) 1=cur 2=prev 3=sz(i32) 4=result.
-export let gen_rc_alloc_body: () -> Bytes = () -> {
+export let gen_rc_alloc_body: (Bool) -> Bytes = (rc_shadow) -> {
   let b = bytebuf_new()
   // sz = (i32) size
   emit_local_get(b, 0)
@@ -505,6 +572,17 @@ export let gen_rc_alloc_body: () -> Bytes = () -> {
   emit_i32_load(b, 2, 0)
   emit_i32_store(b, 2, 0)
   emit_end(b)
+  // #715 recurrence guard (VIBE_RC=shadow): the block is live again -- clear
+  // its freed-marker byte so later dups/drops of the reused block are legal.
+  if rc_shadow {
+    emit_local_get(b, 1)
+    emit_i32_const(b, rc_shadow_base())
+    emit_i32_add(b)
+    emit_i32_const(b, 0)
+    emit_i32_store8(b, 0, 0)
+  } else {
+    ()
+  }
   // return block_start = cur - 8
   emit_local_get(b, 1)
   emit_i32_const(b, 8)

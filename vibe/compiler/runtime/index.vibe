@@ -34,10 +34,17 @@ import ../syntax/index.vibe {
 }
 
 import ../syntax/import_alias_rewrite.vibe {
-  append_import_alias_rewritten_non_import_stmts_skipping,
+  ExportRenamePlan,
+  append_import_alias_rewritten_non_import_stmts_with_renames,
   append_non_import_stmts_without_alias_rewrite,
+  apply_export_renames_stmts,
+  build_export_rename_plan,
   collect_import_alias_collision_locals,
   collect_import_alias_collision_refs,
+  collect_import_value_renames,
+  export_plan_fingerprint_text,
+  export_plan_renames_for,
+  import_value_rename_locals,
   namespace_private_value_stmts,
   rewrite_imported_value_stmt_to_local,
   stmts_have_import_deep
@@ -847,7 +854,10 @@ let lookup_source_by_path: (Array[(String, String)], String) -> Option[String] =
   found
 }
 
-let append_import_alias_collision_defs_from_sources: (Array[Stmt], String, Array[Stmt], Array[(String, String)]) -> Unit with { Error } = (merged, current_path, stmts, sources) -> {
+// #716: collision-def fallback (see merge_sources.vibe). `excluded_locals`
+// are the locals the export-rename plan already rewrites; the inline copy gets
+// the target file's export renames applied first.
+let append_import_alias_collision_defs_from_sources: (Array[Stmt], String, Array[Stmt], Array[(String, String)], ExportRenamePlan, Array[String]) -> Unit with { Error } = (merged, current_path, stmts, sources, plan, excluded_locals) -> {
   let refs = collect_import_alias_collision_refs(stmts)
   let emitted = Array::slice([
     ""
@@ -856,13 +866,16 @@ let append_import_alias_collision_defs_from_sources: (Array[Stmt], String, Array
   let mut i = 0
   while i < Array::length(refs) {
     let (raw_path, original, local) = Array::get(refs, i)
-    if !contains_str(emitted, local) {
+    if !contains_str(emitted, local) && !contains_str(excluded_locals, local) {
       let resolved = resolve_import_path(base_dir, raw_path)
       match lookup_source_by_path(sources, resolved) {
         Some(source) => {
           let source_stmts = namespace_private_value_stmts(
             resolved,
-            parse_program_with_path(resolved, source)
+            apply_export_renames_stmts(
+              parse_program_with_path(resolved, source),
+              export_plan_renames_for(plan, resolved)
+            )
           )
           let mut j = 0
           let mut done = false
@@ -885,33 +898,76 @@ let append_import_alias_collision_defs_from_sources: (Array[Stmt], String, Array
   }
 }
 
-let build_merged_source: (String, Array[(String, String)]) -> String with { Error } = (entry_path, sources) -> {
+// #716: parse every source once and expose (paths, stmts) for the export-
+// rename plan; the merge itself reuses the parsed statements.
+let parse_merge_sources: (Array[(String, String)]) -> (Array[String], Array[Array[Stmt]]) with { Error } = (sources) -> {
+  let file_paths = Array::slice([
+    ""
+  ], 0, 0)
+  let file_stmts = Array::slice([
+    empty_stmt_array()
+  ], 0, 0)
+  let mut si = 0
+  while si < Array::length(sources) {
+    let (path, source) = Array::get(sources, si)
+    Array::push(file_paths, path)
+    Array::push(file_stmts, parse_program_with_path(path, source))
+    si = si + 1
+  }
+  (file_paths, file_stmts)
+}
+
+// One (sub)list of sources merged under a whole-program rename plan.
+// `collision_sources` spans the whole program so a collision-def import that
+// crosses a group boundary still resolves.
+let build_merged_source_with_plan: (String, Array[(String, String)], Array[String], Array[Array[Stmt]], ExportRenamePlan, Array[(String, String)]) -> String with { Error } = (entry_path, sources, file_paths, file_stmts, plan, collision_sources) -> {
   let merged = empty_stmt_array()
   let source_count = Array::length(sources)
   let mut si = 0
   while si < source_count {
-    let (path, source) = Array::get(sources, si)
-    let stmts = parse_program_with_path(path, source)
+    let path = Array::get(file_paths, si)
+    let stmts = Array::get(file_stmts, si)
     let is_entry_source = if entry_path == "" {
       si == source_count - 1
     } else {
       path == entry_path
     }
-    let namespaced_stmts = if is_entry_source {
+    let export_renamed = if is_entry_source {
       stmts
     } else {
-      namespace_private_value_stmts(path, stmts)
+      apply_export_renames_stmts(stmts, export_plan_renames_for(plan, path))
+    }
+    let namespaced_stmts = if is_entry_source {
+      export_renamed
+    } else {
+      namespace_private_value_stmts(path, export_renamed)
     }
     if stmts_have_import_deep(stmts) {
+      let import_renames = collect_import_value_renames(plan, path, stmts)
       let skipped_locals = collect_import_alias_collision_locals(stmts)
-      append_import_alias_collision_defs_from_sources(merged, path, stmts, sources)
-      append_import_alias_rewritten_non_import_stmts_skipping(merged, namespaced_stmts, skipped_locals)
+      append_import_alias_collision_defs_from_sources(merged, path, stmts, collision_sources, plan, import_value_rename_locals(import_renames))
+      append_import_alias_rewritten_non_import_stmts_with_renames(merged, namespaced_stmts, skipped_locals, import_renames)
     } else {
       append_non_import_stmts_without_alias_rewrite(merged, namespaced_stmts)
     }
     si = si + 1
   }
   print_program(merged)
+}
+
+let build_merged_source: (String, Array[(String, String)]) -> String with { Error } = (entry_path, sources) -> {
+  let (file_paths, file_stmts) = parse_merge_sources(sources)
+  let plan_entry = if entry_path == "" {
+    if Array::length(file_paths) > 0 {
+      Array::get(file_paths, Array::length(file_paths) - 1)
+    } else {
+      ""
+    }
+  } else {
+    entry_path
+  }
+  let plan = build_export_rename_plan(file_paths, file_stmts, plan_entry)
+  build_merged_source_with_plan(entry_path, sources, file_paths, file_stmts, plan, sources)
 }
 
 let join_group_sources: (Array[String]) -> String = (group_sources) -> {
@@ -980,10 +1036,41 @@ export let db_grouped_merged_source: (TypeDb, Array[(String, Array[(String, Stri
       let mut grouped_fingerprint = "merged-groups"
       let new_group_cache_entries = empty_string_triples()
       let mut merge_count_acc = merge_count
+      // #716: the export-rename plan spans ALL groups (imports cross group
+      // boundaries), so every source is parsed once up front and the plan
+      // fingerprint is folded into each group's cache fingerprint — a change
+      // to the program's ambiguous-export set invalidates cached group merges
+      // even when the group's own sources are unchanged.
+      let flat_sources = Array::slice([
+        ("", "")
+      ], 0, 0)
+      let mut fgi = 0
+      while fgi < Array::length(groups) {
+        let (_, gsources) = Array::get(groups, fgi)
+        let mut fsi = 0
+        while fsi < Array::length(gsources) {
+          Array::push(flat_sources, Array::get(gsources, fsi))
+          fsi = fsi + 1
+        }
+        fgi = fgi + 1
+      }
+      let (flat_paths, flat_stmts) = parse_merge_sources(flat_sources)
+      let plan_entry = if Array::length(flat_paths) > 0 {
+        Array::get(flat_paths, Array::length(flat_paths) - 1)
+      } else {
+        ""
+      }
+      let plan = build_export_rename_plan(flat_paths, flat_stmts, plan_entry)
+      let plan_fp = compact_string_fingerprint(export_plan_fingerprint_text(plan))
+      let mut flat_idx = 0
       let mut i = 0
       while i < Array::length(groups) {
         let (group_name, sources) = Array::get(groups, i)
-        let fingerprint = build_merge_fingerprint(sources)
+        let group_start = flat_idx
+        flat_idx = flat_idx + Array::length(sources)
+        let fingerprint = compact_string_fingerprint(
+          String::concat(build_merge_fingerprint(sources), String::concat("#", plan_fp))
+        )
         let grouped_next = String::concat(
           grouped_fingerprint,
           String::concat("|", String::concat(group_name, String::concat("=", fingerprint)))
@@ -1000,7 +1087,9 @@ export let db_grouped_merged_source: (TypeDb, Array[(String, Array[(String, Stri
                 Array::push(group_sources, source)
               },
               None => {
-                let source = build_merged_source("", sources)
+                let group_paths = Array::slice(flat_paths, group_start, group_start + Array::length(sources))
+                let group_stmts = Array::slice(flat_stmts, group_start, group_start + Array::length(sources))
+                let source = build_merged_source_with_plan("", sources, group_paths, group_stmts, plan, flat_sources)
                 Array::push(new_group_cache_entries, StringTriple(cache_key, fingerprint, source))
                 merge_count_acc = merge_count_acc + 1
                 Array::push(group_sources, source)

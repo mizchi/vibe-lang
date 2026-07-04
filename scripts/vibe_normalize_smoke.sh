@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Smoke test for selfhost `vibe normalize` (scripts/vibe_normalize.sh).
-# Mirrors the retired host normalize fixtures 01 (order/DCE) and 03 (module
-# flatten): module flattening, dead-code elimination from exported roots,
-# dropping the aggregate `export { .. }`, and section layout. Also asserts
-# idempotency and that --check distinguishes normalized from un-normalized.
+# Mirrors the retired host normalize fixture 01 (order/DCE): dead-code
+# elimination from exported roots, dropping the aggregate `export { .. }`,
+# and section layout. Also asserts idempotency and that --check distinguishes
+# normalized from un-normalized. (This script drives the COMMITTED SEED, so
+# stage2-only behavior — module-block rejection #728, fn rejection #727 —
+# is asserted in selfhost_only_gate.sh step 6 instead. The old module-flatten
+# fixture 03 was retired with module blocks, #728.)
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -42,25 +45,6 @@ let helper: () -> Int = () -> { 1 }
 export let run: () -> Int = () -> { helper() }
 
 export let run_io: () -> Int with { Error } = () -> { run() }
-EOF
-
-# Fixture 03: module flatten (`module math` => `math::*`) + intra-module DCE.
-cat > "$WORK/03.in.vibe" <<'EOF'
-export module math {
-  let dead: () -> Int = () -> { 0 }
-  let helper: () -> Int = () -> { 1 }
-  export let run: () -> Int = () -> { helper() }
-  export let run_io: () -> Int with { Error } = () -> { run() }
-}
-EOF
-cat > "$WORK/03.expected.vibe" <<'EOF'
-//# Functions
-
-let math::helper: () -> Int = () -> { 1 }
-
-export let math::run: () -> Int = () -> { math::helper() }
-
-export let math::run_io: () -> Int with { Error } = () -> { math::run() }
 EOF
 
 # Aggregate-only export: `export { run }` is the sole export marker. `run` and
@@ -146,7 +130,7 @@ let called = mk()
 export let run: () -> Int = () -> { (lit + called) }
 EOF
 
-for case in 01 03 agg hoist generic fold annot; do
+for case in 01 agg hoist generic fold annot; do
   bash "$ROOT_DIR/scripts/vibe_normalize.sh" --stdout "$WORK/$case.in.vibe" > "$WORK/$case.got.vibe" 2>/dev/null
   if ! cmp -s "$WORK/$case.expected.vibe" "$WORK/$case.got.vibe"; then
     echo "[vibe-normalize-smoke] FAIL: fixture $case mismatch" >&2
@@ -170,4 +154,4 @@ if ! bash "$ROOT_DIR/scripts/vibe_normalize.sh" --check "$WORK/01.normalized.vib
   echo "[vibe-normalize-smoke] FAIL: --check rejected normalized file" >&2; exit 1
 fi
 
-echo "[vibe-normalize-smoke] ok (fixtures 01/03 + agg + hoist + generic + fold + annot + idempotent + --check)"
+echo "[vibe-normalize-smoke] ok (fixtures 01 + agg + hoist + generic + fold + annot + idempotent + --check)"

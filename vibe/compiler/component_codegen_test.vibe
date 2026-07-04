@@ -5,7 +5,7 @@ import ./bytebuf.vibe {
 }
 
 import ./component_codegen.vibe {
-  comp_emit_component_wasm, comp_emit_component_wasm_async, comp_emit_component_wasm_async_trampolined, comp_emit_component_wasm_async_trampolined_p1, comp_emit_component_wasm_with_lift, comp_emit_component_wasm_with_string_lift, comp_generate_string_trampoline
+  comp_emit_component_wasm, comp_emit_component_wasm_async, comp_emit_component_wasm_async_trampolined, comp_emit_component_wasm_async_trampolined_p1, comp_emit_component_wasm_string_handler, comp_emit_component_wasm_with_lift, comp_emit_component_wasm_with_string_lift, comp_generate_string_trampoline, comp_generate_string_trampoline_packed
 }
 
 import ./wasm_emit.vibe {
@@ -423,4 +423,112 @@ test "component: simple wrap overhead is small" {
   let overhead = Bytes::length(comp) - Bytes::length(core)
   assert(overhead > 0)
   assert(overhead < 100)
+}
+
+//# #537 packed-string handler emitter
+
+// A core module shaped like a selfhost linear-backend compile: exports
+// `handler` with the (i64 x N+1) -> i64 packed-string ABI (trailing closure
+// env), plus `memory` and `__heap_ptr` (mut i32 global).
+let build_test_core_packed_handler: () -> Bytes = () -> {
+  let out = bytebuf_new()
+  emit_header(out)
+  let type_content = bytebuf_new()
+  bytebuf_push_vec_header(type_content, 1)
+  emit_func_type_raw(type_content, [
+    126,
+    126,
+    126,
+    126,
+    126
+  ], [
+    126
+  ])
+  bytebuf_push_section(out, 1, type_content)
+  emit_function_section(out, [
+    0
+  ])
+  emit_memory_section(out, 1)
+  // global section: one mut i32 = 8 (the bump frontier)
+  let global_content = bytebuf_new()
+  leb128_encode_u32(global_content, 1)
+  bytebuf_push(global_content, 127)
+  bytebuf_push(global_content, 1)
+  bytebuf_push(global_content, 65)
+  bytebuf_push(global_content, 8)
+  bytebuf_push(global_content, 11)
+  bytebuf_push_section(out, 6, global_content)
+  // exports: handler (func 0), memory, __heap_ptr (global 0)
+  let export_content = bytebuf_new()
+  bytebuf_push_vec_header(export_content, 3)
+  emit_name(export_content, "handler")
+  bytebuf_push(export_content, 0)
+  leb128_encode_u32(export_content, 0)
+  emit_name(export_content, "memory")
+  bytebuf_push(export_content, 2)
+  leb128_encode_u32(export_content, 0)
+  emit_name(export_content, "__heap_ptr")
+  bytebuf_push(export_content, 3)
+  leb128_encode_u32(export_content, 0)
+  bytebuf_push_section(out, 7, export_content)
+  let h_body = bytebuf_new()
+  emit_local_get(h_body, 0)
+  emit_code_section(out, [
+    h_body
+  ])
+  bytebuf_to_bytes(out)
+}
+
+test "component #537: packed trampoline exports canon_func and cabi_realloc" {
+  let tramp = comp_generate_string_trampoline_packed(4)
+  assert(Bytes::get(tramp, 0) == 0)
+  assert(Bytes::get(tramp, 4) == 1)
+  assert(component_bytes_contains(tramp, "canon_func") == 1)
+  assert(component_bytes_contains(tramp, "cabi_realloc") == 1)
+  assert(component_bytes_contains(tramp, "__heap_ptr") == 1)
+  assert(component_bytes_contains(tramp, "target_func") == 1)
+}
+
+test "component #537: string handler wraps a packed-ABI core" {
+  let core = build_test_core_packed_handler()
+  let comp = comp_emit_component_wasm_string_handler(core, "handler", "handler", [
+    "method",
+    "url",
+    "headers",
+    "body"
+  ])
+  assert(Bytes::get(comp, 0) == 0)
+  assert(Bytes::get(comp, 4) == 13)
+  assert(component_bytes_contains(comp, "handler") == 1)
+  assert(component_bytes_contains(comp, "cabi_realloc") == 1)
+  // component functype params are kebab-cased names
+  assert(component_bytes_contains(comp, "headers") == 1)
+}
+
+test "component #537: string handler rejects a missing export" {
+  let core = build_test_core_packed_handler()
+  let rejected = handle {
+    let _ = comp_emit_component_wasm_string_handler(core, "nope", "handler", [
+      "method"
+    ])
+    false
+  } with Error {
+    Throw(_) => true
+  }
+  assert(rejected)
+}
+
+test "component #537: string handler rejects a wrong signature" {
+  let core = build_test_core_packed_handler()
+  // core handler takes 4 strings (5 i64s); asking for 2 must throw
+  let rejected = handle {
+    let _ = comp_emit_component_wasm_string_handler(core, "handler", "handler", [
+      "method",
+      "url"
+    ])
+    false
+  } with Error {
+    Throw(_) => true
+  }
+  assert(rejected)
 }

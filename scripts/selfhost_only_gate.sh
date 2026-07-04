@@ -42,23 +42,18 @@ if s2 != s3:
 print(f"[selfhost-only-gate] fixpoint ok: stage2==stage3 ({s2[:12]})")
 PY
 
-# 3b. RC bootstrap gate (#556) -- CAVEAT (found #705 bump-removal spike): this
-# reuses the manifest from the bump-pinned build above (VIBE_RC=0, line ~11),
-# so it does NOT perform a fresh seed-compiles-stage1-under-RC build; it only
-# re-checks that manifest's stage2==stage3 sha (already asserted just above).
-# It still guards the #556 `analyze_calls` iterative fix (#681) for whatever
-# backend actually built that manifest, but it is NOT currently evidence that
-# the whole compiler self-hosts correctly under RC end-to-end. A real (fresh,
-# unreused) `VIBE_RC=1 bash scripts/selfhost_generations.sh build --stage3`
-# currently FAILS at seed->stage1 ("not EFn", stale seed) -- and a stage1
-# (built from current, post-#702-fix source) *can* compile a fresh flat source
-# under RC, but the resulting compiler then segfaults (`memory access out of
-# bounds` in parse_let_stmt/parse_program) parsing even a trivial one-line
-# program. This is a distinct, deeper bug from the per-feature RC codegen
-# issues fixed this session (v128 #705, coverage/trace/break #705): it means
-# the compiler's OWN internal RC-managed state is unsound in some pattern its
-# own source uses (parser internals), not yet isolated. Do not remove the
-# bump backend or the VIBE_RC=0 pin above until this is root-caused and fixed.
+# 3b. RC bootstrap gate (#556) -- CAVEAT: this reuses the manifest from the
+# bump-pinned build above (VIBE_RC=0, line ~11), so it does NOT perform a
+# fresh seed-compiles-stage1-under-RC build; it only re-checks that
+# manifest's stage2==stage3 sha (already asserted just above).
+# Status (#705/#715/#720, 2026-07-02): RC self-hosting is CORRECT end-to-end
+# -- a bump stage2 compiling the flat source under VIBE_RC=1 yields a
+# stage2_rc whose own re-compile (stage3_rc) is byte-identical, and the
+# VIBE_RC=shadow instrumented build completes the same self-compile trap-
+# free. The VIBE_RC=0 pin above is now a PERFORMANCE default only (RC binary
+# ~1.7x wall, ~2.9x output size; see #705 final benchmark), not a
+# correctness blocker. seed->stage1 must still run bump: the pinned seed
+# predates RC ("not EFn" on VIBE_RC=1).
 VIBE_SELFHOST_RC_BOOTSTRAP_REUSE_GEN="${latest_gen}generation.json" \
   bash scripts/test_selfhost_rc_bootstrap.sh
 
@@ -119,24 +114,43 @@ rm -rf "$tdir"
 echo "[selfhost-only-gate] test-block regression ok"
 
 # 6. normalize regression (#594): `vibe normalize` (VIBE_NORMALIZE=1) canonicalizes
-#    a source file — module flatten + DCE from exported roots + section layout —
-#    via the in-compiler engine. Guards that a future seed keeps it working and
-#    idempotent. The flat selfbuild source strips imports/modules, so the
-#    fixpoint above does not exercise the normalize entry; assert it directly.
+#    a source file — DCE from exported roots + section layout — via the
+#    in-compiler engine. Guards that a future seed keeps it working and
+#    idempotent. The flat selfbuild source strips imports, so the fixpoint
+#    above does not exercise the normalize entry; assert it directly.
+#    (Module blocks were removed in #728; flatten coverage retired with them.)
 echo "[selfhost-only-gate] 6/6 normalize compile+run regression"
 ndir="_build/_gate_normalize"
 rm -rf "$ndir"; mkdir -p "$ndir"
-printf 'export module m {\n  let dead: () -> Int = () -> { 0 }\n  let helper: () -> Int = () -> { 1 }\n  export let run: () -> Int = () -> { helper() }\n}\n' > "$ndir/in.vibe"
+printf 'let dead: () -> Int = () -> { 0 }\nlet helper: () -> Int = () -> { 1 }\nexport let run: () -> Int = () -> { helper() }\n' > "$ndir/in.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ndir/in.vibe" "$ndir/out.vibe" >/dev/null 2>&1
 if [ ! -s "$ndir/out.vibe" ]; then
   echo "[selfhost-only-gate] FAIL: normalize produced no output" >&2; exit 1
 fi
-# `dead` must be eliminated; `m::helper` (reached from the exported `m::run`) kept.
-if grep -q "dead" "$ndir/out.vibe" || ! grep -q "m::helper" "$ndir/out.vibe"; then
-  echo "[selfhost-only-gate] FAIL: normalize DCE/flatten incorrect" >&2
+# `dead` must be eliminated; `helper` (reached from the exported `run`) kept.
+if grep -q "dead" "$ndir/out.vibe" || ! grep -q "helper" "$ndir/out.vibe"; then
+  echo "[selfhost-only-gate] FAIL: normalize DCE incorrect" >&2
   cat "$ndir/out.vibe" >&2; exit 1
+fi
+# Removed/guarded syntax must be refused by the CURRENT stage2 (the committed
+# seed lags until the next bump, so these checks live here, not in the
+# seed-driven normalize smoke): module blocks are removed (#728); fn
+# statements re-print as let-form until the printer lands (#727).
+printf 'module m {\n  export let run: () -> Int = () -> { 1 }\n}\n' > "$ndir/reject_module.vibe"
+if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$ndir/reject_module.vibe" "$ndir/reject_module.out.vibe" >/dev/null 2>&1 \
+  && [ -s "$ndir/reject_module.out.vibe" ]; then
+  echo "[selfhost-only-gate] FAIL: module-block source was not rejected (#728)" >&2; exit 1
+fi
+printf 'fn run() -> Int { 1 }\nexport { run }\n' > "$ndir/reject_fn.vibe"
+if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$ndir/reject_fn.vibe" "$ndir/reject_fn.out.vibe" >/dev/null 2>&1 \
+  && [ -s "$ndir/reject_fn.out.vibe" ]; then
+  echo "[selfhost-only-gate] FAIL: fn-bearing source was not rejected by normalize (#727)" >&2; exit 1
 fi
 # Idempotency: normalize(normalize(x)) == normalize(x).
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
@@ -145,10 +159,10 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
 if ! cmp -s "$ndir/out.vibe" "$ndir/out2.vibe"; then
   echo "[selfhost-only-gate] FAIL: normalize not idempotent" >&2; exit 1
 fi
-# Flattened output must still typecheck: intra-module refs are qualified
-# (`m::run` calls `m::helper`), so compiling a copy with an entry must succeed.
+# Normalized output must still typecheck: compiling a copy with an entry
+# must succeed.
 cp "$ndir/out.vibe" "$ndir/compile.vibe"
-printf '\nexport let _start: () -> Int = () -> { m::run() }\n' >> "$ndir/compile.vibe"
+printf '\nexport let _start: () -> Int = () -> { run() }\n' >> "$ndir/compile.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ndir/compile.vibe" "$ndir/out.wasm" _start >/dev/null 2>&1
@@ -158,6 +172,143 @@ if [ ! -s "$ndir/out.wasm" ]; then
 fi
 rm -rf "$ndir"
 echo "[selfhost-only-gate] normalize regression ok"
+
+# 6b. contract package regression (#729): an index.vibei contract package must
+#     resolve via a bare directory import (conformance-check + facade desugar,
+#     end to end through the current stage2), and its internals must NOT be
+#     importable from outside the boundary (incoming enforcement, Phase C-3).
+echo "[selfhost-only-gate] 6b contract package + boundary regression (#729)"
+cdir="_build/_gate_contract"
+rm -rf "$cdir"; mkdir -p "$cdir/pkg"
+printf 'import ./impl.vibe {}\nfn add(x: Int, y: Int) -> Int\n' > "$cdir/pkg/index.vibei"
+printf 'export fn add(x: Int, y: Int) -> Int { x + y }\n' > "$cdir/pkg/impl.vibe"
+printf 'import ./pkg { add }\nexport let _start: () -> Int = () -> { add(40, 2) }\n' > "$cdir/ok.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$cdir/ok.vibe" "$cdir/ok.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$cdir/ok.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: contract package import did not compile (#729)" >&2
+  cat "$cdir/ok.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+printf 'import ./pkg/impl.vibe { add }\nexport let _start: () -> Int = () -> { add(40, 2) }\n' > "$cdir/bad.vibe"
+if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$cdir/bad.vibe" "$cdir/bad.wasm" _start >/dev/null 2>&1 \
+  && [ -s "$cdir/bad.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: package-internal import crossed the boundary (#729)" >&2; exit 1
+fi
+if ! grep -q "package boundary" "$cdir/bad.wasm.diag" 2>/dev/null; then
+  echo "[selfhost-only-gate] FAIL: boundary rejection lacks the expected diagnostic (#729)" >&2
+  cat "$cdir/bad.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+rm -rf "$cdir"
+echo "[selfhost-only-gate] contract package + boundary regression ok"
+
+# 6c. content-addressed store regression (#730 D-2): `vibe hash` prints a
+#     store package's pin; a require-pinned `import @scope/name` resolves
+#     through .vibe/store/ with hash verification; a wrong pin is rejected.
+echo "[selfhost-only-gate] 6c content-addressed store regression (#730)"
+sdir=".vibe/store/@gate/d2pkg"
+rm -rf ".vibe/store/@gate"; mkdir -p "$sdir"
+printf 'import ./impl.vibe {}\nfn triple(x: Int) -> Int\n' > "$sdir/index.vibei"
+printf 'export fn triple(x: Int) -> Int { x * 3 }\n' > "$sdir/impl.vibe"
+cdir2="_build/_gate_store"
+rm -rf "$cdir2"; mkdir -p "$cdir2"
+VIBE_HASH=1 VIBE_PREOPEN_DIR="$ROOT_DIR" \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$sdir/index.vibei" "$cdir2/hash.out" __no_entry__ >/dev/null 2>&1 || true
+pin="$(grep '^package ' "$cdir2/hash.out" 2>/dev/null | cut -d' ' -f2)"
+if [ -z "$pin" ]; then
+  echo "[selfhost-only-gate] FAIL: vibe hash produced no package pin (#730)" >&2
+  cat "$cdir2/hash.out.diag" 2>/dev/null >&2; exit 1
+fi
+printf 'require @gate/d2pkg 1.0.0 = %s\n\nimport @gate/d2pkg { triple }\nexport let _start: () -> Int = () -> { triple(14) }\n' "$pin" > "$cdir2/ok.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$cdir2/ok.vibe" "$cdir2/ok.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$cdir2/ok.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: pinned store import did not compile (#730)" >&2
+  cat "$cdir2/ok.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+printf 'require @gate/d2pkg 1.0.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\nimport @gate/d2pkg { triple }\nexport let _start: () -> Int = () -> { triple(14) }\n' > "$cdir2/bad.vibe"
+if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$cdir2/bad.vibe" "$cdir2/bad.wasm" _start >/dev/null 2>&1 \
+  && [ -s "$cdir2/bad.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: wrong pin was not rejected (#730)" >&2; exit 1
+fi
+if ! grep -q "pin mismatch" "$cdir2/bad.wasm.diag" 2>/dev/null; then
+  echo "[selfhost-only-gate] FAIL: pin rejection lacks the expected diagnostic (#730)" >&2
+  cat "$cdir2/bad.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+# D-3: an unpinned require refuses to build; VIBE_FILL_PINS completes it
+# offline from the store; the filled source builds; the fill is idempotent.
+printf 'require @gate/d2pkg 1.0.0\n\nimport @gate/d2pkg { triple }\nexport let _start: () -> Int = () -> { triple(14) }\n' > "$cdir2/unpinned.vibe"
+if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$cdir2/unpinned.vibe" "$cdir2/unpinned.wasm" _start >/dev/null 2>&1 \
+  && [ -s "$cdir2/unpinned.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: unpinned require was not rejected (#730 D-3)" >&2; exit 1
+fi
+VIBE_FILL_PINS=1 VIBE_PREOPEN_DIR="$ROOT_DIR" \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$cdir2/unpinned.vibe" "$cdir2/filled.vibe" __no_entry__ >/dev/null 2>&1 || true
+if ! grep -q "= #pkg:sha1:" "$cdir2/filled.vibe" 2>/dev/null; then
+  echo "[selfhost-only-gate] FAIL: VIBE_FILL_PINS did not insert the pin (#730 D-3)" >&2
+  cat "$cdir2/filled.vibe.diag" 2>/dev/null >&2; exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$cdir2/filled.vibe" "$cdir2/filled.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$cdir2/filled.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: pin-filled source did not compile (#730 D-3)" >&2
+  cat "$cdir2/filled.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+VIBE_NORMALIZE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$cdir2/filled.vibe" "$cdir2/norm.vibe" >/dev/null 2>&1 || true
+if ! head -1 "$cdir2/norm.vibe" 2>/dev/null | grep -q "^require @gate/d2pkg 1.0.0 = #pkg:sha1:"; then
+  echo "[selfhost-only-gate] FAIL: normalize did not re-emit the require pin line (#730 D-3)" >&2
+  head -3 "$cdir2/norm.vibe" 2>/dev/null >&2; exit 1
+fi
+rm -rf ".vibe/store/@gate" "$cdir2"
+echo "[selfhost-only-gate] content-addressed store regression ok"
+
+# 6d. where-contract + publish-gate regression (#731 / #732): a violated
+#     requires clause traps at runtime; the publish semver gate accepts an
+#     honest bump and rejects a dishonest one.
+echo "[selfhost-only-gate] 6d where-contract + publish gate regression (#731/#732)"
+edir="_build/_gate_ef"
+rm -rf "$edir"; mkdir -p "$edir"
+printf 'fn half_pos(x: Int) -> Int where { requires: x > 0 } { x / 2 }\nexport let _start: () -> Int = () -> { half_pos(0 - 4) }\n' > "$edir/viol.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edir/viol.vibe" "$edir/viol.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$edir/viol.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: where-contract program did not compile (#731)" >&2
+  cat "$edir/viol.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/viol.wasm" >/dev/null 2>&1; then
+  echo "[selfhost-only-gate] FAIL: violated requires clause did not trap (#731)" >&2; exit 1
+fi
+printf 'fn a(x: Int) -> Int\n' > "$edir/prev.vibei"
+printf 'fn a(x: Int) -> Int\nfn b(x: Int) -> Int\n' > "$edir/next.vibei"
+VIBE_PUBLISH_CHECK=1 VIBE_PUBLISH_PREV="$edir/prev.vibei" VIBE_PUBLISH_PREV_VERSION=1.0.0 VIBE_PUBLISH_VERSION=1.1.0 \
+  VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edir/next.vibei" "$edir/pub.out" __no_entry__ >/dev/null 2>&1 || true
+if ! grep -q "^ok" "$edir/pub.out" 2>/dev/null; then
+  echo "[selfhost-only-gate] FAIL: honest minor bump was rejected (#732)" >&2
+  cat "$edir/pub.out.diag" 2>/dev/null >&2; exit 1
+fi
+VIBE_PUBLISH_CHECK=1 VIBE_PUBLISH_PREV="$edir/prev.vibei" VIBE_PUBLISH_PREV_VERSION=1.0.0 VIBE_PUBLISH_VERSION=1.0.1 \
+  VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$edir/next.vibei" "$edir/pub2.out" __no_entry__ >/dev/null 2>&1 || true
+if ! grep -q "requires minor" "$edir/pub2.out.diag" 2>/dev/null; then
+  echo "[selfhost-only-gate] FAIL: dishonest patch claim was not rejected (#732)" >&2
+  cat "$edir/pub2.out" "$edir/pub2.out.diag" 2>/dev/null >&2; exit 1
+fi
+rm -rf "$edir"
+echo "[selfhost-only-gate] where-contract + publish gate regression ok"
 
 # 7. literal sub-pattern regression (#603): a literal (PInt/PString) argument of a
 #    constructor pattern must be tested, not just the tag — `I("x")` must not
@@ -2496,5 +2647,148 @@ if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
 fi
 rm -rf "$v2dir"
 echo "[selfhost-only-gate] V128 SIMD intrinsics under RC ok"
+
+# 40f. RC shadow-liveness regression guard (#715 recurrence prevention).
+#      Compiles the #715 shape corpus (every minimal shape that once produced
+#      a use-after-free / double-free in the Perceus RC backend) with
+#      VIBE_RC=shadow -- codegen that marks freed blocks in a shadow byte
+#      table and executes `unreachable` on the FIRST dup-of-freed or
+#      drop-of-freed -- and runs it. A regression in the RC dup/drop
+#      accounting traps HERE, deterministically, at the faulting operation,
+#      instead of corrupting the free list and crashing later at an
+#      unrelated, binary-layout-dependent location ("moving target").
+echo "[selfhost-only-gate] 40f/40 RC shadow-liveness regression guard (#715 shapes)"
+shdir="_build/_gate_rc_shadow"
+rm -rf "$shdir"; mkdir -p "$shdir"
+VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/rc_shadow_regression_test.vibe" "$shdir/shadow.wasm" main >/dev/null 2>&1
+if [ ! -s "$shdir/shadow.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: rc_shadow_regression fixture did not compile under VIBE_RC=shadow" >&2
+  cat "$shdir/shadow.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+sh_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$shdir/shadow.wasm" 2>&1 | tail -1)"
+if [ "$sh_out" != "122489" ]; then
+  echo "[selfhost-only-gate] FAIL: rc_shadow_regression got '$sh_out' (want 122489). A trap here means an RC dup/drop accounting regression touched a freed block -- see fixtures/rc_shadow_regression_test.vibe for which shapes are covered and issue #715 for the debugging methodology." >&2
+  exit 1
+fi
+rm -rf "$shdir"
+echo "[selfhost-only-gate] RC shadow-liveness regression guard ok (122489)"
+
+# 40g. #cfg conditional-compilation guard: the flag-off build must strip the
+#      guarded statements entirely (compiles, dev symbols absent -> different
+#      program), flag-on builds must select the matching statements.
+echo "[selfhost-only-gate] 40g/40 #cfg conditional compilation"
+cfdir="_build/_gate_cfg"
+rm -rf "$cfdir"; mkdir -p "$cfdir"
+VIBE_CFG=dev VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/cfg_flag_test.vibe" "$cfdir/dev.wasm" main >/dev/null 2>&1
+cf_dev="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$cfdir/dev.wasm" 2>&1 | tail -1)"
+VIBE_CFG=release VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/cfg_flag_test.vibe" "$cfdir/rel.wasm" main >/dev/null 2>&1
+cf_rel="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$cfdir/rel.wasm" 2>&1 | tail -1)"
+if [ "$cf_dev" != "102" ] || [ "$cf_rel" != "2" ]; then
+  echo "[selfhost-only-gate] FAIL: #cfg selection wrong (dev='$cf_dev' want 102, release='$cf_rel' want 2)" >&2
+  exit 1
+fi
+rm -rf "$cfdir"
+echo "[selfhost-only-gate] #cfg conditional compilation ok (dev=102 release=2)"
+
+# 40h. wasm-gc backend smoke: the VIBE_BACKEND=gc lane (selfhost port of the
+#      gc backend, wired through the adapter) must compile and run the
+#      supported-subset fixture identically to the linear backend. Guards the
+#      gc/linear builtin-body name split (gc_gen_*) and the annotated-local-
+#      lambda distribution on the gc path. See fixtures/gc_backend_smoke_test.vibe
+#      for the covered subset and the known gc-lane gaps.
+echo "[selfhost-only-gate] 40h/40 wasm-gc backend smoke"
+gcdir="_build/_gate_gc"
+rm -rf "$gcdir"; mkdir -p "$gcdir"
+VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/gc_backend_smoke_test.vibe" "$gcdir/smoke.wasm" main >/dev/null 2>&1
+if [ ! -s "$gcdir/smoke.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: gc backend smoke did not compile under VIBE_BACKEND=gc" >&2
+  cat "$gcdir/smoke.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+gc_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcdir/smoke.wasm" 2>&1 | tail -1)"
+if [ "$gc_out" != "90419" ]; then
+  echo "[selfhost-only-gate] FAIL: gc backend smoke got '$gc_out' (want 90419)" >&2
+  exit 1
+fi
+rm -rf "$gcdir"
+echo "[selfhost-only-gate] wasm-gc backend smoke ok (90419)"
+
+# 40i. effect->WIT golden (#537): `vibe compile --wit` (adapter VIBE_EMIT_WIT=1)
+#      must render fixtures/wit_gen_http.vibe byte-exactly as the committed
+#      golden. Pins the WIT mapping contract (docs/effect-wit-mapping.md):
+#      declared effect -> inline interface import, host-capability effect ->
+#      comment marker, exported fns -> world exports, type mapping.
+echo "[selfhost-only-gate] 40i/40 effect->WIT golden (#537)"
+witdir="_build/_gate_wit"
+rm -rf "$witdir"; mkdir -p "$witdir"
+VIBE_EMIT_WIT=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/wit_gen_http.vibe" "$witdir/out.wit" main >/dev/null 2>&1
+if [ ! -s "$witdir/out.wit" ]; then
+  echo "[selfhost-only-gate] FAIL: VIBE_EMIT_WIT produced no output" >&2
+  cat "$witdir/out.wit.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! diff -u "fixtures/wit_gen_http.golden.wit" "$witdir/out.wit" >&2; then
+  echo "[selfhost-only-gate] FAIL: WIT output differs from fixtures/wit_gen_http.golden.wit. If the mapping contract changed intentionally, update the golden AND docs/effect-wit-mapping.md together." >&2
+  exit 1
+fi
+rm -rf "$witdir"
+echo "[selfhost-only-gate] effect->WIT golden ok"
+
+# 40j. `vibe serve` handler componentization (#537): the adapter's
+#      VIBE_SERVE_COMPONENT=1 step must turn the serve smoke handler into a
+#      valid component exporting
+#        handler: func(method, url, headers, body: string) -> string
+#      via the packed-string trampoline (component_codegen). Executed on
+#      wasmtime when available (the same auth check the full HTTP gate curls);
+#      otherwise only the emission is asserted.
+echo "[selfhost-only-gate] 40j/40 serve handler componentization (#537)"
+svdir="_build/_gate_serve"
+rm -rf "$svdir"; mkdir -p "$svdir"
+VIBE_SERVE_COMPONENT=1 VIBE_SERVE_WIT_OUT="$svdir/handler.wit" \
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/serve_handler_smoke.vibe" "$svdir/handler.component.wasm" main >/dev/null 2>&1
+if [ ! -s "$svdir/handler.component.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: VIBE_SERVE_COMPONENT produced no component" >&2
+  cat "$svdir/handler.component.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+sv_magic="$(od -An -t x1 -N 4 "$svdir/handler.component.wasm" | tr -d ' \n')"
+if [ "$sv_magic" != "0061736d" ]; then
+  echo "[selfhost-only-gate] FAIL: serve component is not wasm (magic=$sv_magic)" >&2
+  exit 1
+fi
+if [ ! -s "$svdir/handler.wit" ]; then
+  echo "[selfhost-only-gate] FAIL: VIBE_SERVE_WIT_OUT sidecar missing" >&2
+  exit 1
+fi
+SERVE_WASMTIME="$(bash scripts/wasmtime_bin.sh 2>/dev/null || command -v wasmtime || true)"
+if [ -n "$SERVE_WASMTIME" ] && "$SERVE_WASMTIME" --version >/dev/null 2>&1; then
+  sv_out="$("$SERVE_WASMTIME" run -W exceptions=y \
+    --invoke 'handler("GET", "/gate", "x-token: secret", "")' \
+    "$svdir/handler.component.wasm" 2>&1 | tail -1)"
+  case "$sv_out" in
+    *"ok:GET:/gate"*) ;;
+    *)
+      echo "[selfhost-only-gate] FAIL: serve component invoke got '$sv_out' (want 200 ok:GET:/gate). The packed-string trampoline (comp_emit_component_wasm_string_handler) no longer matches the linear-backend string ABI." >&2
+      exit 1
+      ;;
+  esac
+  echo "[selfhost-only-gate] serve handler componentization ok (invoked on wasmtime)"
+else
+  echo "[selfhost-only-gate] serve handler componentization ok (emission only; wasmtime unavailable)"
+fi
+rm -rf "$svdir"
 
 echo "[selfhost-only-gate] ok"

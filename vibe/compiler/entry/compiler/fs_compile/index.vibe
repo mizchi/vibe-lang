@@ -9,9 +9,15 @@ import ../../../syntax/parser.vibe {
 }
 
 import ../../../syntax/import_alias_rewrite.vibe {
-  append_import_alias_rewritten_non_import_stmts_skipping,
+  ExportRenamePlan,
+  append_import_alias_rewritten_non_import_stmts_with_renames,
+  apply_export_renames_stmts,
+  build_export_rename_plan,
   collect_import_alias_collision_locals,
   collect_import_alias_collision_refs,
+  collect_import_value_renames,
+  export_plan_renames_for,
+  import_value_rename_locals,
   namespace_private_value_stmts,
   rewrite_imported_value_stmt_to_local
 }
@@ -207,7 +213,10 @@ let string_array_contains_local: (Array[String], String) -> Bool = (items, targe
   found
 }
 
-let append_inline_import_alias_collision_defs: (Array[Stmt], String, Array[Stmt], Array[(String, String)]) -> Unit with { Error } = (merged, current_path, stmts, sources) -> {
+// #716: collision-def fallback (see merge_sources.vibe). `excluded_locals`
+// are the locals the export-rename plan already rewrites; the inline copy gets
+// the target file's export renames applied first.
+let append_inline_import_alias_collision_defs: (Array[Stmt], String, Array[Stmt], Array[(String, String)], ExportRenamePlan, Array[String]) -> Unit with { Error } = (merged, current_path, stmts, sources, plan, excluded_locals) -> {
   let refs = collect_import_alias_collision_refs(stmts)
   let emitted = Array::slice([
     ""
@@ -216,12 +225,15 @@ let append_inline_import_alias_collision_defs: (Array[Stmt], String, Array[Stmt]
   let mut i = 0
   while i < Array::length(refs) {
     let (raw_path, original, local) = Array::get(refs, i)
-    if !string_array_contains_local(emitted, local) {
+    if !string_array_contains_local(emitted, local) && !string_array_contains_local(excluded_locals, local) {
       let resolved = resolve_import_path(base_dir, raw_path)
       let source = source_lookup_or_throw(sources, resolved)
       let source_stmts = namespace_private_value_stmts(
         resolved,
-        parse_program(lex(source))
+        apply_export_renames_stmts(
+          parse_program(lex(source)),
+          export_plan_renames_for(plan, resolved)
+        )
       )
       let mut j = 0
       let mut done = false
@@ -347,18 +359,46 @@ let build_merge_fingerprint_inline: (Array[(String, String)]) -> String = (sourc
 let build_merged_stmts_inline: (Array[(String, String)]) -> Array[Stmt] with { Error } = (sources) -> {
   let merged = empty_stmt_array()
   let source_count = Array::length(sources)
+  // #716: parse once, then build the whole-program export-rename plan (last
+  // source is the entry) before appending any file.
+  let file_paths = Array::slice([
+    ""
+  ], 0, 0)
+  let file_stmts = Array::slice([
+    empty_stmt_array()
+  ], 0, 0)
+  let mut pi = 0
+  while pi < source_count {
+    let (path, source) = Array::get(sources, pi)
+    Array::push(file_paths, path)
+    Array::push(file_stmts, parse_program(lex(source)))
+    pi = pi + 1
+  }
+  let plan_entry = if source_count > 0 {
+    Array::get(file_paths, source_count - 1)
+  } else {
+    ""
+  }
+  let plan = build_export_rename_plan(file_paths, file_stmts, plan_entry)
   let mut si = 0
   while si < source_count {
-    let (path, source) = Array::get(sources, si)
-    let stmts = parse_program(lex(source))
-    let namespaced_stmts = if si == source_count - 1 {
+    let path = Array::get(file_paths, si)
+    let stmts = Array::get(file_stmts, si)
+    let is_entry_source = si == source_count - 1
+    let export_renamed = if is_entry_source {
       stmts
     } else {
-      namespace_private_value_stmts(path, stmts)
+      apply_export_renames_stmts(stmts, export_plan_renames_for(plan, path))
     }
+    let namespaced_stmts = if is_entry_source {
+      export_renamed
+    } else {
+      namespace_private_value_stmts(path, export_renamed)
+    }
+    let import_renames = collect_import_value_renames(plan, path, stmts)
     let skipped_locals = collect_import_alias_collision_locals(stmts)
-    append_inline_import_alias_collision_defs(merged, path, stmts, sources)
-    append_import_alias_rewritten_non_import_stmts_skipping(merged, namespaced_stmts, skipped_locals)
+    append_inline_import_alias_collision_defs(merged, path, stmts, sources, plan, import_value_rename_locals(import_renames))
+    append_import_alias_rewritten_non_import_stmts_with_renames(merged, namespaced_stmts, skipped_locals, import_renames)
     si = si + 1
   }
   merged

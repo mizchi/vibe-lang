@@ -545,20 +545,59 @@ linked-build hotspot.
    rules out the "input order normalization / sort + merge" option from
    the #533 scope on correctness grounds.
 
-**Decision: keep the linear scans, order-preserving, as-is.** The
-sites are now annotated with these bounds and the reorder hazard in
-`module_graph_path.vibe` and `linked_artifacts.vibe` so a future
-contributor does not re-attempt the unsafe sort+merge. The only path
-that would help every string-keyed scan at once is upgrading the
-runtime `Map` to a hash table (#395, not-planned); until then there is
-no bounded improvement to make here without regressing the binary or
-the build.
+**Decision (per-module sites): keep the linear scans, order-preserving,
+as-is.** The sites are annotated with these bounds and the reorder
+hazard in `module_graph_path.vibe` and `linked_artifacts.vibe` so a
+future contributor does not re-attempt the unsafe sort+merge.
 
-**Verification used:** static re-read of the call sites and the
-`linked_imports` → wasm import-index data flow. The selfhost gates
-(`scripts/bench_selfhost_perf.sh --gate`,
-`scripts/bench_selfhost_compile_hotspots.sh bundle`,
-`pkf run selfhost-gate`) require the MoonBit toolchain to build the
-stage compiler and were not re-run in this doc-only/comment-only
-change; the change is behavior-preserving (comments + markdown), so
-the compile/check KPI cannot regress.
+### Whole-graph visited/scheduled sets → bucketed `path_set` (#533, round 2)
+
+The re-grounding pass found the ACTUAL unbounded sites were not the
+per-module scans above but the graph-traversal dedup structures, which
+test membership against a set that grows to every module of the
+program, once per import edge:
+
+- `merge_sources.vibe` `collect_merged_stmts_recursive_impl` — `visited`
+  linear scan per import edge → O(edges × modules).
+- `loader/index.vibe` `collect_sources_rec` — same shape, and it runs on
+  every manifest-less multi-module `vibe build/check` (FS collect).
+- `loader/manifest_sources.vibe` × 3 worklist collectors — the
+  `scheduled_set` was a `Map[String, Bool]`, and the runtime `Map::set`
+  copies the WHOLE map per insert (O(N) each → O(N²) copying) on top of
+  the linear `Map::has_key` per edge. These loops also carried a
+  pop-time `contains_path(visited, current)` guard that could never
+  fire (worklist entries are unique by construction) yet cost another
+  full scan per node.
+
+All of these are membership-only — output order always comes from the
+recursion / the separate insertion-ordered `visited` array — so they
+were switched to `path_set_new/contains/add`
+(`module_graph_path.vibe`): 64 buckets of `Array[String]` keyed by a
+masked djb2 hash, mutable `Array::push`-based, no runtime `Map`
+involvement. This does NOT contradict the StrIntIndex postmortem above:
+that experiment targeted `resolve_func` (~50 lookups per compile,
+constant-size table); these sites do `edges × modules` work that grows
+quadratically with project size.
+
+**Measured** (probe entries appended to the flat bundle calling
+`collect_sources_rec` directly, 10 iterations over a synthetic
+501-module / ~1800-edge layered DAG, node host runner, means of 6
+alternating runs): probe wallclock 232 ms → 190 ms; net collect phase
+≈10.2 ms → ≈6.0 ms per walk (**-41%**). Cold-cache end-to-end
+`VIBE_FS_COMPILE` of the same tree is unchanged (~600 ms, dominated by
+read/lex/parse/check/codegen) and the emitted wasm is byte-identical
+old vs new. Selfhost bundle compile KPI is unaffected (the flat bundle
+has no imports, so the collectors see 1 module).
+
+**Crash fix found by the same measurement** (would otherwise block any
+~200+ module cold-cache FS compile): the inline `__to_string` handler
+(linear `compile_call.vibe` and its gc port
+`backend_builtins_numeric.vibe`) ran `memory.copy` into the fresh
+allocation BEFORE bumping global 0 and running the heap grow check.
+When the previous allocation left the heap pointer within a few bytes
+of the memory end (the grow check only guarantees the pointer itself is
+addressable, not a page of headroom), the copy trapped with "memory
+access out of bounds" inside `compact_string_fingerprint` during the
+persistent-cache key build. Reordered to bump + grow check first, then
+copy. A cold-cache 501-module compile crashed deterministically before
+the fix and passes after it.

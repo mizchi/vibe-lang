@@ -9,7 +9,7 @@ import ./parser_base.vibe {
 }
 
 import ./parser_expr.vibe {
-  parse, parse_expr, parse_impl, parse_let_stmt, parse_ok
+  parse, parse_expr, parse_fn_stmt, parse_impl, parse_let_stmt, parse_ok
 }
 
 import ./token.vibe {
@@ -240,6 +240,8 @@ let parse_export_stmt: (Array[Token], Array[Int], Int) -> (Stmt, Int) with { Err
     TStruct => parse_toplevel_struct_stmt(tokens, pos + 1, true),
     TIdent(ident_name) => if ident_name == "effect" {
       parse_effect_stmt(tokens, pos + 1, true)
+    } else if ident_name == "fn" {
+      parse_fn_stmt(tokens, starts, pos + 1, true)
     } else {
       throw(String::concat("unexpected token in export: ", ident_name))
     },
@@ -289,47 +291,16 @@ let parse_extern_let_stmt: (Array[Token], Int) -> (Stmt, Int) with { Error } = (
   (SExternLet(name, ty), end)
 }
 
-let rec parse_module_body_with: ((Array[Token], Int) -> (Stmt, Int) with { Error }, Array[Token], Int, ArrayBuilder[Stmt]) -> (Array[Stmt], Int) with { Error } = (parse_stmt_fn, tokens, pos, b) -> {
-  match peek(tokens, pos) {
-    TRBrace => (ArrayBuilder::freeze(b), pos + 1),
-    _ => {
-      let (stmt, next) = parse_stmt_fn(tokens, pos)
-      ArrayBuilder::push(b, stmt)
-      parse_module_body_with(parse_stmt_fn, tokens, next, b)
-    }
-  }
-}
-
 export let rec parse_stmt: (Array[Token], Array[Int], Int) -> (Stmt, Int) with { Error } = (tokens, starts, pos) -> {
-  let parse_stmt_closure: (Array[Token], Int) -> (Stmt, Int) with { Error } = (t, p) -> {
-    parse_stmt(t, starts, p)
-  }
   let head = peek(tokens, pos)
   match head {
     TLet => parse_let_stmt(tokens, starts, pos + 1, false),
     TExport => match peek(tokens, pos + 1) {
-      TModule => match peek(tokens, pos + 2) {
-        TIdent(name) => {
-          let br = expect_tk(tokens, pos + 3, "{")
-          {
-            let (stmts, end) = parse_module_body_with(parse_stmt_closure, tokens, br, ArrayBuilder::new());
-            (SModule(true, name, stmts), end)
-          }
-        },
-        _ => throw("expected module name")
-      },
+      // ADR-0063 Phase B (#728): module blocks are removed.
+      TModule => throw("'module' blocks are removed (#728); use file boundaries + import/export"),
       _ => parse_export_stmt(tokens, starts, pos + 1)
     },
-    TModule => match peek(tokens, pos + 1) {
-      TIdent(name) => {
-        let br = expect_tk(tokens, pos + 2, "{")
-        {
-          let (stmts, end) = parse_module_body_with(parse_stmt_closure, tokens, br, ArrayBuilder::new());
-          (SModule(false, name, stmts), end)
-        }
-      },
-      _ => throw("expected module name")
-    },
+    TModule => throw("'module' blocks are removed (#728); use file boundaries + import/export"),
     TEnum => parse_enum_stmt(tokens, pos + 1, false),
     TSuberror => parse_suberror_stmt(tokens, pos + 1, false),
     TStruct => parse_toplevel_struct_stmt(tokens, pos + 1, false),
@@ -341,6 +312,7 @@ export let rec parse_stmt: (Array[Token], Array[Int], Int) -> (Stmt, Int) with {
     TIdent(name) => match name {
       "effect" => parse_effect_stmt(tokens, pos + 1, false),
       "extern" => parse_extern_let_stmt(tokens, pos + 1),
+      "fn" => parse_fn_stmt(tokens, starts, pos + 1, false),
       "use" => throw("'use' syntax is removed; use 'import <module-ref> { ... }'"),
       _ => {
       let (e, next) = parse_impl(tokens, starts, pos, 0)
@@ -459,7 +431,85 @@ let parse_impl_methods: (Array[Token], Int, Stmt) -> (Array[Stmt], Int) with { E
   }
 }
 
+// Compile-time conditional compilation (#cfg). A top-level statement may be
+// prefixed with `#cfg(flag)`; the statement is KEPT only when `flag` is
+// active, and otherwise parsed (syntax must stay valid, like Rust's cfg) and
+// DISCARDED before checking/codegen -- so disabled debug code adds zero bytes
+// to the output. Flags are activated by `#cfg_enable(flag)` directives, which
+// the CLI appends to the source when `VIBE_CFG=flag1,flag2` is set (appending
+// at the END keeps every source offset -- and thus diagnostics -- unchanged).
+// A pre-scan collects the active set so `#cfg_enable` position is irrelevant.
+//
+// NOTE: `#cfg` must not be used in the compiler's own source until the seed
+// compiler understands it (docs/selfhost-bootstrap.md bump procedure).
+
+// Parse the directive after a THash: `cfg(name)` or `cfg_enable(name)`.
+// Returns (directive_kind, flag_name, next_pos).
+let parse_cfg_directive: (Array[Token], Int) -> (String, String, Int) with { Error } = (tokens, pos) -> {
+  match peek(tokens, pos) {
+    TIdent(dname) => {
+      if dname == "cfg" || dname == "cfg_enable" {
+        match peek(tokens, pos + 1) {
+          TLParen => match peek(tokens, pos + 2) {
+            TIdent(flag) => match peek(tokens, pos + 3) {
+              TRParen => (dname, flag, pos + 4),
+              _ => throw("expected ')' after #cfg flag name")
+            },
+            _ => throw("expected flag name in #cfg(...)")
+          },
+          _ => throw("expected '(' after #cfg")
+        }
+      } else {
+        throw(String::concat("unknown # directive: ", dname))
+      }
+    },
+    _ => throw("expected directive name after '#'")
+  }
+}
+
+// Pre-scan the whole token stream for `#cfg_enable(name)` directives and
+// return the active flag set. O(tokens), no allocation unless a THash exists.
+let cfg_scan_enabled: (Array[Token]) -> Array[String] with { Error } = (tokens) -> {
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  let n = Array::length(tokens)
+  while i < n {
+    match Array::get(tokens, i) {
+      THash => {
+        let (dname, flag, next) = parse_cfg_directive(tokens, i + 1)
+        if dname == "cfg_enable" {
+          Array::push(out, flag)
+        } else {
+          ()
+        }
+        i = next
+      },
+      _ => {
+        i = i + 1
+      }
+    }
+  }
+  out
+}
+
+let cfg_flag_active: (Array[String], String) -> Bool = (active, flag) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(active) {
+    if Array::get(active, i) == flag {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 export let parse_program: (Array[Token]) -> Array[Stmt] with { Error } = (tokens) -> {
+  let cfg_active = cfg_scan_enabled(tokens)
   let b = ArrayBuilder::new()
   let mut pos = 0
   let mut done = false
@@ -470,6 +520,26 @@ export let parse_program: (Array[Token]) -> Array[Stmt] with { Error } = (tokens
       },
       TSemicolon => {
         pos = pos + 1
+      },
+      THash => {
+        let (dname, flag, dnext) = parse_cfg_directive(tokens, pos + 1)
+        if dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
+          // enable directive consumed, or active #cfg: keep the next stmt.
+          pos = dnext
+        } else {
+          // Inactive #cfg: parse the guarded statement and discard it.
+          match peek(tokens, dnext) {
+            TImpl => {
+              let (simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens, dnext + 1)
+              let (_dropped, dn) = parse_impl_methods(tokens, hp_d, simpl_d)
+              pos = dn
+            },
+            _ => {
+              let (_dropped, dn) = parse_stmt(tokens, [], dnext)
+              pos = dn
+            }
+          }
+        }
       },
       TImpl => {
         let (simpl, hp) = parse_impl_stmt_dispatch(tokens, pos + 1)
@@ -497,6 +567,7 @@ export let parse_program: (Array[Token]) -> Array[Stmt] with { Error } = (tokens
 // String::concat (not `+` or interpolation) to avoid selfhost string-concat
 // NUL fragility. Source-span foundation: located parse diagnostics.
 export let parse_program_located: (Array[Token], Array[Int], String) -> Array[Stmt] with { Error } = (tokens, starts, source) -> {
+  let cfg_active = cfg_scan_enabled(tokens)
   let b = ArrayBuilder::new()
   let mut pos = 0
   let mut done = false
@@ -507,6 +578,24 @@ export let parse_program_located: (Array[Token], Array[Int], String) -> Array[St
       },
       TSemicolon => {
         pos = pos + 1
+      },
+      THash => {
+        let (dname, flag, dnext) = parse_cfg_directive(tokens, pos + 1)
+        if dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
+          pos = dnext
+        } else {
+          match peek(tokens, dnext) {
+            TImpl => {
+              let (simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens, dnext + 1)
+              let (_dropped, dn) = parse_impl_methods(tokens, hp_d, simpl_d)
+              pos = dn
+            },
+            _ => {
+              let (_dropped, dn) = parse_stmt(tokens, starts, dnext)
+              pos = dn
+            }
+          }
+        }
       },
       _ => {
         let start_pos = pos
@@ -583,6 +672,13 @@ let is_recovery_point: (Token) -> Bool = (t) -> {
 // strings with String::concat (not `+`/interpolation) to avoid selfhost
 // string-concat NUL fragility. Foundation: collect-all parse diagnostics (LSP).
 export let parse_program_recovering: (Array[Token], Array[Int], String) -> (Array[Stmt], Array[String]) with { Error } = (tokens, starts, source) -> {
+  let cfg_active = handle {
+    cfg_scan_enabled(tokens)
+  } with Error {
+    Throw(_) => Array::slice([
+      ""
+    ], 0, 0)
+  }
   let b = ArrayBuilder::new()
   let diags = ArrayBuilder::new()
   let n = Array::length(tokens)
@@ -595,6 +691,40 @@ export let parse_program_recovering: (Array[Token], Array[Int], String) -> (Arra
       },
       TSemicolon => {
         pos = pos + 1
+      },
+      THash => {
+        // #cfg directive: on any malformed directive fall through to the
+        // recovery machinery below by treating it like a failed statement.
+        let cfg_res = handle {
+          let (dname, flag, dnext) = parse_cfg_directive(tokens, pos + 1)
+          if dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
+            dnext
+          } else {
+            match peek(tokens, dnext) {
+              TImpl => {
+                let (simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens, dnext + 1)
+                let (_dropped, dn) = parse_impl_methods(tokens, hp_d, simpl_d)
+                dn
+              },
+              _ => {
+                let (_dropped, dn) = parse_stmt(tokens, starts, dnext)
+                dn
+              }
+            }
+          }
+        } with Error {
+          Throw(_) => 0 - 1
+        }
+        if cfg_res >= 0 {
+          pos = cfg_res
+        } else {
+          // resync: skip to the next recovery point (mirrors the stmt path).
+          let mut rp = pos + 1
+          while rp < n && !is_recovery_point(Array::get(tokens, rp)) {
+            rp = rp + 1
+          }
+          pos = rp
+        }
       },
       _ => {
         let start_pos = pos
@@ -678,6 +808,14 @@ export let parse_program_spans: (Array[Token], Array[Int], Array[Int]) -> (Array
       },
       TSemicolon => {
         pos = pos + 1
+      },
+      THash => {
+        // Module-source (flat source) emission re-emits statement spans; a
+        // #cfg directive sits OUTSIDE its statement's span, so passing it
+        // through would silently change semantics between the original and
+        // the re-emitted source. Refuse loudly instead (the compiler's own
+        // source must not use #cfg until the seed understands it).
+        throw("#cfg directives are not supported in module-source emission")
       },
       TImpl => {
         let st = Array::get(starts, pos)

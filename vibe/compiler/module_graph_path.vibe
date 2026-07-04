@@ -36,7 +36,11 @@ export let contains_name: (Array[String], String) -> Bool = (items, name) -> {
 // Linear membership scan used by `collect_direct_dep_paths` to dedup the
 // direct dependency paths of one entry file. Bounded by that file's
 // unique imports (≈5-30), so the dedup is O(D^2) with small D (≤ ~900
-// ops, per #366's survey). Kept linear deliberately (#533):
+// ops, per #366's survey). NOTE: the whole-graph visited/scheduled sets
+// that used to route through this helper (merge recursion, FS collect,
+// manifest worklists) moved to the bucketed `path_set` below (#533);
+// only genuinely small, per-module dedups should keep using this. Kept
+// linear deliberately for those (#533):
 //   - `Map[String, Bool]` is a no-op — the selfhost runtime emits
 //     `Map::has_key`/`Map::get` as linear searches (#395 not-planned).
 //   - A sort+merge dedup is UNSAFE: the resulting `dep_paths` order is
@@ -56,6 +60,75 @@ export let contains_path: (Array[String], String) -> Bool = (visited, path) -> {
     }
   }
   found
+}
+
+// #533: mutable bucketed string set for whole-graph membership tests.
+//
+// The per-module `contains_name` / `contains_path` scans above are fine
+// (small bounded N — see the notes on each), but the graph-traversal
+// dedup sites (`collect_sources_rec`, `collect_merged_stmts_recursive`,
+// the manifest worklist loops) test membership against a set that grows
+// to ALL modules, once per import edge — O(edges × modules) string
+// compares, plus O(modules²) entry copying where the set was a
+// `Map[String, Bool]` (the runtime `Map::set` copies the whole map per
+// insert; `Map::has_key` is a linear scan — #395, closed not-planned).
+//
+// This set is plain `Array[Array[String]]` buckets + `Array::push`, so
+// it relies on nothing but O(1)-amortized array ops: membership and
+// insert are O(len(path)) hash + a short bucket scan, independent of
+// module count. Insert-only; iteration order is NOT meaningful — callers
+// that need ordered output must keep their own insertion-ordered array
+// (see the reorder hazard on `contains_path` above).
+let path_set_bucket_count = 64
+
+let path_set_hash: (String) -> Int = (s) -> {
+  let len = String::length(s)
+  let mut h = 5381
+  let mut i = 0
+  while i < len {
+    // djb2-xor, masked to 30 bits so `h * 33` stays far below the 61-bit
+    // tagged-int range.
+    h = ((h * 33) ^ String::char_code_at(s, i)) & 0x3FFFFFFF
+    i = i + 1
+  }
+  h
+}
+
+export let path_set_new: () -> Array[Array[String]] = () -> {
+  let buckets = Array::slice([
+    Array::slice([
+      ""
+    ], 0, 0)
+  ], 0, 0)
+  let mut i = 0
+  while i < path_set_bucket_count {
+    Array::push(buckets, Array::slice([
+      ""
+    ], 0, 0))
+    i = i + 1
+  }
+  buckets
+}
+
+export let path_set_contains: (Array[Array[String]], String) -> Bool = (set, path) -> {
+  let bucket = Array::get(set, path_set_hash(path) & (path_set_bucket_count - 1))
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(bucket) && !found {
+    if Array::get(bucket, i) == path {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+// No membership check: callers gate on `path_set_contains` first (every
+// site below is check-then-add), so adding unconditionally here avoids a
+// second hash walk.
+export let path_set_add: (Array[Array[String]], String) -> Unit = (set, path) -> {
+  Array::push(Array::get(set, path_set_hash(path) & (path_set_bucket_count - 1)), path)
 }
 
 export let normalize_path: (String) -> String = (path) -> {
@@ -193,6 +266,15 @@ export let resolve_import_path: (String, String) -> String = (base_dir, raw_path
 }
 
 export let resolve_import_path_candidates: (String, String) -> Array[String] = (base_dir, raw_path) -> {
+  // #730 (ADR-0063 §5/§6): `@scope/name` package refs resolve to the
+  // workspace store, laid out BY NAME and verified BY HASH against the
+  // importer's require pin (verification happens in the loader; this
+  // function stays pure). Root-relative, independent of base_dir.
+  if String::starts_with(raw_path, "@") {
+    return [
+      String::concat(".vibe/store/", String::concat(raw_path, "/index.vibei"))
+    ]
+  } else ()
   let len = String::length(raw_path)
   let joined = if path_has_relative_prefix(raw_path, len) {
     join_relative_path(base_dir, raw_path)
@@ -205,8 +287,13 @@ export let resolve_import_path_candidates: (String, String) -> Array[String] = (
       normalized
     ]
   } else {
+    // #729: a bare (directory-style) import may target a contract package —
+    // `<dir>/index.vibei` is probed between the plain-file and index.vibe
+    // forms. Existence-probing resolvers pick it up when present; index-0
+    // stays the plain-file form so no-match fallbacks are unchanged.
     [
       String::concat(normalized, ".vibe"),
+      String::concat(normalized, "/index.vibei"),
       String::concat(normalized, "/index.vibe")
     ]
   }

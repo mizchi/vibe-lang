@@ -1,0 +1,370 @@
+import ../../../vibe/compiler/syntax/lexer.vibe { lex }
+import ../../../vibe/compiler/syntax/parser.vibe { parse_program }
+import ../../../vibe/compiler/module_graph_path.vibe {
+  dir_of_path, resolve_import_path_candidates
+}
+
+struct ExportRenamePlan {
+  plan_paths: Array[String];
+  rename_paths: Array[String];
+  rename_names: Array[String];
+  rename_mangled: Array[String]
+}
+
+let empty_strings: () -> Array[String] = () -> {
+  Array::slice([
+    ""
+  ], 0, 0)
+}
+
+let empty_aliases: () -> Array[(String, String)] = () -> {
+  Array::slice([
+    ("", "")
+  ], 0, 0)
+}
+
+let string_array_contains: (Array[String], String) -> Bool = (items, target) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) && !found {
+    if Array::get(items, i) == target {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+let sanitize_namespace_char: (Int) -> String = (code) -> {
+  if (code >= 'a' && code <= 'z') || (code >= 'A' && code <= 'Z') || (code >= '0' && code <= '9') || code == '_' {
+    String::from_char_code(code)
+  } else {
+    "_"
+  }
+}
+
+let sanitize_namespace_path: (String) -> String = (path) -> {
+  // O(N) build via StringBuilder; the previous `out = String::concat(out, ...)`
+  // per char was O(N²) over the path length (issue #366).
+  let out = StringBuilder::new()
+  let mut i = 0
+  while i < String::length(path) {
+    StringBuilder::push(out, sanitize_namespace_char(String::char_code_at(path, i)))
+    i = i + 1
+  }
+  StringBuilder::freeze(out)
+}
+
+let bare_builtin_value_names: () -> Array[String] = () -> {
+  [
+    "add", "sub", "mul", "lt", "eq", "not", "print", "println", "assert",
+    "assert_eq", "assert_true", "map", "map_has", "array_new", "iter_get",
+    "iter_length", "iter_require", "path", "sh", "sh_lines", "sleep",
+    "string_char_at", "simd_skip_ws", "simd_scan_alnum", "simd_scan_alnum_str"
+  ]
+}
+
+let namespace_exported_name: (String, String) -> String = (path, name) -> {
+  String::concat(name, String::concat("_exp_", sanitize_namespace_path(path)))
+}
+
+let collect_export_def_value_names: (Array[Stmt]) -> Array[String] = (stmts) -> {
+  let extern_names = empty_strings()
+  let let_names = empty_strings()
+  let exported_lets = empty_strings()
+  let export_items = empty_strings()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exported, _, name, _, _) => {
+        Array::push(let_names, name)
+        if exported {
+          Array::push(exported_lets, name)
+        } else {
+          ()
+        }
+      },
+      SExternLet(name, _) => Array::push(extern_names, name),
+      SExport(items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          Array::push(export_items, Array::get(items, j))
+          j = j + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  let out = empty_strings()
+  let push_def_name: (String) -> Unit = (name) -> {
+    if String::index_of(name, "::") < 0 && !string_array_contains(extern_names, name) && !string_array_contains(out, name) {
+      Array::push(out, name)
+    } else {
+      ()
+    }
+  }
+  let mut k = 0
+  while k < Array::length(exported_lets) {
+    push_def_name(Array::get(exported_lets, k))
+    k = k + 1
+  }
+  let mut m = 0
+  while m < Array::length(export_items) {
+    let name = Array::get(export_items, m)
+    if string_array_contains(let_names, name) {
+      push_def_name(name)
+    } else {
+      ()
+    }
+    m = m + 1
+  }
+  out
+}
+
+let empty_import_refs: () -> Array[(String, String, String)] = () -> {
+  Array::slice([
+    ("", "", "")
+  ], 0, 0)
+}
+
+let collect_import_refs: (Array[Stmt]) -> Array[(String, String, String)] = (stmts) -> {
+  let refs = empty_import_refs()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImport(raw_path, items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          let (original, alias_opt) = Array::get(items, j)
+          let local = match alias_opt {
+            Some(alias) => alias,
+            None => original
+          }
+          Array::push(refs, (raw_path, original, local))
+          j = j + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  refs
+}
+
+let resolve_known_import_path: (Array[String], String, String) -> String = (known_paths, base_dir, raw_path) -> {
+  let candidates = resolve_import_path_candidates(base_dir, raw_path)
+  let mut chosen = Array::get(candidates, 0)
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(candidates) && !found {
+    if string_array_contains(known_paths, Array::get(candidates, i)) {
+      chosen = Array::get(candidates, i)
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  chosen
+}
+
+let plan_triple_lookup: (Array[String], Array[String], Array[String], String, String) -> Option[String] = (tpaths, tnames, tvalues, path, name) -> {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(tpaths) {
+    if Array::get(tpaths, i) == path && Array::get(tnames, i) == name {
+      found = Some(Array::get(tvalues, i))
+      i = Array::length(tpaths)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+let collect_reexport_edges_into: (String, Array[Stmt], Array[String], Array[String], Array[String], Array[String], Array[String]) -> Unit = (path, stmts, known_paths, edge_from, edge_pub, edge_tpath, edge_tname) -> {
+  let base_dir = dir_of_path(path)
+  let let_names = empty_strings()
+  let import_refs = collect_import_refs(stmts)
+  let mut si = 0
+  while si < Array::length(stmts) {
+    match Array::get(stmts, si) {
+      SReExport(raw_path, items) => {
+        let target = resolve_known_import_path(known_paths, base_dir, raw_path)
+        let mut j = 0
+        while j < Array::length(items) {
+          let (iname, alias_opt) = Array::get(items, j)
+          let public_name = match alias_opt {
+            Some(alias) => alias,
+            None => iname
+          }
+          Array::push(edge_from, path)
+          Array::push(edge_pub, public_name)
+          Array::push(edge_tpath, target)
+          Array::push(edge_tname, iname)
+          j = j + 1
+        }
+      },
+      SExport(items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          let name = Array::get(items, j)
+          if !string_array_contains(let_names, name) {
+            let mut ri = 0
+            let mut done = false
+            while ri < Array::length(import_refs) && !done {
+              let (raw_path, original, local) = Array::get(import_refs, ri)
+              if local == name {
+                Array::push(edge_from, path)
+                Array::push(edge_pub, name)
+                Array::push(edge_tpath, raw_path)
+                Array::push(edge_tname, original)
+                done = true
+              } else {
+                ri = ri + 1
+              }
+            }
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+      },
+      _ => ()
+    }
+    si = si + 1
+  }
+}
+
+let build_export_rename_plan: (Array[String], Array[Array[Stmt]], String) -> ExportRenamePlan = (paths, stmts_list, entry_path) -> {
+  let file_count = Array::length(paths)
+  let def_names_list = Array::slice([
+    empty_strings()
+  ], 0, 0)
+  let mut fi = 0
+  while fi < file_count {
+    Array::push(def_names_list, collect_export_def_value_names(Array::get(stmts_list, fi)))
+    fi = fi + 1
+  }
+  // A def name is ambiguous when ≥2 files define-and-export it, or when it
+  // shadows a bare builtin value name.
+  let builtins = bare_builtin_value_names()
+  let is_dup_name: (String, Int) -> Bool = (name, owner_idx) -> {
+    let mut other = false
+    let mut i = 0
+    while i < file_count && !other {
+      if i != owner_idx && string_array_contains(Array::get(def_names_list, i), name) {
+        other = true
+      } else {
+        i = i + 1
+      }
+    }
+    other
+  }
+  let edge_from = empty_strings()
+  let edge_pub = empty_strings()
+  let edge_tpath = empty_strings()
+  let edge_tname = empty_strings()
+  let mut ei = 0
+  while ei < file_count {
+    collect_reexport_edges_into(Array::get(paths, ei), Array::get(stmts_list, ei), paths, edge_from, edge_pub, edge_tpath, edge_tname)
+    ei = ei + 1
+  }
+  // The origins of the entry file's re-export surface are program ABI (wasm
+  // export names of a linked library / component entry) and stay bare.
+  let excluded_paths = empty_strings()
+  let excluded_names = empty_strings()
+  let file_idx_of: (String) -> Int = (path) -> {
+    let mut i = 0
+    let mut found = -1
+    while i < file_count {
+      if Array::get(paths, i) == path {
+        found = i
+        i = file_count
+      } else {
+        i = i + 1
+      }
+    }
+    found
+  }
+  let rename_paths = empty_strings()
+  let rename_names = empty_strings()
+  let rename_mangled = empty_strings()
+  let mut ri = 0
+  while ri < file_count {
+    let path = Array::get(paths, ri)
+    if path == entry_path {
+      ()
+    } else {
+      let def_names = Array::get(def_names_list, ri)
+      let mut ni = 0
+      while ni < Array::length(def_names) {
+        let name = Array::get(def_names, ni)
+        let ambiguous = string_array_contains(builtins, name) || is_dup_name(name, ri)
+        let excluded = match plan_triple_lookup(excluded_paths, excluded_names, excluded_names, path, name) {
+          Some(_) => true,
+          None => false
+        }
+        if ambiguous && !excluded {
+          Array::push(rename_paths, path)
+          Array::push(rename_names, name)
+          Array::push(rename_mangled, namespace_exported_name(path, name))
+        } else {
+          ()
+        }
+        ni = ni + 1
+      }
+    }
+    ri = ri + 1
+  }
+  // Close the rename table over re-export facades so an import THROUGH a
+  // facade (`import ./index.vibe { eq }` where index re-exports float's `eq`)
+  // resolves to the renamed origin in one lookup.
+  ExportRenamePlan::{
+    plan_paths: paths,
+    rename_paths: rename_paths,
+    rename_names: rename_names,
+    rename_mangled: rename_mangled
+  }
+}
+
+let export_plan_rename_count: (ExportRenamePlan) -> Int = (plan) -> {
+  Array::length(plan.rename_paths)
+}
+
+let export_plan_renames_for: (ExportRenamePlan, String) -> Array[(String, String)] = (plan, path) -> {
+  let out = empty_aliases()
+  let rename_paths = plan.rename_paths
+  let rename_names = plan.rename_names
+  let rename_mangled = plan.rename_mangled
+  let mut i = 0
+  while i < Array::length(rename_paths) {
+    if Array::get(rename_paths, i) == path {
+      Array::push(out, (Array::get(rename_names, i), Array::get(rename_mangled, i)))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+
+export let main: () -> Int with { Error } = () -> {
+  let a_stmts = parse_program(lex("export let eq: (Float, Float) -> Bool = (x, y) -> { true }\nexport let uniq_a: () -> Int = () -> { 1 }"))
+  let b_stmts = parse_program(lex("export let eq = (a: Int, b: Int) -> Bool { a == b }"))
+  let f_stmts = parse_program(lex("export ./a.vibe { eq }"))
+  let e_stmts = parse_program(lex("let z: () -> Int = () -> { 0 }"))
+  let plan = build_export_rename_plan(["/p/a.vibe", "/p/b.vibe", "/p/f.vibe", "/p/e.vibe"], [a_stmts, b_stmts, f_stmts, e_stmts], "/p/e.vibe")
+  let ca = Array::length(export_plan_renames_for(plan, "/p/a.vibe"))
+  let cb = Array::length(export_plan_renames_for(plan, "/p/b.vibe"))
+  let cf = Array::length(export_plan_renames_for(plan, "/p/f.vibe"))
+  let rp = plan.rename_paths
+  let mut c0 = 0
+  if Array::length(rp) > 0 {
+    let p0 = Array::get(rp, 0)
+    c0 = String::length(p0)
+  } else { () }
+  export_plan_rename_count(plan) * 100000 + ca * 10000 + cb * 1000 + cf * 100 + c0
+}

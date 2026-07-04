@@ -4,7 +4,93 @@ Spec-locked decisions are tracked in `docs/spec/decisions.md`.
 Completed items are archived in `docs/DONE.md`.
 タスクの一次管理は GitHub Issues (`gh issue` / MCP)。本ファイルはロードマップ概要。
 
-## 次の一手 (2026-06-09 時点)
+## 次の一手 (2026-07-02 時点)
+
+現況スナップショット。**selfhost-only 移行は完了**（#594、`src/` MoonBit host 退役、
+tag `moonbit-host-final-2026-06-23`）。**RC self-hosting は green**: #707→#708→#709→#715
+系譜の free-list 破壊は #715 の 6 修正で全て解消し、RC 自己コンパイルされた
+コンパイラが任意のプログラムを正しくコンパイル・実行できる（selfhost gate の
+rc-bootstrap fixpoint + shape corpus で常時検証）。
+
+### 現状サマリ
+
+- **selfhost-only gate green** (`pkf run release-check` → `scripts/selfhost_only_gate.sh`、40+ steps)。
+- **RC self-hosting fixpoint green**: whole-compiler-as-one-unit RC build、stage2==stage3、
+  RC reclamation leak guard (heap_used=424B at N=20000)、V128 under RC。
+- **#715 closed (2026-07-02)**: ETuple/EArray/ERecord/ctor の borrowed-element retention、
+  sibling same-name binding の uniquify、`let mut` の Perceus dup budget
+  （宣言時 + 再代入時）、EForIn loop-borrow parity。
+- **再発防止機構 landed**: `VIBE_RC=shadow`（shadow-liveness trap、gate 40f が
+  #715 shape corpus を常時実行）+ `#cfg(flag)` 条件コンパイル（gate 40g）。
+  debugging 手順は #715 スレッドと docs/cheatsheet.md 参照。
+
+### 🔴 アクティブ
+
+- [x] **#705 残タスク (判断済み 2026-07-02)**: `VIBE_RC=0` pin は**性能上の
+  既定値として維持**。#715/#720 の RC codegen バグ 3 件 (ネストパターン非
+  short-circuit / ローカル let 注釈の未分配 / rc 24-bit オーバーフロー) を
+  修正し、RC self-hosting は fixpoint まで完全 green (正しさの blocker は消滅)。
+  最終ベンチ: bump 4.8s/791KB vs RC バイナリ 8.2s/2.31MB (+71% wall, 2.9×) で
+  「顕著に遅い」に該当。RC ランタイム最適化 (dup 飽和チェックの single-load
+  化、entry-dup 予算の branch-aware 化) 後に再測定。
+- [x] **#716** merge layer の import 可視性 — ambiguous な export（複数ファイル
+  同名 / builtin 名衝突）を merge 時に `name_exp_<path>` へ rename し、import
+  している側の参照だけ書き換える（re-export facade 追従、entry の export 面と
+  linked-library ABI は不変）。全 export の完全な可視性強制（未 import 名の
+  非 ambiguous な leak 解消）も seed bump `merge-visibility-716-2026-07-03`
+  を経て 2026-07-03 に landing 済み（非 entry の exported def は全 rename）。
+  残件: committed flat bundle は Python flattener 製で merge machinery を
+  通らず 45 dup def が残る → 別 issue。副産物として
+  top-level 関数エイリアス (`export let eq = float_eq`) の呼び出しが不正 wasm を
+  生むバグと、RC lane の float 型 param `==` がポインタ比較になるバグも修正
+  （rc-corpus default-pass 22→27）。
+- [x] **Module System v2 (ADR-0063/0064, docs/module-system-v2.md)** —
+  **A–G 全フェーズの中核を実装済み (2026-07-04)**。E where 契約 =
+  常時 runtime assert(release strip は後続)、F publish semver 機械検証、
+  G seed bump `module-system-v2-2026-07-04` + compiler source の fn 移行
+  開始(cache/sha1.vibe、stage byte 同一)。後続: ネットワーク add/update、
+  Fs::ReadDir、型封印、全ツリー export 撤去の機械移行。旧記述:
+  契約ファースト・パッケージシステム。**A `fn` 構文 #727 と B `module {}`
+  削除 #728 は完了（2026-07-03）**。C #729 は C-1 照合エンジン / C-2
+  index.vibei 解決+facade 脱糖 / C-3 入方向境界強制まで landing 済み
+  （残: Fs::ReadDir 自動発見、opaque type、subpath、.vibei 直エントリ、
+  escape 規則）。
+  D content-addressed `require` #730、E `where` 契約 Phase 1 #731、
+  F/G publish 検証 + export 撤去 + compiler source 移行 #732。
+  残件 #726（Python flattener → merge machinery）は G の前提整備。
+- [ ] **#415** codegen builtin registry 化（linear↔wasm-gc parity、Phase B）。
+- [ ] **#418 / #629 (ADR-0060)** mut の region capability 統一 — 設計は ADR-0060、
+  実装は effect row 基盤に依存。
+
+### 🟡 機能 / 品質
+
+- [x] **#535** post-cutover branch coverage gate 復帰 — `scripts/coverage_selfhost_suite.sh`
+  (allowlist を `vibe test --coverage` で回して fn/branch/case rate を集計、
+  `selfhost_suite.report.json` を出力し ratchet 閾値で gate)。CI の
+  selfhost-only-gate job に組み込み + report artifact。baseline: fn 38.11% /
+  branch 9.57% / case 98.88%(閾値 37/9/97、上げる方向にのみ動かす)
+- [ ] **#538** WASM-GC selfbuild — P4 compile E2E + **P4.5 run E2E + self-compile fixpoint 達成**（gc-compiled compiler がコンパイラ全体を byte 一致で再現）。残: P5 size
+- [x] **#537** WASI P3: effect → WIT mapping + `vibe serve` — `vibe compile --wit` / `vibe serve` (launcher + adapter VIBE_EMIT_WIT / VIBE_SERVE_COMPONENT)、packed-string trampoline で selfhost componentize、wac plug + wasmtime serve。契約: docs/effect-wit-mapping.md、gate 40i/40j + test_wasi_http_p3_full_gate.sh
+- [ ] **#683** wasm-gc backend の実行検証ハーネス
+- [ ] **#639/#640** effect 診断の fix-it / Error の algebraic effect 化
+- [ ] **#644/#645/#646** post-GA debugger/diagnostics 残タスク
+
+### 🔵 リファクタ / 長期
+
+- [ ] **#534** `vibe/types/` / `vibe/parser/` 分離
+- [x] **#533** linked artifact の contains 線形走査解消 — whole-graph の visited/scheduled set を bucketed `path_set` 化（merge 再帰 / FS collect / manifest worklist×3、collect フェーズ -41% @450 modules）。per-module の `contains_name`/`contains_path` は小 N のため意図的に線形のまま。副産物: inline `__to_string` の copy-before-grow OOB crash 修正（cold-cache 大規模 FS compile が deterministic に落ちていた）
+- [ ] **#488** shared-everything-threads 実験基盤
+- [ ] **#647** 1.0 GA タグ / version bump（リリース運用判断）
+- [ ] `#cfg` をコンパイラ自身のソースで使えるようにする seed bump
+  （docs/selfhost-bootstrap.md 手順、現状は user code 専用）
+
+---
+
+## 次の一手 (2026-06-09 時点) — historical
+
+> 注: 以下は selfhost cutover 進行中 (2026-06-09) の整理。cutover と `src/` 退役は
+> 完了済み (#594)。#402 (cutover tracking) / #584 (seed 復旧) も解決済み。
+> 最新は上の「2026-07-02 時点」を参照。
 
 現況スナップショット。selfhost cutover は「移行開始可」。以後は
 wasmtime runner 層と compiler wasm artifact 層を分け、compiler/checker/codegen
@@ -55,8 +141,8 @@ bootstrap / fallback として通常開発では触らない。
 
 - [ ] **CI branch coverage 70% gate** + normalize/DCE/loader テスト拡充 (§カバレッジ)
 - [ ] **SIMD codegen 本番化** — 0xFD prefix emit + `simd_skip_ws`/`simd_scan_alnum` builtin 化 (§vibe/wasm)
-- [ ] **#59 WASM-GC selfbuild ~350KB** — P4 残 3 ケース (simd_patterns / gc_only/index / selfhost_cli_gc_entry) + P5 DCE + wasm-opt
-- [ ] **WASI P3**: effect → WIT マッピング + `vibe serve`
+- [ ] **#59 WASM-GC selfbuild 小型配布形** — P4 compile E2E 達成 (966KB valid, #538)。P4.5 run E2E + self-compile fixpoint も達成。残: P5 DCE + wasm-opt。サイズ目標は初回リリース後に現実的な値を再設定（旧 ~350KB 目標は撤回）
+- [x] **WASI P3**: effect → WIT マッピング + `vibe serve` (#537, docs/effect-wit-mapping.md)
 - [ ] selfhost accumulator 残 2 sites (`linked_helpers.vibe` の `contains_name` 線形走査) — vibe runtime の Map が hash table 化するまで保留 (ROI ≪、§accumulator 撲滅)
 
 ### 🔵 リファクタ / 長期
@@ -92,9 +178,9 @@ bootstrap / fallback として通常開発では触らない。
 
 ### 🟡 機能追加
 
-- [ ] **WASI P3: effect → WIT マッピング + `vibe serve`**
+- [x] **WASI P3: effect → WIT マッピング + `vibe serve`** (#537)
 - [ ] **SIMD codegen 本番化** — selfhost codegen の 0xFD prefix emit + `simd_skip_ws` / `simd_scan_alnum` 組込
-- [ ] **#59 WASM-GC selfbuild ~350KB** — P4 compile E2E の残 3 ケース（simd_patterns / gc_only/index / selfhost_cli_gc_entry）+ P5 DCE + wasm-opt
+- [ ] **#59 WASM-GC selfbuild 小型配布形** — P4 compile E2E 達成 (966KB valid, #538)。P4.5 run E2E + self-compile fixpoint も達成。残: P5 DCE + wasm-opt。サイズ目標は初回リリース後に現実的な値を再設定（旧 ~350KB 目標は撤回）
 - [x] **pkfire / pkspec 全面導入** — `justfile` を完全削除し `pkfire/Taskfile.pkl` (238 tasks) が canonical。複雑な多行レシピは `scripts/pkfire/*.sh` に抽出。CI は `pkf run` 経由 + `~/.cache/pkfire` を `actions/cache` でキャッシュ。`pkspec/{VibeSpec,VibeTest}.pkl` で `pkspec check` 通る、PR 用 informational gate あり。次は (a) `pkf affected --since=origin/main 'test:*'` を CI の PR 高速化パスに組み込む (b) `pkspec exec` で `moon test` を pkspec 経由で回す
 
 ### 🔵 リファクタ / 長期
@@ -388,7 +474,7 @@ StringBuilder/ArrayBuilder) に置換する。
 - [x] throw(x) → Perform("Error", "Throw", [x]) desugar
 - [x] suberror の throw を Error effect 経由に統一
 - [x] Net → fine-grained capability effects (Http, Socket 個別化、Net は super-effect)
-- [ ] WASI P3: effect → WIT マッピング、vibe serve コマンド
+- [x] WASI P3: effect → WIT マッピング、vibe serve コマンド (#537)
 
 ## vibe/wasm ツールチェーン
 
@@ -433,7 +519,7 @@ StringBuilder/ArrayBuilder) に置換する。
 
 - [ ] MoonBit host CLI を bootstrap 専用へ縮退
 - [ ] selfhost perf gap を cutover 水準まで詰める
-- [ ] GC backend セルフコンパイルで ~350KB 配布形 (#59)
+- [ ] GC backend セルフコンパイルで小型配布形 (#59) — サイズ目標は初回リリース後に現実的な値を再設定（旧 ~350KB は撤回）
   - [x] **P0: Enum/Variant codegen** — per-variant struct `[i32 tag, payload...]`, ref.test + ref.cast pattern match
   - [x] **P1: Bytes mutable ops** — struct `(len, cap, data)` wrapper, 12 ops (new/push/set/get/append/blit/fill/slice/concat/from_array/to_array/length)
   - [x] **P2: Record/Struct pattern** — Pat::Struct or-pattern with Pat::Record, Tuple binding
@@ -452,10 +538,30 @@ StringBuilder/ArrayBuilder) に置換する。
   - [x] **B12: Module-level globals** — Int/Bool 定数は immutable global、Call/String/Array 等は mutable EqRef global + run body で global.set
   - [x] **B13: Polymorphic Option** — builtin Some/None enum 登録、polymorphic Some with EqRef boxing、nested Ctor pattern bind
   - [x] **B14: HOF parameters** — Type::Func パラメータの closure_call_types 登録、Named 型 alias の generic closure call fallback
-  - [ ] **P4: selfhost compile E2E** — 260/263 (99%) compile OK
-    - 残り 3: simd_patterns (Bytes::emit_end), gc_only/index (循環参照), selfhost_cli_gc_entry (上流依存)
-    - 全て型チェッカー/bundler の上流問題
-  - [ ] **P5: DCE + wasm-opt** — 未使用コード除去と最適化で ~350KB 目標
+  - [x] **P4: selfhost compile E2E** — **達成 (2026-07, #538)**: probe 10/10 pass +
+    **full bundle (コンパイラ全体) が gc backend でコンパイル成功・wasm-tools validate 通過
+    (966KB、linear stage2 2.57MB 比 -62%)**。`pkf run test-gc-selfbuild` が常設計測。
+    (旧 260/263 集計は退役 host のもので無効。) 達成に入れた修正:
+    gc_ctor_table rename (#722 root cause) / linear string-ops ボディ再利用 (9 ops + eq) /
+    StringBuilder・FixedArray・print/assert 系 call-site / Map eq placeholder 修正 + Map::set /
+    nested ctor pattern の再帰 test+bind (+tuple bind offset 修正) / module-level 定数+計算 global /
+    tuple index `.0` / EMap・ELabeledArg / Fs・Env・Profiler host imports (group-gated, index shift hbo) /
+    perform → canonical builtin lowering / resolve 済み call の env 引数 (user-shadowed builtin 対応) /
+    ref cell の linear-memory 化 (mut-capture closure) / Error handle の try_table + throw tag (#721 gating)
+  - [x] **P4.5: run E2E + self-compile fixpoint** — **達成 (2026-07, #538)**: gc-compiled compiler が
+    実プログラムをコンパイルし (出力は linear コンパイラと byte 一致)、さらに**コンパイラ全体を
+    self-compile して linear 版と byte 一致の出力を再現** (~5s)。達成に入れた修正:
+    `==`/`!=` の eq builtin 経由化 + tuple/ctor 構造比較 (emit_gc_eq_value) / for-in 内包表記の
+    値収集 (旧実装は値を drop) / `__to_string` の実行時 string-vs-int dispatch (interp が全 `\{x}` を
+    ここに通す; user 定義 __to_string の shadow も解決) / Array::truncate no-op stub 除去 /
+    float 演算の f64 化 (shape-based floatish 追跡) / gc pipeline に trait-dict desugar +
+    interp 展開 + generic strip を接続 / entry・__heap_ptr export。
+    `pkf run test-gc-selfbuild` が probe / bundle / run E2E / self-compile fixpoint を常設計測。
+  - [ ] **P5: DCE + wasm-opt** — baseline 確保: raw 966KB (-62% vs linear)。縮小手段は
+    `core/dce.vibe` を gc path に適用 + `vibe/wasm/wasm_opt` post-pass
+    (compiler への直接結合は +700KB & seed 不能 — docs/wasm-opt-dogfood.md)。
+    数値目標は置かない（初回リリース後に現実的な値を設定）。
+    メモ: wasm_opt の FS-linked compile は linear lane の FixedArray::make 未解決で現状ブロック
 - [ ] `vibe/compiler` の論理分割
   - [x] `loader/index.vibe` の manifest traversal を shared helper に寄せ、source list/source groups の二重 BFS を削減する
 

@@ -1548,3 +1548,396 @@ export let comp_emit_component_wasm_async_trampolined_p1: (Bytes, String, Int) -
   emit_comp_export_section(buf, export_name, 0)
   bytebuf_to_bytes(buf)
 }
+
+// #537: core:sort for globals (func=0, table=1, mem=2, global=3).
+let core_sort_global = 3
+
+// #537: from-exports core instance with per-item sorts (the older
+// emit_core_instance_from_exports hardcodes core_sort_func; the packed-string
+// env instance also carries the main memory and the __heap_ptr global).
+let emit_core_instance_from_exports_sorted: (Bytes, Array[String], Array[Int], Array[Int]) -> Unit = (buf, names, sorts, indices) -> {
+  bytebuf_push(buf, section_core_instance)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 1)
+  leb128_encode_u32(content, Array::length(names))
+  let mut i = 0
+  while i < Array::length(names) {
+    emit_name(content, Array::get(names, i))
+    bytebuf_push(content, Array::get(sorts, i))
+    leb128_encode_u32(content, Array::get(indices, i))
+    i = i + 1
+  }
+  emit_raw_content(buf, content)
+}
+
+// #537: string trampoline for the CURRENT selfhost wasi linear backend ABI.
+// A vibe string value is the packed i64 `(byte_offset << 32) | byte_len`
+// (mode-invariant: identical under bump and RC; see gen_str_len_body /
+// gen_str_char_code_at_body). The legacy comp_generate_string_trampoline
+// predates this and builds retired-host heap-object strings, so it cannot
+// call today's core modules.
+//
+// Imports (module "env", all supplied from the main core instance):
+//   target_func : (i64 x N) -> i64      the exported vibe handler
+//   memory      : the main linear memory
+//   __heap_ptr  : mut i32 global        the main module's bump frontier
+// Exports:
+//   cabi_realloc : (i32,i32,i32,i32) -> i32
+//     Canonical-ABI allocator used by the host to lower string params into
+//     the main memory (and by canon_func for the string-result ret area).
+//     Bumps __heap_ptr (align-adjusted) and memory.grows as needed. Fresh
+//     allocations only (old_ptr is ignored) — the canonical lowering of
+//     bare string params/results never reallocates.
+//   canon_func : (i32 x 2N) -> i32
+//     Canonical-ABI core shape of `(string x N) -> string`: N (ptr,len)
+//     pairs in, retptr out. Packs each pair into a vibe string value, calls
+//     target_func, unpacks the returned value into an 8-byte (ptr,len)
+//     return area allocated via cabi_realloc.
+export let comp_generate_string_trampoline_packed: (Int) -> Bytes = (string_param_count) -> {
+  let buf = bytebuf_new()
+  emit_header(buf)
+  // types: 0 = target_func (i64 x N) -> i64; 1 = canon_func (i32 x 2N) -> i32;
+  // 2 = cabi_realloc (i32,i32,i32,i32) -> i32
+  let type_sec = bytebuf_new()
+  bytebuf_push_vec_header(type_sec, 3)
+  bytebuf_push(type_sec, 96)
+  // +1: top-level vibe functions carry a trailing closure-env i64 param
+  // (callers pass 0); see linked_compile's entry invocation.
+  leb128_encode_u32(type_sec, string_param_count + 1)
+  let mut ti = 0
+  while ti < (string_param_count + 1) {
+    bytebuf_push(type_sec, 126)
+    ti = ti + 1
+  }
+  bytebuf_push(type_sec, 1)
+  bytebuf_push(type_sec, 126)
+  bytebuf_push(type_sec, 96)
+  leb128_encode_u32(type_sec, string_param_count * 2)
+  let mut ci = 0
+  while ci < (string_param_count * 2) {
+    bytebuf_push(type_sec, 127)
+    ci = ci + 1
+  }
+  bytebuf_push(type_sec, 1)
+  bytebuf_push(type_sec, 127)
+  bytebuf_push(type_sec, 96)
+  leb128_encode_u32(type_sec, 4)
+  bytebuf_push(type_sec, 127)
+  bytebuf_push(type_sec, 127)
+  bytebuf_push(type_sec, 127)
+  bytebuf_push(type_sec, 127)
+  bytebuf_push(type_sec, 1)
+  bytebuf_push(type_sec, 127)
+  bytebuf_push_section(buf, 1, type_sec)
+  // imports: env.target_func (func 0), env.__heap_ptr (mut i32 global), env.memory
+  let import_sec = bytebuf_new()
+  leb128_encode_u32(import_sec, 3)
+  emit_name(import_sec, "env")
+  emit_name(import_sec, "target_func")
+  bytebuf_push(import_sec, 0)
+  leb128_encode_u32(import_sec, 0)
+  emit_name(import_sec, "env")
+  emit_name(import_sec, "__heap_ptr")
+  bytebuf_push(import_sec, 3)
+  bytebuf_push(import_sec, 127)
+  bytebuf_push(import_sec, 1)
+  emit_name(import_sec, "env")
+  emit_name(import_sec, "memory")
+  bytebuf_push(import_sec, 2)
+  bytebuf_push(import_sec, 0)
+  leb128_encode_u32(import_sec, 0)
+  bytebuf_push_section(buf, 2, import_sec)
+  // funcs: 1 = canon_func (type 1), 2 = cabi_realloc (type 2)
+  let func_sec = bytebuf_new()
+  leb128_encode_u32(func_sec, 2)
+  leb128_encode_u32(func_sec, 1)
+  leb128_encode_u32(func_sec, 2)
+  bytebuf_push_section(buf, 3, func_sec)
+  let export_sec = bytebuf_new()
+  leb128_encode_u32(export_sec, 2)
+  emit_name(export_sec, "canon_func")
+  bytebuf_push(export_sec, 0)
+  leb128_encode_u32(export_sec, 1)
+  emit_name(export_sec, "cabi_realloc")
+  bytebuf_push(export_sec, 0)
+  leb128_encode_u32(export_sec, 2)
+  bytebuf_push_section(buf, 7, export_sec)
+  let code_sec = bytebuf_new()
+  leb128_encode_u32(code_sec, 2)
+  // canon_func body. locals: params 0..2N-1 (i32); 2N = result i64; 2N+1 = retptr i32
+  let canon_body = bytebuf_new()
+  leb128_encode_u32(canon_body, 2)
+  leb128_encode_u32(canon_body, 1)
+  bytebuf_push(canon_body, 126)
+  leb128_encode_u32(canon_body, 1)
+  bytebuf_push(canon_body, 127)
+  let result_local = string_param_count * 2
+  let retptr_local = result_local + 1
+  let mut si = 0
+  while si < string_param_count {
+    // (extend_u(ptr) << 32) | extend_u(len)
+    emit_local_get(canon_body, si * 2)
+    bytebuf_push(canon_body, 173)
+    emit_i64_const(canon_body, 32)
+    bytebuf_push(canon_body, 134)
+    emit_local_get(canon_body, (si * 2) + 1)
+    bytebuf_push(canon_body, 173)
+    bytebuf_push(canon_body, 132)
+    si = si + 1
+  }
+  // Trailing closure-env argument (0 for a top-level function).
+  emit_i64_const(canon_body, 0)
+  bytebuf_push(canon_body, 16)
+  leb128_encode_u32(canon_body, 0)
+  emit_local_set(canon_body, result_local)
+  // retptr = cabi_realloc(0, 0, 4, 8)
+  emit_i32_const(canon_body, 0)
+  emit_i32_const(canon_body, 0)
+  emit_i32_const(canon_body, 4)
+  emit_i32_const(canon_body, 8)
+  bytebuf_push(canon_body, 16)
+  leb128_encode_u32(canon_body, 2)
+  emit_local_set(canon_body, retptr_local)
+  // [retptr] = wrap(result >> 32); [retptr+4] = wrap(result & 0xFFFFFFFF)
+  emit_local_get(canon_body, retptr_local)
+  emit_local_get(canon_body, result_local)
+  emit_i64_const(canon_body, 32)
+  bytebuf_push(canon_body, 136)
+  bytebuf_push(canon_body, 167)
+  emit_i32_store(canon_body, 2, 0)
+  emit_local_get(canon_body, retptr_local)
+  emit_local_get(canon_body, result_local)
+  bytebuf_push(canon_body, 167)
+  emit_i32_store(canon_body, 2, 4)
+  emit_local_get(canon_body, retptr_local)
+  bytebuf_push(canon_body, 11)
+  leb128_encode_u32(code_sec, Bytes::length(canon_body))
+  bytebuf_push_buf(code_sec, canon_body)
+  // cabi_realloc body. params: 0=old_ptr 1=old_size 2=align 3=new_size;
+  // local 4 = aligned ptr.
+  let realloc_body = bytebuf_new()
+  leb128_encode_u32(realloc_body, 1)
+  leb128_encode_u32(realloc_body, 1)
+  bytebuf_push(realloc_body, 127)
+  // p = (heap + align - 1) & (0 - align)
+  bytebuf_push(realloc_body, 35)
+  leb128_encode_u32(realloc_body, 0)
+  emit_local_get(realloc_body, 2)
+  emit_i32_add(realloc_body)
+  emit_i32_const(realloc_body, 1)
+  bytebuf_push(realloc_body, 107)
+  emit_i32_const(realloc_body, 0)
+  emit_local_get(realloc_body, 2)
+  bytebuf_push(realloc_body, 107)
+  bytebuf_push(realloc_body, 113)
+  emit_local_set(realloc_body, 4)
+  // __heap_ptr = p + new_size
+  emit_local_get(realloc_body, 4)
+  emit_local_get(realloc_body, 3)
+  emit_i32_add(realloc_body)
+  bytebuf_push(realloc_body, 36)
+  leb128_encode_u32(realloc_body, 0)
+  // if (__heap_ptr > memory.size << 16) memory.grow(pages needed)
+  bytebuf_push(realloc_body, 35)
+  leb128_encode_u32(realloc_body, 0)
+  bytebuf_push(realloc_body, 63)
+  bytebuf_push(realloc_body, 0)
+  emit_i32_const(realloc_body, 16)
+  bytebuf_push(realloc_body, 116)
+  bytebuf_push(realloc_body, 75)
+  bytebuf_push(realloc_body, 4)
+  bytebuf_push(realloc_body, 64)
+  bytebuf_push(realloc_body, 35)
+  leb128_encode_u32(realloc_body, 0)
+  emit_i32_const(realloc_body, 65535)
+  emit_i32_add(realloc_body)
+  emit_i32_const(realloc_body, 16)
+  bytebuf_push(realloc_body, 118)
+  bytebuf_push(realloc_body, 63)
+  bytebuf_push(realloc_body, 0)
+  bytebuf_push(realloc_body, 107)
+  bytebuf_push(realloc_body, 64)
+  bytebuf_push(realloc_body, 0)
+  bytebuf_push(realloc_body, 26)
+  bytebuf_push(realloc_body, 11)
+  emit_local_get(realloc_body, 4)
+  bytebuf_push(realloc_body, 11)
+  leb128_encode_u32(code_sec, Bytes::length(realloc_body))
+  bytebuf_push_buf(code_sec, realloc_body)
+  bytebuf_push_section(buf, 10, code_sec)
+  bytebuf_to_bytes(buf)
+}
+
+// #537: wrap a selfhost-compiled core module into a component exporting
+//   <export_name> : func(<param_names>: string, ...) -> string
+// via the packed-string trampoline above. This is the selfhost replacement
+// for the retired host's `--compose-p3` handler-side componentization: the
+// result plugs into the P3 HTTP adapter's `import handler: func(method, url,
+// headers, body) -> string` (scripts/build_wasi_http_p3_full_adapter.sh).
+//
+// The core module must export `target_func_name` with signature
+// (i64 x N) -> i64 (N = param count, all vibe String), plus `memory` and
+// `__heap_ptr` (any normal non-library selfhost compile does). Host imports
+// other than wasi_snapshot_preview1.fd_write (stubbed to a no-op) are
+// rejected: a serve handler must be a pure function of its request params.
+export let comp_emit_component_wasm_string_handler: (Bytes, String, String, Array[String]) -> Bytes with { Error } = (core_wasm, target_func_name, export_name, param_names) -> {
+  let string_param_count = Array::length(param_names)
+  // Validate the target export exists with the packed-string core signature.
+  let export_names = Array::slice([
+    ""
+  ], 0, 0)
+  let export_func_indices = new_int_array()
+  let export_type_sigs = Array::slice([
+    [
+      0
+    ]
+  ], 0, 0)
+  let _ = parse_core_exports(core_wasm, export_names, export_func_indices, export_type_sigs)
+  let mut target_sig_ok = false
+  let mut target_found = false
+  let mut ei = 0
+  while ei < Array::length(export_names) {
+    if Array::get(export_names, ei) == target_func_name {
+      target_found = true
+      let sig = Array::get(export_type_sigs, ei)
+      // sig = [param_count, params..., result_count, results...]. Core shape
+      // is (i64 x N+1) -> i64: leading closure-env param + one i64 per String.
+      let core_param_count = string_param_count + 1
+      if Array::length(sig) == (core_param_count + 3) {
+        let mut ok = Array::get(sig, 0) == core_param_count
+        let mut pi = 0
+        while pi < core_param_count {
+          if Array::get(sig, 1 + pi) != 126 {
+            ok = false
+          }
+          pi = pi + 1
+        }
+        if Array::get(sig, 1 + core_param_count) != 1 {
+          ok = false
+        }
+        if Array::get(sig, 2 + core_param_count) != 126 {
+          ok = false
+        }
+        target_sig_ok = ok
+      }
+      ei = Array::length(export_names)
+    } else {
+      ei = ei + 1
+    }
+  }
+  if !target_found {
+    throw("component: core module does not export '\{target_func_name}'")
+  }
+  if !target_sig_ok {
+    throw("component: '\{target_func_name}' must take \{string_param_count} String params and return String")
+  }
+  // Reject host imports the stub cannot satisfy.
+  let imp_modules = Array::slice([
+    ""
+  ], 0, 0)
+  let imp_names = Array::slice([
+    ""
+  ], 0, 0)
+  let imp_type_indices = new_int_array()
+  let imp_type_sigs = Array::slice([
+    [
+      0
+    ]
+  ], 0, 0)
+  let import_count = parse_core_imports(core_wasm, imp_modules, imp_names, imp_type_indices, imp_type_sigs)
+  let mut ii = 0
+  while ii < import_count {
+    let im = Array::get(imp_modules, ii)
+    let ifn = Array::get(imp_names, ii)
+    if im == "wasi_snapshot_preview1" && ifn == "fd_write" {
+      ()
+    } else {
+      throw("component: handler uses host import '\{im}.\{ifn}' (a serve handler must be pure; only stdout via fd_write is stubbed)")
+    }
+    ii = ii + 1
+  }
+  let buf = bytebuf_new()
+  emit_component_header(buf)
+  emit_core_module_section(buf, core_wasm)
+  emit_core_module_section(buf, comp_generate_string_trampoline_packed(string_param_count))
+  emit_core_module_section(buf, comp_generate_wasi_fd_write_stub())
+  // core instance 0: fd_write stub (module 2)
+  emit_core_instance_instantiate_section(buf, 2, Array::slice([
+    ""
+  ], 0, 0))
+  // core instance 1: main (module 0), wasi_snapshot_preview1 satisfied by the
+  // stub when the core imports it (an argument for an import the module does
+  // not declare is legal and ignored).
+  emit_core_instance_instantiate_args(buf, 0, [
+    "wasi_snapshot_preview1"
+  ], [
+    0
+  ])
+  // core func 0 = target, core mem 0 = main memory, core global 0 = __heap_ptr
+  emit_alias_section(buf, 1, [
+    target_func_name
+  ], [
+    core_sort_func
+  ])
+  emit_alias_section(buf, 1, [
+    "memory"
+  ], [
+    core_sort_mem
+  ])
+  emit_alias_section(buf, 1, [
+    "__heap_ptr"
+  ], [
+    core_sort_global
+  ])
+  // core instance 2: env = {target_func, __heap_ptr, memory} from the aliases
+  emit_core_instance_from_exports_sorted(buf, [
+    "target_func",
+    "__heap_ptr",
+    "memory"
+  ], [
+    core_sort_func,
+    core_sort_global,
+    core_sort_mem
+  ], [
+    0,
+    0,
+    0
+  ])
+  // core instance 3: trampoline (module 1) with env
+  emit_core_instance_instantiate_args(buf, 1, [
+    "env"
+  ], [
+    2
+  ])
+  // core func 1 = canon_func, core func 2 = cabi_realloc
+  emit_alias_section(buf, 3, [
+    "canon_func",
+    "cabi_realloc"
+  ], [
+    core_sort_func,
+    core_sort_func
+  ])
+  // component type 0: (param_names: string...) -> string
+  bytebuf_push(buf, section_type)
+  let type_content = bytebuf_new()
+  leb128_encode_u32(type_content, 1)
+  let comp_param_types = new_int_array()
+  let mut pt = 0
+  while pt < string_param_count {
+    Array::push(comp_param_types, comp_valtype_string)
+    pt = pt + 1
+  }
+  emit_comp_func_type(type_content, comp_param_types, param_names, [
+    comp_valtype_string
+  ], 0)
+  emit_raw_content(buf, type_content)
+  // canon lift canon_func (core func 1) with memory 0 + realloc (core func 2)
+  bytebuf_push(buf, section_canon)
+  let canon_content = bytebuf_new()
+  leb128_encode_u32(canon_content, 1)
+  emit_canon_lift_func(canon_content, 1, 0, 1, 0, 2)
+  emit_raw_content(buf, canon_content)
+  emit_comp_export_section(buf, export_name, 0)
+  bytebuf_to_bytes(buf)
+}

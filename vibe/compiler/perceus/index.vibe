@@ -364,6 +364,20 @@ let tail_is_borrow_ret_safe: (Array[String], Expr) -> Bool = (known, e0) -> {
         }
       },
       EIdent(_, _) => (),
+      // #715: a throwing tail (the ubiquitous `match x { Ctor(..) => field, _
+      // => throw("not X") }` shape used by every common_extractors.vibe
+      // accessor) never actually produces a value along that path, so it
+      // cannot violate the borrow-returning invariant -- there is nothing to
+      // mismanage. Without this, EVERY such accessor (get_efn_params,
+      // get_efn_body, get_ecall_args, ...) fell through to the catch-all
+      // below and was rejected solely because of its own error arm, even
+      // though its real (non-throwing) arm is a plain borrowed field
+      // projection. That misclassification made the caller treat the
+      // extracted field as an independently owned value while the
+      // scrutinee's own later structural drop also reclaims it -- a
+      // same-address double-free (the #715 self-hosting free-list
+      // corruption).
+      EThrow(_) => (),
       _ => {
         all_safe = false
       }

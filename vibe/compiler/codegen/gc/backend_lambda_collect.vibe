@@ -19,15 +19,28 @@ export let collect_lambda_captures_gc: (Array[(String, Option[TypeExpr])], Expr,
     ""
   ], 0, 0)
   let func_table = ctx.func_table
-  let ctor_table = ctx.ctor_table
+  let ctor_table = ctx.gc_ctor_table
   let mut pi = 0
   while pi < Array::length(params) {
     let (pname, _) = Array::get(params, pi)
     Array::push(param_names_arr, pname)
     pi = pi + 1
   }
-  let fn_and_ctor = Array::concat(func_table.names, ctor_table.names)
-  let captures = collect_free_vars(fn_body, param_names_arr, fn_and_ctor)
+  let mut globals = Array::concat(func_table.names, ctor_table.names)
+  // #538: names that resolve globally must not be captured as env slots --
+  // module-level literal constants and the call-site-only desugar builtins
+  // (handled by name in compile_call_gc, absent from the func table).
+  globals = Array::concat(globals, ctx.gc_const_names)
+  globals = Array::concat(globals, ctx.gc_global_names)
+  globals = Array::concat(globals, [
+    "__index",
+    "__len",
+    "__set_field",
+    "__set_index",
+    "__slice",
+    "__rec_field"
+  ])
+  let captures = collect_free_vars(fn_body, param_names_arr, globals)
   let num_captures = Array::length(captures)
   let user_params = Array::length(params)
   (captures, num_captures, user_params)

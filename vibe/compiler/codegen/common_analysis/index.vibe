@@ -260,6 +260,212 @@ export let get_func_param_names: (Stmt) -> Array[String] with { Error } = (stmt)
   }
 }
 
+// #721: does the program reference the exception machinery anywhere? EThrow
+// compiles to `throw 2`, EHandle to try_table over tags 0-3, and effect op
+// performs to `throw <eff_tag>` (guarded separately by the effect declaration
+// list). When NONE of these appear, the tag section and the "error" tag
+// export can be omitted entirely -- V8 runs exnref-bearing modules on a
+// slower path, costing pure-compute code ~35% (fib(38): 0.32s with tags vs
+// 0.20s without; wasmtime shows parity, so it is engine behavior, not
+// codegen). Conservative: any EThrow/EHandle at ANY nesting depth counts.
+export let rec expr_contains_exceptions: (Expr) -> Bool = (expr) -> {
+  match expr {
+    EThrow(_) => true,
+    EHandle(_, _) => true,
+    EBinOp(_, lhs, rhs) => expr_contains_exceptions(lhs) || expr_contains_exceptions(rhs),
+    EUnaryOp(_, operand) => expr_contains_exceptions(operand),
+    EIf(cond, then_e, else_e) =>
+    expr_contains_exceptions(cond) || expr_contains_exceptions(then_e) || expr_contains_exceptions(else_e),
+    ECall(callee, args, _) => {
+      // A bare `resume(..)` call compiles to `throw 1` (continuation resume)
+      // even without a surrounding EHandle in this expression -- a resume
+      // misused outside a handler must still produce a VALID module. A user
+      // function actually named `resume` merely keeps the tags (harmless
+      // over-approximation).
+      let mut found = match callee {
+        EIdent(cname, _) => cname == "resume",
+        _ => expr_contains_exceptions(callee)
+      }
+      let mut i = 0
+      while i < Array::length(args) {
+        if expr_contains_exceptions(Array::get(args, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    ELet(_, value, body) => expr_contains_exceptions(value) || expr_contains_exceptions(body),
+    ELetRec(_, value, body) => expr_contains_exceptions(value) || expr_contains_exceptions(body),
+    ELetMut(_, value, body) => expr_contains_exceptions(value) || expr_contains_exceptions(body),
+    EAssign(_, value, body) => expr_contains_exceptions(value) || expr_contains_exceptions(body),
+    EAssignOp(_, _, value, body) => expr_contains_exceptions(value) || expr_contains_exceptions(body),
+    ESeq(first, second) => expr_contains_exceptions(first) || expr_contains_exceptions(second),
+    EWhile(cond, body) => expr_contains_exceptions(cond) || expr_contains_exceptions(body),
+    EForIn(_, _, iter_e, body) => expr_contains_exceptions(iter_e) || expr_contains_exceptions(body),
+    ELoop(params, body) => {
+      let mut i = 0
+      let mut found = expr_contains_exceptions(body)
+      while i < Array::length(params) {
+        let (_, iv) = Array::get(params, i)
+        if expr_contains_exceptions(iv) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EMatch(scrut, arms) => {
+      let mut i = 0
+      let mut found = expr_contains_exceptions(scrut)
+      while i < Array::length(arms) {
+        let (_, arm_body) = Array::get(arms, i)
+        if expr_contains_exceptions(arm_body) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EFn(_, _, _, _, _, body) => expr_contains_exceptions(body),
+    ETuple(elems) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(elems) {
+        if expr_contains_exceptions(Array::get(elems, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EArray(elems) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(elems) {
+        if expr_contains_exceptions(Array::get(elems, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    ERecord(fields) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fields) {
+        let (_, fval) = Array::get(fields, i)
+        if expr_contains_exceptions(fval) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EMap(fields) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fields) {
+        let (_, fval) = Array::get(fields, i)
+        if expr_contains_exceptions(fval) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EDot(obj, _, _) => expr_contains_exceptions(obj),
+    ELabeledArg(_, _, inner) => expr_contains_exceptions(inner),
+    EReturn(inner) => expr_contains_exceptions(inner),
+    ESpread(inner) => expr_contains_exceptions(inner),
+    EBreak(opt) => match opt {
+      Some(inner) => expr_contains_exceptions(inner),
+      None => false
+    },
+    EContinue(args) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(args) {
+        if expr_contains_exceptions(Array::get(args, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EInt(_) => false,
+    EFloat(_) => false,
+    EString(_) => false,
+    EBool(_) => false,
+    EIdent(_, _) => false,
+    EStringInterp(_) => false,
+    EUnit => false
+  }
+}
+
+export let rec stmts_contain_exceptions: (Array[Stmt]) -> Bool = (stmts) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, expr) => if expr_contains_exceptions(expr) {
+        found = true
+      } else {
+        ()
+      },
+      SLetMut(_, _, expr) => if expr_contains_exceptions(expr) {
+        found = true
+      } else {
+        ()
+      },
+      SLetPat(_, expr) => if expr_contains_exceptions(expr) {
+        found = true
+      } else {
+        ()
+      },
+      SExpr(expr) => if expr_contains_exceptions(expr) {
+        found = true
+      } else {
+        ()
+      },
+      STest(_, expr) => if expr_contains_exceptions(expr) {
+        found = true
+      } else {
+        ()
+      },
+      SBench(_, expr) => if expr_contains_exceptions(expr) {
+        found = true
+      } else {
+        ()
+      },
+      SModule(_, _, inner) => if stmts_contain_exceptions(inner) {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 export let collect_strings_stmts: (Array[Stmt]) -> Array[String] = (stmts) -> {
   let out = common_analysis_fresh_string_array()
   let mut i = 0
