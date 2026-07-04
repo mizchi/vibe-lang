@@ -17,6 +17,9 @@
 
 vibe 言語の構文・機能を把握するには、最初に [docs/cheatsheet.md](docs/cheatsheet.md) を読むこと。型、関数、パターンマッチ、エフェクト、モジュールなど全機能を網羅している。
 
+**モジュールを追加・修復するときは [docs/adding-modules.md](docs/adding-modules.md) に従う**
+(置き場所の規約、テスト + allowlist ラチェット、検証手順、既知の罠)。
+
 ## Quick Commands
 
 タスク runner は [pkfire](https://github.com/mizchi/pkfire) (`pkf`)。

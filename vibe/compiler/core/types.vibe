@@ -968,7 +968,26 @@ export let instantiate: (Type, Int) -> (Type, Int, Array[(Int, Array[String])]) 
       ], 0, 0)
       let mut bi = 0
       let mut bacc = SubstEmpty
+      // #743: fresh ids must not overlap the scheme's OLD bound ids. An
+      // IMPORTED scheme carries bound-var ids from the EXPORTING module's
+      // counter domain (FS-compile checks modules separately and caches
+      // their envs), so the importing module's counter c can be ≤ an old id.
+      // A fresh id equal to another old bound id makes subst_apply's
+      // transitive var resolution chain old→fresh→fresh' and COLLAPSES two
+      // distinct scheme vars into one — `Err` from the prelude instantiated
+      // as `(E) -> Result[E, E]` whenever exactly one extra type var had
+      // been allocated before the use site (json_parse's #743).
       let mut bnc = c
+      let mut bmax_i = 0
+      while bmax_i < blen {
+        let bold = Array::get(bound_vars, bmax_i)
+        if bold >= bnc {
+          bnc = bold + 1
+        } else {
+          ()
+        }
+        bmax_i = bmax_i + 1
+      }
       while bi < blen {
         let old_id = Array::get(bound_vars, bi)
         Array::push(id_map, (old_id, bnc))
