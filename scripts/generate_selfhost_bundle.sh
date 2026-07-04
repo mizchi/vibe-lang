@@ -661,22 +661,33 @@ build_exact_adapter_merged_source() {
   local tool_wasm="$PROJECT_ROOT/_build/emit_merged_source_tool.wasm"
   local seed_wasm="$PROJECT_ROOT/bootstrap/selfhost/seed/selfhost_compiler.wasm"
   rm -f "$tool_wasm" "$tool_wasm.diag"
+  local tool_log="$PROJECT_ROOT/_build/emit_merged_source_tool.log"
+  # Same node stack as selfhost_generations' own compiler runs: the seed
+  # FS-compiling the whole compiler recurses deeply (parser on the largest
+  # files) and overflows the default stack on some node builds (CI Node 24).
+  local tool_node_flags="${VIBE_NODE_WASM_FLAGS:---experimental-wasm-exnref --stack-size=${VIBE_SELFHOST_GENERATION_NODE_STACK_SIZE:-131072}}"
   (cd "$PROJECT_ROOT" && env VIBE_RC=0 VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 \
     VIBE_SELFHOST_IMPORT_ABI="${VIBE_SELFHOST_IMPORT_ABI:-raw}" \
+    VIBE_NODE_WASM_FLAGS="$tool_node_flags" \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$seed_wasm" \
-    vibe/compiler/emit_merged_source_entry.vibe "$tool_wasm" cli_main >/dev/null 2>&1) || true
+    vibe/compiler/emit_merged_source_entry.vibe "$tool_wasm" cli_main >"$tool_log" 2>&1) || true
   if [ ! -s "$tool_wasm" ]; then
     echo "generate_selfhost_bundle: merge-flatten tool build failed" >&2
     cat "$tool_wasm.diag" >&2 2>/dev/null || true
+    echo "--- runner output ---" >&2
+    tail -40 "$tool_log" >&2 2>/dev/null || true
     exit 1
   fi
   rm -f "$merged_path.diag"
-  (cd "$PROJECT_ROOT" && VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
+  (cd "$PROJECT_ROOT" && env VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
+    VIBE_NODE_WASM_FLAGS="$tool_node_flags" \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$tool_wasm" \
-    vibe/compiler/selfhost_cli_adapter.vibe "$merged_path" >/dev/null 2>&1) || true
+    vibe/compiler/selfhost_cli_adapter.vibe "$merged_path" >"$tool_log.flatten" 2>&1) || true
   if [ ! -s "$merged_path" ]; then
     echo "generate_selfhost_bundle: merge flatten failed" >&2
     cat "$merged_path.diag" >&2 2>/dev/null || true
+    echo "--- runner output ---" >&2
+    tail -40 "$tool_log.flatten" >&2 2>/dev/null || true
     exit 1
   fi
   # #726 gate: the merged flat source must have ZERO duplicate top-level defs.
