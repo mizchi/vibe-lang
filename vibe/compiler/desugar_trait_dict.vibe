@@ -546,6 +546,48 @@ let struct_set_has: (Array[(String, Array[String])], String) -> Bool = (struct_s
   found
 }
 
+// Whether type `name` declares a field/variant called `member` (struct_sets
+// maps struct AND enum names to their field/variant name lists). Used to keep
+// a field-stored-function call `b.f(args)` as an EDot when the struct also
+// has a same-named `T::f` method candidate.
+let struct_set_member: (Array[(String, Array[String])], String, String) -> Bool = (struct_sets, name, member) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(struct_sets) {
+    let (sname, members) = Array::get(struct_sets, i)
+    if sname == name {
+      let mut j = 0
+      while j < Array::length(members) {
+        if Array::get(members, j) == member {
+          found = true
+          j = Array::length(members)
+        } else {
+          j = j + 1
+        }
+      }
+      i = Array::length(struct_sets)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+// [robj, arg1, arg2, ...] — receiver prepended to the rewritten args for a
+// method-call rewrite (`xs.m(a)` -> `T::m(xs, a)`).
+let prepend_expr: (Expr, Array[Expr]) -> Array[Expr] = (head, rest) -> {
+  let out = Array::slice([
+    EUnit
+  ], 0, 0)
+  Array::push(out, head)
+  let mut i = 0
+  while i < Array::length(rest) {
+    Array::push(out, Array::get(rest, i))
+    i = i + 1
+  }
+  out
+}
+
 let lookup_var_type: (Array[(String, String)], String) -> Option[String] = (var_types, name) -> {
   let mut i = 0
   let mut result = None
@@ -1742,7 +1784,7 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
         EIdent(name0, coff) => {
           // #672: unqualify a qualified constructor call `Enum::Variant(..)` ->
           // `Variant(..)` so codegen's (unqualified) ctor table recognizes it.
-          let name = match split_qualified(name0) {
+          let name_ctor = match split_qualified(name0) {
             Some(parts0) => {
               let (h0, m0) = parts0
               match qual_ctor_member(h0, m0, struct_sets, fn_returns) {
@@ -1751,6 +1793,27 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
               }
             },
             None => name0
+          }
+          // #736 residual: bare method-style callee — `xs |> length` is
+          // `length(xs)`; with only the receiver TYPE imported there is no
+          // top-level `length`, so resolve to `<type-of-arg0>::length` (USER
+          // types only, and only when no top-level fn of the bare name exists
+          // — a lexically visible `length` keeps normal call semantics). The
+          // checker applies the same rule, so typing and codegen agree.
+          let name = if String::index_of(name_ctor, "::") < 0 && !fn_exists(fn_returns, name_ctor) && Array::length(args) >= 1 {
+            match infer_arg_type_name(Array::get(args, 0), struct_sets, var_types, fn_returns) {
+              Some(tn) => {
+                let qual = String::concat(tn, String::concat("::", name_ctor))
+                if struct_set_has(struct_sets, tn) && fn_exists(fn_returns, qual) {
+                  qual
+                } else {
+                  name_ctor
+                }
+              },
+              None => name_ctor
+            }
+          } else {
+            name_ctor
           }
           // `T::method(args)` inside a transformed body -> `(dict.method)(args)`.
           let as_method = match split_qualified(name) {
@@ -1771,7 +1834,33 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
             }
           }
         },
-        EDot(obj, m, doff) => ECall(EDot(rewrite_expr(obj, gens, traits, struct_sets, dict_binds, var_types, fn_returns), m, doff), rwargs, off),
+        EDot(obj, m, doff) => {
+          // #736 residual: method-style call `xs.length()` on a USER type —
+          // codegen compiles a called EDot as struct-field access, so a
+          // receiver method (`List::length`) failed with "unknown struct
+          // field". Rewrite to the qualified call when the receiver's type is
+          // inferable and declares the method as a top-level fn. A struct
+          // FIELD of the same name keeps the field-stored-function call (the
+          // field is the closer binding), and unknown receivers keep the EDot
+          // (codegen's existing paths).
+          let robj = rewrite_expr(obj, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+          let as_recv_method = match infer_arg_type_name(obj, struct_sets, var_types, fn_returns) {
+            Some(tn) => {
+              let qual = String::concat(tn, String::concat("::", m))
+              let is_field = struct_set_member(struct_sets, tn, m)
+              if !is_field && fn_exists(fn_returns, qual) {
+                Some(qual)
+              } else {
+                None
+              }
+            },
+            None => None
+          }
+          match as_recv_method {
+            Some(qual) => ECall(EIdent(qual, doff), prepend_expr(robj, rwargs), off),
+            None => ECall(EDot(robj, m, doff), rwargs, off)
+          }
+        },
         _ => ECall(rewrite_expr(callee, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rwargs, off)
       }
       }

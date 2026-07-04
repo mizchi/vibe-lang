@@ -1656,6 +1656,61 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
             (tab_call_ty(tytab, call_off, subst_apply(s2, ret_ty)), s2, c2)
           },
           None => {
+            // #736 residual: method-style call with a bare UNRESOLVED callee —
+            // `xs |> length` is `length(xs)`, and with only the receiver TYPE
+            // imported there is no lexical `length`. Retry as
+            // `<type-of-arg0>::length`, the same resolution as `xs.length()`
+            // (the EDot arm below), by re-checking in EDot form. Gated on the
+            // bare name resolving to nothing (env/builtin) AND the qualified
+            // name actually resolving, so a genuinely unknown callee still
+            // reports `unknown name` from the normal path below.
+            let method_form = if String::index_of(name, "::") < 0 && Array::length(args) >= 1 {
+              match env_lookup(env, name) {
+                Some(_) => false,
+                None => match lookup_builtin(name) {
+                  Some(_) => false,
+                  None => true
+                }
+              }
+            } else {
+              false
+            }
+            let recv_method = if method_form {
+              let (a0_ty, sa, ca) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+              let recv_ty = subst_apply(sa, a0_ty)
+              let qual = String::concat(type_name_prefix(recv_ty), String::concat("::", name))
+              let has_qual = match env_lookup(env, qual) {
+                Some(_) => true,
+                None => match lookup_builtin(qual) {
+                  Some(_) => true,
+                  None => false
+                }
+              }
+              // A USER-typed receiver takes the (tolerant) EDot path even when
+              // the qualified method is not in THIS module's env: with only the
+              // type imported (`import ./list.vibe { List }`), `List::length`
+              // lives in the imported module and is resolved by the merged
+              // codegen — the per-module checker can't see it, exactly like
+              // `xs.length()` (EDot), which types such calls CtUnknown. A
+              // non-user receiver (Int/String/...) keeps the strict path so a
+              // typo'd `foo(42)` still reports `unknown name`.
+              let user_recv = match recv_ty {
+                CtEnum(_) => true,
+                CtStruct(_) => true,
+                CtNamed(_, _) => true,
+                _ => false
+              }
+              if has_qual || user_recv {
+                Some(check_expr(ECall(EDot(Array::get(args, 0), name, callee_off), Array::slice(args, 1, Array::length(args)), call_off), env, defs, sa, ca, errors, tytab))
+              } else {
+                None
+              }
+            } else {
+              None
+            }
+            match recv_method {
+            Some(rm) => rm,
+            None => {
             let (ct, s1, c1) = check_expr(EIdent(name, -1), env, defs, s, c, errors, tytab)
             let alen = Array::length(args)
             let arg_tys = Array::slice([
@@ -1720,6 +1775,8 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
                 }
                 (tab_call_ty(tytab, call_off, CtUnknown), s2, c2)
               }
+            }
+            }
             }
           }
         }

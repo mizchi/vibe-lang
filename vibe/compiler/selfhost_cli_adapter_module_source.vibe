@@ -6065,6 +6065,45 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
             (tab_call_ty(tytab, call_off, subst_apply(s2, ret_ty)), s2, c2)
           },
           None => {
+            let method_form = if String::index_of(name, "::") < 0 && Array::length(args) >= 1 {
+              match env_lookup(env, name) {
+                Some(_) => false,
+                None => match lookup_builtin(name) {
+                  Some(_) => false,
+                  None => true
+                }
+              }
+            } else {
+              false
+            }
+            let recv_method = if method_form {
+              let (a0_ty, sa, ca) = check_expr(Array::get(args, 0), env, defs, s, c, errors, tytab)
+              let recv_ty = subst_apply(sa, a0_ty)
+              let qual = String::concat(type_name_prefix(recv_ty), String::concat("::", name))
+              let has_qual = match env_lookup(env, qual) {
+                Some(_) => true,
+                None => match lookup_builtin(qual) {
+                  Some(_) => true,
+                  None => false
+                }
+              }
+              let user_recv = match recv_ty {
+                CtEnum(_) => true,
+                CtStruct(_) => true,
+                CtNamed(_, _) => true,
+                _ => false
+              }
+              if has_qual || user_recv {
+                Some(check_expr(ECall(EDot(Array::get(args, 0), name, callee_off), Array::slice(args, 1, Array::length(args)), call_off), env, defs, sa, ca, errors, tytab))
+              } else {
+                None
+              }
+            } else {
+              None
+            }
+            match recv_method {
+            Some(rm) => rm,
+            None => {
             let (ct, s1, c1) = check_expr(EIdent(name, -1), env, defs, s, c, errors, tytab)
             let alen = Array::length(args)
             let arg_tys = Array::slice([
@@ -6122,6 +6161,8 @@ export let rec check_expr: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[Str
                 }
                 (tab_call_ty(tytab, call_off, CtUnknown), s2, c2)
               }
+            }
+            }
             }
           }
         }
@@ -8179,6 +8220,40 @@ let struct_set_has: (Array[(String, Array[String])], String) -> Bool = (struct_s
   }
   found
 }
+let struct_set_member: (Array[(String, Array[String])], String, String) -> Bool = (struct_sets, name, member) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(struct_sets) {
+    let (sname, members) = Array::get(struct_sets, i)
+    if sname == name {
+      let mut j = 0
+      while j < Array::length(members) {
+        if Array::get(members, j) == member {
+          found = true
+          j = Array::length(members)
+        } else {
+          j = j + 1
+        }
+      }
+      i = Array::length(struct_sets)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+let prepend_expr: (Expr, Array[Expr]) -> Array[Expr] = (head, rest) -> {
+  let out = Array::slice([
+    EUnit
+  ], 0, 0)
+  Array::push(out, head)
+  let mut i = 0
+  while i < Array::length(rest) {
+    Array::push(out, Array::get(rest, i))
+    i = i + 1
+  }
+  out
+}
 let lookup_var_type: (Array[(String, String)], String) -> Option[String] = (var_types, name) -> {
   let mut i = 0
   let mut result = None
@@ -9114,7 +9189,7 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
       }
       match callee {
         EIdent(name0, coff) => {
-          let name = match split_qualified(name0) {
+          let name_ctor = match split_qualified(name0) {
             Some(parts0) => {
               let (h0, m0) = parts0
               match qual_ctor_member(h0, m0, struct_sets, fn_returns) {
@@ -9123,6 +9198,21 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
               }
             },
             None => name0
+          }
+          let name = if String::index_of(name_ctor, "::") < 0 && !fn_exists(fn_returns, name_ctor) && Array::length(args) >= 1 {
+            match infer_arg_type_name(Array::get(args, 0), struct_sets, var_types, fn_returns) {
+              Some(tn) => {
+                let qual = String::concat(tn, String::concat("::", name_ctor))
+                if struct_set_has(struct_sets, tn) && fn_exists(fn_returns, qual) {
+                  qual
+                } else {
+                  name_ctor
+                }
+              },
+              None => name_ctor
+            }
+          } else {
+            name_ctor
           }
           let as_method = match split_qualified(name) {
             Some(parts) => {
@@ -9142,7 +9232,25 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
             }
           }
         },
-        EDot(obj, m, doff) => ECall(EDot(rewrite_expr(obj, gens, traits, struct_sets, dict_binds, var_types, fn_returns), m, doff), rwargs, off),
+        EDot(obj, m, doff) => {
+          let robj = rewrite_expr(obj, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+          let as_recv_method = match infer_arg_type_name(obj, struct_sets, var_types, fn_returns) {
+            Some(tn) => {
+              let qual = String::concat(tn, String::concat("::", m))
+              let is_field = struct_set_member(struct_sets, tn, m)
+              if !is_field && fn_exists(fn_returns, qual) {
+                Some(qual)
+              } else {
+                None
+              }
+            },
+            None => None
+          }
+          match as_recv_method {
+            Some(qual) => ECall(EIdent(qual, doff), prepend_expr(robj, rwargs), off),
+            None => ECall(EDot(robj, m, doff), rwargs, off)
+          }
+        },
         _ => ECall(rewrite_expr(callee, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rwargs, off)
       }
       }
@@ -19492,7 +19600,9 @@ let join_relative_path: (String, String) -> String = (base_dir, raw_path) -> {
   }
 }
 export let path_has_relative_prefix: (String, Int) -> Bool = (raw_path, len) -> {
-  if len >= 2 {
+  if raw_path == "." || raw_path == ".." {
+    true
+  } else if len >= 2 {
     if raw_path[0: 2] == "./" {
       true
     } else if len >= 3 {
@@ -43492,7 +43602,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "e880eca17823854a"
+  "21dd304aa75888fa"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647

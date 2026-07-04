@@ -451,5 +451,24 @@ lands.
   存在する user 型のみ、trait 宣言が無いプログラムでも分類)。
   @vibe/core の List が `for x in list_of3(..)` で回せるようになった。
 - allowlist 追加: vibe/prelude/iterator_test.vibe、lib/@vibe/core/list_test.vibe。
-  残 deferred: `xs |> length`(bare メソッド名の型 import 経由解決、
-  list_type_import_test)と vibe/collection/index_import_test の compiler trap。
+
+### 同日フォローアップ — method-style 呼び出しと dot-import (2026-07-04)
+
+- **`xs.length()` / `xs |> length` の receiver-method 解決 — LANDED**。
+  desugar_trait_dict: called-EDot は receiver 型が infer でき
+  `Tn::method` が top-level fn として存在すれば qualified call に書き換え
+  (同名 struct FIELD は field-stored-function call を維持)。bare callee は
+  「lexical に解決できない(top-level fn に無い)」場合のみ arg0 の型で
+  `Tn::name` を試す。checker: 未解決 bare callee を EDot 形に再チェック
+  (user 型 receiver は per-module env に qualified が無くても EDot と同じ
+  寛容さで通し、merged codegen が解決する。builtin/scalar receiver は
+  従来どおり `unknown name` を報告)。list_type_import_test が PASS →
+  allowlist 追加。
+- **bare `import . { x }` の compiler trap 修正**: `path_has_relative_prefix`
+  が素の `.` / `..` を相対と認識せず、`.` が "" に正規化されて最初の
+  候補が `.vibe`(ワークスペースの store ディレクトリ!)になり、
+  fs_read が EISDIR で diag なしに trap していた。
+- **`Map::values` は selfhost builtin に存在しない**(host 時代の遺物)。
+  vibe/collection/map.vibe の `values` を keys+get で再実装。
+  collection の index_import_test / map_test / maps_facade_test が PASS →
+  allowlist 追加(collection のテストが selfhost gate で回るのは初)。

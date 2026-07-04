@@ -150,7 +150,14 @@ prepend). A *compound* placeholder such as `_ * 2` is a section lambda
 (`(v) -> v * 2`), not a pipe slot — so `xs |> Array::map(_, _ * 2)` reads as
 `Array::map(xs, (v) -> v * 2)`.
 
-`.` is field access only. No method call sugar (`obj.method()` is error).
+**Method-style calls** (#736): `xs.length()` and `xs |> length` resolve to
+`List::length(xs)` when `xs`'s type is a USER type declaring the method as a
+top-level fn — importing just the type is enough
+(`import ./list.vibe { List, list_of3 }` makes `list_of3(1,2,3) |> length`
+work). A struct FIELD of the same name wins over a method (field-stored
+function call), and a lexically visible bare function keeps normal call
+semantics. Builtin receivers (`Array`/`String`/...) keep their builtin
+`Type::method` forms — no bare-method sugar for them.
 
 ### Function combinators (point-free)
 
@@ -462,6 +469,8 @@ export ./lib.vibe { helper1, helper2 }  // re-export
 import ./lib.vibe { func1, func2 }
 import ./lib.vibe { func1 as renamed }
 import ./lib.vibe { type MyType, trait Show }
+import ./subdir { helper }   // directory import -> subdir/index.vibe(i)
+import . { helper }          // own directory's index (same resolution)
 
 // module blocks (`module Math { ... }`) are REMOVED (#728, ADR-0063):
 // use file boundaries + import/export. `Type::method` / `Effect::Op`
