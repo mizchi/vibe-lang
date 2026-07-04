@@ -426,3 +426,30 @@ lands.
 - Generic impls (`impl [T: Eq] Eq for Array[T]`, `EnvTraitImplGen`) — dictionaries that
   themselves need dictionaries; deferred.
 - Bundle regeneration after AST changes is a process gotcha (gate checks bundle sync).
+
+## #736 — `Iterable[T]` (indexed protocol) と Iterator combinators — LANDED (2026-07-04)
+
+「Deferred: map/filter/fold combinators と Iterable trait」の残りが着地した。
+
+- `vibe/prelude/iterator.vibe` が method-bearing `trait Iterable[T] {
+  iter_length(Self) -> Int; iter_get(Self, Int) -> T }` を宣言し、
+  `Iterator::fold/iter/find/any/all/r#map/filter/flatmap` は
+  `C::iter_length(xs)` / `C::iter_get(xs, i)` の witness dispatch に移行。
+  旧 ADR-0044 name-coupling(bare `iter_length` がマージ先に偶然存在する
+  ことに依存、selfhost では一度もコンパイルできなかった)を置き換える。
+- builtin impl は同ファイル内: Array(要素)/ String(char code)/
+  Map(key。`Map::keys` 経由 — per-access 割り当ての perf 追い込みは残課題)。
+- 必要になった機構修正 2 件:
+  (1) merge の private-rename が builtin 型への impl メソッド
+  (`Array::iter_length` 等、head がどのモジュールにも宣言されない)を
+  改名して witness から orphan 化 → 「head がローカル宣言の private 型の
+  ときだけ rename」に変更 (import_alias_rewrite.vibe)。
+  (2) `infer_arg_type_name` に `EMap → "Map"` を追加(map literal 束縛の
+  witness 解決)。
+- `for x in <user型>` の indexed protocol 対応: classify に
+  `classify_indexed_for_loop` を追加(`C::iter_length` + `C::iter_get` が
+  存在する user 型のみ、trait 宣言が無いプログラムでも分類)。
+  @vibe/core の List が `for x in list_of3(..)` で回せるようになった。
+- allowlist 追加: vibe/prelude/iterator_test.vibe、lib/@vibe/core/list_test.vibe。
+  残 deferred: `xs |> length`(bare メソッド名の型 import 経由解決、
+  list_type_import_test)と vibe/collection/index_import_test の compiler trap。

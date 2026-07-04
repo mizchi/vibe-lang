@@ -620,6 +620,9 @@ let rec infer_arg_type_name: (Expr, Array[(String, Array[String])], Array[(Strin
     // An array literal dispatches to an `impl [T] Trait for Array` witness
     // (#5 generic impls): its constructor is "Array" regardless of element type.
     EArray(_) => Some("Array"),
+    // Same for a `map { ... }` literal: constructor "Map" (lets a let-bound
+    // map resolve an `impl ... for Map` witness at a generic call site).
+    EMap(_) => Some("Map"),
     // A variable's recorded type, else a (possibly qualified) nullary
     // constructor's enum name (`Green`/`Color::Green` -> `Color`) so that a
     // `let a = Green` / `let a = Color::Green` binding resolves for `==`. The
@@ -1211,6 +1214,36 @@ let build_iter_for: (String, String, Expr, Expr) -> Expr = (name, ctype, iter, b
   build_iter_for_with(name, next_call_for(ctype), iter, body)
 }
 
+// #736: `for x in xs` over a USER type implementing the indexed Iterable
+// protocol (`C::iter_length(Self) -> Int` + `C::iter_get(Self, Int) -> T`,
+// e.g. @vibe/core's List) desugars to an index-driven loop:
+//
+//   let __iter_src = xs
+//   let __iter_n = C::iter_length(__iter_src)
+//   let mut __iter_i = 0
+//   while __iter_i < __iter_n {
+//     let x = C::iter_get(__iter_src, __iter_i)
+//     body
+//     __iter_i = __iter_i + 1
+//   }
+//
+// The iterand is seeded through an immutable `__iter_src` for the same RC
+// ownership reason as build_iter_for_with (#704). Like the next-protocol
+// desugar, the optional index binding is not supported and the loop is a
+// statement (no per-iteration result collection).
+let build_indexed_iter_for: (String, String, Expr, Expr) -> Expr = (name, ctype, iter, body) -> {
+  let get_call = ECall(EIdent(String::concat(ctype, "::iter_get"), -1), [
+    EIdent("__iter_src", -1),
+    EIdent("__iter_i", -1)
+  ], -1)
+  let len_call = ECall(EIdent(String::concat(ctype, "::iter_length"), -1), [
+    EIdent("__iter_src", -1)
+  ], -1)
+  let incr = EAssign("__iter_i", EBinOp("+", EIdent("__iter_i", -1), EInt(1)), EUnit)
+  let loop_body = ELet(name, get_call, ESeq(body, incr))
+  ELet("__iter_src", iter, ELet("__iter_n", len_call, ELetMut("__iter_i", EInt(0), EWhile(EBinOp("<", EIdent("__iter_i", -1), EIdent("__iter_n", -1)), loop_body))))
+}
+
 // `for await` over an async iterator type `C` whose
 // `C::next(self) -> Future[Option[(T, Self)]] with { Async }`: identical to the
 // sync loop but each step `await`s the next-future. `await` is the M1a builtin
@@ -1300,6 +1333,24 @@ let classify_for_await_loop: (String, Option[String], Expr, Expr, Expr, Array[(S
 
 // `for x in iter { body }`: iterator (`::next`) / iterable (`::iter`) / array
 // classification. `riter` / `rbody` are already rewritten.
+// #736: the indexed-Iterable slice of for-loop classification, USER types only
+// (struct_sets gate — Array/String/Map keep the builtin EForIn lowering even
+// though the prelude's Iterable impls define e.g. `Array::iter_length`). Split
+// out of classify_sync_for_loop because it needs no declared trait (the
+// protocol is plain named `C::iter_length`/`C::iter_get` functions, e.g.
+// @vibe/core's List), so it also runs for trait-free programs where the
+// next/iter classification stays gated off.
+let classify_indexed_for_loop: (String, Option[String], Expr, Expr, Expr, Array[(String, Array[String])], Array[(String, String)], Array[(String, String)]) -> Expr = (name, idx, iter, riter, rbody, struct_sets, var_types, fn_returns) -> {
+  match infer_arg_type_name(iter, struct_sets, var_types, fn_returns) {
+    Some(tn) => if struct_set_has(struct_sets, tn) && fn_exists(fn_returns, String::concat(tn, "::iter_length")) && fn_exists(fn_returns, String::concat(tn, "::iter_get")) {
+      build_indexed_iter_for(name, tn, riter, rbody)
+    } else {
+      EForIn(name, idx, riter, rbody)
+    },
+    None => EForIn(name, idx, riter, rbody)
+  }
+}
+
 let classify_sync_for_loop: (String, Option[String], Expr, Expr, Expr, Array[(String, Array[String])], Array[(String, String)], Array[(String, String)]) -> Expr = (name, idx, iter, riter, rbody, struct_sets, var_types, fn_returns) -> {
   match infer_arg_type_name(iter, struct_sets, var_types, fn_returns) {
     Some(tn) => if fn_exists(fn_returns, String::concat(tn, "::next")) {
@@ -1309,7 +1360,7 @@ let classify_sync_for_loop: (String, Option[String], Expr, Expr, Expr, Array[(St
         Some(itertype) => build_iter_for(name, itertype, ECall(EIdent(String::concat(tn, "::iter"), -1), [
           riter
         ], -1), rbody),
-        None => EForIn(name, idx, riter, rbody)
+        None => classify_indexed_for_loop(name, idx, iter, riter, rbody, struct_sets, var_types, fn_returns)
       }
     },
     None => EForIn(name, idx, riter, rbody)
@@ -1823,7 +1874,10 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
         None => {
           let riter = rewrite_expr(iter, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
           if Array::length(traits) == 0 {
-            EForIn(name, idx, riter, rbody)
+            // No declared trait: next/iter classification stays off (no
+            // `impl ::next` to dispatch), but the #736 indexed protocol is
+            // plain named functions, so it classifies regardless.
+            classify_indexed_for_loop(name, idx, iter, riter, rbody, struct_sets, var_types, fn_returns)
           } else {
             classify_sync_for_loop(name, idx, iter, riter, rbody, struct_sets, var_types, fn_returns)
           }
