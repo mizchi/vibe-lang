@@ -647,10 +647,13 @@ write_runtime_entry_bundle() {
 
 build_exact_adapter_merged_source() {
   # #726: flatten via the compiler's OWN merge machinery (ExportRenamePlan +
-  # private namespacing), replacing the Python flattener. The emit tool
-  # (vibe/compiler/emit_merged_source_entry.vibe) is FS-compiled fresh from
-  # the current source with the committed seed -- a normal multi-file compile,
-  # which itself runs the real merge -- then run to flatten the adapter entry.
+  # private namespacing), replacing the Python flattener. The flattener
+  # binary is built by compiling the COMMITTED flat module source with the
+  # seed — the same robust single-file lane every stage1 build uses — and
+  # then run with VIBE_EMIT_MERGED_SOURCE=1 on the adapter entry (the mode
+  # resolves imports from the FS and prints the merged program). Bootstrap
+  # note: this self-hosts one generation back, exactly like the seed itself
+  # (the committed module source always contains the mode once #726 landed).
   # The old flattener stripped import/export lines and concatenated files,
   # leaving duplicate top-level defs resolved by fn-table first-match; the
   # merge renames them, so the flat source has ZERO duplicates (asserted
@@ -658,31 +661,30 @@ build_exact_adapter_merged_source() {
   local merged_path
   mkdir -p "$PROJECT_ROOT/_build"
   merged_path="$(mktemp "$PROJECT_ROOT/_build/selfhost_cli_adapter_merged_source.XXXXXX")"
-  local tool_wasm="$PROJECT_ROOT/_build/emit_merged_source_tool.wasm"
+  local flatten_wasm="$PROJECT_ROOT/_build/merge_flatten_compiler.wasm"
   local seed_wasm="$PROJECT_ROOT/bootstrap/selfhost/seed/selfhost_compiler.wasm"
-  rm -f "$tool_wasm" "$tool_wasm.diag"
-  local tool_log="$PROJECT_ROOT/_build/emit_merged_source_tool.log"
-  # Same node stack as selfhost_generations' own compiler runs: the seed
-  # FS-compiling the whole compiler recurses deeply (parser on the largest
-  # files) and overflows the default stack on some node builds (CI Node 24).
+  local committed_module_source="$COMPILER_DIR/selfhost_cli_adapter_module_source.vibe"
   local tool_node_flags="${VIBE_NODE_WASM_FLAGS:---experimental-wasm-exnref --stack-size=${VIBE_SELFHOST_GENERATION_NODE_STACK_SIZE:-131072}}"
-  (cd "$PROJECT_ROOT" && env VIBE_RC=0 VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 \
+  local tool_log="$PROJECT_ROOT/_build/merge_flatten_compiler.log"
+  rm -f "$flatten_wasm" "$flatten_wasm.diag"
+  (cd "$PROJECT_ROOT" && env VIBE_RC=0 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
     VIBE_SELFHOST_IMPORT_ABI="${VIBE_SELFHOST_IMPORT_ABI:-raw}" \
     VIBE_NODE_WASM_FLAGS="$tool_node_flags" \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$seed_wasm" \
-    vibe/compiler/emit_merged_source_entry.vibe "$tool_wasm" cli_main >"$tool_log" 2>&1) || true
-  if [ ! -s "$tool_wasm" ]; then
-    echo "generate_selfhost_bundle: merge-flatten tool build failed" >&2
-    cat "$tool_wasm.diag" >&2 2>/dev/null || true
+    "$committed_module_source" "$flatten_wasm" cli_main >"$tool_log" 2>&1) || true
+  if [ ! -s "$flatten_wasm" ]; then
+    echo "generate_selfhost_bundle: merge-flatten compiler build failed" >&2
+    cat "$flatten_wasm.diag" >&2 2>/dev/null || true
     echo "--- runner output ---" >&2
     tail -40 "$tool_log" >&2 2>/dev/null || true
     exit 1
   fi
   rm -f "$merged_path.diag"
-  (cd "$PROJECT_ROOT" && env VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
+  (cd "$PROJECT_ROOT" && env VIBE_EMIT_MERGED_SOURCE=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
+    VIBE_SELFHOST_IMPORT_ABI="${VIBE_SELFHOST_IMPORT_ABI:-raw}" \
     VIBE_NODE_WASM_FLAGS="$tool_node_flags" \
-    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$tool_wasm" \
-    vibe/compiler/selfhost_cli_adapter.vibe "$merged_path" >"$tool_log.flatten" 2>&1) || true
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$flatten_wasm" \
+    vibe/compiler/selfhost_cli_adapter.vibe "$merged_path" cli_main >"$tool_log.flatten" 2>&1) || true
   if [ ! -s "$merged_path" ]; then
     echo "generate_selfhost_bundle: merge flatten failed" >&2
     cat "$merged_path.diag" >&2 2>/dev/null || true
