@@ -357,6 +357,26 @@ let rec parse_pattern: (Array[Token], Int) -> (Pat, Int) with { Error } = (token
                 }
                 (PStruct(name, ArrayBuilder::freeze(field_pats)), sp + 1)
               },
+              // #742: qualified variant pattern `Enum::Variant(..)` /
+              // `Enum::Variant`. The qualifier is dropped, mirroring the
+              // expression side (#672): codegen's ctor table is keyed
+              // unqualified, and handle-arm dispatch re-prefixes the effect
+              // name onto a bare op pattern, so `Fs::ReadFile(p)` in a
+              // `with Fs` arm also lands on the same name it does today.
+              TIdent(vname) => {
+                let vc = String::char_code_at(vname, 0)
+                if vc >= 65 && vc <= 90 {
+                  match peek(tokens, pos + 3) {
+                    TLParen => {
+                      let (args, end) = parse_pats_until_rparen(tokens, pos + 4);
+                      (PCtor(vname, args), end)
+                    },
+                    _ => (PCtor(vname, empty_pats()), pos + 3)
+                  }
+                } else {
+                  (PCtor(name, empty_pats()), pos + 1)
+                }
+              },
               _ => (PCtor(name, empty_pats()), pos + 1)
             },
             _ => (PCtor(name, empty_pats()), pos + 1)
