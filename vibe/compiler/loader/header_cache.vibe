@@ -28,6 +28,10 @@ import .. / syntax / parser.vibe {
   parse_program, parse_program_located
 }
 
+import .. / contract / index.vibe {
+  extract_require_pins, parse_contract_program
+}
+
 //# Functions
 
 let resolve_path_fs: (String, String) -> String with { Fs } = (base_dir, raw_path) -> {
@@ -123,7 +127,31 @@ export let load_or_parse_module_header_fs_impl: (String, String, Int) -> (Array[
     // still reproduces one level deeper (`parse_type_impl`, reached once the
     // input has a type annotation) -- root cause remains uncharacterized, and
     // this workaround likely needs to be repeated at that/other call sites.
-    let header_result = if is_special_bundle_path(path) {
+    let header_result = if String::ends_with(path, ".vibei") {
+      // #740 fallout: a .vibei contract is not ordinary program syntax
+      // (bodyless fn/type declarations), so the full-program parse below
+      // threw "expected = but got type". Only the COLD-cache lane reaches
+      // this parse (warm runs read the cached header), which is why it
+      // survived until the whole-graph cold repro. Parse with the contract
+      // grammar instead: deps come from the implementation imports, the
+      // export surface from decls + opaques + transparent type stmts.
+      let (_, pin_blanked) = extract_require_pins(source)
+      let (cdecls, copaques, cextra) = parse_contract_program(lex(pin_blanked))
+      let cexports = collect_exports(cextra)
+      let mut cdi = 0
+      while cdi < Array::length(cdecls) {
+        let (cdname, _) = Array::get(cdecls, cdi)
+        Array::push(cexports, cdname)
+        cdi = cdi + 1
+      }
+      let mut coi = 0
+      while coi < Array::length(copaques) {
+        let (coname, _) = Array::get(copaques, coi)
+        Array::push(cexports, coname)
+        coi = coi + 1
+      }
+      (collect_import_deps_from_stmts(cextra, dir_of_path(path)), cexports, parse_count + 1)
+    } else if is_special_bundle_path(path) {
       match special_bundle_header(path) {
         Some(pair) => {
           let deps = pair.0
