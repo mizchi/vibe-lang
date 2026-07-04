@@ -126,6 +126,56 @@ export let parse_contract_program: (Array[Token]) -> (Array[(String, String)], A
   while !done {
     match peek(tokens, pos) {
       TEof => { done = true },
+      TType => {
+        // Bodyless `type Name` / `type Name[T]` — a TRANSPARENT public type
+        // whose definition lives in an implementation file (the facade
+        // re-exports it; same conformance rules as opaque, opacity is the
+        // only — currently documentation-level — difference). `type X = ..`
+        // (with '=') is the contract-defined alias and parses as a stmt.
+        let mut la = pos + 1
+        let tname = match peek(tokens, la) {
+          TIdent(tn) => tn,
+          _ => ""
+        }
+        let mut is_bodyless = false
+        if tname == "" {
+          ()
+        } else {
+          la = la + 1
+          let mut scan = la
+          match peek(tokens, scan) {
+            TLBracket => {
+              let mut depth = 1
+              scan = scan + 1
+              while depth > 0 {
+                match peek(tokens, scan) {
+                  TLBracket => { depth = depth + 1 },
+                  TRBracket => { depth = depth - 1 },
+                  TEof => { depth = 0 },
+                  _ => ()
+                }
+                scan = scan + 1
+              }
+            },
+            _ => ()
+          }
+          match peek(tokens, scan) {
+            TEq => (),
+            _ => {
+              is_bodyless = true
+              la = scan
+            }
+          }
+        }
+        if is_bodyless {
+          Array::push(opaques, tname)
+          pos = la
+        } else {
+          let (stmt, next) = parse_stmt(tokens, [], pos)
+          Array::push(stmts, stmt)
+          pos = next
+        }
+      },
       TIdent(head) => if head == "opaque" {
         match peek(tokens, pos + 1) {
           TType => match peek(tokens, pos + 2) {
@@ -231,34 +281,42 @@ export let check_contract: (Array[(String, String)], Array[String], Array[Stmt])
   let mut di = 0
   while di < Array::length(decls) {
     let (dname, dsig) = Array::get(decls, di)
-    let mut found = false
+    // A declaration is satisfied by ANY exported def with a matching
+    // signature. Same-name defs in OTHER package files (private aliases,
+    // domain-local helpers) are legal and never violations by themselves —
+    // only when NO def satisfies the decl do the candidates drive the
+    // error message (best mismatch first, then export status).
+    let mut satisfied = false
+    let mut seen_any = false
+    let mut best_msg = ""
     let mut fi = 0
     while fi < Array::length(defs) {
-      let (fname, fsig_opt, _fexported) = Array::get(defs, fi)
+      let (fname, fsig_opt, fexported) = Array::get(defs, fi)
       if fname == dname {
-        found = true
+        seen_any = true
         match fsig_opt {
           Some(fsig) => if fsig == dsig {
-            ()
+            if fexported {
+              satisfied = true
+            } else {
+              best_msg = "contract declaration '\{dname}' is implemented but not exported by its implementation file"
+            }
           } else {
-            Array::push(errors, "signature mismatch for '\{dname}': contract \{dsig} but implementation \{fsig}")
+            if best_msg == "" {
+              best_msg = "signature mismatch for '\{dname}': contract \{dsig} but implementation \{fsig}"
+            } else ()
           },
-          None => Array::push(errors, "implementation of '\{dname}' lacks the full annotations required by the contract")
-        }
-        // Transitional (until #732 removes the export keyword from impl
-        // files): the facade re-export the contract desugars to can only
-        // reach EXPORTED defs, so a declared def must be exported.
-        let (_, _, fexported0) = Array::get(defs, fi)
-        if fexported0 {
-          ()
-        } else {
-          Array::push(errors, "contract declaration '\{dname}' is implemented but not exported by its implementation file")
+          None => if best_msg == "" {
+            best_msg = "implementation of '\{dname}' lacks the full annotations required by the contract"
+          } else ()
         }
       } else ()
       fi = fi + 1
     }
-    if found {
+    if satisfied {
       ()
+    } else if seen_any {
+      Array::push(errors, best_msg)
     } else {
       Array::push(errors, "contract declaration '\{dname}' has no implementation")
     }
@@ -440,8 +498,8 @@ export let contract_facade_source: (Array[(String, String)], Array[String], Arra
         let mut defined_here = false
         let mut fi = 0
         while fi < Array::length(defs) {
-          let (fname, _, _) = Array::get(defs, fi)
-          if fname == dname {
+          let (fname, _, fexp) = Array::get(defs, fi)
+          if fname == dname && fexp {
             defined_here = true
           } else ()
           fi = fi + 1

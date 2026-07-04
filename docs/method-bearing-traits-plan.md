@@ -426,3 +426,49 @@ lands.
 - Generic impls (`impl [T: Eq] Eq for Array[T]`, `EnvTraitImplGen`) — dictionaries that
   themselves need dictionaries; deferred.
 - Bundle regeneration after AST changes is a process gotcha (gate checks bundle sync).
+
+## #736 — `Iterable[T]` (indexed protocol) と Iterator combinators — LANDED (2026-07-04)
+
+「Deferred: map/filter/fold combinators と Iterable trait」の残りが着地した。
+
+- `vibe/prelude/iterator.vibe` が method-bearing `trait Iterable[T] {
+  iter_length(Self) -> Int; iter_get(Self, Int) -> T }` を宣言し、
+  `Iterator::fold/iter/find/any/all/r#map/filter/flatmap` は
+  `C::iter_length(xs)` / `C::iter_get(xs, i)` の witness dispatch に移行。
+  旧 ADR-0044 name-coupling(bare `iter_length` がマージ先に偶然存在する
+  ことに依存、selfhost では一度もコンパイルできなかった)を置き換える。
+- builtin impl は同ファイル内: Array(要素)/ String(char code)/
+  Map(key。`Map::keys` 経由 — per-access 割り当ての perf 追い込みは残課題)。
+- 必要になった機構修正 2 件:
+  (1) merge の private-rename が builtin 型への impl メソッド
+  (`Array::iter_length` 等、head がどのモジュールにも宣言されない)を
+  改名して witness から orphan 化 → 「head がローカル宣言の private 型の
+  ときだけ rename」に変更 (import_alias_rewrite.vibe)。
+  (2) `infer_arg_type_name` に `EMap → "Map"` を追加(map literal 束縛の
+  witness 解決)。
+- `for x in <user型>` の indexed protocol 対応: classify に
+  `classify_indexed_for_loop` を追加(`C::iter_length` + `C::iter_get` が
+  存在する user 型のみ、trait 宣言が無いプログラムでも分類)。
+  @vibe/core の List が `for x in list_of3(..)` で回せるようになった。
+- allowlist 追加: vibe/prelude/iterator_test.vibe、lib/@vibe/core/list_test.vibe。
+
+### 同日フォローアップ — method-style 呼び出しと dot-import (2026-07-04)
+
+- **`xs.length()` / `xs |> length` の receiver-method 解決 — LANDED**。
+  desugar_trait_dict: called-EDot は receiver 型が infer でき
+  `Tn::method` が top-level fn として存在すれば qualified call に書き換え
+  (同名 struct FIELD は field-stored-function call を維持)。bare callee は
+  「lexical に解決できない(top-level fn に無い)」場合のみ arg0 の型で
+  `Tn::name` を試す。checker: 未解決 bare callee を EDot 形に再チェック
+  (user 型 receiver は per-module env に qualified が無くても EDot と同じ
+  寛容さで通し、merged codegen が解決する。builtin/scalar receiver は
+  従来どおり `unknown name` を報告)。list_type_import_test が PASS →
+  allowlist 追加。
+- **bare `import . { x }` の compiler trap 修正**: `path_has_relative_prefix`
+  が素の `.` / `..` を相対と認識せず、`.` が "" に正規化されて最初の
+  候補が `.vibe`(ワークスペースの store ディレクトリ!)になり、
+  fs_read が EISDIR で diag なしに trap していた。
+- **`Map::values` は selfhost builtin に存在しない**(host 時代の遺物)。
+  vibe/collection/map.vibe の `values` を keys+get で再実装。
+  collection の index_import_test / map_test / maps_facade_test が PASS →
+  allowlist 追加(collection のテストが selfhost gate で回るのは初)。

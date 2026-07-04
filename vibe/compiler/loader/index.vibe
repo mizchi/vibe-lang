@@ -516,6 +516,22 @@ let load_source_if_cached_file_spec_matches: (String, String, String) -> Option[
   }
 }
 
+// #729/#730: EVERY path that turns an on-disk file into an in-memory source
+// must apply the same ingestion transform — require-pin blanking, and for
+// index.vibei contracts the conformance-checked facade desugar. The cold
+// walk (collect_sources_rec) did; the persistent-cache reconstruction lanes
+// below re-read RAW disk bytes, so a warm cache leaked undesugared contracts
+// into the merge (masked until now because every compiler-bundle change
+// invalidated the caches). Cache validity stays keyed on the RAW file.
+let ingest_source_text_fs: (String, String) -> String with { Error, Fs } = (path, raw) -> {
+  let (_, pin_blanked) = extract_require_pins(raw)
+  if String::ends_with(path, ".vibei") {
+    desugar_contract_source_fs(path, pin_blanked)
+  } else {
+    pin_blanked
+  }
+}
+
 let rec load_cached_sources_rec: (Array[(String, String, String)], Int, Array[(String, String)]) -> Option[Array[(String, String)]] with { Error, Fs } = (specs, index, out) -> {
   if index >= Array::length(specs) {
     Some(out)
@@ -523,7 +539,7 @@ let rec load_cached_sources_rec: (Array[(String, String, String)], Int, Array[(S
     let (path, stat_token_text, source_fingerprint) = Array::get(specs, index)
     match load_source_if_cached_file_spec_matches(path, stat_token_text, source_fingerprint) {
       Some(source) => {
-        Array::push(out, (path, source))
+        Array::push(out, (path, ingest_source_text_fs(path, source)))
         load_cached_sources_rec(specs, index + 1, out)
       },
       None => None
@@ -538,7 +554,7 @@ let rec load_cached_grouped_sources_rec: (Array[(String, String, String, String)
     let (group_name, path, stat_token_text, source_fingerprint) = Array::get(rows, index)
     match load_source_if_cached_file_spec_matches(path, stat_token_text, source_fingerprint) {
       Some(source) => {
-        push_grouped_source(out, group_name, path, source)
+        push_grouped_source(out, group_name, path, ingest_source_text_fs(path, source))
         load_cached_grouped_sources_rec(rows, index + 1, out)
       },
       None => None

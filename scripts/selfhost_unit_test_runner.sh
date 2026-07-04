@@ -93,7 +93,7 @@ run_one() {
   return 1
 }
 
-discover() { find examples vibe -name '*_test.vibe' 2>/dev/null | sed "s@^$ROOT_DIR/@@" | sed 's@^\./@@' | sort; }
+discover() { find examples vibe lib -name '*_test.vibe' 2>/dev/null | sed "s@^$ROOT_DIR/@@" | sed 's@^\./@@' | sort; }
 
 # --- --scan / --update-allowlist: rescan everything ---------------------------
 if [ "$mode" = "scan" ] || [ "$mode" = "update" ]; then

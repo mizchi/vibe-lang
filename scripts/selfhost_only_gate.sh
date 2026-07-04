@@ -310,6 +310,66 @@ fi
 rm -rf "$edir"
 echo "[selfhost-only-gate] where-contract + publish gate regression ok"
 
+# 6e. @vibe/core <-> compiler vendored sha1 sync: the compiler keeps a twin
+#     of lib/@vibe/core/sha1.vibe (it cannot import outside vibe/compiler
+#     yet); the twins must not drift. Compare ignoring comments/blanks.
+echo "[selfhost-only-gate] 6e vendored sha1 sync (@vibe/core)"
+if ! diff <(grep -v '^\s*//' "lib/@vibe/core/sha1.vibe" | grep -v '^\s*$') <(grep -v '^\s*//' vibe/compiler/cache/sha1.vibe | grep -v '^\s*$') >/dev/null; then
+  echo "[selfhost-only-gate] FAIL: vibe/compiler/cache/sha1.vibe drifted from lib/@vibe/core/sha1.vibe" >&2
+  diff <(grep -v '^\s*//' "lib/@vibe/core/sha1.vibe" | grep -v '^\s*$') <(grep -v '^\s*//' vibe/compiler/cache/sha1.vibe | grep -v '^\s*$') >&2 || true
+  exit 1
+fi
+echo "[selfhost-only-gate] vendored sha1 sync ok"
+
+# 6f. @vibe/core store-install E2E: install the REAL in-repo package into
+#     .vibe/store via scripts/vibe_core_install.sh, then compile AND RUN a
+#     require-pinned consumer against it. The pin is taken from the install
+#     output, so core source changes never stale this step. Complements 6c
+#     (synthetic packages) with the shipped package: 82-decl contract,
+#     bodyless `type` re-exports, multi-impl any-match conformance.
+echo "[selfhost-only-gate] 6f @vibe/core store-install E2E"
+cdir6f="_build/_gate_core_store"
+rm -rf "$cdir6f" ".vibe/store/@vibe/core"; mkdir -p "$cdir6f"
+if ! VIBE_CORE_CLI_WASM="$stage2_wasm" bash scripts/vibe_core_install.sh > "$cdir6f/install.out" 2>&1; then
+  echo "[selfhost-only-gate] FAIL: vibe_core_install.sh failed" >&2
+  cat "$cdir6f/install.out" >&2; exit 1
+fi
+core_pin="$(grep '^package ' "$cdir6f/install.out" | cut -d' ' -f2)"
+if [ -z "$core_pin" ]; then
+  echo "[selfhost-only-gate] FAIL: install printed no package pin" >&2
+  cat "$cdir6f/install.out" >&2; exit 1
+fi
+cat > "$cdir6f/consumer.vibe" <<EOF
+require @vibe/core 0.1.0 = $core_pin
+
+import @vibe/core {
+  sha1, encode_uleb128, read_uleb128, list_of3, list_sum, from_array, contains
+}
+export let _start: () -> Int = () -> {
+  assert(sha1("abc") == "a9993e364706816aba3e25717850c26c9cd0d89d")
+  let buf = encode_uleb128(624485)
+  let (v, _) = read_uleb128(buf, 0)
+  assert(eq(v, 624485))
+  assert(eq(list_sum(list_of3(1, 2, 3)), 6))
+  let s = from_array(["a", "b"])
+  assert(contains(s, "a"))
+  assert(not(contains(s, "z")))
+  0
+}
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$cdir6f/consumer.vibe" "$cdir6f/consumer.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$cdir6f/consumer.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: pinned @vibe/core consumer did not compile" >&2
+  cat "$cdir6f/consumer.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$cdir6f/consumer.wasm" >/dev/null 2>&1; then
+  echo "[selfhost-only-gate] FAIL: @vibe/core consumer trapped at runtime" >&2; exit 1
+fi
+rm -rf "$cdir6f" ".vibe/store/@vibe/core"
+echo "[selfhost-only-gate] @vibe/core store-install E2E ok"
+
 # 7. literal sub-pattern regression (#603): a literal (PInt/PString) argument of a
 #    constructor pattern must be tested, not just the tag — `I("x")` must not
 #    match `I("y")`, `I(1)` must not match `I(2)`. Guards the match-codegen fix.

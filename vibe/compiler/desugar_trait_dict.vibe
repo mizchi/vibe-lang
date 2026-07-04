@@ -546,6 +546,48 @@ let struct_set_has: (Array[(String, Array[String])], String) -> Bool = (struct_s
   found
 }
 
+// Whether type `name` declares a field/variant called `member` (struct_sets
+// maps struct AND enum names to their field/variant name lists). Used to keep
+// a field-stored-function call `b.f(args)` as an EDot when the struct also
+// has a same-named `T::f` method candidate.
+let struct_set_member: (Array[(String, Array[String])], String, String) -> Bool = (struct_sets, name, member) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(struct_sets) {
+    let (sname, members) = Array::get(struct_sets, i)
+    if sname == name {
+      let mut j = 0
+      while j < Array::length(members) {
+        if Array::get(members, j) == member {
+          found = true
+          j = Array::length(members)
+        } else {
+          j = j + 1
+        }
+      }
+      i = Array::length(struct_sets)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+// [robj, arg1, arg2, ...] — receiver prepended to the rewritten args for a
+// method-call rewrite (`xs.m(a)` -> `T::m(xs, a)`).
+let prepend_expr: (Expr, Array[Expr]) -> Array[Expr] = (head, rest) -> {
+  let out = Array::slice([
+    EUnit
+  ], 0, 0)
+  Array::push(out, head)
+  let mut i = 0
+  while i < Array::length(rest) {
+    Array::push(out, Array::get(rest, i))
+    i = i + 1
+  }
+  out
+}
+
 let lookup_var_type: (Array[(String, String)], String) -> Option[String] = (var_types, name) -> {
   let mut i = 0
   let mut result = None
@@ -589,15 +631,40 @@ let ctor_enum_of_name: (Array[(String, String)], String) -> Option[String] = (fn
   }
 }
 
-let infer_arg_type_name: (Expr, Array[(String, Array[String])], Array[(String, String)], Array[(String, String)]) -> Option[String] = (arg, struct_sets, var_types, fn_returns) -> {
+let rec infer_arg_type_name: (Expr, Array[(String, Array[String])], Array[(String, String)], Array[(String, String)]) -> Option[String] = (arg, struct_sets, var_types, fn_returns) -> {
   match arg {
     EInt(_) => Some("Int"),
     EBool(_) => Some("Bool"),
     EString(_) => Some("String"),
     EFloat(_) => Some("Double"),
+    // String `+` chains: `"a" + b + "c"` infers String when EITHER side does
+    // (the checker enforces both sides are String when one is). This both
+    // types the concat rewrite below and lets a `let u = a + "x"` binding
+    // record u -> String for downstream `u + ...`. Other `+` operands stay
+    // None (no behavior change for numeric/unknown).
+    EBinOp(bop, bl, br) => if bop == "+" {
+      let lstr = match infer_arg_type_name(bl, struct_sets, var_types, fn_returns) {
+        Some(t) => t == "String",
+        None => false
+      }
+      let rstr = match infer_arg_type_name(br, struct_sets, var_types, fn_returns) {
+        Some(t) => t == "String",
+        None => false
+      }
+      if lstr || rstr {
+        Some("String")
+      } else {
+        None
+      }
+    } else {
+      None
+    },
     // An array literal dispatches to an `impl [T] Trait for Array` witness
     // (#5 generic impls): its constructor is "Array" regardless of element type.
     EArray(_) => Some("Array"),
+    // Same for a `map { ... }` literal: constructor "Map" (lets a let-bound
+    // map resolve an `impl ... for Map` witness at a generic call site).
+    EMap(_) => Some("Map"),
     // A variable's recorded type, else a (possibly qualified) nullary
     // constructor's enum name (`Green`/`Color::Green` -> `Color`) so that a
     // `let a = Green` / `let a = Color::Green` binding resolves for `==`. The
@@ -619,6 +686,16 @@ let infer_arg_type_name: (Expr, Array[(String, Array[String])], Array[(String, S
       EIdent("Some", _) => Some("Option"),
       EIdent("Ok", _) => Some("Result"),
       EIdent("Err", _) => Some("Result"),
+      // String-returning builtins (not in fn_returns): lets a
+      // `String::concat(a, b) + c` / `__to_string(n) + s` operand type as
+      // String for the concat rewrite.
+      EIdent("String::concat", _) => Some("String"),
+      EIdent("String::join", _) => Some("String"),
+      EIdent("String::substring", _) => Some("String"),
+      EIdent("String::trim", _) => Some("String"),
+      EIdent("String::replace", _) => Some("String"),
+      EIdent("String::from_char_code", _) => Some("String"),
+      EIdent("__to_string", _) => Some("String"),
       EIdent(fname, _) => ctor_enum_of_name(fn_returns, fname),
       // `let x: T = e` is desugared to `((__asc: T) -> __asc)(e)` (ascribe_wrap);
       // recover the operand's type head from the annotation so an annotated
@@ -1179,6 +1256,41 @@ let build_iter_for: (String, String, Expr, Expr) -> Expr = (name, ctype, iter, b
   build_iter_for_with(name, next_call_for(ctype), iter, body)
 }
 
+// #736: `for x in xs` over a USER type implementing the indexed Iterable
+// protocol (`C::iter_length(Self) -> Int` + `C::iter_get(Self, Int) -> T`,
+// e.g. @vibe/core's List) desugars to an index-driven loop:
+//
+//   let __iter_src = xs
+//   let __iter_n = C::iter_length(__iter_src)
+//   let mut __iter_i = 0
+//   while __iter_i < __iter_n {
+//     let x = C::iter_get(__iter_src, __iter_i)
+//     body
+//     __iter_i = __iter_i + 1
+//   }
+//
+// The iterand is seeded through an immutable `__iter_src` for the same RC
+// ownership reason as build_iter_for_with (#704). Unlike the next-protocol
+// desugar, the optional index binding IS supported here (the loop counter is
+// the index): `for x, i in xs` binds `i` to the current `__iter_i`. The loop
+// is a statement (no per-iteration result collection).
+let build_indexed_iter_for: (String, Option[String], String, Expr, Expr) -> Expr = (name, idx, ctype, iter, body) -> {
+  let get_call = ECall(EIdent(String::concat(ctype, "::iter_get"), -1), [
+    EIdent("__iter_src", -1),
+    EIdent("__iter_i", -1)
+  ], -1)
+  let len_call = ECall(EIdent(String::concat(ctype, "::iter_length"), -1), [
+    EIdent("__iter_src", -1)
+  ], -1)
+  let incr = EAssign("__iter_i", EBinOp("+", EIdent("__iter_i", -1), EInt(1)), EUnit)
+  let bound_body = match idx {
+    Some(iname) => ELet(iname, EIdent("__iter_i", -1), body),
+    None => body
+  }
+  let loop_body = ELet(name, get_call, ESeq(bound_body, incr))
+  ELet("__iter_src", iter, ELet("__iter_n", len_call, ELetMut("__iter_i", EInt(0), EWhile(EBinOp("<", EIdent("__iter_i", -1), EIdent("__iter_n", -1)), loop_body))))
+}
+
 // `for await` over an async iterator type `C` whose
 // `C::next(self) -> Future[Option[(T, Self)]] with { Async }`: identical to the
 // sync loop but each step `await`s the next-future. `await` is the M1a builtin
@@ -1268,6 +1380,24 @@ let classify_for_await_loop: (String, Option[String], Expr, Expr, Expr, Array[(S
 
 // `for x in iter { body }`: iterator (`::next`) / iterable (`::iter`) / array
 // classification. `riter` / `rbody` are already rewritten.
+// #736: the indexed-Iterable slice of for-loop classification, USER types only
+// (struct_sets gate — Array/String/Map keep the builtin EForIn lowering even
+// though the prelude's Iterable impls define e.g. `Array::iter_length`). Split
+// out of classify_sync_for_loop because it needs no declared trait (the
+// protocol is plain named `C::iter_length`/`C::iter_get` functions, e.g.
+// @vibe/core's List), so it also runs for trait-free programs where the
+// next/iter classification stays gated off.
+let classify_indexed_for_loop: (String, Option[String], Expr, Expr, Expr, Array[(String, Array[String])], Array[(String, String)], Array[(String, String)]) -> Expr = (name, idx, iter, riter, rbody, struct_sets, var_types, fn_returns) -> {
+  match infer_arg_type_name(iter, struct_sets, var_types, fn_returns) {
+    Some(tn) => if struct_set_has(struct_sets, tn) && fn_exists(fn_returns, String::concat(tn, "::iter_length")) && fn_exists(fn_returns, String::concat(tn, "::iter_get")) {
+      build_indexed_iter_for(name, idx, tn, riter, rbody)
+    } else {
+      EForIn(name, idx, riter, rbody)
+    },
+    None => EForIn(name, idx, riter, rbody)
+  }
+}
+
 let classify_sync_for_loop: (String, Option[String], Expr, Expr, Expr, Array[(String, Array[String])], Array[(String, String)], Array[(String, String)]) -> Expr = (name, idx, iter, riter, rbody, struct_sets, var_types, fn_returns) -> {
   match infer_arg_type_name(iter, struct_sets, var_types, fn_returns) {
     Some(tn) => if fn_exists(fn_returns, String::concat(tn, "::next")) {
@@ -1277,7 +1407,7 @@ let classify_sync_for_loop: (String, Option[String], Expr, Expr, Expr, Array[(St
         Some(itertype) => build_iter_for(name, itertype, ECall(EIdent(String::concat(tn, "::iter"), -1), [
           riter
         ], -1), rbody),
-        None => EForIn(name, idx, riter, rbody)
+        None => classify_indexed_for_loop(name, idx, iter, riter, rbody, struct_sets, var_types, fn_returns)
       }
     },
     None => EForIn(name, idx, riter, rbody)
@@ -1659,7 +1789,7 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
         EIdent(name0, coff) => {
           // #672: unqualify a qualified constructor call `Enum::Variant(..)` ->
           // `Variant(..)` so codegen's (unqualified) ctor table recognizes it.
-          let name = match split_qualified(name0) {
+          let name_ctor = match split_qualified(name0) {
             Some(parts0) => {
               let (h0, m0) = parts0
               match qual_ctor_member(h0, m0, struct_sets, fn_returns) {
@@ -1668,6 +1798,27 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
               }
             },
             None => name0
+          }
+          // #736 residual: bare method-style callee — `xs |> length` is
+          // `length(xs)`; with only the receiver TYPE imported there is no
+          // top-level `length`, so resolve to `<type-of-arg0>::length` (USER
+          // types only, and only when no top-level fn of the bare name exists
+          // — a lexically visible `length` keeps normal call semantics). The
+          // checker applies the same rule, so typing and codegen agree.
+          let name = if String::index_of(name_ctor, "::") < 0 && !fn_exists(fn_returns, name_ctor) && Array::length(args) >= 1 {
+            match infer_arg_type_name(Array::get(args, 0), struct_sets, var_types, fn_returns) {
+              Some(tn) => {
+                let qual = String::concat(tn, String::concat("::", name_ctor))
+                if struct_set_has(struct_sets, tn) && fn_exists(fn_returns, qual) {
+                  qual
+                } else {
+                  name_ctor
+                }
+              },
+              None => name_ctor
+            }
+          } else {
+            name_ctor
           }
           // `T::method(args)` inside a transformed body -> `(dict.method)(args)`.
           let as_method = match split_qualified(name) {
@@ -1688,7 +1839,33 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
             }
           }
         },
-        EDot(obj, m, doff) => ECall(EDot(rewrite_expr(obj, gens, traits, struct_sets, dict_binds, var_types, fn_returns), m, doff), rwargs, off),
+        EDot(obj, m, doff) => {
+          // #736 residual: method-style call `xs.length()` on a USER type —
+          // codegen compiles a called EDot as struct-field access, so a
+          // receiver method (`List::length`) failed with "unknown struct
+          // field". Rewrite to the qualified call when the receiver's type is
+          // inferable and declares the method as a top-level fn. A struct
+          // FIELD of the same name keeps the field-stored-function call (the
+          // field is the closer binding), and unknown receivers keep the EDot
+          // (codegen's existing paths).
+          let robj = rewrite_expr(obj, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+          let as_recv_method = match infer_arg_type_name(obj, struct_sets, var_types, fn_returns) {
+            Some(tn) => {
+              let qual = String::concat(tn, String::concat("::", m))
+              let is_field = struct_set_member(struct_sets, tn, m)
+              if !is_field && fn_exists(fn_returns, qual) {
+                Some(qual)
+              } else {
+                None
+              }
+            },
+            None => None
+          }
+          match as_recv_method {
+            Some(qual) => ECall(EIdent(qual, doff), prepend_expr(robj, rwargs), off),
+            None => ECall(EDot(robj, m, doff), rwargs, off)
+          }
+        },
         _ => ECall(rewrite_expr(callee, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rwargs, off)
       }
       }
@@ -1791,7 +1968,10 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
         None => {
           let riter = rewrite_expr(iter, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
           if Array::length(traits) == 0 {
-            EForIn(name, idx, riter, rbody)
+            // No declared trait: next/iter classification stays off (no
+            // `impl ::next` to dispatch), but the #736 indexed protocol is
+            // plain named functions, so it classifies regardless.
+            classify_indexed_for_loop(name, idx, iter, riter, rbody, struct_sets, var_types, fn_returns)
           } else {
             classify_sync_for_loop(name, idx, iter, riter, rbody, struct_sets, var_types, fn_returns)
           }
@@ -1902,6 +2082,30 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
             }
           }
         }
+        }
+      } else if op == "+" {
+        // String `+` lowering: the checker types `String + String` as String,
+        // but the backends compile a bare `+` as numeric i64.add — on the
+        // (ptr<<32)|len string repr that adds the lengths and garbles the
+        // pointer. Rewrite to String::concat when either ORIGINAL operand is
+        // determinably String (literal, tracked var, string-returning call,
+        // or a nested `+` chain of those). Undeterminable operands (e.g. two
+        // untracked call results) keep the raw binop — same residual class
+        // as #695's opaque `==`.
+        let stringish = (match infer_arg_type_name(l, struct_sets, var_types, fn_returns) {
+          Some(t) => t == "String",
+          None => false
+        }) || (match infer_arg_type_name(r, struct_sets, var_types, fn_returns) {
+          Some(t) => t == "String",
+          None => false
+        })
+        if stringish {
+          ECall(EIdent("String::concat", -1), [
+            rl,
+            rr
+          ], -1)
+        } else {
+          EBinOp(op, rl, rr)
         }
       } else {
         EBinOp(op, rl, rr)

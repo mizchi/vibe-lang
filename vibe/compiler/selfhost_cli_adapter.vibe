@@ -4,6 +4,10 @@ import ./entry / source_compile / wasi_only / preprocess.vibe {
   compile_source_wasi_only, compile_source_wasi_only_coverage, compile_source_wasi_only_rc, compile_source_wasi_only_rc_shadow
 }
 
+import ./entry / source_compile / wasi_only / merge_sources.vibe {
+  merged_program_source_fs
+}
+
 import ./entry / source_compile / gc_only / index.vibe {
   compile_source_gc_only
 }
@@ -483,6 +487,28 @@ export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
     let diags = collect_all_diagnostics(src)
     Fs::write_bytes(output_path, adapter_string_to_bytes(join_lines(diags)))
     return 0
+  }
+  // #726: emit the MERGED whole program as source text. `input_path` is an
+  // entry file whose imports resolve from the FS; the output is the flat
+  // source produced by the real merge machinery (export-rename plan +
+  // private namespacing), replacing the Python flattener in
+  // scripts/generate_selfhost_bundle.sh. The flatten step compiles the
+  // COMMITTED flat module source with the seed (the same robust single-file
+  // lane as stage1) and runs this mode on it — the previous standalone-tool
+  // approach FS-compiled the whole 200-file graph with the seed, which hits
+  // a deterministic cold-cache OOB inside the FIXED seed binary
+  // (build_persistent_sources_cache_text; unreachable in this lane).
+  // Adding this adapter -> merge_sources import edge is safe now that the
+  // committed bundle is itself merge-built (zero duplicate defs, no
+  // first-match roulette to reshuffle).
+  if Env::get("VIBE_EMIT_MERGED_SOURCE") == "1" {
+    return handle {
+      let merged_src = merged_program_source_fs(input_path)
+      Fs::write_file(output_path, merged_src)
+      0
+    } with Error {
+      Throw(msg) => emit_compile_diag(output_path, msg)
+    }
   }
   // #537 `vibe compile --wit`: emit the WIT world for the file's effect
   // surface (exported functions -> world exports; their `with { E }` rows ->

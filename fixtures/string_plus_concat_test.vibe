@@ -1,0 +1,67 @@
+// #734: `+` on String operands must lower to String::concat, not numeric
+// i64.add. Strings are represented as (ptr<<32)|len, so a raw add produced a
+// value with the SUMMED length and a garbage pointer — correct String::length
+// but all-zero bytes (and `==` comparisons against the expected text failed).
+// The lowering happens in desugar_trait_dict's EBinOp rewrite, driven by the
+// same best-effort operand typing as the #672/#695 `==` dispatch: literals,
+// tracked `let` bindings, annotated params, string-returning builtins, and
+// nested `+` chains of those.
+
+test "string_plus_literals" {
+  let u = "ab" + "cd"
+  assert(String::length(u) == 4)
+  assert(u == "abcd")
+  assert(String::char_code_at(u, 0) == 97)
+}
+
+test "string_plus_tracked_var_and_chain" {
+  let a = "fn f("
+  let u = a + "x)"
+  assert(u == "fn f(x)")
+  let chain = "a" + a + ")"
+  assert(chain == "afn f()")
+}
+
+test "string_plus_join_empty" {
+  // The original #734 symptom: a decl line built around String::join of an
+  // empty params array. join([]) itself was always correct — the enclosing
+  // `+` was the corruption.
+  let parts: Array[String] = []
+  let s = String::join(parts, ", ")
+  assert(String::length(s) == 0)
+  let msg = "fn f(" + s + ")"
+  assert(msg == "fn f()")
+}
+
+test "string_plus_builtin_returns" {
+  let n = 42
+  let m = "n=" + __to_string(n)
+  assert(m == "n=42")
+  let c = String::concat("x", "y") + "z"
+  assert(c == "xyz")
+}
+
+test "string_plus_annotated_param" {
+  let wrap = (s: String) -> String {
+    "<" + s + ">"
+  }
+  assert(wrap("mid") == "<mid>")
+}
+
+test "string_plus_mut_accumulate" {
+  let mut acc = ""
+  let mut i = 0
+  while i < 3 {
+    acc = acc + __to_string(i)
+    i = i + 1
+  }
+  assert(acc == "012")
+}
+
+test "int_plus_still_numeric" {
+  let x = 40 + 2
+  assert(eq(x, 42))
+  let mut t = 0
+  t = t + 5
+  assert(eq(t, 5))
+}

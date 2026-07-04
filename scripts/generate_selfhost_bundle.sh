@@ -646,121 +646,64 @@ write_runtime_entry_bundle() {
 }
 
 build_exact_adapter_merged_source() {
+  # #726: flatten via the compiler's OWN merge machinery (ExportRenamePlan +
+  # private namespacing), replacing the Python flattener. The flattener
+  # binary is built by compiling the COMMITTED flat module source with the
+  # seed — the same robust single-file lane every stage1 build uses — and
+  # then run with VIBE_EMIT_MERGED_SOURCE=1 on the adapter entry (the mode
+  # resolves imports from the FS and prints the merged program). Bootstrap
+  # note: this self-hosts one generation back, exactly like the seed itself
+  # (the committed module source always contains the mode once #726 landed).
+  # The old flattener stripped import/export lines and concatenated files,
+  # leaving duplicate top-level defs resolved by fn-table first-match; the
+  # merge renames them, so the flat source has ZERO duplicates (asserted
+  # below) and carries the #716 visibility guarantees.
   local merged_path
   mkdir -p "$PROJECT_ROOT/_build"
   merged_path="$(mktemp "$PROJECT_ROOT/_build/selfhost_cli_adapter_merged_source.XXXXXX")"
-  python3 - "$COMPILER_DIR" "$MANIFEST" "selfhost_cli_adapter.vibe" "$merged_path" <<'PY'
-import os
-import re
-import sys
-
-compiler_dir, manifest_path, root_rel, out_path = sys.argv[1:]
-rows = []
-for raw in open(manifest_path, "r", encoding="utf-8"):
-    line = raw.rstrip("\n")
-    if not line or line.startswith("#"):
-        continue
-    parts = line.split("\t")
-    if len(parts) != 2:
-        continue
-    rows.append((parts[0], parts[1]))
-
-source_by_rel = {}
-for _, rel in rows:
-    full = os.path.join(compiler_dir, rel)
-    if os.path.isfile(full):
-        with open(full, "r", encoding="utf-8") as f:
-            source_by_rel[rel] = f.read()
-
-dep_pattern = re.compile(r'^\s*(?:import|export)\s+(\.[\w./\s-]+?)(?:\.vibe)?\s*\{', re.MULTILINE)
-drop_pattern = re.compile(r'^\s*(?:import|export)\s+[.][^\s{]+')
-
-def normalize_path(path: str) -> str:
-    parts = []
-    for seg in path.split("/"):
-        if seg == "" or seg == ".":
-            continue
-        if seg == "..":
-            if parts:
-                parts.pop()
-            continue
-        parts.append(seg)
-    return "/".join(parts)
-
-def resolve_path(base_rel: str, raw_path: str) -> str:
-    base_dir = os.path.dirname(base_rel)
-    raw_path = re.sub(r'\s*/\s*', '/', raw_path.strip())
-    joined = raw_path
-    if raw_path.startswith("./") or raw_path.startswith("../"):
-      if base_dir:
-        joined = normalize_path(base_dir + "/" + raw_path)
-      else:
-        joined = normalize_path(raw_path)
-    else:
-      joined = normalize_path(raw_path)
-    candidates = []
-    if joined.endswith(".vibe"):
-      candidates.append(joined)
-    else:
-      candidates.append(joined + ".vibe")
-      candidates.append(joined + "/index.vibe")
-    for candidate in candidates:
-      if candidate in source_by_rel:
-        return candidate
-    return candidates[0]
-
-visited = set()
-ordered = []
-
-def visit(rel: str):
-    if rel in visited:
-        return
-    source = source_by_rel.get(rel)
-    if source is None:
-        return
-    visited.add(rel)
-    for dep in dep_pattern.findall(source):
-        visit(resolve_path(rel, dep))
-    ordered.append(rel)
-
-def strip_relative_imports(source: str) -> str:
-    lines = source.splitlines(True)
-    out = []
-    skipping = False
-    depth = 0
-    for line in lines:
-        stripped = line.lstrip()
-        if stripped.startswith("//"):
-            continue
-        if not skipping and drop_pattern.match(line):
-            depth = line.count("{") - line.count("}")
-            if depth > 0:
-                skipping = True
-            continue
-        if skipping:
-            depth += line.count("{") - line.count("}")
-            if depth <= 0:
-                skipping = False
-            continue
-        out.append(line)
-    merged = "".join(out)
-    if merged and not merged.endswith("\n"):
-        merged += "\n"
-    return merged
-
-visit(root_rel)
-first_chunk = True
-with open(out_path, "w", encoding="utf-8") as f:
-    for rel in ordered:
-        source = source_by_rel.get(rel)
-        if source is None:
-            continue
-        merged = strip_relative_imports(source)
-        if first_chunk:
-            merged = merged.lstrip("\r\n")
-            first_chunk = False
-        f.write(merged)
-PY
+  local flatten_wasm="$PROJECT_ROOT/_build/merge_flatten_compiler.wasm"
+  local seed_wasm="$PROJECT_ROOT/bootstrap/selfhost/seed/selfhost_compiler.wasm"
+  local committed_module_source="$COMPILER_DIR/selfhost_cli_adapter_module_source.vibe"
+  local tool_node_flags="${VIBE_NODE_WASM_FLAGS:---experimental-wasm-exnref --stack-size=${VIBE_SELFHOST_GENERATION_NODE_STACK_SIZE:-131072}}"
+  local tool_log="$PROJECT_ROOT/_build/merge_flatten_compiler.log"
+  rm -f "$flatten_wasm" "$flatten_wasm.diag"
+  (cd "$PROJECT_ROOT" && env VIBE_RC=0 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
+    VIBE_SELFHOST_IMPORT_ABI="${VIBE_SELFHOST_IMPORT_ABI:-raw}" \
+    VIBE_NODE_WASM_FLAGS="$tool_node_flags" \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$seed_wasm" \
+    "$committed_module_source" "$flatten_wasm" cli_main >"$tool_log" 2>&1) || true
+  if [ ! -s "$flatten_wasm" ]; then
+    echo "generate_selfhost_bundle: merge-flatten compiler build failed" >&2
+    cat "$flatten_wasm.diag" >&2 2>/dev/null || true
+    echo "--- runner output ---" >&2
+    tail -40 "$tool_log" >&2 2>/dev/null || true
+    exit 1
+  fi
+  rm -f "$merged_path.diag"
+  (cd "$PROJECT_ROOT" && env VIBE_EMIT_MERGED_SOURCE=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
+    VIBE_SELFHOST_IMPORT_ABI="${VIBE_SELFHOST_IMPORT_ABI:-raw}" \
+    VIBE_NODE_WASM_FLAGS="$tool_node_flags" \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$flatten_wasm" \
+    vibe/compiler/selfhost_cli_adapter.vibe "$merged_path" cli_main >"$tool_log.flatten" 2>&1) || true
+  if [ ! -s "$merged_path" ]; then
+    echo "generate_selfhost_bundle: merge flatten failed" >&2
+    cat "$merged_path.diag" >&2 2>/dev/null || true
+    echo "--- runner output ---" >&2
+    tail -40 "$tool_log.flatten" >&2 2>/dev/null || true
+    exit 1
+  fi
+  # #726 gate: the merged flat source must have ZERO duplicate top-level defs.
+  local dups
+  dups="$(grep -E '^(export )?let (rec )?(mut )?[A-Za-z_]' "$merged_path" \
+    | sed -E 's/^(export )?let (rec )?(mut )?([A-Za-z_][A-Za-z0-9_:#]*).*/\4/' \
+    | sort | uniq -d | wc -l | tr -d ' ')"
+  if [ "$dups" != "0" ]; then
+    echo "generate_selfhost_bundle: $dups duplicate top-level def(s) in merged source (#726)" >&2
+    grep -E '^(export )?let (rec )?(mut )?[A-Za-z_]' "$merged_path" \
+      | sed -E 's/^(export )?let (rec )?(mut )?([A-Za-z_][A-Za-z0-9_:#]*).*/\4/' \
+      | sort | uniq -d >&2
+    exit 1
+  fi
   printf '%s\n' "$merged_path"
 }
 
