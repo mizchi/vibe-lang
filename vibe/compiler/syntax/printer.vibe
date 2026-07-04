@@ -256,7 +256,18 @@ let print_fn_type_params: (Array[String], Array[(String, Array[String])]) -> Str
 export let rec print_expr: (Expr) -> String = (e) -> {
   match e {
     EInt(n) => __to_string(n),
-    EFloat(n) => double_to_string_compiler(n),
+    EFloat(n) => {
+      // #726: a whole double printed as "2" re-parses as an INT literal —
+      // `EFloat(2.0)` round-tripped to `EInt(2)` (the merge-flatten stage
+      // rejected the compiler's own `EFloat(...)` ctor calls; normalize had
+      // the same silent semantic corruption). Keep the float-ness explicit.
+      let s = double_to_string_compiler(n)
+      if String::contains(s, ".") || s == "nan" {
+        s
+      } else {
+        String::concat(s, ".0")
+      }
+    },
     EString(s) => String::concat("\"", String::concat(escape_string(s), "\"")),
     EBool(b) => if b {
       "true"
@@ -318,6 +329,11 @@ export let rec print_expr: (Expr) -> String = (e) -> {
       } else {
         String::concat(print_expr(callee), String::concat("(", String::concat(join(map_to_strings(args, print_expr), ", "), ")")))
       },
+      // #726: an immediately-invoked lambda callee must be parenthesized —
+      // `(x: T) -> { x }(args)` re-parses with the CALL inside the lambda
+      // body (`{ x }(args)`, "calling a non-function value"), so print
+      // `((x: T) -> { x })(args)`.
+      EFn(_, _, _, _, _, _) => String::concat("(", String::concat(print_expr(callee), String::concat(")(", String::concat(join(map_to_strings(args, print_expr), ", "), ")")))),
       _ => String::concat(print_expr(callee), String::concat("(", String::concat(join(map_to_strings(args, print_expr), ", "), ")")))
     },
     EBinOp(op, left, right) => String::concat("(", String::concat(print_expr(left), String::concat(" ", String::concat(op, String::concat(" ", String::concat(print_expr(right), ")")))))),

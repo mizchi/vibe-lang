@@ -70,6 +70,14 @@ rc-bootstrap fixpoint + shape corpus で常時検証）。
   lane の ingestion 統一（pin-blank + .vibei 脱糖が cache lane を
   バイパスするバグ修正）。残: compiler 本体が @vibe/core を require で
   消費する形への移行（#726/#730 系）、prelude の重複 helper 整理。
+- [x] **#726 bundle flatten を merge machinery 化 (2026-07-04)** — Python
+  flattener を廃止し、`vibe/compiler/emit_merged_source_entry.vibe`(seed で
+  FS-compile される単体ツール)が ExportRenamePlan + private namespacing の
+  実 merge で flat source を生成する。**dup top-level def 45 → 0**(生成時に
+  0 を強制 assert)。副産物: compiler source が **FS-compile clean** になった
+  (roulette が隠していた import 可視性違反・二重定義・チェーン re-export・
+  printer round-trip バグ(EFloat 整数化 / IIFE 括弧)を全修正)。
+  発見バグ: 深い再帰内 perform の resume 破壊は #737。
 - [ ] **#415** codegen builtin registry 化（linear↔wasm-gc parity、Phase B）。
 - [ ] **#418 / #629 (ADR-0060)** mut の region capability 統一 — 設計は ADR-0060、
   実装は effect row 基盤に依存。
