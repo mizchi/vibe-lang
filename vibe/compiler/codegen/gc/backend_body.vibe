@@ -770,6 +770,11 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
           Array::push(local_names, "__env")
           let param_count = Array::length(params) + 1
           // #724 round 2: seed the aggregate-shape log from annotated params.
+          // #744 gc mirror: seed float tracking from annotated Float/Double
+          // params in the same walk (linear tracks these via float_local_slots).
+          let gc_float_names_f = Array::slice([
+            ""
+          ], 0, 0)
           let gc_sig_ptypes = fn_type_param_types(gc_fn_ann)
           let mut psi = 0
           while psi < Array::length(params) {
@@ -794,6 +799,15 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
                   Array::push(gc_agg_slots_f, psi * 256 + pinfo)
                 } else {
                   ()
+                }
+                match pte {
+                  TyName(ptn) => if ptn == "Float" || ptn == "Double" {
+                    let (psname, _) = Array::get(params, psi)
+                    Array::push(gc_float_names_f, psname)
+                  } else {
+                    ()
+                  },
+                  _ => ()
                 }
               },
               None => ()
@@ -828,9 +842,7 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
             gc_const_names: gc_const_names_l, gc_const_kinds: gc_const_kinds_l,
             gc_const_ivals: gc_const_ivals_l, gc_const_svals: gc_const_svals_l,
             gc_global_names: gc_global_names_l,
-            gc_float_locals: Array::slice([
-              ""
-            ], 0, 0),
+            gc_float_locals: gc_float_names_f,
             gc_agg_local_slots: gc_agg_slots_f,
             gc_agg_ret_names: gc_agg_ret_names_l,
             gc_agg_ret_infos: gc_agg_ret_infos_l

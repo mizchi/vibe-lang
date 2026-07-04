@@ -2825,12 +2825,12 @@ if [ ! -s "$gcdir/smoke.wasm" ]; then
   exit 1
 fi
 gc_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcdir/smoke.wasm" 2>&1 | tail -1)"
-if [ "$gc_out" != "90419" ]; then
-  echo "[selfhost-only-gate] FAIL: gc backend smoke got '$gc_out' (want 90419)" >&2
+if [ "$gc_out" != "101520" ]; then
+  echo "[selfhost-only-gate] FAIL: gc backend smoke got '$gc_out' (want 101520)" >&2
   exit 1
 fi
 rm -rf "$gcdir"
-echo "[selfhost-only-gate] wasm-gc backend smoke ok (90419)"
+echo "[selfhost-only-gate] wasm-gc backend smoke ok (101520)"
 
 # 40i. effect->WIT golden (#537): `vibe compile --wit` (adapter VIBE_EMIT_WIT=1)
 #      must render fixtures/wit_gen_http.vibe byte-exactly as the committed

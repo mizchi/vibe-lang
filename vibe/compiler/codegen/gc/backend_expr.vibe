@@ -494,13 +494,39 @@ let rec compile_expr_gc: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) ->
       }
       emit_i64_reinterpret_f64(buf)
       nl2
+    } else if (op == "<" || op == ">" || op == "<=" || op == ">=") && (gc_expr_is_floatish(lhs, ctx) || gc_expr_is_floatish(rhs, ctx)) {
+      // Float ordering: signed-i64 compare of raw f64 bits inverts the order
+      // whenever both sides are negative (and misranks mixed signs vs -0.0),
+      // so route through real f64 comparisons (mirrors the linear lane).
+      let nl1 = ce(buf, lhs, local_names, next_local, ld)
+      emit_f64_reinterpret_i64(buf)
+      let nl2 = ce(buf, rhs, local_names, nl1, ld)
+      emit_f64_reinterpret_i64(buf)
+      if op == "<" {
+        emit_f64_lt(buf)
+      } else if op == ">" {
+        emit_f64_gt(buf)
+      } else if op == "<=" {
+        emit_f64_le(buf)
+      } else {
+        emit_f64_ge(buf)
+      }
+      emit_i64_extend_i32_s(buf)
+      nl2
     } else {
       let nl1 = ce(buf, lhs, local_names, next_local, ld)
       let nl2 = ce(buf, rhs, local_names, nl1, ld)
       emit_binop_op(buf, op)
       nl2
     },
-    EUnaryOp(op, operand) => if op == "-" {
+    EUnaryOp(op, operand) => if op == "-" && gc_expr_is_floatish(operand, ctx) {
+      // `0 - bits` integer-negates the f64 bit pattern; use f64.neg instead.
+      let nl = ce(buf, operand, local_names, next_local, ld)
+      emit_f64_reinterpret_i64(buf)
+      emit_f64_neg(buf)
+      emit_i64_reinterpret_f64(buf)
+      nl
+    } else if op == "-" {
       emit_i64_const(buf, 0)
       let nl = ce(buf, operand, local_names, next_local, ld)
       emit_i64_sub(buf)
@@ -527,6 +553,26 @@ let rec compile_expr_gc: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) ->
           let cnl = emit_gc_eq_value(buf, clhs, crhs, local_names, next_local, ctx, ld, compile_expr_gc)
           emit_i64_eqz(buf)
           cnl
+        } else if (cop == "<" || cop == ">" || cop == "<=" || cop == ">=") && (gc_expr_is_floatish(clhs, ctx) || gc_expr_is_floatish(crhs, ctx)) {
+          // Same f64-vs-raw-bits ordering fix as the EBinOp float comparison
+          // branch; the fast path leaves the comparison's i32 for the `if`.
+          let cnl1 = ce(buf, clhs, local_names, next_local, ld)
+          emit_f64_reinterpret_i64(buf)
+          let cnl2 = ce(buf, crhs, local_names, cnl1, ld)
+          emit_f64_reinterpret_i64(buf)
+          if cop == "<" {
+            emit_f64_lt(buf)
+          }
+          else if cop == ">" {
+            emit_f64_gt(buf)
+          }
+          else if cop == "<=" {
+            emit_f64_le(buf)
+          }
+          else {
+            emit_f64_ge(buf)
+          }
+          cnl2
         } else if cop == "<" || cop == ">" || cop == "<=" || cop == ">=" {
           let cnl1 = ce(buf, clhs, local_names, next_local, ld)
           let cnl2 = ce(buf, crhs, local_names, cnl1, ld)
@@ -934,6 +980,27 @@ let rec compile_expr_gc: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) ->
           emit_i64_eqz(buf)
           emit_i32_eqz(buf)
           wnl
+        } else if (wcop == "<" || wcop == ">" || wcop == "<=" || wcop == ">=") && (gc_expr_is_floatish(wlhs, ctx) || gc_expr_is_floatish(wrhs, ctx)) {
+          // Same f64-vs-raw-bits ordering fix as the EBinOp/EIf float
+          // comparison branches; leaves the i32 for the shared eqz below.
+          let wnl1 = ce(buf, wlhs, local_names, next_local, ld + 1)
+          emit_f64_reinterpret_i64(buf)
+          let wnl2 = ce(buf, wrhs, local_names, wnl1, ld + 1)
+          emit_f64_reinterpret_i64(buf)
+          if wcop == "<" {
+            emit_f64_lt(buf)
+          }
+          else if wcop == ">" {
+            emit_f64_gt(buf)
+          }
+          else if wcop == "<=" {
+            emit_f64_le(buf)
+          }
+          else {
+            emit_f64_ge(buf)
+          }
+          emit_i32_eqz(buf)
+          wnl2
         } else if wcop == "<" || wcop == ">" || wcop == "<=" || wcop == ">=" {
           let wnl1 = ce(buf, wlhs, local_names, next_local, ld + 1)
           let wnl2 = ce(buf, wrhs, local_names, wnl1, ld + 1)
