@@ -12,6 +12,10 @@ import ./runtime / module_source.vibe {
   build_module_source_from_source, build_funcmap_from_source
 }
 
+import ./loader/index.vibe {
+  contract_package_hashes_fs
+}
+
 import ./entry / compiler / file_compile {
   compile_file_fs_mode, compile_file_fs_mode_rc, compile_file_fs_mode_coverage, compile_file_fs_mode_trace, compile_file_fs_mode_break, compile_file_fs_mode_testmeta
 }
@@ -327,6 +331,19 @@ export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
   let output_path = own_host_string(read_arg_or_env(1, "VIBE_OUTPUT"))
   let entry_name = own_host_string(read_arg_or_env(2, "VIBE_ENTRY"))
   let mark_memory = Env::get("VIBE_PROFILE_MEMORY_MARKS") == "1"
+  // #730 (D-2): `vibe hash` — print a contract package's content-addressing
+  // hashes. Input is the package's index.vibei; the output file receives
+  // "package #pkg:sha1:<hex>" and "contract ct:sha1:<hex>" lines. The
+  // package line is copy-pasteable as a require pin.
+  if Env::get("VIBE_HASH") == "1" {
+    return handle {
+      let (pkg_hash, ct_hash) = contract_package_hashes_fs(input_path)
+      Fs::write_file(output_path, "package #\{pkg_hash}\ncontract \{ct_hash}\n")
+      0
+    } with Error {
+      Throw(msg) => emit_compile_diag(output_path, msg)
+    }
+  } else ()
   // #594 Stage 3 (debug): file-mode compile resolving imports from the FS.
   if Env::get("VIBE_FS_COMPILE") == "1" {
     // #cov: `vibe test/run --coverage` sets VIBE_COVERAGE=1 so the user file (and

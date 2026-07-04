@@ -204,6 +204,46 @@ fi
 rm -rf "$cdir"
 echo "[selfhost-only-gate] contract package + boundary regression ok"
 
+# 6c. content-addressed store regression (#730 D-2): `vibe hash` prints a
+#     store package's pin; a require-pinned `import @scope/name` resolves
+#     through .vibe/store/ with hash verification; a wrong pin is rejected.
+echo "[selfhost-only-gate] 6c content-addressed store regression (#730)"
+sdir=".vibe/store/@gate/d2pkg"
+rm -rf ".vibe/store/@gate"; mkdir -p "$sdir"
+printf 'import ./impl.vibe {}\nfn triple(x: Int) -> Int\n' > "$sdir/index.vibei"
+printf 'export fn triple(x: Int) -> Int { x * 3 }\n' > "$sdir/impl.vibe"
+cdir2="_build/_gate_store"
+rm -rf "$cdir2"; mkdir -p "$cdir2"
+VIBE_HASH=1 VIBE_PREOPEN_DIR="$ROOT_DIR" \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$sdir/index.vibei" "$cdir2/hash.out" __no_entry__ >/dev/null 2>&1 || true
+pin="$(grep '^package ' "$cdir2/hash.out" 2>/dev/null | cut -d' ' -f2)"
+if [ -z "$pin" ]; then
+  echo "[selfhost-only-gate] FAIL: vibe hash produced no package pin (#730)" >&2
+  cat "$cdir2/hash.out.diag" 2>/dev/null >&2; exit 1
+fi
+printf 'require @gate/d2pkg 1.0.0 = %s\n\nimport @gate/d2pkg { triple }\nexport let _start: () -> Int = () -> { triple(14) }\n' "$pin" > "$cdir2/ok.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$cdir2/ok.vibe" "$cdir2/ok.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$cdir2/ok.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: pinned store import did not compile (#730)" >&2
+  cat "$cdir2/ok.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+printf 'require @gate/d2pkg 1.0.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\nimport @gate/d2pkg { triple }\nexport let _start: () -> Int = () -> { triple(14) }\n' > "$cdir2/bad.vibe"
+if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$cdir2/bad.vibe" "$cdir2/bad.wasm" _start >/dev/null 2>&1 \
+  && [ -s "$cdir2/bad.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: wrong pin was not rejected (#730)" >&2; exit 1
+fi
+if ! grep -q "pin mismatch" "$cdir2/bad.wasm.diag" 2>/dev/null; then
+  echo "[selfhost-only-gate] FAIL: pin rejection lacks the expected diagnostic (#730)" >&2
+  cat "$cdir2/bad.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+rm -rf ".vibe/store/@gate" "$cdir2"
+echo "[selfhost-only-gate] content-addressed store regression ok"
+
 # 7. literal sub-pattern regression (#603): a literal (PInt/PString) argument of a
 #    constructor pattern must be tested, not just the tag — `I("x")` must not
 #    match `I("y")`, `I(1)` must not match `I(2)`. Guards the match-codegen fix.

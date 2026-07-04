@@ -586,6 +586,154 @@ export let package_hash_from_sources: (Array[(String, String)]) -> String = (sou
   "pkg:sha1:\{sha1(StringBuilder::freeze(sb))}"
 }
 
+// ADR-0063 §6 (#730 D-2): `require` pin lines. A directive, not statement
+// grammar: `require @scope/name 1.2.3 = #pkg:sha1:<40hex>` lines sit at the
+// top of a file (blank lines / line comments may precede). The loader
+// extracts them BEFORE parsing and blanks them to spaces, so byte offsets —
+// and therefore diagnostics — are preserved (same philosophy as #cfg's
+// tail-append). semver is strict: bare x.y.z or ^x.y.z, full triple only.
+// The constraint is edit-time tooling metadata; the build consumes only the
+// hash. The hash is REQUIRED here until fmt pin-insertion lands (D-3).
+
+let is_digit_run: (String, Int, Int) -> Bool = (s, from, to) -> {
+  if to <= from {
+    false
+  } else {
+    let mut i = from
+    let mut ok = true
+    while i < to {
+      let c = String::char_code_at(s, i)
+      if c < '0' || c > '9' {
+        ok = false
+        i = to
+      } else {
+        i = i + 1
+      }
+    }
+    ok
+  }
+}
+
+export let is_strict_semver: (String) -> Bool = (v) -> {
+  let start = if String::starts_with(v, "^") {
+    1
+  } else 0
+  let body = String::substring(v, start, String::length(v))
+  let parts = String::split(body, ".")
+  if Array::length(parts) != 3 {
+    false
+  } else {
+    let a = Array::get(parts, 0)
+    let b = Array::get(parts, 1)
+    let c = Array::get(parts, 2)
+    is_digit_run(a, 0, String::length(a)) && is_digit_run(b, 0, String::length(b)) && is_digit_run(c, 0, String::length(c))
+  }
+}
+
+export let is_package_pin: (String) -> Bool = (h) -> {
+  if !String::starts_with(h, "#pkg:sha1:") {
+    false
+  } else if String::length(h) != 50 {
+    false
+  } else {
+    let mut i = 10
+    let mut ok = true
+    while i < 50 {
+      let c = String::char_code_at(h, i)
+      let is_hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
+      if is_hex {
+        i = i + 1
+      } else {
+        ok = false
+        i = 50
+      }
+    }
+    ok
+  }
+}
+
+let split_fields: (String) -> Array[String] = (line) -> {
+  let raw = String::split(String::trim(line), " ")
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(raw) {
+    let f = Array::get(raw, i)
+    if String::length(f) > 0 {
+      Array::push(out, f)
+    } else ()
+    i = i + 1
+  }
+  out
+}
+
+// Returns ((name, constraint, pin) triples, source with require lines
+// blanked to spaces). Only the leading directive region is scanned; a
+// `require` line after the first ordinary statement is a parse error
+// downstream (it never parses as a statement), which is intended.
+export let extract_require_pins: (String) -> (Array[(String, String, String)], String) with { Error } = (source) -> {
+  let pins = Array::slice([
+    ("", "", "")
+  ], 0, 0)
+  let sb = StringBuilder::new()
+  let len = String::length(source)
+  let mut pos = 0
+  let mut scanning = true
+  while pos < len {
+    let mut nl = pos
+    while nl < len && String::char_code_at(source, nl) != 10 {
+      nl = nl + 1
+    }
+    let line = String::substring(source, pos, nl)
+    let trimmed = String::trim(line)
+    let is_require = scanning && String::starts_with(trimmed, "require ")
+    if is_require {
+      let fields = split_fields(trimmed)
+      if Array::length(fields) != 5 {
+        throw("malformed require line (expected: require @scope/name x.y.z = #pkg:sha1:<40hex>): \{trimmed}")
+      } else ()
+      let name = Array::get(fields, 1)
+      let ver = Array::get(fields, 2)
+      let eq = Array::get(fields, 3)
+      let pin = Array::get(fields, 4)
+      if !String::starts_with(name, "@") {
+        throw("require package name must start with '@': \{name}")
+      } else ()
+      if !is_strict_semver(ver) {
+        throw("require version must be a strict semver triple (x.y.z or ^x.y.z): \{ver}")
+      } else ()
+      if eq == "=" {
+        ()
+      } else {
+        throw("malformed require line (missing '='): \{trimmed}")
+      }
+      if !is_package_pin(pin) {
+        throw("require pin must be #pkg:sha1:<40hex> (compute with `vibe hash`): \{pin}")
+      } else ()
+      Array::push(pins, (name, ver, String::substring(pin, 1, String::length(pin))))
+      // blank the line, preserving its byte length
+      let mut bi = 0
+      while bi < String::length(line) {
+        StringBuilder::push(sb, " ")
+        bi = bi + 1
+      }
+    } else {
+      if String::length(trimmed) == 0 || String::starts_with(trimmed, "//") {
+        ()
+      } else {
+        scanning = false
+      }
+      StringBuilder::push(sb, line)
+    }
+    if nl < len {
+      StringBuilder::push(sb, "\n")
+    } else ()
+    pos = nl + 1
+  }
+  (pins, StringBuilder::freeze(sb))
+}
+
 export {
   parse_contract_program, collect_impl_fn_defs, check_contract
 }

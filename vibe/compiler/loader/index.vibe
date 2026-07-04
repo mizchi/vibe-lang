@@ -34,7 +34,7 @@ import ./header_cache.vibe {
 }
 
 import ../contract/index.vibe {
-  check_contract, classify_contract_stmts, contract_facade_source, parse_contract_program
+  check_contract, classify_contract_stmts, contract_facade_source, contract_hash, extract_require_pins, package_hash_from_sources, parse_contract_program
 }
 
 import ./manifest_sources.vibe {
@@ -1091,7 +1091,11 @@ let desugar_contract_source_fs: (String, String) -> String with { Error, Fs } = 
     let raw = Array::get(impl_raws, ri)
     let resolved = resolve_import_path(dir, raw)
     let impl_text = Fs::read_file(resolved)
-    let impl_stmts = parse_program(lex(impl_text))
+    // impl files may carry their own require pin lines (extracted for real
+    // when the file itself is ingested) — blank them for the conformance
+    // parse here.
+    let (_, impl_blanked) = extract_require_pins(impl_text)
+    let impl_stmts = parse_program(lex(impl_blanked))
     Array::push(impl_units, (raw, impl_stmts))
     let mut si = 0
     while si < Array::length(impl_stmts) {
@@ -1105,6 +1109,69 @@ let desugar_contract_source_fs: (String, String) -> String with { Error, Fs } = 
     throw("\{path}: contract violation: \{String::join(errors, "; ")}")
   } else ()
   contract_facade_source(decls, opaque_names, type_defs, impl_units)
+}
+
+// #730 (D-2): both content-addressing hashes of a contract package, from its
+// ORIGINAL on-disk texts (require lines included — they are part of the
+// hashed content, which is what makes a direct pin fix the transitive
+// closure). Paths in the package hash are package-relative ("index.vibei" +
+// each impl's raw import spelling), so the hash is location-independent —
+// the same function serves `vibe hash` on a working directory and store
+// verification of an installed copy.
+export let contract_package_hashes_fs: (String) -> (String, String) with { Error, Fs } = (path) -> {
+  let raw = Fs::read_file(path)
+  let (_, blanked) = extract_require_pins(raw)
+  let (decls, opaques, extra) = parse_contract_program(lex(blanked))
+  let (impl_raws, type_defs) = classify_contract_stmts(extra)
+  let dir = dir_of_path(path)
+  let sources = Array::slice([
+    ("", "")
+  ], 0, 0)
+  Array::push(sources, ("index.vibei", raw))
+  let mut ri = 0
+  while ri < Array::length(impl_raws) {
+    let iraw = Array::get(impl_raws, ri)
+    let itext = Fs::read_file(resolve_import_path(dir, iraw))
+    Array::push(sources, (iraw, itext))
+    ri = ri + 1
+  }
+  (package_hash_from_sources(sources), contract_hash(decls, opaques, type_defs))
+}
+
+// #730 (D-2): verify a store-resolved package against the importer's require
+// pin. The store is laid out BY NAME (.vibe/store/@scope/name/) and trusted
+// only through this hash check, so any mirror/copy mechanism is fine.
+let verify_store_package_fs: (String, Array[(String, String, String)], String) -> Unit with { Error, Fs } = (importer, pins, store_index_path) -> {
+  let prefix = ".vibe/store/"
+  let suffix = "/index.vibei"
+  let name = String::substring(
+    store_index_path,
+    String::length(prefix),
+    String::length(store_index_path) - String::length(suffix)
+  )
+  let mut pin_hash = ""
+  let mut pi = 0
+  while pi < Array::length(pins) {
+    let (pname, _, phash) = Array::get(pins, pi)
+    if pname == name {
+      pin_hash = phash
+    } else ()
+    pi = pi + 1
+  }
+  if pin_hash == "" {
+    throw("no require pin for \{name} in \{importer} (add: require \{name} <x.y.z> = #<pkg-hash>; compute with `vibe hash`)")
+  } else ()
+  if Fs::exists(store_index_path) {
+    ()
+  } else {
+    throw("package \{name} is not installed in the store (.vibe/store/\{name}/)")
+  }
+  let (actual, _) = contract_package_hashes_fs(store_index_path)
+  if actual == pin_hash {
+    ()
+  } else {
+    throw("pin mismatch for \{name}: \{importer} requires #\{pin_hash} but the store copy is #\{actual}")
+  }
 }
 
 // #729 (Phase C-3): incoming boundary enforcement. A directory with an
@@ -1144,10 +1211,13 @@ let rec collect_sources_rec: (String, Array[(String, String)], Array[Array[Strin
   else {
     path_set_add(visited, path)
     let raw_source = Fs::read_file(path)
+    // #730 (D-2): require pin lines are a leading directive, extracted and
+    // blanked (offset-preserving) before anything parses the source.
+    let (pins, pin_blanked) = extract_require_pins(raw_source)
     let source = if String::ends_with(path, ".vibei") {
-      desugar_contract_source_fs(path, raw_source)
+      desugar_contract_source_fs(path, pin_blanked)
     } else {
-      raw_source
+      pin_blanked
     }
     let (deps, _, _) = load_or_parse_module_header_fs(path, source, 0)
     // First, recurse into dependencies (imports and re-exports)
@@ -1155,6 +1225,12 @@ let rec collect_sources_rec: (String, Array[(String, String)], Array[Array[Strin
     while i < Array::length(deps) {
       let dep = Array::get(deps, i)
       enforce_incoming_boundary_fs(path, dep)
+      // Only a store PACKAGE reference (its contract) is pin-verified;
+      // paths inside an already-verified store package (its impl files)
+      // are covered by that package's hash.
+      if String::starts_with(dep, ".vibe/store/") && String::ends_with(dep, "/index.vibei") {
+        verify_store_package_fs(path, pins, dep)
+      } else ()
       collect_sources_rec(dep, sources, visited)
       i = i + 1
     }

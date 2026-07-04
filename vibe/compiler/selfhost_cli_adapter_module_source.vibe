@@ -13523,8 +13523,15 @@ let lex_one_token: (String, Int, Int) -> (Token, Int) with { Error } = (source, 
     (TQuestion, pos + 1)
   } else if c == '@' {
     let mut end = pos + 1
-    while end < len && is_alnum(String::char_code_at(source, end)) {
-      end = end + 1
+    while end < len {
+      let ec = String::char_code_at(source, end)
+      if is_alnum(ec) || ec == '_' || ec == '-' {
+        end = end + 1
+      } else if ec == '/' && end + 1 < len && is_alnum(String::char_code_at(source, end + 1)) {
+        end = end + 1
+      } else {
+        break
+      }
     }
     if end > pos + 1 {
       (TIdent(String::substring(source, pos, end)), end)
@@ -18441,6 +18448,11 @@ export let resolve_import_path: (String, String) -> String = (base_dir, raw_path
   }
 }
 export let resolve_import_path_candidates: (String, String) -> Array[String] = (base_dir, raw_path) -> {
+  if String::starts_with(raw_path, "@") {
+    return [
+      String::concat(".vibe/store/", String::concat(raw_path, "/index.vibei"))
+    ]
+  } else ()
   let len = String::length(raw_path)
   let joined = if path_has_relative_prefix(raw_path, len) {
     join_relative_path(base_dir, raw_path)
@@ -42218,24 +42230,6 @@ export let build_funcmap_from_source: (String) -> String with { Error } = (sourc
   }
   StringBuilder::freeze(buf)
 }
-export let compile_wasi_module: (Array[Stmt], String) -> Bytes with { Error } = (stmts, entry_name) -> {
-  compile_wasi_module_impl(stmts, entry_name)
-}
-export let compile_wasi_module_rc: (Array[Stmt], String) -> Bytes with { Error } = (stmts, entry_name) -> {
-  compile_wasi_module_rc_impl(stmts, entry_name)
-}
-export let compile_wasi_module_coverage: (Array[Stmt], String) -> Bytes with { Error } = (stmts, entry_name) -> {
-  compile_wasi_module_coverage_impl(stmts, entry_name)
-}
-export let compile_wasi_module_trace: (Array[Stmt], String) -> Bytes with { Error } = (stmts, entry_name) -> {
-  compile_wasi_module_trace_impl(stmts, entry_name)
-}
-export let compile_wasi_module_break: (Array[Stmt], String, DbgProv) -> Bytes with { Error } = (stmts, entry_name, prov) -> {
-  compile_wasi_module_break_impl(stmts, entry_name, prov)
-}
-export let compile_wasi_module_rc: (Array[Stmt], String) -> Bytes with { Error } = (stmts, entry_name) -> {
-  compile_wasi_module_rc_impl(stmts, entry_name)
-}
 export let contains_str: (Array[String], String) -> Bool = (arr, target) -> {
   let rec go: (Int) -> Bool = (i) -> {
     if i >= Array::length(arr) {
@@ -42391,7 +42385,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "3d519c0299c8006a"
+  "e14cf4a441722835"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647
@@ -42562,6 +42556,172 @@ export let load_or_parse_module_header_fs_impl: (String, String, Int) -> (Array[
     Fs::write_file(cache_path, persistent_module_header_text(deps, exports))
     (deps, exports, next_parse_count)
   }
+}
+let k0: Int = 1518500249
+let k1: Int = 1859775393
+let k2: Int = ((36635 << 16) | 48348)
+let k3: Int = ((51810 << 16) | 49622)
+let ushr = (x: Int, n: Int) -> Int {
+  if n == 0 {
+    x
+  }
+  else if n >= 32 {
+    0
+  }
+  else {
+    (x>>n)&((1<<(32 - n)) - 1)
+  }
+}
+let mask32: Int = ((65535 << 16) | 65535)
+let rotl = (x: Int, n: Int) -> Int {
+  ((x<<n)|ushr(x, 32 - n))&mask32
+}
+let add32 = (a: Int, b: Int) -> Int {
+  (a + b)&mask32
+}
+let h0_init: Int = 1732584193
+let h1_init: Int = ((61389 << 16) | 43913)
+let h2_init: Int = ((39098 << 16) | 56574)
+let h3_init: Int = 271733878
+let h4_init: Int = ((50130 << 16) | 57840)
+let hex_table: String = "0123456789abcdef"
+let read_word = (s: String, idx: Int) -> Int {
+  let offset = idx * 4
+  let b0 = s|>String::char_code_at(offset)
+  let b1 = s|>String::char_code_at(offset + 1)
+  let b2 = s|>String::char_code_at(offset + 2)
+  let b3 = s|>String::char_code_at(offset + 3)
+  ((b0<<24)|(b1<<16)|(b2<<8)|b3)&mask32
+}
+let read_word_bytes = (b: Bytes, idx: Int) -> Int {
+  let offset = idx * 4
+  let b0 = Bytes::get(b, offset)
+  let b1 = Bytes::get(b, offset + 1)
+  let b2 = Bytes::get(b, offset + 2)
+  let b3 = Bytes::get(b, offset + 3)
+  ((b0<<24)|(b1<<16)|(b2<<8)|b3)&mask32
+}
+let push_word_bytes = (b: Bytes, w: Int) -> Unit {
+  Bytes::push(b, ushr(w, 24)&255)
+  Bytes::push(b, ushr(w, 16)&255)
+  Bytes::push(b, ushr(w, 8)&255)
+  Bytes::push(b, w&255)
+}
+let pad_message = (msg: String) -> String {
+  let len = msg|>String::length()
+  let bit_len = len * 8
+  let sb = StringBuilder::new()
+  StringBuilder::push(sb, msg)
+  StringBuilder::push(sb, String::from_char_code(128))
+  let mut cur_len = len + 1
+  while cur_len % 64 != 56 {
+    StringBuilder::push(sb, String::from_char_code(0))
+    cur_len = cur_len + 1
+  }
+  StringBuilder::push(sb, String::from_char_code(0))
+  StringBuilder::push(sb, String::from_char_code(0))
+  StringBuilder::push(sb, String::from_char_code(0))
+  StringBuilder::push(sb, String::from_char_code(0))
+  StringBuilder::push(sb, String::from_char_code(ushr(bit_len, 24)&255))
+  StringBuilder::push(sb, String::from_char_code(ushr(bit_len, 16)&255))
+  StringBuilder::push(sb, String::from_char_code(ushr(bit_len, 8)&255))
+  StringBuilder::push(sb, String::from_char_code(bit_len&255))
+  StringBuilder::freeze(sb)
+}
+let to_hex_char = (i: Int) -> String {
+  String::substring(hex_table, i, i + 1)
+}
+let byte_to_hex = (b: Int) -> String {
+  to_hex_char((b>>4)&15)|>String::concat(to_hex_char(b&15))
+}
+let word_to_hex = (w: Int) -> String {
+  let sb = StringBuilder::new()
+  StringBuilder::push(sb, byte_to_hex(ushr(w, 24)&255))
+  StringBuilder::push(sb, byte_to_hex(ushr(w, 16)&255))
+  StringBuilder::push(sb, byte_to_hex(ushr(w, 8)&255))
+  StringBuilder::push(sb, byte_to_hex(w&255))
+  StringBuilder::freeze(sb)
+}
+let build_schedule = (msg: String, block_start: Int) -> Bytes {
+  let arr = Bytes::new()
+  let mut i = 0
+  while i < 16 {
+    let w = read_word(msg, block_start / 4 + i)
+    push_word_bytes(arr, w)
+    i = i + 1
+  }
+  while i < 80 {
+    let w = rotl(
+      read_word_bytes(arr, i - 3) ^
+      read_word_bytes(arr, i - 8) ^
+      read_word_bytes(arr, i - 14) ^
+      read_word_bytes(arr, i - 16),
+      1
+    )
+    push_word_bytes(arr, w)
+    i = i + 1
+  }
+  arr
+}
+let rec process_rounds = (i: Int, a: Int, b: Int, c: Int, d: Int, e: Int, w: Bytes) -> Bytes {
+  if i >= 80 {
+    let out = Bytes::new()
+    push_word_bytes(out, a)
+    push_word_bytes(out, b)
+    push_word_bytes(out, c)
+    push_word_bytes(out, d)
+    push_word_bytes(out, e)
+    out
+  } else {
+    let f = if i < 20 {
+      (b&c)^((b^mask32)&d)
+    } else if i < 40 {
+      b^c^d
+    } else if i < 60 {
+      (b&c)^(b&d)^(c&d)
+    } else {
+      b^c^d
+    }
+    let k = if i < 20 {
+      k0
+    }
+    else if i < 40 {
+      k1
+    }
+    else if i < 60 {
+      k2
+    }
+    else {
+      k3
+    }
+    let temp = add32(add32(add32(add32(rotl(a, 5), f), e), k), read_word_bytes(w, i))
+    process_rounds(i + 1, temp, a, rotl(b, 30), c, d, w)
+  }
+}
+let rec process_blocks = (msg: String, block_idx: Int, num_blocks: Int, h0: Int, h1: Int, h2: Int, h3: Int, h4: Int) -> String {
+  if block_idx >= num_blocks {
+    let sb = StringBuilder::new()
+    StringBuilder::push(sb, word_to_hex(h0))
+    StringBuilder::push(sb, word_to_hex(h1))
+    StringBuilder::push(sb, word_to_hex(h2))
+    StringBuilder::push(sb, word_to_hex(h3))
+    StringBuilder::push(sb, word_to_hex(h4))
+    StringBuilder::freeze(sb)
+  } else {
+    let w = build_schedule(msg, block_idx * 64)
+    let result = process_rounds(0, h0, h1, h2, h3, h4, w)
+    let new_h0 = add32(h0, read_word_bytes(result, 0))
+    let new_h1 = add32(h1, read_word_bytes(result, 1))
+    let new_h2 = add32(h2, read_word_bytes(result, 2))
+    let new_h3 = add32(h3, read_word_bytes(result, 3))
+    let new_h4 = add32(h4, read_word_bytes(result, 4))
+    process_blocks(msg, block_idx + 1, num_blocks, new_h0, new_h1, new_h2, new_h3, new_h4)
+  }
+}
+export let sha1 = (msg: String) -> String {
+  let padded = pad_message(msg)
+  let num_blocks = (padded|>String::length()) / 64
+  process_blocks(padded, 0, num_blocks, h0_init, h1_init, h2_init, h3_init, h4_init)
 }
 let fn_sig_text: (Array[String], Array[(String, Array[String])], Array[(String, Option[TypeExpr])], TypeExpr, Option[String]) -> Option[String] = (tps, tbs, params, ret_ty, eff_opt) -> {
   let mut missing = false
@@ -42935,6 +43095,242 @@ export let contract_facade_source: (Array[(String, String)], Array[String], Arra
     throw("contract facade: some declarations have no implementation file (run check_contract first)")
   } else ()
   String::concat(String::join(lines, "\n"), "\n")
+}
+let sorted_strings: (Array[String]) -> Array[String] = (items) -> {
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(items) {
+    Array::push(out, Array::get(items, i))
+    i = i + 1
+  }
+  let n = Array::length(out)
+  let mut a = 0
+  while a < n {
+    let mut b = a + 1
+    let mut min_i = a
+    while b < n {
+      let x = Array::get(out, b)
+      let y = Array::get(out, min_i)
+      let xl = String::length(x)
+      let yl = String::length(y)
+      let mut ci = 0
+      let mut cmp = 0
+      while cmp == 0 && ci < xl && ci < yl {
+        let cx = String::char_code_at(x, ci)
+        let cy = String::char_code_at(y, ci)
+        if cx < cy {
+          cmp = 0 - 1
+        } else if cx > cy {
+          cmp = 1
+        } else ()
+        ci = ci + 1
+      }
+      if cmp == 0 {
+        if xl < yl {
+          cmp = 0 - 1
+        } else if xl > yl {
+          cmp = 1
+        } else ()
+      } else ()
+      if cmp < 0 {
+        min_i = b
+      } else ()
+      b = b + 1
+    }
+    if min_i != a {
+      let tmp = Array::get(out, a)
+      Array::set(out, a, Array::get(out, min_i))
+      Array::set(out, min_i, tmp)
+    } else ()
+    a = a + 1
+  }
+  out
+}
+export let contract_hash: (Array[(String, String)], Array[String], Array[Stmt]) -> String = (fn_decls, opaque_names, type_defs) -> {
+  let lines = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(fn_decls) {
+    let (dname, dsig) = Array::get(fn_decls, i)
+    Array::push(lines, "fn \{dname} \{dsig}")
+    i = i + 1
+  }
+  let mut oi = 0
+  while oi < Array::length(opaque_names) {
+    Array::push(lines, "opaque \{Array::get(opaque_names, oi)}")
+    oi = oi + 1
+  }
+  let mut ti = 0
+  while ti < Array::length(type_defs) {
+    Array::push(lines, "type \{print_stmt(Array::get(type_defs, ti))}")
+    ti = ti + 1
+  }
+  let canon = String::join(sorted_strings(lines), "\n")
+  "ct:sha1:\{sha1(String::concat("vibei:v1\n", canon))}"
+}
+export let package_hash_from_sources: (Array[(String, String)]) -> String = (sources) -> {
+  let keys = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(sources) {
+    let (path, _) = Array::get(sources, i)
+    Array::push(keys, path)
+    i = i + 1
+  }
+  let ordered = sorted_strings(keys)
+  let sb = StringBuilder::new()
+  StringBuilder::push(sb, "vibe-pkg:v1\n")
+  let mut ki = 0
+  while ki < Array::length(ordered) {
+    let key = Array::get(ordered, ki)
+    let mut si = 0
+    while si < Array::length(sources) {
+      let (path, text) = Array::get(sources, si)
+      if path == key {
+        StringBuilder::push(sb, "file \{path} \{String::length(text)}\n")
+        StringBuilder::push(sb, text)
+        StringBuilder::push(sb, "\n")
+        si = Array::length(sources)
+      } else {
+        si = si + 1
+      }
+    }
+    ki = ki + 1
+  }
+  "pkg:sha1:\{sha1(StringBuilder::freeze(sb))}"
+}
+let is_digit_run: (String, Int, Int) -> Bool = (s, from, to) -> {
+  if to <= from {
+    false
+  } else {
+    let mut i = from
+    let mut ok = true
+    while i < to {
+      let c = String::char_code_at(s, i)
+      if c < '0' || c > '9' {
+        ok = false
+        i = to
+      } else {
+        i = i + 1
+      }
+    }
+    ok
+  }
+}
+export let is_strict_semver: (String) -> Bool = (v) -> {
+  let start = if String::starts_with(v, "^") {
+    1
+  } else 0
+  let body = String::substring(v, start, String::length(v))
+  let parts = String::split(body, ".")
+  if Array::length(parts) != 3 {
+    false
+  } else {
+    let a = Array::get(parts, 0)
+    let b = Array::get(parts, 1)
+    let c = Array::get(parts, 2)
+    is_digit_run(a, 0, String::length(a)) && is_digit_run(b, 0, String::length(b)) && is_digit_run(c, 0, String::length(c))
+  }
+}
+export let is_package_pin: (String) -> Bool = (h) -> {
+  if !String::starts_with(h, "#pkg:sha1:") {
+    false
+  } else if String::length(h) != 50 {
+    false
+  } else {
+    let mut i = 10
+    let mut ok = true
+    while i < 50 {
+      let c = String::char_code_at(h, i)
+      let is_hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
+      if is_hex {
+        i = i + 1
+      } else {
+        ok = false
+        i = 50
+      }
+    }
+    ok
+  }
+}
+let split_fields: (String) -> Array[String] = (line) -> {
+  let raw = String::split(String::trim(line), " ")
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(raw) {
+    let f = Array::get(raw, i)
+    if String::length(f) > 0 {
+      Array::push(out, f)
+    } else ()
+    i = i + 1
+  }
+  out
+}
+export let extract_require_pins: (String) -> (Array[(String, String, String)], String) with { Error } = (source) -> {
+  let pins = Array::slice([
+    ("", "", "")
+  ], 0, 0)
+  let sb = StringBuilder::new()
+  let len = String::length(source)
+  let mut pos = 0
+  let mut scanning = true
+  while pos < len {
+    let mut nl = pos
+    while nl < len && String::char_code_at(source, nl) != 10 {
+      nl = nl + 1
+    }
+    let line = String::substring(source, pos, nl)
+    let trimmed = String::trim(line)
+    let is_require = scanning && String::starts_with(trimmed, "require ")
+    if is_require {
+      let fields = split_fields(trimmed)
+      if Array::length(fields) != 5 {
+        throw("malformed require line (expected: require @scope/name x.y.z = #pkg:sha1:<40hex>): \{trimmed}")
+      } else ()
+      let name = Array::get(fields, 1)
+      let ver = Array::get(fields, 2)
+      let eq = Array::get(fields, 3)
+      let pin = Array::get(fields, 4)
+      if !String::starts_with(name, "@") {
+        throw("require package name must start with '@': \{name}")
+      } else ()
+      if !is_strict_semver(ver) {
+        throw("require version must be a strict semver triple (x.y.z or ^x.y.z): \{ver}")
+      } else ()
+      if eq == "=" {
+        ()
+      } else {
+        throw("malformed require line (missing '='): \{trimmed}")
+      }
+      if !is_package_pin(pin) {
+        throw("require pin must be #pkg:sha1:<40hex> (compute with `vibe hash`): \{pin}")
+      } else ()
+      Array::push(pins, (name, ver, String::substring(pin, 1, String::length(pin))))
+      let mut bi = 0
+      while bi < String::length(line) {
+        StringBuilder::push(sb, " ")
+        bi = bi + 1
+      }
+    } else {
+      if String::length(trimmed) == 0 || String::starts_with(trimmed, "//") {
+        ()
+      } else {
+        scanning = false
+      }
+      StringBuilder::push(sb, line)
+    }
+    if nl < len {
+      StringBuilder::push(sb, "\n")
+    } else ()
+    pos = nl + 1
+  }
+  (pins, StringBuilder::freeze(sb))
 }
 export {
   parse_contract_program, collect_impl_fn_defs, check_contract
@@ -44502,7 +44898,8 @@ let desugar_contract_source_fs: (String, String) -> String with { Error, Fs } = 
     let raw = Array::get(impl_raws, ri)
     let resolved = resolve_import_path(dir, raw)
     let impl_text = Fs::read_file(resolved)
-    let impl_stmts = parse_program(lex(impl_text))
+    let (_, impl_blanked) = extract_require_pins(impl_text)
+    let impl_stmts = parse_program(lex(impl_blanked))
     Array::push(impl_units, (raw, impl_stmts))
     let mut si = 0
     while si < Array::length(impl_stmts) {
@@ -44516,6 +44913,57 @@ let desugar_contract_source_fs: (String, String) -> String with { Error, Fs } = 
     throw("\{path}: contract violation: \{String::join(errors, "; ")}")
   } else ()
   contract_facade_source(decls, opaque_names, type_defs, impl_units)
+}
+export let contract_package_hashes_fs: (String) -> (String, String) with { Error, Fs } = (path) -> {
+  let raw = Fs::read_file(path)
+  let (_, blanked) = extract_require_pins(raw)
+  let (decls, opaques, extra) = parse_contract_program(lex(blanked))
+  let (impl_raws, type_defs) = classify_contract_stmts(extra)
+  let dir = dir_of_path(path)
+  let sources = Array::slice([
+    ("", "")
+  ], 0, 0)
+  Array::push(sources, ("index.vibei", raw))
+  let mut ri = 0
+  while ri < Array::length(impl_raws) {
+    let iraw = Array::get(impl_raws, ri)
+    let itext = Fs::read_file(resolve_import_path(dir, iraw))
+    Array::push(sources, (iraw, itext))
+    ri = ri + 1
+  }
+  (package_hash_from_sources(sources), contract_hash(decls, opaques, type_defs))
+}
+let verify_store_package_fs: (String, Array[(String, String, String)], String) -> Unit with { Error, Fs } = (importer, pins, store_index_path) -> {
+  let prefix = ".vibe/store/"
+  let suffix = "/index.vibei"
+  let name = String::substring(
+    store_index_path,
+    String::length(prefix),
+    String::length(store_index_path) - String::length(suffix)
+  )
+  let mut pin_hash = ""
+  let mut pi = 0
+  while pi < Array::length(pins) {
+    let (pname, _, phash) = Array::get(pins, pi)
+    if pname == name {
+      pin_hash = phash
+    } else ()
+    pi = pi + 1
+  }
+  if pin_hash == "" {
+    throw("no require pin for \{name} in \{importer} (add: require \{name} <x.y.z> = #<pkg-hash>; compute with `vibe hash`)")
+  } else ()
+  if Fs::exists(store_index_path) {
+    ()
+  } else {
+    throw("package \{name} is not installed in the store (.vibe/store/\{name}/)")
+  }
+  let (actual, _) = contract_package_hashes_fs(store_index_path)
+  if actual == pin_hash {
+    ()
+  } else {
+    throw("pin mismatch for \{name}: \{importer} requires #\{pin_hash} but the store copy is #\{actual}")
+  }
 }
 let enforce_incoming_boundary_fs: (String, String) -> Unit with { Error, Fs } = (importer, target) -> {
   let tlen = String::length(target)
@@ -44545,16 +44993,20 @@ let rec collect_sources_rec: (String, Array[(String, String)], Array[Array[Strin
   else {
     path_set_add(visited, path)
     let raw_source = Fs::read_file(path)
+    let (pins, pin_blanked) = extract_require_pins(raw_source)
     let source = if String::ends_with(path, ".vibei") {
-      desugar_contract_source_fs(path, raw_source)
+      desugar_contract_source_fs(path, pin_blanked)
     } else {
-      raw_source
+      pin_blanked
     }
     let (deps, _, _) = load_or_parse_module_header_fs(path, source, 0)
     let mut i = 0
     while i < Array::length(deps) {
       let dep = Array::get(deps, i)
       enforce_incoming_boundary_fs(path, dep)
+      if String::starts_with(dep, ".vibe/store/") && String::ends_with(dep, "/index.vibei") {
+        verify_store_package_fs(path, pins, dep)
+      } else ()
       collect_sources_rec(dep, sources, visited)
       i = i + 1
     }
@@ -44662,6 +45114,24 @@ export let collect_source_groups_fs: (String) -> Array[(String, Array[(String, S
           }
       }
   }
+}
+export let compile_wasi_module: (Array[Stmt], String) -> Bytes with { Error } = (stmts, entry_name) -> {
+  compile_wasi_module_impl(stmts, entry_name)
+}
+export let compile_wasi_module_rc: (Array[Stmt], String) -> Bytes with { Error } = (stmts, entry_name) -> {
+  compile_wasi_module_rc_impl(stmts, entry_name)
+}
+export let compile_wasi_module_coverage: (Array[Stmt], String) -> Bytes with { Error } = (stmts, entry_name) -> {
+  compile_wasi_module_coverage_impl(stmts, entry_name)
+}
+export let compile_wasi_module_trace: (Array[Stmt], String) -> Bytes with { Error } = (stmts, entry_name) -> {
+  compile_wasi_module_trace_impl(stmts, entry_name)
+}
+export let compile_wasi_module_break: (Array[Stmt], String, DbgProv) -> Bytes with { Error } = (stmts, entry_name, prov) -> {
+  compile_wasi_module_break_impl(stmts, entry_name, prov)
+}
+export let compile_wasi_module_rc: (Array[Stmt], String) -> Bytes with { Error } = (stmts, entry_name) -> {
+  compile_wasi_module_rc_impl(stmts, entry_name)
 }
 let empty_stmt_array: () -> Array[Stmt] = () -> {
   Array::slice([
@@ -48194,6 +48664,15 @@ export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
   let output_path = own_host_string(read_arg_or_env(1, "VIBE_OUTPUT"))
   let entry_name = own_host_string(read_arg_or_env(2, "VIBE_ENTRY"))
   let mark_memory = Env::get("VIBE_PROFILE_MEMORY_MARKS") == "1"
+  if Env::get("VIBE_HASH") == "1" {
+    return handle {
+      let (pkg_hash, ct_hash) = contract_package_hashes_fs(input_path)
+      Fs::write_file(output_path, "package #\{pkg_hash}\ncontract \{ct_hash}\n")
+      0
+    } with Error {
+      Throw(msg) => emit_compile_diag(output_path, msg)
+    }
+  } else ()
   if Env::get("VIBE_FS_COMPILE") == "1" {
     return handle {
       let bytes = if Env::get("VIBE_COVERAGE") == "1" {

@@ -17,7 +17,7 @@ import ../vibe/compiler/core {
 }
 
 import ../vibe/compiler/contract/index.vibe {
-  parse_contract_program, check_contract, contract_hash, package_hash_from_sources
+  parse_contract_program, check_contract, contract_hash, package_hash_from_sources, extract_require_pins, is_strict_semver, is_package_pin
 }
 
 import ../vibe/compiler/cache/sha1.vibe {
@@ -137,6 +137,43 @@ test "content-addressing hashes (#730 D-1)" {
   assert(String::starts_with(p1, "pkg:sha1:"))
   let p3 = package_hash_from_sources([("index.vibei", "fn a() -> Int"), ("./impl.vibe", "export fn a() -> Int { 2 }")])
   assert(!(p3 == p1))
+}
+
+test "require pin extraction and validation (#730 D-2)" {
+  assert(is_strict_semver("1.2.3"))
+  assert(is_strict_semver("^0.10.42"))
+  assert(!is_strict_semver("^1"))
+  assert(!is_strict_semver("1.2"))
+  assert(!is_strict_semver("~1.2.3"))
+  assert(!is_strict_semver("1.2.x"))
+  assert(is_package_pin("#pkg:sha1:dfd1c758bb64203416db0b64b5854882a43abc11"))
+  assert(!is_package_pin("#pkg:sha1:dfd1"))
+  assert(!is_package_pin("#ct:sha1:dfd1c758bb64203416db0b64b5854882a43abc11"))
+
+  let src = "require @d2/pkg 1.0.0 = #pkg:sha1:dfd1c758bb64203416db0b64b5854882a43abc11\n\nimport @d2/pkg { triple }\nlet x = 1"
+  let (pins, blanked) = extract_require_pins(src)
+  assert_eq(Array::length(pins), 1)
+  let (pname, pver, ppin) = pins[0]
+  assert(pname == "@d2/pkg")
+  assert(pver == "1.0.0")
+  assert(String::starts_with(ppin, "pkg:sha1:"))
+  // blanking preserves byte length (offsets stay valid for diagnostics)
+  assert_eq(String::length(blanked), String::length(src))
+  assert(!String::contains(blanked, "require"))
+  assert(String::contains(blanked, "import @d2/pkg { triple }"))
+}
+
+test "malformed require lines are rejected (#730 D-2)" {
+  let bad1 = handle {
+    let _ = extract_require_pins("require @a/b 1.2 = #pkg:sha1:dfd1c758bb64203416db0b64b5854882a43abc11\n")
+    false
+  } with Error { Throw(_) => true }
+  assert(bad1)
+  let bad2 = handle {
+    let _ = extract_require_pins("require @a/b 1.2.3 = #bad\n")
+    false
+  } with Error { Throw(_) => true }
+  assert(bad2)
 }
 
 test "contract declaration with a body is rejected (#729)" {
