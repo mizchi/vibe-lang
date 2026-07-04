@@ -111,12 +111,15 @@ let fn_sig_text: (Array[String], Array[(String, Array[String])], Array[(String, 
 // whose definition lives in an implementation file (#729 C-4). Everything
 // else (implementation imports, transparent type definitions) parses as
 // ordinary statements and is returned alongside.
-export let parse_contract_program: (Array[Token]) -> (Array[(String, String)], Array[String], Array[Stmt]) with { Error } = (tokens) -> {
+// #739: opaque/bodyless type declarations carry (name, arity) so conformance
+// can reject an impl whose type-parameter count differs and the semver
+// surface can see `Box` -> `Box[T]` as a breaking change.
+export let parse_contract_program: (Array[Token]) -> (Array[(String, String)], Array[(String, Int)], Array[Stmt]) with { Error } = (tokens) -> {
   let decls = Array::slice([
     ("", "")
   ], 0, 0)
   let opaques = Array::slice([
-    ""
+    ("", 0)
   ], 0, 0)
   let stmts = Array::slice([
     SExport(Array::slice([
@@ -140,6 +143,7 @@ export let parse_contract_program: (Array[Token]) -> (Array[(String, String)], A
           _ => ""
         }
         let mut is_bodyless = false
+        let mut arity = 0
         if tname == "" {
           ()
         } else {
@@ -148,11 +152,18 @@ export let parse_contract_program: (Array[Token]) -> (Array[(String, String)], A
           match peek(tokens, scan) {
             TLBracket => {
               let mut depth = 1
+              // `[T, U]` — parameters at depth 1 are comma-separated (#739).
+              arity = 1
               scan = scan + 1
               while depth > 0 {
                 match peek(tokens, scan) {
                   TLBracket => { depth = depth + 1 },
                   TRBracket => { depth = depth - 1 },
+                  TComma => if depth == 1 {
+                    arity = arity + 1
+                  } else {
+                    ()
+                  },
                   TEof => { depth = 0 },
                   _ => ()
                 }
@@ -162,7 +173,9 @@ export let parse_contract_program: (Array[Token]) -> (Array[(String, String)], A
             _ => ()
           }
           match peek(tokens, scan) {
-            TEq => (),
+            TEq => {
+              arity = 0
+            },
             _ => {
               is_bodyless = true
               la = scan
@@ -170,7 +183,7 @@ export let parse_contract_program: (Array[Token]) -> (Array[(String, String)], A
           }
         }
         if is_bodyless {
-          Array::push(opaques, tname)
+          Array::push(opaques, (tname, arity))
           pos = la
         } else {
           let (stmt, next) = parse_stmt(tokens, [], pos)
@@ -186,7 +199,7 @@ export let parse_contract_program: (Array[Token]) -> (Array[(String, String)], A
                 TLBracket => throw("opaque type '\{oname}': type parameters are not yet supported (#729)"),
                 _ => ()
               }
-              Array::push(opaques, oname)
+              Array::push(opaques, (oname, 0))
               pos = pos + 3
             },
             _ => throw("expected type name after 'opaque type'")
@@ -255,17 +268,20 @@ export let collect_impl_fn_defs: (Array[Stmt]) -> Array[(String, Option[String],
 // Collect (name, exported) for every top-level type definition (struct /
 // enum / type alias / suberror) — the shapes an `opaque type` declaration
 // can be implemented by.
-export let collect_impl_type_defs: (Array[Stmt]) -> Array[(String, Bool)] = (stmts) -> {
+// #739: the third element is the implementation's type-parameter count, so
+// conformance can compare it against the contract's declared arity. Structs
+// and suberrors carry no type parameters in the AST — arity 0.
+export let collect_impl_type_defs: (Array[Stmt]) -> Array[(String, Bool, Int)] = (stmts) -> {
   let out = Array::slice([
-    ("", false)
+    ("", false, 0)
   ], 0, 0)
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SStruct(exported, name, _, _, _) => Array::push(out, (name, exported)),
-      SEnum(exported, name, _, _, _) => Array::push(out, (name, exported)),
-      STypeAlias(exported, name, _, _) => Array::push(out, (name, exported)),
-      SSuberror(exported, name, _) => Array::push(out, (name, exported)),
+      SStruct(exported, name, _, _, _) => Array::push(out, (name, exported, 0)),
+      SEnum(exported, name, tparams, _, _) => Array::push(out, (name, exported, Array::length(tparams))),
+      STypeAlias(exported, name, tparams, _) => Array::push(out, (name, exported, Array::length(tparams))),
+      SSuberror(exported, name, _) => Array::push(out, (name, exported, 0)),
       _ => ()
     }
     i = i + 1
@@ -275,7 +291,7 @@ export let collect_impl_type_defs: (Array[Stmt]) -> Array[(String, Bool)] = (stm
 
 // Check that `impl_stmts` provide exactly the contract surface. Returns a
 // list of human-readable conformance errors; empty = conformant.
-export let check_contract: (Array[(String, String)], Array[String], Array[Stmt]) -> Array[String] = (decls, opaque_names, impl_stmts) -> {
+export let check_contract: (Array[(String, String)], Array[(String, Int)], Array[Stmt]) -> Array[String] = (decls, opaque_names, impl_stmts) -> {
   let errors = Array::slice([
     ""
   ], 0, 0)
@@ -348,17 +364,24 @@ export let check_contract: (Array[(String, String)], Array[String], Array[Stmt])
   let type_defs = collect_impl_type_defs(impl_stmts)
   let mut oi = 0
   while oi < Array::length(opaque_names) {
-    let oname = Array::get(opaque_names, oi)
+    let (oname, oarity) = Array::get(opaque_names, oi)
     let mut ofound = false
     let mut ti = 0
     while ti < Array::length(type_defs) {
-      let (tname, texported) = Array::get(type_defs, ti)
+      let (tname, texported, tarity) = Array::get(type_defs, ti)
       if tname == oname {
         ofound = true
         if texported {
           ()
         } else {
           Array::push(errors, "opaque type '\{oname}' is implemented but not exported by its implementation file")
+        }
+        // #739: the contract's declared type-parameter count is part of the
+        // surface — `type Box[T]` is not satisfied by a nullary `enum Box`.
+        if tarity == oarity {
+          ()
+        } else {
+          Array::push(errors, "type '\{oname}' arity mismatch: contract declares \{oarity} type parameter(s), implementation defines \{tarity}")
         }
       } else ()
       ti = ti + 1
@@ -372,12 +395,13 @@ export let check_contract: (Array[(String, String)], Array[String], Array[Stmt])
   }
   let mut xi = 0
   while xi < Array::length(type_defs) {
-    let (tname, texported) = Array::get(type_defs, xi)
+    let (tname, texported, _) = Array::get(type_defs, xi)
     if texported {
       let mut tdeclared = false
       let mut oj = 0
       while oj < Array::length(opaque_names) {
-        if Array::get(opaque_names, oj) == tname {
+        let (ojname, _) = Array::get(opaque_names, oj)
+        if ojname == tname {
           tdeclared = true
         } else ()
         oj = oj + 1
@@ -433,7 +457,7 @@ export let contract_impl_import_raw_paths: (Array[Stmt]) -> Array[String] with {
 // source, so everything downstream of the loader (type db, merge plan,
 // codegen) needs no .vibei awareness — it rides the #716 re-export
 // machinery unchanged.
-export let contract_facade_source: (Array[(String, String)], Array[String], Array[Stmt], Array[(String, Array[Stmt])]) -> String with { Error } = (decls, opaque_names, type_defs, impl_units) -> {
+export let contract_facade_source: (Array[(String, String)], Array[(String, Int)], Array[Stmt], Array[(String, Array[Stmt])]) -> String with { Error } = (decls, opaque_names, type_defs, impl_units) -> {
   let lines = Array::slice([
     ""
   ], 0, 0)
@@ -455,7 +479,7 @@ export let contract_facade_source: (Array[(String, String)], Array[String], Arra
     ], 0, 0)
     let mut oi = 0
     while oi < Array::length(opaque_names) {
-      let oname = Array::get(opaque_names, oi)
+      let (oname, _) = Array::get(opaque_names, oi)
       let mut otaken = false
       let mut oai = 0
       while oai < Array::length(allocated) {
@@ -470,7 +494,7 @@ export let contract_facade_source: (Array[(String, String)], Array[String], Arra
         let mut here = false
         let mut uti = 0
         while uti < Array::length(unit_types) {
-          let (tname, _) = Array::get(unit_types, uti)
+          let (tname, _, _) = Array::get(unit_types, uti)
           if tname == oname {
             here = true
           } else ()
@@ -592,7 +616,7 @@ let sorted_strings: (Array[String]) -> Array[String] = (items) -> {
   out
 }
 
-export let contract_hash: (Array[(String, String)], Array[String], Array[Stmt]) -> String = (fn_decls, opaque_names, type_defs) -> {
+export let contract_hash: (Array[(String, String)], Array[(String, Int)], Array[Stmt]) -> String = (fn_decls, opaque_names, type_defs) -> {
   let canon = String::join(sorted_strings(contract_surface_lines(fn_decls, opaque_names, type_defs)), "\n")
   "ct:sha1:\{sha1(String::concat("vibei:v1\n", canon))}"
 }
@@ -809,7 +833,7 @@ let str_in: (Array[String], String) -> Bool = (arr, target) -> {
 
 // Canonical per-declaration lines for a contract surface (shared by
 // contract_hash and the change classifier, so they can never disagree).
-export let contract_surface_lines: (Array[(String, String)], Array[String], Array[Stmt]) -> Array[String] = (fn_decls, opaque_names, type_defs) -> {
+export let contract_surface_lines: (Array[(String, String)], Array[(String, Int)], Array[Stmt]) -> Array[String] = (fn_decls, opaque_names, type_defs) -> {
   let lines = Array::slice([
     ""
   ], 0, 0)
@@ -821,7 +845,16 @@ export let contract_surface_lines: (Array[(String, String)], Array[String], Arra
   }
   let mut oi = 0
   while oi < Array::length(opaque_names) {
-    Array::push(lines, "opaque \{Array::get(opaque_names, oi)}")
+    let (oname, oarity) = Array::get(opaque_names, oi)
+    // #739: arity is part of the surface — `Box` -> `Box[T]` must classify
+    // as a MAJOR change. Zero-arity keeps the historical `opaque X` line so
+    // existing contract hashes only move for parameterized types.
+    let oline = if oarity == 0 {
+      "opaque \{oname}"
+    } else {
+      "opaque \{oname}[\{oarity}]"
+    }
+    Array::push(lines, oline)
     oi = oi + 1
   }
   let mut ti = 0

@@ -24,9 +24,9 @@ import ../lib/@vibe/core {
   sha1
 }
 
-let no_opaques: () -> Array[String] = () -> {
+let no_opaques: () -> Array[(String, Int)] = () -> {
   Array::slice([
-    ""
+    ("", 0)
   ], 0, 0)
 }
 
@@ -92,7 +92,9 @@ test "declared but unexported implementation is reported (#729)" {
 test "opaque type conformance (#729 C-4)" {
   let (decls, opaques, _) = parse_contract_program(lex("opaque type Counter\nfn get(c: Counter) -> Int"))
   assert_eq(Array::length(opaques), 1)
-  assert(opaques[0] == "Counter")
+  let (oname0, oarity0) = opaques[0]
+  assert(oname0 == "Counter")
+  assert_eq(oarity0, 0)
   let ok_impls = parse_program(lex("export struct Counter { n: Int }\nexport fn get(c: Counter) -> Int { c.n }"))
   assert_eq(Array::length(check_contract(decls, opaques, ok_impls)), 0)
   let missing = parse_program(lex("export fn get(c: Counter) -> Int { 0 }"))
@@ -101,6 +103,29 @@ test "opaque type conformance (#729 C-4)" {
   let errs = check_contract(decls, opaques, unexported)
   assert_eq(Array::length(errs), 1)
   assert(String::contains(errs[0], "not exported"))
+}
+
+test "bodyless type arity is tracked and enforced (#739)" {
+  let (decls, opaques, _) = parse_contract_program(lex("type Box[T]\ntype Pair[A, B]\nfn boxed[T](x: T) -> Box[T]"))
+  assert_eq(Array::length(opaques), 2)
+  let (bname, barity) = opaques[0]
+  assert(bname == "Box")
+  assert_eq(barity, 1)
+  let (pname2, parity2) = opaques[1]
+  assert(pname2 == "Pair")
+  assert_eq(parity2, 2)
+  // conformant: matching arities
+  let ok_impls = parse_program(lex("export enum Box[T] { BoxOf(T) }\nexport enum Pair[A, B] { PairOf(A, B) }\nexport fn boxed[T](x: T) -> Box[T] { BoxOf(x) }"))
+  assert_eq(Array::length(check_contract(decls, opaques, ok_impls)), 0)
+  // arity mismatch: nullary Box against declared Box[T]
+  let bad_impls = parse_program(lex("export enum Box { BoxNone }\nexport enum Pair[A, B] { PairOf(A, B) }\nexport fn boxed[T](x: T) -> Box[T] { BoxNone }"))
+  let errs = check_contract(decls, opaques, bad_impls)
+  assert_eq(Array::length(errs), 1)
+  assert(String::contains(errs[0], "arity mismatch"))
+  // surface lines carry the arity so Box -> Box[T] classifies as major
+  let l_box0 = contract_surface_lines(decls, [("Box", 0)], no_type_defs())
+  let l_box1 = contract_surface_lines(decls, [("Box", 1)], no_type_defs())
+  assert(classify_contract_change(l_box0, l_box1) == "major")
 }
 
 test "undeclared exported type is reported (#729 C-4)" {
