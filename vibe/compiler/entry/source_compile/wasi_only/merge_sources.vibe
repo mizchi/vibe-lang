@@ -112,8 +112,8 @@ let append_fs_import_alias_collision_defs: (Array[Stmt], String, Array[Stmt], Ex
     let (raw_path, original, local) = Array::get(refs, i)
     if !string_array_contains_local(emitted, local) && !string_array_contains_local(excluded_locals, local) {
       let resolved = resolve_existing_import_path(base_dir, raw_path)
-      // Builtin read for the same reason as collect_parsed_sources_recursive;
-      // ingest for the same reason too (#741).
+      // Builtin read + ingest, same as collect_parsed_sources_recursive
+      // (flatten-lane wiring constraint / #741).
       let source = ingest_source_text_fs(resolved, Fs::read_file(resolved))
       let source_stmts = namespace_private_value_stmts(
         resolved,
@@ -156,12 +156,14 @@ let rec collect_parsed_sources_recursive: (String, Array[String], Array[Array[St
   }
   else {
     path_set_add(visited, path)
-    // Builtin read, NOT `perform Fs::ReadFile`: nothing mocks Fs around the
-    // merge (the effect was ceremony bridged to the same host import), and a
-    // perform resumed from THIS recursion depth corrupts the next op's
-    // argument in an in-language handler (deep-continuation resume bug — the
-    // #726 emit tool hit it; bundle-built binaries never did because their
-    // performs compile to direct host calls).
+    // Builtin read, NOT `perform Fs::ReadFile`. The original reason (#737's
+    // deep-continuation resume corruption) no longer reproduces — the
+    // selfhost gate keeps a recursive-perform + in-language-handler canary —
+    // but the FLATTEN lane (the adapter binary run with
+    // VIBE_EMIT_MERGED_SOURCE=1) installs no Fs handler and does not wire
+    // this path's performs to host imports, so a perform here throws an
+    // unhandled effect at flatten time. Mockable reads need that lane's
+    // effect wiring first.
     // #741: ingestion (require-pin blanking + .vibei contract desugar) applies
     // in THIS lane too, so a contract package in the graph resolves to its
     // conformance-checked facade instead of a parse error on bodyless decls.

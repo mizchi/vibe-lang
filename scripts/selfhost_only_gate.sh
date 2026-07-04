@@ -84,6 +84,63 @@ if [ "$fsres" != "42" ]; then
 fi
 echo "[selfhost-only-gate] multi-file FS-compile ok (42)"
 
+# 4b. deep-recursion effect resume regression (#737): a perform issued from a
+#     RECURSIVE frame, handled by an in-language handler OUTSIDE the recursion
+#     that bridges to a host builtin, used to deliver the FIRST resume's value
+#     as the SECOND op's argument (deep-continuation resume corruption). The
+#     merge lane works around nothing anymore (merge_sources is back on
+#     `perform Fs::ReadFile`), so this program is the canary.
+echo "[selfhost-only-gate] 4b deep-recursion effect resume regression (#737)"
+drdir="_build/_gate_deepresume"
+rm -rf "$drdir"; mkdir -p "$drdir/d"
+printf 'AAA' > "$drdir/a.txt"
+printf 'BBB' > "$drdir/d/b.txt"
+printf 'CCC' > "$drdir/d/c.txt"
+cat > "$drdir/main.vibe" <<'VEOF'
+effect FileIo {
+  ReadFile(String) -> String
+}
+
+let rec walk = (path: String, depth: Int) -> String with { FileIo } {
+  let source = perform FileIo::ReadFile(path)
+  if depth <= 0 {
+    source
+  } else {
+    let s1 = walk("_build/_gate_deepresume/d/b.txt", depth - 1)
+    let s2 = walk("_build/_gate_deepresume/d/c.txt", depth - 1)
+    "\{source}|\{s1}|\{s2}"
+  }
+}
+
+export let _start: () -> Int with { Fs } = () -> {
+  let out = handle {
+    walk("_build/_gate_deepresume/a.txt", 1)
+  } with FileIo {
+    ReadFile(p) => resume(Fs::read_file(p))
+  }
+  if out == "AAA|BBB|CCC" {
+    42
+  } else {
+    1
+  }
+}
+VEOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$drdir/main.vibe" "$drdir/main.wasm" _start >/dev/null 2>&1
+if [ ! -s "$drdir/main.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: deep-resume regression program did not compile" >&2
+  cat "$drdir/main.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+drres="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$drdir/main.wasm" 2>/dev/null | tr -dc '0-9')"
+rm -rf "$drdir"
+if [ "$drres" != "42" ]; then
+  echo "[selfhost-only-gate] FAIL: deep-resume regression returned '$drres' (expected 42) — #737-class resume corruption" >&2
+  exit 1
+fi
+echo "[selfhost-only-gate] deep-recursion effect resume ok (42)"
+
 # 5. test-block regression (#594): a file with only `test {}` blocks (no entry)
 #    must compile to a valid module whose `_start` runs every test; a passing
 #    file exits clean and a failing assert traps. Guards the codegen fix that
