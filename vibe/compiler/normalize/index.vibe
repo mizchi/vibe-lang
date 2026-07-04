@@ -15,6 +15,10 @@
 
 //# Imports
 
+import ../contract/index.vibe {
+  extract_require_pins
+}
+
 import ../core/ast.vibe {
   Stmt, TypeExpr, Expr, Pat
 }
@@ -1059,10 +1063,16 @@ export let normalize_stmts: (Array[Stmt]) -> Array[Stmt] = (stmts) -> {
 }
 
 export let normalize_source: (String) -> String with { Error } = (src) -> {
+  // #730 (D-3): require pin lines are a leading directive, not statement
+  // grammar — extract them, normalize the remainder, and re-emit them in
+  // canonical single-space form above the output. Pin FILLING is the
+  // Fs-mode wrapper's job (VIBE_FILL_PINS); this pure engine re-emits
+  // pinned and unpinned lines as they are.
+  let (req_pins, src_wo_requires) = extract_require_pins(src)
   // #cfg guard: parse_program DROPS inactive #cfg statements, so formatting
   // a #cfg-bearing source would silently delete the disabled code from the
   // re-printed output. Refuse instead.
-  let toks_cfg = lex(src)
+  let toks_cfg = lex(src_wo_requires)
   let mut ci = 0
   while ci < Array::length(toks_cfg) {
     match Array::get(toks_cfg, ci) {
@@ -1083,6 +1093,20 @@ export let normalize_source: (String) -> String with { Error } = (src) -> {
   let stmts = parse_program(toks_cfg)
   let kept = normalize_stmts(stmts)
   let sections = empty_strs()
+  if Array::length(req_pins) > 0 {
+    let req_lines = empty_strs()
+    let mut ri = 0
+    while ri < Array::length(req_pins) {
+      let (rname, rver, rpin) = Array::get(req_pins, ri)
+      if rpin == "" {
+        Array::push(req_lines, "require \{rname} \{rver}")
+      } else {
+        Array::push(req_lines, "require \{rname} \{rver} = #\{rpin}")
+      }
+      ri = ri + 1
+    }
+    Array::push(sections, String::join(req_lines, "\n"))
+  } else ()
   let mut s = 0
   while s <= 3 {
     let rendered = render_section(kept, s)

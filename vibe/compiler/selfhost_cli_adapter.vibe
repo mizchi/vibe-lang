@@ -13,7 +13,7 @@ import ./runtime / module_source.vibe {
 }
 
 import ./loader/index.vibe {
-  contract_package_hashes_fs
+  contract_package_hashes_fs, fill_require_pins_fs
 }
 
 import ./entry / compiler / file_compile {
@@ -339,6 +339,18 @@ export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
     return handle {
       let (pkg_hash, ct_hash) = contract_package_hashes_fs(input_path)
       Fs::write_file(output_path, "package #\{pkg_hash}\ncontract \{ct_hash}\n")
+      0
+    } with Error {
+      Throw(msg) => emit_compile_diag(output_path, msg)
+    }
+  } else ()
+  // #730 (D-3): `vibe fmt` pin insertion — fill unpinned require lines
+  // OFFLINE from the workspace store and write the completed source to the
+  // output path. Idempotent; pinned form is the canonical form.
+  if Env::get("VIBE_FILL_PINS") == "1" {
+    return handle {
+      let filled = fill_require_pins_fs(Fs::read_file(input_path))
+      Fs::write_file(output_path, filled)
       0
     } with Error {
       Throw(msg) => emit_compile_diag(output_path, msg)

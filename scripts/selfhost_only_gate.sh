@@ -241,6 +241,36 @@ if ! grep -q "pin mismatch" "$cdir2/bad.wasm.diag" 2>/dev/null; then
   echo "[selfhost-only-gate] FAIL: pin rejection lacks the expected diagnostic (#730)" >&2
   cat "$cdir2/bad.wasm.diag" 2>/dev/null >&2; exit 1
 fi
+# D-3: an unpinned require refuses to build; VIBE_FILL_PINS completes it
+# offline from the store; the filled source builds; the fill is idempotent.
+printf 'require @gate/d2pkg 1.0.0\n\nimport @gate/d2pkg { triple }\nexport let _start: () -> Int = () -> { triple(14) }\n' > "$cdir2/unpinned.vibe"
+if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$cdir2/unpinned.vibe" "$cdir2/unpinned.wasm" _start >/dev/null 2>&1 \
+  && [ -s "$cdir2/unpinned.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: unpinned require was not rejected (#730 D-3)" >&2; exit 1
+fi
+VIBE_FILL_PINS=1 VIBE_PREOPEN_DIR="$ROOT_DIR" \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$cdir2/unpinned.vibe" "$cdir2/filled.vibe" __no_entry__ >/dev/null 2>&1 || true
+if ! grep -q "= #pkg:sha1:" "$cdir2/filled.vibe" 2>/dev/null; then
+  echo "[selfhost-only-gate] FAIL: VIBE_FILL_PINS did not insert the pin (#730 D-3)" >&2
+  cat "$cdir2/filled.vibe.diag" 2>/dev/null >&2; exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$cdir2/filled.vibe" "$cdir2/filled.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$cdir2/filled.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: pin-filled source did not compile (#730 D-3)" >&2
+  cat "$cdir2/filled.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+VIBE_NORMALIZE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$cdir2/filled.vibe" "$cdir2/norm.vibe" >/dev/null 2>&1 || true
+if ! head -1 "$cdir2/norm.vibe" 2>/dev/null | grep -q "^require @gate/d2pkg 1.0.0 = #pkg:sha1:"; then
+  echo "[selfhost-only-gate] FAIL: normalize did not re-emit the require pin line (#730 D-3)" >&2
+  head -3 "$cdir2/norm.vibe" 2>/dev/null >&2; exit 1
+fi
 rm -rf ".vibe/store/@gate" "$cdir2"
 echo "[selfhost-only-gate] content-addressed store regression ok"
 

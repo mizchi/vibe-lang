@@ -690,28 +690,37 @@ export let extract_require_pins: (String) -> (Array[(String, String, String)], S
     let is_require = scanning && String::starts_with(trimmed, "require ")
     if is_require {
       let fields = split_fields(trimmed)
-      if Array::length(fields) != 5 {
-        throw("malformed require line (expected: require @scope/name x.y.z = #pkg:sha1:<40hex>): \{trimmed}")
+      let nfields = Array::length(fields)
+      if nfields != 5 && nfields != 3 {
+        throw("malformed require line (expected: require @scope/name x.y.z [= #pkg:sha1:<40hex>]): \{trimmed}")
       } else ()
       let name = Array::get(fields, 1)
       let ver = Array::get(fields, 2)
-      let eq = Array::get(fields, 3)
-      let pin = Array::get(fields, 4)
       if !String::starts_with(name, "@") {
         throw("require package name must start with '@': \{name}")
       } else ()
       if !is_strict_semver(ver) {
         throw("require version must be a strict semver triple (x.y.z or ^x.y.z): \{ver}")
       } else ()
-      if eq == "=" {
-        ()
+      // Unpinned (3-field) form: accepted at parse so `vibe fmt` can fill
+      // the pin offline from the store (D-3); the BUILD still refuses to
+      // resolve an unpinned package (hash-only, resolver-free).
+      let pin_hash = if nfields == 5 {
+        let eq = Array::get(fields, 3)
+        let pin = Array::get(fields, 4)
+        if eq == "=" {
+          ()
+        } else {
+          throw("malformed require line (missing '='): \{trimmed}")
+        }
+        if !is_package_pin(pin) {
+          throw("require pin must be #pkg:sha1:<40hex> (compute with `vibe hash`): \{pin}")
+        } else ()
+        String::substring(pin, 1, String::length(pin))
       } else {
-        throw("malformed require line (missing '='): \{trimmed}")
+        ""
       }
-      if !is_package_pin(pin) {
-        throw("require pin must be #pkg:sha1:<40hex> (compute with `vibe hash`): \{pin}")
-      } else ()
-      Array::push(pins, (name, ver, String::substring(pin, 1, String::length(pin))))
+      Array::push(pins, (name, ver, pin_hash))
       // blank the line, preserving its byte length
       let mut bi = 0
       while bi < String::length(line) {

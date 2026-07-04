@@ -1138,6 +1138,60 @@ export let contract_package_hashes_fs: (String) -> (String, String) with { Error
   (package_hash_from_sources(sources), contract_hash(decls, opaques, type_defs))
 }
 
+// #730 (D-3): fill missing require pins OFFLINE from the workspace store.
+// `require @x/y 1.2.3` becomes `require @x/y 1.2.3 = #pkg:sha1:<hex>` when
+// .vibe/store/@x/y/ is installed; a package absent from the store is an
+// error (network fetch belongs to `vibe add`/`update`, never to fmt).
+// Pinned lines pass through untouched, so the rewrite is idempotent.
+export let fill_require_pins_fs: (String) -> String with { Error, Fs } = (source) -> {
+  let sb = StringBuilder::new()
+  let len = String::length(source)
+  let mut pos = 0
+  let mut scanning = true
+  while pos < len {
+    let mut nl = pos
+    while nl < len && String::char_code_at(source, nl) != 10 {
+      nl = nl + 1
+    }
+    let line = String::substring(source, pos, nl)
+    let trimmed = String::trim(line)
+    let mut emitted = false
+    if scanning && String::starts_with(trimmed, "require ") {
+      let (pins_one, _) = extract_require_pins(String::concat(trimmed, "\n"))
+      if Array::length(pins_one) == 1 {
+        let (pname, pver, ppin) = Array::get(pins_one, 0)
+        if ppin == "" {
+          let store_index = String::concat(".vibe/store/", String::concat(pname, "/index.vibei"))
+          if Fs::exists(store_index) {
+            ()
+          } else {
+            throw("cannot pin \{pname} offline: not installed in the store (.vibe/store/\{pname}/)")
+          }
+          let (pkg_hash, _) = contract_package_hashes_fs(store_index)
+          StringBuilder::push(sb, "require \{pname} \{pver} = #\{pkg_hash}")
+          emitted = true
+        } else ()
+      } else ()
+    } else {
+      if String::length(trimmed) == 0 || String::starts_with(trimmed, "//") {
+        ()
+      } else {
+        scanning = false
+      }
+    }
+    if emitted {
+      ()
+    } else {
+      StringBuilder::push(sb, line)
+    }
+    if nl < len {
+      StringBuilder::push(sb, "\n")
+    } else ()
+    pos = nl + 1
+  }
+  StringBuilder::freeze(sb)
+}
+
 // #730 (D-2): verify a store-resolved package against the importer's require
 // pin. The store is laid out BY NAME (.vibe/store/@scope/name/) and trusted
 // only through this hash check, so any mirror/copy mechanism is fine.
@@ -1150,16 +1204,23 @@ let verify_store_package_fs: (String, Array[(String, String, String)], String) -
     String::length(store_index_path) - String::length(suffix)
   )
   let mut pin_hash = ""
+  let mut pin_found = false
   let mut pi = 0
   while pi < Array::length(pins) {
     let (pname, _, phash) = Array::get(pins, pi)
     if pname == name {
       pin_hash = phash
+      pin_found = true
     } else ()
     pi = pi + 1
   }
-  if pin_hash == "" {
+  if pin_found {
+    ()
+  } else {
     throw("no require pin for \{name} in \{importer} (add: require \{name} <x.y.z> = #<pkg-hash>; compute with `vibe hash`)")
+  }
+  if pin_hash == "" {
+    throw("unpinned require for \{name} in \{importer}: run `vibe fmt` (VIBE_FILL_PINS=1) to insert the pin from the store")
   } else ()
   if Fs::exists(store_index_path) {
     ()

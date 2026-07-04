@@ -12877,748 +12877,6 @@ export enum Token {
   TStringInterp(Array[String]);
   TEof
 }
-let is_ws: (Int) -> Bool = (c) -> {
-  c == ' ' || c == '\n' || c == '\t' || c == '\r'
-}
-let is_alpha: (Int) -> Bool = (c) -> {
-  (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
-}
-let is_digit: (Int) -> Bool = (c) -> {
-  c >= '0' && c <= '9'
-}
-let is_alnum: (Int) -> Bool = (c) -> {
-  is_alpha(c) || is_digit(c)
-}
-let lex_char: (String, Int, Int) -> (Token, Int) with { Error } = (s, len, i) -> {
-  let start = i + 1
-  if start >= len {
-    throw("unterminated char literal")
-  }
-  let c = String::char_code_at(s, start)
-  if c == '\\' {
-    let esc_pos = start + 1
-    if esc_pos >= len {
-      throw("unterminated char escape")
-    }
-    let esc = String::char_code_at(s, esc_pos)
-    let val = if esc == 'n' {
-      10
-    }
-    else if esc == 't' {
-      9
-    }
-    else if esc == 'r' {
-      13
-    }
-    else if esc == '\\' {
-      92
-    }
-    else if esc == '\'' {
-      39
-    }
-    else if esc == '0' {
-      0
-    }
-    else throw("invalid char escape")
-    let close = esc_pos + 1
-    if close >= len || String::char_code_at(s, close) != '\'' {
-      throw("expected closing quote for char literal")
-    };
-    (TInt(val), close + 1)
-  } else {
-    let close = start + 1
-    if close >= len || String::char_code_at(s, close) != '\'' {
-      throw("expected closing quote for char literal")
-    };
-    (TInt(c), close + 1)
-  }
-}
-let slice_eq: (String, Int, Int, String) -> Bool = (source, start, end, text) -> {
-  let len = end - start
-  let text_len = String::length(text)
-  if len != text_len {
-    false
-  } else {
-    let mut i = 0
-    let mut ok = true
-    while ok && i < text_len {
-      ok = String::char_code_at(source, start + i) == String::char_code_at(text, i)
-      i = i + 1
-    }
-    ok
-  }
-}
-let is_hex_digit: (Int) -> Bool = (c) -> {
-  (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
-}
-let keyword_lookup: (String, Int, Int) -> Option[Token] = (source, start, end) -> {
-  let len = end - start
-  if len == 2 {
-    let c0 = String::char_code_at(source, start)
-    if c0 == 'f' {
-      if slice_eq(source, start, end, "fn") {
-        Some(TIdent("fn"))
-      } else None
-    } else if c0 == 'i' {
-      if slice_eq(source, start, end, "if") {
-        Some(TIf)
-      } else if slice_eq(source, start, end, "in") {
-        Some(TIn)
-      } else if slice_eq(source, start, end, "is") {
-        Some(TIs)
-      } else None
-    } else if c0 == 'd' {
-      if slice_eq(source, start, end, "do") {
-        Some(TDo)
-      } else None
-    } else if c0 == 'a' {
-      if slice_eq(source, start, end, "as") {
-        Some(TAs)
-      } else None
-    } else None
-  } else if len == 3 {
-    let c0 = String::char_code_at(source, start)
-    if c0 == 'l' {
-      if slice_eq(source, start, end, "let") {
-        Some(TLet)
-      } else None
-    } else if c0 == 'r' {
-      if slice_eq(source, start, end, "rec") {
-        Some(TRec)
-      } else None
-    } else if c0 == 'm' {
-      if slice_eq(source, start, end, "mut") {
-        Some(TMut)
-      } else None
-    } else if c0 == 'f' {
-      if slice_eq(source, start, end, "for") {
-        Some(TFor)
-      } else None
-    } else None
-  } else if len == 4 {
-    let c0 = String::char_code_at(source, start)
-    if c0 == 'e' {
-      if slice_eq(source, start, end, "else") {
-        Some(TElse)
-      } else if slice_eq(source, start, end, "enum") {
-        Some(TEnum)
-      } else None
-    } else if c0 == 't' {
-      if slice_eq(source, start, end, "true") {
-        Some(TIdent("true"))
-      } else if slice_eq(source, start, end, "type") {
-        Some(TType)
-      } else if slice_eq(source, start, end, "test") {
-        Some(TTest)
-      } else None
-    } else if c0 == 'w' {
-      if slice_eq(source, start, end, "with") {
-        Some(TWith)
-      } else None
-    } else if c0 == 'l' {
-      if slice_eq(source, start, end, "loop") {
-        Some(TLoop)
-      } else None
-    } else if c0 == 'o' {
-      if slice_eq(source, start, end, "open") {
-        Some(TOpen)
-      } else None
-    } else if c0 == 'i' {
-      if slice_eq(source, start, end, "impl") {
-        Some(TImpl)
-      } else None
-    } else None
-  } else if len == 5 {
-    let c0 = String::char_code_at(source, start)
-    if c0 == 'f' {
-      if slice_eq(source, start, end, "false") {
-        Some(TIdent("false"))
-      } else None
-    } else if c0 == 'm' {
-      if slice_eq(source, start, end, "match") {
-        Some(TMatch)
-      } else None
-    } else if c0 == 't' {
-      if slice_eq(source, start, end, "trait") {
-        Some(TTrait)
-      } else if slice_eq(source, start, end, "throw") {
-        Some(TThrow)
-      } else None
-    } else if c0 == 'w' {
-      if slice_eq(source, start, end, "while") {
-        Some(TWhile)
-      } else None
-    } else if c0 == 'b' {
-      if slice_eq(source, start, end, "break") {
-        Some(TBreak)
-      } else if slice_eq(source, start, end, "bench") {
-        Some(TBench)
-      } else None
-    } else if c0 == 'r' {
-      if slice_eq(source, start, end, "raise") {
-        Some(TRaise)
-      } else None
-    } else if c0 == 'y' {
-      if slice_eq(source, start, end, "yield") {
-        Some(TYield)
-      } else None
-    } else None
-  } else if len == 6 {
-    let c0 = String::char_code_at(source, start)
-    if c0 == 's' {
-      if slice_eq(source, start, end, "struct") {
-        Some(TStruct)
-      } else None
-    } else if c0 == 'e' {
-      if slice_eq(source, start, end, "export") {
-        Some(TExport)
-      } else None
-    } else if c0 == 'r' {
-      if slice_eq(source, start, end, "return") {
-        Some(TReturn)
-      } else None
-    } else if c0 == 'h' {
-      if slice_eq(source, start, end, "handle") {
-        Some(THandle)
-      } else None
-    } else if c0 == 'm' {
-      if slice_eq(source, start, end, "module") {
-        Some(TModule)
-      } else None
-    } else if c0 == 'd' {
-      if slice_eq(source, start, end, "derive") {
-        Some(TDerive)
-      } else None
-    } else if c0 == 'i' {
-      if slice_eq(source, start, end, "import") {
-        Some(TImport)
-      } else None
-    } else None
-  } else if len == 7 {
-    if slice_eq(source, start, end, "declare") {
-      Some(TDeclare)
-    } else None
-  } else if len == 8 {
-    let c0 = String::char_code_at(source, start)
-    if c0 == 'c' {
-      if slice_eq(source, start, end, "continue") {
-        Some(TContinue)
-      } else None
-    } else if c0 == 's' {
-      if slice_eq(source, start, end, "suberror") {
-        Some(TSuberror)
-      } else None
-    } else None
-  } else None
-}
-let scan_ident_end: (String, Int, Int) -> Int = (s, len, i) -> {
-  let mut out = i
-  while out < len && is_alnum(String::char_code_at(s, out)) {
-    out = out + 1
-  }
-  out
-}
-let lex_ident: (String, Int, Int) -> (Token, Int) = (s, len, i) -> {
-  let end = scan_ident_end(s, len, i)
-  if end == i + 1 && String::char_code_at(s, i) == 'r' && end < len && String::char_code_at(s, end) == '#' {
-    let ri_start = end + 1
-    let ri_end = scan_ident_end(s, len, ri_start)
-    (TIdent(s[ri_start: ri_end]), ri_end)
-  }
-  else if end == i + 1 && String::char_code_at(s, i) == 'r' && end < len && String::char_code_at(s, end) == '"' {
-    let mut ri = end + 1
-    while ri < len && String::char_code_at(s, ri) != '"' {
-      ri = ri + 1
-    }
-    (TString(s[end + 1: ri]), if ri >= len {
-      ri
-    } else {
-      ri + 1
-    })
-  } else {
-    match keyword_lookup(s, i, end) {
-      Some(tok) => (tok, end),
-      None => (TIdent(s[i: end]), end)
-    }
-  }
-}
-let scan_digits_end: (String, Int, Int) -> Int = (s, len, i) -> {
-  let mut out = i
-  while out < len && is_digit(String::char_code_at(s, out)) {
-    out = out + 1
-  }
-  out
-}
-let scan_interp_end: (String, Int, Int, Int) -> Int with { Error } = (s, len, idx, depth) -> {
-  let mut out = idx
-  let mut current_depth = depth
-  let mut found = -1
-  while out < len && found < 0 {
-    let c = String::char_code_at(s, out)
-    if c == '{' {
-      current_depth = current_depth + 1
-    } else if c == '}' {
-      if current_depth == 1 {
-        found = out
-      } else {
-        current_depth = current_depth - 1
-      }
-    }
-    if found < 0 {
-      out = out + 1
-    }
-  }
-  if found >= 0 {
-    found
-  } else {
-    throw("unterminated string interpolation")
-  }
-}
-let parse_frac_digits: (String, Int, Int, Double, Double) -> (Double, Int) = (s, len, i, acc, scale) -> {
-  let mut out_i = i
-  let mut out_acc = acc
-  let mut out_scale = scale
-  let mut done = false
-  while out_i < len && !done {
-    let c = String::char_code_at(s, out_i)
-    if is_digit(c) {
-      out_acc = out_acc + Int::to_double(c - 48) / out_scale
-      out_scale = out_scale * 10.0
-      out_i = out_i + 1
-    } else {
-      done = true
-    }
-  }
-  (out_acc, out_i)
-}
-let empty_string_array: () -> Array[String] = () -> {
-  Array::slice([
-    ""
-  ], 0, 0)
-}
-let skip_until_newline: (String, Int, Int) -> Int = (s, len, i) -> {
-  let mut out = i
-  let mut done = false
-  while out < len && !done {
-    if String::char_code_at(s, out) == '\n' {
-      out = out + 1
-      done = true
-    } else {
-      out = out + 1
-    }
-  }
-  out
-}
-let skip_ws_with_newline: (String, Int, Int) -> (Int, Bool) = (s, len, i) -> {
-  let mut out = i
-  let mut saw_newline = false
-  let mut skipping = true
-  while skipping && out < len {
-    let c = String::char_code_at(s, out)
-    if is_ws(c) {
-      if c == '\n' {
-        saw_newline = true
-      } else {
-        ()
-      }
-      out = out + 1
-    } else if c == '/' && out + 1 < len && String::char_code_at(s, out + 1) == '/' {
-      let next = skip_until_newline(s, len, out + 2)
-      if next > out + 2 && String::char_code_at(s, next - 1) == '\n' {
-        saw_newline = true
-      } else {
-        ()
-      }
-      out = next
-    } else {
-      skipping = false
-    }
-  }
-  (out, saw_newline)
-}
-let concat_string_parts: (Array[String], String) -> String = (parts, tail) -> {
-  let out = StringBuilder::new()
-  let mut i = 0
-  while i < Array::length(parts) {
-    StringBuilder::push(out, Array::get(parts, i))
-    i = i + 1
-  }
-  StringBuilder::push(out, tail)
-  StringBuilder::freeze(out)
-}
-let lex_string_go: (String, Int, Int, Int, Array[String], Bool, ArrayBuilder[String]) -> (Token, Int) with { Error } = (s, len, idx, start, parts_acc, has_interp, parts) -> {
-  let mut current_idx = idx
-  let mut current_start = start
-  let mut current_parts_acc = parts_acc
-  let mut current_has_interp = has_interp
-  let mut out_tok = TEof
-  let mut out_next = -1
-  let mut done = false
-  while !done {
-    if current_idx >= len {
-      throw("unterminated string")
-    }
-    let c = String::char_code_at(s, current_idx)
-    if c == '"' {
-      let value = concat_string_parts(current_parts_acc, s[current_start: current_idx])
-      if current_has_interp {
-        ArrayBuilder::push(parts, value)
-        out_tok = TStringInterp(ArrayBuilder::freeze(parts))
-        out_next = current_idx + 1
-      } else {
-        out_tok = TString(value)
-        out_next = current_idx + 1
-      }
-      done = true
-    } else if c == '\\' {
-      let chunk = s[current_start: current_idx]
-      let next = current_idx + 1
-      if next >= len {
-        throw("unterminated string escape")
-      }
-      let esc = String::char_code_at(s, next)
-      if esc == '{' || esc == '(' {
-        ArrayBuilder::push(parts, concat_string_parts(current_parts_acc, chunk))
-        let interp_end = if esc == '{' {
-          scan_interp_end(s, len, next + 1, 1)
-        } else {
-          let mut ie = next + 1
-          let mut depth = 1
-          while ie < len && depth > 0 {
-            let ic = String::char_code_at(s, ie)
-            if ic == '(' {
-              depth = depth + 1
-            }
-            else if ic == ')' {
-              depth = depth - 1
-            }
-            ie = ie + 1
-          }
-          ie - 1
-        }
-        let expr_src = s[next + 1: interp_end]
-        ArrayBuilder::push(parts, expr_src)
-        current_idx = interp_end + 1
-        current_start = interp_end + 1
-        current_parts_acc = empty_string_array()
-        current_has_interp = true
-      } else {
-        let escaped = if esc == '"' {
-          "\""
-        }
-        else if esc == '\\' {
-          "\\"
-        }
-        else if esc == 'n' {
-          "\n"
-        }
-        else if esc == 't' {
-          "\t"
-        }
-        else if esc == 'r' {
-          String::from_char_code(13)
-        }
-        else if esc == '0' {
-          String::from_char_code(0)
-        }
-        else throw("invalid escape sequence")
-        Array::push(current_parts_acc, chunk)
-        Array::push(current_parts_acc, escaped)
-        current_idx = next + 1
-        current_start = next + 1
-      }
-    } else {
-      current_idx = current_idx + 1
-    }
-  }
-  (out_tok, out_next)
-}
-let lex_string: (String, Int, Int) -> (Token, Int) with { Error } = (s, len, i) -> {
-  lex_string_go(s, len, i + 1, i + 1, empty_string_array(), false, ArrayBuilder::new())
-}
-let scan_hex_digits_end: (String, Int, Int) -> Int = (s, len, i) -> {
-  let mut out = i
-  while out < len && is_hex_digit(String::char_code_at(s, out)) {
-    out = out + 1
-  }
-  out
-}
-let parse_hex_from_string: (String) -> Int = (s) -> {
-  let len = String::length(s)
-  let mut i = 0
-  let mut acc = 0
-  while i < len {
-    let c = String::char_code_at(s, i)
-    let digit = if c >= '0' && c <= '9' {
-      c - 48
-    } else if c >= 'a' && c <= 'f' {
-      c - 87
-    } else c - 55
-    acc = acc * 16 + digit
-    i = i + 1
-  }
-  acc
-}
-let parse_int_from_string: (String) -> Int = (s) -> {
-  let len = String::length(s)
-  let mut i = 0
-  let mut acc = 0
-  while i < len {
-    let c = String::char_code_at(s, i)
-    acc = acc * 10 + (c - 48)
-    i = i + 1
-  }
-  acc
-}
-let lex_decimal: (String, Int, Int) -> (Token, Int) with { Error } = (s, len, i) -> {
-  let int_end = scan_digits_end(s, len, i)
-  if int_end == i {
-    throw("expected digit")
-  }
-  let after_field_dot = i >= 1 && String::char_code_at(s, i - 1) == '.' && (i < 2 || String::char_code_at(s, i - 2) != '.')
-  if !after_field_dot && int_end < len && String::char_code_at(s, int_end) == '.' {
-    if int_end + 1 < len && is_digit(String::char_code_at(s, int_end + 1)) {
-      let int_str = s[i: int_end]
-      let int_val = Int::to_double(parse_int_from_string(int_str))
-      let (frac_val, frac_end) = parse_frac_digits(s, len, int_end + 1, 0.0, 10.0);
-      if frac_end < len && String::char_code_at(s, frac_end) == 'f' {
-        (TFloat(int_val + frac_val), frac_end + 1)
-      } else {
-        (TFloat(int_val + frac_val), frac_end)
-      }
-    } else {
-      let int_str = s[i: int_end];
-      (TInt(parse_int_from_string(int_str)), int_end)
-    }
-  } else if int_end < len && String::char_code_at(s, int_end) == 'f' {
-    let int_str = s[i: int_end]
-    let int_val = Int::to_double(parse_int_from_string(int_str))
-    (TFloat(int_val), int_end + 1)
-  } else {
-    let int_str = s[i: int_end];
-    (TInt(parse_int_from_string(int_str)), int_end)
-  }
-}
-let lex_number: (String, Int, Int) -> (Token, Int) with { Error } = (s, len, i) -> {
-  if i + 1 < len && String::char_code_at(s, i) == '0' {
-    let next_c = String::char_code_at(s, i + 1)
-    if next_c == 'x' || next_c == 'X' {
-      let hex_start = i + 2
-      let hex_end = scan_hex_digits_end(s, len, hex_start)
-      if hex_end == hex_start {
-        throw("expected hex digit after 0x")
-      }
-      let hex_str = s[hex_start: hex_end];
-      (TInt(parse_hex_from_string(hex_str)), hex_end)
-    } else lex_decimal(s, len, i)
-  } else lex_decimal(s, len, i)
-}
-let is_expr_ending_tok: (Token) -> Bool = (t) -> {
-  match t {
-    TRParen => true,
-    TRBracket => true,
-    TRBrace => true,
-    TIdent(_) => true,
-    TInt(_) => true,
-    TFloat(_) => true,
-    TString(_) => true,
-    _ => false
-  }
-}
-let lex_one_token: (String, Int, Int) -> (Token, Int) with { Error } = (source, len, pos) -> {
-  let c = String::char_code_at(source, pos)
-  if is_alpha(c) {
-    lex_ident(source, len, pos)
-  } else if is_digit(c) {
-    lex_number(source, len, pos)
-  } else if c == '"' {
-    lex_string(source, len, pos)
-  } else if c == '+' {
-    if pos + 1 < len && String::char_code_at(source, pos + 1) == '=' {
-      (TPlusEq, pos + 2)
-    } else (TPlus, pos + 1)
-  } else if c == '-' {
-    if pos + 1 < len && String::char_code_at(source, pos + 1) == '>' {
-      (TThinArrow, pos + 2)
-    } else if pos + 1 < len && String::char_code_at(source, pos + 1) == '=' {
-      (TMinusEq, pos + 2)
-    } else (TMinus, pos + 1)
-  } else if c == '*' {
-    if pos + 1 < len && String::char_code_at(source, pos + 1) == '=' {
-      (TStarEq, pos + 2)
-    } else (TStar, pos + 1)
-  } else if c == '/' {
-    if pos + 1 < len && String::char_code_at(source, pos + 1) == '=' {
-      (TSlashEq, pos + 2)
-    } else (TSlash, pos + 1)
-  } else if c == '%' {
-    if pos + 1 < len && String::char_code_at(source, pos + 1) == '=' {
-      (TPercentEq, pos + 2)
-    } else (TPercent, pos + 1)
-  } else if c == '=' {
-    if pos + 1 < len && String::char_code_at(source, pos + 1) == '=' {
-      (TEqEq, pos + 2)
-    } else if pos + 1 < len && String::char_code_at(source, pos + 1) == '>' {
-      (TArrow, pos + 2)
-    } else (TEq, pos + 1)
-  } else if c == '!' {
-    if pos + 1 < len && String::char_code_at(source, pos + 1) == '=' {
-      (TNeq, pos + 2)
-    } else (TNot, pos + 1)
-  } else if c == '<' {
-    if pos + 1 < len && String::char_code_at(source, pos + 1) == '=' {
-      (TLte, pos + 2)
-    } else if pos + 1 < len && String::char_code_at(source, pos + 1) == '<' {
-      (TLShift, pos + 2)
-    } else (TLt, pos + 1)
-  } else if c == '>' {
-    if pos + 1 < len && String::char_code_at(source, pos + 1) == '=' {
-      (TGte, pos + 2)
-    } else if pos + 1 < len && String::char_code_at(source, pos + 1) == '>' {
-      (TRShift, pos + 2)
-    } else (TGt, pos + 1)
-  } else if c == '&' {
-    if pos + 1 < len && String::char_code_at(source, pos + 1) == '&' {
-      (TAnd, pos + 2)
-    } else (TBitAnd, pos + 1)
-  } else if c == '|' {
-    if pos + 1 < len && String::char_code_at(source, pos + 1) == '|' {
-      (TOr, pos + 2)
-    } else if pos + 1 < len && String::char_code_at(source, pos + 1) == '>' {
-      (TPipeGt, pos + 2)
-    } else (TBitOr, pos + 1)
-  } else if c == '^' {
-    (TBitXor, pos + 1)
-  } else if c == '(' {
-    (TLParen, pos + 1)
-  } else if c == ')' {
-    (TRParen, pos + 1)
-  } else if c == '{' {
-    (TLBrace, pos + 1)
-  } else if c == '}' {
-    (TRBrace, pos + 1)
-  } else if c == '[' {
-    (TLBracket, pos + 1)
-  } else if c == ']' {
-    (TRBracket, pos + 1)
-  } else if c == ',' {
-    (TComma, pos + 1)
-  } else if c == ';' {
-    (TSemicolon, pos + 1)
-  } else if c == '.' {
-    if pos + 2 < len && String::char_code_at(source, pos + 1) == '.' && String::char_code_at(source, pos + 2) == '.' {
-      (TDotDotDot, pos + 3)
-    } else if pos + 1 < len && String::char_code_at(source, pos + 1) == '.' {
-      (TDotDot, pos + 2)
-    } else (TDot, pos + 1)
-  } else if c == ':' {
-    if pos + 1 < len && String::char_code_at(source, pos + 1) == ':' {
-      (TDoubleColon, pos + 2)
-    } else (TColon, pos + 1)
-  } else if c == '#' {
-    (THash, pos + 1)
-  } else if c == '~' {
-    (TTilde, pos + 1)
-  } else if c == '?' {
-    (TQuestion, pos + 1)
-  } else if c == '@' {
-    let mut end = pos + 1
-    while end < len {
-      let ec = String::char_code_at(source, end)
-      if is_alnum(ec) || ec == '_' || ec == '-' {
-        end = end + 1
-      } else if ec == '/' && end + 1 < len && is_alnum(String::char_code_at(source, end + 1)) {
-        end = end + 1
-      } else {
-        break
-      }
-    }
-    if end > pos + 1 {
-      (TIdent(String::substring(source, pos, end)), end)
-    } else {
-      throw("unexpected '@' without identifier")
-    }
-  } else if c == '\'' {
-    lex_char(source, len, pos)
-  } else throw(String::concat("unexpected character: ", String::from_char_code(c)))
-}
-export let lex_with_offsets: (String) -> (Array[Token], Array[Int], Array[Int]) with { Error } = (source) -> {
-  let len = String::length(source)
-  {
-    let b = ArrayBuilder::new()
-    let starts = ArrayBuilder::new()
-    let ends = ArrayBuilder::new()
-    let mut prev_tok = TEof
-    let first_skip = skip_ws_with_newline(source, len, 0)
-    let mut pos = first_skip.0
-    let mut nl_before = first_skip.1
-    while pos < len {
-      let c = String::char_code_at(source, pos)
-      let (tok, next) = lex_one_token(source, len, pos)
-      if (c == '[' || c == '(') && nl_before && is_expr_ending_tok(prev_tok) {
-        ArrayBuilder::push(b, TSemicolon)
-        ArrayBuilder::push(starts, pos)
-        ArrayBuilder::push(ends, pos)
-      } else {
-        ()
-      }
-      ArrayBuilder::push(b, tok)
-      ArrayBuilder::push(starts, pos)
-      ArrayBuilder::push(ends, next)
-      prev_tok = tok
-      let skipped = skip_ws_with_newline(source, len, next)
-      pos = skipped.0
-      nl_before = skipped.1
-    }
-    ArrayBuilder::push(b, TEof)
-    ArrayBuilder::push(starts, len)
-    ArrayBuilder::push(ends, len)
-    (ArrayBuilder::freeze(b), ArrayBuilder::freeze(starts), ArrayBuilder::freeze(ends))
-  }
-}
-export let offset_to_line_col: (String, Int) -> (Int, Int) = (source, offset) -> {
-  let len = String::length(source)
-  let bound = if offset < len { offset } else { len }
-  let mut i = 0
-  let mut line = 1
-  let mut col = 1
-  while i < bound {
-    if String::char_code_at(source, i) == 10 {
-      line = line + 1
-      col = 1
-    } else {
-      col = col + 1
-    }
-    i = i + 1
-  }
-  (line, col)
-}
-export let lex: (String) -> Array[Token] with { Error } = (source) -> {
-  let len = String::length(source)
-  {
-    let b = ArrayBuilder::new()
-    let mut prev_tok = TEof
-    let first_skip = skip_ws_with_newline(source, len, 0)
-    let mut pos = first_skip.0
-    let mut nl_before = first_skip.1
-    while pos < len {
-      let c = String::char_code_at(source, pos)
-      let (tok, next) = lex_one_token(source, len, pos)
-      if (c == '[' || c == '(') && nl_before && is_expr_ending_tok(prev_tok) {
-        ArrayBuilder::push(b, TSemicolon)
-      } else {
-        ()
-      }
-      ArrayBuilder::push(b, tok)
-      prev_tok = tok
-      let skipped = skip_ws_with_newline(source, len, next)
-      pos = skipped.0
-      nl_before = skipped.1
-    }
-    ArrayBuilder::push(b, TEof)
-    ArrayBuilder::freeze(b)
-  }
-}
 let peek: (Array[Token], Int) -> Token = (tokens, pos) -> {
   if pos < Array::length(tokens) {
     Array::get(tokens, pos)
@@ -14986,6 +14244,748 @@ export {
 }
 export {
   peek, is_tk, _no_tb, _no_tp, mode_if, tk_name, expect_tk, skip_semi, empty_arms, empty_pats, mode_block, mode_match, mode_while, parse_type, empty_exprs, mode_for_in, mode_handle, skip_derive, parse_derive_names, empty_fields, empty_params, parse_pattern, is_lambda_start, parse_enum_stmt, parse_type_impl, empty_type_exprs, parse_param_list, parse_trait_stmt, is_expr_end_token, is_non_pipe_infix, parse_effect_stmt, parse_import_item, parse_struct_stmt, empty_import_items, parse_binding_name, parse_struct_field, collect_import_path, parse_suberror_stmt, collect_effect_names, parse_type_alias_stmt, parse_impl_stmt_dispatch
+}
+let is_ws: (Int) -> Bool = (c) -> {
+  c == ' ' || c == '\n' || c == '\t' || c == '\r'
+}
+let is_alpha: (Int) -> Bool = (c) -> {
+  (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
+}
+let is_digit: (Int) -> Bool = (c) -> {
+  c >= '0' && c <= '9'
+}
+let is_alnum: (Int) -> Bool = (c) -> {
+  is_alpha(c) || is_digit(c)
+}
+let lex_char: (String, Int, Int) -> (Token, Int) with { Error } = (s, len, i) -> {
+  let start = i + 1
+  if start >= len {
+    throw("unterminated char literal")
+  }
+  let c = String::char_code_at(s, start)
+  if c == '\\' {
+    let esc_pos = start + 1
+    if esc_pos >= len {
+      throw("unterminated char escape")
+    }
+    let esc = String::char_code_at(s, esc_pos)
+    let val = if esc == 'n' {
+      10
+    }
+    else if esc == 't' {
+      9
+    }
+    else if esc == 'r' {
+      13
+    }
+    else if esc == '\\' {
+      92
+    }
+    else if esc == '\'' {
+      39
+    }
+    else if esc == '0' {
+      0
+    }
+    else throw("invalid char escape")
+    let close = esc_pos + 1
+    if close >= len || String::char_code_at(s, close) != '\'' {
+      throw("expected closing quote for char literal")
+    };
+    (TInt(val), close + 1)
+  } else {
+    let close = start + 1
+    if close >= len || String::char_code_at(s, close) != '\'' {
+      throw("expected closing quote for char literal")
+    };
+    (TInt(c), close + 1)
+  }
+}
+let slice_eq: (String, Int, Int, String) -> Bool = (source, start, end, text) -> {
+  let len = end - start
+  let text_len = String::length(text)
+  if len != text_len {
+    false
+  } else {
+    let mut i = 0
+    let mut ok = true
+    while ok && i < text_len {
+      ok = String::char_code_at(source, start + i) == String::char_code_at(text, i)
+      i = i + 1
+    }
+    ok
+  }
+}
+let is_hex_digit: (Int) -> Bool = (c) -> {
+  (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+}
+let keyword_lookup: (String, Int, Int) -> Option[Token] = (source, start, end) -> {
+  let len = end - start
+  if len == 2 {
+    let c0 = String::char_code_at(source, start)
+    if c0 == 'f' {
+      if slice_eq(source, start, end, "fn") {
+        Some(TIdent("fn"))
+      } else None
+    } else if c0 == 'i' {
+      if slice_eq(source, start, end, "if") {
+        Some(TIf)
+      } else if slice_eq(source, start, end, "in") {
+        Some(TIn)
+      } else if slice_eq(source, start, end, "is") {
+        Some(TIs)
+      } else None
+    } else if c0 == 'd' {
+      if slice_eq(source, start, end, "do") {
+        Some(TDo)
+      } else None
+    } else if c0 == 'a' {
+      if slice_eq(source, start, end, "as") {
+        Some(TAs)
+      } else None
+    } else None
+  } else if len == 3 {
+    let c0 = String::char_code_at(source, start)
+    if c0 == 'l' {
+      if slice_eq(source, start, end, "let") {
+        Some(TLet)
+      } else None
+    } else if c0 == 'r' {
+      if slice_eq(source, start, end, "rec") {
+        Some(TRec)
+      } else None
+    } else if c0 == 'm' {
+      if slice_eq(source, start, end, "mut") {
+        Some(TMut)
+      } else None
+    } else if c0 == 'f' {
+      if slice_eq(source, start, end, "for") {
+        Some(TFor)
+      } else None
+    } else None
+  } else if len == 4 {
+    let c0 = String::char_code_at(source, start)
+    if c0 == 'e' {
+      if slice_eq(source, start, end, "else") {
+        Some(TElse)
+      } else if slice_eq(source, start, end, "enum") {
+        Some(TEnum)
+      } else None
+    } else if c0 == 't' {
+      if slice_eq(source, start, end, "true") {
+        Some(TIdent("true"))
+      } else if slice_eq(source, start, end, "type") {
+        Some(TType)
+      } else if slice_eq(source, start, end, "test") {
+        Some(TTest)
+      } else None
+    } else if c0 == 'w' {
+      if slice_eq(source, start, end, "with") {
+        Some(TWith)
+      } else None
+    } else if c0 == 'l' {
+      if slice_eq(source, start, end, "loop") {
+        Some(TLoop)
+      } else None
+    } else if c0 == 'o' {
+      if slice_eq(source, start, end, "open") {
+        Some(TOpen)
+      } else None
+    } else if c0 == 'i' {
+      if slice_eq(source, start, end, "impl") {
+        Some(TImpl)
+      } else None
+    } else None
+  } else if len == 5 {
+    let c0 = String::char_code_at(source, start)
+    if c0 == 'f' {
+      if slice_eq(source, start, end, "false") {
+        Some(TIdent("false"))
+      } else None
+    } else if c0 == 'm' {
+      if slice_eq(source, start, end, "match") {
+        Some(TMatch)
+      } else None
+    } else if c0 == 't' {
+      if slice_eq(source, start, end, "trait") {
+        Some(TTrait)
+      } else if slice_eq(source, start, end, "throw") {
+        Some(TThrow)
+      } else None
+    } else if c0 == 'w' {
+      if slice_eq(source, start, end, "while") {
+        Some(TWhile)
+      } else None
+    } else if c0 == 'b' {
+      if slice_eq(source, start, end, "break") {
+        Some(TBreak)
+      } else if slice_eq(source, start, end, "bench") {
+        Some(TBench)
+      } else None
+    } else if c0 == 'r' {
+      if slice_eq(source, start, end, "raise") {
+        Some(TRaise)
+      } else None
+    } else if c0 == 'y' {
+      if slice_eq(source, start, end, "yield") {
+        Some(TYield)
+      } else None
+    } else None
+  } else if len == 6 {
+    let c0 = String::char_code_at(source, start)
+    if c0 == 's' {
+      if slice_eq(source, start, end, "struct") {
+        Some(TStruct)
+      } else None
+    } else if c0 == 'e' {
+      if slice_eq(source, start, end, "export") {
+        Some(TExport)
+      } else None
+    } else if c0 == 'r' {
+      if slice_eq(source, start, end, "return") {
+        Some(TReturn)
+      } else None
+    } else if c0 == 'h' {
+      if slice_eq(source, start, end, "handle") {
+        Some(THandle)
+      } else None
+    } else if c0 == 'm' {
+      if slice_eq(source, start, end, "module") {
+        Some(TModule)
+      } else None
+    } else if c0 == 'd' {
+      if slice_eq(source, start, end, "derive") {
+        Some(TDerive)
+      } else None
+    } else if c0 == 'i' {
+      if slice_eq(source, start, end, "import") {
+        Some(TImport)
+      } else None
+    } else None
+  } else if len == 7 {
+    if slice_eq(source, start, end, "declare") {
+      Some(TDeclare)
+    } else None
+  } else if len == 8 {
+    let c0 = String::char_code_at(source, start)
+    if c0 == 'c' {
+      if slice_eq(source, start, end, "continue") {
+        Some(TContinue)
+      } else None
+    } else if c0 == 's' {
+      if slice_eq(source, start, end, "suberror") {
+        Some(TSuberror)
+      } else None
+    } else None
+  } else None
+}
+let scan_ident_end: (String, Int, Int) -> Int = (s, len, i) -> {
+  let mut out = i
+  while out < len && is_alnum(String::char_code_at(s, out)) {
+    out = out + 1
+  }
+  out
+}
+let lex_ident: (String, Int, Int) -> (Token, Int) = (s, len, i) -> {
+  let end = scan_ident_end(s, len, i)
+  if end == i + 1 && String::char_code_at(s, i) == 'r' && end < len && String::char_code_at(s, end) == '#' {
+    let ri_start = end + 1
+    let ri_end = scan_ident_end(s, len, ri_start)
+    (TIdent(s[ri_start: ri_end]), ri_end)
+  }
+  else if end == i + 1 && String::char_code_at(s, i) == 'r' && end < len && String::char_code_at(s, end) == '"' {
+    let mut ri = end + 1
+    while ri < len && String::char_code_at(s, ri) != '"' {
+      ri = ri + 1
+    }
+    (TString(s[end + 1: ri]), if ri >= len {
+      ri
+    } else {
+      ri + 1
+    })
+  } else {
+    match keyword_lookup(s, i, end) {
+      Some(tok) => (tok, end),
+      None => (TIdent(s[i: end]), end)
+    }
+  }
+}
+let scan_digits_end: (String, Int, Int) -> Int = (s, len, i) -> {
+  let mut out = i
+  while out < len && is_digit(String::char_code_at(s, out)) {
+    out = out + 1
+  }
+  out
+}
+let scan_interp_end: (String, Int, Int, Int) -> Int with { Error } = (s, len, idx, depth) -> {
+  let mut out = idx
+  let mut current_depth = depth
+  let mut found = -1
+  while out < len && found < 0 {
+    let c = String::char_code_at(s, out)
+    if c == '{' {
+      current_depth = current_depth + 1
+    } else if c == '}' {
+      if current_depth == 1 {
+        found = out
+      } else {
+        current_depth = current_depth - 1
+      }
+    }
+    if found < 0 {
+      out = out + 1
+    }
+  }
+  if found >= 0 {
+    found
+  } else {
+    throw("unterminated string interpolation")
+  }
+}
+let parse_frac_digits: (String, Int, Int, Double, Double) -> (Double, Int) = (s, len, i, acc, scale) -> {
+  let mut out_i = i
+  let mut out_acc = acc
+  let mut out_scale = scale
+  let mut done = false
+  while out_i < len && !done {
+    let c = String::char_code_at(s, out_i)
+    if is_digit(c) {
+      out_acc = out_acc + Int::to_double(c - 48) / out_scale
+      out_scale = out_scale * 10.0
+      out_i = out_i + 1
+    } else {
+      done = true
+    }
+  }
+  (out_acc, out_i)
+}
+let empty_string_array: () -> Array[String] = () -> {
+  Array::slice([
+    ""
+  ], 0, 0)
+}
+let skip_until_newline: (String, Int, Int) -> Int = (s, len, i) -> {
+  let mut out = i
+  let mut done = false
+  while out < len && !done {
+    if String::char_code_at(s, out) == '\n' {
+      out = out + 1
+      done = true
+    } else {
+      out = out + 1
+    }
+  }
+  out
+}
+let skip_ws_with_newline: (String, Int, Int) -> (Int, Bool) = (s, len, i) -> {
+  let mut out = i
+  let mut saw_newline = false
+  let mut skipping = true
+  while skipping && out < len {
+    let c = String::char_code_at(s, out)
+    if is_ws(c) {
+      if c == '\n' {
+        saw_newline = true
+      } else {
+        ()
+      }
+      out = out + 1
+    } else if c == '/' && out + 1 < len && String::char_code_at(s, out + 1) == '/' {
+      let next = skip_until_newline(s, len, out + 2)
+      if next > out + 2 && String::char_code_at(s, next - 1) == '\n' {
+        saw_newline = true
+      } else {
+        ()
+      }
+      out = next
+    } else {
+      skipping = false
+    }
+  }
+  (out, saw_newline)
+}
+let concat_string_parts: (Array[String], String) -> String = (parts, tail) -> {
+  let out = StringBuilder::new()
+  let mut i = 0
+  while i < Array::length(parts) {
+    StringBuilder::push(out, Array::get(parts, i))
+    i = i + 1
+  }
+  StringBuilder::push(out, tail)
+  StringBuilder::freeze(out)
+}
+let lex_string_go: (String, Int, Int, Int, Array[String], Bool, ArrayBuilder[String]) -> (Token, Int) with { Error } = (s, len, idx, start, parts_acc, has_interp, parts) -> {
+  let mut current_idx = idx
+  let mut current_start = start
+  let mut current_parts_acc = parts_acc
+  let mut current_has_interp = has_interp
+  let mut out_tok = TEof
+  let mut out_next = -1
+  let mut done = false
+  while !done {
+    if current_idx >= len {
+      throw("unterminated string")
+    }
+    let c = String::char_code_at(s, current_idx)
+    if c == '"' {
+      let value = concat_string_parts(current_parts_acc, s[current_start: current_idx])
+      if current_has_interp {
+        ArrayBuilder::push(parts, value)
+        out_tok = TStringInterp(ArrayBuilder::freeze(parts))
+        out_next = current_idx + 1
+      } else {
+        out_tok = TString(value)
+        out_next = current_idx + 1
+      }
+      done = true
+    } else if c == '\\' {
+      let chunk = s[current_start: current_idx]
+      let next = current_idx + 1
+      if next >= len {
+        throw("unterminated string escape")
+      }
+      let esc = String::char_code_at(s, next)
+      if esc == '{' || esc == '(' {
+        ArrayBuilder::push(parts, concat_string_parts(current_parts_acc, chunk))
+        let interp_end = if esc == '{' {
+          scan_interp_end(s, len, next + 1, 1)
+        } else {
+          let mut ie = next + 1
+          let mut depth = 1
+          while ie < len && depth > 0 {
+            let ic = String::char_code_at(s, ie)
+            if ic == '(' {
+              depth = depth + 1
+            }
+            else if ic == ')' {
+              depth = depth - 1
+            }
+            ie = ie + 1
+          }
+          ie - 1
+        }
+        let expr_src = s[next + 1: interp_end]
+        ArrayBuilder::push(parts, expr_src)
+        current_idx = interp_end + 1
+        current_start = interp_end + 1
+        current_parts_acc = empty_string_array()
+        current_has_interp = true
+      } else {
+        let escaped = if esc == '"' {
+          "\""
+        }
+        else if esc == '\\' {
+          "\\"
+        }
+        else if esc == 'n' {
+          "\n"
+        }
+        else if esc == 't' {
+          "\t"
+        }
+        else if esc == 'r' {
+          String::from_char_code(13)
+        }
+        else if esc == '0' {
+          String::from_char_code(0)
+        }
+        else throw("invalid escape sequence")
+        Array::push(current_parts_acc, chunk)
+        Array::push(current_parts_acc, escaped)
+        current_idx = next + 1
+        current_start = next + 1
+      }
+    } else {
+      current_idx = current_idx + 1
+    }
+  }
+  (out_tok, out_next)
+}
+let lex_string: (String, Int, Int) -> (Token, Int) with { Error } = (s, len, i) -> {
+  lex_string_go(s, len, i + 1, i + 1, empty_string_array(), false, ArrayBuilder::new())
+}
+let scan_hex_digits_end: (String, Int, Int) -> Int = (s, len, i) -> {
+  let mut out = i
+  while out < len && is_hex_digit(String::char_code_at(s, out)) {
+    out = out + 1
+  }
+  out
+}
+let parse_hex_from_string: (String) -> Int = (s) -> {
+  let len = String::length(s)
+  let mut i = 0
+  let mut acc = 0
+  while i < len {
+    let c = String::char_code_at(s, i)
+    let digit = if c >= '0' && c <= '9' {
+      c - 48
+    } else if c >= 'a' && c <= 'f' {
+      c - 87
+    } else c - 55
+    acc = acc * 16 + digit
+    i = i + 1
+  }
+  acc
+}
+let parse_int_from_string: (String) -> Int = (s) -> {
+  let len = String::length(s)
+  let mut i = 0
+  let mut acc = 0
+  while i < len {
+    let c = String::char_code_at(s, i)
+    acc = acc * 10 + (c - 48)
+    i = i + 1
+  }
+  acc
+}
+let lex_decimal: (String, Int, Int) -> (Token, Int) with { Error } = (s, len, i) -> {
+  let int_end = scan_digits_end(s, len, i)
+  if int_end == i {
+    throw("expected digit")
+  }
+  let after_field_dot = i >= 1 && String::char_code_at(s, i - 1) == '.' && (i < 2 || String::char_code_at(s, i - 2) != '.')
+  if !after_field_dot && int_end < len && String::char_code_at(s, int_end) == '.' {
+    if int_end + 1 < len && is_digit(String::char_code_at(s, int_end + 1)) {
+      let int_str = s[i: int_end]
+      let int_val = Int::to_double(parse_int_from_string(int_str))
+      let (frac_val, frac_end) = parse_frac_digits(s, len, int_end + 1, 0.0, 10.0);
+      if frac_end < len && String::char_code_at(s, frac_end) == 'f' {
+        (TFloat(int_val + frac_val), frac_end + 1)
+      } else {
+        (TFloat(int_val + frac_val), frac_end)
+      }
+    } else {
+      let int_str = s[i: int_end];
+      (TInt(parse_int_from_string(int_str)), int_end)
+    }
+  } else if int_end < len && String::char_code_at(s, int_end) == 'f' {
+    let int_str = s[i: int_end]
+    let int_val = Int::to_double(parse_int_from_string(int_str))
+    (TFloat(int_val), int_end + 1)
+  } else {
+    let int_str = s[i: int_end];
+    (TInt(parse_int_from_string(int_str)), int_end)
+  }
+}
+let lex_number: (String, Int, Int) -> (Token, Int) with { Error } = (s, len, i) -> {
+  if i + 1 < len && String::char_code_at(s, i) == '0' {
+    let next_c = String::char_code_at(s, i + 1)
+    if next_c == 'x' || next_c == 'X' {
+      let hex_start = i + 2
+      let hex_end = scan_hex_digits_end(s, len, hex_start)
+      if hex_end == hex_start {
+        throw("expected hex digit after 0x")
+      }
+      let hex_str = s[hex_start: hex_end];
+      (TInt(parse_hex_from_string(hex_str)), hex_end)
+    } else lex_decimal(s, len, i)
+  } else lex_decimal(s, len, i)
+}
+let is_expr_ending_tok: (Token) -> Bool = (t) -> {
+  match t {
+    TRParen => true,
+    TRBracket => true,
+    TRBrace => true,
+    TIdent(_) => true,
+    TInt(_) => true,
+    TFloat(_) => true,
+    TString(_) => true,
+    _ => false
+  }
+}
+let lex_one_token: (String, Int, Int) -> (Token, Int) with { Error } = (source, len, pos) -> {
+  let c = String::char_code_at(source, pos)
+  if is_alpha(c) {
+    lex_ident(source, len, pos)
+  } else if is_digit(c) {
+    lex_number(source, len, pos)
+  } else if c == '"' {
+    lex_string(source, len, pos)
+  } else if c == '+' {
+    if pos + 1 < len && String::char_code_at(source, pos + 1) == '=' {
+      (TPlusEq, pos + 2)
+    } else (TPlus, pos + 1)
+  } else if c == '-' {
+    if pos + 1 < len && String::char_code_at(source, pos + 1) == '>' {
+      (TThinArrow, pos + 2)
+    } else if pos + 1 < len && String::char_code_at(source, pos + 1) == '=' {
+      (TMinusEq, pos + 2)
+    } else (TMinus, pos + 1)
+  } else if c == '*' {
+    if pos + 1 < len && String::char_code_at(source, pos + 1) == '=' {
+      (TStarEq, pos + 2)
+    } else (TStar, pos + 1)
+  } else if c == '/' {
+    if pos + 1 < len && String::char_code_at(source, pos + 1) == '=' {
+      (TSlashEq, pos + 2)
+    } else (TSlash, pos + 1)
+  } else if c == '%' {
+    if pos + 1 < len && String::char_code_at(source, pos + 1) == '=' {
+      (TPercentEq, pos + 2)
+    } else (TPercent, pos + 1)
+  } else if c == '=' {
+    if pos + 1 < len && String::char_code_at(source, pos + 1) == '=' {
+      (TEqEq, pos + 2)
+    } else if pos + 1 < len && String::char_code_at(source, pos + 1) == '>' {
+      (TArrow, pos + 2)
+    } else (TEq, pos + 1)
+  } else if c == '!' {
+    if pos + 1 < len && String::char_code_at(source, pos + 1) == '=' {
+      (TNeq, pos + 2)
+    } else (TNot, pos + 1)
+  } else if c == '<' {
+    if pos + 1 < len && String::char_code_at(source, pos + 1) == '=' {
+      (TLte, pos + 2)
+    } else if pos + 1 < len && String::char_code_at(source, pos + 1) == '<' {
+      (TLShift, pos + 2)
+    } else (TLt, pos + 1)
+  } else if c == '>' {
+    if pos + 1 < len && String::char_code_at(source, pos + 1) == '=' {
+      (TGte, pos + 2)
+    } else if pos + 1 < len && String::char_code_at(source, pos + 1) == '>' {
+      (TRShift, pos + 2)
+    } else (TGt, pos + 1)
+  } else if c == '&' {
+    if pos + 1 < len && String::char_code_at(source, pos + 1) == '&' {
+      (TAnd, pos + 2)
+    } else (TBitAnd, pos + 1)
+  } else if c == '|' {
+    if pos + 1 < len && String::char_code_at(source, pos + 1) == '|' {
+      (TOr, pos + 2)
+    } else if pos + 1 < len && String::char_code_at(source, pos + 1) == '>' {
+      (TPipeGt, pos + 2)
+    } else (TBitOr, pos + 1)
+  } else if c == '^' {
+    (TBitXor, pos + 1)
+  } else if c == '(' {
+    (TLParen, pos + 1)
+  } else if c == ')' {
+    (TRParen, pos + 1)
+  } else if c == '{' {
+    (TLBrace, pos + 1)
+  } else if c == '}' {
+    (TRBrace, pos + 1)
+  } else if c == '[' {
+    (TLBracket, pos + 1)
+  } else if c == ']' {
+    (TRBracket, pos + 1)
+  } else if c == ',' {
+    (TComma, pos + 1)
+  } else if c == ';' {
+    (TSemicolon, pos + 1)
+  } else if c == '.' {
+    if pos + 2 < len && String::char_code_at(source, pos + 1) == '.' && String::char_code_at(source, pos + 2) == '.' {
+      (TDotDotDot, pos + 3)
+    } else if pos + 1 < len && String::char_code_at(source, pos + 1) == '.' {
+      (TDotDot, pos + 2)
+    } else (TDot, pos + 1)
+  } else if c == ':' {
+    if pos + 1 < len && String::char_code_at(source, pos + 1) == ':' {
+      (TDoubleColon, pos + 2)
+    } else (TColon, pos + 1)
+  } else if c == '#' {
+    (THash, pos + 1)
+  } else if c == '~' {
+    (TTilde, pos + 1)
+  } else if c == '?' {
+    (TQuestion, pos + 1)
+  } else if c == '@' {
+    let mut end = pos + 1
+    while end < len {
+      let ec = String::char_code_at(source, end)
+      if is_alnum(ec) || ec == '_' || ec == '-' {
+        end = end + 1
+      } else if ec == '/' && end + 1 < len && is_alnum(String::char_code_at(source, end + 1)) {
+        end = end + 1
+      } else {
+        break
+      }
+    }
+    if end > pos + 1 {
+      (TIdent(String::substring(source, pos, end)), end)
+    } else {
+      throw("unexpected '@' without identifier")
+    }
+  } else if c == '\'' {
+    lex_char(source, len, pos)
+  } else throw(String::concat("unexpected character: ", String::from_char_code(c)))
+}
+export let lex_with_offsets: (String) -> (Array[Token], Array[Int], Array[Int]) with { Error } = (source) -> {
+  let len = String::length(source)
+  {
+    let b = ArrayBuilder::new()
+    let starts = ArrayBuilder::new()
+    let ends = ArrayBuilder::new()
+    let mut prev_tok = TEof
+    let first_skip = skip_ws_with_newline(source, len, 0)
+    let mut pos = first_skip.0
+    let mut nl_before = first_skip.1
+    while pos < len {
+      let c = String::char_code_at(source, pos)
+      let (tok, next) = lex_one_token(source, len, pos)
+      if (c == '[' || c == '(') && nl_before && is_expr_ending_tok(prev_tok) {
+        ArrayBuilder::push(b, TSemicolon)
+        ArrayBuilder::push(starts, pos)
+        ArrayBuilder::push(ends, pos)
+      } else {
+        ()
+      }
+      ArrayBuilder::push(b, tok)
+      ArrayBuilder::push(starts, pos)
+      ArrayBuilder::push(ends, next)
+      prev_tok = tok
+      let skipped = skip_ws_with_newline(source, len, next)
+      pos = skipped.0
+      nl_before = skipped.1
+    }
+    ArrayBuilder::push(b, TEof)
+    ArrayBuilder::push(starts, len)
+    ArrayBuilder::push(ends, len)
+    (ArrayBuilder::freeze(b), ArrayBuilder::freeze(starts), ArrayBuilder::freeze(ends))
+  }
+}
+export let offset_to_line_col: (String, Int) -> (Int, Int) = (source, offset) -> {
+  let len = String::length(source)
+  let bound = if offset < len { offset } else { len }
+  let mut i = 0
+  let mut line = 1
+  let mut col = 1
+  while i < bound {
+    if String::char_code_at(source, i) == 10 {
+      line = line + 1
+      col = 1
+    } else {
+      col = col + 1
+    }
+    i = i + 1
+  }
+  (line, col)
+}
+export let lex: (String) -> Array[Token] with { Error } = (source) -> {
+  let len = String::length(source)
+  {
+    let b = ArrayBuilder::new()
+    let mut prev_tok = TEof
+    let first_skip = skip_ws_with_newline(source, len, 0)
+    let mut pos = first_skip.0
+    let mut nl_before = first_skip.1
+    while pos < len {
+      let c = String::char_code_at(source, pos)
+      let (tok, next) = lex_one_token(source, len, pos)
+      if (c == '[' || c == '(') && nl_before && is_expr_ending_tok(prev_tok) {
+        ArrayBuilder::push(b, TSemicolon)
+      } else {
+        ()
+      }
+      ArrayBuilder::push(b, tok)
+      prev_tok = tok
+      let skipped = skip_ws_with_newline(source, len, next)
+      pos = skipped.0
+      nl_before = skipped.1
+    }
+    ArrayBuilder::push(b, TEof)
+    ArrayBuilder::freeze(b)
+  }
 }
 let build_interp_expr: (Array[String], (Array[Token], Int, Int) -> (Expr, Int) with { Error }) -> Expr with { Error } = (parts, parse_recur) -> {
   let concat_expr: (Expr, Expr) -> Expr = (a, b) -> {
@@ -18313,6 +18313,790 @@ export let rec print_stmt: (Stmt) -> String = (s) -> {
     }
   }
 }
+let k0: Int = 1518500249
+let k1: Int = 1859775393
+let k2: Int = ((36635 << 16) | 48348)
+let k3: Int = ((51810 << 16) | 49622)
+let ushr = (x: Int, n: Int) -> Int {
+  if n == 0 {
+    x
+  }
+  else if n >= 32 {
+    0
+  }
+  else {
+    (x>>n)&((1<<(32 - n)) - 1)
+  }
+}
+let mask32: Int = ((65535 << 16) | 65535)
+let rotl = (x: Int, n: Int) -> Int {
+  ((x<<n)|ushr(x, 32 - n))&mask32
+}
+let add32 = (a: Int, b: Int) -> Int {
+  (a + b)&mask32
+}
+let h0_init: Int = 1732584193
+let h1_init: Int = ((61389 << 16) | 43913)
+let h2_init: Int = ((39098 << 16) | 56574)
+let h3_init: Int = 271733878
+let h4_init: Int = ((50130 << 16) | 57840)
+let hex_table: String = "0123456789abcdef"
+let read_word = (s: String, idx: Int) -> Int {
+  let offset = idx * 4
+  let b0 = s|>String::char_code_at(offset)
+  let b1 = s|>String::char_code_at(offset + 1)
+  let b2 = s|>String::char_code_at(offset + 2)
+  let b3 = s|>String::char_code_at(offset + 3)
+  ((b0<<24)|(b1<<16)|(b2<<8)|b3)&mask32
+}
+let read_word_bytes = (b: Bytes, idx: Int) -> Int {
+  let offset = idx * 4
+  let b0 = Bytes::get(b, offset)
+  let b1 = Bytes::get(b, offset + 1)
+  let b2 = Bytes::get(b, offset + 2)
+  let b3 = Bytes::get(b, offset + 3)
+  ((b0<<24)|(b1<<16)|(b2<<8)|b3)&mask32
+}
+let push_word_bytes = (b: Bytes, w: Int) -> Unit {
+  Bytes::push(b, ushr(w, 24)&255)
+  Bytes::push(b, ushr(w, 16)&255)
+  Bytes::push(b, ushr(w, 8)&255)
+  Bytes::push(b, w&255)
+}
+let pad_message = (msg: String) -> String {
+  let len = msg|>String::length()
+  let bit_len = len * 8
+  let sb = StringBuilder::new()
+  StringBuilder::push(sb, msg)
+  StringBuilder::push(sb, String::from_char_code(128))
+  let mut cur_len = len + 1
+  while cur_len % 64 != 56 {
+    StringBuilder::push(sb, String::from_char_code(0))
+    cur_len = cur_len + 1
+  }
+  StringBuilder::push(sb, String::from_char_code(0))
+  StringBuilder::push(sb, String::from_char_code(0))
+  StringBuilder::push(sb, String::from_char_code(0))
+  StringBuilder::push(sb, String::from_char_code(0))
+  StringBuilder::push(sb, String::from_char_code(ushr(bit_len, 24)&255))
+  StringBuilder::push(sb, String::from_char_code(ushr(bit_len, 16)&255))
+  StringBuilder::push(sb, String::from_char_code(ushr(bit_len, 8)&255))
+  StringBuilder::push(sb, String::from_char_code(bit_len&255))
+  StringBuilder::freeze(sb)
+}
+let to_hex_char = (i: Int) -> String {
+  String::substring(hex_table, i, i + 1)
+}
+let byte_to_hex = (b: Int) -> String {
+  to_hex_char((b>>4)&15)|>String::concat(to_hex_char(b&15))
+}
+let word_to_hex = (w: Int) -> String {
+  let sb = StringBuilder::new()
+  StringBuilder::push(sb, byte_to_hex(ushr(w, 24)&255))
+  StringBuilder::push(sb, byte_to_hex(ushr(w, 16)&255))
+  StringBuilder::push(sb, byte_to_hex(ushr(w, 8)&255))
+  StringBuilder::push(sb, byte_to_hex(w&255))
+  StringBuilder::freeze(sb)
+}
+let build_schedule = (msg: String, block_start: Int) -> Bytes {
+  let arr = Bytes::new()
+  let mut i = 0
+  while i < 16 {
+    let w = read_word(msg, block_start / 4 + i)
+    push_word_bytes(arr, w)
+    i = i + 1
+  }
+  while i < 80 {
+    let w = rotl(
+      read_word_bytes(arr, i - 3) ^
+      read_word_bytes(arr, i - 8) ^
+      read_word_bytes(arr, i - 14) ^
+      read_word_bytes(arr, i - 16),
+      1
+    )
+    push_word_bytes(arr, w)
+    i = i + 1
+  }
+  arr
+}
+let rec process_rounds = (i: Int, a: Int, b: Int, c: Int, d: Int, e: Int, w: Bytes) -> Bytes {
+  if i >= 80 {
+    let out = Bytes::new()
+    push_word_bytes(out, a)
+    push_word_bytes(out, b)
+    push_word_bytes(out, c)
+    push_word_bytes(out, d)
+    push_word_bytes(out, e)
+    out
+  } else {
+    let f = if i < 20 {
+      (b&c)^((b^mask32)&d)
+    } else if i < 40 {
+      b^c^d
+    } else if i < 60 {
+      (b&c)^(b&d)^(c&d)
+    } else {
+      b^c^d
+    }
+    let k = if i < 20 {
+      k0
+    }
+    else if i < 40 {
+      k1
+    }
+    else if i < 60 {
+      k2
+    }
+    else {
+      k3
+    }
+    let temp = add32(add32(add32(add32(rotl(a, 5), f), e), k), read_word_bytes(w, i))
+    process_rounds(i + 1, temp, a, rotl(b, 30), c, d, w)
+  }
+}
+let rec process_blocks = (msg: String, block_idx: Int, num_blocks: Int, h0: Int, h1: Int, h2: Int, h3: Int, h4: Int) -> String {
+  if block_idx >= num_blocks {
+    let sb = StringBuilder::new()
+    StringBuilder::push(sb, word_to_hex(h0))
+    StringBuilder::push(sb, word_to_hex(h1))
+    StringBuilder::push(sb, word_to_hex(h2))
+    StringBuilder::push(sb, word_to_hex(h3))
+    StringBuilder::push(sb, word_to_hex(h4))
+    StringBuilder::freeze(sb)
+  } else {
+    let w = build_schedule(msg, block_idx * 64)
+    let result = process_rounds(0, h0, h1, h2, h3, h4, w)
+    let new_h0 = add32(h0, read_word_bytes(result, 0))
+    let new_h1 = add32(h1, read_word_bytes(result, 1))
+    let new_h2 = add32(h2, read_word_bytes(result, 2))
+    let new_h3 = add32(h3, read_word_bytes(result, 3))
+    let new_h4 = add32(h4, read_word_bytes(result, 4))
+    process_blocks(msg, block_idx + 1, num_blocks, new_h0, new_h1, new_h2, new_h3, new_h4)
+  }
+}
+export let sha1 = (msg: String) -> String {
+  let padded = pad_message(msg)
+  let num_blocks = (padded|>String::length()) / 64
+  process_blocks(padded, 0, num_blocks, h0_init, h1_init, h2_init, h3_init, h4_init)
+}
+let fn_sig_text: (Array[String], Array[(String, Array[String])], Array[(String, Option[TypeExpr])], TypeExpr, Option[String]) -> Option[String] = (tps, tbs, params, ret_ty, eff_opt) -> {
+  let mut missing = false
+  let parts = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(params) {
+    let (pname, pty_opt) = Array::get(params, i)
+    match pty_opt {
+      Some(pty) => {
+        let tystr = print_type_expr(pty)
+        let entry = if String::ends_with(pname, "~") {
+          "\{pname}: \{tystr}"
+        } else tystr
+        Array::push(parts, entry)
+      },
+      None => { missing = true }
+    }
+    i = i + 1
+  }
+  if missing {
+    None
+  } else {
+    let gen = if Array::length(tps) == 0 {
+      ""
+    } else {
+      let entries = Array::slice([
+        ""
+      ], 0, 0)
+      let mut gi = 0
+      while gi < Array::length(tps) {
+        let tp = Array::get(tps, gi)
+        let mut bound = ""
+        let mut bi = 0
+        while bi < Array::length(tbs) {
+          let (bname, bnds) = Array::get(tbs, bi)
+          if bname == tp && Array::length(bnds) > 0 {
+            bound = String::join(bnds, " + ")
+          } else ()
+          bi = bi + 1
+        }
+        let entry = if String::length(bound) == 0 {
+          tp
+        } else "\{tp}: \{bound}"
+        Array::push(entries, entry)
+        gi = gi + 1
+      }
+      "[\{String::join(entries, ", ")}]"
+    }
+    let eff = match eff_opt {
+      Some(e) => " with { \{e} }",
+      None => ""
+    }
+    Some("\{gen}(\{String::join(parts, ", ")}) -> \{print_type_expr(ret_ty)}\{eff}")
+  }
+}
+export let parse_contract_program: (Array[Token]) -> (Array[(String, String)], Array[String], Array[Stmt]) with { Error } = (tokens) -> {
+  let decls = Array::slice([
+    ("", "")
+  ], 0, 0)
+  let opaques = Array::slice([
+    ""
+  ], 0, 0)
+  let stmts = Array::slice([
+    SExport(Array::slice([
+      ""
+    ], 0, 0))
+  ], 0, 0)
+  let mut pos = 0
+  let mut done = false
+  while !done {
+    match peek(tokens, pos) {
+      TEof => { done = true },
+      TIdent(head) => if head == "opaque" {
+        match peek(tokens, pos + 1) {
+          TType => match peek(tokens, pos + 2) {
+            TIdent(oname) => {
+              match peek(tokens, pos + 3) {
+                TLBracket => throw("opaque type '\{oname}': type parameters are not yet supported (#729)"),
+                _ => ()
+              }
+              Array::push(opaques, oname)
+              pos = pos + 3
+            },
+            _ => throw("expected type name after 'opaque type'")
+          },
+          _ => throw("expected 'type' after 'opaque'")
+        }
+      } else if head == "fn" {
+        let (dhead, dsig, next) = parse_fn_signature(tokens, pos + 1)
+        let (name, tps, tbs) = dhead
+        let (params, ret_ty, eff_opt) = dsig
+        match peek(tokens, next) {
+          TLBrace => throw("contract fn declaration '\{name}' must not have a body (#729)"),
+          _ => ()
+        }
+        match fn_sig_text(tps, tbs, params, ret_ty, eff_opt) {
+          Some(sig) => Array::push(decls, (name, sig)),
+          None => throw("contract fn declaration '\{name}' requires full annotations")
+        }
+        pos = next
+      } else {
+        let (stmt, next) = parse_stmt(tokens, [], pos)
+        Array::push(stmts, stmt)
+        pos = next
+      },
+      _ => {
+        let (stmt, next) = parse_stmt(tokens, [], pos)
+        Array::push(stmts, stmt)
+        pos = next
+      }
+    }
+  }
+  (decls, opaques, stmts)
+}
+export let collect_impl_fn_defs: (Array[Stmt]) -> Array[(String, Option[String], Bool)] = (stmts) -> {
+  let out = Array::slice([
+    ("", Some(""), false)
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exported, _, name, _, val) => match val {
+        EFn(tps, tbs, params, ret_opt, eff_opt, _) => {
+          let sig = match ret_opt {
+            Some(ret_ty) => fn_sig_text(tps, tbs, params, ret_ty, eff_opt),
+            None => None
+          }
+          Array::push(out, (name, sig, exported))
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+export let collect_impl_type_defs: (Array[Stmt]) -> Array[(String, Bool)] = (stmts) -> {
+  let out = Array::slice([
+    ("", false)
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(exported, name, _, _, _) => Array::push(out, (name, exported)),
+      SEnum(exported, name, _, _, _) => Array::push(out, (name, exported)),
+      STypeAlias(exported, name, _, _) => Array::push(out, (name, exported)),
+      SSuberror(exported, name, _) => Array::push(out, (name, exported)),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+export let check_contract: (Array[(String, String)], Array[String], Array[Stmt]) -> Array[String] = (decls, opaque_names, impl_stmts) -> {
+  let errors = Array::slice([
+    ""
+  ], 0, 0)
+  let defs = collect_impl_fn_defs(impl_stmts)
+  let mut di = 0
+  while di < Array::length(decls) {
+    let (dname, dsig) = Array::get(decls, di)
+    let mut found = false
+    let mut fi = 0
+    while fi < Array::length(defs) {
+      let (fname, fsig_opt, _fexported) = Array::get(defs, fi)
+      if fname == dname {
+        found = true
+        match fsig_opt {
+          Some(fsig) => if fsig == dsig {
+            ()
+          } else {
+            Array::push(errors, "signature mismatch for '\{dname}': contract \{dsig} but implementation \{fsig}")
+          },
+          None => Array::push(errors, "implementation of '\{dname}' lacks the full annotations required by the contract")
+        }
+        let (_, _, fexported0) = Array::get(defs, fi)
+        if fexported0 {
+          ()
+        } else {
+          Array::push(errors, "contract declaration '\{dname}' is implemented but not exported by its implementation file")
+        }
+      } else ()
+      fi = fi + 1
+    }
+    if found {
+      ()
+    } else {
+      Array::push(errors, "contract declaration '\{dname}' has no implementation")
+    }
+    di = di + 1
+  }
+  let mut ei = 0
+  while ei < Array::length(defs) {
+    let (fname, _fsig_opt, fexported) = Array::get(defs, ei)
+    if fexported {
+      let mut declared = false
+      let mut ci = 0
+      while ci < Array::length(decls) {
+        let (dname, _dsig) = Array::get(decls, ci)
+        if dname == fname {
+          declared = true
+        } else ()
+        ci = ci + 1
+      }
+      if declared {
+        ()
+      } else {
+        Array::push(errors, "exported '\{fname}' is not declared in the contract")
+      }
+    } else ()
+    ei = ei + 1
+  }
+  let type_defs = collect_impl_type_defs(impl_stmts)
+  let mut oi = 0
+  while oi < Array::length(opaque_names) {
+    let oname = Array::get(opaque_names, oi)
+    let mut ofound = false
+    let mut ti = 0
+    while ti < Array::length(type_defs) {
+      let (tname, texported) = Array::get(type_defs, ti)
+      if tname == oname {
+        ofound = true
+        if texported {
+          ()
+        } else {
+          Array::push(errors, "opaque type '\{oname}' is implemented but not exported by its implementation file")
+        }
+      } else ()
+      ti = ti + 1
+    }
+    if ofound {
+      ()
+    } else {
+      Array::push(errors, "opaque type '\{oname}' has no implementation")
+    }
+    oi = oi + 1
+  }
+  let mut xi = 0
+  while xi < Array::length(type_defs) {
+    let (tname, texported) = Array::get(type_defs, xi)
+    if texported {
+      let mut tdeclared = false
+      let mut oj = 0
+      while oj < Array::length(opaque_names) {
+        if Array::get(opaque_names, oj) == tname {
+          tdeclared = true
+        } else ()
+        oj = oj + 1
+      }
+      if tdeclared {
+        ()
+      } else {
+        Array::push(errors, "exported type '\{tname}' is not declared in the contract (declare it as `opaque type \{tname}` or define it transparently in the contract)")
+      }
+    } else ()
+    xi = xi + 1
+  }
+  errors
+}
+export let classify_contract_stmts: (Array[Stmt]) -> (Array[String], Array[Stmt]) with { Error } = (stmts) -> {
+  let raws = Array::slice([
+    ""
+  ], 0, 0)
+  let type_defs = Array::slice([
+    SExport(Array::slice([
+      ""
+    ], 0, 0))
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImport(raw_path, _) => Array::push(raws, raw_path),
+      SStruct(_, name, fields, derives, mut_names) => Array::push(type_defs, SStruct(true, name, fields, derives, mut_names)),
+      SEnum(_, name, tparams, ctors, derives) => Array::push(type_defs, SEnum(true, name, tparams, ctors, derives)),
+      STypeAlias(_, name, tparams, ty) => Array::push(type_defs, STypeAlias(true, name, tparams, ty)),
+      _ => throw("unsupported statement in a .vibei contract: only fn declarations, opaque type declarations, transparent type definitions, and implementation-file imports are allowed (#729)")
+    }
+    i = i + 1
+  }
+  (raws, type_defs)
+}
+export let contract_facade_source: (Array[(String, String)], Array[String], Array[Stmt], Array[(String, Array[Stmt])]) -> String with { Error } = (decls, opaque_names, type_defs, impl_units) -> {
+  let lines = Array::slice([
+    ""
+  ], 0, 0)
+  let mut tdi = 0
+  while tdi < Array::length(type_defs) {
+    Array::push(lines, print_stmt(Array::get(type_defs, tdi)))
+    tdi = tdi + 1
+  }
+  let allocated = Array::slice([
+    ""
+  ], 0, 0)
+  let mut ui = 0
+  while ui < Array::length(impl_units) {
+    let (raw, unit_stmts) = Array::get(impl_units, ui)
+    let defs = collect_impl_fn_defs(unit_stmts)
+    let unit_types = collect_impl_type_defs(unit_stmts)
+    let names = Array::slice([
+      ""
+    ], 0, 0)
+    let mut oi = 0
+    while oi < Array::length(opaque_names) {
+      let oname = Array::get(opaque_names, oi)
+      let mut otaken = false
+      let mut oai = 0
+      while oai < Array::length(allocated) {
+        if Array::get(allocated, oai) == "type \{oname}" {
+          otaken = true
+        } else ()
+        oai = oai + 1
+      }
+      if otaken {
+        ()
+      } else {
+        let mut here = false
+        let mut uti = 0
+        while uti < Array::length(unit_types) {
+          let (tname, _) = Array::get(unit_types, uti)
+          if tname == oname {
+            here = true
+          } else ()
+          uti = uti + 1
+        }
+        if here {
+          Array::push(names, "type \{oname}")
+          Array::push(allocated, "type \{oname}")
+        } else ()
+      }
+      oi = oi + 1
+    }
+    let mut di = 0
+    while di < Array::length(decls) {
+      let (dname, _) = Array::get(decls, di)
+      let mut taken = false
+      let mut ai = 0
+      while ai < Array::length(allocated) {
+        if Array::get(allocated, ai) == dname {
+          taken = true
+        } else ()
+        ai = ai + 1
+      }
+      if taken {
+        ()
+      } else {
+        let mut defined_here = false
+        let mut fi = 0
+        while fi < Array::length(defs) {
+          let (fname, _, _) = Array::get(defs, fi)
+          if fname == dname {
+            defined_here = true
+          } else ()
+          fi = fi + 1
+        }
+        if defined_here {
+          Array::push(names, dname)
+          Array::push(allocated, dname)
+        } else ()
+      }
+      di = di + 1
+    }
+    if Array::length(names) > 0 {
+      Array::push(lines, "export \{raw} { \{String::join(names, ", ")} }")
+    } else ()
+    ui = ui + 1
+  }
+  if Array::length(allocated) != Array::length(decls) + Array::length(opaque_names) {
+    throw("contract facade: some declarations have no implementation file (run check_contract first)")
+  } else ()
+  String::concat(String::join(lines, "\n"), "\n")
+}
+let sorted_strings: (Array[String]) -> Array[String] = (items) -> {
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(items) {
+    Array::push(out, Array::get(items, i))
+    i = i + 1
+  }
+  let n = Array::length(out)
+  let mut a = 0
+  while a < n {
+    let mut b = a + 1
+    let mut min_i = a
+    while b < n {
+      let x = Array::get(out, b)
+      let y = Array::get(out, min_i)
+      let xl = String::length(x)
+      let yl = String::length(y)
+      let mut ci = 0
+      let mut cmp = 0
+      while cmp == 0 && ci < xl && ci < yl {
+        let cx = String::char_code_at(x, ci)
+        let cy = String::char_code_at(y, ci)
+        if cx < cy {
+          cmp = 0 - 1
+        } else if cx > cy {
+          cmp = 1
+        } else ()
+        ci = ci + 1
+      }
+      if cmp == 0 {
+        if xl < yl {
+          cmp = 0 - 1
+        } else if xl > yl {
+          cmp = 1
+        } else ()
+      } else ()
+      if cmp < 0 {
+        min_i = b
+      } else ()
+      b = b + 1
+    }
+    if min_i != a {
+      let tmp = Array::get(out, a)
+      Array::set(out, a, Array::get(out, min_i))
+      Array::set(out, min_i, tmp)
+    } else ()
+    a = a + 1
+  }
+  out
+}
+export let contract_hash: (Array[(String, String)], Array[String], Array[Stmt]) -> String = (fn_decls, opaque_names, type_defs) -> {
+  let lines = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(fn_decls) {
+    let (dname, dsig) = Array::get(fn_decls, i)
+    Array::push(lines, "fn \{dname} \{dsig}")
+    i = i + 1
+  }
+  let mut oi = 0
+  while oi < Array::length(opaque_names) {
+    Array::push(lines, "opaque \{Array::get(opaque_names, oi)}")
+    oi = oi + 1
+  }
+  let mut ti = 0
+  while ti < Array::length(type_defs) {
+    Array::push(lines, "type \{print_stmt(Array::get(type_defs, ti))}")
+    ti = ti + 1
+  }
+  let canon = String::join(sorted_strings(lines), "\n")
+  "ct:sha1:\{sha1(String::concat("vibei:v1\n", canon))}"
+}
+export let package_hash_from_sources: (Array[(String, String)]) -> String = (sources) -> {
+  let keys = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(sources) {
+    let (path, _) = Array::get(sources, i)
+    Array::push(keys, path)
+    i = i + 1
+  }
+  let ordered = sorted_strings(keys)
+  let sb = StringBuilder::new()
+  StringBuilder::push(sb, "vibe-pkg:v1\n")
+  let mut ki = 0
+  while ki < Array::length(ordered) {
+    let key = Array::get(ordered, ki)
+    let mut si = 0
+    while si < Array::length(sources) {
+      let (path, text) = Array::get(sources, si)
+      if path == key {
+        StringBuilder::push(sb, "file \{path} \{String::length(text)}\n")
+        StringBuilder::push(sb, text)
+        StringBuilder::push(sb, "\n")
+        si = Array::length(sources)
+      } else {
+        si = si + 1
+      }
+    }
+    ki = ki + 1
+  }
+  "pkg:sha1:\{sha1(StringBuilder::freeze(sb))}"
+}
+let is_digit_run: (String, Int, Int) -> Bool = (s, from, to) -> {
+  if to <= from {
+    false
+  } else {
+    let mut i = from
+    let mut ok = true
+    while i < to {
+      let c = String::char_code_at(s, i)
+      if c < '0' || c > '9' {
+        ok = false
+        i = to
+      } else {
+        i = i + 1
+      }
+    }
+    ok
+  }
+}
+export let is_strict_semver: (String) -> Bool = (v) -> {
+  let start = if String::starts_with(v, "^") {
+    1
+  } else 0
+  let body = String::substring(v, start, String::length(v))
+  let parts = String::split(body, ".")
+  if Array::length(parts) != 3 {
+    false
+  } else {
+    let a = Array::get(parts, 0)
+    let b = Array::get(parts, 1)
+    let c = Array::get(parts, 2)
+    is_digit_run(a, 0, String::length(a)) && is_digit_run(b, 0, String::length(b)) && is_digit_run(c, 0, String::length(c))
+  }
+}
+export let is_package_pin: (String) -> Bool = (h) -> {
+  if !String::starts_with(h, "#pkg:sha1:") {
+    false
+  } else if String::length(h) != 50 {
+    false
+  } else {
+    let mut i = 10
+    let mut ok = true
+    while i < 50 {
+      let c = String::char_code_at(h, i)
+      let is_hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
+      if is_hex {
+        i = i + 1
+      } else {
+        ok = false
+        i = 50
+      }
+    }
+    ok
+  }
+}
+let split_fields: (String) -> Array[String] = (line) -> {
+  let raw = String::split(String::trim(line), " ")
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(raw) {
+    let f = Array::get(raw, i)
+    if String::length(f) > 0 {
+      Array::push(out, f)
+    } else ()
+    i = i + 1
+  }
+  out
+}
+export let extract_require_pins: (String) -> (Array[(String, String, String)], String) with { Error } = (source) -> {
+  let pins = Array::slice([
+    ("", "", "")
+  ], 0, 0)
+  let sb = StringBuilder::new()
+  let len = String::length(source)
+  let mut pos = 0
+  let mut scanning = true
+  while pos < len {
+    let mut nl = pos
+    while nl < len && String::char_code_at(source, nl) != 10 {
+      nl = nl + 1
+    }
+    let line = String::substring(source, pos, nl)
+    let trimmed = String::trim(line)
+    let is_require = scanning && String::starts_with(trimmed, "require ")
+    if is_require {
+      let fields = split_fields(trimmed)
+      let nfields = Array::length(fields)
+      if nfields != 5 && nfields != 3 {
+        throw("malformed require line (expected: require @scope/name x.y.z [= #pkg:sha1:<40hex>]): \{trimmed}")
+      } else ()
+      let name = Array::get(fields, 1)
+      let ver = Array::get(fields, 2)
+      if !String::starts_with(name, "@") {
+        throw("require package name must start with '@': \{name}")
+      } else ()
+      if !is_strict_semver(ver) {
+        throw("require version must be a strict semver triple (x.y.z or ^x.y.z): \{ver}")
+      } else ()
+      let pin_hash = if nfields == 5 {
+        let eq = Array::get(fields, 3)
+        let pin = Array::get(fields, 4)
+        if eq == "=" {
+          ()
+        } else {
+          throw("malformed require line (missing '='): \{trimmed}")
+        }
+        if !is_package_pin(pin) {
+          throw("require pin must be #pkg:sha1:<40hex> (compute with `vibe hash`): \{pin}")
+        } else ()
+        String::substring(pin, 1, String::length(pin))
+      } else {
+        ""
+      }
+      Array::push(pins, (name, ver, pin_hash))
+      let mut bi = 0
+      while bi < String::length(line) {
+        StringBuilder::push(sb, " ")
+        bi = bi + 1
+      }
+    } else {
+      if String::length(trimmed) == 0 || String::starts_with(trimmed, "//") {
+        ()
+      } else {
+        scanning = false
+      }
+      StringBuilder::push(sb, line)
+    }
+    if nl < len {
+      StringBuilder::push(sb, "\n")
+    } else ()
+    pos = nl + 1
+  }
+  (pins, StringBuilder::freeze(sb))
+}
+export {
+  parse_contract_program, collect_impl_fn_defs, check_contract
+}
 export let dir_of_path: (String) -> String = (file_path) -> {
   let idx = String::last_index_of(file_path, "/")
   if idx < 0 {
@@ -20787,7 +21571,8 @@ export let normalize_stmts: (Array[Stmt]) -> Array[Stmt] = (stmts) -> {
   hoist_lambda_lets(annotate_literal_lets(fold_stmts(drop_unused_type_aliases(promoted))))
 }
 export let normalize_source: (String) -> String with { Error } = (src) -> {
-  let toks_cfg = lex(src)
+  let (req_pins, src_wo_requires) = extract_require_pins(src)
+  let toks_cfg = lex(src_wo_requires)
   let mut ci = 0
   while ci < Array::length(toks_cfg) {
     match Array::get(toks_cfg, ci) {
@@ -20804,6 +21589,20 @@ export let normalize_source: (String) -> String with { Error } = (src) -> {
   let stmts = parse_program(toks_cfg)
   let kept = normalize_stmts(stmts)
   let sections = empty_strs()
+  if Array::length(req_pins) > 0 {
+    let req_lines = empty_strs()
+    let mut ri = 0
+    while ri < Array::length(req_pins) {
+      let (rname, rver, rpin) = Array::get(req_pins, ri)
+      if rpin == "" {
+        Array::push(req_lines, "require \{rname} \{rver}")
+      } else {
+        Array::push(req_lines, "require \{rname} \{rver} = #\{rpin}")
+      }
+      ri = ri + 1
+    }
+    Array::push(sections, String::join(req_lines, "\n"))
+  } else ()
   let mut s = 0
   while s <= 3 {
     let rendered = render_section(kept, s)
@@ -42385,7 +43184,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "e14cf4a441722835"
+  "0b010f0696ba0c23"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647
@@ -42556,784 +43355,6 @@ export let load_or_parse_module_header_fs_impl: (String, String, Int) -> (Array[
     Fs::write_file(cache_path, persistent_module_header_text(deps, exports))
     (deps, exports, next_parse_count)
   }
-}
-let k0: Int = 1518500249
-let k1: Int = 1859775393
-let k2: Int = ((36635 << 16) | 48348)
-let k3: Int = ((51810 << 16) | 49622)
-let ushr = (x: Int, n: Int) -> Int {
-  if n == 0 {
-    x
-  }
-  else if n >= 32 {
-    0
-  }
-  else {
-    (x>>n)&((1<<(32 - n)) - 1)
-  }
-}
-let mask32: Int = ((65535 << 16) | 65535)
-let rotl = (x: Int, n: Int) -> Int {
-  ((x<<n)|ushr(x, 32 - n))&mask32
-}
-let add32 = (a: Int, b: Int) -> Int {
-  (a + b)&mask32
-}
-let h0_init: Int = 1732584193
-let h1_init: Int = ((61389 << 16) | 43913)
-let h2_init: Int = ((39098 << 16) | 56574)
-let h3_init: Int = 271733878
-let h4_init: Int = ((50130 << 16) | 57840)
-let hex_table: String = "0123456789abcdef"
-let read_word = (s: String, idx: Int) -> Int {
-  let offset = idx * 4
-  let b0 = s|>String::char_code_at(offset)
-  let b1 = s|>String::char_code_at(offset + 1)
-  let b2 = s|>String::char_code_at(offset + 2)
-  let b3 = s|>String::char_code_at(offset + 3)
-  ((b0<<24)|(b1<<16)|(b2<<8)|b3)&mask32
-}
-let read_word_bytes = (b: Bytes, idx: Int) -> Int {
-  let offset = idx * 4
-  let b0 = Bytes::get(b, offset)
-  let b1 = Bytes::get(b, offset + 1)
-  let b2 = Bytes::get(b, offset + 2)
-  let b3 = Bytes::get(b, offset + 3)
-  ((b0<<24)|(b1<<16)|(b2<<8)|b3)&mask32
-}
-let push_word_bytes = (b: Bytes, w: Int) -> Unit {
-  Bytes::push(b, ushr(w, 24)&255)
-  Bytes::push(b, ushr(w, 16)&255)
-  Bytes::push(b, ushr(w, 8)&255)
-  Bytes::push(b, w&255)
-}
-let pad_message = (msg: String) -> String {
-  let len = msg|>String::length()
-  let bit_len = len * 8
-  let sb = StringBuilder::new()
-  StringBuilder::push(sb, msg)
-  StringBuilder::push(sb, String::from_char_code(128))
-  let mut cur_len = len + 1
-  while cur_len % 64 != 56 {
-    StringBuilder::push(sb, String::from_char_code(0))
-    cur_len = cur_len + 1
-  }
-  StringBuilder::push(sb, String::from_char_code(0))
-  StringBuilder::push(sb, String::from_char_code(0))
-  StringBuilder::push(sb, String::from_char_code(0))
-  StringBuilder::push(sb, String::from_char_code(0))
-  StringBuilder::push(sb, String::from_char_code(ushr(bit_len, 24)&255))
-  StringBuilder::push(sb, String::from_char_code(ushr(bit_len, 16)&255))
-  StringBuilder::push(sb, String::from_char_code(ushr(bit_len, 8)&255))
-  StringBuilder::push(sb, String::from_char_code(bit_len&255))
-  StringBuilder::freeze(sb)
-}
-let to_hex_char = (i: Int) -> String {
-  String::substring(hex_table, i, i + 1)
-}
-let byte_to_hex = (b: Int) -> String {
-  to_hex_char((b>>4)&15)|>String::concat(to_hex_char(b&15))
-}
-let word_to_hex = (w: Int) -> String {
-  let sb = StringBuilder::new()
-  StringBuilder::push(sb, byte_to_hex(ushr(w, 24)&255))
-  StringBuilder::push(sb, byte_to_hex(ushr(w, 16)&255))
-  StringBuilder::push(sb, byte_to_hex(ushr(w, 8)&255))
-  StringBuilder::push(sb, byte_to_hex(w&255))
-  StringBuilder::freeze(sb)
-}
-let build_schedule = (msg: String, block_start: Int) -> Bytes {
-  let arr = Bytes::new()
-  let mut i = 0
-  while i < 16 {
-    let w = read_word(msg, block_start / 4 + i)
-    push_word_bytes(arr, w)
-    i = i + 1
-  }
-  while i < 80 {
-    let w = rotl(
-      read_word_bytes(arr, i - 3) ^
-      read_word_bytes(arr, i - 8) ^
-      read_word_bytes(arr, i - 14) ^
-      read_word_bytes(arr, i - 16),
-      1
-    )
-    push_word_bytes(arr, w)
-    i = i + 1
-  }
-  arr
-}
-let rec process_rounds = (i: Int, a: Int, b: Int, c: Int, d: Int, e: Int, w: Bytes) -> Bytes {
-  if i >= 80 {
-    let out = Bytes::new()
-    push_word_bytes(out, a)
-    push_word_bytes(out, b)
-    push_word_bytes(out, c)
-    push_word_bytes(out, d)
-    push_word_bytes(out, e)
-    out
-  } else {
-    let f = if i < 20 {
-      (b&c)^((b^mask32)&d)
-    } else if i < 40 {
-      b^c^d
-    } else if i < 60 {
-      (b&c)^(b&d)^(c&d)
-    } else {
-      b^c^d
-    }
-    let k = if i < 20 {
-      k0
-    }
-    else if i < 40 {
-      k1
-    }
-    else if i < 60 {
-      k2
-    }
-    else {
-      k3
-    }
-    let temp = add32(add32(add32(add32(rotl(a, 5), f), e), k), read_word_bytes(w, i))
-    process_rounds(i + 1, temp, a, rotl(b, 30), c, d, w)
-  }
-}
-let rec process_blocks = (msg: String, block_idx: Int, num_blocks: Int, h0: Int, h1: Int, h2: Int, h3: Int, h4: Int) -> String {
-  if block_idx >= num_blocks {
-    let sb = StringBuilder::new()
-    StringBuilder::push(sb, word_to_hex(h0))
-    StringBuilder::push(sb, word_to_hex(h1))
-    StringBuilder::push(sb, word_to_hex(h2))
-    StringBuilder::push(sb, word_to_hex(h3))
-    StringBuilder::push(sb, word_to_hex(h4))
-    StringBuilder::freeze(sb)
-  } else {
-    let w = build_schedule(msg, block_idx * 64)
-    let result = process_rounds(0, h0, h1, h2, h3, h4, w)
-    let new_h0 = add32(h0, read_word_bytes(result, 0))
-    let new_h1 = add32(h1, read_word_bytes(result, 1))
-    let new_h2 = add32(h2, read_word_bytes(result, 2))
-    let new_h3 = add32(h3, read_word_bytes(result, 3))
-    let new_h4 = add32(h4, read_word_bytes(result, 4))
-    process_blocks(msg, block_idx + 1, num_blocks, new_h0, new_h1, new_h2, new_h3, new_h4)
-  }
-}
-export let sha1 = (msg: String) -> String {
-  let padded = pad_message(msg)
-  let num_blocks = (padded|>String::length()) / 64
-  process_blocks(padded, 0, num_blocks, h0_init, h1_init, h2_init, h3_init, h4_init)
-}
-let fn_sig_text: (Array[String], Array[(String, Array[String])], Array[(String, Option[TypeExpr])], TypeExpr, Option[String]) -> Option[String] = (tps, tbs, params, ret_ty, eff_opt) -> {
-  let mut missing = false
-  let parts = Array::slice([
-    ""
-  ], 0, 0)
-  let mut i = 0
-  while i < Array::length(params) {
-    let (pname, pty_opt) = Array::get(params, i)
-    match pty_opt {
-      Some(pty) => {
-        let tystr = print_type_expr(pty)
-        let entry = if String::ends_with(pname, "~") {
-          "\{pname}: \{tystr}"
-        } else tystr
-        Array::push(parts, entry)
-      },
-      None => { missing = true }
-    }
-    i = i + 1
-  }
-  if missing {
-    None
-  } else {
-    let gen = if Array::length(tps) == 0 {
-      ""
-    } else {
-      let entries = Array::slice([
-        ""
-      ], 0, 0)
-      let mut gi = 0
-      while gi < Array::length(tps) {
-        let tp = Array::get(tps, gi)
-        let mut bound = ""
-        let mut bi = 0
-        while bi < Array::length(tbs) {
-          let (bname, bnds) = Array::get(tbs, bi)
-          if bname == tp && Array::length(bnds) > 0 {
-            bound = String::join(bnds, " + ")
-          } else ()
-          bi = bi + 1
-        }
-        let entry = if String::length(bound) == 0 {
-          tp
-        } else "\{tp}: \{bound}"
-        Array::push(entries, entry)
-        gi = gi + 1
-      }
-      "[\{String::join(entries, ", ")}]"
-    }
-    let eff = match eff_opt {
-      Some(e) => " with { \{e} }",
-      None => ""
-    }
-    Some("\{gen}(\{String::join(parts, ", ")}) -> \{print_type_expr(ret_ty)}\{eff}")
-  }
-}
-export let parse_contract_program: (Array[Token]) -> (Array[(String, String)], Array[String], Array[Stmt]) with { Error } = (tokens) -> {
-  let decls = Array::slice([
-    ("", "")
-  ], 0, 0)
-  let opaques = Array::slice([
-    ""
-  ], 0, 0)
-  let stmts = Array::slice([
-    SExport(Array::slice([
-      ""
-    ], 0, 0))
-  ], 0, 0)
-  let mut pos = 0
-  let mut done = false
-  while !done {
-    match peek(tokens, pos) {
-      TEof => { done = true },
-      TIdent(head) => if head == "opaque" {
-        match peek(tokens, pos + 1) {
-          TType => match peek(tokens, pos + 2) {
-            TIdent(oname) => {
-              match peek(tokens, pos + 3) {
-                TLBracket => throw("opaque type '\{oname}': type parameters are not yet supported (#729)"),
-                _ => ()
-              }
-              Array::push(opaques, oname)
-              pos = pos + 3
-            },
-            _ => throw("expected type name after 'opaque type'")
-          },
-          _ => throw("expected 'type' after 'opaque'")
-        }
-      } else if head == "fn" {
-        let (dhead, dsig, next) = parse_fn_signature(tokens, pos + 1)
-        let (name, tps, tbs) = dhead
-        let (params, ret_ty, eff_opt) = dsig
-        match peek(tokens, next) {
-          TLBrace => throw("contract fn declaration '\{name}' must not have a body (#729)"),
-          _ => ()
-        }
-        match fn_sig_text(tps, tbs, params, ret_ty, eff_opt) {
-          Some(sig) => Array::push(decls, (name, sig)),
-          None => throw("contract fn declaration '\{name}' requires full annotations")
-        }
-        pos = next
-      } else {
-        let (stmt, next) = parse_stmt(tokens, [], pos)
-        Array::push(stmts, stmt)
-        pos = next
-      },
-      _ => {
-        let (stmt, next) = parse_stmt(tokens, [], pos)
-        Array::push(stmts, stmt)
-        pos = next
-      }
-    }
-  }
-  (decls, opaques, stmts)
-}
-export let collect_impl_fn_defs: (Array[Stmt]) -> Array[(String, Option[String], Bool)] = (stmts) -> {
-  let out = Array::slice([
-    ("", Some(""), false)
-  ], 0, 0)
-  let mut i = 0
-  while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SLet(exported, _, name, _, val) => match val {
-        EFn(tps, tbs, params, ret_opt, eff_opt, _) => {
-          let sig = match ret_opt {
-            Some(ret_ty) => fn_sig_text(tps, tbs, params, ret_ty, eff_opt),
-            None => None
-          }
-          Array::push(out, (name, sig, exported))
-        },
-        _ => ()
-      },
-      _ => ()
-    }
-    i = i + 1
-  }
-  out
-}
-export let collect_impl_type_defs: (Array[Stmt]) -> Array[(String, Bool)] = (stmts) -> {
-  let out = Array::slice([
-    ("", false)
-  ], 0, 0)
-  let mut i = 0
-  while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SStruct(exported, name, _, _, _) => Array::push(out, (name, exported)),
-      SEnum(exported, name, _, _, _) => Array::push(out, (name, exported)),
-      STypeAlias(exported, name, _, _) => Array::push(out, (name, exported)),
-      SSuberror(exported, name, _) => Array::push(out, (name, exported)),
-      _ => ()
-    }
-    i = i + 1
-  }
-  out
-}
-export let check_contract: (Array[(String, String)], Array[String], Array[Stmt]) -> Array[String] = (decls, opaque_names, impl_stmts) -> {
-  let errors = Array::slice([
-    ""
-  ], 0, 0)
-  let defs = collect_impl_fn_defs(impl_stmts)
-  let mut di = 0
-  while di < Array::length(decls) {
-    let (dname, dsig) = Array::get(decls, di)
-    let mut found = false
-    let mut fi = 0
-    while fi < Array::length(defs) {
-      let (fname, fsig_opt, _fexported) = Array::get(defs, fi)
-      if fname == dname {
-        found = true
-        match fsig_opt {
-          Some(fsig) => if fsig == dsig {
-            ()
-          } else {
-            Array::push(errors, "signature mismatch for '\{dname}': contract \{dsig} but implementation \{fsig}")
-          },
-          None => Array::push(errors, "implementation of '\{dname}' lacks the full annotations required by the contract")
-        }
-        let (_, _, fexported0) = Array::get(defs, fi)
-        if fexported0 {
-          ()
-        } else {
-          Array::push(errors, "contract declaration '\{dname}' is implemented but not exported by its implementation file")
-        }
-      } else ()
-      fi = fi + 1
-    }
-    if found {
-      ()
-    } else {
-      Array::push(errors, "contract declaration '\{dname}' has no implementation")
-    }
-    di = di + 1
-  }
-  let mut ei = 0
-  while ei < Array::length(defs) {
-    let (fname, _fsig_opt, fexported) = Array::get(defs, ei)
-    if fexported {
-      let mut declared = false
-      let mut ci = 0
-      while ci < Array::length(decls) {
-        let (dname, _dsig) = Array::get(decls, ci)
-        if dname == fname {
-          declared = true
-        } else ()
-        ci = ci + 1
-      }
-      if declared {
-        ()
-      } else {
-        Array::push(errors, "exported '\{fname}' is not declared in the contract")
-      }
-    } else ()
-    ei = ei + 1
-  }
-  let type_defs = collect_impl_type_defs(impl_stmts)
-  let mut oi = 0
-  while oi < Array::length(opaque_names) {
-    let oname = Array::get(opaque_names, oi)
-    let mut ofound = false
-    let mut ti = 0
-    while ti < Array::length(type_defs) {
-      let (tname, texported) = Array::get(type_defs, ti)
-      if tname == oname {
-        ofound = true
-        if texported {
-          ()
-        } else {
-          Array::push(errors, "opaque type '\{oname}' is implemented but not exported by its implementation file")
-        }
-      } else ()
-      ti = ti + 1
-    }
-    if ofound {
-      ()
-    } else {
-      Array::push(errors, "opaque type '\{oname}' has no implementation")
-    }
-    oi = oi + 1
-  }
-  let mut xi = 0
-  while xi < Array::length(type_defs) {
-    let (tname, texported) = Array::get(type_defs, xi)
-    if texported {
-      let mut tdeclared = false
-      let mut oj = 0
-      while oj < Array::length(opaque_names) {
-        if Array::get(opaque_names, oj) == tname {
-          tdeclared = true
-        } else ()
-        oj = oj + 1
-      }
-      if tdeclared {
-        ()
-      } else {
-        Array::push(errors, "exported type '\{tname}' is not declared in the contract (declare it as `opaque type \{tname}` or define it transparently in the contract)")
-      }
-    } else ()
-    xi = xi + 1
-  }
-  errors
-}
-export let classify_contract_stmts: (Array[Stmt]) -> (Array[String], Array[Stmt]) with { Error } = (stmts) -> {
-  let raws = Array::slice([
-    ""
-  ], 0, 0)
-  let type_defs = Array::slice([
-    SExport(Array::slice([
-      ""
-    ], 0, 0))
-  ], 0, 0)
-  let mut i = 0
-  while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SImport(raw_path, _) => Array::push(raws, raw_path),
-      SStruct(_, name, fields, derives, mut_names) => Array::push(type_defs, SStruct(true, name, fields, derives, mut_names)),
-      SEnum(_, name, tparams, ctors, derives) => Array::push(type_defs, SEnum(true, name, tparams, ctors, derives)),
-      STypeAlias(_, name, tparams, ty) => Array::push(type_defs, STypeAlias(true, name, tparams, ty)),
-      _ => throw("unsupported statement in a .vibei contract: only fn declarations, opaque type declarations, transparent type definitions, and implementation-file imports are allowed (#729)")
-    }
-    i = i + 1
-  }
-  (raws, type_defs)
-}
-export let contract_facade_source: (Array[(String, String)], Array[String], Array[Stmt], Array[(String, Array[Stmt])]) -> String with { Error } = (decls, opaque_names, type_defs, impl_units) -> {
-  let lines = Array::slice([
-    ""
-  ], 0, 0)
-  let mut tdi = 0
-  while tdi < Array::length(type_defs) {
-    Array::push(lines, print_stmt(Array::get(type_defs, tdi)))
-    tdi = tdi + 1
-  }
-  let allocated = Array::slice([
-    ""
-  ], 0, 0)
-  let mut ui = 0
-  while ui < Array::length(impl_units) {
-    let (raw, unit_stmts) = Array::get(impl_units, ui)
-    let defs = collect_impl_fn_defs(unit_stmts)
-    let unit_types = collect_impl_type_defs(unit_stmts)
-    let names = Array::slice([
-      ""
-    ], 0, 0)
-    let mut oi = 0
-    while oi < Array::length(opaque_names) {
-      let oname = Array::get(opaque_names, oi)
-      let mut otaken = false
-      let mut oai = 0
-      while oai < Array::length(allocated) {
-        if Array::get(allocated, oai) == "type \{oname}" {
-          otaken = true
-        } else ()
-        oai = oai + 1
-      }
-      if otaken {
-        ()
-      } else {
-        let mut here = false
-        let mut uti = 0
-        while uti < Array::length(unit_types) {
-          let (tname, _) = Array::get(unit_types, uti)
-          if tname == oname {
-            here = true
-          } else ()
-          uti = uti + 1
-        }
-        if here {
-          Array::push(names, "type \{oname}")
-          Array::push(allocated, "type \{oname}")
-        } else ()
-      }
-      oi = oi + 1
-    }
-    let mut di = 0
-    while di < Array::length(decls) {
-      let (dname, _) = Array::get(decls, di)
-      let mut taken = false
-      let mut ai = 0
-      while ai < Array::length(allocated) {
-        if Array::get(allocated, ai) == dname {
-          taken = true
-        } else ()
-        ai = ai + 1
-      }
-      if taken {
-        ()
-      } else {
-        let mut defined_here = false
-        let mut fi = 0
-        while fi < Array::length(defs) {
-          let (fname, _, _) = Array::get(defs, fi)
-          if fname == dname {
-            defined_here = true
-          } else ()
-          fi = fi + 1
-        }
-        if defined_here {
-          Array::push(names, dname)
-          Array::push(allocated, dname)
-        } else ()
-      }
-      di = di + 1
-    }
-    if Array::length(names) > 0 {
-      Array::push(lines, "export \{raw} { \{String::join(names, ", ")} }")
-    } else ()
-    ui = ui + 1
-  }
-  if Array::length(allocated) != Array::length(decls) + Array::length(opaque_names) {
-    throw("contract facade: some declarations have no implementation file (run check_contract first)")
-  } else ()
-  String::concat(String::join(lines, "\n"), "\n")
-}
-let sorted_strings: (Array[String]) -> Array[String] = (items) -> {
-  let out = Array::slice([
-    ""
-  ], 0, 0)
-  let mut i = 0
-  while i < Array::length(items) {
-    Array::push(out, Array::get(items, i))
-    i = i + 1
-  }
-  let n = Array::length(out)
-  let mut a = 0
-  while a < n {
-    let mut b = a + 1
-    let mut min_i = a
-    while b < n {
-      let x = Array::get(out, b)
-      let y = Array::get(out, min_i)
-      let xl = String::length(x)
-      let yl = String::length(y)
-      let mut ci = 0
-      let mut cmp = 0
-      while cmp == 0 && ci < xl && ci < yl {
-        let cx = String::char_code_at(x, ci)
-        let cy = String::char_code_at(y, ci)
-        if cx < cy {
-          cmp = 0 - 1
-        } else if cx > cy {
-          cmp = 1
-        } else ()
-        ci = ci + 1
-      }
-      if cmp == 0 {
-        if xl < yl {
-          cmp = 0 - 1
-        } else if xl > yl {
-          cmp = 1
-        } else ()
-      } else ()
-      if cmp < 0 {
-        min_i = b
-      } else ()
-      b = b + 1
-    }
-    if min_i != a {
-      let tmp = Array::get(out, a)
-      Array::set(out, a, Array::get(out, min_i))
-      Array::set(out, min_i, tmp)
-    } else ()
-    a = a + 1
-  }
-  out
-}
-export let contract_hash: (Array[(String, String)], Array[String], Array[Stmt]) -> String = (fn_decls, opaque_names, type_defs) -> {
-  let lines = Array::slice([
-    ""
-  ], 0, 0)
-  let mut i = 0
-  while i < Array::length(fn_decls) {
-    let (dname, dsig) = Array::get(fn_decls, i)
-    Array::push(lines, "fn \{dname} \{dsig}")
-    i = i + 1
-  }
-  let mut oi = 0
-  while oi < Array::length(opaque_names) {
-    Array::push(lines, "opaque \{Array::get(opaque_names, oi)}")
-    oi = oi + 1
-  }
-  let mut ti = 0
-  while ti < Array::length(type_defs) {
-    Array::push(lines, "type \{print_stmt(Array::get(type_defs, ti))}")
-    ti = ti + 1
-  }
-  let canon = String::join(sorted_strings(lines), "\n")
-  "ct:sha1:\{sha1(String::concat("vibei:v1\n", canon))}"
-}
-export let package_hash_from_sources: (Array[(String, String)]) -> String = (sources) -> {
-  let keys = Array::slice([
-    ""
-  ], 0, 0)
-  let mut i = 0
-  while i < Array::length(sources) {
-    let (path, _) = Array::get(sources, i)
-    Array::push(keys, path)
-    i = i + 1
-  }
-  let ordered = sorted_strings(keys)
-  let sb = StringBuilder::new()
-  StringBuilder::push(sb, "vibe-pkg:v1\n")
-  let mut ki = 0
-  while ki < Array::length(ordered) {
-    let key = Array::get(ordered, ki)
-    let mut si = 0
-    while si < Array::length(sources) {
-      let (path, text) = Array::get(sources, si)
-      if path == key {
-        StringBuilder::push(sb, "file \{path} \{String::length(text)}\n")
-        StringBuilder::push(sb, text)
-        StringBuilder::push(sb, "\n")
-        si = Array::length(sources)
-      } else {
-        si = si + 1
-      }
-    }
-    ki = ki + 1
-  }
-  "pkg:sha1:\{sha1(StringBuilder::freeze(sb))}"
-}
-let is_digit_run: (String, Int, Int) -> Bool = (s, from, to) -> {
-  if to <= from {
-    false
-  } else {
-    let mut i = from
-    let mut ok = true
-    while i < to {
-      let c = String::char_code_at(s, i)
-      if c < '0' || c > '9' {
-        ok = false
-        i = to
-      } else {
-        i = i + 1
-      }
-    }
-    ok
-  }
-}
-export let is_strict_semver: (String) -> Bool = (v) -> {
-  let start = if String::starts_with(v, "^") {
-    1
-  } else 0
-  let body = String::substring(v, start, String::length(v))
-  let parts = String::split(body, ".")
-  if Array::length(parts) != 3 {
-    false
-  } else {
-    let a = Array::get(parts, 0)
-    let b = Array::get(parts, 1)
-    let c = Array::get(parts, 2)
-    is_digit_run(a, 0, String::length(a)) && is_digit_run(b, 0, String::length(b)) && is_digit_run(c, 0, String::length(c))
-  }
-}
-export let is_package_pin: (String) -> Bool = (h) -> {
-  if !String::starts_with(h, "#pkg:sha1:") {
-    false
-  } else if String::length(h) != 50 {
-    false
-  } else {
-    let mut i = 10
-    let mut ok = true
-    while i < 50 {
-      let c = String::char_code_at(h, i)
-      let is_hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
-      if is_hex {
-        i = i + 1
-      } else {
-        ok = false
-        i = 50
-      }
-    }
-    ok
-  }
-}
-let split_fields: (String) -> Array[String] = (line) -> {
-  let raw = String::split(String::trim(line), " ")
-  let out = Array::slice([
-    ""
-  ], 0, 0)
-  let mut i = 0
-  while i < Array::length(raw) {
-    let f = Array::get(raw, i)
-    if String::length(f) > 0 {
-      Array::push(out, f)
-    } else ()
-    i = i + 1
-  }
-  out
-}
-export let extract_require_pins: (String) -> (Array[(String, String, String)], String) with { Error } = (source) -> {
-  let pins = Array::slice([
-    ("", "", "")
-  ], 0, 0)
-  let sb = StringBuilder::new()
-  let len = String::length(source)
-  let mut pos = 0
-  let mut scanning = true
-  while pos < len {
-    let mut nl = pos
-    while nl < len && String::char_code_at(source, nl) != 10 {
-      nl = nl + 1
-    }
-    let line = String::substring(source, pos, nl)
-    let trimmed = String::trim(line)
-    let is_require = scanning && String::starts_with(trimmed, "require ")
-    if is_require {
-      let fields = split_fields(trimmed)
-      if Array::length(fields) != 5 {
-        throw("malformed require line (expected: require @scope/name x.y.z = #pkg:sha1:<40hex>): \{trimmed}")
-      } else ()
-      let name = Array::get(fields, 1)
-      let ver = Array::get(fields, 2)
-      let eq = Array::get(fields, 3)
-      let pin = Array::get(fields, 4)
-      if !String::starts_with(name, "@") {
-        throw("require package name must start with '@': \{name}")
-      } else ()
-      if !is_strict_semver(ver) {
-        throw("require version must be a strict semver triple (x.y.z or ^x.y.z): \{ver}")
-      } else ()
-      if eq == "=" {
-        ()
-      } else {
-        throw("malformed require line (missing '='): \{trimmed}")
-      }
-      if !is_package_pin(pin) {
-        throw("require pin must be #pkg:sha1:<40hex> (compute with `vibe hash`): \{pin}")
-      } else ()
-      Array::push(pins, (name, ver, String::substring(pin, 1, String::length(pin))))
-      let mut bi = 0
-      while bi < String::length(line) {
-        StringBuilder::push(sb, " ")
-        bi = bi + 1
-      }
-    } else {
-      if String::length(trimmed) == 0 || String::starts_with(trimmed, "//") {
-        ()
-      } else {
-        scanning = false
-      }
-      StringBuilder::push(sb, line)
-    }
-    if nl < len {
-      StringBuilder::push(sb, "\n")
-    } else ()
-    pos = nl + 1
-  }
-  (pins, StringBuilder::freeze(sb))
-}
-export {
-  parse_contract_program, collect_impl_fn_defs, check_contract
 }
 import . / header_cache.vibe {
   load_or_parse_module_header_fs_impl
@@ -44933,6 +44954,54 @@ export let contract_package_hashes_fs: (String) -> (String, String) with { Error
   }
   (package_hash_from_sources(sources), contract_hash(decls, opaques, type_defs))
 }
+export let fill_require_pins_fs: (String) -> String with { Error, Fs } = (source) -> {
+  let sb = StringBuilder::new()
+  let len = String::length(source)
+  let mut pos = 0
+  let mut scanning = true
+  while pos < len {
+    let mut nl = pos
+    while nl < len && String::char_code_at(source, nl) != 10 {
+      nl = nl + 1
+    }
+    let line = String::substring(source, pos, nl)
+    let trimmed = String::trim(line)
+    let mut emitted = false
+    if scanning && String::starts_with(trimmed, "require ") {
+      let (pins_one, _) = extract_require_pins(String::concat(trimmed, "\n"))
+      if Array::length(pins_one) == 1 {
+        let (pname, pver, ppin) = Array::get(pins_one, 0)
+        if ppin == "" {
+          let store_index = String::concat(".vibe/store/", String::concat(pname, "/index.vibei"))
+          if Fs::exists(store_index) {
+            ()
+          } else {
+            throw("cannot pin \{pname} offline: not installed in the store (.vibe/store/\{pname}/)")
+          }
+          let (pkg_hash, _) = contract_package_hashes_fs(store_index)
+          StringBuilder::push(sb, "require \{pname} \{pver} = #\{pkg_hash}")
+          emitted = true
+        } else ()
+      } else ()
+    } else {
+      if String::length(trimmed) == 0 || String::starts_with(trimmed, "//") {
+        ()
+      } else {
+        scanning = false
+      }
+    }
+    if emitted {
+      ()
+    } else {
+      StringBuilder::push(sb, line)
+    }
+    if nl < len {
+      StringBuilder::push(sb, "\n")
+    } else ()
+    pos = nl + 1
+  }
+  StringBuilder::freeze(sb)
+}
 let verify_store_package_fs: (String, Array[(String, String, String)], String) -> Unit with { Error, Fs } = (importer, pins, store_index_path) -> {
   let prefix = ".vibe/store/"
   let suffix = "/index.vibei"
@@ -44942,16 +45011,23 @@ let verify_store_package_fs: (String, Array[(String, String, String)], String) -
     String::length(store_index_path) - String::length(suffix)
   )
   let mut pin_hash = ""
+  let mut pin_found = false
   let mut pi = 0
   while pi < Array::length(pins) {
     let (pname, _, phash) = Array::get(pins, pi)
     if pname == name {
       pin_hash = phash
+      pin_found = true
     } else ()
     pi = pi + 1
   }
-  if pin_hash == "" {
+  if pin_found {
+    ()
+  } else {
     throw("no require pin for \{name} in \{importer} (add: require \{name} <x.y.z> = #<pkg-hash>; compute with `vibe hash`)")
+  }
+  if pin_hash == "" {
+    throw("unpinned require for \{name} in \{importer}: run `vibe fmt` (VIBE_FILL_PINS=1) to insert the pin from the store")
   } else ()
   if Fs::exists(store_index_path) {
     ()
@@ -48668,6 +48744,15 @@ export let cli_main: () -> Int with { Error, Fs, Env } = () -> {
     return handle {
       let (pkg_hash, ct_hash) = contract_package_hashes_fs(input_path)
       Fs::write_file(output_path, "package #\{pkg_hash}\ncontract \{ct_hash}\n")
+      0
+    } with Error {
+      Throw(msg) => emit_compile_diag(output_path, msg)
+    }
+  } else ()
+  if Env::get("VIBE_FILL_PINS") == "1" {
+    return handle {
+      let filled = fill_require_pins_fs(Fs::read_file(input_path))
+      Fs::write_file(output_path, filled)
       0
     } with Error {
       Throw(msg) => emit_compile_diag(output_path, msg)
