@@ -171,6 +171,30 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
       hpi = hpi + 1
     }
   }
+  // #744: annotated Float/Double LAMBDA params seed float_local_slots exactly
+  // like top-level fn params do (linked_compile's psi loop) — without this a
+  // local `(v: Double, by: Double) -> Double { v * by }` compiled `v * by` as
+  // an INTEGER multiply of the f64 bits (and under RC compared/box-leaked
+  // pointers), so closure float math was silently garbage.
+  let lam_float_slots = Array::slice([
+    0
+  ], 0, 0)
+  let mut lfs_i = 0
+  while lfs_i < user_params {
+    let (_, lfs_ann) = Array::get(norm_params, lfs_i)
+    match lfs_ann {
+      Some(lfs_ty) => match lfs_ty {
+        TyName(lfs_tn) => if lfs_tn == "Float" || lfs_tn == "Double" {
+          Array::push(lam_float_slots, lfs_i * 2 + 1)
+        } else {
+          ()
+        },
+        _ => ()
+      },
+      None => ()
+    }
+    lfs_i = lfs_i + 1
+  }
   let lam_ctx = CompileCtx::{
     func_table: ctx.func_table, str_table: ctx.str_table,
     lambda_table: ctx.lambda_table,
@@ -188,9 +212,7 @@ export let compile_lambda: (Bytes, Array[(String, Option[TypeExpr])], Expr, Arra
     rc_alloc_func_idx: ctx.rc_alloc_func_idx,
     heap_grow_check_func_idx: ctx.heap_grow_check_func_idx,
     rc_dup_names: lam_dups,
-    float_local_slots: Array::slice([
-      0
-    ], 0, 0),
+    float_local_slots: lam_float_slots,
     int_local_slots: Array::slice([
       0
     ], 0, 0),

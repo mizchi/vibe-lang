@@ -212,6 +212,60 @@ let cc_retain_stored_arg: (Bytes, Expr, Array[String], Int, CompileCtx) -> Int w
   }
 }
 
+// #744: fixed-precision Double→String, synthesized as ordinary AST and lowered
+// via `ce` at `__to_string` callsites whose argument is statically floatish
+// (string interpolation of a Double used to stringify the raw f64 bits —
+// `"\{42.0}"` printed "4631107791820423168"). Integer part exact; fraction as
+// 15 scaled digits with trailing zeros trimmed (round-trips human-scale values:
+// 3.14 / 0.0125 / -1.5). Same algorithm as vibe/json's format_number. String
+// pieces are built with String::from_char_code so no string-table seeding is
+// needed. Beyond ~9e14 the fraction is meaningless: integer part only. The
+// synthesized code follows ordinary source conventions, so RC boxing and the
+// bump lane's raw bits both work through the normal float codegen paths.
+let cc_double_to_string_expr: (Expr) -> Expr = (arg) -> {
+  let c1: (String, Expr) -> Expr = (f, a0) -> {
+    ECall(EIdent(f, -1), [
+      a0
+    ], -1)
+  }
+  let c2: (String, Expr, Expr) -> Expr = (f, a0, a1) -> {
+    ECall(EIdent(f, -1), [
+      a0,
+      a1
+    ], -1)
+  }
+  let c3: (String, Expr, Expr, Expr) -> Expr = (f, a0, a1, a2) -> {
+    ECall(EIdent(f, -1), [
+      a0,
+      a1,
+      a2
+    ], -1)
+  }
+  let n = EIdent("__dts_n", -1)
+  let neg = EIdent("__dts_neg", -1)
+  let a = EIdent("__dts_a", -1)
+  let ip = EIdent("__dts_ip", -1)
+  let frac = EIdent("__dts_frac", -1)
+  let s0 = EIdent("__dts_s0", -1)
+  let ip2 = EIdent("__dts_ip2", -1)
+  let sc = EIdent("__dts_sc", -1)
+  let istr = EIdent("__dts_istr", -1)
+  let signed = EIdent("__dts_signed", -1)
+  let ds = EIdent("__dts_ds", -1)
+  let endv = EIdent("__dts_end", -1)
+  let big = EIdent("__dts_big", -1)
+  let ch_minus = c1("String::from_char_code", EInt(45))
+  let ch_dot = c1("String::from_char_code", EInt(46))
+  let ch_zero = c1("String::from_char_code", EInt(48))
+  let scale_int = EInt(1000000000000000)
+  // 15 fractional digits: zero-pad to 15, trim trailing zeros, append.
+  let frac_tail = ELetMut("__dts_ds", c1("__to_string", sc), ELetMut("__dts_end", EInt(15), ESeq(EWhile(EBinOp("<", c1("String::length", ds), EInt(15)), EAssign("__dts_ds", c2("String::concat", ch_zero, ds), EUnit)), ESeq(EWhile(EBinOp("==", c2("String::char_code_at", ds, EBinOp("-", endv, EInt(1))), EInt(48)), EAssign("__dts_end", EBinOp("-", endv, EInt(1)), EUnit)), c2("String::concat", signed, c2("String::concat", ch_dot, c3("String::substring", ds, EInt(0), endv)))))))
+  let signed_val = EIf(neg, EIf(EBinOp(">", ip2, EInt(0)), c2("String::concat", ch_minus, istr), EIf(EBinOp(">", sc, EInt(0)), c2("String::concat", ch_minus, istr), istr)), istr)
+  let small = ELet("__dts_ip", c1("Double::to_int", a), ELet("__dts_frac", EBinOp("-", a, c1("Int::to_double", ip)), ELet("__dts_s0", c1("Double::to_int", EBinOp("+", EBinOp("*", frac, EFloat(1000000000000000.0)), EFloat(0.5))), ELet("__dts_ip2", EIf(EBinOp(">=", s0, scale_int), EBinOp("+", ip, EInt(1)), ip), ELet("__dts_sc", EIf(EBinOp(">=", s0, scale_int), EInt(0), s0), ELet("__dts_istr", c1("__to_string", ip2), ELet("__dts_signed", signed_val, EIf(EBinOp("==", sc, EInt(0)), signed, frac_tail))))))))
+  let big_case = ELet("__dts_big", c1("__to_string", c1("Double::to_int", a)), EIf(neg, c2("String::concat", ch_minus, big), big))
+  ELet("__dts_n", arg, ELet("__dts_neg", EBinOp("<", n, EFloat(0.0)), ELet("__dts_a", EIf(neg, EBinOp("-", EFloat(0.0), n), n), EIf(EBinOp(">=", a, EFloat(900000000000000.0)), big_case, small))))
+}
+
 // #664/#678: is `e` statically — BY SHAPE — a known integer that must NOT be run
 // through `__to_string`'s string-pointer heuristic (which misreads a large int
 // as an empty string)? An Int literal, or a bitwise/shift/mod expression (those
@@ -1292,6 +1346,12 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
     }
     else if !prefer_bound_call && fname == "__float_bits" {
       ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    }
+    else if fname == "__to_string" && Array::length(args) == 1 && cc_expr_is_floatish(Array::get(args, 0), local_names, ctx) {
+      // #744: a statically-floatish argument takes the synthesized Double
+      // formatter — the generic handler below would stringify the raw f64
+      // bits (or the box pointer under RC) as an integer.
+      ce(buf, cc_double_to_string_expr(Array::get(args, 0)), local_names, next_local, ctx, ld)
     }
     else if fname == "__to_string" {
       let ts_arg0 = Array::get(args, 0)
