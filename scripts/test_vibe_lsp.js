@@ -134,7 +134,7 @@ const isDiag = (uri) => (m) => m.method === "textDocument/publishDiagnostics" &&
   const astText =
     "// export let ghost = 1  (comment — must NOT be a symbol)\n" +
     "export let\n  wrapped =\n  (n: Int) -> Int { n }\n" +
-    "module Geo {\n  export struct Vec { dx: Int }\n}\n";
+    "export struct Vec { dx: Int }\n";
   send({ jsonrpc: "2.0", method: "textDocument/didOpen", params: { textDocument: { uri: astUri, languageId: "vibe", version: 1, text: astText } } });
   await waitFor(isDiag(astUri));
   send({ jsonrpc: "2.0", id: 31, method: "textDocument/documentSymbol", params: { textDocument: { uri: astUri } } });
@@ -147,7 +147,7 @@ const isDiag = (uri) => (m) => m.method === "textDocument/publishDiagnostics" &&
   if (!astOk) console.log("skip: AST-accurate outline (compiler symbols path unavailable on this runner)");
   const checkAst = (desc, cond) => astOk ? check(desc, cond) : (console.log(`skip: ${desc}`), pass++);
   checkAst("outline finds a multi-line declaration", astNames.includes("wrapped"));
-  checkAst("outline finds a module-nested symbol", astNames.includes("Vec"));
+  checkAst("outline finds a struct symbol", astNames.includes("Vec"));
   checkAst("outline excludes a name that only appears in a comment", !astNames.includes("ghost"));
 
   // definition: cursor on `helper` in main's body -> jumps to helper's decl (line 1)

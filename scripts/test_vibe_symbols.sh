@@ -64,14 +64,15 @@ else
   bad "symbols should find multi-line 'wrapped'; got: $out_ml"
 fi
 
-# 4. module-nested symbols: the module name AND its body declarations appear.
-mn="$WORK/module.vibe"
-printf 'module Geo {\n  export struct Vec { dx: Int }\n  export let zero = 0\n}\nexport let top = 1\n' > "$mn"
+# 4. fn-syntax declarations (#727; module blocks were removed in #728):
+#    top-level `fn` and `export fn` report as functions alongside values.
+mn="$WORK/fnsyms.vibe"
+printf 'fn double(x: Int) -> Int { x * 2 }\nexport fn top(y: Int) -> Int { y }\nexport let zero = 0\n' > "$mn"
 out_mn="$("$VIBE" symbols "$mn" 2>/dev/null || true)"
-if has_sym "$out_mn" Geo 2 && has_sym "$out_mn" Vec 23 && has_sym "$out_mn" zero 13 && has_sym "$out_mn" top 13; then
-  ok "symbols finds module + nested symbols"
+if has_sym "$out_mn" double 12 && has_sym "$out_mn" top 12 && has_sym "$out_mn" zero 13; then
+  ok "symbols finds fn-syntax declarations"
 else
-  bad "symbols should find Geo/Vec/zero/top; got: $out_mn"
+  bad "symbols should find double/top/zero; got: $out_mn"
 fi
 
 # 5. a name appearing only inside a comment must NOT be reported.
