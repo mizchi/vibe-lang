@@ -326,6 +326,13 @@ let build_grouped_merged_stmts: (Array[(String, Array[(String, String)])]) -> Ar
     ""
   }
   let plan = build_export_rename_plan(file_paths, file_stmts, plan_entry)
+  // #740: the is-entry flag must mean "the LAST file of the WHOLE merge"
+  // (the plan entry, whose exports stay unrenamed). It was `si ==
+  // source_count - 1` — the last file of EVERY GROUP — so every group
+  // tail (ripple/ripple.vibe, desugar_trait_dict.vibe, ...) skipped its
+  // export renames while callers were rewritten to the renamed names:
+  // "undefined variable (local): <name>_exp_<path>" at codegen.
+  let flat_total = Array::length(file_paths)
   let mut flat_idx = 0
   let mut gi = 0
   while gi < Array::length(source_groups) {
@@ -335,7 +342,7 @@ let build_grouped_merged_stmts: (Array[(String, Array[(String, String)])]) -> Ar
     while si < source_count {
       let path = Array::get(file_paths, flat_idx)
       let stmts = Array::get(file_stmts, flat_idx)
-      append_merged_stmts_for_file(merged, path, stmts, si == source_count - 1, plan, flat_sources)
+      append_merged_stmts_for_file(merged, path, stmts, flat_idx == flat_total - 1, plan, flat_sources)
       flat_idx = flat_idx + 1
       si = si + 1
     }
@@ -427,7 +434,9 @@ let build_grouped_merged_stmts_prov: (Array[(String, Array[(String, String)])]) 
       Array::push(files, path_basename(path))
       Array::push(file_nls, file_newline_offsets(source))
       let before = Array::length(merged)
-      append_merged_stmts_for_file(merged, path, Array::get(file_stmts, flat_idx), si == source_count - 1, plan, flat_sources)
+      // #740: last-of-WHOLE-merge, not last-of-group (see the note in
+      // build_grouped_merged_stmts).
+      append_merged_stmts_for_file(merged, path, Array::get(file_stmts, flat_idx), flat_idx == Array::length(file_paths) - 1, plan, flat_sources)
       let after = Array::length(merged)
       let mut k = before
       while k < after {
