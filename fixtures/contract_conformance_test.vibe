@@ -12,13 +12,29 @@ import ../vibe/compiler/syntax/parser.vibe {
   parse_program
 }
 
+import ../vibe/compiler/core {
+  Stmt
+}
+
 import ../vibe/compiler/contract/index.vibe {
-  parse_contract_program, check_contract
+  parse_contract_program, check_contract, contract_hash, package_hash_from_sources
+}
+
+import ../vibe/compiler/cache/sha1.vibe {
+  sha1
 }
 
 let no_opaques: () -> Array[String] = () -> {
   Array::slice([
     ""
+  ], 0, 0)
+}
+
+let no_type_defs: () -> Array[Stmt] = () -> {
+  Array::slice([
+    SExport(Array::slice([
+      ""
+    ], 0, 0))
   ], 0, 0)
 }
 
@@ -93,6 +109,34 @@ test "undeclared exported type is reported (#729 C-4)" {
   let errs = check_contract(decls, opaques, impls)
   assert_eq(Array::length(errs), 1)
   assert(String::contains(errs[0], "Leak"))
+}
+
+test "vendored sha1 known vectors (#730 D-1)" {
+  assert(sha1("abc") == "a9993e364706816aba3e25717850c26c9cd0d89d")
+  assert(sha1("") == "da39a3ee5e6b4b0d3255bfef95601890afd80709")
+}
+
+test "content-addressing hashes (#730 D-1)" {
+  // contract_hash: deterministic, order-insensitive over declarations,
+  // implementation-independent by construction (built from decls only).
+  let (d1, o1, r1) = parse_contract_program(lex("fn add(x: Int, y: Int) -> Int\nopaque type Counter\nfn get(c: Counter) -> Int"))
+  let (d2, o2, r2) = parse_contract_program(lex("opaque type Counter\nfn get(c: Counter) -> Int\nfn add(x: Int, y: Int) -> Int"))
+  let _ = r1
+  let _ = r2
+  let h1 = contract_hash(d1, o1, no_type_defs())
+  let h2 = contract_hash(d2, o2, no_type_defs())
+  assert(h1 == h2)
+  assert(String::starts_with(h1, "ct:sha1:"))
+  let (d3, o3, _) = parse_contract_program(lex("fn add(x: Int, y: Int) -> String\nopaque type Counter\nfn get(c: Counter) -> Int"))
+  assert(!(contract_hash(d3, o3, no_type_defs()) == h1))
+
+  // package_hash: path-order-insensitive, content-sensitive.
+  let p1 = package_hash_from_sources([("index.vibei", "fn a() -> Int"), ("./impl.vibe", "export fn a() -> Int { 1 }")])
+  let p2 = package_hash_from_sources([("./impl.vibe", "export fn a() -> Int { 1 }"), ("index.vibei", "fn a() -> Int")])
+  assert(p1 == p2)
+  assert(String::starts_with(p1, "pkg:sha1:"))
+  let p3 = package_hash_from_sources([("index.vibei", "fn a() -> Int"), ("./impl.vibe", "export fn a() -> Int { 2 }")])
+  assert(!(p3 == p1))
 }
 
 test "contract declaration with a body is rejected (#729)" {
