@@ -1270,10 +1270,11 @@ let build_iter_for: (String, String, Expr, Expr) -> Expr = (name, ctype, iter, b
 //   }
 //
 // The iterand is seeded through an immutable `__iter_src` for the same RC
-// ownership reason as build_iter_for_with (#704). Like the next-protocol
-// desugar, the optional index binding is not supported and the loop is a
-// statement (no per-iteration result collection).
-let build_indexed_iter_for: (String, String, Expr, Expr) -> Expr = (name, ctype, iter, body) -> {
+// ownership reason as build_iter_for_with (#704). Unlike the next-protocol
+// desugar, the optional index binding IS supported here (the loop counter is
+// the index): `for x, i in xs` binds `i` to the current `__iter_i`. The loop
+// is a statement (no per-iteration result collection).
+let build_indexed_iter_for: (String, Option[String], String, Expr, Expr) -> Expr = (name, idx, ctype, iter, body) -> {
   let get_call = ECall(EIdent(String::concat(ctype, "::iter_get"), -1), [
     EIdent("__iter_src", -1),
     EIdent("__iter_i", -1)
@@ -1282,7 +1283,11 @@ let build_indexed_iter_for: (String, String, Expr, Expr) -> Expr = (name, ctype,
     EIdent("__iter_src", -1)
   ], -1)
   let incr = EAssign("__iter_i", EBinOp("+", EIdent("__iter_i", -1), EInt(1)), EUnit)
-  let loop_body = ELet(name, get_call, ESeq(body, incr))
+  let bound_body = match idx {
+    Some(iname) => ELet(iname, EIdent("__iter_i", -1), body),
+    None => body
+  }
+  let loop_body = ELet(name, get_call, ESeq(bound_body, incr))
   ELet("__iter_src", iter, ELet("__iter_n", len_call, ELetMut("__iter_i", EInt(0), EWhile(EBinOp("<", EIdent("__iter_i", -1), EIdent("__iter_n", -1)), loop_body))))
 }
 
@@ -1385,7 +1390,7 @@ let classify_for_await_loop: (String, Option[String], Expr, Expr, Expr, Array[(S
 let classify_indexed_for_loop: (String, Option[String], Expr, Expr, Expr, Array[(String, Array[String])], Array[(String, String)], Array[(String, String)]) -> Expr = (name, idx, iter, riter, rbody, struct_sets, var_types, fn_returns) -> {
   match infer_arg_type_name(iter, struct_sets, var_types, fn_returns) {
     Some(tn) => if struct_set_has(struct_sets, tn) && fn_exists(fn_returns, String::concat(tn, "::iter_length")) && fn_exists(fn_returns, String::concat(tn, "::iter_get")) {
-      build_indexed_iter_for(name, tn, riter, rbody)
+      build_indexed_iter_for(name, idx, tn, riter, rbody)
     } else {
       EForIn(name, idx, riter, rbody)
     },
