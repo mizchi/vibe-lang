@@ -42391,7 +42391,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "bf09837806ea6fc6"
+  "1bb6551fb0a64ea0"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647
@@ -42619,9 +42619,12 @@ let fn_sig_text: (Array[String], Array[(String, Array[String])], Array[(String, 
     Some("\{gen}(\{String::join(parts, ", ")}) -> \{print_type_expr(ret_ty)}\{eff}")
   }
 }
-export let parse_contract_program: (Array[Token]) -> (Array[(String, String)], Array[Stmt]) with { Error } = (tokens) -> {
+export let parse_contract_program: (Array[Token]) -> (Array[(String, String)], Array[String], Array[Stmt]) with { Error } = (tokens) -> {
   let decls = Array::slice([
     ("", "")
+  ], 0, 0)
+  let opaques = Array::slice([
+    ""
   ], 0, 0)
   let stmts = Array::slice([
     SExport(Array::slice([
@@ -42633,7 +42636,22 @@ export let parse_contract_program: (Array[Token]) -> (Array[(String, String)], A
   while !done {
     match peek(tokens, pos) {
       TEof => { done = true },
-      TIdent(head) => if head == "fn" {
+      TIdent(head) => if head == "opaque" {
+        match peek(tokens, pos + 1) {
+          TType => match peek(tokens, pos + 2) {
+            TIdent(oname) => {
+              match peek(tokens, pos + 3) {
+                TLBracket => throw("opaque type '\{oname}': type parameters are not yet supported (#729)"),
+                _ => ()
+              }
+              Array::push(opaques, oname)
+              pos = pos + 3
+            },
+            _ => throw("expected type name after 'opaque type'")
+          },
+          _ => throw("expected 'type' after 'opaque'")
+        }
+      } else if head == "fn" {
         let (dhead, dsig, next) = parse_fn_signature(tokens, pos + 1)
         let (name, tps, tbs) = dhead
         let (params, ret_ty, eff_opt) = dsig
@@ -42658,7 +42676,7 @@ export let parse_contract_program: (Array[Token]) -> (Array[(String, String)], A
       }
     }
   }
-  (decls, stmts)
+  (decls, opaques, stmts)
 }
 export let collect_impl_fn_defs: (Array[Stmt]) -> Array[(String, Option[String], Bool)] = (stmts) -> {
   let out = Array::slice([
@@ -42683,7 +42701,24 @@ export let collect_impl_fn_defs: (Array[Stmt]) -> Array[(String, Option[String],
   }
   out
 }
-export let check_contract: (Array[(String, String)], Array[Stmt]) -> Array[String] = (decls, impl_stmts) -> {
+export let collect_impl_type_defs: (Array[Stmt]) -> Array[(String, Bool)] = (stmts) -> {
+  let out = Array::slice([
+    ("", false)
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(exported, name, _, _, _) => Array::push(out, (name, exported)),
+      SEnum(exported, name, _, _, _) => Array::push(out, (name, exported)),
+      STypeAlias(exported, name, _, _) => Array::push(out, (name, exported)),
+      SSuberror(exported, name, _) => Array::push(out, (name, exported)),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+export let check_contract: (Array[(String, String)], Array[String], Array[Stmt]) -> Array[String] = (decls, opaque_names, impl_stmts) -> {
   let errors = Array::slice([
     ""
   ], 0, 0)
@@ -42742,26 +42777,84 @@ export let check_contract: (Array[(String, String)], Array[Stmt]) -> Array[Strin
     } else ()
     ei = ei + 1
   }
+  let type_defs = collect_impl_type_defs(impl_stmts)
+  let mut oi = 0
+  while oi < Array::length(opaque_names) {
+    let oname = Array::get(opaque_names, oi)
+    let mut ofound = false
+    let mut ti = 0
+    while ti < Array::length(type_defs) {
+      let (tname, texported) = Array::get(type_defs, ti)
+      if tname == oname {
+        ofound = true
+        if texported {
+          ()
+        } else {
+          Array::push(errors, "opaque type '\{oname}' is implemented but not exported by its implementation file")
+        }
+      } else ()
+      ti = ti + 1
+    }
+    if ofound {
+      ()
+    } else {
+      Array::push(errors, "opaque type '\{oname}' has no implementation")
+    }
+    oi = oi + 1
+  }
+  let mut xi = 0
+  while xi < Array::length(type_defs) {
+    let (tname, texported) = Array::get(type_defs, xi)
+    if texported {
+      let mut tdeclared = false
+      let mut oj = 0
+      while oj < Array::length(opaque_names) {
+        if Array::get(opaque_names, oj) == tname {
+          tdeclared = true
+        } else ()
+        oj = oj + 1
+      }
+      if tdeclared {
+        ()
+      } else {
+        Array::push(errors, "exported type '\{tname}' is not declared in the contract (declare it as `opaque type \{tname}` or define it transparently in the contract)")
+      }
+    } else ()
+    xi = xi + 1
+  }
   errors
 }
-export let contract_impl_import_raw_paths: (Array[Stmt]) -> Array[String] with { Error } = (stmts) -> {
-  let out = Array::slice([
+export let classify_contract_stmts: (Array[Stmt]) -> (Array[String], Array[Stmt]) with { Error } = (stmts) -> {
+  let raws = Array::slice([
     ""
+  ], 0, 0)
+  let type_defs = Array::slice([
+    SExport(Array::slice([
+      ""
+    ], 0, 0))
   ], 0, 0)
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SImport(raw_path, _) => Array::push(out, raw_path),
-      _ => throw("unsupported statement in a .vibei contract: only fn declarations and implementation-file imports are allowed (#729)")
+      SImport(raw_path, _) => Array::push(raws, raw_path),
+      SStruct(_, name, fields, derives, mut_names) => Array::push(type_defs, SStruct(true, name, fields, derives, mut_names)),
+      SEnum(_, name, tparams, ctors, derives) => Array::push(type_defs, SEnum(true, name, tparams, ctors, derives)),
+      STypeAlias(_, name, tparams, ty) => Array::push(type_defs, STypeAlias(true, name, tparams, ty)),
+      _ => throw("unsupported statement in a .vibei contract: only fn declarations, opaque type declarations, transparent type definitions, and implementation-file imports are allowed (#729)")
     }
     i = i + 1
   }
-  out
+  (raws, type_defs)
 }
-export let contract_facade_source: (Array[(String, String)], Array[(String, Array[Stmt])]) -> String with { Error } = (decls, impl_units) -> {
+export let contract_facade_source: (Array[(String, String)], Array[String], Array[Stmt], Array[(String, Array[Stmt])]) -> String with { Error } = (decls, opaque_names, type_defs, impl_units) -> {
   let lines = Array::slice([
     ""
   ], 0, 0)
+  let mut tdi = 0
+  while tdi < Array::length(type_defs) {
+    Array::push(lines, print_stmt(Array::get(type_defs, tdi)))
+    tdi = tdi + 1
+  }
   let allocated = Array::slice([
     ""
   ], 0, 0)
@@ -42769,9 +42862,40 @@ export let contract_facade_source: (Array[(String, String)], Array[(String, Arra
   while ui < Array::length(impl_units) {
     let (raw, unit_stmts) = Array::get(impl_units, ui)
     let defs = collect_impl_fn_defs(unit_stmts)
+    let unit_types = collect_impl_type_defs(unit_stmts)
     let names = Array::slice([
       ""
     ], 0, 0)
+    let mut oi = 0
+    while oi < Array::length(opaque_names) {
+      let oname = Array::get(opaque_names, oi)
+      let mut otaken = false
+      let mut oai = 0
+      while oai < Array::length(allocated) {
+        if Array::get(allocated, oai) == "type \{oname}" {
+          otaken = true
+        } else ()
+        oai = oai + 1
+      }
+      if otaken {
+        ()
+      } else {
+        let mut here = false
+        let mut uti = 0
+        while uti < Array::length(unit_types) {
+          let (tname, _) = Array::get(unit_types, uti)
+          if tname == oname {
+            here = true
+          } else ()
+          uti = uti + 1
+        }
+        if here {
+          Array::push(names, "type \{oname}")
+          Array::push(allocated, "type \{oname}")
+        } else ()
+      }
+      oi = oi + 1
+    }
     let mut di = 0
     while di < Array::length(decls) {
       let (dname, _) = Array::get(decls, di)
@@ -42807,7 +42931,7 @@ export let contract_facade_source: (Array[(String, String)], Array[(String, Arra
     } else ()
     ui = ui + 1
   }
-  if Array::length(allocated) != Array::length(decls) {
+  if Array::length(allocated) != Array::length(decls) + Array::length(opaque_names) {
     throw("contract facade: some declarations have no implementation file (run check_contract first)")
   } else ()
   String::concat(String::join(lines, "\n"), "\n")
@@ -44359,8 +44483,8 @@ let desugar_contract_source_fs: (String, String) -> String with { Error, Fs } = 
   if Fs::exists(sibling_index) {
     throw("both index.vibe and index.vibei exist in \{dir} (#729): a boundary has exactly one index")
   } else ()
-  let (decls, extra) = parse_contract_program(lex(source))
-  let impl_raws = contract_impl_import_raw_paths(extra)
+  let (decls, opaque_names, extra) = parse_contract_program(lex(source))
+  let (impl_raws, type_defs) = classify_contract_stmts(extra)
   let impl_units = Array::slice([
     ("", Array::slice([
       SExport(Array::slice([
@@ -44387,11 +44511,11 @@ let desugar_contract_source_fs: (String, String) -> String with { Error, Fs } = 
     }
     ri = ri + 1
   }
-  let errors = check_contract(decls, union_stmts)
+  let errors = check_contract(decls, opaque_names, union_stmts)
   if Array::length(errors) > 0 {
     throw("\{path}: contract violation: \{String::join(errors, "; ")}")
   } else ()
-  contract_facade_source(decls, impl_units)
+  contract_facade_source(decls, opaque_names, type_defs, impl_units)
 }
 let enforce_incoming_boundary_fs: (String, String) -> Unit with { Error, Fs } = (importer, target) -> {
   let tlen = String::length(target)

@@ -21,7 +21,7 @@ import ../syntax/parser.vibe {
 }
 
 import ../syntax/printer.vibe {
-  print_type_expr
+  print_stmt, print_type_expr
 }
 
 //# Functions
@@ -101,11 +101,16 @@ let fn_sig_text: (Array[String], Array[(String, Array[String])], Array[(String, 
 
 // Parse a contract source's top level. Bare `fn` heads become declarations
 // (name, canonical signature); a declaration followed by `{` is an error —
-// contract files carry no bodies. Everything else (imports, type defs,
-// re-exports) parses as ordinary statements and is returned alongside.
-export let parse_contract_program: (Array[Token]) -> (Array[(String, String)], Array[Stmt]) with { Error } = (tokens) -> {
+// contract files carry no bodies. `opaque type Name` declares a public type
+// whose definition lives in an implementation file (#729 C-4). Everything
+// else (implementation imports, transparent type definitions) parses as
+// ordinary statements and is returned alongside.
+export let parse_contract_program: (Array[Token]) -> (Array[(String, String)], Array[String], Array[Stmt]) with { Error } = (tokens) -> {
   let decls = Array::slice([
     ("", "")
+  ], 0, 0)
+  let opaques = Array::slice([
+    ""
   ], 0, 0)
   let stmts = Array::slice([
     SExport(Array::slice([
@@ -117,7 +122,22 @@ export let parse_contract_program: (Array[Token]) -> (Array[(String, String)], A
   while !done {
     match peek(tokens, pos) {
       TEof => { done = true },
-      TIdent(head) => if head == "fn" {
+      TIdent(head) => if head == "opaque" {
+        match peek(tokens, pos + 1) {
+          TType => match peek(tokens, pos + 2) {
+            TIdent(oname) => {
+              match peek(tokens, pos + 3) {
+                TLBracket => throw("opaque type '\{oname}': type parameters are not yet supported (#729)"),
+                _ => ()
+              }
+              Array::push(opaques, oname)
+              pos = pos + 3
+            },
+            _ => throw("expected type name after 'opaque type'")
+          },
+          _ => throw("expected 'type' after 'opaque'")
+        }
+      } else if head == "fn" {
         let (dhead, dsig, next) = parse_fn_signature(tokens, pos + 1)
         let (name, tps, tbs) = dhead
         let (params, ret_ty, eff_opt) = dsig
@@ -142,7 +162,7 @@ export let parse_contract_program: (Array[Token]) -> (Array[(String, String)], A
       }
     }
   }
-  (decls, stmts)
+  (decls, opaques, stmts)
 }
 
 // Collect (name, Some(sig) | None, exported) for every top-level let whose
@@ -173,9 +193,30 @@ export let collect_impl_fn_defs: (Array[Stmt]) -> Array[(String, Option[String],
   out
 }
 
+// Collect (name, exported) for every top-level type definition (struct /
+// enum / type alias / suberror) — the shapes an `opaque type` declaration
+// can be implemented by.
+export let collect_impl_type_defs: (Array[Stmt]) -> Array[(String, Bool)] = (stmts) -> {
+  let out = Array::slice([
+    ("", false)
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(exported, name, _, _, _) => Array::push(out, (name, exported)),
+      SEnum(exported, name, _, _, _) => Array::push(out, (name, exported)),
+      STypeAlias(exported, name, _, _) => Array::push(out, (name, exported)),
+      SSuberror(exported, name, _) => Array::push(out, (name, exported)),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 // Check that `impl_stmts` provide exactly the contract surface. Returns a
 // list of human-readable conformance errors; empty = conformant.
-export let check_contract: (Array[(String, String)], Array[Stmt]) -> Array[String] = (decls, impl_stmts) -> {
+export let check_contract: (Array[(String, String)], Array[String], Array[Stmt]) -> Array[String] = (decls, opaque_names, impl_stmts) -> {
   let errors = Array::slice([
     ""
   ], 0, 0)
@@ -237,27 +278,86 @@ export let check_contract: (Array[(String, String)], Array[Stmt]) -> Array[Strin
     } else ()
     ei = ei + 1
   }
+  let type_defs = collect_impl_type_defs(impl_stmts)
+  let mut oi = 0
+  while oi < Array::length(opaque_names) {
+    let oname = Array::get(opaque_names, oi)
+    let mut ofound = false
+    let mut ti = 0
+    while ti < Array::length(type_defs) {
+      let (tname, texported) = Array::get(type_defs, ti)
+      if tname == oname {
+        ofound = true
+        if texported {
+          ()
+        } else {
+          Array::push(errors, "opaque type '\{oname}' is implemented but not exported by its implementation file")
+        }
+      } else ()
+      ti = ti + 1
+    }
+    if ofound {
+      ()
+    } else {
+      Array::push(errors, "opaque type '\{oname}' has no implementation")
+    }
+    oi = oi + 1
+  }
+  let mut xi = 0
+  while xi < Array::length(type_defs) {
+    let (tname, texported) = Array::get(type_defs, xi)
+    if texported {
+      let mut tdeclared = false
+      let mut oj = 0
+      while oj < Array::length(opaque_names) {
+        if Array::get(opaque_names, oj) == tname {
+          tdeclared = true
+        } else ()
+        oj = oj + 1
+      }
+      if tdeclared {
+        ()
+      } else {
+        Array::push(errors, "exported type '\{tname}' is not declared in the contract (declare it as `opaque type \{tname}` or define it transparently in the contract)")
+      }
+    } else ()
+    xi = xi + 1
+  }
   errors
 }
 
-// The raw paths of a contract's implementation-file imports
-// (`import ./impl.vibe {}` lines). Any other non-declaration statement is
-// rejected — the v1 contract grammar is: fn declarations + implementation
-// imports. (Type defs, opaque type, and subpath re-exports come with the
-// later #729 stages.)
-export let contract_impl_import_raw_paths: (Array[Stmt]) -> Array[String] with { Error } = (stmts) -> {
-  let out = Array::slice([
+// Classify a contract's non-declaration statements: implementation-file
+// imports (`import ./impl.vibe {}`) and transparent type definitions
+// (struct / enum / type alias — the definition IS the contract, so it lives
+// here and passes into the facade verbatim, exported). Anything else is
+// rejected (subpath re-exports arrive with @scope resolution, #730).
+export let classify_contract_stmts: (Array[Stmt]) -> (Array[String], Array[Stmt]) with { Error } = (stmts) -> {
+  let raws = Array::slice([
     ""
+  ], 0, 0)
+  let type_defs = Array::slice([
+    SExport(Array::slice([
+      ""
+    ], 0, 0))
   ], 0, 0)
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SImport(raw_path, _) => Array::push(out, raw_path),
-      _ => throw("unsupported statement in a .vibei contract: only fn declarations and implementation-file imports are allowed (#729)")
+      SImport(raw_path, _) => Array::push(raws, raw_path),
+      SStruct(_, name, fields, derives, mut_names) => Array::push(type_defs, SStruct(true, name, fields, derives, mut_names)),
+      SEnum(_, name, tparams, ctors, derives) => Array::push(type_defs, SEnum(true, name, tparams, ctors, derives)),
+      STypeAlias(_, name, tparams, ty) => Array::push(type_defs, STypeAlias(true, name, tparams, ty)),
+      _ => throw("unsupported statement in a .vibei contract: only fn declarations, opaque type declarations, transparent type definitions, and implementation-file imports are allowed (#729)")
     }
     i = i + 1
   }
-  out
+  (raws, type_defs)
+}
+
+// Compat shim for the strict v1 shape (implementation imports only).
+export let contract_impl_import_raw_paths: (Array[Stmt]) -> Array[String] with { Error } = (stmts) -> {
+  let (raws, _) = classify_contract_stmts(stmts)
+  raws
 }
 
 // Desugar a conformance-checked contract to facade source text: one
@@ -266,10 +366,15 @@ export let contract_impl_import_raw_paths: (Array[Stmt]) -> Array[String] with {
 // source, so everything downstream of the loader (type db, merge plan,
 // codegen) needs no .vibei awareness — it rides the #716 re-export
 // machinery unchanged.
-export let contract_facade_source: (Array[(String, String)], Array[(String, Array[Stmt])]) -> String with { Error } = (decls, impl_units) -> {
+export let contract_facade_source: (Array[(String, String)], Array[String], Array[Stmt], Array[(String, Array[Stmt])]) -> String with { Error } = (decls, opaque_names, type_defs, impl_units) -> {
   let lines = Array::slice([
     ""
   ], 0, 0)
+  let mut tdi = 0
+  while tdi < Array::length(type_defs) {
+    Array::push(lines, print_stmt(Array::get(type_defs, tdi)))
+    tdi = tdi + 1
+  }
   let allocated = Array::slice([
     ""
   ], 0, 0)
@@ -277,9 +382,40 @@ export let contract_facade_source: (Array[(String, String)], Array[(String, Arra
   while ui < Array::length(impl_units) {
     let (raw, unit_stmts) = Array::get(impl_units, ui)
     let defs = collect_impl_fn_defs(unit_stmts)
+    let unit_types = collect_impl_type_defs(unit_stmts)
     let names = Array::slice([
       ""
     ], 0, 0)
+    let mut oi = 0
+    while oi < Array::length(opaque_names) {
+      let oname = Array::get(opaque_names, oi)
+      let mut otaken = false
+      let mut oai = 0
+      while oai < Array::length(allocated) {
+        if Array::get(allocated, oai) == "type \{oname}" {
+          otaken = true
+        } else ()
+        oai = oai + 1
+      }
+      if otaken {
+        ()
+      } else {
+        let mut here = false
+        let mut uti = 0
+        while uti < Array::length(unit_types) {
+          let (tname, _) = Array::get(unit_types, uti)
+          if tname == oname {
+            here = true
+          } else ()
+          uti = uti + 1
+        }
+        if here {
+          Array::push(names, "type \{oname}")
+          Array::push(allocated, "type \{oname}")
+        } else ()
+      }
+      oi = oi + 1
+    }
     let mut di = 0
     while di < Array::length(decls) {
       let (dname, _) = Array::get(decls, di)
@@ -315,7 +451,7 @@ export let contract_facade_source: (Array[(String, String)], Array[(String, Arra
     } else ()
     ui = ui + 1
   }
-  if Array::length(allocated) != Array::length(decls) {
+  if Array::length(allocated) != Array::length(decls) + Array::length(opaque_names) {
     throw("contract facade: some declarations have no implementation file (run check_contract first)")
   } else ()
   String::concat(String::join(lines, "\n"), "\n")
