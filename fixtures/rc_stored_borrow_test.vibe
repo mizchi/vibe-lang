@@ -1,0 +1,105 @@
+// #745 regression fixtures. `vibe test` compiles with the production default
+// (RC), so these exercise the RC-lane paths directly.
+//
+// 1. Map::set / MapBuilder::set STORE their key and value. A borrowed
+//    argument (an `Array::get(...)` result) must be retained at the call
+//    site — without the dup, the source array's epilogue drop freed the
+//    stored entry, and a later ctor match on `Map::get` read freed memory
+//    (json's build_json_map corrupted this way; the wrap fn below perturbs
+//    the heap so the stale cell is actually reused).
+// 2. Builtin `eq` on Doubles: under RC floats are boxed, and the scalar
+//    i64.eq fast-path compared BOX POINTERS — `eq(0.0125, 0.0125)` was false.
+// 3. A Bool derived from a float comparison is NOT floatish: `neg && ...`
+//    used to hit "unsupported float binop: &&" because the comparison result
+//    was tracked as a float slot.
+
+enum Jv {
+  VStr(String);
+  VNull
+}
+
+let build_via_borrow = () -> Map[String, Jv] {
+  let vb = ArrayBuilder::new()
+  ArrayBuilder::push(vb, VStr("2.0"))
+  let vals = ArrayBuilder::freeze(vb)
+  let b = MapBuilder::new()
+  MapBuilder::set(b, "k", Array::get(vals, 0))
+  MapBuilder::freeze(b)
+}
+
+let wrap = () -> Option[Map[String, Jv]] {
+  let m = build_via_borrow()
+  let o: Option[Map[String, Jv]] = Some(m)
+  o
+}
+
+test "stored borrow survives its source array (MapBuilder::set)" {
+  match wrap() {
+    Some(m) => match Map::get(m, "k") {
+      VStr(s) => assert(s == "2.0"),
+      _ => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+let build_map_set_borrow = () -> Map[String, Jv] {
+  let vb = ArrayBuilder::new()
+  ArrayBuilder::push(vb, VStr("77"))
+  let vals = ArrayBuilder::freeze(vb)
+  let empty: Map[String, Jv] = map {}
+  Map::set(empty, "k", Array::get(vals, 0))
+}
+
+let wrap2 = () -> Option[Map[String, Jv]] {
+  let m = build_map_set_borrow()
+  let o: Option[Map[String, Jv]] = Some(m)
+  o
+}
+
+test "stored borrow survives its source array (Map::set)" {
+  match wrap2() {
+    Some(m) => match Map::get(m, "k") {
+      VStr(s) => assert(s == "77"),
+      _ => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "builtin eq on doubles takes the unboxed f64 path" {
+  assert(eq(0.0125, 0.0125))
+  assert(!eq(0.3, 0.4))
+  let x = 1.25 / 100.0
+  assert(eq(x, 0.0125))
+}
+
+// 4. Unary minus on a boxed float: `-1.0` used to negate the box POINTER
+//    under RC (missing unbox/rebox around f64.neg).
+test "negative float literal round-trips under RC" {
+  let n = -1.0
+  assert(n < 0.0)
+  assert(eq(n, 0.0 - 1.0))
+  assert(eq(0.0 - n, 1.0))
+  assert(Double::to_int(0.0 - n) == 1)
+}
+
+let sign_str = (n: Double) -> String {
+  let neg = n < 0.0
+  let big = n > 100.0
+  if neg && !big {
+    "small-negative"
+  } else if neg {
+    "impossible"
+  } else if big {
+    "big"
+  } else {
+    "small"
+  }
+}
+
+test "float-comparison bool works with && (not floatish)" {
+  assert(sign_str(0.0 - 1.5) == "small-negative")
+  assert(sign_str(200.0) == "big")
+  assert(sign_str(1.0) == "small")
+}

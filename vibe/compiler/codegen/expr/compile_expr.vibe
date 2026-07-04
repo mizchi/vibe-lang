@@ -592,10 +592,24 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
     if op == "-" {
       if expr_is_floatish(operand, local_names, ctx) {
         let nl = compile_expr(buf, operand, local_names, next_local, ctx, ld)
+        // #745: under RC the operand is a BOXED float — unbox before the
+        // f64.neg and rebox the result, exactly like the float binop path.
+        // Without this, `-1.0` negated the box POINTER and the "float" that
+        // escaped was garbage bits.
+        if ctx.enable_rc {
+          emit_unbox_float(buf)
+        }
         emit_f64_reinterpret_i64(buf)
         emit_f64_neg(buf)
         emit_i64_reinterpret_f64(buf)
-        nl
+        if ctx.enable_rc {
+          Array::push(local_names, "__fbits")
+          Array::push(local_names, "__fbox")
+          emit_box_float(buf, ctx, nl, nl + 1)
+          nl + 2
+        } else {
+          nl
+        }
       } else {
         emit_i64_const(buf, 0)
         let nl = compile_expr(buf, operand, local_names, next_local, ctx, ld)
