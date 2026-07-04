@@ -432,7 +432,22 @@ export let rec print_stmt: (Stmt) -> String = (s) -> {
       }
       String::concat("let mut ", String::concat(name, String::concat(t, String::concat(" = ", print_expr(val)))))
     },
-    SEnum(exported, name, _, ctors, _) => String::concat(prefix(exported), String::concat("enum ", String::concat(name, String::concat(" { ", String::concat(print_ctor_list(ctors), " }"))))),
+    SEnum(exported, name, params, ctors, derives) => {
+      // #735: `[T]` type params and `derive(...)` were dropped, so a printed
+      // generic enum (e.g. a contract facade embedding `enum List[T]`)
+      // round-tripped to an ill-typed nullary declaration.
+      let tp = if Array::length(params) == 0 {
+        ""
+      } else {
+        String::concat("[", String::concat(join(params, ", "), "]"))
+      }
+      let base = String::concat(prefix(exported), String::concat("enum ", String::concat(name, String::concat(tp, String::concat(" { ", String::concat(print_ctor_list(ctors), " }"))))))
+      if Array::length(derives) == 0 {
+        base
+      } else {
+        String::concat(base, String::concat(" derive(", String::concat(join(derives, ", "), ")")))
+      }
+    },
     SSuberror(exported, name, ctors) => {
       let p = prefix(exported)
       if Array::length(ctors) == 1 {
@@ -471,7 +486,15 @@ export let rec print_stmt: (Stmt) -> String = (s) -> {
         String::concat(base, String::concat(" derive(", String::concat(join(derives, ", "), ")")))
       }
     },
-    STypeAlias(exported, name, _, ty) => String::concat(prefix(exported), String::concat("type ", String::concat(name, String::concat(" = ", print_type_expr(ty))))),
+    STypeAlias(exported, name, params, ty) => {
+      // #735 (same class as SEnum): keep `[T]` params on printed aliases.
+      let tp = if Array::length(params) == 0 {
+        ""
+      } else {
+        String::concat("[", String::concat(join(params, ", "), "]"))
+      }
+      String::concat(prefix(exported), String::concat("type ", String::concat(name, String::concat(tp, String::concat(" = ", print_type_expr(ty))))))
+    },
     STrait(exported, name, supers, methods, _) => {
       let base = String::concat(prefix(exported), String::concat("trait ", name))
       let head = if Array::length(supers) == 0 {

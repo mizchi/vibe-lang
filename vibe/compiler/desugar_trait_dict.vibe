@@ -589,12 +589,34 @@ let ctor_enum_of_name: (Array[(String, String)], String) -> Option[String] = (fn
   }
 }
 
-let infer_arg_type_name: (Expr, Array[(String, Array[String])], Array[(String, String)], Array[(String, String)]) -> Option[String] = (arg, struct_sets, var_types, fn_returns) -> {
+let rec infer_arg_type_name: (Expr, Array[(String, Array[String])], Array[(String, String)], Array[(String, String)]) -> Option[String] = (arg, struct_sets, var_types, fn_returns) -> {
   match arg {
     EInt(_) => Some("Int"),
     EBool(_) => Some("Bool"),
     EString(_) => Some("String"),
     EFloat(_) => Some("Double"),
+    // String `+` chains: `"a" + b + "c"` infers String when EITHER side does
+    // (the checker enforces both sides are String when one is). This both
+    // types the concat rewrite below and lets a `let u = a + "x"` binding
+    // record u -> String for downstream `u + ...`. Other `+` operands stay
+    // None (no behavior change for numeric/unknown).
+    EBinOp(bop, bl, br) => if bop == "+" {
+      let lstr = match infer_arg_type_name(bl, struct_sets, var_types, fn_returns) {
+        Some(t) => t == "String",
+        None => false
+      }
+      let rstr = match infer_arg_type_name(br, struct_sets, var_types, fn_returns) {
+        Some(t) => t == "String",
+        None => false
+      }
+      if lstr || rstr {
+        Some("String")
+      } else {
+        None
+      }
+    } else {
+      None
+    },
     // An array literal dispatches to an `impl [T] Trait for Array` witness
     // (#5 generic impls): its constructor is "Array" regardless of element type.
     EArray(_) => Some("Array"),
@@ -619,6 +641,16 @@ let infer_arg_type_name: (Expr, Array[(String, Array[String])], Array[(String, S
       EIdent("Some", _) => Some("Option"),
       EIdent("Ok", _) => Some("Result"),
       EIdent("Err", _) => Some("Result"),
+      // String-returning builtins (not in fn_returns): lets a
+      // `String::concat(a, b) + c` / `__to_string(n) + s` operand type as
+      // String for the concat rewrite.
+      EIdent("String::concat", _) => Some("String"),
+      EIdent("String::join", _) => Some("String"),
+      EIdent("String::substring", _) => Some("String"),
+      EIdent("String::trim", _) => Some("String"),
+      EIdent("String::replace", _) => Some("String"),
+      EIdent("String::from_char_code", _) => Some("String"),
+      EIdent("__to_string", _) => Some("String"),
       EIdent(fname, _) => ctor_enum_of_name(fn_returns, fname),
       // `let x: T = e` is desugared to `((__asc: T) -> __asc)(e)` (ascribe_wrap);
       // recover the operand's type head from the annotation so an annotated
@@ -1902,6 +1934,30 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
             }
           }
         }
+        }
+      } else if op == "+" {
+        // String `+` lowering: the checker types `String + String` as String,
+        // but the backends compile a bare `+` as numeric i64.add — on the
+        // (ptr<<32)|len string repr that adds the lengths and garbles the
+        // pointer. Rewrite to String::concat when either ORIGINAL operand is
+        // determinably String (literal, tracked var, string-returning call,
+        // or a nested `+` chain of those). Undeterminable operands (e.g. two
+        // untracked call results) keep the raw binop — same residual class
+        // as #695's opaque `==`.
+        let stringish = (match infer_arg_type_name(l, struct_sets, var_types, fn_returns) {
+          Some(t) => t == "String",
+          None => false
+        }) || (match infer_arg_type_name(r, struct_sets, var_types, fn_returns) {
+          Some(t) => t == "String",
+          None => false
+        })
+        if stringish {
+          ECall(EIdent("String::concat", -1), [
+            rl,
+            rr
+          ], -1)
+        } else {
+          EBinOp(op, rl, rr)
         }
       } else {
         EBinOp(op, rl, rr)

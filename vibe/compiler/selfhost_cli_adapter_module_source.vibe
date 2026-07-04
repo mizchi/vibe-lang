@@ -8212,12 +8212,29 @@ let ctor_enum_of_name: (Array[(String, String)], String) -> Option[String] = (fn
     }
   }
 }
-let infer_arg_type_name: (Expr, Array[(String, Array[String])], Array[(String, String)], Array[(String, String)]) -> Option[String] = (arg, struct_sets, var_types, fn_returns) -> {
+let rec infer_arg_type_name: (Expr, Array[(String, Array[String])], Array[(String, String)], Array[(String, String)]) -> Option[String] = (arg, struct_sets, var_types, fn_returns) -> {
   match arg {
     EInt(_) => Some("Int"),
     EBool(_) => Some("Bool"),
     EString(_) => Some("String"),
     EFloat(_) => Some("Double"),
+    EBinOp(bop, bl, br) => if bop == "+" {
+      let lstr = match infer_arg_type_name(bl, struct_sets, var_types, fn_returns) {
+        Some(t) => t == "String",
+        None => false
+      }
+      let rstr = match infer_arg_type_name(br, struct_sets, var_types, fn_returns) {
+        Some(t) => t == "String",
+        None => false
+      }
+      if lstr || rstr {
+        Some("String")
+      } else {
+        None
+      }
+    } else {
+      None
+    },
     EArray(_) => Some("Array"),
     EIdent(name, _) => if name == "None" {
       Some("Option")
@@ -8231,6 +8248,13 @@ let infer_arg_type_name: (Expr, Array[(String, Array[String])], Array[(String, S
       EIdent("Some", _) => Some("Option"),
       EIdent("Ok", _) => Some("Result"),
       EIdent("Err", _) => Some("Result"),
+      EIdent("String::concat", _) => Some("String"),
+      EIdent("String::join", _) => Some("String"),
+      EIdent("String::substring", _) => Some("String"),
+      EIdent("String::trim", _) => Some("String"),
+      EIdent("String::replace", _) => Some("String"),
+      EIdent("String::from_char_code", _) => Some("String"),
+      EIdent("__to_string", _) => Some("String"),
       EIdent(fname, _) => ctor_enum_of_name(fn_returns, fname),
       EFn(_, _, params, _, _, _) => if Array::length(params) == 1 {
         let (_, ann) = Array::get(params, 0)
@@ -9282,6 +9306,22 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
             }
           }
         }
+        }
+      } else if op == "+" {
+        let stringish = (match infer_arg_type_name(l, struct_sets, var_types, fn_returns) {
+          Some(t) => t == "String",
+          None => false
+        }) || (match infer_arg_type_name(r, struct_sets, var_types, fn_returns) {
+          Some(t) => t == "String",
+          None => false
+        })
+        if stringish {
+          ECall(EIdent("String::concat", -1), [
+            rl,
+            rr
+          ], -1)
+        } else {
+          EBinOp(op, rl, rr)
         }
       } else {
         EBinOp(op, rl, rr)
@@ -18242,7 +18282,19 @@ export let rec print_stmt: (Stmt) -> String = (s) -> {
       }
       String::concat("let mut ", String::concat(name, String::concat(t, String::concat(" = ", print_expr(val)))))
     },
-    SEnum(exported, name, _, ctors, _) => String::concat(prefix(exported), String::concat("enum ", String::concat(name, String::concat(" { ", String::concat(print_ctor_list(ctors), " }"))))),
+    SEnum(exported, name, params, ctors, derives) => {
+      let tp = if Array::length(params) == 0 {
+        ""
+      } else {
+        String::concat("[", String::concat(join(params, ", "), "]"))
+      }
+      let base = String::concat(prefix(exported), String::concat("enum ", String::concat(name, String::concat(tp, String::concat(" { ", String::concat(print_ctor_list(ctors), " }"))))))
+      if Array::length(derives) == 0 {
+        base
+      } else {
+        String::concat(base, String::concat(" derive(", String::concat(join(derives, ", "), ")")))
+      }
+    },
     SSuberror(exported, name, ctors) => {
       let p = prefix(exported)
       if Array::length(ctors) == 1 {
@@ -18281,7 +18333,14 @@ export let rec print_stmt: (Stmt) -> String = (s) -> {
         String::concat(base, String::concat(" derive(", String::concat(join(derives, ", "), ")")))
       }
     },
-    STypeAlias(exported, name, _, ty) => String::concat(prefix(exported), String::concat("type ", String::concat(name, String::concat(" = ", print_type_expr(ty))))),
+    STypeAlias(exported, name, params, ty) => {
+      let tp = if Array::length(params) == 0 {
+        ""
+      } else {
+        String::concat("[", String::concat(join(params, ", "), "]"))
+      }
+      String::concat(prefix(exported), String::concat("type ", String::concat(name, String::concat(tp, String::concat(" = ", print_type_expr(ty))))))
+    },
     STrait(exported, name, supers, methods, _) => {
       let base = String::concat(prefix(exported), String::concat("trait ", name))
       let head = if Array::length(supers) == 0 {
@@ -43389,7 +43448,7 @@ export let parse_persistent_module_header_text: (String) -> (Array[String], Arra
   }
 }
 export let selfhost_codegen_fingerprint: () -> String = () -> {
-  "896341ebc6e7fbed"
+  "017399e220b888b4"
 }
 export let compact_string_fingerprint: (String) -> String = (source) -> {
   let mod1 = 2147483647
