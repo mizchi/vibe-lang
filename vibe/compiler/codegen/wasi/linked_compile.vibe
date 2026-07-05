@@ -1864,9 +1864,60 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
       Array::push(meta_i32, 0)
       Array::push(meta_i64, extra)
     } else {
+      // Module-level non-function `let` (a THUNK): previously the initializer
+      // re-ran on EVERY reference, so a 16-entry lookup table cost an O(size)
+      // allocation per access (~148 B/call in bench/_probe_sb_phases.vibe)
+      // and, worse, each access saw a FRESH value while the gc backend
+      // initializes module globals ONCE — a cross-backend semantics split
+      // (mutations visible there, lost here). Memoize: two appended i64
+      // globals per thunk (value + init flag; base index rc?7:6, after
+      // g_op_index). First call computes and caches, later calls reload.
+      // Under RC the cache holds one permanent reference and every return
+      // (both paths) hands the caller a guarded-dup'd reference, so consumer
+      // drops balance exactly like the old fresh-value contract.
       Array::push(local_names, "__env")
       let param_count = 1
-      let final_nl = compile_expr(body_buf, __bi_expr, local_names, param_count, compile_ctx, -1)
+      let mut tg_k = -1
+      let mut tg_i = 0
+      while tg_i < Array::length(thunk_names_list) {
+        if Array::get(thunk_names_list, tg_i) == fn_name_dbg {
+          tg_k = tg_i
+          tg_i = Array::length(thunk_names_list)
+        } else {
+          tg_i = tg_i + 1
+        }
+      }
+      let tg_base = if enable_rc {
+        7
+      } else {
+        6
+      }
+      let tg_value_g = tg_base + tg_k * 2
+      let tg_flag_g = tg_value_g + 1
+      emit_global_get(body_buf, tg_flag_g)
+      emit_i32_wrap_i64(body_buf)
+      emit_if_i64(body_buf)
+      emit_global_get(body_buf, tg_value_g)
+      emit_local_tee(body_buf, 1)
+      if enable_rc {
+        emit_rc_dup_guarded(body_buf, 1, rc_shadow)
+      } else {
+        ()
+      }
+      emit_else(body_buf)
+      Array::push(local_names, "__thunk_memo")
+      let final_nl = compile_expr(body_buf, __bi_expr, local_names, 2, compile_ctx, -1)
+      emit_local_tee(body_buf, 1)
+      emit_global_set(body_buf, tg_value_g)
+      if enable_rc {
+        emit_rc_dup_guarded(body_buf, 1, rc_shadow)
+      } else {
+        ()
+      }
+      emit_i64_const(body_buf, 1)
+      emit_global_set(body_buf, tg_flag_g)
+      emit_local_get(body_buf, 1)
+      emit_end(body_buf)
       if enable_rc && fn_name_dbg == entry_name {
         emit_i64_const(body_buf, 1)
         emit_i64_shr_s(body_buf)
@@ -2576,10 +2627,14 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
     ()
   }
   let global_content = bytebuf_new()
+  // Base globals (bump ptr, effect state, ..., g_op_index) plus two i64
+  // globals per module-level thunk (memo value + init flag) appended last —
+  // see the thunk-body memoization above for the index formula.
+  let tg_num_thunks = Array::length(thunk_names_list)
   if enable_rc {
-    bytebuf_push_vec_header(global_content, 7)
+    bytebuf_push_vec_header(global_content, 7 + tg_num_thunks * 2)
   } else {
-    bytebuf_push_vec_header(global_content, 6)
+    bytebuf_push_vec_header(global_content, 6 + tg_num_thunks * 2)
   }
   bytebuf_push(global_content, 127)
   bytebuf_push(global_content, 1)
@@ -2613,6 +2668,14 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   bytebuf_push(global_content, 1)
   emit_i64_const(global_content, 0)
   emit_end(global_content)
+  let mut tg_gi = 0
+  while tg_gi < tg_num_thunks * 2 {
+    bytebuf_push(global_content, 126)
+    bytebuf_push(global_content, 1)
+    emit_i64_const(global_content, 0)
+    emit_end(global_content)
+    tg_gi = tg_gi + 1
+  }
   bytebuf_push_section(out, 6, global_content)
   let start_func_idx = func_offset + num_user_funcs
   let run_func_idx = start_func_idx + 1
