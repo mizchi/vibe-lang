@@ -1,0 +1,75 @@
+// Regression for #746: String `<` `>` `<=` `>=` used to compile as a raw
+// signed i64 compare on the packed (ptr<<32)|len repr — ordering by POINTER,
+// not content. The desugar layer now rewrites String relationals to
+// `str_lex_diff(l, r) <op> 0` (SIMD prefix skip + differing-byte diff +
+// length tie-break). The heap-concat shapes below are the original #746
+// discovery: two same-length strings whose allocation order INVERTS the
+// pointer order relative to the lexicographic order.
+
+let p20 = "aaaaaaaaaaaaaaaaaaaa"
+
+let make_suffixed: (String) -> String = (sfx) -> {
+  p20 + sfx
+}
+
+test "literal relational compare" {
+  assert("abc" < "abd")
+  assert("abd" > "abc")
+  assert("abc" <= "abc")
+  assert("abc" >= "abc")
+  assert(not("abd" < "abc"))
+  assert(not("abc" > "abd"))
+}
+
+test "length tie-break on shared prefix" {
+  assert("abc" < "abcd")
+  assert("abcd" > "abc")
+  assert("" < "a")
+  assert("" <= "")
+  assert("" >= "")
+}
+
+test "heap-concat operands order by content not pointer" {
+  // Allocate the lexicographically LARGER string first, so a pointer
+  // compare would answer the opposite of the content order.
+  let y = p20 + "Y"
+  let x = p20 + "X"
+  assert(y > x)
+  assert(x < y)
+  assert(x <= y)
+  assert(y >= x)
+  assert(not(x > y))
+  assert(not(y < x))
+}
+
+test "long strings exercise the SIMD chunk path" {
+  // > 16 shared bytes forces at least one full 16-byte chunk before the
+  // differing byte; the diff sits inside the second chunk. The larger
+  // string is allocated FIRST so a pointer compare answers backwards.
+  let b = make_suffixed("bbbbbbbbbbbbbbbbQb")
+  let a = make_suffixed("bbbbbbbbbbbbbbbbQa")
+  assert(a < b)
+  assert(b > a)
+  assert(a <= b)
+  assert(b >= a)
+  assert(not(a >= b))
+  assert(not(b <= a))
+}
+
+test "equal strings are neither lt nor gt" {
+  let a = make_suffixed("Z")
+  let b = make_suffixed("Z")
+  assert(not(a < b))
+  assert(not(a > b))
+  assert(a <= b)
+  assert(a >= b)
+}
+
+test "byte values above 0x7f compare unsigned" {
+  // 0xE3 (utf-8 lead byte) must order ABOVE ascii: a signed byte diff on
+  // sign-extended loads would flip this. load8_u keeps bytes in [0,255].
+  let hi = "あ"
+  let lo = "z"
+  assert(lo < hi)
+  assert(hi > lo)
+}

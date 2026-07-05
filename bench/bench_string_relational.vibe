@@ -1,0 +1,74 @@
+// #746/#748: String relational operators (`<` etc.) lower to the
+// str_lex_diff builtin (SIMD 16-byte prefix skip). Compare against the
+// prelude's pure-vibe byte-loop string_compare on 1KB strings that agree
+// until the last byte (worst case: the whole prefix must be scanned).
+
+let make_long: (String) -> String = (tail) -> {
+  let mut s = ""
+  let mut i = 0
+  while i < 64 {
+    s = s + "abcdefghijklmnop"
+    i = i + 1
+  }
+  s + tail
+}
+
+let string_compare_loop: (String, String) -> Int = (a, b) -> {
+  let la = String::length(a)
+  let lb = String::length(b)
+  let min = if la < lb { la } else { lb }
+  let mut i = 0
+  let mut r = 0
+  while i < min && r == 0 {
+    let ca = String::char_code_at(a, i)
+    let cb = String::char_code_at(b, i)
+    if ca < cb {
+      r = 0 - 1
+    } else if ca > cb {
+      r = 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if r != 0 {
+    r
+  } else if la < lb {
+    0 - 1
+  } else if la > lb {
+    1
+  } else {
+    0
+  }
+}
+
+// Module-level `let` bindings are not tracked by the desugar's type
+// inference (var_types starts empty per top-level stmt), so the compare is
+// routed through a helper with annotated String params — inside it the
+// relational rewrite fires.
+let lt_probe: (String, String) -> Int = (a, b) -> {
+  if a < b {
+    1
+  } else {
+    0
+  }
+}
+
+let long_x = make_long("X")
+
+let long_y = make_long("Y")
+
+let sink_cell = [0]
+
+bench "relational_lt_1kb_simd" {
+  Array::set(sink_cell, 0, Array::get(sink_cell, 0) + lt_probe(long_x, long_y))
+}
+
+bench "compare_loop_1kb_scalar" {
+  let hit = if string_compare_loop(long_x, long_y) < 0 {
+    1
+  } else {
+    0
+  }
+  Array::set(sink_cell, 0, Array::get(sink_cell, 0) + hit)
+}

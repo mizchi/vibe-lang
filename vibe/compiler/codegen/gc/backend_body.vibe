@@ -25,7 +25,7 @@ import .. / wasm_emit {
 }
 
 import .. / builtin_bodies {
-  gen_str_eq_body, gen_bytes_append_body, gen_bytes_blit_body, gen_bytes_concat_body, gen_bytes_fill_body, gen_bytes_from_array_body, gen_bytes_get_body, gen_bytes_new_body, gen_bytes_push_body, gen_bytes_set_body, gen_bytes_slice_body, gen_bytes_to_array_body, gen_eq_body, gen_string_contains_body, gen_string_ends_with_body, gen_string_index_of_body, gen_string_join_body, gen_string_last_index_of_body, gen_string_split_body, gen_string_starts_with_body, gen_string_trim_body
+  gen_str_eq_body, gen_str_lex_diff_body, gen_bytes_append_body, gen_bytes_blit_body, gen_bytes_concat_body, gen_bytes_fill_body, gen_bytes_from_array_body, gen_bytes_get_body, gen_bytes_new_body, gen_bytes_push_body, gen_bytes_set_body, gen_bytes_slice_body, gen_bytes_to_array_body, gen_eq_body, gen_string_contains_body, gen_string_ends_with_body, gen_string_index_of_body, gen_string_join_body, gen_string_last_index_of_body, gen_string_split_body, gen_string_starts_with_body, gen_string_trim_body
 }
 
 import ./backend_builtins_array_alloc.vibe {
@@ -283,7 +283,7 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
     si = si + 1
   }
   let heap_start = ((str_pos + 7) / 8) * 8
-  let num_generated = 41
+  let num_generated = 42
   // #538: host imports (module "vibe", tagged-i64 ABI -- the same raw ABI the
   // linear backend and the node host runner speak). Gated as a GROUP: pure
   // modules stay import-free (runnable on bare wasmtime); a module touching
@@ -319,6 +319,7 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
     ("Array::concat", 2, 39, 1),
     ("Array::truncate", 2, 40, 0),
     ("Array::push_all", 2, 41, 0),
+    ("str_lex_diff", 2, 42, 1),
     ("eq", 2, 29, 1),
     ("not", 1, 6, 1),
     ("String::join", 2, 35, 1),
@@ -753,6 +754,14 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
   Array::push(user_ref_local_indices_all, Array::slice([
     0
   ], 0, 0))
+  // #746: same packed-string layout as the linear lane, generator shared
+  // verbatim (untagged ints in the gc lane -> enable_rc=false).
+  Array::push(bodies, gen_str_lex_diff_body(false))
+  Array::push(meta_i32, 7)
+  Array::push(meta_i64, 0)
+  Array::push(user_ref_local_indices_all, Array::slice([
+    0
+  ], 0, 0))
   let mut bi = 0
   while bi < num_user_funcs {
     let stmt = Array::get(user_func_stmts, bi)
@@ -1143,6 +1152,7 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
   Array::push(func_type_indices, 4)
   Array::push(func_type_indices, 6)
   Array::push(func_type_indices, 6)
+  Array::push(func_type_indices, 4)
   let mut fti = 0
   while fti < num_user_funcs {
     let upc = Array::get(ft_params, fti)
