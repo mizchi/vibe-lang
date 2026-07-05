@@ -52,9 +52,19 @@
 #   vibe help                             this message
 set -euo pipefail
 
-# Resolve install root: the directory layout is
-#   $VIBE_HOME/bin/{vibe,moonrun_wt}
-#   $VIBE_HOME/lib/{vibe-cli.wasm,vibe-cli.cwasm}
+# Resolve install root. Two layouts are supported (rustup-style toolchains
+# landed with the #755-era installer; the flat layout stays recognized so old
+# installs keep working):
+#
+#   toolchain: $VIBE_HOME/toolchains/<name>/bin/{vibe,moonrun_wt}
+#              $VIBE_HOME/toolchains/<name>/lib/{vibe-cli.wasm,vibe-cli.cwasm,…}
+#              $VIBE_HOME/{lib/@scope/name…, cache/…}   (SHARED state: package
+#              root #751 / fetch cache #754 — versioned per toolchain is the
+#              artifacts, not the packages)
+#   flat:      $VIBE_HOME/bin/{vibe,moonrun_wt}
+#              $VIBE_HOME/lib/{vibe-cli.wasm,vibe-cli.cwasm}
+#
+# TOOLCHAIN_DIR points at this launcher's own artifact root in both layouts.
 # Resolve this script's real path WITHOUT `readlink -f` (a GNU extension that
 # macOS/BSD readlink lacks — `readlink -f` there errors and breaks every install).
 # Walk symlinks portably instead.
@@ -66,10 +76,15 @@ while [ -L "$_src" ]; do
 done
 LAUNCHER="$(cd -P "$(dirname "$_src")" && pwd)/$(basename "$_src")"
 SELF="$(cd -P "$(dirname "$LAUNCHER")" && pwd)"
-VIBE_HOME="${VIBE_HOME:-$(dirname "$SELF")}"
-RUNNER="${VIBE_RUNNER:-$VIBE_HOME/bin/moonrun_wt}"
-CLI_WASM="${VIBE_CLI_WASM:-$VIBE_HOME/lib/vibe-cli.wasm}"
-CLI_CWASM="${VIBE_CLI_CWASM:-$VIBE_HOME/lib/vibe-cli.cwasm}"
+TOOLCHAIN_DIR="$(dirname "$SELF")"
+if [ "$(basename "$(dirname "$TOOLCHAIN_DIR")")" = "toolchains" ]; then
+  VIBE_HOME="${VIBE_HOME:-$(dirname "$(dirname "$TOOLCHAIN_DIR")")}"
+else
+  VIBE_HOME="${VIBE_HOME:-$TOOLCHAIN_DIR}"
+fi
+RUNNER="${VIBE_RUNNER:-$TOOLCHAIN_DIR/bin/moonrun_wt}"
+CLI_WASM="${VIBE_CLI_WASM:-$TOOLCHAIN_DIR/lib/vibe-cli.wasm}"
+CLI_CWASM="${VIBE_CLI_CWASM:-$TOOLCHAIN_DIR/lib/vibe-cli.cwasm}"
 
 # Portable single-file sha256 (macOS ships `shasum`, not `sha256sum`).
 _sha256_file() {
@@ -503,7 +518,7 @@ case "$cmd" in
     [ "$no_run" = "1" ] && exit 0
     # 2. P3 HTTP adapter (imports `handler`, exports wasi:http/handler@0.3)
     if [ -z "$adapter" ]; then
-      for cand in "$VIBE_HOME/lib/vibe_http_p3_full_adapter.component.wasm" \
+      for cand in "$TOOLCHAIN_DIR/lib/vibe_http_p3_full_adapter.component.wasm" \
                   "$PWD/_build/http_adapter/vibe_http_p3_full_adapter.component.wasm"; do
         [ -f "$cand" ] && { adapter="$cand"; break; }
       done
@@ -906,14 +921,33 @@ case "$cmd" in
     # Start the stdio LSP server (diagnostics). Editors configure `vibe lsp`.
     # The node server is JSON-RPC plumbing; it drives this same launcher's
     # `vibe check` for the actual compile. (docs/release-roadmap.md テーマ4 MVP.)
-    server="$VIBE_HOME/lib/lsp_server.js"
+    server="$TOOLCHAIN_DIR/lib/lsp_server.js"
     [ -f "$server" ] || server="$SELF/../../js/vibe/lsp_server.js"
-    [ -f "$server" ] || die "lsp server not found (looked in $VIBE_HOME/lib and repo js/vibe)"
+    [ -f "$server" ] || die "lsp server not found (looked in $TOOLCHAIN_DIR/lib and repo js/vibe)"
     command -v node >/dev/null 2>&1 || die "node is required for 'vibe lsp'"
     exec env VIBE_BIN="$LAUNCHER" node "$server" "$@"
     ;;
+  hash)
+    # `vibe hash <pkg_dir|index.vibei>` — print the contract/package content
+    # hashes (ADR-0063 §5). The require-pin spelling is `#<package-line>`.
+    target="${1:-}"
+    [ -n "$target" ] || die "usage: vibe hash <pkg_dir|index.vibei>"
+    [ -d "$target" ] && target="$target/index.vibei"
+    [ -f "$target" ] || die "not found: $target"
+    cli="$(pick_cli)"
+    hout="$(mktemp -t vibe-hash-XXXXXX)"
+    env VIBE_HASH=1 "$RUNNER" "$cli" "$target" "$hout" __no_entry__ >/dev/null 2>&1 || true
+    if ! grep -q '^package ' "$hout" 2>/dev/null; then
+      cat "$hout.diag" 2>/dev/null >&2 || true
+      rm -f "$hout" "$hout.diag"
+      die "hash computation failed for $target"
+    fi
+    cat "$hout"
+    rm -f "$hout" "$hout.diag"
+    ;;
   version|--version|-V)
     echo "vibe (selfhost launcher)"
+    echo "toolchain:   $TOOLCHAIN_DIR"
     echo "runner:      $RUNNER"
     "$RUNNER" --version 2>/dev/null || true
     cli="$(pick_cli 2>/dev/null || true)"

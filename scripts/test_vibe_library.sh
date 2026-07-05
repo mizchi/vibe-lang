@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Smoke-test a curated allow-list of library `*_test.vibe` files through the
 # installed selfhost `vibe test`. This is the regression net for vibe/wasm,
-# vibe/x and vibe/prelude library modules, which the selfhost-only gate does NOT
+# lib/@vibex and vibe/prelude library modules, which the selfhost-only gate does NOT
 # cover (it only validates the compiler self-compile). The MoonBit host that used
 # to run the full suite via flaker was retired in #594.
 #
@@ -23,19 +23,19 @@ cd "$ROOT_DIR"
 
 # The known-green library tests (selfhost-CLI-compilable subset). Covers the
 # wasm parsers touched by the O(N²) StringBuilder work (#660/#662) plus prelude
-# and a few vibe/x modules with real logic.
+# and a few lib/@vibex packages with real logic (#752 moved them out of vibe/x).
 ALLOW=(
   vibe/prelude/func_test.vibe
   vibe/prelude/lazy_iter_test.vibe
   vibe/wasm/component_parser/component_parser_test.vibe
   vibe/wasm/wasm_parser/wasm_parser_test.vibe
   vibe/wasm/wat_parser/wat_parser_test.vibe
-  vibe/x/args/parser_import_test.vibe
-  vibe/x/collect/collect_effect_test.vibe
-  vibe/x/collect/collect_test.vibe
-  vibe/x/jsonschema/validate_test.vibe
-  vibe/x/math/math_test.vibe
-  vibe/x/scan/index_import_test.vibe
+  lib/@vibex/args/parser_import_test.vibe
+  lib/@vibex/collect/collect_effect_test.vibe
+  lib/@vibex/collect/collect_test.vibe
+  lib/@vibex/jsonschema/validate_test.vibe
+  lib/@vibex/math/math_test.vibe
+  lib/@vibex/scan/index_import_test.vibe
 )
 
 RT="$ROOT_DIR/tools/moonrun_wasmtime/target/release/moonrun_wt"
