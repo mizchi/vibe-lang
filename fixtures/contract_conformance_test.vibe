@@ -17,7 +17,7 @@ import ../vibe/compiler/core {
 }
 
 import ../vibe/compiler/contract/index.vibe {
-  parse_contract_program, check_contract, contract_hash, package_hash_from_sources, extract_require_pins, is_strict_semver, is_package_pin, contract_surface_lines, classify_contract_change, semver_bump_kind, verify_publish_bump
+  parse_contract_program, check_contract, contract_hash, package_hash_from_sources, extract_package_version, extract_require_pins, is_strict_semver, is_package_pin, contract_surface_lines, classify_contract_change, semver_bump_kind, verify_publish_bump
 }
 
 import ../lib/@vibe/core {
@@ -308,4 +308,38 @@ test "contract value declaration with a definition is rejected (#752)" {
     }
   }
   assert_eq(outcome, "rejected")
+}
+
+test "version directive: extracted, blanked, offset-preserving (#754)" {
+  let src = "version 1.2.3\nrequire @a/b 1.0.0 = #pkg:sha1:dfd1c758bb64203416db0b64b5854882a43abc11\n\nfn f(x: Int) -> Int"
+  assert(extract_package_version(src) == "1.2.3")
+  let (pins, blanked) = extract_require_pins(src)
+  assert_eq(Array::length(pins), 1)
+  // both directive lines blank to spaces; lengths are preserved
+  assert_eq(String::length(blanked), String::length(src))
+  assert(!String::contains(blanked, "version 1.2.3"))
+  assert(String::contains(blanked, "fn f(x: Int) -> Int"))
+}
+
+test "version directive: absent -> empty; only the leading region counts (#754)" {
+  assert(extract_package_version("fn f(x: Int) -> Int") == "")
+  // a later line that happens to start with "version " is ordinary source
+  assert(extract_package_version("fn f(x: Int) -> Int\nversion 9.9.9") == "")
+}
+
+test "version directive: malformed forms are rejected (#754)" {
+  let bad = handle {
+    let (_, _) = extract_require_pins("version ^1.2.3\nfn f(x: Int) -> Int")
+    ""
+  } with Error {
+    Throw(msg) => msg
+  }
+  assert(String::contains(bad, "exact semver"))
+  let dup = handle {
+    let (_, _) = extract_require_pins("version 1.0.0\nversion 1.0.1\nfn f(x: Int) -> Int")
+    ""
+  } with Error {
+    Throw(msg) => msg
+  }
+  assert(String::contains(dup, "duplicate version directive"))
 }

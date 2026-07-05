@@ -446,6 +446,81 @@ fi
 rm -rf "lib/@gate751x" "$xdir" "$xroot"
 echo "[selfhost-only-gate] VIBE_LIB external roots + freeze ok"
 
+# 6j. distribution pipeline (#754, ADR-0065 Phase 4): publish (version
+#     directive + semver gate) -> fetch cache (CAS keyed by package hash +
+#     versions.tsv) -> materialize into $VIBE_HOME/lib (the default VIBE_LIB
+#     root) -> name resolution -> build&run; then the pinned store lane
+#     under freeze; then the two rejections that make version->hash an
+#     immutable mapping (same-version republish; dishonest semver claim).
+echo "[selfhost-only-gate] 6j distribution pipeline: publish/cache/materialize (#754)"
+jhome="$(mktemp -d)"
+jsrc="$jhome/src/@gate754/mathx"
+mkdir -p "$jsrc"
+printf 'version 1.0.0\n\nfn quad(x: Int) -> Int\n' > "$jsrc/index.vibei"
+printf 'export fn quad(x: Int) -> Int { x * 4 }\n' > "$jsrc/impl.vibe"
+jdir="_build/_gate_pkg754"
+rm -rf "$jdir" ".vibe/store/@gate754"; mkdir -p "$jdir"
+if ! VIBE_HOME="$jhome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh publish "$jsrc" > "$jdir/pub1.log" 2>&1; then
+  echo "[selfhost-only-gate] FAIL: publish of @gate754/mathx@1.0.0 failed (#754)" >&2
+  cat "$jdir/pub1.log" >&2; exit 1
+fi
+if ! grep -q "@gate754/mathx@1.0.0" "$jhome/cache/versions.tsv" 2>/dev/null; then
+  echo "[selfhost-only-gate] FAIL: publish did not record the version mapping (#754)" >&2; exit 1
+fi
+if ! VIBE_HOME="$jhome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh install "@gate754/mathx@1.0.0" > "$jdir/inst1.log" 2>&1; then
+  echo "[selfhost-only-gate] FAIL: install/materialize into VIBE_HOME/lib failed (#754)" >&2
+  cat "$jdir/inst1.log" >&2; exit 1
+fi
+printf 'import @gate754/mathx { quad }\nexport let _start: () -> Int = () -> { quad(11) }\n' > "$jdir/use.vibe"
+VIBE_HOME="$jhome" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$jdir/use.vibe" "$jdir/use.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$jdir/use.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: materialized package did not resolve via VIBE_HOME default root (#754)" >&2
+  cat "$jdir/use.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+juse_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$jdir/use.wasm" 2>/dev/null | tail -1)"
+if [ "$juse_out" != "44" ]; then
+  echo "[selfhost-only-gate] FAIL: materialized package returned '$juse_out' (want 44) (#754)" >&2; exit 1
+fi
+# pinned store lane under freeze: install --store, consumer carries the pin
+if ! VIBE_HOME="$jhome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh install "@gate754/mathx@1.0.0" --store > "$jdir/inst2.log" 2>&1; then
+  echo "[selfhost-only-gate] FAIL: install --store failed (#754)" >&2
+  cat "$jdir/inst2.log" >&2; exit 1
+fi
+jhash="$(awk -F'\t' '$1 == "@gate754/mathx@1.0.0" { print $2 }' "$jhome/cache/versions.tsv")"
+printf 'require @gate754/mathx 1.0.0 = #%s\n\nimport @gate754/mathx { quad }\nexport let _start: () -> Int = () -> { quad(11) + 0 }\n' "$jhash" > "$jdir/pinned.vibe"
+VIBE_REQUIRE_PINS=1 VIBE_HOME="$jhome" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$jdir/pinned.vibe" "$jdir/pinned.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$jdir/pinned.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: pinned store build under VIBE_REQUIRE_PINS=1 failed (#754)" >&2
+  cat "$jdir/pinned.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+# same-version republish with different content must be rejected
+printf 'export fn quad(x: Int) -> Int { x * 5 }\n' > "$jsrc/impl.vibe"
+if VIBE_HOME="$jhome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh publish "$jsrc" > "$jdir/pub2.log" 2>&1; then
+  echo "[selfhost-only-gate] FAIL: same-version republish was accepted (#754)" >&2; exit 1
+fi
+if ! grep -q "same-version republish rejected" "$jdir/pub2.log"; then
+  echo "[selfhost-only-gate] FAIL: republish rejection lacks the expected message (#754)" >&2
+  cat "$jdir/pub2.log" >&2; exit 1
+fi
+# dishonest bump: surface grows but only the patch level is bumped
+printf 'version 1.0.1\n\nfn quad(x: Int) -> Int\nfn oct(x: Int) -> Int\n' > "$jsrc/index.vibei"
+printf 'export fn quad(x: Int) -> Int { x * 4 }\nexport fn oct(x: Int) -> Int { x * 8 }\n' > "$jsrc/impl.vibe"
+if VIBE_HOME="$jhome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh publish "$jsrc" > "$jdir/pub3.log" 2>&1; then
+  echo "[selfhost-only-gate] FAIL: dishonest patch bump was accepted by publish (#754)" >&2; exit 1
+fi
+# honest minor bump passes (versions come from the directives, no env)
+printf 'version 1.1.0\n\nfn quad(x: Int) -> Int\nfn oct(x: Int) -> Int\n' > "$jsrc/index.vibei"
+if ! VIBE_HOME="$jhome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh publish "$jsrc" > "$jdir/pub4.log" 2>&1; then
+  echo "[selfhost-only-gate] FAIL: honest minor bump was rejected by publish (#754)" >&2
+  cat "$jdir/pub4.log" >&2; exit 1
+fi
+rm -rf ".vibe/store/@gate754" "$jdir" "$jhome"
+echo "[selfhost-only-gate] distribution pipeline ok"
+
 # 6d. where-contract + publish-gate regression (#731 / #732): a violated
 #     requires clause traps at runtime; the publish semver gate accepts an
 #     honest bump and rejects a dishonest one.

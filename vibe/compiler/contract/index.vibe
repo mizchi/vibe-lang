@@ -798,6 +798,12 @@ let split_fields: (String) -> Array[String] = (line) -> {
 // blanked to spaces). Only the leading directive region is scanned; a
 // `require` line after the first ordinary statement is a parse error
 // downstream (it never parses as a statement), which is intended.
+// #754 (ADR-0065): the leading region may also carry ONE `version x.y.z`
+// directive — the PACKAGE-side version declaration. It is validated and
+// blanked here (so every parse lane tolerates it) and read back with
+// extract_package_version below. The raw line stays in the file text, so it
+// is part of the package hash by construction: a version change is a new
+// artifact, and version->hash immutability is checkable.
 export let extract_require_pins: (String) -> (Array[(String, String, String)], String) with { Error } = (source) -> {
   let pins = Array::slice([
     ("", "", "")
@@ -806,6 +812,7 @@ export let extract_require_pins: (String) -> (Array[(String, String, String)], S
   let len = String::length(source)
   let mut pos = 0
   let mut scanning = true
+  let mut seen_version = false
   while pos < len {
     let mut nl = pos
     while nl < len && String::char_code_at(source, nl) != 10 {
@@ -814,7 +821,26 @@ export let extract_require_pins: (String) -> (Array[(String, String, String)], S
     let line = String::substring(source, pos, nl)
     let trimmed = String::trim(line)
     let is_require = scanning && String::starts_with(trimmed, "require ")
-    if is_require {
+    let is_version = scanning && String::starts_with(trimmed, "version ")
+    if is_version {
+      let vfields = split_fields(trimmed)
+      if Array::length(vfields) != 2 {
+        throw("malformed version directive (expected: version x.y.z): \{trimmed}")
+      } else ()
+      let vver = Array::get(vfields, 1)
+      if String::starts_with(vver, "^") || !is_strict_semver(vver) {
+        throw("version directive must be an exact semver triple (x.y.z): \{trimmed}")
+      } else ()
+      if seen_version {
+        throw("duplicate version directive: \{trimmed}")
+      } else ()
+      seen_version = true
+      let mut vbi = 0
+      while vbi < String::length(line) {
+        StringBuilder::push(sb, " ")
+        vbi = vbi + 1
+      }
+    } else if is_require {
       let fields = split_fields(trimmed)
       let nfields = Array::length(fields)
       if nfields != 5 && nfields != 3 {
@@ -867,6 +893,39 @@ export let extract_require_pins: (String) -> (Array[(String, String, String)], S
     pos = nl + 1
   }
   (pins, StringBuilder::freeze(sb))
+}
+
+// #754: read the `version x.y.z` directive from a contract's leading
+// directive region ("" when absent). Same scanning rules as
+// extract_require_pins — only the region before the first ordinary
+// statement counts.
+export let extract_package_version: (String) -> String with { Error } = (source) -> {
+  let len = String::length(source)
+  let mut pos = 0
+  let mut found = ""
+  let mut scanning = true
+  while pos < len && scanning {
+    let mut nl = pos
+    while nl < len && String::char_code_at(source, nl) != 10 {
+      nl = nl + 1
+    }
+    let trimmed = String::trim(String::substring(source, pos, nl))
+    if String::starts_with(trimmed, "version ") {
+      let vfields = split_fields(trimmed)
+      if Array::length(vfields) == 2 {
+        found = Array::get(vfields, 1)
+        scanning = false
+      } else {
+        throw("malformed version directive (expected: version x.y.z): \{trimmed}")
+      }
+    } else if String::length(trimmed) == 0 || String::starts_with(trimmed, "//") || String::starts_with(trimmed, "require ") {
+      ()
+    } else {
+      scanning = false
+    }
+    pos = nl + 1
+  }
+  found
 }
 
 // ADR-0063 §8 (#732 Phase F): Elm-style machine-verified semver. The

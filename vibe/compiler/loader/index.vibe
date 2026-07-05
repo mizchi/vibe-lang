@@ -34,7 +34,7 @@ import ./header_cache.vibe {
 }
 
 import ../contract/index.vibe {
-  check_contract, classify_contract_stmts, contract_facade_marker, contract_facade_source, contract_hash, contract_surface_lines, extract_require_pins, package_hash_from_sources, parse_contract_program, verify_publish_bump
+  check_contract, classify_contract_stmts, contract_facade_marker, contract_facade_source, contract_hash, contract_surface_lines, extract_package_version, extract_require_pins, package_hash_from_sources, parse_contract_program, verify_publish_bump
 }
 
 import ./manifest_sources.vibe {
@@ -1287,18 +1287,52 @@ export let fill_require_pins_fs_mode: (String, Bool) -> String with { Error, Fs 
 // requires (Elm-style machine-checked semver). Returns error strings;
 // empty = the release claim is honest.
 export let publish_check_fs: (String, String, String, String) -> Array[String] with { Error, Fs } = (prev_contract_path, next_contract_path, prev_version, next_version) -> {
-  let (_, prev_blanked) = extract_require_pins(Fs::read_file(prev_contract_path))
+  let prev_raw = Fs::read_file(prev_contract_path)
+  let (_, prev_blanked) = extract_require_pins(prev_raw)
   let (pd, po, pextra) = parse_contract_program(lex(prev_blanked))
   let (_, ptypes) = classify_contract_stmts(pextra)
-  let (_, next_blanked) = extract_require_pins(Fs::read_file(next_contract_path))
+  let next_raw = Fs::read_file(next_contract_path)
+  let (_, next_blanked) = extract_require_pins(next_raw)
   let (nd, no, nextra) = parse_contract_program(lex(next_blanked))
   let (_, ntypes) = classify_contract_stmts(nextra)
-  verify_publish_bump(
-    prev_version,
-    next_version,
-    contract_surface_lines(pd, po, ptypes),
-    contract_surface_lines(nd, no, ntypes)
-  )
+  // #754: versions come from the PACKAGE-side `version x.y.z` directive when
+  // the caller does not pass them; a caller-passed version that contradicts
+  // the directive is its own error (a publish must not claim a version the
+  // package does not declare).
+  let prev_directive = extract_package_version(prev_raw)
+  let next_directive = extract_package_version(next_raw)
+  let errors = Array::slice([
+    ""
+  ], 0, 0)
+  if prev_version != "" && prev_directive != "" && prev_version != prev_directive {
+    Array::push(errors, "previous version \{prev_version} contradicts the contract's version directive \{prev_directive}")
+  } else ()
+  if next_version != "" && next_directive != "" && next_version != next_directive {
+    Array::push(errors, "claimed version \{next_version} contradicts the contract's version directive \{next_directive}")
+  } else ()
+  let pv = if prev_version != "" {
+    prev_version
+  } else {
+    prev_directive
+  }
+  let nv = if next_version != "" {
+    next_version
+  } else {
+    next_directive
+  }
+  if pv == "" || nv == "" {
+    Array::push(errors, "publish versions unavailable: pass them explicitly or add a `version x.y.z` directive to the contract (#754)")
+    errors
+  } else if Array::length(errors) > 0 {
+    errors
+  } else {
+    verify_publish_bump(
+      pv,
+      nv,
+      contract_surface_lines(pd, po, ptypes),
+      contract_surface_lines(nd, no, ntypes)
+    )
+  }
 }
 
 // #730 (D-2): verify a store-resolved package against the importer's require
