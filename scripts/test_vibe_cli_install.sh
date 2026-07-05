@@ -37,8 +37,13 @@ bash scripts/install.sh \
   >/dev/null 2>&1
 VIBE="$VIBE_BIN_DIR/vibe"
 [ -x "$VIBE" ] || { echo "FAIL: launcher not installed" >&2; exit 1; }
-[ -f "$VIBE_HOME/lib/vibe-cli.cwasm" ] || { echo "FAIL: .cwasm not generated" >&2; exit 1; }
-echo "ok: install produced launcher + .cwasm"
+# Toolchain layout (#755): the AOT artifact lives under toolchains/<name>/lib
+# (the flat path is the pre-toolchain layout, kept as a fallback assertion).
+[ -f "$VIBE_HOME/toolchains/main/lib/vibe-cli.cwasm" ] || [ -f "$VIBE_HOME/lib/vibe-cli.cwasm" ] \
+  || { echo "FAIL: .cwasm not generated" >&2; exit 1; }
+[ -f "$VIBE_HOME/toolchain" ] || { echo "FAIL: default toolchain file not written" >&2; exit 1; }
+[ -f "$VIBE_HOME/lib/@vibe/core/index.vibei" ] || { echo "FAIL: stdlib @vibe/core not materialized" >&2; exit 1; }
+echo "ok: install produced launcher + .cwasm + default toolchain + stdlib"
 pass=$((pass + 1))
 
 proj="$WORK/proj"
