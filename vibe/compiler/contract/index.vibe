@@ -32,6 +32,15 @@ import ../../../lib/@vibe/core {
 
 //# Functions
 
+// #740/#753: facades are marked so every re-ingestion point (the grouped
+// chokepoint, the persistent-header lane, type_db re-reads of collected
+// sources) can tell an already-desugared facade from raw contract grammar.
+// Re-parsing a facade AS a contract mis-attributes its imports (a facade
+// with only `import ./impl.vibe {}` lines yields zero DECLS, and one with
+// only type defs yields zero impl imports → sibling auto-discovery), so the
+// marker check must happen wherever `.vibei`-suffixed sources are parsed.
+export let contract_facade_marker: String = "// vibe: contract facade (desugared from .vibei)\n"
+
 // ADR-0063 Phase C (#729): contract conformance engine for `.vibei` files.
 //
 // A contract file's top level declares the package's public API. This module
@@ -579,7 +588,16 @@ export let contract_facade_source: (Array[(String, String)], Array[(String, Int)
     }
     if Array::length(names) > 0 {
       Array::push(lines, "export \{raw} { \{String::join(names, ", ")} }")
-    } else ()
+    } else {
+      // #753: an impl unit with no allocated names must STILL appear in the
+      // facade. A facade with no import/export lines re-header-parses (the
+      // type_db lane re-reads collected sources under the .vibei path) to
+      // ZERO impl imports, which triggers sibling auto-discovery and pulls
+      // test files beside the package into its dep set — an `import .` test
+      // then manufactures "type_db: import cycle detected". Zero-name impl
+      // units are real for all-transparent-type packages (@vibe/ast).
+      Array::push(lines, "import \{raw} {}")
+    }
     ui = ui + 1
   }
   if Array::length(allocated) != Array::length(decls) + Array::length(opaque_names) {

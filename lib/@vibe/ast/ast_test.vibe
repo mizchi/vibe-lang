@@ -1,0 +1,46 @@
+// @vibe/ast contract surface (#753): the AST enums are transparent contract
+// types — consumers construct AND pattern-match them through the facade.
+// Plain-name imports mirror how the compiler's core/ast.vibe shim re-exports
+// the package.
+
+import . {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+test "construct and match Expr through the contract (#753)" {
+  let e = EBinOp("+", EInt(40), EInt(2))
+  let v = match e {
+    EBinOp(op, EInt(a), EInt(b)) => if op == "+" { a + b } else { 0 },
+    _ => 0
+  }
+  assert_eq(v, 42)
+}
+
+test "Pat and TypeExpr variants round-trip (#753)" {
+  let p = PCtor("Some", [PBind("x")])
+  let named = match p {
+    PCtor(name, args) => match Array::get(args, 0) {
+      PBind(b) => String::concat(name, b),
+      _ => "?"
+    },
+    _ => "?"
+  }
+  // #756: assert_eq on a match-derived String can fall to the raw pointer
+  // compare — use the boolean form.
+  assert(named == "Somex")
+  let t = TyFn([TyName("Int")], TyTuple([TyName("Int"), TyUnit]), None)
+  let arity = match t {
+    TyFn(params, _, _) => Array::length(params),
+    _ => -1
+  }
+  assert_eq(arity, 1)
+}
+
+test "Stmt variants carry Expr payloads (#753)" {
+  let s = SLet(true, false, "answer", Some(TyName("Int")), EInt(42))
+  let n = match s {
+    SLet(exported, _, name, _, EInt(v)) => if exported { "\{name}\{v}" } else { name },
+    _ => "?"
+  }
+  assert(n == "answer42")
+}
