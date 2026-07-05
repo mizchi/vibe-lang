@@ -1,0 +1,68 @@
+// Regression: match-arm pattern BINDING must recurse to arbitrary depth.
+// The linear compile_match arm binder was an inline loop that stopped at
+// depth 2, so the `v` in `Some(Some(Some(v)))` was never emitted and its use
+// in the arm body failed codegen with "undefined variable (ident): v"
+// (discrimination tests already recursed, only binding was depth-limited —
+// found via examples/match_advanced_test.vibe / pattern_match_test.vibe in
+// the #531 corpus scan). Binding now delegates to the recursive
+// bind_match_pat, which also covers ctor-in-tuple-in-ctor shapes and the
+// catch-all arm's nested binds.
+
+enum Wrap {
+  W(Int);
+  V(Wrap);
+  P((Int, Wrap))
+}
+
+test "triple nested option binding" {
+  let extract: (Option[Option[Option[Int]]]) -> Int = (x) -> {
+    match x {
+      Some(Some(Some(v))) => v,
+      Some(Some(None)) => -1,
+      Some(None) => -2,
+      None => -3
+    }
+  }
+  assert(extract(Some(Some(Some(42)))) == 42)
+  assert(extract(Some(Some(None))) == -1)
+  assert(extract(Some(None)) == -2)
+  assert(extract(None) == -3)
+}
+
+test "depth-4 user enum binding" {
+  let peel: (Wrap) -> Int = (w) -> {
+    match w {
+      V(V(V(W(n)))) => n,
+      V(V(W(n))) => n * 10,
+      V(W(n)) => n * 100,
+      W(n) => n * 1000,
+      _ => -1
+    }
+  }
+  assert(peel(V(V(V(W(7))))) == 7)
+  assert(peel(V(V(W(7)))) == 70)
+  assert(peel(V(W(7))) == 700)
+  assert(peel(W(7)) == 7000)
+}
+
+test "ctor inside tuple inside ctor" {
+  let pick: (Wrap) -> Int = (w) -> {
+    match w {
+      P((k, W(n))) => k + n,
+      P((k, _)) => k,
+      _ => -1
+    }
+  }
+  assert(pick(P((5, W(37)))) == 42)
+  assert(pick(P((5, V(W(1))))) == 5)
+}
+
+test "nested binding with reordered arms" {
+  let x: Option[Option[Int]] = Some(Some(9))
+  let r = match x {
+    None => -1,
+    Some(Some(v)) => v + 1,
+    Some(None) => -2
+  }
+  assert(r == 10)
+}

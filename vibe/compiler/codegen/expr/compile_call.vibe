@@ -32,6 +32,10 @@ import ./compile_match.vibe {
   compile_match
 }
 
+import .. / double_to_string_expr.vibe {
+  double_to_string_expr
+}
+
 //# Functions
 
 // A field projection `a.f` (EDot) passed as an argument to an owning user
@@ -93,6 +97,76 @@ let rec cc_arg_is_scalarish: (Expr) -> Bool with { Error } = (e) -> {
   }
 }
 
+// #745: local mirror of compile_expr_tail's expr_is_floatish/slot_is_floatish
+// (importing them here would be a cycle: compile_expr_tail imports this file).
+// Used to route `eq(a, b)` with a float operand onto the unbox + f64.eq path
+// under RC — the scalar i64.eq below compares BOX POINTERS for boxed floats,
+// so `eq(0.0125, 0.0125)` came out false and the assert trapped.
+let cc_slot_is_floatish: (CompileCtx, Int) -> Bool = (ctx, slot) -> {
+  let arr = ctx.float_local_slots
+  let mut j = Array::length(arr) - 1
+  let mut result = false
+  while j >= 0 {
+    let entry = Array::get(arr, j)
+    if entry / 2 == slot {
+      result = (entry % 2) == 1
+      j = -1
+    } else {
+      j = j - 1
+    }
+  }
+  result
+}
+
+let rec cc_expr_is_floatish: (Expr, Array[String], CompileCtx) -> Bool with { Error } = (e, local_names, ctx) -> {
+  let tag = expr_tag(e)
+  if tag == 2 {
+    true
+  } else if tag == 4 {
+    let nm = get_eident_name(e)
+    let len = Array::length(local_names)
+    let mut i = len - 1
+    let mut slot = -1
+    while i >= 0 {
+      if Array::get(local_names, i) == nm {
+        slot = i
+        i = -1
+      } else {
+        i = i - 1
+      }
+    }
+    if slot >= 0 {
+      cc_slot_is_floatish(ctx, slot)
+    } else {
+      false
+    }
+  } else if tag == 5 {
+    let op = get_ebinop_op(e)
+    if op == "+" || op == "-" || op == "*" || op == "/" {
+      cc_expr_is_floatish(get_ebinop_lhs(e), local_names, ctx) || cc_expr_is_floatish(get_ebinop_rhs(e), local_names, ctx)
+    } else {
+      false
+    }
+  } else if tag == 6 {
+    let op = get_eunaryop_op(e)
+    if op == "-" {
+      cc_expr_is_floatish(get_eunaryop_expr(e), local_names, ctx)
+    } else {
+      false
+    }
+  } else if tag == 8 {
+    let callee = get_ecall_callee(e)
+    if is_eident(callee) {
+      let fname = get_eident_name(callee)
+      fname == "Int::to_double" || fname == "Int::to_float" || fname == "Float::to_double" || fname == "Double::to_float" || fname == "Double::from_i64_bits"
+    } else {
+      false
+    }
+  } else {
+    false
+  }
+}
+
 // #706: is `e` a bare reference to a value live-in to an enclosing loop (and not
 // a `mut` ref-cell, whose reassignment already manages its own drop)? Passing
 // such a value to a consuming (owning) parameter inside the loop frees it on the
@@ -113,6 +187,33 @@ export let cc_is_loop_borrowed_ident: (Expr, CompileCtx) -> Bool = (e, ctx) -> {
 // drops it, so the dup would leak; #704). Other argument positions are owning.
 let cc_is_borrow_arg0_call: (String) -> Bool = (f) -> {
   f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "ArrayBuilder::push" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::set" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "__rec_field"
+}
+
+// #745: retain a borrowed argument that a STORING inline builtin (Map::set /
+// MapBuilder::set key+value) keeps a reference to. The generic owning-call
+// path already dups projection / borrow-returning-call / loop-borrowed args
+// (see the `__argdup` sites below), but the inline-emitted builtins compile
+// their args directly and skipped it — json's `build_json_map` stored
+// `Array::get(vals, i)` un-retained, and once `vals` died the map's entry
+// pointed at freed memory (ctor match on `Map::get` then read garbage).
+// Expects the freshly compiled arg on the wasm stack; leaves it there.
+let cc_retain_stored_arg: (Bytes, Expr, Array[String], Int, CompileCtx) -> Int with { Error } = (buf, carg, local_names, nl, ctx) -> {
+  let is_loop_borrow = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx)
+  if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow) {
+    // #706 leak follow-up: a loop-borrowed trigger needs the epilogue's
+    // compensating drop, same as the generic path's `__argdup` sites.
+    if is_loop_borrow {
+      Array::push(ctx.loop_consumed_names, get_eident_name(carg))
+    } else {
+      ()
+    }
+    Array::push(local_names, "__argdup")
+    emit_local_tee(buf, nl)
+    emit_rc_dup_guarded(buf, nl, ctx.rc_shadow)
+    nl + 1
+  } else {
+    nl
+  }
 }
 
 // #664/#678: is `e` statically — BY SHAPE — a known integer that must NOT be run
@@ -316,6 +417,25 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
         emit_i64_or(buf)
         nl_c
       }
+    }
+    else if fname == "eq" && Array::length(args) == 2 && ctx.enable_rc && (cc_expr_is_floatish(Array::get(args, 0), local_names, ctx) || cc_expr_is_floatish(Array::get(args, 1), local_names, ctx)) {
+      // #745: under RC floats are BOXED — the scalar i64.eq below would
+      // compare box pointers, so `eq(0.0125, 0.0125)` returned false. Take
+      // the same unbox + f64.eq path the `==` binop uses. Non-RC floats are
+      // raw f64 bits in an i64, where bitwise i64.eq matches the existing
+      // `==` behavior, so this branch is RC-only.
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      emit_unbox_float(buf)
+      emit_f64_reinterpret_i64(buf)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      emit_unbox_float(buf)
+      emit_f64_reinterpret_i64(buf)
+      emit_f64_eq(buf)
+      emit_i64_extend_i32_s(buf)
+      // Tag the Bool like the scalar branch below (ADR-0055).
+      emit_i64_const(buf, 1)
+      emit_i64_shl(buf)
+      nl
     }
     else if fname == "eq" && Array::length(args) == 2 && (!prefer_bound_call || cc_arg_is_scalarish(Array::get(args, 0)) || cc_arg_is_scalarish(Array::get(args, 1))) {
       // Direct i64.eq for `eq(a, b)` when it is the builtin and at least one
@@ -1177,6 +1297,49 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
     else if !prefer_bound_call && fname == "__float_bits" {
       ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
     }
+    else if fname == "Int::to_string" && Array::length(args) == 1 {
+      // Cheatsheet-documented alias of the integer `__to_string` path (the
+      // argument is Int by signature, so the string-pointer heuristic's int
+      // route applies).
+      ce(buf, ECall(EIdent("__to_string", -1), [
+        Array::get(args, 0)
+      ], -1), local_names, next_local, ctx, ld)
+    }
+    else if fname == "Fs::readdir" && Array::length(args) == 1 {
+      // #729/#730: readdir's surface is Array[String], but the host import
+      // (`__fs_read_dir_raw`, linked_compile) returns the byte-sorted entry
+      // names "\n"-joined as ONE packed string (same ABI as fs_read_file —
+      // no host-side array building, RC/bump agnostic). Lower to ordinary
+      // AST so String::split's codegen does the array work. An empty dir
+      // returns "" which must yield [] — but split("", d) is [""] — hence
+      // the length guard. String pieces are built with String::from_char_code
+      // because a synthesized EString is not in the string table (same
+      // constraint as double_to_string_expr).
+      ce(buf, ELet("__rd_names", ECall(EIdent("__fs_read_dir_raw", -1), [
+        Array::get(args, 0)
+      ], -1), EIf(EBinOp("==", ECall(EIdent("String::length", -1), [
+        EIdent("__rd_names", -1)
+      ], -1), EInt(0)), ECall(EIdent("Array::slice", -1), [
+        EArray([
+          ECall(EIdent("String::from_char_code", -1), [
+            EInt(10)
+          ], -1)
+        ]),
+        EInt(0),
+        EInt(0)
+      ], -1), ECall(EIdent("String::split", -1), [
+        EIdent("__rd_names", -1),
+        ECall(EIdent("String::from_char_code", -1), [
+          EInt(10)
+        ], -1)
+      ], -1))), local_names, next_local, ctx, ld)
+    }
+    else if fname == "__to_string" && Array::length(args) == 1 && cc_expr_is_floatish(Array::get(args, 0), local_names, ctx) {
+      // #744: a statically-floatish argument takes the synthesized Double
+      // formatter — the generic handler below would stringify the raw f64
+      // bits (or the box pointer under RC) as an integer.
+      ce(buf, double_to_string_expr(Array::get(args, 0)), local_names, next_local, ctx, ld)
+    }
     else if fname == "__to_string" {
       let ts_arg0 = Array::get(args, 0)
       let ts_arg_is_int = ts_known_int(ts_arg0, local_names, ctx)
@@ -1409,6 +1572,14 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       }
     }
     else if fname == "Float::to_double" || fname == "Double::to_float" {
+      ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    }
+    else if fname == "Char::to_int" || fname == "Char::from_int" {
+      // Char's runtime representation IS the (tagged) code point; both
+      // conversions are identities. Char::from_int used to sneak through a
+      // fallback path while Char::to_int died with "undefined variable
+      // (local): Char::to_int @call" (bench/bench_char_conversion.vibe,
+      // vibe/prelude/char.vibe's lower/upper).
       ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
     }
     else if !prefer_bound_call && fname == "resume" {
@@ -2199,7 +2370,10 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       let (eq_fi_ms, _, _) = resolve_func(ctx.func_table, "eq")
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      // Map::set STORES key and value — retain borrowed args (#745).
+      nl = cc_retain_stored_arg(buf, Array::get(args, 1), local_names, nl, ctx)
       nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
+      nl = cc_retain_stored_arg(buf, Array::get(args, 2), local_names, nl, ctx)
       let map_l = nl
       let key_l = nl + 1
       let val_l = nl + 2
@@ -2405,7 +2579,10 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       let (mbs_eq_fi, _, _) = resolve_func(ctx.func_table, "eq")
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      // MapBuilder::set STORES key and value — retain borrowed args (#745).
+      nl = cc_retain_stored_arg(buf, Array::get(args, 1), local_names, nl, ctx)
       nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
+      nl = cc_retain_stored_arg(buf, Array::get(args, 2), local_names, nl, ctx)
       let mb_l = nl
       let mk_l = nl + 1
       let mv_l = nl + 2

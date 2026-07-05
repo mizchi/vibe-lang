@@ -1,0 +1,70 @@
+// Regression: `loop` results are not pinned to Int. The desugar
+// (parser_expr_primary.vibe) seeds `let mut __loop_result = 0`, and the
+// checker used to bind that CtInt — so `break((sum, product))` /
+// `break(acc)` with a tuple or String errored "assignment type mismatch for
+// __loop_result" (found via examples/loop_advanced_test.vibe in the #531
+// corpus scan). The marker now gets a fresh type var instantiated by the
+// first break's assignment.
+
+test "loop breaks with tuple" {
+  let result = loop (i = 0, sum = 0, product = 1) {
+    if i >= 5 { break((sum, product)) }
+    continue(i + 1, sum + i, product * (i + 1))
+  }
+  assert(result.0 == 10)
+  assert(result.1 == 120)
+}
+
+test "loop breaks with string" {
+  let result = loop (i = 0, acc = "") {
+    if i >= 3 { break(acc) }
+    continue(i + 1, acc + "x")
+  }
+  assert(result == "xxx")
+}
+
+test "loop breaks with int still works" {
+  let result = loop (i = 0) {
+    if i >= 5 { break(i * 10) }
+    continue(i + 1)
+  }
+  assert(result == 50)
+}
+
+// Nested-loop break depth (round-2 follow-up): `break` must exit the
+// INNERMOST loop. The linear/gc EWhile compiled bodies with cumulative
+// `ld + 1` instead of resetting the per-loop distance, so an inner break
+// emitted a `br` to the OUTER loop header — the insertion-sort shape in
+// fixtures/index_assign_test.vibe spun forever.
+test "break exits innermost while" {
+  let mut outer = 0
+  let mut inner_total = 0
+  while outer < 3 {
+    let mut j = 0
+    while j < 10 {
+      if j >= 2 { break } else { () }
+      inner_total = inner_total + 1
+      j = j + 1
+    }
+    outer = outer + 1
+  }
+  assert(outer == 3)
+  assert(inner_total == 6)
+}
+
+test "break inside if-else in nested while" {
+  let mut count = 0
+  let mut i = 0
+  while i < 2 {
+    let mut j = 5
+    while j >= 0 {
+      if j > 3 {
+        count = count + 1
+        j = j - 1
+      } else break
+    }
+    i = i + 1
+  }
+  assert(count == 4)
+  assert(i == 2)
+}

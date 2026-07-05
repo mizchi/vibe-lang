@@ -2083,6 +2083,29 @@ let rec rewrite_expr: (Expr, Array[(String, Array[(String, String, Int)])], Arra
           }
         }
         }
+      } else if op == "<" || op == ">" || op == "<=" || op == ">=" {
+        // #746: String relational lowering. The backends compile a bare
+        // `<`/`>`/`<=`/`>=` as signed i64 compare — on the (ptr<<32)|len
+        // string repr that orders by POINTER, not content. Rewrite to
+        // `str_lex_diff(l, r) <op> 0` (a builtin returning a sign-carrying
+        // lexicographic diff with length tie-break) when either ORIGINAL
+        // operand is determinably String — same inference and residual
+        // class as the `+` -> String::concat rewrite below.
+        let rel_stringish = (match infer_arg_type_name(l, struct_sets, var_types, fn_returns) {
+          Some(t) => t == "String",
+          None => false
+        }) || (match infer_arg_type_name(r, struct_sets, var_types, fn_returns) {
+          Some(t) => t == "String",
+          None => false
+        })
+        if rel_stringish {
+          EBinOp(op, ECall(EIdent("str_lex_diff", -1), [
+            rl,
+            rr
+          ], -1), EInt(0))
+        } else {
+          EBinOp(op, rl, rr)
+        }
       } else if op == "+" {
         // String `+` lowering: the checker types `String + String` as String,
         // but the backends compile a bare `+` as numeric i64.add — on the

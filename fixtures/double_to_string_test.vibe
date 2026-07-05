@@ -1,0 +1,56 @@
+// #744 regression: `__to_string(Double)` (and thus string interpolation of a
+// Double) used to stringify the raw f64 bit pattern as an integer —
+// `"\{42.0}"` printed "4631107791820423168". Now a statically-floatish
+// argument takes a synthesized fixed-precision formatter: exact integer part,
+// 15 fractional digits with trailing zeros trimmed.
+
+test "interpolated double literals" {
+  assert("\{0.0}" == "0")
+  assert("\{42.0}" == "42")
+  assert("\{3.14}" == "3.14")
+  assert("\{-1.5}" == "-1.5")
+  assert("\{0.0125}" == "0.0125")
+}
+
+test "to_string of float-typed locals" {
+  let x = 1.25 / 100.0
+  assert(__to_string(x) == "0.0125")
+  let y = 2.5 * 2.0
+  assert("value=\{y}" == "value=5")
+}
+
+// The dispatch is SHAPE-based (float literal / float-tracked local slot /
+// float arithmetic / the to_double conversion builtins / annotated float
+// param). A bare USER-function call result is not tracked — bind it through
+// float arithmetic (`* 1.0`) or pass it to a Double-annotated param before
+// interpolating.
+let fmt_param = (v: Double) -> String {
+  "\{v}"
+}
+
+test "to_string of float call results" {
+  assert("\{Int::to_double(7)}" == "7")
+  let scale = (v: Double, by: Double) -> Double {
+    v * by
+  }
+  assert(fmt_param(scale(1.5, 3.0)) == "4.5")
+}
+
+// Separate bug found while testing this: LAMBDA params annotated
+// Float/Double were never seeded into float_local_slots (only top-level fn
+// params were, after the rc_float_param_eq fix), so a local closure's
+// `v * by` compiled as an INTEGER multiply of the f64 bits.
+test "local lambda float params compute float math" {
+  let scale2 = (v: Double, by: Double) -> Double {
+    v * by
+  }
+  assert(eq(scale2(1.5, 3.0), 4.5))
+  assert(eq(scale2(0.5, 0.25), 0.125))
+}
+
+test "negative fraction and carry" {
+  assert("\{-0.25}" == "-0.25")
+  // 0.1 + 0.2 = 0.30000000000000004 in f64; 15-digit rounding trims it back.
+  let z = 0.1 + 0.2
+  assert("\{z}" == "0.3")
+}

@@ -84,6 +84,63 @@ if [ "$fsres" != "42" ]; then
 fi
 echo "[selfhost-only-gate] multi-file FS-compile ok (42)"
 
+# 4b. deep-recursion effect resume regression (#737): a perform issued from a
+#     RECURSIVE frame, handled by an in-language handler OUTSIDE the recursion
+#     that bridges to a host builtin, used to deliver the FIRST resume's value
+#     as the SECOND op's argument (deep-continuation resume corruption). The
+#     merge lane works around nothing anymore (merge_sources is back on
+#     `perform Fs::ReadFile`), so this program is the canary.
+echo "[selfhost-only-gate] 4b deep-recursion effect resume regression (#737)"
+drdir="_build/_gate_deepresume"
+rm -rf "$drdir"; mkdir -p "$drdir/d"
+printf 'AAA' > "$drdir/a.txt"
+printf 'BBB' > "$drdir/d/b.txt"
+printf 'CCC' > "$drdir/d/c.txt"
+cat > "$drdir/main.vibe" <<'VEOF'
+effect FileIo {
+  ReadFile(String) -> String
+}
+
+let rec walk = (path: String, depth: Int) -> String with { FileIo } {
+  let source = perform FileIo::ReadFile(path)
+  if depth <= 0 {
+    source
+  } else {
+    let s1 = walk("_build/_gate_deepresume/d/b.txt", depth - 1)
+    let s2 = walk("_build/_gate_deepresume/d/c.txt", depth - 1)
+    "\{source}|\{s1}|\{s2}"
+  }
+}
+
+export let _start: () -> Int with { Fs } = () -> {
+  let out = handle {
+    walk("_build/_gate_deepresume/a.txt", 1)
+  } with FileIo {
+    ReadFile(p) => resume(Fs::read_file(p))
+  }
+  if out == "AAA|BBB|CCC" {
+    42
+  } else {
+    1
+  }
+}
+VEOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$drdir/main.vibe" "$drdir/main.wasm" _start >/dev/null 2>&1
+if [ ! -s "$drdir/main.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: deep-resume regression program did not compile" >&2
+  cat "$drdir/main.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+drres="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$drdir/main.wasm" 2>/dev/null | tr -dc '0-9')"
+rm -rf "$drdir"
+if [ "$drres" != "42" ]; then
+  echo "[selfhost-only-gate] FAIL: deep-resume regression returned '$drres' (expected 42) — #737-class resume corruption" >&2
+  exit 1
+fi
+echo "[selfhost-only-gate] deep-recursion effect resume ok (42)"
+
 # 5. test-block regression (#594): a file with only `test {}` blocks (no entry)
 #    must compile to a valid module whose `_start` runs every test; a passing
 #    file exits clean and a failing assert traps. Guards the codegen fix that
@@ -183,12 +240,22 @@ rm -rf "$cdir"; mkdir -p "$cdir/pkg"
 printf 'import ./impl.vibe {}\nfn add(x: Int, y: Int) -> Int\n' > "$cdir/pkg/index.vibei"
 printf 'export fn add(x: Int, y: Int) -> Int { x + y }\n' > "$cdir/pkg/impl.vibe"
 printf 'import ./pkg { add }\nexport let _start: () -> Int = () -> { add(40, 2) }\n' > "$cdir/ok.vibe"
+# #749 canary: run this compile with a COLD persistent cache. The runner's
+# module-init _start executes the same pipeline once before the real cli_main
+# invoke; a first-pass failure is masked in the exit code but leaves a .diag
+# beside the (valid) wasm the second pass writes. Cold-only ingestion rot
+# (#740/#749 class) surfaces exactly there, so assert "no sidecar" too.
+find "$ROOT_DIR/_build" -maxdepth 1 -type f -name "vibe_*" -delete 2>/dev/null || true
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$cdir/ok.vibe" "$cdir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$cdir/ok.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: contract package import did not compile (#729)" >&2
   cat "$cdir/ok.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+if [ -s "$cdir/ok.wasm.diag" ]; then
+  echo "[selfhost-only-gate] FAIL: cold contract compile left a stale .diag beside a valid wasm (#749 first-pass ingestion failure)" >&2
+  cat "$cdir/ok.wasm.diag" >&2; exit 1
 fi
 printf 'import ./pkg/impl.vibe { add }\nexport let _start: () -> Int = () -> { add(40, 2) }\n' > "$cdir/bad.vibe"
 if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
@@ -310,16 +377,9 @@ fi
 rm -rf "$edir"
 echo "[selfhost-only-gate] where-contract + publish gate regression ok"
 
-# 6e. @vibe/core <-> compiler vendored sha1 sync: the compiler keeps a twin
-#     of lib/@vibe/core/sha1.vibe (it cannot import outside vibe/compiler
-#     yet); the twins must not drift. Compare ignoring comments/blanks.
-echo "[selfhost-only-gate] 6e vendored sha1 sync (@vibe/core)"
-if ! diff <(grep -v '^\s*//' "lib/@vibe/core/sha1.vibe" | grep -v '^\s*$') <(grep -v '^\s*//' vibe/compiler/cache/sha1.vibe | grep -v '^\s*$') >/dev/null; then
-  echo "[selfhost-only-gate] FAIL: vibe/compiler/cache/sha1.vibe drifted from lib/@vibe/core/sha1.vibe" >&2
-  diff <(grep -v '^\s*//' "lib/@vibe/core/sha1.vibe" | grep -v '^\s*$') <(grep -v '^\s*//' vibe/compiler/cache/sha1.vibe | grep -v '^\s*$') >&2 || true
-  exit 1
-fi
-echo "[selfhost-only-gate] vendored sha1 sync ok"
+# (6e retired by #741: the vendored vibe/compiler/cache/sha1.vibe twin was
+# deleted — the compiler consumes lib/@vibe/core through the contract import,
+# so there is nothing left to drift-check.)
 
 # 6f. @vibe/core store-install E2E: install the REAL in-repo package into
 #     .vibe/store via scripts/vibe_core_install.sh, then compile AND RUN a
@@ -2775,12 +2835,12 @@ if [ ! -s "$gcdir/smoke.wasm" ]; then
   exit 1
 fi
 gc_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcdir/smoke.wasm" 2>&1 | tail -1)"
-if [ "$gc_out" != "90419" ]; then
-  echo "[selfhost-only-gate] FAIL: gc backend smoke got '$gc_out' (want 90419)" >&2
+if [ "$gc_out" != "101520" ]; then
+  echo "[selfhost-only-gate] FAIL: gc backend smoke got '$gc_out' (want 101520)" >&2
   exit 1
 fi
 rm -rf "$gcdir"
-echo "[selfhost-only-gate] wasm-gc backend smoke ok (90419)"
+echo "[selfhost-only-gate] wasm-gc backend smoke ok (101520)"
 
 # 40i. effect->WIT golden (#537): `vibe compile --wit` (adapter VIBE_EMIT_WIT=1)
 #      must render fixtures/wit_gen_http.vibe byte-exactly as the committed

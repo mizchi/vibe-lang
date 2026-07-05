@@ -24,8 +24,12 @@ import .. / wasm_emit {
   emit_block_i64, emit_block_void, emit_br, emit_br_if, emit_call, emit_call_indirect, emit_code_section, emit_code_section_with_locals, emit_data_section, emit_data_section_multi, emit_drop, emit_element_section_active, emit_else, emit_end, emit_export_section, emit_export_section_multi, emit_exports_with_memory, emit_f64_add, emit_f64_const_bits, emit_f64_convert_i64_s, emit_f64_div, emit_f64_eq, emit_f64_ge, emit_f64_gt, emit_f64_le, emit_f64_lt, emit_f64_mul, emit_f64_ne, emit_f64_neg, emit_f64_reinterpret_i64, emit_f64_sub, emit_func_type_raw, emit_function_section, emit_global_get, emit_global_section_i32_mut, emit_global_set, emit_header, emit_i32_add, emit_i32_const, emit_i32_load, emit_i32_load8_u, emit_i32_store, emit_i32_store8, emit_i32_wrap_i64, emit_i64_add, emit_i64_and, emit_i64_const, emit_i64_div_s, emit_i64_eq, emit_i64_eqz, emit_i64_extend_i32_s, emit_i64_ge_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_lt_s, emit_i64_mul, emit_i64_ne, emit_i64_or, emit_i64_reinterpret_f64, emit_i64_rem_s, emit_i64_shl, emit_i64_shr_s, emit_i64_sub, emit_i64_trunc_f64_s, emit_i64_xor, emit_if_i64, emit_if_void, emit_import_section_func, emit_local_get, emit_local_set, emit_local_tee, emit_loop_void, emit_memory_section, emit_name, emit_return, emit_struct_get, emit_struct_new, emit_struct_set, emit_struct_type_raw, emit_table_section_funcref, emit_type_section, emit_type_section_multi, string_to_data
 }
 
+import .. / builtin_registry.vibe {
+  verify_lane_builtins
+}
+
 import .. / builtin_bodies {
-  gen_bytes_append_body, gen_bytes_blit_body, gen_bytes_concat_body, gen_bytes_fill_body, gen_bytes_from_array_body, gen_bytes_get_body, gen_bytes_new_body, gen_bytes_push_body, gen_bytes_set_body, gen_bytes_slice_body, gen_bytes_to_array_body, gen_eq_body, gen_string_contains_body, gen_string_ends_with_body, gen_string_index_of_body, gen_string_join_body, gen_string_last_index_of_body, gen_string_split_body, gen_string_starts_with_body, gen_string_trim_body
+  gen_str_eq_body, gen_str_lex_diff_body, gen_bytes_append_body, gen_bytes_blit_body, gen_bytes_concat_body, gen_bytes_fill_body, gen_bytes_from_array_body, gen_bytes_get_body, gen_bytes_new_body, gen_bytes_push_body, gen_bytes_set_body, gen_bytes_slice_body, gen_bytes_to_array_body, gen_eq_body, gen_string_contains_body, gen_string_ends_with_body, gen_string_index_of_body, gen_string_join_body, gen_string_last_index_of_body, gen_string_split_body, gen_string_starts_with_body, gen_string_trim_body
 }
 
 import ./backend_builtins_array_alloc.vibe {
@@ -283,7 +287,7 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
     si = si + 1
   }
   let heap_start = ((str_pos + 7) / 8) * 8
-  let num_generated = 41
+  let num_generated = 42
   // #538: host imports (module "vibe", tagged-i64 ABI -- the same raw ABI the
   // linear backend and the node host runner speak). Gated as a GROUP: pure
   // modules stay import-free (runnable on bare wasmtime); a module touching
@@ -319,6 +323,7 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
     ("Array::concat", 2, 39, 1),
     ("Array::truncate", 2, 40, 0),
     ("Array::push_all", 2, 41, 0),
+    ("str_lex_diff", 2, 42, 1),
     ("eq", 2, 29, 1),
     ("not", 1, 6, 1),
     ("String::join", 2, 35, 1),
@@ -348,6 +353,8 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
     // i64 world, same as the linear lane's compile_call identity handling.
     ("Double::to_float", 1, 16, 1),
     ("Float::to_double", 1, 16, 1),
+    ("Char::to_int", 1, 16, 1),
+    ("Char::from_int", 1, 16, 1),
     ("Int::to_float", 1, 12, 1),
     ("FixedArray::make", 2, 6, 1),
     ("FixedArray::length", 1, 6, 1),
@@ -371,6 +378,28 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
     ("print", 1, 6, 0),
     ("map_has", 2, 6, 1)
   ]
+  // #415 B-0: builtin_defs must agree with the central registry (name set +
+  // params + returns, both directions). The table is static, so this is a
+  // full bidirectional check — a builtin added to the linear lane without an
+  // explicit gc decision (or vice versa) fails every gc build by name.
+  let __reg_names = Array::slice([
+    ""
+  ], 0, 0)
+  let __reg_params = Array::slice([
+    0
+  ], 0, 0)
+  let __reg_returns = Array::slice([
+    0
+  ], 0, 0)
+  let mut __ri = 0
+  while __ri < Array::length(builtin_defs) {
+    let (rbname, rbparams, _, rbreturns) = Array::get(builtin_defs, __ri)
+    Array::push(__reg_names, rbname)
+    Array::push(__reg_params, rbparams)
+    Array::push(__reg_returns, rbreturns)
+    __ri = __ri + 1
+  }
+  verify_lane_builtins("gc", __reg_names, __reg_params, __reg_returns)
   let mut __bi = 0
   while __bi < Array::length(builtin_defs) {
     let (bname, bparams, _, _) = Array::get(builtin_defs, __bi)
@@ -494,260 +523,78 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
       0
     ], 0, 0)
   ], 0, 0)
-  Array::push(bodies, gc_gen_print_i64_body())
-  Array::push(meta_i32, 3)
-  Array::push(meta_i64, 1)
-  Array::push(user_ref_local_indices_all, Array::slice([
+  // #415 B-1: one call = one gc builtin body — body bytes, extra local
+  // counts, the (always empty here) user-ref locals row, and the
+  // function-section type index together. The function section splices
+  // gc_builtin_type_idxs in this same order; the count mismatch guard below
+  // still applies.
+  let gc_builtin_type_idxs = Array::slice([
     0
-  ], 0, 0))
-  Array::push(bodies, gc_gen_print_str_body())
-  Array::push(meta_i32, 2)
-  Array::push(meta_i64, 0)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gc_gen_str_len_body())
-  Array::push(meta_i32, 0)
-  Array::push(meta_i64, 0)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gc_gen_str_eq_body())
-  Array::push(meta_i32, 5)
-  Array::push(meta_i64, 0)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gc_gen_str_concat_body())
-  Array::push(meta_i32, 6)
-  Array::push(meta_i64, 0)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gc_gen_arr_new_body())
-  Array::push(meta_i32, 1)
-  Array::push(meta_i64, 0)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gc_gen_arr_len_body())
-  Array::push(meta_i32, 0)
-  Array::push(meta_i64, 0)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gc_gen_arr_get_body())
-  Array::push(meta_i32, 1)
-  Array::push(meta_i64, 0)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gc_gen_arr_push_body())
-  Array::push(meta_i32, 6)
-  Array::push(meta_i64, 0)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gc_gen_arr_set_body())
-  Array::push(meta_i32, 1)
-  Array::push(meta_i64, 0)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gc_gen_double_to_int_body())
-  Array::push(meta_i32, 0)
-  Array::push(meta_i64, 0)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gc_gen_int_to_double_body())
-  Array::push(meta_i32, 0)
-  Array::push(meta_i64, 0)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gc_gen_str_char_code_at_body())
-  Array::push(meta_i32, 1)
-  Array::push(meta_i64, 0)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gc_gen_str_from_char_code_body())
-  Array::push(meta_i32, 1)
-  Array::push(meta_i64, 0)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gc_gen_str_substring_body())
-  Array::push(meta_i32, 2)
-  Array::push(meta_i64, 0)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gc_gen_identity_body())
-  Array::push(meta_i32, 0)
-  Array::push(meta_i64, 0)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
+  ], 0, 0)
+  let push_gc_builtin: (Bytes, Int, Int, Int) -> Unit = (body, m32, m64, type_idx) -> {
+    Array::push(bodies, body)
+    Array::push(meta_i32, m32)
+    Array::push(meta_i64, m64)
+    Array::push(user_ref_local_indices_all, Array::slice([
+      0
+    ], 0, 0))
+    Array::push(gc_builtin_type_idxs, type_idx)
+  }
+  push_gc_builtin(gc_gen_print_i64_body(), 3, 1, 1)
+  push_gc_builtin(gc_gen_print_str_body(), 2, 0, 1)
+  push_gc_builtin(gc_gen_str_len_body(), 0, 0, 3)
+  // #748: strings live in linear memory with the same packed layout in the
+  // gc lane, so the SIMD chunk-compare generator is shared verbatim
+  // (chunk_limit local -> meta_i32 6).
+  push_gc_builtin(gen_str_eq_body(), 6, 0, 4)
+  push_gc_builtin(gc_gen_str_concat_body(), 6, 0, 4)
+  push_gc_builtin(gc_gen_arr_new_body(), 1, 0, 5)
+  push_gc_builtin(gc_gen_arr_len_body(), 0, 0, 3)
+  push_gc_builtin(gc_gen_arr_get_body(), 1, 0, 4)
+  push_gc_builtin(gc_gen_arr_push_body(), 6, 0, 6)
+  push_gc_builtin(gc_gen_arr_set_body(), 1, 0, 7)
+  push_gc_builtin(gc_gen_double_to_int_body(), 0, 0, 3)
+  push_gc_builtin(gc_gen_int_to_double_body(), 0, 0, 3)
+  push_gc_builtin(gc_gen_str_char_code_at_body(), 1, 0, 4)
+  push_gc_builtin(gc_gen_str_from_char_code_body(), 1, 0, 3)
+  push_gc_builtin(gc_gen_str_substring_body(), 2, 0, 8)
+  push_gc_builtin(gc_gen_identity_body(), 0, 0, 3)
   // Body 17 (__to_string): runtime string-vs-int dispatch, NOT identity —
   // interpolation routes every `\{x}` here (see gc_gen_to_string_body).
-  Array::push(bodies, gc_gen_to_string_body())
-  Array::push(meta_i32, 0)
-  Array::push(meta_i64, 5)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gen_bytes_new_body())
-  Array::push(meta_i32, 1)
-  Array::push(meta_i64, 0)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gen_bytes_get_body(false))
-  Array::push(meta_i32, 1)
-  Array::push(meta_i64, 0)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gen_bytes_set_body(false))
-  Array::push(meta_i32, 1)
-  Array::push(meta_i64, 0)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gen_bytes_push_body(false))
-  Array::push(meta_i32, 6)
-  Array::push(meta_i64, 0)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gen_bytes_append_body(false, hbo + 7, hbo + 19, hbo + 21))
-  Array::push(meta_i32, 2)
-  Array::push(meta_i64, 0)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gen_bytes_concat_body(hbo + 18, hbo + 22))
-  Array::push(meta_i32, 0)
-  Array::push(meta_i64, 1)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gen_bytes_slice_body(false, hbo + 18, hbo + 19, hbo + 21))
-  Array::push(meta_i32, 2)
-  Array::push(meta_i64, 1)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gen_bytes_from_array_body(false, hbo + 7, hbo + 8, hbo + 18, hbo + 21))
-  Array::push(meta_i32, 2)
-  Array::push(meta_i64, 1)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gen_bytes_to_array_body(false, hbo + 6, hbo + 9, hbo + 7, hbo + 19))
-  Array::push(meta_i32, 2)
-  Array::push(meta_i64, 1)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gen_bytes_blit_body(false, hbo + 19, hbo + 21))
-  Array::push(meta_i32, 2)
-  Array::push(meta_i64, 0)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gen_bytes_fill_body(false, hbo + 21))
-  Array::push(meta_i32, 2)
-  Array::push(meta_i64, 0)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
+  push_gc_builtin(gc_gen_to_string_body(), 0, 5, 3)
+  push_gc_builtin(gen_bytes_new_body(), 1, 0, 5)
+  push_gc_builtin(gen_bytes_get_body(false), 1, 0, 4)
+  push_gc_builtin(gen_bytes_set_body(false), 1, 0, 7)
+  push_gc_builtin(gen_bytes_push_body(false), 6, 0, 6)
+  push_gc_builtin(gen_bytes_append_body(false, hbo + 7, hbo + 19, hbo + 21), 2, 0, 6)
+  push_gc_builtin(gen_bytes_concat_body(hbo + 18, hbo + 22), 0, 1, 4)
+  push_gc_builtin(gen_bytes_slice_body(false, hbo + 18, hbo + 19, hbo + 21), 2, 1, 8)
+  push_gc_builtin(gen_bytes_from_array_body(false, hbo + 7, hbo + 8, hbo + 18, hbo + 21), 2, 1, 3)
+  push_gc_builtin(gen_bytes_to_array_body(false, hbo + 6, hbo + 9, hbo + 7, hbo + 19), 2, 1, 3)
+  push_gc_builtin(gen_bytes_blit_body(false, hbo + 19, hbo + 21), 2, 0, 9)
+  push_gc_builtin(gen_bytes_fill_body(false, hbo + 21), 2, 0, 7)
   // #538: generic eq (i64 fast path + looks-like-string guarded content eq)
   // -- Map::get/has_key/MapBuilder::set resolve "eq" from the func table, and
   // before this existed the placeholder index called array_new, which returns
   // a fresh non-zero pointer: every key comparison was TRUE (silent wrong Map
   // results). The gc string repr is the same packed (offset<<32)|len as the
   // linear backend, so the linear bodies are reused verbatim below.
-  Array::push(bodies, gen_eq_body(hbo + 4))
-  Array::push(meta_i32, 0)
-  Array::push(meta_i64, 0)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gen_string_index_of_body(false, hbo + 3, hbo + 15, hbo + 4))
-  Array::push(meta_i32, 3)
-  Array::push(meta_i64, 1)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gen_string_contains_body(false, hbo + 30))
-  Array::push(meta_i32, 0)
-  Array::push(meta_i64, 0)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gen_string_starts_with_body(false, hbo + 3, hbo + 15, hbo + 4))
-  Array::push(meta_i32, 2)
-  Array::push(meta_i64, 1)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gen_string_ends_with_body(false, hbo + 3, hbo + 15, hbo + 4))
-  Array::push(meta_i32, 2)
-  Array::push(meta_i64, 1)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gen_string_last_index_of_body(false, hbo + 3, hbo + 15, hbo + 4))
-  Array::push(meta_i32, 3)
-  Array::push(meta_i64, 1)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gen_string_join_body(false, hbo + 7, hbo + 8, hbo + 5))
-  Array::push(meta_i32, 9)
-  Array::push(meta_i64, 1)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gen_string_split_body(false, hbo + 6, hbo + 9, hbo + 3, hbo + 15, hbo + 30))
-  Array::push(meta_i32, 4)
-  Array::push(meta_i64, 1)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gen_string_trim_body(false, hbo + 3, hbo + 13, hbo + 15))
-  Array::push(meta_i32, 4)
-  Array::push(meta_i64, 0)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gc_gen_arr_slice_body(hbo + 6, hbo + 8, hbo + 9))
-  Array::push(meta_i32, 0)
-  Array::push(meta_i64, 2)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gc_gen_arr_concat_body(hbo + 6, hbo + 7, hbo + 8, hbo + 9))
-  Array::push(meta_i32, 0)
-  Array::push(meta_i64, 3)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gc_gen_arr_truncate_body())
-  Array::push(meta_i32, 0)
-  Array::push(meta_i64, 0)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
-  Array::push(bodies, gc_gen_arr_push_all_body(hbo + 7, hbo + 8, hbo + 9))
-  Array::push(meta_i32, 0)
-  Array::push(meta_i64, 2)
-  Array::push(user_ref_local_indices_all, Array::slice([
-    0
-  ], 0, 0))
+  push_gc_builtin(gen_eq_body(hbo + 4), 0, 0, 4)
+  push_gc_builtin(gen_string_index_of_body(false, hbo + 3, hbo + 15, hbo + 4), 8, 0, 4)
+  push_gc_builtin(gen_string_contains_body(false, hbo + 30), 0, 0, 4)
+  push_gc_builtin(gen_string_starts_with_body(false, hbo + 3, hbo + 15, hbo + 4), 2, 1, 4)
+  push_gc_builtin(gen_string_ends_with_body(false, hbo + 3, hbo + 15, hbo + 4), 2, 1, 4)
+  push_gc_builtin(gen_string_last_index_of_body(false, hbo + 3, hbo + 15, hbo + 4), 3, 1, 4)
+  push_gc_builtin(gen_string_join_body(false, hbo + 7, hbo + 8, hbo + 5), 9, 1, 4)
+  push_gc_builtin(gen_string_split_body(false, hbo + 6, hbo + 9, hbo + 3, hbo + 15, hbo + 30), 4, 1, 4)
+  push_gc_builtin(gen_string_trim_body(false, hbo + 3, hbo + 13, hbo + 15), 4, 0, 3)
+  push_gc_builtin(gc_gen_arr_slice_body(hbo + 6, hbo + 8, hbo + 9), 0, 2, 8)
+  push_gc_builtin(gc_gen_arr_concat_body(hbo + 6, hbo + 7, hbo + 8, hbo + 9), 0, 3, 4)
+  push_gc_builtin(gc_gen_arr_truncate_body(), 0, 0, 6)
+  push_gc_builtin(gc_gen_arr_push_all_body(hbo + 7, hbo + 8, hbo + 9), 0, 2, 6)
+  // #746: same packed-string layout as the linear lane, generator shared
+  // verbatim (untagged ints in the gc lane -> enable_rc=false).
+  push_gc_builtin(gen_str_lex_diff_body(false), 7, 0, 4)
   let mut bi = 0
   while bi < num_user_funcs {
     let stmt = Array::get(user_func_stmts, bi)
@@ -770,6 +617,11 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
           Array::push(local_names, "__env")
           let param_count = Array::length(params) + 1
           // #724 round 2: seed the aggregate-shape log from annotated params.
+          // #744 gc mirror: seed float tracking from annotated Float/Double
+          // params in the same walk (linear tracks these via float_local_slots).
+          let gc_float_names_f = Array::slice([
+            ""
+          ], 0, 0)
           let gc_sig_ptypes = fn_type_param_types(gc_fn_ann)
           let mut psi = 0
           while psi < Array::length(params) {
@@ -794,6 +646,15 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
                   Array::push(gc_agg_slots_f, psi * 256 + pinfo)
                 } else {
                   ()
+                }
+                match pte {
+                  TyName(ptn) => if ptn == "Float" || ptn == "Double" {
+                    let (psname, _) = Array::get(params, psi)
+                    Array::push(gc_float_names_f, psname)
+                  } else {
+                    ()
+                  },
+                  _ => ()
                 }
               },
               None => ()
@@ -828,9 +689,7 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
             gc_const_names: gc_const_names_l, gc_const_kinds: gc_const_kinds_l,
             gc_const_ivals: gc_const_ivals_l, gc_const_svals: gc_const_svals_l,
             gc_global_names: gc_global_names_l,
-            gc_float_locals: Array::slice([
-              ""
-            ], 0, 0),
+            gc_float_locals: gc_float_names_f,
             gc_agg_local_slots: gc_agg_slots_f,
             gc_agg_ret_names: gc_agg_ret_names_l,
             gc_agg_ret_infos: gc_agg_ret_infos_l
@@ -1083,49 +942,13 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
   let func_type_indices = Array::slice([
     0
   ], 0, 0)
-  Array::push(func_type_indices, 1)
-  Array::push(func_type_indices, 1)
-  Array::push(func_type_indices, 3)
-  Array::push(func_type_indices, 4)
-  Array::push(func_type_indices, 4)
-  Array::push(func_type_indices, 5)
-  Array::push(func_type_indices, 3)
-  Array::push(func_type_indices, 4)
-  Array::push(func_type_indices, 6)
-  Array::push(func_type_indices, 7)
-  Array::push(func_type_indices, 3)
-  Array::push(func_type_indices, 3)
-  Array::push(func_type_indices, 4)
-  Array::push(func_type_indices, 3)
-  Array::push(func_type_indices, 8)
-  Array::push(func_type_indices, 3)
-  Array::push(func_type_indices, 3)
-  Array::push(func_type_indices, 5)
-  Array::push(func_type_indices, 4)
-  Array::push(func_type_indices, 7)
-  Array::push(func_type_indices, 6)
-  Array::push(func_type_indices, 6)
-  Array::push(func_type_indices, 4)
-  Array::push(func_type_indices, 8)
-  Array::push(func_type_indices, 3)
-  Array::push(func_type_indices, 3)
-  Array::push(func_type_indices, 9)
-  Array::push(func_type_indices, 7)
-  // #538 generated additions: eq + 8 string ops (type 4 = (i64,i64)->i64,
-  // type 3 = (i64)->i64 for trim)
-  Array::push(func_type_indices, 4)
-  Array::push(func_type_indices, 4)
-  Array::push(func_type_indices, 4)
-  Array::push(func_type_indices, 4)
-  Array::push(func_type_indices, 4)
-  Array::push(func_type_indices, 4)
-  Array::push(func_type_indices, 4)
-  Array::push(func_type_indices, 4)
-  Array::push(func_type_indices, 3)
-  Array::push(func_type_indices, 8)
-  Array::push(func_type_indices, 4)
-  Array::push(func_type_indices, 6)
-  Array::push(func_type_indices, 6)
+  // #415 B-1: builtin type indices are declared next to each body push
+  // (push_gc_builtin above) — splice them here in the same order.
+  let mut gbti = 0
+  while gbti < Array::length(gc_builtin_type_idxs) {
+    Array::push(func_type_indices, Array::get(gc_builtin_type_idxs, gbti))
+    gbti = gbti + 1
+  }
   let mut fti = 0
   while fti < num_user_funcs {
     let upc = Array::get(ft_params, fti)
@@ -1138,6 +961,11 @@ export let compile_wasi_module_gc: (Array[Stmt], String) -> Bytes with { Error }
     let lam_user_params = Array::get(lt_w.param_counts, lfi) - 1
     Array::push(func_type_indices, closure_type_base + lam_user_params)
     lfi = lfi + 1
+  }
+  if Array::length(func_type_indices) != Array::length(bodies) {
+    throw("gc codegen internal error: function section and code section count mismatch")
+  } else {
+    ()
   }
   emit_function_section(out, func_type_indices)
   let total_table_entries = num_user_funcs + num_lambdas

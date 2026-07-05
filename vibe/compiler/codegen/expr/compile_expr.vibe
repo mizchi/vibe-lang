@@ -468,7 +468,33 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
     let op = get_ebinop_op(expr)
     let lhs = get_ebinop_lhs(expr)
     let rhs = get_ebinop_rhs(expr)
-    if op == "==" && !(ctx.enable_rc && (expr_is_floatish(lhs, local_names, ctx) || expr_is_floatish(rhs, local_names, ctx))) {
+    if op == "&&" || op == "||" {
+      // Short-circuit lowering. The old eager `i64.and`/`i64.or` (still what
+      // emit_binop_op does) evaluated BOTH operands, so `false && inc()` ran
+      // inc()'s side effects. Bool reprs: false = 0 in both lanes, true = 2
+      // (tagged) under RC / 1 otherwise; eqz treats any non-zero as true.
+      let nl1 = compile_expr(buf, lhs, local_names, next_local, ctx, ld)
+      emit_i64_eqz(buf)
+      if op == "&&" {
+        emit_if_i64(buf)
+        emit_i64_const(buf, 0)
+        emit_else(buf)
+        let nl2 = compile_expr(buf, rhs, local_names, nl1, ctx, ld)
+        emit_end(buf)
+        nl2
+      } else {
+        emit_if_i64(buf)
+        let nl2 = compile_expr(buf, rhs, local_names, nl1, ctx, ld)
+        emit_else(buf)
+        emit_i64_const(buf, if ctx.enable_rc {
+          2
+        } else {
+          1
+        })
+        emit_end(buf)
+        nl2
+      }
+    } else if op == "==" && !(ctx.enable_rc && (expr_is_floatish(lhs, local_names, ctx) || expr_is_floatish(rhs, local_names, ctx))) {
       // #704: float `==`/`!=` under RC must NOT go through emit_eq_value — under
       // RC a float is a BOXED heap value, so the generic eq compares box
       // pointers (always unequal for two distinct boxes), making `0.0 == 0.0`
@@ -592,10 +618,24 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
     if op == "-" {
       if expr_is_floatish(operand, local_names, ctx) {
         let nl = compile_expr(buf, operand, local_names, next_local, ctx, ld)
+        // #745: under RC the operand is a BOXED float — unbox before the
+        // f64.neg and rebox the result, exactly like the float binop path.
+        // Without this, `-1.0` negated the box POINTER and the "float" that
+        // escaped was garbage bits.
+        if ctx.enable_rc {
+          emit_unbox_float(buf)
+        }
         emit_f64_reinterpret_i64(buf)
         emit_f64_neg(buf)
         emit_i64_reinterpret_f64(buf)
-        nl
+        if ctx.enable_rc {
+          Array::push(local_names, "__fbits")
+          Array::push(local_names, "__fbox")
+          emit_box_float(buf, ctx, nl, nl + 1)
+          nl + 2
+        } else {
+          nl
+        }
       } else {
         emit_i64_const(buf, 0)
         let nl = compile_expr(buf, operand, local_names, next_local, ctx, ld)

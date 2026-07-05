@@ -16,6 +16,10 @@ import .. / .. / builtin_name.vibe {
   canonical_builtin_name
 }
 
+import .. / double_to_string_expr.vibe {
+  double_to_string_expr
+}
+
 import .. / common_extractors {
   array_contains_str, emit_assignop_op, emit_memory_copy, find_catchall_idx, get_ecall_args, get_ecall_callee, get_eident_name, get_estring_value, str_table_lookup
 }
@@ -91,6 +95,23 @@ let gc_resolve_builtin_last: (FuncTable, String) -> Int = (ft, name) -> {
     }
   }
   found
+}
+
+// Local mirror of backend_expr's gc_expr_is_floatish (backend_expr imports
+// this file, so importing it back would cycle — same precedent as the linear
+// lane's cc_expr_is_floatish mirror in expr/compile_call.vibe).
+let rec bc_expr_is_floatish: (Expr, CompileCtxGc) -> Bool = (e, ctx) -> {
+  match e {
+    EFloat(_) => true,
+    EIdent(fname, _) => array_contains_str(ctx.gc_float_locals, fname),
+    EBinOp(op, l, r) => (op == "+" || op == "-" || op == "*" || op == "/") && (bc_expr_is_floatish(l, ctx) || bc_expr_is_floatish(r, ctx)),
+    EUnaryOp(op, x) => op == "-" && bc_expr_is_floatish(x, ctx),
+    ECall(fcallee, _, _) => match fcallee {
+      EIdent(cn, _) => cn == "Int::to_double" || cn == "Double::from_i64_bits" || cn == "Float::to_double" || cn == "Double::to_float" || cn == "Int::to_float",
+      _ => false
+    },
+    _ => false
+  }
 }
 
 let compile_call_gc: (Bytes, Expr, Array[Expr], Array[String], Int, CompileCtxGc, Int, (Bytes, Expr, Array[String], Int, Int) -> Int with { Error }) -> Int with { Error } = (buf, callee, args, local_names, next_local, ctx, ld, ce) -> {
@@ -689,7 +710,13 @@ let compile_call_gc: (Bytes, Expr, Array[Expr], Array[String], Int, CompileCtxGc
         emit_i64_and(buf)
         nl
       }
-      else if fname == "__to_string" {
+      else if fname == "__to_string" && Array::length(args) == 1 && bc_expr_is_floatish(Array::get(args, 0), ctx) {
+        // #744 (gc mirror of the linear fix): a statically-floatish argument
+        // takes the synthesized Double formatter — the runtime-dispatch
+        // builtin below reads the raw f64 bits as an integer.
+        ce(buf, double_to_string_expr(Array::get(args, 0)), local_names, next_local, ld)
+      }
+      else if fname == "Int::to_string" || fname == "__to_string" {
         let ts_idx = gc_resolve_builtin_last(ctx.func_table, "__to_string")
         let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
         emit_call_resolved(buf, ctx, ts_idx)

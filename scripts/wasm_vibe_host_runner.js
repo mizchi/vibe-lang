@@ -1685,6 +1685,24 @@ async function main() {
           throw new Error(`fs_read_bytes failed for '${filePath}': ${e.message}`);
         }
       },
+      // #729/#730: Fs::readdir — entry NAMES, byte-sorted, "\n"-joined into
+      // ONE string over the same ABI as fs_read_file (raw + tagged both work;
+      // codegen splits guest-side). The legacy fs_readdir above is
+      // tagged-ABI-only (host-built array) and predates the selfhost raw ABI.
+      // Empty dir -> "". Missing dir -> error, matching fs_read_file.
+      fs_read_dir(pathTagged) {
+        const dirPath = decodeStringArg(instanceRef, pathTagged);
+        try {
+          const entries = fs.readdirSync(dirPath);
+          // Explicit byte-order comparison: JS default sort is UTF-16
+          // code-unit order, which diverges from the Rust runner's byte sort
+          // for non-ASCII names.
+          entries.sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+          return encodeHostString(instanceRef, entries.join("\n"));
+        } catch (e) {
+          throw new Error(`fs_read_dir failed for '${dirPath}': ${e.message}`);
+        }
+      },
       fs_exists(pathTagged) {
         const filePath = decodeStringArg(instanceRef, pathTagged);
         if (persistentArtifactCacheDisabled(filePath)) {

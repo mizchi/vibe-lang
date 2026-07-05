@@ -257,15 +257,17 @@ let rec parse_pattern: (Array[Token], Int) -> (Pat, Int) with { Error } = (token
   }
   let (pat, next) = match peek(tokens, pos) {
     TInt(n) => (PInt(n), pos + 1),
-    // A negative integer literal pattern `-5` (lexed as TMinus, TInt). A
-    // negative float falls through to the wildcard like a positive float (exact
-    // float matching is not supported).
+    // A negative literal pattern `-5` / `-1.5` (lexed as TMinus + number).
+    // Float literal patterns used to silently become PWild — the first
+    // float arm then matched EVERYTHING (`match d { 0.0 => .., 1.0 => .. }`
+    // always took "0.0"); they are real PFloat patterns now (bit-exact via
+    // f64.eq at codegen, so 0.0 == -0.0 and NaN never matches, like `==`).
     TMinus => match peek(tokens, pos + 1) {
       TInt(n) => (PInt(0 - n), pos + 2),
-      TFloat(_) => (PWild, pos + 2),
+      TFloat(n) => (PFloat(0.0 - n), pos + 2),
       _ => throw("expected number literal after '-' in pattern")
     },
-    TFloat(_) => (PWild, pos + 1),
+    TFloat(n) => (PFloat(n), pos + 1),
     TString(s) => (PString(s), pos + 1),
     TIdent(name) => {
       let next_is_lbrace = match peek(tokens, pos + 1) {
@@ -356,6 +358,26 @@ let rec parse_pattern: (Array[Token], Int) -> (Pat, Int) with { Error } = (token
                   }
                 }
                 (PStruct(name, ArrayBuilder::freeze(field_pats)), sp + 1)
+              },
+              // #742: qualified variant pattern `Enum::Variant(..)` /
+              // `Enum::Variant`. The qualifier is dropped, mirroring the
+              // expression side (#672): codegen's ctor table is keyed
+              // unqualified, and handle-arm dispatch re-prefixes the effect
+              // name onto a bare op pattern, so `Fs::ReadFile(p)` in a
+              // `with Fs` arm also lands on the same name it does today.
+              TIdent(vname) => {
+                let vc = String::char_code_at(vname, 0)
+                if vc >= 65 && vc <= 90 {
+                  match peek(tokens, pos + 3) {
+                    TLParen => {
+                      let (args, end) = parse_pats_until_rparen(tokens, pos + 4);
+                      (PCtor(vname, args), end)
+                    },
+                    _ => (PCtor(vname, empty_pats()), pos + 3)
+                  }
+                } else {
+                  (PCtor(name, empty_pats()), pos + 1)
+                }
               },
               _ => (PCtor(name, empty_pats()), pos + 1)
             },
@@ -1063,26 +1085,33 @@ let parse_struct_field: (Array[Token], Int) -> ((String, TypeExpr), Bool, Int) w
   }
 }
 
-let rec is_lambda_start_impl: (Array[Token], Int, Int, Bool) -> Bool = (tokens, pos, depth, has_colon) -> {
+let rec is_lambda_start_impl: (Array[Token], Int, Int, Int, Bool) -> Bool = (tokens, pos, depth, bdepth, has_colon) -> {
   match peek(tokens, pos) {
-    TColon => if depth == 0 {
-      is_lambda_start_impl(tokens, pos + 1, depth, true)
-    } else is_lambda_start_impl(tokens, pos + 1, depth, has_colon),
+    // A colon only signals an annotated lambda param when it sits directly
+    // inside the candidate parens — a colon inside BRACKETS is a slice bound
+    // (`raw_path[0: 2]`), and counting it made `(len >= 2 && s[0: 2] == x) {`
+    // (a parenthesized if-condition followed by the if body's brace) parse as
+    // a no-arrow lambda, failing with "expected ',' or ')' in param list".
+    TColon => if depth == 0 && bdepth == 0 {
+      is_lambda_start_impl(tokens, pos + 1, depth, bdepth, true)
+    } else is_lambda_start_impl(tokens, pos + 1, depth, bdepth, has_colon),
     TRParen => if depth == 0 {
       match peek(tokens, pos + 1) {
         TThinArrow => true,
         TLBrace => has_colon,
         _ => false
       }
-    } else is_lambda_start_impl(tokens, pos + 1, depth - 1, has_colon),
-    TLParen => is_lambda_start_impl(tokens, pos + 1, depth + 1, has_colon),
+    } else is_lambda_start_impl(tokens, pos + 1, depth - 1, bdepth, has_colon),
+    TLParen => is_lambda_start_impl(tokens, pos + 1, depth + 1, bdepth, has_colon),
+    TLBracket => is_lambda_start_impl(tokens, pos + 1, depth, bdepth + 1, has_colon),
+    TRBracket => is_lambda_start_impl(tokens, pos + 1, depth, bdepth - 1, has_colon),
     TEof => false,
-    _ => is_lambda_start_impl(tokens, pos + 1, depth, has_colon)
+    _ => is_lambda_start_impl(tokens, pos + 1, depth, bdepth, has_colon)
   }
 }
 
 let is_lambda_start: (Array[Token], Int) -> Bool = (tokens, pos) -> {
-  is_lambda_start_impl(tokens, pos, 0, false)
+  is_lambda_start_impl(tokens, pos, 0, 0, false)
 }
 
 let rec parse_ctor_types_rest: (Array[Token], Int, ArrayBuilder[TypeExpr]) -> (Array[TypeExpr], Int) with { Error } = (tokens, pos, b) -> {

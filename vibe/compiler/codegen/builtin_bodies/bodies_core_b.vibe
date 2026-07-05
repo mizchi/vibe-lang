@@ -17,7 +17,7 @@ import .. / common_extractors {
 }
 
 import .. / wasm_emit {
-  emit_block_i64, emit_block_void, emit_br, emit_br_if, emit_call, emit_call_indirect, emit_code_section, emit_code_section_with_locals, emit_data_section, emit_data_section_multi, emit_drop, emit_element_section_active, emit_else, emit_end, emit_export_section, emit_export_section_multi, emit_exports_full, emit_exports_with_memory, emit_f64_add, emit_f64_const_bits, emit_f64_convert_i64_s, emit_f64_div, emit_f64_eq, emit_f64_ge, emit_f64_gt, emit_f64_le, emit_f64_lt, emit_f64_mul, emit_f64_ne, emit_f64_neg, emit_f64_reinterpret_i64, emit_f64_sub, emit_func_type_raw, emit_function_section, emit_global_get, emit_global_section_i32_mut, emit_global_set, emit_header, emit_heap_memory_grow_check, emit_i32_add, emit_i32_const, emit_i32_load, emit_i32_load8_u, emit_i32_store, emit_i32_store8, emit_i32_wrap_i64, emit_i64_add, emit_i64_and, emit_i64_const, emit_i64_div_s, emit_i64_eq, emit_i64_eqz, emit_i64_extend_i32_s, emit_i64_ge_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_lt_s, emit_i64_mul, emit_i64_ne, emit_i64_or, emit_i64_reinterpret_f64, emit_i64_rem_s, emit_i64_shl, emit_i64_shr_s, emit_i64_sub, emit_i64_trunc_f64_s, emit_i64_xor, emit_if_i64, emit_if_void, emit_import_section_func, emit_local_get, emit_local_set, emit_local_tee, emit_loop_void, emit_memory_section, emit_name, emit_return, emit_table_section_funcref, emit_type_section, emit_type_section_multi, string_to_data
+  emit_block_i64, emit_block_void, emit_br, emit_br_if, emit_call, emit_call_indirect, emit_code_section, emit_code_section_with_locals, emit_data_section, emit_data_section_multi, emit_drop, emit_element_section_active, emit_else, emit_end, emit_export_section, emit_export_section_multi, emit_exports_full, emit_exports_with_memory, emit_f64_add, emit_f64_const_bits, emit_f64_convert_i64_s, emit_f64_div, emit_f64_eq, emit_f64_ge, emit_f64_gt, emit_f64_le, emit_f64_lt, emit_f64_mul, emit_f64_ne, emit_f64_neg, emit_f64_reinterpret_i64, emit_f64_sub, emit_func_type_raw, emit_function_section, emit_global_get, emit_global_section_i32_mut, emit_global_set, emit_header, emit_heap_memory_grow_check, emit_i32_add, emit_i32_const, emit_i32_load, emit_i32_load8_u, emit_i32_store, emit_i32_store8, emit_i32_wrap_i64, emit_i64_add, emit_i64_and, emit_i64_const, emit_i64_div_s, emit_i64_eq, emit_i64_eqz, emit_i64_extend_i32_s, emit_i64_ge_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_lt_s, emit_i64_mul, emit_i64_ne, emit_i64_or, emit_i64_reinterpret_f64, emit_i64_rem_s, emit_i64_shl, emit_i64_shr_s, emit_i64_sub, emit_i64_trunc_f64_s, emit_i64_xor, emit_if_i64, emit_if_void, emit_v128_any_true, emit_i8x16_eq, emit_i8x16_splat, emit_v128_load, emit_import_section_func, emit_local_get, emit_local_set, emit_local_tee, emit_loop_void, emit_memory_section, emit_name, emit_return, emit_table_section_funcref, emit_type_section, emit_type_section_multi, string_to_data
 }
 
 //# Functions
@@ -768,12 +768,23 @@ export let gen_string_contains_body: (Bool, Int) -> Bytes = (enable_rc, string_i
   b
 }
 
+// #748 (ADR-0054 step 3): SIMD memchr substring search. The old body called
+// str_substring + str_eq PER POSITION (two function calls each, ~5.6ns/byte).
+// Now: the needle's first byte is splatted and 16-byte haystack windows with
+// no occurrence are skipped via v128.load + i8x16.eq + v128.any_true; a
+// first-byte hit verifies with ONE str_eq call on a zero-copy packed view
+// ((hp+i)<<32 | ndl_len) — no substring allocation, and the verify rides
+// str_eq's own SIMD chunk path for long needles. Params 0=hay 1=ndl (raw
+// packed). Locals (all i32, meta 8/0): 2=hay_len 3=ndl_len 4=i 5=hay_ptr
+// 6=ndl_ptr 7=first_byte 8=limit (= hay_len - ndl_len, last valid start)
+// 9=chunk_limit (window phase bound; 0 when the range is under 16 starts).
 export let gen_string_index_of_body: (Bool, Int, Int, Int) -> Bytes = (enable_rc, str_len_idx, str_substring_idx, str_eq_idx) -> {
+  let _ = str_substring_idx
   let b = bytebuf_new()
   emit_local_get(b, 0)
   emit_call(b, str_len_idx)
-  // ADR-0055: String::length is value-world (tagged) under RC; untag both lengths
-  // for raw arithmetic, tag the returned index back into the value world.
+  // ADR-0055: String::length is value-world (tagged) under RC; untag both
+  // lengths for raw arithmetic, tag the returned index back at the exits.
   if enable_rc {
     emit_i64_const(b, 1)
     emit_i64_shr_s(b)
@@ -790,7 +801,7 @@ export let gen_string_index_of_body: (Bool, Int, Int, Int) -> Bytes = (enable_rc
   emit_local_set(b, 3)
   emit_local_get(b, 3)
   emit_local_get(b, 2)
-  bytebuf_push(b, 75)
+  emit_i32_gt_u(b)
   emit_if_i64(b)
   emit_i64_const(b, -1)
   if enable_rc {
@@ -798,37 +809,88 @@ export let gen_string_index_of_body: (Bool, Int, Int, Int) -> Bytes = (enable_rc
     emit_i64_shl(b)
   }
   emit_else(b)
-  emit_i32_const(b, 0)
-  emit_local_set(b, 4)
+  emit_local_get(b, 0)
+  emit_i64_const(b, 32)
+  emit_i64_shr_s(b)
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 5)
+  emit_local_get(b, 1)
+  emit_i64_const(b, 32)
+  emit_i64_shr_s(b)
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 6)
   emit_local_get(b, 2)
   emit_local_get(b, 3)
   emit_i32_sub(b)
-  emit_local_set(b, 2)
+  emit_local_set(b, 8)
   emit_block_i64(b)
+  emit_local_get(b, 3)
+  emit_i32_eqz(b)
+  emit_if_void(b)
+  emit_i64_const(b, 0)
+  emit_br(b, 1)
+  emit_end(b)
+  emit_local_get(b, 6)
+  emit_i32_load8_u(b, 0, 0)
+  emit_local_set(b, 7)
+  emit_i32_const(b, 0)
+  emit_local_set(b, 4)
+  emit_i32_const(b, 0)
+  emit_local_set(b, 9)
+  emit_local_get(b, 8)
+  emit_i32_const(b, 15)
+  emit_i32_ge_u(b)
+  emit_if_void(b)
+  emit_local_get(b, 8)
+  emit_i32_const(b, 14)
+  emit_i32_sub(b)
+  emit_local_set(b, 9)
+  emit_end(b)
   emit_block_void(b)
   emit_loop_void(b)
   emit_local_get(b, 4)
-  emit_local_get(b, 2)
-  bytebuf_push(b, 75)
+  emit_local_get(b, 8)
+  emit_i32_gt_u(b)
   emit_br_if(b, 1)
-  emit_local_get(b, 0)
   emit_local_get(b, 4)
-  emit_i64_extend_i32_u(b)
-  if enable_rc {
-    emit_i64_const(b, 1)
-    emit_i64_shl(b)
-  }
+  emit_local_get(b, 9)
+  emit_i32_ge_u(b)
+  emit_i32_eqz(b)
+  emit_if_void(b)
+  emit_local_get(b, 5)
   emit_local_get(b, 4)
-  emit_local_get(b, 3)
+  emit_i32_add(b)
+  emit_v128_load(b, 0, 0)
+  emit_local_get(b, 7)
+  emit_i8x16_splat(b)
+  emit_i8x16_eq(b)
+  emit_v128_any_true(b)
+  emit_i32_eqz(b)
+  emit_if_void(b)
+  emit_local_get(b, 4)
+  emit_i32_const(b, 16)
+  emit_i32_add(b)
+  emit_local_set(b, 4)
+  emit_br(b, 2)
+  emit_end(b)
+  emit_end(b)
+  emit_local_get(b, 5)
+  emit_local_get(b, 4)
+  emit_i32_add(b)
+  emit_i32_load8_u(b, 0, 0)
+  emit_local_get(b, 7)
+  emit_i32_ne(b)
+  emit_i32_eqz(b)
+  emit_if_void(b)
+  emit_local_get(b, 5)
+  emit_local_get(b, 4)
   emit_i32_add(b)
   emit_i64_extend_i32_u(b)
-  if enable_rc {
-    emit_i64_const(b, 1)
-    emit_i64_shl(b)
-  }
-  emit_call(b, str_substring_idx)
-  emit_local_set(b, 5)
-  emit_local_get(b, 5)
+  emit_i64_const(b, 32)
+  emit_i64_shl(b)
+  emit_local_get(b, 3)
+  emit_i64_extend_i32_u(b)
+  emit_i64_or(b)
   emit_local_get(b, 1)
   emit_call(b, str_eq_idx)
   emit_i32_wrap_i64(b)
@@ -839,7 +901,8 @@ export let gen_string_index_of_body: (Bool, Int, Int, Int) -> Bytes = (enable_rc
     emit_i64_const(b, 1)
     emit_i64_shl(b)
   }
-  emit_br(b, 3)
+  emit_br(b, 4)
+  emit_end(b)
   emit_end(b)
   emit_local_get(b, 4)
   emit_i32_const(b, 1)

@@ -1,0 +1,63 @@
+// Regression: float literal patterns are real patterns (PFloat), not
+// silently-parsed wildcards. The parser used to lower a TFloat in pattern
+// position to PWild, so `match d { 0.0 => "zero", 1.0 => "one", _ => .. }`
+// ALWAYS took the first arm (silent wrong-code — found via
+// examples/match_advanced_test.vibe in the #531 corpus scan). Matching is
+// bit-exact via f64.eq, i.e. `==` semantics.
+
+enum Reading {
+  Temp(Double);
+  Missing
+}
+
+test "double literal arms" {
+  let classify: (Double) -> String = (d) -> {
+    match d {
+      0.0 => "zero",
+      1.0 => "one",
+      _ => "other"
+    }
+  }
+  assert(classify(0.0) == "zero")
+  assert(classify(1.0) == "one")
+  assert(classify(3.14) == "other")
+}
+
+test "negative float literal arm" {
+  let sign_name: (Double) -> String = (d) -> {
+    match d {
+      -1.0 => "neg one",
+      1.0 => "pos one",
+      _ => "other"
+    }
+  }
+  assert(sign_name(0.0 - 1.0) == "neg one")
+  assert(sign_name(1.0) == "pos one")
+  assert(sign_name(2.0) == "other")
+}
+
+test "float literal inside ctor payload" {
+  let is_freezing: (Reading) -> Bool = (r) -> {
+    match r {
+      Temp(0.0) => true,
+      Temp(_) => false,
+      Missing => false
+    }
+  }
+  assert(is_freezing(Temp(0.0)))
+  assert(!is_freezing(Temp(21.5)))
+  assert(!is_freezing(Missing))
+}
+
+test "float or-pattern" {
+  let axis: (Double) -> Bool = (d) -> {
+    match d {
+      0.0|180.0|360.0 => true,
+      _ => false
+    }
+  }
+  assert(axis(0.0))
+  assert(axis(180.0))
+  assert(axis(360.0))
+  assert(!axis(90.0))
+}

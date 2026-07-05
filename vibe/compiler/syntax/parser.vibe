@@ -322,6 +322,26 @@ export let rec parse_stmt: (Array[Token], Array[Int], Int) -> (Stmt, Int) with {
             let (val, vn) = parse_impl(tokens, starts, next + 1, 0)
             (SExpr(EAssign(name, val, EUnit)), vn)
           },
+          ECall(idx_callee, idx_args, _) => {
+            // `arr[i] = v` at statement level: `__index(arr, i)` receiver
+            // desugars to Array::set (same as the block-expr TEq arm).
+            let is_index = match idx_callee {
+              EIdent(icn, _) => icn == "__index",
+              _ => false
+            }
+            if is_index && Array::length(idx_args) == 2 {
+              let (val, vn) = parse_impl(tokens, starts, next + 1, 0)
+              let set_args = Array::slice([
+                EUnit
+              ], 0, 0)
+              Array::push(set_args, Array::get(idx_args, 0))
+              Array::push(set_args, Array::get(idx_args, 1))
+              Array::push(set_args, val)
+              (SExpr(ECall(EIdent("Array::set", -1), set_args, -1)), vn)
+            } else {
+              (SExpr(e), next)
+            }
+          },
           _ => (SExpr(e), next)
         },
         TPlusEq => match e {

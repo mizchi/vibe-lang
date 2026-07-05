@@ -1,0 +1,46 @@
+// #743 regression: an IMPORTED scheme carries bound-var ids from the
+// EXPORTING module's counter domain (FS-compile checks modules separately
+// and caches their envs). instantiate() used to allocate fresh ids from the
+// importing module's counter without avoiding the old bound ids — when they
+// overlapped, subst_apply's transitive var resolution chained old→fresh→
+// fresh' and COLLAPSED two distinct scheme vars into one: `Err("x")` typed
+// as Result[String, String]. The collision needed EXACTLY the right counter
+// drift, which one inner `let rec` provides (this file reproduces the
+// json_parse #743 shape minimally).
+
+import ../vibe/prelude/result.vibe {
+  Result
+}
+
+// One inner `let rec` shifts the module's type-var counter by one — the
+// drift that used to line a fresh id up with the imported scheme's old ids.
+let shift_counter = () -> Int {
+  let rec f = (x: Int) -> Int {
+    if x > 0 {
+      f(x - 1)
+    } else {
+      x
+    }
+  }
+  f(3)
+}
+
+let mk_err = () -> Result[Int, String] {
+  Err("nope")
+}
+
+let mk_ok = () -> Result[String, Int] {
+  Ok("fine")
+}
+
+test "imported ctor scheme vars stay distinct after counter drift" {
+  assert(shift_counter() == 0 || true)
+  match mk_err() {
+    Ok(_) => assert(false),
+    Err(m) => assert(m == "nope")
+  }
+  match mk_ok() {
+    Ok(v) => assert(v == "fine"),
+    Err(_) => assert(false)
+  }
+}

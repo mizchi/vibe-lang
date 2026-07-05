@@ -30,7 +30,7 @@ import ../runtime/eval_loader/index.vibe {
 }
 
 import ./header_cache.vibe {
-  load_or_parse_module_header_fs_impl
+  contract_sibling_impl_raws, load_or_parse_module_header_fs_impl
 }
 
 import ../contract/index.vibe {
@@ -56,6 +56,7 @@ import ../cache/persistent_cache.vibe {
 
 import ../module_graph_path.vibe {
   dir_of_path,
+  normalize_path,
   resolve_import_path,
   resolve_import_path_candidates,
   contains_path,
@@ -127,11 +128,14 @@ let resolve_path_fs: (String, String) -> String with { Fs } = (base_dir, raw_pat
   }
 }
 
+// #740: normalized for the same reason as manifest_sources' join_path —
+// manifest rows outside the compiler dir must key under the import-resolved
+// spelling.
 let join_path: (String, String) -> String = (base_dir, rel_path) -> {
   if base_dir == "" {
-    rel_path
+    normalize_path(rel_path)
   } else {
-    String::concat(base_dir, String::concat("/", rel_path))
+    normalize_path(String::concat(base_dir, String::concat("/", rel_path)))
   }
 }
 
@@ -523,13 +527,49 @@ let load_source_if_cached_file_spec_matches: (String, String, String) -> Option[
 // below re-read RAW disk bytes, so a warm cache leaked undesugared contracts
 // into the merge (masked until now because every compiler-bundle change
 // invalidated the caches). Cache validity stays keyed on the RAW file.
-let ingest_source_text_fs: (String, String) -> String with { Error, Fs } = (path, raw) -> {
+// Exported (#741): the wasi_only MERGE lane (merge_sources.vibe) applies the
+// same ingestion when collecting its import graph, so contract packages
+// (.vibei) resolve in that lane too.
+// #740: the facade output is marked so a second ingestion pass (the
+// collect_source_groups_fs chokepoint below re-ingests EVERY collected
+// source, including ones a cache-reconstruction branch already ingested)
+// recognizes an already-desugared contract instead of re-parsing the facade
+// as contract grammar (which would fail conformance with empty decls).
+let contract_facade_marker = "// vibe: contract facade (desugared from .vibei)\n"
+
+export let ingest_source_text_fs: (String, String) -> String with { Error, Fs } = (path, raw) -> {
   let (_, pin_blanked) = extract_require_pins(raw)
   if String::ends_with(path, ".vibei") {
-    desugar_contract_source_fs(path, pin_blanked)
+    if String::starts_with(pin_blanked, contract_facade_marker) {
+      pin_blanked
+    } else {
+      String::concat(contract_facade_marker, desugar_contract_source_fs(path, pin_blanked))
+    }
   } else {
     pin_blanked
   }
+}
+
+// #740: manifest source loaders (manifest_sources.vibe) read RAW disk bytes;
+// a .vibei contract reaching the grouped merge un-desugared left its imports
+// unresolvable ("undefined variable (local): sha1 @call" — contract/index.vibe's
+// @vibe/core import never rewrote). Ingest every collected source once here,
+// the single point all collection branches (manifest, caches, recursive walk)
+// flow through.
+let ingest_grouped_sources_fs: (Array[(String, Array[(String, String)])]) -> Array[(String, Array[(String, String)])] with { Error, Fs } = (groups) -> {
+  let out = empty_grouped_sources()
+  let mut gi = 0
+  while gi < Array::length(groups) {
+    let (gname, gsources) = Array::get(groups, gi)
+    let mut si = 0
+    while si < Array::length(gsources) {
+      let (spath, stext) = Array::get(gsources, si)
+      push_grouped_source(out, gname, spath, ingest_source_text_fs(spath, stext))
+      si = si + 1
+    }
+    gi = gi + 1
+  }
+  out
 }
 
 let rec load_cached_sources_rec: (Array[(String, String, String)], Int, Array[(String, String)]) -> Option[Array[(String, String)]] with { Error, Fs } = (specs, index, out) -> {
@@ -1058,7 +1098,13 @@ export let rec check_module: (String, String, Array[(String, String)], Array[Str
       let check_errors = Array::slice([
         ""
       ], 0, 0)
-      let (env, _, _) = check_stmts(stmts, 0, import_env, empty_defs, SubstEmpty, 0, check_errors)
+      // (8th arg: the typed-hover tytab — unused in this lane. The stale
+      // 7-arg call only surfaced under the cold-cache whole-graph check,
+      // #740 fallout.)
+      let check_tytab = Array::slice([
+        (0, CtUnit)
+      ], 0, 0)
+      let (env, _, _) = check_stmts(stmts, 0, import_env, empty_defs, SubstEmpty, 0, check_errors, check_tytab)
 
       // Cache result
       let cached_env = bind_export_markers(env, collect_exports(stmts))
@@ -1089,7 +1135,15 @@ let desugar_contract_source_fs: (String, String) -> String with { Error, Fs } = 
     throw("both index.vibe and index.vibei exist in \{dir} (#729): a boundary has exactly one index")
   } else ()
   let (decls, opaque_names, extra) = parse_contract_program(lex(source))
-  let (impl_raws, type_defs) = classify_contract_stmts(extra)
+  let (impl_raws0, type_defs) = classify_contract_stmts(extra)
+  // #730: explicit `import ./impl.vibe {}` declarations win; a contract that
+  // declares none auto-discovers its sibling *.vibe files (Fs::readdir,
+  // byte-sorted by the host so the facade is deterministic).
+  let impl_raws = if Array::length(impl_raws0) == 0 {
+    contract_sibling_impl_raws(dir)
+  } else {
+    impl_raws0
+  }
   let impl_units = Array::slice([
     ("", Array::slice([
       SExport(Array::slice([
@@ -1138,8 +1192,17 @@ export let contract_package_hashes_fs: (String) -> (String, String) with { Error
   let raw = Fs::read_file(path)
   let (_, blanked) = extract_require_pins(raw)
   let (decls, opaques, extra) = parse_contract_program(lex(blanked))
-  let (impl_raws, type_defs) = classify_contract_stmts(extra)
+  let (impl_raws0, type_defs) = classify_contract_stmts(extra)
   let dir = dir_of_path(path)
+  // #730: mirror the ingestion's auto-discovery — the package hash must cover
+  // the same impl files the facade is built from. Discovered raws are
+  // "./<name>" and byte-sorted, so the hash stays location-independent and
+  // deterministic.
+  let impl_raws = if Array::length(impl_raws0) == 0 {
+    contract_sibling_impl_raws(dir)
+  } else {
+    impl_raws0
+  }
   let sources = Array::slice([
     ("", "")
   ], 0, 0)
@@ -1319,8 +1382,15 @@ let rec collect_sources_rec: (String, Array[(String, String)], Array[Array[Strin
     // #730 (D-2): require pin lines are a leading directive, extracted and
     // blanked (offset-preserving) before anything parses the source.
     let (pins, pin_blanked) = extract_require_pins(raw_source)
+    // #749: the facade MUST carry contract_facade_marker — every collected
+    // source is re-ingested at the collect_source_groups_fs chokepoint, and
+    // an unmarked facade re-enters desugar_contract_source_fs as if it were
+    // raw contract grammar (classify_contract_stmts rejects its re-export
+    // lines). This walk used to emit the bare facade; only the cold first
+    // pass reaches it, so the failure hid behind the runner's module-init
+    // re-run (#749).
     let source = if String::ends_with(path, ".vibei") {
-      desugar_contract_source_fs(path, pin_blanked)
+      String::concat(contract_facade_marker, desugar_contract_source_fs(path, pin_blanked))
     } else {
       pin_blanked
     }
@@ -1384,8 +1454,78 @@ export let collect_all_sources_fs: (String) -> Array[(String, String)] with { Er
   }
 }
 
+// #740: the grouped merge (db_grouped_merged_source) treats the LAST
+// flattened source as the export-rename plan entry — its exports stay
+// UNRENAMED. Manifest collection returns sources in MANIFEST ROW ORDER, so a
+// manifest-listed entry that is not the last needed row left some LATER dep
+// exempt from renames instead of the entry: callers were rewritten to that
+// dep's `_exp_<path>` names whose defs were never emitted ("undefined
+// variable (local): ripple_get_fingerprint_exp_..." when FS-compiling
+// runtime/typecheck_fs.vibe, row 152, whose ripple deps sit at rows 150-151).
+// Centralized here (rather than in each collection branch) so groups
+// reconstructed from PERSISTENT CACHES get the same ordering guarantee.
+// No-op when the entry is already last (the plain recursive walk).
+let move_entry_last_grouped: (Array[(String, Array[(String, String)])], String) -> Array[(String, Array[(String, String)])] = (groups, entry_path) -> {
+  let glen = Array::length(groups)
+  let mut total = 0
+  let mut gi = 0
+  while gi < glen {
+    let (_, gsources) = Array::get(groups, gi)
+    total = total + Array::length(gsources)
+    gi = gi + 1
+  }
+  let mut seen = 0
+  let mut entry_is_last = false
+  let mut entry_found = false
+  let mut entry_source = ""
+  gi = 0
+  while gi < glen {
+    let (_, gsources) = Array::get(groups, gi)
+    let mut si = 0
+    while si < Array::length(gsources) {
+      seen = seen + 1
+      let (spath, stext) = Array::get(gsources, si)
+      if spath == entry_path {
+        entry_found = true
+        entry_source = stext
+        if seen == total {
+          entry_is_last = true
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      si = si + 1
+    }
+    gi = gi + 1
+  }
+  if !entry_found || entry_is_last {
+    groups
+  } else {
+    let out = empty_grouped_sources()
+    gi = 0
+    while gi < glen {
+      let (gname, gsources) = Array::get(groups, gi)
+      let mut si = 0
+      while si < Array::length(gsources) {
+        let (spath, stext) = Array::get(gsources, si)
+        if spath == entry_path {
+          ()
+        } else {
+          push_grouped_source(out, gname, spath, stext)
+        }
+        si = si + 1
+      }
+      gi = gi + 1
+    }
+    push_grouped_source(out, "entry_last", entry_path, entry_source)
+    out
+  }
+}
+
 export let collect_source_groups_fs: (String) -> Array[(String, Array[(String, String)])] with { Error, Fs } = (entry_path) -> {
-  match special_manifest_source_groups(entry_path) {
+  let collected = match special_manifest_source_groups(entry_path) {
     Some((manifest_path, groups)) => {
       let _ = manifest_path
       copy_grouped_sources(groups)
@@ -1448,6 +1588,7 @@ export let collect_source_groups_fs: (String) -> Array[(String, Array[(String, S
           }
       }
   }
+  move_entry_last_grouped(ingest_grouped_sources_fs(collected), entry_path)
 }
 
 //# Module bundling — merge stmts from all modules in dependency order

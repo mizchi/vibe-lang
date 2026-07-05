@@ -1,0 +1,51 @@
+// Regression: the assignment TARGET counts as a variable use for closure
+// capture. collect_free_vars_expr ignored the name field of EAssign /
+// EAssignOp, so a lambda whose ONLY reference to an outer `let mut` was a
+// write (`count += 1`, or a write-only `x = 5`) never captured it — codegen
+// failed with "undefined variable (local): count @assignop" (found via
+// examples/short_circuit_test.vibe in the #531 corpus scan). Reads inside the
+// assigned VALUE (`acc = acc + n`) masked the bug at most sites.
+
+test "compound assign in closure" {
+  let mut count = 0
+  let inc: () -> Bool = () -> {
+    count += 1
+    true
+  }
+  let _ = inc()
+  let _ = inc()
+  assert(count == 2)
+}
+
+test "short-circuit skips closure assign" {
+  let mut count = 0
+  let inc: () -> Bool = () -> {
+    count += 1
+    true
+  }
+  let _ = false && inc()
+  assert(count == 0)
+  let _ = true || inc()
+  assert(count == 0)
+  let _ = true && inc()
+  assert(count == 1)
+}
+
+test "write-only assign in closure" {
+  let mut flag = 0
+  let set_it: () -> Unit = () -> {
+    flag = 42
+  }
+  set_it()
+  assert(flag == 42)
+}
+
+test "compound ops variety in closure" {
+  let mut acc = 100
+  let churn: () -> Unit = () -> {
+    acc -= 30
+    acc *= 2
+  }
+  churn()
+  assert(acc == 140)
+}

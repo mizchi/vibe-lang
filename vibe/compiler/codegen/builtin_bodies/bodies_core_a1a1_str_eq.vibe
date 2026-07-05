@@ -17,11 +17,19 @@ import .. / common_extractors {
 }
 
 import .. / wasm_emit {
-  emit_block_i64, emit_block_void, emit_br, emit_br_if, emit_call, emit_call_indirect, emit_code_section, emit_code_section_with_locals, emit_data_section, emit_data_section_multi, emit_drop, emit_element_section_active, emit_else, emit_end, emit_export_section, emit_export_section_multi, emit_exports_full, emit_exports_with_memory, emit_f64_add, emit_f64_const_bits, emit_f64_convert_i64_s, emit_f64_div, emit_f64_eq, emit_f64_ge, emit_f64_gt, emit_f64_le, emit_f64_lt, emit_f64_mul, emit_f64_ne, emit_f64_neg, emit_f64_reinterpret_i64, emit_f64_sub, emit_func_type_raw, emit_function_section, emit_global_get, emit_global_section_i32_mut, emit_global_set, emit_header, emit_i32_add, emit_i32_const, emit_i32_load, emit_i32_load8_u, emit_i32_store, emit_i32_store8, emit_i32_wrap_i64, emit_i64_add, emit_i64_and, emit_i64_const, emit_i64_div_s, emit_i64_eq, emit_i64_eqz, emit_i64_extend_i32_s, emit_i64_ge_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_lt_s, emit_i64_mul, emit_i64_ne, emit_i64_or, emit_i64_reinterpret_f64, emit_i64_rem_s, emit_i64_shl, emit_i64_shr_s, emit_i64_sub, emit_i64_trunc_f64_s, emit_i64_xor, emit_if_i64, emit_if_void, emit_import_section_func, emit_local_get, emit_local_set, emit_local_tee, emit_loop_void, emit_memory_section, emit_name, emit_return, emit_table_section_funcref, emit_type_section, emit_type_section_multi, string_to_data
+  emit_block_i64, emit_block_void, emit_br, emit_br_if, emit_call, emit_call_indirect, emit_code_section, emit_code_section_with_locals, emit_data_section, emit_data_section_multi, emit_drop, emit_element_section_active, emit_else, emit_end, emit_export_section, emit_export_section_multi, emit_exports_full, emit_exports_with_memory, emit_f64_add, emit_f64_const_bits, emit_f64_convert_i64_s, emit_f64_div, emit_f64_eq, emit_f64_ge, emit_f64_gt, emit_f64_le, emit_f64_lt, emit_f64_mul, emit_f64_ne, emit_f64_neg, emit_f64_reinterpret_i64, emit_f64_sub, emit_func_type_raw, emit_function_section, emit_global_get, emit_global_section_i32_mut, emit_global_set, emit_header, emit_i32_add, emit_i32_const, emit_i32_load, emit_i32_load8_u, emit_i32_store, emit_i32_store8, emit_i32_wrap_i64, emit_i64_add, emit_i64_and, emit_i64_const, emit_i64_div_s, emit_i64_eq, emit_i64_eqz, emit_i64_extend_i32_s, emit_i64_ge_s, emit_i64_gt_s, emit_i64_le_s, emit_i64_lt_s, emit_i64_mul, emit_i64_ne, emit_i64_or, emit_i64_reinterpret_f64, emit_i64_rem_s, emit_i64_shl, emit_i64_shr_s, emit_i64_sub, emit_i64_trunc_f64_s, emit_i64_xor, emit_if_i64, emit_if_void, emit_v128_load, emit_i8x16_eq, emit_i8x16_all_true, emit_import_section_func, emit_local_get, emit_local_set, emit_local_tee, emit_loop_void, emit_memory_section, emit_name, emit_return, emit_table_section_funcref, emit_type_section, emit_type_section_multi, string_to_data
 }
 
 //# Functions
 
+// ADR-0054 (#748): byte-content equality with a 16-byte SIMD fast path.
+// After the length check, whole chunks are compared with `v128.load` x2 +
+// `i8x16.eq` + `i8x16.all_true` (v128 stays on the operand stack — no v128
+// locals); any unequal chunk answers 0 immediately (equality needs no
+// differing-byte position). A scalar byte loop finishes the < 16-byte tail.
+// Params 0=a 1=b (packed (ptr<<32)|len i64). Locals (all i32, meta_i32=6):
+// 2=len_a 3=len_b 4=ptr_a 5=ptr_b 6=i 7=chunk_limit (len-15, or 0 when
+// len < 16 so the unsigned loop guard skips the chunk phase entirely).
 export let gen_str_eq_body: () -> Bytes = () -> {
   let b = bytebuf_new()
   emit_local_get(b, 0)
@@ -52,7 +60,65 @@ export let gen_str_eq_body: () -> Bytes = () -> {
   emit_local_set(b, 5)
   emit_i32_const(b, 0)
   emit_local_set(b, 6)
+  emit_i32_const(b, 0)
+  emit_local_set(b, 7)
+  emit_local_get(b, 2)
+  emit_i32_const(b, 16)
+  emit_i32_ge_u(b)
+  emit_if_void(b)
+  emit_local_get(b, 2)
+  emit_i32_const(b, 15)
+  emit_i32_sub(b)
+  emit_local_set(b, 7)
+  emit_end(b)
   emit_block_i64(b)
+  // Scalar first-byte precheck: a mismatch at byte 0 answers without the
+  // 16-byte chunk work. index_of probes str_eq once per haystack position
+  // and ~all probes mismatch immediately — the chunk-first version made
+  // index_of 2x SLOWER than the old byte loop; this restores that fast path
+  // for one extra byte-compare on the (rarer) equal/long-prefix cases.
+  emit_block_void(b)
+  emit_local_get(b, 2)
+  emit_i32_eqz(b)
+  emit_br_if(b, 0)
+  emit_local_get(b, 4)
+  emit_i32_load8_u(b, 0, 0)
+  emit_local_get(b, 5)
+  emit_i32_load8_u(b, 0, 0)
+  emit_i32_ne(b)
+  emit_i32_eqz(b)
+  emit_br_if(b, 0)
+  emit_i64_const(b, 0)
+  emit_br(b, 1)
+  emit_end(b)
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(b, 6)
+  emit_local_get(b, 7)
+  emit_i32_ge_u(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, 4)
+  emit_local_get(b, 6)
+  emit_i32_add(b)
+  emit_v128_load(b, 0, 0)
+  emit_local_get(b, 5)
+  emit_local_get(b, 6)
+  emit_i32_add(b)
+  emit_v128_load(b, 0, 0)
+  emit_i8x16_eq(b)
+  emit_i8x16_all_true(b)
+  emit_i32_eqz(b)
+  emit_if_void(b)
+  emit_i64_const(b, 0)
+  emit_br(b, 3)
+  emit_end(b)
+  emit_local_get(b, 6)
+  emit_i32_const(b, 16)
+  emit_i32_add(b)
+  emit_local_set(b, 6)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
   emit_block_void(b)
   emit_loop_void(b)
   emit_local_get(b, 6)
@@ -82,5 +148,141 @@ export let gen_str_eq_body: () -> Bytes = () -> {
   emit_i64_const(b, 1)
   emit_end(b)
   emit_end(b)
+  b
+}
+
+// #746/#748: lexicographic byte comparison for String `<` `>` `<=` `>=`.
+// Returns a sign-carrying diff (NOT normalized to -1/0/1): the first
+// differing byte's `a[i] - b[i]`, or `len_a - len_b` when one string is a
+// prefix of the other, 0 when equal. Callers only ever compare the result
+// against 0 (desugar rewrites `a < b` to `str_lex_diff(a, b) < 0`), so the
+// magnitude is irrelevant and the extra signum normalization is skipped.
+// Tagged (<<1) under RC like every value-world int return; shifting
+// preserves sign so `< 0` stays correct either way.
+// A 16-byte SIMD chunk loop skips the common prefix: equal chunks advance
+// by 16; the first UNEQUAL chunk breaks WITHOUT advancing so the scalar
+// loop locates the differing byte within <= 16 steps. Params 0=a 1=b
+// (packed (ptr<<32)|len i64). Locals (all i32, meta_i32=7): 2=len_a
+// 3=len_b 4=ptr_a 5=ptr_b 6=i 7=min_len 8=chunk_limit (min_len-15, or 0
+// when min_len < 16 so the unsigned guard skips the chunk phase).
+export let gen_str_lex_diff_body: (Bool) -> Bytes = (enable_rc) -> {
+  let b = bytebuf_new()
+  emit_local_get(b, 0)
+  emit_i64_const(b, 4294967295)
+  emit_i64_and(b)
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 2)
+  emit_local_get(b, 1)
+  emit_i64_const(b, 4294967295)
+  emit_i64_and(b)
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 3)
+  emit_local_get(b, 0)
+  emit_i64_const(b, 32)
+  emit_i64_shr_s(b)
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 4)
+  emit_local_get(b, 1)
+  emit_i64_const(b, 32)
+  emit_i64_shr_s(b)
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 5)
+  emit_i32_const(b, 0)
+  emit_local_set(b, 6)
+  emit_local_get(b, 2)
+  emit_local_get(b, 3)
+  emit_i32_ge_u(b)
+  emit_if_void(b)
+  emit_local_get(b, 3)
+  emit_local_set(b, 7)
+  emit_else(b)
+  emit_local_get(b, 2)
+  emit_local_set(b, 7)
+  emit_end(b)
+  emit_i32_const(b, 0)
+  emit_local_set(b, 8)
+  emit_local_get(b, 7)
+  emit_i32_const(b, 16)
+  emit_i32_ge_u(b)
+  emit_if_void(b)
+  emit_local_get(b, 7)
+  emit_i32_const(b, 15)
+  emit_i32_sub(b)
+  emit_local_set(b, 8)
+  emit_end(b)
+  emit_block_i64(b)
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(b, 6)
+  emit_local_get(b, 8)
+  emit_i32_ge_u(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, 4)
+  emit_local_get(b, 6)
+  emit_i32_add(b)
+  emit_v128_load(b, 0, 0)
+  emit_local_get(b, 5)
+  emit_local_get(b, 6)
+  emit_i32_add(b)
+  emit_v128_load(b, 0, 0)
+  emit_i8x16_eq(b)
+  emit_i8x16_all_true(b)
+  emit_i32_eqz(b)
+  emit_if_void(b)
+  emit_br(b, 2)
+  emit_end(b)
+  emit_local_get(b, 6)
+  emit_i32_const(b, 16)
+  emit_i32_add(b)
+  emit_local_set(b, 6)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(b, 6)
+  emit_local_get(b, 7)
+  emit_i32_ge_u(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, 4)
+  emit_local_get(b, 6)
+  emit_i32_add(b)
+  emit_i32_load8_u(b, 0, 0)
+  emit_local_get(b, 5)
+  emit_local_get(b, 6)
+  emit_i32_add(b)
+  emit_i32_load8_u(b, 0, 0)
+  emit_i32_ne(b)
+  emit_if_void(b)
+  emit_local_get(b, 4)
+  emit_local_get(b, 6)
+  emit_i32_add(b)
+  emit_i32_load8_u(b, 0, 0)
+  emit_local_get(b, 5)
+  emit_local_get(b, 6)
+  emit_i32_add(b)
+  emit_i32_load8_u(b, 0, 0)
+  emit_i32_sub(b)
+  emit_i64_extend_i32_s(b)
+  emit_br(b, 3)
+  emit_end(b)
+  emit_local_get(b, 6)
+  emit_i32_const(b, 1)
+  emit_i32_add(b)
+  emit_local_set(b, 6)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  emit_local_get(b, 2)
+  emit_local_get(b, 3)
+  emit_i32_sub(b)
+  emit_i64_extend_i32_s(b)
+  emit_end(b)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  } else {
+    ()
+  }
   b
 }

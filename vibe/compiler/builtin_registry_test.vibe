@@ -1,0 +1,66 @@
+//# Imports
+
+import ./codegen/builtin_registry.vibe {
+  builtin_registry, verify_lane_builtins
+}
+
+//# Misc
+
+test "registry has no duplicate names" {
+  let reg = builtin_registry()
+  let mut i = 0
+  while i < Array::length(reg) {
+    let (n, _, _, _, _) = Array::get(reg, i)
+    let mut j = i + 1
+    while j < Array::length(reg) {
+      let (m, _, _, _, _) = Array::get(reg, j)
+      assert(not(n == m))
+      j = j + 1
+    }
+    i = i + 1
+  }
+  assert(Array::length(reg) > 90)
+}
+
+test "verify rejects a lane-registered name missing from the registry" {
+  // #415 B-0 direction 1: a builtin registered by a lane without a registry
+  // row must fail the build by name.
+  let outcome = handle {
+    verify_lane_builtins("linear", [
+      "__not_a_real_builtin__"
+    ], [
+      1
+    ], [
+      1
+    ])
+    "no-throw"
+  } with Error {
+    Throw(msg) => if String::contains(msg, "__not_a_real_builtin__") {
+      "threw-with-name"
+    } else {
+      "threw-wrong"
+    }
+  }
+  assert(outcome == "threw-with-name")
+}
+
+test "verify rejects a signature mismatch" {
+  // Fs::read_file is (1 param, returns 1) in the registry; claim 2 params.
+  let outcome = handle {
+    verify_lane_builtins("linear", [
+      "Fs::read_file"
+    ], [
+      2
+    ], [
+      1
+    ])
+    "no-throw"
+  } with Error {
+    Throw(msg) => if String::contains(msg, "signature mismatch") {
+      "threw-mismatch"
+    } else {
+      "threw-wrong"
+    }
+  }
+  assert(outcome == "threw-mismatch")
+}

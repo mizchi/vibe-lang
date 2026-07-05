@@ -1,0 +1,43 @@
+// Regression: a module-level non-function `let` initializes ONCE and every
+// reference sees the SAME value (matching the gc backend, which initializes
+// module globals in _start). The linear lane used to compile these as
+// re-evaluating thunks — each reference rebuilt the initializer (an O(size)
+// allocation per table access: ~148 B/call for a 16-entry table in
+// bench/_probe_sb_phases.vibe) and mutations were silently lost between
+// accesses (a cross-backend semantics split).
+
+let table = [10, 20, 30, 40]
+
+let cell = [0]
+
+let lookup: (Int) -> Int = (i) -> {
+  Array::get(table, i & 3)
+}
+
+test "module table reads are stable" {
+  assert(lookup(0) == 10)
+  assert(lookup(3) == 40)
+  let mut i = 0
+  let mut acc = 0
+  while i < 8 {
+    acc = acc + lookup(i)
+    i = i + 1
+  }
+  assert(acc == 200)
+}
+
+test "module cell mutation is visible across accesses" {
+  Array::set(cell, 0, 41)
+  assert(Array::get(cell, 0) + 1 == 42)
+  Array::set(cell, 0, Array::get(cell, 0) + 1)
+  assert(Array::get(cell, 0) == 42)
+}
+
+test "two references share one identity" {
+  let a = table
+  let b = table
+  Array::set(a, 3, 99)
+  assert(Array::get(b, 3) == 99)
+  Array::set(a, 3, 40)
+  assert(Array::get(table, 3) == 40)
+}

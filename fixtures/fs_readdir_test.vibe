@@ -1,0 +1,66 @@
+// #729/#730: Fs::readdir(path) -> Array[String]. The host import returns the
+// byte-sorted entry names "\n"-joined as one string (fs_read_file's ABI);
+// compile_call lowers the Array[String] surface to a String::split over it.
+// The checker has typed Fs::readdir since the host era — this locks the
+// selfhost codegen + both runners actually implementing it.
+//
+// The handles discharge the Fs effect for the checker only: builtin Fs ops
+// compile to direct host-import calls, so the arms are never invoked and the
+// writes/reads below hit the real preopen FS (same as Fs::stat_token in
+// vibe/fs/fs.vibe).
+
+import ../vibe/fs/fs_effect.vibe {
+  Fs
+}
+
+let fixture_dir = "_build/fixture_readdir_test"
+
+let write_and_list: () -> Int with { Fs } = () -> {
+  Fs::write_file("\{fixture_dir}/b.txt", "b")
+  Fs::write_file("\{fixture_dir}/a.txt", "a")
+  Fs::write_file("\{fixture_dir}/c.vibe", "c")
+  let names = Fs::readdir(fixture_dir)
+  assert(Array::get(names, 0) == "a.txt")
+  assert(Array::get(names, 1) == "b.txt")
+  assert(Array::get(names, 2) == "c.vibe")
+  Array::length(names)
+}
+
+let count_vibe_entries: () -> Int with { Fs } = () -> {
+  let names = Fs::readdir(fixture_dir)
+  let mut count = 0
+  let mut i = 0
+  while i < Array::length(names) {
+    if String::ends_with(Array::get(names, i), ".vibe") {
+      count = count + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  count
+}
+
+test "readdir lists entry names byte-sorted" {
+  let n = handle {
+    write_and_list()
+  } with Fs {
+    ReadFile(_p) => resume("");
+    WriteFile(_p, _c) => resume(0);
+    Exists(_p) => resume(false);
+    Mkdir(_p) => resume(0)
+  }
+  assert(n == 3)
+}
+
+test "readdir result behaves as a normal array" {
+  let vibes = handle {
+    count_vibe_entries()
+  } with Fs {
+    ReadFile(_p) => resume("");
+    WriteFile(_p, _c) => resume(0);
+    Exists(_p) => resume(false);
+    Mkdir(_p) => resume(0)
+  }
+  assert(vibes == 1)
+}

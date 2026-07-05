@@ -1097,9 +1097,22 @@ let check_seq_spine: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], 
       },
       ELetMut(name, val, body) => {
         let (vt, ns, nc) = ce(val, cenv, defs, s1, c1, errors, tytab)
-        cenv = env_bind(cenv, name, vt)
+        // `loop` desugars to `let mut __loop_result = 0; while true { ...
+        // __loop_result = <break value> ... }` (parser_expr_primary.vibe) —
+        // the 0 is only a slot placeholder, but binding its CtInt here pinned
+        // every loop's result to Int, so `break((a, b))` / `break(acc)` with a
+        // tuple/String errored "assignment type mismatch for __loop_result".
+        // Bind the marker to a fresh var instead; the first assignment (break)
+        // instantiates it via check_assignable's unify.
+        if name == "__loop_result" {
+          let (lr_tv, nc2) = fresh_var(nc)
+          cenv = env_bind(cenv, name, lr_tv)
+          c1 = nc2
+        } else {
+          cenv = env_bind(cenv, name, vt)
+          c1 = nc
+        }
         s1 = ns
-        c1 = nc
         cur = body
       },
       ELetRec(name, val, body) => {

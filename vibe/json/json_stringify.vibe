@@ -24,12 +24,54 @@ let escape_string = (s: String) -> String {
   "\"\{go(0, "")}\""
 }
 
+// #742/#744: the selfhost linear backend has no Double→String path —
+// `__to_string` on a Double stringifies the raw f64 bit pattern as an integer
+// (42.0 became "4631107791820423168"). Format in library code: integer part exactly, then
+// 15 significant fractional digits with trailing zeros trimmed (round-trips
+// human-scale JSON values like 3.14 / 0.0125).
+let pad_to_15 = (s: String) -> String {
+  let rec go = (acc: String) -> String {
+    if String::length(acc) < 15 {
+      go(String::concat("0", acc))
+    } else acc
+  }
+  go(s)
+}
+
 let format_number = (n: Double) -> String {
-  let s = __to_string(n)
-  let len = String::length(s)
-  if len >= 2 && String::char_code_at(s, len - 1) == '0' && String::char_code_at(s, len - 2) == '.' {
-    s[0: len - 2]
-  } else s
+  let neg = n < 0.0
+  let a = if neg { 0.0 - n } else n
+  if a >= 900000000000000.0 {
+    // Fractional digits are meaningless out here; integer part only.
+    let big = __to_string(Double::to_int(a))
+    if neg { String::concat("-", big) } else big
+  } else {
+    let ip = Double::to_int(a)
+    let frac = a - Int::to_double(ip)
+    let scaled_raw = Double::to_int(frac * 1000000000000000.0 + 0.5)
+    let carried = scaled_raw >= 1000000000000000
+    let ip2 = if carried { ip + 1 } else ip
+    let scaled = if carried { 0 } else scaled_raw
+    let int_str = __to_string(ip2)
+    // Nested ifs: `neg && ...` trips codegen's float-binop classifier because
+    // `neg` comes from a Double comparison (#744).
+    let signed = if neg {
+      if ip2 > 0 || scaled > 0 {
+        String::concat("-", int_str)
+      } else int_str
+    } else int_str
+    if scaled == 0 {
+      signed
+    } else {
+      let ds = pad_to_15(__to_string(scaled))
+      let rec trim_end = (k: Int) -> Int {
+        if k > 0 && String::char_code_at(ds, k - 1) == '0' {
+          trim_end(k - 1)
+        } else k
+      }
+      String::concat(signed, String::concat(".", ds[0: trim_end(15)]))
+    }
+  }
 }
 
 let rec stringify_impl = (j: Json) -> String {
