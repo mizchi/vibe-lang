@@ -1,0 +1,487 @@
+//# Imports
+
+import ../ast {
+  Expr, Stmt, TypeExpr
+}
+
+import ./parser_base.vibe {
+  _no_tb, _no_tp, collect_effect_names, collect_import_path, empty_fields, empty_import_items, expect_tk, is_tk, mode_block, parse_binding_name, parse_effect_stmt, parse_enum_stmt, parse_impl_stmt_dispatch, parse_import_item, parse_param_list, parse_pattern, parse_struct_field, parse_suberror_stmt, parse_trait_stmt, parse_type, parse_type_alias_stmt, parse_type_impl, peek, skip_braced_body, tk_name
+}
+
+import ./parser_expr_core.vibe {
+  parse_infix
+}
+
+import ./parser_expr_dispatch.vibe {
+  parse_impl_dispatch
+}
+
+import ./token.vibe {
+  Token
+}
+
+//# Functions
+
+export let parse_impl: (Array[Token], Array[Int], Int, Int) -> (Expr, Int) with { Error } = (tokens, starts, pos, mode) -> {
+  let rec parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with { Error } = (rtoks, rpos, rmode) -> {
+    if rmode >= 0 && rmode <= 10 {
+      parse_infix(rtoks, starts, rpos, rmode, rpos, parse_recur)
+    } else {
+      parse_impl_dispatch(rtoks, starts, rpos, rmode, parse_recur)
+    }
+  }
+  parse_recur(tokens, pos, mode)
+}
+
+export let parse: (Array[Token]) -> Expr with { Error } = (tokens) -> {
+  let (e, next) = parse_impl(tokens, [], 0, 0)
+  match peek(tokens, next) {
+    TEof => e,
+    _ => {
+      let actual = tk_name(peek(tokens, next))
+      throw("unexpected after expression: \{actual}")
+    }
+  }
+}
+
+export let parse_ok: (Array[Token]) -> Bool = (tokens) -> {
+  handle {
+    let _ = parse(tokens)
+    true
+  } with Error {
+    Throw(_) => false
+  }
+}
+
+export let parse_expr: (Array[Token], Int) -> (Expr, Int) with { Error } = (tokens, pos) -> {
+  parse_impl(tokens, [], pos, 0)
+}
+
+let parse_type_param_bound_names: (Array[Token], Int) -> (Array[String], Int) with { Error } = (tokens, pos) -> {
+  let b = ArrayBuilder::new()
+  let mut p = pos
+  let mut done = false
+  while !done {
+    match peek(tokens, p) {
+      TIdent(name) => {
+        ArrayBuilder::push(b, name)
+        p = p + 1
+        match peek(tokens, p) {
+          TPlus => {
+            p = p + 1
+          },
+          _ => {
+            done = true
+          }
+        }
+      },
+      _ => throw("expected trait bound name")
+    }
+  }
+  (ArrayBuilder::freeze(b), p)
+}
+
+let parse_let_type_params: (Array[Token], Int) -> (Array[String], Array[(String, Array[String])], Int) with { Error } = (tokens, pos) -> {
+  let names = ArrayBuilder::new()
+  let bounds = ArrayBuilder::new()
+  let mut p = pos
+  while true {
+    match peek(tokens, p) {
+      TRBracket => {
+        p = p + 1
+        break
+      },
+      TIdent(name) => {
+        ArrayBuilder::push(names, name)
+        p = p + 1
+        match peek(tokens, p) {
+          TColon => {
+            let (bound_names, next) = parse_type_param_bound_names(tokens, p + 1)
+            ArrayBuilder::push(bounds, (name, bound_names))
+            p = next
+          },
+          _ => ()
+        }
+        match peek(tokens, p) {
+          TComma => {
+            p = p + 1
+          },
+          TRBracket => {
+            p = p + 1
+            break
+          },
+          _ => throw("expected ',' or ']' in type params")
+        }
+      },
+      _ => throw("expected type parameter name or ']'")
+    }
+  }
+  (ArrayBuilder::freeze(names), ArrayBuilder::freeze(bounds), p)
+}
+
+let parse_let_annotation: (Array[Token], Int) -> (Array[String], Array[(String, Array[String])], TypeExpr, Int) with { Error } = (tokens, pos) -> {
+  match peek(tokens, pos) {
+    TLBracket => {
+      let (type_params, type_bounds, after_params) = parse_let_type_params(tokens, pos + 1)
+      let (ty, next) = parse_type_impl(tokens, after_params, 0)
+      (type_params, type_bounds, ty, next)
+    },
+    _ => {
+      let (ty, next) = parse_type_impl(tokens, pos, 0)
+      (_no_tp(), _no_tb(), ty, next)
+    }
+  }
+}
+
+let apply_fn_annotation_params: (Array[(String, Option[TypeExpr])], Array[TypeExpr]) -> Array[(String, Option[TypeExpr])] = (params, param_types) -> {
+  if Array::length(params) != Array::length(param_types) {
+    params
+  } else {
+    let out = ArrayBuilder::new()
+    let mut i = 0
+    while i < Array::length(params) {
+      let (name, ann) = Array::get(params, i)
+      let next_ann = match ann {
+        Some(_) => ann,
+        None => Some(Array::get(param_types, i))
+      }
+      ArrayBuilder::push(out, (name, next_ann))
+      i = i + 1
+    }
+    ArrayBuilder::freeze(out)
+  }
+}
+
+let apply_generic_fn_annotation: (Array[String], Array[(String, Array[String])], Option[TypeExpr], Expr, Array[TypeExpr], TypeExpr, Option[String]) -> (Option[TypeExpr], Expr) = (type_params, type_bounds, ann, val, param_types, ret_ty, effect_name) -> {
+  match val {
+    EFn(existing_type_params, existing_type_bounds, params, ret_opt, effect_opt, body) => {
+      let next_params = apply_fn_annotation_params(params, param_types)
+      let next_ret = match ret_opt {
+        Some(_) => ret_opt,
+        None => Some(ret_ty)
+      }
+      let next_effect = match effect_opt {
+        Some(_) => effect_opt,
+        None => effect_name
+      }
+      let next_type_params = if Array::length(type_params) > 0 {
+        type_params
+      } else existing_type_params
+      let next_type_bounds = if Array::length(type_params) > 0 {
+        type_bounds
+      } else existing_type_bounds
+      let next_ann = if Array::length(type_params) > 0 {
+        None
+      } else ann
+      (next_ann, EFn(next_type_params, next_type_bounds, next_params, next_ret, next_effect, body))
+    },
+    _ => (ann, val)
+  }
+}
+
+let apply_generic_let_annotation: (Array[String], Array[(String, Array[String])], Option[TypeExpr], Expr) -> (Option[TypeExpr], Expr) = (type_params, type_bounds, ann, val) -> {
+  match ann {
+    Some(ann_ty) => match ann_ty {
+      TyFn(param_types, ret_ty, effect_name) => apply_generic_fn_annotation(type_params, type_bounds, ann, val, param_types, ret_ty, effect_name),
+      _ => (ann, val)
+    },
+    _ => (ann, val)
+  }
+}
+
+// Inject a value-position type-parameter header `[T: Ord]` (from
+// `let f = [T: Ord](...)`) into the resulting lambda's EFn type_params/bounds.
+// Previously these were skipped and discarded, so the lambda had no type
+// params: the body checked with `T` as a concrete `CtNamed("T")` rather than a
+// bound type variable. That happened to work standalone (unresolved type names
+// are tolerated) but broke once the module was re-exported and re-checked.
+let apply_value_bracket_type_params: (Array[String], Array[(String, Array[String])], Expr) -> Expr = (tps, tbs, val) -> {
+  if Array::length(tps) == 0 {
+    val
+  } else {
+    match val {
+      EFn(existing_tp, existing_tb, params, ret, eff, body) => {
+        let next_tp = if Array::length(existing_tp) > 0 {
+          existing_tp
+        } else tps
+        let next_tb = if Array::length(existing_tp) > 0 {
+          existing_tb
+        } else tbs
+        EFn(next_tp, next_tb, params, ret, eff, body)
+      },
+      _ => val
+    }
+  }
+}
+
+let skip_generic_value_start: (Array[Token], Int) -> Int = (tokens, pos) -> {
+  match peek(tokens, pos) {
+    TLBracket => match peek(tokens, pos + 1) {
+      TIdent(_) => {
+        let maybe_generic = match peek(tokens, pos + 2) {
+          TRBracket => match peek(tokens, pos + 3) {
+            TLParen => true,
+            _ => false
+          },
+          TColon => true,
+          TComma => true,
+          _ => false
+        }
+        if maybe_generic {
+          let mut scan_pos = pos + 1
+          let mut depth = 1
+          while depth > 0 {
+            match peek(tokens, scan_pos) {
+              TLBracket => {
+                depth = depth + 1
+              },
+              TRBracket => {
+                depth = depth - 1
+              },
+              _ => ()
+            }
+            scan_pos = scan_pos + 1
+          }
+          scan_pos
+        } else {
+          pos
+        }
+      },
+      _ => pos
+    },
+    _ => pos
+  }
+}
+
+// Parse a value-position generic header `[T: Ord]` at `pos` (just after `=`)
+// when one is present, returning its type params/bounds plus the position of
+// the value that follows. When there is no generic header (e.g. an array
+// literal `[1, 2]`), returns empty params and `pos` unchanged.
+let parse_value_bracket_header: (Array[Token], Int) -> (Array[String], Array[(String, Array[String])], Int) with { Error } = (tokens, pos) -> {
+  let skipped = skip_generic_value_start(tokens, pos)
+  if skipped == pos {
+    (_no_tp(), _no_tb(), pos)
+  } else {
+    match peek(tokens, pos) {
+      TLBracket => {
+        let (tps, tbs, _after) = parse_let_type_params(tokens, pos + 1)
+        (tps, tbs, skipped)
+      },
+      _ => (_no_tp(), _no_tb(), skipped)
+    }
+  }
+}
+
+let parse_let_stmt: (Array[Token], Array[Int], Int, Bool) -> (Stmt, Int) with { Error } = (tokens, starts, pos, exported) -> {
+  match peek(tokens, pos) {
+    TRec => {
+      let (name, name_next) = parse_binding_name(tokens, pos + 1)
+      let (type_params, type_bounds, ty_opt, eq_pos) = match peek(tokens, name_next) {
+        TColon => {
+          let (tparams, tbounds, ty, tp) = parse_let_annotation(tokens, name_next + 1)
+          (tparams, tbounds, Some(ty), tp)
+        },
+        _ => (_no_tp(), _no_tb(), None, name_next)
+      }
+      let ep = expect_tk(tokens, eq_pos, "=")
+      let (bracket_tps, bracket_tbs, val_start_r) = parse_value_bracket_header(tokens, ep)
+      let val_pair = parse_impl(tokens, starts, val_start_r, 0)
+      let val_with_tp = apply_value_bracket_type_params(bracket_tps, bracket_tbs, val_pair.0)
+      let (final_ty_opt, val) = apply_generic_let_annotation(type_params, type_bounds, ty_opt, val_with_tp)
+      let val_next = val_pair.1
+      (SLet(exported, true, name, final_ty_opt, val), val_next)
+    },
+    TMut => match peek(tokens, pos + 1) {
+      TIdent(name) => {
+        let (ty_opt, eq_pos) = match peek(tokens, pos + 2) {
+          TColon => {
+            let (ty, tp) = parse_type_impl(tokens, pos + 3, 0)
+            (Some(ty), tp)
+          },
+          _ => (None, pos + 2)
+        }
+        let ep = expect_tk(tokens, eq_pos, "=")
+        let val_pair = parse_impl(tokens, starts, ep, 0)
+        let val = val_pair.0
+        let val_next = val_pair.1
+        (SLetMut(name, ty_opt, val), val_next)
+      },
+      _ => throw("expected name after 'let mut'")
+    },
+    TLParen => {
+      let (pat, pat_next) = parse_pattern(tokens, pos)
+      let ep = expect_tk(tokens, pat_next, "=")
+      let val_pair = parse_impl(tokens, starts, ep, 0)
+      let val = val_pair.0
+      let val_next = val_pair.1
+      (SLetPat(pat, val), val_next)
+    },
+    TIdent(_name0) => {
+      let is_struct_destructure = match peek(tokens, pos + 1) {
+        TDoubleColon => match peek(tokens, pos + 2) {
+          TLBrace => true,
+          _ => false
+        },
+        _ => false
+      }
+      if is_struct_destructure {
+        let (pat, pat_next) = parse_pattern(tokens, pos)
+        let ep = expect_tk(tokens, pat_next, "=")
+        let val_pair = parse_impl(tokens, starts, ep, 0)
+        let val = val_pair.0
+        let val_next = val_pair.1
+        (SLetPat(pat, val), val_next)
+      } else {
+        let (name, name_next) = parse_binding_name(tokens, pos)
+        let (type_params, type_bounds, ty_opt, eq_pos) = match peek(tokens, name_next) {
+          TColon => {
+            let (tparams, tbounds, ty, tp) = parse_let_annotation(tokens, name_next + 1)
+            (tparams, tbounds, Some(ty), tp)
+          },
+          _ => (_no_tp(), _no_tb(), None, name_next)
+        }
+        let ep = expect_tk(tokens, eq_pos, "=")
+        let (bracket_tps, bracket_tbs, val_start) = parse_value_bracket_header(tokens, ep)
+        let val_pair = parse_impl(tokens, starts, val_start, 0)
+        let val_with_tp = apply_value_bracket_type_params(bracket_tps, bracket_tbs, val_pair.0)
+        let (final_ty_opt, val) = apply_generic_let_annotation(type_params, type_bounds, ty_opt, val_with_tp)
+        let val_next = val_pair.1
+        (SLet(exported, false, name, final_ty_opt, val), val_next)
+      }
+    },
+    _ => throw("expected name after 'let'")
+  }
+}
+
+// #727 (ADR-0064 Phase A): top-level `fn` sugar.
+//   fn name[T: Eq](x: Int, y: Int) -> Int with { E } where { ... } { body }
+// desugars to the same SLet + EFn shape impl methods lower to
+// (SLet(exported, rec, name, None, EFn(tps, tbs, params, Some(ret), eff, body))),
+// so checker/codegen are untouched. Full annotations are required (every
+// param typed + explicit return type): ADR-0037's forward-reference
+// conditions then always hold, so the binding is always `rec`. The
+// `where { ... }` contract clause is brace-balance skipped for now —
+// retention + assert semantics land with Phase E (#731); until then
+// fmt/normalize reject it (same guardrail pattern as #cfg, ADR-0061).
+// Shared fn-signature head: `name[T: Eq](x: Int, y: Int) -> Ret with { E }
+// where { ... }` starting AFTER the `fn` keyword. Returns
+// ((name, tps, tbs), (params, ret_ty, eff_opt), (requires, ensures), next)
+// with `next` positioned after the where clause — at the body `{` for a
+// definition, or at the following statement for a .vibei contract
+// declaration (#729). The `where { requires: e, ensures: e }` contract
+// clause (#731, ADR-0064 §7) parses each condition as an ordinary Bool
+// expression; `ensures` conditions may reference the function result as
+// `result`. Multiple requires/ensures entries are allowed.
+export let parse_fn_signature: (Array[Token], Int) -> ((String, Array[String], Array[(String, Array[String])]), (Array[(String, Option[TypeExpr])], TypeExpr, Option[String]), (Array[Expr], Array[Expr]), Int) with { Error } = (tokens, pos) -> {
+  let (name, name_next) = parse_binding_name(tokens, pos)
+  let (tps, tbs, after_gen) = parse_value_bracket_header(tokens, name_next)
+  let lp = expect_tk(tokens, after_gen, "(")
+  let (params, after_params) = parse_param_list(tokens, lp)
+  let mut pi = 0
+  while pi < Array::length(params) {
+    let param = Array::get(params, pi)
+    let pty = param.1
+    match pty {
+      Some(_) => (),
+      None => throw("fn parameter '\{param.0}' requires a type annotation")
+    }
+    pi = pi + 1
+  }
+  let arrow = expect_tk(tokens, after_params, "->")
+  let (ret_ty, ret_next) = parse_type_impl(tokens, arrow, 0)
+  let (eff_opt, eff_next) = match peek(tokens, ret_next) {
+    TWith => {
+      let wb = expect_tk(tokens, ret_next + 1, "{")
+      let (eff_names, en) = collect_effect_names(tokens, wb, "")
+      (Some(eff_names), en)
+    },
+    _ => (None, ret_next)
+  }
+  let reqs = Array::slice([
+    EIdent("", 0 - 1)
+  ], 0, 0)
+  let enss = Array::slice([
+    EIdent("", 0 - 1)
+  ], 0, 0)
+  let where_next = match peek(tokens, eff_next) {
+    TIdent(w) => if w == "where" {
+      let mut wp = expect_tk(tokens, eff_next + 1, "{")
+      let mut wdone = false
+      while !wdone {
+        match peek(tokens, wp) {
+          TRBrace => {
+            wp = wp + 1
+            wdone = true
+          },
+          TIdent(kind) => {
+            let cp = expect_tk(tokens, wp + 1, ":")
+            let (cond, cnext) = parse_impl(tokens, [], cp, 0)
+            if kind == "requires" {
+              Array::push(reqs, cond)
+            } else if kind == "ensures" {
+              Array::push(enss, cond)
+            } else {
+              throw("expected 'requires' or 'ensures' in where clause, got '\{kind}'")
+            }
+            wp = match peek(tokens, cnext) {
+              TComma => cnext + 1,
+              _ => cnext
+            }
+          },
+          _ => throw("expected 'requires', 'ensures', or '}' in where clause")
+        }
+      }
+      wp
+    } else eff_next,
+    _ => eff_next
+  }
+  ((name, tps, tbs), (params, ret_ty, eff_opt), (reqs, enss), where_next)
+}
+
+let parse_fn_stmt: (Array[Token], Array[Int], Int, Bool) -> (Stmt, Int) with { Error } = (tokens, starts, pos, exported) -> {
+  let (head, sig, contracts, where_next) = parse_fn_signature(tokens, pos)
+  let (name, tps, tbs) = head
+  let (params, ret_ty, eff_opt) = sig
+  let (reqs, enss) = contracts
+  let br = expect_tk(tokens, where_next, "{")
+  let (body, end) = parse_impl(tokens, starts, br, mode_block)
+  // #731 (ADR-0064 §7 Phase 1): where-contract desugar. requires conditions
+  // assert at entry; ensures conditions bind the body's value as `result`
+  // and assert at exit. v1 semantics are Eiffel-style ALWAYS-ON runtime
+  // checks (a violating call traps); compile-time stripping for release
+  // builds is a later refinement. Known limits (documented): an early
+  // `return` inside the body bypasses ensures; `result` shadows any
+  // user binding of that name inside ensures conditions.
+  let body_with_ensures = if Array::length(enss) == 0 {
+    body
+  } else {
+    let mut exit_expr = EIdent("result", 0 - 1)
+    let mut ei = Array::length(enss)
+    while ei > 0 {
+      ei = ei - 1
+      exit_expr = ESeq(ECall(EIdent("assert", 0 - 1), [
+        Array::get(enss, ei)
+      ], 0 - 1), exit_expr)
+    }
+    ELet("result", body, exit_expr)
+  }
+  let mut guarded = body_with_ensures
+  let mut qi = Array::length(reqs)
+  while qi > 0 {
+    qi = qi - 1
+    guarded = ESeq(ECall(EIdent("assert", 0 - 1), [
+      Array::get(reqs, qi)
+    ], 0 - 1), guarded)
+  }
+  (SLet(exported, true, name, None, EFn(tps, tbs, params, Some(ret_ty), eff_opt, guarded)), end)
+}
+
+//# Misc
+
+export {
+  collect_import_path, empty_fields, empty_import_items, expect_tk, is_tk, parse, parse_effect_stmt, parse_enum_stmt, parse_expr, parse_fn_stmt, parse_impl, parse_impl_stmt_dispatch, parse_import_item, parse_let_stmt, parse_ok, parse_struct_field, parse_suberror_stmt, parse_trait_stmt, parse_type, parse_type_alias_stmt, peek, tk_name
+}
+
+export {
+  peek, is_tk, parse, tk_name, parse_ok, expect_tk, parse_expr, parse_impl, parse_type, empty_fields, parse_let_stmt, parse_fn_stmt, parse_enum_stmt, parse_trait_stmt, parse_effect_stmt, parse_import_item, empty_import_items, parse_struct_field, collect_import_path, parse_suberror_stmt, parse_type_alias_stmt, parse_impl_stmt_dispatch
+}
