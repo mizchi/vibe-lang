@@ -522,6 +522,14 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   // same shape as fs_read_file). Gated on use so non-users reserve no import
   // (fixpoint-safe). Lets the persistent artifact cache store/load wasm raw.
   let need_fs_read_bytes_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::read_bytes")
+  // #729/#730: `Fs::readdir(path) -> Array[String]` — a `vibe.fs_read_dir
+  // (i64) -> i64` host import (type 3, same packed-string shape as
+  // fs_read_file: the host returns the byte-sorted entry NAMES "\n"-joined as
+  // ONE string, no host-side array building). compile_call lowers the
+  // Array[String] surface to `String::split` over that string. Gated on use
+  // (fixpoint-safe). Unblocks contract-package sibling auto-discovery and the
+  // global store walk.
+  let need_fs_readdir_builtin = stmts_use_builtin(stmts, fn_names_list, "Fs::readdir")
   let need_profiler_now_us_builtin = stmts_use_builtin(stmts, fn_names_list, "Profiler::now_us")
   // `sleep(ms)` (Async): a `vibe.sleep (i64) -> ()` host import. The host
   // implements it as an async function so the guest fiber genuinely
@@ -594,6 +602,15 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   // #632: reserved immediately after fs_write_bytes; the import emission below
   // must stay in this same order so the index matches the descriptor.
   let fs_read_bytes_import_idx = if need_fs_read_bytes_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // #729/#730: reserved immediately after fs_read_bytes; the import emission
+  // below must stay in this same order so the index matches the descriptor.
+  let fs_read_dir_import_idx = if need_fs_readdir_builtin {
     let idx = next_import_idx
     next_import_idx = next_import_idx + 1
     idx
@@ -761,6 +778,13 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   } else {
     fs_read_file_stub_idx
   }
+  // #729/#730: like read_bytes, no dedicated stub — unused readdir reuses the
+  // fs_read_file stub (a `(i64)->i64` never-called placeholder).
+  let fs_read_dir_idx = if fs_read_dir_import_idx >= 0 {
+    fs_read_dir_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
   let profiler_now_us_idx = if profiler_now_us_import_idx >= 0 {
     profiler_now_us_import_idx
   } else {
@@ -839,6 +863,14 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   Array::push(builtin_param_counts, 1)
   Array::push(builtin_needs_env_list, false)
   Array::push(builtin_indices_list, fs_read_bytes_idx)
+  Array::push(builtin_returns_list, 1)
+  // #729/#730: the RAW half of Fs::readdir — the direct host-import call
+  // returning the "\n"-joined names string. User code writes Fs::readdir
+  // (Array[String]); compile_call's lowering is the only caller of this name.
+  Array::push(builtin_names_list, "__fs_read_dir_raw")
+  Array::push(builtin_param_counts, 1)
+  Array::push(builtin_needs_env_list, false)
+  Array::push(builtin_indices_list, fs_read_dir_idx)
   Array::push(builtin_returns_list, 1)
   Array::push(builtin_names_list, "Profiler::now_us")
   Array::push(builtin_param_counts, 0)
@@ -2479,6 +2511,14 @@ export let compile_wasi_module_linked_impl: (Array[Stmt], String, Array[(String,
   if fs_read_bytes_import_idx >= 0 {
     emit_name(import_content, "vibe")
     emit_name(import_content, "fs_read_bytes")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  }
+  // #729/#730: fs_read_dir — emitted right after fs_read_bytes to match its
+  // reserved index. Type 3 is `(i64) -> i64` (same as fs_read_file).
+  if fs_read_dir_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_read_dir")
     bytebuf_push(import_content, 0)
     leb128_encode_u32(import_content, 3)
   }

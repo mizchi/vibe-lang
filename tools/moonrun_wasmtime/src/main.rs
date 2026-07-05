@@ -1678,6 +1678,25 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
             vibe_alloc_packed_bytes(&mut caller, &data)
         },
     )?;
+    // #729/#730: Fs::readdir — entry NAMES of a directory, byte-sorted and
+    // "\n"-joined into ONE packed string (same (i64)->i64 ABI as fs_read_file,
+    // so no host-side array building and it works under RC and bump alike;
+    // codegen splits guest-side). Empty dir -> "". Missing dir -> error,
+    // matching fs_read_file.
+    linker.func_wrap(
+        "vibe",
+        "fs_read_dir",
+        |mut caller: Caller<'_, HostState>, path: i64| -> Result<i64> {
+            let path = vibe_read_packed_str(&mut caller, path)?;
+            let mut names: Vec<String> = fs::read_dir(&path)
+                .map_err(|e| format_err!("vibe fs_read_dir '{path}': {e}"))?
+                .filter_map(|ent| ent.ok())
+                .map(|ent| ent.file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            vibe_alloc_packed_str(&mut caller, &names.join("\n"))
+        },
+    )?;
     // debugger breakpoint (DAP P1): the break-mode codegen emits a bare
     // `call vibe::dbg_break` at each user function entry. We capture the wasm
     // backtrace, name the entering function (the innermost user frame via the

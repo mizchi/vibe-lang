@@ -1305,6 +1305,35 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
         Array::get(args, 0)
       ], -1), local_names, next_local, ctx, ld)
     }
+    else if fname == "Fs::readdir" && Array::length(args) == 1 {
+      // #729/#730: readdir's surface is Array[String], but the host import
+      // (`__fs_read_dir_raw`, linked_compile) returns the byte-sorted entry
+      // names "\n"-joined as ONE packed string (same ABI as fs_read_file —
+      // no host-side array building, RC/bump agnostic). Lower to ordinary
+      // AST so String::split's codegen does the array work. An empty dir
+      // returns "" which must yield [] — but split("", d) is [""] — hence
+      // the length guard. String pieces are built with String::from_char_code
+      // because a synthesized EString is not in the string table (same
+      // constraint as double_to_string_expr).
+      ce(buf, ELet("__rd_names", ECall(EIdent("__fs_read_dir_raw", -1), [
+        Array::get(args, 0)
+      ], -1), EIf(EBinOp("==", ECall(EIdent("String::length", -1), [
+        EIdent("__rd_names", -1)
+      ], -1), EInt(0)), ECall(EIdent("Array::slice", -1), [
+        EArray([
+          ECall(EIdent("String::from_char_code", -1), [
+            EInt(10)
+          ], -1)
+        ]),
+        EInt(0),
+        EInt(0)
+      ], -1), ECall(EIdent("String::split", -1), [
+        EIdent("__rd_names", -1),
+        ECall(EIdent("String::from_char_code", -1), [
+          EInt(10)
+        ], -1)
+      ], -1))), local_names, next_local, ctx, ld)
+    }
     else if fname == "__to_string" && Array::length(args) == 1 && cc_expr_is_floatish(Array::get(args, 0), local_names, ctx) {
       // #744: a statically-floatish argument takes the synthesized Double
       // formatter — the generic handler below would stringify the raw f64
