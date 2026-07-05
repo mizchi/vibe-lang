@@ -633,10 +633,28 @@ export let rec collect_free_vars_expr: (Expr, Array[String], Array[String], Arra
       Array::truncate(bound, saved)
       0
     },
-    EAssign(_, value, body) => {
+    EAssign(name, value, body) => {
+      // The assignment TARGET is a variable reference too: a lambda whose only
+      // use of an outer `let mut` is `x = 1` (no read) must still capture it —
+      // previously only value/body mentions were collected, so `count += 1` /
+      // write-only assigns in closures failed codegen with
+      // "undefined variable (local): count" (and is_mut_captured_in, which
+      // rides this collector, never promoted the cell).
+      if array_contains_str(bound, name) || array_contains_str(fn_names, name) || array_contains_str(out, name) {
+        0
+      } else {
+        Array::push(out, name)
+        0
+      }
       collect_free_vars_expr(value, bound, fn_names, out); collect_free_vars_expr(body, bound, fn_names, out)
     },
-    EAssignOp(_, _, value, body) => {
+    EAssignOp(name, _, value, body) => {
+      if array_contains_str(bound, name) || array_contains_str(fn_names, name) || array_contains_str(out, name) {
+        0
+      } else {
+        Array::push(out, name)
+        0
+      }
       collect_free_vars_expr(value, bound, fn_names, out); collect_free_vars_expr(body, bound, fn_names, out)
     },
     ESeq(first, second) => {

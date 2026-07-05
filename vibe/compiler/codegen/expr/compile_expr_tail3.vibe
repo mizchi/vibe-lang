@@ -59,14 +59,22 @@ export let compile_expr_tail3: (Bytes, Expr, Array[String], Int, CompileCtx, Int
     }
     emit_block_void(buf)
     emit_loop_void(buf)
+    // ld measures wasm blocks between the current position and the INNERMOST
+    // loop header (EBreak emits `br ld+1`, EContinue `br ld`). A new loop
+    // RESETS that distance to 0 — the previous `ld + 1` only converted the
+    // top-level -1 correctly; for a while nested in another loop it kept
+    // counting from the OUTER loop, so an inner `break` jumped to the outer
+    // loop header (observed as an infinite insertion sort in
+    // fixtures/index_assign_test.vibe).
+    let w_ld_in = 0
     let w_cond_tag = expr_tag(cond)
     let nl1 = if w_cond_tag == 5 {
       let wcop = get_ebinop_op(cond)
       if wcop == "<" || wcop == ">" || wcop == "<=" || wcop == ">=" {
         let wlhs = get_ebinop_lhs(cond)
         let wrhs = get_ebinop_rhs(cond)
-        let wnl1 = compile_expr(buf, wlhs, local_names, next_local, ctx, ld + 1)
-        let wnl2 = compile_expr(buf, wrhs, local_names, wnl1, ctx, ld + 1)
+        let wnl1 = compile_expr(buf, wlhs, local_names, next_local, ctx, w_ld_in)
+        let wnl2 = compile_expr(buf, wrhs, local_names, wnl1, ctx, w_ld_in)
         if wcop == "<" {
           emit_i64_lt_s(buf); emit_i32_eqz(buf)
         }
@@ -81,17 +89,17 @@ export let compile_expr_tail3: (Bytes, Expr, Array[String], Int, CompileCtx, Int
         }
         wnl2
       } else {
-        let wnl = compile_expr(buf, cond, local_names, next_local, ctx, ld + 1)
+        let wnl = compile_expr(buf, cond, local_names, next_local, ctx, w_ld_in)
         emit_i64_eqz(buf)
         wnl
       }
     } else {
-      let wnl = compile_expr(buf, cond, local_names, next_local, ctx, ld + 1)
+      let wnl = compile_expr(buf, cond, local_names, next_local, ctx, w_ld_in)
       emit_i64_eqz(buf)
       wnl
     }
     emit_br_if(buf, 1)
-    let nl2 = compile_expr(buf, body, local_names, nl1, ctx, ld + 1)
+    let nl2 = compile_expr(buf, body, local_names, nl1, ctx, w_ld_in)
     emit_drop(buf)
     emit_br(buf, 0)
     emit_end(buf)

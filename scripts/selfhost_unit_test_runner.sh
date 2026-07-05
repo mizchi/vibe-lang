@@ -74,9 +74,12 @@ run_one() {
     local out; out="$(mktemp -t vibe-unit-XXXXXX.wasm)"
     rm -f "$out" "$out.diag"
     VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
-      bash "$RUNNER" --invoke cli_main "$S2" "$f" "$out" __no_entry__ >/dev/null 2>&1 || true
+      timeout 300 bash "$RUNNER" --invoke cli_main "$S2" "$f" "$out" __no_entry__ >/dev/null 2>&1 || true
     if [ -s "$out" ]; then
-      if VIBE_PREOPEN_DIR="$ROOT_DIR" bash "$RUNNER" --invoke _start "$out" >/dev/null 2>&1; then
+      # timeout: a miscompiled test that loops forever must fail the FILE,
+      # not hang the whole battery (a nested-loop break-depth bug once
+      # spun a single _start for an hour with no per-test bound).
+      if VIBE_PREOPEN_DIR="$ROOT_DIR" timeout 120 bash "$RUNNER" --invoke _start "$out" >/dev/null 2>&1; then
         rm -f "$out" "$out.diag"; return 0
       fi
       LAST_DIAG="(test assertion trapped at runtime)"

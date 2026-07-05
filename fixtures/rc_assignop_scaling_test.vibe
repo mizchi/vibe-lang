@@ -1,0 +1,35 @@
+// Regression: `*=` / `/=` must repair the RC tag. Under the RC lane ints are
+// tagged n<<1; `+=`/`-=`/`%=` preserve the tag for free but the raw i64.mul
+// of two tagged values yields ab<<2 (so `x *= 2` silently doubled) and raw
+// i64.div yields an untagged quotient. Found via the two-assignop closure in
+// the #531 corpus scan (the arithmetic garbage surfaced as an assert trap).
+// Covers both the plain-local path and the ref-cell (captured) path.
+
+test "top-level compound multiply and divide" {
+  let mut x = 10
+  x *= 3
+  assert(x == 30)
+  x /= 6
+  assert(x == 5)
+  x %= 3
+  assert(x == 2)
+}
+
+test "chained compound ops in closure" {
+  let mut acc = 100
+  let churn: () -> Unit = () -> {
+    acc -= 30
+    acc *= 2
+  }
+  churn()
+  assert(acc == 140)
+}
+
+test "divide in closure" {
+  let mut n = 84
+  let halve: () -> Unit = () -> {
+    n /= 2
+  }
+  halve()
+  assert(n == 42)
+}

@@ -224,6 +224,31 @@ let parse_block_after_expr: (Array[Token], Int, Expr, (Array[Token], Int, Int) -
         Array::push(set_args, val)
         (ESeq(ECall(EIdent("__set_field", -1), set_args, -1), rest), end)
       },
+      ECall(idx_callee, idx_args, _) => {
+        // `arr[i] = v` (indexing parses as `__index(arr, i)`) desugars to
+        // `Array::set(arr, i, v)` — host-era index assignment used across
+        // vibe/shell and vibe/wasm sources previously died here with
+        // "invalid assignment target". Array-only: a non-Array receiver
+        // fails in the checker on Array::set's signature.
+        let is_index = match idx_callee {
+          EIdent(icn, _) => icn == "__index",
+          _ => false
+        }
+        if is_index && Array::length(idx_args) == 2 {
+          let val_pair = parse_recur(tokens, pos + 1, 0)
+          let val = val_pair.0
+          let val_next = val_pair.1
+          let a = skip_semi(tokens, val_next)
+          let (rest, end) = parse_recur(tokens, a, 20)
+          let set_args = empty_exprs()
+          Array::push(set_args, Array::get(idx_args, 0))
+          Array::push(set_args, Array::get(idx_args, 1))
+          Array::push(set_args, val)
+          (ESeq(ECall(EIdent("Array::set", -1), set_args, -1), rest), end)
+        } else {
+          throw("invalid assignment target")
+        }
+      },
       _ => throw("invalid assignment target")
     },
     TPlusEq => match e {
@@ -640,6 +665,25 @@ let parse_impl_block: (Array[Token], Array[Int], Int, (Array[Token], Int, Int) -
                 Array::push(set_args, val)
                 ArrayBuilder::push(steps, StepSeq(ECall(EIdent("__set_field", -1), set_args, -1)))
                 p = next_pos
+              },
+              ECall(sidx_callee, sidx_args, _) => {
+                // `arr[i] = v` in the step-block path (same desugar as the
+                // parse_block_after_expr TEq arm above).
+                let s_is_index = match sidx_callee {
+                  EIdent(sicn, _) => sicn == "__index",
+                  _ => false
+                }
+                if s_is_index && Array::length(sidx_args) == 2 {
+                  let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur)
+                  let set_args = empty_exprs()
+                  Array::push(set_args, Array::get(sidx_args, 0))
+                  Array::push(set_args, Array::get(sidx_args, 1))
+                  Array::push(set_args, val)
+                  ArrayBuilder::push(steps, StepSeq(ECall(EIdent("Array::set", -1), set_args, -1)))
+                  p = next_pos
+                } else {
+                  throw("invalid assignment target")
+                }
               },
               _ => throw("invalid assignment target")
             },

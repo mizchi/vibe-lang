@@ -257,15 +257,17 @@ let rec parse_pattern: (Array[Token], Int) -> (Pat, Int) with { Error } = (token
   }
   let (pat, next) = match peek(tokens, pos) {
     TInt(n) => (PInt(n), pos + 1),
-    // A negative integer literal pattern `-5` (lexed as TMinus, TInt). A
-    // negative float falls through to the wildcard like a positive float (exact
-    // float matching is not supported).
+    // A negative literal pattern `-5` / `-1.5` (lexed as TMinus + number).
+    // Float literal patterns used to silently become PWild — the first
+    // float arm then matched EVERYTHING (`match d { 0.0 => .., 1.0 => .. }`
+    // always took "0.0"); they are real PFloat patterns now (bit-exact via
+    // f64.eq at codegen, so 0.0 == -0.0 and NaN never matches, like `==`).
     TMinus => match peek(tokens, pos + 1) {
       TInt(n) => (PInt(0 - n), pos + 2),
-      TFloat(_) => (PWild, pos + 2),
+      TFloat(n) => (PFloat(0.0 - n), pos + 2),
       _ => throw("expected number literal after '-' in pattern")
     },
-    TFloat(_) => (PWild, pos + 1),
+    TFloat(n) => (PFloat(n), pos + 1),
     TString(s) => (PString(s), pos + 1),
     TIdent(name) => {
       let next_is_lbrace = match peek(tokens, pos + 1) {

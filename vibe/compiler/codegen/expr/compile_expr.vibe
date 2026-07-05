@@ -468,7 +468,33 @@ export let rec compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) 
     let op = get_ebinop_op(expr)
     let lhs = get_ebinop_lhs(expr)
     let rhs = get_ebinop_rhs(expr)
-    if op == "==" && !(ctx.enable_rc && (expr_is_floatish(lhs, local_names, ctx) || expr_is_floatish(rhs, local_names, ctx))) {
+    if op == "&&" || op == "||" {
+      // Short-circuit lowering. The old eager `i64.and`/`i64.or` (still what
+      // emit_binop_op does) evaluated BOTH operands, so `false && inc()` ran
+      // inc()'s side effects. Bool reprs: false = 0 in both lanes, true = 2
+      // (tagged) under RC / 1 otherwise; eqz treats any non-zero as true.
+      let nl1 = compile_expr(buf, lhs, local_names, next_local, ctx, ld)
+      emit_i64_eqz(buf)
+      if op == "&&" {
+        emit_if_i64(buf)
+        emit_i64_const(buf, 0)
+        emit_else(buf)
+        let nl2 = compile_expr(buf, rhs, local_names, nl1, ctx, ld)
+        emit_end(buf)
+        nl2
+      } else {
+        emit_if_i64(buf)
+        let nl2 = compile_expr(buf, rhs, local_names, nl1, ctx, ld)
+        emit_else(buf)
+        emit_i64_const(buf, if ctx.enable_rc {
+          2
+        } else {
+          1
+        })
+        emit_end(buf)
+        nl2
+      }
+    } else if op == "==" && !(ctx.enable_rc && (expr_is_floatish(lhs, local_names, ctx) || expr_is_floatish(rhs, local_names, ctx))) {
       // #704: float `==`/`!=` under RC must NOT go through emit_eq_value — under
       // RC a float is a BOXED heap value, so the generic eq compares box
       // pointers (always unequal for two distinct boxes), making `0.0 == 0.0`
