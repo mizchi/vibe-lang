@@ -1,0 +1,81 @@
+//# Imports
+
+import ./types.vibe {
+  Json, JsonSchema
+}
+
+//# Functions
+
+export let rec validate = (schema: JsonSchema, value: Json) -> Bool {
+  let rec validate_array_items = (xs: Array[Json], item_schema: JsonSchema, i: Int,) -> Bool {
+    if i >= Array::length(xs) {
+      true
+    } else if validate(item_schema, Array::get(xs, i)) {
+      validate_array_items(xs, item_schema, i + 1)
+    } else false
+  }
+  let rec validate_required = (obj: Map[String, Json], required: Array[String], i: Int,) -> Bool {
+    if i >= Array::length(required) {
+      true
+    } else if Map::has_key(obj, Array::get(required, i)) {
+      validate_required(obj, required, i + 1)
+    } else false
+  }
+  let rec validate_properties = (obj: Map[String, Json], properties: Array[(String, JsonSchema)], i: Int,) -> Bool {
+    if i >= Array::length(properties) {
+      true
+    } else {
+      let (key, prop_schema) = Array::get(properties, i)
+      if Map::has_key(obj, key) {
+        if validate(prop_schema, Map::get(obj, key)) {
+          validate_properties(obj, properties, i + 1)
+        } else false
+      } else validate_properties(obj, properties, i + 1)
+    }
+  }
+  let rec validate_one_of = (schemas: Array[JsonSchema], i: Int,) -> Bool {
+    if i >= Array::length(schemas) {
+      false
+    } else if validate(Array::get(schemas, i), value) {
+      true
+    } else validate_one_of(schemas, i + 1)
+  }
+  match schema {
+    SAny => true,
+    SNull => match value {
+      JNull => true,
+      _ => false
+    },
+    SBool => match value {
+      JBool(_) => true,
+      _ => false
+    },
+    SNumber => match value {
+      JNum(_) => true,
+      _ => false
+    },
+    SString => match value {
+      JStr(_) => true,
+      _ => false
+    },
+    SArray(item_schema) =>
+    match value {
+      JArr(xs) => validate_array_items(xs, item_schema, 0),
+      _ => false
+    },
+    SObject(required, properties) =>
+    match value {
+      JObj(obj) =>
+      validate_required(obj, required, 0) &&
+      validate_properties(obj, properties, 0),
+      _ => false
+    },
+    SOneOf(schemas) => validate_one_of(schemas, 0)
+  }
+}
+
+export let JsonSchema::validate = (schema: JsonSchema, value: Json) -> Bool {
+  validate(schema, value)
+}
+
+export let version: String = "0.0.1"

@@ -1,0 +1,614 @@
+//# Imports
+
+import . {
+  compile, compile_regex, count, escape, find, find_all, find_match, get_capture, get_match_text, get_named_capture, has_match, is_match, match_groups, replace_all, replace_first, replace_with_groups, split, test_match
+}
+
+//# Misc
+
+test "literal match" {
+  let re = compile("abc")
+  assert(test_match(re, "abc"))
+  assert(not(test_match(re, "ab")))
+  assert(not(test_match(re, "abcd")))
+}
+
+test "single char match" {
+  assert(test_match(compile("x"), "x"))
+  assert(not(test_match(compile("x"), "y")))
+}
+
+test "empty pattern matches empty string" {
+  assert(test_match(compile(""), ""))
+}
+
+test "dot matches any char" {
+  let re = compile("a.c")
+  assert(test_match(re, "abc"))
+  assert(test_match(re, "axc"))
+  assert(test_match(re, "a1c"))
+  assert(not(test_match(re, "ac")))
+  assert(not(test_match(re, "abbc")))
+}
+
+test "dot does not match empty" {
+  assert(not(test_match(compile("."), "")))
+}
+
+test "multiple dots" {
+  let re = compile("...")
+  assert(test_match(re, "abc"))
+  assert(test_match(re, "xyz"))
+  assert(not(test_match(re, "ab")))
+  assert(not(test_match(re, "abcd")))
+}
+
+test "star zero or more" {
+  let re = compile("ab*c")
+  assert(test_match(re, "ac"))
+  assert(test_match(re, "abc"))
+  assert(test_match(re, "abbc"))
+  assert(test_match(re, "abbbc"))
+}
+
+test "plus one or more" {
+  let re = compile("ab+c")
+  assert(not(test_match(re, "ac")))
+  assert(test_match(re, "abc"))
+  assert(test_match(re, "abbc"))
+}
+
+test "optional" {
+  let re = compile("ab?c")
+  assert(test_match(re, "ac"))
+  assert(test_match(re, "abc"))
+  assert(not(test_match(re, "abbc")))
+}
+
+test "simple alternation" {
+  let re = compile("cat|dog")
+  assert(test_match(re, "cat"))
+  assert(test_match(re, "dog"))
+  assert(not(test_match(re, "cow")))
+}
+
+test "three-way alternation" {
+  let re = compile("a|b|c")
+  assert(test_match(re, "a"))
+  assert(test_match(re, "b"))
+  assert(test_match(re, "c"))
+  assert(not(test_match(re, "d")))
+}
+
+test "alternation with sequences" {
+  let re = compile("foo|bar|baz")
+  assert(test_match(re, "foo"))
+  assert(test_match(re, "bar"))
+  assert(test_match(re, "baz"))
+  assert(not(test_match(re, "qux")))
+}
+
+test "simple character class" {
+  let re = compile("[abc]")
+  assert(test_match(re, "a"))
+  assert(test_match(re, "b"))
+  assert(test_match(re, "c"))
+  assert(not(test_match(re, "d")))
+}
+
+test "character class range" {
+  let re = compile("[a-z]")
+  assert(test_match(re, "a"))
+  assert(test_match(re, "m"))
+  assert(test_match(re, "z"))
+  assert(not(test_match(re, "A")))
+  assert(not(test_match(re, "0")))
+}
+
+test "negated character class" {
+  let re = compile("[^abc]")
+  assert(not(test_match(re, "a")))
+  assert(not(test_match(re, "b")))
+  assert(test_match(re, "d"))
+  assert(test_match(re, "x"))
+}
+
+test "character class with quantifier" {
+  let re = compile("[0-9]+")
+  assert(test_match(re, "123"))
+  assert(test_match(re, "0"))
+  assert(not(test_match(re, "")))
+  assert(not(test_match(re, "abc")))
+}
+
+test "digit shorthand" {
+  let re = compile("\\d+")
+  assert(test_match(re, "123"))
+  assert(test_match(re, "0"))
+  assert(not(test_match(re, "abc")))
+}
+
+test "word shorthand" {
+  let re = compile("\\w+")
+  assert(test_match(re, "hello"))
+  assert(test_match(re, "test_123"))
+  assert(test_match(re, "ABC"))
+}
+
+test "whitespace shorthand" {
+  let re = compile("a\\sb")
+  assert(test_match(re, "a b"))
+}
+
+test "grouped expression" {
+  let re = compile("(ab)+")
+  assert(test_match(re, "ab"))
+  assert(test_match(re, "abab"))
+  assert(test_match(re, "ababab"))
+  assert(not(test_match(re, "a")))
+}
+
+test "nested groups" {
+  let re = compile("((ab)+c)+")
+  assert(test_match(re, "abc"))
+  assert(test_match(re, "ababc"))
+  assert(test_match(re, "abcabc"))
+}
+
+test "group with alternation" {
+  let re = compile("(foo|bar)baz")
+  assert(test_match(re, "foobaz"))
+  assert(test_match(re, "barbaz"))
+  assert(not(test_match(re, "baz")))
+}
+
+test "optional group" {
+  let re = compile("a(bc)?d")
+  assert(test_match(re, "ad"))
+  assert(test_match(re, "abcd"))
+  assert(not(test_match(re, "abd")))
+}
+
+test "find position in string" {
+  let re = compile("\\d+")
+  assert(find(re, "abc123def") == 3)
+}
+
+test "find at start" {
+  assert(find(compile("hello"), "hello world") == 0)
+}
+
+test "find not found" {
+  assert(find(compile("xyz"), "hello") == -1)
+}
+
+test "find_match extracts matched text" {
+  let re = compile("\\d+")
+  assert(find_match(re, "abc123def") == "123")
+}
+
+test "find_match returns empty on no match" {
+  assert(find_match(compile("\\d+"), "abc") == "")
+}
+
+test "find_match with word" {
+  let re = compile("[a-z]+")
+  assert(find_match(re, "123hello456") == "hello")
+}
+
+test "is_match partial" {
+  assert(is_match(compile("hello"), "say hello world"))
+  assert(not(is_match(compile("hello"), "goodbye")))
+}
+
+test "is_match anywhere" {
+  assert(is_match(compile("\\d\\d\\d"), "call 911 now"))
+  assert(not(is_match(compile("\\d\\d\\d"), "no numbers")))
+}
+
+test "escaped dot is literal" {
+  let re = compile("a\\.b")
+  assert(test_match(re, "a.b"))
+  assert(not(test_match(re, "axb")))
+}
+
+test "escaped star is literal" {
+  let re = compile("a\\*b")
+  assert(test_match(re, "a*b"))
+  assert(not(test_match(re, "ab")))
+}
+
+test "greedy star backtracking" {
+  let re = compile("a.*b")
+  assert(test_match(re, "ab"))
+  assert(test_match(re, "axb"))
+  assert(test_match(re, "axxxb"))
+  assert(not(test_match(re, "a")))
+  assert(not(test_match(re, "axx")))
+}
+
+test "greedy plus backtracking" {
+  let re = compile("a.+b")
+  assert(not(test_match(re, "ab")))
+  assert(test_match(re, "axb"))
+  assert(test_match(re, "axxxb"))
+}
+
+test "greedy star find_match" {
+  let re = compile("a.*b")
+  assert(find_match(re, "xxaxxbxx") == "axxb")
+}
+
+test "anchor start" {
+  let re = compile("^abc")
+  assert(is_match(re, "abcdef"))
+  assert(not(is_match(re, "xabc")))
+}
+
+test "anchor end" {
+  let re = compile("abc$")
+  assert(is_match(re, "xyzabc"))
+  assert(not(is_match(re, "abcx")))
+}
+
+test "anchor both" {
+  let re = compile("^abc$")
+  assert(test_match(re, "abc"))
+  assert(not(test_match(re, "abcd")))
+  assert(not(test_match(re, "xabc")))
+}
+
+test "negated digit" {
+  let re = compile("\\D+")
+  assert(test_match(re, "abc"))
+  assert(not(test_match(re, "123")))
+  assert(not(test_match(re, "a1")))
+}
+
+test "negated word" {
+  let re = compile("\\W")
+  assert(test_match(re, " "))
+  assert(test_match(re, "!"))
+  assert(not(test_match(re, "a")))
+  assert(not(test_match(re, "0")))
+}
+
+test "negated space" {
+  let re = compile("\\S+")
+  assert(test_match(re, "abc"))
+  assert(not(test_match(re, " ")))
+}
+
+test "digit class shorthand in brackets" {
+  let re = compile("[\\d]+")
+  assert(test_match(re, "42"))
+  assert(not(test_match(re, "abc")))
+}
+
+test "word class shorthand in brackets" {
+  let re = compile("[\\w]+")
+  assert(test_match(re, "hello_42"))
+  assert(not(test_match(re, "!@#")))
+}
+
+test "find_all digits" {
+  let re = compile("\\d+")
+  let results = find_all(re, "a1b23c456")
+  assert(Array::length(results) == 3)
+  assert(Array::get(results, 0) == "1")
+  assert(Array::get(results, 1) == "23")
+  assert(Array::get(results, 2) == "456")
+}
+
+test "find_all no match" {
+  let re = compile("\\d+")
+  let results = find_all(re, "abc")
+  assert(Array::length(results) == 0)
+}
+
+test "find_all words" {
+  let re = compile("[a-z]+")
+  let results = find_all(re, "123abc456def")
+  assert(Array::length(results) == 2)
+  assert(Array::get(results, 0) == "abc")
+  assert(Array::get(results, 1) == "def")
+}
+
+test "replace_first basic" {
+  let re = compile("\\d+")
+  let result = replace_first(re, "a123b456", "X")
+  assert(result == "aXb456")
+}
+
+test "replace_first no match" {
+  let re = compile("\\d+")
+  let result = replace_first(re, "abc", "X")
+  assert(result == "abc")
+}
+
+test "replace_all basic" {
+  let re = compile("\\d+")
+  let result = replace_all(re, "a1b23c456", "N")
+  assert(result == "aNbNcN")
+}
+
+test "replace_all no match" {
+  let re = compile("\\d+")
+  let result = replace_all(re, "abc", "X")
+  assert(result == "abc")
+}
+
+test "split by comma" {
+  let re = compile(",")
+  let results = split(re, "a,b,c")
+  assert(Array::length(results) == 3)
+  assert(Array::get(results, 0) == "a")
+  assert(Array::get(results, 1) == "b")
+  assert(Array::get(results, 2) == "c")
+}
+
+test "split by whitespace" {
+  let re = compile("\\s+")
+  let results = split(re, "hello world  foo")
+  assert(Array::length(results) == 3)
+  assert(Array::get(results, 0) == "hello")
+  assert(Array::get(results, 1) == "world")
+  assert(Array::get(results, 2) == "foo")
+}
+
+test "split no delimiter" {
+  let re = compile(",")
+  let results = split(re, "abc")
+  assert(Array::length(results) == 1)
+  assert(Array::get(results, 0) == "abc")
+}
+
+test "repeat exact {3}" {
+  let re = compile("a{3}")
+  assert(test_match(re, "aaa"))
+  assert(not(test_match(re, "aa")))
+  assert(not(test_match(re, "aaaa")))
+}
+
+test "repeat min {2,}" {
+  let re = compile("a{2,}")
+  assert(not(test_match(re, "a")))
+  assert(test_match(re, "aa"))
+  assert(test_match(re, "aaa"))
+  assert(test_match(re, "aaaa"))
+}
+
+test "repeat range {2,4}" {
+  let re = compile("a{2,4}")
+  assert(not(test_match(re, "a")))
+  assert(test_match(re, "aa"))
+  assert(test_match(re, "aaa"))
+  assert(test_match(re, "aaaa"))
+  assert(not(test_match(re, "aaaaa")))
+}
+
+test "repeat with group" {
+  let re = compile("(ab){2}")
+  assert(test_match(re, "abab"))
+  assert(not(test_match(re, "ab")))
+  assert(not(test_match(re, "ababab")))
+}
+
+test "repeat {0,1} is optional" {
+  let re = compile("ab{0,1}c")
+  assert(test_match(re, "ac"))
+  assert(test_match(re, "abc"))
+  assert(not(test_match(re, "abbc")))
+}
+
+test "word boundary basic" {
+  let re = compile("\\bhello\\b")
+  assert(is_match(re, "hello world"))
+  assert(is_match(re, "say hello!"))
+  assert(not(is_match(re, "helloworld")))
+  assert(not(is_match(re, "sayhello")))
+}
+
+test "word boundary find" {
+  let re = compile("\\bcat\\b")
+  assert(is_match(re, "the cat sat"))
+  assert(not(is_match(re, "concatenate")))
+  assert(not(is_match(re, "category")))
+}
+
+test "not word boundary" {
+  let re = compile("\\Bcat\\B")
+  assert(is_match(re, "concatenate"))
+  assert(not(is_match(re, "cat sat")))
+}
+
+test "word boundary at start and end" {
+  let re = compile("\\btest\\b")
+  assert(is_match(re, "test"))
+  assert(is_match(re, "test."))
+  assert(is_match(re, ".test"))
+}
+
+test "count matches" {
+  assert(count(compile("\\d+"), "a1b23c456") == 3)
+  assert(count(compile("\\d+"), "abc") == 0)
+  assert(count(compile("a"), "banana") == 3)
+}
+
+test "escape meta characters" {
+  let escaped = escape("hello.world*foo")
+  let re = compile(escaped)
+  assert(test_match(re, "hello.world*foo"))
+  assert(not(test_match(re, "helloXworldXfoo")))
+}
+
+test "escape brackets and parens" {
+  let escaped = escape("[a](b)")
+  let re = compile(escaped)
+  assert(test_match(re, "[a](b)"))
+}
+
+test "escape preserves normal chars" {
+  let escaped = escape("abc123")
+  assert(escaped == "abc123")
+}
+
+test "repeat digit {3}" {
+  let re = compile("\\d{3}")
+  assert(test_match(re, "123"))
+  assert(not(test_match(re, "12")))
+  assert(not(test_match(re, "1234")))
+}
+
+test "ip-like pattern" {
+  let re = compile("\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}")
+  assert(test_match(re, "192.168.1.1"))
+  assert(test_match(re, "10.0.0.1"))
+  assert(not(test_match(re, "1234.1.1.1")))
+}
+
+test "mixed quantifiers" {
+  let re = compile("[a-z]{2,4}\\d{2}")
+  assert(test_match(re, "ab12"))
+  assert(test_match(re, "abc12"))
+  assert(test_match(re, "abcd12"))
+  assert(not(test_match(re, "a12")))
+  assert(not(test_match(re, "abcde12")))
+}
+
+test "numbered capture group" {
+  let re = compile_regex("(\\d+)-(\\d+)")
+  let m = match_groups(re, "date: 2026-03")
+  assert(has_match(m))
+  assert(get_match_text(m) == "2026-03")
+  assert(get_capture(m, 0) == "2026")
+  assert(get_capture(m, 1) == "03")
+}
+
+test "named capture group" {
+  let re = compile_regex("(?<year>\\d{4})-(?<month>\\d{2})")
+  let m = match_groups(re, "date: 2026-03-13")
+  assert(has_match(m))
+  assert(get_named_capture(m, "year") == "2026")
+  assert(get_named_capture(m, "month") == "03")
+}
+
+test "non-capturing group" {
+  let re = compile_regex("(?:foo|bar)(baz)")
+  let m = match_groups(re, "foobaz")
+  assert(has_match(m))
+  assert(get_match_text(m) == "foobaz")
+  assert(get_capture(m, 0) == "baz")
+}
+
+test "backreference" {
+  let re = compile_regex("(\\w+)=\\1")
+  let m = match_groups(re, "abc=abc")
+  assert(has_match(m))
+  assert(get_match_text(m) == "abc=abc")
+}
+
+test "backreference no match" {
+  let re = compile_regex("(\\w+)=\\1")
+  let m = match_groups(re, "abc=def")
+  assert(not(has_match(m)))
+}
+
+test "capture no match" {
+  let re = compile_regex("(\\d+)")
+  let m = match_groups(re, "abc")
+  assert(not(has_match(m)))
+}
+
+test "replace with numbered capture" {
+  let re = compile_regex("(\\w+)@(\\w+)")
+  let result = replace_with_groups(re, "user@host", "$2/$1")
+  assert(result == "host/user")
+}
+
+test "replace with named capture" {
+  let re = compile_regex("(?<first>\\w+)-(?<last>\\w+)")
+  let result = replace_with_groups(re, "John-Doe", "${last}, ${first}")
+  assert(result == "Doe, John")
+}
+
+test "multiple captures same pattern" {
+  let re = compile_regex("(\\d+)\\+(\\d+)=(\\d+)")
+  let m = match_groups(re, "1+2=3")
+  assert(has_match(m))
+  assert(get_capture(m, 0) == "1")
+  assert(get_capture(m, 1) == "2")
+  assert(get_capture(m, 2) == "3")
+}
+
+test "get_capture out of bounds" {
+  let re = compile_regex("(\\d+)")
+  let m = match_groups(re, "42")
+  assert(get_capture(m, 0) == "42")
+  assert(get_capture(m, 99) == "")
+}
+
+test "lazy star prefers shortest match" {
+  let re = compile("a.*?b")
+  assert(find_match(re, "zzaxxbxxbzz") == "axxb")
+}
+
+test "lazy plus prefers shortest match" {
+  let re = compile("a.+?b")
+  assert(find_match(re, "zzaxbxxbzz") == "axb")
+}
+
+test "lazy optional prefers zero repetition" {
+  let re = compile("colou??r")
+  assert(test_match(re, "color"))
+  assert(test_match(re, "colour"))
+}
+
+test "positive lookahead is zero width" {
+  let re = compile("foo(?=bar)")
+  assert(is_match(re, "xxfoobarxx"))
+  assert(not(is_match(re, "xxfoobazxx")))
+  assert(find_match(re, "xxfoobarxx") == "foo")
+}
+
+test "negative lookahead rejects forbidden suffix" {
+  let re = compile("foo(?!bar)")
+  assert(is_match(re, "xxfoobazxx"))
+  assert(not(is_match(re, "xxfoobarxx")))
+}
+
+test "positive lookbehind checks prefix" {
+  let re = compile("(?<=foo)bar")
+  assert(is_match(re, "xxfoobarxx"))
+  assert(not(is_match(re, "xxbazbarxx")))
+  assert(find_match(re, "xxfoobarxx") == "bar")
+}
+
+test "negative lookbehind rejects forbidden prefix" {
+  let re = compile("(?<!foo)bar")
+  assert(is_match(re, "xxbazbarxx"))
+  assert(not(is_match(re, "xxfoobarxx")))
+}
+
+test "ignore case flag matches regardless of letter case" {
+  let re = compile("(?i)abc")
+  assert(test_match(re, "abc"))
+  assert(test_match(re, "AbC"))
+  assert(not(test_match(re, "abd")))
+}
+
+test "multiline flag lets anchors match line boundaries" {
+  let re = compile("(?m)^bar$")
+  assert(is_match(re, "foo\nbar\nbaz"))
+  assert(not(is_match(compile("^bar$"), "foo\nbar\nbaz")))
+}
+
+test "dotall flag controls newline matching" {
+  assert(not(test_match(compile("a.b"), "a\nb")))
+  assert(test_match(compile("(?s)a.b"), "a\nb"))
+}
+
+test "atomic group prevents backtracking into group" {
+  assert(test_match(compile("(a|ab)c"), "abc"))
+  assert(not(test_match(compile("(?>a|ab)c"), "abc")))
+}
