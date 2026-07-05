@@ -38,6 +38,23 @@ import ./compile_match.vibe {
 
 //# Functions
 
+// ADR-0055 tag repair for compound assignment: under RC both operands are
+// tagged (n<<1), so `+`, `-`, `%` preserve the tag for free, but `*` yields
+// ab<<2 (shift right once) and `/` yields a/b untagged (shift left once).
+// The raw emit_assignop_op alone silently doubled `x *= 2` results under RC.
+let emit_assignop_rc_tag_fix: (Bytes, Bool, String) -> Unit = (buf, enable_rc, op) -> {
+  if enable_rc && op == "*" {
+    emit_i64_const(buf, 1)
+    emit_i64_shr_s(buf)
+  } else if enable_rc && op == "/" {
+    emit_i64_const(buf, 1)
+    emit_i64_shl(buf)
+  } else {
+    ()
+  }
+}
+
+
 // Interior-line breakpoints (span-arc step5): when break-mode line instrumentation
 // is active (ctx.dbg_line_idx >= 0), emit `i32.const <line>` + `call dbg_line` for
 // the statement whose value subexpression is `value`, deriving the 1-based source
@@ -1013,21 +1030,6 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
     let value = get_eassignop_val(expr)
     let body = get_eassignop_body(expr)
     let idx = resolve_local(local_names, name, "assignop")
-    // ADR-0055 tag repair: under RC both operands are tagged (n<<1), so `+`,
-    // `-`, `%` preserve the tag for free, but `*` yields ab<<2 (shift right
-    // once) and `/` yields a/b untagged (shift left once). The raw
-    // emit_assignop_op alone silently doubled `x *= 2` results under RC.
-    let assignop_rc_tag_fix: (Bytes) -> Unit = (b) -> {
-      if ctx.enable_rc && op == "*" {
-        emit_i64_const(b, 1)
-        emit_i64_shr_s(b)
-      } else if ctx.enable_rc && op == "/" {
-        emit_i64_const(b, 1)
-        emit_i64_shl(b)
-      } else {
-        ()
-      }
-    }
     if array_contains_str(ctx.ref_cell_names, name) {
       emit_local_get(buf, idx)
       emit_i32_wrap_i64(buf)
@@ -1036,14 +1038,14 @@ export let compile_expr_tail: (Bytes, Expr, Array[String], Int, CompileCtx, Int,
       emit_i64_load(buf, 3, 0)
       let nl = compile_expr(buf, value, local_names, next_local, ctx, ld)
       emit_assignop_op(buf, op)
-      assignop_rc_tag_fix(buf)
+      emit_assignop_rc_tag_fix(buf, ctx.enable_rc, op)
       emit_i64_store(buf, 3, 0)
       compile_expr(buf, body, local_names, nl, ctx, ld)
     } else {
       emit_local_get(buf, idx)
       let nl = compile_expr(buf, value, local_names, next_local, ctx, ld)
       emit_assignop_op(buf, op)
-      assignop_rc_tag_fix(buf)
+      emit_assignop_rc_tag_fix(buf, ctx.enable_rc, op)
       emit_local_set(buf, idx)
       compile_expr(buf, body, local_names, nl, ctx, ld)
     }
