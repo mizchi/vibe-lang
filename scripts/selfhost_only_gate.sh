@@ -443,7 +443,38 @@ if ! grep -q "pin required" "$xdir/frz.wasm.diag" 2>/dev/null; then
   echo "[selfhost-only-gate] FAIL: freeze rejection lacks the expected diagnostic (#751)" >&2
   cat "$xdir/frz.wasm.diag" 2>/dev/null >&2; exit 1
 fi
-rm -rf "lib/@gate751x" "$xdir" "$xroot"
+# (5) #758 review (P1): a resolved graph cached under one environment must
+#     NOT replay under another — the SAME consumer content is compiled
+#     across env changes (previously the persistent source/header caches
+#     keyed on content only, so a pin-less graph warmed without freeze was
+#     replayed under VIBE_REQUIRE_PINS=1, and a removed VIBE_LIB root kept
+#     resolving).
+rm -rf "lib/@gate751x"
+printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(38) }\n' > "$xdir/replay.vibe"
+VIBE_LIB="$xroot" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$xdir/replay.vibe" "$xdir/replay1.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$xdir/replay1.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: replay warm-up compile failed (#758)" >&2
+  cat "$xdir/replay1.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+if VIBE_LIB="$xroot/does-not-exist" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$xdir/replay.vibe" "$xdir/replay2.wasm" _start >/dev/null 2>&1 \
+  && [ -s "$xdir/replay2.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: warm cache replayed a removed VIBE_LIB root (#758)" >&2; exit 1
+fi
+if VIBE_REQUIRE_PINS=1 VIBE_LIB="$xroot" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$xdir/replay.vibe" "$xdir/replay3.wasm" _start >/dev/null 2>&1 \
+  && [ -s "$xdir/replay3.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: warm cache bypassed VIBE_REQUIRE_PINS=1 (#758)" >&2; exit 1
+fi
+if ! grep -q "pin required" "$xdir/replay3.wasm.diag" 2>/dev/null; then
+  echo "[selfhost-only-gate] FAIL: freeze-under-warm-cache rejection lacks the expected diagnostic (#758)" >&2
+  cat "$xdir/replay3.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+rm -rf "$xdir" "$xroot"
 echo "[selfhost-only-gate] VIBE_LIB external roots + freeze ok"
 
 # 6j. distribution pipeline (#754, ADR-0065 Phase 4): publish (version

@@ -10,6 +10,7 @@ wasm; the installer AOT-compiles the compiler for your machine at install time.
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/scripts/installer.sh | bash
 # (or, from a checkout: bash scripts/install.sh)
+. "$HOME/.vibe/env"   # or restart the shell — ~/.vibe/bin is the PATH entry
 vibe version
 echo 'export let main = () -> Int { 40 + 2 }' > hello.vibe
 vibe run hello.vibe        # -> 42

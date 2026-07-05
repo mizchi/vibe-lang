@@ -72,20 +72,26 @@ content-addressed. A future `vibe toolchain` selector (rustup-style) only has
 to rewrite `$VIBE_HOME/toolchain` — `scripts/installer.sh` already names
 toolchains after the installed ref so several can coexist.
 
-`~/.local/bin/vibe` is symlinked to the dispatcher (override the bin
-directory with `--bin-dir` or `VIBE_BIN_DIR`; skip linking with `--no-link`).
+PATH policy: **`~/.vibe/bin` is the PATH entry** (the dispatcher lives
+there). The installer writes a sourceable `~/.vibe/env` (rustup's
+`~/.cargo/env` pattern) and, for a default-prefix install, appends
+`. "$HOME/.vibe/env"` to `~/.profile` / `~/.bashrc` / `~/.zshrc` (skip with
+`--no-modify-path`; custom `--prefix` installs never touch rc files).
+Restart the shell or `. "$HOME/.vibe/env"` to pick it up. An extra symlink
+dir is opt-in via `--bin-dir` / `VIBE_BIN_DIR` (used by the test harness).
 
 ## Installer options
 
 ```
 bash scripts/install.sh [--prefix DIR]      # VIBE_HOME (default ~/.vibe)
-                        [--bin-dir DIR]      # PATH link dir (default ~/.local/bin)
                         [--runner PATH]      # use a prebuilt moonrun_wt
                         [--cli-wasm PATH]    # use a specific compiler wasm
                         [--toolchain NAME]   # toolchain name (default: main)
                         [--set-default]      # make this the default toolchain
                         [--no-stdlib]        # skip stdlib materialization
-                        [--no-link]          # do not symlink onto PATH
+                        [--no-modify-path]   # do not touch shell rc files
+                        [--bin-dir DIR]      # opt-in extra symlink dir
+                        [--no-link]          # skip the --bin-dir symlink
 ```
 
 To install a released compiler instead of the seed, pass the release artifact:

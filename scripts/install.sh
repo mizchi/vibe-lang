@@ -27,10 +27,17 @@
 #   4. install the launcher into the toolchain + the dispatcher onto PATH,
 #   5. materialize the stdlib packages into $VIBE_HOME/lib (hash-verified).
 #
+# PATH policy: `$VIBE_HOME/bin` (the dispatcher) IS the PATH entry — the
+# installer writes `$VIBE_HOME/env` (rustup's ~/.cargo/env pattern) and, for
+# a default-prefix install, appends `. "$HOME/.vibe/env"` to the shell rc
+# files (skip with --no-modify-path; custom --prefix installs never touch rc
+# files). Symlinking into an extra bin dir is opt-in via --bin-dir /
+# VIBE_BIN_DIR (used by the test harness).
+#
 # Usage:
 #   bash scripts/install.sh [--prefix DIR] [--runner PATH] [--cli-wasm PATH]
-#                           [--bin-dir DIR] [--no-link] [--toolchain NAME]
-#                           [--set-default] [--no-stdlib]
+#                           [--bin-dir DIR] [--no-link] [--no-modify-path]
+#                           [--toolchain NAME] [--set-default] [--no-stdlib]
 #
 # Env overrides: VIBE_HOME, VIBE_BIN_DIR.
 set -euo pipefail
@@ -38,11 +45,12 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 VIBE_HOME="${VIBE_HOME:-$HOME/.vibe}"
-BIN_DIR="${VIBE_BIN_DIR:-$HOME/.local/bin}"
+BIN_DIR="${VIBE_BIN_DIR:-}"
 RUNNER_SRC=""
 CLI_WASM_SRC=""
 DO_LINK=1
 DO_STDLIB=1
+DO_MODIFY_PATH=1
 TOOLCHAIN="main"
 SET_DEFAULT=0
 
@@ -55,8 +63,9 @@ while [ "$#" -gt 0 ]; do
     --toolchain) TOOLCHAIN="$2"; shift 2 ;;
     --set-default) SET_DEFAULT=1; shift ;;
     --no-link) DO_LINK=0; shift ;;
+    --no-modify-path) DO_MODIFY_PATH=0; shift ;;
     --no-stdlib) DO_STDLIB=0; shift ;;
-    -h|--help) sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,44p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "install.sh: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -204,15 +213,52 @@ if [ "$DO_STDLIB" = "1" ]; then
   done
 fi
 
-# 7. PATH link ---------------------------------------------------------------
-if [ "$DO_LINK" = "1" ]; then
+# 7. PATH setup --------------------------------------------------------------
+# $VIBE_HOME/bin (the dispatcher) is THE PATH entry. Write the sourceable env
+# file (rustup's ~/.cargo/env pattern) and — for a default-prefix install
+# only — wire it into the shell rc files. A custom --prefix (tests, throwaway
+# installs) never touches the user's rc files.
+cat > "$VIBE_HOME/env" <<ENVEOF
+#!/bin/sh
+# vibe shell setup: prepends the vibe dispatcher dir to PATH.
+# Wired into your shell rc by the installer; load manually with
+#   . "$VIBE_HOME/env"
+case ":\${PATH}:" in
+  *:"$VIBE_HOME/bin":*) ;;
+  *) export PATH="$VIBE_HOME/bin:\$PATH" ;;
+esac
+ENVEOF
+chmod 0644 "$VIBE_HOME/env"
+say "env file -> $VIBE_HOME/env"
+
+if [ "$DO_MODIFY_PATH" = "1" ] && [ "$VIBE_HOME" = "$HOME/.vibe" ]; then
+  env_line=". \"\$HOME/.vibe/env\""
+  modified=""
+  for rc in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.zshrc"; do
+    [ -f "$rc" ] || continue
+    if ! grep -qsF '.vibe/env' "$rc"; then
+      printf '\n%s\n' "$env_line" >> "$rc"
+      modified="$modified $(basename "$rc")"
+    fi
+  done
+  if [ -n "$modified" ]; then
+    say "PATH: added '. \$HOME/.vibe/env' to:$modified"
+    say "restart your shell or run: . \"\$HOME/.vibe/env\""
+  else
+    say "PATH: shell rc files already source ~/.vibe/env (or none found)"
+  fi
+else
+  case ":$PATH:" in
+    *":$VIBE_HOME/bin:"*) ;;
+    *) say "PATH: add $VIBE_HOME/bin to PATH (e.g. . \"$VIBE_HOME/env\")" ;;
+  esac
+fi
+
+# Optional extra symlink dir (test harness / packaging), opt-in only.
+if [ "$DO_LINK" = "1" ] && [ -n "$BIN_DIR" ]; then
   mkdir -p "$BIN_DIR"
   ln -sf "$VIBE_HOME/bin/vibe" "$BIN_DIR/vibe"
   say "linked $BIN_DIR/vibe -> $VIBE_HOME/bin/vibe"
-  case ":$PATH:" in
-    *":$BIN_DIR:"*) ;;
-    *) say "note: $BIN_DIR is not on your PATH; add it to use 'vibe' directly" ;;
-  esac
 fi
 
 say "done. try: vibe version"
