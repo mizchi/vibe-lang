@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# vibe installer — toolchain worker (docs/release-roadmap.md テーマ1, #755).
+# vibe installer -- toolchain worker (docs/release-roadmap.md テーマ1, #755).
 #
 # Installs the selfhost vibe toolchain from THIS checkout into a
 # rustup-style layout under $VIBE_HOME (default ~/.vibe):
@@ -8,14 +8,14 @@
 #                                             entry; picks a toolchain)
 #   $VIBE_HOME/toolchain                      default toolchain name
 #   $VIBE_HOME/toolchains/<name>/bin/{vibe,moonrun_wt}
-#   $VIBE_HOME/toolchains/<name>/lib/{vibe-cli.wasm,vibe-cli.cwasm,lsp…}
+#   $VIBE_HOME/toolchains/<name>/lib/{vibe-cli.wasm,vibe-cli.cwasm,lsp...}
 #   $VIBE_HOME/lib/@vibe/{core,ast,parser}    stdlib packages, hash-verified
 #                                             (the default VIBE_LIB root #751
-#                                             — SHARED across toolchains)
-#   $VIBE_HOME/cache/…                        fetch cache (#754 — shared)
+#                                             -- SHARED across toolchains)
+#   $VIBE_HOME/cache/...                        fetch cache (#754 -- shared)
 #
 # A future `vibe toolchain` selector only has to rewrite $VIBE_HOME/toolchain
-# (or set $VIBE_TOOLCHAIN) — the layout already isolates artifacts per
+# (or set $VIBE_TOOLCHAIN) -- the layout already isolates artifacts per
 # toolchain while packages stay content-addressed and shared.
 #
 # Steps:
@@ -27,7 +27,7 @@
 #   4. install the launcher into the toolchain + the dispatcher onto PATH,
 #   5. materialize the stdlib packages into $VIBE_HOME/lib (hash-verified).
 #
-# PATH policy: `$VIBE_HOME/bin` (the dispatcher) IS the PATH entry — the
+# PATH policy: `$VIBE_HOME/bin` (the dispatcher) IS the PATH entry -- the
 # installer writes `$VIBE_HOME/env` (rustup's ~/.cargo/env pattern) and, for
 # a default-prefix install, appends `. "$HOME/.vibe/env"` to the shell rc
 # files (skip with --no-modify-path; custom --prefix installs never touch rc
@@ -84,7 +84,7 @@ if [ -z "$RUNNER_SRC" ]; then
     say "using already-built runner: $RUNNER_SRC"
   else
     command -v cargo >/dev/null 2>&1 || die "cargo not found; pass a prebuilt runner with --runner"
-    say "building runner (cargo build --release)…"
+    say "building runner (cargo build --release)..."
     ( cd "$ROOT_DIR/tools/moonrun_wasmtime" && cargo build --release >/dev/null )
     RUNNER_SRC="$prebuilt"
   fi
@@ -111,7 +111,7 @@ install -m 0644 "$CLI_WASM_SRC" "$TC_DIR/lib/vibe-cli.wasm"
 say "compiler wasm -> $TC_DIR/lib/vibe-cli.wasm"
 
 # 3. install-time AOT (.cwasm) --------------------------------------------
-say "AOT-compiling host-specific .cwasm…"
+say "AOT-compiling host-specific .cwasm..."
 "$TC_DIR/bin/moonrun_wt" --precompile "$TC_DIR/lib/vibe-cli.wasm" \
   -o "$TC_DIR/lib/vibe-cli.cwasm"
 say "AOT compiler -> $TC_DIR/lib/vibe-cli.cwasm"
@@ -183,7 +183,7 @@ if [ "$SET_DEFAULT" = "1" ] || [ ! -f "$VIBE_HOME/toolchain" ]; then
 fi
 
 # 6. stdlib packages (shared, hash-verified) --------------------------------
-# The runtime-relevant standard library is materialized into $VIBE_HOME/lib —
+# The runtime-relevant standard library is materialized into $VIBE_HOME/lib --
 # the default VIBE_LIB resolution root (#751). Verification: the hash of the
 # materialized copy must equal the hash of the source package, computed by
 # the JUST-INSTALLED toolchain (`vibe hash`, ADR-0063 §5).
@@ -215,8 +215,8 @@ fi
 
 # 7. PATH setup --------------------------------------------------------------
 # $VIBE_HOME/bin (the dispatcher) is THE PATH entry. Write the sourceable env
-# file (rustup's ~/.cargo/env pattern) and — for a default-prefix install
-# only — wire it into the shell rc files. A custom --prefix (tests, throwaway
+# file (rustup's ~/.cargo/env pattern) and -- for a default-prefix install
+# only -- wire it into the shell rc files. A custom --prefix (tests, throwaway
 # installs) never touches the user's rc files.
 cat > "$VIBE_HOME/env" <<ENVEOF
 #!/bin/sh

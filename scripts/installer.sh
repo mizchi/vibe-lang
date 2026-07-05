@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# vibe curl installer (#755) — the `curl | bash` entry point.
+# vibe curl installer (#755) -- the `curl | bash` entry point.
 #
 #   curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/scripts/installer.sh | bash
 #
@@ -7,12 +7,12 @@
 # running inside a checkout) and delegates to scripts/install.sh, which lays
 # down the rustup-style toolchain layout under ~/.vibe:
 #
-#   ~/.vibe/bin/vibe                    dispatcher (put this dir — or the
-#                                       --bin-dir symlink — on PATH)
-#   ~/.vibe/toolchains/<name>/…         compiler wasm + runner + launcher
+#   ~/.vibe/bin/vibe                    dispatcher (put this dir -- or the
+#                                       --bin-dir symlink -- on PATH)
+#   ~/.vibe/toolchains/<name>/...         compiler wasm + runner + launcher
 #   ~/.vibe/lib/@vibe/{core,ast,parser} stdlib packages (hash-verified;
 #                                       the default VIBE_LIB root)
-#   ~/.vibe/cache/…                     package fetch cache
+#   ~/.vibe/cache/...                     package fetch cache
 #
 # The toolchain name defaults to the installed ref, so a future rustup-like
 # selector can install several refs side by side and flip
@@ -29,7 +29,7 @@
 #
 # Requirements: git, bash; cargo (to build the wasmtime runner from source)
 # unless a prebuilt runner is passed through; node is optional (used to
-# freshly self-build the compiler — without it the committed seed compiler
+# freshly self-build the compiler -- without it the committed seed compiler
 # wasm is installed, which is always functional).
 set -euo pipefail
 
@@ -53,7 +53,7 @@ done
 command -v git >/dev/null 2>&1 || die "git is required"
 
 # When already inside a vibe-lang checkout (developer flow), install from it
-# directly. The pipe flow (`curl | bash`) has no checkout — clone one.
+# directly. The pipe flow (`curl | bash`) has no checkout -- clone one.
 SRC_DIR=""
 if [ -f "scripts/install.sh" ] && [ -f "bootstrap/selfhost/seed/selfhost_compiler.wasm" ]; then
   SRC_DIR="$(pwd)"
@@ -61,7 +61,7 @@ if [ -f "scripts/install.sh" ] && [ -f "bootstrap/selfhost/seed/selfhost_compile
 else
   work="$(mktemp -d "${TMPDIR:-/tmp}/vibe-install-XXXXXX")"
   trap 'rm -rf "$work"' EXIT
-  say "cloning $REPO @ $REF…"
+  say "cloning $REPO @ $REF..."
   git clone -q --depth 1 --branch "$REF" "$REPO" "$work/src" \
     || die "clone failed: $REPO @ $REF"
   SRC_DIR="$work/src"
@@ -71,5 +71,5 @@ fi
 # coexist under ~/.vibe/toolchains and a selector can flip between them.
 TOOLCHAIN="$(printf '%s' "$REF" | tr '/' '-')"
 
-say "installing toolchain '$TOOLCHAIN'…"
+say "installing toolchain '$TOOLCHAIN'..."
 bash "$SRC_DIR/scripts/install.sh" --toolchain "$TOOLCHAIN" ${passthrough[@]+"${passthrough[@]}"}
