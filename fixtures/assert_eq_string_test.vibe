@@ -1,0 +1,61 @@
+// #756: `assert_eq(a, b)` on String operands whose static classification is
+// defeated (tuple-destructured / heap-derived bindings) used to lower to a
+// raw i64.eq over the (ptr<<32)|len string repr — a POINTER compare. Two
+// strings with equal content but distinct backing pointers failed, even
+// though `a == b`, `eq(a, b)`, and `String::equals(a, b)` all returned true.
+// Fix: `assert_eq(a, b)` now lowers as `assert(a == b)`, riding
+// emit_eq_value's operand classification (runtime `eq` content compare for
+// heap strings). See vibe/compiler/codegen/expr/compile_call.vibe.
+
+let shout: (String) -> String = (s) -> {
+  String::concat(s, "!")
+}
+
+test "assert_eq on heap string from tuple destructure (#756)" {
+  let pairs = Array::slice([
+    (String::concat("p", "i"), 1)
+  ], 0, 1)
+  let (n0, _) = Array::get(pairs, 0)
+  // All four must agree — previously only assert_eq trapped.
+  assert(n0 == "pi")
+  assert(eq(n0, "pi"))
+  assert(String::equals(n0, "pi"))
+  assert_eq(n0, "pi")
+}
+
+test "assert_eq on concatenated heap strings (#756)" {
+  let a = String::concat("foo", "bar")
+  let b = String::concat("foob", "ar")
+  assert_eq(a, b)
+  assert_eq(a, "foobar")
+  assert_eq("foobar", b)
+}
+
+test "assert_eq String from call result (#756)" {
+  assert_eq(shout("x"), "x!")
+  let s = shout("hi")
+  assert_eq(s, "hi!")
+}
+
+test "assert_eq still works for ints" {
+  assert_eq(1 + 1, 2)
+  let n = 40 + 2
+  assert_eq(n, 42)
+}
+
+test "assert_eq String inequality traps are avoided when equal" {
+  let names = ["alpha", "beta", "gamma"]
+  let mut i = 0
+  let mut hit = 0
+  while i < Array::length(names) {
+    let cur = Array::get(names, i)
+    if cur == "beta" {
+      assert_eq(cur, "beta")
+      hit = hit + 1
+    } else {
+      0
+    }
+    i = i + 1
+  }
+  assert_eq(hit, 1)
+}

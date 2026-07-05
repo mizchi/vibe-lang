@@ -1633,9 +1633,14 @@ export let compile_call: (Bytes, Expr, Array[Expr], Array[String], Int, CompileC
       nl
     }
     else if fname == "assert_eq" {
-      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
-      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
-      emit_i64_eq(buf)
+      // #756: lower as `assert(a == b)` — the synthesized `==` rides
+      // emit_eq_value's operand classification (intish fast-path, #724 agg
+      // slots, runtime `eq` fall-back). The old raw i64.eq compared the
+      // (ptr<<32)|len STRING repr by pointer, so a heap string the static
+      // classifier can't see (e.g. a tuple-destructured binding) failed
+      // against an equal-content literal while `a == b` passed.
+      let nl = ce(buf, EBinOp("==", Array::get(args, 0), Array::get(args, 1)), local_names, next_local, ctx, ld)
+      emit_i32_wrap_i64(buf)
       emit_if_void(buf)
       emit_else(buf)
       bytebuf_push(buf, 0)
