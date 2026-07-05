@@ -24,6 +24,23 @@
 #       the pinned lane — and re-verifies the materialized copy's hash
 #       against the recorded one.
 #
+#   vibe_pkg.sh add <source-spec> [#pkg:sha1:<40hex>] [--store]
+#       Registry-less resolution (#755 Phase 0): fetch a package DIRECTLY
+#       from a git host, verify it by content hash, and install it. Specs:
+#
+#           github:owner/repo[/sub/dir]@<ref>
+#           git:<url>@<ref>[#<sub/dir>]
+#
+#       The ref is resolved to a COMMIT and fetched with git; the package
+#       hash is computed locally over the fetched sources, so the transport
+#       is untrusted by construction. With an expected pin argument the
+#       fetch is rejected on mismatch BEFORE anything is installed; without
+#       one this is trust-on-first-use — the hash is printed and recorded,
+#       and any later fetch of the same name@version with different content
+#       is rejected (version->hash immutability). The resolved
+#       (source, commit) pair is appended to $VIBE_HOME/cache/provenance.tsv
+#       so third parties can re-fetch and re-hash (source-only provenance).
+#
 # The compiler wasm defaults to the committed seed; override with
 # VIBE_PKG_CLI_WASM (e.g. a freshly built stage2 — required while the seed
 # predates the version directive).
@@ -34,6 +51,7 @@ CLI="${VIBE_PKG_CLI_WASM:-bootstrap/selfhost/seed/selfhost_compiler.wasm}"
 VIBE_HOME="${VIBE_HOME:-$HOME/.vibe}"
 CACHE_DIR="$VIBE_HOME/cache"
 VERSIONS_TSV="$CACHE_DIR/versions.tsv"
+PROVENANCE_TSV="$CACHE_DIR/provenance.tsv"
 
 say() { echo "[vibe-pkg] $*"; }
 die() { echo "[vibe-pkg] error: $*" >&2; exit 1; }
@@ -97,6 +115,30 @@ copy_package_files() {
       *) cp "$f" "$2/" ;;
     esac
   done
+}
+
+materialize_from_cas() {
+  # $1=name $2=version $3=hash(pkg:sha1:…) $4=target ("--store" or "")
+  local name="$1" version="$2" hash="$3" target="$4" hex cas dest got
+  hex="${hash#pkg:sha1:}"
+  cas="$CACHE_DIR/pkg/sha1/$hex"
+  [ -f "$cas/index.vibei" ] || die "cache is missing $name@$version ($hash) at $cas"
+  if [ "$target" = "--store" ]; then
+    dest=".vibe/store/$name"
+  else
+    dest="$VIBE_HOME/lib/$name"
+  fi
+  rm -rf "$dest"
+  copy_package_files "$cas" "$dest"
+  # verify the MATERIALIZED copy against the recorded hash (tamper/bit-rot
+  # and known-version immutability in one check)
+  got="$(pkg_hash_of "$dest/index.vibei")"
+  if [ "$got" != "$hash" ]; then
+    rm -rf "$dest"
+    die "materialized copy of $name@$version hashes to #$got, recorded #$hash — rejected (version->hash is immutable)"
+  fi
+  say "installed $name@$version -> $dest (#$hash)"
+  say "pin line: require $name $version = #$hash"
 }
 
 cmd="${1:-}"
@@ -166,28 +208,113 @@ install)
   name="${spec%@*}"
   version="${spec##*@}"
   hash="$(lookup_version "$name@$version")"
-  [ -n "$hash" ] || die "unknown version: $name@$version (publish it first, or fetch it — #755)"
+  [ -n "$hash" ] || die "unknown version: $name@$version (publish it first, or 'vibe_pkg.sh add' it from a git source — #755)"
+  materialize_from_cas "$name" "$version" "$hash" "$target"
+  ;;
+add)
+  shift
+  spec=""
+  expected=""
+  target=""
+  for a in "$@"; do
+    case "$a" in
+      --store) target="--store" ;;
+      \#pkg:sha1:*) expected="${a#\#}" ;;
+      pkg:sha1:*) expected="$a" ;;
+      *)
+        [ -z "$spec" ] || die "unexpected argument: $a"
+        spec="$a"
+        ;;
+    esac
+  done
+  [ -n "$spec" ] || die "usage: vibe_pkg.sh add github:owner/repo[/sub/dir]@<ref> [#pkg:sha1:<40hex>] [--store]"
+
+  subdir=""
+  case "$spec" in
+    github:*)
+      rest="${spec#github:}"
+      ref="${rest##*@}"
+      path="${rest%@*}"
+      [ "$ref" != "$rest" ] && [ -n "$ref" ] || die "github spec needs @<ref>: $spec"
+      owner="${path%%/*}"
+      rr="${path#*/}"
+      repo="${rr%%/*}"
+      case "$rr" in
+        */*) subdir="${rr#*/}" ;;
+      esac
+      [ -n "$owner" ] && [ -n "$repo" ] || die "malformed github spec: $spec"
+      url="https://github.com/$owner/$repo.git"
+      ;;
+    git:*)
+      rest="${spec#git:}"
+      case "$rest" in
+        *"#"*)
+          subdir="${rest##*#}"
+          rest="${rest%#*}"
+          ;;
+      esac
+      ref="${rest##*@}"
+      url="${rest%@*}"
+      [ "$ref" != "$rest" ] && [ -n "$url" ] || die "git spec needs <url>@<ref>: $spec"
+      ;;
+    *)
+      die "unknown source spec (github:owner/repo[/dir]@ref | git:<url>@<ref>[#<dir>]): $spec"
+      ;;
+  esac
+
+  work="$(mktemp -d)"
+  trap 'rm -rf "$work"' EXIT
+  git init -q "$work/checkout"
+  if ! git -C "$work/checkout" fetch -q --depth 1 "$url" "$ref" 2>"$work/fetch.log"; then
+    # servers that refuse shallow/SHA fetches get one full-fetch retry
+    git -C "$work/checkout" fetch -q "$url" "$ref" 2>>"$work/fetch.log" \
+      || { cat "$work/fetch.log" >&2; die "git fetch failed: $url @ $ref"; }
+  fi
+  commit="$(git -C "$work/checkout" rev-parse FETCH_HEAD)"
+  git -C "$work/checkout" -c advice.detachedHead=false checkout -q FETCH_HEAD
+  src="$work/checkout${subdir:+/$subdir}"
+  [ -f "$src/index.vibei" ] || die "fetched source has no index.vibei at '${subdir:-.}' ($spec)"
+  name="$(basename "$(dirname "$src")")/$(basename "$src")"
+  case "$name" in
+    @*/*) ;;
+    *) die "fetched package directory must be laid out as …/@scope/name (got: $name)" ;;
+  esac
+  version="$(version_directive_of "$src/index.vibei")"
+  [ -n "$version" ] || die "fetched package has no \`version x.y.z\` directive in index.vibei (#754)"
+
+  # hash is computed LOCALLY over the fetched sources — the transport is
+  # untrusted. An expected pin rejects BEFORE any cache/install side effect.
+  hash="$(pkg_hash_of "$src/index.vibei")"
+  if [ -n "$expected" ] && [ "$hash" != "$expected" ]; then
+    die "hash mismatch for $name@$version from $spec: fetched #$hash, expected #$expected — rejected"
+  fi
+  key="$name@$version"
+  recorded="$(lookup_version "$key")"
+  if [ -n "$recorded" ] && [ "$recorded" != "$hash" ]; then
+    die "known version $key is #$recorded but $spec serves #$hash — rejected (version->hash is immutable, ADR-0065)"
+  fi
+
   hex="${hash#pkg:sha1:}"
   cas="$CACHE_DIR/pkg/sha1/$hex"
-  [ -f "$cas/index.vibei" ] || die "cache is missing $name@$version ($hash) at $cas"
-  if [ "$target" = "--store" ]; then
-    dest=".vibe/store/$name"
-  else
-    dest="$VIBE_HOME/lib/$name"
+  rm -rf "$cas"
+  copy_package_files "$src" "$cas"
+  cas_hash="$(pkg_hash_of "$cas/index.vibei")"
+  [ "$cas_hash" = "$hash" ] || die "CAS self-check failed: $cas hashes to #$cas_hash, expected #$hash"
+  mkdir -p "$CACHE_DIR"
+  if [ -z "$recorded" ]; then
+    printf '%s\t%s\n' "$key" "$hash" >> "$VERSIONS_TSV"
+    if [ -z "$expected" ]; then
+      say "TRUST-ON-FIRST-USE: recorded $key -> #$hash (re-run with the pin to verify a fresh fetch)"
+    fi
   fi
-  rm -rf "$dest"
-  copy_package_files "$cas" "$dest"
-  # verify the MATERIALIZED copy against the recorded hash (tamper/bit-rot
-  # and known-version immutability in one check)
-  got="$(pkg_hash_of "$dest/index.vibei")"
-  if [ "$got" != "$hash" ]; then
-    rm -rf "$dest"
-    die "materialized copy of $name@$version hashes to #$got, recorded #$hash — rejected (version->hash is immutable)"
+  prov_line="$(printf '%s\t%s\t%s\t%s' "$key" "$hash" "$spec" "$commit")"
+  if ! grep -qxF "$prov_line" "$PROVENANCE_TSV" 2>/dev/null; then
+    printf '%s\n' "$prov_line" >> "$PROVENANCE_TSV"
   fi
-  say "installed $name@$version -> $dest (#$hash)"
-  say "pin line: require $name $version = #$hash"
+  say "fetched $key from $spec @ $commit"
+  materialize_from_cas "$name" "$version" "$hash" "$target"
   ;;
 *)
-  die "usage: vibe_pkg.sh publish <pkg_dir> | install @scope/name@x.y.z [--store]"
+  die "usage: vibe_pkg.sh publish <pkg_dir> | install @scope/name@x.y.z [--store] | add <source-spec> [#pkg:sha1:<40hex>] [--store]"
   ;;
 esac

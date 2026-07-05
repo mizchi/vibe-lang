@@ -521,6 +521,75 @@ fi
 rm -rf ".vibe/store/@gate754" "$jdir" "$jhome"
 echo "[selfhost-only-gate] distribution pipeline ok"
 
+# 6k. registry-less git resolution (#755 Phase 0): `vibe_pkg.sh add` fetches
+#     a package from a git source (github: is sugar over the same path),
+#     resolves the ref to a COMMIT (provenance), hashes the fetched sources
+#     LOCALLY, and installs only when the hash agrees with the expected pin
+#     (or records it trust-on-first-use). A hermetic file:// repo stands in
+#     for GitHub; the tamper step re-serves the same version with different
+#     content and must be rejected by the version->hash record.
+echo "[selfhost-only-gate] 6k registry-less git resolution (#755 Phase 0)"
+khome="$(mktemp -d)"
+krepo="$(mktemp -d)"
+kdir="_build/_gate_pkg755"
+rm -rf "$kdir"; mkdir -p "$kdir"
+mkdir -p "$krepo/packages/@gate755/hex"
+printf 'version 1.0.0\n\nfn hex_n(x: Int) -> Int\n' > "$krepo/packages/@gate755/hex/index.vibei"
+printf 'export fn hex_n(x: Int) -> Int { x + 6 }\n' > "$krepo/packages/@gate755/hex/impl.vibe"
+git -C "$krepo" init -q
+git -C "$krepo" add -A
+git -C "$krepo" -c user.email=gate@vibe -c user.name=gate commit -qm pkg
+git -C "$krepo" branch -m main
+kspec="git:file://$krepo@main#packages/@gate755/hex"
+# (1) TOFU add: fetch, record, materialize into $VIBE_HOME/lib; consumer runs
+if ! VIBE_HOME="$khome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh add "$kspec" > "$kdir/add1.log" 2>&1; then
+  echo "[selfhost-only-gate] FAIL: git add (TOFU) failed (#755)" >&2
+  cat "$kdir/add1.log" >&2; exit 1
+fi
+khash="$(awk -F'\t' '$1 == "@gate755/hex@1.0.0" { print $2 }' "$khome/cache/versions.tsv")"
+if [ -z "$khash" ]; then
+  echo "[selfhost-only-gate] FAIL: git add did not record the version mapping (#755)" >&2; exit 1
+fi
+if ! grep -q "@gate755/hex@1.0.0" "$khome/cache/provenance.tsv" 2>/dev/null; then
+  echo "[selfhost-only-gate] FAIL: git add did not record provenance (#755)" >&2; exit 1
+fi
+printf 'import @gate755/hex { hex_n }\nexport let _start: () -> Int = () -> { hex_n(36) }\n' > "$kdir/use.vibe"
+VIBE_HOME="$khome" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$kdir/use.vibe" "$kdir/use.wasm" _start >/dev/null 2>&1 || true
+kuse_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$kdir/use.wasm" 2>/dev/null | tail -1)"
+if [ "$kuse_out" != "42" ]; then
+  echo "[selfhost-only-gate] FAIL: git-added package returned '$kuse_out' (want 42) (#755)" >&2; exit 1
+fi
+# (2) wrong expected pin rejects BEFORE any side effect (fresh home)
+khome2="$(mktemp -d)"
+if VIBE_HOME="$khome2" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh add "$kspec" "#pkg:sha1:0000000000000000000000000000000000000000" > "$kdir/add2.log" 2>&1; then
+  echo "[selfhost-only-gate] FAIL: wrong expected pin was accepted (#755)" >&2; exit 1
+fi
+if ! grep -q "hash mismatch" "$kdir/add2.log" || [ -f "$khome2/cache/versions.tsv" ]; then
+  echo "[selfhost-only-gate] FAIL: pin rejection is wrong or left side effects (#755)" >&2
+  cat "$kdir/add2.log" >&2; exit 1
+fi
+# (3) correct expected pin verifies a fresh fetch
+if ! VIBE_HOME="$khome2" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh add "$kspec" "#$khash" > "$kdir/add3.log" 2>&1; then
+  echo "[selfhost-only-gate] FAIL: correct expected pin was rejected (#755)" >&2
+  cat "$kdir/add3.log" >&2; exit 1
+fi
+# (4) upstream tampers: same version, different content -> rejected by the
+#     local version->hash record
+printf 'export fn hex_n(x: Int) -> Int { x + 7 }\n' > "$krepo/packages/@gate755/hex/impl.vibe"
+git -C "$krepo" add -A
+git -C "$krepo" -c user.email=gate@vibe -c user.name=gate commit -qm tamper
+if VIBE_HOME="$khome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh add "$kspec" > "$kdir/add4.log" 2>&1; then
+  echo "[selfhost-only-gate] FAIL: tampered same-version fetch was accepted (#755)" >&2; exit 1
+fi
+if ! grep -q "version->hash is immutable" "$kdir/add4.log"; then
+  echo "[selfhost-only-gate] FAIL: tamper rejection lacks the expected message (#755)" >&2
+  cat "$kdir/add4.log" >&2; exit 1
+fi
+rm -rf "$kdir" "$khome" "$khome2" "$krepo"
+echo "[selfhost-only-gate] registry-less git resolution ok"
+
 # 6d. where-contract + publish-gate regression (#731 / #732): a violated
 #     requires clause traps at runtime; the publish semver gate accepts an
 #     honest bump and rejects a dishonest one.
