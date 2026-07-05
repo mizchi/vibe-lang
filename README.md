@@ -16,6 +16,10 @@ echo 'export let main = () -> Int { 40 + 2 }' > hello.vibe
 vibe run hello.vibe        # -> 42
 ```
 
+New to the language? Start with the runnable tour:
+[docs/tutorial/](docs/tutorial/README.md) — every chapter is a `vibe test`-able
+file, so the examples are executed by CI and cannot rot.
+
 See [docs/install.md](docs/install.md) for the install layout, options, and how
 to update the compiler independently of the runner. The distribution design is
 tracked in [docs/release-roadmap.md](docs/release-roadmap.md) (テーマ1).
