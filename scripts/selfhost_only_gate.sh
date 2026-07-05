@@ -341,6 +341,41 @@ fi
 rm -rf ".vibe/store/@gate" "$cdir2"
 echo "[selfhost-only-gate] content-addressed store regression ok"
 
+# 6h. workspace lib/ package resolution (#751, ADR-0065): `@scope/name`
+#     resolves through lib/@scope/name/index.vibei WITHOUT a require pin
+#     (dev-mode lane; the pinned store stays first in candidate order). A pin,
+#     when present, is still the truth: a wrong pin against the lib/ copy is
+#     rejected. The package below declares no impl imports, so this also
+#     exercises sibling auto-discovery (#730) through the lib/ path.
+echo "[selfhost-only-gate] 6h workspace lib/ package resolution (#751)"
+lpkg="lib/@gate751/greet"
+rm -rf "lib/@gate751"; mkdir -p "$lpkg"
+printf 'fn greet_n(x: Int) -> Int\n' > "$lpkg/index.vibei"
+printf 'export fn greet_n(x: Int) -> Int { x + 2 }\n' > "$lpkg/impl.vibe"
+ldir="_build/_gate_lib751"
+rm -rf "$ldir"; mkdir -p "$ldir"
+printf 'import @gate751/greet { greet_n }\nexport let _start: () -> Int = () -> { greet_n(40) }\n' > "$ldir/ok.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$ldir/ok.vibe" "$ldir/ok.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$ldir/ok.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: unpinned lib/ package import did not compile (#751)" >&2
+  cat "$ldir/ok.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+printf 'require @gate751/greet 1.0.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\nimport @gate751/greet { greet_n }\nexport let _start: () -> Int = () -> { greet_n(40) }\n' > "$ldir/bad.vibe"
+if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$ldir/bad.vibe" "$ldir/bad.wasm" _start >/dev/null 2>&1 \
+  && [ -s "$ldir/bad.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: wrong pin against a lib/ copy was not rejected (#751)" >&2; exit 1
+fi
+if ! grep -q "pin mismatch" "$ldir/bad.wasm.diag" 2>/dev/null; then
+  echo "[selfhost-only-gate] FAIL: lib/ pin rejection lacks the expected diagnostic (#751)" >&2
+  cat "$ldir/bad.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+rm -rf "lib/@gate751" "$ldir"
+echo "[selfhost-only-gate] workspace lib/ package resolution ok"
+
 # 6d. where-contract + publish-gate regression (#731 / #732): a violated
 #     requires clause traps at runtime; the publish semver gate accepts an
 #     honest bump and rejects a dishonest one.
