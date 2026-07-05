@@ -16,7 +16,8 @@ allowlist をセットで足す。**
 | --- | --- | --- |
 | `lib/@vibe/<pkg>/` | 契約パッケージ。`index.vibei` が公開 API。compiler 本体からも `import ../../lib/@vibe/<pkg> { ... }` で消費できる (#741) | `lib/@vibe/core` (sha1 / leb128 / list / set) |
 | `vibe/<domain>/` | 標準ライブラリ層。directory import (`import ../json { ... }`) は `index.vibe(i)` 経由 | `vibe/json`, `vibe/collection` |
-| `vibe/x/<name>/` | 実験・拡張層。安定したら `vibe/` か `lib/@vibe/` へ昇格 | `vibe/x/fmt`, `vibe/x/base64` |
+| `lib/@vibex/<pkg>/` | 実験・拡張層 (ADR-0065: @vibex = 仮想実験ユーザー scope)。安定したら `lib/@vibe/` へ昇格 | `lib/@vibex/fmt`, `lib/@vibex/regexp` |
+| `lib/@<user>/<pkg>/` | コンパイラ非関連の実ユーザー scope パッケージ (in-repo に置けるのは repo owner が支配する scope のみ) | `lib/@mizchi/markdown` |
 | `vibe/compiler/` | compiler 本体のみ。ライブラリを置かない (共有したいものは `lib/@vibe/` に切り出して契約 import する) | — |
 
 新規の再利用可能なデータ構造・アルゴリズムは **`lib/@vibe/core` への追加を
