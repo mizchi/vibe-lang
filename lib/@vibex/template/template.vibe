@@ -1,10 +1,30 @@
-//# Imports
+//# Functions
 
-import .. / collect {
-  empty_array
+// Was `import ../collect { empty_array }` — inlined on the @vibex move
+// (ADR-0065) so the package has no cross-package dependency for a one-liner.
+let empty_array = [T]() -> Array[T] {
+  ArrayBuilder::freeze(ArrayBuilder::new())
 }
 
-//# Functions
+// host-era rot (#742 class): `String::replace_all` never existed under
+// selfhost and `"\(key)"` was the retired host interpolation spelling —
+// a pure-vibe scan/concat replacement (String::index_of is the SIMD builtin).
+let replace_all = (s: String, needle: String, replacement: String) -> String {
+  let nlen = String::length(needle)
+  if nlen == 0 {
+    s
+  } else {
+    let mut out = ""
+    let mut rest = s
+    let mut idx = String::index_of(rest, needle)
+    while idx >= 0 {
+      out = String::concat(out, String::concat(String::substring(rest, 0, idx), replacement))
+      rest = String::substring(rest, idx + nlen, String::length(rest))
+      idx = String::index_of(rest, needle)
+    }
+    String::concat(out, rest)
+  }
+}
 
 export let render = (template: String, vars: Array[(String, String)]) -> String {
   let mut result = template
@@ -12,8 +32,8 @@ export let render = (template: String, vars: Array[(String, String)]) -> String 
   let mut idx = 0
   while idx < var_count {
     let (key, value) = Array::get(vars, idx)
-    let placeholder = "{{\(key)}}"
-    result = String::replace_all(result, placeholder, value)
+    let placeholder = String::concat("{{", String::concat(key, "}}"))
+    result = replace_all(result, placeholder, value)
     idx = idx + 1
   }
   result
@@ -53,11 +73,11 @@ export let render_map = (template: String, vars: Map[String, String]) -> String 
         }
         i = close + 2
       } else {
-        StringBuilder::push(sb, template[i])
+        StringBuilder::push(sb, template[i: i + 1])
         i = i + 1
       }
     } else {
-      StringBuilder::push(sb, template[i])
+      StringBuilder::push(sb, template[i: i + 1])
       i = i + 1
     }
   }
@@ -84,3 +104,5 @@ export let extract_keys = (template: String) -> Array[String] {
   }
   keys
 }
+
+export let version: String = "0.0.1"
