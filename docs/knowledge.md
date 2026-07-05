@@ -718,7 +718,7 @@ ADR-0051 (trait 解決 3 層化) を起点に、`docs/adr.md` の `proposed` 列
 2. **動かない or 部分実装の場合**
    - host (MoonBit 実装) と selfhost (vibe 実装) のどちらが対応済みか確認。
    - `host ok / selfhost 未対応`のパターンが多い。selfhost 側に追加するときは:
-     - `vibe/compiler/syntax/token.vibe` に新 Token variant を追加すると、`tk_name` (`parser_base.vibe`) や `token_to_string` (`token.vibe`) など exhaustive match の一致を必ず壊すので一括で揃える。
+     - `lib/@vibe/parser/token.vibe` に新 Token variant を追加すると、`tk_name` (`parser_base.vibe`) や `token_to_string` (`token.vibe`) など exhaustive match の一致を必ず壊すので一括で揃える。
      - lexer の keyword_lookup は文字数バケットで分かれているので、追加先のバケットに入れる。
      - parser の precedence ladder に新規 trailing-構文を入れる場合、**if-cond などで先食いされない位置**に置く必要がある。`expr is pat` を入れたとき `if x is pat { ... }` の if-form と衝突したので、`parse_infix_no_is` を切り出して mode_if 側ではそちらを使うようにした (#374 参照)。
 3. **新 AST variant が必要なケース**

@@ -39,7 +39,7 @@ Haskell type classes (dictionary passing), Swift protocol witness tables, Roc ab
   `EFn(type_params, bounds, params, ret, effect, body)` is the existing carrier for
   type params + bounds. `SEffectDef(...)` is the precedent for a decl that stores a
   list of `(name, param-types, ret-type)` signatures.
-- Parser: `vibe/compiler/syntax/parser_base.vibe` — `parse_trait_stmt` and
+- Parser: `lib/@vibe/parser/parser_base.vibe` (#753 で vibe/compiler/syntax から移設) — `parse_trait_stmt` and
   `parse_impl_stmt` call `skip_braced_body`, throwing the `{ ... }` block away.
   `parse_effect_stmt` is the working precedent for parsing a `{ sig; ... }` block.
 - Checker: `vibe/compiler/checker/checker_stmt.vibe` records `EnvTraitDef` /
@@ -99,7 +99,7 @@ auto-synthesize and thread the witness), not a language/runtime unknown.
 
 Shipped a smaller slice than originally drafted: **no AST change**. `impl` methods
 are expanded at parse time into `let Type::method = (params) -> ret { body }`
-qualified free functions (`parse_impl_methods` in `syntax/parser.vibe`); the trait
+qualified free functions (`parse_impl_methods` in `lib/@vibe/parser/parser.vibe`); the trait
 declaration stays a marker. Concrete-receiver calls resolve by name, so no checker
 or codegen change was needed. The seed was bumped so the toolchain understands the
 syntax. Deferred to PR-2/PR-3: bound enforcement, dictionary passing, and passing a
@@ -227,7 +227,7 @@ resolve.
 1. **Trait method signatures in the AST** (the deferred PR-1 change). — **LANDED
    (component 1, this branch).** `STrait` now carries
    `Array[(String, Array[TypeExpr], TypeExpr)]` (modeled on `SEffectDef`);
-   `parse_trait_methods` (`syntax/parser_base.vibe`) parses the `{ sig; ... }`
+   `parse_trait_methods` (`lib/@vibe/parser/parser_base.vibe`) parses the `{ sig; ... }`
    block, `syntax/printer.vibe` emits it (idempotent under `VIBE_NORMALIZE=1`),
    and every `STrait` match/construct site was updated to the new arity. Storage
    in `EnvTraitDef` was **deferred to component 2** (where it is consumed) to keep
