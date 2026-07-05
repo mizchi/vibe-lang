@@ -152,6 +152,24 @@ def resolve_path(base_rel: str, raw_path: str) -> str:
 
 reachable = set()
 
+# Manifest-completeness guard (#740 follow-up): an import that resolves to a
+# real file missing from the manifest is silently dropped by every walk here
+# AND by the runtime manifest lane (try_collect_manifest_sources_fs), which
+# surfaces much later as "undefined variable" only in cold whole-graph
+# FS-compiles (this exact hole shipped double_to_string_expr.vibe without a
+# manifest row). Record such edges and fail the generation instead.
+manifest_gaps = {}
+
+def record_gap(user: str, target: str):
+    probes = [target]
+    if target.endswith(".vibe"):
+        stem = target[: -len(".vibe")]
+        probes += [stem + "/index.vibei", stem + "/index.vibe"]
+    for probe in probes:
+        if os.path.isfile(os.path.join(compiler_dir, probe)):
+            manifest_gaps.setdefault(probe, []).append(user)
+            return
+
 def visit(rel: str):
     if rel in reachable:
         return
@@ -160,7 +178,10 @@ def visit(rel: str):
         return
     reachable.add(rel)
     for dep in dep_pattern.findall(source):
-        visit(resolve_path(rel, dep))
+        target = resolve_path(rel, dep)
+        if target not in source_by_rel:
+            record_gap(rel, target)
+        visit(target)
 
 visit(root_rel)
 index_by_rel = {}
@@ -201,7 +222,10 @@ def visit_bundle(rel: str):
         return
     bundle_reachable.add(rel)
     for dep in dep_pattern.findall(source):
-        visit_bundle(resolve_path(rel, dep))
+        target = resolve_path(rel, dep)
+        if target not in source_by_rel:
+            record_gap(rel, target)
+        visit_bundle(target)
 
 # Additional entry points for the main bundle
 bundle_extra_entries = os.environ.get("VIBE_SELFHOST_BUNDLE_EXTRA_ENTRIES", "codegen/gc/index.vibe,index.vibe")
@@ -209,6 +233,18 @@ for entry in bundle_extra_entries.split(","):
     entry = entry.strip()
     if entry:
         visit_bundle(entry)
+
+if manifest_gaps:
+    for target, users in sorted(manifest_gaps.items()):
+        sys.stderr.write(
+            "error: "
+            + target
+            + " is imported by "
+            + ", ".join(sorted(set(users)))
+            + " but has no row in selfhost_sources_manifest.tsv; add one or the"
+            + " manifest FS-compile lane silently drops it (#740)\n"
+        )
+    sys.exit(1)
 
 for idx, (_, rel) in enumerate(rows):
     if rel in bundle_reachable:
