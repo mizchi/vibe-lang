@@ -240,12 +240,22 @@ rm -rf "$cdir"; mkdir -p "$cdir/pkg"
 printf 'import ./impl.vibe {}\nfn add(x: Int, y: Int) -> Int\n' > "$cdir/pkg/index.vibei"
 printf 'export fn add(x: Int, y: Int) -> Int { x + y }\n' > "$cdir/pkg/impl.vibe"
 printf 'import ./pkg { add }\nexport let _start: () -> Int = () -> { add(40, 2) }\n' > "$cdir/ok.vibe"
+# #749 canary: run this compile with a COLD persistent cache. The runner's
+# module-init _start executes the same pipeline once before the real cli_main
+# invoke; a first-pass failure is masked in the exit code but leaves a .diag
+# beside the (valid) wasm the second pass writes. Cold-only ingestion rot
+# (#740/#749 class) surfaces exactly there, so assert "no sidecar" too.
+find "$ROOT_DIR/_build" -maxdepth 1 -type f -name "vibe_*" -delete 2>/dev/null || true
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$cdir/ok.vibe" "$cdir/ok.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$cdir/ok.wasm" ]; then
   echo "[selfhost-only-gate] FAIL: contract package import did not compile (#729)" >&2
   cat "$cdir/ok.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+if [ -s "$cdir/ok.wasm.diag" ]; then
+  echo "[selfhost-only-gate] FAIL: cold contract compile left a stale .diag beside a valid wasm (#749 first-pass ingestion failure)" >&2
+  cat "$cdir/ok.wasm.diag" >&2; exit 1
 fi
 printf 'import ./pkg/impl.vibe { add }\nexport let _start: () -> Int = () -> { add(40, 2) }\n' > "$cdir/bad.vibe"
 if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
