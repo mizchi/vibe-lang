@@ -24,6 +24,13 @@ allowlist をセットで足す。**
 第一候補**にする (moonbitlang/core 方式のドメイン別ファイル + index.vibei
 契約)。
 
+`@scope/name` import の解決順 (ADR-0065, #751): `.vibe/store/` (pin 検証済み)
+→ workspace `lib/` → **`VIBE_LIB`** の各 root (`:` 区切りリスト。未設定時は
+`$VIBE_HOME/lib`、それも無ければ `~/.vibe/lib`)。lib/ / VIBE_LIB 解決は
+dev-mode の便宜で、pin があれば置き場所によらず hash 照合される。
+**`VIBE_REQUIRE_PINS=1`** (release/publish の freeze スイッチ; 将来の
+`vibe run --freeze` はこれに対応する) では pin なしの lib 解決はエラー。
+
 ## 2. 追加の手順
 
 1. **実装**: `<pkg>/foo.vibe` を書く。公開 API は `export`。

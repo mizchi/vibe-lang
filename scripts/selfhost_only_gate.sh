@@ -376,6 +376,76 @@ fi
 rm -rf "lib/@gate751" "$ldir"
 echo "[selfhost-only-gate] workspace lib/ package resolution ok"
 
+# 6i. VIBE_LIB external roots + freeze (#751, ADR-0065): an @scope/name
+#     package living OUTSIDE the workspace resolves through a VIBE_LIB root
+#     (":"-separated list; missing roots are skipped in order). The
+#     workspace lib/ copy wins over an external root when both exist, and
+#     VIBE_REQUIRE_PINS=1 (the release/publish freeze switch) rejects any
+#     pin-less dev-mode lib resolution. Each step uses a distinct consumer
+#     file: the persistent header/dep caches key on content, and the SAME
+#     content under a different VIBE_LIB would replay the previous
+#     resolution.
+echo "[selfhost-only-gate] 6i VIBE_LIB external roots + freeze (#751)"
+xroot="$(mktemp -d)"
+xpkg="$xroot/@gate751x/echo"
+mkdir -p "$xpkg"
+printf 'fn echo_n(x: Int) -> Int\n' > "$xpkg/index.vibei"
+printf 'export fn echo_n(x: Int) -> Int { x + 2 }\n' > "$xpkg/impl.vibe"
+xdir="_build/_gate_lib751x"
+rm -rf "$xdir" "lib/@gate751x"; mkdir -p "$xdir"
+# (1) without a usable root the name must NOT resolve
+printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(40) }\n' > "$xdir/miss.vibe"
+if VIBE_LIB="$xroot/does-not-exist" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$xdir/miss.vibe" "$xdir/miss.wasm" _start >/dev/null 2>&1 \
+  && [ -s "$xdir/miss.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: external package resolved without a VIBE_LIB root (#751)" >&2; exit 1
+fi
+# (2) a ":"-separated VIBE_LIB resolves through the first root that has the
+#     package (missing roots skipped); the compiled program runs.
+printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(40) + 0 }\n' > "$xdir/ext.vibe"
+VIBE_LIB="$xroot/does-not-exist:$xroot" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$xdir/ext.vibe" "$xdir/ext.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$xdir/ext.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: VIBE_LIB root resolution did not compile (#751)" >&2
+  cat "$xdir/ext.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+ext_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$xdir/ext.wasm" 2>/dev/null | tail -1)"
+if [ "$ext_out" != "42" ]; then
+  echo "[selfhost-only-gate] FAIL: VIBE_LIB-resolved package returned '$ext_out' (want 42) (#751)" >&2; exit 1
+fi
+# (3) the workspace lib/ copy wins over the external root
+mkdir -p "lib/@gate751x/echo"
+printf 'fn echo_n(x: Int) -> Int\n' > "lib/@gate751x/echo/index.vibei"
+printf 'export fn echo_n(x: Int) -> Int { x + 3 }\n' > "lib/@gate751x/echo/impl.vibe"
+printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(40) + 0 + 0 }\n' > "$xdir/ws.vibe"
+VIBE_LIB="$xroot/does-not-exist:$xroot" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$xdir/ws.vibe" "$xdir/ws.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$xdir/ws.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: workspace-precedence consumer did not compile (#751)" >&2
+  cat "$xdir/ws.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+ws_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$xdir/ws.wasm" 2>/dev/null | tail -1)"
+if [ "$ws_out" != "43" ]; then
+  echo "[selfhost-only-gate] FAIL: workspace lib/ did not win over VIBE_LIB root (got '$ws_out', want 43) (#751)" >&2; exit 1
+fi
+# (4) freeze: VIBE_REQUIRE_PINS=1 demands a pin for any dev-mode lib lane
+printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(40) + 0 + 0 + 0 }\n' > "$xdir/frz.vibe"
+if VIBE_REQUIRE_PINS=1 VIBE_LIB="$xroot" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$xdir/frz.vibe" "$xdir/frz.wasm" _start >/dev/null 2>&1 \
+  && [ -s "$xdir/frz.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: pin-less lib resolution was allowed under VIBE_REQUIRE_PINS=1 (#751)" >&2; exit 1
+fi
+if ! grep -q "pin required" "$xdir/frz.wasm.diag" 2>/dev/null; then
+  echo "[selfhost-only-gate] FAIL: freeze rejection lacks the expected diagnostic (#751)" >&2
+  cat "$xdir/frz.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+rm -rf "lib/@gate751x" "$xdir" "$xroot"
+echo "[selfhost-only-gate] VIBE_LIB external roots + freeze ok"
+
 # 6d. where-contract + publish-gate regression (#731 / #732): a violated
 #     requires clause traps at runtime; the publish semver gate accepts an
 #     honest bump and rejects a dishonest one.

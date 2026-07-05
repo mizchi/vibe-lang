@@ -59,6 +59,7 @@ import ../module_graph_path.vibe {
   normalize_path,
   resolve_import_path,
   resolve_import_path_candidates,
+  vibe_env_flag,
   contains_path,
   path_set_add,
   path_set_contains,
@@ -1346,14 +1347,20 @@ let verify_store_package_fs: (String, Array[(String, String, String)], String) -
 // #751 (ADR-0065): a `lib/`-resolved package is the dev-mode lane — no
 // require pin is demanded (that stays a store/release rule). But a pin is
 // the truth WHEREVER resolution lands: when the importer does pin the name,
-// the lib/ copy must match it, or a stale checkout silently diverges from
-// what the pin promises.
+// the lib/ (or VIBE_LIB external root) copy must match it, or a stale
+// checkout silently diverges from what the pin promises. Under
+// VIBE_REQUIRE_PINS=1 (the release/publish freeze switch; `vibe run
+// --freeze` maps to it) the pin stops being optional: dev-mode name
+// resolution without a pin is an error.
 let verify_lib_package_fs: (String, Array[(String, String, String)], String) -> Unit with { Error, Fs } = (importer, pins, lib_index_path) -> {
-  let prefix = "lib/"
+  // The package name starts at the "@" — works for both the workspace
+  // spelling ("lib/@scope/name/index.vibei") and an absolute VIBE_LIB root
+  // ("/home/u/.vibe/lib/@scope/name/index.vibei").
   let suffix = "/index.vibei"
+  let at = String::last_index_of(lib_index_path, "@")
   let name = String::substring(
     lib_index_path,
-    String::length(prefix),
+    at,
     String::length(lib_index_path) - String::length(suffix)
   )
   let mut pin_hash = ""
@@ -1366,7 +1373,9 @@ let verify_lib_package_fs: (String, Array[(String, String, String)], String) -> 
     pi = pi + 1
   }
   if pin_hash == "" {
-    ()
+    if vibe_env_flag("VIBE_REQUIRE_PINS") {
+      throw("pin required for \{name} (VIBE_REQUIRE_PINS=1): \{importer} resolves it via the dev-mode lib lane; add `require \{name} <version> = #pkg:sha1:<hash>` (ADR-0065)")
+    } else ()
   } else {
     let (actual, _) = contract_package_hashes_fs(lib_index_path)
     if actual == pin_hash {
@@ -1440,8 +1449,10 @@ let rec collect_sources_rec: (String, Array[(String, String)], Array[Array[Strin
       // are covered by that package's hash.
       if String::starts_with(dep, ".vibe/store/") && String::ends_with(dep, "/index.vibei") {
         verify_store_package_fs(path, pins, dep)
-      } else if String::starts_with(dep, "lib/@") && String::ends_with(dep, "/index.vibei") {
-        // #751: dev-mode lane — pin optional, but verified when present.
+      } else if String::ends_with(dep, "/index.vibei") && String::last_index_of(dep, "@") >= 0 {
+        // #751: dev-mode lane (workspace lib/ OR a VIBE_LIB external root —
+        // any @-named package contract that is not the store) — pin
+        // optional but verified when present; VIBE_REQUIRE_PINS=1 demands it.
         verify_lib_package_fs(path, pins, dep)
       } else ()
       collect_sources_rec(dep, sources, visited)
