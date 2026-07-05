@@ -739,13 +739,14 @@ fn fmt_ops(ops: f64) -> String {
     }
 }
 
-// Benchmark mode. Instantiate ONCE, then call `_start` (which the test entry
-// builds to run the file's `bench {}`/`test {}` bodies) repeatedly on the WARM
-// instance, timing each call and reading `__heap_ptr` before/after the batch for
-// bytes/op. Reuses the re-runnable entry, so NO codegen change is needed; the
-// granularity is the whole file's bench blocks. Reports ns/op (min/p50/p95/mean),
-// ops/sec, and bytes/op (bump-heap delta / iters — the linear backend never frees
-// so this is the average allocation per iteration).
+// Benchmark mode. Instantiate one Store+Instance PER BENCH BLOCK (#747: the
+// linear backend never frees, so sharing an instance let an earlier block's
+// bump-heap high-water mark inflate later blocks 8-10×), warm the block on its
+// fresh instance, then time `iters` calls and read `__heap_ptr` before/after
+// the batch for bytes/op. Per-block `__bench_<name>` exports give block
+// granularity; files without them fall back to timing `_start` (all bodies
+// together). Reports ns/op (min/p50/p95/mean), ops/sec, and bytes/op
+// (bump-heap delta / iters — the average allocation per iteration).
 //
 //   moonrun_wt --bench <wasm|cwasm>
 // Env: VIBE_BENCH_ITERS (default 1000), VIBE_BENCH_WARMUP (default 50),
@@ -773,16 +774,25 @@ fn bench(args: Vec<String>) -> Result<i32> {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(8192);
-    let limits = StoreLimitsBuilder::new()
-        .memory_size(memory_mb * 1024 * 1024)
-        .build();
-    let mut state = HostState::new(vec!["moonrun_wt".to_string()], MemLimiter::new(limits));
-    state.capture_stdout = true; // suppress per-iteration program output
-    let mut store = Store::new(&engine, state);
-    store.limiter(|s| &mut s.mem);
     let mut linker = Linker::new(&engine);
     register_imports(&mut linker)?;
-    let instance = linker.instantiate(&mut store, &module)?;
+
+    // #747: one Store+Instance PER BENCH BLOCK. The linear backend never frees,
+    // so on a shared instance an earlier block's bump-heap growth (e.g. an
+    // O(N²) concat bench leaving a ~200MB high-water mark) inflated the blocks
+    // after it 8-10×. A fresh instance gives every block the same pristine
+    // heap; per-block warmup below still pays lazy module init before timing.
+    let make_instance = |linker: &Linker<HostState>| -> Result<(Store<HostState>, Instance)> {
+        let limits = StoreLimitsBuilder::new()
+            .memory_size(memory_mb * 1024 * 1024)
+            .build();
+        let mut state = HostState::new(vec!["moonrun_wt".to_string()], MemLimiter::new(limits));
+        state.capture_stdout = true; // suppress per-iteration program output
+        let mut store = Store::new(&engine, state);
+        store.limiter(|s| &mut s.mem);
+        let instance = linker.instantiate(&mut store, &module)?;
+        Ok((store, instance))
+    };
 
     // Per-block benchmarking: a `__no_entry__` build (`vibe bench`) exports one
     // `__bench_<name>` function per `bench "name" { }` block (codegen emits each
@@ -865,6 +875,7 @@ fn bench(args: Vec<String>) -> Result<i32> {
         for full in &bench_names {
             let name = full.strip_prefix("__bench_").unwrap_or(full);
             let block_label = format!("{label}::{name}");
+            let (mut store, instance) = make_instance(&linker)?;
             let func: TypedFunc<i64, i64> = instance.get_typed_func(&mut store, full)?;
             bench_one(
                 &mut store,
@@ -891,6 +902,7 @@ fn bench(args: Vec<String>) -> Result<i32> {
     }
 
     // Fallback (no per-block exports): time the whole `_start`.
+    let (mut store, instance) = make_instance(&linker)?;
     let start: TypedFunc<(), ()> = instance.get_typed_func(&mut store, "_start")?;
     bench_one(
         &mut store,
