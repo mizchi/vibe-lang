@@ -30,7 +30,7 @@ import ../runtime/eval_loader/index.vibe {
 }
 
 import ./header_cache.vibe {
-  load_or_parse_module_header_fs_impl
+  contract_sibling_impl_raws, load_or_parse_module_header_fs_impl
 }
 
 import ../contract/index.vibe {
@@ -1135,7 +1135,15 @@ let desugar_contract_source_fs: (String, String) -> String with { Error, Fs } = 
     throw("both index.vibe and index.vibei exist in \{dir} (#729): a boundary has exactly one index")
   } else ()
   let (decls, opaque_names, extra) = parse_contract_program(lex(source))
-  let (impl_raws, type_defs) = classify_contract_stmts(extra)
+  let (impl_raws0, type_defs) = classify_contract_stmts(extra)
+  // #730: explicit `import ./impl.vibe {}` declarations win; a contract that
+  // declares none auto-discovers its sibling *.vibe files (Fs::readdir,
+  // byte-sorted by the host so the facade is deterministic).
+  let impl_raws = if Array::length(impl_raws0) == 0 {
+    contract_sibling_impl_raws(dir)
+  } else {
+    impl_raws0
+  }
   let impl_units = Array::slice([
     ("", Array::slice([
       SExport(Array::slice([
@@ -1184,8 +1192,17 @@ export let contract_package_hashes_fs: (String) -> (String, String) with { Error
   let raw = Fs::read_file(path)
   let (_, blanked) = extract_require_pins(raw)
   let (decls, opaques, extra) = parse_contract_program(lex(blanked))
-  let (impl_raws, type_defs) = classify_contract_stmts(extra)
+  let (impl_raws0, type_defs) = classify_contract_stmts(extra)
   let dir = dir_of_path(path)
+  // #730: mirror the ingestion's auto-discovery — the package hash must cover
+  // the same impl files the facade is built from. Discovered raws are
+  // "./<name>" and byte-sorted, so the hash stays location-independent and
+  // deterministic.
+  let impl_raws = if Array::length(impl_raws0) == 0 {
+    contract_sibling_impl_raws(dir)
+  } else {
+    impl_raws0
+  }
   let sources = Array::slice([
     ("", "")
   ], 0, 0)

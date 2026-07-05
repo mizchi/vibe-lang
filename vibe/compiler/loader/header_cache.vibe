@@ -122,6 +122,31 @@ let collect_import_deps_from_stmts: (Array[Stmt], String, String) -> Array[Strin
   deps
 }
 
+// #730: sibling implementation files of a contract package, as raw import
+// spellings ("./<name>"). Used when an index.vibei declares NO implementation
+// imports: explicit `import ./impl.vibe {}` lines win when present (their
+// spelling is part of the package hash), discovery applies otherwise.
+// Fs::readdir returns names byte-sorted by the host, so facade order, hash
+// order, and dep order are deterministic. index.vibe cannot appear among the
+// siblings — ingestion rejects index.vibe + index.vibei coexistence first.
+export let contract_sibling_impl_raws: (String) -> Array[String] with { Error, Fs } = (dir) -> {
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  let names = Fs::readdir(dir)
+  let mut i = 0
+  while i < Array::length(names) {
+    let name = Array::get(names, i)
+    if String::ends_with(name, ".vibe") {
+      Array::push(out, String::concat("./", name))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 export let load_or_parse_module_header_fs_impl: (String, String, Int) -> (Array[String], Array[String], Int) with { Error, Fs } = (path, source, parse_count) -> {
   let cache_path = persistent_module_header_cache_path(path, compact_string_fingerprint(source))
   if Fs::exists(cache_path) {
@@ -169,7 +194,25 @@ export let load_or_parse_module_header_fs_impl: (String, String, Int) -> (Array[
         Array::push(cexports, coname)
         coi = coi + 1
       }
-      (collect_import_deps_from_stmts(cextra, dir_of_path(path), path), cexports, parse_count + 1)
+      // #730: a contract with no implementation imports auto-discovers its
+      // siblings — those files are deps of the header too, or an impl edit
+      // would not invalidate this cache entry.
+      let cdeps = collect_import_deps_from_stmts(cextra, dir_of_path(path), path)
+      let cdeps2 = if Array::length(cdeps) == 0 {
+        let craws = contract_sibling_impl_raws(dir_of_path(path))
+        let resolved = Array::slice([
+          ""
+        ], 0, 0)
+        let mut cri = 0
+        while cri < Array::length(craws) {
+          Array::push(resolved, resolve_path_fs(dir_of_path(path), Array::get(craws, cri), path))
+          cri = cri + 1
+        }
+        resolved
+      } else {
+        cdeps
+      }
+      (cdeps2, cexports, parse_count + 1)
     } else if is_special_bundle_path(path) {
       match special_bundle_header(path) {
         Some(pair) => {
