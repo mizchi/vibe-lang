@@ -41,11 +41,17 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-MIN_POINT="${VIBE_SELFHOST_SUITE_MIN_POINT_RATE:-34}"
+# Rebaselined 2026-07-05: the allowlist doubled (110 -> 224 files), and every
+# added test file contributes its WHOLE compiled module (prelude + imports) to
+# the fn/branch denominators, diluting the RATES even though absolute covered
+# counts rose ~5x (fn hit 2,4xx -> 12,476; branch hit 4,1xx -> 30,343). The
+# ABSOLUTE mins below are the real anti-regression ratchet and are raised to
+# just under current; the rate mins are recalibrated to the diluted baseline.
+MIN_POINT="${VIBE_SELFHOST_SUITE_MIN_POINT_RATE:-23}"
 MIN_LINE="${VIBE_SELFHOST_SUITE_MIN_LINE_RATE:-97}"
-MIN_BRANCH="${VIBE_SELFHOST_SUITE_MIN_BRANCH_RATE:-9}"
-MIN_FN_HIT="${VIBE_SELFHOST_SUITE_MIN_FN_HIT:-2200}"
-MIN_BRANCH_HIT="${VIBE_SELFHOST_SUITE_MIN_BRANCH_HIT:-3750}"
+MIN_BRANCH="${VIBE_SELFHOST_SUITE_MIN_BRANCH_RATE:-7}"
+MIN_FN_HIT="${VIBE_SELFHOST_SUITE_MIN_FN_HIT:-12000}"
+MIN_BRANCH_HIT="${VIBE_SELFHOST_SUITE_MIN_BRANCH_HIT:-29000}"
 
 ALLOWLIST="scripts/selfhost_unit_test_allowlist.txt"
 OUT_DIR="_build/coverage/selfhost-suite"
