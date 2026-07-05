@@ -34,7 +34,7 @@ import ./header_cache.vibe {
 }
 
 import ../contract/index.vibe {
-  check_contract, classify_contract_stmts, contract_facade_source, contract_hash, contract_surface_lines, extract_require_pins, package_hash_from_sources, parse_contract_program, verify_publish_bump
+  check_contract, classify_contract_stmts, contract_facade_marker, contract_facade_source, contract_hash, contract_surface_lines, extract_package_version, extract_require_pins, package_hash_from_sources, parse_contract_program, verify_publish_bump
 }
 
 import ./manifest_sources.vibe {
@@ -59,6 +59,7 @@ import ../module_graph_path.vibe {
   normalize_path,
   resolve_import_path,
   resolve_import_path_candidates,
+  vibe_env_flag,
   contains_path,
   path_set_add,
   path_set_contains,
@@ -535,7 +536,8 @@ let load_source_if_cached_file_spec_matches: (String, String, String) -> Option[
 // source, including ones a cache-reconstruction branch already ingested)
 // recognizes an already-desugared contract instead of re-parsing the facade
 // as contract grammar (which would fail conformance with empty decls).
-let contract_facade_marker = "// vibe: contract facade (desugared from .vibei)\n"
+// #753: the marker constant moved to contract/index.vibe so the
+// persistent-header lane (header_cache.vibe) applies the same check.
 
 export let ingest_source_text_fs: (String, String) -> String with { Error, Fs } = (path, raw) -> {
   let (_, pin_blanked) = extract_require_pins(raw)
@@ -1285,18 +1287,52 @@ export let fill_require_pins_fs_mode: (String, Bool) -> String with { Error, Fs 
 // requires (Elm-style machine-checked semver). Returns error strings;
 // empty = the release claim is honest.
 export let publish_check_fs: (String, String, String, String) -> Array[String] with { Error, Fs } = (prev_contract_path, next_contract_path, prev_version, next_version) -> {
-  let (_, prev_blanked) = extract_require_pins(Fs::read_file(prev_contract_path))
+  let prev_raw = Fs::read_file(prev_contract_path)
+  let (_, prev_blanked) = extract_require_pins(prev_raw)
   let (pd, po, pextra) = parse_contract_program(lex(prev_blanked))
   let (_, ptypes) = classify_contract_stmts(pextra)
-  let (_, next_blanked) = extract_require_pins(Fs::read_file(next_contract_path))
+  let next_raw = Fs::read_file(next_contract_path)
+  let (_, next_blanked) = extract_require_pins(next_raw)
   let (nd, no, nextra) = parse_contract_program(lex(next_blanked))
   let (_, ntypes) = classify_contract_stmts(nextra)
-  verify_publish_bump(
-    prev_version,
-    next_version,
-    contract_surface_lines(pd, po, ptypes),
-    contract_surface_lines(nd, no, ntypes)
-  )
+  // #754: versions come from the PACKAGE-side `version x.y.z` directive when
+  // the caller does not pass them; a caller-passed version that contradicts
+  // the directive is its own error (a publish must not claim a version the
+  // package does not declare).
+  let prev_directive = extract_package_version(prev_raw)
+  let next_directive = extract_package_version(next_raw)
+  let errors = Array::slice([
+    ""
+  ], 0, 0)
+  if prev_version != "" && prev_directive != "" && prev_version != prev_directive {
+    Array::push(errors, "previous version \{prev_version} contradicts the contract's version directive \{prev_directive}")
+  } else ()
+  if next_version != "" && next_directive != "" && next_version != next_directive {
+    Array::push(errors, "claimed version \{next_version} contradicts the contract's version directive \{next_directive}")
+  } else ()
+  let pv = if prev_version != "" {
+    prev_version
+  } else {
+    prev_directive
+  }
+  let nv = if next_version != "" {
+    next_version
+  } else {
+    next_directive
+  }
+  if pv == "" || nv == "" {
+    Array::push(errors, "publish versions unavailable: pass them explicitly or add a `version x.y.z` directive to the contract (#754)")
+    errors
+  } else if Array::length(errors) > 0 {
+    errors
+  } else {
+    verify_publish_bump(
+      pv,
+      nv,
+      contract_surface_lines(pd, po, ptypes),
+      contract_surface_lines(nd, no, ntypes)
+    )
+  }
 }
 
 // #730 (D-2): verify a store-resolved package against the importer's require
@@ -1339,6 +1375,48 @@ let verify_store_package_fs: (String, Array[(String, String, String)], String) -
     ()
   } else {
     throw("pin mismatch for \{name}: \{importer} requires #\{pin_hash} but the store copy is #\{actual}")
+  }
+}
+
+// #751 (ADR-0065): a `lib/`-resolved package is the dev-mode lane — no
+// require pin is demanded (that stays a store/release rule). But a pin is
+// the truth WHEREVER resolution lands: when the importer does pin the name,
+// the lib/ (or VIBE_LIB external root) copy must match it, or a stale
+// checkout silently diverges from what the pin promises. Under
+// VIBE_REQUIRE_PINS=1 (the release/publish freeze switch; `vibe run
+// --freeze` maps to it) the pin stops being optional: dev-mode name
+// resolution without a pin is an error.
+let verify_lib_package_fs: (String, Array[(String, String, String)], String) -> Unit with { Error, Fs } = (importer, pins, lib_index_path) -> {
+  // The package name starts at the "@" — works for both the workspace
+  // spelling ("lib/@scope/name/index.vibei") and an absolute VIBE_LIB root
+  // ("/home/u/.vibe/lib/@scope/name/index.vibei").
+  let suffix = "/index.vibei"
+  let at = String::last_index_of(lib_index_path, "@")
+  let name = String::substring(
+    lib_index_path,
+    at,
+    String::length(lib_index_path) - String::length(suffix)
+  )
+  let mut pin_hash = ""
+  let mut pi = 0
+  while pi < Array::length(pins) {
+    let (pname, _, phash) = Array::get(pins, pi)
+    if pname == name {
+      pin_hash = phash
+    } else ()
+    pi = pi + 1
+  }
+  if pin_hash == "" {
+    if vibe_env_flag("VIBE_REQUIRE_PINS") {
+      throw("pin required for \{name} (VIBE_REQUIRE_PINS=1): \{importer} resolves it via the dev-mode lib lane; add `require \{name} <version> = #pkg:sha1:<hash>` (ADR-0065)")
+    } else ()
+  } else {
+    let (actual, _) = contract_package_hashes_fs(lib_index_path)
+    if actual == pin_hash {
+      ()
+    } else {
+      throw("pin mismatch for \{name}: \{importer} requires #\{pin_hash} but the lib/ copy is #\{actual}")
+    }
   }
 }
 
@@ -1405,6 +1483,11 @@ let rec collect_sources_rec: (String, Array[(String, String)], Array[Array[Strin
       // are covered by that package's hash.
       if String::starts_with(dep, ".vibe/store/") && String::ends_with(dep, "/index.vibei") {
         verify_store_package_fs(path, pins, dep)
+      } else if String::ends_with(dep, "/index.vibei") && String::last_index_of(dep, "@") >= 0 {
+        // #751: dev-mode lane (workspace lib/ OR a VIBE_LIB external root —
+        // any @-named package contract that is not the store) — pin
+        // optional but verified when present; VIBE_REQUIRE_PINS=1 demands it.
+        verify_lib_package_fs(path, pins, dep)
       } else ()
       collect_sources_rec(dep, sources, visited)
       i = i + 1

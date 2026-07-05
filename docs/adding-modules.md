@@ -14,14 +14,22 @@ allowlist をセットで足す。**
 
 | 置き場所 | 用途 | 例 |
 | --- | --- | --- |
-| `lib/@vibe/<pkg>/` | 契約パッケージ。`index.vibei` が公開 API。compiler 本体からも `import ../../lib/@vibe/<pkg> { ... }` で消費できる (#741) | `lib/@vibe/core` (sha1 / leb128 / list / set) |
+| `lib/@vibe/<pkg>/` | 契約パッケージ。`index.vibei` が公開 API。compiler 本体からも `import ../../lib/@vibe/<pkg> { ... }` で消費できる (#741) | `lib/@vibe/core` (sha1 / leb128 / list / set), `lib/@vibe/ast` (AST 透明型), `lib/@vibe/parser` (lexer/parser/printer, #753) |
 | `vibe/<domain>/` | 標準ライブラリ層。directory import (`import ../json { ... }`) は `index.vibe(i)` 経由 | `vibe/json`, `vibe/collection` |
-| `vibe/x/<name>/` | 実験・拡張層。安定したら `vibe/` か `lib/@vibe/` へ昇格 | `vibe/x/fmt`, `vibe/x/base64` |
+| `lib/@vibex/<pkg>/` | 実験・拡張層 (ADR-0065: @vibex = 仮想実験ユーザー scope)。安定したら `lib/@vibe/` へ昇格 | `lib/@vibex/fmt`, `lib/@vibex/regexp` |
+| `lib/@<user>/<pkg>/` | コンパイラ非関連の実ユーザー scope パッケージ (in-repo に置けるのは repo owner が支配する scope のみ) | `lib/@mizchi/markdown` |
 | `vibe/compiler/` | compiler 本体のみ。ライブラリを置かない (共有したいものは `lib/@vibe/` に切り出して契約 import する) | — |
 
 新規の再利用可能なデータ構造・アルゴリズムは **`lib/@vibe/core` への追加を
 第一候補**にする (moonbitlang/core 方式のドメイン別ファイル + index.vibei
 契約)。
+
+`@scope/name` import の解決順 (ADR-0065, #751): `.vibe/store/` (pin 検証済み)
+→ workspace `lib/` → **`VIBE_LIB`** の各 root (`:` 区切りリスト。未設定時は
+`$VIBE_HOME/lib`、それも無ければ `~/.vibe/lib`)。lib/ / VIBE_LIB 解決は
+dev-mode の便宜で、pin があれば置き場所によらず hash 照合される。
+**`VIBE_REQUIRE_PINS=1`** (release/publish の freeze スイッチ; 将来の
+`vibe run --freeze` はこれに対応する) では pin なしの lib 解決はエラー。
 
 ## 2. 追加の手順
 

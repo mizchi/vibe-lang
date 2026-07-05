@@ -272,15 +272,125 @@ export let resolve_import_path: (String, String) -> String = (base_dir, raw_path
   }
 }
 
+// #751 (ADR-0065): the private Env effect + checker-only discharge below
+// let this module read VIBE_LIB / VIBE_HOME / HOME without carrying an
+// `Env` row on every resolver in the loader chain: builtin `Env::get`
+// compiles to the env-get host import DIRECTLY, so the handler arm is never
+// invoked at runtime (same mechanism as the Fs handles in
+// fixtures/fs_readdir_test.vibe). The effect declaration is private —
+// nothing outside this module sees it.
+effect Env {
+  Get(String) -> String
+}
+
+let env_get_raw: (String) -> String with { Env } = (name) -> {
+  Env::get(name)
+}
+
+let read_env_discharged: (String) -> String = (name) -> {
+  handle {
+    env_get_raw(name)
+  } with Env {
+    Get(_n) => resume("")
+  }
+}
+
+let strip_trailing_slash: (String) -> String = (p) -> {
+  let len = String::length(p)
+  if len > 1 && String::ends_with(p, "/") {
+    p[0: len - 1]
+  } else {
+    p
+  }
+}
+
+// #751 (ADR-0065): external library roots, PATH-style. Pure so it is
+// testable: VIBE_LIB (":"-separated, empty segments dropped) wins;
+// otherwise the default single root is $VIBE_HOME/lib, falling back to
+// $HOME/.vibe/lib. No environment at all -> no external roots
+// (workspace-only resolution).
+export let parse_vibe_lib_roots: (String, String, String) -> Array[String] = (vibe_lib, vibe_home, home) -> {
+  let roots = Array::slice([
+    ""
+  ], 0, 0)
+  if String::length(vibe_lib) > 0 {
+    let parts = String::split(vibe_lib, ":")
+    let mut i = 0
+    while i < Array::length(parts) {
+      let part = Array::get(parts, i)
+      if String::length(part) > 0 {
+        Array::push(roots, strip_trailing_slash(part))
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+  } else if String::length(vibe_home) > 0 {
+    Array::push(roots, String::concat(strip_trailing_slash(vibe_home), "/lib"))
+  } else if String::length(home) > 0 {
+    Array::push(roots, String::concat(strip_trailing_slash(home), "/.vibe/lib"))
+  } else {
+    ()
+  }
+  roots
+}
+
+export let external_lib_roots: () -> Array[String] = () -> {
+  parse_vibe_lib_roots(read_env_discharged("VIBE_LIB"), read_env_discharged("VIBE_HOME"), read_env_discharged("HOME"))
+}
+
+// #751: "is the environment flag set to 1" — the loader's freeze switch
+// (VIBE_REQUIRE_PINS) reads through the same checker-only discharge so its
+// signature stays effect-free.
+export let vibe_env_flag: (String) -> Bool = (name) -> {
+  read_env_discharged(name) == "1"
+}
+
+// #758 review (P1): the RESOLUTION ENVIRONMENT as a cache-key seed. The
+// persistent header/dep-list/source-list caches store RESOLVED graphs, and
+// resolution depends on the external lib roots (#751) and the freeze switch
+// — a graph cached without pins under one VIBE_LIB must not be replayed
+// under VIBE_REQUIRE_PINS=1 or a different root list (the freeze gate and
+// the pin verification only run on the cold walk). Folding this seed into
+// the cache paths makes each environment its own cache universe instead of
+// re-verifying cached graphs on load.
+export let resolution_env_seed: () -> String = () -> {
+  let roots = external_lib_roots()
+  let pins = if vibe_env_flag("VIBE_REQUIRE_PINS") {
+    "1"
+  } else {
+    "0"
+  }
+  String::concat("|roots=", String::concat(String::join(roots, ":"), String::concat("|pins=", pins)))
+}
+
 export let resolve_import_path_candidates: (String, String) -> Array[String] = (base_dir, raw_path) -> {
   // #730 (ADR-0063 §5/§6): `@scope/name` package refs resolve to the
   // workspace store, laid out BY NAME and verified BY HASH against the
   // importer's require pin (verification happens in the loader; this
   // function stays pure). Root-relative, independent of base_dir.
+  // #751 (ADR-0065): `lib/@scope/name` is the SECOND candidate — dev-mode
+  // resolution for in-repo packages and the materialize target for
+  // distributed ones. The pinned store wins when both exist; a lib/-resolved
+  // package is a contract package like the store (index.vibei required,
+  // boundary + conformance apply by path) but is NOT pin-verified — pins
+  // stay mandatory on the store/release path only. External roots (VIBE_LIB,
+  // default $VIBE_HOME/lib -> ~/.vibe/lib) come LAST, in list order — the
+  // workspace always wins over the installation. Both runners' raw fs lanes
+  // read absolute paths, so external roots need no extra preopen.
   if String::starts_with(raw_path, "@") {
-    return [
-      String::concat(".vibe/store/", String::concat(raw_path, "/index.vibei"))
-    ]
+    let candidates = Array::slice([
+      ""
+    ], 0, 0)
+    Array::push(candidates, String::concat(".vibe/store/", String::concat(raw_path, "/index.vibei")))
+    Array::push(candidates, String::concat("lib/", String::concat(raw_path, "/index.vibei")))
+    let roots = external_lib_roots()
+    let mut ri = 0
+    while ri < Array::length(roots) {
+      Array::push(candidates, String::concat(Array::get(roots, ri), String::concat("/", String::concat(raw_path, "/index.vibei"))))
+      ri = ri + 1
+    }
+    return candidates
   } else ()
   let len = String::length(raw_path)
   let joined = if path_has_relative_prefix(raw_path, len) {

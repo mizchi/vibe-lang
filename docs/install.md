@@ -6,6 +6,18 @@ is AOT-compiled to a host-specific `vibe-cli.cwasm` so the compiler is not
 re-JITed on every command. See `docs/release-roadmap.md` (テーマ1) for the
 rationale behind this split.
 
+## Quick install (curl)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/scripts/installer.sh | bash
+```
+
+This shallow-clones the repo (override with `VIBE_INSTALL_REPO` /
+`VIBE_INSTALL_REF`) and delegates to `scripts/install.sh`. Requirements:
+`git`, `bash`, `cargo` (the wasmtime runner builds from source); `node` is
+optional (used to self-build the newest compiler — without it the committed
+seed compiler is installed, which is always functional).
+
 ## Quick install (from a checkout)
 
 ```bash
@@ -19,7 +31,9 @@ This will:
    seed → stage1 → stage2), falling back to the committed seed if the build
    toolchain is unavailable,
 3. AOT-compile it to `vibe-cli.cwasm` for this machine,
-4. install the `vibe` launcher and link it onto your `PATH`.
+4. install the launcher into the toolchain + the dispatcher onto your `PATH`,
+5. materialize the stdlib packages (`@vibe/core` / `@vibe/ast` /
+   `@vibe/parser`) into `$VIBE_HOME/lib`, hash-verified (`vibe hash`).
 
 Then:
 
@@ -29,29 +43,55 @@ echo 'export let main = () -> Int { 40 + 2 }' > hello.vibe
 vibe run hello.vibe        # -> 42
 ```
 
-### Install layout
+### Install layout (rustup-style toolchains, #755)
 
 ```
 $VIBE_HOME/                 (default: ~/.vibe)
 ├── bin/
-│   ├── vibe                # launcher (subcommand dispatch + orchestration)
-│   └── moonrun_wt          # wasmtime runner
-└── lib/
-    ├── vibe-cli.wasm       # portable compiler artifact
-    └── vibe-cli.cwasm      # host-specific AOT build (rebuilt by `vibe self update`)
+│   └── vibe                # dispatcher shim: picks a toolchain and execs it
+│                           # ($VIBE_TOOLCHAIN > $VIBE_HOME/toolchain file >
+│                           #  the single installed toolchain)
+├── toolchain               # default toolchain name
+├── toolchains/<name>/
+│   ├── bin/
+│   │   ├── vibe            # launcher (subcommand dispatch + orchestration)
+│   │   └── moonrun_wt      # wasmtime runner
+│   └── lib/
+│       ├── vibe-cli.wasm   # portable compiler artifact
+│       ├── vibe-cli.cwasm  # host-specific AOT build (`vibe self update`)
+│       └── lsp_server.js…  # editor tooling
+├── lib/
+│   └── @vibe/{core,ast,parser}/   # stdlib packages — the default VIBE_LIB
+│                                  # resolution root (ADR-0065 #751), SHARED
+│                                  # across toolchains (content-addressed)
+└── cache/                  # package fetch cache (#754) — shared
 ```
 
-`~/.local/bin/vibe` is symlinked to `$VIBE_HOME/bin/vibe` (override the bin
-directory with `--bin-dir` or `VIBE_BIN_DIR`; skip linking with `--no-link`).
+Toolchains hold the versioned artifacts; packages and caches are shared and
+content-addressed. A future `vibe toolchain` selector (rustup-style) only has
+to rewrite `$VIBE_HOME/toolchain` — `scripts/installer.sh` already names
+toolchains after the installed ref so several can coexist.
+
+PATH policy: **`~/.vibe/bin` is the PATH entry** (the dispatcher lives
+there). The installer writes a sourceable `~/.vibe/env` (rustup's
+`~/.cargo/env` pattern) and, for a default-prefix install, appends
+`. "$HOME/.vibe/env"` to `~/.profile` / `~/.bashrc` / `~/.zshrc` (skip with
+`--no-modify-path`; custom `--prefix` installs never touch rc files).
+Restart the shell or `. "$HOME/.vibe/env"` to pick it up. An extra symlink
+dir is opt-in via `--bin-dir` / `VIBE_BIN_DIR` (used by the test harness).
 
 ## Installer options
 
 ```
 bash scripts/install.sh [--prefix DIR]      # VIBE_HOME (default ~/.vibe)
-                        [--bin-dir DIR]      # PATH link dir (default ~/.local/bin)
                         [--runner PATH]      # use a prebuilt moonrun_wt
                         [--cli-wasm PATH]    # use a specific compiler wasm
-                        [--no-link]          # do not symlink onto PATH
+                        [--toolchain NAME]   # toolchain name (default: main)
+                        [--set-default]      # make this the default toolchain
+                        [--no-stdlib]        # skip stdlib materialization
+                        [--no-modify-path]   # do not touch shell rc files
+                        [--bin-dir DIR]      # opt-in extra symlink dir
+                        [--no-link]          # skip the --bin-dir symlink
 ```
 
 To install a released compiler instead of the seed, pass the release artifact:

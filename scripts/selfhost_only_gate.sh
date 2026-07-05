@@ -341,6 +341,286 @@ fi
 rm -rf ".vibe/store/@gate" "$cdir2"
 echo "[selfhost-only-gate] content-addressed store regression ok"
 
+# 6h. workspace lib/ package resolution (#751, ADR-0065): `@scope/name`
+#     resolves through lib/@scope/name/index.vibei WITHOUT a require pin
+#     (dev-mode lane; the pinned store stays first in candidate order). A pin,
+#     when present, is still the truth: a wrong pin against the lib/ copy is
+#     rejected. The package below declares no impl imports, so this also
+#     exercises sibling auto-discovery (#730) through the lib/ path.
+echo "[selfhost-only-gate] 6h workspace lib/ package resolution (#751)"
+lpkg="lib/@gate751/greet"
+rm -rf "lib/@gate751"; mkdir -p "$lpkg"
+printf 'fn greet_n(x: Int) -> Int\n' > "$lpkg/index.vibei"
+printf 'export fn greet_n(x: Int) -> Int { x + 2 }\n' > "$lpkg/impl.vibe"
+ldir="_build/_gate_lib751"
+rm -rf "$ldir"; mkdir -p "$ldir"
+printf 'import @gate751/greet { greet_n }\nexport let _start: () -> Int = () -> { greet_n(40) }\n' > "$ldir/ok.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$ldir/ok.vibe" "$ldir/ok.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$ldir/ok.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: unpinned lib/ package import did not compile (#751)" >&2
+  cat "$ldir/ok.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+printf 'require @gate751/greet 1.0.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\nimport @gate751/greet { greet_n }\nexport let _start: () -> Int = () -> { greet_n(40) }\n' > "$ldir/bad.vibe"
+if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$ldir/bad.vibe" "$ldir/bad.wasm" _start >/dev/null 2>&1 \
+  && [ -s "$ldir/bad.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: wrong pin against a lib/ copy was not rejected (#751)" >&2; exit 1
+fi
+if ! grep -q "pin mismatch" "$ldir/bad.wasm.diag" 2>/dev/null; then
+  echo "[selfhost-only-gate] FAIL: lib/ pin rejection lacks the expected diagnostic (#751)" >&2
+  cat "$ldir/bad.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+rm -rf "lib/@gate751" "$ldir"
+echo "[selfhost-only-gate] workspace lib/ package resolution ok"
+
+# 6i. VIBE_LIB external roots + freeze (#751, ADR-0065): an @scope/name
+#     package living OUTSIDE the workspace resolves through a VIBE_LIB root
+#     (":"-separated list; missing roots are skipped in order). The
+#     workspace lib/ copy wins over an external root when both exist, and
+#     VIBE_REQUIRE_PINS=1 (the release/publish freeze switch) rejects any
+#     pin-less dev-mode lib resolution. Each step uses a distinct consumer
+#     file: the persistent header/dep caches key on content, and the SAME
+#     content under a different VIBE_LIB would replay the previous
+#     resolution.
+echo "[selfhost-only-gate] 6i VIBE_LIB external roots + freeze (#751)"
+xroot="$(mktemp -d)"
+xpkg="$xroot/@gate751x/echo"
+mkdir -p "$xpkg"
+printf 'fn echo_n(x: Int) -> Int\n' > "$xpkg/index.vibei"
+printf 'export fn echo_n(x: Int) -> Int { x + 2 }\n' > "$xpkg/impl.vibe"
+xdir="_build/_gate_lib751x"
+rm -rf "$xdir" "lib/@gate751x"; mkdir -p "$xdir"
+# (1) without a usable root the name must NOT resolve
+printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(40) }\n' > "$xdir/miss.vibe"
+if VIBE_LIB="$xroot/does-not-exist" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$xdir/miss.vibe" "$xdir/miss.wasm" _start >/dev/null 2>&1 \
+  && [ -s "$xdir/miss.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: external package resolved without a VIBE_LIB root (#751)" >&2; exit 1
+fi
+# (2) a ":"-separated VIBE_LIB resolves through the first root that has the
+#     package (missing roots skipped); the compiled program runs.
+printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(40) + 0 }\n' > "$xdir/ext.vibe"
+VIBE_LIB="$xroot/does-not-exist:$xroot" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$xdir/ext.vibe" "$xdir/ext.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$xdir/ext.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: VIBE_LIB root resolution did not compile (#751)" >&2
+  cat "$xdir/ext.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+ext_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$xdir/ext.wasm" 2>/dev/null | tail -1)"
+if [ "$ext_out" != "42" ]; then
+  echo "[selfhost-only-gate] FAIL: VIBE_LIB-resolved package returned '$ext_out' (want 42) (#751)" >&2; exit 1
+fi
+# (3) the workspace lib/ copy wins over the external root
+mkdir -p "lib/@gate751x/echo"
+printf 'fn echo_n(x: Int) -> Int\n' > "lib/@gate751x/echo/index.vibei"
+printf 'export fn echo_n(x: Int) -> Int { x + 3 }\n' > "lib/@gate751x/echo/impl.vibe"
+printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(40) + 0 + 0 }\n' > "$xdir/ws.vibe"
+VIBE_LIB="$xroot/does-not-exist:$xroot" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$xdir/ws.vibe" "$xdir/ws.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$xdir/ws.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: workspace-precedence consumer did not compile (#751)" >&2
+  cat "$xdir/ws.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+ws_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$xdir/ws.wasm" 2>/dev/null | tail -1)"
+if [ "$ws_out" != "43" ]; then
+  echo "[selfhost-only-gate] FAIL: workspace lib/ did not win over VIBE_LIB root (got '$ws_out', want 43) (#751)" >&2; exit 1
+fi
+# (4) freeze: VIBE_REQUIRE_PINS=1 demands a pin for any dev-mode lib lane
+printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(40) + 0 + 0 + 0 }\n' > "$xdir/frz.vibe"
+if VIBE_REQUIRE_PINS=1 VIBE_LIB="$xroot" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$xdir/frz.vibe" "$xdir/frz.wasm" _start >/dev/null 2>&1 \
+  && [ -s "$xdir/frz.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: pin-less lib resolution was allowed under VIBE_REQUIRE_PINS=1 (#751)" >&2; exit 1
+fi
+if ! grep -q "pin required" "$xdir/frz.wasm.diag" 2>/dev/null; then
+  echo "[selfhost-only-gate] FAIL: freeze rejection lacks the expected diagnostic (#751)" >&2
+  cat "$xdir/frz.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+# (5) #758 review (P1): a resolved graph cached under one environment must
+#     NOT replay under another — the SAME consumer content is compiled
+#     across env changes (previously the persistent source/header caches
+#     keyed on content only, so a pin-less graph warmed without freeze was
+#     replayed under VIBE_REQUIRE_PINS=1, and a removed VIBE_LIB root kept
+#     resolving).
+rm -rf "lib/@gate751x"
+printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(38) }\n' > "$xdir/replay.vibe"
+VIBE_LIB="$xroot" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$xdir/replay.vibe" "$xdir/replay1.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$xdir/replay1.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: replay warm-up compile failed (#758)" >&2
+  cat "$xdir/replay1.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+if VIBE_LIB="$xroot/does-not-exist" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$xdir/replay.vibe" "$xdir/replay2.wasm" _start >/dev/null 2>&1 \
+  && [ -s "$xdir/replay2.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: warm cache replayed a removed VIBE_LIB root (#758)" >&2; exit 1
+fi
+if VIBE_REQUIRE_PINS=1 VIBE_LIB="$xroot" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$xdir/replay.vibe" "$xdir/replay3.wasm" _start >/dev/null 2>&1 \
+  && [ -s "$xdir/replay3.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: warm cache bypassed VIBE_REQUIRE_PINS=1 (#758)" >&2; exit 1
+fi
+if ! grep -q "pin required" "$xdir/replay3.wasm.diag" 2>/dev/null; then
+  echo "[selfhost-only-gate] FAIL: freeze-under-warm-cache rejection lacks the expected diagnostic (#758)" >&2
+  cat "$xdir/replay3.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+rm -rf "$xdir" "$xroot"
+echo "[selfhost-only-gate] VIBE_LIB external roots + freeze ok"
+
+# 6j. distribution pipeline (#754, ADR-0065 Phase 4): publish (version
+#     directive + semver gate) -> fetch cache (CAS keyed by package hash +
+#     versions.tsv) -> materialize into $VIBE_HOME/lib (the default VIBE_LIB
+#     root) -> name resolution -> build&run; then the pinned store lane
+#     under freeze; then the two rejections that make version->hash an
+#     immutable mapping (same-version republish; dishonest semver claim).
+echo "[selfhost-only-gate] 6j distribution pipeline: publish/cache/materialize (#754)"
+jhome="$(mktemp -d)"
+jsrc="$jhome/src/@gate754/mathx"
+mkdir -p "$jsrc"
+printf 'version 1.0.0\n\nfn quad(x: Int) -> Int\n' > "$jsrc/index.vibei"
+printf 'export fn quad(x: Int) -> Int { x * 4 }\n' > "$jsrc/impl.vibe"
+jdir="_build/_gate_pkg754"
+rm -rf "$jdir" ".vibe/store/@gate754"; mkdir -p "$jdir"
+if ! VIBE_HOME="$jhome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh publish "$jsrc" > "$jdir/pub1.log" 2>&1; then
+  echo "[selfhost-only-gate] FAIL: publish of @gate754/mathx@1.0.0 failed (#754)" >&2
+  cat "$jdir/pub1.log" >&2; exit 1
+fi
+if ! grep -q "@gate754/mathx@1.0.0" "$jhome/cache/versions.tsv" 2>/dev/null; then
+  echo "[selfhost-only-gate] FAIL: publish did not record the version mapping (#754)" >&2; exit 1
+fi
+if ! VIBE_HOME="$jhome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh install "@gate754/mathx@1.0.0" > "$jdir/inst1.log" 2>&1; then
+  echo "[selfhost-only-gate] FAIL: install/materialize into VIBE_HOME/lib failed (#754)" >&2
+  cat "$jdir/inst1.log" >&2; exit 1
+fi
+printf 'import @gate754/mathx { quad }\nexport let _start: () -> Int = () -> { quad(11) }\n' > "$jdir/use.vibe"
+VIBE_HOME="$jhome" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$jdir/use.vibe" "$jdir/use.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$jdir/use.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: materialized package did not resolve via VIBE_HOME default root (#754)" >&2
+  cat "$jdir/use.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+juse_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$jdir/use.wasm" 2>/dev/null | tail -1)"
+if [ "$juse_out" != "44" ]; then
+  echo "[selfhost-only-gate] FAIL: materialized package returned '$juse_out' (want 44) (#754)" >&2; exit 1
+fi
+# pinned store lane under freeze: install --store, consumer carries the pin
+if ! VIBE_HOME="$jhome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh install "@gate754/mathx@1.0.0" --store > "$jdir/inst2.log" 2>&1; then
+  echo "[selfhost-only-gate] FAIL: install --store failed (#754)" >&2
+  cat "$jdir/inst2.log" >&2; exit 1
+fi
+jhash="$(awk -F'\t' '$1 == "@gate754/mathx@1.0.0" { print $2 }' "$jhome/cache/versions.tsv")"
+printf 'require @gate754/mathx 1.0.0 = #%s\n\nimport @gate754/mathx { quad }\nexport let _start: () -> Int = () -> { quad(11) + 0 }\n' "$jhash" > "$jdir/pinned.vibe"
+VIBE_REQUIRE_PINS=1 VIBE_HOME="$jhome" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$jdir/pinned.vibe" "$jdir/pinned.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$jdir/pinned.wasm" ]; then
+  echo "[selfhost-only-gate] FAIL: pinned store build under VIBE_REQUIRE_PINS=1 failed (#754)" >&2
+  cat "$jdir/pinned.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+# same-version republish with different content must be rejected
+printf 'export fn quad(x: Int) -> Int { x * 5 }\n' > "$jsrc/impl.vibe"
+if VIBE_HOME="$jhome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh publish "$jsrc" > "$jdir/pub2.log" 2>&1; then
+  echo "[selfhost-only-gate] FAIL: same-version republish was accepted (#754)" >&2; exit 1
+fi
+if ! grep -q "same-version republish rejected" "$jdir/pub2.log"; then
+  echo "[selfhost-only-gate] FAIL: republish rejection lacks the expected message (#754)" >&2
+  cat "$jdir/pub2.log" >&2; exit 1
+fi
+# dishonest bump: surface grows but only the patch level is bumped
+printf 'version 1.0.1\n\nfn quad(x: Int) -> Int\nfn oct(x: Int) -> Int\n' > "$jsrc/index.vibei"
+printf 'export fn quad(x: Int) -> Int { x * 4 }\nexport fn oct(x: Int) -> Int { x * 8 }\n' > "$jsrc/impl.vibe"
+if VIBE_HOME="$jhome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh publish "$jsrc" > "$jdir/pub3.log" 2>&1; then
+  echo "[selfhost-only-gate] FAIL: dishonest patch bump was accepted by publish (#754)" >&2; exit 1
+fi
+# honest minor bump passes (versions come from the directives, no env)
+printf 'version 1.1.0\n\nfn quad(x: Int) -> Int\nfn oct(x: Int) -> Int\n' > "$jsrc/index.vibei"
+if ! VIBE_HOME="$jhome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh publish "$jsrc" > "$jdir/pub4.log" 2>&1; then
+  echo "[selfhost-only-gate] FAIL: honest minor bump was rejected by publish (#754)" >&2
+  cat "$jdir/pub4.log" >&2; exit 1
+fi
+rm -rf ".vibe/store/@gate754" "$jdir" "$jhome"
+echo "[selfhost-only-gate] distribution pipeline ok"
+
+# 6k. registry-less git resolution (#755 Phase 0): `vibe_pkg.sh add` fetches
+#     a package from a git source (github: is sugar over the same path),
+#     resolves the ref to a COMMIT (provenance), hashes the fetched sources
+#     LOCALLY, and installs only when the hash agrees with the expected pin
+#     (or records it trust-on-first-use). A hermetic file:// repo stands in
+#     for GitHub; the tamper step re-serves the same version with different
+#     content and must be rejected by the version->hash record.
+echo "[selfhost-only-gate] 6k registry-less git resolution (#755 Phase 0)"
+khome="$(mktemp -d)"
+krepo="$(mktemp -d)"
+kdir="_build/_gate_pkg755"
+rm -rf "$kdir"; mkdir -p "$kdir"
+mkdir -p "$krepo/packages/@gate755/hex"
+printf 'version 1.0.0\n\nfn hex_n(x: Int) -> Int\n' > "$krepo/packages/@gate755/hex/index.vibei"
+printf 'export fn hex_n(x: Int) -> Int { x + 6 }\n' > "$krepo/packages/@gate755/hex/impl.vibe"
+git -C "$krepo" init -q
+git -C "$krepo" add -A
+git -C "$krepo" -c user.email=gate@vibe -c user.name=gate commit -qm pkg
+git -C "$krepo" branch -m main
+kspec="git:file://$krepo@main#packages/@gate755/hex"
+# (1) TOFU add: fetch, record, materialize into $VIBE_HOME/lib; consumer runs
+if ! VIBE_HOME="$khome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh add "$kspec" > "$kdir/add1.log" 2>&1; then
+  echo "[selfhost-only-gate] FAIL: git add (TOFU) failed (#755)" >&2
+  cat "$kdir/add1.log" >&2; exit 1
+fi
+khash="$(awk -F'\t' '$1 == "@gate755/hex@1.0.0" { print $2 }' "$khome/cache/versions.tsv")"
+if [ -z "$khash" ]; then
+  echo "[selfhost-only-gate] FAIL: git add did not record the version mapping (#755)" >&2; exit 1
+fi
+if ! grep -q "@gate755/hex@1.0.0" "$khome/cache/provenance.tsv" 2>/dev/null; then
+  echo "[selfhost-only-gate] FAIL: git add did not record provenance (#755)" >&2; exit 1
+fi
+printf 'import @gate755/hex { hex_n }\nexport let _start: () -> Int = () -> { hex_n(36) }\n' > "$kdir/use.vibe"
+VIBE_HOME="$khome" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$kdir/use.vibe" "$kdir/use.wasm" _start >/dev/null 2>&1 || true
+kuse_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$kdir/use.wasm" 2>/dev/null | tail -1)"
+if [ "$kuse_out" != "42" ]; then
+  echo "[selfhost-only-gate] FAIL: git-added package returned '$kuse_out' (want 42) (#755)" >&2; exit 1
+fi
+# (2) wrong expected pin rejects BEFORE any side effect (fresh home)
+khome2="$(mktemp -d)"
+if VIBE_HOME="$khome2" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh add "$kspec" "#pkg:sha1:0000000000000000000000000000000000000000" > "$kdir/add2.log" 2>&1; then
+  echo "[selfhost-only-gate] FAIL: wrong expected pin was accepted (#755)" >&2; exit 1
+fi
+if ! grep -q "hash mismatch" "$kdir/add2.log" || [ -f "$khome2/cache/versions.tsv" ]; then
+  echo "[selfhost-only-gate] FAIL: pin rejection is wrong or left side effects (#755)" >&2
+  cat "$kdir/add2.log" >&2; exit 1
+fi
+# (3) correct expected pin verifies a fresh fetch
+if ! VIBE_HOME="$khome2" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh add "$kspec" "#$khash" > "$kdir/add3.log" 2>&1; then
+  echo "[selfhost-only-gate] FAIL: correct expected pin was rejected (#755)" >&2
+  cat "$kdir/add3.log" >&2; exit 1
+fi
+# (4) upstream tampers: same version, different content -> rejected by the
+#     local version->hash record
+printf 'export fn hex_n(x: Int) -> Int { x + 7 }\n' > "$krepo/packages/@gate755/hex/impl.vibe"
+git -C "$krepo" add -A
+git -C "$krepo" -c user.email=gate@vibe -c user.name=gate commit -qm tamper
+if VIBE_HOME="$khome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh add "$kspec" > "$kdir/add4.log" 2>&1; then
+  echo "[selfhost-only-gate] FAIL: tampered same-version fetch was accepted (#755)" >&2; exit 1
+fi
+if ! grep -q "version->hash is immutable" "$kdir/add4.log"; then
+  echo "[selfhost-only-gate] FAIL: tamper rejection lacks the expected message (#755)" >&2
+  cat "$kdir/add4.log" >&2; exit 1
+fi
+rm -rf "$kdir" "$khome" "$khome2" "$krepo"
+echo "[selfhost-only-gate] registry-less git resolution ok"
+
 # 6d. where-contract + publish-gate regression (#731 / #732): a violated
 #     requires clause traps at runtime; the publish semver gate accepts an
 #     honest bump and rejects a dishonest one.

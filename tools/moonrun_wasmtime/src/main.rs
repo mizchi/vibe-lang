@@ -352,6 +352,20 @@ fn print_help() {
     );
 }
 
+// Wasm stack budget. wasmtime's default max_wasm_stack (512 KiB) is far too
+// small for the compiler's recursive-descent parser on deep sources — hashing
+// or compiling @vibe/parser exhausts it ("wasm trap: call stack exhausted")
+// while the node runner (V8, bigger default) sails through. The wasm stack
+// must stay comfortably below the native stack of the executing thread, so
+// main() re-launches onto a worker thread sized wasm_stack + 8 MiB.
+fn wasm_stack_bytes() -> usize {
+    let mb = std::env::var("MOONRUN_WT_WASM_STACK_MB")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(64);
+    mb.max(1) * 1024 * 1024
+}
+
 fn engine_config() -> Config {
     let mut cfg = Config::new();
     cfg.strategy(Strategy::Cranelift);
@@ -365,6 +379,11 @@ fn engine_config() -> Config {
     cfg.wasm_simd(true);
     cfg.wasm_relaxed_simd(true);
     cfg.wasm_tail_call(true);
+    cfg.max_wasm_stack(wasm_stack_bytes());
+    // The crate builds wasmtime with the async feature (the daemon path), and
+    // wasmtime validates max_wasm_stack <= async_stack_size even for sync
+    // stores — keep the async fiber stack one page-cluster ahead.
+    cfg.async_stack_size(wasm_stack_bytes() + 1024 * 1024);
     // debugger breakpoint (DAP P1): wasm backtraces are enabled by default in
     // wasmtime, so `vibe::dbg_break` can name the entering function and the call
     // stack via the name section without extra config.
@@ -2709,6 +2728,24 @@ fn dump_trace(wasm_path: &str, instance: &wasmtime::Instance, store: &mut Store<
 }
 
 fn main() {
+    // Re-launch onto a worker thread whose native stack comfortably exceeds
+    // the configured wasm stack (see wasm_stack_bytes): wasm frames live on
+    // the executing thread's stack, and the OS default (typically 8 MiB)
+    // would be blown by the enlarged max_wasm_stack before wasmtime could
+    // raise its own graceful trap.
+    let stack = wasm_stack_bytes() + 8 * 1024 * 1024;
+    let handle = std::thread::Builder::new()
+        .name("moonrun_wt".to_string())
+        .stack_size(stack)
+        .spawn(real_main)
+        .expect("spawn main thread");
+    match handle.join() {
+        Ok(()) => {}
+        Err(_) => std::process::exit(1),
+    }
+}
+
+fn real_main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
         print_help();

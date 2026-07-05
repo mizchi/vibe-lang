@@ -29,7 +29,7 @@ import .. / syntax / parser.vibe {
 }
 
 import .. / contract / index.vibe {
-  extract_require_pins, parse_contract_program
+  contract_facade_marker, extract_require_pins, parse_contract_program
 }
 
 //# Functions
@@ -171,7 +171,16 @@ export let load_or_parse_module_header_fs_impl: (String, String, Int) -> (Array[
     // still reproduces one level deeper (`parse_type_impl`, reached once the
     // input has a type annotation) -- root cause remains uncharacterized, and
     // this workaround likely needs to be repeated at that/other call sites.
-    let header_result = if String::ends_with(path, ".vibei") {
+    // #753: an already-desugared facade can reach this parse under its
+    // .vibei path (type_db re-reads COLLECTED sources, and collection
+    // replaces a contract's text with its facade). A facade is ordinary
+    // program syntax — re-parsing it as contract grammar mis-reads its
+    // surface (a facade with only type defs has zero impl imports, which
+    // would trigger sibling auto-discovery below and pull `_test.vibe`
+    // neighbors into the package's dep set — "import cycle detected" for
+    // any `import .` test). Route it to the ordinary branch instead.
+    let is_contract_source = String::ends_with(path, ".vibei") && !String::starts_with(source, contract_facade_marker)
+    let header_result = if is_contract_source {
       // #740 fallout: a .vibei contract is not ordinary program syntax
       // (bodyless fn/type declarations), so the full-program parse below
       // threw "expected = but got type". Only the COLD-cache lane reaches

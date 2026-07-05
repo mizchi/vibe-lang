@@ -1,0 +1,207 @@
+//# Types
+
+export enum Semver {
+  Semver(Int, Int, Int, String)
+  // major, minor, patch, prerelease
+}
+
+//# Functions
+
+export let compare = (a: Semver, b: Semver) -> Int {
+  match a {
+    Semver(a_maj, a_min, a_pat, a_pre) =>
+    match b {
+      Semver(b_maj, b_min, b_pat, b_pre) =>
+      if a_maj != b_maj {
+        a_maj - b_maj
+      }
+      else if a_min != b_min {
+        a_min - b_min
+      }
+      else if a_pat != b_pat {
+        a_pat - b_pat
+      }
+      else {
+        let a_has = String::length(a_pre) > 0
+        let b_has = String::length(b_pre) > 0
+        if a_has && not(b_has) {
+          -1
+        }
+        else if not(a_has) && b_has {
+          1
+        }
+        else {
+          let a_len = String::length(a_pre)
+          let b_len = String::length(b_pre)
+          let min_len = if a_len < b_len {
+            a_len
+          } else {
+            b_len
+          }
+          let rec cmp_at = (ci: Int) -> Int {
+            if ci >= min_len {
+              a_len - b_len
+            } else {
+              let ac = String::char_code_at(a_pre, ci)
+              let bc = String::char_code_at(b_pre, ci)
+              if ac != bc {
+                ac - bc
+              } else {
+                cmp_at(ci + 1)
+              }
+            }
+          }
+          cmp_at(0)
+        }
+      }
+    }
+  }
+}
+
+export let eq = (a: Semver, b: Semver) -> Bool {
+  compare(a, b) == 0
+}
+
+export let gt = (a: Semver, b: Semver) -> Bool {
+  compare(a, b) > 0
+}
+
+export let lt = (a: Semver, b: Semver) -> Bool {
+  compare(a, b) < 0
+}
+
+export let gte = (a: Semver, b: Semver) -> Bool {
+  compare(a, b) >= 0
+}
+
+export let lte = (a: Semver, b: Semver) -> Bool {
+  compare(a, b) <= 0
+}
+
+export let bump_major = (v: Semver) -> Semver {
+  match v {
+    Semver(m, _, _, _) => Semver(m + 1, 0, 0, "")
+  }
+}
+
+export let bump_minor = (v: Semver) -> Semver {
+  match v {
+    Semver(m, n, _, _) => Semver(m, n + 1, 0, "")
+  }
+}
+
+export let bump_patch = (v: Semver) -> Semver {
+  match v {
+    Semver(m, n, p, _) => Semver(m, n, p + 1, "")
+  }
+}
+
+let int_to_string = (n: Int) -> String {
+  if n == 0 {
+    "0"
+  }
+  else {
+    let mut result = ""
+    let mut v = n
+    while v > 0 {
+      let digit = v % 10
+      let ch = match digit {
+        0 => "0",
+        1 => "1",
+        2 => "2",
+        3 => "3",
+        4 => "4",
+        5 => "5",
+        6 => "6",
+        7 => "7",
+        8 => "8",
+        _ => "9"
+      }
+      result = "\{ch}\{result}"
+      v = v / 10
+    }
+    result
+  }
+}
+
+let parse_int_part = (s: String) -> Int {
+  let len = String::length(s)
+  let mut result = 0
+  let mut idx = 0
+  while idx < len {
+    let c = String::char_code_at(s, idx)
+    if c >= 48 && c <= 57 {
+      result = result * 10 + (c - 48)
+    }
+    idx = idx + 1
+  }
+  result
+}
+
+export let parse = (s: String) -> Semver {
+  let input = if String::length(s) > 0 && s[0: 1] == "v" {
+    s[1: String::length(s)]
+  } else {
+    s
+  }
+  let hyphen = String::index_of(input, "-")
+  let (version_part, prerelease) = if hyphen >= 0 {
+    (input[0: hyphen], input[hyphen + 1: String::length(input)])
+  } else {
+    (input, "")
+  }
+  let dot1 = String::index_of(version_part, ".")
+  if dot1 < 0 {
+    Semver(parse_int_part(version_part), 0, 0, prerelease)
+  } else {
+    let major = parse_int_part(version_part[0: dot1])
+    let rest = version_part[dot1 + 1: String::length(version_part)]
+    let dot2 = String::index_of(rest, ".")
+    if dot2 < 0 {
+      Semver(major, parse_int_part(rest), 0, prerelease)
+    } else {
+      let minor = parse_int_part(rest[0: dot2])
+      let patch = parse_int_part(rest[dot2 + 1: String::length(rest)])
+      Semver(major, minor, patch, prerelease)
+    }
+  }
+}
+
+export let Semver::major = (v: Semver) -> Int {
+  match v {
+    Semver(m, _, _, _) => m
+  }
+}
+
+export let Semver::minor = (v: Semver) -> Int {
+  match v {
+    Semver(_, m, _, _) => m
+  }
+}
+
+export let Semver::patch = (v: Semver) -> Int {
+  match v {
+    Semver(_, _, p, _) => p
+  }
+}
+
+export let Semver::to_string = (v: Semver) -> String {
+  match v {
+    Semver(major, minor, patch, pre) => {
+      let base = "\{int_to_string(major)}.\{int_to_string(minor)}.\{int_to_string(patch)}"
+      if String::length(pre) > 0 {
+        "\{base}-\{pre}"
+      } else {
+        base
+      }
+    }
+  }
+}
+
+export let Semver::prerelease = (v: Semver) -> String {
+  match v {
+    Semver(_, _, _, p) => p
+  }
+}
+
+export let version: String = "0.0.1"

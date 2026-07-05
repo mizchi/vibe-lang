@@ -1,0 +1,183 @@
+//# Types
+
+export enum DiffOp {
+  Keep(String);
+  Add(String);
+  Remove(String)
+}
+
+//# Functions
+
+let empty_ops = () -> Array[DiffOp] {
+  Array::slice([
+    Keep("")
+  ], 0, 0)
+}
+
+let empty_ints = () -> Array[Int] {
+  Array::slice([
+    0
+  ], 0, 0)
+}
+
+export let has_changes = (ops: Array[DiffOp]) -> Bool {
+  let len = Array::length(ops)
+  let rec check = (i: Int) -> Bool {
+    if i >= len {
+      false
+    }
+    else {
+      match Array::get(ops, i) {
+        Keep(_) => check(i + 1),
+        _ => true
+      }
+    }
+  }
+  check(0)
+}
+
+let empty_strings = () -> Array[String] {
+  Array::slice([
+    ""
+  ], 0, 0)
+}
+
+let split_lines = (text: String) -> Array[String] {
+  let len = String::length(text)
+  let mut lines = empty_strings()
+  let mut start = 0
+  let mut idx = 0
+  while idx < len {
+    if text[idx] == "\n" {
+      Array::push(lines, text[start: idx])
+      start = idx + 1
+    }
+    idx = idx + 1
+  }
+  if start <= len {
+    Array::push(lines, text[start: len])
+  }
+  lines
+}
+
+export let diff_lines = (old_text: String, new_text: String) -> Array[DiffOp] {
+  let old_lines = split_lines(old_text)
+  let new_lines = split_lines(new_text)
+  let n = Array::length(old_lines)
+  let m = Array::length(new_lines)
+  let table_size = (n + 1) * (m + 1)
+  let mut table = empty_ints()
+  let mut fill_idx = 0
+  while fill_idx < table_size {
+    Array::push(table, 0)
+    fill_idx = fill_idx + 1
+  }
+  let mut i = 1
+  while i <= n {
+    let mut j = 1
+    while j <= m {
+      if Array::get(old_lines, i - 1) == Array::get(new_lines, j - 1) {
+        let prev = Array::get(table, (i - 1) * (m + 1) + (j - 1))
+        Array::set(table, i * (m + 1) + j, prev + 1)
+      } else {
+        let up = Array::get(table, (i - 1) * (m + 1) + j)
+        let left = Array::get(table, i * (m + 1) + (j - 1))
+        let best = if up > left {
+          up
+        } else {
+          left
+        }
+        Array::set(table, i * (m + 1) + j, best)
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  // Backtrace from (n, m) to (0, 0). Previously each step did
+  // `ops = Array::concat([new_op], ops)` which prepends — copying
+  // the entire `ops` prefix per step. Total O(N²) for an N-line
+  // diff. We push to the END instead (O(1) amortized per step) and
+  // reverse once at the end (O(N)).
+  let ops_rev = empty_ops()
+  let mut ci = n
+  let mut cj = m
+  while ci > 0 || cj > 0 {
+    if ci > 0 && cj > 0 && Array::get(old_lines, ci - 1) == Array::get(new_lines, cj - 1) {
+      Array::push(ops_rev, Keep(Array::get(old_lines, ci - 1)))
+      ci = ci - 1
+      cj = cj - 1
+    } else if cj > 0 && (ci == 0 || Array::get(table, ci * (m + 1) + (cj - 1)) >= Array::get(table, (ci - 1) * (m + 1) + cj)) {
+      Array::push(ops_rev, Add(Array::get(new_lines, cj - 1)))
+      cj = cj - 1
+    } else {
+      Array::push(ops_rev, Remove(Array::get(old_lines, ci - 1)))
+      ci = ci - 1
+    }
+  }
+  // Reverse in place: walk from the two ends swapping. Avoids the
+  // need for any reverse builtin / extra allocation.
+  let ops = ops_rev
+  let total = Array::length(ops)
+  let mut a = 0
+  let mut b = total - 1
+  while a < b {
+    let va = Array::get(ops, a)
+    let vb = Array::get(ops, b)
+    Array::set(ops, a, vb)
+    Array::set(ops, b, va)
+    a = a + 1
+    b = b - 1
+  }
+  ops
+}
+
+export let format_unified = (ops: Array[DiffOp]) -> String {
+  let len = Array::length(ops)
+  let mut result = ""
+  let mut idx = 0
+  while idx < len {
+    let op = Array::get(ops, idx)
+    let line = match op {
+      Keep(s) => " \{s}",
+      Add(s) => "+\{s}",
+      Remove(s) => "-\{s}"
+    }
+    result = "\{result}\{line}\n"
+    idx = idx + 1
+  }
+  result
+}
+
+export let count_additions = (ops: Array[DiffOp]) -> Int {
+  let len = Array::length(ops)
+  let mut count = 0
+  let mut idx = 0
+  while idx < len {
+    match Array::get(ops, idx) {
+      Add(_) => {
+        count = count + 1
+      },
+      _ => ()
+    }
+    idx = idx + 1
+  }
+  count
+}
+
+export let count_deletions = (ops: Array[DiffOp]) -> Int {
+  let len = Array::length(ops)
+  let mut count = 0
+  let mut idx = 0
+  while idx < len {
+    match Array::get(ops, idx) {
+      Remove(_) => {
+        count = count + 1
+      },
+      _ => ()
+    }
+    idx = idx + 1
+  }
+  count
+}
+
+export let version: String = "0.0.1"
