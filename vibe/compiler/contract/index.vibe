@@ -9,7 +9,7 @@ import ../syntax/token.vibe {
 }
 
 import ../syntax/parser_base.vibe {
-  peek, tk_name
+  parse_type, peek, tk_name
 }
 
 import ../syntax/parser_expr.vibe {
@@ -191,6 +191,33 @@ export let parse_contract_program: (Array[Token]) -> (Array[(String, String)], A
           pos = next
         }
       },
+      TLet => {
+        // #752 (ADR-0065): bodyless `let name: Type` — a public VALUE
+        // declaration (constants like `pi: Double`). The definition lives in
+        // an implementation file and is fingerprinted as "val <type>";
+        // conformance and the facade treat it exactly like a fn decl (both
+        // are name + signature-string). A body (`= ...`) is rejected like fn
+        // bodies; `let mut` cannot be contract surface.
+        match peek(tokens, pos + 1) {
+          TMut => throw("contract let declaration cannot be `mut` (#752)"),
+          _ => ()
+        }
+        let vname = match peek(tokens, pos + 1) {
+          TIdent(vn) => vn,
+          _ => throw("expected value name after 'let' in a contract")
+        }
+        match peek(tokens, pos + 2) {
+          TColon => (),
+          _ => throw("contract value declaration '\{vname}' requires a type annotation (#752)")
+        }
+        let (vty, vnext) = parse_type(tokens, pos + 3)
+        match peek(tokens, vnext) {
+          TEq => throw("contract value declaration '\{vname}' must not have a definition (#752)"),
+          _ => ()
+        }
+        Array::push(decls, (vname, String::concat("val ", print_type_expr(vty))))
+        pos = vnext
+      },
       TIdent(head) => if head == "opaque" {
         match peek(tokens, pos + 1) {
           TType => match peek(tokens, pos + 2) {
@@ -248,7 +275,7 @@ export let collect_impl_fn_defs: (Array[Stmt]) -> Array[(String, Option[String],
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SLet(exported, _, name, _, val) => match val {
+      SLet(exported, _, name, ty_opt, val) => match val {
         EFn(tps, tbs, params, ret_opt, eff_opt, _) => {
           let sig = match ret_opt {
             Some(ret_ty) => fn_sig_text(tps, tbs, params, ret_ty, eff_opt),
@@ -256,7 +283,15 @@ export let collect_impl_fn_defs: (Array[Stmt]) -> Array[(String, Option[String],
           }
           Array::push(out, (name, sig, exported))
         },
-        _ => ()
+        // #752: a non-fn top-level let is a VALUE def — contract surface when
+        // exported, fingerprinted as "val <type>" (matching the contract's
+        // bodyless `let name: Type` declarations). An unannotated value maps
+        // to None, so a declared name reports the standard
+        // "lacks the full annotations" conformance error.
+        _ => match ty_opt {
+          Some(vty) => Array::push(out, (name, Some(String::concat("val ", print_type_expr(vty))), exported)),
+          None => Array::push(out, (name, None, exported))
+        }
       },
       _ => ()
     }

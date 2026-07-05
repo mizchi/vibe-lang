@@ -257,3 +257,55 @@ test "contract declaration with a body is rejected (#729)" {
   }
   assert(failed)
 }
+
+test "value decl count (#752)" {
+  let (decls, _, _) = parse_contract_program(lex("let pi: Double\nfn scale(x: Double) -> Double"))
+  assert_eq(Array::length(decls), 2)
+}
+
+test "value decl parses with val fingerprint (#752)" {
+  let (decls, _, _) = parse_contract_program(lex("let pi: Double\nfn scale(x: Double) -> Double"))
+  assert_eq(Array::length(decls), 2)
+  let (n0, s0) = Array::get(decls, 0)
+  // NOTE: `assert(a == b)`, not `assert_eq(a, b)` — assert_eq's lowering
+  // falls back to a raw i64 compare for a tuple-destructured string operand
+  // (pointer order, #746 residual class; filed separately). `==` takes the
+  // desugar's string path and compares content.
+  assert(n0 == "pi")
+  assert(s0 == "val Double")
+  let (n1, s1) = Array::get(decls, 1)
+  assert(n1 == "scale")
+  assert(String::starts_with(s1, "("))
+}
+
+test "value decl conformance ok (#752)" {
+  let (decls, _, _) = parse_contract_program(lex("let pi: Double\nfn scale(x: Double) -> Double"))
+  let ok_impls = parse_program(lex("export let pi: Double = 3.14\nexport let scale: (x: Double) -> Double = (x) -> { x * 2.0 }"))
+  assert_eq(Array::length(check_contract(decls, no_opaques(), ok_impls)), 0)
+}
+
+test "value decl type mismatch is an error (#752)" {
+  let (decls, _, _) = parse_contract_program(lex("let pi: Double\nfn scale(x: Double) -> Double"))
+  let bad_impls = parse_program(lex("export let pi: Int = 3\nexport let scale: (x: Double) -> Double = (x) -> { x * 2.0 }"))
+  assert_eq(Array::length(check_contract(decls, no_opaques(), bad_impls)), 1)
+}
+
+test "undeclared exported value is rejected (#752)" {
+  let (decls, _, _) = parse_contract_program(lex("let pi: Double\nfn scale(x: Double) -> Double"))
+  let extra_impls = parse_program(lex("export let pi: Double = 3.14\nexport let scale: (x: Double) -> Double = (x) -> { x * 2.0 }\nexport let stray: Int = 1"))
+  assert_eq(Array::length(check_contract(decls, no_opaques(), extra_impls)), 1)
+}
+
+test "contract value declaration with a definition is rejected (#752)" {
+  let outcome = handle {
+    let (_, _, _) = parse_contract_program(lex("let pi: Double = 3.14"))
+    "no-throw"
+  } with Error {
+    Throw(msg) => if String::contains(msg, "must not have a definition") {
+      "rejected"
+    } else {
+      "wrong-error"
+    }
+  }
+  assert_eq(outcome, "rejected")
+}
