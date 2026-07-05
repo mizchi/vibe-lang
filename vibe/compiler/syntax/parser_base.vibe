@@ -1085,26 +1085,33 @@ let parse_struct_field: (Array[Token], Int) -> ((String, TypeExpr), Bool, Int) w
   }
 }
 
-let rec is_lambda_start_impl: (Array[Token], Int, Int, Bool) -> Bool = (tokens, pos, depth, has_colon) -> {
+let rec is_lambda_start_impl: (Array[Token], Int, Int, Int, Bool) -> Bool = (tokens, pos, depth, bdepth, has_colon) -> {
   match peek(tokens, pos) {
-    TColon => if depth == 0 {
-      is_lambda_start_impl(tokens, pos + 1, depth, true)
-    } else is_lambda_start_impl(tokens, pos + 1, depth, has_colon),
+    // A colon only signals an annotated lambda param when it sits directly
+    // inside the candidate parens — a colon inside BRACKETS is a slice bound
+    // (`raw_path[0: 2]`), and counting it made `(len >= 2 && s[0: 2] == x) {`
+    // (a parenthesized if-condition followed by the if body's brace) parse as
+    // a no-arrow lambda, failing with "expected ',' or ')' in param list".
+    TColon => if depth == 0 && bdepth == 0 {
+      is_lambda_start_impl(tokens, pos + 1, depth, bdepth, true)
+    } else is_lambda_start_impl(tokens, pos + 1, depth, bdepth, has_colon),
     TRParen => if depth == 0 {
       match peek(tokens, pos + 1) {
         TThinArrow => true,
         TLBrace => has_colon,
         _ => false
       }
-    } else is_lambda_start_impl(tokens, pos + 1, depth - 1, has_colon),
-    TLParen => is_lambda_start_impl(tokens, pos + 1, depth + 1, has_colon),
+    } else is_lambda_start_impl(tokens, pos + 1, depth - 1, bdepth, has_colon),
+    TLParen => is_lambda_start_impl(tokens, pos + 1, depth + 1, bdepth, has_colon),
+    TLBracket => is_lambda_start_impl(tokens, pos + 1, depth, bdepth + 1, has_colon),
+    TRBracket => is_lambda_start_impl(tokens, pos + 1, depth, bdepth - 1, has_colon),
     TEof => false,
-    _ => is_lambda_start_impl(tokens, pos + 1, depth, has_colon)
+    _ => is_lambda_start_impl(tokens, pos + 1, depth, bdepth, has_colon)
   }
 }
 
 let is_lambda_start: (Array[Token], Int) -> Bool = (tokens, pos) -> {
-  is_lambda_start_impl(tokens, pos, 0, false)
+  is_lambda_start_impl(tokens, pos, 0, 0, false)
 }
 
 let rec parse_ctor_types_rest: (Array[Token], Int, ArrayBuilder[TypeExpr]) -> (Array[TypeExpr], Int) with { Error } = (tokens, pos, b) -> {
