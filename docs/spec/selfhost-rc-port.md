@@ -2,7 +2,7 @@
 
 Status: planning (issue #493 direction C / item **D**). Tracks implementing
 Perceus reference-counting memory management in the vibe-written selfhost
-compiler (`vibe/compiler/`). The MoonBit `src/` backend is now a historical
+compiler (`lib/@vibe/compiler/`). The MoonBit `src/` backend is now a historical
 reference and legacy bootstrap/fallback layer; new RC work targets selfhost
 directly and is guarded by the parity gates (per CLAUDE.md).
 
@@ -53,7 +53,7 @@ is added.
 
 - **Verification harness in place** (the safety net for the layout change): the
   selfhost codegen unit tests only check wasm magic bytes (`assert_wasm`), which
-  is too weak to catch a layout regression. `vibe/compiler/codegen_heap_e2e_test.vibe`
+  is too weak to catch a layout regression. `lib/@vibe/compiler/codegen_heap_e2e_test.vibe`
   (task `test-selfhost-heap-e2e`, 9/9) compiles heap-object source programs with
   the selfhost backend, runs them on wasmtime (`sh_lines("wasmtime run --invoke
   main …")`), and checks the *result* — covering tuple, nested tuple, array get,
@@ -92,7 +92,7 @@ is added.
 
 ### Phase 2 — port the Perceus analysis pass — *complete (bar branch balancing)*
 
-- Ported the analysis to `vibe/compiler/perceus/index.vibe`
+- Ported the analysis to `lib/@vibe/compiler/perceus/index.vibe`
   (`build_perceus_plan : (Expr) -> Array[PerceusAction]`), pattern-matching the
   selfhost `Expr` enum directly. Because the selfhost AST is
   expression-oriented, scope is structural: an `ELet(x, val, body)` scopes `x`
@@ -113,7 +113,7 @@ is added.
   one owned reference and is dropped at scope end; the scalar check skips
   known non-heap values.
 - Unit-tested in isolation via the native vibe CLI
-  (`vibe/compiler/perceus_rc_test.vibe`, task `test-selfhost-perceus`, 14/14):
+  (`lib/@vibe/compiler/perceus_rc_test.vibe`, task `test-selfhost-perceus`, 14/14):
   pure-borrow drop, moved-out (no drop), scalar (no drop), dup on double use,
   closure-call borrow + drop, nested borrow, branch-local drop, while-body
   per-iteration drop, for-in element drop, closure capture as owning use,

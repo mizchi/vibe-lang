@@ -1,0 +1,1081 @@
+//# Imports
+
+import .. / core {
+  Expr, Stmt, TypeExpr
+}
+
+import ../syntax/token.vibe {
+  Token
+}
+
+import ../syntax/parser_base.vibe {
+  parse_type, peek, tk_name
+}
+
+import ../syntax/parser_expr.vibe {
+  parse_fn_signature
+}
+
+import ../syntax/parser.vibe {
+  parse_stmt
+}
+
+import ../syntax/printer.vibe {
+  print_stmt, print_type_expr
+}
+
+// #741: consumed through the @vibe/core contract boundary (directory import
+// resolving via index.vibei), replacing the vendored cache/sha1.vibe twin.
+import ../../../../lib/@vibe/core {
+  sha1
+}
+
+//# Functions
+
+// #740/#753: facades are marked so every re-ingestion point (the grouped
+// chokepoint, the persistent-header lane, type_db re-reads of collected
+// sources) can tell an already-desugared facade from raw contract grammar.
+// Re-parsing a facade AS a contract mis-attributes its imports (a facade
+// with only `import ./impl.vibe {}` lines yields zero DECLS, and one with
+// only type defs yields zero impl imports → sibling auto-discovery), so the
+// marker check must happen wherever `.vibei`-suffixed sources are parsed.
+export let contract_facade_marker: String = "// vibe: contract facade (desugared from .vibei)\n"
+
+// ADR-0063 Phase C (#729): contract conformance engine for `.vibei` files.
+//
+// A contract file's top level declares the package's public API. This module
+// parses bodyless `fn` declarations (the contract grammar) and checks that a
+// package's implementation statements provide exactly the declared surface:
+// every declared fn exists with a matching signature (param types + labels,
+// generics, return type, effect row), and no exported def is undeclared.
+//
+// This increment is the pure engine + its grammar; wiring into import
+// resolution / the merge layer (directory imports resolving through
+// index.vibei, boundary rules) is the next #729 stage.
+
+// Canonical signature fingerprint: `[T: Eq](Int, x~: Int) -> Ret with { E }`.
+// Labeled params keep their name (the label is ABI); positional params are
+// types only. Built from the same shapes both the contract declaration and
+// the implementation's EFn carry, so string equality is signature equality.
+let fn_sig_text: (Array[String], Array[(String, Array[String])], Array[(String, Option[TypeExpr])], TypeExpr, Option[String]) -> Option[String] = (tps, tbs, params, ret_ty, eff_opt) -> {
+  let mut missing = false
+  let parts = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(params) {
+    let (pname, pty_opt) = Array::get(params, i)
+    match pty_opt {
+      Some(pty) => {
+        let tystr = print_type_expr(pty)
+        let entry = if String::ends_with(pname, "~") {
+          "\{pname}: \{tystr}"
+        } else tystr
+        Array::push(parts, entry)
+      },
+      None => { missing = true }
+    }
+    i = i + 1
+  }
+  if missing {
+    None
+  } else {
+    let gen = if Array::length(tps) == 0 {
+      ""
+    } else {
+      let entries = Array::slice([
+        ""
+      ], 0, 0)
+      let mut gi = 0
+      while gi < Array::length(tps) {
+        let tp = Array::get(tps, gi)
+        let mut bound = ""
+        let mut bi = 0
+        while bi < Array::length(tbs) {
+          let (bname, bnds) = Array::get(tbs, bi)
+          if bname == tp && Array::length(bnds) > 0 {
+            bound = String::join(bnds, " + ")
+          } else ()
+          bi = bi + 1
+        }
+        let entry = if String::length(bound) == 0 {
+          tp
+        } else "\{tp}: \{bound}"
+        Array::push(entries, entry)
+        gi = gi + 1
+      }
+      "[\{String::join(entries, ", ")}]"
+    }
+    let eff = match eff_opt {
+      Some(e) => " with { \{e} }",
+      None => ""
+    }
+    Some("\{gen}(\{String::join(parts, ", ")}) -> \{print_type_expr(ret_ty)}\{eff}")
+  }
+}
+
+// Parse a contract source's top level. Bare `fn` heads become declarations
+// (name, canonical signature); a declaration followed by `{` is an error —
+// contract files carry no bodies. `opaque type Name` declares a public type
+// whose definition lives in an implementation file (#729 C-4). Everything
+// else (implementation imports, transparent type definitions) parses as
+// ordinary statements and is returned alongside.
+// #739: opaque/bodyless type declarations carry (name, arity) so conformance
+// can reject an impl whose type-parameter count differs and the semver
+// surface can see `Box` -> `Box[T]` as a breaking change.
+export let parse_contract_program: (Array[Token]) -> (Array[(String, String)], Array[(String, Int)], Array[Stmt]) with { Error } = (tokens) -> {
+  let decls = Array::slice([
+    ("", "")
+  ], 0, 0)
+  let opaques = Array::slice([
+    ("", 0)
+  ], 0, 0)
+  let stmts = Array::slice([
+    SExport(Array::slice([
+      ""
+    ], 0, 0))
+  ], 0, 0)
+  let mut pos = 0
+  let mut done = false
+  while !done {
+    match peek(tokens, pos) {
+      TEof => { done = true },
+      TType => {
+        // Bodyless `type Name` / `type Name[T]` — a TRANSPARENT public type
+        // whose definition lives in an implementation file (the facade
+        // re-exports it; same conformance rules as opaque, opacity is the
+        // only — currently documentation-level — difference). `type X = ..`
+        // (with '=') is the contract-defined alias and parses as a stmt.
+        let mut la = pos + 1
+        let tname = match peek(tokens, la) {
+          TIdent(tn) => tn,
+          _ => ""
+        }
+        let mut is_bodyless = false
+        let mut arity = 0
+        if tname == "" {
+          ()
+        } else {
+          la = la + 1
+          let mut scan = la
+          match peek(tokens, scan) {
+            TLBracket => {
+              let mut depth = 1
+              // `[T, U]` — parameters at depth 1 are comma-separated (#739).
+              arity = 1
+              scan = scan + 1
+              while depth > 0 {
+                match peek(tokens, scan) {
+                  TLBracket => { depth = depth + 1 },
+                  TRBracket => { depth = depth - 1 },
+                  TComma => if depth == 1 {
+                    arity = arity + 1
+                  } else {
+                    ()
+                  },
+                  TEof => { depth = 0 },
+                  _ => ()
+                }
+                scan = scan + 1
+              }
+            },
+            _ => ()
+          }
+          match peek(tokens, scan) {
+            TEq => {
+              arity = 0
+            },
+            _ => {
+              is_bodyless = true
+              la = scan
+            }
+          }
+        }
+        if is_bodyless {
+          Array::push(opaques, (tname, arity))
+          pos = la
+        } else {
+          let (stmt, next) = parse_stmt(tokens, [], pos)
+          Array::push(stmts, stmt)
+          pos = next
+        }
+      },
+      TLet => {
+        // #752 (ADR-0065): bodyless `let name: Type` — a public VALUE
+        // declaration (constants like `pi: Double`). The definition lives in
+        // an implementation file and is fingerprinted as "val <type>";
+        // conformance and the facade treat it exactly like a fn decl (both
+        // are name + signature-string). A body (`= ...`) is rejected like fn
+        // bodies; `let mut` cannot be contract surface.
+        match peek(tokens, pos + 1) {
+          TMut => throw("contract let declaration cannot be `mut` (#752)"),
+          _ => ()
+        }
+        let vname = match peek(tokens, pos + 1) {
+          TIdent(vn) => vn,
+          _ => throw("expected value name after 'let' in a contract")
+        }
+        match peek(tokens, pos + 2) {
+          TColon => (),
+          _ => throw("contract value declaration '\{vname}' requires a type annotation (#752)")
+        }
+        let (vty, vnext) = parse_type(tokens, pos + 3)
+        match peek(tokens, vnext) {
+          TEq => throw("contract value declaration '\{vname}' must not have a definition (#752)"),
+          _ => ()
+        }
+        Array::push(decls, (vname, String::concat("val ", print_type_expr(vty))))
+        pos = vnext
+      },
+      TIdent(head) => if head == "opaque" {
+        match peek(tokens, pos + 1) {
+          TType => match peek(tokens, pos + 2) {
+            TIdent(oname) => {
+              match peek(tokens, pos + 3) {
+                TLBracket => throw("opaque type '\{oname}': type parameters are not yet supported (#729)"),
+                _ => ()
+              }
+              Array::push(opaques, (oname, 0))
+              pos = pos + 3
+            },
+            _ => throw("expected type name after 'opaque type'")
+          },
+          _ => throw("expected 'type' after 'opaque'")
+        }
+      } else if head == "fn" {
+        // where clauses on declarations parse but are not yet part of the
+        // contract fingerprint (conformance/hash coverage comes with the
+        // SMT stage of #731).
+        let (dhead, dsig, _, next) = parse_fn_signature(tokens, pos + 1)
+        let (name, tps, tbs) = dhead
+        let (params, ret_ty, eff_opt) = dsig
+        match peek(tokens, next) {
+          TLBrace => throw("contract fn declaration '\{name}' must not have a body (#729)"),
+          _ => ()
+        }
+        match fn_sig_text(tps, tbs, params, ret_ty, eff_opt) {
+          Some(sig) => Array::push(decls, (name, sig)),
+          None => throw("contract fn declaration '\{name}' requires full annotations")
+        }
+        pos = next
+      } else {
+        let (stmt, next) = parse_stmt(tokens, [], pos)
+        Array::push(stmts, stmt)
+        pos = next
+      },
+      _ => {
+        let (stmt, next) = parse_stmt(tokens, [], pos)
+        Array::push(stmts, stmt)
+        pos = next
+      }
+    }
+  }
+  (decls, opaques, stmts)
+}
+
+// Collect (name, Some(sig) | None, exported) for every top-level let whose
+// value is a function. A None signature means the def lacks the full
+// annotations needed to compare against a contract (e.g. an unannotated
+// lambda) — reported as a conformance error if the name is declared.
+export let collect_impl_fn_defs: (Array[Stmt]) -> Array[(String, Option[String], Bool)] = (stmts) -> {
+  let out = Array::slice([
+    ("", Some(""), false)
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exported, _, name, ty_opt, val) => match val {
+        EFn(tps, tbs, params, ret_opt, eff_opt, _) => {
+          let sig = match ret_opt {
+            Some(ret_ty) => fn_sig_text(tps, tbs, params, ret_ty, eff_opt),
+            None => None
+          }
+          Array::push(out, (name, sig, exported))
+        },
+        // #752: a non-fn top-level let is a VALUE def — contract surface when
+        // exported, fingerprinted as "val <type>" (matching the contract's
+        // bodyless `let name: Type` declarations). An unannotated value maps
+        // to None, so a declared name reports the standard
+        // "lacks the full annotations" conformance error.
+        _ => match ty_opt {
+          Some(vty) => Array::push(out, (name, Some(String::concat("val ", print_type_expr(vty))), exported)),
+          None => Array::push(out, (name, None, exported))
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+// Collect (name, exported) for every top-level type definition (struct /
+// enum / type alias / suberror) — the shapes an `opaque type` declaration
+// can be implemented by.
+// #739: the third element is the implementation's type-parameter count, so
+// conformance can compare it against the contract's declared arity. Structs
+// and suberrors carry no type parameters in the AST — arity 0.
+export let collect_impl_type_defs: (Array[Stmt]) -> Array[(String, Bool, Int)] = (stmts) -> {
+  let out = Array::slice([
+    ("", false, 0)
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(exported, name, _, _, _) => Array::push(out, (name, exported, 0)),
+      SEnum(exported, name, tparams, _, _) => Array::push(out, (name, exported, Array::length(tparams))),
+      STypeAlias(exported, name, tparams, _) => Array::push(out, (name, exported, Array::length(tparams))),
+      SSuberror(exported, name, _) => Array::push(out, (name, exported, 0)),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+// Check that `impl_stmts` provide exactly the contract surface. Returns a
+// list of human-readable conformance errors; empty = conformant.
+export let check_contract: (Array[(String, String)], Array[(String, Int)], Array[Stmt]) -> Array[String] = (decls, opaque_names, impl_stmts) -> {
+  let errors = Array::slice([
+    ""
+  ], 0, 0)
+  let defs = collect_impl_fn_defs(impl_stmts)
+  let mut di = 0
+  while di < Array::length(decls) {
+    let (dname, dsig) = Array::get(decls, di)
+    // A declaration is satisfied by ANY exported def with a matching
+    // signature. Same-name defs in OTHER package files (private aliases,
+    // domain-local helpers) are legal and never violations by themselves —
+    // only when NO def satisfies the decl do the candidates drive the
+    // error message (best mismatch first, then export status).
+    let mut satisfied = false
+    let mut seen_any = false
+    let mut best_msg = ""
+    let mut fi = 0
+    while fi < Array::length(defs) {
+      let (fname, fsig_opt, fexported) = Array::get(defs, fi)
+      if fname == dname {
+        seen_any = true
+        match fsig_opt {
+          Some(fsig) => if fsig == dsig {
+            if fexported {
+              satisfied = true
+            } else {
+              best_msg = "contract declaration '\{dname}' is implemented but not exported by its implementation file"
+            }
+          } else {
+            if best_msg == "" {
+              best_msg = "signature mismatch for '\{dname}': contract \{dsig} but implementation \{fsig}"
+            } else ()
+          },
+          None => if best_msg == "" {
+            best_msg = "implementation of '\{dname}' lacks the full annotations required by the contract"
+          } else ()
+        }
+      } else ()
+      fi = fi + 1
+    }
+    if satisfied {
+      ()
+    } else if seen_any {
+      Array::push(errors, best_msg)
+    } else {
+      Array::push(errors, "contract declaration '\{dname}' has no implementation")
+    }
+    di = di + 1
+  }
+  let mut ei = 0
+  while ei < Array::length(defs) {
+    let (fname, _fsig_opt, fexported) = Array::get(defs, ei)
+    if fexported {
+      let mut declared = false
+      let mut ci = 0
+      while ci < Array::length(decls) {
+        let (dname, _dsig) = Array::get(decls, ci)
+        if dname == fname {
+          declared = true
+        } else ()
+        ci = ci + 1
+      }
+      if declared {
+        ()
+      } else {
+        Array::push(errors, "exported '\{fname}' is not declared in the contract")
+      }
+    } else ()
+    ei = ei + 1
+  }
+  let type_defs = collect_impl_type_defs(impl_stmts)
+  let mut oi = 0
+  while oi < Array::length(opaque_names) {
+    let (oname, oarity) = Array::get(opaque_names, oi)
+    let mut ofound = false
+    let mut ti = 0
+    while ti < Array::length(type_defs) {
+      let (tname, texported, tarity) = Array::get(type_defs, ti)
+      if tname == oname {
+        ofound = true
+        if texported {
+          ()
+        } else {
+          Array::push(errors, "opaque type '\{oname}' is implemented but not exported by its implementation file")
+        }
+        // #739: the contract's declared type-parameter count is part of the
+        // surface — `type Box[T]` is not satisfied by a nullary `enum Box`.
+        if tarity == oarity {
+          ()
+        } else {
+          Array::push(errors, "type '\{oname}' arity mismatch: contract declares \{oarity} type parameter(s), implementation defines \{tarity}")
+        }
+      } else ()
+      ti = ti + 1
+    }
+    if ofound {
+      ()
+    } else {
+      Array::push(errors, "opaque type '\{oname}' has no implementation")
+    }
+    oi = oi + 1
+  }
+  let mut xi = 0
+  while xi < Array::length(type_defs) {
+    let (tname, texported, _) = Array::get(type_defs, xi)
+    if texported {
+      let mut tdeclared = false
+      let mut oj = 0
+      while oj < Array::length(opaque_names) {
+        let (ojname, _) = Array::get(opaque_names, oj)
+        if ojname == tname {
+          tdeclared = true
+        } else ()
+        oj = oj + 1
+      }
+      if tdeclared {
+        ()
+      } else {
+        Array::push(errors, "exported type '\{tname}' is not declared in the contract (declare it as `opaque type \{tname}` or define it transparently in the contract)")
+      }
+    } else ()
+    xi = xi + 1
+  }
+  errors
+}
+
+// Classify a contract's non-declaration statements: implementation-file
+// imports (`import ./impl.vibe {}`) and transparent type definitions
+// (struct / enum / type alias — the definition IS the contract, so it lives
+// here and passes into the facade verbatim, exported). Anything else is
+// rejected (subpath re-exports arrive with @scope resolution, #730).
+export let classify_contract_stmts: (Array[Stmt]) -> (Array[String], Array[Stmt]) with { Error } = (stmts) -> {
+  let raws = Array::slice([
+    ""
+  ], 0, 0)
+  let type_defs = Array::slice([
+    SExport(Array::slice([
+      ""
+    ], 0, 0))
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImport(raw_path, _) => Array::push(raws, raw_path),
+      SStruct(_, name, fields, derives, mut_names) => Array::push(type_defs, SStruct(true, name, fields, derives, mut_names)),
+      SEnum(_, name, tparams, ctors, derives) => Array::push(type_defs, SEnum(true, name, tparams, ctors, derives)),
+      STypeAlias(_, name, tparams, ty) => Array::push(type_defs, STypeAlias(true, name, tparams, ty)),
+      // #752: a transparent EFFECT definition — like transparent types, the
+      // definition IS the contract (effect rows are core contract surface,
+      // ADR-0063). It passes into the facade verbatim, exported; the
+      // implementation files use the effect but must not re-define it.
+      SEffectDef(_, ename, etparams, eops) => Array::push(type_defs, SEffectDef(true, ename, etparams, eops)),
+      _ => throw("unsupported statement in a .vibei contract: only fn declarations, opaque type declarations, transparent type/effect definitions, and implementation-file imports are allowed (#729)")
+    }
+    i = i + 1
+  }
+  (raws, type_defs)
+}
+
+// Compat shim for the strict v1 shape (implementation imports only).
+export let contract_impl_import_raw_paths: (Array[Stmt]) -> Array[String] with { Error } = (stmts) -> {
+  let (raws, _) = classify_contract_stmts(stmts)
+  raws
+}
+
+// Desugar a conformance-checked contract to facade source text: one
+// `export <raw> { names }` re-export line per implementation file, each
+// declared name allocated to its first definer. The facade is plain vibe
+// source, so everything downstream of the loader (type db, merge plan,
+// codegen) needs no .vibei awareness — it rides the #716 re-export
+// machinery unchanged.
+export let contract_facade_source: (Array[(String, String)], Array[(String, Int)], Array[Stmt], Array[(String, Array[Stmt])]) -> String with { Error } = (decls, opaque_names, type_defs, impl_units) -> {
+  let lines = Array::slice([
+    ""
+  ], 0, 0)
+  let mut tdi = 0
+  while tdi < Array::length(type_defs) {
+    Array::push(lines, print_stmt(Array::get(type_defs, tdi)))
+    tdi = tdi + 1
+  }
+  let allocated = Array::slice([
+    ""
+  ], 0, 0)
+  let mut ui = 0
+  while ui < Array::length(impl_units) {
+    let (raw, unit_stmts) = Array::get(impl_units, ui)
+    let defs = collect_impl_fn_defs(unit_stmts)
+    let unit_types = collect_impl_type_defs(unit_stmts)
+    let names = Array::slice([
+      ""
+    ], 0, 0)
+    let mut oi = 0
+    while oi < Array::length(opaque_names) {
+      let (oname, _) = Array::get(opaque_names, oi)
+      let mut otaken = false
+      let mut oai = 0
+      while oai < Array::length(allocated) {
+        if Array::get(allocated, oai) == "type \{oname}" {
+          otaken = true
+        } else ()
+        oai = oai + 1
+      }
+      if otaken {
+        ()
+      } else {
+        let mut here = false
+        let mut uti = 0
+        while uti < Array::length(unit_types) {
+          let (tname, _, _) = Array::get(unit_types, uti)
+          if tname == oname {
+            here = true
+          } else ()
+          uti = uti + 1
+        }
+        if here {
+          Array::push(names, "type \{oname}")
+          Array::push(allocated, "type \{oname}")
+        } else ()
+      }
+      oi = oi + 1
+    }
+    let mut di = 0
+    while di < Array::length(decls) {
+      let (dname, _) = Array::get(decls, di)
+      let mut taken = false
+      let mut ai = 0
+      while ai < Array::length(allocated) {
+        if Array::get(allocated, ai) == dname {
+          taken = true
+        } else ()
+        ai = ai + 1
+      }
+      if taken {
+        ()
+      } else {
+        let mut defined_here = false
+        let mut fi = 0
+        while fi < Array::length(defs) {
+          let (fname, _, fexp) = Array::get(defs, fi)
+          if fname == dname && fexp {
+            defined_here = true
+          } else ()
+          fi = fi + 1
+        }
+        if defined_here {
+          Array::push(names, dname)
+          Array::push(allocated, dname)
+        } else ()
+      }
+      di = di + 1
+    }
+    if Array::length(names) > 0 {
+      Array::push(lines, "export \{raw} { \{String::join(names, ", ")} }")
+    } else {
+      // #753: an impl unit with no allocated names must STILL appear in the
+      // facade. A facade with no import/export lines re-header-parses (the
+      // type_db lane re-reads collected sources under the .vibei path) to
+      // ZERO impl imports, which triggers sibling auto-discovery and pulls
+      // test files beside the package into its dep set — an `import .` test
+      // then manufactures "type_db: import cycle detected". Zero-name impl
+      // units are real for all-transparent-type packages (@vibe/ast).
+      Array::push(lines, "import \{raw} {}")
+    }
+    ui = ui + 1
+  }
+  if Array::length(allocated) != Array::length(decls) + Array::length(opaque_names) {
+    throw("contract facade: some declarations have no implementation file (run check_contract first)")
+  } else ()
+  String::concat(String::join(lines, "\n"), "\n")
+}
+
+// ADR-0063 §5 (#730): content addressing. Two hashes identify a package:
+//
+// - contract_hash — the API surface only (fn signatures, opaque names,
+//   transparent type definitions), independent of implementation text.
+//   The API-compatibility signal and the dependents' recheck cache key.
+// - package_hash — the merkle over the package's normalized (path, source)
+//   pairs. Paths must be PACKAGE-RELATIVE (the contract as "index.vibei",
+//   impls by their raw import spelling) so the hash is location-independent.
+//   Since require/import lines are part of the hashed file contents, pinning
+//   a package hash transitively fixes its dependency choices.
+//
+// Format: `ct:sha1:<40hex>` / `pkg:sha1:<40hex>` (SHA1 per ADR-0004; the
+// scheme prefix leaves room for a stronger digest without ambiguity).
+
+let sorted_strings: (Array[String]) -> Array[String] = (items) -> {
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(items) {
+    Array::push(out, Array::get(items, i))
+    i = i + 1
+  }
+  let n = Array::length(out)
+  let mut a = 0
+  while a < n {
+    let mut b = a + 1
+    let mut min_i = a
+    while b < n {
+      // char-by-char lexicographic compare (String < is length-first)
+      let x = Array::get(out, b)
+      let y = Array::get(out, min_i)
+      let xl = String::length(x)
+      let yl = String::length(y)
+      let mut ci = 0
+      let mut cmp = 0
+      while cmp == 0 && ci < xl && ci < yl {
+        let cx = String::char_code_at(x, ci)
+        let cy = String::char_code_at(y, ci)
+        if cx < cy {
+          cmp = 0 - 1
+        } else if cx > cy {
+          cmp = 1
+        } else ()
+        ci = ci + 1
+      }
+      if cmp == 0 {
+        if xl < yl {
+          cmp = 0 - 1
+        } else if xl > yl {
+          cmp = 1
+        } else ()
+      } else ()
+      if cmp < 0 {
+        min_i = b
+      } else ()
+      b = b + 1
+    }
+    if min_i != a {
+      let tmp = Array::get(out, a)
+      Array::set(out, a, Array::get(out, min_i))
+      Array::set(out, min_i, tmp)
+    } else ()
+    a = a + 1
+  }
+  out
+}
+
+export let contract_hash: (Array[(String, String)], Array[(String, Int)], Array[Stmt]) -> String = (fn_decls, opaque_names, type_defs) -> {
+  let canon = String::join(sorted_strings(contract_surface_lines(fn_decls, opaque_names, type_defs)), "\n")
+  "ct:sha1:\{sha1(String::concat("vibei:v1\n", canon))}"
+}
+
+export let package_hash_from_sources: (Array[(String, String)]) -> String = (sources) -> {
+  let keys = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(sources) {
+    let (path, _) = Array::get(sources, i)
+    Array::push(keys, path)
+    i = i + 1
+  }
+  let ordered = sorted_strings(keys)
+  let sb = StringBuilder::new()
+  StringBuilder::push(sb, "vibe-pkg:v1\n")
+  let mut ki = 0
+  while ki < Array::length(ordered) {
+    let key = Array::get(ordered, ki)
+    let mut si = 0
+    while si < Array::length(sources) {
+      let (path, text) = Array::get(sources, si)
+      if path == key {
+        StringBuilder::push(sb, "file \{path} \{String::length(text)}\n")
+        StringBuilder::push(sb, text)
+        StringBuilder::push(sb, "\n")
+        si = Array::length(sources)
+      } else {
+        si = si + 1
+      }
+    }
+    ki = ki + 1
+  }
+  "pkg:sha1:\{sha1(StringBuilder::freeze(sb))}"
+}
+
+// ADR-0063 §6 (#730 D-2): `require` pin lines. A directive, not statement
+// grammar: `require @scope/name 1.2.3 = #pkg:sha1:<40hex>` lines sit at the
+// top of a file (blank lines / line comments may precede). The loader
+// extracts them BEFORE parsing and blanks them to spaces, so byte offsets —
+// and therefore diagnostics — are preserved (same philosophy as #cfg's
+// tail-append). semver is strict: bare x.y.z or ^x.y.z, full triple only.
+// The constraint is edit-time tooling metadata; the build consumes only the
+// hash. The hash is REQUIRED here until fmt pin-insertion lands (D-3).
+
+let is_digit_run: (String, Int, Int) -> Bool = (s, from, to) -> {
+  if to <= from {
+    false
+  } else {
+    let mut i = from
+    let mut ok = true
+    while i < to {
+      let c = String::char_code_at(s, i)
+      if c < '0' || c > '9' {
+        ok = false
+        i = to
+      } else {
+        i = i + 1
+      }
+    }
+    ok
+  }
+}
+
+export let is_strict_semver: (String) -> Bool = (v) -> {
+  let start = if String::starts_with(v, "^") {
+    1
+  } else 0
+  let body = String::substring(v, start, String::length(v))
+  let parts = String::split(body, ".")
+  if Array::length(parts) != 3 {
+    false
+  } else {
+    let a = Array::get(parts, 0)
+    let b = Array::get(parts, 1)
+    let c = Array::get(parts, 2)
+    is_digit_run(a, 0, String::length(a)) && is_digit_run(b, 0, String::length(b)) && is_digit_run(c, 0, String::length(c))
+  }
+}
+
+export let is_package_pin: (String) -> Bool = (h) -> {
+  if !String::starts_with(h, "#pkg:sha1:") {
+    false
+  } else if String::length(h) != 50 {
+    false
+  } else {
+    let mut i = 10
+    let mut ok = true
+    while i < 50 {
+      let c = String::char_code_at(h, i)
+      let is_hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
+      if is_hex {
+        i = i + 1
+      } else {
+        ok = false
+        i = 50
+      }
+    }
+    ok
+  }
+}
+
+let split_fields: (String) -> Array[String] = (line) -> {
+  let raw = String::split(String::trim(line), " ")
+  let out = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(raw) {
+    let f = Array::get(raw, i)
+    if String::length(f) > 0 {
+      Array::push(out, f)
+    } else ()
+    i = i + 1
+  }
+  out
+}
+
+// Returns ((name, constraint, pin) triples, source with require lines
+// blanked to spaces). Only the leading directive region is scanned; a
+// `require` line after the first ordinary statement is a parse error
+// downstream (it never parses as a statement), which is intended.
+// #754 (ADR-0065): the leading region may also carry ONE `version x.y.z`
+// directive — the PACKAGE-side version declaration. It is validated and
+// blanked here (so every parse lane tolerates it) and read back with
+// extract_package_version below. The raw line stays in the file text, so it
+// is part of the package hash by construction: a version change is a new
+// artifact, and version->hash immutability is checkable.
+export let extract_require_pins: (String) -> (Array[(String, String, String)], String) with { Error } = (source) -> {
+  let pins = Array::slice([
+    ("", "", "")
+  ], 0, 0)
+  let sb = StringBuilder::new()
+  let len = String::length(source)
+  let mut pos = 0
+  let mut scanning = true
+  let mut seen_version = false
+  while pos < len {
+    let mut nl = pos
+    while nl < len && String::char_code_at(source, nl) != 10 {
+      nl = nl + 1
+    }
+    let line = String::substring(source, pos, nl)
+    let trimmed = String::trim(line)
+    let is_require = scanning && String::starts_with(trimmed, "require ")
+    let is_version = scanning && String::starts_with(trimmed, "version ")
+    if is_version {
+      let vfields = split_fields(trimmed)
+      if Array::length(vfields) != 2 {
+        throw("malformed version directive (expected: version x.y.z): \{trimmed}")
+      } else ()
+      let vver = Array::get(vfields, 1)
+      if String::starts_with(vver, "^") || !is_strict_semver(vver) {
+        throw("version directive must be an exact semver triple (x.y.z): \{trimmed}")
+      } else ()
+      if seen_version {
+        throw("duplicate version directive: \{trimmed}")
+      } else ()
+      seen_version = true
+      let mut vbi = 0
+      while vbi < String::length(line) {
+        StringBuilder::push(sb, " ")
+        vbi = vbi + 1
+      }
+    } else if is_require {
+      let fields = split_fields(trimmed)
+      let nfields = Array::length(fields)
+      if nfields != 5 && nfields != 3 {
+        throw("malformed require line (expected: require @scope/name x.y.z [= #pkg:sha1:<40hex>]): \{trimmed}")
+      } else ()
+      let name = Array::get(fields, 1)
+      let ver = Array::get(fields, 2)
+      if !String::starts_with(name, "@") {
+        throw("require package name must start with '@': \{name}")
+      } else ()
+      if !is_strict_semver(ver) {
+        throw("require version must be a strict semver triple (x.y.z or ^x.y.z): \{ver}")
+      } else ()
+      // Unpinned (3-field) form: accepted at parse so `vibe fmt` can fill
+      // the pin offline from the store (D-3); the BUILD still refuses to
+      // resolve an unpinned package (hash-only, resolver-free).
+      let pin_hash = if nfields == 5 {
+        let eq = Array::get(fields, 3)
+        let pin = Array::get(fields, 4)
+        if eq == "=" {
+          ()
+        } else {
+          throw("malformed require line (missing '='): \{trimmed}")
+        }
+        if !is_package_pin(pin) {
+          throw("require pin must be #pkg:sha1:<40hex> (compute with `vibe hash`): \{pin}")
+        } else ()
+        String::substring(pin, 1, String::length(pin))
+      } else {
+        ""
+      }
+      Array::push(pins, (name, ver, pin_hash))
+      // blank the line, preserving its byte length
+      let mut bi = 0
+      while bi < String::length(line) {
+        StringBuilder::push(sb, " ")
+        bi = bi + 1
+      }
+    } else {
+      if String::length(trimmed) == 0 || String::starts_with(trimmed, "//") {
+        ()
+      } else {
+        scanning = false
+      }
+      StringBuilder::push(sb, line)
+    }
+    if nl < len {
+      StringBuilder::push(sb, "\n")
+    } else ()
+    pos = nl + 1
+  }
+  (pins, StringBuilder::freeze(sb))
+}
+
+// #754: read the `version x.y.z` directive from a contract's leading
+// directive region ("" when absent). Same scanning rules as
+// extract_require_pins — only the region before the first ordinary
+// statement counts.
+export let extract_package_version: (String) -> String with { Error } = (source) -> {
+  let len = String::length(source)
+  let mut pos = 0
+  let mut found = ""
+  let mut scanning = true
+  while pos < len && scanning {
+    let mut nl = pos
+    while nl < len && String::char_code_at(source, nl) != 10 {
+      nl = nl + 1
+    }
+    let trimmed = String::trim(String::substring(source, pos, nl))
+    if String::starts_with(trimmed, "version ") {
+      let vfields = split_fields(trimmed)
+      if Array::length(vfields) == 2 {
+        found = Array::get(vfields, 1)
+        scanning = false
+      } else {
+        throw("malformed version directive (expected: version x.y.z): \{trimmed}")
+      }
+    } else if String::length(trimmed) == 0 || String::starts_with(trimmed, "//") || String::starts_with(trimmed, "require ") {
+      ()
+    } else {
+      scanning = false
+    }
+    pos = nl + 1
+  }
+  found
+}
+
+// ADR-0063 §8 (#732 Phase F): Elm-style machine-verified semver. The
+// version bump a release CLAIMS must match what its contract diff REQUIRES:
+//   patch — the API surface is unchanged (same fn decls, opaques, types)
+//   minor — additions only (every old declaration survives verbatim)
+//   major — anything else
+// "semver is trusted" becomes a checkable property instead of a hope.
+
+let str_in: (Array[String], String) -> Bool = (arr, target) -> {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arr) && !found {
+    if Array::get(arr, i) == target {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+// Canonical per-declaration lines for a contract surface (shared by
+// contract_hash and the change classifier, so they can never disagree).
+export let contract_surface_lines: (Array[(String, String)], Array[(String, Int)], Array[Stmt]) -> Array[String] = (fn_decls, opaque_names, type_defs) -> {
+  let lines = Array::slice([
+    ""
+  ], 0, 0)
+  let mut i = 0
+  while i < Array::length(fn_decls) {
+    let (dname, dsig) = Array::get(fn_decls, i)
+    Array::push(lines, "fn \{dname} \{dsig}")
+    i = i + 1
+  }
+  let mut oi = 0
+  while oi < Array::length(opaque_names) {
+    let (oname, oarity) = Array::get(opaque_names, oi)
+    // #739: arity is part of the surface — `Box` -> `Box[T]` must classify
+    // as a MAJOR change. Zero-arity keeps the historical `opaque X` line so
+    // existing contract hashes only move for parameterized types.
+    let oline = if oarity == 0 {
+      "opaque \{oname}"
+    } else {
+      "opaque \{oname}[\{oarity}]"
+    }
+    Array::push(lines, oline)
+    oi = oi + 1
+  }
+  let mut ti = 0
+  while ti < Array::length(type_defs) {
+    Array::push(lines, "type \{print_stmt(Array::get(type_defs, ti))}")
+    ti = ti + 1
+  }
+  lines
+}
+
+// "patch" | "minor" | "major" for old -> new surface lines.
+export let classify_contract_change: (Array[String], Array[String]) -> String = (old_lines, new_lines) -> {
+  let mut all_old_kept = true
+  let mut i = 0
+  while i < Array::length(old_lines) {
+    if str_in(new_lines, Array::get(old_lines, i)) {
+      ()
+    } else {
+      all_old_kept = false
+    }
+    i = i + 1
+  }
+  if !all_old_kept {
+    "major"
+  } else {
+    let mut any_new = false
+    let mut j = 0
+    while j < Array::length(new_lines) {
+      if str_in(old_lines, Array::get(new_lines, j)) {
+        ()
+      } else {
+        any_new = true
+      }
+      j = j + 1
+    }
+    if any_new {
+      "minor"
+    } else {
+      "patch"
+    }
+  }
+}
+
+let digits_to_int: (String) -> Int = (raw) -> {
+  let len = String::length(raw)
+  let mut result = 0
+  let mut i = 0
+  while i < len {
+    result = result * 10 + (String::char_code_at(raw, i) - 48)
+    i = i + 1
+  }
+  result
+}
+
+let semver_parts: (String) -> Option[(Int, Int, Int)] = (v) -> {
+  if is_strict_semver(v) && !String::starts_with(v, "^") {
+    let parts = String::split(v, ".")
+    Some((digits_to_int(Array::get(parts, 0)), digits_to_int(Array::get(parts, 1)), digits_to_int(Array::get(parts, 2))))
+  } else {
+    None
+  }
+}
+
+// The bump kind a version transition claims: Some("patch"/"minor"/"major"),
+// None when the transition is not a single well-formed forward bump.
+export let semver_bump_kind: (String, String) -> Option[String] = (prev, next) -> {
+  match semver_parts(prev) {
+    None => None,
+    Some(pp) => match semver_parts(next) {
+      None => None,
+      Some(np) => {
+        let (pa, pb, pc) = pp
+        let (na, nb, nc) = np
+        if na == pa + 1 && nb == 0 && nc == 0 {
+          Some("major")
+        } else if na == pa && nb == pb + 1 && nc == 0 {
+          Some("minor")
+        } else if na == pa && nb == pb && nc == pc + 1 {
+          Some("patch")
+        } else {
+          None
+        }
+      }
+    }
+  }
+}
+
+// The publish gate: claimed bump must be exactly what the diff requires.
+export let verify_publish_bump: (String, String, Array[String], Array[String]) -> Array[String] = (prev_version, next_version, old_lines, new_lines) -> {
+  let errors = Array::slice([
+    ""
+  ], 0, 0)
+  let required = classify_contract_change(old_lines, new_lines)
+  match semver_bump_kind(prev_version, next_version) {
+    None => Array::push(errors, "\{prev_version} -> \{next_version} is not a single forward semver bump"),
+    Some(claimed) => if claimed == required {
+      ()
+    } else {
+      Array::push(errors, "version \{prev_version} -> \{next_version} claims a \{claimed} bump but the contract change requires \{required}")
+    }
+  }
+  errors
+}
+
+export {
+  parse_contract_program, collect_impl_fn_defs, check_contract
+}

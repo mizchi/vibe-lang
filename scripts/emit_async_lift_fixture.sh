@@ -16,9 +16,9 @@ STAGE2="$(ls -dt _build/selfhost/generations/*/ 2>/dev/null | head -1)stage2.was
 [ -s "$STAGE2" ] || { echo "no stage2 — run: bash scripts/selfhost_generations.sh build" >&2; exit 1; }
 WORK="_build/_emit_async_fixture"; mkdir -p "$WORK"
 cat > "$WORK/emit.vibe" <<'EOF'
-import ../../vibe/compiler/bytebuf.vibe { bytebuf_new, bytebuf_push, bytebuf_push_section, bytebuf_push_vec_header, bytebuf_to_bytes }
-import ../../vibe/compiler/component_codegen.vibe { comp_emit_component_wasm_async_trampolined_p1 }
-import ../../vibe/compiler/wasm_emit.vibe { emit_header, emit_func_type_raw, emit_function_section, emit_export_section, emit_i64_const, emit_code_section, emit_name }
+import ../../lib/@vibe/compiler/bytebuf.vibe { bytebuf_new, bytebuf_push, bytebuf_push_section, bytebuf_push_vec_header, bytebuf_to_bytes }
+import ../../lib/@vibe/compiler/component_codegen.vibe { comp_emit_component_wasm_async_trampolined_p1 }
+import ../../lib/@vibe/compiler/wasm_emit.vibe { emit_header, emit_func_type_raw, emit_function_section, emit_export_section, emit_i64_const, emit_code_section, emit_name }
 let build_core = () -> Bytes {
   let out = bytebuf_new()
   emit_header(out)

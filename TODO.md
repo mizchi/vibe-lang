@@ -63,7 +63,7 @@ rc-bootstrap fixpoint + shape corpus で常時検証）。
   `lib/@vibe/core/`（ADR-0063 契約パッケージ、`index.vibei` 82 fn decl +
   `type List[T]` / `type StringSet`）へ統合。`vibe/collection` は maps 専用
   facade に縮小。compiler 内部の sha1 は vendored twin
-  (`vibe/compiler/cache/sha1.vibe`) を gate 6e で canonical と diff 同期。
+  (`lib/@vibe/compiler/cache/sha1.vibe`) を gate 6e で canonical と diff 同期。
   store 配布は `scripts/vibe_core_install.sh`。副産物のエンジン強化:
   契約照合の any-match 化（同名 private 兄弟の許容）、bodyless
   `type Name[T]` = transparent re-export 宣言、persistent cache 再構築
@@ -71,7 +71,7 @@ rc-bootstrap fixpoint + shape corpus で常時検証）。
   バイパスするバグ修正）。残: compiler 本体が @vibe/core を require で
   消費する形への移行（#726/#730 系）、prelude の重複 helper 整理。
 - [x] **#726 bundle flatten を merge machinery 化 (2026-07-04)** — Python
-  flattener を廃止し、`vibe/compiler/emit_merged_source_entry.vibe`(seed で
+  flattener を廃止し、`lib/@vibe/compiler/emit_merged_source_entry.vibe`(seed で
   FS-compile される単体ツール)が ExportRenamePlan + private namespacing の
   実 merge で flat source を生成する。**dup top-level def 45 → 0**(生成時に
   0 を強制 assert)。副産物: compiler source が **FS-compile clean** になった
@@ -114,7 +114,7 @@ rc-bootstrap fixpoint + shape corpus で常時検証）。
 
 現況スナップショット。selfhost cutover は「移行開始可」。以後は
 wasmtime runner 層と compiler wasm artifact 層を分け、compiler/checker/codegen
-と CLI 挙動は `vibe/compiler/` 側で実装する。MoonBit `src/` は legacy
+と CLI 挙動は `lib/@vibe/compiler/` 側で実装する。MoonBit `src/` は legacy
 bootstrap / fallback として通常開発では触らない。
 
 ### 現状サマリ
@@ -132,7 +132,7 @@ bootstrap / fallback として通常開発では触らない。
 
 - [ ] **wasmtime runner 層**: `runtime/moonrun_wasmtime` / `scripts/wasmtime_run.sh`
   / cwasm cache / CI perf-RSS gate を「実行基盤」として整理する。
-- [ ] **compiler wasm artifact 層**: `vibe/compiler/` の selfhost CLI/component/check
+- [ ] **compiler wasm artifact 層**: `lib/@vibe/compiler/` の selfhost CLI/component/check
   entry と `scripts/build_selfhost_dist.sh` を canonical 配布物として整理する。
   - `selfhost-generation` 管理層は追加済み (`bootstrap/seed.json`,
     `scripts/selfhost_generations.sh`)。seed → stage1 → stage2 → stage3 は
@@ -167,9 +167,9 @@ bootstrap / fallback として通常開発では触らない。
 
 ### 🔵 リファクタ / 長期
 
-- [ ] `vibe/types/` `vibe/parser/` 分離、`vibe/compiler` 論理分割
+- [ ] `vibe/types/` `vibe/parser/` 分離、`lib/@vibe/compiler` 論理分割
 - [ ] MoonBit host CLI を bootstrap 専用へ縮退し、CLI 実装の source of truth を
-  `vibe/compiler/` へ固定
+  `lib/@vibe/compiler/` へ固定
 - [ ] MoonBit host 重複削減 (§similarity-mbt、残: `src/runtime/db.mbt` の `set_source`/`set_binary_source`)
 
 ---
@@ -206,7 +206,7 @@ bootstrap / fallback として通常開発では触らない。
 ### 🔵 リファクタ / 長期
 
 - [ ] `vibe/types/` / `vibe/parser/` 分離
-- [ ] `vibe/compiler` 論理分割
+- [ ] `lib/@vibe/compiler` 論理分割
 - [ ] MoonBit host CLI を bootstrap 専用へ縮退
 - [ ] selfhost perf gap cutover 水準まで（素材: `claude/chunk-compile-experiment` ブランチに hash-bucket lookup / sorted index / O(n) string dedup 等 23 commits、#295）。wasmtime AOT runtime は `runtime/moonrun_wasmtime` で実装済、bench-selfhost-perf-wasmtime task で 5 cases 平均 compile ratio 5.7 → 1.2（~5× 改善）。残課題は algorithmic な hash-bucket / dedup 系
 - [ ] MoonBit host 重複削減（similarity-mbt 抽出、§[MoonBit host 重複削減](#moonbit-host-重複削減-similarity-mbt-ベース)）
@@ -218,7 +218,7 @@ bootstrap / fallback として通常開発では触らない。
 ### 既知ギャップ（issue として追跡中）
 
 - ~~`just test-wasm-heavy` の wasm_opt / wasm_runtime に 17 fail~~（#356 → PR #357 + #358 で 129/129 ✅）
-- **selfhost checker parity 6 件（#364）** — `selfhost-bootstrap-gate`（PR #362）が surface した pre-existing failure。`vibe/compiler/checker_parity_advanced_test.vibe` で 37/43。host CLI では通る src を selfhost checker が reject (struct destructuring let / is expression / let else / trait impl / struct field type mismatch / derive unknown)。informational gate なので blocker ではないが、selfhost compiler の feature gap として要修正。
+- **selfhost checker parity 6 件（#364）** — `selfhost-bootstrap-gate`（PR #362）が surface した pre-existing failure。`lib/@vibe/compiler/checker_parity_advanced_test.vibe` で 37/43。host CLI では通る src を selfhost checker が reject (struct destructuring let / is expression / let else / trait impl / struct field type mismatch / derive unknown)。informational gate なので blocker ではないが、selfhost compiler の feature gap として要修正。
 - ~~derive(Eq) enum with payload の deep 比較~~（#341 で実装済）
 
 ## 0.2.0 roadmap: wasm-gc main backend gate (2026-03-27)
@@ -335,7 +335,7 @@ bootstrap / fallback として通常開発では触らない。
 
 ## Selfhost compiler の debug build 対応
 
-`vibe/compiler/` で linked debug build が動作するようになった (2026-03-20)。
+`lib/@vibe/compiler/` で linked debug build が動作するようになった (2026-03-20)。
 ReExport チェーン解決、linked import alias re-export、func_import_count 修正済み。
 
 ### 既知のバグ
@@ -362,7 +362,7 @@ ReExport チェーン解決、linked import alias re-export、func_import_count 
 
 ### Phase 4: selfhost codegen の linked build 対応
 
-selfhost compiler (`vibe/compiler/`) の codegen は monolithic のみ。
+selfhost compiler (`lib/@vibe/compiler/`) の codegen は monolithic のみ。
 linked debug build を selfhost でも生成するには以下の移植が必要:
 
 - [x] linked import の wasm import セクション生成 (`codegen/wasi/index.vibe`)
@@ -375,7 +375,7 @@ linked debug build を selfhost でも生成するには以下の移植が必要
 - [x] linked import alias の re-export (ExportLet + Ident → import re-export)
 - [x] selfhost CLI で `build --debug` コマンド統合
 
-目標: cached `vibe run vibe/compiler/index.vibe` を ~100ms に。
+目標: cached `vibe run lib/@vibe/compiler/index.vibe` を ~100ms に。
 
 ## Selfhost CLI parity
 
@@ -449,29 +449,29 @@ StringBuilder/ArrayBuilder) に置換する。
 
 ### 着手済 (このブランチ)
 
-- [x] `vibe/compiler/cache/persistent_cache.vibe :: bytes_to_hex` — StringBuilder 化 (#TBD `7a67c39`)
-- [x] `vibe/compiler/loader/{manifest_sources,index}.vibe :: join_header_values` — StringBuilder 化
-- [x] `vibe/compiler/coverage_selfhost_suite_lib.vibe :: join_str` — StringBuilder 化
-- [x] `vibe/compiler/codegen/common_base/index.vibe :: resolve_local 診断ビルダー` — StringBuilder 化
-- [x] `vibe/compiler/monoify.vibe :: collect_call_sites_*` — out-param walker 化 (10 sites; #TBD `0f843b8`)
-- [x] `vibe/compiler/runtime/eval_loader/index.vibe :: collect_exports` — push 化 (5 sites)
-- [x] `vibe/compiler/runtime/index.vibe :: upsert_source_cache` / `add_dep` / `db_grouped_merged_source` — push 化 (4 sites)
+- [x] `lib/@vibe/compiler/cache/persistent_cache.vibe :: bytes_to_hex` — StringBuilder 化 (#TBD `7a67c39`)
+- [x] `lib/@vibe/compiler/loader/{manifest_sources,index}.vibe :: join_header_values` — StringBuilder 化
+- [x] `lib/@vibe/compiler/coverage_selfhost_suite_lib.vibe :: join_str` — StringBuilder 化
+- [x] `lib/@vibe/compiler/codegen/common_base/index.vibe :: resolve_local 診断ビルダー` — StringBuilder 化
+- [x] `lib/@vibe/compiler/monoify.vibe :: collect_call_sites_*` — out-param walker 化 (10 sites; #TBD `0f843b8`)
+- [x] `lib/@vibe/compiler/runtime/eval_loader/index.vibe :: collect_exports` — push 化 (5 sites)
+- [x] `lib/@vibe/compiler/runtime/index.vibe :: upsert_source_cache` / `add_dep` / `db_grouped_merged_source` — push 化 (4 sites)
 
 ### 着手済 (続き)
 
-- [x] `vibe/compiler/runtime/typecheck_fs.vibe` — recursive `Array::concat(acc, [x])` 4 sites → `Array::push` 化
-- [x] `vibe/compiler/runtime/index.vibe` — recursive `resolve_nested` の dep_acc / stack を `Array::push` + `Array::truncate` 化
+- [x] `lib/@vibe/compiler/runtime/typecheck_fs.vibe` — recursive `Array::concat(acc, [x])` 4 sites → `Array::push` 化
+- [x] `lib/@vibe/compiler/runtime/index.vibe` — recursive `resolve_nested` の dep_acc / stack を `Array::push` + `Array::truncate` 化
 - [x] `vibe/parser/parser.vibe` — `parse_trait_stmt` の super-traits 累積を `Array::push` 化（残る `pipe_desugar` の単発 prepend はループ累積ではないため対象外）
 - [x] `vibe/x/diff/diff.vibe` — backtrace を `ops_rev` push + in-place reverse 化
 
 ### 未着手 (要設計)
 
-- [ ] `vibe/compiler/entry/source_compile/wasi_only/linked_helpers.vibe` — `contains_name` 線形走査 3 sites (要パターン精査: 線形 contains は selfhost runtime では Map[String, Bool] にしても改善しないので、別アプローチ要)
-- [ ] `vibe/compiler/entry/source_compile/wasi_only/linked_artifacts.vibe` — `contains_path` 線形走査 2 sites (同上)
+- [ ] `lib/@vibe/compiler/entry/source_compile/wasi_only/linked_helpers.vibe` — `contains_name` 線形走査 3 sites (要パターン精査: 線形 contains は selfhost runtime では Map[String, Bool] にしても改善しないので、別アプローチ要)
+- [ ] `lib/@vibe/compiler/entry/source_compile/wasi_only/linked_artifacts.vibe` — `contains_path` 線形走査 2 sites (同上)
 
 ### 一旦スキップ (理由付き)
 
-- `vibe/compiler/checker_warning.vibe` (5 sites)、`checker_capture.vibe` (2 sites)、`core/dce.vibe` (2 sites): `if !contains(out, n) { Array::push(out, n) }` 系の dedup。`Map[String, Bool]` set に置換しても、selfhost runtime の `Map::has_key` 自体が線形走査なので効果ゼロ。host CLI 側 (MoonBit) では効くが、selfhost wasm では効かない (vibe runtime の Map が hash table になるまで保留)。詳細は `bench/selfhost_perf/README.md` 参照
+- `lib/@vibe/compiler/checker_warning.vibe` (5 sites)、`checker_capture.vibe` (2 sites)、`core/dce.vibe` (2 sites): `if !contains(out, n) { Array::push(out, n) }` 系の dedup。`Map[String, Bool]` set に置換しても、selfhost runtime の `Map::has_key` 自体が線形走査なので効果ゼロ。host CLI 側 (MoonBit) では効くが、selfhost wasm では効かない (vibe runtime の Map が hash table になるまで保留)。詳細は `bench/selfhost_perf/README.md` 参照
 - `vibe/json/jsonrpc.vibe` などの `Map::has_key` + `Map::get` パターン (Tier B、~10 sites): 同上の理由でスキップ
 
 ### 関連
@@ -582,7 +582,7 @@ StringBuilder/ArrayBuilder) に置換する。
     (compiler への直接結合は +700KB & seed 不能 — docs/wasm-opt-dogfood.md)。
     数値目標は置かない（初回リリース後に現実的な値を設定）。
     メモ: wasm_opt の FS-linked compile は linear lane の FixedArray::make 未解決で現状ブロック
-- [ ] `vibe/compiler` の論理分割
+- [ ] `lib/@vibe/compiler` の論理分割
   - [x] `loader/index.vibe` の manifest traversal を shared helper に寄せ、source list/source groups の二重 BFS を削減する
 
 ## Interpreter 廃止
@@ -616,15 +616,15 @@ StringBuilder/ArrayBuilder) に置換する。
   - [x] active runtime surface / docs から `Runtime::eval_script_with_mode` 記述を外す
   - [x] host / selfhost evaluator 実装と専用 test を削除する
   - [x] 不要になった selfhost fixture smoke test を削除する
-    - [x] `vibe/compiler/fixture_selfhost_test.vibe`
-    - [x] `vibe/compiler/fixture_selfhost_roundtrip_test.vibe`
-    - [x] `vibe/compiler/fixture_parse_test_support.vibe`
+    - [x] `lib/@vibe/compiler/fixture_selfhost_test.vibe`
+    - [x] `lib/@vibe/compiler/fixture_selfhost_roundtrip_test.vibe`
+    - [x] `lib/@vibe/compiler/fixture_parse_test_support.vibe`
   - [x] 不要になった interpreter/evaluator 専用 test を棚卸しして段階削除する
     - [x] `src/runtime/eval_effects_wbtest.mbt` を削除し、compiled shell / scratch-db 側の coverage に寄せる
     - [x] `src/tests/vibe_wasm_eval_test.mbt` の interpreter parity 前提を外し、WASM decode / effect capture の mainline test に寄せる
-    - [x] `vibe/compiler/eval_*` の fixed-string smoke / wrapper test は削除済みで、fixture/mainline test 側へ整理した
+    - [x] `lib/@vibe/compiler/eval_*` の fixed-string smoke / wrapper test は削除済みで、fixture/mainline test 側へ整理した
     - [x] `test-selfhost-cache-probe` は standalone probe のまま維持し、release gate から外して運用する
-    - [x] `vibe/compiler/fixture_*_test_support.vibe` の export 面は `parse_ok` / `roundtrip_ok` / `parse_fixture_spec` に絞り、fixture test を集約した
+    - [x] `lib/@vibe/compiler/fixture_*_test_support.vibe` の export 面は `parse_ok` / `roundtrip_ok` / `parse_fixture_spec` に絞り、fixture test を集約した
     - [x] host / selfhost で重複していた evaluator smoke test は削除済みで、compiled mainline test (`src/tests/vibe_wasm_eval_test.mbt` / CLI scratch-db coverage) へ統合した
     - [x] coverage / bootstrap gate は compiled-only 前提に揃え、古い interpreter backend 前提を除去した
 

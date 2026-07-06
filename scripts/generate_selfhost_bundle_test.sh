@@ -6,9 +6,9 @@ BUNDLE_SCRIPT="$SCRIPT_DIR/generate_selfhost_bundle.sh"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/vibe_selfhost_bundle_test.XXXXXX")"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
-mkdir -p "$TMP_ROOT/vibe/compiler"
+mkdir -p "$TMP_ROOT/lib/@vibe/compiler"
 
-cat > "$TMP_ROOT/vibe/compiler/selfhost_sources_manifest.tsv" <<'EOF'
+cat > "$TMP_ROOT/lib/@vibe/compiler/selfhost_sources_manifest.tsv" <<'EOF'
 # group	path
 core	polyfill.vibe
 syntax	token.vibe
@@ -17,23 +17,23 @@ entry	selfhost_cli_adapter.vibe
 entry	selfhost_cli_adapter_bundle.vibe
 EOF
 
-cat > "$TMP_ROOT/vibe/compiler/polyfill.vibe" <<'EOF'
+cat > "$TMP_ROOT/lib/@vibe/compiler/polyfill.vibe" <<'EOF'
 let polyfill = () -> Int { 1 }
 EOF
 
-cat > "$TMP_ROOT/vibe/compiler/token.vibe" <<'EOF'
+cat > "$TMP_ROOT/lib/@vibe/compiler/token.vibe" <<'EOF'
 import ./polyfill.vibe { polyfill }
 
 let token = () -> Int { polyfill() }
 EOF
 
-cat > "$TMP_ROOT/vibe/compiler/index.vibe" <<'EOF'
+cat > "$TMP_ROOT/lib/@vibe/compiler/index.vibe" <<'EOF'
 import ./selfhost_cli_adapter_bundle.vibe { selfhost_cli_adapter_merged_source }
 
 let index = String::length(selfhost_cli_adapter_merged_source()) + token()
 EOF
 
-cat > "$TMP_ROOT/vibe/compiler/selfhost_cli_adapter.vibe" <<'EOF'
+cat > "$TMP_ROOT/lib/@vibe/compiler/selfhost_cli_adapter.vibe" <<'EOF'
 import ./token.vibe { token }
 
 let ignored = 1
@@ -41,17 +41,17 @@ let cli_main = () -> Int { token() }
 EOF
 
 VIBE_SELFHOST_PROJECT_ROOT="$TMP_ROOT" \
-VIBE_SELFHOST_SOURCE_MANIFEST="$TMP_ROOT/vibe/compiler/selfhost_sources_manifest.tsv" \
-VIBE_SELFHOST_BUNDLE_OUT="$TMP_ROOT/vibe/compiler/selfhost_sources_bundle.vibe" \
-VIBE_SELFHOST_ADAPTER_BUNDLE_OUT="$TMP_ROOT/vibe/compiler/selfhost_cli_adapter_bundle.vibe" \
-VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_OUT="$TMP_ROOT/vibe/compiler/selfhost_cli_adapter_module_source.vibe" \
+VIBE_SELFHOST_SOURCE_MANIFEST="$TMP_ROOT/lib/@vibe/compiler/selfhost_sources_manifest.tsv" \
+VIBE_SELFHOST_BUNDLE_OUT="$TMP_ROOT/lib/@vibe/compiler/selfhost_sources_bundle.vibe" \
+VIBE_SELFHOST_ADAPTER_BUNDLE_OUT="$TMP_ROOT/lib/@vibe/compiler/selfhost_cli_adapter_bundle.vibe" \
+VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_OUT="$TMP_ROOT/lib/@vibe/compiler/selfhost_cli_adapter_module_source.vibe" \
 VIBE_SELFHOST_BUNDLE_EXTRA_ENTRIES="" \
 VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_FROM_MERGED=1 \
 bash "$BUNDLE_SCRIPT" >/dev/null
 
-OUT="$TMP_ROOT/vibe/compiler/selfhost_sources_bundle.vibe"
-OUT_ADAPTER="$TMP_ROOT/vibe/compiler/selfhost_cli_adapter_bundle.vibe"
-OUT_ADAPTER_MODULE="$TMP_ROOT/vibe/compiler/selfhost_cli_adapter_module_source.vibe"
+OUT="$TMP_ROOT/lib/@vibe/compiler/selfhost_sources_bundle.vibe"
+OUT_ADAPTER="$TMP_ROOT/lib/@vibe/compiler/selfhost_cli_adapter_bundle.vibe"
+OUT_ADAPTER_MODULE="$TMP_ROOT/lib/@vibe/compiler/selfhost_cli_adapter_module_source.vibe"
 if [ ! -f "$OUT" ]; then
   echo "generate-selfhost-bundle self-test: expected bundle output" >&2
   exit 1
@@ -72,7 +72,7 @@ fi
 # In this test: polyfill, token, selfhost_cli_adapter are reachable.
 # index.vibe is NOT reachable from adapter (it imports adapter_bundle, not adapter).
 for path in polyfill token selfhost_cli_adapter; do
-  if ! rg -q "\"vibe/compiler/${path}\\.vibe\"" "$OUT"; then
+  if ! rg -q "\"lib/@vibe/compiler/${path}\\.vibe\"" "$OUT"; then
     echo "generate-selfhost-bundle self-test: missing ${path}.vibe entry" >&2
     cat "$OUT" >&2
     exit 1
@@ -80,15 +80,15 @@ for path in polyfill token selfhost_cli_adapter; do
 done
 
 # index.vibe should NOT be in the main bundle (unreachable from adapter)
-if rg -q '"vibe/compiler/index\.vibe"' "$OUT"; then
+if rg -q '"lib/@vibe/compiler/index\.vibe"' "$OUT"; then
   echo "generate-selfhost-bundle self-test: index.vibe should be filtered out (unreachable)" >&2
   cat "$OUT" >&2
   exit 1
 fi
 
-polyfill_line="$(rg -n '"vibe/compiler/polyfill\.vibe"' "$OUT" | cut -d: -f1)"
-token_line="$(rg -n '"vibe/compiler/token\.vibe"' "$OUT" | cut -d: -f1)"
-adapter_line="$(rg -n '"vibe/compiler/selfhost_cli_adapter\.vibe"' "$OUT" | cut -d: -f1)"
+polyfill_line="$(rg -n '"lib/@vibe/compiler/polyfill\.vibe"' "$OUT" | cut -d: -f1)"
+token_line="$(rg -n '"lib/@vibe/compiler/token\.vibe"' "$OUT" | cut -d: -f1)"
+adapter_line="$(rg -n '"lib/@vibe/compiler/selfhost_cli_adapter\.vibe"' "$OUT" | cut -d: -f1)"
 
 if [ "$polyfill_line" -ge "$token_line" ] || [ "$token_line" -ge "$adapter_line" ]; then
   echo "generate-selfhost-bundle self-test: manifest order was not preserved" >&2
@@ -175,7 +175,7 @@ if ! printf '%s\n' "$adapter_sources_block" | rg -Fq 'Array::push(sources, cli_a
   exit 1
 fi
 
-if printf '%s\n' "$adapter_sources_block" | rg -Fq 'vibe/compiler/index.vibe'; then
+if printf '%s\n' "$adapter_sources_block" | rg -Fq 'lib/@vibe/compiler/index.vibe'; then
   echo "generate-selfhost-bundle self-test: adapter closure unexpectedly kept unrelated index source" >&2
   cat "$OUT_ADAPTER" >&2
   exit 1

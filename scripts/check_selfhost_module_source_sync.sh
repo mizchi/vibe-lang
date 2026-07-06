@@ -4,7 +4,7 @@
 #
 # emit-module-source is a deterministic function of the committed compiler
 # source. The default (moon-free) build consumes the committed prebuilt
-# vibe/compiler/selfhost_cli_adapter_module_source.vibe instead of calling
+# lib/@vibe/compiler/selfhost_cli_adapter_module_source.vibe instead of calling
 # the MoonBit host. This gate regenerates it through the host compiler
 # (VIBE_SELFHOST_REGEN_MODULE_SOURCE=1) and fails on drift, so a stale
 # prebuilt can never silently ship.
@@ -16,7 +16,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="${VIBE_SELFHOST_PROJECT_ROOT:-$(dirname "$SCRIPT_DIR")}"
-COMPILER_DIR="${VIBE_SELFHOST_COMPILER_DIR:-$PROJECT_ROOT/vibe/compiler}"
+COMPILER_DIR="${VIBE_SELFHOST_COMPILER_DIR:-$PROJECT_ROOT/lib/@vibe/compiler}"
 EXPECTED="${VIBE_SELFHOST_MODULE_SOURCE_EXPECTED:-$COMPILER_DIR/selfhost_cli_adapter_module_source.vibe}"
 
 if [ ! -f "$EXPECTED" ]; then

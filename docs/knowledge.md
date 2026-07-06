@@ -153,7 +153,7 @@ import 解決時に `exported_names` (AST レベル) と `imported_env` (型レ�
 
 ### 背景
 
-`type_query` は ripple 増分計算システムで管理される。ファイルが `vibe/compiler/` のような `index.vibe` を持つディレクトリにある場合、`has_dir_index = true` となり、index.vibe の cross-directory imports をシブリングファイルの型環境にマージする処理が走る。
+`type_query` は ripple 増分計算システムで管理される。ファイルが `lib/@vibe/compiler/` のような `index.vibe` を持つディレクトリにある場合、`has_dir_index = true` となり、index.vibe の cross-directory imports をシブリングファイルの型環境にマージする処理が走る。
 
 ### 問題
 
@@ -241,7 +241,7 @@ None =>
 
 ### 問題
 
-index.vibe の cross-directory import を処理する際、`imp.path_obj.normalized` を使って import のディレクトリを判定していた。しかし `path_obj.normalized` はパス正規化時に `base_dir` を二重に含めることがあり、例えば `vibe/compiler/vibe/compiler/ast.vibe` のような不正なパスが生成される。
+index.vibe の cross-directory import を処理する際、`imp.path_obj.normalized` を使って import のディレクトリを判定していた。しかし `path_obj.normalized` はパス正規化時に `base_dir` を二重に含めることがあり、例えば `lib/@vibe/compiler/lib/@vibe/compiler/ast.vibe` のような不正なパスが生成される。
 
 ### 修正
 
@@ -273,12 +273,12 @@ let imp_dir = @path.Path(imp.path).dirname().to_string()
 
 ### 目的
 
-18個のセルフホストコンパイラソース（`vibe/compiler/*.vibe`）全てが host MoonBit の `compile_module` パイプライン（parse → type-check → desugar → monoify）を通過することを検証する。
+18個のセルフホストコンパイラソース（`lib/@vibe/compiler/*.vibe`）全てが host MoonBit の `compile_module` パイプライン（parse → type-check → desugar → monoify）を通過することを検証する。
 
 ### 構成
 
 ```
-vibe/compiler/
+lib/@vibe/compiler/
 ├── token.vibe          # トークン定義
 ├── ast.vibe            # AST 定義
 ├── lexer.vibe          # 字句解析
@@ -385,9 +385,9 @@ driver 返り値を配列で作る際、`[roundtrip(...), ...]` 形式が parser
 - 環境変数 `VIBE_SELFHOST_PROBE_FILES` で対象ファイルをオーバーライド可能にし、1ファイル単位の実測を可能化
 - driver の集約結果は array ではなく tuple で返す
 - 追加の高速化（2026-03-02）:
-  - `vibe/compiler/printer.vibe`: `join` / `escape_string` を builder ベースに変更
+  - `lib/@vibe/compiler/printer.vibe`: `join` / `escape_string` を builder ベースに変更
   - 旧 interpreter runtime: `String::length` / `String::char_code_at` / `String::substring` / `String::concat` / `Array::length` / `Array::get` にホットパス追加
-  - `vibe/compiler/lexer.vibe`: `keyword_lookup` を length + 先頭文字ディスパッチに変更
+  - `lib/@vibe/compiler/lexer.vibe`: `keyword_lookup` を length + 先頭文字ディスパッチに変更
 
 ### 効果
 
@@ -401,22 +401,22 @@ driver 返り値を配列で作る際、`[roundtrip(...), ...]` 形式が parser
 
 > 注: eval_*.vibe, values.vibe は eval 廃止に伴い削除済み。計測データは当時の記録。
 
-- 52.28: `vibe/compiler/types.vibe`
-- 43.34: `vibe/compiler/lexer.vibe`
-- 35.13: `vibe/compiler/printer.vibe`
-- 19.95: `vibe/compiler/checker.vibe`
-- 16.61: `vibe/compiler/eval_builtins.vibe`
-- 11.24: `vibe/compiler/builtins.vibe`
-- 11.12: `vibe/compiler/type_db.vibe`
-- 5.88: `vibe/compiler/eval_stmt.vibe`
-- 4.66: `vibe/compiler/checker_stmt.vibe`
-- 4.29: `vibe/compiler/values.vibe`
-- 2.15: `vibe/compiler/token.vibe`
-- 2.11: `vibe/compiler/eval_loader.vibe`
-- 1.28: `vibe/compiler/ast.vibe`
-- 1.26: `vibe/compiler/checker_resolve.vibe`
-- 0.73: `vibe/compiler/index.vibe`
-- 0.48: `vibe/compiler/eval_e2e_helpers.vibe`
+- 52.28: `lib/@vibe/compiler/types.vibe`
+- 43.34: `lib/@vibe/compiler/lexer.vibe`
+- 35.13: `lib/@vibe/compiler/printer.vibe`
+- 19.95: `lib/@vibe/compiler/checker.vibe`
+- 16.61: `lib/@vibe/compiler/eval_builtins.vibe`
+- 11.24: `lib/@vibe/compiler/builtins.vibe`
+- 11.12: `lib/@vibe/compiler/type_db.vibe`
+- 5.88: `lib/@vibe/compiler/eval_stmt.vibe`
+- 4.66: `lib/@vibe/compiler/checker_stmt.vibe`
+- 4.29: `lib/@vibe/compiler/values.vibe`
+- 2.15: `lib/@vibe/compiler/token.vibe`
+- 2.11: `lib/@vibe/compiler/eval_loader.vibe`
+- 1.28: `lib/@vibe/compiler/ast.vibe`
+- 1.26: `lib/@vibe/compiler/checker_resolve.vibe`
+- 0.73: `lib/@vibe/compiler/index.vibe`
+- 0.48: `lib/@vibe/compiler/eval_e2e_helpers.vibe`
 
 上位3ファイル（types/lexer/printer）だけで **61.5%**、上位5ファイルで **78.7%** を占める。
 
@@ -523,13 +523,13 @@ top-level 関数が他の top-level 関数を機械的に capture すると、�
 
 ### 問題
 
-`vibe/compiler/*.vibe` の root が `vibe/compiler` だと、`../module/path.vibe` が `outside root` で失敗する。
+`lib/@vibe/compiler/*.vibe` の root が `lib/@vibe/compiler` だと、`../module/path.vibe` が `outside root` で失敗する。
 
 ### 修正
 
 - `resolve_index_root_with_fs` で、祖先に `vibe` ディレクトリがあり
   `prelude/json/base64/sha1` の `index.lock` を持つ場合は、その `vibe` ルートを root として採用
-- これにより `vibe/compiler` から `vibe/module` への import が許可される
+- これにより `lib/@vibe/compiler` から `vibe/module` への import が許可される
 - 追加テスト: `codebase resolve_index_root uses shared vibe root for repo subtree`
 
 ### 教訓
@@ -629,7 +629,7 @@ top-level 関数が他の top-level 関数を機械的に capture すると、�
 
 ## K-019: selfhost bootstrap の真のボトルネックは `module_loader_test` / `file_compile_mode_test`
 
-- 場所: `scripts/test_selfhost_bootstrap_gate.sh`, `src/cmd/vibe/cli.mbt`, `vibe/compiler/loader/index.vibe`, `vibe/compiler/entry/compiler/file_compile/index.vibe`
+- 場所: `scripts/test_selfhost_bootstrap_gate.sh`, `src/cmd/vibe/cli.mbt`, `lib/@vibe/compiler/loader/index.vibe`, `lib/@vibe/compiler/entry/compiler/file_compile/index.vibe`
 - 発見: 2026-03
 
 ### 背景
@@ -644,8 +644,8 @@ compiled selfhost bootstrap は当初「parallel batch が細かすぎて child 
 
 しかし `shard 1/4` を同じ条件で再計測すると、他の batch が先に抜けた後も次の 2 本だけが高 CPU のまま残り続けた。
 
-- `vibe/compiler/module_loader_test.vibe`
-- `vibe/compiler/file_compile_mode_test.vibe`
+- `lib/@vibe/compiler/module_loader_test.vibe`
+- `lib/@vibe/compiler/file_compile_mode_test.vibe`
 
 ### 観測
 
@@ -700,7 +700,7 @@ if stat_token_text != "" {
 
 ## K-020: ADR を一周まわして実装する作業ループ
 
-- 場所: `docs/adr.md`, `src/checker/`, `vibe/compiler/`
+- 場所: `docs/adr.md`, `src/checker/`, `lib/@vibe/compiler/`
 - 発見: 2026-05 (ADR-0051 / 0046 / 0047 / 0050 / 0023-selfhost を順に処理)
 
 ### 背景
@@ -741,7 +741,7 @@ ADR doc 更新と新規 wbtest だけの PR (#373) は CI も短く、レビュ�
 
 `selfhost-bootstrap-gate` は CI 上 `continue-on-error: true` の informational job なので、`ci-required` には影響しない。ただし pre-existing bug を放置していると判別できなくなるので:
 
-1. `vibe test vibe/compiler/<failing>_test.vibe` をローカルで再現 (`flaker` でなく直叩き)。
+1. `vibe test lib/@vibe/compiler/<failing>_test.vibe` をローカルで再現 (`flaker` でなく直叩き)。
 2. wasmtime 必須なので `bash scripts/install_wasmtime_release.sh` で repo 既定バージョンを入れる。
 3. exit code 24 = `assert(...)` 失敗。テストが通ろうとしている場面が selfhost compiler のどの構文/型機能を要求しているかを切り分ける。
 4. 「テストソース自体が host も受理しない」「auto-generated bundle のシェイプが変わったのに assert が古い」など、テストが先走っていることが多い。skip + 再有効化条件を残すコメントだけで unblock 可 (#372)。

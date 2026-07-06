@@ -10,7 +10,7 @@ use-after-free), and the gate that blocks RC cutover to the selfhost linear
 default. Prerequisite
 for *recursive field drop* in the selfhost Perceus RC port
 (`docs/spec/selfhost-rc-port.md`). The canonical implementation target is now
-the selfhost compiler under `vibe/compiler/`; the MoonBit `src/` backend is only
+the selfhost compiler under `lib/@vibe/compiler/`; the MoonBit `src/` backend is only
 a historical/reference point for this design. This documents the design the
 selfhost backend needs before the RC vertical can reclaim **nested** heap
 (a dropped container freeing its heap fields) and **container/call escapes**.

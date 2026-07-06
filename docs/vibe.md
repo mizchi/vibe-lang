@@ -796,7 +796,7 @@ Runtime API:
 - Internal PosixMode preprocessing/desugar remains available for preview
   shell-style command-head rewriting in runtime tests.
 CLI:
-- The canonical compiler / checker / CLI implementation lives under `vibe/compiler/`
+- The canonical compiler / checker / CLI implementation lives under `lib/@vibe/compiler/`
   and `vibe/cli/` (selfhost-only; the MoonBit `src/cmd/*` host was retired in #594).
 - Commands below use the installed `vibe` binary; from a checkout the equivalent is
   `pkf run run -- <args>`.

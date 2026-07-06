@@ -6,7 +6,7 @@ bumped seed/CI toolchain; PR-2 (bound enforcement + dictionary passing) next.
 ## Build gotcha (read before iterating on the selfhost compiler)
 
 `scripts/selfhost_generations.sh build` and `generate_selfhost_bundle.sh` copy the
-**committed** `vibe/compiler/selfhost_cli_adapter_module_source.vibe` by default
+**committed** `lib/@vibe/compiler/selfhost_cli_adapter_module_source.vibe` by default
 (`build_adapter_module_source`, gated on `VIBE_SELFHOST_REGEN_MODULE_SOURCE`).
 Editing compiler source files therefore has **no effect** on a build until the
 flat module source is regenerated. Always build/regenerate with:
@@ -14,7 +14,7 @@ flat module source is regenerated. Always build/regenerate with:
 ```bash
 VIBE_SELFHOST_REGEN_MODULE_SOURCE=1 bash scripts/selfhost_generations.sh build
 VIBE_SELFHOST_REGEN_MODULE_SOURCE=1 \
-  VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_OUT=vibe/compiler/selfhost_cli_adapter_module_source.vibe \
+  VIBE_SELFHOST_ADAPTER_MODULE_SOURCE_OUT=lib/@vibe/compiler/selfhost_cli_adapter_module_source.vibe \
   bash scripts/generate_selfhost_bundle.sh   # to refresh the committed copy
 ```
 
@@ -33,20 +33,20 @@ Haskell type classes (dictionary passing), Swift protocol witness tables, Roc ab
 
 ## Current state (file:line)
 
-- AST: `vibe/compiler/core/ast.vibe` — `STrait(Bool, String, Array[String])` (exported,
+- AST: `lib/@vibe/compiler/core/ast.vibe` — `STrait(Bool, String, Array[String])` (exported,
   name, supertraits; **no methods**); `SImpl(Array[String], Array[(String, Array[String])],
   String, String)` (type_params, type_bounds, trait, type; **no method bodies**).
   `EFn(type_params, bounds, params, ret, effect, body)` is the existing carrier for
   type params + bounds. `SEffectDef(...)` is the precedent for a decl that stores a
   list of `(name, param-types, ret-type)` signatures.
-- Parser: `lib/@vibe/parser/parser_base.vibe` (#753 で vibe/compiler/syntax から移設) — `parse_trait_stmt` and
+- Parser: `lib/@vibe/parser/parser_base.vibe` (#753 で lib/@vibe/compiler/syntax から移設) — `parse_trait_stmt` and
   `parse_impl_stmt` call `skip_braced_body`, throwing the `{ ... }` block away.
   `parse_effect_stmt` is the working precedent for parsing a `{ sig; ... }` block.
-- Checker: `vibe/compiler/checker/checker_stmt.vibe` records `EnvTraitDef` /
-  `EnvTraitImpl` markers (no methods). `vibe/compiler/checker_trait.vibe`
+- Checker: `lib/@vibe/compiler/checker/checker_stmt.vibe` records `EnvTraitDef` /
+  `EnvTraitImpl` markers (no methods). `lib/@vibe/compiler/checker_trait.vibe`
   `satisfies_bound` / `check_bounds_satisfied` are exported but **never called**
   (bounds are tracked, not enforced). Resolution primitives exist in
-  `vibe/compiler/core/types.vibe`: `instantiate`, `subst_apply`, `trait_supers`,
+  `lib/@vibe/compiler/core/types.vibe`: `instantiate`, `subst_apply`, `trait_supers`,
   `trait_is_subtrait`, `type_implements_trait`.
 - Codegen: records store each field as a uniform i64
   (`codegen/expr/compile_expr_tail4.vibe`); a closure value is itself a uniform i64
@@ -242,7 +242,7 @@ resolve.
    helpers `trait_method_sig` / `subst_bounds_for` in `core/types.vibe`). The
    syntactic lowering below means no checker obligation list is needed.
 3. **Witness threading + 4. materialization.** — **LANDED (components 3+4,
-   this branch; `vibe/compiler/desugar_trait_dict.vibe`).** A pre-check pass
+   this branch; `lib/@vibe/compiler/desugar_trait_dict.vibe`).** A pre-check pass
    `desugar_trait_dicts` synthesizes a witness struct `TraitDict { m: (Self)->R; ... }`
    per method-bearing trait, prepends a hidden `__dict_Trait_T: TraitDict[T]`
    parameter to each `[T: Trait]` generic, rewrites `T::method(args)` →

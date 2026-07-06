@@ -13,13 +13,13 @@ SEED="bootstrap/seed/selfhost_compiler.wasm"
 # cli_main-unreachable (DCE'd) functions. Merge still counts only branches in
 # corpus-present functions, so a richer base only adds executed bits, never
 # inflates the denominator.
-FLAT="${VIBE_COV_FLAT:-vibe/compiler/selfhost_cli_adapter_module_source.vibe}"
+FLAT="${VIBE_COV_FLAT:-lib/@vibe/compiler/selfhost_cli_adapter_module_source.vibe}"
 RUNNER="scripts/run_wasm_vibe_host_runner.sh"
 ACC="_build/coverage/selfhost-corpus/acc.json"
 OUT="_build/coverage/selfhost-ut"; rm -rf "$OUT"; mkdir -p "$OUT"
 
 ok=0; fail=0; : > "$OUT/runs.txt"
-for f in vibe/compiler/*_test.vibe; do
+for f in lib/@vibe/compiler/*_test.vibe; do
   base="$(basename "$f")"
   SUPPORTS="$(grep -oE "\./[a-z_]+_support\.vibe" "$f" 2>/dev/null | sed "s|\./||" | sort -u | paste -sd, -)"
   python3 scripts/coverage_selfhost_unittests.py "$SUPPORTS" "$base" >/dev/null 2>&1 || { fail=$((fail+1)); continue; }

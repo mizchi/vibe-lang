@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Selfhost `vibe fmt` (#594): format vibe source via the selfhost CST-token
-# formatter (vibe/compiler/fmt/format.vibe), compiled by the committed seed and
+# formatter (lib/@vibe/compiler/fmt/format.vibe), compiled by the committed seed and
 # run through the Rust/node runner — no MoonBit host.
 #
 #   bash scripts/vibe_fmt.sh <file.vibe>          # rewrite the file in place
@@ -41,7 +41,7 @@ entry_wasm_rel="_build/vibe_fmt/fmt_entry.wasm"
 
 # Compile the formatter entry once (it FS-resolves the format module import).
 if [ ! -s "$ROOT_DIR/$entry_wasm_rel" ] || [ "$entry_src" -nt "$ROOT_DIR/$entry_wasm_rel" ] \
-   || [ "vibe/compiler/fmt/format.vibe" -nt "$ROOT_DIR/$entry_wasm_rel" ]; then
+   || [ "lib/@vibe/compiler/fmt/format.vibe" -nt "$ROOT_DIR/$entry_wasm_rel" ]; then
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_SELFHOST_IMPORT_ABI=raw \
     bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" \
     --invoke cli_main "$seed" "$entry_src" "$entry_wasm_rel" main >/dev/null

@@ -17,7 +17,7 @@ cd "$ROOT_DIR"
 
 CLI="${1:-$(ls -t _build/selfhost/generations/*/stage2.wasm 2>/dev/null | head -1)}"
 [ -s "$CLI" ] || { echo "[rc-selfhost] no stage2 CLI (build one first)" >&2; exit 2; }
-BUNDLE=vibe/compiler/selfhost_cli_adapter_module_source.vibe
+BUNDLE=lib/@vibe/compiler/selfhost_cli_adapter_module_source.vibe
 OUT=_build/rc_selfhost
 mkdir -p "$OUT"
 RUN="bash scripts/run_wasm_vibe_host_runner.sh"

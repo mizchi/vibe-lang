@@ -3,7 +3,7 @@
 Stable binary encoding for `@core.Module` shared by the MoonBit host
 implementation (`src/core/serialize_binary.mbt`,
 `src/core/deserialize_binary.mbt`) and the selfhost vibe compiler
-(`vibe/compiler/ast_binary.vibe`).
+(`lib/@vibe/compiler/ast_binary.vibe`).
 
 The format is the source of truth for the on-disk prelude AST cache
 (`~/.cache/vibe/prelude-<sha>.ast.bin`) and any other place where an
@@ -284,7 +284,7 @@ back to parsing the source string.
 
 ## Cross-implementation conformance
 
-`vibe/compiler/ast_binary_test.vibe` and
+`lib/@vibe/compiler/ast_binary_test.vibe` and
 `src/core/serialize_binary_wbtest.mbt` each contain a small fixture
 ("the smoke module") that exercises every tagged variant at least
 once. Both implementations must produce byte-identical output when

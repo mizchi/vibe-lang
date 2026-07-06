@@ -248,7 +248,7 @@
   LSP（編集中の壊れたソースで診断/補完を出す）と UX 両方の天井になっている。
   recovery point（`;` / `}` / トップレベル宣言境界で再同期）を入れる。
 - **B. source location / wasm name section** — 現状 codegen は name section も
-  source map も出さない（`grep source.?map vibe/compiler/codegen` → 0 件）。
+  source map も出さない（`grep source.?map lib/@vibe/compiler/codegen` → 0 件）。
   ランタイム trap / panic がソース行を指せない。ADR-0035 P0 の
   `vibe.func_map` + wasm name section を入れると、debugger だけでなく
   実行時エラーの可読性も上がる。
@@ -342,7 +342,7 @@
 ### 現状（想定より進んでいる）
 
 - 相対パス import/export（`import ./lib.vibe { f }`、`export use`）は実装済み
-  （`docs/module-system.md`, `vibe/compiler/module_*.vibe`）。
+  （`docs/module-system.md`, `lib/@vibe/compiler/module_*.vibe`）。
 - **lock workflow 実装済み**（`docs/spec/decisions.md`）:
   `vibe fetch` / `vibe update-lock` が `index.lock`
   （`path`/`version`/`symbol`/`module`/`annotation` マップ）を維持。
@@ -558,7 +558,7 @@ VS Code（DAP クライアント）から breakpoint を張り、停止・変数
   diagnostics / hover / go-to-def / completion / document symbols / formatting を
   LSP メソッドとして話す層が未実装。
 - **バックエンドが host (`src/`) 依存**: selfhost-only 方針に対し、
-  symbol index が MoonBit 側にある。selfhost `vibe/compiler/` への移植が要る。
+  symbol index が MoonBit 側にある。selfhost `lib/@vibe/compiler/` への移植が要る。
 - **parser に error recovery が無い**（横断土台 A）— 編集中ソースで診断/補完が
   破綻する。LSP 品質の最大ボトルネック。
 - 型チェッカが部分的な型情報（hover 用の式の型、補完候補）を返す API を持たない。
@@ -596,7 +596,7 @@ install/​debugger と runtime 前提を一本化する。`vibe lsp` を selfho
       着地で正確化（`[@off=N]` → 実 line:col）。検証済み（`scripts/test_vibe_lsp.js`
       14/14、型付き hover assertion 含む）。
 - [ ] **4-2 selfhost への index 移植**（M2–M3）— `src/frontend/symbol_index.mbt`
-      相当を `vibe/compiler/` 側に持ち、host 依存を外す。
+      相当を `lib/@vibe/compiler/` 側に持ち、host 依存を外す。
 - [~] **4-3 definition / hover / completion / references / rename**（M3）—
       definition / completion はテキスト走査ベース。**references / rename は AST 精度化**:
       `vibe binding-at <file> <line> <col>`（selfhost の `binding_occurrences`: 位置の

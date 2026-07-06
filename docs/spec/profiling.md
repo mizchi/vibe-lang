@@ -161,7 +161,7 @@ vibe::bench label=multi_bench.vibe::heavy iters=1000 ns_min=… … bytes_per_op
 bench multi_bench.vibe::heavy: 1000 iters — … ns/op …
 ```
 
-実装: codegen は `vibe/compiler/codegen/wasi/linked_compile.vibe`（export セクションで `test_fn_names` の
+実装: codegen は `lib/@vibe/compiler/codegen/wasi/linked_compile.vibe`（export セクションで `test_fn_names` の
 `__bench_*` を `all_export_names` に追加）、計時は runner（`bench()` が module export を走査して
 ブロック単位 / フォールバックを選ぶ）。test: `scripts/test_vibe_bench.sh`（per-block 3 assertions）。
 

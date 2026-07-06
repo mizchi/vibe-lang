@@ -15,7 +15,7 @@ Status: accepted from 2026-06-12.
 - seed tag: `selfhost-cutover-base-2026-06-12`
 - seed artifact: `bootstrap/seed/selfhost_compiler.wasm`
 - seed sha256: `f9da8e285fe0c71c33670a2b9a13a49088dee3ec9a46d2175e975968c6b4b26b`
-- source of truth: `vibe/compiler/` and `vibe/cli/`
+- source of truth: `lib/@vibe/compiler/` and `vibe/cli/`
 - MoonBit `src/`: legacy bootstrap / fallback / host-runner 層。通常開発では触らない
 
 2026-06-12 の local cutover sign-off:
@@ -34,22 +34,22 @@ Status: accepted from 2026-06-12.
 
 ## Development Mode
 
-compiler/checker/codegen の挙動変更は `vibe/compiler/` に入れる。CLI の
+compiler/checker/codegen の挙動変更は `lib/@vibe/compiler/` に入れる。CLI の
 コマンド挙動、adapter、bundle、component entry は `vibe/cli/` と
-`vibe/compiler/` 側を source of truth とする。MoonBit `src/` は固定 seed から
+`lib/@vibe/compiler/` 側を source of truth とする。MoonBit `src/` は固定 seed から
 current selfhost compiler を作るための legacy bootstrap/fallback 境界として扱い、
 通常の feature / bugfix / CLI 変更では編集しない。
 
 通常の feature / bugfix は次の順で進める。
 
 1. selfhost 側に test を追加して Red を確認する。
-2. `vibe/compiler/` または `vibe/cli/` の実装を直して Green にする。
+2. `lib/@vibe/compiler/` または `vibe/cli/` の実装を直して Green にする。
 3. 必要なら `scripts/generate_selfhost_bundle.sh` で bundle を同期する。
 4. `pkf run selfhost-gate` を通す。
 5. 互換や配布 artifact に影響する変更だけ `pkf run release-check` も通す。
 
 `src/` を変更する必要があるように見える場合は、先に原因を
-`vibe/compiler/` / `vibe/cli/` / bootstrap scripts / seed 管理へ切り分ける。
+`lib/@vibe/compiler/` / `vibe/cli/` / bootstrap scripts / seed 管理へ切り分ける。
 break-glass として `src/` を触る場合は、通常 feature commit とは分け、
 明示的な方針確認を行う。
 

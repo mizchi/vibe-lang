@@ -31,7 +31,7 @@ WORK="_build/coverage/drivers"; mkdir -p "$WORK"
 #    concatenated (the pre-DCE input to build_module_source_from_source). This is
 #    the base every driver appends to.
 echo "[drivers] regenerating no-DCE merged source ..." >&2
-python3 - "vibe/compiler" "vibe/compiler/selfhost_sources_manifest.tsv" "selfhost_cli_adapter.vibe" "$MERGED" <<'PY'
+python3 - "lib/@vibe/compiler" "lib/@vibe/compiler/selfhost_sources_manifest.tsv" "selfhost_cli_adapter.vibe" "$MERGED" <<'PY'
 import os, re, sys
 compiler_dir, manifest_path, root_rel, out_path = sys.argv[1:]
 rows=[]

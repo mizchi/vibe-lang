@@ -140,7 +140,7 @@ corpus は base self-compile / RC-stress に加えて以下のワークロード
 
 #### test-execution 計測（2026-06-24, 上記方式 #1 を実装）
 
-`scripts/coverage_selfhost_testexec.sh` は `vibe/compiler/*_test.vibe` を
+`scripts/coverage_selfhost_testexec.sh` は `lib/@vibe/compiler/*_test.vibe` を
 **coverage 付きでコンパイル → 生成 wasm を実行**し、実行された分岐を corpus に
 `(関数名, 関数内 local 分岐 index)` キーで union する（別バイナリだが同一ソース
 関数なら local 分岐順が一致するのでマージできる）。テストは `type_to_string` /

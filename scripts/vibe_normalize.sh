@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Selfhost `vibe normalize` (#594): canonicalize a vibe source file via the
-# in-compiler normalize engine (vibe/compiler/normalize/index.vibe), run through
+# in-compiler normalize engine (lib/@vibe/compiler/normalize/index.vibe), run through
 # the committed seed compiler (VIBE_NORMALIZE=1) on the Rust/node runner — no
 # MoonBit host.
 #

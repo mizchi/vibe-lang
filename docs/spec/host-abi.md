@@ -69,7 +69,7 @@
 
 - **デフォルト linear path**（`vibe build` / `moonrun_wt`）: Preview1 `fd_write` ＋ 独自 `vibe::*`。
   **wasip3 ではない**。
-- **component path**（`vibe/compiler/component_codegen.vibe`）: canonical ABI（`cabi_realloc`）＋
+- **component path**（`lib/@vibe/compiler/component_codegen.vibe`）: canonical ABI（`cabi_realloc`）＋
   preview1 adapter で WASI component 化。標準 I/O を `wasi:io`（preview2）→ p3 async に寄せるのが
   到達目標（[wasi-p3-async.md](./wasi-p3-async.md), [decisions.md](./decisions.md)）。
 - よって「IO を wasip3 前提にする」のは **component path の方針**であり、
