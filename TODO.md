@@ -160,7 +160,7 @@ bootstrap / fallback として通常開発では触らない。
 ### 🟡 機能 / 品質 (issue 化候補、TODO 内に詳細あり)
 
 - [ ] **CI branch coverage 70% gate** + normalize/DCE/loader テスト拡充 (§カバレッジ)
-- [ ] **SIMD codegen 本番化** — 0xFD prefix emit + `simd_skip_ws`/`simd_scan_alnum` builtin 化 (§vibe/wasm)
+- [ ] **SIMD codegen 本番化** — 0xFD prefix emit + `simd_skip_ws`/`simd_scan_alnum` builtin 化 (§lib/@vibex/wasm)
 - [ ] **#59 WASM-GC selfbuild 小型配布形** — P4 compile E2E 達成 (966KB valid, #538)。P4.5 run E2E + self-compile fixpoint も達成。残: P5 DCE + wasm-opt。サイズ目標は初回リリース後に現実的な値を再設定（旧 ~350KB 目標は撤回）
 - [x] **WASI P3**: effect → WIT マッピング + `vibe serve` (#537, docs/effect-wit-mapping.md)
 - [ ] selfhost accumulator 残 2 sites (`linked_helpers.vibe` の `contains_name` 線形走査) — vibe runtime の Map が hash table 化するまで保留 (ROI ≪、§accumulator 撲滅)
@@ -496,7 +496,7 @@ StringBuilder/ArrayBuilder) に置換する。
 - [x] Net → fine-grained capability effects (Http, Socket 個別化、Net は super-effect)
 - [x] WASI P3: effect → WIT マッピング、vibe serve コマンド (#537)
 
-## vibe/wasm ツールチェーン
+## lib/@vibex/wasm ツールチェーン
 
 - [x] wasm_opt: directize, call forwarding, signature pruning (remove_unused_types で実装済み)
 - [x] wasm_runtime: テスト拡充 (64→81テスト、i64 ops + type conv + control flow)

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Smoke-test a curated allow-list of library `*_test.vibe` files through the
-# installed selfhost `vibe test`. This is the regression net for vibe/wasm,
+# installed selfhost `vibe test`. This is the regression net for lib/@vibex/wasm,
 # lib/@vibex and vibe/prelude library modules, which the selfhost-only gate does NOT
 # cover (it only validates the compiler self-compile). The MoonBit host that used
 # to run the full suite via flaker was retired in #594.
@@ -27,9 +27,9 @@ cd "$ROOT_DIR"
 ALLOW=(
   lib/@vibe/prelude/func_test.vibe
   lib/@vibe/prelude/lazy_iter_test.vibe
-  vibe/wasm/component_parser/component_parser_test.vibe
-  vibe/wasm/wasm_parser/wasm_parser_test.vibe
-  vibe/wasm/wat_parser/wat_parser_test.vibe
+  lib/@vibex/wasm/component_parser/component_parser_test.vibe
+  lib/@vibex/wasm/wasm_parser/wasm_parser_test.vibe
+  lib/@vibex/wasm/wat_parser/wat_parser_test.vibe
   lib/@vibex/args/parser_import_test.vibe
   lib/@vibex/collect/collect_effect_test.vibe
   lib/@vibex/collect/collect_test.vibe
