@@ -27,7 +27,7 @@
 # Self-test:
 #   scripts/test_selfhost_dist_stage2_parity.sh --self-test
 #     validates the vibe.abi extractor against the committed pinned seed wasm
-#     (bootstrap/selfhost/seed/selfhost_compiler.wasm) without any build.
+#     (bootstrap/seed/selfhost_compiler.wasm) without any build.
 #
 # Env:
 #   VIBE_DIST_PARITY_REQUIRE_HASH  — 1 (default) strict byte parity of output
@@ -96,7 +96,7 @@ PY
 }
 
 self_test() {
-  local seed="$PROJECT_ROOT/bootstrap/selfhost/seed/selfhost_compiler.wasm"
+  local seed="$PROJECT_ROOT/bootstrap/seed/selfhost_compiler.wasm"
   [ -f "$seed" ] || die "pinned seed wasm not found: $seed"
   local abi
   abi="$(extract_vibe_abi "$seed")"

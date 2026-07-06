@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Benchmark for the vibe LSP workspace symbol / call-hierarchy index
-// (js/vibe/symbol_index.js).
+// (clients/js/symbol_index.js).
 //
 // Establishes the perf case for the in-process index: the LSP server answers
 // queries by spawning a `vibe` subprocess (each loads the wasm compiler), which

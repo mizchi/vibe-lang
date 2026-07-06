@@ -17,7 +17,7 @@
   を経由する script は約 50。`moon`/`src/` を直接呼ぶ script は約 60、Taskfile.pkl の
   `moon` 呼び出しは 32。seam を 1 点 (`run_cached_vibe`) で selfhost wasm へ向ければ、
   下流の大半が moon-free になる。
-- **runner layer は既に moon-free**: `tools/moonrun_wasmtime` は Rust。
+- **runner layer は既に moon-free**: `runtime/moonrun_wasmtime` は Rust。
   selfhost wasm の実行 (`scripts/run_wasm_vibe_host_runner.sh` → node/wasmtime) は
   `src/` に依存しない。
 - **唯一の本質ブロッカー = `emit-module-source`**: flat module source の生成
@@ -31,7 +31,7 @@
     `VIBE_SELFHOST_PREBUILT_MODULE_SOURCE`) が既に存在し、`generate_selfhost_bundle.sh`
     にも prebuilt を優先する decoupling hook がある。
   - bundle 同期 gate (`scripts/check_selfhost_bundle_sync.sh`) が既にある。
-- **seed wasm は pipeline 専用**: `bootstrap/selfhost/seed/selfhost_compiler.wasm` の
+- **seed wasm は pipeline 専用**: `bootstrap/seed/selfhost_compiler.wasm` の
   `cli_main` は generation pipeline 向けに ABI/呼び出し規約が特化しており
   (tagged ABI で argv を誤デコード → `fs_read_file` garbage、raw で trap)、
   汎用 `vibe` CLI の drop-in には**ならない**。汎用 CLI には `vibe/cli/selfhost_entry.vibe`

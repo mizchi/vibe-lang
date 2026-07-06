@@ -36,7 +36,7 @@ case "$src" in
 esac
 [ -f "$ROOT_DIR/$src_rel" ] || { echo "vibe_normalize.sh: not found: $src_rel" >&2; exit 2; }
 
-seed="$ROOT_DIR/bootstrap/selfhost/seed/selfhost_compiler.wasm"
+seed="$ROOT_DIR/bootstrap/seed/selfhost_compiler.wasm"
 [ -s "$seed" ] || { echo "vibe_normalize.sh: seed compiler missing: $seed" >&2; exit 1; }
 
 mkdir -p "$ROOT_DIR/_build/vibe_normalize"

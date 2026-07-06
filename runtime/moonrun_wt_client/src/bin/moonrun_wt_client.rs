@@ -22,7 +22,7 @@ fn print_help() {
          \n\
          ENV:\n\
            MOONRUN_WT_BIN   path to moonrun_wt (default: \n\
-                            tools/moonrun_wasmtime/target/release/moonrun_wt)\n"
+                            runtime/moonrun_wasmtime/target/release/moonrun_wt)\n"
     );
 }
 

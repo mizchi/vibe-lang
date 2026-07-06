@@ -55,7 +55,7 @@ command -v git >/dev/null 2>&1 || die "git is required"
 # When already inside a vibe-lang checkout (developer flow), install from it
 # directly. The pipe flow (`curl | bash`) has no checkout -- clone one.
 SRC_DIR=""
-if [ -f "scripts/install.sh" ] && [ -f "bootstrap/selfhost/seed/selfhost_compiler.wasm" ]; then
+if [ -f "scripts/install.sh" ] && [ -f "bootstrap/seed/selfhost_compiler.wasm" ]; then
   SRC_DIR="$(pwd)"
   say "installing from the current checkout: $SRC_DIR (ref flags ignored)"
 else

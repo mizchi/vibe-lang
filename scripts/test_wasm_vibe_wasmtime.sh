@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-WASM_PATH="${1:-wasm/vibe/vibe.wasm}"
+WASM_PATH="${1:-clients/wasm/vibe.wasm}"
 
 if [ ! -f "$WASM_PATH" ]; then
   echo "missing wasm artifact: $WASM_PATH" >&2

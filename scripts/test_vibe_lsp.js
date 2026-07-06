@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Drive js/vibe/lsp_server.js over stdio and assert it publishes diagnostics
+// Drive clients/js/lsp_server.js over stdio and assert it publishes diagnostics
 // for a bad file and clears them for a good one. Uses VIBE_BIN from the env
 // (the installed launcher) for the actual compile.
 "use strict";

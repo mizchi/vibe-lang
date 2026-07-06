@@ -33,7 +33,7 @@ echo "[test] installing into $VIBE_HOME"
 # Use the committed seed for speed/determinism; the launcher/runner path is what
 # we are testing, not a fresh compiler build.
 bash scripts/install.sh \
-  --cli-wasm "$ROOT_DIR/bootstrap/selfhost/seed/selfhost_compiler.wasm" \
+  --cli-wasm "$ROOT_DIR/bootstrap/seed/selfhost_compiler.wasm" \
   >/dev/null 2>&1
 VIBE="$VIBE_BIN_DIR/vibe"
 [ -x "$VIBE" ] || { echo "FAIL: launcher not installed" >&2; exit 1; }

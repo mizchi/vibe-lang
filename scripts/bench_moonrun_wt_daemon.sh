@@ -14,7 +14,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-WT_BIN="${MOONRUN_WT_BIN:-$PROJECT_ROOT/tools/moonrun_wasmtime/target/release/moonrun_wt}"
+WT_BIN="${MOONRUN_WT_BIN:-$PROJECT_ROOT/runtime/moonrun_wasmtime/target/release/moonrun_wt}"
 if [ ! -x "$WT_BIN" ]; then
   echo "bench-moonrun-wt-daemon: build moonrun_wt first" >&2
   exit 1

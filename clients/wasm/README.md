@@ -1,6 +1,6 @@
-# wasm/vibe
+# clients/wasm
 
-`wasm/vibe/vibe.wasm` は `src/lib` を `wasm-gc` release でビルドした配布用成果物です。
+`clients/wasm/vibe.wasm` は selfhost compiler を `wasm-gc` release でビルドした配布用成果物です。
 
 ## Update
 
@@ -23,5 +23,5 @@ pkf run test-wasm-vibe-wasmtime
 内部では以下を実行します:
 
 ```bash
-wasmtime run -W gc=y -W function-references=y --invoke vibe_check wasm/vibe/vibe.wasm 1024 0 4096 4096
+wasmtime run -W gc=y -W function-references=y --invoke vibe_check clients/wasm/vibe.wasm 1024 0 4096 4096
 ```

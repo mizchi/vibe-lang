@@ -9,8 +9,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-RT="$ROOT_DIR/tools/moonrun_wasmtime/target/release/moonrun_wt"
-[ -x "$RT" ] || cargo build --release --manifest-path tools/moonrun_wasmtime/Cargo.toml >/dev/null
+RT="$ROOT_DIR/runtime/moonrun_wasmtime/target/release/moonrun_wt"
+[ -x "$RT" ] || cargo build --release --manifest-path runtime/moonrun_wasmtime/Cargo.toml >/dev/null
 
 cli="$(bash scripts/build_cli_wasm.sh)"
 [ -s "$cli" ] || { echo "FAIL: no CLI wasm built" >&2; exit 1; }

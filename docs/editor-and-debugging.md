@@ -156,7 +156,7 @@ produces its normal result when continued.
 `integrations/vscode-vibe/` is a VS Code extension contributing both syntax
 highlighting and a debug adapter. The debug side bridges VS Code's Debug
 Adapter Protocol to the function-granularity debugger above via
-[`js/vibe/dap_server.js`](../js/vibe/dap_server.js) (a small, dependency-free
+[`clients/js/dap_server.js`](../clients/js/dap_server.js) (a small, dependency-free
 stdio DAP server).
 
 The adapter:

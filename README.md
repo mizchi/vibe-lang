@@ -123,15 +123,15 @@ Coverage は selfhost テストスイート基準で測る:
 - next-branch 提案: `pkf run coverage-selfhost-suite-next-branches`
 - 詳細: [docs/coverage.md](docs/coverage.md)
 
-`js/vibe/` には配布用 wasm (`wasm/vibe/vibe.wasm`) を呼ぶ JS バインディングを置く:
-- `js/vibe/index.js` / `js/vibe/index.d.ts` (`createVibeService`, `init`, `check`, `format`, `checkProject`, `ideOutline`, `idePeekDef`, `ideSearch`)
+`clients/js/` には配布用 wasm (`clients/wasm/vibe.wasm`) を呼ぶ JS バインディングを置く:
+- `clients/js/index.js` / `clients/js/index.d.ts` (`createVibeService`, `init`, `check`, `format`, `checkProject`, `ideOutline`, `idePeekDef`, `ideSearch`)
   - `createVibeService({ bootstrap: { prelude, kv } })` または `service.init({ prelude, kv })` で初期状態を注入可能
   - `checkProject({ entry, files })` と IDE request (`{ entry, path, files, ... }`) は import 解決対応（init で注入した `kv` も解決対象）
-- `js/vibe/cli.js` shell から使う JS CLI (`vibe ide` 相当)
-- `js/vibe/lsp.js` / `js/vibe/lsp.d.ts` (stdio/ws 非依存の transport 抽象)
+- `clients/js/cli.js` shell から使う JS CLI (`vibe ide` 相当)
+- `clients/js/lsp.js` / `clients/js/lsp.d.ts` (stdio/ws 非依存の transport 抽象)
 
-`wasm/vibe/` には配布用 wasm を置く:
-- `wasm/vibe/vibe.wasm` — selfhost compiler をビルドした成果物
+`clients/wasm/` には配布用 wasm を置く:
+- `clients/wasm/vibe.wasm` — selfhost compiler をビルドした成果物
 - `pkf run build-wasm-vibe` で更新
 - `pkf run test-wasm-vibe-wasmtime` で `wasmtime --invoke vibe_check` 疎通確認
 - `pkf run build-release-assets v0.0.1` で GitHub Release 添付用の versioned asset を `dist/release/v0.0.1/` に生成
@@ -312,10 +312,16 @@ lib/                      # Standard + experimental libraries (vibe source)
 └── @vibex/               #   experimental: math, regexp, url, uuid, toml, diff,
                           #   fmt, color, template, semver, quickcheck, base64, …
 
-bootstrap/selfhost/       # Committed seed compiler (bootstraps the build)
+runtime/                  # Host runtime: wasmtime runner (moonrun_wasmtime),
+│                         #   daemon client (moonrun_wt_client), `vibe` launcher
+clients/                  # Embeddings + distribution artifacts
+├── js/                   #   JS bindings (LSP / IDE / DAP / graph-query)
+└── wasm/                 #   distributed compiler wasm (vibe.wasm)
+bootstrap/                # Committed seed compiler (seed/ + seed.json)
+tools/                    # Dev tooling (wasmtime_bench, agent-os-poc)
+integrations/             # Editor plugins (treesitter / vscode / zed)
 examples/                 # Example scripts (examples/wasm/ needs a host)
-examples/async_host/      # Rust/wasmtime host runtime
-js/vibe/ wasm/vibe/       # JS bindings + distributed compiler wasm
+examples/async_host/      # Rust/wasmtime host runtime for async (sleep)
 scripts/ pkspec/          # Build/test scripts + pkfire/pkspec definitions
 ```
 

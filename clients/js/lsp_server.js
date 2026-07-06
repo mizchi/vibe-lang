@@ -68,7 +68,7 @@ const docs = new Map(); // uri -> { text, version }
 const pending = new Map(); // uri -> timeout (debounce)
 
 // ---- workspace symbol / call-hierarchy index ---------------------------
-// In-process incremental index (js/vibe/symbol_index.js) backing workspace/
+// In-process incremental index (clients/js/symbol_index.js) backing workspace/
 // symbol and callHierarchy. Avoids a `vibe` subprocess per file (~0.5s) for
 // these workspace-wide ops; a cold scan is sub-second, edits re-index in ms.
 const { SymbolIndex } = require("./symbol_index.js");

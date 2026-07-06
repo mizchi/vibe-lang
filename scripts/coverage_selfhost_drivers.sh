@@ -19,7 +19,7 @@
 #   scripts/coverage_selfhost_drivers.sh
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; cd "$ROOT"
-SEED="${VIBE_COV_SEED:-bootstrap/selfhost/seed/selfhost_compiler.wasm}"
+SEED="${VIBE_COV_SEED:-bootstrap/seed/selfhost_compiler.wasm}"
 OUTDIR="_build/coverage/selfhost-corpus"
 ACC="$OUTDIR/acc.json"
 RUNNER="scripts/run_wasm_vibe_host_runner.sh"

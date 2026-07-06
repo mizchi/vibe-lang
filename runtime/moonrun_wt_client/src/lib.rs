@@ -131,7 +131,7 @@ impl Client {
         let bin = std::env::var_os("MOONRUN_WT_BIN")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
-                PathBuf::from("tools/moonrun_wasmtime/target/release/moonrun_wt")
+                PathBuf::from("runtime/moonrun_wasmtime/target/release/moonrun_wt")
             });
         Self::spawn_with(bin, wasm_path)
     }

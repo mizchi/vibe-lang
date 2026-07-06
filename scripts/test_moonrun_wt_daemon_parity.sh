@@ -19,10 +19,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-WT_BIN="${MOONRUN_WT_BIN:-$PROJECT_ROOT/tools/moonrun_wasmtime/target/release/moonrun_wt}"
+WT_BIN="${MOONRUN_WT_BIN:-$PROJECT_ROOT/runtime/moonrun_wasmtime/target/release/moonrun_wt}"
 if [ ! -x "$WT_BIN" ]; then
   echo "[daemon-parity] building moonrun_wt..."
-  (cd "$PROJECT_ROOT/tools/moonrun_wasmtime" && cargo build --release >&2)
+  (cd "$PROJECT_ROOT/runtime/moonrun_wasmtime" && cargo build --release >&2)
 fi
 if [ ! -x "$WT_BIN" ]; then
   echo "test-moonrun-wt-daemon-parity: moonrun_wt build did not produce $WT_BIN" >&2

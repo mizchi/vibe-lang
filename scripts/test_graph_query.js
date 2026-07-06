@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Unit tests for the project graph query layer (js/vibe/graph_query.js).
+// Unit tests for the project graph query layer (clients/js/graph_query.js).
 // Pure JS; builds a synthetic 2-module workspace with a deliberate import cycle.
 "use strict";
 const path = require("path");

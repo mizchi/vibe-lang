@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Unit tests for the workspace symbol / call-graph index (js/vibe/symbol_index.js).
+// Unit tests for the workspace symbol / call-graph index (clients/js/symbol_index.js).
 // Pure JS, no compiler/runner required — runs anywhere node does.
 "use strict";
 const path = require("path");

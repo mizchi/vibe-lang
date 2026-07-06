@@ -68,7 +68,7 @@ seed compiler:
 
 Enlarging the body 27× left the K=1→5 delta unchanged (+51 B): bodies are shared,
 each instantiation adds only its call site. **wasm size is therefore not a
-constraint** (product `wasm/vibe/vibe.wasm` is ~943 KB; thousands of method call
+constraint** (product `clients/wasm/vibe.wasm` is ~943 KB; thousands of method call
 sites add tens of KB). Dispatch is chosen by implementation cost, not size, and
 the uniform representation aligns naturally with **dictionary passing** (a dict is
 one value threaded through shared code). Monomorphization is not pursued.

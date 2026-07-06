@@ -61,17 +61,17 @@ CHECKSUM_NAME="SHA256SUMS.txt"
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
 
-echo "[release-assets] building wasm/vibe/vibe.wasm"
+echo "[release-assets] building clients/wasm/vibe.wasm"
 (cd "$PROJECT_ROOT" && moon build --target wasm-gc --release src/lib)
-mkdir -p "$PROJECT_ROOT/wasm/vibe"
+mkdir -p "$PROJECT_ROOT/clients/wasm"
 cp "$PROJECT_ROOT/_build/wasm-gc/release/build/lib/lib.wasm" \
-  "$PROJECT_ROOT/wasm/vibe/vibe.wasm"
+  "$PROJECT_ROOT/clients/wasm/vibe.wasm"
 
-echo "[release-assets] smoke testing wasm/vibe/vibe.wasm"
-(cd "$PROJECT_ROOT" && bash scripts/test_wasm_vibe_wasmtime.sh wasm/vibe/vibe.wasm)
+echo "[release-assets] smoke testing clients/wasm/vibe.wasm"
+(cd "$PROJECT_ROOT" && bash scripts/test_wasm_vibe_wasmtime.sh clients/wasm/vibe.wasm)
 
-cp "$PROJECT_ROOT/wasm/vibe/vibe.wasm" "$OUT_DIR/$WASM_NAME"
-cp "$PROJECT_ROOT/wasm/vibe/README.md" "$OUT_DIR/$README_NAME"
+cp "$PROJECT_ROOT/clients/wasm/vibe.wasm" "$OUT_DIR/$WASM_NAME"
+cp "$PROJECT_ROOT/clients/wasm/README.md" "$OUT_DIR/$README_NAME"
 
 # --- selfhost compiler artifacts ---------------------------------------
 # Unlike vibe-<tag>.wasm (the MoonBit-host lib, which needs moonbit fs
@@ -92,8 +92,8 @@ SELFHOST_WASM_NAME="vibe-selfhost-$TAG.wasm"
 SELFHOST_MODSRC_NAME="vibe-selfhost-module-source-$TAG.vibe"
 SELFHOST_SEED_JSON_NAME="vibe-selfhost-seed-$TAG.json"
 
-seed_src="$PROJECT_ROOT/bootstrap/selfhost/seed/selfhost_compiler.wasm"
-seed_json="$PROJECT_ROOT/bootstrap/selfhost/seed.json"
+seed_src="$PROJECT_ROOT/bootstrap/seed/selfhost_compiler.wasm"
+seed_json="$PROJECT_ROOT/bootstrap/seed.json"
 [ -f "$seed_src" ] || { echo "release-assets: selfhost seed wasm missing: $seed_src" >&2; exit 1; }
 [ -f "$seed_json" ] || { echo "release-assets: selfhost seed.json missing: $seed_json" >&2; exit 1; }
 

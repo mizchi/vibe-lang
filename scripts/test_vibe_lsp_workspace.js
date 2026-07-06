@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // End-to-end test for the LSP server's workspace/symbol + callHierarchy support
-// (index-backed; js/vibe/symbol_index.js). Drives the real stdio JSON-RPC server
-// over a tiny two-file workspace. Spawns `node js/vibe/lsp_server.js` directly —
+// (index-backed; clients/js/symbol_index.js). Drives the real stdio JSON-RPC server
+// over a tiny two-file workspace. Spawns `node clients/js/lsp_server.js` directly —
 // these features are pure-JS (no compiler subprocess), so no vibe build needed.
 "use strict";
 const { spawn } = require("child_process");

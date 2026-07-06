@@ -5,7 +5,7 @@ import type {
   FormatResult,
   IdeOutlineResult,
   VibeService,
-} from "../../js/vibe/index.js";
+} from "../../clients/js/index.js";
 import { vibeLanguageConfig, vibeMonarchLanguage } from "./vibe-monarch.js";
 import {
   initTreeSitter,
@@ -671,7 +671,7 @@ async function init() {
   buildMetaEl.textContent = `${BUILD_TARGET} · ${BUILD_LABEL}`;
 
   try {
-    const { createVibeService } = await import("../../js/vibe/index.js");
+    const { createVibeService } = await import("../../clients/js/index.js");
     const wasmModule = await loadWasmModule(`${import.meta.env.BASE_URL}vibe-runtime.wasm`);
     service = await createVibeService({ wasmModule });
     statusEl.textContent = "Ready";

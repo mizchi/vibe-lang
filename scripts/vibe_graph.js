@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Project graph CLI: get the dependency graph — or any focused perspective — of
 // a vibe workspace in one shot. Builds the in-process symbol index
-// (js/vibe/symbol_index.js) + graph query layer (js/vibe/graph_query.js) and
+// (clients/js/symbol_index.js) + graph query layer (clients/js/graph_query.js) and
 // emits JSON suitable for macro-level visualization (à la mizchi/sprawlens).
 //
 // Every query returns a uniform { nodes, edges, ... } subgraph so one renderer

@@ -19,8 +19,8 @@ set -euo pipefail
 #   --out-dir DIR        Place artifacts here
 #                        (default: _build/selfhost/release/<tag>)
 #   --adopt-seed         Also copy the compiler wasm to the in-repo seed
-#                        path (bootstrap/selfhost/seed/selfhost_compiler.wasm)
-#                        after verifying it matches bootstrap/selfhost/seed.json
+#                        path (bootstrap/seed/selfhost_compiler.wasm)
+#                        after verifying it matches bootstrap/seed.json
 #   --no-module-source   Skip the prebuilt flat module source
 #   --base-url URL       Override the release download base URL
 #                        (default: https://github.com/mizchi/vibe-lang/releases/download/<tag>)
@@ -153,14 +153,14 @@ if [ -n "$seed_manifest_name" ]; then
 fi
 
 if [ "$ADOPT_SEED" = "1" ]; then
-  seed_json="$PROJECT_ROOT/bootstrap/selfhost/seed.json"
-  seed_path="$PROJECT_ROOT/bootstrap/selfhost/seed/selfhost_compiler.wasm"
+  seed_json="$PROJECT_ROOT/bootstrap/seed.json"
+  seed_path="$PROJECT_ROOT/bootstrap/seed/selfhost_compiler.wasm"
   if [ -f "$seed_json" ]; then
     pinned="$(grep -o '"sha256"[[:space:]]*:[[:space:]]*"[0-9a-f]*"' "$seed_json" | head -1 \
       | sed -E 's/.*"([0-9a-f]+)".*/\1/')"
     got="$(sha256_file "$compiler_wasm")"
     [ -z "$pinned" ] || [ "$pinned" = "$got" ] || \
-      die "--adopt-seed refused: fetched wasm sha256=$got does not match bootstrap/selfhost/seed.json pinned=$pinned (tag/source mismatch)"
+      die "--adopt-seed refused: fetched wasm sha256=$got does not match bootstrap/seed.json pinned=$pinned (tag/source mismatch)"
   fi
   mkdir -p "$(dirname "$seed_path")"
   cp "$compiler_wasm" "$seed_path"

@@ -23,7 +23,7 @@
 //   * drives the runner's stdin from continue/next/stepIn/stepOut.
 //
 // Plain Node, no external deps; the DAP wire format (Content-Length framing) is
-// implemented here, mirroring js/vibe/lsp_server.js. The launcher path comes
+// implemented here, mirroring clients/js/lsp_server.js. The launcher path comes
 // from the launch arg `vibeBin`, then VIBE_BIN, then `vibe` on PATH.
 
 "use strict";
