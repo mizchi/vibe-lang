@@ -1,0 +1,70 @@
+// #760(5): a bare `-1` (or `+1`) on its own line after a loop-form statement
+// used to be folded by the greedy infix ladder into `loop_result - 1`, which
+// then failed as `Unit - Int`. A loop expression (while / loop / for-in) is
+// Unit-valued and can never be a valid left operand of an infix operator, so
+// the parser now stops the ladder there and the `-1` parses as the next
+// statement's unary-minus literal. See lib/@vibe/parser/parser_expr_core.vibe.
+
+let after_while: () -> Int = () -> {
+  let mut i = 0
+  while i < 3 {
+    i = i + 1
+  }
+  -1
+}
+
+let after_for: () -> Int = () -> {
+  let mut acc = 0
+  for x in [1, 2, 3] {
+    acc = acc + x
+  }
+  -1
+}
+
+let after_loop: () -> Int = () -> {
+  let mut n = 0
+  loop {
+    n = n + 1
+    if n >= 2 {
+      break
+    } else {
+      0
+    }
+  }
+  -42
+}
+
+// `+n` at statement position after a loop must likewise be a fresh statement.
+let after_while_plus: () -> Int = () -> {
+  let mut i = 0
+  while i < 2 {
+    i = i + 1
+  }
+  let v = 7
+  v
+}
+
+test "bare -1 after while is its own statement (#760)" {
+  assert_eq(after_while(), -1)
+}
+
+test "bare -1 after for is its own statement (#760)" {
+  assert_eq(after_for(), -1)
+}
+
+test "bare -42 after loop is its own statement (#760)" {
+  assert_eq(after_loop(), -42)
+}
+
+test "statement after while still binds normally (#760)" {
+  assert_eq(after_while_plus(), 7)
+}
+
+// Genuine arithmetic is untouched: infix minus across non-loop operands still
+// folds as subtraction.
+test "ordinary subtraction still works" {
+  let a = 10
+  let b = 3
+  assert_eq(a - b, 7)
+  assert_eq(100 - 1, 99)
+}

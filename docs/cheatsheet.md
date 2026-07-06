@@ -235,9 +235,13 @@ x if x > 0          // guard (match arm only)
 
 ```vibe
 let (a, b) = (1, 2)
-let record { x, y } = r
-let Some(v) = opt else { fallback }
+let record { x, y } = r          // any field names bind
+let Some((x, y)) = pt            // ctor pattern (partial: traps on mismatch)
 ```
+
+> **selfhost status (#760):** `let PAT = e else { ... }` (let-else) is not yet
+> implemented in the selfhost parser — use an explicit `match` for the fallback
+> case. Tuple/record/ctor destructuring binds fine.
 
 ### is expression
 
@@ -284,7 +288,8 @@ t.0                           // => 1
 
 // Record
 let r = record { name: "vibe", ver: 1 }
-r.name
+let record { name: n, ver: v } = r   // destructuring binds any field name
+// r.name (dot access) — see selfhost note below
 
 // Map
 let m = map { "key": 42 }
@@ -305,11 +310,27 @@ Int64Array::get(w, 0)            // => 4294967295 (no truncation)
 Int64Array::length(w)            // => 4
 ```
 
+> **selfhost status (#760):**
+> - **Record dot access** (`r.name` on an anonymous `record { ... }`) currently
+>   resolves only when some declared `struct` also names that field (#722
+>   residual). Destructuring (`let record { name: n } = r`) binds any field name
+>   and always works — prefer it.
+> - **`map { ... }` literals / `Map::*` builtins** run in a workspace that imports
+>   `vibe/collection` (`Map::get`/`has_key`/…); the standalone builtin Map lane
+>   still traps at runtime. Use `vibe/collection` for maps today.
+
 ## Effects (core concept)
 
 vibe is **pure by default**. Side effects are tracked in the type system.
 
 ### Result-first pipeline (recommended)
+
+> **selfhost status (#760):** in a **standalone** file the built-in `Result`
+> constructors (`Ok`/`Err`, `Result::Ok`/`Result::Err`) are not yet resolvable
+> — declare a local `enum Result[T] { Ok(T); Err(String) }` (see
+> `examples/pattern_match_test.vibe`), or import one. `Option` (`Some`/`None`)
+> **is** built in everywhere, so `let*`/`?` on `Option` works standalone today;
+> the `Result` railway below assumes a `Result` type is in scope.
 
 ```vibe
 let parse_id: (String) -> Result[Int, String] = (raw) -> { ... }
